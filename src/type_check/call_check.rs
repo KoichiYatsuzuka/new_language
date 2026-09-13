@@ -3,6 +3,7 @@ use crate::type_check::types::InferredType as IT;
 
 use super::errors::{StaticTypeError, TypeErrorKind};
 use super::types::{FnSig, FnTypeParam, InferredType};
+use super::type_utils::Aliasing;
 use super::TypeChecker;
 
 impl TypeChecker {
@@ -399,7 +400,7 @@ impl TypeChecker {
         if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if !self.type_matches(elem_ty, expected_elem_ty) {
+            if !self.types_compatible(elem_ty, expected_elem_ty, Aliasing::ByValue) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{cls_name}.{method_name}"),
@@ -597,7 +598,7 @@ impl TypeChecker {
         if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if !self.type_matches(elem_ty, expected_elem_ty) {
+            if !self.types_compatible(elem_ty, expected_elem_ty, Aliasing::ByValue) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: fname.to_string(),
@@ -836,11 +837,15 @@ impl TypeChecker {
         arg_ty: &InferredType,
         expected: &InferredType,
     ) -> bool {
-        if sig.param_mutable.get(param_idx).copied().unwrap_or(false) {
-            self.type_matches_exact(arg_ty, expected)
+        // ⚠ 判定は `types_compatible` に委譲する（タスク 3.3）。以前はここに
+        //    `check_expected` と**同じ規則をもう 1 つ**書いていたので、片方だけ直すと
+        //    ずれる状態だった。
+        let aliasing = if sig.param_mutable.get(param_idx).copied().unwrap_or(false) {
+            Aliasing::WriteBack
         } else {
-            self.type_matches(arg_ty, expected)
-        }
+            Aliasing::ByValue
+        };
+        self.types_compatible(arg_ty, expected, aliasing)
     }
 
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。
@@ -882,9 +887,9 @@ impl TypeChecker {
                         let param = &params[param_pos];
                         // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                         let ok = if param.mutable {
-                            self.type_matches_exact(arg_ty, &param.ty)
+                            self.types_compatible(arg_ty, &param.ty, Aliasing::WriteBack)
                         } else {
-                            self.type_matches(arg_ty, &param.ty)
+                            self.types_compatible(arg_ty, &param.ty, Aliasing::ByValue)
                         };
                         if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {
@@ -912,9 +917,9 @@ impl TypeChecker {
                     if let Some(param) = params.get(positional_idx) {
                         // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                         let ok = if param.mutable {
-                            self.type_matches_exact(arg_ty, &param.ty)
+                            self.types_compatible(arg_ty, &param.ty, Aliasing::WriteBack)
                         } else {
-                            self.type_matches(arg_ty, &param.ty)
+                            self.types_compatible(arg_ty, &param.ty, Aliasing::ByValue)
                         };
                         if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {

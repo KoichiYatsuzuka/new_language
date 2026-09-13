@@ -269,14 +269,13 @@ impl TypeChecker {
         if self.mentions_type_param(&declared) {
             return rhs_ty;
         }
-        // ⚠ **容器の内側の protocol 名を `Protocol` へ寄せる**（タスク 1.3）。
-        //    寄せないと `list[HasN]` の `HasN` が `NamedInstance` のまま**名前**で比較され、
-        //    構造的に満たしているクラス（`HasN` を宣言していない `Dog`）が
-        //    **誤って弾かれる**（実測）。`check_expected` を通る経路では
-        //    `resolve_protocols` が既に呼ばれており、ここだけ抜けていた。
-        let declared = self.resolve_protocols(&declared);
-        let rhs_ty = self.resolve_protocols(&rhs_ty);
-        if !self.type_matches(&rhs_ty, &declared) {
+        // ⚠⚠ **整合性検査は `types_compatible` を通す**（タスク 3.3）。
+        //    この経路は以前 `type_matches` を直接呼んでいたため `resolve_protocols` が
+        //    掛からず、`list[HasN]` の `HasN` が `NamedInstance` のまま**名前**で比較され、
+        //    構造的に満たしているクラスを**誤って弾いていた**（タスク 1.3 で実測）。
+        //    1.3 では手で `resolve_protocols` を 2 行足して直したが、3.3 で述語の中へ
+        //    閉じ込めたので**新しい検査地点で同じ忘れ方ができない**。
+        if !self.types_compatible(&rhs_ty, &declared, crate::type_check::type_utils::Aliasing::ByValue) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {
                     name: var_name.to_string(),

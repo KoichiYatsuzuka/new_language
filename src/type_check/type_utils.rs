@@ -3,6 +3,19 @@ use std::collections::HashSet;
 use super::types::InferredType;
 use super::TypeChecker;
 
+/// 値の渡し方（タスク 3.3）。整合性検査の厳しさを決める。
+///
+/// ⚠ 以前は `param_mutable: bool` を引き回していたが、`true`/`false` が呼び出し側で
+/// 何を意味するか読めなかった。**書き戻しの有無**は自明キャストを許すかどうかを
+/// 左右する本質的な区別なので、名前を付けて渡す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Aliasing {
+    /// 値渡し。自明キャスト（`int` → `float`）を許す。
+    ByValue,
+    /// **書き戻しあり**（`mut` 引数）。記憶域を共有するので自明キャストを許さない。
+    WriteBack,
+}
+
 impl TypeChecker {
     /// `Result[T, E]` 型で T == E の場合に静的エラーを記録する。
     pub(super) fn validate_result_type(
@@ -127,6 +140,7 @@ impl TypeChecker {
         param_mutable: bool,
         context: &str,
     ) -> bool {
+        let aliasing = if param_mutable { Aliasing::WriteBack } else { Aliasing::ByValue };
         let expected = self.resolve_protocols(expected);
         // ⚠⚠ **`got` 側も寄せる。** protocol 名で注釈された仮引数は `declare_param` が
         //    `NamedInstance("Pr")` として束縛する（`from_ann` は protocol とクラスを
@@ -139,11 +153,50 @@ impl TypeChecker {
             self.check_protocol_conformance(&got, proto, None, context);
             return true;
         }
-        // ⚠ `mut` 引数（write-back）は `int` → `float` の拡大を許さない（`type_matches` の doc）。
-        if param_mutable {
-            self.type_matches_exact(&got, &expected)
-        } else {
-            self.type_matches(&got, &expected)
+        // ⚠ 判定本体は `types_compatible` に一本化してある（タスク 3.3）。
+        //    `resolve_protocols` は上で済ませたので二重には効かない（冪等）。
+        self.types_compatible(&got, &expected, aliasing)
+    }
+
+    /// 整合性検査（**Kind 1 / Kind 2**）の**唯一の述語**（タスク 3.3）。報告はしない。
+    ///
+    /// # 3 分類のどこに当たるか
+    ///
+    /// | Kind | 期待型 | この関数の中での担当 |
+    /// |---|---|---|
+    /// | **1**（同一 or 自明キャスト） | プリミティブ・コレクション・クラス・`new_type`・`enum`・テンプレート実体・`function` | [`Self::type_matches`] / [`Self::type_matches_exact`] |
+    /// | **2**（アップキャスト） | `trait` / `protocol` / `Intersection` | `type_matches_exact` 内の `satisfies_protocol` / `class_implements_trait` / `Intersection` アーム |
+    ///
+    /// ⚠ **Kind は「検査地点」ではなく「期待型の種類」で決まる。** 地点は期待型を渡すだけで、
+    /// どちらの Kind になるかはこの関数が判断する。だから入口は 1 つで足りる。
+    /// ⚠ **Kind 3**（演算子）は被演算子が 2 つで結果型も返すため別系統
+    /// （[`Self::check_binop`] / `infer_binop_result`）。
+    ///
+    /// # なぜ一本化したか
+    ///
+    /// ⚠⚠ 以前は **`mut` 引数なら自明キャストを許さない**という規則が
+    /// `check_expected` と `param_type_matches` の **2 箇所に別々に書かれていた**。
+    /// 同じ問いに 2 つの実装がある状態で、片方だけ直すとずれる。
+    /// ⚠⚠ さらに `resolve_protocols` を呼ぶ経路と呼ばない経路が混在していたため、
+    /// **容器の内側の protocol が経路によって 2 通りに壊れていた**（タスク 1.3 で実測）。
+    /// ⇒ 両方をこの関数に閉じ込めた。新しい検査地点はこれを呼ぶだけでよい。
+    pub(super) fn types_compatible(
+        &self,
+        got: &InferredType,
+        expected: &InferredType,
+        aliasing: Aliasing,
+    ) -> bool {
+        // ⚠ protocol 名を `Protocol` へ寄せる。**両側**に掛けること（`got` 側を忘れると
+        //    「`Pr` という名のクラス」を探しに行って自分自身に不適合という嘘が出る）。
+        let expected = self.resolve_protocols(expected);
+        let got = self.resolve_protocols(got);
+        match aliasing {
+            // ⚠ `mut` 引数（write-back）は `int` → `float` の拡大を許さない。
+            //    C ABI の `double*` のように呼び先が呼び元の記憶域へ書き戻す引数では、
+            //    拡大は「値の変換」ではなく**記憶域の型詐称**になる
+            //    （`cpp_prim_ptr_int_arg_type_mismatch` が実際に検出した）。
+            Aliasing::WriteBack => self.type_matches_exact(&got, &expected),
+            Aliasing::ByValue => self.type_matches(&got, &expected),
         }
     }
 

@@ -10,7 +10,11 @@
 #   （`check_expected`）は**期待型が最上位 `Protocol` のときだけ**動いていた。
 #
 # 期待されるエラー:
-#   StaticTypeError  'xs' is declared 'list[protocol HasN]' but initialized with 'list[No]'
+#   StaticTypeError  'xs' is declared 'list[HasN]' but initialized with 'list[No]'
+#
+# ⚠ タスク 3.3 で文言が `list[protocol HasN]` → `list[HasN]` に変わった（**利用者が書いた
+#   綴りをそのまま出す**）。検査結果は不変で、`protocol` の解決は述語
+#   `types_compatible` の内側で行われる。
 
 protocol HasN:
     mut n: int

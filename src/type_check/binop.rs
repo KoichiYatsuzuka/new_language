@@ -296,7 +296,7 @@ impl TypeChecker {
                 (Complex, Complex)
                 | (Complex, Float) | (Float, Complex)
                 | (Complex, Int)   | (Int, Complex) => Complex,
-                // 実測: `"ab" * 2` / `2 * "ab"` → `abab`（`"a" * 1.5` は TypeError）
+                // 実測: `"ab" * 2` / `2 * "ab"` → "abab" という文字列（`"a" * 1.5` は TypeError）
                 (Str, Int) | (Int, Str) => Str,
                 // 実測: `[1] * 2` → `[1, 1]` ／ `(1,) * 2` → `(1, 1)`
                 (ListOf(a), Int) => ListOf(a.clone()),
