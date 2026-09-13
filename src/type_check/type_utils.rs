@@ -3,17 +3,51 @@ use std::collections::HashSet;
 use super::types::InferredType;
 use super::TypeChecker;
 
-/// 値の渡し方（タスク 3.3）。整合性検査の厳しさを決める。
+/// 整合性検査を行う**地点**（タスク 3.3 で導入・4.3 で拡張）。
 ///
 /// ⚠ 以前は `param_mutable: bool` を引き回していたが、`true`/`false` が呼び出し側で
-/// 何を意味するか読めなかった。**書き戻しの有無**は自明キャストを許すかどうかを
-/// 左右する本質的な区別なので、名前を付けて渡す。
+/// 何を意味するか読めなかった。地点ごとに**何が許されるか**が変わるので名前を付ける。
+///
+/// # 地点によって何が変わるか
+///
+/// | 地点 | 自明キャスト | ユーザー定義キャスト（`__cast__`） |
+/// |---|---|---|
+/// | `LetParam` | 許す | **許す**（実行時が実際に変換する） |
+/// | `MutParam` | 許さない（書き戻し） | 許さない（実行時も変換しない） |
+/// | `Other` | 許す | **許さない**（実行時が変換しない） |
+///
+/// ⚠⚠ **`__cast__` の受理は `let` 仮引数だけが正しい。** 実測（タスク 4.3）:
+///
+/// | 地点 | 実行時の挙動 |
+/// |---|---|
+/// | `let` 仮引数 | **変換する**（`double(w)` → `42`） |
+/// | 変数束縛 | 変換しない（`<W object>` がそのまま入る） |
+/// | フィールド代入 | A-3 の検査が弾く（`value does not match declared type`） |
+/// | 戻り値 | 変換しない |
+///
+/// 実装側のコメントも「`mut` パラメータは自動キャストしない」と明記している
+/// （`interpreter/functions/execution.rs`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Aliasing {
-    /// 値渡し。自明キャスト（`int` → `float`）を許す。
-    ByValue,
-    /// **書き戻しあり**（`mut` 引数）。記憶域を共有するので自明キャストを許さない。
-    WriteBack,
+pub(super) enum Site {
+    /// `let` 仮引数への束縛。実行時が `__cast__` を挿入するので受理してよい。
+    LetParam,
+    /// `mut` 仮引数への束縛。**書き戻しあり**なので記憶域の型を詐称できない。
+    MutParam,
+    /// それ以外（変数束縛・フィールド代入・戻り値・要素型 …）。
+    Other,
+}
+
+impl Site {
+    /// この地点で**自明キャスト**（`int` → `float` 等）を許すか。
+    /// ⚠ タスク 4.2 で暗黙 `int → float` を廃止したので現状は効果が無いが、
+    /// 将来 `fixed_list → list` を入れるときの置き場所として残す（D-7）。
+    fn allows_trivial_cast(self) -> bool {
+        !matches!(self, Site::MutParam)
+    }
+    /// この地点で**ユーザー定義キャスト**（`__cast__`）を許すか。
+    fn allows_user_cast(self) -> bool {
+        matches!(self, Site::LetParam)
+    }
 }
 
 impl TypeChecker {
@@ -140,7 +174,10 @@ impl TypeChecker {
         param_mutable: bool,
         context: &str,
     ) -> bool {
-        let aliasing = if param_mutable { Aliasing::WriteBack } else { Aliasing::ByValue };
+        // ⚠ `check_expected` は**仮引数以外の地点からも**呼ばれる（フィールド既定値・
+        //    再代入・戻り値など）。`param_mutable` が false でも `LetParam` とは限らないので
+        //    `Other` に倒す。仮引数の検査は `param_type_matches` が `Site::LetParam` を渡す。
+        let site = if param_mutable { Site::MutParam } else { Site::Other };
         let expected = self.resolve_protocols(expected);
         // ⚠⚠ **`got` 側も寄せる。** protocol 名で注釈された仮引数は `declare_param` が
         //    `NamedInstance("Pr")` として束縛する（`from_ann` は protocol とクラスを
@@ -155,7 +192,7 @@ impl TypeChecker {
         }
         // ⚠ 判定本体は `types_compatible` に一本化してある（タスク 3.3）。
         //    `resolve_protocols` は上で済ませたので二重には効かない（冪等）。
-        self.types_compatible(&got, &expected, aliasing)
+        self.types_compatible(&got, &expected, site)
     }
 
     /// 整合性検査（**Kind 1 / Kind 2**）の**唯一の述語**（タスク 3.3）。報告はしない。
@@ -184,20 +221,40 @@ impl TypeChecker {
         &self,
         got: &InferredType,
         expected: &InferredType,
-        aliasing: Aliasing,
+        site: Site,
     ) -> bool {
         // ⚠ protocol 名を `Protocol` へ寄せる。**両側**に掛けること（`got` 側を忘れると
         //    「`Pr` という名のクラス」を探しに行って自分自身に不適合という嘘が出る）。
         let expected = self.resolve_protocols(expected);
         let got = self.resolve_protocols(got);
-        match aliasing {
-            // ⚠ `mut` 引数（write-back）は `int` → `float` の拡大を許さない。
-            //    C ABI の `double*` のように呼び先が呼び元の記憶域へ書き戻す引数では、
-            //    拡大は「値の変換」ではなく**記憶域の型詐称**になる
-            //    （`cpp_prim_ptr_int_arg_type_mismatch` が実際に検出した）。
-            Aliasing::WriteBack => self.type_matches_exact(&got, &expected),
-            Aliasing::ByValue => self.type_matches(&got, &expected),
+        // ⚠ `let` 仮引数だけは `__cast__` による受理を許す（タスク 4.3）。
+        if site.allows_user_cast() && self.user_cast_available(&got, &expected) {
+            return true;
         }
+        if site.allows_trivial_cast() {
+            self.type_matches(&got, &expected)
+        } else {
+            // ⚠ `mut` 引数（write-back）は自明キャストを許さない。C ABI の `double*` の
+            //    ように呼び先が呼び元の記憶域へ書き戻す引数では、拡大は「値の変換」ではなく
+            //    **記憶域の型詐称**になる（`cpp_prim_ptr_int_arg_type_mismatch` が検出した）。
+            self.type_matches_exact(&got, &expected)
+        }
+    }
+
+    /// `got` のクラスが `expected` への**ユーザー定義キャスト**（`__cast__[T]`）を持つか。
+    ///
+    /// ⚠⚠ **受理してよいのは実行時が実際に変換する地点だけ**（`Site::LetParam`）。
+    /// 以前は `type_matches_exact` の中で**地点を問わず**受理していたため、
+    /// `let x: int = Conv(5)` が通って `int` 変数に `Conv` が居座っていた
+    /// （「受理したなら変換地点がある」＝ D-7 の原則を破る唯一の箇所だった）。
+    fn user_cast_available(&self, got: &InferredType, expected: &InferredType) -> bool {
+        let InferredType::NamedInstance(class_name) = got else {
+            return false;
+        };
+        let cast_key = format!("__cast__[{}]", expected);
+        self.registry
+            .class_methods(class_name.as_str())
+            .is_some_and(|m| m.contains_key(&cast_key))
     }
 
     /// 引数型 `arg_ty` が期待型 `expected` と互換か。**最上位でのみ** `int` → `float` の
@@ -230,7 +287,7 @@ impl TypeChecker {
     /// ⚠ 逆方向（`float` → `int`）は情報を落とすので許さない。
     pub(super) fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
         // ⚠⚠ **暗黙の `int` → `float` 拡大は廃止した**（決定 D-5・タスク 4.2）。
-        //    代わりに組み込みの変換関数 `float(n)` を使う（`Aliasing::WriteBack` の例外も
+        //    代わりに組み込みの変換関数 `float(n)` を使う（`Site::MutParam` の例外も
         //    不要になった）。
         //
         // ## なぜ廃止したか（実測で比較した）
@@ -408,12 +465,23 @@ impl TypeChecker {
         }
         if let InferredType::NamedInstance(class_name) = arg_ty {
             let expected_name = expected.to_string();
-            let cast_key = format!("__cast__[{}]", expected_name);
-            if let Some(methods) = self.registry.class_methods(class_name.as_str()) {
-                if methods.contains_key(&cast_key) {
-                    return true;
-                }
-            }
+            // ⚠⚠ **`__cast__[T]` を持つクラスの受理はここから消えた**（決定 D-7・タスク 4.3）。
+            //    この述語は**地点を知らない**ので、受理すると**変換が挿入されない地点でも**
+            //    通ってしまっていた:
+            //      class Conv:
+            //          mut n: int
+            //          fn __cast__[int](self) -> int:
+            //              return self.n
+            //      let x: int = Conv(5)
+            //      print(x)        # <Conv object at 0x...>   ← int 変数に Conv が居座る
+            //      print(x + 1)    # TypeError: unsupported operand types for `Add`
+            //    容器経由でも漏れていた（`list[int]` に `Conv` が入った）。
+            //    **「受理したなら変換地点がある」（D-7 の原則）を破る唯一の箇所**だった。
+            // ⇒ 受理は [`Site::LetParam`] の判定に移した（[`TypeChecker::user_cast_available`]）。
+            //    実行時が実際に変換するのは `let` 仮引数への束縛だけだと実測した。
+            //    他の地点（変数束縛・戻り値・フィールド・`mut` 引数）では明示キャスト
+            //    `c => int` を書く。そちらは `eval_cast_evaled` が `__cast__` へ
+            //    ディスパッチして**実際に変換する**。
             // Check class/trait inheritance: Duck(Flyable, Swimmable) satisfies Flyable
             if let InferredType::NamedInstance(_) = expected {
                 if self.class_implements_trait(class_name, &expected_name) {

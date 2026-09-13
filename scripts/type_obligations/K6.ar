@@ -1,6 +1,6 @@
 # @id: K6
-# @obligation: __cast__[T] を持つクラスが T として受理される（変換は走らない）
-# @baseline: NONE
+# @obligation: __cast__[T] を持つクラスが、変換の走らない地点（変数束縛）で T として受理される
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
@@ -10,5 +10,7 @@ class Conv:
     mut n: int
     fn __cast__[int](self) -> int:
         return self.n
+# ⚠ `let` 仮引数は**実行時が実際に変換する**ので受理が正しい（タスク 4.3）。
+#   ここは変数束縛なので変換が走らず、以前は int 変数に Conv が居座っていた。
 let x: int = Conv(5)
 print("x =", x)

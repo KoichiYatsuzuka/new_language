@@ -79,6 +79,7 @@ $knownDiff = @{
     'upcast_only_error'              = 'py: 素の list から list[int] へのダウンキャスト検査が無い（そのまま実行してしまう・タスク 4.1 で新設）'
     'arith_operand_check'            = 'py: str % int（書式化）が未実装（TypeError になる・タスク 4.4 で新設）'
     'arith_operand_check_error'      = 'py: 算術の被演算子の静的検査が無い（実行時の TypeError になる・タスク 4.4 で新設）'
+    'user_cast_site_error'           = 'py: __cast__ の受理地点を絞る検査が無い（int 変数に Conv が居座ったまま実行してしまう・タスク 4.3 で新設）'
     'trait_conformance'              = 'py: trait のデフォルト実装の継承が未実装（AttributeError になる・0-10 で新設）'
     'class_virtual_method_error'     = 'py: クラス本体の仮想メソッド禁止が未実装（None を返して実行してしまう・0-10 で新設）'
     'trait_field_redeclare_error'    = 'py: trait フィールド再宣言の禁止が未実装（実行時 TypeError になる・0-9 で新設）'

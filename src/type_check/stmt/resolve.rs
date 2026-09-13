@@ -275,7 +275,7 @@ impl TypeChecker {
         //    構造的に満たしているクラスを**誤って弾いていた**（タスク 1.3 で実測）。
         //    1.3 では手で `resolve_protocols` を 2 行足して直したが、3.3 で述語の中へ
         //    閉じ込めたので**新しい検査地点で同じ忘れ方ができない**。
-        if !self.types_compatible(&rhs_ty, &declared, crate::type_check::type_utils::Aliasing::ByValue) {
+        if !self.types_compatible(&rhs_ty, &declared, crate::type_check::type_utils::Site::Other) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {
                     name: var_name.to_string(),

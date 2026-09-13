@@ -1,0 +1,23 @@
+# user_cast_site_error.ar — `__cast__` は変数束縛では受理されない（タスク 4.3）
+#
+# 正常系は user_cast_site.ar
+#
+# `Conv` は `__cast__[int]` を持つが、**変数束縛では実行時が変換を挿入しない**。
+# 以前は `type_matches_exact` が地点を問わず受理していたので、この行が通って
+# `int` 変数に `Conv` インスタンスが居座り、`print(x)` が
+# `<Conv object at 0x...>`、`x + 1` が `TypeError` になっていた。
+#
+# ⇒ 受理は `let` 仮引数だけに絞った。ここでは明示キャスト `Conv(5) => int` を書く。
+#
+# 期待されるエラー:
+#   StaticTypeError  'x' is declared 'int' but initialized with 'Conv'
+
+class Conv:
+    mut n: int
+
+    fn __cast__[int](let self) -> int:
+        return self.n
+
+let x: int = Conv(5)            # ⛔ 変数束縛では自動キャストされない
+
+print("ここには到達しない")

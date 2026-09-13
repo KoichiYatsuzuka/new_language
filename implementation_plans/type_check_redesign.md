@@ -892,7 +892,7 @@ silent な穴ではない。塞ぐ対象ではないので取り下げる。
 |---|---|---|---|---|
 | ~~**4.1**~~ | ~~アップキャストのみに限定 ＋ `⊥` の導入~~ → **✅ 完了 2026-09-13** | D-3 / D-11 | — | 下記「4.1 の記録」。⚠ 3.3 より先に実施した（§3 の注記） |
 | ~~**4.2**~~ | ~~暗黙 `int → float` を廃止~~ → **✅ 完了 2026-09-13**（2.4 と同時） | D-5 | — | 下記「2.4 / 4.2 の記録」 |
-| **4.3** | `__cast__[T]` による受理をやめ `=>` を強制する | D-7 | 3.3 | `K6`。「型検査が嘘をつく」1 件目の解消 |
+| ~~**4.3**~~ | ~~`__cast__[T]` による受理をやめ `=>` を強制する~~ → **✅ 完了 2026-09-13**（**受理地点を絞る**形に変更） | D-7 | 3.3 | 下記「4.3 の記録」。`K6` → **STATIC**。「型検査が嘘をつく」2 件目の解消 |
 | ~~**4.4**~~ | ~~演算子を Kind 3 で検査し、結果型を返す~~ → **✅ 完了 2026-09-13** | D-9 | — | `O1` `O2` `Z1` → **STATIC**／`O4` `O5` `O7` `O8` は**仕様**と判明 |
 | ~~**4.5**~~ | ~~`function` 型の分散（引数反変・戻り値共変）~~ → **✅ 2.2 に吸収して完了** | D-13 | — | ⚠ **2.2 と分離できなかった**（下記 2.2 の記録） |
 
@@ -1138,6 +1138,113 @@ C 側の宣言は `int v3_norm(const V3* v, double* out_len)` で**戻り値は 
 
 **追加した例題**: `examples/typing/arith_operand_check{,_error}.ar`
 
+#### 4.3 の記録 【✅ 完了 2026-09-13・⚠ **起票時の方針を実測で変更した**】
+
+##### ⚠⚠ 「受理をやめる」では例題が壊れた ⇒ 実測してから「地点を絞る」に変えた
+
+起票時の内容は「`__cast__[T]` による受理を**やめて** `=>` を強制する」だった。
+実際に `type_matches_exact` から受理を落とすと検体 `K6` は `NONE` → `STATIC` になり
+`cargo test` も 773 件通ったが、**`scan_examples` が `examples/typing/other_typing.ar` で落ちた**:
+
+```
+argument 0 of 'double' expects 'int' but got 'Wrapper'
+```
+
+該当は「`=== cast: auto-cast for let parameters ===`」という節で、`double(w)` が
+**正しく `42` を出していた**。つまり「受理したのに変換していない」のではなく、
+**実行時が実際に変換している地点**があった。
+
+##### どの地点で実行時が変換するのかを 1 つずつ実測した
+
+フェーズ 1 前のバイナリ（`arrow_p0.exe`）に同じクラスを地点だけ変えて食わせた:
+
+| 地点 | 実行時の挙動 |
+|---|---|
+| **`let` 仮引数** | `param: 42` — **変換する** |
+| 変数束縛 | `var: <W object at …>` — 変換しない |
+| フィールド代入 | `Error: value does not match declared type of field …`（A-3 の実行時検査が弾く） |
+| 戻り値 | `ret: <W object at …>` — 変換しない |
+| `mut` 仮引数 | `Error: unsupported operand types for Mul` — 変換しない |
+
+実装は `src/interpreter/functions/execution.rs` にあり、コメントも一致していた:
+
+> 自動キャスト: `let` パラメータに型アノテーションがあり、渡された値がインスタンスで
+> かつ型が異なる場合、`__cast__[TypeName]` メソッドが定義されていれば自動的にキャストする。
+> **`mut` パラメータは自動キャストしない。**
+
+⇒ **バグは「受理そのもの」ではなく「地点を問わず受理していたこと」**だった。
+D-7 の原則（**受理したなら変換地点がある**）は `let` 仮引数では守られていて、
+それ以外の 4 地点で破れていた。
+
+##### `Aliasing` を `Site`（地点）へ拡張した
+
+タスク 3.3 で入れた `Aliasing { ByValue, WriteBack }` は、4.2 で暗黙 `int → float` を
+廃止した結果**振る舞いの差が無くなっていた**（両アームが同じ判定に落ちる）。
+そこへ「ユーザー定義キャストを許すか」という 2 つ目の軸が来たので、
+**同じ場所に 2 軸を持つ 1 つの型**として書き直した:
+
+```rust
+pub(super) enum Site {
+    LetParam,   // `let` 仮引数への束縛
+    MutParam,   // `mut` 仮引数への束縛（書き戻しあり）
+    Other,      // 変数束縛・フィールド代入・戻り値・要素型 …
+}
+```
+
+| 地点 | 自明キャスト | ユーザー定義キャスト（`__cast__`） |
+|---|---|---|
+| `LetParam` | 許す | **許す** |
+| `MutParam` | 許さない（書き戻し） | 許さない |
+| `Other` | 許す | **許さない** |
+
+受理の判定は `type_matches_exact`（**地点を知らない**述語）から
+`types_compatible`（地点を受け取る唯一の入口・3.3 で作った）へ移した。
+⚠ これは 3.3 の効果でもある: **入口が 1 つだったから軸を 1 箇所足すだけで済んだ。**
+
+##### ⚠ `check_expected` の既定は `Other` にした
+
+`check_expected` は仮引数以外（フィールド既定値・再代入・戻り値）からも呼ばれるので、
+`param_mutable == false` を `LetParam` と読み替えてはいけない。**`Other` に倒した**。
+仮引数の検査は `param_type_matches` が明示的に `Site::LetParam` を渡す。
+
+##### 何が塞がったか
+
+```
+class Conv:
+    mut n: int
+    fn __cast__[int](self) -> int:
+        return self.n
+let x: int = Conv(5)
+print(x)        # 旧: <Conv object at 0x...>   ← int 変数に Conv が居座る
+print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
+```
+
+⇒ 静的エラー `'x' is declared 'int' but initialized with 'Conv'` になった。
+容器経由の漏れ（`list[int]` に `Conv` が入る）も同時に塞がった。
+
+##### 結果
+
+**検体**: `K6` が `NONE` → **`STATIC`**。静的検査の割合は **65%（74/114）で変わらず**
+（4.2 の時点で K6 以外は先に閉じていたため、内訳の `NONE` が 20 → 19 に減った）。
+
+⇒ **「型検査が嘘をつく」2 件が両方とも解消**（1 件目は `and` / `or` ＝ 2.5）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build --release` | 警告 0 |
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back |
+| `compare_python_impl.ps1` | 84/84 identical・stale 0（新規 `user_cast_site_error` を `$knownDiff` に登録） |
+| `compare_outputs.ps1 -A 08bb127` | 209/210。差分は**新規例題 1 件のみ**（旧バイナリは黙って実行し `ここには到達しない` を出す＝この検査が無かった証拠） |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **280/280 agreed・INVENTED 0** |
+| `make-vsix.ps1` | VSIX 再生成済み |
+
+**追加した例題**: `examples/typing/user_cast_site{,_error}.ar`
+
 ### フェーズ 5 — 義務を全地点へ行き渡らせる
 
 | # | 内容 | 決定 | 依存 | 検体 |
@@ -1168,7 +1275,7 @@ C 側の宣言は `int v3_norm(const V3* v, double* out_len)` で**戻り値は 
 | D-4 | `Unresolved` にも適用（推論を埋める） | **2.1 / 2.2 / 2.3 / 2.8** | — |
 | D-5 | 暗黙 `int → float` 廃止 | **4.2** | 2.4（同時） |
 | D-6 | 組み込み関数の戻り値型 | **2.4** | 4.2（同時） |
-| D-7 | `=>` 強制（`__cast__` の受理をやめる） | **4.3** | — |
+| D-7 | `=>` 強制（`__cast__` の受理を **`let` 仮引数だけに絞る**） | ~~**4.3**~~ ✅ | — |
 | D-8 | `+=` の二段検査 | **5.1** | 4.4 |
 | D-9 | Kind 3 は結果型も返す | **4.4** | 5.1 |
 | D-10 | `and`/`or` の結果型を join に | **2.5** | 2.6 |

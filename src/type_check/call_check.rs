@@ -3,7 +3,7 @@ use crate::type_check::types::InferredType as IT;
 
 use super::errors::{StaticTypeError, TypeErrorKind};
 use super::types::{FnSig, FnTypeParam, InferredType};
-use super::type_utils::Aliasing;
+use super::type_utils::Site;
 use super::TypeChecker;
 
 impl TypeChecker {
@@ -430,7 +430,9 @@ impl TypeChecker {
         if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if !self.types_compatible(elem_ty, expected_elem_ty, Aliasing::ByValue) {
+            // ⚠ これは**要素型同士**の比較で、仮引数への束縛ではない（実行時に
+            //    `__cast__` は挟まらない）ので `Site::Other`。
+            if !self.types_compatible(elem_ty, expected_elem_ty, Site::Other) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{cls_name}.{method_name}"),
@@ -628,7 +630,9 @@ impl TypeChecker {
         if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if !self.types_compatible(elem_ty, expected_elem_ty, Aliasing::ByValue) {
+            // ⚠ これは**要素型同士**の比較で、仮引数への束縛ではない（実行時に
+            //    `__cast__` は挟まらない）ので `Site::Other`。
+            if !self.types_compatible(elem_ty, expected_elem_ty, Site::Other) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: fname.to_string(),
@@ -870,12 +874,14 @@ impl TypeChecker {
         // ⚠ 判定は `types_compatible` に委譲する（タスク 3.3）。以前はここに
         //    `check_expected` と**同じ規則をもう 1 つ**書いていたので、片方だけ直すと
         //    ずれる状態だった。
-        let aliasing = if sig.param_mutable.get(param_idx).copied().unwrap_or(false) {
-            Aliasing::WriteBack
+        // ⚠ `let` 仮引数は `__cast__` による受理を許す唯一の地点（タスク 4.3）。
+        //    実行時（`interpreter/functions/execution.rs`）が**ここだけ**変換を挿入する。
+        let site = if sig.param_mutable.get(param_idx).copied().unwrap_or(false) {
+            Site::MutParam
         } else {
-            Aliasing::ByValue
+            Site::LetParam
         };
-        self.types_compatible(arg_ty, expected, aliasing)
+        self.types_compatible(arg_ty, expected, site)
     }
 
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。
@@ -917,9 +923,9 @@ impl TypeChecker {
                         let param = &params[param_pos];
                         // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                         let ok = if param.mutable {
-                            self.types_compatible(arg_ty, &param.ty, Aliasing::WriteBack)
+                            self.types_compatible(arg_ty, &param.ty, Site::MutParam)
                         } else {
-                            self.types_compatible(arg_ty, &param.ty, Aliasing::ByValue)
+                            self.types_compatible(arg_ty, &param.ty, Site::LetParam)
                         };
                         if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {
@@ -947,9 +953,9 @@ impl TypeChecker {
                     if let Some(param) = params.get(positional_idx) {
                         // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                         let ok = if param.mutable {
-                            self.types_compatible(arg_ty, &param.ty, Aliasing::WriteBack)
+                            self.types_compatible(arg_ty, &param.ty, Site::MutParam)
                         } else {
-                            self.types_compatible(arg_ty, &param.ty, Aliasing::ByValue)
+                            self.types_compatible(arg_ty, &param.ty, Site::LetParam)
                         };
                         if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {
