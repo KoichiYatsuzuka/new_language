@@ -276,6 +276,20 @@ pub enum TypeErrorKind {
         left: InferredType,
         right: InferredType,
     },
+    /// 複合代入 `x <op>= v` の**演算結果**が左辺の宣言型へ代入できない（D-8・タスク 5.1）。
+    ///
+    /// ⚠⚠ 右辺 `v` を左辺型と直接照合してはいけない。格納されるのは `v` ではなく
+    /// `x <op> v` の**結果**なので、両方向にずれる:
+    ///   - `mut s: str = "a"; s += "b"` は右辺も `str` で通るが、
+    ///     `mut t: str = "a"; t *= 3` は右辺が `int` でも**正しい**（`str * int` は `str`）
+    ///   - 逆に `__add__` が左辺と違う型を返すクラスは、右辺が正しくても**結果が壊れる**
+    /// ⇒ 検査 1（Kind 3: `x <op> v` が可能か）→ 結果型 `R` → 検査 2（`R` → `typeof(x)`）。
+    CompoundAssignResultMismatch {
+        target: String,
+        op: String,
+        result: InferredType,
+        expected: InferredType,
+    },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -617,6 +631,11 @@ impl StaticTypeError {
             TypeErrorKind::IncompatibleBinOp { op, left, right } => format!(
                 "unsupported operand types for {}: {} and {}",
                 hl_q(op), hl_q(&left.to_string()), hl_q(&right.to_string())
+            ),
+            TypeErrorKind::CompoundAssignResultMismatch { target, op, result, expected } => format!(
+                "{} on {} produces {} but {} is declared {}",
+                hl_q(op), hl_q(target), hl_q(&result.to_string()),
+                hl_q(target), hl_q(&expected.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

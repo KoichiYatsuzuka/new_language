@@ -1,0 +1,25 @@
+# compound_assign_two_stage_error.ar — 複合代入の**検査 2**（結果型 → 左辺）が弾く（タスク 5.1）
+#
+# 正常系は compound_assign_two_stage.ar
+#
+# `__add__` の宣言戻り値型が `str` なので、`v += Vec(2)` の結果は `str`。
+# それを `Vec` 変数へ書き戻すことはできない。
+#
+# ⚠⚠ **右辺 `Vec(2)` は正しい**（`__add__` の仮引数は `Vec`）。右辺だけを見る検査では
+#   この誤りは**絶対に見つからない**。これが D-8 で二段にした理由そのもの。
+#
+# ⚠ 以前は無検査だったので `print(v)` が `oops` を出していた（`Vec` 変数に `str` が居座る）。
+#
+# 期待されるエラー:
+#   StaticTypeError  '+' on 'v' produces 'str' but 'v' is declared 'Vec'
+
+class Vec:
+    mut n: int
+
+    fn __add__(self, let other: Vec) -> str:
+        return "oops"
+
+mut v = Vec(1)
+v += Vec(2)                     # ⛔ 結果が str なので Vec へ戻せない
+
+print("ここには到達しない")

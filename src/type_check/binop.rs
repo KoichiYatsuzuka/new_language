@@ -164,6 +164,124 @@ impl TypeChecker {
         }
     }
 
+    /// 複合代入 `x <op>= v` の**二段検査**（決定 D-8・タスク 5.1）。
+    ///
+    /// ⚠⚠ **右辺 `v` を左辺型と直接照合してはいけない。** 格納されるのは `v` ではなく
+    /// `x <op> v` の**結果**で、照合すると**両方向にずれる**（実測した反例）:
+    ///
+    /// | コード | 右辺を直接照合すると | 正しい判定 |
+    /// |---|---|---|
+    /// | `mut t: str = "a"; t *= 3` | ⛔ 誤って弾く（右辺は `int`） | ✅ 通す（`str * int` → `str`） |
+    /// | `class Vec: fn __add__(..) -> str`, `v += Vec(2)` | ✅ 通してしまう（右辺は `Vec`） | ⛔ 弾く（結果が `str`） |
+    ///
+    /// ⇒ **検査 1**（Kind 3: `x <op> v` が可能か）→ 結果型 `R` → **検査 2**（`R` → `typeof(x)`）。
+    ///
+    /// `target` はエラー文言に出す左辺の綴り（`x` / `c.n`）。
+    pub(super) fn check_compound_assign(
+        &mut self,
+        target: &str,
+        op: &BinOp,
+        lt: &InferredType,
+        rt: &InferredType,
+        span: Option<Span>,
+    ) {
+        // ── 検査 1: 演算そのものの可否（Kind 3）─────────────────────────────
+        //
+        // ⚠⚠ 以前は複合代入から `check_binop` を**一度も呼んでいなかった**。`x + "s"` は
+        //    タスク 4.4 で静的エラーになったのに、`x += "s"` は実行時まで判らなかった
+        //    （検体 `B6` / `F2` が `RUNTIME` だった理由）。
+        self.check_binop(op, lt, rt, span.clone().unwrap_or_else(Span::unknown));
+        // ── 検査 2: 結果型が左辺へ代入できるか（Kind 1）──────────────────────
+        let result = self.binop_result_type(op, lt, rt);
+        // 判定材料が無い型は取りこぼす方へ倒す（`check_arith` と同じ方針）。
+        if matches!(
+            result,
+            InferredType::Unresolved | InferredType::Never | InferredType::Any
+        ) || matches!(
+            lt,
+            InferredType::Unresolved | InferredType::Never | InferredType::Any
+        ) {
+            return;
+        }
+        // ⚠ テンプレートクラスの型変数は具体型と突き合わせられない（`mentions_type_param`）。
+        if self.mentions_type_param(lt) || self.mentions_type_param(&result) {
+            return;
+        }
+        // ⚠ 代入先は記憶域なので `Site::Other`（`__cast__` は挿入されない・タスク 4.3）。
+        if self.types_compatible(&result, lt, super::type_utils::Site::Other) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::CompoundAssignResultMismatch {
+                target: target.to_string(),
+                op: op.as_str().to_string(),
+                result,
+                expected: lt.clone(),
+            },
+            span,
+        });
+    }
+
+    /// 二項演算の結果型を、**クラスの演算子メソッドも見て**求める（D-9）。
+    ///
+    /// ⚠ [`Self::infer_binop_result`] は組み込みの表だけを見るので、クラスが左辺だと
+    /// `Unresolved`（＝判定不能）を返す。複合代入の検査 2 はそこで止まってしまうため、
+    /// **宣言された戻り値型**を引く経路をここに足した（決定 D-9 の「クラスは `__add__` 等の
+    /// 宣言戻り値型を使う」）。
+    ///
+    /// ⚠⚠ **ダンダー名は実行時の対応表と一致させること**（`interpreter/ops/operators.rs`）。
+    /// `Div` は `__truediv__`、`FloorDiv` は `__floordiv__`、ビット演算は
+    /// `__and__` / `__or__` / `__xor__` / `__lshift__` / `__rshift__`。
+    /// 演算子名から素直に綴った名前（`Div` なら「div」、`BitAnd` なら「bitand」）は
+    /// **どれも実在しない**ので、推測で書かずに実行時の表を読むこと。
+    /// ずれると静的に見ている演算と実行時に走る演算が食い違う。
+    fn binop_result_type(
+        &self,
+        op: &BinOp,
+        lt: &InferredType,
+        rt: &InferredType,
+    ) -> InferredType {
+        let (class_name, subst) = match self.class_and_subst(lt) {
+            Some(pair) => pair,
+            None => return Self::infer_binop_result(op, lt, rt),
+        };
+        let method = match op {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::FloorDiv => "__floordiv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitXor => "__xor__",
+            BinOp::LShift => "__lshift__",
+            BinOp::RShift => "__rshift__",
+            _ => return InferredType::Unresolved,
+        };
+        let sigs = match self.registry.class_methods(class_name.as_str()) {
+            Some(m) => match m.get(method) {
+                Some(sigs) => sigs,
+                // ⚠ 演算子メソッドを持たないクラスは**実行時に落ちる**が、ここでは
+                //   判定材料が無い扱いにする。可否は検査 1（`check_arith`）の担当で、
+                //   そちらもクラスは素通しにしている（`__add__` の有無だけでは
+                //   trait 由来の実装や動的な生成を見落とすため）。
+                None => return InferredType::Unresolved,
+            },
+            None => return InferredType::Unresolved,
+        };
+        // ⚠ オーバーロードがあると実引数で選ぶ必要がある（タスク 5.7）。それまでは
+        //   **1 本しか無いときだけ**戻り値型を使う（誤った分岐の戻り値で弾かないため）。
+        if sigs.len() != 1 {
+            return InferredType::Unresolved;
+        }
+        match &sigs[0].return_type {
+            Some(t) => Self::subst_type_params(t, &subst),
+            None => InferredType::Unresolved,
+        }
+    }
+
     /// 二項演算子と両辺の型から演算結果の型を推論して返す。
     ///
     /// ⚠⚠ **「結果型」と「可否」を同時に決める**（決定 D-9）。`Unresolved` は

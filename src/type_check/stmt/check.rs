@@ -1,7 +1,7 @@
 // stmt/check.rs — 文の静的型検査の中核: check_stmts / check_stmt。
 
 use {
-    crate::ast::{Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
+    crate::ast::{BinOp, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
     crate::token::Span,
     crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
     crate::type_check::types::InferredType,
@@ -100,7 +100,7 @@ impl TypeChecker {
             }
             Stmt::CompoundAssign {
                 name,
-                op: _,
+                op,
                 value,
                 span,
                 node_id,
@@ -113,6 +113,11 @@ impl TypeChecker {
                 }
                 let lt = self.lookup(name).map(|i| i.ty.clone());
                 let rt = self.infer(value);
+                // ⚠⚠ **二段検査**（D-8・タスク 5.1）。`x + "s"` は静的エラーなのに
+                //    `x += "s"` は実行時まで判らなかった（検体 `B6`）。
+                if let Some(lt) = lt.as_ref() {
+                    self.check_compound_assign(name, op, lt, &rt, Some(span.clone()));
+                }
                 // ── AST 型解決層（#16 / #2b）── `x <op>= e` は `x <op> e` と同じ二項演算なので、
                 // `Expr::BinOp` と同じ基準でオペランド種別を焼き、VM が型特化 op を選べるようにする。
                 // 焼かないと複合代入だけが汎用 `Bin` に落ちる（実測 1.9x 遅い）。
@@ -121,14 +126,17 @@ impl TypeChecker {
                 }
             }
             // 可変性・アクセス制御の検査は通常・複合で同一。
-            // ⚠ **フィールドの型検査は通常代入だけ**に掛ける（0-2）。複合代入で格納されるのは
+            // ⚠ **フィールドの型検査の仕方が違う**（0-2）。複合代入で格納されるのは
             //    `v` ではなく `f <op> v` の結果で、その型は二項演算の規則で決まる。
             //    `v` をそのままフィールド型と突き合わせると嘘の判定になる。
+            //    ⇒ タスク 5.1 で**二段検査**（D-8）に置き換えた。以前はここで
+            //      検査を**丸ごと省いて**いたので `c.n += "s"` が実行時まで判らなかった
+            //      （検体 `F2`）。
             Stmt::AttrAssign { target, value } => {
-                self.check_attr_assign(target, value, true);
+                self.check_attr_assign(target, value, None);
             }
-            Stmt::AttrCompoundAssign { target, value, .. } => {
-                self.check_attr_assign(target, value, false);
+            Stmt::AttrCompoundAssign { target, op, value } => {
+                self.check_attr_assign(target, value, Some(op));
             }
 
             // --- 式文 ---
@@ -775,9 +783,10 @@ impl TypeChecker {
     /// 属性/添字への代入 (`obj.attr = v` / `a[i] = v` と複合代入版) を型検査する。
     /// 添字代入のルートが不変変数ならエラー、不変フィールドへの代入もエラーにする。
     ///
-    /// `check_field_type` が true のとき（＝通常代入）、フィールドの**宣言型**と
-    /// 代入値の型を突き合わせる（0-2）。
-    fn check_attr_assign(&mut self, target: &Expr, value: &Expr, check_field_type: bool) {
+    /// `compound_op` が `None` のとき（＝通常代入）、フィールドの**宣言型**と
+    /// 代入値の型を突き合わせる（0-2）。`Some(op)` のとき（＝複合代入）は
+    /// [`TypeChecker::check_compound_assign`] の二段検査へ回す（D-8・タスク 5.1）。
+    fn check_attr_assign(&mut self, target: &Expr, value: &Expr, compound_op: Option<&BinOp>) {
         if matches!(target, Expr::Subscript { .. }) {
             if let Some(name) = Self::subscript_root_ident(target) {
                 if let Some(info) = self.lookup(name) {
@@ -798,9 +807,6 @@ impl TypeChecker {
         //    （`OperationOnAny` など）が重複する。
         let target_ty = self.infer(target);
         let value_ty = self.infer(value);
-        if !check_field_type {
-            return;
-        }
         let Expr::Attr { object, attr, span, .. } = target else {
             return;
         };
@@ -852,6 +858,14 @@ impl TypeChecker {
         if self.mentions_type_param(&expected) {
             return;
         }
+        // ⚠⚠ **複合代入はここで分岐する**（D-8・タスク 5.1）。格納されるのは `value` ではなく
+        //    `field <op> value` の結果なので、`value` をフィールド型と突き合わせるのは**嘘**。
+        //    二段検査へ回す（以前はこの地点の検査を丸ごと省いていた ＝ 検体 `F2`）。
+        if let Some(op) = compound_op {
+            let target_desc = format!("{}.{}", Self::attr_object_desc(object), attr);
+            self.check_compound_assign(&target_desc, op, &expected, &value_ty, Some(span.clone()));
+            return;
+        }
         // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
         let ctx = format!("field `{attr}` of class `{class_name}`");
         if self.check_expected(&value_ty, &expected, false, &ctx) {
@@ -866,6 +880,18 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// 属性代入のレシーバをエラー文言用の綴りにする（`c.n` の `c` の部分）。
+    ///
+    /// ⚠ 識別子以外のレシーバ（`f().x` など）はここへ来ない（呼び出し元が
+    /// `Expr::Ident` でなければ先に `return` する）が、将来広げたときに
+    /// 文言が壊れないよう既定値を置く。
+    fn attr_object_desc(object: &Expr) -> String {
+        match object {
+            Expr::Ident { name, .. } => name.clone(),
+            _ => "<expr>".to_string(),
+        }
     }
 
     /// 仮引数の**既定値**の型を、その仮引数の宣言型と突き合わせる（0-12）。

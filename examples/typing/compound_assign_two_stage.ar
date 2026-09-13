@@ -1,0 +1,94 @@
+# compound_assign_two_stage.ar — `x <op>= v` は**二回**の型検査を経る（決定 D-8・タスク 5.1）
+#
+# ## 何が壊れていたか
+#
+# 複合代入は型検査を**一度も通っていなかった**。
+#
+#   - 変数への `x += v` は `check_binop` を呼んでいなかったので、`x + "s"` が
+#     タスク 4.4 で静的エラーになった後も **`x += "s"` だけ実行時まで判らなかった**。
+#   - フィールドへの `o.f += v` は「複合代入で格納されるのは `v` ではない」という
+#     正しい理由で検査を**丸ごと省いて**いた（0-2）。理由は正しいが、
+#     **代わりの検査を置いていなかった**。
+#
+# ## なぜ右辺を左辺型と直接照合してはいけないか
+#
+# 格納されるのは `v` ではなく `x <op> v` の**結果**なので、**両方向にずれる**:
+#
+# | コード | 右辺を直接照合すると | 正しい判定 |
+# |---|---|---|
+# | `mut t: str = "a"; t *= 3` | ⛔ 誤って弾く（右辺は `int`） | ✅ 通す（`str * int` → `str`） |
+# | `__add__` が `str` を返すクラスに `v += V(2)` | ✅ 通してしまう（右辺は `V`） | ⛔ 弾く（結果が `str`） |
+#
+# ⇒ **検査 1**（Kind 3: `x <op> v` が可能か）→ 結果型 `R` → **検査 2**（`R` → `typeof(x)`）。
+#
+# 弾かれる例は compound_assign_two_stage_error.ar
+
+print("=== 右辺の型が左辺と違っても、結果型が合えば通る ===")
+
+mut t: str = "a"
+t *= 3                          # 右辺は int。`str * int` → `str` なので OK
+print(t)                        # aaa
+
+mut fmt: str = "n=%d"
+fmt %= 42                       # `str % 任意` は書式化。結果は `str`
+print(fmt)                      # n=42
+
+print("=== 要素型まで見る ===")
+
+mut xs: list[int] = [1]
+xs += [2, 3]                    # `list[int] + list[int]` → `list[int]`
+print(xs)                       # [1, 2, 3]
+
+print("=== 数値 ===")
+
+mut f: float = 1.5
+f += 1.5
+print(f)                        # 3.0
+
+mut i: int = 7
+i //= 2                         # `int // int` → `int`
+i <<= 2
+print(i)                        # 12
+
+print("=== クラスは宣言された戻り値型で判定する（D-9） ===")
+
+# ⚠ 組み込みの表はクラスを見ても何も答えられないので、演算子メソッドの
+#   **宣言戻り値型**を引く。`__add__` が `Vec` を返すのでフィールドへ戻せる。
+class Vec:
+    mut n: int
+
+    fn __add__(self, let other: Vec) -> Vec:
+        return Vec(self.n + other.n)
+
+mut v = Vec(1)
+v += Vec(2)
+print(v.n)                      # 3
+
+print("=== フィールドへの複合代入 ===")
+
+class Counter:
+    mut hits: int
+    mut label: str
+
+mut c = Counter(0, "c")
+c.hits += 5
+c.label += "!"
+print(c.hits, c.label)          # 5 c!
+
+print("=== trait のフィールドも同じ経路を通る ===")
+
+trait Scored:
+    mut score: int
+
+class Player(Scored):
+    mut name: str
+
+mut p = Player(10, "ann")
+p.score += 5
+print(p.score)                  # 15
+
+# ⚠ `p::Scored.score += 5`（trait 名で修飾した形）は**バイトコードに載らない**
+#   （`VmForceError: cannot compile ... AttrCompoundAssign`）。型検査は通るが VM
+#   コンパイラ側の未対応で、タスク 5.1 の前から同じ（HEAD で実測）。ここでは触れない。
+
+print("done")
