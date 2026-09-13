@@ -1,0 +1,93 @@
+# subscript_static.ar — 添字まわりを**静的に**検査する（タスク 5.2b）
+#
+# ## 何が壊れていたか
+#
+# | 義務 | 以前 | 検体 |
+# |---|---|---|
+# | 添字代入 `xs[i] = v` の値 | **無検査**（`list[int]` に `str` が黙って入る） | `L5` |
+# | 添字の型 `xs[i]` | 実行時のみ | `L6` |
+# | `dict` のキー型 | 実行時のみ（しかも `KeyError`） | `L7` |
+# | スライス境界 | 実行時のみ | `L8` |
+#
+# 実測した実行時の規則:
+#
+# | 容器 | 添字に許される型 | 外れたとき |
+# |---|---|---|
+# | `list` / `fixed_list` / `list_like` / `str` / `tuple` | `int` ・ `Index` ・ スライス | `TypeError` |
+# | `dict[K, V]` | **`K` と同じ型** | `KeyError`（型エラーですらない） |
+# | `set` | **無し**（添字アクセスできない） | `TypeError` |
+#
+# ⚠⚠ **`bool` と `float` は添字にできない**（`xs[True]` も `xs[1.5]` も `TypeError`）。
+# ⚠⚠ **`dict` のキーに数値昇格は効かない。** `dict[float, int]` を `int` のキーで引くと
+#   `KeyError`（実測）。等値比較は `uint → int → float` で昇格するのに、**辞書引きは
+#   ハッシュなので昇格しない**。`==` と同じ規則で判定してはいけない。
+#
+# ## ついでに直した推論のバグ
+#
+# **スライス添字が要素型を返していた。** `let y: int = xs[0:2]` が黙って通り、
+# 実行時には `int` 変数に `[1, 2]` が入っていた。スライスは「同じ種類の容器」を返す。
+#
+# 弾かれる例は subscript_static_error.ar
+
+print("=== 添字の型 ===")
+
+let xs: list[int] = [10, 20, 30]
+print(xs[0])                        # 10
+print(xs[-1])                       # 30
+
+let s: str = "hello"
+print(s[1])                         # e
+
+let t = (1, "a")
+print(t[0])                         # 1
+
+print("=== dict のキーは宣言した型 ===")
+
+let d: dict[str, int] = {"a": 1, "b": 2}
+print(d["a"])                       # 1
+
+let di: dict[int, str] = {1: "x"}
+print(di[1])                        # x
+
+print("=== 添字代入は要素型と照合される ===")
+
+mut ys: list[int] = [1, 2, 3]
+ys[0] = 99
+print(ys)                           # [99, 2, 3]
+
+mut dd: dict[str, int] = {"a": 1}
+dd["b"] = 2
+print(dd)                           # {'a': 1, 'b': 2}
+
+print("=== スライスは同じ種類の容器を返す ===")
+
+let sl: list[int] = xs[0:2]         # `int` ではなく `list[int]`
+print(sl)                           # [10, 20]
+
+let ss: str = s[1:3]
+print(ss)                           # el
+
+print("=== スライス代入は「要素の並び」を受け取る ===")
+
+# ⚠ 右辺は**要素ではなく並び**なので、要素型と突き合わせてはいけない。
+#   実測では list / tuple / str のどれでも受け付ける。
+mut sa: list[int] = [1, 2, 3, 4, 5]
+sa[Index(1):Index(3)] = [20, 30]
+print(sa)                           # [1, 20, 30, 4, 5]
+
+print("=== Index クラスは添字にできる ===")
+
+print(xs[Index(2)])                 # 30
+
+print("=== クラスは __getitem__ を定義できるので素通しする ===")
+
+class Ring:
+    mut items: list[int]
+
+    fn __getitem__(self, let idx: int) -> int:
+        return self.items[idx]
+
+let r = Ring([7, 8, 9])
+print(r[1])                         # 8
+
+print("done")

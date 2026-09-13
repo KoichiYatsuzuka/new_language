@@ -299,6 +299,22 @@ pub enum TypeErrorKind {
         expected: InferredType,
         got: InferredType,
     },
+    /// 添字まわりの型不一致（タスク 5.2b）。添字の型・スライス境界・添字代入の値を
+    /// **1 つの種類**で表す。
+    ///
+    /// ⚠ `context` に「どこの型か」を入れる（index of ... ／ begin of slice ／
+    /// element of ...）。地点ごとに種類を分けると、文言だけ違う枝が 3 本できて
+    /// 片方だけ直す形になる。
+    SubscriptTypeMismatch {
+        context: String,
+        expected: InferredType,
+        got: InferredType,
+    },
+    /// 添字アクセスできない型への `obj[i]`（タスク 5.2b）。
+    ///
+    /// ⚠ 実測: `set` は `'set' object is not subscriptable` で**必ず**実行時エラーになる。
+    /// 型検査側は `SetOf(T)` の添字に `T` を返していたので、**嘘の型**が下流へ流れていた。
+    NotSubscriptable { container: InferredType },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -649,6 +665,14 @@ impl StaticTypeError {
             TypeErrorKind::BlockExprValueMismatch { keyword, expected, got } => format!(
                 "{} expects {} but got {}",
                 hl_q(keyword), hl_q(&expected.to_string()), hl_q(&got.to_string())
+            ),
+            TypeErrorKind::SubscriptTypeMismatch { context, expected, got } => format!(
+                "{} expects {} but got {}",
+                context, hl_q(&expected.to_string()), hl_q(&got.to_string())
+            ),
+            TypeErrorKind::NotSubscriptable { container } => format!(
+                "{} is not subscriptable",
+                hl_q(&container.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

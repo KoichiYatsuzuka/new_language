@@ -827,6 +827,26 @@ impl TypeChecker {
         //    （`OperationOnAny` など）が重複する。
         let target_ty = self.infer(target);
         let value_ty = self.infer(value);
+        // ⚠⚠ **添字代入 `xs[i] = v` / `d[k] = v`**（タスク 5.2b・検体 `L5`）。
+        //    以前は完全に無検査で、`list[int]` に `str` が、`dict[str,int]` に
+        //    `int` キーや `str` 値が**黙って入っていた**（実測: `['s', 2]` /
+        //    `{'a': 1, 1: 2}`）。
+        //    ⚠ `infer(target)` が返すのは**容器の要素型 / 値型**なので、そのまま期待型に
+        //      使える（添字そのものの型は `infer` の中で検査済み）。
+        if let Expr::Subscript { object, index, .. } = target {
+            // ⚠⚠ **スライス代入 `xs[a:b] = rhs` は別の義務**（タスク 5.2b では扱わない）。
+            //    右辺は「要素」ではなく**要素の並び**で、実測では list / tuple / str の
+            //    どれでも受け付ける（`collection.ar` が `(20, 30)` と `"abc"` を渡している）。
+            //    要素型と突き合わせると**偽エラー**になる（実際に落ちた）。
+            let index_is_slice = matches!(index.as_ref(), Expr::Slice { .. });
+            if compound_op.is_none() && !index_is_slice {
+                let container = self.infer_container_desc(object);
+                self.check_subscript_assign(&value_ty, &target_ty, &container);
+            }
+            // ⚠ 複合代入 `xs[i] += v` は二段検査（D-8）の対象だが、添字の左辺は
+            //    まだ通していない（タスク 5.1 は変数とフィールドだけ）。
+            return;
+        }
         let Expr::Attr { object, attr, span, .. } = target else {
             return;
         };
@@ -900,6 +920,56 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// 添字代入 `xs[i] = v` の**値**を容器の要素型と照合する（タスク 5.2b・検体 `L5`）。
+    ///
+    /// `expected` は `infer(target)` が返した要素型 / 値型。判定材料が無い型
+    /// （`Any`・`Unresolved`・型変数）は照合しない。
+    fn check_subscript_assign(
+        &mut self,
+        value_ty: &InferredType,
+        expected: &InferredType,
+        container: &str,
+    ) {
+        if matches!(
+            expected,
+            InferredType::Unresolved | InferredType::Any | InferredType::Never
+        ) {
+            return;
+        }
+        // ⚠ テンプレート型変数は具体型と突き合わせられない（`mentions_type_param`）。
+        if self.mentions_type_param(expected) {
+            return;
+        }
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("element of {container}");
+        if self.check_expected(value_ty, expected, false, &ctx) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::SubscriptTypeMismatch {
+                context: format!("element of {container}"),
+                expected: expected.clone(),
+                got: value_ty.clone(),
+            },
+            span: None,
+        });
+    }
+
+    /// 添字代入のエラー文言に出す**容器の綴り**。
+    ///
+    /// ⚠ **推論をやり直さない**。`infer(target)` が既に容器を推論しているので、
+    /// ここで `infer(object)` を呼ぶと診断が二重に出る（`check_attr_assign` の
+    /// 冒頭コメントと同じ理由）。スコープ引きだけで済ませ、引けなければ綴りを諦める。
+    fn infer_container_desc(&self, object: &Expr) -> String {
+        match object {
+            Expr::Ident { name, .. } => match self.lookup(name) {
+                Some(info) => format!("`{}`", info.ty),
+                None => format!("`{name}`"),
+            },
+            _ => "the container".to_string(),
+        }
     }
 
     /// 属性代入のレシーバをエラー文言用の綴りにする（`c.n` の `c` の部分）。

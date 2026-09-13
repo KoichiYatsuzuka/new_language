@@ -1252,7 +1252,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | ~~**5.1**~~ | ~~複合代入の二段検査~~ → **✅ 完了 2026-09-14** | D-8 / D-9 | 4.4 | 下記「5.1 の記録」。`B6` `B10` `B11` `F2` が**全て STATIC** |
 | **5.2** | 未検査の地点を埋める | D-1 | 3.2 | **地点ごとに分割して進める**（下記） |
 | ~~5.2a~~ | ~~`block_return` / `loop_yield` / `yield`~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2a の記録」。`X1`〜`X4` `C8` が**全て STATIC** |
-| 5.2b | 添字（代入の要素型・index の型・スライス境界） | D-1 | 3.2 | `L5` `L6` `L7` `L8` |
+| ~~5.2b~~ | ~~添字（代入の要素型・index の型・スライス境界）~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2b の記録」。`L5`〜`L8` が**全て STATIC** |
 | 5.2c | 組み込みメソッド引数・可変長要素 | D-1 | 3.2 | `L14` `C15` |
 | 5.2d | trait フィールド代入の静的化 | D-1 | 3.2 | `F3` |
 | **5.3** | `static mut` クラス変数への代入を検査 | D-1 | 3.2・1.2 | `F4` |
@@ -1403,6 +1403,90 @@ let f = for i in range(4) ->list[int]:
 | `compare_wasm_frontend.ps1` | **284/284 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/block_expr_value_static{,_error}.ar`
+
+#### 5.2b の記録 【✅ 完了 2026-09-14】
+
+##### 実測した実行時の規則（先に測ってから書いた）
+
+| 容器 | 添字に許される型 | 外れたとき |
+|---|---|---|
+| `list` / `fixed_list` / `list_like` / `str` / `tuple` | `int` ・ `Index` ・ スライス | `TypeError` |
+| `dict[K, V]` | **`K` と同じ型** | **`KeyError`**（型エラーですらない） |
+| `set` | **無し**（添字アクセスできない） | `TypeError` |
+
+⚠⚠ **`bool` と `float` は添字にできない**（`xs[True]` も `xs[1.5]` も `TypeError`）。
+真偽値が整数として通る言語の癖で書くと落ちるので、静的に弾く価値がある。
+
+⚠⚠ **`dict` のキーに数値昇格は効かない。** `dict[float, int]` を `int` のキーで引くと
+`KeyError`（実測）。等値比較は `uint → int → float` で昇格する（4.4 で確認した B2-b の仕様）のに、
+**辞書引きはハッシュなので昇格しない**。⇒ `==` と同じ規則で判定してはいけない。
+
+##### 添字代入は**完全に無検査**だった（検体 `L5`）
+
+実測:
+
+```
+mut xs: list[int] = [1,2];      xs[0] = "s"    ⇒ ['s', 2]
+mut d: dict[str,int] = {"a":1}; d[1] = 2       ⇒ {'a': 1, 1: 2}
+mut d: dict[str,int] = {"a":1}; d["b"] = "s"   ⇒ {'a': 1, 'b': 's'}
+```
+
+**実行時エラーにすらならない**ので、値が後で `+` などに流れて初めて壊れる。
+⇒ `infer(target)` が返す要素型 / 値型をそのまま期待型に使って照合する
+（添字そのものの型は `infer` の中で検査済みなので、容器を二度推論しないで済む）。
+
+##### ⚠⚠ ついでに見つけた**推論のバグ**: スライス添字が要素型を返していた
+
+```arrow
+let xs: list[int] = [1,2,3]
+let y: int = xs[0:2]        # 旧: 黙って通る。実行時には int 変数に [1, 2] が入る
+```
+
+`Expr::Subscript` は添字がスライスかどうかを見ずに `ListOf(T)` → `T` を返していた。
+実測（`eval_subscript_slice`）: list→list ／ str→str ／ tuple→tuple ／
+クラスは `__getitem__` へ委譲 ／ **それ以外（`fixed_list` を含む）は実行時 `TypeError`**。
+⇒ スライス添字は「同じ種類の容器」を返すように直した。
+⚠ tuple は**要素数が変わる**ので静的には決められず `Unresolved` に倒した。
+
+##### ⚠ `set` の添字に**嘘の型**を与えていた
+
+`SetOf(T)` の添字に `T` を返していたが、`set` は `'set' object is not subscriptable` で
+**必ず**実行時エラーになる。診断（`NotSubscriptable`）を出し、型は `Unresolved` にした。
+
+##### 偽陽性 1 件を `scan_examples` が見つけた
+
+`collection.ar` の**スライス代入** `sl_a[Index(1):Index(3)] = [20, 30]` を
+要素型と突き合わせて落ちた。右辺は「要素」ではなく**要素の並び**で、実測では
+list / tuple / str のどれでも受け付ける（同じ例題が `(20, 30)` と `"abc"` を渡している）。
+⇒ 添字がスライスのときは値の照合を**しない**（別の義務なので 5.2b では扱わない）。
+
+##### 正しい検出 2 件（例題側を直した）
+
+| 例題 | 何を書いていたか | 直し方 |
+|---|---|---|
+| `store_copy_semantics.ar` | `mut lst2 = [0]`（＝`list[int]`）に `list[int]` を代入 | `list[list[int]]` と注釈（同ファイルの `append` 節が 4.1 で既に同じ直し方をしている） |
+| `equality_depth_limit_error.ar` | `mut b = [1, 2]` に `b[0] = b` | `list` と注釈（同ファイルの `x` / `y` と同じ意図） |
+
+⚠ どちらも「**注釈が無い束縛にも推論型で同じ厳格さ**」の帰結で、緩めずに例題を直した。
+
+##### 結果
+
+**検体**: `L5` が `NONE` → **`STATIC`**、`L6` `L7` `L8` が `RUNTIME` → **`STATIC`**。
+静的検査の割合 73% → **76%**（87/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back |
+| `compare_python_impl.ps1` | 84/84 identical・stale 0 |
+| `compare_outputs.ps1 -A bb51540` | 214/216。差分は**新規例題 2 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **286/286 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/subscript_static{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 

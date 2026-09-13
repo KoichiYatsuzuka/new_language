@@ -1,0 +1,15 @@
+# subscript_static_error.ar — `list[int]` の要素に `str` を代入できない（タスク 5.2b）
+#
+# 正常系は subscript_static.ar
+#
+# ⚠⚠ 以前は**完全に無検査**で、実行時も素通りしていた。`print(xs)` が
+# `['s', 2]` を出し、`list[int]` を名乗るリストに `str` が居座っていた（実測・検体 `L5`）。
+# 実行時エラーにすらならないので、この値が後で `+` などに流れて初めて壊れる。
+#
+# 期待されるエラー:
+#   StaticTypeError  element of 'list[int]' expects 'int' but got 'str'
+
+mut xs: list[int] = [1, 2]
+xs[0] = "s"                         # ⛔ 要素型は int
+
+print(xs)

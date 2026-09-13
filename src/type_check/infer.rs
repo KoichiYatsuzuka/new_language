@@ -225,9 +225,33 @@ impl TypeChecker {
             Expr::Subscript { object, index, node_id } => {
                 let obj_ty = self.infer(object);
                 let idx_ty = self.infer(index);
+                // ⚠ 添字の型を検査する（タスク 5.2b・検体 L6 / L7）。
+                self.check_subscript_index(&obj_ty, &idx_ty);
+                // ⚠⚠ **スライス添字は要素ではなく「同じ種類の容器」を返す**（タスク 5.2b）。
+                //    以前は添字がスライスでも要素型を返していたので
+                //    `let y: int = xs[0:2]` が**黙って通り**、実行時は `[1, 2]` が入っていた。
+                //    実測（`eval_subscript_slice`）: list→list ／ str→str ／ tuple→tuple ／
+                //    クラスは `__getitem__` へ委譲 ／ それ以外は実行時 TypeError。
+                if Self::is_slice_type(&idx_ty) {
+                    let result = match &obj_ty {
+                        InferredType::List | InferredType::ListOf(_) | InferredType::Str => {
+                            obj_ty.clone()
+                        }
+                        // ⚠ tuple は**要素数が変わる**ので静的には決められない。
+                        // ⚠ fixed_list / list_like / set / dict はスライスできない
+                        //    （実行時 TypeError）。診断は出さず判定不能に倒す。
+                        _ => InferredType::Unresolved,
+                    };
+                    self.annotations.set_resolved(*node_id, result.clone());
+                    return result;
+                }
                 let result = match obj_ty {
                     InferredType::ListOf(elem) | InferredType::FixedListOf(elem) | InferredType::ListLikeOf(elem) => *elem,
-                    InferredType::SetOf(elem) => *elem,
+                    // ⚠⚠ `set` は**添字アクセスできない**（実測: `'set' object is not
+                    //    subscriptable`）。以前はここで要素型を返していたので、
+                    //    **必ず実行時エラーになるコードに嘘の型**を与えていた。
+                    //    診断は `check_subscript_index` が出す。
+                    InferredType::Set | InferredType::SetOf(_) => InferredType::Unresolved,
                     InferredType::DictOf(_, val) => *val,
                     InferredType::Tuple(types) => {
                         // リテラル整数インデックスなら対応する要素型を返す
@@ -248,16 +272,14 @@ impl TypeChecker {
                 self.annotations.set_resolved(*node_id, result.clone());
                 result
             }
-            // ⚠ スライスの境界は `int` でなければならない（現在は実行時のみ・検体 L8）。
+            // ⚠ スライスの境界は `int` でなければならない（タスク 5.2b・検体 L8）。
+            //    実測: `begin` / `end` は `int`・`Index`・`None`、`step` は `int`・`None`。
             Expr::Slice { begin, end, step } => {
-                if let Some(e) = begin {
-                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
-                }
-                if let Some(e) = end {
-                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
-                }
-                if let Some(e) = step {
-                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
+                for (part, what) in [(begin, "begin"), (end, "end"), (step, "step")] {
+                    if let Some(e) = part {
+                        let ty = self.infer(e);
+                        self.check_int_position(&ty, &format!("`{what}` of slice"));
+                    }
                 }
                 InferredType::NamedInstance("slice".to_string())
             }
@@ -464,6 +486,109 @@ impl TypeChecker {
             params: Some(params),
             return_type: Box::new(sig.return_type.clone().unwrap_or(InferredType::Any)),
         })
+    }
+
+    /// 添字 `obj[i]` の**添字の型**を検査する（タスク 5.2b・検体 `L6` / `L7`）。
+    ///
+    /// ## 実測した実行時の規則
+    ///
+    /// | 容器 | 添字に許される型 | 外れたとき |
+    /// |---|---|---|
+    /// | `list` / `fixed_list` / `list_like` / `str` / `tuple` | `int` ・ `Index` ・ スライス | `TypeError` |
+    /// | `dict[K, V]` | **`K` と同じ型** | `KeyError`（型エラーではない） |
+    /// | `set` | **無し**（添字アクセス不可） | `TypeError` |
+    ///
+    /// ⚠⚠ **`bool` と `float` は添字にできない**（`xs[True]` も `xs[1.5]` も `TypeError`）。
+    /// 真偽値が整数として通る言語の癖で書くと落ちるので、静的に弾く価値がある。
+    ///
+    /// ⚠⚠ **`dict` のキーに数値昇格は効かない。** `dict[float, int]` に `int` のキーで
+    /// 引くと `KeyError` になる（実測）。等値比較は `uint → int → float` で昇格するのに
+    /// **辞書引きはハッシュなので昇格しない**という食い違いがあるため、`==` と同じ規則で
+    /// 判定してはいけない。
+    fn check_subscript_index(&mut self, obj_ty: &InferredType, idx_ty: &InferredType) {
+        use InferredType as T;
+        // 添字が不透明なら判定材料が無い（取りこぼす方へ倒す）。
+        // ⚠ `NamedInstance` はここで落ちる。`Index` クラスとスライス（`NamedInstance("slice")`）
+        //   も通したいので、クラスは一律で素通しにするのが都合もよい。
+        if Self::opaque_for_subscript(idx_ty) {
+            return;
+        }
+        match obj_ty {
+            T::List | T::ListOf(_) | T::FixedList | T::FixedListOf(_) | T::ListLike
+            | T::ListLikeOf(_) | T::Str | T::Tuple(_) => {
+                self.check_int_position(idx_ty, &format!("index of `{obj_ty}`"));
+            }
+            T::DictOf(key, _) => {
+                // ⚠ キー型が不透明な辞書（`dict[Any, V]`）は判定しない。
+                if Self::opaque_for_subscript(key) {
+                    return;
+                }
+                // ⚠ 記憶域の型なので `Site::Other`（`__cast__` は挿入されない）。
+                if self.types_compatible(idx_ty, key, super::type_utils::Site::Other) {
+                    return;
+                }
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::SubscriptTypeMismatch {
+                        context: format!("key of `{obj_ty}`"),
+                        expected: (**key).clone(),
+                        got: idx_ty.clone(),
+                    },
+                    span: None,
+                });
+            }
+            T::Set | T::SetOf(_) => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NotSubscriptable { container: obj_ty.clone() },
+                    span: None,
+                });
+            }
+            // 素の `dict`（キー型不明）・クラス（`__getitem__` を定義できる）・
+            // `Any` / `Unresolved` などは判定しない。
+            _ => {}
+        }
+    }
+
+    /// 「ここは `int` でなければならない」位置（添字・スライス境界）を検査する。
+    fn check_int_position(&mut self, ty: &InferredType, context: &str) {
+        if Self::opaque_for_subscript(ty) || matches!(ty, InferredType::Int) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::SubscriptTypeMismatch {
+                context: context.to_string(),
+                expected: InferredType::Int,
+                got: ty.clone(),
+            },
+            span: None,
+        });
+    }
+
+    /// スライス値の型か（`xs[0:2]` の添字 / `slice(...)` の戻り値）。
+    fn is_slice_type(ty: &InferredType) -> bool {
+        matches!(ty, InferredType::NamedInstance(n) if n == "slice")
+    }
+
+    /// 添字まわりの検査で「判定材料が無い」とみなす型。
+    ///
+    /// ⚠ `NamedInstance` を含めるのが要点。組み込みの `Index` クラス・スライス値
+    /// （`NamedInstance("slice")`）・利用者が `__getitem__` を定義したクラスが
+    /// ここを通る。`uint` 注釈も現状 `Unresolved` になるのでここで落ちる。
+    fn opaque_for_subscript(ty: &InferredType) -> bool {
+        use InferredType as T;
+        matches!(
+            ty,
+            T::Unresolved
+                | T::Any
+                | T::Never
+                | T::NamedInstance(_)
+                | T::GenericInstance { .. }
+                | T::SelfType
+                | T::Protocol(_)
+                | T::Union(_)
+                | T::Intersection(_)
+                | T::Namespace(_)
+                | T::PyNamespace(_)
+        )
     }
 
     /// `->T` 注釈を**照合に使える型**として返す。注釈なし・解決できない注釈は `None`

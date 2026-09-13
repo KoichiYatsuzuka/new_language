@@ -44,8 +44,11 @@ s.add(c)
 print(c)                 # [1]
 
 print("=== 添字代入 ===")
+# ⚠ ここも要素型を注釈で与える（上の `append` と同じ理由）。タスク 5.2b で
+#   **添字代入の値も要素型と照合される**ようになったので、`mut lst2 = [0]`
+#   （＝ `list[int]`）に `list[int]` を入れるのは静的エラーになる。
 let e = [1]
-mut lst2 = [0]
+mut lst2: list[list[int]] = [[0]]
 lst2[0] = e
 lst2[0].append(9)
 print(e)                 # [1]
