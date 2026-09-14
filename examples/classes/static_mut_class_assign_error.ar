@@ -1,0 +1,20 @@
+# static_mut_class_assign_error.ar — `static mut` に宣言型と違う値を代入できない（タスク 5.3）
+#
+# 正常系は static_mut_class_assign.ar
+#
+# ⚠⚠ 以前は**黙って通っていた**。`print(C.n)` が `s` を出し、`static mut n: int` を
+# 名乗る変数に `str` が居座っていた（実測・検体 `F4`）。実行時エラーにもならない。
+#
+# ⚠ 同じフィールドをインスタンス経由（`c.n = "s"`）で書くと**以前から弾かれていた**。
+#   経路で扱いが割れていたのが穴の正体。
+#
+# 期待されるエラー:
+#   StaticTypeError  field 'n' of class 'C' is declared 'int' but got 'str'
+
+class C:
+    static mut n: int = 0
+    mut d: int
+
+C.n = "s"                           # ⛔ n は int
+
+print(C.n)

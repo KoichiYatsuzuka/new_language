@@ -1,0 +1,65 @@
+# static_mut_class_assign.ar — クラス名経由の `static mut` 代入も検査する（タスク 5.3）
+#
+# ## 何が壊れていたか
+#
+# **同じフィールドなのに経路で扱いが割れていた**（実測）:
+#
+# | 書き方 | 以前 |
+# |---|---|
+# | `c.n = "s"`（インスタンス経由） | ⛔ 静的に弾かれる |
+# | `C.n = "s"`（クラス名経由） | ✅ **黙って通り `s` を出す** |
+#
+# 原因は受け手の解決。`class_and_subst` は `NamedInstance` / `GenericInstance` しか
+# 知らず、クラス名そのものの型（`TypeValOf(NamedInstance(C))`）を渡すと `None` を返す。
+# 呼び出し側はそこで `return` していたので、**照合に到達する前に抜けていた**。
+#
+# ⚠ 期待型（`infer(target)`）は**正しく `int` を返していた**。`let x: str = C.n` は
+#   以前からちゃんと弾かれていたので、読みは合っていて書きだけ穴だった。
+#
+# ⚠ `static let` は存在しない（`ParseError: expected 'fn' or 'mut' after 'static'`）ので、
+#   可変性の心配は無い。
+#
+# 弾かれる例は static_mut_class_assign_error.ar
+
+print("=== クラス名経由の代入 ===")
+
+class Counter:
+    static mut total: int = 0
+    mut step: int
+
+    fn bump(mut self) -> None:
+        Counter.total += self.step
+
+mut a = Counter(2)
+mut b = Counter(5)
+a.bump()
+b.bump()
+print(Counter.total)                # 7
+
+Counter.total = 100
+print(Counter.total)                # 100
+
+print("=== インスタンス経由でも同じ宣言型が効く ===")
+
+mut c = Counter(1)
+c.step = 3
+print(c.step)                       # 3
+
+print("=== 文字列の static mut ===")
+
+class Registry:
+    static mut last: str = ""
+    mut id: int
+
+Registry.last = "hello"
+print(Registry.last)                # hello
+
+print("=== クラス名を値として持つ変数からも同じ ===")
+
+# ⚠ `let K = Counter` は `TypeValOf(NamedInstance(Counter))` を束縛する。
+#   受け手の解決はこの形も剥がす。
+let K = Counter
+K.total = 42
+print(Counter.total)                # 42
+
+print("done")

@@ -1255,7 +1255,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | ~~5.2b~~ | ~~添字（代入の要素型・index の型・スライス境界）~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2b の記録」。`L5`〜`L8` が**全て STATIC** |
 | ~~5.2c~~ | ~~組み込みメソッド引数・可変長要素~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2c の記録」。`L14` `C15` が**両方 STATIC** |
 | ~~5.2d~~ | ~~trait フィールド代入の静的化~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2d の記録」。`F3` → **STATIC**。⇒ **5.2 完了** |
-| **5.3** | `static mut` クラス変数への代入を検査 | D-1 | 3.2・1.2 | `F4` |
+| ~~**5.3**~~ | ~~`static mut` クラス変数への代入を検査~~ → **✅ 完了 2026-09-14** | D-1 | 3.2・1.2 | 下記「5.3 の記録」。`F4` → **STATIC** |
 | **5.4** | `match` の `case` パターン型を subject と照合 | D-1 | 3.2 | `X5` |
 | **5.5** | `if` / `while` の条件を `bool` 厳密に | D-12 | **2.5** | `K1` `K2`。移行は例題 1 箇所。⚠ `is_truthy` は**撤去しない** |
 | **5.6** | `new_type` のコンストラクタ引数を検査 | D-1 | 3.2 | `T3` |
@@ -1616,6 +1616,51 @@ field 'item' of class 'Holder' is declared 'T' but got 'int'
 | `compare_wasm_frontend.ps1` | **290/290 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/classes/trait_field_assign_static{,_error}.ar`
+
+#### 5.3 の記録 【✅ 完了 2026-09-14】
+
+##### **同じフィールドなのに経路で扱いが割れていた**
+
+実測:
+
+| 書き方 | 以前 |
+|---|---|
+| `c.n = "s"`（インスタンス経由） | ⛔ 静的に弾かれる |
+| `C.n = "s"`（クラス名経由） | ✅ **黙って通り `s` を出す** |
+
+⚠ 期待型の計算は**合っていた**。`let x: str = C.n` は以前からちゃんと弾かれる
+（`infer_attr` が `int` を返している）。穴は**受け手の解決**で、
+`class_and_subst` が `NamedInstance` / `GenericInstance` しか知らず、
+クラス名そのものの型（`TypeValOf(NamedInstance(C))`）には `None` を返していた。
+呼び出し側はそこで `return` していたので、**照合に到達する前に抜けていた**。
+
+⇒ 受け手の解決を `receiver_class` に切り出し、`TypeValOf` を剥がす経路と
+「変数として引けないクラス名」の経路を足した。
+
+⚠ `static let` は存在しない（`ParseError: expected 'fn' or 'mut' after 'static'`）ので、
+可変性の検査は要らない。
+
+##### 結果
+
+**検体**: `F4` が `NONE` → **`STATIC`**。静的検査の割合 79% → **80%**（91/114）。
+
+⚠ ゲート実行中に `cargo test` が 1 度だけ `772 passed; 1 failed` を出したが、
+**続けて 3 回走らせて再現しなかった**（773 passed）。ビルド直後の実行だったので
+一時ファイルの競合と見ている。落ちたテスト名は取れていない。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed（上記のとおり 1 度だけ再現しない失敗あり） |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（291 例題） |
+| `compare_python_impl.ps1` | 86/86 identical・stale 0 |
+| `compare_outputs.ps1 -A 1d0ea51` | 221/222。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **292/292 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/classes/static_mut_class_assign{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 

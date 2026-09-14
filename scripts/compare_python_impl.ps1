@@ -86,6 +86,7 @@ $knownDiff = @{
     'subscript_static'               = 'py: dict 内の str の表示形式が違う（py は引用符を付けない・タスク 5.2b で新設）'
     'collection_method_args'         = 'py: list/set 内の str の表示形式が違う（py は引用符を付けない・タスク 5.2c で新設）'
     'collection_method_args_error'   = 'py: 可変長引数の要素型検査が無い（型が混ざったまま実行してしまう・タスク 5.2c で新設）'
+    'static_mut_class_assign_error'  = 'py: クラス名経由の static mut 代入の型検査が無い（黙って実行してしまう・タスク 5.3 で新設）'
     'trait_field_assign_static_error' = 'py: trait 修飾フィールド代入の静的検査が無い（実行時エラーになる・タスク 5.2d で新設）'
     'subscript_static_error'         = 'py: 添字代入の要素型検査が無い（list[int] に str が黙って入ったまま実行してしまう・タスク 5.2b で新設）'
     'block_expr_value_static_error'  = 'py: block_return の値と ->T の静的照合が無い（実行時エラーになる・タスク 5.2 で新設）'

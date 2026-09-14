@@ -866,13 +866,10 @@ impl TypeChecker {
         // ⚠ `GenericInstance{Box,[int]}` も取りこぼさないこと（A-2）。`NamedInstance` だけを
         //    見ていると、テンプレートクラスのインスタンスに対する検査が**黙って消える**。
         let (class_name, subst) = match object.as_ref() {
-            Expr::Ident { name, .. } => {
-                let ty = self.lookup(name).map(|i| i.ty.clone());
-                match ty.as_ref().and_then(|t| self.class_and_subst(t)) {
-                    Some(pair) => pair,
-                    None => return,
-                }
-            }
+            Expr::Ident { name, .. } => match self.receiver_class(name) {
+                Some(pair) => pair,
+                None => return,
+            },
             _ => return,
         };
         // 期待型を決める。
@@ -930,6 +927,38 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// 属性代入のレシーバ（識別子）が**どのクラスか**を求める（タスク 5.3）。
+    ///
+    /// 2 通りある:
+    /// - **インスタンス**（`c.n = v`）… 変数として引ける。型は `NamedInstance` /
+    ///   `GenericInstance`。
+    /// - **クラス名そのもの**（`C.n = v`・`static mut` への代入）… 変数として引けるときは
+    ///   `TypeValOf(NamedInstance(C))`、引けないときはレジストリのクラス名。
+    ///
+    /// ⚠⚠ **後者を扱っていなかったので `static mut` への代入が丸ごと無検査だった**
+    /// （検体 `F4`。実測: `static mut n: int` に `C.n = "s"` が黙って通り `s` を出す）。
+    /// インスタンス経由（`c.n = "s"`）は**同じフィールドなのに弾けていた**という
+    /// 非対称な穴で、`class_and_subst` が `TypeValOf` を知らないのが原因。
+    fn receiver_class(
+        &self,
+        name: &str,
+    ) -> Option<(String, std::collections::HashMap<String, InferredType>)> {
+        if let Some(info) = self.lookup(name) {
+            let ty = info.ty.clone();
+            // クラス名を値として持つ変数（`let K = C` など）もここを通る。
+            let inner = match ty {
+                InferredType::TypeValOf(inner) => *inner,
+                other => other,
+            };
+            return self.class_and_subst(&inner);
+        }
+        // 変数として引けないクラス名（`C.n = v` の `C`）。
+        if self.registry.is_known_class(name) {
+            return self.class_and_subst(&InferredType::NamedInstance(name.to_string()));
+        }
+        None
     }
 
     /// trait 修飾フィールドへの代入 `o::T.f = v` を宣言型と照合する（タスク 5.2d・検体 `F3`）。
