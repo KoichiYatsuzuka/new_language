@@ -1,0 +1,16 @@
+# new_type_ctor_arg_error.ar — `new_type` の基底型と違う値では作れない（タスク 5.6）
+#
+# 正常系は new_type_ctor_arg.ar
+#
+# ⚠ 以前は**黙って通っていた**。`Meters("s")` が `<Meters object at 0x...>` を作り、
+# `float` を名乗る新型が `str` を包んでいた（実測・検体 `T3`）。実行時が見ているのは
+# **引数の個数だけ**なので、実行時エラーにもならない。
+#
+# 期待されるエラー:
+#   StaticTypeError  argument 0 of 'Meters' expects 'float' but got 'str'
+
+new_type Meters: float
+
+let m = Meters("s")                 # ⛔ 基底は float
+
+print(m)

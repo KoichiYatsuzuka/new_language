@@ -145,6 +145,13 @@ impl TypeChecker {
             }
         }
 
+        // ⚠ `new_type` のコンストラクタ引数（タスク 5.6・検体 `T3`）。
+        if let Expr::Ident { name, .. } = func {
+            if let Some(original) = self.registry.new_type_original(name).map(str::to_string) {
+                self.check_new_type_arg(name, &original, &arg_data);
+            }
+        }
+
         // ⚠ 組み込みコレクションメソッドの引数型（タスク 5.2c・検体 `L14`）。
         if let Some((recv_ty, method, span)) = builtin_recv {
             self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
@@ -895,6 +902,73 @@ impl TypeChecker {
             Site::LetParam
         };
         self.types_compatible(arg_ty, expected, site)
+    }
+
+    /// `new_type` のコンストラクタ引数を**基底型**と照合する（タスク 5.6・検体 `T3`）。
+    ///
+    /// ⚠⚠ `new_type Meters: float` に `Meters("s")` が**黙って通っていた**（実測）。
+    /// `new_type` は `known_class_names` と `new_type_originals` にしか登録されず、
+    /// `__init__` のシグネチャを持たないので、引数の照合先が**そもそも無かった**。
+    /// 実行時が見ているのは個数だけ（`function takes 1 argument(s), got 2`）。
+    ///
+    /// ⚠ 個数違いはここでは扱わない（実行時が報告する）。
+    /// ⚠ `Meters(5)` は**エラーになる**。暗黙の `int` → `float` はタスク 4.2 で廃止したので
+    /// `Meters(float(5))` と書く。
+    ///
+    /// ## ⚠⚠ 基底が**クラス**のときは検査しない
+    ///
+    /// `new_type Kilometers: Meters` の `Meters` が**クラス**のとき、`Kilometers(5)` の `5` は
+    /// 「`Meters` を包む値」ではなく **`Meters` のコンストラクタ引数**（レジストリが
+    /// `class_method_sigs` を引き継いでいる）。基底型と突き合わせると
+    /// `expects 'Meters' but got 'int'` という**偽エラー**になる
+    /// （`examples/.../polymorphism.ar` が実際に落ちた）。
+    /// ⇒ `new_type` の連鎖を根まで辿り、**根がプリミティブのときだけ**検査する。
+    fn check_new_type_arg(
+        &mut self,
+        name: &str,
+        original: &str,
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        // `new_type` の連鎖を根まで辿る（`Kg: Meters: float` → `float`）。
+        let mut root = original.to_string();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(next) = self.registry.new_type_original(&root).map(str::to_string) {
+            if !seen.insert(next.clone()) {
+                break;
+            }
+            root = next;
+        }
+        let Some(expected) = InferredType::from_ann(&root) else {
+            return;
+        };
+        // ⚠ 根がクラス（`NamedInstance`）ならコンストラクタを継承しているので検査しない。
+        if matches!(
+            expected,
+            InferredType::Unresolved
+                | InferredType::Any
+                | InferredType::NamedInstance(_)
+                | InferredType::GenericInstance { .. }
+        ) {
+            return;
+        }
+        let [(None, got)] = arg_data else { return };
+        if matches!(got, InferredType::Unresolved | InferredType::Any) {
+            return;
+        }
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("argument of `{name}`");
+        if self.check_expected(got, &expected, false, &ctx) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::CallArgTypeMismatch {
+                func_name: name.to_string(),
+                param_index: 0,
+                expected,
+                got: got.clone(),
+            },
+            span: None,
+        });
     }
 
     /// **組み込みコレクションのメソッド引数**を要素型と照合する（タスク 5.2c・検体 `L14`）。

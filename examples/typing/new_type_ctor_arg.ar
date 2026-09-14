@@ -1,0 +1,64 @@
+# new_type_ctor_arg.ar — `new_type` のコンストラクタ引数を基底型と照合する（タスク 5.6）
+#
+# ## 何が壊れていたか
+#
+# `new_type Meters: float` に `Meters("s")` が**黙って通っていた**（実測）。
+# `new_type` は `known_class_names` と `new_type_originals` にしか登録されず、
+# `__init__` のシグネチャを持たないので、引数の照合先が**そもそも無かった**。
+# 実行時が見ているのは**個数だけ**（`function takes 1 argument(s), got 2`）。
+#
+# ## ⚠⚠ 基底が**クラス**のときは検査しない
+#
+# `new_type Kilometers: Meters` の `Meters` が**クラス**のとき、`Kilometers(5)` の `5` は
+# 「`Meters` を包む値」ではなく **`Meters` のコンストラクタ引数**
+# （レジストリが `class_method_sigs` を引き継いでいる）。
+# 基底型と突き合わせると `expects 'Meters' but got 'int'` という**偽エラー**になる。
+# ⇒ `new_type` の連鎖を根まで辿り、**根がプリミティブのときだけ**検査する。
+#
+# 弾かれる例は new_type_ctor_arg_error.ar
+
+print("=== プリミティブを基底にする new_type ===")
+
+new_type Meters: float
+new_type Count: int
+new_type Label: str
+
+let m = Meters(5.0)
+let c = Count(3)
+let l = Label("x")
+print(repr(m), repr(c), repr(l))    # Meters(5.0) Count(3) Label('x')
+
+print("=== 連鎖は根まで辿る ===")
+
+# `Kg` の根は `float` なので `float` を要求する。
+new_type Kg: Meters
+let k = Kg(2.5)
+print(repr(k))                      # Kg(2.5)
+
+print("=== ⚠ 暗黙の int → float は無い（D-5・タスク 4.2） ===")
+
+# `Meters(5)` は弾かれる。明示変換を書く。
+let m2 = Meters(float(5))
+print(repr(m2))                     # Meters(5.0)
+
+print("=== 基底がクラスなら、そのクラスのコンストラクタ引数 ===")
+
+class Vec:
+    mut value: int
+
+    fn get(self) -> int:
+        return self.value
+
+new_type Kilometers: Vec
+
+# ⚠ `5` は `Vec` ではなく `Vec.__init__` の引数。ここを基底型（`Vec`）と
+#   突き合わせると偽エラーになるので、検査を見送っている。
+let km = Kilometers(5)
+print(km.get())                     # 5
+
+print("=== キャスト経由 ===")
+
+let m3 = 7.0=>Meters
+print(repr(m3))                     # Meters(7.0)
+
+print("done")

@@ -1258,7 +1258,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | ~~**5.3**~~ | ~~`static mut` クラス変数への代入を検査~~ → **✅ 完了 2026-09-14** | D-1 | 3.2・1.2 | 下記「5.3 の記録」。`F4` → **STATIC** |
 | ~~**5.4**~~ | ~~`match` の `case` パターン型を subject と照合~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.4 の記録」。`X5` → **STATIC** |
 | ~~**5.5**~~ | ~~`if` / `while` の条件を `bool` 厳密に~~ → **✅ 完了 2026-09-14** | D-12 | **2.5** | 下記「5.5 の記録」。`K1` `K2` → **STATIC**。移行は予測どおり例題 1 箇所 |
-| **5.6** | `new_type` のコンストラクタ引数を検査 | D-1 | 3.2 | `T3` |
+| ~~**5.6**~~ | ~~`new_type` のコンストラクタ引数を検査~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.6 の記録」。`T3` → **STATIC** |
 | **5.7** | オーバーロード解決を実引数型で行う | D-1 | 3.2 | `C12` |
 
 #### 5.1 の記録 【✅ 完了 2026-09-14】
@@ -1772,6 +1772,48 @@ join が 2 箇所あった:
 
 **追加した例題**: `examples/typing/condition_must_be_bool{,_error}.ar`
 **移行した例題**: `examples/classes/operator_overload.ar`（`if empty:` → `if empty.__bool__():`）
+
+#### 5.6 の記録 【✅ 完了 2026-09-14】
+
+##### 照合先が**そもそも無かった**
+
+`new_type Meters: float` に `Meters("s")` が黙って通っていた。`new_type` は
+`known_class_names` と `new_type_originals` にしか登録されず、`__init__` の
+シグネチャを持たないので、引数を突き合わせる相手が無い。
+実行時が見ているのも**個数だけ**（`function takes 1 argument(s), got 2`）なので、
+実行時エラーにもならず `<Meters object at 0x…>` が出来ていた。
+
+##### ⚠⚠ 基底が**クラス**のときは検査してはいけない
+
+`scan_examples` が `polymorphism.ar` で落ちて分かった:
+
+```
+argument 0 of 'Kilometers' expects 'Meters' but got 'int'
+```
+
+`new_type Kilometers: Meters` の `Meters` は**クラス**で、`Kilometers(5)` の `5` は
+「`Meters` を包む値」ではなく **`Meters` のコンストラクタ引数**
+（レジストリが `class_method_sigs` を引き継いでいる）。
+⇒ `new_type` の連鎖を**根まで辿り**、根がプリミティブのときだけ検査する。
+`Kg: Meters: float` は `float` を要求し、`Kilometers: Vec`（クラス）は見送る。
+
+##### 結果
+
+**検体**: `T3` が `NONE` → **`STATIC`**。静的検査の割合 82% → **83%**（95/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（297 例題） |
+| `compare_python_impl.ps1` | 88/88 identical・stale 0（`new_type` の連鎖が py 未実装なので `$knownDiff` に登録） |
+| `compare_outputs.ps1 -A dec83f8` | 227/228。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **298/298 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/new_type_ctor_arg{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 
