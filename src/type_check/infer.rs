@@ -84,9 +84,22 @@ impl TypeChecker {
             Expr::Attr { object, attr, span, node_id, .. } => {
                 self.infer_attr(object, attr, span, *node_id)
             }
-            Expr::TraitAccess { object, .. } => {
+            // ⚠⚠ **trait 修飾アクセス `o::T.f` は型を返していなかった**（タスク 5.2d・検体 `F3`）。
+            //    `Unresolved` は「何でも通る」ので、読みも代入も**丸ごと無検査**だった
+            //    （`c::T.n = "s"` は A-3 で入れた実行時検査だけが止めていた）。
+            //    宣言は `trait_field_details` に揃っているので、そこから引く。
+            // ⚠ メソッド（`o::T.m()`）はここでは解決しない。呼び出しの検査は
+            //    `infer_call` の別経路で、そちらを変えると影響範囲が広い。
+            Expr::TraitAccess { object, trait_name, attr } => {
                 self.walk(object);
-                InferredType::Unresolved
+                match self
+                    .registry
+                    .trait_field_details(trait_name.as_str())
+                    .and_then(|f| f.get(attr.as_str()))
+                {
+                    Some((_, ty)) => ty.clone(),
+                    None => InferredType::Unresolved,
+                }
             }
 
             // --- 関数呼び出し ---

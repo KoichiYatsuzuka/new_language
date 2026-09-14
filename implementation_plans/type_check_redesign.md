@@ -1250,11 +1250,11 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | # | 内容 | 決定 | 依存 | 検体 |
 |---|---|---|---|---|
 | ~~**5.1**~~ | ~~複合代入の二段検査~~ → **✅ 完了 2026-09-14** | D-8 / D-9 | 4.4 | 下記「5.1 の記録」。`B6` `B10` `B11` `F2` が**全て STATIC** |
-| **5.2** | 未検査の地点を埋める | D-1 | 3.2 | **地点ごとに分割して進める**（下記） |
+| ~~**5.2**~~ | ~~未検査の地点を埋める~~ → **✅ 完了 2026-09-14**（5.2a〜5.2d） | D-1 | 3.2 | 検体 12 件が**全て STATIC** |
 | ~~5.2a~~ | ~~`block_return` / `loop_yield` / `yield`~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2a の記録」。`X1`〜`X4` `C8` が**全て STATIC** |
 | ~~5.2b~~ | ~~添字（代入の要素型・index の型・スライス境界）~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2b の記録」。`L5`〜`L8` が**全て STATIC** |
 | ~~5.2c~~ | ~~組み込みメソッド引数・可変長要素~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2c の記録」。`L14` `C15` が**両方 STATIC** |
-| 5.2d | trait フィールド代入の静的化 | D-1 | 3.2 | `F3` |
+| ~~5.2d~~ | ~~trait フィールド代入の静的化~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2d の記録」。`F3` → **STATIC**。⇒ **5.2 完了** |
 | **5.3** | `static mut` クラス変数への代入を検査 | D-1 | 3.2・1.2 | `F4` |
 | **5.4** | `match` の `case` パターン型を subject と照合 | D-1 | 3.2 | `X5` |
 | **5.5** | `if` / `while` の条件を `bool` 厳密に | D-12 | **2.5** | `K1` `K2`。移行は例題 1 箇所。⚠ `is_truthy` は**撤去しない** |
@@ -1560,6 +1560,62 @@ f(... = 1, "s")       # ✅ 通っていた
 | `compare_wasm_frontend.ps1` | **288/288 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/collection_method_args{,_error}.ar`
+
+#### 5.2d の記録 【✅ 完了 2026-09-14・⇒ **5.2 完了**】
+
+##### `o::T.f` は**型を返していなかった**
+
+`Expr::TraitAccess` の推論が `Unresolved` を返していた。`Unresolved` は
+「何でも通る」期待型なので、読みの型も判らず、代入は**丸ごと無検査**だった。
+止めていたのは A-3 で入れた実行時検査（`store_field`）だけ。
+宣言は `trait_field_details` に揃っているので引くようにした。
+
+⚠ メソッド（`o::T.m()`）はここでは解決していない。呼び出しの検査は `infer_call` の
+別経路で、そちらを変えると影響範囲が広い。
+
+##### ⚠⚠ 暗黙のコンストラクタが**この経路を通っていた**
+
+`scan_examples` が `trait_conformance.ar` で落ちて分かった:
+
+```
+field 'item' of class 'Holder' is declared 'T' but got 'int'
+```
+
+例題に `::` は 1 つも書かれていない。**trait のフィールドを持つクラスの `C(...)` が
+内部で `self::T.f = arg` の形で代入している**ため、検査がコンストラクタ引数にも
+効いていた（カバー範囲としては良い。ただし下の guard が要る）。
+
+##### `mentions_type_param` は**ここでは効かない**
+
+`trait Holder[T]: mut item: T` を `class IntBox(Holder[int])` が実装するとき、
+期待型は `T` のままで、具体型引数（`int`）は**基底名 `Holder` だけでは判らない**。
+`mentions_type_param` は「**いま見えている**型変数」しか見ず、`IntBox` の中からは
+`Holder` の `T` は見えていないので素通りしていた。
+⇒ レジストリから trait の**テンプレート引数名**を引いて突き合わせる
+`mentions_trait_param` を足した。`trait_conformance.ar` が
+「型変数を含む要求は照合を見送る」と明記している方針そのもの。
+
+⚠ 型変数を**含まない**要求（`trait Counted[T]: mut count: int`）はテンプレート trait でも
+検査される（例題で固定した）。
+
+##### 結果
+
+**検体**: `F3` が `RUNTIME` → **`STATIC`**。静的検査の割合 78% → **79%**（90/114）。
+⇒ **タスク 5.2 の検体 12 件（`L5`〜`L8` `L14` `C8` `C15` `X1`〜`X4` `F3`）が全て STATIC。**
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（289 例題） |
+| `compare_python_impl.ps1` | 85/85 identical・stale 0 |
+| `compare_outputs.ps1 -A 8995433` | 219/220。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **290/290 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/classes/trait_field_assign_static{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 

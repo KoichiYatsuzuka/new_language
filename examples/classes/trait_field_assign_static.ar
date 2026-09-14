@@ -1,0 +1,73 @@
+# trait_field_assign_static.ar — trait 修飾フィールドへの代入を静的に検査する
+# （タスク 5.2d）
+#
+# ## 何が壊れていたか
+#
+# `Expr::TraitAccess`（`o::T.f`）の型推論が **`Unresolved` を返していた**。
+# `Unresolved` は「何でも通る」期待型なので、
+#
+#   - 読み（`print(c::T.n)`）の型も判らず
+#   - 代入（`c::T.n = "s"`）は**丸ごと無検査**
+#
+# だった。止めていたのは A-3 で入れた実行時検査（`store_field`）だけ。
+# 宣言は `trait_field_details` に揃っているので、そこから引くようにした。
+#
+# ## ⚠⚠ 暗黙のコンストラクタもこの経路を通る
+#
+# trait のフィールドを持つクラスの `C(...)` は、内部で `self::T.f = arg` の形で
+# 代入する。⇒ この検査は**コンストラクタ引数にも効く**。
+#
+# そのため `trait Holder[T]` のようなテンプレート trait では、期待型が `T` のままで
+# 具体型引数（`Holder[int]` の `int`）は**基底名だけでは判らない**。
+# 型変数を含む要求は照合を見送る（`trait_conformance.ar` が明記している方針）。
+#
+# 弾かれる例は trait_field_assign_static_error.ar
+
+print("=== trait フィールドの読み書き ===")
+
+trait Named:
+    mut name: str
+
+trait Scored:
+    mut score: int
+
+class Player(Named, Scored):
+    mut level: int
+
+mut p = Player("ann", 10, 1)
+p::Named.name = "bea"
+p::Scored.score = 20
+print(p::Named.name, p::Scored.score)       # bea 20
+
+print("=== 修飾しない形も同じ宣言型が効く ===")
+
+p.name = "cara"
+print(p.name)                               # cara
+
+print("=== テンプレート trait は照合を見送る ===")
+
+# ⚠ `Holder[int]` の `int` は基底名 `Holder` からは判らないので、`T` を含む要求は
+#   検査しない（判らないものを通す）。実行時検査（A-3）が受け持つ。
+trait Holder[T]:
+    mut item: T
+
+class IntBox(Holder[int]):
+    mut tag: str
+
+let b = IntBox(5, "b")
+print(b.item, b.tag)                        # 5 b
+
+print("=== 型変数を含まない要求はテンプレート trait でも検査される ===")
+
+trait Counted[T]:
+    mut item: T
+    mut count: int
+
+class Bag(Counted[str]):
+    mut label: str
+
+mut bag = Bag("x", 3, "bag")
+bag::Counted.count = 7                      # int なので OK
+print(bag::Counted.count)                   # 7
+
+print("done")

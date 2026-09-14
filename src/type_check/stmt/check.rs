@@ -847,6 +847,16 @@ impl TypeChecker {
             //    まだ通していない（タスク 5.1 は変数とフィールドだけ）。
             return;
         }
+        // ⚠⚠ **trait 修飾フィールドへの代入 `o::T.f = v`**（タスク 5.2d・検体 `F3`）。
+        //    以前は `infer` が `Unresolved` を返していたので**丸ごと無検査**で、
+        //    A-3 で入れた実行時検査（`store_field`）だけが止めていた。
+        if let Expr::TraitAccess { trait_name, attr, .. } = target {
+            if compound_op.is_none() {
+                let ctx = format!("field `{attr}` of trait `{trait_name}`");
+                self.check_trait_field_assign(&value_ty, &target_ty, attr, trait_name, &ctx);
+            }
+            return;
+        }
         let Expr::Attr { object, attr, span, .. } = target else {
             return;
         };
@@ -919,6 +929,47 @@ impl TypeChecker {
                 got: value_ty,
             },
             span: Some(span.clone()),
+        });
+    }
+
+    /// trait 修飾フィールドへの代入 `o::T.f = v` を宣言型と照合する（タスク 5.2d・検体 `F3`）。
+    fn check_trait_field_assign(
+        &mut self,
+        value_ty: &InferredType,
+        expected: &InferredType,
+        attr: &str,
+        trait_name: &str,
+        ctx: &str,
+    ) {
+        if matches!(
+            expected,
+            InferredType::Unresolved | InferredType::Any | InferredType::Never
+        ) {
+            return;
+        }
+        // ⚠⚠ **テンプレート trait の型変数は照合できない。** `trait Holder[T]: mut item: T` を
+        //    `class IntBox(Holder[int])` が実装しているとき、期待型は `T` のままで
+        //    具体型引数（`int`）は**基底名 `Holder` だけでは判らない**。
+        //    ⚠ `mentions_type_param` はここでは効かない。あれは「**いま見えている**
+        //      型変数」を見るもので、`IntBox` の中では `Holder` の `T` は見えていない
+        //      （実測: `IntBox(5)` が `declared 'T' but got 'int'` で落ちた）。
+        //    ⇒ その trait の**テンプレート引数名**と突き合わせる。
+        //    `trait_conformance.ar` が「型変数を含む要求は照合を見送る」と明記している。
+        if self.mentions_type_param(expected) || self.mentions_trait_param(trait_name, expected) {
+            return;
+        }
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        if self.check_expected(value_ty, expected, false, ctx) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::FieldTypeMismatch {
+                field_name: attr.to_string(),
+                class_name: trait_name.to_string(),
+                expected: expected.clone(),
+                got: value_ty.clone(),
+            },
+            span: None,
         });
     }
 
@@ -1049,6 +1100,46 @@ impl TypeChecker {
             }
             InferredType::Union(ts) | InferredType::Intersection(ts) | InferredType::Tuple(ts) => {
                 ts.iter().any(|t| self.mentions_type_param(t))
+            }
+            _ => false,
+        }
+    }
+
+    /// `ty` が trait `trait_name` の**テンプレート引数名**を含むか（タスク 5.2d）。
+    ///
+    /// ⚠ [`Self::mentions_type_param`] は「いま見えている型変数」しか見ない。
+    /// trait を実装したクラスの中からは基底 trait の型変数は見えないので、
+    /// レジストリから引いた名前と突き合わせる必要がある。
+    fn mentions_trait_param(&self, trait_name: &str, ty: &InferredType) -> bool {
+        let Some(params) = self.registry.template_params(trait_name) else {
+            return false;
+        };
+        if params.is_empty() {
+            return false;
+        }
+        Self::mentions_any_name(ty, params)
+    }
+
+    /// `ty` が `names` のいずれかを**クラス名の位置**に含むか（再帰）。
+    fn mentions_any_name(ty: &InferredType, names: &[String]) -> bool {
+        match ty {
+            InferredType::NamedInstance(n) => names.iter().any(|p| p == n),
+            InferredType::GenericInstance { args, .. } => {
+                args.iter().any(|a| Self::mentions_any_name(a, names))
+            }
+            InferredType::ListOf(t)
+            | InferredType::FixedListOf(t)
+            | InferredType::ListLikeOf(t)
+            | InferredType::SetOf(t)
+            | InferredType::TypeValOf(t) => Self::mentions_any_name(t, names),
+            InferredType::DictOf(k, v) => {
+                Self::mentions_any_name(k, names) || Self::mentions_any_name(v, names)
+            }
+            InferredType::Result(a, b) => {
+                Self::mentions_any_name(a, names) || Self::mentions_any_name(b, names)
+            }
+            InferredType::Union(ts) | InferredType::Intersection(ts) | InferredType::Tuple(ts) => {
+                ts.iter().any(|t| Self::mentions_any_name(t, names))
             }
             _ => false,
         }

@@ -1,0 +1,22 @@
+# trait_field_assign_static_error.ar — trait フィールドに宣言型と違う値を代入できない
+# （タスク 5.2d）
+#
+# 正常系は trait_field_assign_static.ar
+#
+# ⚠ 以前は `o::T.f` の型推論が `Unresolved` を返していたので**静的には丸ごと無検査**で、
+# A-3 で入れた実行時検査（`TypeError: value does not match declared type of field 'n'`）
+# だけが止めていた（検体 `F3`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  field 'n' of class 'T' is declared 'int' but got 'str'
+
+trait T:
+    mut n: int
+
+class C(T):
+    mut d: int
+
+mut c = C(1, 2)
+c::T.n = "s"                                # ⛔ n は int
+
+print(c::T.n)
