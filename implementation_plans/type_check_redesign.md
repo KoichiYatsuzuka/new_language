@@ -2497,3 +2497,181 @@ let s: str = h.n        # 旧: 黙って通る（Python の int が str 変数�
 
 ⚠ `7.6` は仕様変更なので、実装前に「`x == None` を弾くか」「変種 C でよいか」の確認を取ること。
 
+---
+
+## §10 フェーズ 8 — 要素型を捨てる経路を塞ぐ（起票 2026-09-15）
+
+### 狙い
+
+**根本原因②「要素型を捨てると何とでも適合する」の最後の残り。**
+フェーズ 1〜5 でリテラル（2.7）・空リテラル（4.1）・可変長引数（5.2c）は閉じたが、
+**注釈から要素型が落ちる経路**が残っている:
+
+| 経路 | 例 | 現状 |
+|---|---|---|
+| 素の容器型注釈 | `mut zs: list` | **合法** ⇒ `zs[0]` は `Unresolved`、`zs.append(v)` は無検査 |
+| 解決できない要素型 | `let xs: list[foo]` | **黙って素の `list` へ落ちる** ⇒ 書いた注釈が捨てられる |
+| `tuple` 注釈 | `let t: tuple` | **`from_ann` の表に無い** ⇒ 注釈が `Unresolved` になり無視される |
+
+### タスク
+
+| # | 内容 | 移行コスト | 備考 |
+|---|---|---|---|
+| **8.1** | 素の `list` / `dict` / `set` / `fixed_list` / `list_like` 注釈を禁止 | **46 箇所 / 22 ファイル** | 下記 |
+| **8.2** | 解決できない要素型が黙って捨てられる経路を塞ぐ | **2 箇所 / 1 ファイル** | ⚠ **8.1 より先に**（コストほぼ 0・silent discard） |
+| **8.3** | `tuple` 注釈を解決できるようにする | 実測 0 | 8.2 の原因の 1 つ |
+| **8.4** | 内部で素の容器型が生まれる経路の棚卸し | — | 下記 |
+
+### 順序
+
+`8.2` → `8.3` → `8.1` → `8.4`
+
+⚠ **8.2 / 8.3 を先にやる。** どちらも移行コストがほぼ無く、**書いた注釈が黙って捨てられる**
+という 8.1 より悪い形のバグ。8.1（46 箇所の移行）に着手する前に閉じておく。
+
+---
+
+#### 8.2 解決できない要素型が黙って捨てられる（⚠ **最優先**）
+
+##### 実測した挙動
+
+```arrow
+mut xs: list[foo] = [1]     # `foo` は存在しない型
+xs.append("s")              # ⛔ 通る
+print(xs)                   # [1, 's']
+```
+
+`InferredType::from_ann` は `list[foo]` の内側を解決できないとき
+
+```rust
+None => Self::List          // ← 要素型を捨てて素の `list` にする
+```
+
+としている（`fixed_list[` / `list_like[` / `set[` も同じ形）。
+⇒ **利用者は要素型を書いたのに捨てられ、以降の要素検査が全部消える。**
+
+⚠ 素の `list` と書いた場合（8.1）より**悪い**。書いた本人は検査されているつもりでいる。
+
+##### ⚠ 大文字の未知型は既に弾かれている
+
+`list[Foo]` は `from_ann` が `NamedInstance("Foo")` を作り、妥当性検査（タスク 3.4）が
+`Foo` を未知クラスとして弾く。**落ちるのは小文字で始まる未知の名前だけ。**
+
+##### 実測した移行コスト
+
+例題 **373 件**を走査して **2 箇所 / 1 ファイル**:
+
+| ファイル | 注釈 |
+|---|---|
+| `examples/practical_examples/pd_numpy_pyplot/data_analysis.ar` | `list[tuple]` ×2 |
+
+⇒ しかもこの 2 箇所は **8.3（`tuple` を解決可能にする）で消える**。実質の移行コストは 0。
+
+##### 直し方
+
+`None => Self::List` を**エラーにする**（要素型が解決できない注釈は妥当性エラー）。
+⚠ 3.4 の `UnknownGuardType` と同じ系統の妥当性検査。
+
+#### 8.3 `tuple` 注釈を解決できるようにする
+
+`InferredType::from_ann` のプリミティブ表に **`tuple` が無い**（`list` / `dict` / `set` /
+`fixed_list` / `list_like` はある）。⇒ `let t: tuple = (1, 2)` の注釈は `Unresolved` になり、
+**注釈が無視されて右辺の型がそのまま入る**（実測: 変数の型は `tuple[int, int]` になる）。
+
+⚠ 実害が見えにくいのは「右辺が正しい型を持っていた」だけで、`Unresolved` は万能受容体なので
+`let t: tuple = 1` のような誤りも通る可能性がある（実装時に確認すること）。
+
+⚠ `Tuple` は `InferredType::Tuple(Vec<InferredType>)` しか無く**要素数が固定**。
+「要素数を問わない tuple」を表す形（`Tuple` の空ベクタ？ 専用の変種？）を決める必要がある。
+⇒ 8.1 の「素の容器型を禁止する」方針と整合させること
+（`tuple` を許すなら `list` も許すことになる。**`tuple[...]` を必須にするのが一貫する**）。
+
+#### 8.1 素の容器型注釈を禁止する
+
+##### 実測した移行コスト: **46 箇所 / 22 ファイル**
+
+| 区分 | 箇所 |
+|---|---|
+| **GATED**（`scan_examples` の 9 カテゴリ） | **30** |
+| ungated（`archived/` のみ） | 16 |
+| 形別 | `list`=44, `set`=1, `dict`=1 |
+
+対象ファイル（GATED のみ）:
+
+```
+2  basics/block_return_typecheck.ar      2  basics/closure_mut_param.ar
+1  basics/generator_closure.ar           1  basics/generator_nesting.ar
+2  basics/let_arg_sharing_probe.ar       3  basics/let_immutability.ar
+1  basics/let_immutability_error.ar      1  classes/field_class_type_error.ar
+1  classes/field_type_runtime_error.ar   4  collections/equality_depth_limit_error.ar
+3  collections/store_copy_semantics.ar   1  exceptions/try_except.ar
+1  typing/collection_elem_synthesis.ar   1  typing/collection_method_args.ar
+1  typing/except_bind_and_match_expr.ar  1  typing/other_typing.ar
+3  typing/upcast_only.ar                 1  typing/upcast_only_error.ar
+```
+
+##### `list[Any]` が完全な代替であることを実測した
+
+| 用途 | 素の `list` | `list[Any]` |
+|---|---|---|
+| 自己代入 `b[0] = b` | 通る | **通る** |
+| `z.append(z)` | 通る | **通る** |
+| `->list[Any]` の `loop_yield` | 要素検査なし | **要素検査なし**（`Any` は照合しない） |
+| `dict[Any, Any]` に異型キー | 通る | **通る** |
+
+##### 有効になる検査: 実測 **11 地点**（下限）
+
+素の容器型のせいで検査を飛ばしている地点を計測した（例題 270 件）:
+
+| 飛ばしている検査 | 箇所 |
+|---|---|
+| `append` の引数型（5.2c） | **6** |
+| `for` の要素型（→ ループ変数が `Unresolved` になり下流が全部無検査） | **4** |
+| `loop_yield` の要素型（5.2a） | **1** |
+
+⚠ **これは下限。** 計測したのは 3 経路だけで、添字読みの要素型・`dict` のキー検査などは
+数えていない。
+⚠ 同じ計測で出た `subscript-assign recv=unknown`（`archived/dict.ar`・`pandas_example.ar`・
+`collection.ar`・`data_analysis.ar`）は**素の容器型が原因ではない**（外部由来の `Unresolved`）。
+8.1 では消えない ⇒ タスク 7.8 の領分。
+
+##### ⚠⚠ 仕様を実演している例題の書き換えが要る
+
+| 例題 | 内容 |
+|---|---|
+| `basics/block_return_typecheck.ar` | **5 番目の節「a bare `->list` imposes no element type」** — 素の `->list` が要素型を課さないことを**仕様として固定している節**。`->list[Any]` へ書き換え、節の説明も変える |
+| `collections/equality_depth_limit_error.ar`（4 箇所） | ⚠ **タスク 5.2b / 5.2c で「要素型を問わないリスト」として素の `list` へ直した箇所**。`list[Any]` へ再移行する |
+| `collections/store_copy_semantics.ar`（3 箇所） | 同上 |
+| `typing/upcast_only.ar`（3 箇所） | アップキャスト規則の実演。`list[Any]` との関係を確認すること |
+
+⚠ `language-differences.md` の記述も更新対象。
+
+##### ⚠ 注釈なしの空リテラルとの整合
+
+| 書き方 | 8.1 後 |
+|---|---|
+| `let xs = []`（注釈なし） | **`list[Any]`**（U-6・検体 `L11`・**仕様なので変えない**） |
+| `let xs: list = []`（素の注釈） | **静的エラー** ⇒ `list[Any]` と書く |
+
+⇒ 規則は「**注釈を書くなら要素型まで書け。書かないなら既定の `list[Any]`**」で一貫する。
+
+#### 8.4 内部で素の容器型が生まれる経路の棚卸し
+
+注釈を禁止しても `InferredType::List` / `Dict` / `Set` は内部で作られる:
+
+| 場所 | 形 |
+|---|---|
+| `call_check.rs` の `CallArg::Variadic` | 可変長引数が**空**のとき `List` |
+| `types.rs` の `from_ann` | 8.2 で潰す |
+| `scope.rs` | コレクション判定（**読むだけ**なので問題なし） |
+
+⚠ 「注釈として書けない」と「内部に存在しない」は別。**残った生成元それぞれについて
+『要素型が無いときに何を返すべきか』を決める**（空の可変長引数は `ListOf(Never)` が自然か？
+タスク 4.1 の空リテラルと同じ議論）。
+
+### フェーズ 7 との関係
+
+- **7.7（`L17`）の想定パターン 4 つのうち 2 つ**（素の `list` 注釈への添字・素の容器型
+  フィールドへの添字）は **8.1 で消える** ⇒ 7.7 の優先度はさらに下がる
+- `subscript-assign recv=unknown` は **7.8**（外部言語由来）の領分で、8.1 では消えない
+
