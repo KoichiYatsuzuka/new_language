@@ -1,5 +1,11 @@
 # @id: O7
 # @obligation: 論理 and （int と str）
+#
+# ⚠⚠ **これは穴ではなく仕様**（決定 D-10・タスク 2.5）。`and` / `or` は `bool` ではなく
+#    **被演算子型の join** を返す（`a and b` の値は `a` か `b` そのもの）。
+#    ⇒ `int` と `str` の `and` は `Union[int, str]` を返す正当な式で、弾く理由が無い。
+#    誤りになるのは**条件位置に置いたとき**で、そちらは D-12（タスク 5.5）が
+#    `the condition of 'if' must be 'bool'` で弾く（検体 `K1` / `K2`）。
 # @baseline: NONE
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
