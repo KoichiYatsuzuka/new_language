@@ -290,7 +290,12 @@ impl InferredType {
         // C ABI 型（int32 等）は基底型（int/float）の別名として扱う
         let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
         match ann {
-            "int" => Some(Self::Int),
+            // ⚠⚠ **`uint` は `int` として解決する**（タスク 6.1）。以前は表に無く
+            //    `Unresolved`（＝何でも通る）になっていたので、`let x: uint = "s"` すら
+            //    静的には素通りしていた。値としても `Value::Int` が束縛されるので
+            //    （`Value::UInt` はハンドル値と `uint()` 変換だけ）、`Int` に寄せるのが
+            //    実体と合う。実行時側の相互許容は `primitive_ann_matches` にある。
+            "int" | "uint" => Some(Self::Int),
             "float" => Some(Self::Float),
             "complex" => Some(Self::Complex),
             "str" => Some(Self::Str),

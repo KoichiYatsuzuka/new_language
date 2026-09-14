@@ -1,0 +1,101 @@
+# runtime_type_predicates.ar — 実行時の型判定を 1 本の表に揃える（タスク 6.1）
+#
+# ## 何が壊れていたか
+#
+# 実行時の適合判定は**独立に 3 本**あり、同じ型名について答えが割れていた。
+# `uint` で実測した食い違い（`let x: uint = 5` の実体は `Value::Int`）:
+#
+# | 経路 | 述語 | 以前 | 今 |
+# |---|---|---|---|
+# | `x is uint` | `value_is_type` | **False** | True |
+# | `block ->uint: block_return 5` | `value_matches_type_ann` | **TypeError** | 通る |
+# | フィールド代入 | `TypeTag` ＋ A-3 の相互許容 | 通る | 通る |
+#
+# **同じ値・同じ型名なのに地点で答えが違う**状態だった。
+#
+# ## `uint` と `int` は相互に許容する
+#
+# ⚠⚠ `Value::UInt` が生まれるのは**ハンドル値と `uint()` 変換だけ**で、
+# `let x: uint = 5` も `f(v: uint)` も値としては `Value::Int` を束縛する。
+# `uint` の位置で `Value::UInt` だけを要求すると、実バグを塞がずに
+# **正常なコードが落ちる**。⇒ 整数族は通す（`str` / `bool` の混入は弾く）。
+# A-3 が `store_field` に入れた規則を全体へ広げた形。
+#
+# ## ずれを検出する網
+#
+# `TypeTag::matches`（VM のホットパス・直書き）と `primitive_ann_matches`（唯一の表）は
+# 別々に書いてあるので、`vm::op::type_tag_tests::tag_agrees_with_runtime_table` が
+# **全組み合わせで一致を検証**する。片方を直したらテストが落ちる。
+#
+# ⚠ この例題に `_error` 版は無い。6.1 は**新しい検査を足すのではなく、既にある 3 本の
+#   答えを揃える**タスクなので、「弾かれる例」ではなく「揃っていること」を固定する。
+
+print("=== uint はどの地点でも同じ答え ===")
+
+let x: uint = 5
+
+print(x is uint)                    # True    ← 以前は False
+print(x is int)                     # True    ← 整数族
+
+let r = block ->uint:
+    block_return 5
+print(r)                            # 5       ← 以前は TypeError
+
+fn take_uint(let v: uint) -> uint:
+    return v
+print(take_uint(5))                 # 5
+
+class Counter:
+    mut u: uint
+    mut label: str
+
+mut c = Counter(5, "c")
+c.u = 9
+print(c.u)                          # 9
+
+print("=== uint() が作る値も同じ ===")
+
+let h = uint(7)
+print(h is uint)                    # True
+print(h is int)                     # True
+
+print("=== str / bool の混入は弾く ===")
+
+print("s" is uint)                  # False
+print(True is int)                  # False
+
+print("=== 容器の種別も 1 本の表で見る ===")
+
+let xs: list[int] = [1, 2]
+print(xs is list)                   # True
+print(xs is list_like)              # True
+print(xs is fixed_list)             # False
+
+# ⚠ `fixed_list` は `list` からのキャストで作る（`fixed_list(...)` という関数は無い）。
+#   要素は **int/float フィールドだけを持つ同種のクラスインスタンス**でなければならない。
+class Pt:
+    mut x: float
+    mut y: float
+
+let pts = [Pt(1.0, 2.0), Pt(3.0, 4.0)]
+let fl: fixed_list[Pt] = pts => fixed_list[Pt]
+print(fl is fixed_list)             # True
+print(fl is list_like)              # True
+print(fl is list)                   # False
+
+print("=== function は「呼べるもの」 ===")
+
+fn plain() -> int:
+    return 1
+
+class Callable:
+    mut n: int
+
+    fn __call__(self) -> int:
+        return self.n
+
+print(plain is function)            # True
+print(Callable(1) is function)      # True   ← __call__ を持つ
+print(5 is function)                # False
+
+print("done")

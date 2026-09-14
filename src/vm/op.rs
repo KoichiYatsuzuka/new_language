@@ -41,13 +41,21 @@ impl TypeTag {
     }
 
     /// 値がこの種別に合うか（`Other` は呼び出し側が一般判定へ落とす）。
+    ///
+    /// ⚠⚠ **`primitive_ann_matches` と同じ答えを返さなければならない**（タスク 6.1）。
+    /// こちらは VM のホットパスなので表を引かず `match` で直書きしてあるが、
+    /// **規則が 2 つあるという意味ではない**。ずれていないことは
+    /// `tag_agrees_with_runtime_table` が全組み合わせで検証する。
+    ///
+    /// ⚠ `Int` / `UInt` は**整数族として相互に許容する**。`Value::UInt` が生まれるのは
+    /// ハンドル値と `uint()` 変換だけで、`let x: uint = 5` も `f(v: uint)` も
+    /// `Value::Int` を束縛するため（A-3 が `store_field` で先に踏んだ規則）。
     #[inline(always)]
     pub fn matches(self, v: &crate::interpreter::Value) -> bool {
         use crate::interpreter::Value;
         match self {
             TypeTag::Any => true,
-            TypeTag::Int => matches!(v, Value::Int(_)),
-            TypeTag::UInt => matches!(v, Value::UInt(_)),
+            TypeTag::Int | TypeTag::UInt => matches!(v, Value::Int(_) | Value::UInt(_)),
             TypeTag::Float => matches!(v, Value::Float(_)),
             TypeTag::Str => matches!(v, Value::Str(_)),
             TypeTag::Bool => matches!(v, Value::Bool(_)),
@@ -475,6 +483,49 @@ pub enum DeclKind {
     /// 実行時に `get_var(src)` を引き、可変なら copy+freeze・不変ならそのまま・
     /// 変数でなければ `LetFreezeInstance` と同じ扱い（＝`exec_let` と同一の分岐）。
     LetFromIdent(u32),
+}
+
+#[cfg(test)]
+mod type_tag_tests {
+    use super::*;
+    use crate::interpreter::ops::typecheck::primitive_ann_matches;
+    use crate::interpreter::Value;
+
+    /// **`TypeTag` と実行時の表がずれていないこと**（タスク 6.1）。
+    ///
+    /// ⚠⚠ これがこのタスクの本体。`TypeTag::matches`（VM のホットパス・直書き）と
+    /// `primitive_ann_matches`（実行時の唯一の表）は**同じ答えを返さなければならない**が、
+    /// 別々に書いてある以上ずれうる。実際 `uint` では
+    /// 「`x is uint` は False・`block ->uint` は TypeError・フィールドは通る」という
+    /// **3 者不一致**が起きていた。
+    ///
+    /// ⇒ 片方を直したらここが落ちる。**2 本あることを許す代わりに、ずれを検出する網**。
+    #[test]
+    fn tag_agrees_with_runtime_table() {
+        let values = [
+            Value::Int(1),
+            Value::UInt(1),
+            Value::Float(1.0),
+            Value::Str("a".into()),
+            Value::Bool(true),
+            Value::None,
+        ];
+        // `TypeTag::of` が `Other` 以外を返す名前だけが対象（`Other` は
+        // 呼び出し側が一般判定へ落とすので、表と一致する必要は無い）。
+        for ann in ["Any", "int", "uint", "float", "str", "bool"] {
+            let tag = TypeTag::of(ann);
+            assert!(!matches!(tag, TypeTag::Other), "{ann} should have a tag");
+            for v in &values {
+                let from_table = primitive_ann_matches(ann, v)
+                    .unwrap_or_else(|| panic!("table does not know `{ann}`"));
+                assert_eq!(
+                    tag.matches(v),
+                    from_table,
+                    "TypeTag::matches と primitive_ann_matches がずれている: ann={ann} value={v:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

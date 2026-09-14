@@ -58,8 +58,10 @@ mod functions;
  mod msvc_errors;
 #[path = "interpreter/native_api/mod.rs"]
  mod native_api;
+// ⚠ `pub(crate)`: `vm::op` のテストが `primitive_ann_matches`（実行時の唯一の型表・
+//    タスク 6.1）を引いて `TypeTag` とのずれを検査する。
 #[path = "interpreter/ops/mod.rs"]
-mod ops;
+pub(crate) mod ops;
 #[path = "interpreter/py_interop.rs"]
  mod py_interop;
 #[path = "interpreter/resolver.rs"]

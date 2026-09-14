@@ -1878,7 +1878,7 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 
 | # | 内容 | 決定 | 依存 | 備考 |
 |---|---|---|---|---|
-| **6.1** | 実行時・VM の判定 3 本（`value_matches_type_ann` / `value_is_type` / `TypeTag::matches`）を 3 分類から導出する | D-1 | フェーズ 4 | ⚠ 4 本並立のままだと再設計でずれが 1 本増える。A-3/A-4 で入れた `TypeTag` / `FieldCheck` もここに含む |
+| ~~**6.1**~~ | ~~実行時・VM の判定 3 本を 3 分類から導出する~~ → **✅ 完了 2026-09-14** | D-1 | フェーズ 4 | 下記「6.1 の記録」。⇒ **フェーズ 6 完了** |
 
 ---
 
@@ -1985,3 +1985,78 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 | 「3 分類では順序問題が残る」 | 地点 × 型の種類 → Kind の割り当てが決まれば順序は消える。残っていた合成型の曖昧性も D-5 で消滅 |
 | 「`Kind 2` はダウンキャストなので不健全」 | アップキャストのみに限定（D-3） |
 | 「`list[Any]` で空リテラルを表す」 | `Any` は要素型の**上端**なので方向が逆。`list[⊥]` が正しい（D-11） |
+
+#### 6.1 の記録 【✅ 完了 2026-09-14・⇒ **フェーズ 6 完了**】
+
+##### ⚠⚠ `uint` で **3 者不一致**を実測した
+
+`let x: uint = 5` の実体は `Value::Int`（`Value::UInt` が生まれるのは**ハンドル値と
+`uint()` 変換だけ**）。同じ値・同じ型名なのに地点で答えが違った:
+
+| 経路 | 述語 | 以前 | 今 |
+|---|---|---|---|
+| `x is uint` | `value_is_type` | **False** | True |
+| `block ->uint: block_return 5` | `value_matches_type_ann` | **TypeError** | 通る |
+| フィールド代入 | `TypeTag` ＋ A-3 の相互許容 | 通る | 通る |
+
+さらに静的側では `InferredType::from_ann("uint")` が**表に無く** `Unresolved`（＝何でも通る）
+になっていたので、`let x: uint = "s"` すら素通りしていた。
+⇒ **4 者が 4 通りの答えを持っていた。**
+
+##### 1 本の表に寄せた
+
+`primitive_ann_matches(ann, val) -> Option<bool>` を実行時の**唯一の表**にした:
+
+- `value_matches_type_ann` … 表 → `Optional` / `Union` → `value_is_type`
+- `value_is_type` … 表 → protocol → クラス / trait
+- 静的 `from_ann` … `"int" | "uint" => Int`
+
+`value_is_type` にあった**プリミティブの 2 本目の写し**（`Value::Int => "int"` …）は削除した。
+`uint`（`Value::UInt` だけを要求）・`function`（`JsProcFn` を含まない）・
+`fixed_list` / `list_like` の扱いがそこで割れていた。
+
+##### `TypeTag` は直書きのまま残し、**ずれを検出するテスト**を置いた
+
+`TypeTag::matches` は VM のホットパスなので表を引かず `match` で直書きする。
+**規則が 2 つあるという意味ではない**ので、
+`vm::op::type_tag_tests::tag_agrees_with_runtime_table` が
+`{Any,int,uint,float,str,bool} × {Int,UInt,Float,Str,Bool,None}` の全組み合わせで
+両者の一致を検証する。片方を直したらテストが落ちる。
+
+⚠ この網のために `interpreter::ops` を `pub(crate)` にした。
+
+##### 整数族の規則
+
+`int` / `uint` は**相互に許容する**。`uint` の位置で `Value::UInt` だけを要求すると、
+実バグを塞がずに**正常なコードが落ちる**（A-3 が `store_field` で先に踏んだ）。
+`str` / `bool` の混入は従来どおり弾く。
+
+##### 結果
+
+**検体は動かない**（6.1 は新しい検査を足すのではなく、既にある判定の**答えを揃える**タスク）。
+静的検査の割合は **84%（96/114）のまま**。
+
+⚠ `compare_bytecode` で**バイトコード完全一致**（249/249）を確認した。
+`from_ann("uint")` が `Int` を返すようになったので型特化が変わる可能性があったが、変化なし。
+⚠ 負の対照（同一 exe 同士）を同じセッションで先に取った。
+⚠⚠ **A/B は絶対パスで渡すこと。** 相対パスだと `Process::Start` が
+`WorkingDirectory` ではなく呼び出し側の cwd で解決し、全件「A=1 lines」という
+**偽の全差分**になる（今回踏んだ）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | **774 passed** / 0 failed（ずれ検出テストを 1 本追加） |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（300 例題） |
+| `compare_python_impl.ps1` | 88/88 identical・stale 0 |
+| `compare_outputs.ps1 -A 2da64da` | 230/231。差分は**新規例題 1 件のみ** |
+| `compare_bytecode.ps1 -A 2da64da` | **249/249 identical**（負の対照も 249/249） |
+| `hash_eq_identity.ps1` | consistent |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **301/301 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/runtime_type_predicates.ar`
+（`_error` 版は無い。「弾かれる例」ではなく「**揃っていること**」を固定する例題）
+

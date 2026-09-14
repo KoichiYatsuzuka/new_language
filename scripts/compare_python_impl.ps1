@@ -87,6 +87,7 @@ $knownDiff = @{
     'collection_method_args'         = 'py: list/set 内の str の表示形式が違う（py は引用符を付けない・タスク 5.2c で新設）'
     'collection_method_args_error'   = 'py: 可変長引数の要素型検査が無い（型が混ざったまま実行してしまう・タスク 5.2c で新設）'
     'new_type_ctor_arg'              = 'py: new_type の連鎖（Kg: Meters: float）が未実装で Kg(None) になる・タスク 5.6 で新設'
+    'runtime_type_predicates'        = 'py: 実行時型判定の統一（uint と int の相互許容）が未実装で x is int が False になる・タスク 6.1 で新設'
     'overload_arg_types'             = 'py: オーバーロードの実行時ディスパッチが型を見ない（最初の定義を呼ぶので > int:hi になる）・タスク 5.7 で新設'
     'overload_arg_types_error'       = 'py: オーバーロードの実引数型による解決が無い（黙って実行してしまう・タスク 5.7 で新設）'
     'new_type_ctor_arg_error'        = 'py: new_type のコンストラクタ引数の型検査が無い（黙って str を包んで実行してしまう・タスク 5.6 で新設）'
