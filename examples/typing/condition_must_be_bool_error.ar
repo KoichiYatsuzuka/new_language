@@ -1,0 +1,17 @@
+# condition_must_be_bool_error.ar — `if` の条件に `int` は書けない（D-12・タスク 5.5）
+#
+# 正常系は condition_must_be_bool.ar
+#
+# ⚠ 以前は真偽性で解釈されて**黙って通っていた**（検体 `K1` / `K2`）。
+#   `if a:` は `a != 0` の意味になり、`if some_func:` のような
+#   「**常に真**」の書き間違い（`()` の付け忘れ）も検出できなかった。
+#
+# 直し方: `if a != 0:` と書く。
+#
+# 期待されるエラー:
+#   StaticTypeError  the condition of 'if' must be 'bool', got 'int'
+
+let a: int = 1
+
+if a:                                   # ⛔ int は条件に書けない
+    print("yes")

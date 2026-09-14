@@ -83,13 +83,20 @@ class Bag:
 let bag = Bag([1, 2, 3])
 print(len(bag))      # 3
 
+# ⚠⚠ **条件は `bool` でなければならない**（決定 D-12・タスク 5.5）。Arrow は真偽性を
+#   使わないので `if empty:` とは書けず、`__bool__()` を**明示的に呼ぶ**。
+#   設計書は移行対象としてこの 1 箇所を名指ししていた。
+# ⚠ `__bool__` が死ぬわけではない。`not` / `and` / `or` は今も `__bool__` を経由する
+#   （下の `not empty` がその実演）。
 let empty = Bag([])
-if empty:
+if empty.__bool__():
     print("not empty")
 else:
     print("empty")   # empty
 
-if bag:
+print(not empty)     # True    ← not は __bool__ を呼ぶ
+
+if bag.__bool__():
     print("has items") # has items
 
 # ── 4. __next__ (イテレータプロトコル) ───────────────────────────────────────

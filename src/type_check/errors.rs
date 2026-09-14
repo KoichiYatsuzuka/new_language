@@ -327,6 +327,16 @@ pub enum TypeErrorKind {
         subject: InferredType,
         pattern: InferredType,
     },
+    /// `if` / `while` の条件が `bool` でない（決定 D-12・タスク 5.5）。
+    ///
+    /// ⚠⚠ Arrow は**真偽性を使わない**。`if 0:` / `if xs:` / `if some_func:` はすべて
+    /// 静的エラーで、`if n != 0:` / `if len(xs) > 0:` / `if some_func():` と書く。
+    /// 実利は「**常に真になる条件の書き間違い**」（`()` を忘れた `if some_func:` など）を
+    /// 静的に捕まえられること。
+    ///
+    /// ⚠ 実行時の `is_truthy` は**撤去していない**。`not` / `and` / `or` の評価と、
+    /// ネイティブ ABI の関数表 export（C ABI なので削除・改名すると FFI が壊れる）で要る。
+    ConditionNotBool { keyword: String, got: InferredType },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -699,6 +709,10 @@ impl StaticTypeError {
             TypeErrorKind::CasePatternNeverMatches { subject, pattern } => format!(
                 "case pattern of type {} can never match a subject of type {}; the branch is dead",
                 hl_q(&pattern.to_string()), hl_q(&subject.to_string())
+            ),
+            TypeErrorKind::ConditionNotBool { keyword, got } => format!(
+                "the condition of {} must be {}, got {}",
+                hl_q(keyword), hl_q("bool"), hl_q(&got.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

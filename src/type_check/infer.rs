@@ -17,23 +17,16 @@ impl TypeChecker {
         let _ = self.infer(expr);
     }
 
-    /// 部分木を歩くが、**この地点には型義務があり未実装**（タスク 3.1）。
-    ///
-    /// `task` に実装タスク番号を書く。`walk` と分けてあるのは
-    /// **「義務が無い」と「義務を忘れている」を取り違えないため**で、
-    /// `grep walk_obligation_pending` で未実装の義務地点を数え上げられる。
-    /// ⚠ 外側の網は `scripts/type_obligations.ps1`（114 件の検体）。
-    /// こちらはコード側の記録で、2 つは独立した網。
-    #[inline]
-    pub(super) fn walk_obligation_pending(&mut self, expr: &Expr, _task: &'static str) {
-        let _ = self.infer(expr);
-    }
-
     /// 式の型を推論して [`InferredType`] を返す。副作用として型エラーを収集する場合がある。
     ///
-    /// ⚠⚠ **`#[must_use]`**（タスク 3.1）。結果を捨てたいときは [`Self::walk`] か
-    /// [`Self::walk_obligation_pending`] を使うこと。直接 `self.infer(e);` と書くと
-    /// 警告になる ＝ 「義務を忘れた」のか「歩くだけ」なのかを宣言させる仕掛け。
+    /// ⚠⚠ **`#[must_use]`**（タスク 3.1）。結果を捨てたいときは [`Self::walk`] を
+    /// 使うこと。直接 `self.infer(e);` と書くと警告になる ＝ 「義務を忘れた」のか
+    /// 「歩くだけ」なのかを宣言させる仕掛け。
+    ///
+    /// ⚠ タスク 3.1 では「義務があるが未実装」を表す 2 つ目のラッパも置いていたが、
+    /// **フェーズ 5 で印を付けた地点をすべて実装し終えた**ので撤去した
+    /// （残っていると「義務が無い」と区別できない死んだ足場になる）。
+    /// 外側の網は `scripts/type_obligations.ps1`（114 件の検体）が引き続き担う。
     #[must_use]
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
@@ -330,7 +323,7 @@ impl TypeChecker {
                 self.with_block_expr(ann, |c| {
                     for (cond, body) in branches {
                         // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
-                        c.walk_obligation_pending(cond, "5.5 条件は bool");
+                        c.check_condition_is_bool(cond, "if");
                         c.push_scope();
                         c.check_stmts(body);
                         c.pop_scope();
@@ -383,7 +376,7 @@ impl TypeChecker {
                 return_type,
             } => {
                 // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
-                self.walk_obligation_pending(cond, "5.5 条件は bool");
+                self.check_condition_is_bool(cond, "while");
                 let ann = Self::ann_or_none(return_type);
                 self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();

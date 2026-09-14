@@ -804,7 +804,7 @@ silent な穴ではない。塞ぐ対象ではないので取り下げる。
 |---|---|
 | `infer` に `#[must_use]` | 結果を黙って捨てられないようにする |
 | `walk(e)` | 「**この地点に型義務は無い**」と宣言して歩く |
-| `walk_obligation_pending(e, task)` | 「**義務はあるが未実装**」と宣言して歩く。`task` に実装タスク番号を書く |
+| ~~`walk_obligation_pending(e, task)`~~ | 「**義務はあるが未実装**」と宣言して歩く。`task` に実装タスク番号を書く。⇒ **タスク 5.5 で撤去した**（印を付けた地点をすべて実装し終えたため。残すと「義務が無い」と区別できない死んだ足場になる） |
 
 ⚠ `walk` 1 つでは不十分。「義務が無い」と「義務を忘れている」を**同じ書き方にすると
 再び区別が付かなくなる**ので 2 つに分けた。`walk_obligation_pending` は
@@ -1257,7 +1257,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | ~~5.2d~~ | ~~trait フィールド代入の静的化~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2d の記録」。`F3` → **STATIC**。⇒ **5.2 完了** |
 | ~~**5.3**~~ | ~~`static mut` クラス変数への代入を検査~~ → **✅ 完了 2026-09-14** | D-1 | 3.2・1.2 | 下記「5.3 の記録」。`F4` → **STATIC** |
 | ~~**5.4**~~ | ~~`match` の `case` パターン型を subject と照合~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.4 の記録」。`X5` → **STATIC** |
-| **5.5** | `if` / `while` の条件を `bool` 厳密に | D-12 | **2.5** | `K1` `K2`。移行は例題 1 箇所。⚠ `is_truthy` は**撤去しない** |
+| ~~**5.5**~~ | ~~`if` / `while` の条件を `bool` 厳密に~~ → **✅ 完了 2026-09-14** | D-12 | **2.5** | 下記「5.5 の記録」。`K1` `K2` → **STATIC**。移行は予測どおり例題 1 箇所 |
 | **5.6** | `new_type` のコンストラクタ引数を検査 | D-1 | 3.2 | `T3` |
 | **5.7** | オーバーロード解決を実引数型で行う | D-1 | 3.2 | `C12` |
 
@@ -1710,6 +1710,68 @@ field 'item' of class 'Holder' is declared 'T' but got 'int'
 | `compare_wasm_frontend.ps1` | **294/294 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/match_case_pattern_type{,_error}.ar`
+
+#### 5.5 の記録 【✅ 完了 2026-09-14】
+
+##### 移行コストは**予測どおり例題 1 箇所**だった
+
+起票時に「条件に裸の識別子を使う箇所は 33 あるが、非 bool は
+`examples/classes/operator_overload.ar:87` の `if empty:` だけ」と実測していた。
+実際に入れて `scan_examples` が落ちたのも**その 1 箇所だけ**。
+
+⚠ `Bag` は `__bool__` を定義しているので「常に真」ではない。それでも D-12 の決定
+（「bool 値のみ許可」）に従って `if empty.__bool__():` へ移行した。
+**`__bool__` が死ぬわけではない**（`not` / `and` / `or` は今も `eval_truthy` 経由で
+`__bool__` を呼ぶ）ので、例題にその実演（`print(not empty)`）を足した。
+
+##### ⚠⚠ 偽陽性を通じて **join の写しが 3 つある**ことが判った
+
+`examples/apps/spider_render.ar`（import が解決しない単体解析）で
+
+```
+the condition of 'if' must be 'bool', got 'Union[bool, unknown]'
+```
+
+が出た。`Union[bool, unknown]` ＝「**半分だけ判っている**」型で、こんなものを作る
+join が 2 箇所あった:
+
+| 場所 | `Unresolved` の扱い |
+|---|---|
+| `join_elem_types`（コレクションリテラル） | **潰す**（どれかが `Unresolved` なら全体が `Unresolved`）✅ |
+| `join2`（連結演算） | 潰さない ⛔ |
+| `infer_binop_result` の `And` / `Or` | **`join2` を呼ばず同じ規則を直書き**していた ⛔ |
+
+⇒ `And` / `Or` を `join2` へ寄せ、`join2` に `Unresolved` を潰す規則を入れて 3 つを 1 つにした。
+判らない側が混ざったら**全体が判らない**、が 3 箇所で同じになった。
+
+⚠ この偽陽性は `scan_examples` では見つからない（`spider_render.ar` は import 専用モジュールで
+単体実行されない）。**`compare_wasm_frontend` が拾った** — エディタ側が
+「arrow.exe には無い診断」を出したことで表に出た形。ゲートを全部回す意味がここにあった。
+
+##### 足場の撤去
+
+タスク 3.1 で置いた `walk_obligation_pending`（「義務はあるが未実装」と宣言して歩く
+ラッパ）は、**印を付けた地点をすべて実装し終えた**ので撤去した。
+残すと「義務が無い」と区別できない死んだ足場になる。`#[must_use] infer` と `walk` は残る。
+
+##### 結果
+
+**検体**: `K1` `K2` が `NONE` → **`STATIC`**。静的検査の割合 81% → **82%**（94/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（295 例題） |
+| `compare_python_impl.ps1` | 88/88 identical・stale 0 |
+| `compare_outputs.ps1 -A 8dc4139` | 225/226。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **296/296 agreed・INVENTED 0**（偽陽性を見つけたのがこれ） |
+
+**追加した例題**: `examples/typing/condition_must_be_bool{,_error}.ar`
+**移行した例題**: `examples/classes/operator_overload.ar`（`if empty:` → `if empty.__bool__():`）
 
 ### フェーズ 6 — 実行時との一本化
 

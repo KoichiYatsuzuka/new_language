@@ -153,7 +153,7 @@ impl TypeChecker {
             Stmt::Match { subject, arms, .. } => self.check_match(subject, arms),
             Stmt::While { cond, body } => {
                 // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
-                self.walk_obligation_pending(cond, "5.5 条件は bool");
+                self.check_condition_is_bool(cond, "while");
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
@@ -678,6 +678,43 @@ impl TypeChecker {
         }
     }
 
+    /// `if` / `while` の条件が `bool` かを検査する（決定 D-12・タスク 5.5・検体 `K1` / `K2`）。
+    ///
+    /// ## Arrow は真偽性を使わない
+    ///
+    /// | 書き方 | 真偽性（旧） | **`bool` 厳密（決定）** |
+    /// |---|---|---|
+    /// | `if 0:` | 書けた（偽） | **静的エラー** → `if n != 0:` |
+    /// | `if xs:`（リスト） | 書けた（空なら偽） | **静的エラー** → `if len(xs) > 0:` |
+    /// | `if some_func:` | 書けた（**常に真**） | **静的エラー** |
+    ///
+    /// 実利は「**常に真になる条件の書き間違い**」（`()` を忘れた `if some_func:` など）を
+    /// 静的に捕まえられること。
+    ///
+    /// ⚠⚠ **`is_truthy` は撤去していない。** `not` / `and` / `or` の評価と、ネイティブ ABI の
+    /// 関数表 export（C ABI なので削除・改名すると FFI が壊れる）で要る。D-12 は
+    /// 「条件位置に静的検査を足す」ことであって実行時の真偽性の撤去ではない。
+    ///
+    /// ⚠ 前提はタスク 2.5（D-10）。`and` / `or` が結果型を**被演算子の join** にしたので
+    /// `if a and b:`（非 bool）がここで落ちる。結果型が `Bool` 固定のままなら通ってしまう。
+    pub(crate) fn check_condition_is_bool(&mut self, cond: &Expr, keyword: &'static str) {
+        let ty = self.infer(cond);
+        // ⚠ 本当に判らない型だけ見送る。クラスや数値は**弾く対象**（常に真になる書き間違い）。
+        if matches!(ty, InferredType::Unresolved | InferredType::Any | InferredType::Never) {
+            return;
+        }
+        if matches!(ty, InferredType::Bool) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::ConditionNotBool {
+                keyword: keyword.to_string(),
+                got: ty,
+            },
+            span: None,
+        });
+    }
+
     /// `case` パターンが subject と**一致しうるか**を検査する（タスク 5.4・検体 `X5`）。
     ///
     /// ## これは「型の不一致」ではなく「**腕が死ぬ**」という指摘
@@ -755,7 +792,7 @@ impl TypeChecker {
             let (narrowed, error_info) = self.narrow_by_type_guard(guard_opt);
 
             // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
-            self.walk_obligation_pending(cond, "5.5 条件は bool");
+            self.check_condition_is_bool(cond, "if");
 
             if let Some((var_name, var_type, span)) = error_info {
                 self.report_error(StaticTypeError {

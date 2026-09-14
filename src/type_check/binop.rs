@@ -154,9 +154,20 @@ impl TypeChecker {
         )
     }
 
-    /// 2 つの型の join（同じならその型・違えば `Union`）。連結演算の要素型合成に使う。
-    /// ⚠ `join_elem_types`（コレクションリテラル用）と同じ規則を 2 項に限った形。
+    /// 2 つの型の join（同じならその型・違えば `Union`）。連結演算と `and` / `or`（D-10）の
+    /// 結果型に使う。
+    ///
+    /// ⚠⚠ **片方が `Unresolved` なら結果も `Unresolved`。** `join_elem_types`
+    /// （コレクションリテラル用）はそう書いてあったのに、ここだけ `Union[bool, unknown]`
+    /// のような**「半分だけ判っている」型**を作っていた。タスク 5.5 で条件を `bool` 厳密に
+    /// したときに、`examples/apps/spider_render.ar`（import が解決しない単体解析）で
+    /// `the condition of 'if' must be 'bool', got 'Union[bool, unknown]'` という
+    /// **偽陽性**として表に出た。
+    /// ⇒ 判らない側が混ざったら**全体が判らない**。2 つの join を同じ規則に揃える。
     fn join2(a: &InferredType, b: &InferredType) -> InferredType {
+        if matches!(a, InferredType::Unresolved) || matches!(b, InferredType::Unresolved) {
+            return InferredType::Unresolved;
+        }
         if a == b {
             a.clone()
         } else {
@@ -361,13 +372,14 @@ impl TypeChecker {
             // ⚠ `Any` / `Union` の被演算子はこの関数の冒頭で `Unresolved` に落ちている
             //    （`check_binop` が `OperationOnAny` / `OperationOnUnion` を報告済み）ので、
             //    ここで `Union` が入れ子になることはない。
-            BinOp::And | BinOp::Or => {
-                if lt == rt {
-                    lt.clone()
-                } else {
-                    Union(vec![lt.clone(), rt.clone()])
-                }
-            }
+            // ⚠⚠ **join は `join2` に寄せる**（タスク 5.5）。ここには同じ規則の
+            //    **3 つ目の写し**が書いてあり、`Unresolved` を潰さないまま
+            //    `Union[bool, unknown]` を作っていた。タスク 5.5 で条件を `bool` 厳密に
+            //    したときに `examples/apps/spider_render.ar`（import が解決しない単体解析）で
+            //    **偽陽性**として表に出た。
+            // ⚠ `Unresolved` を返しても `check_arith` の対象外（`check_binop` の
+            //   `And`/`Or` は `_ => {}` に落ちる）なので、可否の誤判定にはならない。
+            BinOp::And | BinOp::Or => Self::join2(lt, rt),
             // ── 算術・ビット演算（タスク 4.4 で**実測に合わせて正確にした**）────────
             //
             // ⚠⚠ **ここは「結果型」と同時に「可否」も決める**（決定 D-9）。`Unresolved` を

@@ -1,0 +1,103 @@
+# condition_must_be_bool.ar — `if` / `while` の条件は `bool` 値のみ（決定 D-12・タスク 5.5）
+#
+# ## Arrow は真偽性を使わない
+#
+# | 書き方 | 真偽性（旧） | **`bool` 厳密（決定）** |
+# |---|---|---|
+# | `if 0:` | 書けた（偽） | **静的エラー** → `if n != 0:` |
+# | `if xs:`（リスト） | 書けた（空なら偽） | **静的エラー** → `if len(xs) > 0:` |
+# | `if some_func:` | 書けた（**常に真**） | **静的エラー** |
+#
+# 実利は「**常に真になる条件の書き間違い**」を静的に捕まえられること
+# （`()` を忘れた `if some_func:` がいちばん多い形）。
+#
+# ## ⚠⚠ 実行時の真偽性は撤去していない
+#
+# `is_truthy` は次で今も要る:
+#
+# | 用途 | 場所 |
+# |---|---|
+# | `not` / `and` / `or` の評価 | `interpreter/ops/operators.rs` |
+# | **ネイティブ ABI の関数表 export** | `native_api/` ・ `cpp_bridge/` ・ `partial_compiler/` |
+#
+# 関数表は C ABI なので削除・改名すると FFI が壊れる。D-12 は
+# 「**条件位置に静的検査を足す**」ことであって真偽性の撤去ではない。
+#
+# ## 前提はタスク 2.5（D-10）
+#
+# `and` / `or` が結果型を**被演算子の join** にしたので `if a and b:`（非 bool）が
+# ここで落ちる。結果型が `Bool` 固定のままなら通ってしまっていた。
+#
+# 弾かれる例は condition_must_be_bool_error.ar
+
+print("=== bool 値 ===")
+
+let flag: bool = True
+if flag:
+    print("flag")                       # flag
+
+mut running: bool = True
+mut i: int = 0
+while running:
+    i += 1
+    if i >= 3:
+        running = False
+print(i)                                # 3
+
+print("=== 比較で bool にする ===")
+
+let n: int = 0
+if n != 0:
+    print("nonzero")
+else:
+    print("zero")                       # zero
+
+let xs: list[int] = []
+if len(xs) > 0:
+    print("has items")
+else:
+    print("empty")                      # empty
+
+print("=== and / or は被演算子の join を返す（D-10） ===")
+
+let a: bool = True
+let b: bool = False
+if a and b:
+    print("both")
+else:
+    print("not both")                   # not both
+
+if a or b:
+    print("either")                     # either
+
+print("=== not は bool を返す ===")
+
+if not b:
+    print("not b")                      # not b
+
+print("=== __bool__ を持つクラスは明示的に呼ぶ ===")
+
+# ⚠ `__bool__` が死ぬわけではない。`not` / `and` / `or` は今も `__bool__` を経由する。
+class Bag:
+    mut items: list[int]
+
+    fn __bool__(self) -> bool:
+        return len(self.items) > 0
+
+let empty = Bag([])
+if empty.__bool__():
+    print("not empty")
+else:
+    print("empty")                      # empty
+
+print(not empty)                        # True   ← not は __bool__ を呼ぶ
+
+print("=== if 式・while 式の条件も同じ ===")
+
+let r = if flag ->str:
+    block_return "yes"
+else:
+    block_return "no"
+print(r)                                # yes
+
+print("done")
