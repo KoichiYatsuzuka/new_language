@@ -442,6 +442,13 @@ impl TypeChecker {
             }
             return None;
         }
+        // ⚠ 個数で 1 本に絞れないときは**実引数の型**で絞る（タスク 5.7・検体 `C12`）。
+        let count_matching = self.narrow_overloads_by_arg_types(
+            &format!("{cls_name}.{method_name}"),
+            count_matching,
+            arg_data,
+            !is_static,
+        );
         if count_matching.len() != 1 {
             return None;
         }
@@ -589,7 +596,10 @@ impl TypeChecker {
             }
             return;
         }
-        if count_matching.len() > 1 {
+        // ⚠ 個数で 1 本に絞れないときは**実引数の型**で絞る（タスク 5.7・検体 `C12`）。
+        let count_matching =
+            self.narrow_overloads_by_arg_types(fname, count_matching, arg_data, false);
+        if count_matching.len() != 1 {
             return;
         }
 
@@ -902,6 +912,93 @@ impl TypeChecker {
             Site::LetParam
         };
         self.types_compatible(arg_ty, expected, site)
+    }
+
+    /// オーバーロード候補を**実引数の型**で絞り込む（タスク 5.7・検体 `C12`）。
+    ///
+    /// ## 何が壊れていたか
+    ///
+    /// 絞り込みは**引数の個数だけ**で行われ、個数の合う候補が 2 つ以上あると
+    /// `count_matching.len() != 1` で**検査を丸ごと諦めて**いた。
+    /// ⇒ `fn m(v: int)` と `fn m(v: str)` の 2 本があるクラスで `c.m(1.5)` が**素通り**
+    /// （実測: `1.5` を出す）。**オーバーロードを書いた瞬間に型検査が消える**形だった。
+    ///
+    /// ## 絞り込みの規則
+    ///
+    /// | 残った候補 | 動作 |
+    /// |---|---|
+    /// | ちょうど 1 つ | それを使う（以降の引数検査が普通に走る） |
+    /// | 0 個 | [`TypeErrorKind::NoOverloadForArgTypes`] を報告 |
+    /// | 2 つ以上 | **絞り込まない**（どれを選んでも嘘になりうる） |
+    ///
+    /// ⚠ 安全側に倒す条件（いずれかに当たれば絞り込まない）:
+    /// - キーワード引数・可変長引数が混ざっている（並びが 1 対 1 でない）
+    /// - 候補に可変長パラメータを持つものがある
+    /// - 実引数に判定材料の無い型（`Unresolved` / `Any`）がある
+    ///
+    /// `implicit_self` はメソッドのとき `true`（`params[0]` が `self` なので 1 つずらす）。
+    fn narrow_overloads_by_arg_types(
+        &mut self,
+        func_name: &str,
+        candidates: Vec<FnSig>,
+        arg_data: &[(Option<String>, InferredType)],
+        implicit_self: bool,
+    ) -> Vec<FnSig> {
+        if candidates.len() < 2 {
+            return candidates;
+        }
+        // すべて位置引数でなければ並びが 1 対 1 に対応しない。
+        if arg_data.iter().any(|(k, _)| k.is_some()) {
+            return candidates;
+        }
+        if candidates.iter().any(|s| s.variadic_type.is_some()) {
+            return candidates;
+        }
+        let arg_types: Vec<InferredType> = arg_data.iter().map(|(_, t)| t.clone()).collect();
+        // ⚠ 判定材料の無い実引数が 1 つでもあれば絞り込まない（どの候補も通りうる）。
+        if arg_types
+            .iter()
+            .any(|t| matches!(t, InferredType::Unresolved | InferredType::Any))
+        {
+            return candidates;
+        }
+        let offset = usize::from(implicit_self);
+        let accepted: Vec<FnSig> = candidates
+            .iter()
+            .filter(|sig| {
+                arg_types.iter().enumerate().all(|(i, arg_ty)| {
+                    match sig.params.get(i + offset).and_then(|(_, t)| t.as_ref()) {
+                        // 注釈の無いパラメータは何でも受ける。
+                        None => true,
+                        Some(expected)
+                            if matches!(
+                                expected,
+                                InferredType::Unresolved | InferredType::Any
+                            ) =>
+                        {
+                            true
+                        }
+                        Some(expected) => self.param_type_matches(sig, i + offset, arg_ty, expected),
+                    }
+                })
+            })
+            .cloned()
+            .collect();
+        match accepted.len() {
+            1 => accepted,
+            0 => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NoOverloadForArgTypes {
+                        func_name: func_name.to_string(),
+                        got: arg_types,
+                    },
+                    span: None,
+                });
+                Vec::new()
+            }
+            // 曖昧: どれを選んでも嘘になりうるので絞り込まない。
+            _ => candidates,
+        }
     }
 
     /// `new_type` のコンストラクタ引数を**基底型**と照合する（タスク 5.6・検体 `T3`）。

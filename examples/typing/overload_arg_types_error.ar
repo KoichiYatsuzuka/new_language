@@ -1,0 +1,28 @@
+# overload_arg_types_error.ar — どのオーバーロードも受け付けない実引数（タスク 5.7）
+#
+# 正常系は overload_arg_types.ar
+#
+# `m` は `int` 版と `str` 版の 2 本。`1.5`（`float`）はどちらでもない。
+#
+# ⚠⚠ 以前は**引数の個数だけ**で絞り込んでおり、個数の合う候補が 2 つ以上あると
+# 検査を丸ごと諦めていた。⇒ この呼び出しは**素通りして `1.5` を出していた**（検体 `C12`）。
+# オーバーロードを書いた瞬間にその呼び出しの型検査が消える、という形の穴だった。
+#
+# ⚠ 暗黙の `int` → `float` はタスク 4.2 で廃止済みなので、`float` が `int` 版に
+#   吸われることもない。
+#
+# 期待されるエラー:
+#   StaticTypeError  no overload of 'C.m' accepts argument types ('float')
+
+class C:
+    mut d: int
+
+    fn m(self, let v: int) -> int:
+        return v
+
+    fn m(self, let v: str) -> int:
+        return 0
+
+mut c = C(1)
+
+print(c.m(1.5))                     # ⛔ int 版でも str 版でもない

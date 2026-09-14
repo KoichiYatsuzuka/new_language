@@ -337,6 +337,15 @@ pub enum TypeErrorKind {
     /// ⚠ 実行時の `is_truthy` は**撤去していない**。`not` / `and` / `or` の評価と、
     /// ネイティブ ABI の関数表 export（C ABI なので削除・改名すると FFI が壊れる）で要る。
     ConditionNotBool { keyword: String, got: InferredType },
+    /// オーバーロードのどれも**実引数の型**を受け付けない（タスク 5.7）。
+    ///
+    /// ⚠⚠ [`TypeErrorKind::NoMatchingOverload`] は**個数**だけを見る。個数が合う候補が
+    /// 2 つ以上あると、以前はそこで検査を**丸ごと諦めて**いた（`count_matching.len() != 1`
+    /// で `return`）。⇒ 個数さえ合えばどんな型でも通る穴になっていた（検体 `C12`）。
+    NoOverloadForArgTypes {
+        func_name: String,
+        got: Vec<InferredType>,
+    },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -714,6 +723,13 @@ impl StaticTypeError {
                 "the condition of {} must be {}, got {}",
                 hl_q(keyword), hl_q("bool"), hl_q(&got.to_string())
             ),
+            TypeErrorKind::NoOverloadForArgTypes { func_name, got } => {
+                let list = got.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ");
+                format!(
+                    "no overload of {} accepts argument types ({})",
+                    hl_q(func_name), hl_q(&list)
+                )
+            }
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(
                 "unknown type {} in type guard; the branch can never match",
