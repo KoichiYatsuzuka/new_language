@@ -649,7 +649,7 @@ impl TypeChecker {
     ///
     /// ⇒ 腕の処理を 1 箇所に集約し、文・式の両方から呼ぶ。**別々に書くと再びずれる。**
     pub(crate) fn check_match_arms(&mut self, subject: &Expr, arms: &[MatchArm]) {
-        let _subject_ty = self.infer(subject);
+        let subject_ty = self.infer(subject);
         // 絞り込めるのは対象が**単なる識別子**のときだけ（再 `declare` で実装しているため）。
         let subject_name: Option<String> = if let Expr::Ident { name: n, .. } = subject {
             Some(n.clone())
@@ -660,8 +660,9 @@ impl TypeChecker {
             self.push_scope();
             match &arm.pattern {
                 MatchPattern::Case(expr) => {
-                    // ⚠ パターンの型は subject の型と一致しなければならない（検体 X5）。
-                    self.walk_obligation_pending(expr, "5.4 case パターン型 vs subject");
+                    // ⚠ パターンの型が subject と決して一致しない＝**腕が死ぬ**（タスク 5.4・検体 X5）。
+                    let pat_ty = self.infer(expr);
+                    self.check_case_pattern_type(&subject_ty, &pat_ty);
                 }
                 MatchPattern::IsType(type_name) => {
                     self.check_guard_type_exists(type_name);
@@ -675,6 +676,72 @@ impl TypeChecker {
             self.check_stmts(&arm.body);
             self.pop_scope();
         }
+    }
+
+    /// `case` パターンが subject と**一致しうるか**を検査する（タスク 5.4・検体 `X5`）。
+    ///
+    /// ## これは「型の不一致」ではなく「**腕が死ぬ**」という指摘
+    ///
+    /// ⚠⚠ タスク 4.4 で `==` の異型比較を厳密化しようとして**撤回した**のを混同しないこと。
+    /// `1 == "a"` が `False` を返すのは**仕様**（意味のある答えがある）。一方
+    /// `match (a: int): case "s":` は**到達できない分岐**で、`UnknownGuardType`（3.4）と
+    /// 同じ「書いた本人の意図と結果が食い違う」系統。
+    ///
+    /// ## 判定は `==` と同じ規則に合わせる（実測）
+    ///
+    /// | subject | pattern | 実行時 |
+    /// |---|---|---|
+    /// | `int` | `1.0` | **一致する**（`uint → int → float` の昇格ラティス） |
+    /// | `float` | `1` | **一致する** |
+    /// | `int` | `True` | 一致しない（`bool` はラティスの対象外） |
+    /// | `str` | `"x"` | 一致する |
+    ///
+    /// ⚠ クラス（`__eq__` を定義できる）・enum・`Union`・`Any`・`Unresolved` は
+    /// **素通し**。判定材料が無いものを弾くと偽陽性になる。
+    fn check_case_pattern_type(&mut self, subject_ty: &InferredType, pat_ty: &InferredType) {
+        use InferredType as T;
+        let opaque = |t: &T| {
+            matches!(
+                t,
+                T::Unresolved
+                    | T::Any
+                    | T::Never
+                    | T::NamedInstance(_)
+                    | T::GenericInstance { .. }
+                    | T::SelfType
+                    | T::Protocol(_)
+                    | T::Union(_)
+                    | T::Intersection(_)
+                    | T::Result(_, _)
+                    | T::Namespace(_)
+                    | T::PyNamespace(_)
+                    | T::TypeVal
+                    | T::TypeValOf(_)
+            )
+        };
+        if opaque(subject_ty) || opaque(pat_ty) {
+            return;
+        }
+        // ⚠ 数値は昇格ラティスで比較されるので相互に一致しうる（`bool` は含めない）。
+        let numeric = |t: &T| matches!(t, T::Int | T::Float | T::Complex);
+        if numeric(subject_ty) && numeric(pat_ty) {
+            return;
+        }
+        // ⚠ 記憶域ではないので `Site::Other`（`__cast__` は挿入されない）。
+        //    どちらの向きでも通れば一致しうるとみなす（`list[⊥]` のような下界を通すため）。
+        let site = crate::type_check::type_utils::Site::Other;
+        if self.types_compatible(pat_ty, subject_ty, site)
+            || self.types_compatible(subject_ty, pat_ty, site)
+        {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::CasePatternNeverMatches {
+                subject: subject_ty.clone(),
+                pattern: pat_ty.clone(),
+            },
+            span: None,
+        });
     }
 
     /// `if` / `elif` / `else` を型検査する。各分岐の条件が型ガード

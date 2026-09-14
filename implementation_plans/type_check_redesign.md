@@ -1256,7 +1256,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | ~~5.2c~~ | ~~組み込みメソッド引数・可変長要素~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2c の記録」。`L14` `C15` が**両方 STATIC** |
 | ~~5.2d~~ | ~~trait フィールド代入の静的化~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2d の記録」。`F3` → **STATIC**。⇒ **5.2 完了** |
 | ~~**5.3**~~ | ~~`static mut` クラス変数への代入を検査~~ → **✅ 完了 2026-09-14** | D-1 | 3.2・1.2 | 下記「5.3 の記録」。`F4` → **STATIC** |
-| **5.4** | `match` の `case` パターン型を subject と照合 | D-1 | 3.2 | `X5` |
+| ~~**5.4**~~ | ~~`match` の `case` パターン型を subject と照合~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.4 の記録」。`X5` → **STATIC** |
 | **5.5** | `if` / `while` の条件を `bool` 厳密に | D-12 | **2.5** | `K1` `K2`。移行は例題 1 箇所。⚠ `is_truthy` は**撤去しない** |
 | **5.6** | `new_type` のコンストラクタ引数を検査 | D-1 | 3.2 | `T3` |
 | **5.7** | オーバーロード解決を実引数型で行う | D-1 | 3.2 | `C12` |
@@ -1661,6 +1661,55 @@ field 'item' of class 'Holder' is declared 'T' but got 'int'
 | `compare_wasm_frontend.ps1` | **292/292 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/classes/static_mut_class_assign{,_error}.ar`
+
+#### 5.4 の記録 【✅ 完了 2026-09-14】
+
+##### ⚠⚠ これは 4.4 で**撤回した** `==` の厳密化とは別物
+
+一見すると「4.4 で `1 == "a"` を弾くのをやめたのに、`case "s"` は弾くのか」と
+矛盾して見えるので、理由を残す:
+
+| | `a == "s"` | `match a: case "s":` |
+|---|---|---|
+| 結果 | `False` — **意味のある答え** | この腕に**決して入らない** |
+| 書いた人の意図 | 「違うなら偽でいい」 | 「この場合を処理したい」 |
+| 分類 | **仕様**（B2-b が固定） | **腕が死ぬ**（3.4 の `UnknownGuardType` と同系統） |
+
+⇒ 弾くのは後者だけ。`==` の検査は入れていない。
+
+##### 判定は `==` と**同じ規則**に合わせた（実測してから書いた）
+
+| subject | pattern | 実行時 |
+|---|---|---|
+| `int` | `1.0` | **一致する**（`uint → int → float` の昇格ラティス） |
+| `float` | `1` | **一致する** |
+| `int` | `True` | 一致しない（`bool` はラティスの対象外） |
+| `str` | `"x"` | 一致する |
+| enum | enum メンバー | 一致する |
+| `list[int]` | `[1, 2]` | 一致する |
+
+⚠ 「静的検査だけ `==` より厳しい」状態を作ってはいけない。`case 1.0` を弾いていたら
+**実行時には一致する腕を殺す**ことになる。
+
+⚠ クラス（`__eq__` を定義できる）・enum・`Union`・`Any`・`Unresolved` は**素通し**。
+
+##### 結果
+
+**検体**: `X5` が `NONE` → **`STATIC`**。静的検査の割合 80% → **81%**（92/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（293 例題） |
+| `compare_python_impl.ps1` | 87/87 identical・stale 0 |
+| `compare_outputs.ps1 -A 2a91c2b` | 223/224。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **294/294 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/match_case_pattern_type{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 

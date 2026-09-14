@@ -1,0 +1,102 @@
+# match_case_pattern_type.ar — 死ぬ `case` 腕を静的に弾く（タスク 5.4）
+#
+# ## これは「型の不一致」ではなく「腕が死ぬ」という指摘
+#
+# ⚠⚠ タスク 4.4 で `==` の異型比較を厳密化しようとして**撤回した**のと混同しないこと。
+# `1 == "a"` が `False` を返すのは**仕様**（意味のある答えがある）。一方
+#
+#     match (a: int):
+#         case "s":       # ← この腕には決して入らない
+#
+# は**到達できない分岐**で、`UnknownGuardType`（タスク 3.4）と同じ
+# 「書いた本人の意図と結果が食い違う」系統。以前は無検査で、黙って `miss` になっていた。
+#
+# ## 判定は `==` と同じ規則（実測して合わせた）
+#
+# | subject | pattern | 実行時 |
+# |---|---|---|
+# | `int` | `1.0` | **一致する**（`uint → int → float` の昇格ラティス） |
+# | `float` | `1` | **一致する** |
+# | `int` | `True` | 一致しない（`bool` はラティスの対象外） |
+#
+# ⚠ クラス（`__eq__` を定義できる）・enum・`Union`・`Any` は**素通し**。
+#   判定材料が無いものを弾くと偽陽性になる。
+#
+# 弾かれる例は match_case_pattern_type_error.ar
+
+print("=== 同じ型 ===")
+
+let a: int = 2
+match a:
+    case 1:
+        print("one")
+    case 2:
+        print("two")                # two
+    case _:
+        print("other")
+
+print("=== 数値は昇格ラティスで一致しうる ===")
+
+let n: int = 1
+match n:
+    case 1.0:
+        print("int が float のパターンに一致した")     # ここに入る
+    case _:
+        print("miss")
+
+let f: float = 2.0
+match f:
+    case 2:
+        print("float が int のパターンに一致した")     # ここに入る
+    case _:
+        print("miss")
+
+print("=== コレクション ===")
+
+let xs: list[int] = [1, 2]
+match xs:
+    case [1, 2]:
+        print("list hit")           # list hit
+    case _:
+        print("miss")
+
+print("=== enum は素通し ===")
+
+enum Color:
+    Red = 0
+    Green = 1
+
+let c: Color = Color.Green
+match c:
+    case Color.Red:
+        print("red")
+    case Color.Green:
+        print("green")              # green
+    case _:
+        print("other")
+
+print("=== クラスは __eq__ を定義できるので素通し ===")
+
+class Point:
+    mut x: int
+
+    fn __eq__(self, let other: Point) -> bool:
+        return self.x == other.x
+
+let p = Point(1)
+match p:
+    case Point(1):
+        print("point hit")          # point hit
+    case _:
+        print("miss")
+
+print("=== Any の subject は素通し ===")
+
+let v: Any = 1
+match v:
+    case "s":
+        print("str")
+    case _:
+        print("other")              # other
+
+print("done")

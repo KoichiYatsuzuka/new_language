@@ -1,0 +1,20 @@
+# match_case_pattern_type_error.ar — 決して一致しない `case` 腕（タスク 5.4）
+#
+# 正常系は match_case_pattern_type.ar
+#
+# subject は `int`、パターンは `str`。`bool` と同じくラティスの外なので
+# **この腕には決して入らない**。以前は無検査で、黙って `miss` になっていた（検体 `X5`）。
+#
+# ⚠ `1 == "s"` が `False` を返すのは仕様だが、`case` は**到達不能な分岐**になるので
+#   別扱いにする（`UnknownGuardType` と同じ系統）。
+#
+# 期待されるエラー:
+#   StaticTypeError  case pattern of type 'str' can never match a subject of type 'int'
+
+let a: int = 1
+
+match a:
+    case "s":                       # ⛔ 決して一致しない
+        print("hit")
+    case _:
+        print("miss")

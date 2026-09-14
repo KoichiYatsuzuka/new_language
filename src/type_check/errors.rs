@@ -315,6 +315,18 @@ pub enum TypeErrorKind {
     /// ⚠ 実測: `set` は `'set' object is not subscriptable` で**必ず**実行時エラーになる。
     /// 型検査側は `SetOf(T)` の添字に `T` を返していたので、**嘘の型**が下流へ流れていた。
     NotSubscriptable { container: InferredType },
+    /// `match` の `case` パターンが subject と**決して一致しない**型（タスク 5.4）。
+    ///
+    /// ⚠⚠ これは「型が違う」ではなく「**腕が永久に死ぬ**」という妥当性の指摘。
+    /// `UnknownGuardType` と同じ系統で、`==` の異型比較（`False` を返すのが**仕様**）とは
+    /// 別物: 比較は「偽」という意味のある答えを返すが、`case` は**到達不能な分岐**になる。
+    ///
+    /// ⚠ 判定は `==` と同じ昇格ラティス（`uint → int → float`・`bool` は対象外）に従う。
+    /// 実測: `match (a: int): case 1.0:` は**一致する**、`case True:` は一致しない。
+    CasePatternNeverMatches {
+        subject: InferredType,
+        pattern: InferredType,
+    },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -683,6 +695,10 @@ impl StaticTypeError {
             TypeErrorKind::NotSubscriptable { container } => format!(
                 "{} is not subscriptable",
                 hl_q(&container.to_string())
+            ),
+            TypeErrorKind::CasePatternNeverMatches { subject, pattern } => format!(
+                "case pattern of type {} can never match a subject of type {}; the branch is dead",
+                hl_q(&pattern.to_string()), hl_q(&subject.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(
