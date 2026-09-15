@@ -2636,12 +2636,32 @@ registry.member_set_is_closed(class_name) -> bool
 | **`list[int]` vs `list[float]`** | 容器は「値の同一性」層（型厳密）⇒ **Python では `True`** になるので誤解しやすい |
 | `int` vs `None` | `None` になり得ない型との比較 ＝ 到達しない分岐 |
 
-##### ⚠ 判断が要る点
+##### 決定（2026-09-16）
 
-- `x == None`（非 Optional 型）を弾くのは意図どおりか。`Union` / `Any` は素通しなので
-  `Optional` 風の判定は壊れない。
-- Python 翻訳時は異型比較を許す前提（利用者の設計）。⇒ `compare_python_impl` の
-  `$knownDiff` に移行例題を登録することになる。
+| 論点 | 決定 |
+|---|---|
+| `x == None`（非 Optional 型） | **弾く**。「`None` になりうる型」だけが `== None` を書ける |
+| 変種 | **C（overload）** — 数値族は相互に許し、クラスは `__eq__` の宣言で判定 |
+
+⚠ Python 翻訳時は異型比較を許す前提（利用者の設計）。⇒ `compare_python_impl` の
+`$knownDiff` に移行例題を登録することになる。
+
+##### ⚠⚠ 前提: `Optional[T]` が静的に解決されない（タスク 9.7）
+
+「`None` になりうる型」を判定するには `Optional[T]` が使えなければならないが、実測すると
+**静的側が `Optional[T]` を知らない**:
+
+```
+let x: Optional[int] = None
+  ⇒ StaticTypeError  'x' is declared 'Optional' but initialized with 'None'
+```
+
+実行時（`value_matches_type_ann`）は `Optional[` / `Option[` を扱うのに、
+`InferredType::from_ann` に対応する枝が無い。現状 `None` を含められるのは
+**`Union[int, None]`** だけ（実測で動作を確認）。
+
+⇒ **タスク 9.7 を先に片付けること。** そうしないと「`Optional` なら書ける」が成立せず、
+利用者は `Union[T, None]` と書くしかなくなる。
 
 #### 7.7 リテラル要素の個別照合（`L17`）— ⚠ **優先度最低**
 
@@ -2953,6 +2973,7 @@ None => Self::List          // ← 要素型を捨てて素の `list` にする
 | **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | Python 側の型が使えない | 7.8 |
 | **9.5** | `compare_bytecode.ps1` が相対パスの `-A` で**偽の全差分**を出す | ゲートが嘘をつく | 6.1 |
 | **9.6** | `examples/_tmp_demo.txt` が例題実行で書き換わる | `git status` が毎回汚れる | 全般 |
+| **9.7** | **`Optional[T]` が静的に解決されない** | 注釈が黙って壊れる | 7.6 の判断時 |
 
 ---
 
@@ -3073,9 +3094,36 @@ git に**追跡されている**ので、ゲートを回すたびに `git status
 
 ⇒ `.gitignore` に入れるか、例題の書き先を一時ディレクトリへ変える。
 
+### 9.7 `Optional[T]` が静的に解決されない
+
+実行時（`interpreter/ops/typecheck.rs`）は `Optional[` / `Option[` を扱う:
+
+```rust
+_ if ann.starts_with("Optional[") || ann.starts_with("Option[") => { ... }
+```
+
+しかし **`InferredType::from_ann` に対応する枝が無い**。⇒ 注釈が黙って壊れる:
+
+```arrow
+let x: Optional[int] = None
+  ⇒ StaticTypeError  'x' is declared 'Optional' but initialized with 'None'
+```
+
+⚠ `Optional` は大文字始まりなので `NamedInstance("Optional")` 相当に落ちており、
+**型引数 `[int]` が捨てられている**。タスク 8.2（要素型が黙って捨てられる）と同じ形。
+
+⚠ 現状 `None` を含められるのは **`Union[int, None]`** だけ（実測で動作を確認）。
+⚠ 既存のエラー文言は `requires a Union or Optional type` と **`Optional` を前提にしている**
+（`errors.rs`）。実装が追いついていない。
+
+⇒ `from_ann` で `Optional[T]` / `Option[T]` を **`Union[T, None]`** へ解決する。
+⚠⚠ **タスク 7.6 の前提**（「`Option` 以外の `None` を弾く」には `Optional` が動く必要がある）。
+
 ### 順序
 
-`9.5` → `9.6` → `9.3` → `9.1` → `9.2` → `9.4`
+`9.5` → `9.6` → **`9.7`** → `9.3` → `9.1` → `9.2` → `9.4`
+
+⚠ `9.7` は**タスク 7.6 の前提**なので、7.6 に着手する前に済ませる。
 
 ⚠ `9.5` / `9.6` は**作業の足場**（ゲートの信頼性と作業ツリーの清潔さ）なので先に直す。
 ⚠ `9.2` は仕様判断が要るので、判断が出るまで着手しない。
