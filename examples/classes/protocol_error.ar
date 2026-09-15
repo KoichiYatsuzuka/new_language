@@ -7,7 +7,10 @@ protocol Printable:
 class Dog:
     let name: str
 
-    fn __init__(self, n: str) -> None:
+    # ⚠⚠ `mut self` が要る。`self`（`mut` なし）だと**フィールドが初期化されない**
+    #    （実行時 `AttributeError: 'Dog' object has no attribute 'name'`）。
+    #    タスク 7.2 の静的検査が `cannot assign to immutable variable 'self'` で捕まえる。
+    fn __init__(mut self, n: str) -> None:
         self.name = n
 
     # Missing print_info method — does not conform to Printable

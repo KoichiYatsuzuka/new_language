@@ -2223,7 +2223,7 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 | # | 内容 | 検体 | 依存 | 見積 |
 |---|---|---|---|---|
 | ~~**7.1**~~ | ~~「判らない」と「誤り」の取り違えを直す~~ → **✅ 完了 2026-09-15** | `C13` `K3` `O6` `E2` | — | 下記「7.1 の記録」。4 件**全て STATIC** |
-| **7.2** | `let` への書き込み経路の非対称を埋める | `M5` `Z7` | — | 小 |
+| ~~**7.2**~~ | ~~`let` への書き込み経路の非対称を埋める~~ → **✅ 完了 2026-09-15** | `M5` `Z7` | — | 下記「7.2 の記録」。2 件**とも STATIC** |
 | **7.3** | 「常に失敗する」変換・表明を弾く | `T1` `T2` | 4.3 / 5.4 | 小 |
 | **7.4** | 組み込み関数のシグネチャ表 | `Z10` `Z5` | — | 中（機構の設計） |
 | **7.5** | メンバーの存在検査 | `M1` `M2` | — | 中（レジストリ 6 種の穴埋め） |
@@ -2324,6 +2324,72 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 ⚠ `path_is_mutable` は既にあり、他 2 経路で使われている。`check_attr_assign` から呼ぶだけ。
 ⚠ `check_immutable_field_assign` は「**フィールド**が `let` か」を見る別の検査。混同しないこと。
 `Z7`（`freeze` 後の代入）も同じ「書き込み可否」の系統。
+
+##### 7.2 の記録 【✅ 完了 2026-09-15】
+
+###### `M5` — 判定は同じなのに 1 経路だけ実行時だった
+
+| 書き方 | 以前 | 判定に使う情報 |
+|---|---|---|
+| `xs.append(2)` | 静的エラー | パスの根の可変性 |
+| `xs[0] = 2` | 静的エラー | 同じ |
+| `c.n = 2` | **実行時エラー** ⛔ | 同じ |
+
+⇒ 添字だけに掛けていた根の可変性検査を**属性にも**掛けた。
+
+###### ⚠⚠ 「根が値の束縛のときだけ」— 実測で 3 種類の除外が要った
+
+| 根 | 弾いてはいけない理由 | 見つけたゲート |
+|---|---|---|
+| クラス名（`TypeValOf`） | `static mut` は**クラス側が**可変。束縛の可変性は無関係 | `scan_examples`（4 例題） |
+| モジュール（`Namespace` / `PyNamespace`） | モジュールは `mutable: false` で束縛されている | `scan_examples`（`py_classvar.ar`） |
+| **`Unresolved` / `Any`** | `editor` ビルドは import 先を読まないので束縛が `Unresolved` になる | **`compare_wasm_frontend`**（エディタだけの偽陽性） |
+
+⚠ 3 つ目は `scan_examples` では出ない。**`compare_wasm_frontend` だけが拾った**
+（5.5 と同じ形。ゲートを全部回す意味がここにある）。
+
+###### `Z7` — `freeze` は**再束縛だけ**を禁じる（実測）
+
+| `freeze xs` の後 | 実行時 |
+|---|---|
+| `xs = [2]` | **エラー** |
+| `xs.append(2)` | 通る（`[1, 2]`） |
+| `xs[0] = 2` | 通る（`[2]`） |
+
+⚠⚠ **可変性フラグを落としてはいけない。** `mutable: false` に降格すると後ろ 2 つまで弾いて
+**偽陽性**になる。⇒ 再束縛だけを見る独立した集合（`CheckState::frozen`）にした。
+⚠ スコープ単位で積む。実行時は内側の `freeze` が外側にも効くが、静的検査は取りこぼす方へ倒す。
+⚠ `examples/basics/variable.ar` が `# temp = 0  # would be StaticTypeError after freeze` と
+仕様を明記していた。
+
+###### ⚠⚠ 見つけた本物のバグ 2 件
+
+| 場所 | 内容 |
+|---|---|
+| `src/frontend_tests/.../variables.rs` の `mut_field_assign_ok` | **テストが穴を仕様として固定していた。** `let c = Counter(); c.count = 5` を `ok(..)` と主張していたが、**実行時は同じコードを拒否する**（`cannot assign to immutable field 'count'`）。⇒ `err` に直して `let_binding_field_assign_err` へ改名し、`mut` 版の正常系を足した |
+| `examples/classes/protocol_error.ar` | `fn __init__(self, n: str)` が **`mut self` になっていなかった**。実測すると**フィールドが初期化されない**（`AttributeError: 'Dog' object has no attribute 'name'`）。⇒ 7.2 の検査が `cannot assign to immutable variable 'self'` で捕まえた |
+
+⚠ `self`（`mut` なし）への書き込みは `__init__` でも通らない。非 `__init__` では**黙って無視される**
+（`fn bump(self): self.n = 1` の後も値は変わらない）。どちらも 7.2 が静的に捕まえる。
+
+###### 結果
+
+**検体**: `M5` `Z7` が `RUNTIME` → **`STATIC`**。静的検査の割合 88% → **89%**（102/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | **775 passed** / 0 failed（テスト 1 件を実行時に合わせて修正・1 件追加） |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（304 例題） |
+| `compare_python_impl.ps1` | 90/90 identical・stale 0 |
+| `compare_outputs.ps1 -A f7e7a4f` | 234/235。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **305/305 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/let_binding_writes{,_error}.ar`
+**直した例題**: `classes/class_trait_error.ar`（`let t` → `mut t`）・`classes/protocol_error.ar`（`self` → `mut self`）
 
 #### 7.3 「常に失敗する」変換・表明（`T1` `T2`）
 

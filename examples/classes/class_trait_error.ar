@@ -8,7 +8,9 @@ class Token:
     let kind: str
     let text: str
 
-let t = Token("ident", "foo")
+# ⚠ `mut t` にしてある。`let t` だと**束縛が不変**という別のエラー（タスク 7.2）も
+#   同時に出て、この節が示したい「**フィールド**が不変」の実演がぼやける。
+mut t = Token("ident", "foo")
 print(t.kind)   # ident — OK
 
 t.kind = "op"   # TypeError: cannot assign to immutable field 'kind'

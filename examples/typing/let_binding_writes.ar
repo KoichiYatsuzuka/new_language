@@ -1,0 +1,78 @@
+# let_binding_writes.ar — `let` 束縛への書き込みと `freeze`（タスク 7.2）
+#
+# ## 何が壊れていたか
+#
+# **`let` 束縛への書き込みは 3 経路あるのに、1 つだけ実行時だった**（実測）:
+#
+# | 書き方 | 以前 |
+# |---|---|
+# | `xs.append(2)` | 静的エラー ✅ |
+# | `xs[0] = 2` | 静的エラー ✅ |
+# | `c.n = 2` | **実行時エラー** ⛔ |
+#
+# 判定はどれも「**パスの根の可変性**」で同じ（規則 1: 要素・フィールドは根の属性を継ぐ）なのに、
+# 属性だけが検査から漏れていた。
+#
+# ⚠ `check_immutable_field_assign` は「**フィールド**が `let` 宣言か」を見る別の検査。
+#   こちらは「**束縛**が `let` か」。
+#
+# ## ⚠⚠ 根が「値の束縛」のときだけ
+#
+# | 書き方 | 根 | 弾いてはいけない理由 |
+# |---|---|---|
+# | `Counter.total = 100` | クラス名 | `static mut` は**クラス側が**可変。束縛の可変性は無関係 |
+# | `m.x = 1` | import したモジュール | モジュールは `mutable: false` で束縛されている |
+#
+# ## `freeze` は**再束縛だけ**を禁じる（実測）
+#
+# | `freeze xs` の後 | 実行時 |
+# |---|---|
+# | `xs = [2]` | **エラー** |
+# | `xs.append(2)` | 通る |
+# | `xs[0] = 2` | 通る |
+#
+# ⇒ 可変性フラグを落とすと後ろ 2 つまで弾いて**偽陽性**になるので、再束縛だけを見る。
+# `examples/basics/variable.ar` が `# temp = 0  # would be StaticTypeError after freeze` と
+# 仕様を明記している。
+#
+# 弾かれる例は let_binding_writes_error.ar
+
+print("=== mut 束縛なら 3 経路とも書ける ===")
+
+class Counter:
+    static mut total: int = 0
+    mut n: int
+
+mut c = Counter(1)
+c.n = 2
+print(c.n)                          # 2
+
+mut xs: list[int] = [1]
+xs.append(2)
+xs[0] = 9
+print(xs)                           # [9, 2]
+
+print("=== static mut はクラス名経由で書ける ===")
+
+# ⚠ 根はクラス名。束縛の可変性とは無関係。
+Counter.total = 100
+print(Counter.total)                # 100
+
+print("=== freeze は再束縛だけを禁じる ===")
+
+mut ys: list[int] = [1]
+freeze ys
+ys.append(2)                        # 中身の変更は通る
+ys[0] = 5
+print(ys)                           # [5, 2]
+
+print("=== freeze はスコープを跨がない（静的検査は取りこぼす方へ倒す） ===")
+
+# ⚠ 実行時は外側にも効くが、静的検査は内側の `freeze` を外へ持ち出さない。
+#   偽陽性を出すより取りこぼす方を選んでいる。
+mut zs: list[int] = [1]
+if True:
+    freeze zs
+print(zs)                           # [1]
+
+print("done")

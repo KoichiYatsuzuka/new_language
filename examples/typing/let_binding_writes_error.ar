@@ -1,0 +1,18 @@
+# let_binding_writes_error.ar — `let` 束縛のフィールドは書き換えられない（タスク 7.2）
+#
+# 正常系は let_binding_writes.ar
+#
+# ⚠ 以前は**実行時エラー**だった（検体 `M5`）。同じ「`let` への書き込み」なのに
+#   `xs.append(2)` と `xs[0] = 2` は静的に弾かれ、`c.n = 2` だけが漏れていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  cannot assign to immutable variable 'c'
+
+class C:
+    mut n: int
+
+let c = C(1)
+
+c.n = 2                             # ⛔ c は let 束縛
+
+print(c.n)

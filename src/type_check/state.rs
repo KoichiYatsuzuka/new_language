@@ -5,7 +5,7 @@
 // この性質を保つため、ここで診断を報告してはならない（例: `declare` は重複宣言を
 // 判定せず、ただ上書きする）。エラーを出すかどうかの判断は呼び出し側の責務。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::types::{InferredType, VarInfo};
 
@@ -60,6 +60,23 @@ pub(super) struct CheckState {
     /// ⚠ **関数本体に入るときは `None` を積む**（継承しない）。入れ子 `fn` の
     /// `block_return` が外側のブロック式の注釈と照合されると嘘の判定になる。
     block_expr_expected: Vec<Option<InferredType>>,
+    /// **`freeze` 済みの名前**（タスク 7.2・検体 `Z7`）。
+    ///
+    /// ⚠⚠ **可変性フラグ（`VarInfo::mutable`）を落としてはいけない。** 実測すると
+    /// `freeze` が禁じるのは**再束縛だけ**で、中身の変更は通る:
+    ///
+    /// | `freeze xs` の後 | 実行時 |
+    /// |---|---|
+    /// | `xs = [2]` | **`TypeError: cannot assign to immutable variable`** |
+    /// | `xs.append(2)` | 通る（`[1, 2]`） |
+    /// | `xs[0] = 2` | 通る（`[2]`） |
+    ///
+    /// `mutable: false` に降格すると後ろ 2 つまで弾いてしまい**偽陽性**になる。
+    /// ⇒ 再束縛だけを見る独立した集合として持つ。
+    ///
+    /// ⚠ スコープ単位で積む（内側で `freeze` しても外側には効かない）。実行時は
+    /// 外側にも効くので**取りこぼす**が、偽陽性を出すよりよい。
+    frozen: Vec<HashSet<String>>,
     /// **いま見えているテンプレート型変数**の名前（`fn f[T]` / `class C[T]` の `T`）。
     ///
     /// ⚠⚠ `InferredType::from_ann` は**大文字始まりの未知の識別子をクラス名として扱う**
@@ -83,6 +100,7 @@ impl CheckState {
             in_gen_body: false,
             block_return_forbidden_depth: 0,
             block_expr_expected: Vec::new(),
+            frozen: vec![HashSet::new()],
             type_params: Vec::new(),
         }
     }
@@ -92,10 +110,14 @@ impl CheckState {
     /// 新しいスコープをスタックに積む。
     pub(super) fn push_scope(&mut self) {
         self.scope_stack.push(HashMap::new());
+        self.frozen.push(HashSet::new());
     }
 
     /// 現在のスコープをスタックから取り除く。グローバルスコープは取り除かない。
     pub(super) fn pop_scope(&mut self) {
+        if self.frozen.len() > 1 {
+            self.frozen.pop();
+        }
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
         }
@@ -213,6 +235,18 @@ impl CheckState {
     /// `enter_barrier` が返した値を渡して障壁を抜ける。
     pub(super) fn exit_barrier(&mut self, saved: usize) {
         self.block_return_forbidden_depth = saved;
+    }
+
+    /// `freeze x` を記録する（タスク 7.2）。
+    pub(super) fn mark_frozen(&mut self, name: &str) {
+        if let Some(top) = self.frozen.last_mut() {
+            top.insert(name.to_string());
+        }
+    }
+
+    /// `name` が `freeze` 済みか（再束縛できないか）。
+    pub(super) fn is_frozen(&self, name: &str) -> bool {
+        self.frozen.iter().any(|s| s.contains(name))
     }
 
     // ── ブロック式の結果型（タスク 5.2）──────────────────────────────────────

@@ -104,11 +104,6 @@ impl TypeChecker {
         self.diags.report_warning(w);
     }
 
-    /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。
-    pub(super) fn subscript_root_ident(expr: &Expr) -> Option<&str> {
-        Self::path_root_ident(expr)
-    }
-
     /// アクセスパスの**根になっている識別子**を返す（`a` / `a[0][1]` / `o.f.g` → `a` / `o`）。
     ///
     /// ⚠ 「その値が誰のものか」を決めるのに使う。規則 1（**要素は変数の属性を再帰的に

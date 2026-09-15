@@ -60,6 +60,10 @@ impl TypeChecker {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
+                // ⚠ `freeze` 済みの名前への**再束縛**（タスク 7.2・検体 `Z7`）。
+                if self.state.is_frozen(name) {
+                    self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
+                }
                 let rhs_ty = self.infer(value);
                 if rhs_ty == InferredType::Undefined {
                     self.report_error(StaticTypeError {
@@ -476,9 +480,13 @@ impl TypeChecker {
             Stmt::Pass
             | Stmt::Break
             | Stmt::Continue
-            | Stmt::Freeze(..)
             | Stmt::BreakPoint { .. }
             | Stmt::DebugLet(..) => {}
+
+            // ⚠ `freeze x` は**再束縛だけ**を禁じる（タスク 7.2・検体 `Z7`）。
+            //    `examples/basics/variable.ar` が
+            //    `# temp = 0  # would be StaticTypeError after freeze` と仕様を明記している。
+            Stmt::Freeze(name, _) => self.state.mark_frozen(name),
 
             // --- 例外処理 ---
             Stmt::Try {
@@ -955,10 +963,45 @@ impl TypeChecker {
     /// 代入値の型を突き合わせる（0-2）。`Some(op)` のとき（＝複合代入）は
     /// [`TypeChecker::check_compound_assign`] の二段検査へ回す（D-8・タスク 5.1）。
     fn check_attr_assign(&mut self, target: &Expr, value: &Expr, compound_op: Option<&BinOp>) {
-        if matches!(target, Expr::Subscript { .. }) {
-            if let Some(name) = Self::subscript_root_ident(target) {
+        // ⚠⚠ **`let` 束縛への書き込みは 3 経路あるのに 1 つだけ実行時だった**（タスク 7.2・検体 `M5`）。
+        //
+        // | 書き方 | 以前 |
+        // |---|---|
+        // | `xs.append(2)` | 静的エラー（`check_mutating_method_receiver`） |
+        // | `xs[0] = 2` | 静的エラー（ここ） |
+        // | `c.n = 2` | **実行時エラー** ⛔ |
+        //
+        // 判定はどれも「**パスの根の可変性**」で同じ（規則 1: 要素・フィールドは根の属性を継ぐ）。
+        // ⇒ 添字だけでなく**属性**も同じ検査に通す。
+        // ⚠ `check_immutable_field_assign` は「**フィールド**が `let` 宣言か」を見る**別の検査**。
+        //    こちらは「**束縛**が `let` か」。混同しないこと。
+        //
+        // ⚠⚠ **根が「値の束縛」のときだけ**に限ること。`scan_examples` が実測で教えた偽陽性:
+        //
+        // | 書き方 | 根 | なぜ弾いてはいけないか |
+        // |---|---|---|
+        // | `Counter.total = 100` | クラス名（`TypeValOf`） | `static mut` は**クラス側が**可変。束縛の可変性は無関係 |
+        // | `m.x = 1` | import したモジュール | モジュールは `mutable: false` で束縛されている |
+        //
+        // これらは「不変な変数の中身を書き換えている」のではなく、**名前空間のメンバーへの代入**。
+        if matches!(target, Expr::Subscript { .. } | Expr::Attr { .. }) {
+            if let Some(name) = Self::path_root_ident(target) {
                 if let Some(info) = self.lookup(name) {
-                    if !info.mutable {
+                    // ⚠⚠ **`Unresolved` / `Any` も除外する。** `compare_wasm_frontend` が
+                    //    `examples/interop/py_classvar.ar` で**エディタだけが出す偽陽性**を
+                    //    検出した: `editor` ビルドは import 先を読まないのでモジュールの
+                    //    束縛が `PyNamespace` ではなく `Unresolved` になり、
+                    //    「不変な変数のフィールドへの代入」に見えてしまう。
+                    //    ⇒ 根が何か判らないときは判断しない（根本原因① の教訓）。
+                    let is_value_binding = !matches!(
+                        info.ty,
+                        InferredType::TypeValOf(_)
+                            | InferredType::Namespace(_)
+                            | InferredType::PyNamespace(_)
+                            | InferredType::Unresolved
+                            | InferredType::Any
+                    );
+                    if is_value_binding && !info.mutable {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
                             span: None,

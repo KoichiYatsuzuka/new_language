@@ -141,10 +141,31 @@ use super::*;
         )));
     }
 
-    /// mut_field_assign_ok のテスト。
+    /// `mut` 束縛のフィールドへの代入は通る。
     #[test]
-    fn mut_field_assign_ok() {
+    fn mut_binding_field_assign_ok() {
         assert!(ok(concat!(
+            "class Counter:\n",
+            "    mut count: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.count = 0\n",
+            "mut c = Counter()\n",
+            "c.count = 5\n",
+        )));
+    }
+
+    /// `let` 束縛のフィールドへの代入は**静的エラー**（タスク 7.2・検体 `M5`）。
+    ///
+    /// ⚠⚠ **このテストは以前 `mut_field_assign_ok` という名前で `ok(..)` を主張していた。**
+    /// フィールドが `mut count: int` なら通る、という読みだったが、**実行時は同じコードを
+    /// 拒否する**（`TypeError: cannot assign to immutable field 'count'`）。
+    /// ⇒ テストが静的検査の穴を仕様として固定していた形。実行時に合わせて `err` に直した。
+    ///
+    /// 見るべきは「**束縛**が `let` か」で、「フィールドが `let` 宣言か」は別の検査
+    /// （`check_immutable_field_assign`）。
+    #[test]
+    fn let_binding_field_assign_err() {
+        assert!(err(concat!(
             "class Counter:\n",
             "    mut count: int\n",
             "    fn __init__(mut self) -> None:\n",
