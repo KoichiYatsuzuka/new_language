@@ -343,6 +343,8 @@ impl TypeChecker {
                 return_type,
             } => {
                 let iter_ty = self.infer(iter);
+                // ⚠ 反復できない型を弾く（タスク 7.1・検体 `K3`）。文と同じ検査を通す。
+                self.check_iterable(&iter_ty, None);
                 // ループ変数を要素型で宣言する（`Stmt::For` と同じ扱い）。
                 // ここが抜けていたため、for **式**の本体では変数が未宣言＝`Unresolved` になり、
                 // 本体の演算に型特化が効かなかった。
@@ -724,16 +726,109 @@ impl TypeChecker {
             }
             _ => {}
         }
-        match op {
-            UnaryOp::Not => InferredType::Bool,
-            UnaryOp::Neg => match ty {
-                InferredType::Int => InferredType::Int,
-                InferredType::Float => InferredType::Float,
-                InferredType::Complex => InferredType::Complex,
-                _ => InferredType::Unresolved,
-            },
-            UnaryOp::BitNot => InferredType::Int,
+        // ⚠⚠ **可否と結果型を同じ表で決める**（4.4 の `check_arith` と同じ形・タスク 7.1）。
+        //    以前は「不可の組み合わせ」でも黙って `Unresolved`（`BitNot` に至っては
+        //    無条件 `Int`）を返しており、**型が判っているのに誤りを報告しない**
+        //    ＝根本原因①（`Unresolved` は万能受容体）がここに残っていた。
+        //
+        // ## 実測した実行時の規則
+        //
+        // | 演算子 | 許される型 | 外れたとき |
+        // |---|---|---|
+        // | `-`  | `int` ・ `float` ・ `complex` | `bad operand type for unary '-'` |
+        // | `~`  | `int` のみ | `bad operand type for unary '~'` |
+        // | `not`| 何でも（`eval_truthy` を通る） | — |
+        //
+        // ⚠⚠ **`bool` は `-` も `~` も不可**（`-True` / `~True` は実行時 TypeError）。
+        //    整数として通る言語の癖で書くと落ちるので静的に弾く価値がある。
+        // ⚠ クラスは `__neg__` を定義できる（実測）ので素通しする。
+        if matches!(op, UnaryOp::Not) {
+            return InferredType::Bool;
         }
+        if Self::opaque_for_unary(&ty) {
+            return InferredType::Unresolved;
+        }
+        let result = match op {
+            UnaryOp::Neg => match ty {
+                InferredType::Int => Some(InferredType::Int),
+                InferredType::Float => Some(InferredType::Float),
+                InferredType::Complex => Some(InferredType::Complex),
+                _ => None,
+            },
+            UnaryOp::BitNot => match ty {
+                InferredType::Int => Some(InferredType::Int),
+                _ => None,
+            },
+            UnaryOp::Not => unreachable!("`not` は上で返している"),
+        };
+        match result {
+            Some(t) => t,
+            None => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::IncompatibleUnaryOp {
+                        op: op_str.to_string(),
+                        operand: ty,
+                    },
+                    span: None,
+                });
+                InferredType::Unresolved
+            }
+        }
+    }
+
+    /// 単項演算子の検査で「判定材料が無い」とみなす型（タスク 7.1）。
+    ///
+    /// ⚠ クラス（`__neg__` を定義できる）を含めるのが要点。
+    fn opaque_for_unary(ty: &InferredType) -> bool {
+        use InferredType as T;
+        matches!(
+            ty,
+            T::Unresolved
+                | T::Any
+                | T::Never
+                | T::NamedInstance(_)
+                | T::GenericInstance { .. }
+                | T::SelfType
+                | T::Protocol(_)
+                | T::Union(_)
+                | T::Intersection(_)
+                | T::Result(_, _)
+                | T::Namespace(_)
+                | T::PyNamespace(_)
+                | T::TypeVal
+                | T::TypeValOf(_)
+        )
+    }
+
+    /// `for` の反復対象が反復可能かを検査する（タスク 7.1・検体 `K3`）。
+    ///
+    /// ## 実測した実行時の規則
+    ///
+    /// | 反復できる | 反復できない |
+    /// |---|---|
+    /// | `list` / `fixed_list` / `list_like` / `set` / `tuple` / `str` | `int` ・ `float` ・ `bool` |
+    /// | `range(..)` ・ ジェネレータ | **`dict`** |
+    /// | `__iter__` を持つクラス | `__iter__` を持たないクラス（`AttributeError`） |
+    ///
+    /// ⚠⚠ **`dict` は反復できない**（`for k in d:` は `TypeError: object is not iterable`）。
+    /// Python と違うので、ここを取りこぼすと Python の癖で書いた `for k in d:` が
+    /// 実行時まで判らない。
+    /// ⚠ クラスは `__iter__` を定義できるので素通しする（持たない場合は実行時 `AttributeError`）。
+    pub(super) fn check_iterable(&mut self, iter_ty: &InferredType, span: Option<Span>) {
+        use InferredType as T;
+        // 判定できるのは「確実に反復できない」と分かっている型だけ。
+        let not_iterable = matches!(
+            iter_ty,
+            T::Int | T::Float | T::Complex | T::Bool | T::None | T::Undefined
+                | T::Dict | T::DictOf(_, _)
+        );
+        if !not_iterable {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::NotIterable { ty: iter_ty.clone() },
+            span,
+        });
     }
 
     /// `expr mustbe Type` の型を推論する。解決した型を返し、コレクション要素型や

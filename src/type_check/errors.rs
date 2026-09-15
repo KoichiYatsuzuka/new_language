@@ -346,6 +346,24 @@ pub enum TypeErrorKind {
         func_name: String,
         got: Vec<InferredType>,
     },
+    /// 単項演算子の被演算子が演算できない型（タスク 7.1・検体 `O6`）。
+    ///
+    /// ⚠ 実測: `-` は `int` / `float` / `complex` のみ（**`bool` も不可**）、
+    /// `~` は `int` のみ。`not` は何にでも使える（`eval_truthy` を通る）。
+    IncompatibleUnaryOp { op: String, operand: InferredType },
+    /// 呼び出せない型の呼び出し（タスク 7.1・検体 `C13`）。
+    ///
+    /// ⚠ クラスは `__call__` を定義できるので素通しする。
+    NotCallable { ty: InferredType },
+    /// 反復できない型の `for`（タスク 7.1・検体 `K3`）。
+    ///
+    /// ⚠⚠ 実測: **`dict` は反復できない**（Python と違う）。`list` / `fixed_list` /
+    /// `list_like` / `set` / `tuple` / `str` と、`__iter__` を持つクラスだけが反復できる。
+    NotIterable { ty: InferredType },
+    /// `except` の型が例外クラスでない（タスク 7.1・検体 `E2`）。
+    ///
+    /// ⚠ 「腕が永久に死ぬ」系統（3.4 の `UnknownGuardType` と同じ）。
+    ExceptNotError { type_name: String, reason: &'static str },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -730,6 +748,20 @@ impl StaticTypeError {
                     hl_q(func_name), hl_q(&list)
                 )
             }
+            TypeErrorKind::IncompatibleUnaryOp { op, operand } => format!(
+                "bad operand type for unary {}: {}",
+                hl_q(op), hl_q(&operand.to_string())
+            ),
+            TypeErrorKind::NotCallable { ty } => {
+                format!("{} is not callable", hl_q(&ty.to_string()))
+            }
+            TypeErrorKind::NotIterable { ty } => {
+                format!("{} is not iterable", hl_q(&ty.to_string()))
+            }
+            TypeErrorKind::ExceptNotError { type_name, reason } => format!(
+                "{} in {} is {}; the handler can never match",
+                hl_q(type_name), hl_bt("except"), reason
+            ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(
                 "unknown type {} in type guard; the branch can never match",

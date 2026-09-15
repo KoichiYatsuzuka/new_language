@@ -115,6 +115,8 @@ impl TypeChecker {
         } else {
             InferredType::Unresolved
         };
+        // ⚠ 呼び出せない型を弾く（タスク 7.1・検体 `C13`）。
+        self.check_callable(&func_type);
 
         let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
         for arg in args.iter() {
@@ -999,6 +1001,53 @@ impl TypeChecker {
             // 曖昧: どれを選んでも嘘になりうるので絞り込まない。
             _ => candidates,
         }
+    }
+
+    /// 呼び出し対象が呼び出せる型かを検査する（タスク 7.1・検体 `C13`）。
+    ///
+    /// ## 実測した実行時の規則
+    ///
+    /// | 呼び出せる | 呼び出せない |
+    /// |---|---|
+    /// | 関数・ジェネレータ関数・ネイティブ関数 | `int` ・ `float` ・ `str` ・ `bool` |
+    /// | クラス名（＝コンストラクタ） | `list` ・ `dict` ・ `set` ・ `tuple` |
+    /// | `__call__` を持つクラスのインスタンス | `None` |
+    ///
+    /// ⚠ クラスのインスタンスは `__call__` を定義できる（実測）ので**素通し**する
+    /// （持たない場合は実行時 `AttributeError: 'D' has no method '__call__'`）。
+    /// ⚠⚠ ここで報告するのは「**確実に呼べない**」と分かっている型だけ。
+    /// `Unresolved` / `Any` / `Namespace` などは判定材料が無いので触らない
+    /// （根本原因① の教訓: 「判らない」と「誤り」を取り違えない）。
+    fn check_callable(&mut self, func_type: &InferredType) {
+        use InferredType as T;
+        let not_callable = matches!(
+            func_type,
+            T::Int
+                | T::Float
+                | T::Complex
+                | T::Str
+                | T::Bool
+                | T::None
+                | T::Undefined
+                | T::List
+                | T::ListOf(_)
+                | T::FixedList
+                | T::FixedListOf(_)
+                | T::ListLike
+                | T::ListLikeOf(_)
+                | T::Dict
+                | T::DictOf(_, _)
+                | T::Set
+                | T::SetOf(_)
+                | T::Tuple(_)
+        );
+        if !not_callable {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::NotCallable { ty: func_type.clone() },
+            span: None,
+        });
     }
 
     /// `new_type` のコンストラクタ引数を**基底型**と照合する（タスク 5.6・検体 `T3`）。

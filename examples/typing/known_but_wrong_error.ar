@@ -1,0 +1,30 @@
+# known_but_wrong_error.ar — 型が判っているのに誤っている 4 形（タスク 7.1）
+#
+# 正常系は known_but_wrong.ar
+#
+# ⚠ 4 件とも以前は**実行時まで判らなかった**（検体 `C13` `K3` `O6` `E2`）。
+#   型検査は被演算子の型を知っていたのに、`Unresolved` を返して黙っていた。
+#
+# 期待されるエラー（4 件）:
+#   StaticTypeError  'int' is not callable
+#   StaticTypeError  'int' is not iterable
+#   StaticTypeError  bad operand type for unary '-': 'str'
+#   StaticTypeError  'NotAnError' in `except` is not an exception class; ...
+
+class NotAnError:
+    mut n: int
+
+let a: int = 1
+let s: str = "s"
+
+print(a())                          # ⛔ int は呼び出せない
+
+for v in a:                         # ⛔ int は反復できない
+    print(v)
+
+print(-s)                           # ⛔ str に単項 - は使えない
+
+try:
+    raise ValueError("x")
+except NotAnError as e:             # ⛔ NotAnError は例外クラスではない
+    print("caught")

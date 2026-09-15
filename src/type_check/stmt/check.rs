@@ -164,6 +164,8 @@ impl TypeChecker {
                 body,
             } => {
                 let iter_ty = self.infer(iter);
+                // ⚠ 反復できない型を弾く（タスク 7.1・検体 `K3`）。
+                self.check_iterable(&iter_ty, None);
                 let elem_ty = Self::for_element_type(&iter_ty);
                 self.push_scope();
                 // 分割代入（`for k, v in pairs`）は要素がタプルのときだけ各要素型へ割り当てる。
@@ -506,6 +508,11 @@ impl TypeChecker {
                             .unwrap_or(InferredType::Unresolved);
                         self.declare(name.clone(), exc_ty, true);
                     }
+                    // ⚠ 例外クラスでない型は**腕が永久に死ぬ**（タスク 7.1・検体 `E2`）。
+                    //    `name` の有無に関係なく検査する。
+                    if let Some(t) = handler.exc_type.as_deref() {
+                        self.check_except_type(t);
+                    }
                     self.check_stmts(&handler.body);
                     self.pop_scope();
                 }
@@ -676,6 +683,43 @@ impl TypeChecker {
             self.check_stmts(&arm.body);
             self.pop_scope();
         }
+    }
+
+    /// `except T:` の `T` が例外クラスかを検査する（タスク 7.1・検体 `E2`）。
+    ///
+    /// ⚠⚠ これは「型が違う」ではなく「**腕が永久に死ぬ**」という妥当性の指摘
+    /// （3.4 の `UnknownGuardType` と同じ系統）。実測では `except NotAnError:` は
+    /// 一致せず、例外がそのまま伝播して実行時 `Traceback` になる。
+    ///
+    /// ⚠ 例外クラスの判定は `raise` 側と**同じ述語**（`class_implements_trait(.., "Error")`）を
+    /// 使う。組み込み例外は `class_bases = ["Error"]` で登録されており、利用者の
+    /// `class MyErr(Error)` も同じ経路で通る。
+    fn check_except_type(&mut self, type_name: &str) {
+        // 未知の名前は「存在しないクラス」として弾く（`UnknownGuardType` と同じ理由）。
+        if !self.registry.is_known_class(type_name) {
+            // ⚠ trait / protocol 名は `is_known_class` に載らないので、そちらも見てから判断する。
+            if self.registry.is_known_trait(type_name) || self.registry.is_protocol(type_name) {
+                return;
+            }
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ExceptNotError {
+                    type_name: type_name.to_string(),
+                    reason: "not a known type",
+                },
+                span: None,
+            });
+            return;
+        }
+        if self.class_implements_trait(type_name, "Error") {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::ExceptNotError {
+                type_name: type_name.to_string(),
+                reason: "not an exception class",
+            },
+            span: None,
+        });
     }
 
     /// `if` / `while` の条件が `bool` かを検査する（決定 D-12・タスク 5.5・検体 `K1` / `K2`）。

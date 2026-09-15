@@ -1,0 +1,117 @@
+# known_but_wrong.ar — 「型は判っていて、それが誤り」を静的に弾く（タスク 7.1）
+#
+# ## 何が壊れていたか
+#
+# 4 地点とも**型は判っていた**のに、`Unresolved` を返して黙っていた。
+# 根本原因①（`Unresolved` は万能受容体）がここに残っていた形。
+#
+# | 検体 | コード | 以前 |
+# |---|---|---|
+# | `C13` | `let a: int = 1` に `a()` | `infer_call` が関数以外を素通り |
+# | `K3` | `let a: int = 1` に `for v in a:` | `for_element_type` が `Unresolved` を返し**報告しない** |
+# | `O6` | `let a: str = "s"` に `-a` | `infer_unaryop` が `Any` / `Union` だけ診断 |
+# | `E2` | `except NotAnError:` | 妥当性検査が無い |
+#
+# ## 実測した実行時の規則（先に測ってから表を書いた）
+#
+# ### 単項演算子
+#
+# | 演算子 | 許される型 |
+# |---|---|
+# | `-` | `int` ・ `float` ・ `complex` |
+# | `~` | `int` のみ |
+# | `not` | 何でも（`eval_truthy` を通る） |
+#
+# ⚠⚠ **`bool` は `-` も `~` も不可**（`-True` は `bad operand type for unary '-': bool`）。
+#
+# ### 反復
+#
+# ⚠⚠ **`dict` は反復できない**（`for k in d:` は `TypeError: object is not iterable`）。
+# Python と違うので、Python の癖で書くと実行時まで判らなかった。
+#
+# ### 呼び出し
+#
+# クラスのインスタンスは `__call__` を、クラスは `__neg__` / `__iter__` を定義できるので
+# **クラスは一律で素通し**する（持たない場合は実行時 `AttributeError`）。
+#
+# 弾かれる例は known_but_wrong_error.ar
+
+print("=== 単項演算子 ===")
+
+let n: int = 5
+print(-n)                           # -5
+print(~n)                           # -6
+
+let f: float = 1.5
+print(-f)                           # -1.5
+
+let c = 1 + 2j
+print(-c)                           # (-1.0-2.0j)
+
+print("=== not は何にでも使える ===")
+
+let s: str = "x"
+print(not s)                        # False
+
+print("=== クラスは __neg__ を定義できる ===")
+
+class Vec:
+    mut n: int
+
+    fn __neg__(self) -> Vec:
+        return Vec(-self.n)
+
+print((-Vec(3)).n)                  # -3
+
+print("=== 呼び出し ===")
+
+fn plain() -> int:
+    return 1
+
+print(plain())                      # 1
+
+class Callable:
+    mut n: int
+
+    fn __call__(self) -> int:
+        return self.n
+
+print(Callable(7)())                # 7
+
+print("=== 反復できるもの ===")
+
+for v in [1, 2]:
+    print(v)                        # 1, 2
+
+let t = (3, 4)
+for v in t:
+    print(v)                        # 3, 4
+
+for ch in "ab":
+    print(ch)                       # a, b
+
+let st: set[int] = {9}
+for v in st:
+    print(v)                        # 9
+
+print("=== ⚠ dict は反復できないので keys() を使う ===")
+
+let d: dict[str, int] = {"a": 1}
+for k in d.keys():
+    print(k)                        # a
+
+print("=== except は例外クラスだけ ===")
+
+class MyErr(Error):
+    mut extra: int
+
+    fn __init__(mut self, let message: str, let extra: int) -> None:
+        self.message = message
+        self.extra = extra
+
+try:
+    raise ValueError("boom")
+except ValueError as e:
+    print(e.message)                # boom
+
+print("done")

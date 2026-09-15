@@ -2222,7 +2222,7 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 
 | # | 内容 | 検体 | 依存 | 見積 |
 |---|---|---|---|---|
-| **7.1** | 「判らない」と「誤り」の取り違えを直す | `C13` `K3` `O6` `E2` | — | 小（既存パターンの流用） |
+| ~~**7.1**~~ | ~~「判らない」と「誤り」の取り違えを直す~~ → **✅ 完了 2026-09-15** | `C13` `K3` `O6` `E2` | — | 下記「7.1 の記録」。4 件**全て STATIC** |
 | **7.2** | `let` への書き込み経路の非対称を埋める | `M5` `Z7` | — | 小 |
 | **7.3** | 「常に失敗する」変換・表明を弾く | `T1` `T2` | 4.3 / 5.4 | 小 |
 | **7.4** | 組み込み関数のシグネチャ表 | `Z10` `Z5` | — | 中（機構の設計） |
@@ -2245,6 +2245,71 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 ⚠⚠ 4 件とも**型は判っていて、それが誤り**。`Unresolved` を返して黙る＝**根本原因①**
 （`Unresolved` は万能受容体）がここに残っている。
 ⇒ `check_arith`（4.4）と同じ形：**不透明なら素通し・判っていて不可なら報告**。
+
+##### 7.1 の記録 【✅ 完了 2026-09-15】
+
+###### 実測した実行時の規則（先に測ってから表を書いた）
+
+**単項演算子**
+
+| 演算子 | 許される型 | 外れたとき |
+|---|---|---|
+| `-` | `int` ・ `float` ・ `complex` | `bad operand type for unary '-'` |
+| `~` | **`int` のみ** | 同上 |
+| `not` | 何でも（`eval_truthy` を通る） | — |
+
+⚠⚠ **`bool` は `-` も `~` も不可**（`-True` / `~True` は実行時 TypeError）。
+整数として通る言語の癖で書くと落ちるので静的に弾く価値がある。
+
+**反復**
+
+| 反復できる | 反復できない |
+|---|---|
+| `list` / `fixed_list` / `list_like` / `set` / `tuple` / `str` / `range(..)` / ジェネレータ | `int` ・ `float` ・ `bool` ・ **`dict`** |
+
+⚠⚠ **`dict` は反復できない**（`for k in d:` は `TypeError: object is not iterable`）。
+**Python と違う**ので、取りこぼすと Python の癖で書いた `for k in d:` が実行時まで判らない。
+⇒ `d.keys()` を使う。
+
+**呼び出し**
+
+| 呼び出せる | 呼び出せない |
+|---|---|
+| 関数・ジェネレータ関数・ネイティブ関数・クラス名・`__call__` を持つインスタンス | `int` `float` `str` `bool` `None` `list` `dict` `set` `tuple` |
+
+⚠ クラスは `__neg__` / `__call__` / `__iter__` を定義できる（実測で確認）ので**一律で素通し**。
+持たない場合は実行時 `AttributeError`。
+
+###### `except` は `raise` と同じ述語を使った
+
+例外クラスの判定は `class_implements_trait(.., "Error")`。組み込み例外は
+`class_bases = ["Error"]` で登録されており、利用者の `class MyErr(Error)` も同じ経路で通る。
+⚠ 未知の名前も弾く（`UnknownGuardType` と同じ「腕が永久に死ぬ」系統）。
+⚠ trait / protocol 名は `is_known_class` に載らないので先に除外する。
+
+###### 副産物: `~` の結果型が**無条件 `Int`** だった
+
+`infer_unaryop` の `UnaryOp::BitNot => InferredType::Int` は被演算子を見ていなかった。
+⇒ 「可否と結果型を同じ表で決める」（4.4 の `check_arith` と同じ形）に直した。
+
+###### 結果
+
+**検体**: `C13` `E2` `K3` `O6` が `RUNTIME` → **`STATIC`**。
+静的検査の割合 84% → **88%**（100/114）。**偽陽性 0**（例題の移行なし）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 774 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（302 例題） |
+| `compare_python_impl.ps1` | 89/89 identical・stale 0 |
+| `compare_outputs.ps1 -A 9534ee0` | 232/233。差分は**新規例題 1 件のみ** |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **303/303 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/known_but_wrong{,_error}.ar`
 
 #### 7.2 `let` への書き込み経路の非対称（`M5` `Z7`）
 

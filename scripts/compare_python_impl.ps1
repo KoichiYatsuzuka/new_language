@@ -90,6 +90,7 @@ $knownDiff = @{
     'runtime_type_predicates'        = 'py: 実行時型判定の統一（uint と int の相互許容）が未実装で x is int が False になる・タスク 6.1 で新設'
     'overload_arg_types'             = 'py: オーバーロードの実行時ディスパッチが型を見ない（最初の定義を呼ぶので > int:hi になる）・タスク 5.7 で新設'
     'overload_arg_types_error'       = 'py: オーバーロードの実引数型による解決が無い（黙って実行してしまう・タスク 5.7 で新設）'
+    'known_but_wrong_error'          = 'py: 呼び出し可否・反復可否・単項演算子・except の型の静的検査が無い（実行時エラーになる・タスク 7.1 で新設）'
     'new_type_ctor_arg_error'        = 'py: new_type のコンストラクタ引数の型検査が無い（黙って str を包んで実行してしまう・タスク 5.6 で新設）'
     'condition_must_be_bool_error'   = 'py: 条件の bool 厳密検査が無い（真偽性で解釈して実行してしまう・タスク 5.5 で新設）'
     'match_case_pattern_type_error'  = 'py: 死ぬ case 腕の検査が無い（黙って miss になる・タスク 5.4 で新設）'
