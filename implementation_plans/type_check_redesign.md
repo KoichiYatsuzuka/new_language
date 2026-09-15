@@ -2530,11 +2530,14 @@ registry.member_set_is_closed(class_name) -> bool
 |---|---|
 | 素の `list` / `dict` / `set` 注釈への添字 | `mut zs: list = [1]` → `zs[0]`（**検体 L17 がこれ**） |
 | 素の容器型フィールドへの添字 | `mut v: list` フィールド → `c.v[0]` |
-| **戻り値注釈の無い関数**の呼び出し | `fn f(): return 1` → `f()` |
 | 可変長 / オーバーロード関数を**値として**参照 | `fn_value_type` が `None` を返す |
 
-⇒ どれも「要素型を書いていない容器」か「戻り値型を書いていない関数」で、
-**型注釈を書けば消える**。タスクとしては残すが、7.1〜7.6 の後でよい。
+⚠⚠ **当初ここに「戻り値注釈の無い関数の呼び出し」を挙げたが誤りだった**（2026-09-15 に訂正）。
+`fn f(): return 1` は **`function 'f' is missing a return type annotation` という静的エラー**で、
+合法な `Unresolved` の源ではない（引数注釈も必須）。実測で 3 パターンとも合法なのを確かめ直した。
+
+⇒ どれも「**要素型を書いていない容器**」か「関数値として一意に型が決まらない関数」で、
+前者は**タスク 8.1 で書けなくなる**。タスクとしては残すが、7.1〜7.6 の後でよい。
 ⚠ 直すなら「判っている要素だけを期待型と照合する」（`join` の結果は変えない）。
 
 #### 7.8 外部言語のクラスインスタンスを正しく型付けする（⚠ **7.5 の前に**）
@@ -2805,4 +2808,149 @@ None => Self::List          // ← 要素型を捨てて素の `list` にする
 - **7.7（`L17`）の想定パターン 4 つのうち 2 つ**（素の `list` 注釈への添字・素の容器型
   フィールドへの添字）は **8.1 で消える** ⇒ 7.7 の優先度はさらに下がる
 - `subscript-assign recv=unknown` は **7.8**（外部言語由来）の領分で、8.1 では消えない
+
+---
+
+## §11 フェーズ 9 — campaign 中に見つけた本体側のバグ（起票 2026-09-15）
+
+型検査の再設計を進める過程で、**型検査そのものではない**バグが見つかった。
+フェーズ 7 / 8 のタスクとは独立なのでここへ分ける。
+
+⚠ ここに載せるのは**実測で再現を確認したものだけ**。
+
+| # | 内容 | 影響 | 見つけたタスク |
+|---|---|---|---|
+| **9.1** | `o::T.attr += v` がバイトコードに載らない | 実行不能 | 5.1 |
+| **9.2** | `freeze` の意味がドキュメントと実装で食い違う | 仕様が確定していない | 7.2 |
+| **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
+| **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | Python 側の型が使えない | 7.8 |
+| **9.5** | `compare_bytecode.ps1` が相対パスの `-A` で**偽の全差分**を出す | ゲートが嘘をつく | 6.1 |
+| **9.6** | `examples/_tmp_demo.txt` が例題実行で書き換わる | `git status` が毎回汚れる | 全般 |
+
+---
+
+### 9.1 `o::T.attr += v` がバイトコードに載らない
+
+```arrow
+trait Scored:
+    mut score: int
+class Player(Scored):
+    mut name: str
+mut p = Player(10, "ann")
+p::Scored.score += 5
+```
+
+```
+VmForceError: cannot compile top-level statement `AttrCompoundAssign` to bytecode
+```
+
+⚠ 関数の中でも同じ（`cannot compile function 'bump'`）。
+⚠ **修飾しない `p.score += 5` は通る。** trait 名で修飾した形だけが載らない。
+⚠ **タスク 5.1 の前から同じ**（HEAD で実測）。型検査は通るので、VM コンパイラ側の未対応。
+
+⇒ `vm/compiler` に `AttrCompoundAssign` の trait 修飾形を足す。
+⚠ `force_gate` は「例題が VM に載るか」を見る網なので、**例題を足せば再発を防げる**。
+
+### 9.2 `freeze` の意味がドキュメントと実装で食い違う
+
+`src/ast.rs` の doc は:
+
+> `Freeze` : `freeze x` — `mut` 変数を `let`（不変）に降格する。
+
+実測はそうなっていない:
+
+| `freeze xs` の後 | 実行時 | `let xs` なら |
+|---|---|---|
+| `xs = [2]` | **エラー** | エラー |
+| `xs.append(2)` | **通る**（`[1, 2]`） | **静的エラー** |
+| `xs[0] = 2` | **通る**（`[2]`） | **静的エラー** |
+
+⇒ `freeze` が禁じているのは**再束縛だけ**で、「`let` への降格」ではない。
+
+⚠⚠ **どちらが正しいかは仕様判断。** 2 択:
+
+| 案 | 内容 | 影響 |
+|---|---|---|
+| A | **doc を実装に合わせる**（`freeze` ＝ 再束縛の禁止） | 変更なし。タスク 7.2 の静的検査もこのままでよい |
+| B | **実装を doc に合わせる**（`freeze` ＝ `let` 化） | 実行時（`append` / 添字代入の禁止）と静的検査の両方を変える |
+
+⚠ タスク 7.2 は**現状の実装に合わせて**（案 A 相当で）静的検査を入れた。
+案 B を採るなら 7.2 の `CheckState::frozen` を可変性フラグの降格に置き換える。
+
+### 9.3 ゲートが `archived/` と `practical_examples/` を見ていない
+
+`scripts/scan_examples.ps1` が走査するのは **9 カテゴリだけ**:
+
+```
+basics collections classes typing exceptions async bench apps interop
+```
+
+⇒ `examples/archived/` と `examples/practical_examples/` は**どのゲートにも掛かっていない**。
+
+##### 実際に壊れているもの（実測）
+
+| 例題 | 状態 |
+|---|---|
+| `examples/archived/id.ar` | **exit 1**。`AttributeError: 'Box' has no field 'val'; all fields must be declared in the class body` |
+| `examples/archived/decorator.ar` | **exit 1**。`'Config.__init__' takes 1 argument(s) but 1 were given` ＋ 宣言なしフィールド 2 箇所 |
+| `examples/apps/spider_render.ar` | 単体解析で**静的エラー 20 件**（`apps/` にあるが `$skip` に載っている） |
+
+⚠⚠ **タスク 7.5 の偽陽性計測でこれらを「偽陽性」と数えかけた。** 壊れた例題が放置されていると、
+**計測の母集団が汚れる**。
+
+⇒ 3 択:
+1. `archived/` を**消す**（役目を終えたものなら）
+2. 直してゲート対象に入れる
+3. 「ゲート対象外である」ことを `archived/README` などに明記し、計測スクリプトも除外する
+
+⚠ `spider_render.ar` は import 専用モジュールなので、単体実行では import が解決せず
+`Any` 由来のエラーが出るのは**正常**。こちらは「スキップ理由の記録」で足りる。
+
+### 9.4 `.pyi` のクラスメンバー・モジュール変数が型検査に届かない
+
+`import[py-int]` は `.pyi` を**優先探索している**（`load_python_interface_module`）。
+しかし実測すると、`.pyi` に書いても型検査に反映されないものがある:
+
+| `.pyi` の記述 | 反映される？ |
+|---|---|
+| `def make(n: int) -> Holder: ...` | ✅ 戻り値型が使われる |
+| `class Holder:` | 名前だけ（`function->Holder` として合成） |
+| `    n: int`（クラスのメンバー） | ❌ `let s: str = h.n` が通る |
+| `VALUE: int`（モジュール変数） | ❌ `pmod.VALUE` は `Any` のまま |
+
+⚠ 抽出しているのは `extract_py_type_stubs` の「トップレベルの `class` 名」と
+「トップレベルの `def`」だけ。
+
+⇒ タスク 7.8（外部クラスを `Any` にする）を入れると、**`.pyi` を書いても救えない**状態が
+はっきりする。7.8 の後に「`.pyi` を深く読む」タスクとして実施する。
+
+### 9.5 `compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す
+
+```powershell
+./scripts/compare_bytecode.ps1 -A target/release/arrow_p61.exe   # ⛔ 全件 "A=1 lines"
+```
+
+`Process::Start` は `FileName` を **`WorkingDirectory` ではなく呼び出し側の cwd** で解決する。
+⇒ 基準バイナリが見つからず、**249 件中 180 件差分**という嘘の結果になる
+（タスク 6.1 で踏んだ。絶対パスで渡し直したら 249/249 一致）。
+
+⇒ スクリプト側で `Resolve-Path` するか、見つからないときに**即座に止める**。
+⚠ 「ゲートが緑でないのに緑に見える」の逆で、「**赤でないのに赤に見える**」形。
+どちらも同じくらい危険（時間を溶かす）。
+
+### 9.6 `examples/_tmp_demo.txt` が例題実行で書き換わる
+
+`examples/basics/built_in.ar` ほかがファイル I/O の実演でこのファイルを書く。
+git に**追跡されている**ので、ゲートを回すたびに `git status` が汚れ、
+`git add -A` で**意図しない差分が混ざる**。
+
+⇒ `.gitignore` に入れるか、例題の書き先を一時ディレクトリへ変える。
+
+### 順序
+
+`9.5` → `9.6` → `9.3` → `9.1` → `9.2` → `9.4`
+
+⚠ `9.5` / `9.6` は**作業の足場**（ゲートの信頼性と作業ツリーの清潔さ）なので先に直す。
+⚠ `9.2` は仕様判断が要るので、判断が出るまで着手しない。
+⚠ `9.4` は**タスク 7.8 の後**（7.8 で「`.pyi` がないと `Any`」が確定してから）。
 
