@@ -1,0 +1,75 @@
+# builtin_signatures.ar — 組み込み関数に型を付ける（タスク 7.4）
+#
+# ## 何が壊れていたか
+#
+# | 検体 | コード | 以前 |
+# |---|---|---|
+# | `Z10` | `let s: str = len([1, 2])` | **無検査**（`len` の戻り値型が無い） |
+# | `Z5` | `range("s")` | 実行時のみ |
+#
+# ## ⚠⚠ `len` を外していた理由は誤りだった
+#
+# タスク 2.4 では「`len` を登録するとグローバル名を占有して `let len = ...` が
+# already declared になる。例題が `len` を変数名に使っている（実測 3 箇所）」として
+# 見送っていた。7.4 で測り直すと:
+#
+#   - `let len = 5` は**すでに実行時 `NameError: variable 'len' is already declared`**
+#   - 「例題 3 箇所」の実体は `print("len:", len(nums))` のような**文字列 `"len:"`**だった
+#     （テキスト grep の誤読）。変数名に使っている例題は **0 件**
+#
+# ⇒ 登録しても新しく壊れるものは無かった。**占有してよいのは「実行時も既に占有している」
+#   名前だけ**、という判断基準は正しいが、当てはめる事実の方を間違えていた。
+#
+# ## 実測した表
+#
+# | 関数 | 引数 | 戻り値 |
+# |---|---|---|
+# | `range` | `int` を 1〜3 個 | `list[int]` |
+# | `len` | 1 個（`list`/`str`/`dict`/`set`/`tuple`/`fixed_list`/`__len__` を持つクラス） | `int` |
+#
+# ⚠ 「大きさを持つ型」は `InferredType` に無いので、`len` の仮引数は `Any` にして
+#   **明らかに持たない型だけ**を専用の診断で弾く（`expects 'str'` のような嘘の期待型を
+#   出さないため）。
+#
+# 弾かれる例は builtin_signatures_error.ar
+
+print("=== len の戻り値は int ===")
+
+let n: int = len([1, 2, 3])
+print(n)                            # 3
+
+print(len("abc"))                   # 3
+
+let d: dict[str, int] = {"a": 1}
+print(len(d))                       # 1
+
+let s: set[int] = {1, 2}
+print(len(s))                       # 2
+
+print(len((1, 2)))                  # 2
+
+print("=== __len__ を持つクラスは通る ===")
+
+class Bag:
+    mut items: list[int]
+
+    fn __len__(self) -> int:
+        return len(self.items)
+
+print(len(Bag([1, 2, 3])))          # 3
+
+print("=== range は int を 1〜3 個 ===")
+
+print(range(3))                     # [0, 1, 2]
+print(range(1, 5))                  # [1, 2, 3, 4]
+print(range(1, 9, 2))               # [1, 3, 5, 7]
+
+print("=== range の戻り値は list[int] ===")
+
+let xs: list[int] = range(3)
+print(xs)                           # [0, 1, 2]
+
+for i in range(2):
+    print(i)                        # 0, 1
+
+print("done")

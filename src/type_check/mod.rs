@@ -90,21 +90,61 @@ impl TypeChecker {
         // 本体の演算が一切型特化されず、そこから `Unresolved` が式全体へ伝播していた。
         // シグネチャは `params: None`（引数の検査はしない）で戻り値型だけ与える。
         //
-        // **`range` に絞っている**。ここへ登録した名前はグローバルスコープを占めるため
-        // `let <name> = ...` が「already declared」の静的エラーになる（`int`/`str` と同じ扱い）。
-        // `len` も試したが、`let len = ...` は今まで通っていた書き方なので**新たなエラーを増やす**割に
-        // 特化件数の伸びが小さく、割に合わないと判断して外した。
-        // `range` はループ形 `for i in range(n)` の頻度が圧倒的で、変数名として使われることは稀。
-        let builtin_fns: &[(&str, InferredType)] = &[
-            ("range", InferredType::ListOf(Box::new(InferredType::Int))),
+        // ⚠⚠ **`len` を外していた理由は誤りだった**（タスク 7.4 で実測して訂正）。
+        //    以前ここには「`let len = ...` は今まで通っていた書き方なので新たなエラーを
+        //    増やす」「例題が `len` を変数名に使っている（実測 3 箇所）」と書いてあったが:
+        //      - `let len = 5` は**すでに実行時 `NameError: variable 'len' is already declared`**
+        //      - 「例題 3 箇所」の実体は `print("len:", len(nums))` のような**文字列 `"len:"`**
+        //        だった（テキスト grep の誤読）。変数名に使っている例題は **0 件**
+        //    ⇒ `len` を登録しても新しく壊れるものは無い。
+        //
+        // ⚠ ここへ登録した名前はグローバルスコープを占める（`int`/`str` と同じ扱い）。
+        //   占有してよいのは「実行時も既に占有している」名前だけ。
+        //
+        // ## 引数の型（実測して表を書いた）
+        //
+        // | 関数 | 引数 | 戻り値 |
+        // |---|---|---|
+        // | `range` | `int` を 1〜3 個 | `list[int]` |
+        // | `len` | 1 個（`list`/`str`/`dict`/`set`/`tuple`/`fixed_list`/`__len__` を持つクラス） | `int` |
+        //
+        // ⚠ `len` の引数は「大きさを持つ型」で、`InferredType` に対応する型が無い。
+        //   ⇒ `Any` にして個数だけ検査し、**明らかに大きさを持たない型**は
+        //     `check_len_argument`（`call_check.rs`）で弾く。
+        let int_p = |name: &str, has_default: bool| types::FnTypeParam {
+            name: name.to_string(),
+            mutable: false,
+            ty: InferredType::Int,
+            has_default,
+        };
+        let builtin_fns: Vec<(&str, Option<Vec<types::FnTypeParam>>, InferredType)> = vec![
+            (
+                "range",
+                Some(vec![
+                    int_p("start", false),
+                    int_p("stop", true),
+                    int_p("step", true),
+                ]),
+                InferredType::ListOf(Box::new(InferredType::Int)),
+            ),
+            (
+                "len",
+                Some(vec![types::FnTypeParam {
+                    name: "obj".to_string(),
+                    mutable: false,
+                    ty: InferredType::Any,
+                    has_default: false,
+                }]),
+                InferredType::Int,
+            ),
         ];
-        for (name, ret) in builtin_fns {
+        for (name, params, ret) in builtin_fns {
             global.insert(
                 name.to_string(),
                 VarInfo {
                     ty: InferredType::Function {
-                        params: None,
-                        return_type: Box::new(ret.clone()),
+                        params,
+                        return_type: Box::new(ret),
                     },
                     mutable: false,
                 },

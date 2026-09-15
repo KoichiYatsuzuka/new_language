@@ -147,6 +147,13 @@ impl TypeChecker {
             }
         }
 
+        // ⚠ `len()` の引数は「大きさを持つ型」（タスク 7.4）。
+        if let Expr::Ident { name, .. } = func {
+            if name == "len" && self.lookup("len").is_some() {
+                self.check_len_argument(&arg_data);
+            }
+        }
+
         // ⚠ `new_type` のコンストラクタ引数（タスク 5.6・検体 `T3`）。
         if let Expr::Ident { name, .. } = func {
             if let Some(original) = self.registry.new_type_original(name).map(str::to_string) {
@@ -1001,6 +1008,34 @@ impl TypeChecker {
             // 曖昧: どれを選んでも嘘になりうるので絞り込まない。
             _ => candidates,
         }
+    }
+
+    /// `len()` の引数が**大きさを持つ型**かを検査する（タスク 7.4）。
+    ///
+    /// ## 実測した実行時の規則
+    ///
+    /// | 大きさを持つ | 持たない |
+    /// |---|---|
+    /// | `list` ・ `fixed_list` ・ `list_like` ・ `str` ・ `dict` ・ `set` ・ `tuple` | `int` ・ `float` ・ `bool` ・ `None` |
+    /// | `__len__` を持つクラス | `__len__` を持たないクラス（`object of type 'object' has no len()`） |
+    ///
+    /// ⚠ `InferredType` に「大きさを持つ型」は無いので、仮引数の型は `Any` にして
+    /// **明らかに持たない型だけ**をここで弾く（7.1 と同じ「判っていて不可なら報告」）。
+    /// ⚠ クラスは `__len__` を定義できるので素通しする。
+    fn check_len_argument(&mut self, arg_data: &[(Option<String>, InferredType)]) {
+        use InferredType as T;
+        let [(None, got)] = arg_data else { return };
+        let no_len = matches!(
+            got,
+            T::Int | T::Float | T::Complex | T::Bool | T::None | T::Undefined
+        );
+        if !no_len {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::NotSized { ty: got.clone() },
+            span: None,
+        });
     }
 
     /// 呼び出し対象が呼び出せる型かを検査する（タスク 7.1・検体 `C13`）。

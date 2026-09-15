@@ -1,0 +1,17 @@
+# builtin_signatures_error.ar — 組み込み関数の型を守る（タスク 7.4）
+#
+# 正常系は builtin_signatures.ar
+#
+# ⚠ `len` の戻り値型は以前**存在しなかった**ので、`let s: str = len([1,2])` が
+#   黙って通っていた（検体 `Z10`）。`Unresolved` が万能受容体だったため。
+#
+# 期待されるエラー:
+#   StaticTypeError  's' is declared 'str' but initialized with 'int'
+#   StaticTypeError  argument 0 of 'range' expects 'int' but got 'str'
+#   StaticTypeError  object of type 'int' has no `len()`
+
+let s: str = len([1, 2])            # ⛔ len は int を返す
+
+print(range("s"))                   # ⛔ range は int を取る
+
+print(len(5))                       # ⛔ int は大きさを持たない

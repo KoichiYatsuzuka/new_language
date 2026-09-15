@@ -368,6 +368,11 @@ pub enum TypeErrorKind {
     CastCanNeverSucceed { from: InferredType, to: String, reason: String },
     /// `mustbe` が**成功しうる値を 1 つも持たない**（タスク 7.3・検体 `T2`）。
     MustBeCanNeverSucceed { from: InferredType, to: InferredType },
+    /// `len()` の引数が大きさを持たない型（タスク 7.4）。
+    ///
+    /// ⚠ 「大きさを持つ型」は `InferredType` に無いので、専用の文言にする
+    /// （`expects 'str'` のような**嘘の期待型**を出さないため）。
+    NotSized { ty: InferredType },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -773,6 +778,10 @@ impl StaticTypeError {
             TypeErrorKind::MustBeCanNeverSucceed { from, to } => format!(
                 "{} can never be {}; the assertion always fails",
                 hl_q(&from.to_string()), hl_q(&to.to_string())
+            ),
+            TypeErrorKind::NotSized { ty } => format!(
+                "object of type {} has no {}",
+                hl_q(&ty.to_string()), hl_bt("len()")
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(
