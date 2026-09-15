@@ -364,6 +364,10 @@ pub enum TypeErrorKind {
     ///
     /// ⚠ 「腕が永久に死ぬ」系統（3.4 の `UnknownGuardType` と同じ）。
     ExceptNotError { type_name: String, reason: &'static str },
+    /// `=>` キャストが**成功しうる組み合わせを 1 つも持たない**（タスク 7.3・検体 `T1`）。
+    CastCanNeverSucceed { from: InferredType, to: String, reason: String },
+    /// `mustbe` が**成功しうる値を 1 つも持たない**（タスク 7.3・検体 `T2`）。
+    MustBeCanNeverSucceed { from: InferredType, to: InferredType },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -761,6 +765,14 @@ impl StaticTypeError {
             TypeErrorKind::ExceptNotError { type_name, reason } => format!(
                 "{} in {} is {}; the handler can never match",
                 hl_q(type_name), hl_bt("except"), reason
+            ),
+            TypeErrorKind::CastCanNeverSucceed { from, to, reason } => format!(
+                "cannot cast {} to {}: {}",
+                hl_q(&from.to_string()), hl_q(to), reason
+            ),
+            TypeErrorKind::MustBeCanNeverSucceed { from, to } => format!(
+                "{} can never be {}; the assertion always fails",
+                hl_q(&from.to_string()), hl_q(&to.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

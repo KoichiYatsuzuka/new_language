@@ -37,6 +37,8 @@ $histWords = @('削除', '廃止', '撤去', '以前', 'かつて', '旧 ', '旧
 #    「`compile_fn` とその `_inner`」のように規約を説明する書き方は正当なので落とす（#57）。
 $whitelist = @(
     'force_gate','compare_vm_modes','compare_python_impl','scan_examples','debug_session',
+    'compare_wasm_frontend','compare_outputs','compare_bytecode','compare_import_paths',
+    'type_obligations','hash_eq_identity','syntax_cov','generate-codebase-map',
     'repl_session','tw_stats_files','ab_bench','ab_bench_modes','dump_native_ir','prof_dist',
     'bench_field_access','fn_call','closure_call','block_expr','method_call','field_access',
     'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire',

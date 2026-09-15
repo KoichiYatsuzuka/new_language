@@ -1,5 +1,16 @@
 # mustbe_error: examples of mustbe type assertion failures
+#
+# ⚠⚠ **タスク 7.3 で実行時 → 静的へ昇格した。** 以前は
+# `TypeError: mustbe assertion failed: expected 'int', got 'str'` という実行時エラーだったが、
+# `str` が `int` になることは**ありえない**（成功しうる値が 1 つも無い）ので、
+# タスク 5.4（死ぬ `case` 腕）と同じ理屈で実行前に弾かれる。
+#
+# ⚠ `mustbe` そのものは動的な表明のままで、`Any` / `Union` / trait からの
+#   ダウンキャストは従来どおり実行時に検査される（cast_mustbe_possible.ar）。
+#
+# 期待されるエラー:
+#   StaticTypeError  'str' can never be 'int'; the assertion always fails
 
 # Fails: value is str, not int
 let s = "hello"
-let n = s mustbe int  # TypeError: mustbe assertion failed: expected `int`, got `str`
+let n = s mustbe int

@@ -1,6 +1,6 @@
 # @id: T1
 # @obligation: cast で不可能な変換
-# @baseline: RUNTIME
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。

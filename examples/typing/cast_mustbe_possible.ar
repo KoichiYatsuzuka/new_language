@@ -1,0 +1,94 @@
+# cast_mustbe_possible.ar — 「成功しうる組み合わせが 1 つも無い」変換・表明を弾く
+# （タスク 7.3）
+#
+# ## 何が壊れていたか
+#
+# `=>` と `mustbe` は**動的**な変換・表明なので実行時に検査するのが正しい。
+# しかし**成功しうる組み合わせが 1 つも無い**なら到達不能で、タスク 5.4（死ぬ `case` 腕）と
+# 同じ理屈で静的に弾ける。以前はどちらも実行時まで判らなかった（検体 `T1` / `T2`）。
+#
+# ## 実測した `=>` の規則
+#
+# | 元 | 先 | 結果 |
+# |---|---|---|
+# | クラスのインスタンス | `__cast__[T]` を持つ `T` | ✅ |
+# | クラスのインスタンス | 持たない `T` | ⛔ `'C' is not castable to 'int'` |
+# | 何でも | **`new_type`** | ✅ |
+# | **`new_type`** | その基底型 | ✅（取り出し） |
+# | `list` ⇄ `fixed_list` | — | ✅（平坦化変換と復元・**双方向**） |
+# | `1 => float` ・ `"5" => int` ・ `xs => list[int]` | — | ⛔ |
+#
+# ⚠⚠ **プリミティブ同士の `=>` は書けない。** 変換は `float(1)` のような組み込み関数を使う
+# （決定 D-5 / タスク 2.4）。
+#
+# ## 実測した `mustbe` の規則
+#
+# ⚠⚠ **`mustbe` に数値昇格は効かない。** `1 mustbe float` は**必ず失敗する**。
+# 実行時の型そのものを見るので、`==` の昇格ラティス（`uint → int → float`）とは規則が違う。
+# タスク 5.4（`case` パターンは昇格する）と混同しないこと。
+#
+# 弾かれる例は cast_mustbe_possible_error.ar
+
+print("=== __cast__ を持つクラス ===")
+
+class Celsius:
+    let value: float
+
+    fn __init__(mut self, value: float) -> None:
+        self.value = value
+
+    fn __cast__[int](let self) -> int:
+        return int(self.value)
+
+let temp = Celsius(36.6)
+print(temp => int)                  # 36
+
+print("=== new_type への変換と取り出し ===")
+
+new_type Meters: float
+
+let m = 5.0 => Meters
+print(repr(m))                      # Meters(5.0)
+print(m => float)                   # 5.0   ← 基底型へ取り出せる
+
+print("=== list ⇄ fixed_list は双方向 ===")
+
+class Vec2:
+    mut x: float
+    mut y: float
+
+let lst = [Vec2(1.0, 2.0), Vec2(3.0, 4.0)]
+let fl: fixed_list[Vec2] = lst => fixed_list[Vec2]
+print(len(fl))                      # 2
+let back: list[Vec2] = fl => list[Vec2]
+print(len(back))                    # 2
+
+print("=== mustbe は Any / Union の絞り込みに使う ===")
+
+let a: Any = 5
+print(a mustbe int)                 # 5
+
+let u: Union[int, str] = 1
+print(u mustbe int)                 # 1
+
+print("=== mustbe は trait からのダウンキャストに使える ===")
+
+trait Speaks:
+    fn speak(let self) -> str:
+        ...
+
+class Dog(Speaks):
+    mut name: str
+
+    fn speak(let self) -> str:
+        return self.name
+
+let sp: Speaks = Dog("rex")
+print((sp mustbe Dog).name)         # rex
+
+print("=== 同じ型への mustbe は通る ===")
+
+let n: int = 7
+print(n mustbe int)                 # 7
+
+print("done")

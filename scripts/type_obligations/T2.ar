@@ -1,6 +1,6 @@
 # @id: T2
 # @obligation: mustbe の型不一致
-# @baseline: RUNTIME
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。

@@ -2224,7 +2224,7 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 |---|---|---|---|---|
 | ~~**7.1**~~ | ~~「判らない」と「誤り」の取り違えを直す~~ → **✅ 完了 2026-09-15** | `C13` `K3` `O6` `E2` | — | 下記「7.1 の記録」。4 件**全て STATIC** |
 | ~~**7.2**~~ | ~~`let` への書き込み経路の非対称を埋める~~ → **✅ 完了 2026-09-15** | `M5` `Z7` | — | 下記「7.2 の記録」。2 件**とも STATIC** |
-| **7.3** | 「常に失敗する」変換・表明を弾く | `T1` `T2` | 4.3 / 5.4 | 小 |
+| ~~**7.3**~~ | ~~「常に失敗する」変換・表明を弾く~~ → **✅ 完了 2026-09-15** | `T1` `T2` | 4.3 / 5.4 | 下記「7.3 の記録」。2 件**とも STATIC** |
 | **7.4** | 組み込み関数のシグネチャ表 | `Z10` `Z5` | — | 中（機構の設計） |
 | **7.5** | メンバーの存在検査 | `M1` `M2` | — | 中（レジストリ 6 種の穴埋め） |
 | **7.6** | 異型の等値比較を静的エラーにする | `O4` `O5` `O8` | — | 中（**仕様変更**） |
@@ -2401,6 +2401,70 @@ c.m(1.5)        # 旧: 素通り。実測では 1.5 を出していた
 ⚠ `cast` / `mustbe` そのものは**動的でよい**。弾くのは「**成功しうる組み合わせが 1 つも無い**」
 場合だけで、これはタスク 5.4（死ぬ `case` 腕）と同じ理屈。
 ⚠ `T1` はタスク 4.3 で `__cast__` の在処を正確に引けるようになっており**材料が揃っている**。
+
+##### 7.3 の記録 【✅ 完了 2026-09-15】
+
+###### 実測した `=>` の規則（表の取りこぼしが偽陽性に直結する）
+
+| 元 | 先 | 結果 |
+|---|---|---|
+| クラスのインスタンス | `__cast__[T]` を持つ `T` | ✅ |
+| クラスのインスタンス | 持たない `T` | ⛔ `'C' is not castable to 'int'` |
+| 何でも | **`new_type`** | ✅ |
+| **`new_type`** | その基底型 | ✅（取り出し） |
+| `list` ⇄ `fixed_list` | — | ✅ **双方向** |
+| `1 => float` ・ `"5" => int` ・ `xs => list[int]` | — | ⛔ |
+
+⚠⚠ **プリミティブ同士の `=>` は書けない**（`1 => float` は実行時エラー）。
+変換は `float(1)` を使う（決定 D-5 / タスク 2.4）。
+
+⚠ **最初の実装は表を 2 つ取りこぼしていた**（`new_type` からの取り出し・`fixed_list → list`）。
+`scan_examples` が `other_typing.ar` / `polymorphism.ar` / `fixed_list.ar` /
+`runtime_checks_in_function.ar` の 4 例題で落ちて教えた。4.4 と同じ教訓:
+**可否を 1 本の表で決める設計では、表の取りこぼしがそのまま偽陽性になる。**
+
+###### 実測した `mustbe` の規則
+
+⚠⚠ **`mustbe` に数値昇格は効かない。** `1 mustbe float` は**必ず失敗する**。
+実行時の型そのものを見るので、`==` の昇格ラティス（`uint → int → float`）とは規則が違う。
+⇒ **タスク 5.4（`case` パターンは昇格する）と混同しないこと。** 同じ「到達不能を弾く」でも
+判定規則が別。
+
+⚠ 判定は**実行時の種別**（`value_matches_type_ann` が見る外側の種別）で行う。
+`list[int] mustbe list[str]` は外側が同じなので素通し（要素型は既存の警告が扱う）。
+⚠ クラス・trait・protocol・`Any` / `Union` は素通し（ダウンキャストが成立しうる）。
+
+###### 両方とも「対象式を推論していなかった」
+
+`Expr::Cast` は「挙動不変」のため object を推論しておらず、`infer_mustbe` は
+`walk` で型を捨てていた。⇒ どちらも推論して元の型を使うようにした。
+
+###### 副産物: `stale_doc_refs.ps1` の whitelist にゲート名が足りなかった
+
+`compare_wasm_frontend` をコメントに書いたら「存在しない識別子」と判定された。
+`force_gate` / `compare_python_impl` 等は載っていたのに、後から足したゲートが漏れていた。
+⇒ `compare_wasm_frontend` / `compare_outputs` / `compare_bytecode` /
+`compare_import_paths` / `type_obligations` / `hash_eq_identity` / `syntax_cov` /
+`generate-codebase-map` を追加した。
+
+###### 結果
+
+**検体**: `T1` `T2` が `RUNTIME` → **`STATIC`**。静的検査の割合 89% → **91%**（104/114）。
+⚠ 既存例題 `typing/mustbe_error.ar` が実行時 → 静的へ昇格（コメントを更新）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 775 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（306 例題） |
+| `compare_python_impl.ps1` | 91/91 identical・stale 0 |
+| `compare_outputs.ps1 -A a3ba728` | 235/237。差分は新規例題 1 件＋昇格した既存例題 1 件 |
+| `stale_doc_refs.ps1` | OK（whitelist を補修） |
+| `compare_wasm_frontend.ps1` | **307/307 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/cast_mustbe_possible{,_error}.ar`
 
 #### 7.4 組み込み関数のシグネチャ表（`Z10` `Z5`）
 

@@ -1,0 +1,22 @@
+# cast_mustbe_possible_error.ar — 成功しえない変換・表明（タスク 7.3）
+#
+# 正常系は cast_mustbe_possible.ar
+#
+# ⚠ 3 件とも以前は**実行時まで判らなかった**（検体 `T1` / `T2`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  cannot cast 'C' to 'int': no `__cast__[int]` method defined
+#   StaticTypeError  cannot cast 'int' to 'float': `=>` requires an instance source or a new_type target
+#   StaticTypeError  'int' can never be 'str'; the assertion always fails
+
+class C:
+    mut n: int
+
+let c = C(1)
+
+print(c => int)                     # ⛔ __cast__[int] が無い
+
+print(1 => float)                   # ⛔ プリミティブ同士の `=>` は書けない（float(1) を使う）
+
+let a: int = 1
+print(a mustbe str)                 # ⛔ int が str になることはない
