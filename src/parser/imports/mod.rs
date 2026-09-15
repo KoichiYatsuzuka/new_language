@@ -50,7 +50,27 @@ fn python_lib_dirs() -> &'static Vec<std::path::PathBuf> {
 /// - トップレベルの `def` / `async def`:
 ///   アノテーション付き → `function->ReturnType`、なし → ボディ推論（フォールバックは `Any`）
 /// - トップレベルの `class`:
-///   `function->ClassName`（呼び出すとインスタンスを返す型として扱う）
+///   **`function->Any`**（呼び出すと `Any` を返す）
+///
+/// ⚠⚠ **クラス名を戻り値型にしてはいけない**（タスク 7.8）。以前は `function->ClassName` と
+/// していたが、そのクラスは **Arrow のクラスではない**（レジストリにメンバーが無い）。
+/// 名前だけあってメンバーが空の `NamedInstance` になり、**嘘の型**が下流へ流れていた:
+///
+/// ```text
+/// let h = pmod.Holder(1)
+/// let s: str = h.n        # 旧: 黙って通る（Python の int が str 変数に入る）
+/// ```
+///
+/// ⚠ `Any` は Arrow では「何でも通る」ではなく「**明示ダウンキャストを要求する**」。
+/// だから `Any` にすることが**型検査を走らせる**ことになる。
+/// ⚠ 同じモジュールの**関数**と**モジュール変数**は既に `Any` になっており、
+/// クラス経路だけが規則から漏れていた（実測）。
+///
+/// ⚠⚠ **`Unresolved` にしてはいけない。** `type_check/stmt/check.rs` の `Stmt::Import` に
+/// 先人の実測記録がある: `editor` ビルドで未知メンバを `Any` にすると
+/// `OperationOnAny` の偽陽性が出る。2 つの「判らない」を混同しないこと:
+/// **解決を試みていない**（editor・未読込）は `Unresolved`、
+/// **解決を試みたが外部言語なので判らない**は `Any`。ここは後者。
 /// - 複数行シグネチャ（ブラケット深さを追跡）に対応
 /// - `_` で始まるプライベート関数は除外
 fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
@@ -83,9 +103,13 @@ fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         if line_indent == 0 {
             if let Some(class_name) = py_parse_class_name(trimmed) {
                 current_class = Some((class_name.clone(), 0));
+                // ⚠⚠ 戻り値は `Any`（doc の「クラス名を戻り値型にしてはいけない」を参照）。
+                //    ⚠ スタブ（`.ars`）を読んだ C# / JS のクラスは**通常の Arrow 宣言**として
+                //      別経路で登録されるので、ここを通らない。触ってよいのは
+                //      「メンバーが判らない Python のクラス」だけ。
                 stmts.push(crate::ast::Stmt::Let(
                     class_name.clone(),
-                    Some(format!("function->{}", class_name)),
+                    Some("function->Any".to_string()),
                     crate::ast::Expr::None,
                 ));
                 i += 1;
