@@ -1449,6 +1449,11 @@ impl TypeChecker {
     /// 引けず、型検査が素通りする。`build_field_index` が実行時に
     /// 「trait のフィールドを先頭に、own を後ろに」と**1 つのスロット列へ畳んでいる**のと
     /// 同じものを、静的側でも 1 つに見せるための関数。
+    /// 【計測用・一時】`declared_field_type` の別モジュール向け入口。
+    pub(crate) fn declared_field_type_pub(&self, class_name: &str, field: &str) -> Option<InferredType> {
+        self.declared_field_type(class_name, field)
+    }
+
     fn declared_field_type(&self, class_name: &str, field: &str) -> Option<InferredType> {
         // own（＋クラス継承）を先に見る。own の宣言が trait の宣言を上書きするため。
         if let Some((_, ty)) = self.collect_class_field_details(class_name).get(field) {

@@ -122,6 +122,11 @@ impl TypeRegistryBuilder {
             class_bases.insert(class_name.to_string(), vec!["Error".to_string()]);
             class_field_details.insert(class_name.to_string(), exc_fields.clone());
         }
+        // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、
+        //    利用者が `class MyErr(Error)` と書いたときに `e.message` が引けなかった
+        //    （`collect_class_field_details` は基底を辿るが、`Error` に何も無かった）。
+        known_class_names.insert("Error".to_string());
+        class_field_details.insert("Error".to_string(), exc_fields.clone());
 
         Self {
             reg: TypeRegistry {
@@ -267,6 +272,15 @@ impl TypeRegistryBuilder {
                     // バリアント名 → そのバリアントの型（`enum_item_<name>`）。
                     // これで `Color.Red` が `NamedInstance("enum_item_Color")` になる。
                     let mut variant_fields = HashMap::new();
+                    // ⚠⚠ **enum 型自身にも `value` を持たせる**（タスク 7.5）。
+                    //    `let m: Color = Color.Green` は `enum_item_Color → Color` の
+                    //    アップキャスト（タスク 2.3）で通るので、変数の静的型は `Color` になる。
+                    //    その `m.value` を引けるようにするには、変種側だけでなく
+                    //    **enum 型の表にも** `value` が要る（実行時は同じインスタンス）。
+                    variant_fields.insert(
+                        "value".to_string(),
+                        (FieldKind::Const, InferredType::Int),
+                    );
                     for (vname, _) in variants.iter() {
                         variant_fields.insert(
                             vname.clone(),
@@ -342,6 +356,33 @@ impl TypeRegistryBuilder {
                     .insert(name.clone(), original.clone());
                 if let Some(orig_sigs) = self.reg.class_method_sigs.get(original).cloned() {
                     self.reg.class_method_sigs.insert(name.clone(), orig_sigs);
+                }
+                // ⚠⚠ **`value` フィールドを登録する**（タスク 7.5）。実行時の
+                //    `make_primitive_wrapper_class`（`interpreter/built_in_types.rs`）は
+                //    `__init__` で `self.value = value` を代入する**宣言済みフィールド**を
+                //    合成しているのに、静的側は `class_method_sigs` しか引き継いでいなかった。
+                //    ⇒ `Celsius(1.0).value` が `Unresolved` になり、型検査が素通りしていた。
+                // ⚠ 基底の連鎖を根まで辿る（`Kg: Meters: float` なら `float`）。
+                //   根がクラスのときは包まず**継承**なので登録しない（タスク 5.6 と同じ判断）。
+                let mut root = original.clone();
+                let mut seen = std::collections::HashSet::new();
+                while let Some(next) = self.reg.new_type_originals.get(&root).cloned() {
+                    if !seen.insert(next.clone()) {
+                        break;
+                    }
+                    root = next;
+                }
+                if let Some(ty) = InferredType::from_ann(&root) {
+                    if !matches!(
+                        ty,
+                        InferredType::NamedInstance(_)
+                            | InferredType::GenericInstance { .. }
+                            | InferredType::Unresolved
+                    ) {
+                        let mut f = HashMap::new();
+                        f.insert("value".to_string(), (FieldKind::Let, ty));
+                        self.reg.class_field_details.insert(name.clone(), f);
+                    }
                 }
             }
         }

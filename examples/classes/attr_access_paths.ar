@@ -63,9 +63,14 @@ fn write_read(mut o: Outer) -> None:
 fn show_pub[T: HasPub](let it: T) -> None:
     print(it.pub_f)
 
+# ⚠⚠ **タスク 7.5 で `o.nope` が静的エラーになった**（メンバーの存在検査）。
+#   この節の意図は「**実行時**に `AttributeError` を捕まえる」ことなので、
+#   静的に型が決まらない経路（要素型を持たない `list` の要素）から同じアクセスへ到達させる。
+#   ⚠ `examples/exceptions/try_except.ar` がタスク 4.4 で踏んだのと同じ形の移行。
 fn missing(let o: Outer) -> None:
+    let opaque: list = [o]
     try:
-        print(o.nope)
+        print(opaque[0].nope)
     except AttributeError as e:
         print("caught missing attr")
 

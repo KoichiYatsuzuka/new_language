@@ -1,0 +1,115 @@
+# member_existence.ar — 存在しないメンバーを静的に弾く（タスク 7.5）
+#
+# ## 前提: Arrow のメンバーは**クラス本体の宣言だけで確定する**
+#
+# 実行時の文言がそう言っている:
+#
+#     AttributeError: 'Box' has no field 'newattr'; all fields must be declared in the class body
+#
+# `__init__` の中でも、他のメソッドでも、外からでも**宣言の無いフィールドは作れない**。
+# ⇒ Arrow のクラスに関して、存在検査は**完全に静的に決まる**。
+#
+# ## ⚠⚠ 「情報が無い」と「メンバーが無い」を取り違えないこと
+#
+# レジストリにフィールド表もメソッド表も基底も無いクラスは、
+# **「メンバーが無い」のではなく「こちらが知らない」**ので素通しする:
+#
+# | 例 | 理由 |
+# |---|---|
+# | `slice` | 組み込みクラス。`begin`/`end`/`step` は特別扱い |
+# | 関数の中で宣言した `enum` | 収集パスが拾っていない |
+# | テンプレート型変数 `T` | `NamedInstance("T")` に化けているだけ |
+#
+# ⚠ これがタスク 7.8 で設計した「メンバー集合が閉じているか」の実体。
+#   **スタブが入ったときに「スタブに載っているものだけ許す」へ寄せられる形**にしてある。
+#
+# ## 実装時に埋めたレジストリの穴（実測した偽陽性 24 件 → 0 件）
+#
+# | 原因 | 直し方 |
+# |---|---|
+# | `new_type` の `value` が未登録 | 基底型で登録（`.value` の型検査も効くようになった） |
+# | protocol を普通のクラスとして引いていた | `registry.protocol()` を見る |
+# | `Error` にフィールド未登録 | 組み込み例外と同じ 5 つを `Error` にも |
+# | enum 型自身に `value` が無い | 変種側だけでなく enum 型の表にも登録 |
+# | 全インスタンス共通の `copy` | 実装側の特別扱いに合わせて表に追加 |
+#
+# 弾かれる例は member_existence_error.ar
+
+print("=== 宣言したフィールドとメソッド ===")
+
+class Point:
+    mut x: int
+    mut y: int
+
+    fn norm2(self) -> int:
+        return self.x * self.x + self.y * self.y
+
+let p = Point(3, 4)
+print(p.x, p.y)                     # 3 4
+print(p.norm2())                    # 25
+
+print("=== 全インスタンスに copy がある ===")
+
+let q = p.copy()
+print(q.x)                          # 3
+
+print("=== trait 由来のメンバー ===")
+
+trait Named:
+    mut name: str
+
+    fn greet(let self) -> str:
+        ...
+
+class Person(Named):
+    mut age: int
+
+    fn greet(let self) -> str:
+        return self.name
+
+mut per = Person("ann", 30)
+print(per.name, per.age)            # ann 30
+print(per.greet())                  # ann
+
+print("=== protocol の要求メンバー ===")
+
+protocol HasN:
+    mut n: int
+
+class Impl:
+    mut n: int
+
+let h: HasN = Impl(5)
+print(h.n)                          # 5
+
+print("=== new_type の value ===")
+
+new_type Meters: float
+
+let m = 5.0 => Meters
+print(m.value)                      # 5.0
+
+print("=== enum の value ===")
+
+enum Color:
+    Red = 0
+    Green = 1
+
+let c: Color = Color.Green
+print(c.value)                      # 1
+
+print("=== 例外クラスのフィールドは Error から継承する ===")
+
+class MyErr(Error):
+    mut extra: int
+
+    fn __init__(mut self, let message: str, let extra: int) -> None:
+        self.message = message
+        self.extra = extra
+
+try:
+    raise MyErr("boom", 7)
+except MyErr as e:
+    print(e.message, e.extra)       # boom 7
+
+print("done")

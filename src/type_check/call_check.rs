@@ -93,6 +93,20 @@ impl TypeChecker {
                     if matches!(obj_ty, InferredType::NamedInstance(_)) {
                         self.check_member_access_static(&cls_name, attr, Some(span.clone()));
                     }
+                    // ⚠⚠ **メソッド呼び出しは `infer_attr` を通らない**（オブジェクトを
+                    //    二度推論しないよう `self.infer(object)` を直接呼んでいる）。
+                    //    ⇒ 存在検査（タスク 7.5）を**ここにも**書く必要がある。
+                    //    検体 `M1`（フィールドの読み）は `infer_attr` 側で閉じたが、
+                    //    `M2`（メソッドの呼び出し）はこの経路なので別に閉じる。
+                    if !self.member_exists(&cls_name, attr) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::NoSuchMember {
+                                class_name: cls_name.clone(),
+                                member: attr.clone(),
+                            },
+                            span: Some(span.clone()),
+                        });
+                    }
                     Some((cls_name, attr.clone()))
                 } else {
                     None

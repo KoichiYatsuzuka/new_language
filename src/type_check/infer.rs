@@ -5,6 +5,16 @@ use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarni
 use super::types::InferredType;
 use super::TypeChecker;
 
+/// **どのクラスのインスタンスにも生えているメソッド**（タスク 7.5）。
+///
+/// ⚠⚠ `interpreter/classes/method_call.rs` がクラスのメソッド表を引く**前に**
+/// 特別扱いしているもの。実測で該当は `copy` だけ
+/// （`keys` / `values` / `clear` / `items` / `get` / `add` / `append` / `pop` は
+/// どれも `AttributeError: 'C' has no method ...`）。
+/// ⚠ 実装側に共通メソッドを足したら**ここにも足すこと**。足し忘れると
+/// 正しいコードが「存在しないメンバー」で落ちる。
+const UNIVERSAL_INSTANCE_METHODS: &[&str] = &["copy"];
+
 impl TypeChecker {
     /// 部分木を歩いて診断を出すだけ。**この地点に型義務は無い**（タスク 3.1）。
     ///
@@ -670,6 +680,16 @@ impl TypeChecker {
         }
         if let Some(class_name) = &class_name_opt {
             self.check_member_access_static(class_name, attr, Some(span.clone()));
+            // ⚠ メンバーの存在検査（タスク 7.5・検体 `M1` / `M2`）。
+            if !self.member_exists(class_name, attr) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NoSuchMember {
+                        class_name: class_name.clone(),
+                        member: attr.to_string(),
+                    },
+                    span: Some(span.clone()),
+                });
+            }
         }
         // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
         let fallback = if let InferredType::Namespace(ref members) = obj_ty {
@@ -698,6 +718,98 @@ impl TypeChecker {
         };
         self.annotations.set_resolved(node_id, resolved.clone());
         resolved
+    }
+
+    /// `class_name` が `member` を持つか（タスク 7.5・検体 `M1` / `M2`）。
+    ///
+    /// ## ⚠⚠ Arrow のメンバーは**クラス本体の宣言だけで確定する**
+    ///
+    /// 実行時の文言がそう言っている:
+    ///
+    /// ```text
+    /// AttributeError: 'Box' has no field 'newattr'; all fields must be declared in the class body
+    /// ```
+    ///
+    /// `__init__` の中でも、他のメソッドでも、外からでも**宣言の無いフィールドは作れない**。
+    /// ⇒ Arrow のクラスに関して存在検査は**完全に静的に決まる**。
+    ///
+    /// ## 判定の順序
+    ///
+    /// 1. **protocol** … 要求メンバー（`registry.protocol`）を見る
+    /// 2. **フィールド** … 自クラス ＋ クラス継承 ＋ 基底 trait（`declared_field_type`）
+    /// 3. **メソッド** … 継承チェーン込み ＋ 基底 trait のメソッド
+    /// 4. **メンバー情報を 1 つも持たないクラス** … **開いている**とみなして素通し（下記）
+    ///
+    /// ## ⚠⚠ 「情報が無い」と「メンバーが無い」を取り違えないこと
+    ///
+    /// レジストリにフィールド表もメソッド表も基底も無いクラスは、
+    /// **「メンバーが無い」のではなく「こちらが知らない」**。素通しする。実際に該当したもの:
+    ///
+    /// | 例 | 理由 |
+    /// |---|---|
+    /// | `slice` | 組み込みクラス。`begin`/`end`/`step` は `eval/attrs.rs` の特別扱い |
+    /// | 関数の中で宣言した `enum` | 収集パスが拾っていない |
+    /// | テンプレート型変数 `T` | `NamedInstance("T")` に化けているだけ |
+    ///
+    /// ⚠ これがタスク 7.8 で設計した `member_set_is_closed`（メンバー集合が閉じているか）の
+    /// 実体。**スタブが入ったときに「スタブに載っているものだけ許す」へ寄せられる形**に
+    /// してある。真偽値ではなく**クラス単位の性質**として持つこと。
+    pub(super) fn member_exists(&self, class_name: &str, member: &str) -> bool {
+        // 0. ⚠⚠ **全インスタンス共通のメソッド**。`method_call.rs` がクラスのメソッド表を
+        //    引く**前に**特別扱いしているので、どのクラスにも生えている。
+        //    実測で確かめた（`copy` だけが該当。`keys` / `values` / `clear` / `items` /
+        //    `get` / `add` / `append` / `pop` はどれも `AttributeError`）。
+        // ⚠ 実装側に共通メソッドを足したら**ここにも足すこと**。
+        if UNIVERSAL_INSTANCE_METHODS.contains(&member) {
+            return true;
+        }
+        // 1. protocol は要求メンバーが別の表にある。
+        if let Some(p) = self.registry.protocol(class_name) {
+            return p.fields.iter().any(|f| f.name == member)
+                || p.methods.iter().any(|m| m.name == member);
+        }
+        // 2/3. フィールドとメソッド。
+        if self.declared_field_type_pub(class_name, member).is_some() {
+            return true;
+        }
+        if self.collect_class_method_sigs(class_name).contains_key(member) {
+            return true;
+        }
+        for base in self.registry.class_bases(class_name).unwrap_or(&[]) {
+            if self
+                .registry
+                .trait_methods(base)
+                .is_some_and(|m| m.contains_key(member))
+            {
+                return true;
+            }
+            if self
+                .registry
+                .trait_field_details(base)
+                .is_some_and(|m| m.contains_key(member))
+            {
+                return true;
+            }
+        }
+        // 4. メンバー集合が閉じていない（＝こちらが何も知らない）クラスは素通し。
+        !self.member_set_is_closed(class_name)
+    }
+
+    /// クラスの**メンバー集合が閉じている**か（タスク 7.5 / 7.8）。
+    ///
+    /// ⚠⚠ **真偽値に潰さずクラス単位の性質として持つこと。** 外部言語のスタブが入ったとき、
+    /// 言語によって「スタブ＝完全な宣言（閉じる）」「スタブ＝部分的な宣言（開いたまま）」が
+    /// 分かれる。ここを「外部由来なら飛ばす」にすると**その区別が表現できなくなる**。
+    ///
+    /// 現状の規則: **レジストリに何らかのメンバー情報があれば閉じている**。
+    /// Arrow のクラス宣言（`.ar` / `.ars` スタブ由来を含む）は必ず表を持つので閉じる。
+    fn member_set_is_closed(&self, class_name: &str) -> bool {
+        self.registry.class_field_details(class_name).is_some()
+            || self.registry.class_methods(class_name).is_some()
+            || self
+                .registry
+                .class_bases(class_name)
+                .is_some_and(|b| !b.is_empty())
     }
 
     /// 単項演算子の結果型を推論する。`Any`/`Union` オペランドは診断する。

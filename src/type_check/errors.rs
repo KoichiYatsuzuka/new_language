@@ -373,6 +373,13 @@ pub enum TypeErrorKind {
     /// ⚠ 「大きさを持つ型」は `InferredType` に無いので、専用の文言にする
     /// （`expects 'str'` のような**嘘の期待型**を出さないため）。
     NotSized { ty: InferredType },
+    /// 存在しないメンバーへのアクセス（タスク 7.5・検体 `M1` / `M2`）。
+    ///
+    /// ⚠⚠ Arrow は「**すべてのフィールドはクラス本体で宣言しなければならない**」
+    /// （実行時の文言）ので、クラスのメンバー集合は**静的に確定する**。
+    /// ⚠ メンバー情報を 1 つも持たないクラス（組み込みの `slice`・関数内で宣言した `enum`・
+    /// テンプレート型変数）は「開いている」とみなして素通しする。
+    NoSuchMember { class_name: String, member: String },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -782,6 +789,10 @@ impl StaticTypeError {
             TypeErrorKind::NotSized { ty } => format!(
                 "object of type {} has no {}",
                 hl_q(&ty.to_string()), hl_bt("len()")
+            ),
+            TypeErrorKind::NoSuchMember { class_name, member } => format!(
+                "{} has no member {}",
+                hl_q(class_name), hl_q(member)
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(
