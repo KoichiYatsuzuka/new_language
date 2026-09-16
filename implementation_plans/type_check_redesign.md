@@ -2646,22 +2646,19 @@ registry.member_set_is_closed(class_name) -> bool
 ⚠ Python 翻訳時は異型比較を許す前提（利用者の設計）。⇒ `compare_python_impl` の
 `$knownDiff` に移行例題を登録することになる。
 
-##### ⚠⚠ 前提: `Optional[T]` が静的に解決されない（タスク 9.7）
+##### 「`None` になりうる型」の書き方（2026-09-17 に確認）
 
-「`None` になりうる型」を判定するには `Optional[T]` が使えなければならないが、実測すると
-**静的側が `Optional[T]` を知らない**:
+⚠ 一度「`Optional[T]` が静的に解決されないので 9.7 が前提」と書いたが**誤診だった**。
+Arrow の綴りは **`Option[T]`**（キーワード）で、`from_ann` が `Union[T, None]` へ
+正しく解決する（実測: `Option[int] = None` ✅ / `= 5` ✅ / `= "s"` ⛔）。
 
-```
-let x: Optional[int] = None
-  ⇒ StaticTypeError  'x' is declared 'Optional' but initialized with 'None'
-```
+| 書き方 | `x == None` |
+|---|---|
+| `Option[int]` ・ `Union[int, None]` | ✅ 通る（`Union` は素通し） |
+| `Any` ・ `Unresolved` | ✅ 通る |
+| `int` ・ `str` ・ `list[int]` | ⛔ **静的エラー** |
 
-実行時（`value_matches_type_ann`）は `Optional[` / `Option[` を扱うのに、
-`InferredType::from_ann` に対応する枝が無い。現状 `None` を含められるのは
-**`Union[int, None]`** だけ（実測で動作を確認）。
-
-⇒ **タスク 9.7 を先に片付けること。** そうしないと「`Optional` なら書ける」が成立せず、
-利用者は `Union[T, None]` と書くしかなくなる。
+⇒ **前提は無い。7.6 はそのまま実装できる。**
 
 #### 7.7 リテラル要素の個別照合（`L17`）— ⚠ **優先度最低**
 
@@ -3035,7 +3032,7 @@ None => Self::List          // ← 要素型を捨てて素の `list` にする
 | **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | ⚠⚠ **py 相互運用の前提**（7.8 の帰結） | 7.8 |
 | **9.5** | `compare_bytecode.ps1` が相対パスの `-A` で**偽の全差分**を出す | ゲートが嘘をつく | 6.1 |
 | **9.6** | `examples/_tmp_demo.txt` が例題実行で書き換わる | `git status` が毎回汚れる | 全般 |
-| **9.7** | **`Optional[T]` が静的に解決されない** | 注釈が黙って壊れる | 7.6 の判断時 |
+| **9.7** | **非テンプレート名の型引数 `[...]` が黙って捨てられる** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
 
 ---
 
@@ -3158,36 +3155,60 @@ git に**追跡されている**ので、ゲートを回すたびに `git status
 
 ⇒ `.gitignore` に入れるか、例題の書き先を一時ディレクトリへ変える。
 
-### 9.7 `Optional[T]` が静的に解決されない
+### 9.7 非テンプレート名の型引数 `[...]` が黙って捨てられる
 
-実行時（`interpreter/ops/typecheck.rs`）は `Optional[` / `Option[` を扱う:
+##### ⚠⚠ 起票時の診断は**誤りだった**（2026-09-17 に訂正）
 
-```rust
-_ if ann.starts_with("Optional[") || ann.starts_with("Option[") => { ... }
-```
+最初は「`Optional[T]` が静的に解決されない」と起票し、**タスク 7.6 の前提**とした。
+調べ直すと:
 
-しかし **`InferredType::from_ann` に対応する枝が無い**。⇒ 注釈が黙って壊れる:
+| 主張 | 実測 |
+|---|---|
+| `Optional[T]` が動くべき | **`Optional` は Arrow の構文ではない。** 綴りは **`Option[T]`**（`Token::Option` というキーワード） |
+| 静的側に `Option[` の枝が無い | **ある**。`from_ann` が `Union[T, None]` へ解決する |
+| `Option[T]` は使えない | **使える**（実測: `Option[int] = None` ✅ / `= 5` ✅ / `= "s"` ⛔） |
+| 実行時の `Optional[` 枝と食い違う | `py_type_to_arrow` が **`Optional[T]` → `Option[T]` に正規化**するので、
+`Optional[` が型検査へ届く経路は無い |
+
+⇒ **タスク 7.6 に前提は無い。** 「`Option` 以外の `None` を弾く」はそのまま実装できる。
+
+⚠ 誤診の原因: 実行時に `Optional[` の枝があり、エラー文言も
+`requires a Union or Optional type` と書いてあったので「`Optional` は使える綴り」だと
+思い込んだ。**文言の "Optional" は概念名**で、綴りではなかった。
+
+##### 本当のバグ: `[...]` が黙って捨てられる
 
 ```arrow
-let x: Optional[int] = None
-  ⇒ StaticTypeError  'x' is declared 'Optional' but initialized with 'None'
+let x: str[int] = "s"     # ⛔ 通る（`[int]` が捨てられ `str` になる）
+let x: Foo[int] = 1       # 'x' is declared 'Foo'（`[int]` が捨てられている）
 ```
 
-⚠ `Optional` は大文字始まりなので `NamedInstance("Optional")` 相当に落ちており、
-**型引数 `[int]` が捨てられている**。タスク 8.2（要素型が黙って捨てられる）と同じ形。
+`parse_type_expr` は **`known_templates` に載る名前以外**の `[...]` を読み飛ばす。
+⇒ 利用者が書いた型引数が消え、意味の無い注釈（`str[int]`）が通る。
+⚠ タスク 8.2（`list[foo]` が素の `list` に落ちる）と**同じ系統**。
 
-⚠ 現状 `None` を含められるのは **`Union[int, None]`** だけ（実測で動作を確認）。
-⚠ 既存のエラー文言は `requires a Union or Optional type` と **`Optional` を前提にしている**
-（`errors.rs`）。実装が追いついていない。
+##### ⚠⚠ 制約: キャスト位置から同じ関数が呼ばれる
 
-⇒ `from_ann` で `Optional[T]` / `Option[T]` を **`Union[T, None]`** へ解決する。
-⚠⚠ **タスク 7.6 の前提**（「`Option` 以外の `None` を弾く」には `Optional` が動く必要がある）。
+読み飛ばしは**意図的**で、理由がコードに記録されている:
+
+> この関数はキャスト（`expr => Type`）からも呼ばれるので、無条件に厳密パースすると
+> `x => list[0]` のような**型でない中身**でパースエラーになる。
+
+⇒ 直すには**注釈位置とキャスト位置を区別する**必要がある（`parse_type_expr` に
+「厳密」フラグを足すか、入口を分ける）。呼び出し元は **34 箇所**
+（`types.rs` 22 / `stmts/core.rs` 4 / `stmts/functions.rs` 2 / `exprs.rs` 2 /
+`classes.rs` 2 / ほか 2）。⚠ 再帰呼び出しが多いのでフラグを伝播させる形になる。
+
+⚠ **タスク 8.2 と一緒にやる方がよい。** どちらも「書いた型引数が捨てられる」で、
+片方だけ直すと `list[foo]` と `Foo[int]` で扱いが割れる。
 
 ### 順序
 
-`9.5` → `9.6` → **`9.7`** → `9.3` → `9.1` → `9.2` → `9.4`
+`9.5` → `9.6` → `9.3` → `9.1` → `9.2` → **`9.4`** → `9.7`
 
-⚠ `9.7` は**タスク 7.6 の前提**なので、7.6 に着手する前に済ませる。
+⚠ `9.7` は **7.6 の前提ではなかった**（誤診・上記）。タスク 8.2 と**同じ系統**なので
+フェーズ 8 と合わせて実施する方がよい。
+⚠ `9.4` は **7.8 の帰結で py 相互運用の前提**になったので優先度を上げた。
 
 ⚠ `9.5` / `9.6` は**作業の足場**（ゲートの信頼性と作業ツリーの清潔さ）なので先に直す。
 ⚠ `9.2` は仕様判断が要るので、判断が出るまで着手しない。
