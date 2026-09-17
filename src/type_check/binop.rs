@@ -75,8 +75,147 @@ impl TypeChecker {
             //    順序比較（`<`）は異型に**意味のある答えが無い**のでエラー、等値は
             //    **常に意味のある答え（偽）がある**ので通す — という区別だった。
             //    ⇒ 検体 `O4` / `O5` / `O8` は「塞ぐべき穴」ではなく**仕様**。検体側に明記した。
+            //
+            // ⚠⚠ **タスク 7.6 でこの撤回を覆した。** 実測し直すと、その「仕様」を主張して
+            //    いるのは**例題 1 ファイル**だけで、移行は全比較地点 237 のうち 10 箇所
+            //    （4.2%）だった。⇒ コスト見積もりが過大だった。下の `check_equality` が
+            //    決定 D-15（変種 C）を実装する。
+            BinOp::Eq | BinOp::NotEq | BinOp::In | BinOp::NotIn => {
+                self.check_equality(op, lt, rt, span)
+            }
             _ => {}
         }
+    }
+
+    /// 異型の等値比較を弾く（決定 D-15・タスク 7.6・検体 `O4` / `O5` / `O8`）。
+    ///
+    /// ## 規則（変種 C）
+    ///
+    /// 上から順に見て、どれにも当たらなければエラー:
+    ///
+    /// 1. **不透明**なら素通し（`Unresolved` / `Intersection` / `Protocol` …）
+    ///    ⚠ `Any` と `Union` は**ここへ届かない**。`check_binop` の冒頭が
+    ///    `OperationOnAny` / `OperationOnUnion` で先に弾く（7.6 より前からの規則）。
+    ///    表に残してあるのは、その前段が変わったときに**ここが穴にならない**ため。
+    /// 2. **同型**なら通す
+    /// 3. **数値族**（`int` / `float` / `complex`）は相互に許す
+    /// 4. どちらかのクラスが **`__eq__` の宣言で相手を受ける**なら通す
+    ///
+    /// ## ⚠⚠ `<` と違って「弾く理由」が別
+    ///
+    /// 順序比較（`<`）は「異型に**意味のある答えが無い**」から弾く。
+    /// 等値は `False` という答えがあるが、**その `False` は常に真**＝書いた人の意図と
+    /// 食い違う。タスク 5.4（死ぬ `case` 腕）と同じ「到達不能」系統。
+    ///
+    /// ## ⚠ 数値族を許すのは必須
+    ///
+    /// 実行時は `uint → int → float` の昇格ラティスで比べる。ここを厳密にすると
+    /// `if n == 0`（`n: float`）のような自然な式が落ちる（実測で 6 箇所増えた）。
+    /// ⚠ **`bool` はラティスの対象外**なので `x == True`（`x: int`）は弾かれる。
+    ///
+    /// ## `None` の扱い（利用者の決定）
+    ///
+    /// 「`None` になりうる型」だけが `== None` を書ける。`Option[int]` /
+    /// `Union[int, None]` は規則 1（`Union` は不透明）で通り、`int` / `str` は弾かれる。
+    fn check_equality(
+        &mut self,
+        op: &BinOp,
+        lt: &InferredType,
+        rt: &InferredType,
+        span: Span,
+    ) {
+        use InferredType as T;
+        // `in` は右辺が容器。左辺と**要素型**を比べる。
+        let (a, b) = if matches!(op, BinOp::In | BinOp::NotIn) {
+            let elem = match rt {
+                T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => (**e).clone(),
+                T::DictOf(k, _) => (**k).clone(),
+                T::Str => T::Str,
+                // 要素型の判らない容器・tuple は判定しない。
+                _ => return,
+            };
+            (lt.clone(), elem)
+        } else {
+            (lt.clone(), rt.clone())
+        };
+        if Self::opaque_for_equality(&a) || Self::opaque_for_equality(&b) {
+            return;
+        }
+        if a == b {
+            return;
+        }
+        let numeric = |t: &T| matches!(t, T::Int | T::Float | T::Complex);
+        if numeric(&a) && numeric(&b) {
+            return;
+        }
+        if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::CrossTypeEquality {
+                op: op.as_str().to_string(),
+                left: a,
+                right: b,
+            },
+            span: Some(span),
+        });
+    }
+
+    /// 等値比較で「判定材料が無い」とみなす型。
+    ///
+    /// ⚠ `Union` を含めてあるが、実際には `check_binop` の冒頭が `Union` 被演算子を
+    /// `OperationOnUnion` で先に弾くのでここへは届かない（多重防御）。
+    /// ⇒ 利用者の決定「`Option` 以外の `None` を弾く」は、
+    /// **`Option` 側がもともと `is None` を使う**ことで成立している。
+    /// ⚠ クラス（`NamedInstance` / `GenericInstance`）は**含めない**。変種 C は
+    /// `__eq__` の宣言を見て判定する。
+    fn opaque_for_equality(ty: &InferredType) -> bool {
+        use InferredType as T;
+        matches!(
+            ty,
+            T::Unresolved
+                | T::Any
+                | T::Never
+                | T::SelfType
+                | T::Protocol(_)
+                | T::Union(_)
+                | T::Intersection(_)
+                | T::Result(_, _)
+                | T::Namespace(_)
+                | T::PyNamespace(_)
+                | T::TypeVal
+                | T::TypeValOf(_)
+        )
+    }
+
+    /// `owner` のクラスが `__eq__` を持ち、`other` を受け付けるか（変種 C）。
+    ///
+    /// ⚠ 継承チェーンを辿って探す（基底クラス・trait 由来の `__eq__` も有効）。
+    /// ⚠ `fn __eq__(self, other: Any)` と書けば何とでも比較できる
+    /// （利用者が「何と比べてもよい」と宣言したことになる）。
+    fn eq_overload_accepts(&self, owner: &InferredType, other: &InferredType) -> bool {
+        let Some((cls, subst)) = self.class_and_subst(owner) else {
+            return false;
+        };
+        let sigs = self.collect_class_method_sigs(cls.as_str());
+        let Some(sigs) = sigs.get("__eq__") else {
+            return false;
+        };
+        sigs.iter().any(|sig| {
+            // params[0] は self。比較対象は params[1]。
+            match sig.params.get(1).and_then(|(_, t)| t.as_ref()) {
+                None => true,
+                Some(expected) => {
+                    let expected = Self::subst_type_params(expected, &subst);
+                    matches!(expected, InferredType::Any | InferredType::Unresolved)
+                        || self.types_compatible(
+                            other,
+                            &expected,
+                            super::type_utils::Site::Other,
+                        )
+                }
+            }
+        })
     }
 
     /// 算術・ビット演算の被演算子が演算可能かを検査する（Kind 3・タスク 4.4）。

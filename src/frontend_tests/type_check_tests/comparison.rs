@@ -52,16 +52,54 @@ use super::*;
         assert!(err(r#""x" <= 1.5"#));
     }
 
-    /// eq_different_types_ok のテスト。
+    /// 異型の `==` は**静的エラー**（決定 D-15・タスク 7.6）。
+    ///
+    /// ⚠⚠ **このテストは以前 `eq_different_types_ok` という名前で `ok(..)` を主張していた。**
+    /// タスク 4.4 の時点では「異型の等値比較は `False` を返す仕様」として厳密化を撤回して
+    /// いたが、7.6 で実測し直したところ、その仕様を主張していたのは**例題 1 ファイル**だけで、
+    /// 移行は全比較地点 237 のうち 10 箇所（4.2%）だった。⇒ 決定を覆した。
+    ///
+    /// ⚠ **実行時の意味論は変えていない。** 型が決まらない経路から到達すれば従来どおり
+    /// `False` を返す（`examples/basics/equality_numeric_promotion.ar`）。
     #[test]
-    fn eq_different_types_ok() {
-        assert!(ok(r#"1 == "hello""#));
+    fn eq_different_types_err() {
+        assert!(err(r#"1 == "hello""#));
     }
 
-    /// neq_different_types_ok のテスト。
+    /// 異型の `!=` も同じ（`bool` は数値の昇格ラティスの対象外）。
     #[test]
-    fn neq_different_types_ok() {
-        assert!(ok(r#"True != "x""#));
+    fn neq_different_types_err() {
+        assert!(err(r#"True != "x""#));
+    }
+
+    /// 数値族（`int` / `float` / `complex`）は相互に比較できる。
+    ///
+    /// ⚠ 実行時が `uint → int → float` の昇格ラティスで比べるので、ここを厳密にすると
+    /// `if n == 0`（`n: float`）のような自然な式が落ちる。
+    #[test]
+    fn eq_numeric_family_ok() {
+        assert!(ok("1 == 1.0"));
+    }
+
+    /// `None` かどうかの判定は **`is None`**（`== None` ではない）。
+    ///
+    /// ⚠⚠ **`Option[T] == None` はタスク 7.6 より前から静的エラー**だった。
+    /// `check_binop` の冒頭が「`Union` を被演算子にする二項演算」を一律
+    /// `OperationOnUnion` で弾いているため（`==` も対象）。
+    /// ⇒ Arrow に `== None` という作法はもともと無い。
+    ///
+    /// 利用者の決定「`Option` 以外の `None` を弾く」の効果は
+    /// **「`int == None` のような非 Option との比較を弾く」**ことで、
+    /// `Option` 側の書き方は変わらない。
+    #[test]
+    fn option_is_none_ok() {
+        assert!(ok("let x: Option[int] = None\nif x is None:\n    pass\n"));
+    }
+
+    /// 非 `Option` 型と `None` の比較は静的エラー（利用者の決定・タスク 7.6）。
+    #[test]
+    fn eq_none_on_non_option_err() {
+        assert!(err("let x: int = 1\nlet b = x == None\n"));
     }
 
     /// unknown_param_comparison_ok のテスト。

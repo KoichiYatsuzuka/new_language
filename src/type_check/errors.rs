@@ -380,6 +380,16 @@ pub enum TypeErrorKind {
     /// ⚠ メンバー情報を 1 つも持たないクラス（組み込みの `slice`・関数内で宣言した `enum`・
     /// テンプレート型変数）は「開いている」とみなして素通しする。
     NoSuchMember { class_name: String, member: String },
+    /// 異型の等値比較（`==` / `!=` / `in`）（決定 D-15・タスク 7.6）。
+    ///
+    /// ⚠⚠ **タスク 4.4 では「仕様だから」と撤回した検査。** 7.6 で実測し直したところ、
+    /// その仕様を主張しているのは**例題 1 ファイル**（`equality_numeric_promotion.ar`）だけで、
+    /// 全比較地点 237 のうち移行が要るのは **10 箇所（4.2%）**だと判った。
+    /// ⇒ コスト見積もりが過大だったので決定を覆した。
+    ///
+    /// ⚠ 数値族（`int`/`float`/`complex`）は相互に許す（実行時が昇格ラティスで比べるため）。
+    /// ⚠ クラスは `__eq__` の**宣言された引数型**で判定する（変種 C）。
+    CrossTypeEquality { op: String, left: InferredType, right: InferredType },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -793,6 +803,10 @@ impl StaticTypeError {
             TypeErrorKind::NoSuchMember { class_name, member } => format!(
                 "{} has no member {}",
                 hl_q(class_name), hl_q(member)
+            ),
+            TypeErrorKind::CrossTypeEquality { op, left, right } => format!(
+                "{} between {} and {} can never be true",
+                hl_q(op), hl_q(&left.to_string()), hl_q(&right.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

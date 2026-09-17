@@ -8,6 +8,18 @@
 #
 # 昇格ラティスは `uint → int → float` の一方向。⚠ **`bool` は昇格対象外**。
 #
+# ## ⚠⚠ タスク 7.6 で**静的検査が加わった**（決定 D-15）
+#
+# 異型の等値比較は**静的エラー**になった。ただし**実行時の意味論は一切変えていない**ので、
+# この例題が固定している答え（`1 == True` → `False` など）はそのまま。
+# ⇒ 静的に弾かれる組み合わせは `hide(..)` で型を隠してから比べている。
+#
+# | 静的に通る | 静的に弾かれる |
+# |---|---|
+# | 同型どうし ・ 数値族（`int`/`float`/`complex`） | `bool` と数値 ・ `list[int]` と `list[float]` |
+# | `Union` / `Any`（＝ `Option[T]` の比較） | `int` と `str` ・ `int` と `None` |
+# | クラスで `__eq__` が相手の型を受ける場合 | `__eq__` を持たないクラスと異型 |
+#
 # ⚠ 以前は値の同一性の側が int を f64 へ昇格していたため、
 #   `9007199254740993 == 9007199254740992.0` が真になる（2^53 超で精度が落ちる）
 #   **非可逆な等値**だった。今は昇格を式の側だけに閉じ込めてある。
@@ -20,25 +32,33 @@ print(3 == uint(3))         # True
 print(1 != 1.0)             # False
 print(1 == 2.0)             # False   昇格しても値が違えば偽
 
+# ⚠⚠ **ここから先は静的検査を通らない組み合わせ**（決定 D-15・タスク 7.6）。
+#   異型の等値比較は**静的エラー**になったが、**実行時の答えは変えていない**。
+#   この例題の役目は「実行時がどう答えるか」を固定することなので、
+#   型が決まらない経路（要素型を持たない `list`）から同じ比較へ到達させる。
+#   ⚠ `examples/typing/arith_operand_check.ar` と同じ移行の形。
+fn hide(let v: list) -> list:
+    return v
+
 print("=== bool は昇格しない ===")
 # ⚠ Python では `1 == True` が True になるが、Arrow では bool を数値の
 #   ラティスに入れていないので False。
-print(1 == True)            # False
-print(True == 1)            # False
-print(0 == False)           # False
+print(hide([1])[0] == True)     # False
+print(hide([True])[0] == 1)     # False
+print(hide([0])[0] == False)    # False
 
 print("=== `in` も同じ規則 ===")
-print(1 in [1.0])           # True
-print(1 in {1.0})           # True
-print(uint(3) in [3])       # True
-print(True in [1])          # False   bool は昇格しない
+print(1 in [1.0])               # True
+print(1 in {1.0})               # True
+print(uint(3) in [3])           # True
+print(hide([True])[0] in [1])   # False   bool は昇格しない
 
 print("=== 昇格はオペランドにだけ掛かる（中まで再帰しない）===")
 # ⚠ 「比較の場所でキャストする」規則の素直な帰結。`[1]` と `[1.0]` は
 #   コンテナどうしの比較なので数値の昇格の対象ではなく、要素は型厳密に比べられる。
-print([1] == [1.0])         # False
-print((1,) == (1.0,))       # False
+print(hide([[1]])[0] == [1.0])  # False
+print(hide([(1,)])[0] == (1.0,))  # False
 
 print("=== 数値でない組み合わせ ===")
-print(1 == "a")             # False
-print(1 == None)            # False
+print(hide([1])[0] == "a")      # False
+print(hide([1])[0] == None)     # False

@@ -1,6 +1,6 @@
 # @id: O5
 # @obligation: 比較 != （クラス vs int）
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠⚠ **これは仕様どおり（B2-b・タスク 4.4 で確認）。** Arrow は等値を二層に分けている:
 #    「値の同一性（型厳密・辞書のキーとハッシュが使う）」と

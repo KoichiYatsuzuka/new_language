@@ -1,6 +1,6 @@
 # @id: O8
 # @obligation: in 演算子（要素型不一致）
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠⚠ **これは仕様どおり（B2-b・タスク 4.4 で確認）。** Arrow は等値を二層に分けている:
 #    「値の同一性（型厳密・辞書のキーとハッシュが使う）」と

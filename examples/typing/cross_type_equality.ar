@@ -1,0 +1,100 @@
+# cross_type_equality.ar — 異型の等値比較を静的に弾く（決定 D-15・タスク 7.6）
+#
+# ## ⚠⚠ タスク 4.4 の撤回を覆した決定
+#
+# 4.4 では「`==` / `!=` / `in` の異型比較は `False` を返す**仕様**」として厳密化を撤回した。
+# 7.6 で実測し直したところ:
+#
+#   - その「仕様」を主張していたのは **例題 1 ファイル**（`equality_numeric_promotion.ar`）だけ
+#   - 全比較地点 **237** のうち移行が要るのは **10 箇所（4.2%）**、しかも 2 ファイルに集中
+#
+# ⇒ コスト見積もりが過大だった。**実行時の意味論は変えていない**（`1 == True` は今も `False`）。
+#
+# ## 規則（変種 C）— 上から順に見て、どれにも当たらなければエラー
+#
+# 1. **不透明**なら素通し … `Unresolved` ・ `Intersection` ・ `Protocol` ほか
+#    （⚠ `Any` と `Union` はここへ届かない。`check_binop` の冒頭が
+#    `OperationOnAny` / `OperationOnUnion` で先に弾く）
+# 2. **同型**なら通す
+# 3. **数値族**（`int` / `float` / `complex`）は相互に許す
+# 4. どちらかのクラスが **`__eq__` の宣言で相手を受ける**なら通す
+#
+# ⚠ 数値族を許すのは必須。実行時は `uint → int → float` の昇格ラティスで比べるので、
+#   ここを厳密にすると `if n == 0`（`n: float`）のような自然な式が落ちる。
+# ⚠⚠ **`bool` はラティスの対象外**なので `x == True`（`x: int`）は弾かれる。
+#
+# ## `None` の判定は `is None`
+#
+# ⚠⚠ **`Option[T] == None` は 7.6 より前から静的エラー**だった（上記の `OperationOnUnion`）。
+# ⇒ Arrow に `== None` という作法はもともと無い。
+# 7.6 の効果は「**`int == None` のような非 Option との比較を弾く**」ことで、
+# `Option` 側の書き方は変わらない。
+#
+# 弾かれる例は cross_type_equality_error.ar
+
+print("=== 同型 ===")
+
+let a: int = 1
+print(a == 1)                       # True
+print("x" == "x")                   # True
+print([1, 2] == [1, 2])             # True
+
+print("=== 数値族は相互に比較できる ===")
+
+print(1 == 1.0)                     # True
+print(1 != 2.0)                     # True
+
+let n: float = 0.0
+if n == 0:
+    print("zero")                   # zero
+
+print("=== in も同じ規則 ===")
+
+print(1 in [1.0])                   # True
+print("a" in ["a", "b"])            # True
+
+let d: dict[str, int] = {"k": 1}
+print("k" in d)                     # True
+
+print("=== クラスは __eq__ の宣言で判定する ===")
+
+class Meters:
+    mut v: int
+
+    fn __eq__(self, let other: int) -> bool:
+        return self.v == other
+
+print(Meters(5) == 5)               # True   ← __eq__ が int を受ける
+
+print("=== __eq__(other: Any) なら何とでも比べられる ===")
+
+class Loose:
+    mut v: int
+
+    fn __eq__(self, let other: Any) -> bool:
+        return True
+
+print(Loose(1) == "anything")       # True
+
+print("=== None の判定は is None ===")
+
+let opt: Option[int] = None
+if opt is None:
+    print("none")                   # none
+
+let some: Option[int] = 5
+if some is not None:
+    print(some + 1)                 # 6   ← 絞り込みも効く
+
+print("=== 型が決まらない経路は素通し ===")
+
+# ⚠⚠ `Any` と `Union` は**この検査に届かない**。`check_binop` の冒頭が
+#   「`Any` / `Union` を被演算子にする二項演算」を `OperationOnAny` /
+#   `OperationOnUnion` で先に弾いているため（7.6 より前からの規則）。
+#   ⇒ 実際に素通しするのは `Unresolved`（型が決まらない経路）。
+fn hide(let v: list) -> list:
+    return v
+
+print(hide([1])[0] == "s")          # False
+
+print("done")

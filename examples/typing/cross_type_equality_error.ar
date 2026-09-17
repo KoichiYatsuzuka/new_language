@@ -1,0 +1,25 @@
+# cross_type_equality_error.ar — 異型の等値比較（決定 D-15・タスク 7.6）
+#
+# 正常系は cross_type_equality.ar
+#
+# ⚠ 3 件とも以前は**黙って `False` を返して**いた（検体 `O4` / `O5` / `O8`）。
+#   実行時の答えは今も `False` だが、**その `False` は常に真**＝書いた人の意図と
+#   食い違うので、タスク 5.4（死ぬ `case` 腕）と同じ「到達不能」系統として弾く。
+#
+# ⚠ `bool` は数値の昇格ラティスの対象外なので `int` とは比較できない。
+#
+# 期待されるエラー:
+#   StaticTypeError  '==' between 'int' and 'str' can never be true
+#   StaticTypeError  '==' between 'int' and 'bool' can never be true
+#   StaticTypeError  'in' between 'int' and 'str' can never be true
+#   StaticTypeError  '==' between 'int' and 'None' can never be true
+
+let a: int = 1
+
+print(a == "s")                     # ⛔ int と str
+
+print(a == True)                    # ⛔ bool はラティス対象外
+
+print(a in ["s"])                   # ⛔ 要素型が str
+
+print(a == None)                    # ⛔ int は None になりえない（is None を使う型でもない）
