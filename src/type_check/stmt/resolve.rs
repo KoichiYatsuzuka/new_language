@@ -1,7 +1,7 @@
 // stmt/resolve.rs — モジュール型収集と型注釈の解決: collect_module_types / type_ann_to_inferred / resolve_declared_type。
 
 use {
-    crate::ast::{Stmt, TupleTarget},
+    crate::ast::{Expr, Stmt, TupleTarget},
     crate::type_check::errors::{StaticTypeError, TypeErrorKind},
     crate::type_check::types::{FnTypeParam, InferredType},
     crate::type_check::TypeChecker,
@@ -203,12 +203,111 @@ impl TypeChecker {
         }
     }
 
+    /// コレクションリテラルの**判っている要素だけ**を宣言型と照合する
+    /// （タスク 7.7・検体 `L17`）。
+    ///
+    /// ## 何を埋めるのか
+    ///
+    /// ```arrow
+    /// mut zs: list = [1]
+    /// let xs: list[str] = [1, zs[0]]   # 旧: 通る
+    /// ```
+    ///
+    /// `zs[0]` が `Unresolved` なので `join_elem_types` が**リテラル全体**を
+    /// `list[⊥不明]` にしてしまい、**判っている要素 `1` の照合まで消えて**いた。
+    ///
+    /// ## ⚠⚠ なぜ join を変えないのか
+    ///
+    /// 「判らない側が混ざったら全体が判らない」（タスク 5.5 で 3 箇所に揃えた規則）を
+    /// 崩すと**下流で偽陽性**が出る:
+    ///
+    /// ```arrow
+    /// let xs = [1, zs[0]]
+    /// let s: str = xs[1]    # zs[0] が str かもしれないので弾いてはいけない
+    /// ```
+    ///
+    /// ⇒ **推論する型は変えず**、期待型が判っている束縛地点でだけ要素を個別に見る。
+    ///
+    /// ## ⚠ 見るのは「リテラルの要素」だけ
+    ///
+    /// 要素式を再推論すると**診断が二重に出る**（`infer(value)` で既に推論済み）。
+    /// ⇒ 型が式だけで決まり**診断を出しようがない**リテラル（`1` / `"s"` / `True` …）に
+    /// 限って照合する。`zs[0]` のような式には触らない。
+    ///
+    /// ⚠ `join` が汚染されていない（＝要素型が判っている）ときは通常の
+    /// `types_compatible` が既に見ているので、ここは動かさない。
+    fn check_literal_elements(&mut self, ann: &str, rhs_ty: &InferredType, stmt: &Stmt) {
+        use InferredType as T;
+        // join が汚染されたときだけ働く。
+        let poisoned_elem = match rhs_ty {
+            T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => {
+                matches!(**e, T::Unresolved)
+            }
+            _ => false,
+        };
+        if !poisoned_elem {
+            return;
+        }
+        let Some(declared) = InferredType::from_ann(ann) else {
+            return;
+        };
+        let expected = match &declared {
+            T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => (**e).clone(),
+            _ => return,
+        };
+        if matches!(expected, T::Unresolved | T::Any | T::Never) {
+            return;
+        }
+        let value = match stmt {
+            Stmt::Let(_, _, v) | Stmt::Const(_, _, v) | Stmt::Mut(_, _, v) => v,
+            _ => return,
+        };
+        let elems = match value {
+            Expr::List(es) | Expr::Set(es) => es,
+            _ => return,
+        };
+        for e in elems {
+            let Some(lit_ty) = Self::literal_type(e) else {
+                continue;
+            };
+            // ⚠ 記憶域なので `Site::Other`（`__cast__` は挿入されない）。
+            if self.types_compatible(&lit_ty, &expected, crate::type_check::type_utils::Site::Other)
+            {
+                continue;
+            }
+            // ⚠ 要素の不一致は添字代入（5.2b）と同じ種別に寄せる。文言が揃う。
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::SubscriptTypeMismatch {
+                    context: format!("element of `{ann}`"),
+                    expected: expected.clone(),
+                    got: lit_ty,
+                },
+                span: None,
+            });
+        }
+    }
+
+    /// **式だけで型が決まり、推論しても診断を出さない**リテラルの型。
+    ///
+    /// ⚠ ここに「推論で診断が出うる式」を足してはいけない（二重報告になる）。
+    fn literal_type(e: &Expr) -> Option<InferredType> {
+        Some(match e {
+            Expr::Int(_) => InferredType::Int,
+            Expr::Float(_) => InferredType::Float,
+            Expr::ImaginaryLit(_) => InferredType::Complex,
+            Expr::Str(_) => InferredType::Str,
+            Expr::Bool(_) => InferredType::Bool,
+            Expr::None => InferredType::None,
+            _ => return None,
+        })
+    }
+
     pub(crate) fn resolve_declared_type(
         &mut self,
         type_ann: Option<&str>,
         rhs_ty: InferredType,
         var_name: &str,
-        _stmt: &Stmt,
+        stmt: &Stmt,
     ) -> InferredType {
         let ann = match type_ann {
             // ⚠⚠ **注釈が無いときは `Never` を `Any` へ開く**（D-11 / U-6・タスク 4.1）。
@@ -220,6 +319,9 @@ impl TypeChecker {
             None => return Self::open_never_to_any(rhs_ty),
             Some(a) => a,
         };
+        // ⚠ リテラルの**判っている要素だけ**を期待型と照合する（タスク 7.7・検体 `L17`）。
+        //    `join` が `Unresolved` に汚染されたときの取りこぼしを埋める。
+        self.check_literal_elements(ann, &rhs_ty, stmt);
         // ⚠ protocol 名の注釈はここで打ち切って構わない。`check_protocol_conformance` が
         //    **右辺との照合も行う**（構造的適合検査）ため、下の整合性検査と二重にならない。
         if self.registry.is_protocol(ann) {

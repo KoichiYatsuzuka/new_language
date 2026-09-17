@@ -92,6 +92,7 @@ $knownDiff = @{
     'overload_arg_types_error'       = 'py: オーバーロードの実引数型による解決が無い（黙って実行してしまう・タスク 5.7 で新設）'
     'member_existence'               = 'py: protocol のフィールド要求を method として誤判定する（type Impl does not satisfy protocol HasN・impl_python 側の既知の限界）'
     'cross_type_equality'            = 'py: Option[T] / is None の扱いが未実装（タスク 7.6 で新設）'
+    'literal_element_check_error'    = 'py: リテラル要素の個別照合が無い（黙って実行してしまう・タスク 7.7 で新設）'
     'cross_type_equality_error'      = 'py: 異型の等値比較の静的検査が無い（False を返して実行してしまう・タスク 7.6 で新設）'
     'member_existence_error'         = 'py: メンバー存在検査が無い（実行時 AttributeError になる・タスク 7.5 で新設）'
     'cast_mustbe_possible_error'     = 'py: 成功しえない cast / mustbe の静的検査が無い（実行時エラーになる・タスク 7.3 で新設）'

@@ -1,0 +1,17 @@
+# literal_element_check_error.ar — リテラルの判っている要素が期待型と合わない（タスク 7.7）
+#
+# 正常系は literal_element_check.ar
+#
+# `zs[0]` は判定不能だが、**`1` は確実に `int`** なので `list[str]` にはなりえない。
+#
+# ⚠ 以前は `join_elem_types` がリテラル全体を判定不能にしてしまい、
+#   **判っている要素の照合まで消えて**いた（検体 `L17`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  element of 'list[str]' expects 'str' but got 'int'
+
+mut zs: list = [1]
+
+let xs: list[str] = [1, zs[0]]      # ⛔ 要素 `1` は str ではない
+
+print(xs)
