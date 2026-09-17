@@ -1,0 +1,94 @@
+# trait_template_args.ar — テンプレート trait の型引数が効く（タスク 9.9）
+#
+# ## 何が壊れていたか
+#
+#     trait Holder[T]:
+#         let item: T
+#
+#     class IntBox(Holder[int]):
+#         fn __init__(mut self, v: int) -> None:
+#             self.item = v          # 旧: field 'item' is declared 'T' but got 'int'
+#
+#     let h: Holder[int] = IntBox(3) # 旧: declared 'Holder[int]' but initialized with 'IntBox'
+#
+# 症状は 2 つあったが**根は 1 つ**だった。パーサは `class IntBox(Holder[int])` の
+# `["int"]` を集めて自動 `__init__` の引数型に使っていたのに、**AST へ載せずに捨てて**
+# いたので型検査へ届いていなかった。
+#
+# ⇒ `Stmt::ClassDef` に `base_args` を足し（`bases` と同じ並び）、
+#   レジストリが `クラス → 基底 → 型引数` を持つようにした。これで
+#
+#   1. 継承したフィールド・メソッドの型が `T` → 具体型に**置換**される
+#   2. `Holder[int]` という**注釈**にクラスが適合するか判定できる
+#
+# ⚠ 2 つ目は**タスク 9.7 が露見させた**穴。それ以前は注釈の `[int]` がパーサで
+#   捨てられて `Holder` になっていたので、型引数を見ないまま通っていた。
+#
+# ⚠ 型引数を書かない `class C(Holder)` は**従来どおり照合しない**（判らないものを通す）。
+#   「書かなかった」を不一致に倒すと既存のコードを一律に弾いてしまう。
+#
+# 弾かれる例は trait_template_args_error.ar
+
+print("=== 継承したフィールドの型が具体型に解決される ===")
+
+trait Holder[T]:
+    mut item: T
+
+class IntBox(Holder[int]):
+    mut tag: str
+
+let b = IntBox(5, "b")
+print(b.item)                   # 5
+print(b.tag)                    # b
+
+print("=== 注釈として書ける ===")
+
+let h: Holder[int] = b
+print(h.item)                   # 5
+
+fn read(h: Holder[int]) -> int:
+    return h.item
+
+print(read(b))                  # 5
+
+print("=== メソッドの戻り値型も置換される ===")
+
+trait Sized[T]:
+    fn size(self) -> T:
+        ...
+
+class Counter(Sized[int]):
+    mut n: int
+
+    fn size(self) -> int:
+        return self.n
+
+let c = Counter(7)
+print(c.size())                 # 7
+
+print("=== trait 修飾アクセスも同じ ===")
+
+trait Counted[T]:
+    mut count: T
+
+class Bag(Counted[int]):
+    fn __init__(mut self) -> None:
+        self.count = 0
+
+mut bag = Bag()
+bag::Counted.count = 7
+print(bag::Counted.count)       # 7
+bag::Counted.count += 5
+print(bag.count)                # 12
+
+print("=== 型引数を書かない基底は従来どおり ===")
+
+trait Plain:
+    mut n: int
+
+class Simple(Plain):
+    fn __init__(mut self) -> None:
+        self.n = 1
+
+let p: Plain = Simple()
+print(p.n)                      # 1

@@ -169,6 +169,8 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
             name: st.name.clone(),
             template_params: vec![],
             bases: vec![],
+            // ⚠ Rust の構造体スタブは trait を継承しない（タスク 9.9）。
+            base_args: vec![],
             decorators: vec![],
             body: class_body,
         });

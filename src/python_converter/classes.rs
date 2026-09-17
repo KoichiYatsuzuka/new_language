@@ -147,6 +147,8 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
     Ok(Stmt::ClassDef {
         name: class_name,
         template_params: vec![],
+        // ⚠ Python 由来のクラスに trait の型引数は無い（タスク 9.9）。
+        base_args: vec![Vec::new(); bases.len()],
         bases,
         body,
         decorators: class_dec.decorators,

@@ -3651,7 +3651,7 @@ list[foo] / list[Box[int]] / list[type[foo]]  → 8.2 以降は NamedInstance �
 | ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
 | ~~**9.6**~~ | ~~`examples/_tmp_demo.txt` が例題実行で書き換わる~~ → **✅ 完了 2026-09-17** | ⚠ **例題を 1 件壊していた** | 全般 |
 | ~~**9.7**~~ | ~~非テンプレート名の型引数 `[...]` が黙って捨てられる~~ → **✅ 完了 2026-09-18** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
-| **9.9** | **テンプレート trait を注釈に書くと照合できない**（9.7 で判明） | `let h: Holder[int] = IntBox(…)` が弾かれる | 9.7 |
+| ~~**9.9**~~ | ~~テンプレート trait を注釈に書くと照合できない~~ → **✅ 完了 2026-09-18** | `let h: Holder[int] = IntBox(…)` が弾かれる | 9.7 |
 | ~~**9.8**~~ | ~~`cargo test`（debug ビルド）が 73 コミットにわたりビルド不能~~ → **✅ 完了 2026-09-17** | ⚠⚠ **単体テストが一切走っていなかった** | 9.1 |
 
 ---
@@ -3990,6 +3990,74 @@ declared 'T' but got 'int'`（基準バイナリでも同じ）。**テンプレ
 
 ⇒ 2 つは同じ根（trait の型引数が基底名リストからしか来ず、置換表が作られていない）なので
 **まとめて扱うこと**。クラス側は同じ問題をタスク A-2 で解決済みなので、その形を trait へ移す。
+
+##### 記録（2026-09-18・完了）
+
+##### 根は 1 つだった: **パーサが型引数を集めてから捨てていた**
+
+`parser/classes.rs` は `class IntBox(Holder[int])` の `["int"]` を
+`bases_with_args` として集め、**自動 `__init__` の引数型の解決に使っていた**。
+ところが `Stmt::ClassDef` には `bases: Vec<String>`（名前だけ）しか載せておらず、
+**型引数はそこで消えていた**。⇒ 型検査は最初から情報を持っていなかった。
+
+⇒ `Stmt::ClassDef` に **`base_args: Vec<Vec<String>>`**（`bases` と同じ並び）を足し、
+レジストリが `クラス → 基底 → 型引数` を持つようにした。これで 2 症状が両方消える:
+
+| 症状 | 直し方 |
+|---|---|
+| `field 'v' of class 'IntHolder' is declared 'T' but got 'int'` | `declared_field_type` が trait のフィールド型を読むときに **`T` → 具体型へ置換**する（`subst_trait_params`） |
+| `'h' is declared 'Holder[int]' but initialized with 'IntHolder'` | `type_matches_exact` に **期待型が `GenericInstance` の腕**を足し、クラスが渡した型引数と照合する（`base_args_match`） |
+
+##### AST を変える判断
+
+`bases` を `Vec<TraitRef>` に変える案もあったが、`Stmt::ClassDef` の出現は **53 箇所**で、
+`bases` を**読む**側（継承判定・実行時のフィールド索引）が大半だった。
+⇒ **追加フィールドにした**（既存の読み手は無変更）。構築地点 6 箇所と
+網羅パターン 3 箇所だけが追従で、rustc が全部指してくれる。
+
+⚠ 並行ベクタなので `ast.rs` に「**`bases` と同じ並び・同じ長さ**」を不変条件として明記した。
+⚠ テンプレート実体化（`interpreter/templates.rs`）では **`base_args` も置換する**。
+`class Outer[T](Holder[T])` を `Outer[int]` として実体化したら基底は `Holder[int]`。
+⚠ 実行時（`exec_class_def`）と `parse_ar`（`ast_value.rs`）は `base_args: _` で受ける。
+前者はフィールド索引を名前だけで決めるため、後者はメタ関数から見える API を
+静的検査の内部事情で膨らませないため。
+
+##### 「書かなかった」を不一致に倒さない
+
+`class C(Holder)`（型引数なし）と非テンプレート trait は**照合しない**で通す。
+書かなかったことを不一致にすると、型引数を省いた既存のコードを一律に弾く。
+⇒ 取りこぼす代わりに誤検出を出さない（`ffi_boundary` の「保守的側」と同じ方針）。
+
+##### ⚠ エラー例題が「偶然正しかった」ことに注意
+
+`trait_template_args_error.ar`（`Holder[str]` に `IntBox` を入れる）は
+**9.9 より前も同じエラーで落ちていた**。ただし理由が違う:
+
+| 時期 | 挙動 |
+|---|---|
+| 9.7 より前 | 注釈の `[str]` がパーサで捨てられ `Holder` になり、**通っていた** |
+| 9.7 〜 9.9 | `Holder[str]` は残るが `GenericInstance` を受ける腕が無く、**`Trait[Args]` を一律に弾いていた**（正常系の `Holder[int]` も落ちていた） |
+| 9.9 以降 | クラスが渡した型引数と照合。`Holder[int]` は通り `Holder[str]` だけ弾く |
+
+⇒ **エラー例題だけでは直ったことを示せない。** 正常系（`trait_template_args.ar`）が
+基準バイナリで落ちることが証拠になる（`compare_bytecode` / `compare_outputs` で確認）。
+
+##### 既存例題の「見送る」記述を撤回した
+
+`examples/classes/trait_field_assign_static.ar` と `trait_conformance.ar` は
+「具体型引数は基底名だけでは判らないので照合を見送る」と明記していた。
+⇒ 判るようになったので記述を更新し、`trait_field_assign_static.ar` には
+`let h: Holder[int] = b` を足して**注釈としても書けること**を示した。
+
+##### ゲート
+
+`cargo test` 782 passed ／ `scan_examples` 既知の TIMEOUT のみ ／ `force_gate` 0 件（322）／
+`compare_bytecode` 負の対照 **274/274**・8.5 基準比は**触った 2 例題だけ**／
+`compare_outputs` 253/255（同上）／ `compare_import_paths` 13/13 ／
+`compare_python_impl` 96/96 clean ／ `compare_wasm_frontend` **325/325 INVENTED 0** ／
+`type_obligations` 98% 退行なし ／ `stale_doc_refs` OK。
+
+例題: `examples/classes/trait_template_args{,_error}.ar`
 
 ### 9.8 `cargo test`（debug ビルド）が 73 コミットにわたりビルド不能だった 【✅ 完了 2026-09-17】
 

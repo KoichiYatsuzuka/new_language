@@ -1,0 +1,32 @@
+# trait_template_args_error.ar — テンプレート trait の型引数が合わない（タスク 9.9）
+#
+# 正常系は trait_template_args.ar
+#
+# `IntBox` は `Holder[int]` を実装しているので `Holder[str]` は満たさない。
+#
+# ⚠⚠ **この行が弾かれること自体は 9.9 より前から同じ**だが、理由が違う（実測）:
+#   - タスク 9.7 より前 … 注釈の `[str]` が**パーサで捨てられて** `Holder` になり、
+#     「trait を実装しているか」だけで判定されて**通っていた**。
+#   - 9.7 〜 9.9 の間 … `Holder[str]` は残るが、型検査は `GenericInstance` を
+#     受ける腕を持たず **`Trait[Args]` の注釈を一律に弾いていた**。
+#     つまりここは**偶然正しかった**だけで、正常系の `Holder[int]` も同時に落ちていた。
+#   - タスク 9.9 以降 … クラスが渡した型引数（`base_args`）と照合して判定する。
+#     ⇒ `Holder[int]` は通り、`Holder[str]` だけが弾かれる（正常系と対で見ること）。
+#
+# ⚠ 型引数を書かない `class C(Holder)` は照合しない（判らないものを通す）。
+#   ここで弾けるのは**クラスが型引数を明示している**からこそ。
+#
+# 期待されるエラー:
+#   StaticTypeError  'bad' is declared 'Holder[str]' but initialized with 'IntBox'
+
+trait Holder[T]:
+    mut item: T
+
+class IntBox(Holder[int]):
+    mut tag: str
+
+let b = IntBox(5, "b")
+
+let bad: Holder[str] = b            # ⛔ IntBox は Holder[int] であって Holder[str] ではない
+
+print("ここには到達しない")

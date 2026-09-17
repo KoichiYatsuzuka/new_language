@@ -70,8 +70,10 @@ print(b.describe(), b.measure())    # Box 24
 print("=== テンプレート trait ===")
 
 # ⚠ `trait Holder[T]` の `-> T` を `class IntBox(Holder[int])` が `-> int` で実装するのは
-#   正しい。⚠ 具体型引数（`Holder[int]` の `int`）は基底名だけでは判らないので、
-#   型変数を含む要求は**照合を見送る**（判らないものを通す）。
+#   正しい。
+# ⚠⚠ **タスク 9.9 で具体型引数まで見るようになった。** 以前は `Holder[int]` の `int` が
+#   基底名 `Holder` からは判らず、型変数を含む要求は照合を見送っていた。
+#   いまは `base_args` として型引数がクラス側に載っているので `T` → `int` に置換される。
 trait Holder[T]:
     mut item: T
 

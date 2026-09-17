@@ -374,6 +374,9 @@ pub(crate) fn generate_stubs(
             stmts.push(Stmt::ClassDef {
                 name: td.name.clone(),
                 template_params,
+                // ⚠ C# スタブの基底は型引数を持たせていない（タスク 9.9）。
+                //   持たせるなら `bases` と同じ並びで詰めること。
+                base_args: vec![Vec::new(); bases.len()],
                 bases,
                 decorators: vec![],
                 body: body_stmts,

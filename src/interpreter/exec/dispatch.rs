@@ -149,10 +149,13 @@ impl Interpreter {
             Stmt::ProtocolDef { name, body } => self.exec_protocol_def(name, body),
             Stmt::NewTypeDef { name, original } => self.exec_new_type_def(name, original),
             Stmt::EnumDef { name, variants } => self.exec_enum_def(name, variants),
+            // ⚠ `base_args`（基底 trait の具体型引数・タスク 9.9）は**静的検査専用**。
+            //   実行時のフィールド索引は `bases` の名前だけで決まる。
             Stmt::ClassDef {
                 name,
                 template_params,
                 bases,
+                base_args: _,
                 body,
                 decorators,
             } => self.exec_class_def(name, template_params, bases, body, decorators),

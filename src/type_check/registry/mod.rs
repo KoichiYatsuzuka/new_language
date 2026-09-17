@@ -35,6 +35,12 @@ pub(super) struct TypeRegistry {
     new_type_originals: HashMap<String, String>,
     /// クラスの基底クラス・トレイト名。継承チェック・protected アクセス検査に使用。
     class_bases: HashMap<String, Vec<String>>,
+    /// **基底 trait ごとの具体型引数**（タスク 9.9）。キー: クラス名 → 基底名 → 型引数。
+    ///
+    /// ⚠⚠ これが無いと `trait Holder[T]` を継承したクラスのフィールド型が
+    /// **`T` のまま**になる（置換表が作れない）。以前はパーサが同じ情報を持ちながら
+    /// AST へ載せずに捨てていた。
+    class_base_args: HashMap<String, HashMap<String, Vec<String>>>,
     /// クラスフィールドの可変フラグ。キー: クラス名 → (フィールド名 → 可変か)。
     class_fields: HashMap<String, HashMap<String, bool>>,
     /// クラスフィールドの詳細（種別・型）。Protocol 適合チェックで使用する。
@@ -95,6 +101,18 @@ impl TypeRegistry {
     }
 
     /// クラスの基底クラス・トレイト名。
+    /// `class` が基底 `base`（trait）へ渡した**具体型引数**（タスク 9.9）。
+    ///
+    /// ⚠ 型引数を書かなかった／trait がテンプレートでない場合は空スライス。
+    /// 「引数が無い」と「そもそも基底でない」を区別したいときは `class_bases` を見ること。
+    pub(super) fn class_base_args(&self, class: &str, base: &str) -> &[String] {
+        self.class_base_args
+            .get(class)
+            .and_then(|m| m.get(base))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub(super) fn class_bases(&self, class: &str) -> Option<&[String]> {
         self.class_bases.get(class).map(|v| v.as_slice())
     }

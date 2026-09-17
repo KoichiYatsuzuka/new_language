@@ -1477,10 +1477,41 @@ impl TypeChecker {
                 .trait_field_details(base)
                 .and_then(|m| m.get(field))
             {
-                return Some(ty.clone());
+                // ⚠⚠ **trait の型変数を具体型へ置換する**（タスク 9.9）。
+                //    `trait Holder[T]: let item: T` を `class IntBox(Holder[int])` が
+                //    継承したとき、以前はここが `T` を**そのまま**返していたので
+                //    `self.item = 3` が `declared 'T' but got 'int'` になっていた。
+                //    ⚠ 置換表は `class_base_args`（基底ごとの具体型引数）から作る。
+                //      パーサは同じ情報を持っていたが AST へ載せていなかった。
+                return Some(self.subst_trait_params(base, class_name, ty));
             }
         }
         None
+    }
+
+    /// 基底 `base`（trait）の**型変数を、`class_name` が渡した具体型へ**置換する（9.9）。
+    ///
+    /// ⚠ 型引数が書かれていない（`class C(Holder)` や非テンプレート trait）なら
+    /// 何も置換せずに返す。「置換できない」を `Unresolved` へ倒さないのは、
+    /// 具体型のメンバー（`T` を含まないフィールド）の検査まで消してしまうため
+    /// （`class_and_subst` が同じ理由で同じ判断をしている）。
+    fn subst_trait_params(&self, base: &str, class_name: &str, ty: &InferredType) -> InferredType {
+        let Some(params) = self.registry.template_params(base) else {
+            return ty.clone();
+        };
+        let args = self.registry.class_base_args(class_name, base);
+        if params.is_empty() || params.len() != args.len() {
+            return ty.clone();
+        }
+        let subst: std::collections::HashMap<String, InferredType> = params
+            .iter()
+            .cloned()
+            .zip(
+                args.iter()
+                    .map(|a| InferredType::from_ann(a).unwrap_or(InferredType::Unresolved)),
+            )
+            .collect();
+        Self::subst_type_params(ty, &subst)
     }
 
     /// タプル分割束縛 `let a, b = expr` を型検査する。

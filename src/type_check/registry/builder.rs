@@ -138,6 +138,7 @@ impl TypeRegistryBuilder {
                 arrow_class_names: HashSet::new(),
                 new_type_originals,
                 class_bases,
+                class_base_args: HashMap::new(),
                 class_fields: HashMap::new(),
                 class_field_details,
                 class_member_access: HashMap::new(),
@@ -224,7 +225,7 @@ impl TypeRegistryBuilder {
                     self.collect(body);
                 }
                 Stmt::ClassDef {
-                    name, bases, body, template_params, ..
+                    name, bases, base_args, body, template_params, ..
                 } => {
                     self.reg.known_class_names.insert(name.clone());
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
@@ -232,6 +233,16 @@ impl TypeRegistryBuilder {
                         self.reg.arrow_class_names.insert(name.clone());
                     }
                     self.reg.class_bases.insert(name.clone(), bases.clone());
+                    // ⚠ `bases` と `base_args` は**同じ並び**（`ast.rs` の不変条件）。
+                    //   zip なので長さがずれても壊れず、足りない分が落ちるだけ。
+                    self.reg.class_base_args.insert(
+                        name.clone(),
+                        bases
+                            .iter()
+                            .cloned()
+                            .zip(base_args.iter().cloned())
+                            .collect(),
+                    );
                     if !template_params.is_empty() {
                         self.reg.template_params.insert(
                             name.clone(),

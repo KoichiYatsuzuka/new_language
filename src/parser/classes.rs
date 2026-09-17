@@ -270,6 +270,9 @@ impl Parser {
         Ok(Stmt::ClassDef {
             name,
             template_params,
+            // ⚠ `bases` と**同じ並び**で型引数を載せる（タスク 9.9）。以前はこの情報を
+            //   自動 `__init__` の引数型に使うだけで捨てており、型検査へ届いていなかった。
+            base_args: bases_with_args.iter().map(|(_, args)| args.clone()).collect(),
             bases,
             body,
             decorators,

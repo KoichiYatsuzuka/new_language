@@ -99,6 +99,8 @@ impl Parser {
                         name: sdef.name.clone(),
                         template_params: vec![],
                         bases: vec![],
+                        // ⚠ C の構造体スタブは trait を継承しない（タスク 9.9）。
+                        base_args: vec![],
                         decorators: vec![],
                         body: field_stmts,
                     });

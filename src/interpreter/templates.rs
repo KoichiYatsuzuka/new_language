@@ -819,12 +819,24 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             name,
             template_params,
             bases,
+            base_args,
             body,
             decorators,
         } => Stmt::ClassDef {
             name: name.clone(),
             template_params: template_params.clone(),
             bases: bases.clone(),
+            // ⚠ 基底 trait の型引数も置換する（タスク 9.9）。
+            //   `class Outer[T](Holder[T])` を `Outer[int]` として実体化したら
+            //   基底は `Holder[int]` でなければならない。
+            base_args: base_args
+                .iter()
+                .map(|args| {
+                    args.iter()
+                        .map(|a| type_map.get(a).cloned().unwrap_or_else(|| a.clone()))
+                        .collect()
+                })
+                .collect(),
             body: subst_stmts(body, type_map),
             decorators: decorators.clone(),
         },

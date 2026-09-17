@@ -401,10 +401,14 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("body", stmts_list(body)),
             ],
         ),
+        // ⚠ `base_args`（基底 trait の具体型引数・タスク 9.9）は**公開しない**。
+        //   `parse_ar` が返す形はメタ関数から見える API なので、静的検査の内部事情で
+        //   フィールドを増やさない。必要になったらそのとき足す。
         Stmt::ClassDef {
             name,
             template_params,
             bases,
+            base_args: _,
             decorators,
             body,
         } => ns(

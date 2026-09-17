@@ -491,8 +491,47 @@ impl TypeChecker {
                     return true;
                 }
             }
+            // ⚠⚠ **テンプレート trait を注釈に書いた形**（タスク 9.9）。
+            //    `let h: Holder[int] = IntBox(3)` の期待型は `GenericInstance`
+            //    なので、上の `NamedInstance` の腕には**当たらない**。
+            //    以前は注釈の `[int]` がパーサで捨てられて `Holder` になっていたため
+            //    上の腕で通っていた（タスク 9.7 で捨てるのをやめて露見した）。
+            // ⚠ **型引数まで見る。** 実装していても引数が違えば別の型
+            //    （`IntBox(Holder[int])` は `Holder[str]` を満たさない）。
+            if let InferredType::GenericInstance { name, args } = expected {
+                if self.class_implements_trait(class_name, name) {
+                    return self.base_args_match(class_name, name, args);
+                }
+            }
         }
         false
+    }
+
+    /// `class_name` が基底 `trait_name` へ渡した型引数が `expected_args` と一致するか（9.9）。
+    ///
+    /// ⚠ 引数を書いていない（`class C(Holder)`）場合は**照合しない**で通す。
+    /// 「書かなかった」を不一致に倒すと、型引数を省いた既存のコードを一律に弾く。
+    /// ⇒ 取りこぼす代わりに誤検出を出さない（`ffi_boundary` と同じ保守的側）。
+    fn base_args_match(
+        &self,
+        class_name: &str,
+        trait_name: &str,
+        expected_args: &[InferredType],
+    ) -> bool {
+        let actual = self.registry.class_base_args(class_name, trait_name);
+        if actual.is_empty() {
+            return true;
+        }
+        if actual.len() != expected_args.len() {
+            return false;
+        }
+        actual.iter().zip(expected_args).all(|(a, e)| {
+            match InferredType::from_ann(a) {
+                Some(t) => self.type_matches_exact(&t, e),
+                // 解釈できない綴りは判定材料が無いので通す（保守的側）。
+                None => true,
+            }
+        })
     }
 
     /// `arg_inner` が `expected_inner` と互換性のある型値かを判定する。

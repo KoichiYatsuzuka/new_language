@@ -17,9 +17,11 @@
 # trait のフィールドを持つクラスの `C(...)` は、内部で `self::T.f = arg` の形で
 # 代入する。⇒ この検査は**コンストラクタ引数にも効く**。
 #
-# そのため `trait Holder[T]` のようなテンプレート trait では、期待型が `T` のままで
-# 具体型引数（`Holder[int]` の `int`）は**基底名だけでは判らない**。
-# 型変数を含む要求は照合を見送る（`trait_conformance.ar` が明記している方針）。
+# ⚠⚠ **タスク 9.9 でテンプレート trait も照合できるようになった。** 以前は
+# 具体型引数（`Holder[int]` の `int`）が**基底名だけでは判らない**ため、期待型が `T` の
+# まま照合を見送っていた。パーサは型引数を持っていたが AST へ載せずに捨てていたので、
+# 型検査へ届いていなかったのが原因。⇒ `base_args` として載せ、継承したフィールドの型を
+# 具体型へ置換するようにした。
 #
 # 弾かれる例は trait_field_assign_static_error.ar
 
@@ -44,10 +46,11 @@ print("=== 修飾しない形も同じ宣言型が効く ===")
 p.name = "cara"
 print(p.name)                               # cara
 
-print("=== テンプレート trait は照合を見送る ===")
+print("=== テンプレート trait も照合される（タスク 9.9） ===")
 
-# ⚠ `Holder[int]` の `int` は基底名 `Holder` からは判らないので、`T` を含む要求は
-#   検査しない（判らないものを通す）。実行時検査（A-3）が受け持つ。
+# ⚠ `Holder[int]` の `int` は `base_args` としてクラス側に載っているので、
+#   継承したフィールド `item` の型は `T` ではなく `int` に解決される。
+#   ⇒ `IntBox(5, "b")` の第 1 引数は `int` として検査される。
 trait Holder[T]:
     mut item: T
 
@@ -56,6 +59,10 @@ class IntBox(Holder[int]):
 
 let b = IntBox(5, "b")
 print(b.item, b.tag)                        # 5 b
+
+# 注釈としても書ける（クラスが実装している型引数と一致することまで見る）。
+let h: Holder[int] = b
+print(h.item)                               # 5
 
 print("=== 型変数を含まない要求はテンプレート trait でも検査される ===")
 
