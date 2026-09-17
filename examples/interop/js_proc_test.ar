@@ -31,7 +31,10 @@ print("stripComment:", stripped)
 let cleaned: str = analysis.cleanTypeAnnotation("  List[int]  ")
 print("cleanTypeAnnotation:", cleaned)
 
-let parts: List[str] = analysis.splitComma("int, str, bool")
+# ⚠ 以前ここは `List[str]`（大文字）だった。Arrow の型は小文字の `list` なので
+#   `List` という型は存在せず、`[str]` は黙って捨てられて `NamedInstance("List")` に
+#   なっていた（右辺が js 由来の `Any` なので照合も素通り）。タスク 9.7 で露見した。
+let parts: list[str] = analysis.splitComma("int, str, bool")
 print("splitComma:", parts)
 
 print("")

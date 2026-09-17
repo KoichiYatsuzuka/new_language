@@ -238,6 +238,8 @@ $knownDiff = @{
     'elem_type_kept_error'           = 'py: 型注釈の要素型を検査しないので素通りして「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.2）'
     'bare_tuple_annotation_error'    = 'py: 型注釈を捨てるので let t: tuple = 1 が通り「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.3）'
     'bare_tuple_annotation'          = 'py: タプル内の str を引用符なしで表示する（実測 `(1, a)`）。list_concat_repeat と同じ repr の差で、タプルの受け渡し自体は py も動く'
+    # ⚠ タスク 9.7（型引数を捨てない）で新設。**実測して確認済み**。
+    'type_args_not_dropped_error'    = 'py: 型注釈の `[...]` を検査しないので素通りして「ここには到達しない」まで出る（Rust は ParseError で停止・9.7）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'

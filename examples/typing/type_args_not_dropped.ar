@@ -1,0 +1,65 @@
+# type_args_not_dropped.ar — 書いた型引数 `[...]` は捨てられない（タスク 9.7）
+#
+# ## 何が壊れていたか
+#
+# `parse_type_expr` は **`known_templates` に載っている名前以外**の `[...]` を
+# **読み飛ばして捨てて**いた。そのため利用者が書いた型引数が黙って消えていた:
+#
+#   let x: str[int] = "s"     # 通っていた（注釈が `str` になる）
+#   let n: int[0] = 5         # 通っていた
+#   let f: Foo[int] = Foo(1)  # 通っていた（`Foo` は非テンプレート）
+#
+# ⚠ タスク 8.2（`list[foo]` が素の `list` に落ちる）と**同じ系統**の穴。
+#
+# ## さらに悪かったこと — `known_templates` はパース途中の状態だった
+#
+# テンプレート名は `class X[T]` を**パースした時点**で 1 つずつ登録されていた。
+# つまり**宣言より前に書いた注釈**では「まだ知らない名前」になり、
+# テンプレートであっても型引数が捨てられていた。実測（修正前）:
+#
+#   fn use_it(b: Box[int]) -> int:     # ← `[int]` が消えて `Box` になる
+#       return b.v
+#   class Box[T]: ...
+#   use_it(Box[str]("s"))              # ⛔ 通ってしまい "s" を出力していた
+#
+# ⚠ `trait X[T]` に至っては**登録すらされていなかった**（`class` だけ登録していた）。
+#
+# ⇒ トークン列を**パース前に 1 度走査**して `class X[...]` / `trait X[...]` を
+#   すべて集めるようにした（`Parser::scan_template_names`）。宣言順に依存しない。
+#
+# 弾かれる例は type_args_not_dropped_error.ar
+
+print("=== 宣言より前の注釈でも型引数が効く ===")
+
+fn unwrap_int(b: Box[int]) -> int:
+    return b.v
+
+fn unwrap_str(b: Box[str]) -> str:
+    return b.v
+
+class Box[T]:
+    let v: T
+
+    fn __init__(mut self, v: T) -> None:
+        self.v = v
+
+print(unwrap_int(Box[int](7)))
+print(unwrap_str(Box[str]("seven")))
+
+# ⚠ ここで `unwrap_int(Box[str]("s"))` と書くと
+#   `argument 0 of 'unwrap_int' expects 'Box[int]' but got 'Box[str]'` になる。
+#   修正前は型引数が消えていたので**素通りしていた**。
+
+print("=== 宣言より後でも同じ ===")
+
+let later: Box[int] = Box[int](11)
+print(later.v)
+
+print("=== 型引数を取る組み込みは従来どおり ===")
+
+let xs: list[int] = [1, 2, 3]
+let d: dict[str, int] = {"a": 1}
+let t: tuple[int, str] = (1, "a")
+print(xs[0])
+print(d["a"])
+print(t[1])

@@ -169,6 +169,13 @@ impl Parser {
             },
         );
         let resolved = source_dir.unwrap_or_else(|| PathBuf::from("."));
+        // ⚠⚠ **テンプレート名はパースを始める前に全部集める**（タスク 9.7）。
+        //    以前は `parse_class_def` が到達した時点で 1 つずつ登録していたので、
+        //    **宣言より前に書いた注釈では型引数が黙って捨てられていた**（実測）:
+        //      fn use_it(b: Box[int]) -> int:   # ← `[int]` が消え `Box` になる
+        //      class Box[T]: ...                #   （宣言はこの後）
+        //    さらに `trait X[T]` は**登録すらされていなかった**（class だけ登録していた）。
+        let known_templates = Self::scan_template_names(&tokens);
         Self {
             tokens,
             pos: 0,
@@ -176,7 +183,7 @@ impl Parser {
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
             aliases: HashMap::new(),
-            known_templates: HashSet::new(),
+            known_templates,
             known_protocols: HashSet::new(),
             source_dir: resolved.clone(),
             root_dir: resolved,
@@ -186,6 +193,28 @@ impl Parser {
             #[cfg(feature = "editor")]
             editor: editor_index::EditorIndex::new(),
         }
+    }
+
+    /// トークン列を 1 度走査して `class X[...]` / `trait X[...]` の **X** を集める
+    /// （タスク 9.7）。
+    ///
+    /// ⚠ **パース順に依存しないことがこの関数の存在理由。** 型注釈は宣言より前に
+    /// 現れうるので、逐次登録では「そのときまだ知らない」テンプレートが出る。
+    /// ⚠ 走査するのは自分のトークン列だけ。import 先のテンプレートは含まれない
+    /// （別ファイルは別 `Parser` が読む）。それらの `Base[Args]` は
+    /// [`Self::parse_type_expr`] が「型引数を取らない型」として弾く。
+    fn scan_template_names(tokens: &[Spanned]) -> HashSet<String> {
+        let mut set = HashSet::new();
+        for w in tokens.windows(3) {
+            if matches!(w[0].token, Token::Class | Token::Trait)
+                && matches!(w[2].token, Token::LBracket)
+            {
+                if let Token::Ident(n) = &w[1].token {
+                    set.insert(n.clone());
+                }
+            }
+        }
+        set
     }
 
     /// AST 型解決層の node-id を1つ採番する（タスク #16）。1 始まり（0 = 未採番）。

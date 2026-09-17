@@ -416,23 +416,31 @@ impl Parser {
             self.eat(&Token::RBracket)?;
             return Ok(format!("{base}[{}]", args.join(",")));
         }
+        // ⚠⚠ **型引数を取らない型に `[...]` が付いていたら弾く**（タスク 9.7）。
+        //
+        //    以前はここで `[...]` を**読み飛ばして捨てて**いた。そのため
+        //      let x: str[int] = "s"     # 通っていた（注釈が `str` になる）
+        //      let n: int[0] = 5         # 通っていた
+        //      let f: Foo[int] = Foo(1)  # 通っていた（`Foo` は非テンプレート）
+        //    のように、**利用者が書いた型引数が黙って消えていた**。
+        //    タスク 8.2（`list[foo]` が素の `list` に落ちる）と同じ系統の穴。
+        //
+        // ⚠ 旧コメントは「キャスト（`expr => Type`）から呼ばれるので `x => list[0]` の
+        //   ような型でない中身でパースエラーになる」ことを読み飛ばしの理由にしていたが、
+        //   **その例はもう成り立たない**。`list[` / `fixed_list[` / `set[` / `dict[` /
+        //   `tuple[` / `type[` / `Result[` は上で**すでに厳密パース**しているので、
+        //   `x => list[0]` は読み飛ばしの有無に関わらずエラーになる。
+        //   ⇒ 「型名のあとに `[` が来たら型引数」という規則は**すでに全体の前提**で、
+        //     キャスト結果に添字を付けたいなら `(x => T)[0]` と括る（既存の作法）。
+        //
+        // ⚠ import 先で定義されたテンプレートもここで弾かれる。別ファイルは別 `Parser` が
+        //   読むので [`Self::scan_template_names`] の走査対象に入らないため。
+        //   ⚠ **これは退行ではない。** 従来もその `[...]` は捨てられており、型検査は
+        //     置換前の型変数を見ていた（＝黙って壊れていた）。弾くことで露見する。
         if *self.current() == Token::LBracket {
-            self.advance();
-            let mut depth = 1usize;
-            while depth > 0 && *self.current() != Token::Eof {
-                if *self.current() == Token::LBracket {
-                    depth += 1;
-                } else if *self.current() == Token::RBracket {
-                    depth -= 1;
-                }
-                // 読み飛ばす型引数も型位置。`MyClass[int]` の `int` を関数扱いさせない。
-                if let Token::Ident(arg) = self.current().clone() {
-                    self.advance();
-                    self.note_type_ref(&arg);
-                    continue;
-                }
-                self.advance();
-            }
+            return Err(format!(
+                "type `{base}` does not take type arguments"
+            ));
         }
         Ok(base)
     }

@@ -3463,10 +3463,11 @@ list[foo] / list[Box[int]] / list[type[foo]]  → 8.2 以降は NamedInstance �
 | ~~**9.1**~~ | ~~`o::T.attr += v` がバイトコードに載らない~~ → **✅ 完了 2026-09-17** | 実行不能 | 5.1 |
 | **9.2** | `freeze` の意味がドキュメントと実装で食い違う | 仕様が確定していない | 7.2 |
 | **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
-| **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | ⚠⚠ **py 相互運用の前提**（7.8 の帰結） | 7.8 |
+| ~~**9.4**~~ | ~~`.pyi` のクラスメンバー・モジュール変数が型検査に届かない~~ → **⏹ 取り下げ 2026-09-18** | Python 直接翻訳機能の実装時に扱う | 7.8 |
 | ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
 | ~~**9.6**~~ | ~~`examples/_tmp_demo.txt` が例題実行で書き換わる~~ → **✅ 完了 2026-09-17** | ⚠ **例題を 1 件壊していた** | 全般 |
-| **9.7** | **非テンプレート名の型引数 `[...]` が黙って捨てられる** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
+| ~~**9.7**~~ | ~~非テンプレート名の型引数 `[...]` が黙って捨てられる~~ → **✅ 完了 2026-09-18** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
+| **9.9** | **テンプレート trait を注釈に書くと照合できない**（9.7 で判明） | `let h: Holder[int] = IntBox(…)` が弾かれる | 9.7 |
 | ~~**9.8**~~ | ~~`cargo test`（debug ビルド）が 73 コミットにわたりビルド不能~~ → **✅ 完了 2026-09-17** | ⚠⚠ **単体テストが一切走っていなかった** | 9.1 |
 
 ---
@@ -3580,7 +3581,13 @@ basics collections classes typing exceptions async bench apps interop
 ⚠ `spider_render.ar` は import 専用モジュールなので、単体実行では import が解決せず
 `Any` 由来のエラーが出るのは**正常**。こちらは「スキップ理由の記録」で足りる。
 
-### 9.4 `.pyi` のクラスメンバー・モジュール変数が型検査に届かない
+### 9.4 `.pyi` のクラスメンバー・モジュール変数が型検査に届かない 【⏹ 取り下げ 2026-09-18】
+
+⚠⚠ **利用者の判断により取り下げ（2026-09-18）。** 「`.pyi` を型検査へ届かせる」作業は
+**Python 直接翻訳機能を実装するときに同じ場所を触る**ので、そちらで一緒に扱う。
+このフェーズの残件としては数えない。
+
+⚠ 以下は取り下げ時点の調査結果。着手する人のために残す。
 
 `import[py-int]` は `.pyi` を**優先探索している**（`load_python_interface_module`）。
 しかし実測すると、`.pyi` に書いても型検査に反映されないものがある:
@@ -3714,6 +3721,91 @@ let x: Foo[int] = 1       # 'x' is declared 'Foo'（`[int]` が捨てられて�
 
 ⚠ **タスク 8.2 と一緒にやる方がよい。** どちらも「書いた型引数が捨てられる」で、
 片方だけ直すと `list[foo]` と `Foo[int]` で扱いが割れる。
+
+##### 記録（2026-09-18・完了）
+
+##### 直し方: 読み飛ばしを**エラー**にし、テンプレート名は**パース前に全部集める**
+
+`parse_type_expr` の末尾は「`known_templates` に無い名前の `[...]` は読み飛ばす」だった。
+これを **`type \`X\` does not take type arguments`** で弾くようにした。
+
+⚠⚠ ただし弾くだけでは**新しい偽陽性**が出る。`known_templates` は
+`parse_class_def` が到達した時点で 1 つずつ登録していたので、**宣言より前に書いた注釈**では
+テンプレートであっても「知らない名前」になるからだ。実測（修正前）:
+
+```arrow
+fn use_it(b: Box[int]) -> int:     # ← `[int]` が消えて `Box` になっていた
+    return b.v
+class Box[T]: ...
+use_it(Box[str]("s"))              # ⛔ 通って "s" を出力していた（基準バイナリで確認）
+```
+
+⇒ トークン列を**パース前に 1 度走査**して `class X[...]` / `trait X[...]` を集める
+`Parser::scan_template_names` を足した。宣言順に依存しない。
+⚠ `trait X[T]` は**そもそも登録されていなかった**（`class` だけ登録していた）。走査で揃えた。
+
+##### 起票時の「制約」は**もう成り立っていなかった**
+
+読み飛ばしの理由はコードにこう書かれていた:
+
+> この関数はキャスト（`expr => Type`）からも呼ばれるので、無条件に厳密パースすると
+> `x => list[0]` のような**型でない中身**でパースエラーになる。
+
+⚠ **この例はもう成り立たない。** `list[` / `fixed_list[` / `set[` / `dict[` / `tuple[` /
+`type[` / `Result[` は**すでに上で厳密パース**されているので、`x => list[0]` は
+読み飛ばしの有無に関わらずエラーになる。
+⇒「型名のあとの `[` は型引数」は**すでに全体の前提**で、キャスト結果へ添字を付けたいなら
+`(x => T)[0]` と括る（既存の作法）。**34 箇所へのフラグ伝播は不要だった。**
+
+##### 例題に潜んでいた本物のバグを 1 件掘り出した
+
+`examples/interop/js_proc_test.ar`:
+
+```arrow
+let parts: List[str] = analysis.splitComma("int, str, bool")
+```
+
+Arrow の型は小文字の `list` で、**`List` という型は存在しない**。`[str]` は黙って捨てられ、
+`NamedInstance("List")` になっていた（右辺が js 由来の `Any` なので照合も素通り）。
+⇒ `list[str]` へ直した。
+
+⚠⚠ **この例題は `scan_examples` の skip 一覧に入っている**（Node.js が要る）。
+捕まえたのは **`compare_outputs` だけ**だった。⇒ ゲートを全部走らせる理由がまた 1 つ増えた。
+
+##### 移行コスト: 例題 1 件（上記）
+
+`scan_examples` 既知の TIMEOUT のみ、`force_gate` 0 件（321）、
+`compare_bytecode` は**新設した error 例題 1 件だけ**が差分、
+`compare_outputs` 251/252（同上）、`compare_import_paths` 13/13、
+`compare_wasm_frontend` **322/322**、`type_obligations` 98% 退行なし、
+`compare_python_impl` 97/97 clean、`cargo test` 778 passed。
+
+例題: `examples/typing/type_args_not_dropped{,_error}.ar`
+
+### 9.9 テンプレート trait を注釈に書くと照合できない（9.7 で判明・新規起票）
+
+```arrow
+trait Holder[T]:
+    let v: T
+
+class IntHolder(Holder[int]):
+    fn __init__(mut self, v: int) -> None:
+        self.v = v
+
+let h: Holder[int] = IntHolder(3)   # ⛔ 'h' is declared 'Holder[int]' but initialized with 'IntHolder'
+```
+
+⚠ **9.7 が作った穴ではなく、9.7 が見えるようにした穴。** 従来は注釈が `Holder` に
+truncate されていたので（型引数が捨てられていた）trait 適合検査に当たって通っていた。
+
+⚠ 同じファイルで**もう 1 つ前から壊れている**: `field 'v' of class 'IntHolder' is
+declared 'T' but got 'int'`（基準バイナリでも同じ）。**テンプレート trait の型引数置換が
+そもそも実装されていない**。例題側も自覚しており、
+`examples/classes/trait_field_assign_static.ar` に
+「具体型引数（`Holder[int]` の `int`）は**基底名だけでは判らない**」と明記してある。
+
+⇒ 2 つは同じ根（trait の型引数が基底名リストからしか来ず、置換表が作られていない）なので
+**まとめて扱うこと**。クラス側は同じ問題をタスク A-2 で解決済みなので、その形を trait へ移す。
 
 ### 9.8 `cargo test`（debug ビルド）が 73 コミットにわたりビルド不能だった 【✅ 完了 2026-09-17】
 

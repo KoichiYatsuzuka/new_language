@@ -1,0 +1,26 @@
+# type_args_not_dropped_error.ar — 型引数を取らない型に `[...]` は書けない（タスク 9.7）
+#
+# 正常系は type_args_not_dropped.ar
+#
+# `str` はテンプレートではないので `str[int]` という型は存在しない。
+#
+# ⚠ 以前は `parse_type_expr` が `known_templates` に無い名前の `[...]` を
+#   **読み飛ばして捨てて**いたため、この行は**通っていた**（注釈が `str` になる）。
+#   同様に `let n: int[0] = 5` も `let f: Foo[int] = Foo(1)` も通っていた。
+#
+# ⚠ 旧実装がこれを読み飛ばしていた理由は「キャスト（`expr => Type`）から同じ関数が
+#   呼ばれるので `x => list[0]` でパースエラーになる」だったが、**その例はもう
+#   成り立たない**。`list[` / `fixed_list[` / `set[` / `dict[` / `tuple[` / `type[` /
+#   `Result[` は既に厳密パースされているので、読み飛ばしの有無に関係なくエラーになる。
+#   ⇒「型名のあとの `[` は型引数」は既に全体の前提で、キャスト結果へ添字を付けるなら
+#     `(x => T)[0]` と括る（既存の作法）。
+#
+# ⚠ テンプレートの**型引数が合わない**場合は別の診断（StaticTypeError）になる。
+#   そちらは generic_type_ann_error.ar と type_args_not_dropped.ar のコメントを参照。
+#
+# 期待されるエラー:
+#   ParseError: type `str` does not take type arguments
+
+let x: str[int] = "s"               # ⛔ str は型引数を取らない
+
+print("ここには到達しない")
