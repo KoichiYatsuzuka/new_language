@@ -418,6 +418,12 @@ fn verify_storage_indices(chunk: &Chunk, local_names: &[String], n_params: usize
 /// 「**忘れてもテストは通ってしまう**」状態になっているのと同じ轍を踏まないため。
 /// ⚠ ローカル slot（`n_locals` で縛る）と**セル索引**（`n_cells` で縛る）は
 /// **別の記憶域**なので混ぜない。混ぜると `LoadCell` が別の値を読む。
+/// ⚠⚠ **この仕掛けは debug ビルドでしか発火しない**（`cfg(debug_assertions)`）。
+/// そして `scripts/*.ps1` のゲートはすべて `target/release` を見るので、
+/// **ここを忘れてもゲートは全部緑になる**。実際 2026-09-08 の `Op::CoerceFloat`
+/// 追加（`15aa677`）でここが漏れ、**73 コミットの間 `cargo test` がビルドできない
+/// まま誰も気づかなかった**（タスク 9.8）。
+/// ⇒ **op を足したら release ゲートだけでなく `cargo test`（debug）を必ず走らせること。**
 #[cfg(debug_assertions)]
 fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 2]) {
     use crate::vm::op::Op;
@@ -514,6 +520,7 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             | Op::BuildDict(_)
             | Op::Yield
             | Op::AsyncSubmit(_)
+            | Op::CoerceFloat
             => ([None, None], [None, None]),
         }
 }
