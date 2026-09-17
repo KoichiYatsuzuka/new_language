@@ -312,6 +312,7 @@ impl TypeChecker {
     /// C ABI 別名や alias 展開を経た綴りもここへ来るため。
     pub(crate) fn check_ann_not_bare(&mut self, ann: &str, what: &str) {
         let Some(ty) = InferredType::from_ann(ann) else { return };
+        self.check_ann_names_exist(&ty, ann, what);
         if !ty.is_bare_container() {
             return;
         }
@@ -322,6 +323,56 @@ impl TypeChecker {
             },
             span: None,
         });
+    }
+
+    /// **注釈に現れる型名が実在するか**を検査する（タスク 8.5）。
+    ///
+    /// ⚠⚠ **呼ぶ位置が効く。** `is_type_param` は**スコープ状態**なので、
+    /// テンプレート型変数を積んだ**後**で呼ばないと `fn f[T](x: T)` の `T` を
+    /// 「存在しない型名」と誤判定する（計測で `T` が 17 件出た）。
+    /// ⇒ `check_fn_def` / `check_gen_def` は `push_type_params` の後に呼んでいる。
+    ///
+    /// ⚠⚠ **外部言語のスタブは巻き込まれない。** py / C# の型名（`Figure` `Axes`
+    /// `NoReturn` …）は import 先のモジュール本体の注釈に現れるが、
+    /// [`Self::annotate_module_body`] が**そこで出た診断を捨てる**ので利用者には出ない。
+    /// 実測: 例題 393 件で未知名は 43 箇所あり、**42 箇所が py スタブ由来**だった。
+    /// ⇒ ここを「外部由来なら飛ばす」と書かないこと。モジュール境界の判断は
+    ///   `annotate_module_body` が 1 箇所で持っている。
+    fn check_ann_names_exist(&mut self, ty: &InferredType, ann: &str, what: &str) {
+        // ⚠ import 先を読み込めていないなら、レジストリに無い＝存在しない とは言えない。
+        if self.registry_incomplete {
+            return;
+        }
+        let mut names = Vec::new();
+        ty.collect_type_names(&mut names);
+        for name in names {
+            if self.type_name_exists(&name) {
+                continue;
+            }
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::UnknownTypeName {
+                    name,
+                    ann: ann.to_string(),
+                    what: what.to_string(),
+                },
+                span: None,
+            });
+        }
+    }
+
+    /// その名前が型として実在するか（タスク 8.5）。
+    ///
+    /// ⚠ `is_known_class` はクラス・enum・`new_type` を含む。trait / protocol と
+    /// **いま見えているテンプレート型変数**を足したものが「実在する型名」の全体。
+    fn type_name_exists(&self, name: &str) -> bool {
+        // ⚠ `generator` は実行時の型名で、クラスとしては登録されない（タスク 8.0）。
+        if name == "generator" {
+            return true;
+        }
+        self.registry.is_known_class(name)
+            || self.registry.is_known_trait(name)
+            || self.registry.is_protocol(name)
+            || self.state.is_type_param(name)
     }
 
     pub(crate) fn resolve_declared_type(

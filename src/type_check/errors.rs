@@ -395,6 +395,26 @@ pub enum TypeErrorKind {
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
     /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
     UnknownGuardType { type_name: String },
+    /// **注釈に書かれた型名が存在しない**（タスク 8.5）。
+    ///
+    /// ```arrow
+    /// let xs: list[Foo] = []      // ⛔ Foo というクラスはどこにも無い
+    /// ```
+    ///
+    /// ⚠⚠ 右辺と食い違ったときにしか露見しなかった。空リテラル（`list[Never]`）は
+    /// 任意の `list[T]` へ上位互換なので、この形では**注釈が丸ごと嘘のまま通っていた**。
+    ///
+    /// ⚠ 起票時は「妥当性検査（タスク 3.4）が弾く」と書いていたが、**そのような検査は
+    /// 無かった**。3.4 が作った `UnknownGuardType` は `is` / `except` / `match` の
+    /// **ガード位置**専用で、注釈位置は対象外だった。
+    UnknownTypeName {
+        /// 見つからなかった名前。
+        name: String,
+        /// それを含む注釈全体（`list[Foo]` など）。
+        ann: String,
+        /// どこの注釈か。
+        what: String,
+    },
     /// **注釈位置に素の容器型**（`list` / `dict` / `set` / `fixed_list` /
     /// `list_like` / `tuple`）が書かれている（タスク 8.1・案 A）。
     ///
@@ -829,6 +849,17 @@ impl StaticTypeError {
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
             ),
+            TypeErrorKind::UnknownTypeName { name, ann, what } => {
+                // ⚠ 注釈がその名前そのものなら繰り返さない（`let x: Foo` のとき）。
+                if name == ann {
+                    format!("{what} is annotated {}, which is not a known type", hl_q(name))
+                } else {
+                    format!(
+                        "{what} is annotated {} but {} is not a known type",
+                        hl_q(ann), hl_q(name)
+                    )
+                }
+            }
             TypeErrorKind::BareContainerAnnotation { ann, what } => {
                 // ⚠ 容器の**形に合った例**を出す。`dict[int]` は書けないので
                 //   一律に `{ann}[int]` とすると**通らない助言**になる。

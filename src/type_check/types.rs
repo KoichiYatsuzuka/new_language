@@ -193,6 +193,40 @@ pub enum InferredType {
 }
 
 impl InferredType {
+    /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
+    pub fn collect_type_names(&self, out: &mut Vec<String>) {
+        match self {
+            Self::NamedInstance(n) | Self::Protocol(n) => out.push(n.clone()),
+            Self::GenericInstance { name, args } => {
+                out.push(name.clone());
+                for a in args {
+                    a.collect_type_names(out);
+                }
+            }
+            Self::ListOf(t)
+            | Self::FixedListOf(t)
+            | Self::ListLikeOf(t)
+            | Self::SetOf(t)
+            | Self::TypeValOf(t) => t.collect_type_names(out),
+            Self::DictOf(k, v) | Self::Result(k, v) => {
+                k.collect_type_names(out);
+                v.collect_type_names(out);
+            }
+            Self::Union(ts) | Self::Intersection(ts) | Self::Tuple(ts) => {
+                for t in ts {
+                    t.collect_type_names(out);
+                }
+            }
+            Self::Function { params, return_type } => {
+                for p in params.iter().flatten() {
+                    p.ty.collect_type_names(out);
+                }
+                return_type.collect_type_names(out);
+            }
+            _ => {}
+        }
+    }
+
     /// **要素型を知らない容器型**か（タスク 8.1・案 A）。
     ///
     /// ⚠ 注釈位置では弾く（`TypeChecker::check_ann_not_bare`）。

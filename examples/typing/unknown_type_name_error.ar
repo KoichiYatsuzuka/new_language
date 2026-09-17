@@ -1,0 +1,19 @@
+# unknown_type_name_error.ar — 存在しない型名を注釈に書くと弾く（タスク 8.5）
+#
+# 正常系は unknown_type_name.ar
+#
+# `Foo` というクラス・enum・new_type・trait・protocol はどこにも無い。
+#
+# ⚠⚠ **以前は通っていた。** 空リテラル `[]` の型は `list[⊥]` で、⊥ は任意の `list[T]` へ
+#   アップキャストできるため**右辺と食い違わない**。注釈が丸ごと嘘のまま素通りしていた。
+#   （右辺が `[1]` なら `list[Foo]` と `list[int]` の不一致として捕まっていたので、
+#   この穴は「空リテラルのとき」に限って開いていた。）
+#
+# ⚠ 型テスト位置（`x is Foo`）は別の検査が担当する（タスク 3.4 の `UnknownGuardType`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  variable `xs` is annotated 'list[Foo]' but 'Foo' is not a known type
+
+let xs: list[Foo] = []              # ⛔ Foo という型は存在しない
+
+print(xs)

@@ -285,15 +285,23 @@ impl TypeChecker {
                 self.state.exit_class(prev_class);
                 self.pop_scope();
             }
-            Stmt::TraitDef { name, body, .. } => {
+            Stmt::TraitDef { name, template_params, body, .. } => {
                 self.declare(
                     name.clone(),
                     InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
                     false,
                 );
+                // ⚠⚠ **trait の型変数もスコープへ積む**（タスク 8.5 の計測で判明）。
+                //    `ClassDef` は積んでいたのに `TraitDef` は積んでいなかったので、
+                //    `trait Holder[T]: let item: T` の `T` が**スコープから見えない**まま
+                //    本体を検査していた。`mentions_type_param` が偽を返すため、
+                //    「存在しない型名」扱いになる経路がここだけ空いていた。
+                let saved_tp =
+                    self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
+                self.state.pop_type_params(saved_tp);
             }
             Stmt::ProtocolDef { name, .. } => {
                 // プロトコルは型値としてスコープに登録する（インスタンス化試行を検出するため）
@@ -1548,13 +1556,7 @@ impl TypeChecker {
             if param.name == "self" || param.variadic {
                 continue;
             }
-            if let Some(ann) = param.type_ann.as_deref() {
-                // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
-                self.check_ann_not_bare(
-                    ann,
-                    &format!("parameter `{}` of `{name}`", param.name),
-                );
-            } else {
+            if param.type_ann.is_none() {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::MissingParamTypeAnn {
                         func_name: name.to_string(),
@@ -1563,10 +1565,6 @@ impl TypeChecker {
                     span: None,
                 });
             }
-        }
-        if let Some(rt) = return_type {
-            // ⚠ 戻り値注釈も同じ（タスク 8.1・案 A）。
-            self.check_ann_not_bare(rt, &format!("return type of `{name}`"));
         }
         match return_type {
             None => self.report_error(StaticTypeError {
@@ -1613,6 +1611,20 @@ impl TypeChecker {
         //    既に積んでいるので、ここでは追加するだけでよい。
         let saved_tp =
             self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
+        // ⚠⚠ **注釈の妥当性検査は型変数を積んだ後で行う**（タスク 8.1 / 8.5）。
+        //    `is_type_param` は**スコープ状態**なので、積む前に見ると `fn f[T](x: T)` の
+        //    `T` を「存在しない型名」と誤判定する（8.5 の計測で実測した）。
+        for param in params.iter() {
+            if let Some(ann) = param.type_ann.as_deref() {
+                self.check_ann_not_bare(
+                    ann,
+                    &format!("parameter `{}` of `{name}`", param.name),
+                );
+            }
+        }
+        if let Some(rt) = return_type {
+            self.check_ann_not_bare(rt, &format!("return type of `{name}`"));
+        }
         // ⚠ **既定値の検査は仮引数を宣言する前**に行う。既定値は他の仮引数を参照できない
         //    （参照できてしまうと評価順に依存する）ので、まだ見えていない状態で推論する。
         // ⚠ 型変数は既に積んであるので `mentions_type_param` が効く（`fn g[T](let n: T = …)`）。
@@ -1650,13 +1662,7 @@ impl TypeChecker {
             if param.name == "self" || param.variadic {
                 continue;
             }
-            if let Some(ann) = param.type_ann.as_deref() {
-                // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
-                self.check_ann_not_bare(
-                    ann,
-                    &format!("parameter `{}` of `{name}`", param.name),
-                );
-            } else {
+            if param.type_ann.is_none() {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::MissingParamTypeAnn {
                         func_name: name.to_string(),
@@ -1666,10 +1672,6 @@ impl TypeChecker {
                 });
             }
         }
-        if let Some(yt) = yield_type {
-            // ⚠ `gen` の `->T` は**要素型**（タスク 5.2）。ここも同じ（8.1・案 A）。
-            self.check_ann_not_bare(yt, &format!("yield type of gen `{name}`"));
-        }
         if yield_type.is_none() {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.to_string() },
@@ -1678,6 +1680,19 @@ impl TypeChecker {
         }
         self.declare(name.to_string(), InferredType::Unresolved, false);
         self.push_scope();
+        // ⚠⚠ `gen` にはテンプレート型変数の投入が無いので、ここで検査してよい
+        //    （囲みクラスの型変数は `ClassDef` 側が既に積んでいる・タスク 8.1 / 8.5）。
+        for param in params.iter() {
+            if let Some(ann) = param.type_ann.as_deref() {
+                self.check_ann_not_bare(
+                    ann,
+                    &format!("parameter `{}` of gen `{name}`", param.name),
+                );
+            }
+        }
+        if let Some(yt) = yield_type {
+            self.check_ann_not_bare(yt, &format!("yield type of gen `{name}`"));
+        }
         for param in params {
             let ty = param
                 .type_ann

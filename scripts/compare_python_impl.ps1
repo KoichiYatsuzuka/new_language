@@ -244,6 +244,8 @@ $knownDiff = @{
     'field_class_type_error'         = 'py: フィールド代入の静的型検査が無く素通りする（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
     'field_type_runtime_error'       = 'py: 同上（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
     'literal_element_check'          = 'py: リスト内の str を引用符なしで表示する（実測 `[a, b]`）。list_concat_repeat と同じ repr の差'
+    # ⚠ タスク 8.5（注釈の型名が実在するか）で新設。**実測して確認済み**。
+    'unknown_type_name_error'        = 'py: 型注釈の型名が実在するか検査しないので素通りして [] を出す（Rust は StaticTypeError で停止・8.5）'
     # ⚠ タスク 9.7（型引数を捨てない）で新設。**実測して確認済み**。
     'type_args_not_dropped_error'    = 'py: 型注釈の `[...]` を検査しないので素通りして「ここには到達しない」まで出る（Rust は ParseError で停止・9.7）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）

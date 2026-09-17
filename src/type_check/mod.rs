@@ -49,6 +49,19 @@ pub struct TypeChecker {
     /// AST 型解決層の注釈（タスク #16・段階(a)）。検査走査中に `infer`/`check` が node-id 索引で
     /// 型・検査指示を焼く。`check_program` が取り出す（`check` は注釈を捨てる）。
     annotations: annotations::AstAnnotations,
+    /// **レジストリが不完全か**（タスク 8.5）。
+    ///
+    /// ⚠⚠ VS Code 拡張の wasm フロントエンドは **import 先を読み込まない**（fs に触れない）
+    /// ので、import 文の body が空になり、その先で定義された型が
+    /// レジストリに載らない。この状態で「注釈の型名が実在するか」を検査すると、
+    /// **import した型を全部「存在しない」と言ってしまう**
+    /// （実測: `compare_wasm_frontend` が INVENTED 6 件を検出した）。
+    /// ⇒ ここが `true` のときは [`Self::check_ann_names_exist`] を止める。
+    ///
+    /// ⚠ **`cfg!(feature = "editor")` で直接分岐しないこと。** 「編集中だから」ではなく
+    /// 「レジストリが不完全だから」止める、という理由で書いておかないと、
+    /// 将来 import を解決する編集環境が出たときに誤って止め続ける。
+    registry_incomplete: bool,
     /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
     /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
     annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
@@ -190,8 +203,32 @@ impl TypeChecker {
             registry: builder.build(),
             diags: Diagnostics::default(),
             annotations: annotations::AstAnnotations::default(),
+            registry_incomplete: Self::has_unloaded_import(stmts),
             annotated_modules: std::collections::HashSet::new(),
         }
+    }
+
+    /// **本体を読み込めていない import があるか**（タスク 8.5）。
+    ///
+    /// VS Code 拡張の wasm フロントエンドは fs に触れないので import 先を読まず、
+    /// `Stmt::Import` / `Stmt::FromImport` の `body` が**空**になる。そのとき
+    /// import 先で定義された型はレジストリに載らないので、
+    /// 「レジストリに無い＝存在しない」と断定できない。
+    ///
+    /// ⚠ **空 body は「読めなかった」の印**であって「中身が無い」ではない。
+    /// 実体のあるモジュールが本当に空になることは（定義文が 1 つも無いファイルを
+    /// import しない限り）無く、その場合に検査を止めても取りこぼしが増えるだけで
+    /// 誤検出は出ない ⇒ 保守的側へ倒す。
+    fn has_unloaded_import(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            Stmt::Import { body, .. } | Stmt::FromImport { body, .. } => body.is_empty(),
+            // ⚠ import は最上位にしか書けないが、`if` の中などへ移ったときに
+            //   静かに見落とさないよう、定義の本体だけは覗いておく。
+            Stmt::FnDef { body, .. }
+            | Stmt::ClassDef { body, .. }
+            | Stmt::TraitDef { body, .. } => Self::has_unloaded_import(body),
+            _ => false,
+        })
     }
 
     /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。

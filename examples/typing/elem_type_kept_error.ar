@@ -15,11 +15,14 @@
 # ⚠ 大文字の `list[Foo]` は昔から弾かれていた。**小文字だけが素通りしていた**
 #   ＝ 単なる非対称であって仕様ではない。
 #
-# 期待されるエラー（2 件）:
+# 期待されるエラー（3 件）:
+#   StaticTypeError  variable `xs` is annotated 'list[foo]' but 'foo' is not a known type
 #   StaticTypeError  'xs' is declared 'list[foo]' but initialized with 'list[int]'
 #   StaticTypeError  argument of `list[foo].append()` expects 'foo' but got 'str'
 #
-# ⚠ 2 件目が出ること自体が復活した検査の証拠。要素型が捨てられていた頃は
+# ⚠ 1 件目はタスク 8.5（注釈の型名が実在するか）で足した検査。8.2 の時点では
+#   「右辺と食い違ったとき」にしか露見しなかった。
+# ⚠ 3 件目が出ること自体が 8.2 で復活した検査の証拠。要素型が捨てられていた頃は
 #   `append` の引数検査が**存在しなかった**（何を足しても通った）。
 
 mut xs: list[foo] = [1]             # ⛔ foo という型は存在しない

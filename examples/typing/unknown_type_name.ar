@@ -1,0 +1,124 @@
+# unknown_type_name.ar — 注釈に書いた型名は実在しなければならない（タスク 8.5）
+#
+# ## 何が壊れていたか
+#
+#     let xs: list[Foo] = []      # ⛔ Foo というクラスはどこにも無いのに通っていた
+#
+# 注釈が**存在しない型名**を書いていても、それ自体は検査されていなかった。
+# `NamedInstance("Foo")` は作られるが、**右辺と食い違ったときにしか露見しない**。
+# 空リテラル（`list[⊥]`）は任意の `list[T]` へ上位互換なので、この形では
+# **注釈が丸ごと嘘のまま通っていた**。
+#
+# ⚠ 起票時は「妥当性検査（タスク 3.4）が `Foo` を未知クラスとして弾く」と書いていたが、
+#   **そのような検査は存在しなかった**（実測）。3.4 が作った `UnknownGuardType` は
+#   `is` / `except` / `match` の**ガード位置**専用で、注釈位置は対象外だった。
+#
+# ## 何が「実在する型名」か
+#
+# クラス ・ `enum` ・ `new_type` ・ `trait` ・ `protocol` ・
+# **いま見えているテンプレート型変数** ・ 組み込み型 ・ `generator`。
+#
+# ⚠⚠ **テンプレート型変数はスコープ状態**なので、検査は型変数を積んだ**後**で行う。
+#   前に見ると `fn f[T](x: T)` の `T` を「存在しない型名」と誤判定する
+#   （実測で `T` が 17 件出た）。
+#
+# ⚠ 外部言語（py / C#）のスタブが持ち込む型名（`Figure` / `Axes` / `NoReturn` …）は
+#   import 先のモジュール本体の注釈に現れるが、そこで出た診断は捨てられるので
+#   利用者には出ない。実測: 例題 393 件で未知名は 43 箇所あり **42 箇所が py 由来**だった。
+#
+# 弾かれる例は unknown_type_name_error.ar
+
+print("=== クラス・enum・new_type ===")
+
+class Person:
+    let name: str
+
+    fn __init__(mut self, name: str) -> None:
+        self.name = name
+
+enum Color:
+    Red = 1
+    Blue = 2
+
+new_type Meters: int
+
+fn greet(p: Person) -> str:
+    return "hi " + p.name
+
+# ⚠ enum / new_type のインスタンスをそのまま print するとアドレスが出て
+#   `compare_outputs` が run ごとに変わってしまう。中身を出す。
+fn show_color(c: Color) -> None:
+    print(c.value)
+
+# ⚠ `new_type X: int` の中身を取り出す構文はここでは使わない。見たいのは
+#   「注釈 `Meters` が実在する型名として通ること」だけ。
+fn show_len(m: Meters) -> None:
+    print("got Meters")
+
+let p = Person("ann")
+print(greet(p))
+show_color(Color.Red)
+show_len(Meters(3))
+
+print("=== trait・protocol ===")
+
+trait Greets:
+    fn hi(self) -> str:
+        ...
+
+protocol Named:
+    let name: str
+
+class Dog(Greets):
+    let name: str
+
+    fn __init__(mut self, name: str) -> None:
+        self.name = name
+
+    fn hi(self) -> str:
+        return "woof " + self.name
+
+fn call_hi(g: Greets) -> None:
+    print(g.hi())
+
+fn read_name(n: Named) -> None:
+    print(n.name)
+
+let d = Dog("rex")
+call_hi(d)
+read_name(d)
+
+print("=== テンプレート型変数と generator ===")
+
+class Box[T]:
+    let v: T
+
+    fn __init__(mut self, v: T) -> None:
+        self.v = v
+
+trait Holder[T]:
+    let item: T
+
+fn unwrap[T](b: Box[T]) -> T:
+    return b.v
+
+gen counter(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        yield i
+        i += 1
+
+fn make(let n: int) -> generator:
+    return counter(n)
+
+print(unwrap[int](Box[int](5)))
+for v in make(2):
+    print(v)
+
+print("=== 要素型の位置でも同じ ===")
+
+let people: list[Person] = [p]
+print(len(people))
+
+let by_name: dict[str, Person] = {"ann": p}
+print(by_name["ann"].name)
