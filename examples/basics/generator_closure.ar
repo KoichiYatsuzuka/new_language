@@ -38,7 +38,7 @@ for v in make_ticker():
 print(t)                          # [1, 2]
 
 print("=== 3. コレクションを捕捉する ===")
-fn scaled(let xs: list, let k: int) -> generator:
+fn scaled(let xs: list[int], let k: int) -> generator:
     gen each() -> int:
         for x in xs:
             yield x * k

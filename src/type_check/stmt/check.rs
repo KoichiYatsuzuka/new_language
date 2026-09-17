@@ -372,6 +372,8 @@ impl TypeChecker {
                 default,
                 ..
             } => {
+                // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
+                self.check_ann_not_bare(type_ann, &format!("field `{name}`"));
                 let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
                 if let Some(expr) = default {
                     if matches!(kind, FieldKind::Mut | FieldKind::Let) {
@@ -1546,7 +1548,13 @@ impl TypeChecker {
             if param.name == "self" || param.variadic {
                 continue;
             }
-            if param.type_ann.is_none() {
+            if let Some(ann) = param.type_ann.as_deref() {
+                // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
+                self.check_ann_not_bare(
+                    ann,
+                    &format!("parameter `{}` of `{name}`", param.name),
+                );
+            } else {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::MissingParamTypeAnn {
                         func_name: name.to_string(),
@@ -1555,6 +1563,10 @@ impl TypeChecker {
                     span: None,
                 });
             }
+        }
+        if let Some(rt) = return_type {
+            // ⚠ 戻り値注釈も同じ（タスク 8.1・案 A）。
+            self.check_ann_not_bare(rt, &format!("return type of `{name}`"));
         }
         match return_type {
             None => self.report_error(StaticTypeError {
@@ -1638,7 +1650,13 @@ impl TypeChecker {
             if param.name == "self" || param.variadic {
                 continue;
             }
-            if param.type_ann.is_none() {
+            if let Some(ann) = param.type_ann.as_deref() {
+                // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
+                self.check_ann_not_bare(
+                    ann,
+                    &format!("parameter `{}` of `{name}`", param.name),
+                );
+            } else {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::MissingParamTypeAnn {
                         func_name: name.to_string(),
@@ -1647,6 +1665,10 @@ impl TypeChecker {
                     span: None,
                 });
             }
+        }
+        if let Some(yt) = yield_type {
+            // ⚠ `gen` の `->T` は**要素型**（タスク 5.2）。ここも同じ（8.1・案 A）。
+            self.check_ann_not_bare(yt, &format!("yield type of gen `{name}`"));
         }
         if yield_type.is_none() {
             self.report_error(StaticTypeError {

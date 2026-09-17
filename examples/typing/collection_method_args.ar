@@ -56,8 +56,9 @@ print(st)                           # {2}
 
 print("=== 要素型を問わない容器は素通しする ===")
 
-# `list`（要素型なし）と `list[Any]` は判定材料が無いので照合しない。
-mut anything: list = [1]
+# `list[Any]` は判定材料が無いので照合しない。
+# ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなったので、これが唯一の綴り。
+mut anything: list[Any] = [1]
 anything.append("s")
 anything.append([1, 2])
 print(anything)                     # [1, 's', [1, 2]]

@@ -7,6 +7,10 @@
 #   (ListOf(_), List)  => true      # list[int] → list      （アップキャスト・正しい）
 #   (List, ListOf(_))  => true      # list      → list[int] （ダウンキャスト・⛔）
 #
+# ⚠⚠ **タスク 8.1（案 A）以降、素の `list` 注釈は書けない。** 上の規則は実装に
+#   残っているが、Arrow のソースからは到達しない（素の容器型を作れるのは Python 翻訳の
+#   経路だけ）。この例題は同じ方向を **`list[int]` ↔ `list[Any]`** で示している。
+#
 # 後者があるために「要素型を捨てる」ことが「**何でも通す**」になっていた
 # （根本原因②の実装本体）。タスク 2.7 で推論側を直し、ここで規則を**片方向**にした。
 # `fixed_list` / `set` / `dict` / `list_like` も同じ。
@@ -27,19 +31,28 @@
 #
 # 弾かれる例は upcast_only_error.ar
 
-print("=== 型引数を忘れる方向は通る（アップキャスト） ===")
+# ⚠⚠ **素の容器型注釈（`list` / `set` / `dict` …）はタスク 8.1（案 A）で禁止された。**
+#   そのため「`list[int]` を素の `list` へ渡す」という**この規則の到達先そのものが
+#   Arrow のソースからは書けなくなった**。規則（`(ListOf(_), List) => true`）は
+#   実装に残っているが、素の容器型を作れるのは Python 翻訳の経路だけ
+#   （`src/type_check/types.rs` の `from_ann` のプリミティブ表の注記を参照）。
+#
+#   ⇒ ここでは**書ける綴りで同じ方向**を示す。`list[int]` → `list[Any]` は
+#     要素型を広げる（情報を落とす）方向なので通る。
+
+print("=== 要素型を広げる方向は通る（アップキャスト） ===")
 
 let xs: list[int] = [1, 2]
-let bare: list = xs
-print(bare)                         # [1, 2]
+let widened: list[Any] = xs
+print(widened)                      # [1, 2]
 
 let si: set[int] = {1}
-let bare_s: set = si
-print(len(bare_s))                  # 1
+let widened_s: set[Any] = si
+print(len(widened_s))                 # 1
 
 let di: dict[str, int] = {"a": 1}
-let bare_d: dict = di
-print(bare_d["a"])                  # 1
+let widened_d: dict[str, Any] = di
+print(widened_d["a"])                 # 1
 
 print("=== 空リテラルは注釈の型になる（⊥ がアップキャスト） ===")
 

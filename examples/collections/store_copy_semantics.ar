@@ -13,9 +13,13 @@
 #   入れても「追加時点のスナップショット」が入る。詳しくは
 #   [equality_depth_limit_error.ar](equality_depth_limit_error.ar)。
 
+# ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなった。この例題は同じフィールドへ
+#   `list[int]` も `list[N]` も入れて「格納時に複製される」ことを見せるので、
+#   要素型を `Any` と**明示する**。素の `list` と違い、`Any` は「何でも入る」ことを
+#   綴りで宣言する（要素へ演算を掛けた瞬間に静的エラーになるので黙って通らない）。
 class N:
-    mut f: list
-    fn __init__(mut self, let f: list) -> None:
+    mut f: list[Any]
+    fn __init__(mut self, let f: list[Any]) -> None:
         self.f = f
 
 print("=== list への append ===")
@@ -66,14 +70,19 @@ print("=== 循環は作れない ===")
 # ⚠ タスク 5.2c で **`append` の引数も要素型と照合される**ようになった。`mut z = [1]`
 #   は `list[int]` に推論されるので、そこへ `z`（`list[int]`）は入らない。
 #   ⇒ ここで見せたいのは「要素型を問わないリストへ自分を入れても循環しない」ことなので
-#     `list` と注釈する（`equality_depth_limit_error.ar` と同じ形）。
-mut z: list = [1]
+#     **要素型を `Any` と書く**（`equality_depth_limit_error.ar` と同じ形）。
+# ⚠ タスク 8.1（案 A）で**素の `list` 注釈は書けなくなった**。代わりが `list[Any]`。
+#   `Any` は「何でも入る」ことを**明示**する綴りで、素の `list` と違って
+#   要素へ演算を掛けた瞬間に静的エラーになる（黙って通らない）。
+mut z: list[Any] = [1]
 z.append(z)
 print(z)                 # [1, [1]]   自己参照にならない
 
 mut p = N([])
 p.f = [p]
-print(p.f[0] === p)      # False      フィールド経由でも循環しない
+# ⚠ 要素型が `Any` なので、要素へ演算を掛けるには**明示ダウンキャスト**が要る
+#   （タスク 8.1・案 A の帰結）。素の `list` のときは無検査で通っていた箇所。
+print((p.f[0] mustbe N) === p)   # False      フィールド経由でも循環しない
 
 print("=== 対照: let → let だけが共有する ===")
 let g = [1]

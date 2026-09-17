@@ -57,11 +57,14 @@ class Dog:
     mut n: int
     mut tag: str
 
-mut xs: list = [Dog(3, "a"), 2]
+# ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなったので `list[Any]` と明示する。
+mut xs: list[Any] = [Dog(3, "a"), 2]
 let v = xs[0]
 
-# ⚠ `v` は `list`（要素型なし）由来なので元の型は `Unresolved`。
+# ⚠ `v` は `list[Any]` 由来なので元の型は `Any`。
 #   `is Dog` の腕の中では `Dog` に絞り込まれるので `v.n` は `int` になる。
+#   ⚠ 絞り込みが**明示ダウンキャストの役割**を果たしている（`Any` のままでは
+#     メンバーアクセスは静的エラー）。
 let r = match v ->int:
     is Dog:
         let n: int = v.n

@@ -395,6 +395,22 @@ pub enum TypeErrorKind {
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
     /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
     UnknownGuardType { type_name: String },
+    /// **注釈位置に素の容器型**（`list` / `dict` / `set` / `fixed_list` /
+    /// `list_like` / `tuple`）が書かれている（タスク 8.1・案 A）。
+    ///
+    /// ⚠⚠ 素の容器型は要素型が `Unresolved`（＝**万能受容体**）になるため、
+    /// `append` の引数・`for` の要素・添字の結果の検査が**すべて消える**。
+    /// 根本原因①の最後の入口で、**利用者が自分の意思で型検査を無効化できる唯一の綴り**
+    /// だった。
+    ///
+    /// ⚠ **型テスト位置（`is` / `mustbe` / `case`）では出さない。** そこでの
+    /// `x is list` は「list かどうか」を問う正しい用法。
+    BareContainerAnnotation {
+        /// 書かれていた綴り（`list` など）。
+        ann: String,
+        /// どこの注釈か（`variable 'xs'` / `parameter 'v' of function 'f'` など）。
+        what: String,
+    },
     /// `enum` のバリアント値が `int` でない。
     ///
     /// ⚠ 実行時の `build_enum_classes` も同じ検査をするが、**定義が実行されない経路**
@@ -813,6 +829,22 @@ impl StaticTypeError {
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
             ),
+            TypeErrorKind::BareContainerAnnotation { ann, what } => {
+                // ⚠ 容器の**形に合った例**を出す。`dict[int]` は書けないので
+                //   一律に `{ann}[int]` とすると**通らない助言**になる。
+                let example = match ann.as_str() {
+                    "dict" => "dict[str, int]".to_string(),
+                    "tuple" => "tuple[int, str]".to_string(),
+                    other => format!("{other}[int]"),
+                };
+                format!(
+                    "{what} is annotated {} without an element type; \
+                     write the element type (e.g. {}) — a bare container makes every \
+                     element check disappear",
+                    hl_q(ann),
+                    hl_q(&example),
+                )
+            }
             TypeErrorKind::EnumVariantNotInt { enum_name, variant, got } => format!(
                 "enum variant {} of {} must be int, got {}",
                 hl_q(variant), hl_q(enum_name), hl_q(got)

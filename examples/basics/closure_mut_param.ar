@@ -45,7 +45,7 @@ let c = make_counter(10)
 print(c(), c(), c())            # 11 12 13
 
 print("=== 2 つの閉包が同じセルを共有する ===")
-fn make_pair(mut n: int) -> list:
+fn make_pair(mut n: int) -> list[function[]->int]:
     fn inc() -> int:
         n = n + 1
         return n
@@ -91,7 +91,7 @@ print(two(3, 4)())              # 7
 print("=== mut 引数の書き戻しは壊れていない ===")
 # ⚠ セルへ写すときは `StoreCell`（複製しない）。複製するかどうかは引数束縛が既に
 #   決めているので、ここで複製を足すと呼び出し元への書き戻しが消える。
-fn g(mut v: list) -> None:
+fn g(mut v: list[int]) -> None:
     v.append(99)
 mut q = [1]
 g(q)

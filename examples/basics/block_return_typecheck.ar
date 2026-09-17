@@ -36,8 +36,11 @@ let d = for i in range(3) ->list[int]:
     loop_yield i
 print(d)                          # [0, 1, 2]
 
-print("=== 5. a bare `->list` imposes no element type ===")
-let e = for i in range(3) ->list:
+print("=== 5. `->list[Any]` imposes no element type ===")
+# ⚠ タスク 8.1（案 A）で**素の `->list` は書けなくなった**。要素型を問わないことを
+#   示すには `Any` と**明示**する。素の `list` と違い、`Any` は取り出して演算した
+#   瞬間に静的エラーになるので「黙って検査が消える」ことがない。
+let e = for i in range(3) ->list[Any]:
     loop_yield "any"
 print(e)                          # ['any', 'any', 'any']
 

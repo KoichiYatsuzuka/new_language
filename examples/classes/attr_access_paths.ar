@@ -65,12 +65,18 @@ fn show_pub[T: HasPub](let it: T) -> None:
 
 # ⚠⚠ **タスク 7.5 で `o.nope` が静的エラーになった**（メンバーの存在検査）。
 #   この節の意図は「**実行時**に `AttributeError` を捕まえる」ことなので、
-#   静的に型が決まらない経路（要素型を持たない `list` の要素）から同じアクセスへ到達させる。
-#   ⚠ `examples/exceptions/try_except.ar` がタスク 4.4 で踏んだのと同じ形の移行。
-fn missing(let o: Outer) -> None:
-    let opaque: list = [o]
+#   **メンバー集合が閉じていない型**から同じアクセスへ到達させる。
+#
+# ⚠⚠ 以前は「素の `list` の要素」で型を隠していたが、タスク 8.1（案 A）で
+#   素の容器型注釈が禁止されたので使えない（`list[Any]` は `Any` への
+#   メンバーアクセス自体が静的エラーなので代わりにならない）。
+#   ⇒ 受け手を `complex` にした。組み込み型のうち**メンバー集合を静的に持たない**ので
+#     `z.nope` は静的検査を通り、実行時に `AttributeError` になる
+#     （`examples/basics/complex_error.ar` が同じ経路を捕まえずに見せている）。
+fn missing() -> None:
+    let z: complex = 1 + 2j
     try:
-        print(opaque[0].nope)
+        print(z.nope)
     except AttributeError as e:
         print("caught missing attr")
 
@@ -82,4 +88,4 @@ write_read(Outer(Inner(1), "orig"))
 show_pub[Base](Base())
 show_pub[Other](Other())
 show_pub[Base](Base())
-missing(o)
+missing()

@@ -4,5 +4,5 @@
 #   （bug_fix.md B6）。モジュール本体側のケースを書くには外部から import するしかない。
 
 # 同じ変数を 2 つの `let` パラメータに渡す。束縛で複製されなければ両者は同一オブジェクト。
-fn probe(let label: str, let v: list, let w: list) -> None:
+fn probe(let label: str, let v: list[int], let w: list[int]) -> None:
     print(label, v === w)

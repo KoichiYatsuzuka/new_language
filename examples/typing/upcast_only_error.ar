@@ -1,22 +1,27 @@
-# upcast_only_error.ar — 素の容器から型引数つき容器へはダウンキャストなので弾く（タスク 4.1 / D-3）
+# upcast_only_error.ar — 要素型を広げた容器から狭い容器へはダウンキャストなので弾く（タスク 4.1 / D-3）
 #
 # 正常系は upcast_only.ar
 #
-# `list` は「要素型が判らないリスト」なので、`list[int]` より**情報が少ない**。
+# `list[Any]` は「どんな要素でも入るリスト」なので `list[int]` より**情報が少ない**。
 # そこへ代入するのは**ダウンキャスト**（情報が増える方向）で、実行時検査なしでは不健全。
+#
+# ⚠⚠ **以前はここを素の `list` で書いていた**（`let bare: list = [1, 2]`）。
+#   タスク 8.1（案 A）で素の容器型注釈が禁止されたので、同じ規則を
+#   **書ける綴りである `list[Any]`** で示す。規則そのものは変えていない:
+#   `(ListOf(_), List)` と同じく `(ListOf(Any), ListOf(Int))` も一方向。
 #
 # ⚠⚠ 以前は `(List, ListOf(_)) => true` という**双方向特例**があり通っていた。
 #   この特例があるために「要素型を捨てる」ことが「**何でも通す**」になっており、
 #   `[1, "s"]` が `list[int]` にも `list[str]` にも `list[float]` にも通っていた
 #   （根本原因②の実装本体）。タスク 2.7 で推論側を直し、4.1 で規則を片方向にした。
 #
-# ⚠ 逆方向（`list[int]` → `list`）は情報を落とすだけなので通る（upcast_only.ar）。
+# ⚠ 逆方向（`list[int]` → `list[Any]`）は情報を落とすだけなので通る（upcast_only.ar）。
 #
 # 期待されるエラー:
-#   StaticTypeError  'narrowed' is declared 'list[int]' but initialized with 'list'
+#   StaticTypeError  'narrowed' is declared 'list[int]' but initialized with 'list[Any]'
 
-let bare: list = [1, 2]
+let loose: list[Any] = [1, 2]
 
-let narrowed: list[int] = bare      # ⛔ list → list[int] はダウンキャスト
+let narrowed: list[int] = loose     # ⛔ list[Any] → list[int] はダウンキャスト
 
 print("ここには到達しない")

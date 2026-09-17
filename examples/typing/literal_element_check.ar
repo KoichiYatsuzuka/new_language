@@ -1,4 +1,4 @@
-# literal_element_check.ar — リテラルの「判っている要素」を照合する（タスク 7.7）
+# literal_element_check.ar — リテラルの「判っている要素」を照合する（タスク 7.7 / 8.1）
 #
 # ## 何が壊れていたか
 #
@@ -24,38 +24,45 @@
 # ⇒ 型が式だけで決まり**診断を出しようがない**リテラル（`1` / `"s"` / `True` / `None` …）に
 #   限って照合する。`zs[0]` のような式には触らない。
 #
+# ## ⚠⚠ タスク 8.1（案 A）以降、この検査は**純 Arrow コードからは発火しない**
+#
+# 発火させるには「型が判らない要素」が要るが、それを作る手段だった
+# **素の容器型注釈（`mut zs: list`）が禁止された**。`list[Any]` は代わりにならない
+# （`Any` は「判らない」ではなく「何でも」なので、`[1, zs[0]]` は
+# `list[Union[int, Any]]` になり `list[int]` とは適合しない）。
+#
+# ⚠ **それでも検査を消していない。** `from_ann` の入力は Arrow のソースだけではなく、
+#   `.pyi` スタブ・`.ars`・`py_type_to_arrow` という**パーサを通らない文字列**も来る
+#   （タスク 8.4 の棚卸し ②）。Python 翻訳の経路が繋がったときに効く。
+#
+# ⇒ 以下は**発火しなくなった形**の記録（実行はしない）:
+#
+#     mut zs: list = [1]                  # ⛔ 8.1 で禁止
+#     let ok1: list[int] = [1, zs[0]]     #    判っている `1` は int なので通る
+#     let ng:  list[str] = [1, zs[0]]     #    判っている `1` は str でないので弾く
+#
 # ⚠ 実測: 例題 270 件のうち「既知と判定不能が混ざったリテラル」は **0 件**だった。
 #   実コードではまず起きない形なので、タスクの優先度は最低に置いていた。
-#
-# 弾かれる例は literal_element_check_error.ar
-
-print("=== 判定不能な要素が混ざっても、判っている要素は合っていれば通る ===")
-
-mut zs: list = [1]
-
-let ok1: list[int] = [1, zs[0]]
-print(len(ok1))                     # 2
-
-let ok2: list[str] = ["a", zs[0]]
-print(len(ok2))                     # 2
 
 print("=== すべて判っていれば従来どおり ===")
 
 let nums: list[int] = [1, 2, 3]
 print(nums)                         # [1, 2, 3]
 
-print("=== set も同じ ===")
+let strs: list[str] = ["a", "b"]
+print(strs)                         # ['a', 'b']
 
-# ⚠ `zs[0]` は実行時には `1` なので、集合としては 1 要素になる。
-let s1: set[int] = {1, zs[0]}
-print(len(s1))                      # 1
+print("=== set / dict も同じ ===")
 
-print("=== 推論した型は変えていない（下流は従来どおり） ===")
+let s1: set[int] = {1, 2}
+print(len(s1))                      # 2
 
-# ⚠ `xs` の要素型は判定不能のまま。`zs[0]` が `str` かもしれないので、
-#   下流の束縛を弾いてはいけない。
-let xs = [1, zs[0]]
-let anything: str = xs[1]
-print(anything)                     # 1
+let d1: dict[str, int] = {"a": 1}
+print(d1["a"])                      # 1
+
+print("=== 混在は Union に合成される（タスク 2.7）===")
+
+let mixed: list[Union[int, str]] = [1, "s", 2]
+print(mixed)                        # [1, 's', 2]
 
 print("done")

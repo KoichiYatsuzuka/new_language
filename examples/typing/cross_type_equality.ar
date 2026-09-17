@@ -92,9 +92,13 @@ print("=== 型が決まらない経路は素通し ===")
 #   「`Any` / `Union` を被演算子にする二項演算」を `OperationOnAny` /
 #   `OperationOnUnion` で先に弾いているため（7.6 より前からの規則）。
 #   ⇒ 実際に素通しするのは `Unresolved`（型が決まらない経路）。
-fn hide(let v: list) -> list:
-    return v
-
-print(hide([1])[0] == "s")          # False
+# ⚠⚠ **実行時の答えは例題では確かめられなくなった**（タスク 8.1・案 A）。
+#   型が決まらない値を作るには素の `list` 注釈で要素型を隠すしかなかったが、
+#   その注釈が書けなくなったため。`list[Any]` は代わりにならない
+#   （`Any` の要素へ `==` を掛けた時点で静的エラーになる＝黙って通らない）。
+#
+#   ⇒ **実行時規則は単体テストへ移した**:
+#     `src/interpreter/ops/equality.rs` の `mod eq_expr_rules`
+#     （異型は False / 数値族は昇格 / bool は対象外 / コンテナの中へは再帰しない）。
 
 print("done")

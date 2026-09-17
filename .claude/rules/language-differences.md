@@ -9,6 +9,16 @@
   - ⚠ **Not enforced yet** (`let xs = []` currently passes). The redesign decides this:
     `[]` infers as `list[⊥]` (upcasts to any `list[T]`), and an unannotated `let xs = []`
     defaults to `list[Any]` — see `implementation_plans/type_check_redesign.md` D-7 / U-6.
+- **Container annotations must name the element type** (task 8.1). `list` / `dict` / `set` /
+  `fixed_list` / `list_like` / `tuple` are rejected in *annotation* position — write
+  `list[int]`, `dict[str, int]`, `tuple[int, str]`. Use `list[Any]` when the element type is
+  deliberately unconstrained; unlike a bare container it is loud (operating on an `Any`
+  element is a static error, so nothing passes silently).
+  - ⚠ Type-test position is unaffected: `x is list`, `x mustbe list` and `case list:` still
+    work — there the bare name asks "is it a list at all?", which is the correct use.
+  - ⚠ The bare container *types* still exist internally, reserved for Python translation
+    (Python's `list`/`dict`/`set` carry no element type). They are unreachable from Arrow
+    source — see the note on `from_ann`'s primitive table in `src/type_check/types.rs`.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

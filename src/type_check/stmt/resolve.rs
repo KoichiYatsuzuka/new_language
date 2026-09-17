@@ -302,6 +302,28 @@ impl TypeChecker {
         })
     }
 
+    /// **注釈位置に素の容器型が書かれていたら弾く**（タスク 8.1・案 A）。
+    ///
+    /// ⚠⚠ **注釈位置だけで呼ぶこと。** 型テスト位置（`x is list` /
+    /// `x mustbe list` / `case list:`）で呼んではいけない。そこでの素の容器名は
+    /// 「list かどうか」を問う正しい用法で、`runtime_type_predicates.ar` が実演している。
+    ///
+    /// ⚠ 判定は [`InferredType::is_bare_container`] に集約してある。綴りで比較しないのは、
+    /// C ABI 別名や alias 展開を経た綴りもここへ来るため。
+    pub(crate) fn check_ann_not_bare(&mut self, ann: &str, what: &str) {
+        let Some(ty) = InferredType::from_ann(ann) else { return };
+        if !ty.is_bare_container() {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::BareContainerAnnotation {
+                ann: ty.to_string(),
+                what: what.to_string(),
+            },
+            span: None,
+        });
+    }
+
     pub(crate) fn resolve_declared_type(
         &mut self,
         type_ann: Option<&str>,
@@ -319,6 +341,8 @@ impl TypeChecker {
             None => return Self::open_never_to_any(rhs_ty),
             Some(a) => a,
         };
+        // ⚠ 素の容器型注釈は弾く（タスク 8.1・案 A）。
+        self.check_ann_not_bare(ann, &format!("variable `{var_name}`"));
         // ⚠ リテラルの**判っている要素だけ**を期待型と照合する（タスク 7.7・検体 `L17`）。
         //    `join` が `Unresolved` に汚染されたときの取りこぼしを埋める。
         self.check_literal_elements(ann, &rhs_ty, stmt);

@@ -316,7 +316,7 @@ impl TypeChecker {
             }
             Expr::Block { stmts, return_type } => {
                 // ⚠ `->T` を **`block_return` の照合先**として積む（タスク 5.2）。
-                let ann = Self::ann_or_none(return_type);
+                let ann = self.ann_or_none(return_type);
                 self.with_block_expr(ann, |c| {
                     c.push_scope();
                     c.check_stmts(stmts);
@@ -329,7 +329,7 @@ impl TypeChecker {
                 else_body,
                 return_type,
             } => {
-                let ann = Self::ann_or_none(return_type);
+                let ann = self.ann_or_none(return_type);
                 self.with_block_expr(ann, |c| {
                     for (cond, body) in branches {
                         // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
@@ -365,7 +365,7 @@ impl TypeChecker {
                 let target_mut = self.path_is_mutable(iter).unwrap_or(false);
                 // ⚠ 積むのは `->list[T]` **そのもの**。要素を取り出すのは `loop_yield`
                 //    側で、内側の注釈が `list[T]` でなければ照合しない（タスク 5.2）。
-                let ann = Self::ann_or_none(return_type);
+                let ann = self.ann_or_none(return_type);
                 self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();
                     // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
@@ -389,7 +389,7 @@ impl TypeChecker {
             } => {
                 // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
                 self.check_condition_is_bool(cond, "while");
-                let ann = Self::ann_or_none(return_type);
+                let ann = self.ann_or_none(return_type);
                 self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();
                     c.check_stmts(body);
@@ -405,7 +405,7 @@ impl TypeChecker {
                 // ⚠ 腕の処理は `match` **文**と共有する（タスク 2.9）。以前はここに
                 //    独自の走査があり `is Type` の絞り込みを持っていなかったので、
                 //    **文では効く絞り込みが式では効かない**という意味論のずれがあった。
-                let ann = Self::ann_or_none(return_type);
+                let ann = self.ann_or_none(return_type);
                 self.with_block_expr(ann, |c| {
                     c.check_match_arms(subject, arms);
                 });
@@ -615,7 +615,16 @@ impl TypeChecker {
 
     /// `->T` 注釈を**照合に使える型**として返す。注釈なし・解決できない注釈は `None`
     /// （＝照合しない）。`Unresolved` を返してしまうと「何でも通る期待型」になる。
-    fn ann_or_none(return_type: &Option<String>) -> Option<InferredType> {
+    /// ブロック式（`if:` / `match:` / `block:` / `for` / `while`）の `->T` 注釈を解く。
+    ///
+    /// ⚠⚠ **素の容器型注釈の検査（タスク 8.1・案 A）をここに置いてある。**
+    /// ブロック式の `->T` は 5 箇所から作られるが、**全部この 1 本を通る**ので、
+    /// ここに置けば `->list` の書き漏らしを一つ残らず捕まえられる。
+    /// ⇒ 呼び出し側で個別に検査を足さないこと（足すと二重に鳴る）。
+    fn ann_or_none(&mut self, return_type: &Option<String>) -> Option<InferredType> {
+        if let Some(ann) = return_type.as_deref() {
+            self.check_ann_not_bare(ann, "block expression result");
+        }
         match return_type.as_deref().and_then(InferredType::from_ann) {
             Some(t) if !matches!(t, InferredType::Unresolved | InferredType::Any) => Some(t),
             _ => None,

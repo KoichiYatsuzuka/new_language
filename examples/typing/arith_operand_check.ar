@@ -74,11 +74,13 @@ print("=== 異型の等値比較は静的エラー（タスク 7.6 で仕様変�
 #   従来どおり `False` が返る（下記）。実行時の規則は
 #   `examples/basics/equality_numeric_promotion.ar` が固定している。
 
-# 静的型を隠す（要素型を持たない `list` を通すと要素は判定不能になる）。
-fn hide(let v: list) -> list:
-    return v
-
-print(hide([1])[0] == "a")          # False
-print(hide([1])[0] in ["a"])        # False
+# ⚠⚠ **実行時の答えは例題では確かめられなくなった**（タスク 8.1・案 A）。
+#   型が決まらない値を作るには素の `list` 注釈で要素型を隠すしかなかったが、
+#   その注釈が書けなくなったため。`list[Any]` は代わりにならない
+#   （`Any` の要素へ `==` を掛けた時点で静的エラーになる＝黙って通らない）。
+#
+#   ⇒ **実行時規則は単体テストへ移した**:
+#     `src/interpreter/ops/equality.rs` の `mod eq_expr_rules`
+#     （異型は False / 数値族は昇格 / bool は対象外 / コンテナの中へは再帰しない）。
 
 print("done")

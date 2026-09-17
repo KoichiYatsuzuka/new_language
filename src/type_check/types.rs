@@ -193,6 +193,24 @@ pub enum InferredType {
 }
 
 impl InferredType {
+    /// **要素型を知らない容器型**か（タスク 8.1・案 A）。
+    ///
+    /// ⚠ 注釈位置では弾く（`TypeChecker::check_ann_not_bare`）。
+    /// **型テスト位置（`is` / `mustbe` / `case`）では弾かない** —— そこでは
+    /// 「list かどうか」を問う正しい用法だから。
+    /// ⚠ `Tuple(Vec<_>)`（型引数つき）は**含まない**。含むのは `TupleAny` だけ。
+    pub fn is_bare_container(&self) -> bool {
+        matches!(
+            self,
+            Self::List
+                | Self::FixedList
+                | Self::ListLike
+                | Self::Dict
+                | Self::Set
+                | Self::TupleAny
+        )
+    }
+
     /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
     pub fn from_ann(ann: &str) -> Option<Self> {
         if let Some(inner) = ann.strip_prefix("Intersection[").and_then(|s| s.strip_suffix(']')) {
@@ -334,6 +352,27 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "Undefined" => Some(Self::Undefined),
+            // ⚠⚠⚠ **ここが「素の容器型」を生む唯一の到達可能な地点**（タスク 8.1・案 A）。
+            //
+            //    ⚠⚠ **純 Arrow コードからは、この結果が注釈として採用されることはない。**
+            //    型検査側の注釈入口（`TypeChecker::check_ann_not_bare`）が
+            //    `list` / `dict` / `set` / `fixed_list` / `list_like` / `tuple` を
+            //    **注釈位置で弾く**ので、`let xs: list = [1]` のような
+            //    「要素型を知らない容器」は **Arrow のソースからは作れない**。
+            //
+            //    ⚠⚠⚠ **それでもこの表を消さないこと。Python 翻訳のために残してある。**
+            //    Python の `list` / `dict` / `set` には要素型が無く、翻訳時には
+            //    「要素型を知らない容器」を素直に表す型が要る。`from_ann` の入力は
+            //    Arrow のソースだけではなく、`.pyi` スタブ・`--compile-cs` の `.ars`・
+            //    `py_type_to_arrow` という**パーサを通らない文字列**も来る
+            //    （タスク 8.4 の棚卸し ② と同じ経路）。
+            //    ⇒ **生成経路は純 Arrow の経路から隔離してある。** Python 翻訳機能を
+            //      実装するとき、その経路からここへ繋ぐこと。
+            //
+            //    ⚠ 型テスト位置（`x is list` / `x mustbe list` / `case list:`）は
+            //    **注釈ではない**ので従来どおり通る。そこでの素の容器名は
+            //    「list かどうか」を問う正しい用法
+            //    （`examples/typing/runtime_type_predicates.ar`）。
             "list" => Some(Self::List),
             "fixed_list" => Some(Self::FixedList),
             "list_like" => Some(Self::ListLike),

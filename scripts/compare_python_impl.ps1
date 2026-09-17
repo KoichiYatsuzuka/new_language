@@ -76,7 +76,7 @@ $knownDiff = @{
     'validity_checks_error'          = 'py: 型ガードの型名の存在検査が無い（死んだ腕のまま実行してしまう・タスク 3.4 で新設）'
     'validity_checks_enum_error'     = 'py: enum バリアント値の静的検査が無い（未呼出関数内を見逃す・タスク 3.4 で新設）'
     'upcast_only'                    = 'py: list 内の str の表示形式が違う（py は引用符を付けない・タスク 4.1 で新設）'
-    'upcast_only_error'              = 'py: 素の list から list[int] へのダウンキャスト検査が無い（そのまま実行してしまう・タスク 4.1 で新設）'
+    'upcast_only_error'              = 'py: 容器の適合方向を検査しないので素通りして実行してしまう（タスク 4.1 で新設・8.1 で list[Any] → list[int] へ書き換え）'
     'arith_operand_check'            = 'py: str % int（書式化）が未実装（TypeError になる・タスク 4.4 で新設）'
     'arith_operand_check_error'      = 'py: 算術の被演算子の静的検査が無い（実行時の TypeError になる・タスク 4.4 で新設）'
     'user_cast_site_error'           = 'py: __cast__ の受理地点を絞る検査が無い（int 変数に Conv が居座ったまま実行してしまう・タスク 4.3 で新設）'
@@ -92,7 +92,6 @@ $knownDiff = @{
     'overload_arg_types_error'       = 'py: オーバーロードの実引数型による解決が無い（黙って実行してしまう・タスク 5.7 で新設）'
     'member_existence'               = 'py: protocol のフィールド要求を method として誤判定する（type Impl does not satisfy protocol HasN・impl_python 側の既知の限界）'
     'cross_type_equality'            = 'py: Option[T] / is None の扱いが未実装（タスク 7.6 で新設）'
-    'literal_element_check_error'    = 'py: リテラル要素の個別照合が無い（黙って実行してしまう・タスク 7.7 で新設）'
     'cross_type_equality_error'      = 'py: 異型の等値比較の静的検査が無い（False を返して実行してしまう・タスク 7.6 で新設）'
     'member_existence_error'         = 'py: メンバー存在検査が無い（実行時 AttributeError になる・タスク 7.5 で新設）'
     'cast_mustbe_possible_error'     = 'py: 成功しえない cast / mustbe の静的検査が無い（実行時エラーになる・タスク 7.3 で新設）'
@@ -238,6 +237,13 @@ $knownDiff = @{
     'elem_type_kept_error'           = 'py: 型注釈の要素型を検査しないので素通りして「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.2）'
     'bare_tuple_annotation_error'    = 'py: 型注釈を捨てるので let t: tuple = 1 が通り「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.3）'
     'bare_tuple_annotation'          = 'py: タプル内の str を引用符なしで表示する（実測 `(1, a)`）。list_concat_repeat と同じ repr の差で、タプルの受け渡し自体は py も動く'
+    # ⚠ タスク 8.1（素の容器型注釈の禁止・案 A）の移行で新しく食い違った。**実測して確認済み**。
+    #   どちらも以前は「実行時のフィールド型検査」を見せる例題だったが、素の `list` が
+    #   書けなくなり `list[Any]` になったので **Rust は静的に停止**するようになった。
+    #   py は静的検査を持たないので 1 行目から出力が出る。
+    'field_class_type_error'         = 'py: フィールド代入の静的型検査が無く素通りする（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
+    'field_type_runtime_error'       = 'py: 同上（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
+    'literal_element_check'          = 'py: リスト内の str を引用符なしで表示する（実測 `[a, b]`）。list_concat_repeat と同じ repr の差'
     # ⚠ タスク 9.7（型引数を捨てない）で新設。**実測して確認済み**。
     'type_args_not_dropped_error'    = 'py: 型注釈の `[...]` を検査しないので素通りして「ここには到達しない」まで出る（Rust は ParseError で停止・9.7）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）

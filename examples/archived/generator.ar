@@ -27,7 +27,7 @@ print(sq.next())   # 9
 print(sq.next())   # 16
 
 # --- 3. 条件分岐を含むジェネレータ ---
-gen evens_only(items: list) -> int:
+gen evens_only(items: list[int]) -> int:
     for x in items:
         if x % 2 == 0:
             yield x

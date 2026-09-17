@@ -12,7 +12,23 @@
 # boxed レイアウト（= `str` が混ざる／trait を実装する／テンプレートクラス）では
 # `store_field` が無検査だったのが原因。
 #
+#
+# ## ⚠⚠ タスク 8.1（案 A）で**静的側が先に捕まえるようになった**
+#
+# 素の容器型注釈（`mut xs: list`）が禁止されたので、書ける綴りは `list[Any]`。
+# `xs[i]` の型は `Unresolved`（万能受容体）ではなく **`Any`** になり、
+# `Any` を宣言型のフィールドへ入れるのは**明示ダウンキャストが要る**ので静的エラーになる。
+#
+# ⇒ **実行時検査は消していない。** FFI・ネイティブコールバック経由で
+#   静的検査を通らない値が来る経路の最後の砦として残っている。
+#   判定に使う述語（`TypeTag::matches`）は `src/vm/op.rs` の
+#   `mod type_tag_tests` が実行時の表と一致することを固定している。
+#   ⇒ Arrow のソースからは**この実行時エラーへ到達できなくなった**（案 A の帰結）。
+#
 # 期待されるエラー:
+#   StaticTypeError  field 'n' of class 'Tagged' is declared 'int' but got 'Any'
+#
+# ⚠ 8.1 より前はここが実行時エラーだった:
 #   TypeError: value does not match declared type of field 'n'
 
 class Tagged:
@@ -21,7 +37,7 @@ class Tagged:
 
 mut t = Tagged(1, "a")
 
-mut xs: list = [1, "wrong"]
+mut xs: list[Any] = [1, "wrong"]
 
 print("代入前:", t.n)           # 1
 

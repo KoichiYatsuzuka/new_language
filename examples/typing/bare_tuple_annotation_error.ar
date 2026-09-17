@@ -1,16 +1,22 @@
-# bare_tuple_annotation_error.ar — 素の `tuple` 注釈は tuple 以外を受けない（タスク 8.3）
+# bare_tuple_annotation_error.ar — 素の `tuple` 注釈は書けない（タスク 8.1・案 A）
 #
 # 正常系は bare_tuple_annotation.ar
 #
-# ⚠ 以前は `from_ann` の表に `tuple` が無く、注釈が `Unresolved`（万能受容体）に
-#   化けていたため **この行が通っていた**。注釈が完全に無視されていた形。
+# 素の容器型（`list` / `dict` / `set` / `fixed_list` / `list_like` / `tuple`）を
+# 注釈位置に書くと、要素型が `Unresolved`（＝**万能受容体**）になり、
+# 要素へのあらゆる検査（`append` の引数・`for` の要素・添字の結果）が**消える**。
+# 根本原因①の最後の入口だったので、注釈位置では禁止した。
 #
-# ⚠ 逆向き（素の `tuple` を `tuple[int, int]` へ入れる）も弾く。要素数も要素型も
-#   判らない値を型引数つきの型として扱うのは情報が増えるダウンキャストになる（D-3）。
+# ⚠ タスク 8.3 より前は、`tuple` は `from_ann` の表に無く注釈が丸ごと無視されていたため
+#   `let t: tuple = 1` すら通っていた。8.3 で型として解決できるようにしたので、
+#   8.1 の禁止が `tuple` にも効くようになった。
+#
+# ⚠ 型テスト位置（`x is tuple`）は対象外。正常系を参照。
 #
 # 期待されるエラー:
-#   StaticTypeError  't' is declared 'tuple' but initialized with 'int'
+#   StaticTypeError  variable `t` is annotated 'tuple' without an element type;
+#                    write the element type (e.g. 'tuple[int, str]')
 
-let t: tuple = 1                    # ⛔ int は tuple ではない
+let t: tuple = (1, 2)               # ⛔ 要素型を書くこと
 
 print("ここには到達しない")

@@ -5,7 +5,7 @@
 # それぞれ単体で実行したときのエラー:
 #
 #   ① `let` 変数を `mut` パラメータへ渡す（B11）
-#      fn touch(mut v: list) -> None:
+#      fn touch(mut v: list[int]) -> None:
 #          v.append(9)
 #      let a = [1]
 #      touch(a)
@@ -52,7 +52,7 @@
 
 print("let immutability error demo")
 
-fn touch(mut v: list) -> None:
+fn touch(mut v: list[int]) -> None:
     v.append(9)
 
 let a = [1]

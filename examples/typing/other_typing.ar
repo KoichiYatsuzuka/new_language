@@ -293,7 +293,10 @@ class CastPoint:
     fn __cast__[str](let self)->str:
         return "(" + repr(self.x) + ", " + repr(self.y) + ")"
 
-    fn __cast__[list](let self)->list:
+    # ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなったので戻り値は `list[int]`。
+    #   キャスト先の名前（`__cast__[list]` と `cp=>list`）は**注釈位置ではない**ので
+    #   従来どおり素の容器名で書ける。
+    fn __cast__[list](let self)->list[int]:
         return [self.x, self.y]
 
 let cp = CastPoint(3, 4)

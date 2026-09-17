@@ -36,9 +36,11 @@ print("=== 混在は Union へ合成される ===")
 let mixed: list[Union[int, str]] = [1, "s", 2]
 print(mixed)                        # [1, 's', 2]
 
-print("=== 素の list 注釈は要素型を問わない ===")
+print("=== list[Any] は要素型を問わない ===")
 
-let loose: list = [1, "s", 2.0]
+# ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなった。要素型を問わないことは
+#   `Any` と**明示**して書く。
+let loose: list[Any] = [1, "s", 2.0]
 print(loose)                        # [1, 's', 2.0]
 
 print("=== set / dict も同じ規則 ===")

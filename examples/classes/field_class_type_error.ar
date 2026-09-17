@@ -10,7 +10,23 @@
 # 素通り**していた。結果、`pet: Dog` のフィールドに `Cat` が黙って居座り、
 # `h.pet.m` という Dog に無いフィールドが読めてしまっていた。
 #
+#
+# ## ⚠⚠ タスク 8.1（案 A）で**静的側が先に捕まえるようになった**
+#
+# 素の容器型注釈（`mut xs: list`）が禁止されたので、書ける綴りは `list[Any]`。
+# `xs[i]` の型は `Unresolved`（万能受容体）ではなく **`Any`** になり、
+# `Any` を宣言型のフィールドへ入れるのは**明示ダウンキャストが要る**ので静的エラーになる。
+#
+# ⇒ **実行時検査は消していない。** FFI・ネイティブコールバック経由で
+#   静的検査を通らない値が来る経路の最後の砦として残っている。
+#   判定に使う述語（`TypeTag::matches`）は `src/vm/op.rs` の
+#   `mod type_tag_tests` が実行時の表と一致することを固定している。
+#   ⇒ Arrow のソースからは**この実行時エラーへ到達できなくなった**（案 A の帰結）。
+#
 # 期待されるエラー:
+#   StaticTypeError  field 'pet' of class 'Holder' is declared 'Dog' but got 'Any'
+#
+# ⚠ 8.1 より前はここが実行時エラーだった:
 #   TypeError: value does not match declared type of field 'pet'
 
 class Dog:
@@ -25,7 +41,7 @@ class Holder:
 
 mut h = Holder(Dog(1), "h")
 
-mut xs: list = [Cat(2), 3]
+mut xs: list[Any] = [Cat(2), 3]
 
 print("代入前:", h.pet.n)       # 1
 

@@ -18,8 +18,8 @@ print(item)              # [1]        let の item は変わらない
 print(xs)                # [[1, 9]]
 
 class K:
-    mut f: list
-    fn __init__(mut self, let f: list) -> None:
+    mut f: list[int]
+    fn __init__(mut self, let f: list[int]) -> None:
         self.f = f
 mut o = K([1])
 let snap = o.f
@@ -71,7 +71,7 @@ let bag = Bag(5)
 print(bag.remove())      # 5   同名でもユーザー定義メソッドは通る
 
 print("=== B11: let を mut パラメータへ渡せない ===")
-fn touch(mut v: list) -> None:
+fn touch(mut v: list[int]) -> None:
     v.append(9)
 
 mut m = [1]
