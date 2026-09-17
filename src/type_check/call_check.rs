@@ -151,8 +151,17 @@ impl TypeChecker {
                 CallArg::Variadic(exprs) => {
                     let elem_types: Vec<InferredType> =
                         exprs.iter().map(|e| self.infer(e)).collect();
+                    // ⚠⚠ **空のときは `ListOf(Never)`。素の `List` に倒さないこと**（タスク 8.4）。
+                    //    素の `List` は下流の可変長検査（`Some((_, IT::ListOf(elem_ty)))` で
+                    //    受ける）に**当たらない**ので、そこだけ検査が消える。空リテラルの
+                    //    要素型を `Never`（⊥）にしたタスク 4.1 と同じ判断。
+                    // ⚠ 現状この枝は**到達しない**。`parse_type_expr` ではなく呼び出し式の
+                    //   パーサ（`parser/exprs.rs` の `... = ` の処理）が
+                    //   「variadic argument `... = ...` requires at least one expression」で
+                    //   空を弾いているため。**それでも素の `List` を置かない**のは、
+                    //   パーサ側が緩んだときに「検査が静かに消える」形で露見するのを防ぐため。
                     let list_ty = if elem_types.is_empty() {
-                        InferredType::List
+                        InferredType::ListOf(Box::new(InferredType::Never))
                     } else {
                         InferredType::ListOf(Box::new(Self::join_elem_types(elem_types)))
                     };

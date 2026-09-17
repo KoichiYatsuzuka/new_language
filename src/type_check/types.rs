@@ -237,6 +237,24 @@ impl InferredType {
         {
             return InferredType::from_ann(inner.trim()).map(|t| Self::Union(vec![t, Self::None]));
         }
+        // ⚠⚠⚠ **以下の容器の「内側が解決できなかったときのフォールバック」を
+        //    『到達しない死枝』として消さないこと**（タスク 8.4 の棚卸し結果）。
+        //
+        //    実測: Arrow のソースからは**どの形でも到達しない**。`parse_type_expr`
+        //    （`parser/types.rs`）が先に弾くため:
+        //      list[a.b] / set[a.b]        → ParseError: expected `]`, got `.`
+        //      dict[str] / list[Result[int]] → ParseError: expected type name, got `]`
+        //      Union[int] / Intersection[A]  → ParseError: requires at least 2 type arguments
+        //    未知の名前は 8.2 以降 `NamedInstance` になるので、ここへは落ちてこない。
+        //
+        //    ⚠ **`from_ann` の入力は Arrow のソースだけではない。** `.pyi` スタブ・
+        //    `--compile-cs` の `.ars`・py 相互運用の型名変換（`py_type_to_arrow`）は
+        //    **パーサを通らない文字列**を渡してくる。スタブによる型検査（タスク 7 の ⑥A）が
+        //    入る余地を残すために、この経路は**形を保ったまま残してある**。
+        //
+        //    ⚠ そのとき「素の容器へ落とす」＝**万能受容体にする**ことの是非は
+        //    改めて決めること（8.2 で潰したのと同じ性質の穴になる）。ここを触るなら
+        //    実装計画書 §10 の 8.4 と 8.5 を読むこと。
         if let Some(inner) = ann.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
             return Some(match InferredType::from_ann(inner.trim()) {
                 Some(t) => Self::ListOf(Box::new(t)),
