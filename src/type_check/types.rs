@@ -308,6 +308,15 @@ impl InferredType {
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
             "type" => Some(Self::TypeVal),
+            // ⚠⚠ **実行時の型名なのに静的側の表に無かった**（フェーズ 8 で実測）。
+            //    `fn counter_from(let n: int) -> generator:` のように**例題が実際に
+            //    注釈として使っている**（9 箇所）のに `from_ann` が `None` を返し、
+            //    注釈が `Unresolved`（＝万能受容体）に化けていた。
+            //    ⚠ `InferredType` に専用の変種は作らず、実行時の型名
+            //      （`runtime_type_name` の `Value::Generator(_) => "generator"`）に合わせて
+            //      クラス名として扱う。メンバー情報を持たないので存在検査は素通しになる
+            //      （タスク 7.5 の `member_set_is_closed`）。
+            "generator" => Some(Self::NamedInstance("generator".to_string())),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
             // Unknown identifier that looks like a class name → treat as instance type.
