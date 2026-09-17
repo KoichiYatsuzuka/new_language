@@ -3252,8 +3252,8 @@ None => Self::List          // ← 要素型を捨てて素の `list` にする
 | **9.2** | `freeze` の意味がドキュメントと実装で食い違う | 仕様が確定していない | 7.2 |
 | **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
 | **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | ⚠⚠ **py 相互運用の前提**（7.8 の帰結） | 7.8 |
-| **9.5** | `compare_bytecode.ps1` が相対パスの `-A` で**偽の全差分**を出す | ゲートが嘘をつく | 6.1 |
-| **9.6** | `examples/_tmp_demo.txt` が例題実行で書き換わる | `git status` が毎回汚れる | 全般 |
+| ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
+| ~~**9.6**~~ | ~~`examples/_tmp_demo.txt` が例題実行で書き換わる~~ → **✅ 完了 2026-09-17** | ⚠ **例題を 1 件壊していた** | 全般 |
 | **9.7** | **非テンプレート名の型引数 `[...]` が黙って捨てられる** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
 
 ---
@@ -3369,13 +3369,59 @@ basics collections classes typing exceptions async bench apps interop
 ⚠ 「ゲートが緑でないのに緑に見える」の逆で、「**赤でないのに赤に見える**」形。
 どちらも同じくらい危険（時間を溶かす）。
 
+##### 対応（2026-09-17）
+
+`-A` / `-B` を **`Test-Path` のあと `Resolve-Path` で絶対パスへ正規化**する処置を
+**3 本すべて**（`compare_bytecode` / `compare_outputs` / `compare_import_paths`）に入れた。
+
+⚠ 実際に `Process::Start` を使っているのは `compare_bytecode` だけ（他 2 本は 0 箇所）。
+それでも 3 本に入れたのは、**あとで `Process::Start` に変えたときに同じ罠に落ちない**ため。
+
+⚠ `.ps1` は **UTF-8 BOM 付き**。BOM を落とすと PowerShell 5.1 が ANSI と誤読して
+日本語コメントが壊れる（`powershell51-ansi-corrupts-utf8-sources` の罠）。編集時は保つこと。
+
+**検証**（相対パスで負の対照を取った）:
+
+| 実行 | 結果 |
+|---|---|
+| `compare_bytecode.ps1 -A target/release/<同一 exe>`（相対） | **264/264 一致**（修正前は全件差分） |
+| 同じことを絶対パスで | 264/264 一致 |
+| `compare_outputs.ps1`（相対） | 245/245 一致 |
+| `compare_import_paths.ps1`（相対） | 13/13 一致 |
+| 存在しないパス | `NOT FOUND` で exit 2 |
+
 ### 9.6 `examples/_tmp_demo.txt` が例題実行で書き換わる
 
 `examples/basics/built_in.ar` ほかがファイル I/O の実演でこのファイルを書く。
-git に**追跡されている**ので、ゲートを回すたびに `git status` が汚れ、
-`git add -A` で**意図しない差分が混ざる**。
+git に**追跡されている**ので、ゲートを回すたびに `git status` が汚れる。
 
-⇒ `.gitignore` に入れるか、例題の書き先を一時ディレクトリへ変える。
+##### ⚠⚠ 調べたら**例題を 1 件壊していた**（起票時の想定より重い）
+
+追跡していた一時ファイルは **6 件**（`examples/` と `examples/basics/` に
+`_tmp_bytes.txt` / `_tmp_demo.txt` / `_tmp_new.txt`）。
+
+⇒ `FileOpenMode.make_and_write` は**既存ファイルがあると失敗する**。
+`examples/archived/file_io.ar` は `built_in.ar` と違って事前に `os.remove` しないので、
+**追跡された `_tmp_new.txt` が存在するせいで毎回落ちていた**
+（`open() make_and_write: file 'examples/_tmp_new.txt' ...`）。
+⚠ ゲート対象外（`archived/`）なので誰も気づいていなかった ＝ タスク 9.3 の実例。
+
+##### 対応（2026-09-17）
+
+1. **読む例題を自己完結にした。** `examples/basics/built_in_error.ar` は
+   `_tmp_demo.txt` の存在に依存していた（`read` だけで作らない）ので、
+   先に `rewrite` で作ってから EOF を踏むように直した。
+2. 6 件を **`git rm --cached`** で追跡から外した。
+3. `.gitignore` に `examples/**/_tmp_*.txt` を追加した。
+
+**検証**:
+
+| 項目 | 結果 |
+|---|---|
+| `examples/archived/file_io.ar` | **exit 0 で完走**（⇒ 9.3 の壊れた例題が 1 件減った） |
+| `examples/basics/built_in_error.ar` | `EOFError: EOF`（意図どおり） |
+| 例題を走らせた後の `git status` | **生成物が出ない**（`??` にも出ない＝ ignore 済み） |
+| `scan_examples` / `compare_python_impl` / `type_obligations` | すべて緑 |
 
 ### 9.7 非テンプレート名の型引数 `[...]` が黙って捨てられる
 
@@ -3426,7 +3472,7 @@ let x: Foo[int] = 1       # 'x' is declared 'Foo'（`[int]` が捨てられて�
 
 ### 順序
 
-`9.5` → `9.6` → `9.3` → `9.1` → `9.2` → **`9.4`** → `9.7`
+~~`9.5`~~ → ~~`9.6`~~ → `9.3` → `9.1` → `9.2` → **`9.4`** → `9.7`
 
 ⚠ `9.7` は **7.6 の前提ではなかった**（誤診・上記）。タスク 8.2 と**同じ系統**なので
 フェーズ 8 と合わせて実施する方がよい。

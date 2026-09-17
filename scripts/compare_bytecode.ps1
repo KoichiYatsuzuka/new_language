@@ -32,8 +32,18 @@ $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($B)) { $B = Join-Path $repo 'target/release/arrow.exe' }
 
-foreach ($exe in @($A, $B)) {
+# ⚠⚠ **相対パスを絶対パスへ正規化する**（タスク 9.5）。
+#    `Test-Path` は PowerShell のカレントで解決するので通るが、
+#    `[System.Diagnostics.Process]::Start` の `FileName` は
+#    **`WorkingDirectory` ではなく呼び出し側プロセスのカレント**で解決する。
+#    ⇒ `-A target/release/arrow_p61.exe` のような相対パスだと基準バイナリが見つからず、
+#      全例題が「A=1 lines」になって **249 件中 180 件差分**という**嘘の結果**が出た
+#      （タスク 6.1 で踏んだ。絶対パスで渡し直したら 249/249 一致）。
+#    ⚠ 「緑でないのに緑」の逆で「**赤でないのに赤**」。どちらも同じくらい時間を溶かす。
+foreach ($name in 'A', 'B') {
+    $exe = Get-Variable -Name $name -ValueOnly
     if (-not (Test-Path $exe)) { Write-Host "NOT FOUND: $exe" -ForegroundColor Red; exit 2 }
+    Set-Variable -Name $name -Value ((Resolve-Path $exe).Path)
 }
 
 # GUI・対話・外部プロセス・長時間ベンチは対象外（dump を取る前に終わらない / 窓が出る）。

@@ -4,6 +4,18 @@
 # 各エラーを個別にテストする場合はコメントアウトして確認すること。
 
 # --- EOF エラー: ファイル末尾でさらに読もうとする ---
+#
+# ⚠⚠ **読む前に自分で作る**（タスク 9.6）。以前は `examples/basics/_tmp_demo.txt` が
+#   **git に追跡された固定物**として置いてあり、この例題はその存在に依存していた。
+#   生成物を追跡していると
+#     - ゲートを回すたび `git status` が汚れる
+#     - `make_and_write`（既存ファイルがあると失敗する）を使う例題が**壊れる**
+#       （実際 `examples/archived/file_io.ar` が `_tmp_new.txt` の追跡で落ちていた）
+#   ので追跡をやめた。⇒ 読む例題は**自分で用意する**。
+let setup = open("examples/basics/_tmp_demo.txt", FileOpenMode.rewrite)
+setup.write_line("Hello, world!")
+close(setup)
+
 # ファイルを末尾 (StartPoint.end) で開いて read を呼ぶと EOFError が発生する
 let f = open("examples/basics/_tmp_demo.txt", FileOpenMode.read, StartPoint.end)
 let r = f.read()   # EOFError: EOF

@@ -29,3 +29,11 @@ crates/arrow-frontend/target/debug
 crates/arrow-frontend/target/wasm32-unknown-unknown
 crates/arrow-frontend/target
 crates/arrow-frontend/target
+
+# ファイル I/O 例題が生成する一時ファイル（タスク 9.6）。
+# ⚠⚠ **追跡してはいけない。** 以前は git に入っていたため
+#   - ゲートを回すたび `git status` が汚れ、`git add -A` に紛れ込む恐れがあった
+#   - `make_and_write`（既存ファイルがあると失敗する）を使う例題が壊れていた
+#     （`examples/archived/file_io.ar` が `_tmp_new.txt` の追跡で落ちていた）
+# ⇒ 読み取りだけの例題は**自分で生成してから読む**こと。
+examples/**/_tmp_*.txt
