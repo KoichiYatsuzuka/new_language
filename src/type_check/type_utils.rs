@@ -444,6 +444,9 @@ impl TypeChecker {
                     None => false,
                 };
             }
+            // ⚠ `tuple[...]` → 素の `tuple` の一方向だけ（タスク 8.3）。上の
+            //    `list` / `fixed_list` / `set` / `dict` と同じ規則（D-3）。
+            (InferredType::Tuple(_), InferredType::TupleAny) => return true,
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,

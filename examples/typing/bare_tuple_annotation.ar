@@ -1,0 +1,51 @@
+# bare_tuple_annotation.ar — 素の `tuple` 注釈が効くようになった（タスク 8.3）
+#
+# ## 何が壊れていたか
+#
+# `InferredType::from_ann` のプリミティブ表に **`tuple` が無かった**
+# （`list` / `dict` / `set` / `fixed_list` / `list_like` はある）。
+# 表に無い名前は `None` → 呼び出し側で `Unresolved`（＝**万能受容体**）になるので、
+# **注釈がまるごと無視**されていた。実測:
+#
+#   let t: tuple = 1          # 通っていた
+#   let b: tuple = [1, 2]     # list なのに通っていた
+#
+# 実害が見えにくかったのは「たまたま右辺が正しい型だった」だけ。
+#
+# ⇒ `InferredType::TupleAny` を足した。`ListOf` に対する `List` と同じ
+#   「型引数を書かなかった容器」の位置づけ。
+#
+# ⚠ 既存の `Tuple(Vec<_>)` は**要素数が固定**なので素の `tuple` を表せない。
+#   名前が `TupleAny` なのは `Tuple` が既に「型引数つき」側だから。
+#
+# ⚠ 適合は **`tuple[...]` → `tuple` の一方向だけ**（決定 D-3）。逆を許すと
+#   「要素数も型も判らない値」が `tuple[int, str]` として通ってしまう。
+#
+# 弾かれる例は bare_tuple_annotation_error.ar
+
+print("=== 要素数を問わないタプルを受ける ===")
+
+fn show(pair: tuple) -> None:
+    print(pair)
+
+show((1, "a"))
+show((1, 2, 3))
+show(("solo",))
+
+print("=== 束縛・反復・添字 ===")
+
+let t: tuple = (10, 20, 30)
+print(t)
+
+for v in t:
+    print(v)
+
+print(t[0])
+
+print("=== 型引数つきは従来どおり ===")
+
+let exact: tuple[int, str] = (1, "a")
+print(exact[1])
+
+# `tuple[int, str]` は素の `tuple` へ渡せる（型引数を忘れる方向は許す）。
+show(exact)

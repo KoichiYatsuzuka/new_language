@@ -146,6 +146,20 @@ pub enum InferredType {
     SetOf(Box<InferredType>),
     /// タプル型 `tuple[T1, T2, ...]`。各要素に独立した型を持つ。
     Tuple(Vec<InferredType>),
+    /// **要素型も要素数も未知**のタプル型 `tuple`（タスク 8.3）。
+    ///
+    /// ⚠⚠ `Tuple(Vec<_>)` は**要素数が固定**なので、素の `tuple` 注釈を表せない。
+    /// `List` / `Dict` / `Set` と同じ「型引数を書かなかった容器」の位置づけで、
+    /// `ListOf` に対する `List` に相当する。名前が `TupleOf` / `Tuple` にならないのは
+    /// **既存の `Tuple` が「型引数つき」側**だから（改名は影響が大きいので見送った）。
+    ///
+    /// ⚠ 適合は **`Tuple(_)` → `TupleAny` の一方向だけ**（D-3）。
+    /// 逆を許すと「要素数も型も判らない値」が `tuple[int, str]` として通ってしまう。
+    ///
+    /// ⚠ 8.1（素の容器型注釈を禁止するか）の判断対象に**これも含まれる**。
+    /// `tuple` だけ特別扱いすると `list` / `dict` / `set` と規則が割れるので、
+    /// 禁止するなら 4 つまとめて禁止すること。
+    TupleAny,
     /// モジュールやパッケージを表す名前空間型。メンバー名 → 推論済み型のマップ。
     Namespace(HashMap<String, InferredType>),
     /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
@@ -307,6 +321,15 @@ impl InferredType {
             "list_like" => Some(Self::ListLike),
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
+            // ⚠⚠ **`tuple` は静的側の表に無かった**（タスク 8.3）。`from_ann` が `None` を
+            //    返すため注釈が `Unresolved`（＝万能受容体）に化け、
+            //      let t: tuple = 1          # 通っていた
+            //      let b: tuple = [1, 2]     # list でも通っていた
+            //    のように**注釈が完全に無視**されていた（実測）。
+            //    ⚠ 8.2 で未知の小文字名を `NamedInstance` 扱いにした結果、この行が無いと
+            //      `tuple` が `NamedInstance("tuple")` に化けて**正しい tuple まで弾く**。
+            //      ⇒ 8.2 と 8.3 は**同時でなければならない**。
+            "tuple" => Some(Self::TupleAny),
             "type" => Some(Self::TypeVal),
             // ⚠⚠ **実行時の型名なのに静的側の表に無かった**（フェーズ 8 で実測）。
             //    `fn counter_from(let n: int) -> generator:` のように**例題が実際に
@@ -321,7 +344,19 @@ impl InferredType {
             "Any" => Some(Self::Any),
             // Unknown identifier that looks like a class name → treat as instance type.
             // This allows `a: Vec2D` parameters to have method calls type-checked correctly.
-            other if other.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            //
+            // ⚠⚠ **大文字だけでなく小文字始まりの名前もここで受ける**（タスク 8.2）。
+            //    以前は小文字の未知名だけが `None`（→ 呼び出し側で `Unresolved` ＝
+            //    **万能受容体**）に落ちており、それが
+            //      `list[foo]` / `set[foo]` / `dict[str, foo]` / `tuple[int, foo]` /
+            //      `Union[int, foo]` / `Intersection[A, foo]`
+            //    の **8 箇所すべてで「要素型を黙って捨てる」原因**だった
+            //    （`list[foo]` が素の `list` になり、以降の要素検査が全部消える）。
+            //    大文字と同じくクラス名扱いにすれば、存在しない型は
+            //    **整合性検査が正直な診断で弾く**（`declared 'list[foo]' but … 'list[int]'`）。
+            //    ⇒ 脱落地点を 8 か所塗るのではなく、**非対称そのものを消す**。
+            // ⚠ `np.ndarray` のような `.` を含む名前は従来どおり `None`（英数と `_` のみ）。
+            other if other.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                      && other.chars().all(|c| c.is_alphanumeric() || c == '_') =>
                 Some(Self::NamedInstance(other.to_string())),
             // **具体化済みユーザ定義ジェネリクス**（`Box[int]` / `Pair[int,str]`）。
@@ -501,6 +536,7 @@ impl std::fmt::Display for InferredType {
                 let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                 write!(f, "tuple[{}]", parts.join(", "))
             }
+            Self::TupleAny => write!(f, "tuple"),
             Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
             Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),

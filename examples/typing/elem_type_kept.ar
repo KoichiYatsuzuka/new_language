@@ -1,0 +1,63 @@
+# elem_type_kept.ar — 型引数に書いた要素型は捨てられない（タスク 8.2）
+#
+# ## 何が壊れていたか
+#
+# `InferredType::from_ann` は **未知の大文字名だけ**をクラス名として受け、
+# 小文字始まりの未知名は `None` を返していた。呼び出し側はそれを
+# `Unresolved`（＝**万能受容体**）に倒すので、
+#
+#   list[foo] → 内側が解けない → 素の list に落とす
+#
+# となり、**利用者が書いた要素型が黙って消えていた**。落ちた先の素の `list` は
+# 「要素型を知らない容器」なので、以降の要素検査が**全部**消える。実測:
+#
+#   mut xs: list[foo] = [1]
+#   xs.append("s")      # 通っていた
+#   print(xs)           # [1, 's']
+#
+# ⚠ 素の `list` と書いた場合より**悪い**。書いた本人は検査されているつもりでいる。
+#
+# 同じ非対称が `set[foo]` / `dict[str, foo]` / `tuple[int, foo]` /
+# `Union[int, foo]` / `Intersection[A, foo]` の **8 箇所すべて**の原因だった。
+# `tuple[int, foo]` に至っては要素が 1 つ落ちて **`tuple[int]` という嘘の診断**を出していた。
+#
+# ⇒ 脱落地点を 8 か所塞ぐのではなく、**大文字/小文字の非対称そのものを消した**。
+#   小文字の未知名も大文字と同じくクラス名として扱う。
+#
+# 弾かれる例は elem_type_kept_error.ar
+
+print("=== 小文字のクラス名が要素型として機能する ===")
+
+class point:
+    let x: int
+    let y: int
+
+    fn __init__(mut self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+let ps: list[point] = [point(1, 2), point(3, 4)]
+print(ps[0].x)
+print(ps[1].y)
+
+# 要素型が保たれているので、要素のメンバーも静的に解決できる。
+fn sum_x(pts: list[point]) -> int:
+    mut total: int = 0
+    for p in pts:
+        total += p.x
+    return total
+
+print(sum_x(ps))
+
+print("=== 入れ子でも保たれる ===")
+
+let grid: list[list[point]] = [[point(1, 1)], [point(2, 2)]]
+print(grid[0][0].x)
+
+print("=== dict / set / tuple も同じ ===")
+
+let by_name: dict[str, point] = {"a": point(5, 6)}
+print(by_name["a"].y)
+
+let pair: tuple[int, point] = (1, point(7, 8))
+print(pair[0])

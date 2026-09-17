@@ -1,0 +1,16 @@
+# bare_tuple_annotation_error.ar — 素の `tuple` 注釈は tuple 以外を受けない（タスク 8.3）
+#
+# 正常系は bare_tuple_annotation.ar
+#
+# ⚠ 以前は `from_ann` の表に `tuple` が無く、注釈が `Unresolved`（万能受容体）に
+#   化けていたため **この行が通っていた**。注釈が完全に無視されていた形。
+#
+# ⚠ 逆向き（素の `tuple` を `tuple[int, int]` へ入れる）も弾く。要素数も要素型も
+#   判らない値を型引数つきの型として扱うのは情報が増えるダウンキャストになる（D-3）。
+#
+# 期待されるエラー:
+#   StaticTypeError  't' is declared 'tuple' but initialized with 'int'
+
+let t: tuple = 1                    # ⛔ int は tuple ではない
+
+print("ここには到達しない")

@@ -1,0 +1,29 @@
+# elem_type_kept_error.ar — 存在しない要素型は弾く（タスク 8.2）
+#
+# 正常系は elem_type_kept.ar
+#
+# `foo` というクラスはどこにも無いので `list[foo]` に `list[int]` は入らない。
+#
+# ⚠ 以前は `from_ann` が小文字の未知名に `None` を返し、`list[foo]` が
+#   **素の `list` に落ちていた**（要素型を黙って捨てる）。素の `list` は要素型を
+#   知らない容器なので、以下が全部通っていた:
+#
+#     mut xs: list[foo] = [1]
+#     xs.append("s")        # 通っていた
+#     print(xs)             # [1, 's']
+#
+# ⚠ 大文字の `list[Foo]` は昔から弾かれていた。**小文字だけが素通りしていた**
+#   ＝ 単なる非対称であって仕様ではない。
+#
+# 期待されるエラー（2 件）:
+#   StaticTypeError  'xs' is declared 'list[foo]' but initialized with 'list[int]'
+#   StaticTypeError  argument of `list[foo].append()` expects 'foo' but got 'str'
+#
+# ⚠ 2 件目が出ること自体が復活した検査の証拠。要素型が捨てられていた頃は
+#   `append` の引数検査が**存在しなかった**（何を足しても通った）。
+
+mut xs: list[foo] = [1]             # ⛔ foo という型は存在しない
+
+xs.append("s")                      # ⛔ 要素型の検査が効いている
+
+print("ここには到達しない")

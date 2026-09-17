@@ -161,6 +161,9 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
             }
             _ => mismatch(value),
         },
+        // ⚠ 素の `tuple` は**要素数も要素型も判らない**ので外側の形だけ見る
+        //    （`Dict` / `Set` と同じ扱い・タスク 8.3）。
+        InferredType::TupleAny => prim(matches!(value, Value::Tuple(_)), value),
 
         // ユーザー定義クラス: 外部から生の Instance が返ることは（現状の変換では）ない。
         // 誤検知を避けるため検査しない。

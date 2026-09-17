@@ -234,6 +234,10 @@ $knownDiff = @{
     'generator_lazy_error'           = 'py 古い: 生成時に本体が走るので holder[0] がまだ無く IndexError。Rust は消費時に走るので ValueError: generator is already executing'
     'generator_closure'              = 'py 古い: ジェネレータのクロージャ化に未対応で、かつ先行評価なので§5 の無限ジェネレータで止まらない（B13 段階 E）'
     'yield_placement_error'          = 'py: `yield` の置き場所の静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止・B13）'
+    # ⚠ フェーズ 8（要素型を捨てる経路を塞ぐ）で新設。**実測して確認済み**。
+    'elem_type_kept_error'           = 'py: 型注釈の要素型を検査しないので素通りして「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.2）'
+    'bare_tuple_annotation_error'    = 'py: 型注釈を捨てるので let t: tuple = 1 が通り「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.3）'
+    'bare_tuple_annotation'          = 'py: タプル内の str を引用符なしで表示する（実測 `(1, a)`）。list_concat_repeat と同じ repr の差で、タプルの受け渡し自体は py も動く'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'
