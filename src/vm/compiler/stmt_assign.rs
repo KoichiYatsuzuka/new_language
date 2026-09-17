@@ -291,6 +291,40 @@ impl Compiler {
                 }
                 Some(())
             }
+            // `obj::Trait.attr <op>= value`（タスク 9.1）。
+            //
+            // ⚠⚠ **アームが無かったので `VmForceError` になっていた。**
+            //    通常代入（`compile_attr_assign`）には `TraitAccess` のアームがあるのに、
+            //    複合代入側だけ抜けており、`p::Scored.score += 5` が
+            //    `cannot compile ... AttrCompoundAssign to bytecode` で実行不能だった
+            //    （修飾しない `p.score += 5` は通る）。型検査は通っていたので**実行段だけの穴**。
+            //
+            // ⚠ 評価順はツリーウォーク（`exec/dispatch.rs` の `Stmt::AttrCompoundAssign`）に
+            //    合わせる: `rhs = eval(value)` → `lhs = eval(target)` → 二項演算 →
+            //    `attr_assign(target, result)`。
+            //    ⇒ **rhs が先**で、**レシーバは 2 回評価される**（読みで 1 回・書きで 1 回）。
+            //    添字の複合代入と同じ形なので、そちらに合わせてある。
+            // ⚠ `Expr::Attr` のような**局所 slot 用の融合はしない**。レシーバを 1 回しか
+            //    評価しない最適化は副作用の有無に依存するので、まず意味論を合わせる。
+            Expr::TraitAccess { object, trait_name, attr } => {
+                let ti = self.add_name(trait_name);
+                let ai = self.add_name(attr);
+                let rhs_tmp = self.alloc_temp()?;
+                self.compile_expr(value)?; // 1. rhs を先に評価
+                self.emit(Op::StoreLocal(rhs_tmp));
+                self.compile_expr(object)?; // 2. 現在値の読み
+                self.emit(Op::GetTraitAttr(ti, ai));
+                self.emit(Op::LoadLocal(rhs_tmp));
+                self.emit(Op::Bin(op.clone())); // 3. 二項演算
+                let res_tmp = self.alloc_temp()?;
+                self.emit(Op::StoreLocal(res_tmp));
+                self.compile_expr(object)?; // 4. 代入（ツリーウォークと同じく再評価）
+                self.emit(Op::LoadLocal(res_tmp));
+                self.emit(Op::SetTraitAttr(ti, ai));
+                self.free_temp();
+                self.free_temp();
+                Some(())
+            }
             other => {
                 bail_expr("attr-compound-target", other);
                 None

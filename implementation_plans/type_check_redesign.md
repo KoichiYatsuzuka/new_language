@@ -3306,13 +3306,14 @@ None => Self::List          // ← 要素型を捨てて素の `list` にする
 
 | # | 内容 | 影響 | 見つけたタスク |
 |---|---|---|---|
-| **9.1** | `o::T.attr += v` がバイトコードに載らない | 実行不能 | 5.1 |
+| ~~**9.1**~~ | ~~`o::T.attr += v` がバイトコードに載らない~~ → **✅ 完了 2026-09-17** | 実行不能 | 5.1 |
 | **9.2** | `freeze` の意味がドキュメントと実装で食い違う | 仕様が確定していない | 7.2 |
 | **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
 | **9.4** | `.pyi` のクラスメンバー・モジュール変数が型検査に届かない | ⚠⚠ **py 相互運用の前提**（7.8 の帰結） | 7.8 |
 | ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
 | ~~**9.6**~~ | ~~`examples/_tmp_demo.txt` が例題実行で書き換わる~~ → **✅ 完了 2026-09-17** | ⚠ **例題を 1 件壊していた** | 全般 |
 | **9.7** | **非テンプレート名の型引数 `[...]` が黙って捨てられる** | 注釈が黙って壊れる（`str[int]` が通る） | 7.6 の判断時 |
+| ~~**9.8**~~ | ~~`cargo test`（debug ビルド）が 73 コミットにわたりビルド不能~~ → **✅ 完了 2026-09-17** | ⚠⚠ **単体テストが一切走っていなかった** | 9.1 |
 
 ---
 
@@ -3337,6 +3338,38 @@ VmForceError: cannot compile top-level statement `AttrCompoundAssign` to bytecod
 
 ⇒ `vm/compiler` に `AttrCompoundAssign` の trait 修飾形を足す。
 ⚠ `force_gate` は「例題が VM に載るか」を見る網なので、**例題を足せば再発を防げる**。
+
+#### 記録（2026-09-17・完了）
+
+**原因は 1 行で言える。** `vm/compiler/stmt_assign.rs` の `compile_attr_compound_assign` が
+`Expr::Subscript` と `Expr::Attr` は扱っていたが **`Expr::TraitAccess` だけ持っていなかった**。
+一方で単純代入側の `compile_attr_assign` には `TraitAccess` の腕があり、
+`Op::GetTraitAttr` / `Op::SetTraitAttr` は**両方とも既に存在していた**。⇒ 新しい op は不要。
+
+**先にツリーウォークの評価順を実測した**（`interpreter/exec/dispatch.rs`）:
+
+1. `rhs = eval(value)` — **右辺が先**
+2. `lhs = eval(target)` — 受け手を 1 回目の評価
+3. `binop(lhs, rhs)`
+4. `attr_assign(target, result)` — 受け手を **2 回目**の評価
+
+⇒ バイトコードもこの順をそのまま写した（`Subscript` の腕と同じ形）。
+受け手を 2 度評価するのは無駄に見えるが、**ツリーウォークと意味を合わせる方を優先した**
+（受け手が副作用を持つ式のときに差が出る）。
+
+**検証した 4 形**: 関数本体 / `str` の `+=` / 受け手が式 / `-=` `*=` — 全部ツリーウォークと一致。
+
+**再発を防ぐ網**: `examples/classes/trait_qualified_compound_assign.ar` を新設。
+`force_gate` は「例題が VM に載るか」を見るので、**例題を置いた時点で網になる**。
+あわせて `examples/typing/compound_assign_two_stage.ar` に残っていた
+「`p::Scored.score += 5` はバイトコードに載らない」という**古い注記を実動するコードに置き換えた**。
+
+**ゲート**: `compare_bytecode` は負の対照 265/265 一致、基準バイナリ比では
+**触った 2 例題だけ**が差分（無関係のバイトコードは 1 バイトも動いていない）。
+`force_gate` 0 件 / `compare_python_impl` 95/95 / `compare_wasm_frontend` 316/316 /
+`type_obligations` 98% 退行なし / `tw_stats` は `in_fn` `vm_ineligible` `vm_bail_*` すべて **0**。
+
+⚠ **この `tw_stats` を走らせようとして 9.8 が見つかった。**
 
 ### 9.2 `freeze` の意味がドキュメントと実装で食い違う
 
@@ -3527,6 +3560,34 @@ let x: Foo[int] = 1       # 'x' is declared 'Foo'（`[int]` が捨てられて�
 
 ⚠ **タスク 8.2 と一緒にやる方がよい。** どちらも「書いた型引数が捨てられる」で、
 片方だけ直すと `list[foo]` と `Foo[int]` で扱いが割れる。
+
+### 9.8 `cargo test`（debug ビルド）が 73 コミットにわたりビルド不能だった 【✅ 完了 2026-09-17】
+
+```
+error[E0004]: non-exhaustive patterns: `&Op::CoerceFloat` not covered
+   --> src/vm/compiler/mod.rs:424:15
+```
+
+`storage_operands`（#86・2026-08-26 導入）は **`_` を書かない網羅 match** にして
+「op を足したらここで止まる」ことを仕掛けにしていた。ところが 2026-09-08 の
+`Op::CoerceFloat` 追加（`15aa677`）でここへの追記が漏れた。
+
+**なぜ 73 コミットも気づかれなかったか**がこの件の本体:
+
+- `storage_operands` は `#[cfg(debug_assertions)]`。⇒ **release ビルドでは存在しない**。
+- `scripts/*.ps1` のゲートは**すべて `target/release` を見る**。
+- ⇒ コンパイルできないのに **ゲートは全部緑になる**。この間、`cargo test` は
+  一行も走っていなかった（実測: 修正を一時的に戻すと exit 101、戻す前は 778 passed）。
+
+⇒ 修正は **`| Op::CoerceFloat` を「記憶域なし」の群へ 1 行足すだけ**（単位バリアントで
+オペランドを持たない）。併せて **この仕掛けが release では発火しないこと**を
+doc コメントに明記した（次に op を足す人への申し送り）。
+
+⚠⚠ **学び**: 「網羅 match で止める」仕掛けは、**そのビルドが定期的に走っていて初めて網になる**。
+`cfg(debug_assertions)` の下に置くなら、**debug ビルドを走らせる手順が必須**。
+⇒ CLAUDE.md のゲート表は release 前提なので、**`cargo test` を毎回走らせる**ことでしかここは守れない。
+
+---
 
 ### 順序
 

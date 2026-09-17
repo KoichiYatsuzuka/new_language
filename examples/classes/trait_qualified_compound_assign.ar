@@ -1,0 +1,75 @@
+# trait_qualified_compound_assign.ar — `obj::Trait.attr <op>= v` がバイトコードに載る
+# （タスク 9.1）
+#
+# ## 何が壊れていたか
+#
+#     p::Scored.score += 5
+#     ⇒ VmForceError: cannot compile top-level statement `AttrCompoundAssign` to bytecode
+#
+# **通常代入（`p::Scored.score = 5`）には `TraitAccess` のアームがあるのに、複合代入側だけ
+# 抜けていた。** 型検査は通っていたので**実行段だけの穴**で、修飾しない `p.score += 5` は
+# 動いていた。⇒ 気づきにくい形だった（タスク 5.1 の例題執筆中に発見）。
+#
+# ⚠ 例題が無かったので `force_gate`（VM に載らない構文を検出する網）に掛からなかった。
+#   **この例題がその網になる。**
+#
+# ## 評価順はツリーウォークに合わせる
+#
+# `exec/dispatch.rs` の `Stmt::AttrCompoundAssign` は
+# `rhs = eval(value)` → `lhs = eval(target)` → 二項演算 → `attr_assign(target, result)`。
+# ⇒ **rhs が先**で、**レシーバは 2 回評価される**（読みで 1 回・書きで 1 回）。
+# 添字の複合代入と同じ形にしてある。
+
+print("=== trait 修飾の複合代入 ===")
+
+trait Scored:
+    mut score: int
+
+class Player(Scored):
+    mut name: str
+
+mut p = Player(10, "ann")
+
+p::Scored.score += 5
+print(p::Scored.score)              # 15
+
+p::Scored.score -= 3
+print(p::Scored.score)              # 12
+
+p::Scored.score *= 2
+print(p::Scored.score)              # 24
+
+print("=== 修飾しない形と同じ記憶域 ===")
+
+# ⚠ trait 由来のフィールドは実行時も同じスロットを共有する。
+print(p.score)                      # 24
+p.score += 1
+print(p::Scored.score)              # 25
+
+print("=== str の += ===")
+
+trait Named:
+    mut label: str
+
+class Tag(Named):
+    mut id: int
+
+mut t = Tag("a", 1)
+t::Named.label += "b"
+print(t::Named.label)               # ab
+
+print("=== 関数の中でも載る ===")
+
+fn bump(mut q: Player) -> None:
+    q::Scored.score += 100
+
+bump(p)
+print(p::Scored.score)              # 125
+
+print("=== レシーバが式でも動く（2 回評価される） ===")
+
+mut roster: list[Player] = [Player(1, "x"), Player(2, "y")]
+roster[0]::Scored.score += 7
+print(roster[0]::Scored.score)      # 8
+
+print("done")

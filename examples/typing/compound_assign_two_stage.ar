@@ -87,8 +87,11 @@ mut p = Player(10, "ann")
 p.score += 5
 print(p.score)                  # 15
 
-# ⚠ `p::Scored.score += 5`（trait 名で修飾した形）は**バイトコードに載らない**
-#   （`VmForceError: cannot compile ... AttrCompoundAssign`）。型検査は通るが VM
-#   コンパイラ側の未対応で、タスク 5.1 の前から同じ（HEAD で実測）。ここでは触れない。
+# ⚠ trait 名で修飾した形も同じ二段検査を通る。
+#   （タスク 5.1 の時点では `p::Scored.score += 5` が **VmForceError** でバイトコードに
+#   載らなかったため触れられなかった。タスク 9.1 で VM コンパイラに
+#   `Expr::TraitAccess` のアームを足して直した。）
+p::Scored.score += 5
+print(p::Scored.score)          # 20
 
 print("done")
