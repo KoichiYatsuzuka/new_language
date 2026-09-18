@@ -77,9 +77,16 @@ fn convert_comprehension_clauses(
                 ))
             }
         };
-        let iter = convert_expr(&gen.iter, filename)?;
-        let ifs: Result<Vec<Expr>, String> =
-            gen.ifs.iter().map(|c| convert_expr(c, filename)).collect();
+        // ⚠ 2 本目以降の `for` の iter と、すべてのフィルタは**要素ごとに評価**される。
+        //   持ち上げ禁止の位置（項目 23）。
+        let iter = {
+            let _unsafe_guard = (!clauses.is_empty()).then(UnsafeHoistGuard::enter);
+            convert_expr(&gen.iter, filename)?
+        };
+        let ifs: Result<Vec<Expr>, String> = {
+            let _unsafe_guard = UnsafeHoistGuard::enter();
+            gen.ifs.iter().map(|c| convert_expr(c, filename)).collect()
+        };
         clauses.push(crate::ast::ComprehensionClause {
             target,
             iter,
@@ -251,6 +258,9 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             let mut values = b.values.iter();
             let first = convert_expr(values.next().unwrap(), filename)?;
             let mut result = first;
+            // ⚠ 2 つ目以降は**短絡で評価されないことがある**。ここで補助文を持ち上げると
+            //   評価回数が変わるので、walrus を禁じる位置として深さを上げる（項目 23）。
+            let _unsafe_guard = UnsafeHoistGuard::enter();
             for val in values {
                 let right = convert_expr(val, filename)?;
                 let span = Span::unknown();
@@ -556,7 +566,36 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             "{filename}: yield expression in Python is not supported"
         )),
 
-        py::Expr::NamedExpr(_) => Err(format!("{filename}: walrus operator ':=' is not supported")),
+        // ★ walrus `(x := expr)`（項目 23）— 補助文 `x = expr` を持ち上げ、式は `x` を返す。
+        //
+        // ⚠⚠ **持ち上げると評価回数が変わる位置では拒否する**。`while` の条件・
+        //   `and` / `or` の右辺・三項の腕・内包表記の中は、条件付き／反復評価なので
+        //   「文の直前に 1 回」へ移すと**黙って意味が変わる**（`UnsafeHoistGuard`）。
+        py::Expr::NamedExpr(ne) => {
+            let py::Expr::Name(target) = &*ne.target else {
+                return Err(format!(
+                    "{filename}: only a simple name is supported on the left of `:=`"
+                ));
+            };
+            if !hoist_is_safe() {
+                return Err(format!(
+                    "{filename}: `:=` here would change how many times it is evaluated                      (it is inside a `while` test, an `and`/`or` operand, a conditional                      expression, or a comprehension); assign before the statement instead"
+                ));
+            }
+            let name = target.id.to_string();
+            let value = convert_expr(&ne.value, filename)?;
+            // ⚠ 宣言か再代入かは項目 2 の巻き上げが決める。walrus の名前も
+            //   `collect_assigned_names` が拾うので、ここは常に再代入で足りる。
+            if !hoist_emit(Stmt::Assign {
+                name: name.clone(),
+                value,
+                span: make_span(filename),
+                slot: Default::default(),
+            }) {
+                return Err(format!("{filename}: internal error: no hoist buffer"));
+            }
+            Ok(ident_expr(&name))
+        }
 
         // Python の三項式 `a if cond else b` を Arrow の `if` 式へ。
         //
@@ -568,8 +607,15 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         py::Expr::IfExp(ifexp) => {
             let span = make_span(filename);
             let cond = convert_expr(&ifexp.test, filename)?;
-            let then_val = convert_expr(&ifexp.body, filename)?;
-            let else_val = convert_expr(&ifexp.orelse, filename)?;
+            // ⚠ **腕は選ばれた側しか評価されない**ので、持ち上げ禁止の位置（項目 23）。
+            //   `test` は必ず評価されるので対象外。
+            let (then_val, else_val) = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                (
+                    convert_expr(&ifexp.body, filename)?,
+                    convert_expr(&ifexp.orelse, filename)?,
+                )
+            };
             Ok(Expr::IfExpr {
                 branches: vec![(cond, vec![Stmt::BlockReturn(then_val, span.clone())])],
                 else_body: Some(vec![Stmt::BlockReturn(else_val, span)]),

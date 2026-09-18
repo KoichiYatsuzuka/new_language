@@ -38,6 +38,7 @@ thread_local! {
 pub(crate) fn reset_hoist() {
     HOIST.with(|h| h.borrow_mut().clear());
     TEMP_SEQ.with(|c| c.set(0));
+    UNSAFE_DEPTH.with(|d| d.set(0));
 }
 
 /// 新しい補助文バッファを積む（1 文の変換を始める）。
@@ -75,4 +76,48 @@ pub(crate) fn next_temp_name(prefix: &str) -> String {
         c.set(n + 1);
         format!("__py_{prefix}_{n}")
     })
+}
+
+// ---------------------------------------------------------------------------
+// 持ち上げが**安全でない**位置（項目 23 の walrus 用）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠ 「文の直前へ補助文を置く」脱糖は、**その式がその文で必ず 1 回だけ評価される**
+//   ことが前提。Python には条件付き／反復評価される位置があり、そこで持ち上げると
+//   **黙って評価回数が変わる**（＝最悪の失敗形）:
+//
+//     while (n := f()) > 0:          毎周回評価 → 持ち上げると 1 回しか走らない
+//     if a and (b := f()):           a が偽なら f() は呼ばれない → 必ず呼ばれてしまう
+//     x if c else (b := f())         選ばれた腕しか評価しない
+//     [x for x in xs if (y := f(x))] 要素ごとに評価
+//
+//   ⇒ これらの位置では walrus を**明示エラー**にする。深さを数えるのは、
+//     入れ子（`if a and (b or (c := f()))`）でも効かせるため。
+
+thread_local! {
+    /// 「ここで持ち上げると評価回数が変わる」位置の入れ子深さ。
+    static UNSAFE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// 条件付き／反復評価される部分式の変換中だけ深さを上げる RAII ガード。
+///
+/// ⚠ RAII にするのは `?` による早期 return で数が狂わないようにするため。
+pub(crate) struct UnsafeHoistGuard;
+
+impl UnsafeHoistGuard {
+    pub(crate) fn enter() -> Self {
+        UNSAFE_DEPTH.with(|d| d.set(d.get() + 1));
+        UnsafeHoistGuard
+    }
+}
+
+impl Drop for UnsafeHoistGuard {
+    fn drop(&mut self) {
+        UNSAFE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// いま補助文を持ち上げても評価回数が変わらないか。
+pub(crate) fn hoist_is_safe() -> bool {
+    UNSAFE_DEPTH.with(|d| d.get() == 0)
 }

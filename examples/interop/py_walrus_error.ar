@@ -1,0 +1,36 @@
+# py_walrus_error.ar — walrus `:=` で**通さない**位置（項目 23）。
+#
+# 変換器は `(x := e)` を「**この文の直前**に `x = e` を置く」形へ脱糖する。
+# その前提は「**その式がその文で必ず 1 回だけ評価される**」こと。
+# 条件付き／反復評価される位置で持ち上げると、**黙って評価回数が変わる**。
+#
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+# ⚠ エラー文言は 4 形とも共通:
+#   `:=` here would change how many times it is evaluated (it is inside a `while` test,
+#   an `and`/`or` operand, a conditional expression, or a comprehension);
+#   assign before the statement instead
+#
+#   ① `while` の条件（本ファイルが踏む形）
+#      毎周回評価 → 持ち上げるとループ**前に 1 回**になる。
+#      ⇒ 代替: ループ前と本体末尾の 2 箇所で代入する。
+#
+#   ② `and` / `or` の右辺
+#      左が偽（`and`）／真（`or`）なら右は**評価されない**。持ち上げると必ず評価される。
+#
+#   ③ 三項式の腕（`1 if c else (n := f())`）
+#      選ばれた腕しか評価されない。
+#
+#   ④ 内包表記の中（`[v for v in xs if (n := v)]`）
+#      **要素ごと**に評価される。
+#
+# ⚠ **入れ子でも効く**（`if a and (b or (n := f()))`）。深さで数えているため。
+# ⚠ **通る形**は `py_walrus.ar`（if の条件 / return / 呼び出し引数 / 代入の右辺）。
+
+import[py] test_modules.py_walrus_while_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_walrus_and_error as m
+# ④ を試す場合:
+# import[py] test_modules.py_walrus_comp_error as m
+
+print("unreachable")

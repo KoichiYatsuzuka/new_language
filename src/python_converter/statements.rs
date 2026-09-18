@@ -72,6 +72,108 @@ pub(crate) fn extract_yield_type(returns: Option<&py::Expr>) -> Option<String> {
     Some(convert_annotation(first))
 }
 
+/// アンパックターゲットの並びから、巻き上げるべき単純名を拾う（U2）。
+fn collect_unpack_names(
+    elts: &[py::Expr],
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    push: &impl Fn(String, &mut Vec<String>, &mut std::collections::HashSet<String>),
+) {
+    for e in elts {
+        match e {
+            py::Expr::Name(n) => push(n.id.to_string(), out, seen),
+            py::Expr::Starred(s) => {
+                if let py::Expr::Name(n) = &*s.value {
+                    push(n.id.to_string(), out, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 文の**式の中**にある walrus `(x := ...)` の名前を拾う（項目 23）。
+///
+/// ⚠⚠ 巻き上げは文のターゲットしか見ないので、ここで拾わないと持ち上げた
+/// `x = ...` が**未宣言の名前への代入**になって `NameError` で落ちる。
+/// ⚠ 条件付き評価の位置（`while` の条件・`and`/`or` の右辺など）の walrus は
+/// `convert_expr` 側が明示エラーにするので、ここで拾っても害は無い（到達しない）。
+fn collect_walrus_names(
+    stmt: &py::Stmt,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    push: &impl Fn(String, &mut Vec<String>, &mut std::collections::HashSet<String>),
+) {
+    /// 式を再帰で歩いて `NamedExpr` のターゲット名を集める。
+    fn walk(
+        e: &py::Expr,
+        out: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+        push: &impl Fn(String, &mut Vec<String>, &mut std::collections::HashSet<String>),
+    ) {
+        if let py::Expr::NamedExpr(ne) = e {
+            if let py::Expr::Name(n) = &*ne.target {
+                push(n.id.to_string(), out, seen);
+            }
+            walk(&ne.value, out, seen, push);
+            return;
+        }
+        // ⚠ 全変種を書くと AST が大きいので、**walrus が現れうる主な入れ子**だけ辿る。
+        //   拾い漏れても「明示エラー」ではなく「その形が未対応のまま」になるだけ。
+        match e {
+            py::Expr::BoolOp(b) => b.values.iter().for_each(|v| walk(v, out, seen, push)),
+            py::Expr::BinOp(b) => {
+                walk(&b.left, out, seen, push);
+                walk(&b.right, out, seen, push);
+            }
+            py::Expr::UnaryOp(u) => walk(&u.operand, out, seen, push),
+            py::Expr::Compare(c) => {
+                walk(&c.left, out, seen, push);
+                c.comparators.iter().for_each(|v| walk(v, out, seen, push));
+            }
+            py::Expr::Call(c) => {
+                walk(&c.func, out, seen, push);
+                c.args.iter().for_each(|v| walk(v, out, seen, push));
+                c.keywords.iter().for_each(|k| walk(&k.value, out, seen, push));
+            }
+            py::Expr::IfExp(i) => {
+                walk(&i.test, out, seen, push);
+                walk(&i.body, out, seen, push);
+                walk(&i.orelse, out, seen, push);
+            }
+            py::Expr::Subscript(s) => {
+                walk(&s.value, out, seen, push);
+                walk(&s.slice, out, seen, push);
+            }
+            py::Expr::Attribute(a) => walk(&a.value, out, seen, push),
+            py::Expr::List(l) => l.elts.iter().for_each(|v| walk(v, out, seen, push)),
+            py::Expr::Tuple(t) => t.elts.iter().for_each(|v| walk(v, out, seen, push)),
+            py::Expr::Set(s) => s.elts.iter().for_each(|v| walk(v, out, seen, push)),
+            _ => {}
+        }
+    }
+    // 文に直接ぶら下がる式だけを見る（入れ子の本体は呼び出し側が再帰する）。
+    match stmt {
+        py::Stmt::Expr(e) => walk(&e.value, out, seen, push),
+        py::Stmt::Assign(a) => walk(&a.value, out, seen, push),
+        py::Stmt::AugAssign(a) => walk(&a.value, out, seen, push),
+        py::Stmt::AnnAssign(a) => {
+            if let Some(v) = &a.value {
+                walk(v, out, seen, push);
+            }
+        }
+        py::Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                walk(v, out, seen, push);
+            }
+        }
+        py::Stmt::If(i) => walk(&i.test, out, seen, push),
+        py::Stmt::While(w) => walk(&w.test, out, seen, push),
+        py::Stmt::For(f) => walk(&f.iter, out, seen, push),
+        _ => {}
+    }
+}
+
 /// 名前参照の `Expr::Ident` を作る短縮形。
 pub(crate) fn ident_expr(name: &str) -> Expr {
     Expr::Ident {
@@ -233,10 +335,26 @@ pub(crate) fn collect_assigned_names(
         }
     };
     for stmt in stmts {
+        // ⚠ walrus `(x := ...)` は**式の中**で名前を作る（項目 23）。ここで拾わないと
+        //   持ち上げた `x = ...` が未宣言の名前への代入になって落ちる。
+        collect_walrus_names(stmt, out, seen, &push);
         match stmt {
             py::Stmt::Assign(a) if a.targets.len() == 1 => {
-                if let py::Expr::Name(n) = &a.targets[0] {
-                    push(n.id.to_string(), out, seen);
+                for t in &a.targets {
+                    if let py::Expr::Name(n) = t {
+                        push(n.id.to_string(), out, seen);
+                    }
+                }
+            }
+            // ★ 複数ターゲット（`a = b = c`）とアンパック（`a, b = t`）も巻き上げ対象。
+            py::Stmt::Assign(a) => {
+                for t in &a.targets {
+                    match t {
+                        py::Expr::Name(n) => push(n.id.to_string(), out, seen),
+                        py::Expr::Tuple(tp) => collect_unpack_names(&tp.elts, out, seen, &push),
+                        py::Expr::List(l) => collect_unpack_names(&l.elts, out, seen, &push),
+                        _ => {}
+                    }
                 }
             }
             py::Stmt::AnnAssign(a) if a.value.is_some() => {
@@ -595,7 +713,13 @@ pub(crate) fn convert_stmt(
             if !w.orelse.is_empty() {
                 return Err(loop_else_error(filename, "while"));
             }
-            let cond = convert_expr(&w.test, filename)?;
+            // ⚠⚠ `while` の条件は**毎周回**評価される。ここで補助文を持ち上げると
+            //   ループの前に 1 回置かれるだけになり、`while (n := f()) > 0:` が
+            //   黙って別物になる。⇒ 持ち上げ禁止の位置にする（項目 23）。
+            let cond = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                convert_expr(&w.test, filename)?
+            };
             let body = convert_stmts(&w.body, filename, declared)?;
             Ok(vec![Stmt::While { cond, body }])
         }
