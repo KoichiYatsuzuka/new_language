@@ -1086,3 +1086,45 @@
             "value-position `...` must not become `pass`, got: {body:?}"
         );
     }
+
+// ---------------------------------------------------------------------------
+// 同梱 `.pyi` スタブ（BYTECODE_VM_PLAN #19 / 群6 S4）
+// ---------------------------------------------------------------------------
+
+/// 同梱スタブは**すべて `convert_python_source` をエラー無しで通る**こと。
+///
+/// ⚠⚠ `load_py_type_body` は変換エラーを握り潰して行ベース抽出へ落ちる。
+/// つまりスタブに未対応構文を書いても**黙って精度が落ちるだけ**で気付けない。
+/// ⇒ スタブを足したり書き換えたりしたときに、ここで落ちるようにしておく。
+#[test]
+fn bundled_stubs_convert_without_error() {
+    for name in crate::py_stubs::builtin_stub_names() {
+        let src = crate::py_stubs::builtin_stub(&[name.to_string()])
+            .unwrap_or_else(|| panic!("同梱スタブ '{name}' が引けない"));
+        let converted = crate::python_converter::convert_python_source(src, name);
+        assert!(
+            converted.is_ok(),
+            "同梱スタブ '{name}' が変換できない: {:?}",
+            converted.err()
+        );
+    }
+}
+
+/// 同梱スタブの関数が**戻り値型つきで**取り込まれること。
+///
+/// ⚠ 変換が通っても `-> float` が落ちていれば型予測は効かない（`Any` になる）。
+/// 「変換できた」だけでは足りないので、戻り値型まで見る。
+#[test]
+fn bundled_stubs_carry_return_types() {
+    use crate::ast::Stmt;
+    let src = crate::py_stubs::builtin_stub(&["math".to_string()]).expect("math スタブ");
+    let body = crate::python_converter::convert_python_source(src, "math").expect("変換できる");
+    let sqrt = body
+        .iter()
+        .find_map(|s| match s {
+            Stmt::FnDef { name, return_type, .. } if name == "sqrt" => Some(return_type.clone()),
+            _ => None,
+        })
+        .expect("math スタブに sqrt がある");
+    assert_eq!(sqrt.as_deref(), Some("float"), "sqrt の戻り値型が落ちている");
+}

@@ -20,6 +20,7 @@ mod parser;
 #[cfg(feature = "prof")]
 mod prof;
 mod partial_compiler;
+mod py_stubs;
 mod python_converter;
 mod repl;
 mod token;

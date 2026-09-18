@@ -1,0 +1,17 @@
+# py_int_stub_error.ar — 同梱スタブが**型を予測して弾く**（BYTECODE_VM_PLAN #19 / 群6）。
+#
+# ⚠⚠ **この検査は以前まったく走っていなかった**。`math` は C 組み込みで `.py` が無く、
+#   検索ディレクトリを辿っても空振りするため、`load_python_interface_module` が
+#   空の body を返して型検査を放棄していた。⇒ 下の行は**黙って通って**いた
+#   （実行すると float が str の変数に入る）。
+#
+# 期待されるエラー:
+#   StaticTypeError: 's' is declared 'str' but initialized with 'float'
+#
+# ⚠ **通る形**は `py_int_stub.ar`（float / int / bool の戻り値・リテラル実引数・
+#   スタブに無いメンバ・`time` の戻り値）。
+
+import[py-int] math
+
+let s: str = math.sqrt(2.0)
+print(s)

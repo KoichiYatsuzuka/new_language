@@ -81,7 +81,18 @@ impl Parser {
             return self.load_py_type_body(module, &abs_path, is_pyi);
         }
 
-        // 見つからなければ空の body を返す（型検査スキップ、実行時は PyO3 が担当）
+        // ★ ファイルが 1 つも見つからなかったときだけ**同梱スタブ**を引く（#19 / 群6 S2）。
+        //   ⚠ **利用者のファイルが常に勝つ**ので、この順序を崩さないこと。
+        //     自分で `time.pyi` を置けば上書きできる。
+        //   ⚠ `time` / `math` は C 組み込みで `.py` が存在せず、検索ディレクトリを
+        //     いくら辿っても空振りする ＝ ここが唯一の供給源。
+        if let Some(src) = crate::py_stubs::builtin_stub(module) {
+            // キャッシュ／循環検出はパスで引くので、実在しない**疑似パス**を割り当てる。
+            let pseudo = PathBuf::from("<builtin>").join(format!("{}.pyi", module.join(".")));
+            return self.build_py_type_body(module, &pseudo, src, true, true);
+        }
+
+        // それでも無ければ空の body を返す（型検査スキップ、実行時は PyO3 が担当）
         Ok(vec![])
     }
 
@@ -105,19 +116,55 @@ impl Parser {
         let source = std::fs::read_to_string(abs_path).map_err(|_| {
             format!("cannot read interface file for module '{}'", module.join("."))
         })?;
+        self.build_py_type_body(module, abs_path, &source, is_pyi, false)
+    }
+
+    /// 読み込み済みのソース文字列から型検査用の body を組む。
+    ///
+    /// `load_py_type_body`（ファイル版）と**同梱スタブ**（`py_stubs`）の共通部分。
+    /// `bundled` はエラー報告の出し分けに使う（群6 S4）。
+    fn build_py_type_body(
+        &mut self,
+        module: &[String],
+        abs_path: &PathBuf,
+        source: &str,
+        is_pyi: bool,
+        bundled: bool,
+    ) -> Result<Vec<Stmt>, String> {
+        let cache_key = ("py-int".to_string(), abs_path.clone());
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+        if self.loading.contains(abs_path) {
+            return Ok(vec![]);
+        }
         self.loading.insert(abs_path.clone());
 
         let body = if is_pyi {
             // .pyi: python_converter でベストエフォート変換
             let filename = abs_path.to_string_lossy().to_string();
-            let mut converted = python_converter::convert_python_source(&source, &filename)
-                .unwrap_or_default();
+            // ⚠⚠ **変換エラーを握り潰して**行ベース抽出へ落ちる経路（群6 S4）。
+            //   利用者の `.pyi` は今までどおり黙って精度を落とすだけにするが、
+            //   **同梱スタブは自分で書いたもの**なので、失敗したら警告を出す
+            //   （黙って精度が落ちると「スタブを整備したのに検査が効かない」に気付けない）。
+            let mut converted = match python_converter::convert_python_source(source, &filename) {
+                Ok(stmts) => stmts,
+                Err(e) => {
+                    if bundled {
+                        eprintln!(
+                            "Warning: bundled stub for '{}' failed to convert ({e});                              falling back to line-based extraction",
+                            module.join(".")
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             // スタブで不足を補完（変換できなかった関数を追加）
             let known: std::collections::HashSet<String> = converted
                 .iter()
                 .filter_map(|s| if let Stmt::FnDef { name, .. } = s { Some(name.clone()) } else { None })
                 .collect();
-            for stub in extract_py_type_stubs(&source) {
+            for stub in extract_py_type_stubs(source) {
                 if let Stmt::Let(ref name, _, _) = stub {
                     if !known.contains(name.as_str()) {
                         converted.push(stub);
@@ -127,7 +174,7 @@ impl Parser {
             converted
         } else {
             // .py: 直接スタブ抽出（python_converter は複雑な構文に対応できないため使わない）
-            extract_py_type_stubs(&source)
+            extract_py_type_stubs(source)
         };
 
         self.loading.remove(abs_path);
