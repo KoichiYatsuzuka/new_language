@@ -1,0 +1,14 @@
+# py_mutarg_error.ar — INF-D で**緩めなかった**側の検査。
+#
+# 一時値（リテラル・戻り値・`mut` の要素）は通すようにしたが、
+# **`let` 束縛を `mut` パラメータへ渡す形は今も静的エラー**（bug_fix.md B11）。
+# 以前は素通りしており、`let` の値が呼び出し先で書き変わっていた。
+#
+# ⚠ **規則 1**: 要素は根の可変性を継ぐので、`let ys` の `ys[0]` も弾かれる。
+#   通る形（`mut xs` の `xs[0]`）は `py_mutarg.ar` の ③ が持つ。
+
+import[py] test_modules.py_mutarg as m
+
+let ys = [1, 2]
+print(m.take(ys[0]))
+# StaticTypeError: parameter 'v' of 'take' expects a mutable argument, but got an immutable value

@@ -1289,7 +1289,7 @@ impl TypeChecker {
                                 span: None,
                             });
                         }
-                        if param.mutable && !self.is_mutable_expr(arg_expr) {
+                        if param.mutable && self.path_is_mutable(arg_expr) == Some(false) {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
@@ -1319,7 +1319,7 @@ impl TypeChecker {
                                 span: None,
                             });
                         }
-                        if param.mutable && !self.is_mutable_expr(arg_expr) {
+                        if param.mutable && self.path_is_mutable(arg_expr) == Some(false) {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
@@ -1332,15 +1332,6 @@ impl TypeChecker {
                     positional_idx += 1;
                 }
             }
-        }
-    }
-
-    /// 式が可変変数の参照かどうかを判定する。
-    pub(super) fn is_mutable_expr(&self, expr: &Expr) -> bool {
-        if let Expr::Ident { name, .. } = expr {
-            self.lookup(name).map(|v| v.mutable).unwrap_or(false)
-        } else {
-            false
         }
     }
 
