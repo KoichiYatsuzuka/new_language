@@ -38,6 +38,10 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 | f-string 脱糖の参照形（項目19） | `fn desugar_fstring` | `src/parser/exprs.rs` |
 | 再帰ロード基盤（項目27） | `fn load_python_module`（`module_cache`/`self.loading`） | `src/parser/imports/py_modules.rs` |
 | AST ノード定義（全般） | `Stmt` / `Expr` / `Param` / `FieldKind` / `BinOp` enum | `src/ast.rs` |
+| `.pyi` 解決（群6） | `fn load_python_interface_module` / `fn load_py_type_body` | `src/parser/imports/py_modules.rs` |
+| スタブの行ベース抽出（群6） | `fn extract_py_type_stubs` / `fn py_type_to_arrow` | `src/parser/imports/mod.rs` |
+| 検索パス（群6 S2） | `Parser::python_search_dirs`（**`Interpreter` 側と別物**） | `src/parser/imports/cs_js_modules.rs` |
+| `mut` 実引数検査（INF-D） | `fn check_mut_param_arg`（緩い側） / `fn is_mutable_expr`（厳しい側） | `src/type_check/call_check.rs` |
 
 ### 0.4 テスト手順（実機）
 1. `cargo build`（変換器は Rust 側のみ）。
@@ -84,6 +88,43 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 用途: 項目15（`a = b = c` を2文へ）。
 - 方針: `convert_stmt` の戻り値 `Result<Option<Stmt>, String>` を `Result<Vec<Stmt>, String>` 化（呼び出し側 `convert_stmts_*` の push を extend に）。または INF-B の `hoist_out` に追加文を積んで対応。どちらか一方で足りる。
 
+### INF-D: `mut` パラメータへの一時値渡しを、ネイティブと同じ規則に揃える
+
+> **この文書で唯一「変換器の外」が主因の基盤タスク**。§2 の「仕様確定」に *任意対応* として
+> 書いていたものを、**群6（同梱スタブ）の前提として必須に格上げ**した。
+
+- ファイル: [`src/type_check/call_check.rs`](src/type_check/call_check.rs)
+- **現状は 2 つの検査が食い違っている**（実測。同じ `CallMutParamWithImmutableArg` を出す）:
+
+| 経路 | 述語 | リテラル実引数 |
+|---|---|---|
+| ネイティブ `fn`（`FnSig`）| `check_mut_param_arg` → `path_is_mutable(e) != Some(false)` | **通る**（`None` を返すため） |
+| モジュールメンバ（`FnTypeParam`）| `is_mutable_expr(e)` → `Expr::Ident` 以外は `false` | **弾かれる** |
+
+  ```text
+  fn f(mut x: int) -> int: return x * 3
+  print(f(5))                    # → 15（通る）
+
+  # 同じ形を .py / .pyi 経由にすると
+  m.triple(5)                    # → StaticTypeError: parameter 'x' of 'triple'
+                                 #    expects a mutable argument, but got an immutable value
+  ```
+- ⚠ `check_mut_param_arg` 側の doc が正しい根拠を書いている —— **「根が識別子でない式
+  （リテラル・呼び出しの戻り値）は一時値で誰とも共有していないので通す。ここを弾くと
+  `g([1, 2])` のような正しい呼び出しまで落ちる」**。B11 が守りたいのは「`let` 変数を
+  `mut` パラメータへ渡して呼び出し元が書き換わる」形であって、一時値ではない。
+- 方針: `FnTypeParam` 側の 2 箇所（`call_check.rs` の `param.mutable && !self.is_mutable_expr(arg_expr)`）を
+  **`path_is_mutable(arg_expr) == Some(false)` 判定へ寄せる**。`is_mutable_expr` は他に消費者が
+  無ければ削除する（`stale_doc_refs.ps1` が拾う）。
+  - ⚠ **`is_python` 限定の緩和にはしない**。食い違いは py 固有ではなく `FnTypeParam` 経路
+    全体（`import[ar]` のモジュールメンバ・cs/js スタブ）に効いており、片側だけ緩めると
+    「同じ関数が呼び方で通ったり落ちたりする」形が残る。
+- 影響: **受け入れる呼び出しが広がる方向のみ**（今まで通っていた形は落ちない）。
+- ゲート: `type_obligations.ps1`（型義務の退行検出）＋ `scan_examples.ps1` ＋
+  `compare_wasm_frontend.ps1`（型検査を触るため必須）。
+  `frontend_tests/type_check_tests/bridge_mutability.rs` は **書き換えが要る**
+  （リテラルを弾くことを固定しているテストが残っていないか確認する）。
+
 ---
 
 ## 2. 実装カード
@@ -92,7 +133,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - **編集**: `ファイル` — アンカー（関数/`match` アーム）／変更内容。
 - rustpython の型名・フィールド名は着手時に実物で確認（例: `ExprSlice{lower,upper,step}`）。
 
-### フェーズ1: 独立・低リスク（式/文の単純マッピング）
+### 群1: 式・文の単純マッピング
 
 #### [3] 添字/キー代入 `a[i]=x`, `d[k]=v`（+ `a[i]+=1`）✅ **実装済（2026-08-28）**
 - 計画どおり。`Attribute` を受けていた 3 アーム（`Assign`/`AugAssign`/`AnnAssign`）を
@@ -254,7 +295,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `FieldKind::Const` を `FieldKind::StaticMut` に変更（Python の可変クラス属性に合わせる）。`type_ann` は注釈があればそれ、無ければ `"Any"`。
 - テスト: `class C: count = 0` をインスタンス/クラス経由で読み書き。
 
-### フェーズ2: 中リスク（本体リライト／サブセット）
+### 群2: 本体リライト／サブセット
 
 #### [2] 変数の再代入 … **INF-A** を実施（上記 §1）✅ **実装済（2026-08-28）**
 - 旧実装は「トップレベルの `if` のブランチ内代入だけ」を巻き上げており、`for`/`while`/`try` の
@@ -331,7 +372,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - サブセット: set/dict/generator/async 内包は当面 Err（set は `set(...)` 包みで後追い可）。
 - テスト: `[x*y for x in a for y in b]`、フィルタ付き。
 
-### フェーズ3: INF-B/INF-C 依存（式→文注入）
+### 群3: 式→文注入が要るもの（INF-B / INF-C 依存）
 
 #### [15] 複数代入 `a=b=c`
 - 前提: INF-B または INF-C。
@@ -372,7 +413,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   （負の対照 116/116 取得済み）。
 - 例題: `examples/interop/py_inherit.ar` / `py_inherit_error.ar` + `test_modules/py_inherit.py`。
 
-### フェーズ4: 大きめ／実行時ガード
+### 群4: 大物（設計比重大／実行時ガード）
 
 #### [25] `with`（`__exit__` 無しのみ block 脱糖）
 - 編集: `statements.rs` `With` アーム（現状 Err）
@@ -389,7 +430,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 制約: stdlib/native（`os`/`numpy` 等）は翻訳不能 → `import[py-int]` フォールバック or 明示 Err。
 - テスト: ローカル `.py` 同士の import 連鎖、循環 import。
 
-### フェーズ5: 明示エラー化・警告（🟠 / 🔴 / del）
+### 群5: 明示エラー化・警告（🟠 / 🔴 / del）
 
 `statements.rs` / `expressions.rs` に集約。**現状サイレント欠落しているものはエラー化が必要**（黙って壊れる解消）。
 
@@ -406,22 +447,409 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 - 各エラー化は `_error.ar` 例を追加。del は警告動作の確認例を追加。
 
+### 群6: 同梱 `.pyi` スタブによる静的型予測（BYTECODE_VM_PLAN #19）
+
+[BYTECODE_VM_PLAN.md](../implementation_logs/BYTECODE_VM_PLAN.md) の別レーン
+**#19「py 組み込みスタブ整備（`time`/`math`）— 同梱 `.pyi` ＋ `python_search_dirs()` に置き場を追加」**
+をここに展開する。対象は `import[py-int]`（PyO3 経路）だが、**`.pyi` の読み込みは
+`python_converter::convert_python_source` を通る**ため本書の管轄に入る。
+
+#### S0. 現状（実測で確定・2026-09-17）
+
+機構は**すでに全部ある**。欠けているのは「スタブの中身」と「置き場」だけ。
+
+```text
+import[py-int] math
+let s: str = math.sqrt(2.0)
+
+  スタブ無し  → 1.4142135623730951 を印字（★型検査がまったく走らない）
+  math.pyi 有 → StaticTypeError: 's' is declared 'str' but initialized with 'float'
+```
+
+- 解決の入口は [`load_python_interface_module`](src/parser/imports/py_modules.rs) —
+  `module.pyi` → `module/__init__.pyi` → `module.py` → `module/__init__.py` の順に
+  **全検索ディレクトリ**を見て、**1 つも無ければ `Ok(vec![])`**（＝型検査を丸ごと放棄）。
+- `.pyi` は [`load_py_type_body`](src/parser/imports/py_modules.rs) が
+  `convert_python_source` で変換し、**変換できなかった名前だけ**
+  `extract_py_type_stubs`（[`imports/mod.rs`](src/parser/imports/mod.rs) の行ベース抽出）で補う。
+- ⚠ `time` / `math` は **C 組み込みモジュールで `.py` が存在しない**。だから
+  `Parser::python_search_dirs()` が CPython の stdlib ディレクトリまで辿っても**必ず空振り**する。
+  ＝ 現状 `time.*` / `math.*` の戻り値型は**恒久的に検査されない**。
+- 既に [`examples/interop/test_modules/time.pyi`](examples/interop/test_modules/time.pyi) が
+  4 関数ぶんだけ存在する（**そのディレクトリから実行したときしか効かない**）。
+
+#### S1. ⚠⚠ 前提: INF-D を先に入れる（**これ無しでは #19 は純粋な退行**）
+
+同梱スタブを置いた瞬間、**最も普通の呼び出しが落ちる**。実測:
+
+```text
+# time.pyi の `def sleep(secs: float) -> None: ...` を置いた状態で
+time.sleep(0.01)
+  → StaticTypeError: parameter 'secs' of 'sleep' expects a mutable argument,
+    but got an immutable value
+```
+
+`convert_params` が全パラメータを `mutable: true` にする（🔵 仕様）ためで、
+**今は「スタブが無いから検査が走らず、たまたま通っている」**。スタブを足すと
+`time.sleep(0.01)` / `math.sqrt(2.0)` が軒並みエラーになる。
+⇒ **INF-D（§1）が S2 以降の着手前提**。順序を逆にしないこと。
+
+#### S2. 同梱スタブの置き場と解決順（★設計判断が要る箇所）
+
+VM plan の一行は「`python_search_dirs()` に置き場を追加」だが、**素直にディレクトリを
+足す案は採らないことを推奨する**。理由と代案:
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| A. `include_str!` で**バイナリに埋め込む** | `src/py_stubs/` に `pub fn builtin_stub(module: &[String]) -> Option<&'static str>`、実体は `stubs/*.pyi` | **推奨** |
+| B. `current_exe()` 相対の `stubs/` を検索パスへ追加 | VM plan の字面どおり | 非推奨 |
+
+- **B を採らない理由**:
+  - `src/` に `current_exe()` の使用は**現在 0 箇所**。`cargo run`（`target/debug/`）と
+    配布レイアウトでスタブの相対位置が変わり、「開発中だけ効く／配布すると効かない」を作り込む。
+  - `python_search_dirs()` に 1 ディレクトリ足すと、**モジュール解決 1 回あたり
+    `exists()` が 4 回増える**（`load_python_interface_module` が dir × 4 候補を生成するため）。
+    ⚠ ここは #69 が「`exists()` の syscall 連打が `interp_init` の 48〜53% を占めていた」と
+    実測して遅延化した場所で、**同じ轍を踏む**。
+- **A の利点**:
+  - syscall ゼロ・パス依存ゼロ。
+  - ⭐ **エディタ（wasm）にも効かせられる**。`editor` feature は `imports` を
+    `imports_editor` へ差し替えて fs に触れないので、**ディレクトリ方式では原理的に届かない**。
+    埋め込みなら「`import[py-int] time` の `time.time()` が VS Code 上でも `float` になる」が
+    射程に入る（⚠ ただし `imports_editor` 側の対応は**別タスク**。S5 で任意とする）。
+- **解決順（重要）**: 埋め込みは**ファイルシステム探索が全部空振りしたときの最後**に見る。
+  ユーザーが自分で置いた `time.pyi` が**必ず勝つ**ようにする（上書き可能性を残す）。
+  ＝ `load_python_interface_module` の `Ok(vec![])` フォールバック**直前**に 1 分岐足すだけ。
+- 編集:
+  - 新設 `stubs/time.pyi` / `stubs/math.pyi`（リポジトリ直下）。
+  - 新設 `src/py_stubs.rs` — `include_str!` のテーブルと `builtin_stub()`。
+    ⚠ `src/python_converter/` には置かない（wasm フロントエンドが取り込まないため。項目 7 で
+    `PY_KWARGS_PARAM` が同じ理由で `src/ast.rs` へ行った）。
+  - `py_modules.rs` `load_python_interface_module` — 末尾の `Ok(vec![])` の前に
+    `builtin_stub()` を引き、当たれば `load_py_type_body` 相当（ソース文字列版）へ流す。
+    ⚠ `load_py_type_body` は `abs_path` でキャッシュキーを作るので、埋め込み用に
+    **疑似パス**（例 `<builtin>/time.pyi`）を使うか、キャッシュキーを `(lang, String)` に広げる。
+
+#### S3. `time` / `math` のスタブを書く
+
+- `stubs/time.pyi` … 既存の [`test_modules/time.pyi`](examples/interop/test_modules/time.pyi) を
+  出発点に（`time` / `monotonic` / `perf_counter` / `sleep`）、`time_ns` / `monotonic_ns` を追加。
+- `stubs/math.pyi` … `sqrt` / `floor` / `ceil` / `fabs` / `pow` / `exp` / `log` / `log2` / `log10` /
+  `sin` / `cos` / `tan` / `atan2` / `hypot` / `isnan` / `isinf` / `gcd` と定数 `pi` / `e` / `inf` / `nan`。
+- **書ける型の上限**（`py_type_to_arrow` の実装で確定。超えたぶんは黙って `Any` に落ちる）:
+  - 通る: `int` / `float` / `str` / `bool` / `None` / `bytes` / `list[T]` / `set[T]` /
+    `Optional[T]` / `List[T]` / `Set[T]` / `X | None` / `X | Y`（角括弧を含まない場合のみ）。
+  - **要素型が落ちる**: `dict[K,V]` → `dict`、`tuple[A,B]` → `tuple`。
+  - `Any` に落ちる: `Callable[...]`・`@overload`・ジェネリック・`Literal[...]`。
+  - ⚠ **モジュール定数（`pi: float`）は現状どちらの経路も拾わない** ——
+    `extract_py_type_stubs` は `def` と `class` しか見ず、`convert_python_source` は
+    値なしの `x: float` を `Ok(None)` で捨てる（[`statements.rs`](src/python_converter/statements.rs) の `AnnAssign` アーム）。
+    ⇒ **定数に型を付けたいなら別途手当てが要る**。S3 では**関数だけを対象にし、
+    定数は次のカード（S4）に切り出す**。
+
+#### S4. スタブ経路のサイレント劣化を可視化する
+
+`load_py_type_body` は `convert_python_source(...).unwrap_or_default()` —— **変換エラーを
+握り潰して**行ベース抽出へ落ちる。同梱スタブを持つ以上、ここは「自分で書いたファイルが
+静かに精度を失う」経路になる。
+
+- `.pyi` の変換に失敗したら、**同梱スタブのときだけ** `eprintln!` で警告する
+  （ユーザーの `.pyi` は今までどおり黙って劣化 —— 外部ファイルを硬いエラーにはしない）。
+- `cargo test` に「同梱スタブは全部 `convert_python_source` を**エラー無しで**通る」
+  という回帰テストを 1 本置く（`frontend_tests/`）。⇒ スタブを足したときに
+  未対応構文を入れてしまったら、その場で落ちる。
+- ⚠ 併せて**クラスを含むスタブは `Any` 止まり**であることを doc に明記する（実測）:
+  `class Fraction: ...` を書いても `Fraction(1,2)` は `Any` を返す
+  （`extract_py_type_stubs` の「クラス名を戻り値型にしてはいけない」＝タスク 7.8 の帰結。
+  **意図どおりで直さない**）。⇒ 同梱スタブは**関数中心**に設計する。
+
+#### S5. 例題・ゲート
+
+- `examples/interop/py_int_stub.ar` — `time` / `math` を**検索パスに何も置かずに**呼び、
+  戻り値型が効いていること（`let x: float = math.sqrt(...)` が通り、`let s: str = ...` が落ちる）。
+- `examples/interop/py_int_stub_error.ar` — 同梱スタブが型を予測して**弾く**形。
+- ⚠ **`scan_examples.ps1` だけでは足りない**。以下を必ず走らせる:
+  - `compare_import_paths.ps1 -A <base.exe>` — import 解決順を変えるため**この変更の本丸**。
+  - `type_obligations.ps1` — INF-D が型義務を落としていないか。
+  - `compare_wasm_frontend.ps1` — `call_check.rs` を触るため必須。
+  - `generate-codebase-map.ps1` — `stubs/` と `src/py_stubs.rs` の新設ぶん。
+- 任意（別タスク化してよい）: `imports_editor` から `builtin_stub()` を引いて、
+  VS Code 上でも `py-int` の戻り値型を出す。⇒ 実施するなら VSIX 再生成まで（`make-vsix.ps1`）。
+
+#### S6. スコープ外（意図的に含めない）
+
+- `os` / `sys` / `json` など**本体が `.py` で存在する** stdlib。これらは既に
+  `extract_py_type_stubs` が実ソースからシグネチャを抜けるので、#19 の対象ではない。
+- typeshed の取り込み。ライセンスと量の判断が別に要る。**まず `time` / `math` の 2 本**。
+- 項目 27（Python モジュール内 import の再帰ロード）との接続。
+  27 が「stdlib は翻訳不能 → `py-int` フォールバック」を選ぶなら本フェーズが受け皿になるが、
+  **27 の設計が固まるまで結合しない**。
+
+### 群7: アンパック（タプル / 辞書）
+
+coverage の 🟠「コレクション型のアンパック」を実装カードに展開する。
+**8 形すべて現状は明示エラー**（サイレント欠落は無い・実測で確認）。
+
+| Python | 現在のエラー文言 | カード |
+|---|---|---|
+| `f(*xs)` | `starred expression is not supported in this context` | U4 |
+| `f(**d)` | `**kwargs unpacking in call is not supported` | U5 |
+| `a, b = t` / `a, *rest = t` | `tuple/list unpacking in assignment is not supported` | U2 |
+| `for k, v in pairs:` | `tuple unpacking in for-loop target is not supported` | U1 |
+| `[*a, 9]` / `{*a, 9}` | `starred expression …` | U3 |
+| `{**d, "z": 1}` | `**dict unpacking in dict literal is not supported` | U3 |
+
+#### ⚠⚠ coverage の根拠を 1 つ訂正する（2026-09-18・実測）
+
+coverage 🟠 は「Arrow には `LetTuple`・多ターゲット `For`・呼び出しの `f(...=a,b,c)`
+（`CallArg::Variadic`）が実在するため将来対応可能」と書いているが、**3 つ目は
+`f(*xs)` の受け皿にならない**。
+
+```text
+fn count(let ...: Any) -> int: return len(local::args)
+mut xs = [1, 2, 3]
+count(... = xs)        → 1     ★リスト 1 個として渡る（展開されない）
+count(... = 1, 2, 3)   → 3
+# 型を付けると静的に弾かれる:
+#   the variadic argument of 'count' expects 'int' but got 'list[int]'
+# 固定長 fn に渡すと: 'add' takes 2 argument(s) but 0 were given
+```
+
+`... =` は**引数を並べる構文**であって展開演算子ではない。**Arrow に splat / spread は
+字句・構文とも 1 つも無い**（lexer / parser を grep して 0 件）。
+⇒ **U1 / U2 / U3 は Arrow 本体の追加なしで載るが、U4 / U5 は言語追加が要る**。
+文書の並びから受ける印象と難易度が逆なので注意。
+
+#### [U1] `for` ターゲットのアンパック `for k, v in pairs:`
+- Arrow 側は**既に対応済み**（`Stmt::For.targets` が `Vec<String>`）。実機で確認:
+  `for k, v in pairs:` / `for i, v in enumerate(xs):` / `for p, q in zip(xs, ys):` すべて動く。
+- 編集: `statements.rs` `For` アーム — `py::Expr::Tuple(t)` のとき各要素が `Name` なら
+  `targets` に並べる。`Name` 以外（入れ子タプル・添字）は明示エラーのまま。
+- ⚠⚠ **`d.items()` が存在しない**。Arrow の dict のメソッドは `keys()`/`key()` と
+  `values()`/`item()` だけ（[`method_call.rs`](src/interpreter/classes/method_call.rs) の `Value::Dict` アーム）。
+  `for k, v in d.items():` は Python で最頻出の形なので、**`items()` の追加をセットで行う**
+  （`all_keys()` / `all_items()` の隣に `all_pairs()` を足して `List<Tuple>` を返す）。
+  ⇒ これは interpreter 変更。impl_python 並行実装の要否を確認すること。
+- テスト: `pairs` / `enumerate` / `zip` / `d.items()` の 4 形。
+
+#### [U2] 代入のアンパック `a, b = t` / `a, *rest = t`
+- 前提: **INF-C**（複数文返却）。
+- ⚠ **`LetTuple` は使えない**。Arrow の `let a, let b = t` は**宣言**で、しかも
+  **宣言済みの名前への `a, b = t` は構文として存在しない**（実測: `ParseError: unexpected token: ','`）。
+  項目 2 のスコープ巻き上げが全代入名を先に宣言して以降を `Stmt::Assign` にする以上、
+  変換器から `LetTuple` は出せない。
+- 方針: **添字への脱糖**（Arrow 本体の追加が不要）。
+  `a, b = t` → `__unpack_N = t; a = __unpack_N[0]; b = __unpack_N[1]`
+  `a, *rest = t` → 末尾は `rest = __unpack_N[1:]`（項目 4 のスライスが既に効く）。
+  - 一時変数名は衝突しない連番（`__unpack_N`）。巻き上げ対象に含めること。
+  - RHS を**1 回だけ**評価するために一時変数は必須（`a = t[0]; b = t[1]` は 2 回評価になる）。
+- 明示エラーのまま残す: 入れ子タプル（`a, (b, c) = t`）・`*rest` が末尾以外。
+- テスト: 2 要素／3 要素／`*rest`／RHS が関数呼び出し（1 回評価の確認）／要素数不一致。
+
+#### [U3] リテラルのアンパック `[*a, 9]` / `{*a, 9}` / `{**d, "z": 1}`
+- Arrow 本体の追加は不要。B5 で `list` / `tuple` の `+` が入ったので連結で書ける。
+- 方針:
+  - `[*a, 9]` → `a + [9]`（`Expr::BinOp{Add}`）。複数の `*` も左結合で連結。
+  - `{*a, 9}` → `set(<list 版>)`（群6 の set 内包と同じ手）。
+  - `{**d, "z": 1}` → **要検討**。Arrow に dict のマージ手段が無い可能性が高い。
+    無ければ `dict()` コンストラクタ（FUTURE_FEATURE §4 (4-a) で辞書内包の前提として
+    既に起票済み）と合わせて片付ける。⇒ **U3 の dict 部分だけ後回しにしてよい**。
+- テスト: 先頭／中間／末尾の `*`、複数の `*`、空リストの展開。
+
+#### [U4] 呼び出しのアンパック `f(*xs)` ★Arrow 本体への言語追加
+- ⚠ **本カードは Arrow の言語仕様追加**。変換器だけでは閉じない。
+  方針決定は [FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) 側に置き、
+  本書はそれを消費する側として扱う。
+- **配管は既にある**（[`args.rs`](src/interpreter/functions/args.rs) の `CallArg::Variadic` 経路）:
+  各式を評価 → `Value::List` に束ねる → 特殊キー `"..."` で渡す → `bind_args` が
+  `variadic_value` として拾い `local::args` に直結。
+  ⇒ **「リスト 1 本を `local::args` に渡す」経路は通っている**。
+- 実装の段取り（見積り順）:
+  1. `CallArg::Spread(Expr)` を追加。⚠ **消費者 11 箇所**が全部コンパイルエラーになる
+     （`expr_walk` / `resolver` / `templates` / `ast_value` / `type_check` / `vm/compiler/calls.rs` /
+     `vm/compiler/diag.rs` / `partial_compiler/llvm_codegen` / `eval/builtins.rs` / `parser/exprs.rs`）。
+     網羅 `match` による強制が効くので**むしろ安全**（`language-dev-principles` 参照）。
+  2. **可変長関数への `f(*xs)`** … `BuildList(n)` を省いて `xs` をそのまま `"..."` で渡すだけ。
+     VM 側（[`calls.rs`](src/vm/compiler/calls.rs)）は**コードが短くなる**。
+  3. **固定長関数への `f(*xs)`** … 束縛時に位置引数列へ展開する。ここが本体。
+  4. 静的型検査: spread を含む呼び出しは**引数個数検査を降りる**。項目 6/7 で
+     `params: None` / `variadic_type` を入れた前例に乗る。
+- 変換器側: `expressions.rs` `Call` アームで `py::Expr::Starred` を `CallArg::Spread` に。
+- ゲート: `compare_bytecode.ps1`（VM コンパイラを触る）＋ `force_gate.ps1` ＋ `syntax_cov.ps1`。
+
+#### [U5] 呼び出しのアンパック `f(**d)` ★Arrow 本体への言語追加
+- 前提: U4 と同じ設計（`CallArg` の拡張）。U4 と**同時に決める**こと。
+- `bind_args_relaxed` は既に余剰キーワードを集めて `extra_kwargs` にしているので、
+  dict を `(name, value)` のキーワード列へ展開するのは U4 と対称に書ける。
+- ⚠ キーが `str` でない dict は実行時 `TypeError`。
+
+#### [U6] 転送パターンの成立（U4 + U5 + INF-D + 項目20†1 が揃って初めて動く）
+```python
+def wrapper(*args, **kwargs):
+    return inner(*args, **kwargs)     # デコレータの定番形
+```
+- これが通ることを**1 本の例題で固定する**。現状は 2 重にブロックされている:
+  ① `f(*args)` が変換器で明示エラー（U4 / U5）
+  ② 関数値の `mut` パラメータが入れ子 `fn` から見えず `NameError: 'f' is not defined`
+     （項目 20 †1。B3 で int は直ったが関数値は残っている・実測）
+- 例題: `examples/interop/py_forward.ar` + `test_modules/py_forward.py`。
+
 ### 仕様確定（コード変更なし or 任意）
 - 整数 i64 切り詰め（`convert_constant`）: 仕様。変更不要（将来「範囲外は Err」への変更余地のみ注記）。
-- 全パラメータ `mutable:true`（`convert_params`）: 仕様。**任意対応**: `is_python` 関数の呼び出しで immutable 実引数を許容するよう型検査 `CallMutParamWithImmutableArg` を緩和（`src/type_check/`）すると UX 改善。
+- 全パラメータ `mutable:true`（`convert_params`）: 仕様。
+  ⚠ **「任意対応」から格上げした** —— 呼び出し側の検査の食い違い（**INF-D**）は
+  フェーズ6 の前提であり、項目 26（lambda）・デコレータの実用性にも効く。§1 INF-D を見ること。
 
 ---
 
-## 3. 推奨着手順
+## 3. 実行フェーズ（依存関係による割り当て）
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・~~19~~・~~22~~・~~20~~・~~21~~・~~1~~・~~24~~・~~5~~）— **完了**— 独立・低リスク。1件ずつ通して examples を積む。
-   （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
-2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
-2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
-3. **フェーズ2**（6・7・8・9・10・16・17）。7 は interpreter 変更を含む。
-4. **INF-B/INF-C → フェーズ3**（15・23・26）— 共通基盤を整えてから。
-5. **フェーズ4**（25・27）— 設計比重大。
-6. **フェーズ5**（明示エラー化・del）— まとめて。サイレント欠落の解消を優先すると安全側に倒れる。
+> **§2 の「群」は話題別のカタログ、本節の「フェーズ」は実行順**。別の軸なので混同しないこと。
+> 各フェーズは「**前のフェーズが終わっていないと着手できないもの**」だけを後ろに置く。
+> 同じフェーズ内のタスクは**互いに独立で、順不同・並行可**。
+
+### 依存グラフ（これだけ守れば順序は自由）
+
+```text
+                 ┌─► B  INF-D ──────────────► E  同梱スタブ（群6）
+                 │                    │
+A 地ならし ──────┼─► C  独立実装（群5 + 14 / U1 / U3 / 8 / 9 / 10）
+（全部の前提）   │                    │
+                 ├─► D1 INF-B / INF-C ┼─► D' 15・23・26・U2
+                 │                    │
+                 ├─► F  言語追加（U4・U5）──┐
+                 │                          ├─► G  U6 転送パターンが成立
+                 ├─► A7 関数値 mut の捕捉 ──┤     （B・F・A7 の 3 つ揃いで初めて動く）
+                 │                          │
+                 │         B ───────────────┘
+                 │
+                 └─► H  大物（25・27）… E と結合するかは 27 の設計で決める
+
+実線 = 硬い依存（先に終わっていないと着手できない）
+B から C / D' / F へ伸びる破線的な関係は「無くても着手できるが、
+無いと `m.f(5)` が落ちるので実用性が出ない」＝ 柔らかい依存。
+```
+
+---
+
+### フェーズ A — 地ならし（依存なし・**すべての前提**）
+
+計画文書が実態とずれたままだと、後続がその嘘を前提に設計してしまう。**最優先**。
+
+| # | タスク | 対象 |
+|---|---|---|
+| A1 | **文書追随**: B1〜B13 で解決済みの「未修正」記述を訂正（項目18 のタプル 3 件／項目6 の入れ子 `fn` × `*args`／項目20 †2 モジュール自己呼び出し） | coverage |
+| A2 | 項目22 の例題欄から実在しない `py_set_error.ar` / `py_setcomp_error.py` を削除（項目17 で解消済み） | coverage / 本書 群1 |
+| A3 | **§0.3 の死んだアンカー**を差し替え（`declare_var("kwargs"...)` は消滅。実体は `bind_args_relaxed`） | 本書 §0.3 |
+| A4 | **項目9 のカードを B13 前提へ更新**: `YieldOutsideGenerator`（`yield` は `gen` 本体の自フレーム直下のみ）／ジェネレータが**真に遅延**になった旨 | 本書 群2 |
+| A5 | 文書移動の後始末: coverage の相対リンク総崩れ、`BUGFIX_B1_B13.md` / `FUTURE_FEATURE.md` からの逆参照、`generate-codebase-map.ps1` 再実行 | 全体 |
+| A6 | **実バグ**: `def f(a, *rest, b)` が `TypeError: argument 'b' given twice`。`convert_params` が kwonly を**可変長より先に**平坦化するため。項目24 の「項目1・6 が未実装だから」という記述と [`classes.rs`](src/python_converter/classes.rs) のコメントも同時に訂正 | 変換器 |
+| A7 | **項目20 †1 の再トリアージ**: B3 で `mut n: int` は直ったが、**関数値の `mut` パラメータ**が入れ子 `fn` から見えず `NameError`。症状（`None` → `NameError`）も記述と違う。⇒ 起票し直す（修正は F/G で効いてくる） | coverage / bug_fix |
+
+**Done**: `scan_examples.ps1` 緑・`stale_doc_refs.ps1` 緑・codebase-map 再生成済み。
+
+---
+
+### フェーズ B — 型検査の食い違い解消（A のみに依存）
+
+| # | タスク |
+|---|---|
+| B1 | **INF-D**（§1）— `FnTypeParam` 経路の `mut` 実引数検査をネイティブ側（`path_is_mutable`）に揃える |
+
+- **単独で完結**するが、**E の絶対前提**（先に E をやると `time.sleep(0.01)` が落ちる状態を自作する）。
+- C / D / F の**実用性**にも効く（`m.f(5)` のようなリテラル渡しが通るようになる）。
+- ゲート: `type_obligations.ps1` ＋ `compare_wasm_frontend.ps1` ＋ `scan_examples.ps1`。
+
+---
+
+### フェーズ C — 独立実装（A のみに依存・**互いに並行可**）
+
+他の何にも依存せず、他の何もブロックしない。手が空いたらここから取る。
+
+| # | タスク | 備考 |
+|---|---|---|
+| C1 | **群5 の明示エラー化 8 件**（`for/while/try else`・`except (A,B)`・`raise from`・`assert`・`global/nonlocal`）＋ **項目14 `del`**（Name は警告付き無視／Subscript・Attribute は明示エラー） | **サイレント欠落の解消**。安全側に倒れるので最優先候補 |
+| C2 | 項目8 `match`（値 / `_` サブセット） | |
+| C3 | 項目9 ジェネレータ | ⚠ A4 を先に（B13 の制約） |
+| C4 | 項目10 型エイリアス | |
+| C5 | **U1** `for k, v in …` ＋ **`dict.items()` の追加** | Arrow 側は既に多ターゲット `for` 対応済み。`items()` が無いと実用にならない |
+| C6 | **U3** リテラルのアンパック `[*a]` / `{*a}` | dict 版 `{**d}` だけは `dict()` 待ちで後回し可 |
+
+---
+
+### フェーズ D — 式→文注入の基盤と、その消費者
+
+| 段 | # | タスク |
+|---|---|---|
+| D-前 | D1 | **INF-B**（式から囲みスコープへ文を注入）＋ **INF-C**（複数文返却）。どちらか一方で足りる項目もあるが、**まとめて入れる** |
+| D-後 | D2 | 項目15 複数代入 `a = b = c` |
+| | D3 | **U2** 代入のアンパック `a, b = t` / `a, *rest = t`（添字＋スライスへ脱糖） |
+| | D4 | 項目23 walrus `:=` |
+| | D5 | 項目26 lambda lifting ⚠ **実用性は A7 と B1 が要る** |
+| | D6 | （任意）項目16 の中間オペランド二重評価を 1 回評価へ |
+
+**D-後 の 5 件は互いに独立**。D1 が入ってから並行で進めてよい。
+
+---
+
+### フェーズ E — 同梱 `.pyi` スタブ（**B1 が前提**）
+
+| # | タスク |
+|---|---|
+| E1 | 群6 S2 — 置き場（`include_str!` 埋め込み・検索パス追加は不採用）と解決順 |
+| E2 | 群6 S3 — `time` / `math` のスタブを書く（**関数だけ**。定数は別カード） |
+| E3 | 群6 S4 — スタブ経路のサイレント劣化を可視化（警告＋回帰テスト） |
+| E4 | 群6 S5 — 例題・ゲート（`compare_import_paths.ps1 -A` が本丸） |
+
+⚠ **E1 → E2 の順序は崩せない**（群6 S1）。
+
+---
+
+### フェーズ F — Arrow 本体への言語追加（呼び出し側アンパック）
+
+**本書で唯一「Arrow の言語仕様そのものを増やす」フェーズ**。方針決定は
+[FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) に置き、本書は消費側として扱う。
+
+| # | タスク |
+|---|---|
+| F1 | `CallArg::Spread` の設計と追加（**消費者 11 箇所**が網羅 `match` で止まる） |
+| F2 | **U4** `f(*xs)` — ①可変長関数向け（`BuildList` を省くだけ）→ ②固定長関数向け（束縛時展開）→ ③型検査の個数検査を降りる |
+| F3 | **U5** `f(**d)` — dict をキーワード列へ展開。F2 と**同時に設計する** |
+
+- A / B にしか依存しないので、**D と並行してよい**。
+- ゲート: `compare_bytecode.ps1` ＋ `force_gate.ps1` ＋ `syntax_cov.ps1`。
+
+---
+
+### フェーズ G — 転送パターンの成立（A7 + B1 + F）
+
+| # | タスク |
+|---|---|
+| G1 | **U6** `def wrapper(*args, **kwargs): return inner(*args, **kwargs)` が動くことを例題で固定 |
+
+Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）・B1（INF-D）・F（spread）の
+3 つが揃って初めて成立する**ので、独立フェーズに切り出してある。ここが通れば
+「実在する Python のデコレータが読める」と言ってよい。
+
+---
+
+### フェーズ H — 大物（A のみに依存・設計比重が大きい）
+
+| # | タスク | 備考 |
+|---|---|---|
+| H1 | 項目25 `with`（`__exit__` 無しのみ block 脱糖） | 実行時ガードの設計 |
+| H2 | 項目27 Python モジュール内 import（再帰ロード） | ⚠ **E と結合するか**は 27 の設計が固まってから決める（群6 S6） |
+
+いつ着手してもよいが、**着手したら他と並行しない**（設計判断が多く、中断コストが高い）。
+
+---
+
+### まとめ（どれから取るか迷ったら）
+
+1. **A**（地ならし）→ 短い。文書が嘘をついている状態を先に消す。
+2. **B1**（INF-D）→ 1 箇所。E の前提で、C/D/F の使い勝手も上がる。
+3. あとは **C（並行可・すぐ価値が出る）** と **D1（基盤）** を並べて進める。
+4. ユーザーの関心が呼び出し側アンパックにあるなら **F を D と並行**で始める。
 
 ## 4. 各項目の Done 条件
 - [ ] `cargo build` / `cargo clippy` 通過。
@@ -429,3 +857,6 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - [ ] `examples/` に配置し `./generate-codebase-map.ps1` 実行。
 - [ ] interpreter を触った項目（7・25・仕様緩和）は impl_python 並行実装の要否を確認、必要なら git SHA 更新。
 - [ ] 挙動変更が大きい項目は sub-branch 提案の要否を確認。
+- [ ] **型検査（`src/type_check/`）を触った項目（INF-D）は `type_obligations.ps1` と
+      `compare_wasm_frontend.ps1` を走らせる**。import 解決を触った項目（フェーズ6・27）は
+      `compare_import_paths.ps1 -A <base.exe>`。
