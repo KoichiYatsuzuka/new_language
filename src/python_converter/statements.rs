@@ -11,6 +11,18 @@ use super::*;
 // スパン生成ヘルパー
 // ---------------------------------------------------------------------------
 
+/// `for ... else:` / `while ... else:` の明示エラー文言（2 箇所で同じものを出す）。
+///
+/// ⚠ Python のループ `else` は「**`break` せずに回り切ったときだけ**走る」節。
+/// 「ループが終わったら走る」ではないので、黙って本体の後ろに繋ぐ変換もできない。
+fn loop_else_error(filename: &str, kw: &str) -> String {
+    format!(
+        "{filename}: `{kw} ... else:` is not supported (Arrow has no loop `else`); \
+         the `else` body runs only when the loop finishes without `break` — \
+         use a flag variable instead"
+    )
+}
+
 /// 指定ファイル名を持つダミースパン（行・列 0）を生成する。
 pub(crate) fn make_span(filename: &str) -> Span {
     Span {
@@ -371,6 +383,11 @@ pub(crate) fn convert_stmt(
 
         // ----- while -----
         py::Stmt::While(w) => {
+            // ⚠ `while ... else:` は Arrow に相当構文が無い。**黙って捨てると
+            //   「break しなかったときだけ走る」節が消えて意味が変わる**ので明示エラー。
+            if !w.orelse.is_empty() {
+                return Err(loop_else_error(filename, "while"));
+            }
             let cond = convert_expr(&w.test, filename)?;
             let body = convert_stmts(&w.body, filename, declared)?;
             Ok(Some(Stmt::While { cond, body }))
@@ -378,6 +395,10 @@ pub(crate) fn convert_stmt(
 
         // ----- for -----
         py::Stmt::For(f) => {
+            // ⚠ `for ... else:` も同上（`while` と同じ意味論）。
+            if !f.orelse.is_empty() {
+                return Err(loop_else_error(filename, "for"));
+            }
             let target = match &*f.target {
                 py::Expr::Name(n) => n.id.to_string(),
                 _ => {
@@ -407,14 +428,39 @@ pub(crate) fn convert_stmt(
         // ----- try / except / finally -----
         py::Stmt::Try(t) => {
             use crate::ast::ExceptHandler;
+            // ⚠ `try ... else:` は「例外が起きなかったときだけ走る」節。Arrow に無く、
+            //   黙って捨てると本体が丸ごと消える（`finally` とも違う）ので明示エラー。
+            if !t.orelse.is_empty() {
+                return Err(format!(
+                    "{filename}: `try ... else:` is not supported \
+                     (Arrow has no `else` clause on `try`); move the `else` body to the end \
+                     of the `try` body"
+                ));
+            }
             let body = convert_stmts(&t.body, filename, declared)?;
             let mut handlers = Vec::new();
             for h in &t.handlers {
                 let py::ExceptHandler::ExceptHandler(eh) = h;
-                let exc_type = eh.type_.as_deref().map(|e| match e {
-                    py::Expr::Name(n) => n.id.to_string(),
-                    _ => "Exception".to_string(),
-                });
+                // ⚠⚠ **以前は単純名以外を黙って `"Exception"` に潰していた**。
+                //   `except (A, B):` は Tuple、`except mod.Err:` は Attribute で来るので、
+                //   どちらも「何でも捕まえるハンドラ」に化けていた（＝捕まえすぎる誤変換）。
+                //   型を捨てる変換は危険なので明示エラーにする。
+                let exc_type = match eh.type_.as_deref() {
+                    None => None,
+                    Some(py::Expr::Name(n)) => Some(n.id.to_string()),
+                    Some(py::Expr::Tuple(_)) => {
+                        return Err(format!(
+                            "{filename}: `except (A, B):` (multiple exception types) is not supported; \
+                             write one `except` clause per type"
+                        ))
+                    }
+                    Some(_) => {
+                        return Err(format!(
+                            "{filename}: only a simple exception name is supported in `except` \
+                             (e.g. `except ValueError:`); qualified or computed types are not"
+                        ))
+                    }
+                };
                 let name = eh.name.as_ref().map(|n| n.to_string());
                 let hbody = convert_stmts(&eh.body, filename, declared)?;
                 handlers.push(ExceptHandler {
@@ -437,6 +483,14 @@ pub(crate) fn convert_stmt(
 
         // ----- raise -----
         py::Stmt::Raise(r) => {
+            // ⚠ `raise X from Y` の `from Y`（例外連鎖）は Arrow に無い。黙って捨てると
+            //   原因情報が消えるので明示エラー。
+            if r.cause.is_some() {
+                return Err(format!(
+                    "{filename}: `raise ... from ...` (exception chaining) is not supported; \
+                     Arrow has no `__cause__`"
+                ));
+            }
             let exc = r
                 .exc
                 .as_deref()
@@ -444,6 +498,49 @@ pub(crate) fn convert_stmt(
                 .transpose()?;
             let span = make_span(filename);
             Ok(Some(Stmt::Raise { exc, span }))
+        }
+
+        // ----- assert（未サポート・専用の文言） -----
+        // ⚠ 以前は末尾の catch-all で `unsupported Python statement` になっていた。
+        //   どの構文で落ちたのか判らないので専用アームにする。
+        py::Stmt::Assert(_) => Err(format!(
+            "{filename}: `assert` is not supported; \
+             use `if not <cond>: raise ...` instead"
+        )),
+
+        // ----- del -----
+        //
+        // ⚠ **ターゲットの種類で扱いを分ける**（coverage 項目 14 の決定）:
+        //   - `del x`（名前）… 束縛の削除。Arrow はスコープ退出で破棄するので
+        //     **警告して無視**する。残る差は「削除後に読むと Python は `NameError`」だけ。
+        //   - `del d[k]` / `del o.a` … **意味のある削除**。無視すると結果が変わるので明示エラー。
+        py::Stmt::Delete(d) => {
+            for target in &d.targets {
+                match target {
+                    py::Expr::Name(n) => {
+                        eprintln!(
+                            "Warning: {filename}: `del {}` is ignored \
+                             (Arrow drops bindings at scope exit)",
+                            n.id.as_str()
+                        );
+                    }
+                    py::Expr::Subscript(_) => {
+                        return Err(format!(
+                            "{filename}: `del <expr>[<key>]` is not supported \
+                             (it would silently do nothing); remove the entry another way"
+                        ))
+                    }
+                    py::Expr::Attribute(a) => {
+                        return Err(format!(
+                            "{filename}: `del <expr>.{}` is not supported \
+                             (Arrow cannot remove an attribute)",
+                            a.attr.as_str()
+                        ))
+                    }
+                    _ => return Err(format!("{filename}: unsupported `del` target")),
+                }
+            }
+            Ok(None)
         }
 
         // ----- pass -----
@@ -470,8 +567,22 @@ pub(crate) fn convert_stmt(
             Ok(Some(Stmt::Expr(expr)))
         }
 
-        // ----- global / nonlocal → 無視 -----
-        py::Stmt::Global(_) | py::Stmt::Nonlocal(_) => Ok(None),
+        // ----- global / nonlocal -----
+        //
+        // ⚠⚠ **以前は黙って無視していた**（`Ok(None)`）。その結果、内側の関数からの
+        //   代入が**外側に届かないまま静かに動く**（＝内側のローカルを書き換えるだけ）
+        //   という誤変換になっていた。Arrow は外側の変数を `mut` で宣言すれば内側から
+        //   書き換えられるので、代替手段はある。
+        py::Stmt::Global(g) => Err(format!(
+            "{filename}: `global {}` is not supported; \
+             declare the outer variable with `mut` instead (Arrow has no `global`)",
+            g.names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+        py::Stmt::Nonlocal(n) => Err(format!(
+            "{filename}: `nonlocal {}` is not supported; \
+             declare the outer variable with `mut` instead (Arrow has no `nonlocal`)",
+            n.names.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+        )),
 
         // ----- import / from-import（モジュール本体内の import は無視） -----
         py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None),

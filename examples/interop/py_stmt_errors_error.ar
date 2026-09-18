@@ -1,0 +1,66 @@
+# py_stmt_errors_error.ar — `import[py]` 変換器が**明示エラーにする文**（C1 / 群5）。
+#
+# ⚠⚠ **ここに挙げた 8 形は、以前すべて「黙って壊れて」いた**。変換器は未対応の節を
+#   捨てて残りを変換していたので、**エラーも出ないまま意味の違うコードが動いて**いた。
+#   サイレント欠落は最悪の失敗形なので、まとめて明示エラーに倒した。
+#
+# ⚠ いずれも**変換時（パース時）のエラー**なので、1 ファイルにつき 1 つしか踏めない。
+#   他を試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① for / while ... else:（本ファイルが踏む形）
+#      `for ... else:` is not supported (Arrow has no loop `else`);
+#      the `else` body runs only when the loop finishes without `break` — use a flag variable instead
+#      ⇒ 以前: else 節を**黙って破棄**。`break` しなかった場合の処理が消えていた。
+#      ⇒ 代替: `mut found = False` のようなフラグ変数を置く。
+#
+#   ② try ... else:
+#      `try ... else:` is not supported (Arrow has no `else` clause on `try`)
+#      ⇒ 以前: else 節を**黙って破棄**。`finally` とは違い「例外が起きなかったとき」の本体。
+#      ⇒ 代替: else の中身を try 本体の末尾へ移す。
+#
+#   ③ except (A, B): / except mod.Err:
+#      `except (A, B):` (multiple exception types) is not supported
+#      ⇒ 以前: **型を黙って `"Exception"` に潰して**いた ＝ 指定した型だけでなく
+#         **何でも捕まえるハンドラ**に化けていた（捕まえすぎる誤変換）。
+#      ⇒ 代替: 型ごとに `except` 節を分ける。
+#
+#   ④ raise X from Y
+#      `raise ... from ...` (exception chaining) is not supported; Arrow has no `__cause__`
+#      ⇒ 以前: `from Y` を**黙って破棄**。原因情報が消えていた。
+#
+#   ⑤ assert
+#      `assert` is not supported; use `if not <cond>: raise ...` instead
+#      ⇒ 以前: 末尾の catch-all で `unsupported Python statement`。どの構文か判らなかった。
+#
+#   ⑥ global / nonlocal
+#      `global COUNT` is not supported; declare the outer variable with `mut` instead
+#      ⇒ 以前: **黙って無視**。内側の代入が外側に届かず、内側のローカルを書き換える
+#         だけになっていた（静かに違う答えが出る）。
+#      ⇒ 代替: 外側の変数を `mut` で宣言する（Arrow は入れ子 fn から書き換えられる）。
+#
+#   ⑦ del d[k] / del o.a
+#      `del <expr>[<key>]` is not supported (it would silently do nothing)
+#      ⇒ **意味のある削除**なので無視できない。`del <name>` だけは警告して無視する
+#         （`py_del_warn.ar` を参照）。
+#
+# ⚠ **通り続ける形**: 素の `try` / `except E as e:` / 裸の `except:` / `finally`、
+#   `raise E("msg")`。`py_del_warn.ar` で確認している。
+
+import[py] test_modules.py_loop_else_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_try_else_error as m
+# ③ を試す場合:
+# import[py] test_modules.py_except_tuple_error as m
+# ④ を試す場合:
+# import[py] test_modules.py_raise_from_error as m
+# ⑤ を試す場合:
+# import[py] test_modules.py_assert_error as m
+# ⑥ を試す場合:
+# import[py] test_modules.py_global_error as m
+# ⑦ を試す場合:
+# import[py] test_modules.py_del_subscript_error as m
+
+print("unreachable")
