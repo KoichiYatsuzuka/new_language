@@ -148,6 +148,7 @@ $knownDiff = @{
     'py_decorators'                  = 'py: python_converter（import[py] のソース翻訳）が Rust 専用（項目20 で新設）'
     'py_decorators_error'            = 'py: 同上。変換時エラーを出さず素通しする（項目20 で新設）'
     'py_kwonly'                      = 'py: python_converter が Rust 専用（項目24 で新設）'
+    'py_kwonly_error'                = 'py: 同上。impl_python は変換時に止めず属性欠落で落ちる（A6 で新設）'
     'py_defaults'                    = 'py: python_converter が Rust 専用（項目1 で新設）'
     'py_defaults_error'              = 'py: 同上。変換時エラーを出さず素通しする（項目1 で新設）'
     'py_reassign'                    = 'py: python_converter が Rust 専用（項目2 で新設）'

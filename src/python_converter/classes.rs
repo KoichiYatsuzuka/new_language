@@ -270,9 +270,33 @@ pub(crate) fn convert_params(
     }
 
 
-    // bare `*` / `*args` より後ろのキーワード専用引数。通常引数として平坦化する（項目 24）。
-    // ⚠ 上の vararg 分岐が走った場合（`def f(a, *rest, b)`）は、`*args` が不正な
-    //   `Param` になっている（項目 6 未実装）ため、この列全体が壊れる。bare `*` 単体は無害。
+    // ★ 名前つき `*args` とキーワード専用引数の併用は**表現できない**ので明示エラー（A6）。
+    //
+    // Arrow の可変長パラメータは**必ず末尾**でなければならず、`Param` に
+    // 「位置渡し禁止」のフラグが無い（項目 24）。そのため `def f(a, *rest, b)` を
+    // 平坦化すると `[a, b, ...]` となり、**`b` が位置引数のスロットを占める**:
+    //
+    //   f(1, b=9)        → (1, 0, 9)  ◯ たまたま合う（位置引数が余らないため）
+    //   f(1, 2, 3, b=9)  → TypeError: argument 'b' given twice
+    //                      ↑ 2 が `b` に入ったあと、キーワードの `b` と衝突する
+    //
+    // ⚠ 「たまたま合う」呼び方があるのが厄介で、**呼び方によって通ったり壊れたり**する。
+    //   `Param` にキーワード専用の概念を足さない限り直せないので、変換時に止める。
+    // ⚠ **bare `*`（名前なし）は対象外**。vararg が無いので平坦化して問題なく、
+    //   項目 24 で固定した 6 形はすべて通り続ける。
+    if args.vararg.is_some() && !args.kwonlyargs.is_empty() {
+        let names: Vec<&str> = args.kwonlyargs.iter().map(|a| a.def.arg.as_str()).collect();
+        return Err(format!(
+            "{filename}: keyword-only parameter(s) after a named `*{}` are not supported \
+             (found: {}); Arrow requires the variadic parameter to be last and has no \
+             keyword-only marker — use a bare `*` or move the parameter before `*{}`",
+            args.vararg.as_ref().expect("checked by is_some").arg.as_str(),
+            names.join(", "),
+            args.vararg.as_ref().expect("checked by is_some").arg.as_str(),
+        ));
+    }
+
+    // bare `*` より後ろのキーワード専用引数。通常引数として平坦化する（項目 24）。
     for arg in &args.kwonlyargs {
         let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
         let default = arg

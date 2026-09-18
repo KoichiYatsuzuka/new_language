@@ -1,0 +1,21 @@
+# py_kwonly_error.ar — 名前つき `*args` とキーワード専用引数の併用は**明示エラー**（A6）。
+#
+# 対象は `convert_params()`（`src/python_converter/classes.rs`）。
+#
+# ⚠⚠ **これは以前サイレントに壊れていた形**。`convert_params` は kwonly を
+#   可変長より**先に**平坦化するので `def f(a, *rest, b)` が `[a, b, ...]` になり、
+#   `b` が位置引数のスロットを占めていた:
+#
+#     m.f(x, b=w)        -> (1, 0, 9)  ◯ たまたま合う（位置引数が余らないため）
+#     m.f(x, y, z, b=w)  -> TypeError: argument 'b' given twice
+#
+#   **呼び方によって通ったり壊れたりする**ため、変換時に止めることにした。
+#   Arrow の可変長は必ず末尾で、`Param` にキーワード専用の概念が無い以上、
+#   この形は表現できない（＝変換器だけでは直せない）。
+#
+# ⚠ **bare `*`（名前なし）は対象外**。`py_kwonly.ar` の 6 形はすべて通り続ける。
+
+import[py] test_modules.py_kwonly_star_error as m
+
+print(m.f(1))
+# ParseError: keyword-only parameter(s) after a named `*rest` are not supported (found: b)
