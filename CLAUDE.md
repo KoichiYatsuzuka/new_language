@@ -82,6 +82,18 @@ python -m impl_python examples/basics/control_flow.ar
 | `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と同じ診断を出すか | **lexer / parser / type_check を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
+⚠⚠ **例題ゲートが見ていない場所がある**（タスク 9.3・意図的）。
+`scan_examples` / `compare_outputs` / `compare_bytecode` / `compare_python_impl` は
+`$categoryDirs` の 9 カテゴリ（`basics` `collections` `classes` `typing` `exceptions`
+`async` `bench` `apps` `interop`）だけを走査し、**`examples/archived/` と
+`examples/practical_examples/` は対象外**。
+`force_gate` と `compare_wasm_frontend` は `-Recurse` で全部舐めるが、
+どちらも「例題が**成功する**か」は見ていない（バイトコード化の可否／2 実装の診断の一致）。
+⇒ **この 2 ディレクトリは壊れていても全ゲートが緑になる。**
+実測（2026-09-18）で `archived/` は 72 件中 53 件が失敗する。
+⚠ **新しい検査の影響を測るときは母集団を 9 カテゴリに限ること**（7.5 でここを踏んだ）。
+理由と現状は各ディレクトリの `README.md`。
+
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
 ⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。
 ⚠ ゲートは `target/release` を見る。**自分で走らせて緑**を確かめる（報告を信じない）。

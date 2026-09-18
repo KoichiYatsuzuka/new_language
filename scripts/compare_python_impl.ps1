@@ -257,6 +257,9 @@ $knownDiff = @{
     'try_except_errors'              = 'py: 例外メッセージの形式が違う'
 }
 
+# ⚠ `archived/` と `practical_examples/` は意図的に対象外（タスク 9.3）。
+#   理由と現状は scan_examples.ps1 の `$categoryDirs` のコメント、および
+#   examples/archived/README.md ・ examples/practical_examples/README.md。
 $categoryDirs = @('basics', 'collections', 'classes', 'typing', 'exceptions', 'async', 'apps', 'interop', 'repl')
 
 $examples = $categoryDirs | ForEach-Object {

@@ -58,6 +58,9 @@ $skip = @(
 # ⚠ **`bench` ディレクトリは丸ごと対象外**（#63 の負の対照で判明）。出力が経過時間そのものなので
 #    **同一バイナリでも 100% 一致しない**。速度の A/B は [ab_bench.ps1](scripts/ab_bench.ps1) の担当。
 # ⚠ `async` も対象外（スケジューリング依存で揺れる。#52 と同じ理由）。
+# ⚠ `archived/` と `practical_examples/` は意図的に対象外（タスク 9.3）。
+#   理由と現状は scan_examples.ps1 の `$categoryDirs` のコメント、および
+#   examples/archived/README.md ・ examples/practical_examples/README.md。
 $categoryDirs = @('basics','collections','classes','typing','exceptions','apps','interop')
 
 $examples = $categoryDirs | ForEach-Object {

@@ -54,6 +54,9 @@ $skip = @(
     'importation', 'event_handler'
 )
 # ⚠ async ディレクトリは丸ごと対象外（同一バイナリでも揺れる・#52）。
+# ⚠ `archived/` と `practical_examples/` は意図的に対象外（タスク 9.3）。
+#   理由と現状は scan_examples.ps1 の `$categoryDirs` のコメント、および
+#   examples/archived/README.md ・ examples/practical_examples/README.md。
 $categoryDirs = @('basics','collections','classes','typing','exceptions','bench','apps','interop')
 
 $examples = $categoryDirs | ForEach-Object {

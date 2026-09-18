@@ -3646,7 +3646,7 @@ list[foo] / list[Box[int]] / list[type[foo]]  → 8.2 以降は NamedInstance �
 |---|---|---|---|
 | ~~**9.1**~~ | ~~`o::T.attr += v` がバイトコードに載らない~~ → **✅ 完了 2026-09-17** | 実行不能 | 5.1 |
 | ~~**9.2**~~ | ~~`freeze` の意味がドキュメントと実装で食い違う~~ → **✅ 完了 2026-09-18**（案 B） | 仕様が確定していない | 7.2 |
-| **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
+| ~~**9.3**~~ | ~~ゲートが `archived/` と `practical_examples/` を見ていない~~ → **✅ 完了 2026-09-18**（案 3・明記） | **壊れた例題が放置されている** | 5.2c / 7.1 |
 | ~~**9.4**~~ | ~~`.pyi` のクラスメンバー・モジュール変数が型検査に届かない~~ → **⏹ 取り下げ 2026-09-18** | Python 直接翻訳機能の実装時に扱う | 7.8 |
 | ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
 | ~~**9.6**~~ | ~~`examples/_tmp_demo.txt` が例題実行で書き換わる~~ → **✅ 完了 2026-09-17** | ⚠ **例題を 1 件壊していた** | 全般 |
@@ -3826,6 +3826,64 @@ basics collections classes typing exceptions async bench apps interop
 
 ⚠ `spider_render.ar` は import 専用モジュールなので、単体実行では import が解決せず
 `Any` 由来のエラーが出るのは**正常**。こちらは「スキップ理由の記録」で足りる。
+
+##### 決定と記録（2026-09-18・完了）— **案 3（ゲート対象外であることを明記する）**
+
+##### 利用者の決定
+
+> 二つとも ungated であることを明記してください
+
+##### ⚠⚠ 起票時の「どのゲートにも掛かっていない」は**誤り**だった
+
+実測すると、ゲートは**選び方が 2 通り**ある:
+
+| 選び方 | ゲート | `archived/` `practical_examples/` |
+|---|---|---|
+| `$categoryDirs`（9 カテゴリ） | `scan_examples` ・ `compare_outputs` ・ `compare_bytecode` ・ `compare_python_impl` | ❌ 見ない |
+| `examples/` を `-Recurse` | `force_gate` ・ `compare_wasm_frontend` | ✅ **見る** |
+
+⚠ ただし**後者 2 つは「例題が成功するか」を見ていない**
+（バイトコード化の可否／2 実装の診断の一致）。
+⇒ 結論は変わらない: **この 2 ディレクトリは壊れていても全ゲートが緑になる。**
+
+##### 実測した現状（2026-09-18）
+
+| ディレクトリ | ファイル | 状態 |
+|---|---|---|
+| `archived/` | **72** | ✅ 19 / ⛔ **53** |
+| `practical_examples/` | **8** | ✅ 1 / ⛔ 5（**本物の静的型エラー**）/ ⏱ 2（GUI） |
+
+`archived/` の失敗 53 件の内訳: `StaticTypeError` 18 ／ **UTF-8 BOM** 13 ／
+外部ファイル不足 10 ／ その他 8 ／ クラス継承（現在は trait のみ）3。
+
+⚠ `practical_examples/` の 5 件は**環境不足ではない**。DxLib の 3 件は
+`'ClearDrawScreen' takes 1 argument(s) but 0 were given` で、
+プログラムが走る前に落ちている（スタブのシグネチャ不一致）。
+
+##### ついでに見つかった 2 件
+
+1. **`examples/` 直下と `debugger/` も 9 カテゴリに入っていない。**
+   前者（`alias.ar` / `alias_error.ar`）は `force_gate` と `compare_wasm_frontend` のみ、
+   後者は専用ゲート `debug_session.ps1` が見ている。
+2. **`vm-pitfalls` skill の記述が誤っていた。** 「`scan_examples` / `force_gate` は
+   再帰する」と書いてあったが、**再帰するのは `force_gate` と
+   `compare_wasm_frontend` だけ**。`scan_examples` は `examples/<cat>/*.ar` で非再帰。
+   実測で 9 カテゴリのサブディレクトリに 14 件の `.ar` があり、どれも見ていない
+   （大半は import 対象のモジュール側なので単体実行の対象ではない）。⇒ 記述を直した。
+
+##### 明記した場所
+
+| 場所 | 内容 |
+|---|---|
+| `examples/archived/README.md`（新規） | ungated である旨・ゲート対応表・失敗 53 件の内訳・**計測の母集団に混ぜるな** |
+| `examples/practical_examples/README.md`（新規） | 同上＋外部環境が要る理由・失敗 6 件が本物の型エラーであること |
+| `scripts/scan_examples.ps1` | `$categoryDirs` の直前に**正典のコメント**（他 3 本はここを指すポインタ） |
+| `scripts/compare_outputs.ps1` ・ `compare_bytecode.ps1` ・ `compare_python_impl.ps1` | 同上のポインタ |
+| `CLAUDE.md` | ゲート表の直後に「見ていない場所がある」旨 |
+| `.claude/skills/vm-pitfalls/SKILL.md` | 再帰するゲートの記述を実測に合わせた |
+
+⚠ `implementation_logs/BYTECODE_VM_PLAN.md`（スクリプト表の詳細版）には**書いていない**。
+別セッションが同ファイルを編集中だったため。必要なら後から足すこと。
 
 ### 9.4 `.pyi` のクラスメンバー・モジュール変数が型検査に届かない 【⏹ 取り下げ 2026-09-18】
 

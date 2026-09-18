@@ -260,7 +260,16 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠⚠ 例題スイートのグロブは非再帰のものがある**（#74）。
   [compare_outputs.ps1](../../../scripts/compare_outputs.ps1) と
   [compare_python_impl.ps1](../../../scripts/compare_python_impl.ps1) は `examples/<cat>/*.ar` なので
-  **サブディレクトリの例題を 1 本も見ない**（`scan_examples` / `force_gate` は再帰する）。
+  **サブディレクトリの例題を 1 本も見ない**。
+  ⚠⚠ **`scan_examples` も同じく非再帰**（`examples/<cat>/*.ar`）。以前ここに
+  「`scan_examples` / `force_gate` は再帰する」と書いていたが、**再帰するのは
+  `force_gate` と `compare_wasm_frontend` だけ**だった（タスク 9.3 で実測）。
+  実測（2026-09-18）で 9 カテゴリのサブディレクトリに 14 件の `.ar` があり、
+  そのどれも `scan_examples` は見ていない（大半は他の例題が import する
+  モジュール側なので単体実行の対象ではないが、**見ていないことは事実**）。
+  ⚠ さらに `examples/archived/` と `examples/practical_examples/` は
+  `$categoryDirs` に載っていないので**ディレクトリごと**対象外
+  （タスク 9.3・意図的。各 `README.md` に明記した）。
   ⇒ サブディレクトリに例題を置いたら、**どのゲートが実際に拾うかを確かめる**こと。
   #74 では [compare_import_paths.ps1](../../../scripts/compare_import_paths.ps1) へ明示登録した
   （ついでに `import_py_search_path.ar` 等が**どのゲートにも入っていなかった**ことも判明した）。
