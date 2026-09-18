@@ -12,6 +12,9 @@ use crate::ast::Stmt;
 
 /// Python ソースコード文字列を解析し、tl の `Stmt` リストに変換する。
 pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
+    // ⚠ 型エイリアス表はモジュール 1 本の変換中だけ有効（項目 10）。
+    //   モジュールをまたいで漏れると、別ファイルの同名の型が化ける。
+    reset_type_aliases();
     let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
     // モジュール本体も 1 つのスコープ（パラメータは無い）。
     convert_scope(&ast, filename, &[])

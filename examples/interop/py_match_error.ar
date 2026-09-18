@@ -1,0 +1,44 @@
+# py_match_error.ar — `match` 文で**通さない**パターン（項目 8）。
+#
+# Arrow の `match` は `MatchPattern::Case`（値の等価比較）と `IsType`（型検査）しか
+# 持たず、**構造を分解しない**。Python の構造的パターンマッチングの大半は写せないので、
+# 黙って一部だけ合わせず明示エラーにする。
+#
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+#
+#   ① キャプチャ `case x:`（本ファイルが踏む形）
+#      a capture pattern (`case <name>:`) is not supported; only literal values and `case _:` are
+#      ⇒ 「常にマッチして名前に束縛する」形。`_` に潰すと**束縛が黙って消える**ので拒否する。
+#
+#   ② OR `case 1 | 2:`
+#      an or-pattern (`case A | B:`) is not supported; write one `case` per value
+#      ⇒ 代替: 値ごとに `case` を分ける。
+#
+#   ③ シーケンス `case [a, b]:`
+#      a sequence pattern (`case [a, b]:`) is not supported
+#      ⇒ 代替: `case _:` で受けてから本体で添字アクセスする。
+#
+#   ④ クラス `case C():`
+#      a class pattern (`case C(...):`) is not supported
+#      ⇒ 代替: Arrow には `is <TypeName>` の型検査アームがあるが、`match` 1 本に
+#        `case` と `is` を混ぜられないので、変換器からは出していない。
+#
+#   ⑤ ガード `case 1 if cond:`
+#      a guard in `case ... if ...:` is not supported; use an `if` inside the case body instead
+#      ⇒ 落とすと**条件を無視して当たってしまう**ので拒否する。
+#
+# ⚠ マッピング `case {"k": v}:` も同じ理由で拒否する（③ と同文言の系統）。
+# ⚠ **通る形**は `py_match.ar`（整数 / 文字列 / None・True・False / `_` なしの不一致）。
+
+import[py] test_modules.py_match_capture_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_match_or_error as m
+# ③ を試す場合:
+# import[py] test_modules.py_match_seq_error as m
+# ④ を試す場合:
+# import[py] test_modules.py_match_class_error as m
+# ⑤ を試す場合:
+# import[py] test_modules.py_match_guard_error as m
+
+print("unreachable")

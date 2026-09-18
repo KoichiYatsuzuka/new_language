@@ -717,11 +717,112 @@ pub(crate) fn convert_stmt(
         // ----- import / from-import（モジュール本体内の import は無視） -----
         py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None),
 
-        // ----- match（未サポート） -----
-        py::Stmt::Match(_) => Err(format!("{filename}: 'match' statement is not supported")),
+        // ----- match（値 / ワイルドカードのサブセット・項目 8） -----
+        //
+        // Arrow の `match` は **値の等価比較**（`MatchPattern::Case`）か
+        // **型検査**（`IsType`）のどちらか一方しか持たず、構造的パターンマッチングは無い。
+        // ⇒ Python の `case <リテラル/値>:` と `case _:` だけを写し、
+        //   構造を分解するパターンは**明示エラー**にする（黙って一部だけ合わせない）。
+        //
+        // ⚠ 意味論は一致する（実機確認済み）: アームは**フォールスルーしない**、
+        //   どれにも当たらなければ何もしない、`_` は常にマッチ。
+        py::Stmt::Match(m) => {
+            use crate::ast::{MatchArm, MatchPattern};
+            let subject = convert_expr(&m.subject, filename)?;
+            let mut arms: Vec<MatchArm> = Vec::new();
+            for case in &m.cases {
+                // ⚠ ガード（`case 1 if cond:`）は Arrow のアームに置き場が無い。
+                //   落とすと条件を無視して当たってしまうので明示エラー。
+                if case.guard.is_some() {
+                    return Err(format!(
+                        "{filename}: a guard in `case ... if ...:` is not supported; \
+                         use an `if` inside the case body instead"
+                    ));
+                }
+                let pattern = match &case.pattern {
+                    // `case 1:` / `case "a":` / `case CONST:`
+                    py::Pattern::MatchValue(v) => {
+                        MatchPattern::Case(convert_expr(&v.value, filename)?)
+                    }
+                    // `case None:` / `case True:` / `case False:`
+                    py::Pattern::MatchSingleton(s) => {
+                        MatchPattern::Case(constant_value_to_expr(&s.value, filename)?)
+                    }
+                    // `case _:`（`pattern` も `name` も無い `MatchAs` がワイルドカード）
+                    py::Pattern::MatchAs(a) if a.pattern.is_none() && a.name.is_none() => {
+                        MatchPattern::Case(Expr::Ident {
+                            name: "_".to_string(),
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        })
+                    }
+                    // `case x:`（キャプチャ）は「常にマッチして名前に束縛する」形。
+                    // Arrow に束縛付きアームが無く、`_` に潰すと**束縛が黙って消える**。
+                    py::Pattern::MatchAs(_) => {
+                        return Err(format!(
+                            "{filename}: a capture pattern (`case <name>:`) is not supported; \
+                             only literal values and `case _:` are"
+                        ))
+                    }
+                    py::Pattern::MatchOr(_) => {
+                        return Err(format!(
+                            "{filename}: an or-pattern (`case A | B:`) is not supported; \
+                             write one `case` per value"
+                        ))
+                    }
+                    py::Pattern::MatchSequence(_) | py::Pattern::MatchStar(_) => {
+                        return Err(format!(
+                            "{filename}: a sequence pattern (`case [a, b]:`) is not supported \
+                             (Arrow's `match` compares values, it does not destructure)"
+                        ))
+                    }
+                    py::Pattern::MatchMapping(_) => {
+                        return Err(format!(
+                            "{filename}: a mapping pattern (`case {{...}}:`) is not supported \
+                             (Arrow's `match` compares values, it does not destructure)"
+                        ))
+                    }
+                    py::Pattern::MatchClass(_) => {
+                        return Err(format!(
+                            "{filename}: a class pattern (`case C(...):`) is not supported \
+                             (Arrow's `match` compares values, it does not destructure)"
+                        ))
+                    }
+                };
+                arms.push(MatchArm {
+                    pattern,
+                    body: convert_stmts(&case.body, filename, declared)?,
+                });
+            }
+            Ok(Some(Stmt::Match {
+                subject,
+                arms,
+                span: make_span(filename),
+            }))
+        }
 
         // ----- type alias（Python 3.12+） -----
-        py::Stmt::TypeAlias(_) => Ok(None),
+        // ----- 型エイリアス `type X = T`（Python 3.12+・項目 10） -----
+        //
+        // ⚠⚠ **Arrow の `alias` は AST に出せない**（パース時に `parser.aliases` へ
+        //   登録され `Stmt::Pass` になる構文）。`new_type` は名目的別型なので
+        //   `type V = list[int]` を `list[int]` として使えなくなり不適。
+        //   ⇒ **変換器が自前の表を持ち、型注釈の解決時に透過展開する**。
+        // ⚠ 文としては何も出さない（Arrow 側に対応する宣言が無い）。
+        // ⚠ 型パラメータ付き（`type L[T] = list[T]`）は展開先に型変数が残るので拒否する。
+        py::Stmt::TypeAlias(t) => {
+            if !t.type_params.is_empty() {
+                return Err(format!(
+                    "{filename}: a parameterized type alias (`type X[T] = ...`) is not supported"
+                ));
+            }
+            let py::Expr::Name(n) = &*t.name else {
+                return Err(format!("{filename}: unsupported type alias target"));
+            };
+            // 右辺は**登録前に**解決する（連鎖は効き、自己参照は無限再帰にならない）。
+            register_type_alias(n.id.to_string(), convert_annotation(&t.value));
+            Ok(None)
+        }
 
         #[allow(unreachable_patterns)]
         _ => Err(format!("{filename}: unsupported Python statement")),

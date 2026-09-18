@@ -1,0 +1,36 @@
+# py_type_alias.ar — `import[py]` 変換器の **型エイリアス `type X = T`**（項目 10）。
+#
+# ⚠⚠ **Arrow の `alias` は AST に出せない**。`alias name: RHS` はパース時構文で、
+#   パーサが `parser.aliases` に登録して `Stmt::Pass` を返す。変換器は `Stmt` しか
+#   作れないので、この経路は使えない。
+#   `new_type` へ落とす案もあるが、あちらは**名目的別型**なので
+#   `type V = list[int]` を `list[int]` として使えなくなり不適。
+#   ⇒ **変換器が自前のエイリアス表を持ち、型注釈の解決時に透過展開する**。
+#
+# ⚠ 表は**モジュール 1 本の変換中だけ**有効（`convert_python_source` の入口で空にする）。
+#   漏れると別ファイルの同名の型が化けるので、③ でそれを固定している。
+#
+# ⚠ 未対応（明示エラー）: 型パラメータ付き `type L[T] = list[T]`
+#   （展開先に型変数が残るため）。→ `py_type_alias_error.ar`。
+
+import[py] test_modules.py_type_alias as m
+import[py] test_modules.py_type_alias_other as o
+
+# ── ① `type Vec = list[int]` が展開される ───────────────────────────────
+mut xs = [1, 2, 3]
+print(m.total(xs))
+# 6
+
+# ── ② 素の型へのエイリアス ──────────────────────────────────────────────
+mut n = "bob"
+print(m.greet(n))
+# hi bob
+
+# ── ③ エイリアスの連鎖（`type Pair = Vec` → list[int]） ─────────────────
+print(m.chained(xs))
+# 3
+
+# ── ④ 別モジュールの**同名**エイリアスは別の型のまま ────────────────────
+mut s = "hello"
+print(o.size(s))
+# 5

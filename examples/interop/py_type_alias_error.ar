@@ -1,0 +1,13 @@
+# py_type_alias_error.ar — 型エイリアスで**通さない**形（項目 10）。
+#
+#   ① 型パラメータ付き `type L[T] = list[T]`
+#      a parameterized type alias (`type X[T] = ...`) is not supported
+#      ⇒ 変換器は右辺を**登録時に型文字列へ展開**するので、型変数 `T` が残る形は扱えない。
+#        代替: 具体型ごとにエイリアスを分ける（`type LInt = list[int]`）。
+#
+# ⚠ **通る形**は `py_type_alias.ar`（素の型 / `list[int]` / エイリアスの連鎖 /
+#   モジュールをまたいだ同名の分離）。
+
+import[py] test_modules.py_type_alias_param_error as m
+
+print("unreachable")

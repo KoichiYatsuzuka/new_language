@@ -633,7 +633,7 @@ pub(crate) fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<E
 ///
 /// `Constant::Tuple` が入れ子の `Constant` を持つため、`convert_constant` から分離して
 /// **再帰できる**形にしてある。
-fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Result<Expr, String> {
+pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Result<Expr, String> {
     match value {
         py::Constant::Int(n) => {
             let v: i64 = n.try_into().unwrap_or(i64::MAX);

@@ -49,6 +49,10 @@ pub(crate) fn convert_annotation_subscript_slice(expr: &py::Expr) -> String {
 
 /// Python の型名を tl の型名にマッピングする（例: `"List"` → `"list"`）。
 pub(crate) fn map_type_name(name: &str) -> String {
+    // ★ 変換器内の型エイリアス（項目 10）を最優先で展開する。
+    if let Some(expanded) = lookup_type_alias(name) {
+        return expanded;
+    }
     match name {
         "int" => "int".to_string(),
         "str" => "str".to_string(),
@@ -69,3 +73,47 @@ pub(crate) fn map_type_name(name: &str) -> String {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// 型エイリアス（項目 10）
+// ---------------------------------------------------------------------------
+//
+// ★ Python 3.12 の `type X = <型式>` を**変換器の中で透過展開**する。
+//
+// ⚠⚠ **Arrow の `alias` は AST に出せない**。`alias name: RHS` はパース時構文で、
+//   パーサが `parser.aliases` に登録して `Stmt::Pass` を返す（＝変換器から
+//   `Stmt` として生成できない）。`new_type` へ落とす案もあるが、あちらは
+//   **名目的別型**なので `type V = list[int]` を `list[int]` として使えなくなる。
+//   ⇒ 変換器が自前の表を持ち、型注釈の解決時に展開する。
+//
+// ⚠ 表はモジュール 1 本の変換中だけ有効（`convert_python_source` が入口で空にする）。
+//   変換器は 1 スレッドで動くのでスレッドローカルで持つ（`supers.rs` と同じ方式）。
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    /// `type X = T` の `X` → 展開後の Arrow 型文字列。
+    static TYPE_ALIASES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// モジュールの変換を始めるときにエイリアス表を空にする。
+pub(crate) fn reset_type_aliases() {
+    TYPE_ALIASES.with(|t| t.borrow_mut().clear());
+}
+
+/// `type X = T` を登録する。
+///
+/// ⚠ **登録時に右辺を展開してから入れる**ので、`type A = int` → `type B = list[A]` と
+/// 連鎖しても `B` は `list[int]` になる。自己参照（`type T = list[T]`）は、自分が
+/// まだ登録されていない時点で右辺を解決するため無限再帰にならない。
+pub(crate) fn register_type_alias(name: String, expanded: String) {
+    TYPE_ALIASES.with(|t| {
+        t.borrow_mut().insert(name, expanded);
+    });
+}
+
+/// 登録済みエイリアスなら展開後の型文字列を返す。
+pub(crate) fn lookup_type_alias(name: &str) -> Option<String> {
+    TYPE_ALIASES.with(|t| t.borrow().get(name).cloned())
+}
