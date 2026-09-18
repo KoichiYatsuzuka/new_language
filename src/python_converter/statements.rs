@@ -72,6 +72,98 @@ pub(crate) fn extract_yield_type(returns: Option<&py::Expr>) -> Option<String> {
     Some(convert_annotation(first))
 }
 
+/// 名前参照の `Expr::Ident` を作る短縮形。
+pub(crate) fn ident_expr(name: &str) -> Expr {
+    Expr::Ident {
+        name: name.to_string(),
+        node_id: 0,
+        res: crate::ast::Resolution::Unresolved,
+    }
+}
+
+/// タプル/リストのアンパック代入 `a, b = <value>` を**添字アクセスへ脱糖**する（U2）。
+///
+/// ```text
+/// a, b = t        →  __py_tmp_N = t ; a = __py_tmp_N[0] ; b = __py_tmp_N[1]
+/// a, *rest = t    →  __py_tmp_N = t ; a = __py_tmp_N[0] ; rest = __py_tmp_N[1:]
+/// ```
+///
+/// ⚠⚠ **`Stmt::LetTuple` は使えない**。Arrow の `let a, let b = t` は**宣言**で、
+/// しかも**宣言済みの名前への `a, b = t` という構文自体が存在しない**
+/// （実測: `ParseError: unexpected token: ','`）。項目 2 のスコープ巻き上げが
+/// 全代入名を先に宣言して以降を `Stmt::Assign` にする以上、変換器から `LetTuple` は出せない。
+///
+/// ⚠ 一時変数は**必須**。`a = t[0]; b = t[1]` と直接書くと右辺が 2 回評価される
+/// （`a, b = f()` で `f` が 2 回走る）。
+/// ⚠ `*rest` は**末尾だけ**。途中に置く形（`a, *m, b = t`）は末尾からの逆算が要るので拒否する。
+fn unpack_assign(
+    elts: &[py::Expr],
+    value: Expr,
+    filename: &str,
+    declared: &std::collections::HashSet<String>,
+) -> Result<Vec<Stmt>, String> {
+    let tmp = next_temp_name("tmp");
+    if !hoist_emit(Stmt::Mut(tmp.clone(), None, value)) {
+        return Err(format!("{filename}: internal error: no hoist buffer"));
+    }
+    let mut out = Vec::new();
+    for (i, elt) in elts.iter().enumerate() {
+        let is_last = i + 1 == elts.len();
+        match elt {
+            py::Expr::Name(n) => {
+                let idx = Expr::Subscript {
+                    object: Box::new(ident_expr(&tmp)),
+                    index: Box::new(Expr::Int(i as i64)),
+                    node_id: 0,
+                };
+                out.push(assign_or_declare(n.id.to_string(), idx, filename, declared));
+            }
+            // `*rest` は残り全部。末尾のときだけスライス（項目 4）で受ける。
+            py::Expr::Starred(s) if is_last => {
+                let py::Expr::Name(n) = &*s.value else {
+                    return Err(format!(
+                        "{filename}: only a simple name is supported after `*` in unpacking"
+                    ));
+                };
+                let rest = Expr::Subscript {
+                    object: Box::new(ident_expr(&tmp)),
+                    index: Box::new(Expr::Slice {
+                        begin: Some(Box::new(Expr::Int(i as i64))),
+                        end: None,
+                        step: None,
+                    }),
+                    node_id: 0,
+                };
+                out.push(assign_or_declare(n.id.to_string(), rest, filename, declared));
+            }
+            py::Expr::Starred(_) => {
+                return Err(format!(
+                    "{filename}: `*rest` must be the last target in unpacking"
+                ))
+            }
+            py::Expr::Tuple(_) | py::Expr::List(_) => {
+                return Err(format!(
+                    "{filename}: nested unpacking (`a, (b, c) = ...`) is not supported"
+                ))
+            }
+            // `o.a, d[k] = t` のような属性/添字ターゲット。
+            py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
+                let idx = Expr::Subscript {
+                    object: Box::new(ident_expr(&tmp)),
+                    index: Box::new(Expr::Int(i as i64)),
+                    node_id: 0,
+                };
+                out.push(Stmt::AttrAssign {
+                    target: convert_expr(elt, filename)?,
+                    value: idx,
+                });
+            }
+            _ => return Err(format!("{filename}: unsupported unpacking target")),
+        }
+    }
+    Ok(out)
+}
+
 /// `for ... else:` / `while ... else:` の明示エラー文言（2 箇所で同じものを出す）。
 ///
 /// ⚠ Python のループ `else` は「**`break` せずに回り切ったときだけ**走る」節。
@@ -206,9 +298,7 @@ pub(crate) fn convert_scope(
         .map(|name| Stmt::Mut(name, None, Expr::None))
         .collect();
     for stmt in stmts {
-        if let Some(s) = convert_stmt(stmt, filename, &declared)? {
-            result.push(s);
-        }
+        convert_one_into(stmt, filename, &declared, &mut result)?;
     }
     Ok(result)
 }
@@ -222,11 +312,30 @@ pub(crate) fn convert_stmts(
 ) -> Result<Vec<Stmt>, String> {
     let mut result = Vec::new();
     for stmt in stmts {
-        if let Some(s) = convert_stmt(stmt, filename, declared)? {
-            result.push(s);
-        }
+        convert_one_into(stmt, filename, declared, &mut result)?;
     }
     Ok(result)
+}
+
+/// 文を 1 つ変換し、**式から持ち上がった補助文を前に置いて**から `out` へ並べる（INF-B / INF-C）。
+///
+/// ⚠⚠ 補助文は**必ず本体より前**。順序を逆にすると walrus も一時変数も未定義参照になる。
+/// ⚠ バッファは文ごとに積む。`if` の本体などは内側の `convert_stmts` が自分のぶんを
+///   積むので、外側の文の補助文と混ざらない。
+fn convert_one_into(
+    stmt: &py::Stmt,
+    filename: &str,
+    declared: &std::collections::HashSet<String>,
+    out: &mut Vec<Stmt>,
+) -> Result<(), String> {
+    hoist_push();
+    // ⚠ `?` で早期 return するとバッファが残るが、変換エラーはモジュールごと中断するので
+    //   実害は無い（`convert_python_source` の入口の `reset_hoist()` が消す）。
+    let converted = convert_stmt(stmt, filename, declared)?;
+    let aux = hoist_pop();
+    out.extend(aux);
+    out.extend(converted);
+    Ok(())
 }
 
 /// 単純名前への代入を、宣言済みなら再代入（`Stmt::Assign`）、そうでなければ宣言（`Stmt::Mut`）にする。
@@ -257,7 +366,7 @@ pub(crate) fn convert_stmt(
     stmt: &py::Stmt,
     filename: &str,
     declared: &std::collections::HashSet<String>,
-) -> Result<Option<Stmt>, String> {
+) -> Result<Vec<Stmt>, String> {
     match stmt {
         // ----- 関数定義 -----
         py::Stmt::FunctionDef(f) => {
@@ -290,16 +399,16 @@ pub(crate) fn convert_stmt(
                         f.name.as_str()
                     ));
                 }
-                return Ok(Some(Stmt::GenDef {
+                return Ok(vec![Stmt::GenDef {
                     name: f.name.to_string(),
                     template_params: vec![],
                     params,
                     yield_type: extract_yield_type(f.returns.as_deref()),
                     body,
                     access: crate::ast::Accessibility::Public,
-                }));
+                }]);
             }
-            Ok(Some(Stmt::FnDef {
+            Ok(vec![Stmt::FnDef {
                 name: f.name.to_string(),
                 template_params: vec![],
                 params,
@@ -310,7 +419,7 @@ pub(crate) fn convert_stmt(
                 is_class_method: false,
                 decorators: dec.decorators,
                 access: crate::ast::Accessibility::Public,
-            }))
+            }])
         }
 
         // ----- 非同期関数定義（未サポート） -----
@@ -321,7 +430,7 @@ pub(crate) fn convert_stmt(
 
         // ----- クラス定義 -----
         // デコレータは `convert_class` 側で処理する（クラス名が必要なため）。
-        py::Stmt::ClassDef(c) => convert_class(c, filename).map(Some),
+        py::Stmt::ClassDef(c) => convert_class(c, filename).map(|s| vec![s]),
 
         // ----- return -----
         py::Stmt::Return(r) => {
@@ -330,40 +439,55 @@ pub(crate) fn convert_stmt(
                 .as_deref()
                 .map(|e| convert_expr(e, filename))
                 .transpose()?;
-            Ok(Some(Stmt::Return(expr)))
+            Ok(vec![Stmt::Return(expr)])
         }
 
-        // ----- 代入: 単純な `x = expr` -----
+        // ----- 代入: `x = expr` / `a = b = expr`（項目 15）/ `a, b = t`（U2） -----
         py::Stmt::Assign(a) => {
-            if a.targets.len() != 1 {
-                return Err(format!(
-                    "{filename}: multiple assignment targets are not supported"
-                ));
-            }
-            let target = &a.targets[0];
-            match target {
-                py::Expr::Name(n) => {
-                    let name = n.id.to_string();
-                    let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(assign_or_declare(name, val, filename, declared)))
+            let val = convert_expr(&a.value, filename)?;
+            // ★ **複数ターゲット**（`a = b = c`・項目 15）。
+            //   ⚠ `a = c; b = c` と 2 回書くと**右辺が 2 回評価される**（`a = b = f()` で
+            //     `f` が 2 回走り、`a = b = []` は別オブジェクトになる）。
+            //     一時変数へ 1 回だけ退避してから配る。
+            let (source, mut out) = if a.targets.len() > 1 {
+                let tmp = next_temp_name("tmp");
+                if !hoist_emit(Stmt::Mut(tmp.clone(), None, val)) {
+                    return Err(format!("{filename}: internal error: no hoist buffer"));
                 }
-                // 属性代入 `o.a = v` と添字代入 `a[i] = v` / `d[k] = v` は
-                // どちらも Arrow では `Stmt::AttrAssign`（target に代入先の**式**を置く形）。
-                // ⚠ `d["k"][0] = v` のような入れ子も、target が入れ子の `Expr::Subscript` に
-                //   なるだけでそのまま通る。
-                py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
-                    let target_expr = convert_expr(target, filename)?;
-                    let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(Stmt::AttrAssign {
-                        target: target_expr,
-                        value: val,
-                    }))
+                (ident_expr(&tmp), Vec::new())
+            } else {
+                (val, Vec::new())
+            };
+            for target in &a.targets {
+                // ⚠ ターゲットが複数のときは毎回 `source`（一時変数への参照）を複製する。
+                let value = source.clone();
+                match target {
+                    py::Expr::Name(n) => {
+                        out.push(assign_or_declare(n.id.to_string(), value, filename, declared));
+                    }
+                    // 属性代入 `o.a = v` と添字代入 `a[i] = v` / `d[k] = v` は
+                    // どちらも Arrow では `Stmt::AttrAssign`（target に代入先の**式**を置く形）。
+                    // ⚠ `d["k"][0] = v` のような入れ子も、target が入れ子の `Expr::Subscript` に
+                    //   なるだけでそのまま通る。
+                    py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
+                        out.push(Stmt::AttrAssign {
+                            target: convert_expr(target, filename)?,
+                            value,
+                        });
+                    }
+                    // ★ **タプル/リストのアンパック**（`a, b = t` / `a, *rest = t`・U2）。
+                    py::Expr::Tuple(_) | py::Expr::List(_) => {
+                        let elts = match target {
+                            py::Expr::Tuple(t) => &t.elts,
+                            py::Expr::List(l) => &l.elts,
+                            _ => unreachable!("直前の match で絞り込み済み"),
+                        };
+                        out.extend(unpack_assign(elts, value, filename, declared)?);
+                    }
+                    _ => return Err(format!("{filename}: unsupported assignment target")),
                 }
-                py::Expr::Tuple(_) | py::Expr::List(_) => Err(format!(
-                    "{filename}: tuple/list unpacking in assignment is not supported"
-                )),
-                _ => Err(format!("{filename}: unsupported assignment target")),
             }
+            Ok(out)
         }
 
         // ----- 型アノテーション付き代入: `x: int = 5` -----
@@ -372,10 +496,10 @@ pub(crate) fn convert_stmt(
                 if let Some(val_expr) = &a.value {
                     let name = n.id.to_string();
                     let val = convert_expr(val_expr, filename)?;
-                    Ok(Some(assign_or_declare(name, val, filename, declared)))
+                    Ok(vec![assign_or_declare(name, val, filename, declared)])
                 } else {
                     // 値なしの `x: int` は Python でも束縛を作らないので何も出さない。
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
             // `o.a: T = v` / `d[k]: T = v`（Python は注釈つき添字代入も許す）。注釈は捨てる。
@@ -383,15 +507,15 @@ pub(crate) fn convert_stmt(
                 if let Some(val_expr) = &a.value {
                     let target_expr = convert_expr(&a.target, filename)?;
                     let val = convert_expr(val_expr, filename)?;
-                    Ok(Some(Stmt::AttrAssign {
+                    Ok(vec![Stmt::AttrAssign {
                         target: target_expr,
                         value: val,
-                    }))
+                    }])
                 } else {
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
-            _ => Ok(None),
+            _ => Ok(vec![]),
         },
 
         // ----- 拡張代入: `x += expr` -----
@@ -401,24 +525,24 @@ pub(crate) fn convert_stmt(
                 py::Expr::Name(n) => {
                     let val = convert_expr(&a.value, filename)?;
                     let span = make_span(filename);
-                    Ok(Some(Stmt::CompoundAssign {
+                    Ok(vec![Stmt::CompoundAssign {
                         name: n.id.to_string(),
                         op,
                         value: val,
                         span,
                         slot: Default::default(),
                         node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
-                    }))
+                    }])
                 }
                 // `o.a += v` と `a[i] += v` はどちらも `Stmt::AttrCompoundAssign`。
                 py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
                     let target_expr = convert_expr(&a.target, filename)?;
                     let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(Stmt::AttrCompoundAssign {
+                    Ok(vec![Stmt::AttrCompoundAssign {
                         target: target_expr,
                         op,
                         value: val,
-                    }))
+                    }])
                 }
                 _ => Err(format!(
                     "{filename}: unsupported augmented assignment target"
@@ -429,7 +553,7 @@ pub(crate) fn convert_stmt(
         // ----- if 文（ホイストなし版: convert_stmt_in_hoist_ctx 経由でホイストあり版を使う） -----
         py::Stmt::If(i) => {
             if is_main_guard(&i.test) {
-                return Ok(None);
+                return Ok(vec![]);
             }
             let cond = convert_expr(&i.test, filename)?;
             let then_body = convert_stmts(&i.body, filename, declared)?;
@@ -458,10 +582,10 @@ pub(crate) fn convert_stmt(
                 break;
             }
 
-            Ok(Some(Stmt::If {
+            Ok(vec![Stmt::If {
                 branches,
                 else_body,
-            }))
+            }])
         }
 
         // ----- while -----
@@ -473,7 +597,7 @@ pub(crate) fn convert_stmt(
             }
             let cond = convert_expr(&w.test, filename)?;
             let body = convert_stmts(&w.body, filename, declared)?;
-            Ok(Some(Stmt::While { cond, body }))
+            Ok(vec![Stmt::While { cond, body }])
         }
 
         // ----- for -----
@@ -518,11 +642,11 @@ pub(crate) fn convert_stmt(
             };
             let iter = convert_expr(&f.iter, filename)?;
             let body = convert_stmts(&f.body, filename, declared)?;
-            Ok(Some(Stmt::For {
+            Ok(vec![Stmt::For {
                 targets,
                 iter,
                 body,
-            }))
+            }])
         }
 
         // ----- with（未サポート） -----
@@ -583,11 +707,11 @@ pub(crate) fn convert_stmt(
             } else {
                 Some(convert_stmts(&t.finalbody, filename, declared)?)
             };
-            Ok(Some(Stmt::Try {
+            Ok(vec![Stmt::Try {
                 body,
                 handlers,
                 finally_body,
-            }))
+            }])
         }
 
         // ----- raise -----
@@ -606,7 +730,7 @@ pub(crate) fn convert_stmt(
                 .map(|e| convert_expr(e, filename))
                 .transpose()?;
             let span = make_span(filename);
-            Ok(Some(Stmt::Raise { exc, span }))
+            Ok(vec![Stmt::Raise { exc, span }])
         }
 
         // ----- assert（未サポート・専用の文言） -----
@@ -649,15 +773,15 @@ pub(crate) fn convert_stmt(
                     _ => return Err(format!("{filename}: unsupported `del` target")),
                 }
             }
-            Ok(None)
+            Ok(vec![])
         }
 
         // ----- pass -----
-        py::Stmt::Pass(_) => Ok(Some(Stmt::Pass)),
+        py::Stmt::Pass(_) => Ok(vec![Stmt::Pass]),
 
         // ----- break / continue -----
-        py::Stmt::Break(_) => Ok(Some(Stmt::Break)),
-        py::Stmt::Continue(_) => Ok(Some(Stmt::Continue)),
+        py::Stmt::Break(_) => Ok(vec![Stmt::Break]),
+        py::Stmt::Continue(_) => Ok(vec![Stmt::Continue]),
 
         // ----- 式文 -----
         py::Stmt::Expr(e) => {
@@ -670,7 +794,7 @@ pub(crate) fn convert_stmt(
             //     Arrow に `Ellipsis` 値が無く、副作用も無いため許容している。
             if matches!(&*e.value, py::Expr::Constant(c) if matches!(c.value, py::Constant::Ellipsis))
             {
-                return Ok(Some(Stmt::Pass));
+                return Ok(vec![Stmt::Pass]);
             }
             // ★ 文位置の `yield x` → `Stmt::Yield`（項目 9）。
             //   ⚠ ここを通るのは `frame_has_yield` が真になった `def` の本体だけ
@@ -682,7 +806,7 @@ pub(crate) fn convert_stmt(
                     Some(v) => convert_expr(v, filename)?,
                     None => Expr::None,
                 };
-                return Ok(Some(Stmt::Yield(val)));
+                return Ok(vec![Stmt::Yield(val)]);
             }
             // ⚠ `yield from xs` は「内側のジェネレータへ委譲する」構文で、Arrow に
             //   相当するものが無い。`for v in xs: yield v` へ機械的に書き換えると
@@ -694,12 +818,12 @@ pub(crate) fn convert_stmt(
                 ));
             }
             let expr = convert_expr(&e.value, filename)?;
-            Ok(Some(Stmt::Expr(expr)))
+            Ok(vec![Stmt::Expr(expr)])
         }
 
         // ----- global / nonlocal -----
         //
-        // ⚠⚠ **以前は黙って無視していた**（`Ok(None)`）。その結果、内側の関数からの
+        // ⚠⚠ **以前は黙って無視していた**（`Ok(vec![])`）。その結果、内側の関数からの
         //   代入が**外側に届かないまま静かに動く**（＝内側のローカルを書き換えるだけ）
         //   という誤変換になっていた。Arrow は外側の変数を `mut` で宣言すれば内側から
         //   書き換えられるので、代替手段はある。
@@ -715,7 +839,7 @@ pub(crate) fn convert_stmt(
         )),
 
         // ----- import / from-import（モジュール本体内の import は無視） -----
-        py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None),
+        py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(vec![]),
 
         // ----- match（値 / ワイルドカードのサブセット・項目 8） -----
         //
@@ -794,11 +918,11 @@ pub(crate) fn convert_stmt(
                     body: convert_stmts(&case.body, filename, declared)?,
                 });
             }
-            Ok(Some(Stmt::Match {
+            Ok(vec![Stmt::Match {
                 subject,
                 arms,
                 span: make_span(filename),
-            }))
+            }])
         }
 
         // ----- type alias（Python 3.12+） -----
@@ -821,7 +945,7 @@ pub(crate) fn convert_stmt(
             };
             // 右辺は**登録前に**解決する（連鎖は効き、自己参照は無限再帰にならない）。
             register_type_alias(n.id.to_string(), convert_annotation(&t.value));
-            Ok(None)
+            Ok(vec![])
         }
 
         #[allow(unreachable_patterns)]

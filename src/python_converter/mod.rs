@@ -15,12 +15,14 @@ pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, 
     // ⚠ 型エイリアス表はモジュール 1 本の変換中だけ有効（項目 10）。
     //   モジュールをまたいで漏れると、別ファイルの同名の型が化ける。
     reset_type_aliases();
+    reset_hoist();
     let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
     // モジュール本体も 1 つのスコープ（パラメータは無い）。
     convert_scope(&ast, filename, &[])
 }
 
 
+mod hoist;
 mod statements;
 mod classes;
 mod decorators;
@@ -29,6 +31,7 @@ mod param_rewrite;
 mod expressions;
 mod annotations;
 mod utils;
+pub(crate) use hoist::*;
 pub(crate) use statements::*;
 pub(crate) use classes::*;
 pub(crate) use decorators::*;

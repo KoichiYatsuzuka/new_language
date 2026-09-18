@@ -75,7 +75,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - 除外: パラメータ名、`for` ループ変数（これらは別途宣言済み）。
 - 影響: `convert_stmt` の `Assign`/`AnnAssign`（Name ターゲット）を `Stmt::Mut` 固定でなく「初回=Mut/以降=Assign」判定に変更。→ 判定用に「宣言済み集合」を引数で引き回すか、`convert_stmts_with_hoist` で全 hoist して常に `Assign` にする（後者が単純で堅牢）。
 
-### INF-B: 式コンテキストから囲みスコープへ文を注入する機構
+### INF-B: 式コンテキストから囲みスコープへ文を注入する機構 ✅ **実装済（2026-09-19）**
+> 実装: 新設 [`hoist.rs`](src/python_converter/hoist.rs)。⚠ **`convert_expr` に
+> `&mut Vec<Stmt>` を足す案は採らなかった** —— 呼び出しが **59 箇所**あり、
+> `supers.rs` / `param_rewrite.rs` が同じ理由で既にスレッドローカルを採っている。
+> `convert_stmts` / `convert_scope` が**文ごと**にバッファを積み、`convert_one_into` が
+> 補助文を**本体の前**に並べる。
 - ファイル: `statements.rs` / `expressions.rs`
 - 用途: 項目15（複数代入の一時変数）・23（walrus）・26（lambda lifting）。
 - 方針: `convert_expr` が「この式の前に実行すべき補助文」を外へ持ち出せるようにする。実装案:
@@ -83,7 +88,8 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `convert_stmt` は各文を変換する際にローカル `hoist_out` を用意し、生成された補助文を**当該文の直前**に挿入する。
 - 難易度: 中（シグネチャ変更が広域に及ぶ）。**先に用意してから 15/23/26 に着手**。
 
-### INF-C: `convert_stmt` の複数文返却
+### INF-C: `convert_stmt` の複数文返却 ✅ **実装済（2026-09-19）**
+> `Result<Option<Stmt>, String>` → `Result<Vec<Stmt>, String>`。呼び出しは 2 箇所だけで安かった。
 - ファイル: `statements.rs`
 - 用途: 項目15（`a = b = c` を2文へ）。
 - 方針: `convert_stmt` の戻り値 `Result<Option<Stmt>, String>` を `Result<Vec<Stmt>, String>` 化（呼び出し側 `convert_stmts_*` の push を extend に）。または INF-B の `hoist_out` に追加文を積んで対応。どちらか一方で足りる。
@@ -836,11 +842,16 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 
 ### フェーズ D — 式→文注入の基盤と、その消費者
 
+> **進捗**: D1（INF-B/C）・D2（項目15）・D3（U2）完了（2026-09-19）。残りは D4（walrus）・D5（lambda）・D6（任意）。
+> ⚠⚠ **coverage 項目 15 の「一時変数化すれば `a = b = []` の共有も直せる」は now 失効**。
+> Arrow は **代入で複製する**（B8/B9/L4「格納も複製する」）ので、一時変数を挟んでも
+> a と b は別オブジェクトになる。純 Arrow で再現する**モデル差**で、変換器では埋められない。
+
 | 段 | # | タスク |
 |---|---|---|
 | D-前 | D1 | **INF-B**（式から囲みスコープへ文を注入）＋ **INF-C**（複数文返却）。どちらか一方で足りる項目もあるが、**まとめて入れる** |
-| D-後 | D2 | 項目15 複数代入 `a = b = c` |
-| | D3 | **U2** 代入のアンパック `a, b = t` / `a, *rest = t`（添字＋スライスへ脱糖） |
+| D-後 | D2 ✅ | 項目15 複数代入 `a = b = c`（2026-09-19 完了） |
+| | D3 ✅ | **U2** 代入のアンパック `a, b = t` / `a, *rest = t`（2026-09-19 完了・添字＋スライスへ脱糖） |
 | | D4 | 項目23 walrus `:=` |
 | | D5 | 項目26 lambda lifting ⚠ **実用性は A7 と B1 が要る** |
 | | D6 | （任意）項目16 の中間オペランド二重評価を 1 回評価へ |
