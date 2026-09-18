@@ -1,26 +1,30 @@
-# py_defaults_error.ar — デフォルト式が**変換できない**ときに明示エラーになること（項目 1）。
+# py_defaults_error.ar — **デフォルト式の中身**が未対応のときのエラー（項目 1）。
 #
-# 項目 1 の実装前は `Param.default` を常に `None` にしていた＝**デフォルト式を丸ごと捨てて**いた。
-# そのため下のような `.py` は「黙って読み込めて、呼ぶと引数不足で落ちる」という分かりにくい形だった。
-# 今はデフォルト式も `convert_expr` に通すので、**未対応構文がその場で表に出る**。
+# 項目 1 の実装前はデフォルト値を**丸ごと捨てて**いたので、変換できない式が入っていても
+# 黙って通っていた（そのかわり呼ぶと引数不足で落ちた）。今はデフォルト式も
+# `convert_expr` に通すので、**中身の未対応がその場で表に出る**。
+# ⇒ これは「項目 1 が壊れている」のではなく、**サイレント欠落の解消**。
 #
-# ⚠ 変換時（パース時）のエラーなので 1 ファイルにつき 1 つしか踏めない。
-#   もう一方を試すときは import 行を入れ替えること。
+# ⚠⚠ **この例題は 2026-09-19 に中身を入れ替えた**。もとは lambda（項目 26）と
+#   素の f-string（項目 19）を踏ませていたが、**どちらも実装されて通るようになった**
+#   ため `_error` 例として成立しなくなった（`compare_python_impl.ps1` が stale として検出）。
+#   ⇒ lambda がデフォルト値として**通る**ことは `py_lambda.ar` の ⑦ が持つ。
 #
-# 期待されるエラー（ParseError・変換時）:
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
 #
-#   ① lambda デフォルト（本ファイルが踏む形／項目 26 が未実装）
-#      `lambda is not supported`
+#   ① 書式指定つき f-string（本ファイルが踏む形）
+#      f-string format specifier (e.g. `{x:.2f}`) is not supported
+#      ⇒ Arrow に書式指定の構文・組込が無い（FUTURE_FEATURE §4 (3)）。
 #
-#   ② f-string デフォルト（項目 19 が未実装）
-#      `f-strings are not supported`
+#   ② bytes リテラル
+#      bytes literals are not supported
+#      ⇒ Arrow に bytes 型が無い。
 #
-# ⇒ どちらも「項目 1 が壊れている」のではなく、**デフォルト式の中身が未対応**という意味。
-#   該当項目が実装されればそのまま通るようになる。
+# ⚠ **通る形**は `py_defaults.ar`（リテラル / None / タプル / 名前参照 / 可変デフォルト）。
 
-import[py] test_modules.py_default_lambda_error as m
+import[py] test_modules.py_default_fmtspec_error as m
 
 # ② を試す場合:
-# import[py] test_modules.py_default_fstring_error as m
+# import[py] test_modules.py_default_bytes_error as m
 
 print("unreachable")

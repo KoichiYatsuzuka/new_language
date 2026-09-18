@@ -1,0 +1,27 @@
+# py_lambda_error.ar — lambda 持ち上げで**通さない**位置（項目 26）。
+#
+# 持ち上げ先は「**この文の直前**」なので、そこで参照できない名前を本体が使う形や、
+# 評価回数が変わる位置は通せない。
+#
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+# ⚠ エラー文言は共通:
+#   a lambda here cannot be lifted (it is inside a comprehension, an `and`/`or` operand,
+#   a conditional expression, or a `while` test); define a named function instead
+#
+#   ① 内包表記の中（本ファイルが踏む形）
+#      `[(lambda: x) for x in xs]` の `x` は**内包表記のループ変数**で、
+#      文の直前には存在しない。⇒ 持ち上げるとスコープ外になる。
+#      ⇒ 代替: 名前付きの `def` を先に定義して使う。
+#
+#   ② `and` / `or` の右辺・三項の腕・`while` の条件
+#      walrus（項目 23）と同じガードで止めている。
+#
+# ⚠ **通る形**は `py_lambda.ar`（変数へ束縛 / 捕捉 / 呼び出し引数 / デフォルト引数つき /
+#   入れ子 / 同じ文脈に 2 つ / デフォルト値の中）。
+
+import[py] test_modules.py_lambda_comp_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_lambda_and_error as m
+
+print("unreachable")

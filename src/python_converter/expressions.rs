@@ -448,7 +448,12 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         // ⚠ 脱糖は `ast::build_list_comprehension` に集約してある。**Arrow のネイティブ構文
         //   （`parse_comprehension_tail`）と同じ関数**を通すので、生成される AST は必ず同一。
         py::Expr::ListComp(lc) => {
-            let elt = convert_expr(&lc.elt, filename)?;
+            // ⚠ 要素式は**要素ごと**に評価され、ループ変数がここでだけ見える。
+            //   持ち上げ禁止の位置にする（walrus・lambda ともに外へ出すと壊れる）。
+            let elt = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                convert_expr(&lc.elt, filename)?
+            };
             let clauses = convert_comprehension_clauses(&lc.generators, filename, "list")?;
             crate::ast::build_list_comprehension(elt, clauses)
                 .ok_or_else(|| format!("{filename}: list comprehension needs at least one `for` clause"))
@@ -456,7 +461,11 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         // 集合内包 → リスト内包の結果を `set(...)` に通す（Arrow の `set()` はリストを受け取れる）。
         py::Expr::SetComp(sc) => {
-            let elt = convert_expr(&sc.elt, filename)?;
+            // ⚠ リスト内包と同じ理由で持ち上げ禁止。
+            let elt = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                convert_expr(&sc.elt, filename)?
+            };
             let clauses = convert_comprehension_clauses(&sc.generators, filename, "set")?;
             let list_expr = crate::ast::build_list_comprehension(elt, clauses)
                 .ok_or_else(|| format!("{filename}: set comprehension needs at least one `for` clause"))?;
@@ -485,7 +494,57 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             "{filename}: generator expression is not supported (it is lazy; use a list comprehension `[...]` instead)"
         )),
 
-        py::Expr::Lambda(_) => Err(format!("{filename}: lambda is not supported")),
+        // ★ lambda を**名前付き関数へ持ち上げる**（lambda lifting・項目 26）。
+        //
+        //   sorted(xs, key=lambda x: -x)
+        //     ->  fn __py_lambda_N(x):
+        //             return -x
+        //         sorted(xs, key=__py_lambda_N)
+        //
+        // ⚠ 戻り型は **`None`（注釈なし）**。`-> Any` にすると `Any` が伝染して
+        //   `cannot apply '+' to 'Any'` になる（実測）。py 由来の関数はどれも注釈が
+        //   無いので、それに揃えるのが正しい。
+        //
+        // ⚠⚠ **入れ子の lambda は内側を外側の本体へ入れる**。同じバッファへ積むと
+        //   `lambda x: (lambda y: x + y)` の内側が外側の外に出てしまい、`x` が見えなくなる。
+        //   ⇒ 本体の変換だけ別バッファで囲い、そこで持ち上がった定義を
+        //     **持ち上げ先 `fn` の本体の先頭**に置く。
+        py::Expr::Lambda(l) => {
+            // ⚠ 束縛を新しく作る位置（内包表記のループ変数など）へ持ち上げると、
+            //   本体が参照する名前がスコープ外になる。評価回数のガードを流用して止める。
+            if !hoist_is_safe() {
+                return Err(format!(
+                    "{filename}: a lambda here cannot be lifted (it is inside a comprehension,                      an `and`/`or` operand, a conditional expression, or a `while` test);                      define a named function instead"
+                ));
+            }
+            let name = next_temp_name("lambda");
+            let (params, renames) = convert_params(&l.args, filename)?;
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            // 本体は別バッファで変換する（入れ子 lambda の定義を内側に閉じ込めるため）。
+            hoist_push();
+            let body_expr = {
+                let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+                convert_expr(&l.body, filename)
+            };
+            let mut body = hoist_pop();
+            let body_expr = body_expr?;
+            body.push(Stmt::Return(Some(body_expr)));
+            if !hoist_emit(Stmt::FnDef {
+                name: name.clone(),
+                template_params: vec![],
+                params,
+                return_type: None,
+                body,
+                is_abstract: false,
+                is_static: false,
+                is_class_method: false,
+                decorators: vec![],
+                access: crate::ast::Accessibility::Public,
+            }) {
+                return Err(format!("{filename}: internal error: no hoist buffer"));
+            }
+            Ok(ident_expr(&name))
+        }
 
         // f-string。`desugar_fstring`（`src/parser/exprs.rs`）と**同形**に脱糖する:
         // リテラル片はそのまま、埋め込み式は `str(...)` で包み、左結合の `+` で連結する。
