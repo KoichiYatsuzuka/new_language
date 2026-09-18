@@ -1,0 +1,56 @@
+# list_dict_ctor.ar — `list()` / `dict()` コンストラクタ。
+#
+# ⚠⚠ **どちらも「あるのに使えない」状態だった**（配線の穴が 2 つ・向きが逆）:
+#   - `list` … `eval_type_call` に**完全な実装があるのに**グローバルに名前が登録されて
+#     おらず、`NameError: 'list' is not defined` で到達できなかった。
+#   - `dict` … グローバルに `Value::Type("dict")` として**登録されているのに**
+#     `eval_type_call` にケースが無く、`'dict' object is not callable` に落ちていた。
+#
+# ⚠ `dict()` は 2 箇所の前提だった: `{**d1, **d2}`（辞書の合成）と
+#   **辞書内包**（FUTURE_FEATURE §4 (4-a)）。`items()` と合わせて
+#   `dict(d1.items() + d2.items())` と書ける。
+#
+# 10 形すべて CPython と出力一致を突き合わせ済み。
+
+print("--- list() ---")
+
+mut t = (1, 2, 3)
+print(list(t))
+# [1, 2, 3]
+
+mut s = {3, 1}
+print(len(list(s)))
+# 2
+
+print(list("abc"))
+# ['a', 'b', 'c']
+
+# ⚠ `list(dict)` は Python と同じく**キー**を返す。
+mut d = {"a": 1, "b": 2}
+print(list(d))
+# ['a', 'b']
+
+print(list())
+# []
+
+print("--- dict() ---")
+
+print(dict())
+# {}
+
+mut pairs = [("a", 1), ("b", 2)]
+print(dict(pairs))
+# {'a': 1, 'b': 2}
+
+# 複製
+print(dict(d))
+# {'a': 1, 'b': 2}
+
+# ★ `items()` との組み合わせ（辞書の合成・辞書内包の土台）
+print(dict(d.items()))
+# {'a': 1, 'b': 2}
+
+# 2 要素のリストでもよい
+mut lists = [["x", 9]]
+print(dict(lists))
+# {'x': 9}

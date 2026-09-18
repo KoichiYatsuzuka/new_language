@@ -209,7 +209,10 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
     // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
     // call_value_with_args 経由で呼べるようにするため。
     for name in [
-        "int", "uint", "str", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
+        // ⚠⚠ `list` は **`eval_type_call` に完全な実装があるのに、ここに名前が無かった**
+        //   ため `NameError: 'list' is not defined` で到達できなかった（配線漏れ）。
+        "int", "uint", "str", "float", "complex", "bool", "dict", "set", "list", "function", "len",
+        "slice",
     ] {
         global.insert(
             name.to_string(),

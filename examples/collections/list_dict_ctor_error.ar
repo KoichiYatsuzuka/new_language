@@ -1,0 +1,17 @@
+# list_dict_ctor_error.ar — `dict()` が**対になっていない要素を黙って捨てない**こと。
+#
+# ⚠ 捨てると「入れたのに引けない辞書」になる（B1 が潰したのと同じ失敗形）。
+#   要素が `(key, value)` の形でなければ `TypeError`、長さが 2 でなければ `ValueError`。
+#
+# 期待されるエラー:
+#   TypeError: dict() element #0 must be a (key, value) pair, not 'int'
+#
+# ⚠ 他の形（どれも明示エラー）:
+#   dict([(1, 2, 3)])  -> ValueError: dict() element #0 has length 3, expected 2
+#   dict(5)            -> TypeError: 'int' object is not iterable
+#   list(5)            -> TypeError: 'int' object is not iterable
+#
+# ⚠ **通る形**は `list_dict_ctor.ar`。
+
+mut xs = [1, 2]
+print(dict(xs))
