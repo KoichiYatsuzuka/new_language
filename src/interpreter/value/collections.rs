@@ -246,6 +246,15 @@ impl DictData {
         self.map.values().cloned().collect()
     }
 
+    /// すべての `(キー, 値)` を**組**にして返す（挿入順）。
+    ///
+    /// `d.items()` の素材。タプル化（`TupleData` の型名リストが要る）は呼び出し側で行う
+    /// —— 要素のランタイム型名は `Interpreter::type_name` でしか取れないため、
+    /// `zip` / `enumerate` と同じく**ディスパッチ側**で組む。
+    pub fn all_pairs(&self) -> Vec<(Value, Value)> {
+        self.map.iter().map(|(k, v)| (k.key.clone(), v.clone())).collect()
+    }
+
     /// エントリ数を返す。
     pub fn len(&self) -> usize {
         self.map.len()

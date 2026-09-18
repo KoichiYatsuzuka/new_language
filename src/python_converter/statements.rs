@@ -399,18 +399,44 @@ pub(crate) fn convert_stmt(
             if !f.orelse.is_empty() {
                 return Err(loop_else_error(filename, "for"));
             }
-            let target = match &*f.target {
-                py::Expr::Name(n) => n.id.to_string(),
+            // ループ変数。Arrow の `Stmt::For.targets` は元から `Vec<String>` で
+            // **多ターゲットに対応済み**なので、単純名を並べるだけで通る（U1）。
+            //   `for k, v in pairs:` / `for i, v in enumerate(xs):` /
+            //   `for k, v in d.items():` がそのまま動く。
+            // ⚠ 入れ子タプル（`for a, (b, c) in ...`）と `*rest` は Arrow 側に受け皿が
+            //   無いので明示エラーのまま。
+            let targets: Vec<String> = match &*f.target {
+                py::Expr::Name(n) => vec![n.id.to_string()],
+                py::Expr::Tuple(t) => {
+                    let mut names = Vec::with_capacity(t.elts.len());
+                    for elt in &t.elts {
+                        match elt {
+                            py::Expr::Name(n) => names.push(n.id.to_string()),
+                            py::Expr::Starred(_) => {
+                                return Err(format!(
+                                    "{filename}: `*rest` in a for-loop target is not supported"
+                                ))
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "{filename}: only simple names are supported in a for-loop \
+                                     target (nested unpacking is not)"
+                                ))
+                            }
+                        }
+                    }
+                    names
+                }
                 _ => {
                     return Err(format!(
-                        "{filename}: tuple unpacking in for-loop target is not supported"
+                        "{filename}: unsupported for-loop target"
                     ))
                 }
             };
             let iter = convert_expr(&f.iter, filename)?;
             let body = convert_stmts(&f.body, filename, declared)?;
             Ok(Some(Stmt::For {
-                targets: vec![target],
+                targets,
                 iter,
                 body,
             }))

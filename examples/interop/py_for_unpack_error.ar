@@ -1,0 +1,26 @@
+# py_for_unpack_error.ar — `for` ターゲットのアンパックで**通さない**形（U1）。
+#
+# `for k, v in ...`（単純名の並び）は通るが、Arrow の `Stmt::For.targets` は
+# `Vec<String>` なので**単純名しか置けない**。以下は受け皿が無く明示エラーにする。
+#
+# ⚠ いずれも**変換時（パース時）のエラー**なので、1 ファイルにつき 1 つしか踏めない。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① 入れ子タプル（本ファイルが踏む形）
+#      only simple names are supported in a for-loop target (nested unpacking is not)
+#      ⇒ 代替: 1 段だけ分解して、内側はループ本体で添字アクセスする。
+#
+#   ② `*rest`
+#      `*rest` in a for-loop target is not supported
+#      ⇒ 代替: 要素をそのまま受けてループ本体でスライスする。
+#
+# ⚠ **通る形**は `py_for_unpack.ar`（タプルのリスト / `d.items()` / `enumerate` /
+#   `zip` / 3 要素の分解）。
+
+import[py] test_modules.py_for_nested_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_for_starred_error as m
+
+print("unreachable")

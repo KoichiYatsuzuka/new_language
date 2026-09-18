@@ -272,6 +272,31 @@ impl Interpreter {
                         Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
                     }
+                    // `d.items()` — `(キー, 値)` タプルのリストを返す。
+                    //
+                    // ⚠ 多ターゲット `for`（`for k, v in d.items():`）で分解して使う形が主目的。
+                    //   タプルは `zip` / `enumerate` と**同じ作り方**にする（型名リストを
+                    //   `type_name` で埋める）。ここがずれると分解の挙動が揃わない。
+                    // ⚠ CPython のビューと違い**スナップショット**。走査中に元の辞書を
+                    //   変更してもこの列は変わらない（CPython は `RuntimeError` になる形）。
+                    "items" => {
+                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
+                        let pairs = d.borrow().all_pairs();
+                        let tuples: Vec<Value> = pairs
+                            .into_iter()
+                            .map(|(k, v)| {
+                                let types = vec![
+                                    self.type_name(&k).to_string(),
+                                    self.type_name(&v).to_string(),
+                                ];
+                                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
+                                    vec![k, v],
+                                    types,
+                                )))
+                            })
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(tuples))))
+                    }
                     _ => Err(format!(
                         "AttributeError: 'dict' object has no method '{method_name}'"
                     )),

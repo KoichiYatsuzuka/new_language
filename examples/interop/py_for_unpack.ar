@@ -1,0 +1,45 @@
+# py_for_unpack.ar — `import[py]` 変換器の **`for` ターゲットのアンパック**（U1）。
+#
+# `for k, v in pairs:` は Python で最頻出の形のひとつ。Arrow 側は
+# `Stmt::For.targets` が元から `Vec<String>` で**多ターゲットに対応済み**だったので、
+# 変換器が単純名を並べるだけで通る（Arrow 本体の追加は不要）。
+#
+# ⚠ **ただし `d.items()` は無かった**。Arrow の dict は `keys()` / `values()` しか
+#   持たず、`for k, v in d.items():` という最頻出の形が使えなかったので、
+#   本項目と同時に `items()` を追加した（`examples/collections/dict_items.ar`）。
+#
+# ⚠ **未対応（明示エラー）**: 入れ子タプル `for a, (b, c) in ...` と
+#   `for a, *rest in ...`。Arrow 側に受け皿が無い。→ `py_for_unpack_error.ar`。
+# ⚠ **内包表記の中はまだ通らない**: `[k for k, v in d.items()]` は
+#   `tuple unpacking in a list comprehension target is not supported`。
+#   `ComprehensionClause.target` が単一 `String` のため（ネイティブ構文側の変更も
+#   要るので別項目）。
+#
+# 5 形すべて CPython と出力一致を突き合わせ済み。
+
+import[py] test_modules.py_for_unpack as m
+
+# ── ① タプルのリストを分解する ──────────────────────────────────────────
+mut pairs = [(1, 10), (2, 20)]
+print(m.from_pairs(pairs))
+# ['1->10', '2->20']
+
+# ── ② dict.items()（本項目で Arrow に追加した） ─────────────────────────
+mut d = {"a": 1, "b": 2}
+print(m.from_dict(d))
+# 3
+
+# ── ③ enumerate ─────────────────────────────────────────────────────────
+mut xs = ["p", "q"]
+print(m.with_enumerate(xs))
+# ['0:p', '1:q']
+
+# ── ④ zip ───────────────────────────────────────────────────────────────
+mut ys = [1, 2]
+print(m.with_zip(xs, ys))
+# ['p1', 'q2']
+
+# ── ⑤ 3 要素の分解 ──────────────────────────────────────────────────────
+mut rows = [(1, 2, 3), (4, 5, 6)]
+print(m.triple(rows))
+# [6, 15]
