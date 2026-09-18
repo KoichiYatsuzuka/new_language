@@ -3645,7 +3645,7 @@ list[foo] / list[Box[int]] / list[type[foo]]  → 8.2 以降は NamedInstance �
 | # | 内容 | 影響 | 見つけたタスク |
 |---|---|---|---|
 | ~~**9.1**~~ | ~~`o::T.attr += v` がバイトコードに載らない~~ → **✅ 完了 2026-09-17** | 実行不能 | 5.1 |
-| **9.2** | `freeze` の意味がドキュメントと実装で食い違う | 仕様が確定していない | 7.2 |
+| ~~**9.2**~~ | ~~`freeze` の意味がドキュメントと実装で食い違う~~ → **✅ 完了 2026-09-18**（案 B） | 仕様が確定していない | 7.2 |
 | **9.3** | ゲートが `archived/` と `practical_examples/` を見ていない | **壊れた例題が放置されている** | 5.2c / 7.1 |
 | ~~**9.4**~~ | ~~`.pyi` のクラスメンバー・モジュール変数が型検査に届かない~~ → **⏹ 取り下げ 2026-09-18** | Python 直接翻訳機能の実装時に扱う | 7.8 |
 | ~~**9.5**~~ | ~~`compare_bytecode.ps1` が相対パスの `-A` で偽の全差分を出す~~ → **✅ 完了 2026-09-17** | ゲートが嘘をつく | 6.1 |
@@ -3735,6 +3735,68 @@ VmForceError: cannot compile top-level statement `AttrCompoundAssign` to bytecod
 
 ⚠ タスク 7.2 は**現状の実装に合わせて**（案 A 相当で）静的検査を入れた。
 案 B を採るなら 7.2 の `CheckState::frozen` を可変性フラグの降格に置き換える。
+
+##### 決定と記録（2026-09-18・完了）— **案 B（実装を doc に合わせる）**
+
+##### 利用者の決定
+
+> freeze は mut を let 属性にする仕様にします
+
+⇒ **`freeze x` は `mut` を `let` へ降格する。** doc（`src/ast.rs`）が正で、実装を直した。
+
+##### 直し方: 別の集合をやめ、**可変フラグそのものを倒す**
+
+7.2 は `CheckState::frozen: Vec<HashSet<String>>` という**別の集合**を持ち、
+`Stmt::Assign` の所で `is_frozen` を見て**再束縛だけ**を弾いていた。
+⇒ 集合を捨て、`CheckState::freeze_var` が**宣言スコープの `VarInfo.mutable` を倒す**
+形にした。`path_is_mutable` が `info.mutable` を見ているので、
+**`let` 束縛のために既にある検査がそのまま全部効く**:
+
+| 書き方 | 9.2 以降 | 9.2 より前 |
+|---|---|---|
+| `xs = [2]`（再束縛） | 静的エラー | 静的エラー |
+| `xs.append(2)` | **静的エラー** | 通っていた（`[1, 2]`） |
+| `xs[0] = 2` | **静的エラー** | 通っていた（`[2]`） |
+| `d["b"] = 2` | **静的エラー** | 通っていた |
+| `c.n = 5`（インスタンス） | **静的エラー** | **実行時**エラー |
+
+⚠ `Stmt::Assign` にあった `is_frozen` の別検査は撤去した。
+「同じ問いに 2 つの実装」が 1 つ減った（この campaign で繰り返し踏んだ形）。
+
+##### 降格はスコープを抜けても戻らない
+
+`if True: freeze zs` のあと、`zs` は**外側でも不変**。
+実行時の `make_var_immutable` が変数そのものを書き換える（＝その変数の寿命の間ずっと不変）
+のに合わせた。7.2 の `frozen` はスコープと一緒に push/pop していたので、
+ここも挙動が変わっている（例題 `let_binding_writes.ar` が
+「静的検査は内側の `freeze` を外へ持ち出さない」と明記していたのを撤回した）。
+
+##### 実行時との関係
+
+⚠ 実行時は `freeze` した**リストの `append` を今も通す**（凍らせるのは要素と
+インスタンスで、リスト自身ではない）。ただしこれは **`let` 束縛と同じ**状態で、
+`let ys = [1]; ys.append(2)` も静的にだけ弾かれ実行時ガードは無い。
+⇒ 2 つの束縛種別で**扱いが揃っている**ので食い違いではない。
+Arrow のソースからは静的検査が塞ぐので、残る到達経路は FFI だけ。
+
+##### 移行: 例題 2 件
+
+| 例題 | 何が変わったか |
+|---|---|
+| `basics/variable.ar` | `freeze cfg` 後の `cfg.debug = True` を **実行時 TypeError として捕まえていた**。静的エラーになったのでコメントへ移した |
+| `typing/let_binding_writes.ar` | 「`freeze` は再束縛だけを禁じる」「スコープを跨がない」という記述を**両方撤回**し、降格の実演に置き換えた |
+
+`let_binding_writes_error.ar` に freeze の 3 経路を足し、**4 件のエラー**が出ることを固定した。
+`src/ast.rs` の doc と `.claude/rules/language-differences.md` にも仕様を明記した。
+
+##### ゲート
+
+`cargo test` 782 passed ／ `scan_examples` 既知の TIMEOUT のみ ／ `force_gate` 0 件（324）／
+`compare_bytecode` 負の対照 274/274・9.9 基準比も **274/274 完全一致**（純粋に静的側の変更）／
+`compare_outputs` 254/255（診断が 1 → 4 件に増えた `let_binding_writes_error.ar` のみ）／
+`compare_import_paths` 13/13 ／ `compare_python_impl` 96/96 clean ／
+`compare_wasm_frontend` **325/325 INVENTED 0** ／ `type_obligations` 98% 退行なし ／
+`stale_doc_refs` OK。
 
 ### 9.3 ゲートが `archived/` と `practical_examples/` を見ていない
 

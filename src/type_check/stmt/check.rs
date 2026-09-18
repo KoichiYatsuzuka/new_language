@@ -60,10 +60,10 @@ impl TypeChecker {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
-                // ⚠ `freeze` 済みの名前への**再束縛**（タスク 7.2・検体 `Z7`）。
-                if self.state.is_frozen(name) {
-                    self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
-                }
+                // ⚠ `freeze` 済みの名前への再束縛も**上の `!info.mutable` で捕まる**
+                //    （タスク 9.2 で `freeze` を可変フラグの降格にしたため）。
+                //    以前はここに `is_frozen` の別検査があったが、同じ問いに 2 つの
+                //    実装がある状態だったので撤去した。
                 let rhs_ty = self.infer(value);
                 if rhs_ty == InferredType::Undefined {
                     self.report_error(StaticTypeError {
@@ -496,7 +496,10 @@ impl TypeChecker {
             // ⚠ `freeze x` は**再束縛だけ**を禁じる（タスク 7.2・検体 `Z7`）。
             //    `examples/basics/variable.ar` が
             //    `# temp = 0  # would be StaticTypeError after freeze` と仕様を明記している。
-            Stmt::Freeze(name, _) => self.state.mark_frozen(name),
+            // ⚠⚠ `freeze x` は **`mut` を `let` へ降格**する（タスク 9.2・利用者の決定）。
+            //    再束縛だけでなく `x.append(..)` / `x[0] = ..` / `x.f = ..` も
+            //    `let` と同じ規則で弾かれるようになる。
+            Stmt::Freeze(name, _) => self.state.freeze_var(name),
 
             // --- 例外処理 ---
             Stmt::Try {

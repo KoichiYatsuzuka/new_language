@@ -5,8 +5,15 @@
 # ⚠ 以前は**実行時エラー**だった（検体 `M5`）。同じ「`let` への書き込み」なのに
 #   `xs.append(2)` と `xs[0] = 2` は静的に弾かれ、`c.n = 2` だけが漏れていた。
 #
-# 期待されるエラー:
+# ⚠ `freeze` した束縛も**同じ扱い**（タスク 9.2）。`freeze` は `mut` を `let` に
+#   降格するので、以降の書き込みは 3 経路とも静的エラーになる。
+#   9.2 より前は `freeze` が禁じるのは**再束縛だけ**で、`append` / 添字代入は通っていた。
+#
+# 期待されるエラー（4 件）:
 #   StaticTypeError  cannot assign to immutable variable 'c'
+#   StaticTypeError  cannot assign to immutable variable 'xs'        （再束縛）
+#   StaticTypeError  cannot call 'append' on 'xs' — it is immutable  （変更メソッド）
+#   StaticTypeError  cannot assign to immutable variable 'xs'        （添字代入）
 
 class C:
     mut n: int
@@ -14,5 +21,12 @@ class C:
 let c = C(1)
 
 c.n = 2                             # ⛔ c は let 束縛
+
+mut xs: list[int] = [1]
+freeze xs                           # ここで mut → let に降格する
+
+xs = [9]                            # ⛔ 再束縛
+xs.append(2)                        # ⛔ 変更メソッド
+xs[0] = 5                           # ⛔ 添字代入
 
 print(c.n)

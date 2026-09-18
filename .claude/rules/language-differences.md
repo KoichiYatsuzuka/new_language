@@ -1,6 +1,13 @@
 # Key Language Differences from Python
 
 - Variable declarations require `let` / `mut` / `const`
+- `freeze x` **demotes a `mut` binding to `let`** (task 9.2). After it, every write is a
+  static error — rebinding (`x = ..`), mutating methods (`x.append(..)`), subscript
+  assignment (`x[0] = ..`) and attribute assignment (`x.f = ..`). Reading still works.
+  - ⚠ The demotion does **not** end with the enclosing block: it matches the runtime,
+    where `make_var_immutable` rewrites the variable itself, so `x` stays immutable for
+    the rest of its lifetime.
+  - ⚠ A class may define `fn __freeze__(mut self)`, which runs once at the `freeze`.
 - Functions use `fn` instead of `def`
 - Static type checking occurs after parsing and before execution
 - Supports templates

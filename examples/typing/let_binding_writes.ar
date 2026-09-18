@@ -23,17 +23,22 @@
 # | `Counter.total = 100` | クラス名 | `static mut` は**クラス側が**可変。束縛の可変性は無関係 |
 # | `m.x = 1` | import したモジュール | モジュールは `mutable: false` で束縛されている |
 #
-# ## `freeze` は**再束縛だけ**を禁じる（実測）
+# ## `freeze` は **`mut` を `let` に降格**する（タスク 9.2・仕様確定）
 #
-# | `freeze xs` の後 | 実行時 |
-# |---|---|
-# | `xs = [2]` | **エラー** |
-# | `xs.append(2)` | 通る |
-# | `xs[0] = 2` | 通る |
+# | `freeze xs` の後 | 9.2 以降 | 9.2 より前 |
+# |---|---|---|
+# | `xs = [2]` | 静的エラー | 静的エラー |
+# | `xs.append(2)` | **静的エラー** | 通っていた |
+# | `xs[0] = 2` | **静的エラー** | 通っていた |
+# | `c.f = 2` | **静的エラー** | 実行時エラー |
 #
-# ⇒ 可変性フラグを落とすと後ろ 2 つまで弾いて**偽陽性**になるので、再束縛だけを見る。
-# `examples/basics/variable.ar` が `# temp = 0  # would be StaticTypeError after freeze` と
-# 仕様を明記している。
+# ⚠⚠ タスク 7.2 は `frozen: Vec<HashSet<String>>` という**別の集合**を持って
+#   再束縛だけを弾いていた。9.2 で**宣言スコープの可変フラグそのものを倒す**形に
+#   変えたので、`let` 束縛のために既にある検査がそのまま効く。
+#   ⇒ 「同じ問いに 2 つの実装」が 1 つに減った。
+#
+# ⚠ 降格は**スコープを抜けても戻らない**。実行時の `make_var_immutable` が変数を
+#   書き換える（＝その変数の寿命の間ずっと不変）のに合わせてある。
 #
 # 弾かれる例は let_binding_writes_error.ar
 
@@ -58,21 +63,26 @@ print("=== static mut はクラス名経由で書ける ===")
 Counter.total = 100
 print(Counter.total)                # 100
 
-print("=== freeze は再束縛だけを禁じる ===")
+print("=== freeze は mut を let に降格する ===")
 
 mut ys: list[int] = [1]
+ys.append(2)                        # 降格前なので書ける
 freeze ys
-ys.append(2)                        # 中身の変更は通る
-ys[0] = 5
-print(ys)                           # [5, 2]
+print(ys)                           # [1, 2]   読みは通る
 
-print("=== freeze はスコープを跨がない（静的検査は取りこぼす方へ倒す） ===")
+# ⚠ ここから先は `let` と同じ。どれも静的エラーになる:
+#   ys = [9]          # 再束縛
+#   ys.append(3)      # 変更メソッド
+#   ys[0] = 5         # 添字代入
+# 弾かれる例は let_binding_writes_error.ar
 
-# ⚠ 実行時は外側にも効くが、静的検査は内側の `freeze` を外へ持ち出さない。
-#   偽陽性を出すより取りこぼす方を選んでいる。
+print("=== 降格はスコープを抜けても戻らない ===")
+
+# ⚠ 実行時の `make_var_immutable` は変数そのものを書き換えるので、
+#   `if` の中で freeze したらその後もずっと不変。静的検査もそれに合わせた。
 mut zs: list[int] = [1]
 if True:
     freeze zs
-print(zs)                           # [1]
+print(zs)                           # [1]   読みは通る（書けば静的エラー）
 
 print("done")

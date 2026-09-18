@@ -35,7 +35,7 @@ bits &= 0b1010   # 0b1010 = 10
 bits ^= 0b0110   # 0b1100 = 12
 print("bits after bitwise ops:", bits)  # 12
 
-# --- freeze: promote mut to immutable at runtime ---
+# --- freeze: demote a mut binding to let (task 9.2) ---
 print("=== freeze ===")
 mut temp = 42
 print("before freeze:", temp)
@@ -54,10 +54,12 @@ class Config:
 mut cfg = Config(True, 10)
 cfg.debug = False
 freeze cfg
-try:
-    cfg.debug = True   # freeze 後の書き込みは TypeError
-except TypeError as e:
-    print("caught after freeze:", e.message)
+print("cfg.debug after freeze:", cfg.debug)   # False   読みは通る
+# ⚠⚠ タスク 9.2 で `freeze` は **`mut` を `let` に降格する**仕様に確定した。
+#   以前はここで `cfg.debug = True` を実行時 TypeError として捕まえていたが、
+#   いまは **静的エラー**になるので書けない（`let` 束縛と同じ扱い）:
+#     cfg.debug = True   # StaticTypeError: cannot assign to immutable variable 'cfg'
+#   ⚠ 実行時の検査は残っている（FFI 経由など静的検査を通らない値の最後の砦）。
 
 # --- static mut: single shared cell across all closure calls ---
 print("=== static mut ===")

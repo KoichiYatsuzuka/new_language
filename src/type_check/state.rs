@@ -5,7 +5,7 @@
 // この性質を保つため、ここで診断を報告してはならない（例: `declare` は重複宣言を
 // 判定せず、ただ上書きする）。エラーを出すかどうかの判断は呼び出し側の責務。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::types::{InferredType, VarInfo};
 
@@ -76,7 +76,6 @@ pub(super) struct CheckState {
     ///
     /// ⚠ スコープ単位で積む（内側で `freeze` しても外側には効かない）。実行時は
     /// 外側にも効くので**取りこぼす**が、偽陽性を出すよりよい。
-    frozen: Vec<HashSet<String>>,
     /// **いま見えているテンプレート型変数**の名前（`fn f[T]` / `class C[T]` の `T`）。
     ///
     /// ⚠⚠ `InferredType::from_ann` は**大文字始まりの未知の識別子をクラス名として扱う**
@@ -100,7 +99,6 @@ impl CheckState {
             in_gen_body: false,
             block_return_forbidden_depth: 0,
             block_expr_expected: Vec::new(),
-            frozen: vec![HashSet::new()],
             type_params: Vec::new(),
         }
     }
@@ -110,14 +108,10 @@ impl CheckState {
     /// 新しいスコープをスタックに積む。
     pub(super) fn push_scope(&mut self) {
         self.scope_stack.push(HashMap::new());
-        self.frozen.push(HashSet::new());
     }
 
     /// 現在のスコープをスタックから取り除く。グローバルスコープは取り除かない。
     pub(super) fn pop_scope(&mut self) {
-        if self.frozen.len() > 1 {
-            self.frozen.pop();
-        }
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
         }
@@ -237,16 +231,25 @@ impl CheckState {
         self.block_return_forbidden_depth = saved;
     }
 
-    /// `freeze x` を記録する（タスク 7.2）。
-    pub(super) fn mark_frozen(&mut self, name: &str) {
-        if let Some(top) = self.frozen.last_mut() {
-            top.insert(name.to_string());
+    /// `freeze x` を **`mut` → `let` の降格**として反映する（タスク 9.2）。
+    ///
+    /// ⚠⚠ **別の集合を持たず、宣言スコープの可変フラグそのものを倒す。**
+    /// こうすると `let` 束縛のために既にある検査
+    /// （再束縛・`append` 等の変更メソッド・添字代入・属性代入）が**そのまま効く**。
+    /// タスク 7.2 は `frozen: Vec<HashSet<String>>` という別の集合を持って
+    /// **再束縛だけ**を弾いていたので、`freeze xs` のあとでも `xs.append(2)` と
+    /// `xs[0] = 2` が通っていた（実測）。
+    ///
+    /// ⚠ **降格はスコープを抜けても戻さない。** 実行時の `make_var_immutable` が
+    /// 変数そのものを書き換える（＝その変数の寿命の間ずっと不変）のに合わせる。
+    /// ⇒ `if` の中で `freeze` したら、その後も不変。
+    pub(super) fn freeze_var(&mut self, name: &str) {
+        for scope in self.scope_stack.iter_mut().rev() {
+            if let Some(info) = scope.get_mut(name) {
+                info.mutable = false;
+                return;
+            }
         }
-    }
-
-    /// `name` が `freeze` 済みか（再束縛できないか）。
-    pub(super) fn is_frozen(&self, name: &str) -> bool {
-        self.frozen.iter().any(|s| s.contains(name))
     }
 
     // ── ブロック式の結果型（タスク 5.2）──────────────────────────────────────
