@@ -1,0 +1,29 @@
+# py_literal_unpack_error.ar — リテラル内の `*` / `**` 展開で**通さない**形（U3 / C6）。
+#
+# ⚠ ①は**実行時**エラー、②は**変換時**エラー。種類が違うので分けて確認する。
+#
+#   ① リストの展開にリストでないものを渡す（本ファイルが踏む形・実行時）
+#      TypeError: unsupported operand types for `Add`: tuple and list
+#      ⇒ 変換器は `[*t, 9]` を `t + [9]` に落とす。Arrow に `list()` 組込みが無いので
+#        `list(t) + [9]` と書けない。**黙って違う結果にならず大きな音で止まる**ので
+#        これを許容している（型が判る文脈なら StaticTypeError として静的に捕まる）。
+#      ⇒ 代替: 呼び出し側でリストを渡す。セット表示なら種類を選ばない（下の注記）。
+#
+#   ② 辞書リテラルの `**` 展開（変換時）
+#      **dict unpacking in dict literal is not supported
+#      ⇒ Arrow に dict のマージ手段が無い（`|` も `update()` も無い）。
+#        `dict()` コンストラクタが入れば `dict(d1.items() + d2.items())` で書ける
+#        （`items()` は C5 で追加済み）。
+#
+# ⚠ **セット表示は展開元の種類を選ばない**（`set()` は任意のイテラブルを受け、
+#   `union` もリストを受ける）。`{*t, 9}` はタプルでも通る — 非対称なのはここ。
+# ⚠ タプル表示 `(*a, 9)` と呼び出し `f(*a)` は別項目（U4/U5・フェーズ F）。
+
+import[py] test_modules.py_list_spread_tuple_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_dict_spread_error as m
+
+mut t = (1, 2)
+print(m.g(t))
+# TypeError: unsupported operand types for `Add`: tuple and list
