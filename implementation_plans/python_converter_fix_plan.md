@@ -3,7 +3,7 @@
 Python→Arrow 変換器（`import[py]` が使う、PyO3 を介さない翻訳器）の修正を、**まっさらなコンテキストからでも即着手できる**ように整理した作業指示書。
 分類の背景・根拠は [python_converter_coverage.md](python_converter_coverage.md)（判断記録）を参照。本書は「どのファイルをどう直すか」に特化する。
 
-- 対象サブシステム: [`src/python_converter/`](src/python_converter/)
+- 対象サブシステム: [`src/python_converter/`](../src/python_converter/)
 - 作成: 2026-07-22（main pull 後の phase 0〜5C リファクタリング反映済み）
 
 ---
@@ -27,7 +27,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
           └ convert_annotation / map_type_name    … annotations.rs
           └ is_self / is_main_guard / expr_to_name … utils.rs
 ```
-呼び出し元（再帰ロード側）: `Parser::load_python_module` … [`src/parser/imports/py_modules.rs`](src/parser/imports/py_modules.rs)
+呼び出し元（再帰ロード側）: `Parser::load_python_module` … [`src/parser/imports/py_modules.rs`](../src/parser/imports/py_modules.rs)
 
 ### 0.3 参照専用（現在位置・grep アンカー）
 | 用途 | シンボル | 現在ファイル |
@@ -93,7 +93,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 > **この文書で唯一「変換器の外」が主因の基盤タスク**。§2 の「仕様確定」に *任意対応* として
 > 書いていたものを、**群6（同梱スタブ）の前提として必須に格上げ**した。
 
-- ファイル: [`src/type_check/call_check.rs`](src/type_check/call_check.rs)
+- ファイル: [`src/type_check/call_check.rs`](../src/type_check/call_check.rs)
 - **現状は 2 つの検査が食い違っている**（実測。同じ `CallMutParamWithImmutableArg` を出す）:
 
 | 経路 | 述語 | リテラル実引数 |
@@ -326,7 +326,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 編集:
   - `classes.rs` `convert_params`: Python kwarg 名が `kwargs` 以外なら本体の当該 `Ident` を `Ident("kwargs")` にリライト。
   - ~~`src/interpreter/functions/execution.rs` の `!extra_kwargs.is_empty()` 条件を緩和~~
-    ⚠ **計画時の見立て。実際の実装先は [`args.rs`](src/interpreter/functions/args.rs) の
+    ⚠ **計画時の見立て。実際の実装先は [`args.rs`](../src/interpreter/functions/args.rs) の
     `bind_args_relaxed`（`kwargs_idx` 分岐）**で、余剰が 0 個でも空 dict を束縛する。
     `execution.rs` 側は `extra_kwargs` を捨てるだけになっている（#33 以降）。
 - テスト: `def f(**kw): return kw` を `f(a=1)` と `f()` の両方。
@@ -342,7 +342,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 > ⚠⚠ **本カードは B13（2026-09-05）より前に書かれている。前提が 2 つ変わった**（A4 で更新）。
 
 - **① `yield` の置き場所に静的な制約が入った**（`TypeErrorKind::YieldOutsideGenerator`・
-  [`type_check/stmt/check.rs`](src/type_check/stmt/check.rs)）。`yield` は **`gen` 本体の
+  [`type_check/stmt/check.rs`](../src/type_check/stmt/check.rs)）。`yield` は **`gen` 本体の
   自フレーム直下だけ**。判定は `in_gen_body()` なので:
   - `if` / `for` / `while` / `try` の**入れ子の中は可**（Python の普通の書き方は通る）。
   - **入れ子の `def` の中の `yield` は不可** → **変換器で明示エラーにする必要がある**
@@ -491,16 +491,16 @@ let s: str = math.sqrt(2.0)
   math.pyi 有 → StaticTypeError: 's' is declared 'str' but initialized with 'float'
 ```
 
-- 解決の入口は [`load_python_interface_module`](src/parser/imports/py_modules.rs) —
+- 解決の入口は [`load_python_interface_module`](../src/parser/imports/py_modules.rs) —
   `module.pyi` → `module/__init__.pyi` → `module.py` → `module/__init__.py` の順に
   **全検索ディレクトリ**を見て、**1 つも無ければ `Ok(vec![])`**（＝型検査を丸ごと放棄）。
-- `.pyi` は [`load_py_type_body`](src/parser/imports/py_modules.rs) が
+- `.pyi` は [`load_py_type_body`](../src/parser/imports/py_modules.rs) が
   `convert_python_source` で変換し、**変換できなかった名前だけ**
-  `extract_py_type_stubs`（[`imports/mod.rs`](src/parser/imports/mod.rs) の行ベース抽出）で補う。
+  `extract_py_type_stubs`（[`imports/mod.rs`](../src/parser/imports/mod.rs) の行ベース抽出）で補う。
 - ⚠ `time` / `math` は **C 組み込みモジュールで `.py` が存在しない**。だから
   `Parser::python_search_dirs()` が CPython の stdlib ディレクトリまで辿っても**必ず空振り**する。
   ＝ 現状 `time.*` / `math.*` の戻り値型は**恒久的に検査されない**。
-- 既に [`examples/interop/test_modules/time.pyi`](examples/interop/test_modules/time.pyi) が
+- 既に [`examples/interop/test_modules/time.pyi`](../examples/interop/test_modules/time.pyi) が
   4 関数ぶんだけ存在する（**そのディレクトリから実行したときしか効かない**）。
 
 #### S1. ⚠⚠ 前提: INF-D を先に入れる（**これ無しでは #19 は純粋な退行**）
@@ -557,7 +557,7 @@ VM plan の一行は「`python_search_dirs()` に置き場を追加」だが、*
 
 #### S3. `time` / `math` のスタブを書く
 
-- `stubs/time.pyi` … 既存の [`test_modules/time.pyi`](examples/interop/test_modules/time.pyi) を
+- `stubs/time.pyi` … 既存の [`test_modules/time.pyi`](../examples/interop/test_modules/time.pyi) を
   出発点に（`time` / `monotonic` / `perf_counter` / `sleep`）、`time_ns` / `monotonic_ns` を追加。
 - `stubs/math.pyi` … `sqrt` / `floor` / `ceil` / `fabs` / `pow` / `exp` / `log` / `log2` / `log10` /
   `sin` / `cos` / `tan` / `atan2` / `hypot` / `isnan` / `isinf` / `gcd` と定数 `pi` / `e` / `inf` / `nan`。
@@ -568,7 +568,7 @@ VM plan の一行は「`python_search_dirs()` に置き場を追加」だが、*
   - `Any` に落ちる: `Callable[...]`・`@overload`・ジェネリック・`Literal[...]`。
   - ⚠ **モジュール定数（`pi: float`）は現状どちらの経路も拾わない** ——
     `extract_py_type_stubs` は `def` と `class` しか見ず、`convert_python_source` は
-    値なしの `x: float` を `Ok(None)` で捨てる（[`statements.rs`](src/python_converter/statements.rs) の `AnnAssign` アーム）。
+    値なしの `x: float` を `Ok(None)` で捨てる（[`statements.rs`](../src/python_converter/statements.rs) の `AnnAssign` アーム）。
     ⇒ **定数に型を付けたいなら別途手当てが要る**。S3 では**関数だけを対象にし、
     定数は次のカード（S4）に切り出す**。
 
@@ -651,7 +651,7 @@ count(... = 1, 2, 3)   → 3
 - 編集: `statements.rs` `For` アーム — `py::Expr::Tuple(t)` のとき各要素が `Name` なら
   `targets` に並べる。`Name` 以外（入れ子タプル・添字）は明示エラーのまま。
 - ⚠⚠ **`d.items()` が存在しない**。Arrow の dict のメソッドは `keys()`/`key()` と
-  `values()`/`item()` だけ（[`method_call.rs`](src/interpreter/classes/method_call.rs) の `Value::Dict` アーム）。
+  `values()`/`item()` だけ（[`method_call.rs`](../src/interpreter/classes/method_call.rs) の `Value::Dict` アーム）。
   `for k, v in d.items():` は Python で最頻出の形なので、**`items()` の追加をセットで行う**
   （`all_keys()` / `all_items()` の隣に `all_pairs()` を足して `List<Tuple>` を返す）。
   ⇒ これは interpreter 変更。impl_python 並行実装の要否を確認すること。
@@ -685,7 +685,7 @@ count(... = 1, 2, 3)   → 3
 - ⚠ **本カードは Arrow の言語仕様追加**。変換器だけでは閉じない。
   方針決定は [FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) 側に置き、
   本書はそれを消費する側として扱う。
-- **配管は既にある**（[`args.rs`](src/interpreter/functions/args.rs) の `CallArg::Variadic` 経路）:
+- **配管は既にある**（[`args.rs`](../src/interpreter/functions/args.rs) の `CallArg::Variadic` 経路）:
   各式を評価 → `Value::List` に束ねる → 特殊キー `"..."` で渡す → `bind_args` が
   `variadic_value` として拾い `local::args` に直結。
   ⇒ **「リスト 1 本を `local::args` に渡す」経路は通っている**。
@@ -695,7 +695,7 @@ count(... = 1, 2, 3)   → 3
      `vm/compiler/diag.rs` / `partial_compiler/llvm_codegen` / `eval/builtins.rs` / `parser/exprs.rs`）。
      網羅 `match` による強制が効くので**むしろ安全**（`language-dev-principles` 参照）。
   2. **可変長関数への `f(*xs)`** … `BuildList(n)` を省いて `xs` をそのまま `"..."` で渡すだけ。
-     VM 側（[`calls.rs`](src/vm/compiler/calls.rs)）は**コードが短くなる**。
+     VM 側（[`calls.rs`](../src/vm/compiler/calls.rs)）は**コードが短くなる**。
   3. **固定長関数への `f(*xs)`** … 束縛時に位置引数列へ展開する。ここが本体。
   4. 静的型検査: spread を含む呼び出しは**引数個数検査を降りる**。項目 6/7 で
      `params: None` / `variadic_type` を入れた前例に乗る。
@@ -768,7 +768,7 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 | A3 | **§0.3 の死んだアンカー**を差し替え（`declare_var("kwargs"...)` は消滅。実体は `bind_args_relaxed`） | 本書 §0.3 |
 | A4 | **項目9 のカードを B13 前提へ更新**: `YieldOutsideGenerator`（`yield` は `gen` 本体の自フレーム直下のみ）／ジェネレータが**真に遅延**になった旨 | 本書 群2 |
 | A5 | 文書移動の後始末: coverage の相対リンク総崩れ、`BUGFIX_B1_B13.md` / `FUTURE_FEATURE.md` からの逆参照、`generate-codebase-map.ps1` 再実行 | 全体 |
-| A6 | **実バグ**: `def f(a, *rest, b)` が `TypeError: argument 'b' given twice`。`convert_params` が kwonly を**可変長より先に**平坦化するため。項目24 の「項目1・6 が未実装だから」という記述と [`classes.rs`](src/python_converter/classes.rs) のコメントも同時に訂正 | 変換器 |
+| A6 | **実バグ**: `def f(a, *rest, b)` が `TypeError: argument 'b' given twice`。`convert_params` が kwonly を**可変長より先に**平坦化するため。項目24 の「項目1・6 が未実装だから」という記述と [`classes.rs`](../src/python_converter/classes.rs) のコメントも同時に訂正 | 変換器 |
 | A7 | **項目20 †1 の再トリアージ**: B3 で `mut n: int` は直ったが、**関数値の `mut` パラメータ**が入れ子 `fn` から見えず `NameError`。症状（`None` → `NameError`）も記述と違う。⇒ 起票し直す（修正は F/G で効いてくる） | coverage / bug_fix |
 
 **Done**: `scan_examples.ps1` 緑・`stale_doc_refs.ps1` 緑・codebase-map 再生成済み。

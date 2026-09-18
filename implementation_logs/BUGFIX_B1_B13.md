@@ -3,7 +3,7 @@
 Python→Arrow 変換器の作業中に見つかったバグ 13 件（B1〜B13）と、その過程で見つけた
 束縛の漏れ 6 件（L1〜L6）の記録。**36 コミット / 117 ファイル / +6587 −967 行**。
 
-> 起票の一覧と各バグの詳細は [../bug_fix.md](../bug_fix.md)。
+> 起票の一覧と各バグの詳細は [bug_fix.md](bug_fix.md)。
 > ここに残すのは **何が言語仕様の決定になったか** と、**見積もり・見立てが外れた記録**。
 >
 > ⚠ 特に価値があるのは「§4 起票の見立てが外れた 5 件」と「§5 測り方を間違えた 2 件」。
@@ -221,8 +221,8 @@ B13 はその先行評価そのものをやめてコルーチン化した（段�
 
 ## 7. 波及した文書・撤去したもの
 
-**更新**: [../bug_fix.md](../bug_fix.md)（全 13 件）／
-[../python_converter_coverage.md](../python_converter_coverage.md)（B4 で 2 箇所が古くなった）／
+**更新**: [bug_fix.md](bug_fix.md)（全 13 件）／
+[python_converter_coverage.md](../implementation_plans/python_converter_coverage.md)（B4 で 2 箇所が古くなった）／
 [FUTURE_FEATURE.md](FUTURE_FEATURE.md)（#11 に消費者が現れた経緯）／
 `vm-pitfalls` §1（計測の罠 3 項目）／ `compare_python_impl.ps1` の `$knownDiff`（+9 件）
 

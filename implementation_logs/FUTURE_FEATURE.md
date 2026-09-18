@@ -249,7 +249,7 @@
     「f-string を使う実在の Python モジュールが `format_spec` を 1 箇所でも含むと
     **import 全体が落ちる**」という**モジュール単位変換**の性質のほうにある。
   - ⚠ 実装したら `python_converter_coverage.md` の項目 19 の「未対応」記述も**同時に**直すこと。
-- **参照**: [python_converter_coverage.md](../python_converter_coverage.md) 項目 19 ／
+- **参照**: [python_converter_coverage.md](../implementation_plans/python_converter_coverage.md) 項目 19 ／
   例題 [`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
   （エラーになる形を固定してある）／`desugar_fstring`（`src/parser/exprs.rs`）。
 

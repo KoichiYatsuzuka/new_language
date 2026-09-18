@@ -53,7 +53,7 @@ AST から消し、参照位置で差し込む。ブロック境界でスコー�
 ### 0.3 `node_id` の制約（最重要）
 
 `Expr::Ident { name, node_id, res }` の `node_id` は `Rc<Cell<u32>>` で**プログラム全体一意**に採番される。
-[parser/mod.rs:99-108](src/parser/mod.rs#L99-L108) に「per-module 採番にしたら**別モジュールの注釈を読んでしまい、
+[parser/mod.rs:99-108](../src/parser/mod.rs#L99-L108) に「per-module 採番にしたら**別モジュールの注釈を読んでしまい、
 FFI 境界検査で誤検知が実際に再現した**」と記録がある。
 
 ⇒ **展開器が生成する全ノードは同じカウンタから採番し、クローンしたノードは必ず再採番する。**
@@ -213,7 +213,7 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | D28 | **open class**（他所のクラスにメンバを足せるか） | **不可**を推奨 | 許すと展開順序と可視性の問題が出る |
 | **D31** | **`const` 初期化子に許す式の範囲**（展開時に評価するため） | リテラル・既出 `const`・許可ビルトインのみ | 任意の関数呼び出しを許すと D1 と衝突 |
 | D32 | **`import` 越しの `const`** を読めるか | 要判断 | 読むならモジュール本体の展開時評価が要る |
-| **D33** | **計算フィールド**（`@property` 相当）を言語機能として入れるか | **入れる**（Python 翻訳を通すなら不可避） | ⚠ **メタ関数では代替できない唯一の機構**（→ 参考K 機構5）。アクセス箇所が任意なので生成では書き換えられない。実装は [attrs.rs:183](src/interpreter/eval/attrs.rs#L183)（読み）/ [:353](src/interpreter/eval/attrs.rs#L353)（書き）。⚠ 属性インラインキャッシュが計算フィールドを実フィールドとして焼かないこと |
+| **D33** | **計算フィールド**（`@property` 相当）を言語機能として入れるか | **入れる**（Python 翻訳を通すなら不可避） | ⚠ **メタ関数では代替できない唯一の機構**（→ 参考K 機構5）。アクセス箇所が任意なので生成では書き換えられない。実装は [attrs.rs:183](../src/interpreter/eval/attrs.rs#L183)（読み）/ [:353](../src/interpreter/eval/attrs.rs#L353)（書き）。⚠ 属性インラインキャッシュが計算フィールドを実フィールドとして焼かないこと |
 | **D34** | **引数展開構文**（`f(*args)` 相当）を入れるか | **入れる**（Python 翻訳を要件に含めるなら） | ⚠ 無いので**実行時 `@` では汎用ラッパを書けない**（→ 参考K 機構4）。⇒ [`python_converter_coverage.md` 項目 28](python_converter_coverage.md) の**前提 1**。無いとデコレータの三分岐でクロージャ分岐が空振りする。⚠ 静的型検査と `--compile` との相性は要検討 |
 
 ---
@@ -249,7 +249,7 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | T3 | `node_counter` の引き継ぎと**クローン時の再採番**（§0.3・必須） | T4 |
 | T2 | 二段パイプラインの配線。`resolve_and_annotate` の再入可能化 | T4 |
 | T11 | `Code` の行ごとに元 `Span` を持たせ、展開由来ノードの位置を追える形にする | T4 |
-| **T27** | **クラスの自動 `__init__` 生成を展開後へ移す**（現在 [classes.rs:348](src/parser/classes.rs#L348) で**パース時**に走るので、展開で足したフィールドが `__init__` に入らない） | T4 |
+| **T27** | **クラスの自動 `__init__` 生成を展開後へ移す**（現在 [classes.rs:348](../src/parser/classes.rs#L348) で**パース時**に走るので、展開で足したフィールドが `__init__` に入らない） | T4 |
 | T28 | クラス本体に配置された `Code` の適合検査（`field`/`fn`/`gen`/`static`/`class_method` のみ） | T4 |
 
 ### Phase 3 — 展開時評価器
@@ -297,7 +297,7 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | 案 | 評価 |
 |---|---|
 | (a) frontend に VM を載せる | 拡張と CLI が完全一致。**`Value` の wasm 非対応 variant 5〜7 個を feature で削る中規模リファクタが前提**（→ 参考I）。メタ関数と独立に価値があるので別タスク |
-| **(b) editor では展開せず `Unresolved`** | **v1 の現実解**。前例あり（[check.rs:374](src/type_check/stmt/check.rs#L374) の `editor_stub_body`）。代償は生成物に補完・定義ジャンプ・ホバーが効かないこと |
+| **(b) editor では展開せず `Unresolved`** | **v1 の現実解**。前例あり（[check.rs:374](../src/type_check/stmt/check.rs#L374) の `editor_stub_body`）。代償は生成物に補完・定義ジャンプ・ホバーが効かないこと |
 | (c) 展開結果をキャッシュ | ビルドしないと編集が壊れるので体験が読みにくい |
 
 ### 4.3 走らせるゲート
@@ -317,11 +317,11 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 
 | # | 事象 | 位置 |
 |---|---|---|
-| 1 | **クラス本体にデコレータを書けない**（`ParseError: unexpected statement in class body`）。インタプリタ側のメソッドデコレータ処理は `import[py]` 変換器からしか到達しない | [classes.rs:640](src/parser/classes.rs#L640) / [definitions.rs:556](src/interpreter/exec/definitions.rs#L556) |
-| 2 | **入れ子 `fn` のデコレータは VM に載らない** → `VmForceError`（フォールバック無し） | [vm/compiler/stmt.rs:615](src/vm/compiler/stmt.rs#L615) |
-| 3 | **テンプレートに付けたデコレータは黙って無視される**（警告もエラーも出ない） | [definitions.rs:128-140](src/interpreter/exec/definitions.rs#L128-L140) |
-| 4 | **デコレータがオーバーロードのマージを壊す**（同名の先行オーバーロードが消え、静的エラーも出ない） | [definitions.rs:157-176](src/interpreter/exec/definitions.rs#L157-L176) |
-| 5 | レジストリは**素のシグネチャ**しか登録しないため、デコレート後の呼び出しが元の型で検査される（アリティ不一致は実行時 `TypeError`） | [registry/builder.rs:147](src/type_check/registry/builder.rs#L147) |
+| 1 | **クラス本体にデコレータを書けない**（`ParseError: unexpected statement in class body`）。インタプリタ側のメソッドデコレータ処理は `import[py]` 変換器からしか到達しない | [classes.rs:640](../src/parser/classes.rs#L640) / [definitions.rs:556](../src/interpreter/exec/definitions.rs#L556) |
+| 2 | **入れ子 `fn` のデコレータは VM に載らない** → `VmForceError`（フォールバック無し） | [vm/compiler/stmt.rs:615](../src/vm/compiler/stmt.rs#L615) |
+| 3 | **テンプレートに付けたデコレータは黙って無視される**（警告もエラーも出ない） | [definitions.rs:128-140](../src/interpreter/exec/definitions.rs#L128-L140) |
+| 4 | **デコレータがオーバーロードのマージを壊す**（同名の先行オーバーロードが消え、静的エラーも出ない） | [definitions.rs:157-176](../src/interpreter/exec/definitions.rs#L157-L176) |
+| 5 | レジストリは**素のシグネチャ**しか登録しないため、デコレート後の呼び出しが元の型で検査される（アリティ不一致は実行時 `TypeError`） | [registry/builder.rs:147](../src/type_check/registry/builder.rs#L147) |
 
 ⇒ **展開時メタ関数はこれらを構造的に解消する**（型検査が展開後のコードを見るため）。
 ⚠ #3・#4 は本設計と独立に修正しうるバグ。別タスクとして起票するか要判断。
@@ -378,7 +378,7 @@ Arrow が実際に持つ機能に対応させた候補:
 `a !> 2` / `<!a!>` はいずれも ParseError＝実測）。⇒ **予約しても既存コードを壊さない。**
 
 **開き `<!` は無条件に安全。** `<` が結合するのは `<` / `=` / `-` の 3 つだけ
-（[symbol.rs:161-179](src/lexer/symbol.rs#L161-L179)）で `!` は含まれない。
+（[symbol.rs:161-179](../src/lexer/symbol.rs#L161-L179)）で `!` は含まれない。
 ⇒ 旧 `<...>` 案の開き側の衝突（`<-x>` が `LeftArrow`、`<<a>>` がシフト、`a < <b>`）は全て消える。
 
 **閉じ `!>` は字句で取らないと危険。** `!` と `>` を別トークンのままにすると `>` が後続を貪欲に食う:
@@ -442,11 +442,11 @@ until 進捗ゼロ
 
 | やっていること | 位置 |
 |---|---|
-| 右辺を 1 回パースし、`Expr` と**生トークン列の両方**を保持（型位置での再パース用） | [definitions.rs:157-166](src/parser/stmts/definitions.rs#L157-L166) |
-| `self.aliases` に登録し、**定義自体は `Stmt::Pass`** にして AST から消す | [definitions.rs:168](src/parser/stmts/definitions.rs#L168) |
-| 参照位置で `(*e.expr).clone()` して差し込む | [exprs.rs:740](src/parser/exprs.rs#L740) |
-| `parse_block` がブロック境界でスナップショット／復元してスコープを作る | [core.rs:43-60](src/parser/stmts/core.rs#L43-L60) |
-| 同一可視スコープでの再定義を禁止 | [definitions.rs:149](src/parser/stmts/definitions.rs#L149) |
+| 右辺を 1 回パースし、`Expr` と**生トークン列の両方**を保持（型位置での再パース用） | [definitions.rs:157-166](../src/parser/stmts/definitions.rs#L157-L166) |
+| `self.aliases` に登録し、**定義自体は `Stmt::Pass`** にして AST から消す | [definitions.rs:168](../src/parser/stmts/definitions.rs#L168) |
+| 参照位置で `(*e.expr).clone()` して差し込む | [exprs.rs:740](../src/parser/exprs.rs#L740) |
+| `parse_block` がブロック境界でスナップショット／復元してスコープを作る | [core.rs:43-60](../src/parser/stmts/core.rs#L43-L60) |
+| 同一可視スコープでの再定義を禁止 | [definitions.rs:149](../src/parser/stmts/definitions.rs#L149) |
 
 ⚠ ただし `alias` は **`node_id` ごとクローンしている**（→ §0.3）。この方針は継承しない。
 
@@ -475,11 +475,11 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 
 | 記号 | 状態 |
 |---|---|
-| `$` | **使用済み** — `$...$` は LaTeX 数式文字列リテラル（[scan.rs:194](src/lexer/scan.rs#L194)）。Julia 風 `$x` は不可 |
-| `#` | **使用済み** — 行コメント（[scan.rs:155](src/lexer/scan.rs#L155)）。Rust 風 `#[...]` は不可 |
-| `!` | **空き** — `!=` 以外は `Token::Unknown('!')`（[symbol.rs:151-157](src/lexer/symbol.rs#L151-L157)） |
+| `$` | **使用済み** — `$...$` は LaTeX 数式文字列リテラル（[scan.rs:194](../src/lexer/scan.rs#L194)）。Julia 風 `$x` は不可 |
+| `#` | **使用済み** — 行コメント（[scan.rs:155](../src/lexer/scan.rs#L155)）。Rust 風 `#[...]` は不可 |
+| `!` | **空き** — `!=` 以外は `Token::Unknown('!')`（[symbol.rs:151-157](../src/lexer/symbol.rs#L151-L157)） |
 | バッククォート | **空き** — 完全に未使用 |
-| `template` | **予約済みだが未使用**のキーワード（[keyword.rs:72](src/lexer/keyword.rs#L72)） |
+| `template` | **予約済みだが未使用**のキーワード（[keyword.rs:72](../src/lexer/keyword.rs#L72)） |
 | `put` | **どの `.ar` でも識別子として未使用**（全ファイル確認済み）。キーワード化しても既存コードは壊れない |
 
 ### H.2 AST 上の格納形
@@ -490,10 +490,10 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 | **型名** | **`Option<String>`**（`Param.type_ann` / `FnDef.return_type`） | **型は文字列。スプライスが安い** |
 | 値 | `Expr` | |
 | `let`/`mut` | `Param.mutable: bool` / `FieldKind`(Mut/Let/Const/StaticMut) | 修飾子位置 |
-| `public`/`private`/`protected` | `Accessibility` | **セクション方式**。メンバ単位の構文が言語に無い（[classes.rs:487-512](src/parser/classes.rs#L487-L512)） |
+| `public`/`private`/`protected` | `Accessibility` | **セクション方式**。メンバ単位の構文が言語に無い（[classes.rs:487-512](../src/parser/classes.rs#L487-L512)） |
 
 ⚠ `InferredType::from_ann` は失敗を **`None`** で返し、呼び出し側は `.and_then(...)` で受ける
-（[types.rs:154](src/type_check/types.rs#L154)）。**壊れた型文字列は診断にならず、黙って「型情報なし」になる。**
+（[types.rs:154](../src/type_check/types.rs#L154)）。**壊れた型文字列は診断にならず、黙って「型情報なし」になる。**
 ⇒ スプライス時点で検証する（→ タスク T7）。
 
 ## 参考 I. wasm フロントエンドの実測（§4.2 の根拠）
@@ -502,8 +502,8 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 「⚠ ここにはネイティブ依存を足さないこと」と明記。ルートは `pyo3` / `libloading` /
 `rustpython-parser` に依存（**いずれも feature gate されていない**）。
 
-`Value` に食い込む native は狭い（[value/native.rs:443](src/interpreter/value/native.rs#L443) の
-`NativeLibWrapper` と [value/objects.rs:16](src/interpreter/value/objects.rs#L16) の `pyo3::Py` の 2 箇所。
+`Value` に食い込む native は狭い（[value/native.rs:443](../src/interpreter/value/native.rs#L443) の
+`NativeLibWrapper` と [value/objects.rs:16](../src/interpreter/value/objects.rs#L16) の `pyo3::Py` の 2 箇所。
 `value/core.rs:116` は doc コメントのみで実依存なし）。ただし wasm に載らない `Value` の variant は
 `PyObject` / `NativeFunction` / `CsObject` / `JsProcFn` / `FileObject` / `AsyncManager` など
 **5〜7 個**（全 36 中）。⇒ 「wasm 用に variant を feature で削る」中規模リファクタ。
@@ -558,7 +558,7 @@ Python のラッパは `def w(*a, **k): return f(*a, **k)` と書け、**シグ�
 Arrow の素のクラスが既に `__init__` 自動生成と**構造的等価**（`p == q` → True・実測）を持つので、
 `@dataclass` は**変換器の修正だけで閉じる**。必要なのは 3 点:
 ①`dataclass` をマーカとして認識（現状は素通しされ実行時 `NameError`）
-②クラス本体の**値なし注釈**（`x: int`）をフィールドへ変換（現状 [classes.rs:89](src/python_converter/classes.rs#L89) は
+②クラス本体の**値なし注釈**（`x: int`）をフィールドへ変換（現状 [classes.rs:89](../src/python_converter/classes.rs#L89) は
 `a.value` が `Some` のときだけ処理するので**黙って捨てている**）③`frozen=True` → `let` フィールド。
 明示エラーにすべきもの: `repr=True`（自動 `__repr__` が無い）/ `order=True` / `field(default_factory=...)`
 （`mut` フィールドに既定値を書けない）/ `ClassVar`。

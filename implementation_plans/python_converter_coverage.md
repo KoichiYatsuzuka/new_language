@@ -1,7 +1,7 @@
 # Python→Arrow 変換機能（`python_converter`）の Python 文法カバレッジ調査
 
 - 初版: 2026-07-21 / 更新: 2026-07-22（フィードバックを受けてトリアージ）
-- 対象: [`src/python_converter/`](src/python_converter/)（`import[py]` が使用する、PyO3 インタープリタを介さない Python→Arrow AST 翻訳器）
+- 対象: [`src/python_converter/`](../src/python_converter/)（`import[py]` が使用する、PyO3 インタープリタを介さない Python→Arrow AST 翻訳器）
 - 手法: 全ソース精査 + 代表ケースを `target/debug/arrow.exe` で実機検証 + Arrow 側 AST/パーサ/インタープリタの対応文法確認
 - 検証列凡例: ✔実機 = 実際に実行して確認 / ソース = ソースコード読解により確定
 
@@ -9,11 +9,11 @@
 
 ## 対象機能の特定
 
-「Python コードをインタープリタを介さずに翻訳する機能」＝ [`src/python_converter/`](src/python_converter/)。
-Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`）へ**直接変換**する。`import[py]` がこれを使う。実行時に PyO3（CPython）を呼ぶ `import[py-int]`（[`src/interpreter/py_interop.rs`](src/interpreter/py_interop.rs)）とは別物であり、本調査の対象外。
+「Python コードをインタープリタを介さずに翻訳する機能」＝ [`src/python_converter/`](../src/python_converter/)。
+Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`）へ**直接変換**する。`import[py]` がこれを使う。実行時に PyO3（CPython）を呼ぶ `import[py-int]`（[`src/interpreter/py_interop.rs`](../src/interpreter/py_interop.rs)）とは別物であり、本調査の対象外。
 
-- エントリポイント: `convert_python_source()` [`mod.rs`](src/python_converter/mod.rs)
-- 文変換: [`statements.rs`](src/python_converter/statements.rs) / クラス: [`classes.rs`](src/python_converter/classes.rs) / 式: [`expressions.rs`](src/python_converter/expressions.rs) / 型注釈: [`annotations.rs`](src/python_converter/annotations.rs) / 補助: [`utils.rs`](src/python_converter/utils.rs)
+- エントリポイント: `convert_python_source()` [`mod.rs`](../src/python_converter/mod.rs)
+- 文変換: [`statements.rs`](../src/python_converter/statements.rs) / クラス: [`classes.rs`](../src/python_converter/classes.rs) / 式: [`expressions.rs`](../src/python_converter/expressions.rs) / 型注釈: [`annotations.rs`](../src/python_converter/annotations.rs) / 補助: [`utils.rs`](../src/python_converter/utils.rs)
 
 ## 結論
 
@@ -42,9 +42,9 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 
 ### [x] 1. デフォルト引数 `def f(x, y=10)`【実装済 2026-08-28】
 
-- 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs)（+ `extract_param_types` 近傍）
+- 対象: [`classes.rs` `convert_params()`](../src/python_converter/classes.rs)（+ `extract_param_types` 近傍）
 - 現状: `Param { default: None, ... }` を常に生成し、デフォルト値を捨てている。
-- Arrow 側: `Param.default: Option<Expr>` が実在（[`ast.rs:156`](src/ast.rs#L156)）。`bind_args` は未割当スロットをデフォルトで埋める（[`args.rs:180`](src/interpreter/functions/args.rs#L180)）。
+- Arrow 側: `Param.default: Option<Expr>` が実在（[`ast.rs:156`](../src/ast.rs#L156)）。`bind_args` は未割当スロットをデフォルトで埋める（[`args.rs:180`](../src/interpreter/functions/args.rs#L180)）。
 - 変換方針:
   - `py::Arguments` の `args`/`posonlyargs` は末尾から `args.defaults` に、`kwonlyargs` は `kw_defaults` に対応する。各 `ArgWithDefault.default: Option<Box<Expr>>` を `convert_expr` して `Param.default` に載せる。
   - 位置引数のデフォルトは「後ろ詰め」で対応付く点に注意（`f(a, b=1, c=2)` なら defaults は `[1,2]` が末尾2個に対応）。
@@ -57,7 +57,7 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 `Param.default` に載せるだけ（`convert_params` の 2 ループ）。
 
 **⚠⚠ 変換器だけでは動かなかった — 静的型検査にもう 1 層あった**:
-`check_fn_type_call`（[`call_check.rs`](src/type_check/call_check.rs)）が
+`check_fn_type_call`（[`call_check.rs`](../src/type_check/call_check.rs)）が
 `arg_data.len() != params.len()` で弾いており、**デフォルトの有無を見ていなかった**
 （`FnTypeParam` に情報自体が無かった）。`FnTypeParam` に `has_default` を追加し、
 必要数を `!has_default` の個数で数えるよう修正した。
@@ -74,7 +74,7 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 
 **⚠ 意味差: デフォルト値の評価時期**:
 Python は `def` の実行時に**1 回**評価してその値を共有する。Arrow は
-`exec_fn_evaled` が**呼び出しごと**に評価する（[`execution.rs`](src/interpreter/functions/execution.rs) の
+`exec_fn_evaled` が**呼び出しごと**に評価する（[`execution.rs`](../src/interpreter/functions/execution.rs) の
 `evaluated_defaults`）。
 
 - リテラル（`0` / `"hi"` / `None` / `(1,2)`）は**完全に同じ**。実用上ほぼこれ。
@@ -89,16 +89,16 @@ Python は `def` の実行時に**1 回**評価してその値を共有する。
 黙って読み込めていた（呼ぶと引数不足で落ちる）。今はデフォルト式も `convert_expr` に通すので、
 lambda（項目 26）・f-string（項目 19）などがその場で明示エラーになる。**サイレント欠落の解消**。
 
-**例題**: [`examples/interop/py_defaults.ar`](examples/interop/py_defaults.ar) +
-[`test_modules/py_defaults.py`](examples/interop/test_modules/py_defaults.py)
+**例題**: [`examples/interop/py_defaults.ar`](../examples/interop/py_defaults.ar) +
+[`test_modules/py_defaults.py`](../examples/interop/test_modules/py_defaults.py)
 （⑦の可変デフォルトを除き CPython と出力一致を突き合わせ済）/
-[`examples/interop/py_defaults_error.ar`](examples/interop/py_defaults_error.ar)（lambda / f-string デフォルト）。
+[`examples/interop/py_defaults_error.ar`](../examples/interop/py_defaults_error.ar)（lambda / f-string デフォルト）。
 
 ### [x] 2. 変数の再代入 `x = 1; x = 2` / ループ内カウンタ【実装済 2026-08-28】
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の文変換全体（`Assign`/`AnnAssign` と巻き上げ処理）
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の文変換全体（`Assign`/`AnnAssign` と巻き上げ処理）
 - 現状: すべての `x = expr` を `Stmt::Mut`（新規宣言）に変換 → Arrow は再宣言を禁止するため実行時 `NameError: variable 'x' is already declared`。既存の巻き上げは `if` ブランチ内代入のみに限定。
-- Arrow 側: 宣言は `Stmt::Mut`、再代入は `Stmt::Assign`（[`ast.rs:580`](src/ast.rs#L580)）。両者は別ノード。
+- Arrow 側: 宣言は `Stmt::Mut`、再代入は `Stmt::Assign`（[`ast.rs:580`](../src/ast.rs#L580)）。両者は別ノード。
 - 変換方針（**スコープ単位の完全巻き上げに置き換える**）:
   1. 関数本体（およびモジュール本体）ごとに、その中で単純名前代入されるすべての変数名を再帰収集（`if`/`for`/`while`/`try`/`block` の全ネストを走査）。
   2. 収集した名前を、パラメータ名・`for` ループ変数を除外したうえで、スコープ先頭に `mut name = None` として一度だけ宣言（hoist）。
@@ -162,18 +162,18 @@ def g(xs):
 
 ⚠ 以前ここには「`=` が無い純粋なループ変数は CPython と一致する」と書いていたが、
   規則 2 で**一致しなくなった**。また「必要なら同名衝突を明示エラーに倒せる」としていた件は、
-  規則 1 で**倒した**。詳細は [bug_fix.md](bug_fix.md) の B4 の節。
+  規則 1 で**倒した**。詳細は [bug_fix.md](../implementation_logs/bug_fix.md) の B4 の節。
 
-**例題**: [`examples/interop/py_reassign.ar`](examples/interop/py_reassign.ar) +
-[`test_modules/py_reassign.py`](examples/interop/test_modules/py_reassign.py)
+**例題**: [`examples/interop/py_reassign.ar`](../examples/interop/py_reassign.ar) +
+[`test_modules/py_reassign.py`](../examples/interop/test_modules/py_reassign.py)
 （12 ケース中 ⑨ の 1 件のみ CPython と相違。他 11 件は一致を突き合わせ済）。
 エラー化した経路が無いため `_error` 例は無し。
 
 ### [x] 3. 添字/キー代入 `a[i] = x` / `d[k] = v`（+ 複合 `a[i] += 1`）【実装済 2026-08-28】
 
-- 対象: [`statements.rs` `convert_stmt()`](src/python_converter/statements.rs) の `Assign` / `AugAssign` アーム
+- 対象: [`statements.rs` `convert_stmt()`](../src/python_converter/statements.rs) の `Assign` / `AugAssign` アーム
 - 現状: 代入ターゲットが `Subscript` の場合 `unsupported assignment target` エラー。
-- Arrow 側: 添字代入は `Stmt::AttrAssign { target: <Subscript式>, value }` で表現する（パーサ `finish_expr_stmt` のコメント「`d["k"] = v`」参照 [`assignment.rs:92`](src/parser/stmts/assignment.rs#L92)）。複合は `Stmt::AttrCompoundAssign`。
+- Arrow 側: 添字代入は `Stmt::AttrAssign { target: <Subscript式>, value }` で表現する（パーサ `finish_expr_stmt` のコメント「`d["k"] = v`」参照 [`assignment.rs:92`](../src/parser/stmts/assignment.rs#L92)）。複合は `Stmt::AttrCompoundAssign`。
 - 変換方針:
   - `Assign` のターゲット `py::Expr::Subscript` を `Attribute` と同様に扱い、`target = convert_expr(subscript)`（= `Expr::Subscript`）として `Stmt::AttrAssign` を生成する。
   - `AugAssign` のターゲット `Subscript` も同様に `Stmt::AttrCompoundAssign` を生成する。
@@ -201,15 +201,15 @@ def g(xs):
 衝突して `already declared` になる（`py_calculator.py` のガード内 `c = Calculator(...)` で実際に踏んだ）。
 `is_main_guard` で降りないように修正し、退行例を `py_reassign.ar` の ⑪ に追加した。
 
-**例題**: [`examples/interop/py_subscript.ar`](examples/interop/py_subscript.ar) +
-[`test_modules/py_subscript.py`](examples/interop/test_modules/py_subscript.py)。
+**例題**: [`examples/interop/py_subscript.ar`](../examples/interop/py_subscript.ar) +
+[`test_modules/py_subscript.py`](../examples/interop/test_modules/py_subscript.py)。
 新しいエラー経路が無いため `_error` 例は無し（スライス代入 `a[1:2] = xs` は項目 4 のエラーになる）。
 
 ### [x] 4. スライス `a[1:2]` / `a[::2]`【実装済 2026-08-28】
 
-- 対象: [`expressions.rs` `convert_expr()`](src/python_converter/expressions.rs) の `py::Expr::Slice` アーム
+- 対象: [`expressions.rs` `convert_expr()`](../src/python_converter/expressions.rs) の `py::Expr::Slice` アーム
 - 現状: `slice expression is not supported` エラー。
-- Arrow 側: `Expr::Slice { begin, end, step }` が実在（[`ast.rs:387`](src/ast.rs#L387)）。添字式の内側で生成される想定。
+- Arrow 側: `Expr::Slice { begin, end, step }` が実在（[`ast.rs:387`](../src/ast.rs#L387)）。添字式の内側で生成される想定。
 - 変換方針: `py::Expr::Slice { lower, upper, step }` → `Expr::Slice { begin: lower.map(convert), end: upper.map(convert), step: step.map(convert) }`。`Subscript` のインデックスとしてそのまま入る。
 - 難易度: 低。
 - テスト: `xs[1:3]`, `xs[::2]`, `xs[:-1]`。
@@ -228,15 +228,15 @@ Arrow の `Expr::Slice { begin, end, step }` も同じ形なのでそのまま�
 項目 3 が代入 target に**式**（`Expr::Subscript`）を置けるようにし、本項目がその index を
 `Expr::Slice` にする。例題 ⑧ で固定した。
 
-**例題**: [`examples/interop/py_slice.ar`](examples/interop/py_slice.ar) +
-[`test_modules/py_slice.py`](examples/interop/test_modules/py_slice.py)。
+**例題**: [`examples/interop/py_slice.ar`](../examples/interop/py_slice.ar) +
+[`test_modules/py_slice.py`](../examples/interop/test_modules/py_slice.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 5. クラス変数 `class C: count = 0`【実装済 2026-08-28】
 
-- 対象: [`classes.rs` `convert_class()`](src/python_converter/classes.rs) のクラス本体 `Assign`/`AnnAssign` アーム
+- 対象: [`classes.rs` `convert_class()`](../src/python_converter/classes.rs) のクラス本体 `Assign`/`AnnAssign` アーム
 - 現状: クラス直下の `x = value` を `FieldKind::Const`（不変・共有）に変換 → Python の可変クラス属性が const になる。`__` 始まりは無視。
-- Arrow 側: 共有**可変**クラス変数は `FieldKind::StaticMut`（`static mut name: Type [= default]`、[`ast.rs:1003`](src/ast.rs#L1003)）。共有不変は `Const`。
+- Arrow 側: 共有**可変**クラス変数は `FieldKind::StaticMut`（`static mut name: Type [= default]`、[`ast.rs:1003`](../src/ast.rs#L1003)）。共有不変は `Const`。
 - 変換方針:
   - クラス直下の `x = value` および `x: T = value` を、Python 意味論（可変・共有）に合わせて `FieldKind::StaticMut` にマップする（`default: Some(...)`、`type_ann` は注釈があればそれ、無ければ `"Any"`）。
   - 定数として使いたいものと区別できないため、既定は可変（`StaticMut`）に倒す。
@@ -265,15 +265,15 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 
 ⇒ **変換器では埋められないモデル差**（Arrow に「インスタンス属性の動的追加」が無い）。
 
-**例題**: [`examples/interop/py_classvar.ar`](examples/interop/py_classvar.ar) +
-[`test_modules/py_classvar.py`](examples/interop/test_modules/py_classvar.py)。
+**例題**: [`examples/interop/py_classvar.ar`](../examples/interop/py_classvar.ar) +
+[`test_modules/py_classvar.py`](../examples/interop/test_modules/py_classvar.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 6. `*args`（可変長位置引数）【実装済 2026-08-28】
 
-- 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs) + 本体の識別子書き換え
+- 対象: [`classes.rs` `convert_params()`](../src/python_converter/classes.rs) + 本体の識別子書き換え
 - 現状: `Param { name: "*args", variadic: false }` という不正なパラメータに化けている。
-- Arrow 側: `Param.variadic = true`・名前 `"..."`、本体からは `local::args`（`Expr::LocalVar("args")`）で参照する（[`args.rs:196`](src/interpreter/functions/args.rs#L196)）。
+- Arrow 側: `Param.variadic = true`・名前 `"..."`、本体からは `local::args`（`Expr::LocalVar("args")`）で参照する（[`args.rs:196`](../src/interpreter/functions/args.rs#L196)）。
 - 変換方針:
   - vararg を `Param { name: "...", variadic: true, mutable: true, type_ann: Some("list[Any]") }` に変更。
   - **関数本体を走査し、Python の vararg 名（例 `args`/`rest`）への `Ident` 参照を `Expr::LocalVar("args")` に書き換える**識別子リライトを追加する。
@@ -283,7 +283,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 
 ### [x] 7. `**kwargs`（可変長キーワード引数）【実装済 2026-08-28】
 
-- 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs) + 本体の識別子書き換え
+- 対象: [`classes.rs` `convert_params()`](../src/python_converter/classes.rs) + 本体の識別子書き換え
 - 現状（⚠ **起票時の記述。この見立ては外れていた** — 下の「実装結果」を見ること）:
   `**kwargs` をパラメータから除外。余剰キーワードは `kwargs` dict に自動注入される仕組みが既存
   （~~`execution.rs:143`~~ ← **アンカーは消滅**。その仕組みは #33 で削除済みで、
@@ -304,11 +304,11 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 | Python | 生成する `Param` | 本体の参照 |
 |---|---|---|
 | `*xs` | `{ name: "...", variadic: true, type_ann: "list[Any]" }` | `xs` → `local::args` |
-| `**opts` | `{ name: "**kwargs" }`（[`ast::PY_KWARGS_PARAM`](src/ast.rs)） | `opts` → `**kwargs` |
+| `**opts` | `{ name: "**kwargs" }`（[`ast::PY_KWARGS_PARAM`](../src/ast.rs)） | `opts` → `**kwargs` |
 
 - Arrow の可変長は**名前を持たず** `local::args` で参照する規約なので、Python 側の名前を
   **本体で差し替える**必要がある。変換後の AST を歩く再帰ウォーカは AST が大きく割に合わないので、
-  **変換中に** `convert_expr` の `Name` アームで差し替える（[`param_rewrite.rs`](src/python_converter/param_rewrite.rs) 新設）。
+  **変換中に** `convert_expr` の `Name` アームで差し替える（[`param_rewrite.rs`](../src/python_converter/param_rewrite.rs) 新設）。
   状態はスレッドローカルのスタック（`supers.rs` と同じ方式）。入れ子 `def` は外側の差し替えを
   引き継ぐが、同名パラメータを持つ場合はそちらが勝つ。
 - `**kwargs` は **番兵パラメータ名**を使う。Arrow の識別子に `*` は使えないので実ユーザの名前と
@@ -353,22 +353,22 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 > ① 自由変数の収集が `local::name` を**意図的に拾っていなかった**（ツリーウォークは
 > スコープ鎖で見えていたので VM だけが落ちていた）／② `mut ...` のセル昇格で
 > `Expr::LocalVar` のコンパイルが `slots` しか見ていなかった。
-> ⇒ 例題 [`examples/basics/varargs_nested_fn.ar`](examples/basics/varargs_nested_fn.ar) で固定済み。
+> ⇒ 例題 [`examples/basics/varargs_nested_fn.ar`](../examples/basics/varargs_nested_fn.ar) で固定済み。
 
 **⚠ 定数の置き場所**: `PY_KWARGS_PARAM` は **`src/ast.rs`** に置く。
 `crates/arrow-frontend`（VS Code 拡張の wasm）は `src/type_check` を取り込むが
 `src/python_converter` は取り込まないので、変換器側に置くと**拡張のビルドだけが壊れる**
 （`compare_wasm_frontend.ps1` が検出した）。
 
-**例題**: [`examples/interop/py_varargs.ar`](examples/interop/py_varargs.ar) +
-[`test_modules/py_varargs.py`](examples/interop/test_modules/py_varargs.py)。
+**例題**: [`examples/interop/py_varargs.ar`](../examples/interop/py_varargs.ar) +
+[`test_modules/py_varargs.py`](../examples/interop/test_modules/py_varargs.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [ ] 8. `match` 文（値/ワイルドカードパターンのサブセット）
 
-- 対象: [`statements.rs` `convert_stmt()`](src/python_converter/statements.rs) の `py::Stmt::Match`
+- 対象: [`statements.rs` `convert_stmt()`](../src/python_converter/statements.rs) の `py::Stmt::Match`
 - 現状: `'match' statement is not supported` エラー。
-- Arrow 側: `Stmt::Match { subject, arms }`、`MatchPattern::Case(Expr)`（`==` 比較）/ `IsType(String)`（型検査）、`case _:` はワイルドカード（[`ast.rs:492`](src/ast.rs#L492)）。1 つの match 内で case と is の混在は不可。
+- Arrow 側: `Stmt::Match { subject, arms }`、`MatchPattern::Case(Expr)`（`==` 比較）/ `IsType(String)`（型検査）、`case _:` はワイルドカード（[`ast.rs:492`](../src/ast.rs#L492)）。1 つの match 内で case と is の混在は不可。
 - 変換方針:
   - Python の `case <リテラル/値>:` → `MatchPattern::Case(convert_expr)`、`case _:` → `MatchPattern::Case(Expr::Ident("_"))`。
   - クラスパターン・キャプチャ・シーケンス/マッピングパターン・OR パターン・ガード（`if`）は**明示エラー**にする。
@@ -377,9 +377,9 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 
 ### [ ] 9. ジェネレータ（`def` + `yield`、サブセット）
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の関数定義変換 + [`expressions.rs`](src/python_converter/expressions.rs) の `Yield`
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の関数定義変換 + [`expressions.rs`](../src/python_converter/expressions.rs) の `Yield`
 - 現状: `yield` 式を `yield expression ... is not supported` でエラー。
-- Arrow 側: ジェネレータは `gen` キーワード=`Stmt::GenDef`、本体で `Stmt::Yield(Expr)`（[`ast.rs:676`](src/ast.rs#L676),[`ast.rs:721`](src/ast.rs#L721)）。呼び出しで `Value::Generator` を返す。
+- Arrow 側: ジェネレータは `gen` キーワード=`Stmt::GenDef`、本体で `Stmt::Yield(Expr)`（[`ast.rs:676`](../src/ast.rs#L676),[`ast.rs:721`](../src/ast.rs#L721)）。呼び出しで `Value::Generator` を返す。
 - 変換方針:
   - 関数本体に `yield` 文を含む `FunctionDef` は `Stmt::FnDef` ではなく `Stmt::GenDef` として生成し、`yield x` 文を `Stmt::Yield` に変換する。
   - `yield_type` は戻り注釈 `Generator[T]`/`Iterator[T]` から `T` を抽出、無ければ `None`。
@@ -389,9 +389,9 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 
 ### [ ] 10. 型エイリアス `type X = ...`
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `py::Stmt::TypeAlias` + [`annotations.rs`](src/python_converter/annotations.rs)
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `py::Stmt::TypeAlias` + [`annotations.rs`](../src/python_converter/annotations.rs)
 - 現状: `Ok(None)`（黙って無視）。
-- Arrow 側: (a) `alias name: RHS`＝パース時展開の透過エイリアス。ただし**AST ノードは持たず**（`Stmt::Pass` を返し `parser.aliases` に登録）、変換器からは出力できない。(b) `Stmt::NewTypeDef { name, original }`＝名目的別型（[`ast.rs:814`](src/ast.rs#L814)）。
+- Arrow 側: (a) `alias name: RHS`＝パース時展開の透過エイリアス。ただし**AST ノードは持たず**（`Stmt::Pass` を返し `parser.aliases` に登録）、変換器からは出力できない。(b) `Stmt::NewTypeDef { name, original }`＝名目的別型（[`ast.rs:814`](../src/ast.rs#L814)）。
 - 変換方針（推奨: 変換器内エイリアステーブル）:
   - `type X = <型式>` を検出したら、変換器が保持するマップに `X → convert_annotation(rhs)` を登録し、以降の型注釈解決（`convert_annotation`/`map_type_name`）で `X` を展開する（`alias` と同等の透過展開を変換器内で行う）。
   - 単純名エイリアスに限り `NewTypeDef` へ出力する案もあるが、名目的別型のため型検査で偽陽性を生む懸念があり非推奨。
@@ -400,9 +400,9 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 
 ### [x] 11. 三項演算子 `a if cond else b`【実装済 2026-08-28】
 
-- 対象: [`expressions.rs` `convert_expr()`](src/python_converter/expressions.rs) の `py::Expr::IfExp` アーム
+- 対象: [`expressions.rs` `convert_expr()`](../src/python_converter/expressions.rs) の `py::Expr::IfExp` アーム
 - 現状: `inline 'if' expression is not supported` エラー。
-- Arrow 側: `Expr::IfExpr { branches, else_body, return_type }`（[`ast.rs:413`](src/ast.rs#L413)）。各ブランチ本体は `block_return` で値を返す。**`return_type: None` でも式として評価可能**（実機検証済み）。任意の式位置にネスト可能。
+- Arrow 側: `Expr::IfExpr { branches, else_body, return_type }`（[`ast.rs:413`](../src/ast.rs#L413)）。各ブランチ本体は `block_return` で値を返す。**`return_type: None` でも式として評価可能**（実機検証済み）。任意の式位置にネスト可能。
 - 変換方針: `IfExp { test, body, orelse }` → `Expr::IfExpr { branches: [(convert(test), [Stmt::BlockReturn(convert(body), span)])], else_body: Some([Stmt::BlockReturn(convert(orelse), span)]), return_type: None }`。
 - 難易度: 低。
 - 検証: ✔実機（`if c -> int: block_return 1 else: block_return 2` および注釈なし版の双方が動作）。
@@ -418,15 +418,15 @@ Arrow の `if` 式は分岐本体が**文の列**なので、各腕を `BlockRet
 **⚠ 遅延評価が一致する**のが要点: Python の三項式は選ばれた腕しか評価しない。Arrow の `if` 式も
 同じなので、副作用のある呼び出しを腕に置いたときの**評価回数まで揃う**（例題 ⑨ で固定）。
 
-**例題**: [`examples/interop/py_ternary.ar`](examples/interop/py_ternary.ar) +
-[`test_modules/py_ternary.py`](examples/interop/test_modules/py_ternary.py)。
+**例題**: [`examples/interop/py_ternary.ar`](../examples/interop/py_ternary.ar) +
+[`test_modules/py_ternary.py`](../examples/interop/test_modules/py_ternary.py)。
 新しいエラー経路が無いため `_error` 例は無し（腕の式が未対応構文ならその構文自身のエラーが出る）。
 
 ### [x] 12. `in` / `not in`（メンバシップ）【実装済 2026-08-28】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Compare` 変換（`convert_cmpop` の `In`/`NotIn` アーム）
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::Compare` 変換（`convert_cmpop` の `In`/`NotIn` アーム）
 - 現状: `'in' operator is not supported in expression context` エラー。
-- Arrow 側: `BinOp::In` / `BinOp::NotIn` が実在（[`ast.rs:248`](src/ast.rs#L248)）。**ソース構文も Python と同一**（`x in xs` / `x not in xs`）。
+- Arrow 側: `BinOp::In` / `BinOp::NotIn` が実在（[`ast.rs:248`](../src/ast.rs#L248)）。**ソース構文も Python と同一**（`x in xs` / `x not in xs`）。
 - 変換方針: `CmpOp::In` → `Expr::BinOp{ op: In }`、`CmpOp::NotIn` → `Expr::BinOp{ op: NotIn }`。単一 BinOp で表現できる。
 - 難易度: 低。
 - 検証: ✔実機（`2 in [1,2,3]`→True、`9 not in [1,2,3]`→True）。
@@ -437,13 +437,13 @@ Arrow の `if` 式は分岐本体が**文の列**なので、各腕を `BlockRet
 list / tuple / set は**要素**、dict は**キー**、str は**部分文字列**。
 条件式・`and` との組み合わせ・ループ内フィルタも確認済み。
 
-**例題**: [`examples/interop/py_membership.ar`](examples/interop/py_membership.ar) +
-[`test_modules/py_membership.py`](examples/interop/test_modules/py_membership.py)。
+**例題**: [`examples/interop/py_membership.ar`](../examples/interop/py_membership.ar) +
+[`test_modules/py_membership.py`](../examples/interop/test_modules/py_membership.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 13. `is` / `is not`（識別比較）— ★文法差異に注意★【実装済 2026-08-28】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Compare` 変換
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::Compare` 変換
 - 現状: `'is' operator is not supported` エラー。
 - **文法差異（重要）**:
   - Python の `is`/`is not` は**識別比較（オブジェクト同一性）**。
@@ -484,13 +484,13 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 モジュール単位変換では 1 箇所の拒否が import 全体を殺すので、警告相当を硬いエラーにするのは
 釣り合わない。将来「警告を出す」方向なら足せる。
 
-**例題**: [`examples/interop/py_identity.ar`](examples/interop/py_identity.ar) +
-[`test_modules/py_identity.py`](examples/interop/test_modules/py_identity.py)
+**例題**: [`examples/interop/py_identity.ar`](../examples/interop/py_identity.ar) +
+[`test_modules/py_identity.py`](../examples/interop/test_modules/py_identity.py)
 （13 ケース中 11 件 CPython 一致・⑤ の 2 件が上記の差）。
 
 ### [ ] 14. `del` 文（警告付き無視）
 
-- 対象: [`statements.rs` `convert_stmt()`](src/python_converter/statements.rs) — 新規 `py::Stmt::Delete` アーム
+- 対象: [`statements.rs` `convert_stmt()`](../src/python_converter/statements.rs) — 新規 `py::Stmt::Delete` アーム
 - 現状: 汎用 catch-all エラー `unsupported Python statement`。
 - 方針（ユーザー指示）: **警告を出したうえで無視**（ローカルスタックの破棄に任せる）。`del <name>` は変数束縛の削除であり、Arrow ではスコープ終了時に破棄されるため無視でおおむね許容。
 - 実装: `Delete { targets }` の各ターゲットについて警告を出して `Ok(None)` を返す。変換器に警告チャネルが無いため、当面 `eprintln!("Warning: ...")`（main.rs の型検査警告と同じ stderr 出力）で対応。将来は警告収集ベクタの導入を検討。
@@ -499,7 +499,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 
 ### [ ] 15. 複数代入 `a = b = c`
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `Assign` アーム（現在 `targets.len() != 1` でエラー）
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `Assign` アーム（現在 `targets.len() != 1` でエラー）
 - 現状: `multiple assignment targets are not supported` エラー。
 - 方針（ユーザー指示）: 単文に分割（`a = c` と `b = c`）。
 - 実装: `convert_stmt` が複数文を返せるようにする（戻り値の `Vec<Stmt>` 化、または `convert_stmts` 側で展開）。各ターゲットについて再代入ロジック（🟢2）に従い `Mut`/`Assign` を生成。
@@ -508,7 +508,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 
 ### [x] 16. 連鎖比較 `a < b < c`【実装済 2026-08-28】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `Compare` アーム（現在 `ops.len() != 1` でエラー）
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `Compare` アーム（現在 `ops.len() != 1` でエラー）
 - 現状: `chained comparisons are not supported` エラー。
 - 方針（ユーザー指示）: `and` で分割（`a < b and b < c`）。
 - 実装: `Compare { left, ops, comparators }` を隣接ペアに展開し `Expr::BinOp{ And }` で連結。`a op1 b op2 c` → `(a op1 b) and (b op2 c)`。式のまま完結（文分割不要）。
@@ -533,15 +533,15 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 **確認（12 ケース中 11 件 CPython 一致）**: 基本形／3 段の連鎖／演算子混在（`<=` と `<`、`==` の連鎖）／
 `and` との組み合わせ／連鎖でない比較（`is not` の特別扱いを壊していないこと）／条件式／短絡。
 
-**例題**: [`examples/interop/py_chained_compare.ar`](examples/interop/py_chained_compare.ar) +
-[`test_modules/py_chained_compare.py`](examples/interop/test_modules/py_chained_compare.py)。
+**例題**: [`examples/interop/py_chained_compare.ar`](../examples/interop/py_chained_compare.ar) +
+[`test_modules/py_chained_compare.py`](../examples/interop/test_modules/py_chained_compare.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 17. 内包表記 → `for` 式 + `loop_yield`【実装済 2026-08-28 / list・set】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `ListComp`/`SetComp`/`DictComp`/`GeneratorExp` アーム
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `ListComp`/`SetComp`/`DictComp`/`GeneratorExp` アーム
 - 現状: `comprehensions are not supported` エラー。
-- Arrow 側: `Expr::ForExpr { target, iter, body, return_type }` + `Stmt::LoopYield`（[`ast.rs:422`](src/ast.rs#L422)）。実機で `for x in xs -> list[int]: if cond: loop_yield x*x` → `[4,16]` 確認。
+- Arrow 側: `Expr::ForExpr { target, iter, body, return_type }` + `Stmt::LoopYield`（[`ast.rs:422`](../src/ast.rs#L422)）。実機で `for x in xs -> list[int]: if cond: loop_yield x*x` → `[4,16]` 確認。
 - 方針: リスト内包 `[expr for x in it if cond]` → `Expr::ForExpr { target:"x", iter:convert(it), body:[If{[(cond,[LoopYield(expr)])],None}]（if 無しなら [LoopYield(expr)]）, return_type:Some("list[Any]") }`。
 - 難易度: 中。
 - **多重 for（検証済み・対応可能）**: `[expr for x in xs for y in ys if cond]` は「外側 for **式** + 内側 for **文** + `loop_yield`」で**フラットなリスト**になる（`loop_yield` は入れ子 for 文・if 文を透過して最外の for 式のアキュムレータへ積まれる）。実機で `[11,21,12,22]`（2重）・`[111,121,112,122]`（3重）・フィルタ付き `[22,12]` を確認。
@@ -554,8 +554,8 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 **実装結果**: 計画どおり `for` 式 + `loop_yield` に脱糖した。ただし**同時に Arrow 側の
 言語仕様としても内包表記を実装**した（ユーザー指示）。
 
-**★ 脱糖器は 1 箇所だけ**: [`ast::build_list_comprehension`](src/ast.rs)。
-Arrow のネイティブ構文（`parse_comprehension_tail`、[`src/parser/exprs.rs`](src/parser/exprs.rs)）と
+**★ 脱糖器は 1 箇所だけ**: [`ast::build_list_comprehension`](../src/ast.rs)。
+Arrow のネイティブ構文（`parse_comprehension_tail`、[`src/parser/exprs.rs`](../src/parser/exprs.rs)）と
 Python からの変換（`ListComp` / `SetComp` アーム）が**同じ関数**を通るので、
 生成される AST は必ず同一になる。
 `frontend_tests/parser_tests.rs::test_python_list_comprehension_matches_native_ast` で固定した。
@@ -586,10 +586,10 @@ ForExpr { target: "a", iter: xs, return_type: Some("list[Any]"), body: [
 - **ジェネレータ式 `(v for v in xs)`** — **遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
   無限ジェネレータや副作用の回数が変わる。「黙って別物にする」より明示エラーを選んだ。
 
-**例題**: Arrow ネイティブ = [`examples/collections/comprehension.ar`](examples/collections/comprehension.ar) /
-[`comprehension_error.ar`](examples/collections/comprehension_error.ar)、
-Python = [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehension.ar) /
-[`py_comprehension_error.ar`](examples/interop/py_comprehension_error.ar)。
+**例題**: Arrow ネイティブ = [`examples/collections/comprehension.ar`](../examples/collections/comprehension.ar) /
+[`comprehension_error.ar`](../examples/collections/comprehension_error.ar)、
+Python = [`examples/interop/py_comprehension.ar`](../examples/interop/py_comprehension.ar) /
+[`py_comprehension_error.ar`](../examples/interop/py_comprehension_error.ar)。
 
 **⚠ 項目 22 の `_error` 例題は削除した**: set 内包が通るようになり、専用のエラー文言が
 存在しなくなったため（`py_set_error.ar` / `py_setcomp_error.py`）。
@@ -597,7 +597,7 @@ Python = [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehens
 
 ### [x] 18. 定数タプル【実装済 2026-08-28 / ただし現構成では到達しない経路】
 
-- 対象: [`expressions.rs` `convert_constant()`](src/python_converter/expressions.rs) の `Constant::Tuple` アーム
+- 対象: [`expressions.rs` `convert_constant()`](../src/python_converter/expressions.rs) の `Constant::Tuple` アーム
 - 現状: `constant tuple is not supported` エラー。
 - Arrow 側: `Expr::Tuple(Vec<Expr>)` 実在。
 - 方針: `Constant::Tuple(Vec<Constant>)` の各要素を定数変換して `Expr::Tuple` を構築。
@@ -624,20 +624,20 @@ Python = [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehens
 > 詳細は [bug_fix.md](../implementation_logs/bug_fix.md) の B1 / B2 / B5。
 > ⚠ B1 は「使えないキーは**仕様として禁止**し必ず `TypeError`」という規則も同時に決めている。
 
-**例題**: [`examples/interop/py_tuple.ar`](examples/interop/py_tuple.ar) +
-[`test_modules/py_tuple.py`](examples/interop/test_modules/py_tuple.py)。
+**例題**: [`examples/interop/py_tuple.ar`](../examples/interop/py_tuple.ar) +
+[`test_modules/py_tuple.py`](../examples/interop/test_modules/py_tuple.py)。
 到達しないアームなので `_error` 例は無し。
 
 ### [x] 19. f-string【実装済 2026-08-28 / 書式指定を除く】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::JoinedStr` アーム
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::JoinedStr` アーム
 - 現状: `f-strings are not supported` エラー。
-- Arrow 側: f-string を **`"lit" + str(expr) + "lit"`** の左結合 `BinOp::Add` 連結に脱糖する（`desugar_fstring` [`exprs.rs:592`](src/parser/exprs.rs#L592)）。実機 `f"hi {name} number {n}"` → `hi bob number 5` 確認。
+- Arrow 側: f-string を **`"lit" + str(expr) + "lit"`** の左結合 `BinOp::Add` 連結に脱糖する（`desugar_fstring` [`exprs.rs:592`](../src/parser/exprs.rs#L592)）。実機 `f"hi {name} number {n}"` → `hi bob number 5` 確認。
 - 方針: Python `JoinedStr { values }` を同形へ変換。各 `Constant(str)` → `Expr::Str`、各 `FormattedValue{value}` → `Expr::Call{ func:Ident("str"), args:[convert(value)] }`。全体を `BinOp::Add` で連結。
 - 難易度: 低〜中。
 - 懸念: 書式指定 `{x:.2f}`（format_spec）・変換 `!r`/`!s`（conversion）は `str()` 単純ラップでは再現不可。書式なし f-string を対応し、format_spec 付きは追加検討 or 明示エラー。
 
-**実装結果**: `desugar_fstring`（[`src/parser/exprs.rs`](src/parser/exprs.rs)）と**同形**に脱糖した。
+**実装結果**: `desugar_fstring`（[`src/parser/exprs.rs`](../src/parser/exprs.rs)）と**同形**に脱糖した。
 リテラル片はそのまま `Expr::Str`、埋め込み式は `str(...)` 呼び出しで包み、左結合の
 `BinOp::Add` で連結する。`f""` は空文字列。
 
@@ -654,26 +654,26 @@ Arrow に「値を書式付きで文字列化する」構文・組込が無い�
 `{x:>10}` / `{n:,}` / `{n:04d}` / `{n:x}` など**書式指定ミニ言語全般**が同じ扱い。
 ⇒ 将来の実装方針（`format(value, spec)` 組込を足す案／Arrow 自身に補間構文を入れる案、
 および「どこまでを仕様にするか先に決める」という留意点）は
-[`implementation_logs/FUTURE_FEATURE.md`](implementation_logs/FUTURE_FEATURE.md) §4 (3) に残した。
+[`implementation_logs/FUTURE_FEATURE.md`](../implementation_logs/FUTURE_FEATURE.md) §4 (3) に残した。
 ⚠ **モジュール単位変換なので、書式指定を 1 箇所でも含む `.py` は import 全体が落ちる**。
 f-string を多用する実在モジュールを読むうえで、これが現状いちばん効く制約。
 
-**例題**: [`examples/interop/py_fstring.ar`](examples/interop/py_fstring.ar) +
-[`test_modules/py_fstring.py`](examples/interop/test_modules/py_fstring.py) /
-[`examples/interop/py_fstring_error.ar`](examples/interop/py_fstring_error.ar)
+**例題**: [`examples/interop/py_fstring.ar`](../examples/interop/py_fstring.ar) +
+[`test_modules/py_fstring.py`](../examples/interop/test_modules/py_fstring.py) /
+[`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
 （書式指定・`!a` の 2 種）。
 
 ### [x] 20. デコレータ `@decorator`【実装済 2026-08-27】
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `FunctionDef` アーム + [`classes.rs`](src/python_converter/classes.rs)（クラス／メソッドの計3箇所のエラー分岐）
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `FunctionDef` アーム + [`classes.rs`](../src/python_converter/classes.rs)（クラス／メソッドの計3箇所のエラー分岐）
 - 現状: `decorators are not yet implemented` エラー（関数・クラス・メソッド）。
-- Arrow 側: **`@decorator fn` / `@decorator class` を実装済み**。`Stmt::FnDef.decorators` / `Stmt::ClassDef.decorators`（`Vec<Expr>`）に保持し、インタープリタが逆順適用（[`definitions.rs:82`](src/interpreter/exec/definitions.rs#L82)）。メソッドデコレータも対応（[`definitions.rs:509`](src/interpreter/exec/definitions.rs#L509)）。実機で関数デコレータ・スタックデコレータの動作を確認。
+- Arrow 側: **`@decorator fn` / `@decorator class` を実装済み**。`Stmt::FnDef.decorators` / `Stmt::ClassDef.decorators`（`Vec<Expr>`）に保持し、インタープリタが逆順適用（[`definitions.rs:82`](../src/interpreter/exec/definitions.rs#L82)）。メソッドデコレータも対応（[`definitions.rs:509`](../src/interpreter/exec/definitions.rs#L509)）。実機で関数デコレータ・スタックデコレータの動作を確認。
 - 方針: Python の `decorator_list` を各々 `convert_expr` して `decorators` フィールドへ格納。3箇所のエラー分岐を削除。
 - 制約: Arrow は `@` の直後が `fn`/`class` のみ（Python も関数/クラスのみで一致）。デコレータ関数は `fn d(let f: function) -> function:` 形のシグネチャが必要。
 - 難易度: 低。
 - 検証: ✔実機（`@log`、`@double_log @log` が正しく動作）。
 
-**実装結果**: [`decorators.rs`](src/python_converter/decorators.rs) を新設し、`convert_decorators()` で
+**実装結果**: [`decorators.rs`](../src/python_converter/decorators.rs) を新設し、`convert_decorators()` で
 `decorator_list` を 2 つに振り分ける形にした（単純な素通しでは不十分だった）:
 
 - **通常のデコレータ** → `FnDef.decorators` / `ClassDef.decorators`（`convert_expr` で変換）。
@@ -688,11 +688,11 @@ f-string を多用する実在モジュールを読むうえで、これが現�
   `@staticmethod` と `@classmethod` の併用。
 
 **意味差（要留意）**: Arrow の `static` / `class_method` は**クラス経由でしか呼べない**
-（インスタンス経由は `AttributeError`：[`method_call.rs`](src/interpreter/classes/method_call.rs) の
+（インスタンス経由は `AttributeError`：[`method_call.rs`](../src/interpreter/classes/method_call.rs) の
 `static_method_names` 判定）。Python は `obj.stat()` も許すので、ここだけ差が残る。
 
-**例題**: [`examples/interop/py_decorators.ar`](examples/interop/py_decorators.ar)（成功・CPython と出力一致を突き合わせ済）/
-[`examples/interop/py_decorators_error.ar`](examples/interop/py_decorators_error.ar)（明示エラー 3 種）。
+**例題**: [`examples/interop/py_decorators.ar`](../examples/interop/py_decorators.ar)（成功・CPython と出力一致を突き合わせ済）/
+[`examples/interop/py_decorators_error.ar`](../examples/interop/py_decorators_error.ar)（明示エラー 3 種）。
 
 **† 実装中に見つかった別バグ（本項目の外）** — 2026-09-18 に再トリアージ:
 
@@ -721,7 +721,7 @@ f-string を多用する実在モジュールを読むうえで、これが現�
 
 ### [x] 21. `...`（Ellipsis）→ 文位置は `pass`【実装済 2026-08-28】
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `py::Stmt::Expr` アーム（中身の Ellipsis 判定）
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `py::Stmt::Expr` アーム（中身の Ellipsis 判定）
 - 現状: `Constant::Ellipsis` を式として `Expr::None` に変換（黙って None 化）。
 - 方針（ユーザー提案）: **文としての `...`**（スタブ本体の `...`）を `Stmt::Pass` に読み替える。`Expr` 文で中身が `Constant::Ellipsis` なら `Stmt::Pass` を返す。
 - 難易度: 低。
@@ -743,13 +743,13 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 **確認（9 ケース中 8 件 CPython 一致・残り 1 件が上記の値位置）**: 関数のスタブ本体／
 型注釈つきスタブ／クラスの空本体／メソッドのスタブ／`if` の枝／ループ本体／値位置。
 
-**例題**: [`examples/interop/py_ellipsis.ar`](examples/interop/py_ellipsis.ar) +
-[`test_modules/py_ellipsis.py`](examples/interop/test_modules/py_ellipsis.py)。
+**例題**: [`examples/interop/py_ellipsis.ar`](../examples/interop/py_ellipsis.ar) +
+[`test_modules/py_ellipsis.py`](../examples/interop/test_modules/py_ellipsis.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 22. 集合リテラル `{1, 2, 3}` / set 内包【実装済 2026-08-28・内包は項目 17 で完了】
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Set` アーム（＋ `SetComp`）
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::Set` アーム（＋ `SetComp`）
 - 現状: `set literal is not supported` エラー。
 - Arrow 側: **set 型は実在**（`Expr::Set(Vec<Expr>)`、`set()` コンストラクタ、`set_type.rs`）。実機で `{1,2,3,2}`→`{1, 2, 3}`、`2 in s`→True、`set()`→空集合 を確認。
 - 方針: `py::Expr::Set { elts }` → `Expr::Set(elts.map(convert))`。set 内包は `set(<for式>)` 相当（ForExpr を set 化）。
@@ -766,7 +766,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 **set 内包 `{x for x in xs}` は項目 17 で解消済み**（2026-08-28）。
 本項目の時点では `SetComp` を独立アームに分けて専用のエラー文言にしていたが、
 項目 17 で `set(<for 式>)` への脱糖が入り**通るようになった**ため、その `_error` 例題は削除した。
-⇒ 集合内包の例題は [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehension.ar) の ⑦。
+⇒ 集合内包の例題は [`examples/interop/py_comprehension.ar`](../examples/interop/py_comprehension.ar) の ⑦。
 
 **⚠ セットの repr 順は当てにしないこと**: CPython は文字列のハッシュを実行ごとに
 ランダム化するので `{"a","b","c"}` の表示順は**実行のたびに変わる**。例題では int / tuple の
@@ -780,7 +780,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### [ ] 23. walrus 演算子 `:=`
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::NamedExpr` アーム（＋文レベルの補助文注入）
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::NamedExpr` アーム（＋文レベルの補助文注入）
 - 現状: `walrus operator ':=' is not supported` エラー。
 - 方針（ユーザー指示）: **2文に分割**。`(x := expr)` を、先行する代入文 `x = expr`（🟢2 の再代入ロジック）＋ 元の式位置での `x` 参照に変換。
   - 例: `if (n := len(xs)) > 10:` → `n = len(xs)` を if の前に出し、条件を `n > 10` にする（＝代入演算子＋左辺値を使った比較文）。
@@ -789,7 +789,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### [x] 24. bare `*`（キーワード専用引数の区切り）【実装済 2026-08-28】
 
-- 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs)（既に概ね対応済み）
+- 対象: [`classes.rs` `convert_params()`](../src/python_converter/classes.rs)（既に概ね対応済み）
 - 背景: `def f(a, *, b)` の bare `*` は rustpython では「vararg なし＋`kwonlyargs`」として表現され、`convert_params` は `kwonlyargs` を通常引数へ平坦化している（＝bare `*` は実質無視済み）。
 - 方針（ユーザー指示）: bare `*` は**無視して引数リストを切り詰める**（キーワード専用引数を通常引数として平坦化）。現状挙動を正式化・確認する。
 - 難易度: 低（ほぼ現状どおり）。
@@ -817,13 +817,13 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
   `def f(a, *rest, b)` が `takes 3 argument(s)` という紛らわしいエラーになる）。
   **bare `*`（名前なし）単体はこの影響を受けない。**
 
-**例題**: [`examples/interop/py_kwonly.ar`](examples/interop/py_kwonly.ar) +
-[`test_modules/py_kwonly.py`](examples/interop/test_modules/py_kwonly.py)
+**例題**: [`examples/interop/py_kwonly.ar`](../examples/interop/py_kwonly.ar) +
+[`test_modules/py_kwonly.py`](../examples/interop/test_modules/py_kwonly.py)
 （②の位置渡しを除き CPython と出力一致を突き合わせ済）。エラー化した項目が無いため `_error` 例は無し。
 
 ### [ ] 25. `with` 文（`__exit__` 実行を伴わない場合のみ）
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `py::Stmt::With` アーム（現在エラー）
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `py::Stmt::With` アーム（現在エラー）
 - 方針（ユーザー決定）: **`__exit__` 実行を伴う with は明示エラー、伴わない場合のみ block 脱糖**で代替。
   - `with EXPR as x: body` → `block: mut x = EXPR; body`（`x` は退出時に Drop され、ファイル等のリソース系は `FileData::drop` で自動後始末。詳細は 🟡「with 文」参照）。
 - 検出: `__exit__` の有無は変換時に静的判定できない（EXPR の実体型は実行時決定）ため、**実行時ガード**で切り分ける — 脱糖 block 内で `x` のクラスに `__exit__` メソッドがあれば `RuntimeError` を raise（同一モジュール内で定義されたクラスは変換時にも静的検出可能）。
@@ -832,7 +832,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### [ ] 26. lambda 式 → 名前付き関数への持ち上げ（lambda lifting）
 
-- 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Lambda` アーム（＋文注入機構）
+- 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::Lambda` アーム（＋文注入機構）
 - 方針（ユーザー決定）: 各 lambda を、囲みスコープへ持ち上げた名前付きネスト関数 `fn __lambda_N(params) -> Ret: return <body>` に変換し、lambda 式をその関数名参照 `Ident("__lambda_N")` に置換。
 - Arrow 側: 名前付きネスト関数は環境をキャプチャする（`CapturedVar`、デコレータ wrapper の実機動作で確認済み）→ lambda のクロージャ意味論を保持できる。
 - 難易度: 中（式コンテキストから囲みスコープへ `fn` 定義を注入する仕組みが必要。🟢15 複数代入・🟢23 walrus と共通の配管）。
@@ -840,7 +840,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### [ ] 27. Python モジュール内の import（再帰ロード）
 
-- 対象: [`statements.rs`](src/python_converter/statements.rs) の `Import`/`ImportFrom`（現在 `Ok(None)` で破棄）＋ [`imports/py_modules.rs` `load_python_module`](src/parser/imports/py_modules.rs) の後処理
+- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `Import`/`ImportFrom`（現在 `Ok(None)` で破棄）＋ [`imports/py_modules.rs` `load_python_module`](../src/parser/imports/py_modules.rs) の後処理
 - 方針（ユーザー提案・肯定）: `import[py]` は「Python ソースを AST 展開したものをロード」する方針とし、**Python モジュール内の `import`/`from import` を Arrow の `Stmt::Import`/`FromImport`（lang="py"）に変換**、その body を **`load_python_module` の再帰呼び出しで充填**する。
 - 実現可能性: **可能**。`load_python_module` は既に検索ディレクトリ・`module_cache`・循環検出（`self.loading`）を持ち、内部で `convert_python_source` を呼ぶ。現状の唯一の欠落は「変換器が Python 内部 import を捨てている」点のみ。変換器が import 文を（空 body で）emit し、`load_python_module` が返り値 body を走査して各 import を再帰解決すれば、キャッシュ・循環検出をそのまま再利用できる。
 - 難易度: 中。
@@ -848,7 +848,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### [ ] 28. デコレータの三分岐（メタ関数化 / クロージャ化 / 読み込み時エラー）
 
-- 対象: [`decorators.rs`](src/python_converter/decorators.rs) の `convert_decorators`（現在は「定義種別マーカ」と「それ以外」の 2 分岐のみ）
+- 対象: [`decorators.rs`](../src/python_converter/decorators.rs) の `convert_decorators`（現在は「定義種別マーカ」と「それ以外」の 2 分岐のみ）
 - 方針（ユーザー提案・肯定）: デコレータを **①展開時に完全解決できる → Arrow のメタ関数（`!`）** / **②実行時に解決でき、クロージャで置換できる → 実行時デコレータ（`@`）** / **③どちらでもない → 読み込み時エラー** の 3 つに振り分ける。
 - ⚠ **「まず①を試し、失敗したら②へ」という動的フォールバックにはできない。** `import[py]` は**パース時**に解決され、メタ関数の展開はその後なので、フェーズをまたぐ。規約（#3「フォールバックは無い」）とも衝突する。⇒ **変換時の静的分類**として実装する。
 - 判定方法:
@@ -863,7 +863,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 - 難易度: 高（前提 2 件を含む）。
 
 **制約 1: デコレータの本体が見えない（最大）**
-[`statements.rs:477`](src/python_converter/statements.rs#L477) が `py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None)` で **Python 内 import を黙って捨てている**。実測: 他モジュール定義のデコレータは `NameError: 'banner' is not defined`。⇒ `@app.route` / `@lru_cache` 等**サードパーティのデコレータは分類不能**。判定できるのは同一ファイル定義のものだけ。⇒ **項目 27 が前提。**
+[`statements.rs:477`](../src/python_converter/statements.rs#L477) が `py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None)` で **Python 内 import を黙って捨てている**。実測: 他モジュール定義のデコレータは `NameError: 'banner' is not defined`。⇒ `@app.route` / `@lru_cache` 等**サードパーティのデコレータは分類不能**。判定できるのは同一ファイル定義のものだけ。⇒ **項目 27 が前提。**
 
 **制約 2: 「展開時に完全解決できるか」は一般には判定できない**
 メタ関数化とは「Python の命令的コードを AST 操作コードへ翻訳する」こと。`def log(f): def w(*a,**k): ... return w` をメタ関数にするには「これは引数を転送するラッパである」と**意味を理解して** `^f.params` のスプライスを合成する必要があり、機械的変換ではない。⇒ ①は**イディオムのホワイトリスト**であって一般判定ではない。
@@ -881,7 +881,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 | 4 | ①のホワイトリスト | クロージャで表現できないもの（`@dataclass` 等）を救う |
 
 - **残る制約**: 項目 27 を実装しても、標準ライブラリ・サードパーティは翻訳対象の `.py` が無い／C 実装のため本体を読めない。そこは `import[py-int]`（PyO3）へ回すか明示エラーにするかを方針として選ぶ。⇒ **「③の保証は完全にはできない」**が、「静かに間違った変換をする」ことは避けられる。
-- Arrow 側の対応状況は [`comptime_metafn_design.md` 参考K](implementation_plans/comptime_metafn_design.md)（デコレータの機構別・置換可能性）を参照。**機構 5（属性アクセスへの介入）だけはメタ関数でも代替できず、言語機能（計算フィールド）が要る**（同 D33）。
+- Arrow 側の対応状況は [`comptime_metafn_design.md` 参考K](comptime_metafn_design.md)（デコレータの機構別・置換可能性）を参照。**機構 5（属性アクセスへの介入）だけはメタ関数でも代替できず、言語機能（計算フィールド）が要る**（同 D33）。
 
 
 ---
@@ -921,7 +921,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### 整数の切り詰め
 
-- `convert_constant` の `Int` は i64 を超える値を `i64::MAX` にクランプする（[`expressions.rs:199`](src/python_converter/expressions.rs#L199)）。
+- `convert_constant` の `Int` は i64 を超える値を `i64::MAX` にクランプする（[`expressions.rs:199`](../src/python_converter/expressions.rs#L199)）。
 - **仕様**: Arrow の整数は i64。i64 を超える整数リテラルは i64::MAX に丸める（多倍長整数は非対応）。
 - 補足: サイレントなクランプは気付きにくいため、将来的に「範囲外は明示エラー」への変更余地はあるが、現時点では仕様として据え置く。
 
@@ -950,7 +950,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 ### `with` 文 — `block` によるスコープ破棄で「一部」表現可能（前回の断定を訂正）
 
-- **検証結果（訂正）**: Arrow の block は退出時にローカル変数を破棄する仕様が**実在した**。`exec_scoped_block` が `push_scope`→実行→`pop_scope` を行い、`pop_scope` でスコープのバインディングを破棄、値は Rc 参照が 0 になった時点で Rust の `Drop` が走る。さらに**ネイティブリソース型は `Drop` で実クリーンアップ**する — `FileData::drop` は `close()`（フラッシュ＋書き戻し＋ハンドル解放）を呼ぶ（[`objects.rs:137`](src/interpreter/value/objects.rs#L137)、コメントにも「スコープを抜けるとき自動 close」）。C#/Node プロセスブリッジも同様。
+- **検証結果（訂正）**: Arrow の block は退出時にローカル変数を破棄する仕様が**実在した**。`exec_scoped_block` が `push_scope`→実行→`pop_scope` を行い、`pop_scope` でスコープのバインディングを破棄、値は Rc 参照が 0 になった時点で Rust の `Drop` が走る。さらに**ネイティブリソース型は `Drop` で実クリーンアップ**する — `FileData::drop` は `close()`（フラッシュ＋書き戻し＋ハンドル解放）を呼ぶ（[`objects.rs:137`](../src/interpreter/value/objects.rs#L137)、コメントにも「スコープを抜けるとき自動 close」）。C#/Node プロセスブリッジも同様。
 - したがって **`with open(p) as f: body` は `block: mut f = open(p); body` へ脱糖可能** — `f` がスコープを抜けて無参照になると `FileData::drop` がファイルを閉じる。組込みリソース系の `with` は block で概ね表現できる。
 - **参照カウント基準の懸念 → Python→Arrow では非該当（削除）**: block+Drop の破棄は参照カウント基準（最後の参照が消えた時点）だが、**Python→Arrow の変換方向ではこれは問題にならない**。Python の `with` はブロック退出でリソースが後始末される前提であり、退出後にそのリソースを**使う**コードは Python 自身が実行時エラーになる（例: closed file への I/O）。したがって Arrow の遅延破棄との差異が表在化するのは「Python 側で元々エラーになる with 文を Arrow で動かしたとき」に限られ、Python ライブラリを外部モジュールとして使うユースケースでは無視できる（ユーザー確認済み）。（理論上の残差は「書込み with + 未使用の逃げ参照 + ブロック後の外部読取り」という作為的なフラッシュ時機のみで、実質無視可能。）
 - **残る制約**: **ユーザー定義クラスには終了フック（`__del__`/`__exit__`）が無い**。リソース解放以外の副作用を持つカスタムコンテキストマネージャ（ロック解放・トランザクション commit/rollback 等）の `__exit__` は、block 脱糖では**再現できない**。
@@ -976,22 +976,22 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 **実装（3 箇所）**:
 
-1. **`exec_class_def`**（[`definitions.rs`](src/interpreter/exec/definitions.rs)）—
+1. **`exec_class_def`**（[`definitions.rs`](../src/interpreter/exec/definitions.rs)）—
    `in_python_module` のときだけ基底**クラス**のメンバ（メソッド／`gen` メソッド／`class_vars`／
    `static_vars`／`field_mutability`／アクセス制御／`static`・`class_method` 名／既定値つきフィールド）を
    引き継ぐ。トレイト継承と同じく**定義時に平坦化**する（実行時に基底を辿らない）。
    取り込みは「**サブクラスが持っていなければ**」＝オーバーライド優先。
-2. **`build_field_index`**（[`interpreter.rs`](src/interpreter.rs)）— 基底フィールドを先頭に置く
+2. **`build_field_index`**（[`interpreter.rs`](../src/interpreter.rs)）— 基底フィールドを先頭に置く
    既存ロジックをそのまま流用。**トレイトを先に見て、無ければ** `py_class_field_order`
    （Python クラス限定・**平坦化済み**）を見る。
    ⚠ 別マップにしたのは、Python 側のクラス名がトレイト名（`Error` 等）と衝突して
    トレイト継承を壊さないため。多段継承のために登録する順序は平坦化済みにしてある。
-3. **`super()` の脱糖**（[`src/python_converter/supers.rs`](src/python_converter/supers.rs) 新設）—
+3. **`super()` の脱糖**（[`src/python_converter/supers.rs`](../src/python_converter/supers.rs) 新設）—
    Arrow に `super` は無いので**変換時に** `super().m(args)` → `<第1基底>.m(self, args)` へ書き換える。
    基底名は `convert_class` の間だけ有効なスレッドローカルのスタックで持つ
    （`convert_expr` まで引数で引き回すとシグネチャ変更が全域に及ぶため）。
    受け側の**アンバウンド呼び出し**（`Base.__init__(self, ...)`）は
-   [`classes/class_methods.rs`](src/interpreter/classes/class_methods.rs) が許可する。
+   [`classes/class_methods.rs`](../src/interpreter/classes/class_methods.rs) が許可する。
    ⚠ 判定は `self.in_python_module` では**駄目**（ドライバ `.ar` から呼ばれた時点で false）。
    `FnValue::is_python`（そのメソッド自身が Python 由来か）で見る。
 
@@ -1004,7 +1004,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 
 **境界の固定**: ネイティブ `.ar` は今も
 `ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`
-（[`examples/classes/class_inherit_error.ar`](examples/classes/class_inherit_error.ar) で固定）。
+（[`examples/classes/class_inherit_error.ar`](../examples/classes/class_inherit_error.ar) で固定）。
 
 **⚠ 残る差**: 多重継承は「**先に書いた基底が勝つ**」。Python の MRO（C3 線形化）とは厳密には違うが、
 単一継承では一致する。`Sub.x = ...` は基底の `static mut` セルを共有するので基底にも届く（項目 5 と同じモデル差）。
@@ -1012,10 +1012,10 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 **挙動不変の根拠**: `compare_outputs.ps1 -A <HEAD ビルド>` が **114/116 一致**、
 差分は**今回追加した 2 例題のみ**（負の対照 116/116 も取得済み）。
 
-**例題**: [`examples/interop/py_inherit.ar`](examples/interop/py_inherit.ar) +
-[`test_modules/py_inherit.py`](examples/interop/test_modules/py_inherit.py) /
-[`examples/interop/py_inherit_error.ar`](examples/interop/py_inherit_error.ar) /
-[`examples/classes/class_inherit_error.ar`](examples/classes/class_inherit_error.ar)。
+**例題**: [`examples/interop/py_inherit.ar`](../examples/interop/py_inherit.ar) +
+[`test_modules/py_inherit.py`](../examples/interop/test_modules/py_inherit.py) /
+[`examples/interop/py_inherit_error.ar`](../examples/interop/py_inherit_error.ar) /
+[`examples/classes/class_inherit_error.ar`](../examples/classes/class_inherit_error.ar)。
 
 **現時点で ⚪ 未トリアージ項目はなし**。
 

@@ -9,7 +9,7 @@
 
 ⚠ **B1〜B13 は全件完了**。全体のまとめ（決まった仕様・見立てが外れた記録・
 測り方を間違えた記録）は
-[implementation_logs/BUGFIX_B1_B13.md](implementation_logs/BUGFIX_B1_B13.md)。
+[implementation_logs/BUGFIX_B1_B13.md](BUGFIX_B1_B13.md)。
 
 ## 現況（2026-09-02）
 
@@ -47,8 +47,8 @@
 - ⚠⚠ **`borrow_mut()` を握ったまま複製してはいけない。** 値が対象自身を含むと
   `RefCell already mutably borrowed` でパニックする。実装中に 3 経路で踏んだ。
 
-例題: [store_copy_semantics.ar](examples/collections/store_copy_semantics.ar) /
-[equality_depth_limit_error.ar](examples/collections/equality_depth_limit_error.ar)
+例題: [store_copy_semantics.ar](../examples/collections/store_copy_semantics.ar) /
+[equality_depth_limit_error.ar](../examples/collections/equality_depth_limit_error.ar)
 
 ---
 
@@ -56,7 +56,7 @@
 
 ⚠ **どれも例題が 1 本も書いていない形**だった。既存のゲート
 （`scan_examples` / `compare_outputs` / `compare_python_impl`）は
-**例題が踏まない挙動を映さない**（[FUTURE_FEATURE.md](implementation_logs/FUTURE_FEATURE.md) §5(a)
+**例題が踏まない挙動を映さない**（[FUTURE_FEATURE.md](FUTURE_FEATURE.md) §5(a)
 の `NESTED-GAP` と同じ構図）。
 
 ⇒ 修正するときは**必ず例題も足す**こと。直しただけでは次も同じように壊れる。
@@ -137,7 +137,7 @@
   （トレイトのメソッドはインタプリタ文脈を受け取れない）。⇒ `indexmap` の `raw_entry_v1` API を
   使い、ハッシュ値は自分で渡し、等値判定は**クロージャ**で渡す。この API には
   `K: Hash + Eq` の境界が無いので `Cargo.toml` の変更も不要だった。
-- 既定ハッシュは [`src/interpreter/ops/hash.rs`](src/interpreter/ops/hash.rs)。
+- 既定ハッシュは [`src/interpreter/ops/hash.rs`](../src/interpreter/ops/hash.rs)。
   ⚠ **設計規則はただ 1 つ: `values_eq` と 1:1 に対応させること。**
   `equality.rs` に腕を足したら**必ずここにも足す**。破れると「入れたのに引けない」壊れ方をし、
   しかもエラーにならない。
@@ -182,7 +182,7 @@ uint ──> int ──> float          bool は独立（昇格しない）
 「比較の場所でキャストする」規則の素直な帰結。
 
 ⚠ **静的注釈にはできない。** import モジュール本体には注釈が供給されない
-（[resolver.rs](src/interpreter/resolver.rs) の doc・意図的）ので、注釈に依存させると
+（[resolver.rs](../src/interpreter/resolver.rs) の doc・意図的）ので、注釈に依存させると
 **モジュール本体だけ `1 == 1.0` が False** になる。⇒ 昇格は実行時の値の型で行う。
 
 ⚠ 旧実装は値の同一性の側で int を f64 へ昇格しており、
@@ -232,9 +232,9 @@ uint ──> int ──> float          bool は独立（昇格しない）
 閉包もセルを共有していた。壊れていたのは**セルの初期化**:
 
 1. 入れ子 `fn` に可変キャプチャされるローカルは slot → セル（`Rc<RefCell<Value>>`）へ
-   昇格し、**slot は穴として残す**（[entry.rs](src/vm/compiler/entry.rs) — リゾルバの
+   昇格し、**slot は穴として残す**（[entry.rs](../src/vm/compiler/entry.rs) — リゾルバの
    採番を壊さないため）。
-2. `build_cells`（[run.rs](src/vm/run.rs)）は自前のセルを全部 `Value::None` で作り、
+2. `build_cells`（[run.rs](../src/vm/run.rs)）は自前のセルを全部 `Value::None` で作り、
    **外側から継承する捕捉（`captured_cells`）だけ**を埋める。
 3. `mut` **ローカル**は `mut x = e` の実行が `StoreCellDeepCopy` を出すのでセルが埋まる。
 4. ⚠ **`mut` パラメータにはセルへ書く文が無い。** 引数は `bind_args` が
@@ -286,7 +286,7 @@ StoreCell(cell)    # 昇格先のセルへ
 決めている（`let` パラメータは複製済み・`mut` パラメータは呼び出し元と同じ実体を触るのが
 仕様）。ここで複製を足すと **`mut` 引数の書き戻しが壊れる**。
 
-例題: [closure_mut_param.ar](examples/basics/closure_mut_param.ar)。
+例題: [closure_mut_param.ar](../examples/basics/closure_mut_param.ar)。
 
 ### 留意点
 
@@ -351,8 +351,8 @@ def g(xs):
 ```
 
 ⚠ Python→Arrow 変換器を使うときは、元の Python をこの形に直してからかけること。
-推奨形の実例は [py_reassign.ar](examples/interop/py_reassign.ar) ⑨⑩、
-エラー側の実演は [for_target_scope_error.ar](examples/basics/for_target_scope_error.ar)。
+推奨形の実例は [py_reassign.ar](../examples/interop/py_reassign.ar) ⑨⑩、
+エラー側の実演は [for_target_scope_error.ar](../examples/basics/for_target_scope_error.ar)。
 
 ### 実装で踏んだ穴（どれも「直したつもりで直っていない」形）
 
@@ -388,9 +388,9 @@ def g(xs):
 ⚠ 事前の静的走査では規則 2 を「0 件」と見積もったが**外れ**だった（ヒットは全て
 コメント・文字列内の誤検出で、真の 1 件は走査の網から漏れていた）。**ゲートが見つけた。**
 
-例題: [for_target_shadow_error.ar](examples/basics/for_target_shadow_error.ar) /
-[for_target_scope.ar](examples/basics/for_target_scope.ar) /
-[for_target_scope_error.ar](examples/basics/for_target_scope_error.ar)
+例題: [for_target_shadow_error.ar](../examples/basics/for_target_shadow_error.ar) /
+[for_target_scope.ar](../examples/basics/for_target_scope.ar) /
+[for_target_scope_error.ar](../examples/basics/for_target_scope_error.ar)
 
 ---
 
@@ -425,8 +425,8 @@ def g(xs):
 
 ⚠ `fixed_list` の連結・繰り返しは未対応（`Value::FrozenList` の腕は足していない）。
 
-例題: [list_concat_repeat.ar](examples/collections/list_concat_repeat.ar) /
-[list_concat_repeat_error.ar](examples/collections/list_concat_repeat_error.ar)
+例題: [list_concat_repeat.ar](../examples/collections/list_concat_repeat.ar) /
+[list_concat_repeat_error.ar](../examples/collections/list_concat_repeat_error.ar)
 
 ---
 
@@ -476,11 +476,11 @@ def g(xs):
 - 回収は **#11 R2-c**（ファイルごとのグローバル配列）で可能。⚠ ただし
   **2026-09-03 時点で保留と判断済み**（回帰 5.7% は単独着手の理由として弱い）。
   経緯・単価ラダー・回収見込みの概算は
-  [IMPLEMENTATION_LOG.md](implementation_logs/IMPLEMENTATION_LOG.md) の B6 の節、
-  待機列は [FUTURE_FEATURE.md](implementation_logs/FUTURE_FEATURE.md) の #11 R2-c。
+  [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の B6 の節、
+  待機列は [FUTURE_FEATURE.md](FUTURE_FEATURE.md) の #11 R2-c。
 
-例題: [module_selfcall.ar](examples/interop/module_selfcall.ar) /
-[module_async_body.ar](examples/interop/module_async_body.ar)
+例題: [module_selfcall.ar](../examples/interop/module_selfcall.ar) /
+[module_async_body.ar](../examples/interop/module_async_body.ar)
 
 ---
 
@@ -510,7 +510,7 @@ def g(xs):
 
 ⚠⚠ 起票の留意点（「`capture_env` と `nested_fn_captures` の自由変数の定義を揃える」）
 に対する構造的な答えとして、**3 箇所が手写ししていた「自前名の算出」を
-[`fn_own_names`](src/interpreter/exec/mod.rs) 1 本に寄せた**。
+[`fn_own_names`](../src/interpreter/exec/mod.rs) 1 本に寄せた**。
 
 消費者は `exec::blocks::capture_env`（ツリーウォークの捕捉）/
 `vm::compiler::decls::nested_fn_free_names`（セル化の事前解析）/
@@ -521,7 +521,7 @@ def g(xs):
 **自分の `...` を参照しているだけなのに外側からのキャプチャだと誤判定する**。
 おかげで「内側にも `...` があれば内側が優先」が正しく効く（実測で確認）。
 
-例題: [varargs_nested_fn.ar](examples/basics/varargs_nested_fn.ar)
+例題: [varargs_nested_fn.ar](../examples/basics/varargs_nested_fn.ar)
 
 ---
 ## B8. `let` のコレクションの変更 ✅ 修正済み
@@ -562,8 +562,8 @@ a.append(9)
 `let` の値が `mut` 経路から到達できないので、**構文上のレシーバのパスの根を見れば足りる**。
 ⇒ **順序が規模を決めた**。器の変更を先にやっていたら 200 箇所を触っていた。
 
-例題: [let_immutability.ar](examples/basics/let_immutability.ar) /
-[let_immutability_error.ar](examples/basics/let_immutability_error.ar)
+例題: [let_immutability.ar](../examples/basics/let_immutability.ar) /
+[let_immutability_error.ar](../examples/basics/let_immutability_error.ar)
 
 ⚠ 既存例題 2 本（`collection.ar` / `collection_error.ar`）が**このバグに依存していた**
 （`let` に束縛した set を変更するデモ）。`mut` に直した。
@@ -600,7 +600,7 @@ a.append(9)
 - ⚠ `===`（`values_ref_eq`）は **`Tuple` を参照比較しない**（構造比較に落ちる）ので、
   タプルの共有/複製を `===` では観測できない。**中身を書き換えて確かめること**。
 
-例題: [set_tuple_copy_semantics.ar](examples/collections/set_tuple_copy_semantics.ar)
+例題: [set_tuple_copy_semantics.ar](../examples/collections/set_tuple_copy_semantics.ar)
 
 ---
 
@@ -644,8 +644,8 @@ L4（格納も複製する）で循環が構成不能になり、起票の再現
 
 ⚠ 速度への影響は無し（`ab_bench` で負の対照 1.000〜1.006x に対し 1.001〜1.019x）。
 
-例題: [recursion_limit.ar](examples/basics/recursion_limit.ar) /
-[recursion_limit_error.ar](examples/basics/recursion_limit_error.ar)
+例題: [recursion_limit.ar](../examples/basics/recursion_limit.ar) /
+[recursion_limit_error.ar](../examples/basics/recursion_limit_error.ar)
 
 ### ✅ 段階 2: インタプリタのスタックを広げる（完了・`1593ea2`）
 
@@ -733,7 +733,7 @@ golden も一致、`compare_import_paths` 13/13（埋め込み Python・C#・Nod
   `syntax_cov.ps1` の `NESTED-GAP` が拾うべき類型。
 - ⚠ `impl_python` は新例題と**一致**した（65/65）。参照実装の意味論が正しい側。
 
-例題: [generator_nesting.ar](examples/basics/generator_nesting.ar)
+例題: [generator_nesting.ar](../examples/basics/generator_nesting.ar)
 
 ---
 
@@ -816,12 +816,12 @@ Windows Defender が新規ファイルをスキャンする分が **B 側にだ�
 CLAUDE.md が `-A ../head_wt/target/release/arrow.exe` と例示している形）。
 ⚠ **向きを逆にした A/B も取る**と、系統誤差か実効果かを分けられる。
 
-例題: [generator_lazy.ar](examples/basics/generator_lazy.ar) /
-[generator_lazy_error.ar](examples/basics/generator_lazy_error.ar) /
-[generator_reentrancy.ar](examples/basics/generator_reentrancy.ar) /
-[generator_closure.ar](examples/basics/generator_closure.ar) /
-[yield_placement_error.ar](examples/basics/yield_placement_error.ar) /
-[dbg_generator.ar](examples/debugger/dbg_generator.ar)
+例題: [generator_lazy.ar](../examples/basics/generator_lazy.ar) /
+[generator_lazy_error.ar](../examples/basics/generator_lazy_error.ar) /
+[generator_reentrancy.ar](../examples/basics/generator_reentrancy.ar) /
+[generator_closure.ar](../examples/basics/generator_closure.ar) /
+[yield_placement_error.ar](../examples/basics/yield_placement_error.ar) /
+[dbg_generator.ar](../examples/debugger/dbg_generator.ar)
 
 ---
 
@@ -871,10 +871,10 @@ touch(a)
 
 ⚠ **副産物: Python の `[[]] * 2` の落とし穴が Arrow から消えた。** `*` は要素の参照を
 並べるだけだが、束縛の時点で複製されるので結果の要素は互いに独立する。
-[list_concat_repeat.ar](examples/collections/list_concat_repeat.ar) の記述を実態に合わせた。
+[list_concat_repeat.ar](../examples/collections/list_concat_repeat.ar) の記述を実態に合わせた。
 
-例題: [let_immutability.ar](examples/basics/let_immutability.ar) /
-[let_immutability_error.ar](examples/basics/let_immutability_error.ar)
+例題: [let_immutability.ar](../examples/basics/let_immutability.ar) /
+[let_immutability_error.ar](../examples/basics/let_immutability_error.ar)
 
 ---
 
