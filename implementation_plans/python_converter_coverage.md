@@ -284,11 +284,16 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 ### [x] 7. `**kwargs`（可変長キーワード引数）【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs) + 本体の識別子書き換え
-- 現状: `**kwargs` をパラメータから除外。余剰キーワードは `kwargs` dict に自動注入される仕組みが既存（[`execution.rs:143`](src/interpreter/functions/execution.rs#L143), `bind_args_relaxed`）。既存例 [`py_additional_param.ar`](examples/archived/py_additional_param.ar) で動作実績あり。
+- 現状（⚠ **起票時の記述。この見立ては外れていた** — 下の「実装結果」を見ること）:
+  `**kwargs` をパラメータから除外。余剰キーワードは `kwargs` dict に自動注入される仕組みが既存
+  （~~`execution.rs:143`~~ ← **アンカーは消滅**。その仕組みは #33 で削除済みで、
+  `extra_kwargs` は捨てられていた）。既存例 [`py_additional_param.ar`](../examples/archived/py_additional_param.ar)。
 - 変換方針:
   - Python の kwarg 名が `kwargs` 以外（例 `**opts`）の場合、本体の `Ident("opts")` を `Ident("kwargs")` に書き換える。
 - 難易度: 中。
-- 懸念: 余剰キーワードが 1 つも渡されないと `kwargs` 変数が未定義になり、本体参照で `NameError`。**空でも空 dict を注入する**ようインタープリタ側 [`execution.rs`](src/interpreter/functions/execution.rs) の条件（`!extra_kwargs.is_empty()`）緩和が別途必要。
+- 懸念: 余剰キーワードが 1 つも渡されないと `kwargs` 変数が未定義になり、本体参照で `NameError`。**空でも空 dict を束縛する**必要がある。
+  ⚠ 実際の実装先は `execution.rs` ではなく [`args.rs`](../src/interpreter/functions/args.rs) の
+  `bind_args_relaxed`（`kwargs_idx` 分岐）だった。
 - テスト: `def f(**kw): return kw` を `f(a=1,b=2)` と `f()` の両方で呼ぶ。
 
 **実装結果（項目 6・7 は同時に実施）**: 計画では「変換器 + interpreter の 1 箇所」だったが、
@@ -339,11 +344,16 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 **⚠ 残る差 1 件**: **`*args` の中身は list**（CPython は tuple）。添字・反復・`len` は同じだが、
 そのまま表示すると括弧が違い、tuple 固有の操作もできない。Arrow の可変長引数がリストであるため。
 
-**⚠ 実装中に見つかった Arrow 本体の制限（変換器の外・未修正）**:
-**入れ子 `fn` から `*args` を参照すると VM に載らない**。
-`def outer(*xs): def inner(): return len(xs)` が
-`VmForceError: cannot compile function 'inner' to bytecode`。
-⚠ **純 Arrow でも同じ**（`local::args` を捕捉する入れ子 `fn` が VM 非適格）。
+**⚠ 実装中に見つかった Arrow 本体の制限 → ✅ 修正済み（2026-09-02・B7）**:
+~~入れ子 `fn` から `*args` を参照すると VM に載らない~~
+（`VmForceError: cannot compile function 'inner' to bytecode`）。
+実測: `def outer(*xs): def inner(): return len(xs)` → `outer(1,2,3)` が `3` を返す。
+
+> 原因は 2 段構えだった（[bug_fix.md](../implementation_logs/bug_fix.md) B7）:
+> ① 自由変数の収集が `local::name` を**意図的に拾っていなかった**（ツリーウォークは
+> スコープ鎖で見えていたので VM だけが落ちていた）／② `mut ...` のセル昇格で
+> `Expr::LocalVar` のコンパイルが `slots` しか見ていなかった。
+> ⇒ 例題 [`examples/basics/varargs_nested_fn.ar`](examples/basics/varargs_nested_fn.ar) で固定済み。
 
 **⚠ 定数の置き場所**: `PY_KWARGS_PARAM` は **`src/ast.rs`** に置く。
 `crates/arrow-frontend`（VS Code 拡張の wasm）は `src/type_check` を取り込むが
@@ -603,15 +613,16 @@ Python = [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehens
 `constant_value_to_expr(&py::Constant)` を切り出して**再帰変換**を実装した（入れ子の定数タプルも通る）。
 例題は「実際に通る経路」（`Expr::Tuple`）を 16 ケースで固定した（CPython と出力一致）。
 
-**⚠⚠ 検査中に Arrow 本体側のタプルの穴を 3 つ発見（変換器の外・未修正）**:
+**⚠⚠ 検査中に Arrow 本体側のタプルの穴を 3 つ発見 → ✅ 3 件とも修正済み（2026-09-03）**:
 
-1. **タプルを dict のキーにすると黙って消える**（最悪の失敗形）。
-   `{(1, 2): "x"}` は**空の dict** になり、`d[(1,2)] = "y"` も入らない（`len` が 0）。
-   str / int / bool のキーは正常。純 Arrow で再現。
-2. **タプル同士の `+`（連結）が未対応**。`(1,2) + (3,)` が
-   `TypeError: unsupported operand types for Add: tuple and tuple`。純 Arrow で再現。
-3. **`list` の `==` が値比較でない**（`[1,2] == [1,2]` が `False`）。
-   ⚠ **タプルの `==` は値比較で正しい**ので、list 側だけがおかしい。純 Arrow で再現。
+1. ~~タプルを dict のキーにすると黙って消える~~ → **B1 で修正**（`IndexMap<HKey, Value>` +
+   全 `Value` の既定ハッシュ）。実測: `{(1,2): "x"}` は `len` 1・`d[(1,2)]` → `x`。
+2. ~~タプル同士の `+`（連結）が未対応~~ → **B5 で修正**。実測: `(1,2) + (3,)` → `(1, 2, 3)`。
+3. ~~`list` の `==` が値比較でない~~ → **B2 で修正**（等値を「値の同一性」と
+   「式としての比較」に二層化）。実測: `[1,2] == [1,2]` → `True`。
+
+> 詳細は [bug_fix.md](../implementation_logs/bug_fix.md) の B1 / B2 / B5。
+> ⚠ B1 は「使えないキーは**仕様として禁止**し必ず `TypeError`」という規則も同時に決めている。
 
 **例題**: [`examples/interop/py_tuple.ar`](examples/interop/py_tuple.ar) +
 [`test_modules/py_tuple.py`](examples/interop/test_modules/py_tuple.py)。
@@ -683,15 +694,30 @@ f-string を多用する実在モジュールを読むうえで、これが現�
 **例題**: [`examples/interop/py_decorators.ar`](examples/interop/py_decorators.ar)（成功・CPython と出力一致を突き合わせ済）/
 [`examples/interop/py_decorators_error.ar`](examples/interop/py_decorators_error.ar)（明示エラー 3 種）。
 
-**† 実装中に見つかった別バグ（本項目の外）**:
-1. **`mut` パラメータが入れ子 `fn` にキャプチャされない**（None になる）。**純 Arrow で再現**する。
-   `fn f(let n: int)` なら通るが `fn f(mut n: int)` だと壊れる。変換器は全パラメータを
-   `mutable: true` にするため、**Python で最も普通の「クロージャで包むデコレータ」が使えない**。
-2. **モジュール直下で同じモジュールの関数を「呼ぶ」ことができない**（項目 2 の作業中に切り分け完了）。
-   `g = hello`（**参照**）は通るが `MSG = hello("bob")`（**呼び出し**）が
-   `NameError: 'hello' is not defined` になる。⚠ **純 Arrow の `.ar` モジュールでも再現**する
-   （`import[ar] lib` した先の `let MSG = hello("bob")`）。⇒ 変換器ではなく
-   **モジュール本体の実行時の名前解決**の問題。デコレータは `eval_definition_expr` 経由なので通る。
+**† 実装中に見つかった別バグ（本項目の外）** — 2026-09-18 に再トリアージ:
+
+1. **⚠ まだ生きている。ただし範囲も症状も起票時と違う**（A7 で実測し直した）。
+   - 起票時の記述「`mut` パラメータが入れ子 `fn` にキャプチャされない（**None になる**）」の
+     うち、**int などの値は B3 で直った**。実測: 純 Arrow `fn outer(mut n: int)` の
+     入れ子捕捉は `42`、`.py` 経由も `42`。
+   - **残っているのは「関数値の `mut` パラメータ」**で、症状も `None` ではなく
+     **`NameError: 'f' is not defined`**:
+     ```python
+     def deco(f):
+         def wrapper(x): return f(x)   # NameError: 'f' is not defined
+         return wrapper
+     ```
+   - 純 Arrow では `fn deco(let f: function)` なら**通る**（実測 15）。`mut f: function` は
+     静的検査（`CallMutParamWithImmutableArg`）で**呼び出しすら通らない**。
+     変換器は全パラメータを `mutable: true` にするので、必ず `mut` 側に落ちる。
+   - ⇒ **Python で最も普通の「クロージャで包むデコレータ」が使えない**点は起票時のまま。
+     `py_decorators.py` のケース 3（`always42`）は `f` を捕捉しない形に**避けて**ある。
+   - ⚠ 解消には **INF-D（静的検査の食い違い）と本件（実行時の捕捉）の両方**が要る。
+     転送パターン（`inner(*args, **kwargs)`）まで含めた成立条件は
+     [fix_plan](python_converter_fix_plan.md) §3 フェーズ G を参照。
+2. ~~モジュール直下で同じモジュールの関数を「呼ぶ」ことができない~~
+   → **✅ B6 で修正済み**（2026-09-02・案 A、速度回帰を承知で採用）。
+   実測: `.py` の `TOP = helper(41)` が `42` になる。
 
 ### [x] 21. `...`（Ellipsis）→ 文位置は `pass`【実装済 2026-08-28】
 
@@ -721,7 +747,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 [`test_modules/py_ellipsis.py`](examples/interop/test_modules/py_ellipsis.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
-### [x] 22. 集合リテラル `{1, 2, 3}` / set 内包【リテラルのみ実装済 2026-08-28】
+### [x] 22. 集合リテラル `{1, 2, 3}` / set 内包【実装済 2026-08-28・内包は項目 17 で完了】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Set` アーム（＋ `SetComp`）
 - 現状: `set literal is not supported` エラー。
@@ -746,10 +772,11 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 ランダム化するので `{"a","b","c"}` の表示順は**実行のたびに変わる**。例題では int / tuple の
 セットだけを表示し、str のセットはメンバシップで確認している。
 
-**例題**: [`examples/interop/py_set.ar`](examples/interop/py_set.ar) +
-[`test_modules/py_set.py`](examples/interop/test_modules/py_set.py) /
-[`examples/interop/py_set_error.ar`](examples/interop/py_set_error.ar) +
-[`test_modules/py_setcomp_error.py`](examples/interop/test_modules/py_setcomp_error.py)（set 内包）。
+**例題**: [`examples/interop/py_set.ar`](../examples/interop/py_set.ar) +
+[`test_modules/py_set.py`](../examples/interop/test_modules/py_set.py)。
+⚠ **`py_set_error.ar` / `py_setcomp_error.py` は実在しない**（項目 17 で set 内包が
+通るようになったので削除済み。`compare_outputs.ps1` がこの陳腐化を検出した）。
+集合内包の例題は [`py_comprehension.ar`](../examples/interop/py_comprehension.ar) の ⑦。
 
 ### [ ] 23. walrus 演算子 `:=`
 

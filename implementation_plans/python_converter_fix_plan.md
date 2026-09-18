@@ -32,7 +32,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 ### 0.3 参照専用（現在位置・grep アンカー）
 | 用途 | シンボル | 現在ファイル |
 |---|---|---|
-| Python 関数の kwargs 自動注入（項目7） | `extra_kwargs` / `declare_var("kwargs"...)` / `is_python` | `src/interpreter/functions/execution.rs`, `args.rs`（`bind_args_relaxed`） |
+| Python 関数の kwargs 束縛（項目7） | `fn bind_args_relaxed` の `kwargs_idx` 分岐（`PY_KWARGS_PARAM` で束縛）| `src/interpreter/functions/args.rs` |
 | ファイルの Drop クローズ（項目25 根拠） | `impl Drop for FileData` / `fn close` | `src/interpreter/value/objects.rs` |
 | デコレータ適用（項目20 根拠） | 逆順適用ループ / method decorator | `src/interpreter/exec/definitions.rs` |
 | f-string 脱糖の参照形（項目19） | `fn desugar_fstring` | `src/parser/exprs.rs` |
@@ -212,12 +212,14 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 制約: `format_spec`（`{x:.2f}`）・`conversion`（`!r`/`!s`）付きは当面 Err（要追加検討）。
 - テスト: `f"hi {name} n={n}"`。
 
-#### [22] 集合リテラル `{1,2,3}` / set 内包 ✅ **リテラルのみ実装済（2026-08-28）**
+#### [22] 集合リテラル `{1,2,3}` / set 内包 ✅ **実装済（2026-08-28・内包は項目 17 で完了）**
 - リテラルは `py::Expr::Set` アームで要素を積むだけ。13 ケース CPython 一致。
-- set 内包は `SetComp`（別ノード）なので**未対応のまま**。取り違え防止に独立アームへ分けて
-  専用文言にした。項目 17 が入れば `set(<for 式>)` で通せる。
+- **set 内包も通る**。本項目の時点では `SetComp` を独立アームに分けて専用のエラー文言に
+  していたが、項目 17 で `set(<リスト内包>)` への脱糖が入り解消した。
 - ⚠ セットの repr 順は当てにしない（CPython は str のハッシュを実行ごとにランダム化する）。
-- 例題: `examples/interop/py_set.ar` / `py_set_error.ar` + `test_modules/py_set.py` / `py_setcomp_error.py`。
+- 例題: `examples/interop/py_set.ar` + `test_modules/py_set.py`。
+  ⚠ **`py_set_error.ar` / `py_setcomp_error.py` は実在しない**（項目 17 で削除済み）。
+  集合内包は `py_comprehension.ar` の ⑦ が持つ。
 - 編集: `expressions.rs` `convert_expr`
   - `py::Expr::Set(s) => Expr::Set(s.elts.map(convert))`（現状 Err）。
   - `SetComp` は項目17 の for 式を `set(...)` で包む（後回し可）。
@@ -323,7 +325,10 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - ⚠ 定数は `src/ast.rs` に置く。wasm フロントエンドは `python_converter` を取り込まないため。
 - 編集:
   - `classes.rs` `convert_params`: Python kwarg 名が `kwargs` 以外なら本体の当該 `Ident` を `Ident("kwargs")` にリライト。
-  - `src/interpreter/functions/execution.rs`: 余剰キーワードが空でも `kwargs` を空 dict で注入するよう `!extra_kwargs.is_empty()` 条件を緩和（未注入時の `NameError` 回避）。← **interpreter 変更。impl_python 並行実装の有無を確認**。
+  - ~~`src/interpreter/functions/execution.rs` の `!extra_kwargs.is_empty()` 条件を緩和~~
+    ⚠ **計画時の見立て。実際の実装先は [`args.rs`](src/interpreter/functions/args.rs) の
+    `bind_args_relaxed`（`kwargs_idx` 分岐）**で、余剰が 0 個でも空 dict を束縛する。
+    `execution.rs` 側は `extra_kwargs` を捨てるだけになっている（#33 以降）。
 - テスト: `def f(**kw): return kw` を `f(a=1)` と `f()` の両方。
 
 #### [8] `match` 文（値/`_` サブセット）
@@ -333,10 +338,30 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - テスト: リテラル match、`case _`。`_error` 例にキャプチャパターン。
 
 #### [9] ジェネレータ（`def`+`yield`）
+
+> ⚠⚠ **本カードは B13（2026-09-05）より前に書かれている。前提が 2 つ変わった**（A4 で更新）。
+
+- **① `yield` の置き場所に静的な制約が入った**（`TypeErrorKind::YieldOutsideGenerator`・
+  [`type_check/stmt/check.rs`](src/type_check/stmt/check.rs)）。`yield` は **`gen` 本体の
+  自フレーム直下だけ**。判定は `in_gen_body()` なので:
+  - `if` / `for` / `while` / `try` の**入れ子の中は可**（Python の普通の書き方は通る）。
+  - **入れ子の `def` の中の `yield` は不可** → **変換器で明示エラーにする必要がある**
+    （Python では内側の `def` が別のジェネレータになるが、Arrow では表現できない）。
+  - ⚠ これは体裁ではなく**コルーチン化の前提**（`yield` が自分のフレームにしか現れないから
+    「中断＝`run_dispatch` を 1 回抜けるだけ」で済む）。緩められない。
+- **② ジェネレータが真に遅延になった**。B13 以前は先行評価（本体を最後まで走らせて
+  全 `yield` を `Vec` に集める）だったが、今は中断・再開する。
+  実測: 無限ジェネレータ + `break` が正しく止まる。
+  ⇒ カードの「サブセット」という位置づけは**緩められる**。`.send()` と `yield from` は
+  依然サブセット外だが、**普通のジェネレータは意味論まで CPython と揃う**。
+  ⇒ ついでに **FUTURE_FEATURE §4 (4-b) のジェネレータ式**の前提も満たされた
+    （「`gen` を使った脱糖を設計すること」が実行可能になった）。再検討の価値あり。
 - 編集: `statements.rs`
   - `FunctionDef` 変換時、本体に `yield` 文を含むなら `Stmt::FnDef` でなく `Stmt::GenDef`（`yield_type` は `Generator[T]`/`Iterator[T]` 注釈から抽出、無ければ None）を生成。
   - `yield x` 文（`Expr` 文中の `py::Expr::Yield`）→ `Stmt::Yield(convert)`。`yield from`・yield 式の値利用は**明示 Err**。
-- テスト: `def g(): yield 1; yield 2` を for で回す。`_error` 例に `yield from`。
+  - **入れ子 `def` の中に `yield` があれば明示 Err**（①。型検査まで行かせず変換時に止める）。
+- テスト: `def g(): yield 1; yield 2` を for で回す／`if` の中の `yield`／**無限ジェネレータ +
+  `break`**（②の遅延を固定する）。`_error` 例に `yield from` と**入れ子 `def` の `yield`**。
 
 #### [10] 型エイリアス `type X = ...`
 - 編集: `statements.rs`（`TypeAlias`）＋ `annotations.rs`
