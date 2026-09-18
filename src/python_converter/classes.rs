@@ -123,6 +123,40 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     let _rename_guard = ParamRenameGuard::push(renames, &param_names);
                     convert_scope(&f.body, filename, &param_names)?
                 };
+                // ★ 本体に文としての `yield` があれば `gen` メソッド（項目 9）。
+                //   ⚠ `Stmt::GenDef` は `decorators` / `is_static` / `is_class_method` /
+                //     `is_abstract` を持たない（Arrow の `gen` にこれらの形が無い）。
+                //     黙って捨てると効かなくなるので、付いていれば明示エラーにする。
+                if frame_has_yield(&f.body) {
+                    let bad = if !dec.decorators.is_empty() {
+                        Some("a decorator")
+                    } else if dec.is_static {
+                        Some("`@staticmethod`")
+                    } else if dec.is_class_method {
+                        Some("`@classmethod`")
+                    } else if dec.is_abstract {
+                        Some("`@abstractmethod`")
+                    } else {
+                        None
+                    };
+                    if let Some(what) = bad {
+                        return Err(format!(
+                            "{filename}: {what} on a generator method is not supported \
+                             (method '{}.{}'); Arrow's `gen` has no such form",
+                            class_name,
+                            f.name.as_str()
+                        ));
+                    }
+                    methods.push(Stmt::GenDef {
+                        name: f.name.to_string(),
+                        template_params: vec![],
+                        params,
+                        yield_type: extract_yield_type(f.returns.as_deref()),
+                        body,
+                        access: crate::ast::Accessibility::Public,
+                    });
+                    continue;
+                }
                 methods.push(Stmt::FnDef {
                     name: f.name.to_string(),
                     template_params: vec![],

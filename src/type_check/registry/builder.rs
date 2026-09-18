@@ -469,6 +469,48 @@ impl TypeRegistryBuilder {
                 };
                 cls_methods.entry(storage_name).or_default().push(sig);
             }
+            // ⚠⚠ **`gen` メソッドがここに登録されていなかった**（既存のドリフト）。
+            //    `Stmt::GenDef` はクラス本体に置けるのに、この収集が `Stmt::FnDef` しか
+            //    見ていなかったため、`b.each()` が `'Bag' has no member 'each'` になる。
+            //    ⚠ **純 Arrow の `gen` メソッドでも再現**する（`import[py]` 固有ではない）。
+            //    ⚠ 呼び出しの戻り値は**産出型ではなくジェネレータ**。実行時の型名に合わせて
+            //      `NamedInstance("generator")` にする（`from_ann` の `"generator"` と同じ）。
+            if let Stmt::GenDef {
+                name: mname,
+                params,
+                ..
+            } = s
+            {
+                let variadic_param = params.iter().find(|p| p.variadic);
+                let open_arity = Self::has_open_arity(params);
+                let sig = FnSig {
+                    // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
+                    param_mutable: params
+                        .iter()
+                        .filter(|p| Self::is_normal_param(p))
+                        .map(|p| p.mutable)
+                        .collect(),
+                    params: params
+                        .iter()
+                        .filter(|p| Self::is_normal_param(p))
+                        .map(|p| {
+                            (
+                                p.name.clone(),
+                                p.type_ann.as_deref().and_then(InferredType::from_ann),
+                            )
+                        })
+                        .collect(),
+                    required_count: params
+                        .iter()
+                        .filter(|p| Self::is_normal_param(p) && p.default.is_none())
+                        .count(),
+                    return_type: Some(InferredType::NamedInstance("generator".to_string())),
+                    variadic_type: variadic_param
+                        .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
+                        .or(if open_arity { Some(InferredType::Any) } else { None }),
+                };
+                cls_methods.entry(mname.clone()).or_default().push(sig);
+            }
         }
         self.reg.class_method_sigs.insert(name.to_string(), cls_methods);
     }
@@ -519,6 +561,17 @@ impl TypeRegistryBuilder {
                     }
                     if *is_static {
                         static_methods.insert(mname.clone());
+                    }
+                }
+                // ⚠ `gen` メソッドのアクセス指定。`Stmt::GenDef` に `is_static` は
+                //   無い（Arrow の `gen` に `static` 形が無い）ので access だけ拾う。
+                Stmt::GenDef {
+                    name: mname,
+                    access,
+                    ..
+                } => {
+                    if *access != Accessibility::Public {
+                        member_access.insert(mname.clone(), access.clone());
                     }
                 }
                 _ => {}

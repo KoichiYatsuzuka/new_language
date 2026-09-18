@@ -1,0 +1,31 @@
+# py_generator_error.ar — ジェネレータ変換で**通さない**形（項目 9）。
+#
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+#
+#   ① `yield from`（本ファイルが踏む形）
+#      `yield from` is not supported; write `for v in <iterable>: yield v` instead
+#      ⇒ 「内側のジェネレータへ委譲する」構文で Arrow に相当物が無い。機械的に
+#        `for v in xs: yield v` へ書き換えると `.send()` と戻り値の意味が変わるので、
+#        **黙って別物にせず**止める。
+#
+#   ② 値位置の `yield`（`x = yield 1`）
+#      yield expression in Python is not supported
+#      ⇒ 双方向通信（`.send()`）の構文。Arrow の `yield` は文で、値を受け取る形が無い。
+#
+#   ③ ジェネレータへのデコレータ
+#      a decorator on a generator function is not supported (function 'g')
+#      ⇒ `Stmt::GenDef` は `decorators` を持たない（Arrow の `gen` にデコレータ構文が
+#        無い）。捨てると黙って効かなくなる。`gen` メソッドへの `@staticmethod` /
+#        `@classmethod` / `@abstractmethod` も同じ理由で拒否する。
+#
+# ⚠ **通る形**は `py_generator.ar`（素の yield / for 本体 / if の中の yield /
+#   無限ジェネレータ + break / 入れ子 def / gen メソッド）。
+
+import[py] test_modules.py_yield_from_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_yield_value_error as m
+# ③ を試す場合:
+# import[py] test_modules.py_gen_decorator_error as m
+
+print("unreachable")

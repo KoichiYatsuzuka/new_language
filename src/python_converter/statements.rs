@@ -11,6 +11,67 @@ use super::*;
 // スパン生成ヘルパー
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ジェネレータ判定（項目 9）
+// ---------------------------------------------------------------------------
+
+/// **このフレーム**（＝ある `def` の本体）に文としての `yield` があるか。
+///
+/// ⚠⚠ **入れ子の `def` / `class` には降りない**。Python では内側の `def` は
+/// **別の関数**で、そこの `yield` は内側をジェネレータにするだけ。外側は
+/// ジェネレータにならない。
+/// ⇒ 各 `def` を「自分のフレームだけ」で判定すれば、入れ子のジェネレータは
+/// 入れ子の `Stmt::GenDef` として自然に落ちる（Arrow も入れ子 `gen` に対応済み・B13 段階E）。
+///
+/// ⚠ 値位置の `yield`（`x = yield`）はここでは拾わない。`convert_expr` の
+/// `py::Expr::Yield` アームが明示エラーにする。
+pub(crate) fn frame_has_yield(stmts: &[py::Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        py::Stmt::Expr(e) => {
+            matches!(&*e.value, py::Expr::Yield(_) | py::Expr::YieldFrom(_))
+        }
+        py::Stmt::If(i) => frame_has_yield(&i.body) || frame_has_yield(&i.orelse),
+        py::Stmt::For(f) => frame_has_yield(&f.body) || frame_has_yield(&f.orelse),
+        py::Stmt::While(w) => frame_has_yield(&w.body) || frame_has_yield(&w.orelse),
+        py::Stmt::With(w) => frame_has_yield(&w.body),
+        py::Stmt::Try(t) => {
+            frame_has_yield(&t.body)
+                || t.handlers.iter().any(|h| {
+                    let py::ExceptHandler::ExceptHandler(eh) = h;
+                    frame_has_yield(&eh.body)
+                })
+                || frame_has_yield(&t.orelse)
+                || frame_has_yield(&t.finalbody)
+        }
+        // `def` / `class` は別フレーム。降りない。
+        _ => false,
+    })
+}
+
+/// 戻り値注釈から `yield` の型を取り出す（`Generator[T, ...]` / `Iterator[T]` / `Iterable[T]`）。
+///
+/// これら以外の注釈（`-> None` など）や注釈なしは `None`（型を付けない）。
+/// ⚠ `Generator[Y, S, R]` は 3 引数だが Arrow が持てるのは産出型だけなので**先頭だけ**使う。
+pub(crate) fn extract_yield_type(returns: Option<&py::Expr>) -> Option<String> {
+    let py::Expr::Subscript(s) = returns? else {
+        return None;
+    };
+    let base = match &*s.value {
+        py::Expr::Name(n) => n.id.to_string(),
+        py::Expr::Attribute(a) => a.attr.to_string(),
+        _ => return None,
+    };
+    if !matches!(base.as_str(), "Generator" | "Iterator" | "Iterable") {
+        return None;
+    }
+    // `Generator[int, None, None]` の先頭要素、`Iterator[int]` はそれ自体。
+    let first = match &*s.slice {
+        py::Expr::Tuple(t) => t.elts.first()?,
+        other => other,
+    };
+    Some(convert_annotation(first))
+}
+
 /// `for ... else:` / `while ... else:` の明示エラー文言（2 箇所で同じものを出す）。
 ///
 /// ⚠ Python のループ `else` は「**`break` せずに回り切ったときだけ**走る」節。
@@ -216,6 +277,28 @@ pub(crate) fn convert_stmt(
                 let _rename_guard = ParamRenameGuard::push(renames, &param_names);
                 convert_scope(&f.body, filename, &param_names)?
             };
+            // ★ 本体に文としての `yield` があればジェネレータ（項目 9）。
+            //   判定は**自分のフレームだけ**なので、入れ子の `def` が持つ `yield` は
+            //   内側を `GenDef` にするだけで外側には影響しない（Python と同じ規則）。
+            if frame_has_yield(&f.body) {
+                // ⚠ `Stmt::GenDef` は `decorators` を持たない（Arrow の `gen` に
+                //   デコレータ構文が無い）。捨てると黙って効かなくなるので明示エラー。
+                if !dec.decorators.is_empty() {
+                    return Err(format!(
+                        "{filename}: a decorator on a generator function is not supported \
+                         (function '{}'); Arrow's `gen` has no decorator form",
+                        f.name.as_str()
+                    ));
+                }
+                return Ok(Some(Stmt::GenDef {
+                    name: f.name.to_string(),
+                    template_params: vec![],
+                    params,
+                    yield_type: extract_yield_type(f.returns.as_deref()),
+                    body,
+                    access: crate::ast::Accessibility::Public,
+                }));
+            }
             Ok(Some(Stmt::FnDef {
                 name: f.name.to_string(),
                 template_params: vec![],
@@ -588,6 +671,27 @@ pub(crate) fn convert_stmt(
             if matches!(&*e.value, py::Expr::Constant(c) if matches!(c.value, py::Constant::Ellipsis))
             {
                 return Ok(Some(Stmt::Pass));
+            }
+            // ★ 文位置の `yield x` → `Stmt::Yield`（項目 9）。
+            //   ⚠ ここを通るのは `frame_has_yield` が真になった `def` の本体だけ
+            //     （そうでなければ `Stmt::GenDef` にならないので、型検査の
+            //     `YieldOutsideGenerator` が拾う）。
+            if let py::Expr::Yield(y) = &*e.value {
+                // `yield`（値なし）は `yield None` 相当。
+                let val = match y.value.as_deref() {
+                    Some(v) => convert_expr(v, filename)?,
+                    None => Expr::None,
+                };
+                return Ok(Some(Stmt::Yield(val)));
+            }
+            // ⚠ `yield from xs` は「内側のジェネレータへ委譲する」構文で、Arrow に
+            //   相当するものが無い。`for v in xs: yield v` へ機械的に書き換えると
+            //   `.send()` / 戻り値の意味が変わるので、黙って変えず明示エラーにする。
+            if matches!(&*e.value, py::Expr::YieldFrom(_)) {
+                return Err(format!(
+                    "{filename}: `yield from` is not supported; \
+                     write `for v in <iterable>: yield v` instead"
+                ));
             }
             let expr = convert_expr(&e.value, filename)?;
             Ok(Some(Stmt::Expr(expr)))
