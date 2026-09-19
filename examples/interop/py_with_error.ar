@@ -1,0 +1,29 @@
+# py_with_error.ar — `with` 文で**通さない**形（項目 25）。
+#
+# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+#
+#   ① `__enter__` / `__exit__` を持つクラス（本ファイルが踏む形）
+#      `with` on 'Lock' is not supported (it defines `__enter__`/`__exit__`);
+#      Arrow's block scope only runs the value's destructor, not those hooks
+#      ⇒ `__enter__` が**別の値**を返す形は `mut x = EXPR` で再現できず、
+#        `__exit__` の副作用（ロック解放・commit / rollback）は `Drop` では走らない。
+#      ⚠ 判定は**同じモジュールで定義されたクラス**に限る（`hasattr` 相当の組込みが
+#        無く実行時ガードを組めない）。**他モジュール由来は検出できない**のが残る穴。
+#
+#   ② `as` の名前がスコープの他所でも代入されている
+#      the name 'f' bound by `with ... as` is also assigned elsewhere in this scope
+#      ⇒ 項目 2 の巻き上げでその名前は宣言済みになり、ブロック内の `mut` が
+#        `already declared` になる。ブロック外へ束縛すると**退出時に破棄されない**
+#        ＝ リソースが閉じないので、黙って通さず止める。
+#
+# ⚠ `as` にタプル（`with EXPR as (a, b):`）も明示エラー:
+#      only a simple name is supported after `as` in `with`
+#
+# ⚠ **通る形**は `py_with.ar`（基本形 / 複数アイテム / `as` なし）。
+
+import[py] test_modules.py_with_cm_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_with_clash_error as m
+
+print("unreachable")

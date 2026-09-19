@@ -174,6 +174,76 @@ fn collect_walrus_names(
     }
 }
 
+// ---------------------------------------------------------------------------
+// `with` 文（項目 25）
+// ---------------------------------------------------------------------------
+//
+// ★ Arrow に `with` は無いが、**ブロック退出でローカルが破棄され、ネイティブな
+//   リソース型は `Drop` で実クリーンアップされる**（`FileData::drop` が `close()` を
+//   呼ぶ）。⇒ `with EXPR as x: body` を `block: mut x = EXPR; body` へ脱糖できる。
+//   実測: `block: mut f = open(p, FileOpenMode.rewrite); f.write("hi")` のあと
+//   読み直すと書き込みが見える ＝ ブロック退出で閉じている。
+//
+// ⚠⚠ **`__enter__` / `__exit__` を持つクラスは脱糖できない**。
+//   - `__enter__` が**別の値**を返す形は `mut x = EXPR` では再現できない
+//     （`open()` のようにマネージャ自身を返すものだけが一致する）。
+//   - `__exit__` の副作用（ロック解放・commit / rollback）は `Drop` では走らない。
+//   ⇒ **黙って落とさず明示エラー**にする。判定は「同じモジュールで定義されたクラス」
+//     に限る（`hasattr` 相当の組込みが無く実行時ガードを組めないため）。
+//     他モジュール由来のコンテキストマネージャは**検出できない**のが残る穴。
+
+thread_local! {
+    /// このモジュールで `__enter__` / `__exit__` を定義しているクラス名。
+    static CM_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// モジュールの変換を始めるときに、コンテキストマネージャのクラス名を集め直す。
+pub(crate) fn register_context_manager_classes(stmts: &[py::Stmt]) {
+    fn walk(stmts: &[py::Stmt], out: &mut std::collections::HashSet<String>) {
+        for s in stmts {
+            match s {
+                py::Stmt::ClassDef(c) => {
+                    let has_hook = c.body.iter().any(|m| {
+                        matches!(m, py::Stmt::FunctionDef(f)
+                            if f.name.as_str() == "__enter__" || f.name.as_str() == "__exit__")
+                    });
+                    if has_hook {
+                        out.insert(c.name.to_string());
+                    }
+                    walk(&c.body, out);
+                }
+                py::Stmt::FunctionDef(f) => walk(&f.body, out),
+                py::Stmt::If(i) => {
+                    walk(&i.body, out);
+                    walk(&i.orelse, out);
+                }
+                py::Stmt::Try(t) => {
+                    walk(&t.body, out);
+                    walk(&t.finalbody, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    CM_CLASSES.with(|c| {
+        let mut set = c.borrow_mut();
+        set.clear();
+        walk(stmts, &mut set);
+    });
+}
+
+/// 式が「同じモジュールで定義されたコンテキストマネージャの生成」なら、そのクラス名。
+fn context_manager_name(e: &py::Expr) -> Option<String> {
+    let py::Expr::Call(c) = e else { return None };
+    let name = match &*c.func {
+        py::Expr::Name(n) => n.id.to_string(),
+        py::Expr::Attribute(a) => a.attr.to_string(),
+        _ => return None,
+    };
+    CM_CLASSES.with(|s| s.borrow().contains(&name)).then_some(name)
+}
+
 /// 名前参照の `Expr::Ident` を作る短縮形。
 pub(crate) fn ident_expr(name: &str) -> Expr {
     Expr::Ident {
@@ -773,8 +843,49 @@ pub(crate) fn convert_stmt(
             }])
         }
 
-        // ----- with（未サポート） -----
-        py::Stmt::With(_) => Err(format!("{filename}: 'with' statement is not supported")),
+        // ----- with（`__exit__` を持たない場合のみ block 脱糖・項目 25） -----
+        py::Stmt::With(w) => {
+            let mut inner: Vec<Stmt> = Vec::new();
+            for item in &w.items {
+                // ⚠ 同じモジュールで `__enter__` / `__exit__` を定義しているクラスの
+                //   生成なら脱糖できない（上の doc を参照）。
+                if let Some(cls) = context_manager_name(&item.context_expr) {
+                    return Err(format!(
+                        "{filename}: `with` on '{cls}' is not supported (it defines `__enter__`/`__exit__`); Arrow's block scope only runs the value's destructor, not those hooks"
+                    ));
+                }
+                let value = convert_expr(&item.context_expr, filename)?;
+                match item.optional_vars.as_deref() {
+                    // `with EXPR as x:` — x をブロック内で宣言する。
+                    Some(py::Expr::Name(n)) => {
+                        let name = n.id.to_string();
+                        // ⚠⚠ 同名が**このスコープの他の場所でも代入**されていると
+                        //   項目 2 の巻き上げで宣言済みになり、ブロック内の `mut` が
+                        //   `already declared` になる（Arrow は覆い隠しを禁じている）。
+                        //   その場合ブロック外へ束縛するしかなく、**退出時に破棄されない**
+                        //   ＝ リソースが閉じない。黙って壊さず明示エラーにする。
+                        if declared.contains(&name) {
+                            return Err(format!(
+                                "{filename}: the name '{name}' bound by `with ... as` is also assigned elsewhere in this scope; Arrow cannot shadow it inside the block (the resource would not be released) — use a different name"
+                            ));
+                        }
+                        inner.push(Stmt::Mut(name, None, value));
+                    }
+                    // `with EXPR:` — 名前は要らないが、ブロック退出で破棄させるため
+                    // 一時変数へ束縛する（式文にすると即座に捨てられてしまう）。
+                    None => {
+                        inner.push(Stmt::Mut(next_temp_name("with"), None, value));
+                    }
+                    Some(_) => {
+                        return Err(format!(
+                            "{filename}: only a simple name is supported after `as` in `with`"
+                        ))
+                    }
+                }
+            }
+            inner.extend(convert_stmts(&w.body, filename, declared)?);
+            Ok(vec![Stmt::Block(inner)])
+        }
         py::Stmt::AsyncWith(_) => Err(format!(
             "{filename}: 'async with' statement is not supported"
         )),

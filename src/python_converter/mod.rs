@@ -17,6 +17,8 @@ pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, 
     reset_type_aliases();
     reset_hoist();
     let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
+    // ⚠ `with` の脱糖可否を決めるため、先にコンテキストマネージャのクラス名を集める（項目 25）。
+    register_context_manager_classes(&ast);
     // モジュール本体も 1 つのスコープ（パラメータは無い）。
     convert_scope(&ast, filename, &[])
 }
