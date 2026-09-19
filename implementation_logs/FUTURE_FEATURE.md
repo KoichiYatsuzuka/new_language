@@ -365,6 +365,77 @@
   `examples/bench/bench_ab_native_module.arc` の鮮度に依存する形。
 - ⇒ **`force_gate` の「0 件」はこの 1 本を見ていない**ことを含めて読むこと。
 
+## (f) ⚠⚠ 関数の中の `block` 退出でリソースが解放されない
+
+- **現象**（純 Arrow で再現・2026-09-19 に変換器の項目 25（`with`）の作業中に発見）:
+  最上位の `block` と**関数退出**では `Drop` が走るのに、**関数の中の `block` を
+  抜けても走らない**。
+  ```text
+  fn write_then_read(path: str) -> str:
+      block:
+          mut f = open(path, FileOpenMode.rewrite)
+          f.write("hi")
+      # ← ここで閉じてほしいが閉じていない
+      mut g = open(path, FileOpenMode.read)
+      return g.read()     # 空に見える
+  ```
+- ⚠ **明示クローズもできない** — `FileObject` に `close()` メソッドが無い。
+- **意義**: 項目 25 の `with` は `block` へ脱糖するので、**`with` で書いた直後に
+  同じ関数の中で読み直す**という Python で当たり前の形が通らない。
+  coverage 🟡「with 文」の「参照カウント基準の遅延破棄は実質無視できる」という
+  見立ての**反例**。
+- **判断が要る**: スコープ退出で解放するのか、`close()` を生やすのか、両方か。
+- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #10。
+
+## (g) `with` が他モジュール由来のコンテキストマネージャを検出できない
+
+- 項目 25 の実装は「`__enter__` / `__exit__` を**同じモジュールで定義しているクラス**」
+  しか判定できない。`import` してきた CM は**検出できない**ので、
+  `__exit__` の副作用（ロック解放・commit / rollback）が黙って落ちる。
+- **原因**: `hasattr` 相当の組込みが無く、**実行時ガードを組めない**。
+- ⚠ **組込みを足すのは Arrow 側への露出**なので、方針が決まるまで動かさない
+  （`list()` / `dict()` を誤って露出させた前例がある）。
+- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.3 #3。
+
+## (h) `import[py]` の循環 import が CPython と違う（明示エラー）
+
+- CPython は**部分初期化のモジュール**を渡して通すが、Arrow は
+  `circular import detected` で止める。
+- **原因**: Arrow の import は**パース時に AST を確定させてから**型検査する形なので、
+  「途中の姿」を持てない。⇒ 相互 import を含む実在の Python パッケージが読めない。
+- **回避**: 片方を関数内 import にする（が、それは (i) で効かない）／共通部分を
+  3 つ目のモジュールへ切り出す。
+- **参照**: 例題 [`py_import_stdlib_error.ar`](../examples/interop/py_import_stdlib_error.ar) の ②、
+  [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.5。
+
+## (i) `import[py]` は Python の**関数内 import** を充填しない
+
+- 項目 27 の再帰ロードが走査するのは**モジュール本体の直下だけ**。関数の中に書かれた
+  `import` は文の位置を保ったまま残り、`body` が空のままなので**実行時に未定義**になる。
+- ⚠ Python の関数内 import は**遅延読み込み・循環回避の意図**で書かれることが多い。
+  「本体直下と同じく事前に読む」と意図を壊すので、**設計判断が先**。
+- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.5。
+
+## (j) ⚠ `compare_wasm_frontend.ps1` が wasm を再ビルドしない
+
+- 存在確認しかしないので、**古い `.wasm` のまま緑になる**。
+  lexer / parser / type_check を触ったら
+  `cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown` を
+  明示的に回す必要がある。
+- ⚠⚠ **この系列の作業中だけで 3 回踏んだ**（C3・辞書展開・enumerate/zip）。
+  「緑のゲートが嘘をつく」形なので、スクリプト側で再ビルドするか、
+  ソースより古い `.wasm` を検出して落とすのが筋。
+- **参照**: `vm-pitfalls` §3、
+  [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #4。
+
+## (k) `cargo build --release` が緑でも `cargo test` のコンパイルが落ちる
+
+- テストは**別ビルド**なので、AST を変えたときに `src/frontend_tests/` の取りこぼしを
+  `cargo build` では検出できない（`ForExpr { target }` → `targets` で実際に踏んだ）。
+- **当面の運用**: **AST を触ったら `cargo test` まで回す**。
+- スクリプト化するなら、ゲートの前段に `cargo test --no-run` を置く。
+- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #12。
+
 ---
 
 # 6. 着手前のチェックリスト
