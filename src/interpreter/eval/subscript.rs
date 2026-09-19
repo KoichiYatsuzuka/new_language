@@ -263,6 +263,8 @@ impl Interpreter {
             Value::Tuple(td) => Ok(td.all_values().to_vec()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
             Value::Set(items) => Ok(items.borrow().clone()),
+            // ★ 辞書は**キー**を返す（`make_for_iterator` と同じ規則にすること）。
+            Value::Dict(ref d) => Ok(d.borrow().all_keys()),
             Value::Generator(gen) => {
                 let g = gen.borrow();
                 Ok(g.values[g.index..].to_vec())

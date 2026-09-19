@@ -290,6 +290,17 @@ impl TypeChecker {
         if let Some(ret) = builtin_ret {
             return ret;
         }
+        // ★ 組み込み**関数**（`enumerate` / `zip`）の戻り値型。
+        //   ⚠⚠ **シャドウを先に見る**。`let enumerate = tagged` のように同名の変数や
+        //     関数が宣言されていればそちらが勝つ（`examples/basics/builtin_shadow.ar`）。
+        //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
+        if let Expr::Ident { name, .. } = func {
+            if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+                if let Some(ret) = self.builtin_fn_return(name, &arg_data) {
+                    return ret;
+                }
+            }
+        }
         let direct_fn_call = matches!(func, Expr::Ident { .. })
             && func_name
                 .as_deref()
@@ -1295,6 +1306,48 @@ impl TypeChecker {
     /// `list.append` と `set.add` は**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、
     /// `set.discard` は黙って何もしない、`set.remove` は `KeyError`。
     /// どれも「要素型が守られない」ことに変わりはない。
+    /// 組み込み**関数**の戻り値型（分かるものだけ）。
+    ///
+    /// ⚠⚠ **`enumerate` / `zip` に型が付いていなかった**ので、
+    /// `for i, c in enumerate(xs):` のループ変数が `Unresolved` 止まりになり、
+    /// `str(i) + c` のような普通の式で型特化も検査も効かなかった。
+    ///
+    /// ⚠ 実行時の値は `Value::Generator` なので **`ListOf` ではなく `IteratorOf`** を返す。
+    /// `ListOf` にすると `len()` や添字が静的に通ってしまい、実行時に落ちる
+    /// （「反復すると T が出る」以上のことを約束しない型が要る）。
+    ///
+    /// ⚠ 判らない引数は `Any` にする（`Unresolved` は万能受容体になり検査を消す）。
+    fn builtin_fn_return(
+        &self,
+        name: &str,
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
+        use InferredType as T;
+        // 要素型を引く。判らなければ `Any`。
+        let elem = |t: &T| -> T {
+            match Self::for_element_type(t) {
+                T::Unresolved => T::Any,
+                other => other,
+            }
+        };
+        match name {
+            // `enumerate(xs)` / `enumerate(xs, start)` → (index, 要素) の列。
+            "enumerate" => {
+                let (_, first) = arg_data.first()?;
+                Some(T::IteratorOf(Box::new(T::Tuple(vec![T::Int, elem(first)]))))
+            }
+            // `zip(a, b, ...)` → 各列の要素を並べたタプルの列。
+            "zip" => {
+                if arg_data.is_empty() {
+                    return None;
+                }
+                let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
+                Some(T::IteratorOf(Box::new(T::Tuple(ts))))
+            }
+            _ => None,
+        }
+    }
+
     /// 組み込みコレクションのメソッドの**戻り値型**（分かるものだけ）。
     ///
     /// ⚠⚠ **以前は何も返していなかった**ので `d.keys()` が `Unresolved` になり、

@@ -83,6 +83,8 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         // ⚠ `Never`（⊥）は空コレクションリテラルの要素型にしか現れない推論の内部表現で、
         //    FFI 境界の宣言型には書けない。届いたら判定しようがないので通す（保守的側）。
         | InferredType::Never
+        // ⚠ イテレータは FFI 境界の宣言型には書けない（注釈構文が無い）。
+        | InferredType::IteratorOf(_)
         | InferredType::Undefined
         | InferredType::SelfType
         | InferredType::Protocol(_)

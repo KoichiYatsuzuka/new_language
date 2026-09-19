@@ -100,6 +100,14 @@ pub enum InferredType {
     ListLike,
     /// 要素型既知の抽象リスト型 `list_like[T]`。
     ListLikeOf(Box<InferredType>),
+    /// **要素型既知のイテレータ**（`enumerate` / `zip` の戻り値、`gen` の産出列）。
+    ///
+    /// ⚠⚠ `ListOf` / `ListLikeOf` で代用してはいけない。実行時の値は
+    /// `Value::Generator` で、添字も `len()` も効かない。「反復すると `T` が出る」
+    /// という**それだけ**を表す型。
+    /// ⚠ 反復以外の操作は `NamedInstance("generator")` と同じく素通し（メンバー情報を
+    /// 持たないので存在検査は効かない）。
+    IteratorOf(Box<InferredType>),
     /// 型値（クラス自体）を表す `type` 型。型引数なし。
     TypeVal,
     /// 具体的な内部型を持つ型値 `type[T]`（例: `type[int]`, `type[MyClass]`）。
@@ -589,6 +597,9 @@ impl std::fmt::Display for InferredType {
             Self::Undefined => write!(f, "Undefined"),
             Self::List => write!(f, "list"),
             Self::ListOf(t) => write!(f, "list[{t}]"),
+            // ⚠ 注釈として書ける形が無いので、実行時の型名（`generator`）に要素型を
+            //   添えた表示にする。エラーメッセージで「何が出るのか」が判るように。
+            Self::IteratorOf(t) => write!(f, "generator[{t}]"),
             // ⚠ 注釈として**読み直せる形**で出すこと（`Box[int]`）。エラーメッセージが
             //   そのまま直し方の提示になる。
             Self::GenericInstance { name, args } => write!(

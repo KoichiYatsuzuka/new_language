@@ -27,6 +27,12 @@ impl Interpreter {
             }
             Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.borrow().clone())))),
             Value::Tuple(td) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(td.all_values().to_vec())))),
+            // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
+            //   ⚠ `values()` / `items()` は明示のメソッド。ここは `for k in d:` の形。
+            Value::Dict(ref d) => {
+                let keys = d.borrow().all_keys();
+                Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(keys))))
+            }
             Value::Generator(_) => iter_val,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
             Value::PyObject(ref handle) => {

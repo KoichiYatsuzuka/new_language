@@ -1,0 +1,55 @@
+# dict_iter_and_builtin_types.ar — 辞書の直接反復と、`enumerate` / `zip` の戻り値型。
+#
+# ⚠⚠ **以前はどちらも穴だった**:
+#   - `for k in d:` … `StaticTypeError: 'dict[..]' is not iterable` で書けなかった
+#     （Python では既定で**キー**を回す）
+#   - `enumerate` / `zip` … 戻り値型が無く `Unresolved`。ループ変数の型が判らず、
+#     `str(i) + c` のような普通の式で型特化も検査も効かなかった
+#
+# ⚠ `enumerate` / `zip` の戻り値は **`generator[T]`（`IteratorOf`）** にしてある。
+#   実行時の値は `Value::Generator` なので `list[T]` にすると嘘になり、
+#   `len()` や添字が静的に通ってしまう（④ がその境界）。
+#
+# ⚠ **シャドウが先に効く**。`let enumerate = f` のように同名を宣言すればそちらが勝つ
+#   （`examples/basics/builtin_shadow.ar`）。
+
+mut d = {"a": 1, "b": 2}
+mut xs = ["p", "q"]
+mut ns = [10, 20]
+
+# ── ① 辞書の直接反復（キーが出る） ──────────────────────────────────────
+for k in d:
+    print(k)
+# a
+# b
+
+# ── ② 内包表記でも同じ ──────────────────────────────────────────────────
+print([k for k in d])
+# ['a', 'b']
+
+# ── ③ キーの型が届く（`str` として使える） ──────────────────────────────
+for k in d:
+    let up: str = k
+    print(up)
+# a
+# b
+
+# ── ④ enumerate: 添字は int、要素は元の型 ───────────────────────────────
+for i, c in enumerate(xs):
+    let idx: int = i
+    let ch: str = c
+    print(str(idx) + ch)
+# 0p
+# 1q
+
+# ── ⑤ zip: 各列の要素型がそのまま並ぶ ───────────────────────────────────
+for c, n in zip(xs, ns):
+    let ch: str = c
+    let num: int = n
+    print(ch + str(num))
+# p10
+# q20
+
+# ── ⑥ 内包表記で使う ────────────────────────────────────────────────────
+print([str(i) + c for i, c in enumerate(xs)])
+# ['0p', '1q']

@@ -55,7 +55,10 @@ impl TypeChecker {
             InferredType::ListOf(elem)
             | InferredType::FixedListOf(elem)
             | InferredType::ListLikeOf(elem)
+            | InferredType::IteratorOf(elem)
             | InferredType::SetOf(elem) => (**elem).clone(),
+            // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
+            InferredType::DictOf(k, _) => (**k).clone(),
             // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
             // 異種タプルは反復ごとに型が変わるため `Unresolved`。
             InferredType::Tuple(types) if !types.is_empty() && types.iter().all(|t| *t == types[0]) => {

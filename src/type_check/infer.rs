@@ -1220,8 +1220,9 @@ impl TypeChecker {
         // 判定できるのは「確実に反復できない」と分かっている型だけ。
         let not_iterable = matches!(
             iter_ty,
+            // ⚠ **`dict` は反復できる**（キーが出る・Python と同じ）。以前はここで
+            //   弾いていたので `for k in d:` が `'dict[..]' is not iterable` だった。
             T::Int | T::Float | T::Complex | T::Bool | T::None | T::Undefined
-                | T::Dict | T::DictOf(_, _)
         );
         if !not_iterable {
             return;
