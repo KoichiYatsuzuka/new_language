@@ -28,8 +28,39 @@ impl Parser {
                     .map(|p| format!("'{}'", p.display()))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("cannot find module '{}' (looked at {})", module.join("."), looked)
+                // ⚠ C 拡張（`sys` / `numpy` …）は `.py` の実体が無いのでここに来る。
+                //   何が起きたのか判るように、代替手段まで書く。
+                format!(
+                    "cannot find Python source for module '{}' \
+                     — `import[py]` translates `.py` sources, so modules without one \
+                     (C extensions such as sys, numpy, ...) cannot be loaded this way; \
+                     use `import[py-int]` to call them through CPython instead \
+                     (looked at {})",
+                    module.join("."),
+                    looked
+                )
             })?;
+
+        // ⚠⚠ **標準ライブラリは明示エラーで止める**（項目 27）。
+        //   stdlib は検索パスに入っている（`python_lib_dirs`）ので `.py` は**見つかる**。
+        //   だが中身は `from ... import *`・C 拡張への委譲・動的な仕掛けの塊で、
+        //   変換器が通ることはまず無い。黙って翻訳を試みると
+        //   **stdlib のソースを指すエラー**（`.../Lib/os.py: ...`）が出て、
+        //   利用者は自分のコードのどこが悪いのか判らない。
+        //   ⇒ 「stdlib は翻訳しない」と最初に言い切る。
+        //   ⚠ site-packages（purelib）は**対象外**。純 Python のパッケージは
+        //     翻訳できる可能性があるので、従来どおり試す。
+        if is_python_stdlib_path(&abs_path) {
+            return Err(format!(
+                "module '{}' is part of the Python standard library ('{}') \
+                 — `import[py]` translates `.py` sources to Arrow and does not handle \
+                 the standard library; use `import[py-int] {}` to call it through \
+                 CPython instead",
+                module.join("."),
+                abs_path.display(),
+                module.join("."),
+            ));
+        }
 
         let cache_key = ("py".to_string(), abs_path.clone());
 
@@ -47,12 +78,50 @@ impl Parser {
         self.loading.insert(abs_path.clone());
 
         let filename = abs_path.to_string_lossy().to_string();
-        let body = python_converter::convert_python_source(&source, &filename)?;
-
+        // ⚠ 変換が失敗しても `self.loading` を残さない（次の import で偽の循環になる）。
+        let converted = python_converter::convert_python_source(&source, &filename);
+        let mut body = match converted {
+            Ok(b) => b,
+            Err(e) => {
+                self.loading.remove(&abs_path);
+                return Err(e);
+            }
+        };
+        // ★ Python モジュール内の `import` を**再帰で充填**する（項目 27）。
+        //   ⚠ `self.loading` に自分が入ったままここを通るので、循環 import は
+        //     既存の検出（`circular import detected`）がそのまま効く。
+        let filled = self.fill_python_imports(&mut body);
         self.loading.remove(&abs_path);
+        filled?;
         self.module_cache.insert(cache_key, body.clone());
 
         Ok(body)
+    }
+
+    /// Python から変換した body の中の `import[py]` / `from ... import[py]` の
+    /// `body` を**再帰で充填**する（項目 27）。
+    ///
+    /// ⚠⚠ **見つからないモジュールは明示エラー**（`load_python_module` が出す）。
+    /// stdlib や C 拡張（`os` / `sys` / `numpy` …）は翻訳対象の `.py` が無いのでここで
+    /// 止まる。以前は import を丸ごと捨てていたので、**未定義の名前が別の行で
+    /// `NameError` になる**という判りにくい壊れ方をしていた。
+    ///
+    /// ⚠ 走査するのは**モジュール本体の直下だけ**。Python の関数内 import は
+    /// 遅延読み込みの意図があり、変換器は文の位置を保つので、そこはそのまま残る
+    /// （＝現状は充填されず、実行時に未定義になる。必要になったら別途対応する）。
+    fn fill_python_imports(&mut self, body: &mut [Stmt]) -> Result<(), String> {
+        for stmt in body.iter_mut() {
+            match stmt {
+                Stmt::Import { lang, module, body: sub, .. }
+                | Stmt::FromImport { lang, module, body: sub, .. }
+                    if lang == "py" && sub.is_empty() =>
+                {
+                    *sub = self.load_python_module(module)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// `import[py-int]` 用: .pyi を優先して検索し、なければ .py にフォールバックする。
@@ -152,7 +221,8 @@ impl Parser {
                 Err(e) => {
                     if bundled {
                         eprintln!(
-                            "Warning: bundled stub for '{}' failed to convert ({e});                              falling back to line-based extraction",
+                            "Warning: bundled stub for '{}' failed to convert ({e}); \
+                             falling back to line-based extraction",
                             module.join(".")
                         );
                     }

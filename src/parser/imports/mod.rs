@@ -6,6 +6,20 @@
 
 
 
+/// 解決先が **CPython の標準ライブラリ**の下にあるか（項目 27）。
+///
+/// `python_lib_dirs()` の**先頭が stdlib・2 番目が purelib（site-packages）**
+/// （`python_lib_dirs` のスクリプトがこの順で出す）。stdlib だけを見たいので
+/// 先頭のみと突き合わせる。
+///
+/// ⚠ Python が見つからない環境では `python_lib_dirs()` が空 ⇒ 常に `false`。
+///   そのときは stdlib が検索パスにも入らないので、そもそもここに来ない。
+pub(crate) fn is_python_stdlib_path(path: &std::path::Path) -> bool {
+    python_lib_dirs()
+        .first()
+        .is_some_and(|stdlib| path.starts_with(stdlib))
+}
+
 /// Python プロセスを実行して標準ライブラリと site-packages のパスを取得する。
 /// OnceLock でキャッシュするので初回のみサブプロセスが起動する。
 fn python_lib_dirs() -> &'static Vec<std::path::PathBuf> {

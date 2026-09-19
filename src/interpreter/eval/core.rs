@@ -82,7 +82,7 @@ impl Interpreter {
     /// `*other` は**展開元の全要素をその位置に**挿入する。
     /// ⚠ 展開の規則は呼び出し引数の `*` と同じ（`collect_iterable` を通す）ので、
     /// list / tuple / set / str / range / ジェネレータのどれでも展開できる。
-    /// ⚠ ツリーウォークと VM（`vm_build_seq_spread`）で**同じ関数**を通す。
+    /// ⚠ ツリーウォークと VM（`Op::SeqExtend` → `vm_seq_extend`）で**同じ `collect_iterable`** を通す。
     pub(crate) fn eval_seq_entries(
         &mut self,
         entries: &[crate::ast::SeqEntry],

@@ -141,7 +141,7 @@ impl TypeChecker {
                 }
                 // ★ `f(*xs)` / `f(**d)` — **展開後の個数は実行時に決まる**ので、
                 //   ここでは「型は推論するが引数列には積まない」。個数検査は
-                //   `has_spread` を見て降りる（下記）。
+                //   `has_spread_arg` を見て降りる（下記）。
                 //   ⚠ 推論だけは必ず行う（式の中の誤りを見逃さないため）。
                 CallArg::Spread(e) => {
                     let ty = self.infer(e);

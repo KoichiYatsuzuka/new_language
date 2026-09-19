@@ -6,7 +6,7 @@
 //   ⇒ `let s: str = math.sqrt(2.0)` が**黙って通って**いた。
 //
 // ⚠⚠ **検索ディレクトリを増やす案は採らなかった**（群6 S2）:
-//   - `src/` に `current_exe()` の使用は 0 箇所。`cargo run`（`target/debug/`）と配布
+//   - `src/` に std の current_exe() の使用は 0 箇所。`cargo run`（`target/debug/`）と配布
 //     レイアウトで相対位置が変わり、「開発中だけ効く」を作り込む。
 //   - `python_search_dirs()` に 1 つ足すと**モジュール解決 1 回あたり `exists()` が
 //     4 回増える**。#69 が「`exists()` の syscall 連打が `interp_init` の 48〜53%」と

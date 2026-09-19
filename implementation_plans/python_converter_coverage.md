@@ -842,13 +842,23 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 - 難易度: 中（式コンテキストから囲みスコープへ `fn` 定義を注入する仕組みが必要。🟢15 複数代入・🟢23 walrus と共通の配管）。
 - 懸念: Arrow の `fn` は戻り型注釈が要る（`return_type: None` は `MissingReturnTypeAnn`）。lambda は無注釈なので戻り型を推論するか `Any` を補う運用が必要。デフォルト引数付き lambda は 🟢1 と併用。
 
-### [ ] 27. Python モジュール内の import（再帰ロード）
+### [x] 27. Python モジュール内の import（再帰ロード）✅ **実装済み（2026-09-19）**
 
-- 対象: [`statements.rs`](../src/python_converter/statements.rs) の `Import`/`ImportFrom`（現在 `Ok(None)` で破棄）＋ [`imports/py_modules.rs` `load_python_module`](../src/parser/imports/py_modules.rs) の後処理
-- 方針（ユーザー提案・肯定）: `import[py]` は「Python ソースを AST 展開したものをロード」する方針とし、**Python モジュール内の `import`/`from import` を Arrow の `Stmt::Import`/`FromImport`（lang="py"）に変換**、その body を **`load_python_module` の再帰呼び出しで充填**する。
-- 実現可能性: **可能**。`load_python_module` は既に検索ディレクトリ・`module_cache`・循環検出（`self.loading`）を持ち、内部で `convert_python_source` を呼ぶ。現状の唯一の欠落は「変換器が Python 内部 import を捨てている」点のみ。変換器が import 文を（空 body で）emit し、`load_python_module` が返り値 body を走査して各 import を再帰解決すれば、キャッシュ・循環検出をそのまま再利用できる。
-- 難易度: 中。
-- 残る制約: **標準ライブラリ・サードパーティ（`os`/`numpy` 等）は翻訳対象の `.py` が無い/C 実装のため、この再帰では解決不能** → `import[py-int]`（PyO3）へのフォールバックまたは明示エラーが必要。相対 import（`from . import x`）・`import X as Y`・`import a.b.c` のマッピングも要対応。
+- 例題: `examples/interop/py_import_chain.ar`（3 段の連鎖）/ `py_import_stdlib_error.ar`（stdlib・循環）
+- 実装: 変換器が `Stmt::Import` / `Stmt::FromImport`（`lang="py"`・`body` は空）を出し、
+  `load_python_module` の `fill_python_imports` が**再帰呼び出しで body を充填**する。
+  `module_cache` / `self.loading`（循環検出）はそのまま再利用。
+- **stdlib は明示エラー**（ユーザー判断・2026-09-19）。`py-int` フォールバックはしない。
+  ⚠ 「stdlib は `.py` が無いから自然に見つからない」は**誤りだった**:
+  `python_search_dirs()` は `sysconfig.get_path('stdlib')` を含むので `os.py` は**見つかり**、
+  翻訳を試みて **stdlib のソースを指すエラー**を出していた。⇒ `is_python_stdlib_path` で
+  解決先を見て先に止める。site-packages（purelib）は対象外（純 Python なら翻訳し得る）。
+- `typing` / `typing_extensions` / `abc` / `__future__` は**変換器が名前で直接扱う**ので
+  import 文ごと落とす（`is_converter_modelled_module`）。
+- 相対 import（`from . import x`）と `from ... import *` は明示エラー。
+  `import X as Y` / `import a.b.c` は対応済み。
+- 残る穴: **関数内 import は充填されない**（本体直下のみ走査）。循環 import は
+  CPython と違い通らない。⇒ 詳細は fix_plan §5.5 / §5.6（I6・I7）。
 
 ### [ ] 28. デコレータの三分岐（メタ関数化 / クロージャ化 / 読み込み時エラー）
 
@@ -867,7 +877,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 - 難易度: 高（前提 2 件を含む）。
 
 **制約 1: デコレータの本体が見えない（最大）**
-[`statements.rs:477`](../src/python_converter/statements.rs#L477) が `py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None)` で **Python 内 import を黙って捨てている**。実測: 他モジュール定義のデコレータは `NameError: 'banner' is not defined`。⇒ `@app.route` / `@lru_cache` 等**サードパーティのデコレータは分類不能**。判定できるのは同一ファイル定義のものだけ。⇒ **項目 27 が前提。**
+~~変換器が Python 内 import を黙って捨てている~~ → **項目 27 で解消（2026-09-19）**。他モジュール定義のデコレータは、その `.py` が検索パスにあれば分類できる。⇒ 残るのは **stdlib / サードパーティのデコレータ**（`@app.route` / `@lru_cache`）で、これらは import の時点で明示エラーになる（＝静かに間違えることはない）。
 
 **制約 2: 「展開時に完全解決できるか」は一般には判定できない**
 メタ関数化とは「Python の命令的コードを AST 操作コードへ翻訳する」こと。`def log(f): def w(*a,**k): ... return w` をメタ関数にするには「これは引数を転送するラッパである」と**意味を理解して** `^f.params` のスプライスを合成する必要があり、機械的変換ではない。⇒ ①は**イディオムのホワイトリスト**であって一般判定ではない。
@@ -880,7 +890,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 | # | 前提 | 理由 |
 |---|---|---|
 | 1 | **`*` / `**` 展開**（下表「コレクション型のアンパック」）— 少なくとも呼び出し側の `f(*a, **k)` | ⚠ **これが無いと②が空振りする。** 実測: 同一ファイル定義でも Python の最も普通のラッパ形（`def w(*a,**k): return f(*a,**k)`）は**変換時 `ParseError: starred expression is not supported in this context`**。Python のラッパはシグネチャを知らずに包むのが前提なので、ここが開かないとクロージャ分岐に乗るデコレータがほとんど無い |
-| 2 | **項目 27**（Python 内 import の再帰ロード） | これが無いと分類対象が同一ファイルに限られ、③の検出もほぼ効かない |
+| 2 | ~~**項目 27**（Python 内 import の再帰ロード）~~ ✅ **済（2026-09-19）** | 分類対象が同一ファイルに限られる制約は解消。stdlib / サードパーティは import 時点で明示エラー |
 | 3 | 禁止機構の検出（`setattr` / `type()` / ディスクリプタ） | 2 の後でないと検出対象が見えない |
 | 4 | ①のホワイトリスト | クロージャで表現できないもの（`@dataclass` 等）を救う |
 

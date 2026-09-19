@@ -1,0 +1,34 @@
+# py_import_stdlib_error.ar — `import[py]` した Python モジュールの中で**通さない** import（項目 27）。
+#
+#   ① 標準ライブラリ（`import os`）
+#      module 'os' is part of the Python standard library ('...\Lib\os.py')
+#      — `import[py]` translates `.py` sources to Arrow and does not handle the
+#        standard library; use `import[py-int] os` to call it through CPython instead
+#      ⇒ stdlib の `.py` は**検索パスに入っていて見つかる**（`python_lib_dirs`）。
+#        だが中身は `from ... import *`・C 拡張への委譲・動的な仕掛けの塊で、
+#        翻訳を試みると **stdlib のソースを指すエラー**が出て原因が判らなくなる。
+#        ⇒「stdlib は翻訳しない」と最初に言い切る。
+#
+#   ② 相互 import（`py_import_cycle_a_error.py` ⇄ `py_import_cycle_b_error.py`）
+#      circular import detected: '...\py_import_cycle_a_error.py'
+#      ⇒ **Python との差**。CPython は部分初期化のモジュールを渡して通すが、
+#        Arrow の import は AST を確定させてから型検査する形なので、途中の姿を
+#        持てない。片方を関数内 import にするか、共通部分を 3 つ目へ切り出す。
+#      ⚠ 1 ファイル 1 エラーなので、確かめるときは ① を消してこちらを有効にする。
+#
+# ⚠⚠ **以前は変換器が import 文を丸ごと捨てていた**。すると `os` が未定義のまま残り、
+#   `os.getcwd()` を**呼んだ行**で `NameError` になっていた。原因の行と現れる行が
+#   違うので、「翻訳できないモジュールを読んだ」ことに気付けない。
+#
+# ⚠ 変換器が**名前で直接モデル化している** `typing` / `typing_extensions` / `abc` /
+#   `__future__` は例外で、import 文ごと落とす
+#   （`test_modules/py_decorators.py` の `from abc import abstractmethod`）。
+#
+# ⚠ **通る形**は `py_import_chain.ar`（検索パスにある `.py` の 3 段連鎖）。
+
+import[py] test_modules.py_import_stdlib_error as m
+
+# ② 相互 import
+# import[py] test_modules.py_import_cycle_a_error as c
+
+print("unreachable")

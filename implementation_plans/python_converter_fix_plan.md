@@ -612,9 +612,9 @@ VM plan の一行は「`python_search_dirs()` に置き場を追加」だが、*
 - `os` / `sys` / `json` など**本体が `.py` で存在する** stdlib。これらは既に
   `extract_py_type_stubs` が実ソースからシグネチャを抜けるので、#19 の対象ではない。
 - typeshed の取り込み。ライセンスと量の判断が別に要る。**まず `time` / `math` の 2 本**。
-- 項目 27（Python モジュール内 import の再帰ロード）との接続。
-  27 が「stdlib は翻訳不能 → `py-int` フォールバック」を選ぶなら本フェーズが受け皿になるが、
-  **27 の設計が固まるまで結合しない**。
+- ~~項目 27（Python モジュール内 import の再帰ロード）との接続。~~
+  → **結合しないと決まった（2026-09-19）**。27 は「stdlib は**明示エラー**」を選んだので、
+  `py-int` フォールバックの受け皿は要らない（§5.5）。
 
 ### 群7: アンパック（タプル / 辞書）
 
@@ -920,8 +920,8 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 
 | # | タスク | 備考 |
 |---|---|---|
-| H1 | 項目25 `with`（`__exit__` 無しのみ block 脱糖） | 実行時ガードの設計 |
-| H2 | 項目27 Python モジュール内 import（再帰ロード） | ⚠ **E と結合するか**は 27 の設計が固まってから決める（群6 S6） |
+| H1 | 項目25 `with`（`__exit__` 無しのみ block 脱糖） | ✅ **完了（2026-09-19）** |
+| H2 | 項目27 Python モジュール内 import（再帰ロード） | ✅ **完了（2026-09-19）**。§5.5。**E とは結合しない**（stdlib は明示エラー） |
 
 いつ着手してもよいが、**着手したら他と並行しない**（設計判断が多く、中断コストが高い）。
 
@@ -1012,3 +1012,76 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 ⚠ **挙動不変の根拠**: `compare_bytecode -A <前コミットの exe>` が **307/307 一致**、
 `compare_outputs -A` が **288/288 一致**。＝ 既存のコードは 1 命令も変わらず、
 **今まで落ちていた形だけが通るようになった**。
+
+### 5.5 項目27（Python モジュール内 import の再帰ロード）✅ **完了（2026-09-19）**
+
+`import[py]` で読んだ `.py` の**中に書かれた `import`** が効くようになった
+（`py_import_chain.ar` — `chain_top` → `chain_util` → `chain_leaf` の 3 段）。
+
+⚠⚠ **以前は変換器が import 文を丸ごと捨てていた**（`Ok(vec![])`）。そのため
+import した名前が未定義のまま残り、**呼んだ行**で `NameError` が出ていた。
+原因の行と現れる行が違うので、「翻訳できないモジュールを読んだ」ことに気付けない。
+
+**実装**（3 層に分かれた）:
+
+| 層 | 変更 | ファイル |
+|---|---|---|
+| 変換 | `import a.b as c` → `Stmt::Import{lang:"py", body: vec![]}`、`from m import x as y` → `Stmt::FromImport{...}` | `python_converter/statements.rs` |
+| 解決 | 変換後の body を走査して `body` を**再帰ロードで充填**（`fill_python_imports`） | `parser/imports/py_modules.rs` |
+| 判定 | 解決先が **CPython の stdlib 配下**なら明示エラー（`is_python_stdlib_path`） | `parser/imports/mod.rs` |
+
+⭐ **計測して分かった前提の外れ**: 「stdlib は `.py` が無いから自然に
+『見つからない』で止まる」は**誤り**。`python_search_dirs()` は
+`sysconfig.get_path('stdlib')` を検索パスに入れているので、`import os` は
+`C:\...\Python312\Lib\os.py` を**見つけて翻訳を試み**、
+`os.py: from ... import * is not supported` という
+**stdlib のソースを指すエラー**を出していた。⇒ 利用者は自分のコードのどこが
+悪いのか判らない。**「stdlib は翻訳しない」と最初に言い切る**必要があった。
+
+⚠ **site-packages（purelib）は対象外**にした。純 Python のパッケージは翻訳できる
+可能性があるので従来どおり試す。区別は `python_lib_dirs()` の**先頭が stdlib**という
+並び（スクリプトが `[stdlib, purelib]` の順で出す）を使う。
+
+⚠ **変換器が名前で直接モデル化しているモジュールは import 文ごと落とす**
+（`is_converter_modelled_module`）: `typing` / `typing_extensions` / `abc` /
+`__future__`。落とさないと `test_modules/py_decorators.py` の
+`from abc import abstractmethod` が「Python ソースが見つからない」で死ぬ
+（`@abstractmethod` は `decorators.rs` が**末尾の名前**で判定していて、
+`abc` の実体は要らない）。
+⚠ **ここに足してよいのは「変換器が自前で意味を与えている」モジュールだけ**。
+「よく使う stdlib だから」で足すと、上記の `NameError` の壊れ方に戻る。
+
+⚠ **循環 import は既存の `self.loading` がそのまま効く**（再帰中も自分がセットに
+入ったまま）。ただし **Python との差**になる: CPython は部分初期化のモジュールを
+渡して通すが、Arrow は `circular import detected` で止める
+（`py_import_stdlib_error.ar` の ② に記録）。
+
+⚠ **走査するのはモジュール本体の直下だけ**。Python の関数内 import は遅延読み込みの
+意図があり、変換器は文の位置を保つので、そこは充填されない（＝実行時に未定義）。
+必要になったら別途。
+
+⚠ **`self.loading` の後始末**: 変換が失敗する経路で `?` を使うと
+`self.loading.remove()` を飛ばして**次の import が偽の循環**になる。
+`convert_python_source` と `fill_python_imports` の両方を `match` / 後置 `?` で受けてある。
+
+**ゲート**（import 解決を触ったので全部回した）:
+`scan_examples` / `force_gate`（0 件）/ `compare_python_impl`（101 一致・新規 2 件を
+knownDiff へ）/ `compare_import_paths -A`（13/13・負の対照済み）/
+`compare_outputs -A`（296/298・差は新規例題 2 件のみ）/ `compare_bytecode -A`（315/317・同上）/
+`type_obligations`（STATIC 112/114・退行なし）/ `compare_wasm_frontend`（368/368・**wasm を明示再ビルド**）/
+`cargo test`（784）/ `stale_doc_refs`（⚠ 過去のコミットが残していた 6 件をここで掃除した）。
+
+### 5.6 起票（詳細は後で詰める）
+
+> ⚠ **この計画の範囲外**。ユーザー判断が要る／別サブシステムの話なので、
+> ここには「何が起きるか」だけ置いて、着手はしない。
+
+| # | 内容 | 出所 |
+|---|---|---|
+| I1 | **`for` のループ変数を捕捉する入れ子 `fn` が VM に載らない**（`VmForceError`）。純 Arrow で再現。`while` 本体・ループ変数以外の捕捉・ループ外は通る | §5.2 #3 |
+| I2 | **`compare_wasm_frontend.ps1` が wasm を再ビルドしない**（存在確認のみ）＝ **古い成果物で緑になる**。この作業中に**3 回**踏んだ | §5.2 #4 |
+| I3 | **関数の中の `block` 退出でリソースが解放されない**。最上位の `block` と関数退出では解放される。`FileObject` に `close()` が無いので明示クローズもできない | §5.2 #10 |
+| I4 | **`cargo build --release` が緑でも `cargo test` のコンパイルが落ちる**（テストは別ビルド）。AST を触ったら `cargo test` まで回す運用で回避中 | §5.2 #12 |
+| I5 | **他モジュール由来のコンテキストマネージャを `with` が検出できない**。`hasattr` 相当の組込みが無く実行時ガードを組めない。組込みを足すかは Arrow 側への露出なので方針判断が要る | §5.3 #3 |
+| I6 | **循環 import が Python と違う**（CPython は通る・Arrow は明示エラー）。AST を確定してから型検査する形なので、部分初期化のモジュールを持てない | §5.5 |
+| I7 | **Python モジュールの関数内 import が充填されない**。遅延読み込みの意図を保つか、本体直下と同じく事前に読むかは設計判断 | §5.5 |

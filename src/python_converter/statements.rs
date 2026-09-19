@@ -189,7 +189,7 @@ fn collect_walrus_names(
 //     （`open()` のようにマネージャ自身を返すものだけが一致する）。
 //   - `__exit__` の副作用（ロック解放・commit / rollback）は `Drop` では走らない。
 //   ⇒ **黙って落とさず明示エラー**にする。判定は「同じモジュールで定義されたクラス」
-//     に限る（`hasattr` 相当の組込みが無く実行時ガードを組めないため）。
+//     に限る（Python の hasattr 相当の組込みが無く実行時ガードを組めないため）。
 //     他モジュール由来のコンテキストマネージャは**検出できない**のが残る穴。
 
 thread_local! {
@@ -367,6 +367,28 @@ fn loop_else_error(filename: &str, kw: &str) -> String {
         "{filename}: `{kw} ... else:` is not supported (Arrow has no loop `else`); \
          the `else` body runs only when the loop finishes without `break` — \
          use a flag variable instead"
+    )
+}
+
+/// **変換器が名前で直接モデル化している**モジュールか（項目 27）。
+///
+/// これらは `.py` の実体を読む必要が無い／読んでも意味が無いので、`import` 文を
+/// **落とす**。落とさないと `load_python_module` が実体を探しに行って
+/// 「Python ソースが見つからない」という的外れな明示エラーになる。
+///
+/// - `typing` / `typing_extensions` — 注釈は `annotations.rs` が Arrow の型名へ写す。
+///   実行時に名前として現れることは無い。
+/// - `abc` — `@abstractmethod` は `decorators.rs` が**末尾の名前**で判定する
+///   （`abc.abstractmethod` の形でも拾う）。`ABC` 基底は `classes.rs` が扱う。
+/// - `__future__` — 実体の無いコンパイラ指示。
+///
+/// ⚠ **ここに足してよいのは「変換器が自前で意味を与えている」モジュールだけ**。
+///   単に「よく使う stdlib だから」で足すと、名前が未定義のまま実行されて
+///   **別の行で `NameError`** という判りにくい壊れ方に戻る（項目 27 で直した形）。
+fn is_converter_modelled_module(module: &[String]) -> bool {
+    matches!(
+        module.first().map(|s| s.as_str()),
+        Some("typing" | "typing_extensions" | "abc" | "__future__")
     )
 }
 
@@ -1096,7 +1118,76 @@ pub(crate) fn convert_stmt(
         )),
 
         // ----- import / from-import（モジュール本体内の import は無視） -----
-        py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(vec![]),
+        // ----- import / from-import（再帰ロード・項目 27） -----
+        //
+        // ★ Python モジュール内の `import` を Arrow の `Stmt::Import` / `Stmt::FromImport`
+        //   （`lang = "py"`・`body` は空）として出す。`body` は
+        //   `Parser::load_python_module` が**再帰呼び出しで充填**する
+        //   （既存の `module_cache` / `self.loading` の循環検出をそのまま再利用できる）。
+        //
+        // ⚠⚠ **以前は `Ok(vec![])` で黙って捨てていた**。そのため import した名前が
+        //   未定義のまま実行され、`NameError` が**別の行**で出ていた。
+        //
+        // ⚠ **見つからないモジュールは明示エラー**（`load_python_module` が出す）。
+        //   stdlib や C 拡張（`os` / `sys` / `numpy` …）は翻訳対象の `.py` が無いので
+        //   ここで止まる。PyO3 経由で使いたいなら**ドライバ側で** `import[py-int]` する。
+        py::Stmt::Import(i) => {
+            let mut out = Vec::with_capacity(i.names.len());
+            for alias in &i.names {
+                // `import a.b.c` → module = ["a", "b", "c"]
+                let module: Vec<String> =
+                    alias.name.as_str().split('.').map(|s| s.to_string()).collect();
+                if is_converter_modelled_module(&module) {
+                    continue;
+                }
+                out.push(Stmt::Import {
+                    lang: "py".to_string(),
+                    module,
+                    with_file: None,
+                    alias: alias.asname.as_ref().map(|a| a.to_string()),
+                    body: Vec::new(),
+                });
+            }
+            Ok(out)
+        }
+        py::Stmt::ImportFrom(f) => {
+            // ⚠ 相対 import（`from . import x` / `from ..pkg import y`）は、現在の
+            //   モジュールのパッケージ位置を解決する仕組みが要る。黙って絶対扱いすると
+            //   **別のモジュールを読む**ので明示エラーにする。
+            if f.level.map(|l| l.to_u32() > 0).unwrap_or(false) {
+                return Err(format!(
+                    "{filename}: relative imports (`from . import ...`) are not supported; \
+                     use an absolute module path"
+                ));
+            }
+            let Some(modname) = f.module.as_ref() else {
+                return Err(format!("{filename}: unsupported `from` import"));
+            };
+            let module: Vec<String> =
+                modname.as_str().split('.').map(|s| s.to_string()).collect();
+            if is_converter_modelled_module(&module) {
+                return Ok(vec![]);
+            }
+            // ⚠ `from m import *` は導入される名前が実行時にしか判らない（Arrow の
+            //   `FromImport` は名前の列を要求する）ので明示エラー。
+            if f.names.iter().any(|a| a.name.as_str() == "*") {
+                return Err(format!(
+                    "{filename}: `from ... import *` is not supported; list the names explicitly"
+                ));
+            }
+            let names: Vec<(String, Option<String>)> = f
+                .names
+                .iter()
+                .map(|a| (a.name.to_string(), a.asname.as_ref().map(|x| x.to_string())))
+                .collect();
+            Ok(vec![Stmt::FromImport {
+                lang: "py".to_string(),
+                module,
+                with_file: None,
+                names,
+                body: Vec::new(),
+            }])
+        }
 
         // ----- match（値 / ワイルドカードのサブセット・項目 8） -----
         //

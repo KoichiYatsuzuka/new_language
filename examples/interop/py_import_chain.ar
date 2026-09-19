@@ -1,0 +1,28 @@
+# py_import_chain.ar — `import[py]` した Python モジュールの**中にある import**（項目 27）。
+#
+# `chain_top.py` → `chain_util.py` → `chain_leaf.py` の 3 段。
+# 変換器は `import` / `from ... import` を Arrow の `Stmt::Import` / `Stmt::FromImport`
+# （`lang = "py"`・`body` は空）として出し、`Parser::load_python_module` が
+# **再帰呼び出しで `body` を充填**する。
+#
+# ⚠⚠ **以前は変換器が import 文を丸ごと捨てていた**。そのため `chain_util.py` の中で
+#   `chain_leaf.double(...)` を呼ぶと、import した行ではなく**呼んだ行**で
+#   `NameError: chain_leaf` が出ていた。原因の行と現れる行が違うので追いにくい。
+#
+# ⚠ 循環 import は既存の `self.loading` による検出（`circular import detected`）が
+#   そのまま効く（再帰中も自分がセットに入ったまま）。
+#
+# ⚠ モジュールの解決は `ar_config.json` の `python.search_paths`（= `py_libs`）経由。
+#   中段・葉も**同じ検索パス**で引かれる（相対 import は明示エラー）。
+
+import[py] chain_top
+
+# ── ① 2 段先の定数まで届く（モジュール本体の実行順） ──────────────────────
+#    `chain_leaf.LEAF_MARKER` → `chain_util.UTIL_MARKER` → `chain_top.TOP_MARKER`
+print(chain_top.TOP_MARKER)
+
+# ── ② `from ... import x as y` 経由の呼び出し（`dbl` = `chain_leaf.double`） ──
+# ── ③ `import m` 経由の呼び出し（`chain_leaf.double`） ──────────────────────
+#    run(x) = quad(x) + leaf_of(x) = (x*2)*2 + x*2
+mut n = 3
+print(chain_top.run(n))
