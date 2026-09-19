@@ -490,12 +490,6 @@ impl Interpreter {
                         Ok(Value::List(Rc::new(RefCell::new(items))))
                     }
                     Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
-                    // ⚠ `set()` は Tuple を受けるのにここだけ受けていなかった（揃えた）。
-                    Value::Tuple(t) => Ok(Value::List(Rc::new(RefCell::new(t.all_values().to_vec())))),
-                    Value::Dict(d) => {
-                        // Python の `list(d)` は**キー**を返す。
-                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
-                    }
                     Value::Str(s) => {
                         let chars = s.chars().map(|c| Value::str(c.to_string())).collect();
                         Ok(Value::List(Rc::new(RefCell::new(chars))))
@@ -506,73 +500,6 @@ impl Interpreter {
                     )),
                 },
                 _ => Err("TypeError: list() takes at most 1 argument".to_string()),
-            },
-            // ★ `dict()` コンストラクタ。
-            //
-            // ⚠⚠ **`dict` はグローバルに `Value::Type("dict")` として登録済みなのに、
-            //   ここに呼び出しケースが無かった**ため `'dict' object is not callable` に
-            //   落ちていた（`list` はこの逆で、ケースはあるのに名前が未登録だった）。
-            // ⚠ これは辞書内包（FUTURE_FEATURE §4 (4-a)）と `{**d1, **d2}` の**共通の前提**。
-            //   `d.items()` が入ったので `dict(d1.items() + d2.items())` で両方書ける。
-            "dict" => match vals {
-                ref v if v.is_empty() => Ok(Value::Dict(Rc::new(RefCell::new(
-                    crate::interpreter::DictData::new("Any".to_string(), "Any".to_string()),
-                )))),
-                _ if vals.len() == 1 => {
-                    let arg = vals.into_iter().next().unwrap();
-                    // `dict(other)` は複製、`dict(pairs)` は `(k, v)` の並びから構築。
-                    let pairs: Vec<Value> = match arg {
-                        Value::Dict(src) => {
-                            let d = Rc::new(RefCell::new(crate::interpreter::DictData::new(
-                                "Any".to_string(),
-                                "Any".to_string(),
-                            )));
-                            for (k, v) in src.borrow().all_pairs() {
-                                self.dict_set(&d, k, v)?;
-                            }
-                            return Ok(Value::Dict(d));
-                        }
-                        Value::List(lst) => lst.borrow().clone(),
-                        Value::Set(st) => st.borrow().clone(),
-                        Value::Tuple(t) => t.all_values().to_vec(),
-                        other => {
-                            return Err(format!(
-                                "TypeError: '{}' object is not iterable",
-                                self.type_name(&other)
-                            ))
-                        }
-                    };
-                    let d = Rc::new(RefCell::new(crate::interpreter::DictData::new(
-                        "Any".to_string(),
-                        "Any".to_string(),
-                    )));
-                    for (i, item) in pairs.into_iter().enumerate() {
-                        // ⚠ 各要素は**ちょうど 2 要素**の並びでなければならない。
-                        //   黙って捨てると「入れたのに引けない辞書」になるのでエラーにする。
-                        let kv: Vec<Value> = match &item {
-                            Value::Tuple(t) => t.all_values().to_vec(),
-                            Value::List(l) => l.borrow().clone(),
-                            other => {
-                                return Err(format!(
-                                    "TypeError: dict() element #{i} must be a (key, value) pair,                                      not '{}'",
-                                    self.type_name(other)
-                                ))
-                            }
-                        };
-                        if kv.len() != 2 {
-                            return Err(format!(
-                                "ValueError: dict() element #{i} has length {}, expected 2",
-                                kv.len()
-                            ));
-                        }
-                        let mut it = kv.into_iter();
-                        let k = it.next().expect("長さ 2 を確認済み");
-                        let v = it.next().expect("長さ 2 を確認済み");
-                        self.dict_set(&d, k, v)?;
-                    }
-                    Ok(Value::Dict(d))
-                }
-                _ => Err("TypeError: dict() takes at most 1 argument".to_string()),
             },
             "set" => match vals {
                 ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
