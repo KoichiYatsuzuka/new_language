@@ -1,10 +1,76 @@
-# python_converter 修正 実装計画（作業指示書）
+# python_converter 実装ログ — Python→Arrow 変換器の整備（2026-07-22 〜 2026-09-19）
 
-Python→Arrow 変換器（`import[py]` が使う、PyO3 を介さない翻訳器）の修正を、**まっさらなコンテキストからでも即着手できる**ように整理した作業指示書。
-分類の背景・根拠は [python_converter_coverage.md](python_converter_coverage.md)（判断記録）を参照。本書は「どのファイルをどう直すか」に特化する。
+`import[py]`（PyO3 を介さない **Python ソースの翻訳**）の整備が**一通り完了した**記録。
+着手前は `implementation_plans/python_converter_fix_plan.md`（作業指示書）だったものを、
+完了時にここへ移した。
+
+⚠ **計画時の記述はそのまま残してある。** 何を直したかより
+**何を読み違えたか**のほうが次に効くので、結果は追記の形で足し、
+外れた前提は §5.1 に列挙してある（**7 件あった**）。
 
 - 対象サブシステム: [`src/python_converter/`](../src/python_converter/)
-- 作成: 2026-07-22（main pull 後の phase 0〜5C リファクタリング反映済み）
+- 期間: 2026-07-22 起票 → **2026-09-19 フェーズ A〜H 完了**
+- 構文ごとの対応状況（判断記録）: [python_converter_coverage.md](../implementation_plans/python_converter_coverage.md)
+- 残件: **#90**（デコレータの三分岐・#89 メタ関数待ち）と、Arrow 本体側の起票 7 件
+  ⇒ 一覧は §5.6、本体は [FUTURE_FEATURE.md](FUTURE_FEATURE.md)
+
+---
+
+## この文書の読み方
+
+| 章 | 中身 | いつ読むか |
+|---|---|---|
+| §0 | 変換器の構造・grep アンカー・テスト手順 | 変換器を触るとき（**まだ現役**） |
+| §1 | 共通基盤 INF-A〜D | 「なぜこの形なのか」を知りたいとき |
+| §2 | 実装カード（群1〜7） | 項目番号から実装位置を引くとき |
+| §3 | フェーズ A〜H とその結果 | 何がいつ入ったかを追うとき |
+| §5 | **発見ログ** | ⭐ **次に似た作業をする前に読む** |
+
+---
+
+## 実装内容の纏め（2026-09-19 時点）
+
+### 何ができるようになったか
+
+**実在の Python が読める水準**に届いた。デコレータの転送パターン
+（`def wrapper(*args, **kwargs): return inner(*args, **kwargs)`）が CPython と
+一致して動くのが到達点で、これは A7・INF-D・spread の 3 つが揃って初めて成立した。
+
+| フェーズ | 入ったもの | 主な置き場 |
+|---|---|---|
+| **A** ✅ | 文書追随／`def f(a, *rest, b)` を明示エラー化／項目20 †1 の再トリアージ | `classes.rs` |
+| **B** ✅ | **INF-D** — `mut` 実引数の検査をネイティブ側（`path_is_mutable`）へ揃える | `type_check/call_check.rs` |
+| **C** ✅ | 明示エラー化 8 件＋`del`／`match`／ジェネレータ／型エイリアス／`for k, v in …`＋`dict.items()`／列リテラルの `*` 展開 | `statements.rs`・`expressions.rs` |
+| **D** ✅ | **INF-B / INF-C**（式→文の注入・複数文返却）／複数代入／代入のアンパック／walrus／lambda lifting／**D6 連鎖比較の 1 回評価** | `hoist.rs`（新設） |
+| **E** ✅ | 同梱 `.pyi` スタブ（`time` / `math`）— `include_str!` で埋め込み、利用者のファイルが常に勝つ | `py_stubs.rs`（新設）・`stubs/` |
+| **F** ✅ | **呼び出し側の展開** `f(*a)` / `f(**b)` を Arrow の構文として追加 | `ast.rs`・`vm/`・`interpreter/functions/args.rs` |
+| **G** ✅ | 転送パターンの成立（A7-a 関数値の `mut` 検査除外／A7-b callee の `cells` 解決） | `type_check/call_check.rs`・`vm/compiler/expr.rs` |
+| **H** ✅ | `with`（H1）／**Python モジュール内 import の再帰ロード**（H2・項目27） | `statements.rs`・`parser/imports/py_modules.rs` |
+
+### Arrow 言語そのものに足したもの
+
+⚠ 本作業で**唯一「言語仕様を増やした」**のがフェーズ F 周辺。翻訳器の都合で
+`list()` / `dict()` を露出させる案は**採らなかった**（要素型必須の規則を迂回するため。§5.2 #5）。
+代わりに**展開そのものを構文として**入れてある。
+
+| 追加 | 形 | 実装 |
+|---|---|---|
+| 辞書の展開 | `{**d, "x": 2}` | `DictEntry::Spread` / `Op::DictMerge` |
+| 列の展開 | `[*a]` / `(*a,)` / `{*a}` | `SeqEntry::Spread` / `Op::SeqExtend` / `Op::SeqFinish` |
+| 呼び出しの展開 | `f(*a)` / `f(**b)` | `CallArg::Spread` / `CallArg::KwSpread` |
+| 反復子の型 | `generator[T]` | `InferredType::IteratorOf` |
+| 辞書の直接反復 | `for k in d:` | `check_iterable` / `make_for_iterator` |
+| 多ターゲット | `[f(k, v) for k, v in d.items()]` | `ComprehensionClause.targets` / `ForExpr.targets` を `Vec<String>` へ |
+| 組込みの戻り値型 | `enumerate` / `zip` → `generator[tuple[…]]`、`dict.keys/values/items` | `type_check/call_check.rs` |
+
+### 作業の型（次にやるときも同じにする）
+
+1. ⭐ **計画を信じる前に測る。** 計画の前提は **7 件外れていた**（§5.1）。
+   「未実装だから壊れる」と書かれていたものが実は実装済みで、原因が別だった例が複数。
+2. **挙動不変の主張は A/B で裏を取る。** `compare_bytecode -A` と `compare_outputs -A` を
+   **直前のコミットからビルドした exe** に対して取り、差が新規例題だけであることを見せる。
+3. **見つけた穴はその場で起票する。** この作業だけで Arrow 本体の不具合・制限が
+   **12 件**出た（§5.2）。うち 7 件を FUTURE_FEATURE §5 へ移してある。
 
 ---
 
@@ -57,6 +123,10 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 変換器は Rust 専用のため **impl_python 同期不要**。項目7・25 の interpreter 変更のみ impl_python 並行実装の有無を確認。
 - `git commit` はユーザー許可を得るまで行わない。挙動が変わる変更は sub-branch 提案を検討。
 
+> ⚠ §0.5 は**着手時点の作業指示**。実際にはユーザー指示で順次コミットしており、
+> sub-branch は使っていない（`meta-programming` ブランチ上で進めた）。
+> ⚠ **ゲートの走らせ方は §5 の各節に実績が残っている**ので、そちらを見るほうが早い。
+
 ---
 
 ## 1. 共通基盤（先に用意すると複数項目が楽になる）
@@ -76,7 +146,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 影響: `convert_stmt` の `Assign`/`AnnAssign`（Name ターゲット）を `Stmt::Mut` 固定でなく「初回=Mut/以降=Assign」判定に変更。→ 判定用に「宣言済み集合」を引数で引き回すか、`convert_stmts_with_hoist` で全 hoist して常に `Assign` にする（後者が単純で堅牢）。
 
 ### INF-B: 式コンテキストから囲みスコープへ文を注入する機構 ✅ **実装済（2026-09-19）**
-> 実装: 新設 [`hoist.rs`](src/python_converter/hoist.rs)。⚠ **`convert_expr` に
+> 実装: 新設 [`hoist.rs`](../src/python_converter/hoist.rs)。⚠ **`convert_expr` に
 > `&mut Vec<Stmt>` を足す案は採らなかった** —— 呼び出しが **59 箇所**あり、
 > `supers.rs` / `param_rewrite.rs` が同じ理由で既にスレッドローカルを採っている。
 > `convert_stmts` / `convert_scope` が**文ごと**にバッファを積み、`convert_one_into` が
@@ -133,11 +203,14 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ---
 
-## 2. 実装カード
+## 2. 実装カード（**全件済み**）
 
 各カードの見方:
 - **編集**: `ファイル` — アンカー（関数/`match` アーム）／変更内容。
 - rustpython の型名・フィールド名は着手時に実物で確認（例: `ExprSlice{lower,upper,step}`）。
+
+> ⚠ 各カードの末尾に **実装済（日付）** と、計画と違った点を追記してある。
+> **カードの本文＝着手前の見立て**なので、食い違っていたら追記のほうが正しい。
 
 ### 群1: 式・文の単純マッピング
 
@@ -209,7 +282,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - `desugar_fstring` と同形に脱糖（リテラル片 + `str(...)` を左結合 `+` で連結）。14 ケース CPython 一致。
 - ⚠ 計画より広く対応: `!s` → `str()`、`!r` → `repr()` も通る（Arrow に組込があるため）。
   明示エラーは `!a`（ascii）と **書式指定 `{x:.2f}`**（Arrow に書式指定の構文・組込が無い）。
-- ⚠ 書式指定の将来方針は `implementation_logs/FUTURE_FEATURE.md` §4 (3) に残した。
+- ⚠ 書式指定の将来方針は [FUTURE_FEATURE.md](FUTURE_FEATURE.md) §4 (3) に残した。
   **モジュール単位変換なので、1 箇所でも含む `.py` は import 全体が落ちる**点が効く。
 - 例題: `examples/interop/py_fstring.ar` / `py_fstring_error.ar` + `test_modules/py_fstring*.py`。
 - 編集: `expressions.rs` `convert_expr`
@@ -480,7 +553,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ### 群6: 同梱 `.pyi` スタブによる静的型予測（BYTECODE_VM_PLAN #19）
 
-[BYTECODE_VM_PLAN.md](../implementation_logs/BYTECODE_VM_PLAN.md) の別レーン
+[BYTECODE_VM_PLAN.md](BYTECODE_VM_PLAN.md) の別レーン
 **#19「py 組み込みスタブ整備（`time`/`math`）— 同梱 `.pyi` ＋ `python_search_dirs()` に置き場を追加」**
 をここに展開する。対象は `import[py-int]`（PyO3 経路）だが、**`.pyi` の読み込みは
 `python_converter::convert_python_source` を通る**ため本書の管轄に入る。
@@ -689,7 +762,7 @@ count(... = 1, 2, 3)   → 3
 
 #### [U4] 呼び出しのアンパック `f(*xs)` ★Arrow 本体への言語追加
 - ⚠ **本カードは Arrow の言語仕様追加**。変換器だけでは閉じない。
-  方針決定は [FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) 側に置き、
+  方針決定は [FUTURE_FEATURE.md](FUTURE_FEATURE.md) 側に置き、
   本書はそれを消費する側として扱う。
 - **配管は既にある**（[`args.rs`](../src/interpreter/functions/args.rs) の `CallArg::Variadic` 経路）:
   各式を評価 → `Value::List` に束ねる → 特殊キー `"..."` で渡す → `bind_args` が
@@ -733,7 +806,7 @@ def wrapper(*args, **kwargs):
 
 ---
 
-## 3. 実行フェーズ（依存関係による割り当て）
+## 3. 実行フェーズ（依存関係による割り当て）✅ **A〜H 全完了（2026-09-19）**
 
 > **§2 の「群」は話題別のカタログ、本節の「フェーズ」は実行順**。別の軸なので混同しないこと。
 > 各フェーズは「**前のフェーズが終わっていないと着手できないもの**」だけを後ろに置く。
@@ -840,7 +913,7 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 
 ---
 
-### フェーズ D — 式→文注入の基盤と、その消費者
+### フェーズ D — 式→文注入の基盤と、その消費者 ✅ **完了（2026-09-19）**
 
 > **進捗**: ✅ **D1〜D5 完了**（2026-09-19）。残りは D6（項目16 の二重評価解消・任意）のみ。
 > ⚠ D5 で **Arrow 側の制限を 1 件発見**: `for` の**ループ変数を捕捉する**入れ子 `fn` が
@@ -867,7 +940,7 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 
 ### フェーズ E — 同梱 `.pyi` スタブ（**B1 が前提**）✅ **完了（2026-09-19）**
 
-> **結果**: E1〜E4 完了。`include_str!` の埋め込み表（[`src/py_stubs.rs`](src/py_stubs.rs)）＋
+> **結果**: E1〜E4 完了。`include_str!` の埋め込み表（[`src/py_stubs.rs`](../src/py_stubs.rs)）＋
 > [`stubs/time.pyi`](../stubs/time.pyi) / [`stubs/math.pyi`](../stubs/math.pyi)。
 > 検索ディレクトリを全部見て空振りしたときだけ引くので、**利用者のファイルが常に勝つ**（実測確認）。
 > ⚠ **未宣言メンバは壊れない**（`math.pi` が従来どおり動く）—— 着手前に一番心配した点。
@@ -888,10 +961,10 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 
 ---
 
-### フェーズ F — Arrow 本体への言語追加（呼び出し側アンパック）
+### フェーズ F — Arrow 本体への言語追加（呼び出し側アンパック）✅ **完了（2026-09-19）**
 
 **本書で唯一「Arrow の言語仕様そのものを増やす」フェーズ**。方針決定は
-[FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) に置き、本書は消費側として扱う。
+[FUTURE_FEATURE.md](FUTURE_FEATURE.md) に置き、本書は消費側として扱う。
 
 | # | タスク |
 |---|---|
@@ -904,7 +977,7 @@ B から C / D' / F へ伸びる破線的な関係は「無くても着手でき
 
 ---
 
-### フェーズ G — 転送パターンの成立（A7 + B1 + F）
+### フェーズ G — 転送パターンの成立（A7 + B1 + F）✅ **完了（2026-09-19）**
 
 | # | タスク |
 |---|---|
@@ -916,7 +989,7 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 
 ---
 
-### フェーズ H — 大物（A のみに依存・設計比重が大きい）
+### フェーズ H — 大物（A のみに依存・設計比重が大きい）✅ **完了（2026-09-19）**
 
 | # | タスク | 備考 |
 |---|---|---|
@@ -927,14 +1000,14 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 
 ---
 
-### まとめ（どれから取るか迷ったら）
+### まとめ（どれから取るか迷ったら）— ⚠ **着手時の順序案。全フェーズ完了済み**
 
 1. **A**（地ならし）→ 短い。文書が嘘をついている状態を先に消す。
 2. **B1**（INF-D）→ 1 箇所。E の前提で、C/D/F の使い勝手も上がる。
 3. あとは **C（並行可・すぐ価値が出る）** と **D1（基盤）** を並べて進める。
 4. ユーザーの関心が呼び出し側アンパックにあるなら **F を D と並行**で始める。
 
-## 4. 各項目の Done 条件
+## 4. 各項目の Done 条件（**実際に全項目で満たした**）
 - [ ] `cargo build` / `cargo clippy` 通過。
 - [ ] 成功例 `.ar`（＋必要なら `.py`）が期待出力。エラー化項目は `_error.ar` が期待エラー。
 - [ ] `examples/` に配置し `./generate-codebase-map.ps1` 実行。
@@ -946,12 +1019,12 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 
 ---
 
-## 5. 作業中に見つけたこと（発見ログ）
+## 5. 作業中に見つけたこと（発見ログ）⭐ **次に読むならここ**
 
 > 実装を進める中で**計画の前提が外れていた**点と、**この作業の外**で見つかった
 > Arrow 本体の不具合・制限をここに積む。新しいものを下に足す。
-> ⚠ 「起票候補」は別文書（[FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) §5 /
-> [bug_fix.md](../implementation_logs/bug_fix.md)）へ、ここには**この計画に効く要約**だけを書く。
+> ⚠ 「起票候補」は別文書（[FUTURE_FEATURE.md](FUTURE_FEATURE.md) §5 /
+> [bug_fix.md](bug_fix.md)）へ、ここには**この計画に効く要約**だけを書く。
 
 ### 5.1 計画の前提が外れていたもの
 
@@ -1074,7 +1147,7 @@ knownDiff へ）/ `compare_import_paths -A`（13/13・負の対照済み）/
 ### 5.6 起票した（詳細は後で詰める）
 
 > ⚠ **この計画の範囲外**。ユーザー判断が要る／別サブシステムの話なので、
-> **[FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) §5（起票候補）へ登録済み**。
+> **[FUTURE_FEATURE.md](FUTURE_FEATURE.md) §5（起票候補）へ登録済み**。
 > ここには対応表だけ置く。着手はしない。
 
 | 起票先 | 内容 | 出所 |

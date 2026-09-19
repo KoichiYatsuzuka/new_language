@@ -26,6 +26,7 @@
 | skill `importation` | `import[lang]` の全タグ仕様（#19 / #17-b はここに接続する） |
 | skill `partial-compile` | `--compile` の全体像・`.arc`/`.ars` 形式・codegen 実装（#14 / ネイティブ拡張はここ） |
 | skill `type-checking` | 型検査の内部表現・推論規則・全 `TypeErrorKind`（#17-a / #17-b はここ） |
+| [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) | `import[py]`（Python→Arrow 変換器）整備の**全記録**。フェーズ A〜H の結果・**外れた前提 7 件**・Arrow 本体で見つけた不具合 12 件（#90 はここから出た） |
 
 ## 0. 現在地
 
@@ -35,7 +36,7 @@
 ⇒ **残っているのは下の 3 レーンだけ**。
 
 ⚠ **`import[py]`（Python→Arrow 変換器）の計画は完了した**（2026-09-19）。
-[python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md)
+[PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md)
 のフェーズ A〜H は全件済みで、そこから出た残件は
 **#90（デコレータの三分岐・#89 待ち）** と **§5 の起票候補 (f)〜(k)** に移してある。
 
@@ -440,7 +441,7 @@
   coverage 🟡「with 文」の「参照カウント基準の遅延破棄は実質無視できる」という
   見立ての**反例**。
 - **判断が要る**: スコープ退出で解放するのか、`close()` を生やすのか、両方か。
-- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #10。
+- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #10。
 
 ## (g) `with` が他モジュール由来のコンテキストマネージャを検出できない
 
@@ -450,7 +451,7 @@
 - **原因**: `hasattr` 相当の組込みが無く、**実行時ガードを組めない**。
 - ⚠ **組込みを足すのは Arrow 側への露出**なので、方針が決まるまで動かさない
   （`list()` / `dict()` を誤って露出させた前例がある）。
-- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.3 #3。
+- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.3 #3。
 
 ## (h) `import[py]` の循環 import が CPython と違う（明示エラー）
 
@@ -461,7 +462,7 @@
 - **回避**: 片方を関数内 import にする（が、それは (i) で効かない）／共通部分を
   3 つ目のモジュールへ切り出す。
 - **参照**: 例題 [`py_import_stdlib_error.ar`](../examples/interop/py_import_stdlib_error.ar) の ②、
-  [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.5。
+  [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.5。
 
 ## (i) `import[py]` は Python の**関数内 import** を充填しない
 
@@ -469,7 +470,7 @@
   `import` は文の位置を保ったまま残り、`body` が空のままなので**実行時に未定義**になる。
 - ⚠ Python の関数内 import は**遅延読み込み・循環回避の意図**で書かれることが多い。
   「本体直下と同じく事前に読む」と意図を壊すので、**設計判断が先**。
-- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.5。
+- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.5。
 
 ## (j) ⚠ `compare_wasm_frontend.ps1` が wasm を再ビルドしない
 
@@ -481,7 +482,7 @@
   「緑のゲートが嘘をつく」形なので、スクリプト側で再ビルドするか、
   ソースより古い `.wasm` を検出して落とすのが筋。
 - **参照**: `vm-pitfalls` §3、
-  [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #4。
+  [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #4。
 
 ## (k) `cargo build --release` が緑でも `cargo test` のコンパイルが落ちる
 
@@ -489,7 +490,7 @@
   `cargo build` では検出できない（`ForExpr { target }` → `targets` で実際に踏んだ）。
 - **当面の運用**: **AST を触ったら `cargo test` まで回す**。
 - スクリプト化するなら、ゲートの前段に `cargo test --no-run` を置く。
-- **参照**: [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) §5.2 #12。
+- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #12。
 
 ---
 

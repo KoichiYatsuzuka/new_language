@@ -753,7 +753,7 @@ f-string を多用する実在モジュールを読むうえで、これが現�
      `py_decorators.py` のケース 3（`always42`）は `f` を捕捉しない形に**避けて**ある。
    - ⚠ 解消には **INF-D（静的検査の食い違い）と本件（実行時の捕捉）の両方**が要る。
      転送パターン（`inner(*args, **kwargs)`）まで含めた成立条件は
-     [fix_plan](python_converter_fix_plan.md) §3 フェーズ G を参照。
+     [PYTHON_CONVERTER_LOG.md](../implementation_logs/PYTHON_CONVERTER_LOG.md) §3 フェーズ G を参照。
 2. ~~モジュール直下で同じモジュールの関数を「呼ぶ」ことができない~~
    → **✅ B6 で修正済み**（2026-09-02・案 A、速度回帰を承知で採用）。
    実測: `.py` の `TOP = helper(41)` が `42` になる。
@@ -893,7 +893,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 - 相対 import（`from . import x`）と `from ... import *` は明示エラー。
   `import X as Y` / `import a.b.c` は対応済み。
 - 残る穴: **関数内 import は充填されない**（本体直下のみ走査）。循環 import は
-  CPython と違い通らない。⇒ 詳細は fix_plan §5.5 / §5.6（I6・I7）。
+  CPython と違い通らない。⇒ 詳細は PYTHON_CONVERTER_LOG.md §5.5 / §5.6（I6・I7）。
 
 ### [ ] 28. デコレータの三分岐（メタ関数化 / クロージャ化 / 読み込み時エラー）
 

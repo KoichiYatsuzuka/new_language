@@ -278,7 +278,7 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
-| 19 | py 組み込みスタブ整備（`time`/`math`） | 同梱 `.pyi` を `include_str!` で**埋め込み**（`python_search_dirs()` へのディレクトリ追加は**不採用**: `current_exe()` 未使用 + `exists()` 増） | ~~INF-D~~ 解消済み | ✅ **完了（2026-09-19）** [`src/py_stubs.rs`](../src/py_stubs.rs) / [`stubs/`](../stubs/)。詳細は [python_converter_fix_plan.md](../implementation_plans/python_converter_fix_plan.md) 群6・フェーズ E |
+| 19 | py 組み込みスタブ整備（`time`/`math`） | 同梱 `.pyi` を `include_str!` で**埋め込み**（`python_search_dirs()` へのディレクトリ追加は**不採用**: `current_exe()` 未使用 + `exists()` 増） | ~~INF-D~~ 解消済み | ✅ **完了（2026-09-19）** [`src/py_stubs.rs`](../src/py_stubs.rs) / [`stubs/`](../stubs/)。詳細は [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) 群6・フェーズ E |
 | 17-b | JS スタブの型付け | 既定 `Any`・`.d.ts` から `.ars` 生成 | — | 未着手・優先度低 |
 | 17-a | C/C++ `void*` の専用型 | 不透明ハンドル型を導入し int との相互代入を静的禁止 | — | 未着手・優先度低 |
 
