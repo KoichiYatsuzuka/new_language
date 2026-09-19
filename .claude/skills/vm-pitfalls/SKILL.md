@@ -305,6 +305,19 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   減った**ことだけ。⇒ **置換は「何を消すか」を assert できる形に切る**
   （アンカーを前後 2 つ取る／`assert old.strip().startswith(...)` を書く）。
   ⇒ **リファクタ後は必ずテスト件数を前後で比べる**（合否だけ見ていると減っても気づけない）。
+- **⚠⚠ `cargo test --release` は `storage_operands` の網羅 `match` を検査しない**（2026-09-19）。
+  この強制点は `#[cfg(debug_assertions)]` なので **release ビルドには存在しない**。
+  `Op::SeqExtend` / `SeqFinish` / `DictMerge` を足したとき登録を忘れたが、
+  **`cargo test --release` が「784 passed」を出した**ので網を通ったつもりになっていた。
+  実際は `cargo test`（debug）が**ビルド不能**で、`scripts/*.ps1` のゲートは
+  すべて `target/release` を見るので**全部緑のまま 8 コミット進んだ**
+  （同じ踏み方が `15aa677` の `Op::CoerceFloat` で **73 コミット**続いた前例あり）。
+  ⇒ **op を足したら `--release` を付けずに `cargo test` を回す。**
+  ⇒ さらに **debug バイナリで例題を 1 周**させると、`debug_assert!` のスロット/セル
+  範囲検査が**初めて実際に走る**（`cargo test` はビルドが通るかしか見ていない）。
+  ⚠ `target/debug/arrow.exe` は `cargo test --no-run` では**更新されない**。
+  古い debug バイナリで例題を回すと、直したはずの構文が `ParseError` で落ちて
+  偽の失敗に見える（`cargo build` を別に打つこと）。
 - **⚠⚠ op を分類する表は「名前」で作らない — doc で作る**（#86）。`storage_operands` の
   初版は **op 名に `local`/`slot` を含むものだけ**を拾い、`IntBinLL` / `IntBinLC` /
   `FloatBinLL` / `FloatBinLC` / `UnpackTuple` の **5 つを「slot を持たない」と分類**していた

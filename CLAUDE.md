@@ -97,6 +97,12 @@ python -m impl_python examples/basics/control_flow.ar
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
 ⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。
 ⚠ ゲートは `target/release` を見る。**自分で走らせて緑**を確かめる（報告を信じない）。
+⚠⚠ **`Op` を足したら `cargo test`（`--release` を付けない）も回す。**
+`vm/compiler/mod.rs` の `storage_operands` は `cfg(debug_assertions)` なので
+**release には存在せず**、上のゲートは全部 `target/release` を見る
+⇒ 登録を忘れても**全ゲートが緑のまま `cargo test` だけがビルド不能**になる
+（`15aa677` で 73 コミット・`c06254f`/`8c61d07` で 8 コミット見逃した）。
+⚠ `cargo test --release` は**強制点がコンパイルされない**ので網にならない。
 
 **Measurement — before filing a speed task**
 

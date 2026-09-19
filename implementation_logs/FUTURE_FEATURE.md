@@ -484,13 +484,35 @@
 - **参照**: `vm-pitfalls` §3、
   [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #4。
 
-## (k) `cargo build --release` が緑でも `cargo test` のコンパイルが落ちる
+## (k) ⚠⚠ `cargo test`（debug）がビルド不能になっても**どのゲートも気づかない**
 
-- テストは**別ビルド**なので、AST を変えたときに `src/frontend_tests/` の取りこぼしを
-  `cargo build` では検出できない（`ForExpr { target }` → `targets` で実際に踏んだ）。
-- **当面の運用**: **AST を触ったら `cargo test` まで回す**。
-- スクリプト化するなら、ゲートの前段に `cargo test --no-run` を置く。
-- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #12。
+- **2 つの別の穴が重なっている。**
+  1. テストは**別ビルド** ⇒ AST を変えたときの `src/frontend_tests/` の取りこぼしを
+     `cargo build` では検出できない（`ForExpr { target }` → `targets` で踏んだ）。
+  2. ⚠⚠ **`cfg(debug_assertions)` の強制点は release に存在しない** ⇒
+     `vm/compiler/mod.rs` の `storage_operands`（op の網羅 `match`）は
+     **release ビルドでは丸ごと消える**。`scripts/*.ps1` のゲートは全部
+     `target/release` を見るので、**op を足し忘れても全ゲートが緑**になる。
+- **実績 2 回**:
+  | いつ | 何 | 気づくまで |
+  |---|---|---|
+  | 2026-09-08 `15aa677` | `Op::CoerceFloat` | **73 コミット**（タスク 9.8） |
+  | 2026-09-19 `c06254f` / `8c61d07` | `Op::SeqExtend` / `SeqFinish` / `DictMerge` | **8 コミット**（`361994a` で修正） |
+- ⭐ **2 回目は「`cargo test` を回す」という運用では防げなかった。**
+  実際に走らせたのは **`cargo test --release`** で、784 passed と出ていた。
+  **`--release` では強制点そのものがコンパイルされない**ので、網になっていない。
+  ⇒ 運用に落とすなら「`cargo test` を回す」ではなく
+  **「`cargo test`（`--release` を付けない）を回す」**と書かないと意味が無い。
+- **直し方の候補**（どれも未実施・要判断）:
+  - ゲートの前段に **`cargo test --no-run`（debug）** を置く。いちばん安い。
+  - `storage_operands` の `cfg(debug_assertions)` を外し、
+    `#[cfg(any(test, debug_assertions))]` か、素の関数にして release でも型検査させる
+    （呼び出し側だけ `cfg` で切る）。⚠ release バイナリへの影響を測ってから。
+  - `force_gate.ps1` / `scan_examples.ps1` に **debug バイナリでの 1 周**を足す
+    （`debug_assert!` のスロット範囲検査が初めて実際に走る）。
+- **参照**: [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #12 ／
+  `src/vm/compiler/mod.rs` の `storage_operands` の doc（この罠を警告している本体）／
+  skill `vm-pitfalls`。
 
 ---
 

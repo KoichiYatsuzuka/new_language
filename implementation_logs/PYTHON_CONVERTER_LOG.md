@@ -1053,7 +1053,7 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 | 9 | ~~`open()` が Python と非互換なので項目25 は通らない~~ → **私の誤り（訂正済み）**。Arrow の `open` は `file_path` / `open_mode` の**2 引数で通り**、`start_point` / `byte_recognizing` / `encoding` が任意（3 引数でも通る）。`block` 退出で閉じることも実測済み。⇒ **項目25 の障害ではない**。残る論点は「`.py` の `open(p, "w")` をどう解決するか」＝ **Python の `open` を呼ぶ（`py-int` 経路）か、変換器がモードを写すか**という別問題 | ✅ 誤認を訂正。H1 は着手可 | H1 調査 |
 | 10 | **関数の中の `block` 退出でリソースが解放されない**。最上位の `block` と**関数退出**では解放されるのに、関数内のブロックを抜けても `Drop` が走らない（純 Arrow で再現）。⇒ 項目25 の `with` で書いた直後に**同じ関数の中で**読み直すと空に見える。⚠ `FileObject` に `close()` メソッドも無いので明示クローズもできない | ⏳ 未修正・**起票候補**。coverage 🟡「with 文」の「参照カウント基準の遅延破棄は実質無視できる」という見立ての**反例** | H1 |
 | 11 | ~~`enumerate` / `zip` の戻り値型が未整備~~ → **解決（2026-09-19）**。⚠ 実行時の値は `Value::Generator` なので **`ListOf` ではなく新設の `IteratorOf`**（表示は `generator[T]`）。`ListOf` にすると `len()` や添字が静的に通ってしまう。⚠ **シャドウを先に見る**こと（`let enumerate = f` で `builtin_shadow.ar` が壊れた） | ✅ 解決 | 多ターゲット内包表記 |
-| 12 | **`cargo build --release` が緑でも `cargo test` のコンパイルが落ちることがある**（テストは別ビルド）。AST を変えたとき `frontend_tests` の取りこぼしを build では検出できない。⇒ **AST を触ったら `cargo test` まで回す** | ⏳ 運用上の注意 | 多ターゲット内包表記 |
+| 12 | **`cargo test`（debug）がビルド不能になっても全ゲートが緑**。①テストは別ビルドなので AST 変更の取りこぼしを `cargo build` が見ない ②⚠⚠ **`cfg(debug_assertions)` の強制点（`storage_operands`）は release に存在せず**、ゲートは全部 `target/release` を見る。⇒ **op を足し忘れても誰も気づかない**。⭐ **`cargo test --release` は網にならない**（強制点がコンパイルされない）——2026-09-19 に `SeqExtend`/`SeqFinish`/`DictMerge` で実際に踏み、`--release` 付きで 784 passed を見て見逃した（`361994a` で修正） | ⏳ 運用上の注意。**FUTURE_FEATURE §5 (k)** に直し方の候補つきで起票済み | 多ターゲット内包表記 → 展開系 op |
 
 ### 5.3 やらないと決めたこと
 
