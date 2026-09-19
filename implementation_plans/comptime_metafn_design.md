@@ -5,7 +5,9 @@ AST 展開時に**メタ関数**を実行し、クラス・関数・メンバ定
 
 - 対象: 新規サブシステム `src/meta_expand/`（予定）＋ lexer / parser / type_check / main の配線
 - 作成: 2026-09-07
-- 状態: **設計中**（実装未着手）
+- 状態: **仕様確定・実装未着手**（2026-09-19 に未決事項 D1〜D36 をすべて決着）
+- **位置はシンボル名で指す**（関数名・`match` アーム名）。行番号は陳腐化するので書かない（`python_converter_fix_plan.md` と同方針）。
+- **タスク番号は `<フェーズ>-<連番>`**（**0 始まり**。Phase 1 の 1 件目 = `1-0`）。§3 は**上から順に実行できる依存順**に並べてある。
 - **必読部は 用語〜§4（上限 350 行）。** 超えたら根拠・実測を区切り線の下（参考）へ移す。
   ⚠ 上限は 2026-09-11 に 300→350 へ改定（§1 の仕様が固まり、根拠は参考へ退避済みのため）。
 
@@ -23,7 +25,7 @@ AST 展開時に**メタ関数**を実行し、クラス・関数・メンバ定
 | **展開時確定** | 値が展開時に定まること（形式的定義は D14 → 参考F） |
 | **`put:` ブロック** | 中身を AST リテラルとして扱い、メタ関数の返り値に足すブロック（評価されない・§1.1）。⚠ **`put` は仮名**（→ D29）。**文形（`put 式`）は実装しない**（2026-09-10 決定） |
 | **スプライス** | `<! !>` で囲んだ展開時の値を、その位置の構文へ変換して差し込むこと（§1.2） |
-| **メタ情報演算子** | `^` / `^^`。束縛／型のメタ情報を得る前置演算子（§1.4） |
+| **メタ情報演算子** | `^`。対象のメタ情報を得る前置演算子（§1.5）。⚠ `^^` は 2026-09-19 に**廃止**（D10） |
 | **引数シグネチャ** | 仮引数列のメタ情報（D2） |
 | **装飾子**（decorator） | メタ関数を定義に適用する構文および、そう適用されたメタ関数（→ D22） |
 | **展開器** | 展開を行うサブシステム（`src/meta_expand/`・予定） |
@@ -38,7 +40,7 @@ AST 展開時に**メタ関数**を実行し、クラス・関数・メンバ定
 
 ```
 lex → parse（import はここで解決）→ resolve_and_annotate(&mut stmts) → wire_resolution → run
-                                     ↑ 型検査 + slot 解決。配線は 1 箇所（main.rs:365）
+                                     ↑ 型検査 + slot 解決。配線は 1 箇所（`resolve_and_annotate` 呼び出し（src/main.rs））
 ```
 
 メタ関数展開は **parse の後・`resolve_and_annotate` の前**に入る。→ §3.1。
@@ -53,7 +55,7 @@ AST から消し、参照位置で差し込む。ブロック境界でスコー�
 ### 0.3 `node_id` の制約（最重要）
 
 `Expr::Ident { name, node_id, res }` の `node_id` は `Rc<Cell<u32>>` で**プログラム全体一意**に採番される。
-[parser/mod.rs:99-108](../src/parser/mod.rs#L99-L108) に「per-module 採番にしたら**別モジュールの注釈を読んでしまい、
+`Parser::node_counter` の doc（`src/parser/mod.rs`） に「per-module 採番にしたら**別モジュールの注釈を読んでしまい、
 FFI 境界検査で誤検知が実際に再現した**」と記録がある。
 
 ⇒ **展開器が生成する全ノードは同じカウンタから採番し、クローンしたノードは必ず再採番する。**
@@ -69,7 +71,7 @@ FFI 境界検査で誤検知が実際に再現した**」と記録がある。
 型は **`Option<String>`**（`Param.type_ann` / `FnDef.return_type`）＝文字列なのでスプライスが安い。
 `let`/`mut` は `Param.mutable: bool` / `FieldKind`、アクセス制御は**セクション方式**で
 メンバ単位の構文が言語に無い。⚠ `InferredType::from_ann` は失敗を `None` で返し
-**壊れた型文字列が黙って「型情報なし」になる** → スプライス時点で検証する（T7）。
+**壊れた型文字列が黙って「型情報なし」になる** → スプライス時点で検証する（4-4）。
 
 ### 0.6 シグネチャは構文だけで確定する（実測・D15 の土台）→ 参考H
 
@@ -82,7 +84,7 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 
 ### 0.7 型検査の現況（2026-09-09 実測）→ 参考J
 
-別スレッドの 0-1〜0-5 / 0-B2 で、**メソッド引数・コンストラクタ引数・戻り値・変数注釈**の
+別スレッド（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で、**メソッド引数・コンストラクタ引数・戻り値・変数注釈**の
 型検査が入った。`let b: float = 3` は `3.0` になり、無注釈 `let` の右辺推論も既に効く。
 **未検査で残るのは「テンプレートクラスのコンストラクタ引数」と「既定値の型」の 2 つ**（修正中）。
 
@@ -104,6 +106,8 @@ exprconst !fn 名前(仮引数...) -> None:     # 配置メタ関数。`quote` �
 - `!fn` は必ず `exprconst`。**`return` は使えない**。返り値を**値代入・式位置に置けない**。
   戻り値型は常に `None`（「値を返さない」ことの表明。`-> Code` の関数との見間違いを防ぐ）。
 - **`quote` に到達せず抜けたらエラー**。何も出さないときは空 `Code` を `quote` する。
+
+**呼び出し可能性（2026-09-19 確定）**
 
 | 呼ぶ側 | `exprconst fn -> Code` | `exprconst !fn` |
 |---|---|---|
@@ -141,9 +145,10 @@ exprconst !fn 名前(仮引数...) -> None:     # 配置メタ関数。`quote` �
 
 ⚠ **1 行に収まる値のみ。`Code` は入れられない**（複数行の合成は `+` と `.indent()`）。
 
-### 1.5 メタ情報演算子 `^` とメタ情報型（2026-09-11）
+### 1.5 メタ情報演算子 `^` とメタ情報型（2026-09-11 / 09-19）
 
 - `^x` は対象のメタ情報を返す。**返る型は対象によって変わる**。
+- ⚠ **`^^` は廃止**（2026-09-19・D10）。型側も `^` で引き、必要なら射影で辿る。
 - **`^` を書けるのは、メタ関数呼び出しの実引数位置（通常コードでも可）とメタ関数の中だけ。**
   それ以外の通常コードでは書けない。
 - メタ情報は**組み込み型**として用意する: `meta_instance` / `meta_function` /
@@ -171,6 +176,9 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 - ⇒ メタ関数・`^`・装飾子は**自分より前に宣言されたものだけ**を見られる。
 - ⇒ 通常コードの前方参照は影響を受けない（レジストリの先行スキャンは展開後に走るため）。
 - `const` は展開時に値が確定しているので**読める**。
+- ⚠ **例外（D35 確定により有効）**: **テンプレート具体化サイトの収集だけは全体を事前走査する。**
+  具体化は宣言より後ろに現れるため。⇒ 「宣言は前方のみ」の原則は保つが、**使用箇所の収集は別種の情報**として
+  例外扱いする（→ 参考L）。
 
 ### 1.8 展開時の制御フロー（2026-09-07 / 09-11）
 
@@ -194,100 +202,114 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 
 **関数の引数の型注釈は必須を維持する**（→ §0.6。展開時型推論 D15 の前提）。
 
-## 2. 未決事項（決定してから実装に入る）
+## 2. 決定事項の記録（旧・未決事項）
 
-> **「推奨」はアシスタントの提案であって決定ではない。** 決定済みのものは §1 へ移してある。
+> **2026-09-19 時点で未決はゼロ。** 取り消し線は決着済み。決定の要点は §1 に、根拠は参考節にある。
 
 | # | 論点 | 推奨 | 影響 |
 |---|---|---|---|
-| D1 | メタ関数から**普通の `fn`** を呼べるか | **不可**（メタ関数と許可ビルトインのみ） | **`const` 初期化子に許す式の範囲**（→ D31）と一体 |
-| D4 | 展開時評価器を**既存 VM** にするか専用にするか | **既存 VM** | 専用にすると意味論の実装が 3 本目になる（`impl_python` で既に 2 本） |
-| D5 | VS Code 拡張の方針 | **v1 は「展開せず `Unresolved`」** | 予約語ハイライトは TextMate（正規表現・パース不要）で確保済み → §4.2 |
-| D10 | `^^` を残すか | 要判断 | `^` が対象で返り型を変える（§1.5）ので、型側は `^^` が要るか再検討 |
-| D12 | `^` の射影セット | → **参考B** | 引数シグネチャの表現と一体。取得と貼付は同じものの両端 |
-| D15 | **展開時型推論** | 必須 | §1.6 で変数束縛を装飾対象にしたため。⚠ 逐次展開（§1.7）なので**不動点は不要**になった |
-| **D23** | **型の合成**（型値 `T` から `list[T]` を作る手段） | 要設計 | ⚠ `list[int]` は**値として取れない**（実測）。derive 系がほぼ全部要求する |
-| D25 | **型注釈位置**でのメタ関数呼び出し | 要設計 | `std::conditional` 相当 |
-| D26 | **許可ビルトインの中身**（D1 の空欄） | 要決定 | `list`/`dict`/`str` 操作・`len`/`range` が無いと何も組み立てられない |
-| D27 | docstring の保存（`.doc` 射影） | 射影に追加 | 作り直すと docstring が失われエディタのホバーが劣化 |
-| D28 | **open class**（他所のクラスにメンバを足せるか） | **不可**を推奨 | 許すと展開順序と可視性の問題が出る |
-| **D31** | **`const` 初期化子に許す式の範囲**（展開時に評価するため） | リテラル・既出 `const`・許可ビルトインのみ | 任意の関数呼び出しを許すと D1 と衝突 |
-| D32 | **`import` 越しの `const`** を読めるか | 要判断 | 読むならモジュール本体の展開時評価が要る |
-| **D33** | **計算フィールド**（`@property` 相当）を言語機能として入れるか | **入れる**（Python 翻訳を通すなら不可避） | ⚠ **メタ関数では代替できない唯一の機構**（→ 参考K 機構5）。アクセス箇所が任意なので生成では書き換えられない。実装は [attrs.rs:183](../src/interpreter/eval/attrs.rs#L183)（読み）/ [:353](../src/interpreter/eval/attrs.rs#L353)（書き）。⚠ 属性インラインキャッシュが計算フィールドを実フィールドとして焼かないこと |
-| **D34** | **引数展開構文**（`f(*args)` 相当）を入れるか | **入れる**（Python 翻訳を要件に含めるなら） | ⚠ 無いので**実行時 `@` では汎用ラッパを書けない**（→ 参考K 機構4）。⇒ [`python_converter_coverage.md` 項目 28](python_converter_coverage.md) の**前提 1**。無いとデコレータの三分岐でクロージャ分岐が空振りする。⚠ 静的型検査と `--compile` との相性は要検討 |
+| ~~D1~~ | メタ関数から**普通の `fn`** を呼べるか | **確定（2026-09-19）: 呼べない** | 呼べるのは `exprconst fn` と許可ビルトイン（参考N）のみ。⇒ 評価コア（0-5）に要るのは**メタ関数どうしの呼び出しとスコープ**だけで、一般のユーザ関数ディスパッチは不要 |
+| ~~D4~~ | 展開時評価器 | **確定（2026-09-19）: 既存 VM に機能を積む** | 専用評価器を書くと同じ意味論の実装が 3 本目になる（`impl_python` で既に 2 本）。⚠ 展開はコンパイル時に 1 回で生成物は普通の AST なので、**実行時／ネイティブ経路に展開器は残らない**（実行時コストはゼロ） |
+| ~~D5~~ | VS Code 拡張の方針 | **確定（2026-09-19）: 拡張はメタ関数展開後のコードを型検査する** | 展開しないと**一部の修飾子が型検査を通らない**し、拡張とコンパイラの型認識が食い違う（`compare_wasm_frontend.ps1` が守る不変条件）。実現手段は **A 案（評価コアの切り出し・タスク 0-4）** で確定 |
+| ~~D10~~ | `^^` を残すか | **確定（2026-09-19）: 廃止** | 記号の**個数**で意味を区別する形をやめ、`^` に一本化する。型側は射影で辿る |
+| ~~D12~~ | `^` の射影セット | **確定（2026-09-19）: 参考B の 8 項目を採用。ただし変更に耐える形にする** | ⚠ 後で**型変更・追加・削除**が入る前提。⇒ **射影の一覧を 1 箇所で定義し、消費側を網羅 match にする**（`language-dev-principles` §2 の 2 段強制）。そうすれば項目の増減で全消費者がコンパイルエラーになり、追随漏れが出ない。⚠ `converter.ar` 1177 行も消費者になる（4-6） |
+| ~~D15~~ | **展開時型推論** | **確定（2026-09-19）: 採用** | `^x.type` が常に答えを持つために必要（§1.6 で変数束縛を装飾対象にしたため）。⚠ 型検査器は**既に右辺から推論できる**（実測）ので、残るのは展開時に走らせる配線だけ（4-4）。逐次展開（§1.7）なので不動点は不要 |
+| ~~D23~~ | **型の合成**（型値 `T` から `list[T]` を作る手段） | **確定（2026-09-19）: できるようにする。記法は要設計** | ⚠ `list[int]` は**値として取れない**（`NameError: 'list' is not defined`・実測）。型は AST 上で文字列なので連結でも作れてしまうが、それは「壊れた型文字列が黙って通る」経路 ⇒ **正式な合成手段＋スプライス時の検証（4-4）が対で要る**。derive 系がほぼ全部要求する |
+| ~~D25~~ | **型注釈位置**でのメタ関数呼び出し | **確定（2026-09-19）: 不許可**（後日再検討の可能性あり） | `std::conditional` 相当は当面できない |
+| ~~D26~~ | **許可ビルトインの中身** | **確定（2026-09-19）→ 参考N** | 判定基準は「**決定的か**」。非決定的（`id` はアドレス・`getenv` は環境依存）と I/O は禁止。**`parse_ar` も禁止**。⚠ このリストが**タスク 0-5（評価コア）の範囲を決める** |
+| ~~D27~~ | docstring の保存 | **確定（2026-09-19）: 保存する** | `^f.doc` 射影を D12 の射影セットに含める。メタ関数が作り直しても docstring が失われない |
+| ~~D28~~ | **open class**（他所で宣言済みのクラスに後からメンバを足す） | **確定（2026-09-19）: 不許可** | **動的な追加は認めない。** ⚠ `class_id` / フィールドスロット / 属性インラインキャッシュは**クラスが不変である前提**で組まれており、崩すと影響が広範囲。逐次展開（§1.7）の「前方のみ参照」とも矛盾する。※**限定的かつ静的なメンバ追加機能は別途考案中** |
+| ~~D31~~ | **`const` 初期化子に許す式の範囲** | **確定（2026-09-19）: リテラル・既出 `const`・許可ビルトインのみ** | D1（普通の関数は呼べない）と整合する |
+| ~~D32~~ | **`import` 越しの `const`** を読めるか | **確定（2026-09-19）: 読める** | ⚠ import 先モジュールの `const` を展開時に評価する必要がある。import はパース時に解決済みなので AST は揃っている |
+| ~~D33~~ | **計算フィールド**（`@property` 相当） | **別件で対応（2026-09-19）。現状は未対応** | 本書の範囲外。⚠ メタ関数では代替できない唯一の機構（参考K 機構5） |
+| ~~D34~~ | **引数展開構文**（`f(*args)` 相当） | **別スレッドで実装完了（2026-09-20 実測）** | `f(*xs)` / `f(**d)` / `[*a]` / `{**d}` すべて動く。⚠ **残るのは `local::args` の型だけ**（`Option[list[T]]` なので `*` に渡せない）→ 参考O |
+| ~~D35~~ | **展開時単相化**（テンプレート具体化を展開時に実体化し `class_id` を振る） | **確定（2026-09-19）: 採用。展開時にテンプレートを解決する** | 実測: Arrow は**型引数の明示が必須**（`id(3)` → `template 'id' must be called with explicit type arguments`）なので**具体化は構文上で完全に列挙できる**。`subst_*` は**純粋な AST 操作**なので展開器から呼べる。⇒ 装飾子を具体化ごとに走らせられ、**0-1（テンプレートのコンストラクタ引数が未検査）も構造的に解消する**。⚠ 反復・停止性・モジュール跨ぎの検討が要る → 参考L |
+| ~~D36~~ | 実行時具体化（`instantiate_template_class`） | **確定（2026-09-19）: 廃止し、展開時単相化に一本化** | 併存すると Phase T のメモ化キャッシュと単相化テーブルで**同一性判断が 2 本**になり `class_id` がずれる。⚠ 廃止に伴い `build_template_class` の `const` / `static mut` / フィールド既定値の eval を**単相化側へ移す**必要がある |
 
 ---
 
-## 3. 実装タスク（フェーズ別）
+## 3. 実装タスク（フェーズ別・依存順）
 
-「前提」が空欄のものは**今すぐ着手できる**。
+> **上から順に実行できる並びにしてある。** 各タスクの「前提」は必ず自分より上にある。
 
-### Phase 0 — メタ関数と独立に直せる既存の穴
+### Phase 0 — 前提整備（メタ関数と独立に進められる）
 
 | # | タスク | 前提 |
 |---|---|---|
-| T19 | テンプレートクラスのコンストラクタ引数の型検査 | —（別スレッドで修正中） |
-| T20 | 既定値の型検査（`fn f(let a: int = "hello")` が通る） | —（同上） |
-| T21 | `new_type` / `alias` のジェネリクス対応（`new_type N: list[int]` が `NameError`、`alias D: dict[str,int]` が `ParseError`） | — |
+| 0-0 | **別スレッドで進行中の仕様変更を取り込み、本書の前提を突き合わせる。** Python 翻訳（[python_converter_coverage.md](python_converter_coverage.md)）と型検査（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md) / [type_check_redesign.md](type_check_redesign.md)）で言語仕様が動いている。⚠ **着手のたびに再ビルドして実測し直す**（設計書の実測値は日付入りで記録してある） | —（随時・着手のたび） |
+| ~~0-1~~ | ~~テンプレートクラスのコンストラクタ引数の型検査~~ **完了（別スレッド・2026-09-20 実測）**。⚠ ただし**テンプレートの「メソッド」引数は未検査**のまま（下記 0-2 の隣に新設） | — |
+| ~~0-2~~ | ~~既定値の型検査~~ **完了（別スレッド・2026-09-20 実測）**（`str`→`int` / `float`→`int` とも `StaticTypeError`） | — |
+| **0-2b** | **テンプレートクラスの「メソッド」引数の型検査**（0-0 で発見・2026-09-20）。`class P[T]` のメソッドに誤った型を渡しても素通りする。`T` 依存でない引数（`let x: str` に `int`）でも同じ。⚠ 非テンプレートのメソッドは検査される（対照実験済み）ので**テンプレート固有** | — |
+| 0-3 | `new_type` / `alias` のジェネリクス対応（`new_type N: list[int]` が `NameError`、`alias D: dict[str,int]` が `ParseError`） | — |
+| 0-4 | **評価コアの切り出し（A 案・2026-09-19 確定）。** `Interpreter` から「展開時に必要な評価」だけを分離し、**frontend crate と本体で共有する**。⚠ 実測: `src/vm` 8,412 行 / `src/interpreter` 34,752 行に対し frontend は 20,545 行。`vm::run` は `interp: &mut Interpreter` を取り、VM 側から `interp.` 参照が 92 箇所あるので **VM だけの切り出しは不可**。必要なのは算術・比較・制御フロー・コレクション操作・関数呼び出しとスコープのみ（FFI / async / Python 相互運用 / ファイル / イベントループは D1・D26 で禁止なので不要）。**メタ関数と独立に価値がある**（VM の責務が明確になる） | — |
+| 0-5 | **`Value` の非 wasm variant を feature 化。** 8 種・計 124 箇所（`PyObject` 28 / `NativeFunction` 22 / `CsObject` 15 / `AsyncManager` 13 / `Signal` 13 / `JsProcFn` 12 / `FileObject` 12 / `EventLoop` 9）。網羅 match の全アームに `#[cfg]` が要る | 0-4 |
 
 ### Phase 1 — 字句・構文（**評価器不要。wasm フロントエンドでも動く**）
 
 | # | タスク | 前提 |
 |---|---|---|
-| T13 | `Token::Unknown('!')` → `Token::Bang`。`<!` / `!>` の 2 文字トークン化（§1.9） | — |
-| T22 | `exprconst fn` / `exprconst !fn` / `code:`（空ブロック含む）/ `quote` 文 | T13 |
-| T23 | `<! !>` のパース（§1.4） | T22 |
-| T24 | `^` のパース。書ける位置の制限（§1.5） | T13 |
-| T25 | `!装飾子` のパース。対象をクラス本体・変数束縛まで拡張（§1.6） | T13 |
-| T26 | `Code` / `meta_*` を型検査に追加。`Code` の持ち出し禁止を束縛点で弾く | T22 |
+| 1-0 | `Token::Unknown('!')` → `Token::Bang`。`<!` / `!>` の 2 文字トークン化（§1.9） | — |
+| 1-1 | `exprconst fn` / `exprconst !fn` / `code:`（空ブロック含む）/ `quote` 文 | 1-0 |
+| 1-2 | `<! !>` のパース（§1.4） | 1-1 |
+| 1-3 | `^` のパース。書ける位置の制限（§1.5） | 1-0 |
+| 1-4 | `!装飾子` のパース。対象をクラス本体・変数束縛まで拡張（§1.6） | 1-0 |
+| 1-5 | `Code` / `meta_*` を型検査に追加。`Code` の持ち出し禁止を束縛点で弾く | 1-1 |
 
 ### Phase 2 — 展開器の骨格
 
 | # | タスク | 前提 |
 |---|---|---|
-| T4 | `src/meta_expand/` 新設。逐次展開（§1.7）と `quote` の配置 | Phase 1 |
-| T3 | `node_counter` の引き継ぎと**クローン時の再採番**（§0.3・必須） | T4 |
-| T2 | 二段パイプラインの配線。`resolve_and_annotate` の再入可能化 | T4 |
-| T11 | `Code` の行ごとに元 `Span` を持たせ、展開由来ノードの位置を追える形にする | T4 |
-| **T27** | **クラスの自動 `__init__` 生成を展開後へ移す**（現在 [classes.rs:348](../src/parser/classes.rs#L348) で**パース時**に走るので、展開で足したフィールドが `__init__` に入らない） | T4 |
-| T28 | クラス本体に配置された `Code` の適合検査（`field`/`fn`/`gen`/`static`/`class_method` のみ） | T4 |
+| 2-0 | `src/meta_expand/` 新設。逐次展開（§1.7）と `quote` の配置 | Phase 1 |
+| 2-1 | `node_counter` の引き継ぎと**クローン時の再採番**（§0.3・必須） | 2-0 |
+| 2-2 | 二段パイプラインの配線。`resolve_and_annotate` の再入可能化。⚠ **呼び出し箇所は 2 つ**（通常実行と **`--compile`**。`src/main.rs` を `resolve_and_annotate` で grep して両方直す）。片方だけ直すと「実行では展開されるがコンパイルでは展開されない」になる | 2-0 |
+| 2-3 | `Code` の行ごとに元 `Span` を持たせ、展開由来ノードの位置を追える形にする | 2-0 |
+| 2-4 | **パース時のクラス本体注入をすべて展開後へ移す。** 現在 **2 種類**ある — ①自動 `__init__` 生成（`generate_auto_init_if_needed`）②**trait デフォルト実装の注入**（`0-10` で追加。`src/parser/classes.rs` の doc に「自動 `__init__` 生成と同じ『パース時にクラス本体へ足す』方式」と明記）。⚠ **どちらもパース時なので、展開で足したフィールド／メソッドが反映されない** | 2-0 |
+| 2-5 | クラス本体に配置された `Code` の適合検査（`field`/`fn`/`gen`/`static`/`class_method` のみ） | 2-0 |
+| 2-6 | 展開ステップ予算・再帰深さ上限と超過時の診断 | 2-0 |
+| 2-7 | **`subst_stmts` / `subst_type` / `subst_params` を `src/interpreter/templates.rs` から切り出す**（`subst_type` / `subst_params` / `subst_stmts`（`src/interpreter/templates.rs`） は `Value` にも `self` にも触れない純粋関数）。展開器と wasm フロントエンドの双方から使えるようになり **D5 にも効く** | — |
+| 2-8 | テンプレート具体化サイトの**全体事前走査**。現れるのは **3 形式**: ①呼び出し位置（`Expr::TemplateInstantiate`）②型注釈文字列の `Name[Args]` ③**`alias` の右辺**（`parse_alias_rhs` が既知テンプレート名＋`[...]` を `TemplateInstantiate` にする）。パーサの `known_templates` が使える。⚠ `Box[int]` 単独の**式**は書けない（`'template' object is not subscriptable`）ので列挙対象はこの 3 形式に限られる | — |
+| 2-9 | 具体化数の上限と超過時の診断（再帰テンプレート `f[T]` → `f[Box[T]]` は原理的に無限） | 2-6, 2-8 |
 
 ### Phase 3 — 展開時評価器
 
 | # | タスク | 前提 |
 |---|---|---|
-| T1 | 束縛時解析（§1.8）。展開時確定でない値の検出と診断 | D4 |
-| T5 | 展開ステップ予算・再帰深さ上限と超過時の診断 | T4 |
-| T6 | `gensym`（ループで同じ局所名が衝突する） | T4 |
-| T8 | `compile_error("...")` 相当 | T4 |
-| T9 | 展開時スタックトレース（「メタ関数 X を N 行目で展開中」） | T4 |
-| T10 | 展開時 `print` を **stderr** へ（→ §4.1） | — |
-| T29 | `quote` 後の到達不能診断 / `quote` せず抜けたらエラー（§1.1） | T4 |
-| T30 | `const` の展開時評価（§1.7） | D31 |
+| 3-0 | 束縛時解析（§1.8）。展開時確定でない値の検出と診断 | 0-4 |
+| 3-1 | `gensym`（ループで同じ局所名が衝突する） | 2-0 |
+| 3-2 | `compile_error("...")` 相当 | 2-0 |
+| 3-3 | 展開時スタックトレース（「メタ関数 X を N 行目で展開中」） | 2-0, 2-3 |
+| 3-4 | 展開時 `print` を **stderr** へ（→ §4.1） | — |
+| 3-5 | `quote` 後の到達不能診断 / `quote` せず抜けたらエラー（§1.1） | 2-0 |
+| 3-6 | `const` の展開時評価（§1.7） | 2-0 |
 
 ### Phase 4 — メタ情報と型
 
 | # | タスク | 前提 |
 |---|---|---|
-| T12 | `meta_instance` / `meta_function` / `meta_class` / `meta_member` の実装と `.code()` | T26 |
-| T31 | `^` の射影セット（参考B）と引数シグネチャ | D12 |
-| T17 | 展開時型推論（§1.7 の逐次展開に沿う形） | D15, Phase 0 |
-| T7 | スプライスした型文字列の即時検証（`from_ann` が `None` なら展開エラー） | T23 |
+| 4-0 | **`ast_value.rs` の返り値を `meta_*` 専用型へ寄せる（2026-09-19 確定）。** `meta_instance` / `meta_function` / `meta_class` / `meta_member` を実装し、`.code()` を持たせる。現在の `Value::Namespace`（`__type__` 文字列）を置き換える | 1-5 |
+| 4-1 | **`^` の射影セット（参考B の 8 項目）と引数シグネチャ。** ⚠ **射影の一覧は 1 箇所で定義し、消費側を網羅 match にする**（D12。後から型変更・追加・削除が入る前提なので、増減で全消費者がコンパイルエラーになる形にしておく） | 4-0 |
+| 4-2 | **型合成 API（D23 確定）。** 型値 `T` から `list[T]` / `Option[T]` / `dict[K,V]` などを組み立てる手段。⚠ 生成物は型注釈文字列になるので **4-3（スプライス時の検証）と対**。記法は未設計 | 4-0 |
+| 4-3 | スプライスした型文字列の即時検証（`from_ann` が `None` なら展開エラー） | 1-2, 4-0 |
+| 4-4 | 展開時型推論（§1.7 の逐次展開に沿う形） | 0-1, 0-2, 2-0 |
+| 4-5 | **`parse_ar` の機能を切り分けて転用する（2026-09-19 確定）。** ①`Lexer` + `Parser`（`quote` の Code→AST に転用）②`ast_value.rs` の AST→Value 変換（`^` に転用）。⚠ `parse_ar` 自体は**他言語出力用として据え置く**（役割が違う） | 4-0 |
+| 4-6 | **`std_tools/convert_to_python/` を `meta_*` 型に追随させる。** ⚠ `converter.ar` 1177 行 + `node_utils.ar` 109 行が現在の `Namespace`（`__type__`）表現に依存している。専用型化の影響を直接受ける | 4-0, 4-1 |
 
 ### Phase 5 — 周辺
 
 | # | タスク | 前提 |
 |---|---|---|
-| T15 | editor 方針の実装（展開せず `Unresolved`・予約語は TextMate） | D5 |
-| T14 | 例題追加（成功例・`_error` 付き失敗例。`.claude/rules/regulations.md`） | Phase 3 |
-| T16 | ~~`annot_unresolved.ps1` の実測~~ **完了（2026-09-09）**。229 例題で Unresolved 952 件（Ident 340 / Call 320 / BinOp 252）。⚠ VM 特化用の注釈層の数字で、型検査器の推論とは別 | — |
+| 5-0 | editor 方針の実装（展開せず `Unresolved`・予約語は TextMate） | 0-4, 0-5 |
+| 5-1 | 例題追加（成功例・`_error` 付き失敗例。`.claude/rules/regulations.md`） | Phase 3 |
+
+> `annot_unresolved.ps1` の実測（旧 5-3）は **2026-09-09 に完了**。229 例題で Unresolved 952 件
+> （Ident 340 / Call 320 / BinOp 252）。⚠ VM 特化用の注釈層の数字で、型検査器の推論とは別。
 
 ## 4. ゲート・周辺への影響
 
 ### 4.1 ⚠ 展開時 `print` は stdout を汚してはならない
 
 `compare_python_impl.ps1` と `compare_outputs.ps1` は **stdout を差分比較する**ゲート。
-展開時の出力がプログラムの出力に混ざると、**意味論を守る唯一の網が壊れる**。→ T10。
+展開時の出力がプログラムの出力に混ざると、**意味論を守る唯一の網が壊れる**。→ 3-6。
 
 ### 4.2 VS Code 拡張（→ 参考I に実測）
 
@@ -297,16 +319,17 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | 案 | 評価 |
 |---|---|
 | (a) frontend に VM を載せる | 拡張と CLI が完全一致。**`Value` の wasm 非対応 variant 5〜7 個を feature で削る中規模リファクタが前提**（→ 参考I）。メタ関数と独立に価値があるので別タスク |
-| **(b) editor では展開せず `Unresolved`** | **v1 の現実解**。前例あり（[check.rs:374](../src/type_check/stmt/check.rs#L374) の `editor_stub_body`）。代償は生成物に補完・定義ジャンプ・ホバーが効かないこと |
+| **(b) editor では展開せず `Unresolved`** | **v1 の現実解**。前例あり（`editor_stub_body`（`src/type_check/stmt/check.rs`） の `editor_stub_body`）。代償は生成物に補完・定義ジャンプ・ホバーが効かないこと |
 | (c) 展開結果をキャッシュ | ビルドしないと編集が壊れるので体験が読みにくい |
 
 ### 4.3 走らせるゲート
 
 `syntax_cov.ps1`（新しい構文・文脈を扱う前）、`scan_examples.ps1`、`force_gate.ps1`、
-`compare_python_impl.ps1`、`compare_wasm_frontend.ps1`、`stale_doc_refs.ps1`、
+`compare_python_impl.ps1`、**`type_obligations.ps1`**（型義務 94 件の網。`1-5` で `Code` / `meta_*` を
+型検査に足すので対象。退行すると exit 1）、`compare_wasm_frontend.ps1`、`stale_doc_refs.ps1`、
 `generate-codebase-map.ps1`（ファイル新設後）。
 
-⚠ **`force_gate` 0 件は「言語全体で 0」の証明ではない。** 新しい形の例題を必ず足す（T14）。
+⚠ **`force_gate` 0 件は「言語全体で 0」の証明ではない。** 新しい形の例題を必ず足す（5-1）。
 
 ---
 ---
@@ -317,11 +340,11 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 
 | # | 事象 | 位置 |
 |---|---|---|
-| 1 | **クラス本体にデコレータを書けない**（`ParseError: unexpected statement in class body`）。インタプリタ側のメソッドデコレータ処理は `import[py]` 変換器からしか到達しない | [classes.rs:640](../src/parser/classes.rs#L640) / [definitions.rs:556](../src/interpreter/exec/definitions.rs#L556) |
-| 2 | **入れ子 `fn` のデコレータは VM に載らない** → `VmForceError`（フォールバック無し） | [vm/compiler/stmt.rs:615](../src/vm/compiler/stmt.rs#L615) |
-| 3 | **テンプレートに付けたデコレータは黙って無視される**（警告もエラーも出ない） | [definitions.rs:128-140](../src/interpreter/exec/definitions.rs#L128-L140) |
-| 4 | **デコレータがオーバーロードのマージを壊す**（同名の先行オーバーロードが消え、静的エラーも出ない） | [definitions.rs:157-176](../src/interpreter/exec/definitions.rs#L157-L176) |
-| 5 | レジストリは**素のシグネチャ**しか登録しないため、デコレート後の呼び出しが元の型で検査される（アリティ不一致は実行時 `TypeError`） | [registry/builder.rs:147](../src/type_check/registry/builder.rs#L147) |
+| 1 | **クラス本体にデコレータを書けない**（`ParseError: unexpected statement in class body`）。インタプリタ側のメソッドデコレータ処理は `import[py]` 変換器からしか到達しない | `parse_class_stmt` の `unexpected statement in class body`（`src/parser/classes.rs`） / `exec_class_def` のメソッドデコレータ処理（`src/interpreter/exec/definitions.rs`） |
+| 2 | **入れ子 `fn` のデコレータは VM に載らない** → `VmForceError`（フォールバック無し） | `compile_nested_fn_def` の `bail("nested-fn-decorator")`（`src/vm/compiler/stmt.rs`） |
+| 3 | **テンプレートに付けたデコレータは黙って無視される**（警告もエラーも出ない） | `exec_fn_def` / `exec_class_def` のテンプレート早期 return（`src/interpreter/exec/definitions.rs`） |
+| 4 | **デコレータがオーバーロードのマージを壊す**（同名の先行オーバーロードが消え、静的エラーも出ない） | `exec_fn_def` のデコレータ適用（`src/interpreter/exec/definitions.rs`） |
+| 5 | レジストリは**素のシグネチャ**しか登録しないため、デコレート後の呼び出しが元の型で検査される（アリティ不一致は実行時 `TypeError`） | `Registry::collect` の `Stmt::FnDef` アーム（`src/type_check/registry/builder.rs`） |
 
 ⇒ **展開時メタ関数はこれらを構造的に解消する**（型検査が展開後のコードを見るため）。
 ⚠ #3・#4 は本設計と独立に修正しうるバグ。別タスクとして起票するか要判断。
@@ -339,7 +362,7 @@ Arrow が実際に持つ機能に対応させた候補:
 | 4 | `^T.bases`（Arrow は継承を持たずトレイトのみ）、`.implements(Trait)` | derive 系に必須 |
 | 5 | `^T.has_field(n)` / `^T.has_method(n)` | **分岐用**（「`__eq__` が既にあるなら生成しない」）。§1.4 で条件分岐を許した意味がここで出る |
 | 6 | `^E.variants` | Arrow は `enum` を持つ。derive の主要対象 |
-| 7 | `^x.declared_at` | T8（`compile_error`）・T11（Span）と対。対象位置を指せないと診断が役に立たない |
+| 7 | `^x.declared_at` | 3-2（`compile_error`）・2-3（Span）と対。対象位置を指せないと診断が役に立たない |
 | 8 | `^Self` | クラス本体からの入口。⚠ `Token::SelfType` は現在**クラス/トレイト本体の外でエラー**になるので、メタ関数本体でどう受けるか要設計（引数渡しが素直） |
 
 ## 参考 C. D11（変数注釈の禁止）を取り下げた経緯
@@ -378,7 +401,7 @@ Arrow が実際に持つ機能に対応させた候補:
 `a !> 2` / `<!a!>` はいずれも ParseError＝実測）。⇒ **予約しても既存コードを壊さない。**
 
 **開き `<!` は無条件に安全。** `<` が結合するのは `<` / `=` / `-` の 3 つだけ
-（[symbol.rs:161-179](../src/lexer/symbol.rs#L161-L179)）で `!` は含まれない。
+（`lexer/symbol.rs` の `'<'` / `'>'` 分岐）で `!` は含まれない。
 ⇒ 旧 `<...>` 案の開き側の衝突（`<-x>` が `LeftArrow`、`<<a>>` がシフト、`a < <b>`）は全て消える。
 
 **閉じ `!>` は字句で取らないと危険。** `!` と `>` を別トークンのままにすると `>` が後続を貪欲に食う:
@@ -410,7 +433,7 @@ Arrow が実際に持つ機能に対応させた候補:
 > それ以外の `for` / `while` / `if` は `put:` の中にしか書けない。
 
 ⇒ 展開時確定でない値が `put:` の外に現れたらエラーにする（黙って実行時にずらさない）。
-⚠ `while` を許す以上、**展開ステップ予算と再帰深さ上限**が必須（T5）。
+⚠ `while` を許す以上、**展開ステップ予算と再帰深さ上限**が必須（2-6）。
 
 ## 参考 G. 展開時型推論の手法案（⚠ 2026-09-11 却下。§1.7 の逐次展開を採用）
 
@@ -431,7 +454,7 @@ until 進捗ゼロ
 を反転させる。** 推論結果が「速さ」ではなく「どのコードが存在するか」を決めるため、現在 `Unresolved`
 に落ちて「遅いが動く」に倒れている箇所が「**展開できない＝動かない**」になる。とくに合成 AST
 （テンプレート実体化・展開結果）は `node_id: 0` / `Unresolved` のまま来るので、**メタ関数の生成物に
-`^` を使うとまさにここに当たる**。⇒ 推論は**全域的かつ決定的**である必要がある。⇒ 着手前に T16。
+`^` を使うとまさにここに当たる**。⇒ 推論は**全域的かつ決定的**である必要がある。⇒ 着手前に 5-3。
 
 ## 参考 H. 字句と AST 格納形の実測（§0.4 / §0.5 の根拠）
 
@@ -442,11 +465,11 @@ until 進捗ゼロ
 
 | やっていること | 位置 |
 |---|---|
-| 右辺を 1 回パースし、`Expr` と**生トークン列の両方**を保持（型位置での再パース用） | [definitions.rs:157-166](../src/parser/stmts/definitions.rs#L157-L166) |
-| `self.aliases` に登録し、**定義自体は `Stmt::Pass`** にして AST から消す | [definitions.rs:168](../src/parser/stmts/definitions.rs#L168) |
-| 参照位置で `(*e.expr).clone()` して差し込む | [exprs.rs:740](../src/parser/exprs.rs#L740) |
-| `parse_block` がブロック境界でスナップショット／復元してスコープを作る | [core.rs:43-60](../src/parser/stmts/core.rs#L43-L60) |
-| 同一可視スコープでの再定義を禁止 | [definitions.rs:149](../src/parser/stmts/definitions.rs#L149) |
+| 右辺を 1 回パースし、`Expr` と**生トークン列の両方**を保持（型位置での再パース用） | `parse_alias_def`（`src/parser/stmts/definitions.rs`） |
+| `self.aliases` に登録し、**定義自体は `Stmt::Pass`** にして AST から消す | `parse_alias_def` の `Ok(Stmt::Pass)` |
+| 参照位置で `(*e.expr).clone()` して差し込む | `parse_primary` の alias 展開（`src/parser/exprs.rs`） |
+| `parse_block` がブロック境界でスナップショット／復元してスコープを作る | `parse_block` の alias スコープ復元（`src/parser/stmts/core.rs`） |
+| 同一可視スコープでの再定義を禁止 | `parse_alias_def` の再定義禁止 |
 
 ⚠ ただし `alias` は **`node_id` ごとクローンしている**（→ §0.3）。この方針は継承しない。
 
@@ -475,11 +498,11 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 
 | 記号 | 状態 |
 |---|---|
-| `$` | **使用済み** — `$...$` は LaTeX 数式文字列リテラル（[scan.rs:194](../src/lexer/scan.rs#L194)）。Julia 風 `$x` は不可 |
-| `#` | **使用済み** — 行コメント（[scan.rs:155](../src/lexer/scan.rs#L155)）。Rust 風 `#[...]` は不可 |
-| `!` | **空き** — `!=` 以外は `Token::Unknown('!')`（[symbol.rs:151-157](../src/lexer/symbol.rs#L151-L157)） |
+| `$` | **使用済み** — `$...$` は LaTeX 数式文字列リテラル（`lexer/scan.rs` の `$` 分岐）。Julia 風 `$x` は不可 |
+| `#` | **使用済み** — 行コメント（`lexer/scan.rs` の `#` 分岐）。Rust 風 `#[...]` は不可 |
+| `!` | **空き** — `!=` 以外は `Token::Unknown('!')`（`lexer/symbol.rs` の `'!'` 分岐） |
 | バッククォート | **空き** — 完全に未使用 |
-| `template` | **予約済みだが未使用**のキーワード（[keyword.rs:72](../src/lexer/keyword.rs#L72)） |
+| `template` | **予約済みだが未使用**のキーワード（`lexer/keyword.rs` の `"template"`） |
 | `put` | **どの `.ar` でも識別子として未使用**（全ファイル確認済み）。キーワード化しても既存コードは壊れない |
 
 ### H.2 AST 上の格納形
@@ -490,28 +513,49 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 | **型名** | **`Option<String>`**（`Param.type_ann` / `FnDef.return_type`） | **型は文字列。スプライスが安い** |
 | 値 | `Expr` | |
 | `let`/`mut` | `Param.mutable: bool` / `FieldKind`(Mut/Let/Const/StaticMut) | 修飾子位置 |
-| `public`/`private`/`protected` | `Accessibility` | **セクション方式**。メンバ単位の構文が言語に無い（[classes.rs:487-512](../src/parser/classes.rs#L487-L512)） |
+| `public`/`private`/`protected` | `Accessibility` | **セクション方式**。メンバ単位の構文が言語に無い（`parse_class_body` のアクセスセクション処理（`src/parser/classes.rs`）） |
 
 ⚠ `InferredType::from_ann` は失敗を **`None`** で返し、呼び出し側は `.and_then(...)` で受ける
-（[types.rs:154](../src/type_check/types.rs#L154)）。**壊れた型文字列は診断にならず、黙って「型情報なし」になる。**
-⇒ スプライス時点で検証する（→ タスク T7）。
+（`InferredType::from_ann`（`src/type_check/types.rs`））。**壊れた型文字列は診断にならず、黙って「型情報なし」になる。**
+⇒ スプライス時点で検証する（→ タスク 4-3）。
 
-## 参考 I. wasm フロントエンドの実測（§4.2 の根拠）
+## 参考 I. 拡張に評価コアを載せるコスト（D5 / タスク 0-5 の根拠・2026-09-19 実測）
 
-`crates/arrow-frontend` は lexer + parser + type_check のみで、Cargo.toml に
-「⚠ ここにはネイティブ依存を足さないこと」と明記。ルートは `pyo3` / `libloading` /
-`rustpython-parser` に依存（**いずれも feature gate されていない**）。
+⚠ **当初「`Value` の variant を 5〜7 個 feature で削る中規模リファクタ」と書いていたが過小評価だった。**
+本当のコスト要因は `Value` ではなく **VM と Interpreter の結合**。
 
-`Value` に食い込む native は狭い（[value/native.rs:443](../src/interpreter/value/native.rs#L443) の
-`NativeLibWrapper` と [value/objects.rs:16](../src/interpreter/value/objects.rs#L16) の `pyo3::Py` の 2 箇所。
-`value/core.rs:116` は doc コメントのみで実依存なし）。ただし wasm に載らない `Value` の variant は
-`PyObject` / `NativeFunction` / `CsObject` / `JsProcFn` / `FileObject` / `AsyncManager` など
-**5〜7 個**（全 36 中）。⇒ 「wasm 用に variant を feature で削る」中規模リファクタ。
-主コストは**網羅 match の全アーム**。
+| 項目 | 実測 |
+|---|---|
+| `src/vm` | 8,412 行 |
+| `src/interpreter` | **34,752 行** |
+| frontend crate 現状（lexer + parser + type_check） | 20,545 行 |
+| wasm に載らない `Value` variant | **8 種・計 124 箇所**（`PyObject` 28 / `NativeFunction` 22 / `CsObject` 15 / `AsyncManager` 13 / `Signal` 13 / `JsProcFn` 12 / `FileObject` 12 / `EventLoop` 9） |
+
+```rust
+pub fn run(interp: &mut Interpreter, chunk: &Chunk, ...)   // VM は Interpreter を丸ごと取る
+```
+VM 側から `interp.` 参照が **92 箇所**、`Interpreter` 型の参照が 51 箇所。
+⇒ **VM だけの切り出しは不可。Interpreter ごと入る**（20,545 → 約 63,000 行・3 倍超）。
+
+**ただし必要なのは Interpreter 全体ではない。** メタ関数本体は D1・D26 で制限される（`exprconst fn` と
+許可ビルトインのみ、I/O・FFI・async 禁止）ので、要るのは**算術・比較・制御フロー・コレクション操作・
+関数呼び出しとスコープ**だけ。FFI / async / Python 相互運用 / ファイル / イベントループは不要。
+
+⇒ 作業の実体は「`Value` の variant を削る」ではなく「**Interpreter から評価コアを抽出する**」（タスク 0-4）。
+
+### 検討した 3 案（A を採用）
+
+| 案 | 内容 | 評価 |
+|---|---|---|
+| **A（採用・2026-09-19）** | 評価コアを切り出し frontend と本体で共有 | 正攻法。抽出は大仕事だが**メタ関数と独立に価値がある**（VM の責務が明確になる） |
+| B | Interpreter ごと frontend に入れ、非 wasm 部分を feature で落とす | 抽出不要だが crate が 3 倍。124 箇所の `#[cfg]` と網羅 match の手当て |
+| C | 拡張が `arrow.exe` に問い合わせる（LSP 化） | 同一バイナリなので型認識の一致が**構造的に保証される**が、CLAUDE.md の「拡張は wasm 以外に解析ロジックを持たない」を覆す |
+
+⚠ A/B は「2 つの実装を一致させ続ける」努力が要り続ける（`compare_wasm_frontend.ps1` が唯一の網）。
 
 ## 参考 J. 型検査の現況（§0.7 の根拠・2026-09-09 実測）
 
-別スレッドの 0-1〜0-5 / 0-B2 で型検査が大幅に入った。**本設計の前提が変わった箇所がある。**
+別スレッド（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で型検査が大幅に入った。**本設計の前提が変わった箇所がある。**
 
 | 対象 | 状態 |
 |---|---|
@@ -534,18 +578,20 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 | # | 機構 | Arrow 実行時 | 置換手段 | 可否 |
 |---|---|---|---|---|
 | 1 | 対象を値として受け取る | 関数 ✓ / クラス ✓ / **組み込み ✗**（`print` を渡すと `NameError`） | 既存機能 | **可** |
-| 2 | メタ情報を読む | **全滅**（`__name__` `__doc__` `dir()` すべて無い） | `^` による展開時内省 | **可** |
+| 2 | メタ情報を読む | **公開 API は全滅**（`__name__` `__doc__` `dir()` `type()` すべて無い）。⚠ **ただし情報自体は実行時に存在する** → 参考M | `^` による展開時内省 | **可** |
 | 3 | メンバ注入・クラス書き換え | **全滅**（`C.f = g` は `AttributeError`、`type()` は `NameError`） | 展開時の `quote` 生成 | **可** |
-| 4 | ラッパ生成 | クロージャ捕捉 ✓ / `__call__` ✓ / キーワード引数 ✓ / 可変長**受け取り** ✓ / **可変長の転送 ✗** | `^f.params` ＋ 列スプライスで生成 | **条件付き可**（→ D34） |
+| 4 | ラッパ生成 | クロージャ捕捉 ✓ / `__call__` ✓ / キーワード引数 ✓ / 可変長**受け取り** ✓ / **引数展開 `f(*xs)` ✓（2026-09-20 実装）** / ⚠ **可変長の転送だけ ✗**（`local::args` が `Option[list[T]]`） | 展開が入ったので**実行時 `@` でも汎用ラッパがほぼ書ける** | **ほぼ可**（→ 参考O） |
 | 5 | **属性アクセスへの介入** | **ディスクリプタも `__getattr__` も無い**（`src/` 全体で 0 件） | **無し** | **不可**（→ D33） |
 | 6 | 装飾時の副作用（レジストリ登録） | 展開時の副作用は実行時に残らない | 登録コードを生成 | **可**（D24 が要る） |
 | 7 | タイミング | import 時 → 展開時 | — | 可。ただし**実行時の値に依存する装飾は明示エラー**にする |
 
-### 機構 4 が本質的な穴である理由
+### 機構 4 の状況（⚠ 2026-09-20 に更新。当初の結論は覆った）
 
-Python のラッパは `def w(*a, **k): return f(*a, **k)` と書け、**シグネチャを知らずに任意の関数を包める**。
-これがデコレータの汎用性の源。Arrow には展開構文が無いので、**シグネチャを読んで同じ形を生成する**
-以外に道が無い ⇒ **実行時 `@` だけでは Python のラッパを一般に表現できない。** メタ関数が必須。
+当初は「Arrow に展開構文が無いので実行時 `@` では汎用ラッパを書けない。メタ関数が必須」と結論していたが、
+**別スレッドが `f(*xs)` / `f(**d)` を実装した**ため、この前提は崩れた（→ 参考O）。
+残る障害は `local::args` の静的型が `Option[list[T]]` であることだけで、これが直れば
+`def w(*a, **k): return f(*a, **k)` 相当が**実行時デコレータだけで書ける**。
+⇒ メタ関数はラッパ生成の**唯一の手段ではなくなった**（依然として有用ではある）。
 
 ### 機構 5 が代替不可である理由
 
@@ -558,7 +604,170 @@ Python のラッパは `def w(*a, **k): return f(*a, **k)` と書け、**シグ�
 Arrow の素のクラスが既に `__init__` 自動生成と**構造的等価**（`p == q` → True・実測）を持つので、
 `@dataclass` は**変換器の修正だけで閉じる**。必要なのは 3 点:
 ①`dataclass` をマーカとして認識（現状は素通しされ実行時 `NameError`）
-②クラス本体の**値なし注釈**（`x: int`）をフィールドへ変換（現状 [classes.rs:89](../src/python_converter/classes.rs#L89) は
+②クラス本体の**値なし注釈**（`x: int`）をフィールドへ変換（現状 `convert_class` の `AnnAssign` アーム（`src/python_converter/classes.rs`） は
 `a.value` が `Some` のときだけ処理するので**黙って捨てている**）③`frozen=True` → `let` フィールド。
 明示エラーにすべきもの: `repr=True`（自動 `__repr__` が無い）/ `order=True` / `field(default_factory=...)`
 （`mut` フィールドに既定値を書けない）/ `ClassVar`。
+
+## 参考 L. 展開時単相化（D35 / D36 の入力・2026-09-19 実測）
+
+### 成立の決め手: テンプレート実引数は**明示が必須**
+
+```
+id(3)       → Error: template 'id' must be called with explicit type arguments (e.g. 'id[T](...)')
+Box(3)      → Error: template 'Box' must be called with explicit type arguments
+id[int](3)  → 3      Box[int](3) → 3
+```
+
+⇒ Arrow に C++ 風の暗黙具体化は無い。**すべての具体化は構文上に現れ、走査で完全に列挙できる。**
+現れる位置は 2 つ: ①`Expr::TemplateInstantiate`（`Box[int](3)` / `id[int](3)`）
+②型注釈文字列の `Box[int]`（`let b: Box[int]` / `fn take(let x: Box[int])`。実測で動作）。
+パーサは既に `known_templates`（`Parser::known_templates`（`src/parser/mod.rs`）・トークン先行スキャン）を持つ。
+
+### 置換は純粋な AST 操作
+
+`subst_stmts` / `subst_type` / `subst_params`（`subst_type` / `subst_params` / `subst_stmts`（`src/interpreter/templates.rs`））は
+`Value` にも `self` にも触れず、型注釈文字列を `HashMap<String,String>` で差し替えるだけ（実測）。
+⇒ 展開器からそのまま呼べる（2-7 で切り出す）。
+
+⚠ 一方 `build_template_class`（`build_template_class`（`src/interpreter/templates.rs`））は `&mut self` を取り、
+`const` / `static mut` / フィールド既定値の**初期化子を eval する**。`^Box[int].fields` に必要なのは
+置換部分だけなので、この eval は要らない。
+
+### 副次的な利得
+
+| 効果 |
+|---|
+| **0-1（テンプレートのコンストラクタ引数が未検査）が構造的に解消**。単相化後は普通のクラスなので 0-5 の検査がそのまま効く |
+| 装飾子を具体化ごとに走らせられる（`T` の実型で分岐できる） |
+| 型検査がテンプレート本体を `T` のまま検査しなくてよくなる |
+| VM / ネイティブが具体型で特化しやすい |
+
+### 検討が要る点
+
+| # | 内容 |
+|---|---|
+| 1 | **事前走査**が要る（§1.7 の例外・2-8） |
+| 2 | **生成コードが新しい具体化を作ると反復が戻る**。回避するなら「生成コード内での新規具体化を禁止」という規則が要る |
+| 3 | **再帰テンプレートの停止性**（2-9） |
+| 4 | **モジュールを跨ぐ具体化** — モジュールごとに展開するか全体で 1 回か |
+| 5 | **機構が 2 本になる**（→ D36） |
+| 6 | コード量の増加（具体化ごとに実体。計測項目） |
+
+### ⚠ 訂正の記録
+
+当初「展開時にはテンプレート具体化が見えない」と記述していたが**誤り**。
+`ClassValue` が具体化後にしか存在しないのは**実行時の事実**であり、`^` は AST を見るので無関係だった。
+正しくは「`^Box[int]` は引ける。ただし展開器が置換を自分で走らせる必要がある」。
+
+## 参考 M. 実行時には情報が存在する（参考K 機構2 の訂正・2026-09-18 実測）
+
+参考K に「実行時の内省能力はゼロ」と読める記述をしていたが、正確には
+**「情報は実行時に全部あるが、公開 API が無い」**。
+
+### 名前の出どころ
+
+`str(x)` は値そのものが持つフィールドを読んでいる（別のシンボル表は存在しない）。
+
+| 値 | 出どころ | 表示 |
+|---|---|---|
+| `Value::Function` | `FnValue.name`（`FnValue`（`src/interpreter/value/callables.rs`）） | `<function 'g'(a: int) at 0x…>` |
+| `Value::Class` | `ClassValue.name`（`ClassValue`（`src/interpreter/value/callables.rs`）） | `<class 'Point'>` |
+| `Value::Instance` | `InstanceData.class`（`InstanceData.class`（`src/interpreter/value/instance.rs`））の `.name` | `<Point object at 0x…>` |
+| `Value::Type` | 値そのものが名前 | `<class 'int'>` |
+
+いずれも `exec_fn_def` / `exec_class_def` が定義実行時に AST からコピーしたもの。
+
+### 実行時に**存在するが公開されていない**もの
+
+```
+FnValue:    params: Vec<Param>（mutable / type_ann / default / variadic 全部）/ return_type / body
+ClassValue: bases / methods（オーバーロード込み）/ gen_methods / field_index / field_mutability
+            / field_defaults / class_vars
+```
+
+⚠ `str()` が `mut`・既定値・戻り値型を出さないのは `format_fn_params`（`src/interpreter/ops/mod.rs`）
+が `name` と `type_ann` しか使っていないから。**データが無いからではない。**
+オーバーロードは `<function 'o' (2 overloads)>` となりシグネチャが全部消える。
+
+### `parse_ar` の位置づけ（2026-09-19 確定）
+
+**`parse_ar` は「Arrow AST を他言語へ出す」ための入口**であり、メタ関数の `^` とは役割が違う。
+実体は `Lexer` + `Parser` + `ast_value::stmts_to_value` を並べただけ（`parse_ar_evaled`）。
+主な消費者は **Arrow で書かれた Arrow→Python トランスパイラ**
+（`std_tools/convert_to_python/converter.ar` 1177 行 + `node_utils.ar` 109 行）。
+
+⇒ **語彙を揃えるのではなく、機能を切り分けて転用する**（タスク 4-5）:
+①`Lexer` + `Parser` → `quote` の Code→AST に転用
+②`ast_value.rs` の AST→Value 変換 → `^` に転用
+`parse_ar` 自体は他言語出力用として据え置く。
+
+⚠ `ast_value.rs` の返り値は **`meta_*` 専用型へ寄せる**（4-0 で確定）。現在の `Value::Namespace`
+（`__type__` 文字列）表現に依存している `convert_to_python/` は追随が要る（4-6）。
+
+### 既存の唯一の内省手段
+
+**`parse_ar(source)`** が Arrow ソース文字列を `Namespace` ツリーに変換する（[ast_value.rs](src/interpreter/ast_value.rs)）。
+クラスのフィールド種別（`LET`/`MUT`/`CONST`/`STATIC_MUT`）・型注釈・メソッドの引数（`mutable` 込み）・
+戻り値型まで読める（実測）。⚠ ただし**ソース文字列が要り、実行中の値とは繋がらない**。
+`Param` に `variadic` は露出していない（`name == "..."` で判定）。
+
+### 帰結
+
+実行時リフレクションを足す場合、**新しいデータ構造は不要**で、既存フィールドを `Namespace` に変換する
+関数を書けばよい（`ast_value.rs` と同じ形）。型注釈は文字列なので、クラスへ解決するには
+`InferredType::from_ann` で分解して名前をスコープで引く 1 段が要る。
+⚠ **`^` と射影名が重複する**ので、入れるなら D12（`^` の射影セット）と**同じ表から両方を生やす**こと。
+
+## 参考 N. 展開時に許可するビルトイン（D26・2026-09-19 確定）
+
+判定基準は **「決定的か」**。非決定的なもの・I/O は禁止する（`--compile` の `.arc` キャッシュが
+不健全になるため）。⚠ **このリストがタスク 0-4（評価コア）に含める範囲を決める。**
+
+### 関数
+
+| | 対象 |
+|---|---|
+| **許可** | `len` `range` `enumerate` `zip` `str` `int` `float` `bool` `uint` `complex` `list` `set` `repr` |
+| 許可（出力先を変える） | `print` — **stderr へ**（タスク 3-4。stdout に出すと `compare_python_impl` / `compare_outputs` が壊れる） |
+| **禁止** | `id`（アドレスを返す＝非決定的）/ `getenv`（環境依存）/ `open` `close`（I/O）/ **`parse_ar`**（任意のソースを読み込める）/ `create_flat_int_list` `flat_get_int` `flat_set_int`（低レベル） |
+
+### メソッド
+
+⚠ D1 の「許可ビルトイン」という文言はメソッドを覆えていなかった。**リスト・辞書・文字列を
+組み立てられないとメタ関数は実用にならない**ので明示する。
+
+| | 対象 |
+|---|---|
+| **許可** | list / dict / set の純粋メソッド（`append` `pop` `keys` `values` `items` `add` `remove` `discard` `clear` `copy` `count` `index` `contains` `union` `intersection` `difference` `symmetric_difference` `issubset` `issuperset` …）と **str の全メソッド**（`split` `join` `replace` `upper` `strip` `startswith` `find` `format` 系ほか約 45 種。`src/interpreter/classes/string_methods.rs`） |
+| **禁止** | ファイル（`read` `read_line` `read_letter` `write_line`）/ async・イベントループ・シグナル（`emit` `emit_async` `post` `run` `wait_for_finish` `all_done`） |
+
+⚠ 実装上、これらは `src/interpreter/classes/` に散在し、I/O 系と純粋系が**同じディスパッチに混在**
+している（`method_call.rs` / `string_methods.rs` / `set_methods.rs` / `frozen_list_methods.rs`）。
+0-4 の抽出時に**純粋系だけを評価コアへ持っていく**必要がある。
+
+## 参考 O. タスク 0-0 の実施記録（別スレッドとの突き合わせ）
+
+> 0-0 は**繰り返し実行するタスク**。実施のたびにここへ追記し、前回からの差分だけを見ればよい形にする。
+> ⚠ **必ず `cargo build --release` してから実測する**（過去 2 回、古いバイナリで測りかけた）。
+
+### 2026-09-20（基準コミット `148da76` → `f9ac035`）
+
+**入った変更（8 コミット）**: `f(*xs)`/`f(**d)` の実装 / 列リテラル展開 `[*a]` / 辞書合成 `{**d}` /
+A7「捕捉した関数値を呼べるように（デコレータが動く）」/ 入れ子アンパック / `with` 脱糖。
+
+| 前提 | 結果 |
+|---|---|
+| **引数展開 `f(*xs)` / `f(**d)` / `[*a, 3]` / `{**d, k:v}`** | **✓ 実装された**（D34 完了） |
+| **可変長の転送 `inner(*local::args)`** | **✗** `StaticTypeError: \`*\` expects an iterable, not 'Option[list[int]]'`。`declare_param` が `local::args` を `Union[list[T], None]` として宣言しているため（`src/type_check/stmt/check.rs`）。**展開機構そのものは完成しており、残るのは型付けだけ** |
+| **0-1** テンプレートのコンストラクタ引数 | **✓ 解消**（単一 `T`・非 `T` フィールドとも `StaticTypeError`） |
+| **0-2** 既定値の型 | **✓ 解消**（`str`→`int` / `float`→`int` とも） |
+| ⚠ **新規発見: テンプレートの「メソッド」引数** | **✗ 未検査**（`class P[T]` のメソッドに誤った型を渡しても素通り。`T` 依存でない引数でも同じ。非テンプレートのメソッドは検査される＝**テンプレート固有**）→ タスク **0-2b** |
+| 参考A #1 クラス本体の `@` | ✗ 変わらず（`ParseError`） |
+| 参考A #2 入れ子 `fn` のデコレータ | ✗ 変わらず（`VmForceError`） |
+| 参考A #3 テンプレのデコレータが消える | ✗ 変わらず（無警告） |
+| 参考A #4 オーバーロード破壊 | ✗ 変わらず |
+| §0.6 シグネチャ完全性（lambda 不在・引数注釈必須・型引数明示必須） | ✓ 変わらず |
+| §0.4 字句（`!` / `<!` / `!>` が到達不能） | ✓ 変わらず |
+| 参考L `subst_*` の純粋性 | ✓ 変わらず（`subst_type` 以降に `Value` / `self.` なし） |
+| 参考M `parse_ar` | ✓ 変わらず（メンバ列挙できる） |
