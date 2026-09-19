@@ -585,6 +585,28 @@ impl TypeChecker {
     /// 名前付き関数呼び出しの引数個数・型・キーワード引数名を検査する。
     /// ⚠ `args`（引数の**式**）を受け取るのは、`mut` パラメータへ `let` の値を渡していないかを
     /// 見るため（bug_fix.md B11）。型だけでは判定できない — **可変性は束縛の属性であって型ではない**。
+    /// `mut` パラメータへの実引数として「不変でも構わない」型か（A7-a）。
+    ///
+    /// ⚠⚠ **B11 の検査が守りたいのは「呼び出し元の `let` 変数が書き変わること」**。
+    /// 実測した Arrow の `mut` パラメータの意味論はこうなっている:
+    ///
+    /// | 実引数 | 呼び出し元へ書き戻るか |
+    /// |---|---|
+    /// | `mut x: int`（スカラ）| ❌ 値渡し |
+    /// | `mut xs: list`（コンテナ）| ✅ 参照 |
+    ///
+    /// **関数値は書き戻しようがない**（中身を差し替える手段が無い）。それでも弾いていたため、
+    /// `m.apply(m.base, n)` のように**関数を引数で渡す形が丸ごと通らなかった**。
+    /// 変換器は全パラメータを `mutable: true` にするので、py 由来の関数では特に効く。
+    ///
+    /// ⚠ `is_python` 限定にはしない。食い違いは py 固有ではなく、純 Arrow の
+    /// `fn deco(mut f: function)` でも同じく通らなかった（INF-D と同じ判断）。
+    /// ⚠ スカラ（`int` 等）は**対象にしない**。書き戻らないのは同じだが、
+    /// そこまで緩めるかは仕様の話で、本件（関数を渡せない）とは別。
+    fn mut_arg_exempt(ty: &InferredType) -> bool {
+        matches!(ty, InferredType::Function { .. })
+    }
+
     /// 呼び出し引数に `*xs` / `**d` の展開が含まれるか。
     ///
     /// ⚠⚠ 含まれるときは**引数個数・位置ごとの型検査を降りる**。展開後の個数も
@@ -1360,7 +1382,10 @@ impl TypeChecker {
                                 span: None,
                             });
                         }
-                        if param.mutable && self.path_is_mutable(arg_expr) == Some(false) {
+                        if param.mutable
+                            && self.path_is_mutable(arg_expr) == Some(false)
+                            && !Self::mut_arg_exempt(arg_ty)
+                        {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
@@ -1390,7 +1415,10 @@ impl TypeChecker {
                                 span: None,
                             });
                         }
-                        if param.mutable && self.path_is_mutable(arg_expr) == Some(false) {
+                        if param.mutable
+                            && self.path_is_mutable(arg_expr) == Some(false)
+                            && !Self::mut_arg_exempt(arg_ty)
+                        {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
@@ -1428,6 +1456,13 @@ impl TypeChecker {
             return;
         }
         if self.path_is_mutable(arg_expr) != Some(false) {
+            return;
+        }
+        // ⚠ 関数値は書き戻しようがないので弾かない（A7-a。`mut_arg_exempt` の doc 参照）。
+        //   ⚠ **`FnTypeParam` 経路と同じ規則にすること**。片方だけ緩めると
+        //     「同じ関数が呼び方で通ったり落ちたりする」形が戻る（INF-D で潰した失敗）。
+        let arg_ty = self.infer(arg_expr);
+        if Self::mut_arg_exempt(&arg_ty) {
             return;
         }
         let param_name = sig.params.get(param_pos).map(|(n, _)| n.clone()).unwrap_or_default();

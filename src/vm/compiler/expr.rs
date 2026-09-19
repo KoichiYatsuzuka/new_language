@@ -317,6 +317,20 @@ impl Compiler {
                                 return None;
                             }
                         }
+                    } else if let Some(&ci) = self.cells.get(name) {
+                        // ⚠⚠ **捕捉変数（セル）が関数値を保持している場合**（A7-b）。
+                        //    ここが無かったため `f(x)` が下の `emit_callee_load` へ落ち、
+                        //    グローバル名として引かれて `NameError: 'f' is not defined` に
+                        //    なっていた。**値として読む経路（`Expr::Ident`）は `cells` を
+                        //    先に見ている**のに、呼び出し先の解決だけが見ていなかった。
+                        //    ⇒ `g = f` と一旦別名に入れれば動く（slot になるため）という
+                        //      非対称が出ていた（実測で切り分け）。
+                        //    ⚠ **`slots` より先に引く**（セルは slot を持たない。`Expr::Ident`
+                        //      と同じ順序にすること）。
+                        self.emit(Op::LoadCell(ci));
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
+                        let ni = self.add_name(name);
+                        self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));

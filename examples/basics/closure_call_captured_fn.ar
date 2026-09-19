@@ -1,0 +1,36 @@
+# closure_call_captured_fn.ar — 入れ子 `fn` が**捕捉した関数値を呼ぶ**（A7-b）。
+#
+# ⚠⚠ **これは以前 `NameError: 'f' is not defined` で落ちていた**。
+#   値として読む経路（`Expr::Ident`）は `cells`（捕捉変数）を先に見ていたのに、
+#   **呼び出し先の名前解決だけが `cells` を見ていなかった**ため、`f(x)` が
+#   グローバル名として引かれていた。
+#
+#   切り分けの決め手はこの非対称だった:
+#     捕捉して**返すだけ**        → 動く（関数値が返る）
+#     捕捉して**直接呼ぶ** `f(x)` → NameError
+#     一旦別名に入れて `g = f; g(x)` → 動く（slot になるため）
+#
+# ⚠ 併せて **A7-a** も直した: `mut` パラメータへ関数値を渡せなかった
+#   （`parameter 'f' of 'deco' expects a mutable argument`）。
+#   実測した `mut` の意味論は「スカラは値渡し・コンテナは参照」で、
+#   **関数値は書き戻しようがない**ので検査から除外した。
+
+fn base(mut x: int) -> int:
+    return x * 3
+
+# ── ① 入れ子 fn が捕捉した関数を呼ぶ ────────────────────────────────────
+fn deco(let f: function) -> function:
+    fn wrapper(mut x: int) -> Any:
+        return f(x)
+    return wrapper
+
+mut w = deco(base)
+mut n = 5
+print(w(n))
+# 15
+
+# ── ② 捕捉した関数を 2 回呼ぶ ───────────────────────────────────────────
+fn apply_twice(let f: function, mut x: int) -> Any:
+    return f(f(x))
+print(apply_twice(base, n))
+# 45
