@@ -5,11 +5,17 @@
 // アセンブリをロードする。バッチ実行では正しいが、エディタでは 1 打鍵ごとに走るため
 // 使えない（`examples/interop/importation.ar` は実測 7.7 秒かかる）。
 //
-// ここでは**構文だけを解釈して `body: vec![]` を返す**。狙いは 2 つ:
+// ここでは**構文だけを解釈する**。狙いは 2 つ:
 //   1. import 文が構文エラーにならない（＝以降の行の解析が生き残る）
 //   2. fs / プロセス / DLL に一切触れない（＝wasm32 に載る、副作用が無い）
 //
-// 代償は「import したモジュールのメンバ型が分からない」こと。ただし
+// body は**読み込まない**が、空とは限らない。`editor_import_body` が
+// **既に手元にあるテキスト**だけから組み立てる:
+//   - ホストが渡したスタブ（[`crate::parser::stub_registry`]。fs を引くのはホスト）
+//   - 同梱 py スタブ（`crate::py_stubs`。`include_str!` なので syscall ゼロ）
+// どちらも無ければ空 body のまま。
+//
+// 空 body の代償は「import したモジュールのメンバ型が分からない」こと。ただし
 // `InferredType::Namespace` の未知メンバは `Unresolved` を返すだけで**エラーにはならない**
 // （[type_check/types.rs] の doc 参照）ので、**偽陽性の診断は出ない**。
 // 型が付かないだけで、間違った型は付かない。
@@ -25,7 +31,7 @@ use {
 
 impl Parser {
     /// `import[lang] module.sub as alias` をパースして `Stmt::Import` を返す。
-    /// 本体は読み込まない（`body` は常に空）。
+    /// 対象モジュールは読み込まない（body は `editor_import_body` が供給する）。
     pub(crate) fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
@@ -72,7 +78,7 @@ impl Parser {
             self.note_signature(h, &sig);
         }
 
-        let body = Self::bundled_py_stub_body(&lang, &module);
+        let body = self.editor_import_body(&lang, &module);
 
         Ok(Stmt::Import {
             lang,
@@ -84,7 +90,7 @@ impl Parser {
     }
 
     /// `from module import[lang] Name1, Name2 as N2` をパースして `Stmt::FromImport` を返す。
-    /// 本体は読み込まない（`body` は常に空）。
+    /// 対象モジュールは読み込まない（body は `editor_import_body` が供給する）。
     pub(crate) fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `from` を消費
 
@@ -128,7 +134,7 @@ impl Parser {
             }
         }
 
-        let body = Self::bundled_py_stub_body(&lang, &module);
+        let body = self.editor_import_body(&lang, &module);
 
         Ok(Stmt::FromImport {
             lang,
@@ -162,6 +168,46 @@ impl Parser {
             Some(src) => crate::parser::py_stub_extract::extract_py_type_stubs(src),
             None => Vec::new(),
         }
+    }
+
+    /// import 文 1 つ分の body を決める。**ここが唯一の供給口**。
+    ///
+    /// 優先順は CLI に合わせる:
+    ///   1. **ホストが渡したスタブ**（[`crate::parser::stub_registry`]）
+    ///      — CLI が探索順どおりに解決して出したものなので、こちらが正。
+    ///   2. **同梱 py スタブ**（`crate::py_stubs`）— CLI では「どこにも無かったとき」の
+    ///      最後の一段。ホスト由来が無いときだけ引くので、順序が CLI と逆にならない。
+    ///   3. どちらも無ければ空 body（型が付かないだけ・誤診断は出ない）。
+    fn editor_import_body(&mut self, lang: &str, module: &[String]) -> Vec<Stmt> {
+        if let Some(body) = self.host_stub_body(lang, module) {
+            return body;
+        }
+        Self::bundled_py_stub_body(lang, module)
+    }
+
+    /// ホストが積んだ `.ars` テキストを**同じ Arrow パーサ**で読んで body にする。
+    ///
+    /// ⚠ AST の別表現（JSON 等）を作らないのが要点（計画 D-3）。`Stmt` に variant が
+    /// 増えたときに直す場所が 2 つになると、`language-dev-principles` §2 の
+    /// 「同じ木を歩く walker は必ずずれる」に当たる。
+    ///
+    /// ⚠ **解析に失敗しても握り潰して `None`**。壊れた `.ars` でエディタの解析ごと
+    /// 死ぬのは、直そうとしている問題より悪い。
+    ///
+    /// ⚠ `node_counter` は親と共有する。共有しないとスタブ側の node-id が本体と衝突し、
+    /// 消費側が別の式の注釈を読む（`ar_modules.rs` が同じ理由で共有している）。
+    fn host_stub_body(&mut self, lang: &str, module: &[String]) -> Option<Vec<Stmt>> {
+        let key = crate::parser::stub_registry::stub_key(lang, module);
+        let counter = self.node_counter.clone();
+        crate::parser::stub_registry::with_stub(&key, |source| {
+            let tokens = crate::lexer::Lexer::new(source, "<stub>").tokenize();
+            let mut sub = Parser::new(tokens, None);
+            sub.node_counter = counter;
+            // ⚠ スタブ側の宣言をエディタ索引へ混ぜない。`sub` ごと捨てるので
+            //   利用者のファイルのアウトラインには 1 件も出ない。
+            sub.parse_program().unwrap_or_default()
+        })
+        .filter(|body| !body.is_empty())
     }
 
     /// `import[cpp-dll] Dir.Header as alias` の構文だけを読む。
@@ -208,12 +254,14 @@ impl Parser {
             self.note_signature(h, &sig);
         }
 
+        let body = self.editor_import_body(&lang, &parts);
+
         Ok(Stmt::Import {
             lang,
             module: parts,
             with_file: None,
             alias,
-            body: Vec::new(),
+            body,
         })
     }
 

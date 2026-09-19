@@ -219,8 +219,21 @@ impl TypeChecker {
     /// 実体のあるモジュールが本当に空になることは（定義文が 1 つも無いファイルを
     /// import しない限り）無く、その場合に検査を止めても取りこぼしが増えるだけで
     /// 誤検出は出ない ⇒ 保守的側へ倒す。
+    ///
+    /// ⚠⚠ **`editor` では body が非空でもレジストリは完成しない。** スタブ
+    /// （ホスト由来・同梱 py）は実モジュールの**部分集合**でしかなく、しかも
+    /// 古くなりうる（DLL / ヘッダを更新してもスタブは自動では追随しない）。
+    /// ここで「読めた」と見なすと [`Self::check_ann_names_exist`] が動き出し、
+    /// **CLI が出さないエラーをエディタだけが出す**。それは
+    /// `compare_wasm_frontend.ps1` の不変条件
+    /// 「wasm は少なく報告してよいが、多く報告してはならない」を破る。
+    /// ⇒ editor では **import が 1 つでもあれば不完全**と答える。
+    ///   import が無いファイルは従来どおり `false` なので、検査範囲は狭まらない。
     fn has_unloaded_import(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
+            #[cfg(feature = "editor")]
+            Stmt::Import { .. } | Stmt::FromImport { .. } => true,
+            #[cfg(not(feature = "editor"))]
             Stmt::Import { body, .. } | Stmt::FromImport { body, .. } => body.is_empty(),
             // ⚠ import は最上位にしか書けないが、`if` の中などへ移ったときに
             //   静かに見落とさないよう、定義の本体だけは覗いておく。

@@ -223,19 +223,25 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 - **意義**: §1-c の経路を作る本体。これが入ると `let ed = sakura.create(host)` に型が付く
   （hover・inlay・`exprTypes` は body から自動で follow する）。
 - **前提**: なし（#3 / #4 が無くても、テストからは直接叩ける）。
-- **手法**:
-  1. `crates/arrow-frontend/src/wasm.rs` に `ar_set_stub(key, src)` / `ar_clear_stubs()` を足す。
-     `ar_alloc` / `ar_free` の既存の渡し方をそのまま使う（`wasm-bindgen` は引き続き使わない）。
-  2. スタブ表は `thread_local!` の `HashMap<StubKey, String>`。`StubKey` は **`(lang, module パス)`**
-     — import 文だけから作れる形にする（fs のパスを鍵にしない。ホストとキーの作り方がずれる）。
-  3. `imports_editor.rs` の 3 つの入口（`parse_import_stmt` / `parse_from_import_stmt` /
-     `parse_cpp_import_syntax`）が、`body: vec![]` を返す代わりにスタブ表を引き、
-     当たれば**そのテキストを新しい `Parser` で解析した `Vec<Stmt>`** を body にする。
-     外れたら従来どおり空。
-  4. D-1 のため、**スタブ由来であることを型検査に伝える印**を持たせる。
-     `Stmt::Import` に欄を足すと実行経路へ波及するので（`editor_index.rs` 冒頭 doc と同じ理由）、
-     **AST は変えず**、`editor_stub_body` / `has_unloaded_import` が
-     「body の出自」を引ける副次テーブル側で判定する形にする。
+- **手法** ✅ **実装済（2026-09-19）**:
+  1. `src/parser/stub_registry.rs`（`editor` 専用）にスタブ表を置いた。`thread_local!` の
+     `HashMap<String, String>`。鍵の定義は `stub_key(lang, module)` **1 箇所だけ**で、
+     解析中のファイル位置にも DLL / ヘッダの置き場所にも依存しない（D-2 の受け皿）。
+  2. `crates/arrow-frontend/src/wasm.rs` に `ar_set_stub` / `ar_clear_stubs` /
+     `ar_stub_count` を足した。既存の alloc/free の渡し方のままで、`wasm-bindgen` は不使用。
+  3. `imports_editor.rs` に `editor_import_body(lang, module)` を置き、3 つの入口
+     （`parse_import_stmt` / `parse_from_import_stmt` / `parse_cpp_import_syntax`）が
+     すべてそこを通るようにした。優先順は **ホスト由来 → 同梱 py → 空**で、CLI と逆にならない。
+     スタブ本文は**同じ Arrow パーサ**で読む（D-3）。`node_counter` は親と共有する。
+  4. **D-1 の印は「editor では import が 1 つでもあれば不完全」**という形にした
+     （`has_unloaded_import` に `#[cfg(feature = "editor")]` のアームを足す）。
+     AST にもスタブ表にも印を持たせずに済み、しかも**正確**: editor の body は
+     「空」か「スタブ由来」のどちらかで、実読み込みは決して起きない。
+     import が無いファイルは従来どおり `false` なので検査範囲は狭まらない。
+     ⚠ これは #7 が入れてしまった潜在的なずれの修正でもある（`import[py-int] math`
+     だけのファイルで body が非空になり、editor だけ `check_ann_names_exist` が
+     動き出していた）。
+  5. 循環（スタブが自分自身を import する形）は `with_stub` の展開中セットで止める。
 - **留意点**:
   - ⚠⚠ **`ar_analyze` がステートフルになる。** TS 側の解析キャッシュは
     `document.version` だけをキーにしている（`wasm_providers.ts` の `getAnalysis`）。
@@ -245,9 +251,14 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
   - ⚠ 入れ子 Parser を回すので**再入**に注意（スタブの中の import は解析しない＝空 body のまま）。
   - ⚠ `language-dev-principles` §1「注釈は最適化ヒント」と同じ性質：
     **スタブが無くても正しく動く**こと。スタブは「あれば型が付く」だけ。
-- **検証**: `crates/arrow-frontend/tests/` に、スタブ有無で `exprTypes` が変わることと、
-  **診断が 1 件も増えないこと**（D-1）を固定するテストを足す。
-  `./scripts/compare_wasm_frontend.ps1`（スタブ未設定なら完全に従来どおりであること）。
+- **検証** ✅: `crates/arrow-frontend/tests/stubs.rs`（5 件・全通過）— スタブ無しで型が
+  付かないこと／積むと戻り値型が届くこと／**積んでも診断が増えないこと**（D-1）／
+  自己参照スタブが停止すること／壊れた `.ars` が空 body に倒れること。
+  `compare_wasm_frontend` 368/368 一致・INVENTED 0・**wasm fewer 0**／`stress.js` threw 0・
+  misses 0／`scan_examples`／`force_gate` fall back 0／`compare_python_impl` 101/101／
+  `stale_doc_refs` OK。
+  ⚠ `crates/arrow-frontend` の `type_refs::skipped_generic_arguments` は**本変更と無関係に
+  HEAD で落ちている**（`type Box does not take type arguments`）。stash して確認済み。
 - **参照**: [`crates/arrow-frontend/src/wasm.rs`](../crates/arrow-frontend/src/wasm.rs)（ABI の作法）／
   [`src/parser/imports_editor.rs`](../src/parser/imports_editor.rs)（不変条件）。
 
@@ -411,14 +422,14 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 | # | タスク | 前提 | 状態 |
 |---|---|---|---|
 | #1 | cpp import の別名をエディタ索引に登録 | — | ✅ **実装済（2026-09-19）** |
-| #2 | wasm にスタブ供給 ABI ＋ `imports_editor` が引く | — | 未着手 |
+| #2 | wasm にスタブ供給 ABI ＋ `imports_editor` が引く | — | ✅ **実装済（2026-09-19）** |
 | #3 | `arrow.exe --emit-stubs` | — | 未着手 |
 | #4 | 拡張ホストがスタブを読み wasm へ流す | #2 ＋ #3 | 未着手 |
 | #5 | 名前空間を `.` 補完の受け手にする | （実益は #2） | 未着手 |
 | #6 | 索引欠落を検出する網 | #1 | 未着手 |
 | #7 | 同梱 py スタブ（`time` / `math`）をエディタへ届かせる | — | ✅ **実装済（2026-09-19）** |
 
-**#1 / #7 は完了。残る前提なしは #2 / #3 で、どちらも今すぐ着手できる。**
+**#1 / #2 / #7 は完了。次は #3（前提なし）。**
 
 ### タグ別に何が効くようになるか
 
