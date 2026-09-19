@@ -50,7 +50,7 @@ impl Parser {
         Ok(Stmt::Import {
             lang,
             module,
-            with_file: None,
+            source_module: None,
             alias,
             body,
         })

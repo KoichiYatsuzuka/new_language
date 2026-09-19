@@ -140,11 +140,14 @@ impl Parser {
             })
             .unwrap_or_default();
 
+        // ⚠ `module` は**解決済みヘッダパス**（実行時に読み直すのがこれ）。原文の
+        //   ドット表記はここで失われるので、エディタ用スタブの鍵のために別途残す
+        //   （`Stmt::Import::source_module` の doc）。
         let module = vec![file_path];
         Ok(Stmt::Import {
             lang,
             module,
-            with_file: None,
+            source_module: Some(parts.join(".")),
             alias,
             body,
         })
@@ -196,7 +199,7 @@ impl Parser {
         Ok(Stmt::FromImport {
             lang,
             module,
-            with_file: None,
+            source_module: None,
             names,
             body,
         })

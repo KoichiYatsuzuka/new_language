@@ -166,14 +166,14 @@ impl Interpreter {
             Stmt::Import {
                 lang,
                 module,
-                with_file,
+                source_module,
                 alias,
                 body,
-            } => self.exec_import(lang, module, with_file.as_deref(), alias.as_deref(), body),
+            } => self.exec_import(lang, module, source_module.as_deref(), alias.as_deref(), body),
             Stmt::FromImport {
                 lang,
                 module,
-                with_file: _,
+                source_module: _,
                 names,
                 body,
             } => {

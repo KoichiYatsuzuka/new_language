@@ -89,6 +89,7 @@ fn top_level_stub(stmt: &Stmt) -> Option<String> {
             return_type.as_deref(),
             0,
             *is_abstract,
+            false, // トップレベル関数に static は無い
         )),
 
         Stmt::GenDef {
@@ -137,13 +138,15 @@ fn fn_stub(
     return_type: Option<&str>,
     indent_level: usize,
     _is_abstract: bool,
+    is_static: bool,
 ) -> String {
     let i = ind(indent_level);
     let tparams = template_params_str(template_params);
     let pstr = params_str(params);
     let ret = return_type.map(|r| format!(" -> {r}")).unwrap_or_default();
     let body_i = ind(indent_level + 1);
-    format!("{i}fn {name}{tparams}({pstr}){ret}:\n{body_i}...\n")
+    let stat = if is_static { "static " } else { "" };
+    format!("{i}{stat}fn {name}{tparams}({pstr}){ret}:\n{body_i}...\n")
 }
 
 /// ジェネレータ定義のスタブ文字列（`gen name(...) -> T:\n    ...`）を生成する。
@@ -177,8 +180,13 @@ fn class_stub(
     } else {
         format!("({})", bases.join(", "))
     };
-    // ->Name signals the constructor return type (used by the VS Code extension)
-    let mut out = format!("class {name}{tparams}{bases_str}->{name}:\n");
+    // ⚠⚠ かつてここは `class Name(...)->Name:` と書いていた。`->Name` は
+    //    **旧・正規表現版の VS Code 拡張**向けにコンストラクタの戻り値型を
+    //    伝える印で、Arrow の構文ではない。現行の拡張は `.ars` を**本物のパーサ**
+    //    で読むので、この形だと "expected :, got ->" で構文エラーになり、
+    //    **生成した `.ars` を読み返せない**（`import[js-proc]` の `.ars` 経路も同じ罠）。
+    //    現行拡張にこの印を見る箇所は 1 つも無いので落とした。
+    let mut out = format!("class {name}{tparams}{bases_str}:\n");
 
     let body_text = class_or_trait_body_stubs(body, 1);
     if body_text.is_empty() {
@@ -279,9 +287,15 @@ fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibili
             params,
             return_type,
             is_abstract,
+            is_static,
             access,
             ..
         } => {
+            // ⚠⚠ **`static` を落とさないこと。** 落とすと `self` を取らないメソッドが
+            //    インスタンスメソッドとして読み直され、先頭の仮引数が `self` の席に
+            //    吸収されて**引数の数が 1 つずれる**。C# の static メソッドで実測した症状は
+            //    `'WpfApp.show' takes 0 argument(s) but 1 were given` — スタブを置いたせいで
+            //    **エディタだけが偽のエラーを出す**形になる。
             let text = fn_stub(
                 name,
                 template_params,
@@ -289,6 +303,7 @@ fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibili
                 return_type.as_deref(),
                 indent_level,
                 *is_abstract,
+                *is_static,
             );
             Some((access.clone(), text))
         }

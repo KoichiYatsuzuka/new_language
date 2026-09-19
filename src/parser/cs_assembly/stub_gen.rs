@@ -54,7 +54,10 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
             out.push_str(&format!("trait {}{tparams}:\n", td.name));
         } else {
             let n = &td.name;
-            out.push_str(&format!("class {n}{tparams}{bases_str}->{n}:\n"));
+            // ⚠ `->{n}` は付けない。旧・正規表現版拡張向けの印で Arrow の構文では
+            //   なく、生成した `.ars` が読み返せなくなる
+            //   （`partial_compiler::stub_gen::class_stub` の注記と同じ理由）。
+            out.push_str(&format!("class {n}{tparams}{bases_str}:\n"));
         }
 
         // Class-level docstring

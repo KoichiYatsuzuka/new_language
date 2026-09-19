@@ -83,7 +83,7 @@ impl Parser {
         Ok(Stmt::Import {
             lang,
             module,
-            with_file: None,
+            source_module: None,
             alias,
             body,
         })
@@ -139,7 +139,7 @@ impl Parser {
         Ok(Stmt::FromImport {
             lang,
             module,
-            with_file: None,
+            source_module: None,
             names,
             body,
         })
@@ -211,7 +211,7 @@ impl Parser {
     }
 
     /// `import[cpp-dll] Dir.Header as alias` の構文だけを読む。
-    /// 通常ビルドと違いヘッダファイルは開かないので `with_file` は `None`。
+    /// 通常ビルドと違いヘッダファイルは開かないので `source_module` は `None`。
     fn parse_cpp_import_syntax(&mut self, lang: String) -> Result<Stmt, String> {
         let first = match self.current().clone() {
             Token::Ident(s) => {
@@ -259,7 +259,7 @@ impl Parser {
         Ok(Stmt::Import {
             lang,
             module: parts,
-            with_file: None,
+            source_module: None,
             alias,
             body,
         })

@@ -97,17 +97,18 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (224 files, 83504 lines)
+src/  (225 files, 83879 lines)
   ar_config.rs (244)
-  ast.rs (1314)
+  ast.rs (1328)
   decl_names.rs (173)
   expr_walk.rs (183)
   interpreter.rs (946)
-  main.rs (662)
+  main.rs (922)
   prof.rs (557)
   py_stubs.rs (50)
   repl.rs (118)
   stmt_walk.rs (277)
+  stub_manifest.rs (85)
   syntax_cov.rs (379)
   token.rs (531)
   built_in_stab/
@@ -258,18 +259,18 @@ src/  (224 files, 83504 lines)
     imports_editor.rs (322)
     mod.rs (295)
     py_stub_extract.rs (370)
-    stub_registry.rs (75)
+    stub_registry.rs (70)
     types.rs (680)
     cs_assembly/
       metadata.rs (296)
       mod.rs (275)
       parse.rs (261)
       signature.rs (237)
-      stub_gen.rs (451)
+      stub_gen.rs (454)
       xml_docs.rs (115)
     imports/
       ar_modules.rs (264)
-      cpp.rs (205)
+      cpp.rs (208)
       cs_js_modules.rs (249)
       dispatch.rs (187)
       mod.rs (100)
@@ -284,7 +285,7 @@ src/  (224 files, 83504 lines)
   partial_compiler/
     mod.rs (15)
     module_compiler.rs (361)
-    stub_gen.rs (338)
+    stub_gen.rs (353)
     llvm_codegen/
       context.rs (427)
       expr.rs (1067)
@@ -479,5 +480,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (144)
   README.md (317)
 ```
-_Generated 2026-09-19 by generate-codebase-map.ps1_
+_Generated 2026-09-20 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

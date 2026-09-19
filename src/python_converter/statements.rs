@@ -1143,7 +1143,7 @@ pub(crate) fn convert_stmt(
                 out.push(Stmt::Import {
                     lang: "py".to_string(),
                     module,
-                    with_file: None,
+                    source_module: None,
                     alias: alias.asname.as_ref().map(|a| a.to_string()),
                     body: Vec::new(),
                 });
@@ -1183,7 +1183,7 @@ pub(crate) fn convert_stmt(
             Ok(vec![Stmt::FromImport {
                 lang: "py".to_string(),
                 module,
-                with_file: None,
+                source_module: None,
                 names,
                 body: Vec::new(),
             }])

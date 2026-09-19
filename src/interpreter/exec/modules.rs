@@ -25,12 +25,12 @@ impl Interpreter {
         &mut self,
         lang: &str,
         module: &[String],
-        with_file: Option<&str>,
+        source_module: Option<&str>,
         alias: Option<&str>,
         body: &[Stmt],
     ) -> Result<ExecResult, String> {
         let ns = match lang {
-            "cpp-dll" | "cpp-lib" => self.import_cpp_module(lang, module, with_file)?,
+            "cpp-dll" | "cpp-lib" => self.import_cpp_module(lang, module, source_module)?,
             "cs-dll" => self.import_cs_dll(lang, module, body)?,
             "cs-proc" => self.import_cs_proc(lang, module, body)?,
             "js-proc" => self.import_js_proc(lang, module, body)?,
@@ -65,7 +65,7 @@ impl Interpreter {
         &mut self,
         lang: &str,
         module: &[String],
-        with_file: Option<&str>,
+        source_module: Option<&str>,
     ) -> Result<Rc<NamespaceData>, String> {
         let file_path = module.first().map(|s| s.as_str()).unwrap_or("");
         let cache_key = (lang.to_string(), PathBuf::from(file_path));
@@ -74,7 +74,7 @@ impl Interpreter {
         }
         self.module_cache
             .insert(cache_key.clone(), ModuleState::Loading);
-        let ns = self.load_cpp_module(lang, file_path, with_file)?;
+        let ns = self.load_cpp_module(lang, file_path, source_module)?;
         self.module_cache
             .insert(cache_key, ModuleState::Loaded(ns.clone()));
         Ok(ns)
@@ -654,7 +654,7 @@ impl Interpreter {
         &mut self,
         lang: &str,
         header_path_str: &str,
-        _with_file: Option<&str>,
+        _source_module: Option<&str>,
     ) -> Result<Rc<NamespaceData>, String> {
         let header_path = std::path::Path::new(header_path_str);
         let header_dir = header_path.parent().unwrap_or(std::path::Path::new("."));

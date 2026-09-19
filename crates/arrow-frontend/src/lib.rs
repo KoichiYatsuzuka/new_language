@@ -37,6 +37,9 @@ pub mod stmt_walk;
 // なのはこの crate が取り込むため」と書いている、その取り込み。
 #[path = "../../../src/py_stubs.rs"]
 pub mod py_stubs;
+// エディタ向け型スタブの契約（鍵の形・置き場・マニフェスト）。`--emit-stubs` と共有する。
+#[path = "../../../src/stub_manifest.rs"]
+pub mod stub_manifest;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]

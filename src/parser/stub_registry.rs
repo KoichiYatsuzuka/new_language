@@ -11,7 +11,7 @@
 //
 // # 鍵は import 文だけから作る
 //
-// [`stub_key`] が唯一の定義。`(lang, モジュールパス)` から作るので、
+// 鍵は [`crate::stub_manifest::stub_key`] が唯一の定義。`(lang, モジュールパス)` から作るので、
 // **解析中のファイルの位置にも、DLL / ヘッダの実際の置き場所にも依存しない**。
 // 探索順（`source_dir` → `root_dir` → `ar_config.json`）は言語側の規則であって、
 // それをホストや TypeScript に再実装させないための形（計画 D-2）。
@@ -36,13 +36,8 @@ thread_local! {
     static EXPANDING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
-/// スタブ表の鍵。**これが唯一の定義**で、ホストもここが出した文字列をそのまま使う。
-///
-/// ⚠ `lang` を含めること。`import[cs-dll] Foo` と `import[cpp-dll] Foo` は
-/// 別のモジュールで、別のスタブを持つ。
-pub(crate) fn stub_key(lang: &str, module: &[String]) -> String {
-    format!("{lang}:{}", module.join("."))
-}
+// 鍵の定義は [`crate::stub_manifest::stub_key`]（生成側の `--emit-stubs` と共有）。
+pub(crate) use crate::stub_manifest::stub_key;
 
 /// スタブを 1 件登録する（同じ鍵があれば置き換える）。
 pub fn set_stub(key: String, source: String) {

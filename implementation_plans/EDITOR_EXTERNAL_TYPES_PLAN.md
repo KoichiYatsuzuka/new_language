@@ -269,13 +269,29 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 - **意義**: D-2 の受け皿。**言語側の解決規則を 1 箇所に保ったまま**、拡張が読める形でスタブを吐く。
   cs-dll の `.ars`（`--compile-cs`）と `.ar` の `.ars`（`--compile`）に続く 3 本目で、既存の素材で足りる（§1-e）。
 - **前提**: なし。
-- **手法**:
-  1. `src/main.rs:60` の `parse_args` に `--emit-stubs` を足す（`--compile` と同じ体裁）。
-  2. 通常の（fs に触れる）パーサで対象ファイルを**パースだけ**する。実行も型検査も要らない。
-  3. 最上位の `Stmt::Import` / `Stmt::FromImport` ごとに `partial_compiler::stub_gen::generate_stub(body)`
-     を呼んで `.ars` テキストを得る。
-  4. `.ars` 群と、**`(lang, module パス) → .ars のパス`** のマニフェスト 1 本を出力する。
-     置き場はソースからの相対で固定し、`.gitignore` 可能な 1 ディレクトリにまとめる。
+- **手法** ✅ **実装済（2026-09-20）**:
+  1. `--emit-stubs <file.ar>` を追加（`--compile` と同じ体裁）。パースだけで実行も型検査もしない。
+  2. 契約（鍵の形・置き場・マニフェスト）を `src/stub_manifest.rs` に置き、
+     **`--emit-stubs` と `stub_registry` が同じ定義を使う**（`crates/arrow-frontend` も `#[path]` で取り込む）。
+     出力は `<source_dir>/.arrow-stubs/`。
+  3. 書き出す前に `arrow_writable()` で **Arrow として書ける形**に整える。外部言語のスタブ AST は
+     Arrow の規則を満たしていないため（下の「実測で出た 4 件」）。
+  4. ⚠ **body が非空でもテキストが空になることがある**（`generate_stub` が `Stmt::Let` を落とす＝py の形）。
+     空の `.ars` は「読めたがメンバ 0」と誤読されるので**書かずにマニフェストからも落とす**。
+     件数も `body.len()` ではなく**生成後のテキスト**から数える。
+
+  **実測で出た 4 件**（どれも「生成した `.ars` が読み返せない」形で、`.ars` を再パースする
+  経路が無かったため誰も踏んでいなかった）:
+
+  | 症状 | 原因 | 直し方 |
+  |---|---|---|
+  | `expected :, got ->` | `class X->X:` を書いていた。`->X` は**旧・正規表現版拡張**にコンストラクタの戻り値型を伝える印で Arrow の構文ではない | 両生成器（`partial_compiler` / `cs_assembly`）から落とした。現行拡張に読み手は 1 つも無い |
+  | `only traits are allowed as bases` | C# はインタフェースをクラス基底に並べるが Arrow は trait しか許さない | `--emit-stubs` 側で**同じスタブが trait 宣言していない基底を落とす**（読み手はどのみち辿れない） |
+  | `expected :, got .` | .NET の**他アセンブリ参照型**だけが完全修飾名（`System.Windows.Controls.Orientation`） | `--emit-stubs` 側で最終セグメントへ平坦化。どちらの綴りでも不透明な名前なので意味は落ちない |
+  | `'WpfApp.show' takes 0 argument(s) but 1 were given` | `generate_stub` が **`static` を落として**いた。`self` を取らないメソッドがインスタンスメソッドとして読み直され、先頭仮引数が `self` の席に吸収されて**引数の数が 1 つずれる** | `fn_stub` に `is_static` を通し `static fn` を書く |
+
+  ⚠ 下 2 件は `--emit-stubs` 側だけで直した（`cs_assembly` の型名は CLI の型検査が見ているため）。
+  上 2 件は生成器そのものの誤りなので `--compile` / `--compile-cs` の出力も直っている。
 - **留意点**:
   - ⚠ **cpp はヘッダを読むだけ**（シムの C++ ビルドは実行時なので走らない）。
     **py はサブプロセスを起動する**ので、このコマンドは秒オーダーになりうる。
@@ -287,9 +303,16 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
     **その場合はスタブを書かない**（空の `.ars` を置くと「読めた」と誤認する）。
   - ⚠ `generate_stub` は `--compile` の出力形式でもある。**ここで形式を変えない**
     （変えると `.arc`/`.ars` の既存の読み手に波及する）。
-- **検証**: `examples/interop/` の cpp / cs / py それぞれ 1 本に対して実行し、
-  生成された `.ars` を `arrow.exe` で単体解析して構文エラーが無いこと。
-  生成 → パース → 再生成が**同じテキストになる**（不動点）ことをテストで固定する。
+- **検証** ✅: `d:epository\TeX_editor\main.ar`（cpp-dll / cs-dll / cs-proc / py-int / `.ar` を
+  すべて含む実コード）で e2e 確認 — 生成した 4 件が**全て構文として通り**、
+  それをレジストリに積むと `let ed`（cpp-dll）と `let host`（cs-proc の static メソッド）が
+  ともに `int` に解決し、**診断は元の 2 件（既存の `mustbe` 警告）のまま増えない**（D-1）。
+  `scan_examples`／`force_gate` fall back 0／`compare_python_impl` 101/101／
+  `compare_wasm_frontend` 368/368・INVENTED 0／`stale_doc_refs` OK／codebase-map 再生成。
+  **直前コミットからビルドした基準バイナリとの実 A/B**: `compare_import_paths` 13/13 同一、
+  `compare_outputs` 298/298 同一（AST のフィールド改名が実行時に影響していないことの確認）。
+  ⚠ 不動点テストは**未実装**。ルートの `cargo test` が HEAD 側の破損でビルドできず、
+  `crates/arrow-frontend` からは `partial_compiler` に手が届かないため。
 - **参照**: skill `partial-compile`（`.ars` 形式）／skill `importation`（探索順）／
   [`src/partial_compiler/module_compiler.rs`](../src/partial_compiler/module_compiler.rs)（`.ars` の書き出し前例）。
 
@@ -423,13 +446,13 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 |---|---|---|---|
 | #1 | cpp import の別名をエディタ索引に登録 | — | ✅ **実装済（2026-09-19）** |
 | #2 | wasm にスタブ供給 ABI ＋ `imports_editor` が引く | — | ✅ **実装済（2026-09-19）** |
-| #3 | `arrow.exe --emit-stubs` | — | 未着手 |
+| #3 | `arrow.exe --emit-stubs` | — | ✅ **実装済（2026-09-20）** |
 | #4 | 拡張ホストがスタブを読み wasm へ流す | #2 ＋ #3 | 未着手 |
 | #5 | 名前空間を `.` 補完の受け手にする | （実益は #2） | 未着手 |
 | #6 | 索引欠落を検出する網 | #1 | 未着手 |
 | #7 | 同梱 py スタブ（`time` / `math`）をエディタへ届かせる | — | ✅ **実装済（2026-09-19）** |
 
-**#1 / #2 / #7 は完了。次は #3（前提なし）。**
+**#1 / #2 / #3 / #7 は完了。次は #4（前提 #2 ＋ #3 とも充足済み）。**
 
 ### タグ別に何が効くようになるか
 

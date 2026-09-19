@@ -21,6 +21,7 @@ mod parser;
 mod prof;
 mod partial_compiler;
 mod py_stubs;
+mod stub_manifest;
 mod python_converter;
 mod repl;
 mod token;
@@ -41,6 +42,9 @@ enum Mode {
     Compile(String),
     /// C# スタブ生成モード: .NET DLL から `.ars` スタブファイルを生成する。
     CompileCs(String),
+    /// エディタ向けスタブ生成モード: `.ar` の import 先を実際に解決し、
+    /// 各モジュールの型スタブ（`.ars`）とマニフェストを書き出す。
+    EmitStubs(String),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
     Stdin,
     /// REPL モード: stdin からブロックを受け取り、インタープリタを維持しながら実行する。
@@ -51,6 +55,7 @@ enum Mode {
 ///
 /// モードの優先順位:
 /// 1. `--compile <path>` / `-compile <path>` → `Mode::Compile`
+/// 1'. `--emit-stubs <path>` → `Mode::EmitStubs`
 /// 2. `-src <path>` → `Mode::Run`
 /// 3. `--repl` → `Mode::Repl`
 /// 4. `-` で始まらない最初の引数 → `Mode::Run`
@@ -82,6 +87,15 @@ fn parse_args() -> Mode {
                     .map(|p| Mode::CompileCs(p.clone()))
                     .unwrap_or_else(|| {
                         eprintln!("Error: --compile-cs requires a .dll file path");
+                        std::process::exit(1);
+                    });
+            }
+            "--emit-stubs" | "-emit-stubs" => {
+                return args
+                    .get(i + 1)
+                    .map(|p| Mode::EmitStubs(p.clone()))
+                    .unwrap_or_else(|| {
+                        eprintln!("Error: --emit-stubs requires a .ar file path");
                         std::process::exit(1);
                     });
             }
@@ -574,6 +588,10 @@ fn interpreter_main() {
             compile_cs_stub(&path);
         }
 
+        Mode::EmitStubs(path) => {
+            emit_stubs(&path);
+        }
+
         Mode::Repl => {
             repl::run_repl();
             // 診断フック（#55）: REPL 経路にも内訳を出す。⚠ ここが抜けていたので
@@ -659,4 +677,246 @@ fn compile_module(path: &str) {
             std::process::exit(1);
         }
     }
+}
+
+/// `--emit-stubs <file.ar>` — エディタ（VS Code 拡張）へ渡す型スタブを書き出す。
+///
+/// # 何をするか
+///
+/// **通常の（fs に触れる）パーサで対象ファイルをパースするだけ**。型検査も実行もしない。
+/// パース時に import 先が実際に解決される（`.h` を読み、.NET メタデータを読み、
+/// Python を起動する）ので、各 `Stmt::Import` の `body` に型スタブが載って返ってくる。
+/// それを `partial_compiler::stub_gen::generate_stub` で `.ars` テキストに落とし、
+/// `.arrow-stubs/` に並べてマニフェストを書く。
+///
+/// # ⚠ なぜ拡張側でやらないか
+///
+/// DLL / ヘッダの探索順は言語側の規則（`source_dir` → `root_dir` → `ar_config.json`）。
+/// TypeScript に再実装させると「拡張だけ解釈がずれる」という、`analysis.ts` を捨てた
+/// ときの問題がそのまま戻る。⇒ 解決と生成は**ここ 1 箇所**で行い、拡張はマニフェストを
+/// 運ぶだけにする（[`stub_manifest`] 冒頭 doc）。
+///
+/// # ⚠ 呼ばれる頻度の想定
+///
+/// **打鍵ごとではなく明示的な契機でだけ**呼ばれる前提。cpp はヘッダを読むだけだが
+/// （C++ シムのビルドは実行時なのでここでは走らない）、**py はサブプロセスを起動する**
+/// ので秒オーダーになりうる。
+///
+/// # ⚠ 空 body のモジュールは書かない
+///
+/// DLL / ヘッダが見つからなければローダが警告して空 body に倒れる。そこで空の `.ars` を
+/// 置くと、拡張側は「読めた（ただしメンバゼロ）」と誤認する。⇒ **マニフェストから落とす**。
+fn emit_stubs(path: &str) {
+    let source = read_file(path);
+    let src_path = std::path::Path::new(path);
+
+    let tokens = Lexer::new(&source, path).tokenize();
+    let source_dir = src_path.parent().map(|p| p.to_path_buf());
+    let stmts = Parser::new(tokens, source_dir)
+        .parse_program()
+        .unwrap_or_else(|e| {
+            eprintln!("ParseError: {e}");
+            std::process::exit(1);
+        });
+
+    let out_dir = src_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(stub_manifest::STUB_DIR);
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        eprintln!("Error creating {}: {e}", out_dir.display());
+        std::process::exit(1);
+    }
+
+    let mut entries: Vec<stub_manifest::StubEntry> = Vec::new();
+    let mut skipped = 0usize;
+    for stmt in &stmts {
+        let (lang, module, source_module, body) = match stmt {
+            ast::Stmt::Import { lang, module, source_module, body, .. }
+            | ast::Stmt::FromImport { lang, module, source_module, body, .. } => {
+                (lang, module, source_module, body)
+            }
+            _ => continue,
+        };
+        if body.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        // ⚠⚠ **鍵は原文の表記で作る。** cpp 系の `module` は解決済みヘッダパス
+        //    （`{source_dir}/A/B.h`）なので、そのまま鍵にすると**絶対パスが鍵に混ざり**、
+        //    エディタ側（fs を引けないので原文しか持たない）と永久に一致しない。
+        //    `source_module` がそのための欄（`Stmt::Import::source_module` の doc）。
+        let key = match source_module {
+            Some(written) => format!("{lang}:{written}"),
+            None => stub_manifest::stub_key(lang, module),
+        };
+        let module_name = source_module.clone().unwrap_or_else(|| module.join("."));
+        let file = stub_manifest::stub_file_name(&key);
+        let text = partial_compiler::stub_gen::generate_stub(&arrow_writable(body));
+        // ⚠⚠ **body が非空でもテキストが空になることがある。** `generate_stub` が
+        //    書けるのは `fn` / `gen` / `class` / `trait` / `new_type` / `enum` だけで、
+        //    py スタブの形（`Stmt::Let(name, "function->T", None)` — 行ベース抽出器の
+        //    出力）は落ちる。空の `.ars` を置くと拡張が「読めた（メンバ 0）」と誤読し、
+        //    型が付かない理由が分からなくなる。⇒ **書かずにマニフェストからも落とす。**
+        //    py を通すには `generate_stub` が `function->T` を表現できる必要がある（未対応）。
+        let decls = top_level_decl_count(&text);
+        if decls == 0 {
+            skipped += 1;
+            continue;
+        }
+        if let Err(e) = std::fs::write(out_dir.join(&file), &text) {
+            eprintln!("Error writing {file}: {e}");
+            std::process::exit(1);
+        }
+        entries.push(stub_manifest::StubEntry {
+            key,
+            lang: lang.clone(),
+            module: module_name,
+            file,
+            decls,
+        });
+    }
+
+    // 生成時刻。個々の入力の鮮度は追えない（`stub_manifest` 冒頭 doc）ので、
+    // 「いつ作ったか」だけを残して再生成は利用者の明示操作に委ねる。
+    let generated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    let manifest = stub_manifest::render_manifest(&entries, &generated_at);
+    let manifest_path = out_dir.join(stub_manifest::MANIFEST_NAME);
+    if let Err(e) = std::fs::write(&manifest_path, manifest) {
+        eprintln!("Error writing {}: {e}", manifest_path.display());
+        std::process::exit(1);
+    }
+
+    println!("Stubs    : {} module(s) -> {}", entries.len(), out_dir.display());
+    println!("Manifest : {}", manifest_path.display());
+    if skipped > 0 {
+        println!("Skipped  : {skipped} import(s) with no type information");
+    }
+}
+
+/// `.ars` テキストに実際に載った最上位宣言の数。
+///
+/// `body.len()` ではなく**生成後のテキスト**を数えるのは、`generate_stub` が
+/// 書けない文（py スタブの `Stmt::Let`）を黙って落とすため。source 側の件数を
+/// 報告すると「13 件あるのに補完に出ない」という追いにくい食い違いになる。
+fn top_level_decl_count(text: &str) -> usize {
+    text.lines()
+        .filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
+        .count()
+}
+
+/// スタブ本体を **Arrow として書き出せる形**に整える（生成前の整形）。
+///
+/// # なぜ要るか
+///
+/// `.ars` は読み返せなければ意味が無いが、外部言語のスタブ AST は
+/// **Arrow の規則を満たしていない**ことがある。実測で出たのは C#:
+/// `class MainWindow(IComponentConnector)` のようにインタフェースを基底に並べるが、
+/// Arrow は `class` の基底に trait しか許さない
+/// （`class X cannot inherit from Y (only traits are allowed as bases)`）。
+/// CLI では stub AST を再検証しないので通っていただけで、テキストにして読み返すと落ちる。
+///
+/// # 規則
+///
+/// **同じスタブが `trait` として宣言していない基底は落とす。** 落としても失うものは無い:
+/// 読み手（エディタ）はその名前の定義を持っていないので、継承をたどれない。
+///
+/// ⚠ ここでやるのは `--emit-stubs` の出力だけ。`generate_stub` 自体は `--compile` の
+/// `.ars` にも使われており、そちらの基底は同じモジュールの trait なので触ってはいけない。
+fn arrow_writable(body: &[ast::Stmt]) -> Vec<ast::Stmt> {
+    let traits: std::collections::HashSet<&str> = body
+        .iter()
+        .filter_map(|s| match s {
+            ast::Stmt::TraitDef { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    body.iter()
+        .map(|s| {
+            let mut out = s.clone();
+            match &mut out {
+                ast::Stmt::ClassDef { bases, base_args, body, .. } => {
+                    bases.retain(|b| traits.contains(b.as_str()));
+                    base_args.clear();
+                    for m in body.iter_mut() {
+                        flatten_member_types(m);
+                    }
+                }
+                ast::Stmt::TraitDef { body, .. } => {
+                    for m in body.iter_mut() {
+                        flatten_member_types(m);
+                    }
+                }
+                other => flatten_member_types(other),
+            }
+            out
+        })
+        .collect()
+}
+
+/// 1 文の中の型注釈を [`flatten_dotted`] で平坦化する。
+fn flatten_member_types(stmt: &mut ast::Stmt) {
+    match stmt {
+        ast::Stmt::FnDef { params, return_type, .. } => {
+            for p in params.iter_mut() {
+                if let Some(t) = &p.type_ann {
+                    p.type_ann = Some(flatten_dotted(t));
+                }
+            }
+            if let Some(t) = return_type {
+                *t = flatten_dotted(t);
+            }
+        }
+        ast::Stmt::GenDef { params, yield_type, .. } => {
+            for p in params.iter_mut() {
+                if let Some(t) = &p.type_ann {
+                    p.type_ann = Some(flatten_dotted(t));
+                }
+            }
+            if let Some(t) = yield_type {
+                *t = flatten_dotted(t);
+            }
+        }
+        ast::Stmt::Field { type_ann, .. } => {
+            *type_ann = flatten_dotted(type_ann);
+        }
+        _ => {}
+    }
+}
+
+/// `System.Windows.Controls.Orientation` → `Orientation`。
+///
+/// # なぜ必要か
+///
+/// .NET の**他アセンブリ参照型**だけが完全修飾名になる（自アセンブリ定義型は単純名。
+/// `cs_assembly/parse.rs` の TypeRef / TypeDef の差）。Arrow の型構文にドットは無いので、
+/// そのまま書き出すと 「expected `:`, got `.`」で**生成した `.ars` が読み返せない**。
+///
+/// ⚠ 意味は落ちない。どちらの綴りでも Arrow から見れば**メンバの分からない不透明な名前**で、
+/// 読み手（エディタ）はその定義を持っていないため、継承もメンバ参照もたどれない。
+/// ⚠ 名前空間違いの同名型は 1 つに潰れるが、どちらも不透明なので区別する意味が無い。
+/// ⚠ ここで直すのは `--emit-stubs` の出力だけ。`cs_assembly` 側の型名は CLI の型検査が
+/// 見ているので触らない（触ると「挙動不変」と言えなくなる）。
+fn flatten_dotted(ann: &str) -> String {
+    let mut out = String::with_capacity(ann.len());
+    let mut seg = String::new();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    for c in ann.chars() {
+        if is_ident(c) {
+            seg.push(c);
+        } else {
+            if !seg.is_empty() {
+                out.push_str(seg.rsplit('.').next().unwrap_or(&seg));
+                seg.clear();
+            }
+            out.push(c);
+        }
+    }
+    if !seg.is_empty() {
+        out.push_str(seg.rsplit('.').next().unwrap_or(&seg));
+    }
+    out
 }

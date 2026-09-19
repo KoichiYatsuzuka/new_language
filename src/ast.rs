@@ -1080,8 +1080,15 @@ pub enum Stmt {
     Import {
         lang: String,
         module: Vec<String>,
-        /// `.h` / header file path for `import[cpp-dll]` and `import[cpp-lib]`.
-        with_file: Option<String>,
+        /// **ソースに書かれたモジュール表記**（`import[cpp-dll] A.B` の `"A.B"`）。
+        ///
+        /// ⚠ cpp 系では `module` が**解決済みヘッダパス**（`{source_dir}/A/B.h`）になる。
+        /// 実行時にヘッダを読み直すのがそのパスなので変えられないが、その代わり
+        /// 「利用者が何と書いたか」が AST から消える。エディタ用スタブの鍵
+        /// （`stub_manifest::stub_key`）は**原文の表記**でなければエディタ側と一致しない
+        /// （エディタは fs を引けないので解決結果を持てない）。
+        /// ⇒ cpp 系だけがここを埋める。他のタグは `module` が原文そのままなので `None`。
+        source_module: Option<String>,
         alias: Option<String>,
         body: Vec<Stmt>,
     },
@@ -1097,8 +1104,15 @@ pub enum Stmt {
     FromImport {
         lang: String,
         module: Vec<String>,
-        /// `.h` / header file path for `from import[cpp-dll]` / `import[cpp-lib]`.
-        with_file: Option<String>,
+        /// **ソースに書かれたモジュール表記**（`import[cpp-dll] A.B` の `"A.B"`）。
+        ///
+        /// ⚠ cpp 系では `module` が**解決済みヘッダパス**（`{source_dir}/A/B.h`）になる。
+        /// 実行時にヘッダを読み直すのがそのパスなので変えられないが、その代わり
+        /// 「利用者が何と書いたか」が AST から消える。エディタ用スタブの鍵
+        /// （`stub_manifest::stub_key`）は**原文の表記**でなければエディタ側と一致しない
+        /// （エディタは fs を引けないので解決結果を持てない）。
+        /// ⇒ cpp 系だけがここを埋める。他のタグは `module` が原文そのままなので `None`。
+        source_module: Option<String>,
         names: Vec<(String, Option<String>)>,
         body: Vec<Stmt>,
     },
