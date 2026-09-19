@@ -53,6 +53,129 @@ fn build_comparison(
     })
 }
 
+/// 式を**読むだけで副作用が無く、途中の呼び出しで値も変わらない**か（D6）。
+///
+/// 連鎖比較の中間オペランドを「2 回読んでよいか」の判定に使う。
+///
+/// ⚠ 真を返してよいのは **`Name` と定数**だけ。`obj.f` は Python では property が
+/// 走りうるし、`d[k]` は `__getitem__`、`a + b` は `__add__` が走る。
+///
+/// ⭐ **名前が「途中で変わらない」と言い切れる**のは、変換器が `global` / `nonlocal` を
+/// 明示エラーにしているから（群5）。関数呼び出しが呼び出し元のローカル名を
+/// 書き換える経路が無いので、`a < f() < b` の `a` を後ろで読んでも同じ値になる。
+/// ⇒ 順序を保つために純粋なオペランドまで一時変数へ退避する必要が無い。
+fn is_side_effect_free(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Ident { .. }
+            | Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::None
+    )
+}
+
+/// 連鎖比較を**早期脱出のブロック式**へ落とす（D6）。
+///
+/// ```text
+/// a < f() < b < g()
+///   ↓
+/// block->bool:
+///     mut __py_cmp_0 = f()          # 中間オペランドは 1 回だけ評価
+///     if not (a < __py_cmp_0):
+///         block_return False        # ← ここで抜けるので b / g() は評価されない
+///     mut __py_cmp_1 = b
+///     if not (__py_cmp_0 < __py_cmp_1):
+///         block_return False
+///     block_return __py_cmp_1 < g()
+/// ```
+///
+/// ⚠⚠ **ブロック式はその場に埋め込む**（文へ持ち上げない）。持ち上げると
+/// `while 0 < f() < 10:` が 1 回しか評価されない・`p and (0 < f() < 10)` で
+/// `p` が偽でも `f()` が走る、という形で**黙って評価回数が変わる**。
+/// `Expr::Block` は VM コンパイラの一般の式ディスパッチが扱うので、
+/// 条件式の中でも内包表記の中でも、そのまま置ける。
+///
+/// ⚠ 一時変数を作るのは**中間オペランドのうち副作用を持つものだけ**。先頭・末尾は
+/// 1 回しか読まれないのでその場で評価すればよく、素の名前・定数は
+/// [`is_side_effect_free`] の理由で退避が要らない。
+///   ⇒ 余計な束縛を作らないので、**識別子の同一性（`is`）も動かない**。
+fn chained_compare_block(
+    operands: Vec<Expr>,
+    ops: &[py::CmpOp],
+    filename: &str,
+) -> Result<Expr, String> {
+    let span = make_span(filename);
+    let last = operands.len() - 1;
+
+    // 各オペランドを「ブロックの中でどう参照するか」。
+    let mut refs: Vec<Option<Expr>> = vec![None; operands.len()];
+    let mut stmts: Vec<Stmt> = Vec::new();
+
+    let mut operands = operands;
+    for (i, op) in ops.iter().enumerate() {
+        // i 番目の比較に要るオペランドを、まだ用意していなければここで評価する。
+        // ⚠ `i + 1` を**ループの中で**評価するのが短絡の肝（前の比較が偽なら来ない）。
+        materialize(i, last, &mut operands, &mut refs, &mut stmts);
+        materialize(i + 1, last, &mut operands, &mut refs, &mut stmts);
+
+        let left = refs[i].clone().expect("materialize 済み");
+        let right = refs[i + 1].clone().expect("materialize 済み");
+        let pair = build_comparison(left, op, right, filename, span.clone())?;
+
+        if i + 1 == ops.len() {
+            // 最後の比較がそのまま答え。
+            stmts.push(Stmt::BlockReturn(pair, span.clone()));
+        } else {
+            // ★ 1 つでも偽なら**即座に False**（CPython の連鎖比較と同じ）。
+            stmts.push(Stmt::If {
+                branches: vec![(
+                    Expr::UnaryOp { op: UnaryOp::Not, operand: Box::new(pair) },
+                    vec![Stmt::BlockReturn(Expr::Bool(false), span.clone())],
+                )],
+                else_body: None,
+            });
+        }
+    }
+
+    Ok(Expr::Block { stmts, return_type: Some("bool".to_string()) })
+}
+
+/// オペランド `k` を必要なら一時変数へ退避して、ブロック内での参照式を確定する
+/// （[`chained_compare_block`] の補助）。
+///
+/// ⚠ **呼ぶ順序がそのまま評価順序**になる（Python と同じ左→右）。
+/// ⚠ 退避するのは「2 回読まれる ＝ 中間」かつ「読むと副作用がある」ものだけ。
+fn materialize(
+    k: usize,
+    last: usize,
+    operands: &mut [Expr],
+    refs: &mut [Option<Expr>],
+    stmts: &mut Vec<Stmt>,
+) {
+    if refs[k].is_some() {
+        return;
+    }
+    let e = std::mem::replace(&mut operands[k], Expr::None);
+    // 末尾は「使う直前に評価する」位置そのものなので、その場で使ってよい。
+    // 副作用の無い式も退避が要らない（[`is_side_effect_free`] の理由）。
+    //
+    // ⚠⚠ **先頭を「1 回しか読まないから」で素通しすると評価順序が壊れる**（実測）。
+    //   `v("a") < v("b") < v("c")` で先頭を式のまま置くと、先に積まれる
+    //   `mut __py_cmp = v("b")` が**先に走って** `b a c` の順になる。
+    //   ⇒ 先頭も副作用があるなら退避する（この経路には必ず temp が 1 つ以上できるので、
+    //     「退避しなければ順序が保たれる」状況は無い）。
+    if k == last || is_side_effect_free(&e) {
+        refs[k] = Some(e);
+        return;
+    }
+    let tmp = next_temp_name("cmp");
+    stmts.push(Stmt::Mut(tmp.clone(), None, e));
+    refs[k] = Some(ident_expr(&tmp));
+}
+
+
 /// 内包表記の `for ... in ... if ...` 節を [`crate::ast::ComprehensionClause`] に変換する。
 ///
 /// ⚠ タプル展開（`for k, v in d.items()`）は未対応。`Stmt::For` 側と同じ制限なので同じ形で拒否する。
@@ -225,7 +348,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(result)
         }
 
-        // 比較。Python は**連鎖比較**（`a < b < c`）を書けるので、隣接ペアを `and` で連結する。
+        // 比較。Python は**連鎖比較**（`a < b < c`）を書けるので、隣接ペアを連結する。
         py::Expr::Compare(c) => {
             if c.ops.len() != c.comparators.len() || c.ops.is_empty() {
                 return Err(format!("{filename}: malformed comparison"));
@@ -237,6 +360,18 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             operands.push(convert_expr(&c.left, filename)?);
             for cmp in &c.comparators {
                 operands.push(convert_expr(cmp, filename)?);
+            }
+
+            // ★ **中間オペランドに副作用があるか**（D6）。
+            //   中間オペランド ＝ `operands[1 ..= len-2]` は 2 つの比較にまたがるので、
+            //   素朴に `and` で連結すると**2 回評価**される。副作用があると
+            //   CPython と食い違う（`0 < mid() < 100` で `mid()` が 2 回走る）。
+            //   ⇒ そのときだけ**早期脱出のブロック式**へ落とす（`chained_compare_block`）。
+            //   ⚠ **素の名前・定数しか無い連鎖（`0 < x < 10` など圧倒的多数）は従来どおり**。
+            //     2 回読んでも観測できないので、命令を増やす理由が無い。
+            let intermediates = &operands[1..operands.len().saturating_sub(1)];
+            if intermediates.iter().any(|e| !is_side_effect_free(e)) {
+                return chained_compare_block(operands, &c.ops, filename);
             }
 
             let span = make_span(filename);
@@ -252,8 +387,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 result = Some(match result {
                     // `a < b < c` → `(a < b) and (b < c)`。
                     // ⚠ Arrow の `and` も短絡するので、`a < b` が偽なら `c` 側は評価されない
-                    //   （Python と同じ）。**違うのは中間オペランドを 2 回評価すること**だけ
-                    //   （`f() < g() < h()` の `g()` が 2 回走る）。ユーザー方針で許容。
+                    //   （Python と同じ）。中間オペランドを 2 回読むが、ここへ来るのは
+                    //   **読んでも副作用が無い形だけ**（上の分岐で振り分け済み）。
                     Some(acc) => Expr::BinOp {
                         op: BinOp::And,
                         left: Box::new(acc),
