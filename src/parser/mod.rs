@@ -43,6 +43,9 @@ mod imports;
 mod classes;
 mod types;
 mod exprs;
+// Python ソースからの行ベース型スタブ抽出。**両ビルドで使う**ので `imports/` の外に置く
+// （`imports/` は editor では丸ごと差し替わり、抽出器ごと消えてしまうため）。
+pub(crate) mod py_stub_extract;
 // エディタ用の位置情報テーブル（`editor` feature 専用）。AST は変更せず、
 // パースの途中で「どの名前がどこにあるか」を控えるだけの副次構造。
 #[cfg(feature = "editor")]

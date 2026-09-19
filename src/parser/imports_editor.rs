@@ -72,12 +72,14 @@ impl Parser {
             self.note_signature(h, &sig);
         }
 
+        let body = Self::bundled_py_stub_body(&lang, &module);
+
         Ok(Stmt::Import {
             lang,
             module,
             with_file: None,
             alias,
-            body: Vec::new(),
+            body,
         })
     }
 
@@ -126,13 +128,40 @@ impl Parser {
             }
         }
 
+        let body = Self::bundled_py_stub_body(&lang, &module);
+
         Ok(Stmt::FromImport {
             lang,
             module,
             with_file: None,
             names,
-            body: Vec::new(),
+            body,
         })
+    }
+
+    /// **同梱 py スタブ**（`crate::py_stubs`）があればその型スタブを body として返す。
+    ///
+    /// エディタは fs を引けないので、CLI の探索順
+    /// （検索ディレクトリ → 見つからなければ同梱スタブ。`py_modules.rs` の
+    /// `load_python_interface_module`）のうち**最後の一段しか実行できない**。
+    /// ⇒ 利用者が自分の `time.pyi` を置いていてもエディタは同梱側を出す。
+    ///
+    /// ⚠ **CLI より型が少なくなる方向にしか外れない。** CLI は `.pyi` を
+    /// `python_converter` で変換し、取りこぼしを行ベース抽出で補完する。ここは
+    /// 補完側（[`crate::parser::py_stub_extract`]）だけを使うので、得られる宣言は
+    /// CLI の部分集合になる。`compare_wasm_frontend.ps1` の
+    /// 「wasm は少なく報告してよいが多く報告してはならない」と同じ向き。
+    ///
+    /// ⚠ 対象は `time` / `math` のような**トップレベル 1 要素**のモジュールだけ
+    /// （`py_stubs::builtin_stub` の doc）。他の py モジュールは従来どおり空 body。
+    fn bundled_py_stub_body(lang: &str, module: &[String]) -> Vec<Stmt> {
+        if lang != "py" && lang != "py-int" {
+            return Vec::new();
+        }
+        match crate::py_stubs::builtin_stub(module) {
+            Some(src) => crate::parser::py_stub_extract::extract_py_type_stubs(src),
+            None => Vec::new(),
+        }
     }
 
     /// `import[cpp-dll] Dir.Header as alias` の構文だけを読む。
@@ -154,6 +183,9 @@ impl Parser {
             self.advance();
             parts.push(self.expect_ident()?);
         }
+        // ヘッダ名の位置はここでしか正しく取れない（`as x` を読むと `prev_pos()` が
+        // 別名を指す）。`parse_import_stmt` の `module_pos` と同じ理由。
+        let module_pos = self.prev_pos();
 
         let alias = if *self.current() == Token::As {
             self.advance();
@@ -161,6 +193,20 @@ impl Parser {
         } else {
             None
         };
+
+        // エディタ索引: 束縛される名前。ここが無いと **cpp 系の別名だけ**が
+        // hover・定義ジャンプ・スコープ補完・module 着色のすべてから漏れる
+        // （`parse_import_stmt` / `parse_from_import_stmt` には最初からある）。
+        #[cfg(feature = "editor")]
+        {
+            let (bind, pos) = match &alias {
+                Some(a) => (a.clone(), self.prev_pos()),
+                None => (parts.last().cloned().unwrap_or_default(), module_pos),
+            };
+            let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
+            let sig = format!("import[{lang}] {}", parts.join("."));
+            self.note_signature(h, &sig);
+        }
 
         Ok(Stmt::Import {
             lang,

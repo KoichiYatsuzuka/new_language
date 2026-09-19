@@ -97,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (222 files, 83270 lines)
+src/  (223 files, 83365 lines)
   ar_config.rs (244)
   ast.rs (1314)
   decl_names.rs (173)
@@ -255,8 +255,9 @@ src/  (222 files, 83270 lines)
     editor_hooks.rs (424)
     editor_index.rs (250)
     exprs.rs (1125)
-    imports_editor.rs (228)
-    mod.rs (289)
+    imports_editor.rs (274)
+    mod.rs (292)
+    py_stub_extract.rs (370)
     types.rs (680)
     cs_assembly/
       metadata.rs (296)
@@ -270,7 +271,7 @@ src/  (222 files, 83270 lines)
       cpp.rs (205)
       cs_js_modules.rs (249)
       dispatch.rs (187)
-      mod.rs (424)
+      mod.rs (100)
       py_modules.rs (255)
     stmts/
       assignment.rs (193)
@@ -468,7 +469,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   IMPLEMENTATION_LOG.md (9882)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
-  PYTHON_CONVERTER_LOG.md (1201)
+  PYTHON_CONVERTER_LOG.md (1204)
   PYTHON_IMPL_SYNC_PLAN.md (207)
   REFACTORING_HANDOFF.md (133)
 

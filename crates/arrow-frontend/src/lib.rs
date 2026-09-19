@@ -32,6 +32,11 @@ pub mod decl_names;
 pub mod expr_walk;
 #[path = "../../../src/stmt_walk.rs"]
 pub mod stmt_walk;
+// `import[py-int] time` / `math` の同梱型スタブ。`include_str!` なので fs も syscall も
+// 使わず、そのまま wasm に載る。`src/py_stubs.rs` 冒頭 doc が「置き場所が `src/` 直下
+// なのはこの crate が取り込むため」と書いている、その取り込み。
+#[path = "../../../src/py_stubs.rs"]
+pub mod py_stubs;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]
