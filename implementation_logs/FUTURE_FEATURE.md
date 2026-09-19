@@ -484,7 +484,17 @@
 - **参照**: `vm-pitfalls` §3、
   [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §5.2 #4。
 
-## (k) ⚠⚠ `cargo test`（debug）がビルド不能になっても**どのゲートも気づかない**
+## (k) ✅ **対応済み（2026-09-20）** — `cargo test`（debug）のビルド不能を前段で止める
+
+> **結果**: [`scripts/test_build_gate.ps1`](../scripts/test_build_gate.ps1) を新設し、
+> **「毎回」の 2 本（`scan_examples` / `force_gate`）が前段で自動実行**するようにした
+> （`-SkipTestBuild` で飛ばせる）。⚠ **負の対照で確認済み** —— 3 op を戻して
+> `cargo build --release` が **exit 0（緑）** のまま、このゲートだけが exit 1 で止まる。
+> ⚠ 見るのは**ビルドの可否だけ**（キャッシュが効けば 1 秒未満）。合否は別に `cargo test`。
+> ⏳ 残る候補: `storage_operands` の `cfg` を外す案と、debug バイナリで例題を 1 周する案
+> （下記）。**どちらも未実施**。
+
+### 元の起票内容
 
 - **2 つの別の穴が重なっている。**
   1. テストは**別ビルド** ⇒ AST を変えたときの `src/frontend_tests/` の取りこぼしを

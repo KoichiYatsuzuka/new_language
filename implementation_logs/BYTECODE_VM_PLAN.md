@@ -176,7 +176,8 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 ### 検証・計測スクリプト（リポジトリ直下）
 | スクリプト | 用途 |
 |---|---|
-| [scan_examples.ps1](../scripts/scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙 |
+| [scan_examples.ps1](../scripts/scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙。**前段で `test_build_gate.ps1` を呼ぶ**（`-SkipTestBuild` で飛ばせる） |
+| [test_build_gate.ps1](../scripts/test_build_gate.ps1) | **`cargo test`（debug）がビルドできるか**だけを見る（`cargo test --no-run`・合否は見ない）。2026-09-20 新設。⚠⚠ `vm/compiler/mod.rs` の `storage_operands` は `cfg(debug_assertions)` なので **release には存在せず**、他のゲートは全部 `target/release` を見る ⇒ **`Op` の登録を忘れても全ゲートが緑のまま `cargo test` だけがビルド不能**になる（`15aa677` で 73 コミット・`c06254f`/`8c61d07` で 8 コミット見逃した）。⚠ **`cargo test --release` は網にならない**（強制点がコンパイルされない）。`scan_examples` / `force_gate` が前段で自動実行する |
 | [dump_native_ir.ps1](../scripts/dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
 | [annot_diff.ps1](../scripts/annot_diff.ps1) / [annot_unresolved.ps1](../scripts/annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
 | [ab_bench.ps1](../scripts/ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |

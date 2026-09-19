@@ -313,6 +313,9 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   すべて `target/release` を見るので**全部緑のまま 8 コミット進んだ**
   （同じ踏み方が `15aa677` の `Op::CoerceFloat` で **73 コミット**続いた前例あり）。
   ⇒ **op を足したら `--release` を付けずに `cargo test` を回す。**
+  ⇒ ✅ 2026-09-20 から [test_build_gate.ps1](../../../scripts/test_build_gate.ps1) が
+  **`scan_examples` / `force_gate` の前段**で `cargo test --no-run`（debug）を回すので、
+  この 2 本のどちらかを走らせれば自動で止まる（`-SkipTestBuild` で飛ばせる）。
   ⇒ さらに **debug バイナリで例題を 1 周**させると、`debug_assert!` のスロット/セル
   範囲検査が**初めて実際に走る**（`cargo test` はビルドが通るかしか見ていない）。
   ⚠ `target/debug/arrow.exe` は `cargo test --no-run` では**更新されない**。

@@ -6,7 +6,22 @@
 #   - 失敗した例題の stderr 末尾を 1 行に畳んで表示する
 #
 # 使い方: .\scripts\scan_examples.ps1
-param([string]$Exe = '', [int]$TimeoutSec = 45)
+param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild)
+
+
+# ── 前段: `cargo test`（debug）がビルドできるか（`test_build_gate.ps1`）────────────
+# ⚠⚠ **このゲートは `target/release` しか見ない**ので、`cfg(debug_assertions)` の
+#   強制点（`vm/compiler/mod.rs` の `storage_operands`）に `Op` を足し忘れても
+#   最後まで緑で通ってしまう。実際に 2 回踏んでいる（`15aa677` / `c06254f`+`8c61d07`）。
+#   ⇒ **走り出す前に debug のテストビルドだけ通す**（キャッシュが効けば 1 秒未満）。
+#   ⚠ 合否ではなく**ビルドの可否**だけを見る。テスト本体は `cargo test` を別に。
+if (-not $SkipTestBuild) {
+    & (Join-Path $PSScriptRoot 'test_build_gate.ps1')
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '⇒ 先に cargo test（debug）のビルドを直すこと。' -ForegroundColor Red
+        exit 1
+    }
+}
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下

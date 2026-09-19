@@ -65,6 +65,7 @@ python -m impl_python examples/basics/control_flow.ar
 
 | Script | What it checks | Run it when |
 |---|---|---|
+| `test_build_gate.ps1` | **`cargo test`（debug）がビルドできるか**（`cargo test --no-run`） | **毎回**（`scan_examples` / `force_gate` が前段で自動実行。`-SkipTestBuild` で飛ばせる） |
 | `scan_examples.ps1` | 全例題が失敗しないか（タイムアウト付き） | **毎回** |
 | `force_gate.ps1` | VM に載らない構文が無いか（`VmForceError` 0 件） | **毎回** |
 | `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **毎回**（意味論を守る唯一の網） |
@@ -97,12 +98,13 @@ python -m impl_python examples/basics/control_flow.ar
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
 ⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。
 ⚠ ゲートは `target/release` を見る。**自分で走らせて緑**を確かめる（報告を信じない）。
-⚠⚠ **`Op` を足したら `cargo test`（`--release` を付けない）も回す。**
-`vm/compiler/mod.rs` の `storage_operands` は `cfg(debug_assertions)` なので
-**release には存在せず**、上のゲートは全部 `target/release` を見る
-⇒ 登録を忘れても**全ゲートが緑のまま `cargo test` だけがビルド不能**になる
+⚠⚠ **上のゲートは全部 `target/release` を見る。** `vm/compiler/mod.rs` の
+`storage_operands` は `cfg(debug_assertions)` なので **release には存在せず**、
+`Op` の登録を忘れても**全ゲートが緑のまま `cargo test` だけがビルド不能**になる
 （`15aa677` で 73 コミット・`c06254f`/`8c61d07` で 8 コミット見逃した）。
-⚠ `cargo test --release` は**強制点がコンパイルされない**ので網にならない。
+⇒ **`test_build_gate.ps1` が前段でこれを止める**（`scan_examples` / `force_gate` が自動で呼ぶ）。
+⚠ **`cargo test --release` は網にならない**（強制点がコンパイルされない）。
+テストの**合否**まで見たいときは `--release` を付けずに `cargo test` を走らせること。
 
 **Measurement — before filing a speed task**
 
