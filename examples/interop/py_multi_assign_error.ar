@@ -1,25 +1,17 @@
 # py_multi_assign_error.ar — アンパック代入で**通さない**形（U2）。
 #
-# 変換器は `a, b = t` を「一時変数 + 添字アクセス」へ 1 段だけ脱糖する。
-# 以下はその形に収まらないので明示エラーにする。
+# ⚠⚠ **この例題は 2026-09-19 に中身を絞った**。もとは「入れ子 `a, (b, c) = t`」も
+#   踏ませていたが、**再帰で脱糖して通るようになった**（`py_multi_assign.ar` の ⑪〜⑭）。
 #
-# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+# 期待されるエラー（ParseError・変換時）:
+#   `*rest` must be the last target in unpacking
 #
-#   ① 入れ子 `a, (b, c) = t`（本ファイルが踏む形）
-#      nested unpacking (`a, (b, c) = ...`) is not supported
-#      ⇒ 代替: 1 段ずつ分解する（`a, inner = t` のあとで `b, c = inner`）。
-#
-#   ② 途中の `*`（`a, *m, b = t`）
-#      `*rest` must be the last target in unpacking
-#      ⇒ `b` を**末尾から**数える必要がある（`m` の長さが実行時まで決まらない）。
-#        末尾の `*rest` だけスライスで受ける。
+# ⚠ `a, *m, b = t` は `b` を**末尾から**数える必要がある（`m` の長さが実行時まで
+#   決まらない）。末尾の `*rest` だけをスライスで受ける形に留める。
 #
 # ⚠ **通る形**は `py_multi_assign.ar`（複数代入 / 2・3 要素 / 末尾 `*rest` /
-#   リスト形 / スワップ / ループ・while の中 / 添字ターゲット）。
+#   リスト形 / スワップ / ループ・while の中 / 添字ターゲット / 入れ子）。
 
-import[py] test_modules.py_unpack_nested_error as m
-
-# ② を試す場合:
-# import[py] test_modules.py_unpack_midstar_error as m
+import[py] test_modules.py_unpack_midstar_error as m
 
 print("unreachable")

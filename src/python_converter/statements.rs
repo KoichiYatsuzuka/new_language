@@ -268,6 +268,17 @@ pub(crate) fn ident_expr(name: &str) -> Expr {
 /// ⚠ 一時変数は**必須**。`a = t[0]; b = t[1]` と直接書くと右辺が 2 回評価される
 /// （`a, b = f()` で `f` が 2 回走る）。
 /// ⚠ `*rest` は**末尾だけ**。途中に置く形（`a, *m, b = t`）は末尾からの逆算が要るので拒否する。
+///
+/// ★ **入れ子**（`a, (b, c) = t`）は**再帰**で扱う。その位置の要素を新しい一時変数へ
+/// 取り、同じ脱糖を掛ける:
+/// ```text
+/// a, (b, c) = t
+///   →  __py_tmp_0 = t
+///      a = __py_tmp_0[0]
+///      __py_tmp_1 = __py_tmp_0[1]
+///      b = __py_tmp_1[0]
+///      c = __py_tmp_1[1]
+/// ```
 fn unpack_assign(
     elts: &[py::Expr],
     value: Expr,
@@ -313,10 +324,21 @@ fn unpack_assign(
                     "{filename}: `*rest` must be the last target in unpacking"
                 ))
             }
+            // ★ **入れ子のアンパック**（`a, (b, c) = t`）。
+            //   その位置の要素を新しい一時変数へ取り、**再帰で**同じ脱糖を掛ける。
+            //   ⚠ 一時変数は入れ子の段ごとに 1 つ増える（`__py_tmp_N`）。
             py::Expr::Tuple(_) | py::Expr::List(_) => {
-                return Err(format!(
-                    "{filename}: nested unpacking (`a, (b, c) = ...`) is not supported"
-                ))
+                let inner_elts = match elt {
+                    py::Expr::Tuple(t) => &t.elts,
+                    py::Expr::List(l) => &l.elts,
+                    _ => unreachable!("直前の match で絞り込み済み"),
+                };
+                let idx = Expr::Subscript {
+                    object: Box::new(ident_expr(&tmp)),
+                    index: Box::new(Expr::Int(i as i64)),
+                    node_id: 0,
+                };
+                out.extend(unpack_assign(inner_elts, idx, filename, declared)?);
             }
             // `o.a, d[k] = t` のような属性/添字ターゲット。
             py::Expr::Attribute(_) | py::Expr::Subscript(_) => {

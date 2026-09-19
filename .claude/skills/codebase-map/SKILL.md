@@ -97,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (222 files, 82717 lines)
+src/  (222 files, 82739 lines)
   ar_config.rs (244)
   ast.rs (1308)
   decl_names.rs (173)
@@ -303,7 +303,7 @@ src/  (222 files, 82717 lines)
     hoist.rs (123)
     mod.rs (44)
     param_rewrite.rs (82)
-    statements.rs (1190)
+    statements.rs (1212)
     supers.rs (41)
     utils.rs (42)
   type_check/

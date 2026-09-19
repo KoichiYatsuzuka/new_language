@@ -75,3 +75,24 @@ def attr_targets(t):
     d = {}
     d["a"], d["b"] = t
     return d
+
+
+def nested(t):
+    # ★ 入れ子のアンパック（再帰で段ごとに一時変数を取る）
+    a, (b, c) = t
+    return (a, b, c)
+
+
+def nested_deep(t):
+    a, (b, (c, d)) = t
+    return (a, b, c, d)
+
+
+def nested_head(t):
+    (a, b), c = t
+    return (a, b, c)
+
+
+def nested_rest(t):
+    a, (b, *r) = t
+    return (a, b, len(r))
