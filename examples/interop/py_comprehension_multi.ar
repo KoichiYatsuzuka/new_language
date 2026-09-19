@@ -1,0 +1,38 @@
+# py_comprehension_multi.ar — `import[py]` 変換器の **内包表記の多ターゲット**。
+#
+# ⚠ 以前は `tuple unpacking in a list comprehension target is not supported` で拒否。
+#   ⚠⚠ **先頭の節だけ**が単一名に縛られていた（2 つ目以降は `Stmt::For` になるので
+#   通っていた）という非対称が原因。`ComprehensionClause.targets` /
+#   `ForExpr.targets` を `Vec<String>` に揃えて解消した
+#   （`examples/collections/comprehension_multi_target.ar`）。
+#
+# ⚠ **`dict.items()` に戻り値型が付いた**ので、ループ変数へキー型・値型が届く。
+#   以前は `Unresolved` で、`let s: str = d.keys()` が黙って通っていた。
+#
+# 5 形すべて CPython と出力一致を突き合わせ済み。
+
+import[py] test_modules.py_comprehension_multi as m
+
+mut d = {"a": 1, "b": 2}
+mut pairs = [(1, 10), (2, 20)]
+mut xs = ["p", "q"]
+
+# ── ① キーだけ取る ──────────────────────────────────────────────────────
+print(m.keys(d))
+# ['a', 'b']
+
+# ── ② 両方使う ──────────────────────────────────────────────────────────
+print(m.joined(d))
+# ['a1', 'b2']
+
+# ── ③ フィルタ付き ──────────────────────────────────────────────────────
+print(m.filt(pairs))
+# [2]
+
+# ── ④ セット内包 ────────────────────────────────────────────────────────
+print(m.sset(d))
+# 2
+
+# ── ⑤ enumerate ─────────────────────────────────────────────────────────
+print(m.with_enumerate(xs))
+# ['0p', '1q']

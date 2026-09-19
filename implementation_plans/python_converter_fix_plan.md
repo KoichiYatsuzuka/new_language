@@ -975,10 +975,12 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 | 4 | **`compare_wasm_frontend.ps1` は wasm を再ビルドしない**（存在確認のみ）＝ **古い成果物で緑になる**。型検査を触ったら `cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown` を明示的に回すこと | ⏳ 未修正。`vm-pitfalls` §3 に該当 | C3 |
 | 5 | **`list` / `dict` を Arrow から呼べないのは仕様**（⚠ 私が一度「配線漏れ」と誤認して露出させ `4299c88` を revert した）。Arrow 側は**要素型の指定を必須**にしており、素の `list()` / `dict()` で作れるとその規則を迂回する。`eval_type_call` に実装が残るのは **Python 翻訳専用**のため。⇒ ⚠ **`[*a]` の「展開元がリスト限定」も `list()` 抜きで解消した**（列リテラルの `*` を Arrow 構文にしたため） | 🔒 **仕様。Arrow 側へ露出させないこと** | C6 → 誤認 → 撤回 |
 | 6 | ~~`{**d1, **d2}` には py 限定の dict 構築経路が要る~~ → **不要だった**。`dict()` を露出せず、**辞書リテラルの `**` 展開そのものを Arrow の構文**にした（`DictEntry::Spread` / `Op::DictMerge`）。⇒ 要素型を持ち込んで型検査するので、要素型必須の規則も迂回しない | ✅ 解決 | C6 → U3 |
-| 7 | **内包表記が多ターゲットを取れない**（`[k for k, v in d.items()]`）。`ComprehensionClause.target` が単一 `String` で、ネイティブ構文側の変更も要る | ⏳ 未着手・**起票候補** | C5 |
+| 7 | ~~内包表記が多ターゲットを取れない~~ → **解決（2026-09-19）**。⚠ 原因は「**先頭の節だけ**が単一名に縛られていた」非対称（2 つ目以降は `Stmt::For` になるので通っていた）。`ComprehensionClause.targets` / `ForExpr.targets` を `Vec<String>` に揃えた | ✅ 解決 | C5 → 多ターゲット |
 | 8 | **`for k in d:`（dict の直接反復）が `'dict[..]' is not iterable`**。Python では既定でキーを回す | ⏳ 未着手・**起票候補** | C5 |
 | 9 | ~~`open()` が Python と非互換なので項目25 は通らない~~ → **私の誤り（訂正済み）**。Arrow の `open` は `file_path` / `open_mode` の**2 引数で通り**、`start_point` / `byte_recognizing` / `encoding` が任意（3 引数でも通る）。`block` 退出で閉じることも実測済み。⇒ **項目25 の障害ではない**。残る論点は「`.py` の `open(p, "w")` をどう解決するか」＝ **Python の `open` を呼ぶ（`py-int` 経路）か、変換器がモードを写すか**という別問題 | ✅ 誤認を訂正。H1 は着手可 | H1 調査 |
 | 10 | **関数の中の `block` 退出でリソースが解放されない**。最上位の `block` と**関数退出**では解放されるのに、関数内のブロックを抜けても `Drop` が走らない（純 Arrow で再現）。⇒ 項目25 の `with` で書いた直後に**同じ関数の中で**読み直すと空に見える。⚠ `FileObject` に `close()` メソッドも無いので明示クローズもできない | ⏳ 未修正・**起票候補**。coverage 🟡「with 文」の「参照カウント基準の遅延破棄は実質無視できる」という見立ての**反例** | H1 |
+| 11 | **`enumerate` / `zip` の戻り値型が未整備**。`for i, c in enumerate(xs)` のループ変数が `Unresolved` 止まりになる。⚠ `dict.items()` は `builtin_collection_method_return` で `list[tuple[K,V]]` が付くようにした（`let s: str = d.keys()` が**黙って通っていた**のも解消）が、組込み関数側は手つかず | ⏳ 未着手・**起票候補** | 多ターゲット内包表記 |
+| 12 | **`cargo build --release` が緑でも `cargo test` のコンパイルが落ちることがある**（テストは別ビルド）。AST を変えたとき `frontend_tests` の取りこぼしを build では検出できない。⇒ **AST を触ったら `cargo test` まで回す** | ⏳ 運用上の注意 | 多ターゲット内包表記 |
 
 ### 5.3 やらないと決めたこと
 

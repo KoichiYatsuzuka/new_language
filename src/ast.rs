@@ -598,7 +598,13 @@ pub enum Expr {
     /// `->list[T]` アノテーションと `loop_yield` でリストを構築する。
     /// `->T` アノテーションと `block_return` で単一値を返す。
     ForExpr {
-        target: String,
+        /// ループ変数名のリスト。単一変数なら `vec!["x"]`、タプルアンパックなら
+        /// `vec!["k", "v"]`（`Stmt::For.targets` と同じ形）。
+        ///
+        /// ⚠ 以前は単一 `String` だったため、内包表記の**先頭の節**だけが
+        /// `for k, v in d.items()` を書けなかった（2 つ目以降は `Stmt::For` に
+        /// なるので通っていた）という非対称があった。
+        targets: Vec<String>,
         iter: Box<Expr>,
         body: Vec<Stmt>,
         return_type: Option<String>,
@@ -1243,8 +1249,8 @@ pub const KW_SPREAD_ARG_KEY: &str = "**";
 /// [`build_list_comprehension`] を呼ぶ。⇒ **生成される AST が両者で必ず同一**になる。
 #[derive(Debug, Clone)]
 pub struct ComprehensionClause {
-    /// ループ変数名。⚠ タプル展開（`for k, v in ...`）は未対応なので単一名のみ。
-    pub target: String,
+    /// ループ変数名のリスト（`for k, v in d.items()` は 2 要素）。
+    pub targets: Vec<String>,
     /// 反復対象の式。
     pub iter: Expr,
     /// この節に付くフィルタ条件（`if` は複数書ける。すべて満たすときだけ産出する）。
@@ -1292,14 +1298,14 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
         if clauses.is_empty() {
             // 先頭の節だけが値を返す `for` 式になる。
             return Some(Expr::ForExpr {
-                target: clause.target,
+                targets: clause.targets,
                 iter: Box::new(clause.iter),
                 body,
                 return_type: Some("list[Any]".to_string()),
             });
         }
         body = vec![Stmt::For {
-            targets: vec![clause.target],
+            targets: clause.targets,
             iter: clause.iter,
             body,
         }];

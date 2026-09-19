@@ -197,8 +197,11 @@ impl TypeChecker {
         }
 
         // ⚠ 組み込みコレクションメソッドの引数型（タスク 5.2c・検体 `L14`）。
+        let mut builtin_ret: Option<InferredType> = None;
         if let Some((recv_ty, method, span)) = builtin_recv {
             self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
+            // ★ 戻り値型も分かる範囲で付ける。
+            builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method);
         }
 
         // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
@@ -282,6 +285,11 @@ impl TypeChecker {
         //    関数値」（import したモジュールのメンバ等）用で、`check_call_args` の方が
         //    可変長・既定値・`mut` 引数・オーバーロードを正しく扱う。
         //    ⇒ 名前が `fn_sigs` に在るなら従来どおり下の `check_call_args` へ落とす。
+        // ★ 組み込みコレクションのメソッドで戻り値型が判ったものは、ここで確定させる
+        //   （`func_type` は `Unresolved` なので下の分岐では何も付かない）。
+        if let Some(ret) = builtin_ret {
+            return ret;
+        }
         let direct_fn_call = matches!(func, Expr::Ident { .. })
             && func_name
                 .as_deref()
@@ -1287,6 +1295,36 @@ impl TypeChecker {
     /// `list.append` と `set.add` は**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、
     /// `set.discard` は黙って何もしない、`set.remove` は `KeyError`。
     /// どれも「要素型が守られない」ことに変わりはない。
+    /// 組み込みコレクションのメソッドの**戻り値型**（分かるものだけ）。
+    ///
+    /// ⚠⚠ **以前は何も返していなかった**ので `d.keys()` が `Unresolved` になり、
+    /// `let s: str = d.keys()` が**黙って通って**いた（実測）。`Unresolved` は下流で
+    /// 万能受容体として振る舞うため、検査がそこで消える。
+    ///
+    /// ⚠ とくに `d.items()` に型が付くと `for k, v in d.items():` のループ変数へ
+    /// **キー型・値型がそのまま届く**（`Tuple([K, V])` の位置対応）。付いていないと
+    /// `Any` 止まりになり、`k + str(v)` のような普通の式が明示ダウンキャストを要求される。
+    ///
+    /// ⚠ 判らないものは `None`（従来どおり）。ここで嘘の型を返さないこと。
+    fn builtin_collection_method_return(
+        recv_ty: &InferredType,
+        method: &str,
+    ) -> Option<InferredType> {
+        use InferredType as T;
+        let (k, v) = match recv_ty {
+            T::DictOf(k, v) => ((**k).clone(), (**v).clone()),
+            // 要素型を持たない素の `dict`。容器の形だけは判るので `Any` を入れる。
+            T::Dict => (T::Any, T::Any),
+            _ => return None,
+        };
+        match method {
+            "key" | "keys" => Some(T::ListOf(Box::new(k))),
+            "item" | "values" => Some(T::ListOf(Box::new(v))),
+            "items" => Some(T::ListOf(Box::new(T::Tuple(vec![k, v])))),
+            _ => None,
+        }
+    }
+
     fn check_builtin_collection_method_args(
         &mut self,
         recv_ty: &InferredType,

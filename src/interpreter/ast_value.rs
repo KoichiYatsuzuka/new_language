@@ -731,14 +731,14 @@ fn expr_to_value(expr: &Expr) -> Value {
             ],
         ),
         Expr::ForExpr {
-            target,
+            targets,
             iter,
             body,
             ..
         } => ns(
             "ExprForExpr",
             vec![
-                ("target", Value::str(target.as_str())),
+                ("target", str_list(targets)),
                 ("iter", expr_to_value(iter)),
                 ("body", stmts_list(body)),
             ],

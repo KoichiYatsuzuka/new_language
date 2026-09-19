@@ -259,7 +259,7 @@ impl Compiler {
     /// `for target in iter -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
     pub(super) fn compile_for_expr(
         &mut self,
-        target: &str,
+        targets: &[String],
         iter: &Expr,
         body: &[Stmt],
         ann: Option<u32>,
@@ -271,28 +271,60 @@ impl Compiler {
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
         // 本体内の `break` はこの式の NORMAL_END（= 蓄積リストを push する位置）へ跳ぶ。
         let saved_base = self.stmt_base.replace(0);
-        let r = self.compile_for_expr_inner(target, iter, body, ann);
+        let r = self.compile_for_expr_inner(targets, iter, body, ann);
         self.stmt_base = saved_base;
         r
     }
 
     pub(super) fn compile_for_expr_inner(
         &mut self,
-        target: &str,
+        targets: &[String],
         iter: &Expr,
         body: &[Stmt],
         ann: Option<u32>,
     ) -> Option<()> {
+        if targets.is_empty() {
+            bail("forexpr-no-target", None);
+            return None;
+        }
         // ⚠⚠ ループ変数は**ブロック内の束縛**（規則 2・B4）。`compile_for`（文側）と同じく
         //    本体の間だけ temp slot へ差し替え、抜けたら解放する。
         // ⚠ ここを直さないと**内包表記だけが古い規則のまま**になる—— 実測で、関数内の
         //   `[v * 2 for v in range(3)]` の後で `v` が読めていた（最上位だけ NameError）。
         // ⚠ temp は LIFO なので、**一番先に割り当てて一番後に解放**する。
-        let target_temp = if target != "_" { Some(self.alloc_temp()?) } else { None };
-        if let Some(t) = target_temp {
-            self.slots.insert(target.to_string(), t);
+        // ⚠⚠ **多ターゲット（`for k, v in d.items() -> list[T]:`）の分解は
+        //    `compile_for`（文側）と同じ形にすること**。片方だけ直すと、内包表記の
+        //    先頭の節だけが別規則になる（この非対称が実際に穴だった）。
+        let mut shadow_saved: Vec<String> = Vec::new();
+        for t in targets {
+            if t != "_" {
+                let fresh = self.alloc_temp()?;
+                self.slots.insert(t.clone(), fresh);
+                shadow_saved.push(t.clone());
+            }
         }
-        let target_slot = *self.slots.get(target)?;
+        let unpack = targets.len() > 1;
+        // 受け皿の temp が要るのは「複数ターゲット」か「捨てターゲット `_`」（`compile_for` と同じ）。
+        let sink_temp = if unpack || targets[0] == "_" {
+            Some(self.alloc_temp()?)
+        } else {
+            None
+        };
+        let target_slot = match sink_temp {
+            Some(t) => t,
+            None => *self.slots.get(&targets[0])?,
+        };
+        // 分解先 slot は**本体をコンパイルする前に**引く（`?` の早期 return で temp が漏れないように）。
+        let mut target_slots: Vec<Option<u16>> = Vec::new();
+        if unpack {
+            for t in targets {
+                target_slots.push(if t == "_" {
+                    None
+                } else {
+                    Some(*self.slots.get(t)?)
+                });
+            }
+        }
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
         self.emit(Op::StoreLocal(yield_slot));
@@ -303,6 +335,16 @@ impl Compiler {
         self.emit(Op::StoreLocal(iter_temp));
         let loop_start = self.here();
         let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit → NORMAL_END
+        // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（`compile_for` と同一）。
+        if unpack {
+            self.emit(Op::UnpackTuple(target_slot, targets.len() as u16));
+            for ts in target_slots.iter().rev() {
+                match ts {
+                    Some(slot) => self.emit(Op::StoreLocal(*slot)),
+                    None => self.emit(Op::Pop),
+                };
+            }
+        }
         self.loops.push(LoopCtx {
             continue_target: loop_start,
             break_jumps: Vec::new(),
@@ -344,10 +386,15 @@ impl Compiler {
         self.free_temp(); // yield_slot
         // ループ変数を解放する（規則 2・B4）。`compile_for` と同じ理由で
         // `slots` から外すだけだと読みが黙って `None` になるので released にも入れる。
-        if target_temp.is_some() {
-            self.slots.remove(target);
-            self.released_for_targets.insert(target.to_string());
-            self.free_temp(); // target_temp（LIFO なので最後）
+        if sink_temp.is_some() {
+            self.free_temp(); // sink_temp
+        }
+        // ループ変数を解放する（規則 2・B4）。`slots` から外すだけだと読みが黙って
+        // `None` になるので released にも入れる。⚠ temp は LIFO なので逆順に返す。
+        for t in shadow_saved.iter().rev() {
+            self.slots.remove(t);
+            self.released_for_targets.insert(t.clone());
+            self.free_temp();
         }
         Some(())
     }

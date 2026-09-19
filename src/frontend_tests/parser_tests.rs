@@ -966,11 +966,11 @@
     /// 内包表記が `for` 式 + `loop_yield` に脱糖されていることを検証する。
     ///
     /// 期待する形（`[v * 2 for v in xs if v > 1]`）:
-    /// `ForExpr { target: "v", return_type: Some("list[Any]"),
+    /// `ForExpr { targets: ["v"], return_type: Some("list[Any]"),
     ///            body: [If { branches: [(cond, [LoopYield(elt)])], else_body: None }] }`
     fn assert_desugared_comprehension(e: &Expr) {
         let Expr::ForExpr {
-            target,
+            targets,
             body,
             return_type,
             ..
@@ -978,7 +978,7 @@
         else {
             panic!("expected Expr::ForExpr, got: {e:?}");
         };
-        assert_eq!(target, "v");
+        assert_eq!(targets, &["v".to_string()]);
         // ⚠ 要素型は付けない。`->list[T]` にすると loop_yield の実行時型検査が走ってしまう。
         assert_eq!(return_type.as_deref(), Some("list[Any]"));
         assert_eq!(body.len(), 1, "body: {body:?}");
@@ -1027,10 +1027,10 @@
     #[test]
     fn test_nested_comprehension_shape() {
         let stmts = parse("[a * b for a in xs for b in ys]\n");
-        let Expr::ForExpr { target, body, .. } = sole_expr(&stmts) else {
+        let Expr::ForExpr { targets, body, .. } = sole_expr(&stmts) else {
             panic!("expected Expr::ForExpr");
         };
-        assert_eq!(target, "a");
+        assert_eq!(targets, &["a".to_string()]);
         assert!(
             matches!(body.as_slice(), [Stmt::For { targets, body: inner, .. }]
                 if targets == &["b".to_string()]

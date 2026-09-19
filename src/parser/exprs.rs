@@ -790,13 +790,19 @@ impl Parser {
             // `for target in iter [->Type]: body` — for 式
             Token::For => {
                 self.advance();
-                let target = self.expect_ident()?;
+                // ⚠ `for k, v in d.items() -> list[T]:` のように**多ターゲット**を許す
+                //   （`Stmt::For` は元から対応していた。式側だけが単一名だった）。
+                let mut targets = vec![self.expect_ident()?];
+                while *self.current() == Token::Comma {
+                    self.advance();
+                    targets.push(self.expect_ident()?);
+                }
                 self.eat(&Token::In)?;
                 let iter = self.parse_expr()?;
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
                 Ok(Expr::ForExpr {
-                    target,
+                    targets,
                     iter: Box::new(iter),
                     body: self.parse_block()?,
                     return_type,
@@ -970,11 +976,13 @@ impl Parser {
         let mut clauses: Vec<crate::ast::ComprehensionClause> = Vec::new();
         while *self.current() == Token::For {
             self.advance(); // consume `for`
-            let target = self.expect_ident()?;
-            if *self.current() == Token::Comma {
-                return Err(format!(
-                    "ParseError: tuple unpacking in a {kind} comprehension target is not supported"
-                ));
+            // ★ `[k for k, v in d.items()]` — 内包表記のターゲットも多ターゲット可。
+            //   ⚠ 以前は**先頭の節だけ**が単一名に縛られていた（2 つ目以降は
+            //     `Stmt::For` になるので通っていた）という非対称があった。
+            let mut targets = vec![self.expect_ident()?];
+            while *self.current() == Token::Comma {
+                self.advance();
+                targets.push(self.expect_ident()?);
             }
             self.eat(&Token::In)?;
             let iter = self.parse_expr()?;
@@ -983,7 +991,7 @@ impl Parser {
                 self.advance(); // consume `if`
                 ifs.push(self.parse_expr()?);
             }
-            clauses.push(crate::ast::ComprehensionClause { target, iter, ifs });
+            clauses.push(crate::ast::ComprehensionClause { targets, iter, ifs });
         }
         self.eat(close)?;
         let list_expr = crate::ast::build_list_comprehension(elt, clauses).ok_or_else(|| {

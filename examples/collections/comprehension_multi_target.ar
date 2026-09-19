@@ -1,0 +1,63 @@
+# comprehension_multi_target.ar — 内包表記・`for` 式の**多ターゲット**（`for k, v in ...`）。
+#
+# ⚠⚠ **以前は先頭の節だけが単一名に縛られていた**という非対称があった。
+#   2 つ目以降の `for` は `Stmt::For`（`targets: Vec<String>`）になるので通っていたのに、
+#   先頭は `Expr::ForExpr`（`target: String`）だったため
+#   `[k for k, v in d.items()]` が `ParseError` で落ちていた。
+#   ⇒ `ComprehensionClause.targets` / `ForExpr.targets` を `Vec<String>` に揃えた。
+#
+# ⚠ VM の分解は `compile_for`（文側）と**同じ `Op::UnpackTuple`** を通す。
+#   片方だけ直すと内包表記だけ別規則になる。
+#
+# ⚠ **`dict.items()` に戻り値型が付いた**ので、ループ変数へキー型・値型がそのまま届く。
+#   以前は `Unresolved` で、`let s: str = d.keys()` が**黙って通って**いた。
+
+mut d = {"a": 1, "b": 2}
+mut pairs = [(1, 10), (2, 20)]
+mut xs = ["p", "q"]
+
+# ── ① キーだけ取る ──────────────────────────────────────────────────────
+print([k for k, v in d.items()])
+# ['a', 'b']
+
+# ── ② 値だけ取る ────────────────────────────────────────────────────────
+print([v for k, v in d.items()])
+# [1, 2]
+
+# ── ③ 両方使う（型が届いているので `+` がそのまま書ける） ───────────────
+print([k + str(v) for k, v in d.items()])
+# ['a1', 'b2']
+
+# ── ④ タプルのリスト ────────────────────────────────────────────────────
+print([a + b for a, b in pairs])
+# [11, 22]
+
+# ── ⑤ フィルタ付き ──────────────────────────────────────────────────────
+print([a for a, b in pairs if b > 10])
+# [2]
+
+# ── ⑥ セット内包 ────────────────────────────────────────────────────────
+print({k for k, v in d.items()})
+# {'a', 'b'}
+
+# ── ⑦ enumerate ─────────────────────────────────────────────────────────
+print([str(i) + c for i, c in enumerate(xs)])
+# ['0p', '1q']
+
+# ── ⑧ 多重 for との組み合わせ ───────────────────────────────────────────
+print([a + b for a, b in pairs for c in [1]])
+# [11, 22]
+
+# ── ⑨ `for` 式そのものでも多ターゲット ──────────────────────────────────
+mut total = for k, v in d.items() -> list[int]:
+    loop_yield v
+print(total)
+# [1, 2]
+
+# ── ⑩ dict メソッドの戻り値型が効く ─────────────────────────────────────
+let ks: list[str] = d.keys()
+let vs: list[int] = d.values()
+print(ks)
+print(vs)
+# ['a', 'b']
+# [1, 2]

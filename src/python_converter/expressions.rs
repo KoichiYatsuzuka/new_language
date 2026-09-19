@@ -69,11 +69,27 @@ fn convert_comprehension_clauses(
                 "{filename}: `async for` in a {kind} comprehension is not supported"
             ));
         }
-        let target = match &gen.target {
-            py::Expr::Name(n) => n.id.to_string(),
+        // ★ `[k for k, v in d.items()]` — 多ターゲットも写せる（Arrow 側の
+        //   `ComprehensionClause.targets` / `ForExpr.targets` を `Vec<String>` にした）。
+        let targets: Vec<String> = match &gen.target {
+            py::Expr::Name(n) => vec![n.id.to_string()],
+            py::Expr::Tuple(t) => {
+                let mut names = Vec::with_capacity(t.elts.len());
+                for elt in &t.elts {
+                    match elt {
+                        py::Expr::Name(n) => names.push(n.id.to_string()),
+                        _ => {
+                            return Err(format!(
+                                "{filename}: only simple names are supported in a {kind}                                  comprehension target (nested unpacking is not)"
+                            ))
+                        }
+                    }
+                }
+                names
+            }
             _ => {
                 return Err(format!(
-                    "{filename}: tuple unpacking in a {kind} comprehension target is not supported"
+                    "{filename}: unsupported {kind} comprehension target"
                 ))
             }
         };
@@ -88,7 +104,7 @@ fn convert_comprehension_clauses(
             gen.ifs.iter().map(|c| convert_expr(c, filename)).collect()
         };
         clauses.push(crate::ast::ComprehensionClause {
-            target,
+            targets,
             iter,
             ifs: ifs?,
         });

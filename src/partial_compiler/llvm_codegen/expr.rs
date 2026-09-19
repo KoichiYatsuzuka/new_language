@@ -348,7 +348,10 @@ impl<'a> GenCtx<'a> {
                 (r, Ty::Handle)
             }
 
-            Expr::ForExpr { target, iter, body, .. } => {
+            // ⚠ 多ターゲット（`for k, v in ...`）はネイティブ非適格にしてある
+            //   （`expr_eligible` 側）。ここでは先頭 1 つだけを見る。
+            Expr::ForExpr { targets, iter, body, .. } => {
+                let target = &targets[0];
                 // Accumulator list (for loop_yield) or result slot (for block_return)
                 let result_al = format!("%_for_res{}", self.blk);
                 self.blk += 1;

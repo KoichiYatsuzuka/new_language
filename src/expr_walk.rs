@@ -99,9 +99,11 @@ pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
         }
         // ⚠ `target` → `iter` → `body` の順を変えないこと（採番が依存）。
         Expr::ForExpr {
-            target, iter, body, ..
+            targets, iter, body, ..
         } => {
-            f(SubPart::ForTarget(target));
+            for t in targets {
+                f(SubPart::ForTarget(t));
+            }
             f(SubPart::Control(iter));
             f(SubPart::Body(body));
         }

@@ -369,7 +369,7 @@ impl TypeChecker {
                 Self::ann_or_unresolved(return_type)
             }
             Expr::ForExpr {
-                target,
+                targets,
                 iter,
                 body,
                 return_type,
@@ -388,17 +388,36 @@ impl TypeChecker {
                 // ⚠ 積むのは `->list[T]` **そのもの**。要素を取り出すのは `loop_yield`
                 //    側で、内側の注釈が `list[T]` でなければ照合しない（タスク 5.2）。
                 let ann = self.ann_or_none(return_type);
+                // ⚠ 多ターゲット（`for k, v in d.items()`）の型の割り付けは
+                //   **`Stmt::For` と同じ規則**にする（片方だけ直すとずれる）。
+                //   ⚠⚠ 対応が付かないときは **`Stmt::For` と同じく `Unresolved`**。
+                //     `Any` に倒すと「明示ダウンキャスト必須」になり、
+                //     `for i, c in enumerate(xs)` のように**要素型が判らない反復対象**で
+                //     `str(i) + c` のような普通の式が落ちる（実測）。
+                //     ⇒ ここを `Any` にするより、**反復対象の型を判るようにする方が筋**。
+                //     `d.items()` は `builtin_collection_method_return` で
+                //     `list[tuple[K, V]]` が付くようになったので、この枝には落ちない。
+                //     `enumerate` / `zip` の戻り値型は未整備（起票候補）。
+                let target_tys: Vec<InferredType> = match (&elem_ty, targets.len()) {
+                    (_, 1) => vec![elem_ty.clone()],
+                    (InferredType::Tuple(ts), n) if ts.len() == n => ts.clone(),
+                    (_, n) => vec![InferredType::Unresolved; n],
+                };
                 self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();
-                    // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
-                    if target != "_" && c.lookup(target).is_some() {
-                        c.report_error(StaticTypeError {
-                            kind: TypeErrorKind::VariableRedeclaration { name: target.clone() },
-                            span: None,
-                        });
+                    for (target, ty) in targets.iter().zip(target_tys) {
+                        // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
+                        if target != "_" && c.lookup(target).is_some() {
+                            c.report_error(StaticTypeError {
+                                kind: TypeErrorKind::VariableRedeclaration {
+                                    name: target.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                        // 規則 3: 反復対象の属性を継ぐ（一時値は `let`）。
+                        c.declare(target.clone(), ty, target_mut);
                     }
-                    // 規則 3: 反復対象の属性を継ぐ（一時値は `let`）。
-                    c.declare(target.clone(), elem_ty, target_mut);
                     c.check_stmts(body);
                     c.pop_scope();
                 });

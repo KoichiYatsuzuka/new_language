@@ -725,7 +725,11 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::IfExpr { branches, else_body, .. } =>
             branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
             && else_body.as_ref().is_none_or(|b| body_eligible(b)),
-        Expr::ForExpr { iter, body, .. } => expr_eligible(iter) && body_eligible(body),
+        // ⚠ 多ターゲット（`for k, v in ...`）はネイティブ非適格。`gen_expr` は
+        //   ループ変数 1 つ分の受け皿しか作らない（分解する形が無い）。
+        Expr::ForExpr { targets, iter, body, .. } => {
+            targets.len() == 1 && expr_eligible(iter) && body_eligible(body)
+        }
         Expr::WhileExpr { cond, body, .. } => expr_eligible(cond) && body_eligible(body),
         Expr::MatchExpr { subject, arms, .. } =>
             expr_eligible(subject) && arms.iter().all(|a| {

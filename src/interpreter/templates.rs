@@ -665,12 +665,12 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
         Expr::ForExpr {
-            target,
+            targets,
             iter,
             body,
             return_type,
         } => Expr::ForExpr {
-            target: target.clone(),
+            targets: targets.clone(),
             iter: Box::new(subst_expr(iter, type_map)),
             body: subst_stmts(body, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
