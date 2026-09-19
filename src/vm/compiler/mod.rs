@@ -521,6 +521,11 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             | Op::Yield
             | Op::AsyncSubmit(_)
             | Op::CoerceFloat
+            // ⚠ 展開系（`{**d}` / `[*a]` / `f(*a)`）。オペランドはスタック上の値だけで、
+            //   `SeqFinish` の `u8` は**種別タグ**（list / set / tuple）＝ slot でも cell でもない。
+            | Op::DictMerge
+            | Op::SeqExtend
+            | Op::SeqFinish(_)
             => ([None, None], [None, None]),
         }
 }
