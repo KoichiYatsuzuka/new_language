@@ -259,6 +259,10 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
   `stale_doc_refs` OK。
   ⚠ `crates/arrow-frontend` の `type_refs::skipped_generic_arguments` は**本変更と無関係に
   HEAD で落ちている**（`type Box does not take type arguments`）。stash して確認済み。
+  → **2026-09-20 に修正済み**（タスク 9.7 の退行だった）。テストは
+  `type_refs::generic_arguments_of_unknown_base` へ改名。判定を型検査へ移し、
+  あわせて `compare_wasm_frontend.ps1` が `crates/arrow-frontend` の単体テストを
+  走らせるようにした（それまで**どのゲートも走らせていなかった**）。
 - **参照**: [`crates/arrow-frontend/src/wasm.rs`](../crates/arrow-frontend/src/wasm.rs)（ABI の作法）／
   [`src/parser/imports_editor.rs`](../src/parser/imports_editor.rs)（不変条件）。
 

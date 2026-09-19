@@ -4076,6 +4076,65 @@ Arrow の型は小文字の `list` で、**`List` という型は存在しない
 ⚠⚠ **この例題は `scan_examples` の skip 一覧に入っている**（Node.js が要る）。
 捕まえたのは **`compare_outputs` だけ**だった。⇒ ゲートを全部走らせる理由がまた 1 つ増えた。
 
+##### ⚠⚠ 退行を出した（2026-09-19 報告 → 2026-09-20 修正）
+
+**パーサに判定させたのが誤りだった。**
+
+```arrow
+from tmod import[ar] Box          # tmod.ar に class Box[T]
+let b: Box[int] = Box[int](3)     # ⛔ ParseError: type `Box` does not take type arguments
+```
+
+`known_templates` は `scan_template_names` が**自分のファイルのトークンだけ**を
+走査して作るので、import 先で定義されたテンプレートは載らない。
+⇒ **モジュールを跨ぐテンプレート注釈が丸ごと書けなくなっていた。**
+
+⚠ 起票時のコミットメッセージに「import 先のテンプレートもここで弾かれる。
+**これは退行ではない**」と書いたが、**誤りだった**。確かに `[...]` は従来も捨てられて
+いたが、捨てた結果の `Box` は
+[`type_utils.rs`](../src/type_check/type_utils.rs) の
+`(GenericInstance{name: a, ..}, NamedInstance(e)) if a == e` の腕（タスク 2.1）で
+**通っていた**。⇒ 「捨てられていたから元から壊れていた」まで確かめずに書いた。
+
+⚠⚠ **パースエラーなのが特に悪い。** プログラムが動かないだけでなく、
+VS Code 拡張がそのファイルを**一切解析できなくなる**（hover も診断も出ない）。
+⚠ 式の側（`Box[int](3)`）は別経路なので通っており、**注釈だけが落ちる**気づきにくい形だった。
+
+##### なぜゲートが緑だったのか
+
+`crates/arrow-frontend/tests/type_refs.rs` の `skipped_generic_arguments` は
+**この変更で落ちていた**。しかし `crates/arrow-frontend` は `Cargo.toml` の
+`exclude` でワークスペース外なので、**root の `cargo test` が走らせない**。
+⇒ 9.8（release ゲートが `cfg(debug_assertions)` の強制点を見ない）と同じ構造で、
+**テストは存在するのに、それを走らせるゲートが無い**状態だった。
+
+##### 直し方: **判定を型検査へ移した**
+
+| 層 | 修正前（9.7） | 修正後 |
+|---|---|---|
+| パーサ | `known_templates` に無い名前の `[...]` を**エラー**にする | 型引数を**保って** `Base[Args]` を返すだけ |
+| `from_ann` | 大文字始まりの名前だけ `GenericInstance` を作る | 小文字も作る（タスク 8.2 と同じ対称化） |
+| 型検査 | — | `check_ann_takes_no_type_args` が「その名前は型引数を取れるか」を判定 |
+
+レジストリは import 本体も収集している（`registry/builder.rs` の `Stmt::Import` 分岐）
+ので、こちらでは正しく判定できる。
+⚠ `registry_incomplete`（タスク 8.5）で守る。import 先を読めていない
+VS Code 拡張の wasm では「テンプレートでない」と断定できないため。
+
+⚠ 診断の**順序に意味がある**。`str[int]` は「`str` は型引数を取らない」と言うべきで、
+「`str` は存在しない型」ではない（`str` は実在する）。`collect_type_names` は
+`GenericInstance` の頭の名前も集めるので、先に 8.5 の実在検査を回すと
+**誤解を招く方の診断**が出た（実測）。⇒ 型引数の可否を先に見て、鳴ったら打ち切る。
+
+##### 再発を防ぐ網（2 つとも無かった）
+
+1. `examples/interop/cross_module_template.ar`（新設）… import 先のテンプレートを
+   注釈・引数・戻り値に書く。**修正前のビルドで落ちることを確認済み。**
+2. `compare_wasm_frontend.ps1` に `crates/arrow-frontend` の単体テストを走らせる段を追加。
+   ⚠ `test_build_gate.ps1` は「ワークスペース外なので対象外、あちらは
+   `compare_wasm_frontend` が受け持つ」と書いていたが、**実際には受け持っていなかった**。
+   その記述を事実にした。
+
 ##### 移行コスト: 例題 1 件（上記）
 
 `scan_examples` 既知の TIMEOUT のみ、`force_gate` 0 件（321）、

@@ -320,6 +320,15 @@ impl TypeChecker {
     /// C ABI 別名や alias 展開を経た綴りもここへ来るため。
     pub(crate) fn check_ann_not_bare(&mut self, ann: &str, what: &str) {
         let Some(ty) = InferredType::from_ann(ann) else { return };
+        // ⚠⚠ **順序に意味がある。** `str[int]` は
+        //    「`str` は型引数を取らない」と言うべきで、
+        //    「`str` は存在しない型」ではない（`str` は実在する）。
+        //    `collect_type_names` は `GenericInstance` の頭の名前も集めるので、
+        //    先に名前の実在検査を回すと**誤解を招く方の診断が出る**（実測）。
+        //    ⇒ 型引数の可否を先に見て、鳴ったらそこで打ち切る。
+        if self.check_ann_takes_no_type_args(&ty, ann, what) {
+            return;
+        }
         self.check_ann_names_exist(&ty, ann, what);
         if !ty.is_bare_container() {
             return;
@@ -346,6 +355,51 @@ impl TypeChecker {
     /// 実測: 例題 393 件で未知名は 43 箇所あり、**42 箇所が py スタブ由来**だった。
     /// ⇒ ここを「外部由来なら飛ばす」と書かないこと。モジュール境界の判断は
     ///   `annotate_module_body` が 1 箇所で持っている。
+    /// **型引数を取らない型に `[...]` が付いていないか**（タスク 9.7 の退行修正）。
+    ///
+    /// ⚠⚠ **この判定はパーサではできない。** `parse_type_expr` は自分のファイルしか
+    /// 見ないので、import 先で定義されたテンプレートを「テンプレートでない」と
+    /// 誤判定する。9.7 はそこで弾いてしまい、
+    /// `from tmod import[ar] Box` + `let b: Box[int]` を**パースエラー**にしていた。
+    /// ⇒ レジストリ（import 本体も収集済み）を持つこちらで判定する。
+    ///
+    /// ⚠ `registry_incomplete` のときは見送る。理由は
+    /// [`Self::check_ann_names_exist`] と同じで、import 先を読めていない環境
+    /// （VS Code 拡張の wasm）では「テンプレートでない」と断定できないため。
+    ///
+    /// 戻り値: **報告したか**。呼び出し側は `true` なら後続の検査を打ち切る
+    /// （同じ注釈に 2 つの診断を出さないため）。
+    fn check_ann_takes_no_type_args(&mut self, ty: &InferredType, ann: &str, what: &str) -> bool {
+        if self.registry_incomplete {
+            return false;
+        }
+        let InferredType::GenericInstance { name, .. } = ty else {
+            return false;
+        };
+        // テンプレートなら型引数を取れる。個数の不一致は別検査の担当。
+        if self
+            .registry
+            .template_params(name)
+            .is_some_and(|p| !p.is_empty())
+        {
+            return false;
+        }
+        // ⚠ 型変数そのもの（`fn f[T](x: T[int])` の `T`）は判定しない。
+        //   いま見えている型変数は具体型が決まっていないので、取れるかどうか言えない。
+        if self.state.is_type_param(name) {
+            return false;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::TypeTakesNoTypeArgs {
+                name: name.clone(),
+                ann: ann.to_string(),
+                what: what.to_string(),
+            },
+            span: None,
+        });
+        true
+    }
+
     fn check_ann_names_exist(&mut self, ty: &InferredType, ann: &str, what: &str) {
         // ⚠ import 先を読み込めていないなら、レジストリに無い＝存在しない とは言えない。
         if self.registry_incomplete {

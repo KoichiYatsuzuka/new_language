@@ -15,11 +15,22 @@
 #   ⇒「型名のあとの `[` は型引数」は既に全体の前提で、キャスト結果へ添字を付けるなら
 #     `(x => T)[0]` と括る（既存の作法）。
 #
-# ⚠ テンプレートの**型引数が合わない**場合は別の診断（StaticTypeError）になる。
+# ## ⚠⚠ 判定はパーサではなく**型検査**が行う（2026-09-20 の修正）
+#
+# 9.7 は当初これを `parse_type_expr` で弾いていたが、**パーサには判定材料が無い**。
+# `known_templates` は自分のファイルのトークンからしか作れないので、
+# `from tmod import[ar] Box` + `let b: Box[int]` という**モジュールを跨ぐテンプレート
+# 注釈まで ParseError にしていた**（実測）。パースエラーはプログラムが動かないうえ、
+# エディタがそのファイルを一切解析できなくなる。
+# ⇒ パーサは型引数を**保ったまま**返し、レジストリ（import 本体も収集済み）を持つ
+#   型検査側が「その名前は型引数を取れるのか」を決める。
+#
+# ⚠ テンプレートの**型引数が合わない**場合は別の診断になる。
 #   そちらは generic_type_ann_error.ar と type_args_not_dropped.ar のコメントを参照。
 #
-# 期待されるエラー:
-#   ParseError: type `str` does not take type arguments
+# 期待されるエラー（2 件）:
+#   StaticTypeError  variable `x` is annotated 'str[int]' but 'str' does not take type arguments
+#   StaticTypeError  'x' is declared 'str[int]' but initialized with 'str'
 
 let x: str[int] = "s"               # ⛔ str は型引数を取らない
 

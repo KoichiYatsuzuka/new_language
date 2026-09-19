@@ -400,11 +400,28 @@ impl Parser {
         //    `T` は使用箇所では見えない型変数なので、0-2/0-3 の照合が
         //    `field 'v' of class 'Box' is declared 'T'` という**偽陽性**を出していた（実測）。
         //
-        // ⚠ **`known_templates` に載っている名前に限る。** この関数はキャスト
-        //    （`expr => Type`・[exprs.rs] の `Token::FatArrow`）からも呼ばれるので、
-        //    無条件に厳密パースすると `x => list[0]` のような**型でない中身**で
-        //    パースエラーになる。テンプレート名以外は従来どおり読み飛ばす。
-        if self.known_templates.contains(&base) && *self.current() == Token::LBracket {
+        // ⚠⚠ **`known_templates` で絞らない**（タスク 9.7 の退行修正・2026-09-20）。
+        //
+        //    9.7 は「テンプレート名以外に `[...]` が付いていたら弾く」ことにしたが、
+        //    **パーサには判定材料が無い**。`known_templates` は
+        //    [`Self::scan_template_names`] が**自分のファイルのトークンだけ**を走査して
+        //    作るので、import 先で定義されたテンプレートは載らない。結果:
+        //
+        //      from tmod import[ar] Box      # tmod.ar に class Box[T]
+        //      let b: Box[int] = Box[int](3) # ⛔ ParseError になっていた（実測）
+        //
+        //    パースエラーなのでプログラムが動かないだけでなく、**エディタがその
+        //    ファイルを一切解析できない**（hover も診断も出ない）。
+        //
+        //    ⇒ **判定は型検査へ移した。** ここは型引数を保って `Base[Args]` という
+        //      文字列にするだけにし、「`Base` は型引数を取れるのか」は
+        //      レジストリを持つ型検査側（`check_ann_takes_no_type_args`）が決める。
+        //      そちらは import 先も読んでいるので正しく判定できる。
+        //
+        // ⚠ 旧コメントは「キャスト位置から呼ばれるので `x => list[0]` が壊れる」ことを
+        //   絞り込みの理由にしていたが、`list[` 等は**上で既に厳密パース**しているので
+        //   その例は絞り込みの有無に関係なくエラーになる（9.7 で確認済み）。
+        if *self.current() == Token::LBracket {
             self.advance(); // consume '['
             let mut args = Vec::new();
             while *self.current() != Token::RBracket && *self.current() != Token::Eof {
@@ -415,32 +432,6 @@ impl Parser {
             }
             self.eat(&Token::RBracket)?;
             return Ok(format!("{base}[{}]", args.join(",")));
-        }
-        // ⚠⚠ **型引数を取らない型に `[...]` が付いていたら弾く**（タスク 9.7）。
-        //
-        //    以前はここで `[...]` を**読み飛ばして捨てて**いた。そのため
-        //      let x: str[int] = "s"     # 通っていた（注釈が `str` になる）
-        //      let n: int[0] = 5         # 通っていた
-        //      let f: Foo[int] = Foo(1)  # 通っていた（`Foo` は非テンプレート）
-        //    のように、**利用者が書いた型引数が黙って消えていた**。
-        //    タスク 8.2（`list[foo]` が素の `list` に落ちる）と同じ系統の穴。
-        //
-        // ⚠ 旧コメントは「キャスト（`expr => Type`）から呼ばれるので `x => list[0]` の
-        //   ような型でない中身でパースエラーになる」ことを読み飛ばしの理由にしていたが、
-        //   **その例はもう成り立たない**。`list[` / `fixed_list[` / `set[` / `dict[` /
-        //   `tuple[` / `type[` / `Result[` は上で**すでに厳密パース**しているので、
-        //   `x => list[0]` は読み飛ばしの有無に関わらずエラーになる。
-        //   ⇒ 「型名のあとに `[` が来たら型引数」という規則は**すでに全体の前提**で、
-        //     キャスト結果に添字を付けたいなら `(x => T)[0]` と括る（既存の作法）。
-        //
-        // ⚠ import 先で定義されたテンプレートもここで弾かれる。別ファイルは別 `Parser` が
-        //   読むので [`Self::scan_template_names`] の走査対象に入らないため。
-        //   ⚠ **これは退行ではない。** 従来もその `[...]` は捨てられており、型検査は
-        //     置換前の型変数を見ていた（＝黙って壊れていた）。弾くことで露見する。
-        if *self.current() == Token::LBracket {
-            return Err(format!(
-                "type `{base}` does not take type arguments"
-            ));
         }
         Ok(base)
     }

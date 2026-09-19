@@ -411,6 +411,25 @@ pub enum TypeErrorKind {
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
     /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
     UnknownGuardType { type_name: String },
+    /// **型引数を取らない型に `[...]` が付いている**（タスク 9.7）。
+    ///
+    /// ```arrow
+    /// let x: str[int] = "s"       // ⛔ str はテンプレートではない
+    /// ```
+    ///
+    /// ⚠⚠ **以前は `parse_type_expr` が `[...]` を読み飛ばして捨てていた**ので、
+    /// `str[int]` が `str` になって黙って通っていた。9.7 でパーサが弾くようにしたが、
+    /// パーサは import 先のテンプレートを知らないため
+    /// `let b: Box[int]`（`Box` は別モジュール）まで**パースエラー**にしてしまった。
+    /// ⇒ 判定をここへ移した。レジストリは import 本体も収集しているので正しく決まる。
+    TypeTakesNoTypeArgs {
+        /// 型引数を付けられた名前（`str` など）。
+        name: String,
+        /// それを含む注釈全体（`str[int]` など）。
+        ann: String,
+        /// どこの注釈か。
+        what: String,
+    },
     /// **注釈に書かれた型名が存在しない**（タスク 8.5）。
     ///
     /// ```arrow
@@ -882,6 +901,10 @@ impl StaticTypeError {
             TypeErrorKind::UnknownGuardType { type_name } => format!(
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
+            ),
+            TypeErrorKind::TypeTakesNoTypeArgs { name, ann, what } => format!(
+                "{what} is annotated {} but {} does not take type arguments",
+                hl_q(ann), hl_q(name)
             ),
             TypeErrorKind::UnknownTypeName { name, ann, what } => {
                 // ⚠ 注釈がその名前そのものなら繰り返さない（`let x: Foo` のとき）。

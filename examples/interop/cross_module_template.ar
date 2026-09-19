@@ -1,0 +1,52 @@
+# cross_module_template.ar — import 先のテンプレートを**注釈にも**書けること
+#
+# ## なぜこの例題が要るのか
+#
+# タスク 9.7 が `parse_type_expr` に「テンプレート名以外の `[...]` は弾く」検査を入れた
+# とき、**この形が丸ごと書けなくなった**（2026-09-19 〜 09-20）。
+#
+#   from xmod_template.holder import Holder     # holder.ar に class Holder[T]
+#   let h: Holder[int] = Holder[int](3)         # ⛔ ParseError になっていた
+#
+# パーサが参照する `known_templates` は [`Parser::scan_template_names`] が
+# **自分のファイルのトークンだけ**を走査して作るので、import 先で定義された
+# `Holder` を知らず、「テンプレートでない名前に型引数が付いている」と誤判定していた。
+#
+# ⚠⚠ **パースエラーなのが特に悪い。** プログラムが動かないだけでなく、
+#   VS Code 拡張がそのファイルを**一切解析できなくなる**（hover も診断も出ない）。
+#
+# ⚠⚠ **式の側（`Holder[int](3)`）は別の経路なので通っていた。** 注釈だけが落ちる、
+#   という気づきにくい壊れ方だった。
+#
+# ⇒ 判定は型検査へ移した。パーサは型引数を**保ったまま**返し、レジストリ
+#   （import 本体も収集済み）を持つ型検査が「その名前は型引数を取れるか」を決める。
+#
+# ⚠ このバグを誰も捕まえられなかったのは、**この形の例題が 1 本も無かった**から。
+#   `crates/arrow-frontend` の単体テストは落ちていたが、そのクレートは
+#   ワークスペース外なので `cargo test` が走らせていなかった（別途ゲートに足した）。
+
+from xmod_template.holder import Holder
+
+print("=== import 先のテンプレートを注釈に書く ===")
+
+let h: Holder[int] = Holder[int](3)
+print(h.get())                      # 3
+
+let s: Holder[str] = Holder[str]("ok")
+print(s.get())                      # ok
+
+print("=== 注釈なしでも従来どおり ===")
+
+let n = Holder[int](7)
+print(n.get())                      # 7
+
+print("=== 引数・戻り値の位置でも同じ ===")
+
+fn unwrap(let b: Holder[int]) -> int:
+    return b.get()
+
+fn wrap(let v: int) -> Holder[int]:
+    return Holder[int](v)
+
+print(unwrap(h))                    # 3
+print(unwrap(wrap(9)))              # 9

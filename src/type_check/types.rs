@@ -458,16 +458,27 @@ impl InferredType {
             other if other.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                      && other.chars().all(|c| c.is_alphanumeric() || c == '_') =>
                 Some(Self::NamedInstance(other.to_string())),
-            // **具体化済みユーザ定義ジェネリクス**（`Box[int]` / `Pair[int,str]`）。
+            // **型引数つきの名前**（`Box[int]` / `Pair[int,str]` / `str[int]`）。
             //
             // ⚠ 組み込みの括弧つき型（`list[...]`・`dict[...]` 等）は上で個別に処理済みなので、
-            //   ここへ来るのはユーザ定義テンプレートだけ。`parse_type_expr` が
-            //   `known_templates` に載る名前のときだけこの形を作る。
+            //   ここへ来るのは「利用者が名前に `[...]` を付けたもの」だけ。
+            //
+            // ⚠⚠ **テンプレートかどうかはここで判定しない**（9.7 の退行修正・2026-09-20）。
+            //    `parse_type_expr` が `known_templates` で絞っていた頃はここへ来るのが
+            //    テンプレートだけだったが、**パーサには判定材料が無い**（import 先の
+            //    テンプレートを知らない）ので絞り込みをやめた。
+            //    ⇒ `str[int]` のような「型引数を取らない型に付いた `[...]`」も
+            //      `GenericInstance` として**素直に作り**、レジストリを持つ型検査側
+            //      （`check_ann_takes_no_type_args`）が弾く。
+            //
+            // ⚠ 大文字制限も外した（タスク 8.2 で素の識別子を対称にしたのと同じ理由）。
+            //   `str[int]` を `None` に倒すと `Unresolved`（万能受容体）になり、
+            //   **誤った注釈が黙って通る**（9.7 が塞ごうとした穴そのもの）。
             other if other.ends_with(']') => {
                 let open = other.find('[')?;
                 let name = &other[..open];
                 if name.is_empty()
-                    || !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    || !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                     || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
                 {
                     return None;

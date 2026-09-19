@@ -1,4 +1,4 @@
-# compare_wasm_frontend.ps1 -- verify the wasm editor frontend agrees with arrow.exe.
+﻿# compare_wasm_frontend.ps1 -- verify the wasm editor frontend agrees with arrow.exe.
 #
 # The VS Code extension analyses .ar files with crates/arrow-frontend compiled to wasm.
 # That build differs from the shipping binary in exactly one way: `editor` feature
@@ -29,6 +29,32 @@ $dump = Join-Path $repo 'crates\arrow-frontend\dump_diags.js'
 if (-not (Test-Path $exe))  { throw "not built: $exe  (cargo build --release)" }
 if (-not (Test-Path $wasm)) { throw "not built: $wasm (cd crates/arrow-frontend; cargo build --release --target wasm32-unknown-unknown)" }
 if (-not (Test-Path $dump)) { throw "missing helper: $dump" }
+
+# --- crates/arrow-frontend の単体テスト -------------------------------------
+# ⚠⚠ **ここで走らせないと誰も走らせない。** `crates/arrow-frontend` は
+#   `Cargo.toml` の `exclude` でワークスペース外なので、**root の `cargo test` にも
+#   `test_build_gate.ps1` にも入らない**。実際 2026-09-19 のタスク 9.7 で
+#   `type_refs::generic_arguments_of_unknown_base`（当時 `skipped_generic_arguments`）を
+#   壊したまま、全ゲートが緑で通った。
+# ⚠ このゲートは「lexer / parser / type_check を触ったとき」に走らせる約束なので、
+#   同じ条件で守りたいテストの置き場としてちょうどよい。
+# ⚠ 比較本体（wasm と exe の診断突き合わせ）とは**別の網**。こちらは
+#   「型参照の索引」「スタブ解析」などの単体の性質を見る。
+Write-Host 'running crates/arrow-frontend unit tests ...' -ForegroundColor Cyan
+Push-Location (Join-Path $repo 'crates\arrow-frontend')
+$feTest = & cargo test 2>&1
+$feCode = $LASTEXITCODE
+Pop-Location
+if ($feCode -ne 0) {
+    $feTest | ForEach-Object { Write-Host $_ }
+    Write-Host 'FRONTEND-TESTS: FAILED' -ForegroundColor Red
+    exit 1
+}
+# 0 件のスイートは数えても意味がないので、通ったテスト数の合計だけ出す。
+$fePassed = ($feTest | Select-String -Pattern 'test result: ok\. (\d+) passed' -AllMatches |
+    ForEach-Object { $_.Matches } | ForEach-Object { [int]$_.Groups[1].Value } |
+    Measure-Object -Sum).Sum
+Write-Host "frontend tests ok  ($fePassed passed)" -ForegroundColor Green
 
 # --- locate a Node that understands modern wasm opcodes -----------------------
 # The node on PATH may be ancient; VS Code ships a recent one and is always present
