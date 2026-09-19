@@ -228,6 +228,15 @@ pub enum CallArg {
     Keyword { name: String, value: Expr },
     /// 可変長引数: `f(... = A, B, C)` の形式。呼び出し引数の最後にのみ使用可能。
     Variadic(Vec<Expr>),
+    /// 位置引数の展開: `f(*xs)`。`xs` の各要素を**その位置に**位置引数として並べる。
+    ///
+    /// ⚠ 展開後の個数は実行時に決まるので、静的な引数個数検査は**降りる**
+    /// （`check_fn_type_call` / `check_call_args`）。
+    Spread(Expr),
+    /// キーワード引数の展開: `f(**d)`。`d` の各エントリを**その位置に**キーワード引数として並べる。
+    ///
+    /// ⚠ キーは `str` でなければ実行時エラー。
+    KwSpread(Expr),
 }
 
 impl CallArg {
@@ -235,7 +244,10 @@ impl CallArg {
     /// `Variadic` の場合は最初の要素への参照を返す（要素が1つ以上あることを前提とする）。
     pub fn expr(&self) -> &Expr {
         match self {
-            Self::Positional(e) | Self::Keyword { value: e, .. } => e,
+            Self::Positional(e)
+            | Self::Keyword { value: e, .. }
+            | Self::Spread(e)
+            | Self::KwSpread(e) => e,
             Self::Variadic(exprs) => exprs.first().expect("variadic must have at least one expression"),
         }
     }
@@ -1182,6 +1194,15 @@ pub enum FieldKind {
 /// `crates/arrow-frontend`（VS Code 拡張の wasm）は `src/type_check` を取り込むが
 /// `src/python_converter` は取り込まないので、変換器側に置くと拡張のビルドが壊れる。
 pub const PY_KWARGS_PARAM: &str = "**kwargs";
+
+/// `f(*xs)` を VM が「名前付き引数」として運ぶときの番兵キー。
+///
+/// ⚠ Arrow の識別子にできない名前なので、利用者のキーワード名と衝突しない
+/// （可変長が `"..."` を使うのと同じ考え方）。`Interpreter::expand_spread_args` が
+/// 束縛の**直前に**位置引数列へ展開して消す。
+pub const SPREAD_ARG_KEY: &str = "*";
+/// `f(**d)` を VM が「名前付き引数」として運ぶときの番兵キー。
+pub const KW_SPREAD_ARG_KEY: &str = "**";
 
 // ---------------------------------------------------------------------------
 // 内包表記（comprehension）の脱糖

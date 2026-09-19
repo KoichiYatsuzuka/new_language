@@ -410,6 +410,28 @@ impl Parser {
                             args.push(CallArg::Variadic(variadic_exprs));
                             break; // variadic は最後の引数
                         }
+                        // ★ 引数の展開: `f(*xs)` / `f(**d)`。
+                        //   ⚠ 展開後の個数は実行時に決まるので、静的な個数検査は降りる
+                        //     （`check_call_args` / `check_fn_type_call`）。
+                        //   ⚠ `**` を先に見ること（`*` の判定に食われないように）。
+                        if *self.current() == Token::StarStar {
+                            self.advance();
+                            args.push(CallArg::KwSpread(self.parse_expr()?));
+                            if *self.current() == Token::Comma {
+                                self.advance();
+                                continue;
+                            }
+                            break;
+                        }
+                        if *self.current() == Token::Star {
+                            self.advance();
+                            args.push(CallArg::Spread(self.parse_expr()?));
+                            if *self.current() == Token::Comma {
+                                self.advance();
+                                continue;
+                            }
+                            break;
+                        }
                         // キーワード引数の判定: `Ident =`（`==` ではない）
                         let arg = if let Token::Ident(name) = self.current().clone() {
                             if *self.peek1() == Token::Eq {

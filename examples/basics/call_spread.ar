@@ -1,0 +1,55 @@
+# call_spread.ar — 呼び出し引数の展開 `f(*xs)` / `f(**d)`。
+#
+# ⚠ **展開後の個数は実行時に決まる**ので、展開を含む呼び出しでは**静的な引数個数検査と
+#   位置ごとの型検査を降りる**（`check_call_args` / `check_fn_type_call`）。
+#   個数が合わなければ実行時に `TypeError: function takes N argument(s), got M`。
+#
+# ⚠ 展開元の型は静的に見る（`SpreadArgNotIterable`）:
+#   - `*xs` … list / tuple / set / str / range / ジェネレータ など反復可能なもの
+#   - `**d` … dict（キーは `str`）
+#   判らないとき（`Any` / `Unresolved`）は通す。
+#
+# ⚠ **VM に新しい op は足していない**。展開元を番兵名（`"*"` / `"**"`）の名前付き引数として
+#   運び、束縛の直前に `expand_spread_args` が広げる。展開の規則はツリーウォークと
+#   共有（`expand_spread_into` が唯一の実装）。
+
+fn add3(mut a: int, mut b: int, mut c: int) -> int:
+    return a + b + c
+
+# ── ① リストを丸ごと展開 ────────────────────────────────────────────────
+mut xs = [1, 2, 3]
+print(add3(*xs))
+# 6
+
+# ── ② 位置引数と混ぜる ──────────────────────────────────────────────────
+mut pair = [2, 3]
+print(add3(1, *pair))
+# 6
+
+# ── ③ 辞書をキーワード引数として展開 ────────────────────────────────────
+mut d = {"b": 2, "c": 3}
+print(add3(1, **d))
+# 6
+
+# ── ④ タプルの展開（展開のあとに位置引数も置ける） ──────────────────────
+mut t = (1, 2)
+print(add3(*t, 3))
+# 6
+
+# ── ⑤ すべてキーワードで渡す ────────────────────────────────────────────
+mut all3 = {"a": 1, "b": 2, "c": 3}
+print(add3(**all3))
+# 6
+
+# ── ⑥ set も str も展開できる（反復可能なら通る） ──────────────────────
+fn one(mut a: int) -> int:
+    return a
+mut s = {7}
+print(one(*s))
+# 7
+
+fn echo(mut a: str) -> str:
+    return a
+mut cs = "x"
+print(echo(*cs))
+# x

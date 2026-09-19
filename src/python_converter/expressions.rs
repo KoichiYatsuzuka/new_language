@@ -378,15 +378,19 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             let func = convert_expr(&c.func, filename)?;
             let mut args: Vec<CallArg> = Vec::new();
             for arg in &c.args {
+                // ★ `f(*xs)` — Arrow 側にも同じ構文を入れたので 1 対 1 で写せる。
+                if let py::Expr::Starred(st) = arg {
+                    args.push(CallArg::Spread(convert_expr(&st.value, filename)?));
+                    continue;
+                }
                 args.push(CallArg::Positional(convert_expr(arg, filename)?));
             }
             for kw in &c.keywords {
-                let name = kw.arg.as_ref().map(|a| a.to_string()).unwrap_or_default();
-                if name.is_empty() {
-                    return Err(format!(
-                        "{filename}: **kwargs unpacking in call is not supported"
-                    ));
-                }
+                // ★ `f(**d)` — キーワード名が無い（`arg` が `None`）のが `**` の印。
+                let Some(name) = kw.arg.as_ref().map(|a| a.to_string()) else {
+                    args.push(CallArg::KwSpread(convert_expr(&kw.value, filename)?));
+                    continue;
+                };
                 args.push(CallArg::Keyword {
                     name,
                     value: convert_expr(&kw.value, filename)?,

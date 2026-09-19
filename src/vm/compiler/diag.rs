@@ -110,7 +110,15 @@ pub(super) const VM_BUILTIN_KW_NAMES: &[&str] = &["enumerate", "open"];
 /// **引数をコンパイルする前に**決めなければならない。
 pub(super) fn has_named_args(args: &[CallArg]) -> bool {
     args.iter()
-        .any(|a| matches!(a, CallArg::Keyword { .. } | CallArg::Variadic(_)))
+        .any(|a| {
+            matches!(
+                a,
+                CallArg::Keyword { .. }
+                    | CallArg::Variadic(_)
+                    | CallArg::Spread(_)
+                    | CallArg::KwSpread(_)
+            )
+        })
 }
 
 // ⚠⚠ **`is_builtin_callee` は #56 で削除した。**

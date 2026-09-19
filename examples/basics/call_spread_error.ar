@@ -1,0 +1,17 @@
+# call_spread_error.ar — 呼び出し引数の展開が**型検査で止まる**形。
+#
+# 期待されるエラー:
+#   StaticTypeError: `*` in a call expects an iterable, not 'int'
+#
+# ⚠ 他の形:
+#   f(**xs)   -> `**` in a call expects a `dict`, not 'list[int]'   （静的）
+#   f(*[1])   -> TypeError: function takes 2 argument(s), got 1     （★実行時）
+#     展開後の個数は実行時にしか決まらないので、**個数の不一致は静的には捕まらない**。
+#
+# ⚠ **通る形**は `call_spread.ar`。
+
+fn f(mut a: int) -> int:
+    return a
+
+mut n = 5
+print(f(*n))

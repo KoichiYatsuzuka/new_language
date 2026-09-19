@@ -139,6 +139,18 @@ impl TypeChecker {
                 CallArg::Keyword { name, value } => {
                     arg_data.push((Some(name.clone()), self.infer(value)))
                 }
+                // ★ `f(*xs)` / `f(**d)` — **展開後の個数は実行時に決まる**ので、
+                //   ここでは「型は推論するが引数列には積まない」。個数検査は
+                //   `has_spread` を見て降りる（下記）。
+                //   ⚠ 推論だけは必ず行う（式の中の誤りを見逃さないため）。
+                CallArg::Spread(e) => {
+                    let ty = self.infer(e);
+                    self.check_spread_arg(&ty, false);
+                }
+                CallArg::KwSpread(e) => {
+                    let ty = self.infer(e);
+                    self.check_spread_arg(&ty, true);
+                }
                 // 可変長引数: 各要素の型を推論し、リスト型として "..." キーで登録
                 //
                 // ⚠⚠ **以前は「全要素が同じ型のときだけ `list[T]`、混ざったら素の `list`」**
@@ -573,12 +585,67 @@ impl TypeChecker {
     /// 名前付き関数呼び出しの引数個数・型・キーワード引数名を検査する。
     /// ⚠ `args`（引数の**式**）を受け取るのは、`mut` パラメータへ `let` の値を渡していないかを
     /// 見るため（bug_fix.md B11）。型だけでは判定できない — **可変性は束縛の属性であって型ではない**。
+    /// 呼び出し引数に `*xs` / `**d` の展開が含まれるか。
+    ///
+    /// ⚠⚠ 含まれるときは**引数個数・位置ごとの型検査を降りる**。展開後の個数も
+    /// 並び順も実行時にしか決まらないので、位置で対応づける検査が成り立たない。
+    /// ⚠ `arg_data` は展開を積まないので、`args` と zip している検査は
+    /// **並びがずれる**。降りる判断はその安全性の担保でもある。
+    pub(super) fn has_spread_arg(args: &[CallArg]) -> bool {
+        args.iter()
+            .any(|a| matches!(a, CallArg::Spread(_) | CallArg::KwSpread(_)))
+    }
+
+    /// `*xs` / `**d` の展開元の型を検査する。
+    ///
+    /// ⚠⚠ **判らないときは黙って通す**が、**明らかに展開できない型はここで捕まえる**。
+    /// 実行時（`expand_spread_into`）と同じ意味の検査を静的に行う。
+    /// ⚠ `Unresolved` / `Any` はエラーにしない（注釈が供給されない経路があるため）。
+    fn check_spread_arg(&mut self, ty: &InferredType, kw: bool) {
+        use InferredType as IT;
+        if matches!(ty, IT::Any | IT::Unresolved) {
+            return;
+        }
+        let ok = if kw {
+            matches!(ty, IT::Dict | IT::DictOf(_, _))
+        } else {
+            matches!(
+                ty,
+                IT::List
+                    | IT::ListOf(_)
+                    | IT::FixedList
+                    | IT::FixedListOf(_)
+                    | IT::ListLike
+                    | IT::ListLikeOf(_)
+                    | IT::Set
+                    | IT::SetOf(_)
+                    | IT::Tuple(_)
+                    | IT::TupleAny
+                    | IT::Str
+                    | IT::NamedInstance(_)
+            )
+        };
+        if !ok {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::SpreadArgNotIterable {
+                    got: ty.to_string(),
+                    kw,
+                },
+                span: None,
+            });
+        }
+    }
+
     pub(super) fn check_call_args(
         &mut self,
         fname: &str,
         arg_data: &[(Option<String>, InferredType)],
         args: &[CallArg],
     ) {
+        // ⚠ 展開があると位置で対応づけられない（上の doc）。個数・型検査を降りる。
+        if Self::has_spread_arg(args) {
+            return;
+        }
         let sigs = match self.registry.fn_sigs(fname).cloned() {
             Some(s) => s,
             None => return,
@@ -1243,6 +1310,10 @@ impl TypeChecker {
         arg_data: &[(Option<String>, InferredType)],
         params: &[FnTypeParam],
     ) {
+        // ⚠ 展開があると位置で対応づけられない。個数・型検査を降りる。
+        if Self::has_spread_arg(args) {
+            return;
+        }
         // デフォルトを持つ仮引数は省略できるので、必要数は `has_default` が false の個数。
         let required = params.iter().filter(|p| !p.has_default).count();
         if arg_data.len() < required || arg_data.len() > params.len() {

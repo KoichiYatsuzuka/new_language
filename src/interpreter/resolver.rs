@@ -576,7 +576,10 @@ fn rewrite_except_handler(h: &mut ExceptHandler, base: &HashMap<String, u32>,
 fn rewrite_call_arg(arg: &mut CallArg, base: &HashMap<String, u32>,
     globals: &HashSet<String>) {
     match arg {
-        CallArg::Positional(e) | CallArg::Keyword { value: e, .. } => rewrite_expr(e, base, globals),
+        CallArg::Positional(e)
+        | CallArg::Keyword { value: e, .. }
+        | CallArg::Spread(e)
+        | CallArg::KwSpread(e) => rewrite_expr(e, base, globals),
         CallArg::Variadic(exprs) => {
             for e in exprs.iter_mut() {
                 rewrite_expr(e, base, globals);

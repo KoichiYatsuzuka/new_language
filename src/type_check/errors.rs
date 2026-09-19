@@ -76,6 +76,15 @@ pub enum TypeErrorKind {
         got_class: String,
     },
     /// `Any` 型の値に対して演算子を適用した（明示的ダウンキャストが必要）。
+    /// 呼び出しの `*xs` / `**d` に展開できない型を渡した。
+    ///
+    /// ⚠ 実行時（`expand_spread_into`）と**同じ意味**の検査を静的に行う。
+    SpreadArgNotIterable {
+        /// 実際に渡された型。
+        got: String,
+        /// `**`（キーワード展開）なら `true`、`*`（位置展開）なら `false`。
+        kw: bool,
+    },
     /// 辞書リテラルの `**src` に辞書以外を渡した。
     ///
     /// ⚠ 実行時（`DictEntry::Spread` / `Op::DictMerge`）と**同じ意味**の検査を静的に行う。
@@ -647,6 +656,17 @@ impl StaticTypeError {
                 "parameter {} of {} expects {} = {} but got {}",
                 hl_q(param_name), hl_q(method), hl_q("Self"), hl_q(expected_class), hl_q(got_class)
             ),
+            TypeErrorKind::SpreadArgNotIterable { got, kw } => {
+                if *kw {
+                    format!(
+                        "`**` in a call expects a {}, not {}",
+                        hl_bt("dict"),
+                        hl_q(got)
+                    )
+                } else {
+                    format!("`*` in a call expects an iterable, not {}", hl_q(got))
+                }
+            }
             TypeErrorKind::DictSpreadNotADict { got } => format!(
                 "`**` in a dict literal expects a {}, not {}",
                 hl_bt("dict"),

@@ -141,9 +141,12 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
                 walk_expr(func, out);
                 for a in args {
                     match a {
-                        CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => {
-                            walk_expr(x, out)
-                        }
+                        // ⚠ `*xs` / `**d` を含む呼び出しはネイティブ非適格
+                        //   （`expr_eligible` が `Positional` だけを許している）。
+                        CallArg::Positional(x)
+                        | CallArg::Keyword { value: x, .. }
+                        | CallArg::Spread(x)
+                        | CallArg::KwSpread(x) => walk_expr(x, out),
                         CallArg::Variadic(xs) => {
                             for x in xs {
                                 walk_expr(x, out);

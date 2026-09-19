@@ -443,6 +443,14 @@ impl Interpreter {
                                 "TypeError: enumerate() does not support variadic arguments".to_string()
                             ));
                         }
+                        // ⚠ `enumerate` は引数を自前で読むので展開を扱えない。
+                        //   黙って捨てず明示エラーにする（`enumerate(*xs)` は稀）。
+                        CallArg::Spread(_) | CallArg::KwSpread(_) => {
+                            return Some(Err(
+                                "TypeError: enumerate() does not support `*`/`**` argument unpacking"
+                                    .to_string(),
+                            ));
+                        }
                     }
                 }
                 if positional.len() != 1 {

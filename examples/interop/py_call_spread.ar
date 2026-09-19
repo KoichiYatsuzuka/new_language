@@ -1,0 +1,41 @@
+# py_call_spread.ar — `import[py]` 変換器の **呼び出し引数の展開**（群7 U4 / U5）。
+#
+# ⚠ 以前は `starred expression is not supported in this context` /
+#   `**kwargs unpacking in call is not supported` で拒否していた。
+#   Arrow に splat / spread が字句・構文とも無かったため。
+#   ⇒ **Arrow 側に `f(*xs)` / `f(**d)` を入れた**ので 1 対 1 で写せる
+#     （`examples/basics/call_spread.ar`）。
+#
+# ⭐ **転送パターンが成立する**（④）:
+#     def forward(*args, **kwargs):
+#         return add3(*args, **kwargs)
+#   Python で最頻出の形のひとつで、`*args` / `**kwargs`（項目 6・7）と
+#   本項目が揃って初めて動く。
+#
+# ⚠ **デコレータの転送はまだ動かない**。`def deco(f): def wrapper(*a, **k): return f(*a, **k)`
+#   は `NameError: 'f' is not defined` になる —— **関数値の `mut` パラメータが入れ子 `fn` から
+#   見えない**という別の穴（計画書 §5.1 #2 / フェーズ G）。展開とは無関係。
+#
+# 4 形すべて CPython と出力一致を突き合わせ済み。
+
+import[py] test_modules.py_call_spread as m
+
+# ── ① リストを丸ごと展開 ────────────────────────────────────────────────
+mut xs = [1, 2, 3]
+print(m.star(xs))
+# 6
+
+# ── ② 位置引数と混ぜる ──────────────────────────────────────────────────
+mut one = 1
+mut pair = [2, 3]
+print(m.mixed(one, pair))
+# 6
+
+# ── ③ 辞書をキーワード引数として展開 ────────────────────────────────────
+mut d = {"b": 2, "c": 3}
+print(m.kwstar(d))
+# 6
+
+# ── ④ ★転送パターン（`*args` / `**kwargs` を受けてそのまま渡す） ───────
+print(m.use_forward())
+# 6

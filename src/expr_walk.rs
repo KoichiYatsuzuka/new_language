@@ -120,9 +120,10 @@ pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
             f(SubPart::Plain(func));
             for arg in args {
                 match arg {
-                    CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => {
-                        f(SubPart::Plain(x))
-                    }
+                    CallArg::Positional(x)
+                    | CallArg::Keyword { value: x, .. }
+                    | CallArg::Spread(x)
+                    | CallArg::KwSpread(x) => f(SubPart::Plain(x)),
                     CallArg::Variadic(xs) => {
                         for x in xs {
                             f(SubPart::Plain(x));

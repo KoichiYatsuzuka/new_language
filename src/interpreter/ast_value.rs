@@ -165,6 +165,12 @@ fn call_args_list(args: &[CallArg]) -> Value {
                         ("value", expr_to_value(value)),
                     ],
                 ),
+                CallArg::Spread(expr) => {
+                    ns("CallArgSpread", vec![("expr", expr_to_value(expr))])
+                }
+                CallArg::KwSpread(expr) => {
+                    ns("CallArgKwSpread", vec![("expr", expr_to_value(expr))])
+                }
                 CallArg::Variadic(exprs) => ns(
                     "CallArgVariadic",
                     vec![("exprs", Value::List(Rc::new(RefCell::new(

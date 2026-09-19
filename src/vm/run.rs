@@ -1389,6 +1389,8 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (kw.arg_names[i].clone(), v, (kw.mut_mask >> i) & 1 == 1))
                 .collect();
+            // ★ メソッド呼び出しの `o.m(*xs)` / `o.m(**d)` も同じ規則で広げる。
+            let evaled = interp.expand_spread_args(evaled)?;
             let name = &chunk.names[kw.name_idx as usize];
             let r = if matches!(obj, Value::Instance(_)) {
                 interp.call_instance_method_evaled(
@@ -1553,6 +1555,8 @@ fn exec_op(
                 .enumerate()
                 .map(|(j, v)| (kc.arg_names[j].clone(), v, (kc.mut_mask >> j) & 1 == 1))
                 .collect();
+            // ★ `f(*xs)` / `f(**d)` の番兵を実際の引数列へ広げる（ツリーウォークと同じ規則）。
+            let evaled = interp.expand_spread_args(evaled)?;
             let r = interp.call_value_evaled(
                 callee,
                 evaled,

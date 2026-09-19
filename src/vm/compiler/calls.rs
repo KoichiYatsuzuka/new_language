@@ -256,6 +256,23 @@ impl Compiler {
                     names.push(Some(name.clone()));
                     any_named = true;
                 }
+                // ★ `f(*xs)` / `f(**d)` — **番兵名で運ぶ**（新しい op を足さない）。
+                //   展開元をそのまま 1 つの引数として push し、名前に `"*"` / `"**"` を
+                //   付ける。束縛の直前に `expand_spread_args` が位置/キーワード引数列へ
+                //   展開して番兵を消す（ツリーウォークと同じ `expand_spread_into` を通る）。
+                //   ⚠ 既存の `CallKw` 経路にそのまま乗るので、バイトコードの形は変わらない。
+                CallArg::Spread(e) => {
+                    self.compile_expr(e)?;
+                    mask |= 1 << i; // 展開した要素は保守的に mutable 扱い
+                    names.push(Some(crate::ast::SPREAD_ARG_KEY.to_string()));
+                    any_named = true;
+                }
+                CallArg::KwSpread(e) => {
+                    self.compile_expr(e)?;
+                    mask |= 1 << i;
+                    names.push(Some(crate::ast::KW_SPREAD_ARG_KEY.to_string()));
+                    any_named = true;
+                }
                 CallArg::Variadic(exprs) => {
                     let n = u16::try_from(exprs.len()).ok()?;
                     for e in exprs {

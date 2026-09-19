@@ -525,6 +525,8 @@ fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg 
         CallArg::Variadic(exprs) => {
             CallArg::Variadic(exprs.iter().map(|e| subst_expr(e, type_map)).collect())
         }
+        CallArg::Spread(e) => CallArg::Spread(subst_expr(e, type_map)),
+        CallArg::KwSpread(e) => CallArg::KwSpread(subst_expr(e, type_map)),
     }
 }
 

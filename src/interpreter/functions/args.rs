@@ -19,6 +19,76 @@ impl Interpreter {
     /// - `call_args`: 評価前の呼び出し引数リスト
     ///
     /// 戻り値: `Ok(Vec<(Option<String>, Value, bool)>)` — 評価済み引数リスト。`Err` — 評価エラー
+    /// VM が番兵名（`"*"` / `"**"`）で運んできた展開引数を、実際の引数列へ広げる。
+    ///
+    /// ⚠ 展開の規則は [`Self::expand_spread_into`] にしか書かない（ツリーウォークと共有）。
+    /// ⚠ **番兵が 1 つも無ければ何もしない**（既存の呼び出しに負荷を足さない）。
+    pub(crate) fn expand_spread_args(
+        &mut self,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Vec<(Option<String>, Value, bool)>, String> {
+        let has = evaled.iter().any(|(k, _, _)| {
+            matches!(k.as_deref(), Some(crate::ast::SPREAD_ARG_KEY) | Some(crate::ast::KW_SPREAD_ARG_KEY))
+        });
+        if !has {
+            return Ok(evaled);
+        }
+        let mut out = Vec::with_capacity(evaled.len());
+        for (k, v, m) in evaled {
+            match k.as_deref() {
+                Some(crate::ast::SPREAD_ARG_KEY) => self.expand_spread_into(v, false, &mut out)?,
+                Some(crate::ast::KW_SPREAD_ARG_KEY) => self.expand_spread_into(v, true, &mut out)?,
+                _ => out.push((k, v, m)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// `*xs` / `**d` を引数列へ**その場で展開**する（唯一の実装）。
+    ///
+    /// ツリーウォーク（`eval_call_args`）と VM（`expand_spread_args`）の**両方がここを通る**。
+    /// 片方だけ直すと意味がずれるので、展開の規則はこの関数にしか書かない。
+    ///
+    /// - `kw == false`（`*xs`）… 反復可能なら各要素を**位置引数**として並べる。
+    /// - `kw == true`（`**d`）… 辞書の各エントリを**キーワード引数**として並べる。
+    ///   ⚠ キーが `str` でなければエラー（Python と同じ）。
+    ///
+    /// ⚠ 展開した値は `is_mutable = true` にする。元のコンテナから取り出した要素なので
+    /// 「`let` 変数そのもの」ではなく、`Variadic` が保守的に `true` にしているのと同じ扱い。
+    pub(crate) fn expand_spread_into(
+        &mut self,
+        v: Value,
+        kw: bool,
+        out: &mut Vec<(Option<String>, Value, bool)>,
+    ) -> Result<(), String> {
+        if kw {
+            let Value::Dict(d) = v else {
+                return Err(format!(
+                    "TypeError: `**` in a call expects a dict, not '{}'",
+                    self.type_name(&v)
+                ));
+            };
+            // ⚠ 借用を握ったまま進めない（`all_pairs` で取り出す）。
+            let pairs = d.borrow().all_pairs();
+            for (k, val) in pairs {
+                let Value::Str(name) = k else {
+                    return Err(format!(
+                        "TypeError: keywords must be strings, not '{}'",
+                        self.type_name(&k)
+                    ));
+                };
+                out.push((Some(name.to_string()), val, true));
+            }
+        } else {
+            // ⚠ `collect_iterable` を通すので list / tuple / set / str / range /
+            //   ジェネレータのどれでも展開できる（Python の `*` と同じ広さ）。
+            for item in self.collect_iterable(v)? {
+                out.push((None, item, true));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn eval_call_args(
         &mut self,
         call_args: &[CallArg],
@@ -45,6 +115,17 @@ impl Interpreter {
                         _ => true,
                     };
                     result.push((Some(name.clone()), self.eval(value)?, is_mutable));
+                }
+                // ★ `f(*xs)` — `xs` の各要素を**その位置に**位置引数として並べる。
+                //   ⚠ 展開は `expand_spread_into` に集約する（VM 側も同じ関数を通す）。
+                CallArg::Spread(e) => {
+                    let v = self.eval(e)?;
+                    self.expand_spread_into(v, false, &mut result)?;
+                }
+                // ★ `f(**d)` — `d` の各エントリを**その位置に**キーワード引数として並べる。
+                CallArg::KwSpread(e) => {
+                    let v = self.eval(e)?;
+                    self.expand_spread_into(v, true, &mut result)?;
                 }
                 // 可変長引数: 各要素を評価してリストに集約し、特殊キー "..." で渡す
                 CallArg::Variadic(exprs) => {
