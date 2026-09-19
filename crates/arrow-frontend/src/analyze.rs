@@ -14,7 +14,7 @@
 //! | `exprTypes`   | `editor_index.node_spans` × `AstAnnotations` | Hover（式の推論型）/ Inlay |
 //! | `typeRefs`    | `editor_index.type_refs`（`parse_type_expr` が控えた型位置） | Semantic tokens / Hover（型名を関数と誤認させない） |
 //! | `tokens`      | `lexer::editor_tokens`（トークンの範囲＋コメント） | Semantic tokens / 語の特定 / 受け手判定 / 呼び出し文脈 |
-//! | `members`     | AST のクラス/トレイト/列挙本体 | `.` 補完 |
+//! | `members`     | AST のクラス/トレイト/列挙本体 ＋ **import した名前空間** | `.` 補完 |
 //!
 //! ⚠ `tokens` だけは **`ok: false` のときも現在のテキストのもの**を返す。
 //!   `Lexer::tokenize()` は失敗しないので構文エラー中でも正しく、拡張が
@@ -418,6 +418,9 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
     // ── メンバ表 ──────────────────────────────────────────────────────────
     let mut members = Map::new();
     collect_members(&stmts, &mut members);
+    // ⚠ **順番が効く**。名前空間は「空いている鍵」にだけ入るので、型名を先に確定させる
+    //   （`collect_module_members` の doc）。
+    collect_module_members(&stmts, &mut members);
 
     json!({
         "ok": true,
@@ -440,5 +443,108 @@ pub(crate) fn docstring(body: &[Stmt]) -> Option<&str> {
     match body.first() {
         Some(Stmt::Expr(Expr::Str(s))) => Some(s),
         _ => None,
+    }
+}
+
+/// **import した名前空間**のメンバ表を集める（`.` 補完用）。
+///
+/// # なぜ [`collect_members`] と別なのか
+///
+/// あちらの鍵は**型名**（クラス／トレイト／列挙）で、`.` の受け手が型のときに引く。
+/// 名前空間の受け手は**束縛名**（`import[...] X as sakura` の `sakura`）で、
+/// 種類が違う。`Stmt::Import` を `collect_members` の match に足すと、
+/// 「型名の表」に別の意味の鍵が混ざる。
+///
+/// ⚠⚠ **衝突したら型が勝つ**。`class Foo` と `import ... as Foo` が同居しうるので、
+/// ここは**空いている鍵にだけ**入れる（`collect_members` を先に走らせる）。
+/// 型名のほうが強い主張で、`members` はもともとそのために作られた表だから。
+///
+/// ⚠ import 先の body に入れ子で定義された**型**も登録する。`wpf.HostWindow.` の
+/// 受け手は `HostWindow`（import 先のクラス）なので、これが無いと 2 段目が引けない。
+fn collect_module_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
+    for stmt in stmts {
+        let (module, alias, body) = match stmt {
+            Stmt::Import { module, alias, body, .. } => (module, alias.as_ref(), body),
+            // `from X import a, b` は名前を直接束縛するので、名前空間の受け手にはならない。
+            // ただし body に載っている型定義は `collect_members` で拾わせたい。
+            Stmt::FromImport { body, .. } => {
+                merge_vacant(body, out);
+                continue;
+            }
+            _ => continue,
+        };
+        if body.is_empty() {
+            continue;
+        }
+        // import 先で定義された型（`wpf.HostWindow` の `HostWindow` 等）を型名の表へ。
+        merge_vacant(body, out);
+
+        let bind = alias
+            .cloned()
+            .or_else(|| module.last().cloned())
+            .unwrap_or_default();
+        if bind.is_empty() || out.contains_key(&bind) {
+            continue; // 型名が既に取っている鍵は奪わない
+        }
+        out.insert(bind, json!({ "members": namespace_members(body), "bases": [] }));
+    }
+}
+
+/// モジュール本体の**最上位宣言**をメンバとして並べる。
+///
+/// ⚠ `members_of_body`（クラス本体用）と違い、`class` / `enum` / `trait` も並べる。
+/// 名前空間のメンバにはそれらが含まれるため（`wpf.WpfApp` はクラス）。
+/// ⚠ `Stmt::Let` も拾う。py スタブは `let name: function->T` の形で来るので
+/// （`parser::py_stub_extract`）、落とすと py モジュールの補完が空になる。
+fn namespace_members(body: &[Stmt]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for s in body {
+        let v = match s {
+            Stmt::FnDef { name, params, return_type, body, .. } => json!({
+                "name": name, "kind": "function", "type": return_type,
+                "params": params_json(params), "access": "public", "doc": docstring(body),
+            }),
+            Stmt::GenDef { name, params, yield_type, body, .. } => json!({
+                "name": name, "kind": "generator", "type": yield_type,
+                "params": params_json(params), "access": "public", "doc": docstring(body),
+            }),
+            Stmt::ClassDef { name, body, .. } => json!({
+                "name": name, "kind": "class", "type": name,
+                "access": "public", "doc": docstring(body),
+            }),
+            Stmt::TraitDef { name, .. } => json!({
+                "name": name, "kind": "trait", "type": name, "access": "public",
+            }),
+            Stmt::ProtocolDef { name, .. } => json!({
+                "name": name, "kind": "protocol", "type": name, "access": "public",
+            }),
+            Stmt::EnumDef { name, .. } => json!({
+                "name": name, "kind": "enum", "type": name, "access": "public",
+            }),
+            Stmt::NewTypeDef { name, original } => json!({
+                "name": name, "kind": "new_type", "type": original, "access": "public",
+            }),
+            // py スタブ（`let loads: function->str`）と、モジュールの定数。
+            Stmt::Let(name, type_ann, _) | Stmt::Const(name, type_ann, _) => json!({
+                "name": name, "kind": "variable", "type": type_ann, "access": "public",
+            }),
+            _ => continue,
+        };
+        items.push(v);
+    }
+    items
+}
+
+/// import 先の型定義を、**空いている鍵にだけ**入れる。
+///
+/// ⚠⚠ `collect_members` は `insert` なので、そのまま import 先に対して呼ぶと
+/// **同名の利用者のクラスを上書きする**（`class Config` を自分で書いていて、
+/// import 先にも `Config` がある、はふつうに起こる）。上書きすると `.` 補完が
+/// 別の型のメンバを出すので、静かに間違う。⇒ 自分のファイルの型が常に勝つ。
+fn merge_vacant(body: &[Stmt], out: &mut Map<String, Value>) {
+    let mut sub = Map::new();
+    collect_members(body, &mut sub);
+    for (k, v) in sub {
+        out.entry(k).or_insert(v);
     }
 }

@@ -353,11 +353,21 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 - **意義**: §1-d の穴。#2 まで入れても `sakura.` / `json.` / `mod.` の補完は空のまま。
   **外部言語に限らず `.ar` モジュールにも効く**ので、単独でも価値がある。
 - **前提**: 実益を出すには **#2**（body が空だと出すものが無い）。コード自体は独立に書ける。
-- **手法**:
-  1. `analyze.rs` の `collect_members` に `Stmt::Import` / `Stmt::FromImport` を足し、
-     **別名をキーにしたメンバ表**を `members` に載せる（クラス名と衝突しない鍵の付け方を決める）。
-  2. TS 側 `receiverTypeAt` の `known()` が、受け手名をその表でも引けるようにする。
-  3. `signature help` / `hover` も同じ表を引く（`membersOf` 経由なので 1 箇所で済む）。
+- **手法** ✅ **実装済（2026-09-20）**:
+  1. `analyze.rs` に `collect_module_members` を足した。`collect_members`（型名の表）とは
+     **別の関数**にしてある — あちらの鍵は型名、こちらは束縛名で、意味が違うため。
+  2. 名前空間のメンバは `namespace_members`。`class` / `enum` / `trait` も並べ、
+     **`Stmt::Let` も拾う**（py スタブは `let loads: function->str` の形で来るため）。
+  3. import 先で定義された型（`wpf.HostWindow` の `HostWindow`）も型名の表へ入れる。
+     これが無いと 2 段目（`wpf.HostWindow.`）が引けない。
+  4. **TS 側は変更なし**。`receiverTypeAt` の `known()` が `analysis.members[受け手名]` を
+     引くので、束縛名を鍵にした時点で hover / 補完 / signature help が一斉に通る。
+- **衝突の規則**（決めてコメントに書いた）:
+  - 名前空間の鍵は**空いているときだけ**入れる（`class Foo` と `import ... as Foo`）。
+  - import 先の型定義も**空いている鍵にだけ**入れる（`merge_vacant`）。
+    ⚠ `collect_members` は `insert` なので、そのまま呼ぶと**同名の利用者のクラスを
+    上書きする**。上書きすると `.` 補完が別の型のメンバを出して静かに間違う。
+    ⇒ **自分のファイルの型が常に勝つ**。
 - **留意点**:
   - ⚠ `collect_members` は末尾 `_ => {}` の walker。`language-dev-principles` §2 のとおり
     **variant を足しても何も強制しない**。ここを触るなら、
@@ -367,8 +377,11 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
   - ⚠ PyNamespace（未知メンバが `Any`）と Namespace（未知メンバが `Unresolved`）で
     補完の出し方を変えない。補完は「知っている名前を出す」だけで、
     **知らない名前について何も主張しない**。
-- **検証**: `run_debug.js` で `sakura.` / `json.` / `.ar` モジュールの `.` 補完が出ること。
-  `stress.js` の `threw` が 0、`hover misses` / `def misses` が 0 のままであること。
+- **検証** ✅: `run_debug.js` で `sakura.` が 55 件（`create` / `pump` / `load_file` …）、
+  `wpf.` が 13 件（`App` / `HostWindow` / `PaneNode` …）。
+  `stress.js` threw 0・misses 0／`compare_wasm_frontend` 368/368・INVENTED 0。
+  ⚠ `json.` はまだ空。`--emit-stubs` が py を出せていないため（#3 の「テキストが空」）で、
+  `.` 補完側の問題ではない。
 - **参照**: [`crates/arrow-frontend/src/analyze.rs`](../crates/arrow-frontend/src/analyze.rs)（`members` の作り）／
   [`vscode-extension/src/wasm_providers.ts`](../vscode-extension/src/wasm_providers.ts)（`receiverTypeAt` / `membersOf`）。
 
@@ -450,11 +463,11 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 | #2 | wasm にスタブ供給 ABI ＋ `imports_editor` が引く | — | ✅ **実装済（2026-09-19）** |
 | #3 | `arrow.exe --emit-stubs` | — | ✅ **実装済（2026-09-20）** |
 | #4 | 拡張ホストがスタブを読み wasm へ流す | #2 ＋ #3 | ✅ **実装済（2026-09-20）** |
-| #5 | 名前空間を `.` 補完の受け手にする | （実益は #2） | 未着手 |
+| #5 | 名前空間を `.` 補完の受け手にする | （実益は #2） | ✅ **実装済（2026-09-20）** |
 | #6 | 索引欠落を検出する網 | #1 | 未着手 |
 | #7 | 同梱 py スタブ（`time` / `math`）をエディタへ届かせる | — | ✅ **実装済（2026-09-19）** |
 
-**#1〜#4 / #7 は完了。残るは #5（`.` 補完）と #6（退行検出の網）。**
+**#1〜#5 / #7 は完了。残るは #6（退行検出の網）だけ。**
 
 ### タグ別に何が効くようになるか
 
