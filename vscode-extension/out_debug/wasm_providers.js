@@ -12,7 +12,7 @@
  * いた（`protocol` は宣言として認識すらされていなかった）。その構造的な原因を消すのが目的。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.provideDiagnostics = exports.provideDocumentSymbols = exports.provideDefinition = exports.provideSignatureHelp = exports.provideCompletionItems = exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideInlayHints = exports.provideHover = exports.forgetDocument = exports.loadPrelude = void 0;
+exports.provideDiagnostics = exports.provideDocumentSymbols = exports.provideDefinition = exports.provideSignatureHelp = exports.provideCompletionItems = exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideInlayHints = exports.provideHover = exports.clearAnalysisCache = exports.forgetDocument = exports.loadPrelude = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const frontend_1 = require("./frontend");
@@ -103,6 +103,17 @@ function forgetDocument(document) {
     cache.delete(document.uri.toString());
 }
 exports.forgetDocument = forgetDocument;
+/**
+ * 解析キャッシュを全部捨てる。
+ *
+ * ⚠ **スタブ表を入れ替えたら必ず呼ぶこと。** キャッシュの鍵は `document.version` だけなので、
+ *    テキストが変わらない限り古い解析結果を返し続ける。スタブだけ更新しても
+ *    「型が出ない・古い型が出る」ままになる（`stubs.ts` 冒頭 doc）。
+ */
+function clearAnalysisCache() {
+    cache.clear();
+}
+exports.clearAnalysisCache = clearAnalysisCache;
 /** この版の解析が構文エラーだったか（診断の出し分けに使う）。 */
 function freshParseFailed(document) {
     const e = cache.get(document.uri.toString());

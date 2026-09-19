@@ -11,7 +11,7 @@
  * 実行時には要らない。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
+exports.stubCount = exports.clearStubs = exports.setStub = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
 const fs = require("fs");
 const path = require("path");
 let exports_ = null;
@@ -99,4 +99,61 @@ function analyze(source) {
     }
 }
 exports.analyze = analyze;
+/**
+ * wasm へ UTF-8 文字列を書き込み、`(ptr, len)` で `f` に渡す。
+ *
+ * ⚠ `memory.buffer` は `ar_alloc` がメモリを拡張すると差し替わるので、
+ *    TypedArray は alloc の**後**に作ること（`analyze` と同じ注意）。
+ */
+function withUtf8(ex, s, f) {
+    const bytes = new TextEncoder().encode(s);
+    const ptr = ex.ar_alloc(bytes.length);
+    if (ptr === 0 && bytes.length > 0)
+        return null;
+    try {
+        new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
+        return f(ptr, bytes.length);
+    }
+    finally {
+        ex.ar_free(ptr, bytes.length);
+    }
+}
+/**
+ * 型スタブを 1 件登録する。
+ *
+ * ⚠ **これを呼ぶと `analyze()` の結果がスタブの有無に依存する。** 呼び出し側は
+ *    ドキュメントを切り替えるたびに [`clearStubs`] してから積み直し、**同時に
+ *    解析キャッシュも捨てる**こと（捨てないと「スタブを更新したのに古い型が出続ける」）。
+ *
+ * @param key `arrow.exe --emit-stubs` が出したマニフェストの `key` をそのまま渡す。
+ *            拡張側で組み立てない（探索規則を TS に持ち込まないため）。
+ */
+function setStub(key, source) {
+    var _a;
+    const ex = exports_;
+    if (!ex)
+        return false;
+    // 2 本の文字列を同時に渡すので、外側を確保したまま内側を確保する。
+    // ⚠ 内側の alloc でメモリが伸びると外側の ptr が指す ArrayBuffer は detach するが、
+    //    **ptr（数値）自体は有効**なので、書き込み側でだけ取り直せばよい。
+    return (_a = withUtf8(ex, key, (kp, kl) => {
+        var _a;
+        return (_a = withUtf8(ex, source, (sp, sl) => {
+            ex.ar_set_stub(kp, kl, sp, sl);
+            return true;
+        })) !== null && _a !== void 0 ? _a : false;
+    })) !== null && _a !== void 0 ? _a : false;
+}
+exports.setStub = setStub;
+/** 登録済みのスタブをすべて捨てる。 */
+function clearStubs() {
+    exports_ === null || exports_ === void 0 ? void 0 : exports_.ar_clear_stubs();
+}
+exports.clearStubs = clearStubs;
+/** 登録済みスタブの件数（配線確認・ログ用）。 */
+function stubCount() {
+    var _a;
+    return (_a = exports_ === null || exports_ === void 0 ? void 0 : exports_.ar_stub_count()) !== null && _a !== void 0 ? _a : 0;
+}
+exports.stubCount = stubCount;
 //# sourceMappingURL=frontend.js.map

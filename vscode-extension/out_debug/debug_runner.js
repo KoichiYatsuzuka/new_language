@@ -27,6 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const frontend_1 = require("./frontend");
 const wasm_providers_1 = require("./wasm_providers");
+const stubs_1 = require("./stubs");
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const A = {
     reset: '\x1b[0m',
@@ -192,6 +193,16 @@ function main() {
     // reproduce here at all -- neither in run_debug.js nor in stress.js.
     if (!(0, wasm_providers_1.loadPrelude)(path.join(extensionRoot, 'builtins.ars'))) {
         console.error(c(A.red, 'WARNING: builtins.ars failed to load — builtin names will be missing'));
+    }
+    // 外部モジュールの型スタブも activate() と同じ経路で積む。
+    //
+    // ⚠ **ここを素通りさせない。** harness だけスタブ無しで走ると
+    //    「VS Code では型が出るのに run_debug では出ない」というずれが生まれ、
+    //    以後この harness で調べたことが全部あてにならなくなる
+    //    （builtins.ars が呼ばれていなかった上の事例と同じ失敗の形）。
+    const nStubs = (0, stubs_1.loadStubsFor)(filePath);
+    if (nStubs !== null) {
+        console.error(c(A.gray, `stubs: ${nStubs} external module(s) from ${(0, stubs_1.loadedManifestPath)()}`));
     }
     console.log('\n' + c(A.gray, '═'.repeat(70)));
     console.log(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${path.basename(filePath)}`));

@@ -20,6 +20,11 @@
         "command": "arrow.sendToRepl",
         "title": "Send to REPL",
         "category": "Arrow"
+      },
+      {
+        "command": "arrow.refreshStubs",
+        "title": "Refresh External Stubs",
+        "category": "Arrow"
       }
     ],
     "keybindings": [
@@ -90,11 +95,10 @@
     "configuration": {
       "title": "Arrow",
       "properties": {
-        "arrow.pythonLibraryPaths": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "markdownDescription": "Paths to search for Python module files (`.py` / `.pyi`) used by `import[py-int]` statements. Add your Python standard library path, e.g. `C:\\Python311\\Lib` or `C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python312\\Lib`."
+        "arrow.executablePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to `arrow.exe`. Used by **Arrow: Refresh External Stubs**, which runs `arrow.exe --emit-stubs <file>` to resolve `import[cpp-dll]` / `import[cs-dll]` / ... and write type stubs into `.arrow-stubs/` next to your entry script. Leave empty to disable stub generation (imported modules simply stay untyped)."
         }
       }
     }

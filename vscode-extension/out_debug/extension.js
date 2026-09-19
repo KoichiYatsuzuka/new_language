@@ -8,6 +8,7 @@
  *   defined in `wasm_providers.ts`
  * - Implement the "Send to REPL" command and REPL terminal management
  * - Schedule debounced diagnostics on document open/change events
+ * - Feed external type stubs (`.arrow-stubs/`) to the frontend (`stubs.ts`)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deactivate = exports.activate = void 0;
@@ -15,6 +16,7 @@ const vscode = require("vscode");
 const path = require("path");
 const wasm_providers_1 = require("./wasm_providers");
 const frontend_1 = require("./frontend");
+const stubs_1 = require("./stubs");
 // ===== REPL terminal =====
 const REPL_SENTINEL = '##REPL_EXEC##';
 let replTerminal;
@@ -87,7 +89,7 @@ function isArrowDocument(document) {
 }
 // ===== Activation =====
 function activate(context) {
-    var _a;
+    var _a, _b;
     // 解析は wasm 版フロントエンド（= `cargo run` と同一のソース）が担う。
     // 読み込めない環境では言語機能を諦める。旧正規表現実装へは**戻さない**:
     // 二重実装を残すと「拡張だけ解釈がずれる」問題がそのまま生き延びるため。
@@ -129,6 +131,34 @@ function activate(context) {
         terminal.sendText(code, false);
         terminal.sendText('\n' + REPL_SENTINEL);
     }));
+    // ---- External type stubs ----
+    // ⚠ **スタブ表を入れ替えたら解析キャッシュも捨てる**（`stubs.ts` 冒頭 doc）。
+    //    キャッシュの鍵は `document.version` だけなので、捨てないとテキストが変わるまで
+    //    古い結果を返し続け、「スタブを作り直したのに型が出ない」ことになる。
+    function syncStubs(document) {
+        if (!isArrowDocument(document) || document.uri.scheme !== 'file')
+            return;
+        const before = (0, stubs_1.loadedManifestPath)();
+        const n = (0, stubs_1.loadStubsFor)(document.uri.fsPath);
+        if (before !== (0, stubs_1.loadedManifestPath)() || n !== null)
+            (0, wasm_providers_1.clearAnalysisCache)();
+    }
+    context.subscriptions.push(vscode.commands.registerCommand('arrow.refreshStubs', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !isArrowDocument(editor.document)) {
+            vscode.window.showWarningMessage('Arrow: open a .ar file first.');
+            return;
+        }
+        const file = editor.document.uri.fsPath;
+        const res = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Arrow: generating type stubs…' }, () => (0, stubs_1.refreshStubs)(file));
+        if (!res.ok) {
+            vscode.window.showErrorMessage(`Arrow: stub generation failed — ${res.message}`);
+            return;
+        }
+        const n = (0, stubs_1.loadStubsFor)(file);
+        (0, wasm_providers_1.clearAnalysisCache)();
+        vscode.window.showInformationMessage(`Arrow: loaded ${n !== null && n !== void 0 ? n : 0} external module stub(s).`);
+    }));
     // ---- Diagnostics ----
     const diagCollection = vscode.languages.createDiagnosticCollection('arrow');
     const debounceMap = new Map();
@@ -149,7 +179,11 @@ function activate(context) {
             catch { /* 解析に失敗しても拡張は生かす */ }
         }, 200));
     }
-    context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(scheduleDiagnostics), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {
+    context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(doc => { syncStubs(doc); scheduleDiagnostics(doc); }), 
+    // ⚠ ファイルを跨ぐとマニフェストが変わりうる（別プロジェクトの `.ar` を開いたとき）。
+    //    残したままにすると**無関係なモジュールの型**が出る。
+    vscode.window.onDidChangeActiveTextEditor(e => { if (e)
+        syncStubs(e.document); }), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {
         diagCollection.delete(doc.uri);
         const key = doc.uri.toString();
         const t = debounceMap.get(key);
@@ -159,6 +193,9 @@ function activate(context) {
         }
         (0, wasm_providers_1.forgetDocument)(doc);
     }));
+    const active = (_b = vscode.window.activeTextEditor) === null || _b === void 0 ? void 0 : _b.document;
+    if (active)
+        syncStubs(active);
     vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
 }
 exports.activate = activate;

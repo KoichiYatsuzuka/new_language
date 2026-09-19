@@ -30,6 +30,9 @@ interface FrontendExports {
     ar_analyze(ptr: number, len: number): number;
     ar_result_ptr(): number;
     ar_result_len(): number;
+    ar_set_stub(keyPtr: number, keyLen: number, srcPtr: number, srcLen: number): void;
+    ar_clear_stubs(): void;
+    ar_stub_count(): number;
 }
 
 /** 診断 1 件。`at` は 0 始まりの行・列で、位置不明のときは null。 */
@@ -130,4 +133,56 @@ export function analyze(source: string): AnalysisResult | null {
     } finally {
         ex.ar_free(ptr, bytes.length);
     }
+}
+
+/**
+ * wasm へ UTF-8 文字列を書き込み、`(ptr, len)` で `f` に渡す。
+ *
+ * ⚠ `memory.buffer` は `ar_alloc` がメモリを拡張すると差し替わるので、
+ *    TypedArray は alloc の**後**に作ること（`analyze` と同じ注意）。
+ */
+function withUtf8<T>(ex: FrontendExports, s: string, f: (ptr: number, len: number) => T): T | null {
+    const bytes = new TextEncoder().encode(s);
+    const ptr = ex.ar_alloc(bytes.length);
+    if (ptr === 0 && bytes.length > 0) return null;
+    try {
+        new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
+        return f(ptr, bytes.length);
+    } finally {
+        ex.ar_free(ptr, bytes.length);
+    }
+}
+
+/**
+ * 型スタブを 1 件登録する。
+ *
+ * ⚠ **これを呼ぶと `analyze()` の結果がスタブの有無に依存する。** 呼び出し側は
+ *    ドキュメントを切り替えるたびに [`clearStubs`] してから積み直し、**同時に
+ *    解析キャッシュも捨てる**こと（捨てないと「スタブを更新したのに古い型が出続ける」）。
+ *
+ * @param key `arrow.exe --emit-stubs` が出したマニフェストの `key` をそのまま渡す。
+ *            拡張側で組み立てない（探索規則を TS に持ち込まないため）。
+ */
+export function setStub(key: string, source: string): boolean {
+    const ex = exports_;
+    if (!ex) return false;
+    // 2 本の文字列を同時に渡すので、外側を確保したまま内側を確保する。
+    // ⚠ 内側の alloc でメモリが伸びると外側の ptr が指す ArrayBuffer は detach するが、
+    //    **ptr（数値）自体は有効**なので、書き込み側でだけ取り直せばよい。
+    return withUtf8(ex, key, (kp, kl) =>
+        withUtf8(ex, source, (sp, sl) => {
+            ex.ar_set_stub(kp, kl, sp, sl);
+            return true;
+        }) ?? false,
+    ) ?? false;
+}
+
+/** 登録済みのスタブをすべて捨てる。 */
+export function clearStubs(): void {
+    exports_?.ar_clear_stubs();
+}
+
+/** 登録済みスタブの件数（配線確認・ログ用）。 */
+export function stubCount(): number {
+    return exports_?.ar_stub_count() ?? 0;
 }

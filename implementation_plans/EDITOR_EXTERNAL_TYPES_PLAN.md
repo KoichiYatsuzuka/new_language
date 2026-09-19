@@ -303,7 +303,7 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
     **その場合はスタブを書かない**（空の `.ars` を置くと「読めた」と誤認する）。
   - ⚠ `generate_stub` は `--compile` の出力形式でもある。**ここで形式を変えない**
     （変えると `.arc`/`.ars` の既存の読み手に波及する）。
-- **検証** ✅: `d:epository\TeX_editor\main.ar`（cpp-dll / cs-dll / cs-proc / py-int / `.ar` を
+- **検証** ✅: `d:\repository\TeX_editor\main.ar`（cpp-dll / cs-dll / cs-proc / py-int / `.ar` を
   すべて含む実コード）で e2e 確認 — 生成した 4 件が**全て構文として通り**、
   それをレジストリに積むと `let ed`（cpp-dll）と `let host`（cs-proc の static メソッド）が
   ともに `int` に解決し、**診断は元の 2 件（既存の `mustbe` 警告）のまま増えない**（D-1）。
@@ -339,9 +339,11 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
     「VS Code では出るが harness では出ない」が起きて、以後の調査が全部狂う。
   - ⚠ 拡張を触ったので **VSIX の再梱包が要る**（`make-vsix.ps1`。リポジトリ規約）。
   - ⚠ 外部プロセス起動を拡張に入れるのは**初**。既定 off・明示コマンドのみ、を崩さない。
-- **検証**: `d:\repository\TeX_editor\main.ar` で
-  `let ed` に `int` が出る・`sakura.` の補完が出る・`wpf.HostWindow.` が引ける、を目視 ＋ `run_debug.js`。
-  `./scripts/compare_wasm_frontend.ps1`（スタブを置いた状態でも**診断が増えない**こと ＝ D-1 の実地確認）。
+- **検証** ✅: `run_debug.js d:\repository\TeX_editor\main.ar` が
+  `stubs: 4 external module(s)` を読み、ソース表示に **`let host: int`**（cs-proc の static
+  メソッド）と **`let ed: int`**（cpp-dll）がインレイヒントとして出る。診断は増えない（D-1）。
+  `stress.js` threw 0・misses 0／`compare_wasm_frontend` 368/368・INVENTED 0／VSIX 再梱包。
+  ⚠ `sakura.` の**メンバ補完はまだ空**。名前空間を受け手にする経路が無いため（§1-d・#5）。
 - **参照**: skill `vscode-extension-dev`（設定・コマンド・VSIX）／skill `vscode-debug-runner`。
 
 ---
@@ -447,12 +449,12 @@ JSON 化した AST を第 2 の表現として持つと、AST に variant を足
 | #1 | cpp import の別名をエディタ索引に登録 | — | ✅ **実装済（2026-09-19）** |
 | #2 | wasm にスタブ供給 ABI ＋ `imports_editor` が引く | — | ✅ **実装済（2026-09-19）** |
 | #3 | `arrow.exe --emit-stubs` | — | ✅ **実装済（2026-09-20）** |
-| #4 | 拡張ホストがスタブを読み wasm へ流す | #2 ＋ #3 | 未着手 |
+| #4 | 拡張ホストがスタブを読み wasm へ流す | #2 ＋ #3 | ✅ **実装済（2026-09-20）** |
 | #5 | 名前空間を `.` 補完の受け手にする | （実益は #2） | 未着手 |
 | #6 | 索引欠落を検出する網 | #1 | 未着手 |
 | #7 | 同梱 py スタブ（`time` / `math`）をエディタへ届かせる | — | ✅ **実装済（2026-09-19）** |
 
-**#1 / #2 / #3 / #7 は完了。次は #4（前提 #2 ＋ #3 とも充足済み）。**
+**#1〜#4 / #7 は完了。残るは #5（`.` 補完）と #6（退行検出の網）。**
 
 ### タグ別に何が効くようになるか
 
