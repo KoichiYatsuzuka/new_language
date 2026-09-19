@@ -63,21 +63,33 @@ node stress.js
 Runs all seven providers over every `.ar` under `examples/` and prints:
 
 ```
-files          : 164
-ok             : 164
+files          : 368
+ok             : 368
 threw          : 0     <- must be 0
-no symbols     : 3
-symbols probed : 2486
-hover misses   : 0 / 2486
-def   misses   : 0 / 2486
+no symbols     : 11
+symbols probed : 4076
+hover misses   : 0 / 4076
+def   misses   : 0 / 4076
+bind  misses   : 0 / 182   <- must be 0
+tag   misses   : 0 / 14    <- must be 0
 ```
 
 - `threw` must be 0.
 - `hover misses` / `def misses` must be 0. A non-zero count usually means a declaration hook was
   called at the wrong moment and its recorded position no longer sits on the name
   (see `vscode-extension-dev`, "Adding a feature").
-- `no symbols` is expected for exactly three files: the two deliberate `ParseError` examples
-  (`alias_error.ar`, `functions_errors.ar`) and `math_string.ar`, which declares nothing.
+- `bind misses` must be 0 — every name an `import` statement binds has to be in the symbol index.
+  ⚠ The expected set is built by **scanning the source lines**, deliberately *not* through the
+  parser: taking it from the parser would make the check agree with itself and detect nothing.
+  That is exactly how the missing `import[cpp-dll]` index hook survived every gate — the
+  hover/def population comes from `provideDocumentSymbols`, so a name absent from the index is
+  never probed and never counted as a miss.
+- `tag misses` must be 0 — one minimal in-memory fixture per `import[lang]` tag.
+  ⚠ **Add a row to `TAG_FIXTURES` when you add a tag.** Examples alone do not cover every tag:
+  as of 2026-09-20 `import[cpp-dll]` has no example outside `examples/archived/`, so the
+  fixtures are the only thing guarding it.
+- `no symbols` is expected for the deliberate `ParseError` / `*_error.ar` examples and for
+  `math_string.ar`, which declares nothing.
 
 ## What each harness will NOT catch
 

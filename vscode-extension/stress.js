@@ -6,6 +6,11 @@
 //   threw        : 例外を投げた例題（0 でなければならない）
 //   hover misses : 宣言の上で hover が出なかった件数（0 が正常）
 //   def   misses : 宣言の上で go-to-definition が解決しなかった件数（0 が正常）
+//   tag   misses : `import[lang]` タグごとの最小フィクスチャで別名が索引に載らなかった件数。
+//                  例題が 1 本も無いタグ（実測: cpp-dll）はこれでしか守れない。
+//   bind  misses : import が束縛する名前が索引に載っていない件数（0 が正常）。
+//                  期待値は**ソースの行スキャン**で作る — パーサから取ると一致して
+//                  しまい、まさにこの種の欠落を検出できない（`importBindings` の注記）。
 //   no symbols   : 宣言が 1 つも取れなかった例題。ParseError 例題と、宣言を含まない
 //                  例題（math_string.ar）だけが該当するのが正常。
 //
@@ -59,8 +64,78 @@ function walk(dir,out=[]){ for(const e of fs.readdirSync(dir,{withFileTypes:true
   if(e.isDirectory()){ if(e.name!=='archived') walk(p,out); }
   else if(e.name.endsWith('.ar')) out.push(p);} return out; }
 
+
+// ── import が束縛する名前を**ソースから**割り出す ───────────────────────────────
+//
+// ⚠⚠ **ここだけはパーサを通さない。** この検査の目的は「パーサ側の索引に載り忘れた名前」を
+//    見つけることなので、期待値もパーサから取ると**必ず一致してしまい何も検出しない**。
+//    実際、`import[cpp-dll]` の別名が索引に載っていなかった欠落は、hover/def の母集団を
+//    `provideDocumentSymbols` から取っていたために**probe されず miss にも数えられず**、
+//    全ゲート緑のまま残り続けた（計画 §1-g）。だから素朴な行スキャンで独立に作る。
+//
+// ⚠ 近似で構わない（誤検出が出たらここを狭める）。狙いは網羅ではなく
+//    「タグを足したときに索引フックだけ忘れる」形の再発を止めること。
+function importBindings(lines){
+  const out=[];
+  for(let i=0;i<lines.length;i++){
+    const t=lines[i].trim();
+    if(t.startsWith('#')) continue;
+    let m;
+    if((m=/^import(?:\[[\w-]+\])?\s+([A-Za-z_][\w.]*)(?:\s*\[[^\]]*\])?(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(t))){
+      out.push({name:m[2]??m[1].split('.').pop(), line:i});
+    }else if((m=/^from\s+[A-Za-z_][\w.]*\s+import(?:\[[\w-]+\])?\s+(.+)$/.exec(t))){
+      for(const part of m[1].split(',')){
+        const a=/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/.exec(part.trim());
+        if(a) out.push({name:a[2]??a[1], line:i});
+      }
+    }
+  }
+  return out;
+}
+
+
+// ── タグ別の最小フィクスチャ ─────────────────────────────────────────────────
+//
+// ⚠⚠ **例題ベースの検査だけでは届かないタグがある。** 実測（2026-09-20）で
+//    `import[cpp-dll]` は `examples/archived/` 以外に**1 本も無い** — まさにこのタグの
+//    索引フックが抜けていたのに、全ゲートが緑のままだった理由がこれ。
+//    例題を足すには DLL の同梱が要るので、ここは**解析だけ**の最小ソースで代替する
+//    （エディタビルドは import 先を読まないので、実体が無くても解析は通る）。
+//
+// ⚠ 新しい `import[lang]` タグを足したら、ここにも 1 行足すこと。
+const TAG_FIXTURES = [
+  ['ar-auto (bare)',  'import some_module\n',                          'some_module'],
+  ['ar-auto (as)',    'import some_module as sm\n',                     'sm'],
+  ['ar',              'import[ar] some_module as sm\n',                 'sm'],
+  ['py',              'import[py] json as j\n',                         'j'],
+  ['py-int',          'import[py-int] math\n',                          'math'],
+  ['rs (version)',    'import[rs] libm[0.2] as lm\n',                    'lm'],
+  ['cs-dll',          'import[cs-dll] Some.Bridge as sb\n',             'sb'],
+  ['cs-proc',         'import[cs-proc] Shell as sh\n',                   'sh'],
+  ['cpp-dll',         'import[cpp-dll] Dir.Header as hd\n',             'hd'],
+  ['cpp-lib',         'import[cpp-lib] Dir.Header as hl\n',             'hl'],
+  ['js-proc',         'import[js-proc] pkg as p\n',                      'p'],
+  ['from (bare)',     'from some_module import thing\n',                 'thing'],
+  ['from (as)',       'from some_module import thing as t\n',            't'],
+  ['from[py]',        'from mod import[py] thing as t2\n',               't2'],
+];
+
+function checkTagFixtures(){
+  const misses=[];
+  for(const [label, src, bind] of TAG_FIXTURES){
+    const doc=new Doc(`<fixture:${label}>`, src + '\nfn main() -> None:\n    pass\n');
+    let names=new Set();
+    try{
+      (function w(ns){for(const n of ns){names.add(n.name); w(n.children);}})(P.provideDocumentSymbols(doc));
+    }catch(e){ misses.push(`  TAG   THREW ${label}  ${String(e).split('\n')[0]}`); continue; }
+    if(!names.has(bind)) misses.push(`  TAG   MISS  ${label}  '${bind}' not in the symbol index`);
+  }
+  return misses;
+}
+
 const files=walk(path.join(__dirname,'..','examples'));
 let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0;
+let totalBind=0, bindMiss=0;
 const problems=[];
 
 for(const f of files){
@@ -82,6 +157,17 @@ for(const f of files){
       P.provideSignatureHelp(doc,{line:i,character:doc.lineAt(i).text.length});
     }
     totalSym+=probe.length;
+
+    // import が束縛する名前は**必ず**索引に載っていること（計画 #6）。
+    const declared=new Set(); (function w(ns){for(const n of ns){declared.add(n.name); w(n.children);}})(outline);
+    for(const b of importBindings(doc.getText().split('\n'))){
+      totalBind++;
+      if(!declared.has(b.name)){
+        bindMiss++;
+        problems.push(`  BIND  MISS  ${path.relative(process.cwd(),f)}  L${b.line+1}  '${b.name}' not in the symbol index`);
+      }
+    }
+
     if(probe.length===0 && doc.lineCount>5) { noSym++; problems.push(`  NO SYMBOLS  ${path.relative(process.cwd(),f)}`); }
     ok++;
   }catch(e){
@@ -96,4 +182,8 @@ console.log(`no symbols     : ${noSym}`);
 console.log(`symbols probed : ${totalSym}`);
 console.log(`hover misses   : ${hoverMiss} / ${totalHover}`);
 console.log(`def   misses   : ${defMiss} / ${totalDef}`);
+console.log(`bind  misses   : ${bindMiss} / ${totalBind}   <- must be 0 (import が束縛する名前が索引に無い)`);
+const tagMisses = checkTagFixtures();
+console.log(`tag   misses   : ${tagMisses.length} / ${TAG_FIXTURES.length}   <- must be 0 (タグ別フィクスチャ)`);
+problems.push(...tagMisses);
 if(problems.length){ console.log('\nproblems:'); problems.slice(0,25).forEach(p=>console.log(p)); }
