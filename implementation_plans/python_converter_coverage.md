@@ -364,7 +364,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 [`test_modules/py_varargs.py`](../examples/interop/test_modules/py_varargs.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
-### [ ] 8. `match` 文（値/ワイルドカードパターンのサブセット）
+### [x] 8. `match` 文（値/ワイルドカードパターンのサブセット）✅ **実装済み（2026-09-19・C2）**
 
 - 対象: [`statements.rs` `convert_stmt()`](../src/python_converter/statements.rs) の `py::Stmt::Match`
 - 現状: `'match' statement is not supported` エラー。
@@ -375,7 +375,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 - 難易度: 中。
 - 懸念: Arrow の match は値等価/型検査のみ。Python の構造的パターンの大半は非対応（サブセット対応）。
 
-### [ ] 9. ジェネレータ（`def` + `yield`、サブセット）
+### [x] 9. ジェネレータ（`def` + `yield`、サブセット）✅ **実装済み（2026-09-19・C3）**
 
 - 対象: [`statements.rs`](../src/python_converter/statements.rs) の関数定義変換 + [`expressions.rs`](../src/python_converter/expressions.rs) の `Yield`
 - 現状: `yield` 式を `yield expression ... is not supported` でエラー。
@@ -387,7 +387,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 - 難易度: 中。
 - 懸念: `.send()`/双方向通信・`yield from` は非対応（サブセット）。
 
-### [ ] 10. 型エイリアス `type X = ...`
+### [x] 10. 型エイリアス `type X = ...` ✅ **実装済み（2026-09-19・C4）**
 
 - 対象: [`statements.rs`](../src/python_converter/statements.rs) の `py::Stmt::TypeAlias` + [`annotations.rs`](../src/python_converter/annotations.rs)
 - 現状: `Ok(None)`（黙って無視）。
@@ -488,7 +488,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 [`test_modules/py_identity.py`](../examples/interop/test_modules/py_identity.py)
 （13 ケース中 11 件 CPython 一致・⑤ の 2 件が上記の差）。
 
-### [ ] 14. `del` 文（警告付き無視）
+### [x] 14. `del` 文（警告付き無視）✅ **実装済み（2026-09-18・C1）**
 
 - 対象: [`statements.rs` `convert_stmt()`](../src/python_converter/statements.rs) — 新規 `py::Stmt::Delete` アーム
 - 現状: 汎用 catch-all エラー `unsupported Python statement`。
@@ -497,7 +497,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 難易度: 低。
 - 懸念（要判断）: `del d[k]`（Subscript）・`del obj.attr`（Attribute）は**意味のある削除**であり、無視すると挙動が失われる（警告があっても誤り）。→ **Name ターゲットのみ警告付き無視、Subscript/Attribute は明示エラー**を推奨（あるいは `d.pop(k)` 等への変換を別途検討）。
 
-### [ ] 15. 複数代入 `a = b = c`
+### [x] 15. 複数代入 `a = b = c` ✅ **実装済み（2026-09-19・D2）**
 
 - 対象: [`statements.rs`](../src/python_converter/statements.rs) の `Assign` アーム（現在 `targets.len() != 1` でエラー）
 - 現状: `multiple assignment targets are not supported` エラー。
@@ -782,7 +782,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 通るようになったので削除済み。`compare_outputs.ps1` がこの陳腐化を検出した）。
 集合内包の例題は [`py_comprehension.ar`](../examples/interop/py_comprehension.ar) の ⑦。
 
-### [ ] 23. walrus 演算子 `:=`
+### [x] 23. walrus 演算子 `:=` ✅ **実装済み（2026-09-19・D4）**
 
 - 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::NamedExpr` アーム（＋文レベルの補助文注入）
 - 現状: `walrus operator ':=' is not supported` エラー。
@@ -825,7 +825,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 [`test_modules/py_kwonly.py`](../examples/interop/test_modules/py_kwonly.py)
 （②の位置渡しを除き CPython と出力一致を突き合わせ済）。エラー化した項目が無いため `_error` 例は無し。
 
-### [ ] 25. `with` 文（`__exit__` 実行を伴わない場合のみ）
+### [x] 25. `with` 文（`__exit__` 実行を伴わない場合のみ）✅ **実装済み（2026-09-19・H1）**
 
 - 対象: [`statements.rs`](../src/python_converter/statements.rs) の `py::Stmt::With` アーム（現在エラー）
 - 方針（ユーザー決定）: **`__exit__` 実行を伴う with は明示エラー、伴わない場合のみ block 脱糖**で代替。
@@ -834,7 +834,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 - 難易度: 中。
 - 懸念: `__enter__` の戻り値束縛（Python は `x = EXPR.__enter__()`）— ファイル等は `open()` が直接オブジェクトを返すため `mut x = EXPR` で足りるが、`__enter__` が別値を返すケースは要考慮。`__exit__` の例外抑制（True 返却で握り潰し）は error 対象なので非対応で問題なし。
 
-### [ ] 26. lambda 式 → 名前付き関数への持ち上げ（lambda lifting）
+### [x] 26. lambda 式 → 名前付き関数への持ち上げ（lambda lifting）✅ **実装済み（2026-09-19・D5）**
 
 - 対象: [`expressions.rs`](../src/python_converter/expressions.rs) の `py::Expr::Lambda` アーム（＋文注入機構）
 - 方針（ユーザー決定）: 各 lambda を、囲みスコープへ持ち上げた名前付きネスト関数 `fn __lambda_N(params) -> Ret: return <body>` に変換し、lambda 式をその関数名参照 `Ident("__lambda_N")` に置換。
