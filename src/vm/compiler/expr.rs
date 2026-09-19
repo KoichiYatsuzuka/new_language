@@ -14,6 +14,49 @@ use super::*;
 
 
 impl Compiler {
+    /// 展開を含む列リテラルを「蓄積リスト ＋ `SeqExtend`」へコンパイルする。
+    ///
+    /// `[a, *b, c]` なら:
+    /// ```text
+    /// BuildList(0)          # 蓄積先
+    /// a を push → BuildList(1) → SeqExtend   # 連続する通常要素はまとめて足す
+    /// b を push → SeqExtend                  # 展開元はそのまま足す
+    /// c を push → BuildList(1) → SeqExtend
+    /// ```
+    /// 仕上げは呼び出し側が `SeqFinish` を出す（list/tuple/set の作り分け）。
+    ///
+    /// ⚠ **順序どおりに足す**こと。`{*a, *b}` の重複排除は `SeqFinish` が最後に行う。
+    fn compile_seq_spread(&mut self, items: &[crate::ast::SeqEntry]) -> Option<()> {
+        use crate::ast::SeqEntry;
+        self.emit(Op::BuildList(0)); // 蓄積先
+        let mut run: Vec<&crate::ast::Expr> = Vec::new();
+        let mut flush = |c: &mut Self, run: &mut Vec<&crate::ast::Expr>| -> Option<()> {
+            if run.is_empty() {
+                return Some(());
+            }
+            let n = u16::try_from(run.len()).ok()?;
+            for e in run.iter() {
+                c.compile_expr(e)?;
+            }
+            c.emit(Op::BuildList(n));
+            c.emit(Op::SeqExtend);
+            run.clear();
+            Some(())
+        };
+        for it in items {
+            match it {
+                SeqEntry::Item(e) => run.push(e),
+                SeqEntry::Spread(e) => {
+                    flush(self, &mut run)?;
+                    self.compile_expr(e)?;
+                    self.emit(Op::SeqExtend);
+                }
+            }
+        }
+        flush(self, &mut run)?;
+        Some(())
+    }
+
     pub(super) fn compile_expr(&mut self, expr: &Expr) -> Option<()> {
         // #34: 親が「この式が始まる深さ」を伝えていれば受け取る。ここで奪うので、
         // 明示的に伝え直さない限り子の式は `None`（＝ブロック式内 `break` が bail）になる。
@@ -429,25 +472,43 @@ impl Compiler {
                 self.emit(Op::BuildSlice);
             }
             Expr::List(items) => {
-                let n = u16::try_from(items.len()).ok()?;
-                for it in items {
-                    self.compile_expr(it)?;
+                // 展開が無ければ従来どおり 1 命令（**バイトコードを変えない**）。
+                if items.iter().any(|e| e.is_spread()) {
+                    self.compile_seq_spread(items)?;
+                    self.emit(Op::SeqFinish(0));
+                } else {
+                    let n = u16::try_from(items.len()).ok()?;
+                    for it in items {
+                        self.compile_expr(it.expr())?;
+                    }
+                    self.emit(Op::BuildList(n));
                 }
-                self.emit(Op::BuildList(n));
             }
             Expr::Tuple(items) => {
-                let n = u16::try_from(items.len()).ok()?;
-                for it in items {
-                    self.compile_expr(it)?;
+                // 展開が無ければ従来どおり 1 命令（**バイトコードを変えない**）。
+                if items.iter().any(|e| e.is_spread()) {
+                    self.compile_seq_spread(items)?;
+                    self.emit(Op::SeqFinish(1));
+                } else {
+                    let n = u16::try_from(items.len()).ok()?;
+                    for it in items {
+                        self.compile_expr(it.expr())?;
+                    }
+                    self.emit(Op::BuildTuple(n));
                 }
-                self.emit(Op::BuildTuple(n));
             }
             Expr::Set(items) => {
-                let n = u16::try_from(items.len()).ok()?;
-                for it in items {
-                    self.compile_expr(it)?;
+                // 展開が無ければ従来どおり 1 命令（**バイトコードを変えない**）。
+                if items.iter().any(|e| e.is_spread()) {
+                    self.compile_seq_spread(items)?;
+                    self.emit(Op::SeqFinish(2));
+                } else {
+                    let n = u16::try_from(items.len()).ok()?;
+                    for it in items {
+                        self.compile_expr(it.expr())?;
+                    }
+                    self.emit(Op::BuildSet(n));
                 }
-                self.emit(Op::BuildSet(n));
             }
             Expr::Dict(entries) => {
                 use crate::ast::DictEntry;

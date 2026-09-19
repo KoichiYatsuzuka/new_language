@@ -146,5 +146,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::BuildSet(n) => format!("BUILD_SET {n}"),
         Op::BuildDict(n) => format!("BUILD_DICT {n}"),
         Op::DictMerge => "DICT_MERGE".to_string(),
+        Op::SeqExtend => "SEQ_EXTEND".to_string(),
+        Op::SeqFinish(k) => format!("SEQ_FINISH {k}"),
     }
 }

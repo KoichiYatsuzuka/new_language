@@ -1682,6 +1682,15 @@ fn exec_op(
             let flat = buf.split_off(split);
             buf.push(interp.vm_build_dict(flat)?);
         }
+        Op::SeqFinish(kind) => {
+            let acc = buf.pop().expect("SeqFinish: 蓄積リストがスタックに無い");
+            buf.push(interp.vm_seq_finish(acc, *kind)?);
+        }
+        Op::SeqExtend => {
+            let src = buf.pop().expect("SeqExtend: 展開元がスタックに無い");
+            let dest = buf.last().expect("SeqExtend: 追加先がスタックに無い").clone();
+            interp.vm_seq_extend(&dest, src)?;
+        }
         Op::DictMerge => {
             let src = buf.pop().expect("DictMerge: 展開元がスタックに無い");
             let dest = buf.last().expect("DictMerge: 合成先がスタックに無い").clone();

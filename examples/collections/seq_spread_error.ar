@@ -1,0 +1,18 @@
+# seq_spread_error.ar — 列リテラルの展開が**型検査で止まる**形。
+#
+# 期待されるエラー:
+#   StaticTypeError: `*` expects an iterable, not 'int'
+#
+# ⚠ 他の形:
+#   let c: list[int] = [*a, "s"]   要素型が合わない（a が list[int] のとき）
+#     -> 'c' is declared 'list[int]' but initialized with 'list[Union[int,str]]'
+#
+# ⚠ **型が判らないときは通す**（`Any` / `Unresolved`）。`import[py]` 由来の値は
+#   注釈が無いのでここを通り、実行時に `TypeError: 'int' object is not iterable`
+#   になる（`examples/interop/py_literal_unpack_error.ar`）。
+#
+# ⚠ **通る形**は `seq_spread.ar`。
+
+let n = 5
+mut c = [*n]
+print(c)

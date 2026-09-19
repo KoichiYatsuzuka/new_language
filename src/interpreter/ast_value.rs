@@ -151,6 +151,23 @@ fn unaryop_str(op: &UnaryOp) -> Value {
     Value::str(s.to_string())
 }
 
+/// 列リテラルの要素列を `eval()`/`exec()` のツール用ビューへ落とす。
+///
+/// ⚠ `*other` は `ExprSpread` で包んで表す（形が読めることを優先。往復はしない）。
+fn seq_entries_list(entries: &[crate::ast::SeqEntry]) -> Value {
+    Value::List(Rc::new(RefCell::new(
+        entries
+            .iter()
+            .map(|e| match e {
+                crate::ast::SeqEntry::Item(x) => expr_to_value(x),
+                crate::ast::SeqEntry::Spread(x) => {
+                    ns("ExprSpread", vec![("expr", expr_to_value(x))])
+                }
+            })
+            .collect(),
+    )))
+}
+
 fn call_args_list(args: &[CallArg]) -> Value {
     Value::List(Rc::new(RefCell::new(
         args.iter()
@@ -597,7 +614,7 @@ fn expr_to_value(expr: &Expr) -> Value {
             ns("ExprIdent", vec![("name", Value::str(name.as_str()))])
         }
 
-        Expr::List(elements) => ns("ExprList", vec![("elements", exprs_list(elements))]),
+        Expr::List(elements) => ns("ExprList", vec![("elements", seq_entries_list(elements))]),
         Expr::Dict(entries) => {
             // ⚠ `**other` は「キーが `None`」の組で表す（`eval()`/`exec()` のツール用
             //   ビューなので、往復できることより形が読めることを優先する）。
@@ -616,8 +633,8 @@ fn expr_to_value(expr: &Expr) -> Value {
             )));
             ns("ExprDict", vec![("pairs", pairs_val)])
         }
-        Expr::Tuple(elements) => ns("ExprTuple", vec![("elements", exprs_list(elements))]),
-        Expr::Set(elements) => ns("ExprSet", vec![("elements", exprs_list(elements))]),
+        Expr::Tuple(elements) => ns("ExprTuple", vec![("elements", seq_entries_list(elements))]),
+        Expr::Set(elements) => ns("ExprSet", vec![("elements", seq_entries_list(elements))]),
 
         Expr::BinOp { op, left, right, .. } => ns(
             "ExprBinOp",

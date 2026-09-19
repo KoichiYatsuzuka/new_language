@@ -157,7 +157,7 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
             }
             Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
                 for x in items {
-                    walk_expr(x, out);
+                    walk_expr(x.expr(), out);
                 }
             }
             Expr::Dict(entries) => {
@@ -703,7 +703,11 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Ident { .. } => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
-        Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),
+        // ⚠ `*other` を含む列リテラルは**ネイティブ非適格**（展開後の長さが実行時決定で、
+        //   「N 要素を alloca して渡す」形に載らない）。`Dict` の `**` と同じ判断。
+        Expr::List(items) | Expr::Tuple(items) => items
+            .iter()
+            .all(|e| !e.is_spread() && expr_eligible(e.expr())),
         // ⚠ `**other` を含む辞書リテラルは**ネイティブ非適格**にする（合成は実行時の
         //   辞書操作で、`gen_expr` の「キー配列 / 値配列を alloca して渡す」形に載らない）。
         Expr::Dict(entries) => entries.iter().all(|e| match e {

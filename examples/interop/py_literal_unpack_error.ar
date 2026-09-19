@@ -1,29 +1,25 @@
-# py_literal_unpack_error.ar — リテラル内の `*` / `**` 展開で**通さない**形（U3 / C6）。
+# py_literal_unpack_error.ar — リテラル内の `*` / `**` 展開で**通さない**形（U3）。
 #
-# ⚠ ①は**実行時**エラー、②は**変換時**エラー。種類が違うので分けて確認する。
+# ⚠⚠ **この例題は 2026-09-19 に中身を入れ替えた**。もとは「リストの展開にタプルを
+#   渡すと `TypeError`」という**連結脱糖の制限**を踏ませていたが、Arrow 側に
+#   `*other` を入れて**その制限が消えた**（`compare_outputs -A` が検出）。
+#   ⇒ 通るようになった形は `py_literal_unpack.ar` の ③ が持つ。
 #
-#   ① リストの展開にリストでないものを渡す（本ファイルが踏む形・実行時）
-#      TypeError: unsupported operand types for `Add`: tuple and list
-#      ⇒ 変換器は `[*t, 9]` を `t + [9]` に落とす。Arrow に `list()` 組込みが無いので
-#        `list(t) + [9]` と書けない。**黙って違う結果にならず大きな音で止まる**ので
-#        これを許容している（型が判る文脈なら StaticTypeError として静的に捕まる）。
-#      ⇒ 代替: 呼び出し側でリストを渡す。セット表示なら種類を選ばない（下の注記）。
+# 期待されるエラー（**実行時**）:
+#   TypeError: 'int' object is not iterable
 #
-#   ② 辞書リテラルの `**` 展開（変換時）
-#      **dict unpacking in dict literal is not supported
-#      ⇒ Arrow に dict のマージ手段が無い（`|` も `update()` も無い）。
-#        `dict()` コンストラクタが入れば `dict(d1.items() + d2.items())` で書ける
-#        （`items()` は C5 で追加済み）。
+# ⚠⚠ **ここが実行時になるのは `.py` 由来だから**。項目 2 のスコープ巻き上げが
+#   `mut n = None` を置くので、`n` の静的型は `Any` になり検査を降りる
+#   （注釈が供給されない経路で誤検出を出さないため）。
+#   ⇒ **型が判る文脈なら静的に捕まる**。純 Arrow の例は
+#     `examples/collections/seq_spread_error.ar`（`StaticTypeError: `*` expects an
+#     iterable, not 'int'`）。
 #
-# ⚠ **セット表示は展開元の種類を選ばない**（`set()` は任意のイテラブルを受け、
-#   `union` もリストを受ける）。`{*t, 9}` はタプルでも通る — 非対称なのはここ。
-# ⚠ タプル表示 `(*a, 9)` と呼び出し `f(*a)` は別項目（U4/U5・フェーズ F）。
+# ⚠ 辞書の `{**d}` に辞書以外を渡した場合も同じ系統の静的エラー:
+#   `**` in a dict literal expects a `dict`, not 'list[int]'
+#
+# ⚠ **通る形**は `py_literal_unpack.ar`（list / tuple / set のどれでも展開できる）。
 
-import[py] test_modules.py_list_spread_tuple_error as m
+import[py] test_modules.py_spread_notiter_error as m
 
-# ② を試す場合:
-# import[py] test_modules.py_dict_spread_error as m
-
-mut t = (1, 2)
-print(m.g(t))
-# TypeError: unsupported operand types for `Add`: tuple and list
+print(m.g())

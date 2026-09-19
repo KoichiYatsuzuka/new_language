@@ -411,6 +411,34 @@ pub enum UnaryOp {
     BitNot,
 }
 
+/// 列リテラル（`list` / `set` / `tuple`）の 1 要素。
+///
+/// - `Item(e)`   … 普通の要素
+/// - `Spread(e)` … `*other`（`other` の中身をその位置に展開する）
+///
+/// ⚠ `DictEntry` と同じ考え方。`*other` を**別の `Expr` 変種にしない**のは
+/// 「同じ木を歩く walker が 2 つあると必ずずれる」ため（`language-dev-principles`）。
+#[derive(Debug, Clone)]
+pub enum SeqEntry {
+    /// 普通の要素。
+    Item(Expr),
+    /// `*other` — 展開元の全要素をその位置に挿入する。
+    Spread(Expr),
+}
+
+impl SeqEntry {
+    /// 内包する式への参照（種類を問わない）。
+    pub fn expr(&self) -> &Expr {
+        match self {
+            Self::Item(e) | Self::Spread(e) => e,
+        }
+    }
+    /// 展開要素なら `true`。
+    pub fn is_spread(&self) -> bool {
+        matches!(self, Self::Spread(_))
+    }
+}
+
 /// 辞書リテラルの 1 要素。
 ///
 /// - `Pair(k, v)` … `key: value`
@@ -481,7 +509,7 @@ pub enum Expr {
     /// 1 変種＋解決フィールドへ統合した。
     Ident { name: String, node_id: u32, res: Resolution },
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
-    List(Vec<Expr>),
+    List(Vec<SeqEntry>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
     /// `cache` はインスタンスフィールド解決のインラインキャッシュ（R3・初回解決時に焼き込み）。
     Attr {
@@ -543,10 +571,10 @@ pub enum Expr {
     Dict(Vec<DictEntry>),
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
     /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
-    Tuple(Vec<Expr>),
+    Tuple(Vec<SeqEntry>),
     /// セットリテラル: `{val, val, ...}` — 評価結果は `set` 型の値になる。
     /// 空セットは `set()` コンストラクタで生成する（`{}` は空辞書）。
-    Set(Vec<Expr>),
+    Set(Vec<SeqEntry>),
     /// ブロック式: `block [->Type]: body`。
     ///
     /// `block_return value` で即座に終了してその値を返す。

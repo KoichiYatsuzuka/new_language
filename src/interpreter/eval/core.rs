@@ -77,6 +77,74 @@ impl Interpreter {
         Ok(Value::Dict(d))
     }
 
+    /// 列リテラル（`list` / `set` / `tuple`）の要素を評価して並べる。
+    ///
+    /// `*other` は**展開元の全要素をその位置に**挿入する。
+    /// ⚠ 展開の規則は呼び出し引数の `*` と同じ（`collect_iterable` を通す）ので、
+    /// list / tuple / set / str / range / ジェネレータのどれでも展開できる。
+    /// ⚠ ツリーウォークと VM（`vm_build_seq_spread`）で**同じ関数**を通す。
+    pub(crate) fn eval_seq_entries(
+        &mut self,
+        entries: &[crate::ast::SeqEntry],
+    ) -> Result<Vec<Value>, String> {
+        let mut out = Vec::with_capacity(entries.len());
+        for e in entries {
+            match e {
+                crate::ast::SeqEntry::Item(x) => out.push(self.eval(x)?),
+                crate::ast::SeqEntry::Spread(x) => {
+                    let v = self.eval(x)?;
+                    out.extend(self.collect_iterable(v)?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// VM: `Op::SeqExtend` の本体 — `src` の全要素を `dest`（リスト）へ追加する。
+    ///
+    /// ⚠ ツリーウォーク側（`eval_seq_entries`）と**同じ `collect_iterable`** を通すこと。
+    /// 片方だけ広さを変えると VM と解釈で展開できる型がずれる。
+    pub(crate) fn vm_seq_extend(&mut self, dest: &Value, src: Value) -> Result<(), String> {
+        let Value::List(dl) = dest else {
+            return Err(format!(
+                "TypeError: internal: SeqExtend target must be a list, not '{}'",
+                self.type_name(dest)
+            ));
+        };
+        let items = self.collect_iterable(src)?;
+        dl.borrow_mut().extend(items);
+        Ok(())
+    }
+
+    /// VM: `Op::SeqFinish` の本体 — 蓄積したリストを目的の容器へ変換する。
+    ///
+    /// ⚠ `set` の重複排除は**展開したあと**に行う（`{*a, *b}` で重なっても 1 つになる）。
+    /// ツリーウォーク側（`Expr::Set`）と同じ順序にすること。
+    pub(crate) fn vm_seq_finish(&mut self, acc: Value, kind: u8) -> Result<Value, String> {
+        let Value::List(l) = acc else {
+            return Err("TypeError: internal: SeqFinish expects the accumulator list".to_string());
+        };
+        match kind {
+            0 => Ok(Value::List(l)),
+            1 => {
+                let values = l.borrow().clone();
+                let types = values
+                    .iter()
+                    .map(|v| self.type_name(v).to_string())
+                    .collect();
+                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values, types))))
+            }
+            _ => {
+                let raw = l.borrow().clone();
+                let mut vals: Vec<Value> = Vec::new();
+                for v in raw {
+                    set_insert(&mut vals, v, self)?;
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(vals))))
+            }
+        }
+    }
+
     /// VM: `Op::DictMerge` の本体 — `src` の全エントリを `dest` へ挿入する。
     ///
     /// `{a: 1, **b}` の `**b`。**後から来たキーが勝つ**（Python と同じ）。
@@ -143,20 +211,15 @@ impl Interpreter {
             }
             Expr::Attr { object, attr, cache, .. } => self.eval_attr(object, attr, cache),
             Expr::List(items) => {
-                let mut vals = Vec::new();
-                for item in items {
-                    vals.push(self.eval(item)?);
-                }
+                let vals = self.eval_seq_entries(items)?;
                 Ok(Value::List(Rc::new(RefCell::new(vals))))
             }
             Expr::Tuple(exprs) => {
-                let mut values = Vec::new();
-                let mut types = Vec::new();
-                for expr in exprs {
-                    let val = self.eval(expr)?;
-                    types.push(self.type_name(&val).to_string());
-                    values.push(val);
-                }
+                let values = self.eval_seq_entries(exprs)?;
+                let types = values
+                    .iter()
+                    .map(|v| self.type_name(v).to_string())
+                    .collect();
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
             Expr::Dict(entries) => {
@@ -190,9 +253,10 @@ impl Interpreter {
                 Ok(Value::Dict(d))
             }
             Expr::Set(items) => {
+                // ⚠ 重複排除は展開したあとに行う（`{*a, *b}` で重なっても 1 つになる）。
+                let raw = self.eval_seq_entries(items)?;
                 let mut vals: Vec<Value> = Vec::new();
-                for item in items {
-                    let v = self.eval(item)?;
+                for v in raw {
                     set_insert(&mut vals, v, self)?;
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(vals))))

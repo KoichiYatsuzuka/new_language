@@ -177,6 +177,7 @@ $knownDiff = @{
     'dict_spread'                    = 'py: impl_python は辞書リテラルの `**` 展開を解釈しない（Arrow 側の新構文・U3 で新設）'
     'py_dict_spread'                 = 'py: python_converter が Rust 専用（U3 で新設）'
     'call_spread'                    = 'py: impl_python は呼び出しの `*`/`**` 展開を解釈しない（Arrow 側の新構文・U4/U5 で新設）'
+    'seq_spread'                     = 'py: impl_python は列リテラルの `*` 展開を解釈しない（Arrow 側の新構文・U3 で新設）'
     'py_call_spread'                 = 'py: python_converter が Rust 専用（U4/U5 で新設）'
     'py_decorator_forward'           = 'py: python_converter が Rust 専用（A7 / フェーズ G で新設）'
     'py_defaults'                    = 'py: python_converter が Rust 専用（項目1 で新設）'

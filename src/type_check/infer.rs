@@ -66,7 +66,7 @@ impl TypeChecker {
                     //    `list[Any]` → `list[int]` がダウンキャストになって落ちる。
                     InferredType::ListOf(Box::new(InferredType::Never))
                 } else {
-                    let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
+                    let types = self.seq_entry_elem_types(elems);
                     InferredType::ListOf(Box::new(Self::join_elem_types(types)))
                 }
             }
@@ -74,13 +74,21 @@ impl TypeChecker {
                 if elems.is_empty() {
                     InferredType::SetOf(Box::new(InferredType::Never))
                 } else {
-                    let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
+                    let types = self.seq_entry_elem_types(elems);
                     InferredType::SetOf(Box::new(Self::join_elem_types(types)))
                 }
             }
             Expr::Tuple(exprs) => {
-                let types: Vec<InferredType> = exprs.iter().map(|e| self.infer(e)).collect();
-                InferredType::Tuple(types)
+                // ⚠ タプルは**位置ごとの型**を持つが、`*other` を含むと長さが実行時に
+                //   決まるので位置が対応づけられない。⇒ 展開があれば `TupleAny` に倒す
+                //   （要素型を捨てるのではなく「位置が判らない」ことを表す）。
+                if exprs.iter().any(|e| e.is_spread()) {
+                    InferredType::TupleAny
+                } else {
+                    let types: Vec<InferredType> =
+                        exprs.iter().map(|e| self.infer(e.expr())).collect();
+                    InferredType::Tuple(types)
+                }
             }
 
             // --- 属性アクセス ---
@@ -541,6 +549,52 @@ impl TypeChecker {
     /// 引くと `KeyError` になる（実測）。等値比較は `uint → int → float` で昇格するのに
     /// **辞書引きはハッシュなので昇格しない**という食い違いがあるため、`==` と同じ規則で
     /// 判定してはいけない。
+    /// 列リテラル（`list` / `set`）の要素型を集める。`*other` は**展開元の要素型**を持ち込む。
+    ///
+    /// ⚠⚠ **`Unresolved` を返さない**（`dict_spread_elem_types` と同じ判断）。
+    /// `Unresolved` は下流で「万能受容体」になり、要素型の食い違いを素通しさせてしまう。
+    /// 判らないときは `Any` に倒す —— こちらは明示ダウンキャストを要求する側なので
+    /// 検査が消えない。
+    ///
+    /// ⚠ 展開元が反復できない型なら**その場で静的エラー**（実行時と同じ意味）。
+    fn seq_entry_elem_types(&mut self, entries: &[crate::ast::SeqEntry]) -> Vec<InferredType> {
+        use InferredType as IT;
+        let mut out = Vec::with_capacity(entries.len());
+        for e in entries {
+            match e {
+                crate::ast::SeqEntry::Item(x) => out.push(self.infer(x)),
+                crate::ast::SeqEntry::Spread(x) => {
+                    let ty = self.infer(x);
+                    out.push(match &ty {
+                        IT::ListOf(t) | IT::FixedListOf(t) | IT::ListLikeOf(t) | IT::SetOf(t) => {
+                            (**t).clone()
+                        }
+                        // 要素型を持たない容器。反復はできるので `Any`。
+                        IT::List | IT::FixedList | IT::ListLike | IT::Set | IT::TupleAny => IT::Any,
+                        // タプルは位置ごとの型を持つ。展開すると位置が崩れるので合成する。
+                        IT::Tuple(ts) => Self::join_elem_types(ts.clone()),
+                        // `str` を展開すると 1 文字ずつの `str`。
+                        IT::Str => IT::Str,
+                        IT::Any | IT::Unresolved => IT::Any,
+                        // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
+                        IT::NamedInstance(_) => IT::Any,
+                        other => {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::SpreadArgNotIterable {
+                                    got: other.to_string(),
+                                    kw: false,
+                                },
+                                span: None,
+                            });
+                            IT::Any
+                        }
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// 辞書リテラル内の `**src` が持ち込む（キー型, 値型）を返す。
     ///
     /// ⚠⚠ **`Unresolved` を返さない**。`Unresolved` は下流で「万能受容体」として

@@ -142,9 +142,12 @@ pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
                 f(SubPart::Plain(x));
             }
         }
+        // ⚠ `*other`（`SeqEntry::Spread`）も中の式は普通に歩く。
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for x in items {
-                f(SubPart::Plain(x));
+                f(SubPart::Plain(match x {
+                    crate::ast::SeqEntry::Item(e) | crate::ast::SeqEntry::Spread(e) => e,
+                }));
             }
         }
         Expr::Dict(entries) => {

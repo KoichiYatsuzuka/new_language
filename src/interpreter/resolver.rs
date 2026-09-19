@@ -634,7 +634,8 @@ fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
             }
         }
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
-            for e in items.iter_mut() {
+            for x in items.iter_mut() {
+                let (crate::ast::SeqEntry::Item(e) | crate::ast::SeqEntry::Spread(e)) = x;
                 rewrite_expr(e, base, globals);
             }
         }

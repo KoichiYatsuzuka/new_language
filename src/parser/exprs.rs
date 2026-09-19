@@ -1,7 +1,7 @@
 // exprs.rs — expression parsing (precedence chain, literals, subscript, f-strings).
 
 use super::Parser;
-use crate::ast::{BinOp, CallArg, DictEntry, Expr, UnaryOp, Resolution};
+use crate::ast::{BinOp, CallArg, DictEntry, Expr, SeqEntry, UnaryOp, Resolution};
 use crate::token::{FStrPart, Span, Token};
 use crate::lexer;
 use std::rc::Rc;
@@ -858,12 +858,37 @@ impl Parser {
     ///
     /// # エラー
     /// 内部式または `)` のパースに失敗した場合
+    /// 列リテラルの 1 要素（`expr` または `*expr`）を読む。
+    ///
+    /// ⚠ `*other` は**展開元の全要素をその位置に**挿入する。要素型は展開元から持ち込む
+    /// （`seq_entry_elem_types`）ので、型検査は要素ごとに見たときと同じ厳しさになる。
+    fn parse_seq_entry(&mut self) -> Result<SeqEntry, String> {
+        if *self.current() == Token::Star {
+            self.advance();
+            return Ok(SeqEntry::Spread(self.parse_expr()?));
+        }
+        Ok(SeqEntry::Item(self.parse_expr()?))
+    }
+
     fn parse_paren_expr(&mut self) -> Result<Expr, String> {
         self.advance(); // `(` を消費
                         // 空タプル `()` を処理
         if *self.current() == Token::RParen {
             self.advance();
             return Ok(Expr::Tuple(vec![]));
+        }
+        // ★ 先頭が `*expr` なら**必ずタプル**（グループ式にはなりえない）。
+        if *self.current() == Token::Star {
+            let mut items = vec![self.parse_seq_entry()?];
+            while *self.current() == Token::Comma {
+                self.advance();
+                if *self.current() == Token::RParen {
+                    break;
+                }
+                items.push(self.parse_seq_entry()?);
+            }
+            self.eat(&Token::RParen)?;
+            return Ok(Expr::Tuple(items));
         }
         let first = self.parse_expr()?;
         // `)` が続けばグループ式（タプルではない）
@@ -873,9 +898,9 @@ impl Parser {
         }
         // `,` が続けば単要素タプルまたは多要素タプル
         self.eat(&Token::Comma)?;
-        let mut items = vec![first];
+        let mut items = vec![SeqEntry::Item(first)];
         while *self.current() != Token::RParen && *self.current() != Token::Eof {
-            items.push(self.parse_expr()?);
+            items.push(self.parse_seq_entry()?);
             // 末尾カンマがあればスキップ
             if *self.current() == Token::Comma {
                 self.advance();
@@ -897,6 +922,15 @@ impl Parser {
         self.advance(); // consume `[`
         let mut items = Vec::new();
         while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+            // ★ `*other` の展開。内包表記の判定より先に見る（`[*a for ...]` は無い）。
+            if *self.current() == Token::Star {
+                items.push(self.parse_seq_entry()?);
+                if *self.current() == Token::Comma {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
             let item = self.parse_expr()?;
             // ★ 最初の要素の直後が `for` なら**リスト内包表記**。
             //   `[elt for x in xs if c]` を `for` 式 + `loop_yield` に脱糖する
@@ -905,7 +939,7 @@ impl Parser {
                 let comp = self.parse_comprehension_tail(item, &Token::RBracket, "list")?;
                 return Ok(comp);
             }
-            items.push(item);
+            items.push(SeqEntry::Item(item));
             if *self.current() == Token::Comma {
                 self.advance();
             } else {
@@ -1032,6 +1066,20 @@ impl Parser {
         if *self.current() == Token::StarStar {
             return self.parse_dict_entries(None);
         }
+        // ★ 先頭が `*expr` なら**セットの展開**（`{*a, 1}`）。
+        //   辞書には `*`（1 個）が無いので、これが来た時点でセットと確定する。
+        if *self.current() == Token::Star {
+            let mut items = vec![self.parse_seq_entry()?];
+            while *self.current() == Token::Comma {
+                self.advance();
+                if *self.current() == Token::RBrace {
+                    break;
+                }
+                items.push(self.parse_seq_entry()?);
+            }
+            self.eat(&Token::RBrace)?;
+            return Ok(Expr::Set(items));
+        }
         // Parse first expression to determine dict vs set
         let first = self.parse_expr()?;
         // ★ 最初の要素の直後が `for` なら**セット内包表記**。
@@ -1054,13 +1102,13 @@ impl Parser {
             self.parse_dict_entries(Some(DictEntry::Pair(first, val)))
         } else {
             // Set path
-            let mut items = vec![first];
+            let mut items = vec![SeqEntry::Item(first)];
             while *self.current() == Token::Comma {
                 self.advance();
                 if *self.current() == Token::RBrace {
                     break;
                 }
-                items.push(self.parse_expr()?);
+                items.push(self.parse_seq_entry()?);
             }
             self.eat(&Token::RBrace)?;
             Ok(Expr::Set(items))

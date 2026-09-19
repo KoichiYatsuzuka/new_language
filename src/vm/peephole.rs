@@ -154,6 +154,8 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::BuildSet(_)
         | Op::BuildDict(_)
         | Op::DictMerge
+        | Op::SeqExtend
+        | Op::SeqFinish(_)
         | Op::Yield
         | Op::AsyncSubmit(_)
         => None,

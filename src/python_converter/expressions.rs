@@ -96,93 +96,27 @@ fn convert_comprehension_clauses(
     Ok(clauses)
 }
 
-/// `*a` を含むリスト表示 `[e, *a, ...]` を**連結**へ脱糖する（U3）。
+/// Python の列要素（`e` / `*e`）を Arrow の [`SeqEntry`] へ写す（U3）。
 ///
-/// 連続する非展開要素をリテラルにまとめ、展開要素はその式そのものにして `+` で繋ぐ:
-/// - `[0, *a, 9]` → `[0] + a + [9]`
-/// - `[*a, *b]`   → `a + b`
-/// - `[*a]`       → `a + []`（**必ずリテラルを 1 つ残して**新しいリストにする）
-///
-/// ⚠⚠ **展開元がリストでないと落ちる**。Arrow に `list()` 組込みが無いので
-/// `list(a) + [...]` と書けず、`a` がタプル / セット / str / dict のときは
-/// `TypeError: unsupported operand types for Add` になる（型が判れば静的に、
-/// `.py` 由来で `Any` なら実行時に）。**黙って違う結果にはならない**ので許容する。
-fn build_spread_concat(elts: &[py::Expr], filename: &str) -> Result<Expr, String> {
-    let span = make_span(filename);
-    let mut segments: Vec<Expr> = Vec::new();
-    let mut pending: Vec<Expr> = Vec::new();
+/// ⚠⚠ **以前は連結へ脱糖していた**（`[0, *a, 9]` → `[0] + a + [9]`）。Arrow に
+/// splat が無かったため。その形は**展開元がリストに限られる**（`list()` 組込みは
+/// 意図的に非公開）という穴があり、タプルやセットを展開すると `TypeError` になった。
+/// ⇒ **Arrow 側に `*other` を入れた**ので 1 対 1 で写せるようになり、
+///   展開元の種類を選ばなくなった。
+fn convert_seq_entries(
+    elts: &[py::Expr],
+    filename: &str,
+) -> Result<Vec<crate::ast::SeqEntry>, String> {
+    let mut out = Vec::with_capacity(elts.len());
     for e in elts {
         match e {
-            py::Expr::Starred(s) => {
-                if !pending.is_empty() {
-                    segments.push(Expr::List(std::mem::take(&mut pending)));
-                }
-                segments.push(convert_expr(&s.value, filename)?);
+            py::Expr::Starred(st) => {
+                out.push(crate::ast::SeqEntry::Spread(convert_expr(&st.value, filename)?))
             }
-            other => pending.push(convert_expr(other, filename)?),
+            other => out.push(crate::ast::SeqEntry::Item(convert_expr(other, filename)?)),
         }
     }
-    // 末尾のリテラル片。無ければ空リストを足して「必ず新しいリスト」にする。
-    if !pending.is_empty() || segments.len() == 1 {
-        segments.push(Expr::List(std::mem::take(&mut pending)));
-    }
-    let mut iter = segments.into_iter();
-    let first = iter.next().expect("`*` が 1 つ以上あるので空にならない");
-    Ok(iter.fold(first, |acc, e| Expr::BinOp {
-        op: BinOp::Add,
-        left: Box::new(acc),
-        right: Box::new(e),
-        span: span.clone(),
-        node_id: 0, // 合成（注釈対象外）
-    }))
-}
-
-/// `*a` を含むセット表示 `{e, *a, ...}` を `set(...)` + `.union(...)` へ脱糖する（U3）。
-///
-/// - `{1, *a, 2}` → `set([1, 2]).union(a)`
-/// - `{*a, *b}`   → `set([]).union(a).union(b)`
-///
-/// ⚠ リスト版と違い**展開元の種類を選ばない**。`set()` は任意のイテラブルを受け、
-/// `union` もリストを受けるため（実機確認済み）。
-fn build_set_spread(elts: &[py::Expr], filename: &str) -> Result<Expr, String> {
-    let span = make_span(filename);
-    let mut literals: Vec<Expr> = Vec::new();
-    let mut spreads: Vec<Expr> = Vec::new();
-    for e in elts {
-        match e {
-            py::Expr::Starred(s) => spreads.push(convert_expr(&s.value, filename)?),
-            other => literals.push(convert_expr(other, filename)?),
-        }
-    }
-    // まずリテラル分を `set([...])` にする。
-    let mut acc = Expr::Call {
-        func: Box::new(Expr::Ident {
-            name: "set".to_string(),
-            node_id: 0,
-            res: Resolution::Unresolved,
-        }),
-        args: vec![CallArg::Positional(Expr::List(literals))],
-        span: span.clone(),
-        cache: Default::default(),
-        node_id: 0,
-    };
-    // 展開分を `.union(...)` で足していく。
-    for s in spreads {
-        acc = Expr::Call {
-            func: Box::new(Expr::Attr {
-                object: Box::new(acc),
-                attr: "union".to_string(),
-                span: span.clone(),
-                cache: Default::default(),
-                node_id: 0,
-            }),
-            args: vec![CallArg::Positional(s)],
-            span: span.clone(),
-            cache: Default::default(),
-            node_id: 0,
-        };
-    }
-    Ok(acc)
+    Ok(out)
 }
 
 /// 式が引数なしの `super()` 呼び出しかどうかを判定する。
@@ -418,22 +352,11 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         // リスト表示。`*a` の展開（U3）を含むときは**連結**へ脱糖する:
         //   `[0, *a, 9]` → `[0] + a + [9]`
         // ⚠ Arrow に splat が無いので連結で表す。B5 で `list` の `+` が入ったので成立する。
-        py::Expr::List(l) => {
-            if l.elts.iter().any(|e| matches!(e, py::Expr::Starred(_))) {
-                return build_spread_concat(&l.elts, filename);
-            }
-            let items: Result<Vec<Expr>, _> =
-                l.elts.iter().map(|e| convert_expr(e, filename)).collect();
-            Ok(Expr::List(items?))
-        }
+        py::Expr::List(l) => Ok(Expr::List(convert_seq_entries(&l.elts, filename)?)),
 
         // ⚠ タプル表示の `*` は**連結できない**（Arrow のタプルは `+` で繋げるが、
         //   展開元がリストだと型が混ざる）。`Starred` アームの明示エラーに任せる。
-        py::Expr::Tuple(t) => {
-            let items: Result<Vec<Expr>, _> =
-                t.elts.iter().map(|e| convert_expr(e, filename)).collect();
-            Ok(Expr::Tuple(items?))
-        }
+        py::Expr::Tuple(t) => Ok(Expr::Tuple(convert_seq_entries(&t.elts, filename)?)),
 
         // 辞書リテラル。`{**other}`（キーが `None`）は Arrow の `DictEntry::Spread` へ。
         // ⚠ Arrow 側にも同じ構文を入れたので、そのまま 1 対 1 で写せる。
@@ -702,14 +625,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         // ⚠ **リストの `[*a]` と違い、展開元がリストでもセットでも通る**
         //   （`set()` は任意のイテラブルを受け、`union` もリストを受けるため）。
         //   セットは順序を持たないので、リテラル分を先に集めてから union しても意味は同じ。
-        py::Expr::Set(st) => {
-            if st.elts.iter().any(|e| matches!(e, py::Expr::Starred(_))) {
-                return build_set_spread(&st.elts, filename);
-            }
-            let items: Result<Vec<Expr>, _> =
-                st.elts.iter().map(|e| convert_expr(e, filename)).collect();
-            Ok(Expr::Set(items?))
-        }
+        py::Expr::Set(st) => Ok(Expr::Set(convert_seq_entries(&st.elts, filename)?)),
 
         // スライス `a[1:3]` / `a[::2]`。rustpython は 3 要素とも `Option` で持ち、
         // 省略（`a[:2]` の begin など）は `None` になる。Arrow の `Expr::Slice` も同じ形。
@@ -770,7 +686,9 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
                 .iter()
                 .map(|x| constant_value_to_expr(x, filename))
                 .collect();
-            Ok(Expr::Tuple(elts?))
+            Ok(Expr::Tuple(
+                elts?.into_iter().map(crate::ast::SeqEntry::Item).collect(),
+            ))
         }
         py::Constant::Complex { .. } => {
             Err(format!("{filename}: complex numbers are not supported"))

@@ -1,14 +1,10 @@
 """py_literal_unpack.py — リテラル内の `*` 展開（U3）。
 
-Arrow に splat が無いので**連結**へ脱糖する:
-    [0, *a, 9]  ->  [0] + a + [9]
-    {1, *a, 2}  ->  set([1, 2]).union(a)
-
-⚠ リスト版は**展開元がリストでないと落ちる**（Arrow に `list()` 組込みが無く
-  `list(a) + [...]` と書けないため）。タプル等を渡すと `TypeError` で**大きな音で**
-  止まるので、黙って違う結果にはならない。
-⚠ セット版は展開元がリストでもセットでも通る（`set()` は任意のイテラブルを受け、
-  `union` もリストを受ける）。
+⚠⚠ **以前は連結へ脱糖していた**（`[0, *a, 9]` → `[0] + a + [9]`）。Arrow に splat が
+無かったため。その形は**展開元がリストに限られる**という穴があり、タプルやセットを
+展開すると `TypeError` になっていた。
+⇒ **Arrow 側に `*other` を入れた**ので 1 対 1 で写せるようになり、
+  展開元の種類を選ばなくなった（③ がその証拠）。
 """
 
 
@@ -20,10 +16,6 @@ def head(a):
     return [*a, 9]
 
 
-def tail(a):
-    return [0, *a]
-
-
 def only(a):
     return [*a]
 
@@ -32,15 +24,23 @@ def two(a, b):
     return [*a, *b]
 
 
+def from_tuple(t):
+    # ★ 以前はここが `TypeError: unsupported operand types for Add: tuple and list` だった。
+    return [*t, 9]
+
+
 def copy_check(a):
     b = [*a]
     b.append(99)
     return (len(a), len(b))
 
 
-def s_mid(a):
-    return {1, *a, 2}
+def tup(a):
+    # ★ タプル表示の展開（以前は明示エラー）。
+    return (*a, 9)
 
 
-def s_two(a, b):
-    return {*a, *b}
+def st(a):
+    # ⚠ セットの並びは当てにしない。要素数と所属で確認する。
+    u = {*a, 9}
+    return (len(u), 9 in u)

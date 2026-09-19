@@ -541,7 +541,19 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         // 空キャッシュを返すので、実体化ごとに解決し直される。
         Expr::Ident { name, node_id, res } =>
             Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
-        Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|x| match x {
+                    crate::ast::SeqEntry::Item(e) => {
+                        crate::ast::SeqEntry::Item(subst_expr(e, type_map))
+                    }
+                    crate::ast::SeqEntry::Spread(e) => {
+                        crate::ast::SeqEntry::Spread(subst_expr(e, type_map))
+                    }
+                })
+                .collect(),
+        ),
         Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
@@ -610,7 +622,19 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
                 })
                 .collect(),
         ),
-        Expr::Tuple(items) => Expr::Tuple(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::Tuple(items) => Expr::Tuple(
+            items
+                .iter()
+                .map(|x| match x {
+                    crate::ast::SeqEntry::Item(e) => {
+                        crate::ast::SeqEntry::Item(subst_expr(e, type_map))
+                    }
+                    crate::ast::SeqEntry::Spread(e) => {
+                        crate::ast::SeqEntry::Spread(subst_expr(e, type_map))
+                    }
+                })
+                .collect(),
+        ),
         Expr::IsType {
             expr,
             negated,
@@ -678,7 +702,19 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
                 .collect(),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
-        Expr::Set(items) => Expr::Set(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::Set(items) => Expr::Set(
+            items
+                .iter()
+                .map(|x| match x {
+                    crate::ast::SeqEntry::Item(e) => {
+                        crate::ast::SeqEntry::Item(subst_expr(e, type_map))
+                    }
+                    crate::ast::SeqEntry::Spread(e) => {
+                        crate::ast::SeqEntry::Spread(subst_expr(e, type_map))
+                    }
+                })
+                .collect(),
+        ),
         Expr::Cast {
             object,
             type_name,

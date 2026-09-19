@@ -664,7 +664,9 @@ impl StaticTypeError {
                         hl_q(got)
                     )
                 } else {
-                    format!("`*` in a call expects an iterable, not {}", hl_q(got))
+                    // ⚠ 呼び出し引数と列リテラル（`[*a]` / `(*a,)` / `{*a}`）で共有する
+                    //   文言なので、どちらでも通じる言い方にする。
+                    format!("`*` expects an iterable, not {}", hl_q(got))
                 }
             }
             TypeErrorKind::DictSpreadNotADict { got } => format!(

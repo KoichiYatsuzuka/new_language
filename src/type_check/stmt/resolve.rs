@@ -266,7 +266,12 @@ impl TypeChecker {
             Expr::List(es) | Expr::Set(es) => es,
             _ => return,
         };
-        for e in elems {
+        for entry in elems {
+            // ⚠ `*other` の中身はリテラルではないので、この検査（リテラル要素の型）では見ない。
+            //   展開元の要素型は `seq_entry_elem_types` が合成に持ち込む。
+            let crate::ast::SeqEntry::Item(e) = entry else {
+                continue;
+            };
             let Some(lit_ty) = Self::literal_type(e) else {
                 continue;
             };

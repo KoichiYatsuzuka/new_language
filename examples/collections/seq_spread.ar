@@ -1,0 +1,56 @@
+# seq_spread.ar — 列リテラルの展開 `[*a]` / `(*a,)` / `{*a}`。
+#
+# ⚠ **展開元の種類を選ばない**。`collect_iterable` を通すので list / tuple / set /
+#   str / range / ジェネレータのどれでも展開できる（呼び出し引数の `*` と同じ広さ）。
+#
+# ⚠ 型検査は**展開元の要素型を持ち込む**（`seq_entry_elem_types`）ので、
+#   要素ごとに書いたときと同じ厳しさになる:
+#     let a: list[int] = [1, 2]
+#     let c: list[int] = [*a, 3]     ✅
+#     let c: list[int] = [*a, "s"]   ⛔ 要素型が合わない
+#   判らないときは `Unresolved` ではなく `Any` に倒す（検査が消えないように）。
+#
+# ⚠ **VM のバイトコードは展開が無ければ変わらない**。展開があるときだけ
+#   「蓄積リスト ＋ `SeqExtend`」→ `SeqFinish` に切り替える。
+# ⚠ タプルは位置ごとの型を持つが、展開があると長さが実行時決定になるので
+#   `tuple`（`TupleAny`）に倒す。
+
+mut a = [1, 2]
+mut b = [3, 4]
+mut t = (5, 6)
+mut s = {7, 8}
+
+print("--- list ---")
+print([0, *a, 9])
+print([*a, *b])
+print([*a])
+print([*t])
+# [0, 1, 2, 9]
+# [1, 2, 3, 4]
+# [1, 2]
+# [5, 6]
+
+print("--- tuple ---")
+print((*a, 9))
+print((0, *a))
+print((*t, 9))
+# (1, 2, 9)
+# (0, 1, 2)
+# (5, 6, 9)
+
+print("--- set ---")
+# ⚠ セットの並びは当てにしない。要素数と所属で確認する。
+mut u = {*a, 9}
+print(len(u))
+print(9 in u)
+mut v = {*a, *b}
+print(len(v))
+# 3
+# True
+# 4
+
+print("--- 要素型は展開元から持ち込む ---")
+let xs: list[int] = [1, 2]
+let ys: list[int] = [*xs, 3]
+print(ys)
+# [1, 2, 3]

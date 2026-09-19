@@ -223,6 +223,11 @@ impl<'a> GenCtx<'a> {
                 let arr  = format!("%_la{}", self.reg); self.reg += 1;
                 self.ea(&format!("{arr} = alloca [{n} x i64], align 8"));
                 for (i, item) in items.iter().enumerate() {
+                    // ⚠ `*other` は `expr_eligible` が弾いているのでここには来ない。
+                    //   来たら黙って落とさず panic させる（silent drop を作らない）。
+                    let crate::ast::SeqEntry::Item(item) = item else {
+                        unreachable!("`*` を含む列リテラルはネイティブ非適格（expr_eligible）")
+                    };
                     let (v, vt) = self.gen_expr(item);
                     let h  = self.to_handle(&v, vt);
                     let ep = self.fresh_reg();
@@ -242,6 +247,11 @@ impl<'a> GenCtx<'a> {
                 let arr = format!("%_ta{}", self.reg); self.reg += 1;
                 self.ea(&format!("{arr} = alloca [{n} x i64], align 8"));
                 for (i, item) in items.iter().enumerate() {
+                    // ⚠ `*other` は `expr_eligible` が弾いているのでここには来ない。
+                    //   来たら黙って落とさず panic させる（silent drop を作らない）。
+                    let crate::ast::SeqEntry::Item(item) = item else {
+                        unreachable!("`*` を含む列リテラルはネイティブ非適格（expr_eligible）")
+                    };
                     let (v, vt) = self.gen_expr(item);
                     let h  = self.to_handle(&v, vt);
                     let ep = self.fresh_reg();

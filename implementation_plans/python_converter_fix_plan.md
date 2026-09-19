@@ -973,7 +973,7 @@ Python で最頻出のデコレータ形。**A7（関数値の `mut` 捕捉）�
 | 2 | **`dict.items()` が Rust 側に無い**（`impl_python` には最初からあった＝ Rust 側のドリフト） | ✅ C5 で追加 | C5 |
 | 3 | **`for` のループ変数を捕捉する入れ子 `fn` が VM に載らない**（`VmForceError`）。純 Arrow で再現。`while` 本体・ループ変数以外の捕捉・ループ外は通る | ⏳ 未修正。**FUTURE_FEATURE §5 (z)** に起票候補として記録 | D5 |
 | 4 | **`compare_wasm_frontend.ps1` は wasm を再ビルドしない**（存在確認のみ）＝ **古い成果物で緑になる**。型検査を触ったら `cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown` を明示的に回すこと | ⏳ 未修正。`vm-pitfalls` §3 に該当 | C3 |
-| 5 | **`list` / `dict` を Arrow から呼べないのは仕様**。⚠⚠ 私が一度「配線漏れ」と誤認して露出させ、`4299c88` を **revert した**。Arrow 側は**要素型の指定を必須**にしており（`mut xs: list[int] = []`）、素の `list()` / `dict()` で作れるとその規則を迂回する。`eval_type_call` に実装が残っているのは **Python 翻訳専用**に使うため | 🔒 **仕様。Arrow 側へ露出させないこと** | C6 → 誤認 → 撤回 |
+| 5 | **`list` / `dict` を Arrow から呼べないのは仕様**（⚠ 私が一度「配線漏れ」と誤認して露出させ `4299c88` を revert した）。Arrow 側は**要素型の指定を必須**にしており、素の `list()` / `dict()` で作れるとその規則を迂回する。`eval_type_call` に実装が残るのは **Python 翻訳専用**のため。⇒ ⚠ **`[*a]` の「展開元がリスト限定」も `list()` 抜きで解消した**（列リテラルの `*` を Arrow 構文にしたため） | 🔒 **仕様。Arrow 側へ露出させないこと** | C6 → 誤認 → 撤回 |
 | 6 | ~~`{**d1, **d2}` には py 限定の dict 構築経路が要る~~ → **不要だった**。`dict()` を露出せず、**辞書リテラルの `**` 展開そのものを Arrow の構文**にした（`DictEntry::Spread` / `Op::DictMerge`）。⇒ 要素型を持ち込んで型検査するので、要素型必須の規則も迂回しない | ✅ 解決 | C6 → U3 |
 | 7 | **内包表記が多ターゲットを取れない**（`[k for k, v in d.items()]`）。`ComprehensionClause.target` が単一 `String` で、ネイティブ構文側の変更も要る | ⏳ 未着手・**起票候補** | C5 |
 | 8 | **`for k in d:`（dict の直接反復）が `'dict[..]' is not iterable`**。Python では既定でキーを回す | ⏳ 未着手・**起票候補** | C5 |
