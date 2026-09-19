@@ -431,17 +431,21 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(Expr::Tuple(items?))
         }
 
+        // 辞書リテラル。`{**other}`（キーが `None`）は Arrow の `DictEntry::Spread` へ。
+        // ⚠ Arrow 側にも同じ構文を入れたので、そのまま 1 対 1 で写せる。
         py::Expr::Dict(d) => {
-            let mut pairs: Vec<(Expr, Expr)> = Vec::new();
+            let mut entries: Vec<crate::ast::DictEntry> = Vec::new();
             for (k, v) in d.keys.iter().zip(d.values.iter()) {
-                let Some(k) = k else {
-                    return Err(format!(
-                        "{filename}: **dict unpacking in dict literal is not supported"
-                    ));
-                };
-                pairs.push((convert_expr(k, filename)?, convert_expr(v, filename)?));
+                match k {
+                    Some(k) => entries.push(crate::ast::DictEntry::Pair(
+                        convert_expr(k, filename)?,
+                        convert_expr(v, filename)?,
+                    )),
+                    None => entries
+                        .push(crate::ast::DictEntry::Spread(convert_expr(v, filename)?)),
+                }
             }
-            Ok(Expr::Dict(pairs))
+            Ok(Expr::Dict(entries))
         }
 
         // リスト内包表記 → `for` 式 + `loop_yield`。

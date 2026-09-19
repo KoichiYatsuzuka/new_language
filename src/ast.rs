@@ -399,6 +399,21 @@ pub enum UnaryOp {
     BitNot,
 }
 
+/// 辞書リテラルの 1 要素。
+///
+/// - `Pair(k, v)` … `key: value`
+/// - `Spread(e)`  … `**other`（`other` の中身をその位置に展開する）
+///
+/// ⚠ **後から来たキーが勝つ**（Python と同じ）。`{**a, "x": 1}` で `a` が `"x"` を
+/// 持っていても `1` になる。
+#[derive(Debug, Clone)]
+pub enum DictEntry {
+    /// `key: value`
+    Pair(Expr, Expr),
+    /// `**other` — 展開元の全エントリをその位置に挿入する。
+    Spread(Expr),
+}
+
 /// 式（Expression）の AST ノード。
 ///
 /// インタープリタが評価すると `Value` を返す構文要素を表す。
@@ -508,8 +523,12 @@ pub enum Expr {
         end: Option<Box<Expr>>,
         step: Option<Box<Expr>>,
     },
-    /// 辞書リテラル: `{key: value, ...}` — 評価結果は `dict[Any, Any]` 型の値になる。
-    Dict(Vec<(Expr, Expr)>),
+    /// 辞書リテラル: `{key: value, **other, ...}`。
+    ///
+    /// ⚠ 要素は `DictEntry`（ペア or 展開）。`**other` を**別の `Expr` 変種**にせず
+    /// ここに畳んだのは、「同じ木を歩く walker が 2 つあると必ずずれる」ため
+    /// （`language-dev-principles`）。網羅 `match` が全消費者を止める。
+    Dict(Vec<DictEntry>),
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
     /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
     Tuple(Vec<Expr>),

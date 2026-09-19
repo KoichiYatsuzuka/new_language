@@ -262,6 +262,17 @@ impl<'a> GenCtx<'a> {
                 let varr = format!("%_dva{}", self.reg); self.reg += 1;
                 self.ea(&format!("{karr} = alloca [{n} x i64], align 8"));
                 self.ea(&format!("{varr} = alloca [{n} x i64], align 8"));
+                // ⚠ `**other` は `expr_eligible` が弾いているのでここには来ない。
+                //   来たら黙って落とさず panic させる（silent drop を作らない）。
+                let pairs: Vec<(&Expr, &Expr)> = pairs
+                    .iter()
+                    .map(|e| match e {
+                        crate::ast::DictEntry::Pair(k, v) => (k, v),
+                        crate::ast::DictEntry::Spread(_) => unreachable!(
+                            "`**` を含む辞書リテラルはネイティブ非適格（expr_eligible）"
+                        ),
+                    })
+                    .collect();
                 for (i, (k, v)) in pairs.iter().enumerate() {
                     let (kv, kt) = self.gen_expr(k);
                     let (vv, vt) = self.gen_expr(v);

@@ -592,11 +592,20 @@ fn expr_to_value(expr: &Expr) -> Value {
         }
 
         Expr::List(elements) => ns("ExprList", vec![("elements", exprs_list(elements))]),
-        Expr::Dict(pairs) => {
+        Expr::Dict(entries) => {
+            // ⚠ `**other` は「キーが `None`」の組で表す（`eval()`/`exec()` のツール用
+            //   ビューなので、往復できることより形が読めることを優先する）。
             let pairs_val = Value::List(Rc::new(RefCell::new(
-                pairs
+                entries
                     .iter()
-                    .map(|(k, v)| pair(expr_to_value(k), expr_to_value(v)))
+                    .map(|e| match e {
+                        crate::ast::DictEntry::Pair(k, v) => {
+                            pair(expr_to_value(k), expr_to_value(v))
+                        }
+                        crate::ast::DictEntry::Spread(src) => {
+                            pair(Value::None, expr_to_value(src))
+                        }
+                    })
                     .collect(),
             )));
             ns("ExprDict", vec![("pairs", pairs_val)])

@@ -103,6 +103,7 @@ pub const OP_NAMES: [&str; 90] = [
     "Yield",
     "AsyncSubmit",
     "CoerceFloat",
+    "DictMerge",
 ];
 
 /// `Op` を宣言順のインデックスへ落とす。
@@ -198,6 +199,7 @@ pub fn op_index(op: &Op) -> u8 {
         Op::BuildTuple { .. } => 84,
         Op::BuildSet { .. } => 85,
         Op::BuildDict { .. } => 86,
+        Op::DictMerge => 90,
         Op::Yield => 87,
         Op::AsyncSubmit { .. } => 88,
         Op::CoerceFloat => 89,

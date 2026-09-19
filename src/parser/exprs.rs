@@ -1,7 +1,7 @@
 // exprs.rs — expression parsing (precedence chain, literals, subscript, f-strings).
 
 use super::Parser;
-use crate::ast::{BinOp, CallArg, Expr, UnaryOp, Resolution};
+use crate::ast::{BinOp, CallArg, DictEntry, Expr, UnaryOp, Resolution};
 use crate::token::{FStrPart, Span, Token};
 use crate::lexer;
 use std::rc::Rc;
@@ -962,12 +962,53 @@ impl Parser {
     ///
     /// # エラー
     /// 式または `}` のパースに失敗した場合
+    /// 辞書リテラルの残りの要素を読み、`}` まで進めて `Expr::Dict` を返す。
+    ///
+    /// `first` は「既に読んだ 1 つ目」（先頭が `**` のときは `None`）。
+    /// 各要素は `key: value` か `**expr`。
+    ///
+    /// ⚠ **後から来たキーが勝つ**（Python と同じ）。順序はそのまま AST に残し、
+    /// 合成の意味は評価側（`DictEntry::Spread`）が決める。
+    fn parse_dict_entries(&mut self, first: Option<DictEntry>) -> Result<Expr, String> {
+        let mut entries: Vec<DictEntry> = first.into_iter().collect();
+        // 先頭が `**` のときはまだ 1 つも読んでいないので、カンマを待たずに 1 つ読む。
+        if entries.is_empty() {
+            entries.push(self.parse_dict_entry()?);
+        }
+        while *self.current() == Token::Comma {
+            self.advance();
+            if *self.current() == Token::RBrace {
+                break;
+            }
+            entries.push(self.parse_dict_entry()?);
+        }
+        self.eat(&Token::RBrace)?;
+        Ok(Expr::Dict(entries))
+    }
+
+    /// 辞書リテラルの 1 要素（`key: value` または `**expr`）を読む。
+    fn parse_dict_entry(&mut self) -> Result<DictEntry, String> {
+        if *self.current() == Token::StarStar {
+            self.advance();
+            return Ok(DictEntry::Spread(self.parse_expr()?));
+        }
+        let key = self.parse_expr()?;
+        self.eat(&Token::Colon)?;
+        let val = self.parse_expr()?;
+        Ok(DictEntry::Pair(key, val))
+    }
+
     fn parse_dict_or_set_literal(&mut self) -> Result<Expr, String> {
         self.advance(); // consume `{`
                         // Empty braces → empty dict
         if *self.current() == Token::RBrace {
             self.advance();
             return Ok(Expr::Dict(vec![]));
+        }
+        // ★ 先頭が `**expr` なら**辞書の合成**（`{**a, "x": 1}`）。
+        //   セットには `**` が無いので、これが来た時点で辞書と確定する。
+        if *self.current() == Token::StarStar {
+            return self.parse_dict_entries(None);
         }
         // Parse first expression to determine dict vs set
         let first = self.parse_expr()?;
@@ -988,19 +1029,7 @@ impl Parser {
                         .to_string(),
                 );
             }
-            let mut pairs = vec![(first, val)];
-            while *self.current() == Token::Comma {
-                self.advance();
-                if *self.current() == Token::RBrace {
-                    break;
-                }
-                let key = self.parse_expr()?;
-                self.eat(&Token::Colon)?;
-                let val = self.parse_expr()?;
-                pairs.push((key, val));
-            }
-            self.eat(&Token::RBrace)?;
-            Ok(Expr::Dict(pairs))
+            self.parse_dict_entries(Some(DictEntry::Pair(first, val)))
         } else {
             // Set path
             let mut items = vec![first];

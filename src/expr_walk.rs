@@ -146,10 +146,15 @@ pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
                 f(SubPart::Plain(x));
             }
         }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                f(SubPart::Plain(k));
-                f(SubPart::Plain(v));
+        Expr::Dict(entries) => {
+            for e in entries {
+                match e {
+                    crate::ast::DictEntry::Pair(k, v) => {
+                        f(SubPart::Plain(k));
+                        f(SubPart::Plain(v));
+                    }
+                    crate::ast::DictEntry::Spread(src) => f(SubPart::Plain(src)),
+                }
             }
         }
         Expr::TemplateInstantiate { base, .. } => f(SubPart::Plain(base)),

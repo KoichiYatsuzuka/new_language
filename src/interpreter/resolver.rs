@@ -635,10 +635,15 @@ fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
                 rewrite_expr(e, base, globals);
             }
         }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs.iter_mut() {
-                rewrite_expr(k, base, globals);
-                rewrite_expr(v, base, globals);
+        Expr::Dict(entries) => {
+            for e in entries.iter_mut() {
+                match e {
+                    crate::ast::DictEntry::Pair(k, v) => {
+                        rewrite_expr(k, base, globals);
+                        rewrite_expr(v, base, globals);
+                    }
+                    crate::ast::DictEntry::Spread(src) => rewrite_expr(src, base, globals),
+                }
             }
         }
         Expr::Block { stmts, .. } => rewrite_stmts(stmts, base, globals),

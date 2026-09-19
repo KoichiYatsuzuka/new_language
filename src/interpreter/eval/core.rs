@@ -77,6 +77,33 @@ impl Interpreter {
         Ok(Value::Dict(d))
     }
 
+    /// VM: `Op::DictMerge` の本体 — `src` の全エントリを `dest` へ挿入する。
+    ///
+    /// `{a: 1, **b}` の `**b`。**後から来たキーが勝つ**（Python と同じ）。
+    /// ⚠ ツリーウォーク側（`Expr::Dict` の `DictEntry::Spread`）と**同じエラー文言**に
+    /// すること。片方だけ直すと VM と解釈で意味がずれる。
+    pub(crate) fn vm_dict_merge(&mut self, dest: &Value, src: Value) -> Result<(), String> {
+        let Value::Dict(dd) = dest else {
+            return Err(format!(
+                "TypeError: `**` in a dict literal expects a dict, not '{}'",
+                self.type_name(dest)
+            ));
+        };
+        let Value::Dict(sd) = src else {
+            return Err(format!(
+                "TypeError: `**` in a dict literal expects a dict, not '{}'",
+                self.type_name(&src)
+            ));
+        };
+        // ⚠ 借用を握ったまま `dict_set`（`__hash__`/`__eq__` を回す）を呼ぶと再入で落ちる。
+        let pairs = sd.borrow().all_pairs();
+        let dd = dd.clone();
+        for (k, v) in pairs {
+            self.dict_set(&dd, k, v)?;
+        }
+        Ok(())
+    }
+
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
         // 式評価がツリーウォークで走っているかの計測（#55）。既定ビルドでは消える。
@@ -132,12 +159,33 @@ impl Interpreter {
                 }
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
-            Expr::Dict(pairs) => {
+            Expr::Dict(entries) => {
                 let d = Rc::new(RefCell::new(DictData::new("Any".to_string(), "Any".to_string())));
-                for (key_expr, val_expr) in pairs {
-                    let k = self.eval(key_expr)?;
-                    let v = self.eval(val_expr)?;
-                    self.dict_set(&d, k, v)?;
+                for entry in entries {
+                    match entry {
+                        crate::ast::DictEntry::Pair(key_expr, val_expr) => {
+                            let k = self.eval(key_expr)?;
+                            let v = self.eval(val_expr)?;
+                            self.dict_set(&d, k, v)?;
+                        }
+                        // `**other` — 展開元の全エントリをその位置に挿入する。
+                        // ⚠ **後から来たキーが勝つ**（Python と同じ）。挿入順に上書きする。
+                        crate::ast::DictEntry::Spread(src_expr) => {
+                            let src = self.eval(src_expr)?;
+                            let Value::Dict(sd) = src else {
+                                return Err(format!(
+                                    "TypeError: `**` in a dict literal expects a dict, not '{}'",
+                                    self.type_name(&src)
+                                ));
+                            };
+                            // ⚠ 借用を握ったまま `dict_set`（`__hash__`/`__eq__` を回す）を
+                            //   呼ぶと再入で落ちるので、先に取り出す。
+                            let pairs = sd.borrow().all_pairs();
+                            for (k, v) in pairs {
+                                self.dict_set(&d, k, v)?;
+                            }
+                        }
+                    }
                 }
                 Ok(Value::Dict(d))
             }

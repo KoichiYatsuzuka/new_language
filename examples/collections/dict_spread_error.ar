@@ -1,0 +1,17 @@
+# dict_spread_error.ar — 辞書の合成が**型検査で止まる**形。
+#
+# 期待されるエラー:
+#   StaticTypeError: 'a' is declared 'dict[str,int]' but initialized with 'dict[Union[...],int]'
+#
+# ⚠ 展開元の要素型を合成に混ぜているので、追加したキーの型が合わなければここで捕まる。
+#
+# ⚠ 他の形（どれも静的エラー）:
+#   let a: dict[str, str] = {**b, "x": 1}   値の型が合わない
+#   mut a = {**xs}                          展開元が辞書でない
+#     -> `**` in a dict literal expects a `dict`, not 'list[int]'
+#
+# ⚠ **通る形**は `dict_spread.ar`。
+
+let b = {"a": 1}
+let a: dict[str, int] = {**b, 3.0: 2}
+print(a)

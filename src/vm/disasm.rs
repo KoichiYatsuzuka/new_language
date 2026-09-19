@@ -145,5 +145,6 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::CallKw(i) => format!("CALL_KW site#{i}"),
         Op::BuildSet(n) => format!("BUILD_SET {n}"),
         Op::BuildDict(n) => format!("BUILD_DICT {n}"),
+        Op::DictMerge => "DICT_MERGE".to_string(),
     }
 }

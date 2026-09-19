@@ -435,13 +435,49 @@ impl Compiler {
                 }
                 self.emit(Op::BuildSet(n));
             }
-            Expr::Dict(pairs) => {
-                let n = u16::try_from(pairs.len()).ok()?;
-                for (k, v) in pairs {
-                    self.compile_expr(k)?;
-                    self.compile_expr(v)?;
+            Expr::Dict(entries) => {
+                use crate::ast::DictEntry;
+                // 展開が無ければ従来どおり 1 命令（**バイトコードを変えない**）。
+                if entries.iter().all(|e| matches!(e, DictEntry::Pair(..))) {
+                    let n = u16::try_from(entries.len()).ok()?;
+                    for e in entries {
+                        let DictEntry::Pair(k, v) = e else { unreachable!("直前で絞り込み済み") };
+                        self.compile_expr(k)?;
+                        self.compile_expr(v)?;
+                    }
+                    self.emit(Op::BuildDict(n));
+                } else {
+                    // `{a: 1, **b, c: 2}` → 連続するペアを束ねた辞書を作り、
+                    // 展開元も辞書として `DictMerge` で合成していく。
+                    // ⚠ **順序どおりに合成する**（後から来たキーが勝つ）。
+                    self.emit(Op::BuildDict(0)); // 合成先
+                    let mut run: Vec<(&Expr, &Expr)> = Vec::new();
+                    let mut flush = |c: &mut Self, run: &mut Vec<(&Expr, &Expr)>| -> Option<()> {
+                        if run.is_empty() {
+                            return Some(());
+                        }
+                        let n = u16::try_from(run.len()).ok()?;
+                        for (k, v) in run.iter() {
+                            c.compile_expr(k)?;
+                            c.compile_expr(v)?;
+                        }
+                        c.emit(Op::BuildDict(n));
+                        c.emit(Op::DictMerge);
+                        run.clear();
+                        Some(())
+                    };
+                    for e in entries {
+                        match e {
+                            DictEntry::Pair(k, v) => run.push((k, v)),
+                            DictEntry::Spread(src) => {
+                                flush(self, &mut run)?;
+                                self.compile_expr(src)?;
+                                self.emit(Op::DictMerge);
+                            }
+                        }
+                    }
+                    flush(self, &mut run)?;
                 }
-                self.emit(Op::BuildDict(n));
             }
             // ── ブロック式（値を産む制御構文, Phase V-C） ──
             Expr::Block { stmts, return_type } => {

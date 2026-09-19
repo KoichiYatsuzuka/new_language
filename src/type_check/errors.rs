@@ -76,6 +76,13 @@ pub enum TypeErrorKind {
         got_class: String,
     },
     /// `Any` 型の値に対して演算子を適用した（明示的ダウンキャストが必要）。
+    /// 辞書リテラルの `**src` に辞書以外を渡した。
+    ///
+    /// ⚠ 実行時（`DictEntry::Spread` / `Op::DictMerge`）と**同じ意味**の検査を静的に行う。
+    DictSpreadNotADict {
+        /// 実際に渡された型。
+        got: String,
+    },
     OperationOnAny {
         op: String,
     },
@@ -639,6 +646,11 @@ impl StaticTypeError {
             TypeErrorKind::SelfTypeMismatch { method, param_name, expected_class, got_class } => format!(
                 "parameter {} of {} expects {} = {} but got {}",
                 hl_q(param_name), hl_q(method), hl_q("Self"), hl_q(expected_class), hl_q(got_class)
+            ),
+            TypeErrorKind::DictSpreadNotADict { got } => format!(
+                "`**` in a dict literal expects a {}, not {}",
+                hl_bt("dict"),
+                hl_q(got)
             ),
             TypeErrorKind::OperationOnAny { op } => format!(
                 "cannot apply {} to {} — explicit downcast required", hl_bt(op), hl_q("Any")

@@ -157,10 +157,15 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
                     walk_expr(x, out);
                 }
             }
-            Expr::Dict(pairs) => {
-                for (k, v) in pairs {
-                    walk_expr(k, out);
-                    walk_expr(v, out);
+            Expr::Dict(entries) => {
+                for e in entries {
+                    match e {
+                        crate::ast::DictEntry::Pair(k, v) => {
+                            walk_expr(k, out);
+                            walk_expr(v, out);
+                        }
+                        crate::ast::DictEntry::Spread(src) => walk_expr(src, out),
+                    }
                 }
             }
             Expr::Block { stmts, .. } => walk_stmts(stmts, out),
@@ -696,7 +701,12 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
         Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),
-        Expr::Dict(pairs) => pairs.iter().all(|(k, v)| expr_eligible(k) && expr_eligible(v)),
+        // ⚠ `**other` を含む辞書リテラルは**ネイティブ非適格**にする（合成は実行時の
+        //   辞書操作で、`gen_expr` の「キー配列 / 値配列を alloca して渡す」形に載らない）。
+        Expr::Dict(entries) => entries.iter().all(|e| match e {
+            crate::ast::DictEntry::Pair(k, v) => expr_eligible(k) && expr_eligible(v),
+            crate::ast::DictEntry::Spread(_) => false,
+        }),
         Expr::Call { func, args, .. } =>
             expr_eligible(func) && args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e))),
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => expr_eligible(object),

@@ -1,0 +1,29 @@
+# py_dict_spread.ar — `import[py]` 変換器の **辞書の合成 `{**d}`**（群7 U3 の dict 部分）。
+#
+# ⚠ 以前は `**dict unpacking in dict literal is not supported` で拒否していた。
+#   Arrow に dict のマージ手段が無かったため。
+#   ⇒ **Arrow 側に `{**other, key: value}` 構文を入れた**ので 1 対 1 で写せる
+#     （`examples/collections/dict_spread.ar`）。
+#
+# ⚠ **後から来たキーが勝つ**のも Python と同じ。
+# ⚠ Arrow 側は**型検査を通るときだけ**合成できる（展開元の要素型を持ち込む）。
+#   py 由来の値は注釈が無く `Any` になるので、実質そのまま通る。
+#
+# 3 形すべて CPython と出力一致を突き合わせ済み。
+
+import[py] test_modules.py_dict_spread as m
+
+mut a = {"a": 1}
+mut b = {"b": 2}
+
+# ── ① 2 つの辞書を合成 ──────────────────────────────────────────────────
+print(m.merge(a, b))
+# {'a': 1, 'b': 2}
+
+# ── ② 展開 + 追加 ───────────────────────────────────────────────────────
+print(m.with_extra(a))
+# {'a': 1, 'z': 9}
+
+# ── ③ 追加 + 展開（順序どおり） ─────────────────────────────────────────
+print(m.before(a))
+# {'z': 0, 'a': 1}

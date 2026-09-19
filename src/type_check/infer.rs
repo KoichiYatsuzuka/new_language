@@ -219,19 +219,33 @@ impl TypeChecker {
             }
 
             // --- 辞書・サブスクリプト ---
-            Expr::Dict(pairs) => {
-                if pairs.is_empty() {
+            Expr::Dict(entries) => {
+                if entries.is_empty() {
                     InferredType::DictOf(
                         Box::new(InferredType::Never),
                         Box::new(InferredType::Never),
                     )
                 } else {
-                    let key_types: Vec<InferredType> =
-                        pairs.iter().map(|(k, _)| self.infer(k)).collect();
-                    let val_types: Vec<InferredType> =
-                        pairs.iter().map(|(_, v)| self.infer(v)).collect();
                     // ⚠ キー・値それぞれを合成する（タスク 2.7）。以前はどちらかが
                     //    揃わないだけで素の `Dict` に落ち、`dict[任意, 任意]` と適合していた。
+                    // ★ `**other`（`DictEntry::Spread`）は**展開元の要素型を持ち込む**。
+                    //    合成に混ぜることで `{**b, 3.0: 2}` のようなキー型の食い違いが
+                    //    そのまま代入時の検査で捕まる。
+                    let mut key_types: Vec<InferredType> = Vec::new();
+                    let mut val_types: Vec<InferredType> = Vec::new();
+                    for e in entries {
+                        match e {
+                            crate::ast::DictEntry::Pair(k, v) => {
+                                key_types.push(self.infer(k));
+                                val_types.push(self.infer(v));
+                            }
+                            crate::ast::DictEntry::Spread(src) => {
+                                let (kt, vt) = self.dict_spread_elem_types(src);
+                                key_types.push(kt);
+                                val_types.push(vt);
+                            }
+                        }
+                    }
                     InferredType::DictOf(
                         Box::new(Self::join_elem_types(key_types)),
                         Box::new(Self::join_elem_types(val_types)),
@@ -527,6 +541,41 @@ impl TypeChecker {
     /// 引くと `KeyError` になる（実測）。等値比較は `uint → int → float` で昇格するのに
     /// **辞書引きはハッシュなので昇格しない**という食い違いがあるため、`==` と同じ規則で
     /// 判定してはいけない。
+    /// 辞書リテラル内の `**src` が持ち込む（キー型, 値型）を返す。
+    ///
+    /// ⚠⚠ **`Unresolved` を返さない**。`Unresolved` は下流で「万能受容体」として
+    /// 振る舞い、`{**b, 3.0: 2}` のようなキー型の食い違いを**素通し**させてしまう。
+    /// 判らないときは `Any` に倒す —— `Any` は「明示ダウンキャストを要求する」側なので、
+    /// 検査を消さずに済む（`extract_py_type_stubs` の doc と同じ判断）。
+    ///
+    /// ⚠ 展開元が辞書でなければ**その場で静的エラー**（実行時 `TypeError` と同じ形）。
+    fn dict_spread_elem_types(
+        &mut self,
+        src: &Expr,
+    ) -> (InferredType, InferredType) {
+        let ty = self.infer(src);
+        match &ty {
+            InferredType::DictOf(k, v) => ((**k).clone(), (**v).clone()),
+            // 要素型を持たない素の `dict`。要素は判らないが**辞書ではある**ので
+            // `Any` として通す（`Unresolved` にすると検査が消える）。
+            InferredType::Dict => (InferredType::Any, InferredType::Any),
+            // ⚠ 型が判らない（`Any` / `Unresolved`）ときは検査できないが、
+            //   **エラーにもしない**（`import` 越しの値など、注釈が供給されない経路がある）。
+            InferredType::Any | InferredType::Unresolved => {
+                (InferredType::Any, InferredType::Any)
+            }
+            other => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::DictSpreadNotADict {
+                        got: other.to_string(),
+                    },
+                    span: None,
+                });
+                (InferredType::Any, InferredType::Any)
+            }
+        }
+    }
+
     fn check_subscript_index(&mut self, obj_ty: &InferredType, idx_ty: &InferredType) {
         use InferredType as T;
         // 添字が不透明なら判定材料が無い（取りこぼす方へ倒す）。

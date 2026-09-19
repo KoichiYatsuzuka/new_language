@@ -594,10 +594,18 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             end: end.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
             step: step.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
         },
-        Expr::Dict(pairs) => Expr::Dict(
-            pairs
+        Expr::Dict(entries) => Expr::Dict(
+            entries
                 .iter()
-                .map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map)))
+                .map(|e| match e {
+                    crate::ast::DictEntry::Pair(k, v) => crate::ast::DictEntry::Pair(
+                        subst_expr(k, type_map),
+                        subst_expr(v, type_map),
+                    ),
+                    crate::ast::DictEntry::Spread(src) => {
+                        crate::ast::DictEntry::Spread(subst_expr(src, type_map))
+                    }
+                })
                 .collect(),
         ),
         Expr::Tuple(items) => Expr::Tuple(items.iter().map(|e| subst_expr(e, type_map)).collect()),

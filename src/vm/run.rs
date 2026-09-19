@@ -1678,6 +1678,11 @@ fn exec_op(
             let flat = buf.split_off(split);
             buf.push(interp.vm_build_dict(flat)?);
         }
+        Op::DictMerge => {
+            let src = buf.pop().expect("DictMerge: 展開元がスタックに無い");
+            let dest = buf.last().expect("DictMerge: 合成先がスタックに無い").clone();
+            interp.vm_dict_merge(&dest, src)?;
+        }
         Op::Yield => {
             // ⚠⚠ **ここでディスパッチループを抜ける**（bug_fix.md B13）。
             //    以前は共有バッファへ積むだけで本体は最後まで走っていた（先行評価）。
