@@ -293,6 +293,20 @@ pub enum Token {
     LtEq,    // <=
     GtEq,    // >=
 
+    // ── メタ関数（コンパイル時展開）用のトークン ──────────────────────────
+    // ⚠ いずれも**現在の Arrow では到達不能な並び**なので、予約しても既存コードを壊さない
+    //   （`!` 単独は従来 `Unknown('!')` でどこでもパースエラーだった）。
+    //   設計は implementation_plans/comptime_metafn_design.md §1.9。
+    /// `!` 単独。メタ関数の定義（`!fn`）と装飾子の適用（`!名前`）の目印。
+    /// ⚠ 判定順は `=`（`!=`）→ `>`（`!>`）→ この `Bang`。
+    Bang,        // !
+    /// `<!` — スプライスの開始。
+    SpliceOpen,  // <!
+    /// `!>` — スプライスの終了。
+    /// ⚠ **2 文字で取ることが必須。** `!` と `>` を別トークンにすると `>` が後続の
+    ///   `=` / `>` を貪欲に食い、`<!name!>= 3` が `>=` になって壊れる（参考E）。
+    SpliceClose, // !>
+
     // Bitwise operators
     Amp,   // &
     Pipe,  // |
@@ -474,6 +488,9 @@ impl std::fmt::Display for Token {
             Token::EqEq => write!(f, "=="),
             Token::EqEqEq => write!(f, "==="),
             Token::NotEq => write!(f, "!="),
+            Token::Bang => write!(f, "!"),
+            Token::SpliceOpen => write!(f, "<!"),
+            Token::SpliceClose => write!(f, "!>"),
             Token::Lt => write!(f, "<"),
             Token::Gt => write!(f, ">"),
             Token::LtEq => write!(f, "<="),

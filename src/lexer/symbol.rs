@@ -147,18 +147,34 @@ impl Lexer {
                 }
             }
 
-            // `!=`（`!` 単独は未知文字）
+            // `!=` / `!>`（スプライス終了）/ `!` 単独（メタ関数の目印）
+            // ⚠ **判定順が意味を持つ**: `=` → `>` → 単独。`!>` を 2 文字で取らないと
+            //   `>` が後続の `=` / `>` を貪欲に食い、`<!name!>= 3` が `>=` になって壊れる
+            //   （comptime_metafn_design.md 参考E）。
             '!' => {
-                if self.ch() == Some('=') {
-                    self.pos += 1;
-                    Token::NotEq
-                } else {
-                    Token::Unknown('!')
+                match self.ch() {
+                    Some('=') => {
+                        self.pos += 1;
+                        Token::NotEq
+                    }
+                    Some('>') => {
+                        self.pos += 1;
+                        Token::SpliceClose
+                    }
+                    // ⚠ 従来は `Unknown('!')` で必ずパースエラーだった。トークンにしても
+                    //   受理する構文はまだ無いので、**既存コードの挙動は変わらない**。
+                    _ => Token::Bang,
                 }
             }
 
-            // `<` / `<=` / `<<` / `<<=` / `<-` の 5 種を判定する
+            // `<` / `<=` / `<<` / `<<=` / `<-` / `<!`（スプライス開始）の 6 種を判定する
             '<' => match self.ch() {
+                // ⚠ `<` は `<` / `=` / `-` としか結合しないので、`<!` を足しても
+                //   既存の並びを奪わない（comptime_metafn_design.md 参考E）。
+                Some('!') => {
+                    self.pos += 1;
+                    Token::SpliceOpen
+                }
                 Some('<') => {
                     self.pos += 1;
                     if self.ch() == Some('=') {
