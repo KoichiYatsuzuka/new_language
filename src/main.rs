@@ -585,7 +585,15 @@ fn interpreter_main() {
         }
 
         Mode::CompileCs(path) => {
+            #[cfg(not(feature = "editor"))]
             compile_cs_stub(&path);
+            // ⚠ `editor` ビルドでは FFI を持たないので、このモードは受け付けない（#1）。
+            #[cfg(feature = "editor")]
+            {
+                let _ = path;
+                eprintln!("Error: --compile-cs is not available in the editor build");
+                std::process::exit(1);
+            }
         }
 
         Mode::EmitStubs(path) => {
@@ -616,6 +624,11 @@ fn read_file(path: &str) -> String {
 /// `import[cs-dll]` / `import[cs-proc]` が内部的に生成する型情報と同一の内容を、
 /// コーダーが参照できる `.ars` ファイルとして書き出す。
 /// Python の `stubgen` に相当する明示的なスタブ生成コマンド。
+///
+/// ⚠ `editor` ビルドでは `parser::cs_assembly` ごと外れるので、このモードも落とす
+/// （評価コア切り出し #1）。`editor` は「FFI を持たない解析ビルド」なので、
+/// .NET アセンブリを読むコマンドは定義上存在しない。
+#[cfg(not(feature = "editor"))]
 fn compile_cs_stub(path: &str) {
     let dll_path = std::path::Path::new(path);
 
