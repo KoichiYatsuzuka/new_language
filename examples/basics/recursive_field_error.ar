@@ -1,0 +1,23 @@
+# recursive_field_error.ar — 値として直接の自己参照フィールド（タスク 0-6 / D37）。
+#
+# フィールドが**値として自分自身のクラス**を持つと、構造が無限階層になる。
+# C の `struct S { S s; }` が禁止なのと同じ理由。
+#
+# ⚠ 以前は**宣言だけ通って使えない**状態だった（`Node(1, None)` が
+#   `argument 1 of 'Node.__init__' expects 'Node' but got 'None'` になり、
+#   終端を作れないので絶対にインスタンスを生成できなかった）。
+#   ⇒ 宣言の時点で弾くようにした。
+#
+# ⚠ 包めば書ける（`Option[Node]` / `list[Node]`）。成功例は `recursive_field.ar`。
+# ⚠ `Self` を使っても同じく弾かれる。
+#
+# 期待されるエラー:
+#   StaticTypeError  field 'next' of class 'Node' cannot hold 'Node' by value
+#                    (the structure would be infinitely nested);
+#                    wrap it — 'Option[Node]' or 'list[Node]' — so the nesting can terminate
+
+class Node:
+    let v: int
+    let next: Node
+
+print("unreachable")

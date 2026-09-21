@@ -230,6 +230,15 @@ pub enum TypeErrorKind {
         class_name: String,
         method_name: String,
     },
+    /// クラスのフィールドが**値として自分自身のクラス**を持っている。
+    ///
+    /// ⚠ 無限階層構造になるので禁止する（C の `struct S { S s; }` が禁止なのと同じ）。
+    /// **`Option[C]` / `list[C]` は許可**（インスタンスは実行時ポインタなので無限にならず、
+    /// 連結リストや木が書ける）。メタ関数設計書の D37 / タスク 0-6。
+    SelfReferentialField {
+        class_name: String,
+        field_name: String,
+    },
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -790,6 +799,11 @@ impl StaticTypeError {
                 "template {} must be called with explicit type arguments (e.g. {})",
                 hl_q(name),
                 hl_q(&format!("{name}[T](...)"))
+            ),
+            TypeErrorKind::SelfReferentialField { class_name, field_name } => format!(
+                "field {} of class {} cannot hold {} by value (the structure would be infinitely nested);                  wrap it — {} or {} — so the nesting can terminate",
+                hl_q(field_name), hl_q(class_name), hl_q(class_name),
+                hl_q(&format!("Option[{class_name}]")), hl_q(&format!("list[{class_name}]"))
             ),
             TypeErrorKind::VirtualMethodInClass { class_name, method_name } => format!(
                 "class {} cannot declare virtual method {} (a `...` body);                  virtual methods belong to traits — give it a real body,                  or move the declaration into a trait that {} implements",

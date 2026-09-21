@@ -242,7 +242,7 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | ~~0-3~~ | ~~`new_type` / `alias` のジェネリクス対応~~ **完了（2026-09-22）**。`alias` は右辺の式パースが失敗したら型式として読み直す（`list[int]` は引数 1 つなので偶然通っていた＝**カンマを含む型だけ**が壊れていた）。`new_type` は `get_val` で引けないとき**構造を持つ型に限り** `Value::Type` へ落とす。⚠ 条件を「`from_ann` が通る」だけにすると未知の裸名が `NamedInstance` で通り `NameError` が消える（実装中に踏んだ）。例題 `examples/basics/alias_newtype_generics.ar` / `_error.ar` | — |
 | ~~0-4~~ | ~~評価コアの切り出し（A 案）~~ **完了（2026-09-22）**。[eval_core_extraction_plan.md](eval_core_extraction_plan.md) の `#1`〜`#7` をすべて完了。`cargo build --release --target wasm32-unknown-unknown` が通り、**インタプリタと VM が拡張の crate に載った**。効いたのは「FFI モジュールを同名スタブへ差し替える」方針で、**網羅 `match` 124 箇所には一切触っていない** | D4, D5 |
 | ~~0-5~~ | ~~`Value` の非 wasm variant を feature 化~~ **不要と判明（2026-09-22）**。ネイティブ crate に触れる payload は `PyObjHandle` / `NativeLibWrapper` の 2 型だけで、**中身を差し替えれば variant は全ビルドに残せる**。⇒ 網羅 `match` の 2 段強制を崩さずに済んだ | — |
-| **0-6** | **値としての直接の自己参照フィールドを明示エラーにする（D37・B 案）。** ⚠ 実測では `class Node: let next: Node` も `Option[Node]` / `list[Tree]` も **宣言は通る**が、直接自己参照は使用時に `argument 1 of 'Node.__init__' expects 'Node' but got 'None'` になり**終端を作れない**。宣言時に弾く。⚠ `Option[Node]` / `list[Node]` は許可のまま | — |
+| ~~0-6~~ | ~~値としての直接の自己参照フィールドを明示エラーに~~ **完了（2026-09-22）**。`TypeErrorKind::SelfReferentialField` を新設し、`ClassDef` の検査で型注釈が**クラス名そのもの**（または `Self`）のフィールドを弾く。`Option[C]` / `list[C]` は許可のまま。例題 `examples/basics/recursive_field.ar` / `_error.ar`。⚠ **残件**: 値での相互再帰（`A.b: B` と `B.a: A`）はクラスを跨ぐ循環検査が要るので未対応 | — |
 
 
 ⚠ **テンプレートクラスのメソッド引数の型検査は別スレッドへ委譲**（2026-09-21）。

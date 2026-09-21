@@ -1,0 +1,67 @@
+# recursive_field.ar — クラスのフィールドが自分自身のクラスを持つ形（タスク 0-6 / D37）。
+#
+# ⚠ **値として直接持つのは禁止**（`let next: Node`）。無限階層構造になるため
+#   （C の `struct S { S s; }` が禁止なのと同じ）。失敗例は `recursive_field_error.ar`。
+#
+# ⚠ **`Option[C]` / `list[C]` は許可**。Arrow のインスタンスは実行時にはポインタ
+#   （`Value::Instance(Rc<RefCell<InstanceData>>)`）なので、包めば無限にならず
+#   連結リストや木が書ける。この例題はそれを固定する。
+#
+# ⚠ `Option[C]` のフィールドは**そのままでは属性アクセスできない**
+#   （`cannot apply attribute access to 'Option[Node]' — explicit downcast required`）。
+#   `mustbe` で絞り込むか `is` で型ガードする。
+
+print("=== Option 経由の連結リスト ===")
+
+class Node:
+    mut v: int
+    mut next: Option[Node]
+
+mut tail = Node(3, None)
+mut mid = Node(2, tail)
+mut head = Node(1, mid)
+
+print(head.v)                       # 1
+
+let second = head.next mustbe Node
+print(second.v)                     # 2
+
+let third = second.next mustbe Node
+print(third.v)                      # 3
+
+# 終端は None なので型ガードで分岐できる
+if third.next is Node:
+    print("has next")
+else:
+    print("tail reached")           # tail reached
+
+print("=== list 経由の木 ===")
+
+class Tree:
+    mut label: str
+    mut kids: list[Tree]
+
+mut leaf_a = Tree("a", [])
+mut leaf_b = Tree("b", [])
+mut root = Tree("root", [leaf_a, leaf_b])
+
+print(root.label)                   # root
+print(len(root.kids))               # 2
+print(root.kids[0].label)           # a
+print(root.kids[1].label)           # b
+
+print("=== 相互参照も包めば書ける ===")
+
+# ⚠ 値で相互に持つ（`A.b: B` と `B.a: A`）のは同じ理由で不正だが、
+#   クラスを跨ぐ循環検査は未実装なので**現状は通ってしまう**（0-6 の残件）。
+class Child:
+    mut name: str
+
+class Parent:
+    mut name: str
+    mut child: Option[Child]
+
+mut c = Child("c1")
+mut p = Parent("p1", c)
+let got = p.child mustbe Child
+print(got.name)                     # c1

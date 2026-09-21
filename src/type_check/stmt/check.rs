@@ -276,6 +276,26 @@ impl TypeChecker {
                         }
                     }
                 }
+                // ⚠ 値としての**直接の自己参照フィールド**を禁止する（D37 / タスク 0-6）。
+                //   `let next: Node` は無限階層構造になる（C の `struct S { S s; }` と同じ）。
+                //   ⚠ **`Option[Node]` / `list[Node]` は許可**。インスタンスは実行時ポインタ
+                //     （`Value::Instance(Rc<RefCell<InstanceData>>)`）なので無限にならず、
+                //     連結リストや木が書ける。⇒ 型注釈が**クラス名そのもの**のときだけ弾く。
+                //   ⚠ 相互再帰（`A.b: B` と `B.a: A`）は同じ理由で不正だが、クラスを跨ぐ
+                //     循環検査が要るので**ここでは見ていない**（D37 は直接の自己参照のみ）。
+                for st in body {
+                    if let Stmt::Field { name: fname, type_ann, .. } = st {
+                        if type_ann == name || type_ann == "Self" {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::SelfReferentialField {
+                                    class_name: name.clone(),
+                                    field_name: fname.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                }
                 self.check_stmts(body);
                 // 基底 trait の要求（フィールド型・メソッドシグネチャ）を満たすか（0-8）。
                 // ⚠ 本体を検査した後に呼ぶ。クラスの型変数がまだ積まれている状態で
