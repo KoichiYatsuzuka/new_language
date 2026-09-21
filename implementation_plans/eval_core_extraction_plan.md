@@ -4,7 +4,7 @@
 `0-5`（`Value` の非 wasm variant を feature 化）は、実測すると**単一コミットに収まらない**ので本書へ分割する。
 
 - 作成: 2026-09-22
-- 状態: **#1 / #2 / #3 / #4 完了（2026-09-22）・#5 以降未着手**
+- 状態: **#1〜#5 完了（2026-09-22）・#6（frontend への取り込み）が次**
 - 採番は `#1, #2, ...`（フェーズに分ける必要がないため。`.claude/rules/regulations.md`）
 - 位置はシンボル名で指す（行番号は書かない）
 
@@ -87,7 +87,7 @@ Interpreter 側に置かれた支援コードで、実質すでにコアの一�
 | ~~#2~~ | ~~ネイティブ依存を feature で外す~~ **完了（2026-09-22）**。`cargo build --no-default-features --features editor` が**エラー 0** で通る | #1 | 中 |
 | ~~#3~~ | ~~FFI モジュールを外す~~ **完了（#2 と同時・2026-09-22）**。`cpp_bridge` は丸ごと落とし、`py_interop` / `cs_dll_runtime` / `native_api` / `eval/native` は**同名スタブへ差し替え** | #2 | 中 |
 | ~~#4~~ | ~~`event_loop` / `async_mgr` を外す~~ **不要と判明（2026-09-22）**。どちらもネイティブ crate に依存しておらず（`std` のみ）、評価コアビルドを妨げない。wasm 実行時に動くかは #6 で判断する | #2 | — |
-| **#5** | `exec/modules` の FFI import 経路を外す（`import[ar]` と `const` 読み取りは残す・D32） | #3, #4 | 中 |
+| ~~#5~~ | ~~`exec/modules` の FFI import 経路を外す~~ **完了（2026-09-22）**。併せて `proc_bridge` / `cs_proc_runtime` / `js_proc_runtime` / `msvc_errors` / `partial_compiler::rs_loader` も落とし、**死にコード警告 100 → 22 件**。`import[ar]` と `.arc` の AST 読み取りは残っている | #3 | 中 |
 | **#6** | frontend crate に `src/interpreter` と `src/vm` を `#[path]` で取り込み、**wasm32 ビルドを通す** | #5 | 中 |
 | **#7** | ゲートを張る（`compare_wasm_frontend` / `test_build_gate` / `scan_examples` / `force_gate` / `compare_outputs`） | #6 | 中 |
 

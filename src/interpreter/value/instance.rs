@@ -1,3 +1,7 @@
+// ⚠ 評価コアビルド（`native` 無効）では FFI 経路が全部落ちるので、raw レイアウトの読み書き補助が
+//   未使用になる。型（`NativeFnRef` / `RawLayout` など）は `Value` が参照するため
+//   残す必要があり、**関数だけ** dead になる。⇒ そのビルドに限り警告を抑える。
+#![cfg_attr(not(feature = "native"), allow(dead_code))]
 // value/instance.rs — インスタンスデータと C ABI raw レイアウト: InstanceData(オフセット参照アクセサ)、RawWidth/RawFieldDesc/RawLayout、シャドウ変換ヘルパー、InstanceData フラグ定数。
 
 use std::rc::Rc;

@@ -6,6 +6,10 @@
 ///   stub_gen        — .ars stub text generator
 pub mod llvm_codegen;
 mod module_compiler;
+// ⚠ Rust crate ローダ（`import[rs]`）。外部 `cargo` を起動して DLL を作るので
+//   `native` 限定（評価コア切り出し #5）。参照元は `parser/imports/dispatch.rs`
+//   （`editor` では `imports_editor.rs` に差し替わって消える）と `module_compiler`。
+#[cfg(feature = "native")]
 pub mod rs_loader;
 pub mod stub_gen;
 

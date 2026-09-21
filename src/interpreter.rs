@@ -34,6 +34,9 @@ mod classes;
 #[cfg(feature = "native")]
 pub(crate) mod cpp_bridge;
 #[path = "interpreter/proc_bridge.rs"]
+// ⚠ 名前付きパイプ（Windows API）。`native` 限定（評価コア切り出し #5）。
+//   参照元は `cs_proc_runtime` / `js_proc_runtime` だけで、どちらもスタブに差し替わる。
+#[cfg(feature = "native")]
 pub(crate) mod proc_bridge;
 #[path = "interpreter/cs_dll_runtime.rs"]
 // ⚠ .NET ブリッジ（libloading）。評価コアビルドでは同名スタブへ差し替える
@@ -45,8 +48,18 @@ pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/cs_dll_runtime_stub.rs"]
 pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/cs_proc_runtime.rs"]
+// ⚠ .NET 別プロセスブリッジ。評価コアでは同名スタブへ差し替える（#5）。
+#[cfg(feature = "native")]
+pub(crate) mod cs_proc_runtime;
+#[cfg(not(feature = "native"))]
+#[path = "interpreter/cs_proc_runtime_stub.rs"]
 pub(crate) mod cs_proc_runtime;
 #[path = "interpreter/js_proc_runtime.rs"]
+// ⚠ Node.js ブリッジ。評価コアでは同名スタブへ差し替える（#5）。
+#[cfg(feature = "native")]
+pub(crate) mod js_proc_runtime;
+#[cfg(not(feature = "native"))]
+#[path = "interpreter/js_proc_runtime_stub.rs"]
 pub(crate) mod js_proc_runtime;
 
 /// FFI 境界検査（#16）: 動的型付け言語から Arrow へ入る値をスタブ宣言型と突き合わせる。
@@ -64,7 +77,9 @@ pub(crate) use exec::{collect_referenced_names, fn_own_names};
 #[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]
- mod msvc_errors;
+// ⚠ MSVC 診断の解析。参照元は `cpp_bridge` だけで、それが `native` 限定（#5）。
+#[cfg(feature = "native")]
+mod msvc_errors;
 #[path = "interpreter/native_api/mod.rs"]
 // ⚠ ネイティブ callback ABI（libloading）。評価コアビルドでは同名スタブへ差し替える
 // （評価コア切り出し #2）。コアから参照されるのは `ErrSlot` /

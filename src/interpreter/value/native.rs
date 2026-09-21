@@ -1,3 +1,7 @@
+// ⚠ 評価コアビルド（`native` 無効）では FFI 経路が全部落ちるので、typed ABI の marshal/cleanup 補助が
+//   未使用になる。型（`NativeFnRef` / `RawLayout` など）は `Value` が参照するため
+//   残す必要があり、**関数だけ** dead になる。⇒ そのビルドに限り警告を抑える。
+#![cfg_attr(not(feature = "native"), allow(dead_code))]
 // value/native.rs — ネイティブ関数サポートと typed ABI ポインタ引数解決: PtrParam / AbiTy / TypedSig / PtrArgCleanup / resolve_typed_ptr_arg / finish_ptr_arg_cleanup / NativeFnRef / NativeLibWrapper。
 
 use {
