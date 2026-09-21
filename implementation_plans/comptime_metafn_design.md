@@ -240,8 +240,8 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 | ~~0-1~~ | ~~テンプレートクラスのコンストラクタ引数の型検査~~ **完了（別スレッド・2026-09-20 実測）**。⚠ ただし**テンプレートの「メソッド」引数は未検査**のまま（下記 0-2 の隣に新設） | — |
 | ~~0-2~~ | ~~既定値の型検査~~ **完了（別スレッド・2026-09-20 実測）**（`str`→`int` / `float`→`int` とも `StaticTypeError`） | — |
 | ~~0-3~~ | ~~`new_type` / `alias` のジェネリクス対応~~ **完了（2026-09-22）**。`alias` は右辺の式パースが失敗したら型式として読み直す（`list[int]` は引数 1 つなので偶然通っていた＝**カンマを含む型だけ**が壊れていた）。`new_type` は `get_val` で引けないとき**構造を持つ型に限り** `Value::Type` へ落とす。⚠ 条件を「`from_ann` が通る」だけにすると未知の裸名が `NamedInstance` で通り `NameError` が消える（実装中に踏んだ）。例題 `examples/basics/alias_newtype_generics.ar` / `_error.ar` | — |
-| 0-4 | **評価コアの切り出し（A 案）→ 専用計画書へ分割（2026-09-22）。** 実測すると単一コミットに収まらない（VM から Interpreter への呼び出し 68 種・`Value` の非 wasm variant 8 種が 124 箇所・非コアは約 14,000 行）。⇒ [eval_core_extraction_plan.md](eval_core_extraction_plan.md) に `#1`〜`#7` として分割。**`#1` 完了** | D4, D5 |
-| 0-5 | `Value` の非 wasm variant を feature 化 → **[eval_core_extraction_plan.md](eval_core_extraction_plan.md) `#2` に統合**（0-4 と不可分。variant が残っているとモジュールを外せない） | 0-4 |
+| ~~0-4~~ | ~~評価コアの切り出し（A 案）~~ **完了（2026-09-22）**。[eval_core_extraction_plan.md](eval_core_extraction_plan.md) の `#1`〜`#7` をすべて完了。`cargo build --release --target wasm32-unknown-unknown` が通り、**インタプリタと VM が拡張の crate に載った**。効いたのは「FFI モジュールを同名スタブへ差し替える」方針で、**網羅 `match` 124 箇所には一切触っていない** | D4, D5 |
+| ~~0-5~~ | ~~`Value` の非 wasm variant を feature 化~~ **不要と判明（2026-09-22）**。ネイティブ crate に触れる payload は `PyObjHandle` / `NativeLibWrapper` の 2 型だけで、**中身を差し替えれば variant は全ビルドに残せる**。⇒ 網羅 `match` の 2 段強制を崩さずに済んだ | — |
 | **0-6** | **値としての直接の自己参照フィールドを明示エラーにする（D37・B 案）。** ⚠ 実測では `class Node: let next: Node` も `Option[Node]` / `list[Tree]` も **宣言は通る**が、直接自己参照は使用時に `argument 1 of 'Node.__init__' expects 'Node' but got 'None'` になり**終端を作れない**。宣言時に弾く。⚠ `Option[Node]` / `list[Node]` は許可のまま | — |
 
 
