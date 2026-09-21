@@ -133,6 +133,9 @@ impl Interpreter {
                     format!("<FileObject '{}' pos={}>", fd.path, fd.pointer)
                 }
             }
+            // ⚠ 評価コアビルドでは `PyObjHandle` が構築不能なのでこのアームへは到達しないが、
+            //   **アーム自体は残す**（消すと網羅 match の 2 段強制が崩れる・評価コア切り出し #2）。
+            #[cfg(feature = "native")]
             Value::PyObject(h) => pyo3::Python::with_gil(|py| {
                 use pyo3::types::PyAnyMethods;
                 h.inner
@@ -141,6 +144,8 @@ impl Interpreter {
                     .and_then(|r| r.extract::<String>())
                     .unwrap_or_else(|_| "<PyObject>".to_string())
             }),
+            #[cfg(not(feature = "native"))]
+            Value::PyObject(_) => "<PyObject>".to_string(),
             Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
             Value::Slice(s) => {
                 let b = s

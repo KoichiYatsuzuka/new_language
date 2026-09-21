@@ -36,8 +36,13 @@ pub(crate) mod cpp_bridge;
 #[path = "interpreter/proc_bridge.rs"]
 pub(crate) mod proc_bridge;
 #[path = "interpreter/cs_dll_runtime.rs"]
-// ⚠ .NET ブリッジ（libloading）。`native` 限定（評価コア切り出し #2）。
+// ⚠ .NET ブリッジ（libloading）。評価コアビルドでは同名スタブへ差し替える
+// （評価コア切り出し #2）。`Value::CsObject` の match アームが 4 ファイルに散っているので、
+// **呼び出し側に `#[cfg]` を配らない**ためにモジュールごと差し替える。
 #[cfg(feature = "native")]
+pub(crate) mod cs_dll_runtime;
+#[cfg(not(feature = "native"))]
+#[path = "interpreter/cs_dll_runtime_stub.rs"]
 pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/cs_proc_runtime.rs"]
 pub(crate) mod cs_proc_runtime;
@@ -61,16 +66,29 @@ mod functions;
 #[path = "interpreter/msvc_errors.rs"]
  mod msvc_errors;
 #[path = "interpreter/native_api/mod.rs"]
-// ⚠ ネイティブ callback ABI（libloading）。`native` 限定（評価コア切り出し #2）。
+// ⚠ ネイティブ callback ABI（libloading）。評価コアビルドでは同名スタブへ差し替える
+// （評価コア切り出し #2）。コアから参照されるのは `ErrSlot` /
+// `lookup_native_method_ptr` / `try_dispatch_native_method` の 3 つだけで、
+// いずれも**分岐の条件式**に埋まっているので `#[cfg]` を配ると条件が読めなくなる。
 #[cfg(feature = "native")]
+mod native_api;
+#[cfg(not(feature = "native"))]
+#[path = "interpreter/native_api_stub.rs"]
 mod native_api;
 // ⚠ `pub(crate)`: `vm::op` のテストが `primitive_ann_matches`（実行時の唯一の型表・
 //    タスク 6.1）を引いて `TypeTag` とのずれを検査する。
 #[path = "interpreter/ops/mod.rs"]
 pub(crate) mod ops;
 #[path = "interpreter/py_interop.rs"]
-// ⚠ Python 相互運用（pyo3）。`native` 限定（評価コア切り出し #2）。
+// ⚠ Python 相互運用（pyo3）。評価コアビルドでは同名スタブへ差し替える
+// （評価コア切り出し #2）。`Value::PyObject` の match アームが 10 箇所以上に散っているので、
+// **呼び出し側に `#[cfg]` を配らない**ためにモジュールごと差し替える。
 #[cfg(feature = "native")]
+mod py_interop;
+#[cfg(not(feature = "native"))]
+// ⚠ `#[path]` は**宣言元ファイルのディレクトリ基準**。`interpreter.rs` は `src/` にあるので
+// `interpreter/` を前置する（`eval/mod.rs` 側は `mod.rs` なので相対のままでよい）。
+#[path = "interpreter/py_interop_stub.rs"]
 mod py_interop;
 #[path = "interpreter/resolver.rs"]
 pub(crate) mod resolver;

@@ -29,11 +29,26 @@ impl Interpreter {
         alias: Option<&str>,
         body: &[Stmt],
     ) -> Result<ExecResult, String> {
+        // ⚠ FFI 系の import は `native` 限定（評価コア切り出し #2）。
+        //   評価コアビルドでは `_` へ落とさず**明示エラー**にする。落とすと
+        //   `exec_module` が普通のモジュールとして探しに行き、理由の分からない
+        //   「ファイルが無い」になる。
         let ns = match lang {
+            #[cfg(feature = "native")]
             "cpp-dll" | "cpp-lib" => self.import_cpp_module(lang, module, source_module)?,
+            #[cfg(feature = "native")]
             "cs-dll" => self.import_cs_dll(lang, module, body)?,
+            #[cfg(feature = "native")]
             "cs-proc" => self.import_cs_proc(lang, module, body)?,
+            #[cfg(feature = "native")]
             "js-proc" => self.import_js_proc(lang, module, body)?,
+            #[cfg(not(feature = "native"))]
+            "cpp-dll" | "cpp-lib" | "cs-dll" | "cs-proc" | "js-proc" => {
+                let _ = source_module;
+                return Err(format!(
+                    "ImportError: `import[{lang}]` is not available in the evaluation core                      build (FFI is excluded; rebuild with the `native` feature)"
+                ));
+            }
             _ => self.exec_module(lang, module, body)?,
         };
         let bind_name = match alias {
@@ -61,6 +76,8 @@ impl Interpreter {
 
     /// `import[cpp-dll]` / `import[cpp-lib]`。
     /// ⚠ キャッシュキーは**ヘッダのパス**（`exec_module` の `module.join("/")` ではない）。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn import_cpp_module(
         &mut self,
         lang: &str,
@@ -84,6 +101,8 @@ impl Interpreter {
     /// 見つかった DLL のパスを各クラスへ焼き込む。
     ///
     /// ⚠ **ブリッジが無い／読み込めない場合はスタブのまま返す**（警告のみ・従来どおり）。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn import_cs_dll(
         &mut self,
         lang: &str,
@@ -113,6 +132,8 @@ impl Interpreter {
     ///
     /// ⚠ **`find_cs_proc_host` の探索とは順序も候補も違う**ので畳んでいない（#58）。
     /// こちらは「全 `python_search_dirs` を先に見てから CWD 側へ落ちる」1 候補名の探索。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn find_cs_dll_bridge(&self, sub_dir: &Path, native_dll_name: &str) -> Option<PathBuf> {
         for search_dir in self.python_search_dirs() {
             let c = search_dir.join(sub_dir).join(native_dll_name);
@@ -139,6 +160,8 @@ impl Interpreter {
     /// そのパスを各クラスへ焼き込む。
     ///
     /// ⚠ **ホストが無い／起動できない場合はスタブのまま返す**（警告のみ・従来どおり）。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn import_cs_proc(
         &mut self,
         lang: &str,
@@ -169,6 +192,8 @@ impl Interpreter {
     /// **候補名ごと**に「全 `python_search_dirs` → CWD 側」を回すので、
     /// `{Name}_proc.exe` が CWD にあれば `{Name}.exe` が search_dir にあっても前者が勝つ。
     /// さらに単一セグメントのときだけ `<dir>/{Name}/{exe}` も見る。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn find_cs_proc_host(
         &self,
         module: &[String],
@@ -222,6 +247,8 @@ impl Interpreter {
     /// 3. `list` 操作でエクスポート関数名を取得し `Value::JsProcFn` として登録
     ///
     /// ⚠ **設定が無い／起動できない場合はスタブ（`exec_module` の結果）へ落ちる**（従来どおり）。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     fn import_js_proc(
         &mut self,
         lang: &str,
@@ -338,6 +365,11 @@ impl Interpreter {
                     let stem = module.last().map(|s| s.as_str()).unwrap_or("");
                     if stem != module_name { crate::partial_compiler::take_native_bytes(stem) } else { None }
                 });
+            // ⚠ ネイティブ払い出し（`.arc` 同梱 DLL）の読み込みは `native` 限定
+            //   （評価コア切り出し #2）。評価コアでは DLL を読めないので、
+            //   **ネイティブ部分を無視して通常のモジュールとして続行する**
+            //   （`.arc` は AST も持っているので解析は成立する）。
+            #[cfg(feature = "native")]
             if let Some((_exports, payload)) = native_data
             {
                 use crate::partial_compiler::NativePayload;
@@ -448,6 +480,8 @@ impl Interpreter {
     /// ポインタ（`OpaqueStructPtr`）・by-value 構造体（`ByValueStruct`）のいずれかであること。
     /// 戻り値は void/int/long/float/double のみ（構造体戻り値は非対応）。
     /// codegen 側の `cpp_typed_eligible`（cpp_bridge/codegen.rs）と条件を一致させること。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     pub(crate) fn build_cpp_typed_sig(
         sig: &crate::interpreter::cpp_bridge::CFnSig,
         raw_layouts: &HashMap<String, Arc<crate::interpreter::value::RawLayout>>,
@@ -495,6 +529,8 @@ impl Interpreter {
     }
 
     /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     pub(crate) fn try_load_native_module(
         &mut self,
         module: &[String],
@@ -650,6 +686,8 @@ impl Interpreter {
 
     /// C++ ライブラリ（`cpp-lib`）または DLL（`cpp-dll`）を tl モジュールとしてロードする。
     /// ヘッダーをパースして関数シグネチャを収集し、ラッパー DLL を構築・ロードして名前空間を返す。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     pub(crate) fn load_cpp_module(
         &mut self,
         lang: &str,
@@ -756,6 +794,8 @@ impl Interpreter {
     /// これにより `call_native_function` の write-back パスに入り、typed ABI の
     /// Ptr 高速経路（`resolve_typed_ptr_arg`）がまず試みられる。typed 経路に
     /// 乗らない場合のみ従来のハンドルベース書き戻しにフォールバックする。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     pub(crate) fn sig_to_ptr_param_fn(ct: &crate::interpreter::cpp_bridge::CType) -> crate::interpreter::PtrParam {
         use crate::interpreter::cpp_bridge::CType;
         use crate::interpreter::PtrParam;
@@ -772,6 +812,8 @@ impl Interpreter {
 
     /// コンパイル済み C++ ラッパー DLL をロードして名前空間を構築する。
     /// `ar_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
     pub(crate) fn load_cpp_wrapper_dll(
         &mut self,
         lib_path: &std::path::Path,

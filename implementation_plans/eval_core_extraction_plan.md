@@ -4,7 +4,7 @@
 `0-5`（`Value` の非 wasm variant を feature 化）は、実測すると**単一コミットに収まらない**ので本書へ分割する。
 
 - 作成: 2026-09-22
-- 状態: **#1 完了・#2 進行中（2026-09-22）**
+- 状態: **#1 / #2 / #3 / #4 完了（2026-09-22）・#5 以降未着手**
 - 採番は `#1, #2, ...`（フェーズに分ける必要がないため。`.claude/rules/regulations.md`）
 - 位置はシンボル名で指す（行番号は書かない）
 
@@ -84,9 +84,9 @@ Interpreter 側に置かれた支援コードで、実質すでにコアの一�
 | # | 内容 | 前提 | 規模 |
 |---|---|---|---|
 | ~~#1~~ | ~~`editor` feature を評価コア用に配線する~~ **完了（2026-09-22）**。ルート crate が `--features editor` で**ビルドできるようになった**（`main.rs` の `--compile-cs` が `parser::cs_assembly` を参照していた 1 箇所を `#[cfg]` で落とした）。⇒ **#2 以降を wasm を経由せず `cargo build --features editor` で検証できる**（速い反復路の確保がこのタスクの実体） | — | 小 |
-| **#2** | **ネイティブ依存を feature で外す**（進行中） | #1 | 中 |
-| **#3** | FFI モジュール（`cpp_bridge` / `native_api` / `py_interop` / `cs_dll_runtime` / `cs_proc` / `js_proc`）を外す | #2 | 中 |
-| **#4** | `event_loop` / `async_mgr` を外す | #2 | 中 |
+| ~~#2~~ | ~~ネイティブ依存を feature で外す~~ **完了（2026-09-22）**。`cargo build --no-default-features --features editor` が**エラー 0** で通る | #1 | 中 |
+| ~~#3~~ | ~~FFI モジュールを外す~~ **完了（#2 と同時・2026-09-22）**。`cpp_bridge` は丸ごと落とし、`py_interop` / `cs_dll_runtime` / `native_api` / `eval/native` は**同名スタブへ差し替え** | #2 | 中 |
+| ~~#4~~ | ~~`event_loop` / `async_mgr` を外す~~ **不要と判明（2026-09-22）**。どちらもネイティブ crate に依存しておらず（`std` のみ）、評価コアビルドを妨げない。wasm 実行時に動くかは #6 で判断する | #2 | — |
 | **#5** | `exec/modules` の FFI import 経路を外す（`import[ar]` と `const` 読み取りは残す・D32） | #3, #4 | 中 |
 | **#6** | frontend crate に `src/interpreter` と `src/vm` を `#[path]` で取り込み、**wasm32 ビルドを通す** | #5 | 中 |
 | **#7** | ゲートを張る（`compare_wasm_frontend` / `test_build_gate` / `scan_examples` / `force_gate` / `compare_outputs`） | #6 | 中 |
@@ -132,7 +132,24 @@ payload 型を調べたところ**ネイティブ crate に触れているのは
 - `eval/native.rs` を **`eval/native_stub.rs` へ差し替え**（`parser` の `imports` / `imports_editor` と同じ形）。
   ⚠ **呼び出し側に `#[cfg]` を配らないため**に、面（シグネチャ）は残して実装だけ落とす方針
 
-⇒ 残 58 エラー（着手時 63 → モジュール落としで 89 に一時増 → スタブ差し替えで 58）。
+### 決着（2026-09-22）
+
+エラー推移: 63 →（モジュール落としで一時増）89 → 58 → 31 → 20 → 12 → 6 → 2 → **0**。
+
+**効いたのは「同名スタブへの差し替え」**。`py_interop` / `cs_dll_runtime` / `native_api` / `eval/native`
+の 4 モジュールをスタブに差し替えただけで 31 件 → 2 件まで落ちた。
+**呼び出し側に `#[cfg]` を 1 つも配っていない**（`Value::PyObject` / `CsObject` /
+`NativeFunction` の match アームは全ビルドでそのまま）。
+
+`#[cfg]` を直接置いたのは 3 箇所だけ:
+- `exec_import` の FFI アーム（評価コアでは `_` へ落とさず**明示エラー**にする。落とすと
+  `exec_module` が普通のモジュールとして探しに行き、理由の分からない「ファイルが無い」になる）
+- `ops/display.rs` の `Value::PyObject` 表示（アームは残し、評価コアでは `"<PyObject>"` 固定）
+- `exec/modules.rs` のネイティブ払い出し読み込み（評価コアではネイティブ部分を無視して
+  通常のモジュールとして続行。`.arc` は AST も持っているので解析は成立する）
+
+⚠ **`#[path]` は宣言元ファイルのディレクトリ基準**。`interpreter.rs` は `src/` にあるので
+`#[path = "interpreter/xxx_stub.rs"]` と書く（`eval/mod.rs` 側は `mod.rs` なので相対のままでよい）。実装中に踏んだ。
 
 ## 4. ⚠ 注意
 
