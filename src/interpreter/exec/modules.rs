@@ -360,11 +360,16 @@ impl Interpreter {
         if lang == "ar-auto" || lang == "tl-auto" || lang == "arc" || lang == "tlc" || lang == "rs" {
             let module_name = module.join(".");
             // .arc files store only the stem as their module name; fall back to last segment.
+            // ⚠ ネイティブ払い出しの取り出しは `native` 限定（評価コア切り出し #6）。
+            //   評価コアには `partial_compiler` が無いので、常に「払い出し無し」とする。
+            #[cfg(feature = "native")]
             let native_data = crate::partial_compiler::take_native_bytes(&module_name)
                 .or_else(|| {
                     let stem = module.last().map(|s| s.as_str()).unwrap_or("");
                     if stem != module_name { crate::partial_compiler::take_native_bytes(stem) } else { None }
                 });
+            #[cfg(not(feature = "native"))]
+            let native_data: Option<(Vec<String>, ())> = None;
             // ⚠ ネイティブ払い出し（`.arc` 同梱 DLL）の読み込みは `native` 限定
             //   （評価コア切り出し #2）。評価コアでは DLL を読めないので、
             //   **ネイティブ部分を無視して通常のモジュールとして続行する**

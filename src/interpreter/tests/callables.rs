@@ -637,6 +637,8 @@ fn test_decorator_instance_callable() {
 }
 
 /// ar_to_py_dict のテスト。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
 #[test]
 fn test_ar_to_py_dict() {
     // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
@@ -653,6 +655,8 @@ fn test_ar_to_py_dict() {
 }
 
 /// ar_to_py_tuple のテスト。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
 #[test]
 fn test_ar_to_py_tuple() {
     // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)

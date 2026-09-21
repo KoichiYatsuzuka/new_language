@@ -46,6 +46,15 @@ pub mod lexer;
 pub mod parser;
 #[path = "../../../src/type_check/mod.rs"]
 pub mod type_check;
+// ── 評価コア（メタ関数の展開時評価に要る）────────────────────────────────
+// ⚠ ルート crate を `--no-default-features`（= `native` 無効）でビルドしたときと
+//   同じ構成。FFI・Python 相互運用・別プロセスブリッジは同名スタブに差し替わる。
+//   この crate は `native` feature を持たないので、常にスタブ側が選ばれる。
+//   作業分割は implementation_plans/eval_core_extraction_plan.md を参照。
+#[path = "../../../src/vm/mod.rs"]
+pub mod vm;
+#[path = "../../../src/interpreter.rs"]
+pub mod interpreter;
 
 // ── このクレート固有のコード ─────────────────────────────────────────────────
 pub mod analyze;

@@ -4,7 +4,7 @@
 `0-5`（`Value` の非 wasm variant を feature 化）は、実測すると**単一コミットに収まらない**ので本書へ分割する。
 
 - 作成: 2026-09-22
-- 状態: **#1〜#5 完了（2026-09-22）・#6（frontend への取り込み）が次**
+- 状態: **#1〜#7 完了（2026-09-22）。評価コアが wasm32 でビルドでき、拡張の crate に載った**
 - 採番は `#1, #2, ...`（フェーズに分ける必要がないため。`.claude/rules/regulations.md`）
 - 位置はシンボル名で指す（行番号は書かない）
 
@@ -88,8 +88,8 @@ Interpreter 側に置かれた支援コードで、実質すでにコアの一�
 | ~~#3~~ | ~~FFI モジュールを外す~~ **完了（#2 と同時・2026-09-22）**。`cpp_bridge` は丸ごと落とし、`py_interop` / `cs_dll_runtime` / `native_api` / `eval/native` は**同名スタブへ差し替え** | #2 | 中 |
 | ~~#4~~ | ~~`event_loop` / `async_mgr` を外す~~ **不要と判明（2026-09-22）**。どちらもネイティブ crate に依存しておらず（`std` のみ）、評価コアビルドを妨げない。wasm 実行時に動くかは #6 で判断する | #2 | — |
 | ~~#5~~ | ~~`exec/modules` の FFI import 経路を外す~~ **完了（2026-09-22）**。併せて `proc_bridge` / `cs_proc_runtime` / `js_proc_runtime` / `msvc_errors` / `partial_compiler::rs_loader` も落とし、**死にコード警告 100 → 22 件**。`import[ar]` と `.arc` の AST 読み取りは残っている | #3 | 中 |
-| **#6** | frontend crate に `src/interpreter` と `src/vm` を `#[path]` で取り込み、**wasm32 ビルドを通す** | #5 | 中 |
-| **#7** | ゲートを張る（`compare_wasm_frontend` / `test_build_gate` / `scan_examples` / `force_gate` / `compare_outputs`） | #6 | 中 |
+| ~~#6~~ | ~~frontend crate に取り込み wasm32 ビルドを通す~~ **完了（2026-09-22）**。`cargo build --release --target wasm32-unknown-unknown` がエラー 0・警告 0 |  #5 | 中 |
+| ~~#7~~ | ~~ゲートを張る~~ **完了（2026-09-22）**。`compare_wasm_frontend` のフロントエンド単体テストが **23 → 482 件**（interpreter のテストが評価コア構成で走るようになった）。これが「評価コアが壊れていないか」の常設の網になる | #6 | 中 |
 
 ⚠ **#2 が全体の律速。**
 
@@ -171,5 +171,16 @@ payload 型を調べたところ**ネイティブ crate に触れているのは
 
 ⇒ **検証後は必ず `cargo build --release`（feature なし）に戻してからゲートを走らせる。**
 ⇒ 迷ったら `ls -la target/release/arrow.exe` で時刻を見る。サイズも違う（feature なし 11.3MB / editor 版 6.9MB）。
+
+### ⚠ #6 で踏んだもの
+
+- **`#[path]` の無い `mod x;` は取り込み側から解決できない。** `interpreter.rs` の兄弟モジュールが
+  すべて `#[path = "interpreter/..."]` を持っているのはこのため。`ffi_boundary` だけ漏れていたので足した
+- **frontend crate に `native` / `prof` / `tw_stats` の feature 宣言が要る**（有効にはしない）。
+  取り込んだ共有ソースの `#[cfg]` に対する `unexpected_cfgs` 警告を防ぐため。ルート crate が
+  `editor` を宣言しているのと同じ理由
+- **interpreter の単体テストも frontend crate で走るようになる。** Python 相互運用を実際に動かす
+  テスト（`tests/pyobject` ほか 4 本）は評価コアでは必ず落ちるので `#[cfg(feature = "native")]` を付けた
+- `regex` を frontend の依存に追加（`str_methods` が使う）。**純 Rust なので wasm32 に載る**
 
 ⚠ これは `vm-pitfalls` の「ゲートは `target/release` を見る」「緑だと報告された、ではなく自分で走らせて緑を確かめる」と同じ罠の別形。

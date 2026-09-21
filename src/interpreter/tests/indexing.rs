@@ -82,6 +82,8 @@ fn test_instance_getitem_setitem() {
 }
 
 /// pyobject_getitem のテスト。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
 #[test]
 fn test_pyobject_getitem() {
     // PyObject の subscript read: Container.__getitem__
@@ -98,6 +100,8 @@ fn test_pyobject_getitem() {
 }
 
 /// pyobject_setitem のテスト。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
 #[test]
 fn test_pyobject_setitem() {
     // PyObject の subscript write: Container.__setitem__

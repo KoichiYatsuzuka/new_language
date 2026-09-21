@@ -12,12 +12,22 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 indexmap = "2"
 serde_json = "1"
+# ⚠ 評価コア（`src/interpreter` の取り込み）が使う。**純 Rust なので wasm32 に載る**
+#   （評価コア切り出し #6）。ネイティブ依存ではないので上の禁止事項には当たらない。
+regex = "1"
 
 [features]
 default = ["editor"]
 # ルート crate の `editor` feature と同名。`src/parser/mod.rs` の #[cfg] がこれを見て
 # import 解析を fs 非依存版へ差し替える。
 editor = []
+# ⚠ **有効にはしない。** 取り込んだ共有ソース（`src/interpreter` / `src/vm`）が持つ
+#   `#[cfg(feature = "...")]` に対する `unexpected_cfgs` 警告を防ぐための宣言
+#   （ルート crate が `editor` を宣言しているのと同じ理由）。
+#   `native` を有効にすると pyo3 / libloading が要るので wasm32 ビルドが壊れる。
+native = []
+prof = []
+tw_stats = []
 
 [profile.release]
 opt-level = "z"

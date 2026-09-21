@@ -109,6 +109,8 @@ fn run_get(src: &str, var: &str) -> Value {
 }
 
 /// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
+/// ⚠ `native` 限定（評価コアビルドでは `py_interop` がスタブなので成立しない・#6）。
+#[cfg(feature = "native")]
 fn run_py_get(src: &str, var: &str) -> Value {
     let (stmts, mut interp) = prepare(src).unwrap();
     interp.add_python_search_dir(std::path::PathBuf::from("examples"));
@@ -180,6 +182,9 @@ mod iterator;
 mod collections;
 mod callables;
 mod indexing;
+// ⚠ `import[py-int]` を実際に動かすので `native` 限定（評価コア切り出し #6）。
+//   評価コアビルドでは `py_interop` がスタブなので必ず失敗する。
+#[cfg(feature = "native")]
 mod pyobject;
 mod expressions;
 mod enum_defaults;

@@ -63,6 +63,11 @@ pub(crate) mod js_proc_runtime;
 pub(crate) mod js_proc_runtime;
 
 /// FFI 境界検査（#16）: 動的型付け言語から Arrow へ入る値をスタブ宣言型と突き合わせる。
+// ⚠ **`#[path]` を明示する**。このファイルは `crates/arrow-frontend` から
+//   `#[path = "../../../src/interpreter.rs"]` で取り込まれるため、素の `mod x;` は
+//   **取り込み側のディレクトリ**を基準に探されて見つからない。兄弟モジュールが
+//   すべて `#[path = "interpreter/..."]` を持っているのはこの理由（評価コア切り出し #6）。
+#[path = "interpreter/ffi_boundary.rs"]
 pub(crate) mod ffi_boundary;
 #[path = "interpreter/debugger.rs"]
 // `pub(crate)`: VM コンパイラが行テーブル構築で `stmt_span_of` を使う（#1）。
@@ -673,7 +678,11 @@ impl Interpreter {
     /// ⇒ cs-dll / cs-proc / js-proc / `import[py-int]` を使わないスクリプトは**一度も走らない**。
     pub(crate) fn python_search_dirs(&self) -> impl Iterator<Item = &PathBuf> {
         let cfg = self.config_search_dirs.get_or_init(|| match &self.config_base_dir {
+            // ⚠ `ar_config` は `native` 限定（評価コアには `.ar_config` を読む意味が無い・#6）。
+            #[cfg(feature = "native")]
             Some(d) => crate::ar_config::load_python_search_paths(d),
+            #[cfg(not(feature = "native"))]
+            Some(_) => Vec::new(),
             None => Vec::new(),
         });
         self.python_search_dirs.iter().chain(cfg.iter())
