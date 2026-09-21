@@ -193,6 +193,12 @@ fn get_arg<'a>(
 mod core;
 mod calls;
 mod builtins;
+// ⚠ 評価コアビルド（`native` 無効）では同名スタブへ差し替える（評価コア切り出し #2）。
+// `parser` の `imports` / `imports_editor` と同じ形。**呼び出し側は `#[cfg]` を持たない。**
+#[cfg(feature = "native")]
+mod native;
+#[cfg(not(feature = "native"))]
+#[path = "native_stub.rs"]
 mod native;
 mod attrs;
 mod subscript;

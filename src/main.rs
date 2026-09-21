@@ -22,6 +22,10 @@ mod prof;
 mod partial_compiler;
 mod py_stubs;
 mod stub_manifest;
+// ⚠ `rustpython-parser` に依存するので `native` 限定（評価コア切り出し #2）。
+// 参照元は `parser/imports/py_modules.rs` だけで、そこも `editor` では
+// `imports_editor.rs` に差し替わって消える。
+#[cfg(feature = "native")]
 mod python_converter;
 mod repl;
 mod token;

@@ -12,8 +12,21 @@ use super::*;
 
 /// PyO3 を通じて Python オブジェクトへの参照を保持するハンドル。
 /// GIL を保持せずにオブジェクトを所有でき、ドロップ時に Python 側の参照カウントを自動減少させる。
+///
+/// ⚠ **`Value::PyObject` の variant 自体は評価コアビルドにも残す**（評価コア切り出し #2）。
+/// 消すと `Value` を網羅 `match` している 100 箇所超に `#[cfg]` を配る必要があり、
+/// variant を足したときに止まる 2 段強制（`language-dev-principles` §2）を崩してしまう。
+/// ⇒ **中身だけ差し替える。** 評価コアでは `Infallible` なので**構築できない**＝
+/// `Value::PyObject` を作る経路（`py_interop`）が `native` 限定であることと整合する。
+#[cfg(feature = "native")]
 pub struct PyObjHandle {
     pub inner: pyo3::Py<pyo3::PyAny>,
+}
+
+/// 評価コアビルド（`native` 無効）の `PyObjHandle`。構築不能。
+#[cfg(not(feature = "native"))]
+pub struct PyObjHandle {
+    pub inner: std::convert::Infallible,
 }
 
 

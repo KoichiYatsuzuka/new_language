@@ -440,7 +440,16 @@ impl Clone for NativeFnRef {
 
 
 /// Wrapper around `libloading::Library` that implements `Debug`.
+///
+/// ⚠ 評価コアビルド（`native` 無効）では `libloading` が無いので**構築不能な空型**にする
+/// （評価コア切り出し #2）。`Value::NativeFunction` の variant 自体は残すので、
+/// 網羅 `match` には触らない。
+#[cfg(feature = "native")]
 pub struct NativeLibWrapper(pub libloading::Library);
+
+/// 評価コアビルドの `NativeLibWrapper`。構築不能。
+#[cfg(not(feature = "native"))]
+pub struct NativeLibWrapper(pub std::convert::Infallible);
 
 
 impl fmt::Debug for NativeLibWrapper {

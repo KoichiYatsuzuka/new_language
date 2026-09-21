@@ -30,10 +30,14 @@ pub(crate) mod event_loop;
 #[path = "interpreter/classes/mod.rs"]
 mod classes;
 #[path = "interpreter/cpp_bridge/mod.rs"]
+// ⚠ C/C++ ブリッジ（libloading）。`native` 限定（評価コア切り出し #2）。
+#[cfg(feature = "native")]
 pub(crate) mod cpp_bridge;
 #[path = "interpreter/proc_bridge.rs"]
 pub(crate) mod proc_bridge;
 #[path = "interpreter/cs_dll_runtime.rs"]
+// ⚠ .NET ブリッジ（libloading）。`native` 限定（評価コア切り出し #2）。
+#[cfg(feature = "native")]
 pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/cs_proc_runtime.rs"]
 pub(crate) mod cs_proc_runtime;
@@ -57,13 +61,17 @@ mod functions;
 #[path = "interpreter/msvc_errors.rs"]
  mod msvc_errors;
 #[path = "interpreter/native_api/mod.rs"]
- mod native_api;
+// ⚠ ネイティブ callback ABI（libloading）。`native` 限定（評価コア切り出し #2）。
+#[cfg(feature = "native")]
+mod native_api;
 // ⚠ `pub(crate)`: `vm::op` のテストが `primitive_ann_matches`（実行時の唯一の型表・
 //    タスク 6.1）を引いて `TypeTag` とのずれを検査する。
 #[path = "interpreter/ops/mod.rs"]
 pub(crate) mod ops;
 #[path = "interpreter/py_interop.rs"]
- mod py_interop;
+// ⚠ Python 相互運用（pyo3）。`native` 限定（評価コア切り出し #2）。
+#[cfg(feature = "native")]
+mod py_interop;
 #[path = "interpreter/resolver.rs"]
 pub(crate) mod resolver;
 #[path = "interpreter/scope.rs"]

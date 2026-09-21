@@ -4,7 +4,7 @@
 `0-5`（`Value` の非 wasm variant を feature 化）は、実測すると**単一コミットに収まらない**ので本書へ分割する。
 
 - 作成: 2026-09-22
-- 状態: **#1 完了（2026-09-22）・#2 以降未着手**
+- 状態: **#1 完了・#2 進行中（2026-09-22）**
 - 採番は `#1, #2, ...`（フェーズに分ける必要がないため。`.claude/rules/regulations.md`）
 - 位置はシンボル名で指す（行番号は書かない）
 
@@ -84,14 +84,55 @@ Interpreter 側に置かれた支援コードで、実質すでにコアの一�
 | # | 内容 | 前提 | 規模 |
 |---|---|---|---|
 | ~~#1~~ | ~~`editor` feature を評価コア用に配線する~~ **完了（2026-09-22）**。ルート crate が `--features editor` で**ビルドできるようになった**（`main.rs` の `--compile-cs` が `parser::cs_assembly` を参照していた 1 箇所を `#[cfg]` で落とした）。⇒ **#2 以降を wasm を経由せず `cargo build --features editor` で検証できる**（速い反復路の確保がこのタスクの実体） | — | 小 |
-| **#2** | `Value` の非 wasm variant 8 種を `#[cfg(not(feature = "editor"))]` で外し、網羅 `match` 124 箇所を手当てする | #1 | **大** |
+| **#2** | **ネイティブ依存を feature で外す**（進行中） | #1 | 中 |
 | **#3** | FFI モジュール（`cpp_bridge` / `native_api` / `py_interop` / `cs_dll_runtime` / `cs_proc` / `js_proc`）を外す | #2 | 中 |
 | **#4** | `event_loop` / `async_mgr` を外す | #2 | 中 |
 | **#5** | `exec/modules` の FFI import 経路を外す（`import[ar]` と `const` 読み取りは残す・D32） | #3, #4 | 中 |
 | **#6** | frontend crate に `src/interpreter` と `src/vm` を `#[path]` で取り込み、**wasm32 ビルドを通す** | #5 | 中 |
 | **#7** | ゲートを張る（`compare_wasm_frontend` / `test_build_gate` / `scan_examples` / `force_gate` / `compare_outputs`） | #6 | 中 |
 
-⚠ **#2 が全体の律速。** ここを飛ばして #3 以降はできない（variant が残っているとモジュールを外せない）。
+⚠ **#2 が全体の律速。**
+
+### ⚠⚠ #2 の方針転換（2026-09-22）— 網羅 match は触らない
+
+当初は「`Value` の非 wasm variant 8 種を外し、網羅 `match` 124 箇所を手当てする」計画だったが、
+payload 型を調べたところ**ネイティブ crate に触れているのは 2 型だけ**だった
+（`PyObjHandle.inner: pyo3::Py<PyAny>` と `NativeLibWrapper(libloading::Library)`）。
+`NativeFnRef` は `PathBuf` / `String` / `usize` / `Vec<bool>` など**素のデータが大半**。
+
+⇒ **variant は全ビルドに残し、payload の中身だけ差し替える**（評価コアでは `Infallible` ＝構築不能）。
+これで **124 箇所の網羅 `match` に一切触らずに済み**、2 段強制（`language-dev-principles` §2）も保たれる。
+
+### 実際の作業量（実測）
+
+依存を optional 化して `cargo build --no-default-features --features editor` を通すと、
+エラーは **23 関数 / 14 ファイル**に収束した。
+
+| ファイル | 対象関数 |
+|---|---|
+| `exec/modules.rs` | `build_cpp_typed_sig` / `exec_module` / `import_cs_dll` / `load_cpp_module` / `load_cpp_wrapper_dll` / `sig_to_ptr_param_fn` / `try_load_native_module` |
+| `classes/method_call.rs` | `call_instance_method_evaled` / `eval_method_call_full` |
+| `classes/instantiate.rs` | `instantiate_evaled` |
+| `classes/class_methods.rs` | `eval_class_method` |
+| `eval/attrs.rs` | `get_attr_val` |
+| `eval/builtins.rs` | `eval_builtin_evaled` / `eval_builtin_ident_call` |
+| `eval/calls.rs` | `call_value_evaled` |
+| `eval/subscript.rs` | `eval_setitem` / `eval_subscript` |
+| `exec/control_flow.rs` | `make_for_iterator` |
+| `ops/display.rs` | `display` |
+| `ops/operators.rs` | `apply_binop` |
+| `value/native.rs` | `invoke_typed_abi` |
+| `partial_compiler/{mod,rs_loader/mod}.rs` | トップレベル |
+
+### 済んだもの
+
+- `Cargo.toml`: `pyo3` / `libloading` / `rustpython-parser` を **optional** にし、`native` feature で有効化。`default = ["native"]` なので従来のビルドは不変
+- `python_converter` / `cpp_bridge` / `native_api` / `cs_dll_runtime` / `py_interop` を `#[cfg(feature = "native")]` でモジュールごと落とす
+- `PyObjHandle` / `NativeLibWrapper` の payload を feature 依存にする
+- `eval/native.rs` を **`eval/native_stub.rs` へ差し替え**（`parser` の `imports` / `imports_editor` と同じ形）。
+  ⚠ **呼び出し側に `#[cfg]` を配らないため**に、面（シグネチャ）は残して実装だけ落とす方針
+
+⇒ 残 58 エラー（着手時 63 → モジュール落としで 89 に一時増 → スタブ差し替えで 58）。
 
 ## 4. ⚠ 注意
 
