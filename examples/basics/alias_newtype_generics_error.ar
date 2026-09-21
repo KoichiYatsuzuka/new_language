@@ -1,0 +1,16 @@
+# alias_newtype_generics_error.ar — `new_type` の右辺が**未定義の裸の名前**のとき（タスク 0-3）。
+#
+# タスク 0-3 で「ジェネリクスをスコープから引けなくても型式として受け取る」ようにしたが、
+# ⚠⚠ **その条件を「型式としてパースできる」だけにすると退行する。**
+#   `InferredType::from_ann` は**未知の裸の名前を `NamedInstance` として通す**ので、
+#   `new_type N: Nonexistent` の `NameError` が消えてしまう（実装中に実際に踏んだ）。
+#
+# ⇒ 落とすのは**構造を持つ型**（`list[int]` / `dict[str,int]` / `Option[int]` など）だけにし、
+#   裸の名前は従来どおり `NameError` にする。この例題はその境界を固定する。
+#
+# 期待されるエラー（実行時）:
+#   NameError: type 'Nonexistent' is not defined
+
+new_type Bad: Nonexistent
+
+print("unreachable")

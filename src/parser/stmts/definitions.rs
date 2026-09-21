@@ -187,7 +187,28 @@ impl Parser {
                 type_args,
             });
         }
-        self.parse_expr()
+        // ⚠ 右辺が**型式**のこともある（`alias D: dict[str, int]`）。式としてパースすると
+        //   `dict[...]` は添字式になり、型引数の `,` で `expected ']'` になる
+        //   （`list[int]` は引数 1 つなので偶然通っていた）。
+        //   ⇒ 式パースが失敗したら巻き戻して**型式として**読み直す。
+        //   型位置での展開は `expand_alias_as_type` が保存トークンを再パースするので、
+        //   ここで返す `Expr` は式位置で誤用されたときの名前（`NameError` の見出し）に使う。
+        let save = self.pos;
+        match self.parse_expr() {
+            Ok(e) => Ok(e),
+            Err(expr_err) => {
+                self.pos = save;
+                match self.parse_type_expr() {
+                    Ok(ty) => Ok(Expr::Ident {
+                        name: ty,
+                        node_id: self.next_node_id(),
+                        res: Resolution::Unresolved,
+                    }),
+                    // 型としても読めないなら、式としての失敗の方が利用者に近い
+                    Err(_) => Err(expr_err),
+                }
+            }
+        }
     }
 
     /// `new_type 名前: 元の型` 定義をパースして `Stmt::NewTypeDef` を返す。

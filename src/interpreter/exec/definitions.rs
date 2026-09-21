@@ -289,10 +289,25 @@ impl Interpreter {
     }
 
     /// `new_type name: OriginalType` を実行して新しい型をスコープに登録する。
+    ///
+    /// ⚠ `original` は**型式の文字列**（`int` / `list[int]` / `dict[str,int]`）であって
+    /// 変数名とは限らない。`get_val` で引けるのは `int` や利用者クラスのように
+    /// **同名の束縛がある**ものだけで、`list[int]` のような具体化済みジェネリクスは
+    /// スコープに存在しない。そこで引けなかった場合は `Value::Type` に落として
+    /// 下の「プリミティブを包む」経路へ流す。
+    ///
+    /// ⚠⚠ **落とす条件を「`from_ann` が通る」だけにしてはいけない。** 未知の裸の名前は
+    /// `NamedInstance` として通ってしまい、`new_type N: Nonexistent` の `NameError` が
+    /// 消える（実際に踏んだ）。⇒ **構造を持つ型（`list[int]` など）だけ**を落とし、
+    /// 裸の名前は従来どおり `NameError` にする。
     pub(crate) fn exec_new_type_def(&mut self, name: &str, original: &str) -> Result<ExecResult, String> {
-        let orig_val = self
-            .get_val(original)
-            .ok_or_else(|| format!("NameError: type '{original}' is not defined"))?;
+        let structural = crate::type_check::InferredType::from_ann(original)
+            .is_some_and(|t| !matches!(t, crate::type_check::InferredType::NamedInstance(_)));
+        let orig_val = match self.get_val(original) {
+            Some(v) => v,
+            None if structural => Value::Type(original.to_string()),
+            None => return Err(format!("NameError: type '{original}' is not defined")),
+        };
         match orig_val {
             Value::Class(orig_cls) => {
                 let new_cls = Rc::new(crate::interpreter::ClassValue {

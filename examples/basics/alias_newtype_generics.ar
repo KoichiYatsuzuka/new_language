@@ -1,0 +1,58 @@
+# alias_newtype_generics.ar — `alias` / `new_type` の右辺に**ジェネリクス**を書く（タスク 0-3）。
+#
+# 以前は次の 2 つが通らなかった:
+#   ① `alias D: dict[str, int]`  → ParseError: expected `]`, got `,`
+#      右辺を**式**としてパースしていたため、`dict[...]` が添字式になり型引数の `,` で落ちた。
+#      引数が 1 つの `list[int]` は偶然通っていたので、**カンマを含む型だけ**が壊れていた。
+#   ② `new_type N: list[int]`    → NameError: type 'list[int]' is not defined
+#      `original` を**変数名として** `get_val` していたため。`int` や利用者クラスは同名の
+#      束縛があるので引けるが、具体化済みジェネリクスはスコープに存在しない。
+
+print("=== alias にジェネリクス ===")
+
+alias IntList: list[int]
+let xs: IntList = [1, 2, 3]
+print(xs)                       # [1, 2, 3]
+
+# カンマを含む型（以前はここで ParseError）
+alias StrToInt: dict[str, int]
+let d: StrToInt = {"a": 1, "b": 2}
+print(d["a"])                   # 1
+
+# 入れ子のジェネリクス
+alias Buckets: dict[str, list[int]]
+let b: Buckets = {"x": [1, 2]}
+print(b["x"])                   # [1, 2]
+
+print("=== new_type にジェネリクス ===")
+
+# 以前はここで NameError
+new_type Scores: list[int]
+let s = Scores([10, 20])
+print(s.value)                  # [10, 20]
+
+new_type Table: dict[str, int]
+let t = Table({"k": 7})
+print(t.value["k"])             # 7
+
+new_type MaybeInt: Option[int]
+let m = MaybeInt(5)
+print(m.value)                  # 5
+
+print("=== 既存の形が壊れていないこと ===")
+
+# 素の型への alias（型としてもコンストラクタとしても使える）
+alias Handle: int
+let h: Handle = Handle(42)
+print(h)                        # 42
+
+# lvalue への alias（参照のたびに再評価される）
+mut store: dict[str, int] = {"often": 1}
+alias often: store["often"]
+often = 5
+print(store["often"])           # 5
+
+# 素の型への new_type
+new_type Meters: int
+let dist = Meters(100)
+print(dist.value)               # 100
