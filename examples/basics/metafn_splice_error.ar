@@ -1,0 +1,18 @@
+# metafn_splice_error.ar — スプライス `<! !>` は `code:` の中でしか書けない（タスク 1-2 / 設計書 §1.4）。
+#
+# `<! 式 !>` は「展開時に評価した値を、その位置のトークン列へ変換して差し込む」記法。
+# ⇒ 差し込む先（`code:` ブロック）が無い場所に書いても意味を持たない。
+#
+# ⚠ `unexpected token: `<!`` だけを出すと「どこでなら書けるのか」が分からないので、
+#   置ける場所を名指しするエラーにしてある。
+#
+# ⚠ 成功例は `metafn_syntax_error.ar`（`code:` の中のスプライス）。
+#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+#
+# 期待されるエラー:
+#   ParseError: `<!` can only appear inside a `code:` block
+
+let name = "x"
+let bad = <! name !>
+
+print("unreachable")

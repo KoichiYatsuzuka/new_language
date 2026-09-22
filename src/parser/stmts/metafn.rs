@@ -9,11 +9,16 @@
 //
 // ⚠⚠ **`code:` の中身はパースしない。** `code: if cond:` のように**本体の無い `if`** を
 // 書けることが要件（未完の断片を組み立てて最後に一度だけパースする）。
-// ⇒ 字句だけして行に切り、`CodeLine { tokens, indent }` として持つ。
+// ⇒ 字句だけして行に切り、`CodeLine { pieces, indent }` として持つ。
 // パースは `quote` の 1 回だけ（Phase 2 の展開器が行う）。
+//
+// ⚠ **例外が `<! ... !>`**（タスク 1-2 / 設計書 §1.4）。中身は地の文ではなく
+// **展開時に評価される普通の式**なので、ここだけはその場でパースする。
+// 素通しにすると展開器が組み立て後に `<!` を探すことになるが、`!>` は文字列
+// リテラルの中にも書けるので、**境界を正しく決められるのはパーサだけ**。
 
 use {
-    crate::ast::{CodeLine, Param, Stmt},
+    crate::ast::{CodeLine, CodePiece, Param, Stmt},
     crate::parser::Parser,
     crate::token::Token,
 };
@@ -35,7 +40,7 @@ impl Parser {
         };
         if *self.current() != Token::Fn {
             return Err(format!(
-                "ParseError: `exprconst` must be followed by `fn` or `!fn`, got `{}`",
+                "`exprconst` must be followed by `fn` or `!fn`, got `{}`",
                 self.current()
             ));
         }
@@ -50,7 +55,7 @@ impl Parser {
         //   前に走る（設計書 §1.7）ので、型変数を置く意味が無い。
         if *self.current() == Token::LBracket {
             return Err(format!(
-                "ParseError: metafunction `{name}` cannot have template parameters \
+                "metafunction `{name}` cannot have template parameters \
                  (expansion runs before template instantiation)"
             ));
         }
@@ -80,7 +85,7 @@ impl Parser {
             self.current(),
             Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent
         ) {
-            return Err("ParseError: `quote` requires a `Code` value to place".to_string());
+            return Err("`quote` requires a `Code` value to place".to_string());
         }
         Ok(Stmt::Quote(self.parse_expr()?))
     }
@@ -103,7 +108,7 @@ impl Parser {
         // 改行が無い（`code:` の後に同じ行で何か書いてある）のは受け付けない。
         if *self.current() != Token::Newline {
             return Err(format!(
-                "ParseError: `code:` must be followed by a newline, got `{}`",
+                "`code:` must be followed by a newline, got `{}`",
                 self.current()
             ));
         }
@@ -119,18 +124,26 @@ impl Parser {
 
         let mut lines: Vec<CodeLine> = Vec::new();
         let mut indent: i32 = 0;
-        let mut current: Vec<crate::token::Spanned> = Vec::new();
+        let mut current: Vec<CodePiece> = Vec::new();
 
         loop {
             match self.current() {
                 Token::Eof => {
-                    return Err("ParseError: unterminated `code:` block".to_string());
+                    return Err("unterminated `code:` block".to_string());
                 }
                 Token::Code => {
                     return Err(
-                        "ParseError: `code:` blocks cannot be nested (the inner block would \
+                        "`code:` blocks cannot be nested (the inner block would \
                          be emitted as plain text, not evaluated)"
                             .to_string(),
+                    );
+                }
+                // `<! 式 !>` — `code:` の中で唯一「中身をパースする」場所（設計書 §1.4）。
+                Token::SpliceOpen => current.push(CodePiece::Splice(self.parse_splice()?)),
+                // 対応する `<!` の無い `!>`。素通しすると地の文に紛れて消えるので弾く。
+                Token::SpliceClose => {
+                    return Err(
+                        "`!>` has no matching `<!` in this `code:` block".to_string(),
                     );
                 }
                 Token::Indent => {
@@ -148,20 +161,47 @@ impl Parser {
                 }
                 Token::Newline | Token::Semicolon => {
                     if !current.is_empty() {
-                        lines.push(CodeLine { tokens: std::mem::take(&mut current), indent });
+                        lines.push(CodeLine { pieces: std::mem::take(&mut current), indent });
                     }
                     self.advance();
                 }
                 _ => {
-                    current.push(self.spanned_at_pos());
+                    current.push(CodePiece::Token(self.spanned_at_pos()));
                     self.advance();
                 }
             }
         }
         if !current.is_empty() {
-            lines.push(CodeLine { tokens: current, indent });
+            lines.push(CodeLine { pieces: current, indent });
         }
         Ok(lines)
+    }
+
+    /// `<! 式 !>` の中身をパースする（設計書 §1.4）。`<!` の位置で呼ぶ。
+    ///
+    /// ⚠ **空のスプライス `<!!>` は弾く。** 「何も差し込まない」を書きたいなら空文字列を
+    /// 渡せばよく、空の `<! !>` は書き損じである方が圧倒的に多い。
+    ///
+    /// ⚠ 中身は**1 行に収まる値だけ**（`Code` は入れられない・§1.4）。
+    /// その検査は型検査（1-5）の仕事で、ここでは構文だけを見る。
+    fn parse_splice(&mut self) -> Result<crate::ast::Expr, String> {
+        self.advance(); // `<!` を消費
+        if *self.current() == Token::SpliceClose {
+            return Err(
+                "`<! !>` must contain an expression \
+                 (it is spliced into the surrounding `code:` line)"
+                    .to_string(),
+            );
+        }
+        let expr = self.parse_expr()?;
+        if *self.current() != Token::SpliceClose {
+            return Err(format!(
+                "expected `!>` to close the splice, got `{}`",
+                self.current()
+            ));
+        }
+        self.advance(); // `!>` を消費
+        Ok(expr)
     }
 }
 

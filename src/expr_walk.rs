@@ -73,9 +73,20 @@ pub enum SubPart<'a> {
 pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
     match expr {
         // ── 式形式の制御構文（式と本体が対になる） ──
-        // ⚠ `code:` の中身は**トークン列**であって式ではない（パースしていない）。
-        //   ⇒ 部分式は 1 つも無い。`<! !>` のスプライスも 1-2 でトークン列として扱う。
-        Expr::CodeBlock(_) => {}
+        // ⚠ `code:` の地の文は**トークン列**であって式ではない（パースしていない）。
+        //   ⇒ 降りる先は `<! !>`（スプライス）の中だけ。こちらは**展開時に評価される
+        //   普通の式**なので、参照を集める walker は降りないと
+        //   「メタ関数の局所変数をスプライスした」ときに捕捉し損ねる（#75 と同じ形）。
+        Expr::CodeBlock(lines) => {
+            for line in lines {
+                for piece in &line.pieces {
+                    match piece {
+                        crate::ast::CodePiece::Token(_) => {}
+                        crate::ast::CodePiece::Splice(e) => f(SubPart::Plain(e)),
+                    }
+                }
+            }
+        }
         Expr::Block { stmts, .. } => f(SubPart::Body(stmts)),
         Expr::IfExpr {
             branches,

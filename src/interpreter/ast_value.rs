@@ -626,7 +626,19 @@ fn expr_to_value(expr: &Expr) -> Value {
         // 解決状態（`res`）は AST 値としては見せない（parse_ar は実行時に新規パースするので常に未解決）。
         Expr::CodeBlock(lines) => ns(
             "ExprCodeBlock",
-            vec![("line_count", Value::Int(lines.len() as i64))],
+            vec![
+                ("line_count", Value::Int(lines.len() as i64)),
+                (
+                    "splice_count",
+                    Value::Int(
+                        lines
+                            .iter()
+                            .flat_map(|l| l.pieces.iter())
+                            .filter(|p| matches!(p, crate::ast::CodePiece::Splice(_)))
+                            .count() as i64,
+                    ),
+                ),
+            ],
         ),
         Expr::Ident { name, .. } => {
             ns("ExprIdent", vec![("name", Value::str(name.as_str()))])

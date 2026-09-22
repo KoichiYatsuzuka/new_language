@@ -183,7 +183,7 @@
         },
         {
           "comment": "metafunction keywords (compile-time expansion) — implementation_plans/comptime_metafn_design.md",
-          "match": "\b(exprconst|quote|code)\b",
+          "match": "\\b(exprconst|quote|code)\\b",
           "name": "keyword.other.metafn.ar"
         },
         {
@@ -277,6 +277,11 @@
         {
           "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|:=",
           "name": "keyword.operator.assignment.augmented.ar"
+        },
+        {
+          "comment": "splice delimiters — must precede the comparison rule so `<!` is not eaten as `<`",
+          "match": "<!|!>",
+          "name": "keyword.operator.splice.ar"
         },
         {
           "match": "->",

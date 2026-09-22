@@ -1198,3 +1198,78 @@ fn quote_requires_a_value() {
     let err = parse_fails("exprconst !fn f() -> None:\n    quote\n");
     assert!(err.contains("requires a `Code` value"), "実際のエラー: {err}");
 }
+
+/// `<! 式 !>` は `code:` の中で**唯一パースされる**場所（設計書 §1.4 / タスク 1-2）。
+/// 地の文はトークンのまま、スプライスだけが式として取れていること。
+#[test]
+fn splice_inside_code_block_is_parsed_as_an_expression() {
+    use crate::ast::{CodePiece, Expr, Stmt};
+    let stmts = parse(
+        "exprconst fn f(n) -> Code:\n    let a = code:\n        let <! n !> = 1\n    return a\n",
+    );
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    assert_eq!(lines.len(), 1, "1 行");
+    let splices: Vec<&Expr> = lines[0]
+        .pieces
+        .iter()
+        .filter_map(|p| match p {
+            CodePiece::Splice(e) => Some(e),
+            CodePiece::Token(_) => None,
+        })
+        .collect();
+    assert_eq!(splices.len(), 1, "スプライスは 1 つ");
+    let Expr::Ident { name, .. } = splices[0] else { panic!("Ident を期待") };
+    assert_eq!(name, "n");
+    // 地の文（`let` / `=` / `1`）はトークンのまま残る。
+    let tokens = lines[0].pieces.iter().filter(|p| matches!(p, CodePiece::Token(_))).count();
+    assert_eq!(tokens, 3, "`let` `=` `1` の 3 トークン");
+}
+
+/// ⚠ スプライスの中は**式**なので、呼び出しや演算も書ける。
+/// ここが式として取れていないと、展開器が評価すべきものを見失う。
+#[test]
+fn splice_accepts_a_full_expression() {
+    use crate::ast::{CodePiece, Expr, Stmt};
+    let stmts = parse(
+        "exprconst fn f(n) -> Code:\n    let a = code:\n        <! prefix(n) + \"_x\" !>()\n    return a\n",
+    );
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    let CodePiece::Splice(e) = &lines[0].pieces[0] else { panic!("先頭はスプライス") };
+    assert!(matches!(e, Expr::BinOp { .. }), "二項演算として取れていること");
+}
+
+/// ⚠ 空のスプライスは書き損じである方が多いので弾く。
+#[test]
+fn empty_splice_is_rejected() {
+    let err =
+        parse_fails("exprconst fn f() -> Code:\n    let a = code:\n        <!!>\n    return a\n");
+    assert!(err.contains("must contain an expression"), "実際のエラー: {err}");
+}
+
+/// ⚠ 閉じ忘れを「地の文」として飲み込まない。
+#[test]
+fn unclosed_splice_is_rejected() {
+    let err = parse_fails(
+        "exprconst fn f(n) -> Code:\n    let a = code:\n        let <! n = 1\n    return a\n",
+    );
+    assert!(err.contains("expected `!>` to close the splice"), "実際のエラー: {err}");
+}
+
+/// ⚠ 対応する `<!` の無い `!>` も弾く。素通しすると地の文に紛れて消える。
+#[test]
+fn unmatched_splice_close_is_rejected() {
+    let err = parse_fails(
+        "exprconst fn f() -> Code:\n    let a = code:\n        let x = 1 !>\n    return a\n",
+    );
+    assert!(err.contains("no matching `<!`"), "実際のエラー: {err}");
+}
+
+/// `<! !>` を書けるのは `code:` の中だけ（設計書 §1.4）。
+/// ⚠ `unexpected token` だけだと「どこでなら書けるのか」が分からないので名指しする。
+#[test]
+fn splice_outside_a_code_block_is_rejected() {
+    let err = parse_fails("let x = <! 1 !>\n");
+    assert!(err.contains("can only appear inside a `code:` block"), "実際のエラー: {err}");
+}

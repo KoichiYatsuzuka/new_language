@@ -847,6 +847,13 @@ impl Parser {
                     return_type,
                 })
             }
+            // `<! !>` は `code:` ブロックの中でしか書けない（設計書 §1.4）。
+            // ⚠ ここへ来たということは `code:` の外。`unexpected token: `<!`` だけだと
+            // 「どこでなら書けるのか」が分からないので、置ける場所を名指しする。
+            Token::SpliceOpen | Token::SpliceClose => Err(format!(
+                "`{}` can only appear inside a `code:` block",
+                self.current()
+            )),
             tok => Err(format!("unexpected token: `{tok}`")),
         }
     }

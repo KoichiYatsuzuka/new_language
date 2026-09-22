@@ -539,9 +539,29 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         // テンプレート関数はリゾルバの対象外なので `res` は通常 `Unresolved` だが、
         // 網羅性のためそのまま複製する。`Resolution::Global` の `SlotCache::clone` は
         // 空キャッシュを返すので、実体化ごとに解決し直される。
-        // ⚠ `code:` の中身はトークン列で、型注釈の置換対象にならない（未パース）。
+        // ⚠ `code:` の**地の文**はトークン列で、型注釈の置換対象にならない（未パース）。
         //   ⇒ そのまま複製する。単相化（D35）で扱うのは展開**後**の AST。
-        Expr::CodeBlock(lines) => Expr::CodeBlock(lines.clone()),
+        //   ただし `<! !>` の中は普通の式なので、ここは置換して降りる。
+        Expr::CodeBlock(lines) => Expr::CodeBlock(
+            lines
+                .iter()
+                .map(|line| crate::ast::CodeLine {
+                    pieces: line
+                        .pieces
+                        .iter()
+                        .map(|p| match p {
+                            crate::ast::CodePiece::Token(t) => {
+                                crate::ast::CodePiece::Token(t.clone())
+                            }
+                            crate::ast::CodePiece::Splice(e) => {
+                                crate::ast::CodePiece::Splice(subst_expr(e, type_map))
+                            }
+                        })
+                        .collect(),
+                    indent: line.indent,
+                })
+                .collect(),
+        ),
         Expr::Ident { name, node_id, res } =>
             Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
         Expr::List(items) => Expr::List(
