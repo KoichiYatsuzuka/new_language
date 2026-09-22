@@ -96,7 +96,11 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         // ⚠ 具体化済みジェネリクスは Arrow のインスタンス。外部言語から届く値では
         //   ないので境界検査の対象にならない（`NamedInstance` と同じ扱い）。
         | InferredType::GenericInstance { .. }
-        | InferredType::Function { .. } => Verdict::Unverifiable,
+        | InferredType::Function { .. }
+        // ⚠ メタプログラミングの型は**展開時にしか存在しない**。FFI 境界の宣言型には
+        //   書けない（書けても展開器が消す）ので、届いたら判定しようがない―保守的側に倒す。
+        | InferredType::Code
+        | InferredType::Meta(_) => Verdict::Unverifiable,
 
         InferredType::Int => prim(matches!(value, Value::Int(_) | Value::UInt(_)), value),
         InferredType::Float => prim(matches!(value, Value::Float(_)), value),

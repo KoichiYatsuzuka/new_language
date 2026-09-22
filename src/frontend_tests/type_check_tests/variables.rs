@@ -186,3 +186,42 @@ use super::*;
         )));
     }
 
+// ── メタプログラミングの型（設計書 §1.2 / §1.5・タスク 1-5）────────────────
+
+/// ⚠⚠ `Code` は**メタ関数の外へ持ち出せない**（設計書 §1.2）。
+/// 展開時にしか存在しない値なので、通常の変数に束縛できると
+/// 「実行時に評価できない値」が型検査をすり抜けて実行まで届く。
+#[test]
+fn code_value_cannot_be_bound_outside_a_metafunction() {
+    assert!(err("let frag = code:\n    print(1)\n"));
+}
+
+/// ⚠ 普通の関数の中でも同じ。`code:` を書けるのはメタ関数の中だけ。
+#[test]
+fn code_value_cannot_escape_through_a_plain_function() {
+    assert!(err("fn g() -> Code:\n    let a = code:\n        pass\n    return a\n"));
+}
+
+/// メタ情報型は**注釈として書ける**（設計書 §1.5）。
+/// ⚠ Arrow は関数の仮引数の注釈が必須なので、これが無いとメタ関数そのものが書けない。
+#[test]
+fn meta_type_names_are_accepted_as_annotations() {
+    use crate::type_check::InferredType;
+    for name in ["Code", "meta_instance", "meta_function", "meta_class", "meta_member"] {
+        assert!(
+            InferredType::from_ann(name).is_some(),
+            "`{name}` を型注釈として解釈できること"
+        );
+    }
+}
+
+/// ⚠ `meta_*` は**別々の型**。フィールドとメソッドを混ぜない（設計書 §1.5）。
+#[test]
+fn meta_kinds_are_distinct_types() {
+    use crate::type_check::InferredType;
+    let member = InferredType::from_ann("meta_member").unwrap();
+    let function = InferredType::from_ann("meta_function").unwrap();
+    assert_ne!(member, function);
+    assert_eq!(member.to_string(), "meta_member");
+    assert_eq!(function.to_string(), "meta_function");
+}

@@ -70,6 +70,37 @@ pub struct FnTypeParam {
     pub has_default: bool,
 }
 
+/// メタ情報型の種別（設計書 §1.5 / タスク 1-5）。
+///
+/// ⚠ **フィールドとメソッドは別の型に分ける**（`meta_member` と `meta_function`）。
+/// 射影の一覧（D12・タスク 4-1）はこの種別ごとに決まる。
+///
+/// ⚠⚠ 種別を足すときは、**種別で分岐している箇所をすべて網羅 match にしておくこと**
+/// （`language-dev-principles` §2）。今はまだ分岐が無いので、最初の分岐を書く人が
+/// この約束を引き受ける。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MetaKind {
+    /// `meta_instance` — 値（インスタンス）のメタ情報。
+    Instance,
+    /// `meta_function` — 関数・メソッドのメタ情報。
+    Function,
+    /// `meta_class` — クラス・トレイト・enum のメタ情報。
+    Class,
+    /// `meta_member` — クラスのフィールドのメタ情報。
+    Member,
+}
+
+impl std::fmt::Display for MetaKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Instance => write!(f, "meta_instance"),
+            Self::Function => write!(f, "meta_function"),
+            Self::Class => write!(f, "meta_class"),
+            Self::Member => write!(f, "meta_member"),
+        }
+    }
+}
+
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
@@ -88,6 +119,19 @@ pub enum InferredType {
     /// `Undefined` 型（外部ライブラリのメンバが未定義の状態を表す）。
     /// 変数への代入は禁止。条件判定・型アノテーション・引数としてのみ使用可能。
     Undefined,
+    /// `Code` — `code:` ブロックが作る AST 断片（設計書 §1.2 / タスク 1-5）。
+    ///
+    /// ⚠⚠ **メタ関数の外へ持ち出せない。** 実行時には存在しない値なので、
+    /// 通常の変数に束縛できてしまうと「実行時に評価できない値」が普通の型検査を
+    /// すり抜ける。⇒ 束縛点で弾く（`TypeErrorKind::CodeEscapesMetafunction`）。
+    Code,
+    /// メタ情報型（`^` が返す。設計書 §1.5 / タスク 1-5）。
+    ///
+    /// ⚠ どの種別が返るかは**対象によって変わる**。対象の解決は展開器の仕事なので、
+    /// `^x` の推論は今はまだ [`InferredType::Unresolved`]（4-1 で射影ごと入れる）。
+    /// ここで足しているのは**注釈として書けるようにする**ため（メタ関数の仮引数は
+    /// 注釈必須なので、これが無いとメタ関数そのものが書けない）。
+    Meta(MetaKind),
     /// 要素型未知のリスト型 `list`。
     List,
     /// 要素型既知のリスト型 `list[T]`。
@@ -394,6 +438,12 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "Undefined" => Some(Self::Undefined),
+            // メタプログラミングの型（設計書 §1.2 / §1.5）。
+            "Code" => Some(Self::Code),
+            "meta_instance" => Some(Self::Meta(MetaKind::Instance)),
+            "meta_function" => Some(Self::Meta(MetaKind::Function)),
+            "meta_class" => Some(Self::Meta(MetaKind::Class)),
+            "meta_member" => Some(Self::Meta(MetaKind::Member)),
             // ⚠⚠⚠ **ここが「素の容器型」を生む唯一の到達可能な地点**（タスク 8.1・案 A）。
             //
             //    ⚠⚠ **純 Arrow コードからは、この結果が注釈として採用されることはない。**
@@ -606,6 +656,8 @@ impl std::fmt::Display for InferredType {
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
             Self::Undefined => write!(f, "Undefined"),
+            Self::Code => write!(f, "Code"),
+            Self::Meta(k) => write!(f, "{k}"),
             Self::List => write!(f, "list"),
             Self::ListOf(t) => write!(f, "list[{t}]"),
             // ⚠ 注釈として書ける形が無いので、実行時の型名（`generator`）に要素型を

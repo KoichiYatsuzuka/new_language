@@ -254,7 +254,7 @@
       "name": "constant.language.ar"
     },
     "builtin-type": {
-      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|path|slice)\\b",
+      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|path|slice|Code|meta_instance|meta_function|meta_class|meta_member)\\b",
       "name": "support.type.builtin.ar"
     },
     "builtin-func": {

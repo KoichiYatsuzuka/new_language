@@ -239,6 +239,15 @@ pub enum TypeErrorKind {
         class_name: String,
         field_name: String,
     },
+    /// `Code` 値をメタ関数の外へ持ち出そうとしている（設計書 §1.2 / タスク 1-5）。
+    ///
+    /// ⚠⚠ `Code` は**展開時にしか存在しない値**。通常の変数に束縛できてしまうと、
+    /// 実行時に評価できない値が普通の型検査をすり抜けて実行まで届く。
+    /// ⇒ **束縛点で弾く**（`code:` を書けるのはメタ関数の中だけなので、
+    /// 型検査がここで `Code` を見たということは、それ自体が持ち出しである）。
+    CodeEscapesMetafunction {
+        name: String,
+    },
     /// 型／トレイト本体のメンバーに `!装飾子` が付いたまま残っている（タスク 1-4）。
     ///
     /// ⚠⚠ **黙って無視してはいけない。** 本体の文は実行時に 1 文ずつ `exec` を通らないので、
@@ -813,6 +822,10 @@ impl StaticTypeError {
                 "field {} of class {} cannot hold {} by value (the structure would be infinitely nested);                  wrap it — {} or {} — so the nesting can terminate",
                 hl_q(field_name), hl_q(class_name), hl_q(class_name),
                 hl_q(&format!("Option[{class_name}]")), hl_q(&format!("list[{class_name}]"))
+            ),
+            TypeErrorKind::CodeEscapesMetafunction { name } => format!(
+                "{} cannot hold a {} value — `code:` fragments exist only while the compile-time expander runs, so they cannot be bound outside a metafunction",
+                hl_q(name), hl_q("Code")
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(
                 "decorator {} on a member of {} was not expanded (the compile-time expander is not implemented yet)",

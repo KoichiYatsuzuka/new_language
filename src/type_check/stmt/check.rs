@@ -1847,6 +1847,17 @@ impl TypeChecker {
                 span: None,
             });
         }
+        // ⚠⚠ `Code` の持ち出し禁止（設計書 §1.2 / タスク 1-5）。
+        //   ⚠ **メタ関数の中かどうかを見る必要はない。** `check_stmt` の `MetaFnDef` は
+        //     本体へ降りない（本体は展開時に走るので通常の型検査の対象外）ので、
+        //     ここで `Code` が見えたということ自体が「外へ出た」ことを意味する。
+        //   ⚠ 本体を検査するようにしたら**ここに深さの条件を足すこと**。
+        if rhs_ty == InferredType::Code {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::CodeEscapesMetafunction { name: name.to_string() },
+                span: None,
+            });
+        }
         if name != "_" && self.lookup(name).is_some() {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VariableRedeclaration { name: name.to_string() },

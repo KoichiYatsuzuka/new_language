@@ -12,11 +12,19 @@
 #              (the compile-time expander is not implemented yet)
 
 # ── 純粋メタ関数: `Code` を返す ──────────────────────────────────────────
+# ⚠ `Code` はメタ関数の外へ持ち出せない（設計書 §1.2）。展開時にしか存在しない値なので、
+#   通常の変数に束縛しようとすると束縛点で弾かれる。失敗例は `metafn_code_escape_error.ar`。
 exprconst fn make_greeting() -> Code:
     # ⚠ `code:` の中身は**パースされない**。未完の断片（本体の無い `if` など）も書ける。
     let body = code:
         print("hello")
     return body
+
+# ── メタ情報型を注釈に書く（設計書 §1.5）───────────────────────────────
+# ⚠ Arrow は関数の仮引数の注釈が必須。⇒ `meta_*` が型として存在しないと
+#   メタ関数そのものが書けない。フィールドとメソッドは別の型に分けてある。
+exprconst fn describe_members(c: meta_class, m: meta_member, g: meta_function) -> Code:
+    return code:
 
 # ── スプライス `<! !>`（設計書 §1.4）─────────────────────────────────────
 # ⚠ `code:` の中で**唯一パースされる**のがここ。中身は展開時に評価される普通の式で、

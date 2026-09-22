@@ -41,8 +41,9 @@ impl TypeChecker {
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---
-            // ⚠ `Code` 型は 1-5 で入れる。それまでは未解決にしておく（嘘の型を作らない）。
-            Expr::CodeBlock(_) => InferredType::Unresolved,
+            // `code:` が作るのは `Code`（設計書 §1.2）。
+            // ⚠ メタ関数の外へは持ち出せない。束縛点で弾く（`check_var_decl`）。
+            Expr::CodeBlock(_) => InferredType::Code,
             // ⚠ `meta_*` 型は 1-5 で入れる。それまでは未解決（嘘の型を作らない）。
             Expr::MetaInfo(_) => InferredType::Unresolved,
             Expr::Int(_) => InferredType::Int,
