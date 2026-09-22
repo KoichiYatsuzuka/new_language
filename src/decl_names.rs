@@ -117,6 +117,10 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         // ⚠ メタ関数も名前を束縛する。展開後は AST から消える（設計書 §1.5）が、
         //   展開**前**の解析ではここに居る必要がある。
         Stmt::MetaFnDef { name, .. } => f(name, DeclOrigin::Fn, None),
+        // ⚠ `!装飾子` は**包みなので透かす**。`!deco let x = 1` は `x` を束縛する。
+        //   透かさないと展開前のコードで `x` が「未定義」に見え、本来の
+        //   「展開器が走っていない」という診断より前に無関係な NameError が出る。
+        Stmt::MetaDecorated { target, .. } => each_declared_name(target, f),
         // `quote` は何も束縛しない。
         Stmt::Quote(_) => {}
 

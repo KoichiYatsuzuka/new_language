@@ -90,6 +90,9 @@ pub fn is_toplevel_compile_target(stmt: &Stmt) -> bool {
             //   VM に載せる対象ではない。`FnDef` と同じ「定義文＝対象外」の扱いにする。
             //   ⇒ 展開前にここへ来たらツリーウォーク側が明示エラーを出す。
             | Stmt::MetaFnDef { .. }
+            // ⚠ 装飾子付きの宣言も展開器が消す。VM に載せる対象ではない。
+            //   ⇒ ツリーウォーク側が「展開されていない」と明示エラーを出す。
+            | Stmt::MetaDecorated { .. }
     )
 }
 

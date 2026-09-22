@@ -1,0 +1,23 @@
+# metafn_decorator_member_error.ar — クラスメンバーに残った `!装飾子`（タスク 1-4）。
+#
+# ⚠⚠ **これは「黙って無視される」を塞ぐための例題。**
+#   クラス／トレイト／プロトコル本体の文は、実行時に 1 文ずつ `exec` を通らない
+#   （フィールド・メソッドとして読み取られるだけ）。⇒ 装飾子を放っておくと
+#   **何も起きずに通ってしまう**——「装飾子を書いたのに何も起きない」という最悪の失敗形。
+#
+# ⚠ 型検査も同じ。包まれたままだと `Stmt::Field` として拾われず、
+#   そのメンバーだけ存在しないことになり `'Point' has no member 'y'` という
+#   **無関係な診断**が出る。⇒ 型検査の側でも先に止める。
+#
+# 展開器（Phase 2）が装飾子を消すようになったら、この例題は成功例に書き換える。
+#
+# 期待されるエラー:
+#   StaticTypeError  decorator '!validated' on a member of 'Point' was not expanded
+#                    (the compile-time expander is not implemented yet)
+
+class Point:
+    mut x: int
+    !validated
+    mut y: int
+
+print("unreachable")

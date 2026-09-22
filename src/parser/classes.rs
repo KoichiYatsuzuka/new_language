@@ -617,11 +617,19 @@ impl Parser {
             let decls_before = self.editor_decl_count();
             let mut stmt = self.parse_class_stmt()?;
             // apply current accessibility to fields and method definitions
-            match &mut stmt {
-                Stmt::Field { access, .. } => *access = current_access.clone(),
-                Stmt::FnDef { access, .. } => *access = current_access.clone(),
-                Stmt::GenDef { access, .. } => *access = current_access.clone(),
-                _ => {}
+            // ⚠ `!装飾子` は対象の文を**包む**ので、ここで剥がしてから access を入れる。
+            //   剥がさないと `private:` 節の中の装飾子付きフィールドが public のままになる。
+            {
+                let mut inner: &mut Stmt = &mut stmt;
+                while let Stmt::MetaDecorated { target, .. } = inner {
+                    inner = target;
+                }
+                match inner {
+                    Stmt::Field { access, .. } => *access = current_access.clone(),
+                    Stmt::FnDef { access, .. } => *access = current_access.clone(),
+                    Stmt::GenDef { access, .. } => *access = current_access.clone(),
+                    _ => {}
+                }
             }
             // 同じ判断を索引側にも反映する（hover の "public mut x: int" 表示に使う）。
             self.note_access(decls_before, match current_access {
@@ -654,8 +662,10 @@ impl Parser {
     ///
     /// # エラー
     /// 型アノテーション欠如・`const` のデフォルト値欠如・未対応トークン
-    fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
+    pub(crate) fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
+            // `!装飾子` — 対象はフィールド宣言・メソッド定義（設計書 §1.6 / タスク 1-4）。
+            Token::Bang => self.parse_meta_decorated(true),
             // フィールド宣言: mut/let/const キーワードで始まる
             Token::Mut | Token::Let | Token::Const => {
                 let kind = match self.current() {

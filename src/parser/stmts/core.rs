@@ -334,6 +334,8 @@ impl Parser {
             }
             // ── メタ関数（コンパイル時展開）─────────────────────────
             Token::ExprConst => self.parse_meta_fn_def(),
+            // `!装飾子` — `@` と違い、対象はクラス・関数・フィールド・変数束縛まで広い（§1.6）。
+            Token::Bang => self.parse_meta_decorated(false),
             Token::Quote => self.parse_quote(),
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),

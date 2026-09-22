@@ -244,6 +244,9 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
         Stmt::MetaFnDef { params, body, .. } => f(P::FnBody { params, body }),
         // `quote` が持つのは配置する `Code` 式。
         Stmt::Quote(e) => f(P::Expr(e)),
+        // `!装飾子` の対象は**同じフレーム・同じスコープ**の宣言なので `Control` で渡す。
+        // ⚠ 装飾子式そのものは列挙しない（`@` の `decorators` と同じ扱い・モジュール doc）。
+        Stmt::MetaDecorated { target, .. } => f(P::Control(std::slice::from_ref(target))),
         Stmt::GenDef { body, .. } => f(P::GenBody(body)),
         Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => f(P::TypeBody(body)),
         Stmt::ProtocolDef { body, .. } => f(P::ProtocolBody(body)),

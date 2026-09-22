@@ -1337,3 +1337,86 @@ fn double_caret_is_rejected() {
     let err = parse_fails("exprconst fn f(x) -> Code:\n    let a = ^^x\n    return code:\n");
     assert!(err.contains("`^^` was removed"), "実際のエラー: {err}");
 }
+
+/// `!装飾子` は対象の宣言を**包む**（設計書 §1.6 / タスク 1-4）。
+/// ⚠ `@` の `decorators` 欄とは別物。あちらは実行時クロージャ装飾子で据え置き。
+#[test]
+fn meta_decorator_wraps_its_target() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("!deco\nclass C:\n    mut x: int\n");
+    let Stmt::MetaDecorated { decorators, target } = &stmts[0] else {
+        panic!("MetaDecorated を期待")
+    };
+    assert_eq!(decorators.len(), 1);
+    assert!(matches!(&decorators[0], Expr::Ident { name, .. } if name == "deco"));
+    assert!(matches!(**target, Stmt::ClassDef { .. }));
+}
+
+/// 対象は**変数束縛**でもよい（§1.6）。`@` は `fn` / `class` しか取らない。
+#[test]
+fn meta_decorator_accepts_a_variable_binding() {
+    use crate::ast::Stmt;
+    let stmts = parse("!deco\nlet v = 1\n");
+    let Stmt::MetaDecorated { target, .. } = &stmts[0] else { panic!("MetaDecorated を期待") };
+    assert!(matches!(**target, Stmt::Let(..)));
+}
+
+/// 対象は**クラスフィールド**でもよい（§1.6）。
+#[test]
+fn meta_decorator_accepts_a_class_field() {
+    use crate::ast::Stmt;
+    let stmts = parse("class C:\n    !deco\n    mut x: int\n");
+    let Stmt::ClassDef { body, .. } = &stmts[0] else { panic!("ClassDef を期待") };
+    let Stmt::MetaDecorated { target, .. } = &body[0] else { panic!("MetaDecorated を期待") };
+    assert!(matches!(**target, Stmt::Field { .. }));
+}
+
+/// 引数付きの装飾子（`!deco(1, "x")`）も書ける。呼び出し式としてパースされる。
+#[test]
+fn meta_decorator_can_take_arguments() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("!deco(1, \"x\")\nfn g() -> int:\n    return 1\n");
+    let Stmt::MetaDecorated { decorators, .. } = &stmts[0] else { panic!("MetaDecorated を期待") };
+    assert!(matches!(&decorators[0], Expr::Call { .. }));
+}
+
+/// 複数の装飾子は 1 つの `MetaDecorated` にまとまる（上から順）。
+#[test]
+fn stacked_meta_decorators_collect_into_one_wrapper() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("!a\n!b\nfn g() -> int:\n    return 1\n");
+    let Stmt::MetaDecorated { decorators, target } = &stmts[0] else {
+        panic!("MetaDecorated を期待")
+    };
+    let names: Vec<&str> = decorators
+        .iter()
+        .map(|d| match d {
+            Expr::Ident { name, .. } => name.as_str(),
+            _ => panic!("Ident を期待"),
+        })
+        .collect();
+    assert_eq!(names, vec!["a", "b"], "書いた順に並ぶ");
+    assert!(matches!(**target, Stmt::FnDef { .. }));
+}
+
+/// ⚠ 対象にできない文を黙って包まない。包むと展開器が扱えない形が AST に入る。
+#[test]
+fn meta_decorator_on_a_non_declaration_is_rejected() {
+    let err = parse_fails("!deco\nprint(1)\n");
+    assert!(
+        err.contains("can only be applied to a class, function, field or variable binding"),
+        "実際のエラー: {err}"
+    );
+}
+
+/// ⚠ `private:` 節の中の装飾子付きフィールドにもアクセス指定が効くこと。
+/// 包みを剥がさずに access を入れると、装飾したフィールドだけ public のまま残る。
+#[test]
+fn access_section_reaches_through_a_meta_decorator() {
+    use crate::ast::{Accessibility, Stmt};
+    let stmts = parse("class C:\n    private:\n    !deco\n    mut secret: int\n");
+    let Stmt::ClassDef { body, .. } = &stmts[0] else { panic!("ClassDef を期待") };
+    let Stmt::MetaDecorated { target, .. } = &body[0] else { panic!("MetaDecorated を期待") };
+    let Stmt::Field { access, .. } = &**target else { panic!("Field を期待") };
+    assert_eq!(*access, Accessibility::Private);
+}

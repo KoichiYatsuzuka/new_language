@@ -62,4 +62,19 @@ exprconst !fn place_nothing() -> None:
     let empty = code:
     quote empty
 
+# ── 装飾子 `!名前`（設計書 §1.6）───────────────────────────────────────
+# ⚠ 対象が**第一引数として渡る**。対象はクラス宣言・関数宣言・クラスフィールド宣言・
+#   変数束縛の 4 つ。宣言でない文に付けると弾かれる（`metafn_decorator_error.ar`）。
+# ⚠ `@` は実行時クロージャ装飾子として据え置き。別物なので混ぜない。
+# ⚠ クラスメンバーへの装飾は `metafn_decorator_member_error.ar` を参照
+#   （展開器が無い間は「黙って無視」を避けるため明示エラーにしてある）。
+!place_nothing
+fn decorated_fn() -> int:
+    return 1
+
+# 引数付き・積み重ねも書ける。上から順に並ぶ。
+!place_nothing
+!place_greeting
+let decorated_binding = 1
+
 print("unreachable")

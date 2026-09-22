@@ -225,6 +225,7 @@ impl Interpreter {
 
     /// `trait` 定義を実行してトレイト値をスコープに登録する。アクセス制御情報とフィールド順序も収集する。
     pub(crate) fn exec_trait_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
+        reject_unexpanded_member_decorators("trait", name, body)?;
         let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
         let mut field_order: Vec<(String, bool, String)> = Vec::new();
         for stmt in body {
@@ -271,6 +272,7 @@ impl Interpreter {
     /// `protocol` 定義を実行してプロトコル値をスコープに登録する。
     /// プロトコルは静的型チェック専用で、インスタンス化できない。
     pub(crate) fn exec_protocol_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
+        reject_unexpanded_member_decorators("protocol", name, body)?;
         // 必須メンバー名を収集（is Protocol 実行時チェック用）
         let mut members: Vec<String> = Vec::new();
         for s in body {
@@ -529,6 +531,8 @@ impl Interpreter {
         body: &[Stmt],
         decorators: &[Expr],
     ) -> Result<ExecResult, String> {
+        reject_unexpanded_member_decorators("class", name, body)?;
+
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateClassValue {
                 name: name.to_string(),
@@ -852,4 +856,30 @@ impl Interpreter {
     // Exception handling
     // ---------------------------------------------------------------------------
 
+}
+
+/// クラス／トレイト／プロトコル本体に残った `!装飾子` を明示エラーにする（タスク 1-4）。
+///
+/// ⚠⚠ **本体の文は `exec` を通らない**（フィールド・メソッドとして読み取られるだけ）ので、
+/// [`Stmt::MetaDecorated`] を放っておくと**黙って無視される**。「装飾子を書いたのに何も
+/// 起きない」は最悪の失敗形なので、展開器（Phase 2）が消すまではここで止める。
+fn reject_unexpanded_member_decorators(
+    kind: &str,
+    name: &str,
+    body: &[Stmt],
+) -> Result<(), String> {
+    for st in body {
+        if let Stmt::MetaDecorated { decorators, .. } = st {
+            let what = match decorators.first() {
+                Some(Expr::Ident { name: d, .. }) => format!("`!{d}`"),
+                Some(_) => "this decorator".to_string(),
+                None => "a decorator".to_string(),
+            };
+            return Err(format!(
+                "MetaError: {what} on a member of {kind} '{name}' was not expanded \
+                 (the compile-time expander is not implemented yet)"
+            ));
+        }
+    }
+    Ok(())
 }

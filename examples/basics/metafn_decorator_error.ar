@@ -1,0 +1,22 @@
+# metafn_decorator_error.ar — `!装飾子` を付けられる対象（タスク 1-4 / 設計書 §1.6）。
+#
+# `!装飾子名` は宣言の直前行に置き、展開時に**対象が第一引数として渡る**。
+# 対象は **クラス宣言・関数宣言・クラスフィールド宣言・変数束縛** の 4 つだけ。
+#
+# ⚠ 対象でない文を黙って包むと、展開器が扱えない形（`MetaDecorated(Expr)` など）が
+#   AST に入る。⇒ パース時に弾いて、付けられる対象を名指しする。
+#
+# ⚠ `@` は**実行時クロージャ装飾子として据え置き**（§1.6）。別物なので混ぜない。
+#   `@` が取れるのは `fn` / `class` だけ。
+#
+# ⚠ 成功例は `metafn_syntax_error.ar`（関数・変数束縛への装飾）。
+#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+#
+# 期待されるエラー:
+#   ParseError: `!` decorators can only be applied to a class, function, field or
+#               variable binding, got `Expr`
+
+!log_calls
+print("これは宣言ではない")
+
+print("unreachable")

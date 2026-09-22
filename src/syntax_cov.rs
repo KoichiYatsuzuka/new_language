@@ -313,7 +313,7 @@ pub const ALL_STMT_KINDS: &[&str] = &[
     "ClassDef", "TraitDef", "ProtocolDef", "Field", "NewTypeDef", "EnumDef", "Try", "Raise",
     // メタ関数（コンパイル時展開・タスク 1-1）。
     // ⚠ 展開器は Phase 2 なので、例題はエラー例だけ（構文は通るが実行まで届かない）。
-    "MetaFnDef", "Quote",
+    "MetaFnDef", "Quote", "MetaDecorated",
     "Import", "FromImport", "AsyncAssign", "BreakPoint", "DebugLet", "EventSubscribe",
     "EventUnsubscribe",
 ];

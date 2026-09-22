@@ -239,6 +239,15 @@ pub enum TypeErrorKind {
         class_name: String,
         field_name: String,
     },
+    /// 型／トレイト本体のメンバーに `!装飾子` が付いたまま残っている（タスク 1-4）。
+    ///
+    /// ⚠⚠ **黙って無視してはいけない。** 本体の文は実行時に 1 文ずつ `exec` を通らないので、
+    /// 見逃すと「装飾子を書いたのに何も起きない」という最悪の失敗形になる。
+    /// ⚠ 型検査は展開器より**後**に走る設計（§1.7）なので、ここへ来たのは展開が走っていない証拠。
+    UnexpandedMemberDecorator {
+        type_name: String,
+        decorator: String,
+    },
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -804,6 +813,10 @@ impl StaticTypeError {
                 "field {} of class {} cannot hold {} by value (the structure would be infinitely nested);                  wrap it — {} or {} — so the nesting can terminate",
                 hl_q(field_name), hl_q(class_name), hl_q(class_name),
                 hl_q(&format!("Option[{class_name}]")), hl_q(&format!("list[{class_name}]"))
+            ),
+            TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(
+                "decorator {} on a member of {} was not expanded (the compile-time expander is not implemented yet)",
+                hl_q(decorator), hl_q(type_name)
             ),
             TypeErrorKind::VirtualMethodInClass { class_name, method_name } => format!(
                 "class {} cannot declare virtual method {} (a `...` body);                  virtual methods belong to traits — give it a real body,                  or move the declaration into a trait that {} implements",

@@ -283,6 +283,24 @@ impl TypeChecker {
                 //     連結リストや木が書ける。⇒ 型注釈が**クラス名そのもの**のときだけ弾く。
                 //   ⚠ 相互再帰（`A.b: B` と `B.a: A`）は同じ理由で不正だが、クラスを跨ぐ
                 //     循環検査が要るので**ここでは見ていない**（D37 は直接の自己参照のみ）。
+                // ⚠⚠ メンバーに残った `!装飾子` はここで止める。型検査はフィールドを
+                //   `Stmt::Field` として拾うので、包まれたままだと**そのメンバーだけ
+                //   存在しないことになる**（`'C' has no member 'x'` という無関係な診断が出る）。
+                for st in body {
+                    if let Stmt::MetaDecorated { decorators, .. } = st {
+                        let deco = match decorators.first() {
+                            Some(crate::ast::Expr::Ident { name: d, .. }) => format!("!{d}"),
+                            _ => "!...".to_string(),
+                        };
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::UnexpandedMemberDecorator {
+                                type_name: name.clone(),
+                                decorator: deco,
+                            },
+                            span: None,
+                        });
+                    }
+                }
                 for st in body {
                     if let Stmt::Field { name: fname, type_ann, .. } = st {
                         if type_ann == name || type_ann == "Self" {
@@ -463,6 +481,10 @@ impl TypeChecker {
             }
             // `quote` の検査も 1-5。式は `Code` 型でなければならない。
             Stmt::Quote(_) => {}
+            // ⚠ `!装飾子` は**包みなので透かして対象を検査する**。透かさないと
+            //   装飾された宣言だけが型検査から抜け落ち、退行が緑のまま通る。
+            //   装飾子式そのものの検査（メタ関数かどうか）は展開器（2-0）の仕事。
+            Stmt::MetaDecorated { target, .. } => self.check_stmt(target),
 
             // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {

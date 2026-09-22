@@ -55,6 +55,19 @@ impl Interpreter {
                 "MetaError: metafunction '{name}' was not expanded \
                  (the compile-time expander is not implemented yet)"
             )),
+            // ⚠ 装飾子は展開器（Phase 2）が AST から消す。ここへ来たのは展開が走っていない証拠。
+            //   ⚠ 名前を出せるときは出す（`!deco` と書いた本人に届く診断にするため）。
+            Stmt::MetaDecorated { decorators, .. } => {
+                let what = match decorators.first() {
+                    Some(crate::ast::Expr::Ident { name, .. }) => format!("`!{name}`"),
+                    Some(_) => "this decorator".to_string(),
+                    None => "a decorator".to_string(),
+                };
+                Err(format!(
+                    "MetaError: {what} was not expanded \
+                     (the compile-time expander is not implemented yet)"
+                ))
+            }
             Stmt::Quote(_) => Err(
                 "MetaError: `quote` is only valid inside a metafunction \
                  (the compile-time expander is not implemented yet)"

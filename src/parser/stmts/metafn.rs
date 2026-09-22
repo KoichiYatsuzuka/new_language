@@ -209,6 +209,59 @@ impl Parser {
     }
 }
 
+impl Parser {
+    /// `!装飾子名` の並び + 装飾される宣言をパースして [`Stmt::MetaDecorated`] を返す。
+    /// `!` の位置で呼ぶ（設計書 §1.6 / タスク 1-4）。
+    ///
+    /// `in_class` が真ならクラス本体の中（対象はフィールド・メソッド）。
+    ///
+    /// ⚠ `@` の [`Parser::parse_decorators`] と**別実装にしてある**。`@` は実行時クロージャ
+    /// 装飾子として据え置きと決まっており（§1.6）、受け付ける対象も `fn` / `class` だけで違う。
+    ///
+    /// ⚠ **対象の種類をここで検査する。** 通さないと `!deco import x` のような書き方が
+    /// 黙って `MetaDecorated(Import)` になり、展開器が扱えない形が AST に入る。
+    pub(crate) fn parse_meta_decorated(&mut self, in_class: bool) -> Result<Stmt, String> {
+        let mut decorators = Vec::new();
+        while *self.current() == Token::Bang {
+            self.advance(); // `!` を消費
+            decorators.push(self.parse_expr()?);
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+        }
+
+        let target = if in_class { self.parse_class_stmt()? } else { self.parse_stmt()? };
+        if !is_decoratable(&target) {
+            return Err(format!(
+                "`!` decorators can only be applied to a class, function, field or \
+                 variable binding, got `{}`",
+                crate::interpreter::tw_stats::stmt_kind_of(&target)
+            ));
+        }
+        Ok(Stmt::MetaDecorated { decorators, target: Box::new(target) })
+    }
+}
+
+/// 装飾子を付けられる宣言かどうか（設計書 §1.6）。
+///
+/// ⚠ **網羅 match にしない**（`Stmt` は 40 種類以上あり、ほとんどが対象外）。
+/// 代わりに**受け付けるものを列挙**する。増やすときはここ 1 箇所。
+fn is_decoratable(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::ClassDef { .. }
+            | Stmt::FnDef { .. }
+            | Stmt::GenDef { .. }
+            | Stmt::Field { .. }
+            | Stmt::Let(..)
+            | Stmt::Mut(..)
+            | Stmt::Const(..)
+            | Stmt::Static { .. }
+            // 入れ子の装飾子（`!a` の対象がさらに装飾された宣言）も通す。
+            | Stmt::MetaDecorated { .. }
+    )
+}
+
 /// 仮引数リストのパース補助。`parse_fn_def_with_flags` と同じ形（`parse_param` のループ）。
 impl Parser {
     fn parse_param_list(&mut self) -> Result<Vec<Param>, String> {

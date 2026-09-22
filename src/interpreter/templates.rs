@@ -865,6 +865,10 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         },
         // ⚠ メタ関数はテンプレート本体には書けない（展開はテンプレート実体化より前）。
         //   到達しないが、網羅性のために複製だけしておく。
+        Stmt::MetaDecorated { decorators, target } => Stmt::MetaDecorated {
+            decorators: decorators.iter().map(|d| subst_expr(d, type_map)).collect(),
+            target: Box::new(subst_stmt(target, type_map)),
+        },
         Stmt::MetaFnDef { name, params, return_type, body, is_placing } => Stmt::MetaFnDef {
             name: name.clone(),
             params: subst_params(params, type_map),

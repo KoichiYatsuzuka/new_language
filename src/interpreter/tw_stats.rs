@@ -266,6 +266,7 @@ fn stmt_kind(stmt: &Stmt) -> &'static str {
     match stmt {
         Stmt::Expr(_) => "Expr",
         Stmt::MetaFnDef { .. } => "MetaFnDef",
+        Stmt::MetaDecorated { .. } => "MetaDecorated",
         Stmt::Quote(_) => "Quote",
         Stmt::Let(..) => "Let",
         Stmt::Const(..) => "Const",
