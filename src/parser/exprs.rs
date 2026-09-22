@@ -382,12 +382,20 @@ impl Parser {
     /// - `::` → トレイトアクセス（`Expr::TraitAccess`）
     /// - `[` → `parse_bracket_suffix()` に委譲（template or subscript）
     fn parse_call(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_primary()?;
+        // `^対象` は `.` より強く束縛する（設計書 §1.5）。⇒ primary の位置で受け、
+        // 後置チェーン（`.射影` / `(...)`）はそのまま上に積む。
+        let mut expr = if *self.current() == Token::Caret {
+            self.parse_meta_info()?
+        } else {
+            self.parse_primary()?
+        };
         loop {
             match self.current() {
                 Token::LParen => {
                     let call_span = self.current_span();
                     self.advance(); // `(` を消費
+                    // ⚠ 実引数の中では `^` を書ける（設計書 §1.5）。
+                    self.call_arg_depth += 1;
                     let mut args = Vec::new();
                     // 引数リストをパース。キーワード引数（`name=expr`）と位置引数を区別する
                     while *self.current() != Token::RParen && *self.current() != Token::Eof {
@@ -456,6 +464,7 @@ impl Parser {
                             break;
                         }
                     }
+                    self.call_arg_depth -= 1;
                     self.eat(&Token::RParen)?;
                     expr = Expr::Call {
                         func: Box::new(expr),
@@ -510,6 +519,49 @@ impl Parser {
             }
         }
         Ok(expr)
+    }
+
+    /// `^対象` — メタ情報演算子（設計書 §1.5 / タスク 1-3）。`^` の位置で呼ぶ。
+    ///
+    /// ## 束縛の強さ
+    ///
+    /// **`.` より強い。** `^T.fields` は `(^T).fields`（メタ情報への射影）であって
+    /// `^(T.fields)` ではない。設計書 参考B の射影一覧（`^f.params` / `^T.methods` /
+    /// `^x.declared_at` …）がすべてこの形で書かれている。
+    ///
+    /// ⇒ 対象に取り込むのは **primary と `[...]` まで**。`^Box[int].fields` を
+    /// 「`Box[int]` のメタ情報の `fields`」と読ませるために `[...]` は対象側に含める。
+    /// `.射影` と `(...)` は呼び出し元の後置チェーンがメタ情報オブジェクトに積む。
+    ///
+    /// ## 書ける位置
+    ///
+    /// メタ関数の中か、呼び出しの実引数の中だけ（§1.5）。
+    /// ⚠ 本来の規則は「**メタ関数**呼び出しの実引数位置」だが、呼び先がメタ関数かは
+    /// パース時には分からない。⇒ **正しいコードを決して弾かない**側に倒して緩く受け、
+    /// 呼び先の検査は展開器（Phase 2）に任せる。
+    fn parse_meta_info(&mut self) -> Result<Expr, String> {
+        if self.metafn_depth == 0 && self.call_arg_depth == 0 {
+            return Err(
+                "`^` (the meta-info operator) can only be written inside a metafunction \
+                 or as an argument to one"
+                    .to_string(),
+            );
+        }
+        self.advance(); // `^` を消費
+        // ⚠ `^^` は D10 で廃止。素通しすると `^(^x)` として通ってしまうので明示的に弾く。
+        if *self.current() == Token::Caret {
+            return Err(
+                "`^^` was removed; write `^` once and follow it with a projection \
+                 (for example `^T.fields`)"
+                    .to_string(),
+            );
+        }
+        let mut target = self.parse_primary()?;
+        // `^Box[int]` — テンプレート実体化・添字は**対象側**に含める。
+        while *self.current() == Token::LBracket {
+            target = self.parse_bracket_suffix(target)?;
+        }
+        Ok(Expr::MetaInfo(Box::new(target)))
     }
 
     /// `expr[...]` を `Expr::TemplateInstantiate` または `Expr::Subscript` としてパースする。

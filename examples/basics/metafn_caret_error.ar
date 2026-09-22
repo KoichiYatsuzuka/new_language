@@ -1,0 +1,22 @@
+# metafn_caret_error.ar — メタ情報演算子 `^` を書ける位置（タスク 1-3 / 設計書 §1.5）。
+#
+# `^対象` は対象のメタ情報（`meta_instance` / `meta_function` / `meta_class` /
+# `meta_member`）を返す**展開時**の演算子。実行時には意味を持たない。
+# ⇒ 書けるのは **メタ関数の中**か、**呼び出しの実引数の中**だけ。
+#
+# ⚠ 中置の `^`（ビット XOR）は従来どおり。前置か中置かは位置で区別される。
+#   `print(6 ^ 3)` は 5 を出す。
+#
+# ⚠ 成功例は `metafn_syntax_error.ar`（メタ関数の中の `^`）。
+#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+#
+# 期待されるエラー:
+#   ParseError: `^` (the meta-info operator) can only be written inside a metafunction
+#               or as an argument to one
+
+let x = 1
+print(6 ^ 3)                # 5 — 中置はビット XOR のまま
+
+let meta = ^x               # ← ここが不正（メタ関数の外、かつ実引数でもない）
+
+print("unreachable")

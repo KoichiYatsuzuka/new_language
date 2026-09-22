@@ -87,6 +87,9 @@ pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
                 }
             }
         }
+        // `^対象` — 対象は**普通の式**なので降りる。降りないと `f(^x)` の `x` が
+        // 参照として拾われず、クロージャ捕捉・slot 採番からこぼれる。
+        Expr::MetaInfo(target) => f(SubPart::Plain(target)),
         Expr::Block { stmts, .. } => f(SubPart::Body(stmts)),
         Expr::IfExpr {
             branches,

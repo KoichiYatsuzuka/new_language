@@ -562,6 +562,8 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
                 })
                 .collect(),
         ),
+        // `^対象` の対象は普通の式なので、型注釈の置換はそのまま降りる。
+        Expr::MetaInfo(target) => Expr::MetaInfo(Box::new(subst_expr(target, type_map))),
         Expr::Ident { name, node_id, res } =>
             Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
         Expr::List(items) => Expr::List(

@@ -1,0 +1,20 @@
+# metafn_double_caret_error.ar — `^^` は廃止（タスク 1-3 / 設計書 D10）。
+#
+# 以前は「`^` で値のメタ情報、`^^` で型のメタ情報」という案だったが、
+# **記号の個数で意味を分ける形をやめた**（2026-09-19・D10）。
+# 型側も `^` で引き、必要なら射影で辿る（`^x.type` / `^T.fields`）。
+#
+# ⚠ 黙って `^(^x)` として通すと、意味の違う式が**エラーにならずに**別物として動く。
+#   ⇒ 明示的に弾いて、書き換え方を示す。
+#
+# ⚠ 成功例は `metafn_syntax_error.ar`（`^` 1 個 + 射影）。
+#
+# 期待されるエラー:
+#   ParseError: `^^` was removed; write `^` once and follow it with a projection
+#               (for example `^T.fields`)
+
+exprconst fn describe(t) -> Code:
+    let info = ^^t          # ← 廃止された形。`^t.type` などに書き換える
+    return code:
+
+print("unreachable")

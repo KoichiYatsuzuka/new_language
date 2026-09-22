@@ -46,6 +46,9 @@ $whitelist = @(
     'raw_entry',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
+    # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で
+    #   あって、Rust の識別子ではない（型検査器の中では InferredType のバリアントになる予定）。
+    'meta_instance','meta_function','meta_class','meta_member',
     # ⚠ CPython の内部名。設計の対応関係を説明するのに要る（src に同名は無くて当然）。
     'f_lasti','gi_iframe',
     # ⚠ **Python 側のユーザーコードの識別子**。python_converter の対応表が

@@ -321,7 +321,7 @@ pub const ALL_STMT_KINDS: &[&str] = &[
 /// この言語に存在する `Expr` variant 名の全一覧（未カバー判定の母集団）。
 pub const ALL_EXPR_KINDS: &[&str] = &[
     "Int", "Float", "ImaginaryLit", "Str", "Bool", "None", "Undefined", "Ident", "List", "Attr",
-    "CodeBlock",
+    "CodeBlock", "MetaInfo",
     "TraitAccess", "BinOp", "UnaryOp", "Call", "TemplateInstantiate", "Subscript", "Slice", "Dict",
     "Tuple", "Set", "Block", "IfExpr", "ForExpr", "WhileExpr", "MatchExpr", "Cast", "IsType",
     "MustBe", "DebugVar", "LocalVar",

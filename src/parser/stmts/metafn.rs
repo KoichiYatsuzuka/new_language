@@ -71,7 +71,11 @@ impl Parser {
         self.note_signature(decl_h, &name);
 
         self.eat(&Token::Colon)?;
-        let body = self.parse_block()?;
+        // ⚠ 本体の中では `^`（メタ情報演算子）を書ける（設計書 §1.5）。
+        self.metafn_depth += 1;
+        let body = self.parse_block();
+        self.metafn_depth -= 1;
+        let body = body?;
 
         Ok(Stmt::MetaFnDef { name, params, return_type, body, is_placing })
     }

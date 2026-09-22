@@ -674,6 +674,9 @@ fn expr_to_value(expr: &Expr) -> Value {
                 ("right", expr_to_value(right)),
             ],
         ),
+        Expr::MetaInfo(target) => {
+            ns("ExprMetaInfo", vec![("target", expr_to_value(target))])
+        }
         Expr::UnaryOp { op, operand } => ns(
             "ExprUnaryOp",
             vec![

@@ -34,6 +34,7 @@ pub fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
         Expr::Int(..) => "Int",
         Expr::CodeBlock(..) => "CodeBlock",
+        Expr::MetaInfo(..) => "MetaInfo",
         Expr::Float(..) => "Float",
         Expr::ImaginaryLit(..) => "ImaginaryLit",
         Expr::Str(..) => "Str",

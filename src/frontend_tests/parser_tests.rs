@@ -1273,3 +1273,67 @@ fn splice_outside_a_code_block_is_rejected() {
     let err = parse_fails("let x = <! 1 !>\n");
     assert!(err.contains("can only appear inside a `code:` block"), "実際のエラー: {err}");
 }
+
+/// ⚠⚠ `^` は `.` より**強く**束縛する（設計書 §1.5 / 参考B）。
+/// `^T.fields` は `(^T).fields`（メタ情報への射影）であって `^(T.fields)` ではない。
+/// ここが逆だと参考B の射影一覧がすべて別の意味になる。
+#[test]
+fn meta_info_binds_tighter_than_attribute_access() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("exprconst fn f(t) -> Code:\n    let a = ^t.fields\n    return code:\n");
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::Attr { object, attr, .. }) = &body[0] else {
+        panic!("最外は Attr（射影）を期待")
+    };
+    assert_eq!(attr, "fields");
+    assert!(matches!(**object, Expr::MetaInfo(_)), "その内側が `^t`");
+}
+
+/// `^Box[int].fields` — テンプレート実体化は**対象側**に含める。
+/// ⚠ `[...]` を後置チェーンに任せると `(^Box)[int]` になり、別物になる。
+#[test]
+fn meta_info_takes_template_instantiation_as_its_target() {
+    use crate::ast::{Expr, Stmt};
+    let stmts =
+        parse("exprconst fn f() -> Code:\n    let a = ^Box[int].fields\n    return code:\n");
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::Attr { object, .. }) = &body[0] else { panic!("Attr を期待") };
+    let Expr::MetaInfo(target) = &**object else { panic!("`^` が外側にあること") };
+    assert!(
+        matches!(**target, Expr::TemplateInstantiate { .. } | Expr::Subscript { .. }),
+        "対象に `Box[int]` まで含まれること"
+    );
+}
+
+/// ⚠ 既存の二項 `^`（ビット XOR）を奪っていないこと。前置と中置は位置で区別される。
+#[test]
+fn caret_is_still_binary_xor_in_infix_position() {
+    use crate::ast::{BinOp, Expr, Stmt};
+    let stmts = parse("let a = 6 ^ 3\n");
+    let Stmt::Let(_, _, Expr::BinOp { op, .. }) = &stmts[0] else { panic!("BinOp を期待") };
+    assert_eq!(*op, BinOp::BitXor);
+}
+
+/// `^` を書けるのは**メタ関数の中か、呼び出しの実引数の中**だけ（設計書 §1.5）。
+#[test]
+fn meta_info_is_allowed_in_a_call_argument() {
+    use crate::ast::{CallArg, Expr, Stmt};
+    let stmts = parse("let y = g(^x)\n");
+    let Stmt::Let(_, _, Expr::Call { args, .. }) = &stmts[0] else { panic!("Call を期待") };
+    let CallArg::Positional(arg) = &args[0] else { panic!("位置引数を期待") };
+    assert!(matches!(arg, Expr::MetaInfo(_)));
+}
+
+/// ⚠ 普通のコードで `^` を書いたら弾く。書ける場所を名指しする。
+#[test]
+fn meta_info_outside_a_metafn_or_call_argument_is_rejected() {
+    let err = parse_fails("let x = 1\nlet y = ^x\n");
+    assert!(err.contains("can only be written inside a metafunction"), "実際のエラー: {err}");
+}
+
+/// ⚠ `^^` は D10 で廃止。素通しすると `^(^x)` として通ってしまう。
+#[test]
+fn double_caret_is_rejected() {
+    let err = parse_fails("exprconst fn f(x) -> Code:\n    let a = ^^x\n    return code:\n");
+    assert!(err.contains("`^^` was removed"), "実際のエラー: {err}");
+}

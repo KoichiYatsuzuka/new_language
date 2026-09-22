@@ -94,6 +94,18 @@ impl Compiler {
                 let ci = self.add_const(Value::Complex(0.0, *f));
                 self.emit(Op::Const(ci));
             }
+            // メタ情報演算子（設計書 §1.5 / 1-3）。展開器（Phase 2）が AST から消すので、
+            // ここへ来たのは**展開が走っていない**証拠。
+            // ⚠ bail せず `Op::Fail` にする。bail だと `VmForceError` になり、同じコードが
+            //   ツリーウォーク側では MetaError という食い違いになる（上の `released_for_targets`
+            //   と同じ理由）。force_gate も `VmForceError` 0 件を要求している。
+            Expr::MetaInfo(_) => {
+                let n = self.add_name(
+                    "MetaError: `^` (the meta-info operator) cannot be evaluated at run time \
+                     (the compile-time expander is not implemented yet)",
+                );
+                self.emit(Op::Fail(n));
+            }
             // `undefined` リテラル（#27）。`eval` の `Expr::Undefined => Value::Undefined` と同じ。
             Expr::Undefined => {
                 let ci = self.add_const(Value::Undefined);

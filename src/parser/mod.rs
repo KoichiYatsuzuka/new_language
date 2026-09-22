@@ -90,6 +90,16 @@ pub struct Parser {
     known_traits: HashMap<String, TraitInfo>,
     /// Incremented when entering a class/trait body; `Self` is only valid when this is > 0.
     class_or_trait_depth: usize,
+    /// メタ関数の本体に入ると増える。`^`（メタ情報演算子）が書ける文脈の片方
+    /// （設計書 §1.5 / タスク 1-3）。
+    pub(crate) metafn_depth: usize,
+    /// 呼び出しの実引数リストをパース中なら増える。`^` が書ける文脈のもう片方。
+    ///
+    /// ⚠ **これは近似**。本来の規則は「**メタ関数**呼び出しの実引数位置」だが、
+    /// パース時には呼び先がメタ関数かどうか分からない（解決は展開器の仕事）。
+    /// ⇒ ここでは「呼び出しの実引数の中」まで緩めて受け、**正しいコードを決して弾かない**
+    /// 側に倒す。呼び先がメタ関数かの検査は展開器（Phase 2）が行う。
+    pub(crate) call_arg_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
     known_new_types: HashSet<String>,
     /// Names declared with `alias` → substitution payload. Resolved at parse time.
@@ -187,6 +197,8 @@ impl Parser {
             pos: 0,
             known_traits,
             class_or_trait_depth: 0,
+            metafn_depth: 0,
+            call_arg_depth: 0,
             known_new_types: HashSet::new(),
             aliases: HashMap::new(),
             known_templates,

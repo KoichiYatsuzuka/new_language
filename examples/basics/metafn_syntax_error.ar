@@ -1,6 +1,6 @@
 # metafn_syntax_error.ar — メタ関数の構文が**パースはできるが、まだ展開できない**ことを固定する。
 #
-# タスク 1-1（構文解析）/ 1-2（スプライス）まで実装済み。展開器は Phase 2 なので、
+# タスク 1-1（構文解析）/ 1-2（スプライス）/ 1-3（`^`）まで実装済み。展開器は Phase 2 なので、
 # メタ関数の定義が実行まで届いたら**明示エラー**にする。
 # ⚠ 黙って無視すると「メタ関数を書いたのに何も起きない」という最悪の失敗形になる。
 #
@@ -27,11 +27,25 @@ exprconst fn make_binding(var_name: str, init: int) -> Code:
         let <! var_name !> = <! init + 1 !>
     return body
 
-# ── 入れ子関数（クロージャ）の中の `code:` ──────────────────────────────
-# ⚠ `code:` は値を作るだけなので、メタ関数の中の普通の関数にも書ける。
+# ── メタ情報演算子 `^`（設計書 §1.5）───────────────────────────────────
+# ⚠ `^` は `.` より**強く**束縛する。`^T.fields` は `(^T).fields`、つまり
+#   「メタ情報オブジェクトへの射影」であって「フィールド `T.fields` のメタ情報」ではない。
+# ⚠ テンプレート実体化は対象側に含まれる（`^Box[int].fields`）。
+# ⚠ 書けるのはメタ関数の中か呼び出しの実引数の中だけ。失敗例は `metafn_caret_error.ar`。
+#   `^^` は廃止（D10）。失敗例は `metafn_double_caret_error.ar`。
+exprconst fn describe(t) -> Code:
+    let kind = ^t
+    let members = ^t.fields
+    let body = code:
+        print(<! ^t.name !>)
+    return body
+
+# ── 入れ子関数（クロージャ）の中の `code:` と `^` ───────────────────────
+# ⚠ `code:` も `^` も値を作るだけなので、メタ関数の中の普通の関数にも書ける。
 #   `syntax_cov.ps1` の NESTED-GAP（入れ子関数で一度も書かれていない構文）を塞ぐ。
-exprconst fn make_pair() -> Code:
+exprconst fn make_pair(t) -> Code:
     fn inner() -> Code:
+        let kind = ^t
         let frag = code:
             print("inner")
         return frag

@@ -183,6 +183,12 @@ impl Interpreter {
                 "MetaError: a `code:` block cannot be evaluated at run time \n                 (it is only meaningful inside a metafunction, which the expander has not run)"
                     .to_string(),
             ),
+            // ⚠ `^` は展開時にしか意味を持たない。ここへ来たのは展開器が走っていない証拠。
+            Expr::MetaInfo(_) => Err(
+                "MetaError: `^` (the meta-info operator) cannot be evaluated at run time \
+                 (the compile-time expander is not implemented yet)"
+                    .to_string(),
+            ),
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
             Expr::ImaginaryLit(f) => Ok(Value::Complex(0.0, *f)),
