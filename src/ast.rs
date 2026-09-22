@@ -253,6 +253,18 @@ impl CallArg {
     }
 }
 
+/// `code:` ブロックの 1 行。
+///
+/// ⚠ **トークン列のまま持つ**（パースしない）。`code:` は未完の断片を許すので、
+/// 行の時点では構文として成立していなくてよい。組み立て後に `quote` が一度だけパースする。
+#[derive(Debug, Clone)]
+pub struct CodeLine {
+    /// その行のトークン列（`Newline` / `Indent` / `Dedent` は含めない）。
+    pub tokens: Vec<crate::token::Spanned>,
+    /// 断片先頭からの**相対**インデント段数（設計書 §1.2 の B-1）。
+    pub indent: i32,
+}
+
 /// 関数定義の仮引数（パラメータ）。
 ///
 /// # フィールド
@@ -508,6 +520,14 @@ pub enum Expr {
     /// 「1 つの概念（識別子参照）に 3 変種」は各パスに同じ 3 アームを書かせるだけだったので
     /// 1 変種＋解決フィールドへ統合した。
     Ident { name: String, node_id: u32, res: Resolution },
+    /// `code:` ブロック — 中身を **AST リテラル**として保持する `Code` 値。
+    ///
+    /// ⚠ **中身はパースしない。** 未完の断片（`if cond:` だけ等）を許すため、
+    /// 字句だけして行に切って持つ。パースは `quote` の 1 回だけ
+    /// （設計書 §1.2）。⇒ 各行は「トークン列 + 断片先頭からの相対インデント」。
+    ///
+    /// ⚠ 入れ子は禁止（`code:` の中に `code:` は書けない）。
+    CodeBlock(Vec<CodeLine>),
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<SeqEntry>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
@@ -1028,6 +1048,36 @@ pub enum Stmt {
         /// 元の型の名前（クラス名またはプリミティブ型名）。
         original: String,
     },
+    /// `exprconst fn` / `exprconst !fn` — **メタ関数**の定義（コンパイル時に展開される）。
+    ///
+    /// 設計は implementation_plans/comptime_metafn_design.md §1.1。
+    /// ⚠ `Stmt::FnDef` と**別の variant にしてある**。同じ variant にフラグを足すと
+    /// 36 箇所の構築・照合を書き換えることになるうえ、「メタ関数をどう扱うか」を
+    /// 各 walker に決めさせる強制（`language-dev-principles` §2）が働かない。
+    ///
+    /// # フィールド
+    /// - `name`        : メタ関数名。
+    /// - `params`      : 仮引数リスト。
+    /// - `return_type` : 戻り値型。純粋メタ関数は `Code`、配置メタ関数（`!fn`）は `None`。
+    /// - `body`        : 本体（展開時に実行される）。
+    /// - `is_placing`  : `!fn` かどうか。`true` なら `quote` で配置し `return` は使えない。
+    MetaFnDef {
+        /// メタ関数名。
+        name: String,
+        /// 仮引数リスト。
+        params: Vec<Param>,
+        /// 戻り値型（`exprconst fn` は `Code`、`exprconst !fn` は `None`）。
+        return_type: Option<String>,
+        /// 本体の文リスト。展開時に実行される。
+        body: Vec<Stmt>,
+        /// `true` なら配置メタ関数（`exprconst !fn`）。`quote` で配置し `return` を使えない。
+        is_placing: bool,
+    },
+    /// `quote <Code 型の式>` — `Code` を AST に変換して**呼び出し位置へ配置**する。
+    ///
+    /// ⚠ **`quote` は関数を抜ける**（設計書 §1.3）。以降の文は到達不能。
+    /// メタ関数（`exprconst !fn`）の中でのみ書ける。
+    Quote(Expr),
     /// `enum Name: variant [= expr] ...` — 整数値に対応する名前付き定数の列挙型定義。
     ///
     /// 各バリアントは `enum_item_Name` 型（`new_type enum_item_Name: int` 相当）のインスタンスとして

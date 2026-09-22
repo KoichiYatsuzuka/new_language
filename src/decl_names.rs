@@ -114,6 +114,11 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         Stmt::ProtocolDef { name, .. } => f(name, DeclOrigin::Protocol, None),
         Stmt::EnumDef { name, .. } => f(name, DeclOrigin::Enum, None),
         Stmt::NewTypeDef { name, .. } => f(name, DeclOrigin::NewType, None),
+        // ⚠ メタ関数も名前を束縛する。展開後は AST から消える（設計書 §1.5）が、
+        //   展開**前**の解析ではここに居る必要がある。
+        Stmt::MetaFnDef { name, .. } => f(name, DeclOrigin::Fn, None),
+        // `quote` は何も束縛しない。
+        Stmt::Quote(_) => {}
 
         // ⚠ 既定の束縛名は `alias` か**モジュールパスの末尾**。
         // cpp 系の実際の束縛名はヘッダのファイル stem（`Interpreter::import_bind_name`・#58）で、

@@ -49,6 +49,17 @@ impl Interpreter {
         }
 
         match stmt {
+            // ⚠ 展開器（Phase 2）が未実装なので、ここへ到達したら**メタ関数が展開されずに
+            //   実行まで来てしまった**ということ。黙って無視せず明示エラーにする。
+            Stmt::MetaFnDef { name, .. } => Err(format!(
+                "MetaError: metafunction '{name}' was not expanded \
+                 (the compile-time expander is not implemented yet)"
+            )),
+            Stmt::Quote(_) => Err(
+                "MetaError: `quote` is only valid inside a metafunction \
+                 (the compile-time expander is not implemented yet)"
+                    .to_string(),
+            ),
             Stmt::Expr(expr) => {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)

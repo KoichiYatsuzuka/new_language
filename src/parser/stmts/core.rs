@@ -332,6 +332,9 @@ impl Parser {
                     )),
                 }
             }
+            // ── メタ関数（コンパイル時展開）─────────────────────────
+            Token::ExprConst => self.parse_meta_fn_def(),
+            Token::Quote => self.parse_quote(),
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),
             Token::Class => self.parse_class_def(),

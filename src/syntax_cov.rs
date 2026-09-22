@@ -311,6 +311,9 @@ pub const ALL_STMT_KINDS: &[&str] = &[
     "AttrCompoundAssign", "CompoundAssign", "If", "Match", "While", "For", "Block", "Return",
     "Break", "Continue", "Pass", "BlockReturn", "LoopYield", "Yield", "Freeze", "FnDef", "GenDef",
     "ClassDef", "TraitDef", "ProtocolDef", "Field", "NewTypeDef", "EnumDef", "Try", "Raise",
+    // メタ関数（コンパイル時展開・タスク 1-1）。
+    // ⚠ 展開器は Phase 2 なので、例題は `_error` だけ（まだ実行できない）。
+    "MetaFnDef", "Quote",
     "Import", "FromImport", "AsyncAssign", "BreakPoint", "DebugLet", "EventSubscribe",
     "EventUnsubscribe",
 ];
@@ -318,6 +321,7 @@ pub const ALL_STMT_KINDS: &[&str] = &[
 /// この言語に存在する `Expr` variant 名の全一覧（未カバー判定の母集団）。
 pub const ALL_EXPR_KINDS: &[&str] = &[
     "Int", "Float", "ImaginaryLit", "Str", "Bool", "None", "Undefined", "Ident", "List", "Attr",
+    "CodeBlock",
     "TraitAccess", "BinOp", "UnaryOp", "Call", "TemplateInstantiate", "Subscript", "Slice", "Dict",
     "Tuple", "Set", "Block", "IfExpr", "ForExpr", "WhileExpr", "MatchExpr", "Cast", "IsType",
     "MustBe", "DebugVar", "LocalVar",

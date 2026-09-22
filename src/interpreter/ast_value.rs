@@ -478,6 +478,20 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("default", opt_expr(default.as_ref())),
             ],
         ),
+        // ⚠ メタ関数と `quote` も AST 値として見せる（`parse_ar` の消費者が
+        //   「知らない `__type__`」で落ちないように）。`code:` の中身はトークン列
+        //   なので、行数だけを見せる（値としては再構成できない）。
+        Stmt::MetaFnDef { name, params, return_type, body, is_placing } => ns(
+            "StmtMetaFnDef",
+            vec![
+                ("name", Value::str(name.as_str())),
+                ("params", params_list(params)),
+                ("return_type", opt_str(return_type)),
+                ("body", stmts_list(body)),
+                ("is_placing", Value::Bool(*is_placing)),
+            ],
+        ),
+        Stmt::Quote(e) => ns("StmtQuote", vec![("value", expr_to_value(e))]),
         Stmt::NewTypeDef { name, original } => ns(
             "StmtNewTypeDef",
             vec![
@@ -610,6 +624,10 @@ fn expr_to_value(expr: &Expr) -> Value {
         Expr::None => ns("ExprNone", vec![]),
         Expr::Undefined => ns("ExprUndefined", vec![]),
         // 解決状態（`res`）は AST 値としては見せない（parse_ar は実行時に新規パースするので常に未解決）。
+        Expr::CodeBlock(lines) => ns(
+            "ExprCodeBlock",
+            vec![("line_count", Value::Int(lines.len() as i64))],
+        ),
         Expr::Ident { name, .. } => {
             ns("ExprIdent", vec![("name", Value::str(name.as_str()))])
         }

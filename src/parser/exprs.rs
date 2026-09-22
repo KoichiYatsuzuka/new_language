@@ -774,6 +774,8 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
+            // `code:` — 中身を**パースせず**トークン列で持つ `Code` 値（メタ関数 1-1）。
+            Token::Code => Ok(crate::ast::Expr::CodeBlock(self.parse_code_block()?)),
             Token::LParen => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),
             Token::LBrace => self.parse_dict_or_set_literal(),

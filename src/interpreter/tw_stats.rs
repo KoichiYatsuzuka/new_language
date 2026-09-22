@@ -265,6 +265,8 @@ pub(crate) fn dump() {
 fn stmt_kind(stmt: &Stmt) -> &'static str {
     match stmt {
         Stmt::Expr(_) => "Expr",
+        Stmt::MetaFnDef { .. } => "MetaFnDef",
+        Stmt::Quote(_) => "Quote",
         Stmt::Let(..) => "Let",
         Stmt::Const(..) => "Const",
         Stmt::Mut(..) => "Mut",

@@ -33,3 +33,5 @@ mod control_flow;
 mod assignment;
 mod functions;
 mod definitions;
+// メタ関数（`exprconst fn` / `!fn` / `code:` / `quote`）の解析。
+mod metafn;

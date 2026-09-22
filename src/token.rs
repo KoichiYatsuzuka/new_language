@@ -299,6 +299,12 @@ pub enum Token {
     //   設計は implementation_plans/comptime_metafn_design.md §1.9。
     /// `!` 単独。メタ関数の定義（`!fn`）と装飾子の適用（`!名前`）の目印。
     /// ⚠ 判定順は `=`（`!=`）→ `>`（`!>`）→ この `Bang`。
+    /// `exprconst` — メタ関数の宣言（`exprconst fn` / `exprconst !fn`）。
+    ExprConst,
+    /// `code` — `code:` ブロックの導入語。中身は**行指向で保持しパースしない**。
+    Code,
+    /// `quote` — `Code` を AST に変換して呼び出し位置へ配置する文。
+    Quote,
     Bang,        // !
     /// `<!` — スプライスの開始。
     SpliceOpen,  // <!
@@ -433,6 +439,9 @@ impl Token {
             Token::Trait => Some("trait"),
             Token::Lambda => Some("lambda"),
             Token::Template => Some("template"),
+            Token::ExprConst => Some("exprconst"),
+            Token::Code => Some("code"),
+            Token::Quote => Some("quote"),
             Token::Import => Some("import"),
             Token::From => Some("from"),
             Token::As => Some("as"),
@@ -488,6 +497,9 @@ impl std::fmt::Display for Token {
             Token::EqEq => write!(f, "=="),
             Token::EqEqEq => write!(f, "==="),
             Token::NotEq => write!(f, "!="),
+            Token::ExprConst => write!(f, "exprconst"),
+            Token::Code => write!(f, "code"),
+            Token::Quote => write!(f, "quote"),
             Token::Bang => write!(f, "!"),
             Token::SpliceOpen => write!(f, "<!"),
             Token::SpliceClose => write!(f, "!>"),

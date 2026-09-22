@@ -1128,3 +1128,73 @@ fn bundled_stubs_carry_return_types() {
         .expect("math スタブに sqrt がある");
     assert_eq!(sqrt.as_deref(), Some("float"), "sqrt の戻り値型が落ちている");
 }
+
+// ── メタ関数（コンパイル時展開）の構文 ─────────────────────────────────
+// 設計は implementation_plans/comptime_metafn_design.md §1。タスク 1-1。
+
+/// `exprconst fn` が純粋メタ関数として、`exprconst !fn` が配置メタ関数として解析されること。
+#[test]
+fn metafn_def_distinguishes_pure_and_placing() {
+    use crate::ast::Stmt;
+    let stmts = parse("exprconst fn pure() -> Code:\n    pass\nexprconst !fn place() -> None:\n    pass\n");
+    let flags: Vec<(String, bool)> = stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::MetaFnDef { name, is_placing, .. } => Some((name.clone(), *is_placing)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flags, vec![("pure".to_string(), false), ("place".to_string(), true)]);
+}
+
+/// ⚠ `code:` の中身は**パースされない**。本体の無い `if` のような未完の断片が書けることが要件。
+/// 行とインデント段数だけが取れていればよい。
+#[test]
+fn code_block_keeps_unparsable_fragment_as_lines() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("exprconst fn f() -> Code:\n    let a = code:\n        if x == None:\n            pass\n    return a\n");
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    assert_eq!(lines.len(), 2, "`if` 行と `pass` 行の 2 行");
+    assert_eq!(lines[0].indent, 0, "断片先頭からの相対インデント");
+    assert_eq!(lines[1].indent, 1, "`pass` は 1 段深い");
+}
+
+/// 空の `code:`（直後にインデントが来ない）は**空の Code** になる。設計書 §1.2 の B-2。
+#[test]
+fn empty_code_block_is_allowed() {
+    use crate::ast::{Expr, Stmt};
+    let stmts = parse("exprconst fn f() -> Code:\n    let e = code:\n    return e\n");
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    assert!(lines.is_empty(), "空ブロックは 0 行");
+}
+
+/// ⚠ `code:` の入れ子は禁止。素通しすると「中身は評価されない」規則と相まって、
+/// 内側がただのテキストとして埋まる（書いた人の意図と無関係な結果になる）。
+#[test]
+fn nested_code_block_is_rejected() {
+    let err = parse_fails("exprconst fn f() -> Code:\n    let a = code:\n        code:\n            pass\n    return a\n");
+    assert!(err.contains("cannot be nested"), "実際のエラー: {err}");
+}
+
+/// `exprconst` の後は `fn` か `!fn` だけ。
+#[test]
+fn exprconst_requires_fn() {
+    let err = parse_fails("exprconst class C:\n    let v: int\n");
+    assert!(err.contains("must be followed by `fn` or `!fn`"), "実際のエラー: {err}");
+}
+
+/// ⚠ メタ関数にテンプレート型パラメータは持たせない。展開はテンプレート実体化より前に走る。
+#[test]
+fn metafn_rejects_template_params() {
+    let err = parse_fails("exprconst fn f[T]() -> Code:\n    pass\n");
+    assert!(err.contains("cannot have template parameters"), "実際のエラー: {err}");
+}
+
+/// `quote` は配置する `Code` を必ず伴う。
+#[test]
+fn quote_requires_a_value() {
+    let err = parse_fails("exprconst !fn f() -> None:\n    quote\n");
+    assert!(err.contains("requires a `Code` value"), "実際のエラー: {err}");
+}

@@ -86,6 +86,10 @@ pub fn is_toplevel_compile_target(stmt: &Stmt) -> bool {
             | Stmt::Import { .. }
             | Stmt::FromImport { .. }
             | Stmt::Field { .. }
+            // ⚠ メタ関数の定義は**展開器（Phase 2）が AST から消す**（設計書 §1.5 / D17）ので、
+            //   VM に載せる対象ではない。`FnDef` と同じ「定義文＝対象外」の扱いにする。
+            //   ⇒ 展開前にここへ来たらツリーウォーク側が明示エラーを出す。
+            | Stmt::MetaFnDef { .. }
     )
 }
 

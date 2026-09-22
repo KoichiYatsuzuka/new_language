@@ -73,6 +73,9 @@ pub enum SubPart<'a> {
 pub fn each_subpart(expr: &Expr, f: &mut impl FnMut(SubPart<'_>)) {
     match expr {
         // ── 式形式の制御構文（式と本体が対になる） ──
+        // ⚠ `code:` の中身は**トークン列**であって式ではない（パースしていない）。
+        //   ⇒ 部分式は 1 つも無い。`<! !>` のスプライスも 1-2 でトークン列として扱う。
+        Expr::CodeBlock(_) => {}
         Expr::Block { stmts, .. } => f(SubPart::Body(stmts)),
         Expr::IfExpr {
             branches,

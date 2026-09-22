@@ -240,6 +240,10 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
         // ── 別フレーム／別スコープの本体 ──
         // ⚠ `decorators` と仮引数の既定値は**意図的に列挙しない**（モジュール doc）。
         Stmt::FnDef { params, body, .. } => f(P::FnBody { params, body }),
+        // ⚠ メタ関数の本体も**別フレーム**（通常の関数と同じ）。展開時に実行される。
+        Stmt::MetaFnDef { params, body, .. } => f(P::FnBody { params, body }),
+        // `quote` が持つのは配置する `Code` 式。
+        Stmt::Quote(e) => f(P::Expr(e)),
         Stmt::GenDef { body, .. } => f(P::GenBody(body)),
         Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => f(P::TypeBody(body)),
         Stmt::ProtocolDef { body, .. } => f(P::ProtocolBody(body)),

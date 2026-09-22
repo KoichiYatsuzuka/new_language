@@ -539,6 +539,9 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         // テンプレート関数はリゾルバの対象外なので `res` は通常 `Unresolved` だが、
         // 網羅性のためそのまま複製する。`Resolution::Global` の `SlotCache::clone` は
         // 空キャッシュを返すので、実体化ごとに解決し直される。
+        // ⚠ `code:` の中身はトークン列で、型注釈の置換対象にならない（未パース）。
+        //   ⇒ そのまま複製する。単相化（D35）で扱うのは展開**後**の AST。
+        Expr::CodeBlock(lines) => Expr::CodeBlock(lines.clone()),
         Expr::Ident { name, node_id, res } =>
             Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
         Expr::List(items) => Expr::List(
@@ -838,6 +841,16 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             body: subst_stmts(body, type_map),
             access: access.clone(),
         },
+        // ⚠ メタ関数はテンプレート本体には書けない（展開はテンプレート実体化より前）。
+        //   到達しないが、網羅性のために複製だけしておく。
+        Stmt::MetaFnDef { name, params, return_type, body, is_placing } => Stmt::MetaFnDef {
+            name: name.clone(),
+            params: subst_params(params, type_map),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+            body: subst_stmts(body, type_map),
+            is_placing: *is_placing,
+        },
+        Stmt::Quote(e) => Stmt::Quote(subst_expr(e, type_map)),
         Stmt::FnDef {
             name,
             template_params,

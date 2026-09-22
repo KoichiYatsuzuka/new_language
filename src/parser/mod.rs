@@ -255,6 +255,12 @@ impl Parser {
 
     /// 現在位置のトークンの `Span`（ファイル名・行・列）を返す。
     /// トークン列を超えた場合は `Span::unknown()` を返す。
+    /// 現在位置の `Spanned` トークンを複製して返す（`code:` ブロックが
+    /// 中身を**パースせずトークン列のまま**保持するために使う・メタ関数 1-1）。
+    pub(crate) fn spanned_at_pos(&self) -> crate::token::Spanned {
+        self.tokens[self.pos].clone()
+    }
+
     fn current_span(&self) -> Span {
         self.tokens
             .get(self.pos)

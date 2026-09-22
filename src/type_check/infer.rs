@@ -41,6 +41,8 @@ impl TypeChecker {
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---
+            // ⚠ `Code` 型は 1-5 で入れる。それまでは未解決にしておく（嘘の型を作らない）。
+            Expr::CodeBlock(_) => InferredType::Unresolved,
             Expr::Int(_) => InferredType::Int,
             Expr::Float(_) => InferredType::Float,
             Expr::ImaginaryLit(_) => InferredType::Complex,

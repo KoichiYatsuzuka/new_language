@@ -33,6 +33,7 @@ pub(super) fn bail_expr(site: &'static str, expr: &Expr) {
 pub fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
         Expr::Int(..) => "Int",
+        Expr::CodeBlock(..) => "CodeBlock",
         Expr::Float(..) => "Float",
         Expr::ImaginaryLit(..) => "ImaginaryLit",
         Expr::Str(..) => "Str",

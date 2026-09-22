@@ -455,6 +455,15 @@ impl TypeChecker {
                 ..
             } => self.check_gen_def(name, params, yield_type.as_deref(), body),
 
+            // ⚠ メタ関数の本体の型検査は 1-5（`Code` / `meta_*` 型の追加）で入れる。
+            //   ここで本体を検査すると `Code` を知らないまま `Unresolved` を撒くので、
+            //   **いまは名前だけ宣言して本体には触れない**。
+            Stmt::MetaFnDef { name, .. } => {
+                self.declare(name.clone(), InferredType::Unresolved, false);
+            }
+            // `quote` の検査も 1-5。式は `Code` 型でなければならない。
+            Stmt::Quote(_) => {}
+
             // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {
                 self.declare(
