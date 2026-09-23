@@ -251,6 +251,17 @@ struct Expander {
     ///
     /// ⚠ 「予算を使い切った」だけでは**どれが暴走したのか分からない**。
     last_expanded: Option<String>,
+    /// **実行時に宣言される**名前（設計書 §1.8 / タスク 3-0）。
+    ///
+    /// ⚠⚠ **診断のためだけに持っている。** 展開時に確定するのはリテラル・メタ関数の仮引数・
+    /// メタ関数の返り値・展開済み `const` だけ（§1.8）なので、それ以外を読もうとすると
+    /// 展開器の中では `NameError` になる。だが利用者から見れば**書いた覚えのある名前**なので、
+    /// そのままでは「定義したのに無いと言われた」と読めてしまう。⇒ ここに載っていたら
+    /// 「それは実行時の値だ」と言い直す。
+    ///
+    /// ⚠ **これは先行走査だが §1.7 は壊さない。** 展開の可否や結果には一切影響せず、
+    /// エラー文面を選ぶだけ。展開そのものは前方のみを見る。
+    runtime_names: std::collections::HashSet<String>,
     /// パース時に集めた trait の宣言情報（タスク 2-4）。
     ///
     /// ⚠ 装飾子でメンバーが増えたクラスは、**展開後に** `finalize_class_body` を
@@ -274,9 +285,31 @@ impl Expander {
             interp: Interpreter::new(),
             steps: 0,
             last_expanded: None,
+            runtime_names: std::collections::HashSet::new(),
             known_traits,
             node_counter,
         }
+    }
+
+    /// 展開時の `NameError` が**実行時の宣言**を指していたら、そう言い直す（設計書 §1.8）。
+    ///
+    /// ⚠ 例外の実体から名前を取り出す API が無いので、整形済みの報告から拾っている。
+    /// 拾えなければ `None` を返して元の報告をそのまま出すだけなので、**外すと黙るのではなく
+    /// 元に戻る**（誤検知で正しい診断を隠すことはない）。
+    fn runtime_name_hint(&self, report: &str) -> Option<String> {
+        const HEAD: &str = "NameError: '";
+        const TAIL: &str = "' is not defined";
+        let i = report.find(HEAD)? + HEAD.len();
+        let j = report[i..].find(TAIL)? + i;
+        let name = &report[i..j];
+        if !self.runtime_names.contains(name) {
+            return None;
+        }
+        Some(format!(
+            "'{name}' is declared at run time, so it is not available while expanding. \
+             A metafunction can only use values that are settled at expansion time: \
+             literals, its own parameters, results of other metafunctions, and expanded `const`s"
+        ))
     }
 
     /// 置き先の文脈に合わせて `Code` を文へ戻す（採番は本体と共有）。
@@ -329,6 +362,9 @@ impl Expander {
                     .take_current_exception()
                     .map(|r| Interpreter::format_error_report(&r))
                     .unwrap_or_else(|| "(no details available)".to_string());
+                if let Some(hint) = self.runtime_name_hint(&detail) {
+                    return Err(format!("MetaError: while expanding '{name}': {hint}"));
+                }
                 return Err(format!(
                     "MetaError: while expanding '{name}':{}{detail}",
                     '\n'
@@ -361,6 +397,16 @@ pub fn expand_program(
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
 ) -> Result<Vec<Stmt>, String> {
     let mut ex = Expander::new(node_counter, known_traits);
+    // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
+    for st in &stmts {
+        // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
+        if matches!(st, Stmt::Const(..)) {
+            continue;
+        }
+        crate::decl_names::each_declared_name(st, &mut |n, _, _| {
+            ex.runtime_names.insert(n.to_string());
+        });
+    }
     expand_stmts(&mut ex, stmts, Context::TopLevel)
 }
 
@@ -633,6 +679,46 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ 実行時の値を読もうとしたら**そう言う**（設計書 §1.8 / タスク 3-0）。
+    /// 素の `NameError` のままだと「定義したのに無いと言われた」と読めてしまう。
+    #[test]
+    fn reading_a_run_time_value_says_so() {
+        let err = expand(concat!(
+            "let runtime_v = 5\n",
+            "\n",
+            "exprconst !fn choose() -> None:\n",
+            "    if runtime_v > 3:\n",
+            "        quote code:\n",
+            "            print(1)\n",
+            "    quote code:\n",
+            "\n",
+            "choose()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("is declared at run time"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠ 実行時の宣言**ではない**名前は言い直さない（元の `NameError` をそのまま出す）。
+    /// 誤検知で正しい診断を隠さないこと。
+    #[test]
+    fn an_unknown_name_keeps_its_original_error() {
+        let err = expand(concat!(
+            "exprconst !fn choose() -> None:\n",
+            "    if never_declared > 3:\n",
+            "        quote code:\n",
+            "            print(1)\n",
+            "    quote code:\n",
+            "\n",
+            "choose()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("NameError"), "実際のエラー: {err}");
+        assert!(!err.contains("is declared at run time"), "実際のエラー: {err}");
     }
 
     /// ⚠⚠ メタ関数が無限再帰したときの診断が**読める形で外へ出る**こと（タスク 2-6）。
