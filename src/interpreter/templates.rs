@@ -559,6 +559,7 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
                         })
                         .collect(),
                     indent: line.indent,
+                    span: line.span.clone(),
                 })
                 .collect(),
         ),

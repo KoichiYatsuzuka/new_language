@@ -72,19 +72,21 @@ pub fn fill_splices(lines: &[CodeLine], values: &[Value]) -> Result<Vec<CodeLine
                     let v = it.next().ok_or_else(|| {
                         "MetaError: internal — fewer spliced values than holes".to_string()
                     })?;
-                    pieces.push(CodePiece::Token(splice_token(v)?));
+                    // ⚠ 差し込むトークンには元の位置が無い。⇒ **行の位置**を使う（タスク 2-3）。
+                    pieces.push(CodePiece::Token(splice_token(v, &line.span)?));
                 }
             }
         }
-        out.push(CodeLine { pieces, indent: line.indent });
+        out.push(CodeLine { pieces, indent: line.indent, span: line.span.clone() });
     }
     Ok(out)
 }
 
 /// スプライスされた 1 つの値をトークンへ写す。
 ///
-/// ⚠ 位置は [`Span::unknown`]。展開由来のノードに元の位置を持たせるのは 2-3。
-fn splice_token(v: &Value) -> Result<Spanned, String> {
+/// ⚠ 位置は**差し込まれる行の位置**（タスク 2-3）。値の側には位置が無いので、
+/// これが「どこに差し込まれたか」を指せる唯一の手がかり。
+fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
     let token = match v {
         // ⚠ `str` は**識別子**になる（文字列リテラルではない）。設計書 §1.4 の一段目。
         //   名前を組み立てて差し込むのがスプライスの主用途なので、ここが既定。
@@ -106,7 +108,7 @@ fn splice_token(v: &Value) -> Result<Spanned, String> {
             ))
         }
     };
-    Ok(Spanned { token, span: Span::unknown() })
+    Ok(Spanned { token, span: span.clone() })
 }
 
 /// `Code`（未パースのトークン行）を文の列へ戻す（設計書 §1.2 / タスク 4-5 の①）。
@@ -152,15 +154,18 @@ pub fn code_to_stmts_with(
     counter: Option<std::rc::Rc<std::cell::Cell<u32>>>,
 ) -> Result<Vec<Stmt>, String> {
     let mut tokens: Vec<Spanned> = Vec::new();
-    let unknown = || Span::unknown();
     let mut depth: i32 = 0;
+    // 末尾の `Dedent` / `Eof` に使う位置。⚠ 位置不明のまま出すと、置いたコードの
+    // 構文エラーが「どこで間違えたのか分からない」診断になる（タスク 2-3）。
+    let mut last_span = Span::unknown();
     for line in lines {
+        last_span = line.span.clone();
         while depth < line.indent {
-            tokens.push(Spanned { token: Token::Indent, span: unknown() });
+            tokens.push(Spanned { token: Token::Indent, span: line.span.clone() });
             depth += 1;
         }
         while depth > line.indent {
-            tokens.push(Spanned { token: Token::Dedent, span: unknown() });
+            tokens.push(Spanned { token: Token::Dedent, span: line.span.clone() });
             depth -= 1;
         }
         for piece in &line.pieces {
@@ -175,13 +180,13 @@ pub fn code_to_stmts_with(
                 }
             }
         }
-        tokens.push(Spanned { token: Token::Newline, span: unknown() });
+        tokens.push(Spanned { token: Token::Newline, span: line.span.clone() });
     }
     while depth > 0 {
-        tokens.push(Spanned { token: Token::Dedent, span: unknown() });
+        tokens.push(Spanned { token: Token::Dedent, span: last_span.clone() });
         depth -= 1;
     }
-    tokens.push(Spanned { token: Token::Eof, span: unknown() });
+    tokens.push(Spanned { token: Token::Eof, span: last_span });
 
     let mut parser = crate::parser::Parser::new(tokens, None);
     if let Some(c) = counter {
@@ -628,6 +633,54 @@ mod tests {
                 collect_expr_ids(x, out);
             }
         });
+    }
+
+    /// ⚠⚠ **スプライスで差し込んだトークンと、組み直した `Indent`/`Newline` は**
+    /// **元の位置を持たない**（値やブロック構造には位置が無い）。⇒ 行の位置を代わりに使う
+    /// （タスク 2-3）。位置不明のまま出すと「どこで間違えたのか分からない」診断になる。
+    ///
+    /// ⚠ 地の文のトークンは**もともと自分の `Span` を持っている**ので、そちらを見る検査は
+    /// 2-3 の有無に関わらず通ってしまう。⇒ ここでは**差し込んだトークン**を直接見る。
+    #[test]
+    fn spliced_tokens_carry_the_line_position() {
+        let src = concat!(
+            "exprconst fn f(n) -> Code:\n",      // 1 行目
+            "    let a = code:\n",               // 2 行目
+            "        let <! n !> = 1\n",         // 3 行目 ← ここを指してほしい
+            "    return a\n",
+        );
+        let (stmts, _) = parse(src).expect("parse");
+        let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+        let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+        assert_eq!(lines[0].span.line, 3, "行の位置が記録されていること");
+
+        let filled = fill_splices(lines, &[Value::Str("chosen".into())]).expect("fill");
+        let spliced = filled[0]
+            .pieces
+            .iter()
+            .filter_map(|p| match p {
+                CodePiece::Token(t) => Some(t),
+                CodePiece::Splice(_) => None,
+            })
+            .find(|t| matches!(&t.token, crate::token::Token::Ident(n) if n == "chosen"))
+            .expect("差し込んだ識別子があること");
+        assert_eq!(spliced.span.line, 3, "差し込んだトークンが行の位置を持つこと");
+    }
+
+    /// 置いたコードのノードが元の位置を保つこと（地の文のトークン由来）。
+    #[test]
+    fn placed_nodes_point_back_at_the_code_block_line() {
+        let src = concat!(
+            "exprconst !fn place_it() -> None:\n",   // 1 行目
+            "    quote code:\n",                     // 2 行目
+            "        missing_name()\n",              // 3 行目 ← ここを指してほしい
+            "\n",
+            "place_it()\n",                          // 5 行目
+        );
+        let out = expand(src).expect("expand");
+        assert_eq!(out.len(), 1);
+        let Stmt::Expr(Expr::Call { span, .. }) = &out[0] else { panic!("Call を期待") };
+        assert_eq!(span.line, 3, "`code:` の中身が書かれていた行を指すこと");
     }
 
     /// クラス本体のメンバー装飾子もその場で展開される。

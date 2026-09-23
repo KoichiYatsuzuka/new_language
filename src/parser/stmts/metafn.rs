@@ -129,6 +129,8 @@ impl Parser {
         let mut lines: Vec<CodeLine> = Vec::new();
         let mut indent: i32 = 0;
         let mut current: Vec<CodePiece> = Vec::new();
+        // 行の先頭要素を読んだ位置。⚠ 展開後の診断がここを指す（タスク 2-3）。
+        let mut line_span: Option<crate::token::Span> = None;
 
         loop {
             match self.current() {
@@ -143,7 +145,10 @@ impl Parser {
                     );
                 }
                 // `<! 式 !>` — `code:` の中で唯一「中身をパースする」場所（設計書 §1.4）。
-                Token::SpliceOpen => current.push(CodePiece::Splice(self.parse_splice()?)),
+                Token::SpliceOpen => {
+                    line_span.get_or_insert_with(|| self.current_span());
+                    current.push(CodePiece::Splice(self.parse_splice()?));
+                }
                 // 対応する `<!` の無い `!>`。素通しすると地の文に紛れて消えるので弾く。
                 Token::SpliceClose => {
                     return Err(
@@ -165,18 +170,29 @@ impl Parser {
                 }
                 Token::Newline | Token::Semicolon => {
                     if !current.is_empty() {
-                        lines.push(CodeLine { pieces: std::mem::take(&mut current), indent });
+                        lines.push(CodeLine {
+                            pieces: std::mem::take(&mut current),
+                            indent,
+                            span: line_span.take().unwrap_or_else(crate::token::Span::unknown),
+                        });
                     }
+                    line_span = None;
                     self.advance();
                 }
                 _ => {
-                    current.push(CodePiece::Token(self.spanned_at_pos()));
+                    let t = self.spanned_at_pos();
+                    line_span.get_or_insert_with(|| t.span.clone());
+                    current.push(CodePiece::Token(t));
                     self.advance();
                 }
             }
         }
         if !current.is_empty() {
-            lines.push(CodeLine { pieces: current, indent });
+            lines.push(CodeLine {
+                pieces: current,
+                indent,
+                span: line_span.unwrap_or_else(crate::token::Span::unknown),
+            });
         }
         Ok(lines)
     }
