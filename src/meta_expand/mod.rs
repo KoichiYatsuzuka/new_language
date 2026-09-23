@@ -1019,6 +1019,66 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。
+    /// 強制していなかった頃は、メタ関数の中で `open` がそのまま通ってファイルを開けた（実測）。
+    /// エディタが展開を走らせるようになると（D5）、打鍵のたびにファイルを触ることになる。
+    #[test]
+    fn forbidden_builtins_are_rejected_while_expanding() {
+        for (call, name) in [
+            ("open(\"x.txt\", FileOpenMode.read)", "open"),
+            ("id(1)", "id"),
+            ("getenv(\"PATH\")", "getenv"),
+            ("parse_ar(\"let a = 1\")", "parse_ar"),
+        ] {
+            let src = format!(
+                concat!(
+                    "exprconst !fn sneaky() -> None:\n",
+                    "    let r = {}\n",
+                    "    quote code:\n",
+                    "\n",
+                    "sneaky()\n",
+                ),
+                call
+            );
+            let err = expand(&src).expect_err(name);
+            assert!(
+                err.contains(&format!("`{name}` cannot be called while expanding")),
+                "{name} が通ってしまった: {err}"
+            );
+        }
+    }
+
+    /// ⚠ 受け手の型で止める（メソッド名で並べると後から足したメソッドが素通りする）。
+    /// `EventLoop` は大域の単一値なので、生成を止めるだけでは足りない。
+    #[test]
+    fn the_event_loop_cannot_be_touched_while_expanding() {
+        let err = expand(concat!(
+            "exprconst !fn ev() -> None:\n",
+            "    EventLoop.run()\n",
+            "    quote code:\n",
+            "\n",
+            "ev()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("the event loop cannot be used while expanding"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 許可されたビルトインは今まで通り使える（厳しすぎないことの対照）。
+    #[test]
+    fn allowed_builtins_still_work_while_expanding() {
+        let out = expand(concat!(
+            "exprconst !fn count_up() -> None:\n",
+            "    let n = len([1, 2, 3]) + int(\"4\")\n",
+            "    let name = \"v\" + str(n)\n",
+            "    quote code:\n",
+            "        let <! name !> = 1\n",
+            "\n",
+            "count_up()\n",
+        ))
+        .expect("expand");
+        assert!(matches!(&out[0], Stmt::Let(n, _, _) if n == "v7"));
+    }
+
     /// ⚠⚠ **装飾子で関数を包む**（タスク 2-10 の本来の用途）。元の本体を別名で残し、
     /// 同名のラッパーを置く。`Code` の `+` と 1 行ずつの反復が無いと書けない。
     #[test]

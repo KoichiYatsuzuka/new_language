@@ -36,6 +36,10 @@ impl Interpreter {
         name: &str,
         args: Vec<Value>,
     ) -> Option<Result<Value, String>> {
+        // ⚠ 展開時の禁止ビルトイン（D26・タスク 3-7）。3 つの入口すべてに置く。
+        if let Some(e) = self.meta_forbidden_builtin(name) {
+            return Some(Err(e));
+        }
         match name {
             "print" => {
                 let mut parts: Vec<String> = Vec::with_capacity(args.len());
@@ -264,6 +268,10 @@ impl Interpreter {
     ) -> Option<Result<Value, String>> {
         // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
         crate::interpreter::tw_stats::record_site(4);
+        // ⚠ 展開時の禁止ビルトイン（D26・タスク 3-7）。
+        if let Some(e) = self.meta_forbidden_builtin(name) {
+            return Some(Err(e));
+        }
         match name {
             "print" => {
                 let mut parts: Vec<String> = Vec::new();
@@ -610,6 +618,10 @@ impl Interpreter {
         name: &str,
         args: Vec<(Option<String>, Value)>,
     ) -> Option<Result<Value, String>> {
+        // ⚠ 展開時の禁止ビルトイン（D26・タスク 3-7）。
+        if let Some(e) = self.meta_forbidden_builtin(name) {
+            return Some(Err(e));
+        }
         match name {
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {

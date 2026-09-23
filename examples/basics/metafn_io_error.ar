@@ -1,0 +1,29 @@
+# metafn_io_error.ar — 展開時に I/O はできない（設計書 D26 / 参考N・タスク 3-7）。
+#
+# メタ関数の本体は**実行より前**に走る。そこで使えるのは**決定的で副作用の無い**
+# ビルトインだけ:
+#
+#   許可: len range enumerate zip str int float bool uint complex list set repr
+#         print（展開時は stderr へ）/ list・dict・set・str の純粋なメソッド
+#   禁止: open close（I/O）/ id（アドレス＝非決定的）/ getenv（環境依存）/ parse_ar /
+#         ファイル・非同期・イベントループ・シグナルの操作
+#
+# ⚠⚠ 理由は 2 つ:
+#   - 非決定的な展開は `--compile` の `.arc` キャッシュを不健全にする
+#   - エディタが展開を走らせると（D5）、**打鍵のたびにファイルを触る**ことになる
+#
+# ⚠ 実行時（置いたコードの中）ならもちろん使える。止めるのは展開中だけ。
+#
+# ⚠ 成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   MetaError: while expanding 'read_config': `open` cannot be called while expanding — ...
+
+exprconst !fn read_config() -> None:
+    # ⚠ ここが不正。設定ファイルを展開時に読みたくなるが、それは I/O。
+    let f = open("config.txt", FileOpenMode.read)
+    quote code:
+
+read_config()
+
+print("unreachable")

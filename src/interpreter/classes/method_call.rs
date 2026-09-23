@@ -174,6 +174,11 @@ impl Interpreter {
         evaled: Vec<(Option<String>, Value, bool)>,
         cache: Option<&crate::ast::NativeCallCache>,
     ) -> Result<Value, String> {
+        // ⚠ 展開時の禁止受け手（D26 / 参考N のメソッド表・タスク 3-7）。
+        //   ここは VM とツリーウォークの**唯一の**メソッド入口なので 1 か所で足りる。
+        if let Some(e) = self.meta_forbidden_receiver(&obj) {
+            return Err(e);
+        }
         // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
         if let Value::ResultVal { ok, .. } = &obj {
             if !evaled.is_empty() {

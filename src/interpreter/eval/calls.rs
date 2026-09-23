@@ -377,6 +377,14 @@ impl Interpreter {
         type_name: &str,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
+        // ⚠ 展開時は非同期・シグナルを作らせない（D26・タスク 3-7）。
+        //   メソッドは受け手の型で止めているが、生成そのものも止めておく（スレッドを起こさない）。
+        if self.is_meta_expanding() && (type_name == "AsyncManager" || type_name == "Signal") {
+            return Err(format!(
+                "`{type_name}` cannot be created while expanding — metafunctions may \
+                 only use deterministic, side-effect-free operations"
+            ));
+        }
         if type_name == "AsyncManager" {
             return self.make_async_manager_evaled(evaled);
         }

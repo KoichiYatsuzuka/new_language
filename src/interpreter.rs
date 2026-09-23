@@ -1013,6 +1013,55 @@ impl Interpreter {
         }
     }
 
+    /// 展開時に禁じるビルトインか（設計書 D26 / 参考N・タスク 3-7）。禁じるなら文面を返す。
+    ///
+    /// ⚠⚠ **判定基準は「決定的か」**（D26）。非決定的なもの（`id` はアドレス・`getenv` は環境）と
+    /// I/O は禁じる。`--compile` の `.arc` キャッシュが不健全になるうえ、エディタが展開を
+    /// 走らせるようになると（D5）**打鍵のたびにファイルを触る**ことになる。
+    /// ⚠ 一覧は参考N の禁止表と**過不足なく一致**させてある（名前で振り分けられている
+    /// ビルトインを全部洗って確かめた）。ビルトインを足したら、どちらかへ分類すること。
+    pub(crate) fn meta_forbidden_builtin(&self, name: &str) -> Option<String> {
+        const FORBIDDEN: &[&str] = &[
+            "id",
+            "getenv",
+            "open",
+            "close",
+            "parse_ar",
+            "create_flat_int_list",
+            "flat_get_int",
+            "flat_set_int",
+        ];
+        if !self.meta_expanding || !FORBIDDEN.contains(&name) {
+            return None;
+        }
+        Some(format!(
+            "`{name}` cannot be called while expanding — metafunctions may only use \
+             deterministic, side-effect-free builtins (no I/O, no addresses, no environment)"
+        ))
+    }
+
+    /// 展開時に禁じる受け手か（D26 / 参考N のメソッド表・タスク 3-7）。禁じるなら文面を返す。
+    ///
+    /// ⚠ ファイル・非同期・イベントループ・シグナルは**受け手の型で**止める。メソッド名で
+    /// 並べると、後から足したメソッドが素通りする。`EventLoop` は大域の単一値なので、
+    /// 生成を止めるだけでは足りない。
+    pub(crate) fn meta_forbidden_receiver(&self, obj: &Value) -> Option<String> {
+        if !self.meta_expanding {
+            return None;
+        }
+        let what = match obj {
+            Value::FileObject(_) => "files",
+            Value::AsyncManager(_) => "async tasks",
+            Value::EventLoop(_) => "the event loop",
+            Value::Signal(_) => "signals",
+            _ => return None,
+        };
+        Some(format!(
+            "{what} cannot be used while expanding — metafunctions may only use \
+             deterministic, side-effect-free operations"
+        ))
+    }
+
     pub(crate) fn is_meta_expanding(&self) -> bool {
         self.meta_expanding
     }
