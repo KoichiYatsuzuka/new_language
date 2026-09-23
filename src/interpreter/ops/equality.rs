@@ -292,6 +292,9 @@ impl Interpreter {
             (Value::AsyncManager(a), Value::AsyncManager(b)) => Rc::ptr_eq(a, b),
             (Value::Signal(a), Value::Signal(b)) => Rc::ptr_eq(a, b),
             (Value::EventLoop(a), Value::EventLoop(b)) => Rc::ptr_eq(a, b),
+            // ⚠ `Code` は未パースのトークン列なので値としての等値を定義できない。
+            //   ⇒ 参照の同一性（`hash.rs` の `ptr_hash` と対）。
+            (Value::Code(a), Value::Code(b)) => Rc::ptr_eq(a, b),
             (Value::PyObject(a), Value::PyObject(b)) => std::sync::Arc::ptr_eq(a, b),
             (Value::NativeFunction(a), Value::NativeFunction(b)) => std::sync::Arc::ptr_eq(a, b),
 

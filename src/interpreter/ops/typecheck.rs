@@ -21,6 +21,8 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::None => "NoneType",
         Value::Undefined => "Undefined",
+        // 展開時にしか存在しない AST 断片（設計書 §1.2）。
+        Value::Code(_) => "Code",
         Value::List(_) => "list",
         Value::FrozenList { .. } => "fixed_list",
         Value::Function(_) | Value::OverloadedFn(_) => "function",
@@ -152,6 +154,8 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::Undefined => false,
+            // 空の `Code`（設計書 §1.2 の B-2）は偽。`if frag:` で「何も出さない」を書ける。
+            Value::Code(lines) => !lines.is_empty(),
             Value::List(items) => !items.borrow().is_empty(),
             Value::FrozenList { state, .. } => state.borrow().len > 0,
             Value::Dict(d) => !d.borrow().is_empty(),

@@ -15,6 +15,7 @@ mod syntax_cov;
 #[cfg(test)]
 mod frontend_tests;
 mod interpreter;
+mod meta_expand;
 mod lexer;
 mod parser;
 #[cfg(feature = "prof")]

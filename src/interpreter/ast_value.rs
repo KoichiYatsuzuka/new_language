@@ -268,7 +268,7 @@ pub fn stmts_to_value(stmts: &[Stmt]) -> Value {
 // Statement conversion
 // ---------------------------------------------------------------------------
 
-fn stmt_to_value(stmt: &Stmt) -> Value {
+pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
     match stmt {
         Stmt::Expr(expr) => ns("StmtExpr", vec![("expr", expr_to_value(expr))]),
 

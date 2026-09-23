@@ -1662,6 +1662,23 @@ fn exec_op(
             let obj = buf.pop().unwrap();
             interp.eval_setitem(obj, key, value)?;
         }
+        Op::MakeCode(c) => {
+            let template = match &chunk.consts[*c as usize] {
+                Value::Code(lines) => std::rc::Rc::clone(lines),
+                other => {
+                    return Err(format!(
+                        "MetaError: MAKE_CODE expects a `Code` template, got '{}'",
+                        interp.type_name(other)
+                    ))
+                }
+            };
+            let holes = crate::meta_expand::splice_count(&template);
+            let split = buf.len() - holes;
+            let vals = buf.split_off(split);
+            buf.push(Value::Code(std::rc::Rc::new(
+                crate::meta_expand::fill_splices(&template, &vals)?,
+            )));
+        }
         Op::BuildList(n) => {
             let split = buf.len() - *n as usize;
             let vals = buf.split_off(split);

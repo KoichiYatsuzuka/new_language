@@ -33,6 +33,13 @@ impl Compiler {
                 self.emit_unwind_tries(0, false, 1)?;
                 self.emit(Op::Return);
             }
+            // `quote <Code>` は**関数を抜ける**（設計書 §1.3）。⇒ `return` と同じ形に落とす。
+            // ⚠ 置く値が `Code` かどうかは型検査（1-5）と展開器が見る。VM は値を返すだけ。
+            Stmt::Quote(e) => {
+                self.compile_expr(e)?;
+                self.emit_unwind_tries(0, false, 1)?;
+                self.emit(Op::Return);
+            }
             Stmt::Return(None) => {
                 self.emit_unwind_tries(0, false, 0)?;
                 self.emit(Op::ReturnNil);

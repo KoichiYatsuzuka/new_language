@@ -662,6 +662,29 @@ impl Parser {
     ///
     /// # エラー
     /// 型アノテーション欠如・`const` のデフォルト値欠如・未対応トークン
+    /// **クラス本体の断片**（トークン列全体）を文の列としてパースする（タスク 2-0）。
+    ///
+    /// ⚠ 展開器がクラス本体へ置く `Code` 用。最上位の `parse_program` で読むと
+    /// `mut x: int` が「初期値の無い変数宣言」になって落ちるので、経路を分けている。
+    /// ⚠ `Indent` / `Dedent` は `code_to_stmts` が組み立てた相対段差なので、
+    /// ここでは**段差を無視して 1 文ずつ読む**（本体の入れ子は `parse_class_stmt` が見る）。
+    pub(crate) fn parse_class_body_fragment(&mut self) -> Result<Vec<Stmt>, String> {
+        let mut out = Vec::new();
+        loop {
+            while matches!(
+                self.current(),
+                Token::Newline | Token::Semicolon | Token::Indent | Token::Dedent
+            ) {
+                self.advance();
+            }
+            if *self.current() == Token::Eof {
+                break;
+            }
+            out.push(self.parse_class_stmt()?);
+        }
+        Ok(out)
+    }
+
     pub(crate) fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
             // `!装飾子` — 対象はフィールド宣言・メソッド定義（設計書 §1.6 / タスク 1-4）。

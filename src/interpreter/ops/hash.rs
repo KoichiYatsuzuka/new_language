@@ -337,6 +337,10 @@ impl Interpreter {
             // ⚠ `values_eq` がポインタで比べるものは、ハッシュもポインタで取る。
             //   `deep_clone` するとポインタが変わるが、そのとき `values_eq` も等値でなくなる
             //   ので**規則は一致したまま**（`Instance` / `Class` とはここが違う）。
+            // ⚠ `Code` は**値としての等値を定義しない**（未パースのトークン列なので
+            //   「同じ意味の断片」を判定しようがない）。⇒ 参照の同一性。
+            //   `values_eq` 側も `Rc::ptr_eq` にしてあること（`hash_eq_identity` が見る）。
+            Value::Code(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::Function(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::OverloadedFn(v) => {
                 h.write_u8(Tag::Pointer as u8);

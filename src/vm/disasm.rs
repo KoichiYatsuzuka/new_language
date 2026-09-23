@@ -134,6 +134,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::BreakPoint(s) => format!("BREAK_POINT span={s}"),
         Op::Subscript => "SUBSCRIPT".to_string(),
         Op::SetIndex => "SET_INDEX".to_string(),
+        Op::MakeCode(c) => format!("MAKE_CODE {c}"),
         Op::BuildList(n) => format!("BUILD_LIST {n}"),
         Op::BuildTuple(n) => format!("BUILD_TUPLE {n}"),
         Op::BuildSlice => "BUILD_SLICE".to_string(),

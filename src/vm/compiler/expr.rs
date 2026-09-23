@@ -106,6 +106,28 @@ impl Compiler {
                 );
                 self.emit(Op::Fail(n));
             }
+            // `code:` ブロック（設計書 §1.2・タスク 2-0）。
+            // ⚠ メタ関数の本体は展開器が VM で走らせる。⇒ ここを埋めないと
+            //   メタ関数が 1 つも動かない（`MetaFnDef` の本体は `is_toplevel_compile_target`
+            //   の対象外なので、通常実行ではここへ来ない）。
+            Expr::CodeBlock(lines) => {
+                let holes = crate::meta_expand::splice_count(lines);
+                let ci = self.add_const(Value::Code(std::rc::Rc::new(lines.clone())));
+                if holes == 0 {
+                    // 穴が無ければただの定数。
+                    self.emit(Op::Const(ci));
+                } else {
+                    // ⚠ **出現順に**積む。`fill_splices` は同じ順で取り出す。
+                    for line in lines {
+                        for piece in &line.pieces {
+                            if let crate::ast::CodePiece::Splice(e) = piece {
+                                self.compile_expr(e)?;
+                            }
+                        }
+                    }
+                    self.emit(Op::MakeCode(ci));
+                }
+            }
             // `undefined` リテラル（#27）。`eval` の `Expr::Undefined => Value::Undefined` と同じ。
             Expr::Undefined => {
                 let ci = self.add_const(Value::Undefined);

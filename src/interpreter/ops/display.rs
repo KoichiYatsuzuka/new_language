@@ -15,6 +15,10 @@ impl Interpreter {
     /// 戻り値: 人間が読みやすい表示文字列
     pub(crate) fn display(&self, val: &Value) -> String {
         match val {
+            // ⚠ 中身は**未パースのトークン行**なので、そのまま文字列に戻すと
+            //   元のソースとは似て非なるものになる。⇒ 行数だけを出す。
+            //   `Code` を実行時に表示する場面は展開漏れのときだけなので、これで足りる。
+            Value::Code(lines) => format!("<Code: {} line(s)>", lines.len()),
             Value::Int(n) => n.to_string(),
             Value::UInt(n) => n.to_string(),
             Value::Float(f) => {

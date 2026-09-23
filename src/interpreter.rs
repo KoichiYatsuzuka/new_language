@@ -130,7 +130,7 @@ mod vm_toplevel;
 mod tests;
 
 #[path = "interpreter/ast_value.rs"]
- mod ast_value;
+ pub(crate) mod ast_value;
 #[path = "interpreter/built_in_types.rs"]
 mod built_in_types;
 

@@ -55,6 +55,9 @@ pub mod type_check;
 pub mod vm;
 #[path = "../../../src/interpreter.rs"]
 pub mod interpreter;
+// ⚠ VM が `Op::MakeCode` で参照する（タスク 2-0）ので、こちらにも載せる。
+#[path = "../../../src/meta_expand/mod.rs"]
+pub mod meta_expand;
 
 // ── このクレート固有のコード ─────────────────────────────────────────────────
 pub mod analyze;

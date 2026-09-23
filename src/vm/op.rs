@@ -424,6 +424,15 @@ pub enum Op {
     Subscript,
     /// 添字書き: pop value, pop key, pop obj, `eval_setitem(obj, key, value)`（`obj[key] = value`）。
     SetIndex,
+    /// `code:` ブロックの構築（設計書 §1.2 / §1.4・タスク 2-0）。
+    ///
+    /// 被演算子は**雛形**（`Value::Code`）の定数番号。雛形にはスプライス（`<! !>`）が
+    /// 穴として残っている。スタック末尾にはその穴の数だけ値が**出現順に**積まれていて、
+    /// pop して雛形へ差し込み、出来上がった `Value::Code` を push する。
+    ///
+    /// ⚠ スプライスが 1 つも無い `code:` は `Const` 1 命令で済む（コンパイラが分ける）。
+    /// ⚠ 穴の数は雛形から数えるので被演算子は 1 つでよい。
+    MakeCode(u32),
     /// リテラルリスト構築: 末尾 N 要素を pop して `Value::List` を push（`[a, b, ..]`）。
     BuildList(u16),
     /// リテラルタプル構築: 末尾 N 要素を pop して `Value::Tuple`（要素型名収集）を push（`(a, b, ..)`）。
