@@ -49,6 +49,21 @@ exprconst !fn bind(name: str, value: int) -> None:
 bind("answer", 42)
 print(answer)                       # 42
 
+print("=== 展開時の分岐（const）===")
+
+# ⚠ `const` は**展開時にも値が確定している**（設計書 §1.7）ので読める。
+#   実行時の `let` / `mut` は読めない。失敗例は `metafn_runtime_value_error.ar`。
+const VERBOSE = True
+
+exprconst !fn log_if_verbose() -> None:
+    if VERBOSE:
+        quote code:
+            print("verbose build")
+    quote code:
+        print("quiet build")
+
+log_if_verbose()
+
 print("=== 空の Code は何も置かない ===")
 
 # `code:` の直後にインデントが無ければ空。何も出さずに抜けるときに使う（§1.2 の B-2）。

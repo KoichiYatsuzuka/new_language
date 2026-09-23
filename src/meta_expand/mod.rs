@@ -437,6 +437,32 @@ fn expand_stmts(
             // 定義は登録して AST から消す。
             Stmt::MetaFnDef { .. } => ex.define_metafn(&stmt)?,
 
+            // `const` は**展開時にも値が確定している**（設計書 §1.7）。
+            // ⇒ 展開器のインタプリタにも束縛して、メタ関数から読めるようにする。
+            // ⚠ **AST からは消さない。** 実行時にも要る。
+            // ⚠ 初期化子が実行時の値に依存していると評価できない（`const x = f()` など）。
+            //   そのときは**黙って諦める**——その `const` が展開時に使えないだけで、
+            //   プログラムとしては正しい。⇒ 読まれたときに 3-0 の診断が出るよう名前を控える。
+            Stmt::Const(ref name, _, ref init) => {
+                // ⚠ `exec` には渡せない。最上位の文は VM 経由で走る決まりなので、
+                //   `Stmt::Const` を `exec` へ渡すと `VmForceError` になる（実測）。
+                //   ⇒ 初期化子だけ評価して、VM と同じ経路で束縛する。
+                match ex.interp.eval(init) {
+                    Ok(v) => {
+                        let _ = ex.interp.vm_declare_global(
+                            name,
+                            crate::vm::op::DeclKind::Const,
+                            &[],
+                            v,
+                        );
+                    }
+                    Err(_) => {
+                        ex.runtime_names.insert(name.clone());
+                    }
+                }
+                out.push(stmt);
+            }
+
             // 配置メタ関数の呼び出し文 → `quote` した中身で置き換える。
             Stmt::Expr(Expr::Call { ref func, ref args, .. })
                 if placing_call_name(ex, func).is_some() =>
@@ -679,6 +705,56 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// `const` は**展開時にも値が確定している**ので読める（設計書 §1.7 / タスク 3-6）。
+    /// ⚠ これが無いと「展開時に分岐する」用途がほぼ書けない（仮引数しか見られない）。
+    #[test]
+    fn a_const_is_readable_while_expanding() {
+        let out = expand(concat!(
+            "const N = 3\n",
+            "\n",
+            "exprconst !fn pick() -> None:\n",
+            "    if N > 1:\n",
+            "        quote code:\n",
+            "            let big = 1\n",
+            "    quote code:\n",
+            "        let small = 1\n",
+            "\n",
+            "pick()\n",
+        ))
+        .expect("expand");
+        let names: Vec<&str> = out
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Let(n, _, _) | Stmt::Const(n, _, _) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["N", "big"], "`const` を見て分岐し、`const` 自体は AST に残る");
+    }
+
+    /// ⚠ 初期化子が実行時の値に依存する `const` は展開時に評価できない。
+    /// その `const` が展開時に使えないだけで**プログラムとしては正しい**ので、
+    /// 展開を止めず、読まれたときに 3-0 の診断を出す。
+    #[test]
+    fn a_const_that_needs_run_time_values_is_not_available_while_expanding() {
+        let err = expand(concat!(
+            "fn at_run_time() -> int:\n",
+            "    return 7\n",
+            "\n",
+            "const LATE = at_run_time()\n",
+            "\n",
+            "exprconst !fn pick() -> None:\n",
+            "    if LATE > 1:\n",
+            "        quote code:\n",
+            "            let big = 1\n",
+            "    quote code:\n",
+            "\n",
+            "pick()\n",
+        ))
+        .expect_err("読めないこと");
+        assert!(err.contains("is declared at run time"), "実際のエラー: {err}");
     }
 
     /// ⚠⚠ 実行時の値を読もうとしたら**そう言う**（設計書 §1.8 / タスク 3-0）。
