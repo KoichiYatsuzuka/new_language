@@ -17,6 +17,20 @@ impl Interpreter {
     /// 評価済み引数で「純粋・共通」な組み込みを呼ぶ（VM の `CallBuiltin` op 用）。
     /// `eval_builtin_ident_call` の対応アームと**同一意味論**（引数は VM がスタックで評価済み）。
     /// ここで扱わない名前は `None`（コンパイラは扱う名前だけ `CallBuiltin` を発行する）。
+    /// `print` の 1 行を出す（設計書 §4.1 / タスク 3-4）。
+    ///
+    /// ⚠⚠ **展開中は stderr へ。** stdout に出すと `compare_python_impl` /
+    /// `compare_outputs` の差分比較が壊れる ——「意味論を守る唯一の網」が黙って無効になる。
+    /// ⚠ `print` の出口を**ここ 1 箇所**にまとめてある（評価済み引数版と AST 版の 2 つが
+    /// あるので、片方だけ直すと展開時の出力が漏れる）。
+    pub(crate) fn emit_print(&self, line: &str) {
+        if self.meta_expanding {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+
     pub(crate) fn eval_builtin_evaled(
         &mut self,
         name: &str,
@@ -31,7 +45,7 @@ impl Interpreter {
                         Err(e) => return Some(Err(e)),
                     }
                 }
-                println!("{}", parts.join(" "));
+                self.emit_print(&parts.join(" "));
                 Some(Ok(Value::None))
             }
             // `parse_ar(source[, path])`（#56）。**入力は評価済みの文字列だけ**なので
@@ -264,7 +278,7 @@ impl Interpreter {
                     };
                     parts.push(s);
                 }
-                println!("{}", parts.join(" "));
+                self.emit_print(&parts.join(" "));
                 Some(Ok(Value::None))
             }
             "next" => {

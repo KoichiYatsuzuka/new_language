@@ -547,6 +547,15 @@ pub struct Interpreter {
     pub(self) protocol_required_members: HashMap<String, Vec<String>>,
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
+    /// **コンパイル時展開の最中か**（設計書 §4.1 / タスク 3-4）。
+    ///
+    /// ⚠⚠ 展開時の `print` が **stdout に出ると意味論の網が壊れる**。
+    /// `compare_python_impl` と `compare_outputs` は stdout を差分比較するゲートなので、
+    /// 展開時の出力がプログラムの出力に混ざると**唯一の網が黙って無効になる**。
+    /// ⇒ ここが真の間、`print` は stderr へ出す。
+    ///
+    /// ⚠ 既定は偽。展開器だけが立てる（`meta_expand`）。
+    pub(self) meta_expanding: bool,
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
@@ -652,6 +661,7 @@ impl Interpreter {
                 m
             },
             protocol_required_members: HashMap::new(),
+            meta_expanding: false,
             native_libs: HashMap::new(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
@@ -899,6 +909,21 @@ impl Interpreter {
                 eprintln!("Warning: error while closing a generator at exit: {e}");
             }
         }
+    }
+
+    /// 展開器専用: このインタプリタが**コンパイル時展開の最中**だと印を付ける（タスク 3-4）。
+    ///
+    /// ⚠ これを立てると `print` が stderr へ出る。詳しい理由は `meta_expanding` の doc。
+    /// このインタプリタが展開の最中か（タスク 3-4）。
+    ///
+    /// ⚠ 真なら `print` は stderr へ出る。外側から「このインタプリタは出力先を
+    /// 切り替えている」と確かめられるようにしてある。
+    pub(crate) fn is_meta_expanding(&self) -> bool {
+        self.meta_expanding
+    }
+
+    pub(crate) fn set_meta_expanding(&mut self, on: bool) {
+        self.meta_expanding = on;
     }
 
     pub fn take_current_exception(&mut self) -> Option<RaisedError> {

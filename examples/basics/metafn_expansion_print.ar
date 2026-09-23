@@ -1,0 +1,24 @@
+# metafn_expansion_print.ar — 展開時の `print` は stderr へ（設計書 §4.1 / タスク 3-4）。
+#
+# メタ関数の本体は**実行より前**に走る。そこで `print` したものがプログラムの stdout に
+# 混ざると、`compare_python_impl.ps1` と `compare_outputs.ps1` の差分比較が壊れる
+# ——「意味論を守る唯一の網」が黙って無効になる。
+#
+# ⇒ 展開中の `print` は **stderr** へ出す。置いたコードの `print`（実行時）は stdout のまま。
+#
+# ⚠ 確かめ方:
+#     arrow.exe -src metafn_expansion_print.ar 2>NUL     # stdout だけ → 実行時の行だけ
+#     arrow.exe -src metafn_expansion_print.ar 1>NUL     # stderr だけ → 展開時の行だけ
+#
+# ⚠ 成功例の本体は `metafn.ar`。ここは出力先だけを見るための例題。
+
+exprconst !fn trace_and_place() -> None:
+    # ⚠ これは**展開中**に出る。stderr へ。
+    print("[expanding] building the greeting")
+    quote code:
+        # ⚠ これは**実行時**に出る。stdout へ。
+        print("runtime output")
+
+trace_and_place()
+
+print("done")

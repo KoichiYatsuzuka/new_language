@@ -426,6 +426,9 @@ impl Expander {
     /// ⚠ ここが失敗したら**展開そのものを止める**。前口上が入っていないのに展開を続けると、
     /// `gensym` を使ったメタ関数が「未定義の名前」という無関係な診断で落ちる。
     fn load_prelude(&mut self) -> Result<(), String> {
+        // ⚠ 展開時の `print` は stderr へ（設計書 §4.1）。stdout に混ざると
+        //   `compare_python_impl` / `compare_outputs` の差分比較が壊れる。
+        self.interp.set_meta_expanding(true);
         let tokens = crate::lexer::Lexer::new(PRELUDE, "<meta-prelude>").tokenize();
         let stmts = crate::parser::Parser::new(tokens, None)
             .parse_program()
@@ -855,6 +858,23 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ 展開時の `print` は **stderr** へ出す（設計書 §4.1 / タスク 3-4）。
+    /// stdout に混ざると `compare_python_impl` / `compare_outputs` の差分比較が壊れ、
+    /// 「意味論を守る唯一の網」が**黙って無効**になる。
+    #[test]
+    fn the_expander_redirects_print_to_stderr() {
+        let mut ex = Expander::new(
+            std::rc::Rc::new(std::cell::Cell::new(0)),
+            std::collections::HashMap::new(),
+        );
+        assert!(!ex.interp.is_meta_expanding(), "前口上を読む前は既定のまま");
+        ex.load_prelude().expect("prelude");
+        assert!(
+            ex.interp.is_meta_expanding(),
+            "展開器のインタプリタが出力先を切り替えていない"
+        );
     }
 
     /// ⚠⚠ 置いたコードがさらにメタ関数を呼ぶ形では、失敗した地点だけ見ても
