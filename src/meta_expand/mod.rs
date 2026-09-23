@@ -32,6 +32,41 @@ use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
 use crate::interpreter::{Interpreter, Value};
 use crate::token::{Span, Spanned, Token};
 
+/// 展開器が最初に読み込む前口上（設計書 タスク 3-1）。
+///
+/// ## なぜ要るのか
+///
+/// メタ関数を**2 回以上呼ぶ**と、置いたコードの局所名がぶつかる。
+///
+/// ```ar
+/// exprconst !fn twice() -> None:
+///     quote code:
+///         let tmp = 1
+/// twice()
+/// twice()      # ← `tmp` が二重宣言になる
+/// ```
+///
+/// ⇒ 名前を**毎回作る**手段が要る。`gensym("tmp")` は接頭辞に連番を付けた名前を返す。
+/// スプライスと組み合わせて `let <! gensym("tmp") !> = 1` と書く。
+///
+/// ## なぜ Rust の組み込みではなく Arrow で書くのか
+///
+/// `static mut` という**既にある道具**でそのまま書けるから。組み込みを足すと
+/// 「展開中だけ生えている名前」を字句・型検査・補完のどこまで見せるかを決める話になり、
+/// 得られるものに対して手数が多い。
+///
+/// ⚠ **展開用インタプリタにしか入らない。** 実行時に `gensym` を呼んでも未定義。
+/// 展開時にしか意味の無い道具なのでそれでよい。
+/// ⚠ 利用者が `gensym` という名前のメタ関数を書くと二重宣言で弾かれる（黙って負けない）。
+/// ⚠ 返す名前は**普通の識別子**なので、利用者が同じ綴りを自分で書いていればぶつかる。
+///    そのときは二重宣言エラーになる（黙って壊れない）。
+const PRELUDE: &str = "\
+fn gensym(prefix: str) -> str:
+    static mut gensym_counter = 0
+    gensym_counter = gensym_counter + 1
+    return prefix + \"__\" + str(gensym_counter)
+";
+
 /// 1 回の展開で歩ける文の数の上限（設計書 タスク 2-6）。
 ///
 /// ⚠⚠ **自分自身を置き続けるメタ関数は止まらない。** 展開は前向き走査だが、置いたコードは
@@ -317,6 +352,23 @@ impl Expander {
         code_to_stmts_with(code, ctx, Some(std::rc::Rc::clone(&self.node_counter)))
     }
 
+    /// 前口上（`gensym` など）を展開用インタプリタへ読み込む（タスク 3-1）。
+    ///
+    /// ⚠ ここが失敗したら**展開そのものを止める**。前口上が入っていないのに展開を続けると、
+    /// `gensym` を使ったメタ関数が「未定義の名前」という無関係な診断で落ちる。
+    fn load_prelude(&mut self) -> Result<(), String> {
+        let tokens = crate::lexer::Lexer::new(PRELUDE, "<meta-prelude>").tokenize();
+        let stmts = crate::parser::Parser::new(tokens, None)
+            .parse_program()
+            .map_err(|e| format!("MetaError: internal — the expander prelude does not parse: {e}"))?;
+        for st in &stmts {
+            self.interp
+                .exec(st)
+                .map_err(|e| format!("MetaError: internal — the expander prelude failed: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// メタ関数を「普通の関数」としてインタプリタに登録する。
     ///
     /// ⚠ `Stmt::MetaFnDef` のまま `exec` へ渡すと「展開されていない」エラーになるので、
@@ -397,6 +449,7 @@ pub fn expand_program(
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
 ) -> Result<Vec<Stmt>, String> {
     let mut ex = Expander::new(node_counter, known_traits);
+    ex.load_prelude()?;
     // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
     for st in &stmts {
         // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
@@ -705,6 +758,54 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ 同じメタ関数を 2 回呼ぶと、置いたコードの局所名がぶつかる（タスク 3-1）。
+    /// `gensym` が毎回違う名前を返すことで初めて「置ける道具」になる。
+    #[test]
+    fn gensym_keeps_placed_local_names_apart() {
+        let out = expand(concat!(
+            "exprconst !fn twice() -> None:\n",
+            "    quote code:\n",
+            "        let <! gensym(\"tmp\") !> = 1\n",
+            "\n",
+            "twice()\n",
+            "twice()\n",
+        ))
+        .expect("expand");
+        let names: Vec<&str> = out
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Let(n, _, _) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names.len(), 2, "2 本置かれること");
+        assert_ne!(names[0], names[1], "名前が違うこと: {names:?}");
+        assert!(names.iter().all(|n| n.starts_with("tmp__")), "接頭辞が付くこと: {names:?}");
+    }
+
+    /// ⚠ `gensym` を使わなければ**ぶつかる**（上のテストが何を守っているかの対照）。
+    /// ⚠ ぶつかり方は**静的型検査の二重宣言**なので、展開そのものは通る。
+    #[test]
+    fn placing_the_same_local_name_twice_collides() {
+        let out = expand(concat!(
+            "exprconst !fn twice() -> None:\n",
+            "    quote code:\n",
+            "        let tmp = 1\n",
+            "\n",
+            "twice()\n",
+            "twice()\n",
+        ))
+        .expect("展開自体は通る");
+        let names: Vec<&str> = out
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Let(n, _, _) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["tmp", "tmp"], "同じ名前が 2 本置かれる（この後 型検査が弾く）");
     }
 
     /// `const` は**展開時にも値が確定している**ので読める（設計書 §1.7 / タスク 3-6）。

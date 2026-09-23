@@ -64,6 +64,20 @@ exprconst !fn log_if_verbose() -> None:
 
 log_if_verbose()
 
+print("=== 同じメタ関数を 2 回呼ぶ（gensym）===")
+
+# ⚠⚠ 置いたコードの**局所名は呼ぶたびにぶつかる**。
+#   `let tmp = 1` をそのまま置くと 2 回目で「既に宣言されている」になる。
+# ⇒ `gensym("tmp")` が `tmp__1` / `tmp__2` … を返す。
+# ⚠ `gensym` は**展開時だけの道具**。実行時に呼んでも未定義。
+exprconst !fn make_slot(value: int) -> None:
+    quote code:
+        let <! gensym("slot") !> = <! value !>
+
+make_slot(1)
+make_slot(2)
+print("two slots placed without a name clash")
+
 print("=== 空の Code は何も置かない ===")
 
 # `code:` の直後にインデントが無ければ空。何も出さずに抜けるときに使う（§1.2 の B-2）。
