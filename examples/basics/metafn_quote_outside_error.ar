@@ -1,0 +1,25 @@
+# metafn_quote_outside_error.ar — `quote` はメタ関数の外では書けない（タスク 1-6 / 設計書 §1.3）。
+#
+# `quote` は「`Code` を**メタ関数を呼んだ位置**へ置いて、メタ関数を抜ける」文。
+# ⇒ メタ関数の外に書いても、置く先が無い。
+#
+# ⚠⚠ **以前は黙って通っていた。** `quote` は内部で関数からの return に落ちるので、
+#   - 普通の関数に書くと**その関数を黙って抜け**、後続の文が消えた
+#     （下の例なら `before` だけが出て `after` が出ない）
+#   - 最上位に書くと**プログラムがその場で終わった**
+#   どちらも exit 0（実測）。⇒ パース時に弾く。
+#
+# ⚠ メタ関数の中の**入れ子関数**では書ける（装飾子ファクトリが返すクロージャ・タスク 4-8）。
+#   成功例は `metafn.ar` の「引数を取る装飾子」。
+#
+# 期待されるエラー:
+#   ParseError: `quote` can only be written inside a metafunction (`exprconst fn` /
+#               `exprconst !fn`); outside one there is nowhere to place the code
+
+fn announce() -> None:
+    print("before")
+    quote code:
+        print("placed?")
+    print("after")
+
+announce()

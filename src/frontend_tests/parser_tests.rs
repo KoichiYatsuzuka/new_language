@@ -1199,6 +1199,48 @@ fn quote_requires_a_value() {
     assert!(err.contains("requires a `Code` value"), "実際のエラー: {err}");
 }
 
+/// ⚠⚠ `quote` は**メタ関数の外では書けない**（タスク 1-6）。`Op::Return` に落ちるので、
+/// 素通しすると囲む関数を**黙って抜ける**（最上位ならプログラムが exit 0 で終わる。実測）。
+#[test]
+fn quote_outside_a_metafunction_is_rejected() {
+    for src in [
+        "quote code:\n    pass\n",
+        "fn g() -> None:\n    quote code:\n        pass\n    print(1)\n",
+    ] {
+        let err = parse_fails(src);
+        assert!(
+            err.contains("`quote` can only be written inside a metafunction"),
+            "実際のエラー: {err}"
+        );
+    }
+}
+
+/// ⚠⚠ `code:` も**メタ関数の外では書けない**（タスク 1-6）。式文として書いた `code:` は
+/// 型検査の束縛点（1-5）を通らないので、**中身が一度も走らずに黙って完走した**（実測）。
+#[test]
+fn code_block_outside_a_metafunction_is_rejected() {
+    for src in ["code:\n    print(1)\n", "fn g() -> None:\n    code:\n        print(1)\n"] {
+        let err = parse_fails(src);
+        assert!(
+            err.contains("`code:` blocks can only be written inside a metafunction"),
+            "実際のエラー: {err}"
+        );
+    }
+}
+
+/// ⚠ メタ関数の中の**入れ子関数**では書ける（装飾子ファクトリが返すクロージャ・4-8）。
+#[test]
+fn quote_and_code_are_accepted_in_a_closure_inside_a_metafunction() {
+    let stmts = parse(concat!(
+        "exprconst fn factory():\n",
+        "    fn deco(m) -> None:\n",
+        "        quote code:\n",
+        "            pass\n",
+        "    return deco\n",
+    ));
+    assert_eq!(stmts.len(), 1);
+}
+
 /// `<! 式 !>` は `code:` の中で**唯一パースされる**場所（設計書 §1.4 / タスク 1-2）。
 /// 地の文はトークンのまま、スプライスだけが式として取れていること。
 #[test]

@@ -1,22 +1,22 @@
-# metafn_code_escape_error.ar — `Code` はメタ関数の外へ持ち出せない（タスク 1-5 / 設計書 §1.2）。
+# metafn_code_escape_error.ar — `Code` はメタ関数の外へ持ち出せない（タスク 1-5 / 1-6 / 設計書 §1.2）。
 #
 # `code:` が作る `Code` は**展開時にしか存在しない値**。展開器が AST に埋め込んで
 # 消えるものなので、実行時には対応する値が無い。
 #
-# ⚠⚠ 通常の変数に束縛できてしまうと、「実行時に評価できない値」が普通の型検査を
-#   すり抜けて実行まで届く。⇒ **束縛点で弾く**。
+# ⚠⚠ `code:` は**メタ関数の外では書けない**（パース時に弾く・タスク 1-6）。
+#   以前は束縛点（`let frag = code:`）だけを型検査で弾いていたので、**式文として書いた
+#   `code:` がすり抜けた** —— 中身が一度も走らないまま、プログラムが黙って完走した（実測）。
 #
-# ⚠ 普通の関数の中でも同じ（`fn g() -> Code:` も不可）。`code:` を書けるのは
-#   メタ関数（`exprconst fn` / `exprconst !fn`）の中だけ。
+# ⚠ 残る持ち出し経路は「純粋メタ関数の返り値を束縛する」形（`let f = frag()`）。
+#   こちらは型検査が束縛点で弾く（タスク 1-5。展開しないエディタではこれが網になる）。
 #
 # ⚠ メタ情報型（`meta_instance` / `meta_function` / `meta_class` / `meta_member`）は
 #   注釈として書ける。Arrow は関数の仮引数の注釈が必須なので、これが無いと
-#   メタ関数そのものが書けない。成功例は `metafn_syntax_error.ar`。
+#   メタ関数そのものが書けない。成功例は `metafn.ar`。
 #
 # 期待されるエラー:
-#   StaticTypeError  'frag' cannot hold a 'Code' value — `code:` fragments exist only
-#                    while the compile-time expander runs, so they cannot be bound
-#                    outside a metafunction
+#   ParseError: `code:` blocks can only be written inside a metafunction
+#               (a `Code` value exists only while the compile-time expander runs)
 
 let frag = code:
     print("この断片は実行時には存在しない")

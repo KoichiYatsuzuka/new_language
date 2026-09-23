@@ -84,7 +84,20 @@ impl Parser {
     /// `quote <式>` をパースして [`Stmt::Quote`] を返す。
     ///
     /// ⚠ 後ろに来るのは **`Code` 型の式**。型の検査は 1-5 で入れる。
+    ///
+    /// ⚠⚠ **メタ関数の外では書けない**（タスク 1-6）。`quote` は `Op::Return` に落ちる（2-0）ので、
+    /// 素通しすると**囲む関数を黙って抜ける** —— 普通の関数なら後続の文が消え、最上位なら
+    /// プログラムがその場で exit 0 で終わる（どちらも実測）。置き先が無いので意味も無い。
+    /// ⚠ 数えるのは `metafn_depth`。メタ関数の中の入れ子関数（装飾子ファクトリが返す
+    /// クロージャ・4-8）では書ける。
     pub(crate) fn parse_quote(&mut self) -> Result<Stmt, String> {
+        if self.metafn_depth == 0 {
+            return Err(
+                "`quote` can only be written inside a metafunction (`exprconst fn` / \
+                 `exprconst !fn`); outside one there is nowhere to place the code"
+                    .to_string(),
+            );
+        }
         self.advance(); // `quote` を消費
         if matches!(
             self.current(),
@@ -106,7 +119,18 @@ impl Parser {
     /// ⚠ **入れ子は禁止**（設計書 §1.2）。中に `code` が現れたらエラーにする。
     /// 素通しすると「中身は評価されない」規則と相まって、書いた人の意図と無関係に
     /// ただのテキストとして埋まる。
+    ///
+    /// ⚠⚠ **メタ関数の外では書けない**（設計書 §1.2・タスク 1-6）。`Code` は展開時にしか
+    /// 存在しない値。1-5 の型検査は**束縛点**で弾くが、式文として書いた `code:` は
+    /// 束縛点を通らないので、**中身が一度も走らずに黙って完走した**（実測）。
     pub(crate) fn parse_code_block(&mut self) -> Result<Vec<CodeLine>, String> {
+        if self.metafn_depth == 0 {
+            return Err(
+                "`code:` blocks can only be written inside a metafunction \
+                 (a `Code` value exists only while the compile-time expander runs)"
+                    .to_string(),
+            );
+        }
         self.advance(); // `code` を消費
         self.eat(&Token::Colon)?;
 

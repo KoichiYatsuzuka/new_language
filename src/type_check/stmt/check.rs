@@ -491,11 +491,29 @@ impl TypeChecker {
                 ..
             } => self.check_gen_def(name, params, yield_type.as_deref(), body),
 
-            // ⚠ メタ関数の本体の型検査は 1-5（`Code` / `meta_*` 型の追加）で入れる。
-            //   ここで本体を検査すると `Code` を知らないまま `Unresolved` を撒くので、
-            //   **いまは名前だけ宣言して本体には触れない**。
-            Stmt::MetaFnDef { name, .. } => {
-                self.declare(name.clone(), InferredType::Unresolved, false);
+            // ⚠ メタ関数の**本体には触れない**（本体は展開時に走るので通常の型検査の対象外）。
+            // ⚠⚠ ただし**純粋メタ関数は戻り値の型付きで宣言する**（タスク 1-6）。
+            //   `code:` がメタ関数の外で書けなくなった（1-6）ので、`Code` が通常コードへ
+            //   漏れる経路は「純粋メタ関数の返り値を束縛する」（`let f = frag()`）だけになった。
+            //   `Unresolved` で宣言していると 1-5 の束縛点検査がそれを見逃す（実測）。
+            //   ⚠ 展開しないエディタではこれが唯一の網。CLI では展開でメタ関数が消えるので、
+            //     実行時の `NameError` に説明を添える側（3-8）が受け持つ。
+            //   ⚠ 配置メタ関数は値を返さない（§1.1）ので従来どおり `Unresolved`。
+            Stmt::MetaFnDef { name, return_type, is_placing, .. } => {
+                let ty = if *is_placing {
+                    InferredType::Unresolved
+                } else {
+                    InferredType::Function {
+                        params: None,
+                        return_type: Box::new(
+                            return_type
+                                .as_deref()
+                                .and_then(InferredType::from_ann)
+                                .unwrap_or(InferredType::Unresolved),
+                        ),
+                    }
+                };
+                self.declare(name.clone(), ty, false);
             }
             // `quote` の検査も 1-5。式は `Code` 型でなければならない。
             Stmt::Quote(_) => {}

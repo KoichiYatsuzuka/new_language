@@ -191,15 +191,38 @@ use super::*;
 /// ⚠⚠ `Code` は**メタ関数の外へ持ち出せない**（設計書 §1.2）。
 /// 展開時にしか存在しない値なので、通常の変数に束縛できると
 /// 「実行時に評価できない値」が型検査をすり抜けて実行まで届く。
-#[test]
-fn code_value_cannot_be_bound_outside_a_metafunction() {
-    assert!(err("let frag = code:\n    print(1)\n"));
+///
+/// ⚠ `code:` そのものはメタ関数の外では**パースで**弾かれる（タスク 1-6）。ここで見るのは
+/// 残る経路 —— **純粋メタ関数の返り値**（`Code`）を持ち出す形。展開しないエディタでは
+/// この検査が唯一の網になる。
+fn escapes(source: &str) -> bool {
+    check(source)
+        .iter()
+        .any(|e| matches!(e.kind, TypeErrorKind::CodeEscapesMetafunction { .. }))
 }
 
-/// ⚠ 普通の関数の中でも同じ。`code:` を書けるのはメタ関数の中だけ。
+#[test]
+fn code_value_cannot_be_bound_outside_a_metafunction() {
+    assert!(escapes(concat!(
+        "exprconst fn frag() -> Code:\n",
+        "    let a = code:\n",
+        "        print(1)\n",
+        "    return a\n",
+        "let f = frag()\n",
+    )));
+}
+
+/// ⚠ 普通の関数の中でも同じ。`Code` を扱えるのはメタ関数の中だけ。
 #[test]
 fn code_value_cannot_escape_through_a_plain_function() {
-    assert!(err("fn g() -> Code:\n    let a = code:\n        pass\n    return a\n"));
+    assert!(escapes(concat!(
+        "exprconst fn frag() -> Code:\n",
+        "    let a = code:\n",
+        "        pass\n",
+        "    return a\n",
+        "fn g() -> None:\n",
+        "    let b = frag()\n",
+    )));
 }
 
 /// メタ情報型は**注釈として書ける**（設計書 §1.5）。
