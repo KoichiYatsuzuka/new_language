@@ -1,0 +1,25 @@
+# metafn_caret_forward_error.ar — `^` は自分より前の宣言しか見られない（設計書 §1.7 / タスク 4-0）。
+#
+# 展開は**ファイル先頭から逐次**（§1.7）。メタ関数が展開される時点では、それより後ろの
+# 宣言はまだ読まれていない。⇒ `^` を当てられるのは**呼び出し位置より前の宣言だけ**。
+#
+# ⚠ 繰り返し（不動点）はしない。後ろの宣言を見たいなら、呼び出しを宣言の後ろへ動かす。
+#
+# ⚠ 「宣言はあるが種類が対象外」（メタ関数など）とは**別の文面**になる
+#   （`metafn_caret_kind_error.ar`）。取り違えの種類が違うので言い分けている。
+#
+# ⚠ 成功例は `metafn.ar` の「メタ情報演算子 ^」。
+#
+# 期待されるエラー:
+#   MetaError: while evaluating the arguments of 'describe': `^Later` refers to nothing
+#              declared before this point (expansion only sees declarations above it)
+
+exprconst !fn describe(m) -> None:
+    let slot = m.name + "_seen"
+    quote code:
+        let <! slot !> = 1
+
+describe(^Later)
+
+class Later:
+    mut id: int

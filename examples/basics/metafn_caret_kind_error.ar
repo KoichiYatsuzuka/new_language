@@ -1,0 +1,24 @@
+# metafn_caret_kind_error.ar — メタ情報を持たない宣言に `^` は当てられない（タスク 4-0 / 3-9）。
+#
+# メタ情報があるのは **クラス・トレイト・enum・関数・フィールド・変数束縛** だけ（§1.5）。
+# メタ関数・protocol・import した名前などには `^` を当てられない。
+#
+# ⚠⚠ 以前は「前に何も宣言されていない」と**誤報していた**（宣言表に対象の種類しか
+#   入れていなかった）。前方参照の間違い（`metafn_caret_forward_error.ar`）と
+#   対象違いの間違いが区別できなかったので、それが何であるかを言うようにした。
+#
+# 期待されるエラー:
+#   MetaError: while evaluating the arguments of 'describe': `^greet` is not available —
+#              'greet' is a placing metafunction, and meta information exists only for
+#              classes, traits, enums, functions, fields and variable bindings
+
+exprconst !fn greet() -> None:
+    quote code:
+        print("hi")
+
+exprconst !fn describe(m) -> None:
+    let slot = m.name + "_seen"
+    quote code:
+        let <! slot !> = 1
+
+describe(^greet)

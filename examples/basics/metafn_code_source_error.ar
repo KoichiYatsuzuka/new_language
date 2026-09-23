@@ -1,0 +1,24 @@
+# metafn_code_source_error.ar — 合成された宣言には元のコードが無い（タスク 4-7）。
+#
+# `^x.code()` は宣言の**元のコード**を `Code` として返す（§1.5）。元のコードがあるのは
+# **ソースに書かれた宣言**だけ。フィールドから組み立てられる自動 `__init__` や、
+# 他言語のスタブには元のコードが無い。
+#
+# ⚠ 無いときは**理由を言い分ける** —— 「合成された宣言」と「変数束縛（範囲を記録していない）」は
+#   利用者にとって別の間違い（前者は対象の取り違え、後者は種類の取り違え）。
+#
+# ⚠ 成功例は `metafn.ar` の `keep_as_is`（書かれた関数の `.code()`）。
+#
+# 期待されるエラー:
+#   MetaError: while expanding 'keep_init': '__init__' was generated rather than written in
+#              source (for example an automatic `__init__` or a foreign-language stub), so it
+#              has no original code
+
+class Point:
+    mut x: int
+    mut y: int
+
+exprconst !fn keep_init(m) -> None:
+    quote m.methods[0].code()
+
+keep_init(^Point)

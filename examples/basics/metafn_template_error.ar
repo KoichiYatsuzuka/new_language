@@ -1,0 +1,15 @@
+# metafn_template_error.ar — メタ関数はテンプレート型パラメータを持てない（設計書 §1.7）。
+#
+# 展開は**テンプレートの実体化より前**に走る。メタ関数が動く時点では型変数を具体化する
+# 仕組みがまだ無いので、`[T]` を置いても意味を持たない。
+#
+# ⚠ 型に応じてコードを変えたいなら、`^` で型の情報を受け取って分岐する
+#   （成功例 `metafn.ar` の `twin_of`：`^seed.type` を読んで注釈として差し込む）。
+#
+# 期待されるエラー:
+#   ParseError: metafunction `make_box` cannot have template parameters (expansion runs
+#               before template instantiation)
+
+exprconst !fn make_box[T]() -> None:
+    quote code:
+        print("box")

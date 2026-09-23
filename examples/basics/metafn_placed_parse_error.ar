@@ -1,0 +1,18 @@
+# metafn_placed_parse_error.ar — 置いたコードの構文エラー（タスク 2-0 / 2-3）。
+#
+# `code:` の中身は**書いた時点ではパースされない**（未完の断片を組み立てられるように・§1.2）。
+# パースは `quote` で置くときの 1 回だけ。⇒ 中身の構文エラーは**置いた時点で**見つかる。
+#
+# ⚠ 位置は `code:` の中の**書いた行**を指す（2-3 で行ごとに位置を記録している）。
+#   呼び出し位置だけでは、どの断片が壊れているのか分からない（5-1 で位置を添えた）。
+#
+# 期待されるエラー:
+#   MetaError: the placed `Code` does not parse: expected identifier, got `=`
+#              (at ...metafn_placed_parse_error.ar:16:13, inside the `code:` block)
+#     while expanding 'broken' at ...metafn_placed_parse_error.ar:18:7
+
+exprconst !fn broken() -> None:
+    quote code:
+        let = 1
+
+broken()

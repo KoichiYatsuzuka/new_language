@@ -1,0 +1,23 @@
+# metafn_infer_type_error.ar — 展開時に型が決まらない束縛の `.type`（タスク 4-4）。
+#
+# 注釈の無い変数でも `^x.type` は型を答える（型検査器を「ここまでの文」にかけて読む）。
+# ただし**型検査器にも決められない**ものは答えられない —— 下の `parse_ar(...)` は AST を
+# 動的な値として返すので、静的な型が無い。
+#
+# ⚠⚠ 決まらなければ**エラー**。`unknown` のような文字列を型名として返すと、スプライスした
+#   先で壊れた型注釈が黙って通る。⇒ 注釈を書くよう促す。
+#
+# ⚠ 成功例は `metafn.ar` の `twin_of`（`let seed = 7` から `int` を読む）。
+#
+# 期待されるエラー:
+#   MetaError: while expanding 'twin_of': the type of 'tree' could not be inferred at
+#              expansion time (annotate it, e.g. `let tree: int = ...`)
+
+let tree = parse_ar("let x = 1")
+
+exprconst !fn twin_of(m) -> None:
+    let t = m.type
+    quote code:
+        let twin: <! t !> = 0
+
+twin_of(^tree)

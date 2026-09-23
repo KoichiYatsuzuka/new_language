@@ -7,8 +7,10 @@
 # ⚠ 中置の `^`（ビット XOR）は従来どおり。前置か中置かは位置で区別される。
 #   `print(6 ^ 3)` は 5 を出す。
 #
-# ⚠ 成功例は `metafn_syntax_error.ar`（メタ関数の中の `^`）。
-#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+# ⚠ 成功例は `metafn.ar` の「メタ情報演算子 ^」（メタ関数の実引数・メタ関数の中の `^`）。
+# ⚠ 呼び先がメタ関数かはパース時に分からないので、`print(^T)` のように**普通の関数の
+#   実引数**に書くとパースは通る。そのときは実行時に「展開時にしか評価できない」と
+#   言って止まる（`metafn_caret_runtime_error.ar`）。
 #
 # 期待されるエラー:
 #   ParseError: `^` (the meta-info operator) can only be written inside a metafunction

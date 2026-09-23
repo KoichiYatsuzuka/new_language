@@ -1,0 +1,25 @@
+# metafn_decorator_stack_error.ar — 重ねた装飾子の内側が宣言を 1 つに保たなかった（設計書 §1.6）。
+#
+# 装飾子は**内側から**（宣言に近い方から）適用する。外側の装飾子は、内側が置いた結果を
+# 対象として受け取る。⇒ 内側が宣言を 2 つ以上に増やした（あるいは消した）ら、
+# 外側には渡すべき「1 つの宣言」が無い。
+#
+# ⚠ 黙って先頭の 1 つだけを渡すと、残りが外側の装飾を**すり抜ける**。⇒ エラーにする。
+#
+# 期待されるエラー:
+#   MetaError: decorator '!keep' cannot be applied — the inner decorator produced 2
+#              statements, and a decorator takes exactly one declaration
+#     while expanding '!keep' at ...metafn_decorator_stack_error.ar:22:1
+
+exprconst !fn split_in_two(m) -> None:
+    quote code:
+        let first_half = 1
+        let second_half = 2
+
+exprconst !fn keep(m) -> None:
+    quote m.code()
+
+!keep
+!split_in_two
+fn f() -> int:
+    return 1

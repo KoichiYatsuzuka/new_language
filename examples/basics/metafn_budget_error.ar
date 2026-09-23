@@ -1,0 +1,19 @@
+# metafn_budget_error.ar — 展開が終わらないときは歩数で止める（タスク 2-6）。
+#
+# 置いたコードは**その場から歩き直す**（置いたコードがさらにメタ関数を呼ぶことはある）。
+# ⇒ 自分自身の呼び出しを置き続けるメタ関数は、いつまでも終わらない。
+#
+# ⚠ 展開は 10 万文で打ち切り、**直近に展開したメタ関数の名前**を出す
+#   （「予算を使い切った」だけでは、どれが暴走したのか分からない）。
+# ⚠ メタ関数の中の再帰（メタ関数が自分を**呼ぶ**）は別の柵 —— インタプリタの
+#   `RecursionError` が止める。こちらは「置いたコードが呼ぶ」形の暴走。
+#
+# 期待されるエラー:
+#   MetaError: expansion did not finish within 100000 steps — a metafunction is probably
+#              placing a call to itself (the last metafunction expanded was 'forever')
+
+exprconst !fn forever() -> None:
+    quote code:
+        forever()
+
+forever()

@@ -6,8 +6,7 @@
 # ⚠ `unexpected token: `<!`` だけを出すと「どこでなら書けるのか」が分からないので、
 #   置ける場所を名指しするエラーにしてある。
 #
-# ⚠ 成功例は `metafn_syntax_error.ar`（`code:` の中のスプライス）。
-#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+# ⚠ 成功例は `metafn.ar` の「スプライス <! !>」（`code:` の中のスプライス）。
 #
 # 期待されるエラー:
 #   ParseError: `<!` can only appear inside a `code:` block

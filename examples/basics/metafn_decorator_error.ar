@@ -9,8 +9,7 @@
 # ⚠ `@` は**実行時クロージャ装飾子として据え置き**（§1.6）。別物なので混ぜない。
 #   `@` が取れるのは `fn` / `class` だけ。
 #
-# ⚠ 成功例は `metafn_syntax_error.ar`（関数・変数束縛への装飾）。
-#   ただし展開器は Phase 2 なので、そちらも実行までは届かない。
+# ⚠ 成功例は `metafn.ar` の「装飾子」「クラス本体への配置」「引数を取る装飾子」。
 #
 # 期待されるエラー:
 #   ParseError: `!` decorators can only be applied to a class, function, field or

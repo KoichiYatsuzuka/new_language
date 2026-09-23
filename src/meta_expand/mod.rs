@@ -372,7 +372,23 @@ pub fn code_to_stmts_with(
         Context::TopLevel => parser.parse_program(),
         Context::TypeBody => parser.parse_class_body_fragment(),
     };
-    let stmts = parsed.map_err(|e| format!("MetaError: the placed `Code` does not parse: {e}"))?;
+    // ⚠⚠ 止まった位置を添える（タスク 5-1 で発見）。置いたトークンは `code:` に**書かれた位置**を
+    //   持っている（2-3）のに、この文面では使っておらず、呼び出し位置しか出ていなかった ——
+    //   `code:` が幾つもあると、どの断片が壊れているのか分からない。
+    let stmts = match parsed {
+        Ok(stmts) => stmts,
+        Err(e) => {
+            let at = parser.current_span();
+            return Err(if at.line == 0 {
+                format!("MetaError: the placed `Code` does not parse: {e}")
+            } else {
+                format!(
+                    "MetaError: the placed `Code` does not parse: {e} \
+                     (at {at}, inside the `code:` block)"
+                )
+            });
+        }
+    };
     if ctx == Context::TypeBody {
         check_type_body_members(&stmts)?;
     }
@@ -771,7 +787,9 @@ pub fn explain_removed_metafn(
 /// [`expand_program`] と同じだが、**消したメタ関数の一覧**も返す（タスク 3-8）。
 ///
 /// ⚠ 実行時の `NameError` に理由を書き添えるため（[`explain_removed_metafn`]）。
-pub fn expand_program_with_metafns(
+/// ⚠ エディタ用 wasm は展開しない（5-0）ので、そちらのクレートでは使われない。
+#[allow(dead_code)]
+pub(crate) fn expand_program_with_metafns(
     stmts: Vec<Stmt>,
     node_counter: std::rc::Rc<std::cell::Cell<u32>>,
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
@@ -1556,6 +1574,29 @@ mod tests {
         .expect_err("弾かれること");
         assert!(
             err.contains("`.has_field()` needs a class or trait"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠⚠ 置いたコードの構文エラーは `code:` の中の**書いた位置**を指す（タスク 5-1 で発見）。
+    /// 2-3 で行ごとに位置を記録していたのに、この文面では使っておらず呼び出し位置しか出なかった。
+    #[test]
+    fn a_placed_code_parse_error_points_into_the_code_block() {
+        let err = expand(concat!(
+            "exprconst !fn broken() -> None:
+",
+            "    quote code:
+",
+            "        let = 1
+",
+            "
+",
+            "broken()
+",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("inside the `code:` block") && err.contains("line 3, col 13"),
             "実際のエラー: {err}"
         );
     }

@@ -1,0 +1,24 @@
+# metafn_decorator_callable_error.ar — 装飾子は呼べるものでなければならない（タスク 4-8）。
+#
+# `!式` の式は展開時に評価され、返ってきた**呼べる値**が対象に適用される（§1.6）:
+#
+#   !name        … メタ関数
+#   !alias       … `const` に束縛したメタ関数
+#   !repeat(3)   … 装飾子ファクトリ（`repeat(3)` が返したクロージャを適用する）
+#
+# ⚠ 呼べないもの（ここでは `int`）が返ってきたら、**何が返ってきたか**を言う。
+#   ファクトリでないものに括弧を付けてしまうのがよくある形。
+#
+# ⚠ 成功例は `metafn.ar` の「引数を取る装飾子（装飾子ファクトリ）」。
+#
+# 期待されるエラー:
+#   MetaError: decorator '!answer(...)' did not produce something callable (got 'int');
+#              a decorator must be a metafunction, or an expression that returns one
+#     while expanding '!answer(...)' at ...metafn_decorator_callable_error.ar:22:1
+
+exprconst fn answer() -> int:
+    return 42
+
+!answer()
+fn f() -> int:
+    return 1

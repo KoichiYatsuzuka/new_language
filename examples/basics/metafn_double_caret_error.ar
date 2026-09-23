@@ -7,7 +7,7 @@
 # ⚠ 黙って `^(^x)` として通すと、意味の違う式が**エラーにならずに**別物として動く。
 #   ⇒ 明示的に弾いて、書き換え方を示す。
 #
-# ⚠ 成功例は `metafn_syntax_error.ar`（`^` 1 個 + 射影）。
+# ⚠ 成功例は `metafn.ar` の「メタ情報演算子 ^」（`^` 1 個 + 射影）。
 #
 # 期待されるエラー:
 #   ParseError: `^^` was removed; write `^` once and follow it with a projection

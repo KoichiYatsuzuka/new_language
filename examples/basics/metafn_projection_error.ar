@@ -1,0 +1,29 @@
+# metafn_projection_error.ar — 種別と噛み合わない射影はエラー（設計書 D12 / タスク 4-1 / 3-9）。
+#
+# `^` の射影は対象の種別ごとに決まっている（§1.5 / 参考B）:
+#
+#   関数       … .params / .return_type / .is_static / .decorators …
+#   クラス     … .fields / .methods / .bases / .template_params / .has_field() …
+#   フィールド … .type / .mutable / .has_default
+#   共通       … .name / .kind / .declared_at / .code()
+#
+# ⚠⚠ **空のリストを返さない。** `^関数.fields` が `[]` を返すと「フィールドが 0 個」と
+#   読めてしまい、取り違えが黙って通る。⇒ エラーにして、何を書いたら合うのかまで言う。
+# ⚠ **どの射影が**合わなかったかも言う。メタ関数の中に射影が幾つもあると、
+#   どれが間違いか分からないため（3-9）。
+#
+# ⚠ 成功例は `metafn.ar` の `bind_first_field`（クラスに `.fields`）。
+#
+# 期待されるエラー:
+#   MetaError: while expanding 'first_field': `.fields` needs a class or trait,
+#              but 'helper' is a meta_function
+
+fn helper(x: int) -> int:
+    return x
+
+exprconst !fn first_field(m) -> None:
+    let n = m.fields[0].name
+    quote code:
+        let <! n !> = 1
+
+first_field(^helper)

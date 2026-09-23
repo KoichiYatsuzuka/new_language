@@ -311,8 +311,8 @@ pub const ALL_STMT_KINDS: &[&str] = &[
     "AttrCompoundAssign", "CompoundAssign", "If", "Match", "While", "For", "Block", "Return",
     "Break", "Continue", "Pass", "BlockReturn", "LoopYield", "Yield", "Freeze", "FnDef", "GenDef",
     "ClassDef", "TraitDef", "ProtocolDef", "Field", "NewTypeDef", "EnumDef", "Try", "Raise",
-    // メタ関数（コンパイル時展開・タスク 1-1）。
-    // ⚠ 展開器は Phase 2 なので、例題はエラー例だけ（構文は通るが実行まで届かない）。
+    // メタ関数（コンパイル時展開・タスク 1-1）。成功例は `examples/basics/metafn.ar`。
+    // ⚠ 観測は**展開前**の AST（`main.rs` で展開より先に早期 return する）。展開後は消える。
     "MetaFnDef", "Quote", "MetaDecorated",
     "Import", "FromImport", "AsyncAssign", "BreakPoint", "DebugLet", "EventSubscribe",
     "EventUnsubscribe",
