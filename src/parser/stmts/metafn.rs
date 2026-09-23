@@ -263,7 +263,9 @@ impl Parser {
     /// 黙って `MetaDecorated(Import)` になり、展開器が扱えない形が AST に入る。
     pub(crate) fn parse_meta_decorated(&mut self, in_class: bool) -> Result<Stmt, String> {
         let mut decorators = Vec::new();
+        let mut spans = Vec::new();
         while *self.current() == Token::Bang {
+            spans.push(self.current_span());
             self.advance(); // `!` を消費
             decorators.push(self.parse_expr()?);
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
@@ -279,7 +281,7 @@ impl Parser {
                 crate::interpreter::tw_stats::stmt_kind_of(&target)
             ));
         }
-        Ok(Stmt::MetaDecorated { decorators, target: Box::new(target) })
+        Ok(Stmt::MetaDecorated { decorators, spans, target: Box::new(target) })
     }
 }
 

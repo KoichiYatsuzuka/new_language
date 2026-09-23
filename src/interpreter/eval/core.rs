@@ -177,10 +177,12 @@ impl Interpreter {
         // 式評価がツリーウォークで走っているかの計測（#55）。既定ビルドでは消える。
         crate::interpreter::tw_stats::record_eval();
         match expr {
-            // ⚠ 展開器（Phase 2）が未実装なので、ここへ到達したら**メタ関数が展開されずに
-            //   実行まで来てしまった**ということ。黙って無視せず明示エラーにする。
+            // ⚠ メタ関数の外の `code:` はパースで弾く（1-6）ので、ここへ来るのは
+            //   展開されなかったメタ関数の中身だけ。黙って無視せず明示エラーにする。
+            //   ⚠ 以前の文面は行継続が壊れて改行と空白の並びが混ざっていた（3-9）。
             Expr::CodeBlock(_) => Err(
-                "MetaError: a `code:` block cannot be evaluated at run time \n                 (it is only meaningful inside a metafunction, which the expander has not run)"
+                "MetaError: a `code:` block reached run time (it is only valid inside a \
+                 metafunction, which the expander removes before the program runs)"
                     .to_string(),
             ),
             // `^対象`（設計書 §1.5 / タスク 4-0）。展開器が埋めた宣言表から引く。

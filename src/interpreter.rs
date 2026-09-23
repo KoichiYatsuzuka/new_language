@@ -561,7 +561,7 @@ pub struct Interpreter {
     /// ⚠⚠ `^対象` はここから引く。展開器が**前から順に**埋めるので、
     /// メタ関数は自分より前の宣言しか見られない（設計書 §1.7）。
     /// ⚠ 展開器以外は空のまま。通常実行で `^` を書くことはできない（1-3 の位置制限）。
-    pub(self) meta_decls: std::collections::HashMap<String, Rc<crate::ast::Stmt>>,
+    pub(self) meta_decls: std::collections::HashMap<String, crate::interpreter::value::MetaDecl>,
     /// **展開済みの最上位の文**（タスク 4-4）。展開時型推論の前提になる。
     ///
     /// ⚠ 展開器と共有する（`Rc<RefCell<..>>`）。展開器が最上位の文を出すたびに足す。
@@ -936,7 +936,7 @@ impl Interpreter {
     ///
     /// ⚠ **前から順に呼ぶこと。** 後ろの宣言を先に入れると、§1.7 の
     /// 「自分より前だけ見られる」が崩れる。
-    pub(crate) fn add_meta_decl(&mut self, name: String, decl: Rc<crate::ast::Stmt>) {
+    pub(crate) fn add_meta_decl(&mut self, name: String, decl: crate::interpreter::value::MetaDecl) {
         self.meta_decls.insert(name, decl);
     }
 
@@ -945,7 +945,9 @@ impl Interpreter {
     /// ⚠ 見つからないときのエラーは**呼び出し側で作る**（「まだ宣言されていない」のか
     /// 「メタ情報を取れない種類」なのかで文面を変えたいため）。
     pub(crate) fn meta_lookup(&self, name: &str) -> Option<Value> {
-        let decl = self.meta_decls.get(name)?;
+        let crate::interpreter::value::MetaDecl::Decl(decl) = self.meta_decls.get(name)? else {
+            return None;
+        };
         // ⚠ `^x` の `x` は**もう前の文に入っている**（前方のみ参照・§1.7）。
         //   ⇒ 推論の前提に自分の宣言を足さない（足すと再宣言になる）。
         self.make_meta_value(name, Rc::clone(decl), false)
@@ -1001,10 +1003,27 @@ impl Interpreter {
     /// ⚠ 「まだ宣言されていない」と「メタ情報を取れない種類」を**言い分ける**。
     /// 同じ文面にすると、前方参照の間違いと対象違いの間違いが区別できない。
     pub(crate) fn meta_lookup_error(&self, name: &str) -> String {
+        // ⚠⚠ **実行時に評価されたら「宣言されていない」ではない**（タスク 3-9）。
+        //   `^` はパース時に「メタ関数の中か、呼び出しの実引数の中」まで絞ってある（1-3）が、
+        //   呼び先がメタ関数かはパース時に分からないので、`print(^T)` は通る。展開器は
+        //   それを評価しないので実行時にここへ来る —— 以前は宣言表が空なので
+        //   「前に何も宣言されていない」と**誤報した**（実測）。
+        if !self.meta_expanding {
+            return format!(
+                "MetaError: `^{name}` can only be evaluated while the compile-time expander runs \
+                 — inside a metafunction, or as an argument to a metafunction call (here it is \
+                 part of ordinary code, which runs at run time)"
+            );
+        }
         match self.meta_decls.get(name) {
-            Some(_) => format!(
-                "MetaError: `^{name}` is not available — meta information exists for classes, \
-                 traits, enums, functions, fields and variable bindings"
+            Some(crate::interpreter::value::MetaDecl::Opaque(what)) => format!(
+                "MetaError: `^{name}` is not available — '{name}' is {what}, and meta information \
+                 exists only for classes, traits, enums, functions, fields and variable bindings"
+            ),
+            // ⚠ 引けたのに値が作れなかった（種類の判定と値の作り方がずれた）。ここへは来ないはず。
+            Some(crate::interpreter::value::MetaDecl::Decl(_)) => format!(
+                "MetaError: internal — `^{name}` names a declaration whose meta information \
+                 could not be built"
             ),
             None => format!(
                 "MetaError: `^{name}` refers to nothing declared before this point \

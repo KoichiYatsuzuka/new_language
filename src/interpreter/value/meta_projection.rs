@@ -171,10 +171,27 @@ pub fn project(m: &Rc<MetaValue>, p: Projection) -> Result<Value, String> {
 /// 射影名を間違えたのかが分からない。
 fn wrong_kind(m: &MetaValue, wanted: &str) -> String {
     format!(
-        "this projection needs {wanted}, but '{}' is a {}",
+        "{WRONG_KIND_HEAD}{wanted}, but '{}' is a {}",
         m.name,
         kind_name(m.kind)
     )
+}
+
+/// 種別違いの文面の頭。呼び出し側が**射影の名前**に差し替える（[`name_the_projection`]）。
+const WRONG_KIND_HEAD: &str = "this projection needs ";
+
+/// 種別違いの文面に**どの射影か**を書き込む（タスク 3-9）。
+///
+/// ⚠ 射影を引く関数（`fn_of` / `body_of` …）は複数の射影から共有されていて、
+/// 自分がどの名前で呼ばれたかを知らない。⇒ 名前を知っている入口（属性アクセスと
+/// メソッド呼び出し）で書き込む。
+/// ⚠ 以前は「this projection needs a class or trait」とだけ出て、メタ関数の中に射影が
+/// 幾つもあると**どれが間違いか分からなかった**。
+pub fn name_the_projection(e: String, shown: &str) -> String {
+    match e.strip_prefix(WRONG_KIND_HEAD) {
+        Some(rest) => format!("`{shown}` needs {rest}"),
+        None => e,
+    }
 }
 
 type FnParts<'a> = (
@@ -421,23 +438,30 @@ pub fn meta_method(
         }
         return Some(src_of(m).map(|r| Value::Code(Rc::new(code_lines_of(r)))));
     }
+    let shown = format!(".{method}()");
     let want: MemberKind = match method {
         "has_field" => MemberKind::Field,
         "has_method" => MemberKind::Method,
         "implements" => {
-            return Some(one_str_arg(method, args).and_then(|t| {
-                Ok(Value::Bool(bases_of(m)?.iter().any(|b| *b == t)))
-            }))
+            return Some(
+                one_str_arg(method, args)
+                    .and_then(|t| Ok(Value::Bool(bases_of(m)?.iter().any(|b| *b == t))))
+                    .map_err(|e| name_the_projection(e, &shown)),
+            )
         }
         _ => return None,
     };
-    Some(one_str_arg(method, args).and_then(|n| {
-        let members = members_of(m, want)?;
-        Ok(Value::Bool(members.iter().any(|v| match v {
-            Value::Meta(mm) => mm.name == n,
-            _ => false,
-        })))
-    }))
+    Some(
+        one_str_arg(method, args)
+            .and_then(|n| {
+                let members = members_of(m, want)?;
+                Ok(Value::Bool(members.iter().any(|v| match v {
+                    Value::Meta(mm) => mm.name == n,
+                    _ => false,
+                })))
+            })
+            .map_err(|e| name_the_projection(e, &shown)),
+    )
 }
 
 /// 引数がちょうど 1 つの `str` であることを確かめる。

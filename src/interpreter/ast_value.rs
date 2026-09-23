@@ -481,7 +481,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
         // ⚠ メタ関数と `quote` も AST 値として見せる（`parse_ar` の消費者が
         //   「知らない `__type__`」で落ちないように）。`code:` の中身はトークン列
         //   なので、行数だけを見せる（値としては再構成できない）。
-        Stmt::MetaDecorated { decorators, target } => ns(
+        Stmt::MetaDecorated { decorators, spans: _, target } => ns(
             "StmtMetaDecorated",
             vec![
                 ("decorators", exprs_list(decorators)),

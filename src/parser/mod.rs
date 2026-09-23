@@ -335,7 +335,7 @@ impl Parser {
         self.tokens[self.pos].clone()
     }
 
-    fn current_span(&self) -> Span {
+    pub(crate) fn current_span(&self) -> Span {
         self.tokens
             .get(self.pos)
             .map(|s| s.span.clone())

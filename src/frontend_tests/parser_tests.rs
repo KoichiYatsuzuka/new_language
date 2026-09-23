@@ -1386,7 +1386,7 @@ fn double_caret_is_rejected() {
 fn meta_decorator_wraps_its_target() {
     use crate::ast::{Expr, Stmt};
     let stmts = parse("!deco\nclass C:\n    mut x: int\n");
-    let Stmt::MetaDecorated { decorators, target } = &stmts[0] else {
+    let Stmt::MetaDecorated { decorators, target, .. } = &stmts[0] else {
         panic!("MetaDecorated を期待")
     };
     assert_eq!(decorators.len(), 1);
@@ -1427,7 +1427,7 @@ fn meta_decorator_can_take_arguments() {
 fn stacked_meta_decorators_collect_into_one_wrapper() {
     use crate::ast::{Expr, Stmt};
     let stmts = parse("!a\n!b\nfn g() -> int:\n    return 1\n");
-    let Stmt::MetaDecorated { decorators, target } = &stmts[0] else {
+    let Stmt::MetaDecorated { decorators, target, .. } = &stmts[0] else {
         panic!("MetaDecorated を期待")
     };
     let names: Vec<&str> = decorators

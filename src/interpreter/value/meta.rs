@@ -12,6 +12,19 @@ use std::rc::Rc;
 use crate::ast::Stmt;
 use crate::type_check::MetaKind;
 
+/// 展開時に見えている宣言 1 つ（`Interpreter::meta_decls` の値・タスク 4-0 / 3-9）。
+#[derive(Debug, Clone)]
+pub enum MetaDecl {
+    /// メタ情報を作れる宣言。`^名前` はこれから値を作る。
+    Decl(Rc<Stmt>),
+    /// **メタ情報を持たない種類**の宣言。呼び名（「a protocol」など）だけを持つ。
+    ///
+    /// ⚠ `^` が引けなかったときに「まだ宣言されていない」と言い分けるためにある
+    ///   （以前は `^メタ関数名` が「前に何も宣言されていない」と誤報された）。
+    /// ⚠⚠ **本体は持たない**。`import` の本体はモジュール丸ごとなので、複製すると重い。
+    Opaque(&'static str),
+}
+
 
 /// `^対象` が返すメタ情報（設計書 §1.5）。
 ///

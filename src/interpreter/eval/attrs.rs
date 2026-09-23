@@ -209,7 +209,10 @@ impl Interpreter {
             // メタ情報への射影（設計書 §1.5 / タスク 4-0）。
             // ⚠⚠ **射影の一覧はここ 1 箇所**（D12）。増やすときは `meta_projection` を直す。
             Value::Meta(m) => match crate::interpreter::value::Projection::from_name(attr) {
-                Some(p) => crate::interpreter::value::project(m, p),
+                // ⚠ 種別違いの文面に**どの射影か**を書き込む（タスク 3-9）。
+                Some(p) => crate::interpreter::value::project(m, p).map_err(|e| {
+                    crate::interpreter::value::name_the_projection(e, &format!(".{attr}"))
+                }),
                 // ⚠ 未知の射影は**黙って `None` を返さない**。綴り間違いが通ってしまう。
                 None => Err(format!(
                     "AttributeError: {} '{}' has no projection '{attr}'",

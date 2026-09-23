@@ -489,8 +489,13 @@ struct Expander {
     /// ⚠ 装飾子でメンバーが増えたクラスは、**展開後に** `finalize_class_body` を
     /// 走らせないと自動 `__init__` に増えたフィールドが入らない。
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
-    /// 展開済みの最上位の文を展開時型推論のために共有するか（タスク 4-4）。
-    track_prefix: bool,
+    /// このプログラムが**メタ関数を持つか**（最上位に `exprconst` があるか）。
+    ///
+    /// ⚠ 偽なら次の 2 つを**やらない**（どちらも全文の複製を伴う）:
+    ///   - 展開済みの最上位の文を展開時型推論のために共有する（タスク 4-4）
+    ///   - `^` のための宣言表を埋める（タスク 4-0。3-9 で省くようにした）
+    ///   メタ関数が無ければ `^` は展開時に評価されず、推論も起きえない。
+    has_metafns: bool,
     /// 置いたコードを採番する node-id カウンタ（設計書 §0.3 / タスク 2-1）。
     ///
     /// ⚠⚠ **本体をパースしたパーサと同じものを渡す。** 別のカウンタだと node-id が
@@ -515,7 +520,7 @@ impl Expander {
             steps: 0,
             last_expanded: None,
             runtime_names: std::collections::HashSet::new(),
-            track_prefix: false,
+            has_metafns: false,
             known_traits,
             node_counter,
             placing_fns: Vec::new(),
@@ -794,7 +799,7 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
     // ⚠ 展開時型推論（タスク 4-4）の前提として、展開済みの最上位の文を共有する。
     //   ⚠ メタ関数が 1 つも無いプログラムでは推論が起きえないので**やらない**
     //     （全プログラムで AST を複製するのは割に合わない）。
-    ex.track_prefix = stmts.iter().any(|s| matches!(s, Stmt::MetaFnDef { .. }));
+    ex.has_metafns = stmts.iter().any(|s| matches!(s, Stmt::MetaFnDef { .. }));
     // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
     for st in &stmts {
         // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
@@ -839,7 +844,11 @@ fn expand_stmts(
         //   前から順に入れるので、メタ関数は自分より前の宣言しか見られない（§1.7）。
         //   ⚠ **自分自身は含めない**ようにここで入れる —— 登録してから展開すると、
         //     その宣言を装飾している最中の装飾子が「展開前の自分」を見てしまう。
-        register_decl(ex, &stmt);
+        // ⚠⚠ **メタ関数の無いプログラムでは登録しない。** `^` を評価する場面が無いのに、
+        //   以前は全プログラムで最上位の宣言を**全部複製して**いた（4-0 で入った無駄・3-9）。
+        if ex.has_metafns {
+            register_decl(ex, &stmt);
+        }
 
         let out_len_before = out.len();
 
@@ -918,10 +927,9 @@ fn expand_stmts(
             }
 
             // `!装飾子` 付きの宣言 → 装飾子が返した中身で置き換える。
-            Stmt::MetaDecorated { decorators, target } => {
-                // ⚠ 装飾子には位置が無い（`Expr::Ident` が `Span` を持たない）。
-                //   ⇒ 出所の列には名前だけを積む。位置まで欲しければ AST 側に足すことになる。
-                let placed = apply_decorators(ex, decorators, *target, ctx, &here)?;
+            Stmt::MetaDecorated { decorators, spans, target } => {
+                // ⚠ 位置は `!` のもの（`Expr::Ident` は `Span` を持たないので AST 側に控えてある・3-9）。
+                let placed = apply_decorators(ex, decorators, spans, *target, ctx, &here)?;
                 for s in placed.into_iter().rev() {
                     pending.push_front((s, std::rc::Rc::clone(&here)));
                 }
@@ -979,7 +987,7 @@ fn expand_stmts(
 
         // ⚠ 展開時型推論の前提（タスク 4-4）。**最上位で出した文だけ**を足す。
         //   クラス本体の中の文はそのクラスの文に含まれて届くので二重に足さない。
-        if ex.track_prefix && ctx == Context::TopLevel && trail.is_empty() {
+        if ex.has_metafns && ctx == Context::TopLevel && trail.is_empty() {
             let handle = ex.interp.meta_prefix_handle();
             let mut prefix = handle.borrow_mut();
             for st in &out[out_len_before..] {
@@ -992,20 +1000,51 @@ fn expand_stmts(
 
 /// 展開時に見える宣言として登録する（タスク 4-0）。
 ///
-/// ⚠ メタ情報の対象になる種類だけを入れる（`MetaValue::kind_of` が決める）。
+/// ⚠⚠ **メタ情報の対象にならない種類も入れる**（タスク 3-9）。`^` が引けなかったときに
+/// 「まだ宣言されていない」と「宣言はあるがメタ情報を持たない種類」を言い分けるため
+/// （`Interpreter::meta_lookup_error`）。以前は対象の種類だけを入れていたので、
+/// `^メタ関数名` が**「前に何も宣言されていない」と誤報された**（実測）。
+/// 値を作るかどうかは `MetaValue::kind_of` が引くときに決める。
 /// ⚠ `!装飾子` に包まれた宣言は**中身**を登録する（包みには名前が無い）。
 fn register_decl(ex: &mut Expander, stmt: &Stmt) {
+    use crate::interpreter::value::MetaDecl;
     let inner = match stmt {
         Stmt::MetaDecorated { target, .. } => &**target,
         other => other,
     };
-    if crate::interpreter::value::MetaValue::kind_of(inner).is_none() {
+    // ⚠ 名前を作らない文（式文・制御構文…）は何もしない。**複製の前に**確かめる。
+    let mut names: Vec<String> = Vec::new();
+    crate::decl_names::each_declared_name(inner, &mut |name, _, _| names.push(name.to_string()));
+    if names.is_empty() {
         return;
     }
-    let decl = std::rc::Rc::new(inner.clone());
-    crate::decl_names::each_declared_name(inner, &mut |name, _, _| {
-        ex.interp.add_meta_decl(name.to_string(), std::rc::Rc::clone(&decl));
-    });
+    let entry = if crate::interpreter::value::MetaValue::kind_of(inner).is_some() {
+        MetaDecl::Decl(std::rc::Rc::new(inner.clone()))
+    } else {
+        // ⚠⚠ メタ情報を持たない種類は**複製しない**（`import` の本体はモジュール丸ごと）。
+        MetaDecl::Opaque(non_meta_kind(inner))
+    };
+    for name in names {
+        ex.interp.add_meta_decl(name, entry.clone());
+    }
+}
+
+/// `^` を当てられない宣言の呼び名（タスク 3-9）。
+///
+/// ⚠ **何を取り違えたのかまで言う。** 「使えません」だけだと、名前を間違えたのか
+/// 対象の種類を間違えたのかが分からない。
+/// ⚠ 末尾の `_` は呼び名を持たない残りを受ける（メタ情報を持つ種類はここへ来ない）。
+///   ここは walker ではなく**文面を選ぶだけ**なので、網羅を強制する意味が無い。
+fn non_meta_kind(decl: &Stmt) -> &'static str {
+    match decl {
+        Stmt::MetaFnDef { is_placing: true, .. } => "a placing metafunction",
+        Stmt::MetaFnDef { is_placing: false, .. } => "a pure metafunction",
+        Stmt::ProtocolDef { .. } => "a protocol",
+        Stmt::NewTypeDef { .. } => "a `new_type`",
+        Stmt::Import { .. } | Stmt::FromImport { .. } => "an imported name",
+        Stmt::LetTuple { .. } => "a name bound by tuple unpacking",
+        _ => "a declaration of a kind that has no meta information",
+    }
 }
 
 /// 呼び出し式が「登録済みの**配置**メタ関数」ならその名前を返す。
@@ -1063,12 +1102,15 @@ fn eval_args(
 fn apply_decorators(
     ex: &mut Expander,
     decorators: Vec<Expr>,
+    spans: Vec<Span>,
     target: Stmt,
     ctx: Context,
     trail: &std::rc::Rc<Vec<Frame>>,
 ) -> Result<Vec<Stmt>, String> {
     let mut current = vec![target];
-    for deco in decorators.into_iter().rev() {
+    // ⚠ 位置が欠けていても装飾子は落とさない（`zip` だと短い方で黙って切れる）。
+    let spans = spans.into_iter().map(Some).chain(std::iter::repeat(None));
+    for (deco, span) in decorators.into_iter().zip(spans).collect::<Vec<_>>().into_iter().rev() {
         // ⚠⚠ 装飾子は**式**（設計書 §1.6「装飾子にはクロージャも書ける」・タスク 4-8）。
         //   - `!name`          … 名前で登録されたメタ関数
         //   - `!alias`         … `const` に束縛したメタ関数（3-6 で展開時に評価される）
@@ -1078,6 +1120,12 @@ fn apply_decorators(
         //     ファクトリは既に返っているので、それ以外の意味は取りようがない。
         //     §1.3 の未決（外側のメタ関数の実行中に呼ばれた補助クロージャの `quote`）とは別の場合。
         let name = decorator_label(&deco);
+        // ⚠⚠ この装飾子の**出所**を先に積む（タスク 3-9）。以降の失敗はすべてこれを添える。
+        //   以前は位置を持っておらず、装飾子の失敗が**どの宣言のものか分からなかった**（実測）。
+        let mut frames = (**trail).clone();
+        if frames.len() < MAX_TRAIL {
+            frames.push(Frame { name: format!("!{name}"), span: span.unwrap_or_else(Span::unknown) });
+        }
         let callee = match &deco {
             Expr::Ident { name: n, .. } if ex.metafns.contains_key(n) => {
                 ex.interp.vm_load_name(n)
@@ -1090,14 +1138,16 @@ fn apply_decorators(
             _ => match ex.interp.eval(&deco) {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    return Err(ex.describe_failure(e, Stage::Decorator(&name)) + &render_trail(trail))
+                    return Err(
+                        ex.describe_failure(e, Stage::Decorator(&name)) + &render_trail(&frames)
+                    )
                 }
             },
         };
         let Some(callee) = callee else {
             return Err(format!(
                 "MetaError: decorator '!{name}' is not a metafunction declared before this point"
-            ));
+            ) + &render_trail(&frames));
         };
         if !is_callable(&callee) {
             return Err(format!(
@@ -1105,14 +1155,14 @@ fn apply_decorators(
                  (got '{}'); a decorator must be a metafunction, or an expression that \
                  returns one",
                 ex.interp.type_name(&callee)
-            ));
+            ) + &render_trail(&frames));
         }
         if current.len() != 1 {
             return Err(format!(
                 "MetaError: decorator '!{name}' cannot be applied — the inner decorator produced \
                  {} statements, and a decorator takes exactly one declaration",
                 current.len()
-            ));
+            ) + &render_trail(&frames));
         }
         // ⚠ 装飾子には**メタ情報**を渡す（タスク 4-0）。`parse_ar` の `Namespace` 木ではない。
         //   名前が無い宣言（`pass` など）は対象外なので、そこは弾かれている。
@@ -1121,12 +1171,8 @@ fn apply_decorators(
                 "MetaError: decorator '!{name}' cannot be applied to this declaration \
                  (meta information exists for classes, traits, enums, functions, fields \
                  and variable bindings)"
-            )
+            ) + &render_trail(&frames)
         })?;
-        let mut frames = (**trail).clone();
-        if frames.len() < MAX_TRAIL {
-            frames.push(Frame { name: name.clone(), span: Span::unknown() });
-        }
         let code = ex
             .call_for_code(callee, &name, vec![arg])
             .map_err(|e| e + &render_trail(&frames))?;
@@ -1440,6 +1486,78 @@ mod tests {
         assert!(pure.contains("note: 'frag' is a pure metafunction"), "{pure}");
         let other = explain_removed_metafn("NameError: 'other' is not defined".into(), &metafns);
         assert_eq!(other, "NameError: 'other' is not defined", "関係ない名前には書き添えない");
+    }
+
+    /// ⚠⚠ 宣言は**あるが**メタ情報を持たない種類に `^` を当てたら、**そう言う**（タスク 3-9）。
+    /// 以前は対象の種類だけを宣言表に入れていたので「前に何も宣言されていない」と誤報した（実測）。
+    #[test]
+    fn caret_on_a_metafn_says_what_it_is() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "\n",
+            "exprconst !fn show(m) -> None:\n",
+            "    quote code:\n",
+            "\n",
+            "show(^greet)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("`^greet` is not available — 'greet' is a placing metafunction"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠⚠ `^` が**実行時に**評価されたら「宣言されていない」ではない（タスク 3-9）。
+    /// `print(^T)` は位置制限（1-3）を通る（呼び先がメタ関数かはパース時に分からない）ので、
+    /// 展開器が評価しないまま実行時に来る。以前は「前に何も宣言されていない」と誤報した（実測）。
+    #[test]
+    fn caret_evaluated_at_run_time_says_so() {
+        let interp = Interpreter::new();
+        let err = interp.meta_lookup_error("Marker");
+        assert!(
+            err.contains("can only be evaluated while the compile-time expander runs"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠⚠ 装飾子の失敗は**どの宣言のものか**を位置で言う（タスク 3-9）。
+    /// `Expr::Ident` は位置を持たないので、以前は位置の無い診断になっていた（実測）。
+    #[test]
+    fn a_decorator_failure_points_at_the_decorator() {
+        let err = expand(concat!(
+            "exprconst fn not_a_deco() -> int:\n",
+            "    return 42\n",
+            "\n",
+            "!not_a_deco()\n",
+            "fn f() -> int:\n",
+            "    return 1\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("while expanding '!not_a_deco(...)' at") && err.contains("line 4, col 1"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠ メソッド形の射影（`has_field` など）も**どの射影か**を言う（タスク 3-9）。
+    #[test]
+    fn a_method_projection_that_does_not_fit_names_itself() {
+        let err = expand(concat!(
+            "fn helper() -> int:\n",
+            "    return 1\n",
+            "\n",
+            "exprconst !fn probe(m) -> None:\n",
+            "    let b = m.has_field(\"x\")\n",
+            "    quote code:\n",
+            "\n",
+            "probe(^helper)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("`.has_field()` needs a class or trait"),
+            "実際のエラー: {err}"
+        );
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。
@@ -1997,8 +2115,10 @@ mod tests {
             "wrong(^greet)\n",
         ))
         .expect_err("弾かれること");
+        // ⚠ **どの射影か**まで言う（タスク 3-9）。以前は「this projection」とだけ出て、
+        //   メタ関数の中に射影が幾つもあると、どれが間違いか分からなかった。
         assert!(
-            err.contains("this projection needs a class or trait"),
+            err.contains("`.fields` needs a class or trait, but 'greet' is a meta_function"),
             "実際のエラー: {err}"
         );
     }

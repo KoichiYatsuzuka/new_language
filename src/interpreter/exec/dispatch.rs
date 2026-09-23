@@ -49,11 +49,13 @@ impl Interpreter {
         }
 
         match stmt {
-            // ⚠ 展開器（Phase 2）が未実装なので、ここへ到達したら**メタ関数が展開されずに
-            //   実行まで来てしまった**ということ。黙って無視せず明示エラーにする。
+            // ⚠ ここへ到達したら**メタ関数が展開されずに実行まで来てしまった**ということ。
+            //   黙って無視せず明示エラーにする。
+            //   ⚠ 展開器が走らない入口はまだある（import 先のモジュール・REPL・デバッガ。
+            //     設計書 2-12）。以前の文面「展開器は未実装」は 2-2 の配線で嘘になっていた（3-9）。
             Stmt::MetaFnDef { name, .. } => Err(format!(
                 "MetaError: metafunction '{name}' was not expanded \
-                 (the compile-time expander is not implemented yet)"
+                 (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)"
             )),
             // ⚠ 装飾子は展開器（Phase 2）が AST から消す。ここへ来たのは展開が走っていない証拠。
             //   ⚠ 名前を出せるときは出す（`!deco` と書いた本人に届く診断にするため）。
@@ -65,12 +67,14 @@ impl Interpreter {
                 };
                 Err(format!(
                     "MetaError: {what} was not expanded \
-                     (the compile-time expander is not implemented yet)"
+                     (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)"
                 ))
             }
+            // ⚠ メタ関数の外の `quote` はパースで弾く（1-6）ので、ここへ来るのは
+            //   展開されなかったメタ関数の中身だけ。
             Stmt::Quote(_) => Err(
-                "MetaError: `quote` is only valid inside a metafunction \
-                 (the compile-time expander is not implemented yet)"
+                "MetaError: `quote` reached run time (it is only valid inside a metafunction, \
+                 which the expander removes before the program runs)"
                     .to_string(),
             ),
             Stmt::Expr(expr) => {

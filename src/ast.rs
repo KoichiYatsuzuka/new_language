@@ -1170,6 +1170,12 @@ pub enum Stmt {
     MetaDecorated {
         /// 上から順に並んだ装飾子式。識別子・属性アクセス・呼び出しが書ける。
         decorators: Vec<Expr>,
+        /// 各装飾子の `!` の位置（`decorators` と**同じ長さ・同じ順**・タスク 3-9）。
+        ///
+        /// ⚠ 展開時の診断の「どこで」に使う。`Expr::Ident` は位置を持たないので、
+        /// これが無いと装飾子の失敗が**どの宣言のものか分からない**（実測）。
+        /// ⚠ 組み立てるのはパーサの 1 か所だけ（`parse_meta_decorated`）。
+        spans: Vec<crate::token::Span>,
         /// 装飾される宣言。
         target: Box<Stmt>,
     },
