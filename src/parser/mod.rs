@@ -40,7 +40,7 @@ mod imports;
 #[cfg(feature = "editor")]
 #[path = "imports_editor.rs"]
 mod imports;
-mod classes;
+pub(crate) mod classes;
 mod types;
 mod exprs;
 // Python ソースからの行ベース型スタブ抽出。**両ビルドで使う**ので `imports/` の外に置く
@@ -242,6 +242,15 @@ impl Parser {
     /// （`node_counter` の doc）。⇒ 展開器が置いたコードも**同じカウンタから採番する**。
     pub(crate) fn node_counter(&self) -> std::rc::Rc<std::cell::Cell<u32>> {
         std::rc::Rc::clone(&self.node_counter)
+    }
+
+    /// パース中に集めた trait の宣言情報（タスク 2-4）。
+    ///
+    /// ⚠ 展開器がクラス本体の仕上げ（`finalize_class_body`）を走らせるのに要る。
+    /// 装飾子でメンバーが増えたクラスは、**展開後に**自動 `__init__` 生成と
+    /// trait デフォルト実装の注入をやり直す必要がある。
+    pub(crate) fn known_traits(&self) -> std::collections::HashMap<String, TraitInfo> {
+        self.known_traits.clone()
     }
 
     /// node-id カウンタを差し替える（設計書 §0.3 / タスク 2-1）。

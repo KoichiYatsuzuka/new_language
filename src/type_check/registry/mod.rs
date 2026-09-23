@@ -31,6 +31,11 @@ pub(super) struct TypeRegistry {
     trait_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>>,
     /// パース済みクラス・new_type 名の集合。`NamedInstance` の解決に使用する。
     known_class_names: HashSet<String>,
+    /// 未展開の `!装飾子` を本体に残しているクラス（タスク 2-4）。
+    ///
+    /// ⚠ 装飾子が何を足すか分からないので、このクラスの**メンバーの顔ぶれは未確定**。
+    /// 通常ビルドでは展開器が型検査の前に走る（2-2）ので常に空。
+    classes_with_unexpanded_decorators: HashSet<String>,
     /// `new_type Name: Original` の元の型名。キー: 新しい型名 → 元の型名。
     new_type_originals: HashMap<String, String>,
     /// クラスの基底クラス・トレイト名。継承チェック・protected アクセス検査に使用。
@@ -118,6 +123,17 @@ impl TypeRegistry {
     }
 
     /// クラスのフィールド詳細（種別・型）。
+    /// **メンバーの顔ぶれが未確定なクラス**か（タスク 2-4）。
+    ///
+    /// ⚠⚠ クラス本体に未展開の `!装飾子` が残っていると、装飾子が何を足すか分からない。
+    /// ⇒ そのクラスに対する**メンバー存在検査は答えを持たない**。
+    /// 通常ビルドでは展開器が型検査の前に走る（2-2）のでここは常に空になるが、
+    /// エディタ用 wasm は**わざと展開しない**（設計書 5-0）ので実際に効く。
+    /// ⚠ 「編集中だから」ではなく「**このクラスのメンバーが未確定だから**」で止める。
+    pub(crate) fn members_unresolved(&self, class_name: &str) -> bool {
+        self.classes_with_unexpanded_decorators.contains(class_name)
+    }
+
     pub(super) fn class_field_details(
         &self,
         class: &str,

@@ -236,36 +236,15 @@ impl Parser {
         }
         self.class_or_trait_depth -= 1;
 
-        // 仮想メソッドのオーバーライド検証とトレイト必須フィールドの収集
-        let trait_required =
-            self.collect_trait_fields_and_check_virtuals(&name, &bases_with_args, &body)?;
-
-        // 基底 trait のデフォルト実装を、クラスが定義していないものだけ注入する。
-        // ⚠ `generate_auto_init_if_needed` より**前**に行う。trait が `__init__` の
-        //    デフォルト実装を持つ場合、注入後の body を見て自動生成を抑止させたい。
-        self.inject_trait_default_methods(&name, &bases_with_args, &mut body)?;
-
-        // クラス自身のデフォルトなし mut/let フィールドを収集
-        let class_required: Vec<(String, String)> = body
-            .iter()
-            .filter_map(|s| {
-                if let Stmt::Field {
-                    name: fname,
-                    kind: FieldKind::Mut | FieldKind::Let,
-                    type_ann,
-                    default: None,
-                    ..
-                } = s
-                {
-                    Some((fname.clone(), type_ann.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // 必要に応じて __init__ を自動生成して body に追加
-        self.generate_auto_init_if_needed(&trait_required, &class_required, &mut body);
+        // ⚠⚠ **メンバーに装飾子が残っていたらここでは仕上げない**（タスク 2-4）。
+        //   自動 `__init__` 生成も trait デフォルト実装の注入も**メンバーの顔ぶれ**から
+        //   決まるので、展開で増える前に走らせると**展開で足したフィールド／メソッドが
+        //   反映されない**（`Page(title, hits)` が作れない、という形で実測した）。
+        //   ⇒ 展開器が本体を展開し終えてから `finalize_class_body` を呼ぶ。
+        //   ⚠ 装飾子が無いクラスは**従来どおりここで仕上げる**（挙動は一切変わらない）。
+        if !body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. })) {
+            finalize_class_body(&self.known_traits, &name, &bases_with_args, &mut body)?;
+        }
 
         Ok(Stmt::ClassDef {
             name,
@@ -279,30 +258,80 @@ impl Parser {
         })
     }
 
-    /// 継承トレイトの仮想メソッドオーバーライドを検証し、必須フィールドを収集する。
-    ///
-    /// 各基底トレイトについて:
-    /// 1. 仮想メソッドがクラス本体でオーバーライドされているか確認する
-    /// 2. デフォルト値なしのフィールドを `(トレイト名, フィールド名, 型名)` として収集する
-    ///
-    /// テンプレートトレイトの型変数は `concrete_args` で置換する。
-    ///
-    /// # 引数
-    /// - `class_name`: 検証対象のクラス名（エラーメッセージ用）
-    /// - `bases_with_args`: 基底トレイトと具体型引数のリスト
-    /// - `body`: クラス本体の文リスト
-    ///
-    /// # 戻り値
-    /// `(トレイト名, フィールド名, 解決済み型名)` のタプルリスト
-    ///
-    /// # エラー
-    /// 仮想メソッドがオーバーライドされていない場合
-    fn collect_trait_fields_and_check_virtuals(
-        &self,
-        class_name: &str,
-        bases_with_args: &[(String, Vec<String>)],
-        body: &[Stmt],
-    ) -> Result<Vec<(String, String, String)>, String> {
+}
+
+/// クラス本体の**仕上げ**（タスク 2-4）。次の 3 つを正しい順で行う:
+///
+/// 1. トレイト必須フィールドの収集と仮想メソッドのオーバーライド検証
+/// 2. 基底 trait のデフォルト実装の注入
+/// 3. 必要なら `__init__` の自動生成
+///
+/// ⚠⚠ **メンバーの顔ぶれが確定してから呼ぶこと。** 3 つとも「本体に何があるか」から
+/// 決まるので、装飾子で増える前に走らせると展開で足したフィールド／メソッドが
+/// 反映されない。⇒ 装飾子を含むクラスは**展開器が展開後に**ここを呼ぶ。
+///
+/// ⚠ 2 の注入は 3 より**前**。trait が `__init__` のデフォルト実装を持つ場合、
+/// 注入後の body を見て自動生成を抑止させたい。
+pub(crate) fn finalize_class_body(
+    known_traits: &std::collections::HashMap<String, crate::parser::TraitInfo>,
+    class_name: &str,
+    bases_with_args: &[(String, Vec<String>)],
+    body: &mut Vec<Stmt>,
+) -> Result<(), String> {
+    let trait_required =
+        collect_trait_fields_and_check_virtuals(known_traits, class_name, bases_with_args, body)?;
+    inject_trait_default_methods(known_traits, class_name, bases_with_args, body)?;
+    // クラス自身のデフォルトなし mut/let フィールドを収集
+    let class_required: Vec<(String, String)> = body
+        .iter()
+        .filter_map(|s| {
+            if let Stmt::Field {
+                name: fname,
+                kind: FieldKind::Mut | FieldKind::Let,
+                type_ann,
+                default: None,
+                ..
+            } = s
+            {
+                Some((fname.clone(), type_ann.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    generate_auto_init_if_needed(&trait_required, &class_required, body);
+    Ok(())
+}
+
+/// 継承トレイトの仮想メソッドオーバーライドを検証し、必須フィールドを収集する。
+///
+/// 各基底トレイトについて:
+/// 1. 仮想メソッドがクラス本体でオーバーライドされているか確認する
+/// 2. デフォルト値なしのフィールドを `(トレイト名, フィールド名, 型名)` として収集する
+///
+/// テンプレートトレイトの型変数は `concrete_args` で置換する。
+///
+/// # 引数
+/// - `class_name`: 検証対象のクラス名（エラーメッセージ用）
+/// - `bases_with_args`: 基底トレイトと具体型引数のリスト
+/// - `body`: クラス本体の文リスト
+///
+/// # 戻り値
+/// `(トレイト名, フィールド名, 解決済み型名)` のタプルリスト
+///
+/// # エラー
+/// 仮想メソッドがオーバーライドされていない場合
+/// トレイト必須フィールドの収集と仮想メソッドのオーバーライド検証（自由関数版）。
+///
+/// ⚠ **`self.known_traits` にしか触っていなかったので切り出した**（タスク 2-4）。
+/// 展開器も同じ処理を走らせる必要がある（展開で足したメンバーを見て判断したい）ので、
+/// `Parser` を持たない場所から呼べる形にしてある。
+pub(crate) fn collect_trait_fields_and_check_virtuals(
+    known_traits: &std::collections::HashMap<String, crate::parser::TraitInfo>,
+    class_name: &str,
+    bases_with_args: &[(String, Vec<String>)],
+    body: &[Stmt],
+) -> Result<Vec<(String, String, String)>, String> {
         let mut trait_required = Vec::new();
         // フィールド名 → 最初に宣言したトレイト名（複数トレイト間の名前衝突を検出するため）
         let mut seen_field_origins: HashMap<String, String> = HashMap::new();
@@ -315,7 +344,7 @@ impl Parser {
             })
             .collect();
         for (base, concrete_args) in bases_with_args {
-            if let Some(info) = self.known_traits.get(base).cloned() {
+            if let Some(info) = known_traits.get(base).cloned() {
                 let (trait_tparams, trait_fields, virtual_methods) =
                     (info.template_params, info.fields, info.virtual_methods);
                 // テンプレートパラメータ → 具体型 の変換マップを構築
@@ -406,12 +435,13 @@ impl Parser {
     ///   注釈は最適化ヒントであって意味論の根拠ではないので正しさには影響しない
     ///   （テンプレート実体化と同じ状況）。`SlotCache`/`AttrCache` は `Clone` が空を返すため
     ///   クラスごとに再解決される。
-    fn inject_trait_default_methods(
-        &mut self,
-        class_name: &str,
-        bases_with_args: &[(String, Vec<String>)],
-        body: &mut Vec<Stmt>,
-    ) -> Result<(), String> {
+/// 基底 trait のデフォルト実装を、クラスが定義していないものだけ注入する（自由関数版・タスク 2-4）。
+pub(crate) fn inject_trait_default_methods(
+    known_traits: &std::collections::HashMap<String, crate::parser::TraitInfo>,
+    class_name: &str,
+    bases_with_args: &[(String, Vec<String>)],
+    body: &mut Vec<Stmt>,
+) -> Result<(), String> {
         // クラス自身が定義しているメソッド名（これらは override なので注入しない）。
         let own_methods: Vec<String> = body
             .iter()
@@ -424,7 +454,7 @@ impl Parser {
         let mut seen: HashMap<String, String> = HashMap::new();
         let mut to_add: Vec<Stmt> = Vec::new();
         for (base, _args) in bases_with_args {
-            let Some(info) = self.known_traits.get(base).cloned() else {
+            let Some(info) = known_traits.get(base).cloned() else {
                 continue;
             };
             for m in &info.default_methods {
@@ -460,12 +490,12 @@ impl Parser {
     /// - `trait_required`: トレイトから継承した必須フィールド（トレイト名, フィールド名, 型名）
     /// - `class_required`: クラス自身の必須フィールド（フィールド名, 型名）
     /// - `body`: クラス本体の文リスト。生成した `__init__` を末尾に追加する
-    fn generate_auto_init_if_needed(
-        &self,
-        trait_required: &[(String, String, String)],
-        class_required: &[(String, String)],
-        body: &mut Vec<Stmt>,
-    ) {
+/// 必要なら `__init__` を自動生成して `body` に追加する（自由関数版・タスク 2-4）。
+pub(crate) fn generate_auto_init_if_needed(
+    trait_required: &[(String, String, String)],
+    class_required: &[(String, String)],
+    body: &mut Vec<Stmt>,
+) {
         // 必須フィールドが1つもなければ auto-init は不要
         if trait_required.is_empty() && class_required.is_empty() {
             return;
@@ -484,7 +514,7 @@ impl Parser {
                 name: n, params, ..
             } = s
             {
-                n == "__init__" && Self::init_sig_matches(&all_required, params)
+                n == "__init__" && Parser::init_sig_matches(&all_required, params)
             } else {
                 false
             }
@@ -562,8 +592,9 @@ impl Parser {
             decorators: vec![],
             access: Accessibility::Public,
         });
-    }
+}
 
+impl Parser {
     /// クラス定義のインデントブロックをパースして文のリストを返す。
     ///
     /// `parse_block()` と同様に `NEWLINE INDENT stmt* DEDENT` を処理するが、
@@ -666,7 +697,7 @@ impl Parser {
     ///
     /// ⚠ 展開器がクラス本体へ置く `Code` 用。最上位の `parse_program` で読むと
     /// `mut x: int` が「初期値の無い変数宣言」になって落ちるので、経路を分けている。
-    /// ⚠ `Indent` / `Dedent` は `code_to_stmts` が組み立てた相対段差なので、
+    /// ⚠ `Indent` / `Dedent` は展開器が組み立てた相対段差なので、
     /// ここでは**段差を無視して 1 文ずつ読む**（本体の入れ子は `parse_class_stmt` が見る）。
     pub(crate) fn parse_class_body_fragment(&mut self) -> Result<Vec<Stmt>, String> {
         let mut out = Vec::new();

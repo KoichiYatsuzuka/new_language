@@ -135,6 +135,7 @@ impl TypeRegistryBuilder {
                 trait_method_sigs: HashMap::new(),
                 trait_field_details: HashMap::new(),
                 known_class_names,
+                classes_with_unexpanded_decorators: HashSet::new(),
                 arrow_class_names: HashSet::new(),
                 new_type_originals,
                 class_bases,
@@ -227,6 +228,13 @@ impl TypeRegistryBuilder {
                 Stmt::ClassDef {
                     name, bases, base_args, body, template_params, ..
                 } => {
+                    // ⚠ 未展開の `!装飾子` が残っていたら、このクラスのメンバーは未確定。
+                    //   ⇒ メンバー存在検査を黙らせる（タスク 2-4）。
+                    if body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. })) {
+                        self.reg
+                            .classes_with_unexpanded_decorators
+                            .insert(name.clone());
+                    }
                     self.reg.known_class_names.insert(name.clone());
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {

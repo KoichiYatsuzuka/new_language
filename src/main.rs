@@ -370,6 +370,7 @@ fn run_program(
         .map_err(|e| format!("ParseError: {e}"))?;
     // ⚠ 展開器が置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
     let node_counter = parser.node_counter();
+    let known_traits = parser.known_traits();
     #[cfg(feature = "prof")]
     drop(_p_parse);
 
@@ -386,7 +387,7 @@ fn run_program(
     // ⚠⚠ **構文カバレッジより後**（上の早期 return）。展開すると `MetaFnDef` / `Quote` /
     //    `MetaDecorated` / `CodeBlock` が AST から消えるので、先に展開すると
     //    `syntax_cov` が「その構文は一度も書かれていない」と報告してしまう。
-    stmts = meta_expand::expand_program(stmts, node_counter)?;
+    stmts = meta_expand::expand_program(stmts, node_counter, known_traits)?;
 
     // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
     // ⚠ **配線は 1 箇所**（#88。`resolve_and_annotate` の doc に「畳んだ差」と
@@ -678,11 +679,12 @@ fn compile_module(path: &str) {
     });
     // ⚠ 置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
     let node_counter = parser.node_counter();
+    let known_traits = parser.known_traits();
 
     // メタ関数の展開（タスク 2-2）。
     // ⚠⚠ **通常実行と同じ場所に入れること。** 片方だけ直すと「実行では展開されるが
     //    コンパイルでは展開されない」という最悪の食い違いになる（設計書 2-2）。
-    let mut stmts = meta_expand::expand_program(stmts, node_counter).unwrap_or_else(|e| {
+    let mut stmts = meta_expand::expand_program(stmts, node_counter, known_traits).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });

@@ -899,6 +899,11 @@ impl TypeChecker {
         if UNIVERSAL_INSTANCE_METHODS.contains(&member) {
             return true;
         }
+        // ⚠⚠ 未展開の `!装飾子` を持つクラスは**メンバーの顔ぶれが未確定**（タスク 2-4）。
+        //    装飾子が何を足すか分からないので「無い」と言い切れない。⇒ 通す。
+        if self.registry.members_unresolved(class_name) {
+            return true;
+        }
         // 1. protocol は要求メンバーが別の表にある。
         if let Some(p) = self.registry.protocol(class_name) {
             return p.fields.iter().any(|f| f.name == member)

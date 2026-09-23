@@ -119,10 +119,6 @@ fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
 ///
 /// ⚠ 行に持っているのは**断片先頭からの相対インデント**なので、`Indent` / `Dedent` を
 /// ここで作り直す。字句解析はやり直さない（トークンはもう持っている）。
-pub fn code_to_stmts(lines: &[CodeLine]) -> Result<Vec<Stmt>, String> {
-    code_to_stmts_in(lines, Context::TopLevel)
-}
-
 /// 置き先の文脈。**読み方が変わる**ので区別が要る（タスク 2-0）。
 ///
 /// ⚠⚠ `mut x: int` は最上位では「初期値の無い変数宣言」でエラー、クラス本体では
@@ -134,11 +130,6 @@ pub enum Context {
     TopLevel,
     /// クラス／トレイト本体。
     TypeBody,
-}
-
-/// 置き先の文脈を指定して `Code` を文の列へ戻す。
-pub fn code_to_stmts_in(lines: &[CodeLine], ctx: Context) -> Result<Vec<Stmt>, String> {
-    code_to_stmts_with(lines, ctx, None)
 }
 
 /// 置き先の文脈と **node-id カウンタ**を指定して `Code` を文の列へ戻す（タスク 2-1）。
@@ -214,6 +205,11 @@ struct Expander {
     interp: Interpreter,
     /// 歩数（`STEP_BUDGET` の判定用）。
     steps: usize,
+    /// パース時に集めた trait の宣言情報（タスク 2-4）。
+    ///
+    /// ⚠ 装飾子でメンバーが増えたクラスは、**展開後に** `finalize_class_body` を
+    /// 走らせないと自動 `__init__` に増えたフィールドが入らない。
+    known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
     /// 置いたコードを採番する node-id カウンタ（設計書 §0.3 / タスク 2-1）。
     ///
     /// ⚠⚠ **本体をパースしたパーサと同じものを渡す。** 別のカウンタだと node-id が
@@ -223,11 +219,15 @@ struct Expander {
 }
 
 impl Expander {
-    fn new(node_counter: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
+    fn new(
+        node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+        known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
+    ) -> Self {
         Self {
             metafns: std::collections::HashMap::new(),
             interp: Interpreter::new(),
             steps: 0,
+            known_traits,
             node_counter,
         }
     }
@@ -295,8 +295,9 @@ impl Expander {
 pub fn expand_program(
     stmts: Vec<Stmt>,
     node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+    known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
 ) -> Result<Vec<Stmt>, String> {
-    let mut ex = Expander::new(node_counter);
+    let mut ex = Expander::new(node_counter, known_traits);
     expand_stmts(&mut ex, stmts, Context::TopLevel)
 }
 
@@ -354,7 +355,26 @@ fn expand_stmts(
                 body,
                 decorators,
             } => {
-                let body = expand_stmts(ex, body, Context::TypeBody)?;
+                // ⚠⚠ 装飾子があったクラスは**パース時に仕上げを保留してある**
+                //    （タスク 2-4。`parse_class_def` を参照）。展開でメンバーが確定した
+                //    ここで自動 `__init__` 生成と trait デフォルト実装の注入を行う。
+                //    保留していなければ二重に走らせない（顔ぶれは変わっていない）。
+                let deferred = body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. }));
+                let mut body = expand_stmts(ex, body, Context::TypeBody)?;
+                if deferred {
+                    let bases_with_args: Vec<(String, Vec<String>)> = bases
+                        .iter()
+                        .cloned()
+                        .zip(base_args.iter().cloned())
+                        .collect();
+                    crate::parser::classes::finalize_class_body(
+                        &ex.known_traits,
+                        &name,
+                        &bases_with_args,
+                        &mut body,
+                    )
+                    .map_err(|e| format!("MetaError: while finishing class '{name}': {e}"))?;
+                }
                 out.push(Stmt::ClassDef {
                     name,
                     template_params,
@@ -458,16 +478,22 @@ mod tests {
     /// パースして、文の列と**そのパーサが使った node-id カウンタ**を返す。
     ///
     /// ⚠ カウンタを展開器へ渡すのが要点（設計書 §0.3 / タスク 2-1）。
-    fn parse(src: &str) -> Result<(Vec<Stmt>, std::rc::Rc<std::cell::Cell<u32>>), String> {
+    type Parsed = (
+        Vec<Stmt>,
+        std::rc::Rc<std::cell::Cell<u32>>,
+        std::collections::HashMap<String, crate::parser::TraitInfo>,
+    );
+
+    fn parse(src: &str) -> Result<Parsed, String> {
         let tokens = crate::lexer::Lexer::new(src, "").tokenize();
         let mut parser = crate::parser::Parser::new(tokens, None);
         let stmts = parser.parse_program()?;
-        Ok((stmts, parser.node_counter()))
+        Ok((stmts, parser.node_counter(), parser.known_traits()))
     }
 
     fn expand(src: &str) -> Result<Vec<Stmt>, String> {
-        let (stmts, counter) = parse(src)?;
-        expand_program(stmts, counter)
+        let (stmts, counter, traits) = parse(src)?;
+        expand_program(stmts, counter, traits)
     }
 
     /// メタ関数の定義は**登録されて AST から消える**（設計書 §1.7）。
@@ -590,11 +616,11 @@ mod tests {
             "let c = other\n",
             "place_it()\n",
         );
-        let (stmts, counter) = parse(src).expect("parse");
+        let (stmts, counter, traits) = parse(src).expect("parse");
         // 本体をパースし終えた時点の採番位置。置いたコードはこれより**後ろ**から採番される。
         let before = counter.get();
         assert!(before > 0, "本体が node-id を採番していること");
-        let out = expand_program(stmts, std::rc::Rc::clone(&counter)).expect("expand");
+        let out = expand_program(stmts, std::rc::Rc::clone(&counter), traits).expect("expand");
 
         let mut ids: Vec<u32> = Vec::new();
         collect_node_ids(&out, &mut ids);
@@ -649,7 +675,7 @@ mod tests {
             "        let <! n !> = 1\n",         // 3 行目 ← ここを指してほしい
             "    return a\n",
         );
-        let (stmts, _) = parse(src).expect("parse");
+        let (stmts, _, _) = parse(src).expect("parse");
         let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
         let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
         assert_eq!(lines[0].span.line, 3, "行の位置が記録されていること");
@@ -692,7 +718,45 @@ mod tests {
         )
         .expect("expand");
         let Stmt::ClassDef { body, .. } = &out[0] else { panic!("ClassDef を期待") };
-        assert_eq!(body.len(), 1);
-        assert!(matches!(&body[0], Stmt::Field { name, .. } if name == "tagged"));
+        let fields: Vec<&str> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fields, vec!["tagged"], "装飾された宣言が置き換わっていること");
+    }
+
+    /// ⚠⚠ **自動 `__init__` は展開で増えたフィールドを見ていなければならない**（タスク 2-4）。
+    /// パース時に生成していた頃は、装飾子が足したフィールドが引数に入らず
+    /// 「そのフィールドを渡せないクラス」ができていた（実測）。
+    #[test]
+    fn the_auto_init_sees_fields_added_by_a_decorator() {
+        let out = expand(concat!(
+            "exprconst !fn add_counter(target) -> None:\n",
+            "    quote code:\n",
+            "        mut hits: int\n",
+            "\n",
+            "class Page:\n",
+            "    mut title: str\n",
+            "    !add_counter\n",
+            "    mut placeholder: int\n",
+        ))
+        .expect("expand");
+        let Stmt::ClassDef { body, .. } = &out[0] else { panic!("ClassDef を期待") };
+        let init = body
+            .iter()
+            .find_map(|s| match s {
+                Stmt::FnDef { name, params, .. } if name == "__init__" => Some(params),
+                _ => None,
+            })
+            .expect("自動 `__init__` が生成されていること");
+        let names: Vec<&str> = init.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["self", "title", "hits"],
+            "装飾子が足した `hits` が引数に入り、置き換えられた `placeholder` は消えていること"
+        );
     }
 }

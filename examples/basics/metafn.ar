@@ -74,6 +74,25 @@ fn original() -> str:
 
 print(decorated())                  # produced by a decorator
 
+print("=== クラス本体への配置 ===")
+
+# ⚠ 置き先がクラス本体だと `mut x: int` は**フィールド宣言**として読まれる。
+#   同じ `Code` でも置き先で読み方が変わる。
+# ⚠ 自動 `__init__` の生成は**展開後**に走る（タスク 2-4）。⇒ 装飾子が足した
+#   フィールドがちゃんと引数に入る。パース時に生成していた頃は入らなかった。
+exprconst !fn add_counter(target) -> None:
+    quote code:
+        mut hits: int
+
+class Page:
+    mut title: str
+    !add_counter
+    mut placeholder: int
+
+mut page = Page("top", 0)
+print(page.title)                   # top
+print(page.hits)                    # 0
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。
