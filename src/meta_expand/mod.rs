@@ -136,6 +136,21 @@ pub enum Context {
 
 /// 置き先の文脈を指定して `Code` を文の列へ戻す。
 pub fn code_to_stmts_in(lines: &[CodeLine], ctx: Context) -> Result<Vec<Stmt>, String> {
+    code_to_stmts_with(lines, ctx, None)
+}
+
+/// 置き先の文脈と **node-id カウンタ**を指定して `Code` を文の列へ戻す（タスク 2-1）。
+///
+/// ⚠⚠ **カウンタを渡さないと採番が 0 から始まり、本体の node-id と衝突する。**
+/// node-id はプログラム全体で一意という前提で注釈が引かれる（設計書 §0.3）ので、
+/// 衝突すると**別のノードの注釈を読む**。⇒ 展開器は必ず渡す。
+/// ⚠ 同じ `Code` を 2 回置いても、そのたびにパースし直すので採番は自然に分かれる
+/// （AST を複製して配り回さないので「クローン時の再採番」が要らない設計になっている）。
+pub fn code_to_stmts_with(
+    lines: &[CodeLine],
+    ctx: Context,
+    counter: Option<std::rc::Rc<std::cell::Cell<u32>>>,
+) -> Result<Vec<Stmt>, String> {
     let mut tokens: Vec<Spanned> = Vec::new();
     let unknown = || Span::unknown();
     let mut depth: i32 = 0;
@@ -169,6 +184,9 @@ pub fn code_to_stmts_in(lines: &[CodeLine], ctx: Context) -> Result<Vec<Stmt>, S
     tokens.push(Spanned { token: Token::Eof, span: unknown() });
 
     let mut parser = crate::parser::Parser::new(tokens, None);
+    if let Some(c) = counter {
+        parser.set_node_counter(c);
+    }
     let parsed = match ctx {
         Context::TopLevel => parser.parse_program(),
         Context::TypeBody => parser.parse_class_body_fragment(),
@@ -191,15 +209,27 @@ struct Expander {
     interp: Interpreter,
     /// 歩数（`STEP_BUDGET` の判定用）。
     steps: usize,
+    /// 置いたコードを採番する node-id カウンタ（設計書 §0.3 / タスク 2-1）。
+    ///
+    /// ⚠⚠ **本体をパースしたパーサと同じものを渡す。** 別のカウンタだと node-id が
+    /// 衝突し、型検査の注釈が**別のノードのもの**になる（per-module 採番で実際に
+    /// FFI 境界検査の誤検知が再現した — `Parser::node_counter` の doc）。
+    node_counter: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
 impl Expander {
-    fn new() -> Self {
+    fn new(node_counter: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
         Self {
             metafns: std::collections::HashMap::new(),
             interp: Interpreter::new(),
             steps: 0,
+            node_counter,
         }
+    }
+
+    /// 置き先の文脈に合わせて `Code` を文へ戻す（採番は本体と共有）。
+    fn place(&self, code: &[CodeLine], ctx: Context) -> Result<Vec<Stmt>, String> {
+        code_to_stmts_with(code, ctx, Some(std::rc::Rc::clone(&self.node_counter)))
     }
 
     /// メタ関数を「普通の関数」としてインタプリタに登録する。
@@ -257,8 +287,11 @@ impl Expander {
 ///
 /// ⚠⚠ **`resolve_and_annotate` より前に走らせること。** 展開で生えた宣言を
 /// リゾルバ・型検査・VM が見られるようにするため。配線は 2-2。
-pub fn expand_program(stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String> {
-    let mut ex = Expander::new();
+pub fn expand_program(
+    stmts: Vec<Stmt>,
+    node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+) -> Result<Vec<Stmt>, String> {
+    let mut ex = Expander::new(node_counter);
     expand_stmts(&mut ex, stmts, Context::TopLevel)
 }
 
@@ -292,7 +325,7 @@ fn expand_stmts(
                 let name = placing_call_name(ex, func).expect("checked by the guard");
                 let vals = eval_args(ex, args)?;
                 let code = ex.call_metafn(&name, vals)?;
-                let placed = code_to_stmts_in(&code, ctx)?;
+                let placed = ex.place(&code, ctx)?;
                 // ⚠ **置いたものを先に歩く**。置いたコードがさらにメタ関数を呼ぶことはある。
                 for s in placed.into_iter().rev() {
                     pending.push_front(s);
@@ -402,7 +435,7 @@ fn apply_decorators(
         }
         let arg = crate::interpreter::ast_value::stmt_to_value(&current[0]);
         let code = ex.call_metafn(name, vec![arg])?;
-        current = code_to_stmts_in(&code, ctx)?;
+        current = ex.place(&code, ctx)?;
     }
     Ok(current)
 }
@@ -413,18 +446,23 @@ mod tests {
 
     /// ソースを展開して、残った文の種別名を並べたものを返す。
     fn expand_kinds(src: &str) -> Result<Vec<&'static str>, String> {
-        let stmts = parse(src)?;
-        let out = expand_program(stmts)?;
+        let out = expand(src)?;
         Ok(out.iter().map(crate::interpreter::tw_stats::stmt_kind_of).collect())
     }
 
-    fn parse(src: &str) -> Result<Vec<Stmt>, String> {
+    /// パースして、文の列と**そのパーサが使った node-id カウンタ**を返す。
+    ///
+    /// ⚠ カウンタを展開器へ渡すのが要点（設計書 §0.3 / タスク 2-1）。
+    fn parse(src: &str) -> Result<(Vec<Stmt>, std::rc::Rc<std::cell::Cell<u32>>), String> {
         let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-        crate::parser::Parser::new(tokens, None).parse_program()
+        let mut parser = crate::parser::Parser::new(tokens, None);
+        let stmts = parser.parse_program()?;
+        Ok((stmts, parser.node_counter()))
     }
 
     fn expand(src: &str) -> Result<Vec<Stmt>, String> {
-        expand_program(parse(src)?)
+        let (stmts, counter) = parse(src)?;
+        expand_program(stmts, counter)
     }
 
     /// メタ関数の定義は**登録されて AST から消える**（設計書 §1.7）。
@@ -529,6 +567,67 @@ mod tests {
         )
         .expect("expand");
         assert_eq!(kinds, vec!["Expr"], "呼び出し文が展開されずに残る");
+    }
+
+    /// ⚠⚠ 置いたコードの node-id は**本体と衝突してはならない**（設計書 §0.3 / タスク 2-1）。
+    /// 衝突すると型検査の注釈が**別のノードのもの**になる（per-module 採番で FFI 境界検査の
+    /// 誤検知が実際に再現した）。⇒ 展開器は本体と同じカウンタから採番する。
+    #[test]
+    fn placed_nodes_do_not_reuse_node_ids() {
+        let src = concat!(
+            "exprconst !fn place_it() -> None:\n",
+            "    quote code:\n",
+            "        let placed = other\n",
+            "\n",
+            "let other = 1\n",
+            "let a = other\n",
+            "let b = other\n",
+            "let c = other\n",
+            "place_it()\n",
+        );
+        let (stmts, counter) = parse(src).expect("parse");
+        // 本体をパースし終えた時点の採番位置。置いたコードはこれより**後ろ**から採番される。
+        let before = counter.get();
+        assert!(before > 0, "本体が node-id を採番していること");
+        let out = expand_program(stmts, std::rc::Rc::clone(&counter)).expect("expand");
+
+        let mut ids: Vec<u32> = Vec::new();
+        collect_node_ids(&out, &mut ids);
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "node-id が重複している: {ids:?}");
+        assert!(!ids.contains(&0), "未採番（0）が混ざっている: {ids:?}");
+        // ⚠⚠ **これが本命の検査**。カウンタを共有していなければ置いたコードは 1 から
+        //   採番され、`before` を超える id は 1 つも出ない（＝ここで落ちる）。
+        assert!(
+            ids.iter().any(|id| *id > before),
+            "置いたコードが本体と同じカウンタから採番されていない (before={before}, ids={ids:?})"
+        );
+    }
+
+    /// テスト用: 文の列に現れる `Expr::Ident` の node-id を集める。
+    fn collect_node_ids(stmts: &[Stmt], out: &mut Vec<u32>) {
+        for st in stmts {
+            crate::stmt_walk::each_subpart(st, &mut |part| {
+                if let crate::stmt_walk::StmtPart::Expr(e) = part {
+                    collect_expr_ids(e, out);
+                }
+            });
+
+        }
+    }
+
+    fn collect_expr_ids(e: &Expr, out: &mut Vec<u32>) {
+        if let Expr::Ident { node_id, .. } = e {
+            out.push(*node_id);
+        }
+        crate::expr_walk::each_subpart(e, &mut |sub| {
+            if let crate::expr_walk::SubPart::Plain(x) | crate::expr_walk::SubPart::Control(x) = sub
+            {
+                collect_expr_ids(x, out);
+            }
+        });
     }
 
     /// クラス本体のメンバー装飾子もその場で展開される。

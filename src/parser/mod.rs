@@ -235,6 +235,24 @@ impl Parser {
         set
     }
 
+    /// この `Parser` が使っている node-id カウンタ（設計書 §0.3 / タスク 2-1）。
+    ///
+    /// ⚠⚠ **node-id はプログラム全体で一意**でなければならない。per-module 採番にしたら
+    /// **別モジュールの注釈を読んでしまい、FFI 境界検査で誤検知が実際に再現した**
+    /// （`node_counter` の doc）。⇒ 展開器が置いたコードも**同じカウンタから採番する**。
+    pub(crate) fn node_counter(&self) -> std::rc::Rc<std::cell::Cell<u32>> {
+        std::rc::Rc::clone(&self.node_counter)
+    }
+
+    /// node-id カウンタを差し替える（設計書 §0.3 / タスク 2-1）。
+    ///
+    /// ⚠ **パースを始める前に呼ぶこと。** 途中で差し替えると採番が飛ぶ。
+    /// ⚠ import のサブパーサが `sub.node_counter = self.node_counter.clone()` としているのと
+    /// 同じことを、`src/parser/` の外（展開器）からできるようにしたもの。
+    pub(crate) fn set_node_counter(&mut self, counter: std::rc::Rc<std::cell::Cell<u32>>) {
+        self.node_counter = counter;
+    }
+
     /// AST 型解決層の node-id を1つ採番する（タスク #16）。1 始まり（0 = 未採番）。
     /// カウンタはサブパーサと共有しているので、プログラム全体で一意になる。
     fn next_node_id(&mut self) -> u32 {
