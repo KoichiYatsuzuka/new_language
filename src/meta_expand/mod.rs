@@ -61,11 +61,23 @@ use crate::token::{Span, Spanned, Token};
 /// ⚠ 返す名前は**普通の識別子**なので、利用者が同じ綴りを自分で書いていればぶつかる。
 ///    そのときは二重宣言エラーになる（黙って壊れない）。
 const PRELUDE: &str = "\
+class MetaAbort(Error):
+    pass
+
+fn compile_error(message: str) -> None:
+    raise MetaAbort(message)
+
 fn gensym(prefix: str) -> str:
     static mut gensym_counter = 0
     gensym_counter = gensym_counter + 1
     return prefix + \"__\" + str(gensym_counter)
 ";
+
+/// `compile_error` が投げる例外の名前（タスク 3-2）。
+///
+/// ⚠ 整形済みの報告からこの名前を探して、**利用者の書いた文面だけ**を出す。
+/// traceback ごと出すと「展開器の内部が漏れている」ようにしか見えない。
+const ABORT_CLASS: &str = "MetaAbort";
 
 /// 1 回の展開で歩ける文の数の上限（設計書 タスク 2-6）。
 ///
@@ -326,6 +338,18 @@ impl Expander {
         }
     }
 
+    /// `compile_error("...")` で止めたときの文面を取り出す（タスク 3-2）。
+    ///
+    /// ⚠ **利用者が書いた文面だけを出す。** メタ関数の作者が「こう書いてはいけない」と
+    /// 伝えるための道具なので、展開器の traceback を被せると肝心の一文が埋もれる。
+    fn compile_error_message(report: &str) -> Option<String> {
+        let head = format!("{ABORT_CLASS}: ");
+        let i = report.rfind(&head)? + head.len();
+        let rest = &report[i..];
+        let end = rest.find('\n').unwrap_or(rest.len());
+        Some(rest[..end].trim_end().to_string())
+    }
+
     /// 展開時の `NameError` が**実行時の宣言**を指していたら、そう言い直す（設計書 §1.8）。
     ///
     /// ⚠ 例外の実体から名前を取り出す API が無いので、整形済みの報告から拾っている。
@@ -414,6 +438,10 @@ impl Expander {
                     .take_current_exception()
                     .map(|r| Interpreter::format_error_report(&r))
                     .unwrap_or_else(|| "(no details available)".to_string());
+                // ⚠ `compile_error` は**利用者が意図して止めた**印。最優先で、文面だけ出す。
+                if let Some(msg) = Self::compile_error_message(&detail) {
+                    return Err(format!("MetaError: {msg} (raised by metafunction '{name}')"));
+                }
                 if let Some(hint) = self.runtime_name_hint(&detail) {
                     return Err(format!("MetaError: while expanding '{name}': {hint}"));
                 }
@@ -758,6 +786,44 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// `compile_error("...")` は**利用者が意図して展開を止める**道具（タスク 3-2）。
+    /// ⚠ 出るのは**書いた文面だけ**。traceback を被せると肝心の一文が埋もれる。
+    #[test]
+    fn compile_error_reports_only_the_authors_message() {
+        let err = expand(concat!(
+            "exprconst !fn need_positive(n: int) -> None:\n",
+            "    if n <= 0:\n",
+            "        compile_error(\"need_positive requires a positive literal\")\n",
+            "    quote code:\n",
+            "        print(1)\n",
+            "\n",
+            "need_positive(0)\n",
+        ))
+        .expect_err("止まること");
+        assert!(
+            err.contains("need_positive requires a positive literal"),
+            "実際のエラー: {err}"
+        );
+        assert!(!err.contains("Traceback"), "traceback が被さっている: {err}");
+        assert!(!err.contains("MetaAbort"), "内部の例外名が漏れている: {err}");
+    }
+
+    /// ⚠ 条件を満たすときは**普通に置く**（`compile_error` が常に止めてしまわないこと）。
+    #[test]
+    fn compile_error_does_not_fire_when_the_check_passes() {
+        let out = expand(concat!(
+            "exprconst !fn need_positive(n: int) -> None:\n",
+            "    if n <= 0:\n",
+            "        compile_error(\"nope\")\n",
+            "    quote code:\n",
+            "        let accepted = 1\n",
+            "\n",
+            "need_positive(5)\n",
+        ))
+        .expect("expand");
+        assert!(matches!(&out[0], Stmt::Let(n, _, _) if n == "accepted"));
     }
 
     /// ⚠⚠ 同じメタ関数を 2 回呼ぶと、置いたコードの局所名がぶつかる（タスク 3-1）。

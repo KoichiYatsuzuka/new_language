@@ -1,0 +1,29 @@
+# metafn_compile_error.ar — メタ関数が自分で展開を止める（タスク 3-2）。
+#
+# `compile_error("...")` はメタ関数の作者が「こう書いてはいけない」と伝えるための道具。
+# 展開をその場で止め、**書いた文面だけ**を出す。
+#
+# ⚠ traceback を被せると肝心の一文が埋もれるので、展開器の内部は出さない。
+#
+# ⚠⚠ **展開は実行の前に全部終わる。** 下の `repeat(1)` は正しく置かれるが、
+#   その後の `repeat(0)` が展開を止めるので**何も印字されない**。
+#   「途中まで動いてから止まる」のではない。
+#
+# ⚠ 成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   MetaError: repeat() needs a positive count (raised by metafunction 'repeat')
+
+# 条件を満たすときは普通に置く。
+exprconst !fn repeat(times: int) -> None:
+    if times <= 0:
+        compile_error("repeat() needs a positive count")
+    quote code:
+        print("placed")
+
+repeat(1)
+
+# ここで止まる。
+repeat(0)
+
+print("unreachable")
