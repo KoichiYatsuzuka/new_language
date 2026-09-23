@@ -280,6 +280,11 @@ impl Interpreter {
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
+            // `Code + Code` — 行の連結（設計書 §1.2 / タスク 2-10）。
+            // ⚠ 新しい `Code` を作る（左辺を壊さない）。`str` / `list` の連結と同じ。
+            (BinOp::Add, Value::Code(a), Value::Code(b)) => {
+                Ok(Value::Code(Rc::new(crate::meta_expand::code_concat(a, b))))
+            }
             // str * int / int * str → repeat
             (BinOp::Mul, Value::Str(s), Value::Int(n)) => {
                 Ok(Value::str(s.repeat((*n).max(0) as usize)))

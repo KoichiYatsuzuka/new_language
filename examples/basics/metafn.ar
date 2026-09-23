@@ -187,6 +187,38 @@ fn triple(x: int) -> int:
 
 print(triple(4))                    # 12（本体が残っている）
 
+print("=== 関数を包む装飾子（Code の演算）===")
+
+# ⚠⚠ **Python のデコレータで一番よくある形**：元の関数を別名で残し、
+#   同名のラッパーを置く。Arrow では展開時にコードを組み立てて実現する。
+# ⚠ `Code` の演算（設計書 §1.2）: `+`（連結）/ `.indent()` / `.dedent()` / 1 行ずつの反復。
+#   `.indent()` はメソッド形なので `+` より強く結合する。
+# ⚠ 0 未満になる行が生じる `.dedent()` はエラー。
+exprconst !fn logged(m) -> None:
+    let impl_name = m.name + "_impl"
+    # 元の本体（1 行目の `fn ...:` 以外）を取り出す
+    mut first = True
+    mut rest = code:
+    for line in m.code():
+        if first:
+            first = False
+        else:
+            rest = rest + line
+    let head = code:
+        fn <! impl_name !>(x: int) -> int:
+    let wrapper = code:
+        fn <! m.name !>(x: int) -> int:
+            print("calling the wrapped function")
+            return <! impl_name !>(x)
+    quote head + rest + wrapper
+
+!logged
+fn double(x: int) -> int:
+    let y = x * 2
+    return y
+
+print(double(21))                   # calling the wrapped function / 42
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。

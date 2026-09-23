@@ -269,6 +269,8 @@ impl Interpreter {
                 let g = gen.borrow();
                 Ok(g.values[g.index..].to_vec())
             }
+            // `Code` は 1 行ずつ（タスク 2-10）。⚠ `make_for_iterator` と同じ規則。
+            Value::Code(lines) => Ok(crate::meta_expand::code_lines_as_values(&lines)),
             other => Err(format!(
                 "TypeError: '{}' object is not iterable",
                 self.type_name(&other)

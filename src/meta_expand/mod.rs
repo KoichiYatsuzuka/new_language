@@ -171,6 +171,51 @@ fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
     Ok(Spanned { token, span: span.clone() })
 }
 
+// ── `Code` の演算（設計書 §1.2 / タスク 2-10）─────────────────────────────
+
+/// `a + b` — 行を**そのまま**つなぐ（設計書 §1.2）。
+///
+/// ⚠ 段数は各断片の先頭からの相対なので、**同じ段から始まる断片どうし**なら何も直さずに
+/// つなげる。段をずらしたいときは `.indent()` を先にかける（メソッド形なので `+` より強く
+/// 結合する —— `a + b.indent()` は `a + (b.indent())`）。
+pub fn code_concat(a: &[CodeLine], b: &[CodeLine]) -> Vec<CodeLine> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    out.extend_from_slice(a);
+    out.extend_from_slice(b);
+    out
+}
+
+/// `.indent()` / `.dedent()` — 全行の段数を `delta` だけずらす（設計書 §1.2）。
+///
+/// ⚠⚠ **0 未満になる行が生じる操作はエラー**（§1.2）。黙って 0 で止めると、
+/// 入れ子の関係が崩れた断片が「それらしく」置かれてしまう。
+pub fn code_shift(lines: &[CodeLine], delta: i32) -> Result<Vec<CodeLine>, String> {
+    let mut out = Vec::with_capacity(lines.len());
+    for l in lines {
+        let indent = l.indent + delta;
+        if indent < 0 {
+            return Err(format!(
+                "`.dedent()` would move a line of this `Code` left of its start \
+                 (line indent {} - 1 < 0); dedent only what was indented",
+                l.indent
+            ));
+        }
+        out.push(CodeLine { pieces: l.pieces.clone(), indent, span: l.span.clone() });
+    }
+    Ok(out)
+}
+
+/// 1 行ずつの反復（設計書 §1.2）。各要素は**1 行だけの `Code`**。
+///
+/// ⚠ 段数はそのまま運ぶ（相対のまま）。行ごとに `.indent()` してつなぎ直す、のような
+/// 使い方で、元の入れ子を保てるように。
+pub fn code_lines_as_values(lines: &[CodeLine]) -> Vec<Value> {
+    lines
+        .iter()
+        .map(|l| Value::Code(Rc::new(vec![l.clone()])))
+        .collect()
+}
+
 /// スプライスした `str` が**そのまま 1 つの識別子として字句解析される**ことを確かめる（タスク 4-3）。
 ///
 /// ⚠⚠ **字句規則を自前で書き直さない。** 本物の字句解析器にかけて「`Ident` がちょうど
@@ -972,6 +1017,80 @@ mod tests {
             ex.interp.is_meta_expanding(),
             "展開器のインタプリタが出力先を切り替えていない"
         );
+    }
+
+    /// ⚠⚠ **装飾子で関数を包む**（タスク 2-10 の本来の用途）。元の本体を別名で残し、
+    /// 同名のラッパーを置く。`Code` の `+` と 1 行ずつの反復が無いと書けない。
+    #[test]
+    fn a_decorator_can_wrap_a_function_keeping_its_body() {
+        let out = expand(concat!(
+            "exprconst !fn logged(m) -> None:\n",
+            "    let impl_name = m.name + \"_impl\"\n",
+            "    mut first = True\n",
+            "    mut rest = code:\n",
+            "    for line in m.code():\n",
+            "        if first:\n",
+            "            first = False\n",
+            "        else:\n",
+            "            rest = rest + line\n",
+            "    let head = code:\n",
+            "        fn <! impl_name !>(x: int) -> int:\n",
+            "    let wrapper = code:\n",
+            "        fn <! m.name !>(x: int) -> int:\n",
+            "            return <! impl_name !>(x)\n",
+            "    quote head + rest + wrapper\n",
+            "\n",
+            "!logged\n",
+            "fn double(x: int) -> int:\n",
+            "    let y = x * 2\n",
+            "    return y\n",
+        ))
+        .expect("expand");
+        let fns: Vec<(&str, usize)> = out
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::FnDef { name, body, .. } => Some((name.as_str(), body.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fns,
+            vec![("double_impl", 2), ("double", 1)],
+            "元の本体（2 文）が別名で残り、同名のラッパーが置かれること"
+        );
+    }
+
+    /// `.indent()` はメソッド形で `+` より強く結合する（§1.2）。`if` の中へ入れられる。
+    #[test]
+    fn indent_nests_a_fragment_under_another() {
+        let out = expand(concat!(
+            "exprconst !fn guarded() -> None:\n",
+            "    let body = code:\n",
+            "        let inside = 1\n",
+            "    let guard = code:\n",
+            "        if True:\n",
+            "    quote guard + body.indent()\n",
+            "\n",
+            "guarded()\n",
+        ))
+        .expect("expand");
+        let Stmt::If { .. } = &out[0] else { panic!("`if` が置かれていない") };
+    }
+
+    /// ⚠⚠ **0 未満になる行が生じる `.dedent()` はエラー**（§1.2）。
+    /// 黙って 0 で止めると、入れ子の関係が崩れた断片が「それらしく」置かれる。
+    #[test]
+    fn dedent_below_the_start_is_an_error() {
+        let err = expand(concat!(
+            "exprconst !fn bad() -> None:\n",
+            "    let c = code:\n",
+            "        print(1)\n",
+            "    quote c.dedent()\n",
+            "\n",
+            "bad()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("left of its start"), "実際のエラー: {err}");
     }
 
     /// ⚠⚠ `.code()` は**本体ごと**元のコードを返す（設計書 §1.5 / タスク 4-7）。

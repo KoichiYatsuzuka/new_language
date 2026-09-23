@@ -231,6 +231,24 @@ impl Interpreter {
                     evaled,
                 )
             }
+            // `Code` のメソッド（設計書 §1.2 / タスク 2-10）。
+            // ⚠ メソッド形なので `+` より強く結合する（§1.2）。
+            Value::Code(ref lines) => {
+                if !evaled.is_empty() {
+                    return Err(format!("TypeError: {method_name}() takes no arguments"));
+                }
+                let delta = match method_name {
+                    "indent" => 1,
+                    "dedent" => -1,
+                    _ => {
+                        return Err(format!(
+                            "AttributeError: 'Code' has no method '{method_name}' \
+                             (Code supports `+`, `.indent()`, `.dedent()` and iteration)"
+                        ))
+                    }
+                };
+                crate::meta_expand::code_shift(lines, delta).map(|l| Value::Code(Rc::new(l)))
+            }
             // メタ情報のメソッド形の射影（参考B #4 #5・タスク 4-1）。
             Value::Meta(ref m) => {
                 let vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();

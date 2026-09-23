@@ -33,6 +33,11 @@ impl Interpreter {
                 let keys = d.borrow().all_keys();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(keys))))
             }
+            // `Code` は 1 行ずつ（設計書 §1.2 / タスク 2-10）。各要素は 1 行だけの `Code`。
+            // ⚠ `collect_iterable` と**同じ規則**にすること（辞書のキーと同じ注意）。
+            Value::Code(ref lines) => Value::Generator(Rc::new(RefCell::new(
+                GeneratorState::materialized(crate::meta_expand::code_lines_as_values(lines)),
+            ))),
             Value::Generator(_) => iter_val,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
             Value::PyObject(ref handle) => {
