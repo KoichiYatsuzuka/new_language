@@ -87,7 +87,7 @@ impl Parser {
                     let field_stmts = sdef
                         .fields
                         .iter()
-                        .map(|(fname, fct)| Stmt::Field {
+                        .map(|(fname, fct)| Stmt::Field { src: None,
                             name: fname.clone(),
                             kind: FieldKind::Mut,
                             type_ann: ctype_to_tl_str(fct),
@@ -95,7 +95,7 @@ impl Parser {
                             access: Accessibility::Public,
                         })
                         .collect();
-                    stmts.push(Stmt::ClassDef {
+                    stmts.push(Stmt::ClassDef { src: None,
                         name: sdef.name.clone(),
                         template_params: vec![],
                         bases: vec![],
@@ -123,7 +123,7 @@ impl Parser {
                             Param::bridge(pname, Some(ctype_to_tl_str(&ct)), writable_ref)
                         })
                         .collect();
-                    stmts.push(Stmt::FnDef {
+                    stmts.push(Stmt::FnDef { src: None,
                         name: sig.name,
                         template_params: vec![],
                         params,

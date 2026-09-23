@@ -114,7 +114,7 @@ fn top_level_stub(stmt: &Stmt) -> Option<String> {
             ..
         } => Some(class_stub(name, template_params, bases, body)),
 
-        Stmt::TraitDef {
+        Stmt::TraitDef { src: _,
             name,
             template_params,
             body,
@@ -122,7 +122,7 @@ fn top_level_stub(stmt: &Stmt) -> Option<String> {
 
         Stmt::NewTypeDef { name, original } => Some(format!("new_type {name}: {original}\n")),
 
-        Stmt::EnumDef { name, variants } => Some(enum_stub(name, variants)),
+        Stmt::EnumDef { src: _, name, variants } => Some(enum_stub(name, variants)),
 
         _ => None,
     }
@@ -260,7 +260,7 @@ fn class_or_trait_body_stubs(body: &[Stmt], indent_level: usize) -> String {
 /// Returns `(access, stub_text)` for a class body statement, or `None` to skip it.
 fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibility, String)> {
     match stmt {
-        Stmt::Field {
+        Stmt::Field { src: _,
             name,
             kind,
             type_ann,

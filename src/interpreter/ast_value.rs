@@ -427,7 +427,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
         // ⚠ `base_args`（基底 trait の具体型引数・タスク 9.9）は**公開しない**。
         //   `parse_ar` が返す形はメタ関数から見える API なので、静的検査の内部事情で
         //   フィールドを増やさない。必要になったらそのとき足す。
-        Stmt::ClassDef {
+        Stmt::ClassDef { src: _,
             name,
             template_params,
             bases,
@@ -444,7 +444,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("body", stmts_list(body)),
             ],
         ),
-        Stmt::TraitDef {
+        Stmt::TraitDef { src: _,
             name,
             template_params,
             body,
@@ -506,7 +506,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("original", Value::str(original.as_str())),
             ],
         ),
-        Stmt::EnumDef { name, variants } => {
+        Stmt::EnumDef { src: _, name, variants } => {
             let variants_val = Value::List(Rc::new(RefCell::new(
                 variants
                     .iter()

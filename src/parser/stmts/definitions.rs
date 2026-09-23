@@ -116,7 +116,7 @@ impl Parser {
         if *self.current() == Token::Dedent {
             self.advance();
         }
-        Ok(Stmt::EnumDef { name, variants })
+        Ok(Stmt::EnumDef { src: None, name, variants })
     }
 
     /// `alias 名前: 右辺` 定義をパースする。右辺は任意の式・型・テンプレート適用・

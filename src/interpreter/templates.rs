@@ -849,14 +849,14 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::BlockReturn(e, span) => Stmt::BlockReturn(subst_expr(e, type_map), span.clone()),
         Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
         Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
-        Stmt::GenDef {
+        Stmt::GenDef { src,
             name,
             template_params,
             params,
             yield_type,
             body,
             access,
-        } => Stmt::GenDef {
+        } => Stmt::GenDef { src: src.clone(),
             name: name.clone(),
             template_params: template_params.clone(),
             params: params.clone(),
@@ -878,7 +878,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             is_placing: *is_placing,
         },
         Stmt::Quote(e) => Stmt::Quote(subst_expr(e, type_map)),
-        Stmt::FnDef {
+        Stmt::FnDef { src,
             name,
             template_params,
             params,
@@ -889,7 +889,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             is_class_method,
             decorators,
             access,
-        } => Stmt::FnDef {
+        } => Stmt::FnDef { src: src.clone(),
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
@@ -901,14 +901,14 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             decorators: decorators.clone(),
             access: access.clone(),
         },
-        Stmt::ClassDef {
+        Stmt::ClassDef { src,
             name,
             template_params,
             bases,
             base_args,
             body,
             decorators,
-        } => Stmt::ClassDef {
+        } => Stmt::ClassDef { src: src.clone(),
             name: name.clone(),
             template_params: template_params.clone(),
             bases: bases.clone(),
@@ -926,11 +926,11 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             body: subst_stmts(body, type_map),
             decorators: decorators.clone(),
         },
-        Stmt::TraitDef {
+        Stmt::TraitDef { src,
             name,
             template_params,
             body,
-        } => Stmt::TraitDef {
+        } => Stmt::TraitDef { src: src.clone(),
             name: name.clone(),
             template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
@@ -939,13 +939,13 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             name: name.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::Field {
+        Stmt::Field { src,
             name,
             kind,
             type_ann,
             default,
             access,
-        } => Stmt::Field {
+        } => Stmt::Field { src: src.clone(),
             name: name.clone(),
             kind: kind.clone(),
             type_ann: subst_type(type_ann, type_map),
@@ -960,7 +960,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             name: name.clone(),
             original: subst_type(original, type_map),
         },
-        Stmt::EnumDef { name, variants } => Stmt::EnumDef {
+        Stmt::EnumDef { src, name, variants } => Stmt::EnumDef { src: src.clone(),
             name: name.clone(),
             variants: variants
                 .iter()

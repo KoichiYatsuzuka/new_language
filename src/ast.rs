@@ -253,6 +253,34 @@ impl CallArg {
     }
 }
 
+/// 宣言が**元のソースのどのトークン列から作られたか**（設計書 §1.5 / タスク 4-7）。
+///
+/// `^x.code()` と `^x.declared_at` はここから引く。
+///
+/// ⚠⚠ **トークン列そのものは `Rc` で 1 ファイル 1 本を共有する。** 宣言ごとに写すと、
+/// クラスとそのメソッドで同じトークンを二重に抱えることになる。
+/// ⚠ ファイルごとに別の `Rc` なので、import 先の宣言が本体のトークンを指すことはない
+/// （本体の位置で import 先を切り出すと**黙って別のコードが出る**）。
+/// ⚠ パーサが作った宣言にだけ付く。合成された宣言（自動 `__init__`・外部言語スタブ・
+/// Python 変換の出力など）は `None` で、`.code()` はそう言ってエラーにする。
+#[derive(Clone)]
+pub struct SrcRange {
+    /// そのファイル全体のトークン列。
+    pub tokens: Rc<Vec<crate::token::Spanned>>,
+    /// 宣言の先頭トークンの位置（含む）。
+    pub start: usize,
+    /// 宣言の直後の位置（含まない）。
+    pub end: usize,
+}
+
+impl std::fmt::Debug for SrcRange {
+    /// ⚠ **範囲だけを出す。** 既定の `Debug` だとファイル全体のトークン列を
+    /// 宣言ごとに吐き、AST のダンプが読めない大きさになる。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SrcRange({}..{})", self.start, self.end)
+    }
+}
+
 /// `code:` ブロックの 1 行を構成する要素（設計書 §1.2 / §1.4）。
 ///
 /// ⚠⚠ **`code:` の中身はパースしない**ので、地の文は[`CodePiece::Token`]の列のまま持つ。
@@ -966,6 +994,8 @@ pub enum Stmt {
         decorators: Vec<Expr>,
         /// クラス本体内でのアクセス可能性（デフォルトは `Public`）。クラス外の関数定義では無視される。
         access: Accessibility,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// ジェネレータ関数定義: `gen name[T: Trait](params) -> YieldType:`。
     ///
@@ -990,6 +1020,8 @@ pub enum Stmt {
         body: Vec<Stmt>,
         /// クラス本体内でのアクセス可能性（デフォルトは `Public`）。
         access: Accessibility,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// `class` クラス定義。
     ///
@@ -1019,6 +1051,8 @@ pub enum Stmt {
         decorators: Vec<Expr>,
         /// クラス本体の文リスト（`Field` / `FnDef` / `GenDef` などを含む）。
         body: Vec<Stmt>,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// `trait` トレイト定義。
     ///
@@ -1033,6 +1067,8 @@ pub enum Stmt {
         template_params: Vec<TemplateParam>,
         /// トレイト本体の文リスト（抽象メソッドやデフォルト実装を含む）。
         body: Vec<Stmt>,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// `protocol` プロトコル定義。静的型検査のみに使用され、インスタンス化・継承は不可。
     ///
@@ -1071,6 +1107,8 @@ pub enum Stmt {
         default: Option<Expr>,
         /// アクセス可能性（デフォルトは `Public`）。
         access: Accessibility,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// `new_type NewName: OriginalType` — 既存の型と構造的に同一だが名前が異なる新しい型を定義する。
     ///
@@ -1148,6 +1186,8 @@ pub enum Stmt {
         name: String,
         /// バリアントのリスト（名前と省略可能な値式のペア）。
         variants: Vec<(String, Option<Expr>)>,
+        /// 元のソースの範囲（タスク 4-7）。合成された宣言は `None`。
+        src: Option<SrcRange>,
     },
     /// `try: ... except Type as name: ... finally: ...` 例外処理構文。
     ///

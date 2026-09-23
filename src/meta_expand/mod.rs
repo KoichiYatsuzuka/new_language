@@ -486,7 +486,8 @@ impl Expander {
             return Err("MetaError: internal — define_metafn on a non-metafunction".to_string());
         };
         self.metafns.insert(name.clone(), *is_placing);
-        let as_fn = Stmt::FnDef {
+        // ⚠ メタ関数の写しは展開専用の内部表現。元のソース範囲は持たない。
+        let as_fn = Stmt::FnDef { src: None,
             name: name.clone(),
             template_params: Vec::new(),
             params: params.clone(),
@@ -679,7 +680,7 @@ fn expand_stmts(
             }
 
             // クラス／トレイト本体もその場で展開する（メンバーの装飾子がここで消える）。
-            Stmt::ClassDef {
+            Stmt::ClassDef { src,
                 name,
                 template_params,
                 bases,
@@ -707,7 +708,7 @@ fn expand_stmts(
                     )
                     .map_err(|e| format!("MetaError: while finishing class '{name}': {e}"))?;
                 }
-                out.push(Stmt::ClassDef {
+                out.push(Stmt::ClassDef { src: src.clone(),
                     name,
                     template_params,
                     bases,
@@ -716,10 +717,10 @@ fn expand_stmts(
                     decorators,
                 });
             }
-            Stmt::TraitDef { name, template_params, body } => {
+            Stmt::TraitDef { src, name, template_params, body } => {
                 let body =
                     expand_stmts(ex, body, Context::TypeBody, std::rc::Rc::clone(&here))?;
-                out.push(Stmt::TraitDef { name, template_params, body });
+                out.push(Stmt::TraitDef { src: src.clone(), name, template_params, body });
             }
 
             // それ以外はそのまま。
@@ -971,6 +972,68 @@ mod tests {
             ex.interp.is_meta_expanding(),
             "展開器のインタプリタが出力先を切り替えていない"
         );
+    }
+
+    /// ⚠⚠ `.code()` は**本体ごと**元のコードを返す（設計書 §1.5 / タスク 4-7）。
+    /// 本体が黙って落ちる `.code()` は最悪の失敗形（`stub_gen` を流用しなかった理由）。
+    #[test]
+    fn code_returns_the_whole_declaration_including_its_body() {
+        let out = expand(concat!(
+            "exprconst !fn duplicate(m) -> None:\n",
+            "    quote m.code()\n",
+            "\n",
+            "!duplicate\n",
+            "fn triple(x: int) -> int:\n",
+            "    let y = x * 3\n",
+            "    return y\n",
+        ))
+        .expect("expand");
+        let Stmt::FnDef { name, body, .. } = &out[0] else { panic!("FnDef を期待") };
+        assert_eq!(name, "triple");
+        assert_eq!(body.len(), 2, "本体の 2 文が残っていること");
+    }
+
+    /// `.declared_at` は宣言が書かれた位置（参考B #7）。
+    #[test]
+    fn declared_at_points_at_the_declaration() {
+        let out = expand(concat!(
+            "\n",
+            "\n",
+            "fn area(w: int) -> int:\n",   // 3 行目
+            "    return w\n",
+            "\n",
+            "exprconst !fn where_is(m) -> None:\n",
+            "    let loc = m.declared_at\n",
+            "    let n = \"line_\" + str(loc.line)\n",
+            "    quote code:\n",
+            "        let <! n !> = 1\n",
+            "\n",
+            "where_is(^area)\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "line_3")),
+            "3 行目を指していない"
+        );
+    }
+
+    /// ⚠ 合成された宣言（自動 `__init__` など）には元のコードが無い。**そう言う**。
+    /// 空の `Code` を返すと「本体が空の関数」と読めてしまう。
+    #[test]
+    fn code_of_a_generated_declaration_says_so() {
+        let err = expand(concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "\n",
+            "exprconst !fn show(m) -> None:\n",
+            "    let init = m.methods[0]\n",
+            "    let c = init.code()\n",
+            "    quote code:\n",
+            "\n",
+            "show(^Point)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("was generated rather than written in source"), "実際のエラー: {err}");
     }
 
     /// 展開時型推論（設計書 D15 / タスク 4-4）。注釈の無い束縛でも `.type` が答えを持つ。

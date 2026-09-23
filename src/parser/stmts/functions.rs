@@ -151,7 +151,7 @@ impl Parser {
         if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
             self.note_doc(decl_h, doc);
         }
-        Ok(Stmt::FnDef {
+        Ok(Stmt::FnDef { src: None,
             name,
             template_params,
             params,
@@ -245,7 +245,7 @@ impl Parser {
                 "ParseError: generator function `{name}` must not contain a `return` statement"
             ));
         }
-        Ok(Stmt::GenDef {
+        Ok(Stmt::GenDef { src: None,
             name,
             template_params,
             params,

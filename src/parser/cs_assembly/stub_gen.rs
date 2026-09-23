@@ -194,7 +194,7 @@ pub(crate) fn make_fn_stub(
     is_abstract: bool,
     template_params: Vec<TemplateParam>,
 ) -> Stmt {
-    Stmt::FnDef {
+    Stmt::FnDef { src: None,
         name: name.to_string(),
         template_params,
         params,
@@ -368,13 +368,13 @@ pub(crate) fn generate_stubs(
         }
 
         if is_interface {
-            stmts.push(Stmt::TraitDef {
+            stmts.push(Stmt::TraitDef { src: None,
                 name: td.name.clone(),
                 template_params,
                 body: body_stmts,
             });
         } else {
-            stmts.push(Stmt::ClassDef {
+            stmts.push(Stmt::ClassDef { src: None,
                 name: td.name.clone(),
                 template_params,
                 // ⚠ C# スタブの基底は型引数を持たせていない（タスク 9.9）。

@@ -514,7 +514,7 @@ impl TypeChecker {
             }
 
             // --- enum 定義 ---
-            Stmt::EnumDef { name, variants } => {
+            Stmt::EnumDef { src: _, name, variants } => {
                 let item_type_name = format!("enum_item_{}", name);
                 self.declare(
                     item_type_name.clone(),

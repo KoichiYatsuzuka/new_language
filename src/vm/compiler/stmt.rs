@@ -354,7 +354,7 @@ impl Compiler {
             // （最上位・モジュール本体）ではこのアームに載らない**。そこは
             // `is_toplevel_compile_target` が除外していて `exec_enum_def` が走る。
             // この 1 行が「載る文脈」を自分で閉じているので、入口ごとの場合分けが要らない。
-            Stmt::EnumDef { name, variants } => {
+            Stmt::EnumDef { src: _, name, variants } => {
                 let slot = self.slot_of(name)?;
                 let idx = u32::try_from(self.chunk.enum_defs.len()).ok()?;
                 self.chunk.enum_defs.push(crate::vm::chunk::ChunkEnumDef {

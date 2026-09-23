@@ -631,7 +631,7 @@ pub(crate) fn convert_stmt(
                         f.name.as_str()
                     ));
                 }
-                return Ok(vec![Stmt::GenDef {
+                return Ok(vec![Stmt::GenDef { src: None,
                     name: f.name.to_string(),
                     template_params: vec![],
                     params,
@@ -640,7 +640,7 @@ pub(crate) fn convert_stmt(
                     access: crate::ast::Accessibility::Public,
                 }]);
             }
-            Ok(vec![Stmt::FnDef {
+            Ok(vec![Stmt::FnDef { src: None,
                 name: f.name.to_string(),
                 template_params: vec![],
                 params,

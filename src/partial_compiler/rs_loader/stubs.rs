@@ -15,7 +15,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         let params: Vec<Param> = sig.params.iter()
             .map(|p| Param::bridge(&p.name, Some(rust_type_to_ar(&p.rust_type).to_string()), false))
             .collect();
-        stmts.push(Stmt::FnDef {
+        stmts.push(Stmt::FnDef { src: None,
             name: sig.name.clone(),
             template_params: vec![],
             params,
@@ -34,7 +34,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         let mut class_body: Vec<Stmt> = Vec::new();
 
         // Internal handle field (private, mutable, default 0)
-        class_body.push(Stmt::Field {
+        class_body.push(Stmt::Field { src: None,
             name: "__rs_handle__".to_string(),
             kind: FieldKind::Mut,
             type_ann: "int".to_string(),
@@ -44,7 +44,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
 
         // Public fields mirroring the Rust struct
         for field in &st.fields {
-            class_body.push(Stmt::Field {
+            class_body.push(Stmt::Field { src: None,
                 name: field.name.clone(),
                 kind: FieldKind::Mut,
                 type_ann: rust_type_to_ar(&field.rust_type).to_string(),
@@ -71,7 +71,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
                     variadic: false,
                 });
             }
-            class_body.push(Stmt::FnDef {
+            class_body.push(Stmt::FnDef { src: None,
                 name: "__init__".to_string(),
                 template_params: vec![],
                 params,
@@ -86,7 +86,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         }
 
         // drop stub
-        class_body.push(Stmt::FnDef {
+        class_body.push(Stmt::FnDef { src: None,
             name: "drop".to_string(),
             template_params: vec![],
             params: vec![Param { name: "self".to_string(), mutable: true, type_ann: None, default: None, variadic: false }],
@@ -102,7 +102,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         // Field getter stubs: get_{field}(let self) -> T
         for field in &st.fields {
             let getter_name = format!("get_{}", field.name);
-            class_body.push(Stmt::FnDef {
+            class_body.push(Stmt::FnDef { src: None,
                 name: getter_name,
                 template_params: vec![],
                 params: vec![Param { name: "self".to_string(), mutable: false, type_ann: None, default: None, variadic: false }],
@@ -119,7 +119,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         // Field setter stubs: set_{field}(mut self, val: T)
         for field in &st.fields {
             let setter_name = format!("set_{}", field.name);
-            class_body.push(Stmt::FnDef {
+            class_body.push(Stmt::FnDef { src: None,
                 name: setter_name,
                 template_params: vec![],
                 params: vec![
@@ -151,7 +151,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
             // Return type: primitive or a struct class name
             let ret_type_str = m.return_type.as_deref().map(|r| rust_type_to_ar(r).to_string())
                 .or_else(|| m.return_struct.clone());
-            class_body.push(Stmt::FnDef {
+            class_body.push(Stmt::FnDef { src: None,
                 name: m.name.clone(),
                 template_params: vec![],
                 params,
@@ -165,7 +165,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
             });
         }
 
-        stmts.push(Stmt::ClassDef {
+        stmts.push(Stmt::ClassDef { src: None,
             name: st.name.clone(),
             template_params: vec![],
             bases: vec![],

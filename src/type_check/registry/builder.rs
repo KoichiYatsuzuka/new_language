@@ -267,7 +267,7 @@ impl TypeRegistryBuilder {
                         }
                     }
                 }
-                Stmt::EnumDef { name, variants } => {
+                Stmt::EnumDef { src: _, name, variants } => {
                     self.reg.known_class_names.insert(name.clone());
                     let item_type_name = format!("enum_item_{}", name);
                     self.reg.known_class_names.insert(item_type_name.clone());

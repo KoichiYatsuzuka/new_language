@@ -51,7 +51,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
     let mut seen_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (fname, ftype) in &init_fields {
         if seen_fields.insert(fname.clone()) {
-            fields.push(Stmt::Field {
+            fields.push(Stmt::Field { src: None,
                 name: fname.clone(),
                 kind: FieldKind::Mut,
                 type_ann: ftype.clone(),
@@ -69,7 +69,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     if !fname.starts_with("__") {
                         let default = convert_expr(&a.value, filename)?;
                         if seen_fields.insert(fname.clone()) {
-                            fields.push(Stmt::Field {
+                            fields.push(Stmt::Field { src: None,
                                 name: fname,
                                 // ⚠ Python のクラス属性は**可変・全インスタンス共有**なので
                                 //   `StaticMut`（`static mut`）に対応する。`Const` にすると
@@ -94,7 +94,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                         if let Some(val_expr) = &a.value {
                             let default = convert_expr(val_expr, filename)?;
                             if seen_fields.insert(fname.clone()) {
-                                fields.push(Stmt::Field {
+                                fields.push(Stmt::Field { src: None,
                                     name: fname,
                                     // 注釈つきクラス変数 `n: int = 5` も同じく共有可変。
                                     kind: FieldKind::StaticMut,
@@ -147,7 +147,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                             f.name.as_str()
                         ));
                     }
-                    methods.push(Stmt::GenDef {
+                    methods.push(Stmt::GenDef { src: None,
                         name: f.name.to_string(),
                         template_params: vec![],
                         params,
@@ -157,7 +157,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     });
                     continue;
                 }
-                methods.push(Stmt::FnDef {
+                methods.push(Stmt::FnDef { src: None,
                     name: f.name.to_string(),
                     template_params: vec![],
                     params,
@@ -178,7 +178,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
     let mut body = fields;
     body.extend(methods);
 
-    Ok(Stmt::ClassDef {
+    Ok(Stmt::ClassDef { src: None,
         name: class_name,
         template_params: vec![],
         // ⚠ Python 由来のクラスに trait の型引数は無い（タスク 9.9）。

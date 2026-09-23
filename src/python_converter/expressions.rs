@@ -611,7 +611,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             let mut body = hoist_pop();
             let body_expr = body_expr?;
             body.push(Stmt::Return(Some(body_expr)));
-            if !hoist_emit(Stmt::FnDef {
+            if !hoist_emit(Stmt::FnDef { src: None,
                 name: name.clone(),
                 template_params: vec![],
                 params,

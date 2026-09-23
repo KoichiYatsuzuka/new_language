@@ -184,7 +184,7 @@ fn collect_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
             Stmt::ProtocolDef { name, body, .. } => {
                 out.insert(name.clone(), members_of_body(body, &[]));
             }
-            Stmt::EnumDef { name, variants } => {
+            Stmt::EnumDef { name, variants, src: _ } => {
                 let items: Vec<Value> = variants
                     .iter()
                     .map(|(v, _)| {

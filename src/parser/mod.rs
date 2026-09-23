@@ -84,7 +84,15 @@ pub(crate) struct TraitInfo {
 }
 
 pub struct Parser {
-    tokens: Vec<Spanned>,
+    /// ⚠ `Rc` で持つ（タスク 4-7）。宣言の `SrcRange` がファイル 1 本を**共有**するため。
+    /// 別名展開（`expand_alias_as_type`）は一時的に差し替えるので、宣言の範囲は
+    /// こちらではなく [`Parser::main_tokens`] を指す。
+    tokens: std::rc::Rc<Vec<Spanned>>,
+    /// このパーサが読んでいる**ファイル本体の**トークン列（タスク 4-7）。差し替えない。
+    ///
+    /// ⚠ 別名展開中は `tokens` が別名の右辺へ差し替わる。宣言の範囲をそちらで取ると
+    /// **別のトークン列を切り出す**ので、必ずこちらを使う。
+    main_tokens: std::rc::Rc<Vec<Spanned>>,
     pos: usize,
     /// trait 名 → その trait の宣言情報（[`TraitInfo`]）。
     known_traits: HashMap<String, TraitInfo>,
@@ -192,8 +200,10 @@ impl Parser {
         //      class Box[T]: ...                #   （宣言はこの後）
         //    さらに `trait X[T]` は**登録すらされていなかった**（class だけ登録していた）。
         let known_templates = Self::scan_template_names(&tokens);
+        let tokens_rc = std::rc::Rc::new(tokens);
         Self {
-            tokens,
+            tokens: std::rc::Rc::clone(&tokens_rc),
+            main_tokens: tokens_rc,
             pos: 0,
             known_traits,
             class_or_trait_depth: 0,
@@ -233,6 +243,31 @@ impl Parser {
             }
         }
         set
+    }
+
+    /// 宣言に元のソースの範囲を付ける（タスク 4-7）。`start` は宣言の先頭位置。
+    ///
+    /// ⚠ 付けるのは**まだ付いていない**ものだけ。`!装飾子` の中の宣言は内側の
+    /// 呼び出しで既に付いていて、外側（装飾子行を含む範囲）で上書きしてはいけない
+    /// ——`.code()` が装飾子行ごと返すと、置き直したときに装飾子が二重にかかる。
+    pub(crate) fn attach_src(&self, stmt: &mut crate::ast::Stmt, start: usize) {
+        use crate::ast::{SrcRange, Stmt};
+        let range = || {
+            Some(SrcRange { tokens: std::rc::Rc::clone(&self.main_tokens), start, end: self.pos })
+        };
+        match stmt {
+            Stmt::FnDef { src, .. }
+            | Stmt::GenDef { src, .. }
+            | Stmt::ClassDef { src, .. }
+            | Stmt::TraitDef { src, .. }
+            | Stmt::EnumDef { src, .. }
+            | Stmt::Field { src, .. } => {
+                if src.is_none() {
+                    *src = range();
+                }
+            }
+            _ => {}
+        }
     }
 
     /// この `Parser` が使っている node-id カウンタ（設計書 §0.3 / タスク 2-1）。

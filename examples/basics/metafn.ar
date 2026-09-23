@@ -172,6 +172,21 @@ exprconst !fn twin_of(m) -> None:
 twin_of(^seed)
 print(twin)                         # 0（`int` として宣言されている）
 
+print("=== 元のコード .code() / .declared_at ===")
+
+# ⚠ `.code()` は宣言の**元のコードを本体ごと**返す（設計書 §1.5）。
+#   装飾子が「元の関数を保ったまま置き直す」のに使う。
+# ⚠ 合成された宣言（自動 `__init__` など）には元のコードが無いのでエラー。
+exprconst !fn keep_as_is(m) -> None:
+    quote m.code()
+
+!keep_as_is
+fn triple(x: int) -> int:
+    let y = x * 3
+    return y
+
+print(triple(4))                    # 12（本体が残っている）
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。

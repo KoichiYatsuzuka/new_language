@@ -125,6 +125,15 @@ impl Parser {
     /// # エラー
     /// 未対応のトークンが先頭に現れた場合、またはサブパーサがエラーを返した場合
     pub(crate) fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        // ⚠ 宣言には元のソースの範囲を付ける（タスク 4-7・`^x.code()` / `^x.declared_at`）。
+        //   **ここ（入口）で付ける**ので、`@` 行や `static` のような前置きも範囲に入る。
+        let start = self.pos;
+        let mut stmt = self.parse_stmt_inner()?;
+        self.attach_src(&mut stmt, start);
+        Ok(stmt)
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
             // `let 変数名 [: 型] = 式` — イミュータブル変数宣言
             // `let x, mut y, _ = expr` — タプルアンパック宣言

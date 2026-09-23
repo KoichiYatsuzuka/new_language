@@ -73,6 +73,10 @@ pub enum Projection {
     Mutable,
     /// 既定値を持つか。⚠ **値そのものはまだ出さない**（展開時に評価する話が要る）。
     HasDefault,
+
+    // ── 位置（参考B #7・タスク 4-7）──
+    /// 宣言が書かれた位置（`file` / `line` / `col`）。`compile_error` の文面に使う。
+    DeclaredAt,
 }
 
 impl Projection {
@@ -98,6 +102,7 @@ impl Projection {
             "type" => Self::Type,
             "mutable" => Self::Mutable,
             "has_default" => Self::HasDefault,
+            "declared_at" => Self::DeclaredAt,
             _ => return None,
         })
     }
@@ -142,6 +147,19 @@ pub fn project(m: &Rc<MetaValue>, p: Projection) -> Result<Value, String> {
         Projection::Type => binding_or_field_type(m),
         Projection::Mutable => Ok(Value::Bool(matches!(field_of(m)?.0, FieldKind::Mut))),
         Projection::HasDefault => Ok(Value::Bool(field_of(m)?.2)),
+
+        Projection::DeclaredAt => {
+            let r = src_of(m)?;
+            let first = &r.tokens[r.start].span;
+            Ok(record(
+                "Location",
+                vec![
+                    ("file", Value::str(first.file.to_string())),
+                    ("line", Value::Int(first.line as i64)),
+                    ("col", Value::Int(first.col as i64)),
+                ],
+            ))
+        }
     }
 }
 
@@ -312,6 +330,77 @@ fn members_of(m: &Rc<MetaValue>, want: MemberKind) -> Result<Vec<Value>, String>
     Ok(out)
 }
 
+/// 宣言の元のソースの範囲（タスク 4-7）。
+///
+/// ⚠ 無いときは**理由を言い分ける**。「合成された宣言」と「そもそも範囲を持たない種類」は
+/// 利用者にとって別の間違い（前者は置き場所の問題、後者は対象の取り違え）。
+fn src_of(m: &Rc<MetaValue>) -> Result<&crate::ast::SrcRange, String> {
+    let src = match &*m.decl {
+        Stmt::FnDef { src, .. }
+        | Stmt::GenDef { src, .. }
+        | Stmt::ClassDef { src, .. }
+        | Stmt::TraitDef { src, .. }
+        | Stmt::EnumDef { src, .. }
+        | Stmt::Field { src, .. } => src,
+        _ => {
+            return Err(format!(
+                "'{}' is a variable binding; its source is not recorded \
+                 (only classes, traits, enums, functions and fields keep it)",
+                m.name
+            ))
+        }
+    };
+    src.as_ref().ok_or_else(|| {
+        format!(
+            "'{}' was generated rather than written in source \
+             (for example an automatic `__init__` or a foreign-language stub), \
+             so it has no original code",
+            m.name
+        )
+    })
+}
+
+/// 元のトークン列を `Code` の行へ組み直す（タスク 4-7）。
+///
+/// ⚠ 行の段数は**宣言の先頭からの相対**にする（§1.2 の B-1）。`quote` で置き直したとき、
+/// 置き先の段数に揃えられるように。
+/// ⚠ `Newline` / `Indent` / `Dedent` は行と段数に写して捨てる（`code:` の行と同じ形）。
+fn code_lines_of(r: &crate::ast::SrcRange) -> Vec<crate::ast::CodeLine> {
+    use crate::ast::{CodeLine, CodePiece};
+    use crate::token::Token;
+    let mut lines: Vec<CodeLine> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut pieces: Vec<CodePiece> = Vec::new();
+    let mut span: Option<crate::token::Span> = None;
+    for t in &r.tokens[r.start..r.end] {
+        match &t.token {
+            Token::Indent => depth += 1,
+            Token::Dedent => depth -= 1,
+            Token::Newline | Token::Semicolon | Token::Eof => {
+                if !pieces.is_empty() {
+                    lines.push(CodeLine {
+                        pieces: std::mem::take(&mut pieces),
+                        indent: depth,
+                        span: span.take().unwrap_or_else(crate::token::Span::unknown),
+                    });
+                }
+            }
+            _ => {
+                span.get_or_insert_with(|| t.span.clone());
+                pieces.push(CodePiece::Token(t.clone()));
+            }
+        }
+    }
+    if !pieces.is_empty() {
+        lines.push(CodeLine {
+            pieces,
+            indent: depth,
+            span: span.unwrap_or_else(crate::token::Span::unknown),
+        });
+    }
+    lines
+}
+
 // ── メソッド形の射影（参考B #4 #5）────────────────────────────────────────
 
 /// `^T.has_field(n)` / `^T.has_method(n)` / `^T.implements(Trait)`（参考B #4 #5）。
@@ -325,6 +414,13 @@ pub fn meta_method(
     method: &str,
     args: &[Value],
 ) -> Option<Result<Value, String>> {
+    // `.code()`（設計書 §1.5・タスク 4-7）: 元のコード内容を `Code` として返す。
+    if method == "code" {
+        if !args.is_empty() {
+            return Some(Err("TypeError: code() takes no arguments".to_string()));
+        }
+        return Some(src_of(m).map(|r| Value::Code(Rc::new(code_lines_of(r)))));
+    }
     let want: MemberKind = match method {
         "has_field" => MemberKind::Field,
         "has_method" => MemberKind::Method,

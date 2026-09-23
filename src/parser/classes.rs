@@ -151,7 +151,7 @@ impl Parser {
             },
         );
 
-        Ok(Stmt::TraitDef {
+        Ok(Stmt::TraitDef { src: None,
             name,
             template_params,
             body,
@@ -246,7 +246,7 @@ impl Parser {
             finalize_class_body(&self.known_traits, &name, &bases_with_args, &mut body)?;
         }
 
-        Ok(Stmt::ClassDef {
+        Ok(Stmt::ClassDef { src: None,
             name,
             template_params,
             // ⚠ `bases` と**同じ並び**で型引数を載せる（タスク 9.9）。以前はこの情報を
@@ -580,7 +580,7 @@ pub(crate) fn generate_auto_init_if_needed(
         }
 
         // 生成した __init__ を body の末尾に追加
-        body.push(Stmt::FnDef {
+        body.push(Stmt::FnDef { src: None,
             name: "__init__".to_string(),
             template_params: vec![],
             params,
@@ -717,6 +717,14 @@ impl Parser {
     }
 
     pub(crate) fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
+        // ⚠ クラスのメンバーにも元のソースの範囲を付ける（タスク 4-7）。
+        let start = self.pos;
+        let mut stmt = self.parse_class_stmt_inner()?;
+        self.attach_src(&mut stmt, start);
+        Ok(stmt)
+    }
+
+    fn parse_class_stmt_inner(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
             // `!装飾子` — 対象はフィールド宣言・メソッド定義（設計書 §1.6 / タスク 1-4）。
             Token::Bang => self.parse_meta_decorated(true),
@@ -759,7 +767,7 @@ impl Parser {
                         "class variable `{fname}` declared with `const` must have an initial value (e.g., `const {fname}: int = 0`)"
                     ));
                 }
-                Ok(Stmt::Field {
+                Ok(Stmt::Field { src: None,
                     name: fname,
                     kind,
                     type_ann,
@@ -789,7 +797,7 @@ impl Parser {
                         } else {
                             None
                         };
-                        Ok(Stmt::Field {
+                        Ok(Stmt::Field { src: None,
                             name: fname,
                             kind: FieldKind::StaticMut,
                             type_ann,
