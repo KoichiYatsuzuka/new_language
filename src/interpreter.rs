@@ -168,7 +168,7 @@ pub use value::*;
 /// * Internal bugs should return a plain, non-sentinel `Err(message)`.  A caller
 ///   that sees an `Err` string not equal to `RAISE_SENTINEL` knows it is an
 ///   interpreter bug rather than a user `raise`.
- const RAISE_SENTINEL: &str = "\x00__raise__";
+pub(crate) const RAISE_SENTINEL: &str = " __raise__";
 
 thread_local! {
 }

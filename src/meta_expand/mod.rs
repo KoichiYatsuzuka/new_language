@@ -32,10 +32,18 @@ use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
 use crate::interpreter::{Interpreter, Value};
 use crate::token::{Span, Spanned, Token};
 
-/// 1 回の展開で歩ける文の数の上限（暫定）。
+/// 1 回の展開で歩ける文の数の上限（設計書 タスク 2-6）。
 ///
-/// ⚠ 自分自身を置き続けるメタ関数は止まらないので、無いとハングする。
-/// ⚠ **これは仮の柵**。歩数予算・再帰深さ・超過時の診断は 2-6 で作り直す。
+/// ⚠⚠ **自分自身を置き続けるメタ関数は止まらない。** 展開は前向き走査だが、置いたコードは
+/// その場から歩き直す（§1.7 の「反復しない」は**前方参照の話**で、置いた分を歩くのは反復ではない）
+/// ので、`quote code:` が自分の呼び出しを置けば無限に伸びる。⇒ 歩数で切る。
+///
+/// ⚠ **再帰深さは別の柵が受け持つ。** メタ関数がメタ関数を呼ぶのは展開器から見れば
+/// 1 回の呼び出しの中の出来事で、インタプリタの `RecursionError`（上限 1000）が止める。
+/// ⇒ ここで二重に数えない。代わりに、その例外が**読める形で外へ出る**ようにしてある
+/// （`call_metafn` の `RAISE_SENTINEL` の扱い）。
+///
+/// ⚠ 10 万文は「人が書いた展開では絶対に届かないが、暴走は数秒で止まる」あたり。
 const STEP_BUDGET: usize = 100_000;
 
 /// 雛形に残っているスプライス（`<! !>`）の数。
@@ -239,6 +247,10 @@ struct Expander {
     interp: Interpreter,
     /// 歩数（`STEP_BUDGET` の判定用）。
     steps: usize,
+    /// 直近に展開したメタ関数名（予算超過の診断に使う・タスク 2-6）。
+    ///
+    /// ⚠ 「予算を使い切った」だけでは**どれが暴走したのか分からない**。
+    last_expanded: Option<String>,
     /// パース時に集めた trait の宣言情報（タスク 2-4）。
     ///
     /// ⚠ 装飾子でメンバーが増えたクラスは、**展開後に** `finalize_class_body` を
@@ -261,6 +273,7 @@ impl Expander {
             metafns: std::collections::HashMap::new(),
             interp: Interpreter::new(),
             steps: 0,
+            last_expanded: None,
             known_traits,
             node_counter,
         }
@@ -303,10 +316,26 @@ impl Expander {
             .ok_or_else(|| format!("MetaError: metafunction '{name}' is not defined"))?;
         let evaled: Vec<(Option<String>, Value, bool)> =
             args.into_iter().map(|v| (None, v, false)).collect();
-        let out = self
-            .interp
-            .call_value_evaled(callee, evaled, name, None, 0)
-            .map_err(|e| format!("MetaError: while expanding '{name}': {e}"))?;
+        self.last_expanded = Some(name.to_string());
+        let out = match self.interp.call_value_evaled(callee, evaled, name, None, 0) {
+            Ok(v) => v,
+            // ⚠⚠ インタプリタは例外を**番兵文字列**で返し、実体は自分の中に置く。
+            //    そのまま出すと `MetaError: while expanding 'go':  __raise__` という
+            //    何も分からない診断になる（実測）。⇒ 本体の入口（`src/main.rs`）と
+            //    同じように取り出して整形する。`RecursionError` の traceback もこれで出る。
+            Err(e) if e == crate::interpreter::RAISE_SENTINEL => {
+                let detail = self
+                    .interp
+                    .take_current_exception()
+                    .map(|r| Interpreter::format_error_report(&r))
+                    .unwrap_or_else(|| "(no details available)".to_string());
+                return Err(format!(
+                    "MetaError: while expanding '{name}':{}{detail}",
+                    '\n'
+                ));
+            }
+            Err(e) => return Err(format!("MetaError: while expanding '{name}': {e}")),
+        };
         match out {
             Value::Code(lines) => Ok(lines),
             // ⚠ `quote` に到達せず抜けた形（設計書 §1.1）。診断の本番は 3-5。
@@ -348,9 +377,13 @@ fn expand_stmts(
     while let Some(stmt) = pending.pop_front() {
         ex.steps += 1;
         if ex.steps > STEP_BUDGET {
+            let culprit = match &ex.last_expanded {
+                Some(n) => format!("the last metafunction expanded was '{n}'"),
+                None => "no metafunction was expanded, so the program itself is enormous".to_string(),
+            };
             return Err(format!(
-                "MetaError: expansion did not finish within {STEP_BUDGET} steps \
-                 (a metafunction is probably placing a call to itself)"
+                "MetaError: expansion did not finish within {STEP_BUDGET} steps — \
+                 a metafunction is probably placing a call to itself ({culprit})"
             ));
         }
 
@@ -600,6 +633,36 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ メタ関数が無限再帰したときの診断が**読める形で外へ出る**こと（タスク 2-6）。
+    /// インタプリタは例外を**番兵文字列**で返すので、そのまま出すと
+    /// `MetaError: while expanding 'go':  __raise__` という何も分からない診断になる（実測）。
+    /// ⚠ **大きめのスタックを持つスレッドで走らせる。** インタプリタの再帰上限は 1000 段で、
+    /// debug ビルドの 1 フレームは release より厚い。既定のテストスレッド（2 MiB）だと
+    /// **上限が発火する前に Rust 側のスタックが溢れる**（実測: STATUS_STACK_OVERFLOW）。
+    /// ⚠ これは 2-6 が持ち込んだ性質ではなく、debug ビルドのインタプリタ全体の性質。
+    #[test]
+    fn a_recursive_metafn_reports_a_readable_error() {
+        let handle = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                expand(concat!(
+                    "exprconst fn rec(n: int) -> Code:\n",
+                    "    return rec(n + 1)\n",
+                    "\n",
+                    "exprconst !fn go() -> None:\n",
+                    "    quote rec(0)\n",
+                    "\n",
+                    "go()\n",
+                ))
+                // ⚠ `Vec<Stmt>` は `Rc` を含むのでスレッドを跨げない。見たいのはエラー文字列だけ。
+                .map(|_| ())
+            })
+            .expect("spawn");
+        let err = handle.join().expect("join").expect_err("止まること");
+        assert!(err.contains("RecursionError"), "実際のエラー: {err}");
+        assert!(!err.contains("__raise__"), "番兵がそのまま漏れている: {err}");
     }
 
     /// ⚠ 自分自身を置き続けるメタ関数は止まらない。⇒ 歩数上限で切る（本番の診断は 2-6）。
