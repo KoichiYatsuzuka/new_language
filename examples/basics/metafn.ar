@@ -143,7 +143,7 @@ print(Marker_kind)                  # 1
 
 # ⚠ 射影（`.fields` / `.methods` / `.params` …）は宣言そのものから引く。
 #   分岐用に `has_field` / `has_method` / `implements` もある。
-# ⚠ 種別と噫み合わない射影は**エラー**。空のリストを返すと
+# ⚠ 種別と噛み合わない射影は**エラー**。空のリストを返すと
 #   「0 個」と読めて取り違えが通ってしまう。
 class Tagged:
     mut id: int
@@ -159,14 +159,27 @@ exprconst !fn bind_first_field(m) -> None:
 bind_first_field(^Tagged)
 print(id_seen)                      # 1
 
+# ⚠ **注釈の無い変数でも `.type` が答えを持つ**（展開時型推論・タスク 4-4）。
+#   型検査器を「ここまでの文」にかけて、束縛に付いた型を読む。
+# ⚠ 推論できなければエラー（`unknown` のような文字列を型名として返さない）。
+let seed = 7
+
+exprconst !fn twin_of(m) -> None:
+    let t = m.type
+    quote code:
+        let twin: <! t !> = 0
+
+twin_of(^seed)
+print(twin)                         # 0（`int` として宣言されている）
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。
-# ⚠ `^`（メタ情報演算子）の評価はまだ実装されていない（設計書 4-0 / 4-1）。
-#   書いて構文解析は通るが、呼ぶと展開時にエラーになる。
-exprconst fn describe(t) -> Code:
+#   本体は一度も走らない（下の `^Marker` も評価されない）。
+# ⚠ 入れ子関数の中にも `code:` と `^` を書ける（`syntax_cov` の NESTED-GAP を塞ぐために置いてある）。
+exprconst fn describe() -> Code:
     fn inner() -> Code:
-        let kind = ^t
+        let kind = ^Marker
         let frag = code:
             print("inner")
         return frag

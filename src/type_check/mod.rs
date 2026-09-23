@@ -255,6 +255,26 @@ impl TypeChecker {
     }
 
 
+    /// 展開時型推論（設計書 D15 / タスク 4-4）: `prefix` を型検査し終えた時点で
+    /// 最上位の名前 `name` に付いている型。
+    ///
+    /// ⚠⚠ **新しい推論器を書かない。** 型検査器は既に右辺から推論できる（D15 の実測）ので、
+    /// 展開時には「ここまでの文」をそのまま検査にかけ、束縛に付いた型を読むだけにする。
+    /// 推論規則が 2 本になると、展開時と実行前で型が食い違う。
+    ///
+    /// ⚠ 逐次展開（§1.7）なので `prefix` は**その束縛より前の文だけ**でよい。不動点は要らない。
+    /// ⚠ 推論できなかった（`Unresolved`）ときは `None` を返す。**`unknown` という文字列を
+    /// 型として返さない** —— 型名として差し込まれると壊れた型注釈が黙って通る。
+    pub fn binding_type_after(prefix: &[Stmt], name: &str) -> Option<InferredType> {
+        let mut tc = Self::new(prefix);
+        tc.check_stmts(prefix);
+        let ty = tc.lookup(name)?.ty.clone();
+        if ty == InferredType::Unresolved {
+            return None;
+        }
+        Some(ty)
+    }
+
     /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（**型検査の唯一の入口**）。
     /// `check` と同じ検査に**警告と注釈生成**を加えたもの（同一走査・追加コストは注釈の充填のみ）。
     ///

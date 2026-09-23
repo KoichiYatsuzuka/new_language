@@ -139,7 +139,7 @@ pub fn project(m: &Rc<MetaValue>, p: Projection) -> Result<Value, String> {
             variants_of(m)?.iter().map(|(n, _)| Value::str(n.as_str())).collect(),
         )),
 
-        Projection::Type => Ok(Value::str(field_of(m)?.1.as_str())),
+        Projection::Type => binding_or_field_type(m),
         Projection::Mutable => Ok(Value::Bool(matches!(field_of(m)?.0, FieldKind::Mut))),
         Projection::HasDefault => Ok(Value::Bool(field_of(m)?.2)),
     }
@@ -211,6 +211,31 @@ fn field_of(m: &Rc<MetaValue>) -> Result<(FieldKind, &String, bool), String> {
     }
 }
 
+/// フィールドまたは変数束縛の型（タスク 4-1 / 4-4）。
+///
+/// ⚠ 注釈があれば注釈、無ければ**展開時型推論**の結果（`MetaValue::binding_type`）。
+/// ⚠⚠ 推論できなかったら**エラー**。`unknown` のような文字列を型名として返すと、
+/// スプライスされたときに壊れた型注釈が黙って通る。
+fn binding_or_field_type(m: &Rc<MetaValue>) -> Result<Value, String> {
+    match &*m.decl {
+        Stmt::Field { type_ann, .. } => Ok(Value::str(type_ann.as_str())),
+        Stmt::Let(_, Some(t), _) | Stmt::Mut(_, Some(t), _) | Stmt::Const(_, Some(t), _) => {
+            Ok(Value::str(t.as_str()))
+        }
+        Stmt::Let(..) | Stmt::Mut(..) | Stmt::Const(..) | Stmt::Static(..) => {
+            match &m.binding_type {
+                Some(t) => Ok(Value::str(t.as_str())),
+                None => Err(format!(
+                    "the type of '{}' could not be inferred at expansion time \
+                     (annotate it, e.g. `let {}: int = ...`)",
+                    m.name, m.name
+                )),
+            }
+        }
+        _ => Err(wrong_kind(m, "a field or a variable binding")),
+    }
+}
+
 fn body_of<'a>(m: &'a Rc<MetaValue>) -> Result<&'a Vec<Stmt>, String> {
     match &*m.decl {
         Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => Ok(body),
@@ -279,6 +304,9 @@ fn members_of(m: &Rc<MetaValue>, want: MemberKind) -> Result<Vec<Value>, String>
             kind,
             name,
             decl: Rc::new(st.clone()),
+            // ⚠ クラス本体のメンバーはフィールドとメソッドだけ。フィールドは型注釈が必須なので
+            //   推論は要らない。
+            binding_type: None,
         })));
     }
     Ok(out)

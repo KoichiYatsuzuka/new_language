@@ -562,6 +562,12 @@ pub struct Interpreter {
     /// メタ関数は自分より前の宣言しか見られない（設計書 §1.7）。
     /// ⚠ 展開器以外は空のまま。通常実行で `^` を書くことはできない（1-3 の位置制限）。
     pub(self) meta_decls: std::collections::HashMap<String, Rc<crate::ast::Stmt>>,
+    /// **展開済みの最上位の文**（タスク 4-4）。展開時型推論の前提になる。
+    ///
+    /// ⚠ 展開器と共有する（`Rc<RefCell<..>>`）。展開器が最上位の文を出すたびに足す。
+    /// ⚠ メタ関数を 1 つも持たないプログラムでは**展開器は足さない**（推論が起きえない
+    ///   ので、AST を複製する手間をかけない）。
+    pub(self) meta_prefix: Rc<RefCell<Vec<crate::ast::Stmt>>>,
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
@@ -669,6 +675,7 @@ impl Interpreter {
             protocol_required_members: HashMap::new(),
             meta_expanding: false,
             meta_decls: std::collections::HashMap::new(),
+            meta_prefix: Rc::new(RefCell::new(Vec::new())),
             native_libs: HashMap::new(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
@@ -939,11 +946,53 @@ impl Interpreter {
     /// 「メタ情報を取れない種類」なのかで文面を変えたいため）。
     pub(crate) fn meta_lookup(&self, name: &str) -> Option<Value> {
         let decl = self.meta_decls.get(name)?;
-        let kind = crate::interpreter::value::MetaValue::kind_of(decl)?;
+        // ⚠ `^x` の `x` は**もう前の文に入っている**（前方のみ参照・§1.7）。
+        //   ⇒ 推論の前提に自分の宣言を足さない（足すと再宣言になる）。
+        self.make_meta_value(name, Rc::clone(decl), false)
+    }
+
+    /// 展開器専用: 展開済みの最上位の文を共有する（タスク 4-4）。
+    pub(crate) fn meta_prefix_handle(&self) -> Rc<RefCell<Vec<crate::ast::Stmt>>> {
+        Rc::clone(&self.meta_prefix)
+    }
+
+    /// メタ情報の値を作る（タスク 4-0 / 4-4）。**作り方はここ 1 か所**。
+    ///
+    /// `decl_not_in_prefix` は「その宣言がまだ展開済みの文に入っていない」か。
+    /// 装飾子の第一引数（これから置き換えられる宣言）は入っていないので真にする。
+    ///
+    /// ⚠⚠ 注釈の無い変数束縛は**ここで**推論する（`binding_type`）。射影を引く時点まで
+    /// 遅らせると、その間に展開が進んで前提の文が変わる。
+    pub(crate) fn make_meta_value(
+        &self,
+        name: &str,
+        decl: Rc<crate::ast::Stmt>,
+        decl_not_in_prefix: bool,
+    ) -> Option<Value> {
+        use crate::ast::Stmt;
+        let kind = crate::interpreter::value::MetaValue::kind_of(&decl)?;
+        let needs_inference = matches!(
+            &*decl,
+            Stmt::Let(_, None, _) | Stmt::Mut(_, None, _) | Stmt::Const(_, None, _) | Stmt::Static(..)
+        );
+        let binding_type = if needs_inference {
+            let prefix = self.meta_prefix.borrow();
+            let ty = if decl_not_in_prefix {
+                let mut with_decl = prefix.clone();
+                with_decl.push((*decl).clone());
+                crate::type_check::TypeChecker::binding_type_after(&with_decl, name)
+            } else {
+                crate::type_check::TypeChecker::binding_type_after(&prefix, name)
+            };
+            ty.map(|t| t.to_string())
+        } else {
+            None
+        };
         Some(Value::Meta(Rc::new(crate::interpreter::value::MetaValue {
             kind,
             name: name.to_string(),
-            decl: Rc::clone(decl),
+            decl,
+            binding_type,
         })))
     }
 

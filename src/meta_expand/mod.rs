@@ -392,6 +392,8 @@ struct Expander {
     /// ⚠ 装飾子でメンバーが増えたクラスは、**展開後に** `finalize_class_body` を
     /// 走らせないと自動 `__init__` に増えたフィールドが入らない。
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
+    /// 展開済みの最上位の文を展開時型推論のために共有するか（タスク 4-4）。
+    track_prefix: bool,
     /// 置いたコードを採番する node-id カウンタ（設計書 §0.3 / タスク 2-1）。
     ///
     /// ⚠⚠ **本体をパースしたパーサと同じものを渡す。** 別のカウンタだと node-id が
@@ -411,6 +413,7 @@ impl Expander {
             steps: 0,
             last_expanded: None,
             runtime_names: std::collections::HashSet::new(),
+            track_prefix: false,
             known_traits,
             node_counter,
         }
@@ -559,6 +562,10 @@ pub fn expand_program(
 ) -> Result<Vec<Stmt>, String> {
     let mut ex = Expander::new(node_counter, known_traits);
     ex.load_prelude()?;
+    // ⚠ 展開時型推論（タスク 4-4）の前提として、展開済みの最上位の文を共有する。
+    //   ⚠ メタ関数が 1 つも無いプログラムでは推論が起きえないので**やらない**
+    //     （全プログラムで AST を複製するのは割に合わない）。
+    ex.track_prefix = stmts.iter().any(|s| matches!(s, Stmt::MetaFnDef { .. }));
     // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
     for st in &stmts {
         // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
@@ -604,6 +611,8 @@ fn expand_stmts(
         //   ⚠ **自分自身は含めない**ようにここで入れる —— 登録してから展開すると、
         //     その宣言を装飾している最中の装飾子が「展開前の自分」を見てしまう。
         register_decl(ex, &stmt);
+
+        let out_len_before = out.len();
 
         match stmt {
             // 定義は登録して AST から消す。
@@ -718,6 +727,16 @@ fn expand_stmts(
             //   本体の中の展開は別途決める必要がある）。⇒ 未対応として記録済み。
             other => out.push(other),
         }
+
+        // ⚠ 展開時型推論の前提（タスク 4-4）。**最上位で出した文だけ**を足す。
+        //   クラス本体の中の文はそのクラスの文に含まれて届くので二重に足さない。
+        if ex.track_prefix && ctx == Context::TopLevel && trail.is_empty() {
+            let handle = ex.interp.meta_prefix_handle();
+            let mut prefix = handle.borrow_mut();
+            for st in &out[out_len_before..] {
+                prefix.push(st.clone());
+            }
+        }
     }
     Ok(out)
 }
@@ -752,14 +771,13 @@ fn placing_call_name(ex: &Expander, func: &Expr) -> Option<String> {
 /// 宣言そのものからメタ情報の値を作る（タスク 4-0）。
 ///
 /// ⚠ 装飾子の第一引数に使う。`^名前` と違って**表を引かない**（対象はもう手元にある）。
-fn meta_value_for(decl: &Stmt) -> Option<Value> {
-    let kind = crate::interpreter::value::MetaValue::kind_of(decl)?;
+fn meta_value_for(ex: &Expander, decl: &Stmt) -> Option<Value> {
     // ⚠ `decl_names` ではなく `name_of`。フィールドは `decl_names` が報告しない
     //   （スコープの名前ではないため）ので、混ぜると名前が空になる。
     let name = crate::interpreter::value::MetaValue::name_of(decl)?;
-    Some(Value::Meta(std::rc::Rc::new(
-        crate::interpreter::value::MetaValue { kind, name, decl: std::rc::Rc::new(decl.clone()) },
-    )))
+    // ⚠ 装飾される宣言は**まだ展開済みの文に入っていない**（これから置き換える）。
+    //   ⇒ 推論の前提に足して推論させる（タスク 4-4）。
+    ex.interp.make_meta_value(&name, std::rc::Rc::new(decl.clone()), true)
 }
 
 /// 実引数を展開時に評価する。
@@ -816,7 +834,7 @@ fn apply_decorators(
         }
         // ⚠ 装飾子には**メタ情報**を渡す（タスク 4-0）。`parse_ar` の `Namespace` 木ではない。
         //   名前が無い宣言（`pass` など）は対象外なので、そこは弾かれている。
-        let arg = meta_value_for(&current[0]).ok_or_else(|| {
+        let arg = meta_value_for(ex, &current[0]).ok_or_else(|| {
             format!(
                 "MetaError: decorator '!{name}' cannot be applied to this declaration \
                  (meta information exists for classes, traits, enums, functions, fields \
@@ -952,6 +970,69 @@ mod tests {
         assert!(
             ex.interp.is_meta_expanding(),
             "展開器のインタプリタが出力先を切り替えていない"
+        );
+    }
+
+    /// 展開時型推論（設計書 D15 / タスク 4-4）。注釈の無い束縛でも `.type` が答えを持つ。
+    /// ⚠ 新しい推論器は書いていない。型検査器を「ここまでの文」にかけて束縛の型を読むだけ。
+    #[test]
+    fn an_unannotated_binding_has_an_inferred_type() {
+        let out = expand(concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "\n",
+            "let origin = Point(0)\n",
+            "\n",
+            "exprconst !fn same_type(m) -> None:\n",
+            "    let t = m.type\n",
+            "    quote code:\n",
+            "        let <! t !> = 1\n",
+            "\n",
+            "same_type(^origin)\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "Point")),
+            "`origin` の型が `Point` と推論されていない"
+        );
+    }
+
+    /// ⚠ 装飾子の対象になった束縛は**まだ展開済みの文に入っていない**。
+    /// ⇒ 推論の前提に足して推論する（足さないと「その名前は無い」になる）。
+    #[test]
+    fn a_decorated_binding_has_an_inferred_type_too() {
+        let out = expand(concat!(
+            "exprconst !fn typed_copy(m) -> None:\n",
+            "    let t = m.type\n",
+            "    quote code:\n",
+            "        let copy_of: <! t !> = 0\n",
+            "\n",
+            "!typed_copy\n",
+            "let source = 42\n",
+        ))
+        .expect("expand");
+        let Some(Stmt::Let(_, Some(t), _)) = out.first() else {
+            panic!("注釈付きの `let` が置かれていない")
+        };
+        assert_eq!(t, "int");
+    }
+
+    /// ⚠⚠ 推論できなければ**エラー**。`unknown` のような文字列を型名として返すと、
+    /// スプライスされたときに壊れた型注釈が黙って通る。
+    #[test]
+    fn an_uninferable_binding_type_is_an_error() {
+        let err = expand(concat!(
+            "exprconst !fn show(m) -> None:\n",
+            "    let t = m.type\n",
+            "    quote code:\n",
+            "\n",
+            "let mystery = unknown_thing\n",
+            "show(^mystery)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("could not be inferred at expansion time"),
+            "実際のエラー: {err}"
         );
     }
 
