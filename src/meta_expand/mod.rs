@@ -125,7 +125,7 @@ pub fn fill_splices(lines: &[CodeLine], values: &[Value]) -> Result<Vec<CodeLine
                 CodePiece::Token(t) => pieces.push(CodePiece::Token(t.clone())),
                 CodePiece::Splice(_) => {
                     let v = it.next().ok_or_else(|| {
-                        "MetaError: internal — fewer spliced values than holes".to_string()
+                        "internal — fewer spliced values than holes".to_string()
                     })?;
                     // ⚠ 差し込むトークンには元の位置が無い。⇒ **行の位置**を使う（タスク 2-3）。
                     pieces.push(CodePiece::Token(splice_token(v, &line.span)?));
@@ -145,7 +145,11 @@ fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
     let token = match v {
         // ⚠ `str` は**識別子**になる（文字列リテラルではない）。設計書 §1.4 の一段目。
         //   名前を組み立てて差し込むのがスプライスの主用途なので、ここが既定。
-        Value::Str(s) => Token::Ident(s.to_string()),
+        // ⚠⚠ **識別子として正しいかを確かめる**（タスク 4-3）。確かめないと
+        //   `"a b"` から空白入りの変数が**黙って作られ**、`"list[int]"` を型の位置へ
+        //   差し込めてしまう（どちらも実測で完走した）。後者は D23 が
+        //   「壊れた型文字列が黙って通る経路」と名指しした穴そのもの。
+        Value::Str(s) => Token::Ident(checked_identifier(s)?),
         Value::Int(n) => Token::Int(*n),
         Value::Float(f) => Token::Float(*f),
         Value::Bool(b) => {
@@ -157,13 +161,42 @@ fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
         }
         other => {
             return Err(format!(
-                "MetaError: `<! !>` cannot splice a '{}' yet \
-                 (str / int / float / bool are supported; types and sequences come with tasks 4-1..4-3)",
+                "`<! !>` cannot splice a '{}' \
+                 (str / int / float / bool are supported; splicing types and sequences needs \
+                 the type-composition API, task 4-2, whose notation is not designed yet)",
                 crate::interpreter::ops::typecheck::runtime_type_name(other)
             ))
         }
     };
     Ok(Spanned { token, span: span.clone() })
+}
+
+/// スプライスした `str` が**そのまま 1 つの識別子として字句解析される**ことを確かめる（タスク 4-3）。
+///
+/// ⚠⚠ **字句規則を自前で書き直さない。** 本物の字句解析器にかけて「`Ident` がちょうど
+/// 1 つだけ出る」ことを見る。こうすれば空白・記号・予約語（`if` は `Ident` ではなく
+/// `Token::If` になる）・Unicode の扱いが**言語と食い違わない**。
+///
+/// ⚠ 型を差し込みたいとき（`list[int]` など）はここで弾かれる。それは正しい ——
+/// 文字列を型の位置へ差し込む道は D23 が塞ぐと決めた経路で、正式な手段は
+/// 型値の合成（4-2・**記法は未設計**）とその検証（4-3 の残り半分）。
+fn checked_identifier(s: &str) -> Result<String, String> {
+    let toks = crate::lexer::Lexer::new(s, "<splice>").tokenize();
+    let mut meaningful = toks
+        .iter()
+        .filter(|t| !matches!(t.token, Token::Newline | Token::Eof));
+    let ok = matches!(
+        (meaningful.next(), meaningful.next()),
+        (Some(Spanned { token: Token::Ident(name), .. }), None) if name == s
+    );
+    if ok {
+        return Ok(s.to_string());
+    }
+    Err(format!(
+        "`<! !>` spliced the str {s:?}, which is not a single identifier. \
+         A spliced str becomes a name (a variable, function or type name); \
+         composite types such as `list[int]` cannot be built from a str"
+    ))
 }
 
 /// `Code`（未パースのトークン行）を文の列へ戻す（設計書 §1.2 / タスク 4-5 の①）。
@@ -920,6 +953,51 @@ mod tests {
             ex.interp.is_meta_expanding(),
             "展開器のインタプリタが出力先を切り替えていない"
         );
+    }
+
+    /// ⚠⚠ スプライスした `str` は**識別子として正しくなければならない**（タスク 4-3）。
+    /// 確かめないと空白入りの変数が黙って作られる（`"a b"` で実際に完走した）。
+    #[test]
+    fn a_spliced_str_that_is_not_an_identifier_is_rejected() {
+        for bad in ["a b", "list[int]", "if", "1x", ""] {
+            let src = format!(
+                concat!(
+                    "exprconst !fn bind(n: str) -> None:\n",
+                    "    quote code:\n",
+                    "        let <! n !> = 1\n",
+                    "\n",
+                    "bind({:?})\n",
+                ),
+                bad
+            );
+            let err = expand(&src).expect_err(bad);
+            assert!(
+                err.contains("is not a single identifier"),
+                "{bad:?} が通ってしまった: {err}"
+            );
+        }
+    }
+
+    /// ⚠ 正しい識別子は今まで通り通る（上の検査が厳しすぎないことの対照）。
+    #[test]
+    fn a_spliced_str_that_is_an_identifier_is_accepted() {
+        for good in ["answer", "_private", "Point", "x1"] {
+            let src = format!(
+                concat!(
+                    "exprconst !fn bind(n: str) -> None:\n",
+                    "    quote code:\n",
+                    "        let <! n !> = 1\n",
+                    "\n",
+                    "bind({:?})\n",
+                ),
+                good
+            );
+            let out = expand(&src).unwrap_or_else(|e| panic!("{good:?} が弾かれた: {e}"));
+            assert!(
+                matches!(&out[0], Stmt::Let(n, _, _) if n == good),
+                "{good:?} で束縛されていない"
+            );
+        }
     }
 
     /// ⚠⚠ 置いたコードがさらにメタ関数を呼ぶ形では、失敗した地点だけ見ても

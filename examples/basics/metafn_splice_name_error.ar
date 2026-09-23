@@ -1,0 +1,25 @@
+# metafn_splice_name_error.ar — スプライスした str は識別子でなければならない（タスク 4-3）。
+#
+# `<! str !>` は**名前**（変数名・関数名・型名）として差し込まれる（設計書 §1.4）。
+# ⇒ 1 つの識別子として字句解析できない文字列は弾く。
+#
+# ⚠⚠ 弾かないと次が**黙って完走する**（どちらも実測）:
+#   - `"a b"` → 空白入りの変数ができる（ソースでは二度と書けない名前）
+#   - `"list[int]"` → 型の位置へ差し込めてしまう
+#     ——後者は設計書 D23 が「壊れた型文字列が黙って通る経路」と名指しした穴そのもの。
+#
+# ⚠ 型を組み立てて差し込む正式な手段は**型の合成**（タスク 4-2）。記法は未設計。
+#
+# ⚠ 成功例は `metafn.ar`（識別子として正しい名前を差し込む）。
+#
+# 期待されるエラー:
+#   MetaError: while expanding 'bind': `<! !>` spliced the str "a b", which is not a
+#              single identifier. ...
+
+exprconst !fn bind(name: str) -> None:
+    quote code:
+        let <! name !> = 1
+
+bind("a b")
+
+print("unreachable")
