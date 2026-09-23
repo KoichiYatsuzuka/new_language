@@ -1,0 +1,30 @@
+# metafn_after_quote_error.ar — `quote` の後ろは決して走らない（設計書 §1.3 / タスク 3-5）。
+#
+# `quote` は**関数を抜ける**。⇒ 同じブロックのそれ以降の文は到達不能。
+# 黙って捨てると「書いたのに動かない」——メタ関数で一番避けたい失敗形になる。
+#
+# ⚠ **`if` の枝の中の `quote` の後に、その `if` より後ろの文が続くのは正常**:
+#
+#     exprconst !fn pick(n: int) -> None:
+#         if n > 0:
+#             quote code:
+#                 print("positive")
+#         quote code:            # ← 枝を通らなければここへ来る。正しい。
+#             print("other")
+#
+#   見ているのは「**同じブロックの**後ろ」だけ。
+#
+# ⚠ 成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   ParseError: `quote` exits metafunction `greet`, so the statement after it never runs
+#               (move it before the `quote`, or put the `quote` inside an `if`)
+
+exprconst !fn greet() -> None:
+    quote code:
+        print("hello")
+    print("this line never runs")
+
+greet()
+
+print("unreachable")

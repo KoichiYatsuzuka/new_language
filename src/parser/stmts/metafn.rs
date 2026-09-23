@@ -76,6 +76,7 @@ impl Parser {
         let body = self.parse_block();
         self.metafn_depth -= 1;
         let body = body?;
+        reject_unreachable_after_quote(&name, &body)?;
 
         Ok(Stmt::MetaFnDef { name, params, return_type, body, is_placing })
     }
@@ -256,6 +257,46 @@ impl Parser {
         }
         Ok(Stmt::MetaDecorated { decorators, target: Box::new(target) })
     }
+}
+
+/// `quote` の後ろに書かれた**到達不能な文**を弾く（設計書 §1.3 / タスク 3-5）。
+///
+/// `quote` は関数を抜けるので、**同じブロックのそれ以降は決して走らない**。
+/// 黙って捨てると「書いたのに動かない」——メタ関数で一番避けたい失敗形になる。
+///
+/// ⚠ **見るのは「同じブロックの後ろ」だけ。** `if` の枝の中の `quote` の後に、
+/// その `if` より後ろの文が続くのは**正常**（枝を通らなければ走る）。
+/// ⇒ ブロック単位で見て、入れ子のブロックへは別途降りる。
+fn reject_unreachable_after_quote(fn_name: &str, body: &[Stmt]) -> Result<(), String> {
+    for (i, st) in body.iter().enumerate() {
+        if matches!(st, Stmt::Quote(_)) && i + 1 < body.len() {
+            return Err(format!(
+                "`quote` exits metafunction `{fn_name}`, so the statement after it never runs \
+                 (move it before the `quote`, or put the `quote` inside an `if`)"
+            ));
+        }
+        // 入れ子のブロックにも同じ規則が要る。
+        let mut err: Option<String> = None;
+        crate::stmt_walk::each_subpart(st, &mut |part| {
+            use crate::stmt_walk::StmtPart as P;
+            let nested: &[Stmt] = match part {
+                P::Control(b) | P::GenBody(b) | P::TypeBody(b) | P::ProtocolBody(b)
+                | P::ModuleBody(b) | P::AsyncBody(b) => b,
+                P::FnBody { body: b, .. } => b,
+                P::Expr(_) | P::MatchPattern(_) | P::ForTarget(_) | P::ExceptAlias(_)
+                | P::TargetName(_) => return,
+            };
+            if err.is_none() {
+                if let Err(e) = reject_unreachable_after_quote(fn_name, nested) {
+                    err = Some(e);
+                }
+            }
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
 /// 装飾子を付けられる宣言かどうか（設計書 §1.6）。

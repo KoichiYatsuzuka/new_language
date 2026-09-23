@@ -1420,3 +1420,32 @@ fn access_section_reaches_through_a_meta_decorator() {
     let Stmt::Field { access, .. } = &**target else { panic!("Field を期待") };
     assert_eq!(*access, Accessibility::Private);
 }
+
+/// ⚠⚠ `quote` は関数を抜ける（設計書 §1.3）。同じブロックのそれ以降は**決して走らない**。
+/// 黙って捨てると「書いたのに動かない」——メタ関数で一番避けたい失敗形になる（タスク 3-5）。
+#[test]
+fn a_statement_after_quote_is_rejected() {
+    let err = parse_fails("exprconst !fn f() -> None:\n    quote code:\n        pass\n    print(1)\n");
+    assert!(err.contains("never runs"), "実際のエラー: {err}");
+}
+
+/// ⚠ **`if` の枝の中の `quote` の後に、その `if` より後ろの文が続くのは正常**。
+/// 枝を通らなければ走る。⇒ 見るのは「同じブロックの後ろ」だけ。
+#[test]
+fn a_quote_inside_an_if_does_not_make_the_rest_unreachable() {
+    use crate::ast::Stmt;
+    let stmts = parse(
+        "exprconst !fn f(n: int) -> None:\n    if n > 0:\n        quote code:\n            pass\n    quote code:\n",
+    );
+    let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
+    assert_eq!(body.len(), 2, "`if` と後続の `quote` の 2 文");
+}
+
+/// 入れ子のブロックの中でも同じ規則が効くこと。
+#[test]
+fn a_statement_after_quote_inside_a_nested_block_is_rejected() {
+    let err = parse_fails(
+        "exprconst !fn f(n: int) -> None:\n    if n > 0:\n        quote code:\n            pass\n        print(1)\n    quote code:\n",
+    );
+    assert!(err.contains("never runs"), "実際のエラー: {err}");
+}
