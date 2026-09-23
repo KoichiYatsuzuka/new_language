@@ -1,0 +1,29 @@
+# metafn_ordinary_call_error.ar — 関数本体の中の配置メタ関数呼び出しは展開されない（タスク 3-8）。
+#
+# 展開器が置き換えるのは**最上位とクラス本体の、文として書いた呼び出し**だけ。
+# 関数本体やブロック（`if` / `for` の本体など）の中の呼び出しは、いまは展開されない
+# （設計書 2-11・判断待ち）。
+# メタ関数は展開後の AST から消えるので、実行時にその名前を引けず `NameError` になる。
+#
+# ⚠ `NameError` とだけ出ると「定義したのに無いと言われた」と読めてしまう（実測）。
+#   ⇒ 引けなかった名前がメタ関数なら、理由を書き添える。
+#   純粋メタ関数（`exprconst fn`）を通常コードから呼んだときも同じ（§1.1 で「不可」）。
+#
+# ⚠ **静的には弾いていない。** 同じ名前の局所変数がメタ関数を隠していることがあり、
+#   見分けるには型検査と同じスコープの追跡が要る。実行時に本当に引けなかったときだけ
+#   書き添えるので、誤検知は起きない。
+#
+# 期待されるエラー:
+#   NameError: 'log_call' is not defined
+#   note: 'log_call' is a placing metafunction (`exprconst !fn`). The expander replaces
+#         a call to it only when the call is a statement at the top level or directly in
+#         a class body; ...
+
+exprconst !fn log_call() -> None:
+    quote code:
+        print("called")
+
+fn work() -> None:
+    log_call()
+
+work()

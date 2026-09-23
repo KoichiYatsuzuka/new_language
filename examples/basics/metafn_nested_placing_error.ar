@@ -1,0 +1,35 @@
+# metafn_nested_placing_error.ar — 配置メタ関数はメタ関数の中から呼べない（設計書 §1.1・タスク 3-8）。
+#
+# §1.1 の「呼び出し可能性」:
+#
+#   | 呼ぶ側          | `exprconst fn -> Code` | `exprconst !fn`      |
+#   |-----------------|------------------------|----------------------|
+#   | 通常コード      | 不可                   | 可（文位置のみ）     |
+#   | `exprconst fn`  | 可                     | 不可（配置先が無い） |
+#   | `exprconst !fn` | 可                     | 不可                 |
+#
+# 配置メタ関数の `quote` は「**呼び出し位置へ**置く」。メタ関数の本体から呼ぶと、
+# 呼び出し位置は展開時の世界の中なので置く先が無い。
+#
+# ⚠⚠ **以前は黙って捨てられていた。** `quote` の結果がただの返り値になり、下の例なら
+#   `print("setup")` が一度も置かれないまま exit 0 で完走した（実測）。
+#
+# ⚠ 共通部分を使い回したいなら、**純粋メタ関数**（`exprconst fn ... -> Code`）にして
+#   その結果を `quote` する（成功例 `metafn.ar` の `say_via` / `call_of`）。
+#
+# 期待されるエラー:
+#   MetaError: placing metafunction 'setup' can only run as a statement of the program
+#              or as a `!` decorator; here it was called from inside a metafunction or as
+#              part of an expression, where there is nowhere to place its code (...)
+#              (raised by metafunction 'main_setup')
+
+exprconst !fn setup() -> None:
+    quote code:
+        print("setup")
+
+exprconst !fn main_setup() -> None:
+    setup()
+    quote code:
+        print("main")
+
+main_setup()

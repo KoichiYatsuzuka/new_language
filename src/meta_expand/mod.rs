@@ -71,6 +71,14 @@ fn gensym(prefix: str) -> str:
     static mut gensym_counter = 0
     gensym_counter = gensym_counter + 1
     return prefix + \"__\" + str(gensym_counter)
+
+fn __enter_placing(name: str) -> None:
+    if not __placing_armed:
+        compile_error(\"placing metafunction '\" + name + \"' can only run as a statement of the program \
+or as a `!` decorator; here it was called from inside a metafunction or as part of an expression, \
+where there is nowhere to place its code (to reuse its code, make it a pure metafunction that \
+returns `Code`)\")
+    __placing_armed = False
 ";
 
 /// `compile_error` が投げる例外の名前（タスク 3-2）。
@@ -78,6 +86,50 @@ fn gensym(prefix: str) -> str:
 /// ⚠ 整形済みの報告からこの名前を探して、**利用者の書いた文面だけ**を出す。
 /// traceback ごと出すと「展開器の内部が漏れている」ようにしか見えない。
 const ABORT_CLASS: &str = "MetaAbort";
+
+/// 「いま展開器が配置メタ関数を呼ぼうとしている」印（設計書 §1.1 の呼び出し可能性・タスク 3-8）。
+///
+/// ⚠⚠ **配置メタ関数を呼んでよいのは展開器だけ**（§1.1 の表: `exprconst fn` からも
+/// `exprconst !fn` からも**不可**）。メタ関数の本体から呼ぶと `quote` の結果は
+/// ただの返り値になって**黙って捨てられた**（実測）—— 置いたつもりのコードが消える。
+/// ⇒ 展開器は呼ぶ直前にこの旗を立て、配置メタ関数の入口（`__enter_placing`）が旗を
+/// **倒しながら**確かめる。旗が立っていない呼び出しは展開器以外からのもの。
+/// ⚠ 旗は入口で倒すので、本体の中からさらに配置メタ関数を呼ぶと必ず捕まる。
+const PLACING_ARMED: &str = "__placing_armed";
+
+/// 展開器側で起きた失敗の段（診断の言い回しを選ぶ・タスク 3-8）。
+///
+/// ⚠ **どこで起きたかを言い分ける。** 実引数の評価で `compile_error` したのに
+/// 「メタ関数 'bind' が止めた」と言うと、`bind` の本体を探しに行ってしまう。
+#[derive(Clone, Copy)]
+enum Stage<'a> {
+    /// メタ関数の本体を走らせている。
+    Body(&'a str),
+    /// メタ関数呼び出しの実引数を評価している。
+    Args(&'a str),
+    /// `!装飾子` の式を評価している（`!repeat(3)` の `repeat(3)`）。
+    Decorator(&'a str),
+}
+
+impl Stage<'_> {
+    /// `compile_error` の文面に添える「どこで止めたか」。
+    fn raised_by(self) -> String {
+        match self {
+            Stage::Body(n) => format!("raised by metafunction '{n}'"),
+            Stage::Args(n) => format!("raised while evaluating the arguments of '{n}'"),
+            Stage::Decorator(n) => format!("raised while evaluating decorator '!{n}'"),
+        }
+    }
+
+    /// それ以外の失敗の前置き。
+    fn during(self) -> String {
+        match self {
+            Stage::Body(n) => format!("while expanding '{n}'"),
+            Stage::Args(n) => format!("while evaluating the arguments of '{n}'"),
+            Stage::Decorator(n) => format!("while evaluating decorator '!{n}'"),
+        }
+    }
+}
 
 /// 1 回の展開で歩ける文の数の上限（設計書 タスク 2-6）。
 ///
@@ -445,6 +497,11 @@ struct Expander {
     /// 衝突し、型検査の注釈が**別のノードのもの**になる（per-module 採番で実際に
     /// FFI 境界検査の誤検知が再現した — `Parser::node_counter` の doc）。
     node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+    /// 配置メタ関数の**実体**（タスク 3-8）。呼ぶ直前に [`PLACING_ARMED`] を立てるかの判定に使う。
+    ///
+    /// ⚠ **名前ではなく実体で見る。** `const my_deco = tagged` のように別名で呼ばれても、
+    /// 装飾子ファクトリが返したクロージャ（配置メタ関数ではない）と取り違えないように。
+    placing_fns: Vec<std::rc::Rc<crate::interpreter::value::FnValue>>,
 }
 
 impl Expander {
@@ -461,6 +518,7 @@ impl Expander {
             track_prefix: false,
             known_traits,
             node_counter,
+            placing_fns: Vec::new(),
         }
     }
 
@@ -510,6 +568,16 @@ impl Expander {
         // ⚠ 展開時の `print` は stderr へ（設計書 §4.1）。stdout に混ざると
         //   `compare_python_impl` / `compare_outputs` の差分比較が壊れる。
         self.interp.set_meta_expanding(true);
+        // ⚠ 旗は Rust 側で宣言する。前口上に `mut` の最上位宣言を書いて `exec` へ渡すと、
+        //   最上位の文は VM 経由で走る決まりなので `VmForceError` になる（3-6 で実測）。
+        self.interp
+            .vm_declare_global(
+                PLACING_ARMED,
+                crate::vm::op::DeclKind::Mut,
+                &[],
+                Value::Bool(false),
+            )
+            .map_err(|e| format!("MetaError: internal — {e}"))?;
         let tokens = crate::lexer::Lexer::new(PRELUDE, "<meta-prelude>").tokenize();
         let stmts = crate::parser::Parser::new(tokens, None)
             .parse_program()
@@ -531,12 +599,28 @@ impl Expander {
             return Err("MetaError: internal — define_metafn on a non-metafunction".to_string());
         };
         self.metafns.insert(name.clone(), *is_placing);
+        // ⚠⚠ 配置メタ関数の入口で「展開器から呼ばれたか」を確かめる（§1.1・タスク 3-8）。
+        //   本体の先頭に `__enter_placing("名前")` を差し込む。展開器以外から呼ばれると
+        //   `compile_error` で止まる（[`PLACING_ARMED`] の doc）。
+        //   ⚠ 採番は本体と同じカウンタから（§0.3）。
+        let mut body = body.clone();
+        if *is_placing {
+            let src = format!("__enter_placing(\"{name}\")\n");
+            let tokens = crate::lexer::Lexer::new(&src, "<meta-prologue>").tokenize();
+            let mut parser = crate::parser::Parser::new(tokens, None);
+            parser.set_node_counter(std::rc::Rc::clone(&self.node_counter));
+            let mut prologue = parser
+                .parse_program()
+                .map_err(|e| format!("MetaError: internal — the placing prologue does not parse: {e}"))?;
+            prologue.append(&mut body);
+            body = prologue;
+        }
         // ⚠ メタ関数の写しは展開専用の内部表現。元のソース範囲は持たない。
         let as_fn = Stmt::FnDef { src: None,
             name: name.clone(),
             template_params: Vec::new(),
             params: params.clone(),
-            body: body.clone(),
+            body,
             decorators: Vec::new(),
             return_type: return_type.clone(),
             is_static: false,
@@ -544,7 +628,45 @@ impl Expander {
             is_abstract: false,
             access: crate::ast::Accessibility::Public,
         };
-        self.interp.exec(&as_fn).map(|_| ())
+        self.interp.exec(&as_fn)?;
+        if *is_placing {
+            if let Some(Value::Function(f)) = self.interp.vm_load_name(name) {
+                self.placing_fns.push(f);
+            }
+        }
+        Ok(())
+    }
+
+    /// 展開用インタプリタで起きた失敗を、利用者に読める診断にする（タスク 3-0 / 3-2 / 3-8）。
+    ///
+    /// ⚠⚠ インタプリタは例外を**番兵文字列**で返し、実体は自分の中に置く。
+    /// そのまま出すと `MetaError: while expanding 'go':  __raise__` という
+    /// 何も分からない診断になる（実測）。⇒ 本体の入口（`src/main.rs`）と
+    /// 同じように取り出して整形する。`RecursionError` の traceback もこれで出る。
+    /// ⚠ 本体だけでなく**実引数と装飾子式**もここを通す（タスク 3-8）。以前は実引数の中の
+    /// `compile_error` が番兵のまま漏れ、装飾子式の失敗は握り潰されていた（どちらも実測）。
+    fn describe_failure(&mut self, e: String, stage: Stage<'_>) -> String {
+        if e == crate::interpreter::RAISE_SENTINEL {
+            let detail = self
+                .interp
+                .take_current_exception()
+                .map(|r| Interpreter::format_error_report(&r))
+                .unwrap_or_else(|| "(no details available)".to_string());
+            // ⚠ `compile_error` は**利用者が意図して止めた**印。最優先で、文面だけ出す。
+            if let Some(msg) = Self::compile_error_message(&detail) {
+                return format!("MetaError: {msg} ({})", stage.raised_by());
+            }
+            if let Some(hint) = self.runtime_name_hint(&detail) {
+                return format!("MetaError: {}: {hint}", stage.during());
+            }
+            return format!("MetaError: {}:{}{detail}", stage.during(), '\n');
+        }
+        if let Some(hint) = self.runtime_name_hint(&e) {
+            return format!("MetaError: {}: {hint}", stage.during());
+        }
+        // ⚠ 下の層が `MetaError:` を付けていたら重ねない（二重の前置きは 3-3 で踏んだ）。
+        let body = e.strip_prefix("MetaError: ").unwrap_or(&e);
+        format!("MetaError: {}: {body}", stage.during())
     }
 
     /// メタ関数を呼んで `Code` を得る。
@@ -569,31 +691,25 @@ impl Expander {
         let evaled: Vec<(Option<String>, Value, bool)> =
             args.into_iter().map(|v| (None, v, false)).collect();
         self.last_expanded = Some(name.to_string());
-        let out = match self.interp.call_value_evaled(callee, evaled, name, None, 0) {
+        // ⚠ 配置メタ関数を呼ぶときだけ旗を立てる（[`PLACING_ARMED`] の doc）。
+        //   ⚠⚠ **呼んだ後は必ず下ろす。** 入口の手前で失敗すると（引数の数違いなど）旗が
+        //   立ったまま残り、次に式の中から呼ばれた配置メタ関数が素通りしてしまう。
+        let armed = matches!(&callee, Value::Function(f)
+            if self.placing_fns.iter().any(|p| std::rc::Rc::ptr_eq(p, f)));
+        if armed {
+            self.interp
+                .vm_assign_global(PLACING_ARMED, Value::Bool(true))
+                .map_err(|e| format!("MetaError: internal — {e}"))?;
+        }
+        let result = self.interp.call_value_evaled(callee, evaled, name, None, 0);
+        if armed {
+            self.interp
+                .vm_assign_global(PLACING_ARMED, Value::Bool(false))
+                .map_err(|e| format!("MetaError: internal — {e}"))?;
+        }
+        let out = match result {
             Ok(v) => v,
-            // ⚠⚠ インタプリタは例外を**番兵文字列**で返し、実体は自分の中に置く。
-            //    そのまま出すと `MetaError: while expanding 'go':  __raise__` という
-            //    何も分からない診断になる（実測）。⇒ 本体の入口（`src/main.rs`）と
-            //    同じように取り出して整形する。`RecursionError` の traceback もこれで出る。
-            Err(e) if e == crate::interpreter::RAISE_SENTINEL => {
-                let detail = self
-                    .interp
-                    .take_current_exception()
-                    .map(|r| Interpreter::format_error_report(&r))
-                    .unwrap_or_else(|| "(no details available)".to_string());
-                // ⚠ `compile_error` は**利用者が意図して止めた**印。最優先で、文面だけ出す。
-                if let Some(msg) = Self::compile_error_message(&detail) {
-                    return Err(format!("MetaError: {msg} (raised by metafunction '{name}')"));
-                }
-                if let Some(hint) = self.runtime_name_hint(&detail) {
-                    return Err(format!("MetaError: while expanding '{name}': {hint}"));
-                }
-                return Err(format!(
-                    "MetaError: while expanding '{name}':{}{detail}",
-                    '\n'
-                ));
-            }
-            Err(e) => return Err(format!("MetaError: while expanding '{name}': {e}")),
+            Err(e) => return Err(self.describe_failure(e, Stage::Body(name))),
         };
         match out {
             Value::Code(lines) => Ok(lines),
@@ -610,6 +726,56 @@ impl Expander {
     }
 }
 
+/// 実行時の `NameError` が**展開で消えたメタ関数**を指していたら、理由を書き添える（タスク 3-8）。
+///
+/// ⚠⚠ メタ関数は展開後の AST から消える。⇒ 通常コードから呼ぶ（§1.1 の表で「不可」）と、
+/// 実行時に `NameError: 'greet' is not defined` とだけ出て「定義したのに無いと言われた」と
+/// 読めてしまう（実測）。展開器が置き換えるのは**最上位とクラス本体の文位置の呼び出しだけ**
+/// なので、関数本体の中から呼んだ場合もここへ来る。
+///
+/// ⚠ **静的には弾かない。** 同じ名前の局所変数がメタ関数を隠していることがあり、
+/// その判定には型検査と同じスコープの追跡が要る。実行時に「本当に引けなかった」ときだけ
+/// 書き添えるので誤検知は起きない。
+pub fn explain_removed_metafn(
+    msg: String,
+    metafns: &std::collections::HashMap<String, bool>,
+) -> String {
+    for (name, placing) in metafns {
+        if !msg.contains(&format!("NameError: '{name}' is not defined")) {
+            continue;
+        }
+        let why = if *placing {
+            format!(
+                "note: '{name}' is a placing metafunction (`exprconst !fn`). The expander replaces a \
+                 call to it only when the call is a statement at the top level or directly in a class \
+                 body; a call inside a function body or a block, or one used as a value, is not \
+                 expanded, and metafunctions no longer exist at run time"
+            )
+        } else {
+            format!(
+                "note: '{name}' is a pure metafunction (`exprconst fn`). It exists only while the \
+                 compile-time expander runs, so ordinary code cannot call it; call it from another \
+                 metafunction and `quote` the `Code` it returns"
+            )
+        };
+        return format!("{msg}\n{why}");
+    }
+    msg
+}
+
+/// [`expand_program`] と同じだが、**消したメタ関数の一覧**も返す（タスク 3-8）。
+///
+/// ⚠ 実行時の `NameError` に理由を書き添えるため（[`explain_removed_metafn`]）。
+pub fn expand_program_with_metafns(
+    stmts: Vec<Stmt>,
+    node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+    known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
+) -> Result<(Vec<Stmt>, std::collections::HashMap<String, bool>), String> {
+    let mut ex = Expander::new(node_counter, known_traits);
+    let out = expand_with(&mut ex, stmts)?;
+    Ok((out, std::mem::take(&mut ex.metafns)))
+}
+
 /// 文の列を展開する（設計書 §1.7）。入力を壊さず、新しい列を返す。
 ///
 /// ⚠⚠ **`resolve_and_annotate` より前に走らせること。** 展開で生えた宣言を
@@ -620,6 +786,10 @@ pub fn expand_program(
     known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
 ) -> Result<Vec<Stmt>, String> {
     let mut ex = Expander::new(node_counter, known_traits);
+    expand_with(&mut ex, stmts)
+}
+
+fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String> {
     ex.load_prelude()?;
     // ⚠ 展開時型推論（タスク 4-4）の前提として、展開済みの最上位の文を共有する。
     //   ⚠ メタ関数が 1 つも無いプログラムでは推論が起きえないので**やらない**
@@ -635,7 +805,7 @@ pub fn expand_program(
             ex.runtime_names.insert(n.to_string());
         });
     }
-    expand_stmts(&mut ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))
+    expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))
 }
 
 /// 1 つの文の列を前から順に展開する。
@@ -693,8 +863,11 @@ fn expand_stmts(
                 //   ⇒ メタ関数の定義と同じく、実行時の AST から消す。
                 //   ⚠ 展開時に関数値になるのはメタ関数由来だけ（D1: 普通の `fn` は展開用
                 //     インタプリタに定義されない）なので、値の型で判定してよい。
-                //   ⚠ `Code` に束縛した `const` は**消さない**。§1.2「`Code` はメタ関数の外へ
-                //     持ち出せない」を型検査（1-5）に弾かせるため。
+                //   ⚠ `Code` に束縛した `const` は**消さない**。消すと実行時の失敗が `const` の
+                //     名前の `NameError` になり、原因（純粋メタ関数を通常コードで呼んだ）が
+                //     見えなくなる。残せば**メタ関数の名前で**落ち、3-8 の書き添えが付く。
+                //     ⚠ 型検査（1-5）がこれを弾くのは展開しないエディタだけ。CLI では型検査より
+                //     前にメタ関数が消えている（4-8 の時点の「型検査に弾かせる」は誤り・3-8 で訂正）。
                 let mut expansion_only = false;
                 match ex.interp.eval(init) {
                     Ok(v) => {
@@ -706,7 +879,12 @@ fn expand_stmts(
                             v,
                         );
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        // ⚠ 例外で失敗したときは実体がインタプリタに残っている。捨てておかないと、
+                        //   後の無関係な失敗の報告にこの例外が混ざる。
+                        if e == crate::interpreter::RAISE_SENTINEL {
+                            let _ = ex.interp.take_current_exception();
+                        }
                         ex.runtime_names.insert(name.clone());
                     }
                 }
@@ -730,7 +908,7 @@ fn expand_stmts(
                     std::rc::Rc::new(frames)
                 };
 
-                let vals = eval_args(ex, args).map_err(|e| e + &render_trail(&frames))?;
+                let vals = eval_args(ex, args, &name).map_err(|e| e + &render_trail(&frames))?;
                 let code = ex.call_metafn(&name, vals).map_err(|e| e + &render_trail(&frames))?;
                 let placed = ex.place(&code, ctx).map_err(|e| e + &render_trail(&frames))?;
                 // ⚠ **置いたものを先に歩く**。置いたコードがさらにメタ関数を呼ぶことはある。
@@ -855,11 +1033,18 @@ fn meta_value_for(ex: &Expander, decl: &Stmt) -> Option<Value> {
 ///
 /// ⚠ 展開時に確定しないもの（実行時の変数など）はここで失敗する。
 /// 「何が確定するか」の診断は 3-0（§1.8）。
-fn eval_args(ex: &mut Expander, args: &[crate::ast::CallArg]) -> Result<Vec<Value>, String> {
+fn eval_args(
+    ex: &mut Expander,
+    args: &[crate::ast::CallArg],
+    callee: &str,
+) -> Result<Vec<Value>, String> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
         match a {
-            crate::ast::CallArg::Positional(e) => out.push(ex.interp.eval(e)?),
+            crate::ast::CallArg::Positional(e) => match ex.interp.eval(e) {
+                Ok(v) => out.push(v),
+                Err(err) => return Err(ex.describe_failure(err, Stage::Args(callee))),
+            },
             _ => {
                 return Err(
                     "MetaError: metafunction calls take positional arguments only (for now)"
@@ -897,7 +1082,17 @@ fn apply_decorators(
             Expr::Ident { name: n, .. } if ex.metafns.contains_key(n) => {
                 ex.interp.vm_load_name(n)
             }
-            _ => ex.interp.eval(&deco).ok(),
+            // ⚠ 名前が引けないのは「前に宣言されていない」（§1.7）。下で言う。
+            Expr::Ident { .. } => ex.interp.eval(&deco).ok(),
+            // ⚠⚠ 式（`!repeat(3)` など）の評価の失敗は**握り潰さない**（タスク 3-8）。
+            //   以前は `.ok()` で捨てていたので、ファクトリの実引数の `1 // 0` が
+            //   「前に宣言されていない」という無関係な診断になった（実測）。
+            _ => match ex.interp.eval(&deco) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return Err(ex.describe_failure(e, Stage::Decorator(&name)) + &render_trail(trail))
+                }
+            },
         };
         let Some(callee) = callee else {
             return Err(format!(
@@ -1105,6 +1300,8 @@ mod tests {
 
     /// ⚠⚠ メタ関数に束縛した `const` は**展開時専用**なので実行時の AST から消える（タスク 4-8）。
     /// 残すと実行時に**もう存在しないメタ関数の名前**を読んで `NameError` になる（実測）。
+    /// ⚠ `tagged` は配置メタ関数。別名で呼んでも入口の検査（3-8）を通ることもここで見ている
+    /// —— 旗を**名前ではなく実体で**立てているから通る。
     #[test]
     fn a_const_bound_to_a_metafn_works_as_a_decorator_and_vanishes() {
         let out = expand(concat!(
@@ -1136,6 +1333,113 @@ mod tests {
         ))
         .expect_err("弾かれること");
         assert!(err.contains("did not produce something callable"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ **配置メタ関数を呼んでよいのは展開器だけ**（設計書 §1.1 の表・タスク 3-8）。
+    /// メタ関数の本体から呼ぶと `quote` の結果はただの返り値になり、**黙って捨てられた**
+    /// （実測: 置いたつもりの `print("hi")` が消えて exit 0）。純粋メタ関数からも同じ。
+    #[test]
+    fn a_placing_metafn_called_from_a_metafn_is_an_error() {
+        let greet = concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+        );
+        let from_placing = format!(
+            "{greet}exprconst !fn outer() -> None:\n    greet()\n    quote code:\n\nouter()\n"
+        );
+        let from_pure = format!(
+            "{greet}exprconst fn helper() -> Code:\n    greet()\n    let c = code:\n    return c\n\n\
+             exprconst !fn outer() -> None:\n    quote helper()\n\nouter()\n"
+        );
+        for src in [from_placing, from_pure] {
+            let err = expand(&src).expect_err("弾かれること");
+            assert!(
+                err.contains("placing metafunction 'greet' can only run as a statement"),
+                "実際のエラー: {err}"
+            );
+            assert!(err.contains("(raised by metafunction 'outer')"), "実際のエラー: {err}");
+        }
+    }
+
+    /// ⚠ 実引数の中（式の位置）でも同じ。展開器が呼ぶのは**文として書かれた呼び出し**だけ。
+    #[test]
+    fn a_placing_metafn_used_as_an_argument_is_an_error() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "\n",
+            "exprconst !fn take(c) -> None:\n",
+            "    quote code:\n",
+            "\n",
+            "take(greet())\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("can only run as a statement")
+                && err.contains("(raised while evaluating the arguments of 'take')"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠⚠ 実引数の中の `compile_error` は**文面が出る**（タスク 3-8）。
+    /// 以前は実引数の評価だけ例外の整形を通っておらず、番兵文字列 ` __raise__` が漏れた（実測）。
+    #[test]
+    fn compile_error_in_an_argument_is_reported_with_its_message() {
+        let err = expand(concat!(
+            "exprconst fn checked(n: int) -> int:\n",
+            "    if n < 0:\n",
+            "        compile_error(\"n must not be negative\")\n",
+            "    return n\n",
+            "\n",
+            "exprconst !fn bind(value: int) -> None:\n",
+            "    quote code:\n",
+            "        let x = <! value !>\n",
+            "\n",
+            "bind(checked(-1))\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("n must not be negative (raised while evaluating the arguments of 'bind')"),
+            "実際のエラー: {err}"
+        );
+        assert!(!err.contains("__raise__"), "番兵が漏れている: {err}");
+    }
+
+    /// ⚠⚠ 装飾子式の評価の失敗は**握り潰さない**（タスク 3-8）。
+    /// 以前は `.ok()` で捨てていたので「前に宣言されていない」という無関係な診断になった（実測）。
+    #[test]
+    fn a_failing_decorator_expression_is_described() {
+        let err = expand(concat!(
+            "exprconst fn tag_with(n: int):\n",
+            "    fn deco(m) -> None:\n",
+            "        quote code:\n",
+            "    return deco\n",
+            "\n",
+            "!tag_with(1 // 0)\n",
+            "fn f() -> int:\n",
+            "    return 1\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("while evaluating decorator '!tag_with(...)'") && err.contains("ZeroDivisionError"),
+            "実際のエラー: {err}"
+        );
+        assert!(!err.contains("not a metafunction declared"), "取り違えている: {err}");
+    }
+
+    /// ⚠ 実行時の `NameError` への書き添えは**メタ関数の名前のときだけ**（タスク 3-8）。
+    #[test]
+    fn a_runtime_name_error_on_a_removed_metafn_gets_a_note() {
+        let metafns: std::collections::HashMap<String, bool> =
+            [("greet".to_string(), true), ("frag".to_string(), false)].into_iter().collect();
+        let placing = explain_removed_metafn("NameError: 'greet' is not defined".into(), &metafns);
+        assert!(placing.contains("note: 'greet' is a placing metafunction"), "{placing}");
+        let pure = explain_removed_metafn("NameError: 'frag' is not defined".into(), &metafns);
+        assert!(pure.contains("note: 'frag' is a pure metafunction"), "{pure}");
+        let other = explain_removed_metafn("NameError: 'other' is not defined".into(), &metafns);
+        assert_eq!(other, "NameError: 'other' is not defined", "関係ない名前には書き添えない");
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

@@ -387,7 +387,11 @@ fn run_program(
     // ⚠⚠ **構文カバレッジより後**（上の早期 return）。展開すると `MetaFnDef` / `Quote` /
     //    `MetaDecorated` / `CodeBlock` が AST から消えるので、先に展開すると
     //    `syntax_cov` が「その構文は一度も書かれていない」と報告してしまう。
-    stmts = meta_expand::expand_program(stmts, node_counter, known_traits)?;
+    // ⚠ 消したメタ関数の一覧も受け取る。通常コードから呼ばれていたら実行時に `NameError` に
+    //   なるので、その文面に理由を書き添える（タスク 3-8。下の実行ループ）。
+    let (expanded, metafns) =
+        meta_expand::expand_program_with_metafns(stmts, node_counter, known_traits)?;
+    stmts = expanded;
 
     // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
     // ⚠ **配線は 1 箇所**（#88。`resolve_and_annotate` の doc に「畳んだ差」と
@@ -490,11 +494,13 @@ fn run_program(
     prof::begin_exec();
     #[cfg(feature = "prof")]
     let _p_exec = prof::Timer::new(prof::Phase::Exec);
+    // ⚠ 展開で消えたメタ関数を通常コードから呼んでいたら、`NameError` に理由を書き添える（タスク 3-8）。
+    let explain = |msg: String| meta_expand::explain_removed_metafn(msg, &metafns);
     for stmt in &stmts {
         match interp.exec(stmt) {
             // `raise` 文が実行された場合: フォーマット済みエラーレポートを返す
             Ok(ExecResult::Raise(raised)) => {
-                return Err(Interpreter::format_error_report(&raised));
+                return Err(explain(Interpreter::format_error_report(&raised)));
             }
             // 正常終了: 次の文へ続く
             Ok(_) => {}
@@ -504,10 +510,10 @@ fn run_program(
                     .take_current_exception()
                     .map(|r| Interpreter::format_error_report(&r))
                     .unwrap_or_else(|| "UnhandledException: (no details available)".to_string());
-                return Err(msg);
+                return Err(explain(msg));
             }
             // その他の実行時エラー文字列をそのまま返す
-            Err(e) => return Err(e),
+            Err(e) => return Err(explain(e)),
         }
     }
     // ⚠⚠ 残った**中断中のジェネレータを閉じて `finally` を走らせる**（bug_fix.md B13 段階 D）。
