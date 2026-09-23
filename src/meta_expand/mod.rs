@@ -279,6 +279,51 @@ fn check_type_body_members(stmts: &[Stmt]) -> Result<(), String> {
     Ok(())
 }
 
+/// 出所の列に積む上限（タスク 3-3）。
+///
+/// ⚠⚠ **上限が無いと暴走したメタ関数で二次時間になる。** 自分の呼び出しを置き続ける
+/// メタ関数は歩数予算（10 万）まで走るが、その 1 歩ごとに列が 1 段伸びる。列は
+/// 積むたびに複製するので、上限なしだと 10 万 × 10 万 の複製になる
+/// （実測: `cargo test` が 1 秒から **614 秒**になった）。
+///
+/// ⚠ 溢れたら**外側を残す**。利用者が実際に書いた呼び出しは一番外側にあり、
+/// 内側は同じ枠の繰り返しなので、そちらを捨てる方が読める。
+const MAX_TRAIL: usize = 16;
+
+/// 「この文はどのメタ関数がどこから置いたか」の 1 段（タスク 3-3）。
+#[derive(Clone)]
+struct Frame {
+    /// 展開したメタ関数の名前。
+    name: String,
+    /// **呼び出し位置**。置いたコードの中の呼び出しなら、2-3 のおかげで
+    /// `code:` のその行を指す。
+    span: Span,
+}
+
+/// 出所の列を人が読む形にする（タスク 3-3）。
+///
+/// ⚠⚠ **これが無いと「どのメタ関数の中で起きたか」しか分からない。** 置いたコードが
+/// さらにメタ関数を呼ぶ形（`outer` が `inner()` を置く）では、失敗した地点だけ見ても
+/// **なぜそこに `inner()` があるのか**が追えない。
+fn render_trail(trail: &[Frame]) -> String {
+    let mut out = String::new();
+    if trail.len() >= MAX_TRAIL {
+        out.push_str(&format!(
+            "\n  ... (the expansion trail is deeper than {MAX_TRAIL}; only the outermost frames are kept)"
+        ));
+    }
+    // 内側（直近）から外側へ。traceback と同じ並びにする。
+    for f in trail.iter().rev() {
+        out.push('\n');
+        if f.span.line == 0 {
+            out.push_str(&format!("  while expanding '{}'", f.name));
+        } else {
+            out.push_str(&format!("  while expanding '{}' at {}", f.name, f.span));
+        }
+    }
+    out
+}
+
 // ── 展開器本体 ───────────────────────────────────────────────────────────────
 
 /// 展開器の状態。メタ関数の登録簿と、それを実行するインタプリタを持つ。
@@ -488,7 +533,7 @@ pub fn expand_program(
             ex.runtime_names.insert(n.to_string());
         });
     }
-    expand_stmts(&mut ex, stmts, Context::TopLevel)
+    expand_stmts(&mut ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))
 }
 
 /// 1 つの文の列を前から順に展開する。
@@ -496,12 +541,16 @@ fn expand_stmts(
     ex: &mut Expander,
     stmts: Vec<Stmt>,
     ctx: Context,
+    trail: std::rc::Rc<Vec<Frame>>,
 ) -> Result<Vec<Stmt>, String> {
     // ⚠ 置換で文が増えるので、**残りを持ち回る**形にする（`for` では書けない）。
-    let mut pending: std::collections::VecDeque<Stmt> = stmts.into();
+    // ⚠ 文ごとに**出所**（どのメタ関数が置いたか）を連れて回る（タスク 3-3）。
+    //   `Rc` なので、同じ出所を持つ文が何本増えても複製は起きない。
+    let mut pending: std::collections::VecDeque<(Stmt, std::rc::Rc<Vec<Frame>>)> =
+        stmts.into_iter().map(|s| (s, std::rc::Rc::clone(&trail))).collect();
     let mut out: Vec<Stmt> = Vec::new();
 
-    while let Some(stmt) = pending.pop_front() {
+    while let Some((stmt, here)) = pending.pop_front() {
         ex.steps += 1;
         if ex.steps > STEP_BUDGET {
             let culprit = match &ex.last_expanded {
@@ -545,24 +594,36 @@ fn expand_stmts(
             }
 
             // 配置メタ関数の呼び出し文 → `quote` した中身で置き換える。
-            Stmt::Expr(Expr::Call { ref func, ref args, .. })
+            Stmt::Expr(Expr::Call { ref func, ref args, ref span, .. })
                 if placing_call_name(ex, func).is_some() =>
             {
                 let name = placing_call_name(ex, func).expect("checked by the guard");
-                let vals = eval_args(ex, args)?;
-                let code = ex.call_metafn(&name, vals)?;
-                let placed = ex.place(&code, ctx)?;
+                // ⚠ 出所を積んでから呼ぶ。失敗の報告にこの列を添える（タスク 3-3）。
+                let frames = if here.len() >= MAX_TRAIL {
+                    // ⚠ 上限に達したら**伸ばさない**（そのまま使い回す）。複製が二次になるのを防ぐ。
+                    std::rc::Rc::clone(&here)
+                } else {
+                    let mut frames = (*here).clone();
+                    frames.push(Frame { name: name.clone(), span: span.clone() });
+                    std::rc::Rc::new(frames)
+                };
+
+                let vals = eval_args(ex, args).map_err(|e| e + &render_trail(&frames))?;
+                let code = ex.call_metafn(&name, vals).map_err(|e| e + &render_trail(&frames))?;
+                let placed = ex.place(&code, ctx).map_err(|e| e + &render_trail(&frames))?;
                 // ⚠ **置いたものを先に歩く**。置いたコードがさらにメタ関数を呼ぶことはある。
                 for s in placed.into_iter().rev() {
-                    pending.push_front(s);
+                    pending.push_front((s, std::rc::Rc::clone(&frames)));
                 }
             }
 
             // `!装飾子` 付きの宣言 → 装飾子が返した中身で置き換える。
             Stmt::MetaDecorated { decorators, target } => {
-                let placed = apply_decorators(ex, decorators, *target, ctx)?;
+                // ⚠ 装飾子には位置が無い（`Expr::Ident` が `Span` を持たない）。
+                //   ⇒ 出所の列には名前だけを積む。位置まで欲しければ AST 側に足すことになる。
+                let placed = apply_decorators(ex, decorators, *target, ctx, &here)?;
                 for s in placed.into_iter().rev() {
-                    pending.push_front(s);
+                    pending.push_front((s, std::rc::Rc::clone(&here)));
                 }
             }
 
@@ -580,7 +641,7 @@ fn expand_stmts(
                 //    ここで自動 `__init__` 生成と trait デフォルト実装の注入を行う。
                 //    保留していなければ二重に走らせない（顔ぶれは変わっていない）。
                 let deferred = body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. }));
-                let mut body = expand_stmts(ex, body, Context::TypeBody)?;
+                let mut body = expand_stmts(ex, body, Context::TypeBody, std::rc::Rc::clone(&here))?;
                 if deferred {
                     let bases_with_args: Vec<(String, Vec<String>)> = bases
                         .iter()
@@ -605,7 +666,8 @@ fn expand_stmts(
                 });
             }
             Stmt::TraitDef { name, template_params, body } => {
-                let body = expand_stmts(ex, body, Context::TypeBody)?;
+                let body =
+                    expand_stmts(ex, body, Context::TypeBody, std::rc::Rc::clone(&here))?;
                 out.push(Stmt::TraitDef { name, template_params, body });
             }
 
@@ -656,6 +718,7 @@ fn apply_decorators(
     decorators: Vec<Expr>,
     target: Stmt,
     ctx: Context,
+    trail: &std::rc::Rc<Vec<Frame>>,
 ) -> Result<Vec<Stmt>, String> {
     let mut current = vec![target];
     for deco in decorators.into_iter().rev() {
@@ -679,8 +742,14 @@ fn apply_decorators(
             ));
         }
         let arg = crate::interpreter::ast_value::stmt_to_value(&current[0]);
-        let code = ex.call_metafn(name, vec![arg])?;
-        current = ex.place(&code, ctx)?;
+        let mut frames = (**trail).clone();
+        if frames.len() < MAX_TRAIL {
+            frames.push(Frame { name: name.clone(), span: Span::unknown() });
+        }
+        let code = ex
+            .call_metafn(name, vec![arg])
+            .map_err(|e| e + &render_trail(&frames))?;
+        current = ex.place(&code, ctx).map_err(|e| e + &render_trail(&frames))?;
     }
     Ok(current)
 }
@@ -786,6 +855,33 @@ mod tests {
         let err = expand("exprconst !fn nothing() -> None:\n    pass\n\nnothing()\n")
             .expect_err("エラーになること");
         assert!(err.contains("without placing any `Code`"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ 置いたコードがさらにメタ関数を呼ぶ形では、失敗した地点だけ見ても
+    /// **なぜそこにその呼び出しがあるのか**が追えない（タスク 3-3）。
+    /// ⇒ 出所の列（どのメタ関数がどこから置いたか）を添える。
+    #[test]
+    fn a_nested_expansion_reports_where_it_came_from() {
+        let err = expand(concat!(
+            "exprconst !fn inner() -> None:\n",
+            "    compile_error(\"inner refuses\")\n",
+            "\n",
+            "exprconst !fn outer() -> None:\n",
+            "    quote code:\n",
+            "        inner()\n",
+            "\n",
+            "outer()\n",
+        ))
+        .expect_err("止まること");
+        assert!(err.contains("inner refuses"), "実際のエラー: {err}");
+        assert!(
+            err.contains("while expanding 'inner'"),
+            "内側の出所が無い: {err}"
+        );
+        assert!(
+            err.contains("while expanding 'outer'"),
+            "外側の出所が無い —— 「なぜそこに inner() があるのか」が追えない: {err}"
+        );
     }
 
     /// `compile_error("...")` は**利用者が意図して展開を止める**道具（タスク 3-2）。
