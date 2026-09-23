@@ -78,7 +78,7 @@ pub struct FnTypeParam {
 /// ⚠⚠ 種別を足すときは、**種別で分岐している箇所をすべて網羅 match にしておくこと**
 /// （`language-dev-principles` §2）。今はまだ分岐が無いので、最初の分岐を書く人が
 /// この約束を引き受ける。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MetaKind {
     /// `meta_instance` — 値（インスタンス）のメタ情報。
     Instance,

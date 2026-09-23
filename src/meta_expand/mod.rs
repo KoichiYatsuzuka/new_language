@@ -721,12 +721,9 @@ fn placing_call_name(ex: &Expander, func: &Expr) -> Option<String> {
 /// ⚠ 装飾子の第一引数に使う。`^名前` と違って**表を引かない**（対象はもう手元にある）。
 fn meta_value_for(decl: &Stmt) -> Option<Value> {
     let kind = crate::interpreter::value::MetaValue::kind_of(decl)?;
-    let mut name = String::new();
-    crate::decl_names::each_declared_name(decl, &mut |n, _, _| {
-        if name.is_empty() {
-            name = n.to_string();
-        }
-    });
+    // ⚠ `decl_names` ではなく `name_of`。フィールドは `decl_names` が報告しない
+    //   （スコープの名前ではないため）ので、混ぜると名前が空になる。
+    let name = crate::interpreter::value::MetaValue::name_of(decl)?;
     Some(Value::Meta(std::rc::Rc::new(
         crate::interpreter::value::MetaValue { kind, name, decl: std::rc::Rc::new(decl.clone()) },
     )))
@@ -1106,6 +1103,79 @@ mod tests {
             out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "Point")),
             "`.name` が射影されていない: {:?}",
             out.iter().map(crate::interpreter::tw_stats::stmt_kind_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// クラスの射影（参考B #2 #4 #5・タスク 4-1）。
+    /// ⚠⚠ フィールド名は `decl_names` では取れない（あちらはスコープの名前を答える
+    /// モジュールで、クラスのフィールドは意図的に報告しない）。混ぜると `.name` が
+    /// **空文字列になる**（実測）。⇒ `MetaValue::name_of` を使う。
+    #[test]
+    fn class_projections_read_the_declaration() {
+        let out = expand(concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "    let label: str\n",
+            "\n",
+            "    fn greet(self) -> str:\n",
+            "        return \"hi\"\n",
+            "\n",
+            "exprconst !fn report(m) -> None:\n",
+            "    let first = m.fields[0].name\n",
+            "    let ok = m.has_method(\"greet\")\n",
+            "    if ok:\n",
+            "        quote code:\n",
+            "            let <! first !> = 1\n",
+            "    quote code:\n",
+            "\n",
+            "report(^Point)\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "x")),
+            "`.fields[0].name` と `.has_method` が効いていない"
+        );
+    }
+
+    /// 関数の射影（参考B #1）。⚠ 仮引数の記録は name / type / mutable / has_default / variadic。
+    #[test]
+    fn function_projections_read_the_signature() {
+        let out = expand(concat!(
+            "fn greet(mut who: str, times: int = 2) -> str:\n",
+            "    return who\n",
+            "\n",
+            "exprconst !fn report(m) -> None:\n",
+            "    let n = m.params[0].name + \"_\" + m.return_type\n",
+            "    quote code:\n",
+            "        let <! n !> = 1\n",
+            "\n",
+            "report(^greet)\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "who_str")),
+            "仮引数名と戻り値型が取れていない"
+        );
+    }
+
+    /// ⚠⚠ 種別と噛み合わない射影は**エラー**（タスク 4-1）。空のリストを返すと
+    /// 「フィールドが 0 個」と読めてしまい、取り違えが通ってしまう。
+    #[test]
+    fn a_projection_that_does_not_fit_the_kind_is_an_error() {
+        let err = expand(concat!(
+            "fn greet() -> str:\n",
+            "    return \"hi\"\n",
+            "\n",
+            "exprconst !fn wrong(m) -> None:\n",
+            "    let f = m.fields\n",
+            "    quote code:\n",
+            "\n",
+            "wrong(^greet)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("this projection needs a class or trait"),
+            "実際のエラー: {err}"
         );
     }
 

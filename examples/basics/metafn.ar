@@ -141,6 +141,24 @@ exprconst !fn bind_named(m) -> None:
 bind_named(^Marker)
 print(Marker_kind)                  # 1
 
+# ⚠ 射影（`.fields` / `.methods` / `.params` …）は宣言そのものから引く。
+#   分岐用に `has_field` / `has_method` / `implements` もある。
+# ⚠ 種別と噫み合わない射影は**エラー**。空のリストを返すと
+#   「0 個」と読めて取り違えが通ってしまう。
+class Tagged:
+    mut id: int
+    mut label: str
+
+exprconst !fn bind_first_field(m) -> None:
+    if m.has_field("label"):
+        let first = m.fields[0].name + "_seen"
+        quote code:
+            let <! first !> = 1
+    quote code:
+
+bind_first_field(^Tagged)
+print(id_seen)                      # 1
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。

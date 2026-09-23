@@ -231,6 +231,18 @@ impl Interpreter {
                     evaled,
                 )
             }
+            // メタ情報のメソッド形の射影（参考B #4 #5・タスク 4-1）。
+            Value::Meta(ref m) => {
+                let vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
+                match crate::interpreter::value::meta_method(m, method_name, &vals) {
+                    Some(r) => r,
+                    None => Err(format!(
+                        "AttributeError: {} '{}' has no method '{method_name}'",
+                        self.type_name(&obj),
+                        m.name
+                    )),
+                }
+            }
             Value::Str(s) => self.eval_str_method(s.clone(), method_name, evaled),
             Value::Complex(re, im) => {
                 let re = *re;
