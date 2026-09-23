@@ -187,7 +187,41 @@ pub fn code_to_stmts_with(
         Context::TopLevel => parser.parse_program(),
         Context::TypeBody => parser.parse_class_body_fragment(),
     };
-    parsed.map_err(|e| format!("MetaError: the placed `Code` does not parse: {e}"))
+    let stmts = parsed.map_err(|e| format!("MetaError: the placed `Code` does not parse: {e}"))?;
+    if ctx == Context::TypeBody {
+        check_type_body_members(&stmts)?;
+    }
+    Ok(stmts)
+}
+
+/// クラス／トレイト本体へ置いた `Code` が**メンバー宣言だけ**でできているか（タスク 2-5）。
+///
+/// 置けるのは**フィールド宣言・メソッド定義（`fn` / `gen`、`static` / `class_method` 込み）**だけ。
+///
+/// ⚠⚠ **`pass` を弾くのがここの主目的。** `parse_class_stmt` は手書きの空クラスのために
+/// `pass` を受け付けるので、素通しすると「装飾子が `pass` を置いてメンバーが**黙って消える**」
+/// という形になる（実測）。メンバーを消したいなら**空の `Code`** を `quote` する
+/// （設計書 §1.2 の B-2）。そちらは「意図して何も置かない」と読める。
+///
+/// ⚠ `!装飾子` は通す。置いた直後に同じ前向き走査が展開する。
+fn check_type_body_members(stmts: &[Stmt]) -> Result<(), String> {
+    for st in stmts {
+        match st {
+            Stmt::Field { .. }
+            | Stmt::FnDef { .. }
+            | Stmt::GenDef { .. }
+            | Stmt::MetaDecorated { .. } => {}
+            other => {
+                return Err(format!(
+                    "MetaError: `{}` cannot be placed in a class or trait body \
+                     (only field declarations and `fn` / `gen` methods can); \
+                     to remove the member instead, `quote` an empty `code:` block",
+                    crate::interpreter::tw_stats::stmt_kind_of(other)
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── 展開器本体 ───────────────────────────────────────────────────────────────
@@ -726,6 +760,50 @@ mod tests {
             })
             .collect();
         assert_eq!(fields, vec!["tagged"], "装飾された宣言が置き換わっていること");
+    }
+
+    /// ⚠⚠ クラス本体へ置けるのは**メンバー宣言だけ**（タスク 2-5）。
+    /// `pass` を素通しすると「装飾子が `pass` を置いてメンバーが**黙って消える**」形になる。
+    /// メンバーを消したいなら空の `Code` を `quote` する（§1.2 の B-2）。
+    #[test]
+    fn placing_pass_in_a_class_body_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn passy(t) -> None:\n",
+            "    quote code:\n",
+            "        pass\n",
+            "\n",
+            "class C:\n",
+            "    mut a: int\n",
+            "    !passy\n",
+            "    mut b: int\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("cannot be placed in a class or trait body"), "実際のエラー: {err}");
+    }
+
+    /// 空の `Code` を置けばメンバーは**意図して消える**（上の `pass` との対）。
+    #[test]
+    fn quoting_an_empty_code_removes_the_decorated_member() {
+        let out = expand(concat!(
+            "exprconst !fn drop_it(t) -> None:\n",
+            "    let empty = code:\n",
+            "    quote empty\n",
+            "\n",
+            "class C:\n",
+            "    mut a: int\n",
+            "    !drop_it\n",
+            "    mut b: int\n",
+        ))
+        .expect("expand");
+        let Stmt::ClassDef { body, .. } = &out[0] else { panic!("ClassDef を期待") };
+        let fields: Vec<&str> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fields, vec!["a"], "装飾されたメンバーだけが消えること");
     }
 
     /// ⚠⚠ **自動 `__init__` は展開で増えたフィールドを見ていなければならない**（タスク 2-4）。

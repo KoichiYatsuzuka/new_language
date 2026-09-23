@@ -1,0 +1,34 @@
+# metafn_class_member_error.ar — クラス本体へ置ける `Code` の中身（タスク 2-5）。
+#
+# クラス／トレイト本体へ置けるのは**メンバー宣言だけ** —— フィールド宣言と
+# `fn` / `gen` メソッド（`static` / `class_method` 込み）。
+#
+# ⚠⚠ **`pass` を弾くのがこの検査の主目的。** 手書きの空クラスのために `pass` は
+#   クラス本体で受け付けられるので、素通しすると「装飾子が `pass` を置いて
+#   **メンバーが黙って消える**」という形になる。
+#
+# ⚠ **メンバーを消したいなら空の `Code` を `quote` する**（設計書 §1.2 の B-2）:
+#
+#     exprconst !fn drop_it(target) -> None:
+#         let empty = code:
+#         quote empty
+#
+#   そう書けば「意図して消した」と読める。`pass` では読み取れない。
+#
+# ⚠ 成功例は `metafn.ar`（クラス本体へフィールドを足す）。
+#
+# 期待されるエラー:
+#   MetaError: `Pass` cannot be placed in a class or trait body
+#              (only field declarations and `fn` / `gen` methods can);
+#              to remove the member instead, `quote` an empty `code:` block
+
+exprconst !fn passy(target) -> None:
+    quote code:
+        pass
+
+class Point:
+    mut x: int
+    !passy
+    mut y: int
+
+print("unreachable")
