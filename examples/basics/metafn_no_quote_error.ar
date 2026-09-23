@@ -1,0 +1,26 @@
+# metafn_no_quote_error.ar — 配置メタ関数が `quote` に到達せず抜けた（設計書 §1.1）。
+#
+# `exprconst !fn` は**呼び出し位置へ何かを置く**ための形。`quote` せずに抜けるのは
+# 「メタ関数を書いたのに何も起きない」という最悪の失敗形なので、明示エラーにする。
+#
+# ⚠ **何も置きたくないときは空の `Code` を `quote` する**（設計書 §1.2 の B-2）:
+#
+#     exprconst !fn place_nothing() -> None:
+#         let empty = code:
+#         quote empty
+#
+#   こう書けば「意図して何も置かない」ことが読む側に伝わる。
+#
+# ⚠ 成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   MetaError: metafunction 'forgot_to_quote' returned without placing any `Code`
+#              (use `quote` — an empty `code:` block places nothing)
+
+exprconst !fn forgot_to_quote() -> None:
+    let frag = code:
+        print("this is built but never placed")
+
+forgot_to_quote()
+
+print("unreachable")

@@ -1,0 +1,90 @@
+# metafn.ar — コンパイル時メタ関数（設計書 implementation_plans/comptime_metafn_design.md）。
+#
+# メタ関数は**実行前に展開されて AST から消える**。残るのは置かれたコードだけ。
+#
+#   exprconst fn  名前(...) -> Code:   純粋メタ関数。`return` で `Code` を返す。
+#   exprconst !fn 名前(...) -> None:   配置メタ関数。`quote` で呼び出し位置へ置く。
+#   code:                              `Code` を作るブロック（**中身はパースされない**）。
+#   <! 式 !>                           展開時の値をトークンへ変換して差し込む。
+#   !装飾子名                          宣言に適用する。対象が第一引数として渡る。
+#
+# ⚠ 展開は**ファイル先頭から逐次**（設計書 §1.7）。メタ関数は**自分より前に宣言された
+#   ものだけ**を見られる。繰り返し（不動点）はしない。
+
+print("=== 配置メタ関数 ===")
+
+# `quote` は関数を抜ける（§1.3）。置かれるのは `code:` の中身。
+exprconst !fn greet() -> None:
+    quote code:
+        print("hello from a metafunction")
+
+greet()
+
+print("=== 純粋メタ関数と組み立て ===")
+
+fn loud() -> str:
+    return "built by a pure metafunction"
+
+# ⚠ `code:` の中身はパースされない。⇒ 未完の断片でも作れる。
+#   組み立て終わったものを `quote` が一度だけパースする。
+# ⚠ スプライスした `str` は**識別子**になる（§1.4）。ここでは呼ぶ関数の名前を差し込む。
+exprconst fn call_of(fn_name: str) -> Code:
+    let frag = code:
+        print(<! fn_name !>())
+    return frag
+
+# 配置メタ関数は純粋メタ関数の結果をそのまま置ける。
+exprconst !fn say_via(fn_name: str) -> None:
+    quote call_of(fn_name)
+
+say_via("loud")
+
+print("=== スプライス <! !> ===")
+
+# ⚠ `str` は**識別子**になる（文字列リテラルではない）。名前を組み立てて差し込むのが主用途。
+exprconst !fn bind(name: str, value: int) -> None:
+    quote code:
+        let <! name !> = <! value !>
+
+bind("answer", 42)
+print(answer)                       # 42
+
+print("=== 空の Code は何も置かない ===")
+
+# `code:` の直後にインデントが無ければ空。何も出さずに抜けるときに使う（§1.2 の B-2）。
+exprconst !fn place_nothing() -> None:
+    let empty = code:
+    quote empty
+
+place_nothing()
+print("nothing was placed above")
+
+print("=== 装飾子 ===")
+
+# ⚠ 対象が**第一引数**として渡る。ここでは対象を捨てて別の宣言に差し替えている。
+# ⚠ `@` は実行時クロージャ装飾子として据え置き。別物なので混ぜない。
+exprconst !fn replace_with_greeting(target) -> None:
+    quote code:
+        fn decorated() -> str:
+            return "produced by a decorator"
+
+!replace_with_greeting
+fn original() -> str:
+    return "this declaration is replaced"
+
+print(decorated())                  # produced by a decorator
+
+print("=== 展開されないもの ===")
+
+# 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。
+# ⚠ `^`（メタ情報演算子）の評価はまだ実装されていない（設計書 4-0 / 4-1）。
+#   書いて構文解析は通るが、呼ぶと展開時にエラーになる。
+exprconst fn describe(t) -> Code:
+    fn inner() -> Code:
+        let kind = ^t
+        let frag = code:
+            print("inner")
+        return frag
+    return inner()
+
+print("done")

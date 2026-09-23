@@ -47,6 +47,7 @@ $skip = @(
 # 既知差分: 例題名 → 理由。⚠ 理由を書けないものを足さないこと（黙ったスキップは網を殺す）。
 $knownDiff = @{
     # (a) impl_python が未対応の言語機能・組み込み（NameError / AttributeError / TypeError を出す）
+    'metafn'                         = 'py: メタ関数（exprconst / code: / quote / <! !> / !装飾子）を字句解析できないので ParseError（2-2 で新設。Rust 側は展開して実行する）'
     'recursive_field_error'          = 'py: 値としての自己参照フィールドを検査しないので素通りして unreachable を出す（0-6 で新設）'
     'alias_newtype_generics'         = 'py: alias / new_type の右辺にジェネリクスを書けない（alias はカンマで ParseError、new_type は型名をスコープから引くので NameError・0-3 で新設）'
     'alias_newtype_generics_error'   = 'py: new_type の右辺の型名が実在するか検査しないので素通りして unreachable を出す（0-3 で新設）'

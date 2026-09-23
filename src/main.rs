@@ -364,9 +364,12 @@ fn run_program(
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
     #[cfg(feature = "prof")]
     let _p_parse = prof::Timer::new(prof::Phase::Parse);
-    let mut stmts = Parser::new(tokens, source_dir.clone())
+    let mut parser = Parser::new(tokens, source_dir.clone());
+    let mut stmts = parser
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
+    // ⚠ 展開器が置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
+    let node_counter = parser.node_counter();
     #[cfg(feature = "prof")]
     drop(_p_parse);
 
@@ -377,6 +380,13 @@ fn run_program(
         syntax_cov::dump_program(&stmts);
         return Ok(());
     }
+
+    // --- コンパイル時メタ関数の展開（設計書 §1.7 / タスク 2-2）---
+    // ⚠⚠ **型検査・解決より前。** 展開で生えた宣言をリゾルバ・型検査・VM が見られるように。
+    // ⚠⚠ **構文カバレッジより後**（上の早期 return）。展開すると `MetaFnDef` / `Quote` /
+    //    `MetaDecorated` / `CodeBlock` が AST から消えるので、先に展開すると
+    //    `syntax_cov` が「その構文は一度も書かれていない」と報告してしまう。
+    stmts = meta_expand::expand_program(stmts, node_counter)?;
 
     // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
     // ⚠ **配線は 1 箇所**（#88。`resolve_and_annotate` の doc に「畳んだ差」と
@@ -661,12 +671,21 @@ fn compile_module(path: &str) {
     let tokens = Lexer::new(&source, path).tokenize();
     let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
 
-    let mut stmts = Parser::new(tokens, source_dir)
-        .parse_program()
-        .unwrap_or_else(|e| {
-            eprintln!("ParseError: {e}");
-            std::process::exit(1);
-        });
+    let mut parser = Parser::new(tokens, source_dir);
+    let stmts = parser.parse_program().unwrap_or_else(|e| {
+        eprintln!("ParseError: {e}");
+        std::process::exit(1);
+    });
+    // ⚠ 置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
+    let node_counter = parser.node_counter();
+
+    // メタ関数の展開（タスク 2-2）。
+    // ⚠⚠ **通常実行と同じ場所に入れること。** 片方だけ直すと「実行では展開されるが
+    //    コンパイルでは展開されない」という最悪の食い違いになる（設計書 2-2）。
+    let mut stmts = meta_expand::expand_program(stmts, node_counter).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
 
     // 型検査と同時に AST 型解決層の注釈を生成する（#16 段階(c)）。
     // ネイティブ codegen はこの注釈を消費して自前の型再導出を置き換える。

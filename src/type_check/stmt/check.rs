@@ -15,6 +15,21 @@ use {
 /// import 文を構文解釈だけして `body: vec![]` を返す。型検査側はその空を
 /// 「メンバーが 0 個のモジュール」ではなく「**モジュールの中身が不明**」として扱う
 /// 必要がある。両者を取り違えると、未知メンバーが `Any` に落ちて
+/// **この入口は展開器を通らない**か（設計書 5-0 の editor 方針・タスク 2-2）。
+///
+/// CLI は 2-2 で展開器を型検査の**前**に通す。⇒ 型検査が `Stmt::MetaDecorated` を
+/// 見たら本当に異常（展開漏れ）なので、そこでは必ず報告する。
+/// エディタ用 wasm フロントエンドは**わざと展開しない**（編集途中の不完全なコードを
+/// 展開しても意味が無く、副作用のある展開を走らせたくない）ので、未展開は**正常な状態**。
+/// ⇒ そこで報告すると `compare_wasm_frontend` が言うところの INVENTED（偽陽性）になる。
+///
+/// ⚠ 「編集中だから黙る」ではなく「**この入口は展開器を通らないから黙る**」が理由。
+/// 将来エディタが展開するようになったら、ここを `false` にすれば診断が戻る。
+#[inline]
+fn expansion_skipped_here() -> bool {
+    cfg!(feature = "editor")
+}
+
 /// エディタだけが偽陽性エラーを出す。
 ///
 /// 通常ビルドでは常に `false` を返す（＝この分岐は消える）ので、
@@ -287,6 +302,9 @@ impl TypeChecker {
                 //   `Stmt::Field` として拾うので、包まれたままだと**そのメンバーだけ
                 //   存在しないことになる**（`'C' has no member 'x'` という無関係な診断が出る）。
                 for st in body {
+                    if expansion_skipped_here() {
+                        break;
+                    }
                     if let Stmt::MetaDecorated { decorators, .. } = st {
                         let deco = match decorators.first() {
                             Some(crate::ast::Expr::Ident { name: d, .. }) => format!("!{d}"),

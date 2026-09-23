@@ -1,19 +1,21 @@
-# metafn_decorator_member_error.ar — クラスメンバーに残った `!装飾子`（タスク 1-4）。
+# metafn_decorator_member_error.ar — 宣言されていない装飾子（設計書 §1.6 / §1.7）。
 #
-# ⚠⚠ **これは「黙って無視される」を塞ぐための例題。**
-#   クラス／トレイト／プロトコル本体の文は、実行時に 1 文ずつ `exec` を通らない
-#   （フィールド・メソッドとして読み取られるだけ）。⇒ 装飾子を放っておくと
-#   **何も起きずに通ってしまう**——「装飾子を書いたのに何も起きない」という最悪の失敗形。
+# 展開は**ファイル先頭から逐次**（§1.7）。⇒ 装飾子に使えるのは**自分より前に宣言された
+# メタ関数だけ**。前に無いものを書いたら、その場でエラーにする。
 #
-# ⚠ 型検査も同じ。包まれたままだと `Stmt::Field` として拾われず、
-#   そのメンバーだけ存在しないことになり `'Point' has no member 'y'` という
-#   **無関係な診断**が出る。⇒ 型検査の側でも先に止める。
+# ⚠⚠ **黙って素通りさせてはいけない。** クラス／トレイト／プロトコル本体の文は
+#   実行時に 1 文ずつ `exec` を通らない（フィールド・メソッドとして読み取られるだけ）ので、
+#   装飾子を残したまま通すと**何も起きずに完走する**——「装飾子を書いたのに何も起きない」
+#   という最悪の失敗形になる。
+#   ⇒ 展開器・型検査（`UnexpandedMemberDecorator`）・`exec_class_def` の三段で止めてある。
 #
-# 展開器（Phase 2）が装飾子を消すようになったら、この例題は成功例に書き換える。
+# ⚠ クラスメンバーへの正しい装飾は、メタ関数を**前に**宣言してから書く。
+#   ただし展開で足したフィールドは**まだコンストラクタに反映されない**（タスク 2-4 待ち）。
+#
+# ⚠ 成功例は `metafn.ar`。
 #
 # 期待されるエラー:
-#   StaticTypeError  decorator '!validated' on a member of 'Point' was not expanded
-#                    (the compile-time expander is not implemented yet)
+#   MetaError: decorator '!validated' is not a metafunction declared before this point
 
 class Point:
     mut x: int
