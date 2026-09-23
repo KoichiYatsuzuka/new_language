@@ -553,6 +553,19 @@ impl Expander {
             .interp
             .vm_load_name(name)
             .ok_or_else(|| format!("MetaError: metafunction '{name}' is not defined"))?;
+        self.call_for_code(callee, name, args)
+    }
+
+    /// 呼べる値を呼んで `Code` を得る（タスク 4-8）。`name` は診断用の呼び名。
+    ///
+    /// ⚠ 名前で引けない装飾子（`!repeat(3)` のファクトリが返したクロージャ・
+    /// `const` に束縛したメタ関数）も**ここを通る**。診断の整形を 1 か所にするため。
+    fn call_for_code(
+        &mut self,
+        callee: Value,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Rc<Vec<CodeLine>>, String> {
         let evaled: Vec<(Option<String>, Value, bool)> =
             args.into_iter().map(|v| (None, v, false)).collect();
         self.last_expanded = Some(name.to_string());
@@ -674,8 +687,18 @@ fn expand_stmts(
                 // ⚠ `exec` には渡せない。最上位の文は VM 経由で走る決まりなので、
                 //   `Stmt::Const` を `exec` へ渡すと `VmForceError` になる（実測）。
                 //   ⇒ 初期化子だけ評価して、VM と同じ経路で束縛する。
+                // ⚠⚠ **メタ関数（やそれが返したクロージャ）に束縛した `const` は展開時専用**
+                //   （タスク 4-8）。メタ関数は展開後の AST から消えるので、`const` を残すと
+                //   実行時に**もう存在しない名前を読んで `NameError`** になる（実測）。
+                //   ⇒ メタ関数の定義と同じく、実行時の AST から消す。
+                //   ⚠ 展開時に関数値になるのはメタ関数由来だけ（D1: 普通の `fn` は展開用
+                //     インタプリタに定義されない）なので、値の型で判定してよい。
+                //   ⚠ `Code` に束縛した `const` は**消さない**。§1.2「`Code` はメタ関数の外へ
+                //     持ち出せない」を型検査（1-5）に弾かせるため。
+                let mut expansion_only = false;
                 match ex.interp.eval(init) {
                     Ok(v) => {
+                        expansion_only = matches!(v, Value::Function(_) | Value::OverloadedFn(_));
                         let _ = ex.interp.vm_declare_global(
                             name,
                             crate::vm::op::DeclKind::Const,
@@ -687,7 +710,9 @@ fn expand_stmts(
                         ex.runtime_names.insert(name.clone());
                     }
                 }
-                out.push(stmt);
+                if !expansion_only {
+                    out.push(stmt);
+                }
             }
 
             // 配置メタ関数の呼び出し文 → `quote` した中身で置き換える。
@@ -859,16 +884,32 @@ fn apply_decorators(
 ) -> Result<Vec<Stmt>, String> {
     let mut current = vec![target];
     for deco in decorators.into_iter().rev() {
-        let Expr::Ident { ref name, .. } = deco else {
-            return Err(
-                "MetaError: only a plain decorator name is supported so far \
-                 (arguments and closures come later)"
-                    .to_string(),
-            )
+        // ⚠⚠ 装飾子は**式**（設計書 §1.6「装飾子にはクロージャも書ける」・タスク 4-8）。
+        //   - `!name`          … 名前で登録されたメタ関数
+        //   - `!alias`         … `const` に束縛したメタ関数（3-6 で展開時に評価される）
+        //   - `!repeat(3)`     … **装飾子ファクトリ**。`repeat(3)` を評価して返ってきた
+        //                        クロージャを対象に適用する（Python の `@deco(args)` と同じ形）
+        //   ⚠ ファクトリが返したクロージャの中の `quote` は**そのクロージャを抜ける**。
+        //     ファクトリは既に返っているので、それ以外の意味は取りようがない。
+        //     §1.3 の未決（外側のメタ関数の実行中に呼ばれた補助クロージャの `quote`）とは別の場合。
+        let name = decorator_label(&deco);
+        let callee = match &deco {
+            Expr::Ident { name: n, .. } if ex.metafns.contains_key(n) => {
+                ex.interp.vm_load_name(n)
+            }
+            _ => ex.interp.eval(&deco).ok(),
         };
-        if !ex.metafns.contains_key(name) {
+        let Some(callee) = callee else {
             return Err(format!(
                 "MetaError: decorator '!{name}' is not a metafunction declared before this point"
+            ));
+        };
+        if !is_callable(&callee) {
+            return Err(format!(
+                "MetaError: decorator '!{name}' did not produce something callable \
+                 (got '{}'); a decorator must be a metafunction, or an expression that \
+                 returns one",
+                ex.interp.type_name(&callee)
             ));
         }
         if current.len() != 1 {
@@ -892,11 +933,29 @@ fn apply_decorators(
             frames.push(Frame { name: name.clone(), span: Span::unknown() });
         }
         let code = ex
-            .call_metafn(name, vec![arg])
+            .call_for_code(callee, &name, vec![arg])
             .map_err(|e| e + &render_trail(&frames))?;
         current = ex.place(&code, ctx).map_err(|e| e + &render_trail(&frames))?;
     }
     Ok(current)
+}
+
+/// 装飾子式の呼び名（診断用・タスク 4-8）。`!repeat(3)` なら `repeat(...)`。
+fn decorator_label(deco: &Expr) -> String {
+    match deco {
+        Expr::Ident { name, .. } => name.clone(),
+        Expr::Call { func, .. } => format!("{}(...)", decorator_label(func)),
+        Expr::Attr { object, attr, .. } => format!("{}.{attr}", decorator_label(object)),
+        _ => "<expression>".to_string(),
+    }
+}
+
+/// 呼べる値か（装飾子として適用できるか）。
+///
+/// ⚠ メタ関数も、ファクトリが返したクロージャも、展開用インタプリタの中では
+/// ただの関数値（`Value::Function`）。
+fn is_callable(v: &Value) -> bool {
+    matches!(v, Value::Function(_) | Value::OverloadedFn(_))
 }
 
 #[cfg(test)]
@@ -1017,6 +1076,66 @@ mod tests {
             ex.interp.is_meta_expanding(),
             "展開器のインタプリタが出力先を切り替えていない"
         );
+    }
+
+    /// ⚠⚠ **装飾子ファクトリ**（設計書 §1.6「装飾子にはクロージャも書ける」・タスク 4-8）。
+    /// `!repeat(3)` は `repeat(3)` を評価し、返ってきたクロージャを対象に適用する
+    /// —— Python の `@deco(args)` と同じ形。クロージャの中の `quote` はそのクロージャを抜ける
+    /// （ファクトリは既に返っているので、それ以外の意味は取りようがない）。
+    #[test]
+    fn a_decorator_factory_receives_its_arguments() {
+        let out = expand(concat!(
+            "exprconst fn tag_with(label: str):\n",
+            "    fn deco(m) -> None:\n",
+            "        let n = m.name + \"_\" + label\n",
+            "        quote code:\n",
+            "            let <! n !> = 1\n",
+            "    return deco\n",
+            "\n",
+            "!tag_with(\"seen\")\n",
+            "fn f() -> int:\n",
+            "    return 1\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "f_seen")),
+            "ファクトリの引数が届いていない"
+        );
+    }
+
+    /// ⚠⚠ メタ関数に束縛した `const` は**展開時専用**なので実行時の AST から消える（タスク 4-8）。
+    /// 残すと実行時に**もう存在しないメタ関数の名前**を読んで `NameError` になる（実測）。
+    #[test]
+    fn a_const_bound_to_a_metafn_works_as_a_decorator_and_vanishes() {
+        let out = expand(concat!(
+            "exprconst !fn tagged(m) -> None:\n",
+            "    quote code:\n",
+            "        let tag_seen = 1\n",
+            "\n",
+            "const my_deco = tagged\n",
+            "\n",
+            "!my_deco\n",
+            "fn f() -> int:\n",
+            "    return 1\n",
+        ))
+        .expect("expand");
+        let kinds: Vec<&str> = out.iter().map(crate::interpreter::tw_stats::stmt_kind_of).collect();
+        assert_eq!(kinds, vec!["Let"], "`const my_deco` が残っていない・装飾子が効いていること");
+    }
+
+    /// ⚠ 呼べないものを装飾子に書いたら**そう言う**。
+    #[test]
+    fn a_decorator_that_is_not_callable_is_an_error() {
+        let err = expand(concat!(
+            "exprconst fn not_a_deco() -> int:\n",
+            "    return 42\n",
+            "\n",
+            "!not_a_deco()\n",
+            "fn f() -> int:\n",
+            "    return 1\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("did not produce something callable"), "実際のエラー: {err}");
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

@@ -219,6 +219,38 @@ fn double(x: int) -> int:
 
 print(double(21))                   # calling the wrapped function / 42
 
+print("=== 引数を取る装飾子（装飾子ファクトリ）===")
+
+# ⚠ `!repeat(3)` は `repeat(3)` を展開時に評価し、返ってきたクロージャを対象に適用する
+#   （Python の `@repeat(3)` と同じ形・設計書 §1.6「装飾子にはクロージャも書ける」）。
+# ⚠ クロージャの中の `quote` はそのクロージャを抜ける。ファクトリは既に返っているので、
+#   それ以外の意味は取りようがない。
+# ⚠ メタ関数を `const` に束縛して装飾子に使うこともできる（その `const` は展開後に消える）。
+exprconst fn repeat(times: int):
+    fn deco(m) -> None:
+        let impl_name = m.name + "_once"
+        mut first = True
+        mut rest = code:
+        for line in m.code():
+            if first:
+                first = False
+            else:
+                rest = rest + line
+        let head = code:
+            fn <! impl_name !>() -> None:
+        let wrapper = code:
+            fn <! m.name !>() -> None:
+                for i in range(<! times !>):
+                    <! impl_name !>()
+        quote head + rest + wrapper
+    return deco
+
+!repeat(3)
+fn cheer() -> None:
+    print("hooray")
+
+cheer()                             # hooray × 3
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。
