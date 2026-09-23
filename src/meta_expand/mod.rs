@@ -566,6 +566,12 @@ fn expand_stmts(
             ));
         }
 
+        // ⚠⚠ **分岐の前に登録する。** `^` はここから引く（タスク 4-0）。
+        //   前から順に入れるので、メタ関数は自分より前の宣言しか見られない（§1.7）。
+        //   ⚠ **自分自身は含めない**ようにここで入れる —— 登録してから展開すると、
+        //     その宣言を装飾している最中の装飾子が「展開前の自分」を見てしまう。
+        register_decl(ex, &stmt);
+
         match stmt {
             // 定義は登録して AST から消す。
             Stmt::MetaFnDef { .. } => ex.define_metafn(&stmt)?,
@@ -683,6 +689,24 @@ fn expand_stmts(
     Ok(out)
 }
 
+/// 展開時に見える宣言として登録する（タスク 4-0）。
+///
+/// ⚠ メタ情報の対象になる種類だけを入れる（`MetaValue::kind_of` が決める）。
+/// ⚠ `!装飾子` に包まれた宣言は**中身**を登録する（包みには名前が無い）。
+fn register_decl(ex: &mut Expander, stmt: &Stmt) {
+    let inner = match stmt {
+        Stmt::MetaDecorated { target, .. } => &**target,
+        other => other,
+    };
+    if crate::interpreter::value::MetaValue::kind_of(inner).is_none() {
+        return;
+    }
+    let decl = std::rc::Rc::new(inner.clone());
+    crate::decl_names::each_declared_name(inner, &mut |name, _, _| {
+        ex.interp.add_meta_decl(name.to_string(), std::rc::Rc::clone(&decl));
+    });
+}
+
 /// 呼び出し式が「登録済みの**配置**メタ関数」ならその名前を返す。
 fn placing_call_name(ex: &Expander, func: &Expr) -> Option<String> {
     let Expr::Ident { name, .. } = func else { return None };
@@ -690,6 +714,22 @@ fn placing_call_name(ex: &Expander, func: &Expr) -> Option<String> {
         Some(true) => Some(name.clone()),
         _ => None,
     }
+}
+
+/// 宣言そのものからメタ情報の値を作る（タスク 4-0）。
+///
+/// ⚠ 装飾子の第一引数に使う。`^名前` と違って**表を引かない**（対象はもう手元にある）。
+fn meta_value_for(decl: &Stmt) -> Option<Value> {
+    let kind = crate::interpreter::value::MetaValue::kind_of(decl)?;
+    let mut name = String::new();
+    crate::decl_names::each_declared_name(decl, &mut |n, _, _| {
+        if name.is_empty() {
+            name = n.to_string();
+        }
+    });
+    Some(Value::Meta(std::rc::Rc::new(
+        crate::interpreter::value::MetaValue { kind, name, decl: std::rc::Rc::new(decl.clone()) },
+    )))
 }
 
 /// 実引数を展開時に評価する。
@@ -744,7 +784,15 @@ fn apply_decorators(
                 current.len()
             ));
         }
-        let arg = crate::interpreter::ast_value::stmt_to_value(&current[0]);
+        // ⚠ 装飾子には**メタ情報**を渡す（タスク 4-0）。`parse_ar` の `Namespace` 木ではない。
+        //   名前が無い宣言（`pass` など）は対象外なので、そこは弾かれている。
+        let arg = meta_value_for(&current[0]).ok_or_else(|| {
+            format!(
+                "MetaError: decorator '!{name}' cannot be applied to this declaration \
+                 (meta information exists for classes, traits, enums, functions, fields \
+                 and variable bindings)"
+            )
+        })?;
         let mut frames = (**trail).clone();
         if frames.len() < MAX_TRAIL {
             frames.push(Frame { name: name.clone(), span: Span::unknown() });
@@ -1038,6 +1086,83 @@ mod tests {
         ))
         .expect_err("読めないこと");
         assert!(err.contains("is declared at run time"), "実際のエラー: {err}");
+    }
+
+    /// `^名前` が**自分より前の宣言**からメタ情報を作ること（設計書 §1.5 / タスク 4-0）。
+    #[test]
+    fn caret_builds_meta_info_from_an_earlier_declaration() {
+        let out = expand(concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "\n",
+            "exprconst !fn describe(m) -> None:\n",
+            "    quote code:\n",
+            "        let <! m.name !> = 1\n",
+            "\n",
+            "describe(^Point)\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "Point")),
+            "`.name` が射影されていない: {:?}",
+            out.iter().map(crate::interpreter::tw_stats::stmt_kind_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// ⚠ 展開は前方のみ（§1.7）。**後ろの宣言には `^` を当てられない**。
+    /// ⚠ 「まだ宣言されていない」と「メタ情報を取れない種類」を言い分ける。
+    #[test]
+    fn caret_on_a_later_declaration_says_it_is_not_visible_yet() {
+        let err = expand(concat!(
+            "exprconst !fn d(m) -> None:\n",
+            "    quote code:\n",
+            "\n",
+            "d(^Later)\n",
+            "\n",
+            "class Later:\n",
+            "    mut a: int\n",
+        ))
+        .expect_err("見えないこと");
+        assert!(
+            err.contains("refers to nothing declared before this point"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠ 綴り間違いの射影は**黙って `None` を返さない**。通してしまうと気づかれない。
+    #[test]
+    fn an_unknown_projection_is_an_error() {
+        let err = expand(concat!(
+            "class C:\n",
+            "    mut a: int\n",
+            "\n",
+            "exprconst !fn d(m) -> None:\n",
+            "    let x = m.typo\n",
+            "    quote code:\n",
+            "\n",
+            "d(^C)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("has no projection"), "実際のエラー: {err}");
+    }
+
+    /// 装飾子の第一引数は**メタ情報**（タスク 4-0）。`parse_ar` の `Namespace` 木ではない。
+    #[test]
+    fn a_decorator_receives_meta_information() {
+        let out = expand(concat!(
+            "exprconst !fn rename(m) -> None:\n",
+            "    quote code:\n",
+            "        let <! m.kind !> = 1\n",
+            "\n",
+            "!rename\n",
+            "class Widget:\n",
+            "    mut w: int\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "meta_class")),
+            "装飾子が受け取ったのはメタ情報ではない"
+        );
     }
 
     /// ⚠⚠ 実行時の値を読もうとしたら**そう言う**（設計書 §1.8 / タスク 3-0）。

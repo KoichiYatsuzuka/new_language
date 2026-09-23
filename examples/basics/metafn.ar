@@ -122,6 +122,25 @@ mut page = Page("top", 0)
 print(page.title)                   # top
 print(page.hits)                    # 0
 
+print("=== メタ情報演算子 ^ ===")
+
+# ⚠ `^対象` は対象のメタ情報を返す（設計書 §1.5）。
+#   返る型は対象によって変わる――クラスなら `meta_class`、関数なら `meta_function`。
+# ⚠ **前方のみ参照**（§1.7）。自分より後ろの宣言には `^` を当てられない。
+# ⚠ 装飾子の第一引数も同じメタ情報。
+class Marker:
+    mut id: int
+
+# ⚠ スプライスは**トークン単位**。`<! x !>_kind` は連結されず 2 トークンになる。
+#   ⇒ 名前は**メタ関数の中で組み立ててから**差し込む。
+exprconst !fn bind_named(m) -> None:
+    let slot = m.name + "_kind"
+    quote code:
+        let <! slot !> = 1
+
+bind_named(^Marker)
+print(Marker_kind)                  # 1
+
 print("=== 展開されないもの ===")
 
 # 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。

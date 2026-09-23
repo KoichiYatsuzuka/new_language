@@ -295,6 +295,8 @@ impl Interpreter {
             // ⚠ `Code` は未パースのトークン列なので値としての等値を定義できない。
             //   ⇒ 参照の同一性（`hash.rs` の `ptr_hash` と対）。
             (Value::Code(a), Value::Code(b)) => Rc::ptr_eq(a, b),
+            // ⚠ メタ情報も参照の同一性（`hash.rs` の `ptr_hash` と対）。
+            (Value::Meta(a), Value::Meta(b)) => Rc::ptr_eq(a, b),
             (Value::PyObject(a), Value::PyObject(b)) => std::sync::Arc::ptr_eq(a, b),
             (Value::NativeFunction(a), Value::NativeFunction(b)) => std::sync::Arc::ptr_eq(a, b),
 

@@ -452,8 +452,10 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             // ⚠⚠ **`_` を書かない**。op を足すとここが止まり、
             //    「この op は slot を持つのか」を必ず決めさせられる（#87 の code_target_mut と同型）。
             Op::Const(_)
-            // `MakeCode` の被演算子は**定数番号**（slot でもセル索引でもない）。
+            // `MakeCode` の被演算子は**定数番号**、`MetaInfo` は**名前プール索引**
+            // （どちらも slot でもセル索引でもない）。
             | Op::MakeCode(_)
+            | Op::MetaInfo(_)
             | Op::Nil
             | Op::LoadGlobal(_, _)
             | Op::StoreGlobal(_, _)

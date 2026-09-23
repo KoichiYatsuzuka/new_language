@@ -341,6 +341,8 @@ impl Interpreter {
             //   「同じ意味の断片」を判定しようがない）。⇒ 参照の同一性。
             //   `values_eq` 側も `Rc::ptr_eq` にしてあること（`hash_eq_identity` が見る）。
             Value::Code(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
+            // ⚠ メタ情報も参照の同一性（`values_eq` 側と対。`hash_eq_identity` が見る）。
+            Value::Meta(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::Function(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::OverloadedFn(v) => {
                 h.write_u8(Tag::Pointer as u8);

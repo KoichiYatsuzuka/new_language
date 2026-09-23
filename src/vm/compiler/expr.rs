@@ -99,13 +99,22 @@ impl Compiler {
             // ⚠ bail せず `Op::Fail` にする。bail だと `VmForceError` になり、同じコードが
             //   ツリーウォーク側では MetaError という食い違いになる（上の `released_for_targets`
             //   と同じ理由）。force_gate も `VmForceError` 0 件を要求している。
-            Expr::MetaInfo(_) => {
-                let n = self.add_name(
-                    "MetaError: `^` (the meta-info operator) cannot be evaluated at run time \
-                     (the compile-time expander is not implemented yet)",
-                );
-                self.emit(Op::Fail(n));
-            }
+            Expr::MetaInfo(target) => match &**target {
+                Expr::Ident { name, .. } => {
+                    let n = self.add_name(name);
+                    self.emit(Op::MetaInfo(n));
+                }
+                // ⚠ `^Box[int]` のような具体化は**まだ扱えない**（単相化が 2-8 待ち）。
+                //   ⚠ bail せず `Op::Fail`。bail だと `VmForceError` になり、
+                //     ツリーウォーク側の MetaError と食い違う。
+                _ => {
+                    let n = self.add_name(
+                        "MetaError: `^` currently takes a plain name \
+                         (template instantiations come with monomorphisation)",
+                    );
+                    self.emit(Op::Fail(n));
+                }
+            },
             // `code:` ブロック（設計書 §1.2・タスク 2-0）。
             // ⚠ メタ関数の本体は展開器が VM で走らせる。⇒ ここを埋めないと
             //   メタ関数が 1 つも動かない（`MetaFnDef` の本体は `is_toplevel_compile_target`

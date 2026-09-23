@@ -77,6 +77,11 @@ pub enum Value {
     /// ⚠ 中身は**未パースのトークン行**（`code:` は未完の断片を許すため・§1.2）。
     /// `Rc` 共有で十分——`Code` は連結・インデント操作で**新しい値を作る**（破壊的変更は無い）。
     Code(Rc<Vec<crate::ast::CodeLine>>),
+    /// `^対象` が返すメタ情報（設計書 §1.5 / タスク 4-0）。
+    ///
+    /// ⚠⚠ **`Code` と同じく展開時にしか存在しない。** 通常実行で現れたら展開漏れ。
+    /// ⚠ `parse_ar` が返す `Namespace` の木とは**別物**（`value/meta.rs` の doc を参照）。
+    Meta(Rc<super::meta::MetaValue>),
     /// 可変長リスト値。要素は任意の型を混在できる。`Rc<RefCell<...>>` により共有・可変参照する。
     List(Rc<RefCell<Vec<Value>>>),
     /// フラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。

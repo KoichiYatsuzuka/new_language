@@ -73,8 +73,9 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         //    **テストも例題も通ってしまった**（たまたま除去対象が無かっただけ）。
         // ⚠ `Fail`: doc に「**飛び先索引を持たない**ので `code_target_mut` は不要」と明記（u32 は名前プール索引）。
         Op::Const(_)
-        // `MakeCode` の被演算子は**定数番号**（飛び先ではない）。
+        // `MakeCode` の被演算子は**定数番号**、`MetaInfo` は**名前プール索引**（どちらも飛び先ではない）。
         | Op::MakeCode(_)
+        | Op::MetaInfo(_)
         | Op::Nil
         | Op::LoadLocal(_)
         | Op::LoadGlobal(_, _)

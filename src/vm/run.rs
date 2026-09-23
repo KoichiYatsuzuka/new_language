@@ -1662,6 +1662,13 @@ fn exec_op(
             let obj = buf.pop().unwrap();
             interp.eval_setitem(obj, key, value)?;
         }
+        Op::MetaInfo(n) => {
+            let name = &chunk.names[*n as usize];
+            match interp.meta_lookup(name) {
+                Some(v) => buf.push(v),
+                None => return Err(interp.meta_lookup_error(name)),
+            }
+        }
         Op::MakeCode(c) => {
             let template = match &chunk.consts[*c as usize] {
                 Value::Code(lines) => std::rc::Rc::clone(lines),

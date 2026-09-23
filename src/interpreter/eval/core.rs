@@ -183,12 +183,21 @@ impl Interpreter {
                 "MetaError: a `code:` block cannot be evaluated at run time \n                 (it is only meaningful inside a metafunction, which the expander has not run)"
                     .to_string(),
             ),
-            // ⚠ `^` は展開時にしか意味を持たない。ここへ来たのは展開器が走っていない証拠。
-            Expr::MetaInfo(_) => Err(
-                "MetaError: `^` (the meta-info operator) cannot be evaluated at run time \
-                 (the compile-time expander is not implemented yet)"
-                    .to_string(),
-            ),
+            // `^対象`（設計書 §1.5 / タスク 4-0）。展開器が埋めた宣言表から引く。
+            // ⚠ 通常実行では表が空なので、必ず「宣言されていない」と言って落ちる。
+            //   1-3 の位置制限で通常コードには書けないので、ここへ来るのは展開漏れだけ。
+            Expr::MetaInfo(target) => match &**target {
+                Expr::Ident { name, .. } => self
+                    .meta_lookup(name)
+                    .ok_or_else(|| self.meta_lookup_error(name)),
+                // ⚠ `^Box[int]` のような具体化は**まだ扱えない**（単相化が 2-8 待ち）。
+                //   黙って別のものを返すより、扱えないと言う。
+                _ => Err(
+                    "MetaError: `^` currently takes a plain name \
+                     (template instantiations come with monomorphisation)"
+                        .to_string(),
+                ),
+            },
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
             Expr::ImaginaryLit(f) => Ok(Value::Complex(0.0, *f)),

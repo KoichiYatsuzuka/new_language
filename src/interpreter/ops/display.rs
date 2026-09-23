@@ -19,6 +19,7 @@ impl Interpreter {
             //   元のソースとは似て非なるものになる。⇒ 行数だけを出す。
             //   `Code` を実行時に表示する場面は展開漏れのときだけなので、これで足りる。
             Value::Code(lines) => format!("<Code: {} line(s)>", lines.len()),
+            Value::Meta(m) => format!("<{} {}>", self.type_name(val), m.name),
             Value::Int(n) => n.to_string(),
             Value::UInt(n) => n.to_string(),
             Value::Float(f) => {

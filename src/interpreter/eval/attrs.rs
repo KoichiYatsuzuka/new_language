@@ -206,6 +206,16 @@ impl Interpreter {
                     cls.name
                 ))
             }
+            // メタ情報への射影（設計書 §1.5 / タスク 4-0）。
+            // ⚠⚠ **射影の一覧はここ 1 箇所**（D12）。増やすときは `meta_projection` を直す。
+            Value::Meta(m) => crate::interpreter::value::meta_projection(m, attr)
+                .ok_or_else(|| {
+                    format!(
+                        "AttributeError: {} '{}' has no projection '{attr}'",
+                        self.type_name(&obj),
+                        m.name
+                    )
+                }),
             Value::Namespace(ns) => ns.members.get(attr).cloned().ok_or_else(|| {
                 format!(
                     "AttributeError: module '{}' has no attribute '{attr}'",

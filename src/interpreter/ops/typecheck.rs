@@ -23,6 +23,13 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::Undefined => "Undefined",
         // 展開時にしか存在しない AST 断片（設計書 §1.2）。
         Value::Code(_) => "Code",
+        // ⚠ 種別ごとに違う型名を返す（`meta_class` と `meta_member` は別の型）。
+        Value::Meta(m) => match m.kind {
+            crate::type_check::MetaKind::Instance => "meta_instance",
+            crate::type_check::MetaKind::Function => "meta_function",
+            crate::type_check::MetaKind::Class => "meta_class",
+            crate::type_check::MetaKind::Member => "meta_member",
+        },
         Value::List(_) => "list",
         Value::FrozenList { .. } => "fixed_list",
         Value::Function(_) | Value::OverloadedFn(_) => "function",
@@ -156,6 +163,8 @@ impl Interpreter {
             Value::Undefined => false,
             // 空の `Code`（設計書 §1.2 の B-2）は偽。`if frag:` で「何も出さない」を書ける。
             Value::Code(lines) => !lines.is_empty(),
+            // メタ情報は常に真（対象が存在するから値がある）。
+            Value::Meta(_) => true,
             Value::List(items) => !items.borrow().is_empty(),
             Value::FrozenList { state, .. } => state.borrow().len > 0,
             Value::Dict(d) => !d.borrow().is_empty(),

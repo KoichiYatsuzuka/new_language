@@ -556,6 +556,12 @@ pub struct Interpreter {
     ///
     /// ⚠ 既定は偽。展開器だけが立てる（`meta_expand`）。
     pub(self) meta_expanding: bool,
+    /// **展開時に見えている宣言**（名前 → その宣言・タスク 4-0）。
+    ///
+    /// ⚠⚠ `^対象` はここから引く。展開器が**前から順に**埋めるので、
+    /// メタ関数は自分より前の宣言しか見られない（設計書 §1.7）。
+    /// ⚠ 展開器以外は空のまま。通常実行で `^` を書くことはできない（1-3 の位置制限）。
+    pub(self) meta_decls: std::collections::HashMap<String, Rc<crate::ast::Stmt>>,
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
@@ -662,6 +668,7 @@ impl Interpreter {
             },
             protocol_required_members: HashMap::new(),
             meta_expanding: false,
+            meta_decls: std::collections::HashMap::new(),
             native_libs: HashMap::new(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
@@ -918,6 +925,45 @@ impl Interpreter {
     ///
     /// ⚠ 真なら `print` は stderr へ出る。外側から「このインタプリタは出力先を
     /// 切り替えている」と確かめられるようにしてある。
+    /// 展開器専用: 展開時に見える宣言を 1 つ登録する（タスク 4-0）。
+    ///
+    /// ⚠ **前から順に呼ぶこと。** 後ろの宣言を先に入れると、§1.7 の
+    /// 「自分より前だけ見られる」が崩れる。
+    pub(crate) fn add_meta_decl(&mut self, name: String, decl: Rc<crate::ast::Stmt>) {
+        self.meta_decls.insert(name, decl);
+    }
+
+    /// `^名前` を引く（タスク 4-0）。
+    ///
+    /// ⚠ 見つからないときのエラーは**呼び出し側で作る**（「まだ宣言されていない」のか
+    /// 「メタ情報を取れない種類」なのかで文面を変えたいため）。
+    pub(crate) fn meta_lookup(&self, name: &str) -> Option<Value> {
+        let decl = self.meta_decls.get(name)?;
+        let kind = crate::interpreter::value::MetaValue::kind_of(decl)?;
+        Some(Value::Meta(Rc::new(crate::interpreter::value::MetaValue {
+            kind,
+            name: name.to_string(),
+            decl: Rc::clone(decl),
+        })))
+    }
+
+    /// `^名前` が引けなかったときの文面（タスク 4-0）。
+    ///
+    /// ⚠ 「まだ宣言されていない」と「メタ情報を取れない種類」を**言い分ける**。
+    /// 同じ文面にすると、前方参照の間違いと対象違いの間違いが区別できない。
+    pub(crate) fn meta_lookup_error(&self, name: &str) -> String {
+        match self.meta_decls.get(name) {
+            Some(_) => format!(
+                "MetaError: `^{name}` is not available — meta information exists for classes, \
+                 traits, enums, functions, fields and variable bindings"
+            ),
+            None => format!(
+                "MetaError: `^{name}` refers to nothing declared before this point \
+                 (expansion only sees declarations above it)"
+            ),
+        }
+    }
+
     pub(crate) fn is_meta_expanding(&self) -> bool {
         self.meta_expanding
     }
