@@ -29,6 +29,7 @@
 use std::rc::Rc;
 
 mod modules;
+mod monomorph;
 mod ordinary;
 
 use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
@@ -534,6 +535,10 @@ struct Expander {
     ///
     /// ⚠ モジュールは**初めて読み込まれるとき**に 1 回だけ展開する（§1.7・2026-09-25 確定）。
     module_cache: std::collections::HashMap<String, std::rc::Rc<modules::ExpandedModule>>,
+    /// 今の枠で知っているテンプレートと作った具体化（展開時の単相化・タスク 2-8）。**枠ごと**。
+    templates: monomorph::Templates,
+    /// このプログラムで作った具体化の数（`monomorph::INSTANCE_BUDGET` の判定用・全体で 1 つ）。
+    instance_count: usize,
 }
 
 impl Expander {
@@ -553,6 +558,8 @@ impl Expander {
             placing_fns: Vec::new(),
             modules: std::collections::HashMap::new(),
             module_cache: std::collections::HashMap::new(),
+            templates: monomorph::Templates::default(),
+            instance_count: 0,
         }
     }
 
@@ -881,11 +888,19 @@ fn expand_stmts(
         //     その宣言を装飾している最中の装飾子が「展開前の自分」を見てしまう。
         // ⚠⚠ **メタ関数の無いプログラムでは登録しない。** `^` を評価する場面が無いのに、
         //   以前は全プログラムで最上位の宣言を**全部複製して**いた（4-0 で入った無駄・3-9）。
+        let out_len_before = out.len();
+
+        // ⚠⚠ **テンプレートの具体化はこの文より前に置く**（インライン単相化・タスク 2-8）。
+        //   `^Box[int]` や `Box[int](..)` を含む配置呼び出しは、展開の途中で具体化を参照する
+        //   ので、文を処理する**前**に作っておく。置いたコードの中の具体化も、その文が
+        //   ここへ来たときに拾われる（反復は要らない）。
+        if ctx == Context::TopLevel {
+            monomorph::instantiate_sites(ex, &stmt, &mut out);
+        }
+
         if ex.has_metafns {
             register_decl(ex, &stmt);
         }
-
-        let out_len_before = out.len();
 
         match stmt {
             // 定義は登録して AST から消す。
@@ -1051,6 +1066,13 @@ fn expand_stmts(
             //   メタ関数でない関数の中ではメタ関数を呼べない。残っていたら展開の最後に
             //   `ordinary::check` が弾く（タスク 2-11）。
             other => out.push(other),
+        }
+
+        // テンプレートの宣言を覚える（これより後ろの具体化だけが実体を作れる・前方のみ参照）。
+        if ctx == Context::TopLevel {
+            for i in out_len_before..out.len() {
+                monomorph::note_template(ex, &out[i]);
+            }
         }
 
         // ⚠ 展開時型推論の前提（タスク 4-4）。**最上位で出した文だけ**を足す。
@@ -1960,6 +1982,125 @@ mod tests {
             err.contains("module 'm' uses metafunctions, so it must be imported at the top level"),
             "実際のエラー: {err}"
         );
+    }
+
+    /// 展開後の文の中から、名前が `name` のクラス・関数宣言を探す（単相化のテスト用）。
+    fn find_decl<'a>(out: &'a [Stmt], name: &str) -> Option<(usize, &'a Stmt)> {
+        out.iter().enumerate().find(|(_, s)| match s {
+            Stmt::ClassDef { name: n, .. } | Stmt::FnDef { name: n, .. } | Stmt::GenDef { name: n, .. } => n == name,
+            _ => false,
+        })
+    }
+
+    /// ⚠⚠ **テンプレートの具体化に出会った時点で実体を作る**（インライン単相化・参考P・タスク 2-8）。
+    /// 名前は `Box[int]`、型変数は具体型に置換され、**使う文の直前**に置かれる。
+    #[test]
+    fn a_template_class_is_instantiated_before_its_first_use() {
+        let out = expand(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "    mut items: list[T]\n",
+            "\n",
+            "let b = Box[int](1, [2])\n",
+            "let c = Box[int](3, [4])\n",
+        ))
+        .expect("expand");
+        let (at, decl) = find_decl(&out, "Box[int]").expect("`Box[int]` が作られていない");
+        let Stmt::ClassDef { body, template_params, .. } = decl else { panic!("ClassDef を期待") };
+        assert!(template_params.is_empty(), "具体化は型パラメータを持たない");
+        let fields: Vec<(String, String)> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Field { name, type_ann, .. } => Some((name.clone(), type_ann.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec![("v".to_string(), "int".to_string()), ("items".to_string(), "list[int]".to_string())],
+            "合成型の中の `T` も置換されること"
+        );
+        let first_use = out.iter().position(|s| matches!(s, Stmt::Let(n, _, _) if n == "b")).unwrap();
+        assert!(at < first_use, "使う文より前に置かれること");
+        let count = out.iter().filter(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "Box[int]")).count();
+        assert_eq!(count, 1, "同じ型引数の具体化は 1 回だけ（メモ化）");
+    }
+
+    /// ⚠ テンプレート関数も同じ（`ident[str]("s")` → `fn ident[str](a: str) -> str`）。
+    #[test]
+    fn a_template_function_is_instantiated() {
+        let out = expand(concat!(
+            "fn ident[T](let a: T) -> T:\n",
+            "    return a\n",
+            "\n",
+            "print(ident[str](\"s\"))\n",
+        ))
+        .expect("expand");
+        let (_, decl) = find_decl(&out, "ident[str]").expect("`ident[str]` が作られていない");
+        let Stmt::FnDef { params, return_type, .. } = decl else { panic!("FnDef を期待") };
+        assert_eq!(params[0].type_ann.as_deref(), Some("str"));
+        assert_eq!(return_type.as_deref(), Some("str"));
+    }
+
+    /// ⚠ **宣言より前**に書いた具体化は実体を作らない（前方のみ参照）。実行時の具体化に任せる。
+    /// ⚠ 制約付きのテンプレートも作らない（制約の検査は実行時が持っている）。
+    #[test]
+    fn forward_and_constrained_instantiations_are_left_to_run_time() {
+        let out = expand(concat!(
+            "fn early() -> int:\n",
+            "    return Box[int](1).v\n",
+            "\n",
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "\n",
+            "trait Named:\n",
+            "    fn label(self) -> str:\n",
+            "        ...\n",
+            "\n",
+            "class Holder[T: Named]:\n",
+            "    mut v: T\n",
+            "\n",
+            "let h = Holder[int](1)\n",
+        ))
+        .expect("expand");
+        assert!(find_decl(&out, "Box[int]").is_none(), "宣言より前の具体化は作らない");
+        assert!(find_decl(&out, "Holder[int]").is_none(), "制約付きは作らない");
+    }
+
+    /// ⚠⚠ `^Box[int]` で具体化のメタ情報を引ける（タスク 2-8）。フィールドの型は置換後のもの。
+    /// ⚠ 呼び出しの付かない `^Box[int]` は以前、添字（`Box` の `int` 番目）として読まれていた。
+    #[test]
+    fn caret_on_a_template_instantiation_sees_the_concrete_declaration() {
+        let out = expand(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "\n",
+            "exprconst !fn field_type_of(m) -> None:\n",
+            "    let t = m.fields[0].type\n",
+            "    quote code:\n",
+            "        let copy: <! t !> = 0\n",
+            "\n",
+            "field_type_of(^Box[int])\n",
+        ))
+        .expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, Some(t), _) if n == "copy" && t == "int")),
+            "`^Box[int].fields[0].type` が `int` になっていない"
+        );
+    }
+
+    /// ⚠ 置換は**識別子単位**。`Tag` の中の `T` のような部分一致はしない。
+    #[test]
+    fn subst_type_replaces_whole_identifiers_inside_composite_types() {
+        let m: std::collections::HashMap<String, String> =
+            [("T".to_string(), "int".to_string()), ("K".to_string(), "str".to_string())].into_iter().collect();
+        use crate::template_subst::subst_type;
+        assert_eq!(subst_type("T", &m), "int");
+        assert_eq!(subst_type("list[T]", &m), "list[int]");
+        assert_eq!(subst_type("dict[K, T]", &m), "dict[str, int]");
+        assert_eq!(subst_type("Option[Box[T]]", &m), "Option[Box[int]]");
+        assert_eq!(subst_type("Tag", &m), "Tag");
+        assert_eq!(subst_type("function[T]->T", &m), "function[int]->int");
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

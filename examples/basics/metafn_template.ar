@@ -1,0 +1,42 @@
+# metafn_template.ar — 展開時の単相化とテンプレートのメタ情報（設計書 D35 / 参考P・タスク 2-8）。
+#
+# テンプレートの具体化（`Box[int](..)`）に出会うと、展開器がその場で**普通の宣言**
+# `Box[int]` を作り、使う文の直前に置く（インライン単相化）。
+#
+#   - 同じ型引数の具体化は 1 回だけ（`(テンプレート, 型引数)` でメモ化）。
+#   - 実行時の具体化は、この宣言があればそれを使う。
+#   - `^Box[int]` で具体化のメタ情報を引ける。型変数は置換済み（`list[T]` の中の `T` も）。
+#
+# ⚠ クラス変数の初期化は**クラスの定義の時点**で 1 回だけ走る（以前は最初の具体化の時点）。
+# ⚠ 宣言より前に書いた具体化・制約付きのテンプレートは、従来どおり実行時に具体化する。
+# ⚠ 型検査は従来どおりテンプレートを検査する（具体化した本体は検査しない・設計書 2-8）。
+
+class Pair[K, V]:
+    mut key: K
+    mut value: V
+
+print("=== 具体化のメタ情報 ===")
+
+# `^Pair[str, int]` のフィールドの型は置換済み（`K` → `str`、`V` → `int`）。
+exprconst !fn default_of(m) -> None:
+    let t = m.fields[1].type
+    let n = m.fields[1].name + "_default"
+    quote code:
+        let <! n !>: <! t !> = 0
+
+default_of(^Pair[str, int])
+print(value_default)                # 0（`int` として宣言されている）
+
+print("=== 具体化は 1 回だけ ===")
+
+fn note() -> int:
+    print("  Counter の初期化")
+    return 0
+
+class Counter[T]:
+    mut v: T
+    const K: int = note()
+
+let a = Counter[int](1)
+let b = Counter[int](2)
+print(a.v + b.v)                    # 3（初期化は 1 回だけ）

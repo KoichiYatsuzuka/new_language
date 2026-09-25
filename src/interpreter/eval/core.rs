@@ -192,11 +192,20 @@ impl Interpreter {
                 Expr::Ident { name, .. } => self
                     .meta_lookup(name)
                     .ok_or_else(|| self.meta_lookup_error(name)),
-                // ⚠ `^Box[int]` のような具体化は**まだ扱えない**（単相化が 2-8 待ち）。
-                //   黙って別のものを返すより、扱えないと言う。
+                // `^Box[int]` — 展開時の単相化（タスク 2-8）が置いた宣言 `Box[int]` を引く。
+                Expr::TemplateInstantiate { base, type_args }
+                    if matches!(**base, Expr::Ident { .. }) =>
+                {
+                    let Expr::Ident { name, .. } = &**base else {
+                        unreachable!("checked by the guard")
+                    };
+                    let n = crate::template_subst::instance_name(name, type_args);
+                    self.meta_lookup(&n).ok_or_else(|| self.meta_lookup_error(&n))
+                }
+                // ⚠ それ以外の式は対象にできない。黙って別のものを返すより、扱えないと言う。
                 _ => Err(
-                    "MetaError: `^` currently takes a plain name \
-                     (template instantiations come with monomorphisation)"
+                    "MetaError: `^` takes a declared name or a template instantiation \
+                     (such as `^Point` or `^Box[int]`)"
                         .to_string(),
                 ),
             },

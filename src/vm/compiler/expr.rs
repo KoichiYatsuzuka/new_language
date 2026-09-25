@@ -104,13 +104,23 @@ impl Compiler {
                     let n = self.add_name(name);
                     self.emit(Op::MetaInfo(n));
                 }
-                // ⚠ `^Box[int]` のような具体化は**まだ扱えない**（単相化が 2-8 待ち）。
+                // `^Box[int]` — 展開時の単相化（タスク 2-8）が置いた宣言 `Box[int]` を引く。
+                Expr::TemplateInstantiate { base, type_args }
+                    if matches!(**base, Expr::Ident { .. }) =>
+                {
+                    let Expr::Ident { name, .. } = &**base else {
+                        unreachable!("checked by the guard")
+                    };
+                    let n = self.add_name(&crate::template_subst::instance_name(name, type_args));
+                    self.emit(Op::MetaInfo(n));
+                }
+                // ⚠ それ以外の式は対象にできない。
                 //   ⚠ bail せず `Op::Fail`。bail だと `VmForceError` になり、
                 //     ツリーウォーク側の MetaError と食い違う。
                 _ => {
                     let n = self.add_name(
-                        "MetaError: `^` currently takes a plain name \
-                         (template instantiations come with monomorphisation)",
+                        "MetaError: `^` takes a declared name or a template instantiation \
+                         (such as `^Point` or `^Box[int]`)",
                     );
                     self.emit(Op::Fail(n));
                 }

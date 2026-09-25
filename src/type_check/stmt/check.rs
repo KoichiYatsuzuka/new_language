@@ -49,6 +49,10 @@ impl TypeChecker {
 
     /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
     pub(crate) fn check_stmt(&mut self, stmt: &Stmt) {
+        // ⚠⚠ 単相化で作った宣言（`Box[int]`）は検査しない（タスク 2-8・`collect` と同じ理由）。
+        if crate::template_subst::is_instance_decl(stmt) {
+            return;
+        }
         match stmt {
             // --- 変数宣言 ---
             // Let / Const は不変、Mut は可変。それ以外のロジックは共通。

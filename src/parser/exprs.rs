@@ -557,11 +557,30 @@ impl Parser {
             );
         }
         let mut target = self.parse_primary()?;
-        // `^Box[int]` — テンプレート実体化・添字は**対象側**に含める。
+        // `^Box[int]` — テンプレート実体化は**対象側**に含める。
+        // ⚠⚠ `^` の対象は**宣言**なので、`[...]` は常に**型引数**として読む（タスク 2-8）。
+        //   `parse_bracket_suffix` は「`]` の直後に `(` があるか」で型引数と添字を振り分けるので、
+        //   呼び出しの付かない `^Box[str]` が添字（`Box` の `str` 番目）になっていた（実測）。
         while *self.current() == Token::LBracket {
-            target = self.parse_bracket_suffix(target)?;
+            target = self.parse_type_arg_suffix(target)?;
         }
         Ok(Expr::MetaInfo(Box::new(target)))
+    }
+
+    /// `expr[型, ...]` を**必ず** `Expr::TemplateInstantiate` として読む（`^Box[int]` 用・タスク 2-8）。
+    fn parse_type_arg_suffix(&mut self, expr: Expr) -> Result<Expr, String> {
+        self.advance(); // `[` を消費
+        let mut type_args = Vec::new();
+        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+            type_args.push(self.parse_type_expr()?);
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.eat(&Token::RBracket)?;
+        Ok(Expr::TemplateInstantiate { base: Box::new(expr), type_args })
     }
 
     /// `expr[...]` を `Expr::TemplateInstantiate` または `Expr::Subscript` としてパースする。

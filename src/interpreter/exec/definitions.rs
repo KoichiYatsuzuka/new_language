@@ -146,7 +146,9 @@ impl Interpreter {
             HashMap::new()
         };
         let fn_val = Rc::new(FnValue {
-            name: name.to_string(),
+            // ⚠ 単相化した関数（`ident[str]`）の値の名前はテンプレートの名前（タスク 2-8）。
+            //   実行時の具体化と同じ（traceback の `in ident`）。束縛名は `ident[str]` のまま。
+            name: crate::template_subst::display_name(name).to_string(),
             params: params.to_vec(),
             body: std::rc::Rc::from(body),
             is_python: self.in_python_module,
@@ -206,7 +208,8 @@ impl Interpreter {
                 HashMap::new()
             };
             let gen_fn = Rc::new(GeneratorFnValue {
-                name: name.to_string(),
+                // ⚠ 単相化したジェネレータの値の名前はテンプレートの名前（タスク 2-8）。
+                name: crate::template_subst::display_name(name).to_string(),
                 params: params.to_vec(),
                 body: body.to_vec(),
                 captured_env,
@@ -837,7 +840,14 @@ impl Interpreter {
             class_method_names,
             static_vars,
             raw_layout,
-            ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
+            // ⚠⚠ 単相化したクラス（`Box[int]`）の値の名前はテンプレートの名前（タスク 2-8）。
+            //   実行時の具体化（`build_template_class`）と同じにする —— `<Box object>` の表示・
+            //   型引数を省いた `Box` 注釈との照合（`mut bare: Box = Box[str](..)`）が変わらないように。
+            //   束縛名は `Box[int]` のまま（`declare_var` は `name` を使う）。
+            ..crate::interpreter::ClassValue::synthetic(
+                crate::template_subst::display_name(name).to_string(),
+                crate::interpreter::value::alloc_class_id(),
+            )
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));

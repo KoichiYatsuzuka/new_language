@@ -146,6 +146,22 @@ impl Interpreter {
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
                 let fn_val = match self.template_fn_cache.get(&key) {
                     Some(cached) => cached.clone(),
+                    // ⚠⚠ **展開器が単相化した宣言があればそれを使う**（タスク 2-8）。
+                    //   無いとき（REPL・デバッガ・宣言より前の具体化・制約付きテンプレート）だけ
+                    //   ここで作る。
+                    None if matches!(
+                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
+                        Some(Value::Function(_))
+                    ) =>
+                    {
+                        let Some(Value::Function(f)) = self.vm_load_name(
+                            &crate::template_subst::instance_name(&tmpl.name, type_args),
+                        ) else {
+                            unreachable!("checked by the guard")
+                        };
+                        self.template_fn_cache.insert(key, f.clone());
+                        f
+                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params
@@ -192,6 +208,21 @@ impl Interpreter {
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
                 let cls = match self.template_class_cache.get(&key) {
                     Some(cached) => cached.clone(),
+                    // ⚠⚠ **展開器が単相化したクラスがあればそれを使う**（タスク 2-8）。
+                    //   クラス変数の初期化などは、そのクラスの定義が実行された時点で済んでいる。
+                    None if matches!(
+                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
+                        Some(Value::Class(_))
+                    ) =>
+                    {
+                        let Some(Value::Class(c)) = self.vm_load_name(
+                            &crate::template_subst::instance_name(&tmpl.name, type_args),
+                        ) else {
+                            unreachable!("checked by the guard")
+                        };
+                        self.template_class_cache.insert(key, c.clone());
+                        c
+                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params
@@ -219,6 +250,20 @@ impl Interpreter {
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
                 let gen_fn = match self.template_gen_cache.get(&key) {
                     Some(cached) => cached.clone(),
+                    // ⚠⚠ 展開器が単相化したジェネレータがあればそれを使う（タスク 2-8）。
+                    None if matches!(
+                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
+                        Some(Value::GeneratorFn(_))
+                    ) =>
+                    {
+                        let Some(Value::GeneratorFn(g)) = self.vm_load_name(
+                            &crate::template_subst::instance_name(&tmpl.name, type_args),
+                        ) else {
+                            unreachable!("checked by the guard")
+                        };
+                        self.template_gen_cache.insert(key, g.clone());
+                        g
+                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params

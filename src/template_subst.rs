@@ -23,12 +23,70 @@ use crate::ast::{CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, St
 // `subst_*` 関数群は AST ノードを再帰的に走査し、型変数名を具体型名に書き換えた新しい AST を返す。
 // コードのロジック自体は変更せず、型アノテーション部分のみを置換する。
 
-/// 型名文字列を置換する。`type_map` にある型変数名なら具体型名に、なければそのまま返す。
+/// 型名文字列を置換する。型注釈の中に現れる**型変数名**を具体型名に置き換える。
+///
+/// ⚠⚠ **合成型の中も置換する**（タスク 2-8）。以前は注釈が型変数**そのもの**（`T`）のときしか
+/// 置換せず、`list[T]` / `Option[T]` / `dict[K, V]` / `Box[T]` の中の `T` がそのまま残った。
+/// 実行時は注釈の大半が検査に使われないので表に出ていなかったが、単相化した宣言の中の
+/// `Box[T]` が具体化されない（`Box[int]` にならない）。
+/// ⚠ 置換の単位は**識別子**（英数字と `_` の並び）。`Tag` の中の `T` のような部分一致はしない。
 pub(crate) fn subst_type(type_name: &str, type_map: &HashMap<String, String>) -> String {
-    type_map
-        .get(type_name)
-        .cloned()
-        .unwrap_or_else(|| type_name.to_string())
+    if let Some(t) = type_map.get(type_name) {
+        return t.clone();
+    }
+    let mut out = String::with_capacity(type_name.len());
+    let mut ident = String::new();
+    let flush = |ident: &mut String, out: &mut String| {
+        if !ident.is_empty() {
+            match type_map.get(ident.as_str()) {
+                Some(t) => out.push_str(t),
+                None => out.push_str(ident),
+            }
+            ident.clear();
+        }
+    };
+    for c in type_name.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            ident.push(c);
+        } else {
+            flush(&mut ident, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut ident, &mut out);
+    out
+}
+
+/// 具体化の名前（`Box` と `[int]` から `"Box[int]"`・タスク 2-8）。
+///
+/// ⚠⚠ **展開器（宣言を置く側）と実行時（引く側）が同じ関数で作る。** 綴りがずれると
+/// 実行時が見つけられず、黙って従来の実行時具体化へ戻る（二重に実体化する）。
+pub(crate) fn instance_name(base: &str, type_args: &[String]) -> String {
+    format!("{base}[{}]", type_args.join(", "))
+}
+
+/// 単相化で作った宣言の**実行時の表示名**（`"Box[int]"` → `"Box"`・タスク 2-8）。
+///
+/// ⚠ 実行時の具体化はクラス・関数にテンプレートの名前をそのまま付けていた
+/// （`<Box object>`・traceback の `in ident`・型引数を省いた `Box` 注釈との照合）。
+/// 束縛名は `Box[int]` でも、値の名前はそれに揃える。
+pub(crate) fn display_name(name: &str) -> &str {
+    match name.find('[') {
+        Some(i) => &name[..i],
+        None => name,
+    }
+}
+
+/// 単相化で作った宣言か（名前に `[` を含むクラス・関数・ジェネレータ・タスク 2-8）。
+///
+/// ⚠ ソースに書いた宣言の名前は識別子なので `[` を含みえない。⇒ 名前だけで見分けられる。
+pub(crate) fn is_instance_decl(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::ClassDef { name, .. } | Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } => {
+            name.contains('[')
+        }
+        _ => false,
+    }
 }
 
 /// 仮引数リストの型アノテーションを置換した新しいリストを返す。

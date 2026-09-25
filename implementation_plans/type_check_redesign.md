@@ -4413,6 +4413,8 @@ Arrow には**暗黙の実体化が無い**（型引数なしの呼び出しは 
 
 #### 10-3 実体化パスを足してレジストリへ登録する
 
+**一部完了（2026-09-25・メタ関数の設計書の 2-8）**: 展開器が具体化ごとに普通の宣言 `Box[int]` を作って AST に置くようになった（`src/meta_expand/monomorph.rs`。実行時はそれを使う）。⚠ **型検査はまだそれを見ない**（`template_subst::is_instance_decl` で見送っている）。見るようにすると具体化した本体が検査され、今は通るプログラム（`template_type_param.ar` の `reset()`）が弾かれるので、受け付ける範囲を変える判断として残してある。⚠ `from_ann("Box[int]")` はまだ `GenericInstance` を返す。
+
 レジストリ構築の後に**実体化パス**を足す:
 
 1. ソース中の `Name[args]` を集める（型注釈と `Expr::TemplateInstantiate` の両方）

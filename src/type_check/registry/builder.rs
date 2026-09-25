@@ -172,6 +172,13 @@ impl TypeRegistryBuilder {
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報を収集する。
     pub(in crate::type_check) fn collect(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
+            // ⚠⚠ 単相化で作った宣言（`Box[int]`）は**登録しない**（タスク 2-8）。型検査は
+            //   テンプレートを従来どおり `GenericInstance` で扱い、具体化した本体は検査しない。
+            //   検査すると、今は通るプログラム（`T` を具体型と突き合わせない書き方）が
+            //   弾かれる —— 受け付ける範囲が変わるので別の判断にしてある（設計書 2-8）。
+            if crate::template_subst::is_instance_decl(stmt) {
+                continue;
+            }
             match stmt {
                 Stmt::FnDef {
                     name,
