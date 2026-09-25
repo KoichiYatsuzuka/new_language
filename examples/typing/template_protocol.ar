@@ -1,0 +1,23 @@
+# template_protocol.ar — テンプレートの具体化も protocol に構造的に適合する（タスク 2-14）
+#
+# ⚠⚠ 以前は、適合しているテンプレートの具体化（`Box[int]`）を protocol 型の変数に入れると
+#   「クラスのインスタンスではない」と**誤って弾いていた**（型検査がテンプレートの具体化を
+#   普通のクラスとして扱えなかったため）。単相化した具体クラスで適合を見るようにした。
+# ⚠ 適合していない具体化は、足りないメンバー・型の違いを理由に弾かれる
+#   （template_constrained_error.ar の Section 3）。
+
+protocol Sized:
+    fn size(self) -> int:
+        ...
+
+class Box[T]:
+    mut items: list[T]
+
+    fn size(self) -> int:
+        return len(self.items)
+
+let s: Sized = Box[int]([1, 2, 3])
+print(s.size())             # 3
+
+let t: Sized = Box[str](["a"])
+print(t.size())             # 1

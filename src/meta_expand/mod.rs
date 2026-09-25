@@ -831,6 +831,7 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
     //     （全プログラムで AST を複製するのは割に合わない）。
     // ⚠ 最上位だけでなく入れ子・`import` 先まで見る（タスク 2-11。`ordinary::mentions_meta`）。
     ex.has_metafns = ordinary::mentions_meta(&stmts);
+    ex.mono.enabled = monomorph::declares_template(&stmts);
     prescan_runtime_names(ex, &stmts);
     let out = expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))?;
     // ⚠⚠ 展開後の通常コードに残ったメタ関数への言及を弾く（§1.1・タスク 2-11）。
@@ -1078,10 +1079,16 @@ fn expand_stmts(
             other => out.push(other),
         }
 
-        // テンプレートの宣言を覚える（これより後ろの具体化だけが実体を作れる・前方のみ参照）。
+        // テンプレートとクラスの宣言を覚える。テンプレートの宣言より前に書かれていた具体化は
+        // ここで作り、宣言の後ろに置く（タスク 2-14）。
         if ctx == Context::TopLevel {
-            for i in out_len_before..out.len() {
-                monomorph::note_template(&mut ex.mono, &out[i]);
+            let before_pending = out.len();
+            monomorph::note_decls(&mut ex.mono, &mut out, out_len_before)
+                .map_err(|e| e + &render_trail(&here))?;
+            if ex.has_metafns {
+                for i in before_pending..out.len() {
+                    register_decl(ex, &out[i]);
+                }
             }
         }
 
@@ -1677,16 +1684,11 @@ mod tests {
     #[test]
     fn a_placed_code_parse_error_points_into_the_code_block() {
         let err = expand(concat!(
-            "exprconst !fn broken() -> None:
-",
-            "    quote code:
-",
-            "        let = 1
-",
-            "
-",
-            "broken()
-",
+            "exprconst !fn broken() -> None:\n",
+            "    quote code:\n",
+            "        let = 1\n",
+            "\n",
+            "broken()\n",
         ))
         .expect_err("弾かれること");
         assert!(
@@ -2052,10 +2054,11 @@ mod tests {
         assert_eq!(return_type.as_deref(), Some("str"));
     }
 
-    /// ⚠ **宣言より前**に書いた具体化は実体を作らない（前方のみ参照）。実行時の具体化に任せる。
-    /// ⚠ 制約付きのテンプレートも作らない（制約の検査は実行時が持っている）。
+    /// ⚠⚠ **テンプレートの宣言より前**に書いた具体化（関数の本体の中など）も作る（タスク 2-14）。
+    /// 宣言に出会った時点で作り、**宣言の直後**に置く。関数の本体が呼ばれるのはもっと後なので、
+    /// 実行時の意味は変わらない。以前は作らなかったので、その具体化の検査が丸ごと抜けていた。
     #[test]
-    fn forward_and_constrained_instantiations_are_left_to_run_time() {
+    fn an_instantiation_written_before_the_template_is_made_after_it() {
         let out = expand(concat!(
             "fn early() -> int:\n",
             "    return Box[int](1).v\n",
@@ -2063,18 +2066,38 @@ mod tests {
             "class Box[T]:\n",
             "    mut v: T\n",
             "\n",
+            "print(early())\n",
+        ))
+        .expect("expand");
+        let (tmpl, _) = find_decl(&out, "Box").expect("テンプレート");
+        let (inst, _) = find_decl(&out, "Box[int]").expect("宣言より前の具体化も作られること");
+        assert!(tmpl < inst, "テンプレートの宣言の後ろに置かれること");
+    }
+
+    /// ⚠⚠ 制約付きのテンプレートは、**制約を満たすと確かめられたときだけ**作る（タスク 2-14）。
+    /// 判定は実行時と同じ（型引数がクラスで、基底にその trait がある）。満たさない・判断できない
+    /// （組み込み型）ときは作らず、実行時の `TemplateError` に任せる（従来どおり）。
+    #[test]
+    fn a_constrained_template_is_instantiated_only_when_the_constraint_holds() {
+        let out = expand(concat!(
             "trait Named:\n",
             "    fn label(self) -> str:\n",
             "        ...\n",
             "\n",
+            "class Cat(Named):\n",
+            "    mut n: int\n",
+            "    fn label(self) -> str:\n",
+            "        return \"cat\"\n",
+            "\n",
             "class Holder[T: Named]:\n",
             "    mut v: T\n",
             "\n",
-            "let h = Holder[int](1)\n",
+            "let ok = Holder[Cat](Cat(1))\n",
+            "let bad = Holder[int](1)\n",
         ))
         .expect("expand");
-        assert!(find_decl(&out, "Box[int]").is_none(), "宣言より前の具体化は作らない");
-        assert!(find_decl(&out, "Holder[int]").is_none(), "制約付きは作らない");
+        assert!(find_decl(&out, "Holder[Cat]").is_some(), "制約を満たす具体化は作る");
+        assert!(find_decl(&out, "Holder[int]").is_none(), "満たさない具体化は実行時に任せる");
     }
 
     /// ⚠⚠ `^Box[int]` で具体化のメタ情報を引ける（タスク 2-8）。フィールドの型は置換後のもの。
@@ -2279,22 +2302,35 @@ mod tests {
         assert_eq!(n, 1, "重複している: {errs:?}");
     }
 
+    /// ⚠⚠ 適合しているテンプレートの具体化を protocol 型に入れると「クラスのインスタンスではない」と
+    /// **誤って弾いていた**（タスク 2-14）。単相化した具体クラスで適合を見る。適合しないものは理由つきで弾く。
+    #[test]
+    fn a_template_instance_is_checked_against_a_protocol_structurally() {
+        let src = |ret: &str| {
+            format!(
+                "protocol Sized:\n    fn size(self) -> int:\n        ...\n\nclass Box[T]:\n    mut v: T\n    fn size(self) -> {ret}:\n        return 1\n\nlet s: Sized = Box[int](1)\n"
+            )
+        };
+        let ok = expand_and_check(&src("int"));
+        assert!(ok.is_empty(), "偽陽性: {ok:?}");
+        let bad = expand_and_check(&src("str"));
+        assert!(
+            bad.iter().any(|m| m.contains("type 'Box[int]' does not satisfy protocol 'Sized'")),
+            "出ていない: {bad:?}"
+        );
+    }
+
     /// ⚠⚠ **具体化どうしで node-id を共有しない**（設計書 §0.3・タスク 2-13）。
     /// 型検査の注釈は node-id で引かれるので、共有すると後に検査した具体化の型が全部に効く
     /// （`add_all[int]` の `a + b` が float の加算 `FBIN` にコンパイルされた・実測）。
     #[test]
     fn instantiations_get_their_own_node_ids() {
         let out = expand(concat!(
-            "fn add_all[T](let a: T, let b: T) -> T:
-",
-            "    return a + b
-",
-            "
-",
-            "print(add_all[int](1, 2))
-",
-            "print(add_all[float](1.5, 2.5))
-",
+            "fn add_all[T](let a: T, let b: T) -> T:\n",
+            "    return a + b\n",
+            "\n",
+            "print(add_all[int](1, 2))\n",
+            "print(add_all[float](1.5, 2.5))\n",
         ))
         .expect("expand");
         let add_id = |name: &str| -> u32 {

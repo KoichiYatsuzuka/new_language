@@ -24,6 +24,16 @@ impl TypeChecker {
 
         let class_name = match ty {
             InferredType::NamedInstance(cls) => cls.clone(),
+            // ⚠⚠ **テンプレートの具体化（`Box[int]`）も普通のクラスとして適合を見る**
+            //   （タスク 2-14）。以前は下の `_` に落ち、適合しているのに「クラスのインスタンスではない」
+            //   と**誤って弾いていた**（`let s: Sized = Box[int](1)`・実測）。単相化した具体クラスが
+            //   あればそれを使う。無ければ（単相化されない具体化）判定材料が無いので見送る。
+            InferredType::GenericInstance { .. } => {
+                match self.registry.instance_class(&ty.to_string()) {
+                    Some(cls) => cls.clone(),
+                    None => return,
+                }
+            }
             InferredType::Any => return, // Any は全プロトコルを満たす
             InferredType::Protocol(p) => {
                 // 別プロトコル型 — そのプロトコルがすべての要件を満たすか確認

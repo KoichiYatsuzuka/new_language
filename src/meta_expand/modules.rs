@@ -78,6 +78,10 @@ pub(super) fn expand_module(
         templates: std::mem::take(&mut ex.mono.templates),
     };
     super::prescan_runtime_names(ex, &body);
+    // ⚠ モジュールがテンプレートを宣言していれば単相化を有効にする（一度有効になったら戻さない）。
+    if super::monomorph::declares_template(&body) {
+        ex.mono.enabled = true;
+    }
     ex.interp.meta_push_module_frame();
 
     let expanded = expand_stmts(ex, body, Context::TopLevel, Rc::new(Vec::new()))

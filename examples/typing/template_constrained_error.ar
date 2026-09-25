@@ -1,0 +1,69 @@
+# template_constrained_error.ar — 制約付きテンプレート・宣言より前の具体化も検査される（タスク 2-14）
+#
+# 対になる正常系: classes/polymorphism.ar（制約付き）・type_args_not_dropped.ar（宣言より前）
+#
+# 具体化したテンプレートは型検査にかける（2026-09-26）。ただし次の 2 つの形は単相化されておらず、
+# テンプレートのメソッド呼び出しの検査が**丸ごと抜けていた**:
+#   - 制約付きテンプレート（`class Box[T: Printable]`）
+#   - テンプレートの宣言より前に書いた具体化（関数の本体の中など）
+# ⇒ 制約は実行時と同じ判定（型引数がクラスで、基底にその trait がある）で確かめてから単相化する。
+#   宣言より前の具体化は、宣言に出会った時点で作って宣言の直後に置く。
+#
+# ⚠ 制約を満たさない具体化（`Box[int]`）は従来どおり実行時の TemplateError（polymorphism_error.ar）。
+#
+# Section 1 — StaticTypeError: 制約付きテンプレートのメソッド引数の型違い
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Box[MyInt].put' expects 'MyInt' but got 'str'
+#
+# Section 2 — StaticTypeError: テンプレートの宣言より前に書いた具体化の型違い
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Cell[int].set' expects 'int' but got 'str'
+
+trait Printable:
+    fn to_str(self) -> str:
+        ...
+
+class MyInt(Printable):
+    mut value: int
+
+    fn to_str(self) -> str:
+        return "MyInt"
+
+class Box[T: Printable]:
+    mut item: T
+
+    fn put(mut self, let x: T) -> None:
+        self.item = x
+
+mut b = Box[MyInt](MyInt(1))
+b.put("wrong")
+
+fn make() -> int:
+    mut c = Cell[int](1)
+    c.set("wrong")
+    return c.v
+
+class Cell[T]:
+    mut v: T
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x
+
+print(make())
+
+# Section 3 — StaticTypeError: protocol に適合しない具体化（メソッドの戻り値型が違う）
+#   Expected error (StaticTypeError):
+#     type 'Named[int]' does not satisfy protocol 'Sized': method `size` signature does not
+#     match protocol requirement
+
+protocol Sized:
+    fn size(self) -> int:
+        ...
+
+class Named[T]:
+    mut v: T
+
+    fn size(self) -> str:
+        return "big"
+
+let sz: Sized = Named[int](1)

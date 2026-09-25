@@ -57,6 +57,10 @@ pub(super) struct Templates {
     /// 作った（あるいは作っている最中の）具体化の名前。「実体化中」の印を兼ねる
     /// （型レベルの再帰 `Node[T]` の中の `Node[T]` で無限に潜らないように）。
     made: HashSet<String>,
+    /// それまでに宣言されたクラスの基底（クラス名 → 基底の trait 名）。制約の判定に使う（タスク 2-14）。
+    class_bases: HashMap<String, Vec<String>>,
+    /// **テンプレートの宣言より前**に書かれた具体化（タスク 2-14）。宣言に出会ったら作る。
+    pending: Vec<(String, Vec<String>)>,
 }
 
 /// 単相化の状態（タスク 2-8）。展開器が持つほか、エディタは [`monomorphize`] で単独に使う。
@@ -67,12 +71,27 @@ pub(super) struct Mono {
     count: usize,
     /// プログラム全体の node-id カウンタ。写しの node-id を振り直すのに使う（タスク 2-13）。
     counter: std::rc::Rc<std::cell::Cell<u32>>,
+    /// このプログラム（か、読み込んだモジュール）がテンプレートを宣言しているか。
+    ///
+    /// ⚠ 偽なら具体化の場所を探さない（全文の走査を省く）。テンプレートの宣言より前の具体化も
+    /// 保留しておく必要がある（タスク 2-14）ので、「まだテンプレートに出会っていない」では判定できない。
+    pub(super) enabled: bool,
+}
+
+/// 最上位にテンプレートの宣言があるか（[`Mono::enabled`] の判定・読むだけ）。
+pub(super) fn declares_template(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| {
+        matches!(s,
+            Stmt::ClassDef { template_params, .. }
+            | Stmt::FnDef { template_params, .. }
+            | Stmt::GenDef { template_params, .. } if !template_params.is_empty())
+    })
 }
 
 impl Mono {
     /// ⚠ `counter` は本体をパースしたパーサと**同じ**カウンタ（設計書 §0.3）。
     pub(super) fn new(counter: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
-        Self { templates: Templates::default(), count: 0, counter }
+        Self { templates: Templates::default(), count: 0, counter, enabled: false }
     }
 }
 
@@ -87,30 +106,62 @@ impl Mono {
 #[allow(dead_code)] // CLI は展開器の中で単相化する（エディタ専用の入口）
 pub fn monomorphize(stmts: Vec<Stmt>, counter: std::rc::Rc<std::cell::Cell<u32>>) -> Vec<Stmt> {
     let mut m = Mono::new(counter);
+    m.enabled = declares_template(&stmts);
+    if !m.enabled {
+        return stmts;
+    }
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
     for st in &stmts {
         if instantiate_sites(&mut m, st, &mut out).is_err() {
             return stmts;
         }
-        note_template(&mut m, st);
+        let at = out.len();
         out.push(st.clone());
+        if note_decls(&mut m, &mut out, at).is_err() {
+            return stmts;
+        }
     }
     out
 }
 
-/// テンプレートの宣言なら覚える（最上位に置かれた文を出すときに呼ぶ）。
-pub(super) fn note_template(m: &mut Mono, stmt: &Stmt) {
-    let name = match stmt {
-        Stmt::ClassDef { name, template_params, .. }
-        | Stmt::FnDef { name, template_params, .. }
-        | Stmt::GenDef { name, template_params, .. }
-            if !template_params.is_empty() =>
-        {
-            name
+/// `out[from..]` に置かれた宣言を覚える（最上位に置かれた文を出すときに呼ぶ）。
+///
+/// - テンプレートの宣言は覚え、**それより前に書かれていた具体化**（関数の本体の中など）を
+///   ここで作って `out` の末尾（テンプレートの宣言の後ろ）に積む（タスク 2-14）。
+///   関数の本体が実際に呼ばれるのはもっと後なので、実行時の意味は変わらない。
+/// - クラスの宣言は基底を覚える（制約付きテンプレートの判定に使う）。
+pub(super) fn note_decls(m: &mut Mono, out: &mut Vec<Stmt>, from: usize) -> Result<(), String> {
+    let mut noted: Vec<String> = Vec::new();
+    for st in &out[from..] {
+        match st {
+            Stmt::ClassDef { name, template_params, bases, .. } => {
+                if template_params.is_empty() {
+                    m.templates.class_bases.insert(name.clone(), bases.clone());
+                } else {
+                    m.templates.decls.insert(name.clone(), Rc::new(st.clone()));
+                    noted.push(name.clone());
+                }
+            }
+            Stmt::FnDef { name, template_params, .. } | Stmt::GenDef { name, template_params, .. }
+                if !template_params.is_empty() =>
+            {
+                m.templates.decls.insert(name.clone(), Rc::new(st.clone()));
+                noted.push(name.clone());
+            }
+            _ => {}
         }
-        _ => return,
-    };
-    m.templates.decls.insert(name.clone(), Rc::new(stmt.clone()));
+    }
+    if noted.is_empty() || m.templates.pending.is_empty() {
+        return Ok(());
+    }
+    let (ready, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut m.templates.pending)
+        .into_iter()
+        .partition(|(base, _)| noted.contains(base));
+    m.templates.pending = rest;
+    for (base, args) in ready {
+        instantiate(m, &base, &args, out, &mut Vec::new())?;
+    }
+    Ok(())
 }
 
 /// `stmt` の中の具体化を探し、まだ作っていなければ実体を作って `out` に積む（タスク 2-8）。
@@ -134,7 +185,7 @@ fn instantiate_sites_in(
     out: &mut Vec<Stmt>,
     chain: &mut Vec<String>,
 ) -> Result<(), String> {
-    if m.templates.decls.is_empty() {
+    if !m.enabled {
         return Ok(());
     }
     let mut sites: Vec<(String, Vec<String>)> = Vec::new();
@@ -157,7 +208,14 @@ fn instantiate(
     if m.templates.made.contains(&concrete) {
         return Ok(());
     }
-    let Some(decl) = m.templates.decls.get(base).cloned() else { return Ok(()) };
+    let Some(decl) = m.templates.decls.get(base).cloned() else {
+        // ⚠ テンプレートの宣言より前に書かれた具体化（タスク 2-14）。宣言に出会ったら作る
+        //   （[`note_decls`]）。組み込みの `dict[K, V](..)` などもここへ来るが、宣言が来ないので作られない。
+        if !m.templates.pending.iter().any(|(b, a)| b == base && a == args) {
+            m.templates.pending.push((base.to_string(), args.to_vec()));
+        }
+        return Ok(());
+    };
     let params = match &*decl {
         Stmt::ClassDef { template_params, .. }
         | Stmt::FnDef { template_params, .. }
@@ -165,8 +223,21 @@ fn instantiate(
         _ => return Ok(()),
     };
     // ⚠ 型引数の数違いは実行時がそう言う（ここで黙って作らない）。
-    // ⚠ 制約付き（`class Box[T: Printable]`）は実行時に任せる。制約の検査は実行時が持っている。
-    if params.len() != args.len() || params.iter().any(|p| !p.constraints.is_empty()) {
+    if params.len() != args.len() {
+        return Ok(());
+    }
+    // ⚠⚠ 制約付き（`class Box[T: Printable]`）は、**制約を満たすと確かめられたときだけ**作る
+    //   （タスク 2-14）。判定は実行時の `type_satisfies_trait` と同じ ——「型引数がクラスで、
+    //   その基底にその trait がある」。満たさない・判断できない（組み込み型・まだ宣言されて
+    //   いないクラス）ときは作らず、実行時の `TemplateError` に任せる（従来どおり）。
+    let satisfied = params.iter().zip(args).all(|(p, a)| {
+        p.constraints.is_empty()
+            || m.templates
+                .class_bases
+                .get(a)
+                .is_some_and(|bases| p.constraints.iter().all(|c| bases.contains(c)))
+    });
+    if !satisfied {
         return Ok(());
     }
     // ⚠⚠ 終わらない具体化は止めて、**どう連鎖したか**を見せる（タスク 2-9）。
