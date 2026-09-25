@@ -828,7 +828,7 @@ impl StaticTypeError {
                 hl_q(name), hl_q("Code")
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(
-                "decorator {} on a member of {} was not expanded (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)",
+                "decorator {} on a member of {} was not expanded (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)",
                 hl_q(decorator), hl_q(type_name)
             ),
             TypeErrorKind::VirtualMethodInClass { class_name, method_name } => format!(

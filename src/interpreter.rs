@@ -958,6 +958,59 @@ impl Interpreter {
         Rc::clone(&self.meta_prefix)
     }
 
+    /// 展開器専用: `^` の宣言表を差し替え、元の表を返す（タスク 2-12）。
+    ///
+    /// ⚠ モジュールは**それぞれ自分の宣言だけ**を見る。展開の枠を移るたびに入れ替える。
+    pub(crate) fn meta_swap_decls(
+        &mut self,
+        decls: std::collections::HashMap<String, crate::interpreter::value::MetaDecl>,
+    ) -> std::collections::HashMap<String, crate::interpreter::value::MetaDecl> {
+        std::mem::replace(&mut self.meta_decls, decls)
+    }
+
+    /// 展開器専用: モジュールの展開の枠を開く（タスク 2-12）。
+    ///
+    /// ⚠ 実行時の `exec_module` と**同じ形**にする —— モジュールの本体はスコープを 1 つ積んで
+    /// 走らせる。この中で定義したメタ関数は、それより前にあるモジュールの名前（メタ関数・
+    /// `const`）を閉包として捕まえる（`exec_fn_def` の `capture_env`）。⇒ 後で別のモジュール
+    /// から呼ばれても、**自分のモジュールの名前**を引く（実行時の関数と同じ性質・実測で確認）。
+    pub(crate) fn meta_push_module_frame(&mut self) {
+        self.push_scope();
+    }
+
+    /// 展開器専用: モジュールの展開の枠を閉じ、その枠で定義した名前と値を返す（タスク 2-12）。
+    ///
+    /// ⚠ 実行時の `exec_module` と同じく、**まだ無い名前だけ**を大域へも登録する。
+    /// 閉包は定義より**前**の名前しか捕まえないので、後ろで定義した同じモジュールの
+    /// メタ関数を呼ぶ経路はここで引けるようにしておく。
+    pub(crate) fn meta_pop_module_frame(&mut self) -> std::collections::HashMap<String, Value> {
+        let members: std::collections::HashMap<String, Value> = self
+            .scopes
+            .last()
+            .map(|s| s.iter().map(|(k, v)| (k.clone(), v.get_value())).collect())
+            .unwrap_or_default();
+        self.pop_scope();
+        for (name, value) in &members {
+            if !self.scopes[0].contains_key(name) {
+                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
+            }
+        }
+        members
+    }
+
+    /// 展開器専用: 今の枠に名前を束縛する（`const` の値・import したモジュール・タスク 2-12）。
+    ///
+    /// ⚠ 見るのは**今の枠だけ**。外側に同じ名前があっても隠して束縛する —— 別のモジュールに
+    /// 同じ名前の `const` があっても、各モジュールのメタ関数は自分のモジュールの値を読む。
+    /// ⚠ 同じ枠に既にあれば束縛しない（先に束縛した方が残る。再宣言は型検査が弾く）。
+    pub(crate) fn meta_bind(&mut self, name: &str, value: Value) {
+        if let Some(scope) = self.scopes.last_mut() {
+            if !scope.contains_key(name) {
+                scope.insert(name.to_string(), Var::new(value, false));
+            }
+        }
+    }
+
     /// メタ情報の値を作る（タスク 4-0 / 4-4）。**作り方はここ 1 か所**。
     ///
     /// `decl_not_in_prefix` は「その宣言がまだ展開済みの文に入っていない」か。

@@ -877,7 +877,7 @@ fn reject_unexpanded_member_decorators(
             };
             return Err(format!(
                 "MetaError: {what} on a member of {kind} '{name}' was not expanded \
-                 (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)"
+                 (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)"
             ));
         }
     }

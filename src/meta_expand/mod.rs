@@ -28,6 +28,7 @@
 
 use std::rc::Rc;
 
+mod modules;
 mod ordinary;
 
 use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
@@ -142,7 +143,7 @@ impl Stage<'_> {
 /// ⚠ **再帰深さは別の柵が受け持つ。** メタ関数がメタ関数を呼ぶのは展開器から見れば
 /// 1 回の呼び出しの中の出来事で、インタプリタの `RecursionError`（上限 1000）が止める。
 /// ⇒ ここで二重に数えない。代わりに、その例外が**読める形で外へ出る**ようにしてある
-/// （`call_metafn` の `RAISE_SENTINEL` の扱い）。
+/// （`describe_failure` の `RAISE_SENTINEL` の扱い）。
 ///
 /// ⚠ 10 万文は「人が書いた展開では絶対に届かないが、暴走は数秒で止まる」あたり。
 const STEP_BUDGET: usize = 100_000;
@@ -525,6 +526,14 @@ struct Expander {
     /// ⚠ **名前ではなく実体で見る。** `const my_deco = tagged` のように別名で呼ばれても、
     /// 装飾子ファクトリが返したクロージャ（配置メタ関数ではない）と取り違えないように。
     placing_fns: Vec<std::rc::Rc<crate::interpreter::value::FnValue>>,
+    /// 今の枠で `import` したモジュール（束縛名 → 公開しているメタ関数）（タスク 2-12）。
+    ///
+    /// ⚠ `m.greet()` を配置呼び出しと見分けるのに使う。`metafns` と同じく**枠ごと**。
+    modules: std::collections::HashMap<String, std::collections::HashMap<String, bool>>,
+    /// 展開済みのモジュール（鍵は `(lang, モジュールパス)`・タスク 2-12）。
+    ///
+    /// ⚠ モジュールは**初めて読み込まれるとき**に 1 回だけ展開する（§1.7・2026-09-25 確定）。
+    module_cache: std::collections::HashMap<String, std::rc::Rc<modules::ExpandedModule>>,
 }
 
 impl Expander {
@@ -542,6 +551,8 @@ impl Expander {
             known_traits,
             node_counter,
             placing_fns: Vec::new(),
+            modules: std::collections::HashMap::new(),
+            module_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -692,15 +703,6 @@ impl Expander {
         format!("MetaError: {}: {body}", stage.during())
     }
 
-    /// メタ関数を呼んで `Code` を得る。
-    fn call_metafn(&mut self, name: &str, args: Vec<Value>) -> Result<Rc<Vec<CodeLine>>, String> {
-        let callee = self
-            .interp
-            .vm_load_name(name)
-            .ok_or_else(|| format!("MetaError: metafunction '{name}' is not defined"))?;
-        self.call_for_code(callee, name, args)
-    }
-
     /// 呼べる値を呼んで `Code` を得る（タスク 4-8）。`name` は診断用の呼び名。
     ///
     /// ⚠ 名前で引けない装飾子（`!repeat(3)` のファクトリが返したクロージャ・
@@ -821,8 +823,21 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
     //     （全プログラムで AST を複製するのは割に合わない）。
     // ⚠ 最上位だけでなく入れ子・`import` 先まで見る（タスク 2-11。`ordinary::mentions_meta`）。
     ex.has_metafns = ordinary::mentions_meta(&stmts);
-    // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
-    for st in &stmts {
+    prescan_runtime_names(ex, &stmts);
+    let out = expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))?;
+    // ⚠⚠ 展開後の通常コードに残ったメタ関数への言及を弾く（§1.1・タスク 2-11）。
+    //   関数の中の呼び出し・値としての使用・入れ子の定義・通常コードの `^`。
+    if ex.has_metafns {
+        ordinary::check(&out, &ordinary::MetaNames { plain: &ex.metafns, modules: &ex.modules })?;
+    }
+    Ok(out)
+}
+
+/// 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
+///
+/// ⚠ モジュールの枠でも同じものを作る（タスク 2-12）。枠ごとに入れ替える。
+fn prescan_runtime_names(ex: &mut Expander, stmts: &[Stmt]) {
+    for st in stmts {
         // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
         if matches!(st, Stmt::Const(..)) {
             continue;
@@ -831,13 +846,6 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
             ex.runtime_names.insert(n.to_string());
         });
     }
-    let out = expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))?;
-    // ⚠⚠ 展開後の通常コードに残ったメタ関数への言及を弾く（§1.1・タスク 2-11）。
-    //   関数の中の呼び出し・値としての使用・入れ子の定義・通常コードの `^`。
-    if ex.has_metafns {
-        ordinary::check(&out, &ordinary::MetaNames { plain: &ex.metafns })?;
-    }
-    Ok(out)
 }
 
 /// 1 つの文の列を前から順に展開する。
@@ -908,12 +916,10 @@ fn expand_stmts(
                 match ex.interp.eval(init) {
                     Ok(v) => {
                         expansion_only = matches!(v, Value::Function(_) | Value::OverloadedFn(_));
-                        let _ = ex.interp.vm_declare_global(
-                            name,
-                            crate::vm::op::DeclKind::Const,
-                            &[],
-                            v,
-                        );
+                        // ⚠ **今の枠に**束縛する（タスク 2-12）。モジュールの枠の中では、呼び出し側に
+                        //   同じ名前の `const` があっても隠して束縛する（各モジュールのメタ関数は
+                        //   自分のモジュールの値を読む）。
+                        ex.interp.meta_bind(name, v);
                     }
                     Err(e) => {
                         // ⚠ 例外で失敗したときは実体がインタプリタに残っている。捨てておかないと、
@@ -945,7 +951,17 @@ fn expand_stmts(
                 };
 
                 let vals = eval_args(ex, args, &name).map_err(|e| e + &render_trail(&frames))?;
-                let code = ex.call_metafn(&name, vals).map_err(|e| e + &render_trail(&frames))?;
+                // ⚠ 呼び先は**式として評価する**。`greet` なら名前を引き、`m.greet`（タスク 2-12）
+                //   なら名前空間から引く。同じ経路で両方が引ける。
+                let callee = match ex.interp.eval(func) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(ex.describe_failure(e, Stage::Body(&name)) + &render_trail(&frames))
+                    }
+                };
+                let code = ex
+                    .call_for_code(callee, &name, vals)
+                    .map_err(|e| e + &render_trail(&frames))?;
                 let placed = ex.place(&code, ctx).map_err(|e| e + &render_trail(&frames))?;
                 // ⚠ **置いたものを先に歩く**。置いたコードがさらにメタ関数を呼ぶことはある。
                 for s in placed.into_iter().rev() {
@@ -960,6 +976,30 @@ fn expand_stmts(
                 for s in placed.into_iter().rev() {
                     pending.push_front((s, std::rc::Rc::clone(&here)));
                 }
+            }
+
+            // `import` した `.ar` モジュール（タスク 2-12）。初めてなら展開し、結果を束縛する。
+            // ⚠ メタ関数の構文を含まないモジュール（Python の翻訳など）は触らない。
+            Stmt::Import { lang, module, source_module, alias, body }
+                if ex.has_metafns && ordinary::mentions_meta(&body) =>
+            {
+                let m = modules::expand_module(ex, &lang, &module, body)?;
+                let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
+                modules::bind_import(ex, &bind, &module, &m);
+                out.push(Stmt::Import { lang, module, source_module, alias, body: m.body.clone() });
+            }
+            Stmt::FromImport { lang, module, source_module, names, body }
+                if ex.has_metafns && ordinary::mentions_meta(&body) =>
+            {
+                let m = modules::expand_module(ex, &lang, &module, body)?;
+                modules::bind_from_import(ex, &names, &m);
+                // ⚠⚠ **メタ関数の名前は実行時の import から外す**（`const` の別名と同じ・4-8）。
+                //   メタ関数は展開後のモジュールに無いので、残すと実行時に
+                //   `ImportError: cannot import name 'greet'` になる（実測）。
+                //   ⚠ 全部外れて空になっても文は残す —— モジュールの本体を走らせる入口として要る。
+                let names: Vec<(String, Option<String>)> =
+                    names.into_iter().filter(|(orig, _)| !m.metafns.contains_key(orig)).collect();
+                out.push(Stmt::FromImport { lang, module, source_module, names, body: m.body.clone() });
             }
 
             // クラス／トレイト本体もその場で展開する（メンバーの装飾子がここで消える）。
@@ -1076,10 +1116,22 @@ fn non_meta_kind(decl: &Stmt) -> &'static str {
 }
 
 /// 呼び出し式が「登録済みの**配置**メタ関数」ならその名前を返す。
+///
+/// ⚠ `m.greet()`（`import` したモジュールのメタ関数・タスク 2-12）も配置呼び出し。
+///   返す名前は `"m.greet"`（診断用の呼び名）。
 fn placing_call_name(ex: &Expander, func: &Expr) -> Option<String> {
-    let Expr::Ident { name, .. } = func else { return None };
-    match ex.metafns.get(name) {
-        Some(true) => Some(name.clone()),
+    match func {
+        Expr::Ident { name, .. } => match ex.metafns.get(name) {
+            Some(true) => Some(name.clone()),
+            _ => None,
+        },
+        Expr::Attr { object, attr, .. } => match &**object {
+            Expr::Ident { name: m, .. } => match ex.modules.get(m).and_then(|f| f.get(attr)) {
+                Some(true) => Some(format!("{m}.{attr}")),
+                _ => None,
+            },
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1762,6 +1814,152 @@ mod tests {
             "greet()\n",
         ))
         .expect("仮引数の `greet` はメタ関数ではない");
+    }
+
+    /// `import` 文をディスクを読まずに組み立てて展開する（タスク 2-12 のテスト用）。
+    ///
+    /// ⚠ モジュールと本体は**同じ node-id カウンタ**でパースする（パーサの `parse_sub_module` と同じ）。
+    fn expand_with_module(module_src: &str, imports: &[Stmt], main_src: &str) -> Result<Vec<Stmt>, String> {
+        let (body, counter, traits) = parse(module_src)?;
+        let tokens = crate::lexer::Lexer::new(main_src, "").tokenize();
+        let mut parser = crate::parser::Parser::new(tokens, None);
+        parser.set_node_counter(std::rc::Rc::clone(&counter));
+        let main = parser.parse_program()?;
+        let mut stmts: Vec<Stmt> = Vec::new();
+        for imp in imports {
+            let mut imp = imp.clone();
+            match &mut imp {
+                Stmt::Import { body: b, .. } | Stmt::FromImport { body: b, .. } => *b = body.clone(),
+                _ => unreachable!(),
+            }
+            stmts.push(imp);
+        }
+        stmts.extend(main);
+        expand_program(stmts, counter, traits)
+    }
+
+    fn import_of(alias: Option<&str>) -> Stmt {
+        Stmt::Import {
+            lang: "ar-auto".to_string(),
+            module: vec!["m".to_string()],
+            source_module: None,
+            alias: alias.map(str::to_string),
+            body: Vec::new(),
+        }
+    }
+
+    fn from_import_of(names: &[&str]) -> Stmt {
+        Stmt::FromImport {
+            lang: "ar-auto".to_string(),
+            module: vec!["m".to_string()],
+            source_module: None,
+            names: names.iter().map(|n| (n.to_string(), None)).collect(),
+            body: Vec::new(),
+        }
+    }
+
+    fn module_src() -> &'static str {
+        concat!(
+            "const LEVEL = 3\n",
+            "exprconst fn helper_line() -> Code:\n",
+            "    let c = code:\n",
+            "        let from_module = <! LEVEL !>\n",
+            "    return c\n",
+            "exprconst !fn place_it() -> None:\n",
+            "    quote helper_line()\n",
+            "exprconst !fn tick() -> None:\n",
+            "    quote code:\n",
+            "        let <! gensym(\"tick\") !> = 1\n",
+            "tick()\n",
+        )
+    }
+
+    /// ⚠⚠ **別のモジュールのメタ関数も使える**（設計書 §1.7・2026-09-25 確定・タスク 2-12）。
+    /// `import m` なら `m.place_it()` が配置呼び出しになる。
+    #[test]
+    fn a_module_metafn_can_be_called_through_the_module_name() {
+        let out = expand_with_module(module_src(), &[import_of(None)], "m.place_it()\n").expect("expand");
+        assert!(
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")),
+            "`m.place_it()` が置き換えられていない"
+        );
+    }
+
+    /// ⚠ `from m import name` なら素の名前で呼べる。⚠⚠ メタ関数の名前は**実行時の import から外れる**
+    /// （残すと実行時に `ImportError: cannot import name` になった・実測）。
+    #[test]
+    fn a_from_imported_metafn_is_called_by_its_plain_name() {
+        let out = expand_with_module(module_src(), &[from_import_of(&["place_it"])], "place_it()\n")
+            .expect("expand");
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")));
+        let Some(Stmt::FromImport { names, .. }) = out.first() else { panic!("FromImport を期待") };
+        assert!(names.is_empty(), "メタ関数の名前が実行時の import に残っている: {names:?}");
+    }
+
+    /// ⚠⚠ モジュールのメタ関数は**自分のモジュールの名前**を引く（閉包として捕まえる）。
+    /// 呼び出し側に同じ名前のメタ関数があっても取り違えない（実行時のモジュール関数と同じ性質）。
+    #[test]
+    fn a_module_metafn_uses_its_own_module_names() {
+        let main = concat!(
+            "exprconst fn helper_line() -> Code:\n",
+            "    let c = code:\n",
+            "        let from_main = 1\n",
+            "    return c\n",
+            "\n",
+            "m.place_it()\n",
+        );
+        let out = expand_with_module(module_src(), &[import_of(None)], main).expect("expand");
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")));
+        assert!(!out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_main")));
+    }
+
+    /// ⚠⚠ モジュールは**初めて読み込まれるときに 1 回だけ**展開する（§1.7・2026-09-25 確定）。
+    /// 2 回目の import は展開済みの本体を使い回す —— モジュールの中の `gensym` が 1 回しか進まない。
+    #[test]
+    fn a_module_imported_twice_is_expanded_once() {
+        let out = expand_with_module(module_src(), &[import_of(None), import_of(Some("again"))], "")
+            .expect("expand");
+        let names_in = |s: &Stmt| -> Vec<String> {
+            let Stmt::Import { body, .. } = s else { panic!("Import を期待") };
+            body.iter()
+                .filter_map(|st| match st {
+                    Stmt::Let(n, _, _) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(names_in(&out[0]), vec!["tick__1".to_string()]);
+        assert_eq!(names_in(&out[1]), vec!["tick__1".to_string()], "2 回目も同じ本体（再展開していない）");
+    }
+
+    /// ⚠ モジュールの中の展開エラーは**どのモジュールか**を添える。
+    #[test]
+    fn an_error_inside_a_module_names_the_module() {
+        let bad = "exprconst !fn boom() -> None:\n    compile_error(\"boom\")\n    quote code:\n\nboom()\n";
+        let err = expand_with_module(bad, &[import_of(None)], "").expect_err("弾かれること");
+        assert!(err.contains("boom") && err.contains("while importing module 'm'"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ メタ関数を使うモジュールは**最上位で** import する（関数の中の import の本体は展開されない）。
+    #[test]
+    fn a_metafn_module_imported_inside_a_function_is_rejected() {
+        let (body, counter, traits) = parse(module_src()).expect("parse");
+        let mut imp = import_of(None);
+        if let Stmt::Import { body: b, .. } = &mut imp {
+            *b = body;
+        }
+        let tokens = crate::lexer::Lexer::new("fn f() -> None:\n    pass\n", "").tokenize();
+        let mut parser = crate::parser::Parser::new(tokens, None);
+        parser.set_node_counter(std::rc::Rc::clone(&counter));
+        let mut main = parser.parse_program().expect("parse");
+        if let Stmt::FnDef { body, .. } = &mut main[0] {
+            body.insert(0, imp);
+        }
+        let err = expand_program(main, counter, traits).expect_err("弾かれること");
+        assert!(
+            err.contains("module 'm' uses metafunctions, so it must be imported at the top level"),
+            "実際のエラー: {err}"
+        );
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

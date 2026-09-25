@@ -33,15 +33,27 @@ use crate::token::Span;
 pub(super) struct MetaNames<'a> {
     /// 素の名前 → 配置メタ関数か。
     pub(super) plain: &'a HashMap<String, bool>,
+    /// `import` したモジュールの束縛名 → そのモジュールのメタ関数（タスク 2-12）。
+    pub(super) modules: &'a HashMap<String, HashMap<String, bool>>,
 }
 
 impl MetaNames<'_> {
     /// `e` がメタ関数を指していれば `(表示名, 配置メタ関数か)` を返す。
+    ///
+    /// ⚠ `m.greet`（`import` したモジュールのメタ関数・タスク 2-12）も拾う。
     fn lookup(&self, e: &Expr, shadowed: &HashSet<String>) -> Option<(String, bool)> {
         match e {
             Expr::Ident { name, .. } if !shadowed.contains(name) => {
                 self.plain.get(name).map(|p| (name.clone(), *p))
             }
+            Expr::Attr { object, attr, .. } => match &**object {
+                Expr::Ident { name: m, .. } if !shadowed.contains(m) => self
+                    .modules
+                    .get(m)
+                    .and_then(|f| f.get(attr))
+                    .map(|p| (format!("{m}.{attr}"), *p)),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -167,6 +179,19 @@ impl Walker<'_> {
                      only at the top level or directly in a class body",
                     place.describe()
                 ) + &at(spans.first()));
+            }
+            // ⚠⚠ メタ関数を使うモジュールは**最上位で** import する（タスク 2-12）。
+            //   展開器は関数の本体・ブロックの中へは降りないので、そこにある import の本体は
+            //   展開されない（実行時に「展開されなかった」で落ちる）。
+            Stmt::Import { module, body, .. } | Stmt::FromImport { module, body, .. }
+                if !matches!(place, Place::Top) && mentions_meta(body) =>
+            {
+                return Err(format!(
+                    "MetaError: module '{}' uses metafunctions, so it must be imported at the top \
+                     level (here it is imported {})",
+                    module.join("."),
+                    place.describe()
+                ));
             }
             // ⚠⚠ **最上位（とクラス本体）に文として書いた配置メタ関数の呼び出し**が残っている
             //   ＝ 展開器から見えていなかった ＝ **宣言より前に呼んだ**（§1.7 の前方参照のみ）。

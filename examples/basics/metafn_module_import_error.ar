@@ -1,0 +1,20 @@
+# metafn_module_import_error.ar — メタ関数を使うモジュールは最上位で import する（タスク 2-12）。
+#
+# モジュールは**初めて読み込まれるとき**に展開される（§1.7・2026-09-25 確定）。
+# ただし展開器が歩くのは最上位（とクラス本体）だけで、**関数の本体・ブロックの中には降りない**
+# （関数の中ではメタ関数を呼べないので・§1.1）。⇒ そこにある import の本体は展開されない。
+#
+# ⚠ 黙って通すと、実行時にその関数が呼ばれたとき「展開されなかった」で落ちる
+#   （呼ばれなければ黙って残る）。⇒ 展開時に止める。
+#
+# ⚠ 成功例は `metafn_module.ar`（最上位で import する）。
+#
+# 期待されるエラー:
+#   MetaError: module 'meta_modules.greeting_macros' uses metafunctions, so it must be
+#              imported at the top level (here it is imported inside function 'setup')
+
+fn setup() -> None:
+    import meta_modules.greeting_macros as gm
+    print("setup")
+
+setup()

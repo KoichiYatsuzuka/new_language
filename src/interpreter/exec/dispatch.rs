@@ -55,7 +55,7 @@ impl Interpreter {
             //     設計書 2-12）。以前の文面「展開器は未実装」は 2-2 の配線で嘘になっていた（3-9）。
             Stmt::MetaFnDef { name, .. } => Err(format!(
                 "MetaError: metafunction '{name}' was not expanded \
-                 (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)"
+                 (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)"
             )),
             // ⚠ 装飾子は展開器（Phase 2）が AST から消す。ここへ来たのは展開が走っていない証拠。
             //   ⚠ 名前を出せるときは出す（`!deco` と書いた本人に届く診断にするため）。
@@ -67,7 +67,7 @@ impl Interpreter {
                 };
                 Err(format!(
                     "MetaError: {what} was not expanded \
-                     (the compile-time expander runs only on the program's own file — not yet on an imported module, the REPL or the debugger)"
+                     (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)"
                 ))
             }
             // ⚠ メタ関数の外の `quote` はパースで弾く（1-6）ので、ここへ来るのは

@@ -1,0 +1,30 @@
+# metafn_module.ar — 別のモジュールのメタ関数を使う（設計書 §1.7・タスク 2-12）。
+#
+# §1.7（2026-09-25 確定）:
+#   - モジュールは**初めて読み込まれるとき**に、**モジュールごとに**展開する。
+#   - **別のモジュールのメタ関数も使える。**
+#
+#   import m               … `m.greet()` を配置呼び出し、`!m.deco` を装飾子として使える
+#   from m import greet    … `greet()` / `!greet` をそのまま使える
+#
+# ⚠ 同じモジュールを 2 回 import しても展開は 1 回（実行時の import と同じ）。
+#   下の 2 行目の import は展開済みの本体を使い回すので、"greeting_macros loaded" は 1 回だけ出る。
+# ⚠ メタ関数を使うモジュールは**最上位で** import する（関数の中の import の本体は展開されない）。
+# ⚠ 使われるモジュールは `meta_modules/greeting_macros.ar`。
+
+import meta_modules.greeting_macros as gm
+from meta_modules.greeting_macros import greet_times
+
+print("=== モジュールのメタ関数 ===")
+
+gm.greet_times(2)                   # greeting 1 / greeting 2
+greet_times(1)                      # greeting 1
+
+print("=== モジュールの装飾子 ===")
+
+!gm.tagged
+fn helper() -> int:
+    return 7
+
+print(helper())                     # 7（本体はそのまま残る）
+print(helper_is_tagged)             # True
