@@ -32,10 +32,20 @@ use crate::ast::{Expr, Stmt};
 
 use super::Expander;
 
-/// 1 つのプログラムで作ってよい具体化の数の上限（タスク 2-8 の暫定の柵・本番の診断は 2-9）。
+/// 1 つのプログラムで作ってよい具体化の数の上限（タスク 2-9）。
 ///
-/// ⚠ 再帰的な具体化（`f[T]` が `f[Box[T]]` を呼ぶ形）は原理的に終わらない。
+/// ⚠ 実際のプログラムで届く数ではない。届いたら暴走（下の深さの上限をすり抜ける形）なので止める。
 pub(super) const INSTANCE_BUDGET: usize = 1_000;
+
+/// 具体化の**入れ子の深さ**の上限（タスク 2-9）。
+///
+/// ⚠⚠ **再帰的な具体化は終わらない。** `f[T]` の本体が `f[Box[T]]` を呼ぶと、`f[int]` を作るのに
+/// `f[Box[int]]` が要り、それを作るのに `f[Box[Box[int]]]` が要り……と型引数が伸び続ける。
+/// 実行時の具体化は**呼ばれたときに**作るので、再帰が途中で止まれば終わっていたが、展開時の単相化は
+/// **書かれた具体化をすべて先に作る**ので原理的に終わらない（設計書 参考P のリスク 2）。
+/// ⚠ 以前（2-8）は上限まで黙って作り続けてから実行時に任せていた（名前が伸びるので 2 秒以上かかった・実測）。
+/// ⚠ 64 段は、書いた型の入れ子（`Box[Box[int]]` など）では届かない深さ。
+pub(super) const INSTANCE_DEPTH: usize = 64;
 
 /// 展開器が今の枠で知っているテンプレートと、作った具体化（タスク 2-8）。
 ///
@@ -68,37 +78,67 @@ pub(super) fn note_template(ex: &mut Expander, stmt: &Stmt) {
 ///
 /// ⚠ **テンプレートの宣言そのものの中は見ない**（型変数のままの `Box[T]` は、そのテンプレートを
 /// 具体化したときに置換されて現れる）。メタ関数の本体も見ない（展開時に走るコード）。
-pub(super) fn instantiate_sites(ex: &mut Expander, stmt: &Stmt, out: &mut Vec<Stmt>) {
+/// ⚠ 具体化が終わらないとき（再帰的な具体化・タスク 2-9）は `Err`。
+pub(super) fn instantiate_sites(
+    ex: &mut Expander,
+    stmt: &Stmt,
+    out: &mut Vec<Stmt>,
+) -> Result<(), String> {
+    instantiate_sites_in(ex, stmt, out, &mut Vec::new())
+}
+
+/// `chain` は今作っている具体化の連鎖（外側から）。深さの上限と診断に使う（タスク 2-9）。
+fn instantiate_sites_in(
+    ex: &mut Expander,
+    stmt: &Stmt,
+    out: &mut Vec<Stmt>,
+    chain: &mut Vec<String>,
+) -> Result<(), String> {
     if ex.templates.decls.is_empty() {
-        return;
+        return Ok(());
     }
     let mut sites: Vec<(String, Vec<String>)> = Vec::new();
     collect_sites_stmt(stmt, &mut sites);
     for (base, args) in sites {
-        instantiate(ex, &base, &args, out);
+        instantiate(ex, &base, &args, out, chain)?;
     }
+    Ok(())
 }
 
 /// 1 つの具体化を作る（作れないときは何もしない ＝ 実行時に任せる）。
-fn instantiate(ex: &mut Expander, base: &str, args: &[String], out: &mut Vec<Stmt>) {
+fn instantiate(
+    ex: &mut Expander,
+    base: &str,
+    args: &[String],
+    out: &mut Vec<Stmt>,
+    chain: &mut Vec<String>,
+) -> Result<(), String> {
     let concrete = crate::template_subst::instance_name(base, args);
     if ex.templates.made.contains(&concrete) {
-        return;
+        return Ok(());
     }
-    let Some(decl) = ex.templates.decls.get(base).cloned() else { return };
+    let Some(decl) = ex.templates.decls.get(base).cloned() else { return Ok(()) };
     let params = match &*decl {
         Stmt::ClassDef { template_params, .. }
         | Stmt::FnDef { template_params, .. }
         | Stmt::GenDef { template_params, .. } => template_params,
-        _ => return,
+        _ => return Ok(()),
     };
     // ⚠ 型引数の数違いは実行時がそう言う（ここで黙って作らない）。
     // ⚠ 制約付き（`class Box[T: Printable]`）は実行時に任せる。制約の検査は実行時が持っている。
     if params.len() != args.len() || params.iter().any(|p| !p.constraints.is_empty()) {
-        return;
+        return Ok(());
+    }
+    // ⚠⚠ 終わらない具体化は止めて、**どう連鎖したか**を見せる（タスク 2-9）。
+    if chain.len() >= INSTANCE_DEPTH {
+        return Err(endless_instantiation(chain, &concrete));
     }
     if ex.instance_count >= INSTANCE_BUDGET {
-        return;
+        return Err(format!(
+            "MetaError: too many template instantiations (more than {INSTANCE_BUDGET}) — the last one \
+             was '{concrete}'; a template that keeps producing new type arguments cannot be \
+             monomorphised"
+        ));
     }
     ex.instance_count += 1;
     // ⚠ 「実体化中」の印を**置換の前に**付ける。中に自分自身が現れても潜り直さない。
@@ -111,18 +151,43 @@ fn instantiate(ex: &mut Expander, base: &str, args: &[String], out: &mut Vec<Stm
         Stmt::ClassDef { name, template_params, .. }
         | Stmt::FnDef { name, template_params, .. }
         | Stmt::GenDef { name, template_params, .. } => {
-            *name = concrete;
+            *name = concrete.clone();
             template_params.clear();
         }
         _ => unreachable!("checked above"),
     }
     // 置いた宣言の中の具体化（`Box[Box[int]]` のフィールド型の `Box[int]` など）も作る。
     // ⚠ 使う側より**前**に置く（定義の順序が実行時の順序になる）。
-    instantiate_sites(ex, &inst, out);
+    chain.push(concrete);
+    let nested = instantiate_sites_in(ex, &inst, out, chain);
+    chain.pop();
+    nested?;
     if ex.has_metafns {
         super::register_decl(ex, &inst);
     }
     out.push(inst);
+    Ok(())
+}
+
+/// 終わらない具体化の文面（タスク 2-9）。連鎖の頭と、伸びていく様子が分かるところまでを見せる。
+fn endless_instantiation(chain: &[String], next: &str) -> String {
+    let shown: Vec<&str> = chain.iter().take(3).map(String::as_str).collect();
+    // ⚠ 伸び続けた名前は数百文字になる（`f[Box[Box[…]]]`）。頭と尻尾だけ見せる。
+    let next: String = if next.chars().count() > 60 {
+        let head: String = next.chars().take(40).collect();
+        let tail: String = next.chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+        format!("{head}…{tail}")
+    } else {
+        next.to_string()
+    };
+    format!(
+        "MetaError: template instantiation does not end — {} → … needs '{next}' (more than \
+         {INSTANCE_DEPTH} levels deep). A template that uses itself with a growing type argument \
+         (such as `f[T]` calling `f[Box[T]]`) has infinitely many instantiations, because every \
+         instantiation written in the program is made before it runs; keep the type argument \
+         fixed and pass the growing value instead",
+        shown.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(" → ")
+    )
 }
 
 // ── 具体化の場所を集める（読むだけ） ────────────────────────────────────────

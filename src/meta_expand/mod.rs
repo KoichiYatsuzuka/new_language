@@ -895,7 +895,9 @@ fn expand_stmts(
         //   ので、文を処理する**前**に作っておく。置いたコードの中の具体化も、その文が
         //   ここへ来たときに拾われる（反復は要らない）。
         if ctx == Context::TopLevel {
-            monomorph::instantiate_sites(ex, &stmt, &mut out);
+            // ⚠ 具体化が終わらないとき（再帰的な具体化）は展開時エラー（タスク 2-9）。
+            monomorph::instantiate_sites(ex, &stmt, &mut out)
+                .map_err(|e| e + &render_trail(&here))?;
         }
 
         if ex.has_metafns {
@@ -2101,6 +2103,50 @@ mod tests {
         assert_eq!(subst_type("Option[Box[T]]", &m), "Option[Box[int]]");
         assert_eq!(subst_type("Tag", &m), "Tag");
         assert_eq!(subst_type("function[T]->T", &m), "function[int]->int");
+    }
+
+    /// ⚠⚠ **再帰的な具体化は終わらない**ので、深さの上限で止めて連鎖を見せる（タスク 2-9）。
+    /// `f[T]` が `f[Box[T]]` を呼ぶと型引数が伸び続ける。展開時の単相化は書かれた具体化を
+    /// すべて先に作るので、実行時の再帰が途中で止まる書き方でも終わらない。
+    /// 以前（2-8）は上限まで黙って作り続けて 2 秒以上かかった（実測）。
+    #[test]
+    fn a_recursive_template_instantiation_is_reported() {
+        let err = expand(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "\n",
+            "fn depth[T](let x: T, let n: int) -> int:\n",
+            "    if n == 0:\n",
+            "        return 0\n",
+            "    return 1 + depth[Box[T]](Box[T](x), n - 1)\n",
+            "\n",
+            "print(depth[int](1, 3))\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(
+            err.contains("template instantiation does not end")
+                && err.contains("'depth[int]' → 'depth[Box[int]]' → 'depth[Box[Box[int]]]'"),
+            "実際のエラー: {err}"
+        );
+    }
+
+    /// ⚠ 自分自身を**同じ型引数で**使うテンプレート（型レベルの再帰）は止まる。
+    /// メモ化の印を置換の前に付けているので、`Node[int]` の中の `Node[int]` で潜り直さない。
+    #[test]
+    fn a_template_that_uses_itself_with_the_same_arguments_terminates() {
+        let out = expand(concat!(
+            "class Node[T]:\n",
+            "    mut v: T\n",
+            "    mut next: Option[Node[T]]\n",
+            "\n",
+            "    fn prepend(self, let x: T) -> Node[T]:\n",
+            "        return Node[T](x, None)\n",
+            "\n",
+            "let n = Node[int](1, None)\n",
+        ))
+        .expect("expand");
+        let count = out.iter().filter(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "Node[int]")).count();
+        assert_eq!(count, 1);
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

@@ -1,0 +1,30 @@
+# template_recursion_error.ar — 終わらない具体化（設計書 参考P のリスク 2・タスク 2-9）。
+#
+# テンプレートの具体化は**展開時に**作る（インライン単相化・2-8）。プログラムに書かれた具体化は
+# 実行より前に**すべて**作られる。
+#
+# ⇒ テンプレートが**型引数を伸ばしながら**自分自身を使うと、具体化が終わらない:
+#
+#     depth[int] を作るには depth[Box[int]] が要り、
+#     depth[Box[int]] を作るには depth[Box[Box[int]]] が要り、……
+#
+# ⚠⚠ 実行時に具体化していた頃は、**呼ばれたときに**作っていたので、再帰が途中で止まる
+#   （下の `n == 0`）なら動いていた。展開時の単相化では、`n` の値は実行するまで分からないので
+#   止まる場所が無い。⇒ 64 段で止めて、どう連鎖したかを見せる。
+#
+# ⚠ 直し方: 型引数は固定し、伸びていく値の方を渡す（`depth[int](x, n)` を再帰させる）。
+#
+# 期待されるエラー:
+#   MetaError: template instantiation does not end — 'depth[int]' → 'depth[Box[int]]' →
+#              'depth[Box[Box[int]]]' → … needs 'depth[Box[Box[…]]]' (more than 64 levels
+#              deep). A template that uses itself with a growing type argument ...
+
+class Box[T]:
+    mut v: T
+
+fn depth[T](let x: T, let n: int) -> int:
+    if n == 0:
+        return 0
+    return 1 + depth[Box[T]](Box[T](x), n - 1)
+
+print(depth[int](1, 3))
