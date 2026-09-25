@@ -32,6 +32,9 @@ pub mod decl_names;
 pub mod expr_walk;
 #[path = "../../../src/stmt_walk.rs"]
 pub mod stmt_walk;
+// テンプレートの AST 置換（タスク 2-7）。単相化（2-8）を展開器・型検査から呼ぶため。
+#[path = "../../../src/template_subst.rs"]
+pub mod template_subst;
 // `import[py-int] time` / `math` の同梱型スタブ。`include_str!` なので fs も syscall も
 // 使わず、そのまま wasm に載る。`src/py_stubs.rs` 冒頭 doc が「置き場所が `src/` 直下
 // なのはこの crate が取り込むため」と書いている、その取り込み。

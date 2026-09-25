@@ -4397,6 +4397,8 @@ Arrow には**暗黙の実体化が無い**（型引数なしの呼び出しは 
 
 #### 10-2 置換ロジックを型検査から使えるようにする
 
+**完了（2026-09-25・メタ関数の設計書の 2-7 として実施）**: `subst_*` を `src/template_subst.rs` へ移し `pub(crate)` にした（中身は変えていない。A/B でバイトコード・出力とも一致）。⚠ `subst_type` は注釈が型変数そのもの（`T`）のときしか置換しない —— `list[T]` の中は残る。10-3 / 2-8 で直す。
+
 `subst_stmts` / `subst_stmt` / `subst_params` / `subst_type` / `subst_expr`
 （`src/interpreter/templates.rs`）は **`&self` を取らない純粋な AST→AST 変換**だが、
 モジュール私有になっている。

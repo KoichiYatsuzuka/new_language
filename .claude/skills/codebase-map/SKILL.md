@@ -97,19 +97,20 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (237 files, 90767 lines)
+src/  (238 files, 90787 lines)
   ar_config.rs (244)
   ast.rs (1481)
   decl_names.rs (182)
   expr_walk.rs (200)
   interpreter.rs (1237)
-  main.rs (967)
+  main.rs (969)
   prof.rs (557)
   py_stubs.rs (50)
   repl.rs (118)
   stmt_walk.rs (284)
   stub_manifest.rs (85)
   syntax_cov.rs (383)
+  template_subst.rs (606)
   token.rs (560)
   built_in_stab/
     basic_traits.ars (96)
@@ -153,7 +154,7 @@ src/  (237 files, 90767 lines)
     resolver.rs (689)
     scope.rs (180)
     str_methods.rs (649)
-    templates.rs (1075)
+    templates.rs (487)
     tw_stats.rs (311)
     vm_toplevel.rs (426)
     classes/

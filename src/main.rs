@@ -9,6 +9,8 @@ mod ast;
 mod decl_names;
 mod expr_walk;
 mod stmt_walk;
+// テンプレートの型変数を具体型へ置き換える AST 置換（タスク 2-7）。実行時・展開時・型検査で共有する。
+mod template_subst;
 // 例題スイートの構文カバレッジ計測（#85）。診断専用なので tw_stats と同じ feature に閉じる。
 #[cfg(feature = "tw_stats")]
 mod syntax_cov;
