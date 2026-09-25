@@ -1,0 +1,22 @@
+# metafn_forward_call_error.ar — 宣言より前でメタ関数は呼べない（設計書 §1.7・タスク 2-11）。
+#
+# 展開は**ファイル先頭から逐次**（§1.7）で、参照は**前方のみ**（2026-09-25 確定）。
+# 呼び出しの時点でまだ宣言されていないメタ関数は、展開器から見えない。
+#
+# ⚠ 繰り返し（不動点）はしない。呼び出しを宣言の後ろへ動かす。
+# ⚠ 普通の関数は宣言より前から呼べる（実行時に名前を引くので）が、メタ関数は
+#   **展開の時点**で見えている必要がある。ここが普通の関数と違う。
+#
+# ⚠⚠ 以前は展開されずに残り、実行時の `NameError` になっていた。
+#
+# 期待されるエラー:
+#   MetaError: placing metafunction 'greet' is called before it is declared — expansion
+#              only sees metafunctions declared above the call (move the call below the
+#              declaration)
+#     at ...metafn_forward_call_error.ar:18:6
+
+greet()
+
+exprconst !fn greet() -> None:
+    quote code:
+        print("hello")

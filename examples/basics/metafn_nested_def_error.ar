@@ -1,0 +1,19 @@
+# metafn_nested_def_error.ar — メタ関数は関数の中に定義できない（設計書 §1.1・タスク 2-11）。
+#
+# メタ関数を定義できるのは**ファイルの最上位だけ**。関数の本体は実行時に走るので、
+# その中に書いたメタ関数には「展開される時点」が無い（関数の中でメタ関数は呼べない）。
+#
+# ⚠ 以前は展開器が関数の本体へ降りないので定義がそのまま残り、実行時に
+#   「展開されなかった」と言って落ちていた（関数を呼ばなければ黙って残った）。
+#
+# 期待されるエラー:
+#   MetaError: metafunction 'make_greeting' is defined inside function 'outer' —
+#              metafunctions can only be defined at the top level of a file
+
+fn outer() -> None:
+    exprconst !fn make_greeting() -> None:
+        quote code:
+            print("hello")
+    print("outer")
+
+outer()

@@ -28,6 +28,8 @@
 
 use std::rc::Rc;
 
+mod ordinary;
+
 use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
 use crate::interpreter::{Interpreter, Value};
 use crate::token::{Span, Spanned, Token};
@@ -817,7 +819,8 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
     // ⚠ 展開時型推論（タスク 4-4）の前提として、展開済みの最上位の文を共有する。
     //   ⚠ メタ関数が 1 つも無いプログラムでは推論が起きえないので**やらない**
     //     （全プログラムで AST を複製するのは割に合わない）。
-    ex.has_metafns = stmts.iter().any(|s| matches!(s, Stmt::MetaFnDef { .. }));
+    // ⚠ 最上位だけでなく入れ子・`import` 先まで見る（タスク 2-11。`ordinary::mentions_meta`）。
+    ex.has_metafns = ordinary::mentions_meta(&stmts);
     // ⚠ 診断専用の先行走査（設計書 §1.8 / タスク 3-0）。展開の可否や結果には影響しない。
     for st in &stmts {
         // ⚠ `const` は展開時に読めるはず（設計書 §1.7）なので**実行時の名前ではない**。
@@ -828,7 +831,13 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
             ex.runtime_names.insert(n.to_string());
         });
     }
-    expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))
+    let out = expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))?;
+    // ⚠⚠ 展開後の通常コードに残ったメタ関数への言及を弾く（§1.1・タスク 2-11）。
+    //   関数の中の呼び出し・値としての使用・入れ子の定義・通常コードの `^`。
+    if ex.has_metafns {
+        ordinary::check(&out, &ordinary::MetaNames { plain: &ex.metafns })?;
+    }
+    Ok(out)
 }
 
 /// 1 つの文の列を前から順に展開する。
@@ -998,8 +1007,9 @@ fn expand_stmts(
             }
 
             // それ以外はそのまま。
-            // ⚠ **関数本体の中は今は歩いていない**（§1.7 はファイル先頭からの逐次展開で、
-            //   本体の中の展開は別途決める必要がある）。⇒ 未対応として記録済み。
+            // ⚠⚠ **関数本体・ブロックの中へは降りない**（§1.1・2026-09-25 確定）。
+            //   メタ関数でない関数の中ではメタ関数を呼べない。残っていたら展開の最後に
+            //   `ordinary::check` が弾く（タスク 2-11）。
             other => out.push(other),
         }
 
@@ -1599,6 +1609,159 @@ mod tests {
             err.contains("inside the `code:` block") && err.contains("line 3, col 13"),
             "実際のエラー: {err}"
         );
+    }
+
+    /// ⚠⚠ **メタ関数でない関数の中では、メタ関数を呼べない**（設計書 §1.1・2026-09-25 確定・タスク 2-11）。
+    /// 以前は展開されずに残り、**その関数を呼んだときに**実行時 `NameError` になった。
+    #[test]
+    fn a_placing_call_inside_a_function_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "fn work() -> None:\n",
+            "    greet()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("placing metafunction 'greet' cannot be called inside function 'work'"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ メソッドも関数。クラス本体に**文として**書いた呼び出しとは別物。
+    #[test]
+    fn a_placing_call_inside_a_method_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "class C:\n",
+            "    fn m(self) -> None:\n",
+            "        greet()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("cannot be called inside function 'm'"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 最上位でも**ブロックの中**は置き換えない。ブロックは実行時に走るが、
+    /// メタ関数は展開時に走る（展開時に選びたいならメタ関数の中で `const` で分岐する）。
+    #[test]
+    fn a_placing_call_inside_a_top_level_block_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "const DEBUG = True\n",
+            "if DEBUG:\n",
+            "    greet()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("cannot be called inside a block"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 配置メタ関数は値を返さない（§1.1）。
+    #[test]
+    fn a_placing_metafn_used_as_a_value_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "let x = greet()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("placing metafunction 'greet' cannot be used as a value"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 純粋メタ関数は `Code` を返す。通常コードからは呼べない（§1.1）。
+    #[test]
+    fn a_pure_metafn_called_from_ordinary_code_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "exprconst fn frag() -> Code:\n",
+            "    let c = code:\n",
+            "    return c\n",
+            "\n",
+            "frag()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("pure metafunction 'frag' cannot be called from ordinary code"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 入れ子のメタ関数の定義は許さない（§1.1・2026-09-25 確定）。
+    #[test]
+    fn a_metafn_defined_inside_a_function_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "fn outer() -> None:\n",
+            "    exprconst fn inner() -> Code:\n",
+            "        let c = code:\n",
+            "        return c\n",
+            "    print(1)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("metafunction 'inner' is defined inside function 'outer'"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 関数の中の `!装飾子` も展開されない。以前は実行時まで残って落ちた。
+    #[test]
+    fn a_decorator_inside_a_function_is_rejected() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "exprconst !fn deco(m) -> None:\n",
+            "    quote m.code()\n",
+            "\n",
+            "fn f() -> None:\n",
+            "    !deco\n",
+            "    let x = 1\n",
+            "    print(x)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("decorator '!deco' is written inside function 'f'"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ 通常コードの `^` は展開時に止める（以前は実行時に 3-9 の文面で落ちた）。
+    #[test]
+    fn caret_in_ordinary_code_is_rejected_while_expanding() {
+        let err = expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "class Marker:\n",
+            "    mut id: int\n",
+            "\n",
+            "print(^Marker)\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("`^Marker` is written at the top level in ordinary code"), "実際のエラー: {err}");
+    }
+
+    /// ⚠⚠ 同じ名前の普通の束縛（ここでは仮引数）があるメタ関数は**調べない**（保守的・2-11）。
+    /// 見分けるにはスコープの追跡が要り、取り違えると正しいプログラムを弾くので。
+    #[test]
+    fn a_parameter_that_shadows_a_metafn_is_not_rejected() {
+        expand(concat!(
+            "exprconst !fn greet() -> None:\n",
+            "    quote code:\n",
+            "        print(\"hi\")\n",
+            "\n",
+            "fn shadow(greet: int) -> int:\n",
+            "    return greet + 1\n",
+            "\n",
+            "greet()\n",
+        ))
+        .expect("仮引数の `greet` はメタ関数ではない");
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。
@@ -2312,14 +2475,15 @@ mod tests {
     }
 
     /// ⚠ 自分より**前**に宣言されたメタ関数しか見えない（§1.7 の逐次展開）。
-    /// 後ろにあるものを呼んでも展開されず、そのまま残る（実行時に NameError になる）。
+    /// ⚠⚠ 後ろにあるものを呼んだら**展開時のエラー**（前方参照のみ・2026-09-25 確定・タスク 2-11）。
+    /// 以前は展開されずに残り、実行時の `NameError` になっていた。
     #[test]
     fn a_metafn_declared_later_is_not_visible() {
-        let kinds = expand_kinds(
+        let err = expand(
             "later()\nexprconst !fn later() -> None:\n    quote code:\n        let x = 1\n",
         )
-        .expect("expand");
-        assert_eq!(kinds, vec!["Expr"], "呼び出し文が展開されずに残る");
+        .expect_err("弾かれること");
+        assert!(err.contains("is called before it is declared"), "実際のエラー: {err}");
     }
 
     /// ⚠⚠ 置いたコードの node-id は**本体と衝突してはならない**（設計書 §0.3 / タスク 2-1）。

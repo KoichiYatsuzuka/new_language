@@ -1,23 +1,24 @@
-# metafn_ordinary_call_error.ar — 関数本体の中の配置メタ関数呼び出しは展開されない（タスク 3-8）。
+# metafn_ordinary_call_error.ar — メタ関数でない関数の中ではメタ関数を呼べない（設計書 §1.1・タスク 2-11）。
 #
-# 展開器が置き換えるのは**最上位とクラス本体の、文として書いた呼び出し**だけ。
-# 関数本体やブロック（`if` / `for` の本体など）の中の呼び出しは、いまは展開されない
-# （設計書 2-11・判断待ち）。
-# メタ関数は展開後の AST から消えるので、実行時にその名前を引けず `NameError` になる。
+# §1.1（2026-09-25 確定）:
+#   - **メタ関数でない関数の中では、メタ関数を呼べない**（配置・純粋とも）。
+#   - 配置メタ関数を呼べるのは、最上位とクラス本体に**文として**書いた呼び出しだけ。
 #
-# ⚠ `NameError` とだけ出ると「定義したのに無いと言われた」と読めてしまう（実測）。
-#   ⇒ 引けなかった名前がメタ関数なら、理由を書き添える。
-#   純粋メタ関数（`exprconst fn`）を通常コードから呼んだときも同じ（§1.1 で「不可」）。
+# メタ関数は**プログラムの展開中**（実行より前）に走る。関数の本体は実行時に走るので、
+# その中の呼び出しには「置き換える時点」が無い。メソッドも同じ。
 #
-# ⚠ **静的には弾いていない。** 同じ名前の局所変数がメタ関数を隠していることがあり、
-#   見分けるには型検査と同じスコープの追跡が要る。実行時に本当に引けなかったときだけ
-#   書き添えるので、誤検知は起きない。
+# ⚠⚠ 以前は展開されずに残り、**その関数を呼んだときに**実行時の `NameError` になった
+#   （3-8 で理由を書き添えていた）。呼ばれない経路の誤りは黙って残っていたので、
+#   展開の最後に通常コードを 1 回歩いて**展開時に**止めるようにした。
+#
+# ⚠ 同じ名前の普通の束縛（局所変数・仮引数）があるメタ関数は、取り違えを避けて調べない。
 #
 # 期待されるエラー:
-#   NameError: 'log_call' is not defined
-#   note: 'log_call' is a placing metafunction (`exprconst !fn`). The expander replaces
-#         a call to it only when the call is a statement at the top level or directly in
-#         a class body; ...
+#   MetaError: placing metafunction 'log_call' cannot be called inside function 'work' —
+#              metafunctions run while the program is being expanded, before any function
+#              runs (call a placing metafunction as a statement at the top level or directly
+#              in a class body)
+#     at ...metafn_ordinary_call_error.ar:28:13
 
 exprconst !fn log_call() -> None:
     quote code:

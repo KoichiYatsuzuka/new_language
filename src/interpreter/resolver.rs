@@ -258,7 +258,7 @@ fn collect_program_globals(stmts: &[Stmt]) -> HashMap<String, bool> {
 ///
 /// そこで入れ子ブロック・ブロック式の中まで含め、束縛の可能性がある名前を保守的に集め、
 /// **1 つでも該当したらその名前は `Resolution::Global` にしない**。
-fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
+pub(crate) fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
     for stmt in body {
         // ① この 1 文が直接束縛する名前（判断は [`crate::decl_names`] に集約・#59）。
         crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {

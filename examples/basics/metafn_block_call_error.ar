@@ -1,0 +1,27 @@
+# metafn_block_call_error.ar — ブロックの中では配置メタ関数を呼べない（タスク 2-11）。
+#
+# 配置メタ関数の呼び出しを置き換えるのは、最上位とクラス本体に**文として直接**書いた
+# ものだけ。`if` / `for` / `while` などの**本体の中**は置き換えない。
+#
+# ⚠⚠ ブロックは**実行時**に走るが、メタ関数は**展開中**（実行より前）に走る。
+#   `if DEBUG:` の中に書くと「DEBUG のときだけ展開される」ように読めるが、そうはならない。
+#   `for` の中に書いても展開は 1 回きり。⇒ 誤解を生む書き方なので弾く。
+#
+# ⚠ **展開時に**置くコードを選びたいなら、メタ関数の中で `const` を見て分岐する
+#   （成功例 `metafn.ar` の「展開時の分岐（const）」）。
+#
+# 期待されるエラー:
+#   MetaError: placing metafunction 'setup_logging' cannot be called inside a block — the
+#              block runs at run time, but a metafunction runs while the program is being
+#              expanded (call it directly at the top level; to choose code at expansion
+#              time, branch on a `const` inside a metafunction)
+#     at ...metafn_block_call_error.ar:27:18
+
+exprconst !fn setup_logging() -> None:
+    quote code:
+        print("logging on")
+
+const DEBUG = True
+
+if DEBUG:
+    setup_logging()

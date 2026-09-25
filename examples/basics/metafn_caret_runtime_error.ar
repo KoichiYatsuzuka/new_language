@@ -1,19 +1,20 @@
-# metafn_caret_runtime_error.ar — `^` は展開時にしか評価できない（タスク 1-3 / 3-9）。
+# metafn_caret_runtime_error.ar — 通常コードに `^` は書けない（タスク 1-3 / 3-9 / 2-11）。
 #
-# `^` を書けるのは「メタ関数の中」か「呼び出しの実引数の中」（1-3）。ただし実引数の方は、
-# **呼び先がメタ関数かどうかがパース時には分からない**ので、普通の関数の実引数でもパースは通る。
-# 展開器が評価するのはメタ関数の呼び出しだけなので、`print(^Marker)` の `^` は実行時まで残る。
+# `^` は**展開中にしか評価できない**。書けるのは「メタ関数の中」か「メタ関数呼び出しの
+# 実引数の中」だけ。ただしパース時には**呼び先がメタ関数かどうかが分からない**ので、
+# `print(^Marker)` のように普通の関数の実引数に書いてもパースは通る（1-3）。
 #
-# ⚠⚠ 以前は実行時に「前に何も宣言されていない」と**誤報していた**（`Marker` は宣言してあるのに）。
-#   ⇒ 実行時に来たら「展開時にしか評価できない」と言う。
+# ⚠⚠ 以前は展開器がそれを評価しないまま実行時まで残り、実行時に「前に何も宣言されていない」と
+#   **誤報していた**（`Marker` は宣言してあるのに）。3-9 で実行時の文面を直し、2-11 で
+#   展開の最後に通常コードを歩いて**展開時に**止めるようにした。
 #
 # ⚠ クラスの中身を実行時に使いたいなら、メタ関数で必要な情報を**コードとして置く**
 #   （成功例 `metafn.ar` の `bind_first_field`）。
 #
 # 期待されるエラー:
-#   MetaError: `^Marker` can only be evaluated while the compile-time expander runs —
-#              inside a metafunction, or as an argument to a metafunction call (here it is
-#              part of ordinary code, which runs at run time)
+#   MetaError: `^Marker` is written at the top level in ordinary code — `^` can only be
+#              evaluated while the program is being expanded: inside a metafunction, or as
+#              an argument to a metafunction call
 
 class Marker:
     mut id: int

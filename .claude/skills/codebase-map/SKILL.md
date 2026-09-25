@@ -97,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (235 files, 89844 lines)
+src/  (236 files, 90357 lines)
   ar_config.rs (244)
   ast.rs (1481)
   decl_names.rs (182)
@@ -260,7 +260,8 @@ src/  (235 files, 89844 lines)
     scan.rs (454)
     symbol.rs (279)
   meta_expand/
-    mod.rs (2526)
+    mod.rs (2692)
+    ordinary.rs (347)
   parser/
     classes.rs (969)
     editor_hooks.rs (424)
@@ -436,7 +437,7 @@ examples/  (recursive .ar counts per category)
   apps/ (2 .ar)
   archived/ (72 .ar)
   async/ (7 .ar)
-  basics/ (91 .ar)
+  basics/ (95 .ar)
   bench/ (26 .ar)
   classes/ (42 .ar)
   collections/ (26 .ar)
@@ -493,5 +494,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (152)
   README.md (317)
 ```
-_Generated 2026-09-24 by generate-codebase-map.ps1_
+_Generated 2026-09-25 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

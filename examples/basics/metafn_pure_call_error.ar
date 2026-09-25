@@ -1,0 +1,32 @@
+# metafn_pure_call_error.ar — 純粋メタ関数は通常コードから呼べない（設計書 §1.1・タスク 2-11）。
+#
+# §1.1 の「呼び出し可能性」:
+#
+#   | 呼ぶ側          | `exprconst fn -> Code` | `exprconst !fn`      |
+#   |-----------------|------------------------|----------------------|
+#   | 通常コード      | 不可                   | 可（文位置のみ）     |
+#   | `exprconst fn`  | 可                     | 不可（配置先が無い） |
+#   | `exprconst !fn` | 可                     | 不可                 |
+#
+# 純粋メタ関数は `Code` を**返す**。`Code` は展開中にしか存在しないので、通常コードが
+# 受け取っても使い道が無い。⇒ 別のメタ関数から呼び、返ってきた `Code` を `quote` する
+# （成功例 `metafn.ar` の `say_via` / `call_of`）。
+#
+# ⚠ 以前は展開後に名前が消えて、実行時に `NameError` になっていた（3-8 で理由を添えた）。
+#
+# ⚠ ここでは**束縛しない**呼び出し文にしてある。`let s = greeting()` と束縛すると、展開しない
+#   エディタでは型検査の「`Code` の持ち出し」（1-5 / 1-6）になり、CLI（展開時エラーで止まる）と
+#   診断の種類が食い違う（`compare_wasm_frontend` の INVENTED）。どちらも誤りを捕まえてはいる。
+#
+# 期待されるエラー:
+#   MetaError: pure metafunction 'greeting' cannot be called from ordinary code — it
+#              returns `Code`, which exists only while the program is being expanded (call
+#              it from another metafunction and `quote` what it returns)
+#     at ...metafn_pure_call_error.ar:32:9
+
+exprconst fn greeting() -> Code:
+    let c = code:
+        print("hello")
+    return c
+
+greeting()
