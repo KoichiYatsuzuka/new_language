@@ -2320,6 +2320,123 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ テンプレートの本体で `T` の値を具体型の枠へ入れる形（`let y: int = x`・`h(x)`・`return x`・
+    /// `self.set("x")`）は、`g[int]` / `Box[str]` しか使っていなければ正しい（タスク 2-15）。
+    /// 以前は期待型の側の `T` しか除外しておらず、値の側の `T` で偽のエラーになっていた。
+    /// 型引数が合わない具体化は、具体化の本体で捕まる。
+    #[test]
+    fn a_type_parameter_on_either_side_is_left_to_the_instantiations() {
+        let src = |targ: &str, arg: &str| {
+            format!(
+                "fn h(let n: int) -> int:\n    return n\n\nfn g[T](let x: T) -> int:\n    let y: int = x\n    print(h(x))\n    return x\n\nclass Box[T]:\n    mut v: T\n    fn set(mut self, let x: T) -> None:\n        self.v = x\n    fn fill(mut self) -> None:\n        self.set(\"x\")\n\nprint(g[{targ}]({arg}))\nmut b = Box[{targ}]({arg})\nb.fill()\n"
+            )
+        };
+        let ok = expand_and_check(&src("int", "1").replace("Box[int](1)", "Box[str](\"a\")"));
+        assert!(ok.is_empty(), "偽陽性: {ok:?}");
+        let bad = expand_and_check(&src("str", "\"a\"").replace("Box[str](\"a\")", "Box[int](1)"));
+        assert!(bad.iter().any(|m| m.contains("'y' is declared 'int' but initialized with 'str'")), "{bad:?}");
+        assert!(bad.iter().any(|m| m.contains("'g[str]' is declared to return 'int' but returns 'str'")), "{bad:?}");
+        assert!(bad.iter().any(|m| m.contains("argument 0 of 'Box[int].set' expects 'int' but got 'str'")), "{bad:?}");
+    }
+
+    /// ⚠ 関数型の中の型変数も置換する（タスク 2-15）。`adder[int](1)` が `function[T]->T` のまま
+    /// 外へ出て、`f(2)` が「`T` を期待したのに `int`」という偽のエラーになっていた。
+    #[test]
+    fn a_function_type_returned_from_a_template_function_is_substituted() {
+        let errs = expand_and_check(concat!(
+            "fn adder[T](let base: T) -> function[T]->T:\n",
+            "    fn add(let x: T) -> T:\n",
+            "        return base + x\n",
+            "    return add\n",
+            "let f = adder[int](1)\n",
+            "print(f(2))\n",
+            "print(f(\"s\"))\n",
+        ));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].contains("argument 0 of 'f' expects 'int' but got 'str'"), "{errs:?}");
+    }
+
+    fn template_module_src() -> &'static str {
+        concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "    fn set(mut self, let x: T) -> None:\n",
+            "        self.v = x\n",
+            "\n",
+            "let inner = Box[str](\"own\")\n",
+        )
+    }
+
+    fn body_of<'a>(out: &'a [Stmt], i: usize) -> &'a [Stmt] {
+        match &out[i] {
+            Stmt::Import { body, .. } | Stmt::FromImport { body, .. } => body,
+            _ => panic!("import を期待"),
+        }
+    }
+
+    /// ⚠⚠ `import` したモジュールのテンプレートの具体化（`m.Box[int]` / `from m import Box`）は、
+    /// **その `import` 文の本体の末尾**に置く（タスク 2-15）。メインに置くと、クラスの本体が
+    /// モジュールの名前ではなくメインの名前を引いてしまう。以前は作らなかったので検査が丸ごと抜けていた。
+    #[test]
+    fn an_imported_template_is_instantiated_inside_the_module_body() {
+        for (imp, main) in [
+            (import_of(None), "let b = m.Box[int](1)\n"),
+            (from_import_of(&["Box"]), "let b = Box[int](1)\n"),
+        ] {
+            let out = expand_with_module(template_module_src(), &[imp], main).expect("expand");
+            assert!(find_decl(&out, "Box[int]").is_none(), "メインには置かない");
+            let body = body_of(&out, 0);
+            let (at, _) = find_decl(body, "Box[int]").expect("モジュールの本体に置く");
+            assert_eq!(at, body.len() - 1, "本体の末尾に置く");
+        }
+    }
+
+    /// ⚠ モジュール**自身の中の**具体化も、その本体の中で単相化する（タスク 2-15）。
+    /// 使う文より前に置く（メインのプログラムと同じ規則）。
+    #[test]
+    fn a_module_s_own_instantiation_is_placed_before_its_use() {
+        let out = expand_with_module(template_module_src(), &[import_of(None)], "print(1)\n").expect("expand");
+        let body = body_of(&out, 0);
+        let (at, _) = find_decl(body, "Box[str]").expect("モジュールの中の具体化");
+        let use_at = body.iter().position(|s| matches!(s, Stmt::Let(n, _, _) if n == "inner")).unwrap();
+        assert!(at < use_at, "使う文より前に置く");
+    }
+
+    /// ⚠⚠ `import` 先の具体化の型の誤りも出る（タスク 2-15）。型検査はモジュールの本体の診断を
+    /// 捨てるが、具体化の本体で見つかった誤り（型引数を選んだ側の誤り）は残す。
+    #[test]
+    fn a_type_error_in_an_imported_instantiation_is_reported() {
+        let out = expand_with_module(
+            concat!(
+                "class Box[T]:\n",
+                "    mut v: T\n",
+                "    fn reset(mut self) -> None:\n",
+                "        self.v = 0\n",
+                "    fn label(self) -> str:\n",
+                "        return 1\n",
+            ),
+            &[import_of(None)],
+            "mut b = m.Box[str](\"x\")\nb.reset()\n",
+        )
+        .expect("expand");
+        let (errors, _, _) = crate::type_check::TypeChecker::check_program(&out);
+        let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        assert!(msgs.iter().any(|m| m.contains("Box[str]") && m.contains("declared")), "出ていない: {msgs:?}");
+        // テンプレートの本体の誤り（`label`）はモジュール自身の誤りなので import 側には出さない。
+        assert!(!msgs.iter().any(|m| m.contains("label")), "出てはいけない: {msgs:?}");
+    }
+
+    #[test]
+    fn split_instance_name_is_the_inverse_of_instance_name() {
+        use crate::template_subst::{instance_name, split_instance_name};
+        for args in [vec!["int"], vec!["Pair[int, str]", "int"], vec!["function[int, str]->int"]] {
+            let args: Vec<String> = args.into_iter().map(String::from).collect();
+            let name = instance_name("Box", &args);
+            assert_eq!(split_instance_name(&name), Some(("Box", args.clone())));
+        }
+        assert_eq!(split_instance_name("Box"), None);
+    }
+
     /// ⚠⚠ **具体化どうしで node-id を共有しない**（設計書 §0.3・タスク 2-13）。
     /// 型検査の注釈は node-id で引かれるので、共有すると後に検査した具体化の型が全部に効く
     /// （`add_all[int]` の `a + b` が float の加算 `FBIN` にコンパイルされた・実測）。

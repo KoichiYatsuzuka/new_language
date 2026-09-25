@@ -1,0 +1,47 @@
+# template_modules/containers.ar — 例題 template_module.ar / template_module_error.ar が import する
+# テンプレートのモジュール（タスク 2-15）。
+#
+# ⚠ 具体化（`c.Box[int]` など）は、import する側ではなく**このモジュールの中**に置かれる。
+#   クラスの本体が引く `SCALE` / `scaled_by` は、このモジュールのものでなければならない。
+
+const SCALE = 10
+
+fn scaled_by(let n: int) -> int:
+    return n * SCALE
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x
+
+    fn scaled(self, let n: int) -> int:
+        return scaled_by(n)
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+    fn boxed_value(self) -> Box[V]:
+        return Box[V](self.v)
+
+fn first[T](let xs: list[T]) -> T:
+    return xs[0]
+
+# 本体が `T = int` のときしか正しくない（`self.v = 0`）。`Counter[str]` を具体化すると静的エラー
+# （template_module_error.ar の Section 4）。
+class Counter[T]:
+    mut v: T
+
+    fn reset(mut self) -> None:
+        self.v = 0
+
+# メインにも同じ名前のテンプレートがある（template_module.ar の最後の節）。
+class Tag[T]:
+    mut v: T
+
+    fn who(self) -> str:
+        return "containers.Tag"

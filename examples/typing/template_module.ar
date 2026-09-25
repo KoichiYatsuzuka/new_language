@@ -1,0 +1,47 @@
+# template_module.ar — import したモジュールのテンプレートも具体化して型検査する（タスク 2-15）
+#
+# 対になる誤り: template_module_error.ar
+#
+# ⚠⚠ 以前は、メインが宣言したテンプレートしか単相化しておらず、`c.Box[int]` や
+#   `from ... import Box` の `Box[int]` は、メソッド呼び出し・コンストラクタ・戻り値のどれも
+#   **検査されなかった**（実行時の TypeError まで分からなかった）。
+# ⚠ 具体化はモジュールの中に置く。クラスの本体はモジュールの名前（`SCALE` など）を引く。
+
+import template_modules.containers as c
+from template_modules.containers import Box, first
+
+# ── モジュール名つきの具体化 ──
+mut b = c.Box[int](1)
+b.set(2)
+print(b.get())              # 2
+print(b.scaled(3))          # 30（モジュールの SCALE = 10 を引く）
+
+let p = c.Pair[str, int]("k", 5)
+let inner = p.boxed_value()
+print(inner.get())          # 5
+
+# ── from import した名前での具体化 ──
+mut s = Box[str]("a")
+s.set("b")
+let t: str = s.get()
+print(t)                    # b
+
+let n: int = first[int]([7, 8])
+print(n)                    # 7
+
+mut k = c.Counter[int](5)
+k.reset()
+print(k.v)                  # 0
+
+# ── メインとモジュールに同じ名前のテンプレートがあっても取り違えない ──
+# ⚠⚠ 以前は、実行時の具体化が**呼び出し側の名前**で単相化済みのクラスを探していたので、
+#   `c.Tag[int]` がメインの `Tag[int]` を使っていた。単相化した宣言は、定義した時点で
+#   **そのスコープのテンプレート**の具体化として登録する。
+class Tag[T]:
+    mut v: T
+
+    fn who(self) -> str:
+        return "main Tag"
+
+print(Tag[int](1).who())    # main Tag
+print(c.Tag[int](1).who())  # containers.Tag

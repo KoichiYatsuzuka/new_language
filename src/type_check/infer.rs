@@ -205,9 +205,11 @@ impl TypeChecker {
             //    になるのと揃えて `TypeValOf(GenericInstance{..})` を返す。
             Expr::TemplateInstantiate { base, type_args } => {
                 self.walk(base);
-                let Expr::Ident { name, .. } = base.as_ref() else {
+                // `m.Box[int]` も `Box` と読む（タスク 2-15・`template_base_name` の doc）。
+                let Some(name) = self.template_base_name(base) else {
                     return InferredType::Unresolved;
                 };
+                let name = name.to_string();
                 if !self.registry.is_known_class(name.as_str()) {
                     // テンプレート関数の型値。シグネチャの決定は呼び出し点に任せる。
                     return InferredType::Unresolved;

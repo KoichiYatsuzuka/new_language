@@ -38,7 +38,20 @@ impl TypeChecker {
         self.push_scope();
         self.check_stmts(body);
         self.pop_scope();
-        self.diags = saved;
+        let module_diags = std::mem::replace(&mut self.diags, saved);
+        // ⚠⚠ ただし、**呼び出し側の型引数が原因の誤り**は捨てない（タスク 2-15）。
+        //   `m.Box[str]` の具体化は展開器がモジュールの本体に置く（`monomorph::instantiate_imported`）
+        //   ので、その本体の誤り（`Box[str]` の `self.v = 0`）はここで見つかる。捨てると
+        //   実行時の `TypeError` まで分からない（実測）。
+        //   ⚠ テンプレートの本体（型変数のまま）でも出る誤りは**モジュール自身の誤り**なので捨てる
+        //     （具体化の誤りのうち、テンプレートの本体の誤りと同じ文面のものを落とす・`dedup_instance_errors`）。
+        let (errors, _) = module_diags.into_parts_tagged();
+        let instance_names = self.registry.instance_names().clone();
+        for (e, from_instance) in Self::dedup_instance_errors(errors, &instance_names) {
+            if from_instance {
+                self.diags.report_error(e, true);
+            }
+        }
     }
 
     /// `for target in iter:` のターゲットに与える**要素型**を、イテラブルの型から求める。

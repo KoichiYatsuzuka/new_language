@@ -49,6 +49,7 @@ $knownDiff = @{
     # (a) impl_python が未対応の言語機能・組み込み（NameError / AttributeError / TypeError を出す）
     'metafn_expansion_print'         = 'py: メタ関数を字句解析できないので ParseError（3-4 で新設。Rust 側の stdout は "runtime output" と "done" の 2 行だけで、展開時の print は stderr へ出る）'
     'template_constrained_error'     = 'Rust: 制約付きテンプレート・宣言より前の具体化も単相化して検査し StaticTypeError（2-14 で新設）。py: テンプレートのメソッド呼び出しを検査しないので実行してしまう'
+    'template_module'                = 'Rust: import したテンプレートの具体化をモジュールの中に置くので、メソッドがモジュールの関数を引ける・同名テンプレートを取り違えない（2-15 で新設）。py: 実行時の具体化のメソッドがモジュールの名前を引けず NameError'
     'template_method_error'          = 'Rust: 単相化した Box[int] のメソッド呼び出しを具体型で検査して StaticTypeError（2026-09-26 新設・フェーズ10 の発端）。py: テンプレートのメソッド呼び出しを検査しないので実行して wrong を出す'
     'template_type_param_error'      = 'Rust: 具体化した本体（Cell[str] の self.v = 0・conv[float] の return n）も StaticTypeError（2026-09-26 に Section 3/4 を追加）。py: 具体化した本体を検査しないので実行して 3 を出す'
     'template_recursion_error'       = 'Rust: 展開時の単相化が再帰的な具体化を止めて MetaError（2-9 で新設）。py: 実行時に呼ばれたときだけ具体化するので、再帰が n == 0 で止まり 3 を出す'

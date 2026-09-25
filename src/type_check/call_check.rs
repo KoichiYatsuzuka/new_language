@@ -282,10 +282,11 @@ impl TypeChecker {
         //    変えるとフィールド型が `T`（= 呼び出し点では未知のクラス名）として下流へ
         //    流れ、`a.v = "s"` などが偽エラーになる（型変数の実体化は別タスク）。
         if let Expr::TemplateInstantiate { base, type_args } = func {
-            if let Expr::Ident { name, .. } = base.as_ref() {
-                self.check_template_call_args(name, type_args, &arg_data);
+            if let Some(name) = self.template_base_name(base) {
+                let name = name.to_string();
+                self.check_template_call_args(&name, type_args, &arg_data);
                 // ⚠ タスク 2.1: 結果型を返す（以前は常に `Unresolved` を捨て返していた）。
-                return self.template_call_result_type(name, type_args);
+                return self.template_call_result_type(&name, type_args);
             }
             return InferredType::Unresolved;
         }
@@ -874,6 +875,21 @@ impl TypeChecker {
                 T::Intersection(ts.iter().map(|t| Self::subst_type_params(t, map)).collect())
             }
             T::Tuple(ts) => T::Tuple(ts.iter().map(|t| Self::subst_type_params(t, map)).collect()),
+            // ⚠ 関数型・イテレータ型の内側も置換する（タスク 2-15）。抜けていたので
+            //   `fn adder[T](..) -> function[T]->T` の `adder[int](1)` が `function[T]->T` のまま
+            //   外へ出て、`f(2)` が「`T` を期待したのに `int`」という偽のエラーになっていた（実測）。
+            T::IteratorOf(t) => T::IteratorOf(rec(t)),
+            T::Function { params, return_type } => T::Function {
+                params: params.as_ref().map(|ps| {
+                    ps.iter()
+                        .map(|p| FnTypeParam {
+                            ty: Self::subst_type_params(&p.ty, map),
+                            ..p.clone()
+                        })
+                        .collect()
+                }),
+                return_type: rec(return_type),
+            },
             _ => ty.clone(),
         }
     }
@@ -907,6 +923,26 @@ impl TypeChecker {
     ///
     /// ⚠ 解釈できない型引数・個数不一致・オーバーロードは `Unresolved` に倒す
     /// （取りこぼす方へ。個数不一致は実行時の `TemplateError` が捕まえる）。
+    /// 具体化の式（`Box[int]` / `m.Box[int]`）の**テンプレート名**（タスク 2-15）。
+    ///
+    /// ⚠ `m.Box[int]` は `m` が `import` したモジュールの名前空間で、`Box` をメンバーに持つときだけ
+    ///   `Box` と読む。以前は識別子の形しか見ておらず、モジュールのテンプレートの具体化は
+    ///   コンストラクタも結果の型も検査されなかった（型が `Unresolved` に落ちていた）。
+    /// ⚠ レジストリは `import` の本体の宣言も**素の名前で**集めている（`m.Plain(..)` と同じ扱い）。
+    pub(super) fn template_base_name<'e>(&self, base: &'e Expr) -> Option<&'e str> {
+        match base {
+            Expr::Ident { name, .. } => Some(name),
+            Expr::Attr { object, attr, .. } => {
+                let Expr::Ident { name, .. } = object.as_ref() else { return None };
+                match self.lookup(name).map(|v| &v.ty) {
+                    Some(InferredType::Namespace(members)) if members.contains_key(attr) => Some(attr),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn template_call_result_type(&self, base_name: &str, type_args: &[String]) -> InferredType {
         let Some(tparams) = self.registry.template_params(base_name) else {
             return InferredType::Unresolved; // テンプレートでない名前

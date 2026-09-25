@@ -157,6 +157,11 @@ impl Interpreter {
             vm_chunk: None,
         });
 
+        // 単相化した関数は、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
+        // ⚠ 置換で型が区別されるので、単相化した関数どうしが多重定義に合成されることは無い。
+        if name.ends_with(']') {
+            self.register_mono_instance(name, &Value::Function(Rc::clone(&fn_val)));
+        }
         if decorators.is_empty() {
             let existing = self
                 .scopes
@@ -214,6 +219,9 @@ impl Interpreter {
                 body: body.to_vec(),
                 captured_env,
             });
+            if name.ends_with(']') {
+                self.register_mono_instance(name, &Value::GeneratorFn(Rc::clone(&gen_fn)));
+            }
             self.scopes.last_mut().unwrap().insert(
                 name.to_string(),
                 Var::new(Value::GeneratorFn(gen_fn), false),
@@ -849,16 +857,16 @@ impl Interpreter {
                 crate::interpreter::value::alloc_class_id(),
             )
         });
-        if decorators.is_empty() {
-            self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));
-        } else {
-            let mut value = Value::Class(cls);
-            for dec_expr in decorators.iter().rev() {
-                let dec = self.eval_definition_expr(dec_expr)?;
-                value = self.apply_value_call(dec, value, name)?;
-            }
-            self.declare_var(name.to_string(), Var::new(value, false));
+        let mut value = Value::Class(cls);
+        for dec_expr in decorators.iter().rev() {
+            let dec = self.eval_definition_expr(dec_expr)?;
+            value = self.apply_value_call(dec, value, name)?;
         }
+        // 単相化したクラスは、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
+        if name.ends_with(']') {
+            self.register_mono_instance(name, &value);
+        }
+        self.declare_var(name.to_string(), Var::new(value, false));
         Ok(ExecResult::Normal)
     }
 

@@ -1427,6 +1427,12 @@ impl TypeChecker {
             InferredType::Union(ts) | InferredType::Intersection(ts) | InferredType::Tuple(ts) => {
                 ts.iter().any(|t| self.mentions_type_param(t))
             }
+            // ⚠ 関数型・イテレータ型の内側も見る（タスク 2-15。`function[T]->T` を取りこぼしていた）。
+            InferredType::IteratorOf(t) => self.mentions_type_param(t),
+            InferredType::Function { params, return_type } => {
+                params.iter().flatten().any(|p| self.mentions_type_param(&p.ty))
+                    || self.mentions_type_param(return_type)
+            }
             _ => false,
         }
     }

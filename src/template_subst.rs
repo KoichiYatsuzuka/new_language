@@ -59,8 +59,9 @@ pub(crate) fn subst_type(type_name: &str, type_map: &HashMap<String, String>) ->
 
 /// 具体化の名前（`Box` と `[int]` から `"Box[int]"`・タスク 2-8）。
 ///
-/// ⚠⚠ **展開器（宣言を置く側）と実行時（引く側）が同じ関数で作る。** 綴りがずれると
-/// 実行時が見つけられず、黙って従来の実行時具体化へ戻る（二重に実体化する）。
+/// ⚠⚠ **展開器（宣言を置く側）と実行時（登録する側）が同じ綴りを使う。** 実行時は定義した
+/// 宣言の名前を [`split_instance_name`] で分けて具体化のキャッシュへ登録する（タスク 2-15）。
+/// 綴りがずれると登録の鍵が式の型引数と合わず、黙って従来の実行時具体化へ戻る（二重に実体化する）。
 pub(crate) fn instance_name(base: &str, type_args: &[String]) -> String {
     format!("{base}[{}]", type_args.join(", "))
 }
@@ -75,6 +76,32 @@ pub(crate) fn display_name(name: &str) -> &str {
         Some(i) => &name[..i],
         None => name,
     }
+}
+
+/// [`instance_name`] の逆（`"Box[Pair[int, str], int]"` → `("Box", ["Pair[int, str]", "int"])`・タスク 2-15）。
+///
+/// 単相化した宣言を定義した時点で、**そのスコープのテンプレート**の具体化として登録するのに使う
+/// （`Interpreter::register_mono_instance`）。具体化の名前でないときは `None`。
+/// ⚠ 分けるのは**入れ子の外の** `, ` だけ（型引数そのものが `[..]` / `{..}` / `(..)` を含む）。
+pub(crate) fn split_instance_name(name: &str) -> Option<(&str, Vec<String>)> {
+    let open = name.find('[')?;
+    let inner = name[open + 1..].strip_suffix(']')?;
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[start..].trim().to_string());
+    Some((&name[..open], args))
 }
 
 // ── 写しの node-id の振り直し（タスク 2-13） ───────────────────────────────

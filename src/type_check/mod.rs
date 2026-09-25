@@ -316,8 +316,17 @@ impl TypeChecker {
         errors: Vec<(StaticTypeError, bool)>,
         instance_names: &std::collections::HashSet<String>,
     ) -> Vec<StaticTypeError> {
+        Self::dedup_instance_errors(errors, instance_names).into_iter().map(|(e, _)| e).collect()
+    }
+
+    /// [`Self::merge_instance_errors`] の本体。残した誤りを「具体化の本体で見つかったか」の印つきで返す
+    /// （`import` 先の本体の誤りから具体化の分だけを拾うのにも使う・タスク 2-15）。
+    pub(crate) fn dedup_instance_errors(
+        errors: Vec<(StaticTypeError, bool)>,
+        instance_names: &std::collections::HashSet<String>,
+    ) -> Vec<(StaticTypeError, bool)> {
         if instance_names.is_empty() {
-            return errors.into_iter().map(|(e, _)| e).collect();
+            return errors;
         }
         // ⚠ 長い名前から置き換える（`Box[Box[int]]` の中の `Box[int]` を先に崩さない）。
         let mut names: Vec<&String> = instance_names.iter().collect();
@@ -349,7 +358,6 @@ impl TypeChecker {
                 let fresh = seen.insert(normalize(&e.to_string()));
                 fresh || !from_instance
             })
-            .map(|(e, _)| e)
             .collect()
     }
 }

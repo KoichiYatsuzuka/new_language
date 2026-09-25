@@ -184,6 +184,11 @@ impl TypeChecker {
         //    再代入・戻り値など）。`param_mutable` が false でも `LetParam` とは限らないので
         //    `Other` に倒す。仮引数の検査は `param_type_matches` が `Site::LetParam` を渡す。
         let site = if param_mutable { Site::MutParam } else { Site::Other };
+        // ⚠ テンプレートの型変数は突き合わせない（`types_compatible` の同じ判定の doc）。
+        //    protocol の適合検査へ回すより前に止める（`T` は「クラスのインスタンスではない」と言われる）。
+        if self.mentions_type_param(got) || self.mentions_type_param(expected) {
+            return true;
+        }
         let expected = self.resolve_protocols(expected);
         // ⚠⚠ **`got` 側も寄せる。** protocol 名で注釈された仮引数は `declare_param` が
         //    `NamedInstance("Pr")` として束縛する（`from_ann` は protocol とクラスを
@@ -229,6 +234,17 @@ impl TypeChecker {
         expected: &InferredType,
         site: Site,
     ) -> bool {
+        // ⚠⚠ **テンプレートの本体の中の型変数（`T`）は、どちら側にあっても突き合わせない**
+        //    （2026-09-26・タスク 2-15）。`T` の正しさは具体化ごとに決まり、具体化した本体は
+        //    型変数を具体型に置換してから別に検査される（タスク 2-13）。ここで `T` を「`T` という
+        //    名のクラス」として比べると、`g[int]` しか使っていない `fn g[T](let x: T) -> int:
+        //    return x` や、`Box[str]` しか使っていない `self.set("x")` が**偽のエラー**になる（実測）。
+        //    以前は期待型の側だけ個別に除外していた（フィールドの代入・二項演算など）ので、
+        //    値の側に `T` がある形（`let y: int = x`・`h(x)`・`return x`）が漏れていた。
+        //    ⚠ 本体の中にしか型変数は見えない（`mentions_type_param` の doc）ので、外側の検査は変わらない。
+        if self.mentions_type_param(got) || self.mentions_type_param(expected) {
+            return true;
+        }
         // ⚠ protocol 名を `Protocol` へ寄せる。**両側**に掛けること（`got` 側を忘れると
         //    「`Pr` という名のクラス」を探しに行って自分自身に不適合という嘘が出る）。
         let expected = self.resolve_protocols(expected);

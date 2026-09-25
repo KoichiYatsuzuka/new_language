@@ -144,24 +144,11 @@ impl Interpreter {
                 // `(テンプレート, 型引数)` でメモ化し、再実体化で clone-walk と Chunk 再コンパイルを省く（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                // ⚠⚠ **展開器が単相化した宣言は、定義された時点でこのキャッシュに入っている**
+                //   （`register_mono_instance`・タスク 2-15）。無いとき（REPL・デバッガ・
+                //   制約を確かめられなかった具体化）だけここで作る。
                 let fn_val = match self.template_fn_cache.get(&key) {
                     Some(cached) => cached.clone(),
-                    // ⚠⚠ **展開器が単相化した宣言があればそれを使う**（タスク 2-8）。
-                    //   無いとき（REPL・デバッガ・宣言より前の具体化・制約付きテンプレート）だけ
-                    //   ここで作る。
-                    None if matches!(
-                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
-                        Some(Value::Function(_))
-                    ) =>
-                    {
-                        let Some(Value::Function(f)) = self.vm_load_name(
-                            &crate::template_subst::instance_name(&tmpl.name, type_args),
-                        ) else {
-                            unreachable!("checked by the guard")
-                        };
-                        self.template_fn_cache.insert(key, f.clone());
-                        f
-                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params
@@ -206,23 +193,10 @@ impl Interpreter {
                 //    構造的に毎回ミスする）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                // ⚠⚠ **展開器が単相化したクラスは、定義された時点でこのキャッシュに入っている**
+                //   （`register_mono_instance`・タスク 2-15）。クラス変数の初期化などもその定義で済んでいる。
                 let cls = match self.template_class_cache.get(&key) {
                     Some(cached) => cached.clone(),
-                    // ⚠⚠ **展開器が単相化したクラスがあればそれを使う**（タスク 2-8）。
-                    //   クラス変数の初期化などは、そのクラスの定義が実行された時点で済んでいる。
-                    None if matches!(
-                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
-                        Some(Value::Class(_))
-                    ) =>
-                    {
-                        let Some(Value::Class(c)) = self.vm_load_name(
-                            &crate::template_subst::instance_name(&tmpl.name, type_args),
-                        ) else {
-                            unreachable!("checked by the guard")
-                        };
-                        self.template_class_cache.insert(key, c.clone());
-                        c
-                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params
@@ -248,22 +222,9 @@ impl Interpreter {
                 // TemplateFn と同様に `(テンプレート, 型引数)` でメモ化（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                // ⚠⚠ 展開器が単相化したジェネレータは、定義された時点でこのキャッシュに入っている（2-15）。
                 let gen_fn = match self.template_gen_cache.get(&key) {
                     Some(cached) => cached.clone(),
-                    // ⚠⚠ 展開器が単相化したジェネレータがあればそれを使う（タスク 2-8）。
-                    None if matches!(
-                        self.vm_load_name(&crate::template_subst::instance_name(&tmpl.name, type_args)),
-                        Some(Value::GeneratorFn(_))
-                    ) =>
-                    {
-                        let Some(Value::GeneratorFn(g)) = self.vm_load_name(
-                            &crate::template_subst::instance_name(&tmpl.name, type_args),
-                        ) else {
-                            unreachable!("checked by the guard")
-                        };
-                        self.template_gen_cache.insert(key, g.clone());
-                        g
-                    }
                     None => {
                         let type_map: HashMap<String, String> = tmpl
                             .template_params
@@ -375,6 +336,37 @@ impl Interpreter {
     /// この評価は**その組み合わせにつき 1 回**になる。通常のクラス定義
     /// （`exec_class_def` は 1 回だけ走る）と同じ回数であり、以前の
     /// 「実体化のたびに評価し直す」方が非対称だった。
+    /// 単相化した宣言（`Box[int]`）を定義したときに、**定義したスコープで見えるテンプレート**の
+    /// 具体化としてキャッシュへ登録する（タスク 2-15）。
+    ///
+    /// ⚠⚠ 以前（2-8）は具体化の式のたびに**呼び出し側の名前** `Box[int]` を引いていた。メインと
+    ///   `import` したモジュールが同じ名前のテンプレートを持つと、`m.Box[int](..)` が**メインの**
+    ///   `Box[int]` を使っていた（実測）。テンプレートの値（の同一性）で結び付ければ取り違えない。
+    ///   定義はテンプレートと同じ本体の最上位にあるので、ここで引く `Box` はそのテンプレート。
+    pub(crate) fn register_mono_instance(&mut self, name: &str, value: &Value) {
+        let Some((base, args)) = crate::template_subst::split_instance_name(name) else {
+            return;
+        };
+        let tmpl = self
+            .scopes
+            .last()
+            .and_then(|s| s.get(base))
+            .map(|v| v.get_value())
+            .or_else(|| self.vm_load_name(base));
+        match (tmpl, value) {
+            (Some(Value::TemplateClass(t)), Value::Class(c)) => {
+                self.template_class_cache.insert((Rc::as_ptr(&t) as usize, args), c.clone());
+            }
+            (Some(Value::TemplateFn(t)), Value::Function(f)) => {
+                self.template_fn_cache.insert((Rc::as_ptr(&t) as usize, args), f.clone());
+            }
+            (Some(Value::TemplateGenFn(t)), Value::GeneratorFn(g)) => {
+                self.template_gen_cache.insert((Rc::as_ptr(&t) as usize, args), g.clone());
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn build_template_class(
         &mut self,
         tmpl: &TemplateClassValue,

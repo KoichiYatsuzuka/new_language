@@ -11,15 +11,17 @@
 //   3. `(テンプレート, 型引数)` でメモ化する。置いた宣言の中の具体化（`Box[Box[int]]` の中の
 //      `Box[int]` など）も同じ経路で拾う。
 //
-// ⚠ 事前走査も反復もしない（参考P）。テンプレートの宣言は具体化より前にある（前方のみ参照）。
-//   **宣言より前に書いた具体化**（関数の本体の中など）は実体を作らず、実行時の具体化に任せる
-//   （従来どおり動く。例題 `type_args_not_dropped.ar` の注釈はこの形）。
+// ⚠ 事前走査も反復もしない（参考P）。**宣言より前に書いた具体化**（関数の本体の中など）は
+//   保留し、テンプレートの宣言に出会った時点で作って宣言の直後に置く（タスク 2-14）。
+// ⚠ `import` したモジュールのテンプレート（`m.Box[int]` / `from m import Box`）は、その `import` 文の
+//   本体の末尾に置く（タスク 2-15・[`instantiate_imported`]）。
 //
 // ## 実行時・型検査との分担（この段階）
 //
 //   * 実行時: 具体化の式（`Op::CallTemplate`）は、ここで置いた宣言があればそれを使う
-//     （`templates.rs`）。無いときだけ従来どおり実行時に作る —— REPL・デバッガ・宣言より前の
-//     具体化・**制約付きのテンプレート**（制約の検査は実行時が持っている）。
+//     （`templates.rs`）。無いときだけ従来どおり実行時に作る —— REPL・デバッガ・
+//     制約を満たすと確かめられなかった具体化（制約の検査は実行時が持っている）・
+//     `import` したモジュールのテンプレート（呼び出し側の名前には無いので）。
 //   * 型検査: 置いた宣言を**普通のクラス・関数として検査する**（2026-09-26・設計書 2-13）。
 //     具体化の型（`GenericInstance`）からは、レジストリの `instance_class` で具体クラスを引く。
 //     ⇒ `Box[str]` の `self.v = 0` やテンプレートのメソッド呼び出しの型違いが静的エラーになる。
@@ -61,6 +63,13 @@ pub(super) struct Templates {
     class_bases: HashMap<String, Vec<String>>,
     /// **テンプレートの宣言より前**に書かれた具体化（タスク 2-14）。宣言に出会ったら作る。
     pending: Vec<(String, Vec<String>)>,
+    /// `import` したモジュールのテンプレートの呼び名（タスク 2-15）。
+    /// `m.Box`（`import m`）や `Box` / `B`（`from m import Box` / `Box as B`）→
+    /// （[`Self::modules`] の添字, モジュールの中での名前）。
+    imports: HashMap<String, (usize, String)>,
+    /// `import` したモジュールごとの枠（タスク 2-15）。`.0` は `import` 文の `out` の中の位置で、
+    /// 具体化は**その本体の末尾**に置く（モジュールの名前はモジュールの中で引く必要がある）。
+    modules: Vec<(usize, Templates)>,
 }
 
 /// 単相化の状態（タスク 2-8）。展開器が持つほか、エディタは [`monomorphize`] で単独に使う。
@@ -79,13 +88,121 @@ pub(super) struct Mono {
 }
 
 /// 最上位にテンプレートの宣言があるか（[`Mono::enabled`] の判定・読むだけ）。
+///
+/// ⚠ 最上位で `import` した Arrow のモジュールが宣言しているものも数える（タスク 2-15）。
 pub(super) fn declares_template(stmts: &[Stmt]) -> bool {
-    stmts.iter().any(|s| {
-        matches!(s,
-            Stmt::ClassDef { template_params, .. }
-            | Stmt::FnDef { template_params, .. }
-            | Stmt::GenDef { template_params, .. } if !template_params.is_empty())
+    stmts.iter().any(|s| match s {
+        Stmt::ClassDef { template_params, .. }
+        | Stmt::FnDef { template_params, .. }
+        | Stmt::GenDef { template_params, .. } => !template_params.is_empty(),
+        Stmt::Import { lang, body, .. } | Stmt::FromImport { lang, body, .. } => {
+            is_arrow_source(lang) && body.iter().any(is_template_decl)
+        }
+        _ => false,
     })
+}
+
+fn is_template_decl(s: &Stmt) -> bool {
+    matches!(s,
+        Stmt::ClassDef { template_params, .. }
+        | Stmt::FnDef { template_params, .. }
+        | Stmt::GenDef { template_params, .. } if !template_params.is_empty())
+}
+
+/// Arrow のソースを読み込む `import` か（型検査のレジストリの `is_arrow_source_lang` と同じ）。
+///
+/// ⚠ 外部言語のスタブ（C# の `.ars` など）の本体には具体化を置かない。実行時の意味が違う。
+fn is_arrow_source(lang: &str) -> bool {
+    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+}
+
+/// 本体か、そこで `import` したモジュールが（入れ子も含めて）テンプレートを宣言しているか。
+fn mentions_templates(body: &[Stmt]) -> bool {
+    body.iter().any(|s| match s {
+        Stmt::Import { lang, body, .. } | Stmt::FromImport { lang, body, .. } => {
+            is_arrow_source(lang) && mentions_templates(body)
+        }
+        _ => is_template_decl(s),
+    })
+}
+
+/// `import` したモジュールの本体の中の具体化を、その本体の中で単相化する（タスク 2-15）。
+///
+/// ⚠⚠ 実行時の具体化はクラスのメソッドに閉包の環境を持たせない（`build_template_class`）ので、
+///   **モジュールの最上位**（読み込みの最中）で具体化すると、メソッドがモジュールの関数を引けず
+///   `NameError` になっていた（読み込みが終わるまでモジュールの名前は呼び出し側から見えない・実測）。
+///   モジュールの中に普通のクラスとして置けば、モジュールの他のクラスと同じく名前を引ける。
+/// ⚠ メタ関数を持つモジュールは読み込むときに展開され、そこで単相化も済んでいる（2-12）。
+///   既に置かれた具体化は「作った」ことにする（二重に置かない）。
+fn monomorphize_module_body(m: &mut Mono, body: &mut Vec<Stmt>) -> Result<(), String> {
+    if !mentions_templates(body) {
+        return Ok(());
+    }
+    let mut frame = Templates::default();
+    for st in body.iter() {
+        if let Stmt::ClassDef { name, template_params, .. }
+        | Stmt::FnDef { name, template_params, .. }
+        | Stmt::GenDef { name, template_params, .. } = st
+        {
+            if template_params.is_empty() && name.ends_with(']') {
+                frame.made.insert(name.clone());
+            }
+        }
+    }
+    std::mem::swap(&mut m.templates, &mut frame);
+    let was_enabled = std::mem::replace(&mut m.enabled, true);
+    let stmts = std::mem::take(body);
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let mut result = Ok(());
+    for st in stmts {
+        if let Err(e) = instantiate_sites(m, &st, &mut out) {
+            result = Err(e);
+            break;
+        }
+        let at = out.len();
+        out.push(st);
+        if let Err(e) = note_decls(m, &mut out, at) {
+            result = Err(e);
+            break;
+        }
+    }
+    m.enabled = was_enabled;
+    std::mem::swap(&mut m.templates, &mut frame);
+    if result.is_ok() {
+        *body = out;
+    }
+    result
+}
+
+/// `import` したモジュールの本体から、テンプレートの枠を作る（タスク 2-15）。
+///
+/// ⚠ 本体に既に置かれている具体化（メタ関数を持つモジュールは読み込むときに展開され、自分の中の
+///   具体化はそこで作られている・2-12）は「作った」ことにする（二重に置かない）。
+fn module_templates(body: &[Stmt]) -> Templates {
+    let mut t = Templates::default();
+    for st in body {
+        match st {
+            Stmt::ClassDef { name, template_params, bases, .. } if template_params.is_empty() => {
+                if name.contains('[') {
+                    t.made.insert(name.clone());
+                } else {
+                    t.class_bases.insert(name.clone(), bases.clone());
+                }
+            }
+            Stmt::FnDef { name, template_params, .. } | Stmt::GenDef { name, template_params, .. }
+                if template_params.is_empty() && name.contains('[') =>
+            {
+                t.made.insert(name.clone());
+            }
+            _ if is_template_decl(st) => {
+                if let Stmt::ClassDef { name, .. } | Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } = st {
+                    t.decls.insert(name.clone(), Rc::new(st.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    t
 }
 
 impl Mono {
@@ -131,9 +248,50 @@ pub fn monomorphize(stmts: Vec<Stmt>, counter: std::rc::Rc<std::cell::Cell<u32>>
 ///   関数の本体が実際に呼ばれるのはもっと後なので、実行時の意味は変わらない。
 /// - クラスの宣言は基底を覚える（制約付きテンプレートの判定に使う）。
 pub(super) fn note_decls(m: &mut Mono, out: &mut Vec<Stmt>, from: usize) -> Result<(), String> {
+    // ⚠ `import` したモジュールは、先に**モジュール自身の中の具体化**を単相化する（タスク 2-15）。
+    for st in out[from..].iter_mut() {
+        if let Stmt::Import { lang, body, .. } | Stmt::FromImport { lang, body, .. } = st {
+            if is_arrow_source(lang) {
+                monomorphize_module_body(m, body)?;
+            }
+        }
+    }
     let mut noted: Vec<String> = Vec::new();
-    for st in &out[from..] {
+    for (i, st) in out[from..].iter().enumerate() {
         match st {
+            // ⚠ `import` したモジュールのテンプレートも具体化できるようにする（タスク 2-15）。
+            //   以前はメインが宣言したテンプレートしか知らず、`m.Box[int]` / `from m import Box` の
+            //   `Box[int]` は具体化されなかった ⇒ そのメソッド呼び出し・コンストラクタの検査が丸ごと抜けていた。
+            Stmt::Import { lang, module, alias, body, .. } if is_arrow_source(lang) => {
+                let t = module_templates(body);
+                if t.decls.is_empty() {
+                    continue;
+                }
+                let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
+                let idx = m.templates.modules.len();
+                for name in t.decls.keys() {
+                    let key = format!("{bind}.{name}");
+                    m.templates.imports.insert(key.clone(), (idx, name.clone()));
+                    noted.push(key);
+                }
+                m.templates.modules.push((from + i, t));
+            }
+            Stmt::FromImport { lang, names, body, .. } if is_arrow_source(lang) => {
+                let t = module_templates(body);
+                let idx = m.templates.modules.len();
+                let mut any = false;
+                for (orig, alias) in names {
+                    if t.decls.contains_key(orig) {
+                        let key = alias.clone().unwrap_or_else(|| orig.clone());
+                        m.templates.imports.insert(key.clone(), (idx, orig.clone()));
+                        noted.push(key);
+                        any = true;
+                    }
+                }
+                if any {
+                    m.templates.modules.push((from + i, t));
+                }
+            }
             Stmt::ClassDef { name, template_params, bases, .. } => {
                 if template_params.is_empty() {
                     m.templates.class_bases.insert(name.clone(), bases.clone());
@@ -204,6 +362,13 @@ fn instantiate(
     out: &mut Vec<Stmt>,
     chain: &mut Vec<String>,
 ) -> Result<(), String> {
+    // ⚠ `import` したモジュールのテンプレート（タスク 2-15）はモジュールの枠で作る。
+    //   ⚠ この枠が同じ名前のテンプレートを宣言していればそちらが勝つ（後から隠した形）。
+    if !m.templates.decls.contains_key(base) {
+        if let Some((mi, name)) = m.templates.imports.get(base).cloned() {
+            return instantiate_imported(m, mi, &name, args, out, chain);
+        }
+    }
     let concrete = crate::template_subst::instance_name(base, args);
     if m.templates.made.contains(&concrete) {
         return Ok(());
@@ -278,6 +443,41 @@ fn instantiate(
     Ok(())
 }
 
+/// `import` したモジュールのテンプレートを具体化する（タスク 2-15）。
+///
+/// ⚠⚠ 具体化は**その `import` 文の本体の末尾**に置く（メインには置かない）。クラスの本体が
+///   引く名前（モジュールの定数・補助関数・同じモジュールの別のテンプレート）は、モジュールの中で
+///   引かなければならない。メインに置くとメインの名前を引いてしまう。
+/// ⚠ 実行時は従来どおり動く: 呼び出し側（メイン）には `Box[int]` という名前が無いので、
+///   `m.Box[int](..)` は実行時の具体化に落ちる（`templates.rs`）。置いた宣言は型検査が使う
+///   （レジストリは `import` の本体の宣言も集める）。
+fn instantiate_imported(
+    m: &mut Mono,
+    mi: usize,
+    name: &str,
+    args: &[String],
+    out: &mut [Stmt],
+    chain: &mut Vec<String>,
+) -> Result<(), String> {
+    let at = m.templates.modules[mi].0;
+    let mut frame = std::mem::take(&mut m.templates.modules[mi].1);
+    // ⚠ 型引数は呼び出し側のクラスでもよい（`m.Holder[Cat]`）。制約の判定に呼び出し側の基底も見せる
+    //   （モジュールの名前が先・同名なら隠す）。
+    for (k, v) in &m.templates.class_bases {
+        frame.class_bases.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    std::mem::swap(&mut m.templates, &mut frame);
+    let r = match &mut out[at] {
+        Stmt::Import { body, .. } | Stmt::FromImport { body, .. } => {
+            instantiate(m, name, args, body, chain)
+        }
+        _ => Ok(()),
+    };
+    std::mem::swap(&mut m.templates, &mut frame);
+    m.templates.modules[mi].1 = frame;
+    r
+}
+
 /// 終わらない具体化の文面（タスク 2-9）。連鎖の頭と、伸びていく様子が分かるところまでを見せる。
 fn endless_instantiation(chain: &[String], next: &str) -> String {
     let shown: Vec<&str> = chain.iter().take(3).map(String::as_str).collect();
@@ -340,8 +540,15 @@ fn collect_sites_stmt(stmt: &Stmt, sites: &mut Vec<(String, Vec<String>)>) {
 
 fn collect_sites_expr(e: &Expr, sites: &mut Vec<(String, Vec<String>)>) {
     if let Expr::TemplateInstantiate { base, type_args } = e {
-        if let Expr::Ident { name, .. } = &**base {
-            sites.push((name.clone(), type_args.clone()));
+        match &**base {
+            Expr::Ident { name, .. } => sites.push((name.clone(), type_args.clone())),
+            // `m.Box[int]`（`import` したモジュールのテンプレート・タスク 2-15）。
+            Expr::Attr { object, attr, .. } => {
+                if let Expr::Ident { name, .. } = &**object {
+                    sites.push((format!("{name}.{attr}"), type_args.clone()));
+                }
+            }
+            _ => {}
         }
     }
     crate::expr_walk::each_subpart(e, &mut |part| {
