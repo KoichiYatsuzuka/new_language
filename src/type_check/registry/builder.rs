@@ -135,6 +135,8 @@ impl TypeRegistryBuilder {
                 trait_method_sigs: HashMap::new(),
                 trait_field_details: HashMap::new(),
                 known_class_names,
+                instance_classes: HashMap::new(),
+                instance_names: HashSet::new(),
                 classes_with_unexpanded_decorators: HashSet::new(),
                 arrow_class_names: HashSet::new(),
                 new_type_originals,
@@ -172,12 +174,22 @@ impl TypeRegistryBuilder {
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報を収集する。
     pub(in crate::type_check) fn collect(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            // ⚠⚠ 単相化で作った宣言（`Box[int]`）は**登録しない**（タスク 2-8）。型検査は
-            //   テンプレートを従来どおり `GenericInstance` で扱い、具体化した本体は検査しない。
-            //   検査すると、今は通るプログラム（`T` を具体型と突き合わせない書き方）が
-            //   弾かれる —— 受け付ける範囲が変わるので別の判断にしてある（設計書 2-8）。
-            if crate::template_subst::is_instance_decl(stmt) {
-                continue;
+            // ⚠⚠ 単相化で作ったクラス（`Box[int]`）は**普通のクラスとして**登録し、
+            //   テンプレートの具体化の型（`GenericInstance`）からそれを引けるようにする
+            //   （タスク 2-8 段階 2）。型は読み直した表示形をキーにする（書き方の揺れを吸収）。
+            if let Stmt::ClassDef { name, .. } = stmt {
+                if name.contains('[') {
+                    if let Some(t) = crate::type_check::InferredType::from_ann(name) {
+                        self.reg.instance_classes.insert(t.to_string(), name.clone());
+                    }
+                }
+            }
+            if let Stmt::ClassDef { name, .. } | Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } =
+                stmt
+            {
+                if name.contains('[') {
+                    self.reg.instance_names.insert(name.clone());
+                }
             }
             match stmt {
                 Stmt::FnDef {

@@ -310,6 +310,11 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         }
     };
 
+    // ⚠⚠ メタ関数は展開しない（5-0）が、**テンプレートの単相化だけは行う**（タスク 2-8 段階 2）。
+    //   CLI は単相化した具体クラス（`Box[int]`）を型検査にかけるので、しないと具体化した本体の
+    //   誤り・テンプレートのメソッド呼び出しの型違いが**エディタにだけ出ない**。
+    //   純粋な AST 操作なので fs も評価器も要らない。
+    let stmts = crate::meta_expand::monomorphize(stmts, parser.node_counter());
     let (errors, warnings, annotations) = TypeChecker::check_program(&stmts);
 
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());

@@ -96,12 +96,27 @@ impl TypeChecker {
 
     /// 静的型エラーをエラーリストに追加する。
     pub(super) fn report_error(&mut self, err: StaticTypeError) {
-        self.diags.report_error(err);
+        let from_instance = self.in_instance_decl();
+        self.diags.report_error(err, from_instance);
     }
 
     /// 静的型警告を警告リストに追加する。
+    ///
+    /// ⚠⚠ **単相化した具体化の本体では警告を出さない**（タスク 2-8 段階 2）。型変数に関係しない
+    /// 警告はテンプレートの本体の検査で必ず出る。具体化でだけ出る警告は型引数が決めたもので、
+    /// 作者が書いたものではない（`Box[Drawable]` の `get() -> T` が「protocol を返している」
+    /// と警告された・実測）。
     pub(super) fn report_warning(&mut self, w: StaticTypeWarning) {
+        if self.in_instance_decl() {
+            return;
+        }
         self.diags.report_warning(w);
+    }
+
+    /// 今、単相化した具体化（`Box[int]` / `ident[str]`）の本体を検査しているか（タスク 2-8 段階 2）。
+    fn in_instance_decl(&self) -> bool {
+        self.state.current_class().is_some_and(|c| c.contains('['))
+            || self.state.current_fn().is_some_and(|f| f.contains('['))
     }
 
     /// アクセスパスの**根になっている識別子**を返す（`a` / `a[0][1]` / `o.f.g` → `a` / `o`）。

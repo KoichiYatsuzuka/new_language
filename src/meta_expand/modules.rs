@@ -75,7 +75,7 @@ pub(super) fn expand_module(
         runtime_names: std::mem::take(&mut ex.runtime_names),
         decls: ex.interp.meta_swap_decls(HashMap::new()),
         prefix: std::mem::take(&mut *prefix_handle.borrow_mut()),
-        templates: std::mem::take(&mut ex.templates),
+        templates: std::mem::take(&mut ex.mono.templates),
     };
     super::prescan_runtime_names(ex, &body);
     ex.interp.meta_push_module_frame();
@@ -94,7 +94,7 @@ pub(super) fn expand_module(
     let metafns = std::mem::replace(&mut ex.metafns, saved.metafns);
     ex.modules = saved.modules;
     ex.runtime_names = saved.runtime_names;
-    ex.templates = saved.templates;
+    ex.mono.templates = saved.templates;
     ex.interp.meta_swap_decls(saved.decls);
     *prefix_handle.borrow_mut() = saved.prefix;
 

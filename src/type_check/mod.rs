@@ -296,8 +296,61 @@ impl TypeChecker {
         tc.annotations
             .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
-        let (errors, warnings) = tc.diags.into_parts();
+        let instance_names = tc.registry.instance_names().clone();
+        let (errors, warnings) = tc.diags.into_parts_tagged();
+        let errors = Self::merge_instance_errors(errors, &instance_names);
         (errors, warnings, annotations)
+    }
+
+    /// **同じ誤りの重複報告をまとめる**（タスク 2-8 段階 2）。
+    ///
+    /// テンプレートは本体（型変数のまま）と、単相化した具体化（`Box[int]` / `Box[str]` …）の
+    /// 両方が検査される。型変数に関係しない誤り（`fn label(self) -> str: return 1`）は
+    /// その**全部で**報告され、1 つの誤りが具体化の数＋1 回出てしまう。
+    /// ⇒ 具体化の名前をテンプレートの名前に戻したとき**位置と文面が同じ**になる報告は、
+    ///   最初の 1 件（ふつうはテンプレートの本体の分）だけ残す。
+    /// ⚠ 具体化ごとに合否が違う誤り（`Box[str]` だけが誤り）は文面が具体化名を含むので残る。
+    /// ⚠⚠ まとめる対象は**具体化の本体で見つかった誤りだけ**。テンプレートと関係の無い本物の
+    /// 重複（別々の箇所の同じ文面・位置不明）まで消すと、箇所の数が分からなくなる（実測で踏んだ）。
+    fn merge_instance_errors(
+        errors: Vec<(StaticTypeError, bool)>,
+        instance_names: &std::collections::HashSet<String>,
+    ) -> Vec<StaticTypeError> {
+        if instance_names.is_empty() {
+            return errors.into_iter().map(|(e, _)| e).collect();
+        }
+        // ⚠ 長い名前から置き換える（`Box[Box[int]]` の中の `Box[int]` を先に崩さない）。
+        let mut names: Vec<&String> = instance_names.iter().collect();
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        let normalize = |msg: &str| -> String {
+            // ⚠ 文面は名前を ANSI で色付けしている（引用符の直後に制御文字が入る）ので外してから比べる。
+            let mut m = String::with_capacity(msg.len());
+            let mut in_escape = false;
+            for c in msg.chars() {
+                if in_escape {
+                    in_escape = c != 'm';
+                } else if c == '\x1b' {
+                    in_escape = true;
+                } else {
+                    m.push(c);
+                }
+            }
+            for n in &names {
+                // メソッドの名乗り（`Box[int].half`）はテンプレート側の `half` にそろえる。
+                m = m.replace(&format!("{n}."), "");
+                m = m.replace(n.as_str(), crate::template_subst::display_name(n));
+            }
+            m
+        };
+        let mut seen = std::collections::HashSet::new();
+        errors
+            .into_iter()
+            .filter(|(e, from_instance)| {
+                let fresh = seen.insert(normalize(&e.to_string()));
+                fresh || !from_instance
+            })
+            .map(|(e, _)| e)
+            .collect()
     }
 }
 

@@ -1,0 +1,49 @@
+# template_method_error.ar — テンプレートクラスのメソッド呼び出しの検査（フェーズ10 の発端）
+#
+# 対になる正常系: template_type_param.ar
+#
+# ⚠⚠ 以前は**テンプレートクラスのメソッド呼び出しが丸ごと検査されていなかった**。
+#   具体化の型（`Box[int]`）からクラスを引く所が普通のクラスしか見ておらず、
+#   メソッド呼び出しの検査を飛ばしていた（type_check_redesign.md フェーズ10 の「発端」）。
+#   次がすべて**黙って通って**いた:
+#     - 具体型の引数の型違い（`b.tag("wrong")` は "wrong" を出力した）
+#     - 型変数の引数の型違い（`b.set("wrong")` は実行時に落ちた）
+#     - 戻り値の型違い（`let s: str = b.get()`）
+#   ⇒ 展開器が単相化したクラス `Box[int]` を普通のクラスとして引く（2026-09-26）。
+#
+# Section 1 — StaticTypeError: 具体型の引数の型違い
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Box[int].tag' expects 'int' but got 'str'
+#
+# Section 2 — StaticTypeError: 型変数の引数の型違い（T = int）
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Box[int].set' expects 'int' but got 'str'
+#
+# Section 3 — StaticTypeError: 戻り値の型違い（T = int）
+#   Expected error (StaticTypeError):
+#     's' is declared 'str' but initialized with 'int'
+#
+# Section 4 — StaticTypeError: 具体化すると本体の型が合わない（int / 2 は float）
+#   Expected error (StaticTypeError):
+#     'Box[int].half' is declared to return 'int' but returns 'float'
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x
+
+    fn tag(mut self, let n: int) -> None:
+        print(n)
+
+    fn half(self) -> T:
+        return self.v / 2
+
+mut b = Box[int](1)
+b.tag("wrong")
+b.set("wrong")
+let s: str = b.get()
+print(b.half())

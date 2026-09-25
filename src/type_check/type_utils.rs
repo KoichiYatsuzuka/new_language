@@ -106,6 +106,12 @@ impl TypeChecker {
                 Some((c.clone(), map))
             }
             InferredType::GenericInstance { name, args } => {
+                // ⚠⚠ **展開器が単相化したクラスがあれば、それを普通のクラスとして引く**
+                //   （タスク 2-8 段階 2）。置換は済んでいるので置換表は空。
+                //   ⇒ メンバーの型・メソッドの引数と戻り値が具体型で入っている。
+                if let Some(cls) = self.registry.instance_class(&ty.to_string()) {
+                    return Some((cls.clone(), std::collections::HashMap::new()));
+                }
                 let tparams = self.registry.template_params(name)?;
                 if tparams.len() != args.len() {
                     return None;

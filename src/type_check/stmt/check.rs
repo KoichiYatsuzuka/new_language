@@ -49,10 +49,6 @@ impl TypeChecker {
 
     /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
     pub(crate) fn check_stmt(&mut self, stmt: &Stmt) {
-        // ⚠⚠ 単相化で作った宣言（`Box[int]`）は検査しない（タスク 2-8・`collect` と同じ理由）。
-        if crate::template_subst::is_instance_decl(stmt) {
-            return;
-        }
         match stmt {
             // --- 変数宣言 ---
             // Let / Const は不変、Mut は可変。それ以外のロジックは共通。
@@ -489,11 +485,12 @@ impl TypeChecker {
             // --- ジェネレータ関数定義 ---
             Stmt::GenDef {
                 name,
+                template_params,
                 params,
                 yield_type,
                 body,
                 ..
-            } => self.check_gen_def(name, params, yield_type.as_deref(), body),
+            } => self.check_gen_def(name, template_params, params, yield_type.as_deref(), body),
 
             // ⚠ メタ関数の**本体には触れない**（本体は展開時に走るので通常の型検査の対象外）。
             // ⚠⚠ ただし**純粋メタ関数は戻り値の型付きで宣言する**（タスク 1-6）。
@@ -1197,7 +1194,12 @@ impl TypeChecker {
         }
         // ⚠ テンプレートクラスの `mut v: T` は具体型と突き合わせられない
         //    （`mentions_type_param` の doc）。
-        if self.mentions_type_param(&expected) {
+        // ⚠⚠ **代入する値の側に型変数が残っているときも同じ**（タスク 2-8 段階 2）。
+        //    宣言型の `T` は置換表で `unknown` に写るが、仮引数 `items: list[T]` の型には `T` が
+        //    残るので、自動 `__init__` の `self.items = items` が「`list[unknown]` に `list[T]`」
+        //    という偽陽性になっていた（実測）。型変数を含む代入は、単相化した具体クラス
+        //    （`Tagged[int]`）の側で具体型どうしとして検査される。
+        if self.mentions_type_param(&expected) || self.mentions_type_param(&value_ty) {
             return;
         }
         // ⚠⚠ **複合代入はここで分岐する**（D-8・タスク 5.1）。格納されるのは `value` ではなく
@@ -1472,9 +1474,24 @@ impl TypeChecker {
     /// 型注釈中の `Self` を現在のクラスへ解決する（クラス外ならそのまま）。
     fn resolve_self_type(&self, ty: InferredType) -> InferredType {
         match (&ty, self.state.current_class()) {
-            (InferredType::SelfType, Some(cls)) => InferredType::NamedInstance(cls.to_string()),
+            (InferredType::SelfType, Some(cls)) => Self::instance_type_of(cls),
             _ => ty,
         }
+    }
+
+    /// クラス名からインスタンスの型を作る。
+    ///
+    /// ⚠⚠ 単相化したクラス（`Box[int]`）は **`GenericInstance` の形にそろえる**（タスク 2-8 段階 2）。
+    /// 注釈 `Box[int]` もテンプレート呼び出し `Box[int](..)` の結果も `GenericInstance` なので、
+    /// `self` だけが `NamedInstance("Box[int]")` だと同じ型が 2 つの形を持ち、`return self` が
+    /// 「`Box[int]` を返すはずが `Box[int]` を返している」という偽陽性になる。
+    pub(crate) fn instance_type_of(cls: &str) -> InferredType {
+        if cls.contains('[') {
+            if let Some(t @ InferredType::GenericInstance { .. }) = InferredType::from_ann(cls) {
+                return t;
+            }
+        }
+        InferredType::NamedInstance(cls.to_string())
     }
 
     /// `return <値>` の型を、宣言された戻り値型と突き合わせる（0-3）。
@@ -1493,6 +1510,14 @@ impl TypeChecker {
             return;
         }
         let func_name = self.state.current_fn().unwrap_or("<fn>").to_string();
+        // ⚠ 単相化したクラス（`Box[int]`）のメソッドは**どの具体化か**を名乗る（タスク 2-8 段階 2）。
+        //   同じテンプレートの具体化ごとに合否が違う（`Box[int].half` だけが誤り）ので、
+        //   メソッド名だけでは直す場所が分からない。⚠ `current_fn` そのものは変えない
+        //   （`__init__` の判定に使われている）。
+        let func_name = match self.state.current_class() {
+            Some(cls) if cls.contains('[') => format!("{cls}.{func_name}"),
+            _ => func_name,
+        };
         // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
         let ctx = format!("return value of `{func_name}`");
         if self.check_expected(got, &expected, false, &ctx) {
@@ -1779,6 +1804,7 @@ impl TypeChecker {
     fn check_gen_def(
         &mut self,
         name: &str,
+        template_params: &[crate::ast::TemplateParam],
         params: &[Param],
         yield_type: Option<&str>,
         body: &[Stmt],
@@ -1805,8 +1831,12 @@ impl TypeChecker {
         }
         self.declare(name.to_string(), InferredType::Unresolved, false);
         self.push_scope();
-        // ⚠⚠ `gen` にはテンプレート型変数の投入が無いので、ここで検査してよい
-        //    （囲みクラスの型変数は `ClassDef` 側が既に積んでいる・タスク 8.1 / 8.5）。
+        // ⚠⚠ **`gen` 自身の型変数（`gen take[T]`）を積んでから注釈を検査する**（フェーズ10 10-1）。
+        //    以前は「`gen` には型変数の投入が無いので、ここで検査してよい」と書いてあったが誤りで、
+        //    **投入が漏れていた**（タスク 8.5 の退行）。`gen take[T](xs: list[T])` が
+        //    「`T` は知らない型」と誤って弾かれた。囲みクラスの型変数は `ClassDef` 側が積んでいる。
+        let saved_tp =
+            self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
         for param in params.iter() {
             if let Some(ann) = param.type_ann.as_deref() {
                 self.check_ann_not_bare(
@@ -1837,6 +1867,7 @@ impl TypeChecker {
         self.with_fn_body(|c| c.check_stmts(body));
         self.state.exit_fn(prev_fn);
         self.state.exit_gen_body(prev_gen);
+        self.state.pop_type_params(saved_tp);
         self.pop_scope();
     }
 
@@ -1859,7 +1890,7 @@ impl TypeChecker {
         let ty = if param.name == "self" {
             self.state
                 .current_class()
-                .map(|c| InferredType::NamedInstance(c.to_string()))
+                .map(Self::instance_type_of)
                 .unwrap_or(InferredType::Unresolved)
         } else {
             param

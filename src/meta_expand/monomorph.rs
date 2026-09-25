@@ -20,9 +20,10 @@
 //   * 実行時: 具体化の式（`Op::CallTemplate`）は、ここで置いた宣言があればそれを使う
 //     （`templates.rs`）。無いときだけ従来どおり実行時に作る —— REPL・デバッガ・宣言より前の
 //     具体化・**制約付きのテンプレート**（制約の検査は実行時が持っている）。
-//   * 型検査: 置いた宣言は**見ない**（`template_subst::is_instance_decl`）。テンプレートは従来どおり
-//     `GenericInstance` として検査する。具体化した本体を検査すると、今は通るプログラムが
-//     弾かれる（受け付ける範囲が変わる）ので別の判断にしてある。
+//   * 型検査: 置いた宣言を**普通のクラス・関数として検査する**（2026-09-26・設計書 2-13）。
+//     具体化の型（`GenericInstance`）からは、レジストリの `instance_class` で具体クラスを引く。
+//     ⇒ `Box[str]` の `self.v = 0` やテンプレートのメソッド呼び出しの型違いが静的エラーになる。
+//     エディタは展開しないが、単相化だけは [`monomorphize`] で行う。
 //   * 値の名前はテンプレートの名前のまま（`<Box object>`）。束縛名だけが `Box[int]`。
 
 use std::collections::{HashMap, HashSet};
@@ -30,7 +31,6 @@ use std::rc::Rc;
 
 use crate::ast::{Expr, Stmt};
 
-use super::Expander;
 
 /// 1 つのプログラムで作ってよい具体化の数の上限（タスク 2-9）。
 ///
@@ -59,8 +59,47 @@ pub(super) struct Templates {
     made: HashSet<String>,
 }
 
+/// 単相化の状態（タスク 2-8）。展開器が持つほか、エディタは [`monomorphize`] で単独に使う。
+pub(super) struct Mono {
+    /// 今の枠のテンプレートと作った具体化。**枠ごと**（モジュールの展開で入れ替える）。
+    pub(super) templates: Templates,
+    /// このプログラムで作った具体化の数（[`INSTANCE_BUDGET`] の判定用・全体で 1 つ）。
+    count: usize,
+    /// プログラム全体の node-id カウンタ。写しの node-id を振り直すのに使う（タスク 2-13）。
+    counter: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+impl Mono {
+    /// ⚠ `counter` は本体をパースしたパーサと**同じ**カウンタ（設計書 §0.3）。
+    pub(super) fn new(counter: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
+        Self { templates: Templates::default(), count: 0, counter }
+    }
+}
+
+/// **展開器を通さずに単相化だけを行う**（エディタ用・タスク 2-8 段階 2）。
+///
+/// ⚠⚠ 単相化は評価器の要らない**純粋な AST 操作**。エディタはメタ関数を展開しない（5-0）が、
+/// 単相化だけはここで行う —— しないと具体化した本体の誤り（`Box[str]` の `self.v = 0`・
+/// テンプレートのメソッド呼び出しの型違い）が**エディタにだけ出ない**。
+/// ⚠ 具体化が終わらない（2-9）ときは単相化せずに元の文を返す（CLI が展開時エラーで止める）。
+/// ⚠ メタ関数が置いたコードの中の具体化はエディタでは見えない（展開しないので）。そこは
+///   CLI より少なく報告するだけで、多く報告することは無い。
+#[allow(dead_code)] // CLI は展開器の中で単相化する（エディタ専用の入口）
+pub fn monomorphize(stmts: Vec<Stmt>, counter: std::rc::Rc<std::cell::Cell<u32>>) -> Vec<Stmt> {
+    let mut m = Mono::new(counter);
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for st in &stmts {
+        if instantiate_sites(&mut m, st, &mut out).is_err() {
+            return stmts;
+        }
+        note_template(&mut m, st);
+        out.push(st.clone());
+    }
+    out
+}
+
 /// テンプレートの宣言なら覚える（最上位に置かれた文を出すときに呼ぶ）。
-pub(super) fn note_template(ex: &mut Expander, stmt: &Stmt) {
+pub(super) fn note_template(m: &mut Mono, stmt: &Stmt) {
     let name = match stmt {
         Stmt::ClassDef { name, template_params, .. }
         | Stmt::FnDef { name, template_params, .. }
@@ -71,7 +110,7 @@ pub(super) fn note_template(ex: &mut Expander, stmt: &Stmt) {
         }
         _ => return,
     };
-    ex.templates.decls.insert(name.clone(), Rc::new(stmt.clone()));
+    m.templates.decls.insert(name.clone(), Rc::new(stmt.clone()));
 }
 
 /// `stmt` の中の具体化を探し、まだ作っていなければ実体を作って `out` に積む（タスク 2-8）。
@@ -79,45 +118,46 @@ pub(super) fn note_template(ex: &mut Expander, stmt: &Stmt) {
 /// ⚠ **テンプレートの宣言そのものの中は見ない**（型変数のままの `Box[T]` は、そのテンプレートを
 /// 具体化したときに置換されて現れる）。メタ関数の本体も見ない（展開時に走るコード）。
 /// ⚠ 具体化が終わらないとき（再帰的な具体化・タスク 2-9）は `Err`。
+/// ⚠ 置いた宣言は `out` の末尾に積むだけ。展開器は積まれた分を `^` の宣言表へ登録する。
 pub(super) fn instantiate_sites(
-    ex: &mut Expander,
+    m: &mut Mono,
     stmt: &Stmt,
     out: &mut Vec<Stmt>,
 ) -> Result<(), String> {
-    instantiate_sites_in(ex, stmt, out, &mut Vec::new())
+    instantiate_sites_in(m, stmt, out, &mut Vec::new())
 }
 
 /// `chain` は今作っている具体化の連鎖（外側から）。深さの上限と診断に使う（タスク 2-9）。
 fn instantiate_sites_in(
-    ex: &mut Expander,
+    m: &mut Mono,
     stmt: &Stmt,
     out: &mut Vec<Stmt>,
     chain: &mut Vec<String>,
 ) -> Result<(), String> {
-    if ex.templates.decls.is_empty() {
+    if m.templates.decls.is_empty() {
         return Ok(());
     }
     let mut sites: Vec<(String, Vec<String>)> = Vec::new();
     collect_sites_stmt(stmt, &mut sites);
     for (base, args) in sites {
-        instantiate(ex, &base, &args, out, chain)?;
+        instantiate(m, &base, &args, out, chain)?;
     }
     Ok(())
 }
 
 /// 1 つの具体化を作る（作れないときは何もしない ＝ 実行時に任せる）。
 fn instantiate(
-    ex: &mut Expander,
+    m: &mut Mono,
     base: &str,
     args: &[String],
     out: &mut Vec<Stmt>,
     chain: &mut Vec<String>,
 ) -> Result<(), String> {
     let concrete = crate::template_subst::instance_name(base, args);
-    if ex.templates.made.contains(&concrete) {
+    if m.templates.made.contains(&concrete) {
         return Ok(());
     }
-    let Some(decl) = ex.templates.decls.get(base).cloned() else { return Ok(()) };
+    let Some(decl) = m.templates.decls.get(base).cloned() else { return Ok(()) };
     let params = match &*decl {
         Stmt::ClassDef { template_params, .. }
         | Stmt::FnDef { template_params, .. }
@@ -133,20 +173,21 @@ fn instantiate(
     if chain.len() >= INSTANCE_DEPTH {
         return Err(endless_instantiation(chain, &concrete));
     }
-    if ex.instance_count >= INSTANCE_BUDGET {
+    if m.count >= INSTANCE_BUDGET {
         return Err(format!(
             "MetaError: too many template instantiations (more than {INSTANCE_BUDGET}) — the last one \
              was '{concrete}'; a template that keeps producing new type arguments cannot be \
              monomorphised"
         ));
     }
-    ex.instance_count += 1;
+    m.count += 1;
     // ⚠ 「実体化中」の印を**置換の前に**付ける。中に自分自身が現れても潜り直さない。
-    ex.templates.made.insert(concrete.clone());
+    m.templates.made.insert(concrete.clone());
 
     let type_map: HashMap<String, String> =
         params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
-    let mut inst = crate::template_subst::subst_stmt(&decl, &type_map);
+    // ⚠⚠ 写しには**新しい node-id**を振る（型検査の注釈が具体化どうしで衝突しないように）。
+    let mut inst = crate::template_subst::subst_stmt_renumbered(&decl, &type_map, &m.counter);
     match &mut inst {
         Stmt::ClassDef { name, template_params, .. }
         | Stmt::FnDef { name, template_params, .. }
@@ -159,12 +200,9 @@ fn instantiate(
     // 置いた宣言の中の具体化（`Box[Box[int]]` のフィールド型の `Box[int]` など）も作る。
     // ⚠ 使う側より**前**に置く（定義の順序が実行時の順序になる）。
     chain.push(concrete);
-    let nested = instantiate_sites_in(ex, &inst, out, chain);
+    let nested = instantiate_sites_in(m, &inst, out, chain);
     chain.pop();
     nested?;
-    if ex.has_metafns {
-        super::register_decl(ex, &inst);
-    }
     out.push(inst);
     Ok(())
 }

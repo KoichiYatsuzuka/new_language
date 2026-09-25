@@ -33,3 +33,29 @@ class Labeled[T]:
 # ⚠ trait 制約（`fn render[T: Printable]`）の検査は実行時の `TemplateError` のままで、
 #   本変更では触っていない。静的エラーがあるとそこで停止して到達しないので、
 #   その確認は polymorphism_error.ar が担当する。
+
+# ⚠⚠ ここから下は**具体化した本体**の検査（2026-09-26・メタ関数の設計書 2-8 段階 2）。
+#   展開器が `Cell[str]` などを普通のクラス・関数として置き、型検査はそれを具体型で検査する。
+#   テンプレートの本体（型変数のまま）では通る書き方でも、**具体化すると型が合わない**なら誤り。
+
+# Section 3 — StaticTypeError: 具体化すると `str` のフィールドに `int` を入れている
+#   Expected error (StaticTypeError):
+#     field 'v' of class 'Cell[str]' is declared 'str' but got 'int'
+
+class Cell[T]:
+    mut v: T
+
+    fn reset(mut self) -> None:
+        self.v = 0          # Cell[int] なら正しいが、Cell[str] では誤り
+
+let ci = Cell[int](1)
+let cs = Cell[str]("x")
+
+# Section 4 — StaticTypeError: 具体化すると戻り値の型が合わない
+#   Expected error (StaticTypeError):
+#     'conv[float]' is declared to return 'float' but returns 'int'
+
+fn conv[T](let n: int) -> T:
+    return n                # conv[int] なら正しいが、conv[float] では int を返している
+
+print(conv[float](3))

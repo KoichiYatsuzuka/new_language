@@ -66,7 +66,20 @@ impl TypeChecker {
                     }
                 }
 
+                // ⚠⚠ **テンプレートの具体化（`Box[int]`）も受け手として解決する**（タスク 2-8 段階 2）。
+                //   以前は `GenericInstance` が下の `_ => None` に落ち、メソッド呼び出しの検査が
+                //   **丸ごと飛ばされていた**（型違いの引数・戻り値・存在しないメソッド・アクセス制御・
+                //   `static` の誤用がすべて通った。フェーズ10 の発端）。単相化したクラスがあれば
+                //   それを普通のクラスとして使う。
+                let instance_cls: Option<String> = match &obj_ty {
+                    InferredType::GenericInstance { .. } => {
+                        self.registry.instance_class(&obj_ty.to_string()).cloned()
+                    }
+                    _ => None,
+                };
+                let is_instance = matches!(obj_ty, InferredType::NamedInstance(_)) || instance_cls.is_some();
                 let cls_name_opt: Option<String> = match &obj_ty {
+                    InferredType::GenericInstance { .. } => instance_cls.clone(),
                     InferredType::NamedInstance(cls) => Some(cls.clone()),
                     InferredType::TypeValOf(inner) => {
                         if let InferredType::NamedInstance(cls) = inner.as_ref() {
@@ -80,7 +93,7 @@ impl TypeChecker {
                 if let Some(cls_name) = cls_name_opt {
                     let is_static = self.registry.is_static_method(&cls_name, attr.as_str());
                     // StaticMethodOnInstance: only report when called on an instance
-                    if is_static && matches!(obj_ty, InferredType::NamedInstance(_)) {
+                    if is_static && is_instance {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::StaticMethodOnInstance {
                                 method_name: attr.clone(),
@@ -90,7 +103,7 @@ impl TypeChecker {
                         });
                     }
                     // Member accessibility check (same as infer(Attr) does for NamedInstance)
-                    if matches!(obj_ty, InferredType::NamedInstance(_)) {
+                    if is_instance {
                         self.check_member_access_static(&cls_name, attr, Some(span.clone()));
                     }
                     // ⚠⚠ **メソッド呼び出しは `infer_attr` を通らない**（オブジェクトを

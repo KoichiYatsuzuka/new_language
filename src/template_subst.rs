@@ -9,8 +9,8 @@
 //
 // ⚠⚠ **置換の実装は 1 つだけにする。** 実行時と型検査で別の置換を書くと「実行時は通るのに
 // 型検査が落ちる（逆も）」が構造的に起きる（type_check_redesign.md フェーズ10 10-2 の指摘）。
-// ⚠ 2-7 は**移しただけ**（中身は一字一句同じ）。挙動が変わらないことは `compare_bytecode` /
-// `compare_outputs` で確認する。
+// ⚠ 2-7 は**移しただけ**（中身は同じ・A/B で確認）。2-8 以降で置換の取りこぼし（合成型の中の
+//   型変数・変数の型注釈・`gen` の仮引数と産出型・`async` の戻り値型・`mustbe` の型）を直した。
 
 use std::collections::HashMap;
 
@@ -77,16 +77,43 @@ pub(crate) fn display_name(name: &str) -> &str {
     }
 }
 
-/// 単相化で作った宣言か（名前に `[` を含むクラス・関数・ジェネレータ・タスク 2-8）。
-///
-/// ⚠ ソースに書いた宣言の名前は識別子なので `[` を含みえない。⇒ 名前だけで見分けられる。
-pub(crate) fn is_instance_decl(stmt: &Stmt) -> bool {
-    match stmt {
-        Stmt::ClassDef { name, .. } | Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } => {
-            name.contains('[')
+// ── 写しの node-id の振り直し（タスク 2-13） ───────────────────────────────
+
+thread_local! {
+    /// 置換の最中だけ立てる「新しい node-id を振る」カウンタ（[`subst_stmt_renumbered`]）。
+    static FRESH_IDS: std::cell::RefCell<Option<std::rc::Rc<std::cell::Cell<u32>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 写しのノードの node-id。[`subst_stmt_renumbered`] の最中なら新しく振り、そうでなければ引き継ぐ。
+fn fresh_node_id(id: u32) -> u32 {
+    FRESH_IDS.with(|c| match &*c.borrow() {
+        // ⚠ パーサの `next_node_id` と同じ振り方（先に 1 足してから使う）。
+        Some(counter) => {
+            let next = counter.get() + 1;
+            counter.set(next);
+            next
         }
-        _ => false,
-    }
+        None => id,
+    })
+}
+
+/// `subst_stmt` と同じだが、**写しのすべてのノードに新しい node-id を振る**（単相化用・タスク 2-13）。
+///
+/// ⚠⚠ **型検査にかける写しは node-id を共有してはならない**（設計書 §0.3）。型検査の注釈は node-id で
+/// 引かれるので、`add_all[int]` と `add_all[float]` が同じ node-id を持つと、後に検査した具体化の型
+/// （float の加算）が**すべての具体化に効く**（`add_all[int]` の `a + b` が `FBIN` になった・実測）。
+/// ⚠ 実行時の具体化（`templates.rs`）は写しを型検査にかけないので従来どおり引き継ぐ（[`subst_stmt`]）。
+/// ⚠ カウンタはプログラム全体の node-id カウンタを渡すこと（別のカウンタだと本体と衝突する）。
+pub(crate) fn subst_stmt_renumbered(
+    stmt: &Stmt,
+    type_map: &HashMap<String, String>,
+    counter: &std::rc::Rc<std::cell::Cell<u32>>,
+) -> Stmt {
+    FRESH_IDS.with(|c| *c.borrow_mut() = Some(std::rc::Rc::clone(counter)));
+    let out = subst_stmt(stmt, type_map);
+    FRESH_IDS.with(|c| *c.borrow_mut() = None);
+    out
 }
 
 /// 仮引数リストの型アノテーションを置換した新しいリストを返す。
@@ -155,7 +182,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
         // `^対象` の対象は普通の式なので、型注釈の置換はそのまま降りる。
         Expr::MetaInfo(target) => Expr::MetaInfo(Box::new(subst_expr(target, type_map))),
         Expr::Ident { name, node_id, res } =>
-            Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
+            Expr::Ident { name: name.clone(), node_id: fresh_node_id(*node_id), res: res.clone() },
         Expr::List(items) => Expr::List(
             items
                 .iter()
@@ -174,7 +201,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             attr: attr.clone(),
             span: span.clone(),
             cache: Default::default(),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::TraitAccess {
             object,
@@ -196,7 +223,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             left: Box::new(subst_expr(left, type_map)),
             right: Box::new(subst_expr(right, type_map)),
             span: span.clone(),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::UnaryOp { op, operand } => Expr::UnaryOp {
             op: op.clone(),
@@ -207,7 +234,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
             span: span.clone(),
             cache: Default::default(),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
             base: Box::new(subst_expr(base, type_map)),
@@ -216,7 +243,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
         Expr::Subscript { object, index, node_id } => Expr::Subscript {
             object: Box::new(subst_expr(object, type_map)),
             index: Box::new(subst_expr(index, type_map)),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::Slice { begin, end, step } => Expr::Slice {
             begin: begin.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
@@ -261,7 +288,7 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             negated: *negated,
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::Block { stmts, return_type } => Expr::Block {
             stmts: subst_stmts(stmts, type_map),
@@ -339,16 +366,16 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             object: Box::new(subst_expr(object, type_map)),
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
         Expr::LocalVar(name) => Expr::LocalVar(name.clone()),
         Expr::MustBe { expr, guard_type, span, node_id } => Expr::MustBe {
             expr: Box::new(subst_expr(expr, type_map)),
-            guard_type: guard_type.clone(),
+            guard_type: subst_type(guard_type, type_map),
             span: span.clone(),
             // テンプレ実体化のクローン: node_id を引き継ぐ（テンプレ対応は #16 次段）。
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
     }
 }
@@ -363,9 +390,23 @@ pub(crate) fn subst_stmts(stmts: &[Stmt], type_map: &HashMap<String, String>) ->
 pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
     match stmt {
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, type_map)),
-        Stmt::Let(name, ann, e) => Stmt::Let(name.clone(), ann.clone(), subst_expr(e, type_map)),
-        Stmt::Const(name, ann, e) => Stmt::Const(name.clone(), ann.clone(), subst_expr(e, type_map)),
-        Stmt::Mut(name, ann, e) => Stmt::Mut(name.clone(), ann.clone(), subst_expr(e, type_map)),
+        // ⚠⚠ 変数の型注釈も置換する（タスク 2-8 段階 2）。以前は複製するだけで、
+        //   テンプレートの本体の `let x: T = ..` が具体化しても `T` のまま残った。
+        Stmt::Let(name, ann, e) => Stmt::Let(
+            name.clone(),
+            ann.as_ref().map(|t| subst_type(t, type_map)),
+            subst_expr(e, type_map),
+        ),
+        Stmt::Const(name, ann, e) => Stmt::Const(
+            name.clone(),
+            ann.as_ref().map(|t| subst_type(t, type_map)),
+            subst_expr(e, type_map),
+        ),
+        Stmt::Mut(name, ann, e) => Stmt::Mut(
+            name.clone(),
+            ann.as_ref().map(|t| subst_type(t, type_map)),
+            subst_expr(e, type_map),
+        ),
         Stmt::LetTuple {
             targets,
             value,
@@ -405,7 +446,7 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             slot: Default::default(),
             // node_id は原型から引き継ぐ（他ノードと同じ規約）。実体化後は型変数が具体型に
             // 置き換わるため注釈は原型のものを指すが、VM 側は slot 型からの導出で補う。
-            node_id: *node_id,
+            node_id: fresh_node_id(*node_id),
         },
         Stmt::If {
             branches,
@@ -448,8 +489,11 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
         } => Stmt::GenDef { src: src.clone(),
             name: name.clone(),
             template_params: template_params.clone(),
-            params: params.clone(),
-            yield_type: yield_type.clone(),
+            // ⚠⚠ 仮引数と産出型も置換する（タスク 2-8 段階 2）。以前は複製するだけで、
+            //   単相化した `gen take[int]` が `list[T]` の仮引数を持ったままになった（実測）。
+            //   実行時の具体化は `subst_params(&tmpl.params)` を別に呼んでいたので表に出なかった。
+            params: subst_params(params, type_map),
+            yield_type: yield_type.as_ref().map(|t| subst_type(t, type_map)),
             body: subst_stmts(body, type_map),
             access: access.clone(),
         },
@@ -508,9 +552,8 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             base_args: base_args
                 .iter()
                 .map(|args| {
-                    args.iter()
-                        .map(|a| type_map.get(a).cloned().unwrap_or_else(|| a.clone()))
-                        .collect()
+                    // ⚠ 合成型の中も置換する（`Holder[list[T]]` の `T`・タスク 2-8 段階 2）。
+                    args.iter().map(|a| subst_type(a, type_map)).collect()
                 })
                 .collect(),
             body: subst_stmts(body, type_map),
@@ -633,7 +676,7 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             stmts,
         } => Stmt::AsyncAssign {
             target: target.clone(),
-            return_type: return_type.clone(),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
             stmts: subst_stmts(stmts, type_map),
         },
         Stmt::BreakPoint { span } => Stmt::BreakPoint { span: span.clone() },

@@ -7,10 +7,13 @@
 #     class Box[T]: mut v: T   の  self.v = 0
 #     fn conv[T](let n: int) -> T:  の  return n
 #   が「`T` に `int` を入れた」という**偽のエラー**になる（実際にそうなった）。
-#   ⇒ 型変数を含む注釈は照合しない。検査したい形は実体化後の AST（型変数が具体型へ
-#     置換済み）で見る。
+#   ⇒ テンプレートの本体（型変数のまま）では、型変数を含む注釈は照合しない。
 #
-# 誤りの検出そのものが消えていないことは template_type_param_error.ar で確認する。
+# ⚠⚠ **具体化した本体は具体型で検査する**（2026-09-26・メタ関数の設計書 2-8 段階 2）。
+#   展開器が `Box[str]` を普通のクラスとして置き、型検査はそれを普通のクラスとして検査する。
+#   ⇒ `Box[str]` の `self.v = 0` や `conv[float]` の `return n`（int）は**静的エラー**になる
+#     （以前は「`T` とは突き合わせない」として通していたが、それは誤りだった）。
+#   その形は template_type_param_error.ar で確認する。
 
 print("=== テンプレートクラスの型変数 ===")
 
@@ -21,16 +24,11 @@ class Box[T]:
         return self.v
 
     fn set(mut self, let x: T) -> None:
-        self.v = x          # 型変数への代入（照合しない）
-
-    fn reset(mut self) -> None:
-        self.v = 0          # 具体型を入れても T とは突き合わせない
+        self.v = x          # 型変数への代入（具体化した本体では具体型どうし）
 
 mut bi = Box[int](1)
 bi.set(5)
 print(bi.get())             # 5
-bi.reset()
-print(bi.get())             # 0
 
 let bs = Box[str]("x")
 print(bs.get())             # x
@@ -40,14 +38,8 @@ print("=== テンプレート関数の型変数 ===")
 fn ident[T](let a: T) -> T:
     return a
 
-fn conv[T](let n: int) -> T:
-    return n                # 戻り値注釈が型変数（照合しない）
-
 print(ident[int](7))        # 7
 print(ident[str]("s"))      # s
-
-# ⚠ 実体化後は戻り値注釈も具体型へ置換されるので、int→float の昇格が効く。
-print(conv[float](3))       # 3.0
 print(ident[float](float(4)))      # 4.0
 
 print("=== 同じ型引数の実体化は同じクラス ===")

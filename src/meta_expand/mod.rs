@@ -30,6 +30,9 @@ use std::rc::Rc;
 
 mod modules;
 mod monomorph;
+// ⚠ エディタ（wasm）用。CLI は展開器の中で単相化するので、ルート crate では使わない。
+#[allow(unused_imports)]
+pub use monomorph::monomorphize;
 mod ordinary;
 
 use crate::ast::{CodeLine, CodePiece, Expr, Stmt};
@@ -535,10 +538,8 @@ struct Expander {
     ///
     /// ⚠ モジュールは**初めて読み込まれるとき**に 1 回だけ展開する（§1.7・2026-09-25 確定）。
     module_cache: std::collections::HashMap<String, std::rc::Rc<modules::ExpandedModule>>,
-    /// 今の枠で知っているテンプレートと作った具体化（展開時の単相化・タスク 2-8）。**枠ごと**。
-    templates: monomorph::Templates,
-    /// このプログラムで作った具体化の数（`monomorph::INSTANCE_BUDGET` の判定用・全体で 1 つ）。
-    instance_count: usize,
+    /// 展開時の単相化の状態（タスク 2-8）。テンプレートは**枠ごと**、具体化の数は全体で 1 つ。
+    mono: monomorph::Mono,
 }
 
 impl Expander {
@@ -546,6 +547,7 @@ impl Expander {
         node_counter: std::rc::Rc<std::cell::Cell<u32>>,
         known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
     ) -> Self {
+        let mono = monomorph::Mono::new(std::rc::Rc::clone(&node_counter));
         Self {
             metafns: std::collections::HashMap::new(),
             interp: Interpreter::new(),
@@ -558,8 +560,7 @@ impl Expander {
             placing_fns: Vec::new(),
             modules: std::collections::HashMap::new(),
             module_cache: std::collections::HashMap::new(),
-            templates: monomorph::Templates::default(),
-            instance_count: 0,
+            mono,
         }
     }
 
@@ -896,8 +897,15 @@ fn expand_stmts(
         //   ここへ来たときに拾われる（反復は要らない）。
         if ctx == Context::TopLevel {
             // ⚠ 具体化が終わらないとき（再帰的な具体化）は展開時エラー（タスク 2-9）。
-            monomorph::instantiate_sites(ex, &stmt, &mut out)
+            let before_inst = out.len();
+            monomorph::instantiate_sites(&mut ex.mono, &stmt, &mut out)
                 .map_err(|e| e + &render_trail(&here))?;
+            // 置いた具体化も `^Box[int]` で引けるようにする。
+            if ex.has_metafns {
+                for i in before_inst..out.len() {
+                    register_decl(ex, &out[i]);
+                }
+            }
         }
 
         if ex.has_metafns {
@@ -1073,7 +1081,7 @@ fn expand_stmts(
         // テンプレートの宣言を覚える（これより後ろの具体化だけが実体を作れる・前方のみ参照）。
         if ctx == Context::TopLevel {
             for i in out_len_before..out.len() {
-                monomorph::note_template(ex, &out[i]);
+                monomorph::note_template(&mut ex.mono, &out[i]);
             }
         }
 
@@ -2147,6 +2155,156 @@ mod tests {
         .expect("expand");
         let count = out.iter().filter(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "Node[int]")).count();
         assert_eq!(count, 1);
+    }
+
+    /// 展開してから型検査にかけ、エラーの文面（色付けを外したもの）を返す（タスク 2-8 段階 2）。
+    fn expand_and_check(src: &str) -> Vec<String> {
+        let out = expand(src).expect("expand");
+        let (errors, _, _) = crate::type_check::TypeChecker::check_program(&out);
+        errors
+            .iter()
+            .map(|e| {
+                let s = e.to_string();
+                let mut m = String::new();
+                let mut esc = false;
+                for c in s.chars() {
+                    if esc {
+                        esc = c != 'm';
+                    } else if c == '\x1b' {
+                        esc = true;
+                    } else {
+                        m.push(c);
+                    }
+                }
+                m
+            })
+            .collect()
+    }
+
+    /// ⚠⚠ **具体化した本体を型検査にかける**（2026-09-26 決定・タスク 2-8 段階 2）。
+    /// `Box[str]` の `self.v = 0` は誤り。以前は「`T` とは突き合わせない」として通していた。
+    #[test]
+    fn a_concrete_type_error_in_an_instantiated_body_is_reported() {
+        let errs = expand_and_check(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "    fn reset(mut self) -> None:\n",
+            "        self.v = 0\n",
+            "let a = Box[int](1)\n",
+            "let b = Box[str](\"x\")\n",
+        ));
+        assert!(errs.iter().any(|m| m.contains("field 'v' of class 'Box[str]' is declared 'str' but got 'int'")), "出ていない: {errs:?}");
+        assert!(!errs.iter().any(|m| m.contains("class 'Box[int]'")), "出てはいけない: {errs:?}");
+    }
+
+    /// ⚠ 同じ本体でも、型が合う具体化（`Box[int]`）だけなら通る。
+    #[test]
+    fn an_instantiation_where_the_body_fits_is_accepted() {
+        let errs = expand_and_check(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "    fn reset(mut self) -> None:\n",
+            "        self.v = 0\n",
+            "let a = Box[int](1)\n",
+        ));
+        assert!(errs.is_empty(), "偽陽性: {errs:?}");
+    }
+
+    /// ⚠⚠ **テンプレートクラスのメソッド呼び出しが丸ごと検査されていなかった**（フェーズ10 の発端）。
+    /// 受け手のクラスを引く所が `GenericInstance` を見ておらず、検査が飛ばされていた。
+    #[test]
+    fn method_calls_on_a_template_instance_are_checked() {
+        let errs = expand_and_check(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "    fn get(self) -> T:\n",
+            "        return self.v\n",
+            "    fn set(mut self, let x: T) -> None:\n",
+            "        self.v = x\n",
+            "    fn tag(mut self, let n: int) -> None:\n",
+            "        print(n)\n",
+            "mut b = Box[int](1)\n",
+            "b.tag(\"wrong\")\n",
+            "b.set(\"wrong\")\n",
+            "let s: str = b.get()\n",
+        ));
+        assert!(errs.iter().any(|m| m.contains("argument 0 of 'Box[int].tag' expects 'int' but got 'str'")), "出ていない: {errs:?}");
+        assert!(errs.iter().any(|m| m.contains("argument 0 of 'Box[int].set' expects 'int' but got 'str'")), "出ていない: {errs:?}");
+        assert!(errs.iter().any(|m| m.contains("'s' is declared 'str' but initialized with 'int'")), "出ていない: {errs:?}");
+    }
+
+    /// ⚠⚠ `gen take[T]` の `T` がスコープに入らず誤って弾かれていた（フェーズ10 10-1・8.5 の退行）。
+    #[test]
+    fn a_template_gen_sees_its_type_parameters() {
+        let errs = expand_and_check(concat!(
+            "gen take[T](let xs: list[T], let n: int) -> T:\n",
+            "    mut i = 0\n",
+            "    while i < n:\n",
+            "        yield xs[i]\n",
+            "        i += 1\n",
+            "for x in take[int]([1, 2], 2):\n",
+            "    print(x)\n",
+        ));
+        assert!(errs.is_empty(), "偽陽性: {errs:?}");
+    }
+
+    /// ⚠ `mut items: list[T]` の自動 `__init__` が「`list[unknown]` に `list[T]`」と誤って弾かれていた。
+    /// 具体化では要素の型違いがちゃんと捕まる。
+    #[test]
+    fn a_list_field_of_a_type_parameter_is_accepted_and_checked() {
+        let errs = expand_and_check(concat!(
+            "class Tagged[T]:\n",
+            "    mut v: T\n",
+            "    mut items: list[T]\n",
+            "let good = Tagged[int](1, [2])\n",
+            "let bad = Tagged[int](1, [\"x\"])\n",
+        ));
+        assert!(errs.iter().any(|m| m.contains("expects 'list[int]' but got 'list[str]'")), "出ていない: {errs:?}");
+        assert!(!errs.iter().any(|m| m.contains("list[unknown]")), "出てはいけない: {errs:?}");
+    }
+
+    /// ⚠ 型変数に関係しない誤りは、テンプレートの本体と各具体化の**全部で**見つかる。
+    /// 同じ誤りを具体化の数＋1 回出さないよう、1 件にまとめる（タスク 2-8 段階 2）。
+    #[test]
+    fn the_same_error_is_not_repeated_for_every_instantiation() {
+        let errs = expand_and_check(concat!(
+            "class Labeled[T]:\n",
+            "    mut v: T\n",
+            "    fn label(self) -> str:\n",
+            "        return 1\n",
+            "let a = Labeled[int](1)\n",
+            "let b = Labeled[str](\"x\")\n",
+        ));
+        let n = errs.iter().filter(|m| m.contains("declared to return 'str' but returns 'int'")).count();
+        assert_eq!(n, 1, "重複している: {errs:?}");
+    }
+
+    /// ⚠⚠ **具体化どうしで node-id を共有しない**（設計書 §0.3・タスク 2-13）。
+    /// 型検査の注釈は node-id で引かれるので、共有すると後に検査した具体化の型が全部に効く
+    /// （`add_all[int]` の `a + b` が float の加算 `FBIN` にコンパイルされた・実測）。
+    #[test]
+    fn instantiations_get_their_own_node_ids() {
+        let out = expand(concat!(
+            "fn add_all[T](let a: T, let b: T) -> T:
+",
+            "    return a + b
+",
+            "
+",
+            "print(add_all[int](1, 2))
+",
+            "print(add_all[float](1.5, 2.5))
+",
+        ))
+        .expect("expand");
+        let add_id = |name: &str| -> u32 {
+            let (_, decl) = find_decl(&out, name).expect("宣言が無い");
+            let Stmt::FnDef { body, .. } = decl else { panic!("FnDef を期待") };
+            let Stmt::Return(Some(Expr::BinOp { node_id, .. })) = &body[0] else { panic!("return a + b を期待") };
+            *node_id
+        };
+        let (t, i, f) = (add_id("add_all"), add_id("add_all[int]"), add_id("add_all[float]"));
+        assert!(t != i && t != f && i != f, "node-id が衝突している: {t} {i} {f}");
     }
 
     /// ⚠⚠ 展開時は**決定的で副作用の無い**ビルトインしか呼べない（D26 / 参考N・タスク 3-7）。

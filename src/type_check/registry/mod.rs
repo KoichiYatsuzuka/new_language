@@ -31,6 +31,15 @@ pub(super) struct TypeRegistry {
     trait_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>>,
     /// パース済みクラス・new_type 名の集合。`NamedInstance` の解決に使用する。
     known_class_names: HashSet<String>,
+    /// **テンプレートの具体化 → 展開器が単相化したクラス名**（タスク 2-8 段階 2）。
+    ///
+    /// キーは型の表示形（`GenericInstance` の `to_string()`・例 `"Box[int]"`）。値は AST 上の
+    /// クラス名。ふつうは同じ文字列だが、型引数の書き方の揺れ（`dict[str,int]` と
+    /// `dict[str, int]`）を吸収するために、キーは型として読み直した表示形にしてある。
+    instance_classes: HashMap<String, String>,
+    /// 単相化で作った宣言の名前（クラス・関数・`gen`。`Box[int]` / `ident[str]`）。
+    /// 同じ誤りの重複報告をまとめるのに使う（`TypeChecker::merge_instance_errors`）。
+    instance_names: HashSet<String>,
     /// 未展開の `!装飾子` を本体に残しているクラス（タスク 2-4）。
     ///
     /// ⚠ 装飾子が何を足すか分からないので、このクラスの**メンバーの顔ぶれは未確定**。
@@ -93,6 +102,20 @@ impl TypeRegistry {
     /// テンプレート宣言の型変数名（宣言順）。非テンプレートは `None`。
     pub(super) fn template_params(&self, name: &str) -> Option<&[String]> {
         self.template_params.get(name).map(|v| v.as_slice())
+    }
+
+    /// テンプレートの具体化（`Box[int]` の表示形）に対応する**単相化したクラス名**（タスク 2-8 段階 2）。
+    ///
+    /// ⚠⚠ これがあれば、そのクラスは**普通のクラスとして**検査できる（メソッド引数・戻り値・
+    /// メンバー・アクセス制御がすべて普通の経路を通る）。無いとき（宣言より前の具体化・
+    /// 制約付きテンプレート・展開しないエディタ）は従来どおりテンプレートと置換表で扱う。
+    pub(super) fn instance_class(&self, display: &str) -> Option<&String> {
+        self.instance_classes.get(display)
+    }
+
+    /// 単相化で作った宣言の名前（タスク 2-8 段階 2）。
+    pub(super) fn instance_names(&self) -> &HashSet<String> {
+        &self.instance_names
     }
 
     /// クラス・enum・new_type として登録済みの名前か。

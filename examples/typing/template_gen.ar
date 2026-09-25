@@ -1,0 +1,19 @@
+# template_gen.ar — テンプレートのジェネレータ（フェーズ10 10-1）
+#
+# ⚠⚠ `gen take[T](xs: list[T], ...)` の `T` が型検査のスコープに入っておらず、
+#   「`T` は知らない型」と誤って弾かれていた（タスク 8.5 で入った退行）。
+#   **例題に `gen f[T]` が 1 本も無かったので、全ゲートが緑のまま通っていた。**
+#   ⇒ `gen` 自身の型変数を積んでから注釈を検査する。
+# ⚠ 具体化（`take[int]`）は展開器が普通の `gen` として置き、具体型で検査される。
+
+gen take[T](let xs: list[T], let n: int) -> T:
+    mut i = 0
+    while i < n:
+        yield xs[i]
+        i += 1
+
+for x in take[int]([10, 20, 30], 2):
+    print(x)                # 10 / 20
+
+for w in take[str](["a", "b", "c"], 3):
+    print(w)                # a / b / c
