@@ -4450,7 +4450,7 @@ call_check.rs 4 / binop.rs 3 / registry/builder.rs 1
 
 #### 10-5 テンプレートの網を張る
 
-**一部完了（2026-09-26）**: `template_method_error.ar`（メソッド引数・戻り値・具体化した本体）と `template_gen.ar`（`gen f[T]`）を足した。`template_type_param_error.ar` に具体化した本体の誤り（Section 3 / 4）を足した。
+**一部完了（2026-09-26）**: `template_method_error.ar`（メソッド引数・戻り値・具体化した本体）と `template_gen.ar`（`gen f[T]`）を足した。`template_type_param_error.ar` に具体化した本体の誤り（Section 3 / 4）を足した。（メタ関数の設計書の 2-14 / 2-15 で）`template_constrained_error.ar`（制約付き・宣言より前の具体化・protocol 不適合）・`template_protocol.ar`・`template_module.ar` / `template_module_error.ar`（`import` したテンプレート）を足した。**残り**: `type_obligations` の検体の登録・`syntax_cov` のテンプレート関連 `NESTED-GAP` の洗い出し。
 
 ⚠⚠ **このバグ群が長く残ったのは例題が無かったから。** 直す前に網を張る。
 
