@@ -411,6 +411,13 @@ impl Var {
 /// ⇒ 1000 なら余裕約 9 倍。上げるときは上の表を**測り直してから**。
 pub(crate) const MAX_CALL_DEPTH: u32 = 1000;
 
+/// 展開器の 1 文（配置呼び出し・装飾子・`const` の初期化）で VM が実行してよい命令数（D5）。
+///
+/// ⚠ 実際のメタ関数で届く数ではない（コードを組み立てるだけの処理は数万命令で終わる）。
+///   届いたら終わらないループとみなす。⚠ CLI とエディタで同じ値にすること（片方だけが
+///   エラーを出すと、エディタと CLI の診断が食い違う）。
+pub(crate) const META_OPS_BUDGET: u64 = 20_000_000;
+
 pub struct Interpreter {
     pub(self) scopes: Vec<ScopeMap>,
     /// スロットキャッシュに昇格したグローバル変数のセルレジストリ（append-only、インデックス安定）。
@@ -575,6 +582,13 @@ pub struct Interpreter {
     ///
     /// ⚠ 既定は偽。展開器だけが立てる（`meta_expand`）。
     pub(self) meta_expanding: bool,
+    /// 展開中に VM が実行してよい残りの命令数（D5・タスク 5-0）。
+    ///
+    /// ⚠⚠ メタ関数の本体に `while True:` を書くと展開が終わらない。CLI なら止めればよいが、
+    ///   エディタは打つたびに展開するので**解析が固まる**。展開中だけ VM を命令数を数える
+    ///   ループで回し（`vm::run` の `run_budgeted`）、使い切ったら止める。通常の実行には何も足さない。
+    /// ⚠ 展開器が最上位の文ごとに張り直す（[`Self::meta_reset_budget`]）。CLI とエディタで同じ値。
+    pub(crate) meta_ops_left: u64,
     /// **展開時に見えている宣言**（名前 → その宣言・タスク 4-0）。
     ///
     /// ⚠⚠ `^対象` はここから引く。展開器が**前から順に**埋めるので、
@@ -689,6 +703,7 @@ impl Interpreter {
             },
             protocol_required_members: HashMap::new(),
             meta_expanding: false,
+            meta_ops_left: 0,
             meta_decls: std::collections::HashMap::new(),
             meta_prefix: Rc::new(RefCell::new(Vec::new())),
             native_libs: HashMap::new(),
@@ -1178,6 +1193,11 @@ impl Interpreter {
 
     pub(crate) fn set_meta_expanding(&mut self, on: bool) {
         self.meta_expanding = on;
+    }
+
+    /// 展開中の命令数の上限を張り直す（`meta_ops_left` の doc）。
+    pub(crate) fn meta_reset_budget(&mut self) {
+        self.meta_ops_left = META_OPS_BUDGET;
     }
 
     pub fn take_current_exception(&mut self) -> Option<RaisedError> {

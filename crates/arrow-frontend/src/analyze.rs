@@ -123,6 +123,31 @@ fn span_json(cols: &Utf16Cols, span: &Span) -> Value {
     pos_json(cols, span.line, span.col)
 }
 
+/// 読み込めていない `import`（エディタは fs に触れないので本体が空）があるか（D5・タスク 5-0）。
+fn has_unloaded_import(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| {
+        matches!(s, Stmt::Import { body, .. } | Stmt::FromImport { body, .. } if body.is_empty())
+    })
+}
+
+/// 展開の失敗の文面から、**このファイルの中で**展開を始めた位置（行・列）を拾う（D5・タスク 5-0）。
+///
+/// 展開器は失敗に「どのメタ関数をどこで展開していたか」を添える（`while expanding 'f' at <位置>`・
+/// 外側から順）。最初の 1 行が、このファイルの文（配置呼び出し・装飾子）の位置。
+/// 位置は `ファイル:行:列`（ファイル名つき）か `line 行, col 列` の形。拾えなければ `None`（ファイル全体）。
+fn meta_error_pos(message: &str) -> Option<(usize, usize)> {
+    let line = message.lines().find(|l| l.trim_start().starts_with("while expanding '"))?;
+    let at = &line[line.rfind(" at ")? + 4..];
+    let at = at.trim();
+    if let Some(rest) = at.strip_prefix("line ") {
+        let (l, c) = rest.split_once(", col ")?;
+        return Some((l.trim().parse().ok()?, c.trim().parse().ok()?));
+    }
+    let (head, col) = at.rsplit_once(':')?;
+    let (_, line_no) = head.rsplit_once(':')?;
+    Some((line_no.trim().parse().ok()?, col.trim().parse().ok()?))
+}
+
 fn diag_json(
     cols: &Utf16Cols,
     span: Option<&Span>,
@@ -310,31 +335,68 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         }
     };
 
-    // ⚠⚠ メタ関数は展開しない（5-0）が、**テンプレートの単相化だけは行う**（タスク 2-8 段階 2）。
-    //   CLI は単相化した具体クラス（`Box[int]`）を型検査にかけるので、しないと具体化した本体の
-    //   誤り・テンプレートのメソッド呼び出しの型違いが**エディタにだけ出ない**。
-    //   純粋な AST 操作なので fs も評価器も要らない。
-    let stmts = crate::meta_expand::monomorphize(stmts, parser.node_counter());
+    // ⚠⚠ **メタ関数を展開してから型検査する**（設計書 D5・タスク 5-0）。CLI と同じ AST を検査しないと、
+    //   展開で生えた宣言・装飾子が足したメンバー・置いたコードの誤りが**エディタにだけ見えず**、
+    //   CLI と診断が食い違う（`compare_wasm_frontend` が守る不変条件）。
+    //   メタ関数の構文を含まないプログラムは単相化だけ（展開の結果は同じで、展開用インタプリタを
+    //   作る分だけ無駄）。単相化もしないと、具体化した本体の誤りがエディタにだけ出ない（2-8）。
+    // ⚠ メタ関数が終わらない（`while True:`）と打つたびに解析が固まるので、展開中の VM は命令数に
+    //   上限がある（`META_OPS_BUDGET`・CLI と同じ値）。
+    // ⚠ 展開に失敗したら、CLI と同じく**型エラーは出さず** `MetaError` だけを出す（CLI は展開の失敗で
+    //   止まり、型検査へ進まない。展開前の AST の型エラーは当てにならない）。ホバーなどの情報は
+    //   展開前の AST（単相化だけしたもの）の型検査から取る。
+    let counter = parser.node_counter();
+    // ⚠ エディタは import 先を読まない（本体が空）。そのモジュールのメタ関数・`const` を使う展開は
+    //   エディタでは失敗するが、それはエディタが中身を知らないからで、CLI では通る。
+    //   ⇒ 読めていない import があるときは、展開の失敗を報告しない（少なく報告するのは許される・
+    //   `compare_wasm_frontend.ps1` の「import のある例題」の規則）。
+    let unloaded_import = has_unloaded_import(&stmts);
+    let (stmts, meta_error) = if crate::meta_expand::mentions_meta(&stmts) {
+        match crate::meta_expand::expand_program(
+            stmts.clone(),
+            std::rc::Rc::clone(&counter),
+            parser.known_traits(),
+        ) {
+            Ok(out) => (out, None),
+            Err(e) => (crate::meta_expand::monomorphize(stmts, counter), Some(e)),
+        }
+    } else {
+        (crate::meta_expand::monomorphize(stmts, counter), None)
+    };
     let (errors, warnings, annotations) = TypeChecker::check_program(&stmts);
 
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());
-    for e in &errors {
-        diagnostics.push(diag_json(
-            &cols,
-            e.span.as_ref(),
-            SEVERITY_ERROR,
-            strip_ansi(&e.detail_str()),
-            e.error_type_str(),
-        ));
-    }
-    for w in &warnings {
-        diagnostics.push(diag_json(
-            &cols,
-            w.span.as_ref(),
-            SEVERITY_WARNING,
-            strip_ansi(&w.detail_str()),
-            "TypeWarning",
-        ));
+    if let Some(e) = &meta_error {
+        if unloaded_import {
+            // 報告しない（上の注意）。型エラーも出さない（展開前の AST の誤りは当てにならない）。
+        } else {
+        let message = strip_ansi(e);
+        let at = meta_error_pos(&message).map(|(line, col)| Span {
+            file: std::sync::Arc::from(filename),
+            line,
+            col,
+        });
+        diagnostics.push(diag_json(&cols, at.as_ref(), SEVERITY_ERROR, message, "MetaError"));
+        }
+    } else {
+        for e in &errors {
+            diagnostics.push(diag_json(
+                &cols,
+                e.span.as_ref(),
+                SEVERITY_ERROR,
+                strip_ansi(&e.detail_str()),
+                e.error_type_str(),
+            ));
+        }
+        for w in &warnings {
+            diagnostics.push(diag_json(
+                &cols,
+                w.span.as_ref(),
+                SEVERITY_WARNING,
+                strip_ansi(&w.detail_str()),
+                "TypeWarning",
+            ));
+        }
     }
 
     let index = parser.editor_index();

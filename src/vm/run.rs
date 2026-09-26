@@ -271,7 +271,31 @@ fn enter_depth(interp: &mut Interpreter) -> Result<(), String> {
     Ok(())
 }
 
+/// ディスパッチループの振り分け。
+///
+/// ⚠⚠ **振り分けは大きなループ関数の外で行う**（`#[inline(always)]`）。ループ関数は `exec_op` を
+///   丸ごと展開した大きなフレームを持つので、ループ関数の中から別のループ関数を呼ぶと、再帰の
+///   1 段ごとに大きなフレームが 2 つ積まれる。展開中のループ（`run_budgeted`）をそうしたら、
+///   デバッグビルドでメタ関数の再帰が深さの上限に届く前にスタックがあふれた（実測）。
+#[inline(always)]
 fn run_dispatch(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    ip: usize,
+    handlers: Vec<Handler>,
+    cells: Vec<Rc<RefCell<Value>>>,
+) -> Result<RunOutcome, String> {
+    // 展開中（メタ関数の本体）は命令数を数えるループへ（D5・`meta_ops_left` の doc）。
+    if interp.is_meta_expanding() {
+        run_budgeted(interp, chunk, buf, base, ip, handlers, cells)
+    } else {
+        run_normal(interp, chunk, buf, base, ip, handlers, cells)
+    }
+}
+
+fn run_normal(
     interp: &mut Interpreter,
     chunk: &Chunk,
     buf: &mut Vec<Value>,
@@ -287,7 +311,6 @@ fn run_dispatch(
     if crate::interpreter::debugger::dbg_active() {
         return run_stepping(interp, chunk, buf, base, ip, handlers, cells);
     }
-
     loop {
         // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
         #[cfg(feature = "prof")]
@@ -310,6 +333,44 @@ fn run_dispatch(
                 if crate::interpreter::debugger::dbg_active() {
                     return run_stepping(interp, chunk, buf, base, ip, handlers, cells);
                 }
+            }
+            Err(e) => match unwind_to_handler(interp, buf, &mut handlers, &e) {
+                Some(landing) => ip = landing,
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// **命令数を数える**ディスパッチループ（展開中だけ・D5・タスク 5-0）。
+///
+/// 通常の `run` と同じ `exec_op` を回し、命令のたびに残りの命令数を減らす。使い切ったら
+/// 終わらないメタ関数とみなして止める（エディタは打つたびに展開するので、止めないと解析が固まる）。
+/// ⚠ 呼び出し先のフレームもそれぞれこのループで回る（入口の判定は `run_dispatch` ごと）。
+fn run_budgeted(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    mut ip: usize,
+    mut handlers: Vec<Handler>,
+    cells: Vec<Rc<RefCell<Value>>>,
+) -> Result<RunOutcome, String> {
+    loop {
+        if interp.meta_ops_left == 0 {
+            return Err(format!(
+                "MetaError: a metafunction did not finish within {} steps — it probably loops forever \
+                 (the compile-time expander stops it so that the build and the editor do not hang)",
+                crate::interpreter::META_OPS_BUDGET
+            ));
+        }
+        interp.meta_ops_left -= 1;
+        match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
+            Ok(Flow::Next) | Ok(Flow::NextAfterCall) => ip += 1,
+            Ok(Flow::Jump(t)) => ip = t,
+            Ok(Flow::Return(v)) => return Ok(RunOutcome::Done(v)),
+            Ok(Flow::Suspend(v)) => {
+                return Ok(RunOutcome::Suspended(v, Frame { ip: ip + 1, handlers, cells }))
             }
             Err(e) => match unwind_to_handler(interp, buf, &mut handlers, &e) {
                 Some(landing) => ip = landing,

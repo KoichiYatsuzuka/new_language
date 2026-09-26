@@ -1,0 +1,17 @@
+# metafn_endless_error.ar — 終わらないメタ関数は展開器が止める（設計書 D5・タスク 5-0）
+#
+# ⚠ エディタも打つたびにメタ関数を展開するので、止めないと解析が固まる。展開中の VM は
+#   命令数に上限があり（展開器の 1 文ごとに 2,000 万命令）、使い切ったら止める。CLI とエディタで同じ値。
+#
+# Expected error (MetaError):
+#   a metafunction did not finish within 20000000 steps — it probably loops forever
+
+exprconst !fn spin() -> None:
+    mut i = 0
+    while True:
+        i += 1
+    quote code:
+        print("never placed")
+
+spin()
+print("never runs")

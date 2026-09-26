@@ -110,6 +110,16 @@ function Get-ExeErrorKeys([string]$text) {
             $keys.Add('<unknown>')
         }
     }
+    # D5 (task 5-0): the editor now expands metafunctions too, so a failed expansion is
+    # reported by both sides as a MetaError. arrow.exe prints it as text, not in the table:
+    # the key is the first 'while expanding ... at <file>:<line>:<col>' (the statement in
+    # this file that started the expansion), or '<unknown>' when there is no position.
+    if ($clean -match '(?m)^MetaError:') {
+        $at = ($clean -split "`r?`n") | Where-Object { $_ -match "^\s*while expanding '" } | Select-Object -First 1
+        if ($at -and $at -match ':(\d+):(\d+)\s*$') { $keys.Add("$($Matches[1]):$($Matches[2])") }
+        elseif ($at -and $at -match 'line (\d+), col (\d+)\s*$') { $keys.Add("$($Matches[1]):$($Matches[2])") }
+        else { $keys.Add('<unknown>') }
+    }
     return $keys
 }
 

@@ -610,6 +610,8 @@ impl Expander {
         // ⚠ 展開時の `print` は stderr へ（設計書 §4.1）。stdout に混ざると
         //   `compare_python_impl` / `compare_outputs` の差分比較が壊れる。
         self.interp.set_meta_expanding(true);
+        // 展開中の VM は命令数を数える（D5）。前口上の実行にも上限を張る。
+        self.interp.meta_reset_budget();
         // ⚠ 旗は Rust 側で宣言する。前口上に `mut` の最上位宣言を書いて `exec` へ渡すと、
         //   最上位の文は VM 経由で走る決まりなので `VmForceError` になる（3-6 で実測）。
         self.interp
@@ -827,6 +829,16 @@ pub fn expand_program(
     expand_with(&mut ex, stmts)
 }
 
+/// プログラムがメタ関数の構文（`exprconst` / `code:` / `!装飾子` / `^` など）を含むか
+/// （入れ子・`import` 先も見る・タスク 2-11 の `ordinary::mentions_meta`）。
+///
+/// ⚠ エディタは含まないプログラムでは展開器を起こさない（D5・タスク 5-0）。含まないなら
+///   展開の結果は単相化（[`monomorphize`]）と同じで、展開用インタプリタを作る分だけ無駄になる。
+#[allow(dead_code)] // CLI は常に展開器を通す（エディタ専用の入口）
+pub fn mentions_meta(stmts: &[Stmt]) -> bool {
+    ordinary::mentions_meta(stmts)
+}
+
 /// **ブロックを 1 つずつ**展開する（REPL・D36・タスク 2-16）。
 ///
 /// 展開器の状態（メタ関数・テンプレート・作った具体化・展開用インタプリタ）をブロックをまたいで
@@ -929,6 +941,8 @@ fn expand_stmts(
 
     while let Some((stmt, here)) = pending.pop_front() {
         ex.steps += 1;
+        // ⚠ メタ関数が実行してよい命令数は**文ごと**に張り直す（D5・`META_OPS_BUDGET`）。
+        ex.interp.meta_reset_budget();
         if ex.steps > STEP_BUDGET {
             let culprit = match &ex.last_expanded {
                 Some(n) => format!("the last metafunction expanded was '{n}'"),
