@@ -629,6 +629,9 @@ impl Expander {
                 .exec(st)
                 .map_err(|e| format!("MetaError: internal — the expander prelude failed: {e}"))?;
         }
+        // ⚠ モジュールの展開の枠にも前口上を置く（枠ごとに大域が分かれている・名前空間の分離）。
+        //   旗（[`PLACING_ARMED`]）は置かない —— 旗は 1 つでなければならない。
+        self.interp.meta_set_prelude(&[ABORT_CLASS, "compile_error", "gensym", "__enter_placing"]);
         Ok(())
     }
 
@@ -731,13 +734,13 @@ impl Expander {
             if self.placing_fns.iter().any(|p| std::rc::Rc::ptr_eq(p, f)));
         if armed {
             self.interp
-                .vm_assign_global(PLACING_ARMED, Value::Bool(true))
+                .meta_assign_main_global(PLACING_ARMED, Value::Bool(true))
                 .map_err(|e| format!("MetaError: internal — {e}"))?;
         }
         let result = self.interp.call_value_evaled(callee, evaled, name, None, 0);
         if armed {
             self.interp
-                .vm_assign_global(PLACING_ARMED, Value::Bool(false))
+                .meta_assign_main_global(PLACING_ARMED, Value::Bool(false))
                 .map_err(|e| format!("MetaError: internal — {e}"))?;
         }
         let out = match result {

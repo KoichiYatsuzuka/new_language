@@ -45,6 +45,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
+        globals: crate::interpreter::value::GLOBALS_OF_CALLER,
         name: "__init__".to_string(),
         params: vec![
             Param {
@@ -131,6 +132,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
+        globals: crate::interpreter::value::GLOBALS_OF_CALLER,
         name: "__init__".to_string(),
         params: vec![
             Param {

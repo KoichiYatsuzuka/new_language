@@ -186,6 +186,8 @@ impl Interpreter {
         // ジェネレータメソッドのアクセス制御・Self 依存ディスパッチのため張り直す。
         let prev_class = self.current_class.take();
         self.current_class = prod.self_class.clone();
+        // 本体は定義したモジュールの大域で走らせる（`FnValue::globals` と同じ・名前空間の分離）。
+        let prev_globals = self.switch_globals(prod.globals);
         let chunk = prod.chunk.clone();
         let frame = std::mem::replace(
             &mut prod.frame,
@@ -197,6 +199,7 @@ impl Interpreter {
             }
             None => crate::vm::run::resume_frame(self, &chunk, &mut prod.buf, 0, frame),
         };
+        self.switch_globals(prev_globals);
         self.current_class = prev_class;
         self.pop_call_name();
         outcome
@@ -383,6 +386,7 @@ impl Interpreter {
             values: Vec::new(),
             index: 0,
             producer: Some(Box::new(crate::interpreter::GenProducer {
+                globals: gen_fn.globals,
                 name: gen_fn.name.clone(),
                 chunk,
                 buf,
@@ -602,7 +606,12 @@ impl Interpreter {
         call_span: Option<Span>,
     ) -> Result<Value, String> {
         let declared_ret = fn_val.return_type.clone();
-        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span)?;
+        // ⚠⚠ 本体は**定義したモジュールの大域で**走らせる（`FnValue::globals`・名前空間の分離）。
+        //   失敗で抜けるときも戻す。
+        let prev_globals = self.switch_globals(fn_val.globals);
+        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span);
+        self.switch_globals(prev_globals);
+        let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
             declared_ret.as_deref(),
             out,

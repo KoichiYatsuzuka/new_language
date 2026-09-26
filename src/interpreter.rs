@@ -473,6 +473,21 @@ pub struct Interpreter {
     /// これにより「呼び出しごとに外側スコープを drain/退避/復元する」Vec 確保を排除する。
     /// モジュールトップレベルでは 1（グローバルのみ可視）。
     pub(self) frame_floor: usize,
+    /// **モジュールごとの大域スコープ**（名前空間の分離・2026-09-26）。添字 0 がメインのプログラム。
+    ///
+    /// ⚠⚠ **いま使っている大域は `scopes[0]` にある。** ここのその添字には空の置き物が入っていて、
+    /// 大域を差し替えるときに入れ替える（[`Self::switch_globals`]）。関数値は定義したモジュールの
+    /// 添字を持ち（`FnValue::globals`）、呼び出しの間だけその大域が `scopes[0]` に来る。
+    /// ⚠ 以前は `import` のたびにモジュールの名前を呼び出し側の大域へ流し込んでいた（名前空間の侵食）。
+    pub(self) global_scopes: Vec<ScopeMap>,
+    /// いま `scopes[0]` にある大域の添字（[`Self::global_scopes`] の）。
+    pub(self) cur_globals: u32,
+    /// 組み込みの `EventLoop`（単一の値）。モジュールの大域にも同じものを置く。
+    pub(self) event_loop_value: Value,
+    /// 展開器のモジュールの枠（`meta_push_module_frame`）を閉じるときに戻す状態。
+    pub(self) meta_module_frames: Vec<(u32, Vec<ScopeMap>, usize)>,
+    /// 展開器の前口上（`gensym` など）の名前と値。モジュールの展開の枠の大域にも置く。
+    pub(self) meta_prelude: Vec<(String, Value)>,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
@@ -615,21 +630,10 @@ impl Interpreter {
     ///
     /// 戻り値: 初期化済みの `Interpreter` インスタンス
     pub fn new() -> Self {
-        let mut global: ScopeMap = ScopeMap::default();
-        built_in_types::register_builtin_globals(&mut global);
-
-        // Signal: テンプレート型コンストラクタ。Signal[T]() で Value::Signal を生成する。
-        global.insert(
-            "Signal".to_string(),
-            Var::new(Value::Type("Signal".to_string()), false),
-        );
-
         // EventLoop シングルトンを生成してグローバルスコープに登録する。
         let el_data = Rc::new(RefCell::new(event_loop::EventLoopData::new()));
-        global.insert(
-            "EventLoop".to_string(),
-            Var::new(Value::EventLoop(el_data.clone()), false),
-        );
+        // ⚠ 組み込みの並びは `builtin_global_scope` 1 か所（モジュールの大域も同じものから作る）。
+        let global = Self::builtin_global_scope(&Value::EventLoop(el_data.clone()));
 
         Self {
             scopes: vec![global],
@@ -646,6 +650,12 @@ impl Interpreter {
             template_class_cache: HashMap::new(),
             vm_stack: Vec::new(),
             frame_floor: 1,
+            // ⚠ 添字 0（メイン）は今 `scopes[0]` にあるので、ここは置き物。
+            global_scopes: vec![ScopeMap::default()],
+            cur_globals: 0,
+            event_loop_value: Value::EventLoop(el_data.clone()),
+            meta_module_frames: Vec::new(),
+            meta_prelude: Vec::new(),
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             call_name_pool: Vec::new(),
@@ -970,30 +980,53 @@ impl Interpreter {
 
     /// 展開器専用: モジュールの展開の枠を開く（タスク 2-12）。
     ///
-    /// ⚠ 実行時の `exec_module` と**同じ形**にする —— モジュールの本体はスコープを 1 つ積んで
-    /// 走らせる。この中で定義したメタ関数は、それより前にあるモジュールの名前（メタ関数・
-    /// `const`）を閉包として捕まえる（`exec_fn_def` の `capture_env`）。⇒ 後で別のモジュール
-    /// から呼ばれても、**自分のモジュールの名前**を引く（実行時の関数と同じ性質・実測で確認）。
+    /// ⚠ 実行時の `exec_module` と**同じ形**にする —— モジュールの本体は**そのモジュールの大域で**
+    /// 走らせる（`enter_module_frame`・名前空間の分離）。この中で定義したメタ関数は大域の添字を
+    /// 持つので、後で別のモジュールから呼ばれても**自分のモジュールの名前**を引く。
     pub(crate) fn meta_push_module_frame(&mut self) {
-        self.push_scope();
+        let saved = self.enter_module_frame();
+        self.meta_module_frames.push(saved);
+        // ⚠ 前口上（`gensym` / `compile_error` / 配置メタ関数の入口 …）はどのモジュールからも使う。
+        //   値（関数）だけを置く。関数はメインの大域で走るので、旗や `gensym` の数え上げは共有される。
+        for (name, value) in self.meta_prelude.clone() {
+            self.scopes[0].insert(name, Var::new(value, false));
+        }
+    }
+
+    /// 展開器専用: 前口上の名前を控える（`meta_push_module_frame` がモジュールの枠にも置く）。
+    ///
+    /// ⚠ 呼ぶのは前口上を読み込んだ直後（メインの大域が今の大域のとき）。
+    pub(crate) fn meta_set_prelude(&mut self, names: &[&str]) {
+        self.meta_prelude = names
+            .iter()
+            .filter_map(|n| self.get_val(n).map(|v| (n.to_string(), v)))
+            .collect();
+    }
+
+    /// 展開器専用: **メインの大域の**変数に代入する（配置メタ関数の見張りの旗・タスク 3-8）。
+    ///
+    /// ⚠ 旗を読む前口上の関数はメインの大域で走る。モジュールの展開の枠の中から配置メタ関数を
+    ///   呼ぶときも、旗はメインの大域のものを上げ下げしなければならない。
+    pub(crate) fn meta_assign_main_global(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let prev = self.switch_globals(0);
+        let r = self.vm_assign_global(name, value);
+        self.switch_globals(prev);
+        r
     }
 
     /// 展開器専用: モジュールの展開の枠を閉じ、その枠で定義した名前と値を返す（タスク 2-12）。
     ///
-    /// ⚠ 実行時の `exec_module` と同じく、**まだ無い名前だけ**を大域へも登録する。
-    /// 閉包は定義より**前**の名前しか捕まえないので、後ろで定義した同じモジュールの
-    /// メタ関数を呼ぶ経路はここで引けるようにしておく。
+    /// ⚠ 呼び出し側の大域へは**何も登録しない**（実行時の `exec_module` と同じ・名前空間の分離）。
+    ///   以前は「まだ無い名前だけ」を大域へも登録して、後ろで定義した同じモジュールのメタ関数を
+    ///   引かせていたが、それは呼び出し側の名前空間を侵す。今はメタ関数が自分の大域で名前を引く。
+    /// ⚠ 組み込みと同じ名前を宣言し直したものは名前空間に出ない（展開時の値としては使わない）。
     pub(crate) fn meta_pop_module_frame(&mut self) -> std::collections::HashMap<String, Value> {
-        let members: std::collections::HashMap<String, Value> = self
-            .scopes
-            .last()
-            .map(|s| s.iter().map(|(k, v)| (k.clone(), v.get_value())).collect())
-            .unwrap_or_default();
-        self.pop_scope();
-        for (name, value) in &members {
-            if !self.scopes[0].contains_key(name) {
-                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
-            }
+        let mut members = self.module_members(&std::collections::HashMap::new());
+        for (name, _) in &self.meta_prelude {
+            members.remove(name);
+        }
+        if let Some(saved) = self.meta_module_frames.pop() {
+            self.leave_module_frame(saved);
         }
         members
     }

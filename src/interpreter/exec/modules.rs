@@ -325,6 +325,31 @@ impl Interpreter {
 
     /// モジュールの body を孤立スコープで実行し、`Value::Namespace` を返す。
     /// キャッシュを使用し、循環 import はエラーにする。
+    /// モジュールの本体を今の大域で走らせる（`exec_module` / `try_load_native_module` 共通）。
+    ///
+    /// #42: モジュール本体も**バイトコード VM で実行する**。以前はここが丸ごと
+    /// ツリーウォークで、`for`/`if` などの制御フローがツリーウォークで動いていた
+    /// （`AR_TW_STATS` の `tw_control_flow` で実測）。定義文（`fn`/`class`/`import`）は
+    /// 設計上インタプリタが実行する（#10-d）ので `try_run_module_stmt` が `None` を返す。
+    fn run_module_body(
+        &mut self,
+        body: &[Stmt],
+        module_globals: &HashMap<String, bool>,
+        what: &str,
+        module: &[String],
+    ) -> Result<(), String> {
+        for stmt in body {
+            let res = match self.try_run_module_stmt(stmt, module_globals)? {
+                Some(r) => r,
+                None => self.exec(stmt)?,
+            };
+            if let ExecResult::Raise(_) = res {
+                return Err(format!("RuntimeError: exception during {what}: {}", module.join(".")));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn exec_module(
         &mut self,
         lang: &str,
@@ -400,48 +425,26 @@ impl Interpreter {
         if lang == "py" {
             self.in_python_module = true;
         }
-        self.push_scope();
+        // ⚠⚠ **モジュールの本体は自分の大域で走らせる**（名前空間の分離・2026-09-26）。
+        //   以前はスコープを 1 つ積んで走らせ、終わったらモジュールの名前を**呼び出し側の大域へ
+        //   流し込んでいた**（モジュールの関数が同じモジュールの名前を引くため）。その結果、
+        //   `import m` だけで呼び出し側の名前空間が侵されていた（実測）:
+        //   - 同名の `let` / `const` が `already declared` になる
+        //   - 同名の `fn` が多重定義として合成され、**呼び出し側の関数がモジュールの関数に乗っ取られる**
+        //   - 修飾なしの名前（`helper(2)`・モジュールが import した `o`）が呼び出し側から見える
+        //   - 逆に、モジュールの本体・関数が呼び出し側の名前を引けてしまう
+        //   今は関数値が定義したモジュールの大域を持ち、呼び出しの間だけそれに差し替える
+        //   （`FnValue::globals`・`switch_globals`）。呼び出し側へは名前空間の値だけを渡す。
+        let frame = self.enter_module_frame();
         // 診断フック（#10-d）: ここから先は import モジュール本体（メイン最上位と区別して計上）。
         let _mod_guard = crate::interpreter::tw_stats::enabled()
             .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);
-        // #42: モジュール本体も**バイトコード VM で実行する**。以前はここが丸ごと
-        // ツリーウォークで、`for`/`if` などの制御フローがツリーウォークで動いていた
-        // （`AR_TW_STATS` の `tw_control_flow` で実測）。定義文（`fn`/`class`/`import`）は
-        // 設計上インタプリタが実行する（#10-d）ので `try_run_module_stmt` が `None` を返す。
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
-        for stmt in body {
-            let res = match self.try_run_module_stmt(stmt, &module_globals)? {
-                Some(r) => r,
-                None => self.exec(stmt)?,
-            };
-            match res {
-                ExecResult::Normal => {}
-                ExecResult::Raise(_) => {
-                    self.pop_scope();
-                    return Err(format!(
-                        "RuntimeError: exception during module initialization: {}",
-                        module.join(".")
-                    ));
-                }
-            }
-        }
-        let members: HashMap<String, Value> = self
-            .scopes
-            .last()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.get_value()))
-            .collect();
-        self.pop_scope();
+        let result = self.run_module_body(body, &module_globals, "module initialization", module);
+        let members = self.module_members(&module_globals);
+        self.leave_module_frame(frame);
         self.in_python_module = prev_in_python;
-
-        // Python モジュールのメソッドが同モジュール内の他の関数を呼び出せるように
-        // モジュールメンバをグローバルスコープに登録する（既存エントリは上書きしない）。
-        for (name, value) in &members {
-            if !self.scopes[0].contains_key(name) {
-                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
-            }
-        }
+        result?;
 
         let ns = Rc::new(NamespaceData {
             name: module.join("."),
@@ -547,33 +550,14 @@ impl Interpreter {
 
         let lib_path_buf = lib_path.to_path_buf();
 
-        self.push_scope();
         // #42: ネイティブモジュールのスタブ本体も同じ経路で実行する。
+        // ⚠ 自分の大域で走らせる（`exec_module` と同じ・名前空間の分離）。
+        let frame = self.enter_module_frame();
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
-        for stmt in body {
-            let res = match self.try_run_module_stmt(stmt, &module_globals)? {
-                Some(r) => r,
-                None => self.exec(stmt)?,
-            };
-            match res {
-                ExecResult::Normal => {}
-                ExecResult::Raise(_raised) => {
-                    self.pop_scope();
-                    return Err(format!(
-                        "RuntimeError: exception during native module init: {}",
-                        module.join(".")
-                    ));
-                }
-            }
-        }
-        let mut members: HashMap<String, Value> = self
-            .scopes
-            .last()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.get_value()))
-            .collect();
-        self.pop_scope();
+        let result = self.run_module_body(body, &module_globals, "native module init", module);
+        let mut members = self.module_members(&module_globals);
+        self.leave_module_frame(frame);
+        result?;
 
         for stmt in body {
             match stmt {
@@ -908,6 +892,7 @@ impl Interpreter {
                 .collect();
 
             let init_fn = Rc::new(FnValue {
+                globals: self.cur_globals,
                 name: "__init__".to_string(),
                 params: init_params,
                 body: std::rc::Rc::from(init_body),

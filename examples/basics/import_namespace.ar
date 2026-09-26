@@ -1,0 +1,43 @@
+# import_namespace.ar — `import m` はモジュールの名前を呼び出し側へ流し込まない（名前空間の分離・2026-09-26）
+#
+# 対になる誤り: import_namespace_error.ar
+#
+# ⚠⚠ 以前は `import` のたびに、モジュールの最上位の名前を**呼び出し側の大域へ流し込んでいた**
+#   （モジュールの関数が同じモジュールの名前を引くための仕組みだった）。その結果:
+#   - 同じ名前の `let` / `const` が `NameError: variable 'SCALE' is already declared` になった
+#   - 同じ名前の `fn` が多重定義として合成され、**呼び出し側の `scaled(4)` がモジュールの関数を呼んだ**
+#   - 修飾なしの `scaled(2)` や、モジュールが import した名前が呼び出し側から見えた
+#   - 逆に、モジュールの関数が呼び出し側の名前を引けた
+# ⚠ 今は関数が**定義したモジュールの大域で**名前を引く（Python の `__globals__` と同じ）。
+
+import namespace_modules.shapes as sh
+
+# ── 呼び出し側に同じ名前があってもぶつからない ──
+let SCALE = 3
+fn scaled(let n: int) -> int:
+    return n + 1000
+
+print(SCALE)                # 3
+print(scaled(4))            # 1004（呼び出し側の関数）
+print(sh.scaled(4))         # 40（モジュールの関数。モジュールの SCALE = 10 を引く）
+print(sh.SCALE)             # 10
+
+# ── モジュールの関数・メソッドはモジュールの名前を引く ──
+print(sh.Square(3).area())  # 90
+print(sh.SAMPLE)            # 40（モジュールの最上位から呼んだメソッド）
+
+# ── 非同期タスクの中でも同じ ──
+# ⚠ 以前はタスクの中で呼んだ関数が自分の大域を引けず `NameError` だった
+#   （モジュールの関数に限らず、メインの関数がメインの `const` を引くだけで落ちた）。
+const BONUS = 5
+fn with_bonus(let n: int) -> int:
+    return n + BONUS
+
+mut mng = AsyncManager(num_thread=2)
+mng <- async->int:
+    block_return sh.scaled(1)
+mng <- async->int:
+    block_return with_bonus(1)
+mng.wait_for_finish()
+print(mng.results)          # [10, 6]
+print(mng.error_list)       # [None, None]

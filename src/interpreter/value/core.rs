@@ -282,6 +282,7 @@ impl Value {
                 })))
             }
             Value::Function(rc) => Value::Function(Rc::new(FnValue {
+                globals: rc.globals,
                 name: rc.name.clone(),
                 params: rc.params.clone(),
                 // ⚠ **`Rc` を clone してはいけない**（#45）。`Rc<[Stmt]>` の参照カウントは
@@ -298,6 +299,7 @@ impl Value {
                 fns.iter()
                     .map(|rc| {
                         Rc::new(FnValue {
+                            globals: rc.globals,
                             name: rc.name.clone(),
                             params: rc.params.clone(),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
@@ -312,6 +314,7 @@ impl Value {
                     .collect(),
             ),
             Value::GeneratorFn(rc) => Value::GeneratorFn(Rc::new(GeneratorFnValue {
+                globals: rc.globals,
                 name: rc.name.clone(),
                 params: rc.params.clone(),
                 body: rc.body.clone(),

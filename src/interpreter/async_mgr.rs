@@ -40,8 +40,23 @@ pub enum AsyncStatus {
 // is safe: each thread owns its copy exclusively.
 // ---------------------------------------------------------------------------
 
-/// スレッド境界を越えてスコープ環境（変数名・値・可変フラグ）を送るためのラッパー。
-struct SendableEnv(Vec<(String, Value, bool)>);
+/// タスクへ送る環境（名前空間の分離・2026-09-26）。
+///
+/// ⚠⚠ **見えている名前だけでは足りない。** タスクの中で呼んだ関数は、自分を定義したモジュールの
+/// 大域で名前を引く（`FnValue::globals`）。以前はワーカーに大域が 1 つも無く、メインの関数が
+/// メインの `const` を引くだけで `NameError` になっていた（実測・名前空間の分離の前から）。
+/// ⇒ 各モジュールの大域も（`capture_env` と同じ複製規則で）送り、ワーカーの同じ添字に置く。
+pub(super) struct TaskEnv {
+    /// 見えている名前（現関数のローカル＋今の大域）。
+    pub(super) vars: Vec<(String, Value, bool)>,
+    /// 各モジュールの大域（添字は `Interpreter::global_scopes` と同じ・0 がメイン）。
+    pub(super) globals: Vec<Vec<(String, Value, bool)>>,
+    /// タスクを出したコードの大域の添字（本体はこの大域で走る）。
+    pub(super) cur_globals: u32,
+}
+
+/// スレッド境界を越えてタスクの環境を送るためのラッパー。
+struct SendableEnv(TaskEnv);
 unsafe impl Send for SendableEnv {}
 
 /// スレッド境界を越えてタスク本体の AST を送るためのラッパー。
@@ -55,7 +70,7 @@ unsafe impl Send for SendableBody {}
 /// ペンディング状態の非同期タスク（本体とキャプチャ済み環境を保持）。
 struct AsyncTask {
     body: Vec<Stmt>,
-    env: Vec<(String, Value, bool)>,
+    env: TaskEnv,
 }
 
 /// スレッドから親スレッドへ返す実行結果（値またはエラー文字列）。
@@ -131,12 +146,12 @@ impl AsyncManagerData {
     }
 
     /// 新しいタスクを登録し、スレッドスロットが空いていれば即座に実行を開始する。
-    pub fn add_task(
+    pub(super) fn add_task(
         &mut self,
         body: Vec<Stmt>,
-        env: Vec<(String, Value, bool)>,
+        env: TaskEnv,
     ) {
-        if env.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
+        if env.vars.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
             eprintln!(
                 "Warning: async task captures Python objects; \
                  Python's GIL will serialize execution across tasks (no true parallelism)"
@@ -256,7 +271,7 @@ impl AsyncManagerData {
 /// スレッド内でタスク本体を実行し、結果またはエラーを `ThreadResult` として返す。
 fn run_task(
     body: Vec<Stmt>,
-    env: Vec<(String, Value, bool)>,
+    env: TaskEnv,
     abort: Arc<AtomicBool>,
 ) -> ThreadResult {
     if abort.load(Ordering::Relaxed) {
@@ -267,6 +282,9 @@ fn run_task(
     }
 
     let mut interp = Interpreter::new();
+    // 各モジュールの大域を同じ添字に置き、タスクを出したコードの大域へ切り替える（`TaskEnv` の doc）。
+    interp.install_task_globals(env.globals, env.cur_globals);
+    let env = env.vars;
 
     // ── VM 経路（#32）──────────────────────────────────────────────────────
     // タスク本体は「値を返すブロック式」なので `compile_async_body` で Chunk 化する。
@@ -354,7 +372,23 @@ impl AsyncStatus {
 
 /// インタープリタのスコープスタックから非同期タスク用の環境スナップショットを取得する。
 /// `mut` 変数は Rc クローン（変更が伝播）、`let` 変数はディープクローン（独立コピー）となる。
-pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
+pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
+    let (globals, cur_globals) = interp.snapshot_globals_for_task();
+    TaskEnv { vars: capture_vars(interp), globals, cur_globals }
+}
+
+/// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。
+/// `mut` は Rc クローン（変更が伝播）、`let` はディープクローン（独立コピー）。
+pub(super) fn clone_for_task(var: &Var) -> Value {
+    if var.is_mutable() {
+        var.get_value().clone()
+    } else {
+        var.get_value().deep_clone()
+    }
+}
+
+/// 見えている名前（現関数のローカル＋今の大域）の複製。
+fn capture_vars(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();
     // 可視スコープ = 現関数のローカル（frame_floor..、内側優先）+ グローバル（0）。
@@ -367,12 +401,7 @@ pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     for scope in visible {
         for (name, var) in scope.iter() {
             if seen.insert(name.clone()) {
-                let value = if var.is_mutable() {
-                    var.get_value().clone()
-                } else {
-                    var.get_value().deep_clone()
-                };
-                env.push((name.clone(), value, var.is_mutable()));
+                env.push((name.clone(), clone_for_task(var), var.is_mutable()));
             }
         }
     }

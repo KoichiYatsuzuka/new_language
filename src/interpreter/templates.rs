@@ -159,6 +159,7 @@ impl Interpreter {
                         let concrete_params = subst_params(&tmpl.params, &type_map);
                         let concrete_body = subst_stmts(&tmpl.body, &type_map);
                         let fn_val = Rc::new(FnValue {
+                            globals: self.cur_globals,
                             name: tmpl.name.clone(),
                             params: concrete_params,
                             body: std::rc::Rc::from(concrete_body),
@@ -235,6 +236,7 @@ impl Interpreter {
                         let concrete_params = subst_params(&tmpl.params, &type_map);
                         let concrete_body = subst_stmts(&tmpl.body, &type_map);
                         let gen_fn = Rc::new(GeneratorFnValue {
+                            globals: self.cur_globals,
                             name: tmpl.name.clone(),
                             params: concrete_params,
                             body: concrete_body,
@@ -415,6 +417,7 @@ impl Interpreter {
                         .entry(storage_name)
                         .or_default()
                         .push(Rc::new(FnValue {
+                            globals: self.cur_globals,
                             name: mname.clone(),
                             params: params.clone(),
                             body: std::rc::Rc::from(&mbody[..]),
@@ -437,6 +440,7 @@ impl Interpreter {
                     gen_methods.insert(
                         mname.clone(),
                         Rc::new(GeneratorFnValue {
+                            globals: self.cur_globals,
                             name: mname.clone(),
                             params: params.clone(),
                             body: mbody.clone(),

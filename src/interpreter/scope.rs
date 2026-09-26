@@ -1,4 +1,4 @@
-// scope.rs — スコープ管理 (push_scope / pop_scope / get_var / declare_var / assign_var)
+// scope.rs — スコープ管理 (push_scope / switch_globals / get_var / declare_var / assign_var)
 //
 // `Interpreter` のスコープスタック（`Vec<HashMap<String, Var>>`）を操作するメソッド群。
 // インデックス 0 がグローバルスコープ、末尾がローカルスコープ（最内部）。
@@ -8,19 +8,137 @@
 use super::{Interpreter, Value, Var};
 
 impl Interpreter {
+    /// 組み込みだけを入れた大域（メインの大域と、各モジュールの大域の雛形）。
+    ///
+    /// ⚠ 組み込みの並びは**ここ 1 か所**。メインとモジュールで食い違うと、モジュールの中でだけ
+    ///   組み込みが見えなくなる。
+    pub(super) fn builtin_global_scope(event_loop: &Value) -> super::ScopeMap {
+        let mut global = super::ScopeMap::default();
+        super::built_in_types::register_builtin_globals(&mut global);
+        // Signal: テンプレート型コンストラクタ。Signal[T]() で Value::Signal を生成する。
+        global.insert(
+            "Signal".to_string(),
+            Var::new(Value::Type("Signal".to_string()), false),
+        );
+        // EventLoop は単一の値（どの大域からも同じものが見える）。
+        global.insert("EventLoop".to_string(), Var::new(event_loop.clone(), false));
+        global
+    }
+
+    /// 今の大域（`scopes[0]`）を `to` の大域へ差し替え、差し替える前の添字を返す
+    /// （名前空間の分離・2026-09-26）。
+    ///
+    /// ⚠ 呼び出し側は**必ず戻す**（`let prev = self.switch_globals(g); …; self.switch_globals(prev);`）。
+    ///   失敗（`Err`）で抜けるときも戻すこと。
+    /// ⚠ slot キャッシュ（`slot_epoch` で焼いた大域の slot 番号）は進めない。コードは常に自分を
+    ///   定義したモジュールの大域で走る（関数値が大域を持ち、呼び出しで差し替える）ので、
+    ///   あるコードのキャッシュが別の大域に当たることは無い。
+    #[inline]
+    pub(crate) fn switch_globals(&mut self, to: u32) -> u32 {
+        let prev = self.cur_globals;
+        if to != prev {
+            self.switch_globals_slow(to);
+        }
+        prev
+    }
+
+    #[inline(never)]
+    fn switch_globals_slow(&mut self, to: u32) {
+        // ⚠ 知らない添字（非同期のワーカーへ大域を渡しそこねた等）は差し替えない。
+        if to as usize >= self.global_scopes.len() {
+            return;
+        }
+        let cur = self.cur_globals as usize;
+        // 今の大域を置き場へ戻し、行き先の大域を `scopes[0]` へ持ってくる。
+        std::mem::swap(&mut self.scopes[0], &mut self.global_scopes[cur]);
+        std::mem::swap(&mut self.scopes[0], &mut self.global_scopes[to as usize]);
+        self.cur_globals = to;
+    }
+
+    /// モジュールの本体を走らせる枠に入る（名前空間の分離・2026-09-26）。
+    ///
+    /// 新しい大域（組み込みだけ）を作って `scopes[0]` に据え、**呼び出し側のローカルを隠す**
+    /// （関数やブロックの中の `import` でも、モジュールの本体は呼び出し側の名前を見ない）。
+    /// 戻り値は [`Self::leave_module_frame`] に渡す。
+    pub(super) fn enter_module_frame(&mut self) -> (u32, Vec<super::ScopeMap>, usize) {
+        let fresh = Self::builtin_global_scope(&self.event_loop_value);
+        self.global_scopes.push(fresh);
+        let id = (self.global_scopes.len() - 1) as u32;
+        let locals = self.scopes.split_off(1);
+        let floor = std::mem::replace(&mut self.frame_floor, 1);
+        let prev = self.switch_globals(id);
+        (prev, locals, floor)
+    }
+
+    /// 今の大域（モジュールの大域）から、名前空間に出す名前と値を取り出す。
+    ///
+    /// ⚠ 組み込み（`int` / `EventLoop` …）は出さない（大域には雛形として入っているだけ）。
+    ///   モジュールが同じ名前を宣言し直したもの（`declared` にあるもの）は出す。
+    pub(crate) fn module_members(
+        &self,
+        declared: &std::collections::HashMap<String, bool>,
+    ) -> std::collections::HashMap<String, Value> {
+        let builtins = Self::builtin_global_scope(&self.event_loop_value);
+        self.scopes[0]
+            .iter()
+            .filter(|(n, _)| !builtins.contains_key(n.as_str()) || declared.contains_key(n.as_str()))
+            .map(|(k, v)| (k.clone(), v.get_value()))
+            .collect()
+    }
+
+    /// [`Self::enter_module_frame`] で入った枠を出る。モジュールの大域は置き場に残る
+    /// （そのモジュールの関数が後で呼ばれたときに使う）。
+    pub(super) fn leave_module_frame(&mut self, saved: (u32, Vec<super::ScopeMap>, usize)) {
+        let (prev, locals, floor) = saved;
+        // ⚠ 本体の途中で失敗して積んだスコープが残っていれば捨てる。
+        self.scopes.truncate(1);
+        self.switch_globals(prev);
+        self.scopes.extend(locals);
+        self.frame_floor = floor;
+    }
+
+    /// 非同期タスクへ送る各モジュールの大域の複製と、今の大域の添字（`async_mgr::TaskEnv`）。
+    pub(crate) fn snapshot_globals_for_task(&self) -> (Vec<Vec<(String, Value, bool)>>, u32) {
+        let cur = self.cur_globals as usize;
+        let globals = (0..self.global_scopes.len())
+            .map(|i| {
+                // ⚠ 今の大域は `scopes[0]` にある（置き場のその添字は空の置き物）。
+                let scope = if i == cur { &self.scopes[0] } else { &self.global_scopes[i] };
+                scope
+                    .iter()
+                    .map(|(n, v)| (n.clone(), super::async_mgr::clone_for_task(v), v.is_mutable()))
+                    .collect()
+            })
+            .collect();
+        (globals, self.cur_globals)
+    }
+
+    /// 非同期タスクのワーカーに、送られてきた各モジュールの大域を**同じ添字で**置き、
+    /// タスクを出したコードの大域へ切り替える（`async_mgr::TaskEnv`）。
+    pub(crate) fn install_task_globals(&mut self, globals: Vec<Vec<(String, Value, bool)>>, cur: u32) {
+        debug_assert_eq!(self.cur_globals, 0, "a fresh worker starts in its main globals");
+        for (i, entries) in globals.into_iter().enumerate() {
+            if i == 0 {
+                for (n, v, m) in entries {
+                    self.scopes[0].insert(n, Var::new(v, m));
+                }
+            } else {
+                let mut g = Self::builtin_global_scope(&self.event_loop_value);
+                for (n, v, m) in entries {
+                    g.insert(n, Var::new(v, m));
+                }
+                self.global_scopes.push(g);
+            }
+        }
+        self.switch_globals(cur);
+    }
+
     /// 新しいローカルスコープをスタックに積む。
     /// ブロック・関数・if/while/for の実行開始時に呼ぶ。
     pub(super) fn push_scope(&mut self) {
         self.scopes.push(Default::default());
     }
 
-    /// 最内部のローカルスコープをスタックから取り除く。
-    /// グローバルスコープ（インデックス 0）は削除しない。
-    pub(super) fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
 
     /// 指定名の変数エントリ（`Var`）を内側スコープから外側スコープへ向けて検索する。
     ///

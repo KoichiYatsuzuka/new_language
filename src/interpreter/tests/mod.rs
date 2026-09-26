@@ -197,6 +197,7 @@ mod unpacking;
 mod mustbe;
 mod hashing;
 mod alias;
+mod modules;
 
 /// A 軸（呼び先の同定）の跨ファイル不変条件を固定するテスト（#22-d）。
 ///

@@ -41,6 +41,9 @@ pub struct GeneratorFnValue {
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub captured_env: HashMap<String, CapturedVar>,
+    /// 定義したモジュールの大域（`Interpreter::global_scopes` の添字・0 がメイン）。
+    /// 本体は**この大域で**名前を引く（[`FnValue::globals`] と同じ）。
+    pub globals: u32,
 }
 
 
@@ -75,6 +78,8 @@ pub struct GenProducer {
     pub(crate) frame: crate::vm::run::Frame,
     /// メソッドのときの所属クラス（再開のたび `current_class` を張り直す）。
     pub(crate) self_class: Option<std::rc::Rc<super::ClassValue>>,
+    /// 定義したモジュールの大域（再開のたびに張り直す・[`FnValue::globals`]）。
+    pub(crate) globals: u32,
 }
 
 // ⚠ `Chunk` は `Debug` を実装しないので手書きする。
@@ -164,6 +169,12 @@ pub struct TemplateClassValue {
 }
 
 
+/// [`FnValue::globals`] の特別な値: **呼び出し側の大域のまま**走らせる（名前空間の分離）。
+///
+/// 組み込みが合成する関数（例外クラスの `__init__` など）は本体が引数と `self` しか引かないので、
+/// どのモジュールにも属さない。⚠ `switch_globals` は知らない添字を差し替えないので、これで足りる。
+pub const GLOBALS_OF_CALLER: u32 = u32::MAX;
+
 /// 通常の関数定義（`fn` キーワード）の実行時表現。
 ///
 /// - `name`: 関数名（`__repr__` 等の表示に使用。匿名の場合は `"<anonymous>"`）
@@ -188,6 +199,14 @@ pub struct FnValue {
     /// `exec_fn_def` 由来・テンプレート実体化・`deep_clone` 由来）は従来どおり。
     /// ⚠ **`deep_clone` では必ず `None`**（スレッドへ `Rc` を持ち出さない・#15）。
     pub vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
+    /// 定義したモジュールの大域（`Interpreter::global_scopes` の添字・0 がメイン）。
+    ///
+    /// ⚠⚠ 本体の自由な名前は**定義したモジュールの大域で**引く（Python の関数が持つ globals と同じ）。
+    /// 呼び出しの間だけ `scopes[0]` をこの大域へ差し替える（`Interpreter::switch_globals`）。
+    /// 以前は `import` のたびにモジュールの名前を**呼び出し側の大域へ流し込んで**引かせていたので、
+    /// 呼び出し側の名前空間が侵されていた（同名の `const` が再宣言になる・同名の関数が
+    /// 多重定義として合成されて呼び出し側の関数が乗っ取られる・実測）。
+    pub globals: u32,
 }
 
 
@@ -354,6 +373,7 @@ impl ClassValue {
                     .iter()
                     .map(|rc| {
                         Rc::new(FnValue {
+                            globals: rc.globals,
                             name: rc.name.clone(),
                             params: rc.params.clone(),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
@@ -378,6 +398,7 @@ impl ClassValue {
                 (
                     k.clone(),
                     Rc::new(GeneratorFnValue {
+                        globals: rc.globals,
                         name: rc.name.clone(),
                         params: rc.params.clone(),
                         body: rc.body.clone(),

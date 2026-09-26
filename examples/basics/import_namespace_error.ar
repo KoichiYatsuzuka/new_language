@@ -1,0 +1,11 @@
+# import_namespace_error.ar — `import m` だけではモジュールの名前は修飾なしで使えない（名前空間の分離）
+#
+# 対になる正常系: import_namespace.ar
+#
+# ⚠ 以前はモジュールの名前が呼び出し側の大域へ流し込まれていたので、これが通って 20 を出していた。
+#   Expected error (NameError):
+#     'scaled' is not defined
+
+import namespace_modules.shapes as sh
+
+print(scaled(2))
