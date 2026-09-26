@@ -1,0 +1,14 @@
+# tuple_subscript.ar — 添字の中の `,` は組になる（`d[x, y]` は `d[(x, y)]`・Python と同じ）
+#
+# 対になる誤り: tuple_subscript_error.ar
+#
+# ⚠ 型の合成を展開時に `dict[k, v]` / `tuple[a, b]` と書くために足した構文（設計書 D23・タスク 4-2）。
+#   以前は `,` で `expected ']'` の構文エラーだった。実行時の値にも同じく効く。
+
+mut grid: dict[tuple[int, int], str] = {}
+grid[(0, 0)] = "origin"
+grid[(1, 2)] = "a"
+
+print(grid[0, 0])                   # origin
+print(grid[1, 2])                   # a
+print(grid[(1, 2)] == grid[1, 2])   # True

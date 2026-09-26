@@ -104,6 +104,12 @@ const ABORT_CLASS: &str = "MetaAbort";
 /// ⚠ 旗は入口で倒すので、本体の中からさらに配置メタ関数を呼ぶと必ず捕まる。
 const PLACING_ARMED: &str = "__placing_armed";
 
+/// 展開時にだけ型の値として束縛する型の構築子（D23・タスク 4-2）。`list[t]` などで型を合成する。
+///
+/// ⚠ `int` / `str` / `float` / `bool` / `dict` / `set` / `function` は組み込みの大域に最初から
+///   型の値としてあるので、ここには入れない（入れると二重に宣言される）。
+const TYPE_CONSTRUCTORS: [&str; 6] = ["list", "tuple", "fixed_list", "list_like", "Option", "Result"];
+
 /// 展開器側で起きた失敗の段（診断の言い回しを選ぶ・タスク 3-8）。
 ///
 /// ⚠ **どこで起きたかを言い分ける。** 実引数の評価で `compile_error` したのに
@@ -170,9 +176,9 @@ pub fn splice_count(lines: &[CodeLine]) -> usize {
 /// |---|---|
 /// | `str` | 識別子 1 つ（変数名・関数名・型名） |
 /// | `int` / `float` / `bool` | そのリテラル |
+/// | 型の値（`int` / `m.type` / `list[t]`） | その型（字句の並び・型として読めることを確かめる） |
 ///
-/// ⚠ **型と列はまだ扱えない**（設計書 §1.4 の「型」「列」）。型値の合成は 4-2、
-/// 型文字列の検証は 4-3、引数シグネチャの列は 4-1。⇒ ここでは明示エラーにして、
+/// ⚠ **列はまだ扱えない**（設計書 §1.4 の「列」・引数シグネチャの列は 4-1）。⇒ 明示エラーにして、
 /// 「黙って変なトークンが埋まる」ことを避ける。
 pub fn fill_splices(lines: &[CodeLine], values: &[Value]) -> Result<Vec<CodeLine>, String> {
     let mut it = values.iter();
@@ -187,7 +193,10 @@ pub fn fill_splices(lines: &[CodeLine], values: &[Value]) -> Result<Vec<CodeLine
                         "internal — fewer spliced values than holes".to_string()
                     })?;
                     // ⚠ 差し込むトークンには元の位置が無い。⇒ **行の位置**を使う（タスク 2-3）。
-                    pieces.push(CodePiece::Token(splice_token(v, &line.span)?));
+                    // ⚠ 型の値は字句が複数になる（`list [ int ]`・タスク 4-2）。
+                    for t in splice_tokens(v, &line.span)? {
+                        pieces.push(CodePiece::Token(t));
+                    }
                 }
             }
         }
@@ -200,7 +209,20 @@ pub fn fill_splices(lines: &[CodeLine], values: &[Value]) -> Result<Vec<CodeLine
 ///
 /// ⚠ 位置は**差し込まれる行の位置**（タスク 2-3）。値の側には位置が無いので、
 /// これが「どこに差し込まれたか」を指せる唯一の手がかり。
-fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
+fn splice_tokens(v: &Value, span: &Span) -> Result<Vec<Spanned>, String> {
+    // ⚠⚠ **型の値は型として差し込む**（D23・タスク 4-2 / 4-3 の後半・2026-09-27）。
+    //   `^` の `.type` は型の値を返すので、`let x: <! m.type !> = ...` がそのまま書ける。
+    //   型として読めることを確かめてから、本物の字句解析器で字句に分ける（型の文字列を
+    //   組み立てて差し込む道は 4-3 で塞いである・壊れた型が黙って通らない）。
+    if let Value::Type(t) = v {
+        let t = canonical_type(t)?;
+        return Ok(crate::lexer::Lexer::new(&t, "<splice>")
+            .tokenize()
+            .into_iter()
+            .filter(|tok| !matches!(tok.token, Token::Newline | Token::Eof))
+            .map(|tok| Spanned { token: tok.token, span: span.clone() })
+            .collect());
+    }
     let token = match v {
         // ⚠ `str` は**識別子**になる（文字列リテラルではない）。設計書 §1.4 の一段目。
         //   名前を組み立てて差し込むのがスプライスの主用途なので、ここが既定。
@@ -221,13 +243,26 @@ fn splice_token(v: &Value, span: &Span) -> Result<Spanned, String> {
         other => {
             return Err(format!(
                 "`<! !>` cannot splice a '{}' \
-                 (str / int / float / bool are supported; splicing types and sequences needs \
-                 the type-composition API, task 4-2, whose notation is not designed yet)",
+                 (str / int / float / bool and types are supported)",
                 crate::interpreter::ops::typecheck::runtime_type_name(other)
             ))
         }
     };
-    Ok(Spanned { token, span: span.clone() })
+    Ok(vec![Spanned { token, span: span.clone() }])
+}
+
+/// 型の値の文字列が**型として読める**ことを確かめ、正規の綴りを返す（D23・タスク 4-3 の後半）。
+///
+/// 型の合成（`list[t]`）・差し込み（`<! t !>`）・`^` の射影がここを通る。読めなければ展開時の
+/// エラー（壊れた型を黙って置かない）。⚠ 読み方は型注釈と同じパーサ、判定は型検査と同じ `from_ann`
+/// （自前の規則を書かない）。綴りを揃えるので、同じ型の値どうしは `==` で等しい。
+pub(crate) fn canonical_type(t: &str) -> Result<String, String> {
+    let not_a_type = |why: String| format!("TypeError: '{t}' is not a type ({why})");
+    let canon = crate::parser::canonical_type_text(t).map_err(not_a_type)?;
+    match crate::type_check::InferredType::from_ann(&canon) {
+        Some(ty) if !matches!(ty, crate::type_check::InferredType::Unresolved) => Ok(canon),
+        _ => Err(not_a_type("the type checker cannot read it".to_string())),
+    }
 }
 
 // ── `Code` の演算（設計書 §1.2 / タスク 2-10）─────────────────────────────
@@ -283,7 +318,7 @@ pub fn code_lines_as_values(lines: &[CodeLine]) -> Vec<Value> {
 ///
 /// ⚠ 型を差し込みたいとき（`list[int]` など）はここで弾かれる。それは正しい ——
 /// 文字列を型の位置へ差し込む道は D23 が塞ぐと決めた経路で、正式な手段は
-/// 型値の合成（4-2・**記法は未設計**）とその検証（4-3 の残り半分）。
+/// 型の値（`m.type` / `list[t]`・タスク 4-2）を差し込むこと。
 fn checked_identifier(s: &str) -> Result<String, String> {
     let toks = crate::lexer::Lexer::new(s, "<splice>").tokenize();
     let mut meaningful = toks
@@ -631,9 +666,26 @@ impl Expander {
                 .exec(st)
                 .map_err(|e| format!("MetaError: internal — the expander prelude failed: {e}"))?;
         }
+        // ⚠⚠ **型の構築子を型の値として束縛する**（D23・タスク 4-2）。`list[t]` / `Option[t]` /
+        //   `tuple[a, b]` が型の値を返す（`Interpreter::compose_type`）。`int` / `str` / `dict` / `set`
+        //   などは組み込みの大域に既に型の値としてある。ここで足すのは実行時には値として無いものだけ。
+        // ⚠ **展開用インタプリタにだけ**置く。実行時の大域に `list` を足すと、利用者が変数名に
+        //   使った `list` が「既に宣言されている」になる。
+        for ctor in TYPE_CONSTRUCTORS {
+            self.interp
+                .vm_declare_global(
+                    ctor,
+                    crate::vm::op::DeclKind::Const,
+                    &[],
+                    Value::Type(ctor.to_string()),
+                )
+                .map_err(|e| format!("MetaError: internal — {e}"))?;
+        }
         // ⚠ モジュールの展開の枠にも前口上を置く（枠ごとに大域が分かれている・名前空間の分離）。
         //   旗（[`PLACING_ARMED`]）は置かない —— 旗は 1 つでなければならない。
-        self.interp.meta_set_prelude(&[ABORT_CLASS, "compile_error", "gensym", "__enter_placing"]);
+        let mut prelude: Vec<&str> = vec![ABORT_CLASS, "compile_error", "gensym", "__enter_placing"];
+        prelude.extend(TYPE_CONSTRUCTORS);
+        self.interp.meta_set_prelude(&prelude);
         Ok(())
     }
 
@@ -3095,7 +3147,7 @@ mod tests {
             "    return who\n",
             "\n",
             "exprconst !fn report(m) -> None:\n",
-            "    let n = m.params[0].name + \"_\" + m.return_type\n",
+            "    let n = m.params[0].name + \"_\" + m.return_type.name\n",
             "    quote code:\n",
             "        let <! n !> = 1\n",
             "\n",
@@ -3106,6 +3158,56 @@ mod tests {
             out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "who_str")),
             "仮引数名と戻り値型が取れていない"
         );
+    }
+
+    /// ⚠⚠ **型は型の値で返る**（D23・タスク 4-2・2026-09-27）。`.type` / 仮引数の `type` /
+    /// `.return_type` は `int` と等しく、合成（`list[t]` / `dict[k, v]`）も差し込みもそのまま書ける。
+    #[test]
+    fn type_projections_return_type_values_that_compose_and_splice() {
+        let out = expand(concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "    mut names: dict[str, int]\n",
+            "\n",
+            "exprconst !fn declare(m) -> None:\n",
+            "    let t = m.fields[0].type\n",
+            "    if t != int:\n",
+            "        compile_error(\"not a type value\")\n",
+            "    if dict[str, t] != m.fields[1].type:\n",
+            "        compile_error(\"a composed type differs from the same annotation\")\n",
+            "    quote code:\n",
+            "        let xs: <! list[t] !> = []\n",
+            "        let d: <! dict[str, t] !> = {}\n",
+            "        let <! t.name + \"_named\" !> = 1\n",
+            "\n",
+            "declare(^Point)\n",
+        ))
+        .expect("expand");
+        let ann = |name: &str| {
+            out.iter().find_map(|s| match s {
+                Stmt::Let(n, t, _) if n == name => t.clone(),
+                _ => None,
+            })
+        };
+        assert_eq!(ann("xs").as_deref(), Some("list[int]"));
+        // ⚠ 綴りは型注釈と同じ（パーサの正規の綴り・`canonical_type`）。
+        assert_eq!(ann("d").as_deref(), Some("dict[str,int]"));
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "int_named")));
+    }
+
+    /// ⚠ 型引数は型に限る。型でない値で合成しようとしたら展開時のエラー（壊れた型を黙って作らない）。
+    #[test]
+    fn composing_a_type_with_a_non_type_is_an_error() {
+        let err = expand(concat!(
+            "exprconst !fn bad() -> None:\n",
+            "    let t = list[3]\n",
+            "    quote code:\n",
+            "        let xs: <! t !> = []\n",
+            "\n",
+            "bad()\n",
+        ))
+        .expect_err("弾かれること");
+        assert!(err.contains("the type arguments of `list[...]` must be types"), "{err}");
     }
 
     /// ⚠⚠ 種別と噛み合わない射影は**エラー**（タスク 4-1）。空のリストを返すと

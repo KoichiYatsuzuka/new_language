@@ -1,0 +1,15 @@
+# metafn_type_values_error.ar — 型の合成の型引数は型に限る（設計書 D23・タスク 4-2）
+#
+# 対になる正常系: metafn_type_values.ar
+#
+# ⚠ 型でない値（ここでは `3`）で型を合成すると、展開時のエラー。壊れた型を黙って作らない。
+#
+# Expected error (MetaError):
+#   TypeError: the type arguments of `list[...]` must be types, got 'int'
+
+exprconst !fn bad_list() -> None:
+    let t = list[3]
+    quote code:
+        let xs: <! t !> = []
+
+bad_list()

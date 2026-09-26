@@ -1,0 +1,12 @@
+# tuple_subscript_error.ar — リストの添字に組は書けない（`xs[0, 1]`）
+#
+# 対になる正常系: tuple_subscript.ar
+#
+# ⚠ `xs[0, 1]` は `xs[(0, 1)]` と同じ意味（添字の中の `,` は組になる）なので、リストでは型が合わない。
+#   2 つの要素が欲しいときは `xs[0]` と `xs[1]` を別に書く。
+#
+# Expected error (StaticTypeError):
+#   index of `list[int]` expects 'int' but got 'tuple[int, int]'
+
+let xs = [1, 2, 3]
+print(xs[0, 1])

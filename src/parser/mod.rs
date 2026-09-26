@@ -42,6 +42,8 @@ mod imports;
 mod imports;
 pub(crate) mod classes;
 mod types;
+// 型の文字列を型注釈と同じ綴りに揃える（展開時の型の値・D23 / タスク 4-2）。
+pub(crate) use types::canonical_type_text;
 mod exprs;
 // Python ソースからの行ベース型スタブ抽出。**両ビルドで使う**ので `imports/` の外に置く
 // （`imports/` は editor では丸ごと差し替わり、抽出器ごと消えてしまうため）。

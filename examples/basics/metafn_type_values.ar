@@ -1,0 +1,47 @@
+# metafn_type_values.ar — `^` のメタ情報は型を**型の値**で返す（設計書 D23・タスク 4-2 / 4-3）
+#
+# 対になる誤り: metafn_type_values_error.ar
+#
+# ⚠⚠ 以前は `.type` / 仮引数の `type` / `.return_type` が**文字列**（"int"）だった。
+#   型を文字列で扱うと、`"list[" + t + "]"` のような連結で壊れた型が黙って作れてしまうので、
+#   文字列を型の位置へ差し込む道は塞いであり、合成した型を差し込む手段が 1 つも無かった。
+# ⇒ 型は型の値で返す。比較（`t == int`）・合成（`list[t]` / `dict[str, t]` / `Option[t]`）・
+#   差し込み（`<! t !>`）がそのまま書ける。名前が要るときは `t.name`。
+# ⚠ 合成した型・差し込んだ型は、型注釈と同じパーサで読めることを確かめる（壊れた型は展開時のエラー）。
+# ⚠ `list` / `tuple` / `Option` などの型の構築子は、展開中にだけ値として使える。
+
+class Point:
+    mut x: int
+    mut label: str
+
+fn scale(let p: Point, let k: int) -> int:
+    return p.x * k
+
+print("=== 型の値 ===")
+
+exprconst !fn declare_containers(m) -> None:
+    let t = m.fields[0].type
+    if t != int:
+        compile_error("m.fields[0].type is not the type int")
+    quote code:
+        let xs: <! list[t] !> = [1, 2]
+        let names: <! dict[m.fields[1].type, t] !> = {"a": 1}
+        let maybe: <! Option[t] !> = None
+
+declare_containers(^Point)
+print(xs)                           # [1, 2]
+print(names)                        # {'a': 1}
+print(maybe)                        # None
+
+print("=== 型の名前 ===")
+
+exprconst !fn describe(f) -> None:
+    # 名前は `.name` で文字列にして組み立てる（`scale_returns_int`）。
+    let n = f.name + "_returns_" + f.return_type.name
+    # 型はそのまま型の位置へ差し込む（仮引数 p の型 `Point`）。
+    let first = f.params[0].type
+    quote code:
+        let <! n !>: <! first !> = Point(3, "p")
+
+describe(^scale)
+print(scale_returns_int.x)          # 3

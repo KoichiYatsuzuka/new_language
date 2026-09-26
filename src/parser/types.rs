@@ -670,3 +670,21 @@ impl Parser {
         self.parse_type_expr()
     }
 }
+
+/// 型の文字列を、パーサが型注釈に付ける**正規の綴り**にする（D23・タスク 4-2）。
+///
+/// ⚠ 型の値（`^` の `.type`・`list[t]` の合成）の比較は綴りで行うので、同じ型が同じ綴りに
+///   ならないと `==` が食い違う（型注釈は `dict[str,int]`、素朴に組むと `dict[str, int]`）。
+///   ⇒ 型注釈と同じくこのパーサに通して揃える。読めなければ `Err`。
+pub(crate) fn canonical_type_text(text: &str) -> Result<String, String> {
+    let tokens = crate::lexer::Lexer::new(text, "<type>").tokenize();
+    let mut p = Parser::new(tokens, None);
+    let t = p.parse_type_expr()?;
+    while *p.current() == Token::Newline {
+        p.advance();
+    }
+    if *p.current() != Token::Eof {
+        return Err(format!("unexpected `{}` after the type", p.current()));
+    }
+    Ok(t)
+}

@@ -660,6 +660,19 @@ impl Parser {
                         end,
                         step,
                     }
+                } else if *self.current() == Token::Comma {
+                    // `a[x, y]` は `a[(x, y)]`（Python と同じ・D23・タスク 4-2）。
+                    // ⚠ 型の合成（`dict[k, v]` / `tuple[a, b]`）を展開時に書くために足した。
+                    //   以前は `,` で `expected ']'` の構文エラーだった。
+                    let mut items = vec![crate::ast::SeqEntry::Item(first)];
+                    while *self.current() == Token::Comma {
+                        self.advance();
+                        if *self.current() == Token::RBracket {
+                            break;
+                        }
+                        items.push(crate::ast::SeqEntry::Item(self.parse_expr()?));
+                    }
+                    Expr::Tuple(items)
                 } else {
                     first // 通常添字（スライスなし）
                 }

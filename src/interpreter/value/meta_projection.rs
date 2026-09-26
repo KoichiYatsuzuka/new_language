@@ -119,7 +119,7 @@ pub fn project(m: &Rc<MetaValue>, p: Projection) -> Result<Value, String> {
 
         Projection::Params => Ok(list(params_of(m)?.iter().map(param_record).collect())),
         Projection::ReturnType => Ok(match fn_of(m)? {
-            (_, Some(rt), ..) => Value::str(rt.as_str()),
+            (_, Some(rt), ..) => type_value(rt),
             _ => Value::None,
         }),
         Projection::IsStatic => Ok(Value::Bool(fn_of(m)?.2)),
@@ -253,13 +253,13 @@ fn field_of(m: &Rc<MetaValue>) -> Result<(FieldKind, &String, bool), String> {
 /// スプライスされたときに壊れた型注釈が黙って通る。
 fn binding_or_field_type(m: &Rc<MetaValue>) -> Result<Value, String> {
     match &*m.decl {
-        Stmt::Field { type_ann, .. } => Ok(Value::str(type_ann.as_str())),
+        Stmt::Field { type_ann, .. } => Ok(type_value(type_ann)),
         Stmt::Let(_, Some(t), _) | Stmt::Mut(_, Some(t), _) | Stmt::Const(_, Some(t), _) => {
-            Ok(Value::str(t.as_str()))
+            Ok(type_value(t))
         }
         Stmt::Let(..) | Stmt::Mut(..) | Stmt::Const(..) | Stmt::Static(..) => {
             match &m.binding_type {
-                Some(t) => Ok(Value::str(t.as_str())),
+                Some(t) => Ok(type_value(t)),
                 None => Err(format!(
                     "the type of '{}' could not be inferred at expansion time \
                      (annotate it, e.g. `let {}: int = ...`)",
@@ -480,6 +480,17 @@ fn list(items: Vec<Value>) -> Value {
     Value::List(Rc::new(std::cell::RefCell::new(items)))
 }
 
+/// 型注釈を**型の値**にする（D23・タスク 4-2・2026-09-27）。
+///
+/// ⚠⚠ 以前は型を**文字列**で返していた（`m.type` が `"int"`）。型は型の値で扱う ——
+///   比較（`m.type == int`）・合成（`list[m.type]`）・差し込み（`<! m.type !>`）がそのまま書け、
+///   文字列の連結で壊れた型が作られることも無い。名前が要るときは `.name`（`"int"`）。
+fn type_value(t: &str) -> Value {
+    // ⚠ 綴りを揃える（`canonical_type`）。展開時型推論の結果（型検査の表示）は `dict[str, int]` の
+    //   ように型注釈と綴りが違うことがある。読めない綴りはそのまま（差し込むときに弾かれる）。
+    Value::Type(crate::meta_expand::canonical_type(t).unwrap_or_else(|_| t.to_string()))
+}
+
 fn record(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     let mut members = HashMap::new();
     for (k, v) in fields {
@@ -500,7 +511,7 @@ fn param_record(p: &Param) -> Value {
             (
                 "type",
                 match &p.type_ann {
-                    Some(t) => Value::str(t.as_str()),
+                    Some(t) => type_value(t),
                     None => Value::None,
                 },
             ),

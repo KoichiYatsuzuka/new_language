@@ -227,6 +227,12 @@ impl Interpreter {
                 )
             }),
             Value::PyObject(handle) => crate::interpreter::py_interop::py_getattr(handle, attr),
+            // 型の値の名前（`int` / `list[int]`・D23・タスク 4-2）。型の値から識別子を組み立てるのに使う
+            // （`^` の `.type` は型の値を返すので、文字列としては `.name` で取り出す）。
+            Value::Type(t) => match attr {
+                "name" => Ok(Value::str(t.as_str())),
+                _ => Err(format!("AttributeError: type '{t}' has no attribute '{attr}'")),
+            },
             Value::Slice(s) => match attr {
                 "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
                 "end" => Ok(s.end.clone().unwrap_or(Value::None)),

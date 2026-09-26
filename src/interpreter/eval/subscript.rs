@@ -50,6 +50,34 @@ impl Interpreter {
         }
     }
 
+    /// 型の値に型引数を付けた型の値を作る（D23・タスク 4-2）。
+    ///
+    /// ⚠⚠ **型は文字列ではなく型の値で扱う**（2026-09-27 決定）。`^` の `.type` も型の値を返す。
+    ///   型引数は型の値に限り、組み上がったものは型として読めることを確かめる（4-3）。以前は型を
+    ///   文字列で渡していたので、`"list[" + t + "]"` のような連結で壊れた型が黙って作れた。
+    /// ⚠ 複数の型引数は `dict[k, v]`（添字の `,` は組になる）。
+    fn compose_type(base: &str, key: &Value) -> Result<Value, String> {
+        let args: Vec<Value> = match key {
+            Value::Tuple(td) => td.all_values().to_vec(),
+            other => vec![other.clone()],
+        };
+        let mut names = Vec::with_capacity(args.len());
+        for a in &args {
+            match a {
+                Value::Type(t) => names.push(t.clone()),
+                other => {
+                    return Err(format!(
+                        "TypeError: the type arguments of `{base}[...]` must be types, got '{}' \
+                         (write a type such as `int` or a type value such as `m.type`)",
+                        crate::interpreter::ops::typecheck::runtime_type_name(other)
+                    ))
+                }
+            }
+        }
+        let composed = format!("{base}[{}]", names.join(","));
+        Ok(Value::Type(crate::meta_expand::canonical_type(&composed)?))
+    }
+
     /// `obj[key]` の評価。リスト・文字列・タプル・辞書・PyObject・インスタンスに対応する。
     /// `key` が `Value::Slice` の場合はスライス処理を行い、新たなリスト/文字列/タプルを返す。
     pub(crate) fn eval_subscript(&mut self, obj: Value, key: Value) -> Result<Value, String> {
@@ -131,6 +159,8 @@ impl Interpreter {
                 self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key, true)])
             }
             Value::PyObject(ref handle) => crate::interpreter::py_interop::py_getitem(handle, &key),
+            // 型の合成（D23・タスク 4-2）: `list[t]` / `dict[k, v]` / `Option[t]` は型の値を返す。
+            Value::Type(ref base) => Self::compose_type(base, &key),
             _ => Err(format!(
                 "TypeError: '{}' object is not subscriptable",
                 self.type_name(&obj)
