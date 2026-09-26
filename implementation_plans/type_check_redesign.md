@@ -4381,6 +4381,18 @@ Arrow には**暗黙の実体化が無い**（型引数なしの呼び出しは 
 | **10-3** | 実体化パスを足し、`Box[int]` を**普通のクラスとして**レジストリへ登録する | 10-2 | 大 |
 | **10-4** | `GenericInstance` の特例 29 箇所を撤去する | 10-3 | 中 |
 | **10-5** | テンプレートの網（例題とゲート）を張る | 10-1 / 10-3 | 中 |
+| **10-6** | private メソッドを外から呼べる（重さ: 高） | なし | 小 |
+| **10-7** | 型注釈が守られない（ジェネレータの要素）（重さ: 高） | なし | 中 |
+| **10-8** | 型検査がクラスを名前だけで引く（モジュールの同名クラスと混ざる）（重さ: 中） | なし | 大 |
+| **10-9** | 具体化を値として使えない（静的メソッド・`static mut`）（重さ: 中） | なし | 中 |
+| **10-10** | `x is Stack[int]` が構文エラー（重さ: 低） | なし | 小 |
+| **10-11** | モジュールの `mut` 変数の変更が `m.x` に映らない（重さ: 中） | なし | 中 |
+| **10-12** | 未定義の名前を静的に検査しない（重さ: 中） | なし | 中 |
+| **10-13** | 演算子オーバーロードの被演算子の型を静的に検査しない（重さ: 中） | なし | 中 |
+| **10-14** | `int` などの属性アクセスを静的に検査しない（重さ: 中） | なし | 小 |
+| **10-15** | `freeze` した変数への `mut self` メソッド呼び出しを静的に検査しない（重さ: 低） | なし | 小 |
+| **10-16** | 関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）（重さ: 中） | なし | 中 |
+| **10-17** | 誤りの位置が出ない（重さ: 中） | なし | 大 |
 
 ⚠ 10-1 を先頭に置くのは**退行だから**（他タスクの前提ではない）。
 
@@ -4462,9 +4474,244 @@ call_check.rs 4 / binop.rs 3 / registry/builder.rs 1
 
 ⚠ `syntax_cov.ps1` を走らせて、テンプレート関連の `NESTED-GAP` を洗い出すこと。
 
+#### 10-6〜10-17 について（起票 2026-09-26・フェーズ10 へ移した 2026-09-27）
+
+- 発見経緯: テンプレートの型検査（メタ関数の設計書 2-13〜2-15）と、`import` の名前空間の分離を
+  進める途中で見つけたもの。⚠ **テンプレートに限らない**ものも含む（起票先はあなたの指示でこのフェーズ）。
+- 検証: 2026-09-26 時点の `master` をリリースビルドして実測。各節の「再現」は、そのまま `.ar` に
+  貼って走る最小形（モジュールを使うものはファイル名を添えてある）。「現状」はその出力。
+- ⚠ 同じ調査で見つけて**直したもの**（ここには載せない）: `import m` がモジュールの名前を呼び出し側の
+  大域へ流し込んでいた（名前空間の侵食・`4efdeac`）／モジュールの最上位で呼んだメソッドがそのモジュールの
+  関数を引けなかった／非同期タスクの中で呼んだ関数が自分の大域を引けなかった。
+- 互いに依存しないので、どれからでも着手できる。
+
+#### 10-6 private メソッドを外から呼べる
+
+再現:
+```
+class Account:
+    mut balance: int
+
+    fn deposit(mut self, let n: int) -> None:
+        self.audit(n)
+        self.balance += n
+
+    private:
+    fn audit(self, let n: int) -> None:
+        print("audit", n)
+
+mut a = Account(0)
+a.audit(5)
+```
+現状: `audit 5` と出力して完走する（静的にも実行時にも止まらない）。
+期待: クラスの外からの `a.audit(5)` は、静的エラー（少なくとも実行時エラー）。
+
+⚠ private の**フィールド**は静的に止まる（同じクラスの `private:` の下に `mut secret: int` を置いて
+`a.secret` と書くと `'secret' is private and cannot be accessed outside 'Account'`）。メソッドだけ抜けている。
+
+#### 10-7 型注釈が守られない（ジェネレータの要素）
+
+再現:
+```
+gen each(let items: list[int]) -> int:
+    for x in items:
+        yield x
+
+for s in each([1, 2]):
+    let z: str = s
+    print(z)
+```
+現状: `1` と `2` を出力して完走する。`str` と注釈した `z` に `int` が入っている。
+期待: `let z: str = s` は静的エラー（`s` は `int`）。
+
+⚠ 原因の見当: ジェネレータの呼び出し結果の型が `for` の変数へ伝わらず、`s` の型が分からないまま
+（検査されない）。さらに実行時も注釈を確かめていない。
+
+#### 10-8 型検査がクラスを名前だけで引く（モジュールの同名クラスと混ざる）
+
+モジュール `tags.ar`:
+```
+class Tag:
+    mut v: int
+    fn who(self) -> int:
+        return 1
+```
+メイン:
+```
+import tags as t
+
+class Tag:
+    mut v: int
+    fn who(self) -> str:
+        return "main"
+
+let a: str = Tag(1).who()
+let b: int = t.Tag(1).who()
+print(a, b)
+```
+現状: `'b' is declared 'int' but initialized with 'str'` という**偽の**静的エラーで止まる。
+期待: 通って `main 1` を出す（実行時は正しく区別している）。
+
+⚠ 原因: 型検査のレジストリがクラス・関数を**素の名前だけ**で集めている
+（`import` の本体の宣言も同じ表に入る）。実行時の名前空間の分離（2026-09-26）の静的な側の対応物。
+テンプレートの具体化（`t.Box[int]` とメインの `Box[int]`）も同じ理由で混ざる。
+
+#### 10-9 具体化を値として使えない（静的メソッド・`static mut`）
+
+再現 1:
+```
+class Stack[T]:
+    mut items: list[T]
+    static fn empty() -> Stack[T]:
+        return Stack[T]([])
+
+let s = Stack[int].empty()
+```
+現状: 実行時に `TypeError: 'template' object is not subscriptable`。
+
+再現 2:
+```
+class Counter[T]:
+    static mut n: int = 0
+    mut v: T
+    fn bump(self) -> None:
+        Counter[T].n += 1
+
+let a = Counter[int](1)
+a.bump()
+```
+現状: 実行時に `NameError: 'T' is not defined`。
+期待: どちらも動く（`Stack[int]` は単相化したクラスそのもの）。
+
+⚠ 原因: パーサは `]` の直後が `(` のときだけ具体化として読み、それ以外は添字（`Stack` の `int` 番目）
+として読む。実行時の具体化は廃止した（D36・2026-09-26）ので、値としての具体化も展開器が作った
+具体クラスに結び付けるのが筋（展開器は `Stack[int].empty` の形を具体化の場所として拾っていない）。
+
+#### 10-10 `x is Stack[int]` が構文エラー
+
+再現:
+```
+class Stack[T]:
+    mut items: list[T]
+
+let s = Stack[int]([])
+if s is Stack[int]:
+    print("yes")
+```
+現状: ``ParseError: expected `:`, got `[` ``。
+期待: 型の判定として読む（`is Stack` は書ける）。
+
+#### 10-11 モジュールの `mut` 変数の変更が `m.x` に映らない
+
+モジュール `counter.ar`:
+```
+mut count = 0
+
+fn bump() -> None:
+    count += 1
+```
+メイン:
+```
+import counter as c
+c.bump()
+c.bump()
+print(c.count)
+```
+現状: `0` を出力する。
+期待: `2`。
+
+⚠ 原因: 名前空間（`c`）は import が終わった時点のメンバーの**写し**。モジュールの関数はモジュールの
+大域を書き換える（2026-09-26 から）が、写しは更新されない。名前空間の読みをモジュールの大域へ
+向けるのが筋。
+
+#### 10-12 未定義の名前を静的に検査しない
+
+再現:
+```
+print(nonexistent(2))
+```
+現状: 実行時の `NameError: 'nonexistent' is not defined`（静的には通る）。
+期待: 静的エラー。
+
+⚠ 名前空間の分離の後は、`import m` だけで修飾なしのモジュールの名前（`helper(2)`）を書いた場合も
+これと同じ扱い（実行時の `NameError`）になる。
+
+#### 10-13 演算子オーバーロードの被演算子の型を静的に検査しない
+
+再現:
+```
+class Money:
+    mut cents: int
+
+    fn __add__(self, let other: Money) -> Money:
+        return Money(self.cents + other.cents)
+
+let m = Money(100) + 5
+print(m.cents)
+```
+現状: 実行時に `AttributeError: 'int' object has no attribute 'cents'`（`__add__` の中で落ちる）。
+期待: `Money(100) + 5` が静的エラー（`other` は `Money`）。
+
+#### 10-14 `int` などの属性アクセスを静的に検査しない
+
+再現:
+```
+fn label(let x: int) -> str:
+    return x.name
+
+print(label(1))
+```
+現状: 実行時エラー（`label` の中で落ちる）。
+期待: `x.name` が静的エラー（`int` に `name` は無い）。
+
+⚠ テンプレートの具体化（`fn show[T](let x: T) -> str: return x.name` を `show[int]` で具体化）も
+同じ理由で静的に止まらない。
+
+#### 10-15 `freeze` した変数への `mut self` メソッド呼び出しを静的に検査しない
+
+再現:
+```
+class Box:
+    mut v: int
+    fn set(mut self, let x: int) -> None:
+        self.v = x
+
+mut b = Box(1)
+freeze b
+b.set(2)
+```
+現状: 実行時に `TypeError: cannot call mutable method 'set' on immutable instance of 'Box'`。
+期待: 静的エラー（`freeze` の後は書き込みが静的エラーになる規則・`.claude/rules/language-differences.md`。
+組み込みの変更メソッド `x.append(..)` は静的に止まる）。
+
+#### 10-16 関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）
+
+再現:
+```
+fn f() -> int:
+    class Local:
+        mut v: int
+    return Local(1).v
+
+print(f())
+```
+現状: `VmForceError: cannot compile function 'f' to bytecode`。関数の中の `import` も同じ。
+最上位の `if` の中の `import`（`if True:` の下に `import m`）は
+``VmForceError: cannot compile top-level statement `If` to bytecode``。
+期待: 動く、または「関数の中では書けない」という静的エラー（今の文面は内部の事情しか言っていない）。
+
+#### 10-17 誤りの位置が出ない
+
+- 静的エラーの多くが位置を持たない（表の `File` が `<unknown>`、`Line:Col` が `-`）。
+  例: 10-8 の偽のエラー、テンプレートのメソッド引数の型違い。
+- ParseError に行・列が無い。再現: `let x = 1 +` → ``ParseError: unexpected token: `NEWLINE` ``。
+- traceback の内側のフレームのファイル名が空（`File "", in label`）。
+
 ### 順序
 
 `10-1`（退行・独立） → `10-2` → `10-3` → `10-4` → `10-5`
 
 ⚠ ただし **10-5 の「`gen f[T]` の例題」は 10-1 と同時に**入れる（再発防止が目的なので）。
+
+⚠ `10-6`〜`10-17`（起票したバグ）は互いにも上とも独立。重い順（`10-6` / `10-7` が高）に着手するのがよい。
 

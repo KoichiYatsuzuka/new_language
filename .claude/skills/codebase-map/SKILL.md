@@ -483,7 +483,6 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
 implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   bench_baseline.md (68)
   bug_fix.md (911)
-  bug_reports.md (252)
   BUGFIX_B1_B13.md (250)
   BYTECODE_VM_PLAN.md (1017)
   FUTURE_FEATURE.md (539)
