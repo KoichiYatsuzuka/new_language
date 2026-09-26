@@ -68,3 +68,26 @@ undefined_thing
 ##REPL_EXEC##
 total
 ##REPL_EXEC##
+# D36 (task 2-16): template instantiations are made when a block is run.
+class Pocket[T]:
+    mut v: T
+    fn get(self) -> T:
+        return self.v
+##REPL_EXEC##
+Pocket[int](5).get()
+##REPL_EXEC##
+Pocket[str]("s").get()
+##REPL_EXEC##
+class Pocket[T]:
+    mut v: T
+    fn get(self) -> str:
+        return "redefined"
+##REPL_EXEC##
+Pocket[int](1).get()
+##REPL_EXEC##
+exprconst !fn hello() -> None:
+    quote code:
+        print("hello from a metafunction")
+##REPL_EXEC##
+hello()
+##REPL_EXEC##

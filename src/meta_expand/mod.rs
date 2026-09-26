@@ -827,6 +827,54 @@ pub fn expand_program(
     expand_with(&mut ex, stmts)
 }
 
+/// **ブロックを 1 つずつ**展開する（REPL・D36・タスク 2-16）。
+///
+/// 展開器の状態（メタ関数・テンプレート・作った具体化・展開用インタプリタ）をブロックをまたいで
+/// 持ち続ける。⚠⚠ 実行時の具体化を廃止した（D36）ので、REPL もブロックを受け取ったときに
+/// 展開して具体化を置き、実行時は具体化済みの AST を読む（前のブロックで宣言したテンプレートも使える）。
+pub struct Session {
+    ex: Expander,
+    started: bool,
+}
+
+impl Session {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            ex: Expander::new(
+                std::rc::Rc::new(std::cell::Cell::new(0)),
+                std::collections::HashMap::new(),
+            ),
+            started: false,
+        }
+    }
+
+    /// 1 ブロックを展開する。`node_counter` / `known_traits` はそのブロックをパースしたパーサのもの。
+    ///
+    /// ⚠ 置いたコードの node-id はブロックのパーサと同じカウンタから振る（§0.3）。
+    #[allow(dead_code)] // エディタ用 wasm は REPL を持たない
+    pub fn expand_block(
+        &mut self,
+        stmts: Vec<Stmt>,
+        node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+        known_traits: std::collections::HashMap<String, crate::parser::TraitInfo>,
+    ) -> Result<Vec<Stmt>, String> {
+        let ex = &mut self.ex;
+        ex.node_counter = std::rc::Rc::clone(&node_counter);
+        ex.mono.set_counter(node_counter);
+        ex.known_traits.extend(known_traits);
+        ex.steps = 0;
+        if !self.started {
+            ex.load_prelude()?;
+            self.started = true;
+        }
+        // ⚠ 前のブロックでメタ関数・テンプレートに出会っていれば、この先も有効のまま。
+        ex.has_metafns = ex.has_metafns || ordinary::mentions_meta(&stmts);
+        ex.mono.enabled = ex.mono.enabled || monomorph::declares_template(&stmts);
+        expand_body(ex, stmts)
+    }
+}
+
 fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String> {
     ex.load_prelude()?;
     // ⚠ 展開時型推論（タスク 4-4）の前提として、展開済みの最上位の文を共有する。
@@ -835,6 +883,11 @@ fn expand_with(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String>
     // ⚠ 最上位だけでなく入れ子・`import` 先まで見る（タスク 2-11。`ordinary::mentions_meta`）。
     ex.has_metafns = ordinary::mentions_meta(&stmts);
     ex.mono.enabled = monomorph::declares_template(&stmts);
+    expand_body(ex, stmts)
+}
+
+/// 前口上と旗の準備が済んだ展開器で、最上位の文の列を展開する（プログラム全体・REPL のブロック共通）。
+fn expand_body(ex: &mut Expander, stmts: Vec<Stmt>) -> Result<Vec<Stmt>, String> {
     prescan_runtime_names(ex, &stmts);
     let out = expand_stmts(ex, stmts, Context::TopLevel, std::rc::Rc::new(Vec::new()))?;
     // ⚠⚠ 展開後の通常コードに残ったメタ関数への言及を弾く（§1.1・タスク 2-11）。
@@ -2077,30 +2130,68 @@ mod tests {
         assert!(tmpl < inst, "テンプレートの宣言の後ろに置かれること");
     }
 
-    /// ⚠⚠ 制約付きのテンプレートは、**制約を満たすと確かめられたときだけ**作る（タスク 2-14）。
-    /// 判定は実行時と同じ（型引数がクラスで、基底にその trait がある）。満たさない・判断できない
-    /// （組み込み型）ときは作らず、実行時の `TemplateError` に任せる（従来どおり）。
+    const NAMED_SRC: &str = concat!(
+        "trait Named:\n",
+        "    fn label(self) -> str:\n",
+        "        ...\n",
+        "\n",
+        "class Cat(Named):\n",
+        "    mut n: int\n",
+        "    fn label(self) -> str:\n",
+        "        return \"cat\"\n",
+        "\n",
+        "class Holder[T: Named]:\n",
+        "    mut v: T\n",
+        "\n",
+    );
+
+    /// ⚠⚠ 制約付きのテンプレートは、制約を満たすときに作る（タスク 2-14）。判定は実行時と同じ
+    /// （型引数がクラスで、基底にその trait がある）。
     #[test]
-    fn a_constrained_template_is_instantiated_only_when_the_constraint_holds() {
+    fn a_constrained_template_is_instantiated_when_the_constraint_holds() {
+        let out = expand(&format!("{NAMED_SRC}let ok = Holder[Cat](Cat(1))\n")).expect("expand");
+        assert!(find_decl(&out, "Holder[Cat]").is_some(), "制約を満たす具体化は作る");
+    }
+
+    /// ⚠⚠ 制約違反・型引数の数違いは**展開時のエラー**（D36・タスク 2-16）。実行時の具体化を
+    /// 廃止したので、以前のように作らずに実行時の `TemplateError` へ任せる経路はもう無い。文面は実行時と同じ。
+    #[test]
+    fn a_constraint_violation_and_a_wrong_arity_are_expansion_errors() {
+        let err = expand(&format!("{NAMED_SRC}let bad = Holder[int](1)\n")).expect_err("弾かれること");
+        assert!(
+            err.contains("TemplateError: type `int` does not satisfy trait `Named` (required for template parameter `T`)"),
+            "実際のエラー: {err}"
+        );
+        let err = expand(&format!("{NAMED_SRC}let bad = Holder[Cat, int](1)\n")).expect_err("弾かれること");
+        assert!(err.contains("TemplateError: expected 1 type argument(s), got 2"), "実際のエラー: {err}");
+    }
+
+    /// ⚠ まだ宣言されていないクラスを型引数にした制約付きの具体化（関数の本体の中など）は、
+    /// そのクラスの宣言に出会った時点で作る（タスク 2-16）。関数が呼ばれるのはもっと後。
+    #[test]
+    fn a_constrained_instantiation_waits_for_its_class() {
         let out = expand(concat!(
             "trait Named:\n",
             "    fn label(self) -> str:\n",
             "        ...\n",
             "\n",
-            "class Cat(Named):\n",
-            "    mut n: int\n",
-            "    fn label(self) -> str:\n",
-            "        return \"cat\"\n",
-            "\n",
             "class Holder[T: Named]:\n",
             "    mut v: T\n",
             "\n",
-            "let ok = Holder[Cat](Cat(1))\n",
-            "let bad = Holder[int](1)\n",
+            "fn make() -> str:\n",
+            "    return Holder[Dog](Dog(1)).v.label()\n",
+            "\n",
+            "class Dog(Named):\n",
+            "    mut n: int\n",
+            "    fn label(self) -> str:\n",
+            "        return \"dog\"\n",
+            "\n",
+            "print(make())\n",
         ))
         .expect("expand");
-        assert!(find_decl(&out, "Holder[Cat]").is_some(), "制約を満たす具体化は作る");
-        assert!(find_decl(&out, "Holder[int]").is_none(), "満たさない具体化は実行時に任せる");
+        let (dog, _) = find_decl(&out, "Dog").expect("Dog");
+        let (inst, _) = find_decl(&out, "Holder[Dog]").expect("クラスの宣言に出会ったら作る");
+        assert!(dog < inst, "クラスの宣言の後ろに置く");
     }
 
     /// ⚠⚠ `^Box[int]` で具体化のメタ情報を引ける（タスク 2-8）。フィールドの型は置換後のもの。

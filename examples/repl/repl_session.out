@@ -13,3 +13,7 @@ f3
 2
 NameError: 'undefined_thing' is not defined
 15
+5
+s
+redefined
+hello from a metafunction

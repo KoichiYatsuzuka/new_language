@@ -130,6 +130,20 @@ impl Interpreter {
                 self.global_scopes.push(g);
             }
         }
+        // ⚠ 具体化のキャッシュを組み直す（D36・タスク 2-16）。キャッシュの鍵はテンプレートの値の
+        //   同一性で、ワーカーのテンプレートは複製なので、親の登録はそのままでは使えない。
+        //   各大域の具体化（`Box[int]`）を、同じ大域のテンプレートに結び付け直す。
+        for g in 0..self.global_scopes.len() as u32 {
+            self.switch_globals(g);
+            let instances: Vec<(String, Value)> = self.scopes[0]
+                .iter()
+                .filter(|(n, _)| n.ends_with(']'))
+                .map(|(n, v)| (n.clone(), v.get_value()))
+                .collect();
+            for (name, value) in instances {
+                self.register_mono_instance(&name, &value);
+            }
+        }
         self.switch_globals(cur);
     }
 

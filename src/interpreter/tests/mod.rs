@@ -26,7 +26,12 @@ use crate::parser::Parser;
 /// 以前は既定の `Off`＝ツリーウォークで走っており、**本番と違う実装をテストしていた**（#36）。
 fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let mut stmts = Parser::new(tokens, None).parse_program()?;
+    let mut parser = Parser::new(tokens, None);
+    let stmts = parser.parse_program()?;
+    // ⚠ 展開も本番と同じく先に済ませる（D36・タスク 2-16）。テンプレートの具体化は展開時に作り、
+    //   実行時には作らないので、これが無いとテンプレートを使うテストが全部落ちる。
+    let mut stmts =
+        crate::meta_expand::expand_program(stmts, parser.node_counter(), parser.known_traits())?;
     // ⚠ 配線は 1 箇所（#88）。⚠ この入口は**型エラーを無視する**（下の doc の理由）。
     let (_errors, _warnings, annotations) =
         super::resolver::resolve_and_annotate(&mut stmts);

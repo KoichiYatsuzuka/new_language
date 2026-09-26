@@ -1,7 +1,11 @@
-# polymorphism_error.tl — TemplateError: constraint not satisfied
+# polymorphism_error.ar — TemplateError: constraint not satisfied
 #
-# Expected error (runtime TemplateError):
+# Expected error (TemplateError, before the program runs):
 #   Instantiating a template with a type that does not implement the required trait.
+#
+# ⚠ 2026-09-26（D36・タスク 2-16）から**展開時のエラー**。テンプレートの具体化はプログラムを
+#   走らせる前に作るので、`show[MyInt](ok)` の出力（MyInt）より前に止まる。以前は実行時に
+#   具体化していたので、MyInt を出してから止まっていた。
 
 trait Printable:
     fn to_str(self) -> str:

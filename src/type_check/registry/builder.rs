@@ -54,6 +54,12 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     /// できてしまう（単一シグネチャ前提の高速パスが崩れる）。同じモジュールが複数箇所から
     /// import される・入れ子 import で再訪する、のどちらも起こるのでここで弾く。
     seen_modules: HashSet<(String, Vec<String>)>,
+    /// 収集済みのテンプレートの具体化（`(lang, モジュールパス, 名前)`・タスク 2-16）。
+    ///
+    /// ⚠ 展開器は具体化を「その枠で最初の `import` 文」の本体に置くので、同じモジュールの
+    ///   **2 回目以降の `import` の本体にだけ**ある具体化がある（モジュールが別のモジュールの中で
+    ///   先に読み込まれている形）。`seen_modules` で本体ごと読み飛ばすと、それが登録されない。
+    seen_instances: HashSet<(String, Vec<String>, String)>,
     /// 外部言語 import の本体を収集中の深さ（#27-a）。
     ///
     /// 0 のときに見た `ClassDef` だけを `arrow_class_names` に載せる。外部言語スタブは
@@ -74,6 +80,20 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
 /// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
 fn is_arrow_source_lang(lang: &str) -> bool {
     matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+}
+
+/// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
+fn instance_decl_name(st: &Stmt) -> Option<&str> {
+    match st {
+        Stmt::ClassDef { name, template_params, .. }
+        | Stmt::FnDef { name, template_params, .. }
+        | Stmt::GenDef { name, template_params, .. }
+            if template_params.is_empty() && name.ends_with(']') =>
+        {
+            Some(name)
+        }
+        _ => None,
+    }
 }
 
 impl TypeRegistryBuilder {
@@ -150,6 +170,7 @@ impl TypeRegistryBuilder {
                 template_params: HashMap::new(),
             },
             seen_modules: HashSet::new(),
+            seen_instances: HashSet::new(),
             foreign_depth: 0,
         }
     }
@@ -371,6 +392,16 @@ impl TypeRegistryBuilder {
                 // 同一モジュールの二重収集は `fn_sigs` の偽オーバーロードを生むので弾く。
                 Stmt::Import { lang, module, body, .. }
                 | Stmt::FromImport { lang, module, body, .. } => {
+                    // 具体化（展開器が置いた `Box[int]`）は、集めたものを控える（`seen_instances` の doc）。
+                    let instances: Vec<Stmt> = body
+                        .iter()
+                        .filter(|st| {
+                            instance_decl_name(st).is_some_and(|n| {
+                                self.seen_instances.insert((lang.clone(), module.clone(), n.to_string()))
+                            })
+                        })
+                        .cloned()
+                        .collect();
                     if self.seen_modules.insert((lang.clone(), module.clone())) {
                         // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
                         let foreign = !is_arrow_source_lang(lang);
@@ -381,6 +412,9 @@ impl TypeRegistryBuilder {
                         if foreign {
                             self.foreign_depth -= 1;
                         }
+                    } else if !instances.is_empty() {
+                        // ⚠ 2 回目以降の `import`: この本体にだけある具体化を集める（タスク 2-16）。
+                        self.collect(&instances);
                     }
                 }
                 _ => {}

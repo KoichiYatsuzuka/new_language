@@ -29,6 +29,10 @@ pub fn run_repl() {
     );
 
     let mut interp = Interpreter::new();
+    // ⚠⚠ 展開器の状態はブロックをまたいで持ち続ける（D36・タスク 2-16）。実行時の具体化を
+    //   廃止したので、ブロックを受け取ったら展開して具体化を置き、実行時は具体化済みの AST を読む。
+    //   前のブロックで宣言したテンプレート・メタ関数も後のブロックから使える。
+    let mut session = crate::meta_expand::Session::new();
     // #36/#33: 実行経路はバイトコード VM 一本（`--vm` もツリーウォークも無い）。
     // 解決情報はブロックごとに `run_block` が用意する
     // （`resolve_and_annotate` ＋ globals の積み増し。配線は #88 で 1 箇所に畳んだ）。
@@ -51,7 +55,7 @@ pub fn run_repl() {
                     if !pending.is_empty() {
                         let code = pending.join("\n");
                         pending.clear();
-                        if let Some(stmts) = run_block(&mut interp, &code) {
+                        if let Some(stmts) = run_block(&mut interp, &mut session, &code) {
                             kept_asts.push(stmts);
                         }
                     }
@@ -69,12 +73,28 @@ pub fn run_repl() {
 /// 最後の文が式文であり、その評価結果が `None` 以外の場合は標準出力に repr を出力する。
 /// パースエラーまたは実行時エラーが発生した場合は標準エラー出力に表示してブロックの処理を中断する。
 /// 戻り値は実行したブロックの AST。**呼び出し側が保持し続けること**（上記の不変条件）。
-fn run_block(interp: &mut Interpreter, code: &str) -> Option<Vec<Stmt>> {
+fn run_block(
+    interp: &mut Interpreter,
+    session: &mut crate::meta_expand::Session,
+    code: &str,
+) -> Option<Vec<Stmt>> {
     let tokens = Lexer::new(code, "<repl>").tokenize();
-    let mut stmts = match Parser::new(tokens, None).parse_program() {
+    let mut parser = Parser::new(tokens, None);
+    let stmts = match parser.parse_program() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("ParseError: {e}");
+            return None;
+        }
+    };
+    if stmts.is_empty() {
+        return None;
+    }
+    // メタ関数の展開と、テンプレートの具体化（D36・タスク 2-16）。実行する前に済ませる。
+    let mut stmts = match session.expand_block(stmts, parser.node_counter(), parser.known_traits()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
             return None;
         }
     };

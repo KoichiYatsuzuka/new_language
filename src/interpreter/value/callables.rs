@@ -47,19 +47,15 @@ pub struct GeneratorFnValue {
 }
 
 
-/// 具体型が未確定のテンプレートジェネレータ関数定義。
-/// `gen fn[T: Trait](...)` 構文でパースされ、型引数を渡して実体化される。
+/// テンプレートジェネレータ関数（`gen f[T](...)`）の実行時の値。
 ///
-/// - `name`: ジェネレータ関数名（実体化後の `GeneratorFnValue` に引き継がれる）
-/// - `template_params`: 型変数とその trait 制約
-/// - `params`: 仮引数リスト（型変数名を含む場合がある）
-/// - `body`: 関数本体の文リスト
+/// ⚠ 本体は持たない。具体化は展開時に作り（D36・タスク 2-16）、定義された時点で
+///   `(このテンプレート, 型引数)` の組で登録される（`register_mono_instance`）。
+///   この値はその組の鍵と、制約の検査（`check_template_constraints`）に使うだけ。
 #[derive(Debug)]
 pub struct TemplateGenFnValue {
     pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
-    pub params: Vec<Param>,
-    pub body: Vec<Stmt>,
 }
 
 
@@ -132,40 +128,23 @@ impl GeneratorState {
 }
 
 
-/// 具体型が未確定のテンプレート関数定義（`fn f[T: Trait](...)` 構文）。
-/// 型引数付きで呼び出されたとき（`f[ConcreteType](args)`）、型変数を具体型に置換して実行される。
+/// テンプレート関数（`fn f[T: Trait](...)`）の実行時の値。
 ///
-/// - `name`: 関数名（実体化後の `FnValue` に引き継がれる）
-/// - `template_params`: 型変数名とその trait 制約のリスト
-/// - `params`: 仮引数リスト（型変数名を型アノテーションに含む場合がある）
-/// - `body`: 関数本体の文リスト
+/// ⚠ 本体は持たない。具体化は展開時に作り（D36・タスク 2-16）、定義された時点で
+///   `(このテンプレート, 型引数)` の組で登録される（`register_mono_instance`）。
+///   この値はその組の鍵と、制約の検査（`check_template_constraints`）に使うだけ。
 #[derive(Debug)]
 pub struct TemplateFnValue {
     pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
-    pub params: Vec<Param>,
-    pub body: Vec<Stmt>,
-    /// 戻り値の型注釈（型変数のまま。実体化時に `subst_type` で具体型へ置換する）。
-    ///
-    /// ⚠ これが無いと実体化後の `FnValue.return_type` が `None` になり、
-    /// **テンプレート関数の戻り値だけ `int` → `float` の昇格が効かない**（0-B2 の残件）。
-    pub return_type: Option<String>,
 }
 
 
-/// 具体型が未確定のテンプレートクラス定義（`class C[T: Trait]:` 構文）。
-/// 型引数付きで実体化されたとき（`C[ConcreteType](args)`）、型変数を置換して `ClassValue` を構築する。
-///
-/// - `name`: クラス名
-/// - `template_params`: 型変数名とその trait 制約のリスト
-/// - `bases`: 基底クラス・trait 名のリスト
-/// - `body`: クラス本体の文リスト（フィールド宣言・メソッド定義を含む）
+/// テンプレートクラス（`class C[T: Trait]:`）の実行時の値（[`TemplateFnValue`] と同じ役割）。
 #[derive(Debug)]
 pub struct TemplateClassValue {
     pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
-    pub bases: Vec<String>,
-    pub body: Vec<Stmt>,
 }
 
 

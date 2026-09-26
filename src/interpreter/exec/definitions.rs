@@ -131,9 +131,6 @@ impl Interpreter {
             let tmpl = Rc::new(TemplateFnValue {
                 name: name.to_string(),
                 template_params: template_params.to_vec(),
-                params: params.to_vec(),
-                body: body.to_vec(),
-                return_type: return_type.map(|s| s.to_string()),
             });
             self.scopes
                 .last_mut()
@@ -202,8 +199,6 @@ impl Interpreter {
             let tmpl = Rc::new(TemplateGenFnValue {
                 name: name.to_string(),
                 template_params: template_params.to_vec(),
-                params: params.to_vec(),
-                body: body.to_vec(),
             });
             self.scopes.last_mut().unwrap().insert(
                 name.to_string(),
@@ -554,8 +549,6 @@ impl Interpreter {
             let tmpl = Rc::new(TemplateClassValue {
                 name: name.to_string(),
                 template_params: template_params.to_vec(),
-                bases: bases.to_vec(),
-                body: body.to_vec(),
             });
             self.declare_var(
                 name.to_string(),
@@ -857,7 +850,7 @@ impl Interpreter {
             static_vars,
             raw_layout,
             // ⚠⚠ 単相化したクラス（`Box[int]`）の値の名前はテンプレートの名前（タスク 2-8）。
-            //   実行時の具体化（`build_template_class`）と同じにする —— `<Box object>` の表示・
+            //   以前の実行時の具体化（削除済み）と同じにする —— `<Box object>` の表示・
             //   型引数を省いた `Box` 注釈との照合（`mut bare: Box = Box[str](..)`）が変わらないように。
             //   束縛名は `Box[int]` のまま（`declare_var` は `name` を使う）。
             ..crate::interpreter::ClassValue::synthetic(

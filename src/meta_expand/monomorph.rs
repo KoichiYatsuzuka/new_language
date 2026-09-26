@@ -18,10 +18,11 @@
 //
 // ## 実行時・型検査との分担（この段階）
 //
-//   * 実行時: 具体化の式（`Op::CallTemplate`）は、ここで置いた宣言があればそれを使う
-//     （`templates.rs`）。無いときだけ従来どおり実行時に作る —— REPL・デバッガ・
-//     制約を満たすと確かめられなかった具体化（制約の検査は実行時が持っている）・
-//     `import` したモジュールのテンプレート（呼び出し側の名前には無いので）。
+//   * 実行時: **具体化は作らない**（D36・タスク 2-16）。ここで置いた宣言が定義された時点で
+//     `(テンプレート, 型引数)` の組で登録され（`register_mono_instance`）、具体化の式
+//     （`Op::CallTemplate`）はそれを呼ぶだけ（`templates.rs`）。REPL はブロックごとに展開する
+//     （`meta_expand::Session`）。型引数の数違い・制約違反は展開時のエラー。
+//     ⚠ デバッガは展開しないので、プログラムが作っていない具体化は使えない。
 //   * 型検査: 置いた宣言を**普通のクラス・関数として検査する**（2026-09-26・設計書 2-13）。
 //     具体化の型（`GenericInstance`）からは、レジストリの `instance_class` で具体クラスを引く。
 //     ⇒ `Box[str]` の `self.v = 0` やテンプレートのメソッド呼び出しの型違いが静的エラーになる。
@@ -70,6 +71,8 @@ pub(super) struct Templates {
     /// `import` したモジュールごとの枠（タスク 2-15）。`.0` は `import` 文の `out` の中の位置で、
     /// 具体化は**その本体の末尾**に置く（モジュールの名前はモジュールの中で引く必要がある）。
     modules: Vec<(usize, Templates)>,
+    /// `lang:モジュールパス` → [`Self::modules`] の添字（同じモジュールを 1 つの枠にまとめる・2-16）。
+    module_ids: HashMap<String, usize>,
 }
 
 /// 単相化の状態（タスク 2-8）。展開器が持つほか、エディタは [`monomorphize`] で単独に使う。
@@ -128,10 +131,9 @@ fn mentions_templates(body: &[Stmt]) -> bool {
 
 /// `import` したモジュールの本体の中の具体化を、その本体の中で単相化する（タスク 2-15）。
 ///
-/// ⚠⚠ 実行時の具体化はクラスのメソッドに閉包の環境を持たせない（`build_template_class`）ので、
-///   **モジュールの最上位**（読み込みの最中）で具体化すると、メソッドがモジュールの関数を引けず
-///   `NameError` になっていた（読み込みが終わるまでモジュールの名前は呼び出し側から見えない・実測）。
-///   モジュールの中に普通のクラスとして置けば、モジュールの他のクラスと同じく名前を引ける。
+/// ⚠⚠ 具体化はモジュールの中に普通の宣言として置く（モジュールの他の宣言と同じくモジュールの大域で
+///   名前を引く）。実行時の具体化は廃止した（D36・タスク 2-16）ので、モジュール自身の中の具体化も
+///   ここで作らないとどこにも無い。
 /// ⚠ メタ関数を持つモジュールは読み込むときに展開され、そこで単相化も済んでいる（2-12）。
 ///   既に置かれた具体化は「作った」ことにする（二重に置かない）。
 fn monomorphize_module_body(m: &mut Mono, body: &mut Vec<Stmt>) -> Result<(), String> {
@@ -174,6 +176,28 @@ fn monomorphize_module_body(m: &mut Mono, body: &mut Vec<Stmt>) -> Result<(), St
     result
 }
 
+/// `import` したモジュールの枠の添字（テンプレートを宣言していなければ `None`）。
+///
+/// ⚠⚠ **同じモジュールは 1 つの枠にまとめる**（タスク 2-16）。実行時にモジュールの本体が走るのは
+///   最初の `import` だけ（2 回目からは読み込み済みの名前空間を返す）なので、`import m as c` と
+///   `from m import Box` の両方がある形で、2 つめの `import` 文の本体に具体化を置くと**一度も
+///   定義されなかった**（以前は実行時の具体化が肩代わりしていたので表に出なかった）。
+///   ⇒ 具体化は最初の `import` 文の本体に置く。
+fn module_frame(m: &mut Mono, lang: &str, module: &[String], body: &[Stmt], at: usize) -> Option<usize> {
+    let key = format!("{lang}:{}", module.join("/"));
+    if let Some(&idx) = m.templates.module_ids.get(&key) {
+        return Some(idx);
+    }
+    let t = module_templates(body);
+    if t.decls.is_empty() {
+        return None;
+    }
+    let idx = m.templates.modules.len();
+    m.templates.modules.push((at, t));
+    m.templates.module_ids.insert(key, idx);
+    Some(idx)
+}
+
 /// `import` したモジュールの本体から、テンプレートの枠を作る（タスク 2-15）。
 ///
 /// ⚠ 本体に既に置かれている具体化（メタ関数を持つモジュールは読み込むときに展開され、自分の中の
@@ -209,6 +233,11 @@ impl Mono {
     /// ⚠ `counter` は本体をパースしたパーサと**同じ**カウンタ（設計書 §0.3）。
     pub(super) fn new(counter: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
         Self { templates: Templates::default(), count: 0, counter, enabled: false }
+    }
+
+    /// 写しの node-id を振るカウンタを差し替える（REPL はブロックごとにパーサが違う・タスク 2-16）。
+    pub(super) fn set_counter(&mut self, counter: std::rc::Rc<std::cell::Cell<u32>>) {
+        self.counter = counter;
     }
 }
 
@@ -257,69 +286,77 @@ pub(super) fn note_decls(m: &mut Mono, out: &mut Vec<Stmt>, from: usize) -> Resu
         }
     }
     let mut noted: Vec<String> = Vec::new();
+    let mut noted_classes: Vec<String> = Vec::new();
     for (i, st) in out[from..].iter().enumerate() {
         match st {
             // ⚠ `import` したモジュールのテンプレートも具体化できるようにする（タスク 2-15）。
             //   以前はメインが宣言したテンプレートしか知らず、`m.Box[int]` / `from m import Box` の
             //   `Box[int]` は具体化されなかった ⇒ そのメソッド呼び出し・コンストラクタの検査が丸ごと抜けていた。
             Stmt::Import { lang, module, alias, body, .. } if is_arrow_source(lang) => {
-                let t = module_templates(body);
-                if t.decls.is_empty() {
-                    continue;
-                }
+                let Some(idx) = module_frame(m, lang, module, body, from + i) else { continue };
                 let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
-                let idx = m.templates.modules.len();
-                for name in t.decls.keys() {
+                let names: Vec<String> = m.templates.modules[idx].1.decls.keys().cloned().collect();
+                for name in names {
                     let key = format!("{bind}.{name}");
-                    m.templates.imports.insert(key.clone(), (idx, name.clone()));
+                    m.templates.imports.insert(key.clone(), (idx, name));
                     noted.push(key);
                 }
-                m.templates.modules.push((from + i, t));
             }
-            Stmt::FromImport { lang, names, body, .. } if is_arrow_source(lang) => {
-                let t = module_templates(body);
-                let idx = m.templates.modules.len();
-                let mut any = false;
+            Stmt::FromImport { lang, module, names, body, .. } if is_arrow_source(lang) => {
+                let Some(idx) = module_frame(m, lang, module, body, from + i) else { continue };
                 for (orig, alias) in names {
-                    if t.decls.contains_key(orig) {
+                    if m.templates.modules[idx].1.decls.contains_key(orig) {
                         let key = alias.clone().unwrap_or_else(|| orig.clone());
                         m.templates.imports.insert(key.clone(), (idx, orig.clone()));
                         noted.push(key);
-                        any = true;
                     }
-                }
-                if any {
-                    m.templates.modules.push((from + i, t));
                 }
             }
             Stmt::ClassDef { name, template_params, bases, .. } => {
                 if template_params.is_empty() {
                     m.templates.class_bases.insert(name.clone(), bases.clone());
+                    // ⚠ このクラスを型引数にして保留していた制約付きの具体化を作れる（2-16）。
+                    noted_classes.push(name.clone());
                 } else {
-                    m.templates.decls.insert(name.clone(), Rc::new(st.clone()));
+                    note_template(m, name, st);
                     noted.push(name.clone());
                 }
             }
             Stmt::FnDef { name, template_params, .. } | Stmt::GenDef { name, template_params, .. }
                 if !template_params.is_empty() =>
             {
-                m.templates.decls.insert(name.clone(), Rc::new(st.clone()));
+                note_template(m, name, st);
                 noted.push(name.clone());
             }
             _ => {}
         }
     }
-    if noted.is_empty() || m.templates.pending.is_empty() {
+    if (noted.is_empty() && noted_classes.is_empty()) || m.templates.pending.is_empty() {
         return Ok(());
     }
     let (ready, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut m.templates.pending)
         .into_iter()
-        .partition(|(base, _)| noted.contains(base));
+        .partition(|(base, args)| {
+            noted.contains(base)
+                || args.iter().any(|a| noted_classes.iter().any(|c| mentions_name(a, c)))
+        });
     m.templates.pending = rest;
     for (base, args) in ready {
         instantiate(m, &base, &args, out, &mut Vec::new())?;
     }
     Ok(())
+}
+
+/// テンプレートの宣言を覚える。
+///
+/// ⚠ 同じ名前で宣言し直したとき（REPL で書き直したブロックなど・タスク 2-16）は、前の宣言から
+///   作った具体化を「作っていない」ことに戻す。実行時は新しいテンプレートの値に結び付けるので、
+///   作り直さないと新しいテンプレートの具体化がどこにも無くなる。
+fn note_template(m: &mut Mono, name: &str, st: &Stmt) {
+    if m.templates.decls.insert(name.to_string(), Rc::new(st.clone())).is_some() {
+        let prefix = format!("{name}[");
+        m.templates.made.retain(|c| !c.starts_with(&prefix));
+    }
 }
 
 /// `stmt` の中の具体化を探し、まだ作っていなければ実体を作って `out` に積む（タスク 2-8）。
@@ -387,23 +424,38 @@ fn instantiate(
         | Stmt::GenDef { template_params, .. } => template_params,
         _ => return Ok(()),
     };
-    // ⚠ 型引数の数違いは実行時がそう言う（ここで黙って作らない）。
+    // ⚠⚠ 型引数の数違い・制約違反は**展開時のエラー**（D36・タスク 2-16）。実行時の具体化を
+    //   廃止したので、実行時に作り直して `TemplateError` を出す経路はもう無い。文面は実行時
+    //   （`check_template_constraints`）と同じ。
     if params.len() != args.len() {
-        return Ok(());
+        return Err(format!(
+            "TemplateError: expected {} type argument(s), got {} (in '{concrete}')",
+            params.len(),
+            args.len()
+        ));
     }
-    // ⚠⚠ 制約付き（`class Box[T: Printable]`）は、**制約を満たすと確かめられたときだけ**作る
-    //   （タスク 2-14）。判定は実行時の `type_satisfies_trait` と同じ ——「型引数がクラスで、
-    //   その基底にその trait がある」。満たさない・判断できない（組み込み型・まだ宣言されて
-    //   いないクラス）ときは作らず、実行時の `TemplateError` に任せる（従来どおり）。
-    let satisfied = params.iter().zip(args).all(|(p, a)| {
-        p.constraints.is_empty()
-            || m.templates
-                .class_bases
-                .get(a)
-                .is_some_and(|bases| p.constraints.iter().all(|c| bases.contains(c)))
-    });
-    if !satisfied {
-        return Ok(());
+    // ⚠⚠ 制約付き（`class Box[T: Printable]`）の判定は実行時の `type_satisfies_trait` と同じ
+    //   ——「型引数がクラスで、その基底にその trait がある」（タスク 2-14）。
+    for (p, a) in params.iter().zip(args) {
+        let Some(first) = p.constraints.first() else { continue };
+        match m.templates.class_bases.get(a) {
+            Some(bases) => {
+                if let Some(c) = p.constraints.iter().find(|c| !bases.contains(c)) {
+                    return Err(constraint_violation(a, c, &p.name));
+                }
+            }
+            // ⚠ まだ宣言されていないクラス（関数の本体の中の具体化など）。そのクラスの宣言に
+            //   出会ったら作る（[`note_decls`]）。最後まで宣言されなければ作られず、実行時に
+            //   `NameError: type ... is not defined` になる（実行時の判定と同じ）。
+            None if may_be_a_class(a) => {
+                if !m.templates.pending.iter().any(|(b, x)| b == base && x == args) {
+                    m.templates.pending.push((base.to_string(), args.to_vec()));
+                }
+                return Ok(());
+            }
+            // 組み込みの型（`int` / `list[int]` …）は trait を実装しない。
+            None => return Err(constraint_violation(a, first, &p.name)),
+        }
     }
     // ⚠⚠ 終わらない具体化は止めて、**どう連鎖したか**を見せる（タスク 2-9）。
     if chain.len() >= INSTANCE_DEPTH {
@@ -476,6 +528,29 @@ fn instantiate_imported(
     std::mem::swap(&mut m.templates, &mut frame);
     m.templates.modules[mi].1 = frame;
     r
+}
+
+/// 制約違反の文面（実行時の `check_template_constraints` と同じ・タスク 2-16）。
+fn constraint_violation(type_name: &str, constraint: &str, param: &str) -> String {
+    format!(
+        "TemplateError: type `{type_name}` does not satisfy trait `{constraint}` \
+         (required for template parameter `{param}`)"
+    )
+}
+
+/// 型引数が（まだ宣言されていない）クラスでありうるか。組み込みの型なら偽。
+fn may_be_a_class(type_name: &str) -> bool {
+    matches!(
+        crate::type_check::InferredType::from_ann(type_name),
+        Some(crate::type_check::InferredType::NamedInstance(_))
+    )
+}
+
+/// 型引数の文字列が名前 `name` を（識別子として）含むか（`list[Cat]` は `Cat` を含む）。
+fn mentions_name(type_arg: &str, name: &str) -> bool {
+    type_arg
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|tok| tok == name)
 }
 
 /// 終わらない具体化の文面（タスク 2-9）。連鎖の頭と、伸びていく様子が分かるところまでを見せる。

@@ -65,6 +65,8 @@ pub struct TypeChecker {
     /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
     /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
     annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
+    /// 検査済みのテンプレートの具体化 `(lang, モジュールパス, 名前)`（`annotate_module_body`・タスク 2-16）。
+    annotated_instances: std::collections::HashSet<(String, Vec<String>, String)>,
 }
 
 impl TypeChecker {
@@ -205,6 +207,7 @@ impl TypeChecker {
             annotations: annotations::AstAnnotations::default(),
             registry_incomplete: Self::has_unloaded_import(stmts),
             annotated_modules: std::collections::HashSet::new(),
+            annotated_instances: std::collections::HashSet::new(),
         }
     }
 

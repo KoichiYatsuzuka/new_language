@@ -325,6 +325,47 @@ impl Interpreter {
 
     /// モジュールの body を孤立スコープで実行し、`Value::Namespace` を返す。
     /// キャッシュを使用し、循環 import はエラーにする。
+    /// 読み込み済みのモジュール（大域の添字 `g`）に、`body` にあってまだ定義されていない
+    /// 具体化（`Box[int]` のような名前の宣言）を定義する（タスク 2-16・`exec_module` の読み込み済みの経路）。
+    fn define_missing_instances(&mut self, g: u32, body: &[Stmt]) -> Result<(), String> {
+        let pending: Vec<&Stmt> = body
+            .iter()
+            .filter(|st| match st {
+                Stmt::ClassDef { name, template_params, .. }
+                | Stmt::FnDef { name, template_params, .. }
+                | Stmt::GenDef { name, template_params, .. } => {
+                    template_params.is_empty() && name.ends_with(']')
+                }
+                _ => false,
+            })
+            .collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let locals = self.scopes.split_off(1);
+        let floor = std::mem::replace(&mut self.frame_floor, 1);
+        let prev = self.switch_globals(g);
+        let mut result = Ok(());
+        for st in pending {
+            let name = match st {
+                Stmt::ClassDef { name, .. } | Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } => name,
+                _ => continue,
+            };
+            if self.scopes[0].contains_key(name) {
+                continue;
+            }
+            if let Err(e) = self.exec(st) {
+                result = Err(e);
+                break;
+            }
+        }
+        self.scopes.truncate(1);
+        self.switch_globals(prev);
+        self.scopes.extend(locals);
+        self.frame_floor = floor;
+        result
+    }
+
     /// モジュールの本体を今の大域で走らせる（`exec_module` / `try_load_native_module` 共通）。
     ///
     /// #42: モジュール本体も**バイトコード VM で実行する**。以前はここが丸ごと
@@ -365,7 +406,17 @@ impl Interpreter {
                     module.join(".")
                 ));
             }
-            Some(ModuleState::Loaded(ns)) => return Ok(ns),
+            Some(ModuleState::Loaded(ns)) => {
+                // ⚠⚠ 読み込み済みでも、この `import` 文の本体にだけある具体化は定義する（タスク 2-16）。
+                //   展開器は具体化を「その枠で最初の `import` 文」の本体に置くが、そのモジュールが
+                //   **別のモジュールの中で先に**読み込まれていると、ここは 2 回目の読み込みになり
+                //   本体は走らない。実行時の具体化は廃止した（D36）ので、ここで定義しないと
+                //   その具体化はどこにも無くなる。
+                if let Some(&g) = self.module_globals_ids.get(&cache_key) {
+                    self.define_missing_instances(g, body)?;
+                }
+                return Ok(ns);
+            }
             None => {}
         }
 
@@ -436,6 +487,7 @@ impl Interpreter {
         //   今は関数値が定義したモジュールの大域を持ち、呼び出しの間だけそれに差し替える
         //   （`FnValue::globals`・`switch_globals`）。呼び出し側へは名前空間の値だけを渡す。
         let frame = self.enter_module_frame();
+        self.module_globals_ids.insert(cache_key.clone(), self.cur_globals);
         // 診断フック（#10-d）: ここから先は import モジュール本体（メイン最上位と区別して計上）。
         let _mod_guard = crate::interpreter::tw_stats::enabled()
             .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);

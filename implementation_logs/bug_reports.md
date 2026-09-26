@@ -24,7 +24,7 @@
 | #8 | 演算子オーバーロードの被演算子の型を静的に検査しない | 通る | 落ちる | 中 |
 | #9 | `int` などの属性アクセスを静的に検査しない | 通る | 落ちる | 中 |
 | #10 | `freeze` した変数への `mut self` メソッド呼び出しを静的に検査しない | 通る | `TypeError` | 低 |
-| #11 | 関数の中のクラス定義・`import` が内部エラー（`VmForceError`） | — | 落ちる | 中 |
+| #11 | 関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`） | — | 落ちる | 中 |
 | #12 | 誤りの位置が出ない（静的エラー・ParseError・traceback） | — | — | 中 |
 
 ---
@@ -128,7 +128,8 @@ a.bump()
 期待: どちらも動く（`Stack[int]` は単相化したクラスそのもの）。
 
 ⚠ 原因: パーサは `]` の直後が `(` のときだけ具体化として読み、それ以外は添字（`Stack` の `int` 番目）
-として読む。実行時の具体化の廃止（D36）と合わせて、値としての具体化を単相化したクラスに結び付けるのが筋。
+として読む。実行時の具体化は廃止した（D36・2026-09-26）ので、値としての具体化も展開器が作った
+具体クラスに結び付けるのが筋（展開器は `Stack[int].empty` の形を具体化の場所として拾っていない）。
 
 ## #5 `x is Stack[int]` が構文エラー
 
@@ -227,7 +228,7 @@ b.set(2)
 期待: 静的エラー（`freeze` の後は書き込みが静的エラーになる規則・`.claude/rules/language-differences.md`。
 組み込みの変更メソッド `x.append(..)` は静的に止まる）。
 
-## #11 関数の中のクラス定義・`import` が内部エラー（`VmForceError`）
+## #11 関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）
 
 再現:
 ```
@@ -239,6 +240,8 @@ fn f() -> int:
 print(f())
 ```
 現状: `VmForceError: cannot compile function 'f' to bytecode`。関数の中の `import` も同じ。
+最上位の `if` の中の `import`（`if True:` の下に `import m`）は
+``VmForceError: cannot compile top-level statement `If` to bytecode``。
 期待: 動く、または「関数の中では書けない」という静的エラー（今の文面は内部の事情しか言っていない）。
 
 ## #12 誤りの位置が出ない

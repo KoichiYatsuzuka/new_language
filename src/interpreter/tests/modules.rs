@@ -20,7 +20,11 @@ fn run_with_module(module_src: &str, main_src: &str) -> Result<Interpreter, Stri
         alias: None,
         body,
     }];
-    stmts.extend(Parser::new(Lexer::new(main_src, "").tokenize(), None).parse_program()?);
+    let mut parser = Parser::new(Lexer::new(main_src, "").tokenize(), None);
+    stmts.extend(parser.parse_program()?);
+    // 本番と同じく展開を先に済ませる（テンプレートの具体化・D36）。
+    let mut stmts =
+        crate::meta_expand::expand_program(stmts, parser.node_counter(), parser.known_traits())?;
     let (_errors, _warnings, annotations) = super::super::resolver::resolve_and_annotate(&mut stmts);
     let mut interp = Interpreter::new();
     interp.wire_resolution(

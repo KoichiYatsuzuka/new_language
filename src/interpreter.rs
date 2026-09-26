@@ -453,14 +453,13 @@ pub struct Interpreter {
     pub(self) template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>,
     /// テンプレートジェネレータ関数の実体化メモ（タスク #7）。`template_fn_cache` と同様。
     pub(self) template_gen_cache: HashMap<(usize, Vec<String>), Rc<GeneratorFnValue>>,
-    /// テンプレート**クラス**の実体化メモ（Phase T・D3）。キーは他の 2 本と同形の
+    /// テンプレート**クラス**の具体化の登録（Phase T・D3）。キーは他の 2 本と同形の
     /// `(テンプレートの Rc アドレス, 型引数)`。
     ///
-    /// ⚠⚠ **これが無いと「同じ型で実体化したテンプレートが別の型になる」。**
-    /// `build_template_class` は毎回 `alloc_class_id()` で新しい class_id を発行するので、
-    /// キャッシュしないと同じ `Box[int]` を 2 回書いただけで `Value::Class` の等値
-    /// （class_id 比較）が False になる。属性アクセスの IC も class_id を鍵にするため、
-    /// 実体化ごとに変わると**構造的に毎回ミス**する。
+    /// ⚠ 具体化は展開時に作り、その宣言が定義された時点でここへ入る（`register_mono_instance`・
+    ///   D36・タスク 2-16）。同じ `Box[int]` はいつも同じクラスなので、`Value::Class` の等値
+    ///   （class_id 比較）も属性アクセスの IC も成り立つ（以前の実行時の具体化〔削除済み〕は、
+    ///   これが無いと実体化のたびに新しい class_id を発行していた）。
     pub(self) template_class_cache: HashMap<(usize, Vec<String>), Rc<ClassValue>>,
     /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
     /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
@@ -488,6 +487,11 @@ pub struct Interpreter {
     pub(self) meta_module_frames: Vec<(u32, Vec<ScopeMap>, usize)>,
     /// 展開器の前口上（`gensym` など）の名前と値。モジュールの展開の枠の大域にも置く。
     pub(self) meta_prelude: Vec<(String, Value)>,
+    /// 読み込んだモジュールの大域の添字（鍵は `module_cache` と同じ・タスク 2-16）。
+    ///
+    /// ⚠ 読み込み済みのモジュールをもう一度 `import` したとき、その `import` 文の本体に置かれた
+    ///   具体化（展開器が置く）をモジュールの大域で定義するのに使う（`exec_module`）。
+    pub(self) module_globals_ids: HashMap<(String, PathBuf), u32>,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
@@ -656,6 +660,7 @@ impl Interpreter {
             event_loop_value: Value::EventLoop(el_data.clone()),
             meta_module_frames: Vec::new(),
             meta_prelude: Vec::new(),
+            module_globals_ids: HashMap::new(),
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             call_name_pool: Vec::new(),

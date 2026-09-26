@@ -7,6 +7,28 @@ use {
     crate::type_check::TypeChecker,
 };
 
+/// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
+fn instance_decl_name(st: &Stmt) -> Option<&str> {
+    match st {
+        Stmt::ClassDef { name, template_params, .. }
+        | Stmt::FnDef { name, template_params, .. }
+        | Stmt::GenDef { name, template_params, .. }
+            if template_params.is_empty() && name.ends_with(']') =>
+        {
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+/// テンプレートの宣言か。
+fn is_template_decl(st: &Stmt) -> bool {
+    matches!(st,
+        Stmt::ClassDef { template_params, .. }
+        | Stmt::FnDef { template_params, .. }
+        | Stmt::GenDef { template_params, .. } if !template_params.is_empty())
+}
+
 impl TypeChecker {
     /// import 先モジュールの本体を検査して**注釈だけ**を採取する（#16 段階 F）。
     ///
@@ -28,15 +50,41 @@ impl TypeChecker {
         module: &[String],
         body: &[Stmt],
     ) {
-        if !self
+        let first = self
             .annotated_modules
-            .insert((lang.to_string(), module.to_vec()))
-        {
+            .insert((lang.to_string(), module.to_vec()));
+        // ⚠ 展開器は具体化を「その枠で最初の `import` 文」の本体に置くので、同じモジュールの
+        //   2 回目以降の `import` の本体にだけある具体化がある（タスク 2-16・レジストリの
+        //   `seen_instances` と同じ事情）。それだけは検査する。
+        let fresh: Vec<Stmt> = body
+            .iter()
+            .filter(|st| {
+                instance_decl_name(st).is_some_and(|n| {
+                    self.annotated_instances
+                        .insert((lang.to_string(), module.to_vec(), n.to_string()))
+                })
+            })
+            .cloned()
+            .collect();
+        let owned: Vec<Stmt>;
+        let target: &[Stmt] = if first {
+            body
+        } else if fresh.is_empty() {
             return; // 収集済み（複数箇所からの import・入れ子 import）
-        }
+        } else {
+            // テンプレートの宣言も一緒に検査する（下の重複の除去が、テンプレート自身の誤りを
+            // 具体化の誤りから見分けるのに使う）。
+            owned = body
+                .iter()
+                .filter(|st| is_template_decl(st))
+                .cloned()
+                .chain(fresh)
+                .collect();
+            &owned
+        };
         let saved = std::mem::take(&mut self.diags);
         self.push_scope();
-        self.check_stmts(body);
+        self.check_stmts(target);
         self.pop_scope();
         let module_diags = std::mem::replace(&mut self.diags, saved);
         // ⚠⚠ ただし、**呼び出し側の型引数が原因の誤り**は捨てない（タスク 2-15）。

@@ -1,22 +1,17 @@
-﻿// templates.rs — テンプレート展開・AST置換
-// (check_template_constraints / type_satisfies_trait / instantiate_template / instantiate_template_class)
-// + subst_* フリー関数 (AST substitution helpers for template instantiation)
+﻿// templates.rs — テンプレートの具体化の呼び出し
+// (check_template_constraints / type_satisfies_trait / instantiate_template / register_mono_instance)
 //
-// テンプレート関数・クラス・ジェネレータ関数の呼び出し時に型変数を具体型に置換して実行する。
-// `subst_*` フリー関数群が AST ノードを再帰的に走査して型変数名を書き換える。
+// ⚠⚠ **具体化は展開時に作る**（D36・タスク 2-16）。展開器（`meta_expand::monomorph`）が
+// 具体化を普通の宣言（`Box[int]`）として置き、それが定義された時点で `(テンプレート, 型引数)` の
+// 組で登録される（`register_mono_instance`）。ここは呼び出しのたびに制約を確かめ、登録済みの
+// 具体化を呼ぶだけで、型変数の置換（`crate::template_subst`）はしない。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{CallArg, FieldKind, Stmt, TemplateParam};
+use crate::ast::{CallArg, TemplateParam};
 
-// 置換は `crate::template_subst`（タスク 2-7 で切り出した・実行時と展開時で同じものを使う）。
-use crate::template_subst::{subst_params, subst_stmts, subst_type};
-
-use super::{
-    ClassValue, DictData, FnValue, GeneratorFnValue, Interpreter, TemplateClassValue, Value,
-};
+use super::{DictData, Interpreter, Value};
 
 /// テンプレート実体化に渡す呼び出し引数（#27-c）。
 ///
@@ -94,12 +89,12 @@ impl Interpreter {
         }
     }
 
-    /// テンプレート関数・クラス・ジェネレータを型引数で実体化して実行または構築する。
+    /// テンプレート関数・クラス・ジェネレータの具体化を呼ぶ（具体化そのものは展開時に作ってある）。
     ///
     /// ディスパッチ先:
-    /// - `TemplateFn`: 型変数を置換して通常関数として実行
-    /// - `TemplateClass`: 型変数を置換してクラスを構築してインスタンス化
-    /// - `TemplateGenFn`: 型変数を置換してジェネレータ関数として実行
+    /// - `TemplateFn`: 登録済みの具体化（普通の関数）を実行
+    /// - `TemplateClass`: 登録済みの具体化（普通のクラス）をインスタンス化
+    /// - `TemplateGenFn`: 登録済みの具体化をジェネレータ関数として実行
     /// - `Type("dict")`: `dict[K, V](...)` の組み込み辞書コンストラクタとして処理
     ///
     /// - `tmpl_val`: 実体化するテンプレート値
@@ -139,79 +134,31 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match tmpl_val {
             Value::TemplateFn(tmpl) => {
-                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する。
-                // 制約検証は毎回行う（安価・エラー意味論を保つ）。AST 置換と FnValue 構築は
-                // `(テンプレート, 型引数)` でメモ化し、再実体化で clone-walk と Chunk 再コンパイルを省く（#7）。
+                // テンプレート関数: 制約を検証し、展開時に作った具体化（普通の関数）を実行する。
+                // 制約検証は毎回行う（安価・エラー意味論を保つ）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
-                // ⚠⚠ **展開器が単相化した宣言は、定義された時点でこのキャッシュに入っている**
-                //   （`register_mono_instance`・タスク 2-15）。無いとき（REPL・デバッガ・
-                //   制約を確かめられなかった具体化）だけここで作る。
-                let fn_val = match self.template_fn_cache.get(&key) {
-                    Some(cached) => cached.clone(),
-                    None => {
-                        let type_map: HashMap<String, String> = tmpl
-                            .template_params
-                            .iter()
-                            .zip(type_args.iter())
-                            .map(|(p, t)| (p.name.clone(), t.clone()))
-                            .collect();
-                        let concrete_params = subst_params(&tmpl.params, &type_map);
-                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                        let fn_val = Rc::new(FnValue {
-                            globals: self.cur_globals,
-                            name: tmpl.name.clone(),
-                            params: concrete_params,
-                            body: std::rc::Rc::from(concrete_body),
-                            is_python: false,
-                            captured_env: std::collections::HashMap::new(),
-                            // 0-B2 の残件: 戻り値注釈も具体型へ置換して載せる。
-                            // 無いと `fn f[T](…) -> float` の戻り値昇格が効かない。
-                            return_type: tmpl
-                                .return_type
-                                .as_ref()
-                                .map(|t| subst_type(t, &type_map)),
-                            vm_chunk: None,
-                        });
-                        self.template_fn_cache.insert(key, fn_val.clone());
-                        fn_val
-                    }
+                // ⚠⚠ **具体化は展開時に作る**（D36・タスク 2-16）。展開器が置いた宣言は、定義された
+                //   時点でこのキャッシュに入る（`register_mono_instance`）。実行時には作らない。
+                let Some(fn_val) = self.template_fn_cache.get(&key).cloned() else {
+                    return Err(Self::not_instantiated(&tmpl.name, type_args));
                 };
                 let evaled = call_args.into_evaled(self)?;
                 self.exec_fn_evaled(fn_val, &evaled, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
-                // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する。
+                // テンプレートクラス: 制約を検証し、展開時に作った具体化（普通のクラス）をインスタンス化する。
                 //
                 // ⚠ 制約検証は**キャッシュ引きの前に毎回**行う（関数側と同じ・エラー意味論を保つ）。
-                //
-                // ⚠⚠ **クラスは `(テンプレート, 型引数)` でメモ化する**（D3）。
-                //    以前はキャッシュが無く、実体化のたびに `alloc_class_id()` で
-                //    **新しい class_id** を発行していたため、同じ `Box[int]` を 2 回書くと
-                //    `Value::Class` の等値（class_id 比較）が **False** になっていた。
-                //    メモ化すると「同じ型引数で実体化したテンプレートは同じ型」になり、
-                //    R3 の属性 IC も効くようになる（実体化ごとに class_id が変わると
-                //    構造的に毎回ミスする）。
+                // ⚠ 同じ型引数の具体化は**同じクラス**（展開時に 1 回だけ作る）。`Value::Class` の等値
+                //    （class_id 比較）も R3 の属性 IC もこれを前提にしている（D3）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
-                // ⚠⚠ **展開器が単相化したクラスは、定義された時点でこのキャッシュに入っている**
-                //   （`register_mono_instance`・タスク 2-15）。クラス変数の初期化などもその定義で済んでいる。
-                let cls = match self.template_class_cache.get(&key) {
-                    Some(cached) => cached.clone(),
-                    None => {
-                        let type_map: HashMap<String, String> = tmpl
-                            .template_params
-                            .iter()
-                            .zip(type_args.iter())
-                            .map(|(p, t)| (p.name.clone(), t.clone()))
-                            .collect();
-                        // ⚠ 置換（clone-walk）も**ミス側**に置く。呼び出し元で先に置換すると
-                        //   キャッシュを足しても毎回 AST を複製することになる（関数側と同じ形）。
-                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                        let cls = self.build_template_class(&tmpl, concrete_body)?;
-                        self.template_class_cache.insert(key, cls.clone());
-                        cls
-                    }
+                // ⚠⚠ **具体化は展開時に作る**（D36・タスク 2-16）。展開器が置いたクラスは、定義された
+                //   時点でこのキャッシュに入る（`register_mono_instance`）。実行時には作らない。
+                //   クラス変数の初期化もその定義で済んでいる。
+                let Some(cls) = self.template_class_cache.get(&key).cloned() else {
+                    return Err(Self::not_instantiated(&tmpl.name, type_args));
                 };
                 // ⚠ 引数の評価は**クラスが決まった後**（既存の順序を保つ。先に評価すると
                 //   制約検証より前に副作用が起きる）。
@@ -219,32 +166,12 @@ impl Interpreter {
                 self.instantiate_evaled(cls, evaled)
             }
             Value::TemplateGenFn(tmpl) => {
-                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する。
-                // TemplateFn と同様に `(テンプレート, 型引数)` でメモ化（#7）。
+                // テンプレートジェネレータ関数: 展開時に作った具体化をジェネレータとして実行する。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
-                // ⚠⚠ 展開器が単相化したジェネレータは、定義された時点でこのキャッシュに入っている（2-15）。
-                let gen_fn = match self.template_gen_cache.get(&key) {
-                    Some(cached) => cached.clone(),
-                    None => {
-                        let type_map: HashMap<String, String> = tmpl
-                            .template_params
-                            .iter()
-                            .zip(type_args.iter())
-                            .map(|(p, t)| (p.name.clone(), t.clone()))
-                            .collect();
-                        let concrete_params = subst_params(&tmpl.params, &type_map);
-                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                        let gen_fn = Rc::new(GeneratorFnValue {
-                            globals: self.cur_globals,
-                            name: tmpl.name.clone(),
-                            params: concrete_params,
-                            body: concrete_body,
-                            captured_env: std::collections::HashMap::new(),
-                        });
-                        self.template_gen_cache.insert(key, gen_fn.clone());
-                        gen_fn
-                    }
+                // ⚠⚠ **具体化は展開時に作る**（D36・タスク 2-16・関数と同じ）。
+                let Some(gen_fn) = self.template_gen_cache.get(&key).cloned() else {
+                    return Err(Self::not_instantiated(&tmpl.name, type_args));
                 };
                 let evaled = call_args.into_evaled(self)?;
                 self.exec_generator_evaled(gen_fn, evaled, None)
@@ -321,23 +248,19 @@ impl Interpreter {
         }
     }
 
-    /// 型変数が置換されたテンプレートクラス本体から具体的な `ClassValue` を構築してインスタンス化する。
+    /// 展開時に作られていない具体化を実行しようとしたときの文面（D36・タスク 2-16）。
     ///
-    /// `exec` の `Stmt::ClassDef` 処理と同様にクラス本体を走査してメソッド・フィールド・クラス変数を収集し、
-    /// `ClassValue` を構築してから `instantiate` でインスタンスを生成する。
-    ///
-    /// - `tmpl`: 元のテンプレートクラス定義（名前・bases を参照する）
-    /// - `concrete_body`: 型変数が具体型に置換済みのクラス本体文リスト
-    /// - `call_args`: コンストラクタ呼び出し引数リスト（AST または評価済み）
-    ///
-    /// 戻り値: `Ok(Value::Instance)` — 構築済みインスタンス。`Err` — 実行エラー
-    /// 置換済みの本体から**クラスそのもの**を構築する（インスタンス化はしない）。
-    ///
-    /// ⚠ ここには**副作用がある** — `const` / `static mut` / フィールド既定値の初期化子を
-    /// `self.eval` する。呼び出し側が `(テンプレート, 型引数)` でメモ化するので、
-    /// この評価は**その組み合わせにつき 1 回**になる。通常のクラス定義
-    /// （`exec_class_def` は 1 回だけ走る）と同じ回数であり、以前の
-    /// 「実体化のたびに評価し直す」方が非対称だった。
+    /// ⚠ ふつうは起きない（展開器が書かれた具体化をすべて作る）。起きるのは、デバッガで新しい
+    ///   具体化を書いたとき・関数の中の `import` のように展開器が降りない場所のテンプレートだけ。
+    fn not_instantiated(name: &str, type_args: &[String]) -> String {
+        format!(
+            "TemplateError: '{}' is not instantiated — template instantiations are made before the \
+             program runs (in the REPL, when a block is run), and this one was not made there; the \
+             debugger cannot make new instantiations",
+            crate::template_subst::instance_name(name, type_args)
+        )
+    }
+
     /// 単相化した宣言（`Box[int]`）を定義したときに、**定義したスコープで見えるテンプレート**の
     /// 具体化としてキャッシュへ登録する（タスク 2-15）。
     ///
@@ -369,160 +292,5 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn build_template_class(
-        &mut self,
-        tmpl: &TemplateClassValue,
-        concrete_body: Vec<Stmt>,
-    ) -> Result<Rc<ClassValue>, String> {
-        let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
-        let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
-        let mut field_defaults = Vec::new();
-        let mut class_vars: HashMap<String, Value> = HashMap::new();
-        let mut field_mutability: HashMap<String, bool> = HashMap::new();
-        let mut field_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
-        let mut method_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
-        let mut static_method_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut class_method_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
-        let mut own_field_order: Vec<(String, bool, String)> = Vec::new();
-        for stmt in &concrete_body {
-            match stmt {
-                Stmt::FnDef {
-                    name: mname,
-                    template_params,
-                    params,
-                    body: mbody,
-                    access: macc,
-                    is_static,
-                    is_class_method,
-                    ..
-                } => {
-                    let storage_name = if mname == "__cast__" && !template_params.is_empty() {
-                        format!("__cast__[{}]", template_params[0].name)
-                    } else {
-                        mname.clone()
-                    };
-                    if *is_static {
-                        static_method_names.insert(storage_name.clone());
-                    }
-                    if *is_class_method {
-                        class_method_names.insert(storage_name.clone());
-                    }
-                    if *macc != crate::ast::Accessibility::Public {
-                        method_access.insert(storage_name.clone(), macc.clone());
-                    }
-                    methods
-                        .entry(storage_name)
-                        .or_default()
-                        .push(Rc::new(FnValue {
-                            globals: self.cur_globals,
-                            name: mname.clone(),
-                            params: params.clone(),
-                            body: std::rc::Rc::from(&mbody[..]),
-                            is_python: false,
-                            captured_env: std::collections::HashMap::new(),
-                        return_type: None,
-                        vm_chunk: None,
-                        }));
-                }
-                Stmt::GenDef {
-                    name: mname,
-                    params,
-                    body: mbody,
-                    access: macc,
-                    ..
-                } => {
-                    if *macc != crate::ast::Accessibility::Public {
-                        method_access.insert(mname.clone(), macc.clone());
-                    }
-                    gen_methods.insert(
-                        mname.clone(),
-                        Rc::new(GeneratorFnValue {
-                            globals: self.cur_globals,
-                            name: mname.clone(),
-                            params: params.clone(),
-                            body: mbody.clone(),
-                            captured_env: std::collections::HashMap::new(),
-                        }),
-                    );
-                }
-                Stmt::Field {
-                    name: fname,
-                    kind: FieldKind::Const,
-                    default: Some(init),
-                    access: facc,
-                    ..
-                } => {
-                    if *facc != crate::ast::Accessibility::Public {
-                        field_access.insert(fname.clone(), facc.clone());
-                    }
-                    let val = self.eval(init)?;
-                    class_vars.insert(fname.clone(), val);
-                }
-                Stmt::Field {
-                    name: fname,
-                    kind: FieldKind::StaticMut,
-                    default,
-                    access: facc,
-                    ..
-                } => {
-                    if *facc != crate::ast::Accessibility::Public {
-                        field_access.insert(fname.clone(), facc.clone());
-                    }
-                    let val = if let Some(init) = default {
-                        self.eval(init)?
-                    } else {
-                        Value::None
-                    };
-                    static_vars.insert(fname.clone(), Rc::new(RefCell::new(val)));
-                }
-                Stmt::Field {
-                    name: fname,
-                    kind,
-                    type_ann,
-                    default,
-                    access: facc,
-                    ..
-                } => {
-                    if *facc != crate::ast::Accessibility::Public {
-                        field_access.insert(fname.clone(), facc.clone());
-                    }
-                    let mutable = *kind == FieldKind::Mut;
-                    field_mutability.insert(fname.clone(), mutable);
-                    // ⚠ `type_ann` は `subst_stmts` が型変数を具体型へ置換済み
-                    //   （`Box[int]` なら `"int"`）。実行時型判定タグの素になる。
-                    own_field_order.push((fname.clone(), mutable, type_ann.clone()));
-                    if let Some(init) = default {
-                        let val = self.eval(init)?;
-                        field_defaults.push((fname.clone(), val, mutable));
-                    }
-                }
-                _ => {}
-            }
-        }
-        let (field_index, field_mutability_vec, field_tags, field_checks, field_count) =
-            self.build_field_index(&own_field_order, &tmpl.bases);
-        let cls = Rc::new(ClassValue {
-            bases: tmpl.bases.clone(),
-            methods,
-            gen_methods,
-            field_defaults,
-            class_vars,
-            field_mutability,
-            field_index,
-            field_count,
-            field_mutability_vec,
-            field_tags,
-            field_checks,
-            field_access,
-            method_access,
-            static_method_names,
-            class_method_names,
-            static_vars,
-            ..ClassValue::synthetic(tmpl.name.clone(), crate::interpreter::value::alloc_class_id())
-        });
-        Ok(cls)
-    }
+
 }
