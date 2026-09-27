@@ -598,7 +598,14 @@ impl Parser {
     /// # エラー
     /// 型引数・インデックス式・`]` のパースに失敗した場合
     fn parse_bracket_suffix(&mut self, expr: Expr) -> Result<Expr, String> {
-        if self.is_template_instantiation() {
+        // ⚠ このファイルのテンプレートの名前に付いた `[..]` は、呼び出しでなくても具体化として読む
+        //   （フェーズ10 10-9）。`Stack[int].empty()` / `Counter[T].n += 1` が添字（`Stack` の `int` 番目）に
+        //   なり、実行時に `'template' object is not subscriptable` で落ちていた。テンプレートの値は
+        //   添字を取れないので、この読み替えで意味の変わる正しいプログラムは無い。
+        // ⚠ import 先のテンプレート（`m.Stack[int].empty()`）はパーサには分からないので従来どおり。
+        let base_is_template =
+            matches!(&expr, Expr::Ident { name, .. } if self.known_templates.contains(name));
+        if base_is_template || self.is_template_instantiation() {
             // テンプレート呼び出し: 型引数リストをパース
             self.advance(); // `[` を消費
             let mut type_args = Vec::new();

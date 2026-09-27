@@ -574,3 +574,36 @@ fn test_escaped_nested_fn_called_from_vm_keeps_class_context() {
     );
     assert_int(run_get(src, "r"), 11);
 }
+
+/// 具体化を値として使う（フェーズ10 10-9）: 静的メソッド・`static mut`（具体化ごとに別）・クラスそのもの。
+/// ⚠ 以前は `Stack[int].empty()` が添字として読まれ `'template' object is not subscriptable`、
+///   `Counter[T].n` は `NameError: 'T'` だった。
+#[test]
+fn test_template_instance_as_value() {
+    let src = concat!(
+        "class Stack[T]:\n",
+        "    mut items: list[T]\n",
+        "    static fn empty() -> Stack[T]:\n",
+        "        return Stack[T]([])\n",
+        "class Counter[T]:\n",
+        "    static mut n: int = 0\n",
+        "    mut v: T\n",
+        "    fn bump(self) -> None:\n",
+        "        Counter[T].n += 1\n",
+        "let s = Stack[int].empty()\n",
+        "let size = len(s.items)\n",
+        "let a = Counter[int](1)\n",
+        "a.bump()\n",
+        "a.bump()\n",
+        "Counter[str](\"x\").bump()\n",
+        "let ni = Counter[int].n\n",
+        "let ns = Counter[str].n\n",
+        "let mk = Stack[str]\n",
+        "let t = mk([\"a\"])\n",
+        "let tsize = len(t.items)\n",
+    );
+    assert_int(run_get(src, "size"), 0);
+    assert_int(run_get(src, "ni"), 2);
+    assert_int(run_get(src, "ns"), 1);
+    assert_int(run_get(src, "tsize"), 1);
+}

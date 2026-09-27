@@ -81,13 +81,14 @@ impl TypeChecker {
                 let cls_name_opt: Option<String> = match &obj_ty {
                     InferredType::GenericInstance { .. } => instance_cls.clone(),
                     InferredType::NamedInstance(cls) => Some(cls.clone()),
-                    InferredType::TypeValOf(inner) => {
-                        if let InferredType::NamedInstance(cls) = inner.as_ref() {
-                            Some(cls.clone())
-                        } else {
-                            None
+                    InferredType::TypeValOf(inner) => match inner.as_ref() {
+                        InferredType::NamedInstance(cls) => Some(cls.clone()),
+                        // 具体化を値として使う形（`Stack[int].empty()`・10-9）は単相化した具体クラス。
+                        InferredType::GenericInstance { .. } => {
+                            self.registry.instance_class(&inner.to_string()).cloned()
                         }
-                    }
+                        _ => None,
+                    },
                     _ => None,
                 };
                 if let Some(cls_name) = cls_name_opt {

@@ -273,3 +273,33 @@ use super::*;
             "f(d)\n",
         )));
     }
+
+    // --- 具体化を値として使う（フェーズ10 10-9）---
+
+    const STACK_COUNTER: &str = concat!(
+        "class Stack[T]:\n",
+        "    mut items: list[T]\n",
+        "    static fn empty() -> Stack[T]:\n",
+        "        return Stack[T]([])\n",
+        "class Counter[T]:\n",
+        "    static mut n: int = 0\n",
+        "    mut v: T\n",
+    );
+
+    /// 具体化の静的メソッドの結果・`static mut` の型が付く。
+    #[test]
+    fn template_instance_as_value_is_typed() {
+        let errs = check_expanded(&format!(
+            "{STACK_COUNTER}let x: Stack[str] = Stack[int].empty()\nlet k: str = Counter[int].n\n"
+        ));
+        assert_eq!(errs.len(), 2, "{errs:?}");
+    }
+
+    /// 正しい使い方は通る。
+    #[test]
+    fn template_instance_as_value_ok() {
+        let errs = check_expanded(&format!(
+            "{STACK_COUNTER}let x: Stack[int] = Stack[int].empty()\nlet k: int = Counter[int].n\nlet mk = Stack[str]\n"
+        ));
+        assert!(errs.is_empty(), "{errs:?}");
+    }

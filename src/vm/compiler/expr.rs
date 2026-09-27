@@ -183,6 +183,22 @@ impl Compiler {
                 let n = self.add_name(&format!("NameError: '{name}' is not defined"));
                 self.emit(Op::Fail(n));
             }
+            // 具体化を**値として**使う形（`Stack[int].empty()` / `let make = Stack[str]`・フェーズ10 10-9）。
+            // 展開時の単相化が具体クラスを `Stack[int]` という名前で宣言しているので、その名前を
+            // 普通の識別子として読む（宣言した枠が関数ならローカル、最上位なら大域）。
+            // ⚠ 呼び出しの形（`Stack[int](..)`）は `CallTemplate` のまま（下の `Call` の腕）。
+            // ⚠ `m.Stack[int]`（import したモジュールのテンプレート）は対象外（パーサも添字として読む）。
+            Expr::TemplateInstantiate { base, type_args } if matches!(**base, Expr::Ident { .. }) => {
+                let Expr::Ident { name, node_id, .. } = &**base else {
+                    unreachable!("checked by the guard")
+                };
+                let inst = Expr::Ident {
+                    name: crate::template_subst::instance_name(name, type_args),
+                    node_id: *node_id,
+                    res: Resolution::Unresolved,
+                };
+                self.compile_expr(&inst)?;
+            }
             Expr::Ident { name, res: Resolution::Local(slot), .. } => {
                 // ⚠ 採番のずれをデバッグビルドで捕まえる（#86。`local_slot` の doc）。
                 let s = self.local_slot(name, *slot)?;

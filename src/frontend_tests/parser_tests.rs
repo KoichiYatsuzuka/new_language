@@ -1514,3 +1514,23 @@ fn match_is_arm_accepts_template_instance() {
     assert!(matches!(&arms[0].pattern, crate::ast::MatchPattern::IsType(t) if t == "Stack[int]"));
     assert!(matches!(&arms[1].pattern, crate::ast::MatchPattern::IsType(t) if t == "Box"));
 }
+
+/// このファイルのテンプレートの名前に付いた `[..]` は、呼び出しでなくても具体化（フェーズ10 10-9）。
+/// テンプレートでない名前の添字（`xs[0].n`）は従来どおり添字。
+#[test]
+fn template_name_bracket_is_instantiation_even_without_call() {
+    let stmts = parse(concat!(
+        "class Stack[T]:\n",
+        "    mut items: list[T]\n",
+        "let s = Stack[int].empty()\n",
+        "let make = Stack[str]\n",
+        "let xs = [1]\n",
+        "let n = xs[0].real\n",
+    ));
+    let Stmt::Let(_, _, Expr::Call { func, .. }) = &stmts[1] else { panic!("expected call: {:?}", stmts[1]) };
+    let Expr::Attr { object, .. } = func.as_ref() else { panic!("expected attr") };
+    assert!(matches!(object.as_ref(), Expr::TemplateInstantiate { type_args, .. } if type_args == &["int".to_string()]));
+    assert!(matches!(&stmts[2], Stmt::Let(_, _, Expr::TemplateInstantiate { .. })));
+    let Stmt::Let(_, _, Expr::Attr { object, .. }) = &stmts[4] else { panic!("expected attr") };
+    assert!(matches!(object.as_ref(), Expr::Subscript { .. }));
+}

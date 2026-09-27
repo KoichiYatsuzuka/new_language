@@ -1,0 +1,23 @@
+# template_as_value_error.ar — 具体化を値として使った結果も型検査される（フェーズ10 10-9）
+#
+# 対になる正常系: template_as_value.ar
+#
+# 期待されるエラー（2 件）:
+#   StaticTypeError  'x' is declared 'Stack[str]' but initialized with 'Stack[int]'
+#   StaticTypeError  'k' is declared 'str' but initialized with 'int'
+#
+# ⚠ 以前は `Stack[int].empty()` が添字として読まれ、実行時の TypeError で落ちていた（型検査も素通り）。
+
+class Stack[T]:
+    mut items: list[T]
+
+    static fn empty() -> Stack[T]:
+        return Stack[T]([])
+
+class Counter[T]:
+    static mut n: int = 0
+    mut v: T
+
+let x: Stack[str] = Stack[int].empty()      # ⛔ Stack[int] を Stack[str] へ
+let k: str = Counter[int].n                  # ⛔ static mut n は int
+print(len(x.items), k)

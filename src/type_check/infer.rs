@@ -815,6 +815,11 @@ impl TypeChecker {
                     InferredType::NamedInstance(c) => {
                         Some((c.clone(), std::collections::HashMap::new()))
                     }
+                    // 具体化を値として使う形（`Counter[int].n`・10-9）は単相化した具体クラス。
+                    InferredType::GenericInstance { .. } => self
+                        .registry
+                        .instance_class(&inner.to_string())
+                        .map(|c| (c.clone(), std::collections::HashMap::new())),
                     _ => None,
                 },
                 _ => None,

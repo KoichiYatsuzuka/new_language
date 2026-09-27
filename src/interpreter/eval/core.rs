@@ -304,6 +304,16 @@ impl Interpreter {
                 self.apply_unary_dyn(op, val)
             }
             Expr::BinOp { op, left, right, .. } => self.eval_binop_expr(op, left, right),
+            // 具体化を値として使う形（フェーズ10 10-9）: 単相化した具体クラスの名前を引く
+            // （VM の `compile_expr` の同じ腕と同じ）。
+            Expr::TemplateInstantiate { base, type_args } if matches!(**base, Expr::Ident { .. }) => {
+                let Expr::Ident { name, .. } = &**base else {
+                    unreachable!("checked by the guard")
+                };
+                let inst = crate::template_subst::instance_name(name, type_args);
+                self.get_val(&inst)
+                    .ok_or_else(|| format!("NameError: '{inst}' is not defined"))
+            }
             Expr::TemplateInstantiate { .. } => Err(
                 "TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string()
             ),

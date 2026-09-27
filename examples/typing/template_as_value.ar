@@ -1,0 +1,42 @@
+# template_as_value.ar — テンプレートの具体化を値として使う（フェーズ10 10-9）
+#
+# 対になる誤りの例: template_as_value_error.ar
+#
+# ⚠ 以前は `Stack[int].empty()` が添字（`Stack` の `int` 番目）として読まれ、実行時に
+#   `'template' object is not subscriptable` で落ちた。`Counter[T].n` も同じ形で `NameError: 'T'` だった。
+# `Stack[int]` は展開時に単相化した具体クラスそのもの。静的メソッド・`static mut` をそのクラスから引ける。
+# ⚠ 具体化ごとに別のクラスなので、`static mut` も具体化ごとに別（`Counter[int].n` と `Counter[str].n`）。
+
+class Stack[T]:
+    mut items: list[T]
+
+    static fn empty() -> Stack[T]:
+        return Stack[T]([])
+
+    fn push(mut self, let x: T) -> None:
+        self.items.append(x)
+
+class Counter[T]:
+    static mut n: int = 0
+    mut v: T
+
+    fn bump(self) -> None:
+        Counter[T].n += 1
+
+mut s = Stack[int].empty()
+s.push(3)
+s.push(4)
+print(len(s.items))               # 2
+
+let a = Counter[int](1)
+a.bump()
+a.bump()
+let b = Counter[str]("x")
+b.bump()
+print(Counter[int].n)             # 2
+print(Counter[str].n)             # 1
+
+# クラスそのものを値として渡す
+let make = Stack[str]
+let t = make(["a", "b", "c"])
+print(len(t.items))               # 3
