@@ -303,6 +303,7 @@ impl Interpreter {
         Ok(Rc::new(NamespaceData {
             name: module.join("."),
             members,
+            live: None,
         }))
     }
 
@@ -494,6 +495,13 @@ impl Interpreter {
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "module initialization", module);
         let members = self.module_members(&module_globals);
+        // `mut` の名前は今の値をモジュールの大域から読む（`NamespaceData::live`・10-11）。
+        let mutable_names: std::collections::HashSet<String> = members
+            .keys()
+            .filter(|n| self.scopes[0].get(n.as_str()).is_some_and(|v| v.is_mutable()))
+            .cloned()
+            .collect();
+        let live = (!mutable_names.is_empty()).then(|| (self.cur_globals, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
         self.in_python_module = prev_in_python;
         result?;
@@ -501,6 +509,7 @@ impl Interpreter {
         let ns = Rc::new(NamespaceData {
             name: module.join("."),
             members,
+            live,
         });
         self.module_cache
             .insert(cache_key, ModuleState::Loaded(ns.clone()));
@@ -717,6 +726,7 @@ impl Interpreter {
         let ns = Rc::new(NamespaceData {
             name: module.join("."),
             members,
+            live: None,
         });
         Ok(ns)
     }
@@ -1037,6 +1047,7 @@ impl Interpreter {
         Ok(Rc::new(NamespaceData {
             name: module_name.to_string(),
             members,
+            live: None,
         }))
     }
 

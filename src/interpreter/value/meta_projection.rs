@@ -496,7 +496,7 @@ fn record(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     for (k, v) in fields {
         members.insert(k.to_string(), v);
     }
-    Value::Namespace(Rc::new(NamespaceData { name: type_name.to_string(), members }))
+    Value::Namespace(Rc::new(NamespaceData { name: type_name.to_string(), members, live: None }))
 }
 
 /// 仮引数 1 つの記録（参考B #1）。

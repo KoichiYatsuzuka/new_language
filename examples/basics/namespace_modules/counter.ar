@@ -1,0 +1,12 @@
+# counter.ar — module_mut_state.ar が import するモジュール（フェーズ10 10-11）
+#
+# `mut` の大域をモジュールの関数が書き換える。呼び出し側の `c.count` はその今の値を読む。
+
+mut count = 0
+let STEP = 1
+
+fn bump() -> None:
+    count += STEP
+
+fn reset() -> None:
+    count = 0

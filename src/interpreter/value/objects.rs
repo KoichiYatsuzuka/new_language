@@ -47,6 +47,14 @@ pub struct NamespaceData {
     pub name: String,
     /// メンバ名 → 値のマップ
     pub members: HashMap<String, Value>,
+    /// **今の値をモジュールの大域から読むメンバー**（フェーズ10 10-11）: `(大域の添字, 名前の集合)`。
+    ///
+    /// ⚠ `members` は import が終わった時点の**写し**。モジュールの関数はモジュールの大域を書き換える
+    ///   （名前空間の分離・2026-09-26）ので、`mut count` を `bump()` で増やしても `c.count` は 0 のまま
+    ///   だった（実測）。`mut` で宣言された名前だけここに載せ、読むときはモジュールの大域を引く
+    ///   （`Interpreter::namespace_member`）。変わらない名前（関数・`let` / `const`）は写しのまま読む。
+    /// ⚠ Arrow のモジュール以外（py・ネイティブ・組み込み・メタ）は `None`。
+    pub live: Option<(u32, Rc<std::collections::HashSet<String>>)>,
 }
 
 

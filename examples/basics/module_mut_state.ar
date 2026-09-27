@@ -1,0 +1,20 @@
+# module_mut_state.ar — モジュールの `mut` 変数の変更が `m.x` に映る（フェーズ10 10-11）
+#
+# ⚠ 以前は `c.count` が import した時点の写しで、`c.bump()` を何度呼んでも 0 のままだった。
+#   モジュールの関数はモジュールの大域を書き換える（名前空間の分離・2026-09-26）ので、
+#   名前空間の `mut` のメンバーはモジュールの大域の**今の値**を読む。
+# ⚠ `from m import x` は import した時点の値を束縛する（Python と同じ）。後の変更は映らない。
+
+import namespace_modules.counter as c
+from namespace_modules.counter import count as count_at_import
+
+print(c.count)                    # 0
+c.bump()
+c.bump()
+print(c.count)                    # 2
+c.reset()
+print(c.count)                    # 0
+c.bump()
+print(c.count + c.STEP)           # 2
+
+print(count_at_import)            # 0（from import は写し）

@@ -96,3 +96,28 @@ fn a_module_method_sees_module_names_even_while_loading() {
     assert!(matches!(interp.get_val("a"), Some(Value::Int(90))));
     assert!(matches!(interp.get_val("s"), Some(Value::Int(40))));
 }
+
+/// モジュールの `mut` 変数の変更が `m.x` に映る（フェーズ10 10-11）。
+/// ⚠ 以前は名前空間が import した時点の写しで、`m.bump()` を何度呼んでも `m.count` は 0 のままだった。
+#[test]
+fn a_module_mut_variable_is_read_live() {
+    let module = "mut count = 0\nlet STEP = 1\nfn bump() -> None:\n    count += STEP\n";
+    let interp = run_with_module(
+        module,
+        concat!(
+            "let before = m.count\n",
+            "m.bump()\n",
+            "m.bump()\n",
+            "fn read() -> int:\n",
+            "    return m.count\n",
+            "let after = m.count\n",
+            "let inside = read()\n",
+            "let step = m.STEP\n",
+        ),
+    )
+    .expect("run");
+    assert!(matches!(interp.get_val("before"), Some(Value::Int(0))));
+    assert!(matches!(interp.get_val("after"), Some(Value::Int(2))));
+    assert!(matches!(interp.get_val("inside"), Some(Value::Int(2))));
+    assert!(matches!(interp.get_val("step"), Some(Value::Int(1))));
+}

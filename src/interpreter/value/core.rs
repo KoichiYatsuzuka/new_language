@@ -349,6 +349,12 @@ impl Value {
                 Value::Namespace(Rc::new(NamespaceData {
                     name: rc.name.clone(),
                     members,
+                    // ⚠ 名前の集合は複製する（`Rc` をスレッドへ持ち出さない・#15）。大域の添字は
+                    //   ワーカーでも同じ（`install_task_globals`）。
+                    live: rc
+                        .live
+                        .as_ref()
+                        .map(|(g, names)| (*g, Rc::new((**names).clone()))),
                 }))
             }
             // TemplateFn / TemplateClass / TemplateGenFn contain only Clone data (no RefCell)

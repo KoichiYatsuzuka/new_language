@@ -364,6 +364,7 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
                 Value::Namespace(Rc::new(NamespaceData {
                     name: "Async".to_string(),
                     members,
+                    live: None,
                 })),
                 false,
             ),

@@ -188,6 +188,7 @@ pub fn load_py_int_module(
         Ok(Rc::new(NamespaceData {
             name: module_name,
             members,
+            live: None,
         }))
     })
     .map_err(|e| format!("ImportError: {e}"))

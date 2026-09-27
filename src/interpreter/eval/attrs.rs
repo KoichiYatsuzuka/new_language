@@ -42,6 +42,29 @@ impl Interpreter {
         }
     }
 
+    /// 名前空間のメンバーを読む（フェーズ10 10-11）。モジュールの `mut` 変数は、写しではなく
+    /// **モジュールの大域の今の値**を返す（`NamespaceData::live` の doc）。
+    pub(crate) fn namespace_member(
+        &self,
+        ns: &crate::interpreter::value::NamespaceData,
+        name: &str,
+    ) -> Option<Value> {
+        if let Some((globals, names)) = &ns.live {
+            if names.contains(name) {
+                // ⚠ 今の大域は `scopes[0]` にある（置き場のその添字は空の置き物・`switch_globals`）。
+                let scope = if *globals == self.cur_globals {
+                    self.scopes.first()
+                } else {
+                    self.global_scopes.get(*globals as usize)
+                };
+                if let Some(v) = scope.and_then(|s| s.get(name)) {
+                    return Some(v.get_value());
+                }
+            }
+        }
+        ns.members.get(name).cloned()
+    }
+
     /// アクセスレベル（`access_level` で得た u8）だけを使ってアクセス可否を判定する。
     /// R3 インラインキャッシュのヒット経路が `field_access` の辞書引きを飛ばして直接呼ぶ。
     pub(crate) fn check_access_level(
@@ -220,7 +243,7 @@ impl Interpreter {
                     m.name
                 )),
             },
-            Value::Namespace(ns) => ns.members.get(attr).cloned().ok_or_else(|| {
+            Value::Namespace(ns) => self.namespace_member(ns, attr).ok_or_else(|| {
                 format!(
                     "AttributeError: module '{}' has no attribute '{attr}'",
                     ns.name

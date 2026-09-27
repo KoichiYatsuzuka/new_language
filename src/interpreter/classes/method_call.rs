@@ -384,7 +384,7 @@ impl Interpreter {
             }
             Value::Namespace(ns) => {
                 // モジュール名前空間の場合: メンバを取り出して関数として呼び出す
-                let member = ns.members.get(method_name).cloned().ok_or_else(|| {
+                let member = self.namespace_member(ns, method_name).ok_or_else(|| {
                     format!(
                         "AttributeError: module '{}' has no attribute '{method_name}'",
                         ns.name

@@ -116,6 +116,7 @@ pub(super) fn bind_import(ex: &mut Expander, bind_name: &str, module: &[String],
     let ns = crate::interpreter::value::NamespaceData {
         name: module.join("."),
         members: m.members.clone(),
+        live: None,
     };
     ex.interp.meta_bind(bind_name, Value::Namespace(Rc::new(ns)));
     ex.modules.insert(bind_name.to_string(), m.metafns.clone());

@@ -32,6 +32,7 @@ fn ns(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     Value::Namespace(Rc::new(NamespaceData {
         name: type_name.to_string(),
         members,
+        live: None,
     }))
 }
 
