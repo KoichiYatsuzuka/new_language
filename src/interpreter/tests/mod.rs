@@ -217,6 +217,47 @@ mod modules;
 mod a_axis_invariants {
     use crate::interpreter::Interpreter;
 
+    /// 型検査の「実行時が宣言なしで解決する名前」の表（`type_check::names::RUNTIME_BUILTIN_NAMES`）が
+    /// 実行時とずれていないか（フェーズ10 10-12）。**両方向**を見る。
+    /// ⚠ 表に無い組み込みがあると、正しいプログラムが静的に「未定義」になる（偽の誤り）。
+    /// ⚠ 表に実行時に無い名前が残ると、未定義の名前を見逃す。
+    #[test]
+    fn checker_knows_every_runtime_builtin_name() {
+        use crate::type_check::names::{is_runtime_builtin_name, RUNTIME_BUILTIN_NAMES};
+        let mut interp = Interpreter::new();
+        let scope = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
+        // ① 組み込みの大域（型・例外・`Signal`・`EventLoop` …）。足りない名前は全部まとめて言う。
+        let mut missing: Vec<&String> =
+            scope.iter().map(|(n, _)| n).filter(|n| !is_runtime_builtin_name(n)).collect();
+        missing.sort();
+        assert!(missing.is_empty(), "組み込みの大域が型検査の表に無い: {missing:?}");
+        // ② VM が `CallBuiltin` を出す組み込み関数
+        for name in crate::vm::compiler::VM_BUILTIN_NAMES {
+            assert!(is_runtime_builtin_name(name), "組み込み関数 '{name}' が型検査の表に無い");
+        }
+        // ③ 組み込み関数の表（`eval/builtins.rs` の `"name" =>` の腕）
+        for line in include_str!("../eval/builtins.rs").lines() {
+            let t = line.trim_start();
+            let Some(head) = t.strip_prefix('"').and_then(|_| t.split("=>").next()) else {
+                continue;
+            };
+            if !t.contains("=>") {
+                continue;
+            }
+            for alt in head.split('|') {
+                let n = alt.trim().trim_matches('"');
+                if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    assert!(is_runtime_builtin_name(n), "組み込み関数 '{n}' が型検査の表に無い");
+                }
+            }
+        }
+        // ④ 逆向き: 表の名前は実行時に解決できる
+        for name in RUNTIME_BUILTIN_NAMES {
+            let known = scope.contains_key(*name) || interp.eval_builtin_evaled(name, Vec::new()).is_some();
+            assert!(known, "型検査の表の '{name}' を実行時が知らない（古い名前が残っている）");
+        }
+    }
+
     #[test]
     fn vm_builtin_names_are_all_handled() {
         let mut interp = Interpreter::new();

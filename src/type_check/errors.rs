@@ -438,6 +438,11 @@ pub enum TypeErrorKind {
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
     /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
     UnknownGuardType { type_name: String },
+    /// **どこにも無い名前**を読んでいる（フェーズ10 10-12）。以前は静的に通り、実行時の `NameError` だった。
+    ///
+    /// ⚠ 判定は保守的（`type_check::names` の doc）。プログラムのどこかで束縛される名前・組み込みの名前・
+    ///   クラスや関数の名前は通す。
+    UndefinedName { name: String },
     /// 型ガード（`is T`）で**判定できない型**（フェーズ10 10-10）。
     ///
     /// 実行時の `is` は値の外側の種類（とクラス名）しか見ないので、`x is list[int]` は「`list` か」しか
@@ -953,6 +958,7 @@ impl StaticTypeError {
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
             ),
+            TypeErrorKind::UndefinedName { name } => format!("name {} is not defined", hl_q(name)),
             TypeErrorKind::GuardTypeNotTestable { type_name, outer } => match outer {
                 Some(o) => format!(
                     "type guard cannot test {} at runtime (element types are not checked); write `is {}`",

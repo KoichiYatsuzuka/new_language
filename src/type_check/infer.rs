@@ -130,7 +130,7 @@ impl TypeChecker {
             // 記憶域の解決（`res`）はリゾルバが型検査の後に書くので、ここでは常に未解決。
             // 型検査は名前でスコープを引くだけで `res` を見ない。
             Expr::Ident { name, node_id, .. } => {
-                let result = self
+                let found = self
                     .lookup(name)
                     .map(|v| v.ty.clone())
                     // ⚠⚠ **変数スコープに無ければ関数を探す**（タスク 2.2）。
@@ -140,8 +140,12 @@ impl TypeChecker {
                     //      let x: int = wrong                       # int 変数に関数が入る
                     //      let f: function[int]->int = takes_str    # シグネチャ違いが通る
                     //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
-                    .or_else(|| self.fn_value_type(name.as_str()))
-                    .unwrap_or(InferredType::Unresolved);
+                    .or_else(|| self.fn_value_type(name.as_str()));
+                // どこにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
+                if found.is_none() {
+                    self.check_name_defined(name);
+                }
+                let result = found.unwrap_or(InferredType::Unresolved);
                 // ── AST 型解決層（#15b）── 参照サイトごとの型を焼く。
                 // 変数単位ではなく**参照位置単位**なのが要点で、型ガード絞り込みは
                 // 分岐スコープでの再 `declare` として実装されているため、同じ変数でも
@@ -976,6 +980,33 @@ impl TypeChecker {
     ///
     /// 現状の規則: **レジストリに何らかのメンバー情報があれば閉じている**。
     /// Arrow のクラス宣言（`.ar` / `.ars` スタブ由来を含む）は必ず表を持つので閉じる。
+    /// 今のスコープにも関数表にも無い名前を読んだとき、それが**どこにも無い**なら誤りにする（10-12）。
+    ///
+    /// ⚠ 保守的に判定する（`type_check::names` の doc）。次のどれかなら通す:
+    ///   プログラムのどこかで束縛される名前・実行時の組み込みの名前・クラス / trait / protocol / 関数 /
+    ///   テンプレートの名前・今見えている型変数・`Self`。import 先を読めていない環境（エディタ）では見ない。
+    fn check_name_defined(&mut self, name: &str) {
+        if self.registry_incomplete
+            || self.declared_anywhere.contains(name)
+            || super::names::is_runtime_builtin_name(name)
+            || name == "Self"
+            // `case _:` の `_`（どれにも当たる腕）。束縛ではないので宣言の集合には入らない。
+            || name == "_"
+            || self.state.is_type_param(name)
+            || self.registry.is_known_class(name)
+            || self.registry.is_known_trait(name)
+            || self.registry.is_protocol(name)
+            || self.registry.fn_sigs(name).is_some()
+            || self.registry.template_params(name).is_some()
+        {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::UndefinedName { name: name.to_string() },
+            span: None,
+        });
+    }
+
     /// 属性を読めない組み込みの値の型なら、その表示名（`int` / `list[int]` …・10-14）。
     ///
     /// ⚠ `generator`（`NamedInstance`）・クラス・名前空間・`Any` / `Unresolved` などは対象外。

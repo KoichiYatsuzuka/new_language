@@ -8,6 +8,11 @@
 # `VmForceError: cannot compile top-level statement ...` に化けており、
 # **エラー文言が壊れていることに誰も気づかなかった**（例題が無かったため）。
 # #34 の教訓「必ず失敗する文は bail せず同じ文言を出す」の再演。
+#
+# ⚠ フェーズ10 10-12 で、どこにも無い名前は**静的エラー**になった
+#   （`StaticTypeError  name 'tuple' is not defined`）。CLI ではここで止まる。
+#   実行時の経路（`NameError` が出て `VmForceError` にならないこと）は、型エラーを無視して走る REPL で
+#   まだ意味を持つ。コンパイルできること自体は `force_gate` が見ている。
 
 print("before")
 

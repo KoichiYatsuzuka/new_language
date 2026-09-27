@@ -1,0 +1,17 @@
+# name_resolution_error.ar — どこにも無い名前は静的エラー（フェーズ10 10-12）
+#
+# 対になる正常系: name_resolution.ar
+#
+# 期待されるエラー（2 件）:
+#   StaticTypeError  name 'nonexistent' is not defined
+#   StaticTypeError  name 'totl' is not defined
+#
+# ⚠ 以前は静的に通り、実行時の NameError だった（しかも最初の 1 つで止まるので 2 つ目は見えなかった）。
+# ⚠ `import m` だけでモジュールの名前を修飾なしで書いた場合（`helper(2)`）はまだ実行時の NameError
+#   （型検査がモジュールの宣言を名前だけで集めているため・フェーズ10 10-8）。
+
+fn total() -> int:
+    return 42
+
+print(nonexistent(2))             # ⛔ どこにも無い
+print(totl())                     # ⛔ 綴りの誤り（total）

@@ -1,0 +1,31 @@
+# name_resolution.ar — 名前は使う前に宣言されていなくてよい（前方参照）（フェーズ10 10-12）
+#
+# 対になる誤りの例: name_resolution_error.ar
+#
+# 型検査は**どこにも無い名前**を静的エラーにする（以前は実行時の NameError まで分からなかった）。
+# 判定は保守的で、プログラムのどこかで束縛される名前・組み込みの名前（`print` / `range` / `Ok` …）・
+# クラスや関数の名前は通す。後で宣言される最上位の名前を関数の中から読むのも書ける。
+
+fn total() -> int:
+    # LIMIT と helper はこの関数より後で宣言される
+    return LIMIT + helper()
+
+fn helper() -> int:
+    return 2
+
+let LIMIT = 40
+
+print(total())                    # 42
+
+# 組み込みの名前
+let r = Ok(1)
+print(r.is_OK())                  # True
+for i in range(2):
+    print(i)                      # 0 / 1
+
+# `case _:` の `_` はどれにも当たる腕（名前ではない）
+match 3:
+    case 1:
+        print("one")
+    case _:
+        print("other")            # other

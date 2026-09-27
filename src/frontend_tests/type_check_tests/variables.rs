@@ -312,3 +312,53 @@ fn meta_kinds_are_distinct_types() {
     fn mut_self_method_on_temporary_ok() {
         assert!(ok(&format!("{BOX}Box(1).set(2)\n")));
     }
+
+    // --- 未定義の名前（フェーズ10 10-12）---
+    // ⚠ 以前は静的に通り、実行時の NameError だった。判定は保守的（`type_check::names` の doc）。
+
+    fn undefined_names(src: &str) -> Vec<String> {
+        check(src)
+            .iter()
+            .filter_map(|e| match &e.kind {
+                TypeErrorKind::UndefinedName { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// どこにも無い名前（10-12 の再現）。
+    #[test]
+    fn undefined_name_err() {
+        assert_eq!(undefined_names("print(nonexistent(2))\n"), vec!["nonexistent".to_string()]);
+    }
+
+    /// 後で宣言される最上位の名前を関数の中から読むのは通る（前方参照）。
+    #[test]
+    fn forward_reference_ok() {
+        assert!(undefined_names("fn f() -> int:\n    return LIMIT + g()\nfn g() -> int:\n    return 1\nlet LIMIT = 3\nprint(f())\n").is_empty());
+    }
+
+    /// 組み込みの名前・`case _:`・`for` の変数・`except` の別名・クラス・列挙は通る。
+    #[test]
+    fn builtin_and_bound_names_ok() {
+        let src = concat!(
+            "class P:\n",
+            "    mut x: int\n",
+            "enum Color:\n",
+            "    Red\n",
+            "let r = Ok(1)\n",
+            "let e = Err(\"bad\")\n",
+            "for i in range(2):\n",
+            "    print(i, len([1]), repr(i))\n",
+            "try:\n",
+            "    raise ValueError(\"v\")\n",
+            "except ValueError as err:\n",
+            "    print(err.message)\n",
+            "match 1:\n",
+            "    case 1:\n",
+            "        print(P(1).x, Color.Red)\n",
+            "    case _:\n",
+            "        print(\"other\")\n",
+        );
+        assert!(undefined_names(src).is_empty(), "{:?}", undefined_names(src));
+    }

@@ -53,8 +53,9 @@ except ZeroDivisionError as e:
 
 # ── 6. NameError ──────────────────────────────────────────────────────────────
 print("=== NameError ===")
+# ⚠ 未定義の名前を読むのは静的エラーになった（フェーズ10 10-12）ので、ここでは明示的に投げる。
 try:
-    let v = no_such_variable
+    raise NameError("'no_such_variable' is not defined")
 except NameError as e:
     print("caught NameError:", e.message)
 
