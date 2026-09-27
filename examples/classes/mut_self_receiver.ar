@@ -1,0 +1,45 @@
+# mut_self_receiver.ar — `mut self` のメソッドは変更できる受け手にだけ呼べる（フェーズ10 10-15）
+#
+# 対になる誤りの例: mut_self_receiver_error.ar
+#
+# 規則は組み込みコレクションの `xs.append(..)` と同じ（受け手のパスの根が `mut` か）。
+# 違いは判定の材料で、クラスはメソッドの**名前ではなく `self` の宣言**を見る
+# （`mut self` のメソッドだけが書き換える）。`mut self` でないメソッドは `let` の受け手にも呼べる。
+
+class Box:
+    mut v: int
+
+    fn set(mut self, let x: int) -> None:
+        self.v = x
+
+    fn peek(self) -> int:
+        return self.v
+
+class Holder:
+    mut b: Box
+
+    fn poke(mut self, let x: int) -> None:
+        # `mut self` の先のフィールドは変更できる
+        self.b.set(x)
+
+fn fill(mut p: Box, let x: int) -> None:
+    # `mut` 仮引数は呼び出し元の値を書き換える
+    p.set(x)
+
+mut b = Box(1)
+b.set(2)
+print(b.peek())                   # 2
+
+fill(b, 3)
+print(b.peek())                   # 3
+
+mut h = Holder(Box(0))
+h.poke(4)
+print(h.b.peek())                 # 4
+
+# `mut self` でないメソッドは `let` の受け手にも呼べる
+let c = Box(5)
+print(c.peek())                   # 5
+
+# 一時値（根が名前でない）はそのまま書き換えてよい
+print(Box(6).peek())              # 6

@@ -1,0 +1,20 @@
+# @id: M9
+# @obligation: let 仮引数への mut self メソッド呼び出し
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ フェーズ10 10-15。以前は NONE（写しを黙って書き換えて何も起きなかった）。
+
+class Box:
+    mut v: int
+    fn set(mut self, let x: int) -> None:
+        self.v = x
+
+fn fill(let p: Box) -> None:
+    p.set(3)
+
+mut b = Box(1)
+fill(b)
+print(b.v)

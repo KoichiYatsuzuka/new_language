@@ -203,6 +203,57 @@ impl TypeChecker {
         });
     }
 
+    /// 変更できない値に対する **`mut self` メソッド**の呼び出しを弾く（フェーズ10 10-15）。
+    ///
+    /// [`Self::check_mutating_method_receiver`]（組み込みコレクションの `append` など）のクラス版。
+    /// 判定はメソッドの**名前ではなく `self` の宣言**で行う（`mut self` のメソッドだけが書き換える）。
+    /// 以前は実行時のガード（`INST_IMMUTABLE`）任せで、次の形が静的に止まらなかった:
+    ///   - `let b = Box(1)` / `freeze b` の後の `b.set(2)` → 実行時の `TypeError`
+    ///   - `let` 仮引数・`mut` でない `self` の先のフィールド（`self.b.set(5)`）→ **写しを黙って書き換えて
+    ///     何も起きない**（実行時にも止まらない・実測）
+    ///
+    /// ⚠ 多重定義に `mut self` でないものが 1 つでもあれば通す。実行時はそれを選ぶ
+    ///   （`call_instance_method_evaled` の不変性フィルタ）。
+    /// ⚠ `gen` メソッドは通す。実行時の `gen` メソッドの呼び出しは不変性フィルタより前に振り分けられ、
+    ///   `mut self` でも止まらない。シグネチャの戻り値がジェネレータのものは `gen` とみなして見送る
+    ///   （`-> generator` の `fn` も見送ることになるが、誤検出はしない側に倒す）。
+    /// ⚠ 判定はパスの根（`path_is_mutable`）。根が識別子でない一時値は通す。
+    pub(super) fn check_mut_self_method_receiver(
+        &mut self,
+        object: &Expr,
+        class_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        let Some(sigs) = self.registry.class_methods(class_name).and_then(|m| m.get(method)) else {
+            return;
+        };
+        let all_mut_self = !sigs.is_empty()
+            && sigs.iter().all(|sig| {
+                let takes_mut_self = sig.params.first().is_some_and(|(n, _)| n == "self")
+                    && sig.param_mutable.first() == Some(&true);
+                let is_gen = matches!(
+                    &sig.return_type,
+                    Some(InferredType::IteratorOf(_))
+                ) || matches!(&sig.return_type, Some(InferredType::NamedInstance(n)) if n == "generator");
+                takes_mut_self && !is_gen
+            });
+        if !all_mut_self {
+            return;
+        }
+        if self.path_is_mutable(object) != Some(false) {
+            return;
+        }
+        let root_name = Self::path_root_ident(object).unwrap_or("").to_string();
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::MutatingMethodOnImmutable {
+                method: method.to_string(),
+                root_name,
+            },
+            span: Some(span.clone()),
+        });
+    }
+
     /// `class_name` のメンバー（フィールド・メソッド）`member_name` へのアクセスが現在のコンテキストで
     /// 許可されているか検査する。
     ///

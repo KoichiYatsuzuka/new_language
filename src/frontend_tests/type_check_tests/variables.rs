@@ -248,3 +248,67 @@ fn meta_kinds_are_distinct_types() {
     assert_eq!(member.to_string(), "meta_member");
     assert_eq!(function.to_string(), "meta_function");
 }
+
+    // --- 変更できない受け手への `mut self` メソッド（フェーズ10 10-15）---
+    // ⚠ 以前は実行時のガード任せで、`let` / `freeze` は実行時の TypeError、`let` 仮引数・
+    //   `mut` でない `self` の先は写しを黙って書き換えて何も起きなかった。
+
+    const BOX: &str = concat!(
+        "class Box:\n",
+        "    mut v: int\n",
+        "    fn set(mut self, let x: int) -> None:\n",
+        "        self.v = x\n",
+        "    fn peek(self) -> int:\n",
+        "        return self.v\n",
+    );
+
+    /// `freeze` した束縛へ `mut self` メソッド（10-15 の再現）。
+    #[test]
+    fn mut_self_method_on_frozen_err() {
+        assert!(err(&format!("{BOX}mut b = Box(1)\nfreeze b\nb.set(2)\n")));
+    }
+
+    /// `let` 束縛へ `mut self` メソッド。
+    #[test]
+    fn mut_self_method_on_let_err() {
+        assert!(err(&format!("{BOX}let b = Box(1)\nb.set(2)\n")));
+    }
+
+    /// `let` 仮引数へ `mut self` メソッド（実行時は写しを黙って書き換えていた）。
+    #[test]
+    fn mut_self_method_on_let_param_err() {
+        assert!(err(&format!("{BOX}fn f(let p: Box) -> None:\n    p.set(3)\n")));
+    }
+
+    /// `mut` でない `self` の先のフィールドへ `mut self` メソッド。
+    #[test]
+    fn mut_self_method_through_immutable_self_err() {
+        assert!(err(&format!(
+            "{BOX}class Holder:\n    mut b: Box\n    fn poke(self) -> None:\n        self.b.set(5)\n"
+        )));
+    }
+
+    /// `mut` 束縛・`mut` 仮引数・`mut self` の先は通る。`mut self` でないメソッドは `let` でも通る。
+    #[test]
+    fn mut_self_method_on_mutable_ok() {
+        assert!(ok(&format!(concat!(
+            "{}",
+            "mut b = Box(1)\n",
+            "b.set(2)\n",
+            "fn f(mut p: Box) -> None:\n",
+            "    p.set(3)\n",
+            "f(b)\n",
+            "let c = Box(4)\n",
+            "print(c.peek())\n",
+            "class Holder:\n",
+            "    mut b: Box\n",
+            "    fn poke(mut self) -> None:\n",
+            "        self.b.set(5)\n",
+        ), BOX)));
+    }
+
+    /// 一時値（根が識別子でない）は通す。
+    #[test]
+    fn mut_self_method_on_temporary_ok() {
+        assert!(ok(&format!("{BOX}Box(1).set(2)\n")));
+    }

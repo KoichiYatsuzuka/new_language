@@ -1,0 +1,35 @@
+# mut_self_receiver_error.ar — 変更できない受け手へ `mut self` のメソッドは呼べない（フェーズ10 10-15）
+#
+# 対になる正常系: mut_self_receiver.ar
+#
+# 期待されるエラー（4 件）:
+#   StaticTypeError  cannot call 'set' on 'b' — it is immutable      （freeze の後）
+#   StaticTypeError  cannot call 'set' on 'c' — it is immutable      （let 束縛）
+#   StaticTypeError  cannot call 'set' on 'p' — it is immutable      （let 仮引数）
+#   StaticTypeError  cannot call 'set' on 'self' — it is immutable   （mut でない self の先）
+#
+# ⚠ 以前は静的に止まらなかった。`freeze` / `let` 束縛は実行時の TypeError、
+#   `let` 仮引数・`mut` でない `self` の先は**写しを黙って書き換えて何も起きなかった**
+#   （呼び出し元の値は変わらず、誤りも出ない）。
+
+class Box:
+    mut v: int
+
+    fn set(mut self, let x: int) -> None:
+        self.v = x
+
+class Holder:
+    mut b: Box
+
+    fn poke(self) -> None:
+        self.b.set(5)                 # ⛔ self は mut でない
+
+fn fill(let p: Box) -> None:
+    p.set(3)                          # ⛔ p は let 仮引数
+
+mut b = Box(1)
+freeze b
+b.set(2)                              # ⛔ freeze の後
+
+let c = Box(1)
+c.set(2)                              # ⛔ let 束縛
