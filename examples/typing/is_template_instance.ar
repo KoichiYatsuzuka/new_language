@@ -1,0 +1,45 @@
+# is_template_instance.ar — `is` でテンプレートの具体化を判定する（フェーズ10 10-10）
+#
+# 対になる誤りの例: is_template_instance_error.ar
+#
+# ⚠ 以前は `x is Stack[int]` が ParseError（``expected `:`, got `[` ``）だった。
+# `Stack[int]` は展開時に単相化した具体クラスそのものなので、実行時の `is` で判定できる
+# （`Stack[int]` と `Stack[str]` は別のクラス）。腕の中では `x` がその具体化へ絞り込まれる。
+# ⚠ 要素型つきの組み込みの容器（`is list[int]`）は判定できない（外側しか確かめられない）ので
+#   静的エラー。`is list` と書く。
+
+class Stack[T]:
+    mut items: list[T]
+
+    fn size(self) -> int:
+        return len(self.items)
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+fn describe(let x: Union[Stack[int], Stack[str]]) -> str:
+    if x is Stack[int]:
+        return "ints: " + str(x.size())
+    elif x is Stack[str]:
+        return "strs: " + str(x.size())
+    return "?"
+
+print(describe(Stack[int]([1, 2, 3])))      # ints: 3
+print(describe(Stack[str](["a"])))          # strs: 1
+
+# match の腕にも書ける
+fn kind(let x: Union[Stack[int], Pair[str, int]]) -> str:
+    match x:
+        is Stack[int]:
+            return "stack of " + str(x.size())
+        is Pair[str, int]:
+            return "pair " + x.k
+    return "?"
+
+print(kind(Stack[int]([7])))                # stack of 1
+print(kind(Pair[str, int]("key", 1)))       # pair key
+
+# 否定形
+let s = Stack[str](["x", "y"])
+print(s is not Stack[int])                  # True

@@ -351,3 +351,67 @@ use super::*;
         assert_eq!(type_value.to_string(), "type[int]");
     }
 
+
+    // --- `is` の型名の妥当性（フェーズ10 10-10）---
+
+    const STACKS: &str = concat!(
+        "class Stack[T]:\n",
+        "    mut items: list[T]\n",
+        "    fn size(self) -> int:\n",
+        "        return len(self.items)\n",
+        "let a = Stack[int]([1])\n",
+        "let b = Stack[str]([\"s\"])\n",
+    );
+
+    /// `is Stack[int]` で絞り込んだ先でメンバーが引ける。
+    #[test]
+    fn is_template_instance_narrows_ok() {
+        let errs = check_expanded(&format!(
+            "{STACKS}fn f(let x: Union[Stack[int], Stack[str]]) -> int:\n    if x is Stack[int]:\n        return x.size()\n    return 0\nprint(f(a))\n"
+        ));
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// `if x is NoSuch:` も存在しない型として弾く（以前は `match` の腕でしか見ていなかった）。
+    #[test]
+    fn is_unknown_type_in_if_err() {
+        let errs = check("let x: int = 1\nif x is NoSuch:\n    print(1)\n");
+        assert!(errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::UnknownGuardType { .. })), "{errs:?}");
+    }
+
+    /// 式の `x is Nope` も同じ。
+    #[test]
+    fn is_unknown_type_in_expr_err() {
+        let errs = check("let x: int = 1\nlet b = x is Nope\n");
+        assert!(errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::UnknownGuardType { .. })), "{errs:?}");
+    }
+
+    /// 要素型つきの組み込みの容器は判定できない（`is list` と書く）。
+    #[test]
+    fn is_container_with_element_type_err() {
+        let errs = check("let x: Union[list[str], int] = 1\nlet b = x is list[int]\n");
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::GuardTypeNotTestable { outer: Some(o), .. } if o == "list")),
+            "{errs:?}"
+        );
+    }
+
+    /// テンプレートでない名前に `[..]` が付いていたら未知の型。
+    #[test]
+    fn is_non_template_with_args_err() {
+        let errs = check("let x: int = 1\nlet b = x is str[int]\n");
+        assert!(errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::UnknownGuardType { .. })), "{errs:?}");
+    }
+
+    /// `[` の無い綴りは従来どおり正当（`list` / `function` / `generator` / `None`）。
+    #[test]
+    fn is_bare_builtin_names_ok() {
+        assert!(ok(concat!(
+            "fn f(let x: Any) -> None:\n",
+            "    let a = x is list\n",
+            "    let b = x is function\n",
+            "    let c = x is generator\n",
+            "    let d = x is None\n",
+            "    print(a, b, c, d)\n",
+        )));
+    }

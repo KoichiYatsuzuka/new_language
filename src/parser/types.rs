@@ -638,6 +638,12 @@ impl Parser {
     /// 通常の識別子に加えて `None` キーワードも型名として受け付ける。
     pub(super) fn expect_guard_type_name(&mut self) -> Result<String, String> {
         match self.current().clone() {
+            // `x is Stack[int]`（テンプレートの具体化）は型式として読む（フェーズ10 10-10）。
+            // 以前は名前だけを読み、`[` で ``expected `:` `` の ParseError になっていた。
+            // ⚠ 何を `is` で判定できるかは型検査が決める（`check_guard_type_exists`）。パーサは
+            //   import 先のテンプレートを知らないので、ここで弾くと別モジュールの `Box[int]` まで落ちる
+            //   （9.7 の退行と同じ形）。
+            Token::Ident(_) if *self.peek1() == Token::LBracket => self.parse_type_expr(),
             Token::Ident(name) => {
                 self.advance();
                 // `x is int` の `int` も型位置。式位置と同じ扱いにすると関数色になる。

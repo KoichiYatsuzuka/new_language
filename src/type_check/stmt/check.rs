@@ -702,25 +702,64 @@ impl TypeChecker {
     /// ⚠ 整合性検査（3 分類）ではなく**妥当性検査**。「2 つの型が適合するか」ではなく
     /// 「名前が在るか」を見る別系統（D-14）。
     /// ⚠ **判らない名前は通さない**が、型変数（`fn f[T]` の `T`）は正当なので除く。
+    ///
+    /// ⚠⚠ **`match` の腕だけでなく `x is T` のすべて**で呼ぶ（フェーズ10 10-10）。以前は `match` の
+    ///   腕からしか呼ばれておらず、`if x is NoSuch:` も式の `x is Nope` も黙って通っていた（実測）。
+    /// ⚠ import 先を読めていない環境（エディタ）では、名前が無いことを誤りと言えないので見送る
+    ///   （`check_ann_names_exist` と同じ判断）。
     pub(crate) fn check_guard_type_exists(&mut self, type_name: &str) {
+        if self.registry_incomplete {
+            return;
+        }
         // プリミティブ・`Any` 等は `from_ann` が解釈できるので、それで判定する。
         // ⚠ `from_ann` は**大文字始まりの未知の識別子をクラス名にする**ので、
         //    `Some(..)` でも「在る」ことの証明にはならない（`NamedInstance` は要確認）。
+        let untestable = |outer: Option<&str>| TypeErrorKind::GuardTypeNotTestable {
+            type_name: type_name.to_string(),
+            outer: outer.map(str::to_string),
+        };
         match InferredType::from_ann(type_name) {
             Some(InferredType::NamedInstance(n)) => {
-                if self.state.is_type_param(n.as_str()) {
-                    return; // テンプレート型変数は正当
-                }
-                if self.registry.is_known_class(n.as_str())
-                    || self.registry.is_protocol(n.as_str())
-                    || self.registry.is_known_trait(n.as_str())
-                {
+                // テンプレート型変数・クラス・trait・protocol・`generator`（実行時の型名）は正当。
+                if self.type_name_exists(n.as_str()) {
                     return;
                 }
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::UnknownGuardType { type_name: type_name.to_string() },
                     span: None,
                 });
+            }
+            // テンプレートの具体化（`is Stack[int]`・10-10）。単相化した具体クラスなので判定できる。
+            // ⚠ テンプレートでない名前・知らない名前に `[..]` が付いていたら未知の型として弾く。
+            Some(InferredType::GenericInstance { ref name, .. }) => {
+                let is_template = self
+                    .registry
+                    .template_params(name)
+                    .is_some_and(|p| !p.is_empty());
+                if is_template || self.state.is_type_param(name) {
+                    return;
+                }
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::UnknownGuardType { type_name: type_name.to_string() },
+                    span: None,
+                });
+            }
+            // 型引数つきの組み込み型は `is` で判定できない（`GuardTypeNotTestable` の doc）。
+            // 容器（`list[int]` …）は外側しか確かめられず、`Union[..]` / 関数型などは実行時の `is`
+            // （`value_is_type`・クラス名と組み込みの型名だけを見る）では常に偽になる。
+            // ⚠ `[` の無い綴り（`is list` / `is function`）は従来どおり正当。
+            Some(ref t) if type_name.contains('[') => {
+                let outer = match t {
+                    InferredType::ListOf(_) => Some("list"),
+                    InferredType::FixedListOf(_) => Some("fixed_list"),
+                    InferredType::ListLikeOf(_) => Some("list_like"),
+                    InferredType::SetOf(_) => Some("set"),
+                    InferredType::DictOf(_, _) => Some("dict"),
+                    InferredType::Tuple(_) => Some("tuple"),
+                    InferredType::IteratorOf(_) => Some("generator"),
+                    _ => None,
+                };
+                self.report_error(StaticTypeError { kind: untestable(outer), span: None });
             }
             // プリミティブ・コレクション・`Union` 等は解釈できた時点で存在が確かめられている。
             Some(_) => {}

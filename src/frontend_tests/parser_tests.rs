@@ -1491,3 +1491,26 @@ fn a_statement_after_quote_inside_a_nested_block_is_rejected() {
     );
     assert!(err.contains("never runs"), "実際のエラー: {err}");
 }
+
+/// `x is Stack[int]` は型式として読む（フェーズ10 10-10。以前は `[` で ParseError）。
+#[test]
+fn is_guard_accepts_template_instance() {
+    let stmts = parse("let b = s is Stack[int]\nlet c = p is not Pair[str, int]\n");
+    match &stmts[0] {
+        Stmt::Let(_, _, Expr::IsType { type_name, negated: false, .. }) => assert_eq!(type_name, "Stack[int]"),
+        other => panic!("expected IsType, got {other:?}"),
+    }
+    match &stmts[1] {
+        Stmt::Let(_, _, Expr::IsType { type_name, negated: true, .. }) => assert_eq!(type_name, "Pair[str,int]"),
+        other => panic!("expected IsType, got {other:?}"),
+    }
+}
+
+/// `match` の `is` 腕も同じ（`is Stack[int]:`）。
+#[test]
+fn match_is_arm_accepts_template_instance() {
+    let stmts = parse("match s:\n    is Stack[int]:\n        print(1)\n    is Box:\n        print(2)\n");
+    let Stmt::Match { arms, .. } = &stmts[0] else { panic!("expected match") };
+    assert!(matches!(&arms[0].pattern, crate::ast::MatchPattern::IsType(t) if t == "Stack[int]"));
+    assert!(matches!(&arms[1].pattern, crate::ast::MatchPattern::IsType(t) if t == "Box"));
+}

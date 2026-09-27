@@ -438,6 +438,17 @@ pub enum TypeErrorKind {
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
     /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
     UnknownGuardType { type_name: String },
+    /// 型ガード（`is T`）で**判定できない型**（フェーズ10 10-10）。
+    ///
+    /// 実行時の `is` は値の外側の種類（とクラス名）しか見ないので、`x is list[int]` は「`list` か」しか
+    /// 確かめられない。それなのに腕の中では `list[int]` へ絞り込まれる（要素が `str` でも通る）ので弾く。
+    /// ⚠ テンプレートの具体化（`is Stack[int]`）は単相化した具体クラスそのものなので判定できる（こちらは通す）。
+    GuardTypeNotTestable {
+        /// 書かれた型（`list[int]` など）。
+        type_name: String,
+        /// 代わりに書ける外側の型（`list` など）。無ければ `None`。
+        outer: Option<String>,
+    },
     /// **型引数を取らない型に `[...]` が付いている**（タスク 9.7）。
     ///
     /// ```arrow
@@ -942,6 +953,14 @@ impl StaticTypeError {
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
             ),
+            TypeErrorKind::GuardTypeNotTestable { type_name, outer } => match outer {
+                Some(o) => format!(
+                    "type guard cannot test {} at runtime (element types are not checked); write `is {}`",
+                    hl_q(type_name),
+                    o
+                ),
+                None => format!("type guard cannot test {} at runtime", hl_q(type_name)),
+            },
             TypeErrorKind::TypeTakesNoTypeArgs { name, ann, what } => format!(
                 "{what} is annotated {} but {} does not take type arguments",
                 hl_q(ann), hl_q(name)

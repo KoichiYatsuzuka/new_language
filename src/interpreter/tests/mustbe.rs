@@ -162,3 +162,31 @@ let g = r mustbe Greetable
         assert_eq!(rc.borrow().class.name, "TypeError");
     } else { panic!("expected TypeError instance"); }
 }
+
+/// `is` / `mustbe` でテンプレートの具体化を判定する（フェーズ10 10-10）。
+/// ⚠ 単相化したクラスの `name` はテンプレートの名前（`Stack`）なので、以前は `is Stack[int]` が
+///   常に偽だった。具体化の名前（`ClassValue::instance_name`）と突き合わせる。綴りの空白は無視する
+///   （展開器の束縛名は `Pair[str, int]`、パーサの正規形は `Pair[str,int]`）。
+#[test]
+fn test_is_template_instance_at_runtime() {
+    let src = concat!(
+        "class Stack[T]:\n",
+        "    mut items: list[T]\n",
+        "class Pair[K, V]:\n",
+        "    mut k: K\n",
+        "    mut v: V\n",
+        "let s = Stack[int]([1])\n",
+        "let p = Pair[str, int](\"a\", 1)\n",
+        "let yes = s is Stack[int]\n",
+        "let no = s is Stack[str]\n",
+        "let bare = s is Stack\n",
+        "let pair = p is Pair[str, int]\n",
+        "let t = s mustbe Stack[int]\n",
+        "let n = len(t.items)\n",
+    );
+    assert!(matches!(run_get(src, "yes"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "no"), Value::Bool(false)));
+    assert!(matches!(run_get(src, "bare"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "pair"), Value::Bool(true)));
+    assert_int(run_get(src, "n"), 1);
+}

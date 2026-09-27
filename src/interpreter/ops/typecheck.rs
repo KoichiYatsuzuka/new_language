@@ -307,7 +307,11 @@ impl Interpreter {
         match val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                inst.class.name == type_name || inst.class.bases.contains(&type_name.to_string())
+                // ⚠ 単相化したクラスは `name` がテンプレートの名前（`Stack`）なので、`is Stack` は
+                //   どの具体化にも真、`is Stack[int]` は具体化の名前で見る（フェーズ10 10-10）。
+                inst.class.name == type_name
+                    || inst.class.instance_name.as_deref() == Some(type_name)
+                    || inst.class.bases.contains(&type_name.to_string())
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",

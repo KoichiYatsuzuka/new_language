@@ -332,8 +332,11 @@ impl TypeChecker {
             // --- 型ガード式 ---
             // ⚠ 対象式に型義務は無い（`is` は検査そのもの）。型名の存在検査は
             //    妥当性検査の担当（タスク 3.4・検体 X6）。
-            Expr::IsType { expr, node_id, .. } => {
+            Expr::IsType { expr, type_name, node_id, .. } => {
                 self.walk(expr);
+                // 型名の妥当性（存在するか・`is` で判定できる型か）。⚠ 以前は `match` の腕でしか
+                // 見ておらず、`if x is NoSuch:` が黙って通っていた（フェーズ10 10-10）。
+                self.check_guard_type_exists(type_name);
                 // `is` は Bool を返す（検査自体なので指示は不要・narrowing は直後 if 分岐で反映）。
                 self.annotations.set_resolved(*node_id, InferredType::Bool);
                 InferredType::Bool

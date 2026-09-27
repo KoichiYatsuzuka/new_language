@@ -1,0 +1,23 @@
+# is_template_instance_error.ar — `is` で判定できない型・存在しない型は静的エラー（フェーズ10 10-10）
+#
+# 対になる正常系: is_template_instance.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  type guard cannot test 'list[int]' at runtime (element types are not checked); write `is list`
+#   StaticTypeError  unknown type 'NoSuch' in type guard; the branch can never match
+#   StaticTypeError  unknown type 'str[int]' in type guard; the branch can never match
+#
+# ⚠ `if x is NoSuch:` は以前**黙って通っていた**（存在検査が `match` の腕でしか走っていなかった）。
+#   腕は永久に死に、腕の中では `x` が存在しないクラスへ絞り込まれてメンバーが無検査になる。
+# ⚠ `is list[int]` は以前 ParseError だった。実行時は「`list` か」しか確かめられないのに腕の中では
+#   `list[int]` へ絞り込まれる（要素が `str` でも通る）ので、型引数つきの組み込みの容器は弾く。
+
+fn check(let x: Union[list[str], int]) -> None:
+    if x is list[int]:                  # ⛔ 要素型は確かめられない（`is list` と書く）
+        print("ints")
+    if x is NoSuch:                     # ⛔ 存在しない型
+        print("never")
+    if x is str[int]:                   # ⛔ str はテンプレートではない
+        print("never")
+
+check(1)

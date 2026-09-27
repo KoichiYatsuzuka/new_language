@@ -1,0 +1,17 @@
+# @id: X8
+# @obligation: if の is に存在しない型名
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ フェーズ10 10-10。X6（match の腕）と同じ義務の if 版。以前は NONE（存在検査が match の腕でしか
+#    走っておらず、分岐が永久に死ぬのに黙って通った）。
+
+class Dog:
+    mut n: int
+
+let d = Dog(1)
+if d is NoSuchType:
+    print("hit")
+print("done")

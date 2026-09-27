@@ -487,7 +487,7 @@ impl TypeChecker {
     ///
     /// ⚠ `is_known_class` はクラス・enum・`new_type` を含む。trait / protocol と
     /// **いま見えているテンプレート型変数**を足したものが「実在する型名」の全体。
-    fn type_name_exists(&self, name: &str) -> bool {
+    pub(crate) fn type_name_exists(&self, name: &str) -> bool {
         // ⚠ `generator` は実行時の型名で、クラスとしては登録されない（タスク 8.0）。
         if name == "generator" {
             return true;

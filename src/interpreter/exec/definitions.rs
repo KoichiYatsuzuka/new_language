@@ -840,6 +840,12 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
+            // 単相化したクラスは具体化の名前も持つ（`x is Stack[int]` の判定・10-10）。
+            // ⚠ 綴りはパーサの正規形（空白なし・`Pair[str,int]`）に揃える。展開器の束縛名は
+            //   `Pair[str, int]`（`template_subst::instance_name`）で、そのままだと一致しない（実測）。
+            instance_name: name
+                .ends_with(']')
+                .then(|| name.chars().filter(|c| !c.is_whitespace()).collect()),
             bases: bases.to_vec(),
             methods,
             gen_methods,

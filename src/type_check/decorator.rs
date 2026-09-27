@@ -139,6 +139,12 @@ impl TypeChecker {
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
             "Undefined" => InferredType::Undefined,
+            // テンプレートの具体化（`is Stack[int]`・フェーズ10 10-10）は注釈と同じ型にする。
+            // 名前のまま `NamedInstance("Stack[int]")` にすると、`Stack[int](..)` の値の型
+            // （`GenericInstance`）と別物になり、絞り込んだ先でメンバーが引けない。
+            other if other.contains('[') => {
+                InferredType::from_ann(other).unwrap_or_else(|| InferredType::NamedInstance(other.to_string()))
+            }
             other => InferredType::NamedInstance(other.to_string()),
         }
     }

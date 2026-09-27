@@ -111,7 +111,14 @@ impl Parser {
                     }
                     is_case_kind = Some(false);
                     self.advance();
-                    let type_name = self.expect_ident()?;
+                    // `is Stack[int]:` も読む（`x is Stack[int]` と同じ・フェーズ10 10-10）。
+                    let type_name = if matches!(self.current(), Token::Ident(_))
+                        && *self.peek1() == Token::LBracket
+                    {
+                        self.parse_type_expr()?
+                    } else {
+                        self.expect_ident()?
+                    };
                     self.eat(&Token::Colon)?;
                     arms.push(MatchArm {
                         pattern: MatchPattern::IsType(type_name),

@@ -24,6 +24,17 @@
         !check(source).is_empty()
     }
 
+    /// **展開してから**型検査する（テンプレートの具体化を使うテスト用・本番と同じ順序）。
+    /// ⚠ `check` は展開しないので、`Stack[int]` の具体クラスが無い（型検査の `debug_assert` が鳴る）。
+    fn check_expanded(source: &str) -> Vec<StaticTypeError> {
+        let tokens = Lexer::new(source, "").tokenize();
+        let mut parser = Parser::new(tokens, None);
+        let stmts = parser.parse_program().expect("parse error");
+        let stmts = crate::meta_expand::expand_program(stmts, parser.node_counter(), parser.known_traits())
+            .expect("expand error");
+        TypeChecker::check(&stmts)
+    }
+
 
 mod variables;
 mod access;

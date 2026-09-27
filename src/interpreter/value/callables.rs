@@ -306,6 +306,12 @@ pub struct ClassValue {
     /// Some のときインスタンスは `INST_HAS_RAW_LAYOUT` で生成され、フィールドは
     /// `InstanceData.raw` の C ABI レイアウト領域に格納される。
     pub raw_layout: Option<Rc<RawLayout>>,
+    /// 単相化したクラスのときの**具体化の名前**（`Stack[int]`）。通常のクラスは `None`（フェーズ10 10-10）。
+    ///
+    /// ⚠ `name` は単相化しても**テンプレートの名前**（`Stack`・タスク 2-8。表示と `Stack` 注釈との照合を
+    ///   変えないため）なので、`x is Stack[int]` / `x mustbe Stack[int]` を判定する材料が無かった。
+    ///   `value_is_type` がこちらと突き合わせる。綴りはパーサの正規形（空白なし）。
+    pub instance_name: Option<String>,
 }
 
 
@@ -351,6 +357,7 @@ impl ClassValue {
             new_type_base: None,
             is_exception: false,
             raw_layout: None,
+            instance_name: None,
         }
     }
 
@@ -440,6 +447,7 @@ impl ClassValue {
             new_type_base: self.new_type_base.clone(),
             is_exception: self.is_exception,
             raw_layout: self.raw_layout.clone(),
+            instance_name: self.instance_name.clone(),
         }
     }
 }
