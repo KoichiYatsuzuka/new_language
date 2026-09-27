@@ -1,0 +1,20 @@
+# @id: K21
+# @obligation: 具体化の protocol 適合（size が str を返す具体化を Sized へ）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ テンプレートの検体（フェーズ10 10-5）。具体化した本体・メソッドは単相化して検査する（2-13 / 10-4）。
+
+protocol Sized:
+    fn size(self) -> int:
+        ...
+
+class Named[T]:
+    mut v: T
+    fn size(self) -> str:
+        return "big"
+
+let s: Sized = Named[int](1)
+print(s.size())

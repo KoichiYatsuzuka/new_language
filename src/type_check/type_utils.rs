@@ -71,12 +71,14 @@ impl TypeChecker {
 
     /// 型から **クラス名と「型変数 → 具体型」の置換表**を取り出す。
     ///
-    /// - `NamedInstance("C")`            → `(C, 空の表)`
-    /// - `GenericInstance{Box, [int]}`   → `(Box, {T: int})`（`T` は `Box` の宣言順の型変数）
+    /// - `NamedInstance("C")`            → `(C, 空の表)`（テンプレート名そのものなら型変数 → `Unresolved`）
+    /// - `GenericInstance{Box, [int]}`   → `(Box[int], 空の表)`（展開器が単相化した具体クラス）
+    /// - `GenericInstance{Box, [T]}`     → `(Box, {T: Unresolved})`（テンプレートの本体の中）
+    /// - `GenericInstance{Holder, [int]}`（trait のテンプレート）→ `(Holder, {T: int})`
     ///
-    /// ⚠⚠ これが A-2 の核心。テンプレートクラスのフィールド・メソッドの型は
-    /// レジストリに**置換前**（`T`）で入っているので、`Box[int]` からメンバーを引くときは
-    /// この表で置換しないと `T` が使用箇所へ漏れる（偽陽性の原因）。
+    /// ⚠⚠ 置換表で型引数を埋めて読むのは **trait のテンプレートだけ**（タスク 10-4）。クラスの
+    /// テンプレートの具体化は展開器が普通のクラスとして置く（式の中も型注釈の中も）ので、置換は要らない。
+    /// 以前（A-2）はクラスのテンプレートもここで置換して読んでいた（単相化と同じことの二重実装）。
     ///
     /// ⚠ 型引数の個数が宣言と合わないときは `None`（＝検査を見送る）。合っていない表で
     /// 置換すると別の型変数に別の型を当てる嘘の対応付けになる。
@@ -116,11 +118,23 @@ impl TypeChecker {
                 if tparams.len() != args.len() {
                     return None;
                 }
-                let map = tparams
-                    .iter()
-                    .cloned()
-                    .zip(args.iter().cloned())
-                    .collect();
+                // ⚠⚠ **置換して読むのは trait のテンプレート（`trait Holder[T]`）だけ**（タスク 10-4）。
+                //   trait は単相化しないので、宣言を型引数で置き換えて読むしかない。
+                //   クラスのテンプレートは、具体的な型引数の具体化を展開器が**必ず**作る（式の中も
+                //   型注釈の中も・10-4 で注釈を足した）ので上で引ける。ここへ来るのはテンプレートの
+                //   本体の中（`Box[T]`・型変数のまま）だけで、型変数は何でも受ける（`Unresolved`）として
+                //   読む（具体化した本体は別に検査される・2-13）。以前はここで型引数を置き換えて
+                //   クラスのテンプレートも読んでおり、単相化と同じことを型検査だけで別にやっていた。
+                let map = if self.registry.is_known_trait(name) {
+                    tparams.iter().cloned().zip(args.iter().cloned()).collect()
+                } else {
+                    debug_assert!(
+                        self.mentions_type_param(ty) || self.registry_incomplete,
+                        "a concrete instantiation '{ty}' has no monomorphized class \
+                         (the expander makes one for every instantiation, task 10-4)"
+                    );
+                    tparams.iter().cloned().map(|p| (p, InferredType::Unresolved)).collect()
+                };
                 Some((name.clone(), map))
             }
             _ => None,

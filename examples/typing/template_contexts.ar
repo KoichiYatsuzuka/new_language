@@ -1,0 +1,42 @@
+# template_contexts.ar — テンプレートの具体化をいろいろな場所に書く（フェーズ10 10-5）
+#
+# 対になる誤り: template_contexts_error.ar
+#
+# ⚠ `syntax_cov.ps1` が「例題が一度も書いていない」と報告した文脈を埋める:
+#   入れ子の関数（閉包）の中・クラスの本体（`const` の初期値）・非同期タスクの本体・
+#   モジュールの最上位。どの場所の具体化も展開器が単相化し、実行時には作らない（D36）。
+# ⚠ 非同期タスクは別スレッドの新しいインタプリタで走る。具体化の登録は送られた大域から
+#   組み直される（タスク 2-16）。
+
+import template_modules.containers as c
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+print("=== 入れ子の関数の中 ===")
+fn outer() -> int:
+    fn inner(let n: int) -> int:
+        return Box[int](n).get() * 2
+    return inner(4)
+
+print(outer())                      # 8
+
+print("=== クラスの本体（const の初期値）===")
+class Holder:
+    mut n: int
+    const DEFAULT: Box[str] = Box[str]("default")
+
+print(Holder.DEFAULT.get())         # default
+
+print("=== 非同期タスクの本体 ===")
+mut mng = AsyncManager(num_thread=1)
+mng <- async->int:
+    block_return Box[int](7).get()
+mng.wait_for_finish()
+print(mng.results)                  # [7]
+
+print("=== モジュールの最上位 ===")
+print(c.SAMPLE)                     # 30（モジュールの中で Box[int](2).scaled(3)）

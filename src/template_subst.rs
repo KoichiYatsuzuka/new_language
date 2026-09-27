@@ -31,6 +31,11 @@ use crate::ast::{CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, St
 /// `Box[T]` が具体化されない（`Box[int]` にならない）。
 /// ⚠ 置換の単位は**識別子**（英数字と `_` の並び）。`Tag` の中の `T` のような部分一致はしない。
 pub(crate) fn subst_type(type_name: &str, type_map: &HashMap<String, String>) -> String {
+    SEEN_ANNOTATIONS.with(|c| {
+        if let Some(seen) = &mut *c.borrow_mut() {
+            seen.push(type_name.to_string());
+        }
+    });
     if let Some(t) = type_map.get(type_name) {
         return t.clone();
     }
@@ -102,6 +107,25 @@ pub(crate) fn split_instance_name(name: &str) -> Option<(&str, Vec<String>)> {
     }
     args.push(inner[start..].trim().to_string());
     Some((&name[..open], args))
+}
+
+// ── 型注釈を見て回る（タスク 10-4） ───────────────────────────────────────
+
+thread_local! {
+    /// [`annotations_of`] の最中だけ立てる「見た型注釈」の控え。
+    static SEEN_ANNOTATIONS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 文の中の**すべての型注釈**を返す（仮引数・戻り値・変数・フィールド・`mustbe`・`=>`・`async` …）。
+///
+/// ⚠⚠ 型注釈の置き場所を別に数え上げない。置換（[`subst_stmt`]）は型注釈を**すべて**置き換える
+///   必要があり、その網羅は 2-8 で取りこぼしを直してある。同じ走査を空の置換表で回し、
+///   [`subst_type`] に渡ってきた注釈を控える。置き場所を足したら置換の側を直せば両方に効く。
+pub(crate) fn annotations_of(stmt: &Stmt) -> Vec<String> {
+    SEEN_ANNOTATIONS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    let _ = subst_stmt(stmt, &HashMap::new());
+    SEEN_ANNOTATIONS.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 // ── 写しの node-id の振り直し（タスク 2-13） ───────────────────────────────

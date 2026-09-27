@@ -14,7 +14,7 @@
 
      | 判定    | 意味 |
      |---------|------|
-     | STATIC  | StaticTypeError が出た（= 静的検査がある。あるべき姿） |
+     | STATIC  | StaticTypeError が出た、または展開時に止まった（= 実行の前に捕まる。あるべき姿） |
      | RUNTIME | 実行が始まってから TypeError 等で落ちた（= 実行経路を踏まなければ見逃す） |
      | NONE    | 完走した（= **無検査**。黙って不整合な型が通った） |
 
@@ -68,6 +68,9 @@ function Get-Verdict([string]$file) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
+    # 展開時に止まったときに CLI が `ExpansionStopped` を 1 行添える（展開時の TemplateError は
+    # 実行時のものと文面が同じなので、印が無いと RUNTIME と数え違える）。
+    $psi.EnvironmentVariables['AR_EXPANSION_MARK'] = '1'
     $proc = [System.Diagnostics.Process]::Start($psi)
     # ⚠ 逐次 ReadToEnd は子とデッドロックする（vm-pitfalls §4）。必ず両方を非同期で開始する。
     $o = $proc.StandardOutput.ReadToEndAsync()
@@ -80,12 +83,12 @@ function Get-Verdict([string]$file) {
     # ANSI 色を落とす（診断表は色付きで出る）
     $all = $all -replace "`e\[[0-9;]*m", '' -replace "$([char]27)\[[0-9;]*m", ''
     $verdict =
-        if ($all -match 'StaticTypeError') { 'STATIC' }
+        if ($all -match 'StaticTypeError' -or $all -match 'ExpansionStopped') { 'STATIC' }
         elseif ($all -match 'ParseError') { 'PARSE' }
         elseif ($all -match '\b(TypeError|ValueError|AttributeError|NameError|IndexError|KeyError|TemplateError|ZeroDivisionError)\b') { 'RUNTIME' }
         else { 'NONE' }
     $msg = ''
-    $m = [regex]::Match($all, '(?:StaticTypeError|ParseError)\s+(.+)')
+    $m = [regex]::Match($all, '(?:StaticTypeError|ParseError|MetaError:|TemplateError:)\s+(.+)')
     if ($m.Success) {
         $msg = $m.Groups[1].Value.Trim()
     } else {

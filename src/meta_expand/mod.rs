@@ -3160,6 +3160,52 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **型注釈にしか現れない具体化も作る**（タスク 10-4）。`fn take(let b: Box[int])` の
+    /// `Box[int]` は、以前は作られず、型検査がテンプレートの宣言を型引数で置き換えて読んでいた。
+    #[test]
+    fn an_instantiation_written_only_in_an_annotation_is_made() {
+        let out = expand(concat!(
+            "class Box[T]:\n",
+            "    mut v: T\n",
+            "\n",
+            "fn take(let b: Box[int]) -> int:\n",
+            "    return b.v\n",
+        ))
+        .expect("expand");
+        assert!(find_decl(&out, "Box[int]").is_some(), "注釈の具体化が作られていない");
+    }
+
+    /// ⚠ 注釈を集める走査は `import` の本体（モジュールの中身）へ降りない（タスク 10-4）。
+    /// 降りると、モジュールのテンプレートの宣言の中の `Box[V]`（型変数のまま）を具体化してしまった（実測）。
+    #[test]
+    fn annotations_inside_an_imported_template_are_not_instantiated() {
+        let out = expand_with_module(
+            concat!(
+                "class Box[T]:\n",
+                "    mut v: T\n",
+                "\n",
+                "class Pair[K, V]:\n",
+                "    mut k: K\n",
+                "    mut v: V\n",
+                "    fn boxed(self) -> Box[V]:\n",
+                "        return Box[V](self.v)\n",
+            ),
+            &[import_of(None)],
+            "let p = m.Pair[str, int](\"k\", 1)\n",
+        )
+        .expect("expand");
+        let body = body_of(&out, 0);
+        assert!(find_decl(body, "Box[int]").is_some(), "具体化の中の Box[int] は作る");
+        let leaked: Vec<&str> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::ClassDef { name, .. } if name.contains("[V]") || name.contains("[K") => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(leaked.is_empty(), "型変数のままの具体化: {leaked:?}");
+    }
+
     /// ⚠⚠ **型は型の値で返る**（D23・タスク 4-2・2026-09-27）。`.type` / 仮引数の `type` /
     /// `.return_type` は `int` と等しく、合成（`list[t]` / `dict[k, v]`）も差し込みもそのまま書ける。
     #[test]

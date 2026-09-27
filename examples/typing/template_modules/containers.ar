@@ -31,6 +31,11 @@ class Pair[K, V]:
 fn first[T](let xs: list[T]) -> T:
     return xs[0]
 
+# モジュールの**最上位**での具体化とメソッド呼び出し（読み込みの最中に走る）。
+# ⚠ 以前はここで実行時に具体化したクラスのメソッドがモジュールの関数（scaled_by）を引けず
+#   NameError だった（例題 template_contexts.ar・タスク 10-5 / 2-16）。
+let SAMPLE = Box[int](2).scaled(3)
+
 # 本体が `T = int` のときしか正しくない（`self.v = 0`）。`Counter[str]` を具体化すると静的エラー
 # （template_module_error.ar の Section 4）。
 class Counter[T]:

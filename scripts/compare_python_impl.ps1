@@ -50,6 +50,7 @@ $knownDiff = @{
     'metafn_expansion_print'         = 'py: メタ関数を字句解析できないので ParseError（3-4 で新設。Rust 側の stdout は "runtime output" と "done" の 2 行だけで、展開時の print は stderr へ出る）'
     'template_constrained_error'     = 'Rust: 制約付きテンプレート・宣言より前の具体化も単相化して検査し StaticTypeError（2-14 で新設）。py: テンプレートのメソッド呼び出しを検査しないので実行してしまう'
     'template_module'                = 'Rust: import したテンプレートの具体化をモジュールの中に置くので、メソッドがモジュールの関数を引ける・同名テンプレートを取り違えない（2-15 で新設）。py: 実行時の具体化のメソッドがモジュールの名前を引けず NameError'
+    'template_contexts'              = 'Rust: 閉包・クラスの const・非同期タスク・モジュールの最上位での具体化（10-5 で新設）。py: クラスの const を属性として読めず AttributeError'
     'metafn_type_values'             = 'Rust: ^ の .type などが型の値を返し、list[t] で合成できる（D23・4-2 で新設）。py: メタ関数を展開しないので何も出さない'
     'tuple_subscript'                = 'Rust: 添字の中の , は組になる（d[x, y] は d[(x, y)]・4-2 で新設）。py: この構文を読めず何も出さない'
     'import_namespace'               = 'Rust と py で名前空間の分離は一致（6 行目まで同じ）。py: AsyncManager が無いので非同期の節で NameError'

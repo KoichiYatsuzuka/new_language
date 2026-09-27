@@ -1,0 +1,17 @@
+# @id: K16
+# @obligation: テンプレートのメソッドの引数（Box[int].set に str）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ テンプレートの検体（フェーズ10 10-5）。具体化した本体・メソッドは単相化して検査する（2-13 / 10-4）。
+
+class Box[T]:
+    mut v: T
+    fn set(mut self, let x: T) -> None:
+        self.v = x
+
+mut b = Box[int](1)
+b.set("wrong")
+print(b.v)

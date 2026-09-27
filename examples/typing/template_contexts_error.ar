@@ -1,0 +1,20 @@
+# template_contexts_error.ar — 入れ子の関数の中の具体化も型検査される（フェーズ10 10-5）
+#
+# 対になる正常系: template_contexts.ar
+#
+# Expected error (StaticTypeError):
+#   argument 0 of 'Box[int].set' expects 'int' but got 'str'
+
+class Box[T]:
+    mut v: T
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x
+
+fn outer() -> None:
+    fn inner() -> None:
+        mut b = Box[int](1)
+        b.set("wrong")
+    inner()
+
+outer()

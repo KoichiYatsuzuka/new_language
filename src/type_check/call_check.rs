@@ -943,38 +943,39 @@ impl TypeChecker {
         }
     }
 
+    /// 具体化の式（`Box[int](..)` / `ident[int](..)`）の結果の型（タスク 2.1 / 10-4）。
+    ///
+    /// ⚠⚠ **型引数で置き換えない**（タスク 10-4）。展開器が具体化ごとに普通の宣言（`ident[int]`）を
+    ///   置くので、その宣言の型を読む。以前はテンプレートの宣言を型引数で置き換えて読んでいた
+    ///   （単相化と同じことを型検査だけで別にやっていた）。
+    /// ⚠ クラスの具体化は `GenericInstance`（型の表現。メンバーは `instance_class` で具体クラスから引く）。
+    /// ⚠ 具体化が無い（テンプレートの本体の中の `ident[T](x)`・型変数のまま）ときは `Unresolved`。
     fn template_call_result_type(&self, base_name: &str, type_args: &[String]) -> InferredType {
         let Some(tparams) = self.registry.template_params(base_name) else {
             return InferredType::Unresolved; // テンプレートでない名前
         };
         if tparams.len() != type_args.len() {
-            return InferredType::Unresolved; // 個数不一致 → 実行時の TemplateError に任せる
-        }
-        let mut args = Vec::with_capacity(type_args.len());
-        let mut map = std::collections::HashMap::new();
-        for (p, a) in tparams.iter().zip(type_args.iter()) {
-            match InferredType::from_ann(a) {
-                Some(t) if !matches!(t, InferredType::Unresolved) => {
-                    map.insert(p.clone(), t.clone());
-                    args.push(t);
-                }
-                // 未知の綴りが 1 つでも混ざったら全体を諦める（嘘の型を作らない）
-                _ => return InferredType::Unresolved,
-            }
+            return InferredType::Unresolved; // 個数不一致（展開時の TemplateError）
         }
         if self.registry.is_known_class(base_name) {
-            // テンプレートクラスの実体化 → そのクラスのインスタンス
-            InferredType::GenericInstance { name: base_name.to_string(), args }
-        } else {
-            // テンプレート関数 → 宣言戻り値型を型引数で置換する
-            match self.registry.fn_sigs(base_name) {
-                // ⚠ オーバーロードは実引数で決まるのでここでは決めない
-                Some(sigs) if sigs.len() == 1 => match &sigs[0].return_type {
-                    Some(rt) => Self::subst_type_params(rt, &map),
-                    None => InferredType::Unresolved,
-                },
-                _ => InferredType::Unresolved,
+            let mut args = Vec::with_capacity(type_args.len());
+            for a in type_args {
+                match InferredType::from_ann(a) {
+                    Some(t) if !matches!(t, InferredType::Unresolved) => args.push(t),
+                    // 未知の綴りが 1 つでも混ざったら全体を諦める（嘘の型を作らない）
+                    _ => return InferredType::Unresolved,
+                }
             }
+            return InferredType::GenericInstance { name: base_name.to_string(), args };
+        }
+        // テンプレート関数 → 具体化した関数の宣言の戻り値型
+        let inst = crate::template_subst::instance_name(base_name, type_args);
+        match self.registry.fn_sigs(&inst) {
+            // ⚠ オーバーロードは実引数で決まるのでここでは決めない
+            Some(sigs) if sigs.len() == 1 => {
+                sigs[0].return_type.clone().unwrap_or(InferredType::Unresolved)
+            }
+            _ => InferredType::Unresolved,
         }
     }
 
@@ -984,39 +985,30 @@ impl TypeChecker {
         type_args: &[String],
         arg_data: &[(Option<String>, InferredType)],
     ) {
-        let Some(tparams) = self.registry.template_params(base_name) else {
+        if self.registry.template_params(base_name).is_none() {
             return; // テンプレートでない名前（実行時に別のエラーになる）
-        };
-        if tparams.len() != type_args.len() {
-            return; // 型引数の個数不一致 → 実行時の TemplateError に任せる
         }
-        // 置換表。解釈できない型引数（未知の綴り）が混ざったら検査を諦める。
-        let mut map = std::collections::HashMap::new();
-        for (p, a) in tparams.iter().zip(type_args.iter()) {
-            match InferredType::from_ann(a) {
-                Some(t) if !matches!(t, InferredType::Unresolved) => {
-                    map.insert(p.clone(), t);
-                }
-                _ => return,
-            }
-        }
+        // ⚠⚠ **具体化した宣言のシグネチャで検査する**（タスク 10-4）。型引数で置き換えない。
+        //   具体化が無い（テンプレートの本体の中・型変数のまま、型引数の個数違い）なら見送る
+        //   （具体化した本体の側で検査される・個数違いは展開時のエラー）。
+        let inst = crate::template_subst::instance_name(base_name, type_args);
         // ⚠ 実引数の個数が合わないときは対応付けが嘘になるので見送る（実行時に捕まる）。
         let normal: Vec<_> = arg_data
             .iter()
             .filter(|(k, _)| k.as_deref() != Some("..."))
             .collect();
         // シグネチャを引く。クラスなら自動生成された `__init__`（`self` が先頭）。
-        let (candidates, implicit) = if self.registry.is_known_class(base_name) {
+        let (candidates, implicit) = if self.registry.is_known_class(&inst) {
             match self
                 .registry
-                .class_methods(base_name)
+                .class_methods(&inst)
                 .and_then(|m| m.get("__init__"))
             {
                 Some(sigs) => (sigs.clone(), 1usize),
                 None => return, // `__init__` が無い（`new_type` ラッパ等）
             }
         } else {
-            match self.registry.fn_sigs(base_name) {
+            match self.registry.fn_sigs(&inst) {
                 Some(sigs) => (sigs.clone(), 0usize),
                 None => return,
             }
@@ -1052,18 +1044,14 @@ impl TypeChecker {
             let Some((_, Some(declared))) = sig.params.get(param_idx) else {
                 continue;
             };
-            let expected = Self::subst_type_params(declared, &map);
-            // 置換後もなお型変数が残る（入れ子テンプレート等）なら検査しない。
-            if self.mentions_type_param(&expected) {
-                continue;
-            }
+            let expected = declared.clone();
             // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
             let mutable = sig.param_mutable.get(param_idx).copied().unwrap_or(false);
-            let ctx = format!("argument to `{base_name}[{}]`", type_args.join(", "));
+            let ctx = format!("argument to `{inst}`");
             if !self.check_expected(arg_ty, &expected, mutable, &ctx) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
-                        func_name: format!("{base_name}[{}]", type_args.join(", ")),
+                        func_name: inst.clone(),
                         param_index: param_idx.saturating_sub(implicit),
                         expected,
                         got: arg_ty.clone(),

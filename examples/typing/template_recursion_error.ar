@@ -16,8 +16,9 @@
 #
 # 期待されるエラー:
 #   MetaError: template instantiation does not end — 'depth[int]' → 'depth[Box[int]]' →
-#              'depth[Box[Box[int]]]' → … needs 'depth[Box[Box[…]]]' (more than 64 levels
+#              'depth[Box[Box[int]]]' → … needs 'Box[Box[…]]' (more than 64 levels
 #              deep). A template that uses itself with a growing type argument ...
+#   ⚠ 最後に作ろうとしていたのは仮引数の型の `Box[…]`（型注釈の中の具体化も作る・タスク 10-4）。
 
 class Box[T]:
     mut v: T

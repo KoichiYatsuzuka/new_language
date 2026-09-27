@@ -577,6 +577,106 @@ fn endless_instantiation(chain: &[String], next: &str) -> String {
 // ── 具体化の場所を集める（読むだけ） ────────────────────────────────────────
 
 fn collect_sites_stmt(stmt: &Stmt, sites: &mut Vec<(String, Vec<String>)>) {
+    // ⚠⚠ **型注釈の中の具体化も作る**（タスク 10-4）。`fn take(let b: Box[int])` のように
+    //   型注釈にしか現れない具体化は、以前は作られず、型検査がテンプレートの宣言を型引数で置き換えて
+    //   読む特例（`class_and_subst` の置換表）で扱っていた。作っておけば、具体的な型引数の具体化は
+    //   いつも普通のクラスとして引ける。⚠ テンプレートの宣言の中（型変数のまま）は下で見送る。
+    if !matches!(stmt,
+        Stmt::ClassDef { template_params, .. }
+        | Stmt::FnDef { template_params, .. }
+        | Stmt::GenDef { template_params, .. } if !template_params.is_empty())
+        && !matches!(stmt, Stmt::MetaFnDef { .. })
+        // ⚠ `import` の本体（モジュールの中身）へは降りない。置換の走査は降りるので、そのままだと
+        //   モジュールのテンプレートの宣言の中の `Box[V]`（型変数のまま）を拾って具体化してしまった
+        //   （実測）。モジュールの中の具体化はモジュールの枠で作る（`monomorphize_module_body`）。
+        && !matches!(stmt, Stmt::Import { .. } | Stmt::FromImport { .. })
+    {
+        for ann in crate::template_subst::annotations_of(stmt) {
+            collect_ann_sites(&ann, sites);
+        }
+    }
+    collect_expr_sites_stmt(stmt, sites);
+}
+
+/// 型注釈の文字列の中の具体化（`Name[args]`・入れ子も）を集める（タスク 10-4）。
+///
+/// ⚠ 組み込みの型（`list[..]` / `dict[..]` / `Option[..]` …）は具体化ではないので見送る。
+///   テンプレートでない名前（trait のテンプレート・未知の名前）は、作れないので保留に残るだけ。
+fn collect_ann_sites(ann: &str, sites: &mut Vec<(String, Vec<String>)>) {
+    const BUILTIN: [&str; 13] = [
+        "list", "dict", "set", "tuple", "fixed_list", "list_like", "Option", "Result", "Union",
+        "Intersection", "function", "type", "Signal",
+    ];
+    let chars: Vec<char> = ann.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !(chars[i].is_alphabetic() || chars[i] == '_') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            i += 1;
+        }
+        if i >= chars.len() || chars[i] != '[' {
+            continue;
+        }
+        let name: String = chars[start..i].iter().collect();
+        // 対応する `]` と、入れ子の外の `,` で型引数を分ける。
+        let open = i;
+        let mut depth = 0i32;
+        let mut close = None;
+        for (j, c) in chars.iter().enumerate().skip(open) {
+            match c {
+                '[' | '{' | '(' => depth += 1,
+                ']' | '}' | ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { return };
+        let inner: String = chars[open + 1..close].iter().collect();
+        let args = split_top_level(&inner);
+        if !BUILTIN.contains(&name.as_str()) && !args.is_empty() {
+            sites.push((name, args.clone()));
+        }
+        for a in &args {
+            collect_ann_sites(a, sites);
+        }
+        i = close + 1;
+    }
+}
+
+/// 入れ子の外の `,` で分ける（前後の空白は落とす）。
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+fn collect_expr_sites_stmt(stmt: &Stmt, sites: &mut Vec<(String, Vec<String>)>) {
     match stmt {
         // テンプレートの宣言の中は型変数のまま。メタ関数の本体は展開時に走るコード。
         Stmt::ClassDef { template_params, .. }
@@ -595,12 +695,12 @@ fn collect_sites_stmt(stmt: &Stmt, sites: &mut Vec<(String, Vec<String>)>) {
             P::Expr(e) | P::MatchPattern(e) => collect_sites_expr(e, sites),
             P::Control(b) | P::GenBody(b) | P::TypeBody(b) | P::AsyncBody(b) => {
                 for s in b {
-                    collect_sites_stmt(s, sites);
+                    collect_expr_sites_stmt(s, sites);
                 }
             }
             P::FnBody { body, .. } => {
                 for s in body {
-                    collect_sites_stmt(s, sites);
+                    collect_expr_sites_stmt(s, sites);
                 }
             }
             // シグネチャだけ・別モジュール（それぞれの枠で扱う）・束縛名。
@@ -632,7 +732,7 @@ fn collect_sites_expr(e: &Expr, sites: &mut Vec<(String, Vec<String>)>) {
             P::Plain(x) | P::Control(x) | P::MatchPattern(x) => collect_sites_expr(x, sites),
             P::Body(b) => {
                 for s in b {
-                    collect_sites_stmt(s, sites);
+                    collect_expr_sites_stmt(s, sites);
                 }
             }
             P::ForTarget(_) => {}

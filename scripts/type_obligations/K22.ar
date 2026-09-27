@@ -1,0 +1,17 @@
+# @id: K22
+# @obligation: テンプレート gen の yield（rep[int] で str を yield）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ テンプレートの検体（フェーズ10 10-5）。具体化した本体・メソッドは単相化して検査する（2-13 / 10-4）。
+
+gen rep[T](let x: T, let n: int) -> T:
+    mut i = 0
+    while i < n:
+        yield "s"
+        i += 1
+
+for v in rep[int](1, 2):
+    print(v)

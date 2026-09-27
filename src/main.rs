@@ -392,7 +392,15 @@ fn run_program(
     // ⚠ 消したメタ関数の一覧も受け取る。通常コードから呼ばれていたら実行時に `NameError` に
     //   なるので、その文面に理由を書き添える（タスク 3-8。下の実行ループ）。
     let (expanded, metafns) =
-        meta_expand::expand_program_with_metafns(stmts, node_counter, known_traits)?;
+        meta_expand::expand_program_with_metafns(stmts, node_counter, known_traits).map_err(|e| {
+            // 診断フック: `AR_EXPANSION_MARK=1` で「展開で止まった（実行の前）」ことを 1 行添える。
+            // ⚠ 型引数の数違い・制約違反は展開時の `TemplateError` になった（D36）が、文面は実行時のものと
+            //   同じなので、`type_obligations.ps1` が「実行が始まってから落ちた」と数え違える。
+            if std::env::var_os("AR_EXPANSION_MARK").is_some() {
+                eprintln!("ExpansionStopped");
+            }
+            e
+        })?;
     stmts = expanded;
 
     // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
