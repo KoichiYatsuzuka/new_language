@@ -1,0 +1,28 @@
+# operator_overload_operand_error.ar — 演算子メソッドの仮引数に合わない右辺は静的エラー（フェーズ10 10-13）
+#
+# 対になる正常系: operator_overload_operand.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  unsupported operand types for '+': 'Money' and 'int'
+#   StaticTypeError  unsupported operand types for '*': 'Money' and 'Money'
+#   StaticTypeError  unsupported operand types for '<': 'Money' and 'int'
+#
+# ⚠ 以前は左辺がクラスだと素通しで、`Money(100) + 5` は `__add__` の中の `other.cents` で
+#   実行時の AttributeError になっていた。
+
+class Money:
+    mut cents: int
+
+    fn __add__(self, let other: Money) -> Money:
+        return Money(self.cents + other.cents)
+
+    fn __mul__(self, let k: int) -> Money:
+        return Money(self.cents * k)
+
+    fn __lt__(self, let other: Money) -> bool:
+        return self.cents < other.cents
+
+let m = Money(100) + 5                # ⛔ __add__ は Money を取る
+let d = Money(100) * Money(2)         # ⛔ __mul__ は int を取る
+let c = Money(1) < 3                  # ⛔ __lt__ は Money を取る
+print(m.cents, d.cents, c)

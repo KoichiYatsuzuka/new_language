@@ -226,6 +226,10 @@ impl TypeChecker {
     /// ⚠ `Unresolved` / `Never` も判定材料が無いので素通し（取りこぼす方へ倒す）。
     fn check_arith(&mut self, op: &BinOp, lt: &InferredType, rt: &InferredType, span: Span) {
         use InferredType as T;
+        // クラスの演算子メソッドの右辺（10-13）。可否は下の表では決めない（クラスは素通し）。
+        if self.check_dunder_operand(op, lt, rt, span.clone()) {
+            return;
+        }
         let opaque = |t: &T| {
             matches!(
                 t,
@@ -264,6 +268,16 @@ impl TypeChecker {
         op: &'static str,
         span: Span,
     ) {
+        let bin_op = match op {
+            "<" => BinOp::Lt,
+            ">" => BinOp::Gt,
+            "<=" => BinOp::LtEq,
+            _ => BinOp::GtEq,
+        };
+        // クラスの `__lt__` などの右辺（10-13）。
+        if self.check_dunder_operand(&bin_op, lt, rt, span.clone()) {
+            return;
+        }
         if !Self::ordered_comparable(lt, rt) {
             self.report_error(StaticTypeError::incompatible_cmp(
                 lt.clone(),
@@ -272,6 +286,87 @@ impl TypeChecker {
                 span,
             ));
         }
+    }
+
+    /// 左辺がクラスで演算子メソッド（`__add__` など）を持つとき、**右辺がその仮引数に合うか**を
+    /// 検査する（フェーズ10 10-13）。戻り値: 左辺が演算子メソッドを持つクラスだったか
+    /// （`true` なら呼び出し側は組み込みの表での検査をしない）。
+    ///
+    /// ⚠ 以前はクラスが片側にあると素通しだった（`check_arith` の doc）ので、
+    ///   `Money(100) + 5`（`fn __add__(self, let other: Money)`）が静的に通り、
+    ///   `__add__` の中の `other.cents` で実行時の `AttributeError` になっていた（実測）。
+    /// ⚠ 実行時は**左辺の**演算子メソッドだけを呼ぶ（`apply_binop_dyn`・右辺側の `__radd__` は無い）
+    ///   ので、左辺だけ見ればよい。
+    /// ⚠ 多重定義は**どれか 1 つ**が受ければ通す。型の無い仮引数・仮引数の数が合わない形は
+    ///   判定材料が無いので通す（誤検出をしない側）。
+    /// ⚠ `==` / `!=`（`__eq__` / `__ne__`）は見ない。等値は異型でも「偽」を返すのが仕様。
+    fn check_dunder_operand(
+        &mut self,
+        op: &BinOp,
+        lt: &InferredType,
+        rt: &InferredType,
+        span: Span,
+    ) -> bool {
+        use InferredType as T;
+        let method = match op {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::FloorDiv => "__floordiv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitXor => "__xor__",
+            BinOp::LShift => "__lshift__",
+            BinOp::RShift => "__rshift__",
+            BinOp::Lt => "__lt__",
+            BinOp::Gt => "__gt__",
+            BinOp::LtEq => "__le__",
+            BinOp::GtEq => "__ge__",
+            _ => return false,
+        };
+        let Some((class_name, subst)) = self.class_and_subst(lt) else {
+            return false;
+        };
+        let Some(sigs) = self
+            .registry
+            .class_methods(class_name.as_str())
+            .and_then(|m| m.get(method))
+            .cloned()
+        else {
+            return false;
+        };
+        if matches!(rt, T::Unresolved | T::Never | T::Any) {
+            return true;
+        }
+        let accepted = sigs.iter().any(|sig| {
+            // 第 1 仮引数が `self`、第 2 仮引数が右辺。
+            match sig.params.get(1) {
+                Some((_, Some(pty))) => {
+                    let pty = Self::subst_type_params(pty, &subst);
+                    let site = if sig.param_mutable.get(1).copied().unwrap_or(false) {
+                        super::type_utils::Site::MutParam
+                    } else {
+                        super::type_utils::Site::LetParam
+                    };
+                    self.types_compatible(rt, &pty, site)
+                }
+                _ => true,
+            }
+        });
+        if !accepted {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::IncompatibleBinOp {
+                    op: op.as_str().to_string(),
+                    left: lt.clone(),
+                    right: rt.clone(),
+                },
+                span: Some(span),
+            });
+        }
+        true
     }
 
     /// 2 つの型が順序比較可能な組み合わせかどうかを判定する。

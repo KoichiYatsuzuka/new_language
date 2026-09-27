@@ -146,3 +146,60 @@ use super::*;
         assert!(errors[0].to_string().contains("int"));
     }
 
+
+    // --- 演算子オーバーロードの右辺（フェーズ10 10-13）---
+    // ⚠ 以前は左辺がクラスだと素通しで、`Money(100) + 5` が `__add__` の中の `other.cents` で
+    //   実行時の AttributeError になっていた。
+
+    const MONEY: &str = concat!(
+        "class Money:\n",
+        "    mut cents: int\n",
+        "    fn __add__(self, let other: Money) -> Money:\n",
+        "        return Money(self.cents + other.cents)\n",
+        "    fn __mul__(self, let k: int) -> Money:\n",
+        "        return Money(self.cents * k)\n",
+        "    fn __mul__(self, let k: float) -> Money:\n",
+        "        return Money(int(float(self.cents) * k))\n",
+        "    fn __lt__(self, let other: Money) -> bool:\n",
+        "        return self.cents < other.cents\n",
+    );
+
+    fn binop_errors(src: &str) -> usize {
+        check(src)
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::IncompatibleBinOp { .. }))
+            .count()
+    }
+
+    /// 右辺が `__add__` の仮引数に合わない（10-13 の再現）。
+    #[test]
+    fn dunder_operand_mismatch_err() {
+        assert_eq!(binop_errors(&format!("{MONEY}let m = Money(100) + 5\n")), 1);
+    }
+
+    /// 順序比較の `__lt__` も同じ。
+    #[test]
+    fn dunder_cmp_operand_mismatch_err() {
+        assert_eq!(binop_errors(&format!("{MONEY}let b = Money(1) < 3\n")), 1);
+    }
+
+    /// 多重定義はどれか 1 つが受ければ通す。受けるものが無ければ誤り。
+    #[test]
+    fn dunder_overloads() {
+        assert!(ok(&format!("{MONEY}let a = Money(1) * 2\nlet b = Money(1) * 0.5\n")));
+        assert_eq!(binop_errors(&format!("{MONEY}let c = Money(1) * Money(2)\n")), 1);
+    }
+
+    /// 合う右辺・複合代入は通る。
+    #[test]
+    fn dunder_operand_ok() {
+        assert!(ok(&format!(
+            "{MONEY}let a = Money(1) + Money(2)\nlet b = Money(1) < Money(2)\nmut t = Money(0)\nt += Money(3)\n"
+        )));
+    }
+
+    /// 複合代入の右辺も検査する。
+    #[test]
+    fn dunder_compound_assign_mismatch_err() {
+        assert_eq!(binop_errors(&format!("{MONEY}mut t = Money(0)\nt += 3\n")), 1);
+    }
