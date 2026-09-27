@@ -1,0 +1,20 @@
+# @id: K25
+# @obligation: gen メソッドの要素を別の型へ（Bag.each は str を産む）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+# ⚠ ジェネレータの要素型の検体（フェーズ10 10-7）。以前は NONE（静的にも実行時にも止まらなかった）。
+
+class Bag:
+    mut items: list[str]
+
+    gen each(self) -> str:
+        for it in self.items:
+            yield it
+
+let b = Bag(["a", "b"])
+for it in b.each():
+    let n: int = it
+    print(n)

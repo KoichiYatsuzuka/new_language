@@ -34,3 +34,4 @@ mod calls;
 mod union_types;
 mod guards_fntype;
 mod decorators_generics;
+mod generators;

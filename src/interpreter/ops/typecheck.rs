@@ -129,6 +129,9 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
         _ if ann.starts_with("set[") => matches!(val, Value::Set(_)),
         _ if ann.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
+        // ジェネレータも外側だけ見る（フェーズ10 10-7 で `generator[T]` を注釈に書けるようにした）。
+        "generator" => matches!(val, Value::Generator(_)),
+        _ if ann.starts_with("generator[") => matches!(val, Value::Generator(_)),
         _ => return None,
     };
     Some(r)

@@ -1400,6 +1400,15 @@ impl TypeChecker {
         method: &str,
     ) -> Option<InferredType> {
         use InferredType as T;
+        // ジェネレータ（`generator[T]`・フェーズ10 10-7）。`next()` は要素 1 つ、`close()` は `None`。
+        // ⚠ 以前は結果に型が無く、`let v: str = g.next()` が通っていた（`for` と同じ穴）。
+        if let T::IteratorOf(elem) = recv_ty {
+            return match method {
+                "next" => Some((**elem).clone()),
+                "close" => Some(T::None),
+                _ => None,
+            };
+        }
         let (k, v) = match recv_ty {
             T::DictOf(k, v) => ((**k).clone(), (**v).clone()),
             // 要素型を持たない素の `dict`。容器の形だけは判るので `Any` を入れる。

@@ -170,6 +170,8 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            // `generator[Pr]` の要素も構造的に比べる（10-7 で注釈に書けるようにした）。
+            T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
             T::Result(a, b) => T::Result(rec(a), rec(b)),
             T::Union(ts) => T::Union(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
@@ -392,6 +394,18 @@ impl TypeChecker {
                 }
                 _ => false,
             };
+        }
+        // ジェネレータ（フェーズ10 10-7）。⚠ 要素型を書かない `generator` 注釈は、どの
+        // `generator[T]` も受ける（`fn f() -> generator: return each(xs)`・例題が 9 箇所で使う）。
+        // `generator[T]` どうしは要素型で比べる（取り出すだけなので共変でよい）。
+        match (arg_ty, expected) {
+            (InferredType::IteratorOf(_), InferredType::NamedInstance(n)) if n == "generator" => {
+                return true;
+            }
+            (InferredType::IteratorOf(a), InferredType::IteratorOf(e)) => {
+                return self.type_matches_exact(a, e);
+            }
+            _ => {}
         }
         // list_like accepts both list and fixed_list
         let is_list_like = |t: &InferredType| matches!(

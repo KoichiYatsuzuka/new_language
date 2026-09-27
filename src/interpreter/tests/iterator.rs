@@ -120,3 +120,23 @@ fn test_for_break_with_iterator() {
     }
 }
 
+
+/// `generator[T]` 注釈の仮引数にジェネレータを渡せる（フェーズ10 10-7 で注釈に書けるようにした）。
+/// ⚠ 実行時の注釈の表（`primitive_ann_matches`）が `generator[..]` を知らないと、仮引数の
+///   検査で「`generator[int]` という名のクラスではない」と弾いてしまう。
+#[test]
+fn test_generator_annotation_accepts_generator_at_runtime() {
+    let src = concat!(
+        "gen each(let items: list[int]) -> int:\n",
+        "    for x in items:\n",
+        "        yield x\n",
+        "fn first(let g: generator[int]) -> int:\n",
+        "    for v in g:\n",
+        "        return v\n",
+        "    return -1\n",
+        "let r = first(each([9, 8]))\n",
+        "let is_gen = each([1]) is generator\n",
+    );
+    assert_int(run_get(src, "r"), 9);
+    assert!(matches!(run_get(src, "is_gen"), Value::Bool(true)));
+}

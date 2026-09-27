@@ -1,0 +1,17 @@
+# gen_element_type_error.ar — ジェネレータの要素型の誤りは静的に止まる（フェーズ10 10-7）
+#
+# 対になる正常系: gen_element_type.ar
+#
+# Expected error (StaticTypeError):
+#   'z' is declared 'str' but initialized with 'int'
+#
+# ⚠ 以前は `each` の呼び出しの結果に型が付かず、この代入が通って `1` と `2` を印字していた
+#   （`str` と注釈した `z` に `int` が入っていた）。
+
+gen each(let items: list[int]) -> int:
+    for x in items:
+        yield x
+
+for s in each([1, 2]):
+    let z: str = s
+    print(z)

@@ -259,6 +259,7 @@ impl InferredType {
             | Self::FixedListOf(t)
             | Self::ListLikeOf(t)
             | Self::SetOf(t)
+            | Self::IteratorOf(t)
             | Self::TypeValOf(t) => t.collect_type_names(out),
             Self::DictOf(k, v) | Self::Result(k, v) => {
                 k.collect_type_names(out);
@@ -363,6 +364,14 @@ impl InferredType {
             return Some(match InferredType::from_ann(inner.trim()) {
                 Some(t) => Self::ListOf(Box::new(t)),
                 None => Self::List,
+            });
+        }
+        // `generator[T]`（`IteratorOf` の表示形・フェーズ10 10-7）。`gen` の呼び出しの結果に
+        // 要素型が付いたので、それを受ける関数の戻り値・仮引数にも書けるようにした。
+        if let Some(inner) = ann.strip_prefix("generator[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::IteratorOf(Box::new(t)),
+                None => Self::NamedInstance("generator".to_string()),
             });
         }
         if let Some(inner) = ann.strip_prefix("fixed_list[").and_then(|s| s.strip_suffix(']')) {

@@ -1448,6 +1448,7 @@ impl TypeChecker {
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)
             | InferredType::SetOf(t)
+            | InferredType::IteratorOf(t)
             | InferredType::TypeValOf(t) => Self::mentions_any_name(t, names),
             InferredType::DictOf(k, v) => {
                 Self::mentions_any_name(k, names) || Self::mentions_any_name(v, names)
@@ -1820,7 +1821,11 @@ impl TypeChecker {
                 span: None,
             });
         }
-        self.declare(name.to_string(), InferredType::Unresolved, false);
+        // ⚠ `gen` の名前も関数値としての型で宣言する（`check_fn_def` と同じ・フェーズ10 10-7）。
+        //   結果の型は `generator[T]`。以前は `Unresolved` だったので、入れ子の `gen` を呼んだ結果に
+        //   型が付かなかった。
+        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+        self.declare(name.to_string(), self_ty, false);
         self.push_scope();
         // ⚠⚠ **`gen` 自身の型変数（`gen take[T]`）を積んでから注釈を検査する**（フェーズ10 10-1）。
         //    以前は「`gen` には型変数の投入が無いので、ここで検査してよい」と書いてあったが誤りで、
@@ -1839,13 +1844,13 @@ impl TypeChecker {
         if let Some(yt) = yield_type {
             self.check_ann_not_bare(yt, &format!("yield type of gen `{name}`"));
         }
+        // ⚠⚠ 仮引数は `fn` と同じく宣言する（フェーズ10 10-7）。以前は注釈から型を取るだけで、
+        //    `gen` メソッドの `self` が `Unresolved`（何でも受ける）になり、本体の `self.x` を
+        //    何も検査していなかった（`let s: str = self.n` も、存在しない `self.nope` も通った・実測）。
+        //    既定値の検査も `fn` と同じく宣言の前に行う。
+        self.check_param_defaults(name, params);
         for param in params {
-            let ty = param
-                .type_ann
-                .as_deref()
-                .and_then(InferredType::from_ann)
-                .unwrap_or(InferredType::Unresolved);
-            self.declare(param.name.clone(), ty, param.mutable);
+            self.declare_param(param);
         }
         // `gen` 本体の直下だけが `yield` を書ける（B13）。
         let prev_gen = self.state.enter_gen_body(true);

@@ -221,42 +221,35 @@ impl TypeRegistryBuilder {
                     template_params,
                     ..
                 } => {
-                    let variadic_param = params.iter().find(|p| p.variadic);
-                    let open_arity = Self::has_open_arity(params);
-                    let sig = FnSig {
-                        // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
-                        param_mutable: params
-                            .iter()
-                            .filter(|p| Self::is_normal_param(p))
-                            .map(|p| p.mutable)
-                            .collect(),
-                        params: params
-                            .iter()
-                            .filter(|p| Self::is_normal_param(p))
-                            .map(|p| {
-                                let ty = p.type_ann.as_deref()
-                                    .and_then(InferredType::from_ann)
-                                    .map(|t| self.resolve_protocol_type(t));
-                                (p.name.clone(), ty)
-                            })
-                            .collect(),
-                        required_count: params
-                            .iter()
-                            .filter(|p| {
-                                Self::is_normal_param(p) && p.default.is_none()
-                            })
-                            .count(),
-                        return_type: return_type.as_deref()
-                            .and_then(InferredType::from_ann)
-                            .map(|t| self.resolve_protocol_type(t)),
-                        // ⚠ `**kwargs` しか無い場合も**上限なし**にしたいので、
-                        //   型が取れなくても `Any` を入れて `Some` にする。
-                        variadic_type: variadic_param
-                            .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
-                            .or(if open_arity { Some(InferredType::Any) } else { None }),
-                    };
+                    let ret = return_type
+                        .as_deref()
+                        .and_then(InferredType::from_ann)
+                        .map(|t| self.resolve_protocol_type(t));
+                    let sig = self.sig_of(params, ret);
                     self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
                     // 実体化呼び出しの引数検査に要る（型変数名と並び）。
+                    if !template_params.is_empty() {
+                        self.reg.template_params.insert(
+                            name.clone(),
+                            template_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
+                    self.collect(body);
+                }
+                // ⚠⚠ **`gen` も関数と同じく登録する**（フェーズ10 10-7）。以前は登録が無く、
+                //    `gen` の名前は `Unresolved` だったので、呼び出しの結果の型が分からず
+                //    `for s in each(xs):` の `s` に型が付かなかった。`let z: str = s` のような
+                //    誤りが静的にも実行時にも止まらなかった（実測）。引数も検査されていなかった。
+                //    ⚠ 結果の型は**産出型ではなくジェネレータ**（`generator[T]` = `IteratorOf(T)`）。
+                Stmt::GenDef {
+                    name, params, yield_type, body, template_params, ..
+                } => {
+                    let ret = yield_type
+                        .as_deref()
+                        .and_then(InferredType::from_ann)
+                        .map(|t| InferredType::IteratorOf(Box::new(self.resolve_protocol_type(t))));
+                    let sig = self.sig_of(params, ret);
+                    self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
                     if !template_params.is_empty() {
                         self.reg.template_params.insert(
                             name.clone(),
@@ -302,8 +295,11 @@ impl TypeRegistryBuilder {
                     // Only recurse into method bodies for nested closures;
                     // class methods themselves must NOT be added to fn_sigs.
                     for s in body.iter() {
-                        if let Stmt::FnDef { body: method_body, .. } = s {
-                            self.collect(method_body);
+                        match s {
+                            Stmt::FnDef { body: method_body, .. } => self.collect(method_body),
+                            // `gen` メソッドの中の入れ子の関数・`gen` も同じ（10-7）。
+                            Stmt::GenDef { body: method_body, .. } => self.collect(method_body),
+                            _ => {}
                         }
                     }
                 }
@@ -479,6 +475,43 @@ impl TypeRegistryBuilder {
         params.iter().any(|p| p.variadic || Self::is_py_kwargs_param(p))
     }
 
+    /// 最上位（と入れ子）の `fn` / `gen` の仮引数からシグネチャを作る。`ret` は**呼び出しの結果の型**
+    /// （`gen` なら `generator[T]`）。
+    fn sig_of(&self, params: &[Param], ret: Option<InferredType>) -> FnSig {
+        let variadic_param = params.iter().find(|p| p.variadic);
+        let open_arity = Self::has_open_arity(params);
+        FnSig {
+            // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
+            param_mutable: params
+                .iter()
+                .filter(|p| Self::is_normal_param(p))
+                .map(|p| p.mutable)
+                .collect(),
+            params: params
+                .iter()
+                .filter(|p| Self::is_normal_param(p))
+                .map(|p| {
+                    let ty = p
+                        .type_ann
+                        .as_deref()
+                        .and_then(InferredType::from_ann)
+                        .map(|t| self.resolve_protocol_type(t));
+                    (p.name.clone(), ty)
+                })
+                .collect(),
+            required_count: params
+                .iter()
+                .filter(|p| Self::is_normal_param(p) && p.default.is_none())
+                .count(),
+            return_type: ret,
+            // ⚠ `**kwargs` しか無い場合も**上限なし**にしたいので、
+            //   型が取れなくても `Any` を入れて `Some` にする。
+            variadic_type: variadic_param
+                .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
+                .or(if open_arity { Some(InferredType::Any) } else { None }),
+        }
+    }
+
     /// クラス本体のメソッドシグネチャを収集して `class_method_sigs` に登録する。
     fn collect_class_methods(&mut self, name: &str, body: &[Stmt]) {
         let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
@@ -534,11 +567,13 @@ impl TypeRegistryBuilder {
             //    `Stmt::GenDef` はクラス本体に置けるのに、この収集が `Stmt::FnDef` しか
             //    見ていなかったため、`b.each()` が `'Bag' has no member 'each'` になる。
             //    ⚠ **純 Arrow の `gen` メソッドでも再現**する（`import[py]` 固有ではない）。
-            //    ⚠ 呼び出しの戻り値は**産出型ではなくジェネレータ**。実行時の型名に合わせて
-            //      `NamedInstance("generator")` にする（`from_ann` の `"generator"` と同じ）。
+            //    ⚠ 呼び出しの戻り値は**産出型ではなくジェネレータ**。産出型が書いてあれば
+            //      `generator[T]`（`IteratorOf`・フェーズ10 10-7）、無ければ素の `generator`。
+            //      以前は常に素の `generator` で、`for x in b.each():` の `x` に型が付かなかった。
             if let Stmt::GenDef {
                 name: mname,
                 params,
+                yield_type,
                 ..
             } = s
             {
@@ -565,7 +600,13 @@ impl TypeRegistryBuilder {
                         .iter()
                         .filter(|p| Self::is_normal_param(p) && p.default.is_none())
                         .count(),
-                    return_type: Some(InferredType::NamedInstance("generator".to_string())),
+                    return_type: Some(
+                        yield_type
+                            .as_deref()
+                            .and_then(InferredType::from_ann)
+                            .map(|t| InferredType::IteratorOf(Box::new(t)))
+                            .unwrap_or_else(|| InferredType::NamedInstance("generator".to_string())),
+                    ),
                     variadic_type: variadic_param
                         .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
                         .or(if open_arity { Some(InferredType::Any) } else { None }),
