@@ -196,3 +196,63 @@ use super::*;
             1
         );
     }
+
+    // --- 組み込みの値の属性（フェーズ10 10-14）---
+    // ⚠ 以前は何も見ておらず、`x.name`（`x: int`）が実行時の AttributeError まで通っていた。
+
+    fn no_member_errors(src: &str) -> usize {
+        check(src)
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::NoSuchMember { .. }))
+            .count()
+    }
+
+    /// `int` の属性の読み（10-14 の再現）。
+    #[test]
+    fn builtin_int_attr_read_err() {
+        assert_eq!(no_member_errors("fn label(let x: int) -> str:\n    return x.name\n"), 1);
+    }
+
+    /// 組み込みの値は読める属性を持たない（`str` / `list` / `dict` も）。
+    #[test]
+    fn builtin_attr_read_err() {
+        assert_eq!(
+            no_member_errors(concat!(
+                "let s = \"abc\"\n",
+                "let a = s.length\n",
+                "let xs: list[int] = [1]\n",
+                "let b = xs.size\n",
+                "let d: dict[str, int] = {\"k\": 1}\n",
+                "let c = d.count\n",
+            )),
+            3
+        );
+    }
+
+    /// `int` / `float` / `bool` / `None` はメソッドを持たない。`complex` は `real` / `imag` / `angle` だけ。
+    #[test]
+    fn builtin_scalar_method_err() {
+        assert_eq!(
+            no_member_errors(concat!(
+                "let f: float = 1.5\n",
+                "let a = f.hex()\n",
+                "let z: complex = 1 + 2j\n",
+                "let b = z.conjugate()\n",
+            )),
+            2
+        );
+    }
+
+    /// `str` / 容器のメソッド呼び出しと `complex` のメソッドは通る（呼び先は読みではない）。
+    #[test]
+    fn builtin_method_calls_ok() {
+        assert!(ok(concat!(
+            "let s = \"abc\"\n",
+            "print(s.upper())\n",
+            "mut xs: list[int] = [1]\n",
+            "xs.append(2)\n",
+            "let z: complex = 1 + 2j\n",
+            "print(z.real())\n",
+            "print(\"a,b\".split(\",\"))\n",
+        )));
+    }

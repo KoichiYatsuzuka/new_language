@@ -1,0 +1,27 @@
+# builtin_members.ar — 組み込みの値のメンバー（フェーズ10 10-14）
+#
+# 対になる誤りの例: builtin_members_error.ar
+#
+# 組み込みの値（`int` / `float` / `bool` / `str` / `list` / `dict` …）は**読める属性を持たない**。
+# メソッドは呼び出しの形でだけ使える（`s.upper()` は書けるが `s.upper` だけを読むことはできない）。
+# `int` / `float` / `bool` / `None` はメソッドも持たない。`complex` のメソッドは `real()` / `imag()` /
+# `angle()` だけ。
+# ⚠ 以前はどれも静的に通り、実行時の AttributeError になっていた。
+
+let s = "Arrow"
+print(s.upper())                  # ARROW
+print(s.lower().startswith("ar")) # True
+
+mut xs: list[int] = [3, 1]
+xs.append(2)
+print(len(xs))                    # 3
+
+let d: dict[str, int] = {"a": 1, "b": 2}
+print(len(d.keys()))              # 2
+
+let z: complex = 3 + 4j
+print(z.real(), z.imag())         # 3.0 4.0
+
+# 数値の変換は組み込み関数で行う
+let n: int = -5
+print(str(n), float(n))           # -5 -5.0

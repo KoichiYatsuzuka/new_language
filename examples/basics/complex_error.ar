@@ -1,4 +1,6 @@
 # complex error example: calling a non-existent method
 
 let z: complex = 1 + 2j
-print(z.conjugate())  # AttributeError: 'complex' object has no method 'conjugate'
+print(z.conjugate())  # StaticTypeError: 'complex' has no member 'conjugate'
+# ⚠ フェーズ10 10-14 より前は静的に通り、実行時の AttributeError だった。
+#   `complex` のメソッドは `real()` / `imag()` / `angle()` だけ。

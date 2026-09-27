@@ -64,6 +64,7 @@ $knownDiff = @{
     'is_template_instance'           = 'Rust: x is Stack[int] を型式として読み、単相化したクラスの具体化の名前で判定する（10-10 で新設）。py: is の後ろの [ を読めず ParseError（何も出さない）'
     'operator_overload_operand'      = 'Rust: __mul__ の多重定義（int / float）を実引数の型で選ぶ（10-13 で新設・2 行目まで同じ）。py: 型で選ばず float 版を int に使ってフィールドの型違いで落ちる'
     'operator_overload_operand_error' = 'Rust: 演算子メソッドの仮引数に合わない右辺を StaticTypeError（10-13 で新設）。py: 検査せず実行して __add__ の中の other.cents で AttributeError'
+    'builtin_members_error'          = 'Rust: 組み込みの値の属性の読み・int / float のメソッドを StaticTypeError（10-14 で新設）。py: 検査せず実行して AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'
     'metafn'                         = 'py: メタ関数（exprconst / code: / quote / <! !> / !装飾子）を字句解析できないので ParseError（2-2 で新設。Rust 側は展開して実行する）'

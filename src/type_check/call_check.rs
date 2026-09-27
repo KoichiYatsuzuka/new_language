@@ -141,7 +141,11 @@ impl TypeChecker {
         // was already inferred above; re-calling self.infer(func) would re-evaluate
         // the object expression and potentially duplicate errors.
         let func_type = if method_call_info.is_none() {
-            self.infer(func)
+            // 呼び先の属性式は「読み」ではない（`attr_is_callee` の doc・10-14）。
+            self.attr_is_callee = matches!(func, Expr::Attr { .. });
+            let t = self.infer(func);
+            self.attr_is_callee = false;
+            t
         } else {
             InferredType::Unresolved
         };

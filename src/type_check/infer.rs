@@ -779,7 +779,29 @@ impl TypeChecker {
         span: &Span,
         node_id: u32,
     ) -> InferredType {
+        // ⚠ 入口で取り去る（受け手の `a.b` は読みとして検査する・`attr_is_callee` の doc）。
+        let is_callee = std::mem::take(&mut self.attr_is_callee);
         let obj_ty = self.infer(object);
+        // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
+        //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
+        //    - **読み**: 組み込みの値は読める属性を持たない。実行時の属性の読み（`get_attr_val`）は
+        //      インスタンス・クラス・名前空間などにしか腕が無く、`int` も `str` も `list` も必ず
+        //      `AttributeError` になる（メソッドは呼び出しの形でだけ使える）。
+        //    - **呼び出し**: `int` / `float` / `bool` / `None` はメソッドを 1 つも持たない（実行時の
+        //      メソッド呼び出しに腕が無い）。`complex` は `real` / `imag` / `angle` だけ。
+        //      `str` / `list` などのメソッドの有無はここでは決めない（表を二重に持つとずれる）。
+        if let Some(type_name) = Self::builtin_value_type(&obj_ty) {
+            let known_method = is_callee && Self::builtin_may_have_method(&obj_ty, attr);
+            if !known_method {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NoSuchMember {
+                        class_name: type_name,
+                        member: attr.to_string(),
+                    },
+                    span: Some(span.clone()),
+                });
+            }
+        }
         // ⚠ `GenericInstance{Box,[int]}` も**クラスとして扱う**（A-2）。あわせて
         //    型変数 → 具体型の置換表を取り出しておき、メンバーの型を置換してから返す。
         let class_subst = self.class_and_subst(&obj_ty).or_else(|| {
@@ -949,6 +971,47 @@ impl TypeChecker {
     ///
     /// 現状の規則: **レジストリに何らかのメンバー情報があれば閉じている**。
     /// Arrow のクラス宣言（`.ar` / `.ars` スタブ由来を含む）は必ず表を持つので閉じる。
+    /// 属性を読めない組み込みの値の型なら、その表示名（`int` / `list[int]` …・10-14）。
+    ///
+    /// ⚠ `generator`（`NamedInstance`）・クラス・名前空間・`Any` / `Unresolved` などは対象外。
+    fn builtin_value_type(ty: &InferredType) -> Option<String> {
+        use InferredType as T;
+        match ty {
+            T::Int
+            | T::Float
+            | T::Complex
+            | T::Bool
+            | T::Str
+            | T::None
+            | T::List
+            | T::ListOf(_)
+            | T::FixedList
+            | T::FixedListOf(_)
+            | T::ListLike
+            | T::ListLikeOf(_)
+            | T::Dict
+            | T::DictOf(_, _)
+            | T::Set
+            | T::SetOf(_)
+            | T::Tuple(_)
+            | T::TupleAny
+            | T::IteratorOf(_) => Some(ty.to_string()),
+            _ => None,
+        }
+    }
+
+    /// 組み込みの値のメソッドとして**ありうるか**（10-14）。`false` は「実行時に必ず無い」。
+    fn builtin_may_have_method(ty: &InferredType, method: &str) -> bool {
+        use InferredType as T;
+        match ty {
+            // 実行時のメソッド呼び出し（`eval_method_call_full`）に腕が無い。
+            T::Int | T::Float | T::Bool | T::None => false,
+            T::Complex => matches!(method, "real" | "imag" | "angle"),
+            // `str` / 容器のメソッドの表は実行時にしか無いので、ここでは決めない。
+            _ => true,
+        }
+    }
+
     fn member_set_is_closed(&self, class_name: &str) -> bool {
         self.registry.class_field_details(class_name).is_some()
             || self.registry.class_methods(class_name).is_some()

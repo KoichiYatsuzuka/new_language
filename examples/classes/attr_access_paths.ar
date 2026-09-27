@@ -73,11 +73,15 @@ fn show_pub[T: HasPub](let it: T) -> None:
 # ⚠⚠ 以前は「素の `list` の要素」で型を隠していたが、タスク 8.1（案 A）で
 #   素の容器型注釈が禁止されたので使えない（`list[Any]` は `Any` への
 #   メンバーアクセス自体が静的エラーなので代わりにならない）。
-#   ⇒ 受け手を `complex` にした。組み込み型のうち**メンバー集合を静的に持たない**ので
-#     `z.nope` は静的検査を通り、実行時に `AttributeError` になる
-#     （`examples/basics/complex_error.ar` が同じ経路を捕まえずに見せている）。
+#   ⇒ 受け手を要素型を書かない `generator` にした。メンバー集合を静的に持たないので
+#     `z.nope` は静的検査を通り、実行時に `AttributeError` になる。
+# ⚠ 以前は `complex` を使っていたが、フェーズ10 10-14 で組み込みの値の属性の読みが
+#   静的エラーになった（組み込みの値は読める属性を持たない）ので使えなくなった。
+gen one() -> int:
+    yield 1
+
 fn missing() -> None:
-    let z: complex = 1 + 2j
+    let z: generator = one()
     try:
         print(z.nope)
     except AttributeError as e:

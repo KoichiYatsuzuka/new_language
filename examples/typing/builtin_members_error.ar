@@ -1,0 +1,25 @@
+# builtin_members_error.ar — 組み込みの値に無いメンバーは静的エラー（フェーズ10 10-14）
+#
+# 対になる正常系: builtin_members.ar
+#
+# 期待されるエラー（4 件）:
+#   StaticTypeError  'int' has no member 'name'
+#   StaticTypeError  'int' has no member 'name'           （show[int] の本体）
+#   StaticTypeError  'float' has no member 'is_integer'
+#   StaticTypeError  'str' has no member 'length'
+#
+# ⚠ 以前はどれも静的に通り、実行時の AttributeError になっていた（テンプレートの具体化の本体も同じ）。
+
+fn label(let x: int) -> str:
+    return x.name                     # ⛔ int は属性を持たない
+
+fn show[T](let x: T) -> str:
+    return x.name                     # ⛔ show[int] で具体化すると int.name
+
+let f: float = 2.0
+print(f.is_integer())                 # ⛔ float はメソッドを持たない
+
+let s = "abc"
+print(s.length)                       # ⛔ 組み込みの値は読める属性を持たない（len(s) と書く）
+
+print(label(1), show[int](2))

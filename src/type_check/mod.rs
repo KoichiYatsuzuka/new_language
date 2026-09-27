@@ -67,6 +67,13 @@ pub struct TypeChecker {
     annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
     /// 検査済みのテンプレートの具体化 `(lang, モジュールパス, 名前)`（`annotate_module_body`・タスク 2-16）。
     annotated_instances: std::collections::HashSet<(String, Vec<String>, String)>,
+    /// 次に推論する属性式（`x.m`）が**呼び出しの呼び先**か（フェーズ10 10-14）。
+    ///
+    /// ⚠ 組み込みの受け手（`str` / `list` …）のメソッド呼び出し `s.upper()` は、呼び出しの検査が
+    ///   呼び先 `s.upper` を**普通の属性の読みとして**推論する（`call_check` の `self.infer(func)`）。
+    ///   組み込みの値は読める属性を持たないので、読みとして検査すると正しい呼び出しまで弾いてしまう。
+    ///   ⇒ 呼び出しの検査がここを立て、`infer_attr` が**入口で取り去る**（内側の `a.b` は読みのまま）。
+    attr_is_callee: bool,
 }
 
 impl TypeChecker {
@@ -208,6 +215,7 @@ impl TypeChecker {
             registry_incomplete: Self::has_unloaded_import(stmts),
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
+            attr_is_callee: false,
         }
     }
 
