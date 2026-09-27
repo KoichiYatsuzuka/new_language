@@ -326,3 +326,20 @@ fn test_finally_runs_after_internal_error() {
     assert!(matches!(v, Value::Int(2)));
 }
 
+
+/// 関数の中で起きた誤りの traceback の最も内側のフレームに、失敗した文の位置が付く（フェーズ10 10-17）。
+/// ⚠ 以前は `File "", in inner` で、どの行で落ちたかが出なかった。
+#[test]
+fn test_innermost_frame_has_failing_statement_location() {
+    let src = concat!(
+        "fn inner(let x: int) -> int:\n",
+        "    let d: dict[str, int] = {}\n",
+        "    let v = d[\"k\"] + x\n",
+        "    return v\n",
+        "let r = inner(1)\n",
+    );
+    let raised = run_exc(src).expect("run").expect("raised");
+    let innermost = raised.frames.first().expect("frame");
+    assert_eq!(innermost.fn_name, "inner");
+    assert_eq!(innermost.line, 3, "{:?}", raised.frames);
+}

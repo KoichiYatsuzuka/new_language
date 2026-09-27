@@ -1534,3 +1534,16 @@ fn template_name_bracket_is_instantiation_even_without_call() {
     let Stmt::Let(_, _, Expr::Attr { object, .. }) = &stmts[4] else { panic!("expected attr") };
     assert!(matches!(object.as_ref(), Expr::Subscript { .. }));
 }
+
+/// 構文の誤りの位置（フェーズ10 10-17）。CLI が文面に ` at file:line:col` を添える。
+#[test]
+fn parse_error_location_points_at_the_failing_token() {
+    let tokens = Lexer::new("let a = 1\nlet x = 1 +\n", "m.ar").tokenize();
+    let mut p = Parser::new(tokens, None);
+    let err = p.parse_program().expect_err("parse error");
+    assert_eq!(p.error_location(&err), " at m.ar:2:12", "{err}");
+    // すでに位置で終わっている文面（import 先のファイルの誤り）には足さない。
+    assert_eq!(p.error_location("unexpected token at sub.ar:5:3"), "");
+    assert!(Parser::ends_with_location("x at C:/a b/c.ar:10:2"));
+    assert!(!Parser::ends_with_location("expected `]`, got `EOF`"));
+}

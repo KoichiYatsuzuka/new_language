@@ -453,13 +453,25 @@ impl Interpreter {
                 Err(RAISE_SENTINEL.to_string())
             }
             Err(msg) => {
+                // 失敗した文の位置（`note_error_site`・10-17）。以前は最も内側のフレームが
+                // `File "", in f` で、どの行で落ちたかが出なかった。
+                let site = self.error_site.take();
                 if let Some(mut raised) = self.make_internal_raised_error(&msg) {
-                    raised.frames.push(StackFrame {
-                        file: String::new(),
-                        line: 0,
-                        col: 0,
-                        fn_name: fn_name.to_string(),
-                        context: String::new(),
+                    raised.frames.push(match site {
+                        Some(sp) => StackFrame {
+                            file: sp.file.to_string(),
+                            line: sp.line,
+                            col: sp.col,
+                            fn_name: fn_name.to_string(),
+                            context: self.get_context_lines(&sp.file, sp.line, 5),
+                        },
+                        None => StackFrame {
+                            file: String::new(),
+                            line: 0,
+                            col: 0,
+                            fn_name: fn_name.to_string(),
+                            context: String::new(),
+                        },
                     });
                     raised.frames.push(self.build_caller_frame(call_span.as_ref()));
                     self.current_exception = Some(raised);

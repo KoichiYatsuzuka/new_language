@@ -77,7 +77,11 @@ impl Parser {
         // 衝突し、消費側が別モジュールの注釈を読む（FFI 境界検査が誤検知する）。
         sub.node_counter = self.node_counter.clone();
 
-        let body = sub.parse_program()?;
+        // ⚠ 誤りには**そのファイルの**位置を付ける（外側の CLI が付けると `import` 文の位置になる・10-17）。
+        let body = sub.parse_program().map_err(|e| {
+            let at = sub.error_location(&e);
+            format!("{e}{at}")
+        })?;
 
         // 子パーサが生成したキャッシュエントリを親にマージする
         self.module_cache.extend(sub.module_cache);

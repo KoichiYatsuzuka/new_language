@@ -367,9 +367,14 @@ fn run_program(
     #[cfg(feature = "prof")]
     let _p_parse = prof::Timer::new(prof::Phase::Parse);
     let mut parser = Parser::new(tokens, source_dir.clone());
-    let mut stmts = parser
-        .parse_program()
-        .map_err(|e| format!("ParseError: {e}"))?;
+    // ⚠ 誤りに位置を添える（`Parser::error_location`・フェーズ10 10-17）。
+    let mut stmts = match parser.parse_program() {
+        Ok(s) => s,
+        Err(e) => {
+            let at = parser.error_location(&e);
+            return Err(format!("ParseError: {e}{at}"));
+        }
+    };
     // ⚠ 展開器が置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
     let node_counter = parser.node_counter();
     let known_traits = parser.known_traits();
@@ -689,10 +694,13 @@ fn compile_module(path: &str) {
     let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
 
     let mut parser = Parser::new(tokens, source_dir);
-    let stmts = parser.parse_program().unwrap_or_else(|e| {
-        eprintln!("ParseError: {e}");
-        std::process::exit(1);
-    });
+    let stmts = match parser.parse_program() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ParseError: {e}{}", parser.error_location(&e));
+            std::process::exit(1);
+        }
+    };
     // ⚠ 置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
     let node_counter = parser.node_counter();
     let known_traits = parser.known_traits();
@@ -767,12 +775,14 @@ fn emit_stubs(path: &str) {
 
     let tokens = Lexer::new(&source, path).tokenize();
     let source_dir = src_path.parent().map(|p| p.to_path_buf());
-    let stmts = Parser::new(tokens, source_dir)
-        .parse_program()
-        .unwrap_or_else(|e| {
-            eprintln!("ParseError: {e}");
+    let mut parser = Parser::new(tokens, source_dir);
+    let stmts = match parser.parse_program() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ParseError: {e}{}", parser.error_location(&e));
             std::process::exit(1);
-        });
+        }
+    };
 
     let out_dir = src_path
         .parent()

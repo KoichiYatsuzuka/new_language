@@ -28,6 +28,44 @@ impl Parser {
         result
     }
 
+    /// 構文の誤りが起きた位置（` at file:line:col`）。CLI が誤りの文面に添える（フェーズ10 10-17）。
+    ///
+    /// ⚠ 以前は `ParseError: unexpected token: `NEWLINE`` のように**位置が無く**、どこで止まったか
+    ///   分からなかった。止まったトークンの位置を返す（EOF で止まったら直前のトークン）。
+    /// ⚠ 文面がすでに位置で終わっていれば（import 先のファイルの誤り・`ar_modules`）空を返す。
+    /// ⚠ エディタは位置を別に持つ（`note_parse_error`）ので、文面には足さない（呼ぶのは CLI だけ）。
+    pub(crate) fn error_location(&self, msg: &str) -> String {
+        if Self::ends_with_location(msg) {
+            return String::new();
+        }
+        let upto = self.pos.min(self.tokens.len());
+        let tok = self
+            .tokens
+            .get(self.pos)
+            .filter(|t| t.span.line != 0)
+            .or_else(|| self.tokens[..upto].iter().rev().find(|t| t.span.line != 0));
+        match tok {
+            Some(t) => format!(" at {}:{}:{}", t.span.file, t.span.line, t.span.col),
+            None => String::new(),
+        }
+    }
+
+    /// 文面が ` at <file>:<line>:<col>` で終わっているか。
+    pub(crate) fn ends_with_location(msg: &str) -> bool {
+        let Some((_, tail)) = msg.rsplit_once(" at ") else {
+            return false;
+        };
+        let mut parts = tail.rsplitn(3, ':');
+        let col = parts.next().unwrap_or("");
+        let line = parts.next().unwrap_or("");
+        let file = parts.next().unwrap_or("");
+        !file.is_empty()
+            && !col.is_empty()
+            && !line.is_empty()
+            && col.bytes().all(|b| b.is_ascii_digit())
+            && line.bytes().all(|b| b.is_ascii_digit())
+    }
+
     fn parse_program_inner(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
         // 先頭の空白行やインデントをスキップ

@@ -336,9 +336,45 @@ fn run_normal(
             }
             Err(e) => match unwind_to_handler(interp, buf, &mut handlers, &e) {
                 Some(landing) => ip = landing,
-                None => return Err(e),
+                None => {
+                    note_error_site(interp, chunk, ip, &e);
+                    return Err(e);
+                }
             },
         }
+    }
+}
+
+/// 処理されずにフレームを抜ける誤りについて、**失敗した文の位置**を控える（フェーズ10 10-17）。
+///
+/// ⚠ 以前は関数の中で起きた誤りの traceback の最も内側のフレームが `File "", in f` で、どの行で
+///   落ちたかが出なかった（呼び出し元の位置しか分からなかった）。`stmt_spans`（文境界の行テーブル・#1）を
+///   `ip` から遡って文の先頭を探し、`Interpreter::error_site` に置く。関数の呼び出し（`run_vm_method`）が
+///   最も内側のフレームを作るときに取り去る。
+/// ⚠ 誤りの経路でしか走らない（通常の実行には何も足さない）。`raise` は自分で位置を持つので見送る。
+#[cold]
+fn note_error_site(interp: &mut Interpreter, chunk: &Chunk, ip: usize, err: &str) {
+    if err == crate::interpreter::RAISE_SENTINEL {
+        return;
+    }
+    let mut i = ip.min(chunk.stmt_spans.len().saturating_sub(1));
+    loop {
+        match chunk.stmt_spans.get(i) {
+            Some(&v) if v < crate::vm::chunk::STMT_NO_SPAN => {
+                interp.error_site = chunk.spans.get(v as usize).cloned();
+                return;
+            }
+            Some(&crate::vm::chunk::STMT_NO_SPAN) | None => {
+                interp.error_site = None;
+                return;
+            }
+            _ => {}
+        }
+        if i == 0 {
+            interp.error_site = None;
+            return;
+        }
+        i -= 1;
     }
 }
 
@@ -374,7 +410,10 @@ fn run_budgeted(
             }
             Err(e) => match unwind_to_handler(interp, buf, &mut handlers, &e) {
                 Some(landing) => ip = landing,
-                None => return Err(e),
+                None => {
+                    note_error_site(interp, chunk, ip, &e);
+                    return Err(e);
+                }
             },
         }
     }
@@ -427,10 +466,16 @@ fn run_stepping(
                             buf.push(exc_val);
                             ip = h.handler_ip;
                         }
-                        None => return Err(e),
+                        None => {
+                            note_error_site(interp, chunk, ip, &e);
+                            return Err(e);
+                        }
                     }
                 }
-                None => return Err(e),
+                None => {
+                    note_error_site(interp, chunk, ip, &e);
+                    return Err(e);
+                }
             },
         }
     }

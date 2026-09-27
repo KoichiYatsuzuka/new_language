@@ -161,6 +161,8 @@ foreach ($f in $files) {
             # Both reject it. Compare the message tail so a divergence in *why*
             # still shows up.
             $exeMsg  = ((($exeText -split "`r?`n") | Where-Object { $_ -match 'ParseError:' } | Select-Object -First 1) -replace '^(ParseError:\s*)+', '').Trim()
+            # CLI だけが末尾に位置（` at file:line:col`）を付ける（フェーズ10 10-17・エディタは位置を別に持つ）。
+            $exeMsg  = ($exeMsg -replace '\s+at\s+.+:\d+:\d+$', '').Trim()
             $wasmMsg = ($wj.parseError -replace '^(ParseError:\s*)+', '').Trim()
             if ($exeMsg -eq $wasmMsg) {
                 $checked++; $agreed++

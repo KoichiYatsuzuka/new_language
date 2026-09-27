@@ -554,6 +554,9 @@ pub struct Interpreter {
     /// ⚠ 以前は静的メソッドの中が「クラスの外」扱いで、型検査が通した private メンバーへの
     ///   アクセスが実行時に `AccessError` になっていた（実測）。
     pub(crate) class_call_ctx: Option<Rc<ClassValue>>,
+    /// 処理されずに VM のフレームを抜けた誤りの**失敗した文の位置**（フェーズ10 10-17）。
+    /// `vm::run` の `note_error_site` が置き、`run_vm_method` が最も内側のフレームを作るときに取り去る。
+    pub(crate) error_site: Option<crate::token::Span>,
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
@@ -696,6 +699,7 @@ impl Interpreter {
             static_cells: HashMap::new(),
             current_class: None,
             class_call_ctx: None,
+            error_site: None,
             trait_field_access: HashMap::new(),
             py_class_field_order: HashMap::new(),
             trait_field_order: {
