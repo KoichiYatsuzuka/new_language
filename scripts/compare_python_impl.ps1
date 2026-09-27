@@ -58,6 +58,8 @@ $knownDiff = @{
     'template_method_error'          = 'Rust: 単相化した Box[int] のメソッド呼び出しを具体型で検査して StaticTypeError（2026-09-26 新設・フェーズ10 の発端）。py: テンプレートのメソッド呼び出しを検査しないので実行して wrong を出す'
     'template_type_param_error'      = 'Rust: 具体化した本体（Cell[str] の self.v = 0・conv[float] の return n）も StaticTypeError（2026-09-26 に Section 3/4 を追加）。py: 具体化した本体を検査しないので実行して 3 を出す'
     'template_recursion_error'       = 'Rust: 展開時の単相化が再帰的な具体化を止めて MetaError（2-9 で新設）。py: 実行時に呼ばれたときだけ具体化するので、再帰が n == 0 で止まり 3 を出す'
+    'private_method'                 = 'Rust: private メソッド・メソッドの中の入れ子の関数・静的メソッド・メソッドの中の非同期タスクで private に届く（10-6 で新設・6 行目まで同じ）。py: AsyncManager が無いので非同期の節で NameError'
+    'private_method_error'           = 'Rust: クラスの外から private メソッドを呼ぶと StaticTypeError（10-6 で新設）。py: メソッドのアクセス指定を検査しないので実行して audit: 3 / audit: 5 を出す'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'
     'metafn'                         = 'py: メタ関数（exprconst / code: / quote / <! !> / !装飾子）を字句解析できないので ParseError（2-2 で新設。Rust 側は展開して実行する）'

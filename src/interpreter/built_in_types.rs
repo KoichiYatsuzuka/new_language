@@ -46,6 +46,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     }];
     let init_fn = Rc::new(FnValue {
         globals: crate::interpreter::value::GLOBALS_OF_CALLER,
+        owner_class: None,
         name: "__init__".to_string(),
         params: vec![
             Param {
@@ -133,6 +134,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
     }];
     let init_fn = Rc::new(FnValue {
         globals: crate::interpreter::value::GLOBALS_OF_CALLER,
+        owner_class: None,
         name: "__init__".to_string(),
         params: vec![
             Param {

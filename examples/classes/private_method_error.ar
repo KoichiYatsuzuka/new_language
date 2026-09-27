@@ -1,0 +1,24 @@
+# private_method_error.ar — private のメソッドはクラスの外から呼べない（フェーズ10 10-6）
+#
+# 対になる正常系: private_method.ar
+#
+# Expected error (StaticTypeError):
+#   'audit' is private and cannot be accessed outside 'Account'
+#
+# ⚠ 以前はメソッドだけアクセス指定を見ておらず、この呼び出しが通って `audit: 5` を印字していた。
+#   実行時にも同じ検査がある（`AccessError`）。
+
+class Account:
+    mut balance: int
+
+    fn deposit(mut self, let n: int) -> None:
+        self.audit(n)
+        self.balance += n
+
+    private:
+    fn audit(self, let n: int) -> None:
+        print("audit:", n)
+
+mut a = Account(0)
+a.deposit(3)
+a.audit(5)

@@ -164,13 +164,6 @@ impl TypeRegistry {
         self.class_field_details.get(class)
     }
 
-    /// `class` が `field` という名前のフィールドを持つか。
-    pub(super) fn has_field(&self, class: &str, field: &str) -> bool {
-        self.class_fields
-            .get(class)
-            .is_some_and(|f| f.contains_key(field))
-    }
-
     /// `class.field` が `mut` 宣言か。フィールドが存在しなければ `None`。
     pub(super) fn field_is_mutable(&self, class: &str, field: &str) -> Option<bool> {
         self.class_fields.get(class)?.get(field).copied()

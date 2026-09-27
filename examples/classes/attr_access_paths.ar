@@ -33,6 +33,9 @@ class Base(HasPub):
     private:
     mut priv_f: int
 
+    # ⚠ 区切りは次の区切りまで続く。`public:` が無いと下のメソッドも private になる
+    #   （以前はメソッドだけ見ていなかったので通っていた・フェーズ10 10-6）。
+    public:
     fn __init__(mut self) -> None:
         self.pub_f = 1
         self.priv_f = 2

@@ -44,10 +44,14 @@ impl Interpreter {
         }
 
         // method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ（eval_method_call と同一）。
+        // ⚠ IC にはアクセスレベルも焼いてある（フィールドの R3 と同じ）。命中でも検査を飛ばさない（10-6）。
         if let Some(c) = cache {
             let class_id = inst_rc.borrow().class.class_id;
-            if c.get(class_id).is_some() {
+            if let Some((_, level)) = c.get(class_id) {
                 let class = inst_rc.borrow().class.clone();
+                if level != crate::ast::AttrCache::PUBLIC {
+                    self.check_access_level(&class, level, method_name)?;
+                }
                 if let Some(overloads) = class.methods.get(method_name) {
                     if overloads.len() == 1 {
                         let f = overloads[0].clone();
@@ -60,6 +64,23 @@ impl Interpreter {
         let class = inst_rc.borrow().class.clone();
         let inst_immutable =
             inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
+
+        // ⚠⚠ アクセス制御（フェーズ10 10-6）。以前はメソッド呼び出しだけ `private:` /
+        //   `protected:` を見ておらず、クラスの外から private メソッドを**呼べた**（実測）。
+        //   属性として読む形（`a.audit`・`get_attr_val`）はもともと検査していた。
+        //   gen メソッド・ネイティブメソッドも同じく止めるので、振り分けより前に置く。
+        //   ⚠ 非公開のメソッドを持たないクラス（大半）は表を引かない（呼び出しの度に通る道）。
+        let level = if class.method_access.is_empty() {
+            crate::ast::AttrCache::PUBLIC
+        } else {
+            class
+                .method_access
+                .get(method_name)
+                .map_or(crate::ast::AttrCache::PUBLIC, Self::access_level)
+        };
+        if level != crate::ast::AttrCache::PUBLIC {
+            self.check_access_level(&class, level, method_name)?;
+        }
 
         if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
             return self.exec_generator_evaled(gen_fn, evaled, Some(obj));
@@ -129,7 +150,7 @@ impl Interpreter {
                     )
                     .is_none()
                 {
-                    c.fill(class.class_id, 0, 0);
+                    c.fill(class.class_id, 0, level);
                 }
             }
             self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj), method_name, call_span)

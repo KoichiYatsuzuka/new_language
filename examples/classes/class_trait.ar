@@ -155,6 +155,9 @@ class Counter:
     private:
     mut step: int
 
+    # ⚠ 区切りは次の区切りまで続く。`public:` が無いと下のメソッドも private になる
+    #   （以前はメソッドだけ見ていなかったので通っていた・フェーズ10 10-6）。
+    public:
     fn __init__(mut self, label: str) -> None:
         self.label = label
         self.count = 0

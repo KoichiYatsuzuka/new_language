@@ -69,6 +69,7 @@ impl Interpreter {
         }
         Value::GeneratorFn(Rc::new(GeneratorFnValue {
             globals: self.cur_globals,
+            owner_class: self.current_class.clone(),
             name: name.to_string(),
             params: params.to_vec(),
             body: body.to_vec(),
@@ -103,6 +104,7 @@ impl Interpreter {
         }
         let fn_val = Rc::new(FnValue {
             globals: self.cur_globals,
+            owner_class: self.current_class.clone(),
             name: name.to_string(),
             params: params.to_vec(),
             body,
@@ -146,6 +148,7 @@ impl Interpreter {
         };
         let fn_val = Rc::new(FnValue {
             globals: self.cur_globals,
+            owner_class: self.current_class.clone(),
             // ⚠ 単相化した関数（`ident[str]`）の値の名前はテンプレートの名前（タスク 2-8）。
             //   実行時の具体化と同じ（traceback の `in ident`）。束縛名は `ident[str]` のまま。
             name: crate::template_subst::display_name(name).to_string(),
@@ -212,6 +215,7 @@ impl Interpreter {
             };
             let gen_fn = Rc::new(GeneratorFnValue {
                 globals: self.cur_globals,
+                owner_class: self.current_class.clone(),
                 // ⚠ 単相化したジェネレータの値の名前はテンプレートの名前（タスク 2-8）。
                 name: crate::template_subst::display_name(name).to_string(),
                 params: params.to_vec(),
@@ -358,6 +362,7 @@ impl Interpreter {
                 }];
                 let init_fn = Rc::new(FnValue {
                     globals: self.cur_globals,
+                    owner_class: None,
                     name: "__init__".to_string(),
                     params: vec![
                         crate::ast::Param {
@@ -467,6 +472,7 @@ impl Interpreter {
         }];
         let init_fn = Rc::new(FnValue {
             globals: self.cur_globals,
+            owner_class: None,
             name: "__init__".to_string(),
             params: vec![
                 crate::ast::Param {
@@ -595,6 +601,7 @@ impl Interpreter {
                 } => {
                     let fn_val = Rc::new(FnValue {
                         globals: self.cur_globals,
+                        owner_class: None,
                         name: mname.clone(),
                         params: params.clone(),
                         body: std::rc::Rc::from(&mbody[..]),
@@ -653,6 +660,7 @@ impl Interpreter {
                         mname.clone(),
                         Rc::new(GeneratorFnValue {
                             globals: self.cur_globals,
+                            owner_class: None,
                             name: mname.clone(),
                             params: params.clone(),
                             body: mbody.clone(),

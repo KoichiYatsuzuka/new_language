@@ -103,10 +103,12 @@ fn test_access_private_field_from_outside_errors() {
 /// access_private_field_from_method_ok のテスト。
 #[test]
 fn test_access_private_field_from_method_ok() {
+    // ⚠ `public:` が無いと `get_secret` も private になる（以前はメソッドだけ見ていなかった・10-6）。
     let src = concat!(
         "class C:\n",
         "    private:\n",
         "    mut secret: int = 99\n",
+        "    public:\n",
         "    fn get_secret(self) -> int:\n",
         "        return self.secret\n",
         "let obj = C()\n",
@@ -173,6 +175,8 @@ fn test_access_mixed_sections_in_class() {
         "    mut visible: int = 1\n",
         "    private:\n",
         "    mut hidden: int = 2\n",
+        // ⚠ `public:` が無いと `get_hidden` も private になる（以前はメソッドだけ見ていなかった・10-6）。
+        "    public:\n",
         "    fn get_hidden(self) -> int:\n",
         "        return self.hidden\n",
         "let obj = C()\n",
@@ -355,3 +359,218 @@ fn test_trait_only_required_fields_no_class_fields() {
     }
 }
 
+
+// ── private / protected メソッド（フェーズ10 10-6）──────────────────────────
+// ⚠ 以前はメソッド呼び出しだけアクセス指定を見ておらず、クラスの外から private メソッドを
+//   呼べた。ここは**実行時の**検査を見る（`run` は型エラーを無視する・静的な検査は
+//   `type_check_tests/access.rs`）。
+
+const ACCOUNT_RT: &str = concat!(
+    "class Account:\n",
+    "    mut balance: int\n",
+    "    fn deposit(mut self, let n: int) -> None:\n",
+    "        self.audit(n)\n",
+    "        self.balance += n\n",
+    "    static fn open() -> Account:\n",
+    "        return Account(Account.start(), 0)\n",
+    "    static fn peek(let a: Account) -> int:\n",
+    "        return a.audit(0) + a.secret\n",
+    "    private:\n",
+    "    mut secret: int\n",
+    "    fn audit(self, let n: int) -> int:\n",
+    "        return n\n",
+    "    static fn start() -> int:\n",
+    "        return 7\n",
+    "    gen items(self) -> int:\n",
+    "        yield self.balance\n",
+);
+
+/// 最初の誤りを「クラス名: 中身」で返す。関数の中で出た誤りは例外として伝播する
+/// （`run_err_msg` には `__raise__` しか返らない）ので、例外の中身を取り出す。
+fn first_error(src: &str) -> String {
+    match run_exc(src) {
+        Err(e) => e,
+        Ok(None) => String::new(),
+        Ok(Some(raised)) => match &raised.exception {
+            Value::Instance(inst) => {
+                let b = inst.borrow();
+                let fields: Vec<String> = b
+                    .class
+                    .field_index
+                    .values()
+                    .filter_map(|&i| b.field_value(i))
+                    .map(|v| format!("{v:?}"))
+                    .collect();
+                format!("{}: {}", b.class.name, fields.join(" "))
+            }
+            other => format!("{other:?}"),
+        },
+    }
+}
+
+fn account_err(tail: &str) -> String {
+    first_error(&format!("{ACCOUNT_RT}{tail}"))
+}
+
+/// private メソッドをクラスの外から呼ぶと `AccessError`。
+#[test]
+fn test_private_method_from_outside_errors() {
+    let msg = account_err("mut a = Account(0, 0)\nlet r = a.audit(5)\n");
+    assert!(msg.contains("AccessError") && msg.contains("'audit' is private"), "{msg}");
+}
+
+/// クラスの中（インスタンスメソッド・静的メソッド）からは呼べる。
+#[test]
+fn test_private_method_from_inside_ok() {
+    let src = format!("{ACCOUNT_RT}mut a = Account.open()\na.deposit(5)\nlet r = a.balance\n");
+    assert_int(run_get(&src, "r"), 12);
+}
+
+/// 静的メソッドの中はクラスの中（private のフィールド・メソッドに届く）。
+/// ⚠ 以前は静的メソッドの中が「外」扱いで、private のフィールドも `AccessError` だった。
+#[test]
+fn test_static_method_reaches_private_members() {
+    let src = format!("{ACCOUNT_RT}let r = Account.peek(Account(1, 0))\n");
+    assert_int(run_get(&src, "r"), 0);
+}
+
+/// private の静的メソッドをクラス経由で外から呼ぶと `AccessError`。
+#[test]
+fn test_private_static_method_from_outside_errors() {
+    let msg = account_err("let r = Account.start()\n");
+    assert!(msg.contains("'start' is private"), "{msg}");
+}
+
+/// private の gen メソッドも同じ。
+#[test]
+fn test_private_gen_method_from_outside_errors() {
+    let msg = account_err("let a = Account(3, 0)\nlet g = a.items()\n");
+    assert!(msg.contains("'items' is private"), "{msg}");
+}
+
+/// 別のクラスのメソッドから呼ぶのも「外」。
+#[test]
+fn test_private_method_from_other_class_errors() {
+    let msg = account_err(concat!(
+        "class Auditor:\n",
+        "    mut n: int\n",
+        "    fn check(self, let a: Account) -> int:\n",
+        "        return a.audit(1)\n",
+        "let r = Auditor(0).check(Account(0, 0))\n",
+    ));
+    assert!(msg.contains("'audit' is private"), "{msg}");
+}
+
+/// method IC に焼いたアクセスレベルも見る。同じ呼び出し位置（`peek` の中の `a.audit(0)`）を
+/// クラスの中から通して IC を埋めたあと、同じ関数をクラスの文脈なしで呼ぶと止まる。
+/// ⚠ IC 命中の経路が検査を飛ばすと、2 回目が通ってしまう。
+#[test]
+fn test_private_method_ic_hit_still_checks() {
+    let msg = account_err(concat!(
+        "let ok = Account.peek(Account(1, 0))\n",
+        "let f = Account.peek\n",
+        "let r = f(Account(1, 0))\n",
+    ));
+    assert!(msg.contains("'audit' is private"), "{msg}");
+}
+
+/// メソッドの中の入れ子の関数は、定義したときのクラスの文脈で走る。
+/// ⚠ 以前は入れ子の関数を呼ぶと文脈が消え、private のフィールドも `AccessError` だった。
+#[test]
+fn test_nested_fn_in_method_reaches_private_members() {
+    let src = concat!(
+        "class C:\n",
+        "    mut n: int\n",
+        "    fn f(self) -> int:\n",
+        "        fn g() -> int:\n",
+        "            return self.s + self.h()\n",
+        "        return g()\n",
+        "    private:\n",
+        "    mut s: int\n",
+        "    fn h(self) -> int:\n",
+        "        return 10\n",
+        "let r = C(0, 1).f()\n",
+    );
+    assert_int(run_get(src, "r"), 11);
+}
+
+/// 入れ子の関数を外へ返しても文脈は定義したときのクラス（字句の規則）。
+#[test]
+fn test_escaped_nested_fn_keeps_class_context() {
+    let src = concat!(
+        "class C:\n",
+        "    mut n: int\n",
+        "    fn getter(self) -> function[]->int:\n",
+        "        fn g() -> int:\n",
+        "            return self.h()\n",
+        "        return g\n",
+        "    private:\n",
+        "    fn h(self) -> int:\n",
+        "        return 10\n",
+        "let g = C(0).getter()\n",
+        "let r = g()\n",
+    );
+    assert_int(run_get(src, "r"), 10);
+}
+
+/// メソッドの中の入れ子の `gen` も同じ。
+#[test]
+fn test_nested_gen_in_method_reaches_private_members() {
+    let src = concat!(
+        "class C:\n",
+        "    mut n: int\n",
+        "    fn total(self) -> int:\n",
+        "        gen g() -> int:\n",
+        "            yield self.h()\n",
+        "            yield self.s\n",
+        "        mut t = 0\n",
+        "        for x in g():\n",
+        "            t += x\n",
+        "        return t\n",
+        "    private:\n",
+        "    mut s: int\n",
+        "    fn h(self) -> int:\n",
+        "        return 10\n",
+        "let r = C(0, 1).total()\n",
+    );
+    assert_int(run_get(src, "r"), 11);
+}
+
+/// trait の protected メソッドを外から呼ぶと `AccessError`。
+#[test]
+fn test_protected_method_from_outside_errors() {
+    let msg = first_error(concat!(
+        "trait Guarding:\n",
+        "    protected:\n",
+        "    fn guard(self) -> int:\n",
+        "        return 1\n",
+        "class C(Guarding):\n",
+        "    mut n: int\n",
+        "    fn use_guard(self) -> int:\n",
+        "        return self.guard()\n",
+        "let c = C(0)\n",
+        "let ok = c.use_guard()\n",
+        "let r = c.guard()\n",
+    ));
+    assert!(msg.contains("'guard' is protected"), "{msg}");
+}
+
+/// 外へ返した入れ子の関数を、別の関数の中（VM の呼び出し経路）から呼んでも文脈は保たれる。
+#[test]
+fn test_escaped_nested_fn_called_from_vm_keeps_class_context() {
+    let src = concat!(
+        "class C:\n",
+        "    mut n: int\n",
+        "    fn getter(self) -> function[]->int:\n",
+        "        fn g() -> int:\n",
+        "            return self.h()\n",
+        "        return g\n",
+        "    private:\n",
+        "    fn h(self) -> int:\n",
+        "        return 10\n",
+        "fn call_it(let f: function[]->int) -> int:\n",
+        "    return f() + 1\n",
+        "let r = call_it(C(0).getter())\n",
+    );
+    assert_int(run_get(src, "r"), 11);
+}

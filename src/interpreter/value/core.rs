@@ -283,6 +283,7 @@ impl Value {
             }
             Value::Function(rc) => Value::Function(Rc::new(FnValue {
                 globals: rc.globals,
+                owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                 name: rc.name.clone(),
                 params: rc.params.clone(),
                 // ⚠ **`Rc` を clone してはいけない**（#45）。`Rc<[Stmt]>` の参照カウントは
@@ -300,6 +301,7 @@ impl Value {
                     .map(|rc| {
                         Rc::new(FnValue {
                             globals: rc.globals,
+                            owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                             name: rc.name.clone(),
                             params: rc.params.clone(),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
@@ -315,6 +317,7 @@ impl Value {
             ),
             Value::GeneratorFn(rc) => Value::GeneratorFn(Rc::new(GeneratorFnValue {
                 globals: rc.globals,
+                owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                 name: rc.name.clone(),
                 params: rc.params.clone(),
                 body: rc.body.clone(),

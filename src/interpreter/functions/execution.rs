@@ -366,9 +366,10 @@ impl Interpreter {
         }
         // ジェネレータメソッド: 再開のたび `current_class` を張り直すために覚えておく
         // （アクセス制御・Self 依存ディスパッチのため）。
+        // ⚠ メソッドの中で作った入れ子の `gen` は、定義したときのクラスの文脈で走る（10-6）。
         let self_class = match self_val {
             Some(Value::Instance(inst_rc)) => Some(inst_rc.borrow().class.clone()),
-            _ => None,
+            _ => gen_fn.owner_class.clone(),
         };
         // 不変キャプチャは slot へ書き込む（`bind_captures` と同じ位置づけ・B13 段階 E）。
         // ⚠ 値は clone するだけでよい。`Immutable` は生成時に deep_copy 済み。
@@ -409,7 +410,7 @@ impl Interpreter {
     /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
     /// `buf[base..base+n_locals]` にパラメータが束縛済み。`current_class` はメソッド実行のため一時設定する。
     // 引数が多いのは VM フレームの起動に要る素材がそのまま並んでいるから
-    // （chunk・バッファ・base・self・表示名・呼び出し位置・捕捉環境）。
+    // （chunk・バッファ・base・self・表示名・呼び出し位置・捕捉環境・クラスの文脈）。
     #[allow(clippy::too_many_arguments)]
     fn run_vm_method(
         &mut self,
@@ -421,11 +422,15 @@ impl Interpreter {
         call_span: Option<Span>,
         // クロージャの捕捉環境（#27-d 段階 2b）。可変キャプチャのセルを共有するために渡す。
         captured_env: Option<&std::collections::HashMap<String, CapturedVar>>,
+        // `self` の無い呼び出しのクラスの文脈（10-6・`exec_fn_evaled` が決める）。
+        owner: Option<Rc<crate::interpreter::ClassValue>>,
     ) -> Result<Value, String> {
-        let prev_class = self.current_class.take();
-        if let Some(Value::Instance(inst_rc)) = self_val {
-            self.current_class = Some(inst_rc.borrow().class.clone());
-        }
+        let prev_class = match self_val {
+            Some(Value::Instance(inst_rc)) => {
+                self.current_class.replace(inst_rc.borrow().class.clone())
+            }
+            _ => std::mem::replace(&mut self.current_class, owner),
+        };
         self.push_call_name(fn_name);
         let result = crate::vm::run(self, chunk, &mut buf, base, captured_env);
         self.pop_call_name();
@@ -606,10 +611,20 @@ impl Interpreter {
         call_span: Option<Span>,
     ) -> Result<Value, String> {
         let declared_ret = fn_val.return_type.clone();
+        // クラスの文脈（10-6）。インスタンスメソッドは `self` のクラス（`run_vm_method` が張る）。
+        // それ以外は定義したときのクラス（入れ子の関数）か、クラス経由の呼び出しのクラス。
+        // ⚠ `class_call_ctx` は**ここで取り去る**（`Interpreter::class_call_ctx` の doc）。
+        let owner = match &self_val {
+            Some(Value::Instance(_)) => None,
+            _ => match self.class_call_ctx.take() {
+                Some(c) => Some(c),
+                None => fn_val.owner_class.clone(),
+            },
+        };
         // ⚠⚠ 本体は**定義したモジュールの大域で**走らせる（`FnValue::globals`・名前空間の分離）。
         //   失敗で抜けるときも戻す。
         let prev_globals = self.switch_globals(fn_val.globals);
-        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span);
+        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span, owner);
         self.switch_globals(prev_globals);
         let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
@@ -625,6 +640,7 @@ impl Interpreter {
         self_val: Option<Value>,
         fn_name: &str,
         call_span: Option<Span>,
+        owner: Option<Rc<crate::interpreter::ClassValue>>,
     ) -> Result<Value, String> {
         // ── VM チャンクを1回だけ取得（fast/general 両経路で共有） ──
         // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
@@ -670,7 +686,7 @@ impl Interpreter {
         // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
         if let Some(chunk) = &chunk_opt {
             if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
-                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
+                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env), owner);
             }
         }
 
@@ -796,7 +812,7 @@ impl Interpreter {
                 }
             }
             Self::bind_captures(&fn_val, chunk, &mut buf, base); // #27-d
-            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
+            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env), owner);
         }
 
         // #33: ツリーウォークのフォールバックは無い。ここへ来るのは `chunk_opt` が None の

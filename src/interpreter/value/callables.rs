@@ -44,6 +44,8 @@ pub struct GeneratorFnValue {
     /// 定義したモジュールの大域（`Interpreter::global_scopes` の添字・0 がメイン）。
     /// 本体は**この大域で**名前を引く（[`FnValue::globals`] と同じ）。
     pub globals: u32,
+    /// 定義したときに走っていたクラス（[`FnValue::owner_class`] と同じ）。
+    pub owner_class: Option<Rc<ClassValue>>,
 }
 
 
@@ -186,6 +188,16 @@ pub struct FnValue {
     /// 呼び出し側の名前空間が侵されていた（同名の `const` が再宣言になる・同名の関数が
     /// 多重定義として合成されて呼び出し側の関数が乗っ取られる・実測）。
     pub globals: u32,
+    /// **定義したときに走っていたクラス**（アクセス制御と `Self` の文脈・フェーズ10 10-6）。
+    ///
+    /// メソッドの本体の中で作った入れ子の関数（`fn` / `gen`）だけが持つ。呼び出すとこのクラスの
+    /// 文脈で走るので、`private:` のメンバーに届く（型検査と同じ**字句の**規則）。
+    /// ⚠ 以前は入れ子の関数を呼ぶと文脈が消え、型検査が通した `self.secret` が実行時に
+    ///   `AccessError` になっていた（実測）。
+    /// ⚠ クラスのメソッドは持たない（`None`）。インスタンスメソッドは `self` のクラス、
+    ///   静的メソッド・クラスメソッドは呼び出したクラス（`Interpreter::class_call_ctx`）が文脈。
+    ///   持たせるとクラス → メソッド → クラスの循環になる。
+    pub owner_class: Option<Rc<ClassValue>>,
 }
 
 
@@ -353,6 +365,8 @@ impl ClassValue {
                     .map(|rc| {
                         Rc::new(FnValue {
                             globals: rc.globals,
+                            // クラスのメソッドは `owner_class` を持たない（`self` か呼び出したクラスが文脈）。
+                            owner_class: None,
                             name: rc.name.clone(),
                             params: rc.params.clone(),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
@@ -378,6 +392,7 @@ impl ClassValue {
                     k.clone(),
                     Rc::new(GeneratorFnValue {
                         globals: rc.globals,
+                        owner_class: None,
                         name: rc.name.clone(),
                         params: rc.params.clone(),
                         body: rc.body.clone(),

@@ -203,17 +203,19 @@ impl TypeChecker {
         });
     }
 
-    /// `class_name` のフィールド `member_name` へのアクセスが現在のコンテキストで許可されているか検査する。
+    /// `class_name` のメンバー（フィールド・メソッド）`member_name` へのアクセスが現在のコンテキストで
+    /// 許可されているか検査する。
+    ///
+    /// ⚠⚠ **メソッドも見る**（フェーズ10 10-6）。以前は先頭で「フィールドでなければ見ない」と
+    ///   返していたので、`private:` の下のメソッドを**クラスの外から呼べた**（静的にも実行時にも
+    ///   止まらなかった・実測）。アクセス指定はフィールドもメソッドも同じ表（`member_access`）に
+    ///   入っていて、載っていないメンバーは public なので、表を引くだけでよい。
     pub(super) fn check_member_access_static(
         &mut self,
         class_name: &str,
         member_name: &str,
         span: Option<Span>,
     ) {
-        if !self.registry.has_field(class_name, member_name) {
-            return;
-        }
-
         let access = self.registry.member_access(class_name, member_name);
         match access {
             Accessibility::Public => {}

@@ -945,6 +945,7 @@ impl Interpreter {
 
             let init_fn = Rc::new(FnValue {
                 globals: self.cur_globals,
+                owner_class: None,
                 name: "__init__".to_string(),
                 params: init_params,
                 body: std::rc::Rc::from(init_body),

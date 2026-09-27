@@ -1,0 +1,78 @@
+# private_method.ar — private / protected のメソッドはクラスの中からだけ呼べる（フェーズ10 10-6）
+#
+# 対になる誤りの例: private_method_error.ar
+#
+# ⚠ 以前はメソッドだけアクセス指定を見ておらず、`private:` の下のメソッドを
+#   クラスの外から**呼べた**（静的にも実行時にも止まらなかった）。
+# ⚠ 「クラスの中」は字句で決まる（型検査の規則）。実行時も同じにしたので、次の場所は
+#   どれもクラスの中として private のメンバーに届く（以前はフィールドでも実行時に
+#   `AccessError` になっていた）:
+#   - メソッドの中の入れ子の関数・入れ子の `gen`（外へ返してから呼んでも同じ）
+#   - 静的メソッドの中
+#   - メソッドの中で出した非同期タスクの本体
+
+class Account:
+    mut owner: str
+    mut balance: int
+
+    fn deposit(mut self, let n: int) -> None:
+        self.audit("deposit", n)
+        self.balance += n
+
+    fn report(self) -> str:
+        # 入れ子の関数はクラスの中
+        fn line() -> str:
+            return self.owner + ": " + str(self.balance) + " (" + str(self.secret_count()) + ")"
+        return line()
+
+    fn reporter(self) -> function[]->str:
+        fn line() -> str:
+            return "[" + self.owner + "] " + str(self.secret_count())
+        return line
+
+    fn history(self) -> list[int]:
+        # 入れ子の gen もクラスの中
+        gen steps() -> int:
+            mut i = 0
+            while i < self.secret_count():
+                yield i
+                i += 1
+        mut out: list[int] = []
+        for s in steps():
+            out.append(s)
+        return out
+
+    fn checked_total(self) -> int:
+        # メソッドの中で出したタスクの本体もクラスの中
+        mut mng = AsyncManager(num_thread=2)
+        mng <- async->int:
+            block_return self.balance + self.secret_count()
+        mng.wait_for_finish()
+        return mng.results[0]
+
+    static fn open(let owner: str) -> Account:
+        # 静的メソッドの中もクラスの中
+        return Account(owner, Account.initial())
+
+    static fn peek(let a: Account) -> int:
+        return a.secret_count()
+
+    private:
+    fn audit(self, let what: str, let n: int) -> None:
+        print("audit:", what, n)
+
+    fn secret_count(self) -> int:
+        return 3
+
+    static fn initial() -> int:
+        return 100
+
+mut a = Account.open("alice")
+a.deposit(5)
+print(a.balance)
+print(a.report())
+let r = a.reporter()
+print(r())
+print(a.history())
+print(a.checked_total())
+print(Account.peek(a))

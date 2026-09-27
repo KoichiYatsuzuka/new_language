@@ -102,10 +102,9 @@ impl TypeChecker {
                             span: Some(span.clone()),
                         });
                     }
-                    // Member accessibility check (same as infer(Attr) does for NamedInstance)
-                    if is_instance {
-                        self.check_member_access_static(&cls_name, attr, Some(span.clone()));
-                    }
+                    // アクセス制御（`infer` の属性の読みと同じ）。⚠ クラス経由の呼び出し
+                    // （`Cls.m()`・静的メソッド）も同じく見る（10-6）。
+                    self.check_member_access_static(&cls_name, attr, Some(span.clone()));
                     // ⚠⚠ **メソッド呼び出しは `infer_attr` を通らない**（オブジェクトを
                     //    二度推論しないよう `self.infer(object)` を直接呼んでいる）。
                     //    ⇒ 存在検査（タスク 7.5）を**ここにも**書く必要がある。

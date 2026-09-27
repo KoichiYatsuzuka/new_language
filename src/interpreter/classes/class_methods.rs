@@ -73,12 +73,16 @@ impl Interpreter {
                     cls.name
                 )
             })?;
+        // アクセス制御（10-6）。`private:` の static メソッドをクラスの外から呼べていた。
+        if let Some(acc) = cls.method_access.get(method_name) {
+            self.check_access_level(&cls, Self::access_level(acc), method_name)?;
+        }
 
         if cls.static_method_names.contains(method_name) {
             return if overloads.len() == 1 {
-                self.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None))
             } else {
-                self.dispatch_overload_evaled(overloads, evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.dispatch_overload_evaled(overloads, evaled, None, method_name, None))
             };
         }
 
@@ -88,9 +92,9 @@ impl Interpreter {
             let mut all_evaled: Vec<(Option<String>, Value, bool)> = vec![(None, cls_val, true)];
             all_evaled.extend(evaled);
             return if overloads.len() == 1 {
-                self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name, None))
             } else {
-                self.dispatch_overload_evaled(overloads, all_evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.dispatch_overload_evaled(overloads, all_evaled, None, method_name, None))
             };
         }
 
@@ -105,9 +109,9 @@ impl Interpreter {
         //   `FnValue::is_python`（そのメソッド自身が Python 由来か）で見るのが正しい。
         if overloads.first().is_some_and(|f| f.is_python) {
             return if overloads.len() == 1 {
-                self.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None))
             } else {
-                self.dispatch_overload_evaled(overloads, evaled, None, method_name, None)
+                self.in_class_ctx(&cls, |me| me.dispatch_overload_evaled(overloads, evaled, None, method_name, None))
             };
         }
 
@@ -115,5 +119,20 @@ impl Interpreter {
             "TypeError: cannot call instance method '{method_name}' on class '{}' directly; use an instance",
             cls.name
         ))
+    }
+
+    /// 静的メソッド・クラスメソッドを**そのクラスの文脈で**呼ぶ（フェーズ10 10-6）。
+    ///
+    /// 呼ばれた関数が `exec_fn_evaled` の入口で `class_call_ctx` を取り去って自分の文脈にする。
+    /// 取られずに終わった（引数の数の誤りなどで関数に入らなかった）ときのために、戻りで元へ戻す。
+    fn in_class_ctx(
+        &mut self,
+        cls: &Rc<ClassValue>,
+        call: impl FnOnce(&mut Self) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let prev = self.class_call_ctx.replace(cls.clone());
+        let out = call(self);
+        self.class_call_ctx = prev;
+        out
     }
 }

@@ -14,7 +14,7 @@ use std::sync::{
 
 use crate::ast::Stmt;
 
-use super::{Interpreter, Value, Var};
+use super::{ClassValue, Interpreter, Value, Var};
 
 // ---------------------------------------------------------------------------
 // AsyncStatus
@@ -53,6 +53,12 @@ pub(super) struct TaskEnv {
     pub(super) globals: Vec<Vec<(String, Value, bool)>>,
     /// タスクを出したコードの大域の添字（本体はこの大域で走る）。
     pub(super) cur_globals: u32,
+    /// タスクを出したコードのクラスの文脈（`Interpreter::current_class` の深い複製）。
+    ///
+    /// ⚠ メソッドの中で出したタスクの本体はクラスの中のコード（型検査もそう扱う）。以前は
+    ///   worker が文脈を持たず、本体の `self.secret`（private）が `AccessError` で落ちて
+    ///   **結果が黙って `None` になっていた**（実測・フェーズ10 10-6）。
+    pub(super) class_ctx: Option<ClassValue>,
 }
 
 /// スレッド境界を越えてタスクの環境を送るためのラッパー。
@@ -284,6 +290,7 @@ fn run_task(
     let mut interp = Interpreter::new();
     // 各モジュールの大域を同じ添字に置き、タスクを出したコードの大域へ切り替える（`TaskEnv` の doc）。
     interp.install_task_globals(env.globals, env.cur_globals);
+    interp.current_class = env.class_ctx.map(std::rc::Rc::new);
     let env = env.vars;
 
     // ── VM 経路（#32）──────────────────────────────────────────────────────
@@ -374,7 +381,8 @@ impl AsyncStatus {
 /// `mut` 変数は Rc クローン（変更が伝播）、`let` 変数はディープクローン（独立コピー）となる。
 pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
     let (globals, cur_globals) = interp.snapshot_globals_for_task();
-    TaskEnv { vars: capture_vars(interp), globals, cur_globals }
+    let class_ctx = interp.current_class.as_ref().map(|c| c.deep_clone());
+    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx }
 }
 
 /// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。

@@ -546,6 +546,14 @@ pub struct Interpreter {
     /// 現在実行中のメソッドが属するクラス（アクセス制御チェック用）。
     /// クラスメソッドの外では `None`。
     pub(self) current_class: Option<Rc<ClassValue>>,
+    /// クラス経由で呼ぶ静的メソッド・クラスメソッドの文脈（フェーズ10 10-6）。
+    ///
+    /// `eval_class_method` が呼び出しの間だけ置き、呼ばれた関数が `exec_fn_evaled` の
+    /// **入口で取り去って**自分の文脈にする。入口で取るので、引数の既定値の評価などで
+    /// 先に走る別の関数へは渡らない。
+    /// ⚠ 以前は静的メソッドの中が「クラスの外」扱いで、型検査が通した private メンバーへの
+    ///   アクセスが実行時に `AccessError` になっていた（実測）。
+    pub(crate) class_call_ctx: Option<Rc<ClassValue>>,
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
@@ -687,6 +695,7 @@ impl Interpreter {
             config_search_dirs: std::cell::OnceCell::new(),
             static_cells: HashMap::new(),
             current_class: None,
+            class_call_ctx: None,
             trait_field_access: HashMap::new(),
             py_class_field_order: HashMap::new(),
             trait_field_order: {
