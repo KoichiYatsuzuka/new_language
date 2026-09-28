@@ -504,6 +504,7 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             | Op::DeclareName(_)
             | Op::MakeFn(_)
             | Op::EnumDef(_)
+            | Op::ClassDef(_)
             | Op::LetTuple(_)
             | Op::FreezeVar(_, _)
             | Op::EventSubscribe(_, _)

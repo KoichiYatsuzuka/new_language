@@ -560,6 +560,9 @@ pub struct Interpreter {
     /// 処理されずに VM のフレームを抜けた誤りの**失敗した文の位置**（フェーズ10 10-17）。
     /// `vm::run` の `note_error_site` が置き、`run_vm_method` が最も内側のフレームを作るときに取り去る。
     pub(crate) error_site: Option<crate::token::Span>,
+    /// 関数の中の `class` を組み立てている間だけ真（フェーズ10 10-16・`vm_class_def`）。
+    /// メソッドが関数のローカルを閉包として捕まえる（`exec_class_def`）。
+    pub(crate) defining_nested_class: bool,
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
@@ -704,6 +707,7 @@ impl Interpreter {
             current_class: None,
             class_call_ctx: None,
             error_site: None,
+            defining_nested_class: false,
             trait_field_access: HashMap::new(),
             py_class_field_order: HashMap::new(),
             trait_field_order: {

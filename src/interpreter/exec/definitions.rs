@@ -541,6 +541,47 @@ impl Interpreter {
     }
 
     /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。
+    /// 関数の中の `class`（Python から翻訳したコードだけ・フェーズ10 10-16）を組み立てて返す。
+    ///
+    /// 関数のローカル（`visible`）を一時的なスコープに置き、その上で最上位と同じ `exec_class_def` を走らせる。
+    /// - 基底（`class Wrapped(cls)` の `cls`）・デコレータ・フィールドの既定値が関数のローカルを引ける。
+    /// - メソッドは関数のローカルを閉包として捕まえる（`defining_nested_class`）。
+    /// - メソッドがクラス自身を名前で引ける（`self_cell`。組み立て終わったらクラスを入れる）。
+    /// - `is_python` なら Python の規則（クラス継承・引数の束縛）で組み立てる。
+    ///
+    /// ⚠ クラス自身を名前で引くメソッドがあると、クラス → メソッド → セル → クラスの循環参照になり、
+    ///   そのクラスは解放されない（`Rc`・Python なら循環 GC が回収する）。
+    pub(crate) fn vm_class_def(
+        &mut self,
+        stmt: &Stmt,
+        visible: Vec<(String, Rc<std::cell::RefCell<Value>>)>,
+        self_cell: Rc<std::cell::RefCell<Value>>,
+        is_python: bool,
+    ) -> Result<Value, String> {
+        let Stmt::ClassDef { name, template_params, bases, body, decorators, .. } = stmt else {
+            return Err("RuntimeError: internal: Op::ClassDef without a class".to_string());
+        };
+        let mut scope = crate::interpreter::ScopeMap::default();
+        for (n, cell) in visible {
+            scope.insert(n, Var::Cell(cell));
+        }
+        scope.insert(name.clone(), Var::Cell(self_cell.clone()));
+        self.scopes.push(scope);
+        let now_py = self.in_python_module || is_python;
+        let prev_py = std::mem::replace(&mut self.in_python_module, now_py);
+        let prev_nested = std::mem::replace(&mut self.defining_nested_class, true);
+        let r = self.exec_class_def(name, template_params, bases, body, decorators);
+        self.defining_nested_class = prev_nested;
+        self.in_python_module = prev_py;
+        let scope = self.scopes.pop();
+        r?;
+        let class = scope
+            .and_then(|s| s.get(name.as_str()).map(|v| v.get_value()))
+            .ok_or_else(|| format!("RuntimeError: internal: class '{name}' was not defined"))?;
+        *self_cell.borrow_mut() = class.clone();
+        Ok(class)
+    }
+
     pub(crate) fn exec_class_def(
         &mut self,
         name: &str,
@@ -550,6 +591,34 @@ impl Interpreter {
         decorators: &[Expr],
     ) -> Result<ExecResult, String> {
         reject_unexpanded_member_decorators("class", name, body)?;
+
+        // ⚠ Python の基底は変数のことがある（関数の中の `class Wrapped(cls)`・フェーズ10 10-16）。
+        //   基底のクラスはここで引いておき（組み立ての途中では名前が変わる）、名前で引く表
+        //   （フィールドの並び・`bases`）には**そのクラスの名前**を使う。
+        let py_base_classes: Vec<Rc<crate::interpreter::ClassValue>> = if self.in_python_module {
+            bases
+                .iter()
+                .filter_map(|b| match self.get_var(b).map(|v| v.get_value()) {
+                    Some(Value::Class(c)) => Some(c),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let resolved_bases: Vec<String>;
+        let bases: &[String] = if self.in_python_module {
+            resolved_bases = bases
+                .iter()
+                .map(|b| match self.get_var(b).map(|v| v.get_value()) {
+                    Some(Value::Class(c)) => c.name.clone(),
+                    _ => b.clone(),
+                })
+                .collect();
+            &resolved_bases
+        } else {
+            bases
+        };
 
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateClassValue {
@@ -606,7 +675,12 @@ impl Interpreter {
                         params: params.clone(),
                         body: std::rc::Rc::from(&mbody[..]),
                         is_python: self.in_python_module,
-                        captured_env: HashMap::new(),
+                        // 関数の中のクラス（10-16）のメソッドは関数のローカルを閉包として捕まえる。
+                        captured_env: if self.defining_nested_class {
+                            self.capture_env(mbody, params)
+                        } else {
+                            HashMap::new()
+                        },
                         return_type: mret.clone(),
                         vm_chunk: None,
                     });
@@ -664,7 +738,11 @@ impl Interpreter {
                             name: mname.clone(),
                             params: params.clone(),
                             body: mbody.clone(),
-                            captured_env: HashMap::new(),
+                            captured_env: if self.defining_nested_class {
+                                self.capture_env(mbody, params)
+                            } else {
+                                HashMap::new()
+                            },
                         }),
                     );
                 }
@@ -744,14 +822,8 @@ impl Interpreter {
         //   - メソッド等は**サブクラス側が既に持っていなければ**取り込む（＝オーバーライド優先）。
         // ⚠ 多重継承は「先に書いた基底が勝つ」。Python の MRO と厳密には違うが、単一継承では一致する。
         if self.in_python_module && !bases.is_empty() {
-            let base_classes: Vec<Rc<crate::interpreter::ClassValue>> = bases
-                .iter()
-                .filter_map(|b| match self.get_var(b).map(|v| v.get_value()) {
-                    Some(Value::Class(c)) => Some(c),
-                    _ => None,
-                })
-                .collect();
-            for base_cls in &base_classes {
+            let base_classes = &py_base_classes;
+            for base_cls in base_classes {
                 for (k, v) in &base_cls.methods {
                     methods.entry(k.clone()).or_insert_with(|| v.clone());
                 }

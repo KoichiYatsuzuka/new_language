@@ -257,6 +257,14 @@ pub enum TypeErrorKind {
         type_name: String,
         decorator: String,
     },
+    /// 自分で定義したクラスを返す Python の関数を Arrow から使った（フェーズ10 10-16）。
+    ///
+    /// ⚠ クラスを作って返す関数（デコレータ・クラスのファクトリ）は **Python から呼ぶときだけ**認める。
+    ///   作られるクラスの型を Arrow の型検査は知り得ないので、Arrow から呼ぶ・デコレータに使う・値として
+    ///   持ち出すのはどれも誤り。
+    PyClassFactoryFromArrow {
+        function: String,
+    },
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -842,6 +850,10 @@ impl StaticTypeError {
             TypeErrorKind::CodeEscapesMetafunction { name } => format!(
                 "{} cannot hold a {} value — `code:` fragments exist only while the compile-time expander runs, so they cannot be bound outside a metafunction",
                 hl_q(name), hl_q("Code")
+            ),
+            TypeErrorKind::PyClassFactoryFromArrow { function } => format!(
+                "Python function {} returns a class it defines, so it can only be used from Python code — Arrow cannot know the type of that class (use it from a Python function instead)",
+                hl_q(function)
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(
                 "decorator {} on a member of {} was not expanded (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)",

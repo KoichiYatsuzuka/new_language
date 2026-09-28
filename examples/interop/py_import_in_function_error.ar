@@ -1,0 +1,15 @@
+# py_import_in_function_error.ar — Python の関数の中の import（フェーズ10 10-16）
+#
+# 対になる正常系: py_class_factory.ar
+#
+# 期待されるエラー（import の時点）:
+#   ParseError: ...py_import_in_function.py: an `import` inside a function is not supported;
+#               move it to the top of the module
+#
+# ⚠ import はモジュールの最上位だけ（Arrow の関数・ブロックの中の import も ParseError）。
+#   以前は関数の本体が実行時の内部エラー（VmForceError）になっていた。
+
+import[py] test_modules.py_import_in_function as m
+
+mut x = 2.5
+print(m.floor_of(x))

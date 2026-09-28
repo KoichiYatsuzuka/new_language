@@ -137,6 +137,7 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::DeclareName(_)
         | Op::MakeFn(_)
         | Op::EnumDef(_)
+        | Op::ClassDef(_)
         | Op::UnpackTuple(_, _)
         | Op::LetTuple(_)
         | Op::FreezeVar(_, _)

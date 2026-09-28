@@ -121,6 +121,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                 let body = {
                     // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
                     let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+                    let _body_guard = crate::python_converter::statements::FnBodyGuard::enter();
                     convert_scope(&f.body, filename, &param_names)?
                 };
                 // ★ 本体に文としての `yield` があれば `gen` メソッド（項目 9）。

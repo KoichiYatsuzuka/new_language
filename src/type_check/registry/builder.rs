@@ -350,11 +350,15 @@ impl TypeRegistryBuilder {
                     self.collect(body);
                 }
                 Stmt::ClassDef {
-                    name, bases, base_args, body, template_params, ..
+                    name, bases, base_args, body, template_params, decorators, ..
                 } => {
                     // ⚠ 未展開の `!装飾子` が残っていたら、このクラスのメンバーは未確定。
                     //   ⇒ メンバー存在検査を黙らせる（タスク 2-4）。
-                    if body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. })) {
+                    // ⚠ 外部言語（Python）のクラスにデコレータが付いていても同じ（フェーズ10 10-16）。
+                    //   デコレータは実行時にクラスを差し替えられる（`class Wrapped(cls)` を返してメンバーを足す）。
+                    if body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. }))
+                        || (self.foreign_depth > 0 && !decorators.is_empty())
+                    {
                         self.reg
                             .classes_with_unexpanded_decorators
                             .insert(name.clone());

@@ -481,6 +481,9 @@ pub enum Op {
     /// ⚠ 昇格は `int` → `float` の一方向のみ。逆は情報を落とすので行わない。
     /// ⚠ 対象はスカラの `float` 注釈だけ（`list[float]` の要素単位の昇格は行わない）。
     CoerceFloat,
+    /// 関数本体の `class` 定義（フェーズ10 10-16・Python から翻訳したコードだけが出す）。
+    /// `chunk.class_defs[idx]` のクラスを組み立てて slot へ書く。
+    ClassDef(u32),
     // ⚠⚠ **新しい op は必ずここ（末尾）へ足す。** `vm/op_prof.rs` が
     //    **宣言順のインデックス表**（`--features prof` 専用・自動生成）を持っており、
     //    途中へ挿すと以降の採番が全部ずれる。

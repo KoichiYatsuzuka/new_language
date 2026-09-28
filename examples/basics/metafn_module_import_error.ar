@@ -10,8 +10,12 @@
 # ⚠ 成功例は `metafn_module.ar`（最上位で import する）。
 #
 # 期待されるエラー:
-#   MetaError: module 'meta_modules.greeting_macros' uses metafunctions, so it must be
-#              imported at the top level (here it is imported inside function 'setup')
+#   ParseError: `import` must be at the top level of a module; it cannot be written inside
+#               a function or a block
+#
+# ⚠ フェーズ10 10-16 から、関数・ブロックの中の import は**メタ関数を使うかどうかに関係なく**パーサが弾く
+#   （以前は展開器の MetaError: module '...' uses metafunctions, so it must be imported at the top level
+#   だった。その検査は AST を組み立てたときの保険として残っている）。
 
 fn setup() -> None:
     import meta_modules.greeting_macros as gm

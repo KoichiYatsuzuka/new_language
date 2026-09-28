@@ -95,15 +95,21 @@ impl Parser {
         // 直前に控えた関数の仮引数はここで本体スコープへ配属される。
         let _editor_scope = self.open_editor_scope();
         let mut stmts = Vec::new();
-        loop {
+        self.block_depth += 1;
+        let parsed: Result<(), String> = loop {
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
                 self.advance();
             }
             if matches!(self.current(), Token::Dedent | Token::Eof) {
-                break;
+                break Ok(());
             }
-            stmts.push(self.parse_stmt()?);
-        }
+            match self.parse_stmt() {
+                Ok(st) => stmts.push(st),
+                Err(e) => break Err(e),
+            }
+        };
+        self.block_depth -= 1;
+        parsed?;
         if *self.current() == Token::Dedent {
             self.advance();
         }
@@ -373,6 +379,12 @@ impl Parser {
                 let decorators = self.parse_decorators()?;
                 match self.current().clone() {
                     Token::Fn => self.parse_fn_def_decorated(decorators),
+                    Token::Class if self.block_depth > 0 && self.metafn_depth == 0 => Err(
+                        "a `class` must be defined at the top level of a module; it cannot be defined \
+                         inside a function or a block (only code translated from Python may define \
+                         classes inside functions)"
+                            .to_string(),
+                    ),
                     Token::Class => self.parse_class_def_decorated(decorators),
                     tok => Err(format!(
                         "ParseError: '@' decorator must be followed by 'fn' or 'class', got `{tok}`"
@@ -384,6 +396,32 @@ impl Parser {
             // `!装飾子` — `@` と違い、対象はクラス・関数・フィールド・変数束縛まで広い（§1.6）。
             Token::Bang => self.parse_meta_decorated(false),
             Token::Quote => self.parse_quote(),
+            // ⚠⚠ **型の定義と `import` はモジュールの最上位だけ**（フェーズ10 10-16）。関数・ブロックの中に
+            //    書くと、以前は実行時に内部エラー（`VmForceError`）になっていた。関数の中でクラスを作るのは
+            //    Python から翻訳したコード（デコレータ・クラスを返す関数）だけに認める（変換器はこのパーサを
+            //    通らない）。⚠ メタ関数の本体は展開時に走るコードなので対象外。`enum` は関数の中でも書ける（#68）。
+            Token::Class | Token::Trait | Token::Protocol | Token::NewType | Token::Import | Token::From
+                if self.block_depth > 0 && self.metafn_depth == 0 =>
+            {
+                let what = match self.current() {
+                    Token::Import | Token::From => {
+                        return Err(
+                            "`import` must be at the top level of a module; it cannot be written \
+                             inside a function or a block"
+                                .to_string(),
+                        )
+                    }
+                    Token::Class => "class",
+                    Token::Trait => "trait",
+                    Token::Protocol => "protocol",
+                    _ => "new_type",
+                };
+                Err(format!(
+                    "a `{what}` must be defined at the top level of a module; it cannot be defined \
+                     inside a function or a block (only code translated from Python may define \
+                     classes inside functions)"
+                ))
+            }
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),
             Token::Class => self.parse_class_def(),

@@ -127,14 +127,15 @@ fn declare_stmt_slots(
             // ⚠ `fn` が抜けていたため `alias.ar` の `block->function` が、`enum` が抜けていたため
             // `if:` の中の `enum` が、それぞれ「slot にもグローバルにも無い識別子」として
             // bail していた — **採番 walker と `compile_stmt` の walker がずれていた**典型例。
-            D::Fn | D::Enum => false,
+            // ⚠ `class` も同じ（Python から翻訳した関数の `if` / `while` の中の `class`・フェーズ10 10-16。
+            //   `Op::ClassDef` が slot へ書く）。Arrow のソースはパーサが最上位以外の `class` を弾く。
+            D::Fn | D::Enum | D::Class => false,
             // ⚠ **slot を振らないもの**（振っても使われない or 振ってはいけない）:
             // - `static mut` は記憶域が `Interpreter::static_cells`（span がキー）で slot を持たない
-            // - `gen`/`class`/`trait`/`protocol`/`new_type`/`import` は `compile_stmt` に
+            // - `gen`/`trait`/`protocol`/`new_type`/`import` は `compile_stmt` に
             //   アームが無く、到達すれば bail する
             D::Static
             | D::Gen
-            | D::Class
             | D::Trait
             | D::Protocol
             | D::NewType

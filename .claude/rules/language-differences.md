@@ -31,6 +31,13 @@
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
   `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too. Only importing two modules
   with the same name can collide.
+- **`class` / `trait` / `protocol` / `new_type` and `import` only at the top level of a module**
+  (task 10-16). Inside a function or a block (`if` / `for` / …) they are a `ParseError`.
+  `enum` may still be declared inside a function.
+  - ⚠ Code translated from Python (`import[py]`) may define classes inside functions (decorators,
+    class factories), but a Python function that **returns a class it defines** may only be used
+    from Python: calling it, decorating with it or taking it as a value from Arrow is a static
+    error. A Python `import` inside a function (or a module-level block) is a conversion error.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

@@ -183,6 +183,8 @@ impl Walker<'_> {
             // ⚠⚠ メタ関数を使うモジュールは**最上位で** import する（タスク 2-12）。
             //   展開器は関数の本体・ブロックの中へは降りないので、そこにある import の本体は
             //   展開されない（実行時に「展開されなかった」で落ちる）。
+            // ⚠ フェーズ10 10-16 から**パーサが最上位以外の import を弾く**ので、ソースからここへは来ない
+            //   （AST を組み立てたときの保険・`a_metafn_module_imported_inside_a_function_is_rejected`）。
             Stmt::Import { module, body, .. } | Stmt::FromImport { module, body, .. }
                 if !matches!(place, Place::Top) && mentions_meta(body) =>
             {

@@ -103,6 +103,9 @@ pub struct Parser {
     /// メタ関数の本体に入ると増える。`^`（メタ情報演算子）が書ける文脈の片方
     /// （設計書 §1.5 / タスク 1-3）。
     pub(crate) metafn_depth: usize,
+    /// 入れ子のブロック（関数・`if` / `for` などの本体・クラス本体）の深さ（フェーズ10 10-16）。
+    /// 0 のときだけ `class` / `trait` / `protocol` / `new_type` / `import` を書ける。
+    pub(crate) block_depth: usize,
     /// 呼び出しの実引数リストをパース中なら増える。`^` が書ける文脈のもう片方。
     ///
     /// ⚠ **これは近似**。本来の規則は「**メタ関数**呼び出しの実引数位置」だが、
@@ -210,6 +213,7 @@ impl Parser {
             known_traits,
             class_or_trait_depth: 0,
             metafn_depth: 0,
+            block_depth: 0,
             call_arg_depth: 0,
             known_new_types: HashSet::new(),
             aliases: HashMap::new(),

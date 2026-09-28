@@ -130,6 +130,16 @@ impl CheckState {
         self.scope_stack.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// 今のスコープの深さ（グローバルが 0）。
+    pub(super) fn scope_depth(&self) -> usize {
+        self.scope_stack.len() - 1
+    }
+
+    /// `name` を `lookup` が見つけるスコープの深さ（グローバルが 0）。
+    pub(super) fn lookup_depth(&self, name: &str) -> Option<usize> {
+        self.scope_stack.iter().rposition(|s| s.contains_key(name))
+    }
+
     // ── 検査位置カーソル ──────────────────────────────────────────────────────
 
     /// 現在型検査中の関数名。

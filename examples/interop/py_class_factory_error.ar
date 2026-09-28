@@ -1,0 +1,29 @@
+# py_class_factory_error.ar — クラスを作る Python の関数を Arrow から使う（フェーズ10 10-16）
+#
+# 対になる正常系: py_class_factory.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  Python function 'test_modules.py_class_factory.make_counter_class'
+#                    returns a class it defines, so it can only be used from Python code
+#   StaticTypeError  Python function 'test_modules.py_class_factory.tagged_with'
+#                    returns a class it defines, so it can only be used from Python code
+#   StaticTypeError  Python function 'test_modules.py_class_factory.add_greeting'
+#                    returns a class it defines, so it can only be used from Python code
+#
+# ⚠ 自分で定義したクラスを返す Python の関数（デコレータ・クラスのファクトリ）は Python から呼ぶときだけ
+#   使える。作られるクラスの型を Arrow の型検査は知り得ないので、呼び出し・デコレータ・値としての
+#   持ち出しはどれも誤り。クラスを中で使い切る関数（count_by・pick など）は呼べる。
+# ⚠ 引数を取るデコレータ（tagged_with）はクラスを返す関数を返すので、同じ扱い。
+
+import[py] test_modules.py_class_factory as f
+
+mut step = 3
+let Counter = f.make_counter_class(step)      # ⛔ Arrow から呼ぶ
+let deco = f.tagged_with                      # ⛔ 値として持ち出す
+
+@f.add_greeting                               # ⛔ Arrow のクラスのデコレータに使う
+class Robot:
+    let name: str
+
+    fn __init__(mut self, name: str) -> None:
+        self.name = name

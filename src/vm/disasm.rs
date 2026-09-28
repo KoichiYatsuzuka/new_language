@@ -121,6 +121,11 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::LoadName(n) => format!("LOAD_NAME {:?}", chunk.names.get(*n as usize)),
         Op::DeclareName(n) => format!("DECLARE_NAME {:?}", chunk.names.get(*n as usize)),
         Op::MakeFn(i) => format!("MAKE_FN def[{i}]"),
+        Op::ClassDef(i) => format!(
+            "CLASS_DEF {:?} -> slot/cell {}",
+            chunk.class_defs.get(*i as usize).map(|d| d.name.as_str()),
+            chunk.class_defs.get(*i as usize).map_or(u16::MAX, |d| d.target.0),
+        ),
         Op::EnumDef(i) => format!(
             "ENUM_DEF {:?} -> slot {}",
             chunk.enum_defs.get(*i as usize).map(|d| d.name.as_str()),

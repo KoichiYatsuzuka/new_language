@@ -354,6 +354,32 @@ impl Compiler {
             // （最上位・モジュール本体）ではこのアームに載らない**。そこは
             // `is_toplevel_compile_target` が除外していて `exec_enum_def` が走る。
             // この 1 行が「載る文脈」を自分で閉じているので、入口ごとの場合分けが要らない。
+            // 関数本体の `class`（Python から翻訳したコードだけ・フェーズ10 10-16）。
+            // ⚠ `slot_of` が `None`（最上位・モジュール本体）なら bail する。そこは従来どおり
+            //   ツリーウォークの `exec_class_def` が走る（`is_toplevel_compile_target` が除外）。
+            Stmt::ClassDef { name, template_params, .. } if template_params.is_empty() => {
+                // 入れ子の関数がクラスの名前を捕まえていればセルへ書く（`slot_of` はセルに `None` を返す）。
+                let target = match self.cells.get(name) {
+                    Some(&c) => (c, true),
+                    None => (self.slot_of(name)?, false),
+                };
+                let mut visible: Vec<(String, u16, bool)> = self
+                    .slots
+                    .iter()
+                    .filter(|(n, _)| *n != name)
+                    .map(|(n, &s)| (n.clone(), s, false))
+                    .collect();
+                visible.extend(self.cells.iter().map(|(n, &c)| (n.clone(), c, true)));
+                visible.sort(); // 並びを決定的にする（`HashMap` 由来）
+                let idx = u32::try_from(self.chunk.class_defs.len()).ok()?;
+                self.chunk.class_defs.push(crate::vm::chunk::ChunkClassDef {
+                    stmt: std::rc::Rc::new(stmt.clone()),
+                    name: name.clone(),
+                    target,
+                    visible,
+                });
+                self.emit(Op::ClassDef(idx));
+            }
             Stmt::EnumDef { src: _, name, variants } => {
                 let slot = self.slot_of(name)?;
                 let idx = u32::try_from(self.chunk.enum_defs.len()).ok()?;

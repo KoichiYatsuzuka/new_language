@@ -145,6 +145,8 @@ impl TypeChecker {
                 if found.is_none() {
                     self.check_name_defined(name);
                 }
+                // `from m import make_class` した、クラスを返す Python の関数（10-16）。
+                self.check_py_class_factory_use(name, name, None);
                 let result = found.unwrap_or(InferredType::Unresolved);
                 // ── AST 型解決層（#15b）── 参照サイトごとの型を焼く。
                 // 変数単位ではなく**参照位置単位**なのが要点で、型ガード絞り込みは
@@ -786,6 +788,10 @@ impl TypeChecker {
         // ⚠ 入口で取り去る（受け手の `a.b` は読みとして検査する・`attr_is_callee` の doc）。
         let is_callee = std::mem::take(&mut self.attr_is_callee);
         let obj_ty = self.infer(object);
+        // `import[py] m as p` の `p.make_class`（クラスを返す Python の関数・10-16）。
+        if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
+            self.check_py_class_factory_use(&format!("{name}.{attr}"), name, Some(span.clone()));
+        }
         // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
         //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
         //    - **読み**: 組み込みの値は読める属性を持たない。実行時の属性の読み（`get_attr_val`）は
@@ -972,14 +978,22 @@ impl TypeChecker {
         !self.member_set_is_closed(class_name)
     }
 
-    /// クラスの**メンバー集合が閉じている**か（タスク 7.5 / 7.8）。
+    /// 自分で定義したクラスを返す Python の関数を Arrow から使っていたら誤りにする（フェーズ10 10-16）。
     ///
-    /// ⚠⚠ **真偽値に潰さずクラス単位の性質として持つこと。** 外部言語のスタブが入ったとき、
-    /// 言語によって「スタブ＝完全な宣言（閉じる）」「スタブ＝部分的な宣言（開いたまま）」が
-    /// 分かれる。ここを「外部由来なら飛ばす」にすると**その区別が表現できなくなる**。
-    ///
-    /// 現状の規則: **レジストリに何らかのメンバー情報があれば閉じている**。
-    /// Arrow のクラス宣言（`.ar` / `.ars` スタブ由来を含む）は必ず表を持つので閉じる。
+    /// `spelled` は束縛の綴り（p.factory / factory）、`binding` はその先頭の名前（p / factory）。
+    /// ⚠ 束縛の深さを見て、同じ綴りの別の束縛（関数の引数など）を取り違えない。
+    fn check_py_class_factory_use(&mut self, spelled: &str, binding: &str, span: Option<Span>) {
+        let Some((depth, shown)) = self.py_class_factories.get(spelled) else { return };
+        if self.state.lookup_depth(binding) != Some(*depth) {
+            return;
+        }
+        let function = shown.clone();
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::PyClassFactoryFromArrow { function },
+            span,
+        });
+    }
+
     /// 今のスコープにも関数表にも無い名前を読んだとき、それが**どこにも無い**なら誤りにする（10-12）。
     ///
     /// ⚠ 保守的に判定する（`type_check::names` の doc）。次のどれかなら通す:
@@ -1048,6 +1062,14 @@ impl TypeChecker {
         }
     }
 
+    /// クラスの**メンバー集合が閉じている**か（タスク 7.5 / 7.8）。
+    ///
+    /// ⚠⚠ **真偽値に潰さずクラス単位の性質として持つこと。** 外部言語のスタブが入ったとき、
+    /// 言語によって「スタブ＝完全な宣言（閉じる）」「スタブ＝部分的な宣言（開いたまま）」が
+    /// 分かれる。ここを「外部由来なら飛ばす」にすると**その区別が表現できなくなる**。
+    ///
+    /// 現状の規則: **レジストリに何らかのメンバー情報があれば閉じている**。
+    /// Arrow のクラス宣言（`.ar` / `.ars` スタブ由来を含む）は必ず表を持つので閉じる。
     fn member_set_is_closed(&self, class_name: &str) -> bool {
         self.registry.class_field_details(class_name).is_some()
             || self.registry.class_methods(class_name).is_some()

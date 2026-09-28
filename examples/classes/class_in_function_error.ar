@@ -1,0 +1,21 @@
+# class_in_function_error.ar — 関数の中の class（フェーズ10 10-16）
+#
+# 期待されるエラー:
+#   ParseError: a `class` must be defined at the top level of a module; it cannot be defined
+#               inside a function or a block (only code translated from Python may define
+#               classes inside functions)
+#
+# ⚠ class / trait / protocol / new_type と import はモジュールの最上位だけ（`if` などのブロックの中も同じ）。
+#   以前は関数の中の class が実行時の内部エラー（VmForceError）になっていた。
+# ⚠ 関数の中でクラスを作れるのは Python から翻訳したコード（デコレータ・クラスのファクトリ）だけ
+#   （interop/py_class_factory.ar）。`enum` は関数の中でも書ける。
+
+fn make_point() -> None:
+    class Point:
+        let x: int
+
+        fn __init__(mut self, x: int) -> None:
+            self.x = x
+    print("unreachable")
+
+make_point()

@@ -127,7 +127,11 @@ impl Interpreter {
             &captures,
             &mut_captures,
         )
-        .map(Rc::new);
+        .map(|mut c| {
+            // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
+            c.is_python = fn_val.is_python;
+            Rc::new(c)
+        });
         if crate::interpreter::tw_stats::enabled() {
             crate::interpreter::tw_stats::record_compile("fn", compiled.is_some());
         }

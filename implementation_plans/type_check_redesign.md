@@ -4391,8 +4391,10 @@ Arrow には**暗黙の実体化が無い**（型引数なしの呼び出しは 
 | ~~**10-13**~~ | ~~演算子オーバーロードの被演算子の型を静的に検査しない（重さ: 中）~~ **完了（2026-09-27）** | なし | 中 |
 | ~~**10-14**~~ | ~~`int` などの属性アクセスを静的に検査しない（重さ: 中）~~ **完了（2026-09-28）** | なし | 小 |
 | ~~**10-15**~~ | ~~`freeze` した変数への `mut self` メソッド呼び出しを静的に検査しない（重さ: 低）~~ **完了（2026-09-27）** | なし | 小 |
-| **10-16** | 関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）（重さ: 中） | なし | 中 |
+| ~~**10-16**~~ | ~~関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）（重さ: 中）~~ **完了（2026-09-29）** | なし | 中 |
 | **10-17** | 誤りの位置が出ない（重さ: 中）**一部完了（2026-09-28）**: ParseError・traceback の最も内側のフレーム。残りは文の位置（下） | なし | 大 |
+| **10-18** | Python のクラス本体の中のクラス（`class Outer: class Inner:`）が変換で黙って消える（重さ: 低） | なし | 小 |
+| **10-19** | 組み込みの例外をまとめて捕まえる手段が無い（`except Exception` が `RuntimeError` などを捕まえない）（重さ: 中・要判断） | なし | 小 |
 
 ⚠ 10-1 を先頭に置くのは**退行だから**（他タスクの前提ではない）。
 
@@ -4930,6 +4932,35 @@ print(f())
 ``VmForceError: cannot compile top-level statement `If` to bytecode``。
 期待: 動く、または「関数の中では書けない」という静的エラー（今の文面は内部の事情しか言っていない）。
 
+**完了（2026-09-29）**: 方針（利用者の判断）: **Python のデコレータに要るので、Python からの呼び出しに限って
+クラスを返す関数を認める。関数の中の import は認めない**。
+
+1. **Arrow のソース**: `class` / `trait` / `protocol` / `new_type` と `import` は**モジュールの最上位だけ**。
+   関数・ブロック（`if` / `for` …）の中に書くと ParseError（`Parser::block_depth`・`parse_block` が数える）。
+   ⚠ メタ関数の本体は展開時に走るコードなので対象外。`enum` は関数の中でも書ける（#68）。
+   ⚠ 付随: `basics/metafn_module_import_error.ar` の誤りが展開器の MetaError から ParseError になった
+   （展開器の検査は AST を組み立てたときの保険として残した）。
+2. **Python の変換**: 関数（メソッド）の中の `import`、モジュール直下のブロックの中の `import` / `class` は
+   変換の誤り（`reject_nested_import` / `reject_class_in_module_block`・以前はどれも実行時の `VmForceError`）。
+   関数の中の `class`（関数の中のブロックの中も）は変換する。
+3. **実行（VM）**: 関数の本体の `class` を `Op::ClassDef` で組み立てる（`ChunkClassDef`・`class_def_op`・
+   `Interpreter::vm_class_def`）。関数のローカル（slot・セル）を名前で見える一時スコープに置いて、最上位と同じ
+   `exec_class_def` を走らせる。基底・デコレータが関数のローカル（`class Wrapped(cls)` の `cls`）を引け、
+   メソッドは関数のローカルを閉包として捕まえる（セルは共有・`defining_nested_class`）。メソッドがクラス自身を
+   名前で引ける（`self_cell`）。Python の基底は変数のことがあるので、基底のクラスを先に引いてその**名前**で
+   フィールドの並び・`bases` を引く。slot の採番: 関数の本体直下の `class` は `enum` と同じく base slot
+   （リゾルバの `collect_base_decls` と同順）、ブロックの中の `class` は `declare_stmt_slots` が振る。
+   ⚠ クラス自身を名前で引くメソッドがあると循環参照でそのクラスは解放されない（`Rc`）。
+4. **型検査**: 自分で定義したクラスを返す Python の関数（`return <定義したクラス>`・そういう入れ子の関数を返す
+   引数つきデコレータ）を Arrow から使う（呼ぶ・デコレータにする・値として持ち出す）と静的エラー
+   （`TypeErrorKind::PyClassFactoryFromArrow`・束縛の綴りとスコープの深さで引く `py_class_factories`）。
+   クラスを中で使い切る関数は呼べる。⚠ 名前で見るだけの近似（別名・組で返す形は拾わない）。
+   デコレータ付きの Python のクラスはメンバーが未確定（`members_unresolved`・デコレータがメンバーを足せる）。
+5. 網: 例題 `interop/py_class_factory.ar`（ファクトリ・自己参照・`if` の中・閉包の共有・デコレータ・
+   引数つきデコレータ。出力は CPython と一致）/ `_error.ar`・`interop/py_import_in_function_error.ar`・
+   `classes/class_in_function_error.ar`、パーサ・変換器のテスト各 1 本。
+6. 起票: Python のクラス本体の中のクラスが変換で黙って消える（以前から・10-18）。
+
 #### 10-17 誤りの位置が出ない
 
 - 静的エラーの多くが位置を持たない（表の `File` が `<unknown>`、`Line:Col` が `-`）。
@@ -4958,11 +4989,55 @@ print(f())
   ⚠ 行テーブル（`stmt_spans`）はデバッガの停止位置でもあるので、位置を持つ文が増えると**デバッガが止まる文が
   増える**（`debug_session` の golden が変わる）。どこまでをデバッガの停止位置にするかを先に決めること。
 
+#### 10-18 Python のクラス本体の中のクラスが変換で黙って消える
+
+再現（`import[py]` する `.py`）:
+```
+class Outer:
+    class Inner:
+        def get(self):
+            return 7
+
+    def make(self):
+        return Outer.Inner().get()
+```
+現状: `AttributeError: class 'Outer' has no method 'Inner'`（変換器がクラス本体の `class` を捨てている。
+10-16 の前から同じ）。期待: 動く、または変換の誤り（黙って消さない）。
+⚠ Arrow のクラス本体の `class` は ParseError（`unexpected statement in class body`）。
+
+#### 10-19 組み込みの例外をまとめて捕まえる手段が無い
+
+再現:
+```
+try:
+    raise RuntimeError("x")
+except Exception as e:
+    print("caught")
+```
+現状: 捕まらずに `RuntimeError: x` で止まる。組み込みの例外クラスはどれも基底が `Error`（trait）で、
+`Exception` はその**兄弟**（`make_error_class`。`exc_matches` は直接の基底しか見ない）。一方
+`except Error` は型検査が `'Error' in except is not an exception class` で弾く。
+⇒ **組み込みの例外をまとめて捕まえる書き方が無い**（1 つずつ `except RuntimeError` と書くしかない）。
+
+影響: `except Exception` を「全部捕まえる」つもりで書いた例題が 3 つある（`basics/built_in.ar`・
+`typing/enum_in_function.ar`・`bench/bench_ab_interp.ar`）。`built_in.ar` は `_tmp_new.txt` が無いと
+`os.remove`（`import[py-int]`）の `RuntimeError` を捕まえられず、`scan_examples` で FAIL する
+（10-8 以降のゲートで毎回出ていた。以前はファイルが残っていたので `os.remove` が成功して通っていた）。
+
+要判断:
+- (a) Python と同じく **`Exception` を組み込みの例外の基底にする**（`except Exception` で全部捕まる）。
+  例題の書き方がそのまま正しくなる。⚠ `exc_matches` が推移的な基底を見ていないので、利用者の例外クラスが
+  `ValueError` を継承した形も併せて確かめる。
+- (b) 今のまま（`Exception` は兄弟）にして、全部捕まえる書き方（`except Error` など）を型検査に認めさせ、
+  例題を直す。`except Exception` が組み込みを捕まえないことは型検査で知らせる。
+
+起票（2026-09-29・10-16 のゲートで調べて判明）。
+
 ### 順序
 
 `10-1`（退行・独立） → `10-2` → `10-3` → `10-4` → `10-5`
 
 ⚠ ただし **10-5 の「`gen f[T]` の例題」は 10-1 と同時に**入れる（再発防止が目的なので）。
 
-⚠ `10-6`〜`10-17`（起票したバグ）は互いにも上とも独立。重い順（`10-6` / `10-7` が高）に着手するのがよい。
+⚠ `10-6`〜`10-19`（起票したバグ）は互いにも上とも独立。重い順（`10-6` / `10-7` が高）に着手するのがよい。
 

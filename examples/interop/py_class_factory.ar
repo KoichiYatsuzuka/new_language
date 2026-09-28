@@ -1,0 +1,57 @@
+# py_class_factory.ar — 関数の中でクラスを作る Python のコード（フェーズ10 10-16）
+#
+# 対になるエラー例: py_class_factory_error.ar（ファクトリを Arrow から直接使う）
+#                   py_import_in_function_error.ar（Python の関数の中の import）
+#                   classes/class_in_function_error.ar（Arrow の関数の中の class）
+#
+# Python のデコレータ・クラスのファクトリは関数の中でクラスを定義する。Arrow はこれを
+# **Python から呼ぶときだけ**認める:
+#   - 関数の中でクラスを作って使い切る関数（count_by など）は Arrow から呼べる。
+#   - Python の中でデコレータを掛けたクラス（@add_greeting class Person）も Arrow から使える。
+#     デコレータがメンバーを足すことがあるので、そのクラスのメンバーは静的に「無い」と言わない。
+#
+# ⚠ 以前は Python の関数の中の class が実行時の内部エラー（VmForceError）になっていた。
+# ⚠ Python のメソッドは `mut self` 扱いなので、インスタンスは `mut` で持つ。
+
+import[py] test_modules.py_class_factory as f
+
+# ── ① ファクトリを Python の中で使い切る ────────────────────────────────
+#     Counter は関数の引数 step（3）を閉包として捕まえ、最上位の Base を継承する。
+mut step = 3
+mut times = 4
+print(f.count_by(step, times))
+# base 12
+
+# ── ② メソッドがクラス自身を名前で引く ──────────────────────────────────
+mut n = 5
+print(f.chain_length(n))
+# 5
+
+# ── ③ if / else の中のクラス ────────────────────────────────────────────
+mut yes = True
+mut no = False
+print(f.pick(yes))
+# yes
+print(f.pick(no))
+# no
+
+# ── ④ メソッドが関数のローカルのリストを書き換える（同じリストを指す） ──
+mut values = [1, 2, 3]
+print(f.collect(values))
+# 3
+
+# ── ⑤ Python の中でデコレータを掛けたクラス ──────────────────────────────
+#     Person は add_greeting が返した派生クラス（greet が足されている）。
+mut name = "ann"
+mut p = f.Person(name)
+print(p.name)
+# ann
+print(p.greet())
+# hello from ann
+
+# ── ⑥ 引数を取るデコレータ（tagged_with("v1")）───────────────────────────
+mut r = f.Release()
+print(r.tag())
+# v1
+print(r.ok)
+# True

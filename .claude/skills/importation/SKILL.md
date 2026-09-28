@@ -144,6 +144,12 @@ After parsing, the child's `module_cache` is merged back into the parent.
 
 - Search: only `source_dir`, candidate is `{module_path}.py`
 - Converts Python source via `python_converter::convert_python_source()`
+- ⚠ Placement rules (task 10-16): an `import` inside a function or a module-level block
+  (`if` / `try` …) and a `class` inside a module-level block are **conversion errors**
+  (`reject_nested_import` / `reject_class_in_module_block`). A `class` inside a function is
+  converted and runs on the VM (`Op::ClassDef` → `Interpreter::vm_class_def`). Arrow code may not
+  use a Python function that returns a class it defines (`TypeErrorKind::PyClassFactoryFromArrow`);
+  a decorated Python class has an open member set (`members_unresolved`).
 - Cache key: `("py", abs_path)`
 
 ### Python Interface (`load_python_interface_module`, imports.rs:658)

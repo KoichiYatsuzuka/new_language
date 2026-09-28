@@ -78,6 +78,15 @@ pub struct TypeChecker {
     /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
     /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
     declared_anywhere: std::collections::HashSet<String>,
+    /// Arrow から使えない Python の関数（自分で定義したクラスを返す関数・フェーズ10 10-16）の束縛の綴り。
+    /// キー: p.factory（`import[py] m as p`）/ factory（from m import factory）。
+    /// 値: (束縛のスコープの深さ, 表示名 m.factory)。
+    ///
+    /// ⚠ クラスを作って返す関数（デコレータ・クラスのファクトリ）は **Python から呼ぶときだけ**認める
+    ///   （利用者の判断）。作られるクラスの型を Arrow の型検査は知り得ないので、Arrow から呼ぶ・
+    ///   デコレータに使う・値として持ち出すのはどれも誤りにする。
+    /// ⚠ 深さは、同じ綴りの別の束縛（関数の引数など）を取り違えないために見る。
+    py_class_factories: HashMap<String, (usize, String)>,
 }
 
 impl TypeChecker {
@@ -225,6 +234,7 @@ impl TypeChecker {
                 names::collect_declared_anywhere(stmts, &mut set);
                 set
             },
+            py_class_factories: HashMap::new(),
         }
     }
 

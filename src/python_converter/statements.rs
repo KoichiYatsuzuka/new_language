@@ -193,6 +193,81 @@ fn collect_walrus_names(
 //     他モジュール由来のコンテキストマネージャは**検出できない**のが残る穴。
 
 thread_local! {
+    /// 関数・メソッドの本体を変換中の深さ（フェーズ10 10-16）。0 より大きいときの `import` は認めない。
+    static FN_BODY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// 今のスコープ（モジュール・関数の本体）の中のブロック（`if` / `for` / `while` / `try` / `with` /
+    /// `match`）の深さ（10-16）。関数の本体に入ると 0 から数え直す。
+    static BLOCK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 関数・メソッドの本体を変換している間だけ `FN_BODY_DEPTH` を上げる（10-16）。
+/// ブロックの深さは本体の中で 0 から数え直す（抜けるときに戻す）。
+pub(crate) struct FnBodyGuard {
+    outer_blocks: u32,
+}
+
+impl FnBodyGuard {
+    pub(crate) fn enter() -> Self {
+        FN_BODY_DEPTH.with(|d| d.set(d.get() + 1));
+        FnBodyGuard { outer_blocks: BLOCK_DEPTH.with(|d| d.replace(0)) }
+    }
+}
+
+impl Drop for FnBodyGuard {
+    fn drop(&mut self) {
+        FN_BODY_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        BLOCK_DEPTH.with(|d| d.set(self.outer_blocks));
+    }
+}
+
+/// ブロックの本体を変換している間だけ `BLOCK_DEPTH` を上げる（10-16）。
+struct BlockGuard;
+
+impl BlockGuard {
+    fn enter() -> Self {
+        BLOCK_DEPTH.with(|d| d.set(d.get() + 1));
+        BlockGuard
+    }
+}
+
+impl Drop for BlockGuard {
+    fn drop(&mut self) {
+        BLOCK_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// 最上位でない `import` を明示エラーにする（フェーズ10 10-16・利用者の判断で関数の中の import は認めない）。
+///
+/// ⚠ モジュール直下のブロック（`if` / `try` …）の中も認めない（Arrow の規則と同じ。以前はどちらも
+///   実行時の内部エラー `VmForceError` だった）。
+fn reject_nested_import(filename: &str) -> Result<(), String> {
+    if FN_BODY_DEPTH.with(|d| d.get()) > 0 {
+        return Err(format!(
+            "{filename}: an `import` inside a function is not supported; move it to the top of the module"
+        ));
+    }
+    if BLOCK_DEPTH.with(|d| d.get()) > 0 {
+        return Err(format!(
+            "{filename}: an `import` inside a block (`if` / `try` / ...) is not supported; move it to the top of the module"
+        ));
+    }
+    Ok(())
+}
+
+/// モジュール直下のブロックの中の `class` を明示エラーにする（10-16）。
+///
+/// ⚠ 関数の中の `class`（デコレータ・クラスのファクトリ）は認める（関数の中のブロックの中も）。
+///   モジュール直下のブロックの中だけは実行できない（以前は実行時の内部エラー `VmForceError`）。
+fn reject_class_in_module_block(filename: &str, name: &str) -> Result<(), String> {
+    if FN_BODY_DEPTH.with(|d| d.get()) == 0 && BLOCK_DEPTH.with(|d| d.get()) > 0 {
+        return Err(format!(
+            "{filename}: class '{name}' is defined inside a block (`if` / `try` / ...) at module level, which is not supported; define it at the top of the module"
+        ));
+    }
+    Ok(())
+}
+
+thread_local! {
     /// このモジュールで `__enter__` / `__exit__` を定義しているクラス名。
     static CM_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
@@ -542,6 +617,7 @@ pub(crate) fn convert_stmts(
     filename: &str,
     declared: &std::collections::HashSet<String>,
 ) -> Result<Vec<Stmt>, String> {
+    let _block_guard = BlockGuard::enter();
     let mut result = Vec::new();
     for stmt in stmts {
         convert_one_into(stmt, filename, declared, &mut result)?;
@@ -616,6 +692,7 @@ pub(crate) fn convert_stmt(
             let body = {
                 // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
                 let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+                let _body_guard = FnBodyGuard::enter();
                 convert_scope(&f.body, filename, &param_names)?
             };
             // ★ 本体に文としての `yield` があればジェネレータ（項目 9）。
@@ -662,7 +739,10 @@ pub(crate) fn convert_stmt(
 
         // ----- クラス定義 -----
         // デコレータは `convert_class` 側で処理する（クラス名が必要なため）。
-        py::Stmt::ClassDef(c) => convert_class(c, filename).map(|s| vec![s]),
+        py::Stmt::ClassDef(c) => {
+            reject_class_in_module_block(filename, c.name.as_str())?;
+            convert_class(c, filename).map(|s| vec![s])
+        }
 
         // ----- return -----
         py::Stmt::Return(r) => {
@@ -1132,6 +1212,7 @@ pub(crate) fn convert_stmt(
         //   stdlib や C 拡張（`os` / `sys` / `numpy` …）は翻訳対象の `.py` が無いので
         //   ここで止まる。PyO3 経由で使いたいなら**ドライバ側で** `import[py-int]` する。
         py::Stmt::Import(i) => {
+            reject_nested_import(filename)?;
             let mut out = Vec::with_capacity(i.names.len());
             for alias in &i.names {
                 // `import a.b.c` → module = ["a", "b", "c"]
@@ -1151,6 +1232,7 @@ pub(crate) fn convert_stmt(
             Ok(out)
         }
         py::Stmt::ImportFrom(f) => {
+            reject_nested_import(filename)?;
             // ⚠ 相対 import（`from . import x` / `from ..pkg import y`）は、現在の
             //   モジュールのパッケージ位置を解決する仕組みが要る。黙って絶対扱いすると
             //   **別のモジュールを読む**ので明示エラーにする。

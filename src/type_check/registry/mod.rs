@@ -45,7 +45,9 @@ pub(super) struct TypeRegistry {
     /// 未展開の `!装飾子` を本体に残しているクラス（タスク 2-4）。
     ///
     /// ⚠ 装飾子が何を足すか分からないので、このクラスの**メンバーの顔ぶれは未確定**。
-    /// 通常ビルドでは展開器が型検査の前に走る（2-2）ので常に空。
+    /// Arrow のクラスは、通常ビルドでは展開器が型検査の前に走る（2-2）ので載らない。
+    /// ⚠ デコレータ（`@deco`）付きの Python のクラスも載せる（フェーズ10 10-16）。デコレータは
+    ///   実行時にクラスを差し替えられる（メンバーを足した派生クラスを返す）。
     classes_with_unexpanded_decorators: HashSet<String>,
     /// `new_type Name: Original` の元の型名。キー: 新しい型名 → 元の型名。
     new_type_originals: HashMap<String, String>,

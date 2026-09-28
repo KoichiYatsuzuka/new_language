@@ -24,6 +24,55 @@ fn editor_stub_body(body: &[Stmt]) -> bool {
     cfg!(feature = "editor") && body.is_empty()
 }
 
+/// Python のモジュールの本体で、**自分で定義したクラスを返す関数**の名前（フェーズ10 10-16）。
+///
+/// 次のどちらかを `return <名前>` で返す関数（`if` / `while` などの中の `return` も見る）:
+/// - 自分の本体で定義した `class`（クラスのファクトリ・`class Wrapped(cls)` を返すデコレータ）。
+/// - そういう関数として自分の本体で定義した関数（`def tagged_with(t): def deco(cls): ..; return deco`。
+///   返した関数を Arrow が呼ぶことになる）。
+///
+/// ⚠ 作ったクラスを中で使い切る関数（戻り値がクラスでない・インスタンスを返す）は対象外（Arrow から呼べる）。
+/// ⚠ 名前で見るだけの近似。別名（`X = A; return X`）・組（`return (A, B)`）で返す形は拾わない。
+/// ⚠ クラスのメソッドは見ない（受け手の型から引く別の経路になる）。
+fn py_class_factory_names(body: &[Stmt]) -> Vec<String> {
+    /// 関数の本体 `stmts` が自分で定義したクラスを返すか。
+    fn is_factory(stmts: &[Stmt]) -> bool {
+        let mut makes: Vec<String> = Vec::new();
+        let mut returned: Vec<String> = Vec::new();
+        scan(stmts, &mut makes, &mut returned);
+        returned.iter().any(|r| makes.contains(r))
+    }
+    /// 本体を（入れ子の関数・クラスへは降りずに）歩き、クラスを作るもの（`class` と、クラスを返す入れ子の
+    /// 関数）の名前と、`return` で返す名前を集める。
+    fn scan(stmts: &[Stmt], makes: &mut Vec<String>, returned: &mut Vec<String>) {
+        for st in stmts {
+            match st {
+                Stmt::ClassDef { name, .. } => makes.push(name.clone()),
+                Stmt::FnDef { name, body, .. } | Stmt::GenDef { name, body, .. } => {
+                    if is_factory(body) {
+                        makes.push(name.clone());
+                    }
+                }
+                Stmt::Return(Some(Expr::Ident { name, .. })) => returned.push(name.clone()),
+                _ => crate::stmt_walk::each_subpart(st, &mut |part| {
+                    use crate::stmt_walk::StmtPart as P;
+                    if let P::Control(b) | P::AsyncBody(b) = part {
+                        scan(b, makes, returned);
+                    }
+                }),
+            }
+        }
+    }
+    body.iter()
+        .filter_map(|st| match st {
+            Stmt::FnDef { name, body, .. } | Stmt::GenDef { name, body, .. } if is_factory(body) => {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl TypeChecker {
     /// 文のスライスを順に型検査する。
     pub(crate) fn check_stmts(&mut self, stmts: &[Stmt]) {
@@ -655,6 +704,16 @@ impl TypeChecker {
                 } else {
                     InferredType::Namespace(member_types)
                 };
+                // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
+                let prefix = format!("{bind_name}.");
+                self.py_class_factories.retain(|k, _| !k.starts_with(&prefix));
+                if lang == "py" || lang == "py-int" {
+                    let depth = self.state.scope_depth();
+                    for f in py_class_factory_names(body) {
+                        let shown = format!("{}.{f}", module.join("."));
+                        self.py_class_factories.insert(format!("{prefix}{f}"), (depth, shown));
+                    }
+                }
                 self.declare(bind_name, ns_ty, false);
             }
 
@@ -662,8 +721,17 @@ impl TypeChecker {
                 self.annotate_module_body(lang, module, body);
                 let member_types = self.module_member_types(lang, module, body);
                 let is_py = lang == "py" || lang == "py-int";
+                let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
+                    // クラスを返す Python の関数（10-16）。
+                    if factories.contains(orig_name) {
+                        let shown = format!("{}.{orig_name}", module.join("."));
+                        self.py_class_factories
+                            .insert(bind_name.clone(), (self.state.scope_depth(), shown));
+                    } else {
+                        self.py_class_factories.remove(&bind_name);
+                    }
                     let ty = member_types.get(orig_name.as_str()).cloned().unwrap_or(
                         // `editor` の空 body では `Any` に落とさない（上の Stmt::Import と同じ理由）。
                         if is_py && !editor_stub_body(body) {

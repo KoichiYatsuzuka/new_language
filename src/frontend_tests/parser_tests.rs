@@ -1558,3 +1558,45 @@ fn dotted_type_names_in_annotations() {
     assert_eq!(return_type.as_deref(), Some("list[t.Tag]"));
     assert!(matches!(&stmts[1], Stmt::Let(_, _, Expr::IsType { type_name, .. }) if type_name == "t.Tag"));
 }
+
+/// 型の定義と `import` はモジュールの最上位だけ（フェーズ10 10-16。以前は実行時の内部エラー `VmForceError`）。
+#[test]
+fn definitions_and_imports_only_at_module_top_level() {
+    for src in [
+        "fn f() -> None:\n    class C:\n        let v: int\n",
+        "fn f() -> None:\n    trait T:\n        fn m(self) -> int:\n            ...\n",
+        "fn f() -> None:\n    new_type Id: int\n",
+        "if True:\n    class C:\n        let v: int\n",
+        "fn f() -> None:\n    @deco\n    class C:\n        let v: int\n",
+    ] {
+        let err = parse_fails(src);
+        assert!(err.contains("must be defined at the top level of a module"), "{src:?} → {err}");
+    }
+    for src in ["fn f() -> None:\n    import m\n", "while True:\n    from m import x\n"] {
+        let err = parse_fails(src);
+        assert!(err.contains("`import` must be at the top level of a module"), "{src:?} → {err}");
+    }
+    // 最上位は従来どおり。
+    parse("class C:\n    let v: int\nfn f() -> int:\n    return 1\n");
+}
+
+/// Python の関数の中の `class` は変換する（デコレータ・クラスのファクトリ）。`import` は関数の中でも
+/// モジュール直下のブロックの中でも認めず、モジュール直下のブロックの中の `class` も認めない（10-16）。
+#[test]
+fn python_nested_class_and_import_rules() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let ok = conv("def make(step):\n    if step:\n        class A:\n            pass\n        return A\n    class B:\n        pass\n    return B\n")
+        .expect("class inside a function must convert");
+    let Stmt::FnDef { body, .. } = &ok[0] else { panic!("expected fn: {ok:?}") };
+    assert!(body.iter().any(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "B")), "{body:?}");
+
+    let err = conv("def f():\n    import math\n    return 1\n").expect_err("import inside a function");
+    assert!(err.contains("an `import` inside a function is not supported"), "{err}");
+    let err = conv("try:\n    import math\nexcept ImportError:\n    pass\n").expect_err("import inside a block");
+    assert!(err.contains("an `import` inside a block"), "{err}");
+    let err = conv("if True:\n    class C:\n        pass\n").expect_err("class inside a module-level block");
+    assert!(err.contains("class 'C' is defined inside a block"), "{err}");
+    // 関数の中のブロックの中の `class` は認める（上の `make`）。メソッドの中の import は認めない。
+    let err = conv("class K:\n    def m(self):\n        from os import path\n        return 1\n").expect_err("import in a method");
+    assert!(err.contains("inside a function"), "{err}");
+}
