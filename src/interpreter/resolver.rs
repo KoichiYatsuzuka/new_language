@@ -190,7 +190,7 @@ fn collect_shadowing_binders(stmts: &[Stmt], out: &mut HashSet<String>) {
         match stmt {
             // 直下宣言 = グローバルそのもの。名前は覆わないが、初期化式の中は見る
             // （ブロック式が内部で束縛を作りうる）。
-            Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) => {
+            Stmt::Let(_, _, e, _) | Stmt::Const(_, _, e, _) | Stmt::Mut(_, _, e, _) => {
                 collect_bound_in_expr(e, out);
             }
             Stmt::Static(_, e, _) => collect_bound_in_expr(e, out),
@@ -419,7 +419,7 @@ fn collect_base_decls(body: &[Stmt], order: &mut Vec<String>) -> bool {
     for stmt in body {
         match stmt {
             // --- base に名前を導入する文 ---
-            Stmt::Let(n, _, _) | Stmt::Const(n, _, _) | Stmt::Mut(n, _, _) => push_base(n, order),
+            Stmt::Let(n, _, _, _) | Stmt::Const(n, _, _, _) | Stmt::Mut(n, _, _, _) => push_base(n, order),
             Stmt::Static(n, _, _) => push_base(n, order),
             Stmt::LetTuple { targets, .. } => {
                 for t in targets {
@@ -452,13 +452,13 @@ fn collect_base_decls(body: &[Stmt], order: &mut Vec<String>) -> bool {
             | Stmt::For { .. }
             | Stmt::Block(_)
             | Stmt::Try { .. }
-            | Stmt::Return(_)
+            | Stmt::Return(_, _)
             | Stmt::Break
             | Stmt::Continue
             | Stmt::Pass
             | Stmt::BlockReturn(_, _)
-            | Stmt::LoopYield(_)
-            | Stmt::Yield(_)
+            | Stmt::LoopYield(_, _)
+            | Stmt::Yield(_, _)
             | Stmt::Freeze(_, _)
             | Stmt::Raise { .. }
             | Stmt::BreakPoint { .. } => {}
@@ -486,12 +486,12 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
     globals: &HashSet<String>) {
     match stmt {
         Stmt::Expr(e)
-        | Stmt::Let(_, _, e)
-        | Stmt::Const(_, _, e)
-        | Stmt::Mut(_, _, e)
+        | Stmt::Let(_, _, e, _)
+        | Stmt::Const(_, _, e, _)
+        | Stmt::Mut(_, _, e, _)
         | Stmt::Static(_, e, _)
-        | Stmt::LoopYield(e)
-        | Stmt::Yield(e)
+        | Stmt::LoopYield(e, _)
+        | Stmt::Yield(e, _)
         | Stmt::BlockReturn(e, _) => rewrite_expr(e, base, globals),
 
         Stmt::LetTuple { value, .. } => rewrite_expr(value, base, globals),
@@ -500,7 +500,7 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
         // 右辺（読み取り）のみ書き換える。
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => rewrite_expr(value, base, globals),
 
-        Stmt::AttrAssign { target, value } => {
+        Stmt::AttrAssign { target, value, span: _ } => {
             rewrite_expr(target, base, globals);
             rewrite_expr(value, base, globals);
         }
@@ -512,6 +512,7 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
         Stmt::If {
             branches,
             else_body,
+            span: _,
         } => {
             for (cond, b) in branches.iter_mut() {
                 rewrite_expr(cond, base, globals);
@@ -527,7 +528,7 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
                 rewrite_match_arm(arm, base, globals);
             }
         }
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, span: _ } => {
             rewrite_expr(cond, base, globals);
             rewrite_stmts(body, base, globals);
         }
@@ -542,6 +543,7 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
             body,
             handlers,
             finally_body,
+            span: _,
         } => {
             rewrite_stmts(body, base, globals);
             for h in handlers.iter_mut() {
@@ -551,7 +553,7 @@ fn rewrite_stmt(stmt: &mut Stmt, base: &HashMap<String, u32>,
                 rewrite_stmts(fb, base, globals);
             }
         }
-        Stmt::Return(Some(e)) => rewrite_expr(e, base, globals),
+        Stmt::Return(Some(e), _) => rewrite_expr(e, base, globals),
         Stmt::Raise { exc: Some(e), .. } => rewrite_expr(e, base, globals),
 
         // 入れ子定義には踏み込まない（キャプチャは名前引きのまま＝正しさ維持）。

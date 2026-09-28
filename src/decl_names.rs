@@ -93,8 +93,8 @@ pub enum DeclOrigin {
 /// ここが壊れることだけが「6 本の walker を見直す」きっかけになる。
 pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Option<&String>)) {
     match stmt {
-        Stmt::Let(name, ty, _) | Stmt::Const(name, ty, _) => f(name, DeclOrigin::Let, ty.as_ref()),
-        Stmt::Mut(name, ty, _) => f(name, DeclOrigin::Mut, ty.as_ref()),
+        Stmt::Let(name, ty, _, _) | Stmt::Const(name, ty, _, _) => f(name, DeclOrigin::Let, ty.as_ref()),
+        Stmt::Mut(name, ty, _, _) => f(name, DeclOrigin::Mut, ty.as_ref()),
         // ⚠ `static mut` は slot を持たない（記憶域は `Interpreter::static_cells`）。
         // 「束縛する」ことは確かなので報告し、slot を振るかは消費側が決める。
         Stmt::Static(name, _, _) => f(name, DeclOrigin::Static, None),
@@ -156,13 +156,13 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         | Stmt::Match { .. }
         | Stmt::While { .. }
         | Stmt::Block(_)
-        | Stmt::Return(_)
+        | Stmt::Return(_, _)
         | Stmt::Break
         | Stmt::Continue
         | Stmt::Pass
         | Stmt::BlockReturn(..)
-        | Stmt::LoopYield(_)
-        | Stmt::Yield(_)
+        | Stmt::LoopYield(_, _)
+        | Stmt::Yield(_, _)
         | Stmt::Freeze(..)
         | Stmt::Raise { .. }
         | Stmt::BreakPoint { .. }

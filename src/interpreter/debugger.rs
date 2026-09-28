@@ -110,7 +110,14 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
 /// ここが `None` を返す文は VM 側では `STMT_NO_SPAN` として記録され、
 /// 停止時に `best_span_for` の `DebugState::last_span` フォールバックへ委ねられる。
 /// ＝ ツリーウォークと同じ表示になる。
+///
+/// ⚠ **文の位置（[`Stmt::position`]）を先に使う**（フェーズ10 10-17）。以前は `let x = 5` / `return x` の
+///   ような位置の無い文で、デバッガが直前に止まった行を出し続け、traceback の最も内側のフレームが
+///   `File ""` になっていた。
 pub(crate) fn stmt_span_of(stmt: &Stmt) -> Option<Span> {
+    if let Some(p) = stmt.position() {
+        return Some(p.clone());
+    }
     stmt_location(stmt).map(|(file, line)| Span {
         file: file.into(),
         line,
@@ -119,7 +126,13 @@ pub(crate) fn stmt_span_of(stmt: &Stmt) -> Option<Span> {
 }
 
 /// 文から代表的な（ファイル名, 行番号）を取り出す。スパンを持たない文は `None` を返す。
+///
+/// ⚠ 文の位置（[`Stmt::position`]）を先に使う（10-17）。下の式からの推定は、位置を持たない文
+///   （Python から変換した文・合成した文）のためのもの。
 pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
+    if let Some(p) = stmt.position() {
+        return Some((p.file.to_string(), p.line));
+    }
     fn from_span(s: &Span) -> Option<(String, usize)> {
         if s.line == 0 {
             None
@@ -146,9 +159,9 @@ pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
         | Stmt::Static(_, _, span) => from_span(span),
         Stmt::LetTuple { span, .. } => from_span(span),
         Stmt::Expr(e)
-        | Stmt::Let(_, _, e)
-        | Stmt::Mut(_, _, e)
-        | Stmt::Const(_, _, e)
+        | Stmt::Let(_, _, e, _)
+        | Stmt::Mut(_, _, e, _)
+        | Stmt::Const(_, _, e, _)
         | Stmt::DebugLet(_, e) => from_expr(e),
         _ => None,
     }
@@ -303,7 +316,7 @@ impl Interpreter {
                      (use 'let dbg::name = expr' for temporary variables)"
                 ));
             }
-            Stmt::Mut(name, _, _) => {
+            Stmt::Mut(name, _, _, _) => {
                 return Err(format!(
                     "mutation '{name}' is not allowed in the debugger \
                      (use 'let dbg::name = expr' for temporary variables)"

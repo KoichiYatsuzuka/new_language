@@ -267,10 +267,11 @@ impl Parser {
     pub(crate) fn body_has_return(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
-                Stmt::Return(_) => return true,
+                Stmt::Return(_, _) => return true,
                 Stmt::If {
                     branches,
                     else_body,
+                    span: _,
                 } => {
                     if branches.iter().any(|(_, b)| Self::body_has_return(b)) {
                         return true;

@@ -240,14 +240,14 @@ impl TypeChecker {
                 }
                 // Let/Const with a type annotation carry the type (used by Python stubs:
                 // `let dumps: function->str` → Function { params: None, return_type: Str }).
-                Stmt::Let(name, type_ann, _) | Stmt::Const(name, type_ann, _) => {
+                Stmt::Let(name, type_ann, _, _) | Stmt::Const(name, type_ann, _, _) => {
                     let ty = type_ann
                         .as_deref()
                         .and_then(InferredType::from_ann)
                         .unwrap_or(InferredType::Unresolved);
                     map.insert(name.clone(), ty);
                 }
-                Stmt::Mut(name, _, _) | Stmt::Static(name, _, _) => {
+                Stmt::Mut(name, _, _, _) | Stmt::Static(name, _, _) => {
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
                 Stmt::LetTuple { targets, .. } => {
@@ -365,7 +365,7 @@ impl TypeChecker {
             return;
         }
         let value = match stmt {
-            Stmt::Let(_, _, v) | Stmt::Const(_, _, v) | Stmt::Mut(_, _, v) => v,
+            Stmt::Let(_, _, v, _) | Stmt::Const(_, _, v, _) | Stmt::Mut(_, _, v, _) => v,
             _ => return,
         };
         let elems = match value {

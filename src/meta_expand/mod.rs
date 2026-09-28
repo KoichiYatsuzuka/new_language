@@ -1045,7 +1045,7 @@ fn expand_stmts(
             // ⚠ 初期化子が実行時の値に依存していると評価できない（`const x = f()` など）。
             //   そのときは**黙って諦める**——その `const` が展開時に使えないだけで、
             //   プログラムとしては正しい。⇒ 読まれたときに 3-0 の診断が出るよう名前を控える。
-            Stmt::Const(ref name, _, ref init) => {
+            Stmt::Const(ref name, _, ref init, _) => {
                 // ⚠ `exec` には渡せない。最上位の文は VM 経由で走る決まりなので、
                 //   `Stmt::Const` を `exec` へ渡すと `VmForceError` になる（実測）。
                 //   ⇒ 初期化子だけ評価して、VM と同じ経路で束縛する。
@@ -1491,7 +1491,7 @@ mod tests {
         .expect("expand");
         assert_eq!(out.len(), 1);
         assert!(
-            matches!(&out[0], Stmt::Let(name, _, _) if name == "placed"),
+            matches!(&out[0], Stmt::Let(name, _, _, _) if name == "placed"),
             "置かれたのは `let placed = 1`: {:?}",
             crate::interpreter::tw_stats::stmt_kind_of(&out[0])
         );
@@ -1517,7 +1517,7 @@ mod tests {
         .expect("expand");
         assert_eq!(out.len(), 1);
         assert!(
-            matches!(&out[0], Stmt::Let(name, _, _) if name == "chosen"),
+            matches!(&out[0], Stmt::Let(name, _, _, _) if name == "chosen"),
             "スプライスした名前で束縛される"
         );
     }
@@ -1531,7 +1531,7 @@ mod tests {
         )
         .expect("expand");
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], Stmt::Let(name, _, _) if name == "deep"));
+        assert!(matches!(&out[0], Stmt::Let(name, _, _, _) if name == "deep"));
     }
 
     /// ⚠ `quote` に到達せず抜けたら**エラー**（設計書 §1.1）。
@@ -1580,7 +1580,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "f_seen")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "f_seen")),
             "ファクトリの引数が届いていない"
         );
     }
@@ -2036,7 +2036,7 @@ mod tests {
     fn a_module_metafn_can_be_called_through_the_module_name() {
         let out = expand_with_module(module_src(), &[import_of(None)], "m.place_it()\n").expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "from_module")),
             "`m.place_it()` が置き換えられていない"
         );
     }
@@ -2047,7 +2047,7 @@ mod tests {
     fn a_from_imported_metafn_is_called_by_its_plain_name() {
         let out = expand_with_module(module_src(), &[from_import_of(&["place_it"])], "place_it()\n")
             .expect("expand");
-        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")));
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "from_module")));
         let Some(Stmt::FromImport { names, .. }) = out.first() else { panic!("FromImport を期待") };
         assert!(names.is_empty(), "メタ関数の名前が実行時の import に残っている: {names:?}");
     }
@@ -2065,8 +2065,8 @@ mod tests {
             "m.place_it()\n",
         );
         let out = expand_with_module(module_src(), &[import_of(None)], main).expect("expand");
-        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_module")));
-        assert!(!out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "from_main")));
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "from_module")));
+        assert!(!out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "from_main")));
     }
 
     /// ⚠⚠ モジュールは**初めて読み込まれるときに 1 回だけ**展開する（§1.7・2026-09-25 確定）。
@@ -2079,7 +2079,7 @@ mod tests {
             let Stmt::Import { body, .. } = s else { panic!("Import を期待") };
             body.iter()
                 .filter_map(|st| match st {
-                    Stmt::Let(n, _, _) => Some(n.clone()),
+                    Stmt::Let(n, _, _, _) => Some(n.clone()),
                     _ => None,
                 })
                 .collect()
@@ -2154,7 +2154,7 @@ mod tests {
             vec![("v".to_string(), "int".to_string()), ("items".to_string(), "list[int]".to_string())],
             "合成型の中の `T` も置換されること"
         );
-        let first_use = out.iter().position(|s| matches!(s, Stmt::Let(n, _, _) if n == "b")).unwrap();
+        let first_use = out.iter().position(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "b")).unwrap();
         assert!(at < first_use, "使う文より前に置かれること");
         let count = out.iter().filter(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "Box[int]")).count();
         assert_eq!(count, 1, "同じ型引数の具体化は 1 回だけ（メモ化）");
@@ -2277,7 +2277,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, Some(t), _) if n == "copy" && t == "int")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, Some(t), _, _) if n == "copy" && t == "int")),
             "`^Box[int].fields[0].type` が `int` になっていない"
         );
     }
@@ -2558,7 +2558,7 @@ mod tests {
         let out = expand_with_module(template_module_src(), &[import_of(None)], "print(1)\n").expect("expand");
         let body = body_of(&out, 0);
         let (at, _) = find_decl(body, "Box[str]").expect("モジュールの中の具体化");
-        let use_at = body.iter().position(|s| matches!(s, Stmt::Let(n, _, _) if n == "inner")).unwrap();
+        let use_at = body.iter().position(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "inner")).unwrap();
         assert!(at < use_at, "使う文より前に置く");
     }
 
@@ -2613,7 +2613,7 @@ mod tests {
         let add_id = |name: &str| -> u32 {
             let (_, decl) = find_decl(&out, name).expect("宣言が無い");
             let Stmt::FnDef { body, .. } = decl else { panic!("FnDef を期待") };
-            let Stmt::Return(Some(Expr::BinOp { node_id, .. })) = &body[0] else { panic!("return a + b を期待") };
+            let Stmt::Return(Some(Expr::BinOp { node_id, .. }), _) = &body[0] else { panic!("return a + b を期待") };
             *node_id
         };
         let (t, i, f) = (add_id("add_all"), add_id("add_all[int]"), add_id("add_all[float]"));
@@ -2677,7 +2677,7 @@ mod tests {
             "count_up()\n",
         ))
         .expect("expand");
-        assert!(matches!(&out[0], Stmt::Let(n, _, _) if n == "v7"));
+        assert!(matches!(&out[0], Stmt::Let(n, _, _, _) if n == "v7"));
     }
 
     /// ⚠⚠ **装飾子で関数を包む**（タスク 2-10 の本来の用途）。元の本体を別名で残し、
@@ -2792,7 +2792,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "line_3")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "line_3")),
             "3 行目を指していない"
         );
     }
@@ -2835,7 +2835,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "Point")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "Point")),
             "`origin` の型が `Point` と推論されていない"
         );
     }
@@ -2854,7 +2854,7 @@ mod tests {
             "let source = 42\n",
         ))
         .expect("expand");
-        let Some(Stmt::Let(_, Some(t), _)) = out.first() else {
+        let Some(Stmt::Let(_, Some(t), _, _)) = out.first() else {
             panic!("注釈付きの `let` が置かれていない")
         };
         assert_eq!(t, "int");
@@ -2918,7 +2918,7 @@ mod tests {
             );
             let out = expand(&src).unwrap_or_else(|e| panic!("{good:?} が弾かれた: {e}"));
             assert!(
-                matches!(&out[0], Stmt::Let(n, _, _) if n == good),
+                matches!(&out[0], Stmt::Let(n, _, _, _) if n == good),
                 "{good:?} で束縛されていない"
             );
         }
@@ -2986,7 +2986,7 @@ mod tests {
             "need_positive(5)\n",
         ))
         .expect("expand");
-        assert!(matches!(&out[0], Stmt::Let(n, _, _) if n == "accepted"));
+        assert!(matches!(&out[0], Stmt::Let(n, _, _, _) if n == "accepted"));
     }
 
     /// ⚠⚠ 同じメタ関数を 2 回呼ぶと、置いたコードの局所名がぶつかる（タスク 3-1）。
@@ -3005,7 +3005,7 @@ mod tests {
         let names: Vec<&str> = out
             .iter()
             .filter_map(|s| match s {
-                Stmt::Let(n, _, _) => Some(n.as_str()),
+                Stmt::Let(n, _, _, _) => Some(n.as_str()),
                 _ => None,
             })
             .collect();
@@ -3030,7 +3030,7 @@ mod tests {
         let names: Vec<&str> = out
             .iter()
             .filter_map(|s| match s {
-                Stmt::Let(n, _, _) => Some(n.as_str()),
+                Stmt::Let(n, _, _, _) => Some(n.as_str()),
                 _ => None,
             })
             .collect();
@@ -3057,7 +3057,7 @@ mod tests {
         let names: Vec<&str> = out
             .iter()
             .filter_map(|s| match s {
-                Stmt::Let(n, _, _) | Stmt::Const(n, _, _) => Some(n.as_str()),
+                Stmt::Let(n, _, _, _) | Stmt::Const(n, _, _, _) => Some(n.as_str()),
                 _ => None,
             })
             .collect();
@@ -3102,7 +3102,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "Point")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "Point")),
             "`.name` が射影されていない: {:?}",
             out.iter().map(crate::interpreter::tw_stats::stmt_kind_of).collect::<Vec<_>>()
         );
@@ -3134,7 +3134,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "x")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "x")),
             "`.fields[0].name` と `.has_method` が効いていない"
         );
     }
@@ -3155,7 +3155,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "who_str")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "who_str")),
             "仮引数名と戻り値型が取れていない"
         );
     }
@@ -3231,14 +3231,14 @@ mod tests {
         .expect("expand");
         let ann = |name: &str| {
             out.iter().find_map(|s| match s {
-                Stmt::Let(n, t, _) if n == name => t.clone(),
+                Stmt::Let(n, t, _, _) if n == name => t.clone(),
                 _ => None,
             })
         };
         assert_eq!(ann("xs").as_deref(), Some("list[int]"));
         // ⚠ 綴りは型注釈と同じ（パーサの正規の綴り・`canonical_type`）。
         assert_eq!(ann("d").as_deref(), Some("dict[str,int]"));
-        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "int_named")));
+        assert!(out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "int_named")));
     }
 
     /// ⚠ 型引数は型に限る。型でない値で合成しようとしたら展開時のエラー（壊れた型を黙って作らない）。
@@ -3330,7 +3330,7 @@ mod tests {
         ))
         .expect("expand");
         assert!(
-            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _) if n == "meta_class")),
+            out.iter().any(|s| matches!(s, Stmt::Let(n, _, _, _) if n == "meta_class")),
             "装飾子が受け取ったのはメタ情報ではない"
         );
     }
@@ -3423,7 +3423,7 @@ mod tests {
         )
         .expect("expand");
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], Stmt::Let(name, _, _) if name == "swapped"));
+        assert!(matches!(&out[0], Stmt::Let(name, _, _, _) if name == "swapped"));
     }
 
     /// ⚠ 自分より**前**に宣言されたメタ関数しか見えない（§1.7 の逐次展開）。
@@ -3515,7 +3515,7 @@ mod tests {
         );
         let (stmts, _, _) = parse(src).expect("parse");
         let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-        let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+        let Stmt::Let(_, _, Expr::CodeBlock(lines), _) = &body[0] else { panic!("CodeBlock を期待") };
         assert_eq!(lines[0].span.line, 3, "行の位置が記録されていること");
 
         let filled = fill_splices(lines, &[Value::Str("chosen".into())]).expect("fill");

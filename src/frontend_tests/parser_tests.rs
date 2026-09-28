@@ -49,14 +49,14 @@
     #[test]
     fn test_let_decl() {
         let stmts = parse("let x = 10");
-        assert!(matches!(&stmts[0], Stmt::Let(name, _, Expr::Int(10)) if name == "x"));
+        assert!(matches!(&stmts[0], Stmt::Let(name, _, Expr::Int(10), _) if name == "x"));
     }
 
     /// mut_decl のテスト。
     #[test]
     fn test_mut_decl() {
         let stmts = parse("mut y = 3.14");
-        assert!(matches!(&stmts[0], Stmt::Mut(name, _, Expr::Float(_)) if name == "y"));
+        assert!(matches!(&stmts[0], Stmt::Mut(name, _, Expr::Float(_), _) if name == "y"));
     }
 
     /// assign のテスト。
@@ -132,7 +132,7 @@
     #[test]
     fn test_if_stmt() {
         let stmts = parse("if True:\n    pass\n");
-        assert!(matches!(&stmts[0], Stmt::If { branches, else_body: None } if branches.len() == 1));
+        assert!(matches!(&stmts[0], Stmt::If { branches, else_body: None, span: _ } if branches.len() == 1));
     }
 
     /// if_else_stmt のテスト。
@@ -155,6 +155,7 @@
         if let Stmt::If {
             branches,
             else_body,
+            span: _,
         } = &stmts[0]
         {
             assert_eq!(branches.len(), 2);
@@ -859,7 +860,7 @@
         // alias 定義は Pass に消去され、let の型注釈は "int" に展開される。
         assert!(matches!(&stmts[0], Stmt::Pass));
         assert!(
-            matches!(&stmts[1], Stmt::Let(name, Some(ty), Expr::Int(5)) if name == "x" && ty == "int"),
+            matches!(&stmts[1], Stmt::Let(name, Some(ty), Expr::Int(5), _) if name == "x" && ty == "int"),
             "got: {:?}",
             stmts[1]
         );
@@ -870,7 +871,7 @@
     fn test_alias_expands_in_expr_position() {
         let stmts = parse("alias handle: int\nlet y = handle\n");
         assert!(
-            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }) if name == "y" && id == "int"),
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }, _) if name == "y" && id == "int"),
             "got: {:?}",
             stmts[1]
         );
@@ -886,7 +887,7 @@
         ));
         // `item = 5` は `d["k"] = 5`（Subscript を target とする AttrAssign）になる。
         match &stmts[2] {
-            Stmt::AttrAssign { target, value } => {
+            Stmt::AttrAssign { target, value, span: _ } => {
                 assert!(matches!(target, Expr::Subscript { .. }), "target: {:?}", target);
                 assert!(matches!(value, Expr::Int(5)));
             }
@@ -906,7 +907,7 @@
         // stmts: [0] ClassDef, [1] Pass(alias), [2] Let("b", ...)
         // `IntBox(1)` → `Box[int](1)`（func が TemplateInstantiate の Call）。
         match &stmts[2] {
-            Stmt::Let(name, _, Expr::Call { func, .. }) if name == "b" => {
+            Stmt::Let(name, _, Expr::Call { func, .. }, _) if name == "b" => {
                 assert!(
                     matches!(func.as_ref(), Expr::TemplateInstantiate { .. }),
                     "func: {:?}",
@@ -946,7 +947,7 @@
         ));
         // stmts: [0] FnDef, [1] Let("y", ...) — 関数外の `k` は alias 展開されず素の識別子。
         assert!(
-            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }) if name == "y" && id == "k"),
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }, _) if name == "y" && id == "k"),
             "got: {:?}",
             stmts[1]
         );
@@ -985,6 +986,7 @@
         let Stmt::If {
             branches,
             else_body,
+            span: _,
         } = &body[0]
         else {
             panic!("expected the filter to become Stmt::If, got: {:?}", body[0]);
@@ -992,7 +994,7 @@
         assert!(else_body.is_none());
         assert_eq!(branches.len(), 1);
         assert!(
-            matches!(branches[0].1.as_slice(), [Stmt::LoopYield(_)]),
+            matches!(branches[0].1.as_slice(), [Stmt::LoopYield(_, _)]),
             "expected the element to become Stmt::LoopYield, got: {:?}",
             branches[0].1
         );
@@ -1034,7 +1036,7 @@
         assert!(
             matches!(body.as_slice(), [Stmt::For { targets, body: inner, .. }]
                 if targets == &["b".to_string()]
-                    && matches!(inner.as_slice(), [Stmt::LoopYield(_)])),
+                    && matches!(inner.as_slice(), [Stmt::LoopYield(_, _)])),
             "got: {body:?}"
         );
     }
@@ -1154,7 +1156,7 @@ fn code_block_keeps_unparsable_fragment_as_lines() {
     use crate::ast::{Expr, Stmt};
     let stmts = parse("exprconst fn f() -> Code:\n    let a = code:\n        if x == None:\n            pass\n    return a\n");
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines), _) = &body[0] else { panic!("CodeBlock を期待") };
     assert_eq!(lines.len(), 2, "`if` 行と `pass` 行の 2 行");
     assert_eq!(lines[0].indent, 0, "断片先頭からの相対インデント");
     assert_eq!(lines[1].indent, 1, "`pass` は 1 段深い");
@@ -1166,7 +1168,7 @@ fn empty_code_block_is_allowed() {
     use crate::ast::{Expr, Stmt};
     let stmts = parse("exprconst fn f() -> Code:\n    let e = code:\n    return e\n");
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines), _) = &body[0] else { panic!("CodeBlock を期待") };
     assert!(lines.is_empty(), "空ブロックは 0 行");
 }
 
@@ -1250,7 +1252,7 @@ fn splice_inside_code_block_is_parsed_as_an_expression() {
         "exprconst fn f(n) -> Code:\n    let a = code:\n        let <! n !> = 1\n    return a\n",
     );
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines), _) = &body[0] else { panic!("CodeBlock を期待") };
     assert_eq!(lines.len(), 1, "1 行");
     let splices: Vec<&Expr> = lines[0]
         .pieces
@@ -1277,7 +1279,7 @@ fn splice_accepts_a_full_expression() {
         "exprconst fn f(n) -> Code:\n    let a = code:\n        <! prefix(n) + \"_x\" !>()\n    return a\n",
     );
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::CodeBlock(lines)) = &body[0] else { panic!("CodeBlock を期待") };
+    let Stmt::Let(_, _, Expr::CodeBlock(lines), _) = &body[0] else { panic!("CodeBlock を期待") };
     let CodePiece::Splice(e) = &lines[0].pieces[0] else { panic!("先頭はスプライス") };
     assert!(matches!(e, Expr::BinOp { .. }), "二項演算として取れていること");
 }
@@ -1324,7 +1326,7 @@ fn meta_info_binds_tighter_than_attribute_access() {
     use crate::ast::{Expr, Stmt};
     let stmts = parse("exprconst fn f(t) -> Code:\n    let a = ^t.fields\n    return code:\n");
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::Attr { object, attr, .. }) = &body[0] else {
+    let Stmt::Let(_, _, Expr::Attr { object, attr, .. }, _) = &body[0] else {
         panic!("最外は Attr（射影）を期待")
     };
     assert_eq!(attr, "fields");
@@ -1339,7 +1341,7 @@ fn meta_info_takes_template_instantiation_as_its_target() {
     let stmts =
         parse("exprconst fn f() -> Code:\n    let a = ^Box[int].fields\n    return code:\n");
     let Stmt::MetaFnDef { body, .. } = &stmts[0] else { panic!("MetaFnDef を期待") };
-    let Stmt::Let(_, _, Expr::Attr { object, .. }) = &body[0] else { panic!("Attr を期待") };
+    let Stmt::Let(_, _, Expr::Attr { object, .. }, _) = &body[0] else { panic!("Attr を期待") };
     let Expr::MetaInfo(target) = &**object else { panic!("`^` が外側にあること") };
     assert!(
         matches!(**target, Expr::TemplateInstantiate { .. } | Expr::Subscript { .. }),
@@ -1352,7 +1354,7 @@ fn meta_info_takes_template_instantiation_as_its_target() {
 fn caret_is_still_binary_xor_in_infix_position() {
     use crate::ast::{BinOp, Expr, Stmt};
     let stmts = parse("let a = 6 ^ 3\n");
-    let Stmt::Let(_, _, Expr::BinOp { op, .. }) = &stmts[0] else { panic!("BinOp を期待") };
+    let Stmt::Let(_, _, Expr::BinOp { op, .. }, _) = &stmts[0] else { panic!("BinOp を期待") };
     assert_eq!(*op, BinOp::BitXor);
 }
 
@@ -1361,7 +1363,7 @@ fn caret_is_still_binary_xor_in_infix_position() {
 fn meta_info_is_allowed_in_a_call_argument() {
     use crate::ast::{CallArg, Expr, Stmt};
     let stmts = parse("let y = g(^x)\n");
-    let Stmt::Let(_, _, Expr::Call { args, .. }) = &stmts[0] else { panic!("Call を期待") };
+    let Stmt::Let(_, _, Expr::Call { args, .. }, _) = &stmts[0] else { panic!("Call を期待") };
     let CallArg::Positional(arg) = &args[0] else { panic!("位置引数を期待") };
     assert!(matches!(arg, Expr::MetaInfo(_)));
 }
@@ -1497,11 +1499,11 @@ fn a_statement_after_quote_inside_a_nested_block_is_rejected() {
 fn is_guard_accepts_template_instance() {
     let stmts = parse("let b = s is Stack[int]\nlet c = p is not Pair[str, int]\n");
     match &stmts[0] {
-        Stmt::Let(_, _, Expr::IsType { type_name, negated: false, .. }) => assert_eq!(type_name, "Stack[int]"),
+        Stmt::Let(_, _, Expr::IsType { type_name, negated: false, .. }, _) => assert_eq!(type_name, "Stack[int]"),
         other => panic!("expected IsType, got {other:?}"),
     }
     match &stmts[1] {
-        Stmt::Let(_, _, Expr::IsType { type_name, negated: true, .. }) => assert_eq!(type_name, "Pair[str,int]"),
+        Stmt::Let(_, _, Expr::IsType { type_name, negated: true, .. }, _) => assert_eq!(type_name, "Pair[str,int]"),
         other => panic!("expected IsType, got {other:?}"),
     }
 }
@@ -1527,11 +1529,11 @@ fn template_name_bracket_is_instantiation_even_without_call() {
         "let xs = [1]\n",
         "let n = xs[0].real\n",
     ));
-    let Stmt::Let(_, _, Expr::Call { func, .. }) = &stmts[1] else { panic!("expected call: {:?}", stmts[1]) };
+    let Stmt::Let(_, _, Expr::Call { func, .. }, _) = &stmts[1] else { panic!("expected call: {:?}", stmts[1]) };
     let Expr::Attr { object, .. } = func.as_ref() else { panic!("expected attr") };
     assert!(matches!(object.as_ref(), Expr::TemplateInstantiate { type_args, .. } if type_args == &["int".to_string()]));
-    assert!(matches!(&stmts[2], Stmt::Let(_, _, Expr::TemplateInstantiate { .. })));
-    let Stmt::Let(_, _, Expr::Attr { object, .. }) = &stmts[4] else { panic!("expected attr") };
+    assert!(matches!(&stmts[2], Stmt::Let(_, _, Expr::TemplateInstantiate { .. }, _)));
+    let Stmt::Let(_, _, Expr::Attr { object, .. }, _) = &stmts[4] else { panic!("expected attr") };
     assert!(matches!(object.as_ref(), Expr::Subscript { .. }));
 }
 
@@ -1556,7 +1558,7 @@ fn dotted_type_names_in_annotations() {
     assert_eq!(params[0].type_ann.as_deref(), Some("t.Tag"));
     assert_eq!(params[1].type_ann.as_deref(), Some("a.b.Box[int]"));
     assert_eq!(return_type.as_deref(), Some("list[t.Tag]"));
-    assert!(matches!(&stmts[1], Stmt::Let(_, _, Expr::IsType { type_name, .. }) if type_name == "t.Tag"));
+    assert!(matches!(&stmts[1], Stmt::Let(_, _, Expr::IsType { type_name, .. }, _) if type_name == "t.Tag"));
 }
 
 /// 型の定義と `import` はモジュールの最上位だけ（フェーズ10 10-16。以前は実行時の内部エラー `VmForceError`）。
@@ -1599,4 +1601,41 @@ fn python_nested_class_and_import_rules() {
     // 関数の中のブロックの中の `class` は認める（上の `make`）。メソッドの中の import は認めない。
     let err = conv("class K:\n    def m(self):\n        from os import path\n        return 1\n").expect_err("import in a method");
     assert!(err.contains("inside a function"), "{err}");
+}
+
+/// 文が**文の位置**（先頭のトークン）を持つ（フェーズ10 10-17）。以前は `let` / `return` / `if` などが
+/// 位置を持たず、型検査の誤りが `<unknown>`・デバッガが直前の行を出し続けていた。
+#[test]
+fn statements_carry_their_position() {
+    let stmts = parse(concat!(
+        "let a = 1\n",
+        "mut b = a\n",
+        "if b:\n",
+        "    b = 2\n",
+        "while false:\n",
+        "    pass\n",
+        "for i in [1]:\n",
+        "    pass\n",
+        "try:\n",
+        "    pass\n",
+        "except Exception as e:\n",
+        "    pass\n",
+        "fn f(mut o: Box) -> int:\n",
+        "    o.v = 3\n",
+        "    return o.v\n",
+    ));
+    let lines: Vec<Option<(usize, usize)>> =
+        stmts.iter().map(|s| s.position().map(|p| (p.line, p.col))).collect();
+    // let / mut / if / while / for / try / fn（fn は元のソースの範囲の先頭）
+    assert_eq!(
+        lines,
+        vec![Some((1, 1)), Some((2, 1)), Some((3, 1)), Some((5, 1)), Some((7, 1)), Some((9, 1)), Some((13, 1))]
+    );
+    let Stmt::FnDef { body, .. } = &stmts[6] else { panic!("expected fn") };
+    // 属性への代入・return は字下げの位置（列 5）。
+    assert_eq!(body[0].position().map(|p| (p.line, p.col)), Some((14, 5)));
+    assert_eq!(body[1].position().map(|p| (p.line, p.col)), Some((15, 5)));
+    // 位置を持たない文（`pass`）は `None`。
+    let Stmt::While { body, .. } = &stmts[3] else { panic!("expected while") };
+    assert!(body[0].position().is_none());
 }

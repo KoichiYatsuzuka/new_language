@@ -39,6 +39,14 @@ Add the `Token` and `Stmt`/`Expr` variants, then `cargo build`. Most dispatch ma
 | Template clone-walk | `src/interpreter/templates.rs` — `subst_stmt()` / `subst_expr()` (exhaustive) | |
 | AST reflection | `src/interpreter/ast_value.rs` — Stmt→Value namespace match (exhaustive) | |
 
+**Statement position** (task 10-17): a new statement kind should carry its position
+(`span: Span` field, or a trailing `Span` in a tuple variant) and be listed in
+`Stmt::position` and `Stmt::fill_position` (`src/ast.rs`). Construct it with
+`Span::unknown()` in the parser — `parse_stmt` fills it from the statement's first token
+(`Parser::attach_position`). Without a position, type errors inside it fall back to the enclosing
+statement's position, the debugger shows the previous line, and a runtime error raised in it has no
+line in the traceback. In rewriting walkers (`template_subst`), carry the span over — don't drop it.
+
 **Wildcard sites that will NOT compile-error** (check manually via the Step-0 grep):
 
 - `src/partial_compiler/stub_gen.rs` — `_ => None` fallbacks; add an arm only if the construct can

@@ -361,7 +361,7 @@ fn unpack_assign(
     declared: &std::collections::HashSet<String>,
 ) -> Result<Vec<Stmt>, String> {
     let tmp = next_temp_name("tmp");
-    if !hoist_emit(Stmt::Mut(tmp.clone(), None, value)) {
+    if !hoist_emit(Stmt::Mut(tmp.clone(), None, value, crate::token::Span::unknown())) {
         return Err(format!("{filename}: internal error: no hoist buffer"));
     }
     let mut out = Vec::new();
@@ -425,6 +425,7 @@ fn unpack_assign(
                 out.push(Stmt::AttrAssign {
                     target: convert_expr(elt, filename)?,
                     value: idx,
+                    span: crate::token::Span::unknown(),
                 });
             }
             _ => return Err(format!("{filename}: unsupported unpacking target")),
@@ -602,7 +603,7 @@ pub(crate) fn convert_scope(
 
     let mut result: Vec<Stmt> = hoisted
         .into_iter()
-        .map(|name| Stmt::Mut(name, None, Expr::None))
+        .map(|name| Stmt::Mut(name, None, Expr::None, crate::token::Span::unknown()))
         .collect();
     for stmt in stmts {
         convert_one_into(stmt, filename, &declared, &mut result)?;
@@ -665,7 +666,7 @@ fn assign_or_declare(
             slot: Default::default(),
         }
     } else {
-        Stmt::Mut(name, None, value)
+        Stmt::Mut(name, None, value, crate::token::Span::unknown())
     }
 }
 
@@ -751,7 +752,7 @@ pub(crate) fn convert_stmt(
                 .as_deref()
                 .map(|e| convert_expr(e, filename))
                 .transpose()?;
-            Ok(vec![Stmt::Return(expr)])
+            Ok(vec![Stmt::Return(expr, crate::token::Span::unknown())])
         }
 
         // ----- 代入: `x = expr` / `a = b = expr`（項目 15）/ `a, b = t`（U2） -----
@@ -763,7 +764,7 @@ pub(crate) fn convert_stmt(
             //     一時変数へ 1 回だけ退避してから配る。
             let (source, mut out) = if a.targets.len() > 1 {
                 let tmp = next_temp_name("tmp");
-                if !hoist_emit(Stmt::Mut(tmp.clone(), None, val)) {
+                if !hoist_emit(Stmt::Mut(tmp.clone(), None, val, crate::token::Span::unknown())) {
                     return Err(format!("{filename}: internal error: no hoist buffer"));
                 }
                 (ident_expr(&tmp), Vec::new())
@@ -785,6 +786,7 @@ pub(crate) fn convert_stmt(
                         out.push(Stmt::AttrAssign {
                             target: convert_expr(target, filename)?,
                             value,
+                            span: crate::token::Span::unknown(),
                         });
                     }
                     // ★ **タプル/リストのアンパック**（`a, b = t` / `a, *rest = t`・U2）。
@@ -822,6 +824,7 @@ pub(crate) fn convert_stmt(
                     Ok(vec![Stmt::AttrAssign {
                         target: target_expr,
                         value: val,
+                        span: crate::token::Span::unknown(),
                     }])
                 } else {
                     Ok(vec![])
@@ -854,6 +857,7 @@ pub(crate) fn convert_stmt(
                         target: target_expr,
                         op,
                         value: val,
+                        span: crate::token::Span::unknown(),
                     }])
                 }
                 _ => Err(format!(
@@ -897,6 +901,7 @@ pub(crate) fn convert_stmt(
             Ok(vec![Stmt::If {
                 branches,
                 else_body,
+                span: crate::token::Span::unknown(),
             }])
         }
 
@@ -915,7 +920,7 @@ pub(crate) fn convert_stmt(
                 convert_expr(&w.test, filename)?
             };
             let body = convert_stmts(&w.body, filename, declared)?;
-            Ok(vec![Stmt::While { cond, body }])
+            Ok(vec![Stmt::While { cond, body, span: crate::token::Span::unknown() }])
         }
 
         // ----- for -----
@@ -964,6 +969,7 @@ pub(crate) fn convert_stmt(
                 targets,
                 iter,
                 body,
+                span: crate::token::Span::unknown(),
             }])
         }
 
@@ -993,12 +999,12 @@ pub(crate) fn convert_stmt(
                                 "{filename}: the name '{name}' bound by `with ... as` is also assigned elsewhere in this scope; Arrow cannot shadow it inside the block (the resource would not be released) — use a different name"
                             ));
                         }
-                        inner.push(Stmt::Mut(name, None, value));
+                        inner.push(Stmt::Mut(name, None, value, crate::token::Span::unknown()));
                     }
                     // `with EXPR:` — 名前は要らないが、ブロック退出で破棄させるため
                     // 一時変数へ束縛する（式文にすると即座に捨てられてしまう）。
                     None => {
-                        inner.push(Stmt::Mut(next_temp_name("with"), None, value));
+                        inner.push(Stmt::Mut(next_temp_name("with"), None, value, crate::token::Span::unknown()));
                     }
                     Some(_) => {
                         return Err(format!(
@@ -1070,6 +1076,7 @@ pub(crate) fn convert_stmt(
                 body,
                 handlers,
                 finally_body,
+                span: crate::token::Span::unknown(),
             }])
         }
 
@@ -1165,7 +1172,7 @@ pub(crate) fn convert_stmt(
                     Some(v) => convert_expr(v, filename)?,
                     None => Expr::None,
                 };
-                return Ok(vec![Stmt::Yield(val)]);
+                return Ok(vec![Stmt::Yield(val, crate::token::Span::unknown())]);
             }
             // ⚠ `yield from xs` は「内側のジェネレータへ委譲する」構文で、Arrow に
             //   相当するものが無い。`for v in xs: yield v` へ機械的に書き換えると

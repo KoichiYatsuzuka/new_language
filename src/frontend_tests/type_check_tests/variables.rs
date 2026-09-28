@@ -362,3 +362,18 @@ fn meta_kinds_are_distinct_types() {
         );
         assert!(undefined_names(src).is_empty(), "{:?}", undefined_names(src));
     }
+
+
+    /// 式の側に位置が無い誤りは**文の位置**で報告する（フェーズ10 10-17。以前は `<unknown>`）。
+    #[test]
+    fn error_without_expression_position_uses_statement_position() {
+        // 右辺が識別子（位置を持たない）の宣言。
+        let errs = check("let s = 1\nlet z: str = s\n");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        let at = errs[0].span.as_ref().map(|s| (s.line, s.col));
+        assert_eq!(at, Some((2, 1)), "{errs:?}");
+        // 式文の中の呼び出しの引数の誤り（式文は文の位置を持たないので、呼び出しの位置で代える）。
+        let errs = check("fn f(let x: int) -> None:\n    pass\n\nf(\"s\")\n");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
+    }

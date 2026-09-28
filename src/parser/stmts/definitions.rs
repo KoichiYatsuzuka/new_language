@@ -72,6 +72,7 @@ impl Parser {
             body,
             handlers,
             finally_body,
+            span: crate::token::Span::unknown(),
         })
     }
 

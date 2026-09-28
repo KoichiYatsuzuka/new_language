@@ -70,6 +70,7 @@ impl Parser {
         Ok(Stmt::If {
             branches,
             else_body,
+            span: crate::token::Span::unknown(),
         })
     }
 

@@ -1103,7 +1103,7 @@ impl Interpreter {
         let kind = crate::interpreter::value::MetaValue::kind_of(&decl)?;
         let needs_inference = matches!(
             &*decl,
-            Stmt::Let(_, None, _) | Stmt::Mut(_, None, _) | Stmt::Const(_, None, _) | Stmt::Static(..)
+            Stmt::Let(_, None, _, _) | Stmt::Mut(_, None, _, _) | Stmt::Const(_, None, _, _) | Stmt::Static(..)
         );
         let binding_type = if needs_inference {
             let prefix = self.meta_prefix.borrow();

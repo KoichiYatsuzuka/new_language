@@ -174,6 +174,7 @@ impl Parser {
         let start = self.pos;
         let mut stmt = self.parse_stmt_inner()?;
         self.attach_src(&mut stmt, start);
+        self.attach_position(&mut stmt, start);
         Ok(stmt)
     }
 
@@ -208,7 +209,7 @@ impl Parser {
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
                 self.note_init_expr(h, &init);
-                Ok(Stmt::Let(name, type_ann, init))
+                Ok(Stmt::Let(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `const 変数名 [: 型] = 式` — 定数宣言
             Token::Const => {
@@ -225,7 +226,7 @@ impl Parser {
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
                 self.note_init_expr(h, &init);
-                Ok(Stmt::Const(name, type_ann, init))
+                Ok(Stmt::Const(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
             // `mut x, let y, _ = expr` — タプルアンパック宣言
@@ -246,7 +247,7 @@ impl Parser {
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
                 self.note_init_expr(h, &init);
-                Ok(Stmt::Mut(name, type_ann, init))
+                Ok(Stmt::Mut(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `static mut 変数名 [: 型] = 式` — 静的可変変数宣言（全呼び出しでセル共有）
             Token::Static => {
@@ -294,10 +295,10 @@ impl Parser {
                     Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent
                 ) {
                     // 値なし return
-                    Ok(Stmt::Return(None))
+                    Ok(Stmt::Return(None, crate::token::Span::unknown()))
                 } else {
                     // 値あり return
-                    Ok(Stmt::Return(Some(self.parse_expr()?)))
+                    Ok(Stmt::Return(Some(self.parse_expr()?), crate::token::Span::unknown()))
                 }
             }
             // `block_return 式` / `loop_yield 式` — block/loop スコープからの脱出
@@ -308,7 +309,7 @@ impl Parser {
             }
             Token::LoopYield => {
                 self.advance();
-                Ok(Stmt::LoopYield(self.parse_expr()?))
+                Ok(Stmt::LoopYield(self.parse_expr()?, crate::token::Span::unknown()))
             }
             // `break_point` — デバッガ REPL を起動して実行を一時停止する
             Token::BreakPoint => {
@@ -327,6 +328,7 @@ impl Parser {
                 Ok(Stmt::While {
                     cond,
                     body: self.parse_block()?,
+                    span: crate::token::Span::unknown(),
                 })
             }
             Token::For => {
@@ -345,6 +347,7 @@ impl Parser {
                     targets,
                     iter,
                     body: self.parse_block()?,
+                    span: crate::token::Span::unknown(),
                 })
             }
             // `block [->Type]:` — 値を返せるスコープブロック
@@ -357,7 +360,7 @@ impl Parser {
             // `yield 式` — ジェネレータ関数内で値を yield する
             Token::Yield => {
                 self.advance();
-                Ok(Stmt::Yield(self.parse_expr()?))
+                Ok(Stmt::Yield(self.parse_expr()?, crate::token::Span::unknown()))
             }
             Token::Try => self.parse_try_stmt(),
             // `raise [式]` — 例外を送出する

@@ -95,6 +95,7 @@ impl Parser {
             Ok(Stmt::AttrAssign {
                 target: expr,
                 value: self.parse_expr()?,
+                span: span.clone(),
             })
         } else if let Some(op) = token_to_compound_op(&cur) {
             // `expr += 値` など — 属性/添字複合代入
@@ -103,6 +104,7 @@ impl Parser {
                 target: expr,
                 op,
                 value: self.parse_expr()?,
+                span: span.clone(),
             })
         } else if matches!(self.current(), Token::On | Token::Once | Token::Off) {
             // イベントハンドラ文（on/once/off）

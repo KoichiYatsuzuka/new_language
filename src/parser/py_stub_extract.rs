@@ -84,6 +84,7 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
                     class_name.clone(),
                     Some("function->Any".to_string()),
                     crate::ast::Expr::None,
+                    crate::token::Span::unknown(),
                 ));
                 i += 1;
                 continue;
@@ -108,6 +109,7 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
                         name,
                         Some(format!("function->{}", arrow_ret)),
                         crate::ast::Expr::None,
+                        crate::token::Span::unknown(),
                     ));
                 }
                 i = body_line;

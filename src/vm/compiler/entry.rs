@@ -211,7 +211,7 @@ fn compile_toplevel_stmt_inner(
     // slot ではない。slot を振ると `store_target` が slot 側を優先してしまい、
     // `DeclareGlobal` が出ずに値がフレームへ消える。初期化子の**内側**の宣言だけを採番する。
     let collected = match stmt {
-        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => {
+        Stmt::Let(_, _, e, _) | Stmt::Mut(_, _, e, _) | Stmt::Const(_, _, e, _) => {
             collect_expr_decls(e, &mut slots, &mut slot_mut, &mut slot_type, &mut n)
         }
         // `let a, b = t` も宣言文（#27-c）。ターゲットは最上位ではグローバルなので
@@ -303,7 +303,7 @@ fn compile_fn_inner(
     // トップレベル宣言を事前採番。LetTuple/Static/入れ子定義など slot をずらす形は非対応。
     for stmt in body {
         match stmt {
-            Stmt::Let(name, ty, _) | Stmt::Const(name, ty, _)
+            Stmt::Let(name, ty, _, _) | Stmt::Const(name, ty, _, _)
                 if name != "_" && !slots.contains_key(name) =>
             {
                 slots.insert(name.clone(), n);
@@ -311,7 +311,7 @@ fn compile_fn_inner(
                 slot_type.push(ty.clone());
                 n = n.checked_add(1)?;
             }
-            Stmt::Mut(name, ty, _) if name != "_" && !slots.contains_key(name) => {
+            Stmt::Mut(name, ty, _, _) if name != "_" && !slots.contains_key(name) => {
                 slots.insert(name.clone(), n);
                 slot_mut.push(true);
                 slot_type.push(ty.clone());
@@ -646,7 +646,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
             c.compile_expr(e)?;
             c.emit(Op::Return); // 式の値を返す（呼び出し側が表示）
         }
-        Stmt::Let(name, ty, e) | Stmt::Const(name, ty, e) if name != "_" => {
+        Stmt::Let(name, ty, e, _) | Stmt::Const(name, ty, e, _) if name != "_" => {
             c.compile_expr(e)?;
             c.emit_coerce_binding(ty, e);
             let ni = c.add_name(name);

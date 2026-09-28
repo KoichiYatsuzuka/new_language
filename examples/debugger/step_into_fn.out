@@ -9,41 +9,41 @@
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 5
 (dbg) 
-[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
-[33m  17[0m    fn main() -> int:
-[33m  18[0m        let base = 5
-[33m  19[0m [36m>>[0m     break_point
-[33m  20[0m        let got = accumulate(base)
-[33m  21[0m        return got
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:10
+[33m   8[0m    
+[33m   9[0m    fn accumulate(let n: int) -> int:
+[33m  10[0m [36m>>[0m     mut total = 0
+[33m  11[0m        mut i = 0
+[33m  12[0m        while i < n:
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 5
 (dbg) (dbg) (dbg) 
-[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
-[33m  17[0m    fn main() -> int:
-[33m  18[0m        let base = 5
-[33m  19[0m [36m>>[0m     break_point
-[33m  20[0m        let got = accumulate(base)
-[33m  21[0m        return got
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:11
+[33m   9[0m    fn accumulate(let n: int) -> int:
+[33m  10[0m        mut total = 0
+[33m  11[0m [36m>>[0m     mut i = 0
+[33m  12[0m        while i < n:
+[33m  13[0m            total = total + i * 2
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 
-[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
-[33m  17[0m    fn main() -> int:
-[33m  18[0m        let base = 5
-[33m  19[0m [36m>>[0m     break_point
-[33m  20[0m        let got = accumulate(base)
-[33m  21[0m        return got
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:12
+[33m  10[0m        mut total = 0
+[33m  11[0m        mut i = 0
+[33m  12[0m [36m>>[0m     while i < n:
+[33m  13[0m            total = total + i * 2
+[33m  14[0m            i += 1
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 0
 (dbg) 
-[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
-[33m  17[0m    fn main() -> int:
-[33m  18[0m        let base = 5
-[33m  19[0m [36m>>[0m     break_point
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:21
+[33m  19[0m        break_point
 [33m  20[0m        let got = accumulate(base)
-[33m  21[0m        return got
+[33m  21[0m [36m>>[0m     return got
+[33m  22[0m    
+[33m  23[0m    print(main())
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 20

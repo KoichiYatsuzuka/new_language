@@ -343,3 +343,20 @@ fn test_innermost_frame_has_failing_statement_location() {
     assert_eq!(innermost.fn_name, "inner");
     assert_eq!(innermost.line, 3, "{:?}", raised.frames);
 }
+
+
+/// `return` の式で起きた誤りも最も内側のフレームに行が付く（フェーズ10 10-17）。
+/// ⚠ 以前は `return` が位置を持たず、行テーブルに載らないので `File "", in inner` だった。
+#[test]
+fn test_innermost_frame_location_for_return_statement() {
+    let src = concat!(
+        "fn inner(let x: int) -> int:\n",
+        "    let d: dict[str, int] = {}\n",
+        "    return d[\"k\"] + x\n",
+        "let r = inner(1)\n",
+    );
+    let raised = run_exc(src).expect("run").expect("raised");
+    let innermost = raised.frames.first().expect("frame");
+    assert_eq!(innermost.fn_name, "inner");
+    assert_eq!(innermost.line, 3, "{:?}", raised.frames);
+}

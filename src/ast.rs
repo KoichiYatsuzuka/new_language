@@ -843,11 +843,14 @@ pub enum Stmt {
     /// 式文: 副作用のために式を評価する（例: `print(x)`）。
     Expr(Expr),
     /// 不変変数宣言: `let x [: Type] = expr`。宣言後の再代入はエラー。型アノテーションは省略可能。
-    Let(String, Option<String>, Expr),
+    /// 4 つ目は**文の位置**（先頭のトークン・フェーズ10 10-17・[`Stmt::position`]）。
+    Let(String, Option<String>, Expr, Span),
     /// 不変定数宣言: `const X [: Type] = expr`。`let` と同様に不変だが定数であることを明示する。
-    Const(String, Option<String>, Expr),
+    /// 4 つ目は文の位置（`Let` と同じ）。
+    Const(String, Option<String>, Expr, Span),
     /// 可変変数宣言: `mut x [: Type] = expr`。宣言後に再代入可能。
-    Mut(String, Option<String>, Expr),
+    /// 4 つ目は文の位置（`Let` と同じ）。
+    Mut(String, Option<String>, Expr, Span),
     /// タプルアンパック宣言: `let x, mut y, _ = expr`。
     /// `_` は末尾に置いて残余要素をすべて破棄する。
     LetTuple {
@@ -866,13 +869,14 @@ pub enum Stmt {
         span: Span,
         slot: SlotCache,
     },
-    /// 属性（フィールド）への代入: `obj.attr = expr`。
-    AttrAssign { target: Expr, value: Expr },
-    /// 属性への複合代入: `obj.attr += expr` など。`op` は複合代入の演算子。
+    /// 属性（フィールド）への代入: `obj.attr = expr`。`span` は文の位置（フェーズ10 10-17）。
+    AttrAssign { target: Expr, value: Expr, span: Span },
+    /// 属性への複合代入: `obj.attr += expr` など。`op` は複合代入の演算子。`span` は文の位置（10-17）。
     AttrCompoundAssign {
         target: Expr,
         op: BinOp,
         value: Expr,
+        span: Span,
     },
     /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
     /// `slot` はグローバル可変変数への直接アクセス用スロットキャッシュ（初回解決時に焼き込み）。
@@ -897,6 +901,8 @@ pub enum Stmt {
         branches: Vec<(Expr, Vec<Stmt>)>,
         /// `else` 節のボディ文リスト。`else` がない場合は `None`。
         else_body: Option<Vec<Stmt>>,
+        /// 文の位置（`if` のトークン・フェーズ10 10-17）。
+        span: Span,
     },
     /// `match (expr):` パターンマッチ文。
     ///
@@ -926,6 +932,8 @@ pub enum Stmt {
         cond: Expr,
         /// ループ本体の文リスト。
         body: Vec<Stmt>,
+        /// 文の位置（フェーズ10 10-17）。
+        span: Span,
     },
     /// `for target in iter:` イテレータループ。
     ///
@@ -943,11 +951,14 @@ pub enum Stmt {
         iter: Expr,
         /// ループ本体の文リスト。
         body: Vec<Stmt>,
+        /// 文の位置（フェーズ10 10-17）。
+        span: Span,
     },
     /// `block:` 無名スコープ。ブロック内の変数はブロック外に漏れない。
     Block(Vec<Stmt>),
     /// `return [expr]` — 関数からの返却。`None` の場合は `return None` と等価。
-    Return(Option<Expr>),
+    /// 2 つ目は文の位置（フェーズ10 10-17）。
+    Return(Option<Expr>, Span),
     /// `break` — 最も内側のループを脱出する。
     Break,
     /// `continue` — 最も内側のループの次のイテレーションへ進む。
@@ -957,10 +968,12 @@ pub enum Stmt {
     /// `block_return expr` — `block:` スコープから値を返却して即座に抜ける。
     BlockReturn(Expr, Span),
     /// `loop_yield expr` — `for`/`while` 式内から値を産出してリストに蓄積する。for/while 式の外では実行時エラー。
-    LoopYield(Expr),
+    /// 2 つ目は文の位置（フェーズ10 10-17）。
+    LoopYield(Expr, Span),
     /// `yield expr` — ジェネレータ関数内での値産出。
     /// ジェネレータ関数（`gen` キーワードで定義）の本体内でのみ有効。
-    Yield(Expr),
+    /// 2 つ目は文の位置（フェーズ10 10-17）。
+    Yield(Expr, Span),
     /// `freeze x` — `mut` 変数を `let`（不変）に降格する。
     /// 値に `__freeze__` メソッドがあれば、降格前に呼び出す。
     Freeze(String, Span),
@@ -1208,6 +1221,8 @@ pub enum Stmt {
         handlers: Vec<ExceptHandler>,
         /// `finally` 節の本体文リスト。例外の有無に関わらず常に実行される。
         finally_body: Option<Vec<Stmt>>,
+        /// 文の位置（フェーズ10 10-17）。
+        span: Span,
     },
     /// `raise [expr]` — 例外の送出または再送出。
     ///
@@ -1315,6 +1330,97 @@ pub enum Stmt {
 /// `try` 文内の単一の `except` 節を表す。
 ///
 /// # フィールド
+impl Expr {
+    /// 式そのものが持つ位置（呼び出し・属性・二項演算・`as` / `is` / `mustbe`）。無ければ `None`（フェーズ10 10-17）。
+    ///
+    /// ⚠ 呼び出しの位置は `(` のトークン（文の先頭ではない）。式文の位置の代わりに使う
+    ///   （型検査の `check_stmt`。式文は文の位置を持たない）。
+    pub fn own_span(&self) -> Option<&Span> {
+        let span = match self {
+            Expr::Call { span, .. }
+            | Expr::Attr { span, .. }
+            | Expr::BinOp { span, .. }
+            | Expr::Cast { span, .. }
+            | Expr::IsType { span, .. }
+            | Expr::MustBe { span, .. } => span,
+            _ => return None,
+        };
+        (span.line != 0).then_some(span)
+    }
+}
+
+impl Stmt {
+    /// **文の位置**（先頭のトークン・フェーズ10 10-17）。位置を持たない文・合成した文（行 0）は `None`。
+    ///
+    /// 使い道は 3 つ: 型検査の誤りの位置（式が位置を持たないときの代わり）・VM の行テーブル
+    /// （traceback の最も内側のフレーム）・デバッガの停止位置の表示。
+    ///
+    /// ⚠ 文の位置を持たせたのは、以前は**位置が 1 つも無い文があった**から（`let z: str = s` は
+    ///   右辺の識別子もリテラルも位置を持たない）。パーサは `parse_stmt` の入口で埋める
+    ///   （`Parser::attach_position`）。
+    /// ⚠ 位置を持たない種類: `pass` / `break` / `continue` / `block:` / 式文（式の側の位置を使う）など。
+    ///   定義文（`fn` / `class` …）は `src`（元のソースの範囲）の先頭のトークンの位置。
+    pub fn position(&self) -> Option<&Span> {
+        let span = match self {
+            Stmt::Let(.., span)
+            | Stmt::Const(.., span)
+            | Stmt::Mut(.., span)
+            | Stmt::Return(_, span)
+            | Stmt::LoopYield(_, span)
+            | Stmt::Yield(_, span)
+            | Stmt::BlockReturn(_, span)
+            | Stmt::Freeze(_, span)
+            | Stmt::Static(_, _, span)
+            | Stmt::LetTuple { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::CompoundAssign { span, .. }
+            | Stmt::AttrAssign { span, .. }
+            | Stmt::AttrCompoundAssign { span, .. }
+            | Stmt::If { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::For { span, .. }
+            | Stmt::Match { span, .. }
+            | Stmt::Try { span, .. }
+            | Stmt::Raise { span, .. }
+            | Stmt::BreakPoint { span }
+            | Stmt::EventSubscribe { span, .. }
+            | Stmt::EventUnsubscribe { span, .. } => span,
+            Stmt::FnDef { src: Some(src), .. }
+            | Stmt::GenDef { src: Some(src), .. }
+            | Stmt::ClassDef { src: Some(src), .. }
+            | Stmt::TraitDef { src: Some(src), .. }
+            | Stmt::EnumDef { src: Some(src), .. }
+            | Stmt::Field { src: Some(src), .. } => &src.tokens.get(src.start)?.span,
+            _ => return None,
+        };
+        (span.line != 0).then_some(span)
+    }
+
+    /// 位置の欄がまだ空（行 0）なら `span` で埋める（パーサの `parse_stmt` の入口・10-17）。
+    ///
+    /// ⚠ 既に位置を持つ文（`x = ..` の `Assign` など、パーサが個別に付けたもの）は変えない。
+    pub(crate) fn fill_position(&mut self, span: &Span) {
+        let slot = match self {
+            Stmt::Let(.., s)
+            | Stmt::Const(.., s)
+            | Stmt::Mut(.., s)
+            | Stmt::Return(_, s)
+            | Stmt::LoopYield(_, s)
+            | Stmt::Yield(_, s)
+            | Stmt::AttrAssign { span: s, .. }
+            | Stmt::AttrCompoundAssign { span: s, .. }
+            | Stmt::If { span: s, .. }
+            | Stmt::While { span: s, .. }
+            | Stmt::For { span: s, .. }
+            | Stmt::Try { span: s, .. } => s,
+            _ => return,
+        };
+        if slot.line == 0 {
+            *slot = span.clone();
+        }
+    }
+}
+
 /// - `exc_type` : キャッチする例外型の名前（例: `"ValueError"`）。`None` は bare `except:`（全捕捉）。
 /// - `name`     : 捕捉した例外を束縛する変数名（`as e` の `e`）。省略可能。
 /// - `body`     : このハンドラの本体文リスト。
@@ -1452,7 +1558,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
         return None;
     }
     // 最深部は `loop_yield <elt>`。そこから節を**逆順**に包んでいく。
-    let mut body: Vec<Stmt> = vec![Stmt::LoopYield(elt)];
+    let mut body: Vec<Stmt> = vec![Stmt::LoopYield(elt, crate::token::Span::unknown())];
     let mut clauses = clauses;
     while let Some(clause) = clauses.pop() {
         // フィルタは書かれた順に外→内で効くので、包むときは逆順。
@@ -1460,6 +1566,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
             body = vec![Stmt::If {
                 branches: vec![(cond, body)],
                 else_body: None,
+                span: crate::token::Span::unknown(),
             }];
         }
         if clauses.is_empty() {
@@ -1475,6 +1582,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
             targets: clause.targets,
             iter: clause.iter,
             body,
+            span: crate::token::Span::unknown(),
         }];
     }
     unreachable!("clauses was non-empty, so the loop returns from the `clauses.is_empty()` arm")

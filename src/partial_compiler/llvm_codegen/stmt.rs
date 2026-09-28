@@ -10,7 +10,7 @@ impl<'a> GenCtx<'a> {
 
     pub(super) fn gen_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let(name, _, expr) | Stmt::Const(name, _, expr) => {
+            Stmt::Let(name, _, expr, _) | Stmt::Const(name, _, expr, _) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -21,7 +21,7 @@ impl<'a> GenCtx<'a> {
                 };
                 self.store_val(st, &coerced, &ptr.clone());
             }
-            Stmt::Mut(name, _, expr) => {
+            Stmt::Mut(name, _, expr, _) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st  = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -58,7 +58,7 @@ impl<'a> GenCtx<'a> {
                 };
                 self.store_val(lt, &coerced, &ptr);
             }
-            Stmt::AttrAssign { target, value } => {
+            Stmt::AttrAssign { target, value, span: _ } => {
                 if let Expr::Attr { object, attr, .. } = target {
                     let (obj, ot) = self.gen_expr(object);
                     let (val, vt) = self.gen_expr(value);
@@ -69,7 +69,7 @@ impl<'a> GenCtx<'a> {
                     self.call_cb(CB_SET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {vh}")]);
                 }
             }
-            Stmt::AttrCompoundAssign { target, op, value } => {
+            Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 if let Expr::Attr { object, attr, .. } = target {
                     let (obj, ot) = self.gen_expr(object);
                     let oh   = self.to_handle(&obj, ot);
@@ -82,7 +82,7 @@ impl<'a> GenCtx<'a> {
                     self.call_cb(CB_SET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {rh}")]);
                 }
             }
-            Stmt::Return(Some(expr)) => {
+            Stmt::Return(Some(expr), _) => {
                 let (v, vt) = self.gen_expr(expr);
                 if self.typed_mode {
                     // typed ABI: 生値を %_ret スロットへ格納して status 0 を返す。
@@ -99,7 +99,7 @@ impl<'a> GenCtx<'a> {
                     self.ret_handle(&h);
                 }
             }
-            Stmt::Return(None) => {
+            Stmt::Return(None, _) => {
                 if self.typed_mode {
                     if !self.terminated {
                         let t = llvm_ty(self.current_fn_ret);
@@ -138,7 +138,7 @@ impl<'a> GenCtx<'a> {
                 }
             }
 
-            Stmt::LoopYield(expr) => {
+            Stmt::LoopYield(expr, _) => {
                 if let Some(ctx) = self.block_stack.last().cloned() {
                     if let Some(la) = ctx.list_al.clone() {
                         let list_cur = self.fresh_reg();
@@ -151,7 +151,7 @@ impl<'a> GenCtx<'a> {
                 }
             }
 
-            Stmt::Yield(expr) => {
+            Stmt::Yield(expr, _) => {
                 // Inside a GenDef body compiled as eager accumulator:
                 // the outermost block_stack entry is the generator's list alloca.
                 if let Some(ctx) = self.block_stack.first().cloned() {
@@ -204,7 +204,7 @@ impl<'a> GenCtx<'a> {
                 self.ret_handle("-2");
             }
 
-            Stmt::If { branches, else_body } => {
+            Stmt::If { branches, else_body, span: _ } => {
                 let merge = self.fresh_blk();
                 for (i, (cond, body)) in branches.iter().enumerate() {
                     let then_blk = self.fresh_blk();
@@ -230,7 +230,7 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&merge);
             }
 
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, span: _ } => {
                 let cond_blk = self.fresh_blk();
                 let body_blk = self.fresh_blk();
                 let exit_blk = self.fresh_blk();
@@ -247,7 +247,7 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&exit_blk);
             }
 
-            Stmt::For { targets, iter, body } => {
+            Stmt::For { targets, iter, body, span: _ } => {
                 let target   = &targets[0];
                 let exit_blk = self.fresh_blk();
                 let loop_blk = self.fresh_blk();

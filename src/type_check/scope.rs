@@ -95,7 +95,13 @@ impl TypeChecker {
     }
 
     /// 静的型エラーをエラーリストに追加する。
-    pub(super) fn report_error(&mut self, err: StaticTypeError) {
+    ///
+    /// ⚠ 位置を持たない誤りには**今検査している文の位置**を付ける（フェーズ10 10-17・`check_stmt`）。
+    ///   以前は表の `File` が `<unknown>` になっていた（`let z: str = s` は右辺の識別子が位置を持たない）。
+    pub(super) fn report_error(&mut self, mut err: StaticTypeError) {
+        if err.span.is_none() {
+            err.span = self.stmt_pos.clone();
+        }
         let from_instance = self.in_instance_decl();
         self.diags.report_error(err, from_instance);
     }
@@ -106,9 +112,13 @@ impl TypeChecker {
     /// 警告はテンプレートの本体の検査で必ず出る。具体化でだけ出る警告は型引数が決めたもので、
     /// 作者が書いたものではない（`Box[Drawable]` の `get() -> T` が「protocol を返している」
     /// と警告された・実測）。
-    pub(super) fn report_warning(&mut self, w: StaticTypeWarning) {
+    pub(super) fn report_warning(&mut self, mut w: StaticTypeWarning) {
         if self.in_instance_decl() {
             return;
+        }
+        // 位置を持たない警告には今の文の位置を付ける（`report_error` と同じ・10-17）。
+        if w.span.is_none() {
+            w.span = self.stmt_pos.clone();
         }
         self.diags.report_warning(w);
     }

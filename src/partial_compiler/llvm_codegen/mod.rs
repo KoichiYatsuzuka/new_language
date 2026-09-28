@@ -202,25 +202,25 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
     fn walk_stmts(body: &[Stmt], out: &mut HashMap<String, u16>) {
         for stmt in body {
             match stmt {
-                Stmt::Let(_, _, e)
-                | Stmt::Const(_, _, e)
-                | Stmt::Mut(_, _, e)
+                Stmt::Let(_, _, e, _)
+                | Stmt::Const(_, _, e, _)
+                | Stmt::Mut(_, _, e, _)
                 | Stmt::Static(_, e, _)
                 | Stmt::Expr(e)
-                | Stmt::LoopYield(e)
-                | Stmt::Yield(e)
+                | Stmt::LoopYield(e, _)
+                | Stmt::Yield(e, _)
                 | Stmt::BlockReturn(e, _)
-                | Stmt::Return(Some(e)) => walk_expr(e, out),
+                | Stmt::Return(Some(e), _) => walk_expr(e, out),
                 Stmt::LetTuple { value, .. } => walk_expr(value, out),
                 Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
                     walk_expr(value, out)
                 }
-                Stmt::AttrAssign { target, value }
+                Stmt::AttrAssign { target, value, span: _ }
                 | Stmt::AttrCompoundAssign { target, value, .. } => {
                     walk_expr(target, out);
                     walk_expr(value, out);
                 }
-                Stmt::If { branches, else_body } => {
+                Stmt::If { branches, else_body, span: _ } => {
                     for (c, b) in branches {
                         walk_expr(c, out);
                         walk_stmts(b, out);
@@ -229,7 +229,7 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
                         walk_stmts(b, out);
                     }
                 }
-                Stmt::While { cond, body } => {
+                Stmt::While { cond, body, span: _ } => {
                     walk_expr(cond, out);
                     walk_stmts(body, out);
                 }
@@ -244,7 +244,7 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
                         walk_stmts(&a.body, out);
                     }
                 }
-                Stmt::Try { body, handlers, finally_body } => {
+                Stmt::Try { body, handlers, finally_body, span: _ } => {
                     walk_stmts(body, out);
                     for h in handlers {
                         walk_stmts(&h.body, out);
@@ -652,9 +652,9 @@ fn body_has_loop_yield(stmts: &[Stmt]) -> bool {
 
 fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::LoopYield(_) => true,
+        Stmt::LoopYield(_, _) => true,
         Stmt::Block(ss) => body_has_loop_yield(ss),
-        Stmt::If { branches, else_body } =>
+        Stmt::If { branches, else_body, span: _ } =>
             branches.iter().any(|(_, b)| body_has_loop_yield(b))
             || else_body.as_ref().is_some_and(|b| body_has_loop_yield(b)),
         // Do NOT descend into nested For/While — loop_yield there belongs to that inner loop
@@ -664,26 +664,26 @@ fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
 
 fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => expr_eligible(e),
+        Stmt::Let(_, _, e, _) | Stmt::Mut(_, _, e, _) | Stmt::Const(_, _, e, _) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
-        Stmt::AttrAssign { target, value } => expr_eligible(target) && expr_eligible(value),
+        Stmt::AttrAssign { target, value, span: _ } => expr_eligible(target) && expr_eligible(value),
         Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
-        Stmt::Return(Some(e)) => expr_eligible(e),
-        Stmt::Return(None) | Stmt::Pass | Stmt::Break | Stmt::Continue => true,
+        Stmt::Return(Some(e), _) => expr_eligible(e),
+        Stmt::Return(None, _) | Stmt::Pass | Stmt::Break | Stmt::Continue => true,
         Stmt::Expr(e)    => expr_eligible(e),
         Stmt::Freeze(..) => true,
         Stmt::Block(ss)  => body_eligible(ss),
         Stmt::BlockReturn(e, _) => expr_eligible(e),
-        Stmt::LoopYield(e)      => expr_eligible(e),
-        Stmt::Yield(e)          => expr_eligible(e),
+        Stmt::LoopYield(e, _)      => expr_eligible(e),
+        Stmt::Yield(e, _)          => expr_eligible(e),
         // raise ExcType(msg) — only positional constructor calls
         Stmt::Raise { exc: Some(e), .. } => matches!(e, Expr::Call { args, .. }
             if args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e)))),
-        Stmt::If { branches, else_body } =>
+        Stmt::If { branches, else_body, span: _ } =>
             branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
             && else_body.as_ref().is_none_or(|b| body_eligible(b)),
-        Stmt::While { cond, body } => expr_eligible(cond) && body_eligible(body),
-        Stmt::For { targets, iter, body } =>
+        Stmt::While { cond, body, span: _ } => expr_eligible(cond) && body_eligible(body),
+        Stmt::For { targets, iter, body, span: _ } =>
             targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
         Stmt::Match { subject, arms, .. } =>
             expr_eligible(subject) && arms.iter().all(|a| {
@@ -757,7 +757,7 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
                 ident_name(object.as_ref()) == Some(param)
             } else { false }
         }
-        Stmt::If { branches, else_body } =>
+        Stmt::If { branches, else_body, span: _ } =>
             branches.iter().any(|(_, b)| body_writes_param(b, param))
             || else_body.as_ref().is_some_and(|b| body_writes_param(b, param)),
         Stmt::While { body, .. } | Stmt::For { body, .. } => body_writes_param(body, param),
@@ -812,8 +812,8 @@ fn body_eligible_gen(stmts: &[Stmt]) -> bool {
 
 fn stmt_eligible_gen(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Yield(e) => expr_eligible(e),
-        Stmt::LoopYield(_) | Stmt::BlockReturn(..) => false, // only yield allowed in gen bodies
+        Stmt::Yield(e, _) => expr_eligible(e),
+        Stmt::LoopYield(_, _) | Stmt::BlockReturn(..) => false, // only yield allowed in gen bodies
         other => stmt_eligible(other),
     }
 }

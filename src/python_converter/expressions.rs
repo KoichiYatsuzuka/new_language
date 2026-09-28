@@ -135,6 +135,7 @@ fn chained_compare_block(
                     vec![Stmt::BlockReturn(Expr::Bool(false), span.clone())],
                 )],
                 else_body: None,
+                span: crate::token::Span::unknown(),
             });
         }
     }
@@ -171,7 +172,7 @@ fn materialize(
         return;
     }
     let tmp = next_temp_name("cmp");
-    stmts.push(Stmt::Mut(tmp.clone(), None, e));
+    stmts.push(Stmt::Mut(tmp.clone(), None, e, crate::token::Span::unknown()));
     refs[k] = Some(ident_expr(&tmp));
 }
 
@@ -610,7 +611,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             };
             let mut body = hoist_pop();
             let body_expr = body_expr?;
-            body.push(Stmt::Return(Some(body_expr)));
+            body.push(Stmt::Return(Some(body_expr), crate::token::Span::unknown()));
             if !hoist_emit(Stmt::FnDef { src: None,
                 name: name.clone(),
                 template_params: vec![],

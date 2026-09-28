@@ -235,7 +235,7 @@ impl Parser {
                 .filter_map(|s| if let Stmt::FnDef { name, .. } = s { Some(name.clone()) } else { None })
                 .collect();
             for stub in extract_py_type_stubs(source) {
-                if let Stmt::Let(ref name, _, _) = stub {
+                if let Stmt::Let(ref name, _, _, _) = stub {
                     if !known.contains(name.as_str()) {
                         converted.push(stub);
                     }

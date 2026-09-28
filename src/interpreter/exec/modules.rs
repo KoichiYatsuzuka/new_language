@@ -950,6 +950,7 @@ impl Interpreter {
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
                     value: crate::ast::Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                    span: crate::token::Span::unknown(),
                 })
                 .collect();
 

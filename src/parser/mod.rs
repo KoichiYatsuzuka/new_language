@@ -256,6 +256,15 @@ impl Parser {
     /// ⚠ 付けるのは**まだ付いていない**ものだけ。`!装飾子` の中の宣言は内側の
     /// 呼び出しで既に付いていて、外側（装飾子行を含む範囲）で上書きしてはいけない
     /// ——`.code()` が装飾子行ごと返すと、置き直したときに装飾子が二重にかかる。
+    /// 文に**文の位置**（先頭のトークンの位置）を付ける（フェーズ10 10-17・[`crate::ast::Stmt::position`]）。
+    ///
+    /// ⚠ `parse_stmt` の入口の 1 箇所で付ける（各文の構文解析は位置を空で作る）。
+    pub(crate) fn attach_position(&self, stmt: &mut crate::ast::Stmt, start: usize) {
+        if let Some(t) = self.tokens.get(start) {
+            stmt.fill_position(&t.span);
+        }
+    }
+
     pub(crate) fn attach_src(&self, stmt: &mut crate::ast::Stmt, start: usize) {
         use crate::ast::{SrcRange, Stmt};
         let range = || {

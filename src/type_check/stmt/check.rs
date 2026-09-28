@@ -53,7 +53,7 @@ fn py_class_factory_names(body: &[Stmt]) -> Vec<String> {
                         makes.push(name.clone());
                     }
                 }
-                Stmt::Return(Some(Expr::Ident { name, .. })) => returned.push(name.clone()),
+                Stmt::Return(Some(Expr::Ident { name, .. }), _) => returned.push(name.clone()),
                 _ => crate::stmt_walk::each_subpart(st, &mut |part| {
                     use crate::stmt_walk::StmtPart as P;
                     if let P::Control(b) | P::AsyncBody(b) = part {
@@ -82,14 +82,32 @@ impl TypeChecker {
     }
 
     /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
+    ///
+    /// ⚠ 検査の間は**今の文の位置**を控える（フェーズ10 10-17）。位置を持たない誤り（式の側に位置が
+    ///   無い `let z: str = s` など）はこの位置で報告する（`report_error`）。位置を持たない文
+    ///   （`pass` など）は外側の文の位置を引き継ぐ。
     pub(crate) fn check_stmt(&mut self, stmt: &Stmt) {
+        // 式文は文の位置を持たないので、式そのものの位置（呼び出しの `(` など）で代える。
+        let here = stmt.position().or_else(|| match stmt {
+            Stmt::Expr(e) => e.own_span(),
+            _ => None,
+        });
+        let outer = match here {
+            Some(p) => self.stmt_pos.replace(p.clone()),
+            None => self.stmt_pos.clone(),
+        };
+        self.check_stmt_inner(stmt);
+        self.stmt_pos = outer;
+    }
+
+    fn check_stmt_inner(&mut self, stmt: &Stmt) {
         match stmt {
             // --- 変数宣言 ---
             // Let / Const は不変、Mut は可変。それ以外のロジックは共通。
-            Stmt::Let(name, type_ann, expr) | Stmt::Const(name, type_ann, expr) => {
+            Stmt::Let(name, type_ann, expr, _) | Stmt::Const(name, type_ann, expr, _) => {
                 self.check_var_decl(name, type_ann.as_deref(), expr, stmt, false);
             }
-            Stmt::Mut(name, type_ann, expr) => {
+            Stmt::Mut(name, type_ann, expr, _) => {
                 self.check_var_decl(name, type_ann.as_deref(), expr, stmt, true);
             }
             Stmt::Static(name, expr, _) => {
@@ -185,10 +203,10 @@ impl TypeChecker {
             //    ⇒ タスク 5.1 で**二段検査**（D-8）に置き換えた。以前はここで
             //      検査を**丸ごと省いて**いたので `c.n += "s"` が実行時まで判らなかった
             //      （検体 `F2`）。
-            Stmt::AttrAssign { target, value } => {
+            Stmt::AttrAssign { target, value, span: _ } => {
                 self.check_attr_assign(target, value, None);
             }
-            Stmt::AttrCompoundAssign { target, op, value } => {
+            Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 self.check_attr_assign(target, value, Some(op));
             }
 
@@ -202,9 +220,10 @@ impl TypeChecker {
             Stmt::If {
                 branches,
                 else_body,
+                span: _,
             } => self.check_if(branches, else_body),
             Stmt::Match { subject, arms, .. } => self.check_match(subject, arms),
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, span: _ } => {
                 // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
                 self.check_condition_is_bool(cond, "while");
                 self.push_scope();
@@ -215,6 +234,7 @@ impl TypeChecker {
                 targets,
                 iter,
                 body,
+                span: _,
             } => {
                 let iter_ty = self.infer(iter);
                 // ⚠ 反復できない型を弾く（タスク 7.1・検体 `K3`）。
@@ -404,7 +424,7 @@ impl TypeChecker {
             }
 
             // --- ジャンプ文 ---
-            Stmt::Return(expr) => {
+            Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
                     let got = self.infer(e);
                     self.check_return_type(&got);
@@ -427,7 +447,7 @@ impl TypeChecker {
                 self.check_block_expr_value(&got, expected, "block_return", Some(span.clone()));
             }
             // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
-            Stmt::LoopYield(expr) => {
+            Stmt::LoopYield(expr, _) => {
                 // ⚠ 値は囲み式の `->list[T]` の**要素型**と照合する（タスク 5.2・検体 X3）。
                 //
                 // ⚠⚠ **いちばん内側の注釈が `list[T]` のときだけ**照合する。
@@ -442,7 +462,7 @@ impl TypeChecker {
                 };
                 self.check_block_expr_value(&got, expected, "loop_yield", None);
             }
-            Stmt::Yield(expr) => {
+            Stmt::Yield(expr, _) => {
                 // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
                 //    コルーチン化の前提（yield は自分のフレームにしか現れない）を守るため。
                 if !self.state.in_gen_body() {
@@ -628,6 +648,7 @@ impl TypeChecker {
                 body,
                 handlers,
                 finally_body,
+                span: _,
             } => {
                 self.push_scope();
                 self.check_stmts(body);

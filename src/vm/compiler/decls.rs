@@ -270,7 +270,7 @@ pub(super) const MAX_FINALLY_NEST: usize = 4;
 /// **同じ木を歩く 2 つ目の walker を持たない**（ずれの温床になる）。
 pub(super) fn block_body_bails(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| {
-        if matches!(s, Stmt::Return(_)) {
+        if matches!(s, Stmt::Return(_, _)) {
             return true;
         }
         // 文の直下の構造は 1 箇所（#84）。⚠ **`_ => {}` を書かない**。

@@ -43,6 +43,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
             node_id: 0, // #16: 合成コード（注釈対象外）
         },
         value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
+        span: crate::token::Span::unknown(),
     }];
     let init_fn = Rc::new(FnValue {
         globals: crate::interpreter::value::GLOBALS_OF_CALLER,
@@ -131,6 +132,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
             node_id: 0, // #16: 合成コード（注釈対象外）
         },
         value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+        span: crate::token::Span::unknown(),
     }];
     let init_fn = Rc::new(FnValue {
         globals: crate::interpreter::value::GLOBALS_OF_CALLER,

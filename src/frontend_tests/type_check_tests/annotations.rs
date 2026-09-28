@@ -9,7 +9,7 @@ use crate::type_check::{Directive, InferredType, TypeChecker};
 /// `let` の値式が `MustBe` のとき、その node_id を返す（テスト用の限定的ウォーカ）。
 fn find_mustbe_node_id(stmts: &[Stmt]) -> Option<u32> {
     for s in stmts {
-        if let Stmt::Let(_, _, Expr::MustBe { node_id, .. }) = s {
+        if let Stmt::Let(_, _, Expr::MustBe { node_id, .. }, _) = s {
             return Some(*node_id);
         }
     }
@@ -64,7 +64,7 @@ fn mustbe_annotation_recorded_resolved_and_directive() {
 /// `let` の値式が `BinOp` のとき、その node_id を返す。
 fn find_binop_node_id(stmts: &[Stmt]) -> Option<u32> {
     for s in stmts {
-        if let Stmt::Let(_, _, Expr::BinOp { node_id, .. }) = s {
+        if let Stmt::Let(_, _, Expr::BinOp { node_id, .. }, _) = s {
             return Some(*node_id);
         }
     }
@@ -103,8 +103,8 @@ fn binop_float_result_type_recorded() {
 fn find_attr_node_id(stmts: &[Stmt]) -> Option<u32> {
     for s in stmts {
         match s {
-            Stmt::Let(_, _, Expr::Attr { node_id, .. })
-            | Stmt::Return(Some(Expr::Attr { node_id, .. })) => return Some(*node_id),
+            Stmt::Let(_, _, Expr::Attr { node_id, .. }, _)
+            | Stmt::Return(Some(Expr::Attr { node_id, .. }), _) => return Some(*node_id),
             Stmt::FnDef { body, .. } => {
                 if let Some(id) = find_attr_node_id(body) {
                     return Some(id);
@@ -145,7 +145,7 @@ fn subscript_element_type_recorded() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::Subscript { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::Subscript { node_id, .. }, _) => *node_id,
         other => panic!("expected Subscript, got {other:?}"),
     };
     let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
@@ -159,7 +159,7 @@ fn istype_records_bool() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::IsType { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::IsType { node_id, .. }, _) => *node_id,
         other => panic!("expected IsType, got {other:?}"),
     };
     let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
@@ -175,7 +175,7 @@ fn cast_records_target_type_and_check_directive() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::Cast { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::Cast { node_id, .. }, _) => *node_id,
         other => panic!("expected Cast, got {other:?}"),
     };
     let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
@@ -194,7 +194,7 @@ fn call_result_type_recorded() {
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     // stmts[1] = let y = f(5)
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::Call { node_id, .. }, _) => *node_id,
         other => panic!("expected Call, got {other:?}"),
     };
     assert_ne!(node_id, 0);
@@ -210,7 +210,7 @@ fn call_info_records_callee_and_arg_types() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::Call { node_id, .. }, _) => *node_id,
         other => panic!("expected Call, got {other:?}"),
     };
     let (errors, _warnings, ann) = TypeChecker::check_program(&stmts);
@@ -230,8 +230,8 @@ fn call_info_records_callee_and_arg_types() {
 fn find_call_node_id(stmts: &[Stmt]) -> Option<u32> {
     for s in stmts {
         match s {
-            Stmt::Let(_, _, Expr::Call { node_id, .. })
-            | Stmt::Return(Some(Expr::Call { node_id, .. })) => return Some(*node_id),
+            Stmt::Let(_, _, Expr::Call { node_id, .. }, _)
+            | Stmt::Return(Some(Expr::Call { node_id, .. }), _) => return Some(*node_id),
             Stmt::FnDef { body, .. } => {
                 if let Some(id) = find_call_node_id(body) {
                     return Some(id);
@@ -300,7 +300,7 @@ fn call_arg_static_has_no_check_directive() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = match &stmts[1] {
-        Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
+        Stmt::Let(_, _, Expr::Call { node_id, .. }, _) => *node_id,
         other => panic!("expected Call, got {other:?}"),
     };
     let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);

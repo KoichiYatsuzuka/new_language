@@ -222,7 +222,7 @@ fn collect_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
             Stmt::FnDef { body, .. } | Stmt::GenDef { body, .. } | Stmt::Block(body) => {
                 collect_members(body, out)
             }
-            Stmt::If { branches, else_body } => {
+            Stmt::If { branches, else_body, span: _ } => {
                 for (_, b) in branches {
                     collect_members(b, out);
                 }
@@ -592,7 +592,7 @@ fn namespace_members(body: &[Stmt]) -> Vec<Value> {
                 "name": name, "kind": "new_type", "type": original, "access": "public",
             }),
             // py スタブ（`let loads: function->str`）と、モジュールの定数。
-            Stmt::Let(name, type_ann, _) | Stmt::Const(name, type_ann, _) => json!({
+            Stmt::Let(name, type_ann, _, _) | Stmt::Const(name, type_ann, _, _) => json!({
                 "name": name, "kind": "variable", "type": type_ann, "access": "public",
             }),
             _ => continue,

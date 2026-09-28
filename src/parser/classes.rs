@@ -563,6 +563,7 @@ pub(crate) fn generate_auto_init_if_needed(
                     attr: fname.clone(),
                 },
                 value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                span: Span::unknown(), // 合成した `__init__`（位置を持たない）
             });
         }
         for (fname, _) in class_required {
@@ -576,6 +577,7 @@ pub(crate) fn generate_auto_init_if_needed(
                     node_id: 0, // #16: 合成 __init__ の代入先（注釈対象外）
                 },
                 value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                span: Span::unknown(), // 合成した `__init__`（位置を持たない）
             });
         }
 

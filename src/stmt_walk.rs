@@ -146,13 +146,13 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
     match stmt {
         // ── 部分式を 1 つだけ持つ文 ──
         Stmt::Expr(e)
-        | Stmt::Let(_, _, e)
-        | Stmt::Const(_, _, e)
-        | Stmt::Mut(_, _, e)
+        | Stmt::Let(_, _, e, _)
+        | Stmt::Const(_, _, e, _)
+        | Stmt::Mut(_, _, e, _)
         | Stmt::Static(_, e, _)
         | Stmt::BlockReturn(e, _)
-        | Stmt::LoopYield(e)
-        | Stmt::Yield(e)
+        | Stmt::LoopYield(e, _)
+        | Stmt::Yield(e, _)
         | Stmt::DebugLet(_, e) => f(P::Expr(e)),
         Stmt::LetTuple { value, .. } => f(P::Expr(value)),
         // 左辺は**既存の名前**（束縛ではない）。名前 → 右辺の順。
@@ -160,13 +160,13 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
             f(P::TargetName(name));
             f(P::Expr(value));
         }
-        Stmt::Return(e) | Stmt::Raise { exc: e, .. } => {
+        Stmt::Return(e, _) | Stmt::Raise { exc: e, .. } => {
             if let Some(e) = e {
                 f(P::Expr(e));
             }
         }
         // ── 部分式を 2 つ持つ文（左辺 → 右辺の順）──
-        Stmt::AttrAssign { target, value } | Stmt::AttrCompoundAssign { target, value, .. } => {
+        Stmt::AttrAssign { target, value, span: _ } | Stmt::AttrCompoundAssign { target, value, .. } => {
             f(P::Expr(target));
             f(P::Expr(value));
         }
@@ -184,6 +184,7 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
         Stmt::If {
             branches,
             else_body,
+            span: _,
         } => {
             for (cond, body) in branches {
                 f(P::Expr(cond));
@@ -193,7 +194,7 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
                 f(P::Control(body));
             }
         }
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, span: _ } => {
             f(P::Expr(cond));
             f(P::Control(body));
         }
@@ -202,6 +203,7 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
             targets,
             iter,
             body,
+            span: _,
         } => {
             for t in targets {
                 f(P::ForTarget(t));
@@ -224,6 +226,7 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
             body,
             handlers,
             finally_body,
+            span: _,
         } => {
             f(P::Control(body));
             for h in handlers {

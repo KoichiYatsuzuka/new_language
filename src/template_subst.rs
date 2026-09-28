@@ -443,20 +443,23 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, type_map)),
         // ⚠⚠ 変数の型注釈も置換する（タスク 2-8 段階 2）。以前は複製するだけで、
         //   テンプレートの本体の `let x: T = ..` が具体化しても `T` のまま残った。
-        Stmt::Let(name, ann, e) => Stmt::Let(
+        Stmt::Let(name, ann, e, sp) => Stmt::Let(
             name.clone(),
             ann.as_ref().map(|t| subst_type(t, type_map)),
             subst_expr(e, type_map),
+            sp.clone(),
         ),
-        Stmt::Const(name, ann, e) => Stmt::Const(
+        Stmt::Const(name, ann, e, sp) => Stmt::Const(
             name.clone(),
             ann.as_ref().map(|t| subst_type(t, type_map)),
             subst_expr(e, type_map),
+            sp.clone(),
         ),
-        Stmt::Mut(name, ann, e) => Stmt::Mut(
+        Stmt::Mut(name, ann, e, sp) => Stmt::Mut(
             name.clone(),
             ann.as_ref().map(|t| subst_type(t, type_map)),
             subst_expr(e, type_map),
+            sp.clone(),
         ),
         Stmt::LetTuple {
             targets,
@@ -473,14 +476,16 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             span: span.clone(),
             slot: Default::default(),
         },
-        Stmt::AttrAssign { target, value } => Stmt::AttrAssign {
+        Stmt::AttrAssign { target, value, span } => Stmt::AttrAssign {
             target: subst_expr(target, type_map),
             value: subst_expr(value, type_map),
+            span: span.clone(),
         },
-        Stmt::AttrCompoundAssign { target, op, value } => Stmt::AttrCompoundAssign {
+        Stmt::AttrCompoundAssign { target, op, value, span } => Stmt::AttrCompoundAssign {
             target: subst_expr(target, type_map),
             op: op.clone(),
             value: subst_expr(value, type_map),
+            span: span.clone(),
         },
         Stmt::CompoundAssign {
             name,
@@ -502,34 +507,39 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
         Stmt::If {
             branches,
             else_body,
+            span,
         } => Stmt::If {
             branches: branches
                 .iter()
                 .map(|(cond, body)| (subst_expr(cond, type_map), subst_stmts(body, type_map)))
                 .collect(),
             else_body: else_body.as_ref().map(|b| subst_stmts(b, type_map)),
+            span: span.clone(),
         },
-        Stmt::While { cond, body } => Stmt::While {
+        Stmt::While { cond, body, span } => Stmt::While {
             cond: subst_expr(cond, type_map),
             body: subst_stmts(body, type_map),
+            span: span.clone(),
         },
         Stmt::For {
             targets,
             iter,
             body,
+            span,
         } => Stmt::For {
             targets: targets.clone(),
             iter: subst_expr(iter, type_map),
             body: subst_stmts(body, type_map),
+            span: span.clone(),
         },
         Stmt::Block(body) => Stmt::Block(subst_stmts(body, type_map)),
-        Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, type_map))),
+        Stmt::Return(e, sp) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, type_map)), sp.clone()),
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,
         Stmt::Pass => Stmt::Pass,
         Stmt::BlockReturn(e, span) => Stmt::BlockReturn(subst_expr(e, type_map), span.clone()),
-        Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
-        Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
+        Stmt::LoopYield(e, sp) => Stmt::LoopYield(subst_expr(e, type_map), sp.clone()),
+        Stmt::Yield(e, sp) => Stmt::Yield(subst_expr(e, type_map), sp.clone()),
         Stmt::GenDef { src,
             name,
             template_params,
@@ -660,7 +670,9 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             body,
             handlers,
             finally_body,
+            span,
         } => Stmt::Try {
+            span: span.clone(),
             body: subst_stmts(body, type_map),
             handlers: handlers
                 .iter()

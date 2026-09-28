@@ -273,21 +273,21 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
     match stmt {
         Stmt::Expr(expr) => ns("StmtExpr", vec![("expr", expr_to_value(expr))]),
 
-        Stmt::Let(name, _, expr) => ns(
+        Stmt::Let(name, _, expr, _) => ns(
             "StmtLet",
             vec![
                 ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
-        Stmt::Const(name, _, expr) => ns(
+        Stmt::Const(name, _, expr, _) => ns(
             "StmtConst",
             vec![
                 ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
-        Stmt::Mut(name, _, expr) => ns(
+        Stmt::Mut(name, _, expr, _) => ns(
             "StmtMut",
             vec![
                 ("name", Value::str(name.as_str())),
@@ -316,14 +316,14 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("value", expr_to_value(value)),
             ],
         ),
-        Stmt::AttrAssign { target, value } => ns(
+        Stmt::AttrAssign { target, value, span: _ } => ns(
             "StmtAttrAssign",
             vec![
                 ("target", expr_to_value(target)),
                 ("value", expr_to_value(value)),
             ],
         ),
-        Stmt::AttrCompoundAssign { target, op, value } => ns(
+        Stmt::AttrCompoundAssign { target, op, value, span: _ } => ns(
             "StmtAttrCompoundAssign",
             vec![
                 ("target", expr_to_value(target)),
@@ -340,21 +340,21 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
             ],
         ),
 
-        Stmt::If { branches, else_body } => ns(
+        Stmt::If { branches, else_body, span: _ } => ns(
             "StmtIf",
             vec![
                 ("branches", branches_list(branches)),
                 ("else_body", opt_stmts(else_body.as_ref())),
             ],
         ),
-        Stmt::While { cond, body } => ns(
+        Stmt::While { cond, body, span: _ } => ns(
             "StmtWhile",
             vec![
                 ("cond", expr_to_value(cond)),
                 ("body", stmts_list(body)),
             ],
         ),
-        Stmt::For { targets, iter, body } => ns(
+        Stmt::For { targets, iter, body, span: _ } => ns(
             "StmtFor",
             vec![
                 ("targets", str_list(targets)),
@@ -371,7 +371,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
         ),
         Stmt::Block(stmts) => ns("StmtBlock", vec![("stmts", stmts_list(stmts))]),
 
-        Stmt::Return(e) => ns("StmtReturn", vec![("expr", opt_expr(e.as_ref()))]),
+        Stmt::Return(e, _) => ns("StmtReturn", vec![("expr", opt_expr(e.as_ref()))]),
         Stmt::Break => ns("StmtBreak", vec![]),
         Stmt::Continue => ns("StmtContinue", vec![]),
         Stmt::Pass => ns("StmtPass", vec![]),
@@ -379,8 +379,8 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::BlockReturn(expr, _) => {
             ns("StmtBlockReturn", vec![("expr", expr_to_value(expr))])
         }
-        Stmt::LoopYield(expr) => ns("StmtLoopYield", vec![("expr", expr_to_value(expr))]),
-        Stmt::Yield(expr) => ns("StmtYield", vec![("expr", expr_to_value(expr))]),
+        Stmt::LoopYield(expr, _) => ns("StmtLoopYield", vec![("expr", expr_to_value(expr))]),
+        Stmt::Yield(expr, _) => ns("StmtYield", vec![("expr", expr_to_value(expr))]),
         Stmt::Freeze(name, _) => ns("StmtFreeze", vec![("name", Value::str(name.as_str()))]),
 
         Stmt::FnDef {
@@ -531,6 +531,7 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
             body,
             handlers,
             finally_body,
+            span: _,
         } => ns(
             "StmtTry",
             vec![

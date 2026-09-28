@@ -475,6 +475,7 @@ impl TypeRegistryBuilder {
                 Stmt::If {
                     branches,
                     else_body,
+                    span: _,
                 } => {
                     for (_, body) in branches {
                         self.collect(body);

@@ -46,12 +46,12 @@
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 
-[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:25
-[33m  23[0m        for v in produce(3):
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:26
 [33m  24[0m            break_point
-[33m  25[0m [36m>>[0m         total = total + v
-[33m  26[0m        return total
+[33m  25[0m            total = total + v
+[33m  26[0m [36m>>[0m     return total
 [33m  27[0m    
+[33m  28[0m    print(main())
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
 (dbg) 3

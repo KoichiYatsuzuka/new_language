@@ -87,6 +87,8 @@ pub struct TypeChecker {
     ///   デコレータに使う・値として持ち出すのはどれも誤りにする。
     /// ⚠ 深さは、同じ綴りの別の束縛（関数の引数など）を取り違えないために見る。
     py_class_factories: HashMap<String, (usize, String)>,
+    /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
+    stmt_pos: Option<crate::token::Span>,
 }
 
 impl TypeChecker {
@@ -235,6 +237,7 @@ impl TypeChecker {
                 set
             },
             py_class_factories: HashMap::new(),
+            stmt_pos: None,
         }
     }
 

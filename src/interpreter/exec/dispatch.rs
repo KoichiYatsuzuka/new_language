@@ -81,8 +81,8 @@ impl Interpreter {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::Let(name, ty, expr) => self.exec_let(name, ty.as_deref(), expr),
-            Stmt::Const(name, ty, expr) => {
+            Stmt::Let(name, ty, expr, _) => self.exec_let(name, ty.as_deref(), expr),
+            Stmt::Const(name, ty, expr, _) => {
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -92,7 +92,7 @@ impl Interpreter {
                 self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
-            Stmt::Mut(name, ty, expr) => {
+            Stmt::Mut(name, ty, expr, _) => {
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -115,12 +115,12 @@ impl Interpreter {
                 self.try_fill_slot(name, slot);
                 Ok(ExecResult::Normal)
             }
-            Stmt::AttrAssign { target, value } => {
+            Stmt::AttrAssign { target, value, span: _ } => {
                 let rhs = self.eval(value)?;
                 self.attr_assign(target, rhs)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::AttrCompoundAssign { target, op, value } => {
+            Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 let rhs = self.eval(value)?;
                 let lhs = self.eval(target)?;
                 let result = self.apply_binop_dyn(op, lhs, rhs)?;
@@ -137,9 +137,9 @@ impl Interpreter {
             // ⚠ ここへ来たら配線の穴なので、黙って動かず落とす。
             Stmt::Break
             | Stmt::Continue
-            | Stmt::Return(_)
+            | Stmt::Return(_, _)
             | Stmt::BlockReturn(..)
-            | Stmt::LoopYield(_)
+            | Stmt::LoopYield(_, _)
             | Stmt::If { .. }
             | Stmt::Match { .. }
             | Stmt::While { .. }
@@ -163,7 +163,7 @@ impl Interpreter {
             //    以前はここが共有バッファへ積んでいた（先行評価）。
             //    ⚠ 黙って握り潰さず明示的に落とす。素通りさせると「yield が消える」
             //      種類のバグ（B12）を再び見えなくする。
-            Stmt::Yield(_) => {
+            Stmt::Yield(_, _) => {
                 Err("RuntimeError: internal: `yield` outside a generator body".to_string())
             }
             Stmt::GenDef {

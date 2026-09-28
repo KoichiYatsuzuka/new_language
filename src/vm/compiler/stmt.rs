@@ -24,7 +24,7 @@ impl Compiler {
                 self.compile_expr(e)?;
                 self.emit(Op::Pop);
             }
-            Stmt::Return(Some(e)) => {
+            Stmt::Return(Some(e), _) => {
                 self.compile_expr(e)?;
                 // #37: 開いている `finally` を**全部**走らせてから返す（内側から）。
                 // ⚠ `try/except` の `PopTry` は不要（`run` から即復帰してハンドラごと捨てられる）。
@@ -40,7 +40,7 @@ impl Compiler {
                 self.emit_unwind_tries(0, false, 1)?;
                 self.emit(Op::Return);
             }
-            Stmt::Return(None) => {
+            Stmt::Return(None, _) => {
                 self.emit_unwind_tries(0, false, 0)?;
                 self.emit(Op::ReturnNil);
             }
@@ -56,7 +56,7 @@ impl Compiler {
             } => {
                 self.compile_compound_assign(name, op, value, *node_id)?;
             }
-            Stmt::If { branches, else_body } => {
+            Stmt::If { branches, else_body, span: _ } => {
                 // 各分岐: cond, JumpIfFalse(next), body, Jump(end); next: ...
                 let mut end_jumps: Vec<usize> = Vec::new();
                 for (cond, body) in branches {
@@ -79,7 +79,7 @@ impl Compiler {
                     self.patch_jump(j, end);
                 }
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, span: _ } => {
                 let start = self.here();
                 self.compile_expr(cond)?;
                 let jf = self.emit(Op::JumpIfFalse(0));
@@ -107,7 +107,7 @@ impl Compiler {
             Stmt::Match { subject, arms, .. } => {
                 self.compile_match(subject, arms)?;
             }
-            Stmt::For { targets, iter, body } => {
+            Stmt::For { targets, iter, body, span: _ } => {
                 self.compile_for(targets, iter, body)?;
             }
             Stmt::Break => {
@@ -136,7 +136,7 @@ impl Compiler {
             }
             // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
             // 最上位モード（#10-c）では slot ではなくグローバルへ宣言する（`DeclareGlobal`）。
-            Stmt::Const(name, ty, e) => {
+            Stmt::Const(name, ty, e, _) => {
                 self.compile_expr(e)?;
                 self.emit_coerce_binding(ty, e);
                 if name == "_" {
@@ -148,7 +148,7 @@ impl Compiler {
                     self.emit(Op::StoreLocal(slot)); // const は copy/freeze しない
                 }
             }
-            Stmt::Mut(name, ty, e) => {
+            Stmt::Mut(name, ty, e, _) => {
                 self.compile_expr(e)?;
                 self.emit_coerce_binding(ty, e);
                 if name == "_" {
@@ -164,7 +164,7 @@ impl Compiler {
                     self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
                 }
             }
-            Stmt::Let(name, ty, e) if self.toplevel_decl_name(name).is_some() && name != "_" => {
+            Stmt::Let(name, ty, e, _) if self.toplevel_decl_name(name).is_some() && name != "_" => {
                 // 最上位の `let`（#10-c）。ソースが識別子のときの可変性は**コンパイル時に
                 // 分からない**（`toplevel_globals` は名前の集合だけ）ので、予測せず
                 // `LetFromIdent` でソース名を渡し、`exec_let` と同じ判断を実行時に行う（#27-c）。
@@ -180,7 +180,7 @@ impl Compiler {
                 self.emit_coerce_binding(ty, e);
                 self.emit(Op::DeclareGlobal(ni, kind));
             }
-            Stmt::Let(name, ty, e) => {
+            Stmt::Let(name, ty, e, _) => {
                 self.compile_let(name, ty, e)?;
             }
             // `static mut x = e`（#27-d）。記憶域は `Interpreter::static_cells`（宣言位置がキー）。
@@ -212,12 +212,12 @@ impl Compiler {
                 let after = self.here();
                 self.chunk.code[guard] = Op::StaticInit(si, after);
             }
-            Stmt::AttrAssign { target, value } => {
+            Stmt::AttrAssign { target, value, span: _ } => {
                 self.compile_attr_assign(target, value)?;
             }
             // 複合代入（属性・添字）。⚠ #62 で**アームを 1 つに統合**した
             // （以前は添字用のパターンガード付きアームが別にあり、同じ文種別を 2 箇所で受けていた）。
-            Stmt::AttrCompoundAssign { target, op, value } => {
+            Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 self.compile_attr_compound_assign(target, op, value)?;
             }
             Stmt::Raise { exc, span } => match exc {
@@ -230,7 +230,7 @@ impl Compiler {
                     self.emit(Op::Reraise); // bare raise（再送出）
                 }
             },
-            Stmt::Try { body, handlers, finally_body } => {
+            Stmt::Try { body, handlers, finally_body, span: _ } => {
                 self.compile_try(body, handlers, finally_body)?;
             }
             // ブロック式内: block_return は最内ブロック式の result_slot へ格納して出口へ跳ぶ。
@@ -266,7 +266,7 @@ impl Compiler {
             }
             // loop_yield は最内の「yield 先を持つ」ブロック式（block:/for/while 式）の蓄積リストへ追加。
             // if/match 式は透過（yield_slot=None）なので飛ばして外側へ届く。
-            Stmt::LoopYield(e) => {
+            Stmt::LoopYield(e, _) => {
                 let Some(yield_slot) = self.block_ctxs.iter().rev().find_map(|c| c.yield_slot)
                 else {
                     // for/while 式の外の `loop_yield`（#35）。**bail せず**ツリーウォークと
@@ -300,7 +300,7 @@ impl Compiler {
             }
             // ジェネレータ本体の `yield expr`（タスク #8）。値を評価して yield 収集バッファへ産出する。
             // eager 収集なので制御は継続（ツリーウォークの `Stmt::Yield` と同一）。
-            Stmt::Yield(e) => {
+            Stmt::Yield(e, _) => {
                 self.compile_expr(e)?;
                 self.emit(Op::Yield);
             }

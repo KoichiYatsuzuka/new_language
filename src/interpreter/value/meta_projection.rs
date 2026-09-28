@@ -254,7 +254,7 @@ fn field_of(m: &Rc<MetaValue>) -> Result<(FieldKind, &String, bool), String> {
 fn binding_or_field_type(m: &Rc<MetaValue>) -> Result<Value, String> {
     match &*m.decl {
         Stmt::Field { type_ann, .. } => Ok(type_value(type_ann)),
-        Stmt::Let(_, Some(t), _) | Stmt::Mut(_, Some(t), _) | Stmt::Const(_, Some(t), _) => {
+        Stmt::Let(_, Some(t), _, _) | Stmt::Mut(_, Some(t), _, _) | Stmt::Const(_, Some(t), _, _) => {
             Ok(type_value(t))
         }
         Stmt::Let(..) | Stmt::Mut(..) | Stmt::Const(..) | Stmt::Static(..) => {
