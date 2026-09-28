@@ -15,6 +15,21 @@ use {
 };
 
 impl Interpreter {
+    /// クラス変数（`static mut` / `const` のクラス変数）に入った**クラス**（フェーズ10 10-18）。
+    ///
+    /// メソッドが見つからなかったときだけ使う: `Outer.Inner()` / `self.Inner()` は Python では
+    /// 「属性を読んで呼ぶ」なので、クラス変数に入れた入れ子のクラス（`python_converter::classes` が
+    /// 持ち上げて結んだもの）を呼べるようにする。
+    /// ⚠ クラスだけを対象にする。関数を入れたクラス変数をインスタンス経由で呼ぶと Python は `self` を
+    ///   束縛する（束縛メソッド）ので、同じ扱いにすると意味が違ってしまう。
+    pub(crate) fn class_var_class(cls: &ClassValue, name: &str) -> Option<Value> {
+        let v = match cls.static_vars.get(name) {
+            Some(cell) => cell.borrow().clone(),
+            None => cls.class_vars.get(name)?.clone(),
+        };
+        matches!(v, Value::Class(_)).then_some(v)
+    }
+
     /// クラスオブジェクトのメソッドを評価済み引数で呼ぶ（#63 で切り出し）。
     /// 呼び出し元は `eval_method_call_full` のみ。
     pub(crate) fn eval_class_method(
@@ -65,14 +80,16 @@ impl Interpreter {
         }
 
         // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
-        let overloads = self
-            .lookup_method_in_class(&cls, method_name)
-            .ok_or_else(|| {
-                format!(
-                    "AttributeError: class '{}' has no method '{method_name}'",
-                    cls.name
-                )
-            })?;
+        let Some(overloads) = self.lookup_method_in_class(&cls, method_name) else {
+            // クラス変数に入ったクラス（入れ子のクラス・10-18）なら、それを呼ぶ。
+            if let Some(v) = Self::class_var_class(&cls, method_name) {
+                return self.call_value_evaled(v, evaled, method_name, None, 0);
+            }
+            return Err(format!(
+                "AttributeError: class '{}' has no method '{method_name}'",
+                cls.name
+            ));
+        };
         // アクセス制御（10-6）。`private:` の static メソッドをクラスの外から呼べていた。
         if let Some(acc) = cls.method_access.get(method_name) {
             self.check_access_level(&cls, Self::access_level(acc), method_name)?;

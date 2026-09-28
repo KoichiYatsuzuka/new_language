@@ -1,0 +1,16 @@
+# py_class_body_error.ar — Python のクラス本体の変換しない文（フェーズ10 10-18）
+#
+# 対になる正常系: py_nested_class.ar
+#
+# 期待されるエラー（import の時点）:
+#   ParseError: ...py_class_body_error.py: an `if` statement in the body of class 'Settings' is not
+#               supported (only methods, class attributes and nested classes are converted)
+#
+# ⚠ 変換するのはメソッド・クラス属性（1 つの名前への代入）・入れ子のクラスだけ。docstring・`...`・`pass`
+#   は何もしない文として読み飛ばす。それ以外（`if` / `for` / `import` / `async def` / 複数の代入先 /
+#   `+=` / 式文 …）は変換の誤りにする。
+# ⚠ 以前はクラス本体のこれらの文を**黙って捨てていた**（この例なら `level` が無いクラスになる）。
+
+import[py] test_modules.py_class_body_error as s
+
+print(s.Settings.level)

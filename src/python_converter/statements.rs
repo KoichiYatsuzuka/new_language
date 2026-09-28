@@ -742,7 +742,8 @@ pub(crate) fn convert_stmt(
         // デコレータは `convert_class` 側で処理する（クラス名が必要なため）。
         py::Stmt::ClassDef(c) => {
             reject_class_in_module_block(filename, c.name.as_str())?;
-            convert_class(c, filename).map(|s| vec![s])
+            // 入れ子のクラスは外側のクラスより前に持ち上がる（`convert_class`・フェーズ10 10-18）。
+            convert_class(c, filename)
         }
 
         // ----- return -----

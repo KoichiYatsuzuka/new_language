@@ -1639,3 +1639,38 @@ fn statements_carry_their_position() {
     let Stmt::While { body, .. } = &stmts[3] else { panic!("expected while") };
     assert!(body[0].position().is_none());
 }
+
+/// Python のクラス本体の中のクラスは、外側のクラスより前へ `Outer.Inner` の名前で持ち上がり、外側のクラスには
+/// クラス変数 `Inner` が付く（フェーズ10 10-18。以前は黙って捨てていた）。
+#[test]
+fn python_nested_class_is_hoisted_with_its_qualname() {
+    let stmts = crate::python_converter::convert_python_source(
+        "class Outer:\n    class Inner:\n        pass\n    class Sub(Inner):\n        pass\n",
+        "<test>",
+    )
+    .expect("python conversion failed");
+    let names: Vec<&str> = stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::ClassDef { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["Outer.Inner", "Outer.Sub", "Outer"]);
+    // 同じ本体で先に定義した入れ子のクラスを基底にすると、持ち上げた名前で引く。
+    let Stmt::ClassDef { bases, .. } = &stmts[1] else { panic!("expected class") };
+    assert_eq!(bases, &vec!["Outer.Inner".to_string()]);
+    let Stmt::ClassDef { body, .. } = &stmts[2] else { panic!("expected class") };
+    assert!(
+        body.iter().any(|s| matches!(s, Stmt::Field { name, type_ann, .. }
+            if name == "Inner" && type_ann == "type[Outer.Inner]")),
+        "{body:?}"
+    );
+    // 変換しない文は黙って捨てずに誤りにする。docstring と `...` は読み飛ばす。
+    let err = crate::python_converter::convert_python_source(
+        "class K:\n    \"\"\"doc\"\"\"\n    for i in range(2):\n        pass\n",
+        "<test>",
+    )
+    .expect_err("a `for` in a class body");
+    assert!(err.contains("a `for` statement in the body of class 'K' is not supported"), "{err}");
+}

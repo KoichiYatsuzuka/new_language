@@ -150,6 +150,12 @@ After parsing, the child's `module_cache` is merged back into the parent.
   converted and runs on the VM (`Op::ClassDef` → `Interpreter::vm_class_def`). Arrow code may not
   use a Python function that returns a class it defines (`TypeErrorKind::PyClassFactoryFromArrow`);
   a decorated Python class has an open member set (`members_unresolved`).
+- ⚠ Nested classes (task 10-18): `convert_class` returns a statement list — a class defined in a
+  class body is hoisted in front of its outer class under its `__qualname__` (`Outer.Inner`), and the
+  outer class gets a class variable `Inner` (`static mut`, typed `type[Outer.Inner]`). `Outer.Inner()` /
+  `self.Inner()` reach it through the method-call fallback `Interpreter::class_var_class`. Any class-body
+  statement other than methods, single-name class attributes, nested classes, docstrings, `...` and
+  `pass` is a conversion error (it used to be dropped silently).
 - Cache key: `("py", abs_path)`
 
 ### Python Interface (`load_python_interface_module`, imports.rs:658)

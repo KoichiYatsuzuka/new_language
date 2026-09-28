@@ -12,9 +12,35 @@ use super::*;
 
 /// Python クラス定義を tl の `Stmt::ClassDef` に変換する。
 /// フィールドは `__init__` からの `self.x = ...` 代入と型アノテーションを元に収集する。
-pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
-    let class_name = c.name.to_string();
-    let bases: Vec<String> = c.bases.iter().map(expr_to_name).collect();
+///
+/// 戻り値は**文の並び**: クラス本体の中のクラス（入れ子のクラス）を先に、このクラスを最後に置く（フェーズ10 10-18）。
+/// - 入れ子のクラスは**このクラスと同じ場所へ持ち上げ**、名前を Python の __qualname__（`Outer.Inner`）にする。
+///   ⚠ 素の名前（`Inner`）で持ち上げると、最上位の同名のクラスや別のクラスの同名の入れ子（`A.Meta` と
+///   `B.Meta`）とぶつかる。
+/// - このクラスにはクラス変数 `Inner = Outer.Inner` を置く（`Outer.Inner()` / `self.Inner()` が引ける）。
+/// ⚠ 以前はクラス本体の `class` を**黙って捨てていた**（`class 'Outer' has no method 'Inner'`）。
+pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Vec<Stmt>, String> {
+    convert_class_in(c, filename, c.name.to_string(), &std::collections::HashMap::new())
+}
+
+/// [`convert_class`] の本体。`qualname` はこのクラスの名前（入れ子なら `Outer.Inner`）、
+/// `siblings` は同じクラス本体で先に定義された入れ子のクラスの素の名前 → 持ち上げた名前。
+///
+/// ⚠ Python のクラス本体の中では、先に定義した入れ子のクラスを素の名前で引ける（`class B(A):` の `A`）。
+///   持ち上げると最上位の名前で引くことになるので、基底の名前はここで持ち上げた名前へ置き換える。
+fn convert_class_in(
+    c: &py::StmtClassDef,
+    filename: &str,
+    qualname: String,
+    siblings: &std::collections::HashMap<String, String>,
+) -> Result<Vec<Stmt>, String> {
+    let class_name = qualname;
+    let bases: Vec<String> = c
+        .bases
+        .iter()
+        .map(expr_to_name)
+        .map(|b| siblings.get(&b).cloned().unwrap_or(b))
+        .collect();
     // `super()` の脱糖用に**第 1 基底**を積む（メソッド本体の変換中だけ有効）。
     // ⚠ 多重継承では 1 番目だけを見る（Python の MRO とは違うが、単一継承では一致する）。
     let _super_guard = SuperBaseGuard::push(bases.first().cloned());
@@ -28,6 +54,16 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
 
     let mut fields: Vec<Stmt> = Vec::new();
     let mut methods: Vec<Stmt> = Vec::new();
+    // 持ち上げた入れ子のクラス（このクラスより前に置く）と、その素の名前 → 持ち上げた名前（10-18）。
+    let mut hoisted: Vec<Stmt> = Vec::new();
+    let mut nested: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // 変換しない文を明示エラーにする（黙って捨てない・10-18）。
+    let unsupported = |what: &str| -> Result<(), String> {
+        Err(format!(
+            "{filename}: {what} in the body of class '{class_name}' is not supported \
+             (only methods, class attributes and nested classes are converted)"
+        ))
+    };
 
     // __init__ を先に見つけてインスタンスフィールドを収集
     let mut init_fields: Vec<(String, String)> = Vec::new();
@@ -84,6 +120,8 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                             });
                         }
                     }
+                } else {
+                    unsupported("an assignment to something other than a single name")?
                 }
             }
             py::Stmt::AnnAssign(a) => {
@@ -105,6 +143,8 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                             }
                         }
                     }
+                } else {
+                    unsupported("an annotated assignment to something other than a name")?
                 }
             }
             py::Stmt::FunctionDef(f) => {
@@ -171,15 +211,52 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     access: crate::ast::Accessibility::Public,
                 });
             }
+            // 入れ子のクラス（10-18）: 持ち上げて、このクラスにはクラス変数で結ぶ。
+            py::Stmt::ClassDef(inner) => {
+                let inner_name = inner.name.to_string();
+                let inner_q = format!("{class_name}.{inner_name}");
+                hoisted.extend(convert_class_in(inner, filename, inner_q.clone(), &nested)?);
+                nested.insert(inner_name.clone(), inner_q.clone());
+                if seen_fields.insert(inner_name.clone()) {
+                    fields.push(Stmt::Field { src: None,
+                        name: inner_name,
+                        // Python のクラス属性と同じく共有可変（上の `Assign` の腕と同じ理由）。
+                        kind: FieldKind::StaticMut,
+                        // 型はそのクラス自身（`type[Outer.Inner]`）。`Any` にすると Arrow から
+                        // `m.Deep.Mid.Leaf()` と辿れない（`Any` の属性は静的エラー）。
+                        type_ann: format!("type[{inner_q}]"),
+                        default: Some(crate::ast::Expr::Ident {
+                            name: inner_q,
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        }),
+                        access: crate::ast::Accessibility::Public,
+                    });
+                }
+            }
             py::Stmt::Pass(_) => {}
-            _ => {}
+            // docstring と `...`（空の本体）は実行しても何も起きない。
+            py::Stmt::Expr(e)
+                if matches!(
+                    &*e.value,
+                    py::Expr::Constant(k)
+                        if matches!(k.value, py::Constant::Str(_) | py::Constant::Ellipsis)
+                ) => {}
+            // ⚠ 上の腕が受け取らなかった形は**黙って捨てない**（10-18）。以前はクラス本体の `class` /
+            //   `if` / `import` / 複数の代入先などを捨てていて、実行時に「無い」と言われるまで分からなかった。
+            py::Stmt::Assign(_) => unsupported("an assignment to something other than a single name")?,
+            py::Stmt::AsyncFunctionDef(f) => {
+                unsupported(&format!("an async method (`async def {}`)", f.name.as_str()))?
+            }
+            py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => unsupported("an `import`")?,
+            other => unsupported(py_stmt_kind(other))?,
         }
     }
 
     let mut body = fields;
     body.extend(methods);
 
-    Ok(Stmt::ClassDef { src: None,
+    hoisted.push(Stmt::ClassDef { src: None,
         name: class_name,
         template_params: vec![],
         // ⚠ Python 由来のクラスに trait の型引数は無い（タスク 9.9）。
@@ -187,7 +264,29 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
         bases,
         body,
         decorators: class_dec.decorators,
-    })
+    });
+    Ok(hoisted)
+}
+
+/// 変換しない Python の文の種類（誤りの文面用・冠詞つき・10-18）。
+fn py_stmt_kind(s: &py::Stmt) -> &'static str {
+    match s {
+        py::Stmt::If(_) => "an `if` statement",
+        py::Stmt::For(_) | py::Stmt::AsyncFor(_) => "a `for` statement",
+        py::Stmt::While(_) => "a `while` statement",
+        py::Stmt::Try(_) | py::Stmt::TryStar(_) => "a `try` statement",
+        py::Stmt::With(_) | py::Stmt::AsyncWith(_) => "a `with` statement",
+        py::Stmt::Match(_) => "a `match` statement",
+        py::Stmt::AugAssign(_) => "an augmented assignment (`+=` etc.)",
+        py::Stmt::Delete(_) => "a `del` statement",
+        py::Stmt::Expr(_) => "an expression statement",
+        py::Stmt::Raise(_) => "a `raise` statement",
+        py::Stmt::Assert(_) => "an `assert` statement",
+        py::Stmt::Global(_) => "a `global` statement",
+        py::Stmt::Nonlocal(_) => "a `nonlocal` statement",
+        py::Stmt::Return(_) => "a `return` statement",
+        _ => "a statement of this kind",
+    }
 }
 
 /// `__init__` 本体（ネスト含む）を再帰探索して `self.field = ...` の代入を収集する。

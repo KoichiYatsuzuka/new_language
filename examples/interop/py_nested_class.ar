@@ -1,0 +1,37 @@
+# py_nested_class.ar — Python のクラス本体の中のクラス（入れ子のクラス・フェーズ10 10-18）
+#
+# 対になるエラー例: py_class_body_error.ar（クラス本体の変換しない文）
+#
+# 変換器は入れ子のクラスを外側のクラスと同じ場所へ持ち上げ、名前を Python の __qualname__
+# （Tree.Node）にする。外側のクラスにはクラス変数 Node = Tree.Node を置くので、Tree.Node(..) /
+# self.Node(..) が引ける。最上位の Node や別のクラスの同名の入れ子（Graph.Node）とはぶつからない。
+#
+# ⚠ 以前はクラス本体の class を黙って捨てていた（AttributeError: class 'Tree' has no method 'Node'）。
+# ⚠ Python のメソッドは `mut self` 扱いなので、インスタンスは `mut` で持つ。
+
+import[py] test_modules.py_nested_class as m
+
+# ── ① Python の中で使う ────────────────────────────────────────────────
+print(m.summary())
+# top-level Node, Tree.Node, Tree.Leaf of 5, Graph.Node
+
+# ── ② Arrow から入れ子のクラスを作る ───────────────────────────────────
+mut v = 7
+mut n = m.Tree.Node(v)
+print(n.kind())
+# Tree.Node
+print(n.value)
+# 7
+
+# ── ③ インスタンス経由（self.Leaf と同じ形）───────────────────────────
+mut t = m.Tree()
+mut w = 3
+mut leaf = t.Leaf(w)
+print(leaf.kind())
+# Tree.Leaf of 3
+
+# ── ④ 3 段の入れ子 ─────────────────────────────────────────────────────
+mut key = "port"
+mut e = m.Config.Section.Entry(key)
+print(e.key)
+# port

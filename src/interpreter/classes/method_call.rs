@@ -98,9 +98,13 @@ impl Interpreter {
                 return result;
             }
         }
-        let overloads = self.lookup_method_in_class(&class, method_name).ok_or_else(|| {
-            format!("AttributeError: '{}' has no method '{method_name}'", class.name)
-        })?;
+        let Some(overloads) = self.lookup_method_in_class(&class, method_name) else {
+            // クラス変数に入ったクラス（`self.Inner()`・入れ子のクラス・10-18）なら、それを呼ぶ。
+            if let Some(v) = Self::class_var_class(&class, method_name) {
+                return self.call_value_evaled(v, evaled, method_name, None, 0);
+            }
+            return Err(format!("AttributeError: '{}' has no method '{method_name}'", class.name));
+        };
         let n_overloads = overloads.len();
         if class.static_method_names.contains(method_name) {
             return Err(format!(

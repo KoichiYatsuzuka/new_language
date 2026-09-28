@@ -391,6 +391,17 @@ impl TypeChecker {
         }
 
         if let Some((ref cls_name, ref method_name)) = method_call_info {
+            // クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()` / `self.Inner()`・フェーズ10 10-18）。
+            // 実行時もメソッドが無いときだけクラス変数のクラスを呼ぶ（`Interpreter::class_var_class`）。
+            if !self.collect_class_method_sigs(cls_name).contains_key(method_name.as_str()) {
+                if let Some(InferredType::TypeValOf(inner)) =
+                    self.declared_field_type_pub(cls_name, method_name)
+                {
+                    if let InferredType::NamedInstance(c) = *inner {
+                        return InferredType::NamedInstance(c);
+                    }
+                }
+            }
             // self/cls is passed implicitly; check_self_type_params accounts for the +1
             let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
             return ret_ty.unwrap_or(InferredType::Unresolved);
