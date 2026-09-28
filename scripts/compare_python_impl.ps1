@@ -69,6 +69,7 @@ $knownDiff = @{
     'template_as_value'              = 'Rust: Stack[int].empty() / Counter[T].n を具体化として読む（10-9 で新設）。py: 添字として読み not subscriptable で落ちる'
     'template_as_value_error'        = 'Rust: 具体化を値として使った結果を型検査して StaticTypeError（10-9 で新設）。py: 添字として読み not subscriptable で落ちる'
     'name_resolution_error'          = 'Rust: どこにも無い名前を StaticTypeError（10-12 で新設）。py: 検査せず実行して最初の NameError で止まる'
+    'module_types'                   = 'Rust: モジュールの型をモジュール名の名前空間で扱い、型注釈に t.Tag と書ける（10-8 で新設）。py: 型注釈の t.Tag を読めず ParseError（何も出さない）'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'
     'metafn'                         = 'py: メタ関数（exprconst / code: / quote / <! !> / !装飾子）を字句解析できないので ParseError（2-2 で新設。Rust 側は展開して実行する）'

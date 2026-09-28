@@ -1,0 +1,9 @@
+# namespace_modules/labels.ar — 例題 module_types.ar / module_types_error.ar が import するモジュール（フェーズ10 10-8）
+#
+# `tags.ar` と同名の `Tag` を持つ（`labels.Tag` は `tags.Tag` とは別の型）。
+
+class Tag:
+    mut text: str
+
+    fn who(self) -> str:
+        return self.text

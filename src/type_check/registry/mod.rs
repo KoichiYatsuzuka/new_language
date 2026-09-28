@@ -13,6 +13,8 @@
 
 pub(super) mod builder;
 
+use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Accessibility, FieldKind};
@@ -82,14 +84,110 @@ pub(super) struct TypeRegistry {
     /// 以前は型変数名がレジストリに無く、`Expr::TemplateInstantiate` の呼び出しは
     /// `func_name` が `None` になって検査経路に入らないまま素通りしていた。
     template_params: HashMap<String, Vec<String>>,
+    /// **名前の解決の文脈**（フェーズ10 10-8）。0 がメインのプログラム、1 から先がモジュールごと。
+    ///
+    /// ⚠⚠ モジュール（Arrow のソース）で宣言したクラス・関数などは `tags.Tag` の名前で登録する
+    ///   （収集パスが本体を書き換えた写しを読む・`builder::qualify_module_body`）。以前は素の名前で
+    ///   登録していたので、メインと同名のクラスがあると混ざった（`t.Tag(1).who()` がメインの `Tag` の
+    ///   `who` の型を返していた・実測）。
+    ///   素の名前・別名から修飾名へは、今の文脈の表で引き直す（[`Self::resolve`]）:
+    ///   - モジュールの中の素の `Tag` → `tags.Tag`（自分の宣言）
+    ///   - `from tags import Tag` した `Tag` → `tags.Tag`
+    ///   - `import tags as t` した `t.Tag` → `tags.Tag`
+    name_scopes: Vec<NameScope>,
+    /// モジュールの修飾名（tags / `a.b`）→ `name_scopes` の添字。
+    module_scope_index: HashMap<String, usize>,
+    /// 今の文脈。型検査がモジュールの本体を検査する間だけ切り替える（`enter_module_scope`）。
+    current_scope: Cell<usize>,
+}
+
+/// 1 つの文脈（メイン・モジュール）の名前の表（フェーズ10 10-8）。
+#[derive(Default, Clone)]
+pub(super) struct NameScope {
+    /// 素の名前 → 修飾名（自分の宣言・`from m import x` した名前）。
+    pub(super) names: HashMap<String, String>,
+    /// モジュールの別名 → モジュールの修飾名（`import tags as t` の t → tags）。
+    pub(super) modules: HashMap<String, String>,
 }
 
 impl TypeRegistry {
+    // ── 名前の解決（フェーズ10 10-8）───────────────────────────────────────────
+
+    /// 名前を今の文脈で**修飾名へ引き直す**。表に無ければそのまま。
+    ///
+    /// `Box[Tag]` のような型の綴りは、中の名前を 1 つずつ引き直す（`tags.Box[tags.Tag]`）。
+    pub(super) fn resolve<'a>(&'a self, name: &'a str) -> Cow<'a, str> {
+        if name.contains('[') {
+            return Cow::Owned(self.resolve_spelling(name));
+        }
+        self.resolve_word(name)
+    }
+
+    fn resolve_word<'a>(&'a self, name: &'a str) -> Cow<'a, str> {
+        let Some(scope) = self.name_scopes.get(self.current_scope.get()) else {
+            return Cow::Borrowed(name);
+        };
+        if let Some(q) = scope.names.get(name) {
+            return Cow::Borrowed(q.as_str());
+        }
+        if let Some((head, rest)) = name.split_once('.') {
+            if let Some(m) = scope.modules.get(head) {
+                return Cow::Owned(format!("{m}.{rest}"));
+            }
+        }
+        Cow::Borrowed(name)
+    }
+
+    /// 型の綴り（`Box[Tag, list[Other]]`）の中の名前をすべて引き直す。
+    fn resolve_spelling(&self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut word = String::new();
+        for c in s.chars() {
+            if c.is_alphanumeric() || c == '_' || c == '.' {
+                word.push(c);
+            } else {
+                if !word.is_empty() {
+                    out.push_str(&self.resolve_word(&word));
+                    word.clear();
+                }
+                out.push(c);
+            }
+        }
+        if !word.is_empty() {
+            out.push_str(&self.resolve_word(&word));
+        }
+        out
+    }
+
+    /// `alias.member`（`import tags as t` の `t.Tag`）が **Arrow のモジュールのメンバー**なら、その修飾名
+    /// （`tags.Tag`）。今の文脈で `alias` がモジュールの別名でなければ `None`（外部言語のモジュールは
+    /// 素の名前で登録したまま・10-8）。
+    pub(super) fn module_member(&self, alias: &str, member: &str) -> Option<String> {
+        let scope = self.name_scopes.get(self.current_scope.get())?;
+        scope.modules.get(alias).map(|m| format!("{m}.{member}"))
+    }
+
+    /// モジュール `module` の本体を検査する間、名前をその文脈で引く。戻り値は元の文脈（`leave_module_scope` へ）。
+    /// ⚠ 知らないモジュール（外部言語・読み込めていない）は文脈を変えない。
+    pub(super) fn enter_module_scope(&self, module: &str) -> usize {
+        let prev = self.current_scope.get();
+        if let Some(&i) = self.module_scope_index.get(module) {
+            self.current_scope.set(i);
+        }
+        prev
+    }
+
+    /// [`Self::enter_module_scope`] と対で呼ぶ。
+    pub(super) fn leave_module_scope(&self, prev: usize) {
+        self.current_scope.set(prev);
+    }
+
+
     // ── 関数 ──────────────────────────────────────────────────────────────────
 
     /// 関数名のオーバーロード候補。
     pub(super) fn fn_sigs(&self, name: &str) -> Option<&Vec<FnSig>> {
-        self.fn_sigs.get(name)
+        self.fn_sigs.get(&*self.resolve(name))
     }
 
     // ── クラス ────────────────────────────────────────────────────────────────
@@ -101,7 +199,7 @@ impl TypeRegistry {
 
     /// テンプレート宣言の型変数名（宣言順）。非テンプレートは `None`。
     pub(super) fn template_params(&self, name: &str) -> Option<&[String]> {
-        self.template_params.get(name).map(|v| v.as_slice())
+        self.template_params.get(&*self.resolve(name)).map(|v| v.as_slice())
     }
 
     /// テンプレートの具体化（`Box[int]` の表示形）に対応する**単相化したクラス名**（タスク 2-8 段階 2）。
@@ -110,7 +208,7 @@ impl TypeRegistry {
     /// メンバー・アクセス制御がすべて普通の経路を通る）。無いとき（宣言より前の具体化・
     /// 制約付きテンプレート・展開しないエディタ）は従来どおりテンプレートと置換表で扱う。
     pub(super) fn instance_class(&self, display: &str) -> Option<&String> {
-        self.instance_classes.get(display)
+        self.instance_classes.get(&*self.resolve(display))
     }
 
     /// 単相化で作った宣言の名前（タスク 2-8 段階 2）。
@@ -120,12 +218,12 @@ impl TypeRegistry {
 
     /// クラス・enum・new_type として登録済みの名前か。
     pub(super) fn is_known_class(&self, name: &str) -> bool {
-        self.known_class_names.contains(name)
+        self.known_class_names.contains(&*self.resolve(name))
     }
 
     /// クラスのメソッド表（メソッド名 → オーバーロード候補）。
     pub(super) fn class_methods(&self, class: &str) -> Option<&HashMap<String, Vec<FnSig>>> {
-        self.class_method_sigs.get(class)
+        self.class_method_sigs.get(&*self.resolve(class))
     }
 
     /// クラスの基底クラス・トレイト名。
@@ -135,14 +233,14 @@ impl TypeRegistry {
     /// 「引数が無い」と「そもそも基底でない」を区別したいときは `class_bases` を見ること。
     pub(super) fn class_base_args(&self, class: &str, base: &str) -> &[String] {
         self.class_base_args
-            .get(class)
-            .and_then(|m| m.get(base))
+            .get(&*self.resolve(class))
+            .and_then(|m| m.get(&*self.resolve(base)))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
 
     pub(super) fn class_bases(&self, class: &str) -> Option<&[String]> {
-        self.class_bases.get(class).map(|v| v.as_slice())
+        self.class_bases.get(&*self.resolve(class)).map(|v| v.as_slice())
     }
 
     /// クラスのフィールド詳細（種別・型）。
@@ -154,25 +252,25 @@ impl TypeRegistry {
     /// エディタで展開に失敗したとき（展開前の AST をホバーなどの情報のために検査する。その診断は出さない）。
     /// ⚠ 「編集中だから」ではなく「**このクラスのメンバーが未確定だから**」で止める。
     pub(crate) fn members_unresolved(&self, class_name: &str) -> bool {
-        self.classes_with_unexpanded_decorators.contains(class_name)
+        self.classes_with_unexpanded_decorators.contains(&*self.resolve(class_name))
     }
 
     pub(super) fn class_field_details(
         &self,
         class: &str,
     ) -> Option<&HashMap<String, (FieldKind, InferredType)>> {
-        self.class_field_details.get(class)
+        self.class_field_details.get(&*self.resolve(class))
     }
 
     /// `class.field` が `mut` 宣言か。フィールドが存在しなければ `None`。
     pub(super) fn field_is_mutable(&self, class: &str, field: &str) -> Option<bool> {
-        self.class_fields.get(class)?.get(field).copied()
+        self.class_fields.get(&*self.resolve(class))?.get(field).copied()
     }
 
     /// `class.member` のアクセス可能性。未登録のメンバーは `Public` 扱い。
     pub(super) fn member_access(&self, class: &str, member: &str) -> Accessibility {
         self.class_member_access
-            .get(class)
+            .get(&*self.resolve(class))
             .and_then(|m| m.get(member))
             .cloned()
             .unwrap_or(Accessibility::Public)
@@ -181,7 +279,7 @@ impl TypeRegistry {
     /// `class.method` が `static fn` として定義されているか。
     pub(super) fn is_static_method(&self, class: &str, method: &str) -> bool {
         self.class_static_methods
-            .get(class)
+            .get(&*self.resolve(class))
             .is_some_and(|s| s.contains(method))
     }
 
@@ -189,7 +287,7 @@ impl TypeRegistry {
 
     /// トレイトのメソッド表。
     pub(super) fn trait_methods(&self, name: &str) -> Option<&HashMap<String, Vec<FnSig>>> {
-        self.trait_method_sigs.get(name)
+        self.trait_method_sigs.get(&*self.resolve(name))
     }
 
     /// トレイトのフィールド詳細。
@@ -197,7 +295,7 @@ impl TypeRegistry {
         &self,
         name: &str,
     ) -> Option<&HashMap<String, (FieldKind, InferredType)>> {
-        self.trait_field_details.get(name)
+        self.trait_field_details.get(&*self.resolve(name))
     }
 
     /// トレイトとして登録済みの名前か（タスク 3.4 の妥当性検査で使う）。
@@ -205,23 +303,24 @@ impl TypeRegistry {
     /// ⚠ メンバーが 0 個の trait もあるので、**フィールド表とメソッド表のどちらかに
     /// エントリがあれば trait** と判定する。
     pub(super) fn is_known_trait(&self, name: &str) -> bool {
-        self.trait_field_details.contains_key(name) || self.trait_method_sigs.contains_key(name)
+        let name = self.resolve(name);
+        self.trait_field_details.contains_key(&*name) || self.trait_method_sigs.contains_key(&*name)
     }
 
     // ── protocol / new_type ───────────────────────────────────────────────────
 
     /// プロトコルとして登録済みの名前か。
     pub(super) fn is_protocol(&self, name: &str) -> bool {
-        self.known_protocols.contains_key(name)
+        self.known_protocols.contains_key(&*self.resolve(name))
     }
 
     /// プロトコル定義。
     pub(super) fn protocol(&self, name: &str) -> Option<&ProtocolInfo> {
-        self.known_protocols.get(name)
+        self.known_protocols.get(&*self.resolve(name))
     }
 
     /// `new_type Name: Original` の元の型名。
     pub(super) fn new_type_original(&self, name: &str) -> Option<&str> {
-        self.new_type_originals.get(name).map(|s| s.as_str())
+        self.new_type_originals.get(&*self.resolve(name)).map(|s| s.as_str())
     }
 }

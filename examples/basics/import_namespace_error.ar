@@ -3,8 +3,11 @@
 # 対になる正常系: import_namespace.ar
 #
 # ⚠ 以前はモジュールの名前が呼び出し側の大域へ流し込まれていたので、これが通って 20 を出していた。
-#   Expected error (NameError):
-#     'scaled' is not defined
+#   Expected error (StaticTypeError):
+#     name 'scaled' is not defined
+#
+# ⚠ フェーズ10 10-8 から**静的エラー**（それまでは実行時の NameError）。型検査がモジュールの宣言を
+#   `namespace_modules.shapes.scaled` の名前で扱うようになり、修飾なしの `scaled` はどこにも無い名前になった。
 
 import namespace_modules.shapes as sh
 

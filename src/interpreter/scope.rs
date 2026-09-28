@@ -60,9 +60,12 @@ impl Interpreter {
     /// 新しい大域（組み込みだけ）を作って `scopes[0]` に据え、**呼び出し側のローカルを隠す**
     /// （関数やブロックの中の `import` でも、モジュールの本体は呼び出し側の名前を見ない）。
     /// 戻り値は [`Self::leave_module_frame`] に渡す。
-    pub(super) fn enter_module_frame(&mut self) -> (u32, Vec<super::ScopeMap>, usize) {
+    pub(super) fn enter_module_frame(&mut self, module: &[String]) -> (u32, Vec<super::ScopeMap>, usize) {
         let fresh = Self::builtin_global_scope(&self.event_loop_value);
         self.global_scopes.push(fresh);
+        // このモジュールで定義するクラスの `module_name`（10-8）。
+        self.global_module_names
+            .push((!module.is_empty()).then(|| std::rc::Rc::from(module.join(".").as_str())));
         let id = (self.global_scopes.len() - 1) as u32;
         let locals = self.scopes.split_off(1);
         let floor = std::mem::replace(&mut self.frame_floor, 1);
@@ -128,6 +131,9 @@ impl Interpreter {
                     g.insert(n, Var::new(v, m));
                 }
                 self.global_scopes.push(g);
+                // ⚠ 添字を揃えるだけ（ワーカーでクラスを定義することは無い。送られてきたクラスは
+                //   `module_name` を自分で持っている）。
+                self.global_module_names.push(None);
             }
         }
         // ⚠ 具体化のキャッシュを組み直す（D36・タスク 2-16）。キャッシュの鍵はテンプレートの値の

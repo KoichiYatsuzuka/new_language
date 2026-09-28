@@ -487,7 +487,7 @@ impl Interpreter {
         //   - 逆に、モジュールの本体・関数が呼び出し側の名前を引けてしまう
         //   今は関数値が定義したモジュールの大域を持ち、呼び出しの間だけそれに差し替える
         //   （`FnValue::globals`・`switch_globals`）。呼び出し側へは名前空間の値だけを渡す。
-        let frame = self.enter_module_frame();
+        let frame = self.enter_module_frame(module);
         self.module_globals_ids.insert(cache_key.clone(), self.cur_globals);
         // 診断フック（#10-d）: ここから先は import モジュール本体（メイン最上位と区別して計上）。
         let _mod_guard = crate::interpreter::tw_stats::enabled()
@@ -613,7 +613,7 @@ impl Interpreter {
 
         // #42: ネイティブモジュールのスタブ本体も同じ経路で実行する。
         // ⚠ 自分の大域で走らせる（`exec_module` と同じ・名前空間の分離）。
-        let frame = self.enter_module_frame();
+        let frame = self.enter_module_frame(module);
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "native module init", module);
         let mut members = self.module_members(&module_globals);

@@ -83,9 +83,13 @@ impl TypeChecker {
             &owned
         };
         let saved = std::mem::take(&mut self.diags);
+        // ⚠ モジュールの本体の名前は**そのモジュールの文脈で**引く（`tags.Tag`・フェーズ10 10-8）。
+        //   知らないモジュール（外部言語）では文脈は変わらない。
+        let prev_scope = self.registry.enter_module_scope(&module.join("."));
         self.push_scope();
         self.check_stmts(target);
         self.pop_scope();
+        self.registry.leave_module_scope(prev_scope);
         let module_diags = std::mem::replace(&mut self.diags, saved);
         // ⚠⚠ ただし、**呼び出し側の型引数が原因の誤り**は捨てない（タスク 2-15）。
         //   `m.Box[str]` の具体化は展開器がモジュールの本体に置く（`monomorph::instantiate_imported`）
@@ -129,6 +133,44 @@ impl TypeChecker {
             InferredType::Str => InferredType::Str,
             _ => InferredType::Unresolved,
         }
+    }
+
+    /// import したモジュールの名前空間のメンバーの型（`t.Tag` / `t.make`）。モジュールの文脈で読み、
+    /// クラスの名前を修飾名（`tags.Tag`）にして返す（フェーズ10 10-8）。
+    /// ⚠ 以前は素の名前（`Tag`）のまま外へ出ていたので、メインの同名クラスと混ざった。
+    pub(crate) fn module_member_types(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) -> std::collections::HashMap<String, InferredType> {
+        let prev = self.registry.enter_module_scope(&module.join("."));
+        let mut raw = self.collect_module_types(body);
+        // Arrow のモジュールは、関数の型をレジストリのシグネチャ（修飾名の型で集めてある）から取る。
+        // ⚠ `collect_module_types` は戻り値の型をプリミティブしか読まない（外部言語のスタブ向け）ので、
+        //   `fn make() -> Tag` の結果の型が「分からない」になっていた。`enum` もクラスと同じく出す。
+        // ⚠ 外部言語（py …）は従来どおり（スタブの型の綴りが Arrow の型と限らない）。
+        if matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc") {
+            for st in body {
+                match st {
+                    Stmt::FnDef { name, template_params, .. } if template_params.is_empty() => {
+                        if let Some(t) = self.fn_value_type(name) {
+                            raw.insert(name.clone(), t);
+                        }
+                    }
+                    Stmt::EnumDef { name, .. } => {
+                        raw.insert(
+                            name.clone(),
+                            InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let out = raw.into_iter().map(|(k, t)| (k, self.canon_type(&t))).collect();
+        self.registry.leave_module_scope(prev);
+        out
     }
 
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。

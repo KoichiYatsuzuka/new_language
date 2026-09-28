@@ -7,8 +7,8 @@
 #   StaticTypeError  name 'totl' is not defined
 #
 # ⚠ 以前は静的に通り、実行時の NameError だった（しかも最初の 1 つで止まるので 2 つ目は見えなかった）。
-# ⚠ `import m` だけでモジュールの名前を修飾なしで書いた場合（`helper(2)`）はまだ実行時の NameError
-#   （型検査がモジュールの宣言を名前だけで集めているため・フェーズ10 10-8）。
+# ⚠ `import m` だけでモジュールの名前を修飾なしで書いた場合（`helper(2)`）も同じ静的エラー
+#   （フェーズ10 10-8 でモジュールの宣言を `m.helper` の名前で扱うようになってから）。
 
 fn total() -> int:
     return 42

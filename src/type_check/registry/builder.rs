@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{Accessibility, FieldKind, Param, Stmt};
 
 use super::super::types::{FnSig, InferredType, ProtocolField, ProtocolInfo, ProtocolMethod};
-use super::TypeRegistry;
+use super::{NameScope, TypeRegistry};
 
 /// 組み込みで登録される例外クラス名。`TypeChecker::new` がグローバルスコープの
 /// 束縛を作る際にも使うため公開している。
@@ -67,6 +67,92 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     /// 「Arrow のクラス」に見えてしまう（実際 `event_cs_handler.ar` で
     /// `Value::CsObject` を `Value::Instance` 前提の op に流して落ちた）。
     foreign_depth: u32,
+    /// 今集めている文が属する文脈（`TypeRegistry::name_scopes` の添字・0 がメイン・フェーズ10 10-8）。
+    /// `import` の別名・`from import` した名前をこの文脈の表に控える。
+    cur_scope: usize,
+    /// 今集めているモジュールの修飾名（メインは `None`・10-8）。
+    module_prefix: Option<String>,
+}
+
+/// モジュールの本体を、**宣言を `tags.X` の名前にした写し**にする（フェーズ10 10-8）。
+///
+/// ⚠⚠ 収集パスが読むためだけの写し（実行時と型検査の本体の検査は元の AST を使う）。
+///   ⇒ レジストリの登録箇所を 1 つずつ書き換えずに、モジュールの宣言が修飾名で・シグネチャや
+///   フィールドの型も修飾名で入る。
+/// - 最上位の宣言の名前（`class` / `trait` / `protocol` / `enum` / `new_type` / `fn` / `gen`・
+///   具体化の `Box[int]`）を `prefix.名前` にする。
+/// - 本体のすべての型注釈の中の名前を、同じ表で置き換える（テンプレートの置換と同じ走査
+///   `template_subst::subst_stmts`）。クラスの基底・`new_type` の元の型も。
+/// - そのモジュールの中で `from m import x` した名前は `m.x`、`import m as a` した別名は表に控える。
+/// ⚠ 入れ子の `import` の本体は書き換えない（別のモジュール・それぞれの文脈で集める）。
+/// ⚠ 名前の置き換えは識別子ごと（`t2.Other` のような別名つきの綴りの `Other` も、同名の宣言があれば
+///   置き換わってしまう。モジュールが同名の宣言を持ちつつ別名で別モジュールの同名を指す形だけの穴）。
+pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, NameScope) {
+    let mut scope = NameScope::default();
+    for st in body {
+        match st {
+            Stmt::ClassDef { name, .. }
+            | Stmt::TraitDef { name, .. }
+            | Stmt::ProtocolDef { name, .. }
+            | Stmt::FnDef { name, .. }
+            | Stmt::GenDef { name, .. }
+            | Stmt::NewTypeDef { name, .. }
+                if !name.contains('[') =>
+            {
+                scope.names.insert(name.clone(), format!("{prefix}.{name}"));
+            }
+            Stmt::EnumDef { name, .. } => {
+                scope.names.insert(name.clone(), format!("{prefix}.{name}"));
+                scope.names.insert(format!("enum_item_{name}"), format!("{prefix}.enum_item_{name}"));
+            }
+            Stmt::FromImport { lang, module, names, .. } if is_arrow_source_lang(lang) => {
+                let m = module.join(".");
+                for (orig, alias) in names {
+                    scope
+                        .names
+                        .insert(alias.clone().unwrap_or_else(|| orig.clone()), format!("{m}.{orig}"));
+                }
+            }
+            Stmt::Import { lang, module, alias, .. } if is_arrow_source_lang(lang) => {
+                let bind = alias.clone().unwrap_or_else(|| module.last().cloned().unwrap_or_default());
+                scope.modules.insert(bind, module.join("."));
+            }
+            _ => {}
+        }
+    }
+    let map = &scope.names;
+    let q = |s: &str| crate::template_subst::subst_type(s, map);
+    let out = body
+        .iter()
+        .map(|st| {
+            if matches!(st, Stmt::Import { .. } | Stmt::FromImport { .. }) {
+                return st.clone();
+            }
+            let mut st = crate::template_subst::subst_stmts(std::slice::from_ref(st), map)
+                .pop()
+                .unwrap_or_else(|| st.clone());
+            match &mut st {
+                Stmt::ClassDef { name, bases, .. } => {
+                    *name = q(name);
+                    for b in bases.iter_mut() {
+                        *b = q(b);
+                    }
+                }
+                Stmt::TraitDef { name, .. }
+                | Stmt::ProtocolDef { name, .. }
+                | Stmt::FnDef { name, .. }
+                | Stmt::GenDef { name, .. }
+                | Stmt::EnumDef { name, .. } => *name = q(name),
+                Stmt::NewTypeDef { name, original } => {
+                    *name = q(name);
+                    *original = q(original);
+                }
+                _ => {}
+            }
+            st
+        })
+        .collect();
+    (out, scope)
 }
 
 /// `import[lang]` のうち、**モジュール本体が Arrow ソース**であるものか（#27-a）。
@@ -168,10 +254,15 @@ impl TypeRegistryBuilder {
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),
                 template_params: HashMap::new(),
+                name_scopes: vec![NameScope::default()],
+                module_scope_index: HashMap::new(),
+                current_scope: std::cell::Cell::new(0),
             },
             seen_modules: HashSet::new(),
             seen_instances: HashSet::new(),
             foreign_depth: 0,
+            cur_scope: 0,
+            module_prefix: None,
         }
     }
 
@@ -272,6 +363,17 @@ impl TypeRegistryBuilder {
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {
                         self.reg.arrow_class_names.insert(name.clone());
+                        // ⚠ モジュールのクラスは素の名前も載せる（10-8）。モジュールの本体を検査して付けた
+                        //   注釈は素の名前（`Tag`）の型を持つことがあり、VM はこの集合で「Arrow のインスタンスか」を
+                        //   見る。以前（素の名前で登録していた頃）と同じ判断になる。
+                        if let Some(bare) = self
+                            .module_prefix
+                            .as_deref()
+                            .and_then(|p| name.strip_prefix(p))
+                            .and_then(|r| r.strip_prefix('.'))
+                        {
+                            self.reg.arrow_class_names.insert(bare.to_string());
+                        }
                     }
                     self.reg.class_bases.insert(name.clone(), bases.clone());
                     // ⚠ `bases` と `base_args` は**同じ並び**（`ast.rs` の不変条件）。
@@ -305,7 +407,7 @@ impl TypeRegistryBuilder {
                 }
                 Stmt::EnumDef { src: _, name, variants } => {
                     self.reg.known_class_names.insert(name.clone());
-                    let item_type_name = format!("enum_item_{}", name);
+                    let item_type_name = crate::type_check::types::enum_item_type_name(name);
                     self.reg.known_class_names.insert(item_type_name.clone());
                     // ⚠⚠ **メンバーと `.value` の型を登録する**（タスク 2.3）。
                     //    以前は名前を `known_class_names` に入れるだけだったので
@@ -388,6 +490,29 @@ impl TypeRegistryBuilder {
                 // 同一モジュールの二重収集は `fn_sigs` の偽オーバーロードを生むので弾く。
                 Stmt::Import { lang, module, body, .. }
                 | Stmt::FromImport { lang, module, body, .. } => {
+                    let modpath = module.join(".");
+                    let arrow = is_arrow_source_lang(lang);
+                    // 今の文脈に別名・取り込んだ名前を控える（`TypeRegistry::name_scopes` の doc・10-8）。
+                    if arrow {
+                        let scope = &mut self.reg.name_scopes[self.cur_scope];
+                        match stmt {
+                            Stmt::Import { alias, .. } => {
+                                let bind = alias
+                                    .clone()
+                                    .unwrap_or_else(|| module.last().cloned().unwrap_or_default());
+                                scope.modules.insert(bind, modpath.clone());
+                            }
+                            Stmt::FromImport { names, .. } => {
+                                for (orig, alias) in names {
+                                    scope.names.insert(
+                                        alias.clone().unwrap_or_else(|| orig.clone()),
+                                        format!("{modpath}.{orig}"),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     // 具体化（展開器が置いた `Box[int]`）は、集めたものを控える（`seen_instances` の doc）。
                     let instances: Vec<Stmt> = body
                         .iter()
@@ -399,18 +524,41 @@ impl TypeRegistryBuilder {
                         .cloned()
                         .collect();
                     if self.seen_modules.insert((lang.clone(), module.clone())) {
-                        // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
-                        let foreign = !is_arrow_source_lang(lang);
-                        if foreign {
+                        if arrow {
+                            // モジュールの宣言は `tags.X` の名前で登録する（`qualify_module_body`・10-8）。
+                            let (qbody, scope) = qualify_module_body(&modpath, body);
+                            let idx = self.reg.name_scopes.len();
+                            self.reg.name_scopes.push(scope);
+                            self.reg.module_scope_index.insert(modpath.clone(), idx);
+                            self.collect_in_module(&modpath, idx, &qbody);
+                        } else {
+                            // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
                             self.foreign_depth += 1;
-                        }
-                        self.collect(body);
-                        if foreign {
+                            self.collect(body);
                             self.foreign_depth -= 1;
                         }
                     } else if !instances.is_empty() {
                         // ⚠ 2 回目以降の `import`: この本体にだけある具体化を集める（タスク 2-16）。
-                        self.collect(&instances);
+                        match self.reg.module_scope_index.get(&modpath).copied() {
+                            Some(idx) if arrow => {
+                                let map = self.reg.name_scopes[idx].names.clone();
+                                let q = |s: &str| crate::template_subst::subst_type(s, &map);
+                                let qinst: Vec<Stmt> = crate::template_subst::subst_stmts(&instances, &map)
+                                    .into_iter()
+                                    .map(|mut st| {
+                                        if let Stmt::ClassDef { name, .. }
+                                        | Stmt::FnDef { name, .. }
+                                        | Stmt::GenDef { name, .. } = &mut st
+                                        {
+                                            *name = q(name);
+                                        }
+                                        st
+                                    })
+                                    .collect();
+                                self.collect_in_module(&modpath, idx, &qinst);
+                            }
+                            _ => self.collect(&instances),
+                        }
                     }
                 }
                 _ => {}
@@ -454,6 +602,15 @@ impl TypeRegistryBuilder {
                 }
             }
         }
+    }
+
+    /// モジュールの本体（修飾名に書き換えた写し）を、そのモジュールの文脈で集める（10-8）。
+    fn collect_in_module(&mut self, modpath: &str, idx: usize, body: &[Stmt]) {
+        let prev_scope = std::mem::replace(&mut self.cur_scope, idx);
+        let prev_prefix = self.module_prefix.replace(modpath.to_string());
+        self.collect(body);
+        self.cur_scope = prev_scope;
+        self.module_prefix = prev_prefix;
     }
 
     /// ★ Python の `**kwargs` 番兵パラメータかどうか。

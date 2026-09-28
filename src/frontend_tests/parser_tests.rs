@@ -1547,3 +1547,14 @@ fn parse_error_location_points_at_the_failing_token() {
     assert!(Parser::ends_with_location("x at C:/a b/c.ar:10:2"));
     assert!(!Parser::ends_with_location("expected `]`, got `EOF`"));
 }
+
+/// 型注釈にモジュールの型（`t.Tag` / `a.b.Tag`・`t.Box[int]`）を書ける（フェーズ10 10-8。以前は `.` で ParseError）。
+#[test]
+fn dotted_type_names_in_annotations() {
+    let stmts = parse("fn f(let x: t.Tag, let y: a.b.Box[int]) -> list[t.Tag]:\n    return [x]\nlet ok = v is t.Tag\n");
+    let Stmt::FnDef { params, return_type, .. } = &stmts[0] else { panic!("expected fn") };
+    assert_eq!(params[0].type_ann.as_deref(), Some("t.Tag"));
+    assert_eq!(params[1].type_ann.as_deref(), Some("a.b.Box[int]"));
+    assert_eq!(return_type.as_deref(), Some("list[t.Tag]"));
+    assert!(matches!(&stmts[1], Stmt::Let(_, _, Expr::IsType { type_name, .. }) if type_name == "t.Tag"));
+}

@@ -312,6 +312,13 @@ pub struct ClassValue {
     ///   変えないため）なので、`x is Stack[int]` / `x mustbe Stack[int]` を判定する材料が無かった。
     ///   `value_is_type` がこちらと突き合わせる。綴りはパーサの正規形（空白なし）。
     pub instance_name: Option<String>,
+    /// **定義したモジュールの名前**（`import tags` なら tags・入れ子は `a.b`）。メインのクラスは `None`
+    /// （フェーズ10 10-8）。
+    ///
+    /// ⚠ 型検査はモジュールのクラスを `tags.Tag` の名前で扱う（メインや別のモジュールの同名クラスと
+    ///   混ざらないように）。型検査が付けた実行時の検査（`CheckBefore`）・`is` / `mustbe` にも
+    ///   `tags.Tag` が来るので、`value_is_type` が `name` と合わせて突き合わせる。表示名（`name`）は変えない。
+    pub module_name: Option<Rc<str>>,
 }
 
 
@@ -358,6 +365,7 @@ impl ClassValue {
             is_exception: false,
             raw_layout: None,
             instance_name: None,
+            module_name: None,
         }
     }
 
@@ -448,6 +456,8 @@ impl ClassValue {
             is_exception: self.is_exception,
             raw_layout: self.raw_layout.clone(),
             instance_name: self.instance_name.clone(),
+            // ⚠ `Rc` をスレッドへ持ち出さない（#15）。
+            module_name: self.module_name.as_deref().map(Rc::from),
         }
     }
 }

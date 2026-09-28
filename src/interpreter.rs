@@ -486,6 +486,9 @@ pub struct Interpreter {
     /// 添字を持ち（`FnValue::globals`）、呼び出しの間だけその大域が `scopes[0]` に来る。
     /// ⚠ 以前は `import` のたびにモジュールの名前を呼び出し側の大域へ流し込んでいた（名前空間の侵食）。
     pub(self) global_scopes: Vec<ScopeMap>,
+    /// 各大域（`global_scopes` と同じ添字）が属するモジュールの名前（フェーズ10 10-8）。
+    /// 0（メイン）は `None`。クラスの `module_name` の出どころ。
+    pub(self) global_module_names: Vec<Option<Rc<str>>>,
     /// いま `scopes[0]` にある大域の添字（[`Self::global_scopes`] の）。
     pub(self) cur_globals: u32,
     /// 組み込みの `EventLoop`（単一の値）。モジュールの大域にも同じものを置く。
@@ -681,6 +684,7 @@ impl Interpreter {
             frame_floor: 1,
             // ⚠ 添字 0（メイン）は今 `scopes[0]` にあるので、ここは置き物。
             global_scopes: vec![ScopeMap::default()],
+            global_module_names: vec![None],
             cur_globals: 0,
             event_loop_value: Value::EventLoop(el_data.clone()),
             meta_module_frames: Vec::new(),
@@ -1017,7 +1021,8 @@ impl Interpreter {
     /// 走らせる（`enter_module_frame`・名前空間の分離）。この中で定義したメタ関数は大域の添字を
     /// 持つので、後で別のモジュールから呼ばれても**自分のモジュールの名前**を引く。
     pub(crate) fn meta_push_module_frame(&mut self) {
-        let saved = self.enter_module_frame();
+        // 展開時の枠はモジュールの名前を持たない（クラスの `module_name` は実行時の import だけが付ける）。
+        let saved = self.enter_module_frame(&[]);
         self.meta_module_frames.push(saved);
         // ⚠ 前口上（`gensym` / `compile_error` / 配置メタ関数の入口 …）はどのモジュールからも使う。
         //   値（関数）だけを置く。関数はメインの大域で走るので、旗や `gensym` の数え上げは共有される。

@@ -113,7 +113,7 @@ impl Parser {
                     self.advance();
                     // `is Stack[int]:` も読む（`x is Stack[int]` と同じ・フェーズ10 10-10）。
                     let type_name = if matches!(self.current(), Token::Ident(_))
-                        && *self.peek1() == Token::LBracket
+                        && matches!(self.peek1(), Token::LBracket | Token::Dot)
                     {
                         self.parse_type_expr()?
                     } else {

@@ -309,13 +309,61 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 // ⚠ 単相化したクラスは `name` がテンプレートの名前（`Stack`）なので、`is Stack` は
                 //   どの具体化にも真、`is Stack[int]` は具体化の名前で見る（フェーズ10 10-10）。
-                inst.class.name == type_name
+                if inst.class.name == type_name
                     || inst.class.instance_name.as_deref() == Some(type_name)
                     || inst.class.bases.contains(&type_name.to_string())
+                {
+                    return true;
+                }
+                // モジュールのクラス（`tags.Tag`・10-8）。
+                if !type_name.contains('.') {
+                    return false;
+                }
+                if Self::qualified_class_matches(&inst.class, type_name) {
+                    return true;
+                }
+                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて同じクラスか見る。
+                let class_id = inst.class.class_id;
+                drop(inst);
+                self.dotted_class_id(type_name) == Some(class_id)
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",
             _ => false,
+        }
+    }
+
+    /// `tags.Tag` / `tags.Box[int]` が、モジュール tags で定義したそのクラスか（10-8）。
+    fn qualified_class_matches(class: &crate::interpreter::ClassValue, type_name: &str) -> bool {
+        let Some(module) = class.module_name.as_deref() else {
+            return false;
+        };
+        let Some(rest) = type_name.strip_prefix(module).and_then(|r| r.strip_prefix('.')) else {
+            return false;
+        };
+        if rest == class.name {
+            return true;
+        }
+        // 具体化の名前は空白を除いた正規形（`ClassValue::instance_name`）。
+        match class.instance_name.as_deref() {
+            Some(inst) => rest.chars().filter(|c| !c.is_whitespace()).eq(inst.chars()),
+            None => false,
+        }
+    }
+
+    /// `t.Tag`（名前空間を通した型名）が指すクラスの `class_id`（10-8）。引けなければ `None`。
+    fn dotted_class_id(&self, type_name: &str) -> Option<u32> {
+        let mut parts = type_name.split('.');
+        let mut cur = self.get_val(parts.next()?)?;
+        for seg in parts {
+            cur = match &cur {
+                Value::Namespace(ns) => self.namespace_member(ns, seg)?,
+                _ => return None,
+            };
+        }
+        match cur {
+            Value::Class(c) => Some(c.class_id),
+            _ => None,
         }
     }
 

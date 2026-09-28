@@ -26,6 +26,11 @@
   - ⚠ The bare container *types* still exist internally, reserved for Python translation
     (Python's `list`/`dict`/`set` carry no element type). They are unreachable from Arrow
     source — see the note on `from_ann`'s primitive table in `src/type_check/types.rs`.
+- **Types declared in an imported module are named by the module** (phase 10 task 10-8): the class `Tag` in
+  `tags.ar` is the type `tags.Tag` (a nested path gives `a.b.Tag`), distinct from a `Tag` in the main program or in
+  another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
+  `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too. Only importing two modules
+  with the same name can collide.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

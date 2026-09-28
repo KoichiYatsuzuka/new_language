@@ -1,0 +1,23 @@
+# module_types_error.ar — 別のモジュール・メインの同名クラスは別の型（フェーズ10 10-8）
+#
+# 対になる正常系: module_types.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  'x' is declared 'lb.Tag' but initialized with 'namespace_modules.tags.Tag'
+#   StaticTypeError  argument 0 of 'twice' expects 't.Tag' but got 'namespace_modules.labels.Tag'
+#   StaticTypeError  'z' is declared 'Tag' but initialized with 'namespace_modules.tags.Tag'
+#
+# ⚠ 以前は型検査がクラスを素の名前だけで集めていたので、3 つとも同じ `Tag` に見えて素通りしていた。
+
+import namespace_modules.tags as t
+import namespace_modules.labels as lb
+
+class Tag:
+    mut v: int
+
+fn twice(let x: t.Tag) -> int:
+    return x.v * 2
+
+let x: lb.Tag = t.make(1)                 # ⛔ tags.Tag を labels.Tag へ
+let y = twice(lb.Tag("s"))                # ⛔ labels.Tag を tags.Tag へ
+let z: Tag = t.make(2)                    # ⛔ tags.Tag をメインの Tag へ

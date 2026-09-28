@@ -840,6 +840,9 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
+            // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
+            // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。
+            module_name: self.global_module_names.get(self.cur_globals as usize).cloned().flatten(),
             // 単相化したクラスは具体化の名前も持つ（`x is Stack[int]` の判定・10-10）。
             // ⚠ 綴りはパーサの正規形（空白なし・`Pair[str,int]`）に揃える。展開器の束縛名は
             //   `Pair[str, int]`（`template_subst::instance_name`）で、そのままだと一致しない（実測）。

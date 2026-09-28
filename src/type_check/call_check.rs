@@ -134,7 +134,22 @@ impl TypeChecker {
 
         let func_name = match func {
             Expr::Ident { name, .. } => Some(name.clone()),
-            Expr::Attr { attr, .. } => Some(attr.clone()),
+            // ⚠ モジュールの名前空間のメンバー（`t.Tag(1)` / `t.make(1)`）は修飾名で引く
+            //   （フェーズ10 10-8）。素の `Tag` で引くとメインの同名クラスを見てしまう（実測）。
+            Expr::Attr { object, attr, .. } => match object.as_ref() {
+                Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
+                    Some(InferredType::Namespace(_)) => {
+                        // ⚠ 外部言語のモジュール（cpp / cs …）は素の名前で登録したまま。
+                        Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
+                    }
+                    // ⚠ 型の分からない受け手（エディタで読めていない `import` の別名など）の `x.f(..)` を、
+                    //   素の名前 `f` でレジストリから引かない（10-8）。引くとメインの同名クラス・関数を
+                    //   見てしまう（エディタだけが偽の誤りを出した・`compare_wasm_frontend` で実測）。
+                    None | Some(InferredType::Unresolved) => None,
+                    _ => Some(attr.clone()),
+                },
+                _ => Some(attr.clone()),
+            },
             _ => None,
         };
 
@@ -937,13 +952,17 @@ impl TypeChecker {
     ///   `Box` と読む。以前は識別子の形しか見ておらず、モジュールのテンプレートの具体化は
     ///   コンストラクタも結果の型も検査されなかった（型が `Unresolved` に落ちていた）。
     /// ⚠ レジストリは `import` の本体の宣言も**素の名前で**集めている（`m.Plain(..)` と同じ扱い）。
-    pub(super) fn template_base_name<'e>(&self, base: &'e Expr) -> Option<&'e str> {
+    pub(super) fn template_base_name(&self, base: &Expr) -> Option<String> {
+        // ⚠ 名前は今の文脈で修飾名へ引き直す（フェーズ10 10-8）。モジュールのテンプレートは
+        //   `tags.Box` の名前で登録されている（`m.Box` は別名 `m` を引き直して `tags.Box`）。
         match base {
-            Expr::Ident { name, .. } => Some(name),
+            Expr::Ident { name, .. } => Some(self.registry.resolve(name).into_owned()),
             Expr::Attr { object, attr, .. } => {
                 let Expr::Ident { name, .. } = object.as_ref() else { return None };
                 match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(members)) if members.contains_key(attr) => Some(attr),
+                    Some(InferredType::Namespace(members)) if members.contains_key(attr) => {
+                        Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
+                    }
                     _ => None,
                 }
             }

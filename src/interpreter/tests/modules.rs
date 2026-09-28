@@ -121,3 +121,27 @@ fn a_module_mut_variable_is_read_live() {
     assert!(matches!(interp.get_val("inside"), Some(Value::Int(2))));
     assert!(matches!(interp.get_val("step"), Some(Value::Int(1))));
 }
+
+/// モジュールのクラスは `m.Tag` の名前でも判定できる（`is` / `mustbe`・フェーズ10 10-8）。
+/// ⚠ 型検査が付ける実行時の検査（`CheckBefore`）にも `m.Tag` が来る。表示名（`Tag`）は変えない。
+#[test]
+fn a_module_class_matches_its_qualified_name() {
+    let module = "class Tag:\n    mut v: int\nfn make(let n: int) -> Tag:\n    return Tag(n)\n";
+    let interp = run_with_module(
+        module,
+        concat!(
+            "class Tag:\n",
+            "    mut v: int\n",
+            "let x = m.make(1)\n",
+            "let q = x is m.Tag\n",
+            "let mine = x is Tag\n",
+            "let y = x mustbe m.Tag\n",
+            "let n = y.v\n",
+        ),
+    )
+    .expect("run");
+    assert!(matches!(interp.get_val("q"), Some(Value::Bool(true))));
+    assert!(matches!(interp.get_val("n"), Some(Value::Int(1))));
+    // ⚠ 素の名前での判定は従来どおり（実行時は表示名でも当たる。静的には別の型として弾く）。
+    assert!(matches!(interp.get_val("mine"), Some(Value::Bool(true))));
+}

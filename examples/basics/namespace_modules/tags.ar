@@ -1,0 +1,25 @@
+# namespace_modules/tags.ar — 例題 module_types.ar / module_types_error.ar が import するモジュール（フェーズ10 10-8）
+#
+# `Tag` はメインの例題にも同名のクラスがある。このモジュールの `Tag` は `tags.Tag` という型になる。
+
+class Tag:
+    mut v: int
+
+    fn who(self) -> int:
+        return 1
+
+class Box[T]:
+    mut item: T
+
+    fn get(self) -> T:
+        return self.item
+
+enum Level:
+    Low
+    High
+
+fn make(let n: int) -> Tag:
+    return Tag(n)
+
+fn value_of(let t: Tag) -> int:
+    return t.v

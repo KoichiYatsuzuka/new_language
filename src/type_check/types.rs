@@ -244,6 +244,24 @@ pub enum InferredType {
     },
 }
 
+/// enum `enum_name` の要素の型名（`enum_item_Color`）。モジュールの enum（`tags.Color`）は
+/// `tags.enum_item_Color`（フェーズ10 10-8）。実行時の要素のクラスは `enum_item_Color` という名前で、
+/// モジュールの名前（`ClassValue::module_name`）を持つので、実行時の検査もこの綴りで当たる。
+pub(crate) fn enum_item_type_name(enum_name: &str) -> String {
+    match enum_name.rsplit_once('.') {
+        Some((module, bare)) => format!("{module}.enum_item_{bare}"),
+        None => format!("enum_item_{enum_name}"),
+    }
+}
+
+/// [`enum_item_type_name`] の逆（要素の型名 → enum の名前）。要素の型名でなければ `None`。
+pub(crate) fn enum_of_item_type(item: &str) -> Option<String> {
+    match item.rsplit_once('.') {
+        Some((module, bare)) => bare.strip_prefix("enum_item_").map(|e| format!("{module}.{e}")),
+        None => item.strip_prefix("enum_item_").map(str::to_string),
+    }
+}
+
 impl InferredType {
     /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
     pub fn collect_type_names(&self, out: &mut Vec<String>) {
@@ -513,9 +531,13 @@ impl InferredType {
             //    大文字と同じくクラス名扱いにすれば、存在しない型は
             //    **整合性検査が正直な診断で弾く**（`declared 'list[foo]' but … 'list[int]'`）。
             //    ⇒ 脱落地点を 8 か所塗るのではなく、**非対称そのものを消す**。
-            // ⚠ `np.ndarray` のような `.` を含む名前は従来どおり `None`（英数と `_` のみ）。
-            other if other.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                     && other.chars().all(|c| c.is_alphanumeric() || c == '_') =>
+            // ⚠⚠ **`.` で区切った名前もクラス名**（フェーズ10 10-8）。モジュールの型は `tags.Tag` の名前で
+            //    扱う（メインや別のモジュールの同名クラスと混ざらないように）。以前は `np.ndarray` のような
+            //    名前を `None`（→ `Unresolved`）にしていた。各部分は英数と `_` だけ。
+            other if other.split('.').all(|seg| {
+                seg.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+            }) =>
                 Some(Self::NamedInstance(other.to_string())),
             // **型引数つきの名前**（`Box[int]` / `Pair[int,str]` / `str[int]`）。
             //
@@ -536,9 +558,12 @@ impl InferredType {
             other if other.ends_with(']') => {
                 let open = other.find('[')?;
                 let name = &other[..open];
+                // ⚠ モジュールのテンプレート（`tags.Box[int]`・フェーズ10 10-8）も読む。各部分は英数と `_`。
                 if name.is_empty()
-                    || !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    || !name.split('.').all(|seg| {
+                        seg.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    })
                 {
                     return None;
                 }

@@ -519,7 +519,7 @@ impl TypeChecker {
 
             // --- enum 定義 ---
             Stmt::EnumDef { src: _, name, variants } => {
-                let item_type_name = format!("enum_item_{}", name);
+                let item_type_name = crate::type_check::types::enum_item_type_name(name);
                 self.declare(
                     item_type_name.clone(),
                     InferredType::TypeValOf(Box::new(InferredType::NamedInstance(item_type_name))),
@@ -637,7 +637,7 @@ impl TypeChecker {
                 ..
             } => {
                 self.annotate_module_body(lang, module, body);
-                let member_types = self.collect_module_types(body);
+                let member_types = self.module_member_types(lang, module, body);
                 let bind_name = alias
                     .clone()
                     .unwrap_or_else(|| module.last().unwrap().clone());
@@ -660,7 +660,7 @@ impl TypeChecker {
 
             Stmt::FromImport { lang, module, names, body, .. } => {
                 self.annotate_module_body(lang, module, body);
-                let member_types = self.collect_module_types(body);
+                let member_types = self.module_member_types(lang, module, body);
                 let is_py = lang == "py" || lang == "py-int";
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());

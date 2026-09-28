@@ -4,11 +4,12 @@
 #
 # Section 1 — StaticTypeError: モジュール名つきの具体化のメソッド引数の型違い
 #   Expected error (StaticTypeError):
-#     argument 0 of 'Box[int].set' expects 'int' but got 'str'
+#     argument 0 of 'template_modules.containers.Box[int].set' expects 'int' but got 'str'
+#   ⚠ モジュールのクラスは `モジュール名.クラス名` で表示する（フェーズ10 10-8）。
 #
 # Section 2 — StaticTypeError: from import した名前での具体化のコンストラクタの型違い
 #   Expected error (StaticTypeError):
-#     argument 0 of 'Box[str]' expects 'str' but got 'int'
+#     argument 0 of 'template_modules.containers.Box[str]' expects 'str' but got 'int'
 #
 # Section 3 — StaticTypeError: import したテンプレート関数の戻り値の型違い
 #   Expected error (StaticTypeError):
@@ -19,7 +20,7 @@
 #   ⚠ モジュールの本体の誤りは import 側には出さない（モジュールを直接実行したときに出る）が、
 #     **型引数が原因の誤り**は import 側の誤りなので出す。
 #   Expected error (StaticTypeError):
-#     field 'v' of class 'Counter[str]' is declared 'str' but got 'int'
+#     field 'v' of class 'template_modules.containers.Counter[str]' is declared 'str' but got 'int'
 
 import template_modules.containers as c
 from template_modules.containers import Box, first

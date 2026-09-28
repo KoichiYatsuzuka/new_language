@@ -161,9 +161,21 @@ impl TypeChecker {
         use InferredType as T;
         let rec = |t: &T| Box::new(self.resolve_protocols(t));
         match ty {
-            T::NamedInstance(n) if self.registry.is_protocol(n.as_str()) => T::Protocol(n.clone()),
+            // ⚠ クラスの名前は今の文脈で**修飾名へ引き直してから**比べる（フェーズ10 10-8）。
+            //   モジュールの中の素の `Tag`・`from tags import Tag` した `Tag`・`t.Tag` は、どれも
+            //   `tags.Tag` と同じ型。メインの `Tag` とは別の型。
+            T::NamedInstance(n) => {
+                let r = self.registry.resolve(n);
+                if self.registry.is_protocol(&r) {
+                    T::Protocol(r.into_owned())
+                } else {
+                    T::NamedInstance(r.into_owned())
+                }
+            }
+            T::Protocol(n) => T::Protocol(self.registry.resolve(n).into_owned()),
+            T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::GenericInstance { name, args } => T::GenericInstance {
-                name: name.clone(),
+                name: self.registry.resolve(name).into_owned(),
                 args: args.iter().map(|a| self.resolve_protocols(a)).collect(),
             },
             T::ListOf(t) => T::ListOf(rec(t)),
@@ -176,6 +188,43 @@ impl TypeChecker {
             T::Result(a, b) => T::Result(rec(a), rec(b)),
             T::Union(ts) => T::Union(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
             T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
+            _ => ty.clone(),
+        }
+    }
+
+    /// 型の中のクラスの名前を、今の文脈で**修飾名へ引き直す**（フェーズ10 10-8）。
+    ///
+    /// モジュールの本体から読んだ型（`fn make() -> Tag`）を外へ出すとき、`Tag` を `tags.Tag` にする
+    /// （`Stmt::Import` / `Stmt::FromImport` の検査がモジュールの文脈で呼ぶ）。
+    pub(super) fn canon_type(&self, ty: &InferredType) -> InferredType {
+        use InferredType as T;
+        let rec = |t: &T| Box::new(self.canon_type(t));
+        match ty {
+            T::NamedInstance(n) => T::NamedInstance(self.registry.resolve(n).into_owned()),
+            T::Protocol(n) => T::Protocol(self.registry.resolve(n).into_owned()),
+            T::GenericInstance { name, args } => T::GenericInstance {
+                name: self.registry.resolve(name).into_owned(),
+                args: args.iter().map(|a| self.canon_type(a)).collect(),
+            },
+            T::ListOf(t) => T::ListOf(rec(t)),
+            T::FixedListOf(t) => T::FixedListOf(rec(t)),
+            T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
+            T::SetOf(t) => T::SetOf(rec(t)),
+            T::IteratorOf(t) => T::IteratorOf(rec(t)),
+            T::TypeValOf(t) => T::TypeValOf(rec(t)),
+            T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::Result(a, b) => T::Result(rec(a), rec(b)),
+            T::Union(ts) => T::Union(ts.iter().map(|t| self.canon_type(t)).collect()),
+            T::Intersection(ts) => T::Intersection(ts.iter().map(|t| self.canon_type(t)).collect()),
+            T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.canon_type(t)).collect()),
+            T::Function { params, return_type } => T::Function {
+                params: params.as_ref().map(|ps| {
+                    ps.iter()
+                        .map(|p| super::types::FnTypeParam { ty: self.canon_type(&p.ty), ..p.clone() })
+                        .collect()
+                }),
+                return_type: rec(return_type),
+            },
             _ => ty.clone(),
         }
     }
@@ -463,7 +512,7 @@ impl TypeChecker {
             //    ⚠⚠ **逆は許さない**（`Color` → `enum_item_Color` はダウンキャスト）。
             //    ⚠ `enum_item_` は型検査・実行時の両方が使う内部名（`build_enum_classes`）。
             (InferredType::NamedInstance(a), InferredType::NamedInstance(e))
-                if a.strip_prefix("enum_item_") == Some(e.as_str()) =>
+                if super::types::enum_of_item_type(a).as_deref() == Some(e.as_str()) =>
             {
                 return true
             }

@@ -1,0 +1,51 @@
+# module_types.ar — モジュールの型はモジュール名の名前空間で区別される（フェーズ10 10-8）
+#
+# 対になる誤りの例: module_types_error.ar
+#
+# `namespace_modules/tags.ar` の `Tag` は `namespace_modules.tags.Tag` という型。メインや別のモジュールに
+# 同名の `Tag` があっても混ざらない（同じモジュールを 2 回 import しない限り衝突しない）。
+# ⚠ 以前は型検査がクラスを素の名前だけで集めていたので、`t.Tag(1).who()` がメインの `Tag.who` の型
+#   （`str`）になり、`let b: int = t.Tag(1).who()` が偽の静的エラーになっていた（実行時は正しく区別していた）。
+# 型注釈には `t.Tag`（別名）と書ける。`from ... import Tag` した名前も同じ型を指す。`is` / `mustbe` も同じ。
+
+import namespace_modules.tags as t
+import namespace_modules.labels as lb
+from namespace_modules.tags import make, value_of
+
+class Tag:
+    mut v: int
+
+    fn who(self) -> str:
+        return "main"
+
+let a: str = Tag(1).who()
+let b: int = t.Tag(1).who()
+let c: str = lb.Tag("label").who()
+print(a, b, c)                    # main 1 label
+
+fn twice(let x: t.Tag) -> int:
+    return value_of(x) * 2
+
+print(twice(make(21)))            # 42
+
+# モジュールのテンプレートとメインの同名テンプレートも別
+class Box[T]:
+    mut item: T
+
+    fn get(self) -> str:
+        return "main box"
+
+let n: int = t.Box[int](5).get()
+let m: str = Box[int](6).get()
+print(n, m)                       # 5 main box
+
+# モジュールの enum
+let lv = t.Level.High
+print(lv.value)                   # 1
+
+# is / mustbe
+let x = make(7)
+if x is t.Tag:
+    print("is t.Tag")             # is t.Tag
+let y = x mustbe t.Tag
+print(y.v)                        # 7

@@ -348,8 +348,17 @@ impl TypeChecker {
         if instance_names.is_empty() {
             return errors;
         }
+        // ⚠ モジュールの具体化は `m.Box[str]` の名前で登録されるが、モジュールの本体を検査した文面は
+        //   素の `Box[str]` を使う（フェーズ10 10-8）。どちらの綴りもそろえる。
+        let bare: Vec<String> = instance_names
+            .iter()
+            .filter_map(|n| {
+                let head = &n[..n.find('[').unwrap_or(n.len())];
+                head.rfind('.').map(|i| n[i + 1..].to_string())
+            })
+            .collect();
         // ⚠ 長い名前から置き換える（`Box[Box[int]]` の中の `Box[int]` を先に崩さない）。
-        let mut names: Vec<&String> = instance_names.iter().collect();
+        let mut names: Vec<&String> = instance_names.iter().chain(bare.iter()).collect();
         names.sort_by_key(|n| std::cmp::Reverse(n.len()));
         let normalize = |msg: &str| -> String {
             // ⚠ 文面は名前を ANSI で色付けしている（引用符の直後に制御文字が入る）ので外してから比べる。

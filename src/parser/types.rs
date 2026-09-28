@@ -264,6 +264,22 @@ impl Parser {
         }
 
         let base = match self.current().clone() {
+            // モジュールの型（`t.Tag` / `tags.Tag`・フェーズ10 10-8）。以前は `.` で ParseError だった。
+            // ⚠ 別名（`alias`）の展開は素の名前だけ。型として控えるのは最後の名前（先頭はモジュール）。
+            Token::Ident(name) if *self.peek1() == Token::Dot => {
+                self.advance();
+                let mut path = name;
+                while *self.current() == Token::Dot {
+                    let Token::Ident(seg) = self.peek1().clone() else {
+                        return Err(format!("expected a type name after `{path}.`"));
+                    };
+                    self.advance();
+                    self.advance();
+                    self.note_type_ref(&seg);
+                    path = format!("{path}.{seg}");
+                }
+                path
+            }
             Token::Ident(name) => {
                 self.advance();
                 // ここが「この識別子は型位置にある」と言える唯一の場所。控えないと拡張が
@@ -643,7 +659,8 @@ impl Parser {
             // ⚠ 何を `is` で判定できるかは型検査が決める（`check_guard_type_exists`）。パーサは
             //   import 先のテンプレートを知らないので、ここで弾くと別モジュールの `Box[int]` まで落ちる
             //   （9.7 の退行と同じ形）。
-            Token::Ident(_) if *self.peek1() == Token::LBracket => self.parse_type_expr(),
+            // モジュールの型（`x is t.Tag`・フェーズ10 10-8）も型式として読む。
+            Token::Ident(_) if matches!(self.peek1(), Token::LBracket | Token::Dot) => self.parse_type_expr(),
             Token::Ident(name) => {
                 self.advance();
                 // `x is int` の `int` も型位置。式位置と同じ扱いにすると関数色になる。
