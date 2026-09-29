@@ -917,6 +917,11 @@ impl TypeChecker {
     /// 使う。組み込み例外は `class_bases = ["Error"]` で登録されており、利用者の
     /// `class MyErr(Error)` も同じ経路で通る。
     fn check_except_type(&mut self, type_name: &str) {
+        // `except Error` は「すべての例外」のつもりで書かれる。書くべきは `except Exception`（10-19）。
+        if type_name == "Error" {
+            self.report_error(StaticTypeError { kind: TypeErrorKind::ExceptOnErrorTrait, span: None });
+            return;
+        }
         // 未知の名前は「存在しないクラス」として弾く（`UnknownGuardType` と同じ理由）。
         if !self.registry.is_known_class(type_name) {
             // ⚠ trait / protocol 名は `is_known_class` に載らないので、そちらも見てから判断する。

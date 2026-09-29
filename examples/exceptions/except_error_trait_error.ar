@@ -1,0 +1,15 @@
+# except_error_trait_error.ar — `except Error` と書いた（フェーズ10 10-19）
+#
+# 対になる正常系: except_exception.ar
+#
+# 期待されるエラー:
+#   StaticTypeError  'Error' in `except` is the trait that exceptions implement, not an exception
+#                    class; write `except Exception` to catch every exception
+#
+# ⚠ `Error` は例外が実装する trait（`class MyErr(Error)`）。すべての例外を捕まえるのは `except Exception`
+#   （`Exception` はすべての例外の基底）。
+
+try:
+    raise RuntimeError("x")
+except Error as e:                 # ⛔ except Exception と書く
+    print("caught")

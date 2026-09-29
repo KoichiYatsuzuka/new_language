@@ -309,10 +309,8 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 // ⚠ 単相化したクラスは `name` がテンプレートの名前（`Stack`）なので、`is Stack` は
                 //   どの具体化にも真、`is Stack[int]` は具体化の名前で見る（フェーズ10 10-10）。
-                if inst.class.name == type_name
-                    || inst.class.instance_name.as_deref() == Some(type_name)
-                    || inst.class.bases.contains(&type_name.to_string())
-                {
+                // 基底・`Exception`（すべての例外の基底・10-19）は `ClassValue::is_a` で見る。
+                if inst.class.is_a(type_name) || inst.class.instance_name.as_deref() == Some(type_name) {
                     return true;
                 }
                 // モジュールのクラス（`tags.Tag`・10-8）。

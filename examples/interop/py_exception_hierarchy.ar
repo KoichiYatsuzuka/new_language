@@ -1,0 +1,20 @@
+# py_exception_hierarchy.ar — Python の例外クラスの継承（フェーズ10 10-19）
+#
+# Python のクラスは組み込みの例外を継承できる（class AppError(Exception) / class ConfigError(ValueError)）。
+# 継承は多段でも効く（MissingKey → ConfigError → ValueError → Exception）。Arrow 側の `except Exception`
+# も Python で送出した例外を捕まえる。
+#
+# ⚠ 以前は 2 つとも動かなかった:
+#   - 組み込みの例外を継承した Python のクラスは作れなかった（'AppError' has no field 'message'）。
+#   - `except Exception` が組み込みの例外（とその派生）を捕まえなかった。
+
+import[py] test_modules.py_exception_hierarchy as p
+
+print(p.run())
+# ValueError branch, ValueError branch, Exception branch, Exception branch
+
+try:
+    p.fail()
+except ValueError as e:
+    print("Arrow caught ValueError: " + e.message)
+# Arrow caught ValueError: raised in python

@@ -323,6 +323,21 @@ pub struct ClassValue {
 
 
 impl ClassValue {
+    /// このクラスが `type_name` か、その派生か（`except` の照合・`x is T`・フィールドの型検査）。
+    ///
+    /// ⚠⚠ **`Exception` はすべての例外の基底**（フェーズ10 10-19・Python と同じ）。組み込みの例外
+    ///   （`ValueError` など）も、`Error` を実装した利用者の例外（`class MyErr(Error)`）も `Exception` の派生。
+    ///   以前は組み込みの例外の基底が `Error`（trait）だけで、`Exception` はその**兄弟**だったため、
+    ///   `except Exception` が `RuntimeError` も利用者の例外も捕まえなかった（まとめて捕まえる手段が無かった）。
+    /// ⚠ 基底は `bases` を見るだけ（推移をたどらない）。Python のクラスの継承は定義時に祖先まで平坦化して
+    ///   載せる（`exec_class_def`）。Arrow のクラスは trait しか継承できない。
+    pub(crate) fn is_a(&self, type_name: &str) -> bool {
+        self.name == type_name
+            || self.bases.iter().any(|b| b == type_name)
+            || (type_name == "Exception"
+                && (self.is_exception || self.bases.iter().any(|b| b == "Error" || b == "Exception")))
+    }
+
     /// 合成クラス（組み込み型・`enum` の実体型・`new_type` ラッパー等）の**土台**（#80）。
     ///
     /// `name` と `class_id` だけを受け取り、残りは「空」の既定値で埋める。

@@ -923,7 +923,18 @@ impl Interpreter {
             instance_name: name
                 .ends_with(']')
                 .then(|| name.chars().filter(|c| !c.is_whitespace()).collect()),
-            bases: bases.to_vec(),
+            // ⚠ Python のクラスは**祖先まで平坦化**して載せる（フェーズ10 10-19）。`class B(A)`・`class A(ValueError)`
+            //   の `B` も `except ValueError` / `except Exception` で捕まる（照合は `ClassValue::is_a` が `bases`
+            //   だけを見る・推移をたどらない）。フィールドの並びは上で直接の基底から組んだまま。
+            bases: {
+                let mut all = bases.to_vec();
+                for b in py_base_classes.iter().flat_map(|c| c.bases.iter()) {
+                    if !all.contains(b) {
+                        all.push(b.clone());
+                    }
+                }
+                all
+            },
             methods,
             gen_methods,
             field_defaults,

@@ -377,3 +377,27 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
     }
+
+    /// `Exception` はすべての例外の基底（フェーズ10 10-19）。組み込みの例外も `Error` を実装した利用者の
+    /// 例外も `Exception` の欄・引数に入る。`except Error` は `except Exception` を促す誤り。
+    #[test]
+    fn exception_is_the_base_of_every_exception() {
+        let src = concat!(
+            "class MyErr(Error):\n",
+            "    fn __init__(mut self, message: str) -> None:\n",
+            "        self.message = message\n",
+            "fn take(let e: Exception) -> str:\n",
+            "    return e.message\n",
+            "let a: Exception = ValueError(\"v\")\n",
+            "let b = take(MyErr(\"m\"))\n",
+            "let c = take(KeyError(\"k\"))\n",
+        );
+        assert!(ok(src), "{:?}", check(src));
+        // 例外でない値は入らない。
+        assert!(err("let d: Exception = 5\n"));
+        let errs = check("try:\n    pass\nexcept Error as e:\n    pass\n");
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::ExceptOnErrorTrait)),
+            "{errs:?}"
+        );
+    }

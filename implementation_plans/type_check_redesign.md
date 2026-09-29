@@ -4394,7 +4394,7 @@ Arrow には**暗黙の実体化が無い**（型引数なしの呼び出しは 
 | ~~**10-16**~~ | ~~関数・ブロックの中のクラス定義・`import` が内部エラー（`VmForceError`）（重さ: 中）~~ **完了（2026-09-29）** | なし | 中 |
 | ~~**10-17**~~ | ~~誤りの位置が出ない（重さ: 中）~~ **完了（2026-09-29）** | なし | 大 |
 | ~~**10-18**~~ | ~~Python のクラス本体の中のクラス（`class Outer: class Inner:`）が変換で黙って消える（重さ: 低）~~ **完了（2026-09-29）** | なし | 小 |
-| **10-19** | 組み込みの例外をまとめて捕まえる手段が無い（`except Exception` が `RuntimeError` などを捕まえない）（重さ: 中・要判断） | なし | 小 |
+| ~~**10-19**~~ | ~~組み込みの例外をまとめて捕まえる手段が無い（`except Exception` が `RuntimeError` などを捕まえない）（重さ: 中・要判断）~~ **完了（2026-09-30）** | なし | 小 |
 
 ⚠ 10-1 を先頭に置くのは**退行だから**（他タスクの前提ではない）。
 
@@ -5080,6 +5080,26 @@ except Exception as e:
   例題を直す。`except Exception` が組み込みを捕まえないことは型検査で知らせる。
 
 起票（2026-09-29・10-16 のゲートで調べて判明）。
+
+**完了（2026-09-30）**: 利用者の判断で **(a)**。**`Exception` をすべての例外の基底にした**（Python と同じ）。
+
+1. **実行時**: 「そのクラスか・その派生か」を `ClassValue::is_a` 1 つにまとめ、`except` の照合（`exc_matches`）・
+   `x is T`（`value_is_type`）・フィールドの型検査（`FieldCheck::Class`）が使う。`Exception` は組み込みの例外
+   （`is_exception`）と `Error` を実装したクラス（`class MyErr(Error)`）すべてにマッチする。
+2. **型検査**: `class_implements_trait(c, "Exception")` が「`Error` を実装しているか」で答える
+   （`let e: Exception = ValueError(..)`・`Exception` の引数に `MyErr(..)`）。⚠ 基底の表に `Error` → `Exception`
+   を足さないのは、`Exception` の基底が `Error` なので循環になり、基底をたどる他の walker が止まらなくなるため。
+   `except Error` は「`except Exception` と書く」ことを促す誤り（`ExceptOnErrorTrait`）にした（以前の文面
+   「can never match」は誤りだった。実行時には `Error` を実装したものに当たる）。
+3. **Python のクラスの例外の継承**: 付随して 2 つ直した（以前はどちらも動かなかった）。
+   - 組み込みの例外を継承した Python のクラスが作れなかった（`class AppError(Exception)` が
+     `'AppError' has no field 'message'`）。組み込みの例外の名前ごとにフィールドの並びを `py_class_field_order`
+     へ最初から載せた（一覧は `built_in_types::BUILTIN_EXCEPTION_NAMES` を共有）。
+   - Python のクラスの `bases` を**祖先まで平坦化**した（`class B(A)`・`class A(ValueError)` の `B` が
+     `except ValueError` で捕まる。照合は推移をたどらない）。
+4. 結果: `basics/built_in.ar` が通る（`os.remove` の `RuntimeError` を `except Exception` で捕まえられる）。
+5. 網: 例題 `exceptions/except_exception.ar` / `except_error_trait_error.ar`・`interop/py_exception_hierarchy.ar`
+   （出力は CPython と一致）、型検査・実行時のテスト各 1 本。
 
 ### 順序
 

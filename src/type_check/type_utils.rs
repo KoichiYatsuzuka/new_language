@@ -680,7 +680,19 @@ impl TypeChecker {
     }
 
     /// クラスが指定 trait を実装しているかを基底リストから確認する。
+    ///
+    /// ⚠⚠ **`Exception` はすべての例外の基底**（フェーズ10 10-19・実行時の `ClassValue::is_a` と同じ）。
+    ///   `Error` を実装したクラス（組み込みの例外・`class MyErr(Error)`）は `Exception` の派生として扱う
+    ///   （`let e: Exception = ValueError("x")` / `fn f(let e: Exception)` に `MyErr(..)` を渡す）。
+    ///   ⚠ レジストリの基底の表には足さない（`Error` → `Exception` → `Error` の循環になり、基底を
+    ///   たどる他の walker が止まらなくなる）。
     pub(super) fn class_implements_trait(&self, class_name: &str, trait_name: &str) -> bool {
+        if trait_name == "Exception"
+            && class_name != "Exception"
+            && self.class_implements_trait(class_name, "Error")
+        {
+            return true;
+        }
         let mut stack = vec![class_name.to_string()];
         let mut seen = HashSet::new();
         while let Some(cur) = stack.pop() {

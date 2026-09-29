@@ -360,3 +360,30 @@ fn test_innermost_frame_location_for_return_statement() {
     assert_eq!(innermost.fn_name, "inner");
     assert_eq!(innermost.line, 3, "{:?}", raised.frames);
 }
+
+/// `except Exception` は組み込みの例外も利用者の例外も捕まえる（フェーズ10 10-19）。
+/// ⚠ 以前は組み込みの例外の基底が `Error` だけで、`except Exception` は `Exception` そのものしか捕まえなかった。
+#[test]
+fn test_except_exception_catches_every_exception() {
+    let src = concat!(
+        "class MyErr(Error):\n",
+        "    fn __init__(mut self, message: str) -> None:\n",
+        "        self.message = message\n",
+        "mut caught = 0\n",
+        "try:\n",
+        "    raise RuntimeError(\"r\")\n",
+        "except Exception as e:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise MyErr(\"m\")\n",
+        "except Exception as e:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    let d: dict[str, int] = {}\n",
+        "    let v = d[\"k\"]\n",
+        "except Exception as e:\n",
+        "    caught = caught + 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(3)), "{v:?}");
+}

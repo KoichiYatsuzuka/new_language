@@ -1,0 +1,58 @@
+# except_exception.ar — `Exception` はすべての例外の基底（フェーズ10 10-19）
+#
+# 対になるエラー例: except_error_trait_error.ar（`except Error` と書いた場合）
+#
+# 組み込みの例外（ValueError / KeyError / RuntimeError …）も、`Error` を実装した利用者の例外も
+# `Exception` の派生。`except Exception` はすべての例外を捕まえる（Python と同じ）。
+# ⚠ 以前は組み込みの例外の基底が `Error`（trait）だけで、`Exception` はその兄弟だった。
+#   `except Exception` は `Exception` そのものしか捕まえず、まとめて捕まえる書き方が無かった。
+
+class ParseFailure(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+fn fail(let kind: int) -> None:
+    if kind == 0:
+        let d: dict[str, int] = {}
+        print(d["missing"])
+    elif kind == 1:
+        raise RuntimeError("runtime")
+    elif kind == 2:
+        raise ParseFailure("bad token")
+    else:
+        let z = 0
+        print(1 / z)
+
+# ── ① 組み込みの例外も利用者の例外も捕まえる ───────────────────────────
+for kind in range(4):
+    try:
+        fail(kind)
+    except Exception as e:
+        print("caught: " + e.message)
+# caught: missing
+# caught: runtime
+# caught: bad token
+# caught: division by zero
+
+# ── ② 具体的な例外を先に書けば、そちらが先に当たる ──────────────────────
+try:
+    raise ValueError("specific")
+except ValueError as e:
+    print("ValueError: " + e.message)
+except Exception as e:
+    print("never here")
+# ValueError: specific
+
+# ── ③ `Exception` 型の変数・引数に、どの例外も入る ──────────────────────
+fn describe(let e: Exception) -> str:
+    if e is ParseFailure:
+        return "parse failure: " + e.message
+    return "other: " + e.message
+
+let a: Exception = KeyError("k")
+print(describe(a))
+# other: k
+print(describe(ParseFailure("p")))
+# parse failure: p
+print(ValueError("v") is Exception)
+# True

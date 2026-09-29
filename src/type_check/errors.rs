@@ -415,6 +415,9 @@ pub enum TypeErrorKind {
     ///
     /// ⚠ 「腕が永久に死ぬ」系統（3.4 の `UnknownGuardType` と同じ）。
     ExceptNotError { type_name: String, reason: &'static str },
+    /// `except Error`（フェーズ10 10-19）。`Error` は例外が実装する trait で、`except` には書かない。
+    /// すべての例外を捕まえるのは `except Exception`（`Exception` はすべての例外の基底）。
+    ExceptOnErrorTrait,
     /// `=>` キャストが**成功しうる組み合わせを 1 つも持たない**（タスク 7.3・検体 `T1`）。
     CastCanNeverSucceed { from: InferredType, to: String, reason: String },
     /// `mustbe` が**成功しうる値を 1 つも持たない**（タスク 7.3・検体 `T2`）。
@@ -941,6 +944,10 @@ impl StaticTypeError {
             TypeErrorKind::NotIterable { ty } => {
                 format!("{} is not iterable", hl_q(&ty.to_string()))
             }
+            TypeErrorKind::ExceptOnErrorTrait => format!(
+                "{} in {} is the trait that exceptions implement, not an exception class; write {} to catch every exception",
+                hl_q("Error"), hl_bt("except"), hl_bt("except Exception")
+            ),
             TypeErrorKind::ExceptNotError { type_name, reason } => format!(
                 "{} in {} is {}; the handler can never match",
                 hl_q(type_name), hl_bt("except"), reason

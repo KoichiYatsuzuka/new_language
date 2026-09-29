@@ -355,10 +355,12 @@ impl InstanceData {
             //    ネイティブハンドル・`None` などは判定材料が無いので通す（取りこぼす方へ倒す）。
             if let Value::Instance(v_rc) = &val {
                 let ok = match self.class.field_checks.get(idx) {
-                    // ⚠ Arrow はクラス継承を許さない（trait だけが base）ので**完全一致**でよい。
+                    // ⚠ Arrow はクラス継承を許さない（trait だけが base）ので基本は完全一致。
+                    //   ⚠ ただし `Exception` の欄はすべての例外を受ける（`ClassValue::is_a`・10-19）。
+                    //   Python から変換したクラスの派生もここで受ける（基底は祖先まで平坦化してある）。
                     Some(FieldCheck::Class(expected)) => {
                         let vb = v_rc.borrow();
-                        vb.class.name.as_str() == &**expected
+                        vb.class.is_a(expected)
                             // new_type ラッパは基底名でも受ける（`new_type M: Dog` を Dog へ）。
                             || vb.class.new_type_base.as_deref() == Some(&**expected)
                     }

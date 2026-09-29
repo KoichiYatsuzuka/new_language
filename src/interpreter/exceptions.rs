@@ -100,12 +100,14 @@ impl Interpreter {
     /// 例外インスタンスのクラスが `except` 節の型名にマッチするか判定する。
     ///
     /// マッチ条件: クラス名が `type_name` と一致するか、または `bases`（基底クラス・trait）に含まれる場合。
+    /// `Exception` はすべての例外にマッチする（[`ClassValue::is_a`]）。
     ///
     /// - `inst_class`: 例外インスタンスのクラス定義
     /// - `type_name`: `except` 節で指定された型名
     ///
     /// 戻り値: `true` — マッチあり（例外がこの handler で捕捉される）
     pub(super) fn exc_matches(inst_class: &Rc<ClassValue>, type_name: &str) -> bool {
-        inst_class.name == type_name || inst_class.bases.contains(&type_name.to_string())
+        // `except Exception` はすべての例外を捕まえる（`ClassValue::is_a`・フェーズ10 10-19）。
+        inst_class.is_a(type_name)
     }
 }

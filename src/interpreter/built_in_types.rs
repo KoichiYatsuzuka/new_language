@@ -120,6 +120,33 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     })
 }
 
+/// 組み込みの例外クラスの名前（実行時の一覧）。
+///
+/// ⚠ 3 つの一覧（ここ / `type_check` の `EXCEPTION_CLASS_NAMES` / `exceptions.rs` の `CATCHABLE`）を揃えること。
+/// ⚠ Python のクラスがこれらを継承したときのフィールドの並びにも使う（`Interpreter::new` が
+///   `py_class_field_order` へ載せる・フェーズ10 10-19）。
+pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 19] = [
+    "Exception",
+    "ValueError",
+    "TypeError",
+    "NameError",
+    "AttributeError",
+    "IndexError",
+    "KeyError",
+    "ZeroDivisionError",
+    "RuntimeError",
+    "StopIteration",
+    "NotImplementedError",
+    "OverflowError",
+    "IOError",
+    "OSError",
+    "AssertionError",
+    "ArithmeticError",
+    "AccessError",
+    "RecursionError",
+    "GeneratorExit",
+];
+
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
 /// 生成クラスは `mut value: <prim_type>` フィールドと `__init__(mut self, value: <prim_type>)` を持つ。
 pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
@@ -247,30 +274,7 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
     // 標準例外クラスをすべて登録する。
     // 各クラスは `__init__(mut self, message: str)` を持ち、
     // code_context / file / line / col フィールドは raise 時にインタープリタが設定する。
-    let exception_names = [
-        "Exception",
-        "ValueError",
-        "TypeError",
-        "NameError",
-        "AttributeError",
-        "IndexError",
-        "KeyError",
-        "ZeroDivisionError",
-        "RuntimeError",
-        "StopIteration",
-        "NotImplementedError",
-        "OverflowError",
-        "IOError",
-        "OSError",
-        "AssertionError",
-        "ArithmeticError",
-        "AccessError",
-        // ⚠ 3 つの一覧（ここ / `type_check` の `EXCEPTION_CLASS_NAMES` /
-        //   `exceptions.rs` の `CATCHABLE`）を揃えること。
-        "RecursionError",
-        "GeneratorExit",
-    ];
-    for class_name in exception_names {
+    for class_name in BUILTIN_EXCEPTION_NAMES {
         let cls = make_error_class(class_name);
         global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
     }

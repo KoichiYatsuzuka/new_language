@@ -38,6 +38,10 @@
     class factories), but a Python function that **returns a class it defines** may only be used
     from Python: calling it, decorating with it or taking it as a value from Arrow is a static
     error. A Python `import` inside a function (or a module-level block) is a conversion error.
+- **Exceptions**: a user exception implements the `Error` trait (`class MyErr(Error)` — classes can
+  only inherit traits). `Exception` is the base of **every** exception, built-in or user-defined
+  (task 10-19), so `except Exception` catches them all, as in Python. `except Error` is a static
+  error pointing to `except Exception`.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

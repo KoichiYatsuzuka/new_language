@@ -371,6 +371,14 @@ Exception classes registered (all with base `Error`):
 `ZeroDivisionError`, `RuntimeError`, `StopIteration`, `NotImplementedError`, `OverflowError`,
 `IOError`, `OSError`, `AssertionError`, `ArithmeticError`, `AccessError`.
 
+⚠ **`Exception` is the base of every exception** (task 10-19): `class_implements_trait(c, "Exception")`
+is true for any class that implements `Error` (built-in exceptions and user `class MyErr(Error)`), so
+`let e: Exception = ValueError(..)` and passing `MyErr(..)` to an `Exception` parameter type-check.
+This is answered in `class_implements_trait` rather than by adding `Error → Exception` to the base
+table (that would make a cycle other base walkers don't guard against). The runtime counterpart is
+`ClassValue::is_a` (`except` matching, `x is T`, field checks). `except Error` is rejected with
+`ExceptOnErrorTrait` ("write `except Exception`").
+
 ---
 
 ## Exception Handling

@@ -709,7 +709,25 @@ impl Interpreter {
             error_site: None,
             defining_nested_class: false,
             trait_field_access: HashMap::new(),
-            py_class_field_order: HashMap::new(),
+            // ⚠ 組み込みの例外クラスの並びを最初から載せる（フェーズ10 10-19）。Python のクラスが
+            //   `class AppError(Exception)` / `class ConfigError(ValueError)` と継承したとき、基底の
+            //   フィールド（message …）の並びがここに無く、`'AppError' has no field 'message'` で作れなかった。
+            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。
+            py_class_field_order: built_in_types::BUILTIN_EXCEPTION_NAMES
+                .iter()
+                .map(|n| {
+                    (
+                        n.to_string(),
+                        vec![
+                            ("message".to_string(), false, "str".to_string()),
+                            ("code_context".to_string(), false, "str".to_string()),
+                            ("file".to_string(), false, "str".to_string()),
+                            ("line".to_string(), false, "int".to_string()),
+                            ("col".to_string(), false, "int".to_string()),
+                        ],
+                    )
+                })
+                .collect(),
             trait_field_order: {
                 // Error trait のフィールド順序を登録: サブクラス定義時に build_field_index が参照する
                 let mut m = HashMap::new();
