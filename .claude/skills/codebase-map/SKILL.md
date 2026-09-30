@@ -465,7 +465,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (135)
   compare_outputs.ps1 (140)
-  compare_python_impl.ps1 (446)
+  compare_python_impl.ps1 (449)
   compare_wasm_frontend.ps1 (240)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
