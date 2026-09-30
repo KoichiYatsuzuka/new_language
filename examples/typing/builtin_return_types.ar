@@ -13,6 +13,9 @@
 #
 # ⚠ 戻り値の型が静的に決まらないもの（`next` / `parse_ar`）は従来どおり型を付けない。
 #
+# 組み込みの列挙（`FileOpenMode` / `StartPoint` / `ByteRecognizingMode` / `Encoding`）と `FileObject` の
+# メソッドも同じファイルで宣言した（以前は定義が無く、`FileOpenMode.bogus` も `f.write(1)` も静的に通っていた）。
+#
 # 弾かれる例は builtin_return_types_error.ar
 
 print("=== open は FileObject を返す ===")
@@ -34,6 +37,21 @@ print("=== id は pointer を返す ===")
 
 let p: pointer = id(r)
 print(p is pointer)                 # True
+
+print("=== 組み込みの列挙は型の名前 ===")
+
+let m: FileOpenMode = FileOpenMode.read
+let mv: int = m.value
+print(mv)                           # 2
+let enc: Encoding = Encoding.UTF_8
+print(enc.value)                    # 1
+
+print("=== FileObject のメソッド ===")
+
+let g: FileObject = open("examples/typing/builtin_return_types.ar", FileOpenMode.read, StartPoint.top)
+let first = g.read_line()           # テキストなら str・バイトなら list[int]（実行時に決まる）
+print(len(first) > 0)               # True
+close(g)
 
 print("=== print の結果は None ===")
 

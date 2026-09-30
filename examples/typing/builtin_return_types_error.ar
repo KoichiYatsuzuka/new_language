@@ -8,7 +8,15 @@
 #   StaticTypeError  'n' is declared 'int' but initialized with 'FileObject'
 #   StaticTypeError  'r' is declared 'int' but initialized with 'str'
 #   StaticTypeError  'e' is declared 'int' but initialized with 'str'
+#   StaticTypeError  'FileOpenMode' has no member 'bogus'
+#   StaticTypeError  'FileObject' has no member 'nope'
+#   StaticTypeError  argument 0 of 'FileObject.write' expects 'Union[str, list[int]]' but got 'int'
 
 let n: int = open("examples/typing/builtin_return_types_error.ar", FileOpenMode.read)   # ⛔ FileObject
 let r: int = repr(1)                # ⛔ str
 let e: int = getenv("HOME")         # ⛔ str
+
+print(FileOpenMode.bogus)           # ⛔ 無い要素
+let g = open("examples/typing/builtin_return_types_error.ar", FileOpenMode.read)
+g.nope()                            # ⛔ 無いメソッド
+g.write(1)                          # ⛔ str か list[int]

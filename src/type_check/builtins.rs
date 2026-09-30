@@ -1,4 +1,4 @@
-//! 組み込み関数の型。宣言は `src/built_in_stab/builtins.ars` **1 本だけ**で、ここはそれを読む。
+//! 組み込み関数・組み込みの型の宣言。宣言は `src/built_in_stab/builtins.ars` **1 本だけ**で、ここはそれを読む。
 //!
 //! # なぜ宣言ファイルを型検査器が読むのか
 //!
@@ -19,6 +19,14 @@
 //!   他の関数の仮引数は表示用。
 //!
 //! ⚠ 利用者が同じ名前の関数・変数を宣言したら、そちらが勝つ（呼ぶ側 `builtin_fn_return` が先に見る）。
+//!
+//! # 組み込みの型（`enum` / `class`）
+//!
+//! 実行時の専用の値（`Value::FileObject`）や組み込みの列挙（`FileOpenMode` …）は、以前は型検査器に
+//! 定義が無く、`FileOpenMode.read` も `f.read()` も `Unresolved`（何でも通る）だった。
+//! `builtins.ars` の `enum` / `class` を [`type_decls`] で渡し、`TypeChecker::new` がレジストリへ
+//! （`TypeRegistryBuilder::collect_builtin_types`・Arrow のクラスとしては扱わない）、`enum` の名前を
+//! 大域へ登録する。これで要素・メソッドの存在、メソッドの引数、`.value` の型が検査される。
 
 use std::collections::HashMap;
 
@@ -40,27 +48,38 @@ pub(crate) struct BuiltinFn {
     pub ret: Option<InferredType>,
 }
 
+/// `builtins.ars` を解析した結果。
+struct Declarations {
+    /// 組み込み関数（名前 → 宣言）。
+    fns: HashMap<String, BuiltinFn>,
+    /// 組み込みの型の宣言（`enum` / `class` の文そのもの）。
+    types: Vec<Stmt>,
+}
+
 thread_local! {
     /// `builtins.ars` を解析した表（スレッドごとに 1 回だけ作る）。
-    static TABLE: HashMap<String, BuiltinFn> = parse_table();
+    static TABLE: Declarations = parse_table();
 }
 
 /// `builtins.ars` を解析して「名前 → 宣言」の表を作る。
 ///
 /// ⚠ 解析に失敗したら空の表を返す（組み込みに型が付かないだけで、検査は続けられる）。
 ///   ファイルが壊れていないことは単体テスト（`builtins_ars_parses`）が守る。
-fn parse_table() -> HashMap<String, BuiltinFn> {
+fn parse_table() -> Declarations {
+    let mut table = Declarations { fns: HashMap::new(), types: Vec::new() };
     let tokens = crate::lexer::Lexer::new(SOURCE, "<builtins>").tokenize();
     let stmts = match crate::parser::Parser::new(tokens, None).parse_program() {
         Ok(stmts) => stmts,
         Err(e) => {
             debug_assert!(false, "builtins.ars failed to parse: {e}");
-            return HashMap::new();
+            return table;
         }
     };
-    let mut table = HashMap::new();
     for stmt in stmts {
         let Stmt::FnDef { name, params, return_type, .. } = stmt else {
+            if matches!(stmt, Stmt::EnumDef { .. } | Stmt::ClassDef { .. }) {
+                table.types.push(stmt);
+            }
             continue;
         };
         let params = params
@@ -77,7 +96,7 @@ fn parse_table() -> HashMap<String, BuiltinFn> {
             })
             .collect();
         let ret = return_type.as_deref().and_then(InferredType::from_ann);
-        table.insert(name, BuiltinFn { params, ret });
+        table.fns.insert(name, BuiltinFn { params, ret });
     }
     table
 }
@@ -95,13 +114,13 @@ pub(super) fn return_type(name: &str) -> Option<InferredType> {
     if is_conversion(name) {
         return None;
     }
-    TABLE.with(|t| t.get(name).and_then(|f| f.ret.clone()))
+    TABLE.with(|t| t.fns.get(name).and_then(|f| f.ret.clone()))
 }
 
 /// 組み込み関数 `name` の関数型（仮引数つき）。大域に登録する [`GLOBAL_FNS`] 用。
 pub(super) fn fn_type(name: &str) -> Option<InferredType> {
     TABLE.with(|t| {
-        t.get(name).map(|f| InferredType::Function {
+        t.fns.get(name).map(|f| InferredType::Function {
             params: Some(f.params.clone()),
             return_type: Box::new(f.ret.clone().unwrap_or(InferredType::Unresolved)),
         })
@@ -112,8 +131,60 @@ pub(super) fn fn_type(name: &str) -> Option<InferredType> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn declared_names() -> Vec<String> {
     TABLE.with(|t| {
-        let mut names: Vec<String> = t.keys().cloned().collect();
+        let mut names: Vec<String> = t.fns.keys().cloned().collect();
         names.sort();
         names
+    })
+}
+
+/// 組み込みの型の宣言（`builtins.ars` の `enum` / `class` の文）。`TypeChecker::new` がレジストリと大域へ登録する。
+pub(super) fn type_decls() -> Vec<Stmt> {
+    TABLE.with(|t| t.types.clone())
+}
+
+/// 組み込みの `enum` の宣言（名前・要素と値）。宣言と実行時の突き合わせ用。
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn declared_enums() -> Vec<(String, Vec<(String, Option<i64>)>)> {
+    TABLE.with(|t| {
+        t.types
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::EnumDef { name, variants, .. } => Some((
+                    name.clone(),
+                    variants
+                        .iter()
+                        .map(|(v, e)| {
+                            let value = match e {
+                                Some(crate::ast::Expr::Int(n)) => Some(*n),
+                                _ => None,
+                            };
+                            (v.clone(), value)
+                        })
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// 組み込みの `class` の宣言したメソッド名（クラス名 → メソッド名）。宣言と実行時の突き合わせ用。
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn declared_methods(class: &str) -> Vec<String> {
+    TABLE.with(|t| {
+        t.types
+            .iter()
+            .find_map(|s| match s {
+                Stmt::ClassDef { name, body, .. } if name == class => Some(
+                    body.iter()
+                        .filter_map(|m| match m {
+                            Stmt::FnDef { name, .. } => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
     })
 }

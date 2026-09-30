@@ -376,10 +376,22 @@ seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives t
 | `range`, `len` | `Function { params, return_type }` from `builtins.ars` (`builtins::GLOBAL_FNS` — the only built-ins that occupy a global name) |
 | All exception classes | `TypeValOf(NamedInstance(name))` |
 
-Built-in runtime types usable as annotations / type guards without members being checked:
-`FileObject` (result of `open`), `slice`, and the built-in new_types `path`, `Index`, `Size`,
-`pointer` (`BUILTIN_NEW_TYPES`; `pointer` was missing until 2026-09-30 although the runtime
-registers it as `new_type pointer: uint`).
+Built-in **types declared in `src/built_in_stab/builtins.ars`** (`builtins::type_decls` →
+`TypeRegistryBuilder::collect_builtin_types`, plus the enum names in the global scope in
+`TypeChecker::new`):
+- `enum FileOpenMode` / `StartPoint` / `ByteRecognizingMode` / `Encoding` — members and `.value`
+  are checked like a user enum (`FileOpenMode.bogus` is an error).
+- `class FileObject` (result of `open`) — its methods `read` / `read_line` / `read_letter` /
+  `write` / `write_line` are checked for existence, argument count and types; `write*` return `None`,
+  the `read*` results stay `Unresolved` (text vs byte mode is a runtime choice).
+- ⚠ These classes are collected with `foreign_depth` raised, so they are **not** in
+  `arrow_class_names` (the VM must not treat `Value::FileObject` as `Value::Instance`).
+- ⚠ Declaring any method closes the member set — every runtime method must be listed
+  (`builtins_ars_matches_the_runtime` compares enums and `FileObject` methods with the runtime).
+
+Other built-in runtime types usable as annotations / type guards without members being checked:
+`slice`, and the built-in new_types `path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
+`pointer` was missing until 2026-09-30 although the runtime registers it as `new_type pointer: uint`).
 
 Exception classes registered (all with base `Error`):
 `Exception`, `ValueError`, `TypeError`, `NameError`, `AttributeError`, `IndexError`, `KeyError`,

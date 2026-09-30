@@ -94,7 +94,12 @@ renders as `let`, a writable one as `mut`, and `mut self` keeps its `mut`. This 
   `range` / `len` signatures — `src/type_check/builtins.rs` embeds it with `include_str!`) and the
   extension's hover/completion/signature help (the wasm hands the same text over via
   `ar_builtins` → `frontend.ts` `builtinsSource()` → `wasm_providers.ts` `loadPrelude()`).
-  It is no longer copied into the VSIX. List only functions that exist at runtime
+  It is no longer copied into the VSIX. It also declares built-in **types** (`enum FileOpenMode`,
+  `class FileObject` …); their members reach `.` completion through `preludeMembers`, and hover on
+  `expr.name` resolves `name` through the receiver type (`receiverTypeAt` + `membersOf`, the same path
+  as completion) whenever the plain name lookup misses or lands on another type's declaration.
+  ⚠ Enum members are excluded from `prelude` (the global-name table): they are only reachable as
+  `FileOpenMode.read`, and letting them in made `f.read()` hover as `FileOpenMode.read`. List only functions that exist at runtime
   (`builtins_ars_matches_the_runtime` checks both directions), omit `->` when the return type is
   not static (never `-> Any`), bodies are `pass` not `...`, and never use a keyword such as `code`
   as a parameter name — until 2026-09-30 the extension's own copy used `code`, failed to parse

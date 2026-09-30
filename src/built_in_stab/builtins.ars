@@ -14,15 +14,71 @@
 #   - 戻り値の型が**静的に決まらない**ものは `->` を書かない（型検査器は型を付けない）。
 #     `-> Any` と書かないこと: `Any` は「使う前に `mustbe` が要る型」なので、結果を使う式が
 #     すべて静的エラーになる。
-#     ⚠ このファイルをエディタで開くと「戻り値の注釈が無い」「型が知られていない」の診断が出るのは
-#       想定どおり（宣言の集まりでプログラムではない。`FileOpenMode` などの組み込み列挙は
-#       型検査器がまだ型として知らない）。
+#     ⚠ このファイルをエディタで開くと、`->` を書かない関数・メソッドに「戻り値の注釈が無い」の
+#       診断が出るのは想定どおり（宣言の集まりでプログラムではない）。
 #   - **名前が型の名前**（`int` / `list` …）の関数は型の変換。型検査器はここからは型を付けない
 #     （`int` / `float` / `str` / `bool` は「型の値を呼ぶとその型」の規則が付ける）。
 #   - 仮引数の名前・順番は実行時のキーワード引数名に合わせる（シグネチャヘルプに出る）。
 #     引数の検査に使うのは `range` / `len` だけで、他は表示用。
 #   - 本体は `pass`（`...` は docstring と併用できない）。仮引数名に予約語（`code` など）を使わない
 #     （2026-09-22 に `code` が予約語になり、このファイルが丸ごと読めなくなっていた）。
+#   - **組み込みの型**（`enum` / `class`）もここで宣言する。型検査器はレジストリに登録して
+#     `let m: FileOpenMode` / `FileOpenMode.read` / `f.read()` を検査する。
+#     ⚠ `class` は Arrow のクラスではない（実行時は `Value::FileObject` など専用の値）。型検査器は
+#       外部言語のスタブと同じ扱いで登録するので、VM が `Value::Instance` と見なすことはない。
+#     ⚠ メソッドを 1 つでも宣言したクラスは**メンバーの集合が閉じる**（宣言に無いメソッドは静的エラー）。
+#       実行時にあるメソッドは全部書くこと。`enum` の要素と値も実行時（`built_in_types.rs`）と揃える
+#       （どちらも `builtins_ars_matches_the_runtime` が突き合わせる）。
+#     ⚠ 実行時にしか決まらない戻り値（`f.read()` はテキストなら `str`・バイトなら `list[int]`）は
+#       `->` を書かない（関数と同じ規則）。
+
+# ── 組み込みの型 ──────────────────────────────────────────────────────────────
+
+# `open` の開き方。
+enum FileOpenMode:
+    write = 0
+    rewrite = 1
+    read = 2
+    make_and_write = 3
+
+# `open` した直後の読み書き位置（先頭・末尾）。
+enum StartPoint:
+    top = 0
+    end = 1
+
+# `open` したファイルをバイト列（`list[int]`）で扱うか、テキスト（`str`）で扱うか。
+enum ByteRecognizingMode:
+    byte = 0
+    text = 1
+
+# `open` するファイルの文字コード（`shift_JIS` は未対応で、開くと NotImplementedError）。
+enum Encoding:
+    ASCII = 0
+    UTF_8 = 1
+    UTF_8_with_BOM = 2
+    shift_JIS = 3
+
+# `open` が返すファイル。読み書きは現在位置から行う（`close` で書き戻す）。
+class FileObject:
+    fn read(self, backward: bool = False):
+        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode, list[int] in byte mode."""
+        pass
+
+    fn read_line(self, backward: bool = False):
+        """Read one line from the current position (backward=True: the line before it). str in text mode, list[int] in byte mode."""
+        pass
+
+    fn read_letter(self, backward: bool = False):
+        """Read one character (str) in text mode, or one byte (int) in byte mode."""
+        pass
+
+    fn write(self, content: Union[str, list[int]]) -> None:
+        """Insert content at the current position (str in text mode, list[int] in byte mode)."""
+        pass
+
+    fn write_line(self, content: Union[str, list[int]]) -> None:
+        """Insert content followed by a newline at the current position."""
+        pass
 
 # ── 組み込み関数 ────────────────────────────────────────────────────────────
 

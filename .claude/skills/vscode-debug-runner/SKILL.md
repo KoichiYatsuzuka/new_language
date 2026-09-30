@@ -71,7 +71,7 @@ symbols probed : 4076
 hover misses   : 0 / 4076
 def   misses   : 0 / 4076
 bind  misses   : 0 / 182   <- must be 0
-typed vars     : 1969 / 2371   <- 減ったら退行
+typed vars     : 1972 / 2373   <- 減ったら退行
 tag   misses   : 0 / 14    <- must be 0
 ```
 
@@ -91,7 +91,7 @@ tag   misses   : 0 / 14    <- must be 0
   (`type_check::BindingRecord`) matched to the declaration by statement position + name; a drop
   means that match broke (e.g. a new statement-parsing path that skips `enter_editor_stmt` /
   `leave_editor_stmt`) or the built-in declarations (`src/built_in_stab/builtins.ars`) stopped
-  loading. 1969 / 2371 as of 2026-09-30.
+  loading. 1972 / 2373 as of 2026-10-01.
 - `tag misses` must be 0 — one minimal in-memory fixture per `import[lang]` tag.
   ⚠ **Add a row to `TAG_FIXTURES` when you add a tag.** Examples alone do not cover every tag:
   as of 2026-09-20 `import[cpp-dll]` has no example outside `examples/archived/`, so the

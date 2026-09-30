@@ -66,3 +66,38 @@ fn builtins_source_is_analyzable_for_the_prelude() {
         assert!(!names.contains(&n), "実行時に無い '{n}' が prelude に残っている");
     }
 }
+
+/// 組み込みの型（`enum` / `class`）のメンバが拡張の `.` 補完・hover 用の表（`members`）に載る。
+/// 以前は定義が無く、`f.` にも `FileOpenMode.` にも何も出なかった。
+#[test]
+fn builtin_types_reach_the_member_table() {
+    let v = analyze(arrow_frontend::type_check::builtins::SOURCE);
+    let names = |ty: &str| -> Vec<String> {
+        v["members"][ty]["members"]
+            .as_array()
+            .unwrap_or_else(|| panic!("members に {ty} が無い"))
+            .iter()
+            .filter_map(|m| m["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    let file = names("FileObject");
+    for m in ["read", "read_line", "read_letter", "write", "write_line"] {
+        assert!(file.iter().any(|n| n == m), "FileObject.{m} が無い: {file:?}");
+    }
+    let mode = names("FileOpenMode");
+    for m in ["write", "rewrite", "read", "make_and_write"] {
+        assert!(mode.iter().any(|n| n == m), "FileOpenMode.{m} が無い: {mode:?}");
+    }
+}
+
+/// 組み込みの型のメソッドの結果の型も束縛の型として届く（`write` → `None`）。
+#[test]
+fn builtin_method_results_have_declared_types() {
+    let v = analyze(concat!(
+        "let f = open(\"a.txt\", FileOpenMode.rewrite)\n",
+        "let n = f.write(\"x\")\n",
+        "let m: FileOpenMode = FileOpenMode.read\n",
+        "close(f)\n",
+    ));
+    assert_eq!(inferred_of(&v, "n").as_deref(), Some("None"));
+}

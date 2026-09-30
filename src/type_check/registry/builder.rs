@@ -206,12 +206,8 @@ impl TypeRegistryBuilder {
             new_type_originals.insert(cls_name.to_string(), prim_type.to_string());
         }
         known_class_names.insert("slice".to_string());
-        // `open()` が返すファイル（実行時の型名 `FileObject`・`Value::FileObject`）。
-        // 利用者が `let f: FileObject = open(..)` / `f is FileObject` と書けるように型の名前として登録する
-        // （実行時の `is` は以前から通っていた）。
-        // ⚠ メンバーは登録しない。`f.read()` などは今は検査しない（`member_set_is_closed` が素通しにする）。
-        // ⚠ `arrow_class_names` には入らない（Arrow のクラスではないので VM が `Value::Instance` と見なさない）。
-        known_class_names.insert("FileObject".to_string());
+        // ⚠ `open()` が返す `FileObject` と、`FileOpenMode` などの組み込みの列挙は
+        //   `builtins.ars` の宣言から登録する（`collect_builtin_types`）。
 
         let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
         // ⚠⚠ **組み込み例外のフィールド型も登録する**（タスク 2.8）。名前だけ登録していたため
@@ -295,6 +291,18 @@ impl TypeRegistryBuilder {
     }
 
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報を収集する。
+    /// 組み込みの型の宣言（`builtins.ars` の `enum` / `class`・`type_check::builtins::type_decls`）を集める。
+    ///
+    /// ⚠ `class` は **Arrow のクラスではない**（`FileObject` の実行時の値は `Value::FileObject`）ので、
+    ///   外部言語のスタブと同じく `foreign_depth` を上げて集める（`arrow_class_names` に載せない）。
+    ///   載せると VM が `Value::Instance` と見なして型特化した命令を出し、実行時に落ちる。
+    /// ⚠ 利用者のプログラムより**先に**集める（同じ名前の利用者の宣言が後から上書きする）。
+    pub(in crate::type_check) fn collect_builtin_types(&mut self, decls: &[Stmt]) {
+        self.foreign_depth += 1;
+        self.collect(decls);
+        self.foreign_depth -= 1;
+    }
+
     pub(in crate::type_check) fn collect(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             // ⚠⚠ 単相化で作ったクラス（`Box[int]`）は**普通のクラスとして**登録し、

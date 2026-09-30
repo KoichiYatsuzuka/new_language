@@ -219,7 +219,21 @@ impl TypeChecker {
             );
         }
 
+        // 組み込みの型（`builtins.ars` の `enum` / `class`）。`enum` の名前は `Stmt::EnumDef` の
+        // 検査（`check_stmt`）と同じく、名前と要素の型の 2 つを型の値として大域に置く。
+        let builtin_types = builtins::type_decls();
+        for decl in &builtin_types {
+            if let Stmt::EnumDef { name, .. } = decl {
+                let item = types::enum_item_type_name(name);
+                for n in [name.clone(), item] {
+                    let ty = InferredType::TypeValOf(Box::new(InferredType::NamedInstance(n.clone())));
+                    global.insert(n, VarInfo { ty, mutable: false });
+                }
+            }
+        }
+
         let mut builder = registry::builder::TypeRegistryBuilder::with_builtins();
+        builder.collect_builtin_types(&builtin_types);
         builder.collect(stmts);
 
         Self {

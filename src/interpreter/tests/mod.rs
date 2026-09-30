@@ -294,6 +294,70 @@ mod a_axis_invariants {
                 }
             }
         }
+
+        // ③ 組み込みの `enum`: 宣言の要素と値が実行時（`built_in_types.rs`）と同じ
+        let enums = crate::type_check::builtins::declared_enums();
+        for (name, variants) in &enums {
+            for (variant, value) in variants {
+                let got = super::eval_expr(&format!("{name}.{variant}.value"));
+                assert!(
+                    matches!((&got, value), (crate::interpreter::Value::Int(g), Some(v)) if g == v),
+                    "builtins.ars の {name}.{variant} = {value:?} が実行時の値 {got:?} と違う"
+                );
+            }
+        }
+        // ④ 逆向き: 実行時の組み込みの `enum`（`enum_item_X` を持つ `X`）は全部宣言されている。
+        //    要素の数も揃える（宣言に無い要素は静的に「無い」と言われてしまう）。
+        for (name, _) in scope.iter() {
+            if !scope.contains_key(format!("enum_item_{name}").as_str()) {
+                continue;
+            }
+            let Some((_, variants)) = enums.iter().find(|(n, _)| n == name) else {
+                panic!("実行時の組み込みの enum '{name}' が builtins.ars に無い");
+            };
+            let Some(crate::interpreter::Value::Class(cls)) = scope.get(name.as_str()).map(|v| v.get_value()) else {
+                panic!("組み込みの enum '{name}' が実行時にクラスとして登録されていない");
+            };
+            assert_eq!(cls.class_vars.len(), variants.len(), "enum '{name}' の要素の数が実行時と違う");
+        }
+
+        // ⑤ `FileObject` のメソッド: 宣言したものは実行時にある／実行時のもの（`exec_file_method` の腕）は宣言されている
+        let methods: Vec<String> = crate::type_check::builtins::declared_methods("FileObject")
+            .into_iter()
+            .filter(|m| !m.starts_with("__"))
+            .collect();
+        assert!(!methods.is_empty(), "builtins.ars に FileObject のメソッドが無い");
+        let fd = std::rc::Rc::new(std::cell::RefCell::new(crate::interpreter::FileData {
+            path: String::new(),
+            mode: crate::interpreter::FileOpenModeRust::Read,
+            byte_mode: crate::interpreter::ByteModeRust::Text,
+            content: Vec::new(),
+            pointer: 0,
+            is_closed: true,
+            file_handle: None,
+        }));
+        for m in &methods {
+            let res = interp.exec_file_method(fd.clone(), m, &[]);
+            assert!(
+                !matches!(&res, Err(e) if e.contains("has no method")),
+                "builtins.ars の FileObject.{m} を実行時が知らない"
+            );
+        }
+        let src = include_str!("../classes/object_methods.rs");
+        let body = src.split("fn exec_file_method").nth(1).expect("exec_file_method");
+        let body = body.split("pub(crate) fn ").next().unwrap_or(body);
+        for line in body.lines() {
+            let t = line.trim_start();
+            if !t.starts_with('"') || !t.contains("=>") {
+                continue;
+            }
+            for alt in t.split("=>").next().unwrap_or("").split('|') {
+                let n = alt.trim().trim_matches('"');
+                if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    assert!(methods.iter().any(|d| d == n), "FileObject.{n} が builtins.ars に無い");
+                }
+            }
+        }
     }
 
     #[test]

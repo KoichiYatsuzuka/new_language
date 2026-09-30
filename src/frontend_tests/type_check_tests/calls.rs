@@ -340,3 +340,44 @@ use super::*;
         assert!(!crate::type_check::builtins::is_conversion("path"));
         assert!(err("let s: str = int(\"3\")\n"));
     }
+
+    // --- 組み込みの型（`builtins.ars` の `enum` / `class`）---
+    //
+    // 以前は `FileOpenMode` などの組み込みの列挙と `FileObject` のメソッドに定義が無く、
+    // `FileOpenMode.bogus` も `f.write(1)` も `f.nope()` も静的に通っていた。
+
+    /// 組み込みの列挙は型の名前として書け、要素・`.value` が検査される。
+    #[test]
+    fn builtin_enums_are_typed() {
+        assert!(ok(concat!(
+            "let m: FileOpenMode = FileOpenMode.read\n",
+            "let v: int = m.value\n",
+            "let e: Encoding = Encoding.UTF_8\n",
+        )));
+        assert!(err("print(FileOpenMode.bogus)\n"));
+        assert!(err("let s: str = StartPoint.top\n"));
+        assert!(err("let m: FileOpenMode = Encoding.UTF_8\n"));
+    }
+
+    /// `FileObject` のメソッドは存在・引数の個数・引数の型・戻り値の型が検査される。
+    /// 読みの結果（テキストなら `str`・バイトなら `list[int]`）は実行時にしか決まらないので型を付けない。
+    #[test]
+    fn file_object_methods_are_checked() {
+        let open = "let f = open(\"a.txt\", FileOpenMode.rewrite)\n";
+        assert!(ok(&format!(
+            "{open}let s: str = f.read()\nlet t = f.read_line(backward = True)\nf.write(\"x\")\nf.write_line([1, 2])\n"
+        )));
+        assert!(err(&format!("{open}f.nope()\n")));
+        assert!(err(&format!("{open}f.write(1)\n")));
+        assert!(err(&format!("{open}f.read(True, False)\n")));
+        assert!(err(&format!("{open}let n: int = f.write(\"a\")\n")));
+    }
+
+    /// 組み込みの `class` は Arrow のクラスではない（VM が `Value::Instance` と見なしてはいけない）。
+    #[test]
+    fn builtin_classes_are_not_arrow_classes() {
+        let tokens = Lexer::new("let f = open(\"a.txt\", FileOpenMode.read)\n", "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (_, _, annotations) = TypeChecker::check_program(&stmts);
+        assert!(!annotations.is_arrow_class("FileObject"));
+    }

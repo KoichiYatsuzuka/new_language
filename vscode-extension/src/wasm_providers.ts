@@ -158,7 +158,11 @@ export function loadPrelude(): boolean {
         const result = analyze(source) as Analysis | null;
         if (!result?.ok) return false;
         // トップレベル（スコープ 0）の宣言だけを組み込みとして扱う。
-        prelude = result.symbols.filter(s => s.scope === 0);
+        // ⚠ 列挙の要素（`FileOpenMode.read` の `read`）は除く。宣言表ではスコープ 0 に載るが、
+        //   名前だけで見える大域の名前ではない（`FileOpenMode.` の後の補完は `preludeMembers` が出す）。
+        //   入れると `f.read()` の `read` の hover が `FileOpenMode.read` になり、素の補完にも
+        //   `read` / `write` / `top` / `end` … が並ぶ。
+        prelude = result.symbols.filter(s => s.scope === 0 && s.kind !== 'enum_member');
         preludeMembers = result.members;
         return true;
     } catch {
@@ -397,6 +401,17 @@ function renderSignature(sym: Symbol, inferred?: string): string {
     }
 }
 
+/** hover に出すメンバの 1 行目。`fn read(let backward: bool)` / `FileOpenMode.read` / `let x: int` の形。 */
+function renderMember(owner: string, mem: Member): string {
+    if (mem.params) {
+        const params = mem.params.filter(p => p.name !== 'self').map(p => p.label).join(', ');
+        return `fn ${mem.name}(${params})` + (mem.type ? ` -> ${mem.type}` : '');
+    }
+    if (mem.kind === 'enum_member') return `${owner}.${mem.name}`;
+    const head = mem.mutability ? `${mem.mutability} ${mem.name}` : mem.name;
+    return mem.type ? `${head}: ${mem.type}` : head;
+}
+
 function symbolKindOf(kind: string): vscode.SymbolKind {
     switch (kind) {
         case 'class':       return vscode.SymbolKind.Class;
@@ -454,6 +469,22 @@ export function provideHover(
         const md = new vscode.MarkdownString();
         md.appendCodeblock(`type ${w.word}`, 'arrow');
         return new vscode.Hover(md, w.range);
+    }
+
+    // `expr.name` の `name` は、受け手の型のメンバとして引く（補完と同じ `receiverTypeAt` / `membersOf`）。
+    // ⚠ 名前だけで引いた宣言が**受け手の型のもの**なら従来どおりそれを見せる。名前が引けない・
+    //   別の型の同名の宣言に当たった（`f.read()` の `read` が `FileOpenMode.read`）ときだけこの経路。
+    //   組み込みの型（`FileObject`）のメソッドは利用者のファイルの宣言表に無いので、ここでしか引けない。
+    const receiver = receiverTypeAt(analysis, document, w.range.start);
+    if (receiver?.type && sym?.container !== receiver.type) {
+        const mem = membersOf(analysis, receiver.type).find(m => m.name === w.word);
+        if (mem) {
+            const md = new vscode.MarkdownString();
+            md.appendCodeblock(renderMember(receiver.type, mem), 'arrow');
+            md.appendMarkdown(`\n\nmember of \`${receiver.type}\``);
+            if (mem.doc) md.appendMarkdown('\n\n---\n\n' + mem.doc);
+            return new vscode.Hover(md, w.range);
+        }
     }
 
     // 宣言に紐づく推論型を優先し、無ければカーソル位置の式の型で補う。

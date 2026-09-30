@@ -56,7 +56,7 @@ $knownDiff = @{
     'import_namespace'               = 'Rust と py で名前空間の分離は一致（6 行目まで同じ）。py: AsyncManager が無いので非同期の節で NameError'
     'import_namespace_error'         = 'どちらも NameError（修飾なしのモジュールの名前）。py は失敗を stdout に出し、Rust は stderr に出す'
     'builtin_return_types'           = 'py: 実行時の `f is FileObject` が False（Rust は True）で raise し、組み込みの `getenv` も無い（NameError）。Rust 側は builtins.ars の宣言から組み込みの戻り値の型を取る（2026-09-30）'
-    'builtin_return_types_error'     = 'Rust: 組み込みの戻り値の型（open → FileObject・repr / getenv → str）で StaticTypeError。py: 組み込みの戻り値の型を知らず、getenv も無いので NameError で止まる'
+    'builtin_return_types_error'     = 'Rust: 組み込みの戻り値の型（open → FileObject・repr / getenv → str）と組み込みの列挙・FileObject のメソッド（builtins.ars）で StaticTypeError。py: それらを知らず、getenv も無いので NameError で止まる'
     'template_method_error'          = 'Rust: 単相化した Box[int] のメソッド呼び出しを具体型で検査して StaticTypeError（2026-09-26 新設・フェーズ10 の発端）。py: テンプレートのメソッド呼び出しを検査しないので実行して wrong を出す'
     'template_type_param_error'      = 'Rust: 具体化した本体（Cell[str] の self.v = 0・conv[float] の return n）も StaticTypeError（2026-09-26 に Section 3/4 を追加）。py: 具体化した本体を検査しないので実行して 3 を出す'
     'template_recursion_error'       = 'Rust: 展開時の単相化が再帰的な具体化を止めて MetaError（2-9 で新設）。py: 実行時に呼ばれたときだけ具体化するので、再帰が n == 0 で止まり 3 を出す'
