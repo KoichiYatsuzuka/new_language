@@ -96,7 +96,16 @@ impl TypeChecker {
             Some(p) => self.stmt_pos.replace(p.clone()),
             None => self.stmt_pos.clone(),
         };
+        // 束縛の記録に付ける位置（`bind_pos` の doc）。`Stmt::position` だけを見る。
+        // 記録しない検査（CLI）では張り替えない。
+        let outer_bind = match (self.bindings.is_some(), stmt.position()) {
+            (true, Some(p)) => Some(self.bind_pos.replace(p.clone())),
+            _ => None,
+        };
         self.check_stmt_inner(stmt);
+        if let Some(prev) = outer_bind {
+            self.bind_pos = prev;
+        }
         self.stmt_pos = outer;
     }
 
@@ -112,6 +121,7 @@ impl TypeChecker {
             }
             Stmt::Static(name, expr, _) => {
                 let ty = self.infer(expr);
+                self.note_binding(name, &ty);
                 self.declare(name.clone(), ty, true);
             }
             Stmt::LetTuple {
@@ -278,6 +288,7 @@ impl TypeChecker {
                             span: None,
                         });
                     }
+                    self.note_binding(t, &ty);
                     self.declare(t.clone(), ty, target_mut);
                 }
                 self.check_stmts(body);
@@ -670,6 +681,7 @@ impl TypeChecker {
                             .as_deref()
                             .map(|t| InferredType::NamedInstance(t.to_string()))
                             .unwrap_or(InferredType::Unresolved);
+                        self.note_binding(name, &exc_ty);
                         self.declare(name.clone(), exc_ty, true);
                     }
                     // ⚠ 例外クラスでない型は**腕が永久に死ぬ**（タスク 7.1・検体 `E2`）。
@@ -1809,6 +1821,7 @@ impl TypeChecker {
                     span: Some(span.clone()),
                 });
             }
+            self.note_binding(name, &ty);
             self.declare(name.clone(), ty, mutable);
         }
     }
@@ -2065,6 +2078,7 @@ impl TypeChecker {
             });
         }
         let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt);
+        self.note_binding(name, &ty);
         self.declare(name.to_string(), ty, mutable);
     }
 }

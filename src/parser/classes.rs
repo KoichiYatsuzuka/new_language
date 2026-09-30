@@ -721,8 +721,19 @@ impl Parser {
     pub(crate) fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
         // ⚠ クラスのメンバーにも元のソースの範囲を付ける（タスク 4-7）。
         let start = self.pos;
-        let mut stmt = self.parse_class_stmt_inner()?;
+        // エディタ索引: メンバーも文として束縛の位置を決める（`parse_stmt` と同じ・`leave_editor_stmt`）。
+        // ⚠ 無いと、フィールドの初期値の中の束縛（`for` 式のループ変数）がクラス定義の文に付き、
+        //   型検査器（フィールドの文の位置で記録する）と鍵が食い違う。
+        let mark = self.enter_editor_stmt(start);
+        let mut stmt = match self.parse_class_stmt_inner() {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                self.leave_editor_stmt(mark, None);
+                return Err(e);
+            }
+        };
         self.attach_src(&mut stmt, start);
+        self.leave_editor_stmt(mark, Some(&stmt));
         Ok(stmt)
     }
 

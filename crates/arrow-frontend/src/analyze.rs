@@ -9,7 +9,7 @@
 //! | キー | 供給元 | 拡張側の用途 |
 //! |---|---|---|
 //! | `diagnostics` | `TypeChecker` のエラー・警告 | Diagnostics |
-//! | `symbols`     | `parser::editor_index` の宣言表 | Hover / Inlay / Go-to-def / Semantic tokens |
+//! | `symbols`     | `parser::editor_index` の宣言表（型は型検査器の束縛の記録 `BindingRecord`） | Hover / Inlay / Go-to-def / Semantic tokens |
 //! | `scopes`      | 同上のスコープ木 | Completion（可視名の絞り込み） |
 //! | `exprTypes`   | `editor_index.node_spans` × `AstAnnotations` | Hover（式の推論型）/ Inlay |
 //! | `typeRefs`    | `editor_index.type_refs`（`parse_type_expr` が控えた型位置） | Semantic tokens / Hover（型名を関数と誤認させない） |
@@ -22,6 +22,8 @@
 //!
 //! ⚠ 位置はすべて **0 始まり・列は UTF-16 コードユニット**（VS Code の `Position` と同じ）。
 //!   `Span` は 1 始まり・文字単位なので、変換は [`Utf16Cols`] が 1 箇所で行う。
+
+use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
 
@@ -363,7 +365,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
     } else {
         (crate::meta_expand::monomorphize(stmts, counter), None)
     };
-    let (errors, warnings, annotations) = TypeChecker::check_program(&stmts);
+    let (errors, warnings, annotations, bindings) = TypeChecker::check_program_for_editor(&stmts);
 
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());
     if let Some(e) = &meta_error {
@@ -400,21 +402,19 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
     }
 
     let index = parser.editor_index();
+    let bound = bound_types(index, &bindings, filename);
 
     // ── 宣言表 ────────────────────────────────────────────────────────────
     let symbols: Vec<Value> = index
         .decls
         .iter()
-        .filter(|d| d.pos.0 != 0)
-        .map(|d| {
-            // 型注釈が無い宣言の推論型。初期化式の node-id で型検査器の注釈表を引く。
-            // 位置から探すのではなく id で引くので、`mut c = Circle(5.0)` のように
-            // 右辺が名前から離れていても正しく取れる。
-            let inferred = d
-                .init_node
-                .and_then(|id| annotations.resolved_type(id))
-                .map(|t| t.to_string())
-                .filter(|t| t != "unknown");
+        .enumerate()
+        .filter(|(_, d)| d.pos.0 != 0)
+        .map(|(i, d)| {
+            // 型注釈が無い宣言の型。型検査器が**束縛した瞬間に記録した型**を使う（`bound_types`）。
+            // 初期化式の型ではなく変数の型そのものなので、リテラル・`if` 式・`mustbe` などの
+            // 初期化式の種類にも、初期化式の無い束縛（ループ変数・`except as`）にも左右されない。
+            let inferred = bound.get(&i).filter(|t| t.as_str() != "unknown");
             json!({
                 "name": d.name,
                 "kind": d.kind.as_str(),
@@ -503,6 +503,60 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         "stmtCount": stmts.len(),
     })
     .to_string()
+}
+
+/// 宣言表の束縛（`Decl::binding`）に、型検査器が記録した束縛の型（`BindingRecord`）を割り当てる。
+/// 戻り値は「宣言表の添字 → 型の表示」。
+///
+/// 両側とも鍵は「束縛を含む文の位置（`Stmt::position`）＋名前」で、同じ鍵の中は束縛した順に並ぶ
+/// （パーサは `bind_anchors`、型検査器は `bind_pos` が同じ規則で決める）。ここは**突き合わせるだけ**で、
+/// 型を推し量ることはしない。
+///
+/// ⚠ 数が合わない鍵は、型検査器の側が多いときに**全部同じ型**なら使い、それ以外は出さない。
+///   多くなるのは、宣言表に載せていない束縛（内包表記の変数）が同じ文・同じ名前にあるとき。
+///   誤った型を見せるより、出さないほうがよい。
+/// ⚠ このファイルの位置を持たない記録（import 先の本体＝`<stub>` など）は除く。位置を持つ文の外の
+///   束縛（`pos` が `None`）も、宣言表の側の位置が無い（`(0, 0)`）ので突き合わせない。
+fn bound_types(
+    index: &crate::parser::editor_index::EditorIndex,
+    records: &[crate::type_check::BindingRecord],
+    filename: &str,
+) -> HashMap<usize, String> {
+    type Key<'a> = ((usize, usize), &'a str);
+    let mut checked: HashMap<Key, Vec<String>> = HashMap::new();
+    for r in records {
+        let Some(pos) = r.pos.as_ref().filter(|p| &*p.file == filename) else {
+            continue;
+        };
+        checked
+            .entry(((pos.line, pos.col), r.name.as_str()))
+            .or_default()
+            .push(r.ty.to_string());
+    }
+    let mut declared: HashMap<Key, Vec<(usize, usize)>> = HashMap::new();
+    for (i, d) in index.decls.iter().enumerate() {
+        let Some(seq) = d.binding else { continue };
+        let Some(&anchor) = index.bind_anchors.get(seq) else { continue };
+        if anchor.0 == 0 {
+            continue;
+        }
+        declared.entry((anchor, d.name.as_str())).or_default().push((seq, i));
+    }
+    let mut out = HashMap::new();
+    for (key, mut decls) in declared {
+        let Some(types) = checked.get(&key) else { continue };
+        decls.sort_unstable();
+        if decls.len() == types.len() {
+            for ((_, i), t) in decls.iter().zip(types) {
+                out.insert(*i, t.clone());
+            }
+        } else if types.len() > decls.len() && types.iter().all(|t| *t == types[0]) {
+            for (_, i) in &decls {
+                out.insert(*i, types[0].clone());
+            }
+        }
+    }
+    out
 }
 
 /// docstring 取得のための薄いラッパ（`Expr::Str` 判定は 1 箇所に置く）。

@@ -26,7 +26,7 @@ export interface Symbol {
     at: Pos;
     mutability: string | null;
     typeAnn: string | null;
-    /** 注釈が無い宣言の推論型（初期化式の node-id で型検査器から引いたもの）。 */
+    /** 注釈が無い宣言の型（型検査器が束縛した瞬間に記録した型・`type_check::BindingRecord`）。 */
     inferred: string | null;
     signature: string | null;
     doc: string | null;
@@ -491,7 +491,7 @@ export function provideInlayHints(
         if (sym.kind !== 'variable' && sym.kind !== 'param') continue;
         if (sym.at.line < range.start.line || sym.at.line > range.end.line) continue;
 
-        // 推論型は型検査器の答えをそのまま使う（`inferred` は初期化式の node-id 経由）。
+        // 推論型は型検査器の答えをそのまま使う（`inferred` は型検査器の束縛の記録）。
         const inferred = sym.inferred;
         if (!inferred) continue;
 

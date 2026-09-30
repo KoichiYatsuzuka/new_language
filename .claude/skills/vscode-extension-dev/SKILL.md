@@ -49,7 +49,7 @@ Rust side of the same feature:
 |---|---|
 | Diagnostics | `diagnostics` — `TypeChecker::check_program` errors and warnings |
 | Hover | `symbols` (declaration + signature + docstring + access) and `symbols[].inferred` |
-| Inlay hints | `symbols[].inferred` — the initializer's node-id resolved through `AstAnnotations` |
+| Inlay hints | `symbols[].inferred` — the type the checker recorded **when it bound the variable** (`type_check::BindingRecord`), matched to the declaration by statement position + name. Covers every initializer kind and initializer-less bindings (loop variables, `except as`, tuple targets) |
 | Semantic tokens | `symbols` + the scope tree, matched against identifier occurrences |
 | Completion | `scopes` for visible names; `members` for `.` access |
 | Signature help | `symbols[].signature` and `members[].params` |
@@ -64,6 +64,15 @@ Rust side of the same feature:
    build: take `&str` / `usize` arguments and put the whole body behind
    `#[cfg(feature = "editor")]`.
 3. Rebuild and verify — see below.
+
+⚠ Variable types reach the editor by matching the checker's binding record against the
+declaration on **statement position (`Stmt::position`) + name**. Any code path that parses a
+statement without going through `parse_stmt` must wrap it in `enter_editor_stmt` /
+`leave_editor_stmt` as `parse_class_stmt` does — otherwise bindings inside it (a `for` expression
+in a field initializer) are keyed to the enclosing statement and silently lose their type.
+A new binding form needs a hook on both sides: `note_bound*` in the parser (after the
+initializer / iterable is parsed — binding order must match the checker's) and `note_binding`
+in the checker (just before `declare`).
 
 ⚠ Position hooks must be called **immediately after `expect_ident()`**. The position comes from
 `prev_pos()`, so reading a type annotation or `as` alias first makes the symbol point at the wrong

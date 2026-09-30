@@ -89,6 +89,41 @@ pub struct TypeChecker {
     py_class_factories: HashMap<String, (usize, String)>,
     /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
     stmt_pos: Option<crate::token::Span>,
+    /// 変数を束縛した記録（[`BindingRecord`]）。`None` のあいだは記録しない
+    /// （使うのは VS Code 拡張だけ・[`Self::check_program_for_editor`]）。
+    bindings: Option<Vec<BindingRecord>>,
+    /// 束縛の記録に付ける**文の位置**（`check_stmt` が張り替える・記録するときだけ）。
+    ///
+    /// ⚠⚠ `stmt_pos` と違い **`Stmt::position` だけ**から取る（式文を `own_span` で代えない）。
+    ///   エディタ索引（`parser::editor_index` の `bind_anchors`）が同じ規則で鍵を作るので、
+    ///   片方にだけ規則を足すと突き合わせが外れる。
+    bind_pos: Option<crate::token::Span>,
+}
+
+/// 変数を**束縛した瞬間**の型の記録（VS Code 拡張の hover / inlay hint 用）。
+///
+/// # なぜ初期化式の型ではないのか
+///
+/// 以前のエディタは初期化式の node-id で注釈表を引いていたので、node-id を持たない式
+/// （リテラル・`if` 式・`for` 式…）と、初期化式を持たない束縛（ループ変数・`except as`・
+/// 分割代入）で型が出なかった。束縛の側で記録すれば、式の種類に関係なく**変数の型そのもの**
+/// （注釈や既定の補正を通した後の型）が取れる。
+///
+/// # 鍵
+///
+/// 「束縛を含む文の位置（`Stmt::position`）＋名前」。同じ鍵の中は束縛した順に並ぶ。
+/// エディタ索引は同じ規則で鍵を作り、順番どおりに突き合わせる（`crates/arrow-frontend` の `analyze.rs`）。
+/// ⚠ import 先の本体も検査の途中で束縛するが、その位置は別のファイル（`<stub>` など）を指すので、
+///   突き合わせる側がファイル名で除く。
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
+pub struct BindingRecord {
+    /// 束縛を含む文の位置。位置を持つ文の外（トップレベルの式文の中など）では `None`。
+    pub pos: Option<crate::token::Span>,
+    /// 束縛した名前。
+    pub name: String,
+    /// 束縛した型。
+    pub ty: InferredType,
 }
 
 impl TypeChecker {
@@ -238,6 +273,8 @@ impl TypeChecker {
             },
             py_class_factories: HashMap::new(),
             stmt_pos: None,
+            bindings: None,
+            bind_pos: None,
         }
     }
 
@@ -322,7 +359,39 @@ impl TypeChecker {
         Vec<StaticTypeWarning>,
         annotations::AstAnnotations,
     ) {
+        let (errors, warnings, annotations, _) = Self::check_program_inner(stmts, false);
+        (errors, warnings, annotations)
+    }
+
+    /// [`Self::check_program`] に、変数を束縛した記録（[`BindingRecord`]）を足して返す。
+    ///
+    /// VS Code 拡張（`crates/arrow-frontend`）専用。記録は束縛のたびに型を複製するので、
+    /// CLI の経路（[`Self::check_program`]）では取らない。
+    #[cfg_attr(not(feature = "editor"), allow(dead_code))]
+    pub fn check_program_for_editor(
+        stmts: &[Stmt],
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+        Vec<BindingRecord>,
+    ) {
+        Self::check_program_inner(stmts, true)
+    }
+
+    fn check_program_inner(
+        stmts: &[Stmt],
+        record_bindings: bool,
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+        Vec<BindingRecord>,
+    ) {
         let mut tc = Self::new(stmts);
+        if record_bindings {
+            tc.bindings = Some(Vec::new());
+        }
         tc.check_stmts(stmts);
         // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
         // 「このレシーバは `Value::Instance` だ」と断定してよいかの唯一の根拠。
@@ -330,9 +399,10 @@ impl TypeChecker {
             .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
         let instance_names = tc.registry.instance_names().clone();
+        let bindings = tc.bindings.take().unwrap_or_default();
         let (errors, warnings) = tc.diags.into_parts_tagged();
         let errors = Self::merge_instance_errors(errors, &instance_names);
-        (errors, warnings, annotations)
+        (errors, warnings, annotations, bindings)
     }
 
     /// **同じ誤りの重複報告をまとめる**（タスク 2-8 段階 2）。

@@ -71,6 +71,7 @@ symbols probed : 4076
 hover misses   : 0 / 4076
 def   misses   : 0 / 4076
 bind  misses   : 0 / 182   <- must be 0
+typed vars     : 1947 / 2371   <- 減ったら退行
 tag   misses   : 0 / 14    <- must be 0
 ```
 
@@ -84,6 +85,12 @@ tag   misses   : 0 / 14    <- must be 0
   That is exactly how the missing `import[cpp-dll]` index hook survived every gate — the
   hover/def population comes from `provideDocumentSymbols`, so a name absent from the index is
   never probed and never counted as a miss.
+- `typed vars` is informational: unannotated variable declarations that got a type (`inferred`).
+  It can never reach the total (the checker itself does not know some types — generators,
+  unstubbed imports), so watch for a **drop**. The type comes from the checker's binding record
+  (`type_check::BindingRecord`) matched to the declaration by statement position + name; a drop
+  means that match broke (e.g. a new statement-parsing path that skips `enter_editor_stmt` /
+  `leave_editor_stmt`). 1947 / 2371 as of 2026-09-30.
 - `tag misses` must be 0 — one minimal in-memory fixture per `import[lang]` tag.
   ⚠ **Add a row to `TAG_FIXTURES` when you add a tag.** Examples alone do not cover every tag:
   as of 2026-09-20 `import[cpp-dll]` has no example outside `examples/archived/`, so the

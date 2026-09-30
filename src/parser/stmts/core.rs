@@ -122,17 +122,37 @@ impl Parser {
     /// `first` は既にパースされた先頭ターゲット。現在位置は最初のカンマを指している。
     pub(crate) fn parse_tuple_unpack(&mut self, first: TupleTarget) -> Result<Stmt, String> {
         let span = self.current_span();
+        // エディタ索引: 左辺の `let` / `mut` の名前を控える（直前のトークンが先頭の名前）。
+        // 束縛の番号は右辺を読んだ後に振る（`note_bound_range`）。
+        let first_decl = self.editor_decl_count();
+        match &first {
+            TupleTarget::Let(n) if n != "_" => {
+                self.note_var(n, "let");
+            }
+            TupleTarget::Mut(n) if n != "_" => {
+                self.note_var(n, "mut");
+            }
+            _ => {}
+        }
         let mut targets = vec![first];
         while *self.current() == Token::Comma {
             self.advance();
             match self.current().clone() {
                 Token::Let => {
                     self.advance();
-                    targets.push(TupleTarget::Let(self.expect_ident()?));
+                    let name = self.expect_ident()?;
+                    if name != "_" {
+                        self.note_var(&name, "let");
+                    }
+                    targets.push(TupleTarget::Let(name));
                 }
                 Token::Mut => {
                     self.advance();
-                    targets.push(TupleTarget::Mut(self.expect_ident()?));
+                    let name = self.expect_ident()?;
+                    if name != "_" {
+                        self.note_var(&name, "mut");
+                    }
+                    targets.push(TupleTarget::Mut(name));
                 }
                 Token::Ident(n) if n == "_" => {
                     self.advance();
@@ -152,9 +172,12 @@ impl Parser {
             }
         }
         self.eat(&Token::Eq)?;
+        let targets_end = self.editor_decl_count();
+        let value = self.parse_expr()?;
+        self.note_bound_range(first_decl, targets_end);
         Ok(Stmt::LetTuple {
             targets,
-            value: self.parse_expr()?,
+            value,
             span,
         })
     }
@@ -172,9 +195,18 @@ impl Parser {
         // ⚠ 宣言には元のソースの範囲を付ける（タスク 4-7・`^x.code()` / `^x.declared_at`）。
         //   **ここ（入口）で付ける**ので、`@` 行や `static` のような前置きも範囲に入る。
         let start = self.pos;
-        let mut stmt = self.parse_stmt_inner()?;
+        // エディタ索引: この文の中の束縛に「文の位置」を付けるための目印（`leave_editor_stmt`）。
+        let mark = self.enter_editor_stmt(start);
+        let mut stmt = match self.parse_stmt_inner() {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                self.leave_editor_stmt(mark, None);
+                return Err(e);
+            }
+        };
         self.attach_src(&mut stmt, start);
         self.attach_position(&mut stmt, start);
+        self.leave_editor_stmt(mark, Some(&stmt));
         Ok(stmt)
     }
 
@@ -208,7 +240,7 @@ impl Parser {
                 self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
-                self.note_init_expr(h, &init);
+                self.note_bound(h);
                 Ok(Stmt::Let(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `const 変数名 [: 型] = 式` — 定数宣言
@@ -225,7 +257,7 @@ impl Parser {
                 self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
-                self.note_init_expr(h, &init);
+                self.note_bound(h);
                 Ok(Stmt::Const(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
@@ -246,7 +278,7 @@ impl Parser {
                 self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
-                self.note_init_expr(h, &init);
+                self.note_bound(h);
                 Ok(Stmt::Mut(name, type_ann, init, crate::token::Span::unknown()))
             }
             // `static mut 変数名 [: 型] = 式` — 静的可変変数宣言（全呼び出しでセル共有）
@@ -263,7 +295,7 @@ impl Parser {
                 }
                 self.eat(&Token::Eq)?;
                 let init = self.parse_expr()?;
-                self.note_init_expr(h, &init);
+                self.note_bound(h);
                 Ok(Stmt::Static(name, init, span))
             }
             // `freeze 変数名` — 変数をイミュータブルに凍結
@@ -333,6 +365,7 @@ impl Parser {
             }
             Token::For => {
                 self.advance();
+                let first_tok = self.pos;
                 let first = self.expect_ident()?;
                 let mut targets = vec![first];
                 while *self.current() == Token::Comma {
@@ -343,6 +376,8 @@ impl Parser {
                 let iter = self.parse_expr()?;
                 let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
+                // ループ変数は本体のスコープの変数（本体を読む直前に控える・`note_loop_targets`）。
+                self.note_loop_targets(first_tok, &targets);
                 Ok(Stmt::For {
                     targets,
                     iter,
