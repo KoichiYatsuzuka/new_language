@@ -71,7 +71,7 @@ impl Lexer {
             "lambda" => Token::Lambda,
             "template" => Token::Template,
             // ── メタ関数（コンパイル時展開）─────────────────────────────
-            // 設計は implementation_plans/comptime_metafn_design.md。
+            // 設計は implementation_logs/comptime_metafn_design.md。
             // ⚠ いずれも `.ar` のどこでも識別子として使われていないことを確認済み。
             "exprconst" => Token::ExprConst,
             "code" => Token::Code,

@@ -1139,7 +1139,7 @@ pub enum Stmt {
     },
     /// `exprconst fn` / `exprconst !fn` — **メタ関数**の定義（コンパイル時に展開される）。
     ///
-    /// 設計は implementation_plans/comptime_metafn_design.md §1.1。
+    /// 設計は implementation_logs/comptime_metafn_design.md §1.1。
     /// ⚠ `Stmt::FnDef` と**別の variant にしてある**。同じ variant にフラグを足すと
     /// 36 箇所の構築・照合を書き換えることになるうえ、「メタ関数をどう扱うか」を
     /// 各 walker に決めさせる強制（`language-dev-principles` §2）が働かない。

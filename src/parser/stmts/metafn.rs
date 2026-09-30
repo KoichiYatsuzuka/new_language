@@ -1,6 +1,6 @@
 // stmts/metafn.rs — メタ関数（コンパイル時展開）の構文解析。
 //
-// 対象は次の 3 つ。設計は implementation_plans/comptime_metafn_design.md §1。
+// 対象は次の 3 つ。設計は implementation_logs/comptime_metafn_design.md §1。
 //
 //   exprconst fn  名前(仮引数...) -> Code:   … 純粋メタ関数（`return` で `Code` を返す）
 //   exprconst !fn 名前(仮引数...) -> None:   … 配置メタ関数（`quote` で配置する）

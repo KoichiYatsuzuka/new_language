@@ -84,7 +84,7 @@ Arrow の関数まわりの型は**すべて注釈必須**で、推論なしに�
 
 ### 0.7 型検査の現況（2026-09-09 実測）→ 参考J
 
-別スレッド（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で、**メソッド引数・コンストラクタ引数・戻り値・変数注釈**の
+別スレッド（[type_binding_enforcement_plan.md](../implementation_plans/type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で、**メソッド引数・コンストラクタ引数・戻り値・変数注釈**の
 型検査が入った。`let b: float = 3` は `3.0` になり、無注釈 `let` の右辺推論も既に効く。
 **未検査で残るのは「テンプレートクラスのコンストラクタ引数」と「既定値の型」の 2 つ**（修正中）。
 
@@ -303,7 +303,7 @@ my_meta_func(^x)          # ← `^` が現れるのはこの位置だけ
 
 | # | タスク | 前提 |
 |---|---|---|
-| 0-0 | **別スレッドで進行中の仕様変更を取り込み、本書の前提を突き合わせる。** Python 翻訳（[python_converter_coverage.md](python_converter_coverage.md)。⚠ デコレータ三分岐は現 **`#90`**、旧 `python_converter_fix_plan.md` は [implementation_logs/PYTHON_CONVERTER_LOG.md](../implementation_logs/PYTHON_CONVERTER_LOG.md) へ移動済み）と型検査（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md) / [type_check_redesign.md](type_check_redesign.md)）で言語仕様が動いている。⚠ **着手のたびに再ビルドして実測し直す**（設計書の実測値は日付入りで記録してある） | —（随時・着手のたび） |
+| 0-0 | **別スレッドで進行中の仕様変更を取り込み、本書の前提を突き合わせる。** Python 翻訳（[python_converter_coverage.md](python_converter_coverage.md)。⚠ デコレータ三分岐は現 **`#90`**、旧 `python_converter_fix_plan.md` は [implementation_logs/PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) へ移動済み）と型検査（[type_binding_enforcement_plan.md](../implementation_plans/type_binding_enforcement_plan.md) / [type_check_redesign.md](type_check_redesign.md)）で言語仕様が動いている。⚠ **着手のたびに再ビルドして実測し直す**（設計書の実測値は日付入りで記録してある） | —（随時・着手のたび） |
 | ~~0-1~~ | ~~テンプレートクラスのコンストラクタ引数の型検査~~ **完了（別スレッド・2026-09-20 実測）**。⚠ ただし**テンプレートの「メソッド」引数は未検査**のまま（下記 0-2 の隣に新設） | — |
 | ~~0-2~~ | ~~既定値の型検査~~ **完了（別スレッド・2026-09-20 実測）**（`str`→`int` / `float`→`int` とも `StaticTypeError`） | — |
 | ~~0-3~~ | ~~`new_type` / `alias` のジェネリクス対応~~ **完了（2026-09-22）**。`alias` は右辺の式パースが失敗したら型式として読み直す（`list[int]` は引数 1 つなので偶然通っていた＝**カンマを含む型だけ**が壊れていた）。`new_type` は `get_val` で引けないとき**構造を持つ型に限り** `Value::Type` へ落とす。⚠ 条件を「`from_ann` が通る」だけにすると未知の裸名が `NamedInstance` で通り `NameError` が消える（実装中に踏んだ）。例題 `examples/basics/alias_newtype_generics.ar` / `_error.ar` | — |
@@ -662,7 +662,7 @@ VM 側から `interp.` 参照が **92 箇所**、`Interpreter` 型の参照が 5
 
 ## 参考 J. 型検査の現況（§0.7 の根拠・2026-09-09 実測）
 
-別スレッド（[type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で型検査が大幅に入った。**本設計の前提が変わった箇所がある。**
+別スレッド（[type_binding_enforcement_plan.md](../implementation_plans/type_binding_enforcement_plan.md)）の 0-1〜0-5 / 0-B2 で型検査が大幅に入った。**本設計の前提が変わった箇所がある。**
 
 | 対象 | 状態 |
 |---|---|
@@ -814,7 +814,7 @@ ClassValue: bases / methods（オーバーロード込み）/ gen_methods / fiel
 
 ### 既存の唯一の内省手段
 
-**`parse_ar(source)`** が Arrow ソース文字列を `Namespace` ツリーに変換する（[ast_value.rs](src/interpreter/ast_value.rs)）。
+**`parse_ar(source)`** が Arrow ソース文字列を `Namespace` ツリーに変換する（[ast_value.rs](../src/interpreter/ast_value.rs)）。
 クラスのフィールド種別（`LET`/`MUT`/`CONST`/`STATIC_MUT`）・型注釈・メソッドの引数（`mutable` 込み）・
 戻り値型まで読める（実測）。⚠ ただし**ソース文字列が要り、実行中の値とは繋がらない**。
 `Param` に `variadic` は露出していない（`name == "..."` で判定）。

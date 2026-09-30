@@ -1797,7 +1797,7 @@ probes       : 77,400,461
 
 ## 7. 残っている宿題（本計画の対象外・記録のみ）
 
-⚠ **#20〜#23 と原因①②③ は [type_check_redesign.md](type_check_redesign.md) に引き継いだ。**
+⚠ **#20〜#23 と原因①②③ は [type_check_redesign.md](../implementation_logs/type_check_redesign.md) に引き継いだ。**
 個別に塞ぐのではなく静的型検査の再設計として扱う（3 分類・義務表・型式解決後の検査）。
 本書は個別バグ修正キャンペーン 0-1〜A-4 の記録として閉じる。
 

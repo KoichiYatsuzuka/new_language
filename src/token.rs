@@ -296,7 +296,7 @@ pub enum Token {
     // ── メタ関数（コンパイル時展開）用のトークン ──────────────────────────
     // ⚠ いずれも**現在の Arrow では到達不能な並び**なので、予約しても既存コードを壊さない
     //   （`!` 単独は従来 `Unknown('!')` でどこでもパースエラーだった）。
-    //   設計は implementation_plans/comptime_metafn_design.md §1.9。
+    //   設計は implementation_logs/comptime_metafn_design.md §1.9。
     /// `!` 単独。メタ関数の定義（`!fn`）と装飾子の適用（`!名前`）の目印。
     /// ⚠ 判定順は `=`（`!=`）→ `>`（`!>`）→ この `Bang`。
     /// `exprconst` — メタ関数の宣言（`exprconst fn` / `exprconst !fn`）。

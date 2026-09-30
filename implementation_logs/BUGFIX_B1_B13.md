@@ -222,7 +222,7 @@ B13 はその先行評価そのものをやめてコルーチン化した（段�
 ## 7. 波及した文書・撤去したもの
 
 **更新**: [bug_fix.md](bug_fix.md)（全 13 件）／
-[python_converter_coverage.md](../implementation_plans/python_converter_coverage.md)（B4 で 2 箇所が古くなった）／
+[python_converter_coverage.md](python_converter_coverage.md)（B4 で 2 箇所が古くなった）／
 [FUTURE_FEATURE.md](FUTURE_FEATURE.md)（#11 に消費者が現れた経緯）／
 `vm-pitfalls` §1（計測の罠 3 項目）／ `compare_python_impl.ps1` の `$knownDiff`（+9 件）
 

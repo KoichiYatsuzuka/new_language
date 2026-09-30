@@ -10,7 +10,7 @@
 
 - 対象サブシステム: [`src/python_converter/`](../src/python_converter/)
 - 期間: 2026-07-22 起票 → **2026-09-19 フェーズ A〜H 完了**
-- 構文ごとの対応状況（判断記録）: [python_converter_coverage.md](../implementation_plans/python_converter_coverage.md)
+- 構文ごとの対応状況（判断記録）: [python_converter_coverage.md](python_converter_coverage.md)
 - 残件: **#90**（デコレータの三分岐・#89 メタ関数待ち）と、Arrow 本体側の起票 7 件
   ⇒ 一覧は §5.6、本体は [FUTURE_FEATURE.md](FUTURE_FEATURE.md)
 

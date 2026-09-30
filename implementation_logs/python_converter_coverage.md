@@ -162,7 +162,7 @@ def g(xs):
 
 ⚠ 以前ここには「`=` が無い純粋なループ変数は CPython と一致する」と書いていたが、
   規則 2 で**一致しなくなった**。また「必要なら同名衝突を明示エラーに倒せる」としていた件は、
-  規則 1 で**倒した**。詳細は [bug_fix.md](../implementation_logs/bug_fix.md) の B4 の節。
+  規則 1 で**倒した**。詳細は [bug_fix.md](bug_fix.md) の B4 の節。
 
 **例題**: [`examples/interop/py_reassign.ar`](../examples/interop/py_reassign.ar) +
 [`test_modules/py_reassign.py`](../examples/interop/test_modules/py_reassign.py)
@@ -349,7 +349,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 （`VmForceError: cannot compile function 'inner' to bytecode`）。
 実測: `def outer(*xs): def inner(): return len(xs)` → `outer(1,2,3)` が `3` を返す。
 
-> 原因は 2 段構えだった（[bug_fix.md](../implementation_logs/bug_fix.md) B7）:
+> 原因は 2 段構えだった（[bug_fix.md](bug_fix.md) B7）:
 > ① 自由変数の収集が `local::name` を**意図的に拾っていなかった**（ツリーウォークは
 > スコープ鎖で見えていたので VM だけが落ちていた）／② `mut ...` のセル昇格で
 > `Expr::LocalVar` のコンパイルが `slots` しか見ていなかった。
@@ -660,7 +660,7 @@ Python = [`examples/interop/py_comprehension.ar`](../examples/interop/py_compreh
 3. ~~`list` の `==` が値比較でない~~ → **B2 で修正**（等値を「値の同一性」と
    「式としての比較」に二層化）。実測: `[1,2] == [1,2]` → `True`。
 
-> 詳細は [bug_fix.md](../implementation_logs/bug_fix.md) の B1 / B2 / B5。
+> 詳細は [bug_fix.md](bug_fix.md) の B1 / B2 / B5。
 > ⚠ B1 は「使えないキーは**仕様として禁止**し必ず `TypeError`」という規則も同時に決めている。
 
 **例題**: [`examples/interop/py_tuple.ar`](../examples/interop/py_tuple.ar) +
@@ -693,7 +693,7 @@ Arrow に「値を書式付きで文字列化する」構文・組込が無い�
 `{x:>10}` / `{n:,}` / `{n:04d}` / `{n:x}` など**書式指定ミニ言語全般**が同じ扱い。
 ⇒ 将来の実装方針（`format(value, spec)` 組込を足す案／Arrow 自身に補間構文を入れる案、
 および「どこまでを仕様にするか先に決める」という留意点）は
-[`implementation_logs/FUTURE_FEATURE.md`](../implementation_logs/FUTURE_FEATURE.md) §4 (3) に残した。
+[`implementation_logs/FUTURE_FEATURE.md`](FUTURE_FEATURE.md) §4 (3) に残した。
 ⚠ **モジュール単位変換なので、書式指定を 1 箇所でも含む `.py` は import 全体が落ちる**。
 f-string を多用する実在モジュールを読むうえで、これが現状いちばん効く制約。
 
@@ -753,7 +753,7 @@ f-string を多用する実在モジュールを読むうえで、これが現�
      `py_decorators.py` のケース 3（`always42`）は `f` を捕捉しない形に**避けて**ある。
    - ⚠ 解消には **INF-D（静的検査の食い違い）と本件（実行時の捕捉）の両方**が要る。
      転送パターン（`inner(*args, **kwargs)`）まで含めた成立条件は
-     [PYTHON_CONVERTER_LOG.md](../implementation_logs/PYTHON_CONVERTER_LOG.md) §3 フェーズ G を参照。
+     [PYTHON_CONVERTER_LOG.md](PYTHON_CONVERTER_LOG.md) §3 フェーズ G を参照。
 2. ~~モジュール直下で同じモジュールの関数を「呼ぶ」ことができない~~
    → **✅ B6 で修正済み**（2026-09-02・案 A、速度回帰を承知で採用）。
    実測: `.py` の `TOP = helper(41)` が `42` になる。
@@ -900,7 +900,7 @@ Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示�
 > ⏸ **本計画の対象外へ移した（2026-09-19・ユーザー判断）**。①の行き先である
 > **Arrow のメタ関数が未実装**なので、分類しても受け皿が無い。
 > ⇒ **メタ関数の実装後に対処する**。起票先は
-> [FUTURE_FEATURE.md](../implementation_logs/FUTURE_FEATURE.md) **#90**（前提は #89）。
+> [FUTURE_FEATURE.md](FUTURE_FEATURE.md) **#90**（前提は #89）。
 > 以下は起票時点の調査内容（判定表・制約・前提）をそのまま残したもの。
 
 - 対象: [`decorators.rs`](../src/python_converter/decorators.rs) の `convert_decorators`（現在は「定義種別マーカ」と「それ以外」の 2 分岐のみ）

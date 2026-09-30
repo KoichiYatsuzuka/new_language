@@ -1,4 +1,4 @@
-# metafn.ar — コンパイル時メタ関数（設計書 implementation_plans/comptime_metafn_design.md）。
+# metafn.ar — コンパイル時メタ関数（設計書 implementation_logs/comptime_metafn_design.md）。
 #
 # メタ関数は**実行前に展開されて AST から消える**。残るのは置かれたコードだけ。
 #

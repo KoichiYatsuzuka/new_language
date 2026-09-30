@@ -21,7 +21,7 @@ indexmap = "2"
 serde_json = "1"
 # ⚠ **ネイティブ専用の依存**（wasm32 に載らない）。`native` feature で有効化する。
 # これらを無効にしたビルドが「評価コア」で、VS Code 拡張（wasm）へ持ち込める範囲になる。
-# 詳細と作業分割は implementation_plans/eval_core_extraction_plan.md を参照。
+# 詳細と作業分割は implementation_logs/eval_core_extraction_plan.md を参照。
 rustpython-parser = { version = "0.4", optional = true }
 pyo3 = { version = "0.22", features = ["auto-initialize"], optional = true }
 libloading = { version = "0.8", optional = true }

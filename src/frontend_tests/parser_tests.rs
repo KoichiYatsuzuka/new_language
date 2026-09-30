@@ -1132,7 +1132,7 @@ fn bundled_stubs_carry_return_types() {
 }
 
 // ── メタ関数（コンパイル時展開）の構文 ─────────────────────────────────
-// 設計は implementation_plans/comptime_metafn_design.md §1。タスク 1-1。
+// 設計は implementation_logs/comptime_metafn_design.md §1。タスク 1-1。
 
 /// `exprconst fn` が純粋メタ関数として、`exprconst !fn` が配置メタ関数として解析されること。
 #[test]

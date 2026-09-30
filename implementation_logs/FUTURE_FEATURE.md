@@ -164,9 +164,9 @@
     「静かに間違った変換をする」ことは起きない。
   - ⚠ **機構 5（属性アクセスへの介入）だけはメタ関数でも代替できない** —
     言語側の計算フィールドが要る（`comptime_metafn_design.md` D33）。
-- **参照**: [python_converter_coverage.md](../implementation_plans/python_converter_coverage.md)
+- **参照**: [python_converter_coverage.md](python_converter_coverage.md)
   項目 28（判定表・制約 3 件・前提 4 件の全文）／
-  [comptime_metafn_design.md 参考K](../implementation_plans/comptime_metafn_design.md)
+  [comptime_metafn_design.md 参考K](comptime_metafn_design.md)
   （デコレータの機構別・置換可能性）／例題
   [`py_decorators.ar`](../examples/interop/py_decorators.ar)・
   [`py_decorator_forward.ar`](../examples/interop/py_decorator_forward.ar)（②が動く形）。
@@ -305,7 +305,7 @@
     「f-string を使う実在の Python モジュールが `format_spec` を 1 箇所でも含むと
     **import 全体が落ちる**」という**モジュール単位変換**の性質のほうにある。
   - ⚠ 実装したら `python_converter_coverage.md` の項目 19 の「未対応」記述も**同時に**直すこと。
-- **参照**: [python_converter_coverage.md](../implementation_plans/python_converter_coverage.md) 項目 19 ／
+- **参照**: [python_converter_coverage.md](python_converter_coverage.md) 項目 19 ／
   例題 [`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
   （エラーになる形を固定してある）／`desugar_fstring`（`src/parser/exprs.rs`）。
 

@@ -15,7 +15,7 @@
 - Empty collections require explicit typing
   - ⚠ **Not enforced yet** (`let xs = []` currently passes). The redesign decides this:
     `[]` infers as `list[⊥]` (upcasts to any `list[T]`), and an unannotated `let xs = []`
-    defaults to `list[Any]` — see `implementation_plans/type_check_redesign.md` D-7 / U-6.
+    defaults to `list[Any]` — see `implementation_logs/type_check_redesign.md` D-7 / U-6.
 - **Container annotations must name the element type** (task 8.1). `list` / `dict` / `set` /
   `fixed_list` / `list_like` / `tuple` are rejected in *annotation* position — write
   `list[int]`, `dict[str, int]`, `tuple[int, str]`. Use `list[Any]` when the element type is

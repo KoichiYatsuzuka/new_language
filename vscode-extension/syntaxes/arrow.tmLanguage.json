@@ -195,7 +195,7 @@
           "name": "keyword.control.flow.ar"
         },
         {
-          "comment": "metafunction keywords (compile-time expansion) — implementation_plans/comptime_metafn_design.md",
+          "comment": "metafunction keywords (compile-time expansion) — implementation_logs/comptime_metafn_design.md",
           "match": "\\b(exprconst|quote|code)\\b",
           "name": "keyword.other.metafn.ar"
         },
