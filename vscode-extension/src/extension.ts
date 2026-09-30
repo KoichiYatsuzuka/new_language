@@ -121,9 +121,10 @@ export function activate(context: vscode.ExtensionContext) {
             `(${frontendLoadError() ?? 'unknown error'})`);
         return;
     }
-    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。
+    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。宣言の本文は
+    // wasm が持っている（型検査器と同じ `builtins.ars`）。
     // 読めなくても言語機能は動く（組み込みが候補に出なくなるだけ）。
-    loadPrelude(path.join(context.extensionPath, 'builtins.ars'));
+    loadPrelude();
 
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(t => { if (t === replTerminal) replTerminal = undefined; }),

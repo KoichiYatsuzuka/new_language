@@ -1,0 +1,14 @@
+# builtin_return_types_error.ar — 組み込み関数の戻り値の型を守る
+#
+# 正常系は builtin_return_types.ar
+#
+# ⚠ 以前は組み込みの結果が `Unresolved`（万能受容体）だったので、どれも黙って通っていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  'n' is declared 'int' but initialized with 'FileObject'
+#   StaticTypeError  'r' is declared 'int' but initialized with 'str'
+#   StaticTypeError  'e' is declared 'int' but initialized with 'str'
+
+let n: int = open("examples/typing/builtin_return_types_error.ar", FileOpenMode.read)   # ⛔ FileObject
+let r: int = repr(1)                # ⛔ str
+let e: int = getenv("HOME")         # ⛔ str

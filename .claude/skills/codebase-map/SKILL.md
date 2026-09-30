@@ -60,7 +60,10 @@ Two layers, maintained differently:
   eligibility; `llvm_codegen/` code generation (LLVM IR text → clang → DLL); `rs_loader/`
   `import[rs]` crate loader; `stub_gen.rs` `.ars` stub emission
 - `python_converter/` — Arrow → Python source converter
-- `built_in_stab/` — `.ars` stubs for built-ins (also consumed by the VS Code extension)
+- `built_in_stab/` — `.ars` stubs for built-ins. **`builtins.ars` is the single declaration of the
+  built-in functions**: embedded by `type_check/builtins.rs` (return types, `range`/`len` signatures)
+  and handed to the VS Code extension through the wasm (`ar_builtins`). The other `.ars` files
+  there are reference only — nothing loads them
 - `frontend_tests/` — lexer / parser / type-check tests
 
 ### impl_python/ — Python mirror implementation
@@ -97,7 +100,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (243 files, 97004 lines)
+src/  (245 files, 97335 lines)
   ar_config.rs (244)
   ast.rs (1589)
   decl_names.rs (182)
@@ -116,6 +119,7 @@ src/  (243 files, 97004 lines)
     basic_traits.ars (96)
     built_in_const.ars (2)
     built_in_type.ars (33)
+    builtins.ars (129)
     error.ars (77)
   frontend_tests/
     lexer_tests.rs (315)
@@ -125,7 +129,7 @@ src/  (243 files, 97004 lines)
       access.rs (258)
       annotations.rs (321)
       bridge_mutability.rs (127)
-      calls.rs (276)
+      calls.rs (342)
       comparison.rs (205)
       decorators_generics.rs (305)
       generators.rs (146)
@@ -235,7 +239,7 @@ src/  (243 files, 97004 lines)
       indexing.rs (128)
       instances.rs (427)
       iterator.rs (142)
-      mod.rs (372)
+      mod.rs (410)
       modules.rs (147)
       mustbe.rs (192)
       primitives.rs (186)
@@ -330,20 +334,21 @@ src/  (243 files, 97004 lines)
   type_check/
     annotations.rs (263)
     binop.rs (708)
-    call_check.rs (1664)
+    builtins.rs (119)
+    call_check.rs (1667)
     decorator.rs (151)
     diagnostics.rs (45)
     errors.rs (1049)
     infer.rs (1462)
     members.rs (317)
-    mod.rs (476)
+    mod.rs (441)
     names.rs (93)
     scope.rs (367)
     state.rs (291)
     type_utils.rs (712)
     types.rs (827)
     registry/
-      builder.rs (933)
+      builder.rs (944)
       mod.rs (328)
     stmt/
       check.rs (2084)
@@ -428,14 +433,14 @@ impl_python/  (49 files, 16411 lines)
     type_utils.py (78)
     types.py (335)
 
-vscode-extension/  (8 files, 2545 lines; src/ + syntaxes/ only)
+vscode-extension/  (8 files, 2571 lines; src/ + syntaxes/ only)
   src/
-    debug_runner.ts (362)
-    extension.ts (267)
-    frontend.ts (188)
+    debug_runner.ts (363)
+    extension.ts (268)
+    frontend.ts (206)
     stubs.ts (161)
     vscode_mock.ts (289)
-    wasm_providers.ts (948)
+    wasm_providers.ts (954)
   syntaxes/
     arrow.tmLanguage.json (322)
     arrow-stub.tmLanguage.json (8)
@@ -454,7 +459,7 @@ examples/  (recursive .ar counts per category)
   interop/ (106 .ar)
   practical_examples/ (8 .ar)
   repl/ (0 .ar)
-  typing/ (105 .ar)
+  typing/ (107 .ar)
   (2 loose .ar at top level)
 
 scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUDE.md)
@@ -465,7 +470,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (135)
   compare_outputs.ps1 (140)
-  compare_python_impl.ps1 (449)
+  compare_python_impl.ps1 (451)
   compare_wasm_frontend.ps1 (240)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)

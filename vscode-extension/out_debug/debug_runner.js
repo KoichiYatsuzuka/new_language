@@ -191,7 +191,8 @@ function main() {
     // in builtins.ars, so with the prelude loaded a bare `int` resolves to a builtin
     // FUNCTION. The "type name shown as a cast function" bug therefore could not
     // reproduce here at all -- neither in run_debug.js nor in stress.js.
-    if (!(0, wasm_providers_1.loadPrelude)(path.join(extensionRoot, 'builtins.ars'))) {
+    // The declarations come from the wasm (`builtinsSource`), the same text the type checker uses.
+    if (!(0, wasm_providers_1.loadPrelude)()) {
         console.error(c(A.red, 'WARNING: builtins.ars failed to load — builtin names will be missing'));
     }
     // 外部モジュールの型スタブも activate() と同じ経路で積む。

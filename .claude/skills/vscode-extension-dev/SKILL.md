@@ -27,9 +27,9 @@ Rust frontend and expose it through the analysis JSON.
 
 | File | Responsibility |
 |------|-----------------|
-| `extension.ts` | Entry point (`activate`): loads the wasm frontend + `builtins.ars` prelude, registers the seven providers and the Send-to-REPL command, schedules debounced diagnostics |
+| `extension.ts` | Entry point (`activate`): loads the wasm frontend + the built-in prelude (from the wasm), registers the seven providers and the Send-to-REPL command, schedules debounced diagnostics |
 | `frontend.ts` | Loads `arrow_frontend.wasm` and exposes `analyze(source) → JSON`. Owns the raw C ABI (`ar_alloc` / `ar_analyze` / `ar_result_ptr` / …) |
-| `wasm_providers.ts` | All seven providers, built on the analysis JSON: hover, inlay hints, semantic tokens, completion, signature help, go-to-definition, document symbols, diagnostics. Also the scope walk and the `builtins.ars` prelude |
+| `wasm_providers.ts` | All seven providers, built on the analysis JSON: hover, inlay hints, semantic tokens, completion, signature help, go-to-definition, document symbols, diagnostics. Also the scope walk and the built-in prelude (`loadPrelude`, text from `builtinsSource()`) |
 | `debug_runner.ts` / `vscode_mock.ts` | Standalone CLI harness (see `vscode-debug-runner` skill) — `vscode_mock.ts` is used exclusively by `debug_runner.ts`, never by extension code |
 
 Rust side of the same feature:
@@ -89,11 +89,16 @@ renders as `let`, a writable one as `mut`, and `mut self` keeps its `mut`. This 
 - `syntaxes/arrow.tmLanguage.json` — TextMate grammar. **Still manual**: colouring runs before any
   analysis, so it is a genuinely separate system. Update it when adding/renaming keywords.
 - `language-configuration.json` — bracket matching, comment tokens, auto-closing pairs.
-- `builtins.ars` — built-in function stubs (`print`, `len`, …) that power hover/completion/
-  signature-help for built-ins. It is **parsed by the real Arrow parser**, so it must be valid
-  Arrow: bodies are `pass`, never `...` (an `...` body is only accepted when it is the entire
-  body, so combining it with a docstring is a syntax error). Separate from
-  `src/built_in_stab/*.ars`; the two are not auto-synced.
+- **Built-in function declarations live in `src/built_in_stab/builtins.ars`, not in the extension.**
+  It is the single source for both the type checker (return types of `open` / `repr` / …, and the
+  `range` / `len` signatures — `src/type_check/builtins.rs` embeds it with `include_str!`) and the
+  extension's hover/completion/signature help (the wasm hands the same text over via
+  `ar_builtins` → `frontend.ts` `builtinsSource()` → `wasm_providers.ts` `loadPrelude()`).
+  It is no longer copied into the VSIX. List only functions that exist at runtime
+  (`builtins_ars_matches_the_runtime` checks both directions), omit `->` when the return type is
+  not static (never `-> Any`), bodies are `pass` not `...`, and never use a keyword such as `code`
+  as a parameter name — until 2026-09-30 the extension's own copy used `code`, failed to parse
+  after `code` became a keyword, and the built-in prelude silently vanished for a week.
 - `package.json` `contributes` — commands, keybindings, `languages`/`grammars`, `arrow.*` settings.
 
 ## Build commands
@@ -136,7 +141,8 @@ pwsh ./make-vsix.ps1   # or: powershell -File make-vsix.ps1
    interpreter. If `cargo` is absent it warns and packages the existing wasm.
 3. Assembles `[Content_Types].xml` + `extension.vsixmanifest` by hand.
 4. Copies `package.json`, `language-configuration.json`, `out/*.js`, `out/arrow_frontend.wasm`,
-   `syntaxes/*.json`, `icons/*.svg` and `builtins.ars` into a staging folder.
+   `syntaxes/*.json` and `icons/*.svg` into a staging folder (the built-in declarations are inside
+   the wasm).
 5. Zips it into `arrow-<version>.vsix` at the `vscode-extension/` root.
 
 If you add a new runtime asset, add a `Copy-Item` line **and** a `<Default Extension=…>` entry in

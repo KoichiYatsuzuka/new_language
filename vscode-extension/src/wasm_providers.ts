@@ -12,8 +12,7 @@
  */
 
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import { analyze, isFrontendReady, type AnalysisResult, type WasmDiagnostic } from './frontend';
+import { analyze, builtinsSource, isFrontendReady, type AnalysisResult, type WasmDiagnostic } from './frontend';
 
 // ===== 解析結果の型（frontend が返す JSON の形） =====
 
@@ -137,19 +136,26 @@ const cache = new Map<string, CacheEntry>();
 // ===== 組み込み関数のプレリュード =====
 
 /**
- * `builtins.ars`（`print` / `len` / … のスタブ）を解析した結果。
+ * 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）を解析した結果。
  *
  * 組み込みも**同じフロントエンドで**解析する。TypeScript 側に組み込みの表を持たせると、
  * Rust 側に組み込みが増えたときに手で追随することになり、いま直している問題が
- * 小さい形で戻ってくる。`builtins.ars` は valid な Arrow なのでそのまま食わせられる。
+ * 小さい形で戻ってくる。
+ *
+ * ⚠ 本文は wasm から受け取る（`builtinsSource`）。型検査器が埋め込んでいるのと同じ本文なので、
+ *   hover に出る組み込みと型検査が別々の宣言を見ることはない。以前は拡張が自前の
+ *   `builtins.ars` を読んでいて、実行時に無い関数が並び、`code` が予約語になってからは
+ *   丸ごと読めなくなっていた（読めないことに誰も気づかなかった）。
  */
 let prelude: Symbol[] = [];
 let preludeMembers: Record<string, MemberTable> = {};
 
 /** 拡張の activate から 1 度だけ呼ぶ。失敗しても致命的ではない（組み込みが出ないだけ）。 */
-export function loadPrelude(builtinsPath: string): boolean {
+export function loadPrelude(): boolean {
     try {
-        const result = analyze(fs.readFileSync(builtinsPath, 'utf8')) as Analysis | null;
+        const source = builtinsSource();
+        if (source === null) return false;
+        const result = analyze(source) as Analysis | null;
         if (!result?.ok) return false;
         // トップレベル（スコープ 0）の宣言だけを組み込みとして扱う。
         prelude = result.symbols.filter(s => s.scope === 0);

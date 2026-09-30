@@ -182,6 +182,15 @@ Handled by `infer_call()`:
 2. If callee type is `Function { params: None, .. }` → returns `Any` (untyped function).
 3. Otherwise, the callee name is looked up in `fn_sigs`. If a single overload matches the argument count, its return type is returned; if multiple overloads exist and exactly one matches count, returns that one's return type; otherwise `Unresolved`.
 4. If the callee name is a known class name → returns `NamedInstance(name)`.
+5. **Built-in functions** (callee is a bare name that no user `fn` / variable shadows):
+   `enumerate` / `zip` build their result from the arguments; every other built-in returns the
+   type declared in **`src/built_in_stab/builtins.ars`** (`builtin_fn_return` →
+   `builtins::return_type`): `open` → `FileObject`, `repr` / `getenv` → `str`, `id` → `pointer`,
+   `print` / `close` → `None`. Declarations without `->` (`next`, `parse_ar`, …) stay `Unresolved`,
+   and functions named like a type (`int`, `list`, … — `builtins::is_conversion`) are conversions,
+   not typed from the file (`int`/`float`/`str`/`bool` use the "calling a type value" rule).
+   `builtins.ars` is the single declaration file for both the checker and the VS Code extension's
+   hover/completion (the wasm exports the same text via `ar_builtins`).
 
 ### Expression forms (`block:`, `if:`, `for:`, `while:`, `match:` as expressions)
 
@@ -364,7 +373,13 @@ seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives t
 | `function` | `TypeValOf(Function { None, Any })` |
 | `Error` | `TypeValOf(NamedInstance("Error"))` |
 | `begin`, `last` | `NamedInstance("Index")` |
+| `range`, `len` | `Function { params, return_type }` from `builtins.ars` (`builtins::GLOBAL_FNS` — the only built-ins that occupy a global name) |
 | All exception classes | `TypeValOf(NamedInstance(name))` |
+
+Built-in runtime types usable as annotations / type guards without members being checked:
+`FileObject` (result of `open`), `slice`, and the built-in new_types `path`, `Index`, `Size`,
+`pointer` (`BUILTIN_NEW_TYPES`; `pointer` was missing until 2026-09-30 although the runtime
+registers it as `new_type pointer: uint`).
 
 Exception classes registered (all with base `Error`):
 `Exception`, `ValueError`, `TypeError`, `NameError`, `AttributeError`, `IndexError`, `KeyError`,

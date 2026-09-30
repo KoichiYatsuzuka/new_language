@@ -365,7 +365,8 @@ impl TypeChecker {
             //    全ての義務が無効化されていた。これは **D-5（暗黙 `int → float` の廃止）の
             //    前提**で、受け皿の `float(n)` が無検査だと穴が閉じずに移動するだけになる。
             //
-            // ⚠ **名前を新しく占有しない形で解く。** 既存の `builtin_fns` 機構に
+            // ⚠ **名前を新しく占有しない形で解く。** 大域の名前を占有する組み込みの登録（当時の
+            //    `builtin_fns`・2026-09-30 に撤去し `builtins::GLOBAL_FNS` へ移した）に
             //    `len` 等を足す案は「グローバル名を占有して `let len = ...` が
             //    already declared になる」ため前任者が見送っており、実際に例題が
             //    `len` を変数名に使っている（実測 3 箇所）。
@@ -1381,7 +1382,8 @@ impl TypeChecker {
     /// `list.append` と `set.add` は**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、
     /// `set.discard` は黙って何もしない、`set.remove` は `KeyError`。
     /// どれも「要素型が守られない」ことに変わりはない。
-    /// 組み込み**関数**の戻り値型（分かるものだけ）。
+    /// 組み込み**関数**の戻り値型（分かるものだけ）。`enumerate` / `zip` は引数から組み立て、
+    /// 他は宣言ファイル `builtins.ars` の戻り値の型（`builtins::return_type`）。
     ///
     /// ⚠⚠ **`enumerate` / `zip` に型が付いていなかった**ので、
     /// `for i, c in enumerate(xs):` のループ変数が `Unresolved` 止まりになり、
@@ -1419,7 +1421,9 @@ impl TypeChecker {
                 let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
-            _ => None,
+            // 他の組み込み関数は宣言（`src/built_in_stab/builtins.ars`）の戻り値の型
+            // （`open` → `FileObject`・`repr` → `str` …）。宣言に型が無いものは `None`（従来どおり）。
+            _ => super::builtins::return_type(name),
         }
     }
 

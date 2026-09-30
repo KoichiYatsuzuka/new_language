@@ -11,7 +11,7 @@
  * 実行時には要らない。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.stubCount = exports.clearStubs = exports.setStub = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
+exports.stubCount = exports.clearStubs = exports.setStub = exports.builtinsSource = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
 const fs = require("fs");
 const path = require("path");
 let exports_ = null;
@@ -99,6 +99,24 @@ function analyze(source) {
     }
 }
 exports.analyze = analyze;
+/**
+ * 組み込み関数の宣言（`builtins.ars`）の本文。wasm が埋め込んでいるものを受け取る。
+ *
+ * 型検査器が使っているのと**同じ本文**なので、hover・補完に出る組み込みと型検査が食い違わない
+ * （以前は拡張が自前のファイルを読んでいて、実行時に無い関数まで並んでいた）。
+ *
+ * @returns 本文。wasm が使えない場合は null。
+ */
+function builtinsSource() {
+    const ex = exports_;
+    if (!ex)
+        return null;
+    const len = ex.ar_builtins();
+    // 呼んだ後に buffer を取り直す（`analyze` と同じ注意）。
+    const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), len);
+    return new TextDecoder().decode(out);
+}
+exports.builtinsSource = builtinsSource;
 /**
  * wasm へ UTF-8 文字列を書き込み、`(ptr, len)` で `f` に渡す。
  *

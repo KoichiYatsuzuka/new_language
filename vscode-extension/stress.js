@@ -14,7 +14,7 @@
 //   typed vars   : 型注釈の無い変数宣言のうち、型（`inferred`）が出た件数。0 にはならない
 //                  （型検査器自身が型を知らない宣言がある）ので**減ったら退行**として見る。
 //                  型は型検査器の束縛の記録を「文の位置＋名前」で突き合わせて付けるので、
-//                  突き合わせが外れるとここが減る（2026-09-30 時点 1947 / 2371）。
+//                  突き合わせが外れるとここが減る（2026-09-30 時点 1969 / 2371・組み込みの戻り値の型を含む）。
 //   no symbols   : 宣言が 1 つも取れなかった例題。ParseError 例題と、宣言を含まない
 //                  例題（math_string.ar）だけが該当するのが正常。
 //
@@ -40,7 +40,7 @@ if(!loadFrontend(__dirname)){ console.error('load failed:',frontendLoadError());
 //    調べることになる。`int` / `str` / `float` / `bool` / `uint` / `set` / `slice` /
 //    `path` / `type` は builtins.ars で `fn` として宣言されているので、prelude を読んで
 //    初めて「型名が組み込み関数に当たる」経路が動く。読まないと退行を取り逃がす。
-if(!P.loadPrelude(path.join(__dirname,'builtins.ars'))){
+if(!P.loadPrelude()){
   console.error('WARNING: builtins.ars failed to load — builtin names will be missing');
 }
 

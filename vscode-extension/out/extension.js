@@ -97,9 +97,10 @@ function activate(context) {
             `(${(0, frontend_1.frontendLoadError)() ?? 'unknown error'})`);
         return;
     }
-    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。
+    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。宣言の本文は
+    // wasm が持っている（型検査器と同じ `builtins.ars`）。
     // 読めなくても言語機能は動く（組み込みが候補に出なくなるだけ）。
-    (0, wasm_providers_1.loadPrelude)(path.join(context.extensionPath, 'builtins.ars'));
+    (0, wasm_providers_1.loadPrelude)();
     context.subscriptions.push(vscode.window.onDidCloseTerminal(t => { if (t === replTerminal)
         replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider(ARROW_SELECTOR, { provideInlayHints: wasm_providers_1.provideInlayHints }), vscode.languages.registerHoverProvider(ARROW_SELECTOR, { provideHover: wasm_providers_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider(ARROW_SELECTOR, { provideDocumentSemanticTokens: wasm_providers_1.provideDocumentSemanticTokens }, wasm_providers_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider(ARROW_SELECTOR, { provideCompletionItems: wasm_providers_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider(ARROW_SELECTOR, { provideDocumentSymbols: wasm_providers_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider(ARROW_SELECTOR, { provideSignatureHelp: wasm_providers_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider(ARROW_SELECTOR, { provideDefinition: wasm_providers_1.provideDefinition }));
     // ---- Send-to-REPL command ----

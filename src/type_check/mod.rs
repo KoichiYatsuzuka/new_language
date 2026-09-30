@@ -13,6 +13,7 @@ mod binop;
 mod decorator;
 pub(crate) mod names;
 pub mod annotations;
+pub mod builtins;
 
 // 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
@@ -171,56 +172,20 @@ impl TypeChecker {
         //    ⇒ `len` を登録しても新しく壊れるものは無い。
         //
         // ⚠ ここへ登録した名前はグローバルスコープを占める（`int`/`str` と同じ扱い）。
-        //   占有してよいのは「実行時も既に占有している」名前だけ。
+        //   占有してよいのは「実行時も既に占有している」名前だけ（`builtins::GLOBAL_FNS`）。
+        //   他の組み込み関数（`open` / `repr` …）は占有せず、呼び出しの結果にだけ型を付ける
+        //   （`call_check` の `builtin_fn_return`。同じ名前の利用者の宣言が勝つ）。
         //
-        // ## 引数の型（実測して表を書いた）
-        //
-        // | 関数 | 引数 | 戻り値 |
-        // |---|---|---|
-        // | `range` | `int` を 1〜3 個 | `list[int]` |
-        // | `len` | 1 個（`list`/`str`/`dict`/`set`/`tuple`/`fixed_list`/`__len__` を持つクラス） | `int` |
+        // ⚠ シグネチャ（仮引数・戻り値）は `src/built_in_stab/builtins.ars` から取る
+        //   （組み込みの宣言はそこ 1 本・`builtins` モジュールの doc）。以前はここに手書きしていた。
         //
         // ⚠ `len` の引数は「大きさを持つ型」で、`InferredType` に対応する型が無い。
-        //   ⇒ `Any` にして個数だけ検査し、**明らかに大きさを持たない型**は
+        //   ⇒ 宣言は `Any` にして個数だけ検査し、**明らかに大きさを持たない型**は
         //     `check_len_argument`（`call_check.rs`）で弾く。
-        let int_p = |name: &str, has_default: bool| types::FnTypeParam {
-            name: name.to_string(),
-            mutable: false,
-            ty: InferredType::Int,
-            has_default,
-        };
-        let builtin_fns: Vec<(&str, Option<Vec<types::FnTypeParam>>, InferredType)> = vec![
-            (
-                "range",
-                Some(vec![
-                    int_p("start", false),
-                    int_p("stop", true),
-                    int_p("step", true),
-                ]),
-                InferredType::ListOf(Box::new(InferredType::Int)),
-            ),
-            (
-                "len",
-                Some(vec![types::FnTypeParam {
-                    name: "obj".to_string(),
-                    mutable: false,
-                    ty: InferredType::Any,
-                    has_default: false,
-                }]),
-                InferredType::Int,
-            ),
-        ];
-        for (name, params, ret) in builtin_fns {
-            global.insert(
-                name.to_string(),
-                VarInfo {
-                    ty: InferredType::Function {
-                        params,
-                        return_type: Box::new(ret),
-                    },
-                    mutable: false,
-                },
-            );
+        for name in builtins::GLOBAL_FNS {
+            if let Some(ty) = builtins::fn_type(name) {
+                global.insert(name.to_string(), VarInfo { ty, mutable: false });
+            }
         }
         for name in ["begin", "last"] {
             global.insert(

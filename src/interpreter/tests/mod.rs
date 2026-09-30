@@ -258,6 +258,44 @@ mod a_axis_invariants {
         }
     }
 
+    /// 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）が実行時とずれていないか。**両方向**を見る。
+    /// ⚠ 宣言に実行時に無い関数があると、型検査が NameError になる呼び出しに型を付け、補完が
+    ///   存在しない関数を勧める（以前の拡張用 `builtins.ars` は `ord` / `abs` など 18 個を並べていた）。
+    /// ⚠ 実行時の組み込み関数が宣言に無いと、その呼び出しに型が付かず、hover にも出ない。
+    #[test]
+    fn builtins_ars_matches_the_runtime() {
+        let mut interp = Interpreter::new();
+        let scope = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
+        let declared = crate::type_check::builtins::declared_names();
+        assert!(!declared.is_empty(), "builtins.ars が読めていない（構文エラー？）");
+        // ① 宣言した名前は実行時に解決できる（組み込み関数・型の変換・組み込みのクラス）
+        for name in &declared {
+            let known = scope.contains_key(name.as_str())
+                || interp.eval_builtin_evaled(name, Vec::new()).is_some()
+                || match interp.call_type_by_name_evaled(name, Vec::new()) {
+                    Ok(_) => true,
+                    Err(e) => !e.contains("is not callable"),
+                };
+            assert!(known, "builtins.ars の '{name}' を実行時が知らない（実在しない関数を宣言している）");
+        }
+        // ② 実行時の組み込み関数の表（`eval/builtins.rs` の `"name" =>` の腕）は全部宣言されている
+        for line in include_str!("../eval/builtins.rs").lines() {
+            let t = line.trim_start();
+            let Some(head) = t.strip_prefix('"').and_then(|_| t.split("=>").next()) else {
+                continue;
+            };
+            if !t.contains("=>") {
+                continue;
+            }
+            for alt in head.split('|') {
+                let n = alt.trim().trim_matches('"');
+                if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    assert!(declared.iter().any(|d| d == n), "組み込み関数 '{n}' が builtins.ars に無い");
+                }
+            }
+        }
+    }
+
     #[test]
     fn vm_builtin_names_are_all_handled() {
         let mut interp = Interpreter::new();

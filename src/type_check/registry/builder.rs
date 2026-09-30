@@ -43,7 +43,12 @@ pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
 ];
 
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。
-const BUILTIN_NEW_TYPES: [(&str, &str); 3] = [("path", "str"), ("Index", "int"), ("Size", "int")];
+///
+/// ⚠ 実行時の登録（`interpreter/built_in_types.rs`）と揃えること。`pointer` は実行時に
+///   「`new_type pointer: uint` 相当のラッパークラス」として登録されているのに、ここに無かったので
+///   `let p: pointer = id(x)` や `p is pointer` が「知らない型」になっていた（`id` の戻り値の型）。
+const BUILTIN_NEW_TYPES: [(&str, &str); 4] =
+    [("path", "str"), ("Index", "int"), ("Size", "int"), ("pointer", "uint")];
 
 /// `TypeRegistry` の構築器。`collect` で AST を走査し、`build` で凍結する。
 pub(in crate::type_check) struct TypeRegistryBuilder {
@@ -201,6 +206,12 @@ impl TypeRegistryBuilder {
             new_type_originals.insert(cls_name.to_string(), prim_type.to_string());
         }
         known_class_names.insert("slice".to_string());
+        // `open()` が返すファイル（実行時の型名 `FileObject`・`Value::FileObject`）。
+        // 利用者が `let f: FileObject = open(..)` / `f is FileObject` と書けるように型の名前として登録する
+        // （実行時の `is` は以前から通っていた）。
+        // ⚠ メンバーは登録しない。`f.read()` などは今は検査しない（`member_set_is_closed` が素通しにする）。
+        // ⚠ `arrow_class_names` には入らない（Arrow のクラスではないので VM が `Value::Instance` と見なさない）。
+        known_class_names.insert("FileObject".to_string());
 
         let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
         // ⚠⚠ **組み込み例外のフィールド型も登録する**（タスク 2.8）。名前だけ登録していたため

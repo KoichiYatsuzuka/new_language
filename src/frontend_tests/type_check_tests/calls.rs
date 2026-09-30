@@ -274,3 +274,69 @@ use super::*;
         assert!(msg.contains('3'));
     }
 
+
+    // --- 組み込み関数の戻り値の型（`src/built_in_stab/builtins.ars`）---
+    //
+    // 以前は `range` / `len` / `enumerate` / `zip` 以外の組み込みの結果がすべて `Unresolved`
+    // （＝何でも通る）で、`let n: int = open(..)` すら静的に通っていた。
+
+    /// 宣言ファイルが解析できて、実行時の組み込み関数が並んでいる（壊れると全部の型が消える）。
+    #[test]
+    fn builtins_ars_parses() {
+        let names = crate::type_check::builtins::declared_names();
+        for n in ["print", "open", "close", "repr", "getenv", "id", "range", "len"] {
+            assert!(names.iter().any(|d| d == n), "builtins.ars に '{n}' が無い: {names:?}");
+        }
+    }
+
+    /// `open` の結果は `FileObject`。`FileObject` は注釈・型の判定に書ける。
+    #[test]
+    fn open_returns_file_object() {
+        assert!(ok(concat!(
+            "let f: FileObject = open(\"a.txt\", FileOpenMode.read)\n",
+            "if f is FileObject:\n    close(f)\n",
+        )));
+        let errors = check("let n: int = open(\"a.txt\", FileOpenMode.read)\n");
+        assert!(
+            errors.iter().any(|e| e.to_string().contains("FileObject")),
+            "{errors:?}"
+        );
+    }
+
+    /// 宣言に戻り値の型がある組み込みは、その型で検査される。
+    #[test]
+    fn builtin_return_types_are_checked() {
+        assert!(err("let r: int = repr(1)\n"));
+        assert!(err("let s: int = getenv(\"HOME\")\n"));
+        assert!(err("let x: int = print(\"a\")\n"));
+        assert!(ok("let r: str = repr(1)\nlet s: str = getenv(\"HOME\", \"none\")\n"));
+        // `id` は `pointer`（実行時の `new_type pointer: uint` 相当のクラス）。
+        assert!(ok("let p: pointer = id(1)\nif p is pointer:\n    print(p)\n"));
+    }
+
+    /// 宣言に戻り値の型が無い組み込み（`next` / `parse_ar`）は従来どおり型を付けない。
+    /// `Any` にすると結果を使う式がすべて静的エラーになる（`builtins.ars` 冒頭の規則）。
+    #[test]
+    fn builtin_without_declared_return_type_stays_unknown() {
+        assert!(ok(concat!(
+            "gen g() -> int:\n    yield 1\n",
+            "let it = g()\n",
+            "let n: int = next(it) + 1\n",
+        )));
+    }
+
+    /// 利用者が同じ名前を宣言したら、そちらが勝つ（組み込みの宣言は使わない）。
+    #[test]
+    fn user_function_shadows_builtin_declaration() {
+        assert!(ok("fn repr(let v: int) -> int:\n    return v\nlet r: int = repr(1)\n"));
+    }
+
+    /// 型の変換（名前が型の名前）は宣言からは型を付けない（`int` などは「型の値を呼ぶ」規則）。
+    #[test]
+    fn conversions_are_not_typed_from_the_declarations() {
+        assert!(crate::type_check::builtins::is_conversion("int"));
+        assert!(crate::type_check::builtins::is_conversion("list"));
+        assert!(!crate::type_check::builtins::is_conversion("open"));
+        assert!(!crate::type_check::builtins::is_conversion("path"));
+        assert!(err("let s: str = int(\"3\")\n"));
+    }
