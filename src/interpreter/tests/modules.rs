@@ -23,6 +23,12 @@ fn run_with_module(module_src: &str, main_src: &str) -> Result<Interpreter, Stri
     }];
     let mut parser = Parser::new(Lexer::new(main_src, "").tokenize(), None);
     stmts.extend(parser.parse_program()?);
+    run_prepared(stmts, &parser)
+}
+
+/// 組み立て済みのプログラムを、本番と同じ配線（展開 → 解決 → 注釈の注入）で走らせる。
+/// `parser` は node-id の採番と trait 表を展開器へ渡すためのもの。
+fn run_prepared(stmts: Vec<Stmt>, parser: &Parser) -> Result<Interpreter, String> {
     // 本番と同じく展開を先に済ませる（テンプレートの具体化・D36）。
     let mut stmts =
         crate::meta_expand::expand_program(stmts, parser.node_counter(), parser.known_traits())?;
@@ -145,4 +151,102 @@ fn a_module_class_matches_its_qualified_name() {
     assert!(matches!(interp.get_val("n"), Some(Value::Int(1))));
     // ⚠ 素の名前での判定は従来どおり（実行時は表示名でも当たる。静的には別の型として弾く）。
     assert!(matches!(interp.get_val("mine"), Some(Value::Bool(true))));
+}
+
+// ── 再エクスポートしない（2026-10-02）────────────────────────────────────────
+//
+// ⚠⚠ 以前はモジュールの中の `import` / `from … import` で束縛した名前も名前空間に入っていたので、
+//   `import m` だけで、m が import したモジュール（`m.inner`）やその名前（`from m import Item`）が読めた。
+//   型検査は同じ形を静的エラーにする（`ModuleHasNoMember` / `CannotImportName`）が、
+//   実行時の名前空間からも外れていることをここで押さえる（`run_with_module` は型エラーを無視する）。
+
+const INNER: &str = "class Item:\n    let v: int\n    fn __init__(mut self, let v: int):\n        self.v = v\nlet LABEL = \"inner\"\n";
+
+/// `inner` を import する外側のモジュール m の本体（`import inner` / `from inner import Item` ＋ `outer_src`）。
+fn outer_module_body(outer_src: &str) -> Vec<Stmt> {
+    let inner = Parser::new(Lexer::new(INNER, "").tokenize(), None).parse_program().expect("parse inner");
+    let mut body = vec![
+        Stmt::Import {
+            lang: "ar".to_string(),
+            module: vec!["inner".to_string()],
+            source_module: None,
+            alias: None,
+            body: inner.clone(),
+            origin: crate::ast::ImportOrigin::default(),
+        },
+        Stmt::FromImport {
+            lang: "ar".to_string(),
+            module: vec!["inner".to_string()],
+            source_module: None,
+            names: vec![("Item".to_string(), None)],
+            body: inner,
+            origin: crate::ast::ImportOrigin::default(),
+        },
+    ];
+    body.extend(Parser::new(Lexer::new(outer_src, "").tokenize(), None).parse_program().expect("parse outer"));
+    body
+}
+
+const OUTER: &str = "fn make(let v: int) -> Item:\n    return Item(v)\nfn label() -> str:\n    return inner.LABEL\n";
+
+/// 外側のモジュールの名前空間に、外側が import した `inner` は入らない。
+#[test]
+fn a_module_does_not_reexport_a_module_it_imports() {
+    let mut stmts = vec![Stmt::Import {
+        lang: "ar".to_string(),
+        module: vec!["m".to_string()],
+        source_module: None,
+        alias: None,
+        body: outer_module_body(OUTER),
+        origin: crate::ast::ImportOrigin::default(),
+    }];
+    let mut parser = Parser::new(Lexer::new("let x = m.inner.LABEL\n", "").tokenize(), None);
+    stmts.extend(parser.parse_program().unwrap());
+    let err = run_prepared(stmts, &parser).err().expect("AttributeError のはず");
+    assert!(err.contains("has no attribute 'inner'"), "{err}");
+}
+
+/// 外側のモジュールが `from inner import Item` した `Item` も、外側の名前空間には入らない。
+#[test]
+fn a_module_does_not_reexport_a_name_it_imports() {
+    let outer = outer_module_body(OUTER);
+    let stmts = vec![
+        Stmt::Import {
+            lang: "ar".to_string(),
+            module: vec!["m".to_string()],
+            source_module: None,
+            alias: None,
+            body: outer.clone(),
+            origin: crate::ast::ImportOrigin::default(),
+        },
+        Stmt::FromImport {
+            lang: "ar".to_string(),
+            module: vec!["m".to_string()],
+            source_module: None,
+            names: vec![("Item".to_string(), None)],
+            body: outer,
+            origin: crate::ast::ImportOrigin::default(),
+        },
+    ];
+    let parser = Parser::new(Lexer::new("", "").tokenize(), None);
+    let err = run_prepared(stmts, &parser).err().expect("ImportError のはず");
+    assert!(err.contains("cannot import name 'Item'"), "{err}");
+}
+
+/// 外側のモジュールの関数は、外側が import した名前（`inner` / `Item`）を今までどおり使える。
+#[test]
+fn a_module_still_uses_what_it_imports() {
+    let mut stmts = vec![Stmt::Import {
+        lang: "ar".to_string(),
+        module: vec!["m".to_string()],
+        source_module: None,
+        alias: None,
+        body: outer_module_body(OUTER),
+        origin: crate::ast::ImportOrigin::default(),
+    }];
+    let mut parser = Parser::new(Lexer::new("let v = m.make(7).v\nlet l = m.label()\n", "").tokenize(), None);
+    stmts.extend(parser.parse_program().unwrap());
+    let interp = run_prepared(stmts, &parser).expect("run");
+    assert!(matches!(interp.get_val("v"), Some(Value::Int(7))));
+    assert!(matches!(interp.get_val("l"), Some(Value::Str(s)) if s.as_ref() == "inner"));
 }

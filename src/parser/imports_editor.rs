@@ -86,7 +86,7 @@ impl Parser {
             module,
             alias,
             body,
-            origin: crate::ast::ImportOrigin { level, base_dir: None },
+            origin: crate::ast::ImportOrigin { level, ..Default::default() },
         })
     }
 
@@ -146,7 +146,7 @@ impl Parser {
             module,
             names,
             body,
-            origin: crate::ast::ImportOrigin { level, base_dir: None },
+            origin: crate::ast::ImportOrigin { level, ..Default::default() },
         })
     }
 
@@ -266,7 +266,7 @@ impl Parser {
             module: parts,
             alias,
             body,
-            origin: crate::ast::ImportOrigin { level, base_dir: None },
+            origin: crate::ast::ImportOrigin { level, ..Default::default() },
         })
     }
 

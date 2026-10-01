@@ -2,7 +2,7 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::{ImportOrigin, Stmt}, crate::module_path, crate::python_converter,
+    crate::ast::Stmt, crate::module_path, crate::python_converter,
     super::dispatch::LoadedModule,
     std::path::{Path, PathBuf},
 };
@@ -158,10 +158,7 @@ impl Parser {
                     *source_module = Self::written_if_renamed(level, module, &loaded.name);
                     *module = loaded.name;
                     *sub = loaded.body;
-                    *origin = ImportOrigin {
-                        level,
-                        base_dir: Some(module_path::search_base(py_dir, level)),
-                    };
+                    origin.base_dir = Some(module_path::search_base(py_dir, level));
                 }
                 _ => {}
             }

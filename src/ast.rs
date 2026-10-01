@@ -842,13 +842,24 @@ pub enum TupleTarget {
 /// （`import[py-int]` の `sys.path`・C# のブリッジ・js-proc の設定）もこれを使う。
 /// ⚠ 実行時がエントリのディレクトリで探すと、サブディレクトリのファイルが書いた
 ///   import だけ別の場所を探すことになる（以前の不具合）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ImportOrigin {
     /// 先頭のドットの数（`import ..a` なら 2）。0 は相対指定なし。
     pub level: u32,
     /// 探索の起点ディレクトリ（`level` を適用済み）。
     /// `None` はファイルから読まれていない文（エディタの解析・合成した文）。
     pub base_dir: Option<std::path::PathBuf>,
+    /// import 文の位置（`Stmt::position`・10-17）。パーサが `parse_stmt` の入口で埋める。
+    ///
+    /// ⚠ 以前は import 文が位置を持たず、`from m import x` の誤り（`CannotImportName`）が
+    ///   位置なし（`<unknown>`）で出ていた。
+    pub span: Span,
+}
+
+impl Default for ImportOrigin {
+    fn default() -> Self {
+        ImportOrigin { level: 0, base_dir: None, span: Span::unknown() }
+    }
 }
 
 /// インタープリタが実行するすべての構文要素を表す。式文・変数宣言・制御構文・
@@ -1410,6 +1421,7 @@ impl Stmt {
             | Stmt::BreakPoint { span }
             | Stmt::EventSubscribe { span, .. }
             | Stmt::EventUnsubscribe { span, .. } => span,
+            Stmt::Import { origin, .. } | Stmt::FromImport { origin, .. } => &origin.span,
             Stmt::FnDef { src: Some(src), .. }
             | Stmt::GenDef { src: Some(src), .. }
             | Stmt::ClassDef { src: Some(src), .. }
@@ -1438,6 +1450,7 @@ impl Stmt {
             | Stmt::While { span: s, .. }
             | Stmt::For { span: s, .. }
             | Stmt::Try { span: s, .. } => s,
+            Stmt::Import { origin, .. } | Stmt::FromImport { origin, .. } => &mut origin.span,
             _ => return,
         };
         if slot.line == 0 {

@@ -1,0 +1,10 @@
+# vis_core.ar — 型義務 I1〜I3 の下段のモジュール（vis_wrapper.ar が import する）。
+# ⚠ 検体ではない（type_obligations.ps1 は直下の *.ar だけを検体として走らせる）。
+
+const LABEL: str = "core"
+
+class Item:
+    let v: int
+
+    fn __init__(mut self, let v: int):
+        self.v = v

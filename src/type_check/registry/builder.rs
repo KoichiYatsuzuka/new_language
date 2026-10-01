@@ -170,7 +170,7 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
 /// 「Arrow のクラス扱い」になって壊れるより、最適化が効かない方が安全。
 /// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
 fn is_arrow_source_lang(lang: &str) -> bool {
-    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+    crate::module_path::is_arrow_source_lang(lang)
 }
 
 /// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。

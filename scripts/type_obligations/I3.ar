@@ -1,0 +1,15 @@
+# @id: I3
+# @obligation: 注釈の型名が今のファイルから届くか（import していないモジュールの型は書けない）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+#
+# ⚠ 2026-10-02 以前は NONE（型の表がプログラム全体で 1 つなので、vis_wrapper が import した
+#   vis_core の型を、このファイルが import していなくても書けた）。
+
+import modules.vis_wrapper as w
+
+let it: modules.vis_core.Item = w.wrap(1)
+print(it.v)

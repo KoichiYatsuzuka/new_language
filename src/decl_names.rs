@@ -180,3 +180,51 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         Stmt::DebugLet(..) => {}
     }
 }
+
+/// Arrow のモジュールが**名前空間に出す名前**と、出さない（import で束縛しただけの）名前
+/// （再エクスポートしない・2026-10-02）。[`module_exports`] の結果。
+#[derive(Debug, Default)]
+pub struct ModuleExports {
+    /// モジュール自身が宣言した名前（`let` / `fn` / `class` …）。名前空間のメンバー。
+    pub defined: std::collections::HashSet<String>,
+    /// `import` / `from … import` で束縛した**だけ**の名前。名前空間には出さない。
+    pub imported: std::collections::HashSet<String>,
+}
+
+/// モジュールの本体（最上位の文）から [`ModuleExports`] を作る。
+///
+/// ⚠⚠ **実行時と型検査が同じこれを使う**（`Interpreter::exec_module` が名前空間から外し、
+///   型検査の `module_member_types` がメンバーの顔ぶれに使う）。片方だけで決めると
+///   「型検査は通るのに実行時に `AttributeError`」（またはその逆）になる。
+/// ⚠ 以前はモジュールの中の import で束縛した名前も名前空間に入っていたので、
+///   `import lib.deep` だけで `deep.helper`（deep が import した lib.helper）が読めた。
+/// ⚠ Python から変換したモジュール（`import[py]`）には使わない（Python の再エクスポート
+///   `from .sub import X` はパッケージの公開の仕方そのもの）。
+pub fn module_exports(body: &[Stmt]) -> ModuleExports {
+    let mut out = ModuleExports::default();
+    for st in body {
+        each_declared_name(st, &mut |name, origin, _| match origin {
+            DeclOrigin::Import | DeclOrigin::FromImport => {
+                out.imported.insert(name.to_string());
+            }
+            DeclOrigin::Let
+            | DeclOrigin::Mut
+            | DeclOrigin::Static
+            | DeclOrigin::TupleLet
+            | DeclOrigin::TupleMut
+            | DeclOrigin::Fn
+            | DeclOrigin::Gen
+            | DeclOrigin::Class
+            | DeclOrigin::Trait
+            | DeclOrigin::Protocol
+            | DeclOrigin::Enum
+            | DeclOrigin::NewType => {
+                out.defined.insert(name.to_string());
+            }
+        });
+    }
+    // 同じ名前を宣言し直していればメンバー（宣言が勝つ）。
+    let defined = &out.defined;
+    out.imported.retain(|n| !defined.contains(n));
+    out
+}

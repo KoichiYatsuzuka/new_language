@@ -169,6 +169,48 @@ impl TypeRegistry {
         scope.modules.get(alias).map(|m| format!("{m}.{member}"))
     }
 
+    /// 書いた型名 `name`（`util.Tag`）が、**今の文脈から届かない**モジュールの型を指しているか
+    /// （import していないモジュールの型・2026-10-02）。
+    ///
+    /// 届かないなら `Some((モジュールの名前, 今の文脈でのそのモジュールの別名))`。別名は、
+    /// そのモジュールを別の名前で import していればその名前（`import tags as t` の `t`）。
+    ///
+    /// ⚠⚠ レジストリは型をプログラム全体の表に**修飾名**（`util.Tag`）で持つので、
+    ///   [`Self::resolve`] で引き直せない綴りもそのまま表を引けてしまう。以前はそのせいで、
+    ///   メインが import していない（import したモジュールがさらに import した）`util` の型を
+    ///   `let t: util.Tag` と書けた。
+    /// ⚠ 頭がモジュールの別名（`t.Tag`）・`from` で取り込んだ名前・自分の宣言は届く。
+    /// ⚠ モジュールの名前の接頭辞を持たない綴り（Python の入れ子クラス `Outer.Inner` など）は
+    ///   対象外（`None`）。ここが答えるのは「どのモジュールの型か」が綴りから判るものだけ。
+    pub(super) fn unreachable_module_type(&self, name: &str) -> Option<(String, Option<String>)> {
+        if !name.contains('.') {
+            return None;
+        }
+        let scope = self.name_scopes.get(self.current_scope.get())?;
+        if scope.names.contains_key(name) {
+            return None;
+        }
+        if let Some((head, _)) = name.split_once('.') {
+            if scope.modules.contains_key(head) {
+                return None;
+            }
+        }
+        // いちばん長いモジュールの接頭辞（`a.b.Tag` は `a.b`）。
+        let module = name
+            .match_indices('.')
+            .map(|(i, _)| &name[..i])
+            .filter(|p| self.module_scope_index.contains_key(*p))
+            .last()?
+            .to_string();
+        let alias = scope
+            .modules
+            .iter()
+            .filter(|(_, m)| **m == module)
+            .map(|(a, _)| a.clone())
+            .min();
+        Some((module, alias))
+    }
+
     /// モジュール `module` の本体を検査する間、名前をその文脈で引く。戻り値は元の文脈（`leave_module_scope` へ）。
     /// ⚠ 知らないモジュール（外部言語・読み込めていない）は文脈を変えない。
     pub(super) fn enter_module_scope(&self, module: &str) -> usize {

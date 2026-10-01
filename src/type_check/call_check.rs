@@ -138,7 +138,7 @@ impl TypeChecker {
             //   （フェーズ10 10-8）。素の `Tag` で引くとメインの同名クラスを見てしまう（実測）。
             Expr::Attr { object, attr, .. } => match object.as_ref() {
                 Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(_)) => {
+                    Some(InferredType::Namespace(..)) => {
                         // ⚠ 外部言語のモジュール（cpp / cs …）は素の名前で登録したまま。
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
@@ -974,7 +974,7 @@ impl TypeChecker {
             Expr::Attr { object, attr, .. } => {
                 let Expr::Ident { name, .. } = object.as_ref() else { return None };
                 match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(members)) if members.contains_key(attr) => {
+                    Some(InferredType::Namespace(members, _)) if members.contains_key(attr) => {
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
                     _ => None,

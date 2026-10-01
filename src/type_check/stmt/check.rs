@@ -4,7 +4,7 @@ use {
     crate::ast::{BinOp, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
     crate::token::Span,
     crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
-    crate::type_check::types::InferredType,
+    crate::type_check::types::{ClosedModule, InferredType},
     crate::type_check::BinOperandKind,
     crate::type_check::TypeChecker,
 };
@@ -22,6 +22,24 @@ use {
 #[inline]
 fn editor_stub_body(body: &[Stmt]) -> bool {
     cfg!(feature = "editor") && body.is_empty()
+}
+
+/// Arrow のモジュールなら、**メンバーが確定している**ことの印（[`ClosedModule`]）を作る
+/// （再エクスポートしない・2026-10-02）。
+///
+/// ⚠ メンバーの顔ぶれは実行時と同じ定義（[`crate::decl_names::module_exports`]）。
+/// ⚠ 外部言語のスタブ（cpp / cs / js / rs）は実物の部分集合でありうるので作らない。
+/// ⚠ エディタ（`editor`）も作らない。ホストが渡すスタブ（`.ars`）は `let` を落とすなど
+///   実モジュールの部分集合なので、「無い」と断定すると CLI が出さない誤りをエディタだけが出す
+///   （`compare_wasm_frontend.ps1` の不変条件）。
+fn closed_module(lang: &str, module: &[String], body: &[Stmt]) -> Option<Box<ClosedModule>> {
+    if cfg!(feature = "editor") || !crate::module_path::is_arrow_source_lang(lang) {
+        return None;
+    }
+    let mut imported: Vec<String> =
+        crate::decl_names::module_exports(body).imported.into_iter().collect();
+    imported.sort();
+    Some(Box::new(ClosedModule { name: module.join("."), imported }))
 }
 
 /// Python のモジュールの本体で、**自分で定義したクラスを返す関数**の名前（フェーズ10 10-16）。
@@ -735,7 +753,7 @@ impl TypeChecker {
                 } else if lang == "py" || lang == "py-int" {
                     InferredType::PyNamespace(member_types)
                 } else {
-                    InferredType::Namespace(member_types)
+                    InferredType::Namespace(member_types, closed_module(lang, module, body))
                 };
                 // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
                 let prefix = format!("{bind_name}.");
@@ -755,7 +773,22 @@ impl TypeChecker {
                 let member_types = self.module_member_types(lang, module, body);
                 let is_py = lang == "py" || lang == "py-int";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
+                // ⚠ Arrow のモジュールに無い名前は静的エラー（再エクスポートしない・2026-10-02）。
+                //   実行時は `ImportError: cannot import name ..`（`Interpreter::drop_reexports`）。
+                let closed = closed_module(lang, module, body);
                 for (orig_name, alias) in names {
+                    if let Some(c) = &closed {
+                        if !member_types.contains_key(orig_name.as_str()) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CannotImportName {
+                                    module: c.name.clone(),
+                                    name: orig_name.clone(),
+                                    imported: c.imported.iter().any(|n| n == orig_name),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
                     // クラスを返す Python の関数（10-16）。
                     if factories.contains(orig_name) {
@@ -821,6 +854,10 @@ impl TypeChecker {
         };
         match InferredType::from_ann(type_name) {
             Some(InferredType::NamedInstance(n)) => {
+                // ⚠ import していないモジュールの型は書けない（2026-10-02）。
+                if self.report_unimported_module_type(&n) {
+                    return;
+                }
                 // テンプレート型変数・クラス・trait・protocol・`generator`（実行時の型名）は正当。
                 if self.type_name_exists(n.as_str()) {
                     return;
@@ -833,6 +870,9 @@ impl TypeChecker {
             // テンプレートの具体化（`is Stack[int]`・10-10）。単相化した具体クラスなので判定できる。
             // ⚠ テンプレートでない名前・知らない名前に `[..]` が付いていたら未知の型として弾く。
             Some(InferredType::GenericInstance { ref name, .. }) => {
+                if self.report_unimported_module_type(name) {
+                    return;
+                }
                 let is_template = self
                     .registry
                     .template_params(name)
@@ -934,6 +974,10 @@ impl TypeChecker {
             self.report_error(StaticTypeError { kind: TypeErrorKind::ExceptOnErrorTrait, span: None });
             return;
         }
+        // ⚠ import していないモジュールの例外クラスは書けない（2026-10-02）。
+        if self.report_unimported_module_type(type_name) {
+            return;
+        }
         // 未知の名前は「存在しないクラス」として弾く（`UnknownGuardType` と同じ理由）。
         if !self.registry.is_known_class(type_name) {
             // ⚠ trait / protocol 名は `is_known_class` に載らないので、そちらも見てから判断する。
@@ -1033,7 +1077,7 @@ impl TypeChecker {
                     | T::Union(_)
                     | T::Intersection(_)
                     | T::Result(_, _)
-                    | T::Namespace(_)
+                    | T::Namespace(..)
                     | T::PyNamespace(_)
                     | T::TypeVal
                     | T::TypeValOf(_)
@@ -1227,7 +1271,7 @@ impl TypeChecker {
                     let is_value_binding = !matches!(
                         info.ty,
                         InferredType::TypeValOf(_)
-                            | InferredType::Namespace(_)
+                            | InferredType::Namespace(..)
                             | InferredType::PyNamespace(_)
                             | InferredType::Unresolved
                             | InferredType::Any

@@ -747,7 +747,7 @@ impl TypeChecker {
                 | T::Protocol(_)
                 | T::Union(_)
                 | T::Intersection(_)
-                | T::Namespace(_)
+                | T::Namespace(..)
                 | T::PyNamespace(_)
         )
     }
@@ -870,8 +870,22 @@ impl TypeChecker {
                 });
             }
         }
+        // ⚠ メンバーが確定している Arrow のモジュールに無い名前は静的エラー（再エクスポートしない・
+        //   2026-10-02）。実行時は `AttributeError` になる（`Interpreter::drop_reexports`）。
+        if let InferredType::Namespace(ref members, Some(ref closed)) = obj_ty {
+            if !members.contains_key(attr) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ModuleHasNoMember {
+                        module: closed.name.clone(),
+                        member: attr.to_string(),
+                        imported: closed.imported.iter().any(|n| n == attr),
+                    },
+                    span: Some(span.clone()),
+                });
+            }
+        }
         // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
-        let fallback = if let InferredType::Namespace(ref members) = obj_ty {
+        let fallback = if let InferredType::Namespace(ref members, _) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
         } else if let InferredType::PyNamespace(ref members) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Any)
@@ -1331,7 +1345,7 @@ impl TypeChecker {
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Result(_, _)
-                | T::Namespace(_)
+                | T::Namespace(..)
                 | T::PyNamespace(_)
                 | T::TypeVal
                 | T::TypeValOf(_)

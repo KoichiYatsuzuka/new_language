@@ -1,0 +1,22 @@
+# import_visibility_error.ar — import したモジュールが import したものは見えない（再エクスポートしない）
+#
+# 対になる正常系: import_visibility.ar
+#
+# visibility_modules/wrapper.ar は core を import しているが、メインは wrapper しか import していない。
+# 以前はこの 3 行とも通っていた（3 つの経路で core が無条件に読めた）。
+#
+#   Expected error (StaticTypeError) ×3:
+#     cannot import 'Item' from 'visibility_modules.wrapper'
+#       ('Item' is imported by 'visibility_modules.wrapper', not defined in it; import it directly)
+#     module 'visibility_modules.wrapper' has no member 'core'
+#       ('core' is imported by 'visibility_modules.wrapper', not defined in it; import it directly)
+#     type 'visibility_modules.core.Item' belongs to module 'visibility_modules.core',
+#       which is not imported here; import it to use its types
+#
+# ⚠ 実行まで進んだ場合も、名前空間に無いので `ImportError` / `AttributeError` になる。
+
+import visibility_modules.wrapper as w
+from visibility_modules.wrapper import Item
+
+print(w.core.LABEL)
+let it: visibility_modules.core.Item = w.wrap(1)

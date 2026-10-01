@@ -442,6 +442,19 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Arrow のモジュールの名前空間から、**モジュールの中の import で束縛しただけの名前**を外す
+    /// （再エクスポートしない・2026-10-02）。
+    ///
+    /// ⚠ 以前は外していなかったので、`import lib.deep` だけで `deep.helper`
+    ///   （deep が import した lib.helper）や `from lib.deep import helper` が通った。
+    /// ⚠ 外すのは名前空間（外から見える値）だけ。モジュールの関数は自分の大域で名前を引くので、
+    ///   モジュールの中からは今までどおり使える。
+    /// ⚠ どの名前を外すかは型検査と同じ定義（[`crate::decl_names::module_exports`]）。
+    fn drop_reexports(members: &mut HashMap<String, Value>, body: &[Stmt]) {
+        let exports = crate::decl_names::module_exports(body);
+        members.retain(|n, _| !exports.imported.contains(n));
+    }
+
     pub(crate) fn exec_module(
         &mut self,
         lang: &str,
@@ -546,7 +559,12 @@ impl Interpreter {
             .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "module initialization", module);
-        let members = self.module_members(&module_globals);
+        let mut members = self.module_members(&module_globals);
+        // ⚠ Arrow のモジュールは再エクスポートしない（[`Self::drop_reexports`]）。
+        //   Python から変換したモジュールは Python の意味（`from .sub import X` で公開する）を保つ。
+        if crate::module_path::is_arrow_source_lang(lang) {
+            Self::drop_reexports(&mut members, body);
+        }
         // `mut` の名前は今の値をモジュールの大域から読む（`NamespaceData::live`・10-11）。
         let mutable_names: std::collections::HashSet<String> = members
             .keys()
@@ -669,6 +687,8 @@ impl Interpreter {
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "native module init", module);
         let mut members = self.module_members(&module_globals);
+        // ⚠ `.arc` も Arrow のモジュール（再エクスポートしない）。`import[rs]` のスタブは import を持たない。
+        Self::drop_reexports(&mut members, body);
         self.leave_module_frame(frame);
         result?;
 

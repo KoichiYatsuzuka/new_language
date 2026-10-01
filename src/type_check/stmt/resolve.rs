@@ -150,7 +150,14 @@ impl TypeChecker {
         // ⚠ `collect_module_types` は戻り値の型をプリミティブしか読まない（外部言語のスタブ向け）ので、
         //   `fn make() -> Tag` の結果の型が「分からない」になっていた。`enum` もクラスと同じく出す。
         // ⚠ 外部言語（py …）は従来どおり（スタブの型の綴りが Arrow の型と限らない）。
-        if matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc") {
+        if crate::module_path::is_arrow_source_lang(lang) {
+            // ⚠ メンバーの顔ぶれは**実行時と同じ定義**（`decl_names::module_exports`）で揃える。
+            //   型の分からない名前（`trait` / `protocol` / `gen` …）も「在る」ことは確かなので
+            //   `Unresolved` で載せる（`InferredType::Namespace` の 2 つ目が、載っていない名前を
+            //   静的エラーにするため・再エクスポートしない・2026-10-02）。
+            for name in crate::decl_names::module_exports(body).defined {
+                raw.entry(name).or_insert(InferredType::Unresolved);
+            }
             for st in body {
                 match st {
                     Stmt::FnDef { name, template_params, .. } if template_params.is_empty() => {
@@ -511,6 +518,10 @@ impl TypeChecker {
         let mut names = Vec::new();
         ty.collect_type_names(&mut names);
         for name in names {
+            // ⚠ import していないモジュールの型は、表に在っても書けない（2026-10-02）。
+            if self.report_unimported_module_type(&name) {
+                continue;
+            }
             if self.type_name_exists(&name) {
                 continue;
             }
@@ -523,6 +534,26 @@ impl TypeChecker {
                 span: None,
             });
         }
+    }
+
+    /// `name` が import していないモジュールの型なら報告して `true`
+    /// （[`TypeErrorKind::UnimportedModuleType`]・2026-10-02）。
+    ///
+    /// ⚠ 注釈・型テストの**書いた綴り**に対して呼ぶこと。推論で流れてきた修飾名
+    ///   （`module_member_types` が引き直した `util.Tag`）に呼ぶと、届く型まで弾く。
+    /// ⚠ import 先を読めていない環境（エディタ）では見送る（`check_ann_names_exist` と同じ判断）。
+    pub(crate) fn report_unimported_module_type(&mut self, name: &str) -> bool {
+        if self.registry_incomplete {
+            return false;
+        }
+        let Some((module, alias)) = self.registry.unreachable_module_type(name) else {
+            return false;
+        };
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::UnimportedModuleType { name: name.to_string(), module, alias },
+            span: None,
+        });
+        true
     }
 
     /// その名前が型として実在するか（タスク 8.5）。

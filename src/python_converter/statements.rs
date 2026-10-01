@@ -1260,7 +1260,7 @@ pub(crate) fn convert_stmt(
                         source_module: None,
                         alias: a.asname.as_ref().map(|x| x.to_string()),
                         body: Vec::new(),
-                        origin: crate::ast::ImportOrigin { level, base_dir: None },
+                        origin: crate::ast::ImportOrigin { level, ..Default::default() },
                     });
                 }
                 return Ok(out);
@@ -1291,7 +1291,7 @@ pub(crate) fn convert_stmt(
                 source_module: None,
                 names,
                 body: Vec::new(),
-                origin: crate::ast::ImportOrigin { level, base_dir: None },
+                origin: crate::ast::ImportOrigin { level, ..Default::default() },
             }])
         }
 

@@ -1,0 +1,15 @@
+# core.ar — 例題 import_visibility.ar / import_visibility_error.ar の下段のモジュール。
+#
+# wrapper.ar がこれを import する。メインが wrapper.ar だけを import しても、
+# このモジュールは見えない（再エクスポートしない）。
+
+const LABEL: str = "core"
+
+class Item:
+    let v: int
+
+    fn __init__(mut self, let v: int):
+        self.v = v
+
+fn make_item(let v: int) -> Item:
+    return Item(v * 10)

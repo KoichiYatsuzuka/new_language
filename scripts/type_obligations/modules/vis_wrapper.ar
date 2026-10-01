@@ -1,0 +1,8 @@
+# vis_wrapper.ar — vis_core を import する中段のモジュール（型義務 I1〜I3）。
+# ⚠ ここで import した `vis_core` / `Item` は、このモジュールの名前空間に入らない（再エクスポートしない）。
+
+import .vis_core
+from .vis_core import Item
+
+fn wrap(let v: int) -> Item:
+    return Item(v)

@@ -116,7 +116,7 @@ fn is_template_decl(s: &Stmt) -> bool {
 ///
 /// ⚠ 外部言語のスタブ（C# の `.ars` など）の本体には具体化を置かない。実行時の意味が違う。
 fn is_arrow_source(lang: &str) -> bool {
-    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+    crate::module_path::is_arrow_source_lang(lang)
 }
 
 /// 本体か、そこで `import` したモジュールが（入れ子も含めて）テンプレートを宣言しているか。

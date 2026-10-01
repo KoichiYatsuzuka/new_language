@@ -90,6 +90,13 @@ pub fn search_base(dir: &Path, level: u32) -> PathBuf {
     normalize(&p)
 }
 
+/// **Arrow のソース**のモジュールか（`.ar` / `.arc`。旧名 `tl` 系を含む）。
+///
+/// ⚠ モジュールの名前の書き換え・型の修飾名・再エクスポートしない規則は、この言語だけに効く。
+pub fn is_arrow_source_lang(lang: &str) -> bool {
+    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+}
+
 /// 言語ごとの外部の探索先を見てよいか（ドット付きの書き方では見ない）。
 pub fn uses_external_paths(level: u32) -> bool {
     level == 0

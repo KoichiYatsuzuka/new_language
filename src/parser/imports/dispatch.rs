@@ -39,6 +39,8 @@ impl Parser {
         ImportOrigin {
             level,
             base_dir: self.has_source_dir.then(|| self.import_base(level)),
+            // 位置は `parse_stmt` の入口が埋める（`Stmt::fill_position`）。
+            span: crate::token::Span::unknown(),
         }
     }
 

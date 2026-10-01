@@ -504,6 +504,44 @@ pub enum TypeErrorKind {
         /// どこの注釈か。
         what: String,
     },
+    /// **Arrow のモジュールに無いメンバー**の属性（`deep.helper`・2026-10-02）。
+    ///
+    /// ⚠ モジュールの中で import しただけの名前は名前空間に出さない（再エクスポートしない）。
+    ///   以前は `import lib.deep` だけで、deep が import した `lib.helper` が `deep.helper` で読めた。
+    /// ⚠ 外部言語のスタブ・エディタ（import 先を読めていない）では出さない
+    ///   （`InferredType::Namespace` の 2 つ目が `None`）。
+    ModuleHasNoMember {
+        /// モジュールの名前（`lib.deep`）。
+        module: String,
+        /// 見つからなかったメンバー。
+        member: String,
+        /// モジュールの中で import しただけの名前か（補足の表示に使う）。
+        imported: bool,
+    },
+    /// **import していないモジュールの型名**（`let t: util.Tag`・2026-10-02）。
+    ///
+    /// ⚠ 型はプログラム全体の表に修飾名で載るので、以前は「import したモジュールが import した」
+    ///   モジュールの型まで、このファイルが import していなくても書けた。
+    /// ⚠ 注釈・型テスト（`is` / `mustbe` / `case` / `except`）で出す。値としての `util.Tag(1)` は
+    ///   もともと `name 'util' is not defined`。
+    UnimportedModuleType {
+        /// 書いた型名（`util.Tag`）。
+        name: String,
+        /// その型のモジュール（`util`）。
+        module: String,
+        /// このファイルがそのモジュールを別の名前で import していれば、その名前（`t`）。
+        alias: Option<String>,
+    },
+    /// **Arrow のモジュールに無い名前**の `from … import`（2026-10-02）。
+    /// [`TypeErrorKind::ModuleHasNoMember`] の `from` 版。実行時は `ImportError`。
+    CannotImportName {
+        /// モジュールの名前（`lib.deep`）。
+        module: String,
+        /// 見つからなかった名前。
+        name: String,
+        /// モジュールの中で import しただけの名前か（補足の表示に使う）。
+        imported: bool,
+    },
     /// **注釈位置に素の容器型**（`list` / `dict` / `set` / `fixed_list` /
     /// `list_like` / `tuple`）が書かれている（タスク 8.1・案 A）。
     ///
@@ -990,6 +1028,41 @@ impl StaticTypeError {
                 "{what} is annotated {} but {} does not take type arguments",
                 hl_q(ann), hl_q(name)
             ),
+            TypeErrorKind::ModuleHasNoMember { module, member, imported } => {
+                let base = format!("module {} has no member {}", hl_q(module), hl_q(member));
+                if *imported {
+                    format!(
+                        "{base} ({} is imported by {}, not defined in it; import it directly)",
+                        hl_q(member), hl_q(module)
+                    )
+                } else {
+                    base
+                }
+            }
+            TypeErrorKind::UnimportedModuleType { name, module, alias } => match alias {
+                Some(a) => {
+                    let member = name.strip_prefix(&format!("{module}.")).unwrap_or(name);
+                    format!(
+                        "type {} is not reachable here: module {} is imported as {}; write {}",
+                        hl_q(name), hl_q(module), hl_q(a), hl_q(&format!("{a}.{member}"))
+                    )
+                }
+                None => format!(
+                    "type {} belongs to module {}, which is not imported here; import it to use its types",
+                    hl_q(name), hl_q(module)
+                ),
+            },
+            TypeErrorKind::CannotImportName { module, name, imported } => {
+                let base = format!("cannot import {} from {}", hl_q(name), hl_q(module));
+                if *imported {
+                    format!(
+                        "{base} ({} is imported by {}, not defined in it; import it directly)",
+                        hl_q(name), hl_q(module)
+                    )
+                } else {
+                    base
+                }
+            }
             TypeErrorKind::UnknownTypeName { name, ann, what } => {
                 // ⚠ 注釈がその名前そのものなら繰り返さない（`let x: Foo` のとき）。
                 if name == ann {

@@ -101,6 +101,17 @@ impl std::fmt::Display for MetaKind {
     }
 }
 
+/// **メンバーが確定している** Arrow のモジュール（[`InferredType::Namespace`] の 2 つ目）。
+///
+/// ⚠ メンバーの顔ぶれは実行時と同じ定義（[`crate::decl_names::module_exports`]）で決める。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosedModule {
+    /// モジュールの名前（`lib.deep`・誤りの表示用）。
+    pub name: String,
+    /// モジュールの中で import しただけの名前（名前空間には無い）。誤りの補足の表示に使う。
+    pub imported: Vec<String>,
+}
+
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
@@ -213,7 +224,12 @@ pub enum InferredType {
     /// 禁止するなら 4 つまとめて禁止すること。
     TupleAny,
     /// モジュールやパッケージを表す名前空間型。メンバー名 → 推論済み型のマップ。
-    Namespace(HashMap<String, InferredType>),
+    ///
+    /// 2 つ目は **メンバーが確定している** Arrow のモジュールの情報（[`ClosedModule`]）。
+    /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー
+    /// （再エクスポートしない・2026-10-02）。外部言語（cpp / cs / js / rs）のスタブと、
+    /// import 先を読めていないエディタ（`registry_incomplete`）では `None`（開いている）。
+    Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>),
     /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
     PyNamespace(HashMap<String, InferredType>),
@@ -736,7 +752,7 @@ impl std::fmt::Display for InferredType {
                 write!(f, "tuple[{}]", parts.join(", "))
             }
             Self::TupleAny => write!(f, "tuple"),
-            Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
+            Self::Namespace(members, _) => write!(f, "<module({} members)>", members.len()),
             Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
             // ⚠ 利用者が書ける綴りではない（推論の内部表現）。表示は空コレクション由来だと

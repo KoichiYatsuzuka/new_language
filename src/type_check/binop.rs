@@ -181,7 +181,7 @@ impl TypeChecker {
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Result(_, _)
-                | T::Namespace(_)
+                | T::Namespace(..)
                 | T::PyNamespace(_)
                 | T::TypeVal
                 | T::TypeValOf(_)
@@ -240,7 +240,7 @@ impl TypeChecker {
                     | T::SelfType
                     | T::Protocol(_)
                     | T::Intersection(_)
-                    | T::Namespace(_)
+                    | T::Namespace(..)
                     | T::PyNamespace(_)
             )
         };
