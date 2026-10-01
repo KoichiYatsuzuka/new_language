@@ -44,6 +44,9 @@ $whitelist = @(
     'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire',
     # 外部クレートの API 名（indexmap の raw_entry_v1）。src に同名の識別子は無くて当然。
     'raw_entry',
+    # Rust 標準の整数のメソッド名。`ops::py_floor_div` / `ops::py_mod` の doc が「これを使ってはいけない
+    # （割る数が負のとき CPython と食い違う）」と書くために言及する。src から呼ばないのが正しい状態。
+    'div_euclid','rem_euclid',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で
