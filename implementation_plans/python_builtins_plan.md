@@ -368,7 +368,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | `iter(x)` | 33（すべて 1 引数） | 前置き: `x.__iter__()`。辞書は `d.keys().__iter__()`、ジェネレータはそのまま返す | 辞書とジェネレータに `__iter__` が無い（6 節）ので場合分けが要る。2 引数の `iter(f, 番兵)` はジェネレータ関数で書ける |
 | `abs` | 26 | 符号で分ける。複素数は `.real()` / `.imag()` から | — |
 | `ord` | 9 | `s.ord()`（既にある。`"é".ord()` → `233`） | — |
-| `divmod` | 8 | `(a // b, a % b)` | ⚠ **演算子の側に差がある**: 割る数が負のときの結果・float の `//` / `%`（6 節）。演算子を直すまで `divmod` も同じ差を持つ |
+| `divmod` | 8 | `(a // b, a % b)` | ⚠ **演算子の側に差がある**: float の `//` / `%` が無い（6 節）。演算子を直すまで `divmod` も同じ差を持つ（割る数が負のときの int の差は直した） |
 | `round(x)` | 2（すべて 1 引数） | 前置き（偶数への丸め。`int()` は 0 方向の切り捨て） | 2 引数の `round(x, n)` は `x * 10**n` 経由だと端で CPython（正確な 10 進の丸め）とずれる |
 | `pow` | 1（値として渡す形） | 2 引数は `**`、3 引数は前置き（二乗を繰り返す） | 法が大きいと i64 の掛け算があふれる（i128 が要る） |
 | `hex` / `oct` / `bin` | 1 / — / — | `"%x" % n` / `"%o" % n`（動く）。`bin` は桁を繰り返す | `0x` などの接頭辞と負数の `-0x` の形は自前で付ける |
@@ -500,8 +500,10 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 
 - `list.sort()`（メソッド）が無い（`AttributeError: 'list' object has no method 'sort'`）。組み込み関数ではないので本書の数には入れていない。
 - 以下は 4 節の分類で見つけた（どれも実測）。4.1 の前置きで書くものの正しさに効く:
-  - 整数の `//` / `%` が**割る数が負のとき** CPython と違う。`-7 // -2` が `4`（CPython `3`）、`7 % -2` が `1`（CPython `-1`）。
-    `div_euclid` / `rem_euclid` で計算しているため（`ops/operators.rs`）。割る数が正なら一致する。
+  - ~~整数の `//` / `%` が**割る数が負のとき** CPython と違う。`-7 // -2` が `4`（CPython `3`）、`7 % -2` が `1`（CPython `-1`）。~~
+    → **直した**（2026-10-01）。`div_euclid` / `rem_euclid` をやめ、`ops::py_floor_div` / `ops::py_mod` に 1 本化した
+    （`apply_binop` と VM の `int_binop_specialized` の 2 か所。ネイティブ codegen の `@_tl_idiv` / `@_tl_imod` は元から正しかった）。
+    回帰の例題は `examples/basics/int_floor_div_mod.ar`。
   - float の `//` / `%` が無い（`-7.5 // 2.0` が静的に `unsupported operand types`。型検査を通らない Python 由来のコードでも実行時に `TypeError`）。
   - list 同士・tuple 同士の大小比較（`<` など）が無い（静的にも実行時にも `TypeError`）。`sorted` / `min` / `max` で組を比べる形に効く。
   - 辞書とジェネレータに `__iter__` メソッドが無い（list・str・set にはある）。

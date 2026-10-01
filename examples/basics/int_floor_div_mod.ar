@@ -1,0 +1,57 @@
+# int_floor_div_mod.ar — 整数の `//` と `%` が CPython と同じ結果になるか（符号の組み合わせ全部）。
+#
+# `//` は商を**負の無限大の方向へ**丸め、`%` の余りは**割る数と同じ符号**になる。
+# どの符号でも `(a // b) * b + a % b == a` が成り立つ。
+#
+# ⚠ 以前は `div_euclid` / `rem_euclid` で計算しており、**割る数が負のとき**だけ CPython と違った
+#   （`-7 // -2` が 4・`7 % -2` が 1。CPython は 3・-1）。割る数が正の例題しか無かったので、どのゲートも見ていなかった。
+# ⚠ 計算する場所は 2 つある: `apply_binop`（ツリーウォーク・汎用）と VM の `int_binop_specialized`
+#   （関数の中の int 同士）。両方を通すため、最上位と関数の中の両方で確かめる。
+
+print("=== 1. top level ===")
+print(7 // 2)
+print(-7 // 2)
+print(7 // -2)
+print(-7 // -2)
+print(7 % 2)
+print(-7 % 2)
+print(7 % -2)
+print(-7 % -2)
+
+print("=== 2. exact division keeps the sign of the quotient ===")
+print(-6 // 2)
+print(6 // -2)
+print(-6 % 2)
+print(6 % -2)
+print(0 // -3)
+print(0 % -3)
+
+print("=== 3. inside a function (VM int fast path) ===")
+fn fdiv(a: int, b: int) -> int:
+    return a // b
+
+fn fmod(a: int, b: int) -> int:
+    return a % b
+
+let pairs: list[tuple[int, int]] = [(7, 2), (-7, 2), (7, -2), (-7, -2), (1, -5), (-1, 5), (13, -4), (-13, 4)]
+for a, b in pairs:
+    let q = fdiv(a, b)
+    let r = fmod(a, b)
+    print(str(a) + " " + str(b) + " -> " + str(q) + " " + str(r) + " " + str(q * b + r == a))
+
+print("=== 4. augmented assignment ===")
+fn aug(a: int, b: int) -> int:
+    mut x = a
+    mut y = a
+    x //= b
+    y %= b
+    return x * 100 + y
+
+print(aug(-7, -2))
+print(aug(7, -2))
+mut top = 7
+top //= -2
+print(top)
+top = 7
+top %= -2
+print(top)
