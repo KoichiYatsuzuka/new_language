@@ -320,10 +320,22 @@ impl Interpreter {
                 if Self::qualified_class_matches(&inst.class, type_name) {
                     return true;
                 }
-                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて同じクラスか見る。
+                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて、同じクラスか・その派生か見る。
                 let class_id = inst.class.class_id;
                 drop(inst);
-                self.dotted_class_id(type_name) == Some(class_id)
+                let Some(target) = self.dotted_class(type_name) else {
+                    return false;
+                };
+                if target.class_id == class_id {
+                    return true;
+                }
+                // ⚠ 基底（Python のクラスの継承・`d is z.Animal`）。祖先は修飾名で `bases` に載っている
+                //   （`exec_class_def`・python_builtins_plan.md の 6 節）。以前は同じクラスしか見ず、派生は偽だった。
+                let qualified = match target.module_name.as_deref() {
+                    Some(m) => format!("{m}.{}", target.name),
+                    None => target.name.clone(),
+                };
+                inst_rc.borrow().class.is_a(&qualified)
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",
@@ -349,8 +361,8 @@ impl Interpreter {
         }
     }
 
-    /// `t.Tag`（名前空間を通した型名）が指すクラスの `class_id`（10-8）。引けなければ `None`。
-    fn dotted_class_id(&self, type_name: &str) -> Option<u32> {
+    /// `t.Tag`（名前空間を通した型名）が指すクラス（10-8）。引けなければ `None`。
+    fn dotted_class(&self, type_name: &str) -> Option<std::rc::Rc<crate::interpreter::ClassValue>> {
         let mut parts = type_name.split('.');
         let mut cur = self.get_val(parts.next()?)?;
         for seg in parts {
@@ -360,7 +372,7 @@ impl Interpreter {
             };
         }
         match cur {
-            Value::Class(c) => Some(c.class_id),
+            Value::Class(c) => Some(c),
             _ => None,
         }
     }

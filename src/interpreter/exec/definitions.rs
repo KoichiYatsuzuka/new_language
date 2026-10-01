@@ -926,11 +926,17 @@ impl Interpreter {
             // ⚠ Python のクラスは**祖先まで平坦化**して載せる（フェーズ10 10-19）。`class B(A)`・`class A(ValueError)`
             //   の `B` も `except ValueError` / `except Exception` で捕まる（照合は `ClassValue::is_a` が `bases`
             //   だけを見る・推移をたどらない）。フィールドの並びは上で直接の基底から組んだまま。
+            // ⚠ モジュールで定義した基底は**修飾名も**載せる（`zoo.Animal`・python_builtins_plan.md の 6 節）。
+            //   `d is z.Animal` / 型検査が付ける実行時の検査の `zoo.Animal` を `is_a` がそのまま当てるため。
+            //   祖先の修飾名は基底の `bases` に入っている（同じ手順で作ったので）。
             bases: {
                 let mut all = bases.to_vec();
-                for b in py_base_classes.iter().flat_map(|c| c.bases.iter()) {
-                    if !all.contains(b) {
-                        all.push(b.clone());
+                for c in &py_base_classes {
+                    let qualified = c.module_name.as_deref().map(|m| format!("{m}.{}", c.name));
+                    for b in qualified.into_iter().chain(c.bases.iter().cloned()) {
+                        if !all.contains(&b) {
+                            all.push(b);
+                        }
                     }
                 }
                 all

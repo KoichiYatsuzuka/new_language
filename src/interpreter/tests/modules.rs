@@ -145,3 +145,74 @@ fn a_module_class_matches_its_qualified_name() {
     // ⚠ 素の名前での判定は従来どおり（実行時は表示名でも当たる。静的には別の型として弾く）。
     assert!(matches!(interp.get_val("mine"), Some(Value::Bool(true))));
 }
+
+/// `import[py] zoo as z`（本体は Python の `py_src` を変換したもの）を先頭に置いたプログラムを走らせる。
+/// ⚠ `native` 限定（変換器 `python_converter` は rustpython-parser を使うので評価コアビルド・wasm のフロントエンドに無い）。
+#[cfg(feature = "native")]
+fn run_with_py_module(py_src: &str, main_src: &str) -> Result<Interpreter, String> {
+    let body = crate::python_converter::convert_python_source(py_src, "zoo.py")?;
+    let mut stmts = vec![Stmt::Import {
+        lang: "py".to_string(),
+        module: vec!["zoo".to_string()],
+        source_module: None,
+        alias: Some("z".to_string()),
+        body,
+    }];
+    stmts.extend(Parser::new(Lexer::new(main_src, "").tokenize(), None).parse_program()?);
+    let (_errors, _warnings, annotations) = super::super::resolver::resolve_and_annotate(&mut stmts);
+    let mut interp = Interpreter::new();
+    interp.wire_resolution(
+        annotations,
+        super::super::resolver::toplevel_declared_globals(&stmts),
+        crate::interpreter::GlobalsMode::Replace,
+    );
+    for stmt in &stmts {
+        if let Err(e) = interp.exec(stmt) {
+            return Err(match interp.take_current_exception() {
+                Some(r) if e == crate::interpreter::RAISE_SENTINEL => Interpreter::format_error_report(&r),
+                _ => e,
+            });
+        }
+    }
+    Ok(interp)
+}
+
+/// Python のモジュールのクラスも `z.Dog` / `zoo.Dog` の名前で判定でき、**基底クラス**も修飾名で当たる
+/// （CPython の `isinstance(d, z.Animal)`・python_builtins_plan.md の 6 節）。
+/// ⚠ `zoo.Animal`（別名を引き直した綴り）は型検査が付ける実行時の検査（`CheckBefore`）から来る。
+#[cfg(feature = "native")]
+#[test]
+fn a_py_module_class_and_its_bases_match_qualified_names() {
+    let zoo = "class Animal:\n    pass\n\nclass Dog(Animal):\n    pass\n\nclass Puppy(Dog):\n    pass\n";
+    let interp = run_with_py_module(
+        zoo,
+        concat!(
+            "class Dog:\n",
+            "    mut v: int\n",
+            "let d = z.Dog()\n",
+            "let p = z.Puppy()\n",
+            "let a = z.Animal()\n",
+            "let d_dog = d is z.Dog\n",
+            "let d_animal = d is z.Animal\n",
+            "let d_animal_q = d is zoo.Animal\n",
+            "let p_animal = p is z.Animal\n",
+            "let p_dog_q = p is zoo.Dog\n",
+            "let a_dog = a is z.Dog\n",
+            "let mine_dog = Dog(1) is z.Dog\n",
+            "let y = p mustbe z.Animal\n",
+        ),
+    )
+    .expect("run");
+    for (var, want) in [
+        ("d_dog", true),
+        ("d_animal", true),
+        ("d_animal_q", true),
+        ("p_animal", true),
+        ("p_dog_q", true),
+        // 派生でない向き・メインの同名クラスは当たらない。
+        ("a_dog", false),
+        ("mine_dog", false),
+    ] {
+        assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
+    }
+}

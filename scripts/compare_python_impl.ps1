@@ -78,6 +78,7 @@ $knownDiff = @{
     'py_class_body_error'            = 'Rust: Python のクラス本体の変換しない文（if）を変換の誤りにする（10-18 で新設）。py: 検査せず、モジュールの属性も引けず AttributeError'
     'except_exception'               = 'Rust: Exception をすべての例外の基底にし、except Exception が組み込みの例外も利用者の例外も捕まえる（10-19 で新設）。py: 何も出さない'
     'except_error_trait_error'       = 'Rust: except Error を静的エラーにし except Exception を促す（10-19 で新設）。py: 検査せず Error で捕まえて caught を出す'
+    'py_module_types'                = 'Rust: import[py] のクラスをモジュール名の名前空間で扱い、is / 型注釈に z.Dog と書ける・基底でも当たる（python_builtins_plan.md の 6 節で新設）。py: 型注釈の z.Animal を読めず ParseError（何も出さない）'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

@@ -88,7 +88,8 @@ pub(super) struct TypeRegistry {
     template_params: HashMap<String, Vec<String>>,
     /// **名前の解決の文脈**（フェーズ10 10-8）。0 がメインのプログラム、1 から先がモジュールごと。
     ///
-    /// ⚠⚠ モジュール（Arrow のソース）で宣言したクラス・関数などは `tags.Tag` の名前で登録する
+    /// ⚠⚠ モジュール（Arrow のソース・`import[py]` で変換した Python のソース）で宣言したクラス・関数などは
+    ///   `tags.Tag` の名前で登録する（どの `lang` が対象かは `builder::names_types_by_module`）
     ///   （収集パスが本体を書き換えた写しを読む・`builder::qualify_module_body`）。以前は素の名前で
     ///   登録していたので、メインと同名のクラスがあると混ざった（`t.Tag(1).who()` がメインの `Tag` の
     ///   `who` の型を返していた・実測）。
@@ -161,9 +162,9 @@ impl TypeRegistry {
         out
     }
 
-    /// `alias.member`（`import tags as t` の `t.Tag`）が **Arrow のモジュールのメンバー**なら、その修飾名
+    /// `alias.member`（`import tags as t` の `t.Tag`）が **型を修飾するモジュールのメンバー**なら、その修飾名
     /// （`tags.Tag`）。今の文脈で `alias` がモジュールの別名でなければ `None`（外部言語のモジュールは
-    /// 素の名前で登録したまま・10-8）。
+    /// 素の名前で登録したまま・10-8。`import[py]` は修飾する・`builder::names_types_by_module`）。
     pub(super) fn module_member(&self, alias: &str, member: &str) -> Option<String> {
         let scope = self.name_scopes.get(self.current_scope.get())?;
         scope.modules.get(alias).map(|m| format!("{m}.{member}"))

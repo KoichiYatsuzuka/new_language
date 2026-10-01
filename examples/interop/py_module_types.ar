@@ -1,0 +1,42 @@
+# py_module_types.ar — import[py] のクラスもモジュールの名前で型として書ける（python_builtins_plan.md の 6 節）
+#
+# 対になる誤りの例: py_module_types_error.ar
+#
+# `test_modules/py_module_types_zoo.py` の `Dog` は `test_modules.py_module_types_zoo.Dog` という型。
+# 別名つき（`z.Dog`）・別名なしの修飾名・`from ... import` した素の名前のどれでも、`is` / `mustbe` /
+# 型注釈に書ける。基底クラス（`z.Animal`）でも当たる（CPython の `isinstance(p, z.Animal)` と同じ）。
+#
+# ⚠ 以前は Python のモジュールのクラスを素の名前（`Dog`）で登録していたので、`p is z.Dog` が
+#   `unknown type 'z.Dog' in type guard`、`let x: z.Dog` が `not a known type` の静的エラーだった。
+#   別のモジュールの同名クラス（kennel の `Dog`）とも混ざっていた。
+# ⚠ Python のメソッドは `mut self` 扱いなので、メソッドを呼ぶインスタンスは `mut` で持つ。
+
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+from test_modules.py_module_types_zoo import[py] Puppy
+
+# ── ① is: 自分のクラスと、その基底 ──────────────────────────────────────
+let p = z.Puppy()
+print(p is z.Puppy, p is z.Dog, p is z.Animal)            # True True True
+print(z.Animal() is z.Dog)                                 # False（基底は派生ではない）
+print(p is Puppy)                                          # True（from import した素の名前）
+print(p is test_modules.py_module_types_zoo.Animal)        # True（別名を使わない修飾名）
+
+# ── ② 型注釈・mustbe: 派生を基底の型で受ける ────────────────────────────
+fn describe(mut a: z.Animal) -> str:
+    return a.kind()
+
+mut d: z.Dog = z.Puppy()
+print(describe(d))                                         # puppy
+let m = p mustbe z.Dog
+print(m is z.Puppy)                                        # True
+
+# ── ③ 別のモジュールのクラスを継承する（kennel.Corgi は zoo.Dog の派生）──
+mut c = k.Corgi()
+print(c is k.Corgi, c is z.Dog, c is z.Animal)            # True True True
+print(describe(c))                                         # corgi
+
+# ── ④ 別のモジュールの同名クラスは別の型 ───────────────────────────────
+mut kd = k.Dog()
+print(kd is k.Dog, kd is z.Dog, p is k.Dog)               # True False False
+print(kd.kind())                                           # kennel dog

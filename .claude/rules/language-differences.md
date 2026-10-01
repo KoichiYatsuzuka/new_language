@@ -31,6 +31,9 @@
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
   `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too. Only importing two modules
   with the same name can collide.
+  - ⚠ The same holds for classes of an `import[py]` module (`import[py] zoo as z` → `z.Dog` / `zoo.Dog`). A Python
+    class also matches the names of its base classes (`p is z.Animal` for `class Dog(Animal)`), as CPython's
+    `isinstance` does. `import[py-int]` (CPython objects) is not covered.
 - **`class` / `trait` / `protocol` / `new_type` and `import` only at the top level of a module**
   (task 10-16). Inside a function or a block (`if` / `for` / …) they are a `ParseError`.
   `enum` may still be declared inside a function.

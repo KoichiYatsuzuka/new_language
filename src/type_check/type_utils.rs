@@ -589,6 +589,14 @@ impl TypeChecker {
                 if self.class_implements_trait(class_name, &expected_name) {
                     return true;
                 }
+                // ⚠ import 先を読めていない環境（エディタ・`registry_incomplete`）では、レジストリに無いクラスの
+                //   基底が分からないので「合わない」と言えない（`import[py]` の `z.Dog` を `z.Animal` の仮引数へ
+                //   渡す形で、エディタだけが偽の誤りを出した・`compare_wasm_frontend` で実測）。誤りを作らない側へ倒す。
+                if self.registry_incomplete
+                    && (!self.type_name_exists(class_name) || !self.type_name_exists(&expected_name))
+                {
+                    return true;
+                }
             }
             // ⚠⚠ **テンプレート trait を注釈に書いた形**（タスク 9.9）。
             //    `let h: Holder[int] = IntBox(3)` の期待型は `GenericInstance`
