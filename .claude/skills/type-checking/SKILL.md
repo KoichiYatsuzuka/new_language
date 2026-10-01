@@ -182,6 +182,24 @@ Handled by `infer_call()`:
 2. If callee type is `Function { params: None, .. }` → returns `Any` (untyped function).
 3. Otherwise, the callee name is looked up in `fn_sigs`. If a single overload matches the argument count, its return type is returned; if multiple overloads exist and exactly one matches count, returns that one's return type; otherwise `Unresolved`.
 4. If the callee name is a known class name → returns `NamedInstance(name)`.
+5. **Built-in functions** (callee is a bare name that no user `fn` / variable shadows):
+   `enumerate` / `zip` build their result from the arguments; every other built-in returns the
+   type declared in **`src/built_in_stab/builtins.ars`** (`builtin_fn_return` →
+   `builtins::return_type`): `open` → `FileObject`, `repr` / `getenv` → `str`, `id` → `pointer`,
+   `print` / `close` → `None`. Declarations without `->` (`next`, `parse_ar`, …) stay `Unresolved`,
+   and functions named like a type (`int`, `list`, … — `builtins::is_conversion`) are conversions,
+   not typed from the file (`int`/`float`/`str`/`bool` use the "calling a type value" rule).
+   `builtins.ars` is the single declaration file for both the checker and the VS Code extension's
+   hover/completion (the wasm exports the same text via `ar_builtins`).
+   **Arguments** of those calls are checked against the declared parameters
+   (`check_builtin_call`): fixed parameters go through `check_fn_type_call` (count, keyword names,
+   types — `open("a", 1)`, `close("x")`, `repr(1, 2)` are errors); a `let ...: T` parameter
+   (`print`, `zip`) means *any number of positional arguments*, each checked against `T`, and keyword
+   arguments / `... =` are rejected. Unlike a user function's variadic (`f(... = a, b)`), these are
+   called with plain positionals. Conversions (`int(x)` …) are not checked. `range` / `len` are
+   checked through their global function type. ⚠ What the stub cannot express is not checked:
+   which built-ins accept keyword arguments at runtime (only `open` / `enumerate` — `repr(value = 1)`
+   passes statically and fails with `VmForceError`), and `enumerate`'s `start` being keyword-only.
 
 ### Expression forms (`block:`, `if:`, `for:`, `while:`, `match:` as expressions)
 
@@ -364,7 +382,25 @@ seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives t
 | `function` | `TypeValOf(Function { None, Any })` |
 | `Error` | `TypeValOf(NamedInstance("Error"))` |
 | `begin`, `last` | `NamedInstance("Index")` |
+| `range`, `len` | `Function { params, return_type }` from `builtins.ars` (`builtins::GLOBAL_FNS` — the only built-ins that occupy a global name) |
 | All exception classes | `TypeValOf(NamedInstance(name))` |
+
+Built-in **types declared in `src/built_in_stab/builtins.ars`** (`builtins::type_decls` →
+`TypeRegistryBuilder::collect_builtin_types`, plus the enum names in the global scope in
+`TypeChecker::new`):
+- `enum FileOpenMode` / `StartPoint` / `ByteRecognizingMode` / `Encoding` — members and `.value`
+  are checked like a user enum (`FileOpenMode.bogus` is an error).
+- `class FileObject` (result of `open`) — its methods `read` / `read_line` / `read_letter` /
+  `write` / `write_line` are checked for existence, argument count and types; `write*` return `None`,
+  the `read*` results stay `Unresolved` (text vs byte mode is a runtime choice).
+- ⚠ These classes are collected with `foreign_depth` raised, so they are **not** in
+  `arrow_class_names` (the VM must not treat `Value::FileObject` as `Value::Instance`).
+- ⚠ Declaring any method closes the member set — every runtime method must be listed
+  (`builtins_ars_matches_the_runtime` compares enums and `FileObject` methods with the runtime).
+
+Other built-in runtime types usable as annotations / type guards without members being checked:
+`slice`, and the built-in new_types `path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
+`pointer` was missing until 2026-09-30 although the runtime registers it as `new_type pointer: uint`).
 
 Exception classes registered (all with base `Error`):
 `Exception`, `ValueError`, `TypeError`, `NameError`, `AttributeError`, `IndexError`, `KeyError`,

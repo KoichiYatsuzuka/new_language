@@ -33,6 +33,7 @@ interface FrontendExports {
     ar_set_stub(keyPtr: number, keyLen: number, srcPtr: number, srcLen: number): void;
     ar_clear_stubs(): void;
     ar_stub_count(): number;
+    ar_builtins(): number;
 }
 
 /** 診断 1 件。`at` は 0 始まりの行・列で、位置不明のときは null。 */
@@ -133,6 +134,23 @@ export function analyze(source: string): AnalysisResult | null {
     } finally {
         ex.ar_free(ptr, bytes.length);
     }
+}
+
+/**
+ * 組み込み関数の宣言（`builtins.ars`）の本文。wasm が埋め込んでいるものを受け取る。
+ *
+ * 型検査器が使っているのと**同じ本文**なので、hover・補完に出る組み込みと型検査が食い違わない
+ * （以前は拡張が自前のファイルを読んでいて、実行時に無い関数まで並んでいた）。
+ *
+ * @returns 本文。wasm が使えない場合は null。
+ */
+export function builtinsSource(): string | null {
+    const ex = exports_;
+    if (!ex) return null;
+    const len = ex.ar_builtins();
+    // 呼んだ後に buffer を取り直す（`analyze` と同じ注意）。
+    const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), len);
+    return new TextDecoder().decode(out);
 }
 
 /**

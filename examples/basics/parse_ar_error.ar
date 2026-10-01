@@ -1,11 +1,17 @@
 # parse_ar_error.ar — `parse_ar()` の型エラー（負の対照・#56）。
 #
-# 引数は **str** でなければならない。int を渡すと TypeError になる。
+# 引数は **str** でなければならない。str でない値を渡すと実行時に TypeError になる。
 # ⚠ この例題の役目は「**`VmForceError` ではなく本来の TypeError が出る**」ことの固定。
 # #33〜#55 の間は、正しい呼び出しですら `VmForceError: cannot compile ...` で止まっていた。
+#
+# ⚠ 2026-10-01 から組み込みの引数を静的にも検査する（src/built_in_stab/builtins.ars）。
+#   以前ここにあった `parse_ar(42)` は StaticTypeError で止まり、実行時の経路を通らなくなった。
+#   ⇒ 静的には型が決まらない値（`parse_ar` の結果の木・builtins.ars で `->` を書いていない）を渡して、
+#     実行時の TypeError を引き出す。
 
 print("before")
 
-let bad = parse_ar(42)
+let tree = parse_ar("let x = 1")
+let bad = parse_ar(tree)
 
 print(bad)

@@ -1,0 +1,61 @@
+# builtin_return_types.ar — 組み込み関数の戻り値の型（宣言は src/built_in_stab/builtins.ars）
+#
+# ## 何が壊れていたか
+#
+# 型検査器が型を知っていた組み込みは `range` / `len` / `enumerate` / `zip` だけで、他の結果は
+# すべて `Unresolved`（＝何でも通る）だった。`let n: int = open(..)` すら静的に通っていた。
+# 一方 VS Code 拡張は別の `builtins.ars` を hover 用に読んでいて、そこには実行時に無い関数
+# （`ord` / `abs` …）が並んでいた。
+#
+# ⇒ 宣言を src/built_in_stab/builtins.ars 1 本にして、型検査器（`arrow.exe` と拡張の両方）が
+#   戻り値の型をそこから取るようにした。`open` の結果の型として `FileObject` を型の名前に加えた
+#   （実行時の `x is FileObject` は以前から通っていた）。`id` の結果の `pointer` も型の名前になった。
+#
+# ⚠ 戻り値の型が静的に決まらないもの（`next` / `parse_ar`）は従来どおり型を付けない。
+#
+# 組み込みの列挙（`FileOpenMode` / `StartPoint` / `ByteRecognizingMode` / `Encoding`）と `FileObject` の
+# メソッドも同じファイルで宣言した（以前は定義が無く、`FileOpenMode.bogus` も `f.write(1)` も静的に通っていた）。
+#
+# 弾かれる例は builtin_return_types_error.ar
+
+print("=== open は FileObject を返す ===")
+
+let f: FileObject = open("examples/typing/builtin_return_types.ar", FileOpenMode.read)
+if not (f is FileObject):
+    raise RuntimeError("open must return a FileObject")
+print(f is FileObject)              # True
+close(f)
+
+print("=== repr / getenv は str を返す ===")
+
+let r: str = repr([1, 2])
+print(r)                            # [1, 2]
+let missing: str = getenv("ARROW_NO_SUCH_VARIABLE_42", "none")
+print(missing)                      # none
+
+print("=== id は pointer を返す ===")
+
+let p: pointer = id(r)
+print(p is pointer)                 # True
+
+print("=== 組み込みの列挙は型の名前 ===")
+
+let m: FileOpenMode = FileOpenMode.read
+let mv: int = m.value
+print(mv)                           # 2
+let enc: Encoding = Encoding.UTF_8
+print(enc.value)                    # 1
+
+print("=== FileObject のメソッド ===")
+
+let g: FileObject = open("examples/typing/builtin_return_types.ar", FileOpenMode.read, StartPoint.top)
+let first = g.read_line()           # テキストなら str・バイトなら list[int]（実行時に決まる）
+print(len(first) > 0)               # True
+close(g)
+
+print("=== print の結果は None ===")
+
+let nothing: None = print("hello")  # hello
+print(nothing)                      # None
+
+print("done")

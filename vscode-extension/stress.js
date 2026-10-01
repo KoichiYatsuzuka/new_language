@@ -11,6 +11,10 @@
 //   bind  misses : import が束縛する名前が索引に載っていない件数（0 が正常）。
 //                  期待値は**ソースの行スキャン**で作る — パーサから取ると一致して
 //                  しまい、まさにこの種の欠落を検出できない（`importBindings` の注記）。
+//   typed vars   : 型注釈の無い変数宣言のうち、型（`inferred`）が出た件数。0 にはならない
+//                  （型検査器自身が型を知らない宣言がある）ので**減ったら退行**として見る。
+//                  型は型検査器の束縛の記録を「文の位置＋名前」で突き合わせて付けるので、
+//                  突き合わせが外れるとここが減る（2026-10-01 時点 1980 / 2382・組み込みの戻り値の型・組み込みの型のメソッドを含む）。
 //   no symbols   : 宣言が 1 つも取れなかった例題。ParseError 例題と、宣言を含まない
 //                  例題（math_string.ar）だけが該当するのが正常。
 //
@@ -26,7 +30,7 @@ Module._load=function(req,parent,isMain){
   if(req==='vscode') return require(path.join(__dirname,'out_debug','vscode_mock'));
   return orig(req,parent,isMain);
 };
-const {loadFrontend,frontendLoadError}=require('./out_debug/frontend');
+const {loadFrontend,frontendLoadError,analyze}=require('./out_debug/frontend');
 const P=require('./out_debug/wasm_providers');
 
 if(!loadFrontend(__dirname)){ console.error('load failed:',frontendLoadError()); process.exit(1); }
@@ -36,7 +40,7 @@ if(!loadFrontend(__dirname)){ console.error('load failed:',frontendLoadError());
 //    調べることになる。`int` / `str` / `float` / `bool` / `uint` / `set` / `slice` /
 //    `path` / `type` は builtins.ars で `fn` として宣言されているので、prelude を読んで
 //    初めて「型名が組み込み関数に当たる」経路が動く。読まないと退行を取り逃がす。
-if(!P.loadPrelude(path.join(__dirname,'builtins.ars'))){
+if(!P.loadPrelude()){
   console.error('WARNING: builtins.ars failed to load — builtin names will be missing');
 }
 
@@ -136,6 +140,7 @@ function checkTagFixtures(){
 const files=walk(path.join(__dirname,'..','examples'));
 let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0;
 let totalBind=0, bindMiss=0;
+let totalVars=0, typedVars=0;
 const problems=[];
 
 for(const f of files){
@@ -157,6 +162,12 @@ for(const f of files){
       P.provideSignatureHelp(doc,{line:i,character:doc.lineAt(i).text.length});
     }
     totalSym+=probe.length;
+
+    // 注釈の無い変数宣言に型が出ているか（ヘッダの `typed vars`）。
+    for(const s of analyze(doc.getText())?.symbols ?? []){
+      if(s.kind!=='variable' || s.typeAnn) continue;
+      totalVars++; if(s.inferred) typedVars++;
+    }
 
     // import が束縛する名前は**必ず**索引に載っていること（計画 #6）。
     const declared=new Set(); (function w(ns){for(const n of ns){declared.add(n.name); w(n.children);}})(outline);
@@ -183,6 +194,7 @@ console.log(`symbols probed : ${totalSym}`);
 console.log(`hover misses   : ${hoverMiss} / ${totalHover}`);
 console.log(`def   misses   : ${defMiss} / ${totalDef}`);
 console.log(`bind  misses   : ${bindMiss} / ${totalBind}   <- must be 0 (import が束縛する名前が索引に無い)`);
+console.log(`typed vars     : ${typedVars} / ${totalVars}   <- 減ったら退行 (注釈の無い変数宣言に型が出た数)`);
 const tagMisses = checkTagFixtures();
 console.log(`tag   misses   : ${tagMisses.length} / ${TAG_FIXTURES.length}   <- must be 0 (タグ別フィクスチャ)`);
 problems.push(...tagMisses);

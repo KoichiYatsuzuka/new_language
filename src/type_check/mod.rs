@@ -13,6 +13,7 @@ mod binop;
 mod decorator;
 pub(crate) mod names;
 pub mod annotations;
+pub mod builtins;
 
 // 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
@@ -89,6 +90,41 @@ pub struct TypeChecker {
     py_class_factories: HashMap<String, (usize, String)>,
     /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
     stmt_pos: Option<crate::token::Span>,
+    /// 変数を束縛した記録（[`BindingRecord`]）。`None` のあいだは記録しない
+    /// （使うのは VS Code 拡張だけ・[`Self::check_program_for_editor`]）。
+    bindings: Option<Vec<BindingRecord>>,
+    /// 束縛の記録に付ける**文の位置**（`check_stmt` が張り替える・記録するときだけ）。
+    ///
+    /// ⚠⚠ `stmt_pos` と違い **`Stmt::position` だけ**から取る（式文を `own_span` で代えない）。
+    ///   エディタ索引（`parser::editor_index` の `bind_anchors`）が同じ規則で鍵を作るので、
+    ///   片方にだけ規則を足すと突き合わせが外れる。
+    bind_pos: Option<crate::token::Span>,
+}
+
+/// 変数を**束縛した瞬間**の型の記録（VS Code 拡張の hover / inlay hint 用）。
+///
+/// # なぜ初期化式の型ではないのか
+///
+/// 以前のエディタは初期化式の node-id で注釈表を引いていたので、node-id を持たない式
+/// （リテラル・`if` 式・`for` 式…）と、初期化式を持たない束縛（ループ変数・`except as`・
+/// 分割代入）で型が出なかった。束縛の側で記録すれば、式の種類に関係なく**変数の型そのもの**
+/// （注釈や既定の補正を通した後の型）が取れる。
+///
+/// # 鍵
+///
+/// 「束縛を含む文の位置（`Stmt::position`）＋名前」。同じ鍵の中は束縛した順に並ぶ。
+/// エディタ索引は同じ規則で鍵を作り、順番どおりに突き合わせる（`crates/arrow-frontend` の `analyze.rs`）。
+/// ⚠ import 先の本体も検査の途中で束縛するが、その位置は別のファイル（`<stub>` など）を指すので、
+///   突き合わせる側がファイル名で除く。
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
+pub struct BindingRecord {
+    /// 束縛を含む文の位置。位置を持つ文の外（トップレベルの式文の中など）では `None`。
+    pub pos: Option<crate::token::Span>,
+    /// 束縛した名前。
+    pub name: String,
+    /// 束縛した型。
+    pub ty: InferredType,
 }
 
 impl TypeChecker {
@@ -136,56 +172,20 @@ impl TypeChecker {
         //    ⇒ `len` を登録しても新しく壊れるものは無い。
         //
         // ⚠ ここへ登録した名前はグローバルスコープを占める（`int`/`str` と同じ扱い）。
-        //   占有してよいのは「実行時も既に占有している」名前だけ。
+        //   占有してよいのは「実行時も既に占有している」名前だけ（`builtins::GLOBAL_FNS`）。
+        //   他の組み込み関数（`open` / `repr` …）は占有せず、呼び出しの結果にだけ型を付ける
+        //   （`call_check` の `builtin_fn_return`。同じ名前の利用者の宣言が勝つ）。
         //
-        // ## 引数の型（実測して表を書いた）
-        //
-        // | 関数 | 引数 | 戻り値 |
-        // |---|---|---|
-        // | `range` | `int` を 1〜3 個 | `list[int]` |
-        // | `len` | 1 個（`list`/`str`/`dict`/`set`/`tuple`/`fixed_list`/`__len__` を持つクラス） | `int` |
+        // ⚠ シグネチャ（仮引数・戻り値）は `src/built_in_stab/builtins.ars` から取る
+        //   （組み込みの宣言はそこ 1 本・`builtins` モジュールの doc）。以前はここに手書きしていた。
         //
         // ⚠ `len` の引数は「大きさを持つ型」で、`InferredType` に対応する型が無い。
-        //   ⇒ `Any` にして個数だけ検査し、**明らかに大きさを持たない型**は
+        //   ⇒ 宣言は `Any` にして個数だけ検査し、**明らかに大きさを持たない型**は
         //     `check_len_argument`（`call_check.rs`）で弾く。
-        let int_p = |name: &str, has_default: bool| types::FnTypeParam {
-            name: name.to_string(),
-            mutable: false,
-            ty: InferredType::Int,
-            has_default,
-        };
-        let builtin_fns: Vec<(&str, Option<Vec<types::FnTypeParam>>, InferredType)> = vec![
-            (
-                "range",
-                Some(vec![
-                    int_p("start", false),
-                    int_p("stop", true),
-                    int_p("step", true),
-                ]),
-                InferredType::ListOf(Box::new(InferredType::Int)),
-            ),
-            (
-                "len",
-                Some(vec![types::FnTypeParam {
-                    name: "obj".to_string(),
-                    mutable: false,
-                    ty: InferredType::Any,
-                    has_default: false,
-                }]),
-                InferredType::Int,
-            ),
-        ];
-        for (name, params, ret) in builtin_fns {
-            global.insert(
-                name.to_string(),
-                VarInfo {
-                    ty: InferredType::Function {
-                        params,
-                        return_type: Box::new(ret),
-                    },
-                    mutable: false,
-                },
-            );
+        for name in builtins::GLOBAL_FNS {
+            if let Some(ty) = builtins::fn_type(name) {
+                global.insert(name.to_string(), VarInfo { ty, mutable: false });
+            }
         }
         for name in ["begin", "last"] {
             global.insert(
@@ -219,7 +219,21 @@ impl TypeChecker {
             );
         }
 
+        // 組み込みの型（`builtins.ars` の `enum` / `class`）。`enum` の名前は `Stmt::EnumDef` の
+        // 検査（`check_stmt`）と同じく、名前と要素の型の 2 つを型の値として大域に置く。
+        let builtin_types = builtins::type_decls();
+        for decl in &builtin_types {
+            if let Stmt::EnumDef { name, .. } = decl {
+                let item = types::enum_item_type_name(name);
+                for n in [name.clone(), item] {
+                    let ty = InferredType::TypeValOf(Box::new(InferredType::NamedInstance(n.clone())));
+                    global.insert(n, VarInfo { ty, mutable: false });
+                }
+            }
+        }
+
         let mut builder = registry::builder::TypeRegistryBuilder::with_builtins();
+        builder.collect_builtin_types(&builtin_types);
         builder.collect(stmts);
 
         Self {
@@ -238,6 +252,8 @@ impl TypeChecker {
             },
             py_class_factories: HashMap::new(),
             stmt_pos: None,
+            bindings: None,
+            bind_pos: None,
         }
     }
 
@@ -322,7 +338,39 @@ impl TypeChecker {
         Vec<StaticTypeWarning>,
         annotations::AstAnnotations,
     ) {
+        let (errors, warnings, annotations, _) = Self::check_program_inner(stmts, false);
+        (errors, warnings, annotations)
+    }
+
+    /// [`Self::check_program`] に、変数を束縛した記録（[`BindingRecord`]）を足して返す。
+    ///
+    /// VS Code 拡張（`crates/arrow-frontend`）専用。記録は束縛のたびに型を複製するので、
+    /// CLI の経路（[`Self::check_program`]）では取らない。
+    #[cfg_attr(not(feature = "editor"), allow(dead_code))]
+    pub fn check_program_for_editor(
+        stmts: &[Stmt],
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+        Vec<BindingRecord>,
+    ) {
+        Self::check_program_inner(stmts, true)
+    }
+
+    fn check_program_inner(
+        stmts: &[Stmt],
+        record_bindings: bool,
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+        Vec<BindingRecord>,
+    ) {
         let mut tc = Self::new(stmts);
+        if record_bindings {
+            tc.bindings = Some(Vec::new());
+        }
         tc.check_stmts(stmts);
         // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
         // 「このレシーバは `Value::Instance` だ」と断定してよいかの唯一の根拠。
@@ -330,9 +378,10 @@ impl TypeChecker {
             .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
         let instance_names = tc.registry.instance_names().clone();
+        let bindings = tc.bindings.take().unwrap_or_default();
         let (errors, warnings) = tc.diags.into_parts_tagged();
         let errors = Self::merge_instance_errors(errors, &instance_names);
-        (errors, warnings, annotations)
+        (errors, warnings, annotations, bindings)
     }
 
     /// **同じ誤りの重複報告をまとめる**（タスク 2-8 段階 2）。

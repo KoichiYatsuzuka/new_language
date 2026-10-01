@@ -270,17 +270,101 @@ impl Parser {
         }
     }
 
-    /// 変数宣言の**初期化式**の node-id を控える。
+    /// `note_var` で控えた宣言が**いま束縛された**ことを控える。初期化式を読み終えた直後に呼ぶ。
     ///
-    /// inlay hint は「注釈が書かれていない宣言に推論型を出す」機能なので、右辺の型が要る。
-    /// 位置から探すやり方は駄目だった: `mut c = Circle(5.0)` の右辺の node 位置は
-    /// 式の**末尾**（`)`）を指すため、名前 `c` の近くを探しても見つからない。
-    /// node-id を直接控えれば、型検査器の注釈表をそのまま引ける。
+    /// inlay hint / hover の型は、型検査器が束縛した瞬間に記録した型（`type_check::BindingRecord`）
+    /// から引く。以前は初期化式の node-id で注釈表を引いていたが、node-id を持たない式
+    /// （リテラル・`if` 式・`for` 式…）と、node-id の取り出しに漏れた式（`mustbe`）で型が出なかった。
+    /// ⚠ **初期化式の後で**呼ぶこと。型検査器は初期化式を検査してから束縛するので、
+    ///   初期化式の中の束縛（`for` 式のループ変数）より先に番号を取ると順番が食い違う。
     #[allow(unused_variables)]
-    pub(crate) fn note_init_expr(&mut self, handle: usize, expr: &crate::ast::Expr) {
+    pub(crate) fn note_bound(&mut self, handle: usize) {
         #[cfg(feature = "editor")]
-        if let Some(id) = node_id_of(expr) {
-            self.editor.with_decl(handle, |d| d.init_node = Some(id));
+        {
+            let seq = self.editor.new_binding();
+            self.editor.with_decl(handle, |d| d.binding = Some(seq));
+        }
+    }
+
+    /// 宣言表の `[from, to)` の宣言が、この順に**いま束縛された**ことを控える（分割代入）。
+    ///
+    /// 分割代入の左辺は右辺より先に読むが、型検査器が束縛するのは右辺を検査した後なので、
+    /// 左辺を読んだ時点で `note_var` しておき、右辺を読み終えてからここで番号を振る。
+    #[allow(unused_variables)]
+    pub(crate) fn note_bound_range(&mut self, from: usize, to: usize) {
+        #[cfg(feature = "editor")]
+        for handle in from..to {
+            self.note_bound(handle);
+        }
+    }
+
+    /// トークン位置 `tok` の名前を、**次に開くスコープ**の変数として控え、いま束縛されたことも控える
+    /// （ループ変数・`except ... as` の名前）。
+    ///
+    /// ⚠ 本体ブロックを読む**直前**（反復対象を読んだ後）に呼ぶこと。
+    ///   - 次に開くスコープ（本体）へ入れるので、間に別のブロックを読むとそちらへ入ってしまう
+    ///     （反復対象に `for` 式があるとき）。
+    ///   - 型検査器は反復対象を検査してからループ変数を束縛するので、順番もそれに合わせる。
+    /// 位置をトークン位置で受け取るのは、名前を読んだ時点では控えずに済ませるため
+    /// （通常ビルドで位置の表を作らない）。`_` は束縛しないので控えない。
+    #[allow(unused_variables)]
+    pub(crate) fn note_bound_var_at_token(&mut self, tok: usize, name: &str) {
+        #[cfg(feature = "editor")]
+        {
+            if name == "_" {
+                return;
+            }
+            // 位置の割り出しが外れていたら控えない（別の語の位置に宣言を置くよりまし）。
+            let Some(pos) = self
+                .tokens
+                .get(tok)
+                .filter(|t| matches!(&t.token, crate::token::Token::Ident(n) if n == name))
+                .map(|t| (t.span.line, t.span.col))
+            else {
+                return;
+            };
+            let scope = self.editor.current_scope();
+            let mut d = EditorIndex::decl(name.to_string(), DeclKind::Variable, pos, scope);
+            d.binding = Some(self.editor.new_binding());
+            self.editor.push_pending(d);
+        }
+    }
+
+    /// `for a, b in ...` のターゲットを控える。`first_tok` は最初のターゲットのトークン位置。
+    ///
+    /// ターゲットの並びは `名前 (, 名前)*` なので、`i` 番目の名前は `first_tok + 2 * i` にある。
+    /// 使い方の注意は [`Self::note_bound_var_at_token`] と同じ（本体を読む直前に呼ぶ）。
+    #[allow(unused_variables)]
+    pub(crate) fn note_loop_targets(&mut self, first_tok: usize, targets: &[String]) {
+        #[cfg(feature = "editor")]
+        for (i, name) in targets.iter().enumerate() {
+            self.note_bound_var_at_token(first_tok + 2 * i, name);
+        }
+    }
+
+    /// 文のパースに入る（束縛の目印の位置を決めるため・[`EditorIndex::enter_stmt`]）。
+    /// `start` は文の先頭のトークン位置。戻り値は [`Self::leave_editor_stmt`] へそのまま渡す。
+    #[allow(unused_variables)]
+    pub(crate) fn enter_editor_stmt(&mut self, start: usize) -> EditorStmtMark {
+        #[cfg(feature = "editor")]
+        {
+            let pos = self.tokens.get(start).map(|t| (t.span.line, t.span.col)).unwrap_or((0, 0));
+            return EditorStmtMark { saved: self.editor.enter_stmt(pos) };
+        }
+        #[cfg(not(feature = "editor"))]
+        EditorStmtMark {}
+    }
+
+    /// 文のパースを終える。`stmt` は読めた文（構文エラーなら `None`）。
+    ///
+    /// ⚠ 束縛の目印の位置は `Stmt::position` で決める（位置を持たない文は外側の文の位置）。
+    ///   型検査器（`check_stmt` の `bind_pos`）と**同じ関数**を使うことで、両側の鍵が構造的に揃う。
+    #[allow(unused_variables)]
+    pub(crate) fn leave_editor_stmt(&mut self, mark: EditorStmtMark, stmt: Option<&crate::ast::Stmt>) {
+        #[cfg(feature = "editor")]
+        {
+            let position = stmt.and_then(|s| s.position()).map(|s| (s.line, s.col));
+            self.editor.leave_stmt(mark.saved, position);
         }
     }
 
@@ -365,20 +449,12 @@ impl From<EditorKind> for DeclKind {
     }
 }
 
-/// 式が持つ node-id（型解決層の索引キー）。採番されていない式は `None`。
-#[cfg(feature = "editor")]
-fn node_id_of(expr: &crate::ast::Expr) -> Option<u32> {
-    use crate::ast::Expr;
-    let id = match expr {
-        Expr::Ident { node_id, .. }
-        | Expr::Attr { node_id, .. }
-        | Expr::BinOp { node_id, .. }
-        | Expr::Call { node_id, .. }
-        | Expr::Subscript { node_id, .. }
-        | Expr::Cast { node_id, .. } => *node_id,
-        _ => 0,
-    };
-    (id != 0).then_some(id)
+/// [`Parser::enter_editor_stmt`] が返し、[`Parser::leave_editor_stmt`] が受け取る目印。
+/// 通常ビルドでは中身の無い型（大きさ 0）になる。
+#[derive(Clone, Copy)]
+pub(crate) struct EditorStmtMark {
+    #[cfg(feature = "editor")]
+    saved: (Pos, usize),
 }
 
 /// 関数・クラスの本体先頭にある docstring（文字列リテラル 1 個の文）を取り出す。

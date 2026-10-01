@@ -25,6 +25,22 @@ impl TypeChecker {
         self.state.declare(name, ty, mutable);
     }
 
+    /// 変数を束縛したことを記録する（[`super::BindingRecord`]・VS Code 拡張の hover / inlay 用）。
+    /// 記録しない検査（CLI）では何もしない。`declare` の**直前**に、束縛する型で呼ぶ。
+    ///
+    /// ⚠ 単相化した具体化（`Box[int]` / `f[str]`）の本体では記録しない。具体化はテンプレートの
+    ///   本体と同じ位置を型引数ごとに検査するので、記録すると 1 つの宣言に型が何通りも付く。
+    ///   ソースに書かれているのはテンプレートの本体なので、その型（型変数のまま）を残す。
+    pub(super) fn note_binding(&mut self, name: &str, ty: &InferredType) {
+        if self.bindings.is_none() || self.in_instance_decl() {
+            return;
+        }
+        let pos = self.bind_pos.clone();
+        if let Some(records) = self.bindings.as_mut() {
+            records.push(super::BindingRecord { pos, name: name.to_string(), ty: ty.clone() });
+        }
+    }
+
     /// スコープスタックを内側から外側へ走査して変数情報を返す。見つからない場合は `None`。
     pub(super) fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.state.lookup(name)

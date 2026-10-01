@@ -333,6 +333,8 @@ impl TypeChecker {
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
             if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+                // 引数は宣言（`builtins.ars`）の仮引数で検査する（`check_builtin_call`）。
+                self.check_builtin_call(name, args, &arg_data);
                 if let Some(ret) = self.builtin_fn_return(name, &arg_data) {
                     return ret;
                 }
@@ -365,7 +367,8 @@ impl TypeChecker {
             //    全ての義務が無効化されていた。これは **D-5（暗黙 `int → float` の廃止）の
             //    前提**で、受け皿の `float(n)` が無検査だと穴が閉じずに移動するだけになる。
             //
-            // ⚠ **名前を新しく占有しない形で解く。** 既存の `builtin_fns` 機構に
+            // ⚠ **名前を新しく占有しない形で解く。** 大域の名前を占有する組み込みの登録（当時の
+            //    `builtin_fns`・2026-09-30 に撤去し `builtins::GLOBAL_FNS` へ移した）に
             //    `len` 等を足す案は「グローバル名を占有して `let len = ...` が
             //    already declared になる」ため前任者が見送っており、実際に例題が
             //    `len` を変数名に使っている（実測 3 箇所）。
@@ -1381,7 +1384,8 @@ impl TypeChecker {
     /// `list.append` と `set.add` は**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、
     /// `set.discard` は黙って何もしない、`set.remove` は `KeyError`。
     /// どれも「要素型が守られない」ことに変わりはない。
-    /// 組み込み**関数**の戻り値型（分かるものだけ）。
+    /// 組み込み**関数**の戻り値型（分かるものだけ）。`enumerate` / `zip` は引数から組み立て、
+    /// 他は宣言ファイル `builtins.ars` の戻り値の型（`builtins::return_type`）。
     ///
     /// ⚠⚠ **`enumerate` / `zip` に型が付いていなかった**ので、
     /// `for i, c in enumerate(xs):` のループ変数が `Unresolved` 止まりになり、
@@ -1419,7 +1423,9 @@ impl TypeChecker {
                 let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
-            _ => None,
+            // 他の組み込み関数は宣言（`src/built_in_stab/builtins.ars`）の戻り値の型
+            // （`open` → `FileObject`・`repr` → `str` …）。宣言に型が無いものは `None`（従来どおり）。
+            _ => super::builtins::return_type(name),
         }
     }
 
@@ -1497,6 +1503,57 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// 組み込み関数の呼び出しの引数を、宣言（`src/built_in_stab/builtins.ars`）の仮引数で検査する。
+    ///
+    /// ⚠⚠ 以前は `range` / `len`（大域の関数型・`check_fn_type_call`）以外の組み込みの引数を
+    ///   検査していなかった。`open("a.txt", 1)` / `close("x")` / `getenv(1)` は実行時まで通っていた。
+    /// - 仮引数が固定の関数は、関数値の呼び出しと同じ検査（[`Self::check_fn_type_call`]・個数・
+    ///   キーワード引数の名前・型）。
+    /// - `let ...: T`（`print` / `zip`）は位置引数をそれぞれ `T` と突き合わせ、キーワード引数と
+    ///   `... =` を弾く（実行時もそれらは通らない）。固定の仮引数は前に持たない（`builtins.ars` の規則・
+    ///   単体テスト `variadic_builtins_have_no_fixed_params` が守る）。
+    /// ⚠ 型の変換（`int(x)` …）は検査しない（`builtins::call_decl`）。
+    /// ⚠ 呼ぶのは同じ名前の利用者の関数・変数が無いときだけ（呼ぶ側 `infer_call_inner`）。
+    fn check_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        let Some(decl) = super::builtins::call_decl(name) else { return };
+        let Some(elem) = decl.variadic else {
+            self.check_fn_type_call(name, args, arg_data, &decl.params);
+            return;
+        };
+        // ⚠ 展開（`print(*xs)`）は位置で対応づけられない。`check_fn_type_call` と同じく降りる。
+        if Self::has_spread_arg(args) {
+            return;
+        }
+        for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
+            if let Some(arg_name) = key {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::UnknownKeywordArg {
+                        func_name: name.to_string(),
+                        arg_name: arg_name.clone(),
+                    },
+                    span: None,
+                });
+                continue;
+            }
+            if elem != InferredType::Any && !self.types_compatible(arg_ty, &elem, Site::LetParam) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: name.to_string(),
+                        param_index: i,
+                        expected: elem.clone(),
+                        got: arg_ty.clone(),
+                    },
+                    span: None,
+                });
+            }
+        }
     }
 
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。

@@ -87,8 +87,11 @@ pub struct Decl {
     pub scope: usize,
     /// 関数・クラスの本体スコープ（`None` は本体を持たない宣言）。
     pub body_scope: Option<usize>,
-    /// 変数宣言の初期化式の node-id。型注釈が無いときの推論型はここから引く。
-    pub init_node: Option<u32>,
+    /// 変数を**束縛した順の通し番号**（[`EditorIndex::bind_anchors`] の添字）。束縛でない宣言は `None`。
+    ///
+    /// 型注釈が無いときの型は、型検査器が束縛した瞬間に記録した型（`type_check::BindingRecord`）から
+    /// 引く。鍵は「束縛を含む文の位置＋名前」で、同じ鍵の中はこの番号の順に突き合わせる。
+    pub binding: Option<usize>,
 }
 
 /// 字句的スコープ。`end_line` は閉じるまで `usize::MAX`。
@@ -135,6 +138,15 @@ pub struct EditorIndex {
     pending: Vec<Decl>,
     /// いまパース中のクラス/トレイト/プロトコル名。メンバ宣言の `container` に入れる。
     pub container: Option<String>,
+    /// 束縛の目印ごとの**束縛を含む文の位置**（添字 = [`Decl::binding`]）。
+    ///
+    /// ⚠⚠ 型検査器の束縛の記録（`type_check::BindingRecord`）と**同じ規則**で決める。
+    ///   文の位置は `Stmt::position` の値で、位置を持たない文（式文など）の中の束縛は
+    ///   外側の文の位置に付け替える（[`Self::leave_stmt`]）。型検査器の `bind_pos` と規則が
+    ///   ずれると、型が出なくなるか別の束縛の型が出る。
+    pub bind_anchors: Vec<Pos>,
+    /// いまパース中の文の**仮の**位置（先頭のトークン）。`(0, 0)` はどの文の中でもない。
+    anchor: Pos,
 }
 
 impl EditorIndex {
@@ -150,7 +162,39 @@ impl EditorIndex {
             current: 0,
             pending: Vec::new(),
             container: None,
+            bind_anchors: Vec::new(),
+            anchor: (0, 0),
         }
+    }
+
+    /// 文のパースに入る。`start` は文の先頭のトークンの位置。戻り値は [`Self::leave_stmt`] に渡す。
+    pub fn enter_stmt(&mut self, start: Pos) -> (Pos, usize) {
+        let saved = (self.anchor, self.bind_anchors.len());
+        self.anchor = start;
+        saved
+    }
+
+    /// 文のパースを終える。`position` はその文の `Stmt::position`（位置を持たない文は `None`）。
+    ///
+    /// この文の中で直接行われた束縛の位置を、仮の「先頭のトークン」から**文の位置**へ付け替える
+    /// （入れ子の文の束縛は、その文を抜けるときに付け替え済み）。位置を持たない文なら外側の文の位置へ。
+    /// ⚠ 先頭のトークンのままにできないのは、文の位置が先頭とは限らないから
+    ///   （`LetTuple` は最初の `,`、定義文は `src` の先頭）。
+    pub fn leave_stmt(&mut self, saved: (Pos, usize), position: Option<Pos>) {
+        let provisional = self.anchor;
+        let fin = position.unwrap_or(saved.0);
+        for a in &mut self.bind_anchors[saved.1..] {
+            if *a == provisional {
+                *a = fin;
+            }
+        }
+        self.anchor = saved.0;
+    }
+
+    /// 束縛の目印を 1 つ発行する（位置は今の文の仮の位置）。**束縛した順に**呼ぶこと。
+    pub fn new_binding(&mut self) -> usize {
+        self.bind_anchors.push(self.anchor);
+        self.bind_anchors.len() - 1
     }
 
     /// 現在のスコープ id。
@@ -244,7 +288,7 @@ impl EditorIndex {
             bases: Vec::new(),
             scope,
             body_scope: None,
-            init_node: None,
+            binding: None,
         }
     }
 }

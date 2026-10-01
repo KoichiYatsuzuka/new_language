@@ -11,7 +11,7 @@ Rust 実装そのもの（`crates/arrow-frontend` を wasm32 化したもの）�
 
 - [x] Diagnostics — 型検査器のエラー・警告をそのまま表示
 - [x] Hover — 型・const/let/mut 属性・docstring・継承元 trait・アクセス指定
-- [x] Inlay hints — 型注釈が無い宣言に推論型（初期化式の node-id 経由）
+- [x] Inlay hints — 型注釈が無い宣言に推論型（型検査器の束縛の記録 `BindingRecord` 経由。ループ変数・`except as`・分割代入を含む）
 - [x] Semantic tokens — 宣言種別に基づく色分け
 - [x] Completion — スコープ木に基づく可視名、`.` アクセスはメンバ表
 - [x] Signature help — 関数・自動生成コンストラクタ

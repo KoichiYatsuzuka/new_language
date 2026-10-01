@@ -224,7 +224,8 @@ function main(): void {
     // in builtins.ars, so with the prelude loaded a bare `int` resolves to a builtin
     // FUNCTION. The "type name shown as a cast function" bug therefore could not
     // reproduce here at all -- neither in run_debug.js nor in stress.js.
-    if (!loadPrelude(path.join(extensionRoot, 'builtins.ars'))) {
+    // The declarations come from the wasm (`builtinsSource`), the same text the type checker uses.
+    if (!loadPrelude()) {
         console.error(c(A.red, 'WARNING: builtins.ars failed to load — builtin names will be missing'));
     }
 

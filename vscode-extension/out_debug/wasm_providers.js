@@ -14,7 +14,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.provideDiagnostics = exports.provideDocumentSymbols = exports.provideDefinition = exports.provideSignatureHelp = exports.provideCompletionItems = exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideInlayHints = exports.provideHover = exports.clearAnalysisCache = exports.forgetDocument = exports.loadPrelude = void 0;
 const vscode = require("vscode");
-const fs = require("fs");
 const frontend_1 = require("./frontend");
 /**
  * `line:col` → その位置に書かれた型名。`analysis.typeRefs` の逆引き。
@@ -38,22 +37,34 @@ function typeRefsOf(analysis) {
 const cache = new Map();
 // ===== 組み込み関数のプレリュード =====
 /**
- * `builtins.ars`（`print` / `len` / … のスタブ）を解析した結果。
+ * 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）を解析した結果。
  *
  * 組み込みも**同じフロントエンドで**解析する。TypeScript 側に組み込みの表を持たせると、
  * Rust 側に組み込みが増えたときに手で追随することになり、いま直している問題が
- * 小さい形で戻ってくる。`builtins.ars` は valid な Arrow なのでそのまま食わせられる。
+ * 小さい形で戻ってくる。
+ *
+ * ⚠ 本文は wasm から受け取る（`builtinsSource`）。型検査器が埋め込んでいるのと同じ本文なので、
+ *   hover に出る組み込みと型検査が別々の宣言を見ることはない。以前は拡張が自前の
+ *   `builtins.ars` を読んでいて、実行時に無い関数が並び、`code` が予約語になってからは
+ *   丸ごと読めなくなっていた（読めないことに誰も気づかなかった）。
  */
 let prelude = [];
 let preludeMembers = {};
 /** 拡張の activate から 1 度だけ呼ぶ。失敗しても致命的ではない（組み込みが出ないだけ）。 */
-function loadPrelude(builtinsPath) {
+function loadPrelude() {
     try {
-        const result = (0, frontend_1.analyze)(fs.readFileSync(builtinsPath, 'utf8'));
+        const source = (0, frontend_1.builtinsSource)();
+        if (source === null)
+            return false;
+        const result = (0, frontend_1.analyze)(source);
         if (!(result === null || result === void 0 ? void 0 : result.ok))
             return false;
         // トップレベル（スコープ 0）の宣言だけを組み込みとして扱う。
-        prelude = result.symbols.filter(s => s.scope === 0);
+        // ⚠ 列挙の要素（`FileOpenMode.read` の `read`）は除く。宣言表ではスコープ 0 に載るが、
+        //   名前だけで見える大域の名前ではない（`FileOpenMode.` の後の補完は `preludeMembers` が出す）。
+        //   入れると `f.read()` の `read` の hover が `FileOpenMode.read` になり、素の補完にも
+        //   `read` / `write` / `top` / `end` … が並ぶ。
+        prelude = result.symbols.filter(s => s.scope === 0 && s.kind !== 'enum_member');
         preludeMembers = result.members;
         return true;
     }
@@ -292,6 +303,17 @@ function renderSignature(sym, inferred) {
         }
     }
 }
+/** hover に出すメンバの 1 行目。`fn read(let backward: bool)` / `FileOpenMode.read` / `let x: int` の形。 */
+function renderMember(owner, mem) {
+    if (mem.params) {
+        const params = mem.params.filter(p => p.name !== 'self').map(p => p.label).join(', ');
+        return `fn ${mem.name}(${params})` + (mem.type ? ` -> ${mem.type}` : '');
+    }
+    if (mem.kind === 'enum_member')
+        return `${owner}.${mem.name}`;
+    const head = mem.mutability ? `${mem.mutability} ${mem.name}` : mem.name;
+    return mem.type ? `${head}: ${mem.type}` : head;
+}
 function symbolKindOf(kind) {
     switch (kind) {
         case 'class': return vscode.SymbolKind.Class;
@@ -345,6 +367,22 @@ function provideHover(document, position) {
         md.appendCodeblock(`type ${w.word}`, 'arrow');
         return new vscode.Hover(md, w.range);
     }
+    // `expr.name` の `name` は、受け手の型のメンバとして引く（補完と同じ `receiverTypeAt` / `membersOf`）。
+    // ⚠ 名前だけで引いた宣言が**受け手の型のもの**なら従来どおりそれを見せる。名前が引けない・
+    //   別の型の同名の宣言に当たった（`f.read()` の `read` が `FileOpenMode.read`）ときだけこの経路。
+    //   組み込みの型（`FileObject`）のメソッドは利用者のファイルの宣言表に無いので、ここでしか引けない。
+    const receiver = receiverTypeAt(analysis, document, w.range.start);
+    if ((receiver === null || receiver === void 0 ? void 0 : receiver.type) && (sym === null || sym === void 0 ? void 0 : sym.container) !== receiver.type) {
+        const mem = membersOf(analysis, receiver.type).find(m => m.name === w.word);
+        if (mem) {
+            const md = new vscode.MarkdownString();
+            md.appendCodeblock(renderMember(receiver.type, mem), 'arrow');
+            md.appendMarkdown(`\n\nmember of \`${receiver.type}\``);
+            if (mem.doc)
+                md.appendMarkdown('\n\n---\n\n' + mem.doc);
+            return new vscode.Hover(md, w.range);
+        }
+    }
     // 宣言に紐づく推論型を優先し、無ければカーソル位置の式の型で補う。
     const inferred = (_b = sym === null || sym === void 0 ? void 0 : sym.inferred) !== null && _b !== void 0 ? _b : exprTypeAt(analysis, position);
     if (!sym) {
@@ -383,7 +421,7 @@ function provideInlayHints(document, range) {
             continue;
         if (sym.at.line < range.start.line || sym.at.line > range.end.line)
             continue;
-        // 推論型は型検査器の答えをそのまま使う（`inferred` は初期化式の node-id 経由）。
+        // 推論型は型検査器の答えをそのまま使う（`inferred` は型検査器の束縛の記録）。
         const inferred = sym.inferred;
         if (!inferred)
             continue;

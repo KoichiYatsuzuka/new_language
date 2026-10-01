@@ -43,7 +43,12 @@ pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
 ];
 
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。
-const BUILTIN_NEW_TYPES: [(&str, &str); 3] = [("path", "str"), ("Index", "int"), ("Size", "int")];
+///
+/// ⚠ 実行時の登録（`interpreter/built_in_types.rs`）と揃えること。`pointer` は実行時に
+///   「`new_type pointer: uint` 相当のラッパークラス」として登録されているのに、ここに無かったので
+///   `let p: pointer = id(x)` や `p is pointer` が「知らない型」になっていた（`id` の戻り値の型）。
+const BUILTIN_NEW_TYPES: [(&str, &str); 4] =
+    [("path", "str"), ("Index", "int"), ("Size", "int"), ("pointer", "uint")];
 
 /// `TypeRegistry` の構築器。`collect` で AST を走査し、`build` で凍結する。
 pub(in crate::type_check) struct TypeRegistryBuilder {
@@ -201,6 +206,8 @@ impl TypeRegistryBuilder {
             new_type_originals.insert(cls_name.to_string(), prim_type.to_string());
         }
         known_class_names.insert("slice".to_string());
+        // ⚠ `open()` が返す `FileObject` と、`FileOpenMode` などの組み込みの列挙は
+        //   `builtins.ars` の宣言から登録する（`collect_builtin_types`）。
 
         let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
         // ⚠⚠ **組み込み例外のフィールド型も登録する**（タスク 2.8）。名前だけ登録していたため
@@ -284,6 +291,18 @@ impl TypeRegistryBuilder {
     }
 
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報を収集する。
+    /// 組み込みの型の宣言（`builtins.ars` の `enum` / `class`・`type_check::builtins::type_decls`）を集める。
+    ///
+    /// ⚠ `class` は **Arrow のクラスではない**（`FileObject` の実行時の値は `Value::FileObject`）ので、
+    ///   外部言語のスタブと同じく `foreign_depth` を上げて集める（`arrow_class_names` に載せない）。
+    ///   載せると VM が `Value::Instance` と見なして型特化した命令を出し、実行時に落ちる。
+    /// ⚠ 利用者のプログラムより**先に**集める（同じ名前の利用者の宣言が後から上書きする）。
+    pub(in crate::type_check) fn collect_builtin_types(&mut self, decls: &[Stmt]) {
+        self.foreign_depth += 1;
+        self.collect(decls);
+        self.foreign_depth -= 1;
+    }
+
     pub(in crate::type_check) fn collect(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             // ⚠⚠ 単相化で作ったクラス（`Box[int]`）は**普通のクラスとして**登録し、

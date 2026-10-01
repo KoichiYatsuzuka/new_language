@@ -97,6 +97,21 @@ pub extern "C" fn ar_stub_count() -> usize {
     crate::parser::stub_registry::stub_count()
 }
 
+/// 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）の本文を結果バッファに置く。
+/// 戻り値はバイト長（`ar_result_ptr` / `ar_result_len` で読む。次の `ar_analyze` まで有効）。
+///
+/// 型検査器が埋め込んでいる本文（`type_check::builtins::SOURCE`）と**同じもの**を渡すので、
+/// 拡張の hover・補完・シグネチャヘルプと型検査が別々の宣言を見ることはない
+/// （以前は拡張が自前の `builtins.ars` を読んでいた）。
+#[no_mangle]
+pub extern "C" fn ar_builtins() -> usize {
+    RESULT.with(|r| {
+        let mut r = r.borrow_mut();
+        *r = crate::type_check::builtins::SOURCE.as_bytes().to_vec();
+        r.len()
+    })
+}
+
 /// 直近の解析結果 JSON の先頭ポインタ。
 #[no_mangle]
 pub extern "C" fn ar_result_ptr() -> *const u8 {

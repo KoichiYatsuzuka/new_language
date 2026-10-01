@@ -1,0 +1,189 @@
+# builtins.ars — Arrow の組み込み関数の宣言（**唯一の定義**）。
+#
+# 読むもの:
+#   - 型検査器（`arrow.exe` と VS Code 拡張の両方・`src/type_check/builtins.rs` が埋め込む）
+#       … 呼び出しの戻り値の型と、`range` / `len` のシグネチャ
+#   - VS Code 拡張 … hover・補完・シグネチャヘルプ（wasm の `ar_builtins` が同じ本文を渡す）
+#   ⇒ エディタと `arrow.exe` が同じ宣言を見るので、組み込みの型でエディタだけ診断がずれることはない。
+#
+# 規則:
+#   - 実行時（`src/interpreter/eval/builtins.rs` と型の変換 `call_type_by_name_evaled`）に
+#     **実在するものだけ**を書く。無いものを書くと補完が存在しない関数を勧め、型検査も
+#     実行時に NameError になる呼び出しに型を付けてしまう
+#     （`interpreter/tests` の `builtins_ars_matches_the_runtime` が両方向を検査する）。
+#   - 戻り値の型が**静的に決まらない**ものは `->` を書かない（型検査器は型を付けない）。
+#     `-> Any` と書かないこと: `Any` は「使う前に `mustbe` が要る型」なので、結果を使う式が
+#     すべて静的エラーになる。
+#     ⚠ このファイルをエディタで開くと、`->` を書かない関数・メソッドに「戻り値の注釈が無い」の
+#       診断が出るのは想定どおり（宣言の集まりでプログラムではない）。
+#   - **名前が型の名前**（`int` / `list` …）の関数は型の変換。型検査器はここからは型を付けない
+#     （`int` / `float` / `str` / `bool` は「型の値を呼ぶとその型」の規則が付ける）。
+#   - 仮引数（名前・順番・型・既定値）で**呼び出しの引数を検査する**（個数・キーワード引数の名前・型）。
+#     名前と順番は実行時のキーワード引数名に合わせる（`get_arg(.., "file_path")` など）。
+#   - **個数自由の位置引数**（`print(a, b, c)` / `zip(xs, ys)`）は `let ...: T` で書く。
+#     ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。組み込みでは素の位置引数を
+#       何個でも受け取り、キーワード引数・`... =` は受け取らない（実行時もそれらは通らない）。
+#       型検査器は位置引数をそれぞれ `T` と突き合わせる。
+#   - 本体は `pass`（`...` は docstring と併用できない）。仮引数名に予約語（`code` など）を使わない
+#     （2026-09-22 に `code` が予約語になり、このファイルが丸ごと読めなくなっていた）。
+#   - **組み込みの型**（`enum` / `class`）もここで宣言する。型検査器はレジストリに登録して
+#     `let m: FileOpenMode` / `FileOpenMode.read` / `f.read()` を検査する。
+#     ⚠ `class` は Arrow のクラスではない（実行時は `Value::FileObject` など専用の値）。型検査器は
+#       外部言語のスタブと同じ扱いで登録するので、VM が `Value::Instance` と見なすことはない。
+#     ⚠ メソッドを 1 つでも宣言したクラスは**メンバーの集合が閉じる**（宣言に無いメソッドは静的エラー）。
+#       実行時にあるメソッドは全部書くこと。`enum` の要素と値も実行時（`built_in_types.rs`）と揃える
+#       （どちらも `builtins_ars_matches_the_runtime` が突き合わせる）。
+#     ⚠ 実行時にしか決まらない戻り値（`f.read()` はテキストなら `str`・バイトなら `list[int]`）は
+#       `->` を書かない（関数と同じ規則）。
+
+# ── 組み込みの型 ──────────────────────────────────────────────────────────────
+
+# `open` の開き方。
+enum FileOpenMode:
+    write = 0
+    rewrite = 1
+    read = 2
+    make_and_write = 3
+
+# `open` した直後の読み書き位置（先頭・末尾）。
+enum StartPoint:
+    top = 0
+    end = 1
+
+# `open` したファイルをバイト列（`list[int]`）で扱うか、テキスト（`str`）で扱うか。
+enum ByteRecognizingMode:
+    byte = 0
+    text = 1
+
+# `open` するファイルの文字コード（`shift_JIS` は未対応で、開くと NotImplementedError）。
+enum Encoding:
+    ASCII = 0
+    UTF_8 = 1
+    UTF_8_with_BOM = 2
+    shift_JIS = 3
+
+# `open` が返すファイル。読み書きは現在位置から行う（`close` で書き戻す）。
+class FileObject:
+    fn read(self, backward: bool = False):
+        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode, list[int] in byte mode."""
+        pass
+
+    fn read_line(self, backward: bool = False):
+        """Read one line from the current position (backward=True: the line before it). str in text mode, list[int] in byte mode."""
+        pass
+
+    fn read_letter(self, backward: bool = False):
+        """Read one character (str) in text mode, or one byte (int) in byte mode."""
+        pass
+
+    fn write(self, content: Union[str, list[int]]) -> None:
+        """Insert content at the current position (str in text mode, list[int] in byte mode)."""
+        pass
+
+    fn write_line(self, content: Union[str, list[int]]) -> None:
+        """Insert content followed by a newline at the current position."""
+        pass
+
+# ── 組み込み関数 ────────────────────────────────────────────────────────────
+
+fn print(let ...: Any) -> None:
+    """Print any number of values (positional only) separated by a space, followed by a newline."""
+    pass
+
+fn len(obj: Any) -> int:
+    """Number of items in a list, fixed_list, str, dict, set or tuple, or the result of `__len__`."""
+    pass
+
+fn range(start: int, stop: int = 0, step: int = 1) -> list[int]:
+    """range(stop) / range(start, stop) / range(start, stop, step): the ints from start up to (not including) stop."""
+    pass
+
+fn enumerate(iterable: Any, start: int = 0):
+    """Generator of (index, element) tuples, counting from start (pass it by keyword: `enumerate(xs, start = 1)`). The element type follows the argument."""
+    pass
+
+fn zip(let ...: Any):
+    """Generator of tuples pairing the elements of any number of iterables (positional only); stops at the shortest."""
+    pass
+
+fn next(iterator: Any):
+    """Advance a generator (or an object with `__next__`) and return the next value."""
+    pass
+
+fn repr(value: Any) -> str:
+    """Developer-oriented string representation of a value."""
+    pass
+
+fn id(value: Any) -> pointer:
+    """Identity of a value, as a pointer."""
+    pass
+
+fn getenv(name: str, default: str = "") -> str:
+    """Value of the environment variable `name`, or `default` when it is not set."""
+    pass
+
+fn open(file_path: Union[str, path], open_mode: FileOpenMode, start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Encoding = Encoding.UTF_8, exclusion: bool = True) -> FileObject:
+    """Open a file. `open_mode` is FileOpenMode.read / write / rewrite / make_and_write."""
+    pass
+
+fn close(file: FileObject) -> None:
+    """Close a file opened with `open`."""
+    pass
+
+fn parse_ar(source: str, path: str = ""):
+    """Parse Arrow source and return its AST as a namespace tree."""
+    pass
+
+fn create_flat_int_list(size: int, value: int):
+    """A fixed_list[Cell] of `size` cells holding `value`, stored flat. Requires class `Cell` in scope."""
+    pass
+
+fn flat_get_int(grid: fixed_list[Any], index: int) -> int:
+    """Read the int at `index` of a list made by `create_flat_int_list`."""
+    pass
+
+fn flat_set_int(grid: fixed_list[Any], index: int, value: int) -> None:
+    """Write the int at `index` of a list made by `create_flat_int_list`."""
+    pass
+
+# ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
+
+fn str(value: Any = "") -> str:
+    """Convert a value to its string representation."""
+    pass
+
+fn int(value: Any = 0) -> int:
+    """Convert a value to int (truncates floats, parses strings)."""
+    pass
+
+fn uint(value: int = 0) -> uint:
+    """Convert an int to uint."""
+    pass
+
+fn float(value: Any = 0.0) -> float:
+    """Convert a value to float."""
+    pass
+
+fn complex(real: Any = 0, imag: Any = 0) -> complex:
+    """Make a complex number from a real and an imaginary part."""
+    pass
+
+fn bool(value: Any = False) -> bool:
+    """Convert a value to bool."""
+    pass
+
+fn list(iterable: Any = None) -> list[Any]:
+    """A list of the elements of an iterable, or an empty list."""
+    pass
+
+fn set(iterable: Any = None) -> set[Any]:
+    """A set of the elements of an iterable, or an empty set."""
+    pass
+
+fn slice(begin: Any, end: Any, step: Any = None) -> slice:
+    """A slice value from begin to end, with an optional step."""
+    pass
+
+fn path(value: str) -> path:
+    """A path value from a string."""
+    pass

@@ -33,20 +33,25 @@ impl Parser {
         while *self.current() == Token::Except {
             self.advance(); // consume `except`
             // Determine exception type and optional name binding
-            let (exc_type, name) = if matches!(self.current(), Token::Colon) {
+            let (exc_type, name, name_tok) = if matches!(self.current(), Token::Colon) {
                 // bare `except:`
-                (None, None)
+                (None, None, 0)
             } else {
                 let type_name = self.expect_ident()?;
+                let name_tok = self.pos + 1; // `as` の次のトークン
                 let alias = if *self.current() == Token::As {
                     self.advance();
                     Some(self.expect_ident()?)
                 } else {
                     None
                 };
-                (Some(type_name), alias)
+                (Some(type_name), alias, name_tok)
             };
             self.eat(&Token::Colon)?;
+            // 捕捉した例外の名前はハンドラ本体のスコープの変数（本体を読む直前に控える）。
+            if let Some(n) = &name {
+                self.note_bound_var_at_token(name_tok, n);
+            }
             let handler_body = self.parse_block()?;
             handlers.push(ExceptHandler {
                 exc_type,

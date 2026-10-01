@@ -885,6 +885,7 @@ impl Parser {
                 self.advance();
                 // ⚠ `for k, v in d.items() -> list[T]:` のように**多ターゲット**を許す
                 //   （`Stmt::For` は元から対応していた。式側だけが単一名だった）。
+                let first_tok = self.pos;
                 let mut targets = vec![self.expect_ident()?];
                 while *self.current() == Token::Comma {
                     self.advance();
@@ -894,6 +895,8 @@ impl Parser {
                 let iter = self.parse_expr()?;
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
+                // ループ変数は本体のスコープの変数（本体を読む直前に控える・`note_loop_targets`）。
+                self.note_loop_targets(first_tok, &targets);
                 Ok(Expr::ForExpr {
                     targets,
                     iter: Box::new(iter),

@@ -432,6 +432,7 @@ impl TypeChecker {
                             });
                         }
                         // 規則 3: 反復対象の属性を継ぐ（一時値は `let`）。
+                        c.note_binding(target, &ty);
                         c.declare(target.clone(), ty, target_mut);
                     }
                     c.check_stmts(body);

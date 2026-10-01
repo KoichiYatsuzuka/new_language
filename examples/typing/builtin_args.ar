@@ -1,0 +1,33 @@
+# builtin_args.ar — 組み込み関数の引数を宣言（src/built_in_stab/builtins.ars）で検査する
+#
+# ## 何が壊れていたか
+#
+# 型検査器が引数を検査していた組み込みは `range` / `len` だけで、`open("a.txt", 1)` /
+# `close("x")` / `repr(1, 2)` などは実行時まで通っていた。
+# ⇒ builtins.ars の仮引数（名前・順番・型・既定値）で、個数・キーワード引数の名前・型を検査する。
+#   `print` / `zip` は `let ...: Any`（個数自由の位置引数・キーワード引数は取らない）。
+#
+# 弾かれる例は builtin_args_error.ar
+
+print("=== open は宣言どおりの引数（キーワード引数の名前も実行時と同じ） ===")
+
+let f = open("examples/typing/builtin_args.ar", FileOpenMode.read, StartPoint.top, encoding = Encoding.UTF_8)
+print(len(f.read_line()) > 0)       # True
+close(f)
+
+let g = open(path("examples/typing/builtin_args.ar"), FileOpenMode.read)   # path も渡せる
+print(len(g.read_line()) > 0)       # True
+close(g)
+
+print("=== print / zip は位置引数を何個でも ===")
+
+print(1, "a", [2])                  # 1 a [2]
+for t in zip([1, 2], ["x", "y"], [True, False]):
+    print(t)                        # (1, 'x', True) / (2, 'y', False)
+
+print("=== enumerate の start はキーワードで ===")
+
+for i, x in enumerate(["p", "q"], start = 1):
+    print(i, x)                     # 1 p / 2 q
+
+print("done")
