@@ -39,6 +39,9 @@
   `tags.ar` is the type `tags.Tag` (a nested path gives `a.b.Tag`), distinct from a `Tag` in the main program or in
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
   `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too.
+  - ⚠ The same holds for classes of an `import[py]` module (`import[py] zoo as z` → `z.Dog`). A Python
+    class also matches the names of its base classes (`p is z.Animal` for `class Dog(Animal)`), as CPython's
+    `isinstance` does. `import[py-int]` classes (CPython objects) follow the foreign-stub rule below instead.
   - ⚠ A module's name is **per file** (2026-10-02): its path relative to the entry file's directory
     (`pkg.util`; above the entry directory each level is `__parent__`, e.g. `__parent__.util`). The same file
     imported under different spellings is one module; two files never share a name (so `util.ar` and

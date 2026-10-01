@@ -342,18 +342,30 @@ impl Interpreter {
                 if Self::qualified_class_matches(&inst.class, type_name) {
                     return true;
                 }
-                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて同じクラスか見る。
+                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて、同じクラスか・その派生か見る。
                 // ⚠ enum のメンバーのクラスは、引いた `Name` クラス（メンバーを持つ方）とは別のクラス
                 //   （`build_enum_classes`）。`class_id` は一致しないので、同じモジュールの同じ名前の
                 //   enum かで見る。
                 let class_id = inst.class.class_id;
                 let enum_key = inst.class.enum_of.clone().map(|e| (e, inst.class.module_name.clone()));
                 drop(inst);
-                let Some(cls) = self.dotted_class(type_name) else {
+                let Some(target) = self.dotted_class(type_name) else {
                     return false;
                 };
-                cls.class_id == class_id
-                    || enum_key.is_some_and(|(e, m)| cls.enum_of.is_none() && cls.name == e && cls.module_name == m)
+                if target.class_id == class_id
+                    || enum_key.is_some_and(|(e, m)| {
+                        target.enum_of.is_none() && target.name == e && target.module_name == m
+                    })
+                {
+                    return true;
+                }
+                // ⚠ 基底（Python のクラスの継承・`d is z.Animal`）。祖先は修飾名で `bases` に載っている
+                //   （`exec_class_def`・python_builtins_plan.md の 6 節）。以前は同じクラスしか見ず、派生は偽だった。
+                let qualified = match target.module_name.as_deref() {
+                    Some(m) => format!("{m}.{}", target.name),
+                    None => target.name.clone(),
+                };
+                inst_rc.borrow().class.is_a(&qualified)
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",

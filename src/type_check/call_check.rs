@@ -143,8 +143,10 @@ impl TypeChecker {
             }
             Expr::Attr { object, attr, .. } => match object.as_ref() {
                 Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(..)) => {
-                        // ⚠ 外部言語のモジュール（cpp / cs …）は素の名前で登録したまま。
+                    // ⚠ `import[py]` のモジュール（`PyNamespace`）も修飾名で引く（`zoo.Dog`）。以前は素の `Dog` で
+                    //   引いていたので、`z.Dog()` がメインの同名クラスの `__init__` で検査されていた（実測）。
+                    Some(InferredType::Namespace(..) | InferredType::PyNamespace(_)) => {
+                        // ⚠ 外部言語のモジュール（cpp / cs / py-int …）は素の名前で登録したまま。
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
                     // ⚠ 型の分からない受け手（エディタで読めていない `import` の別名など）の `x.f(..)` を、

@@ -115,7 +115,7 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
             Stmt::EnumDef { name, .. } => {
                 scope.names.insert(name.clone(), format!("{prefix}.{name}"));
             }
-            Stmt::FromImport { lang, module, names, .. } if is_arrow_source_lang(lang) => {
+            Stmt::FromImport { lang, module, names, .. } if names_types_by_module(lang) => {
                 let m = module.join(".");
                 for (orig, alias) in names {
                     scope
@@ -124,7 +124,7 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
                 }
             }
             // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（`import a.b` は `a` → パッケージ `a`）。
-            Stmt::Import { lang, bind: Some(b), .. } if is_arrow_source_lang(lang) => {
+            Stmt::Import { lang, bind: Some(b), .. } if names_types_by_module(lang) => {
                 scope.modules.insert(b.name.clone(), b.module.join("."));
             }
             _ => {}
@@ -176,6 +176,22 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
 /// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
 fn is_arrow_source_lang(lang: &str) -> bool {
     crate::module_path::is_arrow_source_lang(lang)
+}
+
+/// `import[lang]` のモジュールで宣言した型を**モジュールの名前で修飾する**か（`zoo.Dog`・10-8）。
+///
+/// Arrow のソースに加えて `py`（Python のソースを Arrow の文へ変換したもの）も修飾する。
+/// ⚠⚠ 以前は Arrow のソースだけだったので、`import[py] zoo as z` の `z.Dog` / `zoo.Dog` が
+///   型の名前として通らなかった（`d is z.Dog` が `unknown type`・`let x: z.Dog` が `not a known type`）。
+///   CPython の `isinstance(d, z.Dog)` は通る形で、変換したコードからも Arrow からも書けないと困る。
+///   ついでに、別々のモジュールの同名クラス（素の名前で登録すると混ざる）も分かれる。
+/// ⚠ [`is_arrow_source_lang`]（`Value::Instance` 前提の最適化に載せてよいか）とは**別の問い**。
+///   `py` のクラスは修飾するが、外部言語のまま扱う（`foreign_depth`・`arrow_class_names` に載せない・
+///   デコレータつきのクラスのメンバー検査を黙らせる）ので、VM の最適化とデコレータの扱いは変わらない。
+/// ⚠ `py-int`（CPython 経由・本体は `.pyi` の型の写し）は対象外。実行時の値が `Value::PyObject` で、
+///   `is` が修飾名を突き合わせる相手（`ClassValue::module_name`）を持たない。
+fn names_types_by_module(lang: &str) -> bool {
+    is_arrow_source_lang(lang) || lang == "py"
 }
 
 /// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
@@ -518,8 +534,11 @@ impl TypeRegistryBuilder {
                 | Stmt::FromImport { lang, module, body, .. } => {
                     let modpath = module.join(".");
                     let arrow = is_arrow_source_lang(lang);
-                    // 外部言語のモジュールの別名と、そのスタブのクラスを控える（`NameScope::foreign`・7-6）
-                    if !arrow {
+                    // 型をモジュールの名前で修飾するか（Arrow のソースと `py`・`names_types_by_module`）。
+                    let qualified = names_types_by_module(lang);
+                    // 外部言語のモジュールの別名と、そのスタブのクラスを控える（`NameScope::foreign`・7-6）。
+                    // ⚠ `py` は修飾名（`zoo.Dog`）で登録するので控えない（控えると `z.Dog` が素の `Dog` を指す）。
+                    if !qualified {
                         if let Stmt::Import { bind: Some(b), .. } = stmt {
                             let classes = body.iter().filter_map(|st| match st {
                                 Stmt::ClassDef { name, .. } => Some(name.clone()),
@@ -533,7 +552,7 @@ impl TypeRegistryBuilder {
                         }
                     }
                     // 今の文脈に別名・取り込んだ名前を控える（`TypeRegistry::name_scopes` の doc・10-8）。
-                    if arrow {
+                    if qualified {
                         let scope = &mut self.reg.name_scopes[self.cur_scope];
                         match stmt {
                             // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（CPython 準拠）。
@@ -565,13 +584,20 @@ impl TypeRegistryBuilder {
                         .cloned()
                         .collect();
                     if self.seen_modules.insert((lang.clone(), module.clone())) {
-                        if arrow {
+                        if qualified {
                             // モジュールの宣言は `tags.X` の名前で登録する（`qualify_module_body`・10-8）。
                             let (qbody, scope) = qualify_module_body(&modpath, body);
                             let idx = self.reg.name_scopes.len();
                             self.reg.name_scopes.push(scope);
                             self.reg.module_scope_index.insert(modpath.clone(), idx);
+                            // `py` は修飾するが外部言語のまま集める（`names_types_by_module` の doc・#27-a）。
+                            if !arrow {
+                                self.foreign_depth += 1;
+                            }
                             self.collect_in_module(&modpath, idx, &qbody);
+                            if !arrow {
+                                self.foreign_depth -= 1;
+                            }
                         } else {
                             // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
                             self.foreign_depth += 1;
@@ -583,7 +609,7 @@ impl TypeRegistryBuilder {
                     } else if !instances.is_empty() {
                         // ⚠ 2 回目以降の `import`: この本体にだけある具体化を集める（タスク 2-16）。
                         match self.reg.module_scope_index.get(&modpath).copied() {
-                            Some(idx) if arrow => {
+                            Some(idx) if qualified => {
                                 let map = self.reg.name_scopes[idx].names.clone();
                                 let q = |s: &str| crate::template_subst::subst_type(s, &map);
                                 let qinst: Vec<Stmt> = crate::template_subst::subst_stmts(&instances, &map)

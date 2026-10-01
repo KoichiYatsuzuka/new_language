@@ -1,0 +1,21 @@
+# py_module_types_error.ar — import[py] の別のモジュールの同名クラスは別の型（python_builtins_plan.md の 6 節）
+#
+# 対になる正常系: py_module_types.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  'x' is declared 'z.Dog' but initialized with 'test_modules.py_module_types_kennel.Dog'
+#   StaticTypeError  'y' is declared 'Dog' but initialized with 'test_modules.py_module_types_zoo.Dog'
+#   StaticTypeError  unknown type 'z.Cat' in type guard; the branch can never match
+#
+# ⚠ 以前は Python のモジュールのクラスを素の名前（`Dog`）で登録していたので、上の 2 つは同じ `Dog` に見えて
+#   素通りしていた。3 つ目は修飾名なら何でも通すわけではないことの確認（存在しない名前は従来どおり弾く）。
+
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+
+class Dog:
+    mut v: int
+
+let x: z.Dog = k.Dog()                    # ⛔ kennel.Dog を zoo.Dog へ
+let y: Dog = z.Dog()                      # ⛔ zoo.Dog をメインの Dog へ
+let w = x is z.Cat                        # ⛔ zoo に Cat は無い
