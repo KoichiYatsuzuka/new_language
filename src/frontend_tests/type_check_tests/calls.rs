@@ -381,3 +381,52 @@ use super::*;
         let (_, _, annotations) = TypeChecker::check_program(&stmts);
         assert!(!annotations.is_arrow_class("FileObject"));
     }
+
+    // --- 組み込み関数の引数（`builtins.ars` の仮引数）---
+    //
+    // 以前は `range` / `len` 以外の組み込みの引数を検査していなかった
+    // （`open("a.txt", 1)` / `close("x")` / `getenv(1)` が実行時まで通っていた）。
+
+    /// 個数・キーワード引数の名前・型を宣言で検査する。
+    #[test]
+    fn builtin_args_are_checked_from_declarations() {
+        assert!(ok(concat!(
+            "let f = open(\"a.txt\", FileOpenMode.read, StartPoint.top, encoding = Encoding.UTF_8)\n",
+            "let g = open(path(\"b.txt\"), open_mode = FileOpenMode.rewrite)\n",
+            "close(f)\nclose(g)\n",
+            "let e: str = getenv(\"HOME\", \"none\")\n",
+            "let r: str = repr([1])\n",
+        )));
+        assert!(err("let f = open(\"a.txt\", 1)\n"));
+        assert!(err("let f = open(\"a.txt\")\n"));
+        assert!(err("let f = open(\"a.txt\", FileOpenMode.read, mode = 1)\n"));
+        assert!(err("close(\"x\")\n"));
+        assert!(err("let e = getenv(1)\n"));
+        assert!(err("let r = repr(1, 2)\n"));
+        assert!(err("for i, x in enumerate([1], start = \"a\"):\n    print(i)\n"));
+    }
+
+    /// 個数自由の位置引数（`let ...: T`）は何個でも通し、キーワード引数・`... =` を弾く。
+    #[test]
+    fn variadic_builtins_take_positional_args_only() {
+        assert!(ok("print()\nprint(1, \"a\", [2])\nfor t in zip([1], [\"a\"], [True]):\n    print(t)\n"));
+        assert!(err("print(1, sep = \" \")\n"));
+        assert!(err("print(... = 1, 2)\n"));
+    }
+
+    /// `let ...: T` を持つ組み込みは固定の仮引数を前に持たない（`check_builtin_call` が前提にしている）。
+    #[test]
+    fn variadic_builtins_have_no_fixed_params() {
+        for name in crate::type_check::builtins::declared_names() {
+            let Some(decl) = crate::type_check::builtins::call_decl(&name) else { continue };
+            if decl.variadic.is_some() {
+                assert!(decl.params.is_empty(), "'{name}' は `let ...: T` と固定の仮引数を両方持っている");
+            }
+        }
+    }
+
+    /// 同じ名前の利用者の関数があれば、そちらのシグネチャで検査する（組み込みの宣言は使わない）。
+    #[test]
+    fn user_function_shadows_builtin_args() {
+        assert!(ok("fn close(let s: str) -> None:\n    print(s)\nclose(\"x\")\n"));
+    }

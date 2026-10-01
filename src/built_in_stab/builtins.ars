@@ -18,8 +18,12 @@
 #       診断が出るのは想定どおり（宣言の集まりでプログラムではない）。
 #   - **名前が型の名前**（`int` / `list` …）の関数は型の変換。型検査器はここからは型を付けない
 #     （`int` / `float` / `str` / `bool` は「型の値を呼ぶとその型」の規則が付ける）。
-#   - 仮引数の名前・順番は実行時のキーワード引数名に合わせる（シグネチャヘルプに出る）。
-#     引数の検査に使うのは `range` / `len` だけで、他は表示用。
+#   - 仮引数（名前・順番・型・既定値）で**呼び出しの引数を検査する**（個数・キーワード引数の名前・型）。
+#     名前と順番は実行時のキーワード引数名に合わせる（`get_arg(.., "file_path")` など）。
+#   - **個数自由の位置引数**（`print(a, b, c)` / `zip(xs, ys)`）は `let ...: T` で書く。
+#     ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。組み込みでは素の位置引数を
+#       何個でも受け取り、キーワード引数・`... =` は受け取らない（実行時もそれらは通らない）。
+#       型検査器は位置引数をそれぞれ `T` と突き合わせる。
 #   - 本体は `pass`（`...` は docstring と併用できない）。仮引数名に予約語（`code` など）を使わない
 #     （2026-09-22 に `code` が予約語になり、このファイルが丸ごと読めなくなっていた）。
 #   - **組み込みの型**（`enum` / `class`）もここで宣言する。型検査器はレジストリに登録して
@@ -82,8 +86,8 @@ class FileObject:
 
 # ── 組み込み関数 ────────────────────────────────────────────────────────────
 
-fn print(values: Any) -> None:
-    """Print any number of values separated by a space, followed by a newline."""
+fn print(let ...: Any) -> None:
+    """Print any number of values (positional only) separated by a space, followed by a newline."""
     pass
 
 fn len(obj: Any) -> int:
@@ -95,11 +99,11 @@ fn range(start: int, stop: int = 0, step: int = 1) -> list[int]:
     pass
 
 fn enumerate(iterable: Any, start: int = 0):
-    """Generator of (index, element) tuples, counting from start. The element type follows the argument."""
+    """Generator of (index, element) tuples, counting from start (pass it by keyword: `enumerate(xs, start = 1)`). The element type follows the argument."""
     pass
 
-fn zip(iterables: Any):
-    """Generator of tuples pairing the elements of any number of iterables; stops at the shortest."""
+fn zip(let ...: Any):
+    """Generator of tuples pairing the elements of any number of iterables (positional only); stops at the shortest."""
     pass
 
 fn next(iterator: Any):

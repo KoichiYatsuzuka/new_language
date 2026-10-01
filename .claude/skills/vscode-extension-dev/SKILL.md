@@ -90,8 +90,8 @@ renders as `let`, a writable one as `mut`, and `mut self` keeps its `mut`. This 
   analysis, so it is a genuinely separate system. Update it when adding/renaming keywords.
 - `language-configuration.json` — bracket matching, comment tokens, auto-closing pairs.
 - **Built-in function declarations live in `src/built_in_stab/builtins.ars`, not in the extension.**
-  It is the single source for both the type checker (return types of `open` / `repr` / …, and the
-  `range` / `len` signatures — `src/type_check/builtins.rs` embeds it with `include_str!`) and the
+  It is the single source for both the type checker (return types and argument checks of `open` /
+  `repr` / … — `src/type_check/builtins.rs` embeds it with `include_str!`) and the
   extension's hover/completion/signature help (the wasm hands the same text over via
   `ar_builtins` → `frontend.ts` `builtinsSource()` → `wasm_providers.ts` `loadPrelude()`).
   It is no longer copied into the VSIX. It also declares built-in **types** (`enum FileOpenMode`,

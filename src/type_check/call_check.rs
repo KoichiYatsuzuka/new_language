@@ -333,6 +333,8 @@ impl TypeChecker {
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
             if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+                // 引数は宣言（`builtins.ars`）の仮引数で検査する（`check_builtin_call`）。
+                self.check_builtin_call(name, args, &arg_data);
                 if let Some(ret) = self.builtin_fn_return(name, &arg_data) {
                     return ret;
                 }
@@ -1501,6 +1503,57 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// 組み込み関数の呼び出しの引数を、宣言（`src/built_in_stab/builtins.ars`）の仮引数で検査する。
+    ///
+    /// ⚠⚠ 以前は `range` / `len`（大域の関数型・`check_fn_type_call`）以外の組み込みの引数を
+    ///   検査していなかった。`open("a.txt", 1)` / `close("x")` / `getenv(1)` は実行時まで通っていた。
+    /// - 仮引数が固定の関数は、関数値の呼び出しと同じ検査（[`Self::check_fn_type_call`]・個数・
+    ///   キーワード引数の名前・型）。
+    /// - `let ...: T`（`print` / `zip`）は位置引数をそれぞれ `T` と突き合わせ、キーワード引数と
+    ///   `... =` を弾く（実行時もそれらは通らない）。固定の仮引数は前に持たない（`builtins.ars` の規則・
+    ///   単体テスト `variadic_builtins_have_no_fixed_params` が守る）。
+    /// ⚠ 型の変換（`int(x)` …）は検査しない（`builtins::call_decl`）。
+    /// ⚠ 呼ぶのは同じ名前の利用者の関数・変数が無いときだけ（呼ぶ側 `infer_call_inner`）。
+    fn check_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        let Some(decl) = super::builtins::call_decl(name) else { return };
+        let Some(elem) = decl.variadic else {
+            self.check_fn_type_call(name, args, arg_data, &decl.params);
+            return;
+        };
+        // ⚠ 展開（`print(*xs)`）は位置で対応づけられない。`check_fn_type_call` と同じく降りる。
+        if Self::has_spread_arg(args) {
+            return;
+        }
+        for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
+            if let Some(arg_name) = key {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::UnknownKeywordArg {
+                        func_name: name.to_string(),
+                        arg_name: arg_name.clone(),
+                    },
+                    span: None,
+                });
+                continue;
+            }
+            if elem != InferredType::Any && !self.types_compatible(arg_ty, &elem, Site::LetParam) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: name.to_string(),
+                        param_index: i,
+                        expected: elem.clone(),
+                        got: arg_ty.clone(),
+                    },
+                    span: None,
+                });
+            }
+        }
     }
 
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。

@@ -191,6 +191,15 @@ Handled by `infer_call()`:
    not typed from the file (`int`/`float`/`str`/`bool` use the "calling a type value" rule).
    `builtins.ars` is the single declaration file for both the checker and the VS Code extension's
    hover/completion (the wasm exports the same text via `ar_builtins`).
+   **Arguments** of those calls are checked against the declared parameters
+   (`check_builtin_call`): fixed parameters go through `check_fn_type_call` (count, keyword names,
+   types — `open("a", 1)`, `close("x")`, `repr(1, 2)` are errors); a `let ...: T` parameter
+   (`print`, `zip`) means *any number of positional arguments*, each checked against `T`, and keyword
+   arguments / `... =` are rejected. Unlike a user function's variadic (`f(... = a, b)`), these are
+   called with plain positionals. Conversions (`int(x)` …) are not checked. `range` / `len` are
+   checked through their global function type. ⚠ What the stub cannot express is not checked:
+   which built-ins accept keyword arguments at runtime (only `open` / `enumerate` — `repr(value = 1)`
+   passes statically and fails with `VmForceError`), and `enumerate`'s `start` being keyword-only.
 
 ### Expression forms (`block:`, `if:`, `for:`, `while:`, `match:` as expressions)
 

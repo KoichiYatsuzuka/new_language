@@ -15,8 +15,9 @@
 //! - 戻り値の注釈が無い関数は、型が静的に決まらない（`next` / `parse_ar` …）→ 型を付けない。
 //! - 名前が型の名前（`int` / `list` …・[`is_conversion`]）の関数は型の変換 → ここからは型を付けない。
 //!   `int` / `float` / `str` / `bool` は「型の値を呼ぶとその型」の規則（`call_check`）が付ける。
-//! - 仮引数を検査に使うのは、大域の名前を占有する [`GLOBAL_FNS`] だけ（`TypeChecker::new`）。
-//!   他の関数の仮引数は表示用。
+//! - 仮引数で呼び出しの引数を検査する（[`call_decl`]・`call_check` の `check_builtin_call`）。
+//!   [`GLOBAL_FNS`]（`range` / `len`）は大域の関数型として登録するので、その経路（`check_fn_type_call`）で検査される。
+//! - `let ...: T`（`print` / `zip`）は**個数自由の位置引数**（[`BuiltinFn::variadic`]）。
 //!
 //! ⚠ 利用者が同じ名前の関数・変数を宣言したら、そちらが勝つ（呼ぶ側 `builtin_fn_return` が先に見る）。
 //!
@@ -41,9 +42,13 @@ pub const SOURCE: &str = include_str!("../built_in_stab/builtins.ars");
 pub(super) const GLOBAL_FNS: [&str; 2] = ["range", "len"];
 
 /// 1 つの組み込み関数の宣言。
+#[derive(Clone)]
 pub(crate) struct BuiltinFn {
-    /// 仮引数（名前・型・既定値の有無）。
+    /// 仮引数（名前・型・既定値の有無）。`let ...: T` は含まない（[`Self::variadic`]）。
     pub params: Vec<FnTypeParam>,
+    /// `let ...: T` の `T`。組み込みでは「位置引数を何個でも受け取る」（`print(a, b)`）。
+    /// ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。キーワード引数は受け取らない。
+    pub variadic: Option<InferredType>,
     /// 戻り値の型。注釈が無いもの（静的に決まらない）は `None`。
     pub ret: Option<InferredType>,
 }
@@ -82,8 +87,12 @@ fn parse_table() -> Declarations {
             }
             continue;
         };
+        let variadic = params.iter().find(|p| p.variadic).map(|p| {
+            p.type_ann.as_deref().and_then(InferredType::from_ann).unwrap_or(InferredType::Any)
+        });
         let params = params
             .iter()
+            .filter(|p| !p.variadic)
             .map(|p| FnTypeParam {
                 name: p.name.clone(),
                 mutable: p.mutable,
@@ -96,7 +105,7 @@ fn parse_table() -> Declarations {
             })
             .collect();
         let ret = return_type.as_deref().and_then(InferredType::from_ann);
-        table.fns.insert(name, BuiltinFn { params, ret });
+        table.fns.insert(name, BuiltinFn { params, variadic, ret });
     }
     table
 }
@@ -115,6 +124,16 @@ pub(super) fn return_type(name: &str) -> Option<InferredType> {
         return None;
     }
     TABLE.with(|t| t.fns.get(name).and_then(|f| f.ret.clone()))
+}
+
+/// 組み込み関数 `name` の呼び出しの検査に使う宣言。組み込みでない・型の変換なら `None`。
+///
+/// ⚠ 型の変換（`int(x)` …）は検査しない（引数の受け方が型ごとに違い、宣言は表示用・[`is_conversion`]）。
+pub(crate) fn call_decl(name: &str) -> Option<BuiltinFn> {
+    if is_conversion(name) {
+        return None;
+    }
+    TABLE.with(|t| t.fns.get(name).cloned())
 }
 
 /// 組み込み関数 `name` の関数型（仮引数つき）。大域に登録する [`GLOBAL_FNS`] 用。

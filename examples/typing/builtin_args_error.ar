@@ -1,0 +1,20 @@
+# builtin_args_error.ar — 組み込み関数の引数を守る
+#
+# 正常系は builtin_args.ar
+#
+# ⚠ 以前は `range` / `len` 以外の組み込みの引数を検査していなかったので、どれも実行時まで通っていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  argument 1 of 'open' expects 'FileOpenMode' but got 'int'
+#   StaticTypeError  'open' takes 2 to 6 argument(s) but 1 were given
+#   StaticTypeError  'open' has no parameter named 'mode'
+#   StaticTypeError  argument 0 of 'close' expects 'FileObject' but got 'str'
+#   StaticTypeError  'repr' takes 1 argument(s) but 2 were given
+#   StaticTypeError  'print' has no parameter named 'sep'
+
+let a = open("examples/typing/builtin_args_error.ar", 1)                        # ⛔ FileOpenMode ではない
+let b = open("examples/typing/builtin_args_error.ar")                           # ⛔ open_mode が無い
+let c = open("examples/typing/builtin_args_error.ar", FileOpenMode.read, mode = 1)  # ⛔ そんな名前の引数は無い
+close("examples/typing/builtin_args_error.ar")                                  # ⛔ FileObject ではない
+print(repr(1, 2))                   # ⛔ 1 個だけ
+print(1, sep = " ")                 # ⛔ print はキーワード引数を取らない
