@@ -1,4 +1,4 @@
-# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
+# git SHA: 4427c6023d50056aecc7f7b739f56d520842a91f
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -553,10 +553,10 @@ class Interpreter:
                 msg = display(val)
                 raise RaiseSignal(val, msg)
 
-            case StmtImport(lang=lang, module=module, alias=alias, body=body):
-                self._exec_import(lang, module, alias, body)
+            case StmtImport(lang=lang, module=module, alias=alias, body=body, base_dir=base_dir):
+                self._exec_import(lang, module, alias, body, base_dir)
 
-            case StmtFromImport(lang=lang, module=module, names=names, body=body):
+            case StmtFromImport(lang=lang, module=module, names=names, body=body, base_dir=base_dir):
                 self._exec_from_import(lang, module, names, body)
 
             case StmtAsyncAssign(target=target, return_type=return_type, stmts=stmts):
@@ -2418,7 +2418,8 @@ class Interpreter:
     # Module-level cache for cpp imports: header_path → TlNamespace
     _cpp_module_cache: dict = {}
 
-    def _exec_import(self, lang: str, module: list[str], alias: Optional[str], body: list) -> None:
+    def _exec_import(self, lang: str, module: list[str], alias: Optional[str], body: list,
+                     base_dir: Optional[str] = None) -> None:
         # cpp-dll / cpp-lib: bypass tree-walk; load via ctypes
         if lang in ("cpp-dll", "cpp-lib"):
             header_path_str = module[0] if module else ""
@@ -2487,10 +2488,22 @@ class Interpreter:
 
         ns = TlNamespace(name=mod_name, members=members)
         bound_name = alias if alias else module[-1]
-        self._env.declare(bound_name, ns, mutable=False)
 
         # If using py import
+        # ⚠ 束縛は最後に 1 回だけ（2026-10-02）。以前は先に `ns` を不変で束縛してから
+        #   importlib の結果を `assign` していたので、import が成功すると
+        #   `cannot assign to immutable variable` で落ちていた（sys.path に起点が無く、
+        #   import 自体がほぼ失敗していたので表に出ていなかった）。
         if lang == "py" or lang == "py-int":
+            # ⚠ この import 文の探索の起点を sys.path の先頭へ（mirrors `import_search_dirs`）。
+            #   エントリのディレクトリではなく、import 文を書いたファイルのディレクトリ
+            #   （ドット付きなら段数を適用済み）。
+            if base_dir:
+                import sys as _sys
+                import os as _os
+                _bd = _os.path.abspath(base_dir)
+                if _bd not in _sys.path:
+                    _sys.path.insert(0, _bd)
             try:
                 import importlib
                 py_mod = importlib.import_module(mod_name)
@@ -2513,10 +2526,10 @@ class Interpreter:
                             members2[attr] = _py_to_tl(val)
                     except Exception:
                         pass
-                ns2 = TlNamespace(name=mod_name, members=members2)
-                self._env.assign(bound_name, ns2)
+                ns = TlNamespace(name=mod_name, members=members2)
             except ImportError:
                 pass
+        self._env.declare(bound_name, ns, mutable=False)
 
     def _exec_from_import(self, lang: str, module: list[str], names: list, body: list) -> None:
         if lang in ("cpp-dll", "cpp-lib"):

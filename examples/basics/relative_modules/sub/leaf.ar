@@ -8,10 +8,11 @@
 
 import ..base
 import .util
+from ..base import Unit
 from ..util import which as top_which
 
-fn make_unit(let v: int) -> base.Unit:
-    return base.Unit(base.double(v))
+fn make_unit(let v: int) -> Unit:
+    return Unit(base.double(v))
 
 fn which_utils() -> str:
     return util.which() + " / " + top_which()

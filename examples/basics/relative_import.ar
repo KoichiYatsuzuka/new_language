@@ -26,10 +26,11 @@ if u.v != 42:
 print(leaf.base_name())           # base
 
 # ── ② 同じファイルは、どの綴りで import しても同じモジュール ──
-#    leaf.ar の `..base` と、ここの `.relative_modules.base` は同じ base.ar。
-#    ⇒ 型も同じ（`base.Unit` と `Unit` に互いに入る）。
-let w: base.Unit = u
-print(w.v)                        # 42
+#    leaf.ar の `..base` と、ここの `.relative_modules.base` / `relative_modules.base` は同じ base.ar。
+#    ⇒ 型も同じ（leaf.ar の `Unit` を返す関数の結果が、ここの `Unit` に入る・①）。
+#      モジュールの状態も 1 つ（base.double はどの綴りから呼んでも同じ関数）。
+print(base.double(u.v))           # 84
+print(base.NAME == leaf.base_name())   # True
 
 # ── ③ 同じ名前の別ファイルは別のモジュール ──
 #    sub/util.ar（leaf.ar の `.util`）と util.ar（ここの `relative_modules.util`）

@@ -1,4 +1,4 @@
-# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
+# git SHA: 4427c6023d50056aecc7f7b739f56d520842a91f
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -573,6 +573,10 @@ class StmtImport:
     module: list[str]
     alias: Optional[str]
     body: list["Stmt"]
+    # 探索の起点（相対 import・mirrors `ast::ImportOrigin`）。
+    # level = 先頭のドットの数、base_dir = 起点ディレクトリ（level を適用済み）。
+    level: int = 0
+    base_dir: Optional[str] = None
 
 @dataclass
 class StmtFromImport:
@@ -580,6 +584,9 @@ class StmtFromImport:
     module: list[str]
     names: list[tuple[str, Optional[str]]]
     body: list["Stmt"]
+    # 探索の起点（相対 import・mirrors `ast::ImportOrigin`）。
+    level: int = 0
+    base_dir: Optional[str] = None
 
 @dataclass
 class StmtEventSubscribe:
