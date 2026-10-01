@@ -356,19 +356,19 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 
 | 名前 | pandas | 書き方 | CPython とずれる点・前提 |
 |---|---|---|---|
-| `isinstance(x, C)`（第 2 引数が組み込みの型名・クラス名・その組） | 1,727（組み込みの型 766・pandas のクラス 961） | `x is C`。組は `or` | ⚠ `isinstance(True, int)` は CPython で `True`、Arrow の `True is int` は `False`。`int` は `x is int or x is bool` に写す。⚠ Python のクラスの**修飾名**（`b is m.Box`）は今は静的な誤り（6 節） |
+| `isinstance(x, C)`（第 2 引数が組み込みの型名・クラス名・その組） | 1,727（組み込みの型 766・pandas のクラス 961） | `x is C`。組は `or` | ⚠ `isinstance(True, int)` は CPython で `True`、Arrow の `True is int` は `False`。`int` は `x is int or x is bool` に写す。Python のクラスの**修飾名**（`b is m.Box`）・基底（`b is m.Animal`）も書ける（6 節で直した） |
 | `getattr(o, "名前")` / `getattr(o, "名前", d)` | 188（2 / 186） | `o.名前` / `AttributeError` を捕まえる `try` のブロック式 | 無い属性の読みは捕まえられる `AttributeError` になる |
 | `hasattr(o, "名前")` | 150 | 同じ `try` のブロック式で `True` / `False` | 同上 |
 | `setattr(o, "名前", v)` | 32 | `o.名前 = v` | クラス本体で宣言していない属性は作れない（`'Box' has no field 'zzz'`）。`setattr` に限らない既存の差 |
 | `callable(x)` | 59 | `x is function`（関数・`__call__` を持つインスタンス／クラスで真） | ⚠ `__call__` を持たない**クラス**で `False`（CPython は `True`）。クラスかどうかの判定（4.2）が要る |
 | `all` / `any` | 113 / 98 | 前置きの関数（`for` で途中で返す） | — |
-| `max` / `min` | 51 / 35（2 引数 57・反復可能 27・値として 2） | 2 引数は比較 1 回。ほかは前置きの関数（`key=` / `default=`） | ⚠ list / tuple 同士の `<` が無い（6 節）。組を比べる形は前置きに辞書式の比較を書く |
+| `max` / `min` | 51 / 35（2 引数 57・反復可能 27・値として 2） | 2 引数は比較 1 回。ほかは前置きの関数（`key=` / `default=`） | ⚠ list / tuple 同士の `<` が無い（タスク 1-3）。組を比べる形は前置きに辞書式の比較を書く |
 | `sorted`（`key=` 7・`reverse=` 3） | 37 | 前置きの安定な整列（マージソート） | 組の比較は同上。⚠ 書けるが遅い。`list.sort()` も無い（6 節）ので、**Rust で 1 つ作って両方から使う方が筋が良い**（その場合は 4.2 へ移る） |
 | `sum` | 15 | 前置き（`start` つきの `+` の畳み込み） | CPython 3.12 の float の和は補償つき（Neumaier）。同じ手順で書けば一致する |
-| `iter(x)` | 33（すべて 1 引数） | 前置き: `x.__iter__()`。辞書は `d.keys().__iter__()`、ジェネレータはそのまま返す | 辞書とジェネレータに `__iter__` が無い（6 節）ので場合分けが要る。2 引数の `iter(f, 番兵)` はジェネレータ関数で書ける |
+| `iter(x)` | 33（すべて 1 引数） | 前置き: `x.__iter__()`。辞書は `d.keys().__iter__()`、ジェネレータはそのまま返す | 辞書とジェネレータに `__iter__` が無い（タスク 1-4）ので、それまでは場合分けが要る。2 引数の `iter(f, 番兵)` はジェネレータ関数で書ける |
 | `abs` | 26 | 符号で分ける。複素数は `.real()` / `.imag()` から | — |
 | `ord` | 9 | `s.ord()`（既にある。`"é".ord()` → `233`） | — |
-| `divmod` | 8 | `(a // b, a % b)` | ⚠ **演算子の側に差がある**: float の `//` / `%` が無い（6 節）。演算子を直すまで `divmod` も同じ差を持つ（割る数が負のときの int の差は直した） |
+| `divmod` | 8 | `(a // b, a % b)` | ⚠ **演算子の側に差がある**: float の `//` / `%` が無い（タスク 1-2）。演算子を直すまで `divmod` も同じ差を持つ（割る数が負のときの int の差は直した） |
 | `round(x)` | 2（すべて 1 引数） | 前置き（偶数への丸め。`int()` は 0 方向の切り捨て） | 2 引数の `round(x, n)` は `x * 10**n` 経由だと端で CPython（正確な 10 進の丸め）とずれる |
 | `pow` | 1（値として渡す形） | 2 引数は `**`、3 引数は前置き（二乗を繰り返す） | 法が大きいと i64 の掛け算があふれる（i128 が要る） |
 | `hex` / `oct` / `bin` | 1 / — / — | `"%x" % n` / `"%o" % n`（動く）。`bin` は桁を繰り返す | `0x` などの接頭辞と負数の `-0x` の形は自前で付ける |
@@ -460,7 +460,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 ### 4.5 実装予定（5 節）への影響
 
 - 3-2 / 3-3 の大半（`all` 〜 `pow`・`map` / `filter` / `iter` / `ord` / `hex` / `oct` / `bin` / `ascii`）は前置き 1 つにまとめられる。
-  ただし `divmod` / `sorted` / `min` / `max` を CPython と揃えるには、先に演算子の穴（6 節）を埋める。
+  ただし `divmod` / `sorted` / `min` / `max` を CPython と揃えるには、先に演算子の穴（タスク 1-2 / 1-3）を埋める。`iter` は 1-4 が前提。
 - 3-1 は名前で行き先が違う: `list` は書き換え（4.1）、`tuple` は薄い新規（4.2）、`frozenset` / `bytes` は厚い新規（4.3）。
 - 2-1 は名前の形（1,727）が書き換えで済む一方、pandas の ABC（298）は `__instancecheck__` が無いと残る。
 - 2-2 の `type(x)` は薄い（クラスの値を返すだけ）が、`__name__` と「値がクラスか」の判定を一緒に足す。
@@ -469,7 +469,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 
 フェーズは次のように分けた。フェーズの中は pandas の損害が大きい順。
 
-- フェーズ 1: 失敗を前倒しする（ほかのタスクの間も効く）
+- フェーズ 1: 失敗を前倒しする・後のフェーズの前提になる演算子とメソッドの穴（どれもほかのタスクの間も効く）
 - フェーズ 2〜5: 意味が CPython と同じにできるもの（型の判定 → コンテナと集計 → 例外・警告 → 呼び出しの形の穴）
 - フェーズ 6: Arrow の言語に対応物が無く、写し方を決める必要があるもの（`property` など）
 
@@ -478,15 +478,19 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | # | 内容 | pandas | 前提 | 重さ |
 |---|---|---|---|---|
 | **1-1** | 未対応の組み込みの参照を**変換時に見つけて知らせる**（失敗を前倒しする）。⚠ 要判断: 変換の誤りにするとその名前を 1 箇所でも含むモジュールが丸ごと読めなくなる（実行しない枝でも）。警告にとどめるか、誤りにするかを決める | 7,204（187 モジュール） | なし | 小 |
+| **1-2** | float の `//` / `%`（int と float の混在を含む）。CPython の `_float_div_mod` / `float_rem`（`fmod` で余りを出し、符号を割る数に合わせ、0 にも割る数の符号を付け、商を整数へ寄せる）を写す。ゼロ除算の文言も合わせる（`float floor division by zero` / `float modulo`）。⚠⚠ **ネイティブ codegen も同じ式に揃える**: 今の `floor(a/b)` / `a - floor(a/b)*b` は `0.1 % 0.01`（`0.0`、CPython `3.47e-18`）・`-1.0 % inf`（`nan`、CPython `inf`）・`6.0 % -3.0`（`0.0`、CPython `-0.0`）でずれる。int の `//` / `%`（`ops::py_floor_div`）と同じく共通の関数 1 つにする。型検査の `binop.rs` も float を通す。詳細は 6 節 | —（演算子） | なし | 小 |
+| **1-3** | list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）。CPython の `list_richcompare` / `tuplerichcompare` の 2 段構え（`==` で最初に違う要素を探す → その要素だけを求められた演算子で比べる → 違いが無ければ長さで決める）。⚠ list と tuple は比べない（`TypeError`）、同じオブジェクトは等しいとみなす（`[nan] == [nan]` が真）、比べられない要素に届いたときだけ `TypeError`（`(1, 'a') < (2, 3)` は真）。型検査は `tuple[..]` の要素ごとに比べられるかを見る。3-2 の `sorted` / `min` / `max` でタプルを鍵にする形の前提。詳細は 6 節 | —（演算子） | なし | 中 |
+| **1-4** | 辞書とジェネレータの `__iter__` メソッド。辞書はキーを挿入順に返すイテレータ（CPython の `dict_iter`・反復中に大きさが変わったら `RuntimeError: dictionary changed size during iteration`）、ジェネレータは自分自身（`PyObject_SelfIter`）。⚠ `for k in d:` / `for x in g:` は今も動く。足りないのはメソッドとしての呼び出しと、それを使う `iter()`（3-3）。⚠ list の `__iter__` は呼んだ時点の写しを回すので、反復中の書き換えも CPython と違う（別に要判断）。詳細は 6 節 | —（メソッド） | なし | 小 |
 | **2-1** | `isinstance(x, C)` の写し: 第 2 引数が名前（`C` / `m.C` / `int`）なら `x is C`、組なら `or` へ変換時に写す。変数（`isinstance(x, cls)`）は実行時の組み込みで受ける。⚠ `isinstance(True, int)` は CPython で `True`（`bool` は `int` の派生） | 2,766 | なし | 中 |
 | **2-2** | `type(x)`（1 引数）と `type(x).__name__` / `type(x) is C`。⚠ 3 引数の `type(name, bases, dict)`（クラスを作る）は対象外の候補 | 868 | なし | 中 |
 | **2-3** | `getattr` / `hasattr` / `setattr`（既定値つき `getattr(o, n, d)` を含む） | 595 | なし | 中 |
 | **2-4** | `issubclass` / `callable` | 128 | 2-1 | 小 |
 | **3-1** | `list(it)` / `tuple(it)` / `dict(..)`（呼べるようにする）/ `frozenset` / `bytes` | 969 | なし | 中 |
-| **3-2** | `all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | なし | 中 |
-| **3-3** | `map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | なし | 小 |
+| **3-2** | `all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | 1-2（`divmod` の float）・1-3（組を鍵にする比較） | 中 |
+| **3-3** | `map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | 1-4（`iter` の辞書・ジェネレータ） | 小 |
 | **4-1** | 警告クラス（`FutureWarning` / `DeprecationWarning` / `RuntimeWarning` / `UserWarning` / `Warning` …）と、足りない例外クラス（`ImportError` / `LookupError` / `SyntaxError` / `FileNotFoundError` …）。⚠ 階層（`LookupError` → `KeyError` / `IndexError`）も合わせる（10-19 の `ClassValue::is_a`） | 382 | なし | 中 |
 | **4-2** | 例外の `str(e)`（メッセージ）と `e.args` | — | なし | 小 |
+| **4-3** | 修飾名の例外を捕まえる `except m.Err:`（Python の `except requests.HTTPError:` の形）。今は Arrow の構文が受けず（`except e.MyErr:` が `ParseError: expected ':', got '.'`・Arrow のモジュールでも同じ）、変換器も明示エラーにしている（`only a simple exception name is supported in except`）。構文・変換器に足し、照合は `is` と同じ経路（`value_is_type` の修飾名・基底の修飾名）に載せる。`import[py]` のクラスの修飾名（6 節で直した）が前提 | —（構文） | なし | 中 |
 | **5-1** | 呼び出しの形だけ解決される組み込み（`range` / `repr` …）を**値として**使えるようにする。`print` のキーワード引数（`end=` / `sep=`）で関数がバイトコードにできない問題 | 16 | なし | 中 |
 | **5-2** | `open` を Python の形（`open(path, "r", encoding=..)`）で受ける | 6 | なし | 小 |
 | **6-1** | ⚠ 要判断: `property`（Arrow にプロパティ構文が無い。getter をメソッド呼び出しへ写すか） | 586 | なし | 大 |
@@ -504,9 +508,42 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
     → **直した**（2026-10-01）。`div_euclid` / `rem_euclid` をやめ、`ops::py_floor_div` / `ops::py_mod` に 1 本化した
     （`apply_binop` と VM の `int_binop_specialized` の 2 か所。ネイティブ codegen の `@_tl_idiv` / `@_tl_imod` は元から正しかった）。
     回帰の例題は `examples/basics/int_floor_div_mod.ar`。
-  - float の `//` / `%` が無い（`-7.5 // 2.0` が静的に `unsupported operand types`。型検査を通らない Python 由来のコードでも実行時に `TypeError`）。
-  - list 同士・tuple 同士の大小比較（`<` など）が無い（静的にも実行時にも `TypeError`）。`sorted` / `min` / `max` で組を比べる形に効く。
-  - 辞書とジェネレータに `__iter__` メソッドが無い（list・str・set にはある）。
-  - Python のクラスを**修飾名**で書いた型の判定（`import[py] mod as m` の後の `b is m.Box`）が静的に `unknown type 'm.Box' in type guard`。
-    `from mod import[py] Box` の後の `b is Box` は通る。
+  - float の `//` / `%` が無い → **タスク 1-2**。
+    - 再現: Python の `def fdiv(a, b): return a // b` を `fm.fdiv(7.5, 2.0)` で呼ぶと
+      `TypeError: unsupported operand types for 'FloorDiv': float and float`。Arrow で書いた `a // 2.0`（`a: float`）は
+      静的に `unsupported operand types for '//': 'float' and 'float'`。
+    - CPython（3.12.2・実測）: `-7.5 // 2.0` → `-4.0`、`-7.5 % 2.0` → `0.5`、`7.5 % -2.0` → `-0.5`、`6.0 % -3.0` → `-0.0`、
+      `0.1 % 0.01` → `3.469446951953614e-18`、`-1.0 % inf` → `inf`、`1.0 // 0.0` → `ZeroDivisionError: float floor division by zero`、
+      `1.0 % 0.0` → `ZeroDivisionError: float modulo`。
+    - CPython の実装（`Objects/floatobject.c`）: `//` は `float_floor_div` → `_float_div_mod`、`%` は `float_rem`。
+      `mod = fmod(vx, wx)`（`a/b` を経由しないので余りが厳密）→ 余りが 0 でなく符号が割る数と違えば `mod += wx; div -= 1.0` →
+      余りが 0 なら `copysign(0.0, wx)` → 商 `div = (vx - mod) / wx` を `floor` して 0.5 を超えるずれは繰り上げ、商が 0 なら
+      `copysign(0.0, vx / wx)`。int と混ざったら先に double へ変換する（`CONVERT_TO_DOUBLE`）。Rust の `f64 % f64` は C の `fmod` と同じ。
+  - list 同士・tuple 同士の大小比較（`<` など）が無い → **タスク 1-3**。
+    - 再現: Python の `if r > best:`（`r` / `best` がタプル）が `TypeError: unsupported operand types for 'Gt': tuple and tuple`。
+      Arrow で書いた `(1, 2) < (1, 3)` は静的に `cannot compare 'tuple[int, int]' and 'tuple[int, int]' with <`。
+    - CPython（実測）: `(1, 2) < (1, 2, 0)` → `True`、`(1, 'a') < (2, 3)` → `True`、`(1, 'a') < (1, 3)` → `TypeError: '<' not supported
+      between instances of 'str' and 'int'`、`[1] < (1,)` → `TypeError: ... 'list' and 'tuple'`、同じ NaN を入れた `[nan] == [nan]` → `True`。
+    - CPython の実装（`Objects/listobject.c` の `list_richcompare`・`Objects/tupleobject.c` の `tuplerichcompare`）: 両方が同じ種類で
+      なければ `NotImplemented`（→ `TypeError`）。`PyObject_RichCompareBool(.., Py_EQ)`（同じオブジェクトなら等しい）で最初に違う
+      位置を探し、無ければ長さを比べ、あればその要素だけを求められた演算子で比べ直す。list だけ `==` / `!=` で長さが違えば先に返す。
+  - 辞書とジェネレータに `__iter__` メソッドが無い（list・str・set にはある）→ **タスク 1-4**。
+    - 再現: Python の `next(d.__iter__())` が `AttributeError: 'dict' object has no method '__iter__'`、
+      `next(nums().__iter__())`（`nums` はジェネレータ関数）が `AttributeError: Generator object has no method '__iter__'`。
+      `for k in d:` / `for x in nums():` は動く。
+    - CPython（実測）: `next(d.__iter__())` は挿入順で最初のキー、型は `dict_keyiterator`。`iter(g) is g` は `True`。
+      反復中にキーを足すと `RuntimeError: dictionary changed size during iteration`。
+    - CPython の実装: 辞書（`Objects/dictobject.c`）は `tp_iter = dict_iter` → `dictiter_new(dict, &PyDictIterKey_Type)`。
+      イテレータは作った時の大きさ（`di_used`）と位置を持ち、`dictiter_iternextkey` が毎回 `di_used != ma_used` を見て止める
+      （止めたら止まったまま）。挿入順の表を進み、消された枠は飛ばす。ジェネレータ（`Objects/genobject.c`）は
+      `tp_iter = PyObject_SelfIter`（自分を返す）。`iter(x)` は `Objects/abstract.c` の `PyObject_GetIter`（`tp_iter` が無ければ
+      `__getitem__` の列として回すか `'X' object is not iterable`、返り値がイテレータでなければ `TypeError`）。
+  - ~~Python のクラスを**修飾名**で書いた型の判定（`import[py] mod as m` の後の `b is m.Box`）が静的に `unknown type 'm.Box' in type guard`。~~
+    → **直した**（2026-10-01）。原因は型検査のレジストリが `import[py]` のモジュールのクラスを素の名前（`Box`）で登録していたこと
+    （10-8 のモジュール名での修飾が Arrow のソースだけだった）。`builder::names_types_by_module` で `py` も修飾し、
+    `z.Dog` / `zoo.Dog` が `is` / `mustbe` / 型注釈に書けるようにした。`z.Dog()` の呼び出しの検査もメインの同名クラスを見ていたので直した
+    （`call_check.rs`・`PyNamespace` も修飾名で引く）。実行時は、Python のクラスの祖先（`bases`）に基底の修飾名も載せ、
+    `p is z.Animal`（`class Dog(Animal)` の派生）も当たるようにした（以前はクラス自身しか見ず偽）。
+    別のモジュールの同名クラスも分かれる（kennel の `Dog` と zoo の `Dog`）。例題は `examples/interop/py_module_types.ar` / `_error.ar`。
+    ⚠ 修飾名の `except m.Err:` は構文・変換器の両方が受けないので別件（**タスク 4-3**）。
 
