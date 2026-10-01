@@ -6,6 +6,7 @@
 
 - 起票: 2026-09-30（フェーズ10 の 10-18 の作業中に `isinstance` が使えないことに気づいたのが発端。`type_check_redesign.md` とは別件）
 - 測定: Arrow `ff4afe1`・CPython 3.12.2・pandas 2.2.0
+- 分類（4 節）: 2026-10-01・Arrow `a16e0a1`（release ビルドで実際に動かして確かめた）
 
 ## 0. 何が起きるか
 
@@ -62,7 +63,7 @@ CPython 3.12 の `dir(builtins)` の 158 名から、モジュールの属性（
 C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており、`import[py]`（Python のソースを変換する）では
 そもそも読み込めない。未対応の構文・標準ライブラリも別にある。
 
-⚠ 測定に使ったスクリプト（名前ごとの試験・pandas の集計）は、まだリポジトリに入れていない。タスクを進めて数え直すときは `scripts/` に置く（規約どおり `.ps1` から呼ぶ形にする）。
+⚠ 測定に使ったスクリプト（名前ごとの試験・pandas の集計・4 節の呼び出しの形の集計）は、まだリポジトリに入れていない。タスクを進めて数え直すときは `scripts/` に置く（規約どおり `.ps1` から呼ぶ形にする）。
 
 ## 2. 対応状況の一覧
 
@@ -317,7 +318,154 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 - `@classmethod`（198）・`@staticmethod`（19）はデコレータとして変換器が扱うので数えていない。
 - `super` は 307 箇所のうち 304 箇所が `super().m(...)` の形（対応済み）。
 
-## 4. 実装予定
+## 4. 既存の機能で書けるか（未対応 112 名の分類）
+
+2.1 の 112 名を、**Arrow に今ある機能だけで書けるもの**と**新規実装が要るもの**に分けた。
+
+- **既存の機能で書ける**（4.1）: 新しい実行時の仕組みが要らない。手段は 3 つ:
+  1. 変換時に Arrow の式へ書き換える（`isinstance(x, C)` → `x is C`）
+  2. Arrow か Python で書いた**前置きの関数**を置く（`meta_expand` の `PRELUDE` と同じ形）
+  3. 既存の表に名前を足す（例外・警告クラス）
+- **新規実装が要る**: Rust の側に呼び口・値・意味を足す。
+  - **薄い**（4.2）: 中身は実行時に既にあり、Arrow から呼ぶ口が無いだけ
+  - **厚い**（4.3）: 新しい値の種類か、新しい意味（手順）が要る
+- `isinstance` / `getattr` / `hasattr` / `setattr` / `object` / `tuple` は**呼び出しの形で行き先が分かれる**。
+  pandas の箇所は形ごとに数え直した（1.2 と同じ 254 モジュール。`isinstance` 2,766・`type` の呼び出し 846・
+  `hasattr` 162・`setattr` 64・`issubclass` 69・`list` の呼び出し 332・`tuple` の呼び出し 113 が 3 節と一致した）。
+  ⚠ `object` / `list` / `tuple` の呼び出し以外の内訳はスコープを解決せずに数えたので「約」。
+
+### 4.0 まとめ
+
+| 区分 | 名前 | pandas の箇所 |
+|---|---|---|
+| 既存の機能で書ける（4.1） | 64 | 約 3,960（55%） |
+| 形で分かれる（`isinstance` / `getattr` / `hasattr` / `setattr` / `object` / `tuple`） | 6 | （形ごとに各区分へ振り分けた） |
+| 新規・薄い（4.2） | 14 | 約 1,410（20%） |
+| 新規・厚い（4.3） | 28 | 約 1,130（16%） |
+| 相手の型が読めるか次第（4.4） | — | 627（9%） |
+| 計 | 112 | 7,129（3 節の 7,204 から 2.2 の部分的な対応の 75 を除いた数） |
+
+- 箇所で見ると**半分強は新しい仕組みなしで消せる**。大きいのは `isinstance` の名前の形（1,727）・`list(it)`（332）・
+  `getattr` / `hasattr` の文字列リテラルの形（338）・警告クラス（315）。
+- 新規の上位は `type(x)`（867・薄い）・`property`（586・厚い）・`isinstance` の pandas の ABC（298・厚い）・
+  `getattr` / `hasattr` / `setattr` の名前が変数の形（225・薄い）。
+
+### 4.1 既存の機能で書ける
+
+#### 関数
+
+| 名前 | pandas | 書き方 | CPython とずれる点・前提 |
+|---|---|---|---|
+| `isinstance(x, C)`（第 2 引数が組み込みの型名・クラス名・その組） | 1,727（組み込みの型 766・pandas のクラス 961） | `x is C`。組は `or` | ⚠ `isinstance(True, int)` は CPython で `True`、Arrow の `True is int` は `False`。`int` は `x is int or x is bool` に写す。⚠ Python のクラスの**修飾名**（`b is m.Box`）は今は静的な誤り（6 節） |
+| `getattr(o, "名前")` / `getattr(o, "名前", d)` | 188（2 / 186） | `o.名前` / `AttributeError` を捕まえる `try` のブロック式 | 無い属性の読みは捕まえられる `AttributeError` になる |
+| `hasattr(o, "名前")` | 150 | 同じ `try` のブロック式で `True` / `False` | 同上 |
+| `setattr(o, "名前", v)` | 32 | `o.名前 = v` | クラス本体で宣言していない属性は作れない（`'Box' has no field 'zzz'`）。`setattr` に限らない既存の差 |
+| `callable(x)` | 59 | `x is function`（関数・`__call__` を持つインスタンス／クラスで真） | ⚠ `__call__` を持たない**クラス**で `False`（CPython は `True`）。クラスかどうかの判定（4.2）が要る |
+| `all` / `any` | 113 / 98 | 前置きの関数（`for` で途中で返す） | — |
+| `max` / `min` | 51 / 35（2 引数 57・反復可能 27・値として 2） | 2 引数は比較 1 回。ほかは前置きの関数（`key=` / `default=`） | ⚠ list / tuple 同士の `<` が無い（6 節）。組を比べる形は前置きに辞書式の比較を書く |
+| `sorted`（`key=` 7・`reverse=` 3） | 37 | 前置きの安定な整列（マージソート） | 組の比較は同上。⚠ 書けるが遅い。`list.sort()` も無い（6 節）ので、**Rust で 1 つ作って両方から使う方が筋が良い**（その場合は 4.2 へ移る） |
+| `sum` | 15 | 前置き（`start` つきの `+` の畳み込み） | CPython 3.12 の float の和は補償つき（Neumaier）。同じ手順で書けば一致する |
+| `iter(x)` | 33（すべて 1 引数） | 前置き: `x.__iter__()`。辞書は `d.keys().__iter__()`、ジェネレータはそのまま返す | 辞書とジェネレータに `__iter__` が無い（6 節）ので場合分けが要る。2 引数の `iter(f, 番兵)` はジェネレータ関数で書ける |
+| `abs` | 26 | 符号で分ける。複素数は `.real()` / `.imag()` から | — |
+| `ord` | 9 | `s.ord()`（既にある。`"é".ord()` → `233`） | — |
+| `divmod` | 8 | `(a // b, a % b)` | ⚠ **演算子の側に差がある**: 割る数が負のときの結果・float の `//` / `%`（6 節）。演算子を直すまで `divmod` も同じ差を持つ |
+| `round(x)` | 2（すべて 1 引数） | 前置き（偶数への丸め。`int()` は 0 方向の切り捨て） | 2 引数の `round(x, n)` は `x * 10**n` 経由だと端で CPython（正確な 10 進の丸め）とずれる |
+| `pow` | 1（値として渡す形） | 2 引数は `**`、3 引数は前置き（二乗を繰り返す） | 法が大きいと i64 の掛け算があふれる（i128 が要る） |
+| `hex` / `oct` / `bin` | 1 / — / — | `"%x" % n` / `"%o" % n`（動く）。`bin` は桁を繰り返す | `0x` などの接頭辞と負数の `-0x` の形は自前で付ける |
+| `ascii` | — | `repr` の結果を `chars()` / `ord()` で見て、非 ASCII を `\x..` / `\u....` / `\U........` にする | — |
+| `breakpoint` | — | 何もしない（CPython の `PYTHONBREAKPOINT=0` と同じ） | 本当に止めるならデバッガとつなぐ（新規） |
+
+#### 型
+
+| 名前 | pandas | 書き方 | CPython とずれる点・前提 |
+|---|---|---|---|
+| `list` | 524（呼び出し 332・`isinstance` の中 144・ほか 48） | `list(it)` は `[v for v in it]`（変換器の `build_list_comprehension`）。`isinstance` の中は `is list` | 値として渡す形（`map(list, ..)` など）は前置きの関数が要る |
+| `tuple`（呼び出し以外。大半が `isinstance` の中） | 約 191 | `is tuple` | 呼び出しの `tuple(it)` は 4.2 |
+| `object`（値として。`dtype=object`・`== object` など） | 約 255 | 番兵（空のクラスの値）。`isinstance(x, object)` は `True` | 素の dunder の呼び出し（`object.__setattr__` など約 50）は 4.3 |
+| `map` / `filter` | 34 / — | 前置きのジェネレータ関数（遅延のまま） | — |
+| `reversed` | 15 | 列は `xs[::-1]` を回す。`__reversed__` を持つインスタンスはそれを呼ぶ | — |
+
+#### 定数
+
+| 名前 | pandas | 書き方 | CPython とずれる点・前提 |
+|---|---|---|---|
+| `Ellipsis` | 15（14 が `x is Ellipsis` の比較） | 番兵 | 変換器は今 `...` を `None` にしている（`convert_constant`）。同じ番兵に揃える |
+| `__debug__` | — | `True` に書き換える | — |
+
+#### 例外・警告（既存の例外クラスの表に足す）
+
+| 名前 | pandas |
+|---|---|
+| 警告 12（`Warning` / `FutureWarning` / `DeprecationWarning` / `RuntimeWarning` / `UserWarning` / `ResourceWarning` / `UnicodeWarning` / `EncodingWarning` / `BytesWarning` / `ImportWarning` / `PendingDeprecationWarning` / `SyntaxWarning`） | 315 |
+| 例外 24（`SyntaxError` / `IndentationError` / `TabError` / `LookupError` / `FloatingPointError` / `BufferError` / `ReferenceError` / `SystemError` / `UnboundLocalError` / `UnicodeError` / `UnicodeTranslateError` / `BaseException` / `EnvironmentError` / `WindowsError` / `ConnectionError` / `ConnectionAbortedError` / `ConnectionRefusedError` / `ConnectionResetError` / `BrokenPipeError` / `BlockingIOError` / `ChildProcessError` / `ProcessLookupError` / `InterruptedError` / `TimeoutError`） | 22 |
+
+- どれも **Python のコードが自分で `raise` / `except` するだけ**で、Arrow の実行時が自分で投げる場面が無い。
+  `BUILTIN_EXCEPTION_NAMES` と、それに揃える 2 つの表（`type_check` の `EXCEPTION_CLASS_NAMES`・`exceptions.rs` の `CATCHABLE`）に足せば済む。
+- ⚠ 今の組み込みの例外には**階層が無い**（`make_error_class` が `bases` を空で作る。`except ArithmeticError` が
+  `ZeroDivisionError` を捕まえない・実測）。`ClassValue::is_a` は `bases` の**直接の名前だけ**を見るので、
+  祖先を平らに並べて入れれば仕組みはそのままで捕まる。`LookupError` を足すなら `KeyError` / `IndexError` の `bases` も直す。
+- `EnvironmentError` / `WindowsError` は `OSError` の別名（同じクラスを指す名前）にする。
+  `BaseException` は、`SystemExit` / `KeyboardInterrupt`（4.2 / 4.3）が無いうちは `Exception` と同じに扱ってよい。
+- 警告は**クラスとして**足すだけ。`warnings.warn(..)` は標準ライブラリ（`warnings`）の問題で、本書の対象外。
+
+#### 対話用
+
+| 名前 | pandas | 書き方 | CPython とずれる点・前提 |
+|---|---|---|---|
+| `help` / `copyright` / `credits` / `license` | — | 決まった文を `print` | `help(obj)` は docstring を出せない |
+
+### 4.2 新規実装（薄い: 中身は実行時にあり、呼び口が無いだけ）
+
+| 名前 | pandas | 使える中身 | メモ |
+|---|---|---|---|
+| `type(x)` | 867（1 引数 845・値として 22） | クラスの値（組み込みの型も `print(int)` が `<class 'int'>`） | 使われ方は `type(x).__name__` 258・`type(x)(...)`（作り直し）234・`type(self)._simple_new(..)` などのクラスメソッド約 100・`type(x) is C` などの比較 35。クラスの値は呼べる（`let f = int` の後の `f("12")` が動く）ので、返せば後は既存で回る。`__name__` は足す（今は `Type` の `.name`）。値として（`isinstance(x, type)` など）は「値がクラスか」の判定 |
+| `getattr` / `hasattr` / `setattr`（名前が変数） | 225（181 / 12 / 32） | 属性の読み書きは内部で名前の文字列で引いている（`eval/attrs.rs`） | `getattr` の 40 は既定値つき |
+| `isinstance(x, 変数)` | 146 | `value_is_type` / `ClassValue::is_a` | `is` の右辺は型の**名前**しか書けない（`Expr::IsType` の `type_name: String`） |
+| `issubclass` | 37（ほか 32 は相手が外部の型・4.4） | `ClassValue::is_a` | クラス同士を比べる構文が無い |
+| `tuple(it)` | 113 | `TupleData::new` | 長さが実行時に決まる組を作る手段が無い（`tuple(xs)` は静的に `name 'tuple' is not defined`） |
+| `hash` | 18 | `hash_value`（`ops/hash.rs`） | 辞書・集合の鍵と同じ値を返す |
+| `chr` | 3 | （Rust の `char::from_u32`） | 文字コードから文字列を作る手段が無い |
+| （`callable` のクラスの場合） | （4.1 の 59 に含む） | `Value::Class` | 「値がクラスか」の判定。`type` を値として使う形と共有する |
+| `input` | — | — | 標準入力を読む手段が無い（デバッガの中だけ） |
+| `exit` / `quit` | — | — | プロセスを終える手段が無い。`SystemExit` を投げ、捕まえられなければ終了コードで終わる |
+| `FileNotFoundError` / `PermissionError` / `IsADirectoryError` / `NotADirectoryError` / `FileExistsError` | 3 | 例外クラスの表（4.1 と同じ） | 名前を足すだけでは足りない: 今は `open` の失敗が `IOError`（実測）。OS のエラーの種類で投げ分け、`bases` に `OSError` を入れる |
+| `SystemExit` / `EOFError` | — | 同上 | `exit` / `input` と一緒に |
+
+### 4.3 新規実装（厚い: 新しい値・意味が要る）
+
+| 名前 | pandas | 足りないもの |
+|---|---|---|
+| `property` | 586（576 が `@property`） | 属性を読んだときに getter を呼ぶ仕組み。`o.x` → `o.x()` の書き換えは、変換時に `o` の型が分からないので変換器ではできない（タスク 6-1） |
+| `isinstance` の第 2 引数が pandas の ABC（`ABCSeries` など） | 298 | メタクラスの `__instancecheck__`。pandas の ABC は `create_pandas_abc_type` が作るクラスで、名前は静的だが `is` では判定できない |
+| `NotImplemented` | 50（28 が `return NotImplemented`） | 値は番兵で済むが、意味は「二項演算子が `NotImplemented` を受けたら反対側（`__radd__` など）を試す」手順にある |
+| `object.__setattr__` / `__getattribute__` / `__new__` / `__repr__` | 約 51 | 上書きした dunder を飛ばして素の属性操作・生成を呼ぶ手段（名前が変数の `setattr` と同根） |
+| `bytes` / `bytearray` / `memoryview` | 46 / 2 / 3 | バイト列の値の種類（今の `"é".encode()` は `list[int]` を返す） |
+| `frozenset` | 45 | 不変でハッシュできる集合の値の種類 |
+| `ImportError` / `ModuleNotFoundError` | 35 / 2 | pandas の使い方は `try: import x` / `except ImportError:`（任意の依存）。Python の `import` をブロックの中に書くこと自体が今は変換の誤り |
+| `UnicodeDecodeError` / `UnicodeEncodeError` | 4 / 1 | バイト列と `decode` / `encode` の失敗（`bytes` と一緒に） |
+| `globals` / `locals` / `dir` / `vars` | 5 / 2 / 1 / 1 | 実行時のリフレクション（メタ情報 `Value::Meta` は展開時だけ） |
+| `__import__` / `eval` / `exec` / `compile` / `__build_class__`・3 引数の `type(name, bases, dict)` | 1 / — / — / — / —・1 | 実行時に Python のコードを変換・実行する、import する、クラスを作る（`parse_ar` は Arrow のソースだけ） |
+| `format` | — | 書式指定の小言語。`%` の printf 形式はある（`.2f`・`5d`・`x`・`-5s` は動く）が、`,` は `unsupported format character`、`%e` は `1.234568e4`（CPython `1.234568e+04`）、`^` / `>` の詰め・`_`・`%`・`#x` は無い。f-string の `{x:spec}` も同じものが要る |
+| `delattr` | — | 属性はクラス本体で固定なので「消す」概念が無い |
+| `aiter` / `anext` / `StopAsyncIteration` | — | 非同期の反復の手順（Arrow の非同期は `AsyncManager`） |
+| `KeyboardInterrupt` / `MemoryError` | — | Ctrl+C を例外に変える手順／メモリ不足を捕まえる手順（Rust はメモリ不足で止まる） |
+| `ExceptionGroup` / `BaseExceptionGroup` | — | `except*` の構文と意味 |
+
+### 4.4 相手の型が読めるか次第（組み込みの問題ではない）
+
+| 形 | pandas | メモ |
+|---|---|---|
+| `isinstance` / `issubclass` の第 2 引数が pandas の外の型（`np.ndarray`・`collections.abc` の型・`datetime`・`pandas._libs` の C 拡張の型など） | 627（595 / 32） | 相手の型が Arrow の側にあれば 4.1 の `is` で書ける。numpy と `pandas._libs.*` は `import[py]` では読めない。`collections.abc`（`Iterable` など）は構造で判定するので、別に手段が要る |
+
+### 4.5 実装予定（5 節）への影響
+
+- 3-2 / 3-3 の大半（`all` 〜 `pow`・`map` / `filter` / `iter` / `ord` / `hex` / `oct` / `bin` / `ascii`）は前置き 1 つにまとめられる。
+  ただし `divmod` / `sorted` / `min` / `max` を CPython と揃えるには、先に演算子の穴（6 節）を埋める。
+- 3-1 は名前で行き先が違う: `list` は書き換え（4.1）、`tuple` は薄い新規（4.2）、`frozenset` / `bytes` は厚い新規（4.3）。
+- 2-1 は名前の形（1,727）が書き換えで済む一方、pandas の ABC（298）は `__instancecheck__` が無いと残る。
+- 2-2 の `type(x)` は薄い（クラスの値を返すだけ）が、`__name__` と「値がクラスか」の判定を一緒に足す。
+
+## 5. 実装予定
 
 フェーズは次のように分けた。フェーズの中は pandas の損害が大きい順。
 
@@ -348,7 +496,15 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 `__import__` / `__build_class__` / `breakpoint` / `input` / `help` / `exit` / `quit` / `copyright` / `credits` / `license` / `memoryview` / `aiter` / `anext`。
 対応しないなら 1-1 で「未対応」と知らせる。
 
-## 5. 測定のついでに見つけたもの（組み込み以外）
+## 6. 測定のついでに見つけたもの（組み込み以外）
 
 - `list.sort()`（メソッド）が無い（`AttributeError: 'list' object has no method 'sort'`）。組み込み関数ではないので本書の数には入れていない。
+- 以下は 4 節の分類で見つけた（どれも実測）。4.1 の前置きで書くものの正しさに効く:
+  - 整数の `//` / `%` が**割る数が負のとき** CPython と違う。`-7 // -2` が `4`（CPython `3`）、`7 % -2` が `1`（CPython `-1`）。
+    `div_euclid` / `rem_euclid` で計算しているため（`ops/operators.rs`）。割る数が正なら一致する。
+  - float の `//` / `%` が無い（`-7.5 // 2.0` が静的に `unsupported operand types`。型検査を通らない Python 由来のコードでも実行時に `TypeError`）。
+  - list 同士・tuple 同士の大小比較（`<` など）が無い（静的にも実行時にも `TypeError`）。`sorted` / `min` / `max` で組を比べる形に効く。
+  - 辞書とジェネレータに `__iter__` メソッドが無い（list・str・set にはある）。
+  - Python のクラスを**修飾名**で書いた型の判定（`import[py] mod as m` の後の `b is m.Box`）が静的に `unknown type 'm.Box' in type guard`。
+    `from mod import[py] Box` の後の `b is Box` は通る。
 
