@@ -1914,13 +1914,13 @@ fn int_binop_specialized(x: i64, y: i64, op: &BinOp) -> Option<Value> {
             if y == 0 {
                 return None;
             }
-            Value::Int(x.div_euclid(y))
+            Value::Int(crate::interpreter::ops::py_floor_div(x, y))
         }
         BinOp::Mod => {
             if y == 0 {
                 return None;
             }
-            Value::Int(x.rem_euclid(y))
+            Value::Int(crate::interpreter::ops::py_mod(x, y))
         }
         // 指数が非負なら整数冪、負なら float（`apply_binop` の Int/Int アームと同一）。
         BinOp::Pow => {

@@ -1,4 +1,4 @@
-// tests/primitives.rs — uint プリミティブ型と id() 組み込み関数のテスト。
+// tests/primitives.rs — uint プリミティブ型・id() 組み込み関数・int の `//` / `%` のテスト。
 
 use super::*;
 
@@ -184,3 +184,50 @@ fn test_id_wrong_arg_count_error() {
     assert!(run("let r = id(1, 2)\n").is_err());
 }
 
+
+// ---------------------------------------------------------------------------
+// int `//` / `%`（CPython と同じ丸め）
+// ---------------------------------------------------------------------------
+
+/// 整数の `//` / `%` が CPython と同じく、商を負の無限大の方向へ丸め、余りを割る数と同じ符号にするか。
+///
+/// ⚠ 以前は `div_euclid` / `rem_euclid` で、割る数が負のときだけ違った（`-7 // -2` が 4・`7 % -2` が 1）。
+#[test]
+fn test_int_floor_div_mod_follow_cpython() {
+    use crate::interpreter::ops::{py_floor_div, py_mod};
+    // (a, b, a // b, a % b) — 値は CPython 3.12 で取った。
+    let cases = [
+        (7, 2, 3, 1),
+        (-7, 2, -4, 1),
+        (7, -2, -4, -1),
+        (-7, -2, 3, -1),
+        (1, -5, -1, -4),
+        (-6, 2, -3, 0),
+        (6, -2, -3, 0),
+        (0, -3, 0, 0),
+    ];
+    for (a, b, q, r) in cases {
+        assert_eq!(py_floor_div(a, b), q, "{a} // {b}");
+        assert_eq!(py_mod(a, b), r, "{a} % {b}");
+        assert_eq!(py_floor_div(a, b) * b + py_mod(a, b), a, "{a}, {b}");
+    }
+    // あふれる組はパニックしない（`%` は正しく 0、`//` は `+` などと同じく折り返す）。
+    assert_eq!(py_mod(i64::MIN, -1), 0);
+    assert_eq!(py_floor_div(i64::MIN, -1), i64::MIN);
+}
+
+/// ツリーウォーク（最上位）と VM の int 特化（関数の中・複合代入）が同じ結果になるか。
+#[test]
+fn test_int_floor_div_mod_negative_divisor_in_vm_and_toplevel() {
+    let src = concat!(
+        "fn f(a: int, b: int) -> int:\n",
+        "    mut x = a\n",
+        "    x //= b\n",
+        "    return x * 100 + a % b\n",
+        "let top = -7 // -2 * 100 + 7 % -2\n",
+        "let in_fn = f(-7, -2)\n",
+    );
+    // -7 // -2 = 3、7 % -2 = -1、-7 % -2 = -1
+    assert!(matches!(run_get(src, "top"), Value::Int(299)));
+    assert!(matches!(run_get(src, "in_fn"), Value::Int(299)));
+}

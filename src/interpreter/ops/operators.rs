@@ -362,13 +362,13 @@ impl Interpreter {
                 if *b == 0 {
                     return Err("ZeroDivisionError: integer division by zero".to_string());
                 }
-                Ok(Value::Int(a.div_euclid(*b)))
+                Ok(Value::Int(super::py_floor_div(*a, *b)))
             }
             (BinOp::Mod, Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
                     return Err("ZeroDivisionError: modulo by zero".to_string());
                 }
-                Ok(Value::Int(a.rem_euclid(*b)))
+                Ok(Value::Int(super::py_mod(*a, *b)))
             }
             (BinOp::Pow, Value::Int(a), Value::Int(b)) => {
                 if *b >= 0 {
