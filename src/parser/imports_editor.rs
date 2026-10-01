@@ -46,7 +46,7 @@ impl Parser {
             return self.parse_cpp_import_syntax(lang);
         }
 
-        let module = self.parse_module_path()?;
+        let (level, module) = self.parse_module_ref()?;
         // モジュール名の位置はここでしか正しく取れない。この後 `[0.2]` や `as x` を
         // 読むと `prev_pos()` が `]` や別名を指してしまう。
         let module_pos = self.prev_pos();
@@ -74,18 +74,19 @@ impl Parser {
                 None => (module.last().cloned().unwrap_or_default(), module_pos),
             };
             let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
-            let sig = format!("import[{lang}] {}", module.join("."));
+            let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &module));
             self.note_signature(h, &sig);
         }
 
-        let body = self.editor_import_body(&lang, &module);
+        let body = self.editor_import_body(&lang, level, &module);
 
         Ok(Stmt::Import {
             lang,
+            source_module: (level > 0).then(|| crate::module_path::written_spelling(level, &module)),
             module,
-            source_module: None,
             alias,
             body,
+            origin: crate::ast::ImportOrigin { level, base_dir: None },
         })
     }
 
@@ -94,7 +95,7 @@ impl Parser {
     pub(crate) fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `from` を消費
 
-        let module = self.parse_module_path()?;
+        let (level, module) = self.parse_module_ref()?;
 
         self.eat(&Token::Import)?;
         let lang = if *self.current() == Token::LBracket {
@@ -117,7 +118,10 @@ impl Parser {
             {
                 let bind = alias.clone().unwrap_or_else(|| name.clone());
                 let h = self.note_def(&bind, crate::parser::editor_hooks::EditorKind::Module);
-                let sig = format!("from {} import[{lang}] {name}", module.join("."));
+                let sig = format!(
+                    "from {} import[{lang}] {name}",
+                    crate::module_path::written_spelling(level, &module)
+                );
                 self.note_signature(h, &sig);
             }
             names.push((name, alias));
@@ -134,14 +138,15 @@ impl Parser {
             }
         }
 
-        let body = self.editor_import_body(&lang, &module);
+        let body = self.editor_import_body(&lang, level, &module);
 
         Ok(Stmt::FromImport {
             lang,
+            source_module: (level > 0).then(|| crate::module_path::written_spelling(level, &module)),
             module,
-            source_module: None,
             names,
             body,
+            origin: crate::ast::ImportOrigin { level, base_dir: None },
         })
     }
 
@@ -160,8 +165,9 @@ impl Parser {
     ///
     /// ⚠ 対象は `time` / `math` のような**トップレベル 1 要素**のモジュールだけ
     /// （`py_stubs::builtin_stub` の doc）。他の py モジュールは従来どおり空 body。
-    fn bundled_py_stub_body(lang: &str, module: &[String]) -> Vec<Stmt> {
-        if lang != "py" && lang != "py-int" {
+    fn bundled_py_stub_body(lang: &str, level: u32, module: &[String]) -> Vec<Stmt> {
+        // ⚠ 同梱スタブは外部のモジュールの代わり。相対の書き方では引かない（CLI と同じ）。
+        if (lang != "py" && lang != "py-int") || level > 0 {
             return Vec::new();
         }
         match crate::py_stubs::builtin_stub(module) {
@@ -178,11 +184,11 @@ impl Parser {
     ///   2. **同梱 py スタブ**（`crate::py_stubs`）— CLI では「どこにも無かったとき」の
     ///      最後の一段。ホスト由来が無いときだけ引くので、順序が CLI と逆にならない。
     ///   3. どちらも無ければ空 body（型が付かないだけ・誤診断は出ない）。
-    fn editor_import_body(&mut self, lang: &str, module: &[String]) -> Vec<Stmt> {
-        if let Some(body) = self.host_stub_body(lang, module) {
+    fn editor_import_body(&mut self, lang: &str, level: u32, module: &[String]) -> Vec<Stmt> {
+        if let Some(body) = self.host_stub_body(lang, level, module) {
             return body;
         }
-        Self::bundled_py_stub_body(lang, module)
+        Self::bundled_py_stub_body(lang, level, module)
     }
 
     /// ホストが積んだ `.ars` テキストを**同じ Arrow パーサ**で読んで body にする。
@@ -196,8 +202,14 @@ impl Parser {
     ///
     /// ⚠ `node_counter` は親と共有する。共有しないとスタブ側の node-id が本体と衝突し、
     /// 消費側が別の式の注釈を読む（`ar_modules.rs` が同じ理由で共有している）。
-    fn host_stub_body(&mut self, lang: &str, module: &[String]) -> Option<Vec<Stmt>> {
-        let key = crate::parser::stub_registry::stub_key(lang, module);
+    fn host_stub_body(&mut self, lang: &str, level: u32, module: &[String]) -> Option<Vec<Stmt>> {
+        // ⚠ 鍵は**書いた綴り**（`..util`）。CLI（`--emit-stubs`）も書いた綴りで鍵を作る
+        //   （`Stmt::Import::source_module`）。ドットを落とすと別のモジュールのスタブを引く。
+        let key = if level > 0 {
+            format!("{lang}:{}", crate::module_path::written_spelling(level, module))
+        } else {
+            crate::parser::stub_registry::stub_key(lang, module)
+        };
         let counter = self.node_counter.clone();
         crate::parser::stub_registry::with_stub(&key, |source| {
             let tokens = crate::lexer::Lexer::new(source, "<stub>").tokenize();
@@ -213,22 +225,14 @@ impl Parser {
     /// `import[cpp-dll] Dir.Header as alias` の構文だけを読む。
     /// 通常ビルドと違いヘッダファイルは開かないので `source_module` は `None`。
     fn parse_cpp_import_syntax(&mut self, lang: String) -> Result<Stmt, String> {
-        let first = match self.current().clone() {
-            Token::Ident(s) => {
-                self.advance();
-                s
-            }
-            other => {
-                return Err(format!(
-                    "import[{lang}]: expected dotted identifier for header path, got `{other}`"
-                ))
-            }
-        };
-        let mut parts = vec![first];
-        while *self.current() == Token::Dot {
-            self.advance();
-            parts.push(self.expect_ident()?);
+        // ⚠ CLI 側（`imports/cpp.rs` の `parse_cpp_import`）と同じ受理規則。
+        if !matches!(self.current(), Token::Ident(_) | Token::Dot | Token::Ellipsis) {
+            return Err(format!(
+                "import[{lang}]: expected dotted identifier for header path, got `{}`",
+                self.current()
+            ));
         }
+        let (level, parts) = self.parse_module_ref()?;
         // ヘッダ名の位置はここでしか正しく取れない（`as x` を読むと `prev_pos()` が
         // 別名を指す）。`parse_import_stmt` の `module_pos` と同じ理由。
         let module_pos = self.prev_pos();
@@ -250,18 +254,19 @@ impl Parser {
                 None => (parts.last().cloned().unwrap_or_default(), module_pos),
             };
             let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
-            let sig = format!("import[{lang}] {}", parts.join("."));
+            let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &parts));
             self.note_signature(h, &sig);
         }
 
-        let body = self.editor_import_body(&lang, &parts);
+        let body = self.editor_import_body(&lang, level, &parts);
 
         Ok(Stmt::Import {
             lang,
+            source_module: (level > 0).then(|| crate::module_path::written_spelling(level, &parts)),
             module: parts,
-            source_module: None,
             alias,
             body,
+            origin: crate::ast::ImportOrigin { level, base_dir: None },
         })
     }
 
@@ -294,16 +299,6 @@ impl Parser {
         }
         self.eat(&Token::RBracket)?;
         Ok(lang)
-    }
-
-    /// ドット区切りのモジュールパスをパースして `Vec<String>` を返す。
-    fn parse_module_path(&mut self) -> Result<Vec<String>, String> {
-        let mut segments = vec![self.expect_ident()?];
-        while *self.current() == Token::Dot {
-            self.advance();
-            segments.push(self.expect_ident()?);
-        }
-        Ok(segments)
     }
 
     /// `[version]` を読み飛ばして文字列として返す（`import[rs] libm[0.2]`）。

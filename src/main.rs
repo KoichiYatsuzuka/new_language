@@ -19,6 +19,8 @@ mod frontend_tests;
 mod interpreter;
 mod meta_expand;
 mod lexer;
+// import の探索規則とモジュールの同一性（相対 import・2026-10-02）。パーサと実行時が共有する。
+mod module_path;
 mod parser;
 #[cfg(feature = "prof")]
 mod prof;
@@ -470,18 +472,15 @@ fn run_program(
     interp.add_source_text(filename, source);
     #[cfg(feature = "prof")]
     drop(_s_as);
-    // ソースファイルのディレクトリを import 検索パスに追加する。
+    // ⚠⚠ エントリのディレクトリを実行時の import 探索先に**登録しない**（2026-10-02）。
+    //   以前はここで登録していたので、`import[py-int]` の `sys.path`・C# のブリッジ・js-proc の
+    //   設定が、サブディレクトリのファイルが書いた import でもエントリのディレクトリ基準で探された。
+    //   今は各 import 文が自分の探索の起点を持つ（`ast::ImportOrigin`・`crate::module_path`）。
     // ⚠ この区間は **~0.000 ms でなければならない**（#69・`prof::Sub::CfgWalk` の doc 参照）。
+    //   計測区間の並び（`prof::SUB_NAMES`）を変えないために区間だけ残してある。
     #[cfg(feature = "prof")]
     let _s_cfg = prof::SubTimer::new(prof::Sub::CfgWalk);
-    if let Some(dir) = &source_dir {
-        interp.add_python_search_dir(dir.clone());
-        // ⚠⚠ #69: **ここでは `ar_config.json` を読まない**（起点を覚えるだけ）。
-        // 読むのは `Interpreter::python_search_dirs()` の初回呼び出し ＝
-        // cs-dll / cs-proc / js-proc / `import[py-int]` を実際に使ったときだけ。
-        // 順序（明示登録 → 設定由来）は `python_search_dirs()` が保つ。
-        interp.set_config_base_dir(dir.clone());
-    }
+    let _ = &source_dir;
     #[cfg(feature = "prof")]
     drop(_s_cfg);
     // CLIパラメータを `args` dict としてグローバルスコープに登録する

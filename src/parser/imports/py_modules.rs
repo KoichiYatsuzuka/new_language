@@ -2,25 +2,52 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::Stmt, crate::python_converter,
-    std::path::PathBuf,
+    crate::ast::{ImportOrigin, Stmt}, crate::module_path, crate::python_converter,
+    super::dispatch::LoadedModule,
+    std::path::{Path, PathBuf},
 };
 use super::*;
 
 impl Parser {
+    /// Python の import の探索先（[`crate::module_path`] の規則）。
+    ///
+    /// - ドット無し … `from_dir`（import 文を書いたファイルのディレクトリ）→ 外部の探索先
+    ///   （[`Self::python_search_dirs_from`]）
+    /// - ドット付き … 起点だけ（Python の相対 import と同じく外部は見ない）
+    ///
+    /// 戻り値の先頭が「ファイルの近く」の探索先（そこで見つけたモジュールの名前は
+    /// エントリのディレクトリ基準になる・[`Self::name_module_file`]）。
+    fn python_import_dirs(&self, from_dir: &Path, level: u32) -> Vec<PathBuf> {
+        if module_path::uses_external_paths(level) {
+            self.python_search_dirs_from(from_dir)
+        } else {
+            vec![module_path::search_base(from_dir, level)]
+        }
+    }
+
     /// Python モジュールを検索・変換する（キャッシュ込み）。
-    /// python_search_dirs() の順に .py または __init__.py を探す。
-    pub(crate) fn load_python_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    /// [`Self::python_import_dirs`] の順に .py または __init__.py を探す。
+    ///
+    /// `from_dir` は import 文を書いたファイルのディレクトリ。`.ar` から読むときは
+    /// その `.ar` の、Python モジュールの中の import（[`Self::fill_python_imports`]）では
+    /// **その `.py` の**ディレクトリ。
+    pub(crate) fn load_python_module(
+        &mut self,
+        from_dir: &Path,
+        level: u32,
+        module: &[String],
+    ) -> Result<LoadedModule, String> {
         let module_base: PathBuf = module.iter().collect();
         let rel_py   = module_base.with_extension("py");
         let rel_init = module_base.join("__init__.py");
-        let search_dirs = self.python_search_dirs();
+        let search_dirs = self.python_import_dirs(from_dir, level);
 
         // 検索ディレクトリを順に試して最初に見つかった .py / __init__.py を使う
-        let abs_path = search_dirs
+        let found = search_dirs
             .iter()
-            .flat_map(|d| [d.join(&rel_py), d.join(&rel_init)])
-            .find(|p| p.exists())
+            .enumerate()
+            .flat_map(|(i, d)| [(i, d.join(&rel_py)), (i, d.join(&rel_init))])
+            .find(|(_, p)| p.exists())
             .ok_or_else(|| {
                 let looked = search_dirs
                     .iter()
@@ -36,10 +63,14 @@ impl Parser {
                      (C extensions such as sys, numpy, ...) cannot be loaded this way; \
                      use `import[py-int]` to call them through CPython instead \
                      (looked at {})",
-                    module.join("."),
+                    module_path::written_spelling(level, module),
                     looked
                 )
             })?;
+        // 先頭の探索先（ファイルの近く）で見つけたか（モジュールの名前の付け方が変わる）。
+        let (found_at, found_path) = found;
+        let shown_path = module_path::normalize(&found_path);
+        let abs_path = module_path::absolute(&shown_path);
 
         // ⚠⚠ **標準ライブラリは明示エラーで止める**（項目 27）。
         //   stdlib は検索パスに入っている（`python_lib_dirs`）ので `.py` は**見つかる**。
@@ -62,22 +93,23 @@ impl Parser {
             ));
         }
 
+        let name = self.name_module_file(&abs_path, module, found_at == 0)?;
         let cache_key = ("py".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
-            return Ok(body.clone());
+            return Ok(LoadedModule { body: body.clone(), name });
         }
 
         if self.loading.contains(&abs_path) {
-            return Err(format!("circular import detected: '{}'", abs_path.display()));
+            return Err(format!("circular import detected: '{}'", shown_path.display()));
         }
 
-        let source = std::fs::read_to_string(&abs_path)
-            .map_err(|e| format!("cannot read '{}': {e}", abs_path.display()))?;
+        let source = std::fs::read_to_string(&shown_path)
+            .map_err(|e| format!("cannot read '{}': {e}", shown_path.display()))?;
 
         self.loading.insert(abs_path.clone());
 
-        let filename = abs_path.to_string_lossy().to_string();
+        let filename = shown_path.to_string_lossy().to_string();
         // ⚠ 変換が失敗しても `self.loading` を残さない（次の import で偽の循環になる）。
         let converted = python_converter::convert_python_source(&source, &filename);
         let mut body = match converted {
@@ -90,12 +122,13 @@ impl Parser {
         // ★ Python モジュール内の `import` を**再帰で充填**する（項目 27）。
         //   ⚠ `self.loading` に自分が入ったままここを通るので、循環 import は
         //     既存の検出（`circular import detected`）がそのまま効く。
-        let filled = self.fill_python_imports(&mut body);
+        let py_dir = shown_path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let filled = self.fill_python_imports(&mut body, &py_dir);
         self.loading.remove(&abs_path);
         filled?;
         self.module_cache.insert(cache_key, body.clone());
 
-        Ok(body)
+        Ok(LoadedModule { body, name })
     }
 
     /// Python から変換した body の中の `import[py]` / `from ... import[py]` の
@@ -109,14 +142,26 @@ impl Parser {
     /// ⚠ 走査するのは**モジュール本体の直下だけ**。Python の関数内 import は
     /// 遅延読み込みの意図があり、変換器は文の位置を保つので、そこはそのまま残る
     /// （＝現状は充填されず、実行時に未定義になる。必要になったら別途対応する）。
-    fn fill_python_imports(&mut self, body: &mut [Stmt]) -> Result<(), String> {
+    ///
+    /// ⚠ 探索の起点は**その `.py` のディレクトリ**（`py_dir`・[`crate::module_path`]）。
+    ///   以前は `.py` を読み込んだ `.ar` 側の起点で探していた。`from .m import x`
+    ///   （Python の相対 import）は変換器が `origin.level` に段数を載せてくる。
+    fn fill_python_imports(&mut self, body: &mut [Stmt], py_dir: &Path) -> Result<(), String> {
         for stmt in body.iter_mut() {
             match stmt {
-                Stmt::Import { lang, module, body: sub, .. }
-                | Stmt::FromImport { lang, module, body: sub, .. }
+                Stmt::Import { lang, module, source_module, body: sub, origin, .. }
+                | Stmt::FromImport { lang, module, source_module, body: sub, origin, .. }
                     if lang == "py" && sub.is_empty() =>
                 {
-                    *sub = self.load_python_module(module)?;
+                    let level = origin.level;
+                    let loaded = self.load_python_module(py_dir, level, module)?;
+                    *source_module = Self::written_if_renamed(level, module, &loaded.name);
+                    *module = loaded.name;
+                    *sub = loaded.body;
+                    *origin = ImportOrigin {
+                        level,
+                        base_dir: Some(module_path::search_base(py_dir, level)),
+                    };
                 }
                 _ => {}
             }
@@ -127,9 +172,10 @@ impl Parser {
     /// `import[py-int]` 用: .pyi を優先して検索し、なければ .py にフォールバックする。
     /// `__init__.pyi` / `__init__.py` も検索対象に含める。
     /// body は型検査専用（実行時は PyO3 経由で別ロジックが動く）。
-    pub(crate) fn load_python_interface_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn load_python_interface_module(&mut self, level: u32, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let search_dirs = self.python_search_dirs();
+        let from_dir = self.source_dir.clone();
+        let search_dirs = self.python_import_dirs(&from_dir, level);
 
         // 候補パスを生成: module.pyi, module/__init__.pyi, module.py, module/__init__.py
         let candidates: Vec<(PathBuf, bool)> = {
@@ -147,7 +193,11 @@ impl Parser {
 
         for (abs_path, is_pyi) in candidates {
             if !abs_path.exists() { continue; }
-            return self.load_py_type_body(module, &abs_path, is_pyi);
+            return self.load_py_type_body(module, &module_path::normalize(&abs_path), is_pyi);
+        }
+        // ⚠ 同梱スタブは「どこにも無い外部のモジュール」の代わり。相対の書き方では引かない。
+        if !module_path::uses_external_paths(level) {
+            return Ok(vec![]);
         }
 
         // ★ ファイルが 1 つも見つからなかったときだけ**同梱スタブ**を引く（#19 / 群6 S2）。

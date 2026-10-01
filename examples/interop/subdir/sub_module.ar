@@ -1,4 +1,10 @@
-import test_modules.tl_math as tm
+# sub_module.ar — サブディレクトリのモジュールから上の階層を指す（相対 import・2026-10-02）
+#
+# ⚠ 以前は `import test_modules.tl_math` と書いていた。これは**エントリのディレクトリ**
+#   （importation.ar のある examples/interop/）からの探索に頼っていたので、
+#   このファイルを直接実行すると見つからなかった。今はエントリのディレクトリを探さないので、
+#   1 つ上を `..` で指す。どこから実行しても同じ場所を探す。
+import ..test_modules.tl_math as tm
 
 fn compute(let a: int, let b: int) -> int:
     return tm.add(a, b)

@@ -4,7 +4,7 @@ use crate::ast::Resolution;
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
     std::rc::Rc, std::sync::Arc,
-    crate::ast::Stmt,
+    crate::ast::{ImportOrigin, Stmt},
     crate::interpreter::{
         ExecResult,
         Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, Value, Var,
@@ -28,6 +28,7 @@ impl Interpreter {
         source_module: Option<&str>,
         alias: Option<&str>,
         body: &[Stmt],
+        origin: &ImportOrigin,
     ) -> Result<ExecResult, String> {
         // ⚠ FFI 系の import は `native` 限定（評価コア切り出し #2）。
         //   評価コアビルドでは `_` へ落とさず**明示エラー**にする。落とすと
@@ -37,11 +38,11 @@ impl Interpreter {
             #[cfg(feature = "native")]
             "cpp-dll" | "cpp-lib" => self.import_cpp_module(lang, module, source_module)?,
             #[cfg(feature = "native")]
-            "cs-dll" => self.import_cs_dll(lang, module, body)?,
+            "cs-dll" => self.import_cs_dll(lang, module, body, origin)?,
             #[cfg(feature = "native")]
-            "cs-proc" => self.import_cs_proc(lang, module, body)?,
+            "cs-proc" => self.import_cs_proc(lang, module, body, origin)?,
             #[cfg(feature = "native")]
-            "js-proc" => self.import_js_proc(lang, module, body)?,
+            "js-proc" => self.import_js_proc(lang, module, body, origin)?,
             #[cfg(not(feature = "native"))]
             "cpp-dll" | "cpp-lib" | "cs-dll" | "cs-proc" | "js-proc" => {
                 let _ = source_module;
@@ -49,7 +50,7 @@ impl Interpreter {
                     "ImportError: `import[{lang}]` is not available in the evaluation core                      build (FFI is excluded; rebuild with the `native` feature)"
                 ));
             }
-            _ => self.exec_module(lang, module, body)?,
+            _ => self.exec_module(lang, module, body, origin)?,
         };
         let bind_name = match alias {
             Some(a) => a.to_string(),
@@ -57,6 +58,35 @@ impl Interpreter {
         };
         self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
         Ok(ExecResult::Normal)
+    }
+
+    /// この import 文の**実行時の探索先**（[`crate::module_path`] の規則）。
+    ///
+    /// 起点（import 文を書いたファイルのディレクトリ。ドット付きなら段数を適用済み）を先頭に、
+    /// ドット無しの書き方なら `python.search_paths`（起点から祖先へ遡って最初の設定）を続ける。
+    /// 消費者は `import[py-int]` の `sys.path`・C# のブリッジ／ホスト探索。
+    ///
+    /// ⚠⚠ 以前はここが**エントリのディレクトリ**（`Self::python_search_dirs`）だった。
+    ///   構文解析時はファイルの近くで見つけたのに、実行時は別の場所を探すことになり、
+    ///   サブディレクトリのファイルが書いた `import[py-int]` だけが実行時に失敗した。
+    /// ⚠ 起点を持たない import 文（合成した文・テストが組んだ AST）だけは、
+    ///   登録済みの探索先（`Self::python_search_dirs`）を使う。
+    fn import_search_dirs(&self, origin: &ImportOrigin) -> Vec<PathBuf> {
+        let Some(base) = &origin.base_dir else {
+            return self.python_search_dirs().cloned().collect();
+        };
+        #[allow(unused_mut)]
+        let mut dirs = vec![base.clone()];
+        // ⚠ `ar_config` は `native` 限定（評価コアには `.ar_config` を読む意味が無い・#6）。
+        #[cfg(feature = "native")]
+        if crate::module_path::uses_external_paths(origin.level) {
+            for p in crate::ar_config::load_python_search_paths(base) {
+                if !dirs.contains(&p) {
+                    dirs.push(p);
+                }
+            }
+        }
+        dirs
     }
 
     /// `import` の既定の束縛名（`as` が無いとき）。
@@ -108,13 +138,15 @@ impl Interpreter {
         lang: &str,
         module: &[String],
         body: &[Stmt],
+        origin: &ImportOrigin,
     ) -> Result<Rc<NamespaceData>, String> {
-        let stub_ns = self.exec_module(lang, module, body)?;
+        let stub_ns = self.exec_module(lang, module, body, origin)?;
         let managed_name = module.last().unwrap();
         let native_dll_name = format!("{managed_name}_native.dll");
         let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
 
-        let Some(bp) = self.find_cs_dll_bridge(&sub_dir, &native_dll_name) else {
+        let dirs = self.import_search_dirs(origin);
+        let Some(bp) = Self::find_cs_dll_bridge(&dirs, &sub_dir, &native_dll_name) else {
             return Ok(stub_ns);
         };
         if let Err(e) = crate::interpreter::cs_dll_runtime::load_bridge(&bp) {
@@ -131,11 +163,13 @@ impl Interpreter {
     /// `{Name}_native.dll` の探索（`import[cs-dll]`）。
     ///
     /// ⚠ **`find_cs_proc_host` の探索とは順序も候補も違う**ので畳んでいない（#58）。
-    /// こちらは「全 `python_search_dirs` を先に見てから CWD 側へ落ちる」1 候補名の探索。
+    /// こちらは 1 候補名を探索先（[`Self::import_search_dirs`]）の順に探す。
+    /// ⚠ 以前は探索先がエントリのディレクトリで、見つからなければ CWD 側へ落ちていた
+    ///   （2026-10-02 に外した・[`crate::module_path`]）。
     // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
     #[cfg(feature = "native")]
-    fn find_cs_dll_bridge(&self, sub_dir: &Path, native_dll_name: &str) -> Option<PathBuf> {
-        for search_dir in self.python_search_dirs() {
+    fn find_cs_dll_bridge(dirs: &[PathBuf], sub_dir: &Path, native_dll_name: &str) -> Option<PathBuf> {
+        for search_dir in dirs {
             let c = search_dir.join(sub_dir).join(native_dll_name);
             if c.exists() {
                 return Some(c);
@@ -144,14 +178,6 @@ impl Interpreter {
             if c2.exists() {
                 return Some(c2);
             }
-        }
-        let c = sub_dir.join(native_dll_name);
-        if c.exists() {
-            return Some(c);
-        }
-        let c = PathBuf::from(native_dll_name);
-        if c.exists() {
-            return Some(c);
         }
         None
     }
@@ -167,12 +193,14 @@ impl Interpreter {
         lang: &str,
         module: &[String],
         body: &[Stmt],
+        origin: &ImportOrigin,
     ) -> Result<Rc<NamespaceData>, String> {
-        let stub_ns = self.exec_module(lang, module, body)?;
+        let stub_ns = self.exec_module(lang, module, body, origin)?;
         let managed_name = module.last().unwrap();
         let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
 
-        let Some(pp) = self.find_cs_proc_host(module, managed_name, &sub_dir) else {
+        let dirs = self.import_search_dirs(origin);
+        let Some(pp) = Self::find_cs_proc_host(&dirs, module, managed_name, &sub_dir) else {
             return Ok(stub_ns);
         };
         if let Err(e) = crate::interpreter::cs_proc_runtime::launch_proc(&pp) {
@@ -189,13 +217,15 @@ impl Interpreter {
     /// `{Name}_proc.exe` → `{Name}.exe` の順で探す（`import[cs-proc]`）。
     ///
     /// ⚠ **`find_cs_dll_bridge` とは探索順が違う**（畳まない理由）。こちらは
-    /// **候補名ごと**に「全 `python_search_dirs` → CWD 側」を回すので、
-    /// `{Name}_proc.exe` が CWD にあれば `{Name}.exe` が search_dir にあっても前者が勝つ。
+    /// **候補名ごと**に全探索先（[`Self::import_search_dirs`]）を回すので、
+    /// `{Name}_proc.exe` がどこかにあれば `{Name}.exe` が先の探索先にあっても前者が勝つ。
     /// さらに単一セグメントのときだけ `<dir>/{Name}/{exe}` も見る。
+    /// ⚠ 以前は探索先がエントリのディレクトリで、見つからなければ CWD 側へ落ちていた
+    ///   （2026-10-02 に外した・[`crate::module_path`]）。
     // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
     #[cfg(feature = "native")]
     fn find_cs_proc_host(
-        &self,
+        dirs: &[PathBuf],
         module: &[String],
         managed_name: &str,
         sub_dir: &Path,
@@ -205,7 +235,7 @@ impl Interpreter {
             format!("{managed_name}.exe"),
         ];
         for name in &candidates_names {
-            for search_dir in self.python_search_dirs() {
+            for search_dir in dirs {
                 let c = search_dir.join(sub_dir).join(name);
                 if c.exists() {
                     return Some(c);
@@ -214,28 +244,13 @@ impl Interpreter {
                 if c2.exists() {
                     return Some(c2);
                 }
-                // Single-segment: also try source_dir/name_dir/exe_name
+                // Single-segment: also try <dir>/name_dir/exe_name
                 if module.len() == 1 {
                     let c3 = search_dir.join(managed_name).join(name);
                     if c3.exists() {
                         return Some(c3);
                     }
                 }
-            }
-            let c = sub_dir.join(name);
-            if c.exists() {
-                return Some(c);
-            }
-            // Single-segment CWD fallback: managed_name/exe_name
-            if module.len() == 1 {
-                let c2 = PathBuf::from(managed_name).join(name);
-                if c2.exists() {
-                    return Some(c2);
-                }
-            }
-            let c = PathBuf::from(name);
-            if c.exists() {
-                return Some(c);
             }
         }
         None
@@ -254,15 +269,24 @@ impl Interpreter {
         lang: &str,
         module: &[String],
         body: &[Stmt],
+        origin: &ImportOrigin,
     ) -> Result<Rc<NamespaceData>, String> {
-        // ⚠ #69: `python_search_dirs()` は遅延なので、いったん集めてから渡す。
-        let search_dirs: Vec<PathBuf> = self.python_search_dirs().cloned().collect();
+        // `ar_config.json`（`javascript`）は探索の起点から**祖先へ**探す
+        // （`python.search_paths` / `csharp.lib_paths` と同じ方針・[`crate::module_path`]）。
+        // ⚠ 以前はエントリのディレクトリ（`python_search_dirs`）だけを見ていた。
+        let search_dirs: Vec<PathBuf> = match &origin.base_dir {
+            Some(base) => crate::module_path::absolute(base)
+                .ancestors()
+                .map(Path::to_path_buf)
+                .collect(),
+            None => self.python_search_dirs().cloned().collect(),
+        };
         let (node_exe, bridge_script, bridge_root) = match find_js_config(&search_dirs)
         {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Warning: js-proc: {e}");
-                return self.exec_module(lang, module, body);
+                return self.exec_module(lang, module, body, origin);
             }
         };
         // ⚠ ブリッジの鍵は**起動前**に確定させる（起動の成否に依らず同じ鍵になる）。
@@ -278,10 +302,23 @@ impl Interpreter {
             &bridge_root,
         ) {
             eprintln!("Warning: js-proc bridge not started: {e}");
-            return self.exec_module(lang, module, body);
+            return self.exec_module(lang, module, body, origin);
         }
 
-        let module_name = module.join("/");
+        // JS ファイルの場所（[`crate::module_path`] の規則）:
+        // 起点にあればその**絶対パス**をブリッジへ渡す（Node.js の require がそのまま読む）。
+        // 無ければ、ドット無しの書き方に限りブリッジ側の解決（bridge_root・npm・組み込み）へ任せる。
+        let module_name = match Self::find_local_js_module(origin, module) {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None if crate::module_path::uses_external_paths(origin.level) => module.join("/"),
+            None => {
+                return Err(format!(
+                    "ImportError: cannot find JavaScript module '{}' (looked in '{}')",
+                    crate::module_path::written_spelling(origin.level, module),
+                    origin.base_dir.as_deref().unwrap_or(Path::new("")).display()
+                ));
+            }
+        };
         let fn_names =
             crate::interpreter::js_proc_runtime::list_functions(&bridge_key, &module_name)
                 .unwrap_or_else(|e| {
@@ -305,6 +342,19 @@ impl Interpreter {
             members,
             live: None,
         }))
+    }
+
+    /// 探索の起点にある JS モジュール（`a/b.js` / `a/b.cjs` / `a/b/`）の絶対パス（`import[js-proc]`）。
+    // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
+    #[cfg(feature = "native")]
+    fn find_local_js_module(origin: &ImportOrigin, module: &[String]) -> Option<PathBuf> {
+        let base = origin.base_dir.as_ref()?;
+        let rel: PathBuf = module.iter().collect();
+        let stem = base.join(&rel);
+        [stem.with_extension("js"), stem.with_extension("cjs"), stem.clone()]
+            .into_iter()
+            .find(|p| p.exists())
+            .map(|p| crate::module_path::absolute(&p))
     }
 
     /// 名前空間中の**全クラス**に class 変数を 1 本注入した複製を返す（#58）。
@@ -397,6 +447,7 @@ impl Interpreter {
         lang: &str,
         module: &[String],
         body: &[Stmt],
+        origin: &ImportOrigin,
     ) -> Result<Rc<NamespaceData>, String> {
         let cache_key = (lang.to_string(), PathBuf::from(module.join("/")));
 
@@ -425,7 +476,8 @@ impl Interpreter {
             .insert(cache_key.clone(), ModuleState::Loading);
 
         if lang == "py-int" {
-            let search_dirs: Vec<PathBuf> = self.python_search_dirs().cloned().collect();
+            // ⚠ `sys.path` へ足すのは**この import 文の**探索先（[`Self::import_search_dirs`]）。
+            let search_dirs: Vec<PathBuf> = self.import_search_dirs(origin);
             let ns = crate::interpreter::py_interop::load_py_int_module(module, &search_dirs)?;
             self.module_cache
                 .insert(cache_key, ModuleState::Loaded(ns.clone()));

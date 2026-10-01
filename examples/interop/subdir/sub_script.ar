@@ -1,4 +1,8 @@
-import tl_math as tm
+# sub_script.ar — サブディレクトリのファイルをエントリにして上の階層を import する（相対 import）
+#
+# ⚠ 以前は `import tl_math` と書いていて、どこから実行しても見つからなかった
+#   （tl_math.ar は ../test_modules/ にある）。
+import ..test_modules.tl_math as tm
 
 let x: int = tm.add(100, 200)
 print(x)

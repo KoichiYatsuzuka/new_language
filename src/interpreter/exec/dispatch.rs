@@ -197,15 +197,17 @@ impl Interpreter {
                 source_module,
                 alias,
                 body,
-            } => self.exec_import(lang, module, source_module.as_deref(), alias.as_deref(), body),
+                origin,
+            } => self.exec_import(lang, module, source_module.as_deref(), alias.as_deref(), body, origin),
             Stmt::FromImport {
                 lang,
                 module,
                 source_module: _,
                 names,
                 body,
+                origin,
             } => {
-                let ns = self.exec_module(lang, module, body)?;
+                let ns = self.exec_module(lang, module, body, origin)?;
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
                     let val = ns.members.get(orig_name.as_str()).cloned().ok_or_else(|| {

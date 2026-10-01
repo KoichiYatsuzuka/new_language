@@ -40,6 +40,8 @@ mod imports;
 #[cfg(feature = "editor")]
 #[path = "imports_editor.rs"]
 mod imports;
+// モジュール指定（`..a.b`）の構文。上の 2 実装が**共有**する（受理する構文をずらさないため）。
+mod import_syntax;
 pub(crate) mod classes;
 mod types;
 // 型の文字列を型注釈と同じ綴りに揃える（展開時の型の値・D23 / タスク 4-2）。
@@ -125,13 +127,25 @@ pub struct Parser {
     known_templates: HashSet<String>,
     /// Names declared with `protocol` — instantiation of these is a parse-time error.
     known_protocols: HashSet<String>,
-    /// 現在パース中のファイルのディレクトリ（import の第一検索先）。
-    // `editor` ではモジュールを読み込まないので、以下 4 つは未使用になる。
+    /// 現在パース中のファイルのディレクトリ（import の探索の起点・[`crate::module_path`]）。
+    // `editor` ではモジュールを読み込まないので、以下 5 つは未使用になる。
     // フィールドごと消さないのは、通常ビルドと `Parser::new` の形を揃えておくため。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     source_dir: PathBuf,
-    /// メインエントリーファイルのディレクトリ（import のフォールバック検索先）。
-    /// サブパーサにも変更せず引き継がれる。
+    /// `source_dir` が**ファイルのディレクトリとして与えられたか**（`Parser::new` の `Some`）。
+    ///
+    /// ⚠ 与えられなかった（REPL・テスト・メタ関数の部分ソース）ときは、import 文に
+    ///   探索の起点を**載せない**（`ImportOrigin::base_dir` が `None`）。実行時はそのとき
+    ///   登録済みの探索先（`Interpreter::python_search_dirs`）を使う。`.`（CWD）を起点として
+    ///   載せると、テストが登録した探索先が使われなくなる。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
+    has_source_dir: bool,
+    /// メインエントリーファイルのディレクトリ。サブパーサにも変更せず引き継がれる。
+    ///
+    /// ⚠⚠ **import の探索先ではない**（2026-10-02 に外した）。以前は `source_dir` で
+    ///   見つからなければここを探していたので、エントリが上の階層にあるときだけ
+    ///   サブディレクトリのファイルが上を指せた。今は**モジュールの名前の基準**
+    ///   （`pkg.util`・[`crate::module_path::root_relative_name`]）にだけ使う。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     root_dir: PathBuf,
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
@@ -141,6 +155,10 @@ pub struct Parser {
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     loading: HashSet<PathBuf>,
+    /// ファイル ↔ モジュール名の対応表（[`crate::module_path::ModuleNames`]）。
+    /// **サブパーサと共有する**（プログラム全体で 1 つ。`node_counter` と同じ扱い）。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
+    module_names: std::rc::Rc<std::cell::RefCell<crate::module_path::ModuleNames>>,
     /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
     /// 構築するたびに `next_node_id()` で採番する。
     ///
@@ -197,6 +215,7 @@ impl Parser {
                 ],
             },
         );
+        let has_source_dir = source_dir.is_some();
         let resolved = source_dir.unwrap_or_else(|| PathBuf::from("."));
         // ⚠⚠ **テンプレート名はパースを始める前に全部集める**（タスク 9.7）。
         //    以前は `parse_class_def` が到達した時点で 1 つずつ登録していたので、
@@ -220,9 +239,11 @@ impl Parser {
             known_templates,
             known_protocols: HashSet::new(),
             source_dir: resolved.clone(),
+            has_source_dir,
             root_dir: resolved,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
+            module_names: std::rc::Rc::default(),
             node_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
             #[cfg(feature = "editor")]
             editor: editor_index::EditorIndex::new(),

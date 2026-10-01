@@ -43,6 +43,9 @@ pub mod py_stubs;
 // エディタ向け型スタブの契約（鍵の形・置き場・マニフェスト）。`--emit-stubs` と共有する。
 #[path = "../../../src/stub_manifest.rs"]
 pub mod stub_manifest;
+// import の探索規則とモジュールの同一性（相対 import）。パーサと実行時が共有する。
+#[path = "../../../src/module_path.rs"]
+pub mod module_path;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]

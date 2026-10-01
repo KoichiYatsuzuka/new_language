@@ -1128,15 +1128,15 @@ fn expand_stmts(
 
             // `import` した `.ar` モジュール（タスク 2-12）。初めてなら展開し、結果を束縛する。
             // ⚠ メタ関数の構文を含まないモジュール（Python の翻訳など）は触らない。
-            Stmt::Import { lang, module, source_module, alias, body }
+            Stmt::Import { lang, module, source_module, alias, body, origin }
                 if ex.has_metafns && ordinary::mentions_meta(&body) =>
             {
                 let m = modules::expand_module(ex, &lang, &module, body)?;
                 let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
                 modules::bind_import(ex, &bind, &module, &m);
-                out.push(Stmt::Import { lang, module, source_module, alias, body: m.body.clone() });
+                out.push(Stmt::Import { lang, module, source_module, alias, body: m.body.clone(), origin });
             }
-            Stmt::FromImport { lang, module, source_module, names, body }
+            Stmt::FromImport { lang, module, source_module, names, body, origin }
                 if ex.has_metafns && ordinary::mentions_meta(&body) =>
             {
                 let m = modules::expand_module(ex, &lang, &module, body)?;
@@ -1147,7 +1147,7 @@ fn expand_stmts(
                 //   ⚠ 全部外れて空になっても文は残す —— モジュールの本体を走らせる入口として要る。
                 let names: Vec<(String, Option<String>)> =
                     names.into_iter().filter(|(orig, _)| !m.metafns.contains_key(orig)).collect();
-                out.push(Stmt::FromImport { lang, module, source_module, names, body: m.body.clone() });
+                out.push(Stmt::FromImport { lang, module, source_module, names, body: m.body.clone(), origin });
             }
 
             // クラス／トレイト本体もその場で展開する（メンバーの装飾子がここで消える）。
@@ -2001,6 +2001,7 @@ mod tests {
             source_module: None,
             alias: alias.map(str::to_string),
             body: Vec::new(),
+            origin: crate::ast::ImportOrigin::default(),
         }
     }
 
@@ -2011,6 +2012,7 @@ mod tests {
             source_module: None,
             names: names.iter().map(|n| (n.to_string(), None)).collect(),
             body: Vec::new(),
+            origin: crate::ast::ImportOrigin::default(),
         }
     }
 

@@ -19,6 +19,7 @@ fn run_with_module(module_src: &str, main_src: &str) -> Result<Interpreter, Stri
         source_module: None,
         alias: None,
         body,
+        origin: crate::ast::ImportOrigin::default(),
     }];
     let mut parser = Parser::new(Lexer::new(main_src, "").tokenize(), None);
     stmts.extend(parser.parse_program()?);

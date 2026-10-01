@@ -1,0 +1,14 @@
+# base.ar — 相対 import の例題（relative_import.ar）の上段のモジュール
+#
+# sub/leaf.ar が `import ..base` でここを指す。
+
+let NAME: str = "base"
+
+class Unit:
+    let v: int
+
+    fn __init__(mut self, let v: int):
+        self.v = v
+
+fn double(let n: int) -> int:
+    return n * 2

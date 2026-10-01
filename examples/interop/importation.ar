@@ -179,6 +179,7 @@ print(area_b)
 print(geo.DIMS)
 
 # subdirectory module — dot-separated path components map to filesystem subdirs
+# (sub_module.ar itself reaches back up with `import ..test_modules.tl_math`)
 import subdir.sub_module as sub
 
 let sub_result: int = sub.compute(10, 32)

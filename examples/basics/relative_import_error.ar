@@ -1,0 +1,16 @@
+# relative_import_error.ar — サブディレクトリのモジュールは、エントリのディレクトリを探さない
+#
+# 対になる正常系: relative_import.ar
+#
+# relative_modules/sub/needs_root_error.ar は、エントリ（このファイル）のディレクトリから数えた
+# `import relative_modules.base` を書いている。以前はエントリのディレクトリも探したのでこれが通ったが
+# （base を出していた）、今は書いたファイルのディレクトリ（sub/）からしか探さないので見つからない。
+# 上の階層は `import ..base` と書く。
+#
+#   Expected error (ParseError):
+#     cannot find module 'relative_modules.base'
+#     (looked at '...relative_modules\sub\relative_modules\base.arc', ...)
+
+import relative_modules.sub.needs_root_error as m
+
+print(m.name())

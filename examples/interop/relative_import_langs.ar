@@ -1,0 +1,36 @@
+# relative_import_langs.ar — 相対 import（先頭のドット）は**どの言語のファイルでも同じ規則**（2026-10-02）
+#
+# 規則（src/module_path.rs）:
+#   import[lang] a.b     … import 文を書いたファイルのディレクトリ → 言語ごとの外部の探索先
+#   import[lang] .a.b    … 同じディレクトリだけ
+#   import[lang] ..a.b   … 1 つ上のディレクトリだけ
+# ⚠ エントリのディレクトリからは探さない（実行時の `sys.path`・C のヘッダ・C# のブリッジも同じ）。
+#
+# Arrow のモジュール同士は examples/basics/relative_import.ar。
+
+# ── ① import[py] … Python のファイルの中の相対 import も同じ規則 ──
+#    py_rel_pkg/top.py は `from .helper import double` / `from . import consts` /
+#    `from .inner.deep import quad` を書き、inner/deep.py は `from ..helper import double` を書く。
+import[py] .py_rel_pkg.top as pt
+
+let r: int = pt.run(5)
+print(r)                          # 10 + 20 + 100 = 130
+if r != 130:
+    raise ValueError("py_rel_pkg.top.run")
+
+# ── ② import[py-int] … 実行時（CPython）の `sys.path` も import 文の起点を使う ──
+import[py-int] .py_rel_pkg.plain as pp
+
+print(pp.triple(4))               # 12
+
+# ── ③ import[cpp-lib] … ヘッダも起点から探す（`.test_modules.vec_math` → ./test_modules/vec_math.h）──
+#    実行には examples/interop/test_modules/vec_math_x64.lib が必要:
+#      powershell -File examples/interop/test_modules/build_vec_math.ps1
+import[cpp-lib] .test_modules.vec_math as vm
+
+let v = V3(3.0, 4.0, 0.0)
+mut length: float = 0.0
+vm.v3_norm(v, length)
+print(length)                     # 5.0
+if length != 5.0:
+    raise ValueError("vec_math.v3_norm")

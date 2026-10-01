@@ -1235,27 +1235,42 @@ pub(crate) fn convert_stmt(
                     source_module: None,
                     alias: alias.asname.as_ref().map(|a| a.to_string()),
                     body: Vec::new(),
+                    // 探索の起点はパーサが埋める（`fill_python_imports`・その `.py` のディレクトリ）。
+                    origin: crate::ast::ImportOrigin::default(),
                 });
             }
             Ok(out)
         }
         py::Stmt::ImportFrom(f) => {
             reject_nested_import(filename)?;
-            // ⚠ 相対 import（`from . import x` / `from ..pkg import y`）は、現在の
-            //   モジュールのパッケージ位置を解決する仕組みが要る。黙って絶対扱いすると
-            //   **別のモジュールを読む**ので明示エラーにする。
-            if f.level.map(|l| l.to_u32() > 0).unwrap_or(false) {
-                return Err(format!(
-                    "{filename}: relative imports (`from . import ...`) are not supported; \
-                     use an absolute module path"
-                ));
+            // ★ 相対 import（`from .m import x` / `from ..pkg import y`）は Arrow の相対 import
+            //   （`origin.level`）へそのまま写す（2026-10-02）。探索の起点は**その `.py` の
+            //   ディレクトリ**で、規則は Arrow 側と同じ（`crate::module_path`）。
+            //   ⚠ 以前は「パッケージ位置を解決する仕組みが無い」ので明示エラーにしていた。
+            let level = f.level.map(|l| l.to_u32()).unwrap_or(0);
+            // `from . import a, b as c` … 同じディレクトリのモジュール `a` / `b` の import。
+            // ⚠ `__init__.py` が定義した名前（モジュールでないもの）はここでは引けない
+            //   （ファイルとして探して見つからなければ明示エラー）。
+            if f.module.is_none() && level > 0 {
+                let mut out = Vec::with_capacity(f.names.len());
+                for a in &f.names {
+                    out.push(Stmt::Import {
+                        lang: "py".to_string(),
+                        module: vec![a.name.to_string()],
+                        source_module: None,
+                        alias: a.asname.as_ref().map(|x| x.to_string()),
+                        body: Vec::new(),
+                        origin: crate::ast::ImportOrigin { level, base_dir: None },
+                    });
+                }
+                return Ok(out);
             }
             let Some(modname) = f.module.as_ref() else {
                 return Err(format!("{filename}: unsupported `from` import"));
             };
             let module: Vec<String> =
                 modname.as_str().split('.').map(|s| s.to_string()).collect();
-            if is_converter_modelled_module(&module) {
+            if level == 0 && is_converter_modelled_module(&module) {
                 return Ok(vec![]);
             }
             // ⚠ `from m import *` は導入される名前が実行時にしか判らない（Arrow の
@@ -1276,6 +1291,7 @@ pub(crate) fn convert_stmt(
                 source_module: None,
                 names,
                 body: Vec::new(),
+                origin: crate::ast::ImportOrigin { level, base_dir: None },
             }])
         }
 

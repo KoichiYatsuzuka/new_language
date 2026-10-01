@@ -13,31 +13,23 @@ impl Parser {
     ///
     /// ドット区切り識別子をヘッダファイルパスに解決する:
     ///   `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`
+    ///   `..DxLib.DxLib` → `{source_dir}/../DxLib/DxLib.h`（相対 import・[`crate::module_path`]）
     ///   最後のコンポーネントに `.h` 拡張子が付く。
     ///
     /// ヘッダが存在する場合は静的型情報として Stmt::FnDef スタブを body に積む。
     pub(crate) fn parse_cpp_import(&mut self, lang: String) -> Result<Stmt, String> {
-        // ヘッダパス: IDENT ('.' IDENT)*
-        let first = match self.current().clone() {
-            Token::Ident(s) => {
-                self.advance();
-                s
-            }
-            other => {
-                return Err(format!(
-                    "import[{lang}]: expected dotted identifier for header path, got `{other}`"
-                ))
-            }
-        };
-        let mut parts = vec![first];
-        while *self.current() == Token::Dot {
-            self.advance();
-            parts.push(self.expect_ident()?);
+        // ヘッダパス: [.]* IDENT ('.' IDENT)*
+        if !matches!(self.current(), Token::Ident(_) | Token::Dot | Token::Ellipsis) {
+            return Err(format!(
+                "import[{lang}]: expected dotted identifier for header path, got `{}`",
+                self.current()
+            ));
         }
+        let (level, parts) = self.parse_module_ref()?;
 
-        // ドット区切りパーツを source_dir 基準のヘッダパスに解決する
+        // ドット区切りパーツを探索の起点基準のヘッダパスに解決する
         // 例: DxLib.DxLib → {source_dir}/DxLib/DxLib.h
-        let mut resolved = self.source_dir.clone();
+        let mut resolved = self.import_base(level);
         let n = parts.len();
         for (i, part) in parts.iter().enumerate() {
             if i == n - 1 {
@@ -147,9 +139,10 @@ impl Parser {
         Ok(Stmt::Import {
             lang,
             module,
-            source_module: Some(parts.join(".")),
+            source_module: Some(crate::module_path::written_spelling(level, &parts)),
             alias,
             body,
+            origin: self.import_origin(level),
         })
     }
 
@@ -157,8 +150,8 @@ impl Parser {
     pub(crate) fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `from` を消費
 
-        // モジュールパス
-        let module = self.parse_module_path()?;
+        // モジュール指定（`..a.b`・相対 import）
+        let (level, module) = self.parse_module_ref()?;
 
         // `import[lang]` または `import`（省略時は "ar-auto"）
         self.eat(&Token::Import)?;
@@ -194,14 +187,15 @@ impl Parser {
         }
 
         // モジュールの tl AST を取得
-        let body = self.load_module(&lang, &module, None)?;
+        let loaded = self.load_module(&lang, level, &module, None)?;
 
         Ok(Stmt::FromImport {
+            source_module: Self::written_if_renamed(level, &module, &loaded.name),
             lang,
-            module,
-            source_module: None,
+            module: loaded.name,
             names,
-            body,
+            body: loaded.body,
+            origin: self.import_origin(level),
         })
     }
 

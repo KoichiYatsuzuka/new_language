@@ -16,6 +16,7 @@ use super::*;
             source_module: None,
             alias: alias.map(str::to_string),
             body,
+            origin: crate::ast::ImportOrigin::default(),
         }];
         stmts.extend(Parser::new(Lexer::new(main_src, "").tokenize(), None).parse_program().expect("parse main"));
         TypeChecker::check(&stmts)

@@ -1,0 +1,11 @@
+# needs_root_error.ar — エントリのディレクトリからは探さない（relative_import_error.ar が import する）
+#
+# `relative_modules.base` は**エントリ（examples/basics/relative_import_error.ar）のディレクトリから**
+# 数えた綴り。以前は「書いたファイルのディレクトリ → エントリのディレクトリ」の順に探していたので
+# これで見つかった（このファイルを直接実行すると見つからなかった）。
+# 今は書いたファイルのディレクトリ（sub/）からしか探さない。1 つ上は `import ..base` と書く。
+
+import relative_modules.base as base
+
+fn name() -> str:
+    return base.NAME

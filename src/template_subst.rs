@@ -695,12 +695,14 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             source_module,
             alias,
             body,
+            origin,
         } => Stmt::Import {
             lang: lang.clone(),
             module: module.clone(),
             source_module: source_module.clone(),
             alias: alias.clone(),
             body: subst_stmts(body, type_map),
+            origin: origin.clone(),
         },
         Stmt::FromImport {
             lang,
@@ -708,12 +710,14 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             source_module,
             names,
             body,
+            origin,
         } => Stmt::FromImport {
             lang: lang.clone(),
             module: module.clone(),
             source_module: source_module.clone(),
             names: names.clone(),
             body: subst_stmts(body, type_map),
+            origin: origin.clone(),
         },
         Stmt::Match {
             subject,

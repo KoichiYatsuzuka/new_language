@@ -1,0 +1,20 @@
+# leaf.ar — サブディレクトリのモジュールから上の階層を import する（相対 import の例題）
+#
+# 先頭のドットは「この import 文を書いたファイル（leaf.ar）のディレクトリ」から数える:
+#   `.util`   … 同じディレクトリ（sub/util.ar）
+#   `..base`  … 1 つ上（relative_modules/base.ar）
+# ⚠ エントリ（relative_import.ar）のディレクトリからは探さない。どのファイルから
+#   実行しても同じ場所を探す。
+
+import ..base
+import .util
+from ..util import which as top_which
+
+fn make_unit(let v: int) -> base.Unit:
+    return base.Unit(base.double(v))
+
+fn which_utils() -> str:
+    return util.which() + " / " + top_which()
+
+fn base_name() -> str:
+    return base.NAME

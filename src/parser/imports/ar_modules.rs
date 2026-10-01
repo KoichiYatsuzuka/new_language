@@ -2,19 +2,32 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::Stmt, crate::lexer,
+    crate::ast::Stmt, crate::lexer, crate::module_path,
+    super::dispatch::LoadedModule,
     std::path::{Path, PathBuf},
 };
 
 impl Parser {
-    /// モジュールの検索ディレクトリ（`source_dir` → `root_dir`。同じなら重複させない）。
+    /// モジュールの探索先（**起点 1 か所だけ**・[`crate::module_path`]）。
     ///
     /// ⚠ **3 つのローダで完全に同じ**だったので #79 で 1 本化した。
-    /// 探索**順**（`source_dir` が先）には意味がある — 変えると相対 import の解決先が変わる。
-    fn module_search_dirs(&self) -> Vec<PathBuf> {
-        let a = self.source_dir.clone();
-        let b = self.root_dir.clone();
-        if a == b { vec![a] } else { vec![a, b] }
+    /// ⚠⚠ 以前は `source_dir` で見つからなければ `root_dir`（エントリのディレクトリ）も
+    ///   探していた（2026-10-02 に外した）。エントリが上の階層にあるときだけ上を指せる、
+    ///   という「どこから実行したかで結果が変わる」規則だった。上の階層は `..a` と書く。
+    fn module_search_dirs(&self, level: u32) -> Vec<PathBuf> {
+        vec![self.import_base(level)]
+    }
+
+    /// 見つけたパスを、表示・読み込み用（字句的に正規化）と鍵用（絶対パス）に分ける。
+    ///
+    /// ⚠ 鍵（キャッシュ・循環検出）は**絶対パスに正規化**する。`pkg/../a.ar` と `a.ar` を
+    ///   別物として扱うと、同じモジュールを 2 回読むうえ、`..` を含む相互 import が
+    ///   循環検出をすり抜けて**無限に読み続ける**。
+    /// ⚠ 表示用は相対のまま（エラーメッセージ・位置情報のファイル名を変えないため）。
+    fn found_paths(found: &Path) -> (PathBuf, PathBuf) {
+        let shown = module_path::normalize(found);
+        let key = module_path::absolute(&shown);
+        (shown, key)
     }
 
     /// キャッシュ命中と循環 import の検査（#79 で 3 箇所から 1 本化）。
@@ -41,7 +54,7 @@ impl Parser {
 
     /// 取得済みのソースを**子パーサ**で解析して AST を返す — **唯一の実装**（#79）。
     ///
-    /// 親のキャッシュ・循環検出セット・`root_dir`・`node_counter` を引き継ぎ、
+    /// 親のキャッシュ・循環検出セット・`root_dir`・`node_counter`・モジュール名の表を引き継ぎ、
     /// 終わったら子が作ったキャッシュを親へマージして `cache_key` に登録する。
     ///
     /// ⚠⚠ **#79 以前はこの 22 行が 3 つのローダに逐語コピーされていた**
@@ -55,6 +68,7 @@ impl Parser {
     /// 「一度失敗したモジュールを再 import すると循環扱いになる」が変わる）。
     fn parse_sub_module(
         &mut self,
+        shown_path: &Path,
         abs_path: &Path,
         source: &str,
         filename: &str,
@@ -63,7 +77,8 @@ impl Parser {
         self.loading.insert(abs_path.to_path_buf());
 
         let tokens = lexer::Lexer::new(source, filename).tokenize();
-        let module_dir = abs_path
+        // ⚠ 子の `source_dir`（＝その中の import の探索の起点）は**そのファイルのディレクトリ**。
+        let module_dir = shown_path
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
@@ -73,6 +88,7 @@ impl Parser {
         sub.module_cache = self.module_cache.clone();
         sub.loading = self.loading.clone();
         sub.root_dir = self.root_dir.clone();
+        sub.module_names = std::rc::Rc::clone(&self.module_names);
         // node-id はプログラム全体で一意にする（#16・C1）。共有しないとモジュール間で
         // 衝突し、消費側が別モジュールの注釈を読む（FFI 境界検査が誤検知する）。
         sub.node_counter = self.node_counter.clone();
@@ -93,17 +109,17 @@ impl Parser {
 
     /// `.ar` / `.arc` モジュールをロードして AST を返す。
     ///
-    /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の優先順で試す:
+    /// 探索の起点（[`Self::module_search_dirs`]）で以下の優先順に試す:
     /// 1. `module.arc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
     /// 2. `module.ar`          — ソースファイルモジュール
     /// 3. `module/__init__.ar` — パッケージモジュール
-    pub(crate) fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn load_tl_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
         let module_base: PathBuf = module.iter().collect();
         let tlc_rel = module_base.with_extension("arc");
         let file_rel = module_base.with_extension("ar");
         let init_rel = module_base.join("__init__.ar");
 
-        let search_dirs = self.module_search_dirs();
+        let search_dirs = self.module_search_dirs(level);
 
         // (パス, コンパイル済みか) の候補リスト — .arc が .ar より先になる
         let candidates: Vec<(PathBuf, bool)> = search_dirs
@@ -129,7 +145,7 @@ impl Parser {
                     .join(", ");
                 format!(
                     "cannot find module '{}' (looked at {})",
-                    module.join("."),
+                    module_path::written_spelling(level, module),
                     paths
                 )
             })?;
@@ -162,10 +178,12 @@ impl Parser {
             }
         }
 
+        let (shown_path, abs_path) = Self::found_paths(&abs_path);
+        let name = self.name_module_file(&abs_path, module, true)?;
         let cache_key = ("ar-auto".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(body);
+            return Ok(LoadedModule { body, name });
         }
 
         // ソースを取得: .arc はバイナリから埋め込みソースを抽出、.ar は直読み
@@ -175,21 +193,22 @@ impl Parser {
             let label = format!("<compiled:{mod_name}>");
             (src, label)
         } else {
-            let src = std::fs::read_to_string(&abs_path)
+            let src = std::fs::read_to_string(&shown_path)
                 .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
-            (src, abs_path.to_string_lossy().into_owned())
+            (src, shown_path.to_string_lossy().into_owned())
         };
 
-        self.parse_sub_module(&abs_path, &source, &filename, cache_key)
+        let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
+        Ok(LoadedModule { body, name })
     }
 
     /// `import[ar]`: `.ar` ソースのみをロードする。`.arc` があっても無視する。
-    pub(crate) fn load_tl_source_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn load_tl_source_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
         let module_base: PathBuf = module.iter().collect();
         let file_rel = module_base.with_extension("ar");
         let init_rel = module_base.join("__init__.ar");
 
-        let search_dirs = self.module_search_dirs();
+        let search_dirs = self.module_search_dirs(level);
 
         let candidates: Vec<PathBuf> = search_dirs
             .iter()
@@ -208,30 +227,33 @@ impl Parser {
                     .join(", ");
                 format!(
                     "cannot find source module '{}' (looked at {})",
-                    module.join("."),
+                    module_path::written_spelling(level, module),
                     paths
                 )
             })?;
 
+        let (shown_path, abs_path) = Self::found_paths(&abs_path);
+        let name = self.name_module_file(&abs_path, module, true)?;
         let cache_key = ("ar".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(body);
+            return Ok(LoadedModule { body, name });
         }
 
-        let source = std::fs::read_to_string(&abs_path)
+        let source = std::fs::read_to_string(&shown_path)
             .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
-        let filename = abs_path.to_string_lossy().into_owned();
+        let filename = shown_path.to_string_lossy().into_owned();
 
-        self.parse_sub_module(&abs_path, &source, &filename, cache_key)
+        let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
+        Ok(LoadedModule { body, name })
     }
 
     /// `import[arc]`: `.arc` コンパイル済みモジュールのみをロードする。`.ar` があっても無視する。
-    pub(crate) fn load_tlc_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn load_tlc_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
         let module_base: PathBuf = module.iter().collect();
         let tlc_rel = module_base.with_extension("arc");
 
-        let search_dirs = self.module_search_dirs();
+        let search_dirs = self.module_search_dirs(level);
 
         let candidates: Vec<PathBuf> =
             search_dirs.iter().map(|dir| dir.join(&tlc_rel)).collect();
@@ -248,21 +270,24 @@ impl Parser {
                     .join(", ");
                 format!(
                     "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.ar>)",
-                    module.join("."), paths
+                    module_path::written_spelling(level, module), paths
                 )
             })?;
 
+        let (shown_path, abs_path) = Self::found_paths(&abs_path);
+        let name = self.name_module_file(&abs_path, module, true)?;
         let cache_key = ("arc".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(body);
+            return Ok(LoadedModule { body, name });
         }
 
-        let (mod_name, source) = crate::partial_compiler::load_tlc(&abs_path)
+        let (mod_name, source) = crate::partial_compiler::load_tlc(&shown_path)
             .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
         let filename = format!("<compiled:{mod_name}>");
 
-        self.parse_sub_module(&abs_path, &source, &filename, cache_key)
+        let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
+        Ok(LoadedModule { body, name })
     }
 
 }

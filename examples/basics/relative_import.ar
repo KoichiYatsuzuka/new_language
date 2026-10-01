@@ -1,0 +1,42 @@
+# relative_import.ar — 相対 import（先頭のドット）でディレクトリを遡る（2026-10-02）
+#
+# 対になる誤り: relative_import_error.ar
+#
+# 規則（言語によらず同じ・src/module_path.rs）:
+#   import a.b     … import 文を書いたファイルのディレクトリ → 言語ごとの外部の探索先
+#   import .a.b    … 同じディレクトリだけ
+#   import ..a.b   … 1 つ上のディレクトリだけ（ドットが 1 つ増えるごとにさらに 1 つ上）
+# ⚠ エントリのディレクトリからは探さない。
+#   以前は「書いたファイルのディレクトリ → エントリのディレクトリ」の順に探していたので、
+#   サブディレクトリのファイルは**エントリが上の階層にあるときだけ**上を指せた
+#   （同じモジュールが、どのファイルから実行したかで読めたり読めなかったりした）。
+#
+# relative_modules/sub/leaf.ar が `import ..base` / `import .util` / `from ..util import which` を書いている。
+
+import .relative_modules.base
+import relative_modules.sub.leaf as leaf
+import relative_modules.util as top
+from relative_modules.base import Unit
+
+# ── ① サブディレクトリのモジュールが 1 つ上のモジュールを使う ──
+let u: Unit = leaf.make_unit(21)
+print(u.v)                        # 42
+if u.v != 42:
+    raise ValueError("leaf.make_unit")
+print(leaf.base_name())           # base
+
+# ── ② 同じファイルは、どの綴りで import しても同じモジュール ──
+#    leaf.ar の `..base` と、ここの `.relative_modules.base` は同じ base.ar。
+#    ⇒ 型も同じ（`base.Unit` と `Unit` に互いに入る）。
+let w: base.Unit = u
+print(w.v)                        # 42
+
+# ── ③ 同じ名前の別ファイルは別のモジュール ──
+#    sub/util.ar（leaf.ar の `.util`）と util.ar（ここの `relative_modules.util`）
+let both: str = leaf.which_utils()
+print(both)                       # relative_modules/sub/util.ar / relative_modules/util.ar
+if both != "relative_modules/sub/util.ar / relative_modules/util.ar":
+    raise ValueError("which_utils")
+print(top.which())                # relative_modules/util.ar
+if top.which() != "relative_modules/util.ar":
+    raise ValueError("top.which")

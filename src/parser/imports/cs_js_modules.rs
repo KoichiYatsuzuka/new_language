@@ -2,45 +2,43 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::Stmt, crate::lexer,
-    std::path::PathBuf,
+    crate::ast::Stmt, crate::lexer, crate::module_path,
+    std::path::{Path, PathBuf},
 };
 use super::*;
 
 impl Parser {
     /// `import[cs-dll]` / `import[cs-proc]` — .NET アセンブリから型スタブを生成する。
     ///
-    /// DLL の検索順:
-    ///   1. source_dir / path/to/LastSegment.dll
-    ///   2. source_dir / LastSegment.dll
-    ///   3. root_dir  / LastSegment.dll
-    ///   4. ar_config.json の csharp.lib_paths に列挙されたディレクトリ
+    /// DLL の検索順（`base` は探索の起点・[`crate::module_path`]）:
+    ///   1. base / path/to/LastSegment.dll
+    ///   2. base / LastSegment.dll
+    ///   3. base / LastSegment/LastSegment.dll（単一セグメントのときだけ）
+    ///   4. ar_config.json の csharp.lib_paths に列挙されたディレクトリ（ドット無しの書き方のときだけ）
+    ///
+    /// ⚠ 以前は 2 の後に `root_dir`（エントリのディレクトリ）も見ていた（2026-10-02 に外した）。
     ///
     /// DLL が見つからない場合は警告を出して空スタブを返す（型なし・実行時に解決）。
     /// `is_proc` は IPC サブプロセス方式かを示すが、型スタブは両方式で共通。
-    pub(crate) fn load_cs_module(&mut self, module: &[String], is_proc: bool) -> Result<Vec<Stmt>, String> {
+    pub(crate) fn load_cs_module(&mut self, level: u32, module: &[String], is_proc: bool) -> Result<Vec<Stmt>, String> {
         let last = module.last().cloned().unwrap_or_default();
         let dll_name = format!("{last}.dll");
 
-        // キャッシュキー
-        let cache_key = (if is_proc { "cs-proc" } else { "cs-dll" }.to_string(),
-                         std::path::PathBuf::from(&dll_name));
-        if let Some(body) = self.module_cache.get(&cache_key) {
-            return Ok(body.clone());
+        // 候補パスを順番に試す
+        // 単一セグメント "name" の場合は base/name/name.dll も試す（パッケージディレクトリ規約）。
+        let base = self.import_base(level);
+        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("dll");
+        let mut candidates: Vec<PathBuf> = vec![base.join(&sub_path), base.join(&dll_name)];
+        if module.len() == 1 {
+            // import[cs-dll] foo → also try base/foo/foo.dll
+            candidates.push(base.join(&last).join(&dll_name));
         }
 
-        // 候補パスを順番に試す
-        // 単一セグメント "name" の場合は source_dir/name/name.dll も試す（パッケージディレクトリ規約）。
-        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("dll");
-        let mut candidates: Vec<PathBuf> = vec![
-            self.source_dir.join(&sub_path),
-            self.source_dir.join(&dll_name),
-            self.root_dir.join(&dll_name),
-        ];
-        if module.len() == 1 {
-            // import[cs-dll] foo → also try source_dir/foo/foo.dll
-            candidates.push(self.source_dir.join(&last).join(&dll_name));
-            candidates.push(self.root_dir.join(&last).join(&dll_name));
+        // キャッシュキー（⚠ 起点ごとに別物。別のディレクトリの同名 DLL を取り違えない）
+        let cache_key = (if is_proc { "cs-proc" } else { "cs-dll" }.to_string(),
+                         module_path::absolute(&base).join(&sub_path));
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
         }
 
         let mut dll_path: Option<PathBuf> = None;
@@ -51,8 +49,8 @@ impl Parser {
             }
         }
 
-        // ar_config.json の csharp.lib_paths も検索
-        if dll_path.is_none() {
+        // ar_config.json の csharp.lib_paths も検索（外部の探索先なのでドット無しのときだけ）
+        if dll_path.is_none() && module_path::uses_external_paths(level) {
             if let Some(extra) = self.load_cs_lib_paths() {
                 for dir in extra {
                     let p = dir.join(&dll_name);
@@ -90,22 +88,21 @@ impl Parser {
 
     /// `import[js-proc]` — .ars スタブファイルが存在すれば読み込み、なければ空スタブを返す。
     ///
-    /// スタブ検索順:
-    ///   1. source_dir / path/to/module.ars
-    ///   2. root_dir   / path/to/module.ars
+    /// スタブ検索先: 探索の起点（[`crate::module_path`]）/ path/to/module.ars
+    ///
+    /// ⚠ 以前は `root_dir`（エントリのディレクトリ）も見ていた（2026-10-02 に外した）。
     ///
     /// スタブが見つからない場合は空 body を返す（型なし・実行時にブリッジが関数リストを提供）。
-    pub(crate) fn load_js_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
-        let cache_key = ("js-proc".to_string(), module.iter().collect::<PathBuf>());
+    pub(crate) fn load_js_module(&mut self, level: u32, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let base = self.import_base(level);
+        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("ars");
+        // ⚠ 起点ごとに別物（別のディレクトリの同名スタブを取り違えない）。
+        let cache_key = ("js-proc".to_string(), module_path::absolute(&base).join(&sub_path));
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
         }
 
-        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("ars");
-        let candidates = [
-            self.source_dir.join(&sub_path),
-            self.root_dir.join(&sub_path),
-        ];
+        let candidates = [base.join(&sub_path)];
 
         let body = candidates.iter().find_map(|p| -> Option<Vec<Stmt>> {
             if !p.exists() { return None; }
@@ -118,6 +115,7 @@ impl Parser {
             sub.module_cache = self.module_cache.clone();
             sub.loading     = self.loading.clone();
             sub.root_dir    = self.root_dir.clone();
+            sub.module_names = std::rc::Rc::clone(&self.module_names);
         // node-id はプログラム全体で一意にする（#16・C1）。共有しないとモジュール間で
         // 衝突し、消費側が別モジュールの注釈を読む（FFI 境界検査が誤検知する）。
         sub.node_counter = self.node_counter.clone();
@@ -149,10 +147,11 @@ impl Parser {
         None
     }
 
-    /// Python モジュールの検索ディレクトリリストを返す。
-    /// source_dir を先頭に、ar_config.json の python.search_paths、PYTHONPATH 環境変数、Python site-packages を続ける。
-    pub(crate) fn python_search_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.source_dir.clone()];
+    /// Python モジュールの検索ディレクトリリストを返す（ドット無しの import 用）。
+    /// `from_dir`（import 文を書いたファイルのディレクトリ）を先頭に、ar_config.json の
+    /// python.search_paths、PYTHONPATH 環境変数、Python site-packages を続ける。
+    pub(crate) fn python_search_dirs_from(&self, from_dir: &Path) -> Vec<PathBuf> {
+        let mut dirs = vec![from_dir.to_path_buf()];
         // ar_config.json の python.search_paths を追加する。
         //
         // ⚠ #72: JSON の読み取りは [`crate::ar_config`] へ委譲した（以前はここ専用の
@@ -162,15 +161,9 @@ impl Parser {
         // 2 箇所だけ）。揃える前は、`examples/interop/py_subdir/` のように**自分の設定を
         // 持たないサブディレクトリ**から実行すると、同じ `ar_config.json` が
         // `import[py-int]` からは見えて `import[py]` からは見えず **ParseError** になっていた。
-        // ⚠ `root_dir`（エントリのディレクトリ）は `source_dir` の祖先とは限らない
-        // （検索パス経由のモジュール等）ので、**空振りしたときのフォールバック**として残す。
-        let cfg = crate::ar_config::find_ancestor_config(&self.source_dir).or_else(|| {
-            if self.root_dir == self.source_dir {
-                None
-            } else {
-                crate::ar_config::find_ancestor_config(&self.root_dir)
-            }
-        });
+        // ⚠ 空振りしたときの `root_dir`（エントリのディレクトリ）側の祖先ウォークは
+        //   2026-10-02 に外した（エントリのディレクトリからは探さない・[`crate::module_path`]）。
+        let cfg = crate::ar_config::find_ancestor_config(from_dir);
         if let Some((cfg_path, base)) = cfg {
             for p in crate::ar_config::read_python_search_paths(&cfg_path, &base) {
                 if !dirs.contains(&p) {

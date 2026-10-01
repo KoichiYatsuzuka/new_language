@@ -836,6 +836,21 @@ pub enum TupleTarget {
 
 /// 文（Statement）の AST ノード。
 ///
+/// import 文の**探索の起点**（相対 import・2026-10-02）。
+///
+/// 規則は [`crate::module_path`] が唯一の定義。パーサ（CLI）が埋め、実行時の探索
+/// （`import[py-int]` の `sys.path`・C# のブリッジ・js-proc の設定）もこれを使う。
+/// ⚠ 実行時がエントリのディレクトリで探すと、サブディレクトリのファイルが書いた
+///   import だけ別の場所を探すことになる（以前の不具合）。
+#[derive(Debug, Clone, Default)]
+pub struct ImportOrigin {
+    /// 先頭のドットの数（`import ..a` なら 2）。0 は相対指定なし。
+    pub level: u32,
+    /// 探索の起点ディレクトリ（`level` を適用済み）。
+    /// `None` はファイルから読まれていない文（エディタの解析・合成した文）。
+    pub base_dir: Option<std::path::PathBuf>,
+}
+
 /// インタープリタが実行するすべての構文要素を表す。式文・変数宣言・制御構文・
 /// 関数/クラス/トレイト定義・インポート・非同期タスクなどすべての文種を含む。
 #[derive(Debug, Clone)]
@@ -1242,7 +1257,9 @@ pub enum Stmt {
     ///
     /// # フィールド
     /// - `lang`   : 言語識別子（`"py"` など）
-    /// - `module` : モジュールパスの各セグメント（`["os", "path"]` for `os.path`）
+    /// - `module` : モジュールパスの各セグメント（`["os", "path"]` for `os.path`）。
+    ///   ⚠ Arrow / py のモジュールでは**パーサがファイルごとに一意な名前へ書き換える**
+    ///   （[`crate::module_path`]）。実行時のキャッシュ・型レジストリはこれで区別する。
     /// - `alias`  : `as alias` で与えたバインド名。`None` の場合は最後のセグメント名を使用
     /// - `body`   : パース済みの tl AST（モジュールの内容）
     Import {
@@ -1255,10 +1272,14 @@ pub enum Stmt {
         /// 「利用者が何と書いたか」が AST から消える。エディタ用スタブの鍵
         /// （`stub_manifest::stub_key`）は**原文の表記**でなければエディタ側と一致しない
         /// （エディタは fs を引けないので解決結果を持てない）。
-        /// ⇒ cpp 系だけがここを埋める。他のタグは `module` が原文そのままなので `None`。
+        /// ⇒ `module` が原文と違うときだけ埋める。cpp 系（解決済みヘッダパス）と、
+        /// パーサがモジュール名を書き換えた Arrow / py（相対 import の `..util`、
+        /// サブディレクトリのファイルが書いた `util` → `pkg.util`・[`crate::module_path`]）。
         source_module: Option<String>,
         alias: Option<String>,
         body: Vec<Stmt>,
+        /// 探索の起点（相対 import・[`ImportOrigin`]）。
+        origin: ImportOrigin,
     },
     /// `from module import[lang] Name1, Name2 as N2` — 名前を直接スコープに導入するインポート。
     ///
@@ -1279,10 +1300,14 @@ pub enum Stmt {
         /// 「利用者が何と書いたか」が AST から消える。エディタ用スタブの鍵
         /// （`stub_manifest::stub_key`）は**原文の表記**でなければエディタ側と一致しない
         /// （エディタは fs を引けないので解決結果を持てない）。
-        /// ⇒ cpp 系だけがここを埋める。他のタグは `module` が原文そのままなので `None`。
+        /// ⇒ `module` が原文と違うときだけ埋める。cpp 系（解決済みヘッダパス）と、
+        /// パーサがモジュール名を書き換えた Arrow / py（相対 import の `..util`、
+        /// サブディレクトリのファイルが書いた `util` → `pkg.util`・[`crate::module_path`]）。
         source_module: Option<String>,
         names: Vec<(String, Option<String>)>,
         body: Vec<Stmt>,
+        /// 探索の起点（相対 import・[`ImportOrigin`]）。
+        origin: ImportOrigin,
     },
     /// `target <- async [->Type]: body` — 非同期タスクを AsyncManager に追加する。
     ///
