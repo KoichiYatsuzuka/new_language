@@ -44,7 +44,7 @@
 
 | # | タスク | 前提 | 状態 |
 |---|---|---|---|
-| 3-1 | スキル・文書の更新（`importation` / `architecture-overview` / CLAUDE.md の言語差分）・VSIX | 1-6, 2-4 | |
+| 3-1 | スキル・文書の更新（`importation` / `architecture-overview` / CLAUDE.md の言語差分）・VSIX | 1-6, 2-4 | 済 |
 
 ## 判断の記録
 

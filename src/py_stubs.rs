@@ -1,14 +1,14 @@
 // py_stubs.rs — `import[py-int]` 用に**バイナリへ埋め込む**型スタブ（BYTECODE_VM_PLAN #19）。
 //
 // ★ `time` / `math` は CPython の**C 組み込みモジュール**で `.py` が存在しない。
-//   そのため `Parser::python_search_dirs()` が stdlib まで辿っても必ず空振りし、
+//   そのため `Parser::python_search_dirs_from` が stdlib まで辿っても必ず空振りし、
 //   `load_python_interface_module` は空の body（＝型検査を丸ごと放棄）を返していた。
 //   ⇒ `let s: str = math.sqrt(2.0)` が**黙って通って**いた。
 //
 // ⚠⚠ **検索ディレクトリを増やす案は採らなかった**（群6 S2）:
 //   - `src/` に std の current_exe() の使用は 0 箇所。`cargo run`（`target/debug/`）と配布
 //     レイアウトで相対位置が変わり、「開発中だけ効く」を作り込む。
-//   - `python_search_dirs()` に 1 つ足すと**モジュール解決 1 回あたり `exists()` が
+//   - `python_search_dirs_from` に 1 つ足すと**モジュール解決 1 回あたり `exists()` が
 //     4 回増える**。#69 が「`exists()` の syscall 連打が `interp_init` の 48〜53%」と
 //     実測して遅延化した場所で、同じ轍になる。
 //   ⇒ `include_str!` で埋め込む。syscall ゼロ・パス依存ゼロ。

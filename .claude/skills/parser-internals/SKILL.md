@@ -36,10 +36,12 @@ pub struct Parser {
     known_traits:        HashMap<String, (Vec<TemplateParam>, Vec<(...)>, Vec<String>)>,
     class_or_trait_depth: usize,
     known_new_types:     HashSet<String>,
-    source_dir:          PathBuf,   // first search dir for imports
-    root_dir:            PathBuf,   // fallback search dir (shared to sub-parsers unchanged)
-    module_cache:        HashMap<(String, PathBuf), Vec<Stmt>>,
-    loading:             HashSet<PathBuf>,  // circular import detection
+    source_dir:          PathBuf,   // import search base (this file's dir; `..a` goes up — src/module_path.rs)
+    has_source_dir:      bool,      // false for REPL / tests: imports then record no search base
+    root_dir:            PathBuf,   // entry file's dir — NOT searched; only the base for module names (`pkg.util`)
+    module_cache:        HashMap<(String, PathBuf), Vec<Stmt>>,  // key = absolute normalized path
+    loading:             HashSet<PathBuf>,  // circular import detection (absolute normalized paths)
+    module_names:        Rc<RefCell<ModuleNames>>,  // file <-> module name, shared with sub-parsers
 }
 ```
 

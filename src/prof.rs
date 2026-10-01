@@ -171,7 +171,8 @@ pub enum Sub {
     /// ⚠⚠ **ここは常に ~0.000 ms でなければならない**（#69）。#69 以前は祖先ウォーク
     /// （`exists()` の syscall 連打 ＋ 読み込み ＋ JSON パース）を**起動時に必ず**行っており、
     /// `interp_init` の **48〜53%**（repo 外の深い階層では 55〜62%）を占めていた。
-    /// 今は `Interpreter::python_search_dirs()` の初回参照まで遅延する。
+    /// 今は `Interpreter::import_search_dirs`（その import 文の実行時）まで遅延する。
+    /// ⚠ 2026-10-02 からは登録自体をしない（各 import 文が起点を持つ）。区間は空のまま残してある。
     /// ⇒ **この値が 0 でなくなったら、eager なウォークが復活している。**
     CfgWalk = 3,
     /// `set_cli_args`

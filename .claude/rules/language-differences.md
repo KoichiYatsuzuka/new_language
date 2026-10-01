@@ -29,8 +29,27 @@
 - **Types declared in an imported module are named by the module** (phase 10 task 10-8): the class `Tag` in
   `tags.ar` is the type `tags.Tag` (a nested path gives `a.b.Tag`), distinct from a `Tag` in the main program or in
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
-  `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too. Only importing two modules
-  with the same name can collide.
+  `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too.
+  - ⚠ A module's name is **per file** (2026-10-02): its path relative to the entry file's directory
+    (`pkg.util`; above the entry directory each level is `__parent__`, e.g. `__parent__.util`). The same file
+    imported under different spellings is one module; two files never share a name (so `util.ar` and
+    `pkg/util.ar` no longer collide). Rule and naming: `src/module_path.rs`.
+  - ⚠ A type can only be named through a module **this file imports** (`UnimportedModuleType`): the type
+    table is program-wide, but `let t: util.Tag` is an error unless this file imports `util`.
+- **Relative imports with leading dots** (2026-10-02, `IMPORT_RESOLUTION_PLAN.md`): `import .a` (this file's
+  directory), `import ..a.b` (one level up; each extra dot goes one more level up), `from ..lib import f`.
+  Without dots, `import a.b` searches the importing file's directory, then the language's external paths
+  (Python `search_paths` / site-packages, C# `lib_paths`, the js-proc bridge). **The same rule applies to
+  every `import[lang]`** (`.ar` / `.arc` / py / py-int / cpp / cs / js), both when parsing and at runtime.
+  - ⚠ **The entry file's directory is not searched** (unlike Python's `sys.path[0]`). A module in a
+    subdirectory reaches up with `..`, never through the entry directory.
+  - ⚠ `import[rs]` takes a crate name, so a relative `import[rs]` is an error. Python files translated by
+    `import[py]` may use `from .m import x` / `from . import m` (same rule, from the `.py` file's directory).
+- **No re-exports** (2026-10-02): names a module binds with `import` / `from … import` are **not** part of
+  its namespace. `import wrapper` does not make `wrapper.core` (wrapper's own import) or
+  `from wrapper import Item` (wrapper's `from core import Item`) available — both are static errors
+  (`ModuleHasNoMember` / `CannotImportName`) and fail at runtime too. Import what you use directly.
+  Modules translated from Python (`import[py]`) keep Python's re-export semantics.
 - **`class` / `trait` / `protocol` / `new_type` and `import` only at the top level of a module**
   (task 10-16). Inside a function or a block (`if` / `for` / …) they are a `ParseError`.
   `enum` may still be declared inside a function.

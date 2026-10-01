@@ -1,12 +1,51 @@
 ---
 name: importation
-description: Use when writing, reading, or extending Arrow (.ar) import statements — `import[lang] module.path as alias` / `from module import[lang] Name` — including .py, .dll/.lib (C), .rs, C#, or Node.js interop. Explains what each `[lang]` tag loads and how src/parser/imports.rs and src/interpreter/exec.rs implement it, down to key line numbers.
+description: Use when writing, reading, or extending Arrow (.ar) import statements — `import[lang] module.path as alias` / `from module import[lang] Name` / relative `import ..pkg.mod` — including .py, .dll/.lib (C), .rs, C#, or Node.js interop. Explains the search rule shared by every language (src/module_path.rs), module identity and the no-re-export rule, what each `[lang]` tag loads, and how src/parser/imports/ and src/interpreter/exec/modules.rs implement it.
 ---
 
 # Importation of .ar, .py, .dll (C language), .lib, .rs, and more
 
 Import syntax: `import[lang] module.path as alias` / `from module import[lang] Name`.
 The `[lang]` tag selects the source type; omitting it defaults to `ar-auto`.
+A module path may start with dots (relative import): `import .a` / `import ..a.b` / `from ..lib import f`.
+
+## Search rule (every language, 2026-10-02)
+
+**The only definition is [src/module_path.rs](../../../src/module_path.rs)** (its header doc).
+Parse-time loaders for every tag and the runtime lookups (`import[py-int]`'s `sys.path`, the C# bridge /
+host, the js-proc config) all call it. Plan and decisions: `implementation_logs/IMPORT_RESOLUTION_PLAN.md`.
+
+| Written | Searched |
+|---|---|
+| `import a.b` | the importing file's directory, then the language's external paths (Python `python.search_paths` / `PYTHONPATH` / site-packages, C# `csharp.lib_paths`, js-proc bridge resolution) |
+| `import .a.b` | the importing file's directory **only** |
+| `import ..a.b` | one level up **only** (each extra dot = one more level; `...` lexes as one `Ellipsis` = 3) |
+
+- ⚠⚠ **The entry file's directory (`Parser::root_dir`) is never searched.** It used to be the fallback,
+  so a module in a subdirectory could reach up only when the entry happened to be above it. `root_dir` is
+  now only the base for module names (below).
+- ⚠ Python files loaded by `import[py]` resolve their own imports from **the `.py` file's directory**
+  (`fill_python_imports`); `from .m import x` / `from . import m` map to relative imports.
+- ⚠ `import[rs]` takes a crate name: a relative `import[rs]` is an error. Its `ar_config.json` is looked up
+  from the importing file's directory upward (`rust.crates_path`).
+- Each `Stmt::Import` / `Stmt::FromImport` carries `origin: ImportOrigin { level, base_dir, span }` — the
+  runtime searches from `base_dir`, never from the entry directory. Statements not parsed from a file
+  (REPL, tests: `Parser::new(_, None)`) carry `base_dir: None` and fall back to the dirs registered with
+  `Interpreter::add_python_search_dir`.
+
+## Module identity and visibility (2026-10-02)
+
+- **Module names are per file.** For Arrow / py modules the parser rewrites `module` to a unique name:
+  the path relative to the entry file's directory (`pkg.util`; levels above it are `__parent__`, e.g.
+  `__parent__.util`). Modules found in Python's external paths keep the written name. The same file under
+  any spelling is one module; two files claiming one name is an explicit error
+  (`module_path::ModuleNames`). The runtime cache, the type registry and the expander key on this name.
+  `source_module` keeps the written spelling when it differs (editor stub keys use it).
+- **No re-exports** for Arrow modules: names a module binds with `import` / `from … import` are not in its
+  namespace (`Interpreter::drop_reexports`; static `ModuleHasNoMember` / `CannotImportName`). The member set
+  is defined once by `decl_names::module_exports`. Python modules keep Python's re-export semantics.
+- A type can be named only through a module **this file imports** (`TypeErrorKind::UnimportedModuleType`,
+  `TypeRegistry::unreachable_module_type`) — the type table itself is program-wide.
 
 ## Quick reference
 
@@ -35,10 +74,10 @@ This section describes how module importation works in the Arrow Rust implementa
 
 Import statements are processed in **two phases**:
 
-1. **Parse time** — `src/parser/imports.rs` resolves the module file, parses its source, and embeds the resulting AST into the `Stmt::Import` or `Stmt::FromImport` node as `body`.
-2. **Runtime** — `src/interpreter/exec.rs` executes the `body` in an isolated scope and collects all declared names as a `NamespaceData` object, then binds it to the module variable.
+1. **Parse time** — `src/parser/imports/` resolves the module file (`dispatch.rs` → per-language loaders), parses its source, and embeds the resulting AST into the `Stmt::Import` or `Stmt::FromImport` node as `body`. The module-path syntax (`..a.b`) is `src/parser/import_syntax.rs`, shared with the editor build (`imports_editor.rs`).
+2. **Runtime** — `src/interpreter/exec/modules.rs` executes the `body` in the module's own globals and collects its declared names (minus import-only names) as a `NamespaceData` object, then binds it to the module variable.
 
-Type checking (`src/type_check/stmt.rs`) reads the `body` AST directly to collect member types without any additional file I/O.
+Type checking (`src/type_check/stmt/check.rs` / `resolve.rs`) reads the `body` AST directly to collect member types without any additional file I/O.
 
 ---
 
@@ -52,8 +91,11 @@ import[py]  module.path              # Python source
 import[py-int] module.path           # Python type stubs (runtime via PyO3)
 import[rs]  crate_name               # Rust crate
 import[rs]  crate_name[0.2]          # Rust crate, specific version
+import ..module.path                 # relative: one level up from this file
+import[py] .pkg.mod                  # relative works for every tag except rs
 
 from module import[lang] Name1, Name2 as N2
+from ..module import Name
 ```
 
 `parse_lang_bracket()` (imports.rs:267) reads the `[lang]` bracket and assembles hyphenated identifiers (e.g. `py-int`). If absent, the default is `"ar-auto"`.
@@ -66,19 +108,19 @@ from module import[lang] Name1, Name2 as N2
 
 ```
 Stmt::Import {
-    lang:      String,              // "ar-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
-    module:    Vec<String>,         // dotted path segments, e.g. ["os", "path"]
-    with_file: Option<String>,      // header path for cpp-dll/cpp-lib only
-    alias:     Option<String>,      // as alias
-    body:      Vec<Stmt>,           // parsed module AST, embedded at parse time
+    lang:          String,          // "ar-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
+    module:        Vec<String>,     // Arrow/py: per-file module name (`pkg.util`); others: written path;
+                                    // cpp: [resolved header path]
+    source_module: Option<String>,  // written spelling when it differs (`..util`, cpp `A.B`)
+    alias:         Option<String>,  // as alias
+    body:          Vec<Stmt>,       // parsed module AST, embedded at parse time
+    origin:        ImportOrigin,    // { level, base_dir, span } — search base used at runtime too
 }
 
 Stmt::FromImport {
-    lang:      String,
-    module:    Vec<String>,
-    with_file: Option<String>,
-    names:     Vec<(String, Option<String>)>, // [(original_name, as_alias)]
-    body:      Vec<Stmt>,           // parsed module AST, embedded at parse time
+    lang, module, source_module,
+    names:         Vec<(String, Option<String>)>, // [(original_name, as_alias)]
+    body, origin,
 }
 ```
 
@@ -86,7 +128,10 @@ Stmt::FromImport {
 
 ---
 
-## Module Loading Dispatch (`load_module`, imports.rs:306)
+## Module Loading Dispatch (`load_module`, `src/parser/imports/dispatch.rs`)
+
+`load_module(lang, level, module, version)` returns a `LoadedModule { body, name }`; `name` becomes
+`Stmt::Import::module`.
 
 ```
 lang         → loader
@@ -108,11 +153,11 @@ lang         → loader
 
 ---
 
-## `.ar` / `.arc` Module Resolution (`load_tl_module`, imports.rs:388)
+## `.ar` / `.arc` Module Resolution (`load_tl_module`, `src/parser/imports/ar_modules.rs`)
 
-Search directories: `source_dir` first, then `root_dir` (deduplicated when identical).
+Search directory: **the search base only** (`module_search_dirs(level)` = `module_path::search_base(source_dir, level)`).
 
-For each directory, candidates are tried in this order:
+Candidates are tried in this order:
 
 ```
 1. {dir}/{module_path}.arc    ← compiled module (preferred)
@@ -127,22 +172,33 @@ The first candidate that `exists()` wins.
 **If `.ar`**: reads the file directly with `fs::read_to_string`.
 
 Either way, the source is tokenized and a new `Parser` is created with:
-- `source_dir` = directory of the resolved file
-- `module_cache`, `loading`, and `root_dir` cloned from the parent parser
+- `source_dir` = directory of the resolved file (so its own imports start there)
+- `module_cache`, `loading`, `root_dir`, `node_counter` and `module_names` shared with / cloned from the parent
 
 After parsing, the child's `module_cache` is merged back into the parent.
 
-**Circular import detection**: `self.loading` is a `HashSet<PathBuf>`. Before parsing a module, its absolute path is inserted; it is removed after parsing completes. If a path is already in `loading`, an error is returned immediately.
+**Paths**: the found path is split into a display path (lexically normalized, relative — used in messages and
+as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). ⚠ Keys must be normalized:
+`pkg/../a.ar` vs `a.ar` would otherwise parse twice, and a `..` cycle would evade circular-import detection.
 
-**Cache key**: `("ar-auto", abs_path)` for ar-auto, `("ar", abs_path)` for forced source, `("arc", abs_path)` for forced compiled.
+**Circular import detection**: `self.loading` is a `HashSet<PathBuf>` of keys. Before parsing a module, its key is inserted; it is removed after parsing completes. If a key is already in `loading`, an error is returned immediately.
+
+**Cache key**: `("ar-auto", key)` for ar-auto, `("ar", key)` for forced source, `("arc", key)` for forced compiled.
+
+**Module name**: `name_module_file(key, written, local=true)` (see "Module identity" above).
 
 `load_tl_source_module` and `load_tlc_module` are identical to `load_tl_module` but skip `.arc` or skip `.ar` respectively.
 
 ---
 
-## Python Modules (`load_python_module`, imports.rs:614)
+## Python Modules (`load_python_module`, `src/parser/imports/py_modules.rs`)
 
-- Search: only `source_dir`, candidate is `{module_path}.py`
+- Search (`python_import_dirs(from_dir, level)`): no dots → `from_dir` then `python_search_dirs_from(from_dir)`'s
+  external dirs (`python.search_paths` from the nearest ancestor `ar_config.json`, `PYTHONPATH`, site-packages,
+  stdlib); dots → the search base only. Candidates `{module_path}.py` / `{module_path}/__init__.py`.
+- `from_dir` is the `.ar` file's directory for `import[py]`, and **the `.py` file's directory** for imports
+  inside a Python module (`fill_python_imports`). A module found in `from_dir` is named relative to the entry
+  directory; one found in an external dir keeps the written name.
 - Converts Python source via `python_converter::convert_python_source()`
 - ⚠ Placement rules (task 10-16): an `import` inside a function or a module-level block
   (`if` / `try` …) and a `class` inside a module-level block are **conversion errors**
@@ -156,18 +212,19 @@ After parsing, the child's `module_cache` is merged back into the parent.
   `self.Inner()` reach it through the method-call fallback `Interpreter::class_var_class`. Any class-body
   statement other than methods, single-name class attributes, nested classes, docstrings, `...` and
   `pass` is a conversion error (it used to be dropped silently).
-- Cache key: `("py", abs_path)`
+- Cache key: `("py", key)`
 
-### Python Interface (`load_python_interface_module`, imports.rs:658)
+### Python Interface (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)
 
 Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
 
-Search order (via `python_search_dirs()`):
-1. `source_dir`
-2. Directories in `PYTHONPATH` env var
-3. `$PYTHONHOME/Lib/site-packages`
+Search order: the same `python_import_dirs` as `import[py]` (no dots: `source_dir`, `python.search_paths`,
+`PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib/purelib; dots: the search base only).
 
-For each directory, tries `.pyi` first, then `.py`. If nothing is found, returns an empty body (no type checking, PyO3 handles everything at runtime).
+For each directory, tries `.pyi` first, then `.py`. If nothing is found, the bundled stub (`py_stubs`, only for
+non-relative imports) or an empty body (no type checking, PyO3 handles everything at runtime).
+At runtime `py_interop::load_py_int_module` inserts `Interpreter::import_search_dirs(origin)` (the search base,
+plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 
 Parsing errors in `.pyi` / `.py` files are silently ignored (best-effort via `unwrap_or_default()`).
 
@@ -193,7 +250,7 @@ import[rs] sha2           # RustCrypto hash crate (digest pattern auto-detected)
 
 #### Step 1 — Find crate source (`find_config`, rs_loader.rs:202)
 
-Looks for `ar_config.json` in `source_dir` and `root_dir`. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
+Looks for `ar_config.json` in the importing file's directory and its ancestors (then the CWD). ⚠ It used to look in `source_dir` and `root_dir` only. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
 
 ```json
 {
@@ -297,15 +354,18 @@ These stubs are embedded in `Stmt::Import.body` and used by the type checker and
 
 ---
 
-## Runtime Execution (`exec_module`, exec.rs:~1321)
+## Runtime Execution (`exec_module`, `src/interpreter/exec/modules.rs`)
 
-All import variants go through `exec_module`. Cache key: `(lang, PathBuf from module segments)`.
+All import variants go through `exec_module(lang, module, body, origin)`. Cache key: `(lang, PathBuf from module segments)` —
+`module` is the per-file name the parser assigned, so two different files never share an entry.
 
 States:
 - `ModuleState::Loading` — set before execution to catch circular imports at runtime
 - `ModuleState::Loaded(NamespaceData)` — cached after first execution
 
-**For `.ar` / `.arc` / `py` imports**: runs the body AST in a fresh scope, collects all declared top-level variables as `NamespaceData.members`.
+**For `.ar` / `.arc` / `py` imports**: runs the body AST in the module's own globals, collects the declared top-level names as `NamespaceData.members`. For Arrow modules (`module_path::is_arrow_source_lang`) the names bound only by `import` / `from … import` are dropped (`drop_reexports`, defined by `decl_names::module_exports`); the module's functions still see them through their globals.
+
+**Runtime search** (`py-int`'s `sys.path`, the C# bridge `{Name}_native.dll` / host `{Name}_proc.exe`): `Interpreter::import_search_dirs(origin)` = the statement's search base, plus `python.search_paths` (nearest ancestor `ar_config.json`) for non-relative imports. js-proc looks for `ar_config.json` from the search base upward, and passes a JS file found at the search base to the bridge as an absolute path. ⚠ These used to search the entry file's directory (and the CWD for C#).
 
 **For `rs` and `arc` imports** (v1 is the only native `.arc` version): calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
 
@@ -325,7 +385,7 @@ States:
 
 Not covered by `rs_loader`. Parsed by `parse_cpp_import` (imports.rs:91):
 
-1. Resolves dotted identifier to a header file path: `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`
+1. Resolves dotted identifier to a header file path from the search base: `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`, `..DxLib.DxLib` → `{source_dir}/../DxLib/DxLib.h`
 2. Reads the header and calls `cpp_bridge::parse_header_full()` to extract C function signatures and struct definitions.
 3. Generates `Stmt::FnDef` and `Stmt::ClassDef` stubs for the type checker.
 
@@ -341,33 +401,20 @@ For the C ABI value/struct-passing design behind this bridge (raw layout, zero-c
 
 `import[js-proc]` は Node.js を子プロセスとして起動し、Windows 名前付きパイプ上の NDJSON-RPC で任意の JS モジュールを呼び出します。cs-proc の JS 版に相当します。
 
-### パーサー側 (`src/parser/imports.rs` — `load_js_module`)
+### パーサー側 (`src/parser/imports/cs_js_modules.rs` — `load_js_module`)
 
-`lang == "js-proc"` のとき `load_js_module(module)` が呼ばれます。
-
-```rust
-fn load_js_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
-    // モジュールパスを "seg1/seg2" 形式に結合
-    let module_name = module.join("/");
-    // .ars スタブが存在すれば静的型チェックに使用
-    for dir in [&self.source_dir, &self.root_dir] {
-        let stub = dir.join(format!("{}.ars", module_name));
-        if stub.exists() {
-            // 既存の load_stub_file() パターンで .ars をパース
-            return self.parse_stub_file(&stub);
-        }
-    }
-    Ok(vec![])  // スタブなし = 型チェックなし（実行時に動的取得）
-}
-```
+`lang == "js-proc"` のとき `load_js_module(level, module)` が呼ばれます。
+`.ars` スタブは**探索の起点**（`import_base(level)`）の `path/to/module.ars` だけを見ます
+（⚠ 以前は `root_dir` も見ていた）。見つかればそれをパースして body にします。
 
 スタブがない場合は空の body を返します。型チェックは行われず、インポート後のメンバーは全て動的型になります。
 
-### ランタイム側 (`src/interpreter/exec.rs`)
+### ランタイム側 (`src/interpreter/exec/modules.rs` — `import_js_proc`)
 
-#### `find_js_config`
+#### `find_js_config`（`src/interpreter/exec/mod.rs`）
 
-`ar_config.json` を `python_search_dirs`（source_dir・root_dir）の順でウォークアップ検索し、`javascript` キーを読みます。
+`ar_config.json` を**探索の起点から祖先へ**（その後 CWD）探し、`javascript` キーを読みます。
+⚠ 以前はエントリのディレクトリ（`python_search_dirs`）だけを見ていた。
 
 ```rust
 fn find_js_config(search_dirs: &[PathBuf])
@@ -537,20 +584,23 @@ print(mng.results[0])   # "List[int]"
 
 | Subject | File | Key lines |
 |---------|------|-----------|
-| AST node definitions | `src/ast.rs` | ~688–722 |
-| Import parsing entry points | `src/parser/imports.rs` | 38–81, 215–264 |
-| Module loader dispatch | `src/parser/imports.rs` | 306–328 |
-| `.ar`/`.arc` file resolution | `src/parser/imports.rs` | 388–611 |
-| Python loading | `src/parser/imports.rs` | 614–726 |
+| **Search rule / module identity (single definition)** | `src/module_path.rs` | header doc, `search_base`, `ModuleNames` |
+| Module-path syntax `..a.b` (CLI + editor) | `src/parser/import_syntax.rs` | `parse_module_ref` |
+| AST node definitions | `src/ast.rs` | `Stmt::Import` / `Stmt::FromImport` / `ImportOrigin` |
+| Import parsing entry points | `src/parser/imports/dispatch.rs` / `cpp.rs` | `parse_import_stmt` / `parse_from_import_stmt` |
+| Module loader dispatch | `src/parser/imports/dispatch.rs` | `load_module`, `name_module_file` |
+| `.ar`/`.arc` file resolution | `src/parser/imports/ar_modules.rs` | `load_tl_module` … |
+| Python loading | `src/parser/imports/py_modules.rs` | `load_python_module`, `fill_python_imports` |
+| Module exports (no re-export) | `src/decl_names.rs` | `module_exports` |
 | Rust crate loader entry | `src/partial_compiler/rs_loader.rs` | 98–198 |
 | ABI compatibility check | `src/partial_compiler/rs_loader.rs` | 946–965 |
 | Wrapper code generator | `src/partial_compiler/rs_loader.rs` | 1293–1675 |
 | `.arc` binary format | `src/partial_compiler/module_compiler.rs` | ~1–170 |
-| Runtime module execution | `src/interpreter/exec.rs` | ~1321–1627 |
-| Python interop runtime | `src/interpreter/py_interop.rs` | ~143–184 |
-| Type checker import handling | `src/type_check/stmt.rs` | ~553–576 |
-| JS-proc stub loader | `src/parser/imports.rs` | `load_js_module` |
-| JS-proc config reader | `src/interpreter/exec.rs` | `find_js_config` |
+| Runtime module execution | `src/interpreter/exec/modules.rs` | `exec_module`, `drop_reexports`, `import_search_dirs` |
+| Python interop runtime | `src/interpreter/py_interop.rs` | `load_py_int_module` |
+| Type checker import handling | `src/type_check/stmt/check.rs` / `resolve.rs` | `Stmt::Import` arm, `closed_module`, `module_member_types`, `report_unimported_module_type` |
+| JS-proc stub loader | `src/parser/imports/cs_js_modules.rs` | `load_js_module` |
+| JS-proc config reader | `src/interpreter/exec/mod.rs` | `find_js_config` |
 | JS-proc bridge runtime | `src/interpreter/js_proc_runtime.rs` | all |
 | JS-proc value dispatch (attr call) | `src/interpreter/classes.rs` | Namespace arm in `eval_method_call` |
 | JS-proc value dispatch (direct call) | `src/interpreter/eval.rs` | `JsProcFn` arm in `eval_call` |

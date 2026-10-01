@@ -22,6 +22,9 @@ description: Use before modifying the lexer, parser, static type checker, interp
 ### Parsing (`src/parser/`)
 
 Recursive-descent parser. Input: `Vec<Spanned>` tokens. Output: `Vec<Stmt>` AST. Module loading also happens here — imported module ASTs are embedded in `Stmt::Import.body` at parse time.
+Where an import is searched is defined once in `src/module_path.rs` (relative `import ..a`, the importing
+file's directory — never the entry directory — for every `[lang]`, per-file module names); Arrow modules do
+not re-export what they import. Details: the `importation` skill.
 
 - Declarations: `let` / `mut` / `const` / `static mut`; tuple unpack `let x, mut y = expr`
 - Assignments: `x = expr`, compound `x += expr`, attribute `obj.x = expr`
