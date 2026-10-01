@@ -1,4 +1,4 @@
-# git SHA: 4427c6023d50056aecc7f7b739f56d520842a91f
+# git SHA: fac8ad08ee7d7ccee54275ceed8e4e2f16b7c6f9
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -137,6 +137,26 @@ _STATIC_CELLS: dict[str, list] = {}  # span_key → [Value]
 # ---------------------------------------------------------------------------
 # Interpreter
 # ---------------------------------------------------------------------------
+
+
+# Arrow のソースのモジュール（mirrors `module_path::is_arrow_source_lang`）。
+_ARROW_SOURCE_LANGS = ("ar", "tl", "ar-auto", "tl-auto", "arc", "tlc")
+
+
+def _reexported_names(body: list) -> set:
+    """モジュールの中で import で束縛した**だけ**の名前（mirrors `decl_names::module_exports`）。
+
+    ⚠ Arrow のモジュールは再エクスポートしない（2026-10-02）。名前空間からはこれを外す。
+    """
+    imported: set = set()
+    for st in body:
+        if isinstance(st, StmtImport):
+            imported.add(st.alias if st.alias else st.module[-1])
+        elif isinstance(st, StmtFromImport):
+            for orig, alias in st.names:
+                imported.add(alias if alias else orig)
+    defined = {getattr(st, "name", None) for st in body if not isinstance(st, (StmtImport, StmtFromImport))}
+    return imported - defined
 
 class Interpreter:
     def __init__(self) -> None:
@@ -2479,10 +2499,13 @@ class Interpreter:
             pass
 
         # Build namespace from sub's global scope
+        # ⚠ Arrow のモジュールは再エクスポートしない（mirrors `Interpreter::drop_reexports`・2026-10-02）。
+        hidden = _reexported_names(body) if lang in _ARROW_SOURCE_LANGS else set()
         members: dict = {}
         for scope in sub._env._scopes:
             for name, entry in scope.items():
                 if name.startswith("_"): continue
+                if name in hidden: continue
                 val = entry[2][0] if entry[2] is not None else entry[0]
                 members[name] = val
 
@@ -2594,9 +2617,12 @@ class Interpreter:
         except ReturnSignal:
             pass
 
+        # ⚠ Arrow のモジュールは再エクスポートしない（mirrors `Interpreter::drop_reexports`・2026-10-02）。
+        hidden = _reexported_names(body) if lang in _ARROW_SOURCE_LANGS else set()
         members: dict = {}
         for scope in sub._env._scopes:
             for name, entry in scope.items():
+                if name in hidden: continue
                 val = entry[2][0] if entry[2] is not None else entry[0]
                 members[name] = val
 
