@@ -1441,6 +1441,18 @@ impl TypeChecker {
         method: &str,
     ) -> Option<InferredType> {
         use InferredType as T;
+        // `x.__iter__()` は要素の列（python_builtins_plan.md のタスク 1-4）。辞書はキー、ジェネレータは自分自身。
+        if method == "__iter__" {
+            return match recv_ty {
+                T::IteratorOf(_) => Some(recv_ty.clone()),
+                T::DictOf(k, _) => Some(T::IteratorOf(k.clone())),
+                T::ListOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) | T::SetOf(e) => {
+                    Some(T::IteratorOf(e.clone()))
+                }
+                T::Str => Some(T::IteratorOf(Box::new(T::Str))),
+                _ => None,
+            };
+        }
         // ジェネレータ（`generator[T]`・フェーズ10 10-7）。`next()` は要素 1 つ、`close()` は `None`。
         // ⚠ 以前は結果に型が無く、`let v: str = g.next()` が通っていた（`for` と同じ穴）。
         if let T::IteratorOf(elem) = recv_ty {

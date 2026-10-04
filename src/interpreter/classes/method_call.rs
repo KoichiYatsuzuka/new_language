@@ -357,6 +357,14 @@ impl Interpreter {
                             .collect();
                         Ok(Value::List(Rc::new(RefCell::new(tuples))))
                     }
+                    // `d.__iter__()` — キーを挿入順に返すジェネレータ（python_builtins_plan.md のタスク 1-4・
+                    // CPython の `dict_iter`）。⚠ `for k in d:` と同じく**スナップショット**（CPython は反復中に
+                    // 大きさが変わると `RuntimeError` になる。list の `__iter__` と同じ差・別に要判断）。
+                    "__iter__" => {
+                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
+                        let keys = d.borrow().all_keys();
+                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(keys)))))
+                    }
                     _ => Err(format!(
                         "AttributeError: 'dict' object has no method '{method_name}'"
                     )),
@@ -370,6 +378,12 @@ impl Interpreter {
                     let st = state.clone();
                     self.gen_close(&st)?;
                     return Ok(Value::None);
+                }
+                // `g.__iter__()` — ジェネレータは自分自身を返す（タスク 1-4・CPython の `PyObject_SelfIter`）。
+                // ⚠ 写しを作らない。返した値で進めると元のジェネレータも進む（`iter(g) is g`）。
+                if method_name == "__iter__" {
+                    Self::expect_no_args_evaled(&evaled, "Generator", "__iter__")?;
+                    return Ok(obj.clone());
                 }
                 if method_name != "next" {
                     return Err(format!(

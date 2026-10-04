@@ -367,3 +367,30 @@ fn test_seq_ordering_type_errors() {
     let e = run("let bad = c.lt([1], (1,))\n").err().expect("list vs tuple");
     assert!(e.contains("TypeError"), "{e}");
 }
+
+// ---------------------------------------------------------------------------
+// 辞書・ジェネレータの `__iter__`（python_builtins_plan.md のタスク 1-4）
+// ---------------------------------------------------------------------------
+
+/// `d.__iter__()` はキーを挿入順に返し、`g.__iter__()` は同じジェネレータを返す（CPython の `iter(g) is g`）。
+#[test]
+fn test_dict_and_generator_dunder_iter() {
+    let src = concat!(
+        "let d: dict[str, int] = {\"b\": 1, \"a\": 2}\n",
+        "mut it = d.__iter__()\n",
+        "let k1 = it.next()\n",
+        "let k2 = it.next()\n",
+        "gen nums() -> int:\n",
+        "    yield 1\n",
+        "    yield 2\n",
+        "mut g = nums()\n",
+        "mut same = g.__iter__()\n",
+        "let first = same.next()\n",
+        "let second = g.next()\n",
+    );
+    assert_str(run_get(src, "k1"), "b");
+    assert_str(run_get(src, "k2"), "a");
+    assert!(matches!(run_get(src, "first"), Value::Int(1)));
+    // 写しではないので、`same` で 1 つ進めると `g` の次は 2。
+    assert!(matches!(run_get(src, "second"), Value::Int(2)));
+}
