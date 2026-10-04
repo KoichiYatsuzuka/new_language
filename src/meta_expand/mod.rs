@@ -1128,13 +1128,17 @@ fn expand_stmts(
 
             // `import` した `.ar` モジュール（タスク 2-12）。初めてなら展開し、結果を束縛する。
             // ⚠ メタ関数の構文を含まないモジュール（Python の翻訳など）は触らない。
-            Stmt::Import { lang, module, source_module, alias, body, origin }
+            Stmt::Import { lang, module, source_module, alias, body, origin, bind }
                 if ex.has_metafns && ordinary::mentions_meta(&body) =>
             {
                 let m = modules::expand_module(ex, &lang, &module, body)?;
-                let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
-                modules::bind_import(ex, &bind, &module, &m);
-                out.push(Stmt::Import { lang, module, source_module, alias, body: m.body.clone(), origin });
+                // ⚠ 束縛名は AST の `bind`（CPython 準拠・`import a.b` は `a`）。束縛されるのが
+                //   このモジュールそのもののときだけ、メタ関数の名前空間を束縛する
+                //   （パッケージ `a` の束縛は、そのパッケージを読み込んだ文が担う）。
+                if let Some(b) = bind.as_ref().filter(|b| b.module == module) {
+                    modules::bind_import(ex, &b.name, &module, &m);
+                }
+                out.push(Stmt::Import { lang, module, source_module, alias, body: m.body.clone(), origin, bind });
             }
             Stmt::FromImport { lang, module, source_module, names, body, origin }
                 if ex.has_metafns && ordinary::mentions_meta(&body) =>
@@ -2002,6 +2006,10 @@ mod tests {
             alias: alias.map(str::to_string),
             body: Vec::new(),
             origin: crate::ast::ImportOrigin::default(),
+            bind: Some(crate::ast::ImportBind {
+                name: alias.unwrap_or("m").to_string(),
+                module: vec!["m".to_string()],
+            }),
         }
     }
 

@@ -870,15 +870,15 @@ impl TypeChecker {
                 });
             }
         }
-        // ⚠ メンバーが確定している Arrow のモジュールに無い名前は静的エラー（再エクスポートしない・
-        //   2026-10-02）。実行時は `AttributeError` になる（`Interpreter::drop_reexports`）。
+        // ⚠ メンバーが確定している Arrow のモジュールに無い名前は静的エラー（2026-10-02）。
+        //   実行時は `AttributeError`。メンバーには再エクスポート・サブモジュールも入っている
+        //   （`TypeChecker::namespace_type`）。
         if let InferredType::Namespace(ref members, Some(ref closed)) = obj_ty {
             if !members.contains_key(attr) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::ModuleHasNoMember {
                         module: closed.name.clone(),
                         member: attr.to_string(),
-                        imported: closed.imported.iter().any(|n| n == attr),
                     },
                     span: Some(span.clone()),
                 });

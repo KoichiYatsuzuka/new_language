@@ -69,6 +69,17 @@ pub struct TypeChecker {
     annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
     /// 検査済みのテンプレートの具体化 `(lang, モジュールパス, 名前)`（`annotate_module_body`・タスク 2-16）。
     annotated_instances: std::collections::HashSet<(String, Vec<String>, String)>,
+    /// import したモジュールのメンバーの型（モジュールの名前 `a.b` → 名前 → 型）。
+    /// `Stmt::Import` / `Stmt::FromImport` を検査するたびに入れる（CPython 準拠・2026-10-02）。
+    /// パッケージの名前空間の型（`namespace_type`）を組み立てるのに使う。
+    module_member_cache: HashMap<String, HashMap<String, InferredType>>,
+    /// **サブモジュールの表**（親パッケージの名前 → 子の名前）。プログラムのどこかで import される
+    /// モジュール（`a.b`）を、その親（`a`）の子として集めたもの（[`names::collect_module_children`]）。
+    ///
+    /// ⚠ CPython では `a.b` をどこかで読み込めば、`a` の属性として `b` が見える（`sys.modules`）。
+    ///   `import a` だけのファイルでも `a.b` が読めることがあるので、型検査は**プログラム全体**の
+    ///   子を名前空間のメンバーに含める（含めないと実行時に通る `a.b` を誤りと言ってしまう）。
+    module_children: HashMap<String, std::collections::BTreeSet<String>>,
     /// 次に推論する属性式（`x.m`）が**呼び出しの呼び先**か（フェーズ10 10-14）。
     ///
     /// ⚠ 組み込みの受け手（`str` / `list` …）のメソッド呼び出し `s.upper()` は、呼び出しの検査が
@@ -244,6 +255,12 @@ impl TypeChecker {
             registry_incomplete: Self::has_unloaded_import(stmts),
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
+            module_member_cache: HashMap::new(),
+            module_children: {
+                let mut map = HashMap::new();
+                names::collect_module_children(stmts, &mut map);
+                map
+            },
             attr_is_callee: false,
             declared_anywhere: {
                 let mut set = std::collections::HashSet::new();
@@ -282,8 +299,14 @@ impl TypeChecker {
         stmts.iter().any(|s| match s {
             #[cfg(feature = "editor")]
             Stmt::Import { .. } | Stmt::FromImport { .. } => true,
+            // ⚠ Arrow / py（変換）のモジュールは CLI では必ず読み込まれる（見つからなければ
+            //   構文解析の誤り）。本体が空なのは `__init__` の無い**名前空間パッケージ**
+            //   （CPython 準拠・2026-10-02）か、本当に空のファイルなので、「読めなかった」とは数えない。
+            //   数えると `import a.b`（`a` が名前空間パッケージ）だけで未定義名などの検査が全部止まる（実測）。
             #[cfg(not(feature = "editor"))]
-            Stmt::Import { body, .. } | Stmt::FromImport { body, .. } => body.is_empty(),
+            Stmt::Import { body, lang, .. } | Stmt::FromImport { body, lang, .. } => {
+                body.is_empty() && !crate::module_path::is_arrow_source_lang(lang) && lang != "py"
+            }
             // ⚠ import は最上位にしか書けないが、`if` の中などへ移ったときに
             //   静かに見落とさないよう、定義の本体だけは覗いておく。
             Stmt::FnDef { body, .. }

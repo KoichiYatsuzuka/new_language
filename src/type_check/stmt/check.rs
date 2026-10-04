@@ -24,22 +24,19 @@ fn editor_stub_body(body: &[Stmt]) -> bool {
     cfg!(feature = "editor") && body.is_empty()
 }
 
-/// Arrow のモジュールなら、**メンバーが確定している**ことの印（[`ClosedModule`]）を作る
-/// （再エクスポートしない・2026-10-02）。
+/// Arrow のモジュールなら、**メンバーが確定している**ことの印（[`ClosedModule`]）を作る（2026-10-02）。
 ///
-/// ⚠ メンバーの顔ぶれは実行時と同じ定義（[`crate::decl_names::module_exports`]）。
+/// ⚠ メンバーは最上位で束縛される名前すべて（宣言・import の束縛＝再エクスポート・CPython 準拠）と、
+///   どこかで import されるサブモジュール（`TypeChecker::namespace_type`）。
 /// ⚠ 外部言語のスタブ（cpp / cs / js / rs）は実物の部分集合でありうるので作らない。
 /// ⚠ エディタ（`editor`）も作らない。ホストが渡すスタブ（`.ars`）は `let` を落とすなど
 ///   実モジュールの部分集合なので、「無い」と断定すると CLI が出さない誤りをエディタだけが出す
 ///   （`compare_wasm_frontend.ps1` の不変条件）。
-fn closed_module(lang: &str, module: &[String], body: &[Stmt]) -> Option<Box<ClosedModule>> {
-    if cfg!(feature = "editor") || !crate::module_path::is_arrow_source_lang(lang) {
+pub(crate) fn closed_module(lang: &str, module: &[String]) -> Option<Box<ClosedModule>> {
+    if cfg!(feature = "editor") || !crate::module_path::is_arrow_source_lang(lang) || module.is_empty() {
         return None;
     }
-    let mut imported: Vec<String> =
-        crate::decl_names::module_exports(body).imported.into_iter().collect();
-    imported.sort();
-    Some(Box::new(ClosedModule { name: module.join("."), imported }))
+    Some(Box::new(ClosedModule { name: module.join(".") }))
 }
 
 /// Python のモジュールの本体で、**自分で定義したクラスを返す関数**の名前（フェーズ10 10-16）。
@@ -729,61 +726,65 @@ impl TypeChecker {
             }
 
             // --- import ---
-            Stmt::Import {
-                lang,
-                module,
-                alias,
-                body,
-                ..
-            } => {
+            //
+            // ⚠ 束縛は AST の `bind`（パーサが決める・CPython 準拠・2026-10-02）。`import a.b.c` は
+            //   **パッケージ `a`** を束縛し、その型はパッケージのメンバーと子モジュールから組み立てる
+            //   （`namespace_type`）。`bind: None` は束縛しない文（パッケージの連鎖を読み込むために
+            //   パーサが足した文）で、メンバーの型を控えるだけ。
+            Stmt::Import { lang, module, body, bind, .. } => {
                 self.annotate_module_body(lang, module, body);
                 let member_types = self.module_member_types(lang, module, body);
-                let bind_name = alias
-                    .clone()
-                    .unwrap_or_else(|| module.last().unwrap().clone());
-                let ns_ty = if editor_stub_body(body) {
-                    // `editor`（VS Code 拡張の wasm ビルド）は import 先を読み込まないので
-                    // body が空になる。ここで `PyNamespace([])` を束縛すると未知メンバが
-                    // `Any` になり、`d.Box.bump()` のような連鎖アクセスが
-                    // OperationOnAny エラー＝**エディタだけが出す偽陽性**になる
-                    // （examples/interop/py_decorators.ar で実際に発生した）。
-                    // `Unresolved` は attribute access の match で `_ => {}` に落ちるため
-                    // 「型は分からないがエラーでもない」を正しく表現できる。
-                    InferredType::Unresolved
-                } else if lang == "py" || lang == "py-int" {
-                    InferredType::PyNamespace(member_types)
-                } else {
-                    InferredType::Namespace(member_types, closed_module(lang, module, body))
-                };
-                // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
-                let prefix = format!("{bind_name}.");
-                self.py_class_factories.retain(|k, _| !k.starts_with(&prefix));
-                if lang == "py" || lang == "py-int" {
-                    let depth = self.state.scope_depth();
-                    for f in py_class_factory_names(body) {
-                        let shown = format!("{}.{f}", module.join("."));
-                        self.py_class_factories.insert(format!("{prefix}{f}"), (depth, shown));
+                self.module_member_cache.insert(module.join("."), member_types);
+                if let Some(b) = bind {
+                    let ns_ty = if editor_stub_body(body) {
+                        // `editor`（VS Code 拡張の wasm ビルド）は import 先を読み込まないので
+                        // body が空になる。ここで `PyNamespace([])` を束縛すると未知メンバが
+                        // `Any` になり、`d.Box.bump()` のような連鎖アクセスが
+                        // OperationOnAny エラー＝**エディタだけが出す偽陽性**になる
+                        // （examples/interop/py_decorators.ar で実際に発生した）。
+                        // `Unresolved` は attribute access の match で `_ => {}` に落ちるため
+                        // 「型は分からないがエラーでもない」を正しく表現できる。
+                        InferredType::Unresolved
+                    } else {
+                        self.namespace_type(lang, &b.module)
+                    };
+                    // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
+                    // 綴りは束縛名からモジュールまでの道（`import a.b` の `a.b.f`・`import a.b as m` の `m.f`）。
+                    self.py_class_factories.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
+                    if lang == "py" || lang == "py-int" {
+                        let rest = module.get(b.module.len()..).unwrap_or(&[]);
+                        let spelled: Vec<&str> =
+                            std::iter::once(b.name.as_str()).chain(rest.iter().map(String::as_str)).collect();
+                        let prefix = format!("{}.", spelled.join("."));
+                        let depth = self.state.scope_depth();
+                        for f in py_class_factory_names(body) {
+                            let shown = format!("{}.{f}", module.join("."));
+                            self.py_class_factories.insert(format!("{prefix}{f}"), (depth, shown));
+                        }
                     }
+                    self.declare(b.name.clone(), ns_ty, false);
                 }
-                self.declare(bind_name, ns_ty, false);
             }
 
             Stmt::FromImport { lang, module, names, body, .. } => {
                 self.annotate_module_body(lang, module, body);
                 let member_types = self.module_member_types(lang, module, body);
+                self.module_member_cache.insert(module.join("."), member_types.clone());
                 let is_py = lang == "py" || lang == "py-int";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
-                // ⚠ Arrow のモジュールに無い名前は静的エラー（再エクスポートしない・2026-10-02）。
-                //   実行時は `ImportError: cannot import name ..`（`Interpreter::drop_reexports`）。
-                let closed = closed_module(lang, module, body);
+                // CPython: 名前がモジュールに無ければサブモジュール（パーサが先に読み込んでいる）。
+                let children = self.module_children.get(&module.join(".")).cloned().unwrap_or_default();
+                // ⚠ Arrow のモジュールの名前にもサブモジュールにも無い名前は静的エラー（2026-10-02）。
+                //   実行時は `ImportError: cannot import name ..`。
+                let closed = closed_module(lang, module);
                 for (orig_name, alias) in names {
+                    let is_child = children.contains(orig_name);
                     if let Some(c) = &closed {
-                        if !member_types.contains_key(orig_name.as_str()) {
+                        if !member_types.contains_key(orig_name.as_str()) && !is_child {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CannotImportName {
                                     module: c.name.clone(),
                                     name: orig_name.clone(),
-                                    imported: c.imported.iter().any(|n| n == orig_name),
                                 },
                                 span: None,
                             });
@@ -798,14 +799,20 @@ impl TypeChecker {
                     } else {
                         self.py_class_factories.remove(&bind_name);
                     }
-                    let ty = member_types.get(orig_name.as_str()).cloned().unwrap_or(
-                        // `editor` の空 body では `Any` に落とさない（上の Stmt::Import と同じ理由）。
-                        if is_py && !editor_stub_body(body) {
-                            InferredType::Any
-                        } else {
-                            InferredType::Unresolved
-                        },
-                    );
+                    let child_path: Vec<String> =
+                        module.iter().cloned().chain([orig_name.clone()]).collect();
+                    let ty = member_types
+                        .get(orig_name.as_str())
+                        .cloned()
+                        .or_else(|| is_child.then(|| self.namespace_type(lang, &child_path)))
+                        .unwrap_or(
+                            // `editor` の空 body では `Any` に落とさない（上の Stmt::Import と同じ理由）。
+                            if is_py && !editor_stub_body(body) {
+                                InferredType::Any
+                            } else {
+                                InferredType::Unresolved
+                            },
+                        );
                     self.declare(bind_name, ty, false);
                 }
             }

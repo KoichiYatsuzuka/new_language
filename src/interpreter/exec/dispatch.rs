@@ -195,10 +195,11 @@ impl Interpreter {
                 lang,
                 module,
                 source_module,
-                alias,
+                alias: _,
                 body,
                 origin,
-            } => self.exec_import(lang, module, source_module.as_deref(), alias.as_deref(), body, origin),
+                bind,
+            } => self.exec_import(lang, module, source_module.as_deref(), body, origin, bind.as_ref()),
             Stmt::FromImport {
                 lang,
                 module,
@@ -208,9 +209,12 @@ impl Interpreter {
                 origin,
             } => {
                 let ns = self.exec_module(lang, module, body, origin)?;
+                self.attach_submodule(module, &ns);
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
-                    let val = ns.members.get(orig_name.as_str()).cloned().ok_or_else(|| {
+                    // ⚠ メンバー（再エクスポートを含む）→ サブモジュール（`from pkg import sub`）の順
+                    //   （`namespace_member`・CPython と同じ）。
+                    let val = self.namespace_member(&ns, orig_name.as_str()).ok_or_else(|| {
                         format!(
                             "ImportError: cannot import name '{}' from '{}'",
                             orig_name,

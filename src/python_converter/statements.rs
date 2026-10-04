@@ -1229,11 +1229,18 @@ pub(crate) fn convert_stmt(
                 if is_converter_modelled_module(&module) {
                     continue;
                 }
+                let asname = alias.asname.as_ref().map(|a| a.to_string());
                 out.push(Stmt::Import {
                     lang: "py".to_string(),
+                    // 仮の束縛（CPython: `import a.b` は `a`、`import a.b as m` は `m`）。
+                    // ⚠ パーサが読み込んだあとファイルごとの名前で付け直す（`fill_python_imports`）。
+                    bind: Some(crate::ast::ImportBind {
+                        name: asname.clone().unwrap_or_else(|| module[0].clone()),
+                        module: if asname.is_some() { module.clone() } else { module[..1].to_vec() },
+                    }),
                     module,
                     source_module: None,
-                    alias: alias.asname.as_ref().map(|a| a.to_string()),
+                    alias: asname,
                     body: Vec::new(),
                     // 探索の起点はパーサが埋める（`fill_python_imports`・その `.py` のディレクトリ）。
                     origin: crate::ast::ImportOrigin::default(),
@@ -1254,11 +1261,17 @@ pub(crate) fn convert_stmt(
             if f.module.is_none() && level > 0 {
                 let mut out = Vec::with_capacity(f.names.len());
                 for a in &f.names {
+                    let module = vec![a.name.to_string()];
+                    let asname = a.asname.as_ref().map(|x| x.to_string());
                     out.push(Stmt::Import {
                         lang: "py".to_string(),
-                        module: vec![a.name.to_string()],
+                        bind: Some(crate::ast::ImportBind {
+                            name: asname.clone().unwrap_or_else(|| module[0].clone()),
+                            module: module.clone(),
+                        }),
+                        module,
                         source_module: None,
-                        alias: a.asname.as_ref().map(|x| x.to_string()),
+                        alias: asname,
                         body: Vec::new(),
                         origin: crate::ast::ImportOrigin { level, ..Default::default() },
                     });

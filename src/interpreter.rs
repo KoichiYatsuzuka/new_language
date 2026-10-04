@@ -537,6 +537,11 @@ pub struct Interpreter {
     ///   `python.search_paths`（遅延読み込み・#69）が入っており、サブディレクトリの
     ///   ファイルが書いた import までエントリ基準で探されていた。
     pub(self) python_search_dirs: Vec<PathBuf>,
+    /// **サブモジュールの表**（CPython の `sys.modules` でパッケージに付く属性・2026-10-02）。
+    /// キー: 親パッケージの名前（`NamespaceData::name`）→ 子の名前 → 子の名前空間。
+    /// `Interpreter::attach_submodule` が書き、`namespace_member` が引く。
+    /// ⚠ 名前空間の値の中に持たせない理由は `attach_submodule` の doc（循環）。
+    pub(crate) submodules: HashMap<String, HashMap<String, Value>>,
     /// `static mut` 変数の永続セル。キーは宣言の (ファイル名, 行, 列)。
     /// 外側関数の全呼び出しで同じセルを共有する。
     pub(self) static_cells: HashMap<(String, usize, usize), Rc<RefCell<Value>>>,
@@ -695,6 +700,7 @@ impl Interpreter {
             module_cache: HashMap::new(),
             in_python_module: false,
             python_search_dirs: Vec::new(),
+            submodules: HashMap::new(),
             static_cells: HashMap::new(),
             current_class: None,
             class_call_ctx: None,

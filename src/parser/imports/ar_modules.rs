@@ -11,9 +11,8 @@ impl Parser {
     /// モジュールの探索先（**起点 1 か所だけ**・[`crate::module_path`]）。
     ///
     /// ⚠ **3 つのローダで完全に同じ**だったので #79 で 1 本化した。
-    /// ⚠⚠ 以前は `source_dir` で見つからなければ `root_dir`（エントリのディレクトリ）も
-    ///   探していた（2026-10-02 に外した）。エントリが上の階層にあるときだけ上を指せる、
-    ///   という「どこから実行したかで結果が変わる」規則だった。上の階層は `..a` と書く。
+    /// ⚠ 起点は [`crate::module_path::import_base`]: ドット無しはエントリのディレクトリ
+    ///   （CPython の `sys.path[0]`）、ドット付きは書いたファイルのディレクトリから数える。
     fn module_search_dirs(&self, level: u32) -> Vec<PathBuf> {
         vec![self.import_base(level)]
     }
@@ -114,42 +113,103 @@ impl Parser {
     /// 2. `module.ar`          — ソースファイルモジュール
     /// 3. `module/__init__.ar` — パッケージモジュール
     pub(crate) fn load_tl_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
-        let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("arc");
-        let file_rel = module_base.with_extension("ar");
-        let init_rel = module_base.join("__init__.ar");
+        self.load_ar(ArKind::Auto, level, module)
+    }
 
+    /// `import[ar]`: `.ar` ソースのみをロードする。`.arc` があっても無視する。
+    pub(crate) fn load_tl_source_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
+        self.load_ar(ArKind::Source, level, module)
+    }
+
+    /// `import[arc]`: `.arc` コンパイル済みモジュールのみをロードする。`.ar` があっても無視する。
+    pub(crate) fn load_tlc_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
+        self.load_ar(ArKind::Compiled, level, module)
+    }
+
+    /// `module`（`a.b`）の `.ar` / `.arc` のファイルが探索の起点に在るか（読み込まない）。
+    ///
+    /// `from pkg import x` の `x` がサブモジュールかどうかの判定に使う（CPython 準拠・2026-10-02）。
+    pub(crate) fn ar_module_exists(&self, lang: &str, level: u32, module: &[String]) -> bool {
+        let module_base: PathBuf = module.iter().collect();
+        let kind = ArKind::of(lang);
+        self.module_search_dirs(level).iter().any(|dir| {
+            kind.candidates(&module_base).iter().any(|(rel, _)| dir.join(rel).exists())
+                || dir.join(&module_base).is_dir()
+        })
+    }
+
+    /// 3 つのローダの共通部分（候補の並べ方だけが `kind` で違う）。
+    fn load_ar(&mut self, kind: ArKind, level: u32, module: &[String]) -> Result<LoadedModule, String> {
+        let module_base: PathBuf = module.iter().collect();
         let search_dirs = self.module_search_dirs(level);
 
-        // (パス, コンパイル済みか) の候補リスト — .arc が .ar より先になる
-        let candidates: Vec<(PathBuf, bool)> = search_dirs
+        // (探索先, パス, コンパイル済みか) の候補リスト — .arc が .ar より先になる
+        let candidates: Vec<(PathBuf, PathBuf, bool)> = search_dirs
             .iter()
             .flat_map(|dir| {
-                [
-                    (dir.join(&tlc_rel), true),
-                    (dir.join(&file_rel), false),
-                    (dir.join(&init_rel), false),
-                ]
+                kind.candidates(&module_base)
+                    .into_iter()
+                    .map(move |(rel, compiled)| (dir.clone(), dir.join(rel), compiled))
             })
             .collect();
 
-        let (mut abs_path, mut is_compiled) = candidates
-            .iter()
-            .find(|(p, _)| p.exists())
-            .cloned()
-            .ok_or_else(|| {
-                let paths = candidates
-                    .iter()
-                    .map(|(p, _)| format!("'{}'", p.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "cannot find module '{}' (looked at {})",
-                    module_path::written_spelling(level, module),
-                    paths
-                )
-            })?;
+        let found = candidates.iter().find(|(_, p, _)| p.exists()).cloned();
+        let Some((root, found, is_compiled)) = found else {
+            // ⚠ `__init__` の無いディレクトリは**名前空間パッケージ**（CPython と同じ）。
+            //   `import pkg`（pkg/ にファイルが 1 つも無くても）は空のモジュールになる。
+            if let Some(dir) = search_dirs.iter().find(|d| d.join(&module_base).is_dir()) {
+                let mut loaded = self.load_ar_package(kind.lang(), &dir.join(&module_base), module)?;
+                loaded.root = Some(dir.clone());
+                return Ok(loaded);
+            }
+            let paths = candidates
+                .iter()
+                .map(|(_, p, _)| format!("'{}'", p.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(kind.not_found(&module_path::written_spelling(level, module), &paths));
+        };
 
+        let mut loaded = self.load_found_ar(kind, found, is_compiled, module)?;
+        loaded.root = Some(root);
+        Ok(loaded)
+    }
+
+    /// パッケージ（ディレクトリ `dir`）を読み込む（CPython 準拠・2026-10-02）。
+    ///
+    /// `__init__` があればそれを読み、無ければ**空の名前空間パッケージ**（CPython の
+    /// namespace package と同じ）。`written` は書いた綴り（名前を作れないときの代わり）。
+    pub(crate) fn load_ar_package(
+        &mut self,
+        lang: &str,
+        dir: &Path,
+        written: &[String],
+    ) -> Result<LoadedModule, String> {
+        let kind = ArKind::of(lang);
+        let init = kind
+            .package_inits()
+            .into_iter()
+            .map(|(rel, compiled)| (dir.join(rel), compiled))
+            .find(|(p, _)| p.exists());
+        match init {
+            Some((found, compiled)) => self.load_found_ar(kind, found, compiled, written),
+            None => Ok(LoadedModule {
+                body: Vec::new(),
+                name: self.name_module_dir(dir, written, true)?,
+                root: None,
+            }),
+        }
+    }
+
+    /// 見つけた `.ar` / `.arc` を読み込む（陳腐化検査・名前・キャッシュ・子パーサ）。
+    fn load_found_ar(
+        &mut self,
+        kind: ArKind,
+        found: PathBuf,
+        is_compiled: bool,
+        module: &[String],
+    ) -> Result<LoadedModule, String> {
+        let (mut found, mut is_compiled) = (found, is_compiled);
         // ── `.arc` の陳腐化検査（#14 の「ABI ハッシュ照合」を、実際に起きる食い違いへ適用）──
         //
         // `.arc` は**ソースを埋め込んで**おり、存在すると `.ar` より優先される。
@@ -159,39 +219,39 @@ impl Parser {
         // 埋め込みソースと隣の `.ar` を突き合わせ、食い違ったら**ソース側を正**として `.ar` を使う。
         // §6.3 の「不一致ならフォールバック（再解決できなければ明示エラー）」を、
         // 回復手段（＝ソースがそこにある）が常にある本ケースへ当てはめたもの。
-        if is_compiled {
-            let src_sibling = abs_path.with_extension("ar");
+        // ⚠ `import[arc]`（`ArKind::Compiled`）は `.arc` を強制するので見ない。
+        if is_compiled && kind == ArKind::Auto {
+            let src_sibling = found.with_extension("ar");
             if let (Ok((_, embedded)), Ok(on_disk)) = (
-                crate::partial_compiler::read_tlc_source(&abs_path),
+                crate::partial_compiler::read_tlc_source(&found),
                 std::fs::read_to_string(&src_sibling),
             ) {
                 if embedded != on_disk {
                     eprintln!(
                         "Warning: compiled module '{}' is out of date with '{}'; \
                          using the source (re-run `--compile` to refresh the .arc)",
-                        abs_path.display(),
+                        found.display(),
                         src_sibling.display()
                     );
-                    abs_path = src_sibling;
+                    found = src_sibling;
                     is_compiled = false;
                 }
             }
         }
 
-        let (shown_path, abs_path) = Self::found_paths(&abs_path);
+        let (shown_path, abs_path) = Self::found_paths(&found);
         let name = self.name_module_file(&abs_path, module, true)?;
-        let cache_key = ("ar-auto".to_string(), abs_path.clone());
+        let cache_key = (kind.cache_lang().to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(LoadedModule { body, name });
+            return Ok(LoadedModule { body, name, root: None });
         }
 
         // ソースを取得: .arc はバイナリから埋め込みソースを抽出、.ar は直読み
         let (source, filename) = if is_compiled {
-            let (mod_name, src) = crate::partial_compiler::load_tlc(&abs_path)
+            let (mod_name, src) = crate::partial_compiler::load_tlc(&shown_path)
                 .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
-            let label = format!("<compiled:{mod_name}>");
-            (src, label)
+            (src, format!("<compiled:{mod_name}>"))
         } else {
             let src = std::fs::read_to_string(&shown_path)
                 .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
@@ -199,95 +259,70 @@ impl Parser {
         };
 
         let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
-        Ok(LoadedModule { body, name })
+        Ok(LoadedModule { body, name, root: None })
     }
+}
 
-    /// `import[ar]`: `.ar` ソースのみをロードする。`.arc` があっても無視する。
-    pub(crate) fn load_tl_source_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
-        let module_base: PathBuf = module.iter().collect();
-        let file_rel = module_base.with_extension("ar");
-        let init_rel = module_base.join("__init__.ar");
+/// `.ar` / `.arc` のローダの種類（`import` / `import[ar]` / `import[arc]`）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArKind {
+    /// `.arc` を優先し、無ければ `.ar`（`ar-auto` / `tl-auto`）
+    Auto,
+    /// `.ar` だけ（`ar` / `tl`）
+    Source,
+    /// `.arc` だけ（`arc` / `tlc`）
+    Compiled,
+}
 
-        let search_dirs = self.module_search_dirs(level);
-
-        let candidates: Vec<PathBuf> = search_dirs
-            .iter()
-            .flat_map(|dir| [dir.join(&file_rel), dir.join(&init_rel)])
-            .collect();
-
-        let abs_path = candidates
-            .iter()
-            .find(|p| p.exists())
-            .cloned()
-            .ok_or_else(|| {
-                let paths = candidates
-                    .iter()
-                    .map(|p| format!("'{}'", p.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "cannot find source module '{}' (looked at {})",
-                    module_path::written_spelling(level, module),
-                    paths
-                )
-            })?;
-
-        let (shown_path, abs_path) = Self::found_paths(&abs_path);
-        let name = self.name_module_file(&abs_path, module, true)?;
-        let cache_key = ("ar".to_string(), abs_path.clone());
-
-        if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(LoadedModule { body, name });
+impl ArKind {
+    fn of(lang: &str) -> Self {
+        match lang {
+            "ar" | "tl" => ArKind::Source,
+            "arc" | "tlc" => ArKind::Compiled,
+            _ => ArKind::Auto,
         }
-
-        let source = std::fs::read_to_string(&shown_path)
-            .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
-        let filename = shown_path.to_string_lossy().into_owned();
-
-        let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
-        Ok(LoadedModule { body, name })
     }
 
-    /// `import[arc]`: `.arc` コンパイル済みモジュールのみをロードする。`.ar` があっても無視する。
-    pub(crate) fn load_tlc_module(&mut self, level: u32, module: &[String]) -> Result<LoadedModule, String> {
-        let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("arc");
-
-        let search_dirs = self.module_search_dirs(level);
-
-        let candidates: Vec<PathBuf> =
-            search_dirs.iter().map(|dir| dir.join(&tlc_rel)).collect();
-
-        let abs_path = candidates
-            .iter()
-            .find(|p| p.exists())
-            .cloned()
-            .ok_or_else(|| {
-                let paths = candidates
-                    .iter()
-                    .map(|p| format!("'{}'", p.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.ar>)",
-                    module_path::written_spelling(level, module), paths
-                )
-            })?;
-
-        let (shown_path, abs_path) = Self::found_paths(&abs_path);
-        let name = self.name_module_file(&abs_path, module, true)?;
-        let cache_key = ("arc".to_string(), abs_path.clone());
-
-        if let Some(body) = self.module_cache_probe(&cache_key, &abs_path)? {
-            return Ok(LoadedModule { body, name });
+    fn lang(self) -> &'static str {
+        match self {
+            ArKind::Auto => "ar-auto",
+            ArKind::Source => "ar",
+            ArKind::Compiled => "arc",
         }
-
-        let (mod_name, source) = crate::partial_compiler::load_tlc(&shown_path)
-            .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
-        let filename = format!("<compiled:{mod_name}>");
-
-        let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
-        Ok(LoadedModule { body, name })
     }
 
+    /// キャッシュの鍵の言語名（以前からの値を保つ）。
+    fn cache_lang(self) -> &'static str {
+        self.lang()
+    }
+
+    /// `module`（`a/b`）の候補（パス, コンパイル済みか）。
+    fn candidates(self, module_base: &Path) -> Vec<(PathBuf, bool)> {
+        let arc = (module_base.with_extension("arc"), true);
+        let ar = (module_base.with_extension("ar"), false);
+        let init = (module_base.join("__init__.ar"), false);
+        match self {
+            ArKind::Auto => vec![arc, ar, init],
+            ArKind::Source => vec![ar, init],
+            ArKind::Compiled => vec![arc],
+        }
+    }
+
+    /// パッケージのディレクトリの中の `__init__` の候補（[`Self::candidates`] の `module/__init__.ar` と揃える）。
+    fn package_inits(self) -> Vec<(PathBuf, bool)> {
+        match self {
+            ArKind::Auto | ArKind::Source => vec![(PathBuf::from("__init__.ar"), false)],
+            ArKind::Compiled => vec![(PathBuf::from("__init__.arc"), true)],
+        }
+    }
+
+    fn not_found(self, written: &str, paths: &str) -> String {
+        match self {
+            ArKind::Auto => format!("cannot find module '{written}' (looked at {paths})"),
+            ArKind::Source => format!("cannot find source module '{written}' (looked at {paths})"),
+            ArKind::Compiled => format!(
+                "cannot find compiled module '{written}' (looked at {paths}; compile with: cargo run --release -- --compile <source.ar>)"
+            ),
+        }
+    }
 }

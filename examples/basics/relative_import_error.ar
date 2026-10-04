@@ -1,16 +1,18 @@
-# relative_import_error.ar — サブディレクトリのモジュールは、エントリのディレクトリを探さない
+# relative_import_error.ar — ドット無しの import は、書いたファイルのディレクトリを探さない（CPython 準拠）
 #
 # 対になる正常系: relative_import.ar
 #
-# relative_modules/sub/needs_root_error.ar は、エントリ（このファイル）のディレクトリから数えた
-# `import relative_modules.base` を書いている。以前はエントリのディレクトリも探したのでこれが通ったが
-# （base を出していた）、今は書いたファイルのディレクトリ（sub/）からしか探さないので見つからない。
-# 上の階層は `import ..base` と書く。
+# relative_modules/sub/implicit_relative_error.ar は、同じディレクトリの util.ar を `import util` で
+# 読もうとしている。ドット無しの import はエントリのディレクトリ（CPython の sys.path[0] =
+# このファイルのある examples/basics/）から探すので見つからない（CPython にも暗黙の相対 import は無い）。
+# 同じディレクトリのモジュールは `import .util` か `from . import util` と書く。
 #
 #   Expected error (ParseError):
-#     cannot find module 'relative_modules.base'
-#     (looked at '...relative_modules\sub\relative_modules\base.arc', ...)
+#     cannot find module 'util' (looked at '...examples\basics\util.arc', ...)
+#
+# ⚠ 2026-10-02 午前の版（フェーズ 1）では逆に「ドット無しも書いたファイルのディレクトリから・
+#   エントリのディレクトリは探さない」だった。利用者の決定で CPython 準拠へ改めた（フェーズ 4）。
 
-import relative_modules.sub.needs_root_error as m
+import relative_modules.sub.implicit_relative_error as m
 
-print(m.name())
+print(m.which())

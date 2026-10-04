@@ -25,7 +25,7 @@ impl Parser {
                 self.current()
             ));
         }
-        let (level, parts) = self.parse_module_ref()?;
+        let (level, parts) = self.parse_module_ref(false)?;
 
         // ドット区切りパーツを探索の起点基準のヘッダパスに解決する
         // 例: DxLib.DxLib → {source_dir}/DxLib/DxLib.h
@@ -136,7 +136,16 @@ impl Parser {
         //   ドット表記はここで失われるので、エディタ用スタブの鍵のために別途残す
         //   （`Stmt::Import::source_module` の doc）。
         let module = vec![file_path];
+        // 束縛は別名か**ヘッダのファイル名（stem）**（cpp 系は従来どおり・パッケージではない）。
+        let bind_name = alias.clone().unwrap_or_else(|| {
+            std::path::Path::new(&module[0])
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("lib")
+                .to_string()
+        });
         Ok(Stmt::Import {
+            bind: Some(crate::ast::ImportBind { name: bind_name, module: module.clone() }),
             lang,
             module,
             source_module: Some(crate::module_path::written_spelling(level, &parts)),
@@ -150,8 +159,8 @@ impl Parser {
     pub(crate) fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `from` を消費
 
-        // モジュール指定（`..a.b`・相対 import）
-        let (level, module) = self.parse_module_ref()?;
+        // モジュール指定（`..a.b`・相対 import）。`from . import x` のように名前の無い形も受ける。
+        let (level, module) = self.parse_module_ref(true)?;
 
         // `import[lang]` または `import`（省略時は "ar-auto"）
         self.eat(&Token::Import)?;
@@ -186,8 +195,27 @@ impl Parser {
             }
         }
 
+        let file_dir = self.source_dir.clone();
+
+        // `from . import x` / `from .. import x`（CPython の書き方）: x はサブモジュールか、
+        // このディレクトリのパッケージの名前（`packages.rs`）。
+        if module.is_empty() {
+            let mut stmts = self.from_dots_import(&lang, &file_dir, level, names)?;
+            let last = stmts.pop().expect("from_dots_import は 1 つ以上の文を返す");
+            self.pending_stmts.extend(stmts);
+            return Ok(last);
+        }
+
         // モジュールの tl AST を取得
         let loaded = self.load_module(&lang, level, &module, None)?;
+        // CPython と同じく、先にパッケージの連鎖（`a` → `a.b`）を読み込み、取り込む名前が
+        // サブモジュールならそれも読み込む（`packages.rs`）。
+        if Self::has_packages(&lang) {
+            let chain = self.package_chain(&lang, &file_dir, level, &module, &loaded)?;
+            self.pending_stmts.extend(chain.into_iter().map(|(_, st)| st));
+            let subs = self.from_import_submodules(&lang, &file_dir, level, &module, &names, &loaded)?;
+            self.pending_stmts.extend(subs);
+        }
 
         Ok(Stmt::FromImport {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),

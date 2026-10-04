@@ -97,4 +97,6 @@ mod dispatch;
 mod cpp;
 mod ar_modules;
 mod py_modules;
+// CPython と同じパッケージの扱い（`import a.b` の連鎖・束縛・サブモジュール・`from . import x`）。
+mod packages;
 mod cs_js_modules;

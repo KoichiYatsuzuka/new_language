@@ -1,30 +1,38 @@
-# import_visibility.ar — import したモジュールが import したものは見えない（再エクスポートしない・2026-10-02）
+# import_visibility.ar — import で何が見えるか（CPython と同じ・2026-10-02）
 #
 # 対になる誤り: import_visibility_error.ar
 #
-# visibility_modules/wrapper.ar は `import .core` / `from .core import Item` を書いている。
-# メインが wrapper だけを import しても、`w.core` も `w.Item` も無い。
-# core の型や関数を使いたければ、メインが自分で core を import する。
+# ① `import a.b` は先にパッケージ `a`（a/__init__.ar。無ければ空の名前空間パッケージ）を実行し、
+#    **先頭の `a` を束縛**する。`a.b.f()` と属性でたどる。
+# ② 読み込まれたサブモジュールは親パッケージの属性になる（どこで読み込まれても・`sys.modules` と同じ）。
+# ③ モジュールの中で import した名前もそのモジュールのメンバー（再エクスポート）。
+# ④ `from a import b` は、b が a の名前に無ければサブモジュール a.b を読み込む。
 #
-# ⚠⚠ 以前は 3 つの経路で「import したファイルの中で import されたファイル」が無条件に読めた:
-#   - `w.core.LABEL` … モジュールの名前空間に、そのモジュールが import した名前まで入っていた
-#   - `from visibility_modules.wrapper import Item` … 同上
-#   - `let it: visibility_modules.core.Item` … 型の表がプログラム全体で 1 つなので、
-#     import していないモジュールの型名まで注釈に書けた
-# ⚠ 消えたのは「外から見えること」だけ。wrapper の関数は今までどおり core を使える。
+# ⚠ 2026-10-02 のフェーズ 2 では「再エクスポートしない」だったが、利用者の決定で CPython 準拠に改めた。
 
-import visibility_modules.wrapper as w
-import visibility_modules.core as core
-from visibility_modules.core import Item
+import visibility_modules.wrapper
 
-# ── ① wrapper の関数は、wrapper が import した core を使える ──
-let it: Item = w.wrap(4)          # 戻り値は core の Item（メインは core を自分で import した）
-print(it.v)                       # 40
+# ── ① パッケージ `visibility_modules` を束縛する ──
+print(visibility_modules.PACKAGE)                 # visibility_modules（__init__.ar の名前）
+let it = visibility_modules.wrapper.wrap(4)
+print(it.v)                                       # 40
 if it.v != 40:
-    raise ValueError("w.wrap")
-print(w.describe(it))             # wrapped core:40
-print(w.WRAPPED)                  # wrapped core
+    raise ValueError("wrapper.wrap")
+print(visibility_modules.wrapper.describe(it))    # wrapped core:40
 
-# ── ② core のものは、メインが import した core から使う ──
-print(core.LABEL)                 # core
-print(core.make_item(1).v)        # 10
+# ── ② wrapper が読み込んだ core は、パッケージの属性として見える ──
+print(visibility_modules.core.LABEL)              # core
+
+# ── ③ 再エクスポート: wrapper が import した core / Item は wrapper のメンバー ──
+print(visibility_modules.wrapper.core.make_item(1).v)   # 10
+from visibility_modules.wrapper import Item
+let it2: Item = visibility_modules.wrapper.wrap(2)
+print(it2.v)                                      # 20
+
+# ── ④ `from パッケージ import サブモジュール` ──
+from visibility_modules import core
+print(core.make_item(3).v)                        # 30
+
+# ── 型の名前も同じ綴りで書ける（`visibility_modules` を束縛しているので） ──
+let it3: visibility_modules.core.Item = core.make_item(5)
+print(it3.v)                                      # 50

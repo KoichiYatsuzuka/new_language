@@ -124,12 +124,14 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         // `quote` は何も束縛しない。
         Stmt::Quote(_) => {}
 
-        // ⚠ 既定の束縛名は `alias` か**モジュールパスの末尾**。
-        // cpp 系の実際の束縛名はヘッダのファイル stem（`Interpreter::import_bind_name`・#58）で、
-        // ここと**食い違っている**。#59 では既存の挙動をそのまま保存した（変えるとバイトコードが動く）。
-        Stmt::Import { module, alias, .. } => {
-            if let Some(b) = alias.as_ref().or_else(|| module.last()) {
-                f(b, DeclOrigin::Import, None);
+        // ⚠ 束縛名はパーサが決めた `bind`（CPython 準拠・2026-10-02）。`import a.b` は `a`、
+        //   `import a.b as m` は `m`、cpp 系はヘッダの stem。`None`（パッケージの連鎖を読み込むために
+        //   パーサが足した文）は何も束縛しない。
+        //   ⚠ 以前はここが「`alias` か末尾」を自分で計算しており、cpp 系の実際の束縛名（stem）と
+        //   食い違っていた（#59 の注記）。今は 1 か所（`bind`）しか無いので食い違わない。
+        Stmt::Import { bind, .. } => {
+            if let Some(b) = bind {
+                f(&b.name, DeclOrigin::Import, None);
             }
         }
         Stmt::FromImport { names, .. } => {
@@ -181,25 +183,22 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
     }
 }
 
-/// Arrow のモジュールが**名前空間に出す名前**と、出さない（import で束縛しただけの）名前
-/// （再エクスポートしない・2026-10-02）。[`module_exports`] の結果。
+/// モジュールの最上位で束縛される名前を、宣言したものと import で束縛したものに分けたもの
+/// （[`module_exports`] の結果）。**両方とも名前空間のメンバー**（再エクスポート・CPython 準拠）。
 #[derive(Debug, Default)]
 pub struct ModuleExports {
-    /// モジュール自身が宣言した名前（`let` / `fn` / `class` …）。名前空間のメンバー。
+    /// モジュール自身が宣言した名前（`let` / `fn` / `class` …）。
     pub defined: std::collections::HashSet<String>,
-    /// `import` / `from … import` で束縛した**だけ**の名前。名前空間には出さない。
+    /// `import` / `from … import` で束縛した**だけ**の名前（型の分からない再エクスポート）。
     pub imported: std::collections::HashSet<String>,
 }
 
 /// モジュールの本体（最上位の文）から [`ModuleExports`] を作る。
 ///
-/// ⚠⚠ **実行時と型検査が同じこれを使う**（`Interpreter::exec_module` が名前空間から外し、
-///   型検査の `module_member_types` がメンバーの顔ぶれに使う）。片方だけで決めると
-///   「型検査は通るのに実行時に `AttributeError`」（またはその逆）になる。
-/// ⚠ 以前はモジュールの中の import で束縛した名前も名前空間に入っていたので、
-///   `import lib.deep` だけで `deep.helper`（deep が import した lib.helper）が読めた。
-/// ⚠ Python から変換したモジュール（`import[py]`）には使わない（Python の再エクスポート
-///   `from .sub import X` はパッケージの公開の仕方そのもの）。
+/// 型検査（`module_member_types`）がメンバーの顔ぶれに、パーサ（`from_import_submodules`）が
+/// 「取り込む名前がモジュールの名前か、サブモジュールか」の判定に使う。
+/// ⚠ 2026-10-02 のフェーズ 2 では import で束縛した名前を名前空間から外していた（再エクスポート
+///   しない）が、利用者の決定でフェーズ 4 から CPython と同じく**メンバーに含める**。
 pub fn module_exports(body: &[Stmt]) -> ModuleExports {
     let mut out = ModuleExports::default();
     for st in body {

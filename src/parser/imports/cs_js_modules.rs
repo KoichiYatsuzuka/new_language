@@ -129,12 +129,13 @@ impl Parser {
     /// ar_config.json の `csharp.lib_paths` を読んでパスリストを返す。
     ///
     /// ⚠ JSON の読み取りは [`crate::ar_config`] へ委譲（#73）。ここが持つのは
-    /// **探索方針（`source_dir` から祖先へ遡り、最初に読めた設定で確定）**だけ。
+    /// **探索方針（エントリのディレクトリから祖先へ遡り、最初に読めた設定で確定）**だけ。
     /// ⚠ `cfg.exists()` でも読めなかった場合は**さらに上へ遡る**（`python` 側は空を返して打ち切る）。
     /// 既存の挙動なのでそのまま保存してある。
     pub(crate) fn load_cs_lib_paths(&self) -> Option<Vec<PathBuf>> {
-        // Walk up from source_dir looking for ar_config.json
-        let mut dir = self.source_dir.clone();
+        // エントリのディレクトリ（CPython の `sys.path[0]` 相当・`crate::module_path`）から
+        // 祖先へ ar_config.json を探す。⚠ 2026-10-02 午前の版までは import 文のファイルのディレクトリから。
+        let mut dir = self.root_dir.clone();
         loop {
             let cfg = dir.join("ar_config.json");
             if cfg.exists() {

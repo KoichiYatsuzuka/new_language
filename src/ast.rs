@@ -856,6 +856,19 @@ pub struct ImportOrigin {
     pub span: Span,
 }
 
+/// import 文が束縛する名前と、そこへ入るモジュール（CPython 準拠・2026-10-02）。
+///
+/// - `import a.b.c`       → `a` に**パッケージ `a`**（`a.b.c` は属性でたどる）
+/// - `import a.b.c as m`  → `m` に `a.b.c`
+/// - 外部言語（cpp / cs / js / rs）は従来どおり別名か末尾（cpp はヘッダの stem）
+#[derive(Debug, Clone)]
+pub struct ImportBind {
+    /// 束縛する名前。
+    pub name: String,
+    /// そこへ入るモジュールの名前（`Stmt::Import::module` と同じく、パーサが付けたファイルごとの名前）。
+    pub module: Vec<String>,
+}
+
 impl Default for ImportOrigin {
     fn default() -> Self {
         ImportOrigin { level: 0, base_dir: None, span: Span::unknown() }
@@ -1291,6 +1304,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
         /// 探索の起点（相対 import・[`ImportOrigin`]）。
         origin: ImportOrigin,
+        /// この文が**束縛する名前と、そこへ入るモジュール**（[`ImportBind`]）。`None` は束縛しない
+        /// （パッケージの連鎖を読み込むためにパーサが足した文）。
+        ///
+        /// ⚠ 束縛名は**ここでだけ決める**（実行時・型検査・型レジストリ・展開器が読む）。
+        ///   以前は各所が「`alias` か `module` の末尾」を自分で計算していた。
+        bind: Option<ImportBind>,
     },
     /// `from module import[lang] Name1, Name2 as N2` — 名前を直接スコープに導入するインポート。
     ///

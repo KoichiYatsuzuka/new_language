@@ -136,6 +136,11 @@ impl TypeChecker {
             Expr::Ident { name, .. } => Some(name.clone()),
             // ⚠ モジュールの名前空間のメンバー（`t.Tag(1)` / `t.make(1)`）は修飾名で引く
             //   （フェーズ10 10-8）。素の `Tag` で引くとメインの同名クラスを見てしまう（実測）。
+            // ⚠ 呼び先の受け手がモジュールの連鎖（`a.b.f(..)`・`import a.b` は `a` を束縛する）なら、
+            //   修飾名 `a.b.f` で引く（CPython 準拠・2026-10-02）。
+            Expr::Attr { object, attr, .. } if self.module_path_of_expr(object).is_some() => {
+                self.module_path_of_expr(object).map(|p| format!("{p}.{attr}"))
+            }
             Expr::Attr { object, attr, .. } => match object.as_ref() {
                 Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
                     Some(InferredType::Namespace(..)) => {
@@ -966,11 +971,42 @@ impl TypeChecker {
     ///   `Box` と読む。以前は識別子の形しか見ておらず、モジュールのテンプレートの具体化は
     ///   コンストラクタも結果の型も検査されなかった（型が `Unresolved` に落ちていた）。
     /// ⚠ レジストリは `import` の本体の宣言も**素の名前で**集めている（`m.Plain(..)` と同じ扱い）。
+    /// 式がモジュール（の連鎖）を指していれば、その Arrow のモジュールの名前（CPython 準拠・2026-10-02）。
+    ///
+    /// - `a`（`import a.b` / `import a.b as a` の束縛）→ `a` / `a.b`
+    /// - `a.b`（`a` がパッケージで、`a.b` がモジュール）→ `a.b`
+    ///
+    /// ⚠ 束縛が名前空間の型でなければ（同じ綴りのローカル変数など）モジュールとは見なさない。
+    pub(super) fn module_path_of_expr(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ident { name, .. } => {
+                let is_ns = matches!(
+                    self.lookup(name).map(|v| &v.ty),
+                    Some(InferredType::Namespace(..) | InferredType::PyNamespace(..))
+                );
+                if !is_ns {
+                    return None;
+                }
+                self.registry.module_of_alias(name).map(str::to_string)
+            }
+            Expr::Attr { object, attr, .. } => {
+                let p = self.module_path_of_expr(object)?;
+                let path = format!("{p}.{attr}");
+                self.registry.is_module(&path).then_some(path)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn template_base_name(&self, base: &Expr) -> Option<String> {
         // ⚠ 名前は今の文脈で修飾名へ引き直す（フェーズ10 10-8）。モジュールのテンプレートは
         //   `tags.Box` の名前で登録されている（`m.Box` は別名 `m` を引き直して `tags.Box`）。
         match base {
             Expr::Ident { name, .. } => Some(self.registry.resolve(name).into_owned()),
+            // `a.b.Box[int]`（`import a.b` は `a` を束縛する・CPython 準拠）。
+            Expr::Attr { object, attr, .. } if self.module_path_of_expr(object).is_some() => {
+                self.module_path_of_expr(object).map(|p| format!("{p}.{attr}"))
+            }
             Expr::Attr { object, attr, .. } => {
                 let Expr::Ident { name, .. } = object.as_ref() else { return None };
                 match self.lookup(name).map(|v| &v.ty) {

@@ -91,3 +91,27 @@ fn collect_declared_in_expr(e: &Expr, out: &mut HashSet<String>) {
         }
     });
 }
+
+
+/// プログラムのどこかで import されるモジュール（`a.b`）を、親（`a`）の子として集める
+/// （`TypeChecker::module_children`・CPython 準拠・2026-10-02）。
+///
+/// ⚠ import は最上位にしか書けない（10-16）ので、たどるのは最上位の文と、import したモジュールの本体だけ。
+/// ⚠ 外部言語（cpp / cs / js / rs）のドット区切りはファイルの場所なので数えない。
+pub(super) fn collect_module_children(
+    stmts: &[Stmt],
+    out: &mut std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+) {
+    for st in stmts {
+        if let Stmt::Import { lang, module, body, .. } | Stmt::FromImport { lang, module, body, .. } = st {
+            if crate::module_path::has_packages(lang) {
+                if let Some((last, parent)) = module.split_last() {
+                    if !parent.is_empty() {
+                        out.entry(parent.join(".")).or_default().insert(last.clone());
+                    }
+                }
+            }
+            collect_module_children(body, out);
+        }
+    }
+}

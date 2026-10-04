@@ -1,27 +1,26 @@
-// module_path.rs — import の探索規則とモジュールの同一性（相対 import・2026-10-02）。
+// module_path.rs — import の探索規則とモジュールの同一性（CPython 準拠・2026-10-02）。
 //
 // ⚠⚠ **探索の起点の規則はここが唯一の定義。** パーサ（全言語のローダ）と実行時
 //   （`import[py-int]` の `sys.path`・C# のブリッジ探索・js-proc の設定探索）が同じ関数を呼ぶ。
-//   以前は言語と段ごとに起点がばらばらだった:
-//   - `.ar` / `.arc` … 書いたファイルのディレクトリ → **エントリのディレクトリ**
-//   - py … 書いたファイルのディレクトリ → 設定（見つからなければエントリ側の設定）
-//   - 実行時（py-int / cs / js）… **エントリのディレクトリ**だけ
-//   その結果、サブディレクトリのファイルをエントリにすると上の階層を指す手段が無く、
-//   同じモジュールが「どのファイルから実行したか」で読めたり読めなかったりした。
+//   以前は言語と段ごとに起点がばらばらで、サブディレクトリのファイルから上の階層を指す手段が無かった。
 //
-// ## 規則（全言語共通）
+// ## 規則（全言語共通・CPython と同じ。計画: implementation_logs/IMPORT_RESOLUTION_PLAN.md）
 //
 // | 書き方 | 探す場所 |
 // |---|---|
-// | `import a.b` | import 文を書いたファイルのディレクトリ → 言語ごとの外部の探索先 |
-// | `import .a.b` | 同じディレクトリ**だけ** |
-// | `import ..a.b` | 1 つ上のディレクトリ**だけ**（ドットが 1 つ増えるごとにさらに 1 つ上） |
+// | `import a.b` | **エントリのディレクトリ**（CPython の `sys.path[0]`）→ 言語ごとの外部の探索先 |
+// | `import .a.b` / `from . import x` | import 文を書いたファイルのディレクトリ**だけ** |
+// | `import ..a.b` / `from ..m import y` | 1 つ上のディレクトリ**だけ**（ドットが 1 つ増えるごとにさらに 1 つ上） |
 //
+// - ドット無しの書き方は、書いたファイルのディレクトリを**探さない**（CPython に暗黙の相対 import は無い）。
+//   パッケージの中から同じディレクトリのモジュールを指すときは `from . import util` か `import pkg.util`。
 // - 言語ごとの外部の探索先: Python の `python.search_paths` / `PYTHONPATH` / site-packages、
-//   C# の `csharp.lib_paths`、js-proc のブリッジ側の解決。**ドット付きの書き方では見ない**
-//   （Python の相対 import と同じ）。
-// - ⚠ **エントリのディレクトリ（`root_dir`）からは探さない**。`root_dir` は下の
-//   「モジュールの名前」の基準にだけ使う。
+//   C# の `csharp.lib_paths`、js-proc のブリッジ側の解決。**ドット付きの書き方では見ない**。
+// - ⚠ CPython との差（Arrow の拡張）: `import .x` / `import ..x` も書ける。相対 import は
+//   エントリのファイルからも使え、エントリのディレクトリより上へも遡れる（CPython はどちらも誤り）。
+//   サブディレクトリのファイルをエントリにして上の階層を読むため（利用者の報告した不具合 1）。
+// - ⚠ 2026-10-02 午前の版（フェーズ 1）は「ドット無しも書いたファイルのディレクトリから・エントリの
+//   ディレクトリは探さない」だった。利用者の決定で CPython 準拠へ改めた（フェーズ 4）。
 //
 // ## モジュールの同一性
 //
@@ -30,9 +29,9 @@
 // 別のファイルが同じ `util` になり、**後から読んだ側が先に読んだ側の名前空間を受け取っていた**
 // （実測: `util.ar` と `pkg/util.ar`）。
 // ⇒ パーサが `module` を**ファイルごとに一意な名前**（[`ModuleNames::assign`]）へ書き換える。
-//   名前はエントリのディレクトリからの相対パス（`pkg.util`）。エントリより上のディレクトリは
-//   [`PARENT_SEGMENT`] で表す（`__parent__.util`）。型の修飾名（`pkg.util.Tag`）にも使うので、
-//   各部分は識別子でなければならない（`..` は使えない）。
+//   名前はエントリのディレクトリからの相対パス（`pkg.util`）＝ CPython のモジュール名（`__name__`）。
+//   エントリより上のディレクトリは [`PARENT_SEGMENT`] で表す（`__parent__.util`）。型の修飾名
+//   （`pkg.util.Tag`）にも使うので、各部分は識別子でなければならない（`..` は使えない）。
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -75,9 +74,21 @@ pub fn absolute(p: &Path) -> PathBuf {
     }
 }
 
-/// 探索の起点。`dir` は import 文を書いたファイルのディレクトリ、`level` は先頭のドットの数。
+/// import の探索の起点（[`search_base`] とエントリのディレクトリの使い分け）。
 ///
-/// - `level` 0（ドット無し）・1（`.`）… `dir` そのもの
+/// - `level` 0（ドット無し）… `entry_dir`（CPython の `sys.path[0]`）
+/// - `level` ≥ 1 … `file_dir`（import 文を書いたファイルのディレクトリ）から数える
+pub fn import_base(file_dir: &Path, entry_dir: &Path, level: u32) -> PathBuf {
+    if level == 0 {
+        entry_dir.to_path_buf()
+    } else {
+        search_base(file_dir, level)
+    }
+}
+
+/// 相対 import の起点。`dir` は import 文を書いたファイルのディレクトリ、`level` は先頭のドットの数。
+///
+/// - `level` 0・1（`.`）… `dir` そのもの
 /// - `level` k（k ≥ 2）… `dir` の k-1 個上
 pub fn search_base(dir: &Path, level: u32) -> PathBuf {
     if level <= 1 {
@@ -95,6 +106,15 @@ pub fn search_base(dir: &Path, level: u32) -> PathBuf {
 /// ⚠ モジュールの名前の書き換え・型の修飾名・再エクスポートしない規則は、この言語だけに効く。
 pub fn is_arrow_source_lang(lang: &str) -> bool {
     matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
+}
+
+/// 言語が**パッケージの階層**を持つか（Arrow / py / py-int・CPython 準拠・2026-10-02）。
+///
+/// これらの言語では `import a.b` が `a` を束縛し、パッケージ `a` → `a.b` を順に読み込む。
+/// ⚠ 外部言語（cpp / cs / js / rs）のドット区切りは**ファイルの場所**なので対象外
+///   （束縛は別名か末尾・cpp はヘッダの stem）。
+pub fn has_packages(lang: &str) -> bool {
+    is_arrow_source_lang(lang) || lang == "py" || lang == "py-int"
 }
 
 /// 言語ごとの外部の探索先を見てよいか（ドット付きの書き方では見ない）。
@@ -118,6 +138,11 @@ pub fn module_identity(file: &Path) -> PathBuf {
         return abs.parent().map(Path::to_path_buf).unwrap_or(abs);
     }
     abs.with_extension("")
+}
+
+/// **ディレクトリ**（パッケージ）の同一性の鍵（[`module_identity`] の `__init__` と同じになる）。
+pub fn dir_identity(dir: &Path) -> PathBuf {
+    absolute(dir)
 }
 
 /// 識別子として書ける綴りか（モジュール名の各部分・型の修飾名に使うため）。

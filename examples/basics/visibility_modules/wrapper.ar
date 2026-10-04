@@ -1,10 +1,9 @@
 # wrapper.ar — core.ar を import して使う中段のモジュール（例題 import_visibility.ar）。
 #
-# ⚠ ここで import した `core` と `Item` は**このモジュールの中でだけ**使える名前で、
-#   wrapper の名前空間には入らない。`w.core` / `from wrapper import Item` は誤り。
-#   このモジュールの関数は自分の名前（`core` / `Item`）を今までどおり引ける。
+# ここで import した `core` と `Item` は、CPython と同じく wrapper の名前空間のメンバーにもなる
+# （再エクスポート）。`wrapper.core` / `from wrapper import Item` が書ける。
 
-import .core
+from . import core
 from .core import Item
 
 const WRAPPED: str = "wrapped " + core.LABEL

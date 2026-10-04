@@ -504,10 +504,10 @@ pub enum TypeErrorKind {
         /// どこの注釈か。
         what: String,
     },
-    /// **Arrow のモジュールに無いメンバー**の属性（`deep.helper`・2026-10-02）。
+    /// **Arrow のモジュールに無いメンバー**の属性（`deep.nothing`・2026-10-02）。実行時は `AttributeError`。
     ///
-    /// ⚠ モジュールの中で import しただけの名前は名前空間に出さない（再エクスポートしない）。
-    ///   以前は `import lib.deep` だけで、deep が import した `lib.helper` が `deep.helper` で読めた。
+    /// ⚠ メンバーは宣言・import の束縛（再エクスポート・CPython 準拠）・どこかで import される
+    ///   サブモジュール。そのどれでもない名前だけが誤り。
     /// ⚠ 外部言語のスタブ・エディタ（import 先を読めていない）では出さない
     ///   （`InferredType::Namespace` の 2 つ目が `None`）。
     ModuleHasNoMember {
@@ -515,8 +515,6 @@ pub enum TypeErrorKind {
         module: String,
         /// 見つからなかったメンバー。
         member: String,
-        /// モジュールの中で import しただけの名前か（補足の表示に使う）。
-        imported: bool,
     },
     /// **import していないモジュールの型名**（`let t: util.Tag`・2026-10-02）。
     ///
@@ -537,10 +535,8 @@ pub enum TypeErrorKind {
     CannotImportName {
         /// モジュールの名前（`lib.deep`）。
         module: String,
-        /// 見つからなかった名前。
+        /// 見つからなかった名前（モジュールの名前にも、サブモジュールにも無い）。
         name: String,
-        /// モジュールの中で import しただけの名前か（補足の表示に使う）。
-        imported: bool,
     },
     /// **注釈位置に素の容器型**（`list` / `dict` / `set` / `fixed_list` /
     /// `list_like` / `tuple`）が書かれている（タスク 8.1・案 A）。
@@ -1028,16 +1024,8 @@ impl StaticTypeError {
                 "{what} is annotated {} but {} does not take type arguments",
                 hl_q(ann), hl_q(name)
             ),
-            TypeErrorKind::ModuleHasNoMember { module, member, imported } => {
-                let base = format!("module {} has no member {}", hl_q(module), hl_q(member));
-                if *imported {
-                    format!(
-                        "{base} ({} is imported by {}, not defined in it; import it directly)",
-                        hl_q(member), hl_q(module)
-                    )
-                } else {
-                    base
-                }
+            TypeErrorKind::ModuleHasNoMember { module, member } => {
+                format!("module {} has no member {}", hl_q(module), hl_q(member))
             }
             TypeErrorKind::UnimportedModuleType { name, module, alias } => match alias {
                 Some(a) => {
@@ -1052,16 +1040,8 @@ impl StaticTypeError {
                     hl_q(name), hl_q(module)
                 ),
             },
-            TypeErrorKind::CannotImportName { module, name, imported } => {
-                let base = format!("cannot import {} from {}", hl_q(name), hl_q(module));
-                if *imported {
-                    format!(
-                        "{base} ({} is imported by {}, not defined in it; import it directly)",
-                        hl_q(name), hl_q(module)
-                    )
-                } else {
-                    base
-                }
+            TypeErrorKind::CannotImportName { module, name } => {
+                format!("cannot import {} from {}", hl_q(name), hl_q(module))
             }
             TypeErrorKind::UnknownTypeName { name, ann, what } => {
                 // ⚠ 注釈がその名前そのものなら繰り返さない（`let x: Foo` のとき）。

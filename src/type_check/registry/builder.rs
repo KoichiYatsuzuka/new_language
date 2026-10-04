@@ -118,9 +118,9 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
                         .insert(alias.clone().unwrap_or_else(|| orig.clone()), format!("{m}.{orig}"));
                 }
             }
-            Stmt::Import { lang, module, alias, .. } if is_arrow_source_lang(lang) => {
-                let bind = alias.clone().unwrap_or_else(|| module.last().cloned().unwrap_or_default());
-                scope.modules.insert(bind, module.join("."));
+            // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（`import a.b` は `a` → パッケージ `a`）。
+            Stmt::Import { lang, bind: Some(b), .. } if is_arrow_source_lang(lang) => {
+                scope.modules.insert(b.name.clone(), b.module.join("."));
             }
             _ => {}
         }
@@ -520,11 +520,12 @@ impl TypeRegistryBuilder {
                     if arrow {
                         let scope = &mut self.reg.name_scopes[self.cur_scope];
                         match stmt {
-                            Stmt::Import { alias, .. } => {
-                                let bind = alias
-                                    .clone()
-                                    .unwrap_or_else(|| module.last().cloned().unwrap_or_default());
-                                scope.modules.insert(bind, modpath.clone());
+                            // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（CPython 準拠）。
+                            //   `import a.b` は `a` → パッケージ `a`（`a.b.Tag` は `a` を引き直して `a.b.Tag`）。
+                            Stmt::Import { bind, .. } => {
+                                if let Some(b) = bind {
+                                    scope.modules.insert(b.name.clone(), b.module.join("."));
+                                }
                             }
                             Stmt::FromImport { names, .. } => {
                                 for (orig, alias) in names {

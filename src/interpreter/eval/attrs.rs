@@ -62,7 +62,11 @@ impl Interpreter {
                 }
             }
         }
-        ns.members.get(name).cloned()
+        ns.members
+            .get(name)
+            .cloned()
+            // サブモジュール（`import a.b` の後の `a.b`・CPython と同じ・`attach_submodule`）。
+            .or_else(|| self.submodules.get(&ns.name).and_then(|m| m.get(name)).cloned())
     }
 
     /// アクセスレベル（`access_level` で得た u8）だけを使ってアクセス可否を判定する。

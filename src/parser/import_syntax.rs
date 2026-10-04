@@ -17,9 +17,9 @@ impl Parser {
     /// 探索の規則は [`crate::module_path`]。
     /// ⚠ 字句解析器は `...` を `Ellipsis` の 1 トークンにする（`..` は `Dot` 2 つ）ので、
     ///   `Ellipsis` はドット 3 つとして数える。
-    /// ⚠ ドットの後にモジュール名が無い書き方（`from . import x`）は受けない。
-    ///   同じディレクトリのモジュールは `import .x` と書く。
-    pub(crate) fn parse_module_ref(&mut self) -> Result<(u32, Vec<String>), String> {
+    /// ⚠ ドットの後にモジュール名が無い書き方（`from . import x`・`from .. import x`）は
+    ///   `allow_bare_dots` のときだけ受け、各部分は空で返す（`from` の形だけ。`import .` は誤り）。
+    pub(crate) fn parse_module_ref(&mut self, allow_bare_dots: bool) -> Result<(u32, Vec<String>), String> {
         let mut level: u32 = 0;
         loop {
             match self.current() {
@@ -28,6 +28,9 @@ impl Parser {
                 _ => break,
             }
             self.advance();
+        }
+        if level > 0 && allow_bare_dots && *self.current() == Token::Import {
+            return Ok((level, Vec::new()));
         }
         if level > 0 && !matches!(self.current(), Token::Ident(_)) {
             return Err(format!(
@@ -53,7 +56,7 @@ mod tests {
 
     fn module_ref(src: &str) -> Result<(u32, Vec<String>), String> {
         let mut p = Parser::new(Lexer::new(src, "<test>").tokenize(), None);
-        p.parse_module_ref()
+        p.parse_module_ref(false)
     }
 
     fn segs(v: &[&str]) -> Vec<String> {
@@ -68,6 +71,12 @@ mod tests {
         // ⚠ `...` は字句解析器が `Ellipsis` の 1 トークンにする。
         assert_eq!(module_ref("...a").unwrap(), (3, segs(&["a"])));
         assert_eq!(module_ref("....a").unwrap(), (4, segs(&["a"])));
+    }
+
+    #[test]
+    fn bare_dots_are_accepted_only_for_from() {
+        let mut p = Parser::new(Lexer::new(".. import x", "<test>").tokenize(), None);
+        assert_eq!(p.parse_module_ref(true).unwrap(), (2, Vec::<String>::new()));
     }
 
     #[test]

@@ -1,0 +1,6 @@
+# visibility_modules/__init__.ar — パッケージの初期化（例題 import_visibility.ar・CPython 準拠）
+#
+# `import visibility_modules.wrapper` は、まずこのファイルを実行してから wrapper を読み込む。
+# ここで定義した名前はパッケージ `visibility_modules` のメンバー。
+
+const PACKAGE: str = "visibility_modules"

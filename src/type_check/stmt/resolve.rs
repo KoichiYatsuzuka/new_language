@@ -151,10 +151,10 @@ impl TypeChecker {
         //   `fn make() -> Tag` の結果の型が「分からない」になっていた。`enum` もクラスと同じく出す。
         // ⚠ 外部言語（py …）は従来どおり（スタブの型の綴りが Arrow の型と限らない）。
         if crate::module_path::is_arrow_source_lang(lang) {
-            // ⚠ メンバーの顔ぶれは**実行時と同じ定義**（`decl_names::module_exports`）で揃える。
-            //   型の分からない名前（`trait` / `protocol` / `gen` …）も「在る」ことは確かなので
+            // ⚠ 型の分からない名前（`trait` / `protocol` / `gen` …）も「在る」ことは確かなので
             //   `Unresolved` で載せる（`InferredType::Namespace` の 2 つ目が、載っていない名前を
-            //   静的エラーにするため・再エクスポートしない・2026-10-02）。
+            //   静的エラーにするため・2026-10-02）。import で束縛した名前は下の
+            //   `add_reexported_members` が足す。
             for name in crate::decl_names::module_exports(body).defined {
                 raw.entry(name).or_insert(InferredType::Unresolved);
             }
@@ -175,9 +175,85 @@ impl TypeChecker {
                 }
             }
         }
+        // ⚠ import で束縛した名前もメンバー（再エクスポート・CPython 準拠・2026-10-02）。
+        //   型は、束縛したモジュールの名前空間（`import x` の `x`）・取り込んだ名前の型
+        //   （`from x import f` の `f`）。分からなければ `Unresolved`（在ることだけは確か）。
+        self.add_reexported_members(&mut raw, body);
         let out = raw.into_iter().map(|(k, t)| (k, self.canon_type(&t))).collect();
         self.registry.leave_module_scope(prev);
         out
+    }
+
+    /// モジュールの本体で import が束縛した名前を、メンバーの表に足す（再エクスポート・CPython 準拠）。
+    fn add_reexported_members(
+        &self,
+        raw: &mut std::collections::HashMap<String, InferredType>,
+        body: &[Stmt],
+    ) {
+        for st in body {
+            match st {
+                Stmt::Import { lang, bind: Some(b), .. } => {
+                    let ty = if Self::lang_has_packages(lang) {
+                        self.namespace_type(lang, &b.module)
+                    } else {
+                        InferredType::Unresolved
+                    };
+                    raw.entry(b.name.clone()).or_insert(ty);
+                }
+                Stmt::FromImport { lang, module, names, .. } => {
+                    let key = module.join(".");
+                    for (orig, alias) in names {
+                        let child: Vec<String> = module.iter().cloned().chain([orig.clone()]).collect();
+                        let ty = self
+                            .module_member_cache
+                            .get(&key)
+                            .and_then(|m| m.get(orig))
+                            .cloned()
+                            .or_else(|| {
+                                self.module_children
+                                    .get(&key)
+                                    .is_some_and(|c| c.contains(orig))
+                                    .then(|| self.namespace_type(lang, &child))
+                            })
+                            .unwrap_or(InferredType::Unresolved);
+                        raw.entry(alias.clone().unwrap_or_else(|| orig.clone())).or_insert(ty);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 言語がパッケージの階層を持つか（[`crate::module_path::has_packages`]）。
+    fn lang_has_packages(lang: &str) -> bool {
+        crate::module_path::has_packages(lang)
+    }
+
+    /// モジュール `path` の**名前空間の型**（CPython 準拠・2026-10-02）。
+    ///
+    /// メンバーは、そのモジュールの最上位の名前（`module_member_cache`・再エクスポートを含む）と、
+    /// プログラムのどこかで import される**サブモジュール**（`module_children`。型はその名前空間）。
+    /// `import a.b` が束縛する `a` の型はこれで、`a.b.f` を型でたどれる。
+    ///
+    /// ⚠ まだ検査していない（メンバーの分からない）モジュールは開いた名前空間（無いメンバーを誤りにしない）。
+    pub(crate) fn namespace_type(&self, lang: &str, path: &[String]) -> InferredType {
+        let key = path.join(".");
+        let known = self.module_member_cache.get(&key);
+        let mut members = known.cloned().unwrap_or_default();
+        if let Some(children) = self.module_children.get(&key) {
+            for c in children {
+                if !members.contains_key(c) {
+                    let child: Vec<String> = path.iter().cloned().chain([c.clone()]).collect();
+                    members.insert(c.clone(), self.namespace_type(lang, &child));
+                }
+            }
+        }
+        if lang == "py" || lang == "py-int" {
+            InferredType::PyNamespace(members)
+        } else {
+            let closed = if known.is_some() { super::check::closed_module(lang, path) } else { None };
+            InferredType::Namespace(members, closed)
+        }
     }
 
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。

@@ -1,13 +1,15 @@
 # @id: I1
-# @obligation: モジュールのメンバーの存在（モジュールが import しただけの名前は無い・再エクスポートしない）
+# @obligation: モジュールのメンバーの存在（宣言・再エクスポート・サブモジュールのどれでもない名前は無い）
 # @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
 #    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
 #
-# ⚠ 2026-10-02 以前は NONE（vis_wrapper の名前空間に vis_core が入っていて完走した）。
+# ⚠ vis_wrapper が import した vis_core は、CPython と同じく vis_wrapper のメンバー（再エクスポート・
+#   2026-10-02 のフェーズ 4）なので `w.vis_core` は通る。ここでは本当に無い名前を引く。
 
 import modules.vis_wrapper as w
 
 print(w.vis_core.LABEL)
+print(w.nothing)

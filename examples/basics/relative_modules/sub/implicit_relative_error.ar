@@ -1,0 +1,11 @@
+# implicit_relative_error.ar — ドット無しの import は、書いたファイルのディレクトリを探さない
+# （relative_import_error.ar が import する・CPython 準拠）
+#
+# 同じディレクトリに util.ar（sub/util.ar）があるが、`import util` はエントリのディレクトリ
+# （CPython の sys.path[0] = examples/basics/）から探すので見つからない。CPython にも
+# 暗黙の相対 import は無い。同じディレクトリは `import .util` か `from . import util` と書く。
+
+import util
+
+fn which() -> str:
+    return util.which()

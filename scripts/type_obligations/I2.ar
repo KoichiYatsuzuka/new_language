@@ -1,13 +1,14 @@
 # @id: I2
-# @obligation: from … import の名前の存在（モジュールが import しただけの名前は取り込めない）
+# @obligation: from … import の名前の存在（モジュールの名前にもサブモジュールにも無い名前は取り込めない）
 # @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
 #    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
 #
-# ⚠ 2026-10-02 以前は NONE（vis_wrapper が `from .vis_core import Item` した Item を取り込めた）。
+# ⚠ vis_wrapper が `from .vis_core import Item` した Item は、CPython と同じく取り込める（再エクスポート）。
+#   ここでは本当に無い名前を取り込む。
 
-from modules.vis_wrapper import Item
+from modules.vis_wrapper import Item, Nothing
 
 print(Item(1).v)

@@ -71,7 +71,10 @@ impl Parser {
         // 先頭の空白行やインデントをスキップ
         self.skip_newlines();
         while *self.current() != Token::Eof {
-            stmts.push(self.parse_stmt()?);
+            let st = self.parse_stmt()?;
+            // import が足した「先に読み込む文」（パッケージの連鎖）を前に置く（`Parser::pending_stmts`）。
+            stmts.append(&mut self.pending_stmts);
+            stmts.push(st);
             // 文と文の間の空白行をスキップ
             self.skip_newlines();
         }

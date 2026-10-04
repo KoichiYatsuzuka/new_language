@@ -59,6 +59,11 @@ pub(super) struct TaskEnv {
     ///   worker が文脈を持たず、本体の `self.secret`（private）が `AccessError` で落ちて
     ///   **結果が黙って `None` になっていた**（実測・フェーズ10 10-6）。
     pub(super) class_ctx: Option<ClassValue>,
+    /// サブモジュールの表（`Interpreter::submodules` の深い複製・CPython 準拠・2026-10-02）。
+    ///
+    /// ⚠ これが無いと、タスクの中の `a.b`（`import a.b` の後の属性）が `AttributeError` になる
+    ///   （サブモジュールは名前空間の値ではなくインタプリタの表に付いている）。
+    pub(super) submodules: Vec<(String, String, Value)>,
 }
 
 /// スレッド境界を越えてタスクの環境を送るためのラッパー。
@@ -291,6 +296,9 @@ fn run_task(
     // 各モジュールの大域を同じ添字に置き、タスクを出したコードの大域へ切り替える（`TaskEnv` の doc）。
     interp.install_task_globals(env.globals, env.cur_globals);
     interp.current_class = env.class_ctx.map(std::rc::Rc::new);
+    for (parent, name, v) in env.submodules {
+        interp.submodules.entry(parent).or_default().insert(name, v);
+    }
     let env = env.vars;
 
     // ── VM 経路（#32）──────────────────────────────────────────────────────
@@ -382,7 +390,14 @@ impl AsyncStatus {
 pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
     let (globals, cur_globals) = interp.snapshot_globals_for_task();
     let class_ctx = interp.current_class.as_ref().map(|c| c.deep_clone());
-    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx }
+    let submodules = interp
+        .submodules
+        .iter()
+        .flat_map(|(parent, children)| {
+            children.iter().map(move |(name, v)| (parent.clone(), name.clone(), v.deep_clone()))
+        })
+        .collect();
+    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx, submodules }
 }
 
 /// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。

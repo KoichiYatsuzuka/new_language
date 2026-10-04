@@ -1,19 +1,19 @@
-# relative_import.ar — 相対 import（先頭のドット）でディレクトリを遡る（2026-10-02）
+# relative_import.ar — 相対 import（先頭のドット）でディレクトリを遡る（2026-10-02・CPython 準拠）
 #
 # 対になる誤り: relative_import_error.ar
 #
 # 規則（言語によらず同じ・src/module_path.rs）:
-#   import a.b     … import 文を書いたファイルのディレクトリ → 言語ごとの外部の探索先
-#   import .a.b    … 同じディレクトリだけ
-#   import ..a.b   … 1 つ上のディレクトリだけ（ドットが 1 つ増えるごとにさらに 1 つ上）
-# ⚠ エントリのディレクトリからは探さない。
-#   以前は「書いたファイルのディレクトリ → エントリのディレクトリ」の順に探していたので、
-#   サブディレクトリのファイルは**エントリが上の階層にあるときだけ**上を指せた
-#   （同じモジュールが、どのファイルから実行したかで読めたり読めなかったりした）。
+#   import a.b          … エントリのディレクトリ（CPython の sys.path[0]）→ 言語ごとの外部の探索先
+#   import .a.b         … import 文を書いたファイルのディレクトリだけ
+#   from ..m import y   … 1 つ上のディレクトリだけ（ドットが 1 つ増えるごとにさらに 1 つ上）
+#   from . import m     … このディレクトリのモジュール m（CPython の書き方）
+# ⚠ `import a.b` は CPython と同じく**先頭の `a` を束縛**する（`a.b.f()` と呼ぶ）。`as m` なら `m = a.b`。
+# ⚠ CPython との差（Arrow の拡張）: `import .x` / `import ..x` も書け、エントリのファイルからも、
+#   エントリのディレクトリより上へも相対 import できる（サブディレクトリのファイルから上の階層を読むため）。
 #
 # relative_modules/sub/leaf.ar が `import ..base` / `import .util` / `from ..util import which` を書いている。
 
-import .relative_modules.base
+import .relative_modules.base        # `relative_modules` を束縛（`relative_modules.base` は属性でたどる）
 import relative_modules.sub.leaf as leaf
 import relative_modules.util as top
 from relative_modules.base import Unit
@@ -29,8 +29,8 @@ print(leaf.base_name())           # base
 #    leaf.ar の `..base` と、ここの `.relative_modules.base` / `relative_modules.base` は同じ base.ar。
 #    ⇒ 型も同じ（leaf.ar の `Unit` を返す関数の結果が、ここの `Unit` に入る・①）。
 #      モジュールの状態も 1 つ（base.double はどの綴りから呼んでも同じ関数）。
-print(base.double(u.v))           # 84
-print(base.NAME == leaf.base_name())   # True
+print(relative_modules.base.double(u.v))               # 84
+print(relative_modules.base.NAME == leaf.base_name())  # True
 
 # ── ③ 同じ名前の別ファイルは別のモジュール ──
 #    sub/util.ar（leaf.ar の `.util`）と util.ar（ここの `relative_modules.util`）

@@ -46,7 +46,13 @@ impl Parser {
             return self.parse_cpp_import_syntax(lang);
         }
 
-        let (level, module) = self.parse_module_ref()?;
+        // 先頭の識別子の位置（`import a.b` は `a` を束縛するので、索引はそこを指す・CPython 準拠）。
+        let first_pos = self.tokens[self.pos..]
+            .iter()
+            .find(|t| matches!(t.token, Token::Ident(_)))
+            .map(|t| (t.span.line, t.span.col))
+            .unwrap_or((0, 0));
+        let (level, module) = self.parse_module_ref(false)?;
         // モジュール名の位置はここでしか正しく取れない。この後 `[0.2]` や `as x` を
         // 読むと `prev_pos()` が `]` や別名を指してしまう。
         let module_pos = self.prev_pos();
@@ -64,16 +70,22 @@ impl Parser {
             None
         };
 
-        // エディタ索引: 束縛される名前（`as` があればその別名、無ければ末尾セグメント）。
-        // 位置は最後に読んだ識別子＝まさにその名前を指す。
+        // 束縛（CLI の `packages.rs` と同じ規則）: `as x` があれば x、パッケージを持つ言語は先頭
+        // （`import a.b` は `a`・CPython 準拠）、外部言語は末尾。
+        // ⚠ エディタはパッケージの連鎖を読み込まない（fs を引けない）ので、束縛されるモジュールの
+        //   名前は書いた綴りの接頭辞。body が空なので型検査は `Unresolved` を束縛する。
+        let (bind_name, bind_module, bind_pos) = match &alias {
+            Some(a) => (a.clone(), module.clone(), self.prev_pos()),
+            None if crate::module_path::has_packages(&lang) => {
+                (module[0].clone(), module[..1].to_vec(), first_pos)
+            }
+            None => (module.last().cloned().unwrap_or_default(), module.clone(), module_pos),
+        };
+        let _ = (module_pos, first_pos, bind_pos);
+        // エディタ索引: 束縛される名前。位置はその名前を書いた識別子。
         #[cfg(feature = "editor")]
         {
-            // `as x` があればその別名の位置（＝直前に読んだ識別子）、無ければモジュール名の位置。
-            let (bind, pos) = match &alias {
-                Some(a) => (a.clone(), self.prev_pos()),
-                None => (module.last().cloned().unwrap_or_default(), module_pos),
-            };
-            let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
+            let h = self.note_def_at(&bind_name, crate::parser::editor_hooks::EditorKind::Module, bind_pos);
             let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &module));
             self.note_signature(h, &sig);
         }
@@ -87,6 +99,7 @@ impl Parser {
             alias,
             body,
             origin: crate::ast::ImportOrigin { level, ..Default::default() },
+            bind: Some(crate::ast::ImportBind { name: bind_name, module: bind_module }),
         })
     }
 
@@ -95,7 +108,8 @@ impl Parser {
     pub(crate) fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `from` を消費
 
-        let (level, module) = self.parse_module_ref()?;
+        // `from . import x`（名前の無い相対・CPython の書き方）も受ける（CLI と同じ受理規則）。
+        let (level, module) = self.parse_module_ref(true)?;
 
         self.eat(&Token::Import)?;
         let lang = if *self.current() == Token::LBracket {
@@ -232,7 +246,7 @@ impl Parser {
                 self.current()
             ));
         }
-        let (level, parts) = self.parse_module_ref()?;
+        let (level, parts) = self.parse_module_ref(false)?;
         // ヘッダ名の位置はここでしか正しく取れない（`as x` を読むと `prev_pos()` が
         // 別名を指す）。`parse_import_stmt` の `module_pos` と同じ理由。
         let module_pos = self.prev_pos();
@@ -259,10 +273,13 @@ impl Parser {
         }
 
         let body = self.editor_import_body(&lang, level, &parts);
+        // ⚠ cpp 系の束縛は別名か**最後の部分**（CLI はヘッダのファイル名の stem で、同じ綴りになる）。
+        let bind_name = alias.clone().unwrap_or_else(|| parts.last().cloned().unwrap_or_default());
 
         Ok(Stmt::Import {
             lang,
             source_module: (level > 0).then(|| crate::module_path::written_spelling(level, &parts)),
+            bind: Some(crate::ast::ImportBind { name: bind_name, module: parts.clone() }),
             module: parts,
             alias,
             body,

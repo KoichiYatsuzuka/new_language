@@ -292,14 +292,28 @@ pub(super) fn note_decls(m: &mut Mono, out: &mut Vec<Stmt>, from: usize) -> Resu
             // ⚠ `import` したモジュールのテンプレートも具体化できるようにする（タスク 2-15）。
             //   以前はメインが宣言したテンプレートしか知らず、`m.Box[int]` / `from m import Box` の
             //   `Box[int]` は具体化されなかった ⇒ そのメソッド呼び出し・コンストラクタの検査が丸ごと抜けていた。
-            Stmt::Import { lang, module, alias, body, .. } if is_arrow_source(lang) => {
-                let Some(idx) = module_frame(m, lang, module, body, from + i) else { continue };
-                let bind = alias.clone().or_else(|| module.last().cloned()).unwrap_or_default();
-                let names: Vec<String> = m.templates.modules[idx].1.decls.keys().cloned().collect();
-                for name in names {
-                    let key = format!("{bind}.{name}");
-                    m.templates.imports.insert(key.clone(), (idx, name));
-                    noted.push(key);
+            // ⚠ 束縛は AST の `bind`（CPython 準拠・2026-10-02）。`import a.b` は `a` を束縛するので、
+            //   `a.Box[int]`（パッケージ `a` のテンプレート）も `a.b.Box[int]` も書ける。連鎖の各モジュールの
+            //   テンプレートを、束縛名からの綴り（`a` / `a.b`）で登録する。パッケージの枠は、パーサが
+            //   手前に足した束縛しない文（`bind: None`）を処理したときに作ってある。
+            Stmt::Import { lang, module, body, bind, .. } if is_arrow_source(lang) => {
+                let _ = module_frame(m, lang, module, body, from + i);
+                let Some(b) = bind else { continue };
+                for k in b.module.len()..=module.len() {
+                    let path = &module[..k];
+                    let Some(&idx) = m.templates.module_ids.get(&format!("{lang}:{}", path.join("/"))) else {
+                        continue;
+                    };
+                    let spelled: Vec<&str> = std::iter::once(b.name.as_str())
+                        .chain(path[b.module.len().min(k)..].iter().map(String::as_str))
+                        .collect();
+                    let spelled = spelled.join(".");
+                    let names: Vec<String> = m.templates.modules[idx].1.decls.keys().cloned().collect();
+                    for name in names {
+                        let key = format!("{spelled}.{name}");
+                        m.templates.imports.insert(key.clone(), (idx, name));
+                        noted.push(key);
+                    }
                 }
             }
             Stmt::FromImport { lang, module, names, body, .. } if is_arrow_source(lang) => {

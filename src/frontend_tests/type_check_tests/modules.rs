@@ -17,6 +17,10 @@ use super::*;
             alias: alias.map(str::to_string),
             body,
             origin: crate::ast::ImportOrigin::default(),
+            bind: Some(crate::ast::ImportBind {
+                name: alias.unwrap_or("m").to_string(),
+                module: vec!["m".to_string()],
+            }),
         }];
         stmts.extend(Parser::new(Lexer::new(main_src, "").tokenize(), None).parse_program().expect("parse main"));
         TypeChecker::check(&stmts)
@@ -75,24 +79,32 @@ use super::*;
         assert!(errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::UndefinedName { .. })), "{errs:?}");
     }
 
-    // ── 再エクスポートしない（2026-10-02）────────────────────────────────────
+    // ── CPython と同じ名前空間（2026-10-02）──────────────────────────────────
     //
-    // ⚠⚠ 以前は 3 つの経路で、import したモジュールが import したものが読めた:
-    //   `m.inner`（名前空間）・`from m import Item`・`let t: inner.Item`（型の表が全体で 1 つ）。
+    // ⚠ フェーズ 2 では「再エクスポートしない」だったが、フェーズ 4 で CPython 準拠に改めた:
+    //   モジュールの中の import の束縛もメンバー、`import a.b` は `a` を束縛し、サブモジュールは親の属性。
+    //   無い名前（宣言・再エクスポート・サブモジュールのどれでもない）だけが誤り。
 
     fn parse(src: &str) -> Vec<crate::ast::Stmt> {
         Parser::new(Lexer::new(src, "").tokenize(), None).parse_program().expect("parse")
     }
 
-    fn import_stmt(module: &str, body: Vec<crate::ast::Stmt>) -> crate::ast::Stmt {
+    /// `import <module>`（束縛は `bind`。`None` はパーサが足すパッケージの連鎖の文）。
+    fn import_bound(module: &[&str], body: Vec<crate::ast::Stmt>, bind: Option<(&str, &[&str])>) -> crate::ast::Stmt {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         crate::ast::Stmt::Import {
             lang: "ar".to_string(),
-            module: vec![module.to_string()],
+            module: v(module),
             source_module: None,
             alias: None,
             body,
             origin: crate::ast::ImportOrigin::default(),
+            bind: bind.map(|(name, m)| crate::ast::ImportBind { name: name.to_string(), module: v(m) }),
         }
+    }
+
+    fn import_stmt(module: &str, body: Vec<crate::ast::Stmt>) -> crate::ast::Stmt {
+        import_bound(&[module], body, Some((module, &[module])))
     }
 
     fn from_stmt(module: &str, name: &str, body: Vec<crate::ast::Stmt>) -> crate::ast::Stmt {
@@ -106,58 +118,47 @@ use super::*;
         }
     }
 
+    fn inner_body() -> Vec<crate::ast::Stmt> {
+        parse("class Item:\n    mut v: int\nlet LABEL = \"inner\"\n")
+    }
+
     /// `inner` を import して使うモジュール m の本体。
     fn reexporting_module() -> Vec<crate::ast::Stmt> {
-        let inner = parse("class Item:
-    mut v: int
-let LABEL = \"inner\"
-");
+        let inner = inner_body();
         let mut body = vec![import_stmt("inner", inner.clone()), from_stmt("inner", "Item", inner)];
-        body.extend(parse("fn make(let v: int) -> Item:
-    return Item(v)
-let OWN = 1
-"));
+        body.extend(parse("fn make(let v: int) -> Item:\n    return Item(v)\nlet OWN = 1\n"));
         body
     }
 
-    /// `m.inner`（m が import したモジュール）は m のメンバーではない。
+    /// `m.inner`（m が import したモジュール）は m のメンバー（再エクスポート・CPython と同じ）。
     #[test]
-    fn module_member_imported_by_the_module_is_err() {
+    fn module_member_imported_by_the_module_is_a_member() {
         let mut stmts = vec![import_stmt("m", reexporting_module())];
-        stmts.extend(parse("let a = m.OWN
-let x = m.inner.LABEL
-"));
+        stmts.extend(parse("let a = m.OWN\nlet x: str = m.inner.LABEL\nlet y = m.Item\n"));
         let errs = TypeChecker::check(&stmts);
-        assert_eq!(errs.len(), 1, "{errs:?}");
-        assert!(
-            matches!(&errs[0].kind, TypeErrorKind::ModuleHasNoMember { member, imported: true, .. } if member == "inner"),
-            "{errs:?}"
-        );
+        assert!(errs.is_empty(), "{errs:?}");
     }
 
-    /// 本当に無い名前も誤り（補足は付かない）。
+    /// 本当に無い名前は誤り。
     #[test]
     fn module_member_that_does_not_exist_is_err() {
         let mut stmts = vec![import_stmt("m", reexporting_module())];
-        stmts.extend(parse("let x = m.nothing
-"));
+        stmts.extend(parse("let x = m.nothing\n"));
         let errs = TypeChecker::check(&stmts);
         assert!(
-            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::ModuleHasNoMember { imported: false, .. })),
+            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::ModuleHasNoMember { member, .. } if member == "nothing")),
             "{errs:?}"
         );
     }
 
-    /// `from m import Item`（m が `from inner import Item` しただけ）は誤り。
+    /// `from m import Item`（m が `from inner import Item` した名前）も取り込める（再エクスポート）。
     #[test]
-    fn from_import_of_a_name_the_module_imported_is_err() {
+    fn from_import_of_a_name_the_module_imported_is_ok() {
         let m = reexporting_module();
-        let stmts = vec![import_stmt("m", m.clone()), from_stmt("m", "Item", m)];
+        let mut stmts = vec![import_stmt("m", m.clone()), from_stmt("m", "Item", m)];
+        stmts.extend(parse("let it: Item = m.make(1)\n"));
         let errs = TypeChecker::check(&stmts);
-        assert!(
-            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::CannotImportName { name, imported: true, .. } if name == "Item")),
-            "{errs:?}"
-        );
+        assert!(errs.is_empty(), "{errs:?}");
     }
 
     /// m 自身の宣言は今までどおり `from m import ..` できる。
@@ -169,12 +170,23 @@ let x = m.inner.LABEL
         assert!(errs.is_empty(), "{errs:?}");
     }
 
-    /// import していないモジュール（`inner`）の型は、型の表に在っても注釈に書けない。
+    /// 無い名前の `from … import` は誤り。
+    #[test]
+    fn from_import_of_a_missing_name_is_err() {
+        let m = reexporting_module();
+        let stmts = vec![import_stmt("m", m.clone()), from_stmt("m", "Nothing", m)];
+        let errs = TypeChecker::check(&stmts);
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::CannotImportName { name, .. } if name == "Nothing")),
+            "{errs:?}"
+        );
+    }
+
+    /// import していない（束縛していない）モジュール（`inner`）の型は、型の表に在っても注釈に書けない。
     #[test]
     fn type_of_a_module_not_imported_here_is_err() {
         let mut stmts = vec![import_stmt("m", reexporting_module())];
-        stmts.extend(parse("let t: inner.Item = m.make(1)
-"));
+        stmts.extend(parse("let t: inner.Item = m.make(1)\n"));
         let errs = TypeChecker::check(&stmts);
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert!(
@@ -186,13 +198,44 @@ let x = m.inner.LABEL
     /// 自分でも import すれば書ける（同じ型）。
     #[test]
     fn type_of_a_module_imported_here_is_ok() {
-        let inner = parse("class Item:
-    mut v: int
-let LABEL = \"inner\"
-");
-        let mut stmts = vec![import_stmt("m", reexporting_module()), import_stmt("inner", inner)];
-        stmts.extend(parse("let t: inner.Item = m.make(1)
-"));
+        let mut stmts = vec![import_stmt("m", reexporting_module()), import_stmt("inner", inner_body())];
+        stmts.extend(parse("let t: inner.Item = m.make(1)\n"));
         let errs = TypeChecker::check(&stmts);
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// `import pkg.mod` は `pkg` を束縛し、`pkg.mod.f()` を型でたどれる（CPython 準拠）。
+    /// パーサはパッケージ `pkg` を読み込む文（束縛しない）を手前に足す。
+    fn package_program(main_src: &str) -> Vec<crate::ast::Stmt> {
+        let pkg = parse("let NAME = \"pkg\"\n");
+        let module = parse("fn f(let n: int) -> int:\n    return n\nclass Tag:\n    mut v: int\n");
+        let mut stmts = vec![
+            import_bound(&["pkg"], pkg, None),
+            import_bound(&["pkg", "mod"], module, Some(("pkg", &["pkg"]))),
+        ];
+        stmts.extend(parse(main_src));
+        stmts
+    }
+
+    #[test]
+    fn dotted_import_binds_the_package_and_types_the_chain() {
+        let errs = TypeChecker::check(&package_program(
+            "let a: int = pkg.mod.f(1)\nlet n: str = pkg.NAME\nlet t: pkg.mod.Tag = pkg.mod.Tag(1)\nlet b: str = pkg.mod.f(2)\n",
+        ));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+    }
+
+    #[test]
+    fn dotted_import_missing_member_of_the_submodule_is_err() {
+        let errs = TypeChecker::check(&package_program("let x = pkg.mod.nothing\n"));
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::ModuleHasNoMember { module, .. } if module == "pkg.mod")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn dotted_import_does_not_bind_the_last_segment() {
+        let errs = TypeChecker::check(&package_program("let x = mod.f(1)\n"));
+        assert!(errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::UndefinedName { .. })), "{errs:?}");
     }

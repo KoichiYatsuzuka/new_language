@@ -130,14 +130,71 @@ impl TypeRegistry {
             return Cow::Borrowed(name);
         };
         if let Some(q) = scope.names.get(name) {
-            return Cow::Borrowed(q.as_str());
+            return self.chase_reexport(Cow::Borrowed(q.as_str()));
         }
         if let Some((head, rest)) = name.split_once('.') {
             if let Some(m) = scope.modules.get(head) {
-                return Cow::Owned(format!("{m}.{rest}"));
+                return self.chase_reexport(Cow::Owned(format!("{m}.{rest}")));
             }
         }
         Cow::Borrowed(name)
+    }
+
+    /// 修飾名 `m.x` の `x` がモジュール `m` の**再エクスポート**（`m` が `from core import x` した名前）なら、
+    /// 元の宣言の修飾名（`core.x`）までたどる（CPython 準拠・2026-10-02）。
+    ///
+    /// ⚠ たどらないと `from wrapper import Item`（wrapper が core から取り込んだ `Item`）が
+    ///   存在しないクラス `wrapper.Item` になり、`core.Item` を返す関数の結果と食い違う（実測）。
+    /// ⚠ モジュール自身の宣言は自分の表で自分を指す（`m.x` → `m.x`）ので、そこで止まる。
+    ///   循環（あり得ないが）に備えて段数を限る。
+    fn chase_reexport<'a>(&'a self, q: Cow<'a, str>) -> Cow<'a, str> {
+        let mut cur = q;
+        for _ in 0..16 {
+            let Some((m, x)) = cur.rsplit_once('.') else { break };
+            let Some(scope) = self.module_scope_index.get(m).and_then(|&i| self.name_scopes.get(i)) else {
+                break;
+            };
+            // ⚠ `m` が `import other` で束縛した名前空間を通る綴り（`m.other.X`）は下で扱う。
+            match scope.names.get(x).map(String::as_str) {
+                Some(n) if n != cur.as_ref() => cur = Cow::Owned(n.to_string()),
+                _ => break,
+            }
+        }
+        // `m.alias.X`（`m` が `import other as alias` した名前空間を通る綴り）: 頭の 2 つを引き直す。
+        if !self.knows_type(&cur) {
+            if let Some((m, rest)) = Self::split_module_prefix(&cur, &self.module_scope_index) {
+                if let Some(scope) = self.module_scope_index.get(m).and_then(|&i| self.name_scopes.get(i)) {
+                    if let Some((head, tail)) = rest.split_once('.') {
+                        if let Some(target) = scope.modules.get(head) {
+                            let next = format!("{target}.{tail}");
+                            if next != cur.as_ref() {
+                                return self.chase_reexport(Cow::Owned(next));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cur
+    }
+
+    /// `name` が型として登録されている（クラス・trait・protocol）か（再エクスポートの追跡用）。
+    fn knows_type(&self, name: &str) -> bool {
+        self.known_class_names.contains(name)
+            || self.trait_method_sigs.contains_key(name)
+            || self.known_protocols.contains_key(name)
+            || self.fn_sigs.contains_key(name)
+    }
+
+    /// `a.b.c.X` を、いちばん長いモジュールの接頭辞（`a.b`）と残り（`c.X`）に分ける。
+    fn split_module_prefix<'n>(
+        name: &'n str,
+        modules: &HashMap<String, usize>,
+    ) -> Option<(&'n str, &'n str)> {
+        name.match_indices('.')
+            .map(|(i, _)| (&name[..i], &name[i + 1..]))
+            .filter(|(p, _)| modules.contains_key(*p))
+            .last()
     }
 
     /// 型の綴り（`Box[Tag, list[Other]]`）の中の名前をすべて引き直す。
@@ -167,6 +224,17 @@ impl TypeRegistry {
     pub(super) fn module_member(&self, alias: &str, member: &str) -> Option<String> {
         let scope = self.name_scopes.get(self.current_scope.get())?;
         scope.modules.get(alias).map(|m| format!("{m}.{member}"))
+    }
+
+    /// 今の文脈で `alias` が束縛している Arrow のモジュールの名前（`import a.b` の `a` → `a`）。
+    pub(super) fn module_of_alias(&self, alias: &str) -> Option<&str> {
+        let scope = self.name_scopes.get(self.current_scope.get())?;
+        scope.modules.get(alias).map(String::as_str)
+    }
+
+    /// `path`（`a.b`）が型レジストリの知っている Arrow のモジュールか。
+    pub(super) fn is_module(&self, path: &str) -> bool {
+        self.module_scope_index.contains_key(path)
     }
 
     /// 書いた型名 `name`（`util.Tag`）が、**今の文脈から届かない**モジュールの型を指しているか

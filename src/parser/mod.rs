@@ -159,6 +159,11 @@ pub struct Parser {
     /// **サブパーサと共有する**（プログラム全体で 1 つ。`node_counter` と同じ扱い）。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     module_names: std::rc::Rc<std::cell::RefCell<crate::module_path::ModuleNames>>,
+    /// 今の文の**前に**置く文（CPython 準拠・2026-10-02）。`import a.b.c` は先にパッケージ `a` と
+    /// `a.b` を読み込む（束縛しない `Stmt::Import` を足す）。`parse_program` が最上位の文の前へ並べる。
+    /// ⚠ import は最上位にしか書けない（10-16）ので、溜めるのも出すのも最上位だけ。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
+    pending_stmts: Vec<Stmt>,
     /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
     /// 構築するたびに `next_node_id()` で採番する。
     ///
@@ -244,6 +249,7 @@ impl Parser {
             module_cache: HashMap::new(),
             loading: HashSet::new(),
             module_names: std::rc::Rc::default(),
+            pending_stmts: Vec::new(),
             node_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
             #[cfg(feature = "editor")]
             editor: editor_index::EditorIndex::new(),

@@ -4,7 +4,7 @@ use crate::ast::Resolution;
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
     std::rc::Rc, std::sync::Arc,
-    crate::ast::{ImportOrigin, Stmt},
+    crate::ast::{ImportBind, ImportOrigin, Stmt},
     crate::interpreter::{
         ExecResult,
         Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, Value, Var,
@@ -18,17 +18,21 @@ impl Interpreter {
     /// ⚠ **言語ごとに違うのは「名前空間の作り方」だけ**で、束縛（`declare_var`）は共通。
     /// #58 以前は cs-dll / cs-proc / js-proc の 3 経路が名前空間を作った直後に
     /// **自分で `declare_var` して早期 return** していたが、その 3 箇所の束縛名は
-    /// 共通の末尾と**逐語で同じ式**だった（`alias` か `module.last()` ＝ この 3 言語では
-    /// `import_bind_name` の cpp 判定が必ず偽になる）。⇒ 早期 return を畳み、
-    /// 各経路は**名前空間を返すだけ**にしてある。
+    /// 共通の末尾と**逐語で同じ式**だった（`alias` か `module.last()`）。⇒ 早期 return を畳み、
+    /// 各経路は**名前空間を返すだけ**にしてある。束縛名は今はパーサが決める（`bind`・
+    /// 束縛名を計算していた `import_bind_name` は 2026-10-02 に削除済み）。
+    ///
+    /// ⚠ 束縛は AST の `bind`（パーサが決める・CPython 準拠）。`import a.b.c` は**パッケージ `a`**
+    ///   を束縛し、`a.b.c` は属性でたどる（[`Self::attach_submodule`]）。`None` は束縛しない
+    ///   （パッケージの連鎖を読み込むためにパーサが足した文）。
     pub(crate) fn exec_import(
         &mut self,
         lang: &str,
         module: &[String],
         source_module: Option<&str>,
-        alias: Option<&str>,
         body: &[Stmt],
         origin: &ImportOrigin,
+        bind: Option<&ImportBind>,
     ) -> Result<ExecResult, String> {
         // ⚠ FFI 系の import は `native` 限定（評価コア切り出し #2）。
         //   評価コアビルドでは `_` へ落とさず**明示エラー**にする。落とすと
@@ -52,12 +56,54 @@ impl Interpreter {
             }
             _ => self.exec_module(lang, module, body, origin)?,
         };
-        let bind_name = match alias {
-            Some(a) => a.to_string(),
-            None => Self::import_bind_name(lang, module),
+        self.attach_submodule(module, &ns);
+        let Some(bind) = bind else {
+            return Ok(ExecResult::Normal);
         };
-        self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
+        // 束縛されるのがこのモジュールそのものか、連鎖の先頭のパッケージ（`import a.b` の `a`）か。
+        let bound = if bind.module.as_slice() == module {
+            ns
+        } else {
+            self.loaded_module(&bind.module).ok_or_else(|| {
+                format!(
+                    "ImportError: package '{}' is not loaded (internal: the parser should load it before '{}')",
+                    bind.module.join("."),
+                    module.join(".")
+                )
+            })?
+        };
+        self.declare_var(bind.name.clone(), Var::new(Value::Namespace(bound), false));
         Ok(ExecResult::Normal)
+    }
+
+    /// 読み込み済みのモジュール（`module` の名前で、言語を問わず）。
+    fn loaded_module(&self, module: &[String]) -> Option<Rc<NamespaceData>> {
+        let key = PathBuf::from(module.join("/"));
+        self.module_cache.iter().find_map(|((_, path), state)| match state {
+            ModuleState::Loaded(ns) if *path == key => Some(ns.clone()),
+            _ => None,
+        })
+    }
+
+    /// 読み込んだモジュールを、**親パッケージの属性**にする（CPython の `sys.modules` と同じ）。
+    ///
+    /// `a.b` を読み込むと、`a` の名前空間から `b` で引ける（[`Self::namespace_member`]）。
+    /// ⚠ どこで読み込んでも付く（CPython と同じく、プログラム全体で 1 つの表）。
+    /// ⚠ 名前空間の値には持たせない（`Interpreter::submodules`）。持たせると親と子が互いを
+    ///   指す循環になり、非同期タスクへの深い複製（`Value::deep_clone`）が止まらない。
+    /// ⚠ 親が**読み込み中**でも付ける。パッケージの `__init__` が自分のサブモジュールを読む形
+    ///   （`from .core import X`）では、サブモジュールの方が先に読み終わる（CPython と同じ）。
+    /// ⚠ 親を読み込んでいない（外部言語のドット区切り・エントリより上の `__parent__`）なら何もしない。
+    pub(crate) fn attach_submodule(&mut self, module: &[String], ns: &Rc<NamespaceData>) {
+        let Some((last, parent)) = module.split_last() else { return };
+        let parent_key = PathBuf::from(parent.join("/"));
+        if parent.is_empty() || !self.module_cache.keys().any(|(_, p)| *p == parent_key) {
+            return;
+        }
+        self.submodules
+            .entry(parent.join("."))
+            .or_default()
+            .insert(last.clone(), Value::Namespace(ns.clone()));
     }
 
     /// この import 文の**実行時の探索先**（[`crate::module_path`] の規則）。
@@ -89,20 +135,6 @@ impl Interpreter {
         dirs
     }
 
-    /// `import` の既定の束縛名（`as` が無いとき）。
-    /// cpp 系だけ**ヘッダ/DLL のファイル名（stem）**で、他はモジュールパスの末尾。
-    fn import_bind_name(lang: &str, module: &[String]) -> String {
-        if lang == "cpp-dll" || lang == "cpp-lib" {
-            let path = module.first().map(|s| s.as_str()).unwrap_or("lib");
-            std::path::Path::new(path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("lib")
-                .to_string()
-        } else {
-            module.last().unwrap().clone()
-        }
-    }
 
     /// `import[cpp-dll]` / `import[cpp-lib]`。
     /// ⚠ キャッシュキーは**ヘッダのパス**（`exec_module` の `module.join("/")` ではない）。
@@ -442,19 +474,6 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Arrow のモジュールの名前空間から、**モジュールの中の import で束縛しただけの名前**を外す
-    /// （再エクスポートしない・2026-10-02）。
-    ///
-    /// ⚠ 以前は外していなかったので、`import lib.deep` だけで `deep.helper`
-    ///   （deep が import した lib.helper）や `from lib.deep import helper` が通った。
-    /// ⚠ 外すのは名前空間（外から見える値）だけ。モジュールの関数は自分の大域で名前を引くので、
-    ///   モジュールの中からは今までどおり使える。
-    /// ⚠ どの名前を外すかは型検査と同じ定義（[`crate::decl_names::module_exports`]）。
-    fn drop_reexports(members: &mut HashMap<String, Value>, body: &[Stmt]) {
-        let exports = crate::decl_names::module_exports(body);
-        members.retain(|n, _| !exports.imported.contains(n));
-    }
-
     pub(crate) fn exec_module(
         &mut self,
         lang: &str,
@@ -559,12 +578,9 @@ impl Interpreter {
             .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "module initialization", module);
-        let mut members = self.module_members(&module_globals);
-        // ⚠ Arrow のモジュールは再エクスポートしない（[`Self::drop_reexports`]）。
-        //   Python から変換したモジュールは Python の意味（`from .sub import X` で公開する）を保つ。
-        if crate::module_path::is_arrow_source_lang(lang) {
-            Self::drop_reexports(&mut members, body);
-        }
+        // ⚠ モジュールの中の import で束縛した名前も名前空間のメンバー（再エクスポート・CPython 準拠）。
+        //   2026-10-02 のフェーズ 2 では外していたが、フェーズ 4 で CPython と同じに戻した。
+        let members = self.module_members(&module_globals);
         // `mut` の名前は今の値をモジュールの大域から読む（`NamespaceData::live`・10-11）。
         let mutable_names: std::collections::HashSet<String> = members
             .keys()
@@ -687,8 +703,6 @@ impl Interpreter {
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "native module init", module);
         let mut members = self.module_members(&module_globals);
-        // ⚠ `.arc` も Arrow のモジュール（再エクスポートしない）。`import[rs]` のスタブは import を持たない。
-        Self::drop_reexports(&mut members, body);
         self.leave_module_frame(frame);
         result?;
 

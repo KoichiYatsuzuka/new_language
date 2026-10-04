@@ -1,7 +1,7 @@
 # core.ar — 例題 import_visibility.ar / import_visibility_error.ar の下段のモジュール。
 #
-# wrapper.ar がこれを import する。メインが wrapper.ar だけを import しても、
-# このモジュールは見えない（再エクスポートしない）。
+# wrapper.ar がこれを import する（`from . import core`）。読み込まれたサブモジュールは
+# 親パッケージの属性になる（`visibility_modules.core`・CPython と同じ）。
 
 const LABEL: str = "core"
 

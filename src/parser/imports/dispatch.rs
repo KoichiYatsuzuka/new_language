@@ -16,19 +16,24 @@ pub(crate) struct LoadedModule {
     /// ⚠ Arrow / py のモジュールは**ファイルごとに一意な名前**（[`crate::module_path`]）。
     ///   それ以外（py-int / rs / cs / js）は書いた綴りのまま（実行時がその名前で外部へ問い合わせる）。
     pub(crate) name: Vec<String>,
+    /// モジュールのパスを解いた**探索先のディレクトリ**（`a.b` なら `<root>/a/b.ar` の `<root>`）。
+    /// パッケージの連鎖（`<root>/a`）を読み込むのに使う（CPython 準拠・`packages.rs`）。
+    /// パッケージを持たない言語（cpp / cs / js / rs）は `None`。
+    pub(crate) root: Option<PathBuf>,
 }
 
 impl LoadedModule {
     /// 名前を書き換えない言語用（書いた綴りをそのまま `module` にする）。
     pub(crate) fn as_written(body: Vec<Stmt>, module: &[String]) -> Self {
-        LoadedModule { body, name: module.to_vec() }
+        LoadedModule { body, name: module.to_vec(), root: None }
     }
 }
 
 impl Parser {
-    /// 探索の起点（`level` を適用済み・[`module_path::search_base`]）。
+    /// 探索の起点（[`module_path::import_base`]）。ドット無しはエントリのディレクトリ
+    /// （CPython の `sys.path[0]`）、ドット付きは書いたファイルのディレクトリから数える。
     pub(crate) fn import_base(&self, level: u32) -> PathBuf {
-        module_path::search_base(&self.source_dir, level)
+        module_path::import_base(&self.source_dir, &self.root_dir, level)
     }
 
     /// import 文に載せる探索の起点（実行時の探索もこれを使う・[`ImportOrigin`]）。
@@ -46,7 +51,8 @@ impl Parser {
 
     /// 見つけたモジュールファイルに名前を付ける（Arrow / py・[`module_path::ModuleNames`]）。
     ///
-    /// - `local` … import 文のファイルの近く（起点）で見つけた。名前はエントリのディレクトリからの相対。
+    /// - `local` … エントリのディレクトリ・相対の起点で見つけた。名前はエントリのディレクトリからの相対
+    ///   （＝ CPython のモジュール名）。
     /// - それ以外（Python の検索パスなど外部で見つけた）… 書いた綴り（Python と同じ名前の付け方）。
     pub(crate) fn name_module_file(
         &self,
@@ -54,7 +60,26 @@ impl Parser {
         written: &[String],
         local: bool,
     ) -> Result<Vec<String>, String> {
-        let identity = module_path::module_identity(file);
+        self.name_identity(module_path::module_identity(file), written, local)
+    }
+
+    /// パッケージのディレクトリに名前を付ける（`__init__` の無い名前空間パッケージ用）。
+    /// `dir/__init__.ar` を読んだときと同じ名前になる（同一性の鍵が同じ）。
+    pub(crate) fn name_module_dir(
+        &self,
+        dir: &Path,
+        written: &[String],
+        local: bool,
+    ) -> Result<Vec<String>, String> {
+        self.name_identity(module_path::dir_identity(dir), written, local)
+    }
+
+    fn name_identity(
+        &self,
+        identity: PathBuf,
+        written: &[String],
+        local: bool,
+    ) -> Result<Vec<String>, String> {
         let preferred = if local {
             module_path::root_relative_name(&identity, &self.root_dir)
                 .unwrap_or_else(|| written.to_vec())
@@ -72,7 +97,8 @@ impl Parser {
     /// `import[lang] module.sub as alias` をパースして `Stmt::Import` を返す。
     ///
     /// - `import[py] math as m`
-    /// - `import[py] os.path as p`
+    /// - `import a.b.c` … CPython と同じく**先に `a` → `a.b` を読み込み**（`pending_stmts`）、
+    ///   **`a` を束縛**する（`packages.rs`）
     /// - `import ..lib.helper as h`（相対 import・[`crate::module_path`]）
     pub(crate) fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
@@ -90,7 +116,7 @@ impl Parser {
         }
 
         // モジュール指定 (`..a.b.c`)
-        let (level, module) = self.parse_module_ref()?;
+        let (level, module) = self.parse_module_ref(false)?;
 
         // `[version]` — `import[rs] libm[0.2]` のバージョン指定（rs のみ）
         let version = if lang == "rs" && *self.current() == Token::LBracket {
@@ -109,6 +135,8 @@ impl Parser {
 
         // モジュールの tl AST を取得（キャッシュ込み）
         let loaded = self.load_module(&lang, level, &module, version.as_deref())?;
+        // パッケージの連鎖（`a` → `a.b`）を先に読み込む文を溜め、束縛を決める（CPython 準拠）。
+        let bind = self.import_chain_and_bind(&lang, level, &module, alias.as_deref(), &loaded)?;
 
         Ok(Stmt::Import {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),
@@ -117,6 +145,7 @@ impl Parser {
             alias,
             body: loaded.body,
             origin: self.import_origin(level),
+            bind: Some(bind),
         })
     }
 
@@ -173,9 +202,7 @@ impl Parser {
             }
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
-            "py-int" => self
-                .load_python_interface_module(level, module)
-                .map(|b| LoadedModule::as_written(b, module)),
+            "py-int" => self.load_python_interface_module(level, module),
             // import[rs]: クレートバインディングをコンパイル・キャッシュし stubs を返す
             // ⚠ クレートはファイルではないので相対の書き方は受けない。
             "rs" if level > 0 => Err(format!(
@@ -215,10 +242,10 @@ impl Parser {
             return Ok(body.clone());
         }
 
-        // `ar_config.json`（`rust.crates_path`）を探すディレクトリ: import 文のファイルの
-        // ディレクトリから**祖先へ**（`python.search_paths` / `csharp.lib_paths` と同じ方針）。
+        // `ar_config.json`（`rust.crates_path`）を探すディレクトリ: エントリのディレクトリ
+        // （CPython の `sys.path[0]`）から**祖先へ**（`python.search_paths` / `csharp.lib_paths` と同じ方針）。
         // ⚠ 以前は `source_dir` と `root_dir`（エントリのディレクトリ）の 2 箇所だった。
-        let search_dirs: Vec<PathBuf> = module_path::absolute(&self.source_dir)
+        let search_dirs: Vec<PathBuf> = module_path::absolute(&self.root_dir)
             .ancestors()
             .map(Path::to_path_buf)
             .collect();

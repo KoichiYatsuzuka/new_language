@@ -103,13 +103,12 @@ impl std::fmt::Display for MetaKind {
 
 /// **メンバーが確定している** Arrow のモジュール（[`InferredType::Namespace`] の 2 つ目）。
 ///
-/// ⚠ メンバーの顔ぶれは実行時と同じ定義（[`crate::decl_names::module_exports`]）で決める。
+/// ⚠ メンバーは、モジュールの最上位で束縛される名前すべて（宣言・import の束縛＝再エクスポート）と、
+///   プログラムのどこかで import されるサブモジュール（`TypeChecker::module_children`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedModule {
     /// モジュールの名前（`lib.deep`・誤りの表示用）。
     pub name: String,
-    /// モジュールの中で import しただけの名前（名前空間には無い）。誤りの補足の表示に使う。
-    pub imported: Vec<String>,
 }
 
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
@@ -226,9 +225,8 @@ pub enum InferredType {
     /// モジュールやパッケージを表す名前空間型。メンバー名 → 推論済み型のマップ。
     ///
     /// 2 つ目は **メンバーが確定している** Arrow のモジュールの情報（[`ClosedModule`]）。
-    /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー
-    /// （再エクスポートしない・2026-10-02）。外部言語（cpp / cs / js / rs）のスタブと、
-    /// import 先を読めていないエディタ（`registry_incomplete`）では `None`（開いている）。
+    /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー（2026-10-02）。
+    /// 外部言語（cpp / cs / js / rs）のスタブと、import 先を読めていないエディタでは `None`（開いている）。
     Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>),
     /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
