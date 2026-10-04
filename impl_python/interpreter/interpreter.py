@@ -1,4 +1,4 @@
-# git SHA: fac8ad08ee7d7ccee54275ceed8e4e2f16b7c6f9
+# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -142,21 +142,6 @@ _STATIC_CELLS: dict[str, list] = {}  # span_key → [Value]
 # Arrow のソースのモジュール（mirrors `module_path::is_arrow_source_lang`）。
 _ARROW_SOURCE_LANGS = ("ar", "tl", "ar-auto", "tl-auto", "arc", "tlc")
 
-
-def _reexported_names(body: list) -> set:
-    """モジュールの中で import で束縛した**だけ**の名前（mirrors `decl_names::module_exports`）。
-
-    ⚠ Arrow のモジュールは再エクスポートしない（2026-10-02）。名前空間からはこれを外す。
-    """
-    imported: set = set()
-    for st in body:
-        if isinstance(st, StmtImport):
-            imported.add(st.alias if st.alias else st.module[-1])
-        elif isinstance(st, StmtFromImport):
-            for orig, alias in st.names:
-                imported.add(alias if alias else orig)
-    defined = {getattr(st, "name", None) for st in body if not isinstance(st, (StmtImport, StmtFromImport))}
-    return imported - defined
 
 class Interpreter:
     def __init__(self) -> None:
@@ -573,8 +558,9 @@ class Interpreter:
                 msg = display(val)
                 raise RaiseSignal(val, msg)
 
-            case StmtImport(lang=lang, module=module, alias=alias, body=body, base_dir=base_dir):
-                self._exec_import(lang, module, alias, body, base_dir)
+            case StmtImport(lang=lang, module=module, alias=alias, body=body, base_dir=base_dir,
+                            bind_name=bind_name, bind_module=bind_module, no_bind=no_bind):
+                self._exec_import(lang, module, alias, body, base_dir, bind_name, bind_module, no_bind)
 
             case StmtFromImport(lang=lang, module=module, names=names, body=body, base_dir=base_dir):
                 self._exec_from_import(lang, module, names, body)
@@ -2439,7 +2425,8 @@ class Interpreter:
     _cpp_module_cache: dict = {}
 
     def _exec_import(self, lang: str, module: list[str], alias: Optional[str], body: list,
-                     base_dir: Optional[str] = None) -> None:
+                     base_dir: Optional[str] = None, bind_name: Optional[str] = None,
+                     bind_module: Optional[list] = None, no_bind: bool = False) -> None:
         # cpp-dll / cpp-lib: bypass tree-walk; load via ctypes
         if lang in ("cpp-dll", "cpp-lib"):
             header_path_str = module[0] if module else ""
@@ -2489,6 +2476,15 @@ class Interpreter:
             return
 
         mod_name = ".".join(module)
+        if lang in _ARROW_SOURCE_LANGS:
+            # CPython と同じく 1 回だけ実行し、サブモジュールを親の属性にする（`sys.modules`）。
+            ns = self._load_arrow_module(mod_name, body, hide_private=True)
+            if no_bind:
+                return
+            name = bind_name or alias or module[-1]
+            bound = Interpreter._module_registry.get(".".join(bind_module)) if bind_module else None
+            self._env.declare(name, bound if bound is not None else ns, mutable=False)
+            return
         # Execute pre-parsed body in a sub-interpreter, collect as namespace
         sub = Interpreter()
         sub._known_classes = self._known_classes
@@ -2498,14 +2494,10 @@ class Interpreter:
         except ReturnSignal:
             pass
 
-        # Build namespace from sub's global scope
-        # ⚠ Arrow のモジュールは再エクスポートしない（mirrors `Interpreter::drop_reexports`・2026-10-02）。
-        hidden = _reexported_names(body) if lang in _ARROW_SOURCE_LANGS else set()
         members: dict = {}
         for scope in sub._env._scopes:
             for name, entry in scope.items():
                 if name.startswith("_"): continue
-                if name in hidden: continue
                 val = entry[2][0] if entry[2] is not None else entry[0]
                 members[name] = val
 
@@ -2530,6 +2522,10 @@ class Interpreter:
             try:
                 import importlib
                 py_mod = importlib.import_module(mod_name)
+                # CPython: `import a.b`（as 無し）は先頭の `a` を束縛する。
+                if bind_name and bind_module and list(bind_module) != list(module):
+                    bound_name = bind_name
+                    py_mod = importlib.import_module(".".join(bind_module))
                 members2: dict = {}
                 for attr in dir(py_mod):
                     if attr.startswith("_"): continue
@@ -2609,27 +2605,62 @@ class Interpreter:
             return
 
         mod_name = ".".join(module)
-        sub = Interpreter()
-        sub._known_classes = self._known_classes
-        sub._known_traits = self._known_traits
-        try:
-            sub.exec_stmts(body)
-        except ReturnSignal:
-            pass
-
-        # ⚠ Arrow のモジュールは再エクスポートしない（mirrors `Interpreter::drop_reexports`・2026-10-02）。
-        hidden = _reexported_names(body) if lang in _ARROW_SOURCE_LANGS else set()
-        members: dict = {}
-        for scope in sub._env._scopes:
-            for name, entry in scope.items():
-                if name in hidden: continue
-                val = entry[2][0] if entry[2] is not None else entry[0]
-                members[name] = val
+        if lang in _ARROW_SOURCE_LANGS:
+            members = self._load_arrow_module(mod_name, body, hide_private=False).members
+        else:
+            sub = Interpreter()
+            sub._known_classes = self._known_classes
+            sub._known_traits = self._known_traits
+            try:
+                sub.exec_stmts(body)
+            except ReturnSignal:
+                pass
+            members = {}
+            for scope in sub._env._scopes:
+                for name, entry in scope.items():
+                    val = entry[2][0] if entry[2] is not None else entry[0]
+                    members[name] = val
 
         for orig_name, alias in names:
             if orig_name in members:
                 bound = alias if alias else orig_name
                 self._env.declare(bound, members[orig_name], mutable=False)
+
+    # 読み込んだ Arrow のモジュール（名前 → 名前空間・CPython の sys.modules と同じ・2026-10-02）。
+    _module_registry: dict = {}
+
+    def _load_arrow_module(self, mod_name: str, body: list, hide_private: bool) -> "TlNamespace":
+        """Arrow のモジュールを 1 回だけ実行して名前空間を返し、親パッケージの属性にする
+        （mirrors `Interpreter::exec_module` / `attach_submodule`）。"""
+        reg = Interpreter._module_registry
+        ns = reg.get(mod_name)
+        if ns is None:
+            sub = Interpreter()
+            sub._known_classes = self._known_classes
+            sub._known_traits = self._known_traits
+            try:
+                sub.exec_stmts(body)
+            except ReturnSignal:
+                pass
+            members: dict = {}
+            for scope in sub._env._scopes:
+                for name, entry in scope.items():
+                    if hide_private and name.startswith("_"):
+                        continue
+                    val = entry[2][0] if entry[2] is not None else entry[0]
+                    members[name] = val
+            ns = TlNamespace(name=mod_name, members=members)
+            reg[mod_name] = ns
+            # 先に読み終わった子（`__init__` の中から読んだサブモジュール）を付ける。
+            prefix = mod_name + "."
+            for key, child in reg.items():
+                rest = key[len(prefix):] if key.startswith(prefix) else None
+                if rest and "." not in rest:
+                    ns.members.setdefault(rest, child)
+        parent, _, last = mod_name.rpartition(".")
+        if parent and parent in reg:
+            reg[parent].members[last] = ns
+        return ns
 
     def _exec_cs_dll_import(self, module: list[str], body: list) -> "TlNamespace":
         """Execute cs-dll stubs and patch namespace classes with the native bridge DLL.

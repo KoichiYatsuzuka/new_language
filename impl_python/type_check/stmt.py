@@ -1,4 +1,4 @@
-# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
+# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -300,11 +300,18 @@ class _TypeCheckerStmts:
                 if exc is not None:
                     self._infer(exc)
 
-            case StmtImport(module=module, alias=alias, body=body):
-                member_types = self._collect_module_types(body)
-                bind_name = alias if alias else module[-1]
-                from .types import TyNamespace
-                self._declare(bind_name, TyNamespace(tuple(member_types.items())), False)
+            case StmtImport(module=module, alias=alias, body=body, bind_name=bn, bind_module=bm, no_bind=nb):
+                # 束縛はパーサが決める（mirrors `ast::ImportBind`・CPython 準拠）。
+                if nb:
+                    pass
+                elif bn and bm and list(bm) != list(module):
+                    # `import a.b` は パッケージ `a` を束縛する（中身は属性でたどる・型は追わない）。
+                    self._declare(bn, TyUnresolved(), False)
+                else:
+                    member_types = self._collect_module_types(body)
+                    bind_name = bn or (alias if alias else module[-1])
+                    from .types import TyNamespace
+                    self._declare(bind_name, TyNamespace(tuple(member_types.items())), False)
 
             case StmtFromImport(names=names, body=body):
                 member_types = self._collect_module_types(body)

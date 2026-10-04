@@ -32,7 +32,3 @@ print(it2.v)                                      # 20
 # ── ④ `from パッケージ import サブモジュール` ──
 from visibility_modules import core
 print(core.make_item(3).v)                        # 30
-
-# ── 型の名前も同じ綴りで書ける（`visibility_modules` を束縛しているので） ──
-let it3: visibility_modules.core.Item = core.make_item(5)
-print(it3.v)                                      # 50

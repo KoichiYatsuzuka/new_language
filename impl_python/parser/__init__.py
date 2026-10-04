@@ -1,4 +1,4 @@
-# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
+# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
 """Parser package (mirrors src/parser/mod.rs).
 
 Sub-modules:
@@ -52,6 +52,8 @@ class Parser(_ParserStmts, _ParserExprs, _ParserClasses, _ParserImports, _Parser
         self._root_dir = resolved
         self._module_cache: dict[tuple[str, Path], list[Stmt]] = {}
         self._loading: set[Path] = set()
+        # 今の文の前に置く文（パッケージの連鎖・mirrors `Parser::pending_stmts`）。
+        self._pending: list[Stmt] = []
 
     # ------------------------------------------------------------------
     # Token access helpers
@@ -115,7 +117,11 @@ class Parser(_ParserStmts, _ParserExprs, _ParserClasses, _ParserImports, _Parser
         stmts: list[Stmt] = []
         self._skip_newlines()
         while self._current_kind() != TokenKind.EOF:
-            stmts.append(self._parse_stmt())
+            st = self._parse_stmt()
+            # import が足した「先に読み込む文」（パッケージの連鎖）を前に置く。
+            stmts.extend(self._pending)
+            self._pending = []
+            stmts.append(st)
             self._skip_newlines()
         return stmts
 

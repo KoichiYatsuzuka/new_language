@@ -1,4 +1,4 @@
-# git SHA: 4427c6023d50056aecc7f7b739f56d520842a91f
+# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
 """Import statement parsing (mirrors src/parser/imports.rs)."""
 from __future__ import annotations
 import os
@@ -31,11 +31,14 @@ def _make_parse_error(msg: str) -> Exception:
     return ParseError(msg)
 
 
-def _search_base(source_dir: Path, level: int) -> Path:
-    """探索の起点（mirrors `module_path::search_base`）。
+_ARROW_LANGS = ("ar", "tl", "ar-auto", "tl-auto", "arc", "tlc")
 
-    level 0（ドット無し）・1（`.`）は source_dir そのもの、k（k >= 2）は k-1 個上。
-    ⚠ エントリのディレクトリ（`_root_dir`）からは探さない（2026-10-02）。
+
+def _search_base(source_dir: Path, level: int) -> Path:
+    """相対 import の起点（mirrors `module_path::search_base`）。
+
+    level 0・1（`.`）は source_dir そのもの、k（k >= 2）は k-1 個上。
+    ドット無しの import の起点はエントリのディレクトリ（`_ParserImports._import_base`）。
     """
     base = source_dir
     for _ in range(1, level):
@@ -48,8 +51,43 @@ def _written(level: int, module: list[str]) -> str:
     return "." * level + ".".join(module)
 
 
+def _identity_of_file(path: Path) -> Path:
+    """モジュールファイルの同一性の鍵（mirrors `module_path::module_identity`）。"""
+    p = Path(os.path.normpath(os.path.abspath(path)))
+    return p.parent if p.stem == "__init__" else p.with_suffix("")
+
+
 class _ParserImports:
     """Mixin providing import statement parsing."""
+
+    def _import_base(self, level: int) -> Path:
+        """探索の起点（mirrors `module_path::import_base`・CPython 準拠）。
+
+        ドット無しはエントリのディレクトリ（CPython の sys.path[0]）、ドット付きは書いたファイルから数える。
+        """
+        return self._root_dir if level == 0 else _search_base(self._source_dir, level)
+
+    def _canonical(self, identity: Path, written: list[str]) -> list[str]:
+        """ファイルごとの名前（エントリのディレクトリからの相対・mirrors `root_relative_name`）。"""
+        try:
+            rel = os.path.relpath(identity, os.path.abspath(self._root_dir))
+        except ValueError:
+            return list(written)
+        parts = ["__parent__" if p == ".." else p for p in Path(rel).parts]
+        if not parts or parts == ["."] or not all(p.isidentifier() for p in parts):
+            return list(written)
+        return parts
+
+    def _bind_for(self, lang: str, module: list[str], alias: Optional[str],
+                  canonical: list[str], chain: list) -> tuple[str, list[str]]:
+        """この文の束縛（mirrors `chain_and_bind`）。`import a.b` は `a`、`as m` は `m`。"""
+        if alias:
+            return alias, canonical
+        if lang in _ARROW_LANGS and len(module) > 1 and chain:
+            return module[0], chain[0].module
+        if lang in ("py", "py-int") and len(module) > 1:
+            return module[0], module[:1]
+        return module[-1], canonical
 
     # ------------------------------------------------------------------
     # import / from ... import
@@ -72,12 +110,17 @@ class _ParserImports:
             self._advance()
             alias = self._expect_ident()
         body = self._load_module(lang, module, version=version, level=level)
-        return StmtImport(lang=lang, module=module, alias=alias, body=body,
-                          level=level, base_dir=str(_search_base(self._source_dir, level)))
+        canonical, root = self._last_loaded if lang in _ARROW_LANGS else (module, None)
+        chain = self._package_chain(lang, level, module, root)
+        self._pending.extend(chain)
+        bind_name, bind_module = self._bind_for(lang, module, alias, canonical, chain)
+        return StmtImport(lang=lang, module=canonical, alias=alias, body=body,
+                          level=level, base_dir=str(self._import_base(level)),
+                          bind_name=bind_name, bind_module=bind_module)
 
     def _parse_from_import_stmt(self) -> Stmt:
         self._eat(TokenKind.FROM)
-        level, module = self._parse_module_ref()
+        level, module = self._parse_module_ref(allow_bare_dots=True)
         self._eat(TokenKind.IMPORT)
         lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "ar-auto"
         names: list[tuple[str, Optional[str]]] = []
@@ -97,9 +140,102 @@ class _ParserImports:
                     break
             else:
                 break
+        if not module:
+            return self._from_dots_import(lang, level, names)
         body = self._load_module(lang, module, version=None, level=level)
-        return StmtFromImport(lang=lang, module=module, names=names, body=body,
-                              level=level, base_dir=str(_search_base(self._source_dir, level)))
+        canonical, root = self._last_loaded if lang in _ARROW_LANGS else (module, None)
+        self._pending.extend(self._package_chain(lang, level, module, root))
+        if lang in _ARROW_LANGS:
+            self._pending.extend(self._from_submodules(lang, level, module, canonical, body, names))
+        return StmtFromImport(lang=lang, module=canonical, names=names, body=body,
+                              level=level, base_dir=str(self._import_base(level)))
+
+    # ------------------------------------------------------------------
+    # CPython と同じパッケージの扱い（mirrors src/parser/imports/packages.rs）
+    # ------------------------------------------------------------------
+
+    def _package_chain(self, lang: str, level: int, module: list[str], root) -> list:
+        """`import a.b.c` の連鎖（`a`・`a.b`）を先に読み込む、束縛しない StmtImport。"""
+        out: list = []
+        if lang not in _ARROW_LANGS or root is None:
+            return out
+        for i in range(1, len(module)):
+            prefix = module[:i]
+            d = Path(root).joinpath(*prefix)
+            init = d / "__init__.ar"
+            if Path(os.path.normpath(os.path.abspath(init))) in self._loading:
+                continue  # 読み込み中のパッケージ（その __init__ の中からの import）
+            if init.exists():
+                body = self._load_tl_file(init, False, prefix)
+                canonical = self._canonical(_identity_of_file(init), prefix)
+            else:
+                body = []
+                canonical = self._canonical(Path(os.path.normpath(os.path.abspath(d))), prefix)
+            out.append(StmtImport(lang=lang, module=canonical, alias=None, body=body,
+                                  level=level, base_dir=str(self._import_base(level)), no_bind=True))
+        return out
+
+    def _ar_module_exists(self, lang: str, level: int, module: list[str]) -> bool:
+        base = self._import_base(level)
+        mb = Path(*module)
+        return any(p.exists() for p in (
+            base / mb.with_suffix(".ar"), base / mb.with_suffix(".arc"), base / mb / "__init__.ar"
+        )) or (base / mb).is_dir()
+
+    def _from_submodules(self, lang: str, level: int, module: list[str], canonical: list[str],
+                         body: list, names: list) -> list:
+        """`from a.b import x` の x がサブモジュールなら先に読み込む（mirrors `from_import_submodules`）。"""
+        defined = {getattr(st, "name", None) for st in body}
+        for st in body:
+            if isinstance(st, StmtImport):
+                defined.add(st.bind_name or st.alias or st.module[-1])
+            elif isinstance(st, StmtFromImport):
+                for orig, al in st.names:
+                    defined.add(al or orig)
+        out: list = []
+        for orig, _ in names:
+            if orig in defined:
+                continue
+            sub = list(module) + [orig]
+            if not self._ar_module_exists(lang, level, sub):
+                continue
+            if not out:
+                out.append(StmtImport(lang=lang, module=canonical, alias=None, body=body,
+                                      level=level, base_dir=str(self._import_base(level)), no_bind=True))
+            sbody = self._load_module(lang, sub, version=None, level=level)
+            scan, _ = self._last_loaded
+            out.append(StmtImport(lang=lang, module=scan, alias=None, body=sbody,
+                                  level=level, base_dir=str(self._import_base(level)), no_bind=True))
+        return out
+
+    def _from_dots_import(self, lang: str, level: int, names: list) -> Stmt:
+        """`from . import x`（mirrors `from_dots_import`）。x はサブモジュールとして読み込んで束縛する。"""
+        stmts: list = []
+        rest: list = []
+        for orig, alias in names:
+            if lang in _ARROW_LANGS and self._ar_module_exists(lang, level, [orig]):
+                body = self._load_module(lang, [orig], version=None, level=level)
+                canonical, _ = self._last_loaded
+                stmts.append(StmtImport(lang=lang, module=canonical, alias=alias, body=body,
+                                        level=level, base_dir=str(self._import_base(level)),
+                                        bind_name=alias or orig, bind_module=canonical))
+            else:
+                rest.append((orig, alias))
+        if rest:
+            base = self._import_base(level)
+            init = base / "__init__.ar"
+            if not init.exists():
+                raise self._error(
+                    f"cannot import name '{rest[0][0]}' from '{'.' * level}' (no module '{rest[0][0]}' in '{base}', "
+                    "and it is not a package with an __init__)"
+                )
+            body = self._load_tl_file(init, False, [])
+            canonical = self._canonical(_identity_of_file(init), [])
+            stmts.append(StmtFromImport(lang=lang, module=canonical, names=rest, body=body,
+                                        level=level, base_dir=str(base)))
+        last = stmts.pop()
+        self._pending.extend(stmts)
+        return last
 
     def _parse_lang_bracket(self) -> str:
         self._eat(TokenKind.LBRACKET)
@@ -117,7 +253,7 @@ class _ParserImports:
         self._eat(TokenKind.RBRACKET)
         return lang
 
-    def _parse_module_ref(self) -> tuple[int, list[str]]:
+    def _parse_module_ref(self, allow_bare_dots: bool = False) -> tuple[int, list[str]]:
         """`[.]* IDENT ('.' IDENT)*` → (先頭のドットの数, 各部分)。
 
         mirrors `Parser::parse_module_ref`（src/parser/import_syntax.rs）。
@@ -127,6 +263,8 @@ class _ParserImports:
         while self._current_kind() in (TokenKind.DOT, TokenKind.ELLIPSIS):
             level += 3 if self._current_kind() == TokenKind.ELLIPSIS else 1
             self._advance()
+        if level > 0 and allow_bare_dots and self._current_kind() == TokenKind.IMPORT:
+            return level, []
         if level > 0 and self._current_kind() != TokenKind.IDENT:
             raise self._error(
                 f"expected a module name after `{'.' * level}`, got `{self._current().kind.name}` "
@@ -157,7 +295,7 @@ class _ParserImports:
         level, parts = self._parse_module_ref()
 
         # Resolve to header path: last part gets .h extension
-        resolved = _search_base(self._source_dir, level)
+        resolved = self._import_base(level)
         for i, part in enumerate(parts):
             if i == len(parts) - 1:
                 resolved = resolved / f"{part}.h"
@@ -234,7 +372,7 @@ class _ParserImports:
                 pass  # header parse errors are non-fatal; runtime handles errors
 
         return StmtImport(lang=lang, module=[file_path], alias=alias, body=body,
-                          level=level, base_dir=str(_search_base(self._source_dir, level)))
+                          level=level, base_dir=str(self._import_base(level)))
 
     def _parse_version_bracket(self) -> Optional[str]:
         """Parse optional [X.Y.Z] version tag after a crate name."""
@@ -275,8 +413,8 @@ class _ParserImports:
     def _load_tl_module(self, module: list[str], force_source: bool = False, level: int = 0) -> list[Stmt]:
         module_base = Path(*module) if len(module) > 1 else Path(module[0])
         candidates: list[tuple[Path, bool]] = []
-        # ⚠ 探索先は起点 1 か所だけ（エントリのディレクトリは探さない・mirrors module_search_dirs）
-        search_dirs = [_search_base(self._source_dir, level)]
+        # ⚠ 探索先は起点 1 か所だけ（ドット無しはエントリのディレクトリ・mirrors module_search_dirs）
+        search_dirs = [self._import_base(level)]
         for d in search_dirs:
             if not force_source:
                 candidates.append((d / module_base.with_suffix(".arc"), True))
@@ -290,10 +428,22 @@ class _ParserImports:
                 break
 
         if found is None:
+            # `__init__` の無いディレクトリは名前空間パッケージ（CPython と同じ）。
+            d = search_dirs[0] / module_base
+            if d.is_dir():
+                self._last_loaded = (self._canonical(Path(os.path.normpath(os.path.abspath(d))), module),
+                                     search_dirs[0])
+                return []
             checked = ", ".join(f"'{p}'" for p, _ in candidates)
             raise self._error(f"cannot find module '{_written(level, module)}' (looked at {checked})")
 
-        abs_path, is_tlc = found
+        self._last_loaded = (self._canonical(_identity_of_file(found[0]), module), search_dirs[0])
+        return self._load_tl_file(found[0], found[1], module)
+
+    def _load_tl_file(self, path: Path, is_tlc: bool, module: list[str]) -> list[Stmt]:
+        """見つけた .ar / .arc を読み込む（キャッシュ・循環検出・子パーサ）。"""
+        module_base = Path(*module) if module else Path("__init__")
+        abs_path, is_tlc = path, is_tlc
         # ⚠ 鍵（キャッシュ・循環検出）は絶対パスに正規化する（`..` を含む相互 import が
         #   循環検出をすり抜けないように・mirrors found_paths）。
         abs_path = Path(os.path.normpath(abs_path.resolve()))
@@ -326,7 +476,7 @@ class _ParserImports:
 
     def _load_tlc_module(self, module: list[str], level: int = 0) -> list[Stmt]:
         module_base = Path(*module) if len(module) > 1 else Path(module[0])
-        search_dirs = [_search_base(self._source_dir, level)]
+        search_dirs = [self._import_base(level)]
         candidates = [d / module_base.with_suffix(".arc") for d in search_dirs]
         found: Optional[Path] = next((p for p in candidates if p.exists()), None)
         if found is None:
@@ -335,6 +485,7 @@ class _ParserImports:
                 f"cannot find compiled module '{_written(level, module)}' (looked at {checked}; "
                 "compile with: cargo run --release -- --compile <source.ar>)"
             )
+        self._last_loaded = (self._canonical(_identity_of_file(found), module), search_dirs[0])
         cache_key = ("tlc", found)
         if cache_key in self._module_cache:
             return self._module_cache[cache_key]
@@ -364,8 +515,8 @@ class _ParserImports:
             return self._module_cache[cache_key]
 
         from ..partial_compiler.rs_loader import load as rs_load, _RS_DLL_CACHE
-        # ar_config.json は import 文のファイルのディレクトリから祖先へ探す（mirrors load_rs_module）
-        start = self._source_dir.resolve()
+        # ar_config.json はエントリのディレクトリから祖先へ探す（mirrors load_rs_module）
+        start = self._root_dir.resolve()
         search_dirs = [start, *start.parents]
 
         try:
@@ -383,8 +534,8 @@ class _ParserImports:
         mod_path = Path(*module) if len(module) > 1 else Path(module[0])
         managed_dll_name = f"{module[-1]}.dll"
 
-        # ⚠ 起点 1 か所だけ（エントリのディレクトリは探さない・mirrors load_cs_module）
-        search_dirs = [_search_base(self._source_dir, level)]
+        # ⚠ 起点 1 か所だけ（ドット無しはエントリのディレクトリ・mirrors load_cs_module）
+        search_dirs = [self._import_base(level)]
 
         found: Optional[Path] = None
         for d in search_dirs:

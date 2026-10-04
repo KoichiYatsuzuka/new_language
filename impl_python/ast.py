@@ -1,4 +1,4 @@
-# git SHA: 4427c6023d50056aecc7f7b739f56d520842a91f
+# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -577,6 +577,12 @@ class StmtImport:
     # level = 先頭のドットの数、base_dir = 起点ディレクトリ（level を適用済み）。
     level: int = 0
     base_dir: Optional[str] = None
+    # 束縛（mirrors `ast::ImportBind`・CPython 準拠）。`import a.b` は bind_name="a" / bind_module=["a"]。
+    # no_bind=True はパッケージの連鎖を読み込むためにパーサが足した文（束縛しない）。
+    # bind_name が None なら従来どおり（別名か末尾）。
+    bind_name: Optional[str] = None
+    bind_module: Optional[list[str]] = None
+    no_bind: bool = False
 
 @dataclass
 class StmtFromImport:
