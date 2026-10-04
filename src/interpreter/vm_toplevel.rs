@@ -267,8 +267,8 @@ impl Interpreter {
         if name == "_" {
             return Ok(());
         }
-        if self.get_var(name).is_some() {
-            return Err(format!("NameError: variable '{name}' is already declared"));
+        if let Some(e) = self.redeclaration_error(name) {
+            return Err(e);
         }
         let (value, mutable) = match kind {
             DeclKind::Const => (value, false),

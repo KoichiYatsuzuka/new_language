@@ -45,6 +45,25 @@ pub(crate) fn coerce_binding(type_ann: Option<&str>, value: Value) -> Value {
 }
 
 impl Interpreter {
+    /// 今のスコープで `name` を宣言すると誤りになるなら、その文言（`already declared` の**唯一の判定**）。
+    ///
+    /// 呼び出し元は宣言の 4 か所（`exec_let` / `Const` / `Mut` / 最上位の VM の `vm_declare_global`）と
+    /// タプル分解の宣言（`exec_let_tuple_evaled`）。
+    /// ⚠ Python から変換したモジュール（`import[py]`）の本体では、組み込みの名前（`id` / `str` / `dict` / `len` …）を
+    ///   束縛し直してよい（python_builtins_plan.md のタスク 1-6）。CPython は組み込みを名前の探索の最後の段に置くので、
+    ///   モジュールの大域が組み込みを隠す。以前は `id = 3` が `variable 'id' is already declared` だった（実測）。
+    ///   変換器は最上位の名前を 1 度だけ `mut x = None` で宣言する（巻き上げ）ので、同じ名前を 2 度宣言することはない。
+    /// ⚠ Arrow のソースの最上位では従来どおり誤り（`let len = 3`・規則として残すかは別に要判断）。
+    pub(crate) fn redeclaration_error(&self, name: &str) -> Option<String> {
+        if name == "_" || self.get_var(name).is_none() {
+            return None;
+        }
+        if self.in_python_module && crate::type_check::names::is_runtime_builtin_name(name) {
+            return None;
+        }
+        Some(format!("NameError: variable '{name}' is already declared"))
+    }
+
     /// `let` 宣言を実行する。
     pub(crate) fn exec_let(
         &mut self,
@@ -52,8 +71,8 @@ impl Interpreter {
         type_ann: Option<&str>,
         expr: &Expr,
     ) -> Result<ExecResult, String> {
-        if name != "_" && self.get_var(name).is_some() {
-            return Err(format!("NameError: variable '{name}' is already declared"));
+        if let Some(e) = self.redeclaration_error(name) {
+            return Err(e);
         }
         // mut → let: deep copy してからフリーズする。
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
@@ -119,8 +138,8 @@ impl Interpreter {
         for target in targets.iter() {
             match target {
                 TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
-                    if n != "_" && self.get_var(n).is_some() {
-                        return Err(format!("NameError: variable '{n}' is already declared"));
+                    if let Some(e) = self.redeclaration_error(n) {
+                        return Err(e);
                     }
                 }
                 TupleTarget::Wildcard => {}
