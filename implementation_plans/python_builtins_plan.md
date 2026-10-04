@@ -232,7 +232,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | `print` | キーワード引数つき（`print(x, end="")`）の関数は**丸ごとバイトコードにできない**（`VmForceError`） | キーワード引数つきの呼び出し | 0 |
 | `int` | `int("ff", 16)`（基数の引数）が無い（`int() takes at most 1 argument`） | 2 引数・`base=` | 0 |
 | 例外クラス（`ValueError` など 17 個） | 作れて捕まえられるが、`str(e)` がメッセージでなくオブジェクト表示、`e.args` が無い | （静的に数えられない） | — |
-| `complex` | 表示が違う（`complex(1, 2)` が `(1.0+2.0j)`。CPython は `(1+2j)`） | （表示だけ） | — |
+| ~~`complex`~~ | ✅ 直した（タスク 1-5・2026-10-05）。~~表示が違う（`complex(1, 2)` が `(1.0+2.0j)`。CPython は `(1+2j)`）~~ | （表示だけ） | — |
 
 ### 2.3 対応
 
@@ -481,8 +481,9 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | ~~**1-2**~~ | ✅ **済**（2026-10-05）float の `//` / `%`（int と float の混在を含む）。CPython の `_float_div_mod` / `float_rem`（`fmod` で余りを出し、符号を割る数に合わせ、0 にも割る数の符号を付け、商を整数へ寄せる）を写す。ゼロ除算の文言も合わせる（`float floor division by zero` / `float modulo`）。⚠⚠ **ネイティブ codegen も同じ式に揃える**: 今の `floor(a/b)` / `a - floor(a/b)*b` は `0.1 % 0.01`（`0.0`、CPython `3.47e-18`）・`-1.0 % inf`（`nan`、CPython `inf`）・`6.0 % -3.0`（`0.0`、CPython `-0.0`）でずれる。int の `//` / `%`（`ops::py_floor_div`）と同じく共通の関数 1 つにする。型検査の `binop.rs` も float を通す。詳細は 6 節 | —（演算子） | なし | 小 |
 | ~~**1-3**~~ | ✅ **済**（2026-10-05）list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）。CPython の `list_richcompare` / `tuplerichcompare` の 2 段構え（`==` で最初に違う要素を探す → その要素だけを求められた演算子で比べる → 違いが無ければ長さで決める）。⚠ list と tuple は比べない（`TypeError`）、同じオブジェクトは等しいとみなす（`[nan] == [nan]` が真）、比べられない要素に届いたときだけ `TypeError`（`(1, 'a') < (2, 3)` は真）。型検査は `tuple[..]` の要素ごとに比べられるかを見る。3-2 の `sorted` / `min` / `max` でタプルを鍵にする形の前提。詳細は 6 節 | —（演算子） | なし | 中 |
 | ~~**1-4**~~ | ✅ **済**（2026-10-05）辞書とジェネレータの `__iter__` メソッド。辞書はキーを挿入順に返すイテレータ（CPython の `dict_iter`・反復中に大きさが変わったら `RuntimeError: dictionary changed size during iteration`）、ジェネレータは自分自身（`PyObject_SelfIter`）。⚠ `for k in d:` / `for x in g:` は今も動く。足りないのはメソッドとしての呼び出しと、それを使う `iter()`（3-3）。⚠ list の `__iter__` は呼んだ時点の写しを回すので、反復中の書き換えも CPython と違う（別に要判断）。詳細は 6 節 | —（メソッド） | なし | 小 |
-| **1-5** | float の表示（`str` / `repr` / `print`）を CPython の `repr` に合わせる。今は指数表記を使わず、`1e20` が `100000000000000000000`（`.0` も付かない）、`1e-10` が `0.0000000001`、`0.1 % 0.01` が `0.000000000000000003469446951953614` と出る（CPython は `1e+20` / `1e-10` / `3.469446951953614e-18`）。CPython は最短の往復表現（`PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)`）で、10 進の指数が `-4` 未満か `16` 以上なら指数表記（`e+20` / `e-05`・指数は 2 桁以上）、それ以外は小数表記に `.0` を足す。1-2 の作業中に見つけた（6 節） | —（表示） | なし | 小 |
-| **1-6** | Python のモジュールの**最上位**で、組み込みの名前（`id` / `str` / `dict` / `len` …）を束縛し直せるようにする。今は `id = 3` が `NameError: variable 'id' is already declared`（実測）。CPython はモジュールの大域が組み込みを隠す（`builtins` は名前の探索の最後の段）。関数の仮引数・局所変数の `type` / `dict` / `len` / `print` は今も動く（実測）。⚠ 組み込みを足すほど（2-x / 3-x）ぶつかる名前が増えるので、組み込みを足すタスクの前提。⚠ Arrow のソースの最上位の `let len = 3` も同じ誤り（静的に `already declared`）だが、Arrow の規則として残すかは別に要判断（ここでは `import[py]` のモジュールだけを直す） | —（名前の解決） | なし | 小 |
+| ~~**1-5**~~ | ✅ **済**（2026-10-05・complex の表示も CPython の `complex_repr` に揃えた）float の表示（`str` / `repr` / `print`）を CPython の `repr` に合わせる。今は指数表記を使わず、`1e20` が `100000000000000000000`（`.0` も付かない）、`1e-10` が `0.0000000001`、`0.1 % 0.01` が `0.000000000000000003469446951953614` と出る（CPython は `1e+20` / `1e-10` / `3.469446951953614e-18`）。CPython は最短の往復表現（`PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)`）で、10 進の指数が `-4` 未満か `16` 以上なら指数表記（`e+20` / `e-05`・指数は 2 桁以上）、それ以外は小数表記に `.0` を足す。1-2 の作業中に見つけた（6 節） | —（表示） | なし | 小 |
+| ~~**1-6**~~ | ✅ **済**（2026-10-05）Python のモジュールの**最上位**で、組み込みの名前（`id` / `str` / `dict` / `len` …）を束縛し直せるようにする。今は `id = 3` が `NameError: variable 'id' is already declared`（実測）。CPython はモジュールの大域が組み込みを隠す（`builtins` は名前の探索の最後の段）。関数の仮引数・局所変数の `type` / `dict` / `len` / `print` は今も動く（実測）。⚠ 組み込みを足すほど（2-x / 3-x）ぶつかる名前が増えるので、組み込みを足すタスクの前提。⚠ Arrow のソースの最上位の `let len = 3` も同じ誤り（静的に `already declared`）だが、Arrow の規則として残すかは別に要判断（ここでは `import[py]` のモジュールだけを直す） | —（名前の解決） | なし | 小 |
+| **1-7** | 組み込みの関数・型の名前を**値として**使えるようにする（5-1 の前半を前提として前に出した）。束縛されていない名前が組み込みの名前なら、名前の探索の最後の段で組み込みの値（`Value::Type(名前)`）を返す（CPython の `builtins` と同じ位置・束縛した名前が勝つので 1-6 の衝突は起きない）。大域へ束縛する形（`int` / `str` / `dict` は今そう）にすると、同名の最上位の宣言が `already declared` になるので使わない（実測）。これで `map(repr, xs)` / `key=len` / `isinstance(x, (list, tuple))`（2-1）/ `list(it)` / `tuple(it)`（3-1）が書ける。呼ぶと組み込み関数の表（`eval_builtin_evaled` / キーワードつきは `eval_builtin_evaled_named`）へ回す | 16（値としての参照）+ 2-1 / 3-1 の前提 | なし | 中 |
 | **2-1** | `isinstance(x, C)` の写し: 第 2 引数が名前（`C` / `m.C` / `int`）なら `x is C`、組なら `or` へ変換時に写す。変数（`isinstance(x, cls)`）は実行時の組み込みで受ける。⚠ `isinstance(True, int)` は CPython で `True`（`bool` は `int` の派生） | 2,766 | なし | 中 |
 | **2-2** | `type(x)`（1 引数）と `type(x).__name__` / `type(x) is C`。⚠ 3 引数の `type(name, bases, dict)`（クラスを作る）は対象外の候補 | 868 | なし | 中 |
 | **2-3** | `getattr` / `hasattr` / `setattr`（既定値つき `getattr(o, n, d)` を含む） | 595 | なし | 中 |
@@ -493,7 +494,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | **4-1** | 警告クラス（`FutureWarning` / `DeprecationWarning` / `RuntimeWarning` / `UserWarning` / `Warning` …）と、足りない例外クラス（`ImportError` / `LookupError` / `SyntaxError` / `FileNotFoundError` …）。⚠ 階層（`LookupError` → `KeyError` / `IndexError`）も合わせる（10-19 の `ClassValue::is_a`） | 382 | なし | 中 |
 | **4-2** | 例外の `str(e)`（メッセージ）と `e.args` | — | なし | 小 |
 | **4-3** | 修飾名の例外を捕まえる `except m.Err:`（Python の `except requests.HTTPError:` の形）。今は Arrow の構文が受けず（`except e.MyErr:` が `ParseError: expected ':', got '.'`・Arrow のモジュールでも同じ）、変換器も明示エラーにしている（`only a simple exception name is supported in except`）。構文・変換器に足し、照合は `is` と同じ経路（`value_is_type` の修飾名・基底の修飾名）に載せる。`import[py]` のクラスの修飾名（6 節で直した）が前提 | —（構文） | なし | 中 |
-| **5-1** | 呼び出しの形だけ解決される組み込み（`range` / `repr` …）を**値として**使えるようにする。`print` のキーワード引数（`end=` / `sep=`）で関数がバイトコードにできない問題 | 16 | なし | 中 |
+| **5-1** | ~~呼び出しの形だけ解決される組み込み（`range` / `repr` …）を**値として**使えるようにする。~~（**1-7 へ移した**）`print` のキーワード引数（`end=` / `sep=`）で関数がバイトコードにできない問題 | 16 | なし | 中 |
 | **5-2** | `open` を Python の形（`open(path, "r", encoding=..)`）で受ける | 6 | なし | 小 |
 | **6-1** | ⚠ 要判断: `property`（Arrow にプロパティ構文が無い。getter をメソッド呼び出しへ写すか） | 586 | なし | 大 |
 | **6-2** | ⚠ 要判断: `object`（`class C(object)` の基底・`dtype=object` などの値）/ `NotImplemented` / `Ellipsis` / `super(C, self)` の形 / `staticmethod` / `classmethod` の関数としての使用 | 374 | なし | 中 |
@@ -532,7 +533,9 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
     - CPython の実装（`Objects/listobject.c` の `list_richcompare`・`Objects/tupleobject.c` の `tuplerichcompare`）: 両方が同じ種類で
       なければ `NotImplemented`（→ `TypeError`）。`PyObject_RichCompareBool(.., Py_EQ)`（同じオブジェクトなら等しい）で最初に違う
       位置を探し、無ければ長さを比べ、あればその要素だけを求められた演算子で比べ直す。list だけ `==` / `!=` で長さが違えば先に返す。
-  - float の表示が CPython と違う（指数表記を使わない）→ **タスク 1-5**（1-2 の作業中に見つけた）。
+  - ~~float の表示が CPython と違う（指数表記を使わない）~~ → **直した**（タスク 1-5・2026-10-05）。`ops::py_float_repr`。
+    complex も CPython の `complex_repr` に揃え（`(1+2j)` / `2j`）、実数 − complex の虚部の符号（`1.5 - 0j` が `(1.5-0j)`）も直した。
+    例題は `examples/basics/float_repr.ar`。
     - 再現: `print(1e20)` → `100000000000000000000`（CPython `1e+20`）、`print(1e-5)` → `0.00001`（CPython `1e-05`）、
       `print(1.5e-7)` → `0.00000015`（CPython `1.5e-07`）、`print(2.5e300)` → 301 桁の整数（CPython `2.5e+300`）。
   - ~~辞書とジェネレータに `__iter__` メソッドが無い（list・str・set にはある）~~ → **直した**（タスク 1-4・2026-10-05）。

@@ -216,3 +216,14 @@ fn a_py_module_class_and_its_bases_match_qualified_names() {
         assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
     }
 }
+
+/// Python のモジュールの最上位で組み込みの名前（`id` / `str` / `len`）を束縛し直せる（python_builtins_plan.md の 1-6）。
+/// ⚠ 隠すのはそのモジュールの中だけ。メインの `len` / `id` は組み込みのまま。
+#[cfg(feature = "native")]
+#[test]
+fn a_py_module_may_rebind_builtin_names() {
+    let zoo = "id = 7\nstr = \"s\"\n\ndef len(x):\n    return 42\n\ndef read_back():\n    return len([1, 2, 3]) + id\n";
+    let interp = run_with_py_module(zoo, "let back = z.read_back()\nlet mine = len([1, 2])\n").expect("run");
+    assert!(matches!(interp.get_val("back"), Some(Value::Int(49))));
+    assert!(matches!(interp.get_val("mine"), Some(Value::Int(2))));
+}
