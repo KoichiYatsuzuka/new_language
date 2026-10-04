@@ -1,0 +1,23 @@
+# seq_ordering_error.ar — 比べられない要素を持つ列の大小比較（python_builtins_plan.md のタスク 1-3）
+#
+# 対になる正常系: seq_ordering.ar
+#
+# 期待されるエラー（3 件）:
+#   StaticTypeError  cannot compare 'list[int]' and 'list[str]' with `<`
+#   StaticTypeError  cannot compare 'tuple[int, str]' and 'tuple[int, int]' with `<`
+#   StaticTypeError  cannot compare 'list[int]' and 'tuple[int]' with `<`
+#
+# ⚠ tuple は短い方の長さまでのすべての位置が比べられることを求める。実行時は最初に違う位置しか比べない
+#   （CPython の `(1, "a") < (2, 3)` は真）が、どの位置で決まるかは値次第なので静的に弾く。
+# ⚠ list と tuple は比べない（CPython も `TypeError`）。
+
+let a: list[int] = [1]
+let b: list[str] = ["a"]
+print(a < b)                              # ⛔ int と str は比べられない
+
+let c: tuple[int, str] = (1, "a")
+let d: tuple[int, int] = (1, 2)
+print(c < d)                              # ⛔ 2 番目の位置が str と int
+
+let e: tuple[int] = (1,)
+print(a < e)                              # ⛔ list と tuple
