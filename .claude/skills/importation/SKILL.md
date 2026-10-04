@@ -1,51 +1,63 @@
 ---
 name: importation
-description: Use when writing, reading, or extending Arrow (.ar) import statements — `import[lang] module.path as alias` / `from module import[lang] Name` / relative `import ..pkg.mod` — including .py, .dll/.lib (C), .rs, C#, or Node.js interop. Explains the search rule shared by every language (src/module_path.rs), module identity and the no-re-export rule, what each `[lang]` tag loads, and how src/parser/imports/ and src/interpreter/exec/modules.rs implement it.
+description: Use when writing, reading, or extending Arrow (.ar) import statements — `import[lang] module.path as alias` / `from module import[lang] Name` / relative `import ..pkg.mod` — including .py, .dll/.lib (C), .rs, C#, or Node.js interop. Explains the CPython-compatible module semantics (search from the entry directory, `import a.b` binds `a`, packages and submodule attributes, re-exports, `from . import x`) shared by every language (src/module_path.rs, src/parser/imports/packages.rs), what each `[lang]` tag loads, and how src/parser/imports/ and src/interpreter/exec/modules.rs implement it.
 ---
 
 # Importation of .ar, .py, .dll (C language), .lib, .rs, and more
 
 Import syntax: `import[lang] module.path as alias` / `from module import[lang] Name`.
 The `[lang]` tag selects the source type; omitting it defaults to `ar-auto`.
-A module path may start with dots (relative import): `import .a` / `import ..a.b` / `from ..lib import f`.
+A module path may start with dots (relative import): `from . import x` / `from ..lib import f` / `import ..a.b`.
 
-## Search rule (every language, 2026-10-02)
+## Module semantics = CPython (2026-10-02, phase 4)
 
-**The only definition is [src/module_path.rs](../../../src/module_path.rs)** (its header doc).
-Parse-time loaders for every tag and the runtime lookups (`import[py-int]`'s `sys.path`, the C# bridge /
-host, the js-proc config) all call it. Plan and decisions: `implementation_logs/IMPORT_RESOLUTION_PLAN.md`.
+Plan and decisions: `implementation_logs/IMPORT_RESOLUTION_PLAN.md`. The search rule's only definition is
+[src/module_path.rs](../../../src/module_path.rs) (header doc); packages / binding are
+[src/parser/imports/packages.rs](../../../src/parser/imports/packages.rs).
 
-| Written | Searched |
-|---|---|
-| `import a.b` | the importing file's directory, then the language's external paths (Python `python.search_paths` / `PYTHONPATH` / site-packages, C# `csharp.lib_paths`, js-proc bridge resolution) |
-| `import .a.b` | the importing file's directory **only** |
-| `import ..a.b` | one level up **only** (each extra dot = one more level; `...` lexes as one `Ellipsis` = 3) |
+| Written | Searched | Binds |
+|---|---|---|
+| `import a.b.c` | **entry file's directory** (CPython `sys.path[0]`), then the language's external paths | `a` (package) |
+| `import a.b.c as m` | same | `m = a.b.c` |
+| `from a.b import x` | same | `x` (a name in `a.b`, else submodule `a.b.x`) |
+| `from . import x` / `from .m import y` | the importing file's directory **only** | `x` / `y` |
+| `from .. import x` / `import ..a.b` | one level up **only** (each extra dot = one more level; `...` lexes as one `Ellipsis` = 3) | as above (`import ..a.b` binds `a`) |
 
-- ⚠⚠ **The entry file's directory (`Parser::root_dir`) is never searched.** It used to be the fallback,
-  so a module in a subdirectory could reach up only when the entry happened to be above it. `root_dir` is
-  now only the base for module names (below).
-- ⚠ Python files loaded by `import[py]` resolve their own imports from **the `.py` file's directory**
-  (`fill_python_imports`); `from .m import x` / `from . import m` map to relative imports.
-- ⚠ `import[rs]` takes a crate name: a relative `import[rs]` is an error. Its `ar_config.json` is looked up
-  from the importing file's directory upward (`rust.crates_path`).
-- Each `Stmt::Import` / `Stmt::FromImport` carries `origin: ImportOrigin { level, base_dir, span }` — the
-  runtime searches from `base_dir`, never from the entry directory. Statements not parsed from a file
-  (REPL, tests: `Parser::new(_, None)`) carry `base_dir: None` and fall back to the dirs registered with
-  `Interpreter::add_python_search_dir`.
+- **No implicit relative import**: `import util` in `pkg/mid.ar` does not look in `pkg/` — write
+  `from . import util` or `import pkg.util`. External paths: Python `python.search_paths` / `PYTHONPATH` /
+  site-packages, C# `csharp.lib_paths`, js-proc bridge resolution; config files are looked up from the
+  entry directory upward. Dotted (relative) imports never use external paths.
+- ⚠ Arrow extensions over CPython: `import .x` / `import ..x` exist; relative imports also work from the
+  entry file and may go above the entry directory (needed so a file in a subdirectory can be the entry).
+- **Packages**: `import a.b.c` loads `a` → `a.b` → `a.b.c` in order. The parser emits **unbound
+  `Stmt::Import`s (`bind: None`) in front of the statement** (`Parser::pending_stmts`, drained by
+  `parse_program`), so runtime / type checker / registry / expander process package bodies like any import.
+  A directory without `__init__` is an empty namespace package. A package whose `__init__` is being loaded is
+  not re-loaded (CPython lets `__init__` import its own submodules).
+- **Binding is decided once**: `Stmt::Import::bind: Option<ImportBind { name, module }>` (parser). Runtime,
+  type checker, registry (`scope.modules`), expander (`monomorph` keys `a.b.Box`) and `decl_names` read it.
+  cpp / cs / js / rs keep their old binding (alias or last part; cpp: header stem).
+- **Submodule attributes**: after `a.b` loads it is an attribute of `a` wherever it was imported
+  (`Interpreter::attach_submodule` → `Interpreter::submodules`, read by `namespace_member`; copied into async
+  tasks). Not stored inside `NamespaceData` (parent ↔ child cycle would break `deep_clone`).
+- **Re-exports**: names a module binds with imports are members (`wrapper.core`, `from wrapper import Item`).
+  The type registry follows re-exports to the declaring module (`TypeRegistry::chase_reexport`).
+- Static errors: `ModuleHasNoMember` / `CannotImportName` (name is no declaration / re-export / submodule —
+  members come from `module_member_cache` + `module_children`, built by `TypeChecker::namespace_type`),
+  `UnimportedModuleType` (a type spelled through a module this file did not bind).
+- Each statement carries `origin: ImportOrigin { level, base_dir, span }`; runtime lookups (py-int
+  `sys.path`, C# bridge/host, js-proc config) use `base_dir` (entry dir for absolute imports). Statements not
+  parsed from a file (REPL, tests) carry `base_dir: None` and use `Interpreter::add_python_search_dir`.
 
-## Module identity and visibility (2026-10-02)
+## Module identity
 
-- **Module names are per file.** For Arrow / py modules the parser rewrites `module` to a unique name:
-  the path relative to the entry file's directory (`pkg.util`; levels above it are `__parent__`, e.g.
-  `__parent__.util`). Modules found in Python's external paths keep the written name. The same file under
-  any spelling is one module; two files claiming one name is an explicit error
-  (`module_path::ModuleNames`). The runtime cache, the type registry and the expander key on this name.
-  `source_module` keeps the written spelling when it differs (editor stub keys use it).
-- **No re-exports** for Arrow modules: names a module binds with `import` / `from … import` are not in its
-  namespace (`Interpreter::drop_reexports`; static `ModuleHasNoMember` / `CannotImportName`). The member set
-  is defined once by `decl_names::module_exports`. Python modules keep Python's re-export semantics.
-- A type can be named only through a module **this file imports** (`TypeErrorKind::UnimportedModuleType`,
-  `TypeRegistry::unreachable_module_type`) — the type table itself is program-wide.
+- **Module names are per file**: the path relative to the entry file's directory (`pkg.util` = CPython's
+  `__name__`; levels above it are `__parent__`, e.g. `__parent__.util`). Modules found in Python's external
+  paths keep the written name. The same file under any spelling is one module; two files claiming one name is
+  an explicit error (`module_path::ModuleNames`). The runtime cache, the type registry and the expander key
+  on this name. `source_module` keeps the written spelling when it differs (editor stub keys use it).
+- ⚠ History: phase 1 (morning of 2026-10-02) searched the importing file's directory and never the entry
+  directory, and phase 2 had "no re-exports"; phase 4 replaced both with CPython semantics.
 
 ## Quick reference
 
@@ -174,6 +186,7 @@ The first candidate that `exists()` wins.
 Either way, the source is tokenized and a new `Parser` is created with:
 - `source_dir` = directory of the resolved file (so its own imports start there)
 - `module_cache`, `loading`, `root_dir`, `node_counter` and `module_names` shared with / cloned from the parent
+- `pending_stmts` is per parser (a module's own package chains go in front of its own statements)
 
 After parsing, the child's `module_cache` is merged back into the parent.
 
@@ -193,12 +206,15 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 ## Python Modules (`load_python_module`, `src/parser/imports/py_modules.rs`)
 
-- Search (`python_import_dirs(from_dir, level)`): no dots → `from_dir` then `python_search_dirs_from(from_dir)`'s
-  external dirs (`python.search_paths` from the nearest ancestor `ar_config.json`, `PYTHONPATH`, site-packages,
-  stdlib); dots → the search base only. Candidates `{module_path}.py` / `{module_path}/__init__.py`.
-- `from_dir` is the `.ar` file's directory for `import[py]`, and **the `.py` file's directory** for imports
-  inside a Python module (`fill_python_imports`). A module found in `from_dir` is named relative to the entry
-  directory; one found in an external dir keeps the written name.
+- Search (`python_import_dirs(from_dir, level)`): no dots → the **entry directory** then
+  `python_search_dirs_from(entry)`'s external dirs (`python.search_paths` from the nearest ancestor
+  `ar_config.json`, `PYTHONPATH`, site-packages, stdlib) — CPython's `sys.path`; dots → counted from
+  `from_dir` only. Candidates `{module_path}.py` / `{module_path}/__init__.py`; a directory without
+  `__init__.py` is a namespace package.
+- `from_dir` (relative imports only) is the `.ar` file's directory for `import[py]`, and **the `.py` file's
+  directory** for imports inside a Python module (`fill_python_imports`, which also inserts package chains /
+  submodule imports in front of each statement). A module found in the entry directory or a relative base is
+  named relative to the entry directory; one found in an external dir keeps the written name.
 - Converts Python source via `python_converter::convert_python_source()`
 - ⚠ Placement rules (task 10-16): an `import` inside a function or a module-level block
   (`if` / `try` …) and a `class` inside a module-level block are **conversion errors**
@@ -218,7 +234,7 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
 
-Search order: the same `python_import_dirs` as `import[py]` (no dots: `source_dir`, `python.search_paths`,
+Search order: the same `python_import_dirs` as `import[py]` (no dots: the entry directory, `python.search_paths`,
 `PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib/purelib; dots: the search base only).
 
 For each directory, tries `.pyi` first, then `.py`. If nothing is found, the bundled stub (`py_stubs`, only for
@@ -250,7 +266,7 @@ import[rs] sha2           # RustCrypto hash crate (digest pattern auto-detected)
 
 #### Step 1 — Find crate source (`find_config`, rs_loader.rs:202)
 
-Looks for `ar_config.json` in the importing file's directory and its ancestors (then the CWD). ⚠ It used to look in `source_dir` and `root_dir` only. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
+Looks for `ar_config.json` in the entry file's directory and its ancestors (then the CWD). ⚠ It used to look in `source_dir` and `root_dir` only. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
 
 ```json
 {
@@ -363,7 +379,7 @@ States:
 - `ModuleState::Loading` — set before execution to catch circular imports at runtime
 - `ModuleState::Loaded(NamespaceData)` — cached after first execution
 
-**For `.ar` / `.arc` / `py` imports**: runs the body AST in the module's own globals, collects the declared top-level names as `NamespaceData.members`. For Arrow modules (`module_path::is_arrow_source_lang`) the names bound only by `import` / `from … import` are dropped (`drop_reexports`, defined by `decl_names::module_exports`); the module's functions still see them through their globals.
+**For `.ar` / `.arc` / `py` imports**: runs the body AST in the module's own globals, collects the declared top-level names as `NamespaceData.members`. Names bound by the module's own imports are members too (re-exports, CPython). After loading, `attach_submodule` makes the module an attribute of its parent package; binding follows `Stmt::Import::bind` (a package `a` for `import a.b`).
 
 **Runtime search** (`py-int`'s `sys.path`, the C# bridge `{Name}_native.dll` / host `{Name}_proc.exe`): `Interpreter::import_search_dirs(origin)` = the statement's search base, plus `python.search_paths` (nearest ancestor `ar_config.json`) for non-relative imports. js-proc looks for `ar_config.json` from the search base upward, and passes a JS file found at the search base to the bridge as an absolute path. ⚠ These used to search the entry file's directory (and the CWD for C#).
 
@@ -596,7 +612,8 @@ print(mng.results[0])   # "List[int]"
 | ABI compatibility check | `src/partial_compiler/rs_loader.rs` | 946–965 |
 | Wrapper code generator | `src/partial_compiler/rs_loader.rs` | 1293–1675 |
 | `.arc` binary format | `src/partial_compiler/module_compiler.rs` | ~1–170 |
-| Runtime module execution | `src/interpreter/exec/modules.rs` | `exec_module`, `drop_reexports`, `import_search_dirs` |
+| Runtime module execution | `src/interpreter/exec/modules.rs` | `exec_module`, `attach_submodule`, `import_search_dirs` |
+| Packages / binding / `from . import x` | `src/parser/imports/packages.rs` | `chain_and_bind`, `from_import_submodules`, `from_dots_import` |
 | Python interop runtime | `src/interpreter/py_interop.rs` | `load_py_int_module` |
 | Type checker import handling | `src/type_check/stmt/check.rs` / `resolve.rs` | `Stmt::Import` arm, `closed_module`, `module_member_types`, `report_unimported_module_type` |
 | JS-proc stub loader | `src/parser/imports/cs_js_modules.rs` | `load_js_module` |

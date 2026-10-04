@@ -127,7 +127,7 @@ pub struct Parser {
     known_templates: HashSet<String>,
     /// Names declared with `protocol` — instantiation of these is a parse-time error.
     known_protocols: HashSet<String>,
-    /// 現在パース中のファイルのディレクトリ（import の探索の起点・[`crate::module_path`]）。
+    /// 現在パース中のファイルのディレクトリ（相対 import の起点・[`crate::module_path`]）。
     // `editor` ではモジュールを読み込まないので、以下 5 つは未使用になる。
     // フィールドごと消さないのは、通常ビルドと `Parser::new` の形を揃えておくため。
     #[cfg_attr(feature = "editor", allow(dead_code))]
@@ -142,10 +142,10 @@ pub struct Parser {
     has_source_dir: bool,
     /// メインエントリーファイルのディレクトリ。サブパーサにも変更せず引き継がれる。
     ///
-    /// ⚠⚠ **import の探索先ではない**（2026-10-02 に外した）。以前は `source_dir` で
-    ///   見つからなければここを探していたので、エントリが上の階層にあるときだけ
-    ///   サブディレクトリのファイルが上を指せた。今は**モジュールの名前の基準**
-    ///   （`pkg.util`・[`crate::module_path::root_relative_name`]）にだけ使う。
+    /// **ドット無しの import の探索先**（CPython の `sys.path[0]`・[`crate::module_path`]）で、
+    /// **モジュールの名前の基準**（`pkg.util`・[`crate::module_path::root_relative_name`]）でもある。
+    /// ⚠ 2026-10-02 午前の版（フェーズ 1）では探索先から外していたが、CPython 準拠（フェーズ 4）で
+    ///   ドット無しの import の唯一の探索先（言語ごとの外部の探索先を除く）になった。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     root_dir: PathBuf,
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。

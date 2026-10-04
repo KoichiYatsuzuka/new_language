@@ -9,19 +9,18 @@
 // | 読み手 | セクション | 探索方針 | 理由 |
 // |---|---|---|---|
 // | `Interpreter::import_search_dirs`（`load_python_search_paths`） | `python.search_paths` | import 文の**探索の起点**から**祖先を root まで**遡り、**最初の 1 個で打ち切り** | 上位の設定が下位を上書きしない、という既存の挙動（#61） |
-// | `Parser::python_search_dirs_from` | `python.search_paths` | import 文を書いたファイルのディレクトリから祖先へ遡る | **#74 で上の行と揃えた**（以前は 2 箇所だけで、同じ設定が `import[py-int]` からは見えて `import[py]` からは見えなかった） |
+// | `Parser::python_search_dirs_from` | `python.search_paths` | エントリのディレクトリ（CPython の `sys.path[0]` 相当）から祖先へ遡る | **#74 で上の行と揃えた**（以前は 2 箇所だけで、同じ設定が `import[py-int]` からは見えて `import[py]` からは見えなかった） |
 // | `cpp_bridge::config::load_cpp_config` | `cpp.*` | 祖先を root まで ＋ cwd を**全部レイヤーマージ**（遠い方から適用） | **打ち切りだと中間の部分的な設定がルートの cpp 設定を丸ごと隠す**（実バグとして修正済み） |
 // | `exec::find_js_config` | `javascript.*` | 探索の起点から祖先へ → cwd の順に**最初に見つかったもの** | ブリッジは 1 つだけ要るため |
-// | `Parser::load_cs_lib_paths` | `csharp.lib_paths` | `source_dir` から**祖先を root まで**・最初の 1 個 | `python` 側と同じ（#73 で読み取りを共有化） |
+// | `Parser::load_cs_lib_paths` | `csharp.lib_paths` | エントリのディレクトリから**祖先を root まで**・最初の 1 個 | `python` 側と同じ（#73 で読み取りを共有化） |
 //
 // ⚠⚠ **`python` の 2 つは #74 で揃えた**（どちらも祖先ウォーク）。揃える前は
 // `examples/interop/py_subdir/` から `import[py] cfg_probe` が **ParseError** になる一方
 // `import[py-int]` は通る、という食い違いが実際にあった。
 // **ウォーク側へ寄せた根拠**: 5 つの読み手のうち **4 つが既にウォーク**で、2 箇所ルールが異端だった。
-// ⚠ 以前は空振りしたとき `root_dir`（エントリのディレクトリ）側からも遡っていたが、
-//   2026-10-02 に外した（エントリのディレクトリからは探さない・`crate::module_path`）。
-// ⚠ 実行時の起点も 2026-10-02 からは import 文ごと（`ast::ImportOrigin`）。以前はエントリの
-//   ディレクトリ固定で、サブディレクトリのファイルが書いた import も上から探していた。
+// ⚠ 2026-10-02 から、ドット無しの import の設定はエントリのディレクトリ（CPython の `sys.path[0]`
+//   相当）から遡る（`crate::module_path`・CPython 準拠）。実行時の起点は import 文ごと
+//   （`ast::ImportOrigin`）で、ドット無しならエントリのディレクトリ、相対なら書いたファイルから数えた場所。
 //
 // ## #72 が実際に畳んだもの
 //

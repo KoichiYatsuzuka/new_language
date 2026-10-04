@@ -36,12 +36,13 @@ pub struct Parser {
     known_traits:        HashMap<String, (Vec<TemplateParam>, Vec<(...)>, Vec<String>)>,
     class_or_trait_depth: usize,
     known_new_types:     HashSet<String>,
-    source_dir:          PathBuf,   // import search base (this file's dir; `..a` goes up — src/module_path.rs)
+    source_dir:          PathBuf,   // base for relative imports (this file's dir; `..a` goes up — src/module_path.rs)
     has_source_dir:      bool,      // false for REPL / tests: imports then record no search base
-    root_dir:            PathBuf,   // entry file's dir — NOT searched; only the base for module names (`pkg.util`)
+    root_dir:            PathBuf,   // entry file's dir = CPython sys.path[0]: absolute imports search here; base of module names
     module_cache:        HashMap<(String, PathBuf), Vec<Stmt>>,  // key = absolute normalized path
     loading:             HashSet<PathBuf>,  // circular import detection (absolute normalized paths)
     module_names:        Rc<RefCell<ModuleNames>>,  // file <-> module name, shared with sub-parsers
+    pending_stmts:       Vec<Stmt>, // unbound package-chain imports to put before the current statement
 }
 ```
 

@@ -36,20 +36,25 @@
     `pkg/util.ar` no longer collide). Rule and naming: `src/module_path.rs`.
   - ⚠ A type can only be named through a module **this file imports** (`UnimportedModuleType`): the type
     table is program-wide, but `let t: util.Tag` is an error unless this file imports `util`.
-- **Relative imports with leading dots** (2026-10-02, `IMPORT_RESOLUTION_PLAN.md`): `import .a` (this file's
-  directory), `import ..a.b` (one level up; each extra dot goes one more level up), `from ..lib import f`.
-  Without dots, `import a.b` searches the importing file's directory, then the language's external paths
-  (Python `search_paths` / site-packages, C# `lib_paths`, the js-proc bridge). **The same rule applies to
-  every `import[lang]`** (`.ar` / `.arc` / py / py-int / cpp / cs / js), both when parsing and at runtime.
-  - ⚠ **The entry file's directory is not searched** (unlike Python's `sys.path[0]`). A module in a
-    subdirectory reaches up with `..`, never through the entry directory.
-  - ⚠ `import[rs]` takes a crate name, so a relative `import[rs]` is an error. Python files translated by
-    `import[py]` may use `from .m import x` / `from . import m` (same rule, from the `.py` file's directory).
-- **No re-exports** (2026-10-02): names a module binds with `import` / `from … import` are **not** part of
-  its namespace. `import wrapper` does not make `wrapper.core` (wrapper's own import) or
-  `from wrapper import Item` (wrapper's `from core import Item`) available — both are static errors
-  (`ModuleHasNoMember` / `CannotImportName`) and fail at runtime too. Import what you use directly.
-  Modules translated from Python (`import[py]`) keep Python's re-export semantics.
+- **Modules behave like CPython** (2026-10-02, phase 4 of `IMPORT_RESOLUTION_PLAN.md`; rule: `src/module_path.rs`):
+  - `import a.b.c` runs package `a` (its `a/__init__.ar`; a directory without one is an empty namespace
+    package), then `a.b`, then `a.b.c`, and **binds `a`** — call it as `a.b.c.f()`. `import a.b.c as m` binds
+    `m = a.b.c`. A loaded submodule becomes an attribute of its parent package wherever it was imported.
+  - `from a import b` imports submodule `a.b` when `b` is not a name in `a`.
+  - **Re-exports exist**: names a module binds with `import` / `from … import` are part of its namespace
+    (`wrapper.core`, `from wrapper import Item`). Only names that are none of declaration / re-export /
+    submodule are errors (`ModuleHasNoMember` / `CannotImportName`).
+  - **Search**: `import a.b` (no dots) searches the **entry file's directory** (CPython's `sys.path[0]`), then
+    the language's external paths (Python `search_paths` / site-packages, C# `lib_paths`, the js-proc
+    bridge). It does **not** search the importing file's directory (no implicit relative imports) — inside a
+    package write `from . import util` or `import pkg.util`.
+  - **Relative imports**: `from . import x`, `from .m import y`, `from ..m import y` (CPython), plus the Arrow
+    extension `import .a` / `import ..a.b`. Each extra dot goes one directory up from the importing file.
+    ⚠ Unlike CPython they also work from the entry file and may go above the entry directory.
+  - **The same rule applies to every `import[lang]`** (`.ar` / `.arc` / py / py-int / cpp / cs / js), when
+    parsing and at runtime. ⚠ cpp / cs / js / rs dotted paths are file locations, not packages: they bind
+    the alias or the last part (cpp: the header's stem) as before. `import[rs]` takes a crate name, so a
+    relative `import[rs]` is an error.
 - **`class` / `trait` / `protocol` / `new_type` and `import` only at the top level of a module**
   (task 10-16). Inside a function or a block (`if` / `for` / …) they are a `ParseError`.
   `enum` may still be declared inside a function.
