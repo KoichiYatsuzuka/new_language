@@ -610,23 +610,18 @@ impl<'a> GenCtx<'a> {
             (BinOp::Sub, Ty::Float) => { let res = self.fresh_reg(); self.ec(&format!("{res} = fsub double {l}, {r}")); (res, Ty::Float) }
             (BinOp::Mul, Ty::Float) => { let res = self.fresh_reg(); self.ec(&format!("{res} = fmul double {l}, {r}")); (res, Ty::Float) }
             (BinOp::Div, Ty::Float) => { let res = self.fresh_reg(); self.ec(&format!("{res} = fdiv double {l}, {r}")); (res, Ty::Float) }
+            // ⚠ CPython の `_float_div_mod` と同じ手順（`fmod` で余りを出し、符号を割る数へ合わせる）。
+            //   以前は `floor(a/b)` / `a - floor(a/b)*b` で、`a/b` の丸めを拾って端でずれていた
+            //   （`0.1 % 0.01` が `0.0`・`-1.0 % inf` が `nan`）。インタープリタの `ops::py_float_div_mod` と同じ式。
+            // ⚠ ゼロ除算は検査しない（int の `@_tl_idiv` と同じ・ネイティブは例外を投げる経路を持たない）。
             (BinOp::FloorDiv, Ty::Float) => {
-                let d   = self.fresh_reg();
                 let res = self.fresh_reg();
-                self.ec(&format!("{d} = fdiv double {l}, {r}"));
-                self.ec(&format!("{res} = call double @llvm.floor.f64(double {d})"));
+                self.ec(&format!("{res} = call double @_tl_ffloordiv(double {l}, double {r})"));
                 (res, Ty::Float)
             }
             (BinOp::Mod, Ty::Float) => {
-                // Python float mod: a - floor(a/b)*b
-                let d   = self.fresh_reg();
-                let fl  = self.fresh_reg();
-                let mul = self.fresh_reg();
                 let res = self.fresh_reg();
-                self.ec(&format!("{d}   = fdiv double {l}, {r}"));
-                self.ec(&format!("{fl}  = call double @llvm.floor.f64(double {d})"));
-                self.ec(&format!("{mul} = fmul double {fl}, {r}"));
-                self.ec(&format!("{res} = fsub double {l}, {mul}"));
+                self.ec(&format!("{res} = call double @_tl_fmod(double {l}, double {r})"));
                 (res, Ty::Float)
             }
             (BinOp::Pow, Ty::Float) => {

@@ -436,6 +436,49 @@ define internal i64 @_tl_imod(i64 %a, i64 %b) {
   ret i64 %res
 }
 
+; Python-compatible float modulo (CPython float_rem / ops::py_float_div_mod)
+define internal double @_tl_fmod(double %a, double %b) {
+  %m    = frem double %a, %b
+  %mnz  = fcmp une double %m, 0.0
+  %mneg = fcmp olt double %m, 0.0
+  %bneg = fcmp olt double %b, 0.0
+  %diff = xor i1 %mneg, %bneg
+  %need = and i1 %mnz, %diff
+  %madj = fadd double %m, %b
+  %m1   = select i1 %need, double %madj, double %m
+  %bb   = bitcast double %b to i64
+  %bsg  = icmp slt i64 %bb, 0
+  %bz   = select i1 %bsg, double 0x8000000000000000, double 0.0
+  %res  = select i1 %mnz, double %m1, double %bz
+  ret double %res
+}
+
+; Python-compatible float floor division (CPython _float_div_mod / ops::py_float_div_mod)
+define internal double @_tl_ffloordiv(double %a, double %b) {
+  %m    = frem double %a, %b
+  %am   = fsub double %a, %m
+  %div  = fdiv double %am, %b
+  %mnz  = fcmp une double %m, 0.0
+  %mneg = fcmp olt double %m, 0.0
+  %bneg = fcmp olt double %b, 0.0
+  %diff = xor i1 %mneg, %bneg
+  %need = and i1 %mnz, %diff
+  %dadj = fsub double %div, 1.0
+  %d1   = select i1 %need, double %dadj, double %div
+  %fl   = call double @llvm.floor.f64(double %d1)
+  %frac = fsub double %d1, %fl
+  %up   = fcmp ogt double %frac, 0.5
+  %fl1  = fadd double %fl, 1.0
+  %q1   = select i1 %up, double %fl1, double %fl
+  %dnz  = fcmp une double %d1, 0.0
+  %tq   = fdiv double %a, %b
+  %tqb  = bitcast double %tq to i64
+  %tqs  = icmp slt i64 %tqb, 0
+  %qz   = select i1 %tqs, double 0x8000000000000000, double 0.0
+  %res  = select i1 %dnz, double %q1, double %qz
+  ret double %res
+}
+
 declare double @llvm.pow.f64(double, double)
 declare double @llvm.floor.f64(double)
 

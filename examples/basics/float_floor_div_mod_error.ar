@@ -1,0 +1,12 @@
+# float_floor_div_mod_error.ar — float の `%` のゼロ除算（python_builtins_plan.md のタスク 1-2）
+#
+# 対になる正常系: float_floor_div_mod.ar
+#
+# 期待されるエラー（実行時）:
+#   ZeroDivisionError: float modulo
+#
+# ⚠ 文言は CPython 3.12 と同じ（`//` は `float floor division by zero`）。
+
+let a: float = 7.5
+let b: float = 0.0
+print(a % b)                       # ⛔ ZeroDivisionError

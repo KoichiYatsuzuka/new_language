@@ -1,0 +1,43 @@
+# float_floor_div_mod.ar — float の `//` と `%`（python_builtins_plan.md のタスク 1-2）
+#
+# 対になる誤りの例: float_floor_div_mod_error.ar（ゼロ除算）
+#
+# CPython 3.12 の `_float_div_mod` と同じ手順で計算する:
+#   - 余りは fmod で出し、符号を**割る数**に合わせる（`7.5 % -2.0` は -0.5）
+#   - 余りが 0 なら割る数の符号つきの 0（`6.0 % -3.0` は -0.0）
+#   - 商は負の無限大の方向へ丸める（`-7.5 // 2.0` は -4.0）
+#   - int と float が混ざれば float（`-7 // 2.0` は -4.0）
+# ⚠ 以前は float の `//` / `%` が静的にも実行時にも誤り（`unsupported operand types`）だった。
+# ⚠ `a - floor(a/b)*b` で計算すると `a/b` の丸めを拾って端でずれる（`0.1 % 0.01` が 0.0）。下の ② が確かめる。
+
+print("=== 1. signs ===")
+print(7.5 // 2.0, 7.5 % 2.0)        # 3.0 1.5
+print(-7.5 // 2.0, -7.5 % 2.0)      # -4.0 0.5
+print(7.5 // -2.0, 7.5 % -2.0)      # -4.0 -0.5
+print(-7.5 // -2.0, -7.5 % -2.0)    # 3.0 -1.5
+
+print("=== 2. edge values ===")
+print(0.1 // 0.01, 0.1 % 0.01 > 0.0)  # 10.0 True（余りは 3.469446951953614e-18。0.0 ではない）
+print(6.0 % -3.0)                   # -0.0
+print(-0.0 // 1.0)                  # -0.0
+
+print("=== 3. int and float mixed ===")
+print(-7 // 2.0, 7 % -2.5)          # -4.0 -0.5
+print(7.5 // 2, -7.5 % 2)           # 3.0 0.5
+
+print("=== 4. inside a function and augmented assignment ===")
+fn split(a: float, b: float) -> str:
+    mut q = a
+    mut r = a
+    q //= b
+    r %= b
+    return str(q) + " " + str(r)
+
+print(split(-7.5, 2.0))             # -4.0 0.5
+print(split(1.25, -0.5))            # -3.0 -0.25
+
+print("=== 5. division by zero ===")
+try:
+    print(1.0 // 0.0)
+except ZeroDivisionError as e:
+    print("caught")                 # caught
