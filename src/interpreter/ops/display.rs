@@ -22,28 +22,18 @@ impl Interpreter {
             Value::Meta(m) => format!("<{} {}>", self.type_name(val), m.name),
             Value::Int(n) => n.to_string(),
             Value::UInt(n) => n.to_string(),
-            Value::Float(f) => {
-                if f.fract() == 0.0 && f.abs() < 1e15 {
-                    format!("{f:.1}")
-                } else {
-                    f.to_string()
-                }
-            }
+            // CPython の `repr` と同じ（`ops::py_float_repr`・タスク 1-5）。
+            Value::Float(f) => super::py_float_repr(*f),
+            // CPython の `complex_repr`: 成分は `repr` の書式で `.0` を付けない（`(1+2j)`）。実部が +0 なら
+            // 虚部だけで括弧も付けない（`2j`）。虚部は符号を必ず付ける（`(1-0j)`）。
+            // ⚠ 以前は成分に `.0` を付け（`(1.0+2.0j)`）、`-0.0` を `0.0` に寄せていた（2.2 の部分的な対応）。
             Value::Complex(re, im) => {
-                let fmt_f = |f: f64| -> String {
-                    let f = if f == 0.0 { 0.0 } else { f }; // normalize -0.0
-                    if f.fract() == 0.0 && f.abs() < 1e15 {
-                        format!("{f:.1}")
-                    } else {
-                        f.to_string()
-                    }
-                };
-                let re_n = if *re == 0.0 { 0.0 } else { *re };
-                let im_n = if *im == 0.0 { 0.0 } else { *im };
-                if im_n >= 0.0 {
-                    format!("({}+{}j)", fmt_f(re_n), fmt_f(im_n))
+                let im_s = super::py_float_fmt(*im, false);
+                if *re == 0.0 && re.is_sign_positive() {
+                    format!("{im_s}j")
                 } else {
-                    format!("({}-{}j)", fmt_f(re_n), fmt_f(im_n.abs()))
+                    let sign = if im_s.starts_with('-') { "" } else { "+" };
+                    format!("({}{sign}{im_s}j)", super::py_float_fmt(*re, false))
                 }
             }
             Value::Str(s) => s.to_string(),

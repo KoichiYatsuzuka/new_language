@@ -265,3 +265,60 @@ fn test_float_floor_div_mod_follow_cpython() {
     assert!(run_err_msg("let z = 1.0 // 0.0\n").contains("float floor division by zero"));
     assert!(run_err_msg("let z = 1.0 % 0.0\n").contains("float modulo"));
 }
+
+// ---------------------------------------------------------------------------
+// float / complex の表示（python_builtins_plan.md のタスク 1-5）
+// ---------------------------------------------------------------------------
+
+/// float の表示（`str` / `repr` / `print`）が CPython 3.12 の `repr` と同じか。
+///
+/// ⚠ 期待値は CPython 3.12.2 の `repr(x)` をそのまま写した。10 進の指数が -4 以下か 16 より大きければ指数表記、
+///   それ以外は小数表記に `.0` を足す（`PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)`）。
+#[test]
+fn test_float_display_follows_cpython_repr() {
+    use crate::interpreter::ops::py_float_repr;
+    let cases: [(f64, &str); 25] = [
+        (0.0, "0.0"),
+        (-0.0, "-0.0"),
+        (1.0, "1.0"),
+        (-2.5, "-2.5"),
+        (0.1, "0.1"),
+        (100.0, "100.0"),
+        (123.456, "123.456"),
+        (1e15, "1000000000000000.0"),
+        (1e16, "1e+16"),
+        (1.5e16, "1.5e+16"),
+        (1.2345678901234568e16, "1.2345678901234568e+16"),
+        (1e-4, "0.0001"),
+        (1e-5, "1e-05"),
+        (1.5e-7, "1.5e-07"),
+        (3.469446951953614e-18, "3.469446951953614e-18"),
+        (2.5e300, "2.5e+300"),
+        (-1e100, "-1e+100"),
+        (f64::INFINITY, "inf"),
+        (f64::NEG_INFINITY, "-inf"),
+        (f64::NAN, "nan"),
+        (0.30000000000000004, "0.30000000000000004"),
+        (1.0 / 3.0, "0.3333333333333333"),
+        (9007199254740992.0, "9007199254740992.0"),
+        (5e-324, "5e-324"),
+        (f64::MAX, "1.7976931348623157e+308"),
+    ];
+    for (f, want) in cases {
+        assert_eq!(py_float_repr(f), want, "{f:e}");
+    }
+    // complex は成分に `.0` を付けず、実部が +0 なら虚部だけ（括弧なし）。CPython の `complex_repr`。
+    let interp = Interpreter::new();
+    for ((re, im), want) in [
+        ((0.0, 2.0), "2j"),
+        ((-0.0, 2.0), "(-0+2j)"),
+        ((1.0, -2.0), "(1-2j)"),
+        ((1.5, 0.0), "(1.5+0j)"),
+        ((0.0, 0.0), "0j"),
+        ((1e20, 1e-5), "(1e+20+1e-05j)"),
+        ((1.0, -0.0), "(1-0j)"),
+        ((1.0, f64::INFINITY), "(1+infj)"),
+    ] {
+        assert_eq!(interp.display(&Value::Complex(re, im)), want, "{re} {im}");
+    }
+}

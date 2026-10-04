@@ -543,14 +543,16 @@ impl Interpreter {
             (BinOp::Sub, Value::Complex(re, im), Value::Float(s)) => {
                 Ok(Value::Complex(re - s, *im))
             }
+            // ⚠ 虚部は `0.0 - im`（`-im` ではない）。CPython は実数を `complex(s, 0.0)` にして成分ごとに引くので、
+            //   `1.5 - 0j` の虚部は `0.0 - 0.0` = `+0.0`（`-im` だと `-0.0` になり `(1.5-0j)` と出る・タスク 1-5 で実測）。
             (BinOp::Sub, Value::Float(s), Value::Complex(re, im)) => {
-                Ok(Value::Complex(s - re, -im))
+                Ok(Value::Complex(s - re, 0.0 - im))
             }
             (BinOp::Sub, Value::Complex(re, im), Value::Int(n)) => {
                 Ok(Value::Complex(re - *n as f64, *im))
             }
             (BinOp::Sub, Value::Int(n), Value::Complex(re, im)) => {
-                Ok(Value::Complex(*n as f64 - re, -im))
+                Ok(Value::Complex(*n as f64 - re, 0.0 - im))
             }
             (BinOp::Mul, Value::Complex(re, im), Value::Float(s)) => {
                 Ok(Value::Complex(re * s, im * s))
