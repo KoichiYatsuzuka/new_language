@@ -17,7 +17,7 @@
 | [06_classes_traits.md](06_classes_traits.md) | クラス・trait・new_type・enum・アクセス制御 |
 | [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス |
 | [08_type_system.md](08_type_system.md) | 型アノテーション・静的型検査・型推論・型ガードナロイング |
-| [09_imports.md](09_imports.md) | import・from import・言語タグ・モジュールキャッシュ |
+| [09_imports.md](09_imports.md) | import・from import・相対 import・探索規則・パッケージ・名前空間（CPython 準拠）・言語タグ |
 | [10_special_features.md](10_special_features.md) | block_return/loop_yield/yield・async・break_point・数学文字列 |
 | [11_events.md](11_events.md) | Signal[T]・on/once/off 購読・emit/emit_async・EventLoop・外部イベント |
 

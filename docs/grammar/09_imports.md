@@ -1,18 +1,45 @@
 # インポートシステム
 
+モジュールの呼び出し方は **CPython と同じ**です（2026-10-02）。探索規則の唯一の定義は
+[src/module_path.rs](../../src/module_path.rs)、パッケージの扱いは
+[src/parser/imports/packages.rs](../../src/parser/imports/packages.rs) にあります。
+仕様を決めた経緯は [implementation_logs/IMPORT_RESOLUTION_PLAN.md](../../implementation_logs/IMPORT_RESOLUTION_PLAN.md)。
+
 ---
 
 ## 基本構文
 
 ```ar
-import module.submodule
-import module.submodule as alias
+import module.submodule              # 先頭の `module` を束縛する（`module.submodule.f()` と呼ぶ）
+import module.submodule as alias     # `alias` に `module.submodule` を束縛する
 from module import Name1, Name2
 from module import Name as Alias
+from . import sibling                # 相対: このファイルのディレクトリのモジュール
+from ..pkg import Name               # 相対: 1 つ上のディレクトリの pkg から
+import ..pkg.mod as m                # 相対（Arrow の拡張・CPython には無い書き方）
 ```
 
-`Stmt::Import { lang, module, with_file, alias, body }`  
-`Stmt::FromImport { lang, module, with_file, names, body }`
+- `import` / `from … import` は**モジュールの最上位にだけ**書けます。関数・`if` / `for` などの中では
+  `ParseError` です。
+- `[lang]` タグは `import` の直後（`import[py] m`）と `from` 文の `import` の直後（`from m import[py] f`）に書きます。
+
+AST:
+
+```
+Stmt::Import     { lang, module, source_module, alias, body, origin, bind }
+Stmt::FromImport { lang, module, source_module, names, body, origin }
+```
+
+| フィールド | 内容 |
+|---|---|
+| `lang` | 言語タグ（`"ar-auto"` / `"ar"` / `"arc"` / `"py"` / `"py-int"` / `"rs"` / `"cpp-dll"` …） |
+| `module` | モジュールの名前。Arrow / py は**ファイルごとに一意な名前**（後述「モジュールの同一性」）、cpp は解決済みヘッダパス、それ以外は書いた綴り |
+| `source_module` | `module` が書いた綴りと違うときの、書いた綴り（`..util` など。エディタ用スタブの鍵） |
+| `alias` | `as` の別名 |
+| `body` | パース時に読み込んだモジュールの AST |
+| `origin` | 探索の起点（`level` = 先頭のドットの数、`base_dir` = 起点ディレクトリ、`span` = 文の位置）。実行時の探索もこれを使う |
+| `bind` | この文が束縛する名前と、そこへ入るモジュール（後述「束縛」）。`None` は束縛しない文（パッケージの連鎖を読み込むためにパーサが足した文） |
+| `names` | `(元の名前, 別名)` のリスト |
 
 ---
 
@@ -24,30 +51,113 @@ from module import Name as Alias
 import[ar]      mod          # .ar ファイルを強制読み込み
 import[arc]     mod          # .arc (コンパイル済み) を強制読み込み
 import          mod          # 自動選択 (.arc 優先、なければ .ar)
-import[py]      os.path      # Python ファイルをコンバータで変換して読み込み
+import[py]      mylib        # Python ファイルをコンバータで変換して読み込み
 import[py-int]  numpy as np  # Python インタープリタ (PyO3) 経由で読み込み
 import[rs]      regex        # Rust crate を直接読み込み
-import[cpp-dll] DxLib.DxLib with stub as dx  # C++ DLL を読み込み
-import[cpp-lib] MyLib.MyLib with stub as ml  # C++ 静的ライブラリを読み込み
+import[cpp-dll] DxLib.DxLib as dx            # C/C++ DLL を読み込み（ヘッダ DxLib/DxLib.h）
+import[cpp-lib] MyLib.MyLib as ml            # C/C++ 静的ライブラリを読み込み
 import[cs-dll]  MyLib.MyBridge as my         # .NET NativeAOT DLL を読み込み
 import[cs-proc] MyLib.MyService as my        # .NET IPC サブプロセス経由で呼び出し
-import[js-proc] out_debug.analysis as ana   # Node.js IPC サブプロセス経由で呼び出し
+import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経由で呼び出し
 ```
 
 ---
 
-## モジュール検索パス
+## 探索規則（全言語共通）
 
-1. **`source_dir`**: 現在のソースファイルのディレクトリ
-2. **`root_dir`**: メインエントリポイントのディレクトリ
+**どの言語タグでも同じ規則**で探します（`.ar` / `.arc` / py / py-int / cpp / cs / js）。
+構文解析時の読み込みだけでなく、実行時の探索（`import[py-int]` の `sys.path`・C# のブリッジ DLL /
+ホスト・js-proc の設定）も同じ起点を使います。
 
-`import foo.bar.baz` → `foo/bar/baz.ar` または `foo/bar/baz/` (パッケージ) を検索
+| 書き方 | 探す場所 |
+|---|---|
+| `import a.b` / `from a.b import x` | **エントリのディレクトリ**（CPython の `sys.path[0]`）→ 言語ごとの外部の探索先 |
+| `import .a.b` / `from . import x` / `from .m import y` | import 文を書いたファイルのディレクトリ**だけ** |
+| `import ..a.b` / `from .. import x` / `from ..m import y` | 1 つ上のディレクトリ**だけ**（ドットが 1 つ増えるごとにさらに 1 つ上） |
+
+- ドット無しの書き方は、**書いたファイルのディレクトリを探しません**（CPython と同じく暗黙の相対
+  import はありません）。パッケージの中から同じディレクトリのモジュールを指すときは
+  `from . import util` か `import pkg.util` と書きます。
+- エントリのディレクトリは、実行したファイル（`arrow main.ar` の `main.ar`）のあるディレクトリです。
+  REPL などファイルから読んでいないときはカレントディレクトリです。
+- `import a.b.c` は `a/b/c.arc` → `a/b/c.ar` → `a/b/c/__init__.ar` の順に探します（タグ無しの場合）。
+
+**言語ごとの外部の探索先**（ドット無しの書き方のときだけ。ドット付きでは見ません）:
+
+| 言語 | 外部の探索先 |
+|---|---|
+| `py` / `py-int` | `ar_config.json` の `python.search_paths` → `PYTHONPATH` → `$PYTHONHOME/Lib/site-packages` → Python の標準ライブラリ・site-packages |
+| `cs-dll` / `cs-proc` | `ar_config.json` の `csharp.lib_paths` |
+| `js-proc` | ブリッジ側の解決（`bridge_root`・npm パッケージ・Node.js 組み込み） |
+| `.ar` / `.arc` / `cpp-*` | なし |
+
+`ar_config.json` は**エントリのディレクトリから祖先へ**遡って最初に見つかったものを使います
+（`python.search_paths` / `csharp.lib_paths` / `rust.crates_path` / `javascript`）。
+
+> ⚠ 2026-10-02 午前の版では「ドット無しも書いたファイルのディレクトリから探し、エントリの
+> ディレクトリは探さない」でしたが、CPython 準拠に改めました。それ以前は「書いたファイルの
+> ディレクトリ → エントリのディレクトリ」の順で、サブディレクトリのファイルをエントリにすると
+> 上の階層を指す手段がありませんでした。
+
+---
+
+## 相対 import
+
+先頭のドットで、import 文を書いたファイルのディレクトリから数えた場所を指します。
+
+```ar
+# proj/pkg/sub/leaf.ar
+from . import util             # proj/pkg/sub/util.ar
+from .util import which        # proj/pkg/sub/util.ar の which
+from .. import base            # proj/pkg/base.ar
+from ..base import Unit        # proj/pkg/base.ar の Unit
+import ..base                  # proj/pkg/base.ar（`base` を束縛・Arrow の拡張）
+import ...lib.helper as h      # proj/lib/helper.ar（2 つ上）
+```
+
+- `.` が書いたファイルのディレクトリ、ドットが 1 つ増えるごとに 1 つ上です。
+  字句解析器は `...` を 1 つのトークンにしますが、ドット 3 つとして数えます。
+- `from . import x` の `x` は、このディレクトリのモジュール `x`（`x.ar` など）です。モジュールが無ければ、
+  このディレクトリのパッケージ（`__init__.ar`）の中の名前 `x` を取り込みます。
+- ドットの後にモジュール名の無い書き方は `from` の形だけです（`import .` は誤り）。
+- `import[rs]` はクレート名を取るので、相対の書き方は誤りです。
+- **CPython との差（Arrow の拡張）**:
+  - `import .x` / `import ..x.y` も書けます（束縛は `import x.y` と同じく先頭の `x`）。
+  - 相対 import は**エントリのファイルからも**使え、**エントリのディレクトリより上へも**遡れます
+    （CPython ではどちらも誤り）。サブディレクトリのファイルをエントリにして上の階層を読むためです。
+
+```ar
+# proj/app/entry.ar をエントリにして実行する
+from ..pkg import core         # proj/pkg/core.ar
+import ..pkg.wrapper as w      # proj/pkg/wrapper.ar
+```
+
+---
+
+## 束縛（`import a.b` は `a`）
+
+CPython と同じく、`as` の無い `import a.b.c` は**先頭の `a`** を束縛します。
+
+```ar
+import pkg.sub.mod             # `pkg` を束縛する
+print(pkg.sub.mod.f())         # 属性でたどる
+print(mod.f())                 # ⛔ name 'mod' is not defined
+
+import pkg.sub.mod as m        # `m` に pkg.sub.mod を束縛する
+print(m.f())
+```
+
+- `from a.b import x` は `x` を束縛します（`a` / `b` は束縛しません）。
+- 外部言語（`cpp-dll` / `cpp-lib` / `cs-dll` / `cs-proc` / `js-proc` / `rs`）のドット区切りは**ファイルの場所**で
+  あってパッケージの階層ではないので、束縛は従来どおり**別名か最後の部分**（cpp はヘッダのファイル名）です。
+- 束縛名はパーサが 1 か所（`Stmt::Import::bind`）で決め、実行時・型検査・型レジストリ・展開器はそれを読みます。
 
 ---
 
 ## パッケージ
 
-ディレクトリに `__init__.ar` を置くことでパッケージになります。
+ディレクトリがパッケージです。`__init__.ar` があればそれがパッケージの本体で、無ければ
+**空の名前空間パッケージ**です（CPython の namespace package と同じ）。
 
 ```
 geometry/
@@ -57,22 +167,95 @@ geometry/
 ```
 
 ```ar
-import geometry               # geometry/__init__.ar を読み込む
-import geometry.point         # geometry/point.ar を読み込む
-from geometry import Vector   # geometry/__init__.ar 内の Vector を取得
+import geometry               # geometry/__init__.ar を実行し、`geometry` を束縛
+import geometry.point         # geometry/__init__.ar → geometry/point.ar の順に読み込み、`geometry` を束縛
+print(geometry.point.Point(1, 2))
+from geometry import Vector   # geometry/__init__.ar の中の名前 Vector
+from geometry import point    # point が __init__.ar の名前でなければ、サブモジュール geometry/point.ar を読み込む
 ```
+
+- `import a.b.c` は `a` → `a.b` → `a.b.c` の順に読み込みます。各パッケージの `__init__` は 1 回だけ実行されます。
+  パーサは、束縛しない import 文（`bind: None`）を元の文の**手前に**足して連鎖を表します。
+- **読み込んだサブモジュールは親パッケージの属性になります**。どのファイルで読み込まれたかに関係ありません
+  （CPython の `sys.modules` と同じ）。`import pkg` だけのファイルでも、別のところで `pkg.core` が
+  読み込まれていれば `pkg.core` が見えます。
+- `from a import b` は、`b` が `a` の名前に無ければ**サブモジュール `a.b` を読み込んで**束縛します。
+- パッケージの `__init__.ar` の中から、そのパッケージのサブモジュールを読めます
+  （`from . import core` / `from pkg.core import X`）。
+  - ⚠ ただし `__init__.ar` の中の `import pkg.core`（`pkg` 自身を束縛する形）は、実行時に
+    「パッケージが読み込まれていない」という誤りになります（CPython は初期化途中のパッケージを
+    束縛しますが、そこまでは再現していません）。
+
+---
+
+## 名前空間のメンバー
+
+モジュールの名前空間のメンバーは、CPython と同じく次のすべてです。
+
+1. モジュールの最上位で宣言した名前（`let` / `const` / `mut` / `fn` / `class` / `enum` …）
+2. **モジュールの中の `import` / `from … import` で束縛した名前（再エクスポート）**
+3. 読み込まれたサブモジュール
+
+```ar
+# pkg/wrapper.ar
+from . import core
+from .core import Item
+fn wrap(let v: int) -> Item:
+    return core.make_item(v)
+```
+
+```ar
+import pkg.wrapper
+print(pkg.wrapper.core.LABEL)        # 再エクスポート（wrapper が import した core）
+from pkg.wrapper import Item         # 再エクスポート（wrapper が core から取り込んだ Item）
+print(pkg.core.LABEL)                # サブモジュール（wrapper が読み込んだ core は pkg の属性）
+```
+
+これらのどれでもない名前は**静的エラー**です（実行まで進めば `AttributeError` / `ImportError` / `NameError`）。
+
+| 書き方 | 誤り |
+|---|---|
+| `m.nothing` | `module 'm' has no member 'nothing'`（`ModuleHasNoMember`） |
+| `from m import nothing` | `cannot import 'nothing' from 'm'`（`CannotImportName`） |
+| `let t: util.Tag`（`util` を束縛していない） | `type 'util.Tag' belongs to module 'util', which is not imported here; import it to use its types`（`UnimportedModuleType`） |
+
+- モジュールで宣言した型は `モジュール名.型名` の型です（`tags.ar` の `Tag` は `tags.Tag`）。
+  注釈には束縛した名前を通して書きます（`import tags as t` → `let x: t.Tag`、`import a.b` → `let x: a.b.Tag`）。
+  `from tags import Tag` した `Tag` も同じ型です。再エクスポートで取り込んだ型は、元の宣言の型に解決されます。
+- 型の表はプログラム全体で 1 つですが、**このファイルが束縛していないモジュールの型名は書けません**
+  （CPython でも束縛していない名前は `NameError`）。別名で束縛していれば、使うべき綴りを案内します。
+- ⚠ 外部言語のスタブ（cpp / cs / js / rs）と、VS Code 拡張（import 先を読み込まない）では、
+  無いメンバーを誤りにしません。
+
+---
+
+## モジュールの同一性
+
+モジュールは**ファイルごとに 1 つ**です。パーサが `module` を、エントリのディレクトリからの相対パスの
+名前（`pkg.util` ＝ CPython のモジュール名）に書き換えます。
+
+- 同じファイルは、どの綴りで import しても同じモジュールです（`import util` と、`pkg/` の中の
+  `from .. import util` は同じ util.ar）。本体は 1 回だけ実行され、型も同じです。
+- 違うファイルが同じ名前になることはありません（`util.ar` と `pkg/util.ar` は `util` と `pkg.util`）。
+  名前を取り合ったら明示エラーです。
+- エントリのディレクトリより上のディレクトリは `__parent__` で表します（`__parent__.util`）。型の名前にも
+  使われます（`__parent__.util.UTag`）。
+- Python の外部の探索先（site-packages など）で見つけたモジュールの名前は、書いた綴りのままです。
 
 ---
 
 ## モジュールキャッシュと循環 import 検出
 
 ```rust
-module_cache: HashMap<(String, PathBuf), Vec<Stmt>>
+module_cache: HashMap<(String, PathBuf), Vec<Stmt>>   // 鍵は絶対パスに正規化したファイル
 loading:      HashSet<PathBuf>
 ```
 
-- 同じモジュールを複数回 import しても1回しかパースされません
-- `loading` に現在ロード中のパスを追加し、同じパスが再度ロードされたら循環 import エラー
+- 同じモジュールを複数回 import しても 1 回しかパースされません。
+- `loading` に現在ロード中のファイル（絶対パス・`..` を畳んだもの）を入れ、同じファイルが再度ロード
+  されたら循環 import エラーです。パスを正規化するので、`..` を含む相互 import も検出できます。
+- 実行時もモジュールの名前（上記の同一性）ごとに 1 回だけ本体を実行し、名前空間を共有します。
+  読み込み中のモジュールを再び読み込もうとしたら実行時の循環 import エラーです。
 
 ---
 
@@ -85,6 +268,8 @@ loading:      HashSet<PathBuf>
 
 `.arc` には埋め込みソーステキストが含まれており、実行は通常どおり行われます。  
 ネイティブコンパイル済み関数は DLL から呼び出されます。
+⚠ `.arc` の埋め込みソースが隣の `.ar` と食い違っていたら、警告を出して `.ar` を使います
+（`.ar` を直したのに古い `.arc` が使われ続けるのを防ぐため）。
 
 ---
 
@@ -93,14 +278,25 @@ loading:      HashSet<PathBuf>
 Python ソースファイルを Arrow の AST に変換してインポートします。
 
 ```ar
-import[py] math as m
-from[py] os.path import join, exists
+import[py] mylib as m
+from mylib import[py] join_words, count
+import[py] .py_pkg.top as pt          # 相対（このファイルのディレクトリの py_pkg/top.py）
 ```
 
+- 探索は上記の規則どおりです（ドット無しはエントリのディレクトリ → `python.search_paths` → `PYTHONPATH` →
+  site-packages）。
+- **Python ファイルの中の import も同じ規則**です。ドット無しはエントリのディレクトリ（`sys.path[0]`）と
+  外部の探索先から、`from .m import x` / `from . import m` は**その `.py` のディレクトリ**から数えます。
+  `import a.b` の束縛・パッケージ（`__init__.py`・名前空間パッケージ）・サブモジュールの属性・
+  再エクスポートも CPython と同じです。
+- 標準ライブラリ（`os` / `sys` など）と C 拡張は変換できません（明示エラー）。CPython 経由で使うときは
+  `import[py-int]` を使います。
+- Python の関数の中の `import` は変換エラーです。
+
 **変換の制限**:
-- Python の `class` → `fn __init__` を持つ Arrow クラスに変換
+- Python の `class` → Arrow のクラスに変換
 - Python の `def` → `fn` に変換
-- `*args` / `**kwargs` → `AdditionalParam` dict として渡す
+- `*args` は可変長の仮引数、`**kwargs` はキーワード引数を受け取る仮引数として渡されます
 
 関数本体内での変数ホイスト (if ブランチで代入された変数の前宣言) も自動で行われます。
 
@@ -117,16 +313,19 @@ let mean = np.mean(arr)
 ```
 
 **特徴**:
-- `.pyi` スタブファイルがあれば型チェックに使用
-- 実行時は Python インタープリタを呼び出す
+- `.pyi` スタブファイルがあれば型チェックに使用（探索は `[py]` と同じ順。`.pyi` → `.py`）
+- 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
+  ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
+- `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
 - GIL (Global Interpreter Lock) により並列化は不可
 - `Value::PyObject` として扱われる
 
 ---
-
 ## Rust crate (`[rs]`)
 
 `ar_config.json` で `rust.crates_path` を設定すると Rust crate を直接読み込めます。
+`ar_config.json` はエントリのディレクトリから祖先へ遡って探します（見つからなければカレントディレクトリ）。
+`import[rs]` はクレート名を取るので、相対の書き方（`import[rs] ..x`）は誤りです。
 
 ```json
 {
@@ -155,12 +354,13 @@ LLVM IR ラッパーを生成します。
 C/C++ ヘッダファイルを型スタブとして読み込みます。
 
 ```ar
-import[cpp-dll] DxLib.DxLib with stub as dx
-import[cpp-lib] MyMath.VecMath with stub as vm
+import[cpp-dll] DxLib.DxLib as dx
+import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルのディレクトリの test_modules/vec_math.h）
 ```
 
-`with stub` の後にヘッダパスを指定します。  
-`Dir.Name` 形式 → `Dir/Name.h` のパスが検索されます。
+`Dir.Name` 形式 → `{探索の起点}/Dir/Name.h` のヘッダを読みます（ドット無しはエントリのディレクトリ、
+相対は書いたファイルのディレクトリから数えた場所）。DLL（`cpp-dll`）はヘッダと同じディレクトリの `Name.dll` です。
+`as` が無いときの束縛名はヘッダのファイル名（`Name`）です。
 
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応
@@ -195,8 +395,11 @@ let ok = tp.Confirmed
 | `{Name}.dll` | 管理 DLL (ECMA-335 メタデータ、型スタブ生成用) |
 | `{Name}_native.dll` | NativeAOT ネイティブ DLL (実際の実行時呼び出し先) |
 
-管理 DLL (`{Name}.dll`) はスクリプトのディレクトリ (`source_dir`) またはモジュールサブディレクトリから検索されます。  
-ネイティブ DLL (`{Name}_native.dll`) は同じ検索パスで探されます。
+管理 DLL (`{Name}.dll`) は探索の起点（ドット無しはエントリのディレクトリ、相対は書いたファイルから数えた場所）の
+`path/to/{Name}.dll` → `{Name}.dll` → `{Name}/{Name}.dll`（単一セグメントのとき）の順に探し、ドット無しの書き方なら
+最後に `ar_config.json` の `csharp.lib_paths` を探します。
+ネイティブ DLL (`{Name}_native.dll`) は実行時に、同じ探索の起点（ドット無しなら `python.search_paths` も）の
+`path/to/{Name}_native.dll` → `{Name}_native.dll` の順に探します。
 
 ### ブリッジ DLL の設計パターン
 
@@ -466,15 +669,20 @@ dotnet build -c Debug
 
 Arrow は以下の順で proc ホストと型スタブを探します：
 
-**型スタブ DLL** (`import[cs-dll]` と共通):
-1. `source_dir / path / to / {Name}.dll`
-2. `source_dir / {Name}.dll`
-3. `source_dir / {Name} / {Name}.dll` (単一セグメント時、パッケージディレクトリ規約)
+`{起点}` はドット無しならエントリのディレクトリ、相対なら書いたファイルのディレクトリから数えた場所です。
 
-**proc ホスト exe**:
+**型スタブ DLL** (`import[cs-dll]` と共通):
+1. `{起点} / path / to / {Name}.dll`
+2. `{起点} / {Name}.dll`
+3. `{起点} / {Name} / {Name}.dll` (単一セグメント時、パッケージディレクトリ規約)
+4. `ar_config.json` の `csharp.lib_paths`（ドット無しの書き方のときだけ）
+
+**proc ホスト exe**（実行時）:
 1. `{Name}_proc.exe` (専用ホスト)
 2. `{Name}.exe` (自己ホスト exe)
-上記を source_dir → CWD の順で検索
+
+それぞれを `{起点}`（ドット無しなら `python.search_paths` も）の `path/to/` の下 → 直下 →
+`{Name}/` の下（単一セグメント時）の順で探します。⚠ カレントディレクトリは探しません。
 
 ### `ArrowPipeHost` の dispatch 仕組み
 
@@ -543,7 +751,15 @@ let err: str = math.renderSVGToFile("\\frac{1}{2}", True, "out/frac.svg", 1.5, "
 | `bridge_script` | IPC サーバースクリプト（通常 `bridge/js_bridge.cjs`）への相対パス |
 | `bridge_root` | モジュール解決のルートディレクトリ。`import[js-proc] a.b` は `{bridge_root}/a/b.js` を探す |
 
+`ar_config.json` は import 文の探索の起点（ドット無しはエントリのディレクトリ）から祖先へ遡って探し、
+見つからなければカレントディレクトリを見ます。
+
 ### モジュール解決
+
+まず探索の起点（ドット無しはエントリのディレクトリ、相対は書いたファイルから数えた場所）に
+`a/b.js` / `a/b.cjs` / `a/b/` があれば、その**絶対パス**をブリッジへ渡します。
+無ければ、ドット無しの書き方に限りブリッジ側の解決に任せます（相対の書き方で見つからなければ誤り）。
+型検査用の `.ars` スタブは探索の起点の `a/b.ars` を読みます。
 
 ブリッジスクリプト (`js_bridge.cjs`) は次の順でモジュールを探します:
 
@@ -675,23 +891,27 @@ let html_err: str = math.renderGalleryHTML("out")
 
 import 文はパース時に実行されます (`parse_import_stmt`):
 
-1. モジュールファイルを読み込み
-2. 字句解析・構文解析して AST を生成
-3. 生成した AST を `Stmt::Import.body` に埋め込む
+1. 探索規則に従ってモジュールファイルを探し、読み込む
+2. 字句解析・構文解析して AST を生成（その中の import も同じ手順で再帰的に読み込む）
+3. 生成した AST を `Stmt::Import.body` に埋め込み、`module` をファイルごとの名前に書き換え、束縛（`bind`）を決める
+4. `import a.b.c` なら、パッケージ `a` / `a.b` を読み込む**束縛しない import 文**を元の文の手前に足す
 
-型検査・実行フェーズでは `body` を参照するだけです。  
-これにより型検査でインポート先の型情報が利用できます。
+型検査・実行フェーズでは `body` を参照するだけです（実行時に読むのは外部言語のブリッジ・DLL・Python の
+モジュールだけ）。これにより型検査でインポート先の型情報が利用できます。
 
 ---
 
 ## from import の動作
 
 ```ar
-from geometry import Vector, Matrix as Mat
+from geometry import Vector, Matrix as Mat, point
 ```
 
-1. `geometry` モジュール全体の AST が `body` に格納される
-2. 実行時に `body` を実行してモジュール名前空間を構築
-3. `names` に列挙された名前をモジュール名前空間から取り出して現在スコープに登録
+1. `geometry` モジュール全体の AST が `body` に格納される（パッケージの連鎖があれば手前で読み込む）
+2. 取り込む名前がモジュールの名前に無く、サブモジュール（`geometry/point.ar`）があれば、パーサがそれを
+   先に読み込む文を手前に足す
+3. 実行時に `body` を実行してモジュール名前空間を構築（読み込み済みなら共有）
+4. `names` に列挙された名前を、モジュールのメンバー（宣言・再エクスポート）→ サブモジュールの順に引いて
+   現在スコープに登録。どちらにも無ければ静的エラー（`CannotImportName`）
 
 `Stmt::FromImport` と `Stmt::Import` はどちらも `body` にモジュール全体の AST を持ちます。
