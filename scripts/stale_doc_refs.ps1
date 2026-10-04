@@ -49,6 +49,8 @@ $whitelist = @(
     'div_euclid','rem_euclid',
     # C の標準ライブラリの関数名。CPython の `_float_div_mod` が使う `fmod` を説明するために言及する（タスク 1-2）。
     'fmod',
+    # CPython の関数名（Objects/listobject.c 等）。CPython と同じ手順で書いた箇所の出どころを示す（タスク 1-3 / 1-4）。
+    'list_richcompare','tuplerichcompare','dict_iter','PyObject_SelfIter','PyObject_GetIter',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で

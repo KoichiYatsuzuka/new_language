@@ -81,6 +81,7 @@ $knownDiff = @{
     'py_module_types'                = 'Rust: import[py] のクラスをモジュール名の名前空間で扱い、is / 型注釈に z.Dog と書ける・基底でも当たる（python_builtins_plan.md の 6 節で新設）。py: 型注釈の z.Animal を読めず ParseError（何も出さない）'
     'float_floor_div_mod'            = 'Rust: float の // と % を CPython の _float_div_mod で計算し、1.0 // 0.0 を ZeroDivisionError で捕まえる（タスク 1-2 で新設・16 行目まで同じ）。py: Python の ZeroDivisionError が Arrow の例外にならず RuntimeError で止まる'
     'float_floor_div_mod_error'      = 'Rust: 7.5 % 0.0 を ZeroDivisionError: float modulo（CPython 3.12 の文言）で止める（タスク 1-2 で新設）。py: RuntimeError: ZeroDivisionError: modulo by zero'
+    'seq_ordering'                   = 'Rust: list 同士・tuple 同士の大小比較（タスク 1-3 で新設）。py: 静的に cannot compare で止まる（何も出さない）'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

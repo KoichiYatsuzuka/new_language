@@ -119,7 +119,41 @@ impl Interpreter {
                 }
             }
         }
+        // list 同士・tuple 同士の大小比較（python_builtins_plan.md のタスク 1-3）。
+        // ⚠ 要素の比較に演算子メソッド（`__eq__` / `__lt__`）が要るので `&mut self` のここに置く。
+        if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+            let seqs = match (&lv, &rv) {
+                (Value::List(a), Value::List(b)) => Some((a.borrow().clone(), b.borrow().clone())),
+                (Value::Tuple(a), Value::Tuple(b)) => Some((a.all_values().to_vec(), b.all_values().to_vec())),
+                _ => None,
+            };
+            if let Some((a, b)) = seqs {
+                return self.seq_ordered_cmp(op, &a, &b);
+            }
+        }
         self.apply_binop(op, lv, rv)
+    }
+
+    /// 列（list / tuple）の大小比較。CPython の `list_richcompare` / `tuplerichcompare` と同じ 2 段構え:
+    ///   1. `==` で**最初に違う要素**を探す
+    ///   2. あればその要素だけを求められた演算子で比べ直す（比べられない要素ならそこで `TypeError`）
+    ///   3. 無ければ（短い方が尽きたら）長さで決める（`(1, 2) < (1, 2, 0)` は真）
+    /// ⚠ 違う要素より後ろは見ない（`(1, 'a') < (2, 3)` は 1 つ目で決まって真・CPython も同じ）。
+    /// ⚠ list と tuple は比べない（呼び出し側が同じ種類の組だけを渡す・違えば `apply_binop` の `TypeError`）。
+    fn seq_ordered_cmp(&mut self, op: &BinOp, a: &[Value], b: &[Value]) -> Result<Value, String> {
+        for (x, y) in a.iter().zip(b) {
+            let eq = self.apply_binop_dyn(&BinOp::Eq, x.clone(), y.clone())?;
+            if !self.eval_truthy(&eq)? {
+                return self.apply_binop_dyn(op, x.clone(), y.clone());
+            }
+        }
+        let (la, lb) = (a.len(), b.len());
+        Ok(Value::Bool(match op {
+            BinOp::Lt => la < lb,
+            BinOp::Gt => la > lb,
+            BinOp::LtEq => la <= lb,
+            _ => la >= lb,
+        }))
     }
 
     /// `in` / `not in` の右辺から**要素の並び**を取り出す。

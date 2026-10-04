@@ -302,3 +302,68 @@ fn test_tuple_multiline() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// list 同士・tuple 同士の大小比較（python_builtins_plan.md のタスク 1-3）
+// ---------------------------------------------------------------------------
+
+/// CPython の `list_richcompare` / `tuplerichcompare` と同じ結果か（最初に違う要素で決まり、無ければ長さ）。
+#[test]
+fn test_seq_ordering_follows_cpython() {
+    let src = concat!(
+        "let a = [1, 2] < [1, 3]\n",
+        "let b = (1, 2) < (1, 2, 0)\n",
+        "let c = (2, 1) > (1, 9)\n",
+        "let d = [[1, 2], [3]] < [[1, 2], [4]]\n",
+        "let e = (1, 2) <= (1, 2)\n",
+        "let f = [1.5, 2] >= [1.5]\n",
+        "fn lt(x: tuple[int, str], y: tuple[int, str]) -> bool:\n",
+        "    return x < y\n",
+        "let g = lt((1, \"b\"), (1, \"a\"))\n",
+    );
+    for (var, want) in [("a", true), ("b", true), ("c", true), ("d", true), ("e", true), ("f", true), ("g", false)] {
+        assert!(matches!(run_get(src, var), Value::Bool(b) if b == want), "{var}");
+    }
+}
+
+/// 比べられない要素に届いたときだけ `TypeError`（届かなければ決まる）。list と tuple は比べない。
+/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
+#[cfg(feature = "native")]
+#[test]
+fn test_seq_ordering_type_errors() {
+    use crate::ast::Stmt;
+    // 静的検査を通らない形なので、Python から変換した関数（引数の型が無い）で確かめる。
+    let py = "def lt(a, b):\n    return a < b\n";
+    let body = crate::python_converter::convert_python_source(py, "cmp.py").expect("convert");
+    let run = |main: &str| -> Result<Interpreter, String> {
+        let mut stmts = vec![Stmt::Import {
+            lang: "py".to_string(),
+            module: vec!["cmp".to_string()],
+            source_module: None,
+            alias: Some("c".to_string()),
+            body: body.clone(),
+        }];
+        stmts.extend(Parser::new(Lexer::new(main, "").tokenize(), None).parse_program()?);
+        let (_e, _w, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        let mut interp = Interpreter::new();
+        interp.wire_resolution(
+            annotations,
+            crate::interpreter::resolver::toplevel_declared_globals(&stmts),
+            crate::interpreter::GlobalsMode::Replace,
+        );
+        for st in &stmts {
+            if let Err(e) = interp.exec(st) {
+                return Err(match interp.take_current_exception() {
+                    Some(r) if e == crate::interpreter::RAISE_SENTINEL => Interpreter::format_error_report(&r),
+                    _ => e,
+                });
+            }
+        }
+        Ok(interp)
+    };
+    let i = run("let ok = c.lt((1, \"a\"), (2, 3))\n").expect("decided at the first element");
+    assert!(matches!(i.get_val("ok"), Some(Value::Bool(true))));
+    let e = run("let bad = c.lt((1, \"a\"), (1, 3))\n").err().expect("str vs int");
+    assert!(e.contains("TypeError"), "{e}");
+    let e = run("let bad = c.lt([1], (1,))\n").err().expect("list vs tuple");
+    assert!(e.contains("TypeError"), "{e}");
+}

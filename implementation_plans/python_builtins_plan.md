@@ -479,7 +479,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 |---|---|---|---|---|
 | **1-1** | 未対応の組み込みの参照を**変換時に見つけて知らせる**（失敗を前倒しする）。⚠ 要判断: 変換の誤りにするとその名前を 1 箇所でも含むモジュールが丸ごと読めなくなる（実行しない枝でも）。警告にとどめるか、誤りにするかを決める | 7,204（187 モジュール） | なし | 小 |
 | ~~**1-2**~~ | ✅ **済**（2026-10-05）float の `//` / `%`（int と float の混在を含む）。CPython の `_float_div_mod` / `float_rem`（`fmod` で余りを出し、符号を割る数に合わせ、0 にも割る数の符号を付け、商を整数へ寄せる）を写す。ゼロ除算の文言も合わせる（`float floor division by zero` / `float modulo`）。⚠⚠ **ネイティブ codegen も同じ式に揃える**: 今の `floor(a/b)` / `a - floor(a/b)*b` は `0.1 % 0.01`（`0.0`、CPython `3.47e-18`）・`-1.0 % inf`（`nan`、CPython `inf`）・`6.0 % -3.0`（`0.0`、CPython `-0.0`）でずれる。int の `//` / `%`（`ops::py_floor_div`）と同じく共通の関数 1 つにする。型検査の `binop.rs` も float を通す。詳細は 6 節 | —（演算子） | なし | 小 |
-| **1-3** | list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）。CPython の `list_richcompare` / `tuplerichcompare` の 2 段構え（`==` で最初に違う要素を探す → その要素だけを求められた演算子で比べる → 違いが無ければ長さで決める）。⚠ list と tuple は比べない（`TypeError`）、同じオブジェクトは等しいとみなす（`[nan] == [nan]` が真）、比べられない要素に届いたときだけ `TypeError`（`(1, 'a') < (2, 3)` は真）。型検査は `tuple[..]` の要素ごとに比べられるかを見る。3-2 の `sorted` / `min` / `max` でタプルを鍵にする形の前提。詳細は 6 節 | —（演算子） | なし | 中 |
+| ~~**1-3**~~ | ✅ **済**（2026-10-05）list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）。CPython の `list_richcompare` / `tuplerichcompare` の 2 段構え（`==` で最初に違う要素を探す → その要素だけを求められた演算子で比べる → 違いが無ければ長さで決める）。⚠ list と tuple は比べない（`TypeError`）、同じオブジェクトは等しいとみなす（`[nan] == [nan]` が真）、比べられない要素に届いたときだけ `TypeError`（`(1, 'a') < (2, 3)` は真）。型検査は `tuple[..]` の要素ごとに比べられるかを見る。3-2 の `sorted` / `min` / `max` でタプルを鍵にする形の前提。詳細は 6 節 | —（演算子） | なし | 中 |
 | **1-4** | 辞書とジェネレータの `__iter__` メソッド。辞書はキーを挿入順に返すイテレータ（CPython の `dict_iter`・反復中に大きさが変わったら `RuntimeError: dictionary changed size during iteration`）、ジェネレータは自分自身（`PyObject_SelfIter`）。⚠ `for k in d:` / `for x in g:` は今も動く。足りないのはメソッドとしての呼び出しと、それを使う `iter()`（3-3）。⚠ list の `__iter__` は呼んだ時点の写しを回すので、反復中の書き換えも CPython と違う（別に要判断）。詳細は 6 節 | —（メソッド） | なし | 小 |
 | **1-5** | float の表示（`str` / `repr` / `print`）を CPython の `repr` に合わせる。今は指数表記を使わず、`1e20` が `100000000000000000000`（`.0` も付かない）、`1e-10` が `0.0000000001`、`0.1 % 0.01` が `0.000000000000000003469446951953614` と出る（CPython は `1e+20` / `1e-10` / `3.469446951953614e-18`）。CPython は最短の往復表現（`PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)`）で、10 進の指数が `-4` 未満か `16` 以上なら指数表記（`e+20` / `e-05`・指数は 2 桁以上）、それ以外は小数表記に `.0` を足す。1-2 の作業中に見つけた（6 節） | —（表示） | なし | 小 |
 | **1-6** | Python のモジュールの**最上位**で、組み込みの名前（`id` / `str` / `dict` / `len` …）を束縛し直せるようにする。今は `id = 3` が `NameError: variable 'id' is already declared`（実測）。CPython はモジュールの大域が組み込みを隠す（`builtins` は名前の探索の最後の段）。関数の仮引数・局所変数の `type` / `dict` / `len` / `print` は今も動く（実測）。⚠ 組み込みを足すほど（2-x / 3-x）ぶつかる名前が増えるので、組み込みを足すタスクの前提。⚠ Arrow のソースの最上位の `let len = 3` も同じ誤り（静的に `already declared`）だが、Arrow の規則として残すかは別に要判断（ここでは `import[py]` のモジュールだけを直す） | —（名前の解決） | なし | 小 |
@@ -522,7 +522,9 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
       `mod = fmod(vx, wx)`（`a/b` を経由しないので余りが厳密）→ 余りが 0 でなく符号が割る数と違えば `mod += wx; div -= 1.0` →
       余りが 0 なら `copysign(0.0, wx)` → 商 `div = (vx - mod) / wx` を `floor` して 0.5 を超えるずれは繰り上げ、商が 0 なら
       `copysign(0.0, vx / wx)`。int と混ざったら先に double へ変換する（`CONVERT_TO_DOUBLE`）。Rust の `f64 % f64` は C の `fmod` と同じ。
-  - list 同士・tuple 同士の大小比較（`<` など）が無い → **タスク 1-3**。
+  - ~~list 同士・tuple 同士の大小比較（`<` など）が無い~~ → **直した**（タスク 1-3・2026-10-05）。実行時は `apply_binop_dyn` の
+    `seq_ordered_cmp`（要素の比較に演算子メソッドを使えるように `&mut self` 側）、静的は `ordered_comparable` が要素ごとに見る
+    （tuple は短い方の長さまでの全位置・要素の `Union` は構成型ごと）。例題は `examples/collections/seq_ordering.ar` / `_error.ar`。
     - 再現: Python の `if r > best:`（`r` / `best` がタプル）が `TypeError: unsupported operand types for 'Gt': tuple and tuple`。
       Arrow で書いた `(1, 2) < (1, 3)` は静的に `cannot compare 'tuple[int, int]' and 'tuple[int, int]' with <`。
     - CPython（実測）: `(1, 2) < (1, 2, 0)` → `True`、`(1, 'a') < (2, 3)` → `True`、`(1, 'a') < (1, 3)` → `TypeError: '<' not supported

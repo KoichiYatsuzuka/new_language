@@ -376,16 +376,33 @@ impl TypeChecker {
         if matches!(lt, NamedInstance(_)) || matches!(rt, NamedInstance(_)) {
             return true;
         }
-        matches!(
-            (lt, rt),
-            (Unresolved, _)
-                | (_, Unresolved)
-                | (Int, Int)
-                | (Float, Float)
-                | (Int, Float)
-                | (Float, Int)
-                | (Str, Str)
-        )
+        match (lt, rt) {
+            // list 同士・tuple 同士は要素ごと（python_builtins_plan.md のタスク 1-3・実行時は `seq_ordered_cmp`）。
+            // ⚠ tuple は**短い方の長さまでのすべての位置**が比べられることを求める。実行時は最初に違う位置しか
+            //   比べない（`(1, "a") < (2, 3)` は CPython でも真）が、どの位置で決まるかは値次第なので、
+            //   比べられない位置がある組は静的に弾く（Arrow の `<` の厳しさに合わせる）。
+            // ⚠ `[]`（要素型 `Never`）はどの list とも比べられる。素の `list` / `tuple`（Python 由来）は要素が分からないので通す。
+            (ListOf(a), ListOf(b)) => {
+                matches!(**a, Never) || matches!(**b, Never) || Self::ordered_comparable(a, b)
+            }
+            (List, List | ListOf(_)) | (ListOf(_), List) => true,
+            (Tuple(a), Tuple(b)) => a.iter().zip(b).all(|(x, y)| Self::ordered_comparable(x, y)),
+            (TupleAny, TupleAny | Tuple(_)) | (Tuple(_), TupleAny) => true,
+            // 要素の `Union`（`[1, 2.5]` は `list[Union[int, float]]`）は、どの構成型も相手と比べられれば通す。
+            // ⚠ 最上位の `Union` はここへ届かない（`check_binop` の冒頭が `OperationOnUnion` で弾く）。
+            (Union(ts), _) => ts.iter().all(|t| Self::ordered_comparable(t, rt)),
+            (_, Union(ts)) => ts.iter().all(|t| Self::ordered_comparable(lt, t)),
+            _ => matches!(
+                (lt, rt),
+                (Unresolved, _)
+                    | (_, Unresolved)
+                    | (Int, Int)
+                    | (Float, Float)
+                    | (Int, Float)
+                    | (Float, Int)
+                    | (Str, Str)
+            ),
+        }
     }
 
     /// 2 つの型の join（同じならその型・違えば `Union`）。連結演算と `and` / `or`（D-10）の

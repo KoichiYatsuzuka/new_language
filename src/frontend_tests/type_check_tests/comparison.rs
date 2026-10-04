@@ -203,3 +203,24 @@ use super::*;
     fn dunder_compound_assign_mismatch_err() {
         assert_eq!(binop_errors(&format!("{MONEY}mut t = Money(0)\nt += 3\n")), 1);
     }
+
+    // --- list 同士・tuple 同士の大小比較（python_builtins_plan.md のタスク 1-3）---
+
+    /// 要素が比べられる list / tuple は比べられる。`[]` はどの list とも比べられる。
+    #[test]
+    fn seq_ordering_ok() {
+        assert!(ok("let a: list[int] = [1, 2]\nlet b: list[int] = [1, 3]\nlet c = a < b\n"));
+        assert!(ok("let a: tuple[int, str] = (1, \"a\")\nlet b: tuple[int, str] = (1, \"b\")\nlet c = a <= b\n"));
+        assert!(ok("let a: tuple[int, int] = (1, 2)\nlet b: tuple[int, int, int] = (1, 2, 0)\nlet c = a < b\n"));
+        assert!(ok("let b: list[int] = [1]\nlet c = [] < b\n"));
+        // 要素の `Union`（`list[Union[int, float]]`）は構成型ごとに見る。
+        assert!(ok("let c = [1, 2.5] > [1, 2]\n"));
+    }
+
+    /// 要素が比べられない組・list と tuple は誤り（CPython も実行時の `TypeError`）。
+    #[test]
+    fn seq_ordering_err() {
+        assert!(err("let a: list[int] = [1]\nlet b: list[str] = [\"a\"]\nlet c = a < b\n"));
+        assert!(err("let a: tuple[int, str] = (1, \"a\")\nlet b: tuple[int, int] = (1, 2)\nlet c = a < b\n"));
+        assert!(err("let a: list[int] = [1]\nlet b: tuple[int] = (1,)\nlet c = a < b\n"));
+    }
