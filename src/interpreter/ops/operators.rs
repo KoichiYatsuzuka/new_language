@@ -370,6 +370,27 @@ impl Interpreter {
                 }
                 Ok(Value::Int(super::py_mod(*a, *b)))
             }
+            // float の `//` / `%`（int との混在は float へ寄せる・CPython の `CONVERT_TO_DOUBLE`）。
+            // 計算は `ops::py_float_div_mod`（CPython の `_float_div_mod`）。文言も CPython 3.12 に合わせる。
+            (BinOp::FloorDiv | BinOp::Mod, Value::Float(_) | Value::Int(_), Value::Float(_) | Value::Int(_))
+                if matches!(lv, Value::Float(_)) || matches!(rv, Value::Float(_)) =>
+            {
+                let as_f = |v: &Value| match v {
+                    Value::Float(f) => *f,
+                    Value::Int(i) => *i as f64,
+                    _ => unreachable!("guarded by the pattern"),
+                };
+                let (a, b) = (as_f(&lv), as_f(&rv));
+                if b == 0.0 {
+                    return Err(match op {
+                        BinOp::FloorDiv => "ZeroDivisionError: float floor division by zero",
+                        _ => "ZeroDivisionError: float modulo",
+                    }
+                    .to_string());
+                }
+                let (q, m) = super::py_float_div_mod(a, b);
+                Ok(Value::Float(if matches!(op, BinOp::FloorDiv) { q } else { m }))
+            }
             (BinOp::Pow, Value::Int(a), Value::Int(b)) => {
                 if *b >= 0 {
                     Ok(Value::Int(a.pow(*b as u32)))

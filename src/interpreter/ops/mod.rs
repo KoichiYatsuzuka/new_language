@@ -46,6 +46,35 @@ pub(crate) fn py_mod(a: i64, b: i64) -> i64 {
     if r != 0 && ((r < 0) != (b < 0)) { r + b } else { r }
 }
 
+/// float の `//` と `%`（`(商, 余り)`）。CPython 3.12 の `_float_div_mod`（`Objects/floatobject.c`）を写したもの。
+///
+/// - 余りは `fmod`（Rust の `f64 % f64`）で出す。`a - floor(a/b)*b` は `a/b` の丸めを拾って端でずれる
+///   （`0.1 % 0.01` が `0.0`、CPython は `3.469446951953614e-18`・`-1.0 % inf` が `nan`、CPython は `inf`）。
+/// - 余りの符号を割る数に合わせる（`7.5 % -2.0` は `-0.5`）。余りが 0 なら割る数の符号つきの 0（`6.0 % -3.0` は `-0.0`）。
+/// - 商は整数へ寄せる（`(a - mod) / b` は丸めで整数から少しずれることがある）。商が 0 なら真の商の符号つきの 0。
+/// ⚠ ゼロ除算は呼び出し側で弾くこと（CPython の文言 `float floor division by zero` / `float modulo` を `apply_binop` に置く）。
+/// ⚠ ネイティブ codegen の `@_tl_fdivmod`（`partial_compiler/llvm_codegen/mod.rs`）と同じ手順。片方だけ直さないこと。
+#[inline]
+pub(crate) fn py_float_div_mod(a: f64, b: f64) -> (f64, f64) {
+    let mut m = a % b;
+    let mut div = (a - m) / b;
+    if m != 0.0 {
+        if (b < 0.0) != (m < 0.0) {
+            m += b;
+            div -= 1.0;
+        }
+    } else {
+        m = 0.0f64.copysign(b);
+    }
+    let q = if div != 0.0 {
+        let fl = div.floor();
+        if div - fl > 0.5 { fl + 1.0 } else { fl }
+    } else {
+        0.0f64.copysign(a / b)
+    };
+    (q, m)
+}
+
 
 pub(crate) mod typecheck;
 mod display;

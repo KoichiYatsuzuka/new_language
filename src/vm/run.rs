@@ -1953,7 +1953,7 @@ fn float_binop_specialized(x: f64, y: f64, op: &BinOp) -> Option<Value> {
         BinOp::Sub => Value::Float(x - y),
         BinOp::Mul => Value::Float(x * y),
         // float の除算はゼロ検査なし（inf/NaN を返す）＝ `apply_binop` の Float/Float アームと同一。
-        // `//` と `%` は Float/Float のアームが存在しない（＝エラー）ため特化しない。
+        // `//` と `%` は特化しない（`gate_bin_kind` が許さない・汎用の `apply_binop` が CPython の手順で計算する）。
         BinOp::Div => Value::Float(x / y),
         BinOp::Pow => Value::Float(x.powf(y)),
         BinOp::Lt => Value::Bool(x < y),

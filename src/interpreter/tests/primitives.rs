@@ -231,3 +231,37 @@ fn test_int_floor_div_mod_negative_divisor_in_vm_and_toplevel() {
     assert!(matches!(run_get(src, "top"), Value::Int(299)));
     assert!(matches!(run_get(src, "in_fn"), Value::Int(299)));
 }
+
+/// float の `//` / `%` が CPython 3.12 の `_float_div_mod` と同じ値になるか（タスク 1-2）。
+///
+/// ⚠ `a - floor(a/b)*b` では端の値（`0.1 % 0.01`・`-1.0 % inf`）がずれる。符号つきの 0 も見る。
+#[test]
+fn test_float_floor_div_mod_follow_cpython() {
+    use crate::interpreter::ops::py_float_div_mod;
+    let inf = f64::INFINITY;
+    // (a, b, a // b, a % b) — 値は CPython 3.12.2 で取った。
+    let cases = [
+        (7.5, 2.0, 3.0, 1.5),
+        (-7.5, 2.0, -4.0, 0.5),
+        (7.5, -2.0, -4.0, -0.5),
+        (-7.5, -2.0, 3.0, -1.5),
+        (0.1, 0.01, 10.0, 3.469446951953614e-18),
+        (1.0, inf, 0.0, 1.0),
+        (-1.0, inf, -1.0, inf),
+    ];
+    for (a, b, q, r) in cases {
+        let (gq, gr) = py_float_div_mod(a, b);
+        assert_eq!((gq, gr), (q, r), "{a} // {b}, {a} % {b}");
+    }
+    // 余りが 0 なら割る数の符号、商が 0 なら真の商の符号（符号つきの 0）。
+    let (q, r) = py_float_div_mod(6.0, -3.0);
+    assert_eq!((q, r.to_bits()), (-2.0, (-0.0f64).to_bits()));
+    let (q, _) = py_float_div_mod(-0.0, 1.0);
+    assert_eq!(q.to_bits(), (-0.0f64).to_bits());
+    // 実行の経路（int との混在・ゼロ除算の文言）。
+    let src = "let a = -7 // 2.0\nlet b = 7.5 % -2\n";
+    assert!(matches!(run_get(src, "a"), Value::Float(f) if f == -4.0));
+    assert!(matches!(run_get(src, "b"), Value::Float(f) if f == -0.5));
+    assert!(run_err_msg("let z = 1.0 // 0.0\n").contains("float floor division by zero"));
+    assert!(run_err_msg("let z = 1.0 % 0.0\n").contains("float modulo"));
+}

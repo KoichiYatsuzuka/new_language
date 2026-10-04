@@ -683,15 +683,18 @@ impl TypeChecker {
                 (Int, Int) | (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 _ => Unresolved,
             },
-            // 実測: `1 // 2` → 0 ／ **`1.5 // 2` は TypeError**（int 同士のみ）
+            // 実測: `1 // 2` → 0 ／ `1.5 // 2` → 1.0（float が混ざれば float・python_builtins_plan.md のタスク 1-2。
+            //       以前は TypeError だった）
             BinOp::FloorDiv => match (lt, rt) {
                 (Int, Int) => Int,
+                (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 _ => Unresolved,
             },
-            // 実測: `1 % 2` → 1 ／ **`"a" % 2` → `a`・`"a" % 2.5` → `a`**（書式化）
-            //       `1.5 % 2` / `2 % "a"` は TypeError
+            // 実測: `1 % 2` → 1 ／ `1.5 % 2` → 1.5（float・タスク 1-2）／ **`"a" % 2` → `a`・`"a" % 2.5` → `a`**（書式化）
+            //       `2 % "a"` は TypeError
             BinOp::Mod => match (lt, rt) {
                 (Int, Int) => Int,
+                (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 (Str, _) => Str,
                 _ => Unresolved,
             },

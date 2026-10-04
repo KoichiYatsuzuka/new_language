@@ -409,7 +409,8 @@ impl Compiler {
                     | BinOp::Eq
                     | BinOp::NotEq
             ),
-            // float は `//`・`%`・ビット演算のアームが無いので算術と比較のみ。
+            // float は算術と比較のみ。ビット演算のアームは無い。`//`・`%` はアームがある（タスク 1-2）が特化しない
+            // （ゼロ除算の文言と CPython の手順 `ops::py_float_div_mod` を `apply_binop` の 1 か所に保つ）。
             K::Float => matches!(
                 op,
                 BinOp::Add
