@@ -1028,3 +1028,141 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
             .ok_or_else(|| format!("RuntimeError: internal — '{name}' is not in the Python prelude"))
     })
 }
+
+/// Python の形の `open` の引数を Arrow の列挙の値へ写したもの（python_builtins_plan.md のタスク 5-2）。
+pub(crate) struct PyOpenForm {
+    /// `FileOpenMode` の値（write=0 / rewrite=1 / read=2 / make_and_write=3）。
+    pub(crate) open_mode: i64,
+    /// `"a"`（追記）。無ければ作り、あれば末尾から書く。
+    pub(crate) append: bool,
+    /// `"b"`（バイト列として読み書きする）。
+    pub(crate) binary: bool,
+    /// `Encoding` の値（ASCII=0 / UTF_8=1 / UTF_8_with_BOM=2）。
+    pub(crate) enc_int: i64,
+}
+
+impl PyOpenForm {
+    /// 追記で、まだ無いファイルは作る（CPython の `"a"` と同じ）。あれば読み書きで開いて末尾へ。
+    pub(crate) fn open_mode_for(&self, path: &str) -> i64 {
+        if self.append && !std::path::Path::new(path).exists() {
+            1
+        } else {
+            self.open_mode
+        }
+    }
+
+    pub(crate) fn start_point_for(&self, path: &str) -> i64 {
+        i64::from(self.append && std::path::Path::new(path).exists())
+    }
+}
+
+/// `open` の引数が Python の形か（`open(path)` / `open(path, "w")` / `open(path, mode="rb", encoding="utf-8")`）を
+/// 見て、そうなら Arrow の列挙の値へ写す（タスク 5-2）。Arrow の形（2 番目が `FileOpenMode` の値・
+/// `open_mode=`）なら `None`。
+///
+/// 文言は CPython と同じ（`invalid mode: 'q'` / `binary mode doesn't take an encoding argument` …）。
+/// ⚠ 受けない形は黙って意味を変えずに止める:
+///   - `"r+"`: Arrow の `write` は**位置へ挿入する**（CPython は上書き）ので写せない
+///   - `newline="\r"` / `"\r\n"`: Arrow は改行を変換しない。`newline=None`（既定）も変換しない
+///     （CPython は Windows で `\r\n` ⇔ `\n` を変換する）
+///   - UTF-8 / UTF-8-SIG / ASCII 以外の `encoding`、`errors="strict"` 以外
+pub(crate) fn py_open_form(
+    pos: &[Value],
+    kw: &std::collections::HashMap<String, Value>,
+) -> Result<Option<PyOpenForm>, String> {
+    if kw.contains_key("open_mode") || !matches!(pos.get(1), None | Some(Value::Str(_))) {
+        return Ok(None);
+    }
+    // CPython の位置引数: file, mode, buffering, encoding, errors, newline
+    if pos.len() > 6 {
+        return Err(format!("TypeError: open() takes at most 6 positional arguments here ({} given)", pos.len()));
+    }
+    for k in kw.keys() {
+        if !matches!(k.as_str(), "file" | "mode" | "buffering" | "encoding" | "errors" | "newline") {
+            return Err(format!("TypeError: '{k}' is an invalid keyword argument for open()"));
+        }
+    }
+    let get = |i: usize, name: &str| pos.get(i).or_else(|| kw.get(name));
+    let mode: String = match get(1, "mode") {
+        None => "r".to_string(),
+        Some(Value::Str(s)) => s.to_string(),
+        Some(_) => return Err("TypeError: open() argument 'mode' must be str".to_string()),
+    };
+    let invalid = || format!("ValueError: invalid mode: '{mode}'");
+    let (mut kind, mut binary, mut text, mut plus) = (None, false, false, false);
+    let mut seen = String::new();
+    for c in mode.chars() {
+        if !"rwxabt+".contains(c) || seen.contains(c) {
+            return Err(invalid());
+        }
+        seen.push(c);
+        match c {
+            'r' | 'w' | 'x' | 'a' if kind.is_some() => {
+                return Err("ValueError: must have exactly one of create/read/write/append mode".to_string())
+            }
+            'r' | 'w' | 'x' | 'a' => kind = Some(c),
+            'b' => binary = true,
+            't' => text = true,
+            _ => plus = true,
+        }
+    }
+    if binary && text {
+        return Err("ValueError: can't have text and binary mode at once".to_string());
+    }
+    let Some(kind) = kind else {
+        return Err(
+            "ValueError: Must have exactly one of create/read/write/append mode and at most one plus".to_string(),
+        );
+    };
+    let (open_mode, append) = match kind {
+        'r' if plus => {
+            return Err(format!(
+                "NotImplementedError: open() mode '{mode}' is not supported \
+                 (Arrow's write inserts at the position instead of overwriting)"
+            ))
+        }
+        'r' => (2, false),
+        'w' => (1, false),
+        'x' => (3, false),
+        _ => (0, true),
+    };
+    let enc_int = match get(3, "encoding") {
+        None | Some(Value::None) => 1,
+        Some(Value::Str(_)) if binary => {
+            return Err("ValueError: binary mode doesn't take an encoding argument".to_string())
+        }
+        Some(Value::Str(e)) => match e.to_ascii_lowercase().replace('_', "-").as_str() {
+            "utf-8" | "utf8" => 1,
+            "utf-8-sig" => 2,
+            "ascii" | "us-ascii" => 0,
+            _ => {
+                return Err(format!(
+                    "NotImplementedError: open() encoding '{e}' is not supported (UTF-8 / UTF-8-SIG / ASCII only)"
+                ))
+            }
+        },
+        Some(_) => return Err("TypeError: open() argument 'encoding' must be str or None".to_string()),
+    };
+    match get(4, "errors") {
+        None | Some(Value::None) => {}
+        Some(_) if binary => return Err("ValueError: binary mode doesn't take an errors argument".to_string()),
+        Some(Value::Str(s)) if &**s == "strict" => {}
+        Some(_) => {
+            return Err("NotImplementedError: open() errors= other than 'strict' is not supported".to_string())
+        }
+    }
+    match get(5, "newline") {
+        None | Some(Value::None) => {}
+        Some(_) if binary => return Err("ValueError: binary mode doesn't take a newline argument".to_string()),
+        Some(Value::Str(s)) if s.is_empty() || &**s == "\n" => {}
+        Some(Value::Str(s)) if &**s == "\r" || &**s == "\r\n" => {
+            return Err(format!(
+                "NotImplementedError: open() newline={:?} is not supported (Arrow does not translate newlines)",
+                &**s
+            ))
+        }
+        Some(Value::Str(s)) => return Err(format!("ValueError: illegal newline value: {s}")),
+        Some(_) => return Err("TypeError: open() argument 'newline' must be str or None".to_string()),
+    }
+    Ok(Some(PyOpenForm { open_mode, append, binary, enc_int }))
+}

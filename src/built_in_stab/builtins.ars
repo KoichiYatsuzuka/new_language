@@ -125,8 +125,13 @@ fn getenv(name: str, default: str = "") -> str:
     """Value of the environment variable `name`, or `default` when it is not set."""
     pass
 
-fn open(file_path: Union[str, Path], open_mode: FileOpenMode, start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Encoding = Encoding.UTF_8, exclusion: bool = True) -> FileObject:
-    """Open a file. `open_mode` is FileOpenMode.read / write / rewrite / make_and_write."""
+# `open` は 2 つの形を受ける（python_builtins_plan.md のタスク 5-2・実行時は `py_open_form` が見分ける）:
+#   - Arrow の形 `open(path, FileOpenMode.read, StartPoint.top, ByteRecognizingMode.text, Encoding.UTF_8, exclusion)`
+#   - Python の形 `open(path)` / `open(path, "w", encoding="utf-8")` / `open(path, mode="rb")`（2 番目が文字列か省略）
+#   ⚠ 宣言は 1 本なので、3 番目以降の**位置**は Arrow の形で検査する（Python の形はキーワードで渡す）。
+#     `file` 〜 `newline` は Python の形のキーワード引数（`encoding` は両方の形が使う）。
+fn open(file_path: Union[str, Path], open_mode: Union[FileOpenMode, str] = "r", start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Union[Encoding, str, None] = Encoding.UTF_8, exclusion: bool = True, file: Union[str, Path] = "", mode: str = "r", buffering: int = -1, errors: Option[str] = None, newline: Option[str] = None) -> FileObject:
+    """Open a file. Arrow form: `open_mode` is FileOpenMode.read / write / rewrite / make_and_write. Python form: open(path, "r" / "w" / "x" / "a" with "b" / "t" / "+", encoding=..., errors=..., newline=...)."""
     pass
 
 fn close(file: FileObject) -> None:

@@ -399,9 +399,16 @@ use super::*;
             "let e: str = getenv(\"HOME\", \"none\")\n",
             "let r: str = repr([1])\n",
         )));
+        // Python の形（python_builtins_plan.md のタスク 5-2）: 2 番目が文字列か省略・Python のキーワード引数。
+        assert!(ok(concat!(
+            "let p = open(\"a.txt\")\n",
+            "let q = open(\"a.txt\", \"w\", encoding = \"utf-8\", newline = \"\")\n",
+            "let b = open(\"a.txt\", mode = \"rb\")\n",
+        )));
         assert!(err("let f = open(\"a.txt\", 1)\n"));
-        assert!(err("let f = open(\"a.txt\")\n"));
+        assert!(err("let f = open()\n"));
         assert!(err("let f = open(\"a.txt\", FileOpenMode.read, mode = 1)\n"));
+        assert!(err("let f = open(\"a.txt\", \"r\", nope = 1)\n"));
         assert!(err("close(\"x\")\n"));
         assert!(err("let e = getenv(1)\n"));
         assert!(err("let r = repr(1, 2)\n"));

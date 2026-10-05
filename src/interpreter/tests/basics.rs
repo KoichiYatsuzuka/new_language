@@ -437,3 +437,44 @@ fn test_print_keyword_arguments() {
     assert!(run_err_msg("print(\"x\", end=5)\n").contains("end must be None or a string, not int"));
     assert!(run_err_msg("print(\"x\", color=1)\n").contains("'color' is an invalid keyword argument for print()"));
 }
+
+// ---------------------------------------------------------------------------
+// open の Python の形（python_builtins_plan.md のタスク 5-2）
+// ---------------------------------------------------------------------------
+
+/// `open(path, "w", encoding="utf-8")` / `open(path)` / `open(path, "a")` / `"rb"` / `"x"` を受け、
+/// mode・encoding の誤りは CPython と同じ文言で止める。
+#[test]
+fn test_open_python_form() {
+    let p = std::env::temp_dir().join(format!("arrow_py_open_{}.txt", std::process::id()));
+    let ps = p.to_string_lossy().replace('\\', "/");
+    let _ = std::fs::remove_file(&p);
+    let src = format!(
+        concat!(
+            "let w = open(\"{0}\", \"w\", encoding=\"utf-8\")\n",
+            "w.write(\"ab\\n\")\n",
+            "close(w)\n",
+            "let a = open(\"{0}\", \"a\")\n",
+            "a.write(\"cd\\n\")\n",
+            "close(a)\n",
+            "let r = open(\"{0}\")\n",
+            "let text = r.read()\n",
+            "close(r)\n",
+            "let b = open(\"{0}\", mode=\"rb\")\n",
+            "let n = len(b.read())\n",
+            "close(b)\n",
+        ),
+        ps
+    );
+    assert_str(run_get(&src, "text"), "ab\ncd\n");
+    assert!(matches!(run_get(&src, "n"), Value::Int(6)));
+    let exists = run_err_msg(&format!("let x = open(\"{ps}\", \"x\")\n"));
+    assert!(exists.starts_with("FileExistsError"), "{exists}");
+    let _ = std::fs::remove_file(&p);
+    assert!(run_err_msg("let f = open(\"z.txt\", \"rw\")\n")
+        .contains("must have exactly one of create/read/write/append mode"));
+    assert!(run_err_msg("let f = open(\"z.txt\", \"q\")\n").contains("invalid mode: 'q'"));
+    assert!(run_err_msg("let f = open(\"z.txt\", \"rb\", encoding=\"utf-8\")\n")
+        .contains("binary mode doesn't take an encoding argument"));
+    assert!(run_err_msg("let f = open(\"z.txt\", \"r+\")\n").contains("NotImplementedError"));
+}

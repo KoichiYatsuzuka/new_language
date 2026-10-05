@@ -1,0 +1,38 @@
+# py_open.ar — open を Python の形で呼ぶ（python_builtins_plan.md のタスク 5-2）
+#
+# 対になる誤りの例: py_open_error.ar
+#
+# open(fname) / open(fname, "w") / open(fname, mode="rb", encoding="utf-8") の形も受ける（Arrow の
+# open(fname, FileOpenMode.read) はそのまま）。mode は CPython と同じ: r / w / x / a と b / t / +。
+#   - "w" は作り直す、"a" は無ければ作って末尾へ書く、"x" はあれば FileExistsError、"rb" はバイト列
+# ⚠ 以前は open(p, "w") が `expected enum_item_FileOpenMode instance`、open(p) が
+#   `missing required argument 'open_mode'` で止まっていた。
+# ⚠ 受けない形: "r+"（Arrow の write は位置へ挿入する）・UTF-8 / UTF-8-SIG / ASCII 以外の encoding・
+#   newline="\r" / "\r\n"。どれも明示のエラーで止まる。改行の変換はしない（newline="" と同じ。
+#   CPython は Windows の既定で書くときに改行を CR LF にする）。
+# ⚠ 返るのは Arrow のファイル（read / read_line / write）。Python のメソッド（readline / readlines /
+#   close() / for line in f）は別件（タスク 5-4）。
+
+let fname = "examples/basics/_tmp_py_open.txt"
+
+let w = open(fname, "w", encoding="utf-8")
+w.write("first\n")
+close(w)
+
+let a = open(fname, "a")
+a.write("second\n")
+close(a)
+
+let r = open(fname)
+print(r.read(), end="")                          # first / second
+close(r)
+
+let b = open(fname, mode="rb")
+let bs = b.read()
+print(bs[0], bs[1])                              # 102 105（'f' 'i' のバイト）
+close(b)
+
+try:
+    let x = open(fname, "x")
+except FileExistsError:
+    print("FileExistsError")                     # FileExistsError
