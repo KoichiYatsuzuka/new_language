@@ -1,0 +1,54 @@
+# py_aggregates.ar — 集計の組み込み（python_builtins_plan.md のタスク 3-2）
+#
+# 対になる誤りの例: py_aggregates_error.ar
+#
+# all / any / min / max / sum / sorted（と list.sort）/ reversed / abs / round / divmod / pow。
+# どれも CPython 3.12 と同じ結果（下のコメントは CPython の出力）:
+#   - all / any は決まったところで止まる
+#   - min / max は key= / default=、同じ大きさなら最初のもの
+#   - sum は float を Neumaier の補償つきで足す（0.1 を 10 回足すと 1.0）
+#   - sorted / list.sort は安定（key= / reverse=）。比較は `<` だけ（組も比べられる・1-3）
+#   - round は偶数への丸めで、float は正確な 10 進の値で丸める（2.675 は 2.67）
+#   - divmod は `//` / `%` と同じ規則、pow の 3 引数は冪剰余（負の指数は逆元）
+# ⚠ 以前はどれも NameError（pandas で計 401 箇所）。list.sort() も無かった。
+
+print("=== all / any ===")
+print(all([1, 2, 3]), all([1, 0]), all([]))            # True False True
+print(any([0, 0, 2]), any([]))                         # True False
+
+print("=== min / max ===")
+let ws: list[str] = ["pear", "fig", "banana"]
+print(min(ws), max(ws))                                # banana pear
+print(max(ws, key=len), min(ws, key=len))              # banana fig
+print(max(3, 7, 5), min([], default=0))                # 7 0
+print(max([(2024, 3), (2025, 1), (2025, 2)]))          # (2025, 2)
+
+print("=== sum ===")
+print(sum([1, 2, 3]), sum([1, 2], 10))                 # 6 13
+let tenth: list[float] = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+print(sum(tenth))                                      # 1.0（補償つき。素朴に足すと 0.9999999999999999）
+print(sum([1, 2.5]))                                   # 3.5
+
+print("=== sorted / list.sort ===")
+let pairs: list[tuple[str, int]] = [("b", 2), ("a", 2), ("c", 1)]
+fn second(p: tuple[str, int]) -> int:
+    return p[1]
+print(sorted(pairs, key=second))                       # [('c', 1), ('b', 2), ('a', 2)]（安定）
+print(sorted(pairs, key=second, reverse=True))         # [('b', 2), ('a', 2), ('c', 1)]（逆でも安定）
+print(sorted("hello"))                                 # ['e', 'h', 'l', 'l', 'o']
+mut nums: list[int] = [3, 1, 2]
+nums.sort(reverse=True)
+print(nums)                                            # [3, 2, 1]
+
+print("=== reversed ===")
+print(list(reversed([1, 2, 3])), list(reversed("ab")), list(reversed(range(3))))   # [3, 2, 1] ['b', 'a'] [2, 1, 0]
+
+print("=== abs / round ===")
+print(abs(-3), abs(-2.5), abs(3 + 4j))                 # 3 2.5 5.0
+print(round(2.5), round(3.5), round(-0.5))             # 2 4 0
+print(round(2.675, 2), round(0.125, 2), round(1234.5678, -2))   # 2.67 0.12 1200.0
+print(round(1250, -2), round(1350, -2))                # 1200 1400
+
+print("=== divmod / pow ===")
+print(divmod(7, -2), divmod(-7.5, 2.0))                # (-4, -1) (-4.0, 0.5)
+print(pow(2, 10), pow(3, 4, 5), pow(3, -1, 7), pow(3, 2, -5))   # 1024 1 5 -1

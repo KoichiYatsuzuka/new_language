@@ -18,6 +18,7 @@
 //! - 仮引数で呼び出しの引数を検査する（[`call_decl`]・`call_check` の `check_builtin_call`）。
 //!   [`GLOBAL_FNS`]（`range` / `len`）は大域の関数型として登録するので、その経路（`check_fn_type_call`）で検査される。
 //! - `let ...: T`（`print` / `zip`）は**個数自由の位置引数**（[`BuiltinFn::variadic`]）。
+//!   それと並べた固定の仮引数（既定値つき）は**キーワード専用**（`min(xs, key = f)`・[`BuiltinFn::params`]）。
 //!
 //! ⚠ 利用者が同じ名前の関数・変数を宣言したら、そちらが勝つ（呼ぶ側 `builtin_fn_return` が先に見る）。
 //!
@@ -45,9 +46,12 @@ pub(super) const GLOBAL_FNS: [&str; 2] = ["range", "len"];
 #[derive(Clone)]
 pub(crate) struct BuiltinFn {
     /// 仮引数（名前・型・既定値の有無）。`let ...: T` は含まない（[`Self::variadic`]）。
+    /// ⚠ `let ...: T` を持つ関数では、これらは**キーワード専用**（位置引数は入らない・どれも既定値を持つ）。
+    ///   宣言では `let ...` の前に書く（Arrow の構文は `...` を最後の仮引数に限る）。
     pub params: Vec<FnTypeParam>,
     /// `let ...: T` の `T`。組み込みでは「位置引数を何個でも受け取る」（`print(a, b)`）。
-    /// ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。キーワード引数は受け取らない。
+    /// ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。キーワード引数は
+    ///   [`Self::params`] の名前のものだけ受け取る。
     pub variadic: Option<InferredType>,
     /// 戻り値の型。注釈が無いもの（静的に決まらない）は `None`。
     pub ret: Option<InferredType>,

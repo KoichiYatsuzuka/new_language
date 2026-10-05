@@ -1,0 +1,11 @@
+# py_aggregates_error.ar — 空の列の max（python_builtins_plan.md のタスク 3-2）
+#
+# 対になる正常系: py_aggregates.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: max() iterable argument is empty
+#
+# ⚠ 文言は CPython と同じ。空でありうるなら `max(xs, default=0)`。
+
+let xs: list[int] = []
+print(max(xs))                           # ⛔ 空の列

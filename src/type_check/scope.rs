@@ -187,7 +187,7 @@ impl TypeChecker {
     /// `src/interpreter/classes/` の `method_call.rs` / `set_methods.rs` /
     /// `frozen_list_methods.rs` に変更メソッドを足したら**必ずここにも足すこと**。
     pub(super) const MUTATING_COLLECTION_METHODS: &'static [&'static str] =
-        &["append", "pop", "add", "clear", "discard", "remove"];
+        &["append", "pop", "add", "clear", "discard", "remove", "sort"];
 
     /// アクセスパスの**可変性**（中身を書き換えられるか）。根が識別子でない（一時値）／未宣言なら `None`。
     ///

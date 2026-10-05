@@ -1491,7 +1491,53 @@ impl TypeChecker {
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
             // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
-            "isinstance" | "hasattr" | "issubclass" | "callable" => Some(T::Bool),
+            "isinstance" | "hasattr" | "issubclass" | "callable" | "all" | "any" => Some(T::Bool),
+            // 集計（タスク 3-2）。⚠ 要素の型が分からないときは `None`（`Any` にすると下流が静的な誤りになる）。
+            "sorted" | "reversed" | "min" | "max" | "sum" => {
+                let positional: Vec<&T> =
+                    arg_data.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
+                let has_kw = |n: &str| arg_data.iter().any(|(k, _)| k.as_deref() == Some(n));
+                let known_elem = |t: &T| match Self::for_element_type(t) {
+                    T::Unresolved | T::Any => None,
+                    e => Some(e),
+                };
+                match (name, positional.as_slice()) {
+                    ("sorted", [t]) => known_elem(t).map(|e| T::ListOf(Box::new(e))),
+                    ("reversed", [t]) => known_elem(t).map(|e| T::IteratorOf(Box::new(e))),
+                    // `default=` は別の型を返しうるので付けない。
+                    ("min" | "max", [t]) if !has_kw("default") => known_elem(t),
+                    ("min" | "max", [first, rest @ ..])
+                        if !rest.is_empty() && rest.iter().all(|t| t == first) && !matches!(first, T::Unresolved | T::Any) =>
+                    {
+                        Some((*first).clone())
+                    }
+                    ("sum", [t]) if !has_kw("start") => match known_elem(t) {
+                        Some(T::Int) => Some(T::Int),
+                        Some(T::Float) => Some(T::Float),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            "abs" => match arg_data {
+                [(None, T::Int)] => Some(T::Int),
+                [(None, T::Float | T::Complex)] => Some(T::Float),
+                _ => None,
+            },
+            "round" => match arg_data {
+                [(None, T::Int | T::Float)] => Some(T::Int),
+                [(None, t @ (T::Int | T::Float)), (_, T::Int)] => Some(t.clone()),
+                _ => None,
+            },
+            "divmod" => match arg_data {
+                [(None, T::Int), (None, T::Int)] => Some(T::Tuple(vec![T::Int, T::Int])),
+                [(None, T::Int | T::Float), (None, T::Int | T::Float)] => Some(T::Tuple(vec![T::Float, T::Float])),
+                _ => None,
+            },
+            "pow" => match arg_data {
+                [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
+                _ => None,
+            },
             "setattr" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
@@ -1625,9 +1671,12 @@ impl TypeChecker {
     ///   検査していなかった。`open("a.txt", 1)` / `close("x")` / `getenv(1)` は実行時まで通っていた。
     /// - 仮引数が固定の関数は、関数値の呼び出しと同じ検査（[`Self::check_fn_type_call`]・個数・
     ///   キーワード引数の名前・型）。
-    /// - `let ...: T`（`print` / `zip`）は位置引数をそれぞれ `T` と突き合わせ、キーワード引数と
-    ///   `... =` を弾く（実行時もそれらは通らない）。固定の仮引数は前に持たない（`builtins.ars` の規則・
-    ///   単体テスト `variadic_builtins_have_no_fixed_params` が守る）。
+    /// - `let ...: T`（`print` / `zip` / `min`）は位置引数をそれぞれ `T` と突き合わせ、`... =` を弾く
+    ///   （実行時も通らない）。キーワード引数は、宣言で `let ...` と並べた**固定の仮引数**（既定値つき・
+    ///   キーワード専用・`min(xs, key = f)` / `print(x, end = "")`）の名前と型で検査し、ほかは弾く。
+    ///   ⚠ 固定の仮引数を `let ...` の**前**に書くのは、Arrow の構文が `...` を最後の仮引数に限るため
+    ///   （CPython の `min(*args, key=None)` の並びは書けない）。位置引数は固定の仮引数へ入らない
+    ///   （`builtins.ars` の規則・単体テスト `variadic_builtins_fixed_params_are_keyword_only` が守る）。
     /// ⚠ 型の変換（`int(x)` …）は検査しない（`builtins::call_decl`）。
     /// ⚠ 呼ぶのは同じ名前の利用者の関数・変数が無いときだけ（呼ぶ側 `infer_call_inner`）。
     fn check_builtin_call(
@@ -1647,13 +1696,29 @@ impl TypeChecker {
         }
         for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
             if let Some(arg_name) = key {
-                self.report_error(StaticTypeError {
-                    kind: TypeErrorKind::UnknownKeywordArg {
-                        func_name: name.to_string(),
-                        arg_name: arg_name.clone(),
-                    },
-                    span: None,
-                });
+                match decl.params.iter().position(|p| &p.name == arg_name) {
+                    Some(param_pos) => {
+                        let param = &decl.params[param_pos];
+                        if param.ty != InferredType::Any && !self.types_compatible(arg_ty, &param.ty, Site::LetParam) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallArgTypeMismatch {
+                                    func_name: name.to_string(),
+                                    param_index: param_pos,
+                                    expected: param.ty.clone(),
+                                    got: arg_ty.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                    None => self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::UnknownKeywordArg {
+                            func_name: name.to_string(),
+                            arg_name: arg_name.clone(),
+                        },
+                        span: None,
+                    }),
+                }
                 continue;
             }
             if elem != InferredType::Any && !self.types_compatible(arg_ty, &elem, Site::LetParam) {

@@ -416,15 +416,25 @@ use super::*;
         assert!(err("print(... = 1, 2)\n"));
     }
 
-    /// `let ...: T` を持つ組み込みは固定の仮引数を前に持たない（`check_builtin_call` が前提にしている）。
+    /// `let ...: T` を持つ組み込みの固定の仮引数はキーワード専用なので、どれも既定値を持つ
+    /// （位置引数は全部 `let ...` へ入る・`check_builtin_call` が前提にしている）。
     #[test]
-    fn variadic_builtins_have_no_fixed_params() {
+    fn variadic_builtins_fixed_params_are_keyword_only() {
         for name in crate::type_check::builtins::declared_names() {
             let Some(decl) = crate::type_check::builtins::call_decl(&name) else { continue };
             if decl.variadic.is_some() {
-                assert!(decl.params.is_empty(), "'{name}' は `let ...: T` と固定の仮引数を両方持っている");
+                for p in &decl.params {
+                    assert!(p.has_default, "'{name}' の `{}` は `let ...: T` と並ぶのに既定値が無い", p.name);
+                }
             }
         }
+    }
+
+    /// `let ...: T` と並べた固定の仮引数はキーワードで渡せ、名前と型を検査する（`min(xs, key = f)`）。
+    #[test]
+    fn variadic_builtins_take_declared_keyword_only_args() {
+        assert!(ok("let a = min([3, 1], key = abs)\nlet b = max(1, 2, 3, default = 0)\n"));
+        assert!(err("let a = min([3, 1], nope = 1)\n"));
     }
 
     /// 同じ名前の利用者の関数があれば、そちらのシグネチャで検査する（組み込みの宣言は使わない）。
@@ -476,4 +486,35 @@ use super::*;
     #[test]
     fn type_of_types_err() {
         assert!(err("class Box:\n    mut v: int\nlet b = Box(1)\nlet n: int = type(b).__name__\n"));
+    }
+
+    // --- 集計の組み込みの結果の型（python_builtins_plan.md のタスク 3-2）---
+
+    /// 要素の型が分かれば結果に型が付く。
+    #[test]
+    fn aggregate_types_ok() {
+        assert!(ok(concat!(
+            "let xs: list[int] = [3, 1]\n",
+            "let a: list[int] = sorted(xs)\n",
+            "let b: int = max(xs)\n",
+            "let c: int = sum(xs)\n",
+            "let d: bool = any(xs)\n",
+            "let e: int = round(2.5)\n",
+            "let f: float = round(2.5, 1)\n",
+            "let g: tuple[int, int] = divmod(7, 2)\n",
+        )));
+    }
+
+    /// 型の取り違えは誤り。
+    #[test]
+    fn aggregate_types_err() {
+        assert!(err("let xs: list[int] = [3, 1]\nlet a: list[str] = sorted(xs)\n"));
+        assert!(err("let xs: list[int] = [3, 1]\nlet b: str = max(xs)\n"));
+    }
+
+    /// `sort` は書き換えるメソッドなので、`let` の list には呼べない。
+    #[test]
+    fn list_sort_needs_mut() {
+        assert!(err("let xs: list[int] = [3, 1]\nxs.sort()\n"));
+        assert!(ok("mut xs: list[int] = [3, 1]\nxs.sort()\n"));
     }

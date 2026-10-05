@@ -22,8 +22,11 @@
 #     名前と順番は実行時のキーワード引数名に合わせる（`get_arg(.., "file_path")` など）。
 #   - **個数自由の位置引数**（`print(a, b, c)` / `zip(xs, ys)`）は `let ...: T` で書く。
 #     ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。組み込みでは素の位置引数を
-#       何個でも受け取り、キーワード引数・`... =` は受け取らない（実行時もそれらは通らない）。
+#       何個でも受け取り、`... =` は受け取らない（実行時も通らない）。
 #       型検査器は位置引数をそれぞれ `T` と突き合わせる。
+#     ⚠ `let ...` と並べた固定の仮引数は**キーワード専用**（CPython の `min(*args, key=None)`）。
+#       既定値を必ず付け、`let ...` の**前**に書く（Arrow の構文は `...` を最後の仮引数に限る）。
+#       位置引数は入らない: `fn min(key: Any = None, let ...: Any)` の `min(3, 1)` は 2 つとも `let ...` へ。
 #   - 本体は `pass`（`...` は docstring と併用できない）。仮引数名に予約語（`code` など）を使わない
 #     （2026-09-22 に `code` が予約語になり、このファイルが丸ごと読めなくなっていた）。
 #   - **組み込みの型**（`enum` / `class`）もここで宣言する。型検査器はレジストリに登録して
@@ -175,6 +178,50 @@ fn issubclass(cls: Any, class_or_tuple: Any) -> bool:
 
 fn callable(obj: Any) -> bool:
     """True if obj can be called (a function, a class, a bound method, or an instance with `__call__`)."""
+    pass
+
+fn all(iterable: Any) -> bool:
+    """True if every element of the iterable is truthy (True for an empty one)."""
+    pass
+
+fn any(iterable: Any) -> bool:
+    """True if some element of the iterable is truthy (False for an empty one)."""
+    pass
+
+fn min(key: Any = None, default: Any = None, let ...: Any):
+    """The smallest of one iterable's elements, or of two or more arguments. key= orders by key(x); default= is returned for an empty iterable."""
+    pass
+
+fn max(key: Any = None, default: Any = None, let ...: Any):
+    """The largest of one iterable's elements, or of two or more arguments. key= orders by key(x); default= is returned for an empty iterable."""
+    pass
+
+fn sum(iterable: Any, start: Any = 0):
+    """start plus the sum of the iterable's elements."""
+    pass
+
+fn sorted(iterable: Any, key: Any = None, reverse: bool = False):
+    """A new sorted list of the iterable's elements (stable). key= sorts by key(x); reverse=True sorts in descending order."""
+    pass
+
+fn reversed(seq: Any):
+    """A generator of the sequence's elements in reverse order."""
+    pass
+
+fn abs(x: Any):
+    """The absolute value of a number (the magnitude of a complex)."""
+    pass
+
+fn round(number: Any, ndigits: Any = None):
+    """number rounded to ndigits decimals, half to even (an int when ndigits is omitted)."""
+    pass
+
+fn divmod(a: Any, b: Any):
+    """The tuple (a // b, a % b)."""
+    pass
+
+fn pow(base: Any, exp: Any, mod: Any = None):
+    """base ** exp, or (base ** exp) % mod computed efficiently for ints."""
     pass
 
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
