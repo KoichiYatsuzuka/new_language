@@ -271,6 +271,11 @@ pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
     .map_err(|e| format!("TypeError: Python __len__ failed: {e}"))
 }
 
+/// `callable(obj)`: Python の `callable()` と同じ判定（python_builtins_plan.md のタスク 2-4）。
+pub fn py_is_callable(handle: &PyObjHandle) -> bool {
+    Python::with_gil(|py| handle.inner.bind(py).is_callable())
+}
+
 /// Python iterable を走査して要素を `Vec<Value>` に収集する。for ループ用。
 pub fn py_collect_iter(handle: &PyObjHandle) -> Result<Vec<Value>, String> {
     Python::with_gil(|py| -> PyResult<Vec<Value>> {

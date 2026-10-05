@@ -1,0 +1,13 @@
+# py_introspect_error.ar — issubclass の第 1 引数がクラスでない（python_builtins_plan.md のタスク 2-4）
+#
+# 対になる正常系: py_introspect.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: issubclass() arg 1 must be a class
+#
+# ⚠ 文言は CPython と同じ。インスタンスを渡すなら isinstance。
+
+class Box:
+    mut v: int
+
+print(issubclass(Box(1), Box))           # ⛔ Box(1) はインスタンス

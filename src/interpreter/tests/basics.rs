@@ -283,3 +283,35 @@ fn test_getattr_hasattr_setattr() {
     assert!(run_err_msg("class Box:\n    mut v: int\nlet b = Box(1)\nlet z = getattr(b, 3)\n").contains("attribute name must be string"));
     assert!(run_err_msg("class Box:\n    mut v: int\nlet b = Box(1)\nsetattr(b, \"v\", 5)\n").contains("immutable"));
 }
+
+// ---------------------------------------------------------------------------
+// issubclass / callable（python_builtins_plan.md のタスク 2-4）
+// ---------------------------------------------------------------------------
+
+/// `issubclass` は `isinstance` と同じ判定（クラスは派生も・`bool` ⊂ `int`・trait は実装）。`callable` は CPython と同じ。
+#[test]
+fn test_issubclass_and_callable() {
+    let src = concat!(
+        "trait Named:\n",
+        "    fn name(self) -> str:\n",
+        "        ...\n",
+        "class Dog(Named):\n",
+        "    fn name(self) -> str:\n",
+        "        return \"d\"\n",
+        "class Plain:\n",
+        "    mut n: int\n",
+        "let a = issubclass(Dog, Named)\n",
+        "let b = issubclass(Plain, Named)\n",
+        "let c = issubclass(bool, int)\n",
+        "let d = issubclass(int, bool)\n",
+        "let e = issubclass(Dog, (Plain, Dog))\n",
+        "let f = callable(Plain)\n",
+        "let g = callable(len)\n",
+        "let h = callable(Plain(1))\n",
+        "let i = callable(3)\n",
+    );
+    for (var, want) in [("a", true), ("b", false), ("c", true), ("d", false), ("e", true), ("f", true), ("g", true), ("h", false), ("i", false)] {
+        assert!(matches!(run_get(src, var), Value::Bool(x) if x == want), "{var}");
+    }
+    assert!(run_err_msg("class Plain:\n    mut n: int\nlet z = issubclass(Plain(1), Plain)\n").contains("issubclass() arg 1 must be a class"));
+}

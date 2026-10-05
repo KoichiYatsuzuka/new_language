@@ -65,6 +65,11 @@ pub fn py_len(_handle: &PyObjHandle) -> Result<Value, String> {
     Err(unavailable("`len()` on a Python object"))
 }
 
+/// 評価コアビルドでは Python のオブジェクトはできないので呼ばれない（呼ばれたら「呼べない」と答える）。
+pub fn py_is_callable(_handle: &PyObjHandle) -> bool {
+    false
+}
+
 pub fn py_collect_iter(_handle: &PyObjHandle) -> Result<Vec<Value>, String> {
     Err(unavailable("iterating a Python object"))
 }

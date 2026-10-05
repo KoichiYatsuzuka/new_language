@@ -1422,7 +1422,7 @@ impl TypeChecker {
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
             // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
-            "isinstance" | "hasattr" => Some(T::Bool),
+            "isinstance" | "hasattr" | "issubclass" | "callable" => Some(T::Bool),
             "setattr" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。

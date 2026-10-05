@@ -95,7 +95,7 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     // `list(it)` / `tuple(it)`（python_builtins_plan.md のタスク 1-7）。
     "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）。
-    "isinstance", "type", "getattr", "hasattr", "setattr",
+    "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

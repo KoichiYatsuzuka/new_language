@@ -488,7 +488,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | ~~**2-1**~~ | ✅ **済**（2026-10-05）。⚠ 変換時の写しはやめ、実行時の組み込み `isinstance` 1 本にした（1-7 で `list` / `tuple` も値になったので、名前・`m.C`・変数・組を同じ経路で判定できる。クラスは `class_id` と修飾名の祖先で見るので `x is C` より正確。`eval/py_builtins.rs`）。以下は起票時の案: `isinstance(x, C)` の写し: 第 2 引数が名前（`C` / `m.C` / `int`）なら `x is C`、組なら `or` へ変換時に写す。変数（`isinstance(x, cls)`）は実行時の組み込みで受ける。⚠ `isinstance(True, int)` は CPython で `True`（`bool` は `int` の派生） | 2,766 | なし | 中 |
 | ~~**2-2**~~ | ✅ **済**（2026-10-05・3 引数は `TypeError`。クラスの表示はモジュール名を付けないまま）`type(x)`（1 引数）と `type(x).__name__` / `type(x) is C`。⚠ 3 引数の `type(name, bases, dict)`（クラスを作る）は対象外の候補 | 868 | なし | 中 |
 | ~~**2-3**~~ | ✅ **済**（2026-10-05・読み書きは `o.name` と同じ経路。束縛メソッドが無いので `getattr(o, "method")` は 1-8 待ち）`getattr` / `hasattr` / `setattr`（既定値つき `getattr(o, n, d)` を含む） | 595 | なし | 中 |
-| **2-4** | `issubclass` / `callable` | 128 | 2-1 | 小 |
+| ~~**2-4**~~ | ✅ **済**（2026-10-05）`issubclass` / `callable` | 128 | 2-1 | 小 |
 | **3-1** | ~~`list(it)` / `tuple(it)`~~（1-7 で済）/ `dict(..)`（呼べるようにする）/ `frozenset` / `bytes` | 969 | なし | 中 |
 | **3-2** | `all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | 1-2（`divmod` の float）・1-3（組を鍵にする比較） | 中 |
 | **3-3** | `map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | 1-4（`iter` の辞書・ジェネレータ） | 小 |
