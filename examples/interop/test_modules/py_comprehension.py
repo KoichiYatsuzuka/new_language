@@ -50,3 +50,13 @@ def set_comp_size(xs):
 
 def set_comp_has(xs, k):
     return k in {v % 2 for v in xs}
+
+
+def dict_comp(ks):
+    """辞書内包（`dict([(k, v) for ...])` に脱糖される・python_builtins_plan.md のタスク 3-1）。"""
+    return {k: k * 2 for k in ks if k != 3}
+
+
+def dict_comp_items(d):
+    """値を入れ替えた辞書。キーの順は元の順（CPython の挿入順と同じ）。"""
+    return {v: k for k, v in d.items()}

@@ -1,0 +1,25 @@
+# dict_constructor.ar — dict(...) で辞書を作る（python_builtins_plan.md のタスク 3-1）
+#
+# 対になる誤りの例: dict_constructor_error.ar
+#
+# CPython の dict と同じ作り方:
+#   - dict()            空の辞書
+#   - dict(mapping)     辞書の写し（元を変えても写しは変わらない）
+#   - dict(pairs)       2 要素の組（tuple / list）の列から。キーの順は列の順
+#   - dict(a=1, b=2)    キーワード引数を文字列のキーで（位置引数の後に上書き）
+# ⚠ 以前は `TypeError: 'dict' object is not callable` だった（pandas で 50 箇所）。
+#   Python の辞書内包 `{k: v for ...}` もこれを使って `dict([(k, v) for ...])` に変換するようになった。
+
+print(dict())                                        # {}
+let pairs: list[tuple[str, int]] = [("a", 1), ("b", 2), ("a", 3)]
+print(dict(pairs))                                   # {'a': 3, 'b': 2}
+print(dict(x=1, y=2))                                # {'x': 1, 'y': 2}
+print(dict(pairs, b=20, c=30))                       # {'a': 3, 'b': 20, 'c': 30}
+
+mut src: dict[str, int] = {"k": 1}
+let copy = dict(src)
+src["k"] = 99
+print(copy, src)                                     # {'k': 1} {'k': 99}
+
+let ks: list[int] = [1, 2, 3]
+print(dict(zip(ks, ["one", "two", "three"])))        # {1: 'one', 2: 'two', 3: 'three'}

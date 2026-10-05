@@ -64,3 +64,11 @@ print(m.set_comp_has(xs, zero))
 mut nine = 9
 print(m.set_comp_has(xs, nine))
 # False
+
+# ── ⑧ 辞書内包（`dict(<(キー, 値) の for 式>)` に脱糖される・python_builtins_plan.md のタスク 3-1） ──
+#     ⚠ 以前は `dict(pairs)` が呼べず未対応（変換の誤り）だった。
+print(m.dict_comp(xs))
+# {1: 2, 2: 4, 4: 8}
+mut words: dict[str, int] = {"a": 1, "b": 2}
+print(m.dict_comp_items(words))
+# {1: 'a', 2: 'b'}

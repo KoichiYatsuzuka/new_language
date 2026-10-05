@@ -160,6 +160,55 @@ impl Interpreter {
         }
     }
 
+    /// `dict(...)`（タスク 3-1）。CPython の `dict` の作り方と同じ:
+    /// - `dict()` は空、`dict(mapping)` は辞書の写し、`dict(pairs)` は 2 要素の組（list / tuple）の列から
+    /// - キーワード引数（`dict(a=1)`）は文字列のキーで足す（位置引数の後に上書き）
+    /// ⚠ キーの格納は `dict_set`（`__hash__` / `__eq__` を尊重する）。誤りの文言は CPython と同じ。
+    pub(crate) fn py_dict_ctor(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {
+        let (named, positional): (Vec<_>, Vec<_>) = evaled.into_iter().partition(|(k, _, _)| k.is_some());
+        if positional.len() > 1 {
+            return Err(format!("TypeError: dict expected at most 1 argument, got {}", positional.len()));
+        }
+        let d = std::rc::Rc::new(std::cell::RefCell::new(crate::interpreter::DictData::new(
+            "Any".to_string(),
+            "Any".to_string(),
+        )));
+        if let Some((_, src, _)) = positional.into_iter().next() {
+            let pairs: Vec<(Value, Value)> = match src {
+                Value::Dict(m) => m.borrow().all_pairs(),
+                other => {
+                    let mut out = Vec::new();
+                    for (i, item) in self.drain_iterable(other)?.into_iter().enumerate() {
+                        let elems = match &item {
+                            Value::Tuple(t) => t.all_values().to_vec(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => {
+                                return Err(format!(
+                                    "TypeError: cannot convert dictionary update sequence element #{i} to a sequence"
+                                ))
+                            }
+                        };
+                        let [k, v]: [Value; 2] = elems.try_into().map_err(|e: Vec<Value>| {
+                            format!(
+                                "ValueError: dictionary update sequence element #{i} has length {}; 2 is required",
+                                e.len()
+                            )
+                        })?;
+                        out.push((k, v));
+                    }
+                    out
+                }
+            };
+            for (k, v) in pairs {
+                self.dict_set(&d, k, v)?;
+            }
+        }
+        for (k, v, _) in named {
+            self.dict_set(&d, Value::str(k.expect("partitioned by is_some").as_str()), v)?;
+        }
+        Ok(Value::Dict(d))
+    }
+
     /// クラス `c` が `base` 自身か、その派生か（`isinstance` / `issubclass` の**唯一の**判定・タスク 2-1 / 2-4）。
     ///
     /// 同じクラスは `class_id` で見る。派生は祖先の名前（`bases`）で見る。モジュールで定義した基底は

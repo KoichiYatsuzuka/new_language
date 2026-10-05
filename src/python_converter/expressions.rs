@@ -565,11 +565,32 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             })
         }
 
-        // ⚠ 辞書内包は未対応。Arrow に「ペアのリストから dict を作る」手段が無い
-        //   （`dict(pairs)` は `'dict' object is not callable`）。
-        py::Expr::DictComp(_) => Err(format!(
-            "{filename}: dict comprehension is not supported (list and set comprehensions are)"
-        )),
+        // 辞書内包 → `(キー, 値)` の組のリスト内包を `dict(...)` に通す（python_builtins_plan.md のタスク 3-1）。
+        // ⚠ 以前は未対応だった（`dict(pairs)` が `'dict' object is not callable` で、組の列から dict を作る手段が無かった）。
+        // ⚠ キーと値は要素ごとに評価する（リスト内包と同じ理由で持ち上げ禁止）。評価順はキー → 値（CPython 3.8+ と同じ）。
+        py::Expr::DictComp(dc) => {
+            let pair = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                Expr::Tuple(vec![
+                    crate::ast::SeqEntry::Item(convert_expr(&dc.key, filename)?),
+                    crate::ast::SeqEntry::Item(convert_expr(&dc.value, filename)?),
+                ])
+            };
+            let clauses = convert_comprehension_clauses(&dc.generators, filename, "dict")?;
+            let list_expr = crate::ast::build_list_comprehension(pair, clauses)
+                .ok_or_else(|| format!("{filename}: dict comprehension needs at least one `for` clause"))?;
+            Ok(Expr::Call {
+                func: Box::new(Expr::Ident {
+                    name: "dict".to_string(),
+                    node_id: 0,
+                    res: Resolution::Unresolved,
+                }),
+                args: vec![CallArg::Positional(list_expr)],
+                span: make_span(filename),
+                cache: Default::default(),
+                node_id: 0, // #16: py-converter は未採番
+            })
+        }
 
         // ⚠ ジェネレータ式は**遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
         //   無限ジェネレータや副作用の回数が変わる。黙って変えないため明示エラーにする。
