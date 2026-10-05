@@ -42,6 +42,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",
     // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7）。
     "list", "tuple",
+    // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
+    "isinstance",
 ];
 
 /// 実行時が宣言なしで解決する名前か。

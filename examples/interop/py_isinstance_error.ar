@@ -1,0 +1,10 @@
+# py_isinstance_error.ar — isinstance の第 2 引数が型でない（python_builtins_plan.md のタスク 2-1）
+#
+# 対になる正常系: py_isinstance.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union
+#
+# ⚠ 文言は CPython と同じ。組み込み関数（`len`）も型ではない。
+
+print(isinstance(3, len))                 # ⛔ len は型ではない

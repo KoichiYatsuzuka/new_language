@@ -22,6 +22,8 @@ use super::*;
 pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
+    // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
+    "isinstance",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -86,6 +88,11 @@ impl Interpreter {
             "parse_ar" => Some(self.parse_ar_evaled(args)),
             // `list(it)` / `tuple(it)`（タスク 1-7）。本体は型の呼び出し（`call_type_by_name_evaled`）に 1 本化。
             "list" | "tuple" => Some(self.call_type_by_name_evaled(name, args)),
+            // ── Python の組み込み（python_builtins_plan.md のフェーズ 2・本体は `eval/py_builtins.rs`）──
+            "isinstance" => Some(match args.as_slice() {
+                [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),
+                _ => Err(format!("TypeError: isinstance expected 2 arguments, got {}", args.len())),
+            }),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
             "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
                 Some(self.eval_builtin_flat_evaled(name, args))

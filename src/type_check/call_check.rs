@@ -1421,6 +1421,8 @@ impl TypeChecker {
                 let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
+            // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
+            "isinstance" => Some(T::Bool),
             // `list()` は `[]` と同じ（要素型 `Never`）、`list(xs)` は要素の list（タスク 1-7）。
             // ⚠ 要素型が分からない（Python 由来の値など）ときは `None`（`list[Any]` にすると要素の操作が静的な誤りになる）。
             "list" => match arg_data {
