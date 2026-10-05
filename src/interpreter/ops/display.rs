@@ -68,9 +68,10 @@ impl Interpreter {
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
                 let inst = i.borrow();
-                // 例外はメッセージ（7-3・Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが
-                //   実行のたびに変わった。メッセージが無い（`ValueError()`）ときは空文字列（Python と同じ）
-                if inst.class.is_a("Exception") {
+                // 例外はメッセージ（Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが
+                //   実行のたびに変わった（ffi_value_exchange_plan.md 7-3）。メッセージが無い（`ValueError()`）ときは空文字列。
+                // 組み込みの例外の階層（`GeneratorExit` も）は `message` に CPython の `str(e)` が入れてある（タスク 4-2）。
+                if Self::in_exception_hierarchy(&inst.class) || inst.class.is_a("Exception") {
                     return exception_message(&inst).map(|m| self.display(&m)).unwrap_or_default();
                 }
                 let class_name = inst.class.name.clone();
@@ -229,7 +230,16 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
-            // 例外は `ValueError('bad value')`（7-3・Python の `repr(e)` と同じ）。メッセージが無ければ `ValueError()`
+            // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+            Value::Instance(i) if Self::in_exception_hierarchy(&i.borrow().class) => {
+                let inst = i.borrow();
+                let parts: Vec<String> = match Self::exc_args_of(&inst) {
+                    Some(Value::Tuple(t)) => t.values.iter().map(|v| self.display_repr(v)).collect(),
+                    _ => Vec::new(),
+                };
+                format!("{}({})", inst.class.name, parts.join(", "))
+            }
+            // 利用者の例外は `MyError('bad value')`（7-3）。メッセージが無ければ `MyError()`
             Value::Instance(i) if i.borrow().class.is_a("Exception") => {
                 let inst = i.borrow();
                 let message = exception_message(&inst).map(|m| self.display_repr(&m)).unwrap_or_default();
@@ -316,7 +326,19 @@ impl Interpreter {
                     };
                 }
 
-                // 例外は `ValueError('bad value')`（7-3）、ほかは <ClassName object at 0xADDR>
+                // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+                if Self::in_exception_hierarchy(&class) {
+                    let args = Self::exc_args_of(&inst_rc.borrow());
+                    let parts: Vec<String> = match args {
+                        Some(Value::Tuple(t)) => {
+                            t.values.iter().map(|v| self.repr_val(v)).collect::<Result<_, _>>()?
+                        }
+                        _ => Vec::new(),
+                    };
+                    return Ok(format!("{}({})", class.name, parts.join(", ")));
+                }
+
+                // 利用者の例外は `MyError('bad value')`（7-3）、ほかは <ClassName object at 0xADDR>
                 Ok(self.display_repr(val))
             }
             // その他の型はデフォルト表示

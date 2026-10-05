@@ -12,7 +12,7 @@
 #   `StaticTypeError: cannot call 'remove' on 's' — it is immutable` で止まり、
 #   この節が意図したエラーを示せない（bug_fix.md B8）。
 mut s = {1, 2, 3}
-s.remove(99)   # KeyError: 99 is not in set
+s.remove(99)   # KeyError: 99（CPython と同じ文言・タスク 4-2 で揃えた。以前は 99 is not in set）
 
 # --- Error 3: StaticTypeError — tuple unpack missing qualifier ---
 # Each named variable in a tuple unpack requires `let` or `mut`.

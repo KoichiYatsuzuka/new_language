@@ -188,6 +188,11 @@ impl Interpreter {
         Ok(self.is_truthy(val))
     }
 
+    /// 例外のインスタンスの `args`（組み込みの例外の階層だけが持つ・タスク 4-2）。
+    pub(crate) fn exc_args_of(inst: &crate::interpreter::InstanceData) -> Option<Value> {
+        inst.class.field_index.get("args").and_then(|&idx| inst.field_value(idx))
+    }
+
     /// `__str__` を持つ `Value::Instance` に対してそのメソッドを呼び出し文字列表現を返す。
     /// 定義されていなければ `display` へフォールバック。
     pub(crate) fn display_str(&mut self, val: &Value) -> Result<String, String> {

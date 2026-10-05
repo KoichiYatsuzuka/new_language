@@ -38,6 +38,18 @@ impl Interpreter {
             }
         }
         let inst_rc = Rc::new(RefCell::new(inst));
+        // 組み込みの例外の階層は `__init__` より先に `args` と `str(e)` を入れる（CPython の
+        // `BaseException.__new__` と同じ・python_builtins_plan.md のタスク 4-2）。`__init__` を書かない
+        // Python のクラスも、`super().__init__` を呼ばない `__init__` も、`args` は作るときの位置引数になる。
+        // ⚠ キーワード引数を拒むのは `__init__` を持たない（組み込みのまま）ときだけ（CPython と同じ）。
+        if Self::in_exception_hierarchy(&class) {
+            let args = if self.lookup_method_in_class(&class, "__init__").is_some() {
+                evaled.iter().filter(|(k, _, _)| k.is_none()).map(|(_, v, _)| v.clone()).collect()
+            } else {
+                Self::exc_positional_args(&class, &evaled)?
+            };
+            self.exc_set_args(&inst_rc, args)?;
+        }
         let inst_val = Value::Instance(inst_rc);
         let class_name = class.name.clone();
 

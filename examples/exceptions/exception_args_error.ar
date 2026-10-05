@@ -1,0 +1,11 @@
+# exception_args_error.ar — 組み込みの例外はキーワード引数を受けない（python_builtins_plan.md のタスク 4-2）
+#
+# 対になる正常系: exception_args.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: ValueError() takes no keyword arguments
+#
+# ⚠ 文言は CPython と同じ。位置引数ならいくつでも受ける（ValueError("a", 1)）。
+
+let e = ValueError(message="bad")                         # ⛔ キーワード引数
+print(e)
