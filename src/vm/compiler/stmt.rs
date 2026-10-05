@@ -396,12 +396,19 @@ impl Compiler {
             // ⚠ 文なので入口はオペランドスタックが平衡＝深さは `stmt_base` そのもの（#34）。
             // 内部の `break`/`continue` は外側ループへ貫通する（以前は本体ごと bail していた）。
             Stmt::Block(body) => {
-                let depth = self.stmt_base;
                 // ⚠ `block:` **文**はツリーウォークで `BLOCK_RETURN_EXPECTED_TYPE` へ push しない
                 // ので、中の `block_return` は**外側の式**のアノテーションで検査される（#35）。
                 let ann = self.block_ctxs.last().and_then(|c| c.return_type);
                 // ⚠ `block:` **文**は loop_yield に対して**透過**（#35）。
-                self.compile_block_expr(body, depth, ann, false)?;
+                // ⚠⚠ **中の `return` を通す**（python_builtins_plan.md のタスク 5-3）。`compile_block_expr` は
+                //   `block_body_bails` で `return` を断るが、それはブロック**式**（演算子のスタックが積まれた途中）の
+                //   ため。文は入口でスタックが平衡（`stmt_base` のまま）なので、中の `return` は普通の文と同じく
+                //   `emit_unwind_tries` → `Return` で抜けられる。以前は関数の中の `block:` に `return` があるだけで
+                //   関数ごと `VmForceError` になり、Python の `with open(p) as f: return f.read()`（変換先が `block:`）
+                //   も読めなかった。
+                // ⚠ この文を**囲むブロック式**があれば、そちらの `block_body_bails` が中の `return` を見つけて断る
+                //   （`P::Control` を降りる）ので、式の途中から抜ける形は従来どおり作らない。
+                self.compile_block_expr_inner(body, ann, false)?;
                 self.emit(Op::Pop);
             }
             // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。

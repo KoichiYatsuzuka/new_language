@@ -1,0 +1,32 @@
+# block_stmt_return.ar — 関数の中の block: 文から return で抜ける（python_builtins_plan.md のタスク 5-3）
+#
+# block: 文の中の return は、普通の文と同じく関数から抜ける（囲む try の finally も走る）。
+# ⚠ 以前は関数の中の block: に return があるだけで関数ごと VmForceError（バイトコードにできない）だった。
+#   Python の with open(p) as f: return f.read() も、変換先が block: なので同じ理由で読めなかった。
+# ⚠ ブロック式（let x = block -> int: ..）の中の return は今も作れない（式の途中から関数を抜ける形）。
+
+fn first_even(let xs: list[int]) -> int:
+    block:
+        for x in xs:
+            if x % 2 == 0:
+                return x
+    return -1
+
+fn classify(let n: int) -> str:
+    block:
+        let doubled = n * 2
+        if doubled > 10:
+            return "big"
+    return "small"
+
+fn guarded() -> str:
+    try:
+        block:
+            return "from block"
+    finally:
+        print("finally runs")
+    return "unreached"
+
+print(first_even([1, 3, 4, 5]), first_even([1, 3]))   # 4 -1
+print(classify(7), classify(2))                         # big small
+print(guarded())                                        # finally runs / from block
