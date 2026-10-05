@@ -79,6 +79,19 @@ impl Interpreter {
         }
     }
 
+    /// 改行を足さずに書く（`print(.., end=..)`・タスク 5-1）。行き先は `emit_print` と同じ。
+    pub(crate) fn emit_text(&self, text: &str, flush: bool) {
+        use std::io::Write;
+        if self.meta_expanding {
+            eprint!("{text}");
+        } else {
+            print!("{text}");
+            if flush {
+                let _ = std::io::stdout().flush();
+            }
+        }
+    }
+
     pub(crate) fn eval_builtin_evaled(
         &mut self,
         name: &str,
@@ -363,6 +376,23 @@ impl Interpreter {
         }
         match name {
             "print" => {
+                // キーワード引数（`sep=` / `end=`・タスク 5-1）があれば評価済みの入口へ回す。
+                // ⚠ 腕のガード（`"print" if ..`）にしないこと。`checker_knows_every_runtime_builtin_name` が
+                //   `"名前" =>` の行を名前の表として読む。
+                if args.iter().any(|a| matches!(a, CallArg::Keyword { .. })) {
+                    let mut named: Vec<(Option<String>, Value)> = Vec::with_capacity(args.len());
+                    for a in args {
+                        let (key, e) = match a {
+                            CallArg::Keyword { name, value } => (Some(name.clone()), value),
+                            other => (None, other.expr()),
+                        };
+                        match self.eval(e) {
+                            Ok(v) => named.push((key, v)),
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                    return Some(self.py_print(named));
+                }
                 let mut parts: Vec<String> = Vec::new();
                 for a in args {
                     let v = match self.eval(a.expr()) {
@@ -712,6 +742,8 @@ impl Interpreter {
             return Some(Err(e));
         }
         match name {
+            // `print(.., sep=.., end=..)`（タスク 5-1）。`eval_builtin_ident_call` の `print` アームも同じ関数へ回す。
+            "print" => Some(self.py_print(args)),
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {
                 let mut positional: Vec<Value> = Vec::new();

@@ -1,0 +1,11 @@
+# print_keywords_error.ar — print の end= は None か文字列（python_builtins_plan.md のタスク 5-1）
+#
+# 対になる正常系: print_keywords.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: end must be None or a string, not int
+#
+# ⚠ 文言は CPython と同じ。
+
+let n: int = 5
+print("x", end=n)                               # ⛔ end は文字列

@@ -793,6 +793,40 @@ impl Interpreter {
     /// 修飾名（`zoo.Animal`）で載っている（`exec_class_def`）ので、別のモジュールの同名クラスと取り違えない。
     /// ⚠ メインのクラス・組み込みの例外（`ValueError` など）は素の名前。`Exception` はすべての例外の基底
     ///   （`ClassValue::is_a`・10-19）。
+    /// `print(*objects, sep=' ', end='\n', file=None, flush=False)`（CPython と同じ・python_builtins_plan.md のタスク 5-1）。
+    ///
+    /// ⚠ 以前はキーワード引数を受ける口が無く、`print(x, end="")` を含む関数・最上位の文が
+    ///   `VmForceError` でバイトコードにできなかった（ツリーウォークの入口は名前を捨てて `x ` と出していた）。
+    /// ⚠ `file=` は `None` だけ（標準出力の外へ書く手段が無い）。`flush=True` は標準出力を流す。
+    pub(crate) fn py_print(&mut self, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
+        let (pos, mut kw) = split_named(args);
+        let sep = self.print_str_kw(take_kw(&mut kw, "sep"), "sep", " ")?;
+        let end = self.print_str_kw(take_kw(&mut kw, "end"), "end", "\n")?;
+        match take_kw(&mut kw, "file") {
+            None | Some(Value::None) => {}
+            Some(_) => {
+                return Err("TypeError: print() file= is not supported (only the standard output)".to_string())
+            }
+        }
+        let flush = take_kw(&mut kw, "flush").is_some_and(|v| self.is_truthy(&v));
+        reject_extra_kw("print", &kw)?;
+        let parts = pos.iter().map(|v| self.display_str(v)).collect::<Result<Vec<_>, _>>()?;
+        self.emit_text(&format!("{}{end}", parts.join(&sep)), flush);
+        Ok(Value::None)
+    }
+
+    /// `sep=` / `end=` は `None`（既定）か文字列（CPython と同じ文言）。
+    fn print_str_kw(&self, v: Option<Value>, name: &str, default: &str) -> Result<String, String> {
+        match v {
+            None | Some(Value::None) => Ok(default.to_string()),
+            Some(Value::Str(s)) => Ok(s.to_string()),
+            Some(other) => Err(format!(
+                "TypeError: {name} must be None or a string, not {}",
+                self.type_name(&other)
+            )),
+        }
+    }
+
     pub(crate) fn class_is_subclass(c: &ClassValue, base: &ClassValue) -> bool {
         if c.class_id == base.class_id {
             return true;
