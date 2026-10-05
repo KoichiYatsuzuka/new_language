@@ -20,11 +20,13 @@
 #      ⇒ 以前: else 節を**黙って破棄**。`finally` とは違い「例外が起きなかったとき」の本体。
 #      ⇒ 代替: else の中身を try 本体の末尾へ移す。
 #
-#   ③ except (A, B):（⚠ except mod.Err: は python_builtins_plan.md のタスク 4-3 で通るようにした）
-#      `except (A, B):` (multiple exception types) is not supported
-#      ⇒ 以前: **型を黙って `"Exception"` に潰して**いた ＝ 指定した型だけでなく
+#   ③ except (A, (B, C)):（組の入れ子）
+#      only a name, a dotted name or a tuple of them is supported in `except`
+#      ⇒ 組 `except (A, B):` と修飾名 `except mod.Err:` は python_builtins_plan.md のタスク 4-4 / 4-3 で
+#         通るようにした（`py_except_tuple.ar` / `py_qualified_except.ar`）。入れ子は CPython 3.12 も実行時の TypeError。
+#      ⇒ さらに以前: **型を黙って `"Exception"` に潰して**いた ＝ 指定した型だけでなく
 #         **何でも捕まえるハンドラ**に化けていた（捕まえすぎる誤変換）。
-#      ⇒ 代替: 型ごとに `except` 節を分ける。
+#      ⇒ 代替: 組を平らに書く。
 #
 #   ④ raise X from Y
 #      `raise ... from ...` (exception chaining) is not supported; Arrow has no `__cause__`

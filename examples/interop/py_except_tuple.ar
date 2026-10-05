@@ -1,0 +1,16 @@
+# py_except_tuple.ar — Python の except (A, B):（python_builtins_plan.md のタスク 4-4）
+#
+# 組で複数の型を捕まえる形。変換器は型ごとに同じ本体の節を並べる（except A as e: body / except B as e: body）。
+# CPython は前から順に当てて最初の節だけを走らせるので、並べても走るのは高々 1 つで意味は同じ。
+# 要素には修飾名（h.ConfigError・タスク 4-3）も書ける。⚠ 組の入れ子（except (A, (B, C)):）は CPython 3.12 も
+# 実行時の TypeError にするので、変換の誤りにした。
+# ⚠ 以前は変換器が `except (A, B): (multiple exception types) is not supported` で止めていた
+#   （さらに前は型を黙って Exception に潰し、何でも捕まえていた）。
+
+import[py] test_modules.py_except_tuple as t
+
+print(t.parse("12"), t.parse("x"))      # 12 -1
+print(t.classify(1))                    # KeyError in the tuple
+print(t.classify(2))                    # IndexError in the tuple
+print(t.classify(3))                    # MissingKey in the tuple
+print(t.classify(4))                    # RuntimeError fell through

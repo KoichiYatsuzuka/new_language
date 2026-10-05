@@ -1621,6 +1621,23 @@ fn except_accepts_a_dotted_name() {
     assert!(err.contains("computed types are not"), "{err}");
 }
 
+/// Python の `except (A, B) as e:` は型ごとに同じ本体の節を並べる（python_builtins_plan.md のタスク 4-4）。
+/// 組の入れ子は CPython 3.12 も実行時の `TypeError` なので変換の誤り。
+#[test]
+fn python_except_tuple_becomes_one_handler_per_type() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv("try:\n    pass\nexcept (ValueError, m.Err) as e:\n    x = 1\n").expect("except tuple");
+    // ⚠ 変換器は `x` の宣言（`mut x`）を `try` の前へ出すので、`try` を探す。
+    let Some(Stmt::Try { handlers, .. }) = stmts.iter().find(|s| matches!(s, Stmt::Try { .. })) else {
+        panic!("expected try: {stmts:?}")
+    };
+    let types: Vec<Option<&str>> = handlers.iter().map(|h| h.exc_type.as_deref()).collect();
+    assert_eq!(types, vec![Some("ValueError"), Some("m.Err")]);
+    assert!(handlers.iter().all(|h| h.name.as_deref() == Some("e") && h.body.len() == 1), "{handlers:?}");
+    let err = conv("try:\n    pass\nexcept (A, (B, C)):\n    pass\n").expect_err("nested tuple");
+    assert!(err.contains("a tuple of them"), "{err}");
+}
+
 /// 文が**文の位置**（先頭のトークン）を持つ（フェーズ10 10-17）。以前は `let` / `return` / `if` などが
 /// 位置を持たず、型検査の誤りが `<unknown>`・デバッガが直前の行を出し続けていた。
 #[test]
