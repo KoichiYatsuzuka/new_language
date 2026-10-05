@@ -275,11 +275,13 @@ mod a_axis_invariants {
     /// `NameError` になる（表に無い）か、実行時は書ける名前を型検査が拒む（表に余分）。
     #[test]
     fn checker_knows_the_runtime_global_names() {
-        use crate::type_check::names::RUNTIME_GLOBAL_NAMES;
+        use crate::type_check::names::{BUILTIN_EXCEPTIONS, RUNTIME_GLOBAL_NAMES};
         let scope = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
         let mut runtime: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
         runtime.sort();
-        let mut table: Vec<&str> = RUNTIME_GLOBAL_NAMES.to_vec();
+        // 組み込みの例外クラスは例外の表から（`is_runtime_global_name` と同じ・python_builtins_plan.md のタスク 4-1）。
+        let mut table: Vec<&str> =
+            RUNTIME_GLOBAL_NAMES.iter().copied().chain(BUILTIN_EXCEPTIONS.iter().map(|(n, _)| *n)).collect();
         table.sort();
         assert_eq!(table, runtime, "RUNTIME_GLOBAL_NAMES と実行時の組み込みの大域が違う");
     }

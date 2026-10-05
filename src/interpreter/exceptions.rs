@@ -39,8 +39,8 @@ impl Interpreter {
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
     /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
     pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
-        // ⚠⚠ 組み込みの例外の一覧そのもので引く（ffi_value_exchange_plan.md 7-4）。以前は写しの表 `CATCHABLE` で、
-        //    `FfiTypeError` が載っていなかったので `except` で捕まえられなかった（`RecursionError` も一度抜けていた）。
+        // ⚠⚠ 組み込みの例外の表そのもので引く（`builtin_exception_of`・表は `type_check::names::BUILTIN_EXCEPTIONS`・
+        //    python_builtins_plan.md のタスク 4-1 / ffi_value_exchange_plan.md 7-4）。`SyntaxError` の系統は変換しない。
         let class_name = super::built_in_types::builtin_exception_of(msg)?;
 
         let message = msg[class_name.len()..]

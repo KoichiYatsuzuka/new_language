@@ -28,9 +28,10 @@ use super::{
 /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
 ///
 /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
+/// - `bases`: `Error` trait と祖先を平らに並べたもの（`names::builtin_exception_bases`・タスク 4-1）
 ///
 /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
-pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
+pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<ClassValue> {
     use crate::ast::Expr as E;
 
     // __init__ 本体: `self.message = message` を表す AST ノード
@@ -108,10 +109,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .collect();
 
     Rc::new(ClassValue {
-        bases: std::iter::once("Error")
-            .chain(builtin_exception_parent(class_name))
-            .map(str::to_string)
-            .collect(),
+        bases,
         methods,
         field_defaults,
         field_mutability,
@@ -123,54 +121,23 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     })
 }
 
-/// 組み込みの例外クラスの名前（実行時の一覧）。
-///
-/// ⚠ 型検査の 2 つの一覧（`type_check::registry::builder` の `EXCEPTION_CLASS_NAMES` と `type_check::names` の
-///   `RUNTIME_BUILTIN_NAMES`）と揃えること（型検査は wasm にも入るので、ここを直接は引けない）。内部エラーの文字列を
-///   例外へ変える表（`make_internal_raised_error`）は ffi_value_exchange_plan.md 7-4 からこの一覧そのもの
-///   （[`builtin_exception_of`]）で、以前は 3 つ目の写し `CATCHABLE` だった。
-/// ⚠ Python のクラスがこれらを継承したときのフィールドの並びにも使う（`Interpreter::new` が
-///   `py_class_field_order` へ載せる・フェーズ10 10-19）。
-pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 21] = [
-    "Exception",
-    "ValueError",
-    "TypeError",
-    "NameError",
-    "AttributeError",
-    "IndexError",
-    "KeyError",
-    "ZeroDivisionError",
-    "RuntimeError",
-    "StopIteration",
-    "NotImplementedError",
-    "OverflowError",
-    "IOError",
-    "OSError",
-    "AssertionError",
-    "ArithmeticError",
-    "AccessError",
-    "RecursionError",
-    "GeneratorExit",
-    // 外部言語との境界（7-4）: 宣言と食い違う値（`TypeError` の派生）と、相手の言語で投げられた例外
-    "FfiTypeError",
-    "ForeignError",
-];
-
-/// 組み込みの例外クラスの、`Error` のほかの基底（7-4）。`FfiTypeError` は `except TypeError` でも捕まえられる。
-/// ⚠ ほかの例外は `Error` だけ（`None` が正しい）。
-pub(crate) fn builtin_exception_parent(name: &str) -> Option<&'static str> {
-    match name {
-        "FfiTypeError" => Some("TypeError"),
-        _ => None,
-    }
-}
-
 /// `"ValueError: …"` の形の内部エラーなら、その組み込みの例外クラスの名前（7-4）。
 /// `make_internal_raised_error` がこれで例外に変え、外部言語のブリッジはこれで「もう種類が付いたエラー」を見分ける。
+///
+/// 表は組み込みの例外クラスの表 1 つ（`type_check::names::BUILTIN_EXCEPTIONS`・python_builtins_plan.md のタスク 4-1）。
+/// ⚠ 以前は手で揃えた別の一覧（`CATCHABLE`・のちに `BUILTIN_EXCEPTION_NAMES`）で、`RecursionError` が抜けて
+///   `except RecursionError:` で捕まえられなかった（実測）・`FfiTypeError` も一度抜けていた。
+/// ⚠ `SyntaxError` の系統は変換しない。内部で `SyntaxError: 'break' outside for/while loop` などを
+///   返すが、CPython ではコンパイル時の誤りで `try` では捕まらない（`except Exception` に黙って
+///   飲まれないようにする）。
 pub(crate) fn builtin_exception_of(msg: &str) -> Option<&'static str> {
-    BUILTIN_EXCEPTION_NAMES.iter().copied().find(|name| {
-        msg.starts_with(name) && matches!(msg.as_bytes().get(name.len()), None | Some(b':') | Some(b' '))
-    })
+    crate::type_check::names::BUILTIN_EXCEPTIONS
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| !matches!(*n, "SyntaxError" | "IndentationError" | "TabError"))
+        .find(|name| {
+            msg.starts_with(name) && matches!(msg.as_bytes().get(name.len()), None | Some(b':') | Some(b' '))
+        })
 }
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
@@ -294,11 +261,12 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
         Var::new(Value::Trait("Error".to_string()), false),
     );
 
-    // 標準例外クラスをすべて登録する。
+    // 標準例外クラスをすべて登録する（表は `type_check::names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
     // 各クラスは `__init__(mut self, message: str)` を持ち、
     // code_context / file / line / col フィールドは raise 時にインタープリタが設定する。
-    for class_name in BUILTIN_EXCEPTION_NAMES {
-        let cls = make_error_class(class_name);
+    for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
+        let bases = crate::type_check::names::builtin_exception_bases(class_name, true);
+        let cls = make_error_class(class_name, bases);
         global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
     }
 

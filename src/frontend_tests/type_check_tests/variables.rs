@@ -498,7 +498,7 @@ fn meta_kinds_are_distinct_types() {
     }
 
     /// 外部言語との境界の例外（ffi_value_exchange_plan.md 7-4）は組み込みの例外クラス。`except` に書け、
-    /// `FfiTypeError` は `TypeError` の欄にも入る（実行時の `builtin_exception_parent` と同じ）。
+    /// `FfiTypeError` は `TypeError` の欄にも入る（親は例外の表 `names::BUILTIN_EXCEPTIONS`・実行時も同じ表）。
     #[test]
     fn ffi_exceptions_are_builtin_exception_classes() {
         let src = concat!(
@@ -544,4 +544,21 @@ fn meta_kinds_are_distinct_types() {
             errs.iter().any(|e| matches!(e.kind, TypeErrorKind::ExceptOnErrorTrait)),
             "{errs:?}"
         );
+    }
+
+    /// 組み込みの例外は CPython の階層を持つ（python_builtins_plan.md のタスク 4-1）。子は親の欄に入り、
+    /// 親は子の欄に入らない。足した例外・警告のクラスも `except` に書ける。
+    #[test]
+    fn builtin_exceptions_follow_the_cpython_hierarchy() {
+        let src = concat!(
+            "let a: LookupError = KeyError(\"k\")\n",
+            "let b: OSError = FileNotFoundError(\"f\")\n",
+            "let c: IOError = PermissionError(\"p\")\n",
+            "let d: BaseException = ValueError(\"v\")\n",
+            "let w: Warning = FutureWarning(\"w\")\n",
+            "try:\n    pass\nexcept UserWarning as e:\n    pass\n",
+        );
+        assert!(ok(src), "{:?}", check(src));
+        assert!(err("let e: KeyError = LookupError(\"x\")\n"));
+        assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
     }
