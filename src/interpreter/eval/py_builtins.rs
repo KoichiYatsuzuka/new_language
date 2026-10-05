@@ -61,6 +61,60 @@ impl Interpreter {
         Value::Type(name.to_string())
     }
 
+    /// `getattr(o, name[, default])`（タスク 2-3）。読みは `o.name` と**同じ経路**（`get_attr_val`）なので、
+    /// アクセス指定（`private:`）もそのまま効く。既定値があれば `AttributeError` のときだけそれを返す（CPython と同じ）。
+    pub(crate) fn py_getattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let n = args.len();
+        if !(2..=3).contains(&n) {
+            return Err(if n < 2 {
+                format!("TypeError: getattr expected at least 2 arguments, got {n}")
+            } else {
+                format!("TypeError: getattr expected at most 3 arguments, got {n}")
+            });
+        }
+        let mut it = args.into_iter();
+        let (obj, name, default) = (it.next().expect("n >= 2"), it.next().expect("n >= 2"), it.next());
+        let name = self.attr_name_arg(&name)?;
+        match (self.get_attr_val(obj, &name, None), default) {
+            (Err(e), Some(d)) if e.starts_with("AttributeError") => Ok(d),
+            (r, _) => r,
+        }
+    }
+
+    /// `hasattr(o, name)`（タスク 2-3）。読めれば真、`AttributeError` なら偽、ほかの誤りはそのまま上げる
+    /// （CPython も `AttributeError` だけを飲み込む）。
+    pub(crate) fn py_hasattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [obj, name]: [Value; 2] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: hasattr expected 2 arguments, got {}", a.len()))?;
+        let name = self.attr_name_arg(&name)?;
+        match self.get_attr_val(obj, &name, None) {
+            Ok(_) => Ok(Value::Bool(true)),
+            Err(e) if e.starts_with("AttributeError") => Ok(Value::Bool(false)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `setattr(o, name, v)`（タスク 2-3）。書きは `o.name = v` と同じ経路（`set_attr_val`）なので、
+    /// アクセス指定・クラス変数（`const`）への代入の禁止・値の複製の規則がそのまま効く。
+    /// ⚠ Arrow のクラスはフィールドを本体で宣言するので、宣言していない名前は作れない（`o.name = v` と同じ誤り）。
+    pub(crate) fn py_setattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [obj, name, val]: [Value; 3] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: setattr expected 3 arguments, got {}", a.len()))?;
+        let name = self.attr_name_arg(&name)?;
+        self.set_attr_val(obj, &name, val)?;
+        Ok(Value::None)
+    }
+
+    /// 属性の名前の引数（`getattr` / `hasattr` / `setattr`）。文字列でなければ CPython と同じ `TypeError`。
+    fn attr_name_arg(&self, v: &Value) -> Result<String, String> {
+        match v {
+            Value::Str(s) => Ok(s.to_string()),
+            other => Err(format!("TypeError: attribute name must be string, not '{}'", self.type_name(other))),
+        }
+    }
+
     /// クラス `c` が `base` 自身か、その派生か（`isinstance` / `issubclass` の**唯一の**判定・タスク 2-1 / 2-4）。
     ///
     /// 同じクラスは `class_id` で見る。派生は祖先の名前（`bases`）で見る。モジュールで定義した基底は

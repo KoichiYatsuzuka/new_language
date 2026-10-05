@@ -23,7 +23,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
-    "isinstance", "type",
+    "isinstance", "type", "getattr", "hasattr", "setattr",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -94,6 +94,9 @@ impl Interpreter {
                 [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),
                 _ => Err(format!("TypeError: isinstance expected 2 arguments, got {}", args.len())),
             }),
+            "getattr" => Some(self.py_getattr(args)),
+            "hasattr" => Some(self.py_hasattr(args)),
+            "setattr" => Some(self.py_setattr(args)),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
             "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
                 Some(self.eval_builtin_flat_evaled(name, args))

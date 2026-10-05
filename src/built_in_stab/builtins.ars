@@ -157,6 +157,18 @@ fn type(obj: Any):
     """The class of obj (a class value, or the built-in type of a primitive); its `__name__` is the class name."""
     pass
 
+fn getattr(obj: Any, name: str, default: Any = None):
+    """The attribute `name` of obj (same as `obj.name`); `default` when it is missing, else AttributeError."""
+    pass
+
+fn hasattr(obj: Any, name: str) -> bool:
+    """True if obj has the attribute `name`."""
+    pass
+
+fn setattr(obj: Any, name: str, value: Any) -> None:
+    """Assign `value` to the attribute `name` of obj (same as `obj.name = value`)."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:

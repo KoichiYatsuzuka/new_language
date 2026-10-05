@@ -1,0 +1,16 @@
+# py_getattr_error.ar — setattr でも let のインスタンスは書き換えられない（python_builtins_plan.md のタスク 2-3）
+#
+# 対になる正常系: py_getattr.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: cannot assign to immutable field 'v'
+#
+# ⚠ setattr は `o.v = 5` と同じ経路なので、`let` のインスタンスへの書き込みはここでも止まる
+#   （静的には名前が文字列なので見えない。実行時の検査が最後の網）。
+
+class Box:
+    mut v: int
+
+let frozen = Box(3)
+setattr(frozen, "v", 5)                  # ⛔ let のインスタンス
+print(frozen.v)

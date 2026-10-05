@@ -254,3 +254,32 @@ fn test_type_of_follows_cpython() {
     assert_str(run_get(src, "shown"), "<class 'int'>");
     assert!(run_err_msg("let d: dict[str, int] = {}\nlet z = type(\"M\", (), d)\n").contains("type() with 3 arguments"));
 }
+
+// ---------------------------------------------------------------------------
+// getattr / hasattr / setattr（python_builtins_plan.md のタスク 2-3）
+// ---------------------------------------------------------------------------
+
+/// 名前での読み書きは `o.name` / `o.name = v` と同じ経路（既定値は `AttributeError` のときだけ）。
+#[test]
+fn test_getattr_hasattr_setattr() {
+    let src = concat!(
+        "class Box:\n",
+        "    mut v: int\n",
+        "mut b = Box(1)\n",
+        "let a = getattr(b, \"v\")\n",
+        "let d = getattr(b, \"w\", 0)\n",
+        "let h1 = hasattr(b, \"v\")\n",
+        "let h2 = hasattr(b, \"w\")\n",
+        "setattr(b, \"v\", 9)\n",
+        "let after = b.v\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(1)));
+    assert!(matches!(run_get(src, "d"), Value::Int(0)));
+    assert!(matches!(run_get(src, "h1"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "h2"), Value::Bool(false)));
+    assert!(matches!(run_get(src, "after"), Value::Int(9)));
+    // 既定値が無ければ `AttributeError`、名前が文字列でなければ `TypeError`、`let` のインスタンスは書けない。
+    assert!(run_err_msg("class Box:\n    mut v: int\nlet b = Box(1)\nlet z = getattr(b, \"w\")\n").contains("AttributeError"));
+    assert!(run_err_msg("class Box:\n    mut v: int\nlet b = Box(1)\nlet z = getattr(b, 3)\n").contains("attribute name must be string"));
+    assert!(run_err_msg("class Box:\n    mut v: int\nlet b = Box(1)\nsetattr(b, \"v\", 5)\n").contains("immutable"));
+}
