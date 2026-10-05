@@ -1,0 +1,10 @@
+# py_open_error.ar — open の mode は r / w / x / a のどれか 1 つ（python_builtins_plan.md のタスク 5-2）
+#
+# 対になる正常系: py_open.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: must have exactly one of create/read/write/append mode
+#
+# ⚠ 文言は CPython と同じ。
+
+let f = open("examples/basics/_tmp_py_open_error.txt", "rw")   # ⛔ r と w を同時には書けない

@@ -960,31 +960,48 @@ impl Interpreter {
                 None => pos.push(v),
             }
         }
+        // Python の形（`open(path, "w", encoding="utf-8")`・タスク 5-2）は Arrow の列挙の値へ写して同じ道を通す。
+        let py_form = super::py_builtins::py_open_form(&pos, &kw)?;
         let file_path = extract_path_str(
             get_arg(&pos, &kw, 0, "file_path")
+                .or_else(|| py_form.as_ref().and_then(|_| kw.get("file")))
                 .ok_or("TypeError: open() missing required argument 'file_path'")?,
         )?;
-        let open_mode_int = extract_enum_int(
-            get_arg(&pos, &kw, 1, "open_mode")
-                .ok_or("TypeError: open() missing required argument 'open_mode'")?,
-            "enum_item_FileOpenMode",
-        )?;
-        let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
-            .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
-            .transpose()?
-            .unwrap_or(0);
-        let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
-            .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
-            .transpose()?
-            .unwrap_or(1);
-        let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
-            .map(|v| extract_enum_int(v, "enum_item_Encoding"))
-            .transpose()?
-            .unwrap_or(1);
+        let open_mode_int = match &py_form {
+            Some(f) => f.open_mode_for(&file_path),
+            None => extract_enum_int(
+                get_arg(&pos, &kw, 1, "open_mode")
+                    .ok_or("TypeError: open() missing required argument 'open_mode'")?,
+                "enum_item_FileOpenMode",
+            )?,
+        };
+        let start_point_int: i64 = match &py_form {
+            Some(f) => f.start_point_for(&file_path),
+            None => get_arg(&pos, &kw, 2, "start_point")
+                .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
+                .transpose()?
+                .unwrap_or(0),
+        };
+        let byte_mode_int: i64 = match &py_form {
+            Some(f) => i64::from(!f.binary),
+            None => get_arg(&pos, &kw, 3, "byte_recognizing")
+                .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
+                .transpose()?
+                .unwrap_or(1),
+        };
+        let enc_int: i64 = match &py_form {
+            Some(f) => f.enc_int,
+            None => get_arg(&pos, &kw, 4, "encoding")
+                .map(|v| extract_enum_int(v, "enum_item_Encoding"))
+                .transpose()?
+                .unwrap_or(1),
+        };
         if enc_int == 3 {
             return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
         }
+        // ⚠ Python の形の 6 番目は `newline`（`py_open_form` が見た）。
         let _exclusion: bool = get_arg(&pos, &kw, 5, "exclusion")
+            .filter(|_| py_form.is_none())
             .map(|v| match v {
                 Value::Bool(b) => Ok(*b),
                 _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
@@ -1006,7 +1023,8 @@ impl Interpreter {
         };
 
         let std_path = std::path::Path::new(&file_path);
-        if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
+        // ⚠ Python の形の `"x"` は CPython と同じ `FileExistsError`（`create_new` の失敗・`open_error`）にする。
+        if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() && py_form.is_none() {
             return Err(format!(
                 "RuntimeError: open() make_and_write: file '{}' already exists",
                 file_path
