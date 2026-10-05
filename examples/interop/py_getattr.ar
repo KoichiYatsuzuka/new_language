@@ -1,0 +1,27 @@
+# py_getattr.ar — getattr / hasattr / setattr（python_builtins_plan.md のタスク 2-3）
+#
+# 対になる誤りの例: py_getattr_error.ar
+#
+# 名前（文字列）で属性を読み書きする。読み書きは `o.name` / `o.name = v` と同じ経路なので、
+# アクセス指定・`let` のインスタンスへの書き込みの禁止などの規則がそのまま効く。
+#   - getattr(o, name, default) は AttributeError のときだけ default を返す
+#   - hasattr は AttributeError だけを偽にする（ほかの誤りはそのまま上げる）
+# ⚠ 以前は NameError（pandas で getattr 369・hasattr 162・setattr 64 箇所）。
+# ⚠ Arrow のクラスはフィールドを本体で宣言するので、宣言していない名前は setattr でも作れない。
+
+import[py] test_modules.py_getattr as m
+
+print("=== 1. inside Python code ===")
+print(m.run())                          # ([True, False, True], 'started;unknown pause;stopped;')
+mut h = m.Handler()
+print(m.rename(h, "reset"))             # ('reset', True, False)
+
+print("=== 2. from Arrow ===")
+class Box:
+    mut v: int
+
+mut b = Box(1)
+print(getattr(b, "v"), getattr(b, "w", 0))       # 1 0
+print(hasattr(b, "v"), hasattr(b, "w"))          # True False
+setattr(b, "v", 9)
+print(b.v)                                       # 9
