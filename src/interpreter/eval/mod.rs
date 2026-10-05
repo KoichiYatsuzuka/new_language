@@ -193,6 +193,10 @@ fn get_arg<'a>(
 mod core;
 mod calls;
 mod builtins;
+// 値として使える組み込みの名前（タスク 1-7）。表示（`ops/display.rs`）・型検査の名前の表の突き合わせが使う。
+pub(crate) use builtins::is_builtin_function_name;
+#[cfg(test)]
+pub(crate) use builtins::BUILTIN_VALUE_NAMES;
 // ⚠ 評価コアビルド（`native` 無効）では同名スタブへ差し替える（評価コア切り出し #2）。
 // `parser` の `imports` / `imports_editor` と同じ形。**呼び出し側は `#[cfg]` を持たない。**
 #[cfg(feature = "native")]

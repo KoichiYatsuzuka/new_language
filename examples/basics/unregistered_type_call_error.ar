@@ -1,7 +1,9 @@
 # unregistered_type_call_error.ar — 未登録の型名を呼び出したときのエラー（負の対照・#56）。
 #
-# `tuple` / `list` / `type` / `byte` は `Value::Type` グローバルとして**登録されていない**ので、
-# 呼び出すと `NameError: 'tuple' is not defined` になる。
+# `byte` は `Value::Type` グローバルとして**登録されていない**ので、
+# 呼び出すと `NameError: 'byte' is not defined` になる。
+# ⚠ 以前は `tuple` で確かめていたが、python_builtins_plan.md のタスク 1-7 で `list` / `tuple` は組み込みの値になった
+#   （`tuple(it)` が作る）。未登録の名前の役は `byte` へ移した。
 #
 # ⚠ この例題の役目は「**`VmForceError` ではなく `NameError` が出る**」ことの固定。
 # #33〜#55 の間、コンパイラがこれらの名前を bail していたせいで
@@ -10,12 +12,12 @@
 # #34 の教訓「必ず失敗する文は bail せず同じ文言を出す」の再演。
 #
 # ⚠ フェーズ10 10-12 で、どこにも無い名前は**静的エラー**になった
-#   （`StaticTypeError  name 'tuple' is not defined`）。CLI ではここで止まる。
+#   （`StaticTypeError  name 'byte' is not defined`）。CLI ではここで止まる。
 #   実行時の経路（`NameError` が出て `VmForceError` にならないこと）は、型エラーを無視して走る REPL で
 #   まだ意味を持つ。コンパイルできること自体は `force_gate` が見ている。
 
 print("before")
 
-let t = tuple(1, 2)
+let t = byte(1, 2)
 
 print(t)

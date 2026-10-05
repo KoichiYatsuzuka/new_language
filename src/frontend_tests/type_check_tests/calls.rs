@@ -274,3 +274,24 @@ use super::*;
         assert!(msg.contains('3'));
     }
 
+    // --- `list(it)` / `tuple(it)` と組み込みの名前を値として使う（python_builtins_plan.md のタスク 1-7）---
+
+    /// `list(xs)` は要素の list、`list()` は `[]` と同じ。組み込みの名前は値として書ける。
+    #[test]
+    fn list_constructor_types_ok() {
+        assert!(ok(concat!(
+            "let xs: list[int] = [1]\n",
+            "let a: list[int] = list(xs)\n",
+            "let d: dict[str, int] = {\"k\": 1}\n",
+            "let ks: list[str] = list(d)\n",
+            "let e: list[int] = list()\n",
+            "let t = tuple(xs)\n",
+            "let f = repr\n",
+        )));
+    }
+
+    /// 要素の型が違えば誤り（`list(xs)` の結果に型が付く）。
+    #[test]
+    fn list_constructor_types_err() {
+        assert!(err("let xs: list[int] = [1]\nlet a: list[str] = list(xs)\n"));
+    }

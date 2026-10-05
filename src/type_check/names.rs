@@ -40,6 +40,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込み関数（`eval/builtins.rs`）
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",
+    // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7）。
+    "list", "tuple",
 ];
 
 /// 実行時が宣言なしで解決する名前か。

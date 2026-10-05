@@ -11,7 +11,34 @@ use {
 };
 use super::*;
 
+/// **値として使える**組み込みの名前（python_builtins_plan.md のタスク 1-7）。
+///
+/// 束縛されていない名前がここにあれば、名前の探索の**最後の段**で `Value::Type(名前)` になる
+/// （[`Interpreter::builtin_value`]・CPython の `builtins` と同じ位置）。呼ぶと `call_type_constructor_evaled` が
+/// 組み込み関数の表（`eval_builtin_evaled` / キーワードつきは `eval_builtin_evaled_named`）へ回す。
+/// ⚠⚠ **大域へ束縛しないこと。** `int` / `str` / `len` は大域に束縛してあるので、同名の最上位の宣言が
+///   `already declared` になる（`let dict = 3` が実行時の `NameError`・実測）。ここに足す名前はそうならない。
+/// ⚠ `list` / `tuple` は型の名前（呼ぶと作る）。ほかは関数（表示は `<built-in function 名前>`）。
+pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
+    "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
+    "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
+];
+
+/// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
+/// `list` / `tuple` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
+pub(crate) fn is_builtin_function_name(name: &str) -> bool {
+    matches!(name, "len" | "id") || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple"))
+}
+
 impl Interpreter {
+    /// 束縛されていない名前 `name` の**組み込みの値**（名前の探索の最後の段・タスク 1-7）。組み込みでなければ `None`。
+    ///
+    /// 呼び出し元は名前の読みが失敗した所すべて（ツリーウォークの `eval` の識別子 3 か所・VM の `LoadGlobal` 2 か所）。
+    /// ⚠ 束縛した名前が勝つ（ここへ来るのは束縛が無いときだけ）ので、`let repr = f` の利用者の値を隠さない。
+    pub(crate) fn builtin_value(&self, name: &str) -> Option<Value> {
+        BUILTIN_VALUE_NAMES.contains(&name).then(|| Value::Type(name.to_string()))
+    }
+
     /// 組み込み関数名を受け取り、該当する組み込みを実行して結果を返す。
     /// 未知の名前には `None` を返してユーザー定義関数の探索にフォールスルーする。
     /// 評価済み引数で「純粋・共通」な組み込みを呼ぶ（VM の `CallBuiltin` op 用）。
@@ -57,6 +84,8 @@ impl Interpreter {
             // ⚠ #33 でフォールバックが消えた後も、#56 で削除した `is_builtin_callee` が bail し続け、
             //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
             "parse_ar" => Some(self.parse_ar_evaled(args)),
+            // `list(it)` / `tuple(it)`（タスク 1-7）。本体は型の呼び出し（`call_type_by_name_evaled`）に 1 本化。
+            "list" | "tuple" => Some(self.call_type_by_name_evaled(name, args)),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
             "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
                 Some(self.eval_builtin_flat_evaled(name, args))

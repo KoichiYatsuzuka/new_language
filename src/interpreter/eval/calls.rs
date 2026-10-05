@@ -395,6 +395,20 @@ impl Interpreter {
                 crate::interpreter::event_loop::SignalData::new(),
             ))));
         }
+        // 値として取り出した組み込み関数（`let f = repr` / `key=len`・タスク 1-7）は組み込み関数の表へ回す。
+        // ⚠ キーワード引数つきは `eval_builtin_evaled_named`（扱う名前だけ）。扱わない名前はキーワードを受けない。
+        if super::builtins::is_builtin_function_name(type_name) && !matches!(type_name, "len" | "id") {
+            if evaled.iter().any(|(k, _, _)| k.is_some()) {
+                let named: Vec<(Option<String>, Value)> = evaled.into_iter().map(|(k, v, _)| (k, v)).collect();
+                return self.eval_builtin_evaled_named(type_name, named).unwrap_or_else(|| {
+                    Err(format!("TypeError: {type_name}() takes no keyword arguments"))
+                });
+            }
+            let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+            return self
+                .eval_builtin_evaled(type_name, vals)
+                .unwrap_or_else(|| Err(format!("NameError: '{type_name}' is not defined")));
+        }
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
         self.call_type_by_name_evaled(type_name, vals)
     }
@@ -488,27 +502,25 @@ impl Interpreter {
                 [_] => Ok(Value::Bool(true)),
                 _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
             },
-            "list" => match vals {
-                ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
-                _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
-                    Value::List(lst) => Ok(Value::List(lst)),
-                    Value::FrozenList { state, layout } => {
-                        let st = state.borrow();
-                        let items = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
-                        Ok(Value::List(Rc::new(RefCell::new(items))))
+            // `list(it)` / `tuple(it)`（タスク 1-7）。どのイテラブルも `for` と同じ規則で最後まで回す
+            // （辞書はキー・遅延のジェネレータ・`__iter__` を持つインスタンス・`range` …）。
+            // ⚠ `list(xs)` は**新しい list**（CPython の浅いコピー）。以前は同じ `Rc` を返していたので、
+            //   結果へ `append` すると元の list も伸びた（ただし `list` が名前として引けず届かない経路だった）。
+            "list" | "tuple" => {
+                let items = match vals.len() {
+                    0 => Vec::new(),
+                    1 => {
+                        let v = vals.into_iter().next().expect("checked length");
+                        self.drain_iterable(v)?
                     }
-                    Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
-                    Value::Str(s) => {
-                        let chars = s.chars().map(|c| Value::str(c.to_string())).collect();
-                        Ok(Value::List(Rc::new(RefCell::new(chars))))
-                    }
-                    other => Err(format!(
-                        "TypeError: '{}' object is not iterable",
-                        self.type_name(&other)
-                    )),
-                },
-                _ => Err("TypeError: list() takes at most 1 argument".to_string()),
-            },
+                    n => return Err(format!("TypeError: {type_name} expected at most 1 argument, got {n}")),
+                };
+                if type_name == "list" {
+                    Ok(Value::List(Rc::new(RefCell::new(items))))
+                } else {
+                    Ok(self.vm_build_tuple(items))
+                }
+            }
             "set" => match vals {
                 ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => {

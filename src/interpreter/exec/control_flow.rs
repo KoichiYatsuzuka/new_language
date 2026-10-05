@@ -48,4 +48,24 @@ impl Interpreter {
         };
         Ok(generator)
     }
+
+    /// イテラブルを**最後まで回して**要素を集める（`list(it)` / `tuple(it)` などの組み込みが使う・タスク 1-7）。
+    ///
+    /// `for` と同じ規則（[`Self::make_for_iterator`]）でイテレータにしてから `gen_next` で尽きるまで進める。
+    /// ⚠ `collect_iterable` はジェネレータの実体化済みの値しか見ないので、遅延のジェネレータ（`gen` 関数）や
+    ///   `__iter__` を持つインスタンスには使えない。新しい組み込みはこちらを使うこと。
+    pub(crate) fn drain_iterable(&mut self, val: Value) -> Result<Vec<Value>, String> {
+        let type_name = self.type_name(&val).to_string();
+        let it = self
+            .make_for_iterator(val)
+            .map_err(|_| format!("TypeError: '{type_name}' object is not iterable"))?;
+        let Value::Generator(state) = it else {
+            return Err(format!("TypeError: iter() returned non-iterator of type '{}'", self.type_name(&it)));
+        };
+        let mut out = Vec::new();
+        while let Some(v) = self.gen_next(&state)? {
+            out.push(v);
+        }
+        Ok(out)
+    }
 }

@@ -219,8 +219,10 @@ impl Interpreter {
             Expr::Ident { name, res, .. } => match res {
                 Resolution::Local(slot) => self.eval_local_ref(name, *slot),
                 Resolution::Global(cache) => self.eval_global_ref(name, cache),
+                // ⚠ 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7）。
                 Resolution::Unresolved => self
                     .get_val(name)
+                    .or_else(|| self.builtin_value(name))
                     .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             },
             Expr::DebugVar(name) => self

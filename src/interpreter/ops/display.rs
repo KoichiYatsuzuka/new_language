@@ -69,6 +69,10 @@ impl Interpreter {
                 let addr = Rc::as_ptr(i) as usize;
                 format!("<{} object at 0x{:x}>", class_name, addr)
             }
+            // 組み込み関数を値として取り出したもの（`repr` / `len` …・タスク 1-7）は CPython と同じ表示。
+            Value::Type(name) if crate::interpreter::eval::is_builtin_function_name(name) => {
+                format!("<built-in function {name}>")
+            }
             Value::Type(name) => format!("<class '{name}'>"),
             Value::Trait(name) => format!("<trait '{name}'>"),
             Value::Protocol(name) => format!("<protocol '{name}'>"),

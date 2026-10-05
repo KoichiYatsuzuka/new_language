@@ -1421,6 +1421,16 @@ impl TypeChecker {
                 let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
+            // `list()` は `[]` と同じ（要素型 `Never`）、`list(xs)` は要素の list（タスク 1-7）。
+            // ⚠ 要素型が分からない（Python 由来の値など）ときは `None`（`list[Any]` にすると要素の操作が静的な誤りになる）。
+            "list" => match arg_data {
+                [] => Some(T::ListOf(Box::new(T::Never))),
+                [(None, t)] => match Self::for_element_type(t) {
+                    T::Unresolved => None,
+                    e => Some(T::ListOf(Box::new(e))),
+                },
+                _ => None,
+            },
             _ => None,
         }
     }

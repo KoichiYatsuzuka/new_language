@@ -929,7 +929,10 @@ fn load_global_ref(
                 .vm_global_by_slot(idx)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined"))
         }
-        None => Err(format!("NameError: '{name}' is not defined")),
+        // 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7・`Op::LoadGlobal` と同じ）。
+        None => interp
+            .builtin_value(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined")),
     }
 }
 
@@ -972,7 +975,12 @@ fn exec_op(
                         None => return Err(format!("NameError: '{name}' is not defined")),
                     }
                 }
-                None => return Err(format!("NameError: '{name}' is not defined")),
+                // 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7）。
+                // ⚠ `load_global_ref` も同じ手順にすること（上の doc の「完全に同じ手順」）。
+                None => match interp.builtin_value(name) {
+                    Some(v) => buf.push(v),
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                },
             }
         }
         Op::StoreGlobal(ni, ci) => {
