@@ -102,6 +102,8 @@ $knownDiff = @{
     'py_aggregates'                  = 'Rust: all / any / min / max / sum / sorted ...（タスク 3-2 で新設・5 行目まで同じ）。py: min / max の key= を見ず pear banana と出し、default= を受けず ValueError で止まる'
     'py_aggregates_error'            = 'Rust: max([]) を実行時の ValueError で止め、stdout には何も出さない（タスク 3-2 で新設）。py: RuntimeError: ValueError を stdout に出す'
     'py_conversions'                 = 'Rust: map / filter / iter / hash / ord / chr / hex / oct / bin / ascii（タスク 3-3 で新設）。py: map が無く NameError'
+    'exception_hierarchy'            = 'Rust: 組み込みの例外が CPython の階層を持つ（タスク 4-1 で新設）。py: 辞書の引き損ないが Arrow の例外にならず Unhandled exception で止まる'
+    'exception_hierarchy_error'      = 'Rust: let e: KeyError = LookupError(..) を静的に止める（タスク 4-1 で新設）。py: LookupError が無く NameError'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

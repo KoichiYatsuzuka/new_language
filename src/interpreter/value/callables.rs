@@ -331,11 +331,19 @@ impl ClassValue {
     ///   `except Exception` が `RuntimeError` も利用者の例外も捕まえなかった（まとめて捕まえる手段が無かった）。
     /// ⚠ 基底は `bases` を見るだけ（推移をたどらない）。Python のクラスの継承は定義時に祖先まで平坦化して
     ///   載せる（`exec_class_def`）。Arrow のクラスは trait しか継承できない。
+    /// ⚠ 組み込みの例外は CPython の階層の祖先を `bases` に持つ（タスク 4-1・`names::BUILTIN_EXCEPTIONS`）。
+    ///   `BaseException` を祖先に持つクラス（組み込みと、それを継承した Python のクラス）は `bases` だけで
+    ///   答える。`GeneratorExit` は `BaseException` の直下なので `except Exception` では捕まらない（CPython と同じ）。
     pub(crate) fn is_a(&self, type_name: &str) -> bool {
-        self.name == type_name
-            || self.bases.iter().any(|b| b == type_name)
-            || (type_name == "Exception"
-                && (self.is_exception || self.bases.iter().any(|b| b == "Error" || b == "Exception")))
+        if self.name == type_name || self.bases.iter().any(|b| b == type_name) {
+            return true;
+        }
+        if self.name == "BaseException" || self.bases.iter().any(|b| b == "BaseException") {
+            return false;
+        }
+        // 利用者の例外（`class MyErr(Error)`）は `Exception`（とその上の `BaseException`）の派生。
+        matches!(type_name, "Exception" | "BaseException")
+            && (self.is_exception || self.bases.iter().any(|b| b == "Error" || b == "Exception"))
     }
 
     /// 合成クラス（組み込み型・`enum` の実体型・`new_type` ラッパー等）の**土台**（#80）。

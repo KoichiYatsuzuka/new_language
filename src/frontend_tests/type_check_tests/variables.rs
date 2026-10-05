@@ -401,3 +401,20 @@ fn meta_kinds_are_distinct_types() {
             "{errs:?}"
         );
     }
+
+    /// 組み込みの例外は CPython の階層を持つ（python_builtins_plan.md のタスク 4-1）。子は親の欄に入り、
+    /// 親は子の欄に入らない。足した例外・警告のクラスも `except` に書ける。
+    #[test]
+    fn builtin_exceptions_follow_the_cpython_hierarchy() {
+        let src = concat!(
+            "let a: LookupError = KeyError(\"k\")\n",
+            "let b: OSError = FileNotFoundError(\"f\")\n",
+            "let c: IOError = PermissionError(\"p\")\n",
+            "let d: BaseException = ValueError(\"v\")\n",
+            "let w: Warning = FutureWarning(\"w\")\n",
+            "try:\n    pass\nexcept UserWarning as e:\n    pass\n",
+        );
+        assert!(ok(src), "{:?}", check(src));
+        assert!(err("let e: KeyError = LookupError(\"x\")\n"));
+        assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
+    }

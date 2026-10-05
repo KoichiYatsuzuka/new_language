@@ -39,32 +39,18 @@ impl Interpreter {
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
     /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
     pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
-        const CATCHABLE: &[&str] = &[
-            "ZeroDivisionError",
-            "NotImplementedError",
-            "AttributeError",
-            "ArithmeticError",
-            "AssertionError",
-            "OverflowError",
-            "AccessError",
-            "RuntimeError",
-            "ValueError",
-            "TypeError",
-            "NameError",
-            "IndexError",
-            "KeyError",
-            "IOError",
-            "OSError",
-            "StopIteration",
-            // ⚠⚠ ここに無いと `Err("RecursionError: ...")` が例外に変換されず、
-            //    `except RecursionError:` で**捕まえられない**。`values_eq` は以前から
-            //    この文言を返していたのに登録が抜けていた（実測）。
-            "RecursionError",
-            "GeneratorExit",
-            "Exception",
-        ];
+        // 表は組み込みの例外クラスの表 1 つ（`type_check::names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
+        // ⚠ 以前は手で揃えた別の一覧で、`RecursionError` が抜けて `except RecursionError:` で
+        //   捕まえられなかった（実測）。
+        // ⚠ `SyntaxError` の系統は変換しない。内部で `SyntaxError: 'break' outside for/while loop` などを
+        //   返すが、CPython ではコンパイル時の誤りで `try` では捕まらない（`except Exception` に黙って
+        //   飲まれないようにする）。
+        let mut catchable = crate::type_check::names::BUILTIN_EXCEPTIONS
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| !matches!(*n, "SyntaxError" | "IndentationError" | "TabError"));
 
-        let class_name = CATCHABLE.iter().find(|&&cn| {
+        let class_name = catchable.find(|&cn| {
             msg.starts_with(cn)
                 && (msg.len() == cn.len()
                     || msg.as_bytes().get(cn.len()).copied() == Some(b':')

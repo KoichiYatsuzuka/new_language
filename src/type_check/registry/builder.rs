@@ -14,34 +14,6 @@ use crate::ast::{Accessibility, FieldKind, Param, Stmt};
 use super::super::types::{FnSig, InferredType, ProtocolField, ProtocolInfo, ProtocolMethod};
 use super::{NameScope, TypeRegistry};
 
-/// 組み込みで登録される例外クラス名。`TypeChecker::new` がグローバルスコープの
-/// 束縛を作る際にも使うため公開している。
-pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
-    "Exception",
-    "ValueError",
-    "TypeError",
-    "NameError",
-    "AttributeError",
-    "IndexError",
-    "KeyError",
-    "ZeroDivisionError",
-    "RuntimeError",
-    "StopIteration",
-    "NotImplementedError",
-    "OverflowError",
-    "IOError",
-    "OSError",
-    "AssertionError",
-    "ArithmeticError",
-    "AccessError",
-    // ⚠ `RecursionError` は実行時にだけ発生するが、`except RecursionError:` を
-    //   型検査に通すためにここへも登録する。
-    //   ⚠⚠ `built_in_types.rs` の一覧と `exceptions.rs` の `CATCHABLE` と**3 つ揃える**こと。
-    "RecursionError",
-    // `close()` が中断点へ投げ込む（bug_fix.md B13 段階 D）。
-    "GeneratorExit",
-];
-
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。
 const BUILTIN_NEW_TYPES: [(&str, &str); 3] = [("path", "str"), ("Index", "int"), ("Size", "int")];
 
@@ -239,9 +211,15 @@ impl TypeRegistryBuilder {
         }
         let mut class_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>> =
             HashMap::new();
-        for class_name in EXCEPTION_CLASS_NAMES {
+        // 組み込みの例外クラスは実行時と同じ表から登録する（`names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
+        // 基底は祖先を平らに並べる（`let e: LookupError = KeyError(..)`）。⚠ `OSError` の別名は
+        // 循環させない（`builtin_exception_bases` の doc）。
+        for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
             known_class_names.insert(class_name.to_string());
-            class_bases.insert(class_name.to_string(), vec!["Error".to_string()]);
+            class_bases.insert(
+                class_name.to_string(),
+                crate::type_check::names::builtin_exception_bases(class_name, false),
+            );
             class_field_details.insert(class_name.to_string(), exc_fields.clone());
         }
         // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、

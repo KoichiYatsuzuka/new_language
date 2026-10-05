@@ -25,11 +25,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込みの型（`register_builtin_globals`）
     "int", "uint", "str", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
     "pointer", "id", "Error",
-    // 組み込みの例外クラス
-    "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
-    "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
-    "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
-    "GeneratorExit",
+    // 組み込みの例外クラスは [`BUILTIN_EXCEPTIONS`]（実行時も同じ表から登録する）。
     // 組み込みのクラス・列挙・名前空間
     "path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop",
@@ -50,7 +46,120 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
 
 /// 実行時が宣言なしで解決する名前か。
 pub(crate) fn is_runtime_builtin_name(name: &str) -> bool {
-    RUNTIME_BUILTIN_NAMES.contains(&name)
+    RUNTIME_BUILTIN_NAMES.contains(&name) || is_builtin_exception(name)
+}
+
+/// 組み込みの例外・警告クラスと、その親（CPython 3.12 の階層・python_builtins_plan.md のタスク 4-1）。
+///
+/// **唯一の表**。実行時のクラスの登録（`built_in_types.rs` の `register_builtin_globals`）・
+/// 内部のエラーの文字列を例外へ変える照合（`exceptions.rs` の `make_internal_raised_error`）・
+/// Python のクラスが継承したときのフィールドの並び（`py_class_field_order`）・型検査のレジストリ
+/// （`registry/builder.rs`）と大域の束縛（`TypeChecker::new`）が、みなここを読む
+/// （以前は 3 つの表を手で揃えていた）。
+///
+/// - 親が `""` なのは根（`BaseException`）だけ。
+/// - `AccessError` は Arrow 独自（アクセス制御の違反）。
+/// - `IOError` / `EnvironmentError` / `WindowsError` は CPython では `OSError` **そのもの**（別名）。
+///   ここでは `OSError` の子として載せ、互いに捕まえ合うのは [`builtin_exception_bases`] で作る。
+///   ⚠ クラスは別のまま（`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
+/// - ⚠ 意味が要るもの（`SystemExit` / `KeyboardInterrupt` / `ImportError` / `UnicodeDecodeError` /
+///   `ExceptionGroup` …）は載せていない（python_builtins_plan.md の 4.3）。
+pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
+    ("BaseException", ""),
+    ("GeneratorExit", "BaseException"),
+    ("Exception", "BaseException"),
+    ("ArithmeticError", "Exception"),
+    ("FloatingPointError", "ArithmeticError"),
+    ("OverflowError", "ArithmeticError"),
+    ("ZeroDivisionError", "ArithmeticError"),
+    ("AssertionError", "Exception"),
+    ("AttributeError", "Exception"),
+    ("BufferError", "Exception"),
+    ("LookupError", "Exception"),
+    ("IndexError", "LookupError"),
+    ("KeyError", "LookupError"),
+    ("NameError", "Exception"),
+    ("UnboundLocalError", "NameError"),
+    ("OSError", "Exception"),
+    ("IOError", "OSError"),
+    ("EnvironmentError", "OSError"),
+    ("WindowsError", "OSError"),
+    ("BlockingIOError", "OSError"),
+    ("ChildProcessError", "OSError"),
+    ("ConnectionError", "OSError"),
+    ("BrokenPipeError", "ConnectionError"),
+    ("ConnectionAbortedError", "ConnectionError"),
+    ("ConnectionRefusedError", "ConnectionError"),
+    ("ConnectionResetError", "ConnectionError"),
+    ("FileExistsError", "OSError"),
+    ("FileNotFoundError", "OSError"),
+    ("InterruptedError", "OSError"),
+    ("IsADirectoryError", "OSError"),
+    ("NotADirectoryError", "OSError"),
+    ("PermissionError", "OSError"),
+    ("ProcessLookupError", "OSError"),
+    ("TimeoutError", "OSError"),
+    ("ReferenceError", "Exception"),
+    ("RuntimeError", "Exception"),
+    ("NotImplementedError", "RuntimeError"),
+    ("RecursionError", "RuntimeError"),
+    ("StopIteration", "Exception"),
+    ("SyntaxError", "Exception"),
+    ("IndentationError", "SyntaxError"),
+    ("TabError", "IndentationError"),
+    ("SystemError", "Exception"),
+    ("TypeError", "Exception"),
+    ("ValueError", "Exception"),
+    ("UnicodeError", "ValueError"),
+    ("UnicodeTranslateError", "UnicodeError"),
+    ("AccessError", "Exception"),
+    ("Warning", "Exception"),
+    ("BytesWarning", "Warning"),
+    ("DeprecationWarning", "Warning"),
+    ("EncodingWarning", "Warning"),
+    ("FutureWarning", "Warning"),
+    ("ImportWarning", "Warning"),
+    ("PendingDeprecationWarning", "Warning"),
+    ("ResourceWarning", "Warning"),
+    ("RuntimeWarning", "Warning"),
+    ("SyntaxWarning", "Warning"),
+    ("UnicodeWarning", "Warning"),
+    ("UserWarning", "Warning"),
+];
+
+/// CPython で `OSError` と同じクラスを指す名前（[`BUILTIN_EXCEPTIONS`] の doc）。
+const OSERROR_ALIASES: [&str; 3] = ["IOError", "EnvironmentError", "WindowsError"];
+
+/// 組み込みの例外クラスの名前か。
+pub(crate) fn is_builtin_exception(name: &str) -> bool {
+    BUILTIN_EXCEPTIONS.iter().any(|(n, _)| *n == name)
+}
+
+/// 組み込みの例外クラスの基底の名前（`Error` trait と、親から根までの祖先を**平らに**並べたもの）。
+///
+/// 実行時の照合（`ClassValue::is_a`）は `bases` の**直接の名前だけ**を見て推移をたどらないので、
+/// 祖先をすべて載せる（`except LookupError` が `KeyError` を捕まえる）。
+///
+/// `OSError` の別名（`IOError` …）の扱いは `mutual` で変わる:
+/// - `true`（実行時）: `OSError` と別名は**互いを**基底に持ち、`OSError` の子孫は別名をすべて持つ
+///   （`except IOError` が `OSError` も `FileNotFoundError` も捕まえる・CPython と同じ）。
+/// - `false`（型検査）: 別名は `OSError` の子にとどめる（`OSError` の子孫は別名を持つ）。
+///   ⚠⚠ 型検査の基底をたどる関数（`collect_class_field_details` など）は**循環を見ない**ので、
+///   互いを基底にすると止まらない。代わりに `let e: IOError = OSError(..)` が静的に通らない。
+pub(crate) fn builtin_exception_bases(name: &str, mutual: bool) -> Vec<String> {
+    let mut out = vec!["Error".to_string()];
+    let parent_of = |n: &str| BUILTIN_EXCEPTIONS.iter().find(|(c, _)| *c == n).map(|(_, p)| *p);
+    let mut cur = parent_of(name).unwrap_or("");
+    while !cur.is_empty() {
+        out.push(cur.to_string());
+        cur = parent_of(cur).unwrap_or("");
+    }
+    let is_alias = OSERROR_ALIASES.contains(&name);
+    let in_os_group = name == "OSError" || out.iter().any(|b| b == "OSError");
+    if in_os_group && (mutual || !is_alias && name != "OSError") {
+        out.extend(OSERROR_ALIASES.iter().filter(|a| **a != name).map(|a| a.to_string()));
+    }
+    out
 }
 
 /// プログラムの**どこかで束縛される名前**をすべて集める（保守的・10-12）。

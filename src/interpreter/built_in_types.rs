@@ -28,9 +28,10 @@ use super::{
 /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
 ///
 /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
+/// - `bases`: `Error` trait と祖先を平らに並べたもの（`names::builtin_exception_bases`・タスク 4-1）
 ///
 /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
-pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
+pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<ClassValue> {
     use crate::ast::Expr as E;
 
     // __init__ 本体: `self.message = message` を表す AST ノード
@@ -108,7 +109,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .collect();
 
     Rc::new(ClassValue {
-        bases: vec!["Error".to_string()],
+        bases,
         methods,
         field_defaults,
         field_mutability,
@@ -119,33 +120,6 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
-
-/// 組み込みの例外クラスの名前（実行時の一覧）。
-///
-/// ⚠ 3 つの一覧（ここ / `type_check` の `EXCEPTION_CLASS_NAMES` / `exceptions.rs` の `CATCHABLE`）を揃えること。
-/// ⚠ Python のクラスがこれらを継承したときのフィールドの並びにも使う（`Interpreter::new` が
-///   `py_class_field_order` へ載せる・フェーズ10 10-19）。
-pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 19] = [
-    "Exception",
-    "ValueError",
-    "TypeError",
-    "NameError",
-    "AttributeError",
-    "IndexError",
-    "KeyError",
-    "ZeroDivisionError",
-    "RuntimeError",
-    "StopIteration",
-    "NotImplementedError",
-    "OverflowError",
-    "IOError",
-    "OSError",
-    "AssertionError",
-    "ArithmeticError",
-    "AccessError",
-    "RecursionError",
-    "GeneratorExit",
-];
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
 /// 生成クラスは `mut value: <prim_type>` フィールドと `__init__(mut self, value: <prim_type>)` を持つ。
@@ -271,11 +245,12 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
         Var::new(Value::Trait("Error".to_string()), false),
     );
 
-    // 標準例外クラスをすべて登録する。
+    // 標準例外クラスをすべて登録する（表は `type_check::names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
     // 各クラスは `__init__(mut self, message: str)` を持ち、
     // code_context / file / line / col フィールドは raise 時にインタープリタが設定する。
-    for class_name in BUILTIN_EXCEPTION_NAMES {
-        let cls = make_error_class(class_name);
+    for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
+        let bases = crate::type_check::names::builtin_exception_bases(class_name, true);
+        let cls = make_error_class(class_name, bases);
         global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
     }
 

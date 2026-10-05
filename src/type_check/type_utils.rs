@@ -694,13 +694,21 @@ impl TypeChecker {
     ///   （`let e: Exception = ValueError("x")` / `fn f(let e: Exception)` に `MyErr(..)` を渡す）。
     ///   ⚠ レジストリの基底の表には足さない（`Error` → `Exception` → `Error` の循環になり、基底を
     ///   たどる他の walker が止まらなくなる）。
+    /// ⚠ 組み込みの例外は CPython の階層を基底に持つ（タスク 4-1）。`BaseException` を祖先に持つクラスは
+    ///   基底の表だけで答える（`GeneratorExit` は `Exception` の派生でない・実行時の `ClassValue::is_a` と同じ）。
     pub(super) fn class_implements_trait(&self, class_name: &str, trait_name: &str) -> bool {
-        if trait_name == "Exception"
-            && class_name != "Exception"
-            && self.class_implements_trait(class_name, "Error")
-        {
+        if self.bases_reach(class_name, trait_name) {
             return true;
         }
+        matches!(trait_name, "Exception" | "BaseException")
+            && class_name != "BaseException"
+            && !self.bases_reach(class_name, "BaseException")
+            && self.bases_reach(class_name, "Error")
+    }
+
+    /// 基底の表を推移的にたどって `target` に届くか。
+    fn bases_reach(&self, class_name: &str, target: &str) -> bool {
+        let trait_name = target;
         let mut stack = vec![class_name.to_string()];
         let mut seen = HashSet::new();
         while let Some(cur) = stack.pop() {

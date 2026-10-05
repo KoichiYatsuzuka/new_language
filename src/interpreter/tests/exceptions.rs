@@ -387,3 +387,46 @@ fn test_except_exception_catches_every_exception() {
     let v = run_get(src, "caught");
     assert!(matches!(v, Value::Int(3)), "{v:?}");
 }
+
+/// 組み込みの例外は CPython 3.12 の階層を持つ（python_builtins_plan.md のタスク 4-1）。
+/// ⚠ 以前は階層が無く、`except ArithmeticError` が `ZeroDivisionError` を捕まえなかった。
+/// ⚠ `GeneratorExit` は `BaseException` の直下なので `except Exception` では捕まらない。
+#[test]
+fn test_builtin_exception_hierarchy() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let z = 1 // 0\n",
+        "except ArithmeticError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    let d: dict[str, int] = {}\n",
+        "    let v = d[\"k\"]\n",
+        "except LookupError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise OSError(\"o\")\n",
+        "except IOError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise ConnectionResetError(\"c\")\n",
+        "except OSError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    try:\n",
+        "        raise GeneratorExit(\"g\")\n",
+        "    except Exception:\n",
+        "        caught = caught + 100\n",
+        "except BaseException:\n",
+        "    caught = caught + 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(5)), "{v:?}");
+}
+
+/// `open` の失敗は OS のエラーの種類で `OSError` の派生に振り分ける（タスク 4-1・以前はどれも `IOError`）。
+#[test]
+fn test_open_failure_is_file_not_found_error() {
+    let msg = run_err_msg("let f = open(\"__surely_missing_dir__/x.txt\", FileOpenMode.read)\n");
+    assert!(msg.starts_with("FileNotFoundError"), "{msg}");
+}

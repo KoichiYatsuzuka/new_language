@@ -713,9 +713,9 @@ impl Interpreter {
             //   `class AppError(Exception)` / `class ConfigError(ValueError)` と継承したとき、基底の
             //   フィールド（message …）の並びがここに無く、`'AppError' has no field 'message'` で作れなかった。
             //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。
-            py_class_field_order: built_in_types::BUILTIN_EXCEPTION_NAMES
+            py_class_field_order: crate::type_check::names::BUILTIN_EXCEPTIONS
                 .iter()
-                .map(|n| {
+                .map(|(n, _)| {
                     (
                         n.to_string(),
                         vec![

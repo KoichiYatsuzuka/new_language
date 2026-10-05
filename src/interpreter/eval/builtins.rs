@@ -28,6 +28,22 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
 ];
 
+/// `open` の失敗を例外の文字列にする。OS のエラーの種類で `OSError` の派生へ振り分ける
+/// （CPython と同じ・python_builtins_plan.md のタスク 4-1）。以前はどれも `IOError` だった。
+/// ⚠ 文言（`cannot open '..': <OS の文言>`）は変えていない。CPython は `[Errno 2] No such file or directory: '..'`。
+fn open_error(e: &std::io::Error, what: &str, file_path: &str) -> String {
+    use std::io::ErrorKind as K;
+    let class = match e.kind() {
+        K::NotFound => "FileNotFoundError",
+        K::PermissionDenied => "PermissionError",
+        K::AlreadyExists => "FileExistsError",
+        K::IsADirectory => "IsADirectoryError",
+        K::NotADirectory => "NotADirectoryError",
+        _ => "IOError",
+    };
+    format!("{class}: cannot {what} '{file_path}': {e}")
+}
+
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
 /// `list` / `tuple` / `type` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
 pub(crate) fn is_builtin_function_name(name: &str) -> bool {
@@ -970,10 +986,10 @@ impl Interpreter {
                 let mut f = OpenOptions::new()
                     .read(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "open", &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "read", &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Write => {
@@ -981,10 +997,10 @@ impl Interpreter {
                     .read(true)
                     .write(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "open", &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "read", &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Rewrite => {
@@ -994,7 +1010,7 @@ impl Interpreter {
                     .create(true)
                     .truncate(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "open", &file_path))?;
                 (f, Vec::new())
             }
             FileOpenModeRust::MakeAndWrite => {
@@ -1003,7 +1019,7 @@ impl Interpreter {
                     .write(true)
                     .create_new(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
+                    .map_err(|e| open_error(&e, "create", &file_path))?;
                 (f, Vec::new())
             }
         };

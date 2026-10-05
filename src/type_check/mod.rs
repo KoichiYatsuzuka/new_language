@@ -207,7 +207,7 @@ impl TypeChecker {
         );
         // 例外クラスの登録はレジストリ側（with_builtins）と対になっている。
         // ここではグローバルスコープの束縛のみを作る。
-        for class_name in registry::builder::EXCEPTION_CLASS_NAMES {
+        for (class_name, _) in names::BUILTIN_EXCEPTIONS {
             global.insert(
                 class_name.to_string(),
                 VarInfo {
