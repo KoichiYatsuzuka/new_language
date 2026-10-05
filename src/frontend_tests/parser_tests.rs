@@ -1638,6 +1638,29 @@ fn python_except_tuple_becomes_one_handler_per_type() {
     assert!(err.contains("a tuple of them"), "{err}");
 }
 
+/// Arrow に無い組み込みを参照するモジュールは変換時の誤り（python_builtins_plan.md のタスク 1-1）。
+/// 呼ばれない関数の中でも誤りにし、名前ごとに最初の行を並べる。束縛した名前・デコレータ・クラスの基底・
+/// `super().m()` の `super`・Arrow にある組み込みは通す。
+#[test]
+fn python_unsupported_builtins_are_rejected() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "m.py");
+    let err = conv("def f(x):\n    return format(x)\n\ndef g():\n    exit(1)\n    return vars()\n")
+        .expect_err("unsupported builtins");
+    assert!(err.contains("'format' (line 2), 'exit' (line 5), 'vars' (line 6)"), "{err}");
+    // 束縛した名前（def / 代入 / 仮引数 / import の別名）は組み込みを隠す。
+    conv("def format(x):\n    return x\n\ndef g():\n    return format(1)\n").expect("def shadows");
+    conv("vars = 3\n\ndef g(input):\n    return vars + input\n").expect("assignment and parameter shadow");
+    conv("from os import path as exit\n\ndef g():\n    return exit\n").expect("import alias shadows");
+    // 変換器が形で受ける位置。
+    let ok = "class A(object):\n    @staticmethod\n    def make():\n        return 1\n\nclass B(A):\n    def m(self):\n        return super().make()\n";
+    conv(ok).expect("decorator / base / super()");
+    // Arrow にある組み込み（足した組み込みは自動で外れる）。
+    conv("def g(xs):\n    return sorted(map(abs, xs)), isinstance(xs, list), hex(3)\n").expect("supported builtins");
+    // 値として使う `super` は誤り。
+    let err = conv("def g():\n    return super\n").expect_err("bare super value");
+    assert!(err.contains("'super' (line 2)"), "{err}");
+}
+
 /// 文が**文の位置**（先頭のトークン）を持つ（フェーズ10 10-17）。以前は `let` / `return` / `if` などが
 /// 位置を持たず、型検査の誤りが `<unknown>`・デバッガが直前の行を出し続けていた。
 #[test]

@@ -1,0 +1,18 @@
+# py_unsupported_builtin_error.ar — Arrow に無い組み込みを参照する Python のモジュールは読む時点で誤り
+# （python_builtins_plan.md のタスク 1-1）
+#
+# 対になる正常系: py_builtin_shadow.ar（モジュールで定義した同名の関数なら通る）
+#
+# 期待されるエラー（変換時＝実行の前の ParseError）:
+#   ...py_unsupported_builtin_error.py: Python builtin(s) not supported by Arrow:
+#   'format' (line 8), 'exit' (line 12) (the module is rejected even if that code never runs; ...)
+#
+# ⚠ 呼ばれない関数の中（exit）でも誤りにする（決定・2026-10-06）。以前は変換が通り、その行を
+#   実行したときに初めて NameError になった（呼ばれなければ気づかないまま動いた）。
+# ⚠ 「無い」は CPython 3.12 の組み込み 153 名のうち、Arrow の実行時が解決できない名前。組み込みを足すと自動で外れる。
+# ⚠ 束縛した名前（def format(..) / format = .. / import の別名・仮引数など）・デコレータ（@staticmethod）・
+#   クラスの基底（class C(object)）・super().m(..) の super は誤りにしない。
+
+import[py] test_modules.py_unsupported_builtin_error as m
+
+print(m.show(1234))

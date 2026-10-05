@@ -1,6 +1,6 @@
 // python_converter/mod.rs — rustpython-parser の AST を Arrow の AST に変換するサブシステムの束ね。
 // 公開エントリポイント convert_python_source を保持し、役割別サブモジュール
-// (statements/classes/decorators/supers/param_rewrite/expressions/annotations/utils)を宣言する。
+// (builtins_check/statements/classes/decorators/supers/param_rewrite/expressions/annotations/utils)を宣言する。
 
 use rustpython_parser::{ast as py, Parse};
 
@@ -20,10 +20,16 @@ pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, 
     // ⚠ `with` の脱糖可否を決めるため、先にコンテキストマネージャのクラス名を集める（項目 25）。
     register_context_manager_classes(&ast);
     // モジュール本体も 1 つのスコープ（パラメータは無い）。
-    convert_scope(&ast, filename, &[])
+    let stmts = convert_scope(&ast, filename, &[])?;
+    // 未対応の組み込みの参照は、実行の前に（読む時点で）誤りにする（python_builtins_plan.md のタスク 1-1）。
+    // ⚠ 変換の後に見る: 構文の誤り（ブロックの中の `import` など）のほうが具体的なので先に出す
+    //   （`try: import x` / `except ImportError:` は `ImportError` より `import` の位置を言うべき）。
+    check_unsupported_builtins(&ast, source, filename)?;
+    Ok(stmts)
 }
 
 
+mod builtins_check;
 mod hoist;
 mod statements;
 mod classes;
@@ -33,6 +39,7 @@ mod param_rewrite;
 mod expressions;
 mod annotations;
 mod utils;
+pub(crate) use builtins_check::*;
 pub(crate) use hoist::*;
 pub(crate) use statements::*;
 pub(crate) use classes::*;
