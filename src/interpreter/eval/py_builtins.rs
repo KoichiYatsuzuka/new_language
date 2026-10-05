@@ -37,6 +37,30 @@ impl Interpreter {
         }
     }
 
+    /// `type(x)`（1 引数・タスク 2-2）。インスタンスはそのクラスの値、ほかは組み込みの型の値（`<class 'int'>`）。
+    ///
+    /// 返した値はそのまま使える: 呼ぶと作り直せる（`type(x)(...)`）、`__name__` で名前、`===` / `==` で比べられる
+    /// （`type(x) is C`・クラスは同一性、組み込みの型は名前で比べる）、`isinstance` の第 2 引数にできる。
+    /// ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外（`call_type_by_name_evaled` が誤りにする）。
+    pub(crate) fn py_type_of(&self, x: &Value) -> Value {
+        let name = match x {
+            Value::Instance(inst) => return Value::Class(inst.borrow().class.clone()),
+            Value::None => "NoneType",
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::NativeFunction(_)
+            | Value::GeneratorFn(_)
+            | Value::TemplateFn(_)
+            | Value::TemplateGenFn(_)
+            | Value::JsProcFn(_) => "function",
+            Value::Class(_) | Value::Type(_) | Value::Trait(_) | Value::Protocol(_) | Value::TemplateClass(_) => "type",
+            Value::Namespace(_) => "module",
+            Value::Generator(_) => "generator",
+            other => self.type_name(other),
+        };
+        Value::Type(name.to_string())
+    }
+
     /// クラス `c` が `base` 自身か、その派生か（`isinstance` / `issubclass` の**唯一の**判定・タスク 2-1 / 2-4）。
     ///
     /// 同じクラスは `class_id` で見る。派生は祖先の名前（`bases`）で見る。モジュールで定義した基底は

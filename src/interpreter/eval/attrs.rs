@@ -208,7 +208,9 @@ impl Interpreter {
                 ))
             }
             Value::Class(cls) => {
-                if attr == "name" {
+                // `__name__` / `__qualname__` は Python の名前（`type(x).__name__`・python_builtins_plan.md のタスク 2-2）。
+                // ⚠ 表示名（素の名前）を返す。モジュールの修飾名（`zoo.Dog`）は `__module__` 側の情報で、ここでは付けない。
+                if matches!(attr, "name" | "__name__" | "__qualname__") {
                     return Ok(Value::str(cls.name.as_str()));
                 }
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
@@ -253,7 +255,8 @@ impl Interpreter {
             // 型の値の名前（`int` / `list[int]`・D23・タスク 4-2）。型の値から識別子を組み立てるのに使う
             // （`^` の `.type` は型の値を返すので、文字列としては `.name` で取り出す）。
             Value::Type(t) => match attr {
-                "name" => Ok(Value::str(t.as_str())),
+                // `__name__` / `__qualname__` は Python の名前（`type(3).__name__` は `int`・タスク 2-2）。
+                "name" | "__name__" | "__qualname__" => Ok(Value::str(t.as_str())),
                 _ => Err(format!("AttributeError: type '{t}' has no attribute '{attr}'")),
             },
             Value::Slice(s) => match attr {

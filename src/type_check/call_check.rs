@@ -1423,6 +1423,14 @@ impl TypeChecker {
             }
             // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
             "isinstance" => Some(T::Bool),
+            // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
+            // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
+            "type" => match arg_data {
+                [(None, t @ (T::NamedInstance(_) | T::Int | T::Float | T::Str | T::Bool | T::Complex))] => {
+                    Some(T::TypeValOf(Box::new(t.clone())))
+                }
+                _ => None,
+            },
             // `list()` は `[]` と同じ（要素型 `Never`）、`list(xs)` は要素の list（タスク 1-7）。
             // ⚠ 要素型が分からない（Python 由来の値など）ときは `None`（`list[Any]` にすると要素の操作が静的な誤りになる）。
             "list" => match arg_data {

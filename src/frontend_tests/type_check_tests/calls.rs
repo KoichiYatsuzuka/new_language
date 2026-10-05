@@ -295,3 +295,26 @@ use super::*;
     fn list_constructor_types_err() {
         assert!(err("let xs: list[int] = [1]\nlet a: list[str] = list(xs)\n"));
     }
+
+    // --- `type(x)` の型（python_builtins_plan.md のタスク 2-2）---
+
+    /// `type(x)` は x の型の型値。`__name__` は `str`。
+    /// ⚠ 型値を（識別子でなく）式のまま呼ぶ形（`type(b)(5)`）の結果は従来どおり型を付けない
+    ///   （クラス・enum・protocol で呼び出しの意味が違うので、`TypeValOf(NamedInstance)` の呼び出しは触らない方針）。
+    #[test]
+    fn type_of_types_ok() {
+        assert!(ok(concat!(
+            "class Box:\n",
+            "    mut v: int\n",
+            "let b = Box(1)\n",
+            "let again: Box = type(b)(5)\n",
+            "let n: str = type(b).__name__\n",
+            "let k: str = type(3).__name__\n",
+        )));
+    }
+
+    /// 型の取り違えは誤り（`__name__` は `str`）。
+    #[test]
+    fn type_of_types_err() {
+        assert!(err("class Box:\n    mut v: int\nlet b = Box(1)\nlet n: int = type(b).__name__\n"));
+    }

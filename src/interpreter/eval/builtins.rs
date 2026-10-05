@@ -23,13 +23,14 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
-    "isinstance",
+    "isinstance", "type",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
-/// `list` / `tuple` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
+/// `list` / `tuple` / `type` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
 pub(crate) fn is_builtin_function_name(name: &str) -> bool {
-    matches!(name, "len" | "id") || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple"))
+    matches!(name, "len" | "id")
+        || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple" | "type"))
 }
 
 impl Interpreter {
@@ -87,7 +88,7 @@ impl Interpreter {
             //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
             "parse_ar" => Some(self.parse_ar_evaled(args)),
             // `list(it)` / `tuple(it)`（タスク 1-7）。本体は型の呼び出し（`call_type_by_name_evaled`）に 1 本化。
-            "list" | "tuple" => Some(self.call_type_by_name_evaled(name, args)),
+            "list" | "tuple" | "type" => Some(self.call_type_by_name_evaled(name, args)),
             // ── Python の組み込み（python_builtins_plan.md のフェーズ 2・本体は `eval/py_builtins.rs`）──
             "isinstance" => Some(match args.as_slice() {
                 [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),

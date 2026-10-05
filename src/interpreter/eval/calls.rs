@@ -502,6 +502,15 @@ impl Interpreter {
                 [_] => Ok(Value::Bool(true)),
                 _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
             },
+            // `type(x)`（python_builtins_plan.md のタスク 2-2・本体は `py_type_of`）。
+            // ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
+            "type" => match vals.as_slice() {
+                [x] => Ok(self.py_type_of(x)),
+                [_, _, _] => Err(
+                    "TypeError: type() with 3 arguments (creating a class at run time) is not supported".to_string(),
+                ),
+                _ => Err("TypeError: type() takes 1 or 3 arguments".to_string()),
+            },
             // `list(it)` / `tuple(it)`（タスク 1-7）。どのイテラブルも `for` と同じ規則で最後まで回す
             // （辞書はキー・遅延のジェネレータ・`__iter__` を持つインスタンス・`range` …）。
             // ⚠ `list(xs)` は**新しい list**（CPython の浅いコピー）。以前は同じ `Rc` を返していたので、

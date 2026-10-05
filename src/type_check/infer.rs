@@ -792,6 +792,12 @@ impl TypeChecker {
         if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
             self.check_py_class_factory_use(&format!("{name}.{attr}"), name, Some(span.clone()));
         }
+        // クラス・型の値の名前（`type(x).__name__` / `C.__name__`・python_builtins_plan.md のタスク 2-2）。
+        // ⚠ dunder の名前だけ。`name` はクラス変数の名前とぶつかりうるので従来の経路に任せる。
+        if matches!(obj_ty, InferredType::TypeValOf(_)) && matches!(attr, "__name__" | "__qualname__") {
+            self.annotations.set_resolved(node_id, InferredType::Str);
+            return InferredType::Str;
+        }
         // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
         //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
         //    - **読み**: 組み込みの値は読める属性を持たない。実行時の属性の読み（`get_attr_val`）は
