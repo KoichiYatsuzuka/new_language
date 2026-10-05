@@ -1,0 +1,43 @@
+# exception_args.ar — 例外の args と str(e) / repr(e)（python_builtins_plan.md のタスク 4-2）
+#
+# 対になる誤りの例: exception_args_error.ar
+#
+# 組み込みの例外は CPython と同じく位置引数をいくつでも受け、それを e.args（組）に持つ:
+#   - str(e) / print(e) / e.message: 引数が無ければ ''、1 つならその str、2 つ以上なら args の repr
+#     （KeyError だけは 1 つのとき repr。CPython の KeyError_str と同じ）
+#   - repr(e): ValueError('bad', 42) の形
+# ⚠ 以前は ValueError() も ValueError("a", 1) も TypeError で作れず、print(e) は <ValueError object at 0x..> だった。
+# ⚠ 内部で起きた例外（辞書の引き損ないなど）の args は文言 1 つの組（CPython の KeyError ならキーそのもの）。
+
+print("=== args ===")
+let a = ValueError()
+let b = ValueError("bad value")
+let c = ValueError("bad", 42)
+let d = ValueError(5)
+print(a.args, b.args, c.args, d.args)                     # () ('bad value',) ('bad', 42) (5,)
+
+print("=== str / repr ===")
+print("[" + str(a) + "]", str(b), str(c), str(d))         # [] bad value ('bad', 42) 5
+print(repr(a), repr(b), repr(c), repr(d))                 # ValueError() ValueError('bad value') ValueError('bad', 42) ValueError(5)
+print(b)                                                  # bad value
+print([b, d])                                             # [ValueError('bad value'), ValueError(5)]
+print(c.message)                                          # ('bad', 42)
+
+print("=== KeyError ===")
+let k = KeyError("missing")
+print(str(k), repr(k))                                    # 'missing' KeyError('missing')
+let dd: dict[str, int] = {"a": 1}
+try:
+    print(dd["zz"])
+except KeyError as e:
+    print(str(e))                                         # 'zz'
+
+print("=== raise / except ===")
+try:
+    raise ValueError("a", 1)
+except ValueError as e:
+    print(e.args[1], len(e.args))                         # 1 2
+try:
+    raise RuntimeError()
+except RuntimeError as e:
+    print("[" + e.message + "]", e.args)                  # [] ()

@@ -29,7 +29,7 @@ for kind in range(4):
         fail(kind)
     except Exception as e:
         print("caught: " + e.message)
-# caught: missing
+# caught: 'missing'（KeyError の文言はキーの repr・CPython と同じ。python_builtins_plan.md のタスク 4-2）
 # caught: runtime
 # caught: bad token
 # caught: division by zero
@@ -51,7 +51,7 @@ fn describe(let e: Exception) -> str:
 
 let a: Exception = KeyError("k")
 print(describe(a))
-# other: k
+# other: 'k'
 print(describe(ParseFailure("p")))
 # parse failure: p
 print(ValueError("v") is Exception)

@@ -418,3 +418,18 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("let e: KeyError = LookupError(\"x\")\n"));
         assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
     }
+
+    /// 組み込みの例外は `args`（組）を持つ（タスク 4-2）。`Error` を実装しただけの利用者の例外は持たない。
+    #[test]
+    fn builtin_exceptions_have_args() {
+        assert!(ok("let e = ValueError(\"a\", 1)\nlet n = len(e.args)\n"));
+        assert!(err("let e = ValueError(\"a\")\nlet n: int = e.args\n"));
+        let src = concat!(
+            "class MyErr(Error):\n",
+            "    fn __init__(mut self, message: str) -> None:\n",
+            "        self.message = message\n",
+            "let m = MyErr(\"m\")\n",
+            "let x = m.args\n",
+        );
+        assert!(err(src), "{:?}", check(src));
+    }

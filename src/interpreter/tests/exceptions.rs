@@ -430,3 +430,22 @@ fn test_open_failure_is_file_not_found_error() {
     let msg = run_err_msg("let f = open(\"__surely_missing_dir__/x.txt\", FileOpenMode.read)\n");
     assert!(msg.starts_with("FileNotFoundError"), "{msg}");
 }
+
+/// 組み込みの例外は位置引数をいくつでも受け、`args` と CPython の `str(e)` / `repr(e)` を持つ（タスク 4-2）。
+/// ⚠ 以前は `ValueError()` / `ValueError("a", 1)` が作れず、`str(e)` は `<ValueError object at 0x..>` だった。
+#[test]
+fn test_exception_args_str_repr() {
+    let src = concat!(
+        "let a = ValueError()\n",
+        "let c = ValueError(\"bad\", 42)\n",
+        "let k = KeyError(\"m\")\n",
+        "let s = \"[\" + str(a) + \"]\" + str(c) + str(k) + str(ValueError(5))\n",
+        "let r = repr(a) + repr(c) + repr(k)\n",
+        "let n = len(c.args)\n",
+    );
+    assert_str(run_get(src, "s"), "[]('bad', 42)'m'5");
+    assert_str(run_get(src, "r"), "ValueError()ValueError('bad', 42)KeyError('m')");
+    assert!(matches!(run_get(src, "n"), Value::Int(2)));
+    assert!(run_err_msg("let e = ValueError(message=\"x\")\n")
+        .contains("ValueError() takes no keyword arguments"));
+}

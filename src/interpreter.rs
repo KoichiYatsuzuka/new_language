@@ -724,6 +724,7 @@ impl Interpreter {
                             ("file".to_string(), false, "str".to_string()),
                             ("line".to_string(), false, "int".to_string()),
                             ("col".to_string(), false, "int".to_string()),
+                            ("args".to_string(), false, "Any".to_string()),
                         ],
                     )
                 })
@@ -1286,7 +1287,12 @@ impl Interpreter {
                         _ => "<value>".to_string(),
                     })
                 }).unwrap_or_default();
-                out.push_str(&format!("{}: {}", class_name, message));
+                // `str(e)` が空なら名前だけ（CPython と同じ・`raise ValueError()` は `ValueError`）。
+                if message.is_empty() {
+                    out.push_str(&class_name);
+                } else {
+                    out.push_str(&format!("{}: {}", class_name, message));
+                }
             }
             Value::Str(s) => out.push_str(s),
             other => out.push_str(&format!("<exception: {:?}>", other)),

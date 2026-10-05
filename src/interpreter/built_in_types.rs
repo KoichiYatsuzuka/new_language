@@ -23,8 +23,12 @@ use super::{
 /// 標準例外クラス用の `ClassValue` を構築して返す。
 ///
 /// 生成されるクラスの構造:
-/// - フィールド: `message`, `code_context`, `file`, `line`, `col`（すべて let・不変）
-/// - `__init__(mut self, message: str)` メソッドで `self.message = message` を実行
+/// - フィールド: `message`, `code_context`, `file`, `line`, `col`, `args`（すべて let・不変）
+/// - **`__init__` は持たない**（タスク 4-2）。作るときの位置引数を `args` に、CPython の `str(e)` を
+///   `message` に入れるのは `instantiate_evaled`（CPython の `BaseException.__new__` と同じ位置）、
+///   `super().__init__(..)` / `ValueError.__init__(self, ..)` は `eval_class_method` が受ける
+///   （どちらも `Interpreter::exc_set_args`）。以前は `__init__(mut self, message: str)` で、
+///   `ValueError()` / `ValueError("a", 1)` が作れず、`super().__init__(..)` も届かなかった。
 /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
 ///
 /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
@@ -32,73 +36,32 @@ use super::{
 ///
 /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
 pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<ClassValue> {
-    use crate::ast::Expr as E;
-
-    // __init__ 本体: `self.message = message` を表す AST ノード
-    let init_body = vec![Stmt::AttrAssign {
-        target: E::Attr {
-            object: Box::new(E::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
-            attr: "message".to_string(),
-            span: Span::unknown(),
-            cache: Default::default(),
-            node_id: 0, // #16: 合成コード（注釈対象外）
-        },
-        value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
-        span: crate::token::Span::unknown(),
-    }];
-    let init_fn = Rc::new(FnValue {
-        globals: crate::interpreter::value::GLOBALS_OF_CALLER,
-        owner_class: None,
-        name: "__init__".to_string(),
-        params: vec![
-            Param {
-                name: "self".to_string(),
-                mutable: true,
-                type_ann: None,
-                default: None,
-                variadic: false,
-            },
-            Param {
-                name: "message".to_string(),
-                mutable: false,
-                type_ann: Some("str".to_string()),
-                default: None,
-                variadic: false,
-            },
-        ],
-        body: std::rc::Rc::from(init_body),
-        is_python: false,
-        captured_env: HashMap::new(),
-    return_type: None,
-    vm_chunk: None,
-    });
-    let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
-    methods.insert("__init__".to_string(), vec![init_fn]);
-
-    // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
+    // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）。
+    // `message` / `args` は `instantiate_evaled` が入れ直す（ここは作り方を問わない既定）。
     let field_defaults = vec![
+        ("message".to_string(), Value::str(String::new()), false),
         ("code_context".to_string(), Value::str("".to_string()), false),
         ("file".to_string(), Value::str("".to_string()), false),
         ("line".to_string(), Value::Int(0), false),
         ("col".to_string(), Value::Int(0), false),
+        ("args".to_string(), empty_tuple(), false),
     ];
 
     // フィールドの可変フラグ: すべて `let`（不変）
-    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
+    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5
     let mut field_mutability: HashMap<String, bool> = HashMap::new();
-    field_mutability.insert("message".to_string(), false);
-    field_mutability.insert("code_context".to_string(), false);
-    field_mutability.insert("file".to_string(), false);
-    field_mutability.insert("line".to_string(), false);
-    field_mutability.insert("col".to_string(), false);
+    for name in ["message", "code_context", "file", "line", "col", "args"] {
+        field_mutability.insert(name.to_string(), false);
+    }
 
-    // field_index: own フィールド + Error:: trait エイリアス
+    // field_index: own フィールド + Error:: trait エイリアス（`args` は `Error` trait に無い）
     let field_index: HashMap<String, usize> = [
         ("message", 0usize),
         ("code_context", 1),
         ("file", 2),
         ("line", 3),
         ("col", 4),
+        ("args", 5),
         ("Error::code_context", 1),
         ("Error::file", 2),
         ("Error::line", 3),
@@ -110,15 +73,20 @@ pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<Class
 
     Rc::new(ClassValue {
         bases,
-        methods,
+        methods: HashMap::new(),
         field_defaults,
         field_mutability,
         field_index,
-        field_count: 5,
-        field_mutability_vec: vec![false, false, false, false, false],
+        field_count: 6,
+        field_mutability_vec: vec![false; 6],
         is_exception: true,
         ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })
+}
+
+/// 空のタプル（例外の `args` の既定）。
+pub(super) fn empty_tuple() -> Value {
+    Value::Tuple(Rc::new(super::TupleData::new(Vec::new(), Vec::new())))
 }
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。

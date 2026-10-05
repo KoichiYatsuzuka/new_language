@@ -220,7 +220,10 @@ impl TypeRegistryBuilder {
                 class_name.to_string(),
                 crate::type_check::names::builtin_exception_bases(class_name, false),
             );
-            class_field_details.insert(class_name.to_string(), exc_fields.clone());
+            // `args`（作るときの引数の組・タスク 4-2）は組み込みの例外だけが持つ（`Error` trait には無い）。
+            let mut fields = exc_fields.clone();
+            fields.insert("args".to_string(), (FieldKind::Let, InferredType::TupleAny));
+            class_field_details.insert(class_name.to_string(), fields);
         }
         // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、
         //    利用者が `class MyErr(Error)` と書いたときに `e.message` が引けなかった

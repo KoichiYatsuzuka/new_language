@@ -81,6 +81,16 @@ impl Interpreter {
 
         // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
         let Some(overloads) = self.lookup_method_in_class(&cls, method_name) else {
+            // 組み込みの例外の `__init__`（`super().__init__(..)` の変換先・`ValueError.__init__(self, ..)`）。
+            // 組み込みの例外は `__init__` を持たない（`make_error_class`）ので、ここで `args` を入れ直す（タスク 4-2）。
+            if method_name == "__init__" && Self::in_exception_hierarchy(&cls) {
+                if let Some((None, Value::Instance(inst), _)) = evaled.first() {
+                    let inst = inst.clone();
+                    let args = Self::exc_positional_args(&cls, &evaled[1..])?;
+                    self.exc_set_args(&inst, args)?;
+                    return Ok(Value::None);
+                }
+            }
             // クラス変数に入ったクラス（入れ子のクラス・10-18）なら、それを呼ぶ。
             if let Some(v) = Self::class_var_class(&cls, method_name) {
                 return self.call_value_evaled(v, evaled, method_name, None, 0);

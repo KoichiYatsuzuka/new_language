@@ -67,14 +67,22 @@ impl Interpreter {
             _ => return None,
         };
 
-        // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
+        // `args` は文言 1 つの組（空なら空の組・タスク 4-2）。⚠ CPython は `KeyError` ならキーそのもの、
+        // `OSError` なら `(errno, strerror)` だが、内部のエラーは文言しか持たない。
+        let args = self.tuple_of(if message.is_empty() { Vec::new() } else { vec![Value::str(message.clone())] });
+
+        // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5
         // (make_error_class の field_index と対応)
+        let args_idx = cls.field_index.get("args").copied();
         let mut data = InstanceData::new_empty(cls, 0);
         data.store_field(0, Value::str(message), false); // message
         data.store_field(1, Value::str(String::new()), false); // code_context
         data.store_field(2, Value::str(String::new()), false); // file
         data.store_field(3, Value::Int(0), false); // line
         data.store_field(4, Value::Int(0), false); // col
+        if let Some(idx) = args_idx {
+            data.store_field(idx, args, false); // args
+        }
         let inst = Value::Instance(Rc::new(RefCell::new(data)));
 
         Some(RaisedError {
@@ -95,5 +103,62 @@ impl Interpreter {
     pub(super) fn exc_matches(inst_class: &Rc<ClassValue>, type_name: &str) -> bool {
         // `except Exception` はすべての例外を捕まえる（`ClassValue::is_a`・フェーズ10 10-19）。
         inst_class.is_a(type_name)
+    }
+
+    /// 組み込みの例外の階層のクラスか（`BaseException` とその子孫と、それを継承した Python のクラス）。
+    ///
+    /// これらは `args` を持ち、`str(e)` / `repr(e)` が CPython と同じになる（タスク 4-2）。
+    /// ⚠ `Error` を実装しただけの Arrow のクラス（`class MyErr(Error)`）は含まない（`args` を持たない）。
+    pub(crate) fn in_exception_hierarchy(cls: &ClassValue) -> bool {
+        cls.name == "BaseException" || cls.bases.iter().any(|b| b == "BaseException")
+    }
+
+    /// 例外の `args` と `message`（CPython の `str(e)`）を入れる（タスク 4-2）。
+    ///
+    /// `str(e)` は CPython の `BaseException_str` / `KeyError_str` と同じ: 引数が無ければ `''`、
+    /// 1 つならその `str`（`KeyError` だけは `repr`）、2 つ以上なら `args` の組の `repr`。
+    /// ⚠ 可変（`true`）で入れる。Python の `__init__` が `self.message = ..` と書いても通るように
+    ///   （CPython の例外の属性は書き換えられる）。Arrow のソースからの書き換えは型検査が `let` として止める。
+    pub(crate) fn exc_set_args(
+        &mut self,
+        inst: &Rc<RefCell<InstanceData>>,
+        args: Vec<Value>,
+    ) -> Result<(), String> {
+        let cls = inst.borrow().class.clone();
+        let message = match args.as_slice() {
+            [] => String::new(),
+            [one] if cls.is_a("KeyError") => self.repr_val(one)?,
+            [one] => self.display_str(one)?,
+            _ => {
+                let t = self.tuple_of(args.clone());
+                self.repr_val(&t)?
+            }
+        };
+        let args_tuple = self.tuple_of(args);
+        let mut data = inst.borrow_mut();
+        if let Some(&idx) = cls.field_index.get("message") {
+            data.store_field(idx, Value::str(message), true);
+        }
+        if let Some(&idx) = cls.field_index.get("args") {
+            data.store_field(idx, args_tuple, true);
+        }
+        Ok(())
+    }
+
+    /// 例外を作る・`super().__init__(..)` の引数から `args` を取る。キーワード引数は受けない（CPython と同じ文言）。
+    pub(crate) fn exc_positional_args(
+        cls: &ClassValue,
+        evaled: &[(Option<String>, Value, bool)],
+    ) -> Result<Vec<Value>, String> {
+        if evaled.iter().any(|(k, _, _)| k.is_some()) {
+            return Err(format!("TypeError: {}() takes no keyword arguments", cls.name));
+        }
+        Ok(evaled.iter().map(|(_, v, _)| v.clone()).collect())
+    }
+
+    /// 値の列を組にする（要素の型名は実行時の名前）。
+    fn tuple_of(&self, values: Vec<Value>) -> Value {
+        let types = values.iter().map(|v| self.type_name(v).to_string()).collect();
+        Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values, types)))
     }
 }

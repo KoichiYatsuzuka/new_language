@@ -65,6 +65,14 @@ impl Interpreter {
             }
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
+                // 組み込みの例外の階層は CPython の `str(e)`（`message` に入れてある・タスク 4-2）。
+                if Self::in_exception_hierarchy(&i.borrow().class) {
+                    let inst = i.borrow();
+                    let msg = inst.class.field_index.get("message").and_then(|&idx| inst.field_value(idx));
+                    if let Some(Value::Str(s)) = msg {
+                        return s.to_string();
+                    }
+                }
                 let class_name = i.borrow().class.name.clone();
                 let addr = Rc::as_ptr(i) as usize;
                 format!("<{} object at 0x{:x}>", class_name, addr)
@@ -219,6 +227,15 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
+            // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+            Value::Instance(i) if Self::in_exception_hierarchy(&i.borrow().class) => {
+                let inst = i.borrow();
+                let parts: Vec<String> = match Self::exc_args_of(&inst) {
+                    Some(Value::Tuple(t)) => t.values.iter().map(|v| self.display_repr(v)).collect(),
+                    _ => Vec::new(),
+                };
+                format!("{}({})", inst.class.name, parts.join(", "))
+            }
             _ => self.display(val),
         }
     }
@@ -298,6 +315,18 @@ impl Interpreter {
                         Value::Str(s) => Ok(s.to_string()),
                         other => Ok(self.display(&other)),
                     };
+                }
+
+                // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+                if Self::in_exception_hierarchy(&class) {
+                    let args = Self::exc_args_of(&inst_rc.borrow());
+                    let parts: Vec<String> = match args {
+                        Some(Value::Tuple(t)) => {
+                            t.values.iter().map(|v| self.repr_val(v)).collect::<Result<_, _>>()?
+                        }
+                        _ => Vec::new(),
+                    };
+                    return Ok(format!("{}({})", class.name, parts.join(", ")));
                 }
 
                 // デフォルト: <ClassName object at 0xADDR>

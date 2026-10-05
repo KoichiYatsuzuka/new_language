@@ -152,7 +152,7 @@ impl Interpreter {
                 let d = d.clone();
                 match self.dict_get(&d, &key)? {
                     Some(v) => Ok(v),
-                    None => Err(format!("KeyError: {}", self.display(&key))),
+                    None => Err(format!("KeyError: {}", self.display_repr(&key))),
                 }
             }
             Value::Instance(_) => {

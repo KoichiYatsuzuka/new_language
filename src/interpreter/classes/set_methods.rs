@@ -59,14 +59,14 @@ impl Interpreter {
                     s.borrow_mut().remove(pos);
                     Ok(Value::None)
                 } else {
-                    Err(format!("KeyError: {} is not in set", self.display(&item)))
+                    Err(format!("KeyError: {}", self.display_repr(&item)))
                 }
             }
             "pop" => {
                 Self::expect_no_args_evaled(&evaled, "set", "pop")?;
                 let mut s_mut = s.borrow_mut();
                 if s_mut.is_empty() {
-                    Err("KeyError: pop from an empty set".to_string())
+                    Err("KeyError: 'pop from an empty set'".to_string())
                 } else {
                     Ok(s_mut.remove(0))
                 }
