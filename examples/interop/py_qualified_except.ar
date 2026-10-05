@@ -1,0 +1,20 @@
+# py_qualified_except.ar — Python の except m.Err: と、Arrow から import[py] のクラスを修飾名で捕まえる形
+# （python_builtins_plan.md のタスク 4-3）
+#
+# Python のモジュールが別のモジュールの例外を except h.ConfigError: で捕まえる（基底でも当たる: MissingKey は
+# ConfigError の派生）。Arrow の側も except h.ConfigError: と書ける。
+# ⚠ 以前は変換器が `only a simple exception name is supported in except` で止めていた
+#   （Python の except requests.HTTPError: の形がまるごと読めなかった）。
+
+import[py] test_modules.py_qualified_except as q
+import[py] test_modules.py_exception_hierarchy as h
+
+print(q.guarded(1))                       # ConfigError: raised in python
+print(q.guarded(2))                       # AppError: app failure
+
+try:
+    h.fail()
+except h.AppError:
+    print("not reached")
+except h.ConfigError as e:
+    print("Arrow caught h.ConfigError:", e)    # Arrow caught h.ConfigError: raised in python

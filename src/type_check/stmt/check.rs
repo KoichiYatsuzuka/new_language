@@ -665,10 +665,12 @@ impl TypeChecker {
                         //    型は `exc_type` に書いてある（`None` は bare `except:`）。
                         // ⚠ bare `except:` は捕捉する型が判らないので `Unresolved` のまま
                         //    （取りこぼす方へ倒す）。
+                        // ⚠ 修飾名（`except m.Err as e:`・タスク 4-3）はモジュールの修飾名へ引き直す
+                        //   （`t.Tag` の注釈と同じ・10-8）。
                         let exc_ty = handler
                             .exc_type
                             .as_deref()
-                            .map(|t| InferredType::NamedInstance(t.to_string()))
+                            .map(|t| InferredType::NamedInstance(self.registry.resolve(t).into_owned()))
                             .unwrap_or(InferredType::Unresolved);
                         self.declare(name.clone(), exc_ty, true);
                     }
@@ -926,6 +928,12 @@ impl TypeChecker {
         if !self.registry.is_known_class(type_name) {
             // ⚠ trait / protocol 名は `is_known_class` に載らないので、そちらも見てから判断する。
             if self.registry.is_known_trait(type_name) || self.registry.is_protocol(type_name) {
+                return;
+            }
+            // ⚠ import 先を読めていない環境（エディタ）では、名前が無いことを誤りと言えない
+            //   （`check_guard_type_exists` と同じ判断）。`except m.Err:`（タスク 4-3）の `m` のクラスが
+            //   見えず、正しいプログラムに偽の誤りを出していた（`compare_wasm_frontend` の INVENTED）。
+            if self.registry_incomplete {
                 return;
             }
             self.report_error(StaticTypeError {

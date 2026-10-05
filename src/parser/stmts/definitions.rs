@@ -14,6 +14,7 @@ impl Parser {
     /// ただし両方とも省略するとパースエラーになる。
     ///
     /// `except 型名 [as 変数名]:` の形式で例外の型と補足変数名を指定できる。
+    /// 型名はモジュールを通した修飾名でもよい（`except m.Err:`・python_builtins_plan.md のタスク 4-3）。
     /// 型名を省略した `except:` は全ての例外を捕捉する。
     ///
     /// # 戻り値
@@ -37,7 +38,13 @@ impl Parser {
                 // bare `except:`
                 (None, None)
             } else {
-                let type_name = self.expect_ident()?;
+                let mut type_name = self.expect_ident()?;
+                // 修飾名（`except m.Err:` / `except a.b.Err:`・タスク 4-3）。照合は `is` と同じ経路。
+                while *self.current() == Token::Dot {
+                    self.advance();
+                    type_name.push('.');
+                    type_name.push_str(&self.expect_ident()?);
+                }
                 let alias = if *self.current() == Token::As {
                     self.advance();
                     Some(self.expect_ident()?)

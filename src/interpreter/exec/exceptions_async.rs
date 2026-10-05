@@ -204,8 +204,14 @@ impl Interpreter {
     }
 
     /// VM: `except TypeName` の型マッチ（`exc_matches` と同一）。
+    ///
+    /// 修飾名（`except m.Err:`・python_builtins_plan.md のタスク 4-3）は `x is m.Err` と同じ経路
+    /// （`value_is_type`: モジュールの別名を引いて同じクラスか、修飾名の基底に載っているか）で見る。
     pub(crate) fn vm_exc_matches(&self, exc: &Value, type_name: &str) -> bool {
         if let Value::Instance(inst_rc) = exc {
+            if type_name.contains('.') {
+                return self.value_is_type(exc, type_name);
+            }
             Self::exc_matches(&inst_rc.borrow().class, type_name)
         } else {
             false

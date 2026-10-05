@@ -419,6 +419,16 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
     }
 
+    /// `except m.Err:`（タスク 4-3）も知らない名前なら「腕が永久に死ぬ」誤り。
+    #[test]
+    fn dotted_except_type_must_be_known() {
+        let errs = check("try:\n    pass\nexcept nosuch.Err as e:\n    pass\n");
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::ExceptNotError { .. })),
+            "{errs:?}"
+        );
+    }
+
     /// 組み込みの例外は `args`（組）を持つ（タスク 4-2）。`Error` を実装しただけの利用者の例外は持たない。
     #[test]
     fn builtin_exceptions_have_args() {

@@ -1,0 +1,13 @@
+# except_qualified_error.ar — モジュールに無いクラスの名前は書けない（python_builtins_plan.md のタスク 4-3）
+#
+# 対になる正常系: except_qualified.ar
+#
+# 期待されるエラー（静的）:
+#   StaticTypeError: 'ae.NoSuchError' in `except` is not a known type; the handler can never match
+
+import exc_modules.app_errors as ae
+
+try:
+    ae.fail("boom")
+except ae.NoSuchError as e:                               # ⛔ app_errors に NoSuchError は無い
+    print(e.message)

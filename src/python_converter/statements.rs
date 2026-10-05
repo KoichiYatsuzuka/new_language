@@ -1047,6 +1047,13 @@ pub(crate) fn convert_stmt(
                 let exc_type = match eh.type_.as_deref() {
                     None => None,
                     Some(py::Expr::Name(n)) => Some(n.id.to_string()),
+                    // 修飾名（`except requests.HTTPError:`・python_builtins_plan.md のタスク 4-3）。
+                    Some(e @ py::Expr::Attribute(_)) => Some(dotted_name(e).ok_or_else(|| {
+                        format!(
+                            "{filename}: only a name or a dotted name is supported in `except` \
+                             (e.g. `except ValueError:` / `except m.Err:`); computed types are not"
+                        )
+                    })?),
                     Some(py::Expr::Tuple(_)) => {
                         return Err(format!(
                             "{filename}: `except (A, B):` (multiple exception types) is not supported; \
@@ -1055,8 +1062,8 @@ pub(crate) fn convert_stmt(
                     }
                     Some(_) => {
                         return Err(format!(
-                            "{filename}: only a simple exception name is supported in `except` \
-                             (e.g. `except ValueError:`); qualified or computed types are not"
+                            "{filename}: only a name or a dotted name is supported in `except` \
+                             (e.g. `except ValueError:` / `except m.Err:`); computed types are not"
                         ))
                     }
                 };
@@ -1391,3 +1398,12 @@ pub(crate) fn convert_stmt(
     }
 }
 
+/// `a.b.C` の形の式を綴りへ戻す（`except m.Err:`・python_builtins_plan.md のタスク 4-3）。名前と属性の
+/// 連なりでなければ `None`。
+fn dotted_name(e: &py::Expr) -> Option<String> {
+    match e {
+        py::Expr::Name(n) => Some(n.id.to_string()),
+        py::Expr::Attribute(a) => Some(format!("{}.{}", dotted_name(&a.value)?, a.attr)),
+        _ => None,
+    }
+}
