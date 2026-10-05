@@ -96,6 +96,7 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {
@@ -108,7 +109,8 @@ pub(super) fn is_vm_builtin(name: &str) -> bool {
 /// `len` は名前を無視して位置引数扱い…）ので、`eval_builtin_evaled_named` で
 /// **ツリーウォークと一致することを確認した名前だけ**を挙げる。ここに無い名前は従来どおり
 /// bail してツリーウォークへ落とす（＝安全側）。
-pub(super) const VM_BUILTIN_KW_NAMES: &[&str] = &["enumerate", "open"];
+pub(super) const VM_BUILTIN_KW_NAMES: &[&str] =
+    &["enumerate", "open", "min", "max", "sum", "sorted", "round", "pow"];
 
 /// 引数に**名前付き**（キーワード／可変長）が含まれるか（#27-c）。
 /// `compile_call_args` は同じ判定を戻り値で返すが、それでは遅すぎる場面がある:

@@ -315,3 +315,44 @@ fn test_issubclass_and_callable() {
     }
     assert!(run_err_msg("class Plain:\n    mut n: int\nlet z = issubclass(Plain(1), Plain)\n").contains("issubclass() arg 1 must be a class"));
 }
+
+// ---------------------------------------------------------------------------
+// 集計の組み込み（python_builtins_plan.md のタスク 3-2）
+// ---------------------------------------------------------------------------
+
+/// CPython と同じ結果か（補償つきの sum・偶数への丸め・正確な 10 進での round・安定な並べ替え・逆元）。
+#[test]
+fn test_aggregates_follow_cpython() {
+    let src = concat!(
+        "let tenth: list[float] = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]\n",
+        "let s = sum(tenth)\n",
+        "let r1 = round(2.5)\n",
+        "let r2 = round(2.675, 2)\n",
+        "let r3 = round(1250, -2)\n",
+        "let pairs: list[tuple[str, int]] = [(\"b\", 2), (\"a\", 2), (\"c\", 1)]\n",
+        "fn second(p: tuple[str, int]) -> int:\n",
+        "    return p[1]\n",
+        "let st = str(sorted(pairs, key=second, reverse=True))\n",
+        "let mx = max([], default=7)\n",
+        "let inv = pow(3, -1, 7)\n",
+        "let dm = str(divmod(7, -2))\n",
+        "let a = all([1, 0])\n",
+        "let rv = str(list(reversed(range(3))))\n",
+        "mut xs: list[int] = [3, 1, 2]\n",
+        "xs.sort()\n",
+        "let sorted_in_place = str(xs)\n",
+    );
+    assert!(matches!(run_get(src, "s"), Value::Float(f) if f == 1.0));
+    assert!(matches!(run_get(src, "r1"), Value::Int(2)));
+    assert!(matches!(run_get(src, "r2"), Value::Float(f) if f == 2.67));
+    assert!(matches!(run_get(src, "r3"), Value::Int(1200)));
+    assert_str(run_get(src, "st"), "[('b', 2), ('a', 2), ('c', 1)]");
+    assert!(matches!(run_get(src, "mx"), Value::Int(7)));
+    assert!(matches!(run_get(src, "inv"), Value::Int(5)));
+    assert_str(run_get(src, "dm"), "(-4, -1)");
+    assert!(matches!(run_get(src, "a"), Value::Bool(false)));
+    assert_str(run_get(src, "rv"), "[2, 1, 0]");
+    assert_str(run_get(src, "sorted_in_place"), "[1, 2, 3]");
+    assert!(run_err_msg("let xs: list[int] = []\nlet z = max(xs)\n").contains("max() iterable argument is empty"));
+    assert!(run_err_msg("let z = pow(2, -1, 4)\n").contains("base is not invertible"));
+}

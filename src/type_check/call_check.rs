@@ -1422,7 +1422,53 @@ impl TypeChecker {
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
             // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
-            "isinstance" | "hasattr" | "issubclass" | "callable" => Some(T::Bool),
+            "isinstance" | "hasattr" | "issubclass" | "callable" | "all" | "any" => Some(T::Bool),
+            // 集計（タスク 3-2）。⚠ 要素の型が分からないときは `None`（`Any` にすると下流が静的な誤りになる）。
+            "sorted" | "reversed" | "min" | "max" | "sum" => {
+                let positional: Vec<&T> =
+                    arg_data.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
+                let has_kw = |n: &str| arg_data.iter().any(|(k, _)| k.as_deref() == Some(n));
+                let known_elem = |t: &T| match Self::for_element_type(t) {
+                    T::Unresolved | T::Any => None,
+                    e => Some(e),
+                };
+                match (name, positional.as_slice()) {
+                    ("sorted", [t]) => known_elem(t).map(|e| T::ListOf(Box::new(e))),
+                    ("reversed", [t]) => known_elem(t).map(|e| T::IteratorOf(Box::new(e))),
+                    // `default=` は別の型を返しうるので付けない。
+                    ("min" | "max", [t]) if !has_kw("default") => known_elem(t),
+                    ("min" | "max", [first, rest @ ..])
+                        if !rest.is_empty() && rest.iter().all(|t| t == first) && !matches!(first, T::Unresolved | T::Any) =>
+                    {
+                        Some((*first).clone())
+                    }
+                    ("sum", [t]) if !has_kw("start") => match known_elem(t) {
+                        Some(T::Int) => Some(T::Int),
+                        Some(T::Float) => Some(T::Float),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            "abs" => match arg_data {
+                [(None, T::Int)] => Some(T::Int),
+                [(None, T::Float | T::Complex)] => Some(T::Float),
+                _ => None,
+            },
+            "round" => match arg_data {
+                [(None, T::Int | T::Float)] => Some(T::Int),
+                [(None, t @ (T::Int | T::Float)), (_, T::Int)] => Some(t.clone()),
+                _ => None,
+            },
+            "divmod" => match arg_data {
+                [(None, T::Int), (None, T::Int)] => Some(T::Tuple(vec![T::Int, T::Int])),
+                [(None, T::Int | T::Float), (None, T::Int | T::Float)] => Some(T::Tuple(vec![T::Float, T::Float])),
+                _ => None,
+            },
+            "pow" => match arg_data {
+                [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
+                _ => None,
+            },
             "setattr" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。

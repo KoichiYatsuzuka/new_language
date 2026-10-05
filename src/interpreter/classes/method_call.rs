@@ -239,6 +239,29 @@ impl Interpreter {
                         items.borrow_mut().push(copied);
                         return Ok(Value::None);
                     }
+                    // `xs.sort(key=None, reverse=False)`（python_builtins_plan.md のタスク 3-2）。
+                    // 並べ方は `sorted` と同じ実装（`py_sort_values`・安定）。キーワード引数だけを受ける（CPython と同じ）。
+                    // ⚠ 並べ替えの途中で比較が失敗したら、リストは元のまま（並べ終えてから書き戻す）。
+                    "sort" => {
+                        let mut key = None;
+                        let mut reverse = false;
+                        for (k, v, _) in evaled {
+                            match k.as_deref() {
+                                Some("key") => key = Some(v).filter(|f| !matches!(f, Value::None)),
+                                Some("reverse") => reverse = self.eval_truthy(&v)?,
+                                Some(other) => {
+                                    return Err(format!(
+                                        "TypeError: '{other}' is an invalid keyword argument for sort()"
+                                    ))
+                                }
+                                None => return Err("TypeError: sort() takes no positional arguments".to_string()),
+                            }
+                        }
+                        let current = items.borrow().clone();
+                        let sorted = self.py_sort_values(current, key, reverse)?;
+                        *items.borrow_mut() = sorted;
+                        return Ok(Value::None);
+                    }
                     "pop" => {
                         Self::expect_no_args_evaled(&evaled, "list", "pop")?;
                         let mut v = items.borrow_mut();

@@ -318,3 +318,34 @@ use super::*;
     fn type_of_types_err() {
         assert!(err("class Box:\n    mut v: int\nlet b = Box(1)\nlet n: int = type(b).__name__\n"));
     }
+
+    // --- 集計の組み込みの結果の型（python_builtins_plan.md のタスク 3-2）---
+
+    /// 要素の型が分かれば結果に型が付く。
+    #[test]
+    fn aggregate_types_ok() {
+        assert!(ok(concat!(
+            "let xs: list[int] = [3, 1]\n",
+            "let a: list[int] = sorted(xs)\n",
+            "let b: int = max(xs)\n",
+            "let c: int = sum(xs)\n",
+            "let d: bool = any(xs)\n",
+            "let e: int = round(2.5)\n",
+            "let f: float = round(2.5, 1)\n",
+            "let g: tuple[int, int] = divmod(7, 2)\n",
+        )));
+    }
+
+    /// 型の取り違えは誤り。
+    #[test]
+    fn aggregate_types_err() {
+        assert!(err("let xs: list[int] = [3, 1]\nlet a: list[str] = sorted(xs)\n"));
+        assert!(err("let xs: list[int] = [3, 1]\nlet b: str = max(xs)\n"));
+    }
+
+    /// `sort` は書き換えるメソッドなので、`let` の list には呼べない。
+    #[test]
+    fn list_sort_needs_mut() {
+        assert!(err("let xs: list[int] = [3, 1]\nxs.sort()\n"));
+        assert!(ok("mut xs: list[int] = [3, 1]\nxs.sort()\n"));
+    }

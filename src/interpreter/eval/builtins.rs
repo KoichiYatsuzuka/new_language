@@ -24,6 +24,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -102,6 +103,18 @@ impl Interpreter {
                 [x] => Ok(Value::Bool(self.py_callable(x))),
                 _ => Err(format!("TypeError: callable() takes exactly one argument ({} given)", args.len())),
             }),
+            // 集計（タスク 3-2）。キーワード引数つきは `eval_builtin_evaled_named`。
+            "all" => Some(self.py_all_any(args, true)),
+            "any" => Some(self.py_all_any(args, false)),
+            "min" => Some(self.py_min_max(args, Vec::new(), false)),
+            "max" => Some(self.py_min_max(args, Vec::new(), true)),
+            "sum" => Some(self.py_sum(args, Vec::new())),
+            "sorted" => Some(self.py_sorted(args, Vec::new())),
+            "reversed" => Some(self.py_reversed(args)),
+            "abs" => Some(self.py_abs(args)),
+            "round" => Some(self.py_round(args, Vec::new())),
+            "divmod" => Some(self.py_divmod(args)),
+            "pow" => Some(self.py_pow(args, Vec::new())),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),
@@ -711,6 +724,18 @@ impl Interpreter {
                     args.into_iter().map(|(k, v)| (k, v, true)).collect(),
                 ),
             ),
+            // キーワード引数を取る Python の組み込み（タスク 3-2・本体は `eval/py_builtins.rs`）。
+            "min" | "max" | "sum" | "sorted" | "round" | "pow" => {
+                let (pos, kw) = super::py_builtins::split_named(args);
+                Some(match name {
+                    "min" => self.py_min_max(pos, kw, false),
+                    "max" => self.py_min_max(pos, kw, true),
+                    "sum" => self.py_sum(pos, kw),
+                    "sorted" => self.py_sorted(pos, kw),
+                    "round" => self.py_round(pos, kw),
+                    _ => self.py_pow(pos, kw),
+                })
+            }
             // ここに無い名前はコンパイラが `CallBuiltinKw` を発行しない（到達しない）。
             _ => None,
         }

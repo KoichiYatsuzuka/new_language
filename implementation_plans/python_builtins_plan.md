@@ -490,7 +490,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | ~~**2-3**~~ | ✅ **済**（2026-10-05・読み書きは `o.name` と同じ経路。束縛メソッドが無いので `getattr(o, "method")` は 1-8 待ち）`getattr` / `hasattr` / `setattr`（既定値つき `getattr(o, n, d)` を含む） | 595 | なし | 中 |
 | ~~**2-4**~~ | ✅ **済**（2026-10-05）`issubclass` / `callable` | 128 | 2-1 | 小 |
 | **3-1** | ~~`list(it)` / `tuple(it)`~~（1-7 で済）/ ~~`dict(..)`（呼べるようにする）~~（✅ 2026-10-05・Python の辞書内包も `dict([(k, v) for ..])` へ変換するようにした）/ `frozenset` / `bytes`（⚠ 値の種類を足す必要がある・4.3 の厚い方。未着手） | 969 | なし | 中 |
-| **3-2** | `all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | 1-2（`divmod` の float）・1-3（組を鍵にする比較） | 中 |
+| ~~**3-2**~~ | ✅ **済**（2026-10-05・6 節の `list.sort()` も入れた。Rust で実装した・前置きではない）`all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | 1-2（`divmod` の float）・1-3（組を鍵にする比較） | 中 |
 | **3-3** | `map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | 1-4（`iter` の辞書・ジェネレータ） | 小 |
 | **4-1** | 警告クラス（`FutureWarning` / `DeprecationWarning` / `RuntimeWarning` / `UserWarning` / `Warning` …）と、足りない例外クラス（`ImportError` / `LookupError` / `SyntaxError` / `FileNotFoundError` …）。⚠ 階層（`LookupError` → `KeyError` / `IndexError`）も合わせる（10-19 の `ClassValue::is_a`） | 382 | なし | 中 |
 | **4-2** | 例外の `str(e)`（メッセージ）と `e.args` | — | なし | 小 |
@@ -506,7 +506,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 
 ## 6. 測定のついでに見つけたもの（組み込み以外）
 
-- `list.sort()`（メソッド）が無い（`AttributeError: 'list' object has no method 'sort'`）。組み込み関数ではないので本書の数には入れていない。
+- ~~`list.sort()`（メソッド）が無い~~ → **足した**（タスク 3-2・`sorted` と同じ安定な並べ替え `py_sort_values`）。
 - 以下は 4 節の分類で見つけた（どれも実測）。4.1 の前置きで書くものの正しさに効く:
   - ~~整数の `//` / `%` が**割る数が負のとき** CPython と違う。`-7 // -2` が `4`（CPython `3`）、`7 % -2` が `1`（CPython `-1`）。~~
     → **直した**（2026-10-01）。`div_euclid` / `rem_euclid` をやめ、`ops::py_floor_div` / `ops::py_mod` に 1 本化した

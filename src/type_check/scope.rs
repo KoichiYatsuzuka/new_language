@@ -150,7 +150,7 @@ impl TypeChecker {
     /// `src/interpreter/classes/` の `method_call.rs` / `set_methods.rs` /
     /// `frozen_list_methods.rs` に変更メソッドを足したら**必ずここにも足すこと**。
     pub(super) const MUTATING_COLLECTION_METHODS: &'static [&'static str] =
-        &["append", "pop", "add", "clear", "discard", "remove"];
+        &["append", "pop", "add", "clear", "discard", "remove", "sort"];
 
     /// アクセスパスの根の**可変性**。根が識別子でない（一時値）／未宣言なら `None`。
     pub(super) fn path_is_mutable(&self, expr: &Expr) -> Option<bool> {
