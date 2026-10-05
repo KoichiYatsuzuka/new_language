@@ -191,3 +191,36 @@ fn builtin_value_names_are_known_and_callable() {
         assert!(interp.eval_builtin_evaled(name, Vec::new()).is_some(), "{name} を組み込み関数の表が扱わない");
     }
 }
+
+// ---------------------------------------------------------------------------
+// isinstance（python_builtins_plan.md のタスク 2-1）
+// ---------------------------------------------------------------------------
+
+/// CPython と同じ判定か（組は要素ごと・`bool` は `int` の派生・クラスは派生も・trait は `is` と同じ）。
+#[test]
+fn test_isinstance_follows_cpython() {
+    let src = concat!(
+        "trait Named:\n",
+        "    fn name(self) -> str:\n",
+        "        ...\n",
+        "class Dog(Named):\n",
+        "    fn name(self) -> str:\n",
+        "        return \"d\"\n",
+        "class Cat:\n",
+        "    mut n: int\n",
+        "let a = isinstance(True, int)\n",
+        "let b = isinstance(1, float)\n",
+        "let c = isinstance([1], (dict, list))\n",
+        "let d = isinstance(Dog(), Dog)\n",
+        "let e = isinstance(Cat(1), Dog)\n",
+        "let f = isinstance(Dog(), Named)\n",
+        "let k = Dog\n",
+        "let g = isinstance(Dog(), k)\n",
+        "let h = isinstance(None, int)\n",
+    );
+    for (var, want) in [("a", true), ("b", false), ("c", true), ("d", true), ("e", false), ("f", true), ("g", true), ("h", false)] {
+        assert!(matches!(run_get(src, var), Value::Bool(b) if b == want), "{var}");
+    }
+    // 型でない第 2 引数は CPython と同じ `TypeError`。
+    assert!(run_err_msg("let z = isinstance(3, len)\n").contains("isinstance() arg 2 must be a type"));
+}

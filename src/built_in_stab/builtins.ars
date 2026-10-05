@@ -146,6 +146,13 @@ fn flat_set_int(grid: fixed_list[Any], index: int, value: int) -> None:
     """Write the int at `index` of a list made by `create_flat_int_list`."""
     pass
 
+# ── Python の組み込み（`implementation_plans/python_builtins_plan.md`・本体は `eval/py_builtins.rs`） ──
+#   名前と意味は CPython 3.12 と同じ。⚠ CPython で位置専用の引数は、実行時も位置でしか受け取らない。
+
+fn isinstance(obj: Any, class_or_tuple: Any) -> bool:
+    """True if obj is an instance of the class (or of a subclass), or of any class in a tuple of them."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:

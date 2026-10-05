@@ -56,11 +56,12 @@ fn builtins_source_is_analyzable_for_the_prelude() {
         .filter(|s| s["scope"] == 0 && s["kind"] == "function")
         .filter_map(|s| s["name"].as_str())
         .collect();
-    for n in ["print", "len", "range", "open", "close", "repr", "getenv"] {
+    for n in ["print", "len", "range", "open", "close", "repr", "getenv", "isinstance"] {
         assert!(names.contains(&n), "prelude に '{n}' が無い: {names:?}");
     }
     // 実行時に無い関数を並べていないこと（全体の突き合わせは本体側の `builtins_ars_matches_the_runtime`）。
-    for n in ["ord", "abs", "isinstance", "exec"] {
+    // ⚠ `ord` / `abs` / `isinstance` は python_builtins_plan.md のフェーズ 2〜3 で実行時に入った（宣言もある）。
+    for n in ["exec", "vars", "exit"] {
         assert!(!names.contains(&n), "実行時に無い '{n}' が prelude に残っている");
     }
 }
