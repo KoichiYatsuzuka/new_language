@@ -1,0 +1,30 @@
+# py_type.ar — type(x)（python_builtins_plan.md のタスク 2-2）
+#
+# 対になる誤りの例: py_type_error.ar
+#
+# `type(x)` はインスタンスならそのクラスの値、ほかは組み込みの型の値（`<class 'int'>`）を返す。返した値は
+#   - 呼べる（`type(self)(...)` で同じクラスを作り直す・派生でも派生のまま）
+#   - `__name__` で名前が引ける
+#   - `===`（Python の `is`）・`==` で比べられる
+# ⚠ 以前は `NameError: 'type' is not defined`（pandas で 868 箇所）。
+# ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
+# ⚠ クラスの表示は CPython と違いモジュール名を付けない（`<class 'Square'>`。CPython は `<class 'test_modules.py_type.Square'>`）。
+
+import[py] test_modules.py_type as m
+
+print("=== 1. inside Python code ===")
+print(m.names())          # ['int', 'str', 'list', 'NoneType', 'Square(2)', 'Square(6)']
+mut a = m.Square(1)
+mut b = m.Square(2)
+mut c = m.Shape(3)
+print(m.same_class(a, b), m.same_class(a, c))       # True False
+
+print("=== 2. from Arrow ===")
+class Box:
+    mut v: int
+
+let box = Box(1)
+let again = type(box)(5)
+print(again.v, type(box).__name__)                   # 5 Box
+print(type(box) === Box, type(1.5) == float, type(True) === int)   # True True False
+print(type(3), type(None))                           # <class 'int'> <class 'NoneType'>

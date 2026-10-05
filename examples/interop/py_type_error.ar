@@ -1,0 +1,11 @@
+# py_type_error.ar — 3 引数の type()（python_builtins_plan.md のタスク 2-2）
+#
+# 対になる正常系: py_type.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: type() with 3 arguments (creating a class at run time) is not supported
+#
+# ⚠ CPython では実行時にクラスを作る形。Arrow のクラスは最上位の宣言だけ（10-16）なので対応しない。
+
+let d: dict[str, int] = {}
+print(type("Made", (), d))               # ⛔ 実行時にクラスを作る形は対象外

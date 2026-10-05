@@ -153,6 +153,10 @@ fn isinstance(obj: Any, class_or_tuple: Any) -> bool:
     """True if obj is an instance of the class (or of a subclass), or of any class in a tuple of them."""
     pass
 
+fn type(obj: Any):
+    """The class of obj (a class value, or the built-in type of a primitive); its `__name__` is the class name."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:

@@ -224,3 +224,33 @@ fn test_isinstance_follows_cpython() {
     // 型でない第 2 引数は CPython と同じ `TypeError`。
     assert!(run_err_msg("let z = isinstance(3, len)\n").contains("isinstance() arg 2 must be a type"));
 }
+
+// ---------------------------------------------------------------------------
+// type(x)（python_builtins_plan.md のタスク 2-2）
+// ---------------------------------------------------------------------------
+
+/// `type(x)` はクラスの値か組み込みの型の値。呼べ、`__name__` が引け、比べられる。
+#[test]
+fn test_type_of_follows_cpython() {
+    let src = concat!(
+        "class Box:\n",
+        "    mut v: int\n",
+        "let b = Box(1)\n",
+        "let again = type(b)(5)\n",
+        "let v = again.v\n",
+        "let n = type(b).__name__\n",
+        "let same = type(b) === Box\n",
+        "let f = type(1.5) == float\n",
+        "let not_int = type(True) === int\n",
+        "let none = type(None).__name__\n",
+        "let shown = str(type(3))\n",
+    );
+    assert!(matches!(run_get(src, "v"), Value::Int(5)));
+    assert_str(run_get(src, "n"), "Box");
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "f"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "not_int"), Value::Bool(false)));
+    assert_str(run_get(src, "none"), "NoneType");
+    assert_str(run_get(src, "shown"), "<class 'int'>");
+    assert!(run_err_msg("let d: dict[str, int] = {}\nlet z = type(\"M\", (), d)\n").contains("type() with 3 arguments"));
+}
