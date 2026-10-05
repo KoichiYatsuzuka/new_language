@@ -1,0 +1,8 @@
+# app_errors.ar — except_qualified.ar が import するモジュール（python_builtins_plan.md のタスク 4-3）
+
+class AppError(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+fn fail(let msg: str) -> None:
+    raise AppError(msg)

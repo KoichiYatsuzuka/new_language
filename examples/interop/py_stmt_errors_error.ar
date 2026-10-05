@@ -20,7 +20,7 @@
 #      ⇒ 以前: else 節を**黙って破棄**。`finally` とは違い「例外が起きなかったとき」の本体。
 #      ⇒ 代替: else の中身を try 本体の末尾へ移す。
 #
-#   ③ except (A, B): / except mod.Err:
+#   ③ except (A, B):（⚠ except mod.Err: は python_builtins_plan.md のタスク 4-3 で通るようにした）
 #      `except (A, B):` (multiple exception types) is not supported
 #      ⇒ 以前: **型を黙って `"Exception"` に潰して**いた ＝ 指定した型だけでなく
 #         **何でも捕まえるハンドラ**に化けていた（捕まえすぎる誤変換）。

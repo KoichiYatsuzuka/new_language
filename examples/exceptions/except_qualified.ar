@@ -1,0 +1,27 @@
+# except_qualified.ar — モジュールを通した名前の例外を捕まえる except m.Err:（python_builtins_plan.md のタスク 4-3）
+#
+# 対になる誤りの例: except_qualified_error.ar
+#
+# except の型にはモジュールの別名を通した名前（ae.AppError）も、import したときの名前
+# （exc_modules.app_errors.AppError）も書ける。照合は `x is ae.AppError` と同じ（同じクラスか・その派生か）。
+# ⚠ 以前は構文が受けず `ParseError: expected ':', got '.'` だった（Python の except requests.HTTPError: も変換できなかった）。
+
+import exc_modules.app_errors as ae
+import exc_modules.app_errors
+
+try:
+    ae.fail("boom")
+except ae.AppError as e:
+    print("caught ae.AppError:", e.message)               # caught ae.AppError: boom
+
+try:
+    ae.fail("full path")
+except exc_modules.app_errors.AppError as e:
+    print("caught by the full name:", e.message)          # caught by the full name: full path
+
+try:
+    ae.fail("again")
+except ValueError:
+    print("not reached")
+except Exception as e:
+    print("except Exception still catches it:", e.message)   # except Exception still catches it: again

@@ -1603,6 +1603,24 @@ fn python_nested_class_and_import_rules() {
     assert!(err.contains("inside a function"), "{err}");
 }
 
+/// `except` の型にモジュールを通した名前を書ける（`except m.Err:`・python_builtins_plan.md のタスク 4-3）。
+/// Arrow の構文も Python の変換も同じ綴り（`"a.b.Err"`）にする。式（`except f().Err:`）は変換の誤り。
+#[test]
+fn except_accepts_a_dotted_name() {
+    let handler_types = |stmts: &[Stmt]| -> Vec<Option<String>> {
+        let Some(Stmt::Try { handlers, .. }) = stmts.first() else { panic!("expected try: {stmts:?}") };
+        handlers.iter().map(|h| h.exc_type.clone()).collect()
+    };
+    let stmts = parse("try:\n    pass\nexcept m.Err as e:\n    pass\nexcept a.b.C:\n    pass\n");
+    assert_eq!(handler_types(&stmts), vec![Some("m.Err".to_string()), Some("a.b.C".to_string())]);
+
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv("try:\n    pass\nexcept requests.exceptions.HTTPError as e:\n    pass\n").expect("dotted except");
+    assert_eq!(handler_types(&stmts), vec![Some("requests.exceptions.HTTPError".to_string())]);
+    let err = conv("try:\n    pass\nexcept f().Err:\n    pass\n").expect_err("computed except type");
+    assert!(err.contains("computed types are not"), "{err}");
+}
+
 /// 文が**文の位置**（先頭のトークン）を持つ（フェーズ10 10-17）。以前は `let` / `return` / `if` などが
 /// 位置を持たず、型検査の誤りが `<unknown>`・デバッガが直前の行を出し続けていた。
 #[test]
