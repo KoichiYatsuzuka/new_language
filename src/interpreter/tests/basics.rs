@@ -478,3 +478,21 @@ fn test_open_python_form() {
         .contains("binary mode doesn't take an encoding argument"));
     assert!(run_err_msg("let f = open(\"z.txt\", \"r+\")\n").contains("NotImplementedError"));
 }
+
+/// 関数の中の `block:` 文から `return` で抜ける（python_builtins_plan.md のタスク 5-3）。
+/// 以前は関数ごと `VmForceError` だった（`block_body_bails` がブロック文にも掛かっていた）。
+#[test]
+fn test_return_inside_block_statement() {
+    let src = concat!(
+        "fn first_even(let xs: list[int]) -> int:\n",
+        "    block:\n",
+        "        for x in xs:\n",
+        "            if x % 2 == 0:\n",
+        "                return x\n",
+        "    return -1\n",
+        "let a = first_even([1, 4, 5])\n",
+        "let b = first_even([1, 3])\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(4)));
+    assert!(matches!(run_get(src, "b"), Value::Int(-1)));
+}

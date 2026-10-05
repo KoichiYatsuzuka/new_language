@@ -10,6 +10,6 @@ def save(path, lines):
 
 
 def load(path):
+    # with の中の return（変換先は block: 文の中の return・タスク 5-3 で通るようにした）。
     with open(path, encoding="utf-8") as f:
-        text = f.read()
-    return text
+        return f.read()
