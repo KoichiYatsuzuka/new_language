@@ -1,0 +1,12 @@
+# print_keywords_error.ar — print の end= は None か文字列（python_builtins_plan.md のタスク 5-1）
+#
+# 対になる正常系: print_keywords.ar
+#
+# 期待されるエラー（静的・組み込みの宣言 `src/built_in_stab/builtins.ars` の仮引数で検査する）:
+#   StaticTypeError: argument 1 of 'print' expects 'Option[str]' but got 'int'
+#
+# ⚠ 型が静的に分からない値（Python のモジュールから来た値など）は実行時に止まる:
+#   TypeError: end must be None or a string, not int（文言は CPython と同じ）
+
+let n: int = 5
+print("x", end=n)                               # ⛔ end は文字列

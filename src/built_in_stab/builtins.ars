@@ -89,8 +89,8 @@ class FileObject:
 
 # ── 組み込み関数 ────────────────────────────────────────────────────────────
 
-fn print(let ...: Any) -> None:
-    """Print any number of values (positional only) separated by a space, followed by a newline."""
+fn print(sep: Option[str] = None, end: Option[str] = None, file: Any = None, flush: bool = False, let ...: Any) -> None:
+    """Print any number of values separated by sep (default a space), followed by end (default a newline). sep= / end= / flush= are keyword-only; file= takes only None (standard output)."""
     pass
 
 fn len(obj: Any) -> int:

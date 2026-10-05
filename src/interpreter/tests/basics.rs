@@ -415,3 +415,25 @@ fn test_lazy_generators_feed_consumers() {
     assert!(matches!(run_get(src, "s"), Value::Int(2)));
     assert_str(run_get(src, "l"), "[1, 2]");
 }
+
+// ---------------------------------------------------------------------------
+// print のキーワード引数（python_builtins_plan.md のタスク 5-1）
+// ---------------------------------------------------------------------------
+
+/// `print(.., sep=.., end=..)` を含む関数・最上位の文がバイトコードになる（以前は `VmForceError`）。
+/// `sep` / `end` は `None` か文字列で、ほかは CPython と同じ文言の `TypeError`。
+#[test]
+fn test_print_keyword_arguments() {
+    let src = concat!(
+        "fn row(let xs: list[int]) -> int:\n",
+        "    for x in xs:\n",
+        "        print(x, end=\"\")\n",
+        "    print(\"\", sep=None, end=None)\n",
+        "    return len(xs)\n",
+        "print(\"a\", \"b\", sep=\"\", end=\"\n\", flush=True)\n",
+        "let n = row([1, 2])\n",
+    );
+    assert!(matches!(run_get(src, "n"), Value::Int(2)));
+    assert!(run_err_msg("print(\"x\", end=5)\n").contains("end must be None or a string, not int"));
+    assert!(run_err_msg("print(\"x\", color=1)\n").contains("'color' is an invalid keyword argument for print()"));
+}

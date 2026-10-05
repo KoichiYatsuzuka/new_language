@@ -408,11 +408,14 @@ use super::*;
         assert!(err("for i, x in enumerate([1], start = \"a\"):\n    print(i)\n"));
     }
 
-    /// 個数自由の位置引数（`let ...: T`）は何個でも通し、キーワード引数・`... =` を弾く。
+    /// 個数自由の位置引数（`let ...: T`）は何個でも通し、宣言に無いキーワード引数・`... =` を弾く。
+    /// `print` の `sep=` / `end=` / `flush=` は宣言したキーワード専用の仮引数（python_builtins_plan.md のタスク 5-1）。
     #[test]
     fn variadic_builtins_take_positional_args_only() {
         assert!(ok("print()\nprint(1, \"a\", [2])\nfor t in zip([1], [\"a\"], [True]):\n    print(t)\n"));
-        assert!(err("print(1, sep = \" \")\n"));
+        assert!(ok("print(1, 2, sep = \", \", end = \"\")\nprint(flush = True)\n"));
+        assert!(err("print(1, nope = \" \")\n"));
+        assert!(err("print(1, end = 2)\n"));
         assert!(err("print(... = 1, 2)\n"));
     }
 
