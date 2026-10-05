@@ -491,7 +491,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | ~~**2-4**~~ | ✅ **済**（2026-10-05）`issubclass` / `callable` | 128 | 2-1 | 小 |
 | **3-1** | ~~`list(it)` / `tuple(it)`~~（1-7 で済）/ ~~`dict(..)`（呼べるようにする）~~（✅ 2026-10-05・Python の辞書内包も `dict([(k, v) for ..])` へ変換するようにした）/ `frozenset` / `bytes`（⚠ 値の種類を足す必要がある・4.3 の厚い方。未着手） | 969 | なし | 中 |
 | ~~**3-2**~~ | ✅ **済**（2026-10-05・6 節の `list.sort()` も入れた。Rust で実装した・前置きではない）`all` / `any` / `min` / `max` / `sum` / `sorted`（`key=` / `reverse=`）/ `reversed` / `abs` / `round` / `divmod` / `pow` | 401 | 1-2（`divmod` の float）・1-3（組を鍵にする比較） | 中 |
-| **3-3** | `map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | 1-4（`iter` の辞書・ジェネレータ） | 小 |
+| ~~**3-3**~~ | ✅ **済**（2026-10-05・`format` を除く。`map` / `filter` / `iter(f, s)` は Arrow の `gen` で書いた前置きで遅延のまま）`map` / `filter` / `iter` / `hash` / `ord` / `chr` / `hex` / `oct` / `bin` / `format` / `ascii` | 98 | 1-4（`iter` の辞書・ジェネレータ） | 小 |
 | **4-1** | 警告クラス（`FutureWarning` / `DeprecationWarning` / `RuntimeWarning` / `UserWarning` / `Warning` …）と、足りない例外クラス（`ImportError` / `LookupError` / `SyntaxError` / `FileNotFoundError` …）。⚠ 階層（`LookupError` → `KeyError` / `IndexError`）も合わせる（10-19 の `ClassValue::is_a`） | 382 | なし | 中 |
 | **4-2** | 例外の `str(e)`（メッセージ）と `e.args` | — | なし | 小 |
 | **4-3** | 修飾名の例外を捕まえる `except m.Err:`（Python の `except requests.HTTPError:` の形）。今は Arrow の構文が受けず（`except e.MyErr:` が `ParseError: expected ':', got '.'`・Arrow のモジュールでも同じ）、変換器も明示エラーにしている（`only a simple exception name is supported in except`）。構文・変換器に足し、照合は `is` と同じ経路（`value_is_type` の修飾名・基底の修飾名）に載せる。`import[py]` のクラスの修飾名（6 節で直した）が前提 | —（構文） | なし | 中 |
@@ -506,6 +506,8 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 
 ## 6. 測定のついでに見つけたもの（組み込み以外）
 
+- ~~遅延のジェネレータ（`gen` 関数）を `zip` / `enumerate` / `set` / `*` の展開に渡すと黙って空・`TypeError`~~ → **直した**（タスク 3-3）。
+  列への展開を `drain_iterable`（`for` と同じ規則で最後まで回す）に 1 本化し、実体化済みの値しか見ない `collect_iterable` を消した。
 - ~~`list.sort()`（メソッド）が無い~~ → **足した**（タスク 3-2・`sorted` と同じ安定な並べ替え `py_sort_values`）。
 - 以下は 4 節の分類で見つけた（どれも実測）。4.1 の前置きで書くものの正しさに効く:
   - ~~整数の `//` / `%` が**割る数が負のとき** CPython と違う。`-7 // -2` が `4`（CPython `3`）、`7 % -2` が `1`（CPython `-1`）。~~

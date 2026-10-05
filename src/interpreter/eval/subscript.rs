@@ -240,7 +240,7 @@ impl Interpreter {
 
         match obj {
             Value::List(items) => {
-                let new_vals = self.collect_iterable(rhs)?;
+                let new_vals = self.drain_iterable(rhs)?;
                 let mut borrowed = items.borrow_mut();
                 let len = borrowed.len() as i64;
 
@@ -278,32 +278,6 @@ impl Interpreter {
             _ => Err(format!(
                 "TypeError: '{}' object does not support slice assignment",
                 self.type_name(&obj)
-            )),
-        }
-    }
-
-    /// 任意の反復可能値を `Vec<Value>` に収集する（スライス代入、enumerate、zip で使用）。
-    pub(crate) fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
-        match val {
-            Value::List(lst) => Ok(lst.borrow().clone()),
-            Value::FrozenList { ref state, ref layout } => {
-                let st = state.borrow();
-                Ok((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
-            }
-            Value::Tuple(td) => Ok(td.all_values().to_vec()),
-            Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
-            Value::Set(items) => Ok(items.borrow().clone()),
-            // ★ 辞書は**キー**を返す（`make_for_iterator` と同じ規則にすること）。
-            Value::Dict(ref d) => Ok(d.borrow().all_keys()),
-            Value::Generator(gen) => {
-                let g = gen.borrow();
-                Ok(g.values[g.index..].to_vec())
-            }
-            // `Code` は 1 行ずつ（タスク 2-10）。⚠ `make_for_iterator` と同じ規則。
-            Value::Code(lines) => Ok(crate::meta_expand::code_lines_as_values(&lines)),
-            other => Err(format!(
-                "TypeError: '{}' object is not iterable",
-                self.type_name(&other)
             )),
         }
     }

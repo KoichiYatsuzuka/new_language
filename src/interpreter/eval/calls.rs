@@ -538,17 +538,11 @@ impl Interpreter {
                 ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => {
                     let arg = vals.into_iter().next().unwrap();
+                    // ⚠ どのイテラブルも `for` と同じ規則で回す（辞書はキー・遅延のジェネレータ・タスク 3-3）。
+                    //   以前は list / str / tuple / set だけで、`set(g())` が `'generator' object is not iterable` だった。
                     let items: Vec<Value> = match arg {
                         Value::Set(s) => s.borrow().clone(),
-                        Value::List(lst) => lst.borrow().clone(),
-                        Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
-                        Value::Tuple(t) => t.all_values().to_vec(),
-                        other => {
-                            return Err(format!(
-                                "TypeError: '{}' object is not iterable",
-                                self.type_name(&other)
-                            ))
-                        }
+                        other => self.drain_iterable(other)?,
                     };
                     let mut result: Vec<Value> = Vec::new();
                     for v in items {

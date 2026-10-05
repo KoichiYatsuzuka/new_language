@@ -455,7 +455,7 @@ pub enum Op {
     /// 列の展開: 末尾の値（展開元）を pop し、**その下のリストへ全要素を追加**する。
     ///
     /// `[a, *b, c]` / `(*a, 9)` / `{*a, 1}` の `*b` 用。
-    /// ⚠ 展開元は `collect_iterable` を通すので list / tuple / set / str / range /
+    /// ⚠ 展開元は `drain_iterable` を通すので list / tuple / set / str / range /
     /// ジェネレータのどれでもよい（呼び出し引数の `*` と同じ広さ）。
     SeqExtend,
     /// 展開を含む列リテラルの仕上げ: 蓄積したリストを目的の容器へ変換する。

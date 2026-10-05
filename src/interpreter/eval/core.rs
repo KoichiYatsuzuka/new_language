@@ -80,9 +80,9 @@ impl Interpreter {
     /// 列リテラル（`list` / `set` / `tuple`）の要素を評価して並べる。
     ///
     /// `*other` は**展開元の全要素をその位置に**挿入する。
-    /// ⚠ 展開の規則は呼び出し引数の `*` と同じ（`collect_iterable` を通す）ので、
+    /// ⚠ 展開の規則は呼び出し引数の `*` と同じ（`drain_iterable` を通す）ので、
     /// list / tuple / set / str / range / ジェネレータのどれでも展開できる。
-    /// ⚠ ツリーウォークと VM（`Op::SeqExtend` → `vm_seq_extend`）で**同じ `collect_iterable`** を通す。
+    /// ⚠ ツリーウォークと VM（`Op::SeqExtend` → `vm_seq_extend`）で**同じ `drain_iterable`** を通す。
     pub(crate) fn eval_seq_entries(
         &mut self,
         entries: &[crate::ast::SeqEntry],
@@ -93,7 +93,7 @@ impl Interpreter {
                 crate::ast::SeqEntry::Item(x) => out.push(self.eval(x)?),
                 crate::ast::SeqEntry::Spread(x) => {
                     let v = self.eval(x)?;
-                    out.extend(self.collect_iterable(v)?);
+                    out.extend(self.drain_iterable(v)?);
                 }
             }
         }
@@ -102,7 +102,7 @@ impl Interpreter {
 
     /// VM: `Op::SeqExtend` の本体 — `src` の全要素を `dest`（リスト）へ追加する。
     ///
-    /// ⚠ ツリーウォーク側（`eval_seq_entries`）と**同じ `collect_iterable`** を通すこと。
+    /// ⚠ ツリーウォーク側（`eval_seq_entries`）と**同じ `drain_iterable`** を通すこと。
     /// 片方だけ広さを変えると VM と解釈で展開できる型がずれる。
     pub(crate) fn vm_seq_extend(&mut self, dest: &Value, src: Value) -> Result<(), String> {
         let Value::List(dl) = dest else {
@@ -111,7 +111,7 @@ impl Interpreter {
                 self.type_name(dest)
             ));
         };
-        let items = self.collect_iterable(src)?;
+        let items = self.drain_iterable(src)?;
         dl.borrow_mut().extend(items);
         Ok(())
     }

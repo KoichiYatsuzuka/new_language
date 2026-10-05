@@ -45,6 +45,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
 ];
 
 /// 実行時が宣言なしで解決する名前か。

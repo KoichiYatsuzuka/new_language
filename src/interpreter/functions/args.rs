@@ -80,9 +80,9 @@ impl Interpreter {
                 out.push((Some(name.to_string()), val, true));
             }
         } else {
-            // ⚠ `collect_iterable` を通すので list / tuple / set / str / range /
+            // ⚠ `drain_iterable` を通すので list / tuple / set / str / range /
             //   ジェネレータのどれでも展開できる（Python の `*` と同じ広さ）。
-            for item in self.collect_iterable(v)? {
+            for item in self.drain_iterable(v)? {
                 out.push((None, item, true));
             }
         }

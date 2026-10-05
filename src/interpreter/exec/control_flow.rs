@@ -34,7 +34,7 @@ impl Interpreter {
                 Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(keys))))
             }
             // `Code` は 1 行ずつ（設計書 §1.2 / タスク 2-10）。各要素は 1 行だけの `Code`。
-            // ⚠ `collect_iterable` と**同じ規則**にすること（辞書のキーと同じ注意）。
+            // ⚠ 列への展開（`drain_iterable`）もこの関数を通るので規則は 1 か所。
             Value::Code(ref lines) => Value::Generator(Rc::new(RefCell::new(
                 GeneratorState::materialized(crate::meta_expand::code_lines_as_values(lines)),
             ))),
@@ -49,11 +49,13 @@ impl Interpreter {
         Ok(generator)
     }
 
-    /// イテラブルを**最後まで回して**要素を集める（`list(it)` / `tuple(it)` などの組み込みが使う・タスク 1-7）。
+    /// イテラブルを**最後まで回して**要素を集める（列への展開の**唯一の**入口・タスク 1-7 / 3-3）。
     ///
     /// `for` と同じ規則（[`Self::make_for_iterator`]）でイテレータにしてから `gen_next` で尽きるまで進める。
-    /// ⚠ `collect_iterable` はジェネレータの実体化済みの値しか見ないので、遅延のジェネレータ（`gen` 関数）や
-    ///   `__iter__` を持つインスタンスには使えない。新しい組み込みはこちらを使うこと。
+    /// 使い手は `list(it)` / `tuple(it)` / `set(it)` / `zip` / `enumerate` / `*` の展開（呼び出し引数・列の表示）/
+    /// スライス代入など。
+    /// ⚠ 以前の `collect_iterable`（削除済み）はジェネレータの実体化済みの値しか見なかったので、遅延のジェネレータ
+    ///   （`gen` 関数）を渡すと**黙って空**になった（`zip(g(), xs)` が `[]`・実測）。進めもしなかった。
     pub(crate) fn drain_iterable(&mut self, val: Value) -> Result<Vec<Value>, String> {
         let type_name = self.type_name(&val).to_string();
         let it = self

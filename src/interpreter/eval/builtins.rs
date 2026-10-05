@@ -25,6 +25,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -115,6 +116,17 @@ impl Interpreter {
             "round" => Some(self.py_round(args, Vec::new())),
             "divmod" => Some(self.py_divmod(args)),
             "pow" => Some(self.py_pow(args, Vec::new())),
+            // 変換・遅延の組み込み（タスク 3-3）。
+            "map" => Some(self.py_map(args)),
+            "filter" => Some(self.py_filter(args)),
+            "iter" => Some(self.py_iter(args)),
+            "hash" => Some(self.py_hash(args)),
+            "ord" => Some(self.py_ord_chr(args, true)),
+            "chr" => Some(self.py_ord_chr(args, false)),
+            "hex" => Some(self.py_int_to_base(args, 16)),
+            "oct" => Some(self.py_int_to_base(args, 8)),
+            "bin" => Some(self.py_int_to_base(args, 2)),
+            "ascii" => Some(self.py_ascii(args)),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),
@@ -284,7 +296,7 @@ impl Interpreter {
     /// Generator を作る。CallArg 版（`eval_builtin_ident_call`）と評価済み版（VM の
     /// `eval_builtin_evaled`）で共有し、意味論の分岐を防ぐ。
     pub(crate) fn enumerate_core(&mut self, iterable: Value, start: i64) -> Result<Value, String> {
-        let items = self.collect_iterable(iterable)?;
+        let items = self.drain_iterable(iterable)?;
         let tuples: Vec<Value> = items
             .into_iter()
             .enumerate()
@@ -305,7 +317,7 @@ impl Interpreter {
     pub(crate) fn zip_core(&mut self, iters_vals: Vec<Value>) -> Result<Value, String> {
         let mut iters: Vec<Vec<Value>> = Vec::new();
         for v in iters_vals {
-            iters.push(self.collect_iterable(v)?);
+            iters.push(self.drain_iterable(v)?);
         }
         if iters.is_empty() {
             return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(vec![])))));

@@ -1450,6 +1450,19 @@ impl TypeChecker {
                     _ => None,
                 }
             }
+            // 変換・遅延の組み込み（タスク 3-3）。`map` は `f` の戻り値が分からないので付けない。
+            "hash" | "ord" => Some(T::Int),
+            "chr" | "hex" | "oct" | "bin" | "ascii" => Some(T::Str),
+            "filter" | "iter" => {
+                let src = match (name, arg_data) {
+                    ("filter", [_, (None, t)]) | ("iter", [(None, t)]) => Some(t),
+                    _ => None,
+                };
+                src.and_then(|t| match Self::for_element_type(t) {
+                    T::Unresolved | T::Any => None,
+                    e => Some(T::IteratorOf(Box::new(e))),
+                })
+            }
             "abs" => match arg_data {
                 [(None, T::Int)] => Some(T::Int),
                 [(None, T::Float | T::Complex)] => Some(T::Float),

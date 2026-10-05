@@ -1,0 +1,55 @@
+# py_conversions.ar — 変換・遅延の組み込み（python_builtins_plan.md のタスク 3-3）
+#
+# 対になる誤りの例: py_conversions_error.ar
+#
+# map / filter / iter / hash / ord / chr / hex / oct / bin / ascii。どれも CPython 3.12 と同じ結果:
+#   - map / filter は**遅延**（取り出すたびに関数を呼ぶ）。無限のジェネレータにも使える
+#   - iter(x) は for と同じイテレータ、iter(f, sentinel) は f() が sentinel になるまで
+#   - hex / oct / bin は接頭辞つき（負数は -0b101）、ascii は非 ASCII を \x.. にする
+# ⚠ 以前はどれも NameError（pandas で計 98 箇所）。
+# ⚠ あわせて、遅延のジェネレータ（gen 関数）を zip / enumerate / set に渡すと黙って空・TypeError だった穴も直した。
+# ⚠ format は対象外（書式指定の小言語・python_builtins_plan.md の 4.3）。
+
+print("=== map / filter ===")
+let xs: list[int] = [1, 2, 3, 4]
+fn sq(x: int) -> int:
+    return x * x
+fn odd(x: int) -> bool:
+    return x % 2 == 1
+fn add(a: int, b: int) -> int:
+    return a + b
+print(list(map(repr, xs)), list(map(sq, xs)))               # ['1', '2', '3', '4'] [1, 4, 9, 16]
+print(list(filter(odd, xs)), list(filter(None, [0, 1, 2, 0])))   # [1, 3] [1, 2]
+print(list(map(add, xs, [10, 20])))                         # [11, 22]（短い方で止まる）
+
+print("=== lazy ===")
+gen naturals() -> int:
+    mut i = 0
+    while True:
+        yield i
+        i += 1
+mut squares = map(sq, naturals())
+print(squares.next(), squares.next(), squares.next())       # 0 1 4（無限の列でも必要な分だけ）
+
+print("=== iter ===")
+mut it = iter(xs)
+print(it.next(), it.next())                                 # 1 2
+mut k = 0
+fn counter() -> int:
+    k += 1
+    return k
+print(list(iter(counter, 4)))                               # [1, 2, 3]
+
+print("=== hash / ord / chr / hex / oct / bin / ascii ===")
+print(hash(1) == hash(1), ord("a"), chr(97))                # True 97 a
+print(hex(255), oct(8), bin(-5))                            # 0xff 0o10 -0b101
+print(ascii("hello"), ascii(1.5))                           # 'hello' 1.5
+
+print("=== lazy generators into zip / enumerate / set ===")
+gen two() -> int:
+    yield 1
+    yield 2
+print(list(zip(two(), [10, 20])))                           # [(1, 10), (2, 20)]
+for i, v in enumerate(two()):
+    print(i, v)                                             # 0 1 / 1 2
+print(len(set(two())))                                      # 2
