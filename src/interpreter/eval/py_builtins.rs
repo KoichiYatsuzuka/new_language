@@ -115,6 +115,51 @@ impl Interpreter {
         }
     }
 
+    /// `issubclass(c, spec)`（タスク 2-4）。クラス同士は [`Self::class_is_subclass`]（`isinstance` と同じ判定）、
+    /// 組み込みの型同士は名前（`bool` は `int` の派生）、trait は実装しているか。組は要素ごと。
+    /// ⚠ 第 1 引数がクラス（型）でなければ CPython と同じ `TypeError`。
+    pub(crate) fn py_issubclass(&self, c: &Value, spec: &Value) -> Result<bool, String> {
+        if !matches!(c, Value::Class(_) | Value::Type(_)) {
+            return Err("TypeError: issubclass() arg 1 must be a class".to_string());
+        }
+        match spec {
+            Value::Tuple(t) => {
+                for s in t.all_values() {
+                    if self.py_issubclass(c, s)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Value::Class(base) => Ok(matches!(c, Value::Class(cc) if Self::class_is_subclass(cc, base))),
+            Value::Type(name) if !super::is_builtin_function_name(name) => {
+                Ok(matches!(c, Value::Type(cn) if cn == name || (cn == "bool" && name == "int")))
+            }
+            Value::Trait(name) | Value::Protocol(name) => Ok(matches!(c, Value::Class(cc) if cc.is_a(name))),
+            _ => Err("TypeError: issubclass() arg 2 must be a class, a tuple of classes, or a union".to_string()),
+        }
+    }
+
+    /// `callable(x)`（タスク 2-4）。関数・クラス・組み込みの型と関数の値・`__call__` を持つインスタンスは呼べる。
+    /// ⚠ `x is function` と違い、`__call__` を持たないクラスも呼べる（作る）ので真（CPython と同じ）。
+    pub(crate) fn py_callable(&self, x: &Value) -> bool {
+        match x {
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::NativeFunction(_)
+            | Value::GeneratorFn(_)
+            | Value::TemplateFn(_)
+            | Value::TemplateGenFn(_)
+            | Value::JsProcFn(_)
+            | Value::Class(_)
+            | Value::TemplateClass(_)
+            | Value::Type(_) => true,
+            Value::Instance(inst) => inst.borrow().class.methods.contains_key("__call__"),
+            Value::PyObject(h) => crate::interpreter::py_interop::py_is_callable(h),
+            _ => false,
+        }
+    }
+
     /// クラス `c` が `base` 自身か、その派生か（`isinstance` / `issubclass` の**唯一の**判定・タスク 2-1 / 2-4）。
     ///
     /// 同じクラスは `class_id` で見る。派生は祖先の名前（`bases`）で見る。モジュールで定義した基底は

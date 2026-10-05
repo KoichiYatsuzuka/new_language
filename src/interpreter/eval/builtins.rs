@@ -23,7 +23,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
-    "isinstance", "type", "getattr", "hasattr", "setattr",
+    "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
 ];
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -93,6 +93,14 @@ impl Interpreter {
             "isinstance" => Some(match args.as_slice() {
                 [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),
                 _ => Err(format!("TypeError: isinstance expected 2 arguments, got {}", args.len())),
+            }),
+            "issubclass" => Some(match args.as_slice() {
+                [c, spec] => self.py_issubclass(c, spec).map(Value::Bool),
+                _ => Err(format!("TypeError: issubclass expected 2 arguments, got {}", args.len())),
+            }),
+            "callable" => Some(match args.as_slice() {
+                [x] => Ok(Value::Bool(self.py_callable(x))),
+                _ => Err(format!("TypeError: callable() takes exactly one argument ({} given)", args.len())),
             }),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),

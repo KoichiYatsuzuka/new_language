@@ -169,6 +169,14 @@ fn setattr(obj: Any, name: str, value: Any) -> None:
     """Assign `value` to the attribute `name` of obj (same as `obj.name = value`)."""
     pass
 
+fn issubclass(cls: Any, class_or_tuple: Any) -> bool:
+    """True if the class cls is the class (or a subclass of it), or of any class in a tuple of them."""
+    pass
+
+fn callable(obj: Any) -> bool:
+    """True if obj can be called (a function, a class, a bound method, or an instance with `__call__`)."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:
