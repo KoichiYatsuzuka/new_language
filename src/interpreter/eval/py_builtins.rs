@@ -378,7 +378,7 @@ impl Interpreter {
             Value::Tuple(t) => t.all_values().iter().rev().cloned().collect(),
             Value::Str(s) => s.chars().rev().map(|c| Value::str(c.to_string())).collect(),
             Value::Dict(d) => d.borrow().all_keys().into_iter().rev().collect(),
-            Value::FrozenList { .. } => self.collect_iterable(seq.clone())?.into_iter().rev().collect(),
+            Value::FrozenList { .. } => self.drain_iterable(seq.clone())?.into_iter().rev().collect(),
             Value::Instance(inst) if inst.borrow().class.methods.contains_key("__reversed__") => {
                 return self.eval_method_call_evaled(seq.clone(), "__reversed__", vec![]);
             }
@@ -562,8 +562,6 @@ impl Interpreter {
         Ok(Value::Int(r as i64))
     }
 
-    /// クラス `c` が `base` 自身か、その派生か
-
     /// 値を**安定に**並べ替える（`sorted` / `list.sort` の唯一の実装・タスク 3-2）。比較は `<` だけ（CPython と同じ）。
     /// `reverse=True` は CPython と同じく「逆にして並べ、また逆にする」ので、等しいものの順は保たれる。
     /// ⚠ 並べ方はボトムアップのマージソート（CPython は timsort）。全順序なら結果は同じ。比べられない値に
@@ -623,6 +621,170 @@ impl Interpreter {
         let items = self.drain_iterable(it)?;
         let out = self.py_sort_values(items, key, reverse)?;
         Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(out))))
+    }
+
+    // ── 変換・遅延の組み込み（タスク 3-3）──────────────────────────────────────
+
+    /// 遅延の組み込みの本体（`py_lazy_prelude`）を呼んでジェネレータを得る。
+    fn py_call_lazy(&mut self, gen_name: &str, args: Vec<Value>, shown: &str) -> Result<Value, String> {
+        let gen_fn = py_lazy_prelude(gen_name)?;
+        let evaled = args.into_iter().map(|v| (None, v, false)).collect();
+        self.call_value_evaled(gen_fn, evaled, shown, None, 0)
+    }
+
+    /// 回す値を**先に**イテレータにする（`map(f, 5)` を呼んだ時点で `TypeError`・CPython と同じ）。
+    fn py_eager_iter(&mut self, v: Value) -> Result<Value, String> {
+        Ok(Value::Generator(self.py_iter_state(v)?))
+    }
+
+    /// `map(f, *iterables)`。**遅延**（取り出すたびに `f` を呼ぶ・CPython と同じ）。
+    /// ⚠ 回す値が 2 つ以上のときは `zip` で先にまとめる（短い方で止まるのは同じだが、無限の列は回り切らない）。
+    pub(crate) fn py_map(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if args.len() < 2 {
+            return Err("TypeError: map() must have at least two arguments.".to_string());
+        }
+        let mut it = args.into_iter();
+        let f = it.next().expect("len >= 2");
+        let rest: Vec<Value> = it.collect();
+        if rest.len() == 1 {
+            let src = self.py_eager_iter(rest.into_iter().next().expect("len 1"))?;
+            self.py_call_lazy("__py_map", vec![f, src], "map")
+        } else {
+            let zipped = self.zip_core(rest)?;
+            self.py_call_lazy("__py_map_star", vec![f, zipped], "map")
+        }
+    }
+
+    /// `filter(f, it)`。**遅延**。`f` が `None` なら値の真偽で選ぶ（CPython と同じ）。
+    pub(crate) fn py_filter(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [f, it]: [Value; 2] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: filter expected 2 arguments, got {}", a.len()))?;
+        let src = self.py_eager_iter(it)?;
+        match f {
+            Value::None => self.py_call_lazy("__py_filter_truthy", vec![src], "filter"),
+            f => self.py_call_lazy("__py_filter", vec![f, src], "filter"),
+        }
+    }
+
+    /// `iter(x)` / `iter(f, sentinel)`。1 引数は `for` と同じイテレータ（ジェネレータは自分自身）。
+    /// 2 引数は `f()` が `sentinel` と等しくなるまで呼ぶ**遅延**のイテレータ。
+    pub(crate) fn py_iter(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        match <[Value; 2]>::try_from(args) {
+            Ok([f, sentinel]) => {
+                if !self.py_callable(&f) {
+                    return Err("TypeError: iter(v, w): v must be callable".to_string());
+                }
+                self.py_call_lazy("__py_iter_call", vec![f, sentinel], "iter")
+            }
+            Err(args) => match <[Value; 1]>::try_from(args) {
+                Ok([x]) => self.py_eager_iter(x),
+                Err(a) => Err(format!("TypeError: iter expected at most 2 arguments, got {}", a.len())),
+            },
+        }
+    }
+
+    /// `hash(x)`。辞書・集合の鍵と同じ値（`hash_value`）。⚠ 値そのものは CPython と違う（文字列の乱数化なども無い）。
+    pub(crate) fn py_hash(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: hash() takes exactly one argument ({} given)", a.len()))?;
+        Ok(Value::Int(self.hash_value(&x)? as i64))
+    }
+
+    /// `ord(c)` / `chr(i)`。文言は CPython と同じ。
+    pub(crate) fn py_ord_chr(&mut self, args: Vec<Value>, is_ord: bool) -> Result<Value, String> {
+        let fname = if is_ord { "ord" } else { "chr" };
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: {fname}() takes exactly one argument ({} given)", a.len()))?;
+        if is_ord {
+            return match &x {
+                Value::Str(s) => {
+                    let mut cs = s.chars();
+                    match (cs.next(), cs.next()) {
+                        (Some(c), None) => Ok(Value::Int(c as i64)),
+                        _ => Err(format!(
+                            "TypeError: ord() expected a character, but string of length {} found",
+                            s.chars().count()
+                        )),
+                    }
+                }
+                other => Err(format!(
+                    "TypeError: ord() expected string of length 1, but {} found",
+                    self.type_name(other)
+                )),
+            };
+        }
+        let i = self.py_index_int(&x)?;
+        u32::try_from(i)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|c| Value::str(c.to_string()))
+            .ok_or_else(|| "ValueError: chr() arg not in range(0x110000)".to_string())
+    }
+
+    /// `hex(i)` / `oct(i)` / `bin(i)`（接頭辞つき・負数は `-0x..`・CPython と同じ）。
+    pub(crate) fn py_int_to_base(&mut self, args: Vec<Value>, base: u32) -> Result<Value, String> {
+        let fname = match base {
+            16 => "hex",
+            8 => "oct",
+            _ => "bin",
+        };
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: {fname}() takes exactly one argument ({} given)", a.len()))?;
+        let i = self.py_index_int(&x)?;
+        let mag = (i as i128).unsigned_abs();
+        let body = match base {
+            16 => format!("0x{mag:x}"),
+            8 => format!("0o{mag:o}"),
+            _ => format!("0b{mag:b}"),
+        };
+        Ok(Value::str(if i < 0 { format!("-{body}") } else { body }))
+    }
+
+    /// 整数として読める値（int / bool・`__index__` を持つインスタンス）。ほかは CPython と同じ `TypeError`。
+    fn py_index_int(&mut self, x: &Value) -> Result<i64, String> {
+        match x {
+            Value::Int(i) => Ok(*i),
+            Value::Bool(b) => Ok(*b as i64),
+            Value::Instance(inst) if inst.borrow().class.methods.contains_key("__index__") => {
+                match self.eval_method_call_evaled(x.clone(), "__index__", vec![])? {
+                    Value::Int(i) => Ok(i),
+                    other => Err(format!(
+                        "TypeError: __index__ returned non-int (type {})",
+                        self.type_name(&other)
+                    )),
+                }
+            }
+            other => Err(format!(
+                "TypeError: '{}' object cannot be interpreted as an integer",
+                self.type_name(other)
+            )),
+        }
+    }
+
+    /// `ascii(x)`。`repr(x)` の非 ASCII を `\xhh` / `\uhhhh` / `\Uhhhhhhhh` にする（CPython と同じ）。
+    pub(crate) fn py_ascii(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: ascii() takes exactly one argument ({} given)", a.len()))?;
+        let r = self.display_repr(&x);
+        let mut out = String::with_capacity(r.len());
+        for c in r.chars() {
+            let cp = c as u32;
+            if cp < 0x80 {
+                out.push(c);
+            } else if cp < 0x100 {
+                out.push_str(&format!("\\x{cp:02x}"));
+            } else if cp < 0x10000 {
+                out.push_str(&format!("\\u{cp:04x}"));
+            } else {
+                out.push_str(&format!("\\U{cp:08x}"));
+            }
+        }
+        Ok(Value::str(out))
     }
 
     /// クラス `c` が `base` 自身か、その派生か（`isinstance` / `issubclass` の**唯一の**判定・タスク 2-1 / 2-4）。
@@ -761,4 +923,74 @@ fn mod_inverse(a: i128, m: i128) -> Option<i128> {
         (old_s, s) = (s, old_s - q * s);
     }
     (old_r == 1).then(|| old_s.rem_euclid(m))
+}
+
+/// 遅延の組み込み（`map` / `filter` / `iter(f, sentinel)`）の本体（タスク 3-3）。
+///
+/// CPython の `map` / `filter` は取り出すたびに `f` を呼ぶ**遅延**のイテレータ。同じ振る舞いを、
+/// Arrow の `gen`（中断できる本体を持つジェネレータ・B13）で書いて既存の仕組みに載せる
+/// （Rust で中断できるイテレータを足すとジェネレータの仕組みごと作り直しになる）。
+/// ⚠ 型検査は通さない（仮引数に型が無い）。名前の解決は呼び出し側の大域（`GLOBALS_OF_CALLER`）だが、
+///   本体は仮引数と `for` の変数しか読まないので、利用者の名前に左右されない。
+const PY_LAZY_PRELUDE: &str = "\
+gen __py_map(f, it) -> Any:
+    for x in it:
+        yield f(x)
+
+gen __py_map_star(f, it) -> Any:
+    for args in it:
+        yield f(*args)
+
+gen __py_filter(f, it) -> Any:
+    for x in it:
+        if f(x):
+            yield x
+
+gen __py_filter_truthy(it) -> Any:
+    for x in it:
+        if x:
+            yield x
+
+gen __py_iter_call(f, sentinel) -> Any:
+    mut v = f()
+    while v != sentinel:
+        yield v
+        v = f()
+";
+
+thread_local! {
+    /// 読み込んだ前置きのジェネレータ関数（スレッドごとに 1 度だけ作る）。
+    static PY_LAZY: std::cell::RefCell<Option<std::collections::HashMap<String, Value>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 前置きのジェネレータ関数 `name` の値（初回だけ読み込む）。
+fn py_lazy_prelude(name: &str) -> Result<Value, String> {
+    PY_LAZY.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let tokens = crate::lexer::Lexer::new(PY_LAZY_PRELUDE, "<py-prelude>").tokenize();
+            let stmts = crate::parser::Parser::new(tokens, None)
+                .parse_program()
+                .map_err(|e| format!("RuntimeError: internal — the Python prelude does not parse: {e}"))?;
+            let mut table = std::collections::HashMap::new();
+            for st in stmts {
+                if let crate::ast::Stmt::GenDef { name, params, body, .. } = st {
+                    let value = Value::GeneratorFn(std::rc::Rc::new(crate::interpreter::GeneratorFnValue {
+                        globals: crate::interpreter::value::GLOBALS_OF_CALLER,
+                        owner_class: None,
+                        name: name.clone(),
+                        params,
+                        body,
+                        captured_env: std::collections::HashMap::new(),
+                    }));
+                    table.insert(name, value);
+                }
+            }
+            *slot = Some(table);
+        }
+        slot.as_ref()
+            .and_then(|t| t.get(name).cloned())
+            .ok_or_else(|| format!("RuntimeError: internal — '{name}' is not in the Python prelude"))
+    })
 }

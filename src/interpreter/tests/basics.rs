@@ -356,3 +356,62 @@ fn test_aggregates_follow_cpython() {
     assert!(run_err_msg("let xs: list[int] = []\nlet z = max(xs)\n").contains("max() iterable argument is empty"));
     assert!(run_err_msg("let z = pow(2, -1, 4)\n").contains("base is not invertible"));
 }
+
+// ---------------------------------------------------------------------------
+// 変換・遅延の組み込み（python_builtins_plan.md のタスク 3-3）
+// ---------------------------------------------------------------------------
+
+/// map / filter は遅延（無限の列にも使える）、iter(f, sentinel)、文字コード・基数の変換は CPython と同じ。
+#[test]
+fn test_conversions_follow_cpython() {
+    let src = concat!(
+        "fn sq(x: int) -> int:\n",
+        "    return x * x\n",
+        "gen naturals() -> int:\n",
+        "    mut i = 0\n",
+        "    while True:\n",
+        "        yield i\n",
+        "        i += 1\n",
+        "mut m = map(sq, naturals())\n",
+        "let a = m.next()\n",
+        "let b = m.next()\n",
+        "let c = m.next()\n",
+        "let f = str(list(filter(None, [0, 1, 2, 0])))\n",
+        "mut k = 0\n",
+        "fn counter() -> int:\n",
+        "    k += 1\n",
+        "    return k\n",
+        "let it = str(list(iter(counter, 3)))\n",
+        "let h = hex(255) + oct(8) + bin(-5)\n",
+        "let o = ord(\"a\")\n",
+        "let ch = chr(233)\n",
+        "let asc = ascii(\"h\u{e9}\")\n",
+    );
+    assert!(matches!(run_get(src, "c"), Value::Int(4)));
+    assert_str(run_get(src, "f"), "[1, 2]");
+    assert_str(run_get(src, "it"), "[1, 2]");
+    assert_str(run_get(src, "h"), "0xff0o10-0b101");
+    assert!(matches!(run_get(src, "o"), Value::Int(97)));
+    assert_str(run_get(src, "ch"), "\u{e9}");
+    assert_str(run_get(src, "asc"), "'h\\xe9'");
+    assert!(run_err_msg("let z = chr(1114112)\n").contains("chr() arg not in range(0x110000)"));
+    assert!(run_err_msg("let z = map(repr, 5)\n").contains("'int' object is not iterable"));
+}
+
+/// 遅延のジェネレータを zip / enumerate / set / list に渡すと最後まで回す（以前は黙って空・TypeError）。
+#[test]
+fn test_lazy_generators_feed_consumers() {
+    let src = concat!(
+        "gen two() -> int:\n",
+        "    yield 1\n",
+        "    yield 2\n",
+        "let z = str(list(zip(two(), [10, 20])))\n",
+        "let e = str(list(enumerate(two())))\n",
+        "let s = len(set(two()))\n",
+        "let l = str([*two()])\n",
+    );
+    assert_str(run_get(src, "z"), "[(1, 10), (2, 20)]");
+    assert_str(run_get(src, "e"), "[(0, 1), (1, 2)]");
+    assert!(matches!(run_get(src, "s"), Value::Int(2)));
+    assert_str(run_get(src, "l"), "[1, 2]");
+}

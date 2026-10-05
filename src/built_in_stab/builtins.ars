@@ -224,6 +224,46 @@ fn pow(base: Any, exp: Any, mod: Any = None):
     """base ** exp, or (base ** exp) % mod computed efficiently for ints."""
     pass
 
+fn map(let ...: Any):
+    """map(function, iterable, ...): a generator of function applied to the elements (several iterables are zipped; stops at the shortest)."""
+    pass
+
+fn filter(function: Any, iterable: Any):
+    """A generator of the elements for which function(x) is truthy (function None keeps the truthy elements)."""
+    pass
+
+fn iter(obj: Any, sentinel: Any = None):
+    """An iterator over obj, or iter(callable, sentinel): call it until it returns sentinel."""
+    pass
+
+fn hash(obj: Any) -> int:
+    """The hash of a hashable value (equal values hash equal)."""
+    pass
+
+fn ord(c: Any) -> int:
+    """The code point of a one-character string (or the value of a one-byte bytes)."""
+    pass
+
+fn chr(i: int) -> str:
+    """The one-character string of the code point i."""
+    pass
+
+fn hex(x: Any) -> str:
+    """The integer x as a hexadecimal string ('0xff')."""
+    pass
+
+fn oct(x: Any) -> str:
+    """The integer x as an octal string ('0o17')."""
+    pass
+
+fn bin(x: Any) -> str:
+    """The integer x as a binary string ('0b101')."""
+    pass
+
+fn ascii(obj: Any) -> str:
+    """repr(obj) with the non-ASCII characters escaped."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:

@@ -1,0 +1,11 @@
+# py_conversions_error.ar — 範囲外の文字コード（python_builtins_plan.md のタスク 3-3）
+#
+# 対になる正常系: py_conversions.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: chr() arg not in range(0x110000)
+#
+# ⚠ 文言は CPython と同じ。
+
+let n: int = 1114112
+print(chr(n))                            # ⛔ 0x110000 以上
