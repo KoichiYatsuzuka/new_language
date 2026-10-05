@@ -180,6 +180,10 @@ fn set(iterable: Any = None) -> set[Any]:
     """A set of the elements of an iterable, or an empty set."""
     pass
 
+fn tuple(iterable: Any = None):
+    """A tuple of the elements of an iterable, or an empty tuple."""
+    pass
+
 fn slice(begin: Any, end: Any, step: Any = None) -> slice:
     """A slice value from begin to end, with an optional step."""
     pass

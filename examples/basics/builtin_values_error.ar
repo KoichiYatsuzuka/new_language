@@ -1,0 +1,11 @@
+# builtin_values_error.ar — 回せない値を list() に渡す（python_builtins_plan.md のタスク 1-7）
+#
+# 対になる正常系: builtin_values.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: 'int' object is not iterable
+#
+# ⚠ 文言は CPython と同じ。
+
+let n: int = 5
+print(list(n))                          # ⛔ int は回せない

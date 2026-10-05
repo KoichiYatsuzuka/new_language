@@ -92,6 +92,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     // `parse_ar`（#56）。入力は文字列だけなので評価済み引数で表現できる。
     // ⚠ #33〜#55 の間、`is_builtin_callee` が bail していたせいで **`VmForceError` で死んでいた**。
     "parse_ar",
+    // `list(it)` / `tuple(it)`（python_builtins_plan.md のタスク 1-7）。
+    "list", "tuple",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

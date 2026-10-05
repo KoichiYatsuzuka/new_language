@@ -133,4 +133,61 @@ fn test_zero_division() {
     assert!(run("1 // 0").is_err());
 }
 
+// ---------------------------------------------------------------------------
+// 組み込みの名前を値として使う（python_builtins_plan.md のタスク 1-7）
+// ---------------------------------------------------------------------------
 
+/// 束縛の無い組み込みの名前は値になり、呼べる。`list(it)` / `tuple(it)` はどのイテラブルも回す。
+#[test]
+fn test_builtin_names_are_values() {
+    let src = concat!(
+        "let f = repr\n",
+        "let a = f(3)\n",
+        "fn apply(g: function->str, x: int) -> str:\n",
+        "    return g(x)\n",
+        "let b = apply(repr, 5)\n",
+        "let d: dict[str, int] = {\"k\": 1, \"j\": 2}\n",
+        "let c = str(list(d))\n",
+        "let t = str(tuple(range(3)))\n",
+        "gen nums() -> int:\n",
+        "    yield 1\n",
+        "    yield 2\n",
+        "let g = str(list(nums()))\n",
+        "let xs: list[int] = [3, 1]\n",
+        "mut ys = list(xs)\n",
+        "ys.append(9)\n",
+        "let n = len(xs)\n",
+        "let shown = str(repr)\n",
+    );
+    assert_str(run_get(src, "a"), "3");
+    assert_str(run_get(src, "b"), "5");
+    assert_str(run_get(src, "c"), "['k', 'j']");
+    assert_str(run_get(src, "t"), "(0, 1, 2)");
+    assert_str(run_get(src, "g"), "[1, 2]");
+    // `list(xs)` は写し（`ys.append` で `xs` は伸びない）。
+    assert!(matches!(run_get(src, "n"), Value::Int(2)));
+    assert_str(run_get(src, "shown"), "<built-in function repr>");
+}
+
+/// 束縛した名前が勝つ（組み込みの値は最後の段）。
+#[test]
+fn test_builtin_value_is_shadowed_by_a_binding() {
+    let src = concat!(
+        "fn repr(x: int) -> str:\n",
+        "    return \"mine\"\n",
+        "let f = repr\n",
+        "let a = f(3)\n",
+    );
+    assert_str(run_get(src, "a"), "mine");
+}
+
+/// 値として使える名前の表（`BUILTIN_VALUE_NAMES`）は、型検査の名前の表にあり、組み込み関数の表が扱う。
+/// ⚠ どちらかが欠けると「型検査は通るのに実行時に NameError」か「値なのに呼べない」になる。
+#[test]
+fn builtin_value_names_are_known_and_callable() {
+    let mut interp = Interpreter::new();
+    for name in crate::interpreter::eval::BUILTIN_VALUE_NAMES {
+        assert!(crate::type_check::names::is_runtime_builtin_name(name), "{name} が型検査の表に無い");
+        assert!(interp.eval_builtin_evaled(name, Vec::new()).is_some(), "{name} を組み込み関数の表が扱わない");
+    }
+}

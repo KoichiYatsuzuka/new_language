@@ -217,8 +217,9 @@ impl Interpreter {
     }
 
     /// VM デバッガ: 停止スコープから名前引きで値を取る（`LoadName` op）。
+    /// 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7）。
     pub(crate) fn vm_load_name(&self, name: &str) -> Option<Value> {
-        self.get_val(name)
+        self.get_val(name).or_else(|| self.builtin_value(name))
     }
 
     /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
