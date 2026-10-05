@@ -395,6 +395,10 @@ impl Interpreter {
                 crate::interpreter::event_loop::SignalData::new(),
             ))));
         }
+        // `dict(...)`（python_builtins_plan.md のタスク 3-1）。キーワード引数（`dict(a=1)`）を使うので名前を落とす前に。
+        if type_name == "dict" {
+            return self.py_dict_ctor(evaled);
+        }
         // 値として取り出した組み込み関数（`let f = repr` / `key=len`・タスク 1-7）は組み込み関数の表へ回す。
         // ⚠ キーワード引数つきは `eval_builtin_evaled_named`（扱う名前だけ）。扱わない名前はキーワードを受けない。
         if super::builtins::is_builtin_function_name(type_name) && !matches!(type_name, "len" | "id") {

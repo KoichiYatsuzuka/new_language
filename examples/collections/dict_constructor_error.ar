@@ -1,0 +1,11 @@
+# dict_constructor_error.ar — 2 要素でない組から dict を作る（python_builtins_plan.md のタスク 3-1）
+#
+# 対になる正常系: dict_constructor.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: dictionary update sequence element #1 has length 3; 2 is required
+#
+# ⚠ 文言は CPython と同じ（何番目の要素かも同じく 0 から数える）。
+
+let rows: list[list[int]] = [[1, 2], [3, 4, 5]]
+print(dict(rows))                                    # ⛔ 2 番目の組が 3 要素

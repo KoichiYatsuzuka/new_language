@@ -394,3 +394,38 @@ fn test_dict_and_generator_dunder_iter() {
     // 写しではないので、`same` で 1 つ進めると `g` の次は 2。
     assert!(matches!(run_get(src, "second"), Value::Int(2)));
 }
+
+// ---------------------------------------------------------------------------
+// dict(...)（python_builtins_plan.md のタスク 3-1）
+// ---------------------------------------------------------------------------
+
+/// CPython の dict の作り方（空・写し・組の列・キーワード引数）。
+#[test]
+fn test_dict_constructor_follows_cpython() {
+    let src = concat!(
+        "let pairs: list[tuple[str, int]] = [(\"a\", 1), (\"b\", 2), (\"a\", 3)]\n",
+        "let a = str(dict())\n",
+        "let b = str(dict(pairs))\n",
+        "let c = str(dict(pairs, b=20, c=30))\n",
+        "mut src: dict[str, int] = {\"k\": 1}\n",
+        "let cp = dict(src)\n",
+        "src[\"k\"] = 99\n",
+        "let d = str(cp)\n",
+    );
+    assert_str(run_get(src, "a"), "{}");
+    assert_str(run_get(src, "b"), "{'a': 3, 'b': 2}");
+    assert_str(run_get(src, "c"), "{'a': 3, 'b': 20, 'c': 30}");
+    assert_str(run_get(src, "d"), "{'k': 1}");
+    assert!(run_err_msg("let r: list[list[int]] = [[1, 2], [3]]\nlet z = dict(r)\n")
+        .contains("dictionary update sequence element #1 has length 1; 2 is required"));
+}
+
+/// Python の辞書内包は `dict([(k, v) for ...])` に変換される（以前は変換の誤り）。
+/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
+#[cfg(feature = "native")]
+#[test]
+fn test_python_dict_comprehension_converts() {
+    let body = crate::python_converter::convert_python_source("def f(ks):\n    return {k: k * 2 for k in ks}\n", "dc.py")
+        .expect("dict comprehension converts");
+    assert!(!body.is_empty());
+}
