@@ -109,6 +109,7 @@ $knownDiff = @{
     'py_exception_args'              = 'Rust: Python の例外の args / str(e) / super().__init__（タスク 4-2 で新設）。py: import[py] したモジュールの describe_all を引けず AttributeError'
     'except_qualified'               = 'Rust: except ae.AppError: の修飾名で捕まえる（タスク 4-3 で新設）。py: except の修飾名を構文が受けず ParseError（何も出さない）'
     'py_qualified_except'            = 'Rust: Python の except h.ConfigError: と Arrow の except h.ConfigError:（タスク 4-3 で新設）。py: except の修飾名を構文が受けず ParseError（何も出さない）'
+    'py_except_tuple'                = 'Rust: Python の except (A, B):（タスク 4-4 で新設）。py: import[py] したモジュールの parse を引けず AttributeError'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

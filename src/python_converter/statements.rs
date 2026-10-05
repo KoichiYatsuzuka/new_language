@@ -1044,36 +1044,33 @@ pub(crate) fn convert_stmt(
                 //   `except (A, B):` は Tuple、`except mod.Err:` は Attribute で来るので、
                 //   どちらも「何でも捕まえるハンドラ」に化けていた（＝捕まえすぎる誤変換）。
                 //   型を捨てる変換は危険なので明示エラーにする。
-                let exc_type = match eh.type_.as_deref() {
-                    None => None,
-                    Some(py::Expr::Name(n)) => Some(n.id.to_string()),
-                    // 修飾名（`except requests.HTTPError:`・python_builtins_plan.md のタスク 4-3）。
-                    Some(e @ py::Expr::Attribute(_)) => Some(dotted_name(e).ok_or_else(|| {
-                        format!(
-                            "{filename}: only a name or a dotted name is supported in `except` \
-                             (e.g. `except ValueError:` / `except m.Err:`); computed types are not"
-                        )
-                    })?),
-                    Some(py::Expr::Tuple(_)) => {
-                        return Err(format!(
-                            "{filename}: `except (A, B):` (multiple exception types) is not supported; \
-                             write one `except` clause per type"
-                        ))
-                    }
-                    Some(_) => {
-                        return Err(format!(
-                            "{filename}: only a name or a dotted name is supported in `except` \
-                             (e.g. `except ValueError:` / `except m.Err:`); computed types are not"
-                        ))
-                    }
+                // 型の名前（`except (A, B):` は複数・python_builtins_plan.md のタスク 4-4）。`None` は bare `except:`。
+                let exc_types: Vec<Option<String>> = match eh.type_.as_deref() {
+                    None => vec![None],
+                    Some(t) => except_type_names(t)
+                        .ok_or_else(|| {
+                            format!(
+                                "{filename}: only a name, a dotted name or a tuple of them is supported in \
+                                 `except` (e.g. `except ValueError:` / `except m.Err:` / `except (A, B):`); \
+                                 computed types are not"
+                            )
+                        })?
+                        .into_iter()
+                        .map(Some)
+                        .collect(),
                 };
                 let name = eh.name.as_ref().map(|n| n.to_string());
                 let hbody = convert_stmts(&eh.body, filename, declared)?;
-                handlers.push(ExceptHandler {
-                    exc_type,
-                    name,
-                    body: hbody,
-                });
+                // ⚠ `except (A, B) as e: body` は**型ごとに同じ本体の節を並べる**（`except A as e: body` /
+                //   `except B as e: body`）。CPython は前から順に当てて最初の節だけを走らせるので、
+                //   並べた節でも走るのは高々 1 つで意味は変わらない。
+                for exc_type in exc_types {
+                    handlers.push(ExceptHandler {
+                        exc_type,
+                        name: name.clone(),
+                        body: hbody.clone(),
+                    });
+                }
             }
             let finally_body = if t.finalbody.is_empty() {
                 None
@@ -1395,6 +1392,17 @@ pub(crate) fn convert_stmt(
 
         #[allow(unreachable_patterns)]
         _ => Err(format!("{filename}: unsupported Python statement")),
+    }
+}
+
+/// `except` の型の式を名前の列にする: 名前・修飾名（4-3）は 1 つ、組は要素を並べる（4-4）。
+/// それ以外の式なら `None`。
+/// ⚠ 組の入れ子（`except (A, (B, C)):`）は受けない。CPython 3.12 も実行時に
+///   `TypeError: catching classes that do not inherit from BaseException is not allowed` で止める（実測）。
+fn except_type_names(e: &py::Expr) -> Option<Vec<String>> {
+    match e {
+        py::Expr::Tuple(t) => t.elts.iter().map(dotted_name).collect(),
+        _ => Some(vec![dotted_name(e)?]),
     }
 }
 
