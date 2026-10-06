@@ -496,3 +496,52 @@ fn test_return_inside_block_statement() {
     assert!(matches!(run_get(src, "a"), Value::Int(4)));
     assert!(matches!(run_get(src, "b"), Value::Int(-1)));
 }
+
+// ---------------------------------------------------------------------------
+// freeze は let と同じ結果になる（python_builtins_plan.md のタスク 1-9）
+// ---------------------------------------------------------------------------
+
+/// 関数の中の `freeze` が動き（以前は `NameError`）、仮引数を `freeze` しても呼び出し側のオブジェクトは
+/// 可変のまま（`let` と同じ・以前は**その場で**不変にしていた）。関数の中の `let x = <式>` も複製する。
+#[test]
+fn test_freeze_is_the_same_as_let() {
+    let src = concat!(
+        "class C:\n",
+        "    mut n: int\n",
+        "    fn add(mut self, let k: int) -> int:\n",
+        "        self.n = self.n + k\n",
+        "        return self.n\n",
+        "fn local_freeze() -> int:\n",
+        "    mut c = C(1)\n",
+        "    c.add(1)\n",
+        "    freeze c\n",
+        "    return c.n\n",
+        "fn seal(mut c: C) -> None:\n",
+        "    freeze c\n",
+        "fn snapshot() -> int:\n",
+        "    mut rows: list[list[int]] = [[1]]\n",
+        "    let first = rows[0]\n",
+        "    rows[0].append(9)\n",
+        "    return len(first)\n",
+        "let a = local_freeze()\n",
+        "mut mine = C(1)\n",
+        "seal(mine)\n",
+        "let b = mine.add(10)\n",
+        "let s = snapshot()\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(2)));
+    assert!(matches!(run_get(src, "b"), Value::Int(11)));
+    assert!(matches!(run_get(src, "s"), Value::Int(1)));
+    let captured = concat!(
+        "fn make() -> int:\n",
+        "    mut count = 0\n",
+        "    fn inc() -> int:\n",
+        "        count += 1\n",
+        "        return count\n",
+        "    inc()\n",
+        "    freeze count\n",
+        "    return count\n",
+        "let r = make()\n",
+    );
+    assert!(run_err_msg(captured).contains("cannot freeze 'count' because it is captured by a closure"));
+}

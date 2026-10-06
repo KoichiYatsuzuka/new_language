@@ -110,8 +110,9 @@ pub enum Op {
     StoreLocalDeepCopy(u16),
     /// pop して deep_copy + freeze してから locals[slot] へ（`let` = mut ソースからの束縛）。
     StoreLocalCopyFreeze(u16),
-    /// pop し、Instance のときのみ deep_copy + freeze してから locals[slot] へ
-    /// （`let` = 非識別子式からの束縛。exec_let の非 ident 分岐に一致）。
+    /// pop して deep_copy + freeze してから locals[slot] へ（`let` = 非識別子式からの束縛）。
+    /// ⚠ 意味は `StoreLocalCopyFreeze` と同じ（`Interpreter::frozen_copy`・タスク 1-9）。以前はインスタンスの
+    ///   ときしかコピーしていなかった（名前はその名残。発行元を区別するため op は分けたまま）。
     StoreLocalFreezeInstance(u16),
     /// pop して `let x = <識別子>` のコピー意味論を**実行時に**決めてから locals[slot] へ。
     /// フィールド (slot, ソース名 name_idx)。
