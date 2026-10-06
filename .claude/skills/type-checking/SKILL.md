@@ -143,6 +143,12 @@ Returns the type recorded in scope. If not found → `Unresolved`.
 - If `obj` is `Union` → `OperationOnUnion` error.
 - If `obj` is `Namespace` (imported module) → returns the member's recorded type.
 - If `obj` is `NamedInstance(cls)` → access-control check runs (see below) → returns `Unresolved` (field type resolution is partial).
+- **enum**: a member's type is the enum type itself (`Color.Red : NamedInstance("Color")`).
+  Members are read only from the type value (`TypeValOf(Color)` → `registry.enum_members`);
+  from a `Color` value only `value: int` (`class_field_details["Color"]`). So `m.Red` and
+  `Color.value` are `NoSuchMember`, matching the runtime. ⚠ The old internal type
+  `enum_item_Color` (and its `enum_item_X → X` upcast) was removed — see
+  `implementation_plans/enum_member_type_plan.md`.
 
 ### Unary operators
 
@@ -299,6 +305,7 @@ Before checking, `TypeRegistryBuilder::collect` (`registry/builder.rs`) scans al
 - `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution.
 - `class_method_sigs`: `class → method → Vec<FnSig>`.
 - `known_class_names`: set of all class/enum names.
+- `enum_members`: `enum → (member → type)`; the type is the enum type itself.
 - `class_bases`: `class → [base names]`.
 - `class_fields`: `class → (field_name → is_mutable)`.
 - `class_member_access`: `class → (member_name → Accessibility)` (only non-Public members stored).

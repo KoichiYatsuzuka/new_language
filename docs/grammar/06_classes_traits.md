@@ -446,9 +446,18 @@ enum Status:
 `Stmt::EnumDef { name, variants: Vec<(String, Option<Expr>)> }`
 
 **実行**:
-1. 各バリアントの値型 `enum_item_Color` (new_type) を登録
-2. `Color` クラスを作成し、各バリアントを `const` フィールドとして設定
+1. メンバーのクラスを作る。名前は enum と同じ `Color` で、`value: int` フィールドを 1 つ持つ（`build_enum_classes`）
+2. `Color` クラスを作成し、各バリアント（メンバーのクラスのインスタンス）を `const` フィールドとして設定
 3. 値は `0` から自動採番 (明示値がない場合)
+
+**型**: メンバー（`Color.Red`）の型は **enum 型 `Color` そのもの**。`let c: Color = Color.Red`・
+`c == Color.Red`・`c is Color`・`c mustbe Color`・`Color` 型の引数やフィールドがそのまま書ける。
+
+- メンバーは型の値（`Color.Red`）からだけ、`value` はメンバー（`Color` 型の値）からだけ引ける。
+  `c.Red` と `Color.value` は静的エラー
+- 別の enum のメンバーとは比較も代入もできない（`Color.Red == Shape.Square` は静的エラー）
+- ⚠ 以前の内部名 `enum_item_Color` は廃止した（書くと静的エラー。
+  経緯は `implementation_plans/enum_member_type_plan.md`）
 
 ```ar
 let c = Color.Red

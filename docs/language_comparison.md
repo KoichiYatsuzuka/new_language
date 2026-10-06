@@ -142,7 +142,8 @@
 | Access variant | `Color::Red` | `Color.Red` | `Color.Red` |
 | Get int value | `Color::Red as i32` | `Color.Red.value` | `Color.Red.value` |
 | Data-carrying variant | `enum Msg { Move { x: i32, y: i32 } }` | — | — (not supported) |
-| Type-check variant | `matches!(x, Color::Red)` | `x == Color.Red` | `x is enum_item_Color` |
+| Type-check variant | `matches!(x, Color::Red)` | `x == Color.Red` | `x == Color.Red` |
+| Is it a `Color` at all? | (static type) | `isinstance(x, Color)` | `x is Color` (a member's type is `Color`) |
 
 ---
 

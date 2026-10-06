@@ -10,6 +10,7 @@ enum のメンバー（`Color.BLUE`）の型が、型検査でも実行時でも
 - 調査: Arrow `2045111`
 - 別件: 同じ「can never be true」の誤検出が trait でも起きるが、原因が違うので
   [trait_equality_plan.md](trait_equality_plan.md) に分けた
+- **状態: 4-3 を除いて完了**（2026-10-07・各タスクのコミットは §4 の表）
 
 ## 0. 何が起きるか
 
@@ -30,8 +31,9 @@ fn label(let c: Color) -> str:
 | `k == Color.BLUE`（`let k = Color.BLUE`・注釈なし） | ✅ | ✅ |
 | `let m: Color = Color.BLUE` | ✅（アップキャスト） | ✅ |
 | `Color.BLUE is Color` | ✅ | ❌ `False` |
-| `case Color:` | ✅ | ❌ 当たらない |
+| `match` の `is Color:` の腕 | ✅ | ❌ 当たらない |
 | `Color.BLUE mustbe Color` | ✅ | ❌ `expected Color, got enum_item_Color` |
+| `Pen(Color.BLUE)`（`mut color: Color` のフィールド） | ✅ | ❌ `value does not match declared type of field` |
 | `Color.BLUE == Other.X`（別の enum） | ❌（正しい） | — |
 
 ⇒ 型検査は `let m: Color = Color.BLUE` を通すのに、実行時はその `m` を `Color` と認めない。
@@ -51,7 +53,9 @@ fn label(let c: Color) -> str:
 - メンバーは `enum_item_Color` という名前の合成クラスのインスタンス（`src/interpreter/exec/definitions.rs:456-543`）。
   `bases` は空。
 - `x is Color` は `ClassValue::is_a`（クラス名か `bases` の一致・`src/interpreter/value/callables.rs:334`）で
-  判定するので偽になる。`mustbe` と `case Color:` も同じ判定を使う。
+  判定するので偽になる。`mustbe`・`match` の `is Color:` の腕・クラスのフィールドの実行時の型検査も同じ判定を使う。
+- ⚠ 起票時は `case Color:` も挙げていたが、`case X:` は**値の比較**（`subject == X`）の構文で、
+  通常のクラスでも型では分岐しない。型で分岐するのは `is X:` の腕。
 
 ### 1.3 なぜ別の型だったのか
 
@@ -70,7 +74,7 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 ### 1.5 比較の検査を緩める案を採らない理由
 
 `check_equality` に部分型の判定を足せば比較のエラーは消える。
-しかし `is Color` / `case Color:` / `mustbe Color` が実行時に偽になる問題は残る。
+しかし `is Color` / `is Color:` の腕 / `mustbe Color` が実行時に偽になる問題は残る。
 型検査で `Color` と呼んでいる値が、実行時に `Color` でないことが根本の原因である。
 
 ## 2. 決定
@@ -110,14 +114,28 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 ⚠ 型検査だけを先に変えると、`x is Color` を型検査は「常に真」、実行時は「偽」と答える期間ができる。
 そのためフェーズ 1 を先に行う。
 
+⚠ **実施時の変更**: `compare_python_impl` は 2 実装の stdout を突き合わせるので、Python 実装の**実行時**の
+変更は 3-1 を待たず、1-2 の直後の追随コミット（`2b504f9`）で行った。3-1 は型検査の部分だけになった。
+
+| # | 状態 | コミット |
+|---|---|---|
+| 1-1 | ✅ | `71df0b5` |
+| 1-2 | ✅ | `a96a236`（Python 実装の実行時の追随は `2b504f9`） |
+| 2-1 | ✅ | `f04874a` |
+| 2-2 | ✅ | `dd4bb5e` |
+| 3-1 | ✅ | `d41228d` |
+| 4-1 | ✅ | `f80f9f4` |
+| 4-2 | ✅ | （本書の更新と同じコミット） |
+| 4-3 | 未 | — |
+
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | **1-1** | **「enum のメンバーか」を名前ではなく印で判定する**（挙動不変）。`ClassValue` にメンバーの印（例: `enum_of: Option<String>` ＝ 属する enum の名前）を足し、名前の接頭辞で判定している 3 箇所を置き換える: 等値 `src/interpreter/ops/equality.rs:93`・ハッシュ `src/interpreter/ops/hash.rs:200`・`open()` の引数 `src/interpreter/eval/mod.rs:165`（`extract_enum_int`、呼び出し側 `src/interpreter/eval/builtins.rs:834-848`）。⚠ `ClassValue::synthetic` と `deep_clone` は exhaustive なリテラルなので、フィールドを足すとまずここで止まる（既定値はここで決める）。⚠ 等値とハッシュは**同じ印**で判定すること（ずれると「入れたのに引けない辞書」になる） | なし | 小 |
 | **1-2** | **メンバーのクラス名を enum 名にし、`enum_item_X` の束縛をやめる**（D-1・D-2）。名前の付け替え: `build_enum_classes`（`definitions.rs:463`）・`make_builtin_enum_class`（`src/interpreter/built_in_types.rs:212`）。束縛をやめる: `exec_enum_def`（`definitions.rs:416-419`）・`vm_enum_def`（`definitions.rs:438-441`）・組み込み enum の大域登録（`built_in_types.rs:332-334`）・`RUNTIME_BUILTIN_NAMES`（`src/type_check/names.rs:39`）。VM の doc（`src/vm/chunk.rs:116`・`src/vm/op.rs:339`・`src/vm/run.rs:655`・`src/vm/compiler/entry.rs:345`）も直す。⚠ モジュールの enum: メンバーのクラスに `module_name` を付けないと `is tags.Color` が当たらない（`qualified_class_matches`）。別名経由の `is t.Color` は `class_id` で比べる（`src/interpreter/ops/typecheck.rs:326`）ので、enum のクラスとメンバーのクラスの `class_id` が違う点に手当てが要る。⚠ テスト: `src/interpreter/tests/mod.rs:309-312`（`enum_item_X` の有無で組み込み enum を見分けている）・`src/interpreter/tests/enum_defaults.rs:21,115-122`。⚠ 例題 `other_typing.ar:178` の `x is enum_item_Color` は**同じコミットで** `x is Color` に書き換える（実行時の束縛が消えるので出力が変わる）。⚠ repr が `<enum_item_Color object …>` から `<Color object …>` に変わる | 1-1 | 中 |
 | **2-1** | **enum の表を「型の値から引くメンバー」と「インスタンスから引くフィールド」に分ける**（§3）。`Color.BLUE` は型の値（`TypeValOf`）からだけ、`value` はインスタンスからだけ引けるようにする（`infer_attr`・`member_exists`）。§3 の 2 つの穴が静的エラーになる。⚠ 通常のクラスも型の値とインスタンスで同じ表を引いている（`infer.rs:818-838`）。`const` クラス変数などで同じ穴があるかは未調査（本書の対象外） | なし | 中 |
-| **2-2** | **メンバーの型を `NamedInstance("Color")` にする**（D-1）。`builder.rs:464-472`（モジュールの enum は `tags.Color`）。`enum_item_X` の登録をすべて撤去する（D-2）: `builder.rs:433-451`（既知のクラス名・`value` の表）・`builder.rs:111`（モジュール名での修飾）・`src/type_check/stmt/check.rs:617-622`（宣言）・`src/type_check/mod.rs:238`（組み込み enum の宣言）・アップキャスト規則 `type_utils.rs:508-518`・補助関数 `enum_item_type_name` / `enum_of_item_type`（`src/type_check/types.rs:261-276`）。⚠ `check_equality` は**変更しない**。両辺が同じ `Color` になるので通り、別の enum 同士は今までどおり弾かれる。⚠ `match` の死ぬ腕の検査（タスク 5.4）が `case Color.BLUE:` / `case Color:` を誤って弾かないか確かめる | 1-2・2-1 | 中 |
+| **2-2** | **メンバーの型を `NamedInstance("Color")` にする**（D-1）。`builder.rs:464-472`（モジュールの enum は `tags.Color`）。`enum_item_X` の登録をすべて撤去する（D-2）: `builder.rs:433-451`（既知のクラス名・`value` の表）・`builder.rs:111`（モジュール名での修飾）・`src/type_check/stmt/check.rs:617-622`（宣言）・`src/type_check/mod.rs:238`（組み込み enum の宣言）・アップキャスト規則 `type_utils.rs:508-518`・補助関数 `enum_item_type_name` / `enum_of_item_type`（`src/type_check/types.rs:261-276`）。⚠ `check_equality` は**変更しない**。両辺が同じ `Color` になるので通り、別の enum 同士は今までどおり弾かれる。⚠ `match` の死ぬ腕の検査（タスク 5.4）が `case Color.BLUE:` / `is Color:` の腕を誤って弾かないか確かめる | 1-2・2-1 | 中 |
 | **3-1** | **Python 実装を追随させる**。実行時 `impl_python/interpreter/interpreter.py:188, 543-544, 1874-1885`、型検査 `impl_python/type_check/stmt.py:277, 384`。追跡用の git SHA を更新する。⚠ Python 実装は異型の等値を静的に検査しないので、発端のエラーは出ない。ただし `is Color` が偽になる問題は同じようにある | 1-2・2-2 | 小 |
-| **4-1** | **例題**。成功例（新規・`examples/typing/`）: enum 型の引数・注釈つき `let` とメンバーの `==` / `!=` / `in`、`is Color`・`case Color:`・`mustbe Color`、モジュールの enum（`examples/basics/namespace_modules/tags.ar` の `Level`）、組み込み enum（`let m: FileOpenMode = FileOpenMode.read` との比較）。エラー例（`_error`）: 別の enum 同士の比較・`m.PLANE`・`Color.value`・`x is enum_item_Color`。既存の `examples/typing/enum_member_type.ar:39`（「メンバーの型は enum_item_<名前>」）と `enum_member_type_error.ar:5` のコメントを直す | 2-2 | 小 |
+| **4-1** | **例題**。成功例（新規・`examples/typing/`）: enum 型の引数・注釈つき `let` とメンバーの `==` / `!=` / `in`、`is Color`・`is Color:` の腕・`mustbe Color`、モジュールの enum（`examples/basics/namespace_modules/tags.ar` の `Level`）、組み込み enum（`let m: FileOpenMode = FileOpenMode.read` との比較）。エラー例（`_error`）: 別の enum 同士の比較・`m.PLANE`・`Color.value`・`x is enum_item_Color`。既存の `examples/typing/enum_member_type.ar:39`（「メンバーの型は enum_item_<名前>」）と `enum_member_type_error.ar:5` のコメントを直す | 2-2 | 小 |
 | **4-2** | **文書**。`docs/grammar/06_classes_traits.md:449`・`docs/language_comparison.md:145`（`x is enum_item_Color` を `x is Color` に）・`type-checking` スキルの enum の節。`implementation_logs/type_check_redesign.md` の「2.3 の記録」に、本書で置き換えた旨を追記する | 2-2 | 小 |
 | **4-3** | **VS Code 拡張**。型検査が変わると wasm も変わるので `make-vsix.ps1` で VSIX を作り直す。ホバーでメンバーの型が `Color` と出ることを確かめる | 2-2 | 小 |
 
@@ -140,3 +158,7 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 - 別のモジュールにある同名の enum（`a.Color` と `b.Color`）のメンバーは、今もクラス名だけで等値を判定している。
   そのため値が同じなら等しくなる（既存の挙動）。1-1 の印で区別できるようになるが、変えるならハッシュも同時に変えること
 - 通常のクラスで、型の値とインスタンスが同じ表を引くことによる穴（2-1 の ⚠）
+- メンバーへの代入（`Color.BLUE = Color.PLANE`）は型検査を通り、実行時の
+  `TypeError: cannot assign to class variable 'BLUE' (declared const)` で止まる（本書の前から同じ）
+- ⚠ Python 実装では enum のメンバーを辞書のキーに使うと `KeyError` になる（`2045111` でも同じ。
+  Rust 実装は正しく引ける）。例題では辞書のキーに使っていない

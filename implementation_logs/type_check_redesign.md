@@ -661,6 +661,13 @@ doc コメントに相互参照を置いた。
 メンバーは `NamedInstance("enum_item_Color")`）。以前は `Unresolved` ゆえに書けていたので、
 これを弾くのは**機能の退行**になる。⚠ 逆（`Color` → `enum_item_Color`）はダウンキャストなので許さない。
 
+⚠⚠ **2026-10-07 に置き換えた**（`implementation_plans/enum_member_type_plan.md`）。メンバーの型を
+**enum 型そのもの**（`Color.Red : Color`）にし、`enum_item_X` とこのアップキャスト規則を撤去した。
+メンバーを別の型にしたせいで `Color` 型の値が存在せず、`c == Color.Red`（`c: Color`）が
+「決して真にならない」と弾かれ（タスク 7.6 の `check_equality`）、実行時も `x is Color` が偽だった。
+あわせてメンバー（`Color.Red`）を型の値からだけ、`value` をインスタンスからだけ引けるよう表を分けた
+（`registry.enum_members`）。
+
 ⚠ **副産物**: クラス名経由のアクセスに型が付くようになったので、`const` クラス変数
 （`Counter.LIMIT`）と `static mut`（`Counter.total`）も `Unresolved` を卒業した。
 
