@@ -1,4 +1,4 @@
-# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
+# git SHA: dd4bb5e62667397246535b2c7db1f557b9089649
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -274,8 +274,7 @@ class _TypeCheckerStmts:
                 self._declare(name, TyTypeValOf(TyNamedInstance(name)), False)
 
             case StmtEnumDef(name=name):
-                item = f"enum_item_{name}"
-                self._declare(item, TyTypeValOf(TyNamedInstance(item)), False)
+                # A member's type is the enum type itself (`enum_item_<name>` was retired).
                 self._declare(name, TyTypeValOf(TyNamedInstance(name)), False)
 
             case StmtPass() | StmtBreak() | StmtContinue() | StmtFreeze():
@@ -381,7 +380,6 @@ class _TypeCheckerStmts:
 
                 case StmtEnumDef(name=name):
                     self._known_class_names.add(name)
-                    self._known_class_names.add(f"enum_item_{name}")
 
                 case StmtTraitDef(body=body):
                     self._collect_fn_sigs(body)
