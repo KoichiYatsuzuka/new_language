@@ -505,17 +505,6 @@ impl TypeChecker {
                 InferredType::GenericInstance { name: a, .. },
                 InferredType::NamedInstance(e),
             ) if a == e => return true,
-            // ⚠ enum のメンバー型 `enum_item_X` → enum 型 `X` はアップキャスト
-            //    （メンバーはその enum に属する）。タスク 2.3。
-            //    `let m: Color = Color.Green` という**自然な綴り**を通すために要る
-            //    （2.3 でメンバーに型を付けたので、これが無いと書けなくなる）。
-            //    ⚠⚠ **逆は許さない**（`Color` → `enum_item_Color` はダウンキャスト）。
-            //    ⚠ `enum_item_` は型検査・実行時の両方が使う内部名（`build_enum_classes`）。
-            (InferredType::NamedInstance(a), InferredType::NamedInstance(e))
-                if super::types::enum_of_item_type(a).as_deref() == Some(e.as_str()) =>
-            {
-                return true
-            }
             // ── 素の容器と型引数つき容器は**一方向だけ**（D-3・タスク 4.1）──────
             //
             // ⚠⚠ **以前は双方向だった**（`(List, ListOf(_)) => true` も在った）。素の `list` が

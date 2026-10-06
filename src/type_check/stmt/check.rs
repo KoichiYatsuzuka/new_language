@@ -614,12 +614,6 @@ impl TypeChecker {
 
             // --- enum 定義 ---
             Stmt::EnumDef { src: _, name, variants } => {
-                let item_type_name = crate::type_check::types::enum_item_type_name(name);
-                self.declare(
-                    item_type_name.clone(),
-                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(item_type_name))),
-                    false,
-                );
                 self.declare(
                     name.clone(),
                     InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),

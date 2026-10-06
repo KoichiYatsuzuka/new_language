@@ -108,7 +108,6 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
             }
             Stmt::EnumDef { name, .. } => {
                 scope.names.insert(name.clone(), format!("{prefix}.{name}"));
-                scope.names.insert(format!("enum_item_{name}"), format!("{prefix}.enum_item_{name}"));
             }
             Stmt::FromImport { lang, module, names, .. } if is_arrow_source_lang(lang) => {
                 let m = module.join(".");
@@ -431,8 +430,6 @@ impl TypeRegistryBuilder {
                 }
                 Stmt::EnumDef { src: _, name, variants } => {
                     self.reg.known_class_names.insert(name.clone());
-                    let item_type_name = crate::type_check::types::enum_item_type_name(name);
-                    self.reg.known_class_names.insert(item_type_name.clone());
                     // ⚠⚠ **メンバーと `.value` の型を登録する**（タスク 2.3）。
                     //    以前は名前を `known_class_names` に入れるだけだったので
                     //    `Color.Red` も `Color.Red.value` も `Unresolved` になり、
@@ -442,29 +439,20 @@ impl TypeRegistryBuilder {
                     //      let v: A = B.Y                 # 別 enum のメンバーが入っていた
                     //    が黙って通っていた。`.value` は言語規則として `int`
                     //    （実行時 `build_enum_classes` が「must be int」で強制している）。
-                    let mut item_fields = HashMap::new();
-                    item_fields.insert(
-                        "value".to_string(),
-                        (FieldKind::Const, InferredType::Int),
-                    );
-                    self.reg
-                        .class_field_details
-                        .insert(item_type_name.clone(), item_fields);
-                    // ⚠⚠ **enum 型自身にも `value` を持たせる**（タスク 7.5）。
-                    //    `let m: Color = Color.Green` は `enum_item_Color → Color` の
-                    //    アップキャスト（タスク 2.3）で通るので、変数の静的型は `Color` になる。
-                    //    その `m.value` を引けるようにするには、変種側だけでなく
-                    //    **enum 型の表にも** `value` が要る（実行時は同じインスタンス）。
+                    // `Color` 型の値（インスタンス）のフィールドは `value` だけ。
                     let mut enum_fields = HashMap::new();
                     enum_fields.insert("value".to_string(), (FieldKind::Const, InferredType::Int));
                     self.reg.class_field_details.insert(name.clone(), enum_fields);
-                    // バリアント名 → そのバリアントの型（`enum_item_<name>`）。
-                    // これで `Color.Red` が `NamedInstance("enum_item_Color")` になる。
+                    // バリアント名 → そのバリアントの型。**型は enum 型そのもの**で、`Color.Red` は
+                    // `NamedInstance("Color")` になる（タスク 2-2・`implementation_plans/enum_member_type_plan.md`）。
+                    // ⚠⚠ 以前は別の型 `enum_item_Color` で、`Color` 型の値が存在しなかった
+                    //    （`c == Color.Red`（`c: Color`）が「決して真にならない」と弾かれていた）。
+                    //    実行時もメンバーのクラス名は enum 名（`build_enum_classes`）。
                     // ⚠⚠ **フィールドの表とは別の表に入れる**（タスク 2-1）。メンバーは型の値
                     //    （`Color.Red`）からだけ引け、インスタンス（`m.Red`）からは引けない。
                     let members = variants
                         .iter()
-                        .map(|(vname, _)| (vname.clone(), InferredType::NamedInstance(item_type_name.clone())))
+                        .map(|(vname, _)| (vname.clone(), InferredType::NamedInstance(name.clone())))
                         .collect();
                     self.reg.enum_members.insert(name.clone(), members);
                 }

@@ -1233,7 +1233,7 @@ pub enum Stmt {
     },
     /// `enum Name: variant [= expr] ...` — 整数値に対応する名前付き定数の列挙型定義。
     ///
-    /// 各バリアントは `enum_item_Name` 型（`new_type enum_item_Name: int` 相当）のインスタンスとして
+    /// 各バリアントは**型 `Name` の値**（`value: int` を 1 つ持つインスタンス）として
     /// クラス `Name` の const メンバーに格納される。値は 0 から始まる自動採番、または明示的に指定可能。
     ///
     /// # フィールド

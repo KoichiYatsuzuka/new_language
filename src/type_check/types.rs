@@ -258,24 +258,6 @@ pub enum InferredType {
     },
 }
 
-/// enum `enum_name` の要素の型名（`enum_item_Color`）。モジュールの enum（`tags.Color`）は
-/// `tags.enum_item_Color`（フェーズ10 10-8）。実行時の要素のクラスは `enum_item_Color` という名前で、
-/// モジュールの名前（`ClassValue::module_name`）を持つので、実行時の検査もこの綴りで当たる。
-pub(crate) fn enum_item_type_name(enum_name: &str) -> String {
-    match enum_name.rsplit_once('.') {
-        Some((module, bare)) => format!("{module}.enum_item_{bare}"),
-        None => format!("enum_item_{enum_name}"),
-    }
-}
-
-/// [`enum_item_type_name`] の逆（要素の型名 → enum の名前）。要素の型名でなければ `None`。
-pub(crate) fn enum_of_item_type(item: &str) -> Option<String> {
-    match item.rsplit_once('.') {
-        Some((module, bare)) => bare.strip_prefix("enum_item_").map(|e| format!("{module}.{e}")),
-        None => item.strip_prefix("enum_item_").map(str::to_string),
-    }
-}
-
 impl InferredType {
     /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
     pub fn collect_type_names(&self, out: &mut Vec<String>) {
