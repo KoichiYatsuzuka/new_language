@@ -48,6 +48,15 @@ impl Interpreter {
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
+            // 束縛メソッド（タスク 1-8）は CPython と同じ形（`<bound method C.m of <C object at 0x..>>`）。
+            Value::Function(fn_rc) if fn_rc.bound.is_some() => {
+                let b = fn_rc.bound.as_ref().expect("guarded");
+                let owner = match &b.receiver {
+                    Value::Instance(i) => i.borrow().class.name.clone(),
+                    other => self.type_name(other).to_string(),
+                };
+                format!("<bound method {owner}.{} of {}>", fn_rc.name, self.display_repr(&b.receiver))
+            }
             Value::Function(fn_rc) => {
                 let addr = Rc::as_ptr(fn_rc) as usize;
                 let sig = format_fn_params(&fn_rc.params);

@@ -964,6 +964,7 @@ impl Interpreter {
                 captured_env: HashMap::new(),
             return_type: None,
             vm_chunk: None,
+            bound: None,
             });
 
             let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();

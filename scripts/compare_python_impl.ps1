@@ -115,6 +115,8 @@ $knownDiff = @{
     'py_unsupported_builtin_error'   = 'Rust: Arrow に無い組み込み（format / exit）を参照する Python のモジュールを変換時に誤りにする（タスク 1-1 で新設）。py: import[py] したモジュールの show を引けず AttributeError'
     'freeze_like_let'                = 'Rust: freeze x を let x = x と同じ 1 実装にし、関数の中でも動く（タスク 1-9 で新設）。py: __freeze__ を呼ばず frozen at を出さない'
     'freeze_like_let_error'          = 'Rust: クロージャが捕まえた変数の freeze を実行時の TypeError で止め、stdout には何も出さない（タスク 1-9 で新設）。py: RuntimeError: TypeError を stdout に出す'
+    'bound_method'                   = 'Rust: obj.method を値として読むと受け手を束縛した関数になる（タスク 1-8 で新設）。py: 束縛せず、静的に get takes 1 argument(s) but 0 were given で止まる（何も出さない）'
+    'py_bound_method'                = 'Rust: Python の f = s.apply / getattr / map(s.apply, ..)（タスク 1-8 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

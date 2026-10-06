@@ -278,7 +278,8 @@ impl Interpreter {
             // ── 参照の同一性で比べる値 ────────────────────────────────────────
             // ⚠ これらの腕が**丸ごと無かった**ため、`_ => false` に落ちて
             //   **`f == f` すら False** だった（実測）。「あらゆる型を dict のキーに」の前提。
-            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
+            // 束縛メソッド（タスク 1-8）は読むたびに作り直すので「同じ受け手の同じメソッド」で比べる。
+            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b) || crate::interpreter::FnValue::same_binding(a, b),
             (Value::OverloadedFn(a), Value::OverloadedFn(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| Rc::ptr_eq(x, y))
             }

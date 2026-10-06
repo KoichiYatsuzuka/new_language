@@ -128,6 +128,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         captured_env: HashMap::new(),
     return_type: None,
     vm_chunk: None,
+    bound: None,
     });
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);

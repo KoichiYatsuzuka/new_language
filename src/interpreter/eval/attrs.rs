@@ -192,15 +192,13 @@ impl Interpreter {
                             attr, cls.name, cls.name, attr
                         ));
                     }
-                    let overloads = cls.methods.get(attr).unwrap();
-                    let result = if overloads.len() == 1 {
-                        Value::Function(overloads[0].clone())
-                    } else {
-                        Value::OverloadedFn(overloads.clone())
-                    };
+                    // 束縛メソッド（タスク 1-8）。以前は束縛しない関数を返し、呼ぶと
+                    // `missing argument 'self'` / `function takes 1 argument(s), got 0` だった。
+                    // ⚠ アクセス制御は**ここで**見る（呼ぶ時点では見ない・`call_bound_method` の doc）。
+                    let overloads = cls.methods.get(attr).unwrap().clone();
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
-                    return Ok(result);
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(obj.clone(), overloads)));
                 }
                 Err(format!(
                     "AttributeError: '{}' object has no attribute '{attr}'",

@@ -295,6 +295,20 @@ impl Value {
             return_type: None,
             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
             vm_chunk: None,
+            // 束縛メソッド（タスク 1-8）は受け手もメソッドの実体も複製する。
+            bound: rc.bound.as_ref().map(|b| {
+                Rc::new(super::BoundMethod {
+                    receiver: b.receiver.deep_clone(),
+                    methods: b
+                        .methods
+                        .iter()
+                        .map(|m| match Value::Function(m.clone()).deep_clone() {
+                            Value::Function(f) => f,
+                            _ => unreachable!("deep_clone keeps the variant"),
+                        })
+                        .collect(),
+                })
+            }),
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -311,6 +325,7 @@ impl Value {
                             return_type: rc.return_type.clone(),
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
                             vm_chunk: None,
+                            bound: None,
                         })
                     })
                     .collect(),

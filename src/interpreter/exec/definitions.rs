@@ -112,6 +112,7 @@ impl Interpreter {
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk,
+            bound: None,
         });
         let existing = match existing {
             Value::None => None,
@@ -158,6 +159,7 @@ impl Interpreter {
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk: None,
+            bound: None,
         });
 
         // 単相化した関数は、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
@@ -386,6 +388,7 @@ impl Interpreter {
                     captured_env: HashMap::new(),
                 return_type: None,
                 vm_chunk: None,
+                bound: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -497,6 +500,7 @@ impl Interpreter {
             captured_env: HashMap::new(),
         return_type: None,
         vm_chunk: None,
+        bound: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -685,6 +689,7 @@ impl Interpreter {
                         },
                         return_type: mret.clone(),
                         vm_chunk: None,
+                        bound: None,
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。

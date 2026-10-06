@@ -79,7 +79,8 @@ impl SignalData {
             Value::Function(target) => {
                 self.handlers.retain(|h| {
                     if let Value::Function(hf) = &h.func {
-                        !Rc::ptr_eq(hf, target)
+                        // 束縛メソッド（`sig off obj.handle`・タスク 1-8）は読むたびに作り直すので同じ照合で。
+                        !(Rc::ptr_eq(hf, target) || crate::interpreter::FnValue::same_binding(hf, target))
                     } else {
                         true
                     }

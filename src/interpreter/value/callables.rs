@@ -198,6 +198,77 @@ pub struct FnValue {
     ///   静的メソッド・クラスメソッドは呼び出したクラス（`Interpreter::class_call_ctx`）が文脈。
     ///   持たせるとクラス → メソッド → クラスの循環になる。
     pub owner_class: Option<Rc<ClassValue>>,
+    /// **束縛メソッド**（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8）。
+    ///
+    /// `Some` のときこの関数は**包み**で本体を持たない。呼ぶと `exec_fn_evaled` の入口で
+    /// `Interpreter::call_bound_method` へ回り、受け手を `self` にしてメソッドの実体を走らせる。
+    /// ⚠ `Value` に腕を足さず関数の値に持たせた（網羅の `match` を増やさない・呼び出しの経路は
+    ///   ツリーウォークも VM も `exec_fn_evaled` の 1 本なので入口 1 箇所で全部に効く）。
+    pub bound: Option<Rc<BoundMethod>>,
+}
+
+/// 束縛メソッドの中身（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8）。
+///
+/// `FnValue::bound` が持つ。受け手とメソッドの実体（オーバーロードなら全部）を**読んだ時点で**
+/// 引いて持つ（CPython の束縛メソッドが `__self__` と `__func__` を持つのと同じ）。
+#[derive(Debug)]
+pub struct BoundMethod {
+    /// 受け手（`self` になるインスタンス）。
+    pub receiver: Value,
+    /// メソッドの実体（1 つ以上・オーバーロードなら宣言順に全部）。
+    pub methods: Vec<Rc<FnValue>>,
+}
+
+impl FnValue {
+    /// 束縛メソッドの値を作る（タスク 1-8）。
+    ///
+    /// 返すのは**本体を持たない包み**で、呼ぶと `exec_fn_evaled` の入口で `methods` へ回り、
+    /// `receiver` が `self` になる（`obj.method(..)` と同じ実行・コンパイル済みの本体もそのまま使う）。
+    /// 名前・仮引数（`self` を除く）・戻り値の注釈は表示と内省のために写す。
+    pub(crate) fn bind(receiver: Value, methods: Vec<Rc<FnValue>>) -> Rc<FnValue> {
+        let first = methods[0].clone();
+        let params = first
+            .params
+            .iter()
+            .skip(usize::from(first.params.first().is_some_and(|p| p.name == "self")))
+            .cloned()
+            .collect();
+        Rc::new(FnValue {
+            name: first.name.clone(),
+            params,
+            body: Rc::from(Vec::<Stmt>::new()),
+            is_python: first.is_python,
+            captured_env: HashMap::new(),
+            return_type: first.return_type.clone(),
+            vm_chunk: None,
+            globals: first.globals,
+            owner_class: None,
+            bound: Some(Rc::new(BoundMethod { receiver, methods })),
+        })
+    }
+
+    /// 等値・ハッシュに使う**同一性のポインタ**。束縛メソッドはメソッドの実体、それ以外は自分自身。
+    ///
+    /// ⚠ 束縛メソッドは読むたびに作り直すので、自分自身のポインタでは `c.get == c.get` が偽になる
+    ///   （CPython は真）。等値（`same_binding`）とハッシュの規則を揃えるためにここで決める。
+    pub(crate) fn identity_ptr(self: &Rc<Self>) -> *const () {
+        match &self.bound {
+            Some(b) => Rc::as_ptr(&b.methods[0]) as *const (),
+            None => Rc::as_ptr(self) as *const (),
+        }
+    }
+
+    /// 2 つの束縛メソッドが**同じ受け手の同じメソッド**か（`c.get == c.get`・シグナルの `off` の照合）。
+    pub(crate) fn same_binding(a: &FnValue, b: &FnValue) -> bool {
+        let (Some(x), Some(y)) = (&a.bound, &b.bound) else {
+            return false;
+        };
+        let same_receiver = match (&x.receiver, &y.receiver) {
+            (Value::Instance(p), Value::Instance(q)) => Rc::ptr_eq(p, q),
+            _ => false,
+        };
+        same_receiver && Rc::ptr_eq(&x.methods[0], &y.methods[0])
+    }
 }
 
 
@@ -415,6 +486,7 @@ impl ClassValue {
                             return_type: rc.return_type.clone(),
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
                             vm_chunk: None,
+                            bound: None,
                         })
                     })
                     .collect();
