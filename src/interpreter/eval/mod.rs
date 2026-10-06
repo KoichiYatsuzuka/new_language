@@ -174,11 +174,11 @@ fn extract_enum_int(val: &Value, expected_enum: &str) -> Result<i64, String> {
             }
         }
         return Err(format!(
-            "TypeError: expected enum_item_{expected_enum} instance, got instance of '{}'",
+            "TypeError: expected {expected_enum} instance, got instance of '{}'",
             inst.class.name
         ));
     }
-    Err(format!("TypeError: expected enum_item_{expected_enum} instance"))
+    Err(format!("TypeError: expected {expected_enum} instance"))
 }
 
 /// 位置引数とキーワード引数のどちらからでも値を取り出すヘルパー。

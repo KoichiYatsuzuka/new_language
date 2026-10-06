@@ -342,8 +342,7 @@ fn compile_fn_inner(
             // 関数本体の `enum` の名前も base slot を占める（#68）。
             // ⚠ **リゾルバの `collect_base_decls` は `EnumDef` に `push_base` する**ので、
             // ここで飛ばすと以降の base slot が全部 1 つずれる（`Stmt::Static` と同じ罠）。
-            // ⚠ `enum_item_<name>` には slot を採らない。リゾルバも採らないし、
-            //    `Op::EnumDef` が `declare_var` で名前として宣言する（合成名なので読みは名前引き）。
+            // ⚠ メンバーのクラスには slot を採らない（名前で宣言されない・`build_enum_classes`）。
             Stmt::EnumDef { name, .. } if name != "_" && !slots.contains_key(name) => {
                 slots.insert(name.clone(), n);
                 slot_mut.push(false);

@@ -18,7 +18,7 @@ fn test_enum_member_access_value() {
     let val = run_get(src, "x");
     if let Value::Instance(inst_rc) = val {
         let inst = inst_rc.borrow();
-        assert_eq!(inst.class.name, "enum_item_Color");
+        assert_eq!(inst.class.name, "Color");
         let &idx = inst.class.field_index.get("value").unwrap();
         let v = inst.field_value(idx).unwrap();
         assert!(matches!(v, Value::Int(0)));
@@ -112,17 +112,21 @@ match (x):
     assert_int(run_get(src, "result"), 2);
 }
 
-/// enum_item_type_name のテスト。
+/// メンバーのクラスは enum と同じ名前で、`enum_of` が enum を指す。`x is Color` が真になる。
+/// ⚠ 以前は `enum_item_Color` という別の名前で、`x is Color` が偽だった
+///   （`implementation_plans/enum_member_type_plan.md`）。
 #[test]
-fn test_enum_item_type_name() {
-    // enum_item_Color 型が登録されていること
-    let src = "enum Color:\n    Red\nlet x = Color.Red\n";
+fn test_enum_member_class_is_the_enum() {
+    let src = "enum Color:\n    Red\nlet x = Color.Red\nlet t = x is Color\n";
     let val = run_get(src, "x");
     if let Value::Instance(inst_rc) = val {
-        assert_eq!(inst_rc.borrow().class.name, "enum_item_Color");
+        let inst = inst_rc.borrow();
+        assert_eq!(inst.class.name, "Color");
+        assert_eq!(inst.class.enum_of.as_deref(), Some("Color"));
     } else {
         panic!("expected Instance");
     }
+    assert!(matches!(run_get(src, "t"), Value::Bool(true)));
 }
 
 // --- default parameters ---

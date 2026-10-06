@@ -321,9 +321,17 @@ impl Interpreter {
                     return true;
                 }
                 // 書いたとおりの別名（`t.Tag`）は名前空間を引いて同じクラスか見る。
+                // ⚠ enum のメンバーのクラスは、引いた `Name` クラス（メンバーを持つ方）とは別のクラス
+                //   （`build_enum_classes`）。`class_id` は一致しないので、同じモジュールの同じ名前の
+                //   enum かで見る。
                 let class_id = inst.class.class_id;
+                let enum_key = inst.class.enum_of.clone().map(|e| (e, inst.class.module_name.clone()));
                 drop(inst);
-                self.dotted_class_id(type_name) == Some(class_id)
+                let Some(cls) = self.dotted_class(type_name) else {
+                    return false;
+                };
+                cls.class_id == class_id
+                    || enum_key.is_some_and(|(e, m)| cls.enum_of.is_none() && cls.name == e && cls.module_name == m)
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",
@@ -349,8 +357,8 @@ impl Interpreter {
         }
     }
 
-    /// `t.Tag`（名前空間を通した型名）が指すクラスの `class_id`（10-8）。引けなければ `None`。
-    fn dotted_class_id(&self, type_name: &str) -> Option<u32> {
+    /// `t.Tag`（名前空間を通した型名）が指すクラス（10-8）。引けなければ `None`。
+    fn dotted_class(&self, type_name: &str) -> Option<std::rc::Rc<crate::interpreter::ClassValue>> {
         let mut parts = type_name.split('.');
         let mut cur = self.get_val(parts.next()?)?;
         for seg in parts {
@@ -360,7 +368,7 @@ impl Interpreter {
             };
         }
         match cur {
-            Value::Class(c) => Some(c.class_id),
+            Value::Class(c) => Some(c),
             _ => None,
         }
     }

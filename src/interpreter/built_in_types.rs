@@ -199,18 +199,16 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
     })
 }
 
-/// ビルトイン enum クラスのペア（item クラス + enum クラス）を Rust コードで生成する。
+/// ビルトイン enum を Rust コードで生成し、`Name` クラスを返す。
 ///
 /// - `name`: enum クラス名（例: `"FileOpenMode"`）
 /// - `variants`: (バリアント名, 整数値) のスライス
 ///
-/// 戻り値: `(item_cls_name, item_cls, enum_cls)` のタプル
-pub(super) fn make_builtin_enum_class(
-    name: &str,
-    variants: &[(&str, i64)],
-) -> (String, Rc<ClassValue>, Rc<ClassValue>) {
-    let item_cls_name = format!("enum_item_{name}");
-    // バリアントのインスタンス型（`enum_item_X`）: value フィールドを持つだけ
+/// メンバーのクラスは `Interpreter::build_enum_classes` と同じ形（名前は enum と同じ `Name`・
+/// `value` フィールドを 1 つ・`enum_of` が `Some(Name)`）。名前では宣言しない
+/// （`enum_item_Name` は廃止した名前・`implementation_plans/enum_member_type_plan.md` 1-2）。
+pub(super) fn make_builtin_enum_class(name: &str, variants: &[(&str, i64)]) -> Rc<ClassValue> {
+    // メンバーのクラス: value フィールドを持つだけ
     let item_cls_id = crate::interpreter::value::alloc_class_id();
     let item_cls = Rc::new(ClassValue {
         field_mutability: HashMap::from([("value".to_string(), true)]),
@@ -218,22 +216,20 @@ pub(super) fn make_builtin_enum_class(
         field_count: 1,
         field_mutability_vec: vec![true],
         enum_of: Some(name.to_string()),
-        ..ClassValue::synthetic(item_cls_name.clone(), item_cls_id)
+        ..ClassValue::synthetic(name.to_string(), item_cls_id)
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
-    let _ = item_cls_id;
     for (variant_name, int_val) in variants {
         let mut data = InstanceData::new_empty(item_cls.clone(), 0);
         data.store_field(0, Value::Int(*int_val), true);
         class_vars.insert(variant_name.to_string(), Value::Instance(Rc::new(RefCell::new(data))));
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
-    let enum_cls = Rc::new(ClassValue {
+    Rc::new(ClassValue {
         class_vars,
         ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
-    });
-    (item_cls_name, item_cls, enum_cls)
+    })
 }
 
 /// インタープリタのグローバルスコープに全組み込み値を登録する。
@@ -330,9 +326,7 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
             ],
         ),
     ] {
-        let (item_name, item_cls, enum_cls) =
-            make_builtin_enum_class(enum_name, &variants);
-        global.insert(item_name, Var::new(Value::Class(item_cls), false));
+        let enum_cls = make_builtin_enum_class(enum_name, &variants);
         global.insert(
             enum_name.to_string(),
             Var::new(Value::Class(enum_cls), false),

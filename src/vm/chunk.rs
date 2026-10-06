@@ -113,7 +113,7 @@ pub struct ChunkFnDef {
 /// `eval_definition_expr`（#41）で評価するので、明示値（`RED = 1 + 2`）の意味論が一致する。
 /// ⚠ `Rc` で持つ理由は `ChunkFnDef::body` と同じ（#45）— Chunk は実体間で共有される。
 pub struct ChunkEnumDef {
-    /// 列挙型の名前。`enum_item_<name>` クラスの名前もここから作る。
+    /// 列挙型の名前。メンバーのクラスも同じ名前になる（`build_enum_classes`）。
     pub name: String,
     /// `(バリアント名, 省略可能な値式)` の並び。
     pub variants: std::rc::Rc<[(String, Option<crate::ast::Expr>)]>,

@@ -175,7 +175,7 @@ print(MyEnum.c.value)  # 6
 print("=== enum: is check and equality ===")
 
 let x = Color.Red
-print(x is enum_item_Color)  # True
+print(x is Color)  # True（メンバーの型は enum 型そのもの）
 
 let r1 = Color.Red
 let r2 = Color.Red

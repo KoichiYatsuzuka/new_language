@@ -306,12 +306,17 @@ mod a_axis_invariants {
                 );
             }
         }
-        // ④ 逆向き: 実行時の組み込みの `enum`（`enum_item_X` を持つ `X`）は全部宣言されている。
-        //    要素の数も揃える（宣言に無い要素は静的に「無い」と言われてしまう）。
-        for (name, _) in scope.iter() {
-            if !scope.contains_key(format!("enum_item_{name}").as_str()) {
+        // ④ 逆向き: 実行時の組み込みの `enum`（メンバーの `enum_of` が自分の名前を指すクラス）は
+        //    全部宣言されている。要素の数も揃える（宣言に無い要素は静的に「無い」と言われてしまう）。
+        let mut runtime_enums = 0;
+        for (name, var) in scope.iter() {
+            let is_enum = matches!(var.get_value(), crate::interpreter::Value::Class(c)
+                if c.class_vars.values().any(|m| matches!(m, crate::interpreter::Value::Instance(i)
+                    if i.borrow().class.enum_of.as_deref() == Some(name.as_str()))));
+            if !is_enum {
                 continue;
             }
+            runtime_enums += 1;
             let Some((_, variants)) = enums.iter().find(|(n, _)| n == name) else {
                 panic!("実行時の組み込みの enum '{name}' が builtins.ars に無い");
             };
@@ -320,6 +325,8 @@ mod a_axis_invariants {
             };
             assert_eq!(cls.class_vars.len(), variants.len(), "enum '{name}' の要素の数が実行時と違う");
         }
+        // ⚠ 判定が 1 件も当たらないと④は空回りで緑になる。宣言の数と揃うことも見る。
+        assert_eq!(runtime_enums, enums.len(), "実行時の組み込みの enum の数が builtins.ars と違う（判定の空回り？）");
 
         // ⑤ `FileObject` のメソッド: 宣言したものは実行時にある／実行時のもの（`exec_file_method` の腕）は宣言されている
         let methods: Vec<String> = crate::type_check::builtins::declared_methods("FileObject")

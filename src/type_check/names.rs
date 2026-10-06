@@ -35,8 +35,6 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop",
     // Result の構築子（`Ok(v)` / `Err(e)`）
     "Ok", "Err",
-    // 組み込みの列挙の要素のクラス（実行時の大域に載っている内部名）
-    "enum_item_ByteRecognizingMode", "enum_item_Encoding", "enum_item_FileOpenMode", "enum_item_StartPoint",
     // 組み込み関数（`eval/builtins.rs`）
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",

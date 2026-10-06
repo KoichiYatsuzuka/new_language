@@ -415,52 +415,48 @@ impl Interpreter {
         name: &str,
         variants: &[(String, Option<Expr>)],
     ) -> Result<ExecResult, String> {
-        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
-        self.declare_var(
-            item_cls.name.clone(),
-            Var::new(Value::Class(item_cls), false),
-        );
+        let enum_cls = self.build_enum_classes(name, variants)?;
         self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
         Ok(ExecResult::Normal)
     }
 
-    /// VM の `Op::EnumDef` 用（#68）。`enum_item_Name` だけを名前で宣言し、
-    /// `Name` クラスを**値として返す**（呼び出し側がフレームの slot へ入れる）。
-    ///
-    /// ⚠ `declare_var` は interpreter モジュール内に閉じているので、
-    /// `vm_declare_global` / `vm_declare_debug` と同じく**ここに入口を置く**。
+    /// VM の `Op::EnumDef` 用（#68）。`Name` クラスを**値として返す**
+    /// （呼び出し側がフレームの slot へ入れる）。名前での宣言はしない。
     pub(crate) fn vm_enum_def(
         &mut self,
         name: &str,
         variants: &[(String, Option<Expr>)],
     ) -> Result<Value, String> {
-        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
-        self.declare_var(
-            item_cls.name.clone(),
-            Var::new(Value::Class(item_cls), false),
-        );
-        Ok(Value::Class(enum_cls))
+        Ok(Value::Class(self.build_enum_classes(name, variants)?))
     }
 
-    /// `enum` 定義から `(enum_item_Name クラス, Name クラス)` を組み立てる（#68）。
+    /// `enum` 定義から、メンバーのクラスと `Name` クラスの 2 つを組み立てて `Name` クラスを返す（#68）。
+    ///
+    /// - メンバーのクラス … 名前は **enum と同じ `Name`**、`value` フィールドを 1 つ持つ。
+    ///   `ClassValue::enum_of` が `Some(Name)`。各メンバー（`Name.X`）はこのクラスのインスタンス。
+    /// - `Name` クラス … メンバーを `const` クラス変数として持つ（`Name.X` で引く）。
+    ///
+    /// ⚠⚠ **メンバーのクラス名は enum の名前**（`implementation_plans/enum_member_type_plan.md` 1-2）。
+    ///   以前は `enum_item_Name` という別の名前で、`x is Name` / `case Name:` / `mustbe Name` /
+    ///   `Name` 型のフィールドがメンバーを受けなかった（`Name` 型の値が実行時に存在しなかった）。
+    ///   メンバーのクラスは**名前で宣言しない**（`enum_item_Name` は廃止した名前）。
     ///
     /// **スコープへの登録はしない**。呼び出し元が記憶域を決める:
-    /// - ツリーウォーク（`exec_enum_def`）は両方を `declare_var` する（最上位・モジュール本体）。
+    /// - ツリーウォーク（`exec_enum_def`）は `Name` を `declare_var` する（最上位・モジュール本体）。
     /// - VM（`Op::EnumDef`）は `Name` を**フレームの slot** へ入れる（関数内の `enum`）。
     ///   リゾルバの `collect_base_decls` が `Name` に base slot を採番するので、
     ///   読みは `LoadLocal` になる＝ slot に入れないと**別の変数を読む**。
     ///
-    /// ⚠ **2 つに分けたのは #68 の実バグのため**。分ける前は「組み立て」と「`declare_var`」が
+    /// ⚠ **組み立てと登録を分けたのは #68 の実バグのため**。分ける前は「組み立て」と「`declare_var`」が
     /// 一体だったので、VM から呼ぶと `Name` が slot ではなく**呼び出し元のスコープ**へ
     /// 入ってしまい、載せようが無かった（＝ `compile_stmt` が bail し `VmForceError`）。
     fn build_enum_classes(
         &mut self,
         name: &str,
         variants: &[(String, Option<Expr>)],
-    ) -> Result<(Rc<crate::interpreter::ClassValue>, Rc<crate::interpreter::ClassValue>), String>
-    {
-        // enum_item_Name クラスを生成する（new_type enum_item_Name: int 相当）
-        let item_type_name = format!("enum_item_{}", name);
+    ) -> Result<Rc<crate::interpreter::ClassValue>, String> {
+        // メンバーのクラス（`value: int` を持つだけ）。`is tags.Name` のためにモジュール名も付ける。
+        let module_name = self.global_module_names.get(self.cur_globals as usize).cloned().flatten();
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
                 object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
@@ -507,8 +503,9 @@ impl Interpreter {
             field_index: HashMap::from([("value".to_string(), 0usize)]),
             field_count: 1,
             field_mutability_vec: vec![true],
+            module_name: module_name.clone(),
             enum_of: Some(name.to_string()),
-            ..crate::interpreter::ClassValue::synthetic(item_type_name, item_cls_id)
+            ..crate::interpreter::ClassValue::synthetic(name.to_string(), item_cls_id)
         });
         // ⚠ ここで `declare_var` はしない（#68）。記憶域は呼び出し元が決める。
 
@@ -536,11 +533,11 @@ impl Interpreter {
             class_vars.insert(variant_name.clone(), inst);
         }
 
-        let enum_cls = Rc::new(crate::interpreter::ClassValue {
+        Ok(Rc::new(crate::interpreter::ClassValue {
             class_vars,
+            module_name,
             ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
-        });
-        Ok((item_cls, enum_cls))
+        }))
     }
 
     /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。

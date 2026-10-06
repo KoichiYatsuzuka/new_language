@@ -649,10 +649,9 @@ fn apply_writeback(
 ///
 /// ツリーウォークの `exec_enum_def` と**同じ `build_enum_classes`** を呼ぶので、
 /// バリアント値の採番・明示値の評価（`eval_definition_expr`）・エラー文言が構造的に一致する。
-/// 違うのは**記憶域だけ**:
-/// - `Name` → フレームの slot（リゾルバが base slot を採番済み。名前で宣言すると
-///   読みの `LoadLocal` が別の変数を読む）
-/// - `enum_item_Name` → 従来どおり `declare_var`（リゾルバは slot を採らない合成名）
+/// 違うのは**記憶域だけ**: `Name` はフレームの slot へ入れる（リゾルバが base slot を採番済み。
+/// 名前で宣言すると読みの `LoadLocal` が別の変数を読む）。
+/// メンバーのクラスはどちらの経路でも名前で宣言しない（`build_enum_classes`）。
 ///
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
