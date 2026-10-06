@@ -813,6 +813,32 @@ impl TypeChecker {
                 });
             }
         }
+        // ⚠⚠ **enum の型の値から引けるのはメンバーだけ**（タスク 2-1）。`Color.BLUE` はメンバーの表
+        //    （`registry.enum_members`）を引く。`Color.value` のようなインスタンスのフィールドは
+        //    引けない（実行時も `AttributeError: class 'Color' has no attribute 'value'`）。
+        //    逆にインスタンス（`m: Color`）から引けるのは `value` だけで、下の一般の経路が
+        //    `class_field_details` を引く（`m.BLUE` は `NoSuchMember`）。
+        if let InferredType::TypeValOf(inner) = &obj_ty {
+            if let InferredType::NamedInstance(enum_name) = inner.as_ref() {
+                if let Some(members) = self.registry.enum_members(enum_name) {
+                    let ty = match members.get(attr) {
+                        Some(ty) => ty.clone(),
+                        None => {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::NoSuchMember {
+                                    class_name: enum_name.clone(),
+                                    member: attr.to_string(),
+                                },
+                                span: Some(span.clone()),
+                            });
+                            InferredType::Unresolved
+                        }
+                    };
+                    self.annotations.set_resolved(node_id, ty.clone());
+                    return ty;
+                }
+            }
+        }
         // ⚠ `GenericInstance{Box,[int]}` も**クラスとして扱う**（A-2）。あわせて
         //    型変数 → 具体型の置換表を取り出しておき、メンバーの型を置換してから返す。
         let class_subst = self.class_and_subst(&obj_ty).or_else(|| {

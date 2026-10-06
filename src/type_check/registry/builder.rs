@@ -257,6 +257,7 @@ impl TypeRegistryBuilder {
                 class_base_args: HashMap::new(),
                 class_fields: HashMap::new(),
                 class_field_details,
+                enum_members: HashMap::new(),
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),
@@ -449,28 +450,23 @@ impl TypeRegistryBuilder {
                     self.reg
                         .class_field_details
                         .insert(item_type_name.clone(), item_fields);
-                    // バリアント名 → そのバリアントの型（`enum_item_<name>`）。
-                    // これで `Color.Red` が `NamedInstance("enum_item_Color")` になる。
-                    let mut variant_fields = HashMap::new();
                     // ⚠⚠ **enum 型自身にも `value` を持たせる**（タスク 7.5）。
                     //    `let m: Color = Color.Green` は `enum_item_Color → Color` の
                     //    アップキャスト（タスク 2.3）で通るので、変数の静的型は `Color` になる。
                     //    その `m.value` を引けるようにするには、変種側だけでなく
                     //    **enum 型の表にも** `value` が要る（実行時は同じインスタンス）。
-                    variant_fields.insert(
-                        "value".to_string(),
-                        (FieldKind::Const, InferredType::Int),
-                    );
-                    for (vname, _) in variants.iter() {
-                        variant_fields.insert(
-                            vname.clone(),
-                            (
-                                FieldKind::Const,
-                                InferredType::NamedInstance(item_type_name.clone()),
-                            ),
-                        );
-                    }
-                    self.reg.class_field_details.insert(name.clone(), variant_fields);
+                    let mut enum_fields = HashMap::new();
+                    enum_fields.insert("value".to_string(), (FieldKind::Const, InferredType::Int));
+                    self.reg.class_field_details.insert(name.clone(), enum_fields);
+                    // バリアント名 → そのバリアントの型（`enum_item_<name>`）。
+                    // これで `Color.Red` が `NamedInstance("enum_item_Color")` になる。
+                    // ⚠⚠ **フィールドの表とは別の表に入れる**（タスク 2-1）。メンバーは型の値
+                    //    （`Color.Red`）からだけ引け、インスタンス（`m.Red`）からは引けない。
+                    let members = variants
+                        .iter()
+                        .map(|(vname, _)| (vname.clone(), InferredType::NamedInstance(item_type_name.clone())))
+                        .collect();
+                    self.reg.enum_members.insert(name.clone(), members);
                 }
                 Stmt::TraitDef { name, body, template_params, .. } => {
                     // trait 自身の型変数も登録する。適合検査で `-> T` のような

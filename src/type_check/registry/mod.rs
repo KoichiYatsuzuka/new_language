@@ -63,6 +63,15 @@ pub(super) struct TypeRegistry {
     class_fields: HashMap<String, HashMap<String, bool>>,
     /// クラスフィールドの詳細（種別・型）。Protocol 適合チェックで使用する。
     class_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>>,
+    /// **enum のメンバー**（`Color.BLUE`）。キー: enum 名 → (メンバー名 → 型)。
+    ///
+    /// ⚠⚠ メンバーは**型の値（`Color`）からだけ**引ける。`Color` 型の値（インスタンス）から引ける
+    ///   のは `value` だけで、それは `class_field_details` にある（タスク 2-1・
+    ///   `implementation_plans/enum_member_type_plan.md`）。以前は両方を `class_field_details` に
+    ///   入れていたので、`m.BLUE`（`m: Color`）と `Color.value` が型検査を通り、実行時に
+    ///   `AttributeError` になっていた（実行時もメンバーは `Color` クラスの、`value` は
+    ///   メンバーのクラスの持ち物で、別々）。
+    enum_members: HashMap<String, HashMap<String, InferredType>>,
     /// クラスメンバーのアクセス可能性。`Public` 以外のみ格納。
     class_member_access: HashMap<String, HashMap<String, Accessibility>>,
     /// `static fn` で定義されたスタティックメソッド名。
@@ -372,6 +381,11 @@ impl TypeRegistry {
         class: &str,
     ) -> Option<&HashMap<String, (FieldKind, InferredType)>> {
         self.class_field_details.get(&*self.resolve(class))
+    }
+
+    /// enum `name` のメンバー表（メンバー名 → 型）。enum でなければ `None`。
+    pub(super) fn enum_members(&self, name: &str) -> Option<&HashMap<String, InferredType>> {
+        self.enum_members.get(&*self.resolve(name))
     }
 
     /// `class.field` が `mut` 宣言か。フィールドが存在しなければ `None`。
