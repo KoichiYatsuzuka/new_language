@@ -223,15 +223,9 @@ impl Interpreter {
     }
 
     /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
-    /// 非識別子ソースの `let` 意味論に合わせ、Instance は deep_copy + freeze する。
+    /// 非識別子ソースの `let` 意味論に合わせ、深いコピーを不変にする（`frozen_copy`・タスク 1-9）。
     pub(crate) fn vm_declare_debug(&mut self, name: &str, value: Value) -> Result<(), String> {
-        let v = if matches!(value, Value::Instance(_)) {
-            let copied = Self::deep_copy_value(value);
-            self.apply_freeze_to_value(&copied, true)?;
-            copied
-        } else {
-            value
-        };
+        let v = self.frozen_copy(value)?;
         self.declare_var(name.to_string(), Var::new(v, false));
         Ok(())
     }

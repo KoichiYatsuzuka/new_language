@@ -15,7 +15,13 @@ use {
 };
 
 impl Interpreter {
-    /// `freeze name` 文を実行する。変数を不変化し、インスタンスフィールドも再帰的にフリーズする。
+    /// `freeze name` 文を実行する: `let name = name` と**同じ結果**にする（python_builtins_plan.md のタスク 1-9）。
+    ///
+    /// 値の深いコピーを不変にし（`frozen_copy`・`let` と同じ 1 実装）、変数をそのコピーへ束縛し直して
+    /// 不変の変数に降格する。⚠ 以前はコピーせず**その場で**不変にしていたので、同じオブジェクトを
+    /// 持つ相手（呼び出し側の `mut` の変数など）まで不変になり、`let` と結果が違っていた。
+    /// ⚠ 関数の中の変数（VM の slot）はここを通らない。VM は `LoadLocal` + `StoreLocalCopyFreeze`
+    ///   （`let x = <mut 変数>` と同じ命令）にする。ここへ来るのは最上位・モジュール本体・デバッガの変数。
     pub(crate) fn exec_freeze(&mut self, name: &str, span: &Span) -> Result<ExecResult, String> {
         let var = self
             .get_var(name)
@@ -30,65 +36,9 @@ impl Interpreter {
                 "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
             ));
         }
-        let val = var.get_value();
-
-        let replacement = match &val {
-            Value::Instance(ref inst_rc) => {
-                let class = inst_rc.borrow().class.clone();
-                if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
-                    if overloads.len() == 1 {
-                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__", None)?;
-                    } else {
-                        self.dispatch_overload(overloads, &[], Some(val.clone()), None)?;
-                    }
-                }
-                Self::freeze_instance(inst_rc);
-                None
-            }
-            Value::List(ref rc) => {
-                let items = rc.borrow().clone();
-                for item in &items {
-                    self.apply_freeze_to_value(item, true)?;
-                }
-                None
-            }
-            Value::Set(ref rc) => {
-                let items = rc.borrow().clone();
-                for item in &items {
-                    self.apply_freeze_to_value(item, true)?;
-                }
-                None
-            }
-            Value::Dict(ref rc) => {
-                let vals = rc.borrow().all_items();
-                for v in &vals {
-                    self.apply_freeze_to_value(v, true)?;
-                }
-                None
-            }
-            Value::Tuple(ref td) => {
-                for item in td.all_values() {
-                    self.apply_freeze_to_value(item, true)?;
-                }
-                None
-            }
-            // fixed_list: trim unused allocated capacity on freeze
-            Value::FrozenList { ref state, ref layout } => {
-                let mut st = state.borrow_mut();
-                let exact = st.len * layout.stride;
-                st.data.truncate(exact);
-                st.data.shrink_to_fit();
-                st.allocated_size = st.len;
-                None
-            }
-            _ => None,
-        };
-
-        // If a flat conversion was produced, update the variable value before sealing it.
-        if let Some(flat) = replacement {
-            self.assign_var(name, flat)
-                .map_err(|e| format!("{span}: {e}"))?;
-        }
+        let frozen = self.frozen_copy(var.get_value())?;
+        self.assign_var(name, frozen)
+            .map_err(|e| format!("{span}: {e}"))?;
         self.make_var_immutable(name);
         Ok(ExecResult::Normal)
     }

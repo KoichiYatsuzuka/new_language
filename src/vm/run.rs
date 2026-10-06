@@ -1008,9 +1008,9 @@ fn exec_op(
             let v = Interpreter::deep_copy_value(buf.pop().unwrap());
             buf[base + *s as usize] = v;
         }
+        // `let x = <mut 変数>` と、関数の中の `freeze x`（`LoadLocal` + これ・タスク 1-9）。
         Op::StoreLocalCopyFreeze(s) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
-            interp.apply_freeze_to_value(&v, true)?;
+            let v = interp.frozen_copy(buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         // `let x = <グローバル識別子>`（#27-c）。ソースの可変性は実行時にしか分からないので
@@ -1021,15 +1021,11 @@ fn exec_op(
             let v = interp.vm_let_value_from_ident(src_mutable, v)?;
             buf[base + *s as usize] = v;
         }
+        // ⚠ `StoreLocalCopyFreeze` と同じ意味（`let x = <式>`・L2 の「常に複製する」）。以前はインスタンスの
+        //   ときしかコピーせず、関数の中の `let item = xs[0]` が `xs[0]` と共有されていた（最上位は複製していた・
+        //   タスク 1-9 で実測）。発行元を区別できるよう op は分けたまま（`prof_dist` の集計）。
         Op::StoreLocalFreezeInstance(s) => {
-            let v = buf.pop().unwrap();
-            let v = if matches!(v, Value::Instance(_)) {
-                let copied = Interpreter::deep_copy_value(v);
-                interp.apply_freeze_to_value(&copied, true)?;
-                copied
-            } else {
-                v
-            };
+            let v = interp.frozen_copy(buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         Op::Pop => {

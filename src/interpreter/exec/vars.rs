@@ -88,10 +88,8 @@ impl Interpreter {
         let value = self.eval(expr)?;
         let value = match source_var {
             Some((true, _)) => {
-                // mut 変数から let へ: 深いコピーを作成してフリーズする。
-                let copied = Self::deep_copy_value(value);
-                self.apply_freeze_to_value(&copied, true)?;
-                copied
+                // mut 変数から let へ: 深いコピーを作成してフリーズする（`frozen_copy`・タスク 1-9）。
+                self.frozen_copy(value)?
             }
             Some((false, _)) => value,
             None => {
@@ -104,9 +102,7 @@ impl Interpreter {
                 //    リテラルも同じで、`let L = [p]` は `p` を共有していた。
                 // ⚠ 式には引き継ぐべき属性が無いので `let → let` の共有には当たらない。
                 //    ⇒ 「共有するのは `let → let` のときだけ」の規則どおり複製する。
-                let copied = Self::deep_copy_value(value);
-                self.apply_freeze_to_value(&copied, true)?;
-                copied
+                self.frozen_copy(value)?
             }
         };
         // 案 B: `float` 注釈なら昇格する（VM の `Op::CoerceFloat` と同じ位置・同じ判断）。

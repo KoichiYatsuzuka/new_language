@@ -303,11 +303,7 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match src_mutable {
             // mut ソース: 深いコピーを作ってフリーズする。
-            Some(true) => {
-                let copied = Self::deep_copy_value(value);
-                self.apply_freeze_to_value(&copied, true)?;
-                Ok(copied)
-            }
+            Some(true) => self.frozen_copy(value),
             Some(false) => Ok(value),
             // 変数として存在しない名前は非識別子式と同じ扱いに落ちる。
             None => self.let_freeze_instance(value),
@@ -348,9 +344,7 @@ impl Interpreter {
         //    **同じ判断**でなければならない（片方だけ直すと経路で意味が変わる）。
         //    以前は `Instance` のときだけ複製しており、`let item = xs[0]` が
         //    `xs[0]` と共有されて `let` の不変性が破れていた（実測）。
-        let copied = Self::deep_copy_value(value);
-        self.apply_freeze_to_value(&copied, true)?;
-        Ok(copied)
+        self.frozen_copy(value)
     }
 
     /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。

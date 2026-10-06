@@ -423,11 +423,30 @@ impl Compiler {
             Stmt::LetTuple { targets, value, .. } => {
                 self.compile_let_tuple(stmt, targets, value)?;
             }
-            // `freeze x`（#27-c）。値をスタックに載せずに `exec_freeze` を呼ぶだけ。
+            // `freeze x`（#27-c）。`let x = x` と同じ結果にする（python_builtins_plan.md のタスク 1-9）。
+            // 名前の引き方は `store_target` と同じ順（セル → `static` → slot → それ以外）。
             Stmt::Freeze(name, span) => {
-                let ni = self.add_name(name);
-                let si = self.add_span(span);
-                self.emit(Op::FreezeVar(ni, si));
+                if self.cells.contains_key(name) {
+                    // クロージャが捕まえた変数（`exec_freeze` と同じ文言）。
+                    let n = self.add_name(&format!(
+                        "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
+                    ));
+                    self.emit(Op::Fail(n));
+                } else if self.statics.contains_key(name) {
+                    let n = self.add_name(&format!("{span}: TypeError: cannot freeze static variable '{name}'"));
+                    self.emit(Op::Fail(n));
+                } else if let Some(&slot) = self.slots.get(name) {
+                    // ⚠⚠ 関数の中の変数（slot）。以前は `FreezeVar` が名前でスコープを探し、slot に居る
+                    //   変数を見つけられず `NameError: 'c' is not defined` だった（関数の中の `freeze` が
+                    //   すべて動かなかった・例題が最上位でしか書いていなかった）。
+                    //   `let x = <mut 変数>` と同じ命令（深いコピーを不変にして書き戻す）。
+                    self.emit(Op::LoadLocal(slot));
+                    self.emit(Op::StoreLocalCopyFreeze(slot));
+                } else {
+                    let ni = self.add_name(name);
+                    let si = self.add_span(span);
+                    self.emit(Op::FreezeVar(ni, si));
+                }
             }
             // `src on/once handler` / `src off handler`（#27-c）。
             // 評価順（source → handler）はツリーウォークと同じ。
@@ -628,7 +647,7 @@ impl Compiler {
                 // リテラル（プリミティブ）は freeze 不要。
                 Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_)
                 | Expr::None => Op::StoreLocal(slot),
-                // 非識別子式: Instance のときのみ copy+freeze（exec_let 非 ident 分岐）。
+                // 非識別子式: 常に copy+freeze（exec_let 非 ident 分岐・L2。`frozen_copy`・タスク 1-9）。
                 _ => Op::StoreLocalFreezeInstance(slot),
             };
             self.compile_expr(e)?;
