@@ -8,6 +8,9 @@
     where `make_var_immutable` rewrites the variable itself, so `x` stays immutable for
     the rest of its lifetime.
   - ⚠ A class may define `fn __freeze__(mut self)`, which runs once at the `freeze`.
+  - ⚠ `freeze x` gives **the same result as `let x = x`** (task 1-9, one implementation
+    `frozen_copy`): `x` is rebound to a frozen **deep copy**, so other holders of the object
+    (e.g. a caller that passed it to a `mut` parameter) stay mutable. Works inside functions.
 - **`const` is immutable as a whole** (top-level, local, class, trait, enum member — implicitly — and an
   imported module's `const`). Assigning to it (`C.K = ..`, `c.K = ..`, `self.K = ..` even in `__init__`,
   `m.K = ..`) and writing into it (`C.L[0] = ..`, `c.L.append(..)`, `c.O.x = ..`, `m.L[0] = ..`) are static
@@ -80,6 +83,12 @@
   only inherit traits). `Exception` is the base of **every** exception, built-in or user-defined
   (task 10-19), so `except Exception` catches them all, as in Python. `except Error` is a static
   error pointing to `except Exception`.
+  - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
+    `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
+    `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
+- **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
+  Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is a
+  runtime error, exactly as the direct call `obj.method(..)` would be.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation
