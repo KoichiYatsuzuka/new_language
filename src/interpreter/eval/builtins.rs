@@ -834,18 +834,18 @@ impl Interpreter {
         let open_mode_int = extract_enum_int(
             get_arg(&pos, &kw, 1, "open_mode")
                 .ok_or("TypeError: open() missing required argument 'open_mode'")?,
-            "enum_item_FileOpenMode",
+            "FileOpenMode",
         )?;
         let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
-            .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
+            .map(|v| extract_enum_int(v, "StartPoint"))
             .transpose()?
             .unwrap_or(0);
         let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
-            .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
+            .map(|v| extract_enum_int(v, "ByteRecognizingMode"))
             .transpose()?
             .unwrap_or(1);
         let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
-            .map(|v| extract_enum_int(v, "enum_item_Encoding"))
+            .map(|v| extract_enum_int(v, "Encoding"))
             .transpose()?
             .unwrap_or(1);
         if enc_int == 3 {

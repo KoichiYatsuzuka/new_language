@@ -81,18 +81,18 @@ impl Interpreter {
             (Value::Undefined, Value::Undefined) => true,
 
             // ── インスタンス ──────────────────────────────────────────────────
-            // enum バリアント (class name が "enum_item_" で始まる) はフィールド値で比較する。
+            // enum のメンバー（`ClassValue::enum_of` が `Some`）は、同じ enum なら `value` で比較する。
             // それ以外のインスタンスは参照の同一性を先に確認し、
             // 一致しない場合は同じクラスかつ全フィールドが等値であれば真とする。
+            // ⚠ 「同じ enum か」は `hash_into` と同じく enum の名前で見る（別のモジュールの同名の
+            //   enum は区別しない。既存の挙動）。
             (Value::Instance(a), Value::Instance(b)) => {
                 if Rc::ptr_eq(a, b) {
                     return Ok(true);
                 }
                 let a_borrow = a.borrow();
                 let b_borrow = b.borrow();
-                if a_borrow.class.name.starts_with("enum_item_")
-                    && a_borrow.class.name == b_borrow.class.name
-                {
+                if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
                         inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))
                     };

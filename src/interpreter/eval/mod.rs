@@ -161,11 +161,12 @@ fn extract_path_str(val: &Value) -> Result<String, String> {
     }
 }
 
-/// enum インスタンスの整数値を取り出す。クラス名が一致しない場合はエラー。
-fn extract_enum_int(val: &Value, expected_class: &str) -> Result<i64, String> {
+/// enum `expected_enum` のメンバーの整数値を取り出す。そのメンバーでなければエラー。
+/// ⚠ メンバーかどうかは `ClassValue::enum_of` で見る（クラス名では見ない）。
+fn extract_enum_int(val: &Value, expected_enum: &str) -> Result<i64, String> {
     if let Value::Instance(inst_rc) = val {
         let inst = inst_rc.borrow();
-        if inst.class.name == expected_class {
+        if inst.class.enum_of.as_deref() == Some(expected_enum) {
             if let Some(&idx) = inst.class.field_index.get("value") {
                 if let Some(Value::Int(n)) = inst.field_value(idx) {
                     return Ok(n);
@@ -173,11 +174,11 @@ fn extract_enum_int(val: &Value, expected_class: &str) -> Result<i64, String> {
             }
         }
         return Err(format!(
-            "TypeError: expected {expected_class} instance, got instance of '{}'",
+            "TypeError: expected enum_item_{expected_enum} instance, got instance of '{}'",
             inst.class.name
         ));
     }
-    Err(format!("TypeError: expected {expected_class} instance"))
+    Err(format!("TypeError: expected enum_item_{expected_enum} instance"))
 }
 
 /// 位置引数とキーワード引数のどちらからでも値を取り出すヘルパー。

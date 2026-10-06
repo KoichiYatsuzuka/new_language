@@ -197,8 +197,10 @@ impl Interpreter {
                     return Ok(());
                 }
                 let inst = rc.borrow();
-                if inst.class.name.starts_with("enum_item_") {
-                    // enum バリアントは `values_eq` が `value` フィールドだけを見る。
+                if inst.class.enum_of.is_some() {
+                    // enum のメンバーは `values_eq` が `value` フィールドだけを見る。
+                    // ⚠ メンバーのクラス名は enum の名前から一意に決まるので、`enum_of` が等しい 2 値は
+                    //   書き込む名前も等しい（等値の判定とずれない）。
                     h.write_u8(Tag::EnumItem as u8);
                     h.write(inst.class.name.as_bytes());
                     match inst.class.field_index.get("value").and_then(|&i| inst.field_value(i)) {

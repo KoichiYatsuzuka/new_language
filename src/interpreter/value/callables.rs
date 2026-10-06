@@ -319,6 +319,15 @@ pub struct ClassValue {
     ///   混ざらないように）。型検査が付けた実行時の検査（`CheckBefore`）・`is` / `mustbe` にも
     ///   `tags.Tag` が来るので、`value_is_type` が `name` と合わせて突き合わせる。表示名（`name`）は変えない。
     pub module_name: Option<Rc<str>>,
+    /// **enum のメンバーのクラス**なら、その enum の名前（`enum Color` のメンバーなら `Color`）。
+    /// 通常のクラスと、メンバーを持つ enum のクラス自身は `None`。
+    ///
+    /// ⚠⚠ 「enum のメンバーか」は**この印だけで判定する**（等値・ハッシュ・`open()` の引数）。
+    ///   以前はクラス名の接頭辞 `enum_item_` で判定していたが、メンバーのクラス名を enum 名に
+    ///   揃えると名前では見分けられない（`implementation_plans/enum_member_type_plan.md`）。
+    /// ⚠ 等値（`values_eq_at`）とハッシュ（`hash_into`）は**同じ判定**を使うこと。
+    ///   ずれると「入れたのに引けない辞書」になる。
+    pub enum_of: Option<String>,
 }
 
 
@@ -381,6 +390,7 @@ impl ClassValue {
             raw_layout: None,
             instance_name: None,
             module_name: None,
+            enum_of: None,
         }
     }
 
@@ -473,6 +483,7 @@ impl ClassValue {
             instance_name: self.instance_name.clone(),
             // ⚠ `Rc` をスレッドへ持ち出さない（#15）。
             module_name: self.module_name.as_deref().map(Rc::from),
+            enum_of: self.enum_of.clone(),
         }
     }
 }

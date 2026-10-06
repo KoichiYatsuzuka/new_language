@@ -217,6 +217,7 @@ pub(super) fn make_builtin_enum_class(
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
+        enum_of: Some(name.to_string()),
         ..ClassValue::synthetic(item_cls_name.clone(), item_cls_id)
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録

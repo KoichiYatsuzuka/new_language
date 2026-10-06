@@ -507,6 +507,7 @@ impl Interpreter {
             field_index: HashMap::from([("value".to_string(), 0usize)]),
             field_count: 1,
             field_mutability_vec: vec![true],
+            enum_of: Some(name.to_string()),
             ..crate::interpreter::ClassValue::synthetic(item_type_name, item_cls_id)
         });
         // ⚠ ここで `declare_var` はしない（#68）。記憶域は呼び出し元が決める。
