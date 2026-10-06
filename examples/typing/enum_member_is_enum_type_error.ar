@@ -1,0 +1,36 @@
+# enum_member_is_enum_type_error.ar — enum のメンバーの型を enum 型にしたうえで、なお弾くもの
+#
+# 正常系は enum_member_is_enum_type.ar
+# 計画: implementation_plans/enum_member_type_plan.md
+#
+# ⚠ 別々の enum のメンバーは別の型のまま。比較も代入も弾く。
+# ⚠ メンバー（`BLUE`）は型の値（`Color`）からだけ、フィールド（`value`）はインスタンス
+#   （`Color` 型の値）からだけ引ける。以前は両方を同じ表で引いていたので、`m.PLANE` と
+#   `Color.value` が型検査を通って実行時に `AttributeError` になっていた（タスク 2-1）。
+# ⚠ `enum_item_Color` はソースから廃止した（メンバーの型は `Color`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  '==' between 'Color' and 'Shape' can never be true
+#   StaticTypeError  'o' is declared 'Color' but initialized with 'Shape'
+#   StaticTypeError  'Color' has no member 'PLANE'
+#   StaticTypeError  'Color' has no member 'value'
+#   StaticTypeError  unknown type 'enum_item_Color' in type guard; the branch can never match
+
+enum Color:
+    PLANE
+    BLUE
+
+enum Shape:
+    SQUARE
+
+let m: Color = Color.BLUE
+
+print(m == Shape.SQUARE)            # ⛔ 別の enum のメンバーとは比べられない
+
+let o: Color = Shape.SQUARE         # ⛔ 別の enum のメンバーは入らない
+
+print(m.PLANE)                      # ⛔ メンバーはインスタンスからは引けない
+
+print(Color.value)                  # ⛔ value は型の値からは引けない
+
+print(m is enum_item_Color)         # ⛔ enum_item_Color は廃止した名前

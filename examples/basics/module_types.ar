@@ -42,6 +42,9 @@ print(n, m)                       # 5 main box
 # モジュールの enum
 let lv = t.Level.High
 print(lv.value)                   # 1
+# メンバーの型は enum 型そのもの（t.Level）。注釈・比較・is がそのまま書ける
+let low: t.Level = t.Level.Low
+print(lv == t.Level.High, low is t.Level)   # True True
 
 # is / mustbe
 let x = make(7)

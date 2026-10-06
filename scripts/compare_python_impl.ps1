@@ -109,6 +109,7 @@ $knownDiff = @{
     'function_value_type_error'      = 'py: 関数値の型と分散規則の検査が無い（そのまま実行してしまう・タスク 2.2 で新設）'
     'enum_member_type'               = 'py: const クラス変数のクラス名経由アクセスが未対応（AttributeError になる・タスク 2.3 で新設）'
     'enum_member_type_error'         = 'py: enum .value の静的型が無い（int を str 変数へ入れて実行してしまう・タスク 2.3 で新設）'
+    'enum_member_is_enum_type_error' = 'Rust: 別の enum との比較・代入、インスタンスからのメンバー（m.PLANE）・型の値からの value・廃止した enum_item_Color を StaticTypeError（enum_member_type_plan.md 4-1 で新設）。py: 静的に検査せず実行して m.PLANE の AttributeError で止まる'
     'and_or_result_type_error'       = 'py: and/or の結果型検査が無い（bool 変数に int を入れて実行してしまう・タスク 2.5 で新設）'
     'collection_elem_synthesis'      = 'py: list 内の str の表示形式が違う（py は引用符を付けない・タスク 2.7 で新設）'
     'collection_elem_synthesis_error' = 'py: 混在リテラルの要素型合成が無い（list[int] へ混在を入れて実行してしまう・タスク 2.7 で新設）'

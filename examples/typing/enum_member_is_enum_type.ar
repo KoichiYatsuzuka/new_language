@@ -1,0 +1,83 @@
+# enum_member_is_enum_type.ar — enum のメンバーの型は enum 型そのもの（`Color.BLUE` の型は `Color`）
+#
+# 弾かれる例は enum_member_is_enum_type_error.ar
+# 計画: implementation_plans/enum_member_type_plan.md
+#
+# ## 何が壊れていたか
+#
+# メンバー（`Color.BLUE`）の型が、型検査でも実行時でも別の内部の型 `enum_item_Color` だった。
+# そのため **`Color` 型の値が 1 つも存在せず**、次がすべて失敗していた:
+#
+#   fn label(let c: Color) -> str:
+#       if c == Color.BLUE:          # StaticTypeError: '==' between 'Color' and
+#           ...                      #   'enum_item_Color' can never be true
+#   Color.BLUE is Color              # False
+#   Color.BLUE mustbe Color          # 実行時エラー（expected `Color`, got `enum_item_Color`）
+#   Pen(Color.BLUE)                  # `mut color: Color` のフィールドに入らない（実行時エラー）
+#
+# 発端は外部プロジェクトの `if c == ProofColor.BLUE:`（`c: ProofColor`）。
+#
+# ⚠ 注釈なしの `let k = Color.BLUE` 同士の比較だけは以前から通っていた（両辺が同じ
+#   `enum_item_Color` だった）。既存の例題はこの形しか書いておらず、ゲートが見逃していた。
+# ⚠ `enum_item_Color` はソースから廃止した（書くと静的エラー・エラー例題を参照）。
+
+enum Color:
+    PLANE
+    BLUE
+    RED
+
+print("=== enum 型の引数とメンバーを比べる ===")
+
+fn label(let c: Color) -> str:
+    if c == Color.BLUE:
+        return "blue"
+    elif c != Color.RED:
+        return "plane"
+    return "red"
+
+print(label(Color.BLUE))                # blue
+print(label(Color.PLANE))               # plane
+print(label(Color.RED))                 # red
+
+print("=== 注釈つきの let・逆向き・in ===")
+
+let m: Color = Color.BLUE
+print(m == Color.BLUE)                  # True
+print(Color.RED == m)                   # False
+print(m in [Color.PLANE, Color.BLUE])   # True
+let k = Color.BLUE                      # 注釈なしでも型は Color
+print(k == m)                           # True
+
+print("=== 型テスト: is / is の腕 / mustbe ===")
+
+print(m is Color)                       # True
+
+fn kind(let c: Color) -> str:
+    match (c):
+        is Color:
+            return "color"
+    return "?"
+
+print(kind(Color.PLANE))                # color
+let n = m mustbe Color
+print(n.value)                          # 1
+
+print("=== Color 型のフィールド・list[Color] ===")
+
+class Pen:
+    mut color: Color
+
+mut p = Pen(Color.BLUE)
+print(p.color.value)                    # 1
+p.color = Color.RED
+print(p.color == Color.RED)             # True
+let cs: list[Color] = [Color.RED, Color.PLANE]
+print(cs[0].value)                      # 2
+
+print("=== 組み込みの enum ===")
+
+let mode: FileOpenMode = FileOpenMode.read
+print(mode == FileOpenMode.read)        # True
+print(mode is FileOpenMode)             # True
+
+print("done")

@@ -23,6 +23,9 @@
 #   なので、以前は `class_and_subst` が `None` を返してメンバーが全部 `Unresolved` だった。
 #
 # 弾かれる例は enum_member_type_error.ar
+#
+# ⚠ ここで言う `enum_item_Color` は当時の内部の型名。今はメンバーの型は enum 型そのもの
+#   （`Color.Red` の型は `Color`）で、`enum_item_Color` は廃止した（enum_member_is_enum_type.ar）。
 
 print("=== .value は int ===")
 
@@ -36,7 +39,7 @@ print(n)                            # 1
 print(Color.Green.value)            # 2
 print(Color.Blue.value)             # 3   ← 自動採番は直前の値 +1
 
-print("=== メンバーの型は enum_item_<名前> ===")
+print("=== メンバーの型は enum 型そのもの ===")
 
 let m: Color = Color.Green
 print(m.value)                      # 2
