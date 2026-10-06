@@ -547,7 +547,11 @@ impl TypeChecker {
         if sigs.len() != 1 {
             return None; // オーバーロード
         }
-        let sig = &sigs[0];
+        Self::fn_type_of_sig(&sigs[0], 0)
+    }
+
+    /// シグネチャの**関数値としての型**（先頭の `skip` 個の仮引数を除く・束縛メソッドは `self` の 1 個）。
+    pub(super) fn fn_type_of_sig(sig: &super::types::FnSig, skip: usize) -> Option<InferredType> {
         // ⚠⚠ **可変長パラメータを持つ関数は型を作らない。** `FnTypeParam` は
         //    「個数が固定の引数列」しか表せないので、`f(... = 1, 2, 3)` を正しく検査できず
         //    `takes 0 argument(s) but 1 were given` という**嘘のエラー**になる（実測）。
@@ -560,6 +564,7 @@ impl TypeChecker {
             .iter()
             .zip(sig.param_mutable.iter())
             .enumerate()
+            .skip(skip)
             .map(|(i, ((pname, pty), pmut))| super::types::FnTypeParam {
                 name: pname.clone(),
                 mutable: *pmut,
@@ -571,6 +576,7 @@ impl TypeChecker {
         Some(InferredType::Function {
             params: Some(params),
             return_type: Box::new(sig.return_type.clone().unwrap_or(InferredType::Any)),
+            mutates_immutable: None,
         })
     }
 
@@ -818,7 +824,15 @@ impl TypeChecker {
         //      メソッド呼び出しに腕が無い）。`complex` は `real` / `imag` / `angle` だけ。
         //      `str` / `list` などのメソッドの有無はここでは決めない（表を二重に持つとずれる）。
         if let Some(type_name) = Self::builtin_value_type(&obj_ty) {
-            let known_method = is_callee && Self::builtin_may_have_method(&obj_ty, attr);
+            // 呼び出しの形は実行時に任せる（従来どおり）。**値として読む**形は、組み込みの値のメソッドの表
+            // （`names::BUILTIN_VALUE_METHODS`・実行時が束縛メソッドを作る表と同じ）にある名前だけ（タスク 1-11）。
+            let known_method = if is_callee {
+                Self::builtin_may_have_method(&obj_ty, attr)
+            } else {
+                Self::builtin_method_kinds(&obj_ty)
+                    .iter()
+                    .any(|k| super::names::is_builtin_value_method(k, attr))
+            };
             if !known_method {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NoSuchMember {
@@ -942,17 +956,111 @@ impl TypeChecker {
         // ⚠⚠ **型引数で置換する**（A-2）。レジストリのフィールド型は置換前（`T`）なので、
         //    `Box[int]` から引いたまま返すと `T` が使用箇所へ漏れ、0-2/0-3 の照合が
         //    `declared 'T'` という偽陽性を出す（実測）。
-        let resolved = match &class_subst {
-            Some((class, map)) => self
-                .registry
+        let field = class_subst.as_ref().and_then(|(class, map)| {
+            self.registry
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
                 .map(|(_, ty)| Self::subst_type_params(ty, map))
-                .unwrap_or(fallback),
-            None => fallback,
+        });
+        // メソッドを**値として**読む形（束縛メソッド・タスク 1-11）。フィールドが先（同名なら実行時もフィールド）。
+        let bound = if field.is_none() && !is_callee {
+            self.bound_method_type(object, &obj_ty, attr, class_subst.as_ref())
+        } else {
+            None
         };
+        let resolved = field.or(bound).unwrap_or(fallback);
         self.annotations.set_resolved(node_id, resolved.clone());
         resolved
+    }
+
+    /// `obj.method` を**値として**読んだときの型（束縛メソッド・python_builtins_plan.md のタスク 1-11）。
+    ///
+    /// - クラスのメソッド: 多重定義が 1 つなら `self` を除いたシグネチャの関数型（型引数は置換する）、
+    ///   多重定義・可変長ならシグネチャ未確定の関数型（`function`）
+    /// - 組み込みの値のメソッド（`xs.append`）: シグネチャ未確定の関数型。戻り値は分かるものだけ
+    /// - **受け手が不変**（パスの根が `let` / `freeze`）で、メソッドが受け手を書き換える（`mut self` /
+    ///   `MUTATING_COLLECTION_METHODS`）なら `mutates_immutable` を付ける。呼ぶと `MutatingMethodOnImmutable`
+    ///   （`c.add(1)` と同じ誤り）。束縛すること自体は誤りにしない
+    /// - クラスの値から読む `C.m` は束縛しない関数なので対象外（`None`）
+    fn bound_method_type(
+        &mut self,
+        object: &Expr,
+        obj_ty: &InferredType,
+        attr: &str,
+        class_subst: Option<&(String, std::collections::HashMap<String, InferredType>)>,
+    ) -> Option<InferredType> {
+        // ⚠ 要るときだけ引く（`path_is_mutable` は経路の `const` を見るので `&mut self`）。
+        let immutable_root = |this: &mut Self| {
+            (this.path_is_mutable(object) == Some(false))
+                .then(|| Self::path_root_ident(object).unwrap_or("").to_string())
+        };
+        let kinds = Self::builtin_method_kinds(obj_ty);
+        if !kinds.is_empty() {
+            if !kinds.iter().any(|k| super::names::is_builtin_value_method(k, attr)) {
+                return None;
+            }
+            let mutates = Self::MUTATING_COLLECTION_METHODS.contains(&attr)
+                && !matches!(obj_ty, InferredType::Str | InferredType::IteratorOf(_));
+            return Some(InferredType::Function {
+                params: None,
+                return_type: Box::new(
+                    Self::builtin_collection_method_return(obj_ty, attr).unwrap_or(InferredType::Unresolved),
+                ),
+                mutates_immutable: if mutates {
+                    immutable_root(self).map(|root| Box::new((attr.to_string(), root)))
+                } else {
+                    None
+                },
+            });
+        }
+        if matches!(obj_ty, InferredType::TypeValOf(_)) {
+            return None;
+        }
+        let (class, map) = class_subst?;
+        let sigs = self.collect_class_method_sigs(class).remove(attr)?;
+        if self.registry.is_static_method(class, attr) {
+            return None;
+        }
+        let skip = usize::from(sigs[0].params.first().is_some_and(|(n, _)| n == "self"));
+        let ty = match sigs.as_slice() {
+            [sig] => Self::fn_type_of_sig(sig, skip),
+            _ => None,
+        }
+        .map(|t| Self::subst_type_params(&t, map))
+        .unwrap_or(InferredType::Function {
+            params: None,
+            return_type: Box::new(InferredType::Unresolved),
+            mutates_immutable: None,
+        });
+        let mutates = Self::all_sigs_mutate_self(&sigs);
+        Some(match ty {
+            InferredType::Function { params, return_type, .. } => InferredType::Function {
+                params,
+                return_type,
+                mutates_immutable: if mutates {
+                    immutable_root(self).map(|root| Box::new((attr.to_string(), root)))
+                } else {
+                    None
+                },
+            },
+            other => other,
+        })
+    }
+
+    /// 組み込みの値のメソッドの表（`names::BUILTIN_VALUE_METHODS`）を引く種類の名前。`list_like` は
+    /// 実行時に list か fixed_list なので両方。メソッドを読めない型は空。
+    fn builtin_method_kinds(ty: &InferredType) -> &'static [&'static str] {
+        use InferredType as T;
+        match ty {
+            T::Str => &["str"],
+            T::List | T::ListOf(_) => &["list"],
+            T::FixedList | T::FixedListOf(_) => &["fixed_list"],
+            T::ListLike | T::ListLikeOf(_) => &["list", "fixed_list"],
+            T::Dict | T::DictOf(_, _) => &["dict"],
+            T::Set | T::SetOf(_) => &["set"],
+            T::IteratorOf(_) => &["generator"],
+            _ => &[],
+        }
     }
 
     /// `class_name` が `member` を持つか（タスク 7.5・検体 `M1` / `M2`）。
@@ -1498,7 +1606,7 @@ impl TypeChecker {
                 guard_type: guard_type.to_string(),
                 outer_type: "tuple".to_string(),
             }),
-            InferredType::Function { params, return_type } => {
+            InferredType::Function { params, return_type, .. } => {
                 let has_params = params.as_ref().is_some_and(|p| !p.is_empty());
                 let has_ret = **return_type != InferredType::Any;
                 if has_params || has_ret {

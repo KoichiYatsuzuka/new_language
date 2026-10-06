@@ -150,6 +150,44 @@ pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("UserWarning", "Warning"),
 ];
 
+/// 組み込みの値の**メソッドの名前**（実行時の `eval_method_call_full` の腕・python_builtins_plan.md のタスク 1-10）。
+///
+/// 値として読める名前の表（`xs.append` / `s.upper` は受け手を束縛した関数になる）。実行時（束縛メソッドを
+/// 作るか・`eval/attrs.rs`）と型検査（読みの存在検査・`infer_attr`）が同じ表を読む。種類の名前は実行時の
+/// `runtime_type_name`（`list` / `fixed_list` / …）。
+/// ⚠ 実行時のメソッドの腕を足したら**ここにも足す**。テスト `builtin_value_methods_are_dispatched` が
+///   表の名前を実際に呼んで「無いメソッド」の誤りにならないことを確かめる（逆向きは見ない）。
+/// ⚠ `complex` の `real` / `imag` / `angle` は載せない（CPython では値の属性。読むと値が返ると期待される）。
+pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
+    (
+        "str",
+        &[
+            "__iter__", "capitalize", "center", "chars", "contains", "count", "encode", "endswith",
+            "expandtabs", "find", "findall", "format", "index", "isalnum", "isalpha", "isascii", "isdigit",
+            "islower", "isnumeric", "isprintable", "isspace", "isupper", "join", "ljust", "lower", "lstrip",
+            "match", "ord", "partition", "regex_split", "removeprefix", "removesuffix", "replace", "rfind",
+            "rindex", "rjust", "rpartition", "rsplit", "rstrip", "search", "split", "splitlines", "startswith",
+            "strip", "sub", "swapcase", "title", "upper", "zfill",
+        ],
+    ),
+    ("list", &["__iter__", "append", "pop", "sort"]),
+    ("dict", &["__iter__", "item", "items", "key", "keys", "values"]),
+    (
+        "set",
+        &[
+            "__iter__", "add", "clear", "copy", "difference", "discard", "intersection", "issubset",
+            "issuperset", "pop", "remove", "symmetric_difference", "union",
+        ],
+    ),
+    ("fixed_list", &["__contains__", "__iter__", "allocated_size", "append"]),
+    ("generator", &["__iter__", "close", "next"]),
+];
+
+/// `kind`（実行時の型の名前）の値が `name` というメソッドを持つか（[`BUILTIN_VALUE_METHODS`]）。
+pub(crate) fn is_builtin_value_method(kind: &str, name: &str) -> bool {
+    BUILTIN_VALUE_METHODS.iter().any(|(k, ms)| *k == kind && ms.contains(&name))
+}
+
 /// CPython で `OSError` と同じクラスを指す名前（[`BUILTIN_EXCEPTIONS`] の doc）。
 const OSERROR_ALIASES: [&str; 3] = ["IOError", "EnvironmentError", "WindowsError"];
 

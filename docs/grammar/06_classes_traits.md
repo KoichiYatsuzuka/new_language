@@ -526,10 +526,17 @@ print(c.get == c.get)                # True（同じ受け手の同じメソッ�
 - アクセス制御は**読んだ時点で**見ます（クラスの中で `self._key` を取り出してコールバックに渡せば、外で呼ばれても通る）。
 - 表示は `<bound method Counter.add of <Counter object at 0x..>>`。シグナルの `off` も同じ照合で外れます。
 - クラスから読む `C.method` は従来どおり束縛しない関数です（`C.method(obj, ..)` で呼ぶ）。
-- 実装: `FnValue::bound`（`BoundMethod { receiver, methods }`）。呼ぶと `exec_fn_evaled` の入口で
-  `call_bound_method` へ回ります（`Value` に種類は足していません）。
-- ⚠ まだ: 型検査は `c.add` を型なしで通します（引数・戻り値を見ない）。gen メソッドと組み込みの値のメソッド
-  （`xs.append`）は束縛できません。
+- `gen` メソッドも読めます（呼ぶとジェネレータ）。組み込みの値のメソッドも読めます（`push = out.append` /
+  `"s".upper` / `d.items` / `seen.add`。同じ値を書き換えます）。読める名前は `type_check/names.rs` の
+  `BUILTIN_VALUE_METHODS`（`complex` の `real` などは読めません）。表示は `<built-in method append of list object at 0x..>`。
+- **型**: `c.add` は `self` を除いたシグネチャの関数型（`function{let k: int}->int`）で、引数・戻り値を静的に検査します
+  （多重定義・可変長のメソッドは型引数なしの `function`）。⚠ 異なる関数型どうしの `==` は静的な誤りです。
+- **不変の受け手**: 型検査は「不変の受け手を書き換える」印を関数型に付け、**呼んだ行**を
+  `cannot call 'add' on 'c' — it is immutable`（`c.add(1)` と同じ誤り）にします。束縛した行は誤りにしません。
+  型検査が追えない渡し方（関数の引数に渡して中で呼ぶ）でも、インスタンスは実行時に止まります。⚠ list / dict / set は
+  実行時の不変の印を持たないので、そこは止まりません。
+- 実装: `FnValue::bound`（`BoundMethod { receiver, target }`・`target` は `Methods` / `Gen` / `Builtin`）。呼ぶと
+  `exec_fn_evaled` の入口で `call_bound_method` へ回ります（`Value` に種類は足していません）。
 
 ---
 

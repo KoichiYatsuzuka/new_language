@@ -352,17 +352,27 @@ impl TypeChecker {
                 .as_deref()
                 .is_some_and(|n| self.registry.fn_sigs(n).is_some());
         if !direct_fn_call {
+        // 束縛メソッドが不変の受け手を書き換える（`let c` の `let add = c.add` の後の `add(1)`・タスク 1-11）。
+        // `c.add(1)` を直接書いたのと同じ誤り。束縛すること自体は誤りにしない。
+        if let InferredType::Function { mutates_immutable: Some(m), .. } = &func_type {
+            let (method, root_name) = (**m).clone();
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::MutatingMethodOnImmutable { method, root_name },
+                span: None,
+            });
+        }
         match func_type {
             InferredType::Function {
                 params: Some(fn_params),
                 return_type,
+                ..
             } => {
                 let fname = func_name.as_deref().unwrap_or("<function>").to_string();
                 let ret = *return_type;
                 self.check_fn_type_call(&fname, args, &arg_data, &fn_params);
                 return ret;
             }
-            InferredType::Function { params: None, return_type } => {
+            InferredType::Function { params: None, return_type, .. } => {
                 return *return_type;
             }
             // ── 型値の呼び出し＝変換（タスク 2.4 / 決定 D-6）────────────────────
@@ -952,7 +962,8 @@ impl TypeChecker {
             //   `fn adder[T](..) -> function[T]->T` の `adder[int](1)` が `function[T]->T` のまま
             //   外へ出て、`f(2)` が「`T` を期待したのに `int`」という偽のエラーになっていた（実測）。
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
-            T::Function { params, return_type } => T::Function {
+            T::Function { params, return_type, mutates_immutable } => T::Function {
+                mutates_immutable: mutates_immutable.clone(),
                 params: params.as_ref().map(|ps| {
                     ps.iter()
                         .map(|p| FnTypeParam {
@@ -1587,7 +1598,7 @@ impl TypeChecker {
     /// `Any` 止まりになり、`k + str(v)` のような普通の式が明示ダウンキャストを要求される。
     ///
     /// ⚠ 判らないものは `None`（従来どおり）。ここで嘘の型を返さないこと。
-    fn builtin_collection_method_return(
+    pub(super) fn builtin_collection_method_return(
         recv_ty: &InferredType,
         method: &str,
     ) -> Option<InferredType> {

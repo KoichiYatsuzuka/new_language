@@ -42,4 +42,4 @@ let byweight = Weight(-1)
 print(sorted(["bb", "a", "ccc"], key=byweight.score))   # ['ccc', 'bb', 'a']
 
 print("=== equality ===")
-print(c.get == c.get, c.get == c.add)           # True False
+print(c.get == c.get, c.add == c.add)           # True True（異なる関数型どうしの == は静的な誤り）

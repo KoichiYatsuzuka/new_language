@@ -403,6 +403,7 @@ impl TypeChecker {
                             InferredType::Function {
                                 params: None,
                                 return_type: Box::new(ret),
+                                mutates_immutable: None,
                             },
                         );
                         continue;
@@ -427,6 +428,7 @@ impl TypeChecker {
                         InferredType::Function {
                             params: Some(fn_params),
                             return_type: Box::new(ret),
+                            mutates_immutable: None,
                         },
                     );
                 }

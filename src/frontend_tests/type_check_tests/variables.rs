@@ -563,6 +563,40 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
     }
 
+    /// 束縛メソッドには型が付く（タスク 1-11）: `self` を除いたシグネチャの関数型で、引数・戻り値を検査する。
+    /// 不変の受け手を書き換えるメソッドは、束縛はできるが呼ぶと `MutatingMethodOnImmutable`（直接呼ぶのと同じ）。
+    /// 組み込みの値のメソッドは表にある名前だけ読める。
+    #[test]
+    fn bound_methods_are_typed() {
+        let class = concat!(
+            "class Counter:\n",
+            "    mut n: int\n",
+            "    fn add(mut self, let k: int) -> int:\n",
+            "        self.n = self.n + k\n",
+            "        return self.n\n",
+            "    fn get(self) -> int:\n",
+            "        return self.n\n",
+        );
+        let ok_src = format!(
+            "{class}mut c = Counter(1)\nlet g = c.get\nlet x: int = g()\nlet a = c.add\nlet y = a(2)\nlet fixed = Counter(2)\nlet fa = fixed.add\nmut xs: list[int] = []\nlet push = xs.append\npush(1)\nlet up = \"s\".upper\n"
+        );
+        assert!(ok(&ok_src), "{:?}", check(&ok_src));
+        assert!(err(&format!("{class}mut c = Counter(1)\nlet g = c.get\nlet s: str = g()\n")));
+        assert!(err(&format!("{class}mut c = Counter(1)\nlet a = c.add\nlet y = a(\"x\")\n")));
+        let errs = check(&format!("{class}let fixed = Counter(2)\nlet fa = fixed.add\nlet r = fa(1)\n"));
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::MutatingMethodOnImmutable { .. })),
+            "{errs:?}"
+        );
+        let errs = check("let ys: list[int] = [1]\nlet p = ys.append\np(2)\n");
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::MutatingMethodOnImmutable { .. })),
+            "{errs:?}"
+        );
+        let errs = check("mut zs: list[int] = [1]\nlet f = zs.no_such\n");
+        assert!(errs.iter().any(|e| matches!(e.kind, TypeErrorKind::NoSuchMember { .. })), "{errs:?}");
+    }
+
     /// `except m.Err:`（タスク 4-3）も知らない名前なら「腕が永久に死ぬ」誤り。
     #[test]
     fn dotted_except_type_must_be_known() {

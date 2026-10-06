@@ -196,6 +196,7 @@ impl TypeChecker {
                 InferredType::Function {
                     params: None,
                     return_type: Box::new(InferredType::Any),
+                    mutates_immutable: None,
                 },
             ),
         ];

@@ -444,7 +444,15 @@ This is answered in `class_implements_trait` rather than by adding `Error → Ex
 table (that would make a cycle other base walkers don't guard against). ⚠ A class whose bases reach
 `BaseException` (the built-in hierarchy) is answered from the table alone, so `GeneratorExit` is not an
 `Exception`. `except m.Err as e` binds `e` with the name resolved to the module's qualified name; an
-unknown `except` type is not reported while imports are unloaded (`registry_incomplete`, the editor). The runtime counterpart is
+unknown `except` type is not reported while imports are unloaded (`registry_incomplete`, the editor).
+
+Bound methods (python_builtins_plan.md 1-10): reading `obj.m` as a value (not the callee) is typed by
+`bound_method_type` — the single signature without `self` (`fn_type_of_sig(sig, 1)`, type parameters
+substituted), `function` for overloads; methods of built-in values are allowed only if listed in
+`names::BUILTIN_VALUE_METHODS` (otherwise `NoSuchMember`). When the receiver's path root is immutable and the
+method mutates it (`all_sigs_mutate_self` / `MUTATING_COLLECTION_METHODS`), the function type carries
+`mutates_immutable: Some((method, root))`; calling such a value reports `MutatingMethodOnImmutable`
+(binding it does not). The runtime counterpart is
 `ClassValue::is_a` (`except` matching, `x is T`, field checks). `except Error` is rejected with
 `ExceptOnErrorTrait` ("write `except Exception`").
 

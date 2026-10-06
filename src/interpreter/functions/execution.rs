@@ -856,8 +856,16 @@ impl Interpreter {
         evaled: &[(Option<String>, Value, bool)],
         call_span: Option<Span>,
     ) -> Result<Value, String> {
+        use crate::interpreter::value::BoundTarget;
         let receiver = bound.receiver.clone();
-        let method_name = bound.methods[0].name.clone();
+        let methods = match &bound.target {
+            BoundTarget::Methods(m) => m,
+            // `gen` メソッドは `obj.gen_m(..)` と同じく不変性で振り分けない（直接呼びも振り分けない）。
+            BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver)),
+            // 組み込みの値のメソッドは名前で同じ入口へ（`xs.append(..)` と同じ・タスク 1-10）。
+            BoundTarget::Builtin(name) => return self.eval_method_call_full(receiver, name, evaled.to_vec(), None),
+        };
+        let method_name = methods[0].name.clone();
         if let Value::Instance(inst_rc) = &receiver {
             let class = inst_rc.borrow().class.clone();
             if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, &method_name).is_some() {
@@ -872,8 +880,7 @@ impl Interpreter {
                 }
             }
             if inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
-                let callable: Vec<Rc<FnValue>> = bound
-                    .methods
+                let callable: Vec<Rc<FnValue>> = methods
                     .iter()
                     .filter(|f| f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true))
                     .cloned()
@@ -887,7 +894,7 @@ impl Interpreter {
                 return self.run_bound_candidates(callable, evaled, receiver, &method_name, call_span);
             }
         }
-        self.run_bound_candidates(bound.methods.clone(), evaled, receiver, &method_name, call_span)
+        self.run_bound_candidates(methods.clone(), evaled, receiver, &method_name, call_span)
     }
 
     fn run_bound_candidates(

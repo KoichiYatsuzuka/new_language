@@ -146,6 +146,7 @@ pub(super) fn fn_type(name: &str) -> Option<InferredType> {
         t.fns.get(name).map(|f| InferredType::Function {
             params: Some(f.params.clone()),
             return_type: Box::new(f.ret.clone().unwrap_or(InferredType::Unresolved)),
+            mutates_immutable: None,
         })
     })
 }

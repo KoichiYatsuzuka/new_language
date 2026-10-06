@@ -217,7 +217,8 @@ impl TypeChecker {
             T::Union(ts) => T::Union(ts.iter().map(|t| self.canon_type(t)).collect()),
             T::Intersection(ts) => T::Intersection(ts.iter().map(|t| self.canon_type(t)).collect()),
             T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.canon_type(t)).collect()),
-            T::Function { params, return_type } => T::Function {
+            T::Function { params, return_type, mutates_immutable } => T::Function {
+                mutates_immutable: mutates_immutable.clone(),
                 params: params.as_ref().map(|ps| {
                     ps.iter()
                         .map(|p| super::types::FnTypeParam { ty: self.canon_type(&p.ty), ..p.clone() })
@@ -471,8 +472,8 @@ impl TypeChecker {
         // ⚠ **引数は反変・戻り値は共変**（D-13）。引数を共変にすると
         //    `let f: function[Any]->int = narrow`（narrow は int を受ける）が通り、
         //    `f("s")` で int 宣言の引数へ str が渡る（不健全）。
-        if let InferredType::Function { params: e_params, return_type: e_ret } = expected {
-            if let InferredType::Function { params: a_params, return_type: a_ret } = arg_ty {
+        if let InferredType::Function { params: e_params, return_type: e_ret, .. } = expected {
+            if let InferredType::Function { params: a_params, return_type: a_ret, .. } = arg_ty {
                 // 戻り値は共変（`Any` が期待なら何でも通る）
                 if !self.type_matches_exact(a_ret, e_ret) {
                     return false;

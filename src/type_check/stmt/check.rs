@@ -591,6 +591,7 @@ impl TypeChecker {
                                 .and_then(InferredType::from_ann)
                                 .unwrap_or(InferredType::Unresolved),
                         ),
+                        mutates_immutable: None,
                     }
                 };
                 self.declare(name.clone(), ty, false);
@@ -1691,7 +1692,7 @@ impl TypeChecker {
             }
             // ⚠ 関数型・イテレータ型の内側も見る（タスク 2-15。`function[T]->T` を取りこぼしていた）。
             InferredType::IteratorOf(t) => self.mentions_type_param(t),
-            InferredType::Function { params, return_type } => {
+            InferredType::Function { params, return_type, .. } => {
                 params.iter().flatten().any(|p| self.mentions_type_param(&p.ty))
                     || self.mentions_type_param(return_type)
             }

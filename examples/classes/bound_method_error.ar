@@ -3,11 +3,13 @@
 #
 # 対になる正常系: bound_method.ar
 #
-# 期待されるエラー（実行時）:
-#   TypeError: cannot call mutable method 'add' on immutable instance of 'Counter'
+# 期待されるエラー（静的・呼んだ行）:
+#   StaticTypeError: cannot call 'add' on 'c' — it is immutable
 #
 # ⚠ 束縛すること（let add = c.add）は誤りにしない。書き換えが起きるのは呼んだときだけ。
-#   呼べば c.add(1) を直接書いたのと同じ判定で止まる（let の束縛は実行時にも不変の印を持つ）。
+#   呼べば c.add(1) を直接書いたのと同じ誤り（型検査は add の型に「不変の c を書き換える」印を付ける・タスク 1-11）。
+# ⚠ 型検査が追えない渡し方（関数の引数に渡して中で呼ぶ・Python のコード）でも、実行時に同じ判定で止まる:
+#   TypeError: cannot call mutable method 'add' on immutable instance of 'Counter'（let の束縛は実行時にも不変の印を持つ）
 
 class Counter:
     mut n: int

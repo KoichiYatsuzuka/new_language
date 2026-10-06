@@ -207,53 +207,101 @@ pub struct FnValue {
     pub bound: Option<Rc<BoundMethod>>,
 }
 
-/// 束縛メソッドの中身（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8）。
+/// 束縛メソッドの中身（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8 / 1-10）。
 ///
-/// `FnValue::bound` が持つ。受け手とメソッドの実体（オーバーロードなら全部）を**読んだ時点で**
-/// 引いて持つ（CPython の束縛メソッドが `__self__` と `__func__` を持つのと同じ）。
+/// `FnValue::bound` が持つ。受け手と呼び先を**読んだ時点で**決めて持つ（CPython の束縛メソッドが
+/// `__self__` と `__func__` を持つのと同じ）。
 #[derive(Debug)]
 pub struct BoundMethod {
-    /// 受け手（`self` になるインスタンス）。
+    /// 受け手（`self` になるインスタンス・組み込みの値）。
     pub receiver: Value,
-    /// メソッドの実体（1 つ以上・オーバーロードなら宣言順に全部）。
-    pub methods: Vec<Rc<FnValue>>,
+    /// 呼び先。
+    pub target: BoundTarget,
+}
+
+/// 束縛メソッドの呼び先。
+#[derive(Debug)]
+pub enum BoundTarget {
+    /// クラスのメソッドの実体（1 つ以上・オーバーロードなら宣言順に全部）。
+    Methods(Vec<Rc<FnValue>>),
+    /// クラスの `gen` メソッド（呼ぶとジェネレータ・タスク 1-10）。
+    Gen(Rc<GeneratorFnValue>),
+    /// 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）。名前で
+    /// `eval_method_call_full` へ回す。読める名前は `type_check::names::BUILTIN_VALUE_METHODS`。
+    Builtin(String),
+}
+
+impl BoundTarget {
+    /// 呼び先の同一性（等値・ハッシュ）。組み込みのメソッドは名前で比べるので `None`。
+    fn ptr(&self) -> Option<*const ()> {
+        match self {
+            BoundTarget::Methods(m) => Some(Rc::as_ptr(&m[0]) as *const ()),
+            BoundTarget::Gen(g) => Some(Rc::as_ptr(g) as *const ()),
+            BoundTarget::Builtin(_) => None,
+        }
+    }
+}
+
+/// 受け手の同一性のポインタ（参照で持つ値だけ。値で持つものは `None`）。
+fn receiver_ptr(v: &Value) -> Option<*const ()> {
+    match v {
+        Value::Instance(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::List(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::Dict(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::Set(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::Generator(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::FrozenList { state, .. } => Some(Rc::as_ptr(state) as *const ()),
+        Value::Str(s) => Some(Rc::as_ptr(s) as *const u8 as *const ()),
+        _ => None,
+    }
 }
 
 impl FnValue {
-    /// 束縛メソッドの値を作る（タスク 1-8）。
+    /// 束縛メソッドの値を作る（タスク 1-8 / 1-10）。
     ///
-    /// 返すのは**本体を持たない包み**で、呼ぶと `exec_fn_evaled` の入口で `methods` へ回り、
-    /// `receiver` が `self` になる（`obj.method(..)` と同じ実行・コンパイル済みの本体もそのまま使う）。
+    /// 返すのは**本体を持たない包み**で、呼ぶと `exec_fn_evaled` の入口で
+    /// `Interpreter::call_bound_method` へ回り、`receiver` が `self` になる（`obj.method(..)` と同じ実行）。
     /// 名前・仮引数（`self` を除く）・戻り値の注釈は表示と内省のために写す。
-    pub(crate) fn bind(receiver: Value, methods: Vec<Rc<FnValue>>) -> Rc<FnValue> {
-        let first = methods[0].clone();
-        let params = first
-            .params
-            .iter()
-            .skip(usize::from(first.params.first().is_some_and(|p| p.name == "self")))
-            .cloned()
-            .collect();
+    pub(crate) fn bind(receiver: Value, target: BoundTarget) -> Rc<FnValue> {
+        let (name, params, is_python, return_type, globals) = match &target {
+            BoundTarget::Methods(m) => {
+                let f = &m[0];
+                (f.name.clone(), Self::params_without_self(&f.params), f.is_python, f.return_type.clone(), f.globals)
+            }
+            BoundTarget::Gen(g) => (g.name.clone(), Self::params_without_self(&g.params), false, None, g.globals),
+            BoundTarget::Builtin(n) => (n.clone(), Vec::new(), false, None, GLOBALS_OF_CALLER),
+        };
         Rc::new(FnValue {
-            name: first.name.clone(),
+            name,
             params,
             body: Rc::from(Vec::<Stmt>::new()),
-            is_python: first.is_python,
+            is_python,
             captured_env: HashMap::new(),
-            return_type: first.return_type.clone(),
+            return_type,
             vm_chunk: None,
-            globals: first.globals,
+            globals,
             owner_class: None,
-            bound: Some(Rc::new(BoundMethod { receiver, methods })),
+            bound: Some(Rc::new(BoundMethod { receiver, target })),
         })
     }
 
-    /// 等値・ハッシュに使う**同一性のポインタ**。束縛メソッドはメソッドの実体、それ以外は自分自身。
+    fn params_without_self(params: &[Param]) -> Vec<Param> {
+        params
+            .iter()
+            .skip(usize::from(params.first().is_some_and(|p| p.name == "self")))
+            .cloned()
+            .collect()
+    }
+
+    /// 等値・ハッシュに使う**同一性のポインタ**。束縛メソッドは呼び先（組み込みのメソッドは受け手）、
+    /// それ以外は自分自身。
     ///
     /// ⚠ 束縛メソッドは読むたびに作り直すので、自分自身のポインタでは `c.get == c.get` が偽になる
-    ///   （CPython は真）。等値（`same_binding`）とハッシュの規則を揃えるためにここで決める。
+    ///   （CPython は真）。等値（`same_binding`）とハッシュの規則を揃えるためにここで決める
+    ///   （`same_binding` が真なら同じポインタを返す）。
     pub(crate) fn identity_ptr(self: &Rc<Self>) -> *const () {
         match &self.bound {
-            Some(b) => Rc::as_ptr(&b.methods[0]) as *const (),
+            Some(b) => b.target.ptr().or_else(|| receiver_ptr(&b.receiver)).unwrap_or(std::ptr::null()),
             None => Rc::as_ptr(self) as *const (),
         }
     }
@@ -263,11 +311,15 @@ impl FnValue {
         let (Some(x), Some(y)) = (&a.bound, &b.bound) else {
             return false;
         };
-        let same_receiver = match (&x.receiver, &y.receiver) {
-            (Value::Instance(p), Value::Instance(q)) => Rc::ptr_eq(p, q),
+        let same_receiver = match (receiver_ptr(&x.receiver), receiver_ptr(&y.receiver)) {
+            (Some(p), Some(q)) => p == q,
             _ => false,
         };
-        same_receiver && Rc::ptr_eq(&x.methods[0], &y.methods[0])
+        let same_target = match (&x.target, &y.target) {
+            (BoundTarget::Builtin(m), BoundTarget::Builtin(n)) => m == n,
+            (s, t) => s.ptr().is_some() && s.ptr() == t.ptr(),
+        };
+        same_receiver && same_target
     }
 }
 

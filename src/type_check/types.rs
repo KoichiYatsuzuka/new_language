@@ -366,6 +366,13 @@ pub enum InferredType {
         params: Option<Vec<FnTypeParam>>,
         /// 戻り値の型。
         return_type: Box<InferredType>,
+        /// 束縛メソッド（`c.add` を値として読んだもの）が**不変の受け手を書き換える**とき
+        /// `(メソッドの名前, 受け手の根の名前)`（python_builtins_plan.md のタスク 1-11）。
+        ///
+        /// 呼ぶと `MutatingMethodOnImmutable`（`c.add(1)` を直接書いたのと同じ誤り）。束縛すること
+        /// 自体は誤りにしない（関数の値が不変であることと、その関数が受け手を書き換えることは別の話）。
+        /// それ以外の関数型は `None`。
+        mutates_immutable: Option<Box<(String, String)>>,
     },
 }
 
@@ -402,7 +409,7 @@ impl InferredType {
                     t.for_each_type(f);
                 }
             }
-            Self::Function { params, return_type } => {
+            Self::Function { params, return_type, .. } => {
                 for p in params.iter().flatten() {
                     p.ty.for_each_type(f);
                 }
@@ -803,6 +810,7 @@ impl InferredType {
         Some(Self::Function {
             params,
             return_type: Box::new(return_type),
+            mutates_immutable: None,
         })
     }
 
@@ -892,6 +900,7 @@ impl std::fmt::Display for InferredType {
             Self::Function {
                 params,
                 return_type,
+                ..
             } => {
                 match params {
                     None => write!(f, "function")?,

@@ -654,3 +654,78 @@ fn test_bound_methods() {
     );
     assert!(run_err_msg(immutable).contains("cannot call mutable method 'add' on immutable instance of 'Counter'"));
 }
+
+/// `gen` メソッドと組み込みの値のメソッドも束縛できる（タスク 1-10）。組み込みの値のメソッドは同じ値を書き換え、
+/// 同じ受け手の同じ名前は等しい。
+#[test]
+fn test_bound_gen_and_builtin_methods() {
+    let src = concat!(
+        "class Bag:\n",
+        "    let xs: list[int]\n",
+        "    gen each(self) -> int:\n",
+        "        for x in self.xs:\n",
+        "            yield x * 10\n",
+        "let bag = Bag([1, 2])\n",
+        "let each = bag.each\n",
+        "let gens = str(list(each()))\n",
+        "mut out: list[int] = []\n",
+        "let push = out.append\n",
+        "push(7)\n",
+        "let pushed = str(out)\n",
+        "let up = \"ab\".upper\n",
+        "let upper = up()\n",
+        "let same = out.append == out.append\n",
+        "let shown = str(out.append)\n",
+    );
+    assert_str(run_get(src, "gens"), "[10, 20]");
+    assert_str(run_get(src, "pushed"), "[7]");
+    assert_str(run_get(src, "upper"), "AB");
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    let Value::Str(s) = run_get(src, "shown") else { panic!("not a str") };
+    assert!(s.starts_with("<built-in method append of list object at 0x"), "{s}");
+}
+
+/// 組み込みの値のメソッドの表（`names::BUILTIN_VALUE_METHODS`）の名前は、実行時のメソッドの入口が
+/// **知っている**（「無いメソッド」の誤りにならない）。表だけに足して実行時に無い名前を作らないための検査。
+/// ⚠ 逆向き（実行時にあるのに表に無い）は見ない。足し忘れは値として読めないだけで、黙って壊れはしない。
+#[test]
+fn builtin_value_methods_are_dispatched() {
+    let src = concat!(
+        "class V:\n",
+        "    mut x: float\n",
+        "mut st = \"a b\"\n",
+        "mut li = [1, 2]\n",
+        "mut di = {\"a\": 1}\n",
+        "mut se = {1, 2}\n",
+        "mut fl: fixed_list[V] = [V(1.0)] => fixed_list[V]\n",
+        "mut ge = [1, 2].__iter__()\n",
+    );
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
+    for (kind, names) in crate::type_check::names::BUILTIN_VALUE_METHODS {
+        let var = match *kind {
+            "str" => "st",
+            "list" => "li",
+            "dict" => "di",
+            "set" => "se",
+            "fixed_list" => "fl",
+            "generator" => "ge",
+            other => panic!("no sample receiver for '{other}'"),
+        };
+        let recv = interp.get_val(var).unwrap();
+        let unknown = interp
+            .eval_method_call_full(recv.clone(), "__no_such_method__", Vec::new(), None)
+            .expect_err("an unknown method must fail");
+        for name in names.iter() {
+            if let Err(e) = interp.eval_method_call_full(recv.clone(), name, Vec::new(), None) {
+                assert_ne!(
+                    e,
+                    unknown.replace("__no_such_method__", name),
+                    "'{kind}.{name}' is in BUILTIN_VALUE_METHODS but the runtime does not know it"
+                );
+            }
+        }
+    }
+}

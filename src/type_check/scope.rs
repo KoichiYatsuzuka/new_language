@@ -386,17 +386,7 @@ impl TypeChecker {
         let Some(sigs) = self.registry.class_methods(class_name).and_then(|m| m.get(method)) else {
             return;
         };
-        let all_mut_self = !sigs.is_empty()
-            && sigs.iter().all(|sig| {
-                let takes_mut_self = sig.params.first().is_some_and(|(n, _)| n == "self")
-                    && sig.param_mutable.first() == Some(&true);
-                let is_gen = matches!(
-                    &sig.return_type,
-                    Some(InferredType::IteratorOf(_))
-                ) || matches!(&sig.return_type, Some(InferredType::NamedInstance(n)) if n == "generator");
-                takes_mut_self && !is_gen
-            });
-        if !all_mut_self {
+        if !Self::all_sigs_mutate_self(sigs) {
             return;
         }
         if self.path_is_mutable(object) != Some(false) {
@@ -410,6 +400,20 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// メソッドの多重定義が**すべて `mut self`**（受け手を書き換える）か。`gen` メソッドは数えない
+    /// （実行時の `gen` メソッドの呼び出しは不変性で振り分けない）。
+    /// [`Self::check_mut_self_method_receiver`] と束縛メソッドの型（タスク 1-11）が使う。
+    pub(super) fn all_sigs_mutate_self(sigs: &[super::types::FnSig]) -> bool {
+        !sigs.is_empty()
+            && sigs.iter().all(|sig| {
+                let takes_mut_self = sig.params.first().is_some_and(|(n, _)| n == "self")
+                    && sig.param_mutable.first() == Some(&true);
+                let is_gen = matches!(&sig.return_type, Some(InferredType::IteratorOf(_)))
+                    || matches!(&sig.return_type, Some(InferredType::NamedInstance(n)) if n == "generator");
+                takes_mut_self && !is_gen
+            })
     }
 
     /// `class_name` のメンバー（フィールド・メソッド）`member_name` へのアクセスが現在のコンテキストで

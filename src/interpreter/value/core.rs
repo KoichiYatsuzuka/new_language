@@ -314,17 +314,23 @@ impl Value {
             vm_chunk: None,
             // 束縛メソッド（タスク 1-8）は受け手もメソッドの実体も複製する。
             bound: rc.bound.as_ref().map(|b| {
-                Rc::new(super::BoundMethod {
-                    receiver: b.receiver.deep_clone(),
-                    methods: b
-                        .methods
-                        .iter()
-                        .map(|m| match Value::Function(m.clone()).deep_clone() {
-                            Value::Function(f) => f,
-                            _ => unreachable!("deep_clone keeps the variant"),
-                        })
-                        .collect(),
-                })
+                use super::BoundTarget as T;
+                let target = match &b.target {
+                    T::Methods(ms) => T::Methods(
+                        ms.iter()
+                            .map(|m| match Value::Function(m.clone()).deep_clone() {
+                                Value::Function(f) => f,
+                                _ => unreachable!("deep_clone keeps the variant"),
+                            })
+                            .collect(),
+                    ),
+                    T::Gen(g) => match Value::GeneratorFn(g.clone()).deep_clone() {
+                        Value::GeneratorFn(f) => T::Gen(f),
+                        _ => unreachable!("deep_clone keeps the variant"),
+                    },
+                    T::Builtin(n) => T::Builtin(n.clone()),
+                };
+                Rc::new(super::BoundMethod { receiver: b.receiver.deep_clone(), target })
             }),
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(

@@ -87,8 +87,10 @@
     `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
     `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
 - **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
-  Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is a
-  runtime error, exactly as the direct call `obj.method(..)` would be.
+  Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is an
+  error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's
+  `mutates_immutable` mark; instances are also stopped at run time). `gen` methods and methods of built-in
+  values (`push = xs.append`) bind too (task 1-10; readable names: `names::BUILTIN_VALUE_METHODS`).
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

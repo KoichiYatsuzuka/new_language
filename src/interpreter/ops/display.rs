@@ -51,8 +51,13 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             // 束縛メソッド（タスク 1-8）は CPython と同じ形（`<bound method C.m of <C object at 0x..>>`）。
+            // 組み込みの値のメソッド（タスク 1-10）も CPython と同じ形（`<built-in method append of list object at 0x..>`）。
             Value::Function(fn_rc) if fn_rc.bound.is_some() => {
                 let b = fn_rc.bound.as_ref().expect("guarded");
+                if let crate::interpreter::value::BoundTarget::Builtin(name) = &b.target {
+                    let addr = fn_rc.identity_ptr() as usize;
+                    return format!("<built-in method {name} of {} object at 0x{addr:x}>", self.type_name(&b.receiver));
+                }
                 let owner = match &b.receiver {
                     Value::Instance(i) => i.borrow().class.name.clone(),
                     other => self.type_name(other).to_string(),

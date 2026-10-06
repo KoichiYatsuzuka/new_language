@@ -204,7 +204,19 @@ impl Interpreter {
                     let overloads = cls.methods.get(attr).unwrap().clone();
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
-                    return Ok(Value::Function(crate::interpreter::FnValue::bind(obj.clone(), overloads)));
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Methods(overloads),
+                    )));
+                }
+                // `gen` メソッド（タスク 1-10）。呼ぶとジェネレータ（`obj.gen_m(..)` と同じ）。
+                if let Some(gen_fn) = cls.gen_methods.get(attr).cloned() {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Gen(gen_fn),
+                    )));
                 }
                 Err(format!(
                     "AttributeError: '{}' object has no attribute '{attr}'",
@@ -362,10 +374,18 @@ impl Interpreter {
                     }
                 }
             }
-            _ => Err(format!(
-                "AttributeError: '{}' object has no attribute '{attr}'",
-                self.type_name(&obj)
-            )),
+            _ => {
+                // 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）は受け手を束縛した関数。
+                // 読める名前は型検査と同じ表（`names::BUILTIN_VALUE_METHODS`）。呼ぶと `eval_method_call_full`。
+                let kind = self.type_name(&obj);
+                if crate::type_check::names::is_builtin_value_method(kind, attr) {
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Builtin(attr.to_string()),
+                    )));
+                }
+                Err(format!("AttributeError: '{kind}' object has no attribute '{attr}'"))
+            }
         }
     }
 
