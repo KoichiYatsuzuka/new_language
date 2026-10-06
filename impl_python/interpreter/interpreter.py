@@ -1,4 +1,4 @@
-# git SHA: 2dc0dd65bef79508c5acee495394233b12618f36
+# git SHA: a96a2360084f8b727e91fea24dced1c376eeaadc
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -185,9 +185,10 @@ class Interpreter:
 
     def _install_builtin_enums(self) -> None:
         def _make_enum_ns(name: str, variants: list[tuple[str, int]]) -> TlNamespace:
-            cls_name = f"enum_item_{name}"
+            # The members' class is named after the enum itself (`x is FileOpenMode`),
+            # like `build_enum_classes` in Rust. It is not bound to any name.
             enum_cls = TlClass(
-                name=cls_name, bases=[], methods={}, gen_methods={},
+                name=name, bases=[], methods={}, gen_methods={},
                 field_defaults=[("value", None, False), ("name", None, False)],
                 class_vars={}, field_mutability={"value": False, "name": False},
                 field_access={}, method_access={},
@@ -196,8 +197,7 @@ class Interpreter:
                 field_index={"value": 0, "name": 1}, field_count=2,
                 field_mutability_vec=[False, False],
             )
-            self._known_classes[cls_name] = enum_cls
-            members: dict = {cls_name: enum_cls}
+            members: dict = {}
             for vname, vval in variants:
                 inst = TlInstance(cls=enum_cls, fields=[
                     [vval, False],
@@ -540,10 +540,6 @@ class Interpreter:
             case StmtEnumDef(name=name, variants=variants):
                 ns = self._build_enum(name, variants)
                 self._env.declare(name, ns, mutable=False)
-                # Also expose the enum_item class for `is` checks
-                enum_cls_name = f"enum_item_{name}"
-                if enum_cls_name in self._known_classes:
-                    self._env.declare(enum_cls_name, self._known_classes[enum_cls_name], mutable=False)
 
             case StmtField():
                 pass  # handled by _build_class
@@ -1869,9 +1865,11 @@ class Interpreter:
         return cls
 
     def _build_enum(self, name: str, variants: list) -> TlNamespace:
-        # Build an enum class so instances can be type-checked with `is`
+        # The members' class is named after the enum itself, so `x is Color` holds
+        # for a member (`build_enum_classes` in Rust). It is not bound to any name:
+        # `enum_item_Color` was retired (implementation_plans/enum_member_type_plan.md).
         enum_cls = TlClass(
-            name=f"enum_item_{name}", bases=[], methods={}, gen_methods={},
+            name=name, bases=[], methods={}, gen_methods={},
             field_defaults=[("value", None, False), ("name", None, False)],
             class_vars={}, field_mutability={"value": False, "name": False},
             field_access={}, method_access={},
@@ -1880,9 +1878,7 @@ class Interpreter:
             field_index={"value": 0, "name": 1}, field_count=2,
             field_mutability_vec=[False, False],
         )
-        self._known_classes[f"enum_item_{name}"] = enum_cls
-
-        members: dict = {f"enum_item_{name}": enum_cls}
+        members: dict = {}
         auto_val = 0
         for variant_name, value_expr in variants:
             if value_expr is not None:
