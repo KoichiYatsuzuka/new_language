@@ -1,0 +1,21 @@
+# bound_method_error.ar — 不変の受け手の mut self のメソッドは、束縛しても呼べない
+# （python_builtins_plan.md のタスク 1-8）
+#
+# 対になる正常系: bound_method.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: cannot call mutable method 'add' on immutable instance of 'Counter'
+#
+# ⚠ 束縛すること（let add = c.add）は誤りにしない。書き換えが起きるのは呼んだときだけ。
+#   呼べば c.add(1) を直接書いたのと同じ判定で止まる（let の束縛は実行時にも不変の印を持つ）。
+
+class Counter:
+    mut n: int
+
+    fn add(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+let c = Counter(1)
+let add = c.add
+print(add(1))                                   # ⛔ c は不変

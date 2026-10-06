@@ -1,0 +1,8 @@
+# py_bound_method.ar — Python のコードの束縛メソッド（f = s.apply / getattr(s, "apply") / map(s.apply, ..)）
+# （python_builtins_plan.md のタスク 1-8）
+#
+# ⚠ 以前は取り出したメソッドを呼ぶと `missing argument 'self'` だった（2-3 の getattr で見つけた）。
+
+import[py] test_modules.py_bound_method as pb
+
+print(pb.run())                         # [6, 12, [3, 6], [1, 2, 3]]

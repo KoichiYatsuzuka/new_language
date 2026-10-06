@@ -1,0 +1,45 @@
+# bound_method.ar — メソッドを値として取り出す（束縛メソッド・python_builtins_plan.md のタスク 1-8）
+#
+# 対になる誤りの例: bound_method_error.ar
+#
+# obj.method を値として読むと、受け手（self）を束縛した関数になる。呼ぶと obj.method(..) と同じ実体が
+# 同じ判定で走る（CPython の束縛メソッドと同じ）。コールバック（map / sorted(key=) / シグナル）にも渡せる。
+#   - 同じ受け手の同じメソッドは等しい（c.get == c.get）。シグナルの off も同じ照合で外れる
+#   - 不変の束縛（let a = c.add）が可変の受け手を書き換えてよい（関数の値が不変であることとは別の話）
+#   - 受け手そのものが不変（let c / freeze の後）なら、mut self のメソッドは呼んだ時点で誤り（直接呼ぶのと同じ）
+# ⚠ 以前は束縛しない関数が返り、呼ぶと `function takes 1 argument(s), got 0` だった。
+# ⚠ クラスから読む C.method は従来どおり束縛しない関数（C.method(obj, ..) で呼ぶ）。
+
+class Counter:
+    mut n: int
+
+    fn add(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+    fn get(self) -> int:
+        return self.n
+
+print("=== take a method as a value ===")
+mut c = Counter(1)
+let get = c.get
+let add = c.add
+print(get())                                    # 1
+print(add(10))                                  # 11
+print(c.n, get())                               # 11 11（同じ受け手）
+
+print("=== pass it as a callback ===")
+let xs: list[int] = [3, 1, 2]
+print(list(map(c.add, xs)))                     # [14, 15, 17]
+
+class Weight:
+    let w: int
+
+    fn score(self, let s: str) -> int:
+        return len(s) * self.w
+
+let byweight = Weight(-1)
+print(sorted(["bb", "a", "ccc"], key=byweight.score))   # ['ccc', 'bb', 'a']
+
+print("=== equality ===")
+print(c.get == c.get, c.get == c.add)           # True False

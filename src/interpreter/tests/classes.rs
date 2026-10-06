@@ -607,3 +607,50 @@ fn test_template_instance_as_value() {
     assert_int(run_get(src, "ns"), 1);
     assert_int(run_get(src, "tsize"), 1);
 }
+
+// ---------------------------------------------------------------------------
+// 束縛メソッド（python_builtins_plan.md のタスク 1-8）
+// ---------------------------------------------------------------------------
+
+/// `obj.method` を値として読むと受け手を束縛した関数になり、`obj.method(..)` と同じ実体が走る。
+/// コールバック（`map` / `sorted(key=)`）に渡せ、同じ受け手の同じメソッドは等しい。
+/// 不変の受け手の `mut self` のメソッドは、束縛はできるが呼ぶと誤り（直接呼ぶのと同じ判定）。
+#[test]
+fn test_bound_methods() {
+    let src = concat!(
+        "class Counter:\n",
+        "    mut n: int\n",
+        "    fn add(mut self, let k: int) -> int:\n",
+        "        self.n = self.n + k\n",
+        "        return self.n\n",
+        "    fn get(self) -> int:\n",
+        "        return self.n\n",
+        "mut c = Counter(1)\n",
+        "let add = c.add\n",
+        "let r1 = add(10)\n",
+        "let r2 = c.get()\n",
+        "let mapped = str(list(map(c.add, [1, 2])))\n",
+        "let same = c.get == c.get\n",
+        "let differ = c.get == c.add\n",
+        "let shown = str(c.get)\n",
+    );
+    assert!(matches!(run_get(src, "r1"), Value::Int(11)));
+    assert!(matches!(run_get(src, "r2"), Value::Int(11)));
+    assert_str(run_get(src, "mapped"), "[12, 14]");
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "differ"), Value::Bool(false)));
+    let shown = run_get(src, "shown");
+    let Value::Str(s) = shown else { panic!("not a str") };
+    assert!(s.starts_with("<bound method Counter.get of <Counter object at 0x"), "{s}");
+    let immutable = concat!(
+        "class Counter:\n",
+        "    mut n: int\n",
+        "    fn add(mut self, let k: int) -> int:\n",
+        "        self.n = self.n + k\n",
+        "        return self.n\n",
+        "let c = Counter(1)\n",
+        "let add = c.add\n",
+        "let r = add(1)\n",
+    );
+    assert!(run_err_msg(immutable).contains("cannot call mutable method 'add' on immutable instance of 'Counter'"));
+}
