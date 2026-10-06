@@ -149,6 +149,10 @@ fn apply(let func: function[let int]->int, let x: int) -> int:
 apply(square, 10)
 ```
 
+メソッドも値として取り出せます（`let add = c.add` は受け手 `c` を束縛した関数・
+[06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）。組み込み関数の名前も値になります
+（`map(repr, xs)` / `key=len`・[12_builtins.md](12_builtins.md)）。
+
 ### 関数型アノテーション
 
 | 記法 | 意味 |

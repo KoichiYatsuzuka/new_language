@@ -25,7 +25,7 @@ src/interpreter/
 ├── ops.rs         — is_truthy, type_name, display/repr, apply_unary, apply_binop, values_eq
 ├── str_methods.rs — str method dispatch (split, join, format, regex, ...)
 ├── scope.rs       — push/pop scope, get_var, declare_var, assign_var, freeze_var
-├── exceptions.rs  — make_error_class, get_context_lines, exc_matches
+├── exceptions.rs  — get_context_lines, exc_matches, exc_set_args (built-in exception args / str(e))
 ├── async_mgr.rs   — AsyncManagerData, AsyncStatus, thread spawning via std::thread
 ├── native_api.rs  — i64 handle arena, ArCallbacks struct, C callback implementations
 ├── py_interop.rs  — PyO3 runtime bridge (import[py-int] execution)
@@ -80,6 +80,11 @@ SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost loca
 | `declare_var` | Inserts into `scopes.last_mut()` |
 | `assign_var` | Searches tail → head; error if not found or immutable |
 | `freeze_var` | Sets mutability flag to false; error if captured by closure |
+
+`freeze x` gives the same result as `let x = x` (python_builtins_plan.md 1-9): both call
+`Interpreter::frozen_copy` (deep copy → `__freeze__` + field freezing for instances, one level into
+collections, trim for fixed_list). `exec_freeze` writes the frozen copy back and demotes the variable;
+a function local (VM slot) compiles to `LoadLocal` + `StoreLocalCopyFreeze`.
 
 ---
 
@@ -241,9 +246,11 @@ Violation raises `AccessError`.
 
 ## Exceptions (`exceptions.rs`)
 
-Built-in exception classes (`ValueError`, `TypeError`, `IndexError`, `KeyError`, `RuntimeError`, `OSError`, `StopIteration`, `AccessError`, …) are constructed by `make_error_class` as `ClassValue` objects pre-registered in global scope.
+Built-in exception classes (60: CPython 3.12's hierarchy plus `AccessError`) are constructed by `make_error_class` (`built_in_types.rs`) from the single table `type_check::names::BUILTIN_EXCEPTIONS`, with all ancestors flattened into `bases` (`ClassValue::is_a` does not walk). They have no `__init__`: `instantiate_evaled` stores the positional arguments in `args` and CPython's `str(e)` in `message` (`exc_set_args`), and `super().__init__(..)` reaches `eval_class_method`. Internal error strings (`"KeyError: 'k'"`) become instances in `make_internal_raised_error`; `except m.Err` uses `value_is_type`.
 
-Exception propagation uses the error string `RAISE_SENTINEL = "\x00__raise__:..."` threading through Rust's `Result<_, String>`. `exec_try` catches any error containing the sentinel, matches the class name against `except` handlers via `exc_matches`, runs the matching handler, and always runs `finally`.
+Bound methods (python_builtins_plan.md 1-8): reading `obj.method` returns `FnValue::bind(receiver, methods)` — a body-less `FnValue` whose `bound` field holds the receiver and the method overloads. `exec_fn_evaled` redirects it to `call_bound_method` (same dispatch as `obj.method(..)`, including the immutable-receiver check; access control was checked at the read). Equality / hash use `FnValue::same_binding` / `identity_ptr`.
+
+Exception propagation uses the error string `RAISE_SENTINEL = "\x00__raise__:..."` threading through Rust's `Result<_, String>`. The VM's `SetupTry` / `ExcMatch` (the tree-walk `exec_try` was removed in #33) catch any error containing the sentinel, match it against the `except` handlers via `vm_exc_matches`, run the matching handler, and always run `finally`.
 
 `get_context_lines` extracts source lines around the raise site from the `code_context` stored on the exception instance.
 

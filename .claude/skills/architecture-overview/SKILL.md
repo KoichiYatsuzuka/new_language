@@ -52,10 +52,10 @@ For full details (all `InferredType` variants, inference rules, compatibility/co
 Tree-walk interpreter. `exec(stmt)` / `eval(expr)` dispatch on the AST recursively. Lexical scopes are a `Vec<HashMap>` searched tail-to-head.
 
 - **Values**: `Int`, `Float`, `Bool`, `Str`, `None`, `List`, `Dict`, `Tuple`, `Set`, `Slice`, `Function`, `Generator`, `Class`, `Instance`, `Namespace`, `NativeFn`, `PyObject`
-- **Mutability**: `let` → immutable; `mut` → mutable (deep-copied on declaration); `freeze` makes a variable immutable; `static mut` → single shared cell keyed by source position
+- **Mutability**: `let` → immutable; `mut` → mutable (deep-copied on declaration); `freeze x` = `let x = x` (rebinds to a frozen deep copy, `frozen_copy`); `static mut` → single shared cell keyed by source position
 - **Closures**: `let` captures are deep-copied; `mut` captures share an `Rc<RefCell<Value>>` cell with the outer scope
 - **Control-flow signals**: `return` via `ExecResult`; `break` via `BREAK_SENTINEL` error string propagating through `eval()`; `block_return` / `loop_yield` via thread-locals `BLOCK_YIELDS` and `RAISE_SENTINEL`
-- **Exceptions**: `raise` / `try/except/finally` use a sentinel error string `"\x00__raise__:..."`; built-in classes (`ValueError`, `TypeError`, `KeyError`, …) pre-registered at startup
+- **Exceptions**: `raise` / `try/except/finally` use a sentinel error string `"\x00__raise__:..."`; built-in classes follow CPython 3.12's hierarchy (60, `type_check::names::BUILTIN_EXCEPTIONS`), pre-registered at startup; `e.args` / CPython `str(e)`; `except m.Err`. `obj.method` read as a value is a bound method (`FnValue::bound`)
 - **Access control**: `public` / `private` / `protected` enforced at runtime via `current_class` tracked on `Interpreter`; violation raises `AccessError`
 - **Async**: `mng <- async->T: body` spawns an OS thread (`std::thread::spawn`); `mut` captures share Rc, `let` captures are deep-cloned before crossing the thread boundary
 - **Native modules**: values cross the ABI as `i64` handles into a thread-local `VALUE_ARENA`; `ArCallbacks` struct passed to DLLs via `ar_init()`

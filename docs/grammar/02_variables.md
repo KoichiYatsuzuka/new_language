@@ -16,6 +16,24 @@ let pi = 3.14159
 **実行**: 右辺の式を評価して `Var::Immutable(value)` としてスコープに登録。  
 再代入は実行時 `TypeError`。型検査は `StaticTypeError::AssignToImmutable` を報告。
 
+**束縛する値**（`Interpreter::frozen_copy`。`freeze` と同じ 1 つの実装）:
+
+| 右辺 | 束縛する値 |
+|---|---|
+| `let` / `const` の変数 | そのまま共有する（すでに不変） |
+| `mut` の変数・式（`xs[0]` / `f()` / コレクションのリテラル …） | **深いコピーを不変にしたもの** |
+| プリミティブのリテラル | そのまま |
+
+「不変にする」の中身:
+- インスタンス: `__freeze__` があれば呼び、フィールドをすべて不変にして、実行時の印 `INST_IMMUTABLE` を立てる
+  （以後 `mut self` のメソッドは呼べない。束縛メソッドを経由しても同じ）
+- list / set / dict の値 / tuple: 中のインスタンスに同じことをする（1 段）
+- fixed_list: 使っていない確保分を切り詰める（`allocated_size()` が `len` になる）
+
+コピーしてから不変にするので、元の `mut` の変数や、同じオブジェクトを持つ相手は可変のまま。
+関数の中でも最上位でも同じ（⚠ 2026-10-05 までは、関数の中の `let item = xs[0]` だけがコピーせず
+`xs[0]` と共有していた）。
+
 ### `mut` — 可変変数
 
 ```ar
@@ -81,12 +99,24 @@ mut data = [1, 2, 3]
 freeze data   # data を let (不変) に降格する
 ```
 
+**意味**: `freeze x` は **`let x = x` と同じ結果**になります。値の深いコピーを不変にし（上の `let` の
+「束縛する値」と同じ `frozen_copy`）、`x` をそのコピーへ束縛し直して、以後 `x` を `let` の変数として扱います
+（書き込みはすべて静的な誤り。ブロックを抜けても `mut` には戻りません）。
+
+- 関数の中の変数・仮引数にも使えます。仮引数を `freeze` しても、**呼び出し側が渡したオブジェクトは可変のまま**です
+  （コピーを不変にするため。`let` と同じ）
+- `__freeze__` を持つインスタンスは、凍結するコピーに対して 1 回呼ばれます（コレクションの中のインスタンスも）
+- 誤り: 不変の変数（`cannot freeze immutable variable 'x'`）・クロージャが捕まえた変数
+  （`cannot freeze 'x' because it is captured by a closure`）・`static` の変数
+
 **パース**: `Token::Freeze ident`  
 **実行**:
-1. 変数のミュータビリティを `Var::Mutable` → `Var::Immutable` に変更
-2. 変数の値が `__freeze__` メソッドを持つ場合は呼び出す  
-   (カスタム freeze プロトコル: フラットメモリ展開などに使用)
-3. フラット化されたリスト → `Value::FrozenList` に変換
+- 最上位・モジュール本体の変数: `Op::FreezeVar` → `exec_freeze`（`frozen_copy` の値を書き戻し、変数を
+  `Var::Mutable` → `Var::Immutable` に降格）
+- 関数の中の変数（VM の slot）: `LoadLocal` + `StoreLocalCopyFreeze`（`let x = <mut 変数>` と同じ命令）
+
+⚠ 2026-10-05 までは、`freeze` だけがコピーせず**その場で**不変にしていました（同じオブジェクトを持つ相手まで
+不変になる）。また関数の中の `freeze` は `NameError` で動きませんでした（例題 `basics/freeze_like_let.ar`）。
 
 `freeze` は `__freeze__` を直接呼び出す(`inst.__freeze__()`)ことはできません。  
 必ず `freeze` キーワードを使用する必要があります (静的型エラー `DirectFreezeCall`)。
@@ -201,13 +231,15 @@ pub struct InstanceData {
 - **外部ライブラリ（C/Rust など）**: `instance_ptr + 8` をフィールド先頭として扱う  
   （8 バイトヘッダをスキップ）
 
-### freeze との関係
+### let / freeze との関係
 
-`freeze x` を実行すると:
-1. `InstanceData.flags |= INST_IMMUTABLE` がセットされる
-2. `fields` の全スロットの可変フラグ (`bool`) が `false` になる
+`let` の束縛と `freeze x` は、束縛する**コピー**に対して:
+1. `InstanceData.flags |= INST_IMMUTABLE` をセットする
+2. `fields` の全スロットの可変フラグ (`bool`) を `false` にする
 
-フリーズ後にフィールドへ代入しようとすると `TypeError` が送出されます。
+フリーズ後にフィールドへ代入しようとすると `TypeError` が送出されます。`mut self` のメソッドを呼ぶと
+`cannot call mutable method '..' on immutable instance of '..'`（束縛メソッドを経由しても同じ）。
+コピーする前の元のオブジェクトは変わりません。
 
 ### 関数スコープ
 

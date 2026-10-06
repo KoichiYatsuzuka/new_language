@@ -28,7 +28,7 @@ Arrow のクラスは**クラス継承をサポートしません**。
 pub struct ClassValue {
     pub name:       String,
     pub class_id:   u32,          // 宣言時に alloc_class_id() で発行した一意 ID
-    pub is_exception: bool,       // 例外クラス（make_error_class 経由）なら true
+    pub is_exception: bool,       // 組み込みの例外クラス（make_error_class 経由）なら true
     pub field_index: HashMap<String, usize>,  // フィールド名 → Vec インデックス
     pub field_count: usize,       // フィールドスロット総数
     // ... methods, field_defaults, class_vars, static_vars 等
@@ -468,11 +468,39 @@ match c:
 1. `class_val.field_defaults` の初期値を評価してフィールドマップを構築
 2. 初期 `flags` を計算（`is_exception` → `INST_IS_EXCEPTION`、`new_type_base.is_some()` → `INST_IS_NEW_TYPE`）
 3. `InstanceData { class_id, flags, class, fields }` を `Rc<RefCell<...>>` で生成
-4. `__init__` メソッドを検索してバインド
-5. `exec_fn_evaled` で `__init__` を実行
-6. `Value::Instance(...)` を返す
+4. 組み込みの例外の階層のクラスなら、作るときの位置引数を `args` に、CPython の `str(e)` を `message` に入れる
+   （[07_exceptions.md](07_exceptions.md) の「組み込みの例外を作る・表示する」）
+5. `__init__` メソッドを検索してバインド
+6. `exec_fn_evaled` で `__init__` を実行
+7. `Value::Instance(...)` を返す
 
 `class_id` は `ClassValue.class_id` から引き継がれます（`alloc_class_id()` で宣言時に発行済み）。
+
+---
+
+## メソッドを値として読む（束縛メソッド）
+
+`obj.method` を呼ばずに値として読むと、**受け手（`self`）を束縛した関数**になります（CPython の束縛メソッドと同じ）。
+
+```ar
+mut c = Counter(1)
+let add = c.add                      # 受け手 c を束縛した関数
+print(add(10))                       # c.add(10) と同じ
+print(list(map(c.add, [1, 2])))      # コールバックにも渡せる（sorted(key=obj.m) / シグナルの on も）
+print(c.get == c.get)                # True（同じ受け手の同じメソッドは等しい）
+```
+
+- 呼ぶと `obj.method(..)` と**同じ実体が同じ判定で**走ります（オーバーロードの選択・ネイティブのメソッドも）。
+- **受け手の不変は呼ぶ時点で**見ます: `let c` / `freeze` した受け手の `mut self` のメソッドは、束縛はできますが
+  呼ぶと `TypeError: cannot call mutable method '..' on immutable instance of '..'`（直接呼ぶのと同じ）。
+  束縛した関数の値が不変（`let add = ..`）であることと、それが受け手を書き換えることは別の話です。
+- アクセス制御は**読んだ時点で**見ます（クラスの中で `self._key` を取り出してコールバックに渡せば、外で呼ばれても通る）。
+- 表示は `<bound method Counter.add of <Counter object at 0x..>>`。シグナルの `off` も同じ照合で外れます。
+- クラスから読む `C.method` は従来どおり束縛しない関数です（`C.method(obj, ..)` で呼ぶ）。
+- 実装: `FnValue::bound`（`BoundMethod { receiver, methods }`）。呼ぶと `exec_fn_evaled` の入口で
+  `call_bound_method` へ回ります（`Value` に種類は足していません）。
+- ⚠ まだ: 型検査は `c.add` を型なしで通します（引数・戻り値を見ない）。gen メソッドと組み込みの値のメソッド
+  （`xs.append`）は束縛できません。
 
 ---
 

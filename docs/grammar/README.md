@@ -15,11 +15,12 @@
 | [04_control_flow.md](04_control_flow.md) | if/match/for/while/break/continue・制御構文の式としての使い方 |
 | [05_functions.md](05_functions.md) | fn/gen・パラメータ・テンプレート・オーバーロード・デコレータ |
 | [06_classes_traits.md](06_classes_traits.md) | クラス・trait・new_type・enum・アクセス制御 |
-| [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス |
+| [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス（CPython の階層・`args`）・`except m.Err` |
 | [08_type_system.md](08_type_system.md) | 型アノテーション・静的型検査・型推論・型ガードナロイング |
 | [09_imports.md](09_imports.md) | import・from import・言語タグ・モジュールキャッシュ |
 | [10_special_features.md](10_special_features.md) | block_return/loop_yield/yield・async・break_point・数学文字列 |
 | [11_events.md](11_events.md) | Signal[T]・on/once/off 購読・emit/emit_async・EventLoop・外部イベント |
+| [12_builtins.md](12_builtins.md) | 組み込み関数（`print` / `open` の形・Python 互換の組み込み・未対応の組み込み） |
 
 ---
 

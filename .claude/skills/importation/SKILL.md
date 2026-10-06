@@ -156,6 +156,14 @@ After parsing, the child's `module_cache` is merged back into the parent.
   `self.Inner()` reach it through the method-call fallback `Interpreter::class_var_class`. Any class-body
   statement other than methods, single-name class attributes, nested classes, docstrings, `...` and
   `pass` is a conversion error (it used to be dropped silently).
+- ⚠ Unsupported builtins (python_builtins_plan.md 1-1): after a successful conversion,
+  `check_unsupported_builtins` (`python_converter/builtins_check.rs`) folds the Python AST once and
+  rejects the module if it **reads** a CPython 3.12 builtin that the Arrow runtime does not resolve
+  (`is_runtime_builtin_name` is false — the list shrinks automatically as builtins are added). Names
+  bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
+  a module with `from m import *` is not checked. Structural conversion errors are reported first.
+- `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
+  (same body); a nested tuple is a conversion error (4-3 / 4-4).
 - Cache key: `("py", abs_path)`
 
 ### Python Interface (`load_python_interface_module`, imports.rs:658)

@@ -39,6 +39,10 @@ None        # Expr::None
 
 **評価**: リテラルは対応する `Value` を直接返します。
 
+**float の表示**（`print` / `str` / `repr`）は CPython の `repr` と同じ最短の往復表現です。10 進の指数が
+`-4` 未満か `16` 以上なら指数表記（`1e+20` / `1e-05`）、それ以外は小数表記に `.0` を足します（`3.0`）。
+complex も CPython と同じ（`(1+2j)` / `3j`）。
+
 ---
 
 ## 識別子 (変数参照)
@@ -136,6 +140,10 @@ a ** b   # べき乗 (右結合)
 
 - `/` は常に `float` を返します
 - `//` は `int // int` → `int`、それ以外 → `float`
+- `//` と `%` は **CPython と同じ**: 商は負の無限大の方向へ切り捨て、`%` の結果は割る数と同じ符号
+  （`-7 // 2 == -4`・`7 % -2 == -1`・`-7 // -2 == 3`）。float も CPython の `_float_div_mod` と同じ式
+  （`0.1 % 0.01` は `3.469446951953614e-18`、`6.0 % -3.0` は `-0.0`）。0 で割ると `ZeroDivisionError`
+  （`float floor division by zero` / `float modulo`）
 
 ---
 
@@ -154,6 +162,10 @@ a not in b
 
 **評価**: `Bool` を返します。  
 `values_eq` は型を考慮して比較 (`Int(1) == Float(1.0)` は `true`)。
+
+list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）は CPython と同じ辞書順です（最初に違う要素だけを
+比べ、違いが無ければ長さで決める）。list と tuple は比べられません（`TypeError`）。比べられない要素に届いた
+ときだけ `TypeError`（`(1, 'a') < (2, 3)` は `True`）。
 
 ---
 
@@ -255,7 +267,8 @@ module.function
 `Expr::Attr { object, attr, span }` として記録されます。
 
 **評価**: オブジェクトを評価し、値の種類に応じてフィールドまたはメソッドを返します:
-- `Instance` → `fields` マップを検索、なければ `class.methods` を検索
+- `Instance` → `fields` マップを検索、なければ `class.methods` を検索（メソッドは**受け手を束縛した関数**を返す・
+  [06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）
 - `Class` → `class_vars` (const) を検索
 - `Namespace` → `members` マップを検索
 - `Str`/`List`/`Dict`/`Set`/... → 組み込みメソッドのバインド済み関数を返す
@@ -320,6 +333,11 @@ let result = block ->int:
 `Expr::Block { stmts, return_type }` として記録されます。  
 `block_return val` でブロック式を即座に終了して値を返します。  
 `block_return` なしの場合は `None` を返します。
+
+`block:` を**文**として書いた場合（値を受けない）、中の `return` は普通の文と同じく関数から抜けます
+（囲む `try` の `finally` も走る）。⚠ ブロック**式**の中の `return`（式の途中から関数を抜ける形）は作れません。
+⚠ 2026-10-05 までは、関数の中の `block:` 文に `return` があるだけで関数ごと `VmForceError` でした
+（Python の `with ...: return ..` の変換先も `block:` なので同じ理由で読めなかった）。
 
 ---
 

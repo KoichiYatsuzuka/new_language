@@ -102,6 +102,7 @@
 | Subscript get | `impl Index` | `def __getitem__(self, k)` | `fn __getitem__(self, idx: int)` |
 | Subscript set | `impl IndexMut` | `def __setitem__(self, k, v)` | `fn __setitem__(mut self, idx, val)` |
 | Freeze hook | — | — | `fn __freeze__(mut self)` |
+| Bound method as a value | closure `\|x\| obj.m(x)` | `f = obj.m` | `let f = obj.m`（受け手を束縛。不変の受け手の `mut self` メソッドは呼ぶ時点で誤り） |
 | Repr | `impl Display` | `def __repr__(self)` | `fn __repr__(self) -> str` |
 
 ---
@@ -177,9 +178,11 @@
 | Try/catch | — | `try: … except E as e: …` | `try: … except E as e: …` |
 | Finally | — | `finally:` | `finally:` |
 | Bare catch | — | `except:` | `except:` |
+| Catch several types | — | `except (A, B):` | one `except` per type（`import[py]` は自動で分ける） |
+| Catch a module's type | — | `except m.Err:` | `except m.Err:` |
 | Raise | `panic!()` / `return Err(…)` | `raise ValueError("msg")` | `raise ValueError("msg")` |
 | Error propagation | `?` operator | re-raise | manual re-raise |
-| Built-in errors | `std::io::Error`, etc. | `TypeError`, `ValueError`, … | `TypeError`, `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`, `NameError`, `AccessError` |
+| Built-in errors | `std::io::Error`, etc. | `TypeError`, `ValueError`, … | CPython 3.12 と同じ階層の 59 クラス + `AccessError`（`LookupError` で `KeyError` も捕まる・`e.args`・`str(e)`） |
 
 ---
 
@@ -226,7 +229,7 @@
 
 | Feature | Syntax | Notes |
 |---|---|---|
-| Freeze binding | `freeze x` | Promotes `mut` to permanently immutable; calls `__freeze__` hook if defined |
+| Freeze binding | `freeze x` | Same as `let x = x`: rebinds `x` to a frozen deep copy (other holders of the object stay mutable) and demotes it to `let`; calls `__freeze__` on the copy if defined |
 | Newtype from primitive | `new_type Meters: float` | Distinct type sharing all methods; inner value via `.value` |
 | Newtype cast | `5.0=>Meters` | `=>` operator; reverse with `m=>float` |
 | Static shared closure state | `static mut n = 0` inside `fn` | Single cell shared across all invocations of the outer function |

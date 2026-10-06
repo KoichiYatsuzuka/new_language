@@ -104,6 +104,23 @@ from[py] os.path import join, exists
 
 関数本体内での変数ホイスト (if ブランチで代入された変数の前宣言) も自動で行われます。
 
+**組み込み**（[12_builtins.md](12_builtins.md)）:
+- Arrow に無い組み込み（`format` / `vars` / `exit` …）を参照するモジュールは、**読み込む時点で変換の誤り**です
+  （実行の前・呼ばれない関数の中でも）。名前ごとに最初の行を並べます:
+  `m.py: Python builtin(s) not supported by Arrow: 'format' (line 8), 'exit' (line 12) (...)`。
+  モジュールのどこかで束縛した名前（`def format(..)` / 代入 / 仮引数 / `import` の別名）・デコレータ・クラスの基底・
+  `super().m(..)` の `super` は通します（`from m import *` のあるモジュールは調べません）。実装は
+  `src/python_converter/builtins_check.rs`。
+- モジュールの最上位で組み込みの名前を束縛し直せます（`id = 7` / `def len(x): ..`。そのモジュールの中だけ）。
+
+**例外**（[07_exceptions.md](07_exceptions.md)）:
+- `except m.Err:`（修飾名）・`except (A, B) as e:`（型ごとに同じ本体の節を並べる）を変換します。
+  組の入れ子 `except (A, (B, C)):` は変換の誤り（CPython 3.12 も実行時の `TypeError`）。
+- 組み込みの例外を継承したクラスの `super().__init__(..)` は組み込みの例外へ届き、`args` / `str(e)` が CPython と同じになります。
+
+**ファイル**: `open(path, "w", encoding="utf-8")` など Python の形の `open` を受けます。`with open(p) as f: return f.read()`
+（`with` の中の `return`）も動きます。
+
 ---
 
 ## Python インタープリタ連携 (`[py-int]`)

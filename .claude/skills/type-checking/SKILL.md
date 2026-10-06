@@ -351,8 +351,8 @@ Built-in new types pre-registered: `path` (original `str`), `Index` (original `i
 ## Built-in Types and Values
 
 Registered at `TypeChecker::new()` in the global scope (the matching class-name side is
-seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives there as
-`EXCEPTION_CLASS_NAMES`):
+seeded by `TypeRegistryBuilder::with_builtins`; the exception classes come from
+`names::BUILTIN_EXCEPTIONS`, the single table the runtime also reads):
 
 | Name | Scope type |
 |------|-----------|
@@ -366,16 +366,22 @@ seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives t
 | `begin`, `last` | `NamedInstance("Index")` |
 | All exception classes | `TypeValOf(NamedInstance(name))` |
 
-Exception classes registered (all with base `Error`):
-`Exception`, `ValueError`, `TypeError`, `NameError`, `AttributeError`, `IndexError`, `KeyError`,
-`ZeroDivisionError`, `RuntimeError`, `StopIteration`, `NotImplementedError`, `OverflowError`,
-`IOError`, `OSError`, `AssertionError`, `ArithmeticError`, `AccessError`.
+Exception classes registered: the 60 classes of `names::BUILTIN_EXCEPTIONS` (CPython 3.12's hierarchy
+plus `AccessError`, python_builtins_plan.md 4-1). `class_bases` holds `Error` followed by **all ancestors
+flattened** (`names::builtin_exception_bases(name, false)`), so `let e: LookupError = KeyError(..)`
+type-checks. ⚠ The `OSError` aliases (`IOError` / `EnvironmentError` / `WindowsError`) are children of
+`OSError` here, not mutual bases: base walkers such as `collect_class_field_details` do not guard
+against cycles (the runtime makes them mutual). Built-in exceptions also have the field `args: tuple`
+(4-2; not on the `Error` trait).
 
 ⚠ **`Exception` is the base of every exception** (task 10-19): `class_implements_trait(c, "Exception")`
 is true for any class that implements `Error` (built-in exceptions and user `class MyErr(Error)`), so
 `let e: Exception = ValueError(..)` and passing `MyErr(..)` to an `Exception` parameter type-check.
 This is answered in `class_implements_trait` rather than by adding `Error → Exception` to the base
-table (that would make a cycle other base walkers don't guard against). The runtime counterpart is
+table (that would make a cycle other base walkers don't guard against). ⚠ A class whose bases reach
+`BaseException` (the built-in hierarchy) is answered from the table alone, so `GeneratorExit` is not an
+`Exception`. `except m.Err as e` binds `e` with the name resolved to the module's qualified name; an
+unknown `except` type is not reported while imports are unloaded (`registry_incomplete`, the editor). The runtime counterpart is
 `ClassValue::is_a` (`except` matching, `x is T`, field checks). `except Error` is rejected with
 `ExceptOnErrorTrait` ("write `except Exception`").
 
