@@ -227,6 +227,26 @@ print(pkg.core.LABEL)                # サブモジュール（wrapper が読み
 - ⚠ 外部言語のスタブ（cpp / cs / js / rs）と、VS Code 拡張（import 先を読み込まない）では、
   無いメンバーを誤りにしません。
 
+### グローバル変数の型と属性
+
+import した後も、モジュールのグローバル変数の**型と属性**（`const` / `let` / `mut`）はそのまま分かります。
+型は注釈が無くても推論した型です（`let LABEL = "x"` の `g.LABEL` は `str`）。
+**書き換えられるかは型ではなく属性で決まります。**
+
+| モジュールでの宣言 | `g.X = ..` | `g.X[0] = ..` / `g.X.f = ..` / `g.X.append(..)` |
+|---|---|---|
+| `const X` | 静的エラー `cannot assign to const 'g.X'` | 静的エラー `cannot modify the contents of const 'g.X'` |
+| `let X` | 静的エラー `cannot assign to immutable variable 'g.X'` | 静的エラー（`let` の中身も書き換えられない） |
+| `mut X` | **代入できる**（モジュールの大域そのものを書き換える。モジュールの関数も新しい値を見る） | 書き換えられる |
+| 関数・クラス・`import` で束縛した名前 | 静的エラー（付け替えられない） | — |
+
+- `mut` に代入する値は変数の型で検査します（`mut total = 0` に `g.total = "s"` は静的エラー）。
+- `from g import X` で取り込んだ名前は、**付け替えられません**（`X = ..` は静的エラー）。
+  **中身は元の宣言の属性に従います**: 元が `mut` のリストなら `X.append(..)` でき（モジュールと共有）、
+  `let` / `const` ならできません。`int` などの値は import した時点の写しです（CPython と同じ）。
+- VS Code 拡張は import 先を読みませんが、`arrow --emit-stubs` が作るスタブにグローバル変数を型と属性
+  つきで書くので（`const LIMIT: int = Undefined` の形）、拡張でも同じ型と属性が分かります。
+
 ---
 
 ## モジュールの同一性

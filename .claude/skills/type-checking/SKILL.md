@@ -142,6 +142,12 @@ Returns the type recorded in scope. If not found → `Unresolved`.
 - If `obj` is `Any` → `OperationOnAny` error.
 - If `obj` is `Union` → `OperationOnUnion` error.
 - If `obj` is `Namespace` (imported module) → returns the member's recorded type.
+  ⚠ `Namespace(members, closed, vars)`: the third field (`ModuleVars`) carries the **attribute** (`VarAttr`:
+  `Const` / `Let` / `Mut` / `Imported`) of each module global. Member types and attributes of globals come
+  from the scope the module body was checked in (`annotate_module_body` stores `module_globals` before
+  popping it), so unannotated and `mut` globals are typed too. Writes through `g.X` are decided by the
+  attribute (`check_immutable_field_assign` / `readonly_on_path`); `from g import X` declares `X` with
+  `contents_mutable` from the original attribute (`VarInfo::contents_mutable`, `declare_imported`).
 - If `obj` is `NamedInstance(cls)` → access-control check runs (see below) → returns `Unresolved` (field type resolution is partial).
 - **enum**: a member's type is the enum type itself (`Color.Red : NamedInstance("Color")`).
   Members are read only from the type value (`TypeValOf(Color)` → `registry.enum_members`);

@@ -23,6 +23,13 @@ declared` for two unrelated `x`es. Those 5,471 lines are gone. **Do not reintrod
 language knowledge in TypeScript** — if the editor needs to know something about Arrow, teach the
 Rust frontend and expose it through the analysis JSON.
 
+> ⚠ **Imported modules in the editor**: the extension never reads import targets; it reads the stubs that
+> `arrow --emit-stubs` writes to `.arrow-stubs/`. For Arrow modules the stub also carries every global
+> **with its type and attribute** (`const LIMIT: int = Undefined` — `stub_gen::generate_editor_stub`,
+> types from `TypeChecker::module_globals`), so `g.X` has the same type and writability as in the CLI.
+> A global whose type the CLI cannot infer is left out (no wrong type). Without stubs, module members are
+> unknown and nothing is reported (`compare_wasm_frontend` "wasm fewer").
+
 ## Source file map (`vscode-extension/src/`)
 
 | File | Responsibility |

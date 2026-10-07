@@ -12,6 +12,11 @@
   imported module's `const`). Assigning to it (`C.K = ..`, `c.K = ..`, `self.K = ..` even in `__init__`,
   `m.K = ..`) and writing into it (`C.L[0] = ..`, `c.L.append(..)`, `c.O.x = ..`, `m.L[0] = ..`) are static
   errors, whatever the root binding. A copy (`mut xs = C.L`) is writable; `static mut` stays writable.
+  - ⚠ Whether something is writable is decided by the **attribute** (`const` / `let` / `mut`), not the type.
+- **An imported module's globals keep their type and attribute** (`docs/grammar/09_imports.md`):
+  `g.X = ..` is allowed only for `mut X` (it rewrites the module's global itself, like CPython);
+  `let` / `const` / functions are static errors, and so is writing into a `let` / `const` (`g.L.append(..)`).
+  `from g import X` binds a name that cannot be rebound, but its contents follow the original attribute.
 - Functions use `fn` instead of `def`
 - Static type checking occurs after parsing and before execution
 - Supports templates

@@ -60,7 +60,9 @@ class Config:
 | `FieldKind::Const` | `const` | クラス変数。全インスタンスで共有。代入不可（静的エラー `AssignToConst`） |
 | `FieldKind::StaticMut` | `static mut` | 可変クラス変数。全インスタンスで共有 |
 
-**`const` は値ごと不変**（クラス・trait・enum のメンバー・モジュールの `const` のどれでも同じ）:
+**`const` は値ごと不変**（クラス・trait・enum のメンバー・モジュールの `const` のどれでも同じ）。
+書き換えられるかは**型ではなく属性**（`const` / `let` / `mut`）で決まる
+（import したモジュールのグローバル変数は `09_imports.md` の「グローバル変数の型と属性」）:
 
 - **代入**: クラス名経由（`Counter.LIMIT = 5`）・インスタンス経由（`c.LIMIT = 5`）・
   `__init__` の中の `self.LIMIT = 5`・複合代入・trait の `const`・モジュールの `const`（`m.K = 5`）の
