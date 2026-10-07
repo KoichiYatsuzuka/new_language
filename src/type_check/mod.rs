@@ -73,10 +73,13 @@ pub struct TypeChecker {
     /// `Stmt::Import` / `Stmt::FromImport` を検査するたびに入れる（CPython 準拠・2026-10-02）。
     /// パッケージの名前空間の型（`namespace_type`）を組み立てるのに使う。
     module_member_cache: HashMap<String, HashMap<String, InferredType>>,
-    /// import したモジュールの **`const` なメンバー**（モジュールの名前 `a.b` → 名前）。
-    /// 最上位の `const` と、`from x import K` で再エクスポートした `x` の `const`。
-    /// `m.K = ..` / `m.L[0] = ..` を弾くのに使う（`is_const_member` の兄弟・`module_member_types` が入れる）。
-    module_consts: HashMap<String, std::collections::HashSet<String>>,
+    /// import したモジュールの**グローバル変数の型と属性**（モジュールの名前 `a.b` → 名前 → (型, 属性)）。
+    /// モジュールの本体を検査したときのスコープから取る（`annotate_module_body`）ので、注釈の無い変数も
+    /// 推論した型が付く。`module_member_types` が名前空間の型と属性に使う。
+    module_globals: HashMap<String, HashMap<String, (InferredType, types::VarAttr)>>,
+    /// import したモジュールの**メンバーの属性**（モジュールの名前 → 名前 → 属性）。グローバル変数と、
+    /// 本体で import が束縛した名前（再エクスポート）。名前空間の型（`namespace_type`）の 3 つ目に載る。
+    module_attr_cache: HashMap<String, HashMap<String, types::VarAttr>>,
     /// **サブモジュールの表**（親パッケージの名前 → 子の名前）。プログラムのどこかで import される
     /// モジュール（`a.b`）を、その親（`a`）の子として集めたもの（[`names::collect_module_children`]）。
     ///
@@ -168,6 +171,7 @@ impl TypeChecker {
                 VarInfo {
                     ty: InferredType::TypeValOf(Box::new(inner.clone())),
                     mutable: false,
+                    contents_mutable: false,
                 },
             );
         }
@@ -199,7 +203,7 @@ impl TypeChecker {
         //     `check_len_argument`（`call_check.rs`）で弾く。
         for name in builtins::GLOBAL_FNS {
             if let Some(ty) = builtins::fn_type(name) {
-                global.insert(name.to_string(), VarInfo { ty, mutable: false });
+                global.insert(name.to_string(), VarInfo { ty, mutable: false, contents_mutable: false });
             }
         }
         for name in ["begin", "last"] {
@@ -208,6 +212,7 @@ impl TypeChecker {
                 VarInfo {
                     ty: InferredType::NamedInstance("Index".to_string()),
                     mutable: false,
+                    contents_mutable: false,
                 },
             );
         }
@@ -218,6 +223,7 @@ impl TypeChecker {
                     "Error".to_string(),
                 ))),
                 mutable: false,
+                contents_mutable: false,
             },
         );
         // 例外クラスの登録はレジストリ側（with_builtins）と対になっている。
@@ -230,6 +236,7 @@ impl TypeChecker {
                         class_name.to_string(),
                     ))),
                     mutable: false,
+                    contents_mutable: false,
                 },
             );
         }
@@ -240,7 +247,7 @@ impl TypeChecker {
         for decl in &builtin_types {
             if let Stmt::EnumDef { name, .. } = decl {
                 let ty = InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone())));
-                global.insert(name.clone(), VarInfo { ty, mutable: false });
+                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false });
             }
         }
 
@@ -257,7 +264,8 @@ impl TypeChecker {
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
             module_member_cache: HashMap::new(),
-            module_consts: HashMap::new(),
+            module_globals: HashMap::new(),
+            module_attr_cache: HashMap::new(),
             module_children: {
                 let mut map = HashMap::new();
                 names::collect_module_children(stmts, &mut map);

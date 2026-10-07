@@ -2,7 +2,7 @@ use crate::ast::{Accessibility, Expr};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind};
-use super::types::{InferredType, VarInfo};
+use super::types::{InferredType, ModuleVars, VarAttr, VarInfo};
 use super::TypeChecker;
 
 impl TypeChecker {
@@ -23,6 +23,20 @@ impl TypeChecker {
     /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。
     pub(super) fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
         self.state.declare(name, ty, mutable);
+    }
+
+    /// 型ガードで絞り込んだ変数を今のスコープに宣言し直す。**付け替え・中身の書き換えの可否は元の
+    /// 束縛のまま**（`from m import X` の `X` は付け替えられないが中身は書き換えられることがある）。
+    pub(super) fn declare_narrowed(&mut self, name: String, ty: InferredType) {
+        let (mutable, contents_mutable) =
+            self.lookup(&name).map(|i| (i.mutable, i.contents_mutable)).unwrap_or((false, false));
+        self.state.declare_with_contents(name, ty, mutable, contents_mutable);
+    }
+
+    /// `from m import X` で取り込んだ名前を宣言する。付け替えはできず、中身は元の宣言の属性に従う
+    /// （[`VarAttr::Imported`]）。
+    pub(super) fn declare_imported(&mut self, name: String, ty: InferredType, contents_mutable: bool) {
+        self.state.declare_with_contents(name, ty, false, contents_mutable);
     }
 
     /// 変数を束縛したことを記録する（[`super::BindingRecord`]・VS Code 拡張の hover / inlay 用）。
@@ -168,16 +182,16 @@ impl TypeChecker {
     pub(super) const MUTATING_COLLECTION_METHODS: &'static [&'static str] =
         &["append", "pop", "add", "clear", "discard", "remove"];
 
-    /// アクセスパスの**可変性**。根が識別子でない（一時値）／未宣言なら `None`。
+    /// アクセスパスの**可変性**（中身を書き換えられるか）。根が識別子でない（一時値）／未宣言なら `None`。
     ///
-    /// ⚠⚠ **経路の途中に `const` があれば不変**（[`Self::const_on_path`]）。`mut c` の
-    ///   `c.L`（`L` はクラスの `const`）も、`m.L`（モジュールの `const`）も書き換えられない。
+    /// ⚠⚠ **経路の途中に書き換えられないものがあれば不変**（[`Self::readonly_on_path`]）。`mut c` の
+    ///   `c.L`（`L` はクラスの `const`）も、`g.L`（モジュールの `const` / `let`）も書き換えられない。
     ///   以前は根の束縛だけを見ていたので `c.L.append(2)` / `f(c.L)`（`mut` の仮引数）が通っていた。
     /// ⚠⚠ **根が型の値・モジュールなら「値の束縛」ではない**（`check_attr_assign` と同じ区別）。
-    ///   `Counter.items`（`static mut`）は書ける。以前はクラス名の束縛が不変なので
-    ///   `Counter.items.append(1)` が誤って弾かれていた。
+    ///   `Counter.items`（`static mut`）・`g.ML`（モジュールの `mut`）は書ける。
+    /// ⚠ 根の変数は**中身を書き換えられるか**（`VarInfo::contents_mutable`）で見る。
     pub(super) fn path_is_mutable(&mut self, expr: &Expr) -> Option<bool> {
-        if self.const_on_path(expr).is_some() {
+        if self.readonly_on_path(expr).is_some() {
             return Some(false);
         }
         let name = Self::path_root_ident(expr)?;
@@ -188,7 +202,7 @@ impl TypeChecker {
         ) {
             return None;
         }
-        Some(info.mutable)
+        Some(info.contents_mutable)
     }
 
     /// 型だけが欲しい推論（**診断を出さない**）。
@@ -202,12 +216,12 @@ impl TypeChecker {
         ty
     }
 
-    /// `object.attr` の `attr` の**持ち主**（`const` を持ちうるもの）と、それが型の値経由か。
+    /// `object.attr` の `attr` の**持ち主**と、それが型の値経由か。
     ///
     /// - `self` → 今のクラス
     /// - 型の値（`Counter` / `Color` / `Box[int]`）→ そのクラス（型の値経由）
     /// - インスタンス（`c` / `Box[int]` の値 / trait 型の値）→ そのクラス・trait
-    /// - Arrow のモジュール（`m` / 別名 `t`）→ そのモジュール（エディタではメンバーが確定しないので見ない）
+    /// - モジュール（`g` / 別名 `t`）→ そのモジュール（メンバーとグローバル変数の属性）
     pub(super) fn member_owner(&mut self, object: &Expr) -> Option<(MemberOwner, bool)> {
         if matches!(object, Expr::Ident { name, .. } if name == "self") {
             return self.state.current_class().map(|c| (MemberOwner::Class(c.to_string()), false));
@@ -221,35 +235,47 @@ impl TypeChecker {
                     .map(|c| (MemberOwner::Class(c.clone()), true)),
                 _ => None,
             },
-            InferredType::Namespace(_, Some(closed)) => Some((MemberOwner::Module(closed.name), false)),
+            InferredType::Namespace(members, _, vars) => Some((
+                MemberOwner::Module { members: members.into_keys().collect(), vars: *vars },
+                false,
+            )),
             ty => self.class_and_subst(&ty).map(|(c, _)| (MemberOwner::Class(c), false)),
         }
     }
 
-    /// `owner.member` が `const` か（クラス・trait・enum は [`Self::is_const_member`]、モジュールは `module_consts`）。
-    pub(super) fn owner_has_const(&self, owner: &MemberOwner, member: &str) -> bool {
-        match owner {
-            MemberOwner::Class(c) => self.is_const_member(c, member),
-            MemberOwner::Module(m) => self.module_consts.get(m).is_some_and(|s| s.contains(member)),
-        }
-    }
-
-    /// 書き込み先の**経路の途中にある `const`**（持ち主の名前・メンバー名）。無ければ `None`。
+    /// 書き込み先の**経路の途中にある、書き換えられないもの**。無ければ `None`。
     ///
-    /// `C.L[0]` / `c.O.x` の `c.O` / `self.L` / `m.L` のように、経路のどこかが `const` なメンバーなら、
+    /// - クラス・trait の `const`・enum のメンバー（[`Self::is_const_member`]）→ [`ReadOnly::Const`]
+    /// - モジュールのグローバル変数（`g.X`）→ **属性で決める**（[`VarAttr`]）: `const` は
+    ///   [`ReadOnly::Const`]、`let` と中身を書き換えられない取り込んだ名前は [`ReadOnly::Immutable`]、
+    ///   `mut` は書き換えられる
+    ///
+    /// `C.L[0]` / `c.O.x` の `c.O` / `self.L` / `g.L` のように、経路のどこかが書き換えられないなら、
     /// その先の要素・フィールドも書き換えられない（規則 1「要素・フィールドは根の属性を継ぐ」を
-    /// 経路の途中の `const` に広げたもの）。根の識別子そのもの（`const X`）は束縛の不変性が見る。
-    pub(super) fn const_on_path(&mut self, path: &Expr) -> Option<(String, String)> {
+    /// 経路の途中に広げたもの）。根の識別子そのもの（`const X`）は束縛の属性（`VarInfo`）が見る。
+    pub(super) fn readonly_on_path(&mut self, path: &Expr) -> Option<ReadOnly> {
         match path {
             Expr::Attr { object, attr, .. } => {
-                if let Some((owner, _)) = self.member_owner(object) {
-                    if self.owner_has_const(&owner, attr) {
-                        return Some((owner.name().to_string(), attr.clone()));
+                match self.member_owner(object) {
+                    Some((MemberOwner::Class(c), _)) if self.is_const_member(&c, attr) => {
+                        return Some(ReadOnly::Const { owner: c, member: attr.clone() });
                     }
+                    Some((MemberOwner::Module { vars, .. }, _)) => {
+                        match vars.attrs.get(attr.as_str()) {
+                            Some(VarAttr::Const) => {
+                                return Some(ReadOnly::Const { owner: vars.name, member: attr.clone() });
+                            }
+                            Some(a) if !a.contents_mutable() => {
+                                return Some(ReadOnly::Immutable { name: format!("{}.{attr}", vars.name) });
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
-                self.const_on_path(object)
+                self.readonly_on_path(object)
             }
-            Expr::Subscript { object, .. } => self.const_on_path(object),
+            Expr::Subscript { object, .. } => self.readonly_on_path(object),
             _ => None,
         }
     }
@@ -296,14 +322,24 @@ impl TypeChecker {
         if !is_collection {
             return;
         }
-        // ⚠ `const` の中身（`C.L.append(..)` / `self.L.append(..)` / `m.L.append(..)`）は、
-        //   根の束縛が `mut` でも書き換えられない。
-        if let Some((owner, member)) = self.const_on_path(object) {
-            self.report_error(StaticTypeError {
-                kind: TypeErrorKind::ModifyConst { owner, member },
-                span: Some(span.clone()),
-            });
-            return;
+        // ⚠ `const` の中身（`C.L.append(..)` / `self.L.append(..)` / `g.L.append(..)`）と、モジュールの
+        //   `let` の中身（`g.LL.append(..)`）は、根の束縛が `mut` でも書き換えられない。
+        match self.readonly_on_path(object) {
+            Some(ReadOnly::Const { owner, member }) => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ModifyConst { owner, member },
+                    span: Some(span.clone()),
+                });
+                return;
+            }
+            Some(ReadOnly::Immutable { name }) => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::MutatingMethodOnImmutable { method: attr.to_string(), root_name: name },
+                    span: Some(span.clone()),
+                });
+                return;
+            }
+            None => {}
         }
         if self.path_is_mutable(object) != Some(false) {
             return;
@@ -421,19 +457,20 @@ impl TypeChecker {
         }
     }
 
-    /// 属性・添字への代入（複合代入も）の書き込み先を検査する。
+    /// 属性・添字への代入（複合代入も）の書き込み先を検査する。**可否は属性で決める**。
     ///
-    /// 1. `obj.attr = ..` で `attr` が **`const` なメンバー**（[`Self::owner_has_const`]）なら `AssignToConst`。
-    ///    クラス名経由（`Counter.LIMIT`）・インスタンス経由（`c.LIMIT`）・`__init__` の中の
-    ///    `self.LIMIT`・trait の `const`・enum のメンバー・モジュールの `const`（`m.K`）のどれでも同じ。
-    /// 2. 書き込む先の**入れ物の経路に `const` がある**（`C.L[0] = ..` / `C.O.x = ..` / `m.L[0] = ..`）なら
-    ///    `ModifyConst`（[`Self::const_on_path`]）。
+    /// 1. `obj.attr = ..` で `attr` が書き換えられないメンバーなら:
+    ///    - クラス・trait の `const`・enum のメンバー（[`Self::is_const_member`]）→ `AssignToConst`
+    ///      （クラス名経由・インスタンス経由・`__init__` の中の `self.LIMIT` のどれでも）
+    ///    - モジュールのグローバル変数（`g.X`）→ 属性で: `const` は `AssignToConst`、`let` と取り込んだ名前は
+    ///      `AssignToImmutable`、`mut` は代入できる。変数でないメンバー（関数・クラス）も付け替えられない
+    /// 2. 書き込む先の**入れ物の経路に書き換えられないもの**がある（`C.L[0] = ..` / `C.O.x = ..` /
+    ///    `g.LL[0] = ..`）なら `ModifyConst` / `AssignToImmutable`（[`Self::readonly_on_path`]）。
     /// 3. `obj.attr = ..` で `attr` が `let` フィールドなら `AssignToImmutableField`（`__init__` の中の `self` は除く）。
     ///
     /// ⚠⚠ **1・2 は `__init__` の免除より先に見る**。`__init__` で許すのは `let` フィールドの初回代入で、
     ///    `const` は `__init__` の中でも書き換えられない（実行時も `TypeError: cannot assign to class
-    ///    variable`）。以前は `__init__` の中を丸ごと免除していたので `self.LIMIT = 7` が素通りし、
-    ///    クラス名経由の `Counter.LIMIT = 5` も（`NamedInstance` しか見ていなかったので）素通りしていた。
+    ///    variable`）。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
         // ⚠ 添字（`Expr::Subscript`）は位置を持たないので、文の位置で知らせる（`report_error` が補う）。
         let (object, attr, span): (&Expr, Option<&str>, Option<Span>) = match target {
@@ -446,20 +483,41 @@ impl TypeChecker {
             None => None,
         };
         if let (Some((o, _)), Some(attr)) = (&owner, attr) {
-            if self.owner_has_const(o, attr) {
-                self.report_error(StaticTypeError {
-                    kind: TypeErrorKind::AssignToConst { owner: o.name().to_string(), member: attr.to_string() },
-                    span,
-                });
+            let kind = match o {
+                MemberOwner::Class(c) if self.is_const_member(c, attr) => {
+                    Some(TypeErrorKind::AssignToConst { owner: c.clone(), member: attr.to_string() })
+                }
+                MemberOwner::Class(_) => None,
+                MemberOwner::Module { members, vars } => match vars.attrs.get(attr) {
+                    Some(VarAttr::Const) => {
+                        Some(TypeErrorKind::AssignToConst { owner: vars.name.clone(), member: attr.to_string() })
+                    }
+                    Some(VarAttr::Mut) => None,
+                    Some(VarAttr::Let | VarAttr::Imported { .. }) => {
+                        Some(TypeErrorKind::AssignToImmutable { name: format!("{}.{attr}", vars.name) })
+                    }
+                    // 変数でないメンバー（関数・クラス・サブモジュール）は付け替えられない。
+                    None if members.contains(attr) => {
+                        Some(TypeErrorKind::AssignToImmutable { name: format!("{}.{attr}", vars.name) })
+                    }
+                    None => None,
+                },
+            };
+            if let Some(kind) = kind {
+                self.report_error(StaticTypeError { kind, span });
                 return;
             }
         }
-        if let Some((owner, member)) = self.const_on_path(object) {
-            self.report_error(StaticTypeError {
-                kind: TypeErrorKind::ModifyConst { owner, member },
-                span,
-            });
-            return;
+        match self.readonly_on_path(object) {
+            Some(ReadOnly::Const { owner, member }) => {
+                self.report_error(StaticTypeError { kind: TypeErrorKind::ModifyConst { owner, member }, span });
+                return;
+            }
+            Some(ReadOnly::Immutable { name }) => {
+                self.report_error(StaticTypeError { kind: TypeErrorKind::AssignToImmutable { name }, span });
+                return;
+            }
+            None => {}
         }
         let (Some((MemberOwner::Class(class_name), via_type_value)), Some(attr)) = (owner, attr) else {
             return;
@@ -525,19 +583,18 @@ impl TypeChecker {
     }
 }
 
-/// `const` を持ちうるメンバーの持ち主（[`TypeChecker::member_owner`]）。
+/// メンバーの持ち主（[`TypeChecker::member_owner`]）。
 pub(super) enum MemberOwner {
     /// クラス・trait・enum（名前）。
     Class(String),
-    /// Arrow のモジュール（名前 `a.b`）。
-    Module(String),
+    /// モジュール。`members` はメンバーの名前（変数・関数・クラス…）、`vars` はグローバル変数の属性。
+    Module { members: std::collections::HashSet<String>, vars: ModuleVars },
 }
 
-impl MemberOwner {
-    /// 誤りに出す持ち主の名前。
-    pub(super) fn name(&self) -> &str {
-        match self {
-            MemberOwner::Class(n) | MemberOwner::Module(n) => n,
-        }
-    }
+/// 書き込み先の経路の途中にある、書き換えられないもの（[`TypeChecker::readonly_on_path`]）。
+pub(super) enum ReadOnly {
+    /// `const`（クラス・trait の `const`・enum のメンバー・モジュールの `const`）。`owner.member`。
+    Const { owner: String, member: String },
+    /// 中身を書き換えられない変数（モジュールの `let`・取り込んだ名前）。`name` は `g.LL` の形。
+    Immutable { name: String },
 }

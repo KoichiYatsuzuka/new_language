@@ -119,10 +119,21 @@ impl CheckState {
 
     /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。
     pub(super) fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
+        self.declare_with_contents(name, ty, mutable, mutable);
+    }
+
+    /// 付け替えの可否と中身の書き換えの可否を別々に指定して宣言する（`from m import X`）。
+    pub(super) fn declare_with_contents(
+        &mut self,
+        name: String,
+        ty: InferredType,
+        mutable: bool,
+        contents_mutable: bool,
+    ) {
         self.scope_stack
             .last_mut()
             .unwrap()
-            .insert(name, VarInfo { ty, mutable });
+            .insert(name, VarInfo { ty, mutable, contents_mutable });
     }
 
     /// スコープスタックを内側から外側へ走査して変数情報を返す。見つからない場合は `None`。
@@ -256,7 +267,9 @@ impl CheckState {
     pub(super) fn freeze_var(&mut self, name: &str) {
         for scope in self.scope_stack.iter_mut().rev() {
             if let Some(info) = scope.get_mut(name) {
+                // ⚠ 中身の書き換えも止める（`VarInfo::contents_mutable`）。
                 info.mutable = false;
+                info.contents_mutable = false;
                 return;
             }
         }

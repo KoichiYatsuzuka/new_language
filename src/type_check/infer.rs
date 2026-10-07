@@ -899,7 +899,7 @@ impl TypeChecker {
         // ⚠ メンバーが確定している Arrow のモジュールに無い名前は静的エラー（2026-10-02）。
         //   実行時は `AttributeError`。メンバーには再エクスポート・サブモジュールも入っている
         //   （`TypeChecker::namespace_type`）。
-        if let InferredType::Namespace(ref members, Some(ref closed)) = obj_ty {
+        if let InferredType::Namespace(ref members, Some(ref closed), _) = obj_ty {
             if !members.contains_key(attr) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::ModuleHasNoMember {
@@ -911,7 +911,7 @@ impl TypeChecker {
             }
         }
         // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
-        let fallback = if let InferredType::Namespace(ref members, _) = obj_ty {
+        let fallback = if let InferredType::Namespace(ref members, _, _) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
         } else if let InferredType::PyNamespace(ref members) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Any)

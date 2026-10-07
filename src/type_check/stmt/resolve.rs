@@ -88,6 +88,12 @@ impl TypeChecker {
         let prev_scope = self.registry.enter_module_scope(&module.join("."));
         self.push_scope();
         self.check_stmts(target);
+        // ⚠⚠ **グローバル変数の型と属性を控える**（import した側が名前空間で使う）。スコープは
+        //    この直後に捨てるので、ここでしか取れない（注釈の無い変数の推論した型も含む）。
+        if first {
+            let vars = self.module_global_vars(target);
+            self.module_globals.insert(module.join("."), vars);
+        }
         self.pop_scope();
         self.registry.leave_module_scope(prev_scope);
         let module_diags = std::mem::replace(&mut self.diags, saved);
@@ -179,36 +185,87 @@ impl TypeChecker {
         //   型は、束縛したモジュールの名前空間（`import x` の `x`）・取り込んだ名前の型
         //   （`from x import f` の `f`）。分からなければ `Unresolved`（在ることだけは確か）。
         self.add_reexported_members(&mut raw, body);
-        self.collect_module_consts(module, body);
+        // グローバル変数の型は本体を検査したときのスコープから取る（浅い走査は `mut` と注釈の無い
+        // 変数の型を持たない）。属性は名前空間の 3 つ目へ（`namespace_type`）。
+        let key = module.join(".");
+        let mut attrs = std::collections::HashMap::new();
+        if let Some(globals) = self.module_globals.get(&key) {
+            for (name, (ty, attr)) in globals {
+                if !matches!(ty, InferredType::Unresolved) {
+                    raw.insert(name.clone(), ty.clone());
+                }
+                attrs.insert(name.clone(), *attr);
+            }
+        }
+        self.add_reexported_attrs(&mut attrs, body);
+        self.module_attr_cache.insert(key, attrs);
         let out = raw.into_iter().map(|(k, t)| (k, self.canon_type(&t))).collect();
         self.registry.leave_module_scope(prev);
         out
     }
 
-    /// モジュールの **`const` なメンバー**を `module_consts` に入れる（`m.K = ..` を弾くため）。
+    /// モジュールの最上位で宣言した**グローバル変数の型と属性**（`annotate_module_body` が呼ぶ）。
     ///
-    /// 最上位の `const` と、`from x import K` で再エクスポートした `x` の `const`（`x` の表は
-    /// `x` の import を検査したときに入っている・`add_reexported_members` と同じ引き方）。
-    fn collect_module_consts(&mut self, module: &[String], body: &[Stmt]) {
-        let mut consts = std::collections::HashSet::new();
+    /// 属性は宣言のキーワード（`const` / `let` / `mut`）、型は今のスコープ（モジュールの本体を検査した
+    /// スコープ）から引く。⚠ 呼べるのはモジュールのスコープを捨てる前だけ。
+    fn module_global_vars(
+        &self,
+        body: &[Stmt],
+    ) -> std::collections::HashMap<String, (InferredType, crate::type_check::types::VarAttr)> {
+        use crate::type_check::types::VarAttr;
+        let mut out = std::collections::HashMap::new();
+        let mut put = |this: &Self, name: &str, attr: VarAttr| {
+            let ty = this.lookup(name).map(|i| i.ty.clone()).unwrap_or(InferredType::Unresolved);
+            out.insert(name.to_string(), (ty, attr));
+        };
         for st in body {
             match st {
-                Stmt::Const(name, ..) => {
-                    consts.insert(name.clone());
-                }
-                Stmt::FromImport { module: from, names, .. } => {
-                    if let Some(src) = self.module_consts.get(&from.join(".")) {
-                        for (orig, alias) in names {
-                            if src.contains(orig) {
-                                consts.insert(alias.clone().unwrap_or_else(|| orig.clone()));
-                            }
+                Stmt::Const(name, ..) => put(self, name, VarAttr::Const),
+                Stmt::Let(name, ..) => put(self, name, VarAttr::Let),
+                Stmt::Mut(name, ..) | Stmt::Static(name, ..) => put(self, name, VarAttr::Mut),
+                Stmt::LetTuple { targets, .. } => {
+                    for t in targets {
+                        match t {
+                            TupleTarget::Let(n) => put(self, n, VarAttr::Let),
+                            TupleTarget::Mut(n) => put(self, n, VarAttr::Mut),
+                            TupleTarget::Bare(_) | TupleTarget::Wildcard => {}
                         }
                     }
                 }
                 _ => {}
             }
         }
-        self.module_consts.insert(module.join("."), consts);
+        out
+    }
+
+    /// モジュールの本体で import が束縛した名前の**属性**（再エクスポート）。
+    ///
+    /// `from x import K` の `K` は取り込んだ名前（付け替えはできない・中身は `x` での属性に従う）。
+    /// `import x` の `x` はモジュールの束縛で、付け替えも中身の書き換えもできない。
+    fn add_reexported_attrs(
+        &self,
+        attrs: &mut std::collections::HashMap<String, crate::type_check::types::VarAttr>,
+        body: &[Stmt],
+    ) {
+        use crate::type_check::types::VarAttr;
+        for st in body {
+            match st {
+                Stmt::Import { bind: Some(b), .. } => {
+                    attrs.entry(b.name.clone()).or_insert(VarAttr::Imported { contents_mutable: false });
+                }
+                Stmt::FromImport { module: from, names, .. } => {
+                    let src = self.module_attr_cache.get(&from.join("."));
+                    for (orig, alias) in names {
+                        let contents_mutable =
+                            src.and_then(|a| a.get(orig)).is_some_and(|a| a.contents_mutable());
+                        attrs
+                            .entry(alias.clone().unwrap_or_else(|| orig.clone()))
+                            .or_insert(VarAttr::Imported { contents_mutable });
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// モジュールの本体で import が束縛した名前を、メンバーの表に足す（再エクスポート・CPython 準拠）。
@@ -279,7 +336,11 @@ impl TypeChecker {
             InferredType::PyNamespace(members)
         } else {
             let closed = if known.is_some() { super::check::closed_module(lang, path) } else { None };
-            InferredType::Namespace(members, closed)
+            let vars = crate::type_check::types::ModuleVars {
+                name: key.clone(),
+                attrs: self.module_attr_cache.get(&key).cloned().unwrap_or_default(),
+            };
+            InferredType::Namespace(members, closed, Box::new(vars))
         }
     }
 

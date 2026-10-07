@@ -807,7 +807,14 @@ impl TypeChecker {
                                 InferredType::Unresolved
                             },
                         );
-                    self.declare(bind_name, ty, false);
+                    // ⚠ 取り込んだ名前は付け替えられない。**中身は元の宣言の属性に従う**
+                    //   （`mut` のリストなら `X.append(..)` できる・`let` / `const` ならできない）。
+                    let contents_mutable = self
+                        .module_attr_cache
+                        .get(&module.join("."))
+                        .and_then(|a| a.get(orig_name.as_str()))
+                        .is_some_and(|a| a.contents_mutable());
+                    self.declare_imported(bind_name, ty, contents_mutable);
                 }
             }
 
@@ -950,8 +957,7 @@ impl TypeChecker {
                     self.check_guard_type_exists(type_name);
                     if let Some(ref var_name) = subject_name {
                         let narrowed = Self::type_from_guard_name(type_name);
-                        let is_mut = self.lookup(var_name).map(|v| v.mutable).unwrap_or(false);
-                        self.declare(var_name.clone(), narrowed, is_mut);
+                        self.declare_narrowed(var_name.clone(), narrowed);
                     }
                 }
             }
@@ -1130,8 +1136,8 @@ impl TypeChecker {
             }
 
             self.push_scope();
-            if let Some((var_name, narrowed_ty, is_mut)) = result_guard.or(narrowed) {
-                self.declare(var_name, narrowed_ty, is_mut);
+            if let Some((var_name, narrowed_ty, _is_mut)) = result_guard.or(narrowed) {
+                self.declare_narrowed(var_name, narrowed_ty);
             }
             self.check_stmts(body);
             self.pop_scope();
@@ -1277,7 +1283,9 @@ impl TypeChecker {
                             | InferredType::Unresolved
                             | InferredType::Any
                     );
-                    if is_value_binding && !info.mutable {
+                    // ⚠ 見るのは**中身を書き換えられるか**（付け替えではない）。`from m import X` の
+                    //   `X` は付け替えられないが、元が `mut` なら中身は書き換えられる。
+                    if is_value_binding && !info.contents_mutable {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
                             span: None,
@@ -1327,6 +1335,27 @@ impl TypeChecker {
         let Expr::Attr { object, attr, span, .. } = target else {
             return;
         };
+        // ⚠ import したモジュールの `mut` のグローバル変数への代入（`g.MK = v`）は、その変数の型で検査する
+        //   （ふつうの変数の付け替えと同じ `VarTypeMismatch`）。
+        if let InferredType::Namespace(_, _, vars) = self.infer_quietly(object) {
+            if compound_op.is_none()
+                && matches!(vars.attrs.get(attr.as_str()), Some(crate::type_check::types::VarAttr::Mut))
+                && !matches!(target_ty, InferredType::Unresolved | InferredType::Any)
+            {
+                let ctx = format!("variable `{}.{attr}`", vars.name);
+                if !self.check_expected(&value_ty, &target_ty, false, &ctx) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::VarTypeMismatch {
+                            name: format!("{}.{attr}", vars.name),
+                            expected: target_ty,
+                            got: value_ty,
+                        },
+                        span: Some(span.clone()),
+                    });
+                }
+            }
+            return;
+        }
         // レシーバのクラス名。**推論を伴わない**スコープ引きで求める（`self` も
         // `NamedInstance(現在のクラス)` として束縛されているので同じ経路で引ける）。
         // 識別子以外のレシーバ（`f().x = v` など）は保守的に検査しない。

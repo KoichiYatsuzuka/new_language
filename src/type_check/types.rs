@@ -111,6 +111,49 @@ pub struct ClosedModule {
     pub name: String,
 }
 
+/// 変数の**属性**（宣言のキーワード）。**書き換えられるかは型ではなくこれで決まる**。
+///
+/// | 属性 | 付け替え（`x = ..`） | 中身の書き換え（`x[0] = ..` / `x.f = ..` / `x.append(..)`） |
+/// |---|---|---|
+/// | `Const` / `Let` | できない | できない |
+/// | `Mut` | できる | できる |
+/// | `Imported` | できない | 元の宣言の属性に従う（`from m import X` で取り込んだ名前） |
+///
+/// ⚠ import したモジュールのグローバル変数も、この属性を**名前空間ごと持ち出す**（[`ModuleVars`]）。
+///   import した後も、型と同じく属性が分かっていなければならない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarAttr {
+    Const,
+    Let,
+    Mut,
+    /// `from m import X` で取り込んだ名前。`contents_mutable` は元の宣言が `mut` か。
+    Imported { contents_mutable: bool },
+}
+
+impl VarAttr {
+    /// 中身を書き換えられるか。
+    pub fn contents_mutable(self) -> bool {
+        match self {
+            VarAttr::Mut => true,
+            VarAttr::Imported { contents_mutable } => contents_mutable,
+            VarAttr::Const | VarAttr::Let => false,
+        }
+    }
+}
+
+/// import したモジュールの**グローバル変数の属性**（[`InferredType::Namespace`] の 3 つ目）。
+///
+/// メンバーの型は名前空間の 1 つ目にある。ここには変数（`const` / `let` / `mut` と、取り込んだ名前）
+/// だけが載る（関数・クラスは載らない）。⚠ エディタでもスタブにグローバル変数が書かれていれば載る
+/// （メンバーが確定しているかどうか＝[`ClosedModule`] とは別）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModuleVars {
+    /// モジュールの名前（`a.b`・誤りの表示用）。
+    pub name: String,
+    /// 名前 → 属性。
+    pub attrs: HashMap<String, VarAttr>,
+}
+
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
@@ -227,7 +270,7 @@ pub enum InferredType {
     /// 2 つ目は **メンバーが確定している** Arrow のモジュールの情報（[`ClosedModule`]）。
     /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー（2026-10-02）。
     /// 外部言語（cpp / cs / js / rs）のスタブと、import 先を読めていないエディタでは `None`（開いている）。
-    Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>),
+    Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>, Box<ModuleVars>),
     /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
     PyNamespace(HashMap<String, InferredType>),
@@ -732,7 +775,7 @@ impl std::fmt::Display for InferredType {
                 write!(f, "tuple[{}]", parts.join(", "))
             }
             Self::TupleAny => write!(f, "tuple"),
-            Self::Namespace(members, _) => write!(f, "<module({} members)>", members.len()),
+            Self::Namespace(members, _, _) => write!(f, "<module({} members)>", members.len()),
             Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
             // ⚠ 利用者が書ける綴りではない（推論の内部表現）。表示は空コレクション由来だと
@@ -819,5 +862,10 @@ pub(crate) struct FnSig {
 /// スコープ内の変数情報。推論済み型と可変性フラグを保持する。
 pub(crate) struct VarInfo {
     pub(crate) ty: InferredType,
+    /// 付け替えられるか（`x = ..`）。
     pub(crate) mutable: bool,
+    /// **中身を書き換えられるか**（`x[0] = ..` / `x.f = ..` / `x.append(..)`）。ふつうは `mutable` と同じ。
+    /// 違うのは `from m import X` で取り込んだ名前だけ（付け替えはできないが、中身は元の宣言の属性に従う・
+    /// [`VarAttr::Imported`]）。
+    pub(crate) contents_mutable: bool,
 }

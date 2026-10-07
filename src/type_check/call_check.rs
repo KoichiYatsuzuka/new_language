@@ -1010,7 +1010,7 @@ impl TypeChecker {
             Expr::Attr { object, attr, .. } => {
                 let Expr::Ident { name, .. } = object.as_ref() else { return None };
                 match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(members, _)) if members.contains_key(attr) => {
+                    Some(InferredType::Namespace(members, _, _)) if members.contains_key(attr) => {
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
                     _ => None,
