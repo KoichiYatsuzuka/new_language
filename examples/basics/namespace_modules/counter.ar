@@ -4,6 +4,7 @@
 
 mut count = 0
 let STEP = 1
+mut history: list[int] = []
 
 fn bump() -> None:
     count += STEP

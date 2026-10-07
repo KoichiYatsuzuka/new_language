@@ -501,6 +501,36 @@ impl Interpreter {
                     cls.name
                 ))
             }
+            // ⚠⚠ **import したモジュールの `mut` のグローバル変数は外から代入できる**（CPython と同じ・
+            //    `implementation_plans/enum_member_type_plan.md` 6-2）。書くのはモジュールの大域そのもの
+            //    （`namespace_member` が今の値を読む所）。以前は名前空間への代入に腕が無く、`mut` でも
+            //    `cannot set attribute on non-instance` になっていた。
+            //    `let` / `const`・関数などは型検査が弾く（6-1）。ここは型検査を通らない経路の砦。
+            Value::Namespace(ns) => {
+                if let Some((globals, names)) = &ns.live {
+                    if names.contains(attr) {
+                        // ⚠ 今の大域は `scopes[0]` にある（`namespace_member` と同じ）。
+                        let scope = if *globals == self.cur_globals {
+                            self.scopes.first_mut()
+                        } else {
+                            self.global_scopes.get_mut(*globals as usize)
+                        };
+                        if let Some(var) = scope.and_then(|s| s.get_mut(attr)) {
+                            if var.is_mutable() {
+                                var.set_value(rhs);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                if self.namespace_member(&ns, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot assign to '{}.{attr}': only `mut` module variables can be assigned",
+                        ns.name
+                    ));
+                }
+                Err(format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
+            }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
         }
     }

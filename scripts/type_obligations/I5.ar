@@ -1,0 +1,11 @@
+# @id: I5
+# @obligation: モジュールの let の中身の書き換え（g.XS.append(2)）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+import modules.globals_mod as g
+g.XS.append(2)
+print(g.XS)

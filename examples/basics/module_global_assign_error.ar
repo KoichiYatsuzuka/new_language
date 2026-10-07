@@ -1,0 +1,31 @@
+# module_global_assign_error.ar — import したモジュールのグローバル変数は属性どおりに書ける・書けない
+#
+# 計画: implementation_plans/enum_member_type_plan.md（6-1）
+# `const` は module_const_assign_error.ar、`mut` を外から書ける例は module_mut_state.ar
+#
+# 書き換えの可否は**型ではなく属性**（`const` / `let` / `mut`）で決まる。import した後も、
+# モジュールのグローバル変数の型と属性はそのまま分かる（注釈の無い `let LABEL = "x"` も `str`）。
+#
+# ⚠ 以前は `mut` と注釈の無い変数の型が「不明」で、`let` も不変として扱われず、
+#   `g.TAGS.append(..)` は**完走してモジュールの `let` を書き換えていた**。
+#
+# 期待されるエラー:
+#   StaticTypeError  cannot assign to immutable variable 'namespace_modules.globals.LABEL'
+#   StaticTypeError  cannot assign to immutable variable 'namespace_modules.globals.TAGS'
+#   StaticTypeError  cannot call 'append' on 'namespace_modules.globals.TAGS' — it is immutable
+#   StaticTypeError  'namespace_modules.globals.total' is declared 'int' but initialized with 'str'
+#   StaticTypeError  's' is declared 'bool' but initialized with 'str'
+
+import namespace_modules.globals as g
+
+g.LABEL = "y"                           # ⛔ let には代入できない
+
+g.TAGS[0] = "u"                         # ⛔ let の中身も書き換えられない
+
+g.TAGS.append("v")                      # ⛔ 書き換えるメソッドも同じ
+
+g.total = "many"                        # ⛔ mut は書けるが、型は変数の型（int）に合わせる
+
+let s: bool = g.LABEL                   # ⛔ 注釈の無い let LABEL = "x" も str と分かる
+
+print("ここには到達しない")

@@ -4,9 +4,17 @@
 #   モジュールの関数はモジュールの大域を書き換える（名前空間の分離・2026-09-26）ので、
 #   名前空間の `mut` のメンバーはモジュールの大域の**今の値**を読む。
 # ⚠ `from m import x` は import した時点の値を束縛する（Python と同じ）。後の変更は映らない。
+#
+# ⚠ **`mut` のグローバル変数は外から代入できる**（属性が `mut` だから・enum_member_type_plan.md 6-2）。
+#   代入するのはモジュールの大域そのもので、モジュールの関数も代入した値の続きから動く。
+#   以前は名前空間への代入が実行時に `cannot set attribute on non-instance` で失敗していた。
+#   `let` / `const` への代入は静的エラー（module_global_assign_error.ar / module_const_assign_error.ar）。
+# ⚠ `from m import x` で取り込んだ名前は付け替えられないが、**中身は元の宣言の属性に従う**
+#   （`mut` のリストなら `append` できる。リストはモジュールと共有している）。
 
 import namespace_modules.counter as c
 from namespace_modules.counter import count as count_at_import
+from namespace_modules.counter import history
 
 print(c.count)                    # 0
 c.bump()
@@ -18,3 +26,14 @@ c.bump()
 print(c.count + c.STEP)           # 2
 
 print(count_at_import)            # 0（from import は写し）
+
+c.count = 10                      # mut は外から代入できる
+print(c.count)                    # 10
+c.bump()                          # モジュールの関数は代入した値の続きから
+print(c.count)                    # 11
+c.count += 5
+print(c.count)                    # 16
+
+history.append(7)                 # 取り込んだ mut のリストの中身は書き換えられる（共有）
+c.history.append(8)
+print(c.history)                  # [7, 8]

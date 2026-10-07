@@ -1,0 +1,6 @@
+# globals_mod.ar — 型義務 I4〜I7 が import するモジュール（グローバル変数の型と属性）。
+
+let X: int = 1
+let XS: list[int] = [1]
+mut N: int = 0
+let U = 1
