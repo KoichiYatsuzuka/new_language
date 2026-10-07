@@ -1,0 +1,11 @@
+# namespace_modules/consts.ar — 例題 module_const_assign_error.ar が import するモジュール
+#
+# `const` なメンバーは import した側からも書き換えられない（代入も中身も）。
+
+class Point:
+    mut x: int
+
+const LIMIT: int = 10
+const NAMES: list[str] = ["a"]
+const ORIGIN: Point = Point(0)
+mut counter: int = 0

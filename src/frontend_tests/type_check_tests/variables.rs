@@ -225,6 +225,71 @@ use super::*;
         assert!(ok(&format!("{COUNTER}Counter.total = 5\nmut c = Counter(1)\nc.total = 9\n")));
     }
 
+    /// **`const` の中身も書き換えられない**（経路のどこに `const` があっても・`ModifyConst`・5-3）。
+    ///
+    /// ⚠ 以前は根の束縛（`mut c`）だけを見ていたので、`c.L[0] = 2` / `c.L.append(2)` / `c.O.x = 2` /
+    ///   メソッドの中の `self.L.append(2)` が通り、クラスで共有する `const` を書き換えていた。
+    #[test]
+    fn const_contents_are_read_only_on_every_path() {
+        const SRC: &str = concat!(
+            "class P:\n",
+            "    mut x: int\n",
+            "trait T:\n",
+            "    const TL: list[int] = [1]\n",
+            "class C(T):\n",
+            "    const L: list[int] = [1]\n",
+            "    const O: P = P(1)\n",
+            "    mut n: int\n",
+        );
+        let is_modify = |errs: &[StaticTypeError], member: &str| {
+            errs.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ModifyConst { owner, member: m } if owner == "C" && m == member))
+        };
+        for (body, member) in [
+            ("C.L[0] = 2\n", "L"),
+            ("C.L.append(2)\n", "L"),
+            ("C.O.x = 2\n", "O"),
+            ("mut c = C(1)\nc.L[0] = 2\n", "L"),
+            ("mut c = C(1)\nc.L.append(2)\n", "L"),
+            ("mut c = C(1)\nc.O.x = 2\n", "O"),
+            ("mut c = C(1)\nc.TL[0] = 2\n", "TL"),
+        ] {
+            let errs = check(&format!("{SRC}{body}"));
+            assert!(is_modify(&errs, member), "{body:?}: expected ModifyConst, got {errs:?}");
+        }
+        // メソッドの中の `self.L` も同じ（`mut self` でも）。
+        let errs = check(&format!("{SRC}    fn bump(mut self) -> None:\n        self.L.append(2)\n"));
+        assert!(is_modify(&errs, "L"), "self.L.append: expected ModifyConst, got {errs:?}");
+        // trait の `const` への代入はクラスの `const` と同じ `AssignToConst`。
+        let errs = check(&format!("{SRC}mut c = C(1)\nc.TL = [2]\n"));
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind, TypeErrorKind::AssignToConst { member, .. } if member == "TL")),
+            "trait const: expected AssignToConst, got {errs:?}"
+        );
+        // `mut` の仮引数へは渡せない（書き戻しで中身が変わる）。
+        assert!(err(&format!("{SRC}fn f(mut xs: list[int]) -> None:\n    xs.append(1)\nf(C.L)\n")));
+        // 負の対照: 読む・写しを書き換える・`let` の仮引数へ渡すのは通る。
+        assert!(ok(&format!(
+            "{SRC}fn g(let xs: list[int]) -> int:\n    return xs[0]\nprint(g(C.L))\nmut copy = C.L\ncopy.append(3)\nprint(C.L[0], C.O.x)\n"
+        )));
+    }
+
+    /// **`static mut` の中身はクラス名経由でも書ける**（5-3 で直した誤検出）。
+    ///
+    /// ⚠ 以前は経路の根のクラス名（`Counter`）の束縛が不変なので、`Counter.items.append(1)` が
+    ///   `cannot call 'append' on 'Counter' — it is immutable` で弾かれていた（実行時は通る）。
+    ///   型の値・モジュールは「値の束縛」ではない（代入の検査と同じ区別）。
+    #[test]
+    fn static_mut_contents_writable_through_class_name() {
+        assert!(ok(concat!(
+            "class Counter:\n",
+            "    static mut items: list[int] = []\n",
+            "    mut own: int\n",
+            "Counter.items.append(1)\n",
+            "Counter.items[0] = 2\n",
+        )));
+    }
+
 // ── メタプログラミングの型（設計書 §1.2 / §1.5・タスク 1-5）────────────────
 
 /// ⚠⚠ `Code` は**メタ関数の外へ持ち出せない**（設計書 §1.2）。

@@ -179,9 +179,36 @@ impl TypeChecker {
         //   型は、束縛したモジュールの名前空間（`import x` の `x`）・取り込んだ名前の型
         //   （`from x import f` の `f`）。分からなければ `Unresolved`（在ることだけは確か）。
         self.add_reexported_members(&mut raw, body);
+        self.collect_module_consts(module, body);
         let out = raw.into_iter().map(|(k, t)| (k, self.canon_type(&t))).collect();
         self.registry.leave_module_scope(prev);
         out
+    }
+
+    /// モジュールの **`const` なメンバー**を `module_consts` に入れる（`m.K = ..` を弾くため）。
+    ///
+    /// 最上位の `const` と、`from x import K` で再エクスポートした `x` の `const`（`x` の表は
+    /// `x` の import を検査したときに入っている・`add_reexported_members` と同じ引き方）。
+    fn collect_module_consts(&mut self, module: &[String], body: &[Stmt]) {
+        let mut consts = std::collections::HashSet::new();
+        for st in body {
+            match st {
+                Stmt::Const(name, ..) => {
+                    consts.insert(name.clone());
+                }
+                Stmt::FromImport { module: from, names, .. } => {
+                    if let Some(src) = self.module_consts.get(&from.join(".")) {
+                        for (orig, alias) in names {
+                            if src.contains(orig) {
+                                consts.insert(alias.clone().unwrap_or_else(|| orig.clone()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.module_consts.insert(module.join("."), consts);
     }
 
     /// モジュールの本体で import が束縛した名前を、メンバーの表に足す（再エクスポート・CPython 準拠）。

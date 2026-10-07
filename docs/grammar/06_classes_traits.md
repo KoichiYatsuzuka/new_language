@@ -60,10 +60,18 @@ class Config:
 | `FieldKind::Const` | `const` | クラス変数。全インスタンスで共有。代入不可（静的エラー `AssignToConst`） |
 | `FieldKind::StaticMut` | `static mut` | 可変クラス変数。全インスタンスで共有 |
 
-**`const` への代入**: クラス名経由（`Counter.LIMIT = 5`）・インスタンス経由（`c.LIMIT = 5`）・
-`__init__` の中の `self.LIMIT = 5`・複合代入のどれでも静的エラー
-`cannot assign to const 'Counter.LIMIT'`（`AssignToConst`）。enum のメンバーも暗黙に `const` で、
-同じ規則で弾かれる（`Color.Red = ..`）。`static mut` はどの経路でも代入できる。
+**`const` は値ごと不変**（クラス・trait・enum のメンバー・モジュールの `const` のどれでも同じ）:
+
+- **代入**: クラス名経由（`Counter.LIMIT = 5`）・インスタンス経由（`c.LIMIT = 5`）・
+  `__init__` の中の `self.LIMIT = 5`・複合代入・trait の `const`・モジュールの `const`（`m.K = 5`）の
+  どれでも静的エラー `cannot assign to const 'Counter.LIMIT'`（`AssignToConst`）。enum のメンバーも
+  暗黙に `const` で、同じ規則で弾かれる（`Color.Red = ..`）
+- **中身の書き換え**: `const` の要素・フィールド・書き換えるメソッド（`Counter.NAMES[0] = ..` /
+  `c.NAMES.append(..)` / `c.ORIGIN.x = ..` / メソッドの中の `self.NAMES.append(..)` / `m.NAMES[0] = ..`）も
+  静的エラー `cannot modify the contents of const 'Counter.NAMES'`（`ModifyConst`）。経路のどこに
+  `const` があっても同じで、根の変数が `mut` でも書き換えられない。`mut` の仮引数にも渡せない
+- 読む・写しを作る（`mut copy = Counter.NAMES` の後の `copy.append(..)`）・`let` の仮引数に渡すのは通る
+- `static mut` はどの経路でも代入でき、中身も書き換えられる（`Counter.items.append(..)`）
 
 **初期値ルール**:
 - `const` フィールド → 初期値必須
@@ -462,9 +470,9 @@ enum Status:
   `c.Red` と `Color.value` は静的エラー
 - 別の enum のメンバーとは比較も代入もできない（`Color.Red == Shape.Square` は静的エラー）
 - メンバーは**値**で、変数ではない。メンバーは**暗黙に `const`** で、メンバーへの代入
-  （`Color.Red = Color.Green` / `Color.Red += 1`）はクラスの `const` と同じ `AssignToConst`。
-  中身の書き換え（`Color.Red.value = 5` / `m.value = 5`）も静的エラー（`value` は不変のフィールド。
-  実行時も不変）。
+  （`Color.Red = Color.Green` / `Color.Red += 1`）はクラスの `const` と同じ `AssignToConst`、
+  メンバーの中身の書き換え（`Color.Red.value = 5`）は `ModifyConst`。変数に入れた写しの
+  `m.value = 5` も静的エラー（`value` は不変のフィールド。実行時も不変）。
   メンバーを入れた変数の付け替え（`mut c = Color.Red` の後の `c = Color.Green`）は通る
 - ⚠ 以前の内部名 `enum_item_Color` は廃止した（書くと静的エラー。
   経緯は `implementation_plans/enum_member_type_plan.md`）

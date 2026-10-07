@@ -1,0 +1,4 @@
+# consts_mod.ar — 型義務 M16 / M17 が import するモジュール（const への書き込み）。
+
+const K: int = 1
+const L: list[int] = [1]

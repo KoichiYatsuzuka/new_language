@@ -353,6 +353,8 @@ Access control is checked statically only for attribute accesses on `NamedInstan
 
 Assigning to a `let` field (`obj.field = val`) outside `__init__` produces `AssignToImmutableField`. Inside `__init__`, `let` fields can be freely set.
 Assigning to a `const` member is `AssignToConst` on every path, including `__init__` and the class name (`Counter.LIMIT = ..`).
+A `const` is immutable as a whole: writing into it (element / field / mutating method) is `ModifyConst`, whatever the root binding.
+⚠ `path_is_mutable` does not treat a type value or a module as a value binding (`Counter.items.append(..)` on a `static mut` is fine).
 
 ### Static methods
 
@@ -522,7 +524,8 @@ The resulting `HashMap<String, InferredType>` is stored as `InferredType::Namesp
 | `TupleUnpackMissingQualifier { name }` | Tuple-unpack target has no `let`/`mut` qualifier |
 | `TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard }` | Number of unpack targets does not match tuple length |
 | `AssignToImmutableField { field_name, class_name }` | Assigning to a `let` field outside `__init__` |
-| `AssignToConst { owner, member }` | Assigning to a `const` member on any path — `Counter.LIMIT = ..` / `c.LIMIT = ..` / `self.LIMIT = ..` (even in `__init__`) / compound — and to an enum member (implicitly `const`). Decided by `is_const_member` (`scope.rs`) before the `__init__` exemption for `let` fields |
+| `AssignToConst { owner, member }` | Assigning to a `const` member on any path — `Counter.LIMIT = ..` / `c.LIMIT = ..` / `self.LIMIT = ..` (even in `__init__`) / compound — a trait `const`, a module `const` (`m.K = ..`), and an enum member (implicitly `const`). Decided by `owner_has_const` (`scope.rs`: `is_const_member` for classes/traits/enums, `module_consts` for modules) before the `__init__` exemption for `let` fields |
+| `ModifyConst { owner, member }` | Writing **into** a `const` — element / field / mutating method — wherever the `const` sits on the path (`C.L[0] = ..`, `c.O.x = ..`, `self.L.append(..)`, `m.L[0] = ..`). `const_on_path` (`scope.rs`); `path_is_mutable` also answers "immutable" for such paths, so passing them to a `mut` parameter fails too |
 | `PrivateAccessError { member_name, class_name }` | Accessing a `private` member from outside the class |
 | `ProtectedAccessError { member_name, class_name }` | Accessing a `protected` member from a non-subclass |
 | `StaticMethodOnInstance { method_name, class_name }` | Calling a `static` method on an instance |

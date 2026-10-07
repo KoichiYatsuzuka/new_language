@@ -130,7 +130,8 @@ fn test_enum_member_class_is_the_enum() {
 }
 
 /// enum のメンバーは**値**で、暗黙に `const`。メンバーへの代入はクラスの `const` と同じ
-/// `AssignToConst`、メンバーの中身（`value`）の書き換えは `AssignToImmutableField`。
+/// `AssignToConst`、メンバーの中身（`Color.Red.value`）の書き換えは `ModifyConst`、
+/// 変数に入れた写しの `value` の書き換えは `AssignToImmutableField`。
 /// ⚠ 以前は型検査を通り、`Color.Red = ..` は実行時の `TypeError`、`Color.Red.value = 5` は
 ///   **共有のメンバーそのものを書き換えていた**。
 #[test]
@@ -148,7 +149,15 @@ fn test_enum_member_is_a_value_statically() {
             "{what}: expected AssignToConst, got: {errs:?}"
         );
     }
-    for body in ["Color.Red.value = 5\n", "mut m = Color.Red\nm.value = 5\n", "mut m = Color.Red\nm.value += 1\n"] {
+    // メンバー（`const`）の中身の書き換えは `ModifyConst`（5-3）。
+    let errs = static_errors(&format!("{head}Color.Red.value = 5\n"));
+    assert!(
+        errs.iter().any(|e| matches!(&e.kind,
+            K::ModifyConst { owner, member } if owner == "Color" && member == "Red")),
+        "Color.Red.value: expected ModifyConst, got: {errs:?}"
+    );
+    // 変数に入れた写しの `value` は不変のフィールド（`AssignToImmutableField`）。
+    for body in ["mut m = Color.Red\nm.value = 5\n", "mut m = Color.Red\nm.value += 1\n"] {
         let errs = static_errors(&format!("{head}{body}"));
         assert!(
             errs.iter().any(|e| matches!(&e.kind,

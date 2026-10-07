@@ -128,7 +128,8 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 | 4-2 | ✅ | `57e95b7` |
 | 4-3 | ✅ | `41cb92e` |
 | 5-1 | ✅ | `81b944f` |
-| 5-2 | ✅ | （本書の更新と同じコミット） |
+| 5-2 | ✅ | `4d27cc1` |
+| 5-3 | ✅ | （本書の更新と同じコミット） |
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
@@ -155,6 +156,7 @@ D-1 の後も、型検査はメンバー（`Color.BLUE`）を**代入できる�
 |---|---|---|---|
 | **5-1** | **メンバーは値で、変数ではない**。①メンバーへの代入・複合代入を `AssignToEnumMember` で弾く（`check_immutable_field_assign`）。②`value` を不変のフィールドとして登録する（`class_fields[enum] = {value: false}`）ので、`Color.BLUE.value = 5` / `m.value = 5` は既存の `AssignToImmutableField` になる。③実行時もメンバーのクラスの `value` を不変にする（`build_enum_classes` / `make_builtin_enum_class`）。型義務 `N6`〜`N8`。⚠ 変数の付け替え（`mut c = Color.BLUE` の後の `c = Color.RED`）は値の書き換えではないので通す。⚠ Python 実装は実行時にはすでに弾いている（メンバーは不変のインスタンス・名前空間への代入は `AttributeError`）。型検査にはフィールドの書き換えの検査自体が無いので足していない | 2-2 | 小 |
 | **5-2** | **`const` への代入を、どの経路でも同じ規則で弾く**（利用者の指示）。enum のメンバーを**暗黙に `const`** として扱い、クラスの `const` と同じ `AssignToConst` にする（5-1 の `AssignToEnumMember` は統合して廃止）。判定は `is_const_member`（クラスの `FieldKind::Const`・enum のメンバー）の 1 つで、クラス名経由（`Counter.LIMIT = ..`）・インスタンス経由（`c.LIMIT = ..`）・`__init__` の中の `self.LIMIT = ..`・複合代入のどれにも効く。⚠ 以前はインスタンス経由だけが（`AssignToImmutableField` で）弾かれ、クラス名経由と `__init__` の中は実行時の `TypeError` まで通っていた（`__init__` の中は `let` フィールドの初回代入のために検査を丸ごと免除していた・`const` の判定はその免除より先に見る）。⚠ enum の `value` は `const` ではなく不変のフィールド（`FieldKind::Let`）に登録し直した（`m.value = 5` は `AssignToImmutableField` のまま）。型義務 `M11` / `M12`・例題 `examples/classes/const_member_assign_error.ar` | 5-1 | 小 |
+| **5-3** | **あらゆる `const` を書き換えられなくする**（利用者の指示）。①**`const` の中身**（要素・フィールド・書き換えるメソッド）も書き換えられない: 書き込み先の経路のどこに `const` があっても `ModifyConst`（`const_on_path`）。`path_is_mutable` もその経路を不変と答えるので、`mut` の仮引数への受け渡し・`for` のループ変数も同じ規則に乗る。②**trait の `const`**: `is_const_member` が基底の trait（`trait_field_details`）も見る。③**モジュールの `const`**（`m.K = ..` / 別名 `t.K` / 再エクスポート）: `module_member_types` が `module_consts` を集める（エディタはモジュールのメンバーが確定しないので見ない）。④経路の型は**診断を出さずに**推論する（`infer_quietly`・`Diagnostics::mark` / `rollback`）。⚠ 副産物: `path_is_mutable` が型の値・モジュールの根を「値の束縛」と扱っていたため、`static mut` のリストへの `Counter.items.append(..)` が誤って弾かれていた（実行時は通る）。代入の検査と同じ区別にして直した。⚠ enum のメンバーの中身（`Color.BLUE.value = 5`）は `ModifyConst` になった（5-1 では `AssignToImmutableField`）。型義務 `M13`〜`M17`・例題 `const_member_assign_error.ar`（拡張）/ `examples/basics/module_const_assign_error.ar` / `static_mut_assign.ar`（拡張） | 5-2 | 中 |
 
 ## 5. ゲート
 
@@ -179,8 +181,13 @@ D-1 の後も、型検査はメンバー（`Color.BLUE`）を**代入できる�
   `TypeError: cannot assign to class variable 'BLUE' (declared const)` で止まる~~ → **5-1 で対応**
 - ~~通常のクラスの `const` クラス変数への代入（`Counter.LIMIT = 5`）は、今も型検査を通って実行時の
   `TypeError` で止まる~~ → **5-2 で対応**
-- trait の `const`（`trait T: const K` を実装したクラスの `C.K = ..`）と、import したモジュールの
-  `const`（`m.K = ..`）への代入は 5-2 の対象外。どちらも型検査を通り、実行時の `AttributeError` で止まる
-  （前者は `class 'C' has no static field 'K'`、後者は `cannot set attribute on non-instance`）
+- ~~trait の `const` と import したモジュールの `const` への代入は 5-2 の対象外~~ → **5-3 で対応**
+- ⚠ **実行時は `const` の中身を守っていない**（5-3 は静的な検査）。型検査を通らない経路
+  （`Any` を経由した値など）から `C.L.append(..)` すると、実行時はクラスで共有する `const` が書き換わる。
+  守るには値そのものに不変の印が要る（今はインスタンスのフィールドの可変フラグしか無い）
+- trait の `const` は実行時にクラス名・インスタンスから読めない（`class 'C' has no static field 'TK'` /
+  `'C' object has no attribute 'TL'`）。書き込みとは別の既存の問題
+- import したモジュールのメンバーへの書き込みは、`mut` でも実行時に
+  `AttributeError: cannot set attribute on non-instance` になる（`m.v = 1`）。`const` とは別の既存の問題
 - ⚠ Python 実装では enum のメンバーを辞書のキーに使うと `KeyError` になる（`2045111` でも同じ。
   Rust 実装は正しく引ける）。例題では辞書のキーに使っていない

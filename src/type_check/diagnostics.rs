@@ -31,6 +31,18 @@ impl Diagnostics {
         self.warnings.push(w);
     }
 
+    /// 今の診断の数（[`Diagnostics::rollback`] で戻す位置）。
+    pub(super) fn mark(&self) -> (usize, usize) {
+        (self.errors.len(), self.warnings.len())
+    }
+
+    /// [`Diagnostics::mark`] の後に積んだ診断を捨てる（型だけが欲しい推論のため）。
+    pub(super) fn rollback(&mut self, mark: (usize, usize)) {
+        self.errors.truncate(mark.0);
+        self.from_instance.truncate(mark.0);
+        self.warnings.truncate(mark.1);
+    }
+
     /// 収集結果を `(エラー, 警告)` として取り出す。
     pub(super) fn into_parts(self) -> (Vec<StaticTypeError>, Vec<StaticTypeWarning>) {
         (self.errors, self.warnings)

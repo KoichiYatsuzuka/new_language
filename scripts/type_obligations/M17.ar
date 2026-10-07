@@ -1,0 +1,11 @@
+# @id: M17
+# @obligation: モジュールの const の要素の書き換え（m.L[0] = 2）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+import modules.consts_mod as m
+m.L[0] = 2
+print(m.L)

@@ -1,25 +1,38 @@
-# const_member_assign_error.ar — `const` なメンバーへの代入は、どの経路でも静的エラー
+# const_member_assign_error.ar — `const` なメンバーは、代入も中身の書き換えも静的エラー
 #
-# 計画: implementation_plans/enum_member_type_plan.md（5-2）
-# 正常系（`static mut` は代入できる）は static_mut_assign.ar
+# 計画: implementation_plans/enum_member_type_plan.md（5-2・5-3）
+# 正常系（`static mut` は書ける）は static_mut_assign.ar
+# モジュールの `const` は examples/basics/module_const_assign_error.ar
 #
-# `const` なメンバーは 2 種類で、どちらも同じ規則（`AssignToConst`）で弾く:
-#   - クラスの `const`
-#   - enum のメンバー（メンバーは値で、暗黙に `const`）
+# `const` なメンバーはクラスの `const`・trait の `const`・enum のメンバー（暗黙に `const`）で、
+# どれも同じ規則で弾く:
+#   - メンバーへの代入（`C.K = ..` / `c.K = ..` / `self.K = ..`・`__init__` の中も）→ AssignToConst
+#   - 中身の書き換え（`C.L[0] = ..` / `C.L.append(..)` / `C.O.x = ..`・インスタンス経由も）→ ModifyConst
 #
-# ⚠ 以前はインスタンス経由（`c.LIMIT = ..`）だけが静的に弾かれ、クラス名経由（`Counter.LIMIT = ..`）・
-#   `__init__` の中の `self.LIMIT = ..`・enum のメンバーへの代入は、実行時の
-#   `TypeError: cannot assign to class variable 'LIMIT' (declared const)` まで通っていた。
+# ⚠ 以前はインスタンス経由の代入だけが静的に弾かれ、ほかは実行時の `TypeError` まで通るか、
+#   **完走してクラスで共有する `const` を書き換えていた**（`c.L.append(2)` など）。
 #
 # 期待されるエラー:
 #   StaticTypeError  cannot assign to const 'Counter.LIMIT'
 #   StaticTypeError  cannot assign to const 'Counter.LIMIT'
 #   StaticTypeError  cannot assign to const 'Counter.LIMIT'
 #   StaticTypeError  cannot assign to const 'Counter.LIMIT'
+#   StaticTypeError  cannot modify the contents of const 'Counter.NAMES'
+#   StaticTypeError  cannot modify the contents of const 'Counter.NAMES'
+#   StaticTypeError  cannot modify the contents of const 'Counter.ORIGIN'
+#   StaticTypeError  cannot assign to const 'Counter.UNIT'
 #   StaticTypeError  cannot assign to const 'Color.BLUE'
 
-class Counter:
+class Point:
+    mut x: int
+
+trait Measured:
+    const UNIT: str = "cm"
+
+class Counter(Measured):
     const LIMIT: int = 100
+    const NAMES: list[str] = ["a"]
+    const ORIGIN: Point = Point(0)
     static mut total: int = 0
     mut own: int
 
@@ -37,6 +50,14 @@ Counter.LIMIT += 1                      # ⛔ 複合代入も同じ
 
 mut c = Counter(1)
 c.LIMIT = 5                             # ⛔ インスタンス経由
+
+Counter.NAMES[0] = "b"                  # ⛔ const の要素
+
+c.NAMES.append("c")                     # ⛔ インスタンス経由でも const の中身は書き換えられない
+
+c.ORIGIN.x = 3                          # ⛔ const のオブジェクトのフィールド
+
+c.UNIT = "mm"                           # ⛔ trait の const
 
 Counter.total = 5                       # ✅ static mut は代入できる
 

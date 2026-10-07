@@ -168,10 +168,90 @@ impl TypeChecker {
     pub(super) const MUTATING_COLLECTION_METHODS: &'static [&'static str] =
         &["append", "pop", "add", "clear", "discard", "remove"];
 
-    /// アクセスパスの根の**可変性**。根が識別子でない（一時値）／未宣言なら `None`。
-    pub(super) fn path_is_mutable(&self, expr: &Expr) -> Option<bool> {
+    /// アクセスパスの**可変性**。根が識別子でない（一時値）／未宣言なら `None`。
+    ///
+    /// ⚠⚠ **経路の途中に `const` があれば不変**（[`Self::const_on_path`]）。`mut c` の
+    ///   `c.L`（`L` はクラスの `const`）も、`m.L`（モジュールの `const`）も書き換えられない。
+    ///   以前は根の束縛だけを見ていたので `c.L.append(2)` / `f(c.L)`（`mut` の仮引数）が通っていた。
+    /// ⚠⚠ **根が型の値・モジュールなら「値の束縛」ではない**（`check_attr_assign` と同じ区別）。
+    ///   `Counter.items`（`static mut`）は書ける。以前はクラス名の束縛が不変なので
+    ///   `Counter.items.append(1)` が誤って弾かれていた。
+    pub(super) fn path_is_mutable(&mut self, expr: &Expr) -> Option<bool> {
+        if self.const_on_path(expr).is_some() {
+            return Some(false);
+        }
         let name = Self::path_root_ident(expr)?;
-        self.lookup(name).map(|info| info.mutable)
+        let info = self.lookup(name)?;
+        if matches!(
+            info.ty,
+            InferredType::TypeValOf(_) | InferredType::Namespace(..) | InferredType::PyNamespace(_)
+        ) {
+            return None;
+        }
+        Some(info.mutable)
+    }
+
+    /// 型だけが欲しい推論（**診断を出さない**）。
+    ///
+    /// ⚠ 書き込み先の経路（`C.L` の `C`）を調べるために、本来の検査とは別にもう一度推論する。
+    ///   診断をそのまま残すと、同じ誤り（未定義の名前など）が二重に出る。
+    pub(super) fn infer_quietly(&mut self, expr: &Expr) -> InferredType {
+        let mark = self.diags.mark();
+        let ty = self.infer(expr);
+        self.diags.rollback(mark);
+        ty
+    }
+
+    /// `object.attr` の `attr` の**持ち主**（`const` を持ちうるもの）と、それが型の値経由か。
+    ///
+    /// - `self` → 今のクラス
+    /// - 型の値（`Counter` / `Color` / `Box[int]`）→ そのクラス（型の値経由）
+    /// - インスタンス（`c` / `Box[int]` の値 / trait 型の値）→ そのクラス・trait
+    /// - Arrow のモジュール（`m` / 別名 `t`）→ そのモジュール（エディタではメンバーが確定しないので見ない）
+    pub(super) fn member_owner(&mut self, object: &Expr) -> Option<(MemberOwner, bool)> {
+        if matches!(object, Expr::Ident { name, .. } if name == "self") {
+            return self.state.current_class().map(|c| (MemberOwner::Class(c.to_string()), false));
+        }
+        match self.infer_quietly(object) {
+            InferredType::TypeValOf(inner) => match *inner {
+                InferredType::NamedInstance(c) => Some((MemberOwner::Class(c), true)),
+                ref generic @ InferredType::GenericInstance { .. } => self
+                    .registry
+                    .instance_class(&generic.to_string())
+                    .map(|c| (MemberOwner::Class(c.clone()), true)),
+                _ => None,
+            },
+            InferredType::Namespace(_, Some(closed)) => Some((MemberOwner::Module(closed.name), false)),
+            ty => self.class_and_subst(&ty).map(|(c, _)| (MemberOwner::Class(c), false)),
+        }
+    }
+
+    /// `owner.member` が `const` か（クラス・trait・enum は [`Self::is_const_member`]、モジュールは `module_consts`）。
+    pub(super) fn owner_has_const(&self, owner: &MemberOwner, member: &str) -> bool {
+        match owner {
+            MemberOwner::Class(c) => self.is_const_member(c, member),
+            MemberOwner::Module(m) => self.module_consts.get(m).is_some_and(|s| s.contains(member)),
+        }
+    }
+
+    /// 書き込み先の**経路の途中にある `const`**（持ち主の名前・メンバー名）。無ければ `None`。
+    ///
+    /// `C.L[0]` / `c.O.x` の `c.O` / `self.L` / `m.L` のように、経路のどこかが `const` なメンバーなら、
+    /// その先の要素・フィールドも書き換えられない（規則 1「要素・フィールドは根の属性を継ぐ」を
+    /// 経路の途中の `const` に広げたもの）。根の識別子そのもの（`const X`）は束縛の不変性が見る。
+    pub(super) fn const_on_path(&mut self, path: &Expr) -> Option<(String, String)> {
+        match path {
+            Expr::Attr { object, attr, .. } => {
+                if let Some((owner, _)) = self.member_owner(object) {
+                    if self.owner_has_const(&owner, attr) {
+                        return Some((owner.name().to_string(), attr.clone()));
+                    }
+                }
+                self.const_on_path(object)
+            }
+            Expr::Subscript { object, .. } => self.const_on_path(object),
+            _ => None,
+        }
     }
 
     /// `let` の値に対する**変更メソッド**の呼び出しを弾く（bug_fix.md B8）。
@@ -214,6 +294,15 @@ impl TypeChecker {
                 | InferredType::DictOf(_, _)
         );
         if !is_collection {
+            return;
+        }
+        // ⚠ `const` の中身（`C.L.append(..)` / `self.L.append(..)` / `m.L.append(..)`）は、
+        //   根の束縛が `mut` でも書き換えられない。
+        if let Some((owner, member)) = self.const_on_path(object) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ModifyConst { owner, member },
+                span: Some(span.clone()),
+            });
             return;
         }
         if self.path_is_mutable(object) != Some(false) {
@@ -332,57 +421,62 @@ impl TypeChecker {
         }
     }
 
-    /// `obj.attr = val`（複合代入も）の書き込み先を検査する。
+    /// 属性・添字への代入（複合代入も）の書き込み先を検査する。
     ///
-    /// 1. `attr` が **`const` なメンバー**（[`Self::is_const_member`]）なら `AssignToConst`。
+    /// 1. `obj.attr = ..` で `attr` が **`const` なメンバー**（[`Self::owner_has_const`]）なら `AssignToConst`。
     ///    クラス名経由（`Counter.LIMIT`）・インスタンス経由（`c.LIMIT`）・`__init__` の中の
-    ///    `self.LIMIT` のどれでも同じ。
-    /// 2. `attr` が `let` フィールドなら `AssignToImmutableField`（`__init__` の中の `self` は除く）。
+    ///    `self.LIMIT`・trait の `const`・enum のメンバー・モジュールの `const`（`m.K`）のどれでも同じ。
+    /// 2. 書き込む先の**入れ物の経路に `const` がある**（`C.L[0] = ..` / `C.O.x = ..` / `m.L[0] = ..`）なら
+    ///    `ModifyConst`（[`Self::const_on_path`]）。
+    /// 3. `obj.attr = ..` で `attr` が `let` フィールドなら `AssignToImmutableField`（`__init__` の中の `self` は除く）。
     ///
-    /// ⚠⚠ **1 は `__init__` の免除より先に見る**。`__init__` で許すのは `let` フィールドの初回代入で、
-    ///    `const` は `__init__` の中でも代入できない（実行時も `TypeError: cannot assign to class
+    /// ⚠⚠ **1・2 は `__init__` の免除より先に見る**。`__init__` で許すのは `let` フィールドの初回代入で、
+    ///    `const` は `__init__` の中でも書き換えられない（実行時も `TypeError: cannot assign to class
     ///    variable`）。以前は `__init__` の中を丸ごと免除していたので `self.LIMIT = 7` が素通りし、
     ///    クラス名経由の `Counter.LIMIT = 5` も（`NamedInstance` しか見ていなかったので）素通りしていた。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
-        let Expr::Attr { object, attr, span, .. } = target else {
-            return;
+        // ⚠ 添字（`Expr::Subscript`）は位置を持たないので、文の位置で知らせる（`report_error` が補う）。
+        let (object, attr, span): (&Expr, Option<&str>, Option<Span>) = match target {
+            Expr::Attr { object, attr, span, .. } => (object.as_ref(), Some(attr.as_str()), Some(span.clone())),
+            Expr::Subscript { object, .. } => (object.as_ref(), None, None),
+            _ => return,
         };
-        let is_self = matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self");
-        // 書き込み先の持ち主（クラス名・enum 名）と、型の値（`Counter` / `Color`）経由か。
-        let (owner, via_type_value) = if is_self {
-            (self.state.current_class().map(str::to_string), false)
-        } else {
-            match self.infer(object) {
-                InferredType::TypeValOf(inner) => match *inner {
-                    InferredType::NamedInstance(c) => (Some(c), true),
-                    _ => (None, true),
-                },
-                InferredType::NamedInstance(c) => (Some(c), false),
-                _ => (None, false),
+        let owner = match attr {
+            Some(_) => self.member_owner(object),
+            None => None,
+        };
+        if let (Some((o, _)), Some(attr)) = (&owner, attr) {
+            if self.owner_has_const(o, attr) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::AssignToConst { owner: o.name().to_string(), member: attr.to_string() },
+                    span,
+                });
+                return;
             }
-        };
-        let Some(owner) = owner else {
-            return;
-        };
-        if self.is_const_member(&owner, attr) {
+        }
+        if let Some((owner, member)) = self.const_on_path(object) {
             self.report_error(StaticTypeError {
-                kind: TypeErrorKind::AssignToConst { owner, member: attr.clone() },
-                span: Some(span.clone()),
+                kind: TypeErrorKind::ModifyConst { owner, member },
+                span,
             });
             return;
         }
+        let (Some((MemberOwner::Class(class_name), via_type_value)), Some(attr)) = (owner, attr) else {
+            return;
+        };
         // ⚠ 型の値経由で書けるのは `static mut` だけ。`let` / `mut` フィールドを型の値経由で
         //   書く形（`Counter.own = 1`）はここでは判定しない（以前と同じ）。
+        let is_self = matches!(object, Expr::Ident { name: n, .. } if n == "self");
         if via_type_value || (is_self && self.state.current_fn() == Some("__init__")) {
             return;
         }
-        if self.registry.field_is_mutable(&owner, attr.as_str()) == Some(false) {
+        if self.registry.field_is_mutable(&class_name, attr) == Some(false) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::AssignToImmutableField {
-                    field_name: attr.clone(),
-                    class_name: owner,
+                    field_name: attr.to_string(),
+                    class_name,
                 },
-                span: Some(span.clone()),
+                span,
             });
         }
     }
@@ -390,16 +484,60 @@ impl TypeChecker {
     /// `owner.member` が **`const` なメンバー**か（代入できないメンバー）。
     ///
     /// - クラスの `const`（`FieldKind::Const`・基底クラスの分も含む）
+    /// - trait の `const`（クラスが実装する trait・trait 型の値）
     /// - enum のメンバー（`registry.enum_members`）。メンバーは値で、**暗黙に `const`**
-    ///   （`implementation_plans/enum_member_type_plan.md` 5-1・5-2）
+    ///   （`implementation_plans/enum_member_type_plan.md` 5-1〜5-3）
     ///
     /// ⚠ enum のメンバーの `value` は `const` ではなく、メンバーごとの不変のフィールド（`let`）。
     pub(super) fn is_const_member(&self, owner: &str, member: &str) -> bool {
         if self.registry.enum_members(owner).is_some_and(|m| m.contains_key(member)) {
             return true;
         }
-        self.collect_class_field_details(owner)
+        if self
+            .collect_class_field_details(owner)
             .get(member)
             .is_some_and(|(kind, _)| matches!(kind, crate::ast::FieldKind::Const))
+        {
+            return true;
+        }
+        self.trait_has_const(owner, member, 0)
+    }
+
+    /// `name`（trait・クラス）自身か、その基底の trait が `member` を `const` として宣言しているか。
+    /// ⚠ trait のフィールドはクラスの表（`class_field_details`）ではなく `trait_field_details` にある。
+    fn trait_has_const(&self, name: &str, member: &str, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        if self
+            .registry
+            .trait_field_details(name)
+            .and_then(|f| f.get(member))
+            .is_some_and(|(kind, _)| matches!(kind, crate::ast::FieldKind::Const))
+        {
+            return true;
+        }
+        self.registry
+            .class_bases(name)
+            .unwrap_or(&[])
+            .iter()
+            .any(|b| self.trait_has_const(b, member, depth + 1))
+    }
+}
+
+/// `const` を持ちうるメンバーの持ち主（[`TypeChecker::member_owner`]）。
+pub(super) enum MemberOwner {
+    /// クラス・trait・enum（名前）。
+    Class(String),
+    /// Arrow のモジュール（名前 `a.b`）。
+    Module(String),
+}
+
+impl MemberOwner {
+    /// 誤りに出す持ち主の名前。
+    pub(super) fn name(&self) -> &str {
+        match self {
+            MemberOwner::Class(n) | MemberOwner::Module(n) => n,
+        }
     }
 }

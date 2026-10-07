@@ -8,6 +8,10 @@
     where `make_var_immutable` rewrites the variable itself, so `x` stays immutable for
     the rest of its lifetime.
   - ⚠ A class may define `fn __freeze__(mut self)`, which runs once at the `freeze`.
+- **`const` is immutable as a whole** (top-level, local, class, trait, enum member — implicitly — and an
+  imported module's `const`). Assigning to it (`C.K = ..`, `c.K = ..`, `self.K = ..` even in `__init__`,
+  `m.K = ..`) and writing into it (`C.L[0] = ..`, `c.L.append(..)`, `c.O.x = ..`, `m.L[0] = ..`) are static
+  errors, whatever the root binding. A copy (`mut xs = C.L`) is writable; `static mut` stays writable.
 - Functions use `fn` instead of `def`
 - Static type checking occurs after parsing and before execution
 - Supports templates

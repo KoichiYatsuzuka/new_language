@@ -1,0 +1,14 @@
+# @id: M14
+# @obligation: インスタンス経由の const の中身の書き換え（c.L.append(2)）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class C:
+    const L: list[int] = [1]
+    mut n: int
+mut c = C(1)
+c.L.append(2)
+print(C.L)

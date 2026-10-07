@@ -70,4 +70,17 @@ print(r1.bump())                    # 1
 print(r2.bump())                    # 2   ← r1 と同じセル
 print(Registry2.count)              # 2
 
+print("=== static mut の中身はクラス名経由でも書き換えられる ===")
+
+# ⚠ 以前は経路の根のクラス名（`Log`）の束縛が不変なので、`Log.lines.append(..)` が
+#   `cannot call 'append' on 'Log' — it is immutable` で誤って弾かれていた（実行時は通る）。
+#   型の値は「値の束縛」ではない。書き換えられないのは `const` の中身だけ（const_member_assign_error.ar）。
+class Log:
+    static mut lines: list[str] = []
+    mut level: int
+
+Log.lines.append("start")
+Log.lines[0] = "boot"
+print(Log.lines)                    # ['boot']
+
 print("done")

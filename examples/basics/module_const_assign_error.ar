@@ -1,0 +1,34 @@
+# module_const_assign_error.ar — import したモジュールの `const` も書き換えられない
+#
+# 計画: implementation_plans/enum_member_type_plan.md（5-3）
+# クラス・trait・enum の `const` は examples/classes/const_member_assign_error.ar
+#
+# ⚠ 以前は `m.LIMIT = 5` が実行時の `AttributeError`（cannot set attribute on non-instance）まで通り、
+#   `m.NAMES[0] = ..` / `m.ORIGIN.x = ..` は**完走してモジュールの `const` を書き換えていた**。
+# ⚠ 別名（`import ... as k`）でも、`from ... import` で取り込んだ名前でも同じ
+#   （取り込んだ名前は不変の束縛なので `cannot assign to immutable variable`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  cannot assign to const 'namespace_modules.consts.LIMIT'
+#   StaticTypeError  cannot assign to const 'namespace_modules.consts.LIMIT'
+#   StaticTypeError  cannot modify the contents of const 'namespace_modules.consts.NAMES'
+#   StaticTypeError  cannot modify the contents of const 'namespace_modules.consts.NAMES'
+#   StaticTypeError  cannot modify the contents of const 'namespace_modules.consts.ORIGIN'
+#   StaticTypeError  cannot assign to immutable variable 'LIMIT'
+
+import namespace_modules.consts as k
+from namespace_modules.consts import LIMIT
+
+k.LIMIT = 5                             # ⛔ モジュールの const
+
+k.LIMIT += 1                            # ⛔ 複合代入も同じ
+
+k.NAMES[0] = "b"                        # ⛔ const の要素
+
+k.NAMES.append("c")                     # ⛔ 書き換えるメソッド
+
+k.ORIGIN.x = 3                          # ⛔ const のオブジェクトのフィールド
+
+LIMIT = 7                               # ⛔ 取り込んだ名前は不変の束縛
+
+print("ここには到達しない")

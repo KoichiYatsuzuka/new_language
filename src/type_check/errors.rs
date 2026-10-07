@@ -143,6 +143,15 @@ pub enum TypeErrorKind {
         owner: String,
         member: String,
     },
+    /// **`const` の中身**の書き換え（`C.L[0] = ..` / `C.O.x = ..` / `C.L.append(..)` /
+    /// `m.L[0] = ..` / メソッドの中の `self.L.append(..)`）。
+    ///
+    /// `const` は値ごと不変で、その要素・フィールドも書き換えられない（規則 1「要素・フィールドは
+    /// 根の属性を継ぐ」を、経路の途中の `const` にも広げたもの）。`owner.member` がその `const`。
+    ModifyConst {
+        owner: String,
+        member: String,
+    },
     /// `let`/`mut`/`const` の型注釈と初期化子の型が食い違う（0-1）。
     VarTypeMismatch {
         name: String,
@@ -825,6 +834,10 @@ impl StaticTypeError {
             ),
             TypeErrorKind::AssignToConst { owner, member } => format!(
                 "cannot assign to const {}",
+                hl_q(&format!("{owner}.{member}"))
+            ),
+            TypeErrorKind::ModifyConst { owner, member } => format!(
+                "cannot modify the contents of const {}",
                 hl_q(&format!("{owner}.{member}"))
             ),
             TypeErrorKind::VarTypeMismatch { name, expected, got } => format!(

@@ -20,7 +20,7 @@
 #   StaticTypeError  'Color' has no member 'value'
 #   StaticTypeError  unknown type 'enum_item_Color' in type guard; the branch can never match
 #   StaticTypeError  cannot assign to const 'Color.BLUE'
-#   StaticTypeError  cannot assign to immutable field 'value' of class 'Color'
+#   StaticTypeError  cannot modify the contents of const 'Color.BLUE'
 
 enum Color:
     PLANE

@@ -73,6 +73,10 @@ pub struct TypeChecker {
     /// `Stmt::Import` / `Stmt::FromImport` を検査するたびに入れる（CPython 準拠・2026-10-02）。
     /// パッケージの名前空間の型（`namespace_type`）を組み立てるのに使う。
     module_member_cache: HashMap<String, HashMap<String, InferredType>>,
+    /// import したモジュールの **`const` なメンバー**（モジュールの名前 `a.b` → 名前）。
+    /// 最上位の `const` と、`from x import K` で再エクスポートした `x` の `const`。
+    /// `m.K = ..` / `m.L[0] = ..` を弾くのに使う（`is_const_member` の兄弟・`module_member_types` が入れる）。
+    module_consts: HashMap<String, std::collections::HashSet<String>>,
     /// **サブモジュールの表**（親パッケージの名前 → 子の名前）。プログラムのどこかで import される
     /// モジュール（`a.b`）を、その親（`a`）の子として集めたもの（[`names::collect_module_children`]）。
     ///
@@ -253,6 +257,7 @@ impl TypeChecker {
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
             module_member_cache: HashMap::new(),
+            module_consts: HashMap::new(),
             module_children: {
                 let mut map = HashMap::new();
                 names::collect_module_children(stmts, &mut map);
