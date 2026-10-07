@@ -18,7 +18,7 @@ pub mod builtins;
 // 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
 #[allow(unused_imports)]
-pub use types::{FnTypeParam, InferredType, MetaKind};
+pub use types::{FnTypeParam, InferredType, MetaKind, VarAttr};
 #[allow(unused_imports)]
 pub use annotations::{
     ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
@@ -355,6 +355,19 @@ impl TypeChecker {
             return None;
         }
         Some(ty)
+    }
+
+    /// プログラムが import する各モジュールの**グローバル変数の型と属性**
+    /// （モジュールの名前 `a.b` → 名前 → (型, 属性)）。
+    ///
+    /// `--emit-stubs` が VS Code 拡張へ渡すスタブにグローバル変数を書くのに使う（拡張は import 先を
+    /// 読まないので、ここで分かった型と属性をスタブで運ぶ・`enum_member_type_plan.md` 6-3）。
+    /// ⚠ 型は**モジュールの本体を検査したときに束縛に付いた型**（`annotate_module_body` が控える
+    ///   `module_globals`）。注釈の無い変数も推論した型が付く。型推論を別に書かない。
+    pub fn module_globals(stmts: &[Stmt]) -> HashMap<String, HashMap<String, (InferredType, VarAttr)>> {
+        let mut tc = Self::new(stmts);
+        tc.check_stmts(stmts);
+        tc.module_globals
     }
 
     /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（**型検査の唯一の入口**）。

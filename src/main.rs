@@ -782,6 +782,12 @@ fn emit_stubs(path: &str) {
             std::process::exit(1);
         }
     };
+    // ⚠⚠ **import したモジュールのグローバル変数の型と属性**をスタブで運ぶ（拡張は import 先を
+    //    読まない・`enum_member_type_plan.md` 6-3）。型は通常の実行と同じく展開してから型検査して
+    //    求める（推論を別に書かない）。展開に失敗したら変数の型は運ばない（宣言の注釈だけで書く）。
+    let globals = meta_expand::expand_program(stmts.clone(), parser.node_counter(), parser.known_traits())
+        .map(|expanded| type_check::TypeChecker::module_globals(&expanded))
+        .unwrap_or_default();
 
     let out_dir = src_path
         .parent()
@@ -816,7 +822,13 @@ fn emit_stubs(path: &str) {
         };
         let module_name = source_module.clone().unwrap_or_else(|| module.join("."));
         let file = stub_manifest::stub_file_name(&key);
-        let text = partial_compiler::stub_gen::generate_stub(&arrow_writable(body));
+        // Arrow のモジュールはグローバル変数も型と属性つきで書く（6-3）。外部言語は宣言だけ。
+        let text = if crate::module_path::is_arrow_source_lang(lang) {
+            let key = module.join(".");
+            partial_compiler::stub_gen::generate_editor_stub(&arrow_writable(body), &key, globals.get(&key))
+        } else {
+            partial_compiler::stub_gen::generate_stub(&arrow_writable(body))
+        };
         // ⚠⚠ **body が非空でもテキストが空になることがある。** `generate_stub` が
         //    書けるのは `fn` / `gen` / `class` / `trait` / `new_type` / `enum` だけで、
         //    py スタブの形（`Stmt::Let(name, "function->T", None)` — 行ベース抽出器の
