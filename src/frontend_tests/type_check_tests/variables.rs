@@ -186,6 +186,45 @@ use super::*;
         )));
     }
 
+    /// **`const` への代入は、どの経路でも同じ `AssignToConst`**（`enum_member_type_plan.md` 5-2）。
+    ///
+    /// ⚠ 以前はインスタンス経由（`c.LIMIT`）だけが弾かれ（`AssignToImmutableField`）、クラス名経由
+    ///   （`Counter.LIMIT`）と `__init__` の中の `self.LIMIT` は実行時の `TypeError` まで通っていた。
+    /// ⚠ enum のメンバー（暗黙に `const`）は `tests/enum_defaults.rs` で見ている。
+    #[test]
+    fn const_member_assign_err_on_every_path() {
+        const COUNTER: &str = concat!(
+            "class Counter:\n",
+            "    const LIMIT: int = 100\n",
+            "    static mut total: int = 0\n",
+            "    mut own: int\n",
+        );
+        let is_limit = |errs: &[StaticTypeError]| {
+            errs.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::AssignToConst { owner, member } if owner == "Counter" && member == "LIMIT"))
+        };
+        for (body, what) in [
+            ("Counter.LIMIT = 5\n", "class name"),
+            ("Counter.LIMIT += 1\n", "compound"),
+            ("mut c = Counter(1)\nc.LIMIT = 5\n", "instance"),
+        ] {
+            let errs = check(&format!("{COUNTER}{body}"));
+            assert!(is_limit(&errs), "{what}: expected AssignToConst, got {errs:?}");
+        }
+        // `__init__` の中でも代入できない（`let` フィールドの初回代入とは別）。
+        let errs = check(concat!(
+            "class Counter:\n",
+            "    const LIMIT: int = 100\n",
+            "    mut own: int\n",
+            "    fn __init__(mut self, n: int) -> None:\n",
+            "        self.own = n\n",
+            "        self.LIMIT = 7\n",
+        ));
+        assert!(is_limit(&errs), "__init__: expected AssignToConst, got {errs:?}");
+        // 負の対照: `static mut` はクラス名経由・インスタンス経由とも代入できる。
+        assert!(ok(&format!("{COUNTER}Counter.total = 5\nmut c = Counter(1)\nc.total = 9\n")));
+    }
+
 // ── メタプログラミングの型（設計書 §1.2 / §1.5・タスク 1-5）────────────────
 
 /// ⚠⚠ `Code` は**メタ関数の外へ持ち出せない**（設計書 §1.2）。

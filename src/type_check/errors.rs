@@ -132,10 +132,15 @@ pub enum TypeErrorKind {
         field_name: String,
         class_name: String,
     },
-    /// enum のメンバーへの代入（`Color.BLUE = ..` / `Color.BLUE += ..`）。
-    /// メンバーは**値**で、代入できる場所（変数・フィールド）ではない。
-    AssignToEnumMember {
-        enum_name: String,
+    /// **`const` なメンバー**への代入（`__init__` の中も含む）。
+    ///
+    /// `const` なメンバーは 2 種類で、どちらも同じ規則で弾く:
+    /// - クラスの `const`（`Counter.LIMIT = ..` / `c.LIMIT = ..` / `self.LIMIT = ..`）
+    /// - enum のメンバー（`Color.BLUE = ..`）。メンバーは値で、**暗黙に `const`**
+    ///
+    /// `owner` はクラス名・enum 名、`member` はメンバー名。
+    AssignToConst {
+        owner: String,
         member: String,
     },
     /// `let`/`mut`/`const` の型注釈と初期化子の型が食い違う（0-1）。
@@ -818,9 +823,9 @@ impl StaticTypeError {
             TypeErrorKind::AssignToImmutableField { field_name, class_name } => format!(
                 "cannot assign to immutable field {} of class {}", hl_q(field_name), hl_q(class_name)
             ),
-            TypeErrorKind::AssignToEnumMember { enum_name, member } => format!(
-                "cannot assign to enum member {}; an enum member is a value, not a variable",
-                hl_q(&format!("{enum_name}.{member}"))
+            TypeErrorKind::AssignToConst { owner, member } => format!(
+                "cannot assign to const {}",
+                hl_q(&format!("{owner}.{member}"))
             ),
             TypeErrorKind::VarTypeMismatch { name, expected, got } => format!(
                 "{} is declared {} but initialized with {}",

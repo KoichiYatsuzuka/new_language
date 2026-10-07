@@ -332,54 +332,74 @@ impl TypeChecker {
         }
     }
 
-    /// `obj.attr = val` のとき `attr` が `let` フィールドであれば `AssignToImmutableField` エラーを記録する。
-    /// `obj` が enum の型の値で `attr` がそのメンバーなら `AssignToEnumMember` エラーを記録する。
+    /// `obj.attr = val`（複合代入も）の書き込み先を検査する。
+    ///
+    /// 1. `attr` が **`const` なメンバー**（[`Self::is_const_member`]）なら `AssignToConst`。
+    ///    クラス名経由（`Counter.LIMIT`）・インスタンス経由（`c.LIMIT`）・`__init__` の中の
+    ///    `self.LIMIT` のどれでも同じ。
+    /// 2. `attr` が `let` フィールドなら `AssignToImmutableField`（`__init__` の中の `self` は除く）。
+    ///
+    /// ⚠⚠ **1 は `__init__` の免除より先に見る**。`__init__` で許すのは `let` フィールドの初回代入で、
+    ///    `const` は `__init__` の中でも代入できない（実行時も `TypeError: cannot assign to class
+    ///    variable`）。以前は `__init__` の中を丸ごと免除していたので `self.LIMIT = 7` が素通りし、
+    ///    クラス名経由の `Counter.LIMIT = 5` も（`NamedInstance` しか見ていなかったので）素通りしていた。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
-        if let Expr::Attr { object, attr, span, .. } = target {
-            let is_self_in_init = matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self")
-                && self.state.current_fn() == Some("__init__");
-            if is_self_in_init {
-                return;
+        let Expr::Attr { object, attr, span, .. } = target else {
+            return;
+        };
+        let is_self = matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self");
+        // 書き込み先の持ち主（クラス名・enum 名）と、型の値（`Counter` / `Color`）経由か。
+        let (owner, via_type_value) = if is_self {
+            (self.state.current_class().map(str::to_string), false)
+        } else {
+            match self.infer(object) {
+                InferredType::TypeValOf(inner) => match *inner {
+                    InferredType::NamedInstance(c) => (Some(c), true),
+                    _ => (None, true),
+                },
+                InferredType::NamedInstance(c) => (Some(c), false),
+                _ => (None, false),
             }
-            let class_name_opt: Option<String> = if matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self")
-            {
-                self.state.current_class().map(str::to_string)
-            } else {
-                let obj_ty = self.infer(object);
-                // ⚠⚠ **enum のメンバーは値で、代入できる場所ではない**（`Color.BLUE = Color.RED`）。
-                //    以前は型検査を通り、実行時の `TypeError: cannot assign to class variable` で止まっていた。
-                //    メンバーの中身（`value`）も書き換えられない（`class_fields` で `let` 扱い・下の検査）。
-                if let InferredType::TypeValOf(inner) = &obj_ty {
-                    if let InferredType::NamedInstance(enum_name) = inner.as_ref() {
-                        if self.registry.enum_members(enum_name).is_some_and(|m| m.contains_key(attr.as_str())) {
-                            self.report_error(StaticTypeError {
-                                kind: TypeErrorKind::AssignToEnumMember {
-                                    enum_name: enum_name.clone(),
-                                    member: attr.clone(),
-                                },
-                                span: Some(span.clone()),
-                            });
-                            return;
-                        }
-                    }
-                }
-                if let InferredType::NamedInstance(cls) = obj_ty {
-                    Some(cls)
-                } else {
-                    None
-                }
-            };
-            if let Some(class_name) = class_name_opt {
-                if self.registry.field_is_mutable(&class_name, attr.as_str()) == Some(false) {
-                    self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::AssignToImmutableField {
-                            field_name: attr.clone(),
-                            class_name,
-                        },
-                        span: Some(span.clone()),
-                    });
-                }
-            }
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        if self.is_const_member(&owner, attr) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::AssignToConst { owner, member: attr.clone() },
+                span: Some(span.clone()),
+            });
+            return;
         }
+        // ⚠ 型の値経由で書けるのは `static mut` だけ。`let` / `mut` フィールドを型の値経由で
+        //   書く形（`Counter.own = 1`）はここでは判定しない（以前と同じ）。
+        if via_type_value || (is_self && self.state.current_fn() == Some("__init__")) {
+            return;
+        }
+        if self.registry.field_is_mutable(&owner, attr.as_str()) == Some(false) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::AssignToImmutableField {
+                    field_name: attr.clone(),
+                    class_name: owner,
+                },
+                span: Some(span.clone()),
+            });
+        }
+    }
+
+    /// `owner.member` が **`const` なメンバー**か（代入できないメンバー）。
+    ///
+    /// - クラスの `const`（`FieldKind::Const`・基底クラスの分も含む）
+    /// - enum のメンバー（`registry.enum_members`）。メンバーは値で、**暗黙に `const`**
+    ///   （`implementation_plans/enum_member_type_plan.md` 5-1・5-2）
+    ///
+    /// ⚠ enum のメンバーの `value` は `const` ではなく、メンバーごとの不変のフィールド（`let`）。
+    pub(super) fn is_const_member(&self, owner: &str, member: &str) -> bool {
+        if self.registry.enum_members(owner).is_some_and(|m| m.contains_key(member)) {
+            return true;
+        }
+        self.collect_class_field_details(owner)
+            .get(member)
+            .is_some_and(|(kind, _)| matches!(kind, crate::ast::FieldKind::Const))
     }
 }

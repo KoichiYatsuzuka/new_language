@@ -1,0 +1,45 @@
+# const_member_assign_error.ar — `const` なメンバーへの代入は、どの経路でも静的エラー
+#
+# 計画: implementation_plans/enum_member_type_plan.md（5-2）
+# 正常系（`static mut` は代入できる）は static_mut_assign.ar
+#
+# `const` なメンバーは 2 種類で、どちらも同じ規則（`AssignToConst`）で弾く:
+#   - クラスの `const`
+#   - enum のメンバー（メンバーは値で、暗黙に `const`）
+#
+# ⚠ 以前はインスタンス経由（`c.LIMIT = ..`）だけが静的に弾かれ、クラス名経由（`Counter.LIMIT = ..`）・
+#   `__init__` の中の `self.LIMIT = ..`・enum のメンバーへの代入は、実行時の
+#   `TypeError: cannot assign to class variable 'LIMIT' (declared const)` まで通っていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  cannot assign to const 'Counter.LIMIT'
+#   StaticTypeError  cannot assign to const 'Counter.LIMIT'
+#   StaticTypeError  cannot assign to const 'Counter.LIMIT'
+#   StaticTypeError  cannot assign to const 'Counter.LIMIT'
+#   StaticTypeError  cannot assign to const 'Color.BLUE'
+
+class Counter:
+    const LIMIT: int = 100
+    static mut total: int = 0
+    mut own: int
+
+    fn __init__(mut self, n: int) -> None:
+        self.own = n
+        self.LIMIT = n                  # ⛔ __init__ の中でも const には代入できない
+
+enum Color:
+    PLANE
+    BLUE
+
+Counter.LIMIT = 5                       # ⛔ クラス名経由
+
+Counter.LIMIT += 1                      # ⛔ 複合代入も同じ
+
+mut c = Counter(1)
+c.LIMIT = 5                             # ⛔ インスタンス経由
+
+Counter.total = 5                       # ✅ static mut は代入できる
+
+Color.BLUE = Color.PLANE                # ⛔ enum のメンバーは暗黙に const
+
+print("ここには到達しない")

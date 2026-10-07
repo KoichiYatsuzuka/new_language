@@ -146,8 +146,8 @@ Returns the type recorded in scope. If not found → `Unresolved`.
 - **enum**: a member's type is the enum type itself (`Color.Red : NamedInstance("Color")`).
   Members are read only from the type value (`TypeValOf(Color)` → `registry.enum_members`);
   from a `Color` value only `value: int` (`class_field_details["Color"]`). So `m.Red` and
-  `Color.value` are `NoSuchMember`, matching the runtime. A member is a **value**: assigning to
-  it is `AssignToEnumMember`, and `value` is immutable (`class_fields[enum] = {value: false}`, so
+  `Color.value` are `NoSuchMember`, matching the runtime. A member is a **value** and implicitly
+  `const`: assigning to it is `AssignToConst` (the same rule as a class `const`), and `value` is immutable (`class_fields[enum] = {value: false}`, so
   `Color.Red.value = 5` / `m.value = 5` are `AssignToImmutableField`; the runtime field is `let` too). ⚠ The old internal type
   `enum_item_Color` (and its `enum_item_X → X` upcast) was removed — see
   `implementation_plans/enum_member_type_plan.md`.
@@ -352,6 +352,7 @@ Access control is checked statically only for attribute accesses on `NamedInstan
 ### Immutable field assignment
 
 Assigning to a `let` field (`obj.field = val`) outside `__init__` produces `AssignToImmutableField`. Inside `__init__`, `let` fields can be freely set.
+Assigning to a `const` member is `AssignToConst` on every path, including `__init__` and the class name (`Counter.LIMIT = ..`).
 
 ### Static methods
 
@@ -521,7 +522,7 @@ The resulting `HashMap<String, InferredType>` is stored as `InferredType::Namesp
 | `TupleUnpackMissingQualifier { name }` | Tuple-unpack target has no `let`/`mut` qualifier |
 | `TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard }` | Number of unpack targets does not match tuple length |
 | `AssignToImmutableField { field_name, class_name }` | Assigning to a `let` field outside `__init__` |
-| `AssignToEnumMember { enum_name, member }` | Assigning to an enum member (`Color.Red = ..` / `Color.Red += ..`): a member is a value, not a variable |
+| `AssignToConst { owner, member }` | Assigning to a `const` member on any path — `Counter.LIMIT = ..` / `c.LIMIT = ..` / `self.LIMIT = ..` (even in `__init__`) / compound — and to an enum member (implicitly `const`). Decided by `is_const_member` (`scope.rs`) before the `__init__` exemption for `let` fields |
 | `PrivateAccessError { member_name, class_name }` | Accessing a `private` member from outside the class |
 | `ProtectedAccessError { member_name, class_name }` | Accessing a `protected` member from a non-subclass |
 | `StaticMethodOnInstance { method_name, class_name }` | Calling a `static` method on an instance |

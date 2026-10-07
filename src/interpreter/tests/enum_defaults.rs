@@ -129,7 +129,8 @@ fn test_enum_member_class_is_the_enum() {
     assert!(matches!(run_get(src, "t"), Value::Bool(true)));
 }
 
-/// enum のメンバーは**値**。メンバーへの代入と、メンバーの中身（`value`）の書き換えは静的エラー。
+/// enum のメンバーは**値**で、暗黙に `const`。メンバーへの代入はクラスの `const` と同じ
+/// `AssignToConst`、メンバーの中身（`value`）の書き換えは `AssignToImmutableField`。
 /// ⚠ 以前は型検査を通り、`Color.Red = ..` は実行時の `TypeError`、`Color.Red.value = 5` は
 ///   **共有のメンバーそのものを書き換えていた**。
 #[test]
@@ -143,8 +144,8 @@ fn test_enum_member_is_a_value_statically() {
         let errs = static_errors(&format!("{head}{body}"));
         assert!(
             errs.iter().any(|e| matches!(&e.kind,
-                K::AssignToEnumMember { enum_name, member } if enum_name == "Color" && member == "Red")),
-            "{what}: expected AssignToEnumMember, got: {errs:?}"
+                K::AssignToConst { owner, member } if owner == "Color" && member == "Red")),
+            "{what}: expected AssignToConst, got: {errs:?}"
         );
     }
     for body in ["Color.Red.value = 5\n", "mut m = Color.Red\nm.value = 5\n", "mut m = Color.Red\nm.value += 1\n"] {

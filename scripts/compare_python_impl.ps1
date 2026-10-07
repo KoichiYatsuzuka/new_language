@@ -103,6 +103,7 @@ $knownDiff = @{
     'intersection_result_bind_error' = 'py: Intersection 注釈と右辺の照合が無い（妥当性検査だけして素通しする・タスク 1.1 で新設）'
     'static_mut_assign'              = 'py: static mut のインスタンス経由アクセスが未対応（AttributeError になる・タスク 1.2 で新設）'
     'static_mut_assign_error'        = 'py: static mut への代入の型検査が無い（そのまま実行してしまう・タスク 1.2 で新設）'
+    'const_member_assign_error'      = 'Rust: const なメンバー（クラスの const・enum のメンバー）への代入をどの経路でも StaticTypeError（enum_member_type_plan.md 5-2 で新設）。py: 静的に検査せず実行して Counter.LIMIT = 5 の AttributeError で止まる'
     'protocol_in_container'          = 'py: protocol 型の束縛・メンバー解決が未実装（NameError/AttributeError になる・タスク 1.3 で新設）'
     'protocol_in_container_error'    = 'py: 容器の内側の protocol 適合検査が無い（そのまま実行してしまう・タスク 1.3 で新設）'
     'template_result_type_error'     = 'py: テンプレート実体化の結果型が無い（実行時の演算エラーになる・タスク 2.1 で新設）'

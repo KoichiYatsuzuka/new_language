@@ -358,6 +358,7 @@ StaticTypeError のリストを収集
 | `IncompatibleComparison` | 型が合わない比較演算 |
 | `AssignToImmutable` | 不変変数への代入 |
 | `AssignToImmutableField` | 不変フィールドへの代入 |
+| `AssignToConst` | `const` なメンバー（クラスの `const`・enum のメンバー）への代入。どの経路でも（`__init__` の中も） |
 | `VariableRedeclaration` | アクセス可能なスコープに既に存在する変数名の再宣言 |
 | `CallArgCountMismatch` | 引数の数が合わない |
 | `CallArgTypeMismatch` | 引数の型が合わない |

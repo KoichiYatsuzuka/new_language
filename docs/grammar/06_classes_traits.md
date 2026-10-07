@@ -57,8 +57,13 @@ class Config:
 |---|---|---|
 | `FieldKind::Mut` | `mut` | 可変インスタンス変数。`__init__` 後も再代入可能 |
 | `FieldKind::Let` | `let` | 不変インスタンス変数。`__init__` 内でのみ代入可能 |
-| `FieldKind::Const` | `const` | クラス変数。全インスタンスで共有。代入不可 |
+| `FieldKind::Const` | `const` | クラス変数。全インスタンスで共有。代入不可（静的エラー `AssignToConst`） |
 | `FieldKind::StaticMut` | `static mut` | 可変クラス変数。全インスタンスで共有 |
+
+**`const` への代入**: クラス名経由（`Counter.LIMIT = 5`）・インスタンス経由（`c.LIMIT = 5`）・
+`__init__` の中の `self.LIMIT = 5`・複合代入のどれでも静的エラー
+`cannot assign to const 'Counter.LIMIT'`（`AssignToConst`）。enum のメンバーも暗黙に `const` で、
+同じ規則で弾かれる（`Color.Red = ..`）。`static mut` はどの経路でも代入できる。
 
 **初期値ルール**:
 - `const` フィールド → 初期値必須
@@ -456,8 +461,10 @@ enum Status:
 - メンバーは型の値（`Color.Red`）からだけ、`value` はメンバー（`Color` 型の値）からだけ引ける。
   `c.Red` と `Color.value` は静的エラー
 - 別の enum のメンバーとは比較も代入もできない（`Color.Red == Shape.Square` は静的エラー）
-- メンバーは**値**で、変数ではない。メンバーへの代入（`Color.Red = Color.Green` / `Color.Red += 1`）と
-  中身の書き換え（`Color.Red.value = 5` / `m.value = 5`）は静的エラー（実行時も `value` は不変）。
+- メンバーは**値**で、変数ではない。メンバーは**暗黙に `const`** で、メンバーへの代入
+  （`Color.Red = Color.Green` / `Color.Red += 1`）はクラスの `const` と同じ `AssignToConst`。
+  中身の書き換え（`Color.Red.value = 5` / `m.value = 5`）も静的エラー（`value` は不変のフィールド。
+  実行時も不変）。
   メンバーを入れた変数の付け替え（`mut c = Color.Red` の後の `c = Color.Green`）は通る
 - ⚠ 以前の内部名 `enum_item_Color` は廃止した（書くと静的エラー。
   経緯は `implementation_plans/enum_member_type_plan.md`）

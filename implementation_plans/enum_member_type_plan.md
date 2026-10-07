@@ -127,7 +127,8 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 | 4-1 | ✅ | `f80f9f4` |
 | 4-2 | ✅ | `57e95b7` |
 | 4-3 | ✅ | `41cb92e` |
-| 5-1 | ✅ | （本書の更新と同じコミット） |
+| 5-1 | ✅ | `81b944f` |
+| 5-2 | ✅ | （本書の更新と同じコミット） |
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
@@ -153,6 +154,7 @@ D-1 の後も、型検査はメンバー（`Color.BLUE`）を**代入できる�
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | **5-1** | **メンバーは値で、変数ではない**。①メンバーへの代入・複合代入を `AssignToEnumMember` で弾く（`check_immutable_field_assign`）。②`value` を不変のフィールドとして登録する（`class_fields[enum] = {value: false}`）ので、`Color.BLUE.value = 5` / `m.value = 5` は既存の `AssignToImmutableField` になる。③実行時もメンバーのクラスの `value` を不変にする（`build_enum_classes` / `make_builtin_enum_class`）。型義務 `N6`〜`N8`。⚠ 変数の付け替え（`mut c = Color.BLUE` の後の `c = Color.RED`）は値の書き換えではないので通す。⚠ Python 実装は実行時にはすでに弾いている（メンバーは不変のインスタンス・名前空間への代入は `AttributeError`）。型検査にはフィールドの書き換えの検査自体が無いので足していない | 2-2 | 小 |
+| **5-2** | **`const` への代入を、どの経路でも同じ規則で弾く**（利用者の指示）。enum のメンバーを**暗黙に `const`** として扱い、クラスの `const` と同じ `AssignToConst` にする（5-1 の `AssignToEnumMember` は統合して廃止）。判定は `is_const_member`（クラスの `FieldKind::Const`・enum のメンバー）の 1 つで、クラス名経由（`Counter.LIMIT = ..`）・インスタンス経由（`c.LIMIT = ..`）・`__init__` の中の `self.LIMIT = ..`・複合代入のどれにも効く。⚠ 以前はインスタンス経由だけが（`AssignToImmutableField` で）弾かれ、クラス名経由と `__init__` の中は実行時の `TypeError` まで通っていた（`__init__` の中は `let` フィールドの初回代入のために検査を丸ごと免除していた・`const` の判定はその免除より先に見る）。⚠ enum の `value` は `const` ではなく不変のフィールド（`FieldKind::Let`）に登録し直した（`m.value = 5` は `AssignToImmutableField` のまま）。型義務 `M11` / `M12`・例題 `examples/classes/const_member_assign_error.ar` | 5-1 | 小 |
 
 ## 5. ゲート
 
@@ -175,7 +177,10 @@ D-1 の後も、型検査はメンバー（`Color.BLUE`）を**代入できる�
 - 通常のクラスで、型の値とインスタンスが同じ表を引くことによる穴（2-1 の ⚠）
 - ~~メンバーへの代入（`Color.BLUE = Color.PLANE`）は型検査を通り、実行時の
   `TypeError: cannot assign to class variable 'BLUE' (declared const)` で止まる~~ → **5-1 で対応**
-- 通常のクラスの `const` クラス変数への代入（`Counter.LIMIT = 5`）は、今も型検査を通って実行時の
-  `TypeError` で止まる（5-1 は enum のメンバーだけ）
+- ~~通常のクラスの `const` クラス変数への代入（`Counter.LIMIT = 5`）は、今も型検査を通って実行時の
+  `TypeError` で止まる~~ → **5-2 で対応**
+- trait の `const`（`trait T: const K` を実装したクラスの `C.K = ..`）と、import したモジュールの
+  `const`（`m.K = ..`）への代入は 5-2 の対象外。どちらも型検査を通り、実行時の `AttributeError` で止まる
+  （前者は `class 'C' has no static field 'K'`、後者は `cannot set attribute on non-instance`）
 - ⚠ Python 実装では enum のメンバーを辞書のキーに使うと `KeyError` になる（`2045111` でも同じ。
   Rust 実装は正しく引ける）。例題では辞書のキーに使っていない

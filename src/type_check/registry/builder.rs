@@ -440,8 +440,10 @@ impl TypeRegistryBuilder {
                     //    が黙って通っていた。`.value` は言語規則として `int`
                     //    （実行時 `build_enum_classes` が「must be int」で強制している）。
                     // `Color` 型の値（インスタンス）のフィールドは `value` だけ。
+                    // ⚠ `value` はメンバーごとの**不変のフィールド**（`let`）で、クラスの `const` ではない
+                    //   （`const` はクラスで共有される値・`is_const_member`）。
                     let mut enum_fields = HashMap::new();
-                    enum_fields.insert("value".to_string(), (FieldKind::Const, InferredType::Int));
+                    enum_fields.insert("value".to_string(), (FieldKind::Let, InferredType::Int));
                     self.reg.class_field_details.insert(name.clone(), enum_fields);
                     // ⚠⚠ **メンバーは値なので `value` は書き換えられない**（`field_is_mutable` が引く表）。
                     //    以前はこの表に無く、`Color.BLUE.value = 5` が型検査を通って**共有のメンバー
