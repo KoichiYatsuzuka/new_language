@@ -126,7 +126,8 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 | 3-1 | ✅ | `d41228d` |
 | 4-1 | ✅ | `f80f9f4` |
 | 4-2 | ✅ | `57e95b7` |
-| 4-3 | ✅ | （VSIX と本書の更新を同じコミットで） |
+| 4-3 | ✅ | `41cb92e` |
+| 5-1 | ✅ | （本書の更新と同じコミット） |
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
@@ -138,6 +139,20 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 | **4-1** | **例題**。成功例（新規・`examples/typing/`）: enum 型の引数・注釈つき `let` とメンバーの `==` / `!=` / `in`、`is Color`・`is Color:` の腕・`mustbe Color`、モジュールの enum（`examples/basics/namespace_modules/tags.ar` の `Level`）、組み込み enum（`let m: FileOpenMode = FileOpenMode.read` との比較）。エラー例（`_error`）: 別の enum 同士の比較・`m.PLANE`・`Color.value`・`x is enum_item_Color`。既存の `examples/typing/enum_member_type.ar:39`（「メンバーの型は enum_item_<名前>」）と `enum_member_type_error.ar:5` のコメントを直す | 2-2 | 小 |
 | **4-2** | **文書**。`docs/grammar/06_classes_traits.md:449`・`docs/language_comparison.md:145`（`x is enum_item_Color` を `x is Color` に）・`type-checking` スキルの enum の節。`implementation_logs/type_check_redesign.md` の「2.3 の記録」に、本書で置き換えた旨を追記する | 2-2 | 小 |
 | **4-3** | **VS Code 拡張**。型検査が変わると wasm も変わるので `make-vsix.ps1` で VSIX を作り直す。ホバーでメンバーの型が `Color` と出ることを確かめる | 2-2 | 小 |
+
+### フェーズ 5: メンバーを値として扱う（2026-10-07 追加・利用者の指示）
+
+D-1 の後も、型検査はメンバー（`Color.BLUE`）を**代入できる場所**として扱っていた。
+
+| 書き方 | 5-1 の前（型検査） | 5-1 の前（実行時） |
+|---|---|---|
+| `Color.BLUE = Color.PLANE` / `Color.BLUE += 1` | 通る | `TypeError` |
+| `Color.BLUE.value = 5` | 通る | **通り、共有のメンバーそのものが 5 になる** |
+| `mut m = Color.BLUE` の後の `m.value = 5` / `m.value += 1` | 通る | 通る（写しが書き換わる） |
+
+| # | 内容 | 前提 | 重さ |
+|---|---|---|---|
+| **5-1** | **メンバーは値で、変数ではない**。①メンバーへの代入・複合代入を `AssignToEnumMember` で弾く（`check_immutable_field_assign`）。②`value` を不変のフィールドとして登録する（`class_fields[enum] = {value: false}`）ので、`Color.BLUE.value = 5` / `m.value = 5` は既存の `AssignToImmutableField` になる。③実行時もメンバーのクラスの `value` を不変にする（`build_enum_classes` / `make_builtin_enum_class`）。型義務 `N6`〜`N8`。⚠ 変数の付け替え（`mut c = Color.BLUE` の後の `c = Color.RED`）は値の書き換えではないので通す。⚠ Python 実装は実行時にはすでに弾いている（メンバーは不変のインスタンス・名前空間への代入は `AttributeError`）。型検査にはフィールドの書き換えの検査自体が無いので足していない | 2-2 | 小 |
 
 ## 5. ゲート
 
@@ -158,7 +173,9 @@ enum の比較を書いている例題は 2 件（`examples/typing/enum_in_funct
 - 別のモジュールにある同名の enum（`a.Color` と `b.Color`）のメンバーは、今もクラス名だけで等値を判定している。
   そのため値が同じなら等しくなる（既存の挙動）。1-1 の印で区別できるようになるが、変えるならハッシュも同時に変えること
 - 通常のクラスで、型の値とインスタンスが同じ表を引くことによる穴（2-1 の ⚠）
-- メンバーへの代入（`Color.BLUE = Color.PLANE`）は型検査を通り、実行時の
-  `TypeError: cannot assign to class variable 'BLUE' (declared const)` で止まる（本書の前から同じ）
+- ~~メンバーへの代入（`Color.BLUE = Color.PLANE`）は型検査を通り、実行時の
+  `TypeError: cannot assign to class variable 'BLUE' (declared const)` で止まる~~ → **5-1 で対応**
+- 通常のクラスの `const` クラス変数への代入（`Counter.LIMIT = 5`）は、今も型検査を通って実行時の
+  `TypeError` で止まる（5-1 は enum のメンバーだけ）
 - ⚠ Python 実装では enum のメンバーを辞書のキーに使うと `KeyError` になる（`2045111` でも同じ。
   Rust 実装は正しく引ける）。例題では辞書のキーに使っていない

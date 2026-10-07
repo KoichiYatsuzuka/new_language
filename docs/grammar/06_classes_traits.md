@@ -456,6 +456,9 @@ enum Status:
 - メンバーは型の値（`Color.Red`）からだけ、`value` はメンバー（`Color` 型の値）からだけ引ける。
   `c.Red` と `Color.value` は静的エラー
 - 別の enum のメンバーとは比較も代入もできない（`Color.Red == Shape.Square` は静的エラー）
+- メンバーは**値**で、変数ではない。メンバーへの代入（`Color.Red = Color.Green` / `Color.Red += 1`）と
+  中身の書き換え（`Color.Red.value = 5` / `m.value = 5`）は静的エラー（実行時も `value` は不変）。
+  メンバーを入れた変数の付け替え（`mut c = Color.Red` の後の `c = Color.Green`）は通る
 - ⚠ 以前の内部名 `enum_item_Color` は廃止した（書くと静的エラー。
   経緯は `implementation_plans/enum_member_type_plan.md`）
 

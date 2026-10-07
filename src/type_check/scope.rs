@@ -333,6 +333,7 @@ impl TypeChecker {
     }
 
     /// `obj.attr = val` のとき `attr` が `let` フィールドであれば `AssignToImmutableField` エラーを記録する。
+    /// `obj` が enum の型の値で `attr` がそのメンバーなら `AssignToEnumMember` エラーを記録する。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
         if let Expr::Attr { object, attr, span, .. } = target {
             let is_self_in_init = matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self")
@@ -345,6 +346,23 @@ impl TypeChecker {
                 self.state.current_class().map(str::to_string)
             } else {
                 let obj_ty = self.infer(object);
+                // ⚠⚠ **enum のメンバーは値で、代入できる場所ではない**（`Color.BLUE = Color.RED`）。
+                //    以前は型検査を通り、実行時の `TypeError: cannot assign to class variable` で止まっていた。
+                //    メンバーの中身（`value`）も書き換えられない（`class_fields` で `let` 扱い・下の検査）。
+                if let InferredType::TypeValOf(inner) = &obj_ty {
+                    if let InferredType::NamedInstance(enum_name) = inner.as_ref() {
+                        if self.registry.enum_members(enum_name).is_some_and(|m| m.contains_key(attr.as_str())) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::AssignToEnumMember {
+                                    enum_name: enum_name.clone(),
+                                    member: attr.clone(),
+                                },
+                                span: Some(span.clone()),
+                            });
+                            return;
+                        }
+                    }
+                }
                 if let InferredType::NamedInstance(cls) = obj_ty {
                     Some(cls)
                 } else {

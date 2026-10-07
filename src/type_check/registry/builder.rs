@@ -443,6 +443,10 @@ impl TypeRegistryBuilder {
                     let mut enum_fields = HashMap::new();
                     enum_fields.insert("value".to_string(), (FieldKind::Const, InferredType::Int));
                     self.reg.class_field_details.insert(name.clone(), enum_fields);
+                    // ⚠⚠ **メンバーは値なので `value` は書き換えられない**（`field_is_mutable` が引く表）。
+                    //    以前はこの表に無く、`Color.BLUE.value = 5` が型検査を通って**共有のメンバー
+                    //    そのものを書き換えていた**（実行時もフィールドが可変だった・`build_enum_classes`）。
+                    self.reg.class_fields.insert(name.clone(), HashMap::from([("value".to_string(), false)]));
                     // バリアント名 → そのバリアントの型。**型は enum 型そのもの**で、`Color.Red` は
                     // `NamedInstance("Color")` になる（タスク 2-2・`implementation_plans/enum_member_type_plan.md`）。
                     // ⚠⚠ 以前は別の型 `enum_item_Color` で、`Color` 型の値が存在しなかった

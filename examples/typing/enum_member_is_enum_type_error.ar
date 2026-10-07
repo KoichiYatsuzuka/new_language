@@ -8,6 +8,9 @@
 #   （`Color` 型の値）からだけ引ける。以前は両方を同じ表で引いていたので、`m.PLANE` と
 #   `Color.value` が型検査を通って実行時に `AttributeError` になっていた（タスク 2-1）。
 # ⚠ `enum_item_Color` はソースから廃止した（メンバーの型は `Color`）。
+# ⚠ メンバーは**値**で、変数ではない（タスク 5-1）。メンバーへの代入も、中身（`value`）の
+#   書き換えも弾く。以前は `Color.BLUE = ..` が実行時まで通り、`Color.BLUE.value = 5` は
+#   **共有のメンバーそのものを書き換えていた**。
 #
 # 期待されるエラー:
 #   StaticTypeError  '==' between 'Color' and 'Shape' can never be true
@@ -15,6 +18,8 @@
 #   StaticTypeError  'Color' has no member 'PLANE'
 #   StaticTypeError  'Color' has no member 'value'
 #   StaticTypeError  unknown type 'enum_item_Color' in type guard; the branch can never match
+#   StaticTypeError  cannot assign to enum member 'Color.BLUE'; an enum member is a value, not a variable
+#   StaticTypeError  cannot assign to immutable field 'value' of class 'Color'
 
 enum Color:
     PLANE
@@ -34,3 +39,7 @@ print(m.PLANE)                      # ⛔ メンバーはインスタンスか�
 print(Color.value)                  # ⛔ value は型の値からは引けない
 
 print(m is enum_item_Color)         # ⛔ enum_item_Color は廃止した名前
+
+Color.BLUE = Color.PLANE            # ⛔ メンバーは値で、代入できる場所ではない
+
+Color.BLUE.value = 5                # ⛔ メンバーの中身も書き換えられない

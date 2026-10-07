@@ -497,12 +497,15 @@ impl Interpreter {
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
         let item_cls_id = crate::interpreter::value::alloc_class_id();
+        // ⚠⚠ **`value` は不変**。メンバーは値なので中身を書き換えられない（`Color.BLUE.value = 5` は
+        //    `TypeError`）。以前は可変で、**共有のメンバーそのものが書き換わっていた**。
+        //    `__init__` の中の最初の代入（`self.value = value`）は `let` フィールドと同じく通る。
         let item_cls = Rc::new(crate::interpreter::ClassValue {
             methods: item_methods,
-            field_mutability: HashMap::from([("value".to_string(), true)]),
+            field_mutability: HashMap::from([("value".to_string(), false)]),
             field_index: HashMap::from([("value".to_string(), 0usize)]),
             field_count: 1,
-            field_mutability_vec: vec![true],
+            field_mutability_vec: vec![false],
             module_name: module_name.clone(),
             enum_of: Some(name.to_string()),
             ..crate::interpreter::ClassValue::synthetic(name.to_string(), item_cls_id)

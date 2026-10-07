@@ -129,6 +129,51 @@ fn test_enum_member_class_is_the_enum() {
     assert!(matches!(run_get(src, "t"), Value::Bool(true)));
 }
 
+/// enum のメンバーは**値**。メンバーへの代入と、メンバーの中身（`value`）の書き換えは静的エラー。
+/// ⚠ 以前は型検査を通り、`Color.Red = ..` は実行時の `TypeError`、`Color.Red.value = 5` は
+///   **共有のメンバーそのものを書き換えていた**。
+#[test]
+fn test_enum_member_is_a_value_statically() {
+    use crate::type_check::TypeErrorKind as K;
+    let head = "enum Color:\n    Red\n    Green\n";
+    for (body, what) in [
+        ("Color.Red = Color.Green\n", "assign"),
+        ("Color.Red += 1\n", "compound assign"),
+    ] {
+        let errs = static_errors(&format!("{head}{body}"));
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind,
+                K::AssignToEnumMember { enum_name, member } if enum_name == "Color" && member == "Red")),
+            "{what}: expected AssignToEnumMember, got: {errs:?}"
+        );
+    }
+    for body in ["Color.Red.value = 5\n", "mut m = Color.Red\nm.value = 5\n", "mut m = Color.Red\nm.value += 1\n"] {
+        let errs = static_errors(&format!("{head}{body}"));
+        assert!(
+            errs.iter().any(|e| matches!(&e.kind,
+                K::AssignToImmutableField { field_name, class_name } if field_name == "value" && class_name == "Color")),
+            "{body:?}: expected AssignToImmutableField, got: {errs:?}"
+        );
+    }
+    // 変数の付け替えは値の書き換えではないので通る。
+    let errs = static_errors(&format!("{head}mut c = Color.Red\nc = Color.Green\n"));
+    assert!(errs.is_empty(), "rebinding a variable must pass: {errs:?}");
+}
+
+/// 実行時もメンバーの `value` は書き換えられない（型検査を通らない経路の最後の砦）。
+/// ⚠ `run` は型エラーを無視して実行する。
+#[test]
+fn test_enum_member_value_is_immutable_at_runtime() {
+    let head = "enum Color:\n    Red\n    Green\n";
+    for body in ["Color.Red.value = 5\n", "mut m = Color.Red\nm.value = 5\n"] {
+        assert!(run(&format!("{head}{body}")).is_err(), "{body:?}: the runtime must reject it");
+    }
+    // 組み込みの enum も同じ。
+    assert!(run("FileOpenMode.read.value = 9\n").is_err(), "built-in enum member must be immutable");
+    // 負の対照: 読むだけなら通る。
+    assert_int(run_get(&format!("{head}let v = Color.Green.value\n"), "v"), 1);
+}
+
 // --- default parameters ---
 
 /// default_param_uses_default_when_omitted のテスト。

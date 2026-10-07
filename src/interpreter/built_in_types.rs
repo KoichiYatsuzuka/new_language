@@ -208,13 +208,13 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
 /// `value` フィールドを 1 つ・`enum_of` が `Some(Name)`）。名前では宣言しない
 /// （`enum_item_Name` は廃止した名前・`implementation_plans/enum_member_type_plan.md` 1-2）。
 pub(super) fn make_builtin_enum_class(name: &str, variants: &[(&str, i64)]) -> Rc<ClassValue> {
-    // メンバーのクラス: value フィールドを持つだけ
+    // メンバーのクラス: value フィールドを持つだけ。⚠ `value` は不変（メンバーは値・`build_enum_classes`）
     let item_cls_id = crate::interpreter::value::alloc_class_id();
     let item_cls = Rc::new(ClassValue {
-        field_mutability: HashMap::from([("value".to_string(), true)]),
+        field_mutability: HashMap::from([("value".to_string(), false)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
-        field_mutability_vec: vec![true],
+        field_mutability_vec: vec![false],
         enum_of: Some(name.to_string()),
         ..ClassValue::synthetic(name.to_string(), item_cls_id)
     });
@@ -222,7 +222,7 @@ pub(super) fn make_builtin_enum_class(name: &str, variants: &[(&str, i64)]) -> R
     let mut class_vars: HashMap<String, Value> = HashMap::new();
     for (variant_name, int_val) in variants {
         let mut data = InstanceData::new_empty(item_cls.clone(), 0);
-        data.store_field(0, Value::Int(*int_val), true);
+        data.store_field(0, Value::Int(*int_val), false);
         class_vars.insert(variant_name.to_string(), Value::Instance(Rc::new(RefCell::new(data))));
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）

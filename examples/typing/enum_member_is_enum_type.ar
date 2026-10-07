@@ -74,6 +74,14 @@ print(p.color == Color.RED)             # True
 let cs: list[Color] = [Color.RED, Color.PLANE]
 print(cs[0].value)                      # 2
 
+print("=== メンバーは値: 変数の付け替えはできる ===")
+
+# ⚠ メンバーそのもの（`Color.BLUE = ..`）や中身（`.value = ..`）は書き換えられない
+#   （enum_member_is_enum_type_error.ar）。変数が指すメンバーを替えるのは値の書き換えではない。
+mut cur = Color.BLUE
+cur = Color.RED
+print(cur == Color.RED, Color.BLUE.value)   # True 1
+
 print("=== 組み込みの enum ===")
 
 let mode: FileOpenMode = FileOpenMode.read
