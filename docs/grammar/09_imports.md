@@ -353,6 +353,29 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
 **ファイル**: `open(path, "w", encoding="utf-8")` など Python の形の `open` を受けます。`with open(p) as f: return f.read()`
 （`with` の中の `return`）も動きます。
 
+**クラスの属性・property**:
+- `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。
+  メソッドは別名（`__property_get_x` など）になり、`x` はクラスの属性の置き場（`static mut x: Any`）、
+  **クラスの定義の後で**組み込みの `property` を組み立てて置きます。読み書きはディスクリプタのプロトコル
+  （[06_classes_traits.md](06_classes_traits.md)）が getter / setter に回すので、`self._constructor(..)`（property が返す
+  クラスを呼ぶ）や Arrow からの `t.celsius = 30` も動きます。
+  ```python
+  class Temperature:
+      def __init__(self, c):
+          self.celsius = c          # setter を通る（フィールドにはしない）
+      @property
+      def celsius(self):
+          return self._c
+      @celsius.setter
+      def celsius(self, v):
+          self._c = v               # setter だけが代入するフィールドもフィールドになる
+  ```
+- ⚠ `@property` は**いちばん外側**のときだけ（`@logged @property` は変換の誤り）。`@x.setter` は同じ名前のメソッドに
+  付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
+- ⚠ `x = property(getx, setx)`（クラス本体に直接書く形）はまだ動きません（クラス属性の初期化式からクラス本体の名前が
+  見えない）。`del obj.x` も変換の誤りです。
+- `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
+
 ---
 
 ## Python インタープリタ連携 (`[py-int]`)

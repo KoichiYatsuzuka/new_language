@@ -445,6 +445,8 @@ table (that would make a cycle other base walkers don't guard against). ⚠ A cl
 `BaseException` (the built-in hierarchy) is answered from the table alone, so `GeneratorExit` is not an
 `Exception`. `except m.Err as e` binds `e` with the name resolved to the module's qualified name; an
 unknown `except` type is not reported while imports are unloaded (`registry_incomplete`, the editor).
+The runtime counterpart is `ClassValue::is_a` (`except` matching, `x is T`, field checks).
+`except Error` is rejected with `ExceptOnErrorTrait` ("write `except Exception`").
 
 Bound methods (python_builtins_plan.md 1-10): reading `obj.m` as a value (not the callee) is typed by
 `bound_method_type` — the single signature without `self` (`fn_type_of_sig(sig, 1)`, type parameters
@@ -452,9 +454,20 @@ substituted), `function` for overloads; methods of built-in values are allowed o
 `names::BUILTIN_VALUE_METHODS` (otherwise `NoSuchMember`). When the receiver's path root is immutable and the
 method mutates it (`all_sigs_mutate_self` / `MUTATING_COLLECTION_METHODS`), the function type carries
 `mutates_immutable: Some((method, root))`; calling such a value reports `MutatingMethodOnImmutable`
-(binding it does not). The runtime counterpart is
-`ClassValue::is_a` (`except` matching, `x is T`, field checks). `except Error` is rejected with
-`ExceptOnErrorTrait` ("write `except Exception`").
+(binding it does not).
+
+Calling a field (1-11): `obj.f(x)` with no method `f` but a field / `const` / `static mut` `f` is typed in
+`call_check.rs` (`method_call_info` branch) by the member's type — a `Function` type checks arguments and
+returns its return type (`check_fn_type_call`), `TypeValOf(NamedInstance)` constructs, anything else goes
+through `check_callable` (`'int' is not callable`).
+
+Descriptors (1-12): `TypeChecker::class_descriptor(class, attr)` (`infer.rs`) recognizes a class-level member
+(`const` / `static mut`) whose declared type is a class with `__get__`. Reads (`infer_attr`, also `C.x`) and
+calls (1-11 path) use `__get__`'s return type; an assignment through an instance (`check_assign` in
+`stmt/check.rs`) is checked against `__set__`'s `value` type when the descriptor is a data descriptor
+(`__set__` or `__delete__`), and an untyped `value` skips the check; an assignment through the class
+(`C.x = d`) is checked against the declared type. `check_immutable_field_assign` lets a `const` data
+descriptor be assigned (it calls `__set__`).
 
 ---
 

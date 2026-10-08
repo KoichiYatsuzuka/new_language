@@ -71,6 +71,7 @@ let b = open("out.txt", mode="rb")   # バイト列
 | `iter(x)` / `iter(f, sentinel)` | `for` と同じイテレータ／`f()` が `sentinel` になるまで |
 | `hash` / `ord` / `chr` | `hash` は辞書・集合の鍵と同じ値 |
 | `hex` / `oct` / `bin` / `ascii` | 接頭辞つき（`-0b101`）／非 ASCII を `\x..` に |
+| `property(fget=None, fset=None, fdel=None, doc=None)` | クラス。`getter` / `setter` / `deleter` は写した property を返す。クラス側に置くとディスクリプタとして働く（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。Python の `@property` / `@x.setter` は変換器がこれで組み立てる（[09_imports.md](09_imports.md)）。⚠ Arrow で書いたクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）で、名前を初めて引いたときに組み立てる |
 
 ### 組み込みの名前を値として使う
 
@@ -87,11 +88,11 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-06 の時点で次の 44 名は Arrow にありません:
+CPython 3.12 の組み込み 153 名のうち、2026-10-09 の時点で次の 43 名は Arrow にありません（`property` は 6-1 で足した）:
 
 `format` `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
-`bytes` `bytearray` `memoryview` `frozenset` `object` `property` `staticmethod` `classmethod` `super`
+`bytes` `bytearray` `memoryview` `frozenset` `object` `staticmethod` `classmethod` `super`
 `NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `EOFError` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 `UnicodeDecodeError` `UnicodeEncodeError`

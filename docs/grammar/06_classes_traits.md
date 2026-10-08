@@ -540,6 +540,76 @@ print(c.get == c.get)                # True（同じ受け手の同じメソッ�
 
 ---
 
+## 属性に入れた関数を呼ぶ
+
+メソッドの無い名前の `obj.f(x)` は、**属性を読んでその値を呼びます**（CPython と同じ）。フィールド・`const`・
+`static mut` に入れた関数（コールバック）をそのまま呼べます。
+
+```ar
+fn double(let x: int) -> int:
+    return x * 2
+
+class Holder:
+    let f: function[let int]->int
+    fn run(self, let x: int) -> int:
+        return self.f(x)              # フィールドの関数を呼ぶ
+
+let h = Holder(double)
+print(h.run(21))                      # 42
+print(h.f(4))                         # 8
+```
+
+- 同じ名前のメソッドがあればメソッドが先です（下の「メソッドの検索順序」）。
+- 読みは `obj.f` と同じ経路なので、アクセス制御・ディスクリプタ（次節）も同じに働きます。
+- **型**: フィールドの関数型で引数・戻り値を検査します。呼べない値（`let n: int` の `b.n(1)`）は
+  `'int' is not callable`（値を呼ぶのと同じ誤り）。
+
+---
+
+## ディスクリプタ（`__get__` / `__set__`）
+
+クラス側の値（`static mut` / `const`）が `__get__` を持つインスタンスなら、その属性は**ディスクリプタ**として働きます
+（CPython のディスクリプタのプロトコル。Python の `property` もこの仕組み）。
+
+```ar
+class Fahrenheit:
+    fn __get__(self, mut obj: Thermo, owner: Any = None) -> float:
+        return obj.celsius * 9.0 / 5.0 + 32.0
+    fn __set__(self, mut obj: Thermo, value: float) -> None:
+        obj.celsius = (value - 32.0) * 5.0 / 9.0
+
+class Thermo:
+    mut celsius: float
+    static mut fahrenheit: Fahrenheit = Fahrenheit()
+    fn __init__(mut self, c: float) -> None:
+        self.celsius = c
+
+mut t = Thermo(100.0)
+print(t.fahrenheit)       # 212.0（__get__(t, Thermo)）
+t.fahrenheit = 32.0       # __set__(t, 32.0)
+print(t.celsius)          # 0.0
+```
+
+| 書き方 | 働き |
+|---|---|
+| `obj.x`（読み） | ① **データディスクリプタ**（`__set__` か `__delete__` も持つ）なら `__get__(obj, C)` ② フィールド ③ 非データディスクリプタ（`__get__` だけ）なら `__get__(obj, C)` ④ クラス側の値そのもの ⑤ メソッド（束縛メソッド） |
+| `obj.x = v` | データディスクリプタなら `__set__(obj, v)`（`__set__` が無ければ `AttributeError: __set__`）。それ以外は従来どおり |
+| `C.x`（クラスから読む） | ディスクリプタなら `__get__(None, C)` |
+| `C.x = d`（クラスへ代入） | メンバーそのものを置き換える（`__set__` は呼ばない） |
+| `obj.x(..)` | 上の読みで得た値を呼ぶ（前節） |
+
+- **型**: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は `__set__` の `value` の型、クラス経由の代入は
+  メンバーの宣言型（ディスクリプタのクラス）と照合します。`const` に置いたデータディスクリプタへの代入は `__set__` を
+  呼ぶので不変の誤りにはなりません。
+- ⚠ `obj` を書き換える `__set__` / `__get__` は仮引数を `mut obj` にしてください（`let` の仮引数は `mut` の実引数を写すので、
+  書き換えが元に届かない呼び方があります）。
+- ⚠ インスタンスのフィールド（`mut f: D`）に入れた値はディスクリプタとして働きません（CPython と同じ）。
+- ⚠ `del obj.x`（`__delete__`）は Arrow に属性を消す構文が無いので使えません。
+- 実装: `eval/attrs.rs` の `get_attr_val` / `attr_assign_evaled` / `set_attr_val`（3 つの入口だけ）。型検査は
+  `TypeChecker::class_descriptor`。
+
+---
+
 ## 特殊メソッド一覧
 
 | メソッド名 | 呼ばれる場面 |
@@ -555,16 +625,18 @@ print(c.get == c.get)                # True（同じ受け手の同じメソッ�
 | `__add__(self, let other)` | `obj + other` |
 | `__cast__[T](let other: T)` | 自動キャスト |
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
+| `__get__(self, obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節） |
+| `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
+| `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
 
 ---
 
-## クラスメソッドの検索順序
+## メソッドの検索順序
 
-メソッドを呼び出すとき:
+`obj.m(..)` を呼び出すとき:
 
-1. `instance.fields` を検索 (フィールド値に関数が格納されている場合)
-2. `instance.class.methods` を検索
-3. `instance.class.bases` (継承した trait) を再帰的に検索
-4. 見つからなければ `AttributeError`
-
-trait のデフォルト実装も `bases` 経由で検索されます。
+1. クラスのメソッド表（`methods`。trait のデフォルト実装は定義時に平坦化済み）を検索する
+2. 無ければ、クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()`）
+3. それも無く、フィールド・`const`・`static mut` にその名前があれば、**属性として読んで（ディスクリプタを含む）
+   その値を呼ぶ**（「属性に入れた関数を呼ぶ」）
+4. 見つからなければ `AttributeError: '..' object has no method '..'`

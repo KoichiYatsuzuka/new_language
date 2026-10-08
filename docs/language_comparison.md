@@ -103,6 +103,8 @@
 | Subscript set | `impl IndexMut` | `def __setitem__(self, k, v)` | `fn __setitem__(mut self, idx, val)` |
 | Freeze hook | — | — | `fn __freeze__(mut self)` |
 | Bound method as a value | closure `\|x\| obj.m(x)` | `f = obj.m` | `let f = obj.m`（受け手を束縛。不変の受け手の `mut self` メソッドは呼ぶ時点で誤り） |
+| Call a function stored in a field | `(self.f)(x)` | `self.f(x)` | `self.f(x)`（メソッドが無ければ属性を読んで呼ぶ） |
+| Descriptor / property | — (getter methods) | `@property` / `__get__` / `__set__` | `static mut x: D = D()` の `__get__` / `__set__`。組み込みの `property` もある（Python の `@property` は変換器がこれで組み立てる） |
 | Repr | `impl Display` | `def __repr__(self)` | `fn __repr__(self) -> str` |
 
 ---

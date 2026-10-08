@@ -60,6 +60,7 @@ Tree-walk interpreter. `exec(stmt)` / `eval(expr)` dispatch on the AST recursive
 - **Closures**: `let` captures are deep-copied; `mut` captures share an `Rc<RefCell<Value>>` cell with the outer scope
 - **Control-flow signals**: `return` via `ExecResult`; `break` via `BREAK_SENTINEL` error string propagating through `eval()`; `block_return` / `loop_yield` via thread-locals `BLOCK_YIELDS` and `RAISE_SENTINEL`
 - **Exceptions**: `raise` / `try/except/finally` use a sentinel error string `"\x00__raise__:..."`; built-in classes follow CPython 3.12's hierarchy (60, `type_check::names::BUILTIN_EXCEPTIONS`), pre-registered at startup; `e.args` / CPython `str(e)`; `except m.Err`. `obj.method` read as a value is a bound method (`FnValue::bound`)
+- **Attributes**: `obj.f(x)` with no method `f` reads the attribute and calls it (1-11); a class-level `const` / `static mut` holding an instance with `__get__` is a descriptor (`__get__` / `__set__`, CPython's order — 1-12, `eval/attrs.rs`); the built-in `property` is an Arrow class built on first use (6-1, `eval/py_builtins.rs`)
 - **Access control**: `public` / `private` / `protected` enforced at runtime via `current_class` tracked on `Interpreter`; violation raises `AccessError`
 - **Async**: `mng <- async->T: body` spawns an OS thread (`std::thread::spawn`); `mut` captures share Rc, `let` captures are deep-cloned before crossing the thread boundary
 - **Native modules**: values cross the ABI as `i64` handles into a thread-local `VALUE_ARENA`; `ArCallbacks` struct passed to DLLs via `ar_init()`
