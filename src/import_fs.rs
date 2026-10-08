@@ -24,6 +24,17 @@ pub fn is_dir(p: &Path) -> bool {
     p.is_dir()
 }
 
+/// `p` を絶対パスにし、シンボリックリンクなどを解いた形（同じファイルを 1 回だけ読むための鍵）。
+/// 取れなければ `None`（呼び出し側は元のパスを使う）。
+pub fn canonicalize(p: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(p).ok()
+}
+
+/// ディレクトリ `p` の中の項目のパス（順不同）。
+pub fn read_dir(p: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(p)?.flatten().map(|e| e.path()).collect())
+}
+
 /// `p` の中身（バイト列）。
 pub fn read(p: &Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(p)

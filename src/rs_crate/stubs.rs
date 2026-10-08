@@ -1,4 +1,4 @@
-// rs_loader/stubs.rs — 型スタブ生成: 解析したシグネチャから Arrow の Stmt(スタブ)を組み立てる make_stubs。
+// rs_crate/stubs.rs — 型スタブ生成: 解析したシグネチャから Arrow の Stmt(スタブ)を組み立てる make_stubs。
 
 use crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt};
 use super::*;

@@ -28,7 +28,16 @@ Two layers, maintained differently:
 - Root files: `main.rs` entry point / CLI; `repl.rs` REPL; `token.rs` Token enum + Span;
   `ast.rs` AST node definitions; `interpreter.rs` re-export shim for `interpreter/`;
   `module_path.rs` **the import search rule** (CPython: absolute from the entry dir, relative from the
-  file) and per-file module names — shared by the parser (every `[lang]`) and the runtime
+  file) and per-file module names — shared by the parser (every `[lang]`) and the runtime;
+  `import_fs.rs` **the only place import processing touches the outside world** (files, env vars,
+  cwd, Python's lib dirs) — the editor's wasm swaps it for host calls, so import code must not call
+  `std::fs` / `std::env` directly
+- `cpp_header/` — reads **types** from C/C++ headers for `import[cpp-dll]`/`import[cpp-lib]`
+  (`CType`/`CStructDef`/`CFnSig`, header parser, typedef loader, `cpp_config`). Split out of
+  `interpreter/cpp_bridge` so the editor's wasm can use it; fs goes through `import_fs`
+- `rs_crate/` — reads **types** from a Rust crate's source for `import[rs]` (`find_config`,
+  `scan_all_sigs`, `make_stubs`, `load_types` = types only, no `cargo build`). Split out of
+  `partial_compiler/rs_loader` for the editor's wasm
 - `lexer/` — tokenizer: scan loop, keyword recognition (`lex_word()` in `keyword.rs`),
   literal/operator/symbol scanning, indentation tracking
 - `parser/` — recursive-descent parser; imported-module loading happens here at parse time
@@ -38,7 +47,8 @@ Two layers, maintained differently:
   - `imports/` — `import[lang]` parsing + module resolution (`imports_editor.rs` is the fs-free
     editor build; `packages.rs` the CPython package semantics: chains, binding, `from . import x`);
     `import_syntax.rs` — the `..a.b` module-path syntax shared by both
-  - `cs_assembly/` — .NET DLL inspection for `--compile-cs` stub generation
+  - `cs_assembly/` — .NET DLL metadata reading (types for `import[cs-dll]`/`import[cs-proc]`
+    and `--compile-cs` stub generation); pure Rust, so the editor's wasm includes it too
 - `type_check/` — static type checker (runs between parse and exec)
   - `mod.rs` — ファサードのみ: `TypeChecker::check` / `check_with_warnings` + 組み込み登録。
     状態は3つのサブ構造体に分割され、相互依存はない
@@ -56,13 +66,14 @@ Two layers, maintained differently:
   - `functions/` / `classes/` / `value/` / `ops/` — calls & closures/generators,
     class/instance/method dispatch, runtime `Value` types, operator implementations
   - `native_api/` — ABI handle arena + `ArCallbacks` passed to native DLLs
-  - `cpp_bridge/` — C/C++ interop: header parsing, shim compile driver
+  - `cpp_bridge/` — C/C++ interop at run time: wrapper codegen, shim compile driver, the
+    runtime methods of `CType`/`CStructDef` (header parsing itself is in `cpp_header/`)
   - `templates.rs` — template instantiation (`subst_stmt` / `subst_expr` clone-walk)
   - `ast_value.rs` — AST→Value reflection
   - `tests/` — interpreter integration tests, one file per topic
 - `partial_compiler/` — `--compile` subsystem: `module_compiler.rs` orchestration + codegen
   eligibility; `llvm_codegen/` code generation (LLVM IR text → clang → DLL); `rs_loader/`
-  `import[rs]` crate loader; `stub_gen.rs` `.ars` stub emission
+  `import[rs]` crate loader (builds the wrapper DLL with `cargo`; the type scanning is `rs_crate/`); `stub_gen.rs` `.ars` stub emission
 - `python_converter/` — Arrow → Python source converter
 - `built_in_stab/` — `.ars` stubs for built-ins. **`builtins.ars` is the single declaration of the
   built-in functions**: embedded by `type_check/builtins.rs` (return types, `range`/`len` signatures)
@@ -104,14 +115,14 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (249 files, 100667 lines)
+src/  (252 files, 100769 lines)
   ar_config.rs (246)
   ast.rs (1646)
   decl_names.rs (229)
   expr_walk.rs (200)
-  import_fs.rs (90)
+  import_fs.rs (101)
   interpreter.rs (1314)
-  main.rs (1001)
+  main.rs (1005)
   module_path.rs (295)
   prof.rs (558)
   py_stubs.rs (50)
@@ -127,6 +138,16 @@ src/  (249 files, 100667 lines)
     built_in_type.ars (33)
     builtins.ars (189)
     error.ars (77)
+  cpp_header/
+    config.rs (330)
+    mod.rs (17)
+    typedef_loader.rs (324)
+    types.rs (107)
+    header_parser/
+      decls.rs (453)
+      mod.rs (255)
+      preprocess.rs (252)
+      structs.rs (376)
   frontend_tests/
     lexer_tests.rs (315)
     mod.rs (6)
@@ -184,15 +205,8 @@ src/  (249 files, 100667 lines)
     cpp_bridge/
       codegen.rs (499)
       compiler.rs (632)
-      config.rs (330)
-      mod.rs (32)
-      typedef_loader.rs (324)
-      types.rs (185)
-      header_parser/
-        decls.rs (453)
-        mod.rs (255)
-        preprocess.rs (252)
-        structs.rs (376)
+      mod.rs (30)
+      types.rs (91)
     eval/
       attrs.rs (629)
       builtins.rs (950)
@@ -285,7 +299,7 @@ src/  (249 files, 100667 lines)
     exprs.rs (1228)
     import_syntax.rs (88)
     imports_editor.rs (334)
-    mod.rs (417)
+    mod.rs (418)
     py_stub_extract.rs (372)
     stub_registry.rs (70)
     types.rs (713)
@@ -324,10 +338,8 @@ src/  (249 files, 100667 lines)
       stmt.rs (433)
     rs_loader/
       codegen.rs (468)
-      loader.rs (312)
-      mod.rs (100)
-      parse.rs (639)
-      stubs.rs (181)
+      loader.rs (229)
+      mod.rs (44)
   python_converter/
     annotations.rs (119)
     classes.rs (484)
@@ -339,6 +351,10 @@ src/  (249 files, 100667 lines)
     statements.rs (1422)
     supers.rs (41)
     utils.rs (42)
+  rs_crate/
+    mod.rs (198)
+    parse.rs (638)
+    stubs.rs (181)
   type_check/
     annotations.rs (263)
     binop.rs (708)

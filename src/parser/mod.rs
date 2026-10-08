@@ -58,9 +58,10 @@ pub mod stub_registry;
 #[cfg(feature = "editor")]
 pub mod editor_index;
 mod editor_hooks;
-// .NET アセンブリの読み取り（`import[cs-dll]`）。`editor` では import 自体を
-// 構文解釈だけで済ませるので、この重量級モジュールごと外す。
-#[cfg(not(feature = "editor"))]
+// .NET アセンブリの読み取り（`import[cs-dll]` / `import[cs-proc]` の型の出所）。
+// ⚠ ファイルへのアクセスは `crate::import_fs` を通すので、拡張（wasm）でも同じものを使う
+//   （editor_import_resolution_plan.md 2-2。以前は `editor` で外していた）。
+#[cfg_attr(feature = "editor", allow(dead_code, unused_imports))]
 pub(crate) mod cs_assembly;
 
 /// tl 言語の再帰降下パーサ。

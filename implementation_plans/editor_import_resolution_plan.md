@@ -146,3 +146,27 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 - ⚠ **`compare_wasm_frontend` はこの差を見ていない**。拡張はまだ import 先を読まない（エラーを出さない）が、
   拡張側の診断が空のファイルは CLI を走らせずに「一致」と数える作りなので、4 本とも「一致」になる。
   フェーズ 3・4 で拡張が import 先を読むようになれば、同じエラーが出る
+
+### 2-1 実装（`6dba072`）
+
+- `src/import_fs.rs` を足し、import の処理がファイル・ディレクトリ・環境変数・カレントディレクトリ・Python の場所に
+  触る所をすべてここ経由にした（`parser/imports/`・`ar_config`・`module_path::absolute`・`cs_assembly`）。
+  CLI の実装は `std::fs` / `std::env` そのもの
+- 挙動不変: `compare_import_paths -A` 13/13・`compare_outputs -A` 402/402
+
+### 2-2 実装
+
+- `src/cpp_header/`: C/C++ のヘッダから型を読む部分（型の定義・ヘッダ解析・typedef・`cpp_config`）を
+  `interpreter/cpp_bridge` から切り出した。`CType` / `CStructDef` の**実行時に依存するメソッド**
+  （FFI の定数・`raw_layout`）は `cpp_bridge/types.rs` の `impl` に残した
+- `src/rs_crate/`: crate のソースから型を読む部分（`find_config`・`scan_all_sigs`・`make_stubs`）を
+  `partial_compiler/rs_loader` から切り出した。型だけを返す `load_types`（`cargo build` しない・4-1 で使う）を足した
+- `parser/cs_assembly` を拡張のビルドでも外さないようにした（純 Rust・ファイルは `import_fs` 経由）
+- 拡張の crate に `import_fs`・`cpp_header`・`rs_crate`・`python_converter`（`rustpython-parser`）を載せた。
+  **wasm32 でビルドできる**ことを確かめた（wasm は 2.62 MB）
+- ⚠ ヘッダ解析の単体テストは `raw_layout`（実行時側）で結果を確かめるので `native` 限定にした
+  （拡張の crate では `cargo test` がビルドできなくなっていた。`compare_wasm_frontend` の前段で発覚）
+- 挙動不変: `compare_import_paths -A` 13/13・`compare_outputs -A` 402/402・`force_gate` 0・
+  `compare_python_impl` clean・`compare_wasm_frontend` INVENTED 0 / parse mismatch 0
+- ⚠ `bench_ab_native.ar` は `scan_examples` / `force_gate` でタイムアウトするが、**基準の exe でも同じ**
+  （同梱の `bench_ab_native_module.arc` が `.ar` より古く、解釈実行に落ちる。以前から）

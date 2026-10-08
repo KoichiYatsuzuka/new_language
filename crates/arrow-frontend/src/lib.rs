@@ -50,6 +50,15 @@ pub mod module_path;
 // （editor_import_resolution_plan.md 2-1）。`module_path` が使う。
 #[path = "../../../src/import_fs.rs"]
 pub mod import_fs;
+// C/C++ のヘッダから型の情報を読む部分（`import[cpp-*]` の型の出所・2-2）。
+#[path = "../../../src/cpp_header/mod.rs"]
+pub mod cpp_header;
+// Rust crate のソースから型の情報を読む部分（`import[rs]` の型の出所・2-2）。
+#[path = "../../../src/rs_crate/mod.rs"]
+pub mod rs_crate;
+// Python のソース（`.py` / `.pyi`）を Arrow へ写す変換器（`import[py]` / `import[py-int]` の型の出所・2-2）。
+#[path = "../../../src/python_converter/mod.rs"]
+pub mod python_converter;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]

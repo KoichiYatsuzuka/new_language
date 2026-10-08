@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::codegen::gen_dll_wrapper;
-use super::config::CppBuildConfig;
-use super::types::{CStructDef, CFnSig, CType};
+use crate::cpp_header::CppBuildConfig;
+use crate::cpp_header::types::{CStructDef, CFnSig, CType};
 
 // ── Compiler constants ────────────────────────────────────────────────────────
 

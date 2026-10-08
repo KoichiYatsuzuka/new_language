@@ -2,7 +2,7 @@
 
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::interpreter::cpp_bridge::types::{CStructDef, CFnSig, CType},
+    crate::cpp_header::types::{CStructDef, CFnSig, CType},
 };
 use super::*;
 

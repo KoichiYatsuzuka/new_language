@@ -41,8 +41,8 @@ pub(crate) use crate::parser::py_stub_extract::extract_py_type_stubs;
 ///   構造互換な別名クラスのシャドウ変換（`MyVec` → `VECTOR*`、SKILL.md P3）と
 ///   int ハンドル経路の両方を静的に壊すため。可変性検査（`mut`）は型注釈と
 ///   独立に `Param::mutable` で機能する。
-pub(crate) fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> String {
-    use crate::interpreter::cpp_bridge::CType;
+pub(crate) fn ctype_to_tl_str(ct: &crate::cpp_header::CType) -> String {
+    use crate::cpp_header::CType;
     match ct {
         CType::Void => "None".to_string(),
         CType::Bool => "bool".to_string(),

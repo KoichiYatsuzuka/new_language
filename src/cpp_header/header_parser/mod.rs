@@ -70,7 +70,7 @@ pub fn collect_included_headers(raw_content: &str, header_dir: &Path) -> Vec<Pat
             let fname = &inner[..end];
             // Only simple filenames (no path separators) resolved relative to header_dir
             let candidate = header_dir.join(fname);
-            if candidate.exists() && !result.contains(&candidate) {
+            if crate::import_fs::exists(&candidate) && !result.contains(&candidate) {
                 result.push(candidate);
             }
         }
@@ -88,7 +88,10 @@ pub(crate) use decls::*;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+// ⚠ `native` 限定: 結果を `raw_layout`（実行時のメソッド・`interpreter/cpp_bridge/types.rs`）で確かめる。
+//   拡張の crate（`crates/arrow-frontend`）は `native` を持たないので、そちらではビルドしない
+//   （ルート crate の `cargo test` では従来どおり走る）。
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 

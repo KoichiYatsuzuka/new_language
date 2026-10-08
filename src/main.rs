@@ -24,6 +24,10 @@ mod module_path;
 // import の処理が外界（ファイル・環境変数・Python の場所）に触る唯一の窓口。拡張（wasm）では
 // ホストに頼む実装に差し替える（editor_import_resolution_plan.md 2-1）。
 mod import_fs;
+// C/C++ のヘッダから型の情報を読む部分（`interpreter/cpp_bridge` から切り出した・2-2）。
+mod cpp_header;
+// Rust crate のソースから型の情報を読む部分（`partial_compiler/rs_loader` から切り出した・2-2）。
+mod rs_crate;
 mod parser;
 #[cfg(feature = "prof")]
 mod prof;

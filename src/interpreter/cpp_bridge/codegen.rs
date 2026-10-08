@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use super::super::native_api::{TL_FALSE, TL_TRUE};
-use super::types::{CStructDef, CFnSig, CType};
+use crate::cpp_header::types::{CStructDef, CFnSig, CType};
 
 // ── Generated Rust source header ─────────────────────────────────────────────
 

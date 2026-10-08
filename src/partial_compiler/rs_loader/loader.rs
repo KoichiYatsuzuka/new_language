@@ -24,10 +24,7 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
 
     if fns.is_empty() && structs.is_empty() {
         let _ = std::fs::remove_dir_all(&tmp);
-        return Err(format!(
-            "import[rs] `{module_name}`: no compatible pub fn or pub struct found \
-             (only primitive types: int, float, bool, str, &[u8], Vec<u8>, [u8;N] are supported)"
-        ));
+        return Err(no_compatible_items(module_name));
     }
 
     // If digest-pattern wrappers were synthesised, ensure the `digest` crate is
@@ -103,86 +100,6 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
 
     cache_native(module_name, exports, dll_bytes);
     Ok(make_stubs(&fns, &structs))
-}
-
-// ── Config parsing ────────────────────────────────────────────────────────────
-
-pub(crate) fn find_config(module_name: &str, version: Option<&str>, search_dirs: &[PathBuf]) -> Result<CrateSource, String> {
-    let cwd = std::env::current_dir().ok();
-    let extra: &[PathBuf] = cwd.as_slice();
-    for dir in search_dirs.iter().chain(extra.iter()) {
-        let p = dir.join("ar_config.json");
-        if !p.exists() { continue; }
-
-        let json = std::fs::read_to_string(&p)
-            .map_err(|e| format!("cannot read {}: {e}", p.display()))?;
-        let root: serde_json::Value = serde_json::from_str(&json)
-            .map_err(|e| format!("{}: JSON parse error: {e}", p.display()))?;
-
-        // `crates_path` may be a single string or an array of strings.
-        // Each path is searched in order; the first match wins.
-        let crates_val = match root.get("rust").and_then(|r| r.get("crates_path")) {
-            Some(v) => v,
-            None => continue,
-        };
-        let crates_paths: Vec<String> = if let Some(s) = crates_val.as_str() {
-            vec![s.to_string()]
-        } else if let Some(arr) = crates_val.as_array() {
-            arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
-        } else {
-            continue;
-        };
-
-        let base = p.parent().unwrap_or(Path::new("."));
-
-        for crates_path_str in &crates_paths {
-        let crates_root = base.join(crates_path_str);
-        let prefix = format!("{module_name}-");
-
-        let candidates: Vec<_> = std::fs::read_dir(&crates_root)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
-            .collect();
-
-        let exact = crates_root.join(module_name);
-        if exact.exists() && candidates.is_empty() {
-            return Ok(CrateSource::LocalPath {
-                crate_name: module_name.to_string(),
-                path: exact,
-            });
-        }
-
-        if candidates.is_empty() { continue; }
-
-        let chosen = if let Some(ver) = version {
-            candidates.iter()
-                .find(|e| e.file_name().to_string_lossy().contains(ver))
-                .or_else(|| candidates.iter().max_by_key(|e| e.file_name()))
-        } else {
-            candidates.iter().max_by_key(|e| e.file_name())
-        };
-
-        if let Some(entry) = chosen {
-            return Ok(CrateSource::LocalPath {
-                crate_name: module_name.to_string(),
-                path: entry.path(),
-            });
-        }
-        } // end for crates_path_str
-    }
-
-    Err(format!(
-        "import[rs] '{module_name}': crate directory not found under \
-         rust.crates_path in ar_config.json (searched: {})",
-        search_dirs
-            .iter()
-            .map(|d| format!("'{}'", d.display()))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
 }
 
 // ── Digest dependency helpers ─────────────────────────────────────────────────

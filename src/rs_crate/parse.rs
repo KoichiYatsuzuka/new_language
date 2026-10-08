@@ -1,4 +1,4 @@
-// rs_loader/parse.rs — Rust ソースからのシグネチャ抽出: 再エクスポート追跡、free fn / struct / impl メソッド解析、ABI 互換判定、型変換、パラメータ解析。
+// rs_crate/parse.rs — Rust ソースからのシグネチャ抽出: 再エクスポート追跡、free fn / struct / impl メソッド解析、ABI 互換判定、型変換、パラメータ解析。
 
 use {
     std::collections::HashMap, std::path::Path,
@@ -14,7 +14,7 @@ use super::*;
 pub(crate) fn collect_reexports(src_dir: &Path) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     let lib_rs = src_dir.join("lib.rs");
-    let Ok(text) = std::fs::read_to_string(&lib_rs) else { return set };
+    let Ok(text) = crate::import_fs::read_to_string(&lib_rs) else { return set };
     for line in text.lines() {
         if line.starts_with("pub fn ") {
             if let Some(sig) = parse_single_line_sig(line.trim()) {
@@ -52,7 +52,7 @@ pub(crate) fn follow_pub_use(
                 module_dir.join(format!("{mod_path}.rs")),
             ];
             for candidate in &candidates {
-                if let Ok(text) = std::fs::read_to_string(candidate) {
+                if let Ok(text) = crate::import_fs::read_to_string(candidate) {
                     let next_dir = candidate.parent().unwrap_or(module_dir).to_path_buf();
                     for mline in text.lines() {
                         if mline.starts_with("pub fn ") {
@@ -95,16 +95,15 @@ pub(crate) fn collect_sigs(
     seen_fns: &mut std::collections::HashSet<String>,
     seen_structs: &mut std::collections::HashSet<String>,
 ) {
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match crate::import_fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
+    for path in entries {
+        if crate::import_fs::is_dir(&path) {
             collect_sigs(&path, fns, structs, seen_fns, seen_structs);
         } else if path.extension().is_some_and(|e| e == "rs") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = crate::import_fs::read_to_string(&path) {
                 for sig in parse_fn_sigs(&text) {
                     if seen_fns.insert(sig.name.clone()) {
                         fns.push(sig);
@@ -287,7 +286,7 @@ pub(crate) fn parse_struct_sigs(source: &str) -> Vec<RsStructSig> {
 pub(crate) fn collect_digest_fns(src_dir: &Path, crate_ident: &str) -> Vec<RsFnSig> {
     // Only scan lib.rs at the crate root.
     let lib_rs_path = src_dir.join("lib.rs");
-    let source = match std::fs::read_to_string(&lib_rs_path) {
+    let source = match crate::import_fs::read_to_string(&lib_rs_path) {
         Ok(s) => s,
         Err(_) => return vec![],
     };

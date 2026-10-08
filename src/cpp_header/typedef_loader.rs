@@ -36,11 +36,11 @@ fn collect_typedefs_from_file(
     visited: &mut std::collections::HashSet<PathBuf>,
     macros: &[String],
 ) {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = crate::import_fs::canonicalize(path).unwrap_or_else(|| path.to_path_buf());
     if !visited.insert(canonical) {
         return;
     }
-    let content = match std::fs::read_to_string(path) {
+    let content = match crate::import_fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -81,14 +81,14 @@ fn collect_typedef_includes(raw_content: &str, header_dir: &Path) -> Vec<PathBuf
         // Try header_dir first, then sibling directories
         let mut found: Option<PathBuf> = None;
         let candidate = header_dir.join(&fname);
-        if candidate.exists() {
+        if crate::import_fs::exists(&candidate) {
             found = Some(candidate);
         } else if require_exists {
             if let Some(p) = parent {
-                if let Ok(entries) = std::fs::read_dir(p) {
-                    for entry in entries.flatten() {
-                        let c = entry.path().join(&fname);
-                        if c.exists() {
+                if let Ok(entries) = crate::import_fs::read_dir(p) {
+                    for entry in entries {
+                        let c = entry.join(&fname);
+                        if crate::import_fs::exists(&c) {
                             found = Some(c);
                             break;
                         }

@@ -63,15 +63,15 @@ impl Parser {
         let body = Some(raw)
             .map(|raw| String::from_utf8_lossy(&raw).into_owned())
             .map(|content| {
-                let cfg = crate::interpreter::cpp_bridge::load_cpp_config(
+                let cfg = crate::cpp_header::load_cpp_config(
                     resolved.parent().unwrap_or(std::path::Path::new(".")),
                 );
-                let typedefs = crate::interpreter::cpp_bridge::load_system_typedefs(
+                let typedefs = crate::cpp_header::load_system_typedefs(
                     &cfg.system_headers,
                     &cfg.precompile_macros,
                 );
-                use crate::interpreter::cpp_bridge::CType;
-                let (sigs, struct_defs) = crate::interpreter::cpp_bridge::parse_header_full(
+                use crate::cpp_header::CType;
+                let (sigs, struct_defs) = crate::cpp_header::parse_header_full(
                     &content,
                     &cfg.custom_type_map,
                     &typedefs,

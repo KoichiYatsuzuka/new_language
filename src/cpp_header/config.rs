@@ -88,7 +88,7 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     let mut config = CppBuildConfig::default();
 
     let mut search: Vec<PathBuf> = Vec::new();
-    let canon = std::fs::canonicalize(start_dir).unwrap_or_else(|_| start_dir.to_path_buf());
+    let canon = crate::import_fs::canonicalize(start_dir).unwrap_or_else(|| start_dir.to_path_buf());
     let mut d = canon;
     loop {
         search.push(d.clone());
@@ -97,7 +97,7 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
             _ => break,
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
+    if let Some(cwd) = crate::import_fs::current_dir() {
         if !search.contains(&cwd) {
             search.push(cwd);
         }
@@ -107,8 +107,8 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     // parse_tl_config_json はファイルに存在するキーだけを上書きする。
     for dir in search.iter().rev() {
         let cfg_path = dir.join(CONFIG_FILE_NAME);
-        if cfg_path.exists() {
-            if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+        if crate::import_fs::exists(&cfg_path) {
+            if let Ok(text) = crate::import_fs::read_to_string(&cfg_path) {
                 parse_tl_config_json(&text, &mut config);
             }
         }
