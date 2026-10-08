@@ -135,6 +135,17 @@ function Get-ExeErrorKeys([string]$text) {
     return $keys
 }
 
+# A ParseError message without its trailing location, with paths in one form. The wasm passes
+# Windows paths as '/D:/a/b' (vscode-extension/src/wasm_host.ts) and arrow.exe prints 'D:\a\b'.
+function Normalize-ParseMessage([string]$msg) {
+    $m = ($msg -replace '^(ParseError:\s*)+', '').Trim()
+    # CLI only: ' at file:line:col' at the end (the LAST ' at ', see the parse-error branch below).
+    $m = ($m -replace '^(.*)\s+at\s+.+?:\d+:\d+$', '$1').Trim()
+    $m = $m -replace '\\', '/'
+    $m = $m -replace "(^|[\s'`"(])/([A-Za-z]):(?:/|(?=['`"\s),]|$))", '$1$2:/'
+    return $m
+}
+
 $files = Get-ChildItem -Path (Join-Path $repo 'examples') -Recurse -Filter '*.ar' |
     Where-Object { $_.FullName -notlike '*\archived\*' } |
     Sort-Object FullName
@@ -209,6 +220,30 @@ foreach ($f in $files) {
 
     $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $null
     if ($e.TimedOut) { Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Yellow; $skipped++; continue }
+
+    # An import arrow.exe could not resolve: it stops with a ParseError. The editor does not stop
+    # (editor_import_resolution_plan.md 3-2): it reports the import as a 'ParseError' diagnostic and
+    # analyses the rest of the file. So the first such diagnostic must say what arrow.exe said; the
+    # editor's other diagnostics cannot be checked (arrow.exe never got that far).
+    $exeText = (($e.Out + "`n" + $e.Err) -replace "$([char]27)\[[0-9;]*m", '')
+    if ($exeText -match '(?m)^ParseError:') {
+        $checked++
+        $exeMsg = Normalize-ParseMessage ((($exeText -split "`r?`n") | Where-Object { $_ -match '^ParseError:' } | Select-Object -First 1))
+        $wasmImport = @($wj.diagnostics | Where-Object { $_.source -eq 'ParseError' }) | Select-Object -First 1
+        if ($null -eq $wasmImport) {
+            $parseFail++
+            $parseFailList.Add("$rel  REJECTED BY arrow.exe ONLY  --  $exeMsg")
+            Write-Host ("EXE-ONLY     {0}" -f $rel) -ForegroundColor Red
+        } elseif ((Normalize-ParseMessage $wasmImport.message) -eq $exeMsg) {
+            $agreed++
+            if ($VerboseDiff) { Write-Host ("agree(import) {0}" -f $rel) -ForegroundColor DarkGray }
+        } else {
+            $parseFail++
+            $parseFailList.Add("$rel  MESSAGE DIFFERS`n      exe : $exeMsg`n      wasm: $(Normalize-ParseMessage $wasmImport.message)")
+            Write-Host ("PARSE-DIFF   {0}" -f $rel) -ForegroundColor Red
+        }
+        continue
+    }
     $exeKeys = Get-ExeErrorKeys ($e.Out + "`n" + $e.Err)
 
     $checked++

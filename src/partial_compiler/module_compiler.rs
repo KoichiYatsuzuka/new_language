@@ -1,37 +1,7 @@
-﻿/// `.arc` compiled module format — writer and reader.
+﻿/// `.arc` compiled module — writer, native compilation, and the runtime cache of embedded DLLs.
 ///
-/// # File format (version 0)
-///
-/// Embeds only the source text.
-///
-/// ```text
-/// [4 bytes]  magic    : b"TLC\x00"
-/// [4 bytes]  version  : u32 LE  (0)
-/// [4 bytes]  name_len : u32 LE
-/// [name_len] name     : UTF-8 module name
-/// [4 bytes]  src_len  : u32 LE
-/// [src_len]  source   : UTF-8 source text
-/// ```
-///
-/// # File format (version 1)
-///
-/// Extends version 0 with an embedded native shared library (DLL/SO/dylib).
-///
-/// ```text
-/// [4 bytes]  magic    : b"TLC\x00"
-/// [4 bytes]  version  : u32 LE  (1)
-/// [4 bytes]  name_len : u32 LE
-/// [name_len] name     : UTF-8 module name
-/// [4 bytes]  src_len  : u32 LE
-/// [src_len]  source   : UTF-8 source text
-/// [4 bytes]  n_fns    : u32 LE  (number of natively compiled functions)
-/// for each fn:
-///   [4 bytes]       fn_name_len : u32 LE
-///   [fn_name_len]   fn_name     : UTF-8
-///   [4 bytes]       n_params    : u32 LE
-/// [4 bytes]  dll_len  : u32 LE
-/// [dll_len]  dll_bytes: raw shared-library bytes
-/// ```
+/// ⚠ The file format (and the reader) lives in `crate::arc_format`: the import processing reads the
+///   embedded source with it, in the VS Code extension's wasm too (editor_import_resolution_plan.md 3-2).
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,12 +9,9 @@ use std::process::Command;
 
 use super::llvm_codegen as codegen;
 use super::stub_gen;
+use crate::arc_format::{MAGIC, VERSION_V0, VERSION_V1};
 use crate::ast::Stmt;
 use crate::type_check::AstAnnotations;
-
-const MAGIC: &[u8; 4] = b"TLC\x00";
-const VERSION_V0: u32 = 0;
-const VERSION_V1: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Thread-local cache: module_name → (exports, NativePayload)
@@ -140,35 +107,30 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
-/// `.arc` に埋め込まれたソースだけを読む（**ネイティブキャッシュを汚さない**）。
-///
-/// `load_tlc` は埋め込み DLL を `NATIVE_CACHE` へ載せてしまうため、
-/// 「`.arc` が古いかどうか」を判定する目的には使えない（古いと判った後にキャッシュが残る＝
-/// 新しいソース × 古い DLL という最悪の組み合わせになる）。判定用にはこちらを使う。
-pub fn read_tlc_source(path: &Path) -> std::io::Result<(String, String)> {
-    let data = std::fs::read(path)?;
-    let (name, source, _native) = parse_tlc(&data)
-        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
-    Ok((name, source))
-}
-
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
 /// thread-local `NATIVE_CACHE` so that `exec.rs` can pick it up when
 /// the module is later imported.
+///
+/// ⚠ 「`.arc` が古いかどうか」の判定には使わない（古いと判った後に DLL がキャッシュに残る＝
+///   新しいソース × 古い DLL という最悪の組み合わせになる）。判定は形式を読むだけの
+///   `crate::arc_format::read` で行う（`parser/imports/ar_modules.rs`）。
 pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
-    let data = std::fs::read(path)?;
-    let (name, source, native_opt) = parse_tlc(&data)
-        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
+    let arc = crate::arc_format::read(path)?;
+    let name = arc.module_name;
 
-    if let Some((exports, payload)) = native_opt {
+    if let Some((exports, dll)) = arc.native {
+        let exports = exports
+            .into_iter()
+            .map(|(name, n_params)| codegen::FnExport { name, n_params })
+            .collect();
         NATIVE_CACHE.with(|c| {
-            c.borrow_mut().insert(name.clone(), (exports, payload));
+            c.borrow_mut().insert(name.clone(), (exports, NativePayload::Dll(dll)));
         });
     }
 
-    Ok((name, source))
+    Ok((name, arc.source))
 }
 
 // ── native compilation ────────────────────────────────────────────────────────
@@ -287,75 +249,4 @@ fn write_tlc_native(
     }
     write_len_prefixed(&mut buf, payload);
     std::fs::write(path, buf)
-}
-
-// ── reader ────────────────────────────────────────────────────────────────────
-
-/// Returns `(module_name, source, Option<(exports, NativePayload)>)`.
-fn parse_tlc(
-    data: &[u8],
-) -> Result<(String, String, Option<(Vec<codegen::FnExport>, NativePayload)>), String> {
-    let mut pos = 0;
-
-    if data.len() < 4 || &data[..4] != MAGIC {
-        return Err("not a valid .arc file (bad magic)".into());
-    }
-    pos += 4;
-
-    let version = read_u32(data, &mut pos)?;
-    if version > VERSION_V1 {
-        return Err(format!("unsupported .arc version {version}"));
-    }
-
-    let module_name = read_string(data, &mut pos)?;
-    let source = read_string(data, &mut pos)?;
-
-    if version == VERSION_V0 {
-        return Ok((module_name, source, None));
-    }
-
-    // version 1: parse fn export table
-    let n_fns = read_u32(data, &mut pos)? as usize;
-    let mut exports = Vec::with_capacity(n_fns);
-    for _ in 0..n_fns {
-        let fn_name = read_string(data, &mut pos)?;
-        let n_params = read_u32(data, &mut pos)? as usize;
-        exports.push(codegen::FnExport { name: fn_name, n_params });
-    }
-
-    let payload = NativePayload::Dll(read_len_prefixed(data, &mut pos)?.to_vec());
-
-    Ok((module_name, source, Some((exports, payload))))
-}
-
-/// バイト列の現在位置から u32 をリトルエンディアンで読み取り、位置を4バイト進める。
-fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
-    if data.len() < *pos + 4 {
-        return Err("unexpected end of .arc data".into());
-    }
-    let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    Ok(v)
-}
-
-/// バイト列の現在位置から `len` バイトのスライスを返し、位置を進める。
-fn read_bytes<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], String> {
-    if data.len() < *pos + len {
-        return Err("unexpected end of .arc data".into());
-    }
-    let slice = &data[*pos..*pos + len];
-    *pos += len;
-    Ok(slice)
-}
-
-/// `[u32 LE length][bytes]` を読み取りスライスを返す。
-fn read_len_prefixed<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], String> {
-    let len = read_u32(data, pos)? as usize;
-    read_bytes(data, pos, len)
-}
-
-/// `[u32 LE length][UTF-8 bytes]` を読み取り String を返す。
-fn read_string(data: &[u8], pos: &mut usize) -> Result<String, String> {
-    let bytes = read_len_prefixed(data, pos)?;
-    String::from_utf8(bytes.to_vec()).map_err(|_| "invalid UTF-8 in .arc data".to_string())
 }

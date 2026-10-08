@@ -222,11 +222,11 @@ impl Parser {
         // ⚠ `import[arc]`（`ArKind::Compiled`）は `.arc` を強制するので見ない。
         if is_compiled && kind == ArKind::Auto {
             let src_sibling = found.with_extension("ar");
-            if let (Ok((_, embedded)), Ok(on_disk)) = (
-                crate::partial_compiler::read_tlc_source(&found),
+            if let (Ok(arc), Ok(on_disk)) = (
+                crate::arc_format::read(&found),
                 crate::import_fs::read_to_string(&src_sibling),
             ) {
-                if embedded != on_disk {
+                if arc.source != on_disk {
                     eprintln!(
                         "Warning: compiled module '{}' is out of date with '{}'; \
                          using the source (re-run `--compile` to refresh the .arc)",
@@ -249,7 +249,7 @@ impl Parser {
 
         // ソースを取得: .arc はバイナリから埋め込みソースを抽出、.ar は直読み
         let (source, filename) = if is_compiled {
-            let (mod_name, src) = crate::partial_compiler::load_tlc(&shown_path)
+            let (mod_name, src) = Self::load_arc_source(&shown_path)
                 .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
             (src, format!("<compiled:{mod_name}>"))
         } else {
@@ -260,6 +260,19 @@ impl Parser {
 
         let body = self.parse_sub_module(&shown_path, &abs_path, &source, &filename, cache_key)?;
         Ok(LoadedModule { body, name, root: None })
+    }
+}
+
+impl Parser {
+    /// `.arc` の名前と埋め込みソース。
+    ///
+    /// CLI は実行時のために埋め込み DLL も登録する（`partial_compiler::load_tlc`）。拡張（`editor`）は
+    /// 型を読むだけなので形式を読むだけ（`crate::arc_format`・LLVM / DLL を扱う `partial_compiler` を持たない）。
+    fn load_arc_source(path: &Path) -> std::io::Result<(String, String)> {
+        #[cfg(not(feature = "editor"))]
+        return crate::partial_compiler::load_tlc(path);
+        #[cfg(feature = "editor")]
+        return crate::arc_format::read(path).map(|arc| (arc.module_name, arc.source));
     }
 }
 

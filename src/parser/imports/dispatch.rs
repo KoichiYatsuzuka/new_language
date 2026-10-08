@@ -2,7 +2,7 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::{ImportOrigin, Stmt},
+    crate::ast::{ImportBind, ImportOrigin, Stmt},
     crate::module_path,
     crate::token::Token,
     std::path::{Path, PathBuf},
@@ -89,6 +89,48 @@ impl Parser {
         self.module_names.borrow_mut().assign(&identity, preferred)
     }
 
+    /// import 先の読み込み（`load_module` と、パッケージの連鎖・サブモジュールの読み込み）を走らせる。
+    ///
+    /// - CLI: 失敗はそのまま誤り（構文解析を止める・`ParseError`）。戻り値は常に `Some`。
+    /// - 拡張（`editor`）で [`Parser::reuse_modules`] したパーサ: 失敗を**この文の誤り**として控え
+    ///   （[`Self::note_import_error`]・拡張は診断として出す）、`None` を返して続ける。止めるとファイル全体が
+    ///   構文エラーになり、未解決の import が 1 つあるだけで hover も補完も失われる。
+    ///   ⚠ 誤りは黙って捨てない（editor_import_resolution_plan.md D-4）。
+    ///   ⚠ 失敗した読み込みが残した循環検出の印（`loading`・`parse_sub_module` の doc）は戻す。残すと、
+    ///   同じモジュールをもう一度 import した文が「循環 import」という別の誤りになる。
+    pub(crate) fn try_import<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        #[cfg(feature = "editor")]
+        if self.recover_imports {
+            let loading = self.loading.clone();
+            return match f(self) {
+                Ok(v) => Ok(Some(v)),
+                Err(e) => {
+                    self.loading = loading;
+                    self.note_import_error(&e);
+                    Ok(None)
+                }
+            };
+        }
+        f(self).map(Some)
+    }
+
+    /// 読み込めなかった import（[`Self::try_import`] が `None`）の束縛。CLI の [`Self::chain_and_bind`] と
+    /// 同じ名前を束縛する（別名・パッケージを持つ言語は先頭・外部言語は末尾）。body は空。
+    pub(crate) fn unresolved_import(lang: &str, module: &[String], alias: Option<&str>) -> (LoadedModule, ImportBind) {
+        let bind = match alias {
+            Some(a) => ImportBind { name: a.to_string(), module: module.to_vec() },
+            None if Self::has_packages(lang) => ImportBind {
+                name: module.first().cloned().unwrap_or_default(),
+                module: module.iter().take(1).cloned().collect(),
+            },
+            None => ImportBind { name: module.last().cloned().unwrap_or_default(), module: module.to_vec() },
+        };
+        (LoadedModule::as_written(Vec::new(), module), bind)
+    }
+
     /// `module` が書いた綴りと違うときだけ、書いた綴りを残す（`Stmt::Import::source_module`）。
     pub(crate) fn written_if_renamed(level: u32, written: &[String], name: &[String]) -> Option<String> {
         (level != 0 || written != name).then(|| module_path::written_spelling(level, written))
@@ -115,8 +157,19 @@ impl Parser {
             return self.parse_cpp_import(lang);
         }
 
+        // 先頭の識別子の位置（エディタ索引: `import a.b` は `a` を束縛する・CPython 準拠）。
+        #[cfg(feature = "editor")]
+        let first_pos = self.tokens[self.pos..]
+            .iter()
+            .find(|t| matches!(t.token, Token::Ident(_)))
+            .map(|t| (t.span.line, t.span.col))
+            .unwrap_or((0, 0));
+
         // モジュール指定 (`..a.b.c`)
         let (level, module) = self.parse_module_ref(false)?;
+        // モジュール名の位置（エディタ索引）。この後 `[0.2]` や `as x` を読むと `prev_pos()` がずれる。
+        #[cfg(feature = "editor")]
+        let module_pos = self.prev_pos();
 
         // `[version]` — `import[rs] libm[0.2]` のバージョン指定（rs のみ）
         let version = if lang == "rs" && *self.current() == Token::LBracket {
@@ -133,10 +186,28 @@ impl Parser {
             None
         };
 
-        // モジュールの tl AST を取得（キャッシュ込み）
-        let loaded = self.load_module(&lang, level, &module, version.as_deref())?;
-        // パッケージの連鎖（`a` → `a.b`）を先に読み込む文を溜め、束縛を決める（CPython 準拠）。
-        let bind = self.import_chain_and_bind(&lang, level, &module, alias.as_deref(), &loaded)?;
+        // エディタ索引: 束縛される名前。位置はその名前を書いた識別子（別名・先頭・末尾）。
+        #[cfg(feature = "editor")]
+        {
+            let (bind_name, pos) = match &alias {
+                Some(a) => (a.clone(), self.prev_pos()),
+                None if Self::has_packages(&lang) => (module[0].clone(), first_pos),
+                None => (module.last().cloned().unwrap_or_default(), module_pos),
+            };
+            let h = self.note_def_at(&bind_name, crate::parser::editor_hooks::EditorKind::Module, pos);
+            let sig = format!("import[{lang}] {}", module_path::written_spelling(level, &module));
+            self.note_signature(h, &sig);
+        }
+
+        // モジュールの tl AST を取得（キャッシュ込み）し、パッケージの連鎖（`a` → `a.b`）を先に読み込む文を
+        // 溜め、束縛を決める（CPython 準拠）。
+        let resolved = self.try_import(|p| {
+            let loaded = p.load_module(&lang, level, &module, version.as_deref())?;
+            let bind = p.import_chain_and_bind(&lang, level, &module, alias.as_deref(), &loaded)?;
+            Ok((loaded, bind))
+        })?;
+        let (loaded, bind) =
+            resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, alias.as_deref()));
 
         Ok(Stmt::Import {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),
@@ -245,21 +316,31 @@ impl Parser {
         // `ar_config.json`（`rust.crates_path`）を探すディレクトリ: エントリのディレクトリ
         // （CPython の `sys.path[0]`）から**祖先へ**（`python.search_paths` / `csharp.lib_paths` と同じ方針）。
         // ⚠ 以前は `source_dir` と `root_dir`（エントリのディレクトリ）の 2 箇所だった。
-        let search_dirs: Vec<PathBuf> = module_path::absolute(&self.root_dir)
-            .ancestors()
-            .map(Path::to_path_buf)
-            .collect();
+        // ⚠ `import_fs::ancestors`（探した場所は誤りの文面に並ぶ。拡張でも CLI と同じ一覧にする）。
+        let search_dirs = crate::import_fs::ancestors(&module_path::absolute(&self.root_dir));
 
-        let body = crate::partial_compiler::rs_loader::load(&module_name, &search_dirs, version)
+        let body = Self::load_rs_crate(&module_name, &search_dirs, version)
             .map_err(|e| format!("import[rs] '{}': {e}", module.join(".")))?;
 
         // Write .ars stub so the VS Code extension can provide hover/completion
-        let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
-        let stub_path = self.source_dir.join(format!("{module_name}.ars"));
-        let _ = crate::import_fs::write(&stub_path, &stub_text);
+        #[cfg(not(feature = "editor"))]
+        {
+            let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
+            let stub_path = self.source_dir.join(format!("{module_name}.ars"));
+            let _ = crate::import_fs::write(&stub_path, &stub_text);
+        }
 
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)
+    }
+
+    /// crate の型スタブ。CLI は実行時の中継 DLL も `cargo build` して登録する（`rs_loader::load`）。
+    /// 拡張（`editor`）は型を読むだけ（`rs_crate::load_types`・`cargo` を起動しない・D-3）。
+    fn load_rs_crate(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -> Result<Vec<Stmt>, String> {
+        #[cfg(not(feature = "editor"))]
+        return crate::partial_compiler::rs_loader::load(module_name, search_dirs, version);
+        #[cfg(feature = "editor")]
+        return crate::rs_crate::load_types(module_name, search_dirs, version);
     }
 
     /// `[X.Y.Z]` 形式のバージョンブラケットをパースして文字列で返す。

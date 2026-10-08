@@ -22,9 +22,8 @@ pub(crate) fn is_python_stdlib_path(path: &std::path::Path) -> bool {
 
 // ─── Python 型スタブ抽出 ───────────────────────────────────────────────────────
 
-// 実体は [`crate::parser::py_stub_extract`] へ移した（`editor` ビルドでも使うため —
-// このモジュール自体が editor では `imports_editor.rs` に差し替わって消える）。
-// サブモジュールは `use super::*` でここを見ているので、名前だけ通しておく。
+// 実体は [`crate::parser::py_stub_extract`]（以前このモジュールが `editor` では丸ごと消えていたので
+// 外へ出した・その doc）。サブモジュールは `use super::*` でここを見ているので、名前だけ通しておく。
 pub(crate) use crate::parser::py_stub_extract::extract_py_type_stubs;
 
 // ─── C 型スタブ ───────────────────────────────────────────────────────────────

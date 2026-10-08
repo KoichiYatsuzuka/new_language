@@ -39,6 +39,8 @@ pub(crate) struct RsStructSig {
     /// Constructor params: from `pub fn new(...)` if present, else field order.
     pub(crate) ctor_params: Vec<RsParam>,
     /// If true, use `Name::new(...)` for construction; if false, use struct literal.
+    /// ⚠ 読むのは中継 DLL の生成（`partial_compiler/rs_loader`・CLI だけ）。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
     pub(crate) use_new_fn: bool,
 }
 
@@ -103,7 +105,8 @@ pub(crate) fn find_config(module_name: &str, version: Option<&str>, search_dirs:
         let base = p.parent().unwrap_or(Path::new("."));
 
         for crates_path_str in &crates_paths {
-        let crates_root = base.join(crates_path_str);
+        // ⚠ テキストのパスは `import_fs::path_from_text`（拡張では `C:/a` を絶対パスとして扱うため）。
+        let crates_root = base.join(crate::import_fs::path_from_text(crates_path_str));
         let prefix = format!("{module_name}-");
 
         let candidates: Vec<PathBuf> = crate::import_fs::read_dir(&crates_root)

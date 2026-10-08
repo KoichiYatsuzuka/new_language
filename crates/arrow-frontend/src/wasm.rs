@@ -94,6 +94,15 @@ pub unsafe extern "C" fn ar_analyze_at(
     })
 }
 
+/// 保持している import 先のモジュールを捨てる（`analyze::invalidate_modules`）。
+///
+/// ホストは import 先になりうるファイル（`.ar` / `.py` / `.h` / `ar_config.json` …）の変更を見張り、
+/// 変わったら呼ぶ。次の解析で読み直す（打鍵ごとには読み直さない・editor_import_resolution_plan.md D-2）。
+#[no_mangle]
+pub extern "C" fn ar_invalidate_modules() {
+    crate::analyze::invalidate_modules();
+}
+
 /// 型スタブを 1 件登録する。`key` は `arrow.exe` が出したマニフェストの鍵をそのまま渡す
 /// （形式の定義は `parser::stub_registry::stub_key` 1 箇所だけ。ホストは組み立てない）。
 ///

@@ -8,12 +8,12 @@ pub mod llvm_codegen;
 mod module_compiler;
 // ⚠ Rust crate ローダ（`import[rs]`）。外部 `cargo` を起動して DLL を作るので
 //   `native` 限定（評価コア切り出し #5）。参照元は `parser/imports/dispatch.rs`
-//   （`editor` では `imports_editor.rs` に差し替わって消える）と `module_compiler`。
+//   （`editor` では型だけを読む `crate::rs_crate::load_types` を使う）と `module_compiler`。
 #[cfg(feature = "native")]
 pub mod rs_loader;
 pub mod stub_gen;
 
 pub use module_compiler::{
-    compile, load_tlc, native_lib_ext, read_tlc_source, take_native_bytes,
+    compile, load_tlc, native_lib_ext, take_native_bytes,
     NativePayload,
 };

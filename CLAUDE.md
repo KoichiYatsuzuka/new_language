@@ -40,8 +40,10 @@ cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknow
 ```
 
 拡張は**この wasm 以外に解析ロジックを持たない**。文法を追加すれば再ビルドだけで追随する。
-唯一の例外は `src/parser/imports_editor.rs`（fs に触れない import 解析）で、import 構文を
-変えたときだけ手当てが要る。
+import 先も CLI と**同じ処理**（`src/parser/imports/`）で読む。ファイルの読み込みだけは wasm から
+ホスト（`vscode-extension/src/wasm_host.ts`）に頼むので、⚠ **import の処理は `std::fs` / `std::env` を
+直接呼ばず `src/import_fs.rs` を通すこと**（通さないと拡張だけ型が付かない）。実行時のためだけの処理
+（DLL のビルド・`cargo`）は `#[cfg(not(feature = "editor"))]` で分ける。
 
 ### Python implementation (`impl_python/`)
 

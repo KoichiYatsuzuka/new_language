@@ -107,9 +107,9 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 | **2-1** | import の処理がファイルに触る所（存在・ディレクトリか・テキスト・バイナリ・`ar_config.json`）を 1 つの抽象（例: `ImportFs`）の後ろへ集める。CLI は `std::fs` の実装 | なし | 中 |
 | **2-2** | wasm に載らない依存を切り出す: C/C++ のヘッダ解析（`interpreter/cpp_bridge` の解析部）・Rust crate の読み込み（`partial_compiler/rs_loader` の `scan_all_sigs` など）を、ファイルを解析するだけの部分と実行時の部分に分け、前者を拡張の wasm から使える場所へ移す | 2-1 | 中 |
 | **3-1** | wasm からホストへファイルの読み込みを頼む関数（同期）と、解析するドキュメントのパスを渡す入口を足す。ホスト（`frontend.ts`）に実装する | 2-1 | 中 |
-| **3-2** | 拡張のビルドで `.ar` / `.arc` の import に `parser/imports/` を使う。読み込んだモジュールを保持し（パスと更新日時）、ホストがファイルの変更を知らせたものだけ読み直す | 3-1 | 中 |
+| **3-2** | 拡張のビルドで `.ar` / `.arc` の import に `parser/imports/` を使う。読み込んだモジュールを保持し（パスと更新日時）、ホストがファイルの変更を知らせたものだけ読み直す。⚠ 実施では `parser/imports/` が 1 つのモジュールなので**全言語**が同時に載った（4-1 の実装を含む・5 の記録） | 3-1 | 中 |
 | **3-3** | 中身が届いた import については型検査器の拡張だけの分岐（1.1 の 3 つ）を外す。`compare_wasm_frontend.ps1` が import を含む例題でも CLI と同じ診断になることを確かめ、「wasm は少なくてよい」の例外を外す | 3-2 | 小 |
-| **4-1** | 拡張で外部言語（`py` / `py-int` / `cpp` / `cs` / `js-proc` / `rs`）も `parser/imports/` で読む。`rs` は型の情報だけ（`cargo build` しない）。Python の場所はホストから | 2-2・3-2 | 中 |
+| **4-1** | 拡張で外部言語（`py` / `py-int` / `cpp` / `cs` / `js-proc` / `rs`）も `parser/imports/` で読む。`rs` は型の情報だけ（`cargo build` しない）。Python の場所はホストから。⚠ 実装は 3-2 に含まれた。残りは**言語ごとの確認**（デバッグランナーで各言語の例題の hover・補完・診断） | 2-2・3-2 | 小 |
 | **5-1** | スタブの仕組みを撤去（`imports_editor.rs`・`stub_registry`・`--emit-stubs`・`stub_manifest`・`stubs.ts`・コマンド・設定、`enum_member_type_plan.md` 6-3 の `generate_editor_stub`）。`CLAUDE.md` の「唯一の例外」・スキル（`vscode-extension-dev` / `importation` / `codebase-map`）・VSIX を更新 | 3-3・4-1 | 中 |
 
 ## 4. ゲート
@@ -194,3 +194,44 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
   （呼び出しが最適化で消える）。使われるのは 3-2 から
 - ゲート: `compare_import_paths -A` 13/13・`compare_outputs -A` 402/402・`force_gate` 0・`compare_python_impl` clean・
   `compare_wasm_frontend` INVENTED 0 / parse mismatch 0（2-2 と同じ結果）
+
+### 3-2 実装
+
+- **拡張も `parser/imports/` を使う**（`imports_editor.rs` を削除）。違うのは次だけ（`#[cfg(feature = "editor")]`）:
+  - `import[rs]`: 型だけを読む `rs_crate::load_types`（`cargo build` しない・`.ars` も書かない）
+  - `.arc`: 形式を読むだけ（`src/arc_format.rs` に切り出した。CLI は実行時のために埋め込み DLL も登録する）
+  - ⚠ `parser/imports/` は 1 つのモジュールなので、**外部言語もこの時点で全部載った**（4-1 の実装）。
+    Python の場所はホスト（3-1）、C/C++ のヘッダ・.NET のメタデータ・`.pyi` / `.py` は同じコードで読む
+- **読めない import で止まらない**（拡張だけ）: `Parser::try_import` が誤りを `EditorIndex::import_errors` に控え、
+  空の body で続ける。拡張は `ParseError` の診断として出す（位置は CLI が止まる位置）。
+  - ⚠ 立てるのは**ドキュメント自身のパーサだけ**（`Parser::reuse_modules`）。import 先を読む子パーサが立てると、
+    import 先の中の未解決の import がその子の中で控えられたまま捨てられ、黙って型が落ちる（D-4 違反）
+  - ⚠ 失敗した読み込みが残す循環検出の印（`loading`）は戻す（同じモジュールの 2 度目の import が「循環」になる）
+- **モジュールの保持**（D-2）: `analyze.rs` の `ModuleStore`（エントリのディレクトリごと）。解析の前に
+  `Parser::reuse_modules` で引き継ぎ、後で新しく読んだものを足す。ホストがファイルの変更を知らせたら
+  （`ar_invalidate_modules`・`extension.ts` のファイルの見張り）すべて捨てる
+  - ⚠ node-id: 保持したモジュールの AST が使った最大値の次から振る（衝突すると型検査の注釈を取り違える）。
+    新しいモジュールが無い解析では最大値を進めない（打鍵ごとに増え続けて u32 を使い切るため）
+  - 実測（`importation.ar`）: 初回 251 ms・2 回目以降 約 30 ms（CLI では import の処理に 7.7 秒）
+- 拡張の診断は**このドキュメントの位置のもの**だけ（import 先の中の誤りを同じ行・列に出さない）
+- **テキストから読んだパス**（`ar_config.json` の `crates_path` / `search_paths`・ヘッダの場所）は
+  `import_fs::path_from_text` で `PathBuf` にする。wasm では `C:/a` が相対パスになり、設定ファイルの場所に
+  連結されて `import[rs]` が見つからなくなった（ゲートで発覚）
+- **ドライブの上の `/`**: wasm の形（`/D:/a`）では祖先をたどると `/D:` の上に `/` がある。探した場所が文面に
+  並ぶ所は `import_fs::ancestors`（`/` を含めない）。ホストはドライブの無い `/...` を「無い」と答える
+- C/C++ のヘッダが読めないときの文面の理由を `ErrorKind`（`entity not found`）にした（以前は OS の文で、
+  日本語の Windows では日本語になり拡張の文面と食い違う）。**CLI の出力が変わる**（`unresolved_cpp_header_error.ar`）
+- `compare_wasm_frontend`: CLI が `ParseError` で止まった例題は、拡張の最初の `ParseError` の診断と文面
+  （位置の後置きを除き、パスの形をそろえる）を突き合わせる。拡張のそれ以外の診断は確かめられない（CLI がそこまで
+  進まない）。`dump_diags.js` はゲートが読む項目だけを出す（PowerShell 5.1 の `ConvertFrom-Json` は大文字小文字
+  だけが違う鍵を持つ JSON を読めない。`members` にクラス `Vec2` とモジュール `vec2` が並んだ）
+- 拡張の crate のスタブのテスト（`tests/stubs.rs`）を、import を実際に読むことのテスト（`tests/imports.rs`）に置き換えた
+- ⚠ 開発中の罠: `vscode-extension/out/arrow_frontend.wasm`（以前の VSIX 作成などで残った古い wasm）が cargo の出力より
+  優先され、デバッグランナーが古い解析器で動いていた。`loadFrontend` は新しいほうを読むようにした
+- wasm は 2.6 MB → 4.6 MB（Python のパーサ・ヘッダ解析・.NET のメタデータ読み取りが実際に使われるようになった）
+- 言語ごとの確認（デバッグランナー）: py・py-int・cpp・cs・js-proc・rs のどれも import 先のメンバーが補完に出て、
+  戻り値の型がインレイヒントに出る。⚠ `bridge.Calculator.`（モジュール → クラス → 静的メンバー）の補完だけ空
+  （拡張の補完が 2 段の連鎖をたどらない既存の制限・import とは別）
+- ゲート: `compare_import_paths -A` 13/13・`compare_outputs -A` 401/402（差は `unresolved_cpp_header_error.ar` の
+  文面の変更だけ・意図どおり）・`force_gate` 0・`compare_python_impl` clean・`compare_wasm_frontend` INVENTED 0 /
+  parse mismatch 0・`stale_doc_refs` OK・拡張の crate のテスト 655 件

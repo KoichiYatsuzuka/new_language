@@ -24,6 +24,8 @@ mod module_path;
 // import の処理が外界（ファイル・環境変数・Python の場所）に触る唯一の窓口。拡張（wasm）では
 // ホストに頼む実装に差し替える（editor_import_resolution_plan.md 2-1）。
 mod import_fs;
+// コンパイル済みモジュール（`.arc`）の形式の読み取り（import の処理と拡張の wasm が使う・3-2）。
+mod arc_format;
 // C/C++ のヘッダから型の情報を読む部分（`interpreter/cpp_bridge` から切り出した・2-2）。
 mod cpp_header;
 // Rust crate のソースから型の情報を読む部分（`partial_compiler/rs_loader` から切り出した・2-2）。
@@ -35,8 +37,8 @@ mod partial_compiler;
 mod py_stubs;
 mod stub_manifest;
 // ⚠ `rustpython-parser` に依存するので `native` 限定（評価コア切り出し #2）。
-// 参照元は `parser/imports/py_modules.rs` だけで、そこも `editor` では
-// `imports_editor.rs` に差し替わって消える。
+// 参照元は `parser/imports/py_modules.rs` だけ。⚠ 拡張の crate（`crates/arrow-frontend`）は `native` に
+// 関係なく取り込む（`import[py]` の型の出所・editor_import_resolution_plan.md 2-2）。
 #[cfg(feature = "native")]
 mod python_converter;
 mod repl;

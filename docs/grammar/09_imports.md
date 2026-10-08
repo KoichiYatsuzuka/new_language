@@ -240,8 +240,8 @@ print(pkg.core.LABEL)                # サブモジュール（wrapper が読み
   `from tags import Tag` した `Tag` も同じ型です。再エクスポートで取り込んだ型は、元の宣言の型に解決されます。
 - 型の表はプログラム全体で 1 つですが、**このファイルが束縛していないモジュールの型名は書けません**
   （CPython でも束縛していない名前は `NameError`）。別名で束縛していれば、使うべき綴りを案内します。
-- ⚠ 外部言語のスタブ（cpp / cs / js / rs）と、VS Code 拡張（import 先を読み込まない）では、
-  無いメンバーを誤りにしません。
+- ⚠ 外部言語のスタブ（cpp / cs / js / rs）と、VS Code 拡張では、無いメンバーを誤りにしません
+  （拡張は 3-3 で CLI と同じにする・editor_import_resolution_plan.md）。
 
 ### グローバル変数の型と属性
 
@@ -260,8 +260,7 @@ import した後も、モジュールのグローバル変数の**型と属性**
 - `from g import X` で取り込んだ名前は、**付け替えられません**（`X = ..` は静的エラー）。
   **中身は元の宣言の属性に従います**: 元が `mut` のリストなら `X.append(..)` でき（モジュールと共有）、
   `let` / `const` ならできません。`int` などの値は import した時点の写しです（CPython と同じ）。
-- VS Code 拡張は import 先を読みませんが、`arrow --emit-stubs` が作るスタブにグローバル変数を型と属性
-  つきで書くので（`const LIMIT: int = Undefined` の形）、拡張でも同じ型と属性が分かります。
+- VS Code 拡張も CLI と同じ処理で import 先を読むので、同じ型と属性が分かります。
 
 ---
 

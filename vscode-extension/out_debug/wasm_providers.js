@@ -87,7 +87,9 @@ function analyzeDocument(document) {
     if (document.uri.scheme !== 'file') {
         return (0, frontend_1.analyze)(document.getText());
     }
-    const fsPath = document.uri.fsPath;
+    // ⚠ 絶対パスにそろえる（VS Code の `fsPath` は常に絶対だが、デバッグランナーは引数のまま渡す）。
+    //   相対のままだと import の探索の起点とカレントディレクトリがずれる。
+    const fsPath = path.resolve(document.uri.fsPath);
     const folder = (_b = (_a = vscode.workspace).getWorkspaceFolder) === null || _b === void 0 ? void 0 : _b.call(_a, document.uri);
     (0, wasm_host_1.setHostCwd)(folder ? folder.uri.fsPath : path.dirname(fsPath));
     return (0, frontend_1.analyze)(document.getText(), fsPath);
@@ -819,7 +821,7 @@ function provideDiagnostics(document) {
     // 打っている最中ずっと赤線が点滅する。構文エラー自体だけを 1 件出す。
     if (freshParseFailed(document)) {
         const raw = analyzeDocument(document);
-        const message = (_a = raw === null || raw === void 0 ? void 0 : raw.parseError) !== null && _a !== void 0 ? _a : 'parse error';
+        const message = (0, wasm_host_1.displayPaths)((_a = raw === null || raw === void 0 ? void 0 : raw.parseError) !== null && _a !== void 0 ? _a : 'parse error');
         // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
         // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。
         const at = (_b = raw === null || raw === void 0 ? void 0 : raw.parseErrorAt) !== null && _b !== void 0 ? _b : null;
@@ -861,7 +863,7 @@ function toDiagnostic(document, analysis, d) {
         // 実際のエラーがここにしか現れないものがあるため。
         range = new vscode.Range(0, 0, 0, 1);
     }
-    const diag = new vscode.Diagnostic(range, d.message, d.severity === 0 ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning);
+    const diag = new vscode.Diagnostic(range, (0, wasm_host_1.displayPaths)(d.message), d.severity === 0 ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning);
     diag.source = d.source || 'arrow';
     return diag;
 }

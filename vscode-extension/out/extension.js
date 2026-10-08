@@ -172,7 +172,8 @@ function activate(context) {
             clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる。
+            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる（import 先は初回だけ読み、
+            // 以降は wasm が保持したものを使う）。
             try {
                 diagCollection.set(document.uri, (0, wasm_providers_1.provideDiagnostics)(document));
             }
@@ -193,6 +194,24 @@ function activate(context) {
         }
         (0, wasm_providers_1.forgetDocument)(doc);
     }));
+    // ---- Imported files ----
+    // 解析は import 先のモジュールを wasm の中に保持し、打鍵ごとには読み直さない（`invalidateModules`）。
+    // import 先になりうるファイルが変わったら（保存・作成・削除）捨てて、開いているドキュメントを解析し直す。
+    // ⚠ 拡張子は import の型の出所（`.ar` / `.arc` / `.ars` / `.py` / `.pyi` / `.h` / `.dll` / `.js` / `.rs`）と
+    //   設定（`ar_config.json`）。ビルドなどで大量に変わるので、まとめて 1 回にする。
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{ar,arc,ars,py,pyi,h,hpp,dll,js,rs,json}');
+    let reloadTimer;
+    const onImportedFileChanged = () => {
+        if (reloadTimer)
+            clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(() => {
+            reloadTimer = undefined;
+            (0, frontend_1.invalidateModules)();
+            (0, wasm_providers_1.clearAnalysisCache)();
+            vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
+        }, 300);
+    };
+    context.subscriptions.push(watcher, watcher.onDidChange(onImportedFileChanged), watcher.onDidCreate(onImportedFileChanged), watcher.onDidDelete(onImportedFileChanged));
     const active = vscode.window.activeTextEditor?.document;
     if (active)
         syncStubs(active);

@@ -31,24 +31,19 @@ pub(crate) struct AliasEntry {
 }
 
 mod stmts;
-// import 解析は 2 実装ある。既定（バッチ実行）はパース時に実モジュールを読み込む
-// `imports/`。`editor` feature ではファイルシステム・プロセス・DLL に一切触れない
-// `imports_editor.rs` に差し替わる（VS Code 拡張の wasm ビルド用）。
-// ⚠ 両者は**同じ構文を受理**しなければならない。詳細は imports_editor.rs の doc。
-#[cfg(not(feature = "editor"))]
+// import の解析とモジュールの読み込み（パース時に import 先を探して読み、`Stmt::Import::body` に持たせる）。
+// ⚠ VS Code 拡張（`editor`・wasm）も**同じもの**を使う（editor_import_resolution_plan.md 3-2）。違うのは
+//   ファイルの読み方（`crate::import_fs`）と、実行時のためだけの処理（`rs` の `cargo build`・`.arc` の DLL の
+//   登録）をしないことだけ。以前は拡張だけ構文しか読まない別実装（`imports_editor.rs`）に差し替わっていた。
 mod imports;
-#[cfg(feature = "editor")]
-#[path = "imports_editor.rs"]
-mod imports;
-// モジュール指定（`..a.b`）の構文。上の 2 実装が**共有**する（受理する構文をずらさないため）。
+// モジュール指定（`..a.b`）の構文。
 mod import_syntax;
 pub(crate) mod classes;
 mod types;
 // 型の文字列を型注釈と同じ綴りに揃える（展開時の型の値・D23 / タスク 4-2）。
 pub(crate) use types::canonical_type_text;
 mod exprs;
-// Python ソースからの行ベース型スタブ抽出。**両ビルドで使う**ので `imports/` の外に置く
-// （`imports/` は editor では丸ごと差し替わり、抽出器ごと消えてしまうため）。
+// Python ソースからの行ベース型スタブ抽出（`imports/` の py の読み込みが使う）。
 pub(crate) mod py_stub_extract;
 // ホストが渡した型スタブの表（`editor` 専用）。CLI は実モジュールを読むので要らない。
 #[cfg(feature = "editor")]
@@ -61,7 +56,8 @@ mod editor_hooks;
 // .NET アセンブリの読み取り（`import[cs-dll]` / `import[cs-proc]` の型の出所）。
 // ⚠ ファイルへのアクセスは `crate::import_fs` を通すので、拡張（wasm）でも同じものを使う
 //   （editor_import_resolution_plan.md 2-2。以前は `editor` で外していた）。
-#[cfg_attr(feature = "editor", allow(dead_code, unused_imports))]
+// ⚠ `--compile-cs`（`.ars` の生成・XML ドキュメント）の部分は CLI だけが使うので、拡張では未使用になる。
+#[cfg_attr(feature = "editor", allow(dead_code))]
 pub(crate) mod cs_assembly;
 
 /// tl 言語の再帰降下パーサ。
@@ -129,9 +125,6 @@ pub struct Parser {
     /// Names declared with `protocol` — instantiation of these is a parse-time error.
     known_protocols: HashSet<String>,
     /// 現在パース中のファイルのディレクトリ（相対 import の起点・[`crate::module_path`]）。
-    // `editor` ではモジュールを読み込まないので、以下 5 つは未使用になる。
-    // フィールドごと消さないのは、通常ビルドと `Parser::new` の形を揃えておくため。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     source_dir: PathBuf,
     /// `source_dir` が**ファイルのディレクトリとして与えられたか**（`Parser::new` の `Some`）。
     ///
@@ -139,7 +132,6 @@ pub struct Parser {
     ///   探索の起点を**載せない**（`ImportOrigin::base_dir` が `None`）。実行時はそのとき
     ///   登録済みの探索先（`Interpreter::python_search_dirs`）を使う。`.`（CWD）を起点として
     ///   載せると、テストが登録した探索先が使われなくなる。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     has_source_dir: bool,
     /// メインエントリーファイルのディレクトリ。サブパーサにも変更せず引き継がれる。
     ///
@@ -147,23 +139,18 @@ pub struct Parser {
     /// **モジュールの名前の基準**（`pkg.util`・[`crate::module_path::root_relative_name`]）でもある。
     /// ⚠ 2026-10-02 午前の版（フェーズ 1）では探索先から外していたが、CPython 準拠（フェーズ 4）で
     ///   ドット無しの import の唯一の探索先（言語ごとの外部の探索先を除く）になった。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     root_dir: PathBuf,
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
     /// パース時に同じモジュールを複数回読み込まないために使用する。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     loading: HashSet<PathBuf>,
     /// ファイル ↔ モジュール名の対応表（[`crate::module_path::ModuleNames`]）。
     /// **サブパーサと共有する**（プログラム全体で 1 つ。`node_counter` と同じ扱い）。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     module_names: std::rc::Rc<std::cell::RefCell<crate::module_path::ModuleNames>>,
     /// 今の文の**前に**置く文（CPython 準拠・2026-10-02）。`import a.b.c` は先にパッケージ `a` と
     /// `a.b` を読み込む（束縛しない `Stmt::Import` を足す）。`parse_program` が最上位の文の前へ並べる。
     /// ⚠ import は最上位にしか書けない（10-16）ので、溜めるのも出すのも最上位だけ。
-    #[cfg_attr(feature = "editor", allow(dead_code))]
     pending_stmts: Vec<Stmt>,
     /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
     /// 構築するたびに `next_node_id()` で採番する。
@@ -178,6 +165,14 @@ pub struct Parser {
     /// 通常ビルドではフィールドごと存在しない。
     #[cfg(feature = "editor")]
     editor: editor_index::EditorIndex,
+    /// 読み込めなかった import で止まらず、その文の誤りとして控えて続けるか（`editor` 専用・
+    /// [`Self::try_import`]）。**解析するドキュメント自身のパーサだけ**が立てる（[`Self::reuse_modules`]）。
+    ///
+    /// ⚠ import 先のモジュールを読む子パーサは立てない。立てると、import 先の中の未解決の import が
+    ///   その子パーサの中で控えられたまま捨てられ、**黙って型情報が落ちる**（D-4 の禁止事項）。
+    ///   子は誤りを返し、ドキュメントの import 文の誤りとして控えられる。
+    #[cfg(feature = "editor")]
+    recover_imports: bool,
 }
 
 impl Parser {
@@ -254,6 +249,8 @@ impl Parser {
             node_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
             #[cfg(feature = "editor")]
             editor: editor_index::EditorIndex::new(),
+            #[cfg(feature = "editor")]
+            recover_imports: false,
         }
     }
 
@@ -320,6 +317,27 @@ impl Parser {
     /// （`node_counter` の doc）。⇒ 展開器が置いたコードも**同じカウンタから採番する**。
     pub(crate) fn node_counter(&self) -> std::rc::Rc<std::cell::Cell<u32>> {
         std::rc::Rc::clone(&self.node_counter)
+    }
+
+    /// 拡張（`editor`）: 前回までの解析で読み込んだ import 先のモジュールを引き継いで解析する
+    /// （editor_import_resolution_plan.md D-2）。読み込めなかった import では止まらない（[`Self::try_import`]）。
+    ///
+    /// - `modules` … [`Self::take_module_cache`] で取り出したもの（**同じエントリのディレクトリ**の解析の
+    ///   もの。モジュールの名前はエントリのディレクトリで決まる・[`crate::module_path`]）
+    /// - `last_node_id` … `modules` の AST が使った node-id の最大値。このファイルの node-id はその次から振る
+    ///   （衝突すると、型検査の注釈を別のモジュールの式のものと取り違える・`ar_modules.rs` の
+    ///   `node_counter` の注意と同じ理由）
+    #[cfg(feature = "editor")]
+    pub fn reuse_modules(&mut self, modules: HashMap<(String, PathBuf), Vec<Stmt>>, last_node_id: u32) {
+        self.module_cache = modules;
+        self.node_counter.set(last_node_id);
+        self.recover_imports = true;
+    }
+
+    /// 拡張（`editor`）: この解析で読み込んだ（と引き継いだ）import 先のモジュール。
+    #[cfg(feature = "editor")]
+    pub fn take_module_cache(&mut self) -> HashMap<(String, PathBuf), Vec<Stmt>> {
+        std::mem::take(&mut self.module_cache)
     }
 
     /// パース中に集めた trait の宣言情報（タスク 2-4）。

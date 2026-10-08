@@ -25,7 +25,7 @@
  *   拡張の外から読み込み、**拡張と同じホスト**で wasm を動かして CLI と突き合わせる。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.hostImports = exports.setHostCwd = exports.toHostPath = exports.toWasmPath = void 0;
+exports.hostImports = exports.setHostCwd = exports.displayPaths = exports.toHostPath = exports.toWasmPath = void 0;
 const child_process = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -38,13 +38,43 @@ function toWasmPath(p) {
     return /^[A-Za-z]:(\/|$)/.test(s) ? '/' + s : s;
 }
 exports.toWasmPath = toWasmPath;
-/** wasm から来たパス → ホストのパス（`/D:/a/b` → `D:/a/b`。Node は `/` 区切りも受ける）。 */
+/**
+ * wasm から来たパス → ホストのパス（`/D:/a/b` → `D:/a/b`・`/D:` → `D:/`。Node は `/` 区切りも受ける）。
+ *
+ * ⚠ Windows では、ドライブの無い `/...` は wasm にしか無い場所（ドライブ `/D:` の上の `/`）なので
+ *   `null`（無い）を返す。親をたどって設定ファイルを探すループがそこを覗いても、何も見つからない
+ *   （CLI はドライブのルートで止まる）。`//server/share`（UNC）はそのまま。
+ */
 function toHostPath(p) {
     if (!isWindows)
         return p;
-    return /^\/[A-Za-z]:(\/|$)/.test(p) ? p.slice(1) : p;
+    if (/^\/[A-Za-z]:$/.test(p))
+        return p.slice(1) + '/';
+    if (/^\/[A-Za-z]:\//.test(p))
+        return p.slice(1);
+    if (p.startsWith('/') && !p.startsWith('//'))
+        return null;
+    return p;
 }
 exports.toHostPath = toHostPath;
+/**
+ * wasm が出した文面の中のパス（`/D:/a/b`・`/D:`）をホストの形（`D:/a/b`・`D:/`）に直す（表示用）。
+ *
+ * import の誤り（探した場所の一覧など）はパスを含む。wasm の形のまま見せると利用者には見慣れない。
+ */
+function displayPaths(text) {
+    if (!isWindows)
+        return text;
+    return text.replace(/(^|[\s'"(])\/([A-Za-z]):(?:\/|(?=['"\s),]|$))/g, '$1$2:/');
+}
+exports.displayPaths = displayPaths;
+/** ホストのパスが無い（wasm にしか無い場所）ときに投げる。 */
+function hostPath(p) {
+    const h = toHostPath(p);
+    if (h === null)
+        throw Object.assign(new Error(`no such path: ${p}`), { code: 'ENOENT' });
+    return h;
+}
 /** `host_read` などが失敗したときの戻り値（wasm 側の `io::ErrorKind` に写す）。 */
 const NOT_FOUND = -1;
 const OTHER_ERROR = -2;
@@ -117,7 +147,7 @@ function hostImports(memory) {
         /** 0 = 無い・1 = ファイル・2 = ディレクトリ。 */
         host_stat(ptr, len) {
             try {
-                return fs.statSync(toHostPath(str(ptr, len))).isDirectory() ? 2 : 1;
+                return fs.statSync(hostPath(str(ptr, len))).isDirectory() ? 2 : 1;
             }
             catch {
                 return 0;
@@ -126,7 +156,7 @@ function hostImports(memory) {
         /** ファイルの中身（バイト列）。 */
         host_read(ptr, len) {
             try {
-                return put(fs.readFileSync(toHostPath(str(ptr, len))));
+                return put(fs.readFileSync(hostPath(str(ptr, len))));
             }
             catch (e) {
                 return errorCode(e);
@@ -135,16 +165,20 @@ function hostImports(memory) {
         /** ディレクトリの中の項目の名前（`\n` 区切り）。 */
         host_read_dir(ptr, len) {
             try {
-                return putText(fs.readdirSync(toHostPath(str(ptr, len))).join('\n'));
+                return putText(fs.readdirSync(hostPath(str(ptr, len))).join('\n'));
             }
             catch (e) {
                 return errorCode(e);
             }
         },
+        /** テキストに書かれたパス（設定ファイルの値など）を wasm の形にする（`import_fs::path_from_text`）。 */
+        host_path(ptr, len) {
+            return putText(toWasmPath(str(ptr, len)));
+        },
         /** 絶対パスにし、リンクを解いた形。 */
         host_realpath(ptr, len) {
             try {
-                return putText(toWasmPath(fs.realpathSync.native(toHostPath(str(ptr, len)))));
+                return putText(toWasmPath(fs.realpathSync.native(hostPath(str(ptr, len)))));
             }
             catch (e) {
                 return errorCode(e);

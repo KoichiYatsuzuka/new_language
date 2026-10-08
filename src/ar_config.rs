@@ -54,6 +54,8 @@ use std::path::{Path, PathBuf};
 /// ⚠ **見つからない場合はドライブ root まで遡る**（打ち切りが無い）。
 /// これが `interp_init` の支配項だったので、**起動時には呼ばない**（#69）。呼ぶのは
 /// その import 文（py-int / cs）を実際に実行したときだけ。
+// ⚠ 呼ぶのは実行時（インタプリタ）だけなので、拡張（`editor`）では未使用になる。
+#[cfg_attr(feature = "editor", allow(dead_code))]
 pub(crate) fn load_python_search_paths(source_dir: &Path) -> Vec<PathBuf> {
     match find_ancestor_config(source_dir) {
         Some((cfg_path, base)) => read_python_search_paths(&cfg_path, &base),
@@ -148,7 +150,8 @@ fn resolve_path_array(arr: &[serde_json::Value], base: &Path) -> Vec<PathBuf> {
         .filter_map(|p| p.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| {
-            let pb = PathBuf::from(s);
+            // ⚠ テキストのパスは `import_fs::path_from_text`（拡張では `C:/a` を絶対パスとして扱うため）。
+            let pb = crate::import_fs::path_from_text(s);
             if pb.is_absolute() {
                 pb
             } else {

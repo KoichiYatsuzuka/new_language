@@ -14,7 +14,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { analyze, builtinsSource, isFrontendReady, type AnalysisResult, type WasmDiagnostic } from './frontend';
-import { setHostCwd } from './wasm_host';
+import { displayPaths, setHostCwd } from './wasm_host';
 
 // ===== 解析結果の型（frontend が返す JSON の形） =====
 
@@ -183,7 +183,9 @@ function analyzeDocument(document: vscode.TextDocument): Analysis | null {
     if (document.uri.scheme !== 'file') {
         return analyze(document.getText()) as Analysis | null;
     }
-    const fsPath = document.uri.fsPath;
+    // ⚠ 絶対パスにそろえる（VS Code の `fsPath` は常に絶対だが、デバッグランナーは引数のまま渡す）。
+    //   相対のままだと import の探索の起点とカレントディレクトリがずれる。
+    const fsPath = path.resolve(document.uri.fsPath);
     const folder = vscode.workspace.getWorkspaceFolder?.(document.uri);
     setHostCwd(folder ? folder.uri.fsPath : path.dirname(fsPath));
     return analyze(document.getText(), fsPath) as Analysis | null;
@@ -951,7 +953,7 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
     // 打っている最中ずっと赤線が点滅する。構文エラー自体だけを 1 件出す。
     if (freshParseFailed(document)) {
         const raw = analyzeDocument(document);
-        const message = raw?.parseError ?? 'parse error';
+        const message = displayPaths(raw?.parseError ?? 'parse error');
         // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
         // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。
         const at = raw?.parseErrorAt ?? null;
@@ -996,7 +998,7 @@ function toDiagnostic(
         range = new vscode.Range(0, 0, 0, 1);
     }
     const diag = new vscode.Diagnostic(
-        range, d.message,
+        range, displayPaths(d.message),
         d.severity === 0 ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning,
     );
     diag.source = d.source || 'arrow';

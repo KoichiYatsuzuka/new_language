@@ -21,7 +21,8 @@ pub fn load_system_typedefs(header_paths: &[String], macros: &[String]) -> HashM
     let mut raw: HashMap<String, String> = HashMap::new();
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for p in header_paths {
-        collect_typedefs_from_file(Path::new(p), &mut raw, &mut visited, macros);
+        // ⚠ 設定ファイルのパスは `import_fs::path_from_text`（拡張では `C:/a` を絶対パスとして扱うため）。
+        collect_typedefs_from_file(&crate::import_fs::path_from_text(p), &mut raw, &mut visited, macros);
     }
     resolve_typedef_map(&mut raw);
     raw

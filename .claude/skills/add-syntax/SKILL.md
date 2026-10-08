@@ -80,9 +80,12 @@ line in the traceback. In rewriting walkers (`template_subst`), carry the span o
      `src/parser/editor_index.rs`. Call it **immediately after `expect_ident()`** —
      the position comes from `prev_pos()`, so reading a type annotation first makes the
      symbol point at the wrong token. Pick the matching `EditorKind`, or add one.
-   - **Only if you changed `import` syntax**: mirror it in `src/parser/imports_editor.rs`
-     (the fs-free import parser the editor build uses). `scripts/compare_wasm_frontend.ps1`
-     fails if the two stop accepting the same syntax.
+   - **Only if you changed `import` processing**: the editor runs the same `src/parser/imports/`
+     inside the wasm, so file access must go through `crate::import_fs` (never `std::fs` /
+     `std::env` — the wasm reads files through the host), paths read from text (config files)
+     through `import_fs::path_from_text`, and runtime-only work (building a DLL, running `cargo`)
+     behind `#[cfg(not(feature = "editor"))]`. A new name bound by an import needs a `note_def_at`
+     in an `#[cfg(feature = "editor")]` block (see `dispatch.rs`).
    - Then regenerate the VSIX via `make-vsix.ps1` (mandatory).
 
    Verify with `scripts/compare_wasm_frontend.ps1` (editor and `arrow.exe` must agree on

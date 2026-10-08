@@ -3,13 +3,13 @@
 // # なぜ独立したモジュールなのか
 //
 // 元は `parser/imports/mod.rs` の中にあったが、そこは `editor` feature では
-// `imports_editor.rs` に差し替えられて**丸ごと消える**モジュールだった。そのため
-// VS Code 拡張（wasm）からは、同梱スタブ（`crate::py_stubs`）を持っていても
-// 型を取り出す手段が無かった。⇒ 両ビルドが使えるようにここへ出した。
+// 拡張用の構文だけを読む実装（`imports_editor.rs`・削除済み）に差し替えられて**丸ごと消える**
+// モジュールだった。そのため VS Code 拡張（wasm）からも使えるようにここへ出した。
+// （今は拡張も `parser/imports/` を使う・editor_import_resolution_plan.md 3-2。）
 //
-// ⚠⚠ **rustpython に依存しないこと。** ここは 1 行ずつ見るだけの近似抽出で、
-//    `python_converter`（＝本物の Python パーサ）は使わない。使った瞬間に
-//    `crates/arrow-frontend` が wasm32 に載らなくなる
+// ⚠ ここは 1 行ずつ見るだけの近似抽出で、`python_converter`（＝本物の Python パーサ）は使わない
+//    （`python_converter` が取りこぼした宣言を補う側）。⚠ 以前は「rustpython は wasm32 に載らない」
+//    ことも理由だったが、載ることを確かめた（2-2・拡張の crate も `python_converter` を取り込む）
 //    （`crates/arrow-frontend/Cargo.toml` の「ネイティブ依存を足さないこと」）。
 //
 // ⚠ CLI の `.pyi` 経路は **`python_converter` の結果をここで補完する**形（`py_modules.rs`）。

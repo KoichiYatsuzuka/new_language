@@ -1,10 +1,13 @@
 // parser/stub_registry.rs — `editor` feature 専用: ホストが渡した型スタブ（`.ars` テキスト）の表。
 //
-// # なぜ必要か
+// ⚠⚠ **もう使われていない**（editor_import_resolution_plan.md 3-2）。拡張も CLI と同じ import の処理
+//    （`parser/imports/`）で import 先を読むようになった。スタブの仕組み（ここ・`ar_set_stub`・
+//    `--emit-stubs`・`stubs.ts`）は 5-1 で撤去する。以下は撤去までの記録。
 //
-// エディタ版の import 解析（[`super::imports_editor`]）は fs・プロセス・DLL に一切触れない。
-// wasm32 に載せるための制約であり、1 打鍵ごとの解析で DLL をロードするわけにもいかない。
-// その代償として **import 先のメンバ型が一切分からない**（`imports_editor.rs` 冒頭 doc）。
+// # なぜ必要だったか
+//
+// エディタ版の import 解析（`imports_editor.rs`・削除済み）は fs・プロセス・DLL に一切触れなかった。
+// その代償として **import 先のメンバ型が一切分からない**。
 //
 // 解決は「wasm に fs を与える」ではなく「**fs を持っているホスト（Node）に読ませて渡す**」。
 // ここはその受け皿で、wasm 側は最後まで fs を知らない。
@@ -37,6 +40,7 @@ thread_local! {
 }
 
 // 鍵の定義は [`crate::stub_manifest::stub_key`]（生成側の `--emit-stubs` と共有）。
+#[allow(unused_imports)]
 pub(crate) use crate::stub_manifest::stub_key;
 
 /// スタブを 1 件登録する（同じ鍵があれば置き換える）。
@@ -56,8 +60,11 @@ pub fn stub_count() -> usize {
 
 /// 鍵に対応するスタブ本文を、**再帰を避けつつ** `f` に渡す。
 ///
+/// ⚠ 呼び出し元（`imports_editor.rs`）は削除済み（冒頭 doc）。5-1 でこの表ごと撤去する。
+///
 /// 戻り値が `None` になるのは 2 通り: スタブが無い／既に展開中（＝循環）。
 /// どちらも呼び出し側は「空 body」に倒せばよい。
+#[allow(dead_code)]
 pub(crate) fn with_stub<T>(key: &str, f: impl FnOnce(&str) -> T) -> Option<T> {
     let source = STUBS.with(|s| s.borrow().get(key).cloned())?;
     // 循環検出。`insert` が false を返したら既に展開中。

@@ -17,6 +17,14 @@
 //! wasm の `std::path` は Unix の規則なので、Windows のパスは `/D:/a/b.ar` の形で受け渡す
 //! （ホストが境界で変換する・`wasm_host.ts` の `toWasmPath`）。ここで受け取るパスも返すパスも
 //! この形で、Rust 側は区別しなくてよい。
+//!
+//! ⚠ Windows のドライブ（`/D:`）の上には wasm だけに `/` がある。親をたどって探す所は、探す場所の
+//!   一覧が利用者に見える（誤りの文面）なら [`ancestors`] を使う（CLI と同じく `D:\` で止まる）。
+//!   それ以外の親のループが `/` を覗いても、ホストはドライブの無いパスを「無い」と答える。
+//!
+//! ⚠⚠ **テキストから読んだパス**（`ar_config.json` の `crates_path` / `search_paths` など）は
+//!    [`path_from_text`] で `PathBuf` にすること。`PathBuf::from` だと wasm では `C:/a` が**相対パス**に
+//!    なり、設定ファイルの場所に連結されて黙って見つからなくなる（3-2 で `import[rs]` が実際に外れた）。
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
@@ -62,6 +70,16 @@ mod native {
     /// `p` へ書く（import の副産物を書き出す所だけが使う・拡張では何もしない）。
     pub fn write(p: &Path, contents: &str) -> std::io::Result<()> {
         std::fs::write(p, contents)
+    }
+
+    /// テキストに書かれたパス（設定ファイルの値など）を `PathBuf` にする（冒頭 doc）。
+    pub fn path_from_text(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    /// `p` とその祖先（近い順・`Path::ancestors` と同じ）。
+    pub fn ancestors(p: &Path) -> Vec<PathBuf> {
+        p.ancestors().map(Path::to_path_buf).collect()
     }
 
     /// 環境変数 `name` を**1 つのパス**として読む。無ければ `None`。
@@ -138,6 +156,7 @@ mod host {
         fn host_read(ptr: *const u8, len: usize) -> i32;
         fn host_read_dir(ptr: *const u8, len: usize) -> i32;
         fn host_realpath(ptr: *const u8, len: usize) -> i32;
+        fn host_path(ptr: *const u8, len: usize) -> i32;
         fn host_env_path(ptr: *const u8, len: usize, list: i32) -> i32;
         fn host_cwd() -> i32;
         fn host_python_lib_dirs() -> i32;
@@ -215,6 +234,30 @@ mod host {
     /// 拡張は import の副産物を書き出さない（利用者のファイルを解析が書き換えない）。
     pub fn write(_p: &Path, _contents: &str) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// `p` とその祖先（近い順）。⚠ Windows のドライブ（`/D:`）より上の `/` は含めない（冒頭 doc・
+    ///   CLI の `Path::ancestors` は `D:\` で止まる）。
+    pub fn ancestors(p: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = p.ancestors().map(Path::to_path_buf).collect();
+        let under_drive = out.iter().any(|a| is_drive(a));
+        if under_drive && out.last().is_some_and(|a| a.as_os_str() == "/") {
+            out.pop();
+        }
+        out
+    }
+
+    /// `/D:`（wasm の形の Windows のドライブ）か。
+    fn is_drive(p: &Path) -> bool {
+        let s = p.to_string_lossy();
+        let b = s.as_bytes();
+        b.len() == 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':'
+    }
+
+    /// ホストのパスの書き方（`C:\a\b`）を wasm の形（`/C:/a/b`）に直してもらう（`toWasmPath`）。
+    pub fn path_from_text(s: &str) -> PathBuf {
+        let len = unsafe { host_path(s.as_ptr(), s.len()) };
+        PathBuf::from(take(len).map(text).unwrap_or_else(|_| s.to_string()))
     }
 
     fn env(name: &str, list: bool) -> Option<Vec<PathBuf>> {

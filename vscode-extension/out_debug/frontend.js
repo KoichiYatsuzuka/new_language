@@ -11,7 +11,7 @@
  * 実行時には要らない。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.stubCount = exports.clearStubs = exports.setStub = exports.builtinsSource = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
+exports.stubCount = exports.clearStubs = exports.setStub = exports.builtinsSource = exports.invalidateModules = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
 const fs = require("fs");
 const path = require("path");
 const wasm_host_1 = require("./wasm_host");
@@ -42,7 +42,11 @@ function loadFrontend(extensionPath, wasmPath) {
         path.join(extensionPath, '..', 'crates', 'arrow-frontend', 'target', 'wasm32-unknown-unknown', 'release', 'arrow_frontend.wasm'),
     ];
     try {
-        const found = candidates.find(p => fs.existsSync(p));
+        // ⚠ 両方あるときは**新しいほう**（開発中は `out/` に前回の VSIX 作成時などの古い wasm が残りうる。
+        //   そちらを優先すると、Rust 側を直してビルドしても古い解析器が動く）。
+        const found = candidates
+            .filter(p => fs.existsSync(p))
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
         if (!found) {
             loadError = `arrow_frontend.wasm not found (looked in: ${candidates.join(', ')})`;
             return false;
@@ -108,6 +112,16 @@ function analyze(source, fsPath) {
     }
 }
 exports.analyze = analyze;
+/**
+ * wasm が保持している import 先のモジュールを捨てる（次の解析で読み直す）。
+ *
+ * wasm は一度読んだ import 先を保持し、打鍵ごとには読み直さない（editor_import_resolution_plan.md D-2）。
+ * import 先になりうるファイルが変わったら呼ぶこと（`extension.ts` のファイルの見張り）。
+ */
+function invalidateModules() {
+    exports_ === null || exports_ === void 0 ? void 0 : exports_.ar_invalidate_modules();
+}
+exports.invalidateModules = invalidateModules;
 /**
  * 組み込み関数の宣言（`builtins.ars`）の本文。wasm が埋め込んでいるものを受け取る。
  *

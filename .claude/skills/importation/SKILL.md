@@ -86,7 +86,7 @@ This section describes how module importation works in the Arrow Rust implementa
 
 Import statements are processed in **two phases**:
 
-1. **Parse time** — `src/parser/imports/` resolves the module file (`dispatch.rs` → per-language loaders), parses its source, and embeds the resulting AST into the `Stmt::Import` or `Stmt::FromImport` node as `body`. The module-path syntax (`..a.b`) is `src/parser/import_syntax.rs`, shared with the editor build (`imports_editor.rs`).
+1. **Parse time** — `src/parser/imports/` resolves the module file (`dispatch.rs` → per-language loaders), parses its source, and embeds the resulting AST into the `Stmt::Import` or `Stmt::FromImport` node as `body`. The module-path syntax (`..a.b`) is `src/parser/import_syntax.rs`. ⚠ The VS Code extension runs **the same code** inside its wasm (editor_import_resolution_plan.md 3-2): file access goes through `src/import_fs.rs` (the wasm version asks the host, `vscode-extension/src/wasm_host.ts`), paths from config text through `import_fs::path_from_text`, and runtime-only work (`import[rs]`'s `cargo build`, registering a `.arc`'s DLL, writing `.ars`) is `#[cfg(not(feature = "editor"))]`. In the editor an import that fails does not stop the parse: `Parser::try_import` records it as a diagnostic at the position where the CLI stops.
 2. **Runtime** — `src/interpreter/exec/modules.rs` executes the `body` in the module's own globals and collects its declared names (minus import-only names) as a `NamespaceData` object, then binds it to the module variable.
 
 Type checking (`src/type_check/stmt/check.rs` / `resolve.rs`) reads the `body` AST directly to collect member types without any additional file I/O.

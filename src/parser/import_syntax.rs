@@ -1,8 +1,7 @@
-// parser/import_syntax.rs — import 文のモジュール指定（`..a.b`）の構文。**両ビルドで共有**する。
+// parser/import_syntax.rs — import 文のモジュール指定（`..a.b`）の構文。
 //
-// ⚠ import の解析は 2 実装ある（`imports/` と `imports_editor.rs`・`parser/mod.rs` の doc）。
-//   モジュール指定の読み方を片方にだけ書くと、エディタだけが構文エラーを出す（またはその逆）。
-//   ⇒ ここに 1 つだけ置き、両方から呼ぶ。
+// ⚠ 以前は import の解析が 2 実装（`imports/` と、拡張用の構文だけを読む `imports_editor.rs`・削除済み）
+//   あり、モジュール指定の読み方を両方で共有するためにここへ出した。今は `imports/` だけが使う。
 
 use crate::parser::Parser;
 use crate::token::Token;

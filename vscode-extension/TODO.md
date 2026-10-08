@@ -29,8 +29,8 @@ Rust 実装そのもの（`crates/arrow-frontend` を wasm32 化したもの）�
 - [ ] `syntaxes/arrow.tmLanguage.json` — TextMate の色付けは解析前に走る別系統なので、
       キーワード追加時は引き続き手で追随する。現時点で未反映: `alias` `case` `off` `on`
       `once` `protocol`
-- [ ] `src/parser/imports_editor.rs` — import 構文を変えたときのみ追随が必要
-      （`scripts/compare_wasm_frontend.ps1` がずれを検出する）
+- [x] ~~`src/parser/imports_editor.rs`~~ — 削除済み。拡張も CLI と同じ import の処理を使う
+      （editor_import_resolution_plan.md 3-2）
 
 ## 検証
 

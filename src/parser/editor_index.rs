@@ -132,6 +132,12 @@ pub struct EditorIndex {
     /// 位置だけが要るのだから、宣言や型参照と同じく**副次テーブルに控える**のが釣り合う。
     /// パーサが止まった時点の `self.pos` がそのまま失敗位置なので、推測は一切要らない。
     pub parse_error_pos: Option<Pos>,
+    /// 読み込めなかった import（位置と誤りの文面）。
+    ///
+    /// CLI は import 先を読めなければ構文解析を止める（`ParseError`）。拡張は止めずに、その文の誤りとして
+    /// 控えて**空の body で続ける**（ファイルの残りの解析を生かす・`Parser::try_import`）。
+    /// 位置は CLI が止まる位置（そのときのトークン・[`Self::parse_error_pos`] と同じ規則）。
+    pub import_errors: Vec<(Pos, String)>,
     /// 現在のスコープ id。
     current: usize,
     /// 次に開くスコープへ入れる宣言（関数の仮引数・クラスのフィールド）。
@@ -159,6 +165,7 @@ impl EditorIndex {
             type_refs: Vec::new(),
             alias_depth: 0,
             parse_error_pos: None,
+            import_errors: Vec::new(),
             current: 0,
             pending: Vec::new(),
             container: None,

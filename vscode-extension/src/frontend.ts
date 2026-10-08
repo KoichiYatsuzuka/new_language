@@ -30,6 +30,7 @@ interface FrontendExports {
     ar_free(ptr: number, len: number): void;
     ar_analyze(ptr: number, len: number): number;
     ar_analyze_at(pathPtr: number, pathLen: number, srcPtr: number, srcLen: number): number;
+    ar_invalidate_modules(): void;
     ar_result_ptr(): number;
     ar_result_len(): number;
     ar_set_stub(keyPtr: number, keyLen: number, srcPtr: number, srcLen: number): void;
@@ -83,7 +84,11 @@ export function loadFrontend(extensionPath: string, wasmPath?: string): boolean 
                   'target', 'wasm32-unknown-unknown', 'release', 'arrow_frontend.wasm'),
     ];
     try {
-        const found = candidates.find(p => fs.existsSync(p));
+        // ⚠ 両方あるときは**新しいほう**（開発中は `out/` に前回の VSIX 作成時などの古い wasm が残りうる。
+        //   そちらを優先すると、Rust 側を直してビルドしても古い解析器が動く）。
+        const found = candidates
+            .filter(p => fs.existsSync(p))
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
         if (!found) {
             loadError = `arrow_frontend.wasm not found (looked in: ${candidates.join(', ')})`;
             return false;
@@ -143,6 +148,16 @@ export function analyze(source: string, fsPath?: string): AnalysisResult | null 
     } catch {
         return null;
     }
+}
+
+/**
+ * wasm が保持している import 先のモジュールを捨てる（次の解析で読み直す）。
+ *
+ * wasm は一度読んだ import 先を保持し、打鍵ごとには読み直さない（editor_import_resolution_plan.md D-2）。
+ * import 先になりうるファイルが変わったら呼ぶこと（`extension.ts` のファイルの見張り）。
+ */
+export function invalidateModules(): void {
+    exports_?.ar_invalidate_modules();
 }
 
 /**

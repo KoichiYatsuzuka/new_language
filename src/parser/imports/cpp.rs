@@ -26,6 +26,9 @@ impl Parser {
             ));
         }
         let (level, parts) = self.parse_module_ref(false)?;
+        // ヘッダ名の位置（エディタ索引）。`as x` を読むと `prev_pos()` が別名を指す。
+        #[cfg(feature = "editor")]
+        let module_pos = self.prev_pos();
 
         // ドット区切りパーツを探索の起点基準のヘッダパスに解決する
         // 例: DxLib.DxLib → {source_dir}/DxLib/DxLib.h
@@ -48,6 +51,18 @@ impl Parser {
             None
         };
 
+        // エディタ索引: 束縛される名前（別名か最後の部分）。位置はその名前を書いた識別子。
+        #[cfg(feature = "editor")]
+        {
+            let (bind, pos) = match &alias {
+                Some(a) => (a.clone(), self.prev_pos()),
+                None => (parts.last().cloned().unwrap_or_default(), module_pos),
+            };
+            let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
+            let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &parts));
+            self.note_signature(h, &sig);
+        }
+
         // ヘッダファイルを読み込んで静的型スタブを生成する。
         // ファイルが存在しない場合は空の body になる（実行時に解決される）。
         // 非 UTF-8 バイト（例: DxLib.h の Shift-JIS コメント）を含むヘッダでも
@@ -57,10 +72,17 @@ impl Parser {
         // （P5）が働かない。
         // ⚠⚠ **ヘッダが読めなければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は `.ok()` で
         //    黙って空の body（型なし）にしていた。未解決の import は黙って型情報を落とさない。
-        let raw = crate::import_fs::read(&resolved).map_err(|e| {
-            format!("import[{lang}]: cannot read header '{file_path}' ({e}); the header provides the types of this import")
+        let raw = self.try_import(|_| {
+            crate::import_fs::read(&resolved).map_err(|e| {
+                // ⚠ 理由は `ErrorKind`（`entity not found` など）。OS のエラー文はロケールで変わり（日本語の
+                //   Windows では日本語）、拡張（wasm）の文面と食い違う。
+                format!(
+                    "import[{lang}]: cannot read header '{file_path}' ({}); the header provides the types of this import",
+                    e.kind()
+                )
+            })
         })?;
-        let body = Some(raw)
+        let body = raw
             .map(|raw| String::from_utf8_lossy(&raw).into_owned())
             .map(|content| {
                 let cfg = crate::cpp_header::load_cpp_config(
@@ -184,6 +206,17 @@ impl Parser {
             } else {
                 None
             };
+            // エディタ索引: 束縛される名前。位置は最後に読んだ識別子。
+            #[cfg(feature = "editor")]
+            {
+                let bind = alias.clone().unwrap_or_else(|| name.clone());
+                let h = self.note_def(&bind, crate::parser::editor_hooks::EditorKind::Module);
+                let sig = format!(
+                    "from {} import[{lang}] {name}",
+                    crate::module_path::written_spelling(level, &module)
+                );
+                self.note_signature(h, &sig);
+            }
             names.push((name, alias));
             if *self.current() == Token::Comma {
                 self.advance();
@@ -204,22 +237,36 @@ impl Parser {
         // `from . import x` / `from .. import x`（CPython の書き方）: x はサブモジュールか、
         // このディレクトリのパッケージの名前（`packages.rs`）。
         if module.is_empty() {
-            let mut stmts = self.from_dots_import(&lang, &file_dir, level, names)?;
+            let resolved = self.try_import(|p| p.from_dots_import(&lang, &file_dir, level, names.clone()))?;
+            let Some(mut stmts) = resolved else {
+                // 読み込めなかった（拡張だけ・`try_import`）: 名前は取り込んだことにして続ける。
+                return Ok(Stmt::FromImport {
+                    lang,
+                    module: Vec::new(),
+                    source_module: Some(".".repeat(level as usize)),
+                    names,
+                    body: Vec::new(),
+                    origin: self.import_origin(level),
+                });
+            };
             let last = stmts.pop().expect("from_dots_import は 1 つ以上の文を返す");
             self.pending_stmts.extend(stmts);
             return Ok(last);
         }
 
-        // モジュールの tl AST を取得
-        let loaded = self.load_module(&lang, level, &module, None)?;
-        // CPython と同じく、先にパッケージの連鎖（`a` → `a.b`）を読み込み、取り込む名前が
-        // サブモジュールならそれも読み込む（`packages.rs`）。
-        if Self::has_packages(&lang) {
-            let chain = self.package_chain(&lang, &file_dir, level, &module, &loaded)?;
-            self.pending_stmts.extend(chain.into_iter().map(|(_, st)| st));
-            let subs = self.from_import_submodules(&lang, &file_dir, level, &module, &names, &loaded)?;
-            self.pending_stmts.extend(subs);
-        }
+        // モジュールの tl AST を取得する。CPython と同じく、先にパッケージの連鎖（`a` → `a.b`）を読み込み、
+        // 取り込む名前がサブモジュールならそれも読み込む（`packages.rs`）。
+        let resolved = self.try_import(|p| {
+            let loaded = p.load_module(&lang, level, &module, None)?;
+            if Self::has_packages(&lang) {
+                let chain = p.package_chain(&lang, &file_dir, level, &module, &loaded)?;
+                let subs = p.from_import_submodules(&lang, &file_dir, level, &module, &names, &loaded)?;
+                p.pending_stmts.extend(chain.into_iter().map(|(_, st)| st));
+                p.pending_stmts.extend(subs);
+            }
+            Ok(loaded)
+        })?;
+        let loaded = resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, None).0);
 
         Ok(Stmt::FromImport {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),

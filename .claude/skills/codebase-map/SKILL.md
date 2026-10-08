@@ -31,7 +31,8 @@ Two layers, maintained differently:
   file) and per-file module names — shared by the parser (every `[lang]`) and the runtime;
   `import_fs.rs` **the only place import processing touches the outside world** (files, env vars,
   cwd, Python's lib dirs) — the editor's wasm swaps it for host calls, so import code must not call
-  `std::fs` / `std::env` directly
+  `std::fs` / `std::env` directly; `arc_format.rs` the `.arc` file format reader (the embedded source,
+  read by the import code in both builds)
 - `cpp_header/` — reads **types** from C/C++ headers for `import[cpp-dll]`/`import[cpp-lib]`
   (`CType`/`CStructDef`/`CFnSig`, header parser, typedef loader, `cpp_config`). Split out of
   `interpreter/cpp_bridge` so the editor's wasm can use it; fs goes through `import_fs`
@@ -44,9 +45,9 @@ Two layers, maintained differently:
   - `stmts/` — statement parsing (`core.rs` holds the `parse_stmt()` dispatch)
   - `exprs.rs` — expression precedence chain
   - `classes.rs` / `types.rs` — class/trait parsing, type-annotation parsing
-  - `imports/` — `import[lang]` parsing + module resolution (`imports_editor.rs` is the fs-free
-    editor build; `packages.rs` the CPython package semantics: chains, binding, `from . import x`);
-    `import_syntax.rs` — the `..a.b` module-path syntax shared by both
+  - `imports/` — `import[lang]` parsing + module resolution, **also used by the editor's wasm**
+    (file access through `import_fs`; `packages.rs` the CPython package semantics: chains, binding,
+    `from . import x`); `import_syntax.rs` — the `..a.b` module-path syntax
   - `cs_assembly/` — .NET DLL metadata reading (types for `import[cs-dll]`/`import[cs-proc]`
     and `--compile-cs` stub generation); pure Rust, so the editor's wasm includes it too
 - `type_check/` — static type checker (runs between parse and exec)
@@ -115,14 +116,15 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (252 files, 100769 lines)
-  ar_config.rs (246)
+src/  (252 files, 100840 lines)
+  ar_config.rs (249)
+  arc_format.rs (123)
   ast.rs (1646)
   decl_names.rs (229)
   expr_walk.rs (200)
-  import_fs.rs (101)
+  import_fs.rs (290)
   interpreter.rs (1314)
-  main.rs (1005)
+  main.rs (1007)
   module_path.rs (295)
   prof.rs (558)
   py_stubs.rs (50)
@@ -141,11 +143,11 @@ src/  (252 files, 100769 lines)
   cpp_header/
     config.rs (330)
     mod.rs (17)
-    typedef_loader.rs (324)
+    typedef_loader.rs (325)
     types.rs (107)
     header_parser/
       decls.rs (453)
-      mod.rs (255)
+      mod.rs (258)
       preprocess.rs (252)
       structs.rs (376)
   frontend_tests/
@@ -183,7 +185,7 @@ src/  (252 files, 100769 lines)
     native_api_stub.rs (60)
     proc_bridge.rs (200)
     py_interop.rs (423)
-    py_interop_stub.rs (78)
+    py_interop_stub.rs (77)
     resolver.rs (691)
     scope.rs (318)
     str_methods.rs (649)
@@ -294,14 +296,13 @@ src/  (252 files, 100769 lines)
     ordinary.rs (374)
   parser/
     classes.rs (982)
-    editor_hooks.rs (500)
-    editor_index.rs (294)
+    editor_hooks.rs (524)
+    editor_index.rs (301)
     exprs.rs (1228)
-    import_syntax.rs (88)
-    imports_editor.rs (334)
-    mod.rs (418)
+    import_syntax.rs (87)
+    mod.rs (436)
     py_stub_extract.rs (372)
-    stub_registry.rs (70)
+    stub_registry.rs (77)
     types.rs (713)
     cs_assembly/
       metadata.rs (296)
@@ -311,11 +312,11 @@ src/  (252 files, 100769 lines)
       stub_gen.rs (454)
       xml_docs.rs (115)
     imports/
-      ar_modules.rs (328)
-      cpp.rs (234)
-      cs_js_modules.rs (259)
-      dispatch.rs (290)
-      mod.rs (65)
+      ar_modules.rs (341)
+      cpp.rs (281)
+      cs_js_modules.rs (255)
+      dispatch.rs (371)
+      mod.rs (64)
       packages.rs (317)
       py_modules.rs (403)
     stmts/
@@ -328,7 +329,7 @@ src/  (252 files, 100769 lines)
       mod.rs (37)
   partial_compiler/
     mod.rs (19)
-    module_compiler.rs (361)
+    module_compiler.rs (252)
     stub_gen.rs (491)
     llvm_codegen/
       context.rs (427)
@@ -352,7 +353,7 @@ src/  (252 files, 100769 lines)
     supers.rs (41)
     utils.rs (42)
   rs_crate/
-    mod.rs (198)
+    mod.rs (201)
     parse.rs (638)
     stubs.rs (181)
   type_check/
@@ -457,14 +458,15 @@ impl_python/  (49 files, 16687 lines)
     type_utils.py (78)
     types.py (335)
 
-vscode-extension/  (8 files, 2602 lines; src/ + syntaxes/ only)
+vscode-extension/  (9 files, 2889 lines; src/ + syntaxes/ only)
   src/
-    debug_runner.ts (363)
-    extension.ts (268)
-    frontend.ts (206)
+    debug_runner.ts (364)
+    extension.ts (293)
+    frontend.ts (230)
     stubs.ts (161)
-    vscode_mock.ts (289)
-    wasm_providers.ts (985)
+    vscode_mock.ts (292)
+    wasm_host.ts (213)
+    wasm_providers.ts (1006)
   syntaxes/
     arrow.tmLanguage.json (322)
     arrow-stub.tmLanguage.json (8)
@@ -495,7 +497,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_import_paths.ps1 (135)
   compare_outputs.ps1 (140)
   compare_python_impl.ps1 (449)
-  compare_wasm_frontend.ps1 (240)
+  compare_wasm_frontend.ps1 (287)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (149)
@@ -535,7 +537,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (32)
-  CLAUDE.md (152)
+  CLAUDE.md (154)
   README.md (317)
 ```
 _Generated 2026-10-08 by generate-codebase-map.ps1_

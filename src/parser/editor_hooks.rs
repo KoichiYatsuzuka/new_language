@@ -80,7 +80,7 @@ impl Parser {
 
     /// 位置を明示して定義を控える。`prev_pos()` が名前を指していない場面で使う
     /// （例: `import[rs] libm[0.2]` — バージョン括弧を読んだ後は `]` を指してしまう）。
-    // 呼び出し元が `imports_editor.rs`（`editor` 限定）だけなので、通常ビルドでは未使用になる。
+    // 呼び出し元が import の解析の `#[cfg(feature = "editor")]` の中だけなので、通常ビルドでは未使用になる。
     #[cfg_attr(not(feature = "editor"), allow(dead_code))]
     #[allow(unused_variables)]
     pub(crate) fn note_def_at(&mut self, name: &str, kind: EditorKind, pos: (usize, usize)) -> usize {
@@ -241,6 +241,30 @@ impl Parser {
                     if p.0 == 0 { None } else { Some(p) }
                 });
             self.editor.parse_error_pos = pos;
+        }
+    }
+
+    /// 読み込めなかった import を控える（[`EditorIndex::import_errors`](crate::parser::editor_index::EditorIndex::import_errors)）。
+    ///
+    /// 位置は**いま見ているトークン**（CLI がそこで構文解析を止め、そこを誤りの位置にする・
+    /// [`Self::note_parse_error`] と同じ規則）。
+    // 呼び出し元（`Parser::try_import`）は `editor` でだけ呼ぶので、通常ビルドでは未使用になる。
+    #[cfg_attr(not(feature = "editor"), allow(dead_code))]
+    #[allow(unused_variables)]
+    pub(crate) fn note_import_error(&mut self, message: &str) {
+        #[cfg(feature = "editor")]
+        {
+            let pos = self
+                .tokens
+                .get(self.pos)
+                .map(|s| (s.span.line, s.span.col))
+                .filter(|p| p.0 != 0)
+                .or_else(|| {
+                    let p = self.prev_pos();
+                    if p.0 == 0 { None } else { Some(p) }
+                })
+                .unwrap_or((0, 0));
+            self.editor.import_errors.push((pos, message.to_string()));
         }
     }
 
@@ -416,7 +440,7 @@ impl Parser {
 
 /// `note_def` に渡す種別。`editor` が無効なときも呼び出し側が同じコードで書けるように、
 /// `DeclKind` とは別の（常に存在する）列挙にしてある。
-// `Module` は `imports_editor.rs`（`editor` 限定）からしか作られないので、
+// `Module` は import の解析の `#[cfg(feature = "editor")]` の中からしか作られないので、
 // 通常ビルドでは未構築のバリアントになる。
 #[cfg_attr(not(feature = "editor"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -35,4 +35,8 @@ if (!result) {
     console.error('analyze failed');
     process.exit(1);
 }
-process.stdout.write(JSON.stringify(result));
+// Only what the gate reads. The full result also has `members` (the module/class member tables),
+// whose keys may differ only by case (class `Vec2`, module `vec2`); PowerShell 5.1's ConvertFrom-Json
+// rejects such objects.
+const { ok, parseError, parseErrorAt, diagnostics } = result;
+process.stdout.write(JSON.stringify({ ok, parseError, parseErrorAt, diagnostics }));

@@ -23,19 +23,26 @@ declared` for two unrelated `x`es. Those 5,471 lines are gone. **Do not reintrod
 language knowledge in TypeScript** — if the editor needs to know something about Arrow, teach the
 Rust frontend and expose it through the analysis JSON.
 
-> ⚠ **Imported modules in the editor**: the extension never reads import targets; it reads the stubs that
-> `arrow --emit-stubs` writes to `.arrow-stubs/`. For Arrow modules the stub also carries every global
-> **with its type and attribute** (`const LIMIT: int = Undefined` — `stub_gen::generate_editor_stub`,
-> types from `TypeChecker::module_globals`), so `g.X` has the same type and writability as in the CLI.
-> A global whose type the CLI cannot infer is left out (no wrong type). Without stubs, module members are
-> unknown and nothing is reported (`compare_wasm_frontend` "wasm fewer").
+> ⚠ **Imported modules in the editor**: the wasm reads import targets with **the CLI's own import code**
+> (`src/parser/imports/`, editor_import_resolution_plan.md 3-2). Only file access differs: the wasm calls
+> host functions (`arrow_host`, implemented in `wasm_host.ts`) through `src/import_fs.rs`. Paths cross the
+> boundary as `/D:/a/b` on Windows (`toWasmPath` / `toHostPath`); show messages through `displayPaths`.
+> - The document is analysed **as its file** (`analyze(source, fsPath)` → `ar_analyze_at`), so imports
+>   resolve exactly as `arrow <file>` would. The host's "current directory" is the workspace folder.
+> - Loaded modules are **kept inside the wasm** across analyses; only the edited document is re-parsed
+>   per keystroke. `extension.ts` watches files that can be import targets and calls `invalidateModules()`.
+> - An unresolved import is a `ParseError` diagnostic at the position where the CLI stops, and the rest
+>   of the file is still analysed (the CLI stops instead).
+> - The old stub mechanism (`stubs.ts`, `arrow --emit-stubs`, `.arrow-stubs/`, `ar_set_stub`) is no
+>   longer used; it is removed in task 5-1.
 
 ## Source file map (`vscode-extension/src/`)
 
 | File | Responsibility |
 |------|-----------------|
 | `extension.ts` | Entry point (`activate`): loads the wasm frontend + the built-in prelude (from the wasm), registers the seven providers and the Send-to-REPL command, schedules debounced diagnostics |
-| `frontend.ts` | Loads `arrow_frontend.wasm` and exposes `analyze(source) → JSON`. Owns the raw C ABI (`ar_alloc` / `ar_analyze` / `ar_result_ptr` / …) |
+| `frontend.ts` | Loads `arrow_frontend.wasm` and exposes `analyze(source, fsPath?) → JSON` and `invalidateModules()`. Owns the raw C ABI (`ar_alloc` / `ar_analyze_at` / `ar_result_ptr` / …) |
+| `wasm_host.ts` | The host functions the wasm imports (`arrow_host`: stat / read / read_dir / realpath / env_path / cwd / python_lib_dirs / path / take) and the path-form conversion. No `vscode` dependency — `crates/arrow-frontend/dump_diags.js` (the `compare_wasm_frontend` gate) drives the wasm through it too |
 | `wasm_providers.ts` | All seven providers, built on the analysis JSON: hover, inlay hints, semantic tokens, completion, signature help, go-to-definition, document symbols, diagnostics. Also the scope walk and the built-in prelude (`loadPrelude`, text from `builtinsSource()`) |
 | `debug_runner.ts` / `vscode_mock.ts` | Standalone CLI harness (see `vscode-debug-runner` skill) — `vscode_mock.ts` is used exclusively by `debug_runner.ts`, never by extension code |
 
@@ -48,7 +55,7 @@ Rust side of the same feature:
 | `crates/arrow-frontend/src/wasm.rs` | The wasm C ABI. No `wasm-bindgen` — plain `extern "C"` + linear memory, so no extra toolchain is needed |
 | `src/parser/editor_index.rs` | The declaration + scope + node-span side tables. **`editor` feature only**; the AST is not modified |
 | `src/parser/editor_hooks.rs` | `note_var` / `note_def` / `note_field` / … — empty functions in the normal build |
-| `src/parser/imports_editor.rs` | fs-free import parsing for the editor build |
+| `src/import_fs.rs` | Every file / env access of the import code. The wasm version calls the host (`wasm_host.ts`) |
 
 ## Where each feature gets its data
 
@@ -160,6 +167,7 @@ pwsh ./make-vsix.ps1   # or: powershell -File make-vsix.ps1
 If you add a new runtime asset, add a `Copy-Item` line **and** a `<Default Extension=…>` entry in
 `[Content_Types].xml` — files not copied are silently missing from the packaged extension.
 
-The result is self-contained: no Rust toolchain, no `arrow.exe`, no external process at runtime.
-The `.wasm` imports nothing from the host (verified: import section is empty), so one file serves
+The result is self-contained: no Rust toolchain, no `arrow.exe` at runtime. The only external
+process is one `python -c "import sysconfig..."` (the Python library dirs, asked once, as the CLI does).
+The `.wasm` imports only the `arrow_host` functions (`wasm_host.ts`), so one file serves
 Windows / macOS / Linux on x64 and ARM alike.

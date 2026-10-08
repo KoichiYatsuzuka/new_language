@@ -23,7 +23,9 @@
 //! ⚠ 位置はすべて **0 始まり・列は UTF-16 コードユニット**（VS Code の `Position` と同じ）。
 //!   `Span` は 1 始まり・文字単位なので、変換は [`Utf16Cols`] が 1 箇所で行う。
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 
@@ -32,6 +34,65 @@ use crate::lexer::editor_tokens::tokenize_with_spans;
 use crate::parser::Parser;
 use crate::token::Span;
 use crate::type_check::TypeChecker;
+
+/// import 先のモジュール（パースした AST）。鍵は `Parser` のキャッシュと同じ `(言語, 絶対パス)`。
+type Modules = HashMap<(String, PathBuf), Vec<Stmt>>;
+
+/// 前回までの解析で読み込んだ import 先のモジュール（editor_import_resolution_plan.md D-2）。
+///
+/// 打鍵ごとに解析し直すのは**編集中のドキュメントだけ**で、import 先は一度読んだら保持する（一般的な
+/// コード解析器と同じ）。ホストが import 先になりうるファイルの変更を知らせたら（[`invalidate_modules`]）
+/// すべて捨てる。
+struct ModuleStore {
+    /// エントリのディレクトリ（解析するドキュメントのディレクトリ）ごと。モジュールの名前はエントリの
+    /// ディレクトリで決まる（`pkg.util`・`crate::module_path`）ので、別のディレクトリの解析と AST を共有しない。
+    by_root: HashMap<PathBuf, Modules>,
+    /// 保持しているモジュールの AST が使った node-id の最大値。次の解析はその次から振る
+    /// （`Parser::reuse_modules`）。
+    last_node_id: u32,
+}
+
+thread_local! {
+    static MODULES: RefCell<ModuleStore> =
+        RefCell::new(ModuleStore { by_root: HashMap::new(), last_node_id: 0 });
+}
+
+/// 保持している import 先のモジュールをすべて捨てる（ホストが import 先になりうるファイルの変更を
+/// 知らせたとき・`wasm::ar_invalidate_modules`）。
+pub fn invalidate_modules() {
+    MODULES.with(|m| {
+        let mut m = m.borrow_mut();
+        m.by_root.clear();
+        // ⚠ 0 に戻してよいのは、node-id を使っている AST が 1 つも残らないから。
+        m.last_node_id = 0;
+    });
+}
+
+/// 解析の前: `root` の解析で保持しているモジュールを `parser` に引き継ぐ。
+fn reuse_modules(parser: &mut Parser, root: &PathBuf) {
+    MODULES.with(|m| {
+        let m = m.borrow();
+        let modules = m.by_root.get(root).cloned().unwrap_or_default();
+        parser.reuse_modules(modules, m.last_node_id);
+    });
+}
+
+/// 解析の後: この解析で新しく読み込んだモジュールを保持する。
+///
+/// ⚠ 新しいものが無ければ node-id の最大値は**進めない**。進めると、打鍵ごとにドキュメントの node-id の
+///   分だけ増え続ける（u32 を使い切る）。
+fn keep_modules(parser: &mut Parser, root: PathBuf, node_counter: u32) {
+    let modules = parser.take_module_cache();
+    MODULES.with(|m| {
+        let mut m = m.borrow_mut();
+        let known = m.by_root.get(&root);
+        let added = modules.keys().any(|k| !known.is_some_and(|known| known.contains_key(k)));
+        if added {
+            m.by_root.insert(root, modules);
+            m.last_node_id = m.last_node_id.max(node_counter);
+        }
+    });
+}
 
 /// 診断の深刻度。VS Code の `DiagnosticSeverity` に対応する。
 const SEVERITY_ERROR: u8 = 0;
@@ -319,8 +380,15 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
         })
         .collect();
 
+    // import 先のモジュールは前回までの解析のものを使い、読めなかった import では止まらない
+    // （`ModuleStore`・`Parser::reuse_modules`）。
+    let root = source_dir.clone().unwrap_or_else(|| PathBuf::from("."));
     let mut parser = Parser::new(tokens, source_dir);
-    let stmts = match parser.parse_program() {
+    reuse_modules(&mut parser, &root);
+    let parsed = parser.parse_program();
+    let last_node_id = parser.node_counter().get();
+    keep_modules(&mut parser, root, last_node_id);
+    let stmts = match parsed {
         Ok(stmts) => stmts,
         Err(e) => {
             // ⚠ `tokens` だけは**現在のテキストのもの**を返す。`Lexer::tokenize()` は
@@ -382,6 +450,14 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
     let (errors, warnings, annotations, bindings) = TypeChecker::check_program_for_editor(&stmts);
 
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());
+    // 読み込めなかった import（`EditorIndex::import_errors`）。CLI はここで構文解析を止める（`ParseError`）。
+    for ((line, col), message) in &parser.editor_index().import_errors {
+        let at = (*line != 0).then(|| Span { file: std::sync::Arc::from(filename), line: *line, col: *col });
+        diagnostics.push(diag_json(&cols, at.as_ref(), SEVERITY_ERROR, strip_ansi(message), "ParseError"));
+    }
+    // ⚠ このドキュメントの位置の誤りだけを出す。import 先のモジュールの中の誤り（位置がそのファイル）を
+    //   ここに出すと、このドキュメントの同じ行・列に波線が付く。
+    let here = |span: Option<&Span>| span.is_none_or(|s| &*s.file == filename);
     if let Some(e) = &meta_error {
         if unloaded_import {
             // 報告しない（上の注意）。型エラーも出さない（展開前の AST の誤りは当てにならない）。
@@ -395,7 +471,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
         diagnostics.push(diag_json(&cols, at.as_ref(), SEVERITY_ERROR, message, "MetaError"));
         }
     } else {
-        for e in &errors {
+        for e in errors.iter().filter(|e| here(e.span.as_ref())) {
             diagnostics.push(diag_json(
                 &cols,
                 e.span.as_ref(),
@@ -404,7 +480,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
                 e.error_type_str(),
             ));
         }
-        for w in &warnings {
+        for w in warnings.iter().filter(|w| here(w.span.as_ref())) {
             diagnostics.push(diag_json(
                 &cols,
                 w.span.as_ref(),

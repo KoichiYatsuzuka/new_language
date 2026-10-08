@@ -1,7 +1,7 @@
 // eval/native_stub.rs — 評価コアビルド（`native` feature 無効）用のネイティブ dispatch スタブ。
 //
 // `eval/native.rs` と**同じシグネチャ**を提供し、呼ばれたら明示エラーを返す。
-// 差し替えは `eval/mod.rs` の `#[cfg]` が行う（`parser/imports_editor.rs` と同じ形）。
+// 差し替えは `eval/mod.rs` の `#[cfg]` が行う。
 //
 // ⚠ **呼び出し側を `#[cfg]` で刻まないためにこの形にしている。** メソッドごと消すと
 // `classes/method_call.rs` / `classes/instantiate.rs` / `eval/attrs.rs` などの呼び出し側に

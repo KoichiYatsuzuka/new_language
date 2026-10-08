@@ -1,8 +1,7 @@
 // py_interop_stub.rs — 評価コアビルド（`native` feature 無効）用の Python 相互運用スタブ。
 //
 // `py_interop.rs` と**同じシグネチャ**を提供し、呼ばれたら明示エラーを返す。
-// 差し替えは `interpreter.rs` の `#[cfg]` が行う（`parser` の `imports` / `imports_editor`
-// と同じ形）。
+// 差し替えは `interpreter.rs` の `#[cfg]` が行う。
 //
 // ⚠ **呼び出し側を `#[cfg]` で刻まないためにこの形にしている。** `Value::PyObject` の
 // match アームは `eval/subscript.rs` / `exec/control_flow.rs` / `ops/operators.rs` など

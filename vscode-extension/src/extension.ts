@@ -26,7 +26,7 @@ import {
     loadPrelude,
     clearAnalysisCache,
 } from './wasm_providers';
-import { loadFrontend, frontendLoadError } from './frontend';
+import { loadFrontend, frontendLoadError, invalidateModules } from './frontend';
 import { loadStubsFor, refreshStubs, loadedManifestPath } from './stubs';
 
 // ===== REPL terminal =====
@@ -237,7 +237,8 @@ export function activate(context: vscode.ExtensionContext) {
         if (existing) clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる。
+            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる（import 先は初回だけ読み、
+            // 以降は wasm が保持したものを使う）。
             try {
                 diagCollection.set(document.uri, provideDiagnostics(document));
             } catch { /* 解析に失敗しても拡張は生かす */ }
@@ -258,6 +259,30 @@ export function activate(context: vscode.ExtensionContext) {
             if (t) { clearTimeout(t); debounceMap.delete(key); }
             forgetDocument(doc);
         })
+    );
+
+    // ---- Imported files ----
+    // 解析は import 先のモジュールを wasm の中に保持し、打鍵ごとには読み直さない（`invalidateModules`）。
+    // import 先になりうるファイルが変わったら（保存・作成・削除）捨てて、開いているドキュメントを解析し直す。
+    // ⚠ 拡張子は import の型の出所（`.ar` / `.arc` / `.ars` / `.py` / `.pyi` / `.h` / `.dll` / `.js` / `.rs`）と
+    //   設定（`ar_config.json`）。ビルドなどで大量に変わるので、まとめて 1 回にする。
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        '**/*.{ar,arc,ars,py,pyi,h,hpp,dll,js,rs,json}');
+    let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+    const onImportedFileChanged = (): void => {
+        if (reloadTimer) clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(() => {
+            reloadTimer = undefined;
+            invalidateModules();
+            clearAnalysisCache();
+            vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
+        }, 300);
+    };
+    context.subscriptions.push(
+        watcher,
+        watcher.onDidChange(onImportedFileChanged),
+        watcher.onDidCreate(onImportedFileChanged),
+        watcher.onDidDelete(onImportedFileChanged),
     );
 
     const active = vscode.window.activeTextEditor?.document;
