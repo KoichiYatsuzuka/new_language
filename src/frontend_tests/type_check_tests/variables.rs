@@ -597,6 +597,23 @@ fn meta_kinds_are_distinct_types() {
         assert!(errs.iter().any(|e| matches!(e.kind, TypeErrorKind::NoSuchMember { .. })), "{errs:?}");
     }
 
+    /// 関数を入れたフィールドを `obj.f(x)` で呼ぶ形（タスク 1-11）はフィールドの関数型で検査する。
+    /// 呼べない値を入れたフィールドは値を呼ぶのと同じ誤り。
+    #[test]
+    fn calling_a_function_field_is_typed() {
+        let class = concat!(
+            "fn double(let x: int) -> int:\n",
+            "    return x * 2\n",
+            "class Holder:\n",
+            "    let f: function[let int]->int\n",
+            "let h = Holder(double)\n",
+        );
+        assert!(ok(&format!("{class}let n: int = h.f(4)\n")));
+        assert!(err(&format!("{class}let s: str = h.f(4)\n")));
+        assert!(err(&format!("{class}let n = h.f(\"x\")\n")));
+        assert!(err("class Box:\n    let n: int\nlet b = Box(3)\nlet v = b.n(1)\n"));
+    }
+
     /// `except m.Err:`（タスク 4-3）も知らない名前なら「腕が永久に死ぬ」誤り。
     #[test]
     fn dotted_except_type_must_be_known() {

@@ -103,6 +103,16 @@ impl Interpreter {
             if let Some(v) = Self::class_var_class(&class, method_name) {
                 return self.call_value_evaled(v, evaled, method_name, None, 0);
             }
+            // 属性に入れた呼べる値（`self.f(x)`・Python の `self.callback(x)`・python_builtins_plan.md のタスク 1-11）。
+            // CPython と同じく**属性を読んで、その値を呼ぶ**（読みはアクセス制御も含めて `get_attr_val`）。
+            // ⚠ 以前は `has no method 'f'` だった（メソッドの表しか見ていなかった）。
+            if class.field_index.contains_key(method_name)
+                || class.class_vars.contains_key(method_name)
+                || class.static_vars.contains_key(method_name)
+            {
+                let callee = self.get_attr_val(obj.clone(), method_name, None)?;
+                return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
+            }
             return Err(format!("AttributeError: '{}' has no method '{method_name}'", class.name));
         };
         let n_overloads = overloads.len();

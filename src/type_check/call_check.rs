@@ -415,12 +415,23 @@ impl TypeChecker {
             // クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()` / `self.Inner()`・フェーズ10 10-18）。
             // 実行時もメソッドが無いときだけクラス変数のクラスを呼ぶ（`Interpreter::class_var_class`）。
             if !self.collect_class_method_sigs(cls_name).contains_key(method_name.as_str()) {
-                if let Some(InferredType::TypeValOf(inner)) =
-                    self.declared_field_type_pub(cls_name, method_name)
-                {
-                    if let InferredType::NamedInstance(c) = *inner {
-                        return InferredType::NamedInstance(c);
+                match self.declared_field_type_pub(cls_name, method_name) {
+                    Some(InferredType::TypeValOf(inner)) => {
+                        if let InferredType::NamedInstance(c) = *inner {
+                            return InferredType::NamedInstance(c);
+                        }
                     }
+                    // 関数を入れたフィールドを呼ぶ形（`self.f(x)`・python_builtins_plan.md のタスク 1-11）。
+                    // 実行時は「属性を読んで、その値を呼ぶ」。関数型で引数・戻り値を検査する。
+                    Some(InferredType::Function { params, return_type, .. }) => {
+                        if let Some(fn_params) = params {
+                            self.check_fn_type_call(&format!("{cls_name}.{method_name}"), args, &arg_data, &fn_params);
+                        }
+                        return *return_type;
+                    }
+                    // 呼べない値を入れたフィールド（`self.n(1)` の `n: int`）は値を呼ぶのと同じ誤り。
+                    Some(ty) => self.check_callable(&ty),
+                    None => {}
                 }
             }
             // 今の Arrow から正しく呼べない C# のメソッド（コレクションを受け渡す など・2-1）

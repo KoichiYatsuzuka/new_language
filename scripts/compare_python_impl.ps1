@@ -185,6 +185,8 @@ $knownDiff = @{
     'py_bound_method'                = 'Rust: Python の f = s.apply / getattr / map(s.apply, ..)（タスク 1-8 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'bound_method_more'              = 'Rust: gen メソッド・組み込みの値のメソッドの束縛と束縛メソッドの型（タスク 1-10 で新設・5 行目まで同じ）。py: 辞書の鍵の文字列を引用符なしで (a, 1) と表示する'
     'bound_method_more_error'        = 'Rust: 不変の list の append を束縛して呼ぶ形を静的に止める（タスク 1-10 で新設）。py: 検査せず [1, 2, 3] を出す'
+    'callable_field'                 = 'Rust: 関数を入れたフィールドを self.f(x) で呼ぶと、属性を読んでその値を呼ぶ（タスク 1-11 で新設）。py: メソッドとしてしか引かず AttributeError: no method f'
+    'callable_field_error'           = 'Rust: 呼べない値を入れたフィールドを呼ぶ形を静的に止める（タスク 1-11 で新設）。py: 検査せず AttributeError: no method n'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'metafn_template'                = 'py: メタ関数（exprconst / code: / quote / ^）を字句解析できないので ParseError（2-8 で新設。Rust 側は展開時に単相化した Pair[str, int] のメタ情報を引く）'
     'metafn_module'                  = 'py: メタ関数（exprconst / code: / quote）を字句解析できないので ParseError（2-12 で新設。Rust 側は import 先のモジュールをモジュールごとに展開して実行する）'

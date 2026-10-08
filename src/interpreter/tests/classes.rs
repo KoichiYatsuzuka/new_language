@@ -729,3 +729,22 @@ fn builtin_value_methods_are_dispatched() {
         }
     }
 }
+
+/// メソッドの無い名前の `obj.f(x)` は属性を読んでその値を呼ぶ（python_builtins_plan.md のタスク 1-11）。
+/// 以前は `has no method 'f'` だった。
+#[test]
+fn test_call_a_callable_stored_in_a_field() {
+    let src = concat!(
+        "fn double(let x: int) -> int:\n",
+        "    return x * 2\n",
+        "class Holder:\n",
+        "    let f: function[let int]->int\n",
+        "    fn run(self, let x: int) -> int:\n",
+        "        return self.f(x)\n",
+        "let h = Holder(double)\n",
+        "let a = h.run(21)\n",
+        "let b = h.f(4)\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(42)));
+    assert!(matches!(run_get(src, "b"), Value::Int(8)));
+}
