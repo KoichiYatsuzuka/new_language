@@ -9,31 +9,16 @@ use {
     crate::type_check::TypeChecker,
 };
 
-/// この import 本体が「`editor` ビルドが読み込みを省略した結果の空」かどうか。
-///
-/// `editor` feature（VS Code 拡張の wasm ビルド）では `parser/imports_editor.rs` が
-/// import 文を構文解釈だけして `body: vec![]` を返す。型検査側はその空を
-/// 「メンバーが 0 個のモジュール」ではなく「**モジュールの中身が不明**」として扱う
-/// 必要がある。両者を取り違えると、未知メンバーが `Any` に落ちて
-/// エディタだけが偽陽性エラーを出す。
-///
-/// 通常ビルドでは常に `false` を返す（＝この分岐は消える）ので、
-/// バイナリの型検査結果は一切変わらない。
-#[inline]
-fn editor_stub_body(body: &[Stmt]) -> bool {
-    cfg!(feature = "editor") && body.is_empty()
-}
-
 /// Arrow のモジュールなら、**メンバーが確定している**ことの印（[`ClosedModule`]）を作る（2026-10-02）。
 ///
 /// ⚠ メンバーは最上位で束縛される名前すべて（宣言・import の束縛＝再エクスポート・CPython 準拠）と、
 ///   どこかで import されるサブモジュール（`TypeChecker::namespace_type`）。
 /// ⚠ 外部言語のスタブ（cpp / cs / js / rs）は実物の部分集合でありうるので作らない。
-/// ⚠ エディタ（`editor`）も作らない。ホストが渡すスタブ（`.ars`）は `let` を落とすなど
-///   実モジュールの部分集合なので、「無い」と断定すると CLI が出さない誤りをエディタだけが出す
-///   （`compare_wasm_frontend.ps1` の不変条件）。
+/// ⚠ 拡張（`editor`）も CLI と同じに作る（3-3）。以前は拡張だけ import 先を読まず、ホストが渡すスタブが
+///   実モジュールの部分集合だったので作らなかった。読めなかった import（`ImportOrigin::unresolved`）の
+///   モジュールは呼び出し側が作らない。
 pub(crate) fn closed_module(lang: &str, module: &[String]) -> Option<Box<ClosedModule>> {
-    if cfg!(feature = "editor") || !crate::module_path::is_arrow_source_lang(lang) || module.is_empty() {
+    if !crate::module_path::is_arrow_source_lang(lang) || module.is_empty() {
         return None;
     }
     Some(Box::new(ClosedModule { name: module.join(".") }))
@@ -725,19 +710,21 @@ impl TypeChecker {
             //   **パッケージ `a`** を束縛し、その型はパッケージのメンバーと子モジュールから組み立てる
             //   （`namespace_type`）。`bind: None` は束縛しない文（パッケージの連鎖を読み込むために
             //   パーサが足した文）で、メンバーの型を控えるだけ。
-            Stmt::Import { lang, module, body, bind, .. } => {
+            Stmt::Import { lang, module, body, bind, origin, .. } => {
                 self.annotate_module_body(lang, module, body);
                 let member_types = self.module_member_types(lang, module, body);
-                self.module_member_cache.insert(module.join("."), member_types);
+                // ⚠ 読めなかった import（拡張だけ・`ImportOrigin::unresolved`）のモジュールは控えない。
+                //   控えると「メンバーが 0 個のモジュール」として閉じ、使うたびに誤りを重ねる。
+                if !origin.unresolved {
+                    self.module_member_cache.insert(module.join("."), member_types);
+                }
                 if let Some(b) = bind {
-                    let ns_ty = if editor_stub_body(body) {
-                        // `editor`（VS Code 拡張の wasm ビルド）は import 先を読み込まないので
-                        // body が空になる。ここで `PyNamespace([])` を束縛すると未知メンバが
-                        // `Any` になり、`d.Box.bump()` のような連鎖アクセスが
-                        // OperationOnAny エラー＝**エディタだけが出す偽陽性**になる
-                        // （examples/interop/py_decorators.ar で実際に発生した）。
-                        // `Unresolved` は attribute access の match で `_ => {}` に落ちるため
-                        // 「型は分からないがエラーでもない」を正しく表現できる。
+                    let ns_ty = if origin.unresolved {
+                        // 読めなかった import（拡張だけ）。誤りは拡張が診断として出している。
+                        // `PyNamespace([])` を束縛すると未知メンバが `Any` になり、`d.Box.bump()` のような
+                        // 連鎖アクセスが OperationOnAny エラーを重ねる（以前の拡張の
+                        // examples/interop/py_decorators.ar で実際に発生した）。`Unresolved` は attribute
+                        // access の match で `_ => {}` に落ちるため「型は分からないがエラーでもない」を表せる。
                         InferredType::Unresolved
                     } else {
                         self.namespace_type(lang, &b.module)
@@ -760,17 +747,20 @@ impl TypeChecker {
                 }
             }
 
-            Stmt::FromImport { lang, module, names, body, .. } => {
+            Stmt::FromImport { lang, module, names, body, origin, .. } => {
                 self.annotate_module_body(lang, module, body);
                 let member_types = self.module_member_types(lang, module, body);
-                self.module_member_cache.insert(module.join("."), member_types.clone());
+                // 読めなかった import（拡張だけ）のモジュールは控えない（上の `Stmt::Import` と同じ理由）。
+                if !origin.unresolved {
+                    self.module_member_cache.insert(module.join("."), member_types.clone());
+                }
                 let is_py = lang == "py" || lang == "py-int";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
                 // CPython: 名前がモジュールに無ければサブモジュール（パーサが先に読み込んでいる）。
                 let children = self.module_children.get(&module.join(".")).cloned().unwrap_or_default();
                 // ⚠ Arrow のモジュールの名前にもサブモジュールにも無い名前は静的エラー（2026-10-02）。
                 //   実行時は `ImportError: cannot import name ..`。
-                let closed = closed_module(lang, module);
+                let closed = if origin.unresolved { None } else { closed_module(lang, module) };
                 for (orig_name, alias) in names {
                     let is_child = children.contains(orig_name);
                     if let Some(c) = &closed {
@@ -800,8 +790,8 @@ impl TypeChecker {
                         .cloned()
                         .or_else(|| is_child.then(|| self.namespace_type(lang, &child_path)))
                         .unwrap_or(
-                            // `editor` の空 body では `Any` に落とさない（上の Stmt::Import と同じ理由）。
-                            if is_py && !editor_stub_body(body) {
+                            // 読めなかった import では `Any` に落とさない（上の Stmt::Import と同じ理由）。
+                            if is_py && !origin.unresolved {
                                 InferredType::Any
                             } else {
                                 InferredType::Unresolved

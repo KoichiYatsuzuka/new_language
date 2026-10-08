@@ -186,10 +186,10 @@ fn span_json(cols: &Utf16Cols, span: &Span) -> Value {
     pos_json(cols, span.line, span.col)
 }
 
-/// 読み込めていない `import`（エディタは fs に触れないので本体が空）があるか（D5・タスク 5-0）。
+/// 読めなかった `import`（`ImportOrigin::unresolved`・`Parser::try_import`）があるか（D5・タスク 5-0）。
 fn has_unloaded_import(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| {
-        matches!(s, Stmt::Import { body, .. } | Stmt::FromImport { body, .. } if body.is_empty())
+        matches!(s, Stmt::Import { origin, .. } | Stmt::FromImport { origin, .. } if origin.unresolved)
     })
 }
 
@@ -430,10 +430,9 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
     //   止まり、型検査へ進まない。展開前の AST の型エラーは当てにならない）。ホバーなどの情報は
     //   展開前の AST（単相化だけしたもの）の型検査から取る。
     let counter = parser.node_counter();
-    // ⚠ エディタは import 先を読まない（本体が空）。そのモジュールのメタ関数・`const` を使う展開は
-    //   エディタでは失敗するが、それはエディタが中身を知らないからで、CLI では通る。
-    //   ⇒ 読めていない import があるときは、展開の失敗を報告しない（少なく報告するのは許される・
-    //   `compare_wasm_frontend.ps1` の「import のある例題」の規則）。
+    // ⚠ 読めなかった import（`ImportOrigin::unresolved`）があると、そのモジュールのメタ関数・`const` を
+    //   使う展開は失敗する。CLI はその import で止まる（展開まで進まない）ので、展開の失敗は報告しない
+    //   （import の誤りは出している）。
     let unloaded_import = has_unloaded_import(&stmts);
     let (stmts, meta_error) = if crate::meta_expand::mentions_meta(&stmts) {
         match crate::meta_expand::expand_program(
@@ -442,10 +441,11 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
             parser.known_traits(),
         ) {
             Ok(out) => (out, None),
-            Err(e) => (crate::meta_expand::monomorphize(stmts, counter), Some(e)),
+            Err(e) => (crate::meta_expand::monomorphize(stmts, counter).0, Some(e)),
         }
     } else {
-        (crate::meta_expand::monomorphize(stmts, counter), None)
+        // ⚠ 単相化の失敗（具体化が終わらない・2-9）も CLI と同じく `MetaError`（3-3）。
+        crate::meta_expand::monomorphize(stmts, counter)
     };
     let (errors, warnings, annotations, bindings) = TypeChecker::check_program_for_editor(&stmts);
 

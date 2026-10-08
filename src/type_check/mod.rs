@@ -286,36 +286,23 @@ impl TypeChecker {
 
     /// **本体を読み込めていない import があるか**（タスク 8.5）。
     ///
-    /// VS Code 拡張の wasm フロントエンドは fs に触れないので import 先を読まず、
-    /// `Stmt::Import` / `Stmt::FromImport` の `body` が**空**になる。そのとき
-    /// import 先で定義された型はレジストリに載らないので、
+    /// そのとき import 先で定義された型はレジストリに載らないので、
     /// 「レジストリに無い＝存在しない」と断定できない。
     ///
-    /// ⚠ **空 body は「読めなかった」の印**であって「中身が無い」ではない。
-    /// 実体のあるモジュールが本当に空になることは（定義文が 1 つも無いファイルを
-    /// import しない限り）無く、その場合に検査を止めても取りこぼしが増えるだけで
-    /// 誤検出は出ない ⇒ 保守的側へ倒す。
+    /// - 拡張（`editor`）で読めなかった import（`ImportOrigin::unresolved`・誤りは拡張が診断として出す）
+    /// - 外部言語で body が空のもの
     ///
-    /// ⚠⚠ **`editor` では body が非空でもレジストリは完成しない。** スタブ
-    /// （ホスト由来・同梱 py）は実モジュールの**部分集合**でしかなく、しかも
-    /// 古くなりうる（DLL / ヘッダを更新してもスタブは自動では追随しない）。
-    /// ここで「読めた」と見なすと [`Self::check_ann_names_exist`] が動き出し、
-    /// **CLI が出さないエラーをエディタだけが出す**。それは
-    /// `compare_wasm_frontend.ps1` の不変条件
-    /// 「wasm は少なく報告してよいが、多く報告してはならない」を破る。
-    /// ⇒ editor では **import が 1 つでもあれば不完全**と答える。
-    ///   import が無いファイルは従来どおり `false` なので、検査範囲は狭まらない。
+    /// ⚠ 拡張も CLI と同じ規則（3-3）。以前は拡張だけ import 先を読まなかったので「import が 1 つでもあれば
+    ///   不完全」と答え、未定義名などの検査が拡張だけ止まっていた。
     fn has_unloaded_import(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
-            #[cfg(feature = "editor")]
-            Stmt::Import { .. } | Stmt::FromImport { .. } => true,
-            // ⚠ Arrow / py（変換）のモジュールは CLI では必ず読み込まれる（見つからなければ
-            //   構文解析の誤り）。本体が空なのは `__init__` の無い**名前空間パッケージ**
-            //   （CPython 準拠・2026-10-02）か、本当に空のファイルなので、「読めなかった」とは数えない。
-            //   数えると `import a.b`（`a` が名前空間パッケージ）だけで未定義名などの検査が全部止まる（実測）。
-            #[cfg(not(feature = "editor"))]
-            Stmt::Import { body, lang, .. } | Stmt::FromImport { body, lang, .. } => {
-                body.is_empty() && !crate::module_path::is_arrow_source_lang(lang) && lang != "py"
+            // ⚠ Arrow / py（変換）のモジュールは読めなければ構文解析の誤り（拡張では `unresolved`）。
+            //   本体が空なのは `__init__` の無い**名前空間パッケージ**（CPython 準拠・2026-10-02）か、
+            //   本当に空のファイルなので、「読めなかった」とは数えない。数えると `import a.b`
+            //   （`a` が名前空間パッケージ）だけで未定義名などの検査が全部止まる（実測）。
+            Stmt::Import { body, lang, origin, .. } | Stmt::FromImport { body, lang, origin, .. } => {
+                origin.unresolved
+                    || (body.is_empty() && !crate::module_path::is_arrow_source_lang(lang) && lang != "py")
             }
             // ⚠ import は最上位にしか書けないが、`if` の中などへ移ったときに
             //   静かに見落とさないよう、定義の本体だけは覗いておく。

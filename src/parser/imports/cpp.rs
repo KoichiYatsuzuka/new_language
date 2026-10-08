@@ -82,6 +82,7 @@ impl Parser {
                 )
             })
         })?;
+        let origin = if raw.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
         let body = raw
             .map(|raw| String::from_utf8_lossy(&raw).into_owned())
             .map(|content| {
@@ -177,7 +178,7 @@ impl Parser {
             source_module: Some(crate::module_path::written_spelling(level, &parts)),
             alias,
             body,
-            origin: self.import_origin(level),
+            origin,
         })
     }
 
@@ -246,7 +247,7 @@ impl Parser {
                     source_module: Some(".".repeat(level as usize)),
                     names,
                     body: Vec::new(),
-                    origin: self.import_origin(level),
+                    origin: self.unresolved_origin(level),
                 });
             };
             let last = stmts.pop().expect("from_dots_import は 1 つ以上の文を返す");
@@ -266,6 +267,7 @@ impl Parser {
             }
             Ok(loaded)
         })?;
+        let origin = if resolved.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
         let loaded = resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, None).0);
 
         Ok(Stmt::FromImport {
@@ -274,7 +276,7 @@ impl Parser {
             module: loaded.name,
             names,
             body: loaded.body,
-            origin: self.import_origin(level),
+            origin,
         })
     }
 

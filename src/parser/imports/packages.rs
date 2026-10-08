@@ -46,6 +46,7 @@ impl Parser {
                 .has_source_dir
                 .then(|| module_path::import_base(file_dir, &self.root_dir, level)),
             span: crate::token::Span::unknown(),
+            unresolved: false,
         }
     }
 

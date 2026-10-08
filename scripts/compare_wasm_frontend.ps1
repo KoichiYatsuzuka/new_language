@@ -1,17 +1,19 @@
 ﻿# compare_wasm_frontend.ps1 -- verify the wasm editor frontend agrees with arrow.exe.
 #
 # The VS Code extension analyses .ar files with crates/arrow-frontend compiled to wasm.
-# That build differs from the shipping binary in exactly one way: `editor` feature
-# replaces parse-time module loading with a syntax-only stub (see
-# src/parser/imports_editor.rs). So the required property is NOT "identical output",
-# it is:
+# It runs the same lexer / parser / import code / type checker as arrow.exe; imports are read
+# through the host (vscode-extension/src/wasm_host.ts), which this gate uses too (dump_diags.js).
+# So the required property is: for every example, the two report the SAME static errors in
+# that file (editor_import_resolution_plan.md 3-3). arrow.exe is run with AR_CHECK_ONLY=1, which
+# stops after the static checks, so no example is executed (no GUI, FFI or sleeps).
 #
-#   * import-free example  -> the two must report the SAME static type errors
-#   * example with imports -> wasm may report FEWER (module members are unknown),
-#                             but must NEVER report an error arrow.exe does not have
+#   * INVENTED (wasm only) and MISSED (arrow.exe only) must both be 0.
+#   * Errors arrow.exe reports in an imported module's file are not compared: the editor shows a
+#     document's own errors only.
+#   * An import arrow.exe cannot resolve stops it with a ParseError; the editor reports the import
+#     and goes on. Then only the import's message is compared (see the branch below).
 #
-# The second half is the one that matters: an editor that invents errors is exactly
-# the bug this whole change is meant to remove.
+# Until 3-3 the editor did not read imports, and the rule was "wasm may report fewer".
 #
 # ASCII-only on purpose: PowerShell 5.1 reads BOM-less .ps1 as ANSI.
 
@@ -112,12 +114,17 @@ function Invoke-Child([string]$exePath, [string]$argLine, [string]$workDir, [has
 
 # Pull "line:col" keys out of arrow.exe's static-error table. Messages wrap across
 # terminal columns, so positions are the reliable key; '<unknown>' rows are counted.
-function Get-ExeErrorKeys([string]$text) {
+# Only rows of $mainFile: the editor shows a document's own errors (an imported module's errors
+# are shown when that file is open).
+function Get-ExeErrorKeys([string]$text, [string]$mainFile) {
     $clean = $text -replace "$([char]27)\[[0-9;]*m", ''
+    $main = ($mainFile -replace '\\', '/').ToLowerInvariant()
     $keys = New-Object System.Collections.Generic.List[string]
     foreach ($line in ($clean -split "`r?`n")) {
-        if ($line -match '\s(\d+):(\d+)\s+StaticTypeError\s') {
-            $keys.Add("$($Matches[1]):$($Matches[2])")
+        if ($line -match '^(\S.*?)\s+(\d+):(\d+)\s+StaticTypeError\s') {
+            $file = ($Matches[1].Trim() -replace '\\', '/').ToLowerInvariant()
+            if ($file -ne $main) { continue }
+            $keys.Add("$($Matches[2]):$($Matches[3])")
         } elseif ($line -match '^<unknown>\s+-\s+StaticTypeError\s') {
             $keys.Add('<unknown>')
         }
@@ -126,7 +133,9 @@ function Get-ExeErrorKeys([string]$text) {
     # reported by both sides as a MetaError. arrow.exe prints it as text, not in the table:
     # the key is the first 'while expanding ... at <file>:<line>:<col>' (the statement in
     # this file that started the expansion), or '<unknown>' when there is no position.
-    if ($clean -match '(?m)^MetaError:') {
+    # A template instantiation that fails at expansion time (a constraint violation) is printed
+    # as 'TemplateError:' -- the same kind of stop (3-3: the editor used to drop it silently).
+    if ($clean -match '(?m)^(MetaError|TemplateError):') {
         $at = ($clean -split "`r?`n") | Where-Object { $_ -match "^\s*while expanding '" } | Select-Object -First 1
         if ($at -and $at -match ':(\d+):(\d+)\s*$') { $keys.Add("$($Matches[1]):$($Matches[2])") }
         elseif ($at -and $at -match 'line (\d+), col (\d+)\s*$') { $keys.Add("$($Matches[1]):$($Matches[2])") }
@@ -154,8 +163,11 @@ Write-Host ''
 Write-Host 'compare_wasm_frontend -- arrow.exe vs wasm editor frontend' -ForegroundColor Cyan
 Write-Host ('-' * 78)
 
-$checked = 0; $agreed = 0; $fewer = 0; $invented = 0; $parseFail = 0; $skipped = 0
+$checked = 0; $agreed = 0; $missed = 0; $invented = 0; $parseFail = 0; $skipped = 0
 $inventedList = New-Object System.Collections.Generic.List[string]
+$missedList = New-Object System.Collections.Generic.List[string]
+# arrow.exe stops after the static checks (src/main.rs) -- the examples are never executed.
+$checkOnly = @{ AR_CHECK_ONLY = '1' }
 $parseFailList = New-Object System.Collections.Generic.List[string]
 
 foreach ($f in $files) {
@@ -177,7 +189,7 @@ foreach ($f in $files) {
         # The editor frontend could not parse it. That is only correct if arrow.exe
         # cannot parse it either -- otherwise the editor rejects code the compiler
         # accepts, which is just as bad as inventing type errors.
-        $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $null
+        $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $checkOnly
         if ($e.TimedOut) { Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Yellow; $skipped++; continue }
         $exeText = (($e.Out + "`n" + $e.Err) -replace "$([char]27)\[[0-9;]*m", '')
         if ($exeText -match 'ParseError:') {
@@ -213,12 +225,8 @@ foreach ($f in $files) {
         else { $wasmKeys += "$($d.at.line + 1):$($d.at.col + 1)" }
     }
 
-    # Only run arrow.exe when there is something to compare against: any file where
-    # either side reports errors. Clean files are skipped because running them would
-    # execute the example (GUI, FFI, sleeps).
-    if ($wasmKeys.Count -eq 0) { $checked++; $agreed++; continue }
-
-    $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $null
+    # arrow.exe runs on every file (check only), so a file the editor finds clean is compared too.
+    $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $checkOnly
     if ($e.TimedOut) { Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Yellow; $skipped++; continue }
 
     # An import arrow.exe could not resolve: it stops with a ParseError. The editor does not stop
@@ -244,7 +252,7 @@ foreach ($f in $files) {
         }
         continue
     }
-    $exeKeys = Get-ExeErrorKeys ($e.Out + "`n" + $e.Err)
+    $exeKeys = Get-ExeErrorKeys ($e.Out + "`n" + $e.Err) $f.FullName
 
     $checked++
     $extra = @($wasmKeys | Where-Object { $_ -notin $exeKeys })
@@ -254,12 +262,13 @@ foreach ($f in $files) {
         $invented++
         $inventedList.Add("$rel  invented=[$($extra -join ', ')]")
         Write-Host ("INVENTED     {0}  wasm-only=[{1}]" -f $rel, ($extra -join ', ')) -ForegroundColor Red
-    } elseif ($missing.Count -gt 0) {
-        $fewer++
-        if ($VerboseDiff) {
-            Write-Host ("fewer        {0}  exe-only=[{1}]" -f $rel, ($missing -join ', ')) -ForegroundColor DarkYellow
-        }
-    } else {
+    }
+    if ($missing.Count -gt 0) {
+        $missed++
+        $missedList.Add("$rel  missed=[$($missing -join ', ')]")
+        Write-Host ("MISSED       {0}  exe-only=[{1}]" -f $rel, ($missing -join ', ')) -ForegroundColor Red
+    }
+    if ($extra.Count -eq 0 -and $missing.Count -eq 0) {
         $agreed++
         if ($VerboseDiff) { Write-Host ("agree        {0}  ({1} errors)" -f $rel, $wasmKeys.Count) -ForegroundColor DarkGray }
     }
@@ -268,7 +277,7 @@ foreach ($f in $files) {
 Write-Host ('-' * 78)
 Write-Host ("compared      : {0}" -f $checked)
 Write-Host ("agreed        : {0}" -f $agreed) -ForegroundColor Green
-Write-Host ("wasm fewer    : {0}   (expected for files with imports)" -f $fewer) -ForegroundColor DarkYellow
+Write-Host ("wasm MISSED   : {0}   <- must be 0" -f $missed) -ForegroundColor $(if ($missed -eq 0) { 'Green' } else { 'Red' })
 Write-Host ("wasm INVENTED : {0}   <- must be 0" -f $invented) -ForegroundColor $(if ($invented -eq 0) { 'Green' } else { 'Red' })
 Write-Host ("parse mismatch: {0}   <- must be 0" -f $parseFail) -ForegroundColor $(if ($parseFail -eq 0) { 'Green' } else { 'Red' })
 Write-Host ("skipped       : {0}" -f $skipped)
@@ -283,5 +292,10 @@ if ($inventedList.Count -gt 0) {
     Write-Host 'INVENTED ERRORS (these are false positives in the editor):' -ForegroundColor Red
     foreach ($x in $inventedList) { Write-Host "  $x" }
 }
-if ($invented -gt 0 -or $parseFail -gt 0) { exit 1 }
+if ($missedList.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'MISSED ERRORS (arrow.exe reports them, the editor does not):' -ForegroundColor Red
+    foreach ($x in $missedList) { Write-Host "  $x" }
+}
+if ($invented -gt 0 -or $missed -gt 0 -or $parseFail -gt 0) { exit 1 }
 exit 0

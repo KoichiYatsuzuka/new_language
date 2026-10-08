@@ -136,7 +136,7 @@ cd ../crates/arrow-frontend && cargo build --release --target wasm32-unknown-unk
 
 | Check | Command | Must show |
 |---|---|---|
-| Editor agrees with `arrow.exe` | `./scripts/compare_wasm_frontend.ps1` | `INVENTED: 0`, `parse mismatch: 0` |
+| Editor agrees with `arrow.exe` | `./scripts/compare_wasm_frontend.ps1` | `MISSED: 0`, `INVENTED: 0`, `parse mismatch: 0` — every example, imports included (the editor must report **the same** errors in the file; `arrow.exe` runs with `AR_CHECK_ONLY=1`, so nothing is executed) |
 | No provider throws / no regressions | `ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" stress.js` | `threw: 0`, `hover misses: 0`, `def misses: 0` |
 | One file in detail | `node run_debug.js <file.ar>` | see `vscode-debug-runner` |
 

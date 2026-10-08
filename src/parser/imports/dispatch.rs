@@ -46,7 +46,13 @@ impl Parser {
             base_dir: self.has_source_dir.then(|| self.import_base(level)),
             // 位置は `parse_stmt` の入口が埋める（`Stmt::fill_position`）。
             span: crate::token::Span::unknown(),
+            unresolved: false,
         }
+    }
+
+    /// 読めなかった import（[`Self::try_import`] が `None`・拡張だけ）の `origin`（`ImportOrigin::unresolved`）。
+    pub(crate) fn unresolved_origin(&self, level: u32) -> ImportOrigin {
+        ImportOrigin { unresolved: true, ..self.import_origin(level) }
     }
 
     /// 見つけたモジュールファイルに名前を付ける（Arrow / py・[`module_path::ModuleNames`]）。
@@ -206,6 +212,7 @@ impl Parser {
             let bind = p.import_chain_and_bind(&lang, level, &module, alias.as_deref(), &loaded)?;
             Ok((loaded, bind))
         })?;
+        let origin = if resolved.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
         let (loaded, bind) =
             resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, alias.as_deref()));
 
@@ -215,7 +222,7 @@ impl Parser {
             module: loaded.name,
             alias,
             body: loaded.body,
-            origin: self.import_origin(level),
+            origin,
             bind: Some(bind),
         })
     }

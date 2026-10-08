@@ -432,6 +432,12 @@ fn run_program(
         return Err(format_static_errors(&type_errors));
     }
 
+    // 診断フック: `AR_CHECK_ONLY=1` で**静的検査まで**で終わる（実行しない）。`compare_wasm_frontend.ps1` が
+    // 全例題の静的な誤りを拡張と突き合わせるのに使う（GUI・FFI・待ちを起こさずに・3-3）。
+    if std::env::var_os("AR_CHECK_ONLY").is_some() {
+        return Ok(());
+    }
+
     // 診断フック（#16 段階(b)(ii)）: `AR_ANNOT_DIFF=1` で境界検査指示の生成状況を出す。
     // 「Call 注釈のうち引数に CheckBefore が付いたものが何件か」を全例題で測るために使う。
     if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {

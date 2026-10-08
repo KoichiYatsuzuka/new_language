@@ -235,3 +235,24 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 - ゲート: `compare_import_paths -A` 13/13・`compare_outputs -A` 401/402（差は `unresolved_cpp_header_error.ar` の
   文面の変更だけ・意図どおり）・`force_gate` 0・`compare_python_impl` clean・`compare_wasm_frontend` INVENTED 0 /
   parse mismatch 0・`stale_doc_refs` OK・拡張の crate のテスト 655 件
+
+### 3-3 実装
+
+- 読めなかった import の**明示的な印** `ImportOrigin::unresolved`（拡張の `Parser::try_import` だけが立てる・CLI では常に
+  `false`）。型検査器の拡張だけの分岐（1.1 の 3 つ）をこれに置き換えた:
+  - `editor_stub_body`（body が空なら束縛を `Unresolved`）→ `origin.unresolved` のときだけ `Unresolved`。読めなかった
+    モジュールは `module_member_cache` に控えない（控えると「メンバー 0 個」で閉じ、使うたびに誤りを重ねる）
+  - `closed_module`（拡張では作らない）→ 拡張も CLI と同じに作る（読めなかった import の `from` では作らない）
+  - `has_unloaded_import`（拡張では import が 1 つでもあれば不完全）→ CLI と同じ規則 ＋ `origin.unresolved`
+  - ⚠ 空の body では見分けない（名前空間パッケージなど、読めたうえで空のモジュールと区別がつかない）
+- `compare_wasm_frontend` を**全例題で CLI と同じ診断**にした（「wasm は少なくてよい」を外し、`MISSED` も 0 を要求）。
+  CLI は `AR_CHECK_ONLY=1`（`src/main.rs`・静的検査で止まり実行しない）で全例題を走らせる。CLI の表の行は
+  **そのファイルの行だけ**数える（拡張はドキュメント自身の誤りだけを出す）
+- 厳しくしたゲートで見つかった、import とは別の以前からの差 2 件:
+  - `template_recursion_error.ar`: メタ関数を含まないプログラムで、拡張の単相化（`meta_expand::monomorphize`）が
+    具体化の失敗（終わらない具体化）を**黙って捨てていた**。誤りを返し、CLI と同じく `MetaError` として出す
+  - `polymorphism_error.ar`: 上の修正で拡張が出すようになった制約違反を、CLI は `TemplateError:` と書く。
+    ゲートの CLI 側の読み取りが `MetaError:` しか見ていなかった（以前は両方とも空で「一致」に数えていた）
+- ゲート: `compare_wasm_frontend` 489/489 一致（MISSED 0・INVENTED 0・parse mismatch 0）・`compare_import_paths -A` 13/13・
+  `compare_outputs -A` 402/402（CLI の挙動は変えていない）・`type_obligations` 退行なし・`force_gate` 0・
+  `compare_python_impl` clean・`stale_doc_refs` OK

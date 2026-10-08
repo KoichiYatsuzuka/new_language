@@ -246,28 +246,32 @@ impl Mono {
 /// ⚠⚠ 単相化は評価器の要らない**純粋な AST 操作**。エディタはメタ関数を展開しない（5-0）が、
 /// 単相化だけはここで行う —— しないと具体化した本体の誤り（`Box[str]` の `self.v = 0`・
 /// テンプレートのメソッド呼び出しの型違い）が**エディタにだけ出ない**。
-/// ⚠ 具体化が終わらない（2-9）ときは単相化せずに元の文を返す（CLI が展開時エラーで止める）。
-/// ⚠ メタ関数が置いたコードの中の具体化はエディタでは見えない（展開しないので）。そこは
-///   CLI より少なく報告するだけで、多く報告することは無い。
+/// ⚠ 具体化が終わらない（2-9）ときは単相化せずに元の文と**その誤り**を返す。CLI は展開時エラー
+///   （`MetaError`）で止めるので、エディタも同じ誤りを出す（3-3。以前は誤りを捨てていて、
+///   `template_recursion_error.ar` の誤りがエディタにだけ出なかった）。
+/// ⚠ メタ関数が置いたコードの中の具体化はエディタでは見えない（展開しないので）。
 #[allow(dead_code)] // CLI は展開器の中で単相化する（エディタ専用の入口）
-pub fn monomorphize(stmts: Vec<Stmt>, counter: std::rc::Rc<std::cell::Cell<u32>>) -> Vec<Stmt> {
+pub fn monomorphize(
+    stmts: Vec<Stmt>,
+    counter: std::rc::Rc<std::cell::Cell<u32>>,
+) -> (Vec<Stmt>, Option<String>) {
     let mut m = Mono::new(counter);
     m.enabled = declares_template(&stmts);
     if !m.enabled {
-        return stmts;
+        return (stmts, None);
     }
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
     for st in &stmts {
-        if instantiate_sites(&mut m, st, &mut out).is_err() {
-            return stmts;
+        if let Err(e) = instantiate_sites(&mut m, st, &mut out) {
+            return (stmts, Some(e));
         }
         let at = out.len();
         out.push(st.clone());
-        if note_decls(&mut m, &mut out, at).is_err() {
-            return stmts;
+        if let Err(e) = note_decls(&mut m, &mut out, at) {
+            return (stmts, Some(e));
         }
     }
-    out
+    (out, None)
 }
 
 /// `out[from..]` に置かれた宣言を覚える（最上位に置かれた文を出すときに呼ぶ）。

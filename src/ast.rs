@@ -854,6 +854,12 @@ pub struct ImportOrigin {
     /// ⚠ 以前は import 文が位置を持たず、`from m import x` の誤り（`CannotImportName`）が
     ///   位置なし（`<unknown>`）で出ていた。
     pub span: Span,
+    /// **拡張（`editor`）で読めなかった** import（`Parser::try_import`・editor_import_resolution_plan.md 3-3）。
+    ///
+    /// 誤りは拡張が診断として出している。型検査はこの文の束縛を `Unresolved`（型は分からないが誤りでもない）
+    /// にして、そのモジュールの使い方の誤りを重ねない。⚠ 空の body で見分けない（名前空間パッケージなど、
+    /// 読めたうえで空のモジュールと区別がつかない）。CLI では常に `false`（読めなければ構文解析が止まる）。
+    pub unresolved: bool,
 }
 
 /// import 文が束縛する名前と、そこへ入るモジュール（CPython 準拠・2026-10-02）。
@@ -871,7 +877,7 @@ pub struct ImportBind {
 
 impl Default for ImportOrigin {
     fn default() -> Self {
-        ImportOrigin { level: 0, base_dir: None, span: Span::unknown() }
+        ImportOrigin { level: 0, base_dir: None, span: Span::unknown(), unresolved: false }
     }
 }
 
