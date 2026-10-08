@@ -1,0 +1,14 @@
+# unresolved_cs_dll_error.ar — 型の出所が見つからない import[cs-dll] はエラー
+#
+# 計画: implementation_plans/editor_import_resolution_plan.md（1-2）
+#
+# ⚠ 以前は黙って（または警告だけ出して）型なしで続けていたので、モジュールのメンバーが
+#   すべて型の分からないまま通り、間違いが実行時まで分からなかった。未解決の import は
+#   黙って型情報を落とさない。
+#
+# 期待されるエラー:
+#   ParseError: import[cs-dll] 'NoSuchAssembly': cannot find 'NoSuchAssembly.dll' …
+
+import[cs-dll] NoSuchAssembly as asm
+
+print("ここには到達しない")

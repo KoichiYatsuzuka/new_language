@@ -25,8 +25,14 @@ use crate::parser::Parser;
 /// ⚠ テストが**本番と同じ経路**（バイトコード VM）を検査することがこの関数の目的。
 /// 以前は既定の `Off`＝ツリーウォークで走っており、**本番と違う実装をテストしていた**（#36）。
 fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
+    prepare_at(src, None)
+}
+
+/// [`prepare`] の、構文解析の起点（エントリのディレクトリ）を指定する版。
+/// import 先を探す起点になる（`import[py-int] m` の `m.py` を構文解析の時点で見つけるため）。
+fn prepare_at(src: &str, dir: Option<std::path::PathBuf>) -> Result<(Vec<Stmt>, Interpreter), String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let mut parser = Parser::new(tokens, None);
+    let mut parser = Parser::new(tokens, dir);
     let stmts = parser.parse_program()?;
     // ⚠ 展開も本番と同じく先に済ませる（D36・タスク 2-16）。テンプレートの具体化は展開時に作り、
     //   実行時には作らないので、これが無いとテンプレートを使うテストが全部落ちる。
@@ -115,9 +121,14 @@ fn run_get(src: &str, var: &str) -> Value {
 
 /// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
 /// ⚠ `native` 限定（評価コアビルドでは `py_interop` がスタブなので成立しない・#6）。
+///
+/// ⚠ 構文解析も `examples/interop/test_modules` を起点にする。未解決の import はエラーなので
+///   （`editor_import_resolution_plan.md` 1-2）、型の出所（`py_calculator.py`）は構文解析の時点で
+///   見つからなければならない。以前は構文解析が見つけられず、黙って型なしで通っていた。
 #[cfg(feature = "native")]
 fn run_py_get(src: &str, var: &str) -> Value {
-    let (stmts, mut interp) = prepare(src).unwrap();
+    let (stmts, mut interp) =
+        prepare_at(src, Some(std::path::PathBuf::from("examples/interop/test_modules"))).unwrap();
     interp.add_python_search_dir(std::path::PathBuf::from("examples"));
     interp.add_python_search_dir(std::path::PathBuf::from("examples/interop/test_modules"));
     for stmt in &stmts {

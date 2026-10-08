@@ -237,8 +237,11 @@ Used by `import[py-int]`. The body is for type-checking only; the runtime uses P
 Search order: the same `python_import_dirs` as `import[py]` (no dots: the entry directory, `python.search_paths`,
 `PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib/purelib; dots: the search base only).
 
-For each directory, tries `.pyi` first, then `.py`. If nothing is found, the bundled stub (`py_stubs`, only for
-non-relative imports) or an empty body (no type checking, PyO3 handles everything at runtime).
+For each directory, tries `.pyi` first, then `.py`. If nothing is found: a directory without `__init__` is a
+namespace package (empty body, resolved); otherwise the bundled stub (`py_stubs`, only for non-relative imports);
+otherwise **an error** (`cannot find its types` — put a `.pyi` next to the importing file). ⚠ Unresolved imports
+are errors for every language since 2026-10-08 (`implementation_plans/editor_import_resolution_plan.md` 1-2): they
+used to fall back to an empty body (no type checking) for `py-int` / `cpp-*` / `cs-*` / `js-proc`.
 At runtime `py_interop::load_py_int_module` inserts `Interpreter::import_search_dirs(origin)` (the search base,
 plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 
@@ -423,7 +426,9 @@ For the C ABI value/struct-passing design behind this bridge (raw layout, zero-c
 `.ars` スタブは**探索の起点**（`import_base(level)`）の `path/to/module.ars` だけを見ます
 （⚠ 以前は `root_dir` も見ていた）。見つかればそれをパースして body にします。
 
-スタブがない場合は空の body を返します。型チェックは行われず、インポート後のメンバーは全て動的型になります。
+スタブが無い・読めない・構文解析できない場合は**エラー**です（`cannot find the type stub`）。
+Node.js 組み込みのモジュール（`path` など）も、使う関数を `.ars` に書きます（例: `examples/interop/path.ars`）。
+⚠ 2026-10-08 より前は空の body（型なし）を返していた（`editor_import_resolution_plan.md` 1-2）。
 
 ### ランタイム側 (`src/interpreter/exec/modules.rs` — `import_js_proc`)
 

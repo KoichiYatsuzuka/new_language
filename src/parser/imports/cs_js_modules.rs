@@ -62,23 +62,28 @@ impl Parser {
             }
         }
 
+        // ⚠⚠ **見つからない・読めなければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は警告を
+        //    出して空の body（型なし）にしていた。未解決の import は黙って型情報を落とさない。
+        let kind = if is_proc { "cs-proc" } else { "cs-dll" };
         let body = match dll_path {
-            Some(path) => {
-                match crate::parser::cs_assembly::load_cs_assembly(&path) {
-                    Ok(stmts) => stmts,
-                    Err(e) => {
-                        eprintln!("Warning: import[cs-*]: {e}; falling back to empty stubs");
-                        vec![]
-                    }
-                }
-            }
+            Some(path) => crate::parser::cs_assembly::load_cs_assembly(&path)
+                .map_err(|e| format!("import[{kind}] '{}': cannot read the .NET metadata of '{}': {e}", module.join("."), path.display()))?,
             None => {
-                eprintln!(
-                    "Warning: import[cs-*]: cannot find '{dll_name}' for module '{}'; \
-                     no type stubs available (add the DLL path to ar_config.json csharp.lib_paths)",
-                    module.join(".")
-                );
-                vec![]
+                return Err(format!(
+                    "import[{kind}] '{}': cannot find '{dll_name}' (looked at {}; add its directory to \
+                     ar_config.json csharp.lib_paths)",
+                    module.join("."),
+                    {
+                        let mut shown: Vec<String> = Vec::new();
+                        for c in &candidates {
+                            let s = format!("'{}'", c.display());
+                            if !shown.contains(&s) {
+                                shown.push(s);
+                            }
+                        }
+                        shown.join(", ")
+                    }
+                ));
             }
         };
 
@@ -102,11 +107,23 @@ impl Parser {
             return Ok(body.clone());
         }
 
-        let candidates = [base.join(&sub_path)];
-
-        let body = candidates.iter().find_map(|p| -> Option<Vec<Stmt>> {
-            if !p.exists() { return None; }
-            let src = std::fs::read_to_string(p).ok()?;
+        // ⚠⚠ **`.ars` が無い・読めない・構文解析できなければエラー**（`editor_import_resolution_plan.md` 1-2）。
+        //    以前は黙って空の body（型なし）にしていた。`.ars` が js-proc の型の唯一の出所。
+        let stub = base.join(&sub_path);
+        if !stub.exists() {
+            return Err(format!(
+                "import[js-proc] '{}': cannot find the type stub '{}'; write the module's declarations there \
+                 (see examples/interop for the .ars format)",
+                module.join("."),
+                stub.display()
+            ));
+        }
+        let candidates = [stub];
+        let body = candidates.iter().find_map(|p| -> Option<Result<Vec<Stmt>, String>> {
+            let src = match std::fs::read_to_string(p) {
+                Ok(s) => s,
+                Err(e) => return Some(Err(format!("import[js-proc]: cannot read '{}': {e}", p.display()))),
+            };
             let filename = p.to_string_lossy().to_string();
             let module_dir = p.parent().map(|d| d.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
@@ -119,8 +136,8 @@ impl Parser {
         // node-id はプログラム全体で一意にする（#16・C1）。共有しないとモジュール間で
         // 衝突し、消費側が別モジュールの注釈を読む（FFI 境界検査が誤検知する）。
         sub.node_counter = self.node_counter.clone();
-            sub.parse_program().ok()
-        }).unwrap_or_default();
+            Some(sub.parse_program().map_err(|e| format!("import[js-proc]: in '{}': {e}", p.display())))
+        }).unwrap_or_else(|| Ok(Vec::new()))?;
 
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)

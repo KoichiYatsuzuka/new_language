@@ -1,0 +1,10 @@
+# js_text.ars — js_text.js の型（`import[js-proc] js_text` の型の出所）
+
+fn stripComment(let line: str) -> str:
+    ...
+
+fn cleanTypeAnnotation(let text: str) -> str:
+    ...
+
+fn splitComma(let text: str) -> list[str]:
+    ...

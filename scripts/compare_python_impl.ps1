@@ -70,6 +70,8 @@ $knownDiff = @{
     'operator_overload_operand_error' = 'Rust: 演算子メソッドの仮引数に合わない右辺を StaticTypeError（10-13 で新設）。py: 検査せず実行して __add__ の中の other.cents で AttributeError'
     'builtin_members_error'          = 'Rust: 組み込みの値の属性の読み・int / float のメソッドを StaticTypeError（10-14 で新設）。py: 検査せず実行して AttributeError'
     'module_mut_state'               = 'Rust: 名前空間の mut のメンバーはモジュールの大域の今の値を読み、外から代入もできる（10-11・enum_member_type_plan.md 6-2）。py: 名前空間が import 時の写しのままで c.count が 0 のまま・名前空間への代入も未対応'
+    'unresolved_cpp_header_error'    = 'Rust: 見つからないヘッダの import[cpp-lib] を構文解析の誤りにする（editor_import_resolution_plan.md 1-2）。py: 実行時に CppImport の RuntimeError を stdout に出す'
+    'unresolved_py_int_error'        = 'Rust: 型の出所（.pyi / .py）が無い import[py-int] を構文解析の誤りにする（editor_import_resolution_plan.md 1-2）。py: 型を検査せず実行して最後まで進む'
     'module_global_assign_error'     = 'Rust: import したモジュールの let への代入・中身の書き換え・mut への型の合わない代入を StaticTypeError（enum_member_type_plan.md 6-1 で新設）。py: 静的に検査せず実行して g.LABEL = の AttributeError で止まる'
     'template_as_value'              = 'Rust: Stack[int].empty() / Counter[T].n を具体化として読む（10-9 で新設）。py: 添字として読み not subscriptable で落ちる'
     'template_as_value_error'        = 'Rust: 具体化を値として使った結果を型検査して StaticTypeError（10-9 で新設）。py: 添字として読み not subscriptable で落ちる'

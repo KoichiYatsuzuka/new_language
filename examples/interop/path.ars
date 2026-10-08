@@ -1,0 +1,16 @@
+# path.ars — Node.js 組み込みの `path` モジュールの型（`import[js-proc] path` の型の出所）
+#
+# js-proc の型は `.ars` からだけ分かる。無いと import がエラーになる
+# （implementation_plans/editor_import_resolution_plan.md 1-2）。例題が使う関数だけを書く。
+
+fn basename(let p: str) -> str:
+    ...
+
+fn extname(let p: str) -> str:
+    ...
+
+fn join(let ...: str) -> str:
+    ...
+
+fn resolve(let ...: str) -> str:
+    ...

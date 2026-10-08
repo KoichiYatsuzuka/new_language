@@ -55,8 +55,12 @@ impl Parser {
         // `read` + `from_utf8_lossy` を使う（実行時の `load_cpp_module` と一致）。
         // これがないと型チェッカーが空の body を受け取り、`T*` + let の静的検査
         // （P5）が働かない。
-        let body = std::fs::read(&resolved)
-            .ok()
+        // ⚠⚠ **ヘッダが読めなければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は `.ok()` で
+        //    黙って空の body（型なし）にしていた。未解決の import は黙って型情報を落とさない。
+        let raw = std::fs::read(&resolved).map_err(|e| {
+            format!("import[{lang}]: cannot read header '{file_path}' ({e}); the header provides the types of this import")
+        })?;
+        let body = Some(raw)
             .map(|raw| String::from_utf8_lossy(&raw).into_owned())
             .map(|content| {
                 let cfg = crate::interpreter::cpp_bridge::load_cpp_config(

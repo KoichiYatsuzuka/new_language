@@ -1,10 +1,12 @@
 # js_proc_test.ar — import[js-proc] を使って Node.js の path モジュールと
-# VS Code 拡張の analysis.js を呼び出すテスト
+# 同じディレクトリの JS モジュール（js_text.js）を呼び出すテスト
 #
-# ar_config.json の設定:
-#   bridge_root: "vscode-extension"
-#   モジュール "out_debug.analysis" → vscode-extension/out_debug/analysis.js
-#   モジュール "path"               → Node.js 組み込み (bare require fallback)
+#   モジュール "path"    → Node.js 組み込み（型は path.ars）
+#   モジュール "js_text" → js_text.js（型は js_text.ars）
+#
+# ⚠ js-proc の型は `.ars` からだけ分かる。`.ars` が無い import はエラー
+#   （editor_import_resolution_plan.md 1-2）。以前は VS Code 拡張の out_debug/analysis.js を
+#   呼んでいたが、その JS は拡張から削除されていて、実行時に AttributeError になっていた。
 
 # ── テスト 1: Node.js 組み込み path モジュール ────────────────────────────────
 import[js-proc] path as js_path
@@ -19,8 +21,8 @@ print("extname:", ext)
 let joined: str = js_path.join("examples", "test", "file.ar")
 print("join:", joined)
 
-# ── テスト 2: VS Code 拡張 analysis.js の文字列処理関数 ─────────────────────
-import[js-proc] out_debug.analysis as analysis
+# ── テスト 2: 同じディレクトリの JS モジュールの文字列処理関数 ─────────────
+import[js-proc] js_text as analysis
 
 print("")
 print("=== analysis module ===")

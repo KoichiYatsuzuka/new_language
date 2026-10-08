@@ -5,7 +5,7 @@
 # 結果を取得できる。
 
 import[js-proc] path as js_path
-import[js-proc] out_debug.analysis as analysis
+import[js-proc] js_text as analysis
 
 print("=== AsyncManager + js-proc ===")
 

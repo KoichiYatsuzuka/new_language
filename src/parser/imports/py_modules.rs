@@ -275,9 +275,31 @@ impl Parser {
             if !abs_path.exists() { continue; }
             return self.load_py_type_body(module, &module_path::normalize(&abs_path), is_pyi);
         }
+        // ⚠⚠ **型の出所が無ければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は黙って空の body
+        //    （型なし・実行時は PyO3 に任せる）にしていた。未解決の import は黙って型情報を落とさない。
+        let not_found = || {
+            format!(
+                "import[py-int] '{}': cannot find its types (looked for '{}.pyi' / '{}.py' and a package \
+                 '__init__' in {}); put a '.pyi' stub next to the importing file",
+                module.join("."),
+                module_base.display(),
+                module_base.display(),
+                search_dirs
+                    .iter()
+                    .map(|d| if d.as_os_str().is_empty() { "'.'".to_string() } else { format!("'{}'", d.display()) })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        // ⚠ `__init__` の無いディレクトリは**名前空間パッケージ**（CPython・PEP 420）。解決できている
+        //   （メンバーはサブモジュールだけ）ので誤りにしない。`import[py-int] pkg.mod` はパッケージの
+        //   連鎖で `pkg` をここへ通す。
+        if search_dirs.iter().any(|d| d.join(&module_base).is_dir()) {
+            return Ok(vec![]);
+        }
         // ⚠ 同梱スタブは「どこにも無い外部のモジュール」の代わり。相対の書き方では引かない。
         if !module_path::uses_external_paths(level) {
-            return Ok(vec![]);
+            return Err(not_found());
         }
 
         // ★ ファイルが 1 つも見つからなかったときだけ**同梱スタブ**を引く（#19 / 群6 S2）。
@@ -291,8 +313,7 @@ impl Parser {
             return self.build_py_type_body(module, &pseudo, src, true, true);
         }
 
-        // それでも無ければ空の body を返す（型検査スキップ、実行時は PyO3 が担当）
-        Ok(vec![])
+        Err(not_found())
     }
 
     /// Python ソースファイルから型検査用の body を生成する。
@@ -348,16 +369,13 @@ impl Parser {
             //   （黙って精度が落ちると「スタブを整備したのに検査が効かない」に気付けない）。
             let mut converted = match python_converter::convert_python_source(source, &filename) {
                 Ok(stmts) => stmts,
-                Err(e) => {
-                    if bundled {
-                        eprintln!(
-                            "Warning: bundled stub for '{}' failed to convert ({e}); \
-                             falling back to line-based extraction",
-                            module.join(".")
-                        );
-                    }
-                    Vec::new()
+                // ⚠ **同梱スタブは自分で書いたもの**なので、変換できないのは誤り（以前は警告を出して
+                //   行単位の抽出へ落ちていた・`editor_import_resolution_plan.md` 1-2）。
+                Err(e) if bundled => {
+                    self.loading.remove(abs_path);
+                    return Err(format!("bundled stub for '{}' failed to convert: {e}", module.join(".")));
                 }
+                Err(_) => Vec::new(),
             };
             // スタブで不足を補完（変換できなかった関数を追加）
             let known: std::collections::HashSet<String> = converted

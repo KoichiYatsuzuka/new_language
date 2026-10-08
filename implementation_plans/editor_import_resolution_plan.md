@@ -10,6 +10,7 @@ import 先が見つからない・読めないときに**黙って型情報を�
 
 - 起票: 2026-10-08（`enum_member_type_plan.md` 6-3 の後、利用者の指摘から）
 - 調査: Arrow `25ca6ad`
+- 状態: フェーズ 1 完了（§5）
 
 ## 0. 何が起きているか
 
@@ -120,3 +121,28 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 | 2-1・2-2 | `compare_import_paths -A`・`compare_outputs -A`（挙動不変の主張） |
 | 3-*・4-1 | `compare_wasm_frontend`（3-3 以降は import を含む例題も一致すること）・デバッグランナーで import を含む例題 |
 | 5-1 | `stale_doc_refs`・`generate-codebase-map`・VSIX |
+
+## 5. 実施記録
+
+### 1-1 測定（未解決の import をエラーにしたときに落ちるもの）
+
+エラーにする実装を入れて全例題を走らせた（`25ca6ad` との比較）:
+
+| 落ちたもの | 原因 | 対応 |
+|---|---|---|
+| `event_external_handler.ar` / `ffi_boundary_check*.ar`（3 本）/ `relative_import_langs.ar` | `import[py-int] pkg.mod` の `pkg` が `__init__` の無いディレクトリ（名前空間パッケージ）。判定がディレクトリを見ていなかった（**実装の誤り**） | ディレクトリがあれば解決済み（空のパッケージ）とする |
+| `js_proc_test.ar` / `js_proc_async_test.ar` | `import[js-proc] path`（Node.js 組み込み）に `.ars` が無い。`out_debug.analysis` は拡張から削除済みの JS で、**以前から実行時に `AttributeError`** で失敗していた | `path.ars` と、代わりの `js_text.js` / `js_text.ars` を置いた（2 本とも最後まで動くようになった） |
+| `cargo test` の py-int のテスト 8 件 | テストの補助関数（`run_py_get`）が、Python の検索先を構文解析の後で実行時にだけ足していた | 構文解析の起点を `examples/interop/test_modules` にする（`prepare_at`） |
+
+### 1-2 実装
+
+- `py-int`: 型の出所（`.pyi` / `.py` / 同梱スタブ / 名前空間パッケージのディレクトリ）が無ければエラー。
+  同梱スタブの変換失敗もエラー（以前は警告を出して行単位の抽出へ落ちていた）。⚠ 利用者の `.pyi` の
+  変換失敗は従来どおり行単位の抽出で補う（見つかっているので「未解決」ではない）
+- `cpp-*`: ヘッダが読めなければエラー
+- `cs-*`: DLL が無い・メタデータが読めなければエラー
+- `js-proc`: `.ars` が無い・読めない・構文解析できなければエラー
+- エラー例題: `examples/interop/unresolved_{js_proc,py_int,cs_dll,cpp_header}_error.ar`
+- ⚠ **`compare_wasm_frontend` はこの差を見ていない**。拡張はまだ import 先を読まない（エラーを出さない）が、
+  拡張側の診断が空のファイルは CLI を走らせずに「一致」と数える作りなので、4 本とも「一致」になる。
+  フェーズ 3・4 で拡張が import 先を読むようになれば、同じエラーが出る

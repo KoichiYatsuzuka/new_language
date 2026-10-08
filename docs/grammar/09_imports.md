@@ -99,6 +99,22 @@ import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経
 > ディレクトリ → エントリのディレクトリ」の順で、サブディレクトリのファイルをエントリにすると
 > 上の階層を指す手段がありませんでした。
 
+**型の出所が見つからない import はエラー**です（言語によらず・構文解析の誤り）。
+黙って（または警告だけ出して）型なしで続けることはしません。
+
+| 言語 | 型の出所 | 見つからないとき |
+|---|---|---|
+| `.ar` / `.arc` | ソース・`.ars` | `cannot find module` |
+| `py` / `py-int` | `.pyi` / `.py`（`py-int` は無ければ同梱スタブ）。`__init__` の無いディレクトリは名前空間パッケージ | `cannot find its types` — `.pyi` を置く |
+| `cpp-dll` / `cpp-lib` | ヘッダ（`.h`） | `cannot read header` |
+| `cs-dll` / `cs-proc` | DLL の .NET メタデータ | `cannot find '…dll'` — `csharp.lib_paths` に足す |
+| `js-proc` | `.ars`（Node.js 組み込みのモジュールも含め、使う関数を `.ars` に書く） | `cannot find the type stub` |
+| `rs` | crate のソース | `crate directory not found` など |
+
+> ⚠ 2026-10-08 より前は `py-int` / `cpp-*` / `cs-*` / `js-proc` で見つからないと型なしで続けていたため、
+> モジュールのメンバーがすべて型の分からないまま通り、間違いが実行時まで分からなかった
+> （`implementation_plans/editor_import_resolution_plan.md` 1-2）。
+
 ---
 
 ## 相対 import
