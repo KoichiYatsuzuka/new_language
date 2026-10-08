@@ -56,6 +56,7 @@ export class Uri {
     static file(p: string): Uri { return new Uri(p); }
     static parse(v: string): Uri { return new Uri(v); }
     constructor(private readonly _path: string) {}
+    readonly scheme = 'file';
     get fsPath(): string { return this._path; }
     toString(): string { return `file://${this._path.replace(/\\/g, '/')}`; }
 }
@@ -255,6 +256,8 @@ export const workspace = {
         };
     },
     textDocuments: [] as unknown[],
+    // フォルダを開いていない VS Code と同じ（解析はファイルのディレクトリをカレントディレクトリとして見せる）。
+    getWorkspaceFolder(_uri: unknown): { uri: { fsPath: string } } | undefined { return undefined; },
     onDidOpenTextDocument() { return { dispose() {} }; },
     onDidChangeTextDocument() { return { dispose() {} }; },
     onDidCloseTextDocument() { return { dispose() {} }; },

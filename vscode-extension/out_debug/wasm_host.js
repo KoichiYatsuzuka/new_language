@@ -1,0 +1,185 @@
+"use strict";
+/**
+ * wasm_host.ts — wasm（`crates/arrow-frontend`）が import 先を読むためのホスト関数。
+ *
+ * import の処理（探索の規則・読み込み・構文解析・型）はすべて Rust 側（`src/parser/imports/`）にあり、
+ * CLI と**同じコード**が wasm の中で動く。wasm はファイルも環境変数も持たないので、外界に触る所だけを
+ * ここに頼む（Rust 側の窓口は `src/import_fs.rs` の wasm 版）。ここは「読む」「在るか見る」だけを受け持ち、
+ * **判断をしない**（どこを探すか・何を読むかを TypeScript で決めると、拡張だけ解釈がずれる）。
+ *
+ * # 受け渡しの手順
+ *
+ * 値を返す関数（`host_read` など）は結果を**保留**に置いて長さを返す（無ければ負）。wasm はその長さの
+ * 領域を確保してから `host_take(ptr)` で写させる。wasm の関数をホストから呼び返さずに済む
+ * （import の中から export を呼ぶと、確保でメモリが伸びたときの扱いが込み入る）。
+ *
+ * # パスの形
+ *
+ * wasm の `std::path` は Unix の規則（区切りは `/`・`/` で始まれば絶対パス）。Windows のパス
+ * `D:\a\b.ar` はそのままでは親も絶対かどうかも取れないので、境界では `/D:/a/b.ar` の形にする
+ * （VS Code の URI と同じ形）。ホストでファイルに触るときに元へ戻す。
+ * ⚠ wasm に渡すパスは**すべて** `toWasmPath` を通すこと（解析するドキュメントのパス・`realpath`・
+ *   カレントディレクトリ・環境変数のパス）。1 つでも漏れると、そこから先の探索が黙って外れる。
+ *
+ * ⚠ `vscode` に依存しないこと。`crates/arrow-frontend/dump_diags.js`（`compare_wasm_frontend.ps1`）が
+ *   拡張の外から読み込み、**拡張と同じホスト**で wasm を動かして CLI と突き合わせる。
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.hostImports = exports.setHostCwd = exports.toHostPath = exports.toWasmPath = void 0;
+const child_process = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const isWindows = process.platform === 'win32';
+/** ホストのパス → wasm に渡すパス（Windows では `D:\a\b` → `/D:/a/b`）。 */
+function toWasmPath(p) {
+    if (!isWindows)
+        return p;
+    const s = p.replace(/\\/g, '/');
+    return /^[A-Za-z]:(\/|$)/.test(s) ? '/' + s : s;
+}
+exports.toWasmPath = toWasmPath;
+/** wasm から来たパス → ホストのパス（`/D:/a/b` → `D:/a/b`。Node は `/` 区切りも受ける）。 */
+function toHostPath(p) {
+    if (!isWindows)
+        return p;
+    return /^\/[A-Za-z]:(\/|$)/.test(p) ? p.slice(1) : p;
+}
+exports.toHostPath = toHostPath;
+/** `host_read` などが失敗したときの戻り値（wasm 側の `io::ErrorKind` に写す）。 */
+const NOT_FOUND = -1;
+const OTHER_ERROR = -2;
+function errorCode(e) {
+    const code = e === null || e === void 0 ? void 0 : e.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? NOT_FOUND : OTHER_ERROR;
+}
+/** 次の `host_take` で wasm へ写す値。 */
+let pending = null;
+/** カレントディレクトリとして wasm に見せるディレクトリ（ホストの形）。null なら `process.cwd()`。 */
+let cwd = null;
+/**
+ * wasm に見せるカレントディレクトリを決める。
+ *
+ * CLI はカレントディレクトリでも設定ファイル（`ar_config.json`）を探す。拡張では
+ * **利用者が `arrow` を走らせる場所**に当たるワークスペースのフォルダを渡す
+ * （拡張のプロセスのカレントディレクトリは利用者のプロジェクトと無関係）。
+ */
+function setHostCwd(dir) {
+    cwd = dir;
+}
+exports.setHostCwd = setHostCwd;
+/** Python の標準ライブラリと site-packages の場所（1 度だけ調べる）。 */
+let pythonDirs = null;
+/**
+ * Python に `sysconfig` を尋ねる。
+ *
+ * ⚠ CLI の `import_fs::python_lib_dirs`（`src/import_fs.rs`）と**同じ問い合わせ**（候補の実行ファイルの順・
+ *   スクリプト）。片方だけ変えると、拡張と CLI で `import[py]` の探索先がずれる。
+ */
+function queryPythonDirs() {
+    const script = "import sysconfig; " +
+        "paths = [sysconfig.get_path('stdlib'), sysconfig.get_path('purelib')]; " +
+        "print('\\n'.join(p for p in paths if p))";
+    const candidates = isWindows ? ['py', 'python', 'python3'] : ['python3', 'python'];
+    for (const exe of candidates) {
+        try {
+            const out = child_process.execFileSync(exe, ['-c', script], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore'],
+                timeout: 10000,
+                windowsHide: true,
+            });
+            const dirs = out.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            if (dirs.length > 0)
+                return dirs;
+        }
+        catch {
+            // 次の候補へ（見つからない・失敗した）。
+        }
+    }
+    return [];
+}
+/**
+ * wasm の `arrow_host` モジュールとして渡す関数一式。
+ *
+ * @param memory wasm の線形メモリを返す関数。⚠ メモリは伸びると `buffer` が差し替わるので、
+ *               使うたびに取り直す（保持しない）。
+ */
+function hostImports(memory) {
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    const str = (ptr, len) => decoder.decode(new Uint8Array(memory().buffer, ptr, len));
+    const put = (bytes) => {
+        pending = bytes;
+        return bytes.length;
+    };
+    const putText = (s) => put(encoder.encode(s));
+    return {
+        /** 0 = 無い・1 = ファイル・2 = ディレクトリ。 */
+        host_stat(ptr, len) {
+            try {
+                return fs.statSync(toHostPath(str(ptr, len))).isDirectory() ? 2 : 1;
+            }
+            catch {
+                return 0;
+            }
+        },
+        /** ファイルの中身（バイト列）。 */
+        host_read(ptr, len) {
+            try {
+                return put(fs.readFileSync(toHostPath(str(ptr, len))));
+            }
+            catch (e) {
+                return errorCode(e);
+            }
+        },
+        /** ディレクトリの中の項目の名前（`\n` 区切り）。 */
+        host_read_dir(ptr, len) {
+            try {
+                return putText(fs.readdirSync(toHostPath(str(ptr, len))).join('\n'));
+            }
+            catch (e) {
+                return errorCode(e);
+            }
+        },
+        /** 絶対パスにし、リンクを解いた形。 */
+        host_realpath(ptr, len) {
+            try {
+                return putText(toWasmPath(fs.realpathSync.native(toHostPath(str(ptr, len)))));
+            }
+            catch (e) {
+                return errorCode(e);
+            }
+        },
+        /**
+         * 環境変数をパスとして読む（`list` が 0 以外ならパスの並び・`\n` 区切りで返す）。
+         * 値が無ければ負。
+         */
+        host_env_path(ptr, len, list) {
+            const value = process.env[str(ptr, len)];
+            if (value === undefined)
+                return NOT_FOUND;
+            const items = list ? value.split(path.delimiter) : [value];
+            return putText(items.map(toWasmPath).join('\n'));
+        },
+        /** カレントディレクトリ（`setHostCwd`）。 */
+        host_cwd() {
+            return putText(toWasmPath(cwd !== null && cwd !== void 0 ? cwd : process.cwd()));
+        },
+        /** Python の標準ライブラリと site-packages の場所（`\n` 区切り・無ければ空）。 */
+        host_python_lib_dirs() {
+            if (pythonDirs === null)
+                pythonDirs = queryPythonDirs();
+            return putText(pythonDirs.map(toWasmPath).join('\n'));
+        },
+        /** 保留中の値を wasm の `dst` へ写して捨てる。 */
+        host_take(dst) {
+            const bytes = pending;
+            pending = null;
+            if (!bytes || bytes.length === 0)
+                return;
+            new Uint8Array(memory().buffer, dst, bytes.length).set(bytes);
+        },
+    };
+}
+exports.hostImports = hostImports;
+//# sourceMappingURL=wasm_host.js.map

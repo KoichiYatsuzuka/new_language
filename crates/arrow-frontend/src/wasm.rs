@@ -14,6 +14,12 @@
 //! ar_free(ptr, bytes.length);
 //! ```
 //! `ar_analyze` の結果は次の `ar_analyze` まで有効。
+//!
+//! # ホスト関数（`arrow_host`）
+//!
+//! import 先を読むため、wasm はホストの関数（`vscode-extension/src/wasm_host.ts` の `hostImports`）を
+//! `arrow_host` モジュールとして要求する。呼ぶのは `src/import_fs.rs` の wasm 版だけ。
+//! ⚠ インスタンスを作るときに渡さないと読み込みに失敗する（`WebAssembly.Instance` の LinkError）。
 
 use std::cell::RefCell;
 
@@ -57,6 +63,30 @@ pub unsafe extern "C" fn ar_analyze(ptr: *const u8, len: usize) -> usize {
     // 不正な UTF-8 が来ても落とさない。エディタのバッファは常に途中状態でありうる。
     let source = String::from_utf8_lossy(bytes);
     let json = crate::analyze::analyze_json(&source, "<buffer>");
+    RESULT.with(|r| {
+        let mut r = r.borrow_mut();
+        *r = json.into_bytes();
+        r.len()
+    })
+}
+
+/// `src[..src_len]` を**ファイル `path` のソース**として解析する（[`ar_analyze`] と同じ結果の形）。
+///
+/// import は CLI と同じ規則で `path` から探す（`analyze::analyze_file_json`）。`path` は
+/// `/D:/a/b.ar` の形（ホストの `toWasmPath`）。
+///
+/// # Safety
+/// `path[..path_len]` / `src[..src_len]` が有効な UTF-8 でなければならない。
+#[no_mangle]
+pub unsafe extern "C" fn ar_analyze_at(
+    path: *const u8,
+    path_len: usize,
+    src: *const u8,
+    src_len: usize,
+) -> usize {
+    let path = String::from_utf8_lossy(std::slice::from_raw_parts(path, path_len)).into_owned();
+    let source = String::from_utf8_lossy(std::slice::from_raw_parts(src, src_len));
+    let json = crate::analyze::analyze_file_json(&source, &path);
     RESULT.with(|r| {
         let mut r = r.borrow_mut();
         *r = json.into_bytes();

@@ -4,8 +4,14 @@
 //
 // Used by scripts/compare_wasm_frontend.ps1. Prints JSON on stdout and nothing else,
 // so the caller can pipe it straight into ConvertFrom-Json.
+//
+// The wasm is driven through the extension's own host (vscode-extension/out/frontend.js and
+// wasm_host.js, compiled by the gate), so the gate runs it exactly as the extension does: the
+// file is analysed *as that file*, and imports are resolved from its directory by the same Rust
+// code as arrow.exe, reading files through the host functions.
 'use strict';
 const fs = require('fs');
+const path = require('path');
 
 const [, , wasmPath, arPath] = process.argv;
 if (!wasmPath || !arPath) {
@@ -13,15 +19,20 @@ if (!wasmPath || !arPath) {
     process.exit(2);
 }
 
-(async () => {
-    const { instance } = await WebAssembly.instantiate(fs.readFileSync(wasmPath), {});
-    const ex = instance.exports;
+const ext = path.join(__dirname, '..', '..', 'vscode-extension', 'out');
+const { loadFrontend, frontendLoadError, analyze } = require(path.join(ext, 'frontend.js'));
+const { setHostCwd } = require(path.join(ext, 'wasm_host.js'));
 
-    const buf = new TextEncoder().encode(fs.readFileSync(arPath, 'utf8'));
-    const ptr = ex.ar_alloc(buf.length);
-    new Uint8Array(ex.memory.buffer, ptr, buf.length).set(buf);
-    ex.ar_analyze(ptr, buf.length);
-    const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), ex.ar_result_len());
-    process.stdout.write(new TextDecoder().decode(out));
-    ex.ar_free(ptr, buf.length);
-})().catch(e => { console.error(String(e)); process.exit(1); });
+if (!loadFrontend(path.dirname(ext), path.resolve(wasmPath))) {
+    console.error(String(frontendLoadError()));
+    process.exit(1);
+}
+const file = path.resolve(arPath);
+// arrow.exe runs with the file's directory as its working directory (compare_wasm_frontend.ps1).
+setHostCwd(path.dirname(file));
+const result = analyze(fs.readFileSync(file, 'utf8'), file);
+if (!result) {
+    console.error('analyze failed');
+    process.exit(1);
+}
+process.stdout.write(JSON.stringify(result));

@@ -84,7 +84,7 @@ class MockTextDocument {
     private readonly _lines: string[];
     readonly version = 1;
     readonly languageId = 'arrow';
-    readonly uri: { fsPath: string; toString(): string };
+    readonly uri: { scheme: string; fsPath: string; toString(): string };
     readonly fileName: string;
     readonly lineCount: number;
 
@@ -96,6 +96,7 @@ class MockTextDocument {
         this.lineCount = this._lines.length;
         const fp = filePath;
         this.uri = {
+            scheme: 'file',
             fsPath: fp,
             toString() { return `file://${fp.replace(/\\/g, '/')}`; },
         };

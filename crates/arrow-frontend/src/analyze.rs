@@ -281,12 +281,26 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
     json!({ "members": items, "bases": bases })
 }
 
-/// 解析結果を JSON 文字列で返す。
+/// 解析結果を JSON 文字列で返す（ファイルに無いソース。import の探索の起点を持たない）。
 ///
 /// `ok` が false のときは構文エラーで AST が得られなかったことを意味する。その場合
 /// `symbols` などは空配列になるので、拡張側は**前回成功時の結果を保持**して使う
 /// （入力途中は常に構文不正なので、そこで情報を全部消すと使い物にならない）。
 pub fn analyze_json(source: &str, filename: &str) -> String {
+    analyze_impl(source, filename, None)
+}
+
+/// ファイル `path` のソースとして解析する（`analyze_json` と同じ JSON）。
+///
+/// CLI（`arrow <path>`・`src/main.rs`）と同じく、`path` をファイル名に、その親を import の探索の起点
+/// （`Parser::new` の `source_dir`）にする。⚠ wasm ではパスは `/D:/a/b.ar` の形
+/// （`src/import_fs.rs` の「wasm 版のパスの形」）。
+pub fn analyze_file_json(source: &str, path: &str) -> String {
+    let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
+    analyze_impl(source, path, source_dir)
+}
+
+fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::PathBuf>) -> String {
     let cols = Utf16Cols::new(source);
 
     // 字句解析はトークン列と**その範囲**の両方を返す。範囲は拡張の着色・語の特定・
@@ -305,7 +319,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         })
         .collect();
 
-    let mut parser = Parser::new(tokens, None);
+    let mut parser = Parser::new(tokens, source_dir);
     let stmts = match parser.parse_program() {
         Ok(stmts) => stmts,
         Err(e) => {

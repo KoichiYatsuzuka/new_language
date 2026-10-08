@@ -13,8 +13,10 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.provideDiagnostics = exports.provideDocumentSymbols = exports.provideDefinition = exports.provideSignatureHelp = exports.provideCompletionItems = exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideInlayHints = exports.provideHover = exports.clearAnalysisCache = exports.forgetDocument = exports.loadPrelude = void 0;
+const path = require("path");
 const vscode = require("vscode");
 const frontend_1 = require("./frontend");
+const wasm_host_1 = require("./wasm_host");
 /**
  * `line:col` → その位置に書かれた型名。`analysis.typeRefs` の逆引き。
  *
@@ -74,6 +76,23 @@ function loadPrelude() {
 }
 exports.loadPrelude = loadPrelude;
 /**
+ * ドキュメント 1 つを wasm で解析する（キャッシュしない）。
+ *
+ * ファイルに保存されたドキュメントは**そのパスを渡す**。import は CLI と同じ規則でそこから探す
+ * （`src/module_path.rs`）。カレントディレクトリ（CLI が `ar_config.json` を探す場所の 1 つ）には、
+ * 利用者が `arrow` を走らせる場所に当たるワークスペースのフォルダを見せる（無ければファイルのディレクトリ）。
+ */
+function analyzeDocument(document) {
+    var _a, _b;
+    if (document.uri.scheme !== 'file') {
+        return (0, frontend_1.analyze)(document.getText());
+    }
+    const fsPath = document.uri.fsPath;
+    const folder = (_b = (_a = vscode.workspace).getWorkspaceFolder) === null || _b === void 0 ? void 0 : _b.call(_a, document.uri);
+    (0, wasm_host_1.setHostCwd)(folder ? folder.uri.fsPath : path.dirname(fsPath));
+    return (0, frontend_1.analyze)(document.getText(), fsPath);
+}
+/**
  * ドキュメントを解析する（同一バージョンならキャッシュを返す）。
  *
  * 構文エラーのときは **`lastGood` を返す**。エディタのバッファは入力中ほぼ常に
@@ -87,7 +106,7 @@ function getAnalysis(document) {
     if (entry && entry.version === document.version) {
         return entry.view;
     }
-    const result = (0, frontend_1.analyze)(document.getText());
+    const result = analyzeDocument(document);
     const lastGood = (_a = entry === null || entry === void 0 ? void 0 : entry.lastGood) !== null && _a !== void 0 ? _a : null;
     if (!result) {
         // wasm 自体が使えない。旧実装へのフォールバックはしない（二重実装を残さないため）。
@@ -799,7 +818,7 @@ function provideDiagnostics(document) {
     // 構文エラー中は型診断を出さない。壊れた AST から出るエラーは的外れになるうえ、
     // 打っている最中ずっと赤線が点滅する。構文エラー自体だけを 1 件出す。
     if (freshParseFailed(document)) {
-        const raw = (0, frontend_1.analyze)(document.getText());
+        const raw = analyzeDocument(document);
         const message = (_a = raw === null || raw === void 0 ? void 0 : raw.parseError) !== null && _a !== void 0 ? _a : 'parse error';
         // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
         // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。

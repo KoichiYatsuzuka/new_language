@@ -73,6 +73,7 @@ class MockTextDocument {
         this.lineCount = this._lines.length;
         const fp = filePath;
         this.uri = {
+            scheme: 'file',
             fsPath: fp,
             toString() { return `file://${fp.replace(/\\/g, '/')}`; },
         };

@@ -14,6 +14,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.stubCount = exports.clearStubs = exports.setStub = exports.builtinsSource = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
 const fs = require("fs");
 const path = require("path");
+const wasm_host_1 = require("./wasm_host");
 let exports_ = null;
 let loadError = null;
 /**
@@ -22,15 +23,18 @@ let loadError = null;
  * `WebAssembly.instantiate` ではなく同期版の `Module` + `Instance` を使う。
  * 425 KB のコンパイルは実測 1〜2 ms で、activate を非同期にする価値が無いため。
  *
+ * wasm には import 先を読むためのホスト関数（`wasm_host.ts`）を渡す。
+ *
  * @param extensionPath 拡張のルートディレクトリ（`context.extensionPath`）
+ * @param wasmPath 読む wasm を直接指定する（`compare_wasm_frontend.ps1` が使う）。省略時は探す
  * @returns 読み込みに成功したか
  */
-function loadFrontend(extensionPath) {
+function loadFrontend(extensionPath, wasmPath) {
     if (exports_)
         return true;
     if (loadError)
         return false;
-    const candidates = [
+    const candidates = wasmPath ? [wasmPath] : [
         // 配布形態: VSIX に同梱されたもの。
         path.join(extensionPath, 'out', 'arrow_frontend.wasm'),
         // 開発時: リポジトリの cargo 出力を直接読む。これがあるおかげで、
@@ -38,14 +42,17 @@ function loadFrontend(extensionPath) {
         path.join(extensionPath, '..', 'crates', 'arrow-frontend', 'target', 'wasm32-unknown-unknown', 'release', 'arrow_frontend.wasm'),
     ];
     try {
-        const wasmPath = candidates.find(p => fs.existsSync(p));
-        if (!wasmPath) {
+        const found = candidates.find(p => fs.existsSync(p));
+        if (!found) {
             loadError = `arrow_frontend.wasm not found (looked in: ${candidates.join(', ')})`;
             return false;
         }
-        const bytes = fs.readFileSync(wasmPath);
+        const bytes = fs.readFileSync(found);
         const module = new WebAssembly.Module(bytes);
-        const instance = new WebAssembly.Instance(module, {});
+        // ⚠ ホスト関数はメモリを**呼ばれるたびに**取り直す（伸びると差し替わる）。
+        const instance = new WebAssembly.Instance(module, {
+            arrow_host: (0, wasm_host_1.hostImports)(() => exports_.memory),
+        });
         exports_ = instance.exports;
         return true;
     }
@@ -73,29 +80,31 @@ exports.frontendLoadError = frontendLoadError;
  *    TypedArray は wasm を呼ぶ**たびに作り直す**こと。使い回すと、大きめの
  *    ファイルで確保が伸びた瞬間に空の結果や例外になる。
  *
+ * @param fsPath ドキュメントのファイルのパス（ホストの形）。import はここから CLI と同じ規則で
+ *               探す。保存されていないドキュメントなどファイルが無いときは省略する
  * @returns 解析結果。wasm が使えない場合は null。
  */
-function analyze(source) {
+function analyze(source, fsPath) {
     const ex = exports_;
     if (!ex)
         return null;
-    const bytes = new TextEncoder().encode(source);
-    const ptr = ex.ar_alloc(bytes.length);
-    if (ptr === 0 && bytes.length > 0)
-        return null;
     try {
-        // alloc 後に buffer を取り直す（拡張されている可能性がある）。
-        new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
-        ex.ar_analyze(ptr, bytes.length);
-        // analyze 後にも取り直す（解析中に確保が伸びている）。
+        const run = (sp, sl) => {
+            if (fsPath === undefined) {
+                ex.ar_analyze(sp, sl);
+            }
+            else {
+                withUtf8(ex, (0, wasm_host_1.toWasmPath)(fsPath), (pp, pl) => ex.ar_analyze_at(pp, pl, sp, sl));
+            }
+        };
+        if (withUtf8(ex, source, (sp, sl) => { run(sp, sl); return true; }) === null)
+            return null;
+        // analyze 後に buffer を取り直す（解析中に確保が伸びている）。
         const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), ex.ar_result_len());
         return JSON.parse(new TextDecoder().decode(out));
     }
     catch {
         return null;
-    }
-    finally {
-        ex.ar_free(ptr, bytes.length);
     }
 }
 exports.analyze = analyze;

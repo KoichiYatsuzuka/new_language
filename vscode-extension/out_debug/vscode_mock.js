@@ -58,6 +58,7 @@ class Uri {
     static parse(v) { return new Uri(v); }
     constructor(_path) {
         this._path = _path;
+        this.scheme = 'file';
     }
     get fsPath() { return this._path; }
     toString() { return `file://${this._path.replace(/\\/g, '/')}`; }
@@ -283,6 +284,8 @@ exports.workspace = {
         };
     },
     textDocuments: [],
+    // フォルダを開いていない VS Code と同じ（解析はファイルのディレクトリをカレントディレクトリとして見せる）。
+    getWorkspaceFolder(_uri) { return undefined; },
     onDidOpenTextDocument() { return { dispose() { } }; },
     onDidChangeTextDocument() { return { dispose() { } }; },
     onDidCloseTextDocument() { return { dispose() { } }; },

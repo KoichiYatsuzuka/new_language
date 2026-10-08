@@ -56,6 +56,18 @@ $fePassed = ($feTest | Select-String -Pattern 'test result: ok\. (\d+) passed' -
     Measure-Object -Sum).Sum
 Write-Host "frontend tests ok  ($fePassed passed)" -ForegroundColor Green
 
+# --- the extension's host (dump_diags.js drives the wasm through it) ---------
+# dump_diags.js loads vscode-extension/out/frontend.js + wasm_host.js, so the gate runs the wasm
+# with the SAME host functions as the extension (the file reads behind imports). Compile it on
+# every run: a stale out/ would test an old host.
+Write-Host 'compiling vscode-extension (tsc) ...' -ForegroundColor Cyan
+$tsc = & npm --prefix (Join-Path $repo 'vscode-extension') run compile 2>&1
+if ($LASTEXITCODE -ne 0) {
+    $tsc | ForEach-Object { Write-Host $_ }
+    Write-Host 'EXTENSION-COMPILE: FAILED' -ForegroundColor Red
+    exit 1
+}
+
 # --- locate a Node that understands modern wasm opcodes -----------------------
 # The node on PATH may be ancient; VS Code ships a recent one and is always present
 # on a machine that runs this extension.

@@ -11,8 +11,10 @@
  * いた（`protocol` は宣言として認識すらされていなかった）。その構造的な原因を消すのが目的。
  */
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { analyze, builtinsSource, isFrontendReady, type AnalysisResult, type WasmDiagnostic } from './frontend';
+import { setHostCwd } from './wasm_host';
 
 // ===== 解析結果の型（frontend が返す JSON の形） =====
 
@@ -171,6 +173,23 @@ export function loadPrelude(): boolean {
 }
 
 /**
+ * ドキュメント 1 つを wasm で解析する（キャッシュしない）。
+ *
+ * ファイルに保存されたドキュメントは**そのパスを渡す**。import は CLI と同じ規則でそこから探す
+ * （`src/module_path.rs`）。カレントディレクトリ（CLI が `ar_config.json` を探す場所の 1 つ）には、
+ * 利用者が `arrow` を走らせる場所に当たるワークスペースのフォルダを見せる（無ければファイルのディレクトリ）。
+ */
+function analyzeDocument(document: vscode.TextDocument): Analysis | null {
+    if (document.uri.scheme !== 'file') {
+        return analyze(document.getText()) as Analysis | null;
+    }
+    const fsPath = document.uri.fsPath;
+    const folder = vscode.workspace.getWorkspaceFolder?.(document.uri);
+    setHostCwd(folder ? folder.uri.fsPath : path.dirname(fsPath));
+    return analyze(document.getText(), fsPath) as Analysis | null;
+}
+
+/**
  * ドキュメントを解析する（同一バージョンならキャッシュを返す）。
  *
  * 構文エラーのときは **`lastGood` を返す**。エディタのバッファは入力中ほぼ常に
@@ -184,7 +203,7 @@ function getAnalysis(document: vscode.TextDocument): Analysis | null {
         return entry.view;
     }
 
-    const result = analyze(document.getText()) as Analysis | null;
+    const result = analyzeDocument(document);
     const lastGood = entry?.lastGood ?? null;
 
     if (!result) {
@@ -931,7 +950,7 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
     // 構文エラー中は型診断を出さない。壊れた AST から出るエラーは的外れになるうえ、
     // 打っている最中ずっと赤線が点滅する。構文エラー自体だけを 1 件出す。
     if (freshParseFailed(document)) {
-        const raw = analyze(document.getText()) as Analysis | null;
+        const raw = analyzeDocument(document);
         const message = raw?.parseError ?? 'parse error';
         // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
         // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。

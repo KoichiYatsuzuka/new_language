@@ -188,14 +188,10 @@ impl Parser {
                 }
             }
         }
-        if let Some(pythonpath) = crate::import_fs::env_var("PYTHONPATH") {
-            for p in std::env::split_paths(&pythonpath) {
-                dirs.push(p);
-            }
-        }
+        dirs.extend(crate::import_fs::env_paths("PYTHONPATH"));
         // Python インタープリタの sys.prefix から site-packages を推測
-        if let Some(prefix) = crate::import_fs::env_var("PYTHONHOME") {
-            dirs.push(PathBuf::from(&prefix).join("Lib").join("site-packages"));
+        if let Some(prefix) = crate::import_fs::env_path("PYTHONHOME") {
+            dirs.push(prefix.join("Lib").join("site-packages"));
         }
         // Python プロセスから標準ライブラリと site-packages のパスを取得して追加
         for p in crate::import_fs::python_lib_dirs() {

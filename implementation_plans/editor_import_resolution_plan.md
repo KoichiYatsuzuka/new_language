@@ -170,3 +170,27 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
   `compare_python_impl` clean・`compare_wasm_frontend` INVENTED 0 / parse mismatch 0
 - ⚠ `bench_ab_native.ar` は `scan_examples` / `force_gate` でタイムアウトするが、**基準の exe でも同じ**
   （同梱の `bench_ab_native_module.arc` が `.ar` より古く、解釈実行に落ちる。以前から）
+
+### 3-1 実装
+
+- `src/import_fs.rs` を CLI 版（`std::fs` / `std::env`）と **wasm 版**（ホストの関数を呼ぶ）に分けた。
+  ホストの関数（`arrow_host` モジュール）は `vscode-extension/src/wasm_host.ts` の `hostImports`:
+  `host_stat` / `host_read` / `host_read_dir` / `host_realpath` / `host_env_path` / `host_cwd` /
+  `host_python_lib_dirs` / `host_take`
+  - 値を返す関数は結果を保留に置いて長さを返し、wasm が領域を確保してから `host_take` で写させる
+    （import の中から wasm の関数を呼び返さない）
+  - **パスの形**: wasm の `std::path` は Unix の規則なので、Windows のパスは境界で `/D:/a/b` の形にする
+    （`toWasmPath` / `toHostPath`）
+  - 環境変数は**パスとして**読む（`env_path` / `env_paths`）。`PYTHONPATH` を wasm 側で `split_paths` すると
+    `C:` の `:` で切れるため。CLI の挙動は同じ
+  - Python の場所は、ホストが CLI と同じ問い合わせ（`sysconfig`）を 1 度だけする
+  - カレントディレクトリ（CLI が `ar_config.json` を探す場所の 1 つ）には、ワークスペースのフォルダ
+    （無ければドキュメントのディレクトリ）を見せる
+- 解析の入口 `ar_analyze_at(path, src)`（`analyze::analyze_file_json`）: CLI と同じく、パスをファイル名に・
+  その親を import の探索の起点にする。拡張はファイルに保存されたドキュメントのパスを渡す
+- `compare_wasm_frontend` の wasm 側（`dump_diags.js`）を**拡張と同じホスト**（`vscode-extension/out/frontend.js`）
+  経由にし、ファイルのパスつきで解析する（ゲートの前段で拡張の TypeScript をコンパイルする）
+- この時点では拡張はまだ import 先を読まない（`imports_editor.rs`）ので、wasm はホストの関数を要求しない
+  （呼び出しが最適化で消える）。使われるのは 3-2 から
+- ゲート: `compare_import_paths -A` 13/13・`compare_outputs -A` 402/402・`force_gate` 0・`compare_python_impl` clean・
+  `compare_wasm_frontend` INVENTED 0 / parse mismatch 0（2-2 と同じ結果）
