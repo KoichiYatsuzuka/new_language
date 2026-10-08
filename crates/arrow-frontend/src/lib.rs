@@ -46,6 +46,10 @@ pub mod stub_manifest;
 // import の探索規則とモジュールの同一性（相対 import）。パーサと実行時が共有する。
 #[path = "../../../src/module_path.rs"]
 pub mod module_path;
+// import の処理が外界（ファイル・環境変数・Python の場所）に触る唯一の窓口
+// （editor_import_resolution_plan.md 2-1）。`module_path` が使う。
+#[path = "../../../src/import_fs.rs"]
+pub mod import_fs;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]

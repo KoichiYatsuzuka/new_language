@@ -77,7 +77,7 @@ pub(crate) fn find_ancestor_config(start: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut walk: Option<&Path> = Some(start);
     while let Some(d) = walk {
         let cfg_path = d.join("ar_config.json");
-        if cfg_path.exists() {
+        if crate::import_fs::exists(&cfg_path) {
             return Some((cfg_path, d.to_path_buf()));
         }
         walk = d.parent();
@@ -94,7 +94,7 @@ pub(crate) fn find_ancestor_config(start: &Path) -> Option<(PathBuf, PathBuf)> {
 /// 「設定に空文字を書いたら設定ファイルの場所が検索対象になる」という意味不明な挙動になる
 /// （#72 以前の手書き実装はこちらの挙動で、そちらが妥当だったので揃えた）。
 pub(crate) fn read_python_search_paths(cfg_path: &Path, base: &Path) -> Vec<PathBuf> {
-    let Ok(text) = std::fs::read_to_string(cfg_path) else {
+    let Ok(text) = crate::import_fs::read_to_string(cfg_path) else {
         return Vec::new();
     };
     read_python_search_paths_from_str(&text, base)

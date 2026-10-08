@@ -57,7 +57,7 @@ impl Parser {
         // （P5）が働かない。
         // ⚠⚠ **ヘッダが読めなければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は `.ok()` で
         //    黙って空の body（型なし）にしていた。未解決の import は黙って型情報を落とさない。
-        let raw = std::fs::read(&resolved).map_err(|e| {
+        let raw = crate::import_fs::read(&resolved).map_err(|e| {
             format!("import[{lang}]: cannot read header '{file_path}' ({e}); the header provides the types of this import")
         })?;
         let body = Some(raw)

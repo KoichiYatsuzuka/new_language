@@ -14,7 +14,7 @@ use super::*;
 /// Parse a .NET assembly binary into intermediate tables.
 /// Shared by `load_cs_assembly` and `generate_cs_stub_text`.
 pub(crate) fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
-    let data = std::fs::read(path)
+    let data = crate::import_fs::read(path)
         .map_err(|e| format!("CsImport: cannot read '{}': {e}", path.display()))?;
 
     let (meta_off, _sections) = find_metadata_root(&data)?;

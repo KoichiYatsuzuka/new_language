@@ -68,9 +68,9 @@ pub fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
         return normalize(p);
     }
-    match std::env::current_dir() {
-        Ok(cwd) => normalize(&cwd.join(p)),
-        Err(_) => normalize(p),
+    match crate::import_fs::current_dir() {
+        Some(cwd) => normalize(&cwd.join(p)),
+        None => normalize(p),
     }
 }
 

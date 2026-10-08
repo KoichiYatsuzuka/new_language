@@ -5,7 +5,6 @@ use {
     crate::ast::Stmt, crate::lexer, crate::module_path,
     std::path::{Path, PathBuf},
 };
-use super::*;
 
 impl Parser {
     /// `import[cs-dll]` / `import[cs-proc]` — .NET アセンブリから型スタブを生成する。
@@ -43,7 +42,7 @@ impl Parser {
 
         let mut dll_path: Option<PathBuf> = None;
         for c in &candidates {
-            if c.exists() {
+            if crate::import_fs::exists(c) {
                 dll_path = Some(c.clone());
                 break;
             }
@@ -54,7 +53,7 @@ impl Parser {
             if let Some(extra) = self.load_cs_lib_paths() {
                 for dir in extra {
                     let p = dir.join(&dll_name);
-                    if p.exists() {
+                    if crate::import_fs::exists(&p) {
                         dll_path = Some(p);
                         break;
                     }
@@ -110,7 +109,7 @@ impl Parser {
         // ⚠⚠ **`.ars` が無い・読めない・構文解析できなければエラー**（`editor_import_resolution_plan.md` 1-2）。
         //    以前は黙って空の body（型なし）にしていた。`.ars` が js-proc の型の唯一の出所。
         let stub = base.join(&sub_path);
-        if !stub.exists() {
+        if !crate::import_fs::exists(&stub) {
             return Err(format!(
                 "import[js-proc] '{}': cannot find the type stub '{}'; write the module's declarations there \
                  (see examples/interop for the .ars format)",
@@ -120,7 +119,7 @@ impl Parser {
         }
         let candidates = [stub];
         let body = candidates.iter().find_map(|p| -> Option<Result<Vec<Stmt>, String>> {
-            let src = match std::fs::read_to_string(p) {
+            let src = match crate::import_fs::read_to_string(p) {
                 Ok(s) => s,
                 Err(e) => return Some(Err(format!("import[js-proc]: cannot read '{}': {e}", p.display()))),
             };
@@ -155,8 +154,8 @@ impl Parser {
         let mut dir = self.root_dir.clone();
         loop {
             let cfg = dir.join("ar_config.json");
-            if cfg.exists() {
-                if let Ok(text) = std::fs::read_to_string(&cfg) {
+            if crate::import_fs::exists(&cfg) {
+                if let Ok(text) = crate::import_fs::read_to_string(&cfg) {
                     return crate::ar_config::read_cs_lib_paths_from_str(&text, &dir);
                 }
             }
@@ -189,17 +188,17 @@ impl Parser {
                 }
             }
         }
-        if let Ok(pythonpath) = std::env::var("PYTHONPATH") {
+        if let Some(pythonpath) = crate::import_fs::env_var("PYTHONPATH") {
             for p in std::env::split_paths(&pythonpath) {
                 dirs.push(p);
             }
         }
         // Python インタープリタの sys.prefix から site-packages を推測
-        if let Ok(prefix) = std::env::var("PYTHONHOME") {
+        if let Some(prefix) = crate::import_fs::env_var("PYTHONHOME") {
             dirs.push(PathBuf::from(&prefix).join("Lib").join("site-packages"));
         }
         // Python プロセスから標準ライブラリと site-packages のパスを取得して追加
-        for p in python_lib_dirs() {
+        for p in crate::import_fs::python_lib_dirs() {
             if !dirs.contains(p) {
                 dirs.push(p.clone());
             }

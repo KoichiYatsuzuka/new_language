@@ -15,46 +15,9 @@
 /// ⚠ Python が見つからない環境では `python_lib_dirs()` が空 ⇒ 常に `false`。
 ///   そのときは stdlib が検索パスにも入らないので、そもそもここに来ない。
 pub(crate) fn is_python_stdlib_path(path: &std::path::Path) -> bool {
-    python_lib_dirs()
+    crate::import_fs::python_lib_dirs()
         .first()
         .is_some_and(|stdlib| path.starts_with(stdlib))
-}
-
-/// Python プロセスを実行して標準ライブラリと site-packages のパスを取得する。
-/// OnceLock でキャッシュするので初回のみサブプロセスが起動する。
-fn python_lib_dirs() -> &'static Vec<std::path::PathBuf> {
-    use std::sync::OnceLock;
-    static DIRS: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
-    DIRS.get_or_init(|| {
-        let script = concat!(
-            "import sysconfig; ",
-            "paths = [sysconfig.get_path('stdlib'), sysconfig.get_path('purelib')]; ",
-            "print('\\n'.join(p for p in paths if p))"
-        );
-        #[cfg(windows)]
-        let candidates = ["py", "python", "python3"];
-        #[cfg(not(windows))]
-        let candidates = ["python3", "python"];
-        for exe in candidates {
-            let Ok(out) = std::process::Command::new(exe)
-                .args(["-c", script])
-                .output()
-            else { continue };
-            if !out.status.success() { continue; }
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                let dirs: Vec<std::path::PathBuf> = s
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .collect();
-                if !dirs.is_empty() {
-                    return dirs;
-                }
-            }
-        }
-        vec![]
-    })
 }
 
 // ─── Python 型スタブ抽出 ───────────────────────────────────────────────────────

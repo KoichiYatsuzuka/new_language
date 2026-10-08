@@ -30,9 +30,9 @@ impl Parser {
     pub(crate) fn py_module_exists(&self, from_dir: &Path, level: u32, module: &[String]) -> bool {
         let module_base: PathBuf = module.iter().collect();
         self.python_import_dirs(from_dir, level).iter().any(|d| {
-            d.join(module_base.with_extension("py")).exists()
-                || d.join(module_base.with_extension("pyi")).exists()
-                || d.join(&module_base).is_dir()
+            crate::import_fs::exists(&d.join(module_base.with_extension("py")))
+                || crate::import_fs::exists(&d.join(module_base.with_extension("pyi")))
+                || crate::import_fs::is_dir(&d.join(&module_base))
         })
     }
 
@@ -58,10 +58,10 @@ impl Parser {
             .iter()
             .enumerate()
             .flat_map(|(i, d)| [(i, d.join(&rel_py)), (i, d.join(&rel_init))])
-            .find(|(_, p)| p.exists());
+            .find(|(_, p)| crate::import_fs::exists(p));
         let Some((found_at, found_path)) = found else {
             // ⚠ `__init__.py` の無いディレクトリは**名前空間パッケージ**（CPython と同じ）。
-            if let Some((i, d)) = search_dirs.iter().enumerate().find(|(_, d)| d.join(&module_base).is_dir()) {
+            if let Some((i, d)) = search_dirs.iter().enumerate().find(|(_, d)| crate::import_fs::is_dir(&d.join(&module_base))) {
                 let mut pkg = self.load_py_package(&d.join(&module_base), module, i == 0)?;
                 pkg.root = Some(d.clone());
                 return Ok(pkg);
@@ -99,7 +99,7 @@ impl Parser {
         local: bool,
     ) -> Result<LoadedModule, String> {
         let init = dir.join("__init__.py");
-        if init.exists() {
+        if crate::import_fs::exists(&init) {
             return self.load_found_py(&init, written, local);
         }
         Ok(LoadedModule {
@@ -151,7 +151,7 @@ impl Parser {
             return Err(format!("circular import detected: '{}'", shown_path.display()));
         }
 
-        let source = std::fs::read_to_string(&shown_path)
+        let source = crate::import_fs::read_to_string(&shown_path)
             .map_err(|e| format!("cannot read '{}': {e}", shown_path.display()))?;
 
         self.loading.insert(abs_path.clone());
@@ -272,7 +272,7 @@ impl Parser {
         };
 
         for (abs_path, is_pyi) in candidates {
-            if !abs_path.exists() { continue; }
+            if !crate::import_fs::exists(&abs_path) { continue; }
             return self.load_py_type_body(module, &module_path::normalize(&abs_path), is_pyi);
         }
         // ⚠⚠ **型の出所が無ければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は黙って空の body
@@ -294,7 +294,7 @@ impl Parser {
         // ⚠ `__init__` の無いディレクトリは**名前空間パッケージ**（CPython・PEP 420）。解決できている
         //   （メンバーはサブモジュールだけ）ので誤りにしない。`import[py-int] pkg.mod` はパッケージの
         //   連鎖で `pkg` をここへ通す。
-        if search_dirs.iter().any(|d| d.join(&module_base).is_dir()) {
+        if search_dirs.iter().any(|d| crate::import_fs::is_dir(&d.join(&module_base))) {
             return Ok(vec![]);
         }
         // ⚠ 同梱スタブは「どこにも無い外部のモジュール」の代わり。相対の書き方では引かない。
@@ -333,7 +333,7 @@ impl Parser {
         if self.loading.contains(abs_path) {
             return Ok(vec![]);
         }
-        let source = std::fs::read_to_string(abs_path).map_err(|_| {
+        let source = crate::import_fs::read_to_string(abs_path).map_err(|_| {
             format!("cannot read interface file for module '{}'", module.join("."))
         })?;
         self.build_py_type_body(module, abs_path, &source, is_pyi, false)

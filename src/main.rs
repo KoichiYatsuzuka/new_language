@@ -21,6 +21,9 @@ mod meta_expand;
 mod lexer;
 // import の探索規則とモジュールの同一性（相対 import・2026-10-02）。パーサと実行時が共有する。
 mod module_path;
+// import の処理が外界（ファイル・環境変数・Python の場所）に触る唯一の窓口。拡張（wasm）では
+// ホストに頼む実装に差し替える（editor_import_resolution_plan.md 2-1）。
+mod import_fs;
 mod parser;
 #[cfg(feature = "prof")]
 mod prof;

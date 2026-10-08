@@ -81,7 +81,7 @@ pub(crate) fn simplify_member_id(member_id: &str) -> Option<String> {
 /// of simplified member key → summary text.
 /// Returns an empty map if the file does not exist or cannot be read.
 pub(crate) fn parse_xml_docs(xml_path: &Path) -> HashMap<String, String> {
-    let content = match std::fs::read_to_string(xml_path) {
+    let content = match crate::import_fs::read_to_string(xml_path) {
         Ok(c)  => c,
         Err(_) => return HashMap::new(),
     };

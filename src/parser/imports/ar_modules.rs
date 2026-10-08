@@ -133,8 +133,8 @@ impl Parser {
         let module_base: PathBuf = module.iter().collect();
         let kind = ArKind::of(lang);
         self.module_search_dirs(level).iter().any(|dir| {
-            kind.candidates(&module_base).iter().any(|(rel, _)| dir.join(rel).exists())
-                || dir.join(&module_base).is_dir()
+            kind.candidates(&module_base).iter().any(|(rel, _)| crate::import_fs::exists(&dir.join(rel)))
+                || crate::import_fs::is_dir(&dir.join(&module_base))
         })
     }
 
@@ -153,11 +153,11 @@ impl Parser {
             })
             .collect();
 
-        let found = candidates.iter().find(|(_, p, _)| p.exists()).cloned();
+        let found = candidates.iter().find(|(_, p, _)| crate::import_fs::exists(p)).cloned();
         let Some((root, found, is_compiled)) = found else {
             // ⚠ `__init__` の無いディレクトリは**名前空間パッケージ**（CPython と同じ）。
             //   `import pkg`（pkg/ にファイルが 1 つも無くても）は空のモジュールになる。
-            if let Some(dir) = search_dirs.iter().find(|d| d.join(&module_base).is_dir()) {
+            if let Some(dir) = search_dirs.iter().find(|d| crate::import_fs::is_dir(&d.join(&module_base))) {
                 let mut loaded = self.load_ar_package(kind.lang(), &dir.join(&module_base), module)?;
                 loaded.root = Some(dir.clone());
                 return Ok(loaded);
@@ -190,7 +190,7 @@ impl Parser {
             .package_inits()
             .into_iter()
             .map(|(rel, compiled)| (dir.join(rel), compiled))
-            .find(|(p, _)| p.exists());
+            .find(|(p, _)| crate::import_fs::exists(p));
         match init {
             Some((found, compiled)) => self.load_found_ar(kind, found, compiled, written),
             None => Ok(LoadedModule {
@@ -224,7 +224,7 @@ impl Parser {
             let src_sibling = found.with_extension("ar");
             if let (Ok((_, embedded)), Ok(on_disk)) = (
                 crate::partial_compiler::read_tlc_source(&found),
-                std::fs::read_to_string(&src_sibling),
+                crate::import_fs::read_to_string(&src_sibling),
             ) {
                 if embedded != on_disk {
                     eprintln!(
@@ -253,7 +253,7 @@ impl Parser {
                 .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
             (src, format!("<compiled:{mod_name}>"))
         } else {
-            let src = std::fs::read_to_string(&shown_path)
+            let src = crate::import_fs::read_to_string(&shown_path)
                 .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
             (src, shown_path.to_string_lossy().into_owned())
         };

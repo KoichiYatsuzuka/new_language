@@ -287,7 +287,7 @@ impl Parser {
             let dir = module_path::import_base(file_dir, &self.root_dir, level);
             let has_init = ["__init__.ar", "__init__.arc", "__init__.py", "__init__.pyi"]
                 .iter()
-                .any(|f| dir.join(f).exists());
+                .any(|f| crate::import_fs::exists(&dir.join(f)));
             if !has_init {
                 let (name, _) = &rest[0];
                 return Err(format!(

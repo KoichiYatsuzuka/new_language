@@ -256,7 +256,7 @@ impl Parser {
         // Write .ars stub so the VS Code extension can provide hover/completion
         let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
         let stub_path = self.source_dir.join(format!("{module_name}.ars"));
-        let _ = std::fs::write(&stub_path, &stub_text);
+        let _ = crate::import_fs::write(&stub_path, &stub_text);
 
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)
