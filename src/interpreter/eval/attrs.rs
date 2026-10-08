@@ -110,6 +110,56 @@ impl Interpreter {
         }
     }
 
+    // ── ディスクリプタのプロトコル（python_builtins_plan.md のタスク 1-12）────────────────────────
+    //
+    // CPython の `object.__getattribute__` / `object.__setattr__` と同じ順:
+    //   読み: ① クラス側の**データディスクリプタ**（`__get__` と `__set__` / `__delete__` を持つ）→ `__get__`
+    //         ② インスタンスのフィールド ③ クラス側の非データディスクリプタ（`__get__` だけ）→ `__get__`
+    //         ④ クラス側の値そのもの ⑤ メソッド（束縛メソッド）
+    //   代入: クラス側のデータディスクリプタ → `__set__`。それ以外は従来どおり（フィールド・`static mut`）
+    //   クラスから読む（`C.x`）: ディスクリプタなら `__get__(None, C)`（property は自分自身を返す）
+    // 「クラス側の値」は `static mut`（Python のクラス属性）とクラス定数。`static mut` は Python のサブクラスへ
+    // 共有セルごと引き継がれるので、基底クラスの property もサブクラスのインスタンスから当たる。
+    // ⚠ メソッド呼び出し（`obj.x(..)`）はメソッドの無い名前を属性として読んで呼ぶ（タスク 1-11）ので、ここを通る。
+    // ⚠ VM の `GetAttr` のキャッシュはフィールドにしか張られないので、ディスクリプタの読みは毎回ここへ来る。
+
+    /// クラス側の値（`static mut` / クラス定数）。
+    fn class_level_value(cls: &crate::interpreter::ClassValue, attr: &str) -> Option<Value> {
+        if let Some(cell) = cls.static_vars.get(attr) {
+            return Some(cell.borrow().clone());
+        }
+        cls.class_vars.get(attr).cloned()
+    }
+
+    /// 値がディスクリプタなら `Some(データディスクリプタか)`。`__get__` を持つインスタンスがディスクリプタ、
+    /// さらに `__set__` か `__delete__` を持てばデータディスクリプタ（CPython の `PyDescr_IsData`）。
+    pub(crate) fn descriptor_kind(v: &Value) -> Option<bool> {
+        let Value::Instance(i) = v else { return None };
+        let inst = i.borrow();
+        let methods = &inst.class.methods;
+        methods
+            .contains_key("__get__")
+            .then(|| methods.contains_key("__set__") || methods.contains_key("__delete__"))
+    }
+
+    /// `desc.__get__(instance, owner)`（クラスから読んだときの `instance` は `None`）。
+    /// ⚠ 引数は写さずに渡す（`let` の仮引数でも受け手の書き換えが元へ届くように。`obj.m()` の `self` と同じ）。
+    fn descriptor_get(&mut self, desc: Value, instance: Value, owner: Value) -> Result<Value, String> {
+        self.eval_method_call_full(desc, "__get__", vec![(None, instance, false), (None, owner, false)], None)
+    }
+
+    /// `desc.__set__(instance, value)`。データディスクリプタが `__set__` を持たない（`__delete__` だけ）なら
+    /// CPython と同じ `AttributeError: __set__`。
+    fn descriptor_set(&mut self, desc: Value, instance: Value, value: Value) -> Result<(), String> {
+        let has_set =
+            matches!(&desc, Value::Instance(d) if d.borrow().class.methods.contains_key("__set__"));
+        if !has_set {
+            return Err("AttributeError: __set__".to_string());
+        }
+        self.eval_method_call_full(desc, "__set__", vec![(None, instance, false), (None, value, false)], None)
+            .map(|_| ())
+    }
+
     /// Resolve an attribute on any `Value`.
     /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
     ///
@@ -127,6 +177,14 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let cls = inst.class.clone();
+                // ① クラス側のデータディスクリプタ（property など）はフィールドより先（タスク 1-12）。
+                if let Some(desc) = Self::class_level_value(&cls, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        drop(inst);
+                        self.check_member_access(&cls, attr, attr)?;
+                        return self.descriptor_get(desc, obj.clone(), Value::Class(cls));
+                    }
+                }
                 if let Some(&idx) = cls.field_index.get(attr) {
                     if let Some(v) = inst.field_value(idx) {
                         // アクセスキーの決定: trait 由来フィールドは修飾名で検索する
@@ -176,12 +234,20 @@ impl Interpreter {
                 if let Some(v) = Self::lookup_class_var(&cls, attr) {
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
+                    // ③ 非データディスクリプタ（`__get__` だけ）はフィールドの後（タスク 1-12）。
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, obj.clone(), Value::Class(cls));
+                    }
                     return Ok(v);
                 }
                 if let Some(cell) = cls.static_vars.get(attr).cloned() {
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
-                    return Ok(cell.borrow().clone());
+                    let v = cell.borrow().clone();
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, obj.clone(), Value::Class(cls));
+                    }
+                    return Ok(v);
                 }
                 if cls.methods.contains_key(attr) {
                     if cls.static_method_names.contains(attr) {
@@ -229,11 +295,19 @@ impl Interpreter {
                 if matches!(attr, "name" | "__name__" | "__qualname__") {
                     return Ok(Value::str(cls.name.as_str()));
                 }
+                // クラスから読むディスクリプタは `__get__(None, C)`（property は自分自身を返す・タスク 1-12）。
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, Value::None, obj.clone());
+                    }
                     return Ok(v);
                 }
                 if let Some(cell) = cls.static_vars.get(attr) {
-                    return Ok(cell.borrow().clone());
+                    let v = cell.borrow().clone();
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, Value::None, obj.clone());
+                    }
+                    return Ok(v);
                 }
                 if let Some(overloads) = cls.methods.get(attr) {
                     return Ok(if overloads.len() == 1 {
@@ -410,6 +484,13 @@ impl Interpreter {
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
+                // クラス側のデータディスクリプタは `__set__`（`attr_assign_evaled` と同じ・タスク 1-12）。
+                if let Some(desc) = Self::class_level_value(&inst_class, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        self.check_member_access(&inst_class, attr, attr)?;
+                        return self.descriptor_set(desc, Value::Instance(inst_rc), val);
+                    }
+                }
                 if Self::lookup_class_var(&inst_class, attr).is_some() {
                     return Err(format!(
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"
@@ -466,6 +547,14 @@ impl Interpreter {
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
+                // クラス側のデータディスクリプタへの代入は `__set__(obj, v)`（property の setter・タスク 1-12）。
+                // `static mut` の書き換え・フィールドより先（CPython の `object.__setattr__` と同じ）。
+                if let Some(desc) = Self::class_level_value(&inst_class, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        self.check_member_access(&inst_class, attr, attr)?;
+                        return self.descriptor_set(desc, Value::Instance(inst_rc), rhs);
+                    }
+                }
                 if Self::lookup_class_var(&inst_class, attr).is_some() {
                     return Err(format!(
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"

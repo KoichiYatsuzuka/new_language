@@ -415,7 +415,12 @@ impl TypeChecker {
             // クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()` / `self.Inner()`・フェーズ10 10-18）。
             // 実行時もメソッドが無いときだけクラス変数のクラスを呼ぶ（`Interpreter::class_var_class`）。
             if !self.collect_class_method_sigs(cls_name).contains_key(method_name.as_str()) {
-                match self.declared_field_type_pub(cls_name, method_name) {
+                // クラス側のディスクリプタは `__get__` の戻り値を呼ぶ（タスク 1-12）。
+                let member_ty = match self.class_descriptor(cls_name, method_name) {
+                    Some(d) => Some(d.read),
+                    None => self.declared_field_type_pub(cls_name, method_name),
+                };
+                match member_ty {
                     Some(InferredType::TypeValOf(inner)) => {
                         if let InferredType::NamedInstance(c) = *inner {
                             return InferredType::NamedInstance(c);

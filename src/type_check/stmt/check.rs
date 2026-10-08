@@ -1435,7 +1435,28 @@ impl TypeChecker {
         //    検査が素通りしていた（起票されたバグ報告が trait を挙げていたのはこの形）。
         //    ⚠ `collect_class_field_details` も `class_field_details` しか見ないので
         //      これだけでは足りない。基底 trait のテーブルを明示的に引く。
-        let expected = match target_ty {
+        // クラス側のディスクリプタ（タスク 1-12）。インスタンス経由の代入はデータディスクリプタなら
+        // `__set__(obj, v)` の `v`、クラス経由（`C.x = d`）と非データディスクリプタはメンバーそのものを置き換える。
+        // ⚠ `target_ty`（`infer_attr` の戻り値）は読んだ値の型（`__get__` の戻り値）なので、そのままでは使えない。
+        let descriptor_expected = self.class_descriptor(&class_name, attr).map(|d| {
+            let via_class = match object.as_ref() {
+                Expr::Ident { name, .. } => match self.lookup(name) {
+                    Some(info) => matches!(info.ty, InferredType::TypeValOf(_)),
+                    None => true, // 変数として引けないクラス名（`receiver_class` の doc）
+                },
+                _ => false,
+            };
+            if d.is_data && !via_class {
+                d.write.unwrap_or(InferredType::Unresolved)
+            } else {
+                d.declared
+            }
+        });
+        // `__set__` の `value` に型が無い（`Any`）なら検査しない（下の宣言型へ落とすとディスクリプタのクラスと比べてしまう）。
+        if matches!(descriptor_expected, Some(InferredType::Unresolved | InferredType::Any)) {
+            return;
+        }
+        let expected = match descriptor_expected.unwrap_or(target_ty) {
             InferredType::Unresolved | InferredType::Any => {
                 // ⚠ ここも**置換表を通す**（A-2）。`declared_field_type` はレジストリから
                 //   置換前の型を返すので、通さないと型変数（`T`）がそのまま比較されて

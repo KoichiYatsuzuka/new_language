@@ -614,6 +614,36 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("class Box:\n    let n: int\nlet b = Box(3)\nlet v = b.n(1)\n"));
     }
 
+    /// クラス側のディスクリプタ（タスク 1-12）: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は
+    /// `__set__` の値の型、クラス経由の代入（`C.x = d`）はメンバーの宣言型（ディスクリプタのクラス）と照合する。
+    /// `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにしない。
+    #[test]
+    fn class_level_descriptors_are_typed_by_get_and_set() {
+        let classes = concat!(
+            "class F:\n",
+            "    fn __get__(self, obj: Any, owner: Any = None) -> float:\n",
+            "        return 1.5\n",
+            "    fn __set__(self, mut obj: Any, value: float) -> None:\n",
+            "        pass\n",
+            "class G:\n",
+            "    fn __get__(self, obj: Any, owner: Any = None) -> str:\n",
+            "        return \"g\"\n",
+            "class T:\n",
+            "    mut c: float\n",
+            "    static mut f: F = F()\n",
+            "    const k: F = F()\n",
+            "    const g: G = G()\n",
+            "mut t = T(0.0)\n",
+        );
+        assert!(ok(&format!("{classes}let x: float = t.f\nlet y: str = t.g\nlet z: float = T.f\n")));
+        assert!(err(&format!("{classes}let x: int = t.f\n")));
+        assert!(ok(&format!("{classes}t.f = 2.5\nt.k = 3.0\n")));
+        assert!(err(&format!("{classes}t.f = \"hot\"\n")));
+        assert!(ok(&format!("{classes}T.f = F()\n")));
+        assert!(err(&format!("{classes}T.f = 2.5\n")));
+        assert!(ok(&format!("{classes}let n: int = t.g.upper().find(\"G\")\n")));
+    }
+
     /// `except m.Err:`（タスク 4-3）も知らない名前なら「腕が永久に死ぬ」誤り。
     #[test]
     fn dotted_except_type_must_be_known() {

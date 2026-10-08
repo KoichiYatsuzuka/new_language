@@ -15,6 +15,18 @@ use super::TypeChecker;
 /// 正しいコードが「存在しないメンバー」で落ちる。
 const UNIVERSAL_INSTANCE_METHODS: &[&str] = &["copy"];
 
+/// クラス側に置いたディスクリプタの型（[`TypeChecker::class_descriptor`]・タスク 1-12）。
+pub(crate) struct ClassDescriptor {
+    /// 読んだ値の型（`__get__` の戻り値）。
+    pub(crate) read: InferredType,
+    /// データディスクリプタ（`__set__` か `__delete__` を持つ）か。インスタンス経由の代入が `__set__` へ行く。
+    pub(crate) is_data: bool,
+    /// 代入する値の型（`__set__` の `value`）。`__set__` が無ければ `None`。
+    pub(crate) write: Option<InferredType>,
+    /// メンバーの宣言型（ディスクリプタのクラス）。クラス経由の代入（`C.x = d`）はこれを置き換える。
+    pub(crate) declared: InferredType,
+}
+
 impl TypeChecker {
     /// 部分木を歩いて診断を出すだけ。**この地点に型義務は無い**（タスク 3.1）。
     ///
@@ -957,6 +969,10 @@ impl TypeChecker {
         //    `Box[int]` から引いたまま返すと `T` が使用箇所へ漏れ、0-2/0-3 の照合が
         //    `declared 'T'` という偽陽性を出す（実測）。
         let field = class_subst.as_ref().and_then(|(class, map)| {
+            // クラス側のディスクリプタは `__get__` の戻り値（インスタンスから読んでもクラスから読んでも・タスク 1-12）。
+            if let Some(d) = self.class_descriptor(class, attr) {
+                return Some(Self::subst_type_params(&d.read, map));
+            }
             self.registry
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
@@ -1044,6 +1060,37 @@ impl TypeChecker {
                 },
             },
             other => other,
+        })
+    }
+
+    /// クラス側（`static mut` / `const`）に置いた**ディスクリプタ**（python_builtins_plan.md のタスク 1-12）。
+    ///
+    /// 宣言型が `__get__` を持つクラスのインスタンスなら、実行時は読むと `__get__(obj, C)` の戻り値、
+    /// インスタンス経由で代入すると `__set__(obj, v)`（`eval/attrs.rs` のディスクリプタのプロトコル）。
+    /// ⚠ インスタンスのフィールド（`mut f: D`）はディスクリプタとして働かない（CPython と同じ・実行時もクラス側だけを見る）。
+    pub(crate) fn class_descriptor(&self, class_name: &str, attr: &str) -> Option<ClassDescriptor> {
+        // 自クラスの表を先に引く（基底まで集めるのは見つからないときだけ・属性を読むたびに通るので）。
+        let (kind, ty) = match self.registry.class_field_details(class_name).and_then(|m| m.get(attr)) {
+            Some(entry) => entry.clone(),
+            None => self.collect_class_field_details(class_name).remove(attr)?,
+        };
+        if !matches!(kind, crate::ast::FieldKind::Const | crate::ast::FieldKind::StaticMut) {
+            return None;
+        }
+        let desc_class = match &ty {
+            InferredType::NamedInstance(c) => c.clone(),
+            InferredType::GenericInstance { .. } => self.registry.instance_class(&ty.to_string())?.clone(),
+            _ => return None,
+        };
+        let sigs = self.collect_class_method_sigs(&desc_class);
+        let get = sigs.get("__get__")?.first()?;
+        let set = sigs.get("__set__").and_then(|s| s.first());
+        Some(ClassDescriptor {
+            read: get.return_type.clone().unwrap_or(InferredType::Unresolved),
+            is_data: set.is_some() || sigs.contains_key("__delete__"),
+            // `__set__(self, obj, value)` の `value`。
+            write: set.map(|s| s.params.get(2).and_then(|(_, t)| t.clone()).unwrap_or(InferredType::Unresolved)),
+            declared: ty,
         })
     }
 

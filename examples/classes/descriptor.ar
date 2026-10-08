@@ -1,0 +1,70 @@
+# ディスクリプタのプロトコル（python_builtins_plan.md のタスク 1-12）
+#
+# クラス側（`static mut` / `const`）に置いた値が `__get__` を持つと、インスタンスから読んだときに
+# `__get__(obj, クラス)` の戻り値になる。さらに `__set__` を持てば（データディスクリプタ）、
+# インスタンス経由の代入が `__set__(obj, 値)` になる。CPython の `property` と同じ仕組み。
+
+# データディスクリプタ: 摂氏のフィールドを華氏で読み書きする
+class Fahrenheit:
+    fn __get__(self, mut obj: Thermo, owner: Any = None) -> float:
+        return obj.celsius * 9.0 / 5.0 + 32.0
+
+    fn __set__(self, mut obj: Thermo, value: float) -> None:
+        obj.celsius = (value - 32.0) * 5.0 / 9.0
+
+class Thermo:
+    mut celsius: float
+    static mut fahrenheit: Fahrenheit = Fahrenheit()
+
+    fn __init__(mut self, c: float) -> None:
+        self.celsius = c
+
+mut t = Thermo(100.0)
+print(t.fahrenheit)
+t.fahrenheit = 32.0
+print(t.celsius)
+t.fahrenheit += 18.0
+print(t.celsius)
+
+# 非データディスクリプタ（`__get__` だけ）: 読むたびに計算する
+class Greeting:
+    fn __get__(self, mut obj: Person, owner: Any = None) -> str:
+        return f"Hello, {obj.name}"
+
+class Person:
+    let name: str
+    const greeting: Greeting = Greeting()
+
+    fn __init__(mut self, name: str) -> None:
+        self.name = name
+
+let p = Person("Ada")
+print(p.greeting)
+print(p.greeting.upper())
+
+# クラスから読むと `__get__(None, クラス)`
+class Where:
+    fn __get__(self, obj: Any, owner: Any = None) -> str:
+        if obj is None:
+            return "through the class"
+        return "through an instance"
+
+class Spot:
+    static mut where: Where = Where()
+
+print(Spot.where)
+print(Spot().where)
+
+# `__get__` が関数を返すなら、その場で呼べる（属性を読んでその値を呼ぶ・タスク 1-11）
+fn double(x: int) -> int:
+    return x * 2
+
+class Op:
+    fn __get__(self, obj: Any, owner: Any = None) -> function[let int]->int:
+        return double
+
+class Calc:
+    static mut op: Op = Op()
+
+let c = Calc()
+print(c.op(21))

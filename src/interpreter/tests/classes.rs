@@ -748,3 +748,69 @@ fn test_call_a_callable_stored_in_a_field() {
     assert!(matches!(run_get(src, "a"), Value::Int(42)));
     assert!(matches!(run_get(src, "b"), Value::Int(8)));
 }
+
+/// ディスクリプタのプロトコル（python_builtins_plan.md のタスク 1-12）の共通部分。
+/// `Twice` はデータディスクリプタ（`static mut`）、`Label` は非データディスクリプタ（`const`）。
+const DESCRIPTOR_CLASSES: &str = concat!(
+    "class Twice:\n",
+    "    fn __get__(self, mut obj: Any, owner: Any = None) -> Any:\n",
+    "        if obj is None:\n",
+    "            return \"class\"\n",
+    "        return obj.n * 2\n",
+    "    fn __set__(self, mut obj: Any, value: Any) -> None:\n",
+    "        obj.n = value // 2\n",
+    "class Label:\n",
+    "    fn __get__(self, mut obj: Any, owner: Any = None) -> Any:\n",
+    "        return \"n=\" + str(obj.n)\n",
+    "class Box:\n",
+    "    mut n: int\n",
+    "    static mut twice: Twice = Twice()\n",
+    "    const label: Label = Label()\n",
+    "    fn __init__(mut self, n: int) -> None:\n",
+    "        self.n = n\n",
+);
+
+/// クラス側のディスクリプタは、インスタンスから読むと `__get__(obj, C)`、代入すると `__set__(obj, v)`、
+/// クラスから読むと `__get__(None, C)`（タスク 1-12）。以前は値そのもの（`<Twice object>`）が返り、
+/// 代入は `static mut` を書き換えていた。
+#[test]
+fn test_descriptor_get_set_and_class_access() {
+    let src = format!(
+        "{DESCRIPTOR_CLASSES}{}",
+        concat!(
+            "mut b = Box(5)\n",
+            "let r1 = b.twice\n",
+            "b.twice = 40\n",
+            "let n = b.n\n",
+            "let r2 = b.twice\n",
+            "let lab = b.label\n",
+            "let via_class = Box.twice\n",
+            "let other = Box(1).twice\n",
+        )
+    );
+    let interp = run_interp(&src);
+    assert!(matches!(interp.get_val("r1"), Some(Value::Int(10))));
+    assert!(matches!(interp.get_val("n"), Some(Value::Int(20))));
+    assert!(matches!(interp.get_val("r2"), Some(Value::Int(40))));
+    assert!(matches!(interp.get_val("lab"), Some(Value::Str(s)) if s.to_string() == "n=20"));
+    assert!(matches!(interp.get_val("via_class"), Some(Value::Str(s)) if s.to_string() == "class"));
+    // `static mut` のディスクリプタは書き換わっていない（代入は `__set__` へ行った）。
+    assert!(matches!(interp.get_val("other"), Some(Value::Int(2))));
+}
+
+/// `__delete__` だけを持つデータディスクリプタへの代入は CPython と同じ `AttributeError: __set__`。
+#[test]
+fn test_descriptor_without_set_rejects_assignment() {
+    let src = concat!(
+        "class NoSet:\n",
+        "    fn __get__(self, obj: Any, owner: Any = None) -> Any:\n",
+        "        return 1\n",
+        "    fn __delete__(self, obj: Any) -> None:\n",
+        "        pass\n",
+        "class C:\n",
+        "    static mut d: NoSet = NoSet()\n",
+        "mut c = C()\n",
+        "c.d = 3\n",
+    );
+    assert!(run_err_msg(src).contains("AttributeError: __set__"), "{}", run_err_msg(src));
+}

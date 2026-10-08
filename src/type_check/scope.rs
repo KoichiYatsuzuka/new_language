@@ -493,9 +493,16 @@ impl TypeChecker {
             Some(_) => self.member_owner(object),
             None => None,
         };
+        // インスタンス経由のデータディスクリプタへの代入は `__set__` を呼ぶだけでメンバーを書き換えない
+        // （python_builtins_plan.md のタスク 1-12）。`const` に置いたディスクリプタでも誤りにしない。
+        // ⚠ 経路の途中の `const`（`readonly_on_path`）と、クラス経由の `C.x = ..`（メンバーの代入）は従来どおり。
+        let data_descriptor = match (&owner, attr) {
+            (Some((MemberOwner::Class(c), false)), Some(a)) => self.class_descriptor(c, a).is_some_and(|d| d.is_data),
+            _ => false,
+        };
         if let (Some((o, _)), Some(attr)) = (&owner, attr) {
             let kind = match o {
-                MemberOwner::Class(c) if self.is_const_member(c, attr) => {
+                MemberOwner::Class(c) if self.is_const_member(c, attr) && !data_descriptor => {
                     Some(TypeErrorKind::AssignToConst { owner: c.clone(), member: attr.to_string() })
                 }
                 MemberOwner::Class(_) => None,
@@ -536,7 +543,7 @@ impl TypeChecker {
         // ⚠ 型の値経由で書けるのは `static mut` だけ。`let` / `mut` フィールドを型の値経由で
         //   書く形（`Counter.own = 1`）はここでは判定しない（以前と同じ）。
         let is_self = matches!(object, Expr::Ident { name: n, .. } if n == "self");
-        if via_type_value || (is_self && self.state.current_fn() == Some("__init__")) {
+        if via_type_value || data_descriptor || (is_self && self.state.current_fn() == Some("__init__")) {
             return;
         }
         if self.registry.field_is_mutable(&class_name, attr) == Some(false) {
