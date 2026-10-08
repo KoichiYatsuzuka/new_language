@@ -60,6 +60,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`・タスク 6-1）
+    "property",
 ];
 
 /// 実行時が宣言なしで解決する名前か。

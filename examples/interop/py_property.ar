@@ -1,0 +1,28 @@
+# py_property.ar — Python の @property / @x.setter / @x.deleter / @Base.x.getter（python_builtins_plan.md のタスク 6-1）
+#
+# 変換器は property のメソッドを別名のメソッドにし、クラスの定義の後で組み込みの `property` を組み立てて
+# クラスの属性に置く（`C.x = property(C.<getter>)` / `C.x = C.x.setter(C.<setter>)`）。読み書きは
+# ディスクリプタのプロトコル（タスク 1-12）で getter / setter に回る。pp.run() は CPython と同じ出力:
+#   25
+#   77.0
+#   212.0
+#   below absolute zero
+#   property 'fahrenheit' of 'Temperature' object has no setter
+#   property True
+#   True True
+#   0
+#   [1, 2] (2,)
+#   child of base
+#   base
+#
+# ⚠ 以前は `@property` が変換の誤り（Arrow has no property syntax）だった。
+
+import[py] test_modules.py_property as pp
+
+pp.run()
+
+# Arrow からも Python のクラスの property を読み書きできる
+mut t = pp.Temperature(10)
+print(t.celsius)
+t.celsius = 30
+print(t.fahrenheit)

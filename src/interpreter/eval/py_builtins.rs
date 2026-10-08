@@ -1029,6 +1029,104 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
     })
 }
 
+/// 組み込みのクラス `property`（python_builtins_plan.md のタスク 6-1）。CPython 3.12 の `property` と同じ振る舞いを
+/// Arrow のクラスで書いたもの。読み書きはディスクリプタのプロトコル（タスク 1-12・`eval/attrs.rs`）が
+/// `__get__` / `__set__` へ回す。
+/// - 文言は CPython と同じ（`property 'x' of 'C' object has no setter`。名前が無ければ `property of 'C' object ..`）。
+///   名前は `__set_name__` で入る（変換器がクラスの定義の後で呼ぶ。CPython ではクラスを作るときに `type.__new__` が呼ぶ）。
+/// - `getter` / `setter` / `deleter` は名前ごと写した新しい property を返す（CPython 3.12 の `property_copy`）。
+/// - ⚠ CPython 3.12 の property は `__name__` を持たない（3.13 から）ので、名前は `private` のフィールドに置く。
+/// - ⚠ `__doc__` は渡した `doc` だけ（getter の docstring は引き継がない。Arrow の関数は docstring を持たない）。
+/// - ⚠ `obj` を書き換える getter / setter に写しを渡さないよう、仮引数は `mut obj`。
+/// - ⚠ `__get__` は `mut self`: クラスから読む `C.x` は property **そのもの**を返す（`C.x is C.x`・`C.x.__set_name__(..)`
+///   が置いてある property に届く）。`self` のままだと `return self` が写しを返す（Arrow の値の規則）。
+const PY_PROPERTY_SRC: &str = r#"class property:
+    mut fget: Any
+    mut fset: Any
+    mut fdel: Any
+    mut __doc__: Any
+    private:
+    mut _name: Any
+    public:
+
+    fn __init__(mut self, fget: Any = None, fset: Any = None, fdel: Any = None, doc: Any = None) -> None:
+        self.fget = fget
+        self.fset = fset
+        self.fdel = fdel
+        self.__doc__ = doc
+        self._name = None
+
+    fn __set_name__(mut self, owner: Any, name: Any) -> None:
+        self._name = name
+
+    fn __get__(mut self, mut obj: Any, owner: Any = None) -> Any:
+        if obj is None:
+            return self
+        if self.fget is None:
+            raise AttributeError(self._missing(obj, "getter"))
+        return self.fget(obj)
+
+    fn __set__(self, mut obj: Any, value: Any) -> None:
+        if self.fset is None:
+            raise AttributeError(self._missing(obj, "setter"))
+        self.fset(obj, value)
+
+    fn __delete__(self, mut obj: Any) -> None:
+        if self.fdel is None:
+            raise AttributeError(self._missing(obj, "deleter"))
+        self.fdel(obj)
+
+    fn getter(self, fget: Any) -> property:
+        return self._copy(fget, self.fset, self.fdel)
+
+    fn setter(self, fset: Any) -> property:
+        return self._copy(self.fget, fset, self.fdel)
+
+    fn deleter(self, fdel: Any) -> property:
+        return self._copy(self.fget, self.fset, fdel)
+
+    private:
+    fn _copy(self, fget: Any, fset: Any, fdel: Any) -> property:
+        mut p = property(fget, fset, fdel, self.__doc__)
+        p._name = self._name
+        return p
+
+    fn _missing(self, obj: Any, what: str) -> str:
+        if self._name is None:
+            return f"property of '{type(obj).__name__}' object has no {what}"
+        return f"property '{self._name}' of '{type(obj).__name__}' object has no {what}"
+"#;
+
+impl Interpreter {
+    /// 組み込みのクラス `property` の値（初めて引いたときに組み立てる・[`PY_PROPERTY_SRC`]）。
+    ///
+    /// 自分の大域（組み込みだけ）の枠でクラスを定義するので、メソッドの本体は利用者の名前を見ない
+    /// （モジュールの本体と同じ・`enter_module_frame`）。クラスの名前に修飾は付かない（`type(p).__name__` は `property`）。
+    pub(crate) fn py_property_class(&mut self) -> Result<Value, String> {
+        if let Some(class) = &self.py_property {
+            return Ok(class.clone());
+        }
+        let tokens = crate::lexer::Lexer::new(PY_PROPERTY_SRC, "<property>").tokenize();
+        let stmts = crate::parser::Parser::new(tokens, None)
+            .parse_program()
+            .map_err(|e| format!("RuntimeError: internal — the builtin 'property' does not parse: {e}"))?;
+        // ⚠ Python のモジュールの中から引かれても Arrow のクラスとして定義する（`is_python` を立てない）。
+        let prev_py = std::mem::replace(&mut self.in_python_module, false);
+        let prev_nested = std::mem::replace(&mut self.defining_nested_class, false);
+        let frame = self.enter_module_frame(&[]);
+        let result = stmts.iter().try_for_each(|st| self.exec(st).map(|_| ()));
+        let class = self.scopes[0].get("property").map(|v| v.get_value());
+        self.leave_module_frame(frame);
+        self.defining_nested_class = prev_nested;
+        self.in_python_module = prev_py;
+        result.map_err(|e| format!("RuntimeError: internal — the builtin 'property' failed: {e}"))?;
+        let class = class
+            .ok_or_else(|| "RuntimeError: internal — the builtin 'property' was not defined".to_string())?;
+        self.py_property = Some(class.clone());
+        Ok(class)
+    }
+}
+
 /// Python の形の `open` の引数を Arrow の列挙の値へ写したもの（python_builtins_plan.md のタスク 5-2）。
 pub(crate) struct PyOpenForm {
     /// `FileOpenMode` の値（write=0 / rewrite=1 / read=2 / make_and_write=3）。

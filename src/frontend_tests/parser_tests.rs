@@ -1732,3 +1732,67 @@ fn python_nested_class_is_hoisted_with_its_qualname() {
     .expect_err("a `for` in a class body");
     assert!(err.contains("a `for` statement in the body of class 'K' is not supported"), "{err}");
 }
+
+/// Python の `@property` / `@x.setter`（python_builtins_plan.md のタスク 6-1）。メソッドは別名
+/// （`__property_get_x` / `__property_set_x`）になり、`x` はクラスの属性の置き場（`static mut x: Any`）。
+/// クラスの定義の後に property を組み立てる文が並ぶ。`self.x = v` はフィールドにせず、setter だけが代入する
+/// フィールド（`self._x`）はフィールドにする。
+#[test]
+fn python_property_is_built_after_the_class() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv(concat!(
+        "class C:\n",
+        "    def __init__(self, v):\n",
+        "        self.x = v\n",
+        "    @property\n",
+        "    def x(self):\n",
+        "        return self._x\n",
+        "    @x.setter\n",
+        "    def x(self, v):\n",
+        "        self._x = v\n",
+    ))
+    .expect("@property converts");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("expected class: {stmts:?}") };
+    let names: Vec<(&str, Option<&FieldKind>)> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Field { name, kind, .. } => Some((name.as_str(), Some(kind))),
+            Stmt::FnDef { name, .. } => Some((name.as_str(), None)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("_x", Some(&FieldKind::Mut)),
+            ("x", Some(&FieldKind::StaticMut)),
+            ("__init__", None),
+            ("__property_get_x", None),
+            ("__property_set_x", None),
+        ]
+    );
+    // クラスの後: `C.x = property(..)` / `C.x.__set_name__(C, "x")` / `C.x = C.x.setter(..)`
+    assert_eq!(stmts.len(), 4, "{stmts:?}");
+    assert!(matches!(&stmts[1], Stmt::AttrAssign { target: Expr::Attr { attr, .. }, .. } if attr == "x"));
+    assert!(matches!(&stmts[2], Stmt::Expr(Expr::Call { func, .. })
+        if matches!(func.as_ref(), Expr::Attr { attr, .. } if attr == "__set_name__")));
+    assert!(matches!(&stmts[3], Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+        if matches!(func.as_ref(), Expr::Attr { attr, .. } if attr == "setter")));
+
+    // 基底の property を写す形も通る。
+    conv("class B:\n    @property\n    def n(self):\n        return 1\nclass D(B):\n    @B.n.getter\n    def n(self):\n        return 2\n")
+        .expect("@Base.x.getter");
+    // 表せない形は誤り。
+    let err = conv("class C:\n    @x.setter\n    def x(self, v):\n        pass\n").expect_err("setter before property");
+    assert!(err.contains("must follow '@property def x'"), "{err}");
+    let err = conv("class C:\n    @property\n    def x(self):\n        return 1\n    @x.setter\n    def set_x(self, v):\n        pass\n")
+        .expect_err("setter with another name");
+    assert!(err.contains("the method must have the property's name 'x'"), "{err}");
+    let err = conv("def logged(f):\n    return f\nclass C:\n    @logged\n    @property\n    def x(self):\n        return 1\n")
+        .expect_err("property inside another decorator");
+    assert!(err.contains("only as the outermost decorator"), "{err}");
+    let err = conv("class C:\n    @property\n    @staticmethod\n    def x():\n        return 1\n").expect_err("static property");
+    assert!(err.contains("cannot be a static or class method"), "{err}");
+    let err = conv("class C:\n    @cached_property\n    def x(self):\n        return 1\n").expect_err("cached_property");
+    assert!(err.contains("'@cached_property' is not supported"), "{err}");
+}

@@ -65,18 +65,24 @@ pub(crate) fn convert_decorators(
             // `@abstractmethod` は本体を持ったままでも Python では単なるマーカ。
             // 本体はそのまま変換し、Arrow 側の抽象フラグだけを立てる。
             "abstractmethod" => info.is_abstract = true,
-            // Arrow にプロパティ構文（getter/setter）は存在しない。
+            // `@property` / `@x.setter` は**メソッドのいちばん外側**のときだけ `classes.rs` が受ける
+            // （このリストに来る前に取り除く・python_builtins_plan.md のタスク 6-1）。ここへ来たのは
+            // 内側に書いた形（`@logged @property`＝ property を包む）か、メソッドでない関数に付けた形。
             // `@x.setter` 等は属性形のときだけ拾う（同名のユーザデコレータを誤検出しないため）。
-            "property" | "cached_property" => {
+            "property" => {
                 return Err(format!(
-                    "{filename}: '@{name}' is not supported ({target}): \
-                     Arrow has no property syntax; use a plain method instead"
+                    "{filename}: '@{name}' is supported only as the outermost decorator of a method ({target})"
                 ));
             }
             "setter" | "getter" | "deleter" if name.contains('.') => {
                 return Err(format!(
+                    "{filename}: '@{name}' is supported only as the outermost decorator of a method ({target})"
+                ));
+            }
+            "cached_property" => {
+                return Err(format!(
                     "{filename}: '@{name}' is not supported ({target}): \
-                     Arrow has no property syntax; use a plain method instead"
+                     use '@property' and cache the value in a field yourself"
                 ));
             }
             _ => info.decorators.push(convert_expr(dec, filename)?),

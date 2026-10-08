@@ -265,7 +265,10 @@ mod a_axis_invariants {
         }
         // ④ 逆向き: 表の名前は実行時に解決できる
         for name in RUNTIME_BUILTIN_NAMES {
-            let known = scope.contains_key(*name) || interp.eval_builtin_evaled(name, Vec::new()).is_some();
+            // ⚠ 名前の探索の最後の段（`builtin_value`）で引ける値も実行時が知っている名前（`property`・タスク 6-1）。
+            let known = scope.contains_key(*name)
+                || interp.eval_builtin_evaled(name, Vec::new()).is_some()
+                || interp.builtin_value(name).is_some();
             assert!(known, "型検査の表の '{name}' を実行時が知らない（古い名前が残っている）");
         }
     }

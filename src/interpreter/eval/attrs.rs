@@ -292,7 +292,7 @@ impl Interpreter {
             Value::Class(cls) => {
                 // `__name__` / `__qualname__` は Python の名前（`type(x).__name__`・python_builtins_plan.md のタスク 2-2）。
                 // ⚠ 表示名（素の名前）を返す。モジュールの修飾名（`zoo.Dog`）は `__module__` 側の情報で、ここでは付けない。
-                if matches!(attr, "name" | "__name__" | "__qualname__") {
+                if matches!(attr, "__name__" | "__qualname__") {
                     return Ok(Value::str(cls.name.as_str()));
                 }
                 // クラスから読むディスクリプタは `__get__(None, C)`（property は自分自身を返す・タスク 1-12）。
@@ -315,6 +315,12 @@ impl Interpreter {
                     } else {
                         Value::OverloadedFn(overloads.clone())
                     });
+                }
+                // Arrow の `C.name`（クラスの名前）は、同じ名前のメンバーが無いときだけ（タスク 6-1）。
+                // ⚠ 以前はメンバーより先に見ていたので、Python のクラス属性 `name`（`@property def name`・
+                //   `name = "x"`）がクラスから読めなかった（型検査はメンバーの型を付けていた）。
+                if attr == "name" {
+                    return Ok(Value::str(cls.name.as_str()));
                 }
                 Err(format!(
                     "AttributeError: class '{}' has no attribute '{attr}'",

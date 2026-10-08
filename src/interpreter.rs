@@ -541,6 +541,9 @@ pub struct Interpreter {
     /// Python モジュール body を実行中かどうかを示すフラグ。
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
+    /// 組み込みのクラス `property`（python_builtins_plan.md のタスク 6-1）。名前を初めて引いたときに
+    /// 組み立てる（`Interpreter::py_property_class`）。
+    pub(self) py_property: Option<Value>,
     /// **探索の起点を持たない** import 文（合成した文・テストが組んだ AST）の探索先。
     ///
     /// ⚠⚠ ファイルから読んだ import 文は**使わない**。各文が自分の起点を持つ
@@ -713,6 +716,7 @@ impl Interpreter {
             live_generators: Vec::new(),
             module_cache: HashMap::new(),
             in_python_module: false,
+            py_property: None,
             python_search_dirs: Vec::new(),
             submodules: HashMap::new(),
             static_cells: HashMap::new(),

@@ -15,7 +15,7 @@
 // ## 誤りにしない形（保守的に倒す）
 // - モジュールの**どこかで束縛される名前**（代入・`def` / `class`・仮引数・`import`・`for` / `with` / `except` の
 //   束縛・`global` / `nonlocal`・`match` の捕捉）。スコープは解かない（隠していれば通す）。
-// - 変換器が形で受ける位置: デコレータ（`@staticmethod` / `@classmethod`。`@property` は変換器が別に誤りにする）、
+// - 変換器が形で受ける位置: デコレータ（`@staticmethod` / `@classmethod`。`@property` は組み込みの `property` で受ける・6-1）、
 //   クラスの基底（`class C(object)`）、`super().m(..)` の `super`。
 // - `from m import *` があるモジュールは判定しない（何が束縛されるか分からない）。
 

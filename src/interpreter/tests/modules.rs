@@ -336,3 +336,62 @@ fn a_py_module_may_rebind_builtin_names() {
     assert!(matches!(interp.get_val("back"), Some(Value::Int(49))));
     assert!(matches!(interp.get_val("mine"), Some(Value::Int(2))));
 }
+
+/// Python の `@property` / `@x.setter` / `@Base.x.getter`（python_builtins_plan.md のタスク 6-1）。
+/// 組み込みの `property` とディスクリプタのプロトコル（1-12）で getter / setter に回り、文言も CPython と同じ。
+/// `C.x` は同じ property を返し（`C.x is C.x`）、setter だけが代入するフィールド（`self._c`）も使える。
+/// クラス属性の `name` はクラスから読める（以前は Arrow の `C.name` がクラスの名前を返して隠していた）。
+#[cfg(feature = "native")]
+#[test]
+fn a_py_module_property_runs_getter_and_setter() {
+    let zoo = concat!(
+        "class T:\n",
+        "    def __init__(self, c):\n",
+        "        self.c = c\n",
+        "    @property\n",
+        "    def c(self):\n",
+        "        return self._c\n",
+        "    @c.setter\n",
+        "    def c(self, v):\n",
+        "        self._c = v * 2\n",
+        "    @property\n",
+        "    def ro(self):\n",
+        "        return 1\n",
+        "class B:\n",
+        "    @property\n",
+        "    def name(self):\n",
+        "        return 'b'\n",
+        "class D(B):\n",
+        "    @B.name.getter\n",
+        "    def name(self):\n",
+        "        return 'd/' + B.name.fget(self)\n",
+        "def set_ro(t):\n",
+        "    try:\n",
+        "        t.ro = 5\n",
+        "    except AttributeError as e:\n",
+        "        return str(e)\n",
+        "def same():\n",
+        "    return T.c is T.c, type(T.c).__name__\n",
+    );
+    let interp = run_with_py_module(
+        zoo,
+        concat!(
+            "mut t = z.T(3)\n",
+            "let first = t.c\n",
+            "t.c = 10\n",
+            "let second = t.c\n",
+            "let msg = z.set_ro(t)\n",
+            "let same = z.same()\n",
+            "let d = z.D().name\n",
+            "let b = z.B().name\n",
+        ),
+    )
+    .expect("run");
+    assert!(matches!(interp.get_val("first"), Some(Value::Int(6))));
+    assert!(matches!(interp.get_val("second"), Some(Value::Int(20))));
+    let shown = |v: &str| interp.get_val(v).map(|x| interp.display(&x)).unwrap_or_default();
+    assert_eq!(shown("msg"), "property 'ro' of 'T' object has no setter");
+    assert_eq!(shown("same"), "(True, 'property')");
+    assert_eq!(shown("d"), "d/b");
+    assert_eq!(shown("b"), "b");
+}

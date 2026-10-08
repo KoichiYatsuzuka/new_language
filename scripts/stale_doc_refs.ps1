@@ -51,6 +51,8 @@ $whitelist = @(
     'fmod',
     # CPython の関数名（Objects/listobject.c 等）。CPython と同じ手順で書いた箇所の出どころを示す（タスク 1-3 / 1-4）。
     'list_richcompare','tuplerichcompare','dict_iter','PyObject_SelfIter','PyObject_GetIter','float_repr','complex_repr','object_recursive_isinstance','__module__','double_round','__doc__','__package__','__loader__','__spec__','__self__','__func__',
+    # CPython の関数名（Objects/descrobject.c）。組み込みの `property` の `setter` などが写す手順の出どころ（タスク 6-1）。
+    'property_copy',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で
