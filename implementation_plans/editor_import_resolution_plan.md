@@ -273,3 +273,21 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 - 診断は `compare_wasm_frontend`（3-3 以降は全例題で CLI と一致を要求）が全言語の例題で CLI と一致することを確かめている
 - ⚠ 既存の制限（import とは別）: `bridge.Calculator.`（モジュール → クラス → 静的メンバー）の補完が空。拡張の補完が
   2 段の連鎖をたどらない（型は届いている）
+
+### 5-1 実装
+
+拡張が import 先を CLI と同じ処理で読むようになった（3-2・3-3）ので、手作業のスタブの仕組みを撤去した。
+
+- Rust: `parser/stub_registry.rs`・`src/stub_manifest.rs`・`arrow --emit-stubs`（`main.rs` の `emit_stubs` と補助関数）・
+  `stub_gen::generate_editor_stub`（`enum_member_type_plan.md` 6-3）・`TypeChecker::module_globals`（`--emit-stubs` 専用の入口）・
+  wasm の `ar_set_stub` / `ar_clear_stubs` / `ar_stub_count`。`imports_editor.rs` は 3-2 で削除済み
+- `import[rs]` が拡張のためにソースの隣へ書いていた `<crate>.ars` をやめた（`import_fs::write` ごと削除）。
+  書き出されていた `examples/interop/{libm,rand,sha2,vec2}.ars` も削除（読む物はもう無い。残すと黙って古くなる）
+- 拡張: `stubs.ts`・コマンド *Refresh External Stubs*・設定 `arrow.executablePath`。代わりにコマンド
+  **Arrow: Reload Imported Modules**（`arrow.reloadImports`・ワークスペースの外の変更は見張らないので手で読み直す口）
+- 拡張の crate のテストからスタブの表を外し、`binding_types.rs` の「import 先の束縛が混ざらない」をファイルの import で確かめる形にした
+- 文書: `vscode-extension-dev` / `codebase-map` スキル・`enum_member_type_plan.md` 6-3 に撤去済みの注記
+- ゲート: `compare_import_paths -A` 13/13・`compare_outputs -A` 402/402・`compare_wasm_frontend` 489/489 一致
+  （MISSED 0・INVENTED 0）・`force_gate` 0・`compare_python_impl` clean・`stale_doc_refs` OK・拡張の crate のテスト 655 件
+  - ⚠ `compare_outputs -A` は**基準の旧 exe** も全例題を走らせるので、旧 exe が `libm.ars` / `vec2.ars` を書き戻す。
+    新しい exe が書かないことは別に確かめた（消してから `rs_struct.ar` / `event_external_handler.ar` を走らせた）

@@ -103,39 +103,6 @@ pub extern "C" fn ar_invalidate_modules() {
     crate::analyze::invalidate_modules();
 }
 
-/// 型スタブを 1 件登録する。`key` は `arrow.exe` が出したマニフェストの鍵をそのまま渡す
-/// （形式の定義は `parser::stub_registry::stub_key` 1 箇所だけ。ホストは組み立てない）。
-///
-/// これを呼ぶと `ar_analyze` の結果が**スタブの有無に依存する**ようになる。
-/// ホストはドキュメントを切り替えるたびに [`ar_clear_stubs`] してから積み直し、
-/// 同時に自分の解析キャッシュも捨てること（`stub_registry` 冒頭 doc）。
-///
-/// # Safety
-/// `key[..key_len]` / `src[..src_len]` が有効な UTF-8 でなければならない。
-#[no_mangle]
-pub unsafe extern "C" fn ar_set_stub(
-    key: *const u8,
-    key_len: usize,
-    src: *const u8,
-    src_len: usize,
-) {
-    let key = String::from_utf8_lossy(std::slice::from_raw_parts(key, key_len)).into_owned();
-    let source = String::from_utf8_lossy(std::slice::from_raw_parts(src, src_len)).into_owned();
-    crate::parser::stub_registry::set_stub(key, source);
-}
-
-/// 登録済みの型スタブをすべて捨てる。
-#[no_mangle]
-pub extern "C" fn ar_clear_stubs() {
-    crate::parser::stub_registry::clear_stubs();
-}
-
-/// 登録済みスタブの件数（ホスト側の配線確認用）。
-#[no_mangle]
-pub extern "C" fn ar_stub_count() -> usize {
-    crate::parser::stub_registry::stub_count()
-}
-
 /// 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）の本文を結果バッファに置く。
 /// 戻り値はバイト長（`ar_result_ptr` / `ar_result_len` で読む。次の `ar_analyze` まで有効）。
 ///

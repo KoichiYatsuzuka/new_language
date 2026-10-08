@@ -45,9 +45,6 @@ pub(crate) use types::canonical_type_text;
 mod exprs;
 // Python ソースからの行ベース型スタブ抽出（`imports/` の py の読み込みが使う）。
 pub(crate) mod py_stub_extract;
-// ホストが渡した型スタブの表（`editor` 専用）。CLI は実モジュールを読むので要らない。
-#[cfg(feature = "editor")]
-pub mod stub_registry;
 // エディタ用の位置情報テーブル（`editor` feature 専用）。AST は変更せず、
 // パースの途中で「どの名前がどこにあるか」を控えるだけの副次構造。
 #[cfg(feature = "editor")]

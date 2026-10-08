@@ -329,13 +329,8 @@ impl Parser {
         let body = Self::load_rs_crate(&module_name, &search_dirs, version)
             .map_err(|e| format!("import[rs] '{}': {e}", module.join(".")))?;
 
-        // Write .ars stub so the VS Code extension can provide hover/completion
-        #[cfg(not(feature = "editor"))]
-        {
-            let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
-            let stub_path = self.source_dir.join(format!("{module_name}.ars"));
-            let _ = crate::import_fs::write(&stub_path, &stub_text);
-        }
+        // ⚠ 以前は VS Code 拡張のために `<crate>.ars` をソースの隣に書いていた。拡張も crate のソースを
+        //   読むようになったので書かない（editor_import_resolution_plan.md 5-1）。
 
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)

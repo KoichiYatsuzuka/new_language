@@ -138,9 +138,8 @@ exports.forgetDocument = forgetDocument;
 /**
  * 解析キャッシュを全部捨てる。
  *
- * ⚠ **スタブ表を入れ替えたら必ず呼ぶこと。** キャッシュの鍵は `document.version` だけなので、
- *    テキストが変わらない限り古い解析結果を返し続ける。スタブだけ更新しても
- *    「型が出ない・古い型が出る」ままになる（`stubs.ts` 冒頭 doc）。
+ * ⚠ **import 先が変わったら必ず呼ぶこと**（`invalidateModules` と対で・`extension.ts`）。キャッシュの鍵は
+ *    `document.version` だけなので、テキストが変わらない限り古い解析結果（古い import 先の型）を返し続ける。
  */
 function clearAnalysisCache() {
     cache.clear();

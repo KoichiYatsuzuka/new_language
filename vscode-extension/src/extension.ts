@@ -7,7 +7,7 @@
  *   defined in `wasm_providers.ts`
  * - Implement the "Send to REPL" command and REPL terminal management
  * - Schedule debounced diagnostics on document open/change events
- * - Feed external type stubs (`.arrow-stubs/`) to the frontend (`stubs.ts`)
+ * - Watch files that can be import targets and make the frontend re-read them
  */
 
 import * as vscode from 'vscode';
@@ -27,7 +27,6 @@ import {
     clearAnalysisCache,
 } from './wasm_providers';
 import { loadFrontend, frontendLoadError, invalidateModules } from './frontend';
-import { loadStubsFor, refreshStubs, loadedManifestPath } from './stubs';
 
 // ===== REPL terminal =====
 
@@ -191,40 +190,6 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // ---- External type stubs ----
-    // ⚠ **スタブ表を入れ替えたら解析キャッシュも捨てる**（`stubs.ts` 冒頭 doc）。
-    //    キャッシュの鍵は `document.version` だけなので、捨てないとテキストが変わるまで
-    //    古い結果を返し続け、「スタブを作り直したのに型が出ない」ことになる。
-    function syncStubs(document: vscode.TextDocument): void {
-        if (!isArrowDocument(document) || document.uri.scheme !== 'file') return;
-        const before = loadedManifestPath();
-        const n = loadStubsFor(document.uri.fsPath);
-        if (before !== loadedManifestPath() || n !== null) clearAnalysisCache();
-    }
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('arrow.refreshStubs', async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor || !isArrowDocument(editor.document)) {
-                vscode.window.showWarningMessage('Arrow: open a .ar file first.');
-                return;
-            }
-            const file = editor.document.uri.fsPath;
-            const res = await vscode.window.withProgress(
-                { location: vscode.ProgressLocation.Window, title: 'Arrow: generating type stubs…' },
-                () => refreshStubs(file),
-            );
-            if (!res.ok) {
-                vscode.window.showErrorMessage(`Arrow: stub generation failed — ${res.message}`);
-                return;
-            }
-            const n = loadStubsFor(file);
-            clearAnalysisCache();
-            vscode.window.showInformationMessage(
-                `Arrow: loaded ${n ?? 0} external module stub(s).`);
-        })
-    );
-
     // ---- Diagnostics ----
     const diagCollection = vscode.languages.createDiagnosticCollection('arrow');
     const debounceMap = new Map<string, ReturnType<typeof setTimeout>>();
@@ -247,10 +212,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         diagCollection,
-        vscode.workspace.onDidOpenTextDocument(doc => { syncStubs(doc); scheduleDiagnostics(doc); }),
-        // ⚠ ファイルを跨ぐとマニフェストが変わりうる（別プロジェクトの `.ar` を開いたとき）。
-        //    残したままにすると**無関係なモジュールの型**が出る。
-        vscode.window.onDidChangeActiveTextEditor(e => { if (e) syncStubs(e.document); }),
+        vscode.workspace.onDidOpenTextDocument(doc => scheduleDiagnostics(doc)),
         vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)),
         vscode.workspace.onDidCloseTextDocument(doc => {
             diagCollection.delete(doc.uri);
@@ -268,14 +230,17 @@ export function activate(context: vscode.ExtensionContext) {
     //   設定（`ar_config.json`）。ビルドなどで大量に変わるので、まとめて 1 回にする。
     const watcher = vscode.workspace.createFileSystemWatcher(
         '**/*.{ar,arc,ars,py,pyi,h,hpp,dll,js,rs,json}');
+    const reloadImports = (): void => {
+        invalidateModules();
+        clearAnalysisCache();
+        vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
+    };
     let reloadTimer: ReturnType<typeof setTimeout> | undefined;
     const onImportedFileChanged = (): void => {
         if (reloadTimer) clearTimeout(reloadTimer);
         reloadTimer = setTimeout(() => {
             reloadTimer = undefined;
-            invalidateModules();
-            clearAnalysisCache();
-            vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
+            reloadImports();
         }, 300);
     };
     context.subscriptions.push(
@@ -283,10 +248,10 @@ export function activate(context: vscode.ExtensionContext) {
         watcher.onDidChange(onImportedFileChanged),
         watcher.onDidCreate(onImportedFileChanged),
         watcher.onDidDelete(onImportedFileChanged),
+        // ワークスペースの外（Python の site-packages など）は見張らないので、手で読み直す口を残す。
+        vscode.commands.registerCommand('arrow.reloadImports', reloadImports),
     );
 
-    const active = vscode.window.activeTextEditor?.document;
-    if (active) syncStubs(active);
     vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
 }
 

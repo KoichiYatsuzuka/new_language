@@ -30,11 +30,13 @@ Rust frontend and expose it through the analysis JSON.
 > - The document is analysed **as its file** (`analyze(source, fsPath)` → `ar_analyze_at`), so imports
 >   resolve exactly as `arrow <file>` would. The host's "current directory" is the workspace folder.
 > - Loaded modules are **kept inside the wasm** across analyses; only the edited document is re-parsed
->   per keystroke. `extension.ts` watches files that can be import targets and calls `invalidateModules()`.
+>   per keystroke. `extension.ts` watches files that can be import targets and calls `invalidateModules()`;
+>   files outside the workspace (Python's site-packages, …) are not watched — the command
+>   **Arrow: Reload Imported Modules** (`arrow.reloadImports`) re-reads everything.
 > - An unresolved import is a `ParseError` diagnostic at the position where the CLI stops, and the rest
 >   of the file is still analysed (the CLI stops instead).
-> - The old stub mechanism (`stubs.ts`, `arrow --emit-stubs`, `.arrow-stubs/`, `ar_set_stub`) is no
->   longer used; it is removed in task 5-1.
+> - There is no stub step any more: the old mechanism (`stubs.ts`, `arrow --emit-stubs`, `.arrow-stubs/`,
+>   the *Refresh External Stubs* command, `ar_set_stub`) was removed in task 5-1.
 
 ## Source file map (`vscode-extension/src/`)
 

@@ -13,19 +13,11 @@
 //!
 //! ⚠ このクレートはワークスペースから `exclude` されている。**ルートの `cargo test` では
 //!    走らない。** `cd crates/arrow-frontend && cargo test` で実行すること。
-//!
-//! ⚠ `stub_registry` は thread_local。スタブを使わないテストも**必ず `clear_stubs()` から始める**。
 
-use arrow_frontend::analyze::analyze_json;
-use arrow_frontend::parser::stub_registry;
+use arrow_frontend::analyze::{analyze_file_json, analyze_json};
 use serde_json::Value;
 
 fn analyze(source: &str) -> Value {
-    stub_registry::clear_stubs();
-    analyze_with_stubs(source)
-}
-
-fn analyze_with_stubs(source: &str) -> Value {
     let raw = analyze_json(source, "test.ar");
     let v: Value = serde_json::from_str(&raw).expect("analyze_json must return valid JSON");
     assert_eq!(
@@ -202,18 +194,21 @@ fn template_body_shows_the_type_parameter() {
     assert_type(&v, "y", "T");
 }
 
-/// import 先の本体（スタブ）の束縛は、このファイルの同じ行・列・名前の束縛に混ざらない。
+/// import 先の本体の束縛は、このファイルの同じ行・列・名前の束縛に混ざらない。
 ///
-/// ⚠ スタブの `let v` は `<stub>` の 1 行 1 列、このファイルの `let v` も 1 行 1 列。
+/// ⚠ モジュールの `let v` は `m.ar` の 1 行 1 列、このファイルの `let v` も 1 行 1 列。
 ///   ファイルで分けないと 1 つの鍵に 2 つの型（`int` と `str`）が並び、どちらも出せなくなる。
 #[test]
-fn stub_bindings_do_not_leak_into_this_file() {
-    stub_registry::clear_stubs();
-    stub_registry::set_stub("ar-auto:m".to_string(), "let v: int = 1\n".to_string());
-    let v = analyze_with_stubs(concat!(
-        "let v = \"s\"\n",
-        "import m\n",
-        "print(v, m.v)\n",
-    ));
+fn module_bindings_do_not_leak_into_this_file() {
+    let dir = std::env::temp_dir().join(format!("arrow_frontend_binding_types_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("m.ar"), "let v: int = 1\n").unwrap();
+    let main = dir.join("main.ar");
+    let raw = analyze_file_json(
+        concat!("let v = \"s\"\n", "import m\n", "print(v, m.v)\n"),
+        &main.to_string_lossy(),
+    );
+    let v: Value = serde_json::from_str(&raw).expect("analyze_file_json must return valid JSON");
+    assert_eq!(v["ok"], Value::Bool(true), "source failed to parse: {}", v["parseError"]);
     assert_type(&v, "v", "str");
 }

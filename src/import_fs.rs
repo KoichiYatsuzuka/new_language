@@ -67,11 +67,6 @@ mod native {
         std::fs::read_to_string(p)
     }
 
-    /// `p` へ書く（import の副産物を書き出す所だけが使う・拡張では何もしない）。
-    pub fn write(p: &Path, contents: &str) -> std::io::Result<()> {
-        std::fs::write(p, contents)
-    }
-
     /// テキストに書かれたパス（設定ファイルの値など）を `PathBuf` にする（冒頭 doc）。
     pub fn path_from_text(s: &str) -> PathBuf {
         PathBuf::from(s)
@@ -229,11 +224,6 @@ mod host {
     pub fn read_to_string(p: &Path) -> std::io::Result<String> {
         String::from_utf8(read(p)?)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
-    }
-
-    /// 拡張は import の副産物を書き出さない（利用者のファイルを解析が書き換えない）。
-    pub fn write(_p: &Path, _contents: &str) -> std::io::Result<()> {
-        Ok(())
     }
 
     /// `p` とその祖先（近い順）。⚠ Windows のドライブ（`/D:`）より上の `/` は含めない（冒頭 doc・

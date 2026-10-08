@@ -344,19 +344,6 @@ impl TypeChecker {
         Some(ty)
     }
 
-    /// プログラムが import する各モジュールの**グローバル変数の型と属性**
-    /// （モジュールの名前 `a.b` → 名前 → (型, 属性)）。
-    ///
-    /// `--emit-stubs` が VS Code 拡張へ渡すスタブにグローバル変数を書くのに使う（拡張は import 先を
-    /// 読まないので、ここで分かった型と属性をスタブで運ぶ・`enum_member_type_plan.md` 6-3）。
-    /// ⚠ 型は**モジュールの本体を検査したときに束縛に付いた型**（`annotate_module_body` が控える
-    ///   `module_globals`）。注釈の無い変数も推論した型が付く。型推論を別に書かない。
-    pub fn module_globals(stmts: &[Stmt]) -> HashMap<String, HashMap<String, (InferredType, VarAttr)>> {
-        let mut tc = Self::new(stmts);
-        tc.check_stmts(stmts);
-        tc.module_globals
-    }
-
     /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（**型検査の唯一の入口**）。
     /// `check` と同じ検査に**警告と注釈生成**を加えたもの（同一走査・追加コストは注釈の充填のみ）。
     ///

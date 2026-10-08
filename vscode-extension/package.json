@@ -22,8 +22,8 @@
         "category": "Arrow"
       },
       {
-        "command": "arrow.refreshStubs",
-        "title": "Refresh External Stubs",
+        "command": "arrow.reloadImports",
+        "title": "Reload Imported Modules",
         "category": "Arrow"
       }
     ],
@@ -91,17 +91,7 @@
         "scopeName": "source.ars",
         "path": "./syntaxes/arrow-stub.tmLanguage.json"
       }
-    ],
-    "configuration": {
-      "title": "Arrow",
-      "properties": {
-        "arrow.executablePath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Path to `arrow.exe`. Used by **Arrow: Refresh External Stubs**, which runs `arrow.exe --emit-stubs <file>` to resolve `import[cpp-dll]` / `import[cs-dll]` / ... and write type stubs into `.arrow-stubs/` next to your entry script. Leave empty to disable stub generation (imported modules simply stay untyped)."
-        }
-      }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

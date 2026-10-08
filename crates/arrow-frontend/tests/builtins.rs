@@ -13,11 +13,9 @@
 //!    走らない。** `cd crates/arrow-frontend && cargo test` で実行すること。
 
 use arrow_frontend::analyze::analyze_json;
-use arrow_frontend::parser::stub_registry;
 use serde_json::Value;
 
 fn analyze(source: &str) -> Value {
-    stub_registry::clear_stubs();
     let raw = analyze_json(source, "test.ar");
     let v: Value = serde_json::from_str(&raw).expect("analyze_json must return valid JSON");
     assert_eq!(v["ok"], Value::Bool(true), "source failed to parse: {}", v["parseError"]);
