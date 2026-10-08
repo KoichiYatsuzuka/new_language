@@ -256,3 +256,20 @@ let s: str = g.f()  # CLI: 型の不一致                         拡張: 何�
 - ゲート: `compare_wasm_frontend` 489/489 一致（MISSED 0・INVENTED 0・parse mismatch 0）・`compare_import_paths -A` 13/13・
   `compare_outputs -A` 402/402（CLI の挙動は変えていない）・`type_obligations` 退行なし・`force_gate` 0・
   `compare_python_impl` clean・`stale_doc_refs` OK
+
+### 4-1 記録（実装は 3-2 に含まれた）
+
+`parser/imports/` は 1 つのモジュールなので、3-2 で外部言語も同時に拡張へ載った。4-1 では言語ごとに確かめた。
+
+| 言語 | 確かめた例題 | 結果（デバッグランナー） |
+|---|---|---|
+| `py` | `py_call_spread.ar` | `m.` の補完に 6 メンバー（`add3` …）・診断 0 |
+| `py-int` | `event_external_handler.ar` | `pyev.` の補完に 3 メンバー・診断 0（Python の場所はホストが 1 度だけ調べる） |
+| `cpp-lib` | `cpp_struct_ptr.ar` | `vm.` に `V3, v3_add, v3_norm`・構造体のフィールド `x, y, z` |
+| `cs-dll` | `cs_interop_test.ar` | `bridge.` に 4 クラス・戻り値の型（`add_result: int`） |
+| `js-proc` | `js_proc_test.ar` | `js_path.` に 4 関数・`analysis.` に 3 関数（`.ars`） |
+| `rs` | `rs_struct.ar` / `importation.ar` | `vec2.` に `distance, Vec2`・メソッド 16（crate のソースから・`cargo` を起動しない） |
+
+- 診断は `compare_wasm_frontend`（3-3 以降は全例題で CLI と一致を要求）が全言語の例題で CLI と一致することを確かめている
+- ⚠ 既存の制限（import とは別）: `bridge.Calculator.`（モジュール → クラス → 静的メンバー）の補完が空。拡張の補完が
+  2 段の連鎖をたどらない（型は届いている）
