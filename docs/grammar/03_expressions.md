@@ -266,15 +266,33 @@ module.function
 
 `Expr::Attr { object, attr, span }` として記録されます。
 
-**評価**: オブジェクトを評価し、値の種類に応じてフィールドまたはメソッドを返します:
-- `Instance` → `fields` マップを検索、なければ `class.methods` を検索（メソッドは**受け手を束縛した関数**を返す・
-  [06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）
-- `Class` → `class_vars` (const) を検索
+**評価**: オブジェクトを評価し、値の種類に応じて次の順に探します（`eval/attrs.rs` の `get_attr_val`）:
+- `Instance`（CPython の `object.__getattribute__` と同じ順）:
+  1. クラス側（`static mut` / `const`）の**データディスクリプタ**（`__get__` と `__set__` / `__delete__` を持つ値）→ `__get__(obj, C)`
+  2. フィールド
+  3. クラス側の**非データディスクリプタ**（`__get__` だけ）→ `__get__(obj, C)`
+  4. クラス側の値（`const` / `static mut`）そのもの
+  5. メソッド（**受け手を束縛した関数**・[06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）・`gen` メソッド
+- `Class`:
+  1. `__name__` / `__qualname__`（クラスの名前）
+  2. `const` / `static mut`（ディスクリプタなら `__get__(None, C)`。`property` は自分自身を返す）
+  3. メソッド（束縛しない関数）
+  4. `name`（クラスの名前。⚠ 同じ名前のメンバーがあればメンバーが先）
 - `Namespace` → `members` マップを検索
 - `Str`/`List`/`Dict`/`Set`/... → 組み込みメソッドのバインド済み関数を返す
 
+ディスクリプタは [06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」、組み込みの `property` は同じファイルの
+「組み込みの `property`」を参照。
+
+**代入** `obj.attr = v`（`attr_assign_evaled`）: クラス側のデータディスクリプタなら `__set__(obj, v)`、`static mut` なら
+共有セルを書き換え、それ以外はフィールドへ格納します（`const` への代入は `TypeError`）。`C.attr = v` は `static mut` の
+値を置き換えます（ディスクリプタの `__set__` は呼びません）。
+
+**呼び出し** `obj.m(args)`: メソッドを探し、無ければ属性として読んでその値を呼びます（フィールドに入れた関数・
+`__get__` が返す関数。[06_classes_traits.md](06_classes_traits.md) の「メソッドの検索順序」）。
+
 **アクセス制御**: `current_class` と `field_access`/`method_access` を照合して  
-`private`/`protected` 違反があれば `AccessError` を送出します。
+`private`/`protected` 違反があれば `AccessError` を送出します。ディスクリプタを通る読み書きも同じです。
 
 ---
 

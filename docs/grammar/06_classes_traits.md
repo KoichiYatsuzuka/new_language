@@ -598,15 +598,110 @@ print(t.celsius)          # 0.0
 | `C.x = d`（クラスへ代入） | メンバーそのものを置き換える（`__set__` は呼ばない） |
 | `obj.x(..)` | 上の読みで得た値を呼ぶ（前節） |
 
+### データディスクリプタと非データディスクリプタ
+
+| 種類 | 持つメソッド | インスタンスから読む | インスタンス経由で代入する |
+|---|---|---|---|
+| データディスクリプタ | `__get__` と、`__set__` か `__delete__` | **フィールドより先に** `__get__(obj, C)` | `__set__(obj, v)`。`__set__` が無ければ `AttributeError: __set__` |
+| 非データディスクリプタ | `__get__` だけ | 同じ名前のフィールドが無ければ `__get__(obj, C)` | ディスクリプタを通らない（`static mut` なら共有セルを書き換える） |
+
+非データディスクリプタは「読むたびに計算する値」に使えます。`const` に置いてもかまいません:
+
+```ar
+class Greeting:
+    fn __get__(self, mut obj: Person, owner: Any = None) -> str:
+        return f"Hello, {obj.name}"
+
+class Person:
+    let name: str
+    const greeting: Greeting = Greeting()
+    fn __init__(mut self, name: str) -> None:
+        self.name = name
+
+let p = Person("Ada")
+print(p.greeting)             # Hello, Ada
+print(p.greeting.upper())     # HELLO, ADA（読んだ値は str）
+```
+
+- ⚠ Arrow のクラスではフィールドとクラス側の値に同じ名前を付けられないので、「フィールドより先か後か」の違いが
+  出るのは Python から変換したクラス（`__init__` が `self.x = ..` と書くクラス）だけです。
+
+### クラスから読む・関数を返す
+
+クラスから読むと `__get__` の `obj` は `None` です（CPython と同じ）。`__get__` が関数を返せば、その場で呼べます
+（「属性に入れた関数を呼ぶ」と同じ経路）:
+
+```ar
+class Where:
+    fn __get__(self, obj: Any, owner: Any = None) -> str:
+        if obj is None:
+            return "through the class"
+        return "through an instance"
+
+class Spot:
+    static mut where: Where = Where()
+
+print(Spot.where)             # through the class
+print(Spot().where)           # through an instance
+
+fn double(x: int) -> int:
+    return x * 2
+
+class Op:
+    fn __get__(self, obj: Any, owner: Any = None) -> function[let int]->int:
+        return double
+
+class Calc:
+    static mut op: Op = Op()
+
+print(Calc().op(21))          # 42
+```
+
+### 型と注意
+
 - **型**: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は `__set__` の `value` の型、クラス経由の代入は
-  メンバーの宣言型（ディスクリプタのクラス）と照合します。`const` に置いたデータディスクリプタへの代入は `__set__` を
-  呼ぶので不変の誤りにはなりません。
+  メンバーの宣言型（ディスクリプタのクラス）と照合します（[08_type_system.md](08_type_system.md) の「属性の型」）。
+  `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにはなりません。
+  ```ar
+  t.fahrenheit = "hot"      # StaticTypeError: field 'fahrenheit' of class 'Thermo' is declared 'float' but got 'str'
+  ```
+- 複合代入 `t.fahrenheit += 18.0` は `__get__` で読んで `__set__` で書きます。
 - ⚠ `obj` を書き換える `__set__` / `__get__` は仮引数を `mut obj` にしてください（`let` の仮引数は `mut` の実引数を写すので、
   書き換えが元に届かない呼び方があります）。
+- ⚠ `__get__` が `self` を返すとき（クラスから読んだら自分自身を返す形）は `mut self` にしてください。`self` のままだと
+  `return self` は写しを返します（Arrow の値の規則）。組み込みの `property` はそうしています。
 - ⚠ インスタンスのフィールド（`mut f: D`）に入れた値はディスクリプタとして働きません（CPython と同じ）。
 - ⚠ `del obj.x`（`__delete__`）は Arrow に属性を消す構文が無いので使えません。
 - 実装: `eval/attrs.rs` の `get_attr_val` / `attr_assign_evaled` / `set_attr_val`（3 つの入口だけ）。型検査は
-  `TypeChecker::class_descriptor`。
+  `TypeChecker::class_descriptor`。例題は `examples/classes/descriptor.ar`（CPython と同じ出力）・`descriptor_error.ar`。
+
+---
+
+## 組み込みの `property`
+
+CPython 3.12 の `property` と同じ振る舞いのクラスです（データディスクリプタ）。Python の `@property` / `@x.setter` は
+変換器がこれで組み立てます（[09_imports.md](09_imports.md) の「クラスの属性・property」）。
+
+| 書き方 | 働き |
+|---|---|
+| `property(fget=None, fset=None, fdel=None, doc=None)` | 作る。欄 `fget` / `fset` / `fdel` / `__doc__` で読める |
+| `p.getter(f)` / `p.setter(f)` / `p.deleter(f)` | その関数だけを差し替えた**新しい** property を返す（名前も写す） |
+| `p.__set_name__(owner, name)` | 誤りの文言に使う名前を入れる（CPython ではクラスを作るときに呼ばれる） |
+| `obj.x` / `obj.x = v` | `fget(obj)` / `fset(obj, v)`。無ければ CPython と同じ `AttributeError` |
+| `C.x` | property そのもの（`C.x is C.x` は真・`type(C.x).__name__` は `property`） |
+
+誤りの文言は CPython と同じです:
+
+```text
+AttributeError: property 'value' of 'ReadOnly' object has no setter
+AttributeError: property of 'ReadOnly' object has no getter      # 名前を入れていない property
+```
+
+- `fget` などには束縛しない関数（`C.get_x`。呼ぶと `self` に `obj` が入る）も普通の関数も渡せます。
+- ⚠ 型は `Any` です（`property[T]` のような精密な型は付けていません）。Arrow のソースで使うと、読んだ値の演算が
+  `OperationOnAny` になります。Arrow のクラスで同じことをしたいときは、型を付けたディスクリプタのクラス（上の節）を書いてください。
+- ⚠ Arrow で書いたクラスで（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）、名前 `property` を初めて引いたときに組み立てます。
+  CPython 3.12 の property は `__name__` を持たないので、名前は外から読めない欄に置いています。
 
 ---
 
@@ -625,8 +720,9 @@ print(t.celsius)          # 0.0
 | `__add__(self, let other)` | `obj + other` |
 | `__cast__[T](let other: T)` | 自動キャスト |
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
-| `__get__(self, obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節） |
+| `__get__(self, mut obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節。クラスから読むと `obj` は `None`） |
 | `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
+| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる（⚠ `del obj.x` の構文が無いので呼ばれるのは明示の呼び出しだけ） |
 | `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
 
 ---

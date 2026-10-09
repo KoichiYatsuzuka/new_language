@@ -14,7 +14,7 @@
 | [03_expressions.md](03_expressions.md) | 演算子優先順位・各種式・型ガード・キャスト・ブロック式 |
 | [04_control_flow.md](04_control_flow.md) | if/match/for/while/break/continue・制御構文の式としての使い方 |
 | [05_functions.md](05_functions.md) | fn/gen・パラメータ・テンプレート・オーバーロード・デコレータ |
-| [06_classes_traits.md](06_classes_traits.md) | クラス・trait・new_type・enum・アクセス制御 |
+| [06_classes_traits.md](06_classes_traits.md) | クラス・trait・new_type・enum・アクセス制御・束縛メソッド・属性に入れた関数の呼び出し・ディスクリプタ（`__get__` / `__set__`）・組み込みの `property` |
 | [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス（CPython の階層・`args`）・`except m.Err` |
 | [08_type_system.md](08_type_system.md) | 型アノテーション・静的型検査・型推論・型ガードナロイング |
 | [09_imports.md](09_imports.md) | import・from import・相対 import・探索規則・パッケージ・名前空間（CPython 準拠）・言語タグ |

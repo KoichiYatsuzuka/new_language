@@ -404,6 +404,60 @@ if y is not None:
 
 ---
 
+## 属性の型
+
+`obj.x` の型はメンバーの宣言型です。次の 2 つは宣言型そのものではなく、実行時に起きることに合わせた型で検査します。
+
+### 属性に入れた関数を呼ぶ（`obj.f(x)`）
+
+メソッドの無い名前の呼び出しは、メンバーの型で検査します（[06_classes_traits.md](06_classes_traits.md) の「属性に入れた関数を呼ぶ」）:
+
+| メンバーの型 | 検査 |
+|---|---|
+| `function[let int]->int` など引数の分かる関数型 | 引数の数・型を検査し、戻り値の型が呼び出しの型 |
+| `type[C]`（クラス変数に入ったクラス） | `C` のインスタンス |
+| 呼べない型（`int` など） | `'int' is not callable`（値を呼ぶのと同じ誤り） |
+
+### ディスクリプタ
+
+クラス側（`static mut` / `const`）のメンバーの宣言型が `__get__` を持つクラスなら、そのメンバーはディスクリプタです
+（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。
+
+| 書き方 | 照合する型 |
+|---|---|
+| `obj.x` / `C.x`（読み） | `__get__` の戻り値の型 |
+| `obj.x(..)`（呼び出し） | `__get__` の戻り値の型を呼ぶ |
+| `obj.x = v`（データディスクリプタ） | `__set__` の `value` の型（型が書いていなければ検査しない） |
+| `obj.x = v`（非データディスクリプタ） | メンバーの宣言型 |
+| `C.x = v`（クラスへ代入） | メンバーの宣言型（ディスクリプタのクラス） |
+
+```ar
+class F:
+    fn __get__(self, obj: Any, owner: Any = None) -> float:
+        return 1.5
+    fn __set__(self, mut obj: Any, value: float) -> None:
+        pass
+
+class T:
+    static mut f: F = F()
+    const k: F = F()
+
+mut t = T()
+let x: float = t.f        # OK（__get__ の戻り値）
+t.f = 2.5                 # OK（__set__ の value）
+t.k = 3.0                 # OK（const でもデータディスクリプタへの代入は __set__ なので不変の誤りにしない）
+t.f = "hot"               # StaticTypeError: field 'f' of class 'T' is declared 'float' but got 'str'
+T.f = 2.5                 # StaticTypeError: field 'f' of class 'T' is declared 'F' but got 'float'
+                          #（クラスへの代入はメンバーそのものを置き換える）
+```
+
+- ⚠ インスタンスのフィールド（`mut f: D`）はディスクリプタとして扱いません（実行時も働かない）。
+- ⚠ 組み込みの `property` を置いたメンバーは `Any` です（Python から変換したクラスは `static mut x: Any`）。
+- 実装: `TypeChecker::class_descriptor`（`type_check/infer.rs`）。読みは `infer_attr`、呼び出しは `call_check.rs`、
+  代入は `stmt/check.rs` の `check_assign` が使う。
+
+---
+
 ## 静的型検査のタイミング
 
 ```
