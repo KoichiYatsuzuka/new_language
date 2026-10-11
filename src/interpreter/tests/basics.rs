@@ -545,3 +545,31 @@ fn test_freeze_is_the_same_as_let() {
     );
     assert!(run_err_msg(captured).contains("cannot freeze 'count' because it is captured by a closure"));
 }
+
+/// 文字列の `repr` は CPython 3.12 の `unicode_repr` と同じ（python_builtins_plan.md のタスク 1-13）。
+/// 期待値は CPython 3.12.2 の `repr(..)` の出力そのもの。
+#[test]
+fn test_str_repr_matches_cpython() {
+    use crate::interpreter::ops::py_str_repr;
+    for (s, want) in [
+        ("plain", "'plain'"),
+        ("it's", "\"it's\""),
+        ("say \"hi\"", "'say \"hi\"'"),
+        ("both ' and \"", "'both \\' and \"'"),
+        ("tab\tnl\ncr\r", "'tab\\tnl\\ncr\\r'"),
+        ("back\\slash", "'back\\\\slash'"),
+        ("nul\0del\u{7f}", "'nul\\x00del\\x7f'"),
+        ("é 日本 😀", "'é 日本 😀'"),
+        ("\u{a0}\u{ad}\u{200b}\u{2028}", "'\\xa0\\xad\\u200b\\u2028'"),
+        ("\u{e0000}\u{10ffff}", "'\\U000e0000\\U0010ffff'"),
+        ("", "''"),
+    ] {
+        assert_eq!(py_str_repr(s), want, "repr of {s:?}");
+    }
+    // `isprintable` も同じ表（以前は `!is_control()` で U+00A0 / U+200B を表示できるとしていた）。
+    let src = "let a = \"abc\".isprintable()\nlet b = (\"a\" + chr(0xa0)).isprintable()\nlet c = chr(0x200b).isprintable()\nlet d = \"\".isprintable()\n";
+    let interp = run_interp(src);
+    for (var, want) in [("a", true), ("b", false), ("c", false), ("d", true)] {
+        assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
+    }
+}

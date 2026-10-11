@@ -14,10 +14,24 @@ Python 互換の組み込みの本体は `src/interpreter/eval/py_builtins.rs`�
 |---|---|
 | `print(*values, sep=" ", end="\n", flush=False)` | 値を `str` にして `sep` でつなぎ、`end` を足して標準出力へ。`sep` / `end` は `None` か文字列（それ以外は `TypeError: end must be None or a string, not int`）。`file=` は `None` だけ |
 | `range(stop)` / `range(start, stop[, step])` | 整数の列 |
-| `len(x)` / `repr(x)` / `id(x)` / `next(it)` | 長さ・`repr`・同一性・イテレータの次 |
+| `len(x)` / `repr(x)` / `id(x)` / `next(it)` | 長さ・`repr`・同一性・イテレータの次。文字列の `repr` は CPython と同じ（下の「文字列の `repr`」） |
 | `enumerate(it, start=0)` / `zip(*its)` | 番号付き・組の列（遅延のジェネレータも最後まで回す） |
 | `open(path, FileOpenMode.read)` | ファイルを開く（Arrow の形。下の「`open`」） |
 | `close(f)` / `getenv(name)` / `parse_ar(src[, path])` | ファイルを閉じる・環境変数・Arrow のソースを構文木の値にする |
+
+### 文字列の `repr`
+
+`repr(s)`・コンテナの中の文字列の表示（`print([s])`）・`KeyError` の文言・`ascii(s)` は、CPython 3.12 の `repr` と同じ形です:
+
+```ar
+print(repr("it's"))            # "it's"（' を含み " を含まなければ " で囲む）
+print(["a\nb", "c\\d"])        # ['a\nb', 'c\\d']（\t / \n / \r / \ / 引用符をエスケープ）
+print(repr("x" + chr(0xa0)))   # 'x\xa0'（表示できない文字は \xhh / \uhhhh / \Uhhhhhhhh）
+print(repr("日本"))             # '日本'（表示できる非 ASCII はそのまま）
+```
+
+- 「表示できる」の判定は CPython の `str.isprintable()` と同じ表（`ops/unicode_printable.rs`。CPython 3.12.2 から生成）で、
+  `s.isprintable()` も同じ表を使います。
 
 ### `open`
 

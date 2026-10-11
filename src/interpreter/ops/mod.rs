@@ -129,6 +129,45 @@ pub(crate) fn py_float_div_mod(a: f64, b: f64) -> (f64, f64) {
     (q, m)
 }
 
+/// 文字列の `repr`（CPython 3.12 の `unicode_repr`・python_builtins_plan.md のタスク 1-13）。
+///
+/// - 引用符は `'`。ただし `'` を含み `"` を含まなければ `"`（`"it's"`）
+/// - `\` と使った引用符は `\` を前に付ける。`\t` / `\n` / `\r` はその形
+/// - 表示できない文字（[`unicode_printable::is_printable`] が偽）は `\xhh` / `\uhhhh` / `\Uhhhhhhhh`
+///   （ASCII の制御文字・`\x7f` も同じ）。表示できる非 ASCII の文字はそのまま
+///
+/// ⚠ 以前は `'` で囲むだけで、`'it's'` / 改行がそのまま / `\` が 1 つのまま、と出ていた（6-1 の作業中に見つけた）。
+/// ⚠ `ascii(x)` はこの結果の非 ASCII をさらに変える（`py_ascii`）。
+pub(crate) fn py_str_repr(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if unicode_printable::is_printable(c) => out.push(c),
+            c => {
+                let cp = c as u32;
+                if cp <= 0xFF {
+                    out.push_str(&format!("\\x{cp:02x}"));
+                } else if cp <= 0xFFFF {
+                    out.push_str(&format!("\\u{cp:04x}"));
+                } else {
+                    out.push_str(&format!("\\U{cp:08x}"));
+                }
+            }
+        }
+    }
+    out.push(quote);
+    out
+}
 
 pub(crate) mod typecheck;
 mod display;
@@ -137,3 +176,4 @@ mod operators;
 pub(crate) use operators::byte_of;
 mod equality;
 pub(crate) mod hash;
+pub(crate) mod unicode_printable;

@@ -399,7 +399,11 @@ impl Interpreter {
                     && s.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()),
             )),
             "isascii" => Ok(Value::Bool(s.is_ascii())),
-            "isprintable" => Ok(Value::Bool(s.chars().all(|c| !c.is_control()))),
+            // CPython と同じ表（`repr` が `\x..` に変えるかと同じ判定・タスク 1-13）。以前は `!is_control()` で、
+            // 書式文字（U+200B）・区切り（U+00A0 / U+2028）・未割り当ての符号位置を「表示できる」としていた。
+            "isprintable" => Ok(Value::Bool(
+                s.chars().all(crate::interpreter::ops::unicode_printable::is_printable),
+            )),
 
             // ── 幅揃え・ゼロ埋め ────────────────────────────────────────────
             "zfill" => {

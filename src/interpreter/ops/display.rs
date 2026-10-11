@@ -226,15 +226,16 @@ impl Interpreter {
     }
 
     /// 値をコレクション内要素の表示用文字列に変換する。
-    /// 文字列値はシングルクォートで囲み、リストは各要素を再帰的に repr 表示する。
-    /// `display` との違い: 文字列値が `'...'` 形式で出力される点。
+    /// 文字列値は CPython の `repr` の形（`'a'` / `"it's"` / `'a\nb'`・`py_str_repr`・タスク 1-13）、
+    /// リストは各要素を再帰的に repr 表示する。
+    /// `display` との違い: 文字列値が引用符つきで出力される点。
     ///
     /// - `val`: 表示する値
     ///
     /// 戻り値: repr 形式の表示文字列
     pub(crate) fn display_repr(&self, val: &Value) -> String {
         match val {
-            Value::Str(s) => format!("'{s}'"),
+            Value::Str(s) => super::py_str_repr(s),
             Value::List(items) => {
                 let parts: Vec<String> = items
                     .borrow()

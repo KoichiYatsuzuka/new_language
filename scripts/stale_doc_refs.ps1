@@ -53,6 +53,9 @@ $whitelist = @(
     'list_richcompare','tuplerichcompare','dict_iter','PyObject_SelfIter','PyObject_GetIter','float_repr','complex_repr','object_recursive_isinstance','__module__','double_round','__doc__','__package__','__loader__','__spec__','__self__','__func__',
     # CPython の関数名（Objects/descrobject.c）。組み込みの `property` の `setter` などが写す手順の出どころ（タスク 6-1）。
     'property_copy',
+    # CPython の関数名（Objects/unicodeobject.c）と、使わなかった Rust 標準のメソッド名（`char::is_control`）。
+    # 文字列の `repr` と `isprintable` の出どころと、以前の判定を説明するために言及する（タスク 1-13）。
+    'unicode_repr','is_control',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で
