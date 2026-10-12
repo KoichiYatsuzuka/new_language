@@ -7,10 +7,12 @@ class Temperature:
 
     @property
     def celsius(self):
+        """Temperature in degrees Celsius."""
         return self._c
 
     @celsius.setter
     def celsius(self, value):
+        """setter の docstring は property の __doc__ にならない（タスク 6-7）"""
         if value < -273.15:
             raise ValueError("below absolute zero")
         self._c = value  # __init__ では代入していないフィールド
@@ -61,6 +63,7 @@ class Logged:
 class Base:
     @property
     def name(self):
+        """name of the base"""
         return "base"
 
 
@@ -94,3 +97,4 @@ def run():
     print(Child().name)
     print(Base().name)
     print(Logged().v, WRAPPED)
+    print(Temperature.celsius.__doc__, Base.name.__doc__, Child.name.__doc__, Logged.v.__doc__)

@@ -1788,6 +1788,13 @@ fn python_property_is_built_after_the_class() {
     let err = conv("class C:\n    @property\n    def x(self):\n        return 1\n    @x.setter\n    def set_x(self, v):\n        pass\n")
         .expect_err("setter with another name");
     assert!(err.contains("the method must have the property's name 'x'"), "{err}");
+    // getter の docstring は property の `__doc__`（タスク 6-7）: `property(f, None, None, "doc")`。
+    let doc = conv("class C:\n    @property\n    def x(self):\n        \"\"\"the x\"\"\"\n        return 1\n").expect("docstring");
+    let Some(Stmt::AttrAssign { value: Expr::Call { args, .. }, .. }) = doc.get(1) else { panic!("{doc:?}") };
+    assert!(
+        matches!(args.as_slice(), [_, _, _, CallArg::Positional(Expr::Str(s))] if &**s == "the x"),
+        "{args:?}"
+    );
     // property を包むデコレータ（タスク 6-6）: 組み立てた後に `C.x = logged(C.x)` を足す。
     let wrapped = conv("def logged(f):\n    return f\nclass C:\n    @logged\n    @property\n    def x(self):\n        return 1\n")
         .expect("property inside another decorator");

@@ -264,12 +264,24 @@ fn convert_class_in(
                             access: crate::ast::Accessibility::Public,
                         });
                     }
+                    // メソッドの docstring（本体の最初の文字列の式・タスク 6-7）。
+                    let doc = match f.body.first() {
+                        Some(py::Stmt::Expr(e)) => match &*e.value {
+                            py::Expr::Constant(k) => match &k.value {
+                                py::Constant::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     after_class.extend(property_stmts(
                         &class_name,
                         &pname,
                         &method_name,
                         p,
                         outer,
+                        doc,
                         &mut defined_props,
                         filename,
                     )?);
@@ -516,12 +528,18 @@ fn property_decorator(
 /// `C.x = outer[0](outer[1](C.x))` と包む（タスク 6-6）。
 /// ⚠ 名前（`__set_name__`）は包む前の property に付ける。CPython は包んだ後の値に付けるので、包みが
 ///   property と別の物を返すときだけ違う（その property の誤りの文言に名前が入るかどうか）。
+///
+/// `doc` はメソッドの docstring（タスク 6-7）。CPython と同じく getter の docstring が property の `__doc__` になる:
+/// `@property` は `property(f, None, None, doc)`、`@x.getter` は差し替えた後で `C.x.__doc__ = doc`（docstring が無ければ
+/// `None`。CPython も前の getter の doc を捨てる）。setter / deleter の docstring は使わない。
+#[allow(clippy::too_many_arguments)]
 fn property_stmts(
     class_name: &str,
     prop: &str,
     method: &str,
     decor: PropDecor,
     outer: Vec<crate::ast::Expr>,
+    doc: Option<String>,
     defined: &mut std::collections::HashSet<String>,
     filename: &str,
 ) -> Result<Vec<Stmt>, String> {
@@ -543,8 +561,17 @@ fn property_stmts(
     };
     let func = attr(ident(class_name), method);
     let kind = decor.kind();
+    let doc_expr = || match &doc {
+        Some(d) => Expr::Str(std::rc::Rc::from(d.as_str())),
+        None => Expr::None,
+    };
+    // `@x.getter` / `@Base.x.getter` は差し替えた後で doc を付け直す（`@property` は構築子に渡す）。
+    let regetter = matches!(decor, PropDecor::Accessor { .. }) && matches!(kind, PropKind::Get);
     let (value, name_it) = match decor {
-        PropDecor::New => (call(ident("property"), vec![func]), true),
+        PropDecor::New => match &doc {
+            Some(_) => (call(ident("property"), vec![func, Expr::None, Expr::None, doc_expr()]), true),
+            None => (call(ident("property"), vec![func]), true),
+        },
         PropDecor::Accessor { owner: None, .. } => {
             // CPython ではクラス本体の名前 `x` を引く。このクラスで先に `@property def x` が無ければ引けない。
             if !defined.contains(prop) {
@@ -574,6 +601,13 @@ fn property_stmts(
             attr(attr(ident(class_name), prop), "__set_name__"),
             vec![ident(class_name), Expr::Str(std::rc::Rc::from(prop))],
         )));
+    }
+    if regetter {
+        out.push(Stmt::AttrAssign {
+            target: attr(attr(ident(class_name), prop), "__doc__"),
+            value: doc_expr(),
+            span: crate::token::Span::unknown(),
+        });
     }
     if !outer.is_empty() {
         let wrapped = outer
