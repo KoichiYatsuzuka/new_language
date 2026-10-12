@@ -13,6 +13,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 状態: 計画（未着手）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
+- 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
 
 ## 0. 何が起きているか
 
@@ -93,9 +94,9 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   typedef struct {
       uint64_t    address;     /* 先頭アドレス（NULL は 0） */
       const char* elem_type;   /* 要素の型名（"int32" / "float64" / "uint8" / 構造体名 …・静的な文字列・D-12） */
-      uint32_t    flags;       /* const・NUL 終端・借用の寿命（U-11） など */
+      uint32_t    flags;       /* const・NUL 終端・STATIC（D-15） など */
       int64_t     length;      /* 要素数（単体は 1） */
-      void      (*release)(void* ctx, uint64_t address);  /* NULL = 借用（Arrow は解放しない） */
+      void      (*release)(void* ctx, uint64_t address);  /* 解放関数。NULL は STATIC のときだけ（D-15） */
       void*       release_ctx; /* 解放に必要な情報（ヒープ・GCHandle・vector 本体など） */
   } PtrProtocol;
   ```
@@ -147,20 +148,31 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - **D-11**（U-5）: **外部ライブラリとの境界を越えて、値の書き換えを前提としたポインタ渡しはできない**こととする
   （利用者の判断）。ライブラリが持ち続けるメモリを指し、呼び出し側の書き換えがライブラリに伝わる、または
   ライブラリの更新を呼び出し側が読み直す API は扱わない。`Ptr` に書き込みの手段を持たせないことで守る。
-  呼び出しの間だけ C が書き込む引数をどう扱うかは U-10
+  呼び出しの間だけ C が Arrow 側のメモリへ書き込む引数は対象外（D-14）
 - **D-12**（U-6・U-9）: 要素の型は、Arrow 側では `type` の値として見せる（`Ptr[T]` の静的な型と一致するかを
   実行時に照合する）。ABI 側は型名の文字列（`const char*`・静的な文字列。`"int32"` / `"float64"` / `"uint8"` /
   ヘッダの構造体名など）で、境界で Arrow の `type` に引き当てる。知らない名前はエラー（D-4）
 - **D-13**（U-7）: `const char*` の引数は `bytes` だけを受け付ける。`str` を渡したら静的エラーにして
   `.encode(...)` を促す（UTF-8 で黙って渡すと、Shift-JIS 前提のライブラリで文字化けが黙って起きるため）。
   既存の例題（`dxlib_string.ar` など）は書き換える
+- **D-14**（U-10・暫定）: 呼び出しの間だけ C が Arrow 側のメモリへ書き込む引数は D-11 の対象外とし、扱う
+  （利用者の判断・いったん推奨どおり）。`V3* out` のゼロコピー書き戻し・`double*` の書き戻し（skill
+  `c-abi-interop` の P3〜P7）・`char*` の出力バッファ・`mut` の `list` の書き戻し。呼び出しが終わればメモリは
+  共有されず、書き戻した後は Arrow の値なので D-2 と矛盾しない
+- **D-15**（U-11）: `PtrProtocol` には**解放の責任を必ず明記させ、Arrow の値と同じ規約で解放させる**（利用者の判断）。
+  - ライブラリが `PtrProtocol` で Arrow に渡したメモリは、Arrow が参照している間は有効でなければならない。
+    Arrow は最後の参照がなくなったとき（`Drop`）か `release()` で、`release` を 1 回だけ呼ぶ。⇒ 後から
+    `to_list()` / `to_bytes()` しても常に安全で、期限切れの検査は要らない
+  - `release` が NULL でよいのは、flags に STATIC（DLL のアンロードまで有効で、内容も変わらない）があるときだけ。
+    STATIC の無い NULL はエラー（D-4）
+  - 次の呼び出しで上書きされる一時的なバッファを `PtrProtocol` で渡すのは規約違反。ライブラリ側でコピーして
+    `release` を付けて渡す（違反は C 側の誤りで、Arrow からは検知できない）
+  - 逆向き（Arrow → C の引数）は呼び出しの間だけ有効。C が保持したい場合は C 側でコピーする（C の慣習・今の
+    `char*` の引数と同じ）
 
-### 未決事項（着手前に決める）
+### 未決事項
 
-| # | 内容 | 推奨 | 決める時期 |
-|---|---|---|---|
-| U-10 | 呼び出しの間だけ C が Arrow 側のメモリへ書き込む引数（`V3* out` のゼロコピー書き戻し・`double*` の書き戻し＝skill `c-abi-interop` の P3〜P7、`char*` の出力バッファ、`mut` の `list` の書き戻し）は D-11 の対象か | 対象外（扱う）。呼び出しが終わればメモリは共有されず、書き戻しの後は Arrow の値なので D-2 と矛盾しない。既存の機能と例題（`cpp_out_param_writeback.ar`・`cpp_struct_ptr.ar`・DxLib の `VectorAdd` など）も使っている | 4-7 の前 |
-| U-11 | 借用（`release` が NULL）の `PtrProtocol` を後から `to_list()` するときの寿命（D-10 で展開を Arrow 側に移したため。たとえば静的バッファは次の呼び出しで上書きされる） | プロトコルの flags に寿命を書かせる（既定は「同じライブラリの次の呼び出しまで有効」、「DLL のアンロードまで有効」の印あり）。期限切れの `to_list()` はエラー。C へ渡し返すのは寿命の対象にしない（ハンドルとして長く使うため） | 4-1 の前 |
+なし（2026-10-12 時点）。
 
 ## 3. 実装予定
 
@@ -187,13 +199,13 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **3-1** | 組み込み型 `bytes` を足す（D-9）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | 値の種類 `Ptr` を足す（D-3）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | 型検査: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
-| **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・寿命 U-11）の表・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | U-11 | 小 |
+| **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | 生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
-| **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。借用の寿命の検査（U-11）。所有権付きは `Ptr` の `Drop` で解放 | 4-4 | 中 |
+| **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | 構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
-| **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（コピーを渡す）、`bytes` → `char*`。呼び出しの間だけ C が書き込む引数（`mut` の `list`・出力バッファ）の書き戻しは U-10 に従う | 4-5・U-10 | 中 |
+| **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | cs-dll: C# 側の `PtrProtocol` で配列・`List`・`byte[]` を受け渡す（export の生成器が要る。今は手書き）。`IntPtr` / `nint` ↔ `Ptr`、`byte[]` ↔ `bytes` | 2-1・3-1・4-5 | 大 |
 | **5-2** | cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
