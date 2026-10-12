@@ -1,0 +1,22 @@
+# py_class_body_names.ar — クラス本体の名前を参照するクラス属性（python_builtins_plan.md のタスク 6-3）
+#
+# Python のクラス本体は 1 つの名前空間で、`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
+# `table = {"get": get_c}` のように先に定義したメソッドやクラス属性を素の名前で引ける。変換器は:
+#   - そうしたクラス属性を**クラスの定義の後で**組み立てる（`C.DOUBLE = C.LIMIT * 2`。名前を `C.名前` に書き換える）
+#   - メソッドの別名（`current = get_c` / `__repr__ = __str__`）は同じメソッドをその名前でも定義する
+#   - `name = lambda self: ..` はメソッドにする（クラス属性に置いた関数はインスタンスから読むと束縛される）
+# ⚠ Python と同じく、ラムダの本体と内包表記の要素の式からはクラス本体の名前が見えない（大域を引く）。
+#
+# 出力は CPython と同じ:
+#   10 20 [0, 1] 100 1
+#   5 5 5 T
+#   15 degrees Celsius
+#   too hot
+#   Temperature(15) Temperature(15)
+#
+# ⚠ 以前は `DOUBLE = LIMIT * 2` などが `NameError`、`__repr__ = __str__` は黙って捨てられ、
+#   `describe = lambda self: ..` は `missing argument 'self'` だった。
+
+import[py] test_modules.py_class_body_names as cb
+
+cb.run()

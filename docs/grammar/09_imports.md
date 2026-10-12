@@ -378,9 +378,14 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
 - getter の docstring は property の `__doc__` になります（`@x.getter` で差し替えると付け直す。setter / deleter の
   docstring は使わない・CPython と同じ・タスク 6-7）。
 - ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
-- ⚠ `x = property(getx, setx)`（クラス本体に直接書く形）はまだ動きません（クラス属性の初期化式からクラス本体の名前が
-  見えない）。`del obj.x` も変換の誤りです。
+- ⚠ `del obj.x` は変換の誤りです。
 - `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
+- クラス本体で先に定義した名前を引くクラス属性（`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
+  `table = {"get": getx}`）は、**クラスの定義の後で** `C.x = property(C.getx, C.setx)` のように組み立てます
+  （Arrow の `static mut` の初期化式からはクラス本体の名前が見えないため・タスク 6-3）。Python と同じく、ラムダの本体と
+  内包表記の要素の式からはクラス本体の名前は見えません。
+- メソッドの別名（`current = get_c` / `__repr__ = __str__`）と `name = lambda self: ..` はメソッドとして定義します
+  （インスタンスから読むと束縛される・CPython と同じ）。
 
 ---
 

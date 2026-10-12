@@ -247,6 +247,11 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). â
   wrap the built property (`C.x = logged(C.x)`, 6-6). Conversion errors: two property decorators,
   `@staticmethod` / `@classmethod` / `@abstractmethod` outside one, `@x.setter` on a method with another
   name or before `@property def x`, a static/class-method property, `@cached_property`.
+- Class-body names (6-3, `classes.rs` + `class_scope.rs`): a class attribute whose initializer reads a name
+  bound earlier in the class body (method / class attribute / nested class) gets a `None` placeholder and
+  `C.x = <expr with those names rewritten to C.name>` after the class (`ClassNameRewriter`; lambda bodies and
+  comprehension elements are not rewritten, as in Python). `alias = method` / `__repr__ = __str__` define the
+  same method again under the new name; `name = lambda self: ..` becomes a method.
 - Cache key: `("py", key)`
 
 ### Python Interface (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)

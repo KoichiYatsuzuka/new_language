@@ -61,6 +61,9 @@ fn convert_class_in(
     let mut after_class: Vec<Stmt> = Vec::new();
     let mut defined_props: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut prop_method_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // その時点までにクラス本体で束縛された名前と、メソッドの定義（別名を作るため・タスク 6-3）。
+    let mut body_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut method_defs: std::collections::HashMap<String, Stmt> = std::collections::HashMap::new();
     // 変換しない文を明示エラーにする（黙って捨てない・10-18）。
     let unsupported = |what: &str| -> Result<(), String> {
         Err(format!(
@@ -157,11 +160,36 @@ fn convert_class_in(
             py::Stmt::Assign(a) if a.targets.len() == 1 => {
                 if let py::Expr::Name(n) = &a.targets[0] {
                     let fname = n.id.to_string();
+                    // メソッドの別名（`alias = getx` / `__repr__ = __str__`・タスク 6-3）は、同じメソッドをその名前でも定義する。
+                    // CPython ではクラス属性に置いた関数がインスタンスから読むと束縛されるので、別名もメソッドとして働く。
+                    // ⚠ 以前は `__` で始まる名前のクラス属性を黙って捨てていたので、`__repr__ = __str__` が効かなかった。
+                    if let py::Expr::Name(src) = &*a.value {
+                        if let Some(def) = method_defs.get(src.id.as_str()).cloned() {
+                            let alias = rename_method(def, &fname);
+                            method_defs.insert(fname.clone(), alias.clone());
+                            methods.push(alias);
+                            body_names.insert(fname);
+                            continue;
+                        }
+                    }
+                    // クラス本体の `name = lambda self, ..: 式` もメソッド（CPython ではクラス属性に置いた関数は
+                    // インスタンスから読むと束縛される・タスク 6-3）。⚠ 以前は束縛しない関数の `static mut` になり、
+                    // `obj.name()` が `missing argument 'self'` だった。
+                    if let py::Expr::Lambda(l) = &*a.value {
+                        let def = lambda_method(l, &fname, filename)?;
+                        method_defs.insert(fname.clone(), def.clone());
+                        methods.push(def);
+                        body_names.insert(fname);
+                        continue;
+                    }
                     if !fname.starts_with("__") {
-                        let default = convert_expr(&a.value, filename)?;
+                        let (default, deferred) = class_attr_value(&a.value, &body_names, &class_name, filename)?;
                         if seen_fields.insert(fname.clone()) {
+                            if let Some(value) = deferred {
+                                after_class.push(class_attr_assign(&class_name, &fname, value, filename));
+                            }
                             fields.push(Stmt::Field { src: None,
-                                name: fname,
+                                name: fname.clone(),
                                 // ⚠ Python のクラス属性は**可変・全インスタンス共有**なので
                                 //   `StaticMut`（`static mut`）に対応する。`Const` にすると
                                 //   `Counter.count = ...` が
@@ -174,6 +202,7 @@ fn convert_class_in(
                                 access: crate::ast::Accessibility::Public,
                             });
                         }
+                        body_names.insert(fname);
                     }
                 } else {
                     unsupported("an assignment to something other than a single name")?
@@ -185,10 +214,13 @@ fn convert_class_in(
                     if !fname.starts_with("__") {
                         let type_ann = convert_annotation(&a.annotation);
                         if let Some(val_expr) = &a.value {
-                            let default = convert_expr(val_expr, filename)?;
+                            let (default, deferred) = class_attr_value(val_expr, &body_names, &class_name, filename)?;
                             if seen_fields.insert(fname.clone()) {
+                                if let Some(value) = deferred {
+                                    after_class.push(class_attr_assign(&class_name, &fname, value, filename));
+                                }
                                 fields.push(Stmt::Field { src: None,
-                                    name: fname,
+                                    name: fname.clone(),
                                     // 注釈つきクラス変数 `n: int = 5` も同じく共有可変。
                                     kind: FieldKind::StaticMut,
                                     type_ann,
@@ -196,6 +228,7 @@ fn convert_class_in(
                                     access: crate::ast::Accessibility::Public,
                                 });
                             }
+                            body_names.insert(fname);
                         }
                     }
                 } else {
@@ -206,6 +239,7 @@ fn convert_class_in(
                 // `@property` / `@x.setter` は取り除いて別に扱う（タスク 6-1）。それより内側のデコレータは
                 // メソッドに、外側のデコレータは組み立てた property に当てる（タスク 6-6）。
                 let found = property_decorator(f, &class_name, filename)?;
+                let is_prop = found.is_some();
                 let (prop, rest, outer) = match found {
                     None => (None, &f.decorator_list[..], Vec::new()),
                     Some((p, pos)) => {
@@ -320,17 +354,23 @@ fn convert_class_in(
                             f.name.as_str()
                         ));
                     }
-                    methods.push(Stmt::GenDef { src: None,
+                    let def = Stmt::GenDef { src: None,
                         name: method_name,
                         template_params: vec![],
                         params,
                         yield_type: extract_yield_type(f.returns.as_deref()),
                         body,
                         access: crate::ast::Accessibility::Public,
-                    });
+                    };
+                    // 後ろのクラス属性から引ける名前（タスク 6-3）。property の名前は property を指すので別名にしない。
+                    if !is_prop {
+                        method_defs.insert(f.name.to_string(), def.clone());
+                    }
+                    body_names.insert(f.name.to_string());
+                    methods.push(def);
                     continue;
                 }
-                methods.push(Stmt::FnDef { src: None,
+                let def = Stmt::FnDef { src: None,
                     name: method_name,
                     template_params: vec![],
                     params,
@@ -341,7 +381,12 @@ fn convert_class_in(
                     is_class_method: dec.is_class_method,
                     decorators: dec.decorators,
                     access: crate::ast::Accessibility::Public,
-                });
+                };
+                if !is_prop {
+                    method_defs.insert(f.name.to_string(), def.clone());
+                }
+                body_names.insert(f.name.to_string());
+                methods.push(def);
             }
             // 入れ子のクラス（10-18）: 持ち上げて、このクラスにはクラス変数で結ぶ。
             py::Stmt::ClassDef(inner) => {
@@ -349,6 +394,7 @@ fn convert_class_in(
                 let inner_q = format!("{class_name}.{inner_name}");
                 hoisted.extend(convert_class_in(inner, filename, inner_q.clone(), &nested)?);
                 nested.insert(inner_name.clone(), inner_q.clone());
+                body_names.insert(inner_name.clone());
                 if seen_fields.insert(inner_name.clone()) {
                     fields.push(Stmt::Field { src: None,
                         name: inner_name,
@@ -420,6 +466,99 @@ fn convert_class_in(
 // 読み書きは組み込みの `property`（`eval/py_builtins.rs`）とディスクリプタのプロトコル（タスク 1-12）が受ける。
 // ⚠ `__set_name__` は CPython ではクラスを作るときに `type.__new__` が呼ぶ（誤りの文言に名前を入れるため）。
 // ⚠ `x = property(getx, setx)`（クラス属性に直接書く形）はクラス本体の名前を参照するので、まだ動かない。
+
+/// クラス属性の初期化式（タスク 6-3）。クラス本体で先に束縛した名前（`body_names`）を引いていなければ
+/// そのまま `static mut` の初期値、引いていれば初期値は `None` にして、クラスの定義の後で代入する値
+/// （名前を `C.名前` に書き換えたもの）を返す。
+fn class_attr_value(
+    value: &py::Expr,
+    body_names: &std::collections::HashSet<String>,
+    class_name: &str,
+    filename: &str,
+) -> Result<(crate::ast::Expr, Option<crate::ast::Expr>), String> {
+    let (rewritten, hit) = ClassNameRewriter::rewrite(value.clone(), body_names, class_name);
+    if hit {
+        Ok((crate::ast::Expr::None, Some(convert_expr(&rewritten, filename)?)))
+    } else {
+        Ok((convert_expr(value, filename)?, None))
+    }
+}
+
+/// クラスの定義の後に置く `C.name = value`（タスク 6-3）。
+fn class_attr_assign(class_name: &str, name: &str, value: crate::ast::Expr, filename: &str) -> Stmt {
+    use crate::ast::{Expr, Resolution};
+    Stmt::AttrAssign {
+        target: Expr::Attr {
+            object: Box::new(Expr::Ident { name: class_name.to_string(), node_id: 0, res: Resolution::Unresolved }),
+            attr: name.to_string(),
+            span: make_span(filename),
+            cache: Default::default(),
+            node_id: 0,
+        },
+        value,
+        span: crate::token::Span::unknown(),
+    }
+}
+
+/// クラス本体の `name = lambda ..: 式` をメソッド `name` にする（タスク 6-3）。本体は `return 式`。
+/// ⚠ ラムダの本体からクラス本体の名前は見えない（Python の規則）ので、名前は書き換えない。
+fn lambda_method(l: &py::ExprLambda, name: &str, filename: &str) -> Result<Stmt, String> {
+    let (params, renames) = convert_params(&l.args, filename)?;
+    let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+    // 本体の中のラムダ・内包表記の持ち上げはメソッドの本体に閉じ込める（式の変換と同じ）。
+    hoist_push();
+    let body_expr = {
+        let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+        let _body_guard = crate::python_converter::statements::FnBodyGuard::enter();
+        convert_expr(&l.body, filename)
+    };
+    let mut body = hoist_pop();
+    body.push(Stmt::Return(Some(body_expr?), crate::token::Span::unknown()));
+    Ok(Stmt::FnDef {
+        src: None,
+        name: name.to_string(),
+        template_params: vec![],
+        params,
+        return_type: None,
+        body,
+        is_abstract: false,
+        is_static: false,
+        is_class_method: false,
+        decorators: vec![],
+        access: crate::ast::Accessibility::Public,
+    })
+}
+
+/// メソッドの定義を別の名前にした写し（`alias = getx` の別名・タスク 6-3）。
+fn rename_method(def: Stmt, new_name: &str) -> Stmt {
+    match def {
+        Stmt::FnDef { src, template_params, params, return_type, body, is_abstract, is_static, is_class_method, decorators, access, .. } => {
+            Stmt::FnDef {
+                src,
+                name: new_name.to_string(),
+                template_params,
+                params,
+                return_type,
+                body,
+                is_abstract,
+                is_static,
+                is_class_method,
+                decorators,
+                access,
+            }
+        }
+        Stmt::GenDef { src, template_params, params, yield_type, body, access, .. } => Stmt::GenDef {
+            src,
+            name: new_name.to_string(),
+            template_params,
+            params,
+            yield_type,
+            body,
+            access,
+        },
+        other => other,
+    }
+}
 
 /// property のデコレータの種類（`@x.getter` / `@x.setter` / `@x.deleter`。`@property` は getter）。
 #[derive(Clone, Copy)]

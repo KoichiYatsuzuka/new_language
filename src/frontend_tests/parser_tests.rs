@@ -1834,3 +1834,47 @@ fn python_bytes_literal_becomes_a_bytes_call() {
         .collect();
     assert_eq!(ints, vec![65, 0]);
 }
+
+/// クラス本体の名前を参照するクラス属性（python_builtins_plan.md のタスク 6-3）。初期化式がクラス本体で先に
+/// 束縛した名前を引いていればクラスの定義の後で `C.x = <C.名前に書き換えた式>`、メソッドの別名（`alias = m`）と
+/// `name = lambda ..` はメソッドとして定義する。ラムダの本体の名前は書き換えない（Python の規則）。
+#[test]
+fn python_class_body_names_are_resolved_after_the_class() {
+    let stmts = crate::python_converter::convert_python_source(
+        concat!(
+            "class C:\n",
+            "    LIMIT = 10\n",
+            "    DOUBLE = LIMIT * 2\n",
+            "    def m(self):\n",
+            "        return 1\n",
+            "    alias = m\n",
+            "    f = lambda self: LIMIT\n",
+        ),
+        "<test>",
+    )
+    .expect("class body names");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("{stmts:?}") };
+    let method_names: Vec<&str> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::FnDef { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(method_names, vec!["m", "alias", "f"]);
+    // `DOUBLE` は初期値 None の置き場と、クラスの後の `C.DOUBLE = C.LIMIT * 2`。
+    assert!(body.iter().any(|s| matches!(s, Stmt::Field { name, default: Some(Expr::None), .. } if name == "DOUBLE")));
+    let Some(Stmt::AttrAssign { target: Expr::Attr { attr, .. }, value, .. }) = stmts.get(1) else { panic!("{stmts:?}") };
+    assert_eq!(attr, "DOUBLE");
+    assert!(
+        matches!(value, Expr::BinOp { left, .. }
+            if matches!(left.as_ref(), Expr::Attr { object, attr, .. }
+                if attr == "LIMIT" && matches!(object.as_ref(), Expr::Ident { name, .. } if name == "C"))),
+        "{value:?}"
+    );
+    // ラムダの本体の `LIMIT` は大域のまま（書き換えない）。
+    let Some(Stmt::FnDef { body: fbody, .. }) = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "f")) else {
+        panic!()
+    };
+    assert!(matches!(fbody.last(), Some(Stmt::Return(Some(Expr::Ident { name, .. }), _)) if name == "LIMIT"), "{fbody:?}");
+}
