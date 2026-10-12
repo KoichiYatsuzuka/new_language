@@ -537,5 +537,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (154)
   README.md (317)
 ```
-_Generated 2026-10-08 by generate-codebase-map.ps1_
+_Generated 2026-10-12 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
