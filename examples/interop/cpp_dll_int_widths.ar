@@ -1,0 +1,112 @@
+# cpp_dll_int_widths.ar — C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）
+#
+# 以前のブリッジは C の整数型の幅と符号を区別せず、`long` / `long long` 以外をすべて `int`（4 バイト・
+# 符号付き）として読んでいた。実測（1-6 の直前・2090589 の arrow.exe）で次のように黙って違う値が返っていた:
+#   unsigned int 4294967295 → -1 / unsigned long long 2^64-1 → -1
+#   long -5 → 4294967291（Windows の long は 4 バイトなのに 8 バイトとして読んでいた）
+#   unsigned char (200 + 100) mod 256 = 44 → 300 / signed char -5 → 251（レジスタの上位のごみまで読んでいた）
+#   ※ short / unsigned short はコンパイラ（MSVC）が 4 バイトへ広げて返すので偶然合っていた。
+# 今は C の型の幅と符号どおりに読み、Arrow の `int`（符号付き 64 ビット）へ広げる。
+#
+# 渡すときは C の型の幅に切り詰める（C の暗黙の変換と同じ。範囲外を静的に弾くのは将来の課題）。
+# unsigned long long の 2^63 以上は Arrow の `int` に入らないので OverflowError にする（黙って負にしない）。
+# 戻り値だけでなく、書き込みポインタの書き戻しと値返しの構造体のフィールドも同じ。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる例: cpp_lib_int_widths.ar（cpp-lib・シム経由）
+# 対になる負例: cpp_u64_overflow_error.ar（2^63 以上の unsigned long long を受け取る）
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK " + str(got))
+
+# 戻り値: C の型の幅と符号どおりに広げる
+check("unsigned int max   ", fp.fp_u32_max(), 4294967295)
+check("unsigned short max ", fp.fp_u16_max(), 65535)
+check("short min          ", fp.fp_i16_min(), -32768)
+check("long -5            ", fp.fp_long_neg(), -5)
+check("long long min      ", fp.fp_i64_min(), -9223372036854775807 - 1)
+check("unsigned long long ", fp.fp_u64_small(), 42)
+
+# 引数: C の型の幅に切り詰めて渡す
+check("unsigned int arg   ", fp.fp_u32_is_big(3000000000), 1)
+check("unsigned char wrap ", fp.fp_u8_add(200, 100), 44)
+check("signed char neg    ", fp.fp_i8_neg(5), -5)
+check("signed char -128   ", fp.fp_i8_neg(-128), -128)
+
+# bool
+let even = fp.fp_is_even(4)
+let odd = fp.fp_is_even(7)
+if even != True or odd != False:
+    raise ValueError("fp_is_even: got " + str(even) + ", " + str(odd))
+print("bool OK", even, odd)
+
+# 書き込みポインタ引数: C の型の幅で読み戻す
+mut b: int = 0
+fp.fp_u8_out(b)
+check("unsigned char* out ", b, 250)
+mut s: int = 0
+fp.fp_i16_out(s)
+check("short* out         ", s, -2)
+mut l: int = 0
+fp.fp_long_out(l)
+check("long* out          ", l, -7)
+
+# 2^63 以上の unsigned long long は OverflowError
+mut caught = False
+try:
+    let big = fp.fp_u64_big()
+    print("unreachable:", big)
+except OverflowError as e:
+    caught = True
+    if not e.message.startswith("a C unsigned 64-bit value"):
+        raise ValueError("fp_u64_big: unexpected message: " + e.message)
+    print("unsigned long long 2^64-1: OverflowError: " + e.message)
+if not caught:
+    raise ValueError("fp_u64_big: expected OverflowError")
+
+# 戻り値以外でも同じ: 書き込みポインタの書き戻しと、値返しの構造体のフィールド
+mut w: int = 0
+fp.fp_u64_out(w, 0)
+check("u64* out (small)   ", w, 7)
+mut wb_caught = False
+try:
+    fp.fp_u64_out(w, 1)
+except OverflowError as e:
+    wb_caught = True
+if not wb_caught:
+    raise ValueError("fp_u64_out: expected OverflowError, w = " + str(w))
+check("u64* out unchanged ", w, 7)
+print("unsigned long long* 2^64-1: OverflowError")
+
+let small_box = fp.fp_make_u64box(0, 3) mustbe U64Box
+check("U64Box.v (small)   ", small_box.v, 9)
+check("U64Box.tag         ", small_box.tag, 3)
+mut box_caught = False
+try:
+    let big_box = fp.fp_make_u64box(1, 4)
+    print("unreachable:", big_box)
+except OverflowError as e:
+    box_caught = True
+if not box_caught:
+    raise ValueError("fp_make_u64box: expected OverflowError")
+print("U64Box.v 2^64-1: OverflowError")
+# 例外が次の呼び出しまで残らない（以前の形の誤りなら、ここで前の例外が出る）
+check("next call is clean ", fp.fp_u64_small(), 42)
+
+# 関数の中・ループの中から（同じ呼び出し点を何度も通る）
+fn wrap_total(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += fp.fp_u8_add(250, i)
+        i += 1
+    return acc
+
+# 250 + 0..9 → 250..255, 0..3（256 で一周する）
+check("wrap_total(10)     ", wrap_total(10), 250 + 251 + 252 + 253 + 254 + 255 + 0 + 1 + 2 + 3)

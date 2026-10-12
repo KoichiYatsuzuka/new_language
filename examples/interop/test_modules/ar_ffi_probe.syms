@@ -1,4 +1,4 @@
-#stamp e5c5690e0a791cf6
+#stamp 490ad174b071735d
 fp_len
 fp_make_rec
 fp_rec_score_val
@@ -7,3 +7,21 @@ fp_pair_sum
 fp_make_vec3
 fp_vec3_sum
 fp_rec_score
+fp_make_rgba
+fp_rgba_sum
+fp_u32_max
+fp_u32_is_big
+fp_u8_add
+fp_i8_neg
+fp_i16_min
+fp_u16_max
+fp_long_neg
+fp_i64_min
+fp_u64_small
+fp_u64_big
+fp_is_even
+fp_u8_out
+fp_i16_out
+fp_long_out
+fp_u64_out
+fp_make_u64box

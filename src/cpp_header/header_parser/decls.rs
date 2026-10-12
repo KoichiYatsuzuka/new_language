@@ -317,43 +317,35 @@ pub(crate) fn split_type_and_name(s: &str) -> Result<(String, String), String> {
     Ok((type_str, name.to_string()))
 }
 
-/// C 型文字列が **4 バイト未満の整数**（`char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` /
-/// `wchar_t`（Windows では 2 バイト）など。`typedef` で解決したものも含む）なら `true`。
+/// 整数の型名（`unsigned` / `signed` を除いた語の並び）を、幅と符号つきの `CType::Int` にする（1-6）。
+/// 整数でなければ `None`。`sign_kw` は `unsigned` / `signed` が書かれていたか、`unsigned` はそれが `unsigned` か。
 ///
-/// `CType` はこれらを `Int`（4 バイト）にまとめてしまうので、構造体のフィールドに現れると C と同じレイアウトを
-/// 作れない（`unsigned char` を 4 つ並べた `COLOR_U8` を 16 バイトとして読み書きしていた）。構造体の解析は
-/// これでフィールドを見分け、`CStructDef::complete` を偽にする（ffi_value_exchange_plan.md 1-3）。
-/// ポインタは幅が決まっているので `false`。解決の順序は [`parse_c_type_str`] と同じ。
-pub(crate) fn is_narrow_int_type(
-    s: &str,
-    custom: &HashMap<String, String>,
-    typedefs: &HashMap<String, String>,
-) -> bool {
-    let s = s.trim();
-    if s.ends_with('*') {
-        return false;
-    }
-    let core: Vec<&str> = s
-        .split_whitespace()
-        .filter(|t| {
-            !matches!(*t, "const" | "volatile" | "restrict" | "__restrict" | "unsigned" | "signed")
-                && !t.starts_with('[')
-        })
-        .collect();
-    let core_str = core.join(" ");
-    if custom.contains_key(&core_str) {
-        return false; // 利用者の対応表は int / long / float … の幅で読む
-    }
-    if let Some(resolved) = typedefs.get(&core_str) {
-        // 再帰は typedef なしで 1 段だけ（`parse_c_type_str` と同じく無限ループを避ける）
-        return is_narrow_int_type(resolved, custom, &HashMap::new());
-    }
-    matches!(
-        core.as_slice(),
-        ["char"] | ["short"] | ["short", "int"] | ["wchar_t"]
-            | ["int8_t"] | ["uint8_t"] | ["int16_t"] | ["uint16_t"]
-            | ["__int8"] | ["__int16"]
-    )
+/// ⚠ 以前は `char` / `short` / `int` / `intN_t` を符号付き 4 バイトに、`long` / `long long` / `size_t` を 8 バイトに
+///   まとめていた（`unsigned` も捨てていた）。`size_t` / `intptr_t` などはポインタの幅（x64 では 8 バイト）とする。
+fn c_int_type(core: &[&str], sign_kw: bool, unsigned: bool) -> Option<CType> {
+    use crate::cpp_header::types::IntWidth::*;
+    let (width, signed) = match core {
+        ["char"] | ["__int8"] => (W8, !unsigned),
+        ["short"] | ["short", "int"] | ["__int16"] => (W16, !unsigned),
+        ["int"] | ["__int32"] => (W32, !unsigned),
+        [] if sign_kw => (W32, !unsigned), // `unsigned` / `signed` だけ
+        ["long"] | ["long", "int"] => (CLong, !unsigned),
+        ["long", "long"] | ["long", "long", "int"] | ["__int64"] => (W64, !unsigned),
+        ["int8_t"] => (W8, true),
+        ["uint8_t"] => (W8, false),
+        ["int16_t"] => (W16, true),
+        ["uint16_t"] => (W16, false),
+        ["int32_t"] => (W32, true),
+        ["uint32_t"] => (W32, false),
+        ["int64_t"] => (W64, true),
+        ["uint64_t"] => (W64, false),
+        ["size_t"] | ["uintptr_t"] => (W64, false),
+        ["ptrdiff_t"] | ["intptr_t"] | ["ssize_t"] | ["__int3264"] => (W64, true),
+        // 幅と符号は環境で決まる（中継コードの生成で決める）
+        ["wchar_t"] => (WChar, false),
+        _ => return None,
+    };
+    Some(CType::Int { width, signed })
 }
 
 /// C 型文字列（末尾に `*` を含む可能性あり）を `CType` にマップする。
@@ -382,7 +374,9 @@ pub(crate) fn parse_c_type_str(
         })
         .collect();
 
-    // Filter signed/unsigned for primitive lookup
+    // Filter signed/unsigned for primitive lookup（書かれていたかと、`unsigned` かは控える・1-6）
+    let sign_kw = tokens.iter().any(|t| matches!(*t, "unsigned" | "signed"));
+    let unsigned = tokens.contains(&"unsigned");
     let core: Vec<&str> = tokens
         .iter()
         .filter(|t| !matches!(**t, "unsigned" | "signed"))
@@ -393,9 +387,11 @@ pub(crate) fn parse_c_type_str(
 
     // ── 1. User custom type mappings ─────────────────────────────────────────
     if let Some(tl_type) = custom.get(&core_str) {
+        use crate::cpp_header::types::IntWidth;
         let base_ct = match tl_type.as_str() {
-            "int" => CType::Int,
-            "long" => CType::Long,
+            // 対応表の "int" / "long" は従来どおり 4 / 8 バイトの符号付き
+            "int" => CType::Int { width: IntWidth::W32, signed: true },
+            "long" => CType::Int { width: IntWidth::W64, signed: true },
             "float" => CType::Float,
             "double" => CType::Double,
             "bool" => CType::Bool,
@@ -435,7 +431,9 @@ pub(crate) fn parse_c_type_str(
         }
         // char* / wchar_t* → C 文字列。`wchar_t` か、`const` が無い（出力バッファ）かを持つ（1-2）。
         // ⚠ 以前は両方を区別せず、`wchar_t*` にも UTF-8 を渡し、`char*` の出力バッファへの書き込みを捨てていた。
-        if matches!(core.as_slice(), ["char"] | ["wchar_t"]) {
+        // 文字列とみなすのは符号の指定が無い `char` だけ。`unsigned char*` / `signed char*` はバイト（小さい整数）
+        // へのポインタ（1-6。以前は文字列とみなしていた）。
+        if !sign_kw && matches!(core.as_slice(), ["char"] | ["wchar_t"]) {
             return Ok(CType::CharPtr { wide: core == ["wchar_t"], mutable: !is_const });
         }
         // void* → opaque integer handle
@@ -446,13 +444,9 @@ pub(crate) fn parse_c_type_str(
             ["bool"] | ["_Bool"] => CType::Bool,
             ["float"] => CType::Float,
             ["double"] | ["long", "double"] => CType::Double,
-            ["char"] | ["short"] | ["int"]
-            | ["int8_t"] | ["int16_t"] | ["int32_t"]
-            | ["uint8_t"] | ["uint16_t"] | ["uint32_t"] => CType::Int,
-            ["long"] | ["long", "int"] | ["long", "long"] | ["long", "long", "int"]
-            | ["int64_t"] | ["uint64_t"]
-            | ["size_t"] | ["ptrdiff_t"] | ["intptr_t"] | ["uintptr_t"]
-            | ["__int64"] | ["__int3264"] => CType::Long,
+            ints if c_int_type(ints, sign_kw, unsigned).is_some() => {
+                c_int_type(ints, sign_kw, unsigned).unwrap()
+            }
             other => {
                 let type_name = other.join(" ");
                 if type_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ' ') {
@@ -469,13 +463,7 @@ pub(crate) fn parse_c_type_str(
         ["bool"] | ["_Bool"] => Ok(CType::Bool),
         ["float"] => Ok(CType::Float),
         ["double"] | ["long", "double"] => Ok(CType::Double),
-        ["char"] | ["short"] | ["int"] | ["wchar_t"]
-        | ["int8_t"] | ["int16_t"] | ["int32_t"]
-        | ["uint8_t"] | ["uint16_t"] | ["uint32_t"] => Ok(CType::Int),
-        ["long"] | ["long", "int"] | ["long", "long"] | ["long", "long", "int"]
-        | ["int64_t"] | ["uint64_t"]
-        | ["size_t"] | ["ptrdiff_t"] | ["intptr_t"] | ["uintptr_t"]
-        | ["__int64"] | ["__int3264"] => Ok(CType::Long),
+        ints if c_int_type(ints, sign_kw, unsigned).is_some() => Ok(c_int_type(ints, sign_kw, unsigned).unwrap()),
         other => {
             let type_name = other.join(" ");
             if type_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ' ') {

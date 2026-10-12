@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 完了（1-1〜1-5・§5）。1-6 は提案（利用者の判断待ち）
+- 状態: フェーズ 1 完了（1-1〜1-6・§5）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -190,7 +190,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **1-3** | cpp-dll の by-value 構造体（引数・戻り値）の呼び出し規約を直す（ラッパーに `#[repr(C)]` の型を生成して値で受け渡す。typed 経路と同じ形） | 1-1 | 中 |
 | **1-4** | `ar_make_str` の UTF-8 検証（`from_utf8_unchecked` をやめる） | なし | 小 |
 | **1-5** | cpp-lib の恒久キャッシュ DLL を、ラッパー生成が変わったら作り直す（版の刻印） | なし | 小 |
-| **1-6** | （提案・1-3 で発見・利用者の判断待ち）C の整数型の幅と符号を区別する。今は `char` / `short` / `int` / `unsigned` / `uint32_t` をすべて `CType::Int`（符号付き 4 バイト）にまとめていて、引数・戻り値の `unsigned` の 2^31 以上が負になる・`short*` などの書き込みポインタが 4 バイト書く、などが起きうる（構造体のフィールドだけは 1-3 で「レイアウト不明」として止めた） | 1-3 | 中 |
+| **1-6** | （1-3 で発見・2026-10-13 利用者が採用）C の整数型の幅と符号を区別する。`char` / `short` / `int` / `unsigned` / `uint32_t` などを `CType::Int`（符号付き 4 バイト）にまとめていて、`unsigned` の 2^31 以上が負になる・`unsigned char` の戻り値でレジスタの上位のごみまで読む・`short*` などの書き込みポインタが 4 バイト書く、などが起きていた（構造体のフィールドだけは 1-3 で「レイアウト不明」として止めていた）。Windows の `long`（4 バイト）・`bool`（1 バイト）も同じ | 1-3 | 中 |
 | **2-1** | C#: 配列・`List`・`Dictionary` の戻り値と、リストの引数をエラーにする。スタブにあるクラスを返すメソッドは `CsObject` に包む。`str` 以外の注釈（`str \| None` など）の戻り値を正しく扱う | 1-1 | 中 |
 | **2-2** | cs-proc ホスト（`ArrowPipeHost.cs`）の受信を UTF-8 で復号する | なし | 小 |
 | **2-3** | js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
@@ -233,7 +233,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 ## 5. 実施記録
 
-着手順は 1-1 → 1-5 → 1-4 → 1-3 → 1-2。cpp-lib の生成物（`test_modules/ar_vec_math.dll` など）は
+着手順は 1-1 → 1-5 → 1-4 → 1-3 → 1-2 → 1-6。cpp-lib の生成物（`test_modules/ar_vec_math.dll` など）は
 リポジトリに入っていて恒久キャッシュとして読まれるので、先に 1-5 を入れないとラッパー生成の変更
 （1-2・1-3）が既存の例題に効かない。
 
@@ -299,7 +299,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ⚠ **発見**: ヘッダ解析は `char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` / `wchar_t` も
   `CType::Int`（4 バイト）にまとめていて、`unsigned char` × 4 の構造体（DxLib の `COLOR_U8` など）を 16 バイトとして
   読み書きしていた（ゼロコピー渡しも含む）。⇒ `is_narrow_int_type` で見分け、そうしたフィールドを持つ構造体を
-  不完全（`complete = false`）とみなす。引数・戻り値の整数の幅と符号は 1-6（提案）
+  不完全（`complete = false`）とみなす。引数・戻り値の整数の幅と符号は 1-6（⇒ 1-6 で幅を区別し、この判定は外した）
 - 検査用ライブラリに `Rgba8`（`unsigned char` × 4）と `fp_make_rgba` / `fp_rgba_sum` を足した
 - 例題: `cpp_dll_struct_by_value.ar`・`cpp_lib_struct_by_value.ar`（8・12・16 バイトを最上位・関数の中・ループの中から。
   期待値と違えば raise）・`cpp_struct_by_value_layout_error.ar`（負例）。`test_modules/ar_ffi_probe.*` を追加
@@ -337,12 +337,46 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `native_api::callbacks::tests`（`to_cstr`）
 - VSIX を作り直した（拡張の診断が増えるため）
 - ⚠ 残したもの: ハンドル経路の数値の変換（`int` の引数に str が来ると 0）。省略された引数を 0 で埋める仕組み
-  （`DEFAULTPARAM`）がこの変換に依存しており、静的な型でほぼ防がれるので触っていない。`bool` の幅は 1-6（提案）
+  （`DEFAULTPARAM`）がこの変換に依存しており、静的な型でほぼ防がれるので触っていない。`bool` の幅は 1-6（⇒ 1 バイトにした）
 - ゲート（基準 `0c6c54e`）: `scan_examples`・`force_gate` は基準と同じ（新しい例題も期待どおり）。`compare_python_impl` は
   負例 2 本を既知の差分に登録した（参照実装は直す前と同じ壊れ方: NUL で黙って切れる・アクセス違反）。
   `compare_import_paths` 13/13。`compare_outputs` の差 5 本はすべて意図したもの（新しい負例 3 本・1-3 の負例が静的
   エラーになった・`cpp_lib_struct_by_value.ar` は 1-3 と同じく生成物の作り直しの表示）。`const char*` の正例は基準と一致。
   `compare_wasm_frontend` 496/496（新しい静的エラーも拡張と一致）・`type_obligations` 退行なし
+
+### 1-6 実装
+
+- `CType::Int { width: IntWidth, signed }`（`src/cpp_header/types.rs`）。`IntWidth` は `W8`〜`W64` と、環境で幅の
+  変わる `CLong`（Windows 4 バイト）・`WChar`。ヘッダの型名からの対応は `decls.rs::c_int_type`、中継 DLL の Rust の型は
+  `int_rust_type`、`RawLayout` の注釈は `int_raw_ann` の各 1 か所。`CType::Long` は無くした。`bool` は 1 バイト（`u8`）
+- 受け取るときは C の幅と符号どおりに広げる。`unsigned long long` の 2^63 以上は `OverflowError`（戻り値・値返しの
+  構造体のフィールド・書き込みポインタの書き戻しの全部。typed 経路は `_ErrSlot` と `decode_out_ptr`）。渡すときは
+  C の幅に切り詰める（C の暗黙の変換と同じ）。書き込みポインタも C の幅で書く
+- 1-3 の `is_narrow_int_type`（4 バイト未満の整数のフィールドを持つ構造体を不完全とみなす）は外した。`unsigned char` × 4
+  の `Rgba8` は値で受け渡せるようになった。`signed char*` / `unsigned char*` は文字列ではなく数値のポインタにした
+- 実測した以前の症状（`2090589`・cpp-dll）: `unsigned int` 4294967295 → -1、`long` -5 → 4294967291、
+  `unsigned char` の (200 + 100) mod 256 = 44 → 300・`signed char` -5 → 251（レジスタの上位のごみまで読んでいた）、
+  `unsigned long long` の 2^64-1 → -1（戻り値も書き込みポインタも）。`short` / `unsigned short` は MSVC が 4 バイトへ
+  広げて返すので偶然合っていた。`long long` は以前から 8 バイトで正しい
+- ⚠ 途中で見つけて直した: 値返しの構造体のフィールドや書き込みポインタの書き戻しで変換が例外を返したとき、生成コードが
+  例外のハンドルを値として使い、呼び出しは正常に終わって例外が次の呼び出しまで残る形だった。⇒ 生成コードが
+  `TL_EXCEPTION` と比べてすぐ返す（`CType::to_handle_may_raise`）
+- 検査用ライブラリに整数の幅の関数 16 本と `Mat2`（配列のフィールド）・`U64Box`（`unsigned long long` のフィールド）を
+  足した。ヘッダに残っていた非 ASCII のコメント（1-1 から）を ASCII にした
+- 例題: `cpp_dll_int_widths.ar`・`cpp_lib_int_widths.ar`（期待値と違えば raise）・`cpp_u64_overflow_error.ar`（負例）。
+  `cpp_{dll,lib}_struct_by_value.ar` に `Rgba8` を足し、`cpp_struct_by_value_layout_error.ar` は `Mat2` に替えた
+- 単体テスト: `header_parser::tests`（狭い整数・`long` の幅）、`cpp_bridge::codegen::int_width_tests`（幅と符号・`long`・
+  `bool`・2^63 以上の例外・文言の一致）、`value::native::tests`（書き込みポインタの読み出し）
+- `docs/grammar/09_imports.md` に C の値の対応を書いた。VSIX を作り直した（`unsigned char*` の型が変わるため）
+- ⚠ 残したもの: 渡すときの範囲外を静的に弾くこと。C ABI 型 `uint64` の**フィールド**（raw ブロック）が 2^63 以上を
+  負として読むこと（P1 の格納型の規約。構造体ポインタのゼロコピー渡しで C が書いた値も同じ・skill `c-abi-interop`）
+- ゲート（基準 `2090589`）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` は新しい
+  3 本を既知の差分に登録した（参照実装は直す前の Rust と同じく `unsigned int` の最大値を -1・2^64-1 を -1 として読む）。
+  `compare_outputs` の差 6 本のうち 5 本は意図したもの（新しい 3 本と、`Rgba8` を足した値渡しの 2 本は基準では静的エラー）。
+  残る `cpp_default_arg_native_call.ar` と `compare_import_paths` の `cpp_struct_ptr.ar`（12/13）は、負の対照（基準どうし）でも
+  ずれる生成物の作り直しの表示で、`Cpp` の行を除いた出力は基準と一致した（1-3 と同じ）。`compare_wasm_frontend` 499/499・
+  `type_obligations` 退行なし・`cargo test` 1077 件すべて成功
+- `stale_doc_refs` で、1-2 で消した `by_value_ok` を指したままのコメント 2 か所（`codegen.rs`）が見つかり、今の判定（`CFnSig::unsupported_reason`）に直した
 
 ---
 

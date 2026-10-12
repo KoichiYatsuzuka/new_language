@@ -94,8 +94,9 @@ slot 1..    : フィールド（C ABI レイアウト: 宣言順 + C アライ�
   レイアウトメンバを**すべて**含むときのみ `true`。配列・ビットフィールド・ネスト構造体・
   未解決型のスキップ、union、継承付きクラスは `false`
 - `CStructDef::raw_layout()`: `complete` かつ全フィールドが幅確定プリミティブ
-  （`int`→i32 / `float`→f32 / `double`→f64）のとき `RawLayout` を返す。
-  C の `long`（環境依存幅）と `bool`（1B だが既存ミラーは i32 仮定）は対象外
+  （整数は C の幅と符号どおり `int8`〜`uint64`（`int_raw_ann`）/ `float`→f32 / `double`→f64）のとき
+  `RawLayout` を返す。⚠ 1-6（implementation_plans/ffi_value_exchange_plan.md）より前は整数がすべて i32 で、
+  C の `long`（環境依存幅）は対象外だった。`bool` は今も対象外（フィールドの `bool` は 1-6 で扱っていない）
 - `header_parser.rs` の simple class 判定（`classify_member_segment`）:
   - `virtual` / `friend` を含むクラスは**構造体リストから除外**（vtable / 非 simple）
   - メソッド宣言・`static`・`typedef`/`using`・ネスト型定義はレイアウト非寄与として無視
@@ -110,10 +111,11 @@ slot 1..    : フィールド（C ABI レイアウト: 宣言順 + C アライ�
 - 単体テスト: `header_parser.rs::tests`（13本 — virtual/friend 除外、ビットフィールド、
   継承、union、アラインメント、実 DxLib.h スニペット + 実ファイル）
 
-### Windows LLP64 の注意
-C `long` は Windows で 4B、Linux で 8B。現行 `CType::Long → i64` マッピングは
-LP64 前提。`long` 戻り値は x64 で上位 32bit がゼロ埋めされるため負値が壊れる —
-ラッパーで `as i32 as i64`（符号拡張正規化）が必要（既知の未修正問題）。
+### Windows LLP64 の注意（→ 解決: implementation_plans/ffi_value_exchange_plan.md 1-6）
+C `long` は Windows で 4B、Linux で 8B。以前の `CType::Long → i64` マッピングは
+LP64 前提で、Windows の `long` の負の戻り値が壊れていた（-5 → 4294967291）。
+⇒ `IntWidth::CLong` を足し、中継 DLL では `cfg!(windows)` で `i32` / `i64` を選ぶ（`int_rust_type`）。
+下の「C の整数型の幅と符号」。
 
 ### P3/P4 実装詳細（typed ABI へのポインタ引数統合）
 
@@ -306,7 +308,8 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
    `v3_norm(const V3*, double*)` のような**構造体ポインタ + プリミティブ書き込み
    ポインタ混在**の関数は typed 非適格 → ハンドル経路 → 構造体引数のハンドルを
    ポインタとしてビットキャスト → segfault だった。`Ptr{inner: Int|Long|Float|Double,
-   mutable: true}` を `AbiTy::OutPtr { width: RawWidth }` として typed 適格にした:
+   mutable: true}` を `AbiTy::OutPtr { width: RawWidth }` として typed 適格にした
+   （1-6 で `Long` は `Int { width: CLong, .. }` に入り、`width` は C の整数の幅と符号どおりになった）:
    - 呼び出し側がローカル u64 に初期値を width 幅でエンコードし、そのアドレスを渡す
    - 呼び出し成功後、named `mut` 変数へデコードして書き戻す
      （`call_native_function` / `dispatch_native_typed_exprs`。named 情報のない
@@ -352,13 +355,39 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
   シムは実際の型（`c_type_str` が型名を返す）で受け取り・返す。⚠ 以前のシムは値渡しを `void*` で受け取り、
   値返しを静的バッファのアドレスで返していた。typed 経路は値で渡していたので **8 バイトの構造体で segfault**
   （12・16 バイトは x64 の隠しポインタと偶然一致して動いていた）。cpp-dll はシムが無いので値返しで segfault
-- 値で受け渡せるのは `CStructDef::raw_layout` があるもの（完全・フィールドが int32 / float / double）だけ。
+- 値で受け渡せるのは `CStructDef::raw_layout` があるもの（完全・フィールドが C の整数 / float / double）だけ。
   それ以外を値で受け渡す関数は**生成しない**（`gen_dll_fn` が空を返す）
-- ⚠ `CType::Int` は `char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` / `wchar_t` も含む（4 バイト扱い）。
-  これらのフィールドを持つ構造体はヘッダ解析が不完全（`complete = false`）とみなす（`is_narrow_int_type`）。
-  以前は `unsigned char` × 4 の構造体（DxLib の `COLOR_U8` など）を 16 バイトとして読み書きしていた（ゼロコピー渡しも）
-- 例題: `examples/interop/cpp_{dll,lib}_struct_by_value.ar`・`cpp_struct_by_value_layout_error.ar`
-  （`test_modules/ffi_probe.h`）
+- ⚠ 1-3 の時点では `CType::Int` が `char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` / `wchar_t` も
+  4 バイトとして含んでいて、`unsigned char` × 4 の構造体（DxLib の `COLOR_U8` など）を 16 バイトとして読み書きしていた
+  （ゼロコピー渡しも）。1-3 ではそうしたフィールドの構造体を不完全とみなして止め、1-6 で幅を区別して正しく並べた
+- 例題: `examples/interop/cpp_{dll,lib}_struct_by_value.ar`（`Rgba8` = `unsigned char` × 4 を含む）・
+  `cpp_struct_by_value_layout_error.ar`（配列フィールドの `Mat2`）（`test_modules/ffi_probe.h`）
+
+### C の整数型の幅と符号（implementation_plans/ffi_value_exchange_plan.md 1-6）
+
+`CType::Int { width: IntWidth, signed: bool }`（`src/cpp_header/types.rs`）が C の整数型を幅と符号どおりに表す。
+⚠ 以前は `long` / `long long` 以外の整数をすべて `CType::Int`（符号付き 4 バイト）にまとめていた。
+- `IntWidth`: `W8` / `W16` / `W32` / `W64` と、プラットフォームで幅の変わる `CLong`（Windows 4 バイト・他 8 バイト）・
+  `WChar`（Windows `u16`・他 `i32`）。ヘッダの型名からの対応は `decls.rs::c_int_type` の 1 か所
+  （`char` / `short` / `int` / `long` / `long long` / `__intN` / `intN_t` / `uintN_t` / `size_t` / `ptrdiff_t` など。
+  `signed` / `unsigned` だけの型は `int`）。`signed char` / `unsigned char` の `*` は `CharPtr` にしない（数値のポインタ）
+- Rust の型（中継 DLL）は `int_rust_type`、`RawLayout` の注釈は `int_raw_ann`（`cpp_bridge/types.rs`）の 1 か所。
+  `bool` は中継 DLL では `u8`（C の `bool` は 1 バイト）
+- Arrow の値はすべて `int`（i64）。**受け取るとき**は C の幅と符号どおりに広げる。`unsigned long long` の 2^63 以上は
+  入らないので **OverflowError**（以前は黙って負）。戻り値はハンドル経路が `raise_exc` コールバック・typed 経路が
+  `_ErrSlot`。値返しの構造体のフィールドと書き込みポインタの書き戻し（ハンドル経路）は、生成コードが変換結果を
+  `TL_EXCEPTION` と比べてすぐ返す（`CType::to_handle_may_raise`）。⚠ 比べないと例外のハンドルが値として使われ、
+  呼び出しは正常に終わり、例外は次の呼び出しまで残る。typed 経路の書き戻しは `decode_out_ptr` が `Err` を返す。
+  文言は `value::U64_OVERFLOW_MSG` と生成コードの `_U64_MSG` で揃える（単体テストが突き合わせる）。
+  **渡すとき**は C の幅に切り詰める（C の暗黙の変換と同じ。範囲外を静的に弾くのは未対応）
+- ⚠ 残り: C ABI 型 `uint64` の**フィールド**（raw ブロック）は 2^63 以上を負として読む（P1 の格納型の規約。
+  構造体ポインタのゼロコピー渡しで C が書いた値も同じ）。ブリッジの境界の外の、言語の C ABI 型の意味論の問題
+- 書き込みポインタ（`AbiTy::OutPtr`）の幅も `int_raw_ann` から決める（`short*` に 4 バイト書いていたのを直した）
+- ⚠ 実測した以前の症状（MSVC）: `unsigned char` / `signed char` の戻り値はレジスタの上位のごみまで読んでいた
+  （`(unsigned char)300` → 300、`(signed char)-5` → 251）。`short` / `unsigned short` は MSVC が 4 バイトへ広げて返すので
+  偶然合っていた
+- 例題: `examples/interop/cpp_{dll,lib}_int_widths.ar`（戻り値・引数・`bool`・書き込みポインタ・OverflowError を
+  戻り値・書き戻し・構造体のフィールドで捕まえる）・`cpp_u64_overflow_error.ar`（負例）
 
 ## 実装フェーズ
 

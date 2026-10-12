@@ -76,10 +76,18 @@ pub fn encode_out_ptr_init(v: &Value, width: RawWidth) -> Option<u64> {
     })
 }
 
+/// C の符号なし 64 ビットの 2^63 以上を Arrow の `int` に入れようとしたときのメッセージ（1-6）。
+/// 中継 DLL の生成コード（`cpp_bridge/codegen.rs` の `_U64_MSG`）と同じ文言にする（単体テストが突き合わせる）。
+pub const U64_OVERFLOW_MSG: &str = "a C unsigned 64-bit value of 2^63 or more does not fit in int";
+
 /// C 呼び出し後の `AbiTy::OutPtr` ローカルスロットから値をデコードする
 /// （幅変換規則は raw フィールド読み出しと同一: 符号拡張 / f32→f64 拡張）。
-pub fn decode_out_ptr(local: u64, width: RawWidth) -> Value {
-    match width {
+/// ⚠ 符号なし 64 ビットの 2^63 以上は `int` に入らないので OverflowError にする（1-6。以前は黙って負にしていた）。
+pub fn decode_out_ptr(local: u64, width: RawWidth) -> Result<Value, String> {
+    if matches!(width, RawWidth::U64) && local > i64::MAX as u64 {
+        return Err(format!("OverflowError: {U64_OVERFLOW_MSG}"));
+    }
+    Ok(match width {
         RawWidth::I8 => Value::Int(local as u8 as i8 as i64),
         RawWidth::U8 => Value::Int(local as u8 as i64),
         RawWidth::I16 => Value::Int(local as u16 as i16 as i64),
@@ -89,7 +97,7 @@ pub fn decode_out_ptr(local: u64, width: RawWidth) -> Value {
         RawWidth::I64 | RawWidth::U64 => Value::Int(local as i64),
         RawWidth::F32 => Value::Float(f32::from_bits(local as u32) as f64),
         RawWidth::F64 => Value::Float(f64::from_bits(local)),
-    }
+    })
 }
 
 
@@ -316,7 +324,7 @@ impl TypedArgs {
     }
 
     /// `OutPtr` 引数 `i` に C が書いた値を読み出す（`out_wb` の要素に対して呼ぶ）。
-    pub fn decode_out(&self, i: usize, width: RawWidth) -> Value {
+    pub fn decode_out(&self, i: usize, width: RawWidth) -> Result<Value, String> {
         decode_out_ptr(self.out_locals[i], width)
     }
 }
@@ -500,22 +508,38 @@ mod tests {
         use RawWidth::*;
         // f64: ビットパターンそのまま
         let enc = encode_out_ptr_init(&Value::Float(5.0), F64).unwrap();
-        assert!(matches!(decode_out_ptr(enc, F64), Value::Float(f) if f == 5.0));
+        assert!(matches!(decode_out_ptr(enc, F64).unwrap(), Value::Float(f) if f == 5.0));
         // f32: 縮小格納 → 拡張読み出し（f32 で表現可能な値は往復不変）
         let enc = encode_out_ptr_init(&Value::Float(2.5), F32).unwrap();
-        assert!(matches!(decode_out_ptr(enc, F32), Value::Float(f) if f == 2.5));
+        assert!(matches!(decode_out_ptr(enc, F32).unwrap(), Value::Float(f) if f == 2.5));
         // i32: 切り詰め格納・符号拡張読み出し
         let enc = encode_out_ptr_init(&Value::Int(-7), I32).unwrap();
-        assert!(matches!(decode_out_ptr(enc, I32), Value::Int(-7)));
+        assert!(matches!(decode_out_ptr(enc, I32).unwrap(), Value::Int(-7)));
         // i64
         let enc = encode_out_ptr_init(&Value::Int(1 << 40), I64).unwrap();
-        assert!(matches!(decode_out_ptr(enc, I64), Value::Int(n) if n == 1 << 40));
+        assert!(matches!(decode_out_ptr(enc, I64).unwrap(), Value::Int(n) if n == 1 << 40));
         // int → float 昇格（ハンドル経路の ar_to_float と同義）
         let enc = encode_out_ptr_init(&Value::Int(3), F64).unwrap();
-        assert!(matches!(decode_out_ptr(enc, F64), Value::Float(f) if f == 3.0));
+        assert!(matches!(decode_out_ptr(enc, F64).unwrap(), Value::Float(f) if f == 3.0));
         // 型不一致（float を int* へ / 非数値）→ None（typed 経路を諦める）
         assert!(encode_out_ptr_init(&Value::Float(1.5), I32).is_none());
         assert!(encode_out_ptr_init(&Value::Bool(true), F64).is_none());
+    }
+
+    /// C の幅と符号どおりに広げる。符号なし 64 ビットの 2^63 以上は OverflowError（1-6）。
+    #[test]
+    fn out_ptr_decode_follows_c_width_and_sign() {
+        use RawWidth::*;
+        assert!(matches!(decode_out_ptr(0xFA, U8).unwrap(), Value::Int(250)));
+        assert!(matches!(decode_out_ptr(0xFA, I8).unwrap(), Value::Int(-6)));
+        assert!(matches!(decode_out_ptr(0xFFFE, I16).unwrap(), Value::Int(-2)));
+        assert!(matches!(decode_out_ptr(0xFFFF_FFFF, U32).unwrap(), Value::Int(4294967295)));
+        assert!(matches!(decode_out_ptr(42, U64).unwrap(), Value::Int(42)));
+        assert!(matches!(decode_out_ptr(i64::MAX as u64, U64).unwrap(), Value::Int(i64::MAX)));
+        let err = decode_out_ptr(u64::MAX, U64).unwrap_err();
+        assert!(err.starts_with("OverflowError: "), "{err}");
+        // 符号付き 64 ビットは同じビットでも負の値として読む（エラーではない）
+        assert!(matches!(decode_out_ptr(u64::MAX, I64).unwrap(), Value::Int(-1)));
     }
 }
 

@@ -7,13 +7,32 @@
 
 // ── C type model ─────────────────────────────────────────────────────────────
 
+/// C の整数の幅（ffi_value_exchange_plan.md 1-6）。
+///
+/// `CLong` と `WChar` は環境で幅が変わるので、ヘッダの段階では名前のまま持ち、実行時の中継コードの生成で
+/// 決める（`interpreter/cpp_bridge/types.rs`）: Windows（LLP64）は `long` = 4 バイト・`wchar_t` = 2 バイト（符号なし）、
+/// それ以外（LP64）は `long` = 8 バイト・`wchar_t` = 4 バイト（符号付き）。
+/// ⚠ 以前は `char` / `short` / `int` / 符号の有無をすべて符号付き 4 バイトに、`long` / `long long` / `size_t` を
+///   8 バイトにまとめていて、`unsigned` の 2^31 以上が負になる・Windows の `long` の戻り値を 8 バイトとして読む・
+///   `short*` へ 4 バイト書く、といったことが起きていた。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntWidth {
+    W8,
+    W16,
+    W32,
+    W64,
+    /// C の `long`
+    CLong,
+    /// C の `wchar_t`（ポインタでないもの）
+    WChar,
+}
+
 /// tl ↔ ネイティブ境界を越えることができる C の型を表す列挙型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum CType {
-    /// `int`, `short`, `char`, `int32_t`, `uint32_t` → tl `int`
-    Int,
-    /// `long`, `long long`, `int64_t`, `uint64_t`, `size_t` → tl `int`
-    Long,
+    /// 整数（`char` / `short` / `int` / `long` / `long long` / `intN_t` / `size_t` …）→ tl `int`。
+    /// 幅と符号を持つ（1-6）。
+    Int { width: IntWidth, signed: bool },
     /// `float` → tl `float`
     Float,
     /// `double` → tl `float`
@@ -51,11 +70,22 @@ impl CType {
     /// 生成された C++ シム ソースで使用する C 型文字列を返す。
     pub fn c_type_str(&self) -> String {
         match self {
-            CType::Int => "int".to_string(),
-            CType::Long => "long long".to_string(),
+            // シムは実際の幅と符号の型で受け渡す（中継コード側の幅と一致させる・1-6）
+            CType::Int { width, signed } => {
+                let base = match width {
+                    IntWidth::W8 => "char",
+                    IntWidth::W16 => "short",
+                    IntWidth::W32 => "int",
+                    IntWidth::W64 => "long long",
+                    IntWidth::CLong => "long",
+                    IntWidth::WChar => return "wchar_t".to_string(),
+                };
+                if *signed { format!("signed {base}") } else { format!("unsigned {base}") }
+            }
             CType::Float => "float".to_string(),
             CType::Double => "double".to_string(),
-            CType::Bool => "int".to_string(),
+            // C++ の bool（1 バイト）。中継コードも 1 バイトで受け渡す（1-6）
+            CType::Bool => "bool".to_string(),
             CType::Void => "void".to_string(),
             CType::VoidPtr => "void*".to_string(),
             CType::Ptr { inner, mutable } => {
@@ -124,16 +154,16 @@ pub struct CFnSig {
 pub const FFI_UNSUPPORTED_MARK: &str = "ffi-unsupported: ";
 
 impl CStructDef {
-    /// C と**同じレイアウトを正確に作れる**か: 完全（`complete`）で、全フィールドが int（4 バイト）/ float /
-    /// double。値渡し・値返し・構造体ポインタの受け渡しはこれが真のものだけ（`raw_layout` もこれで判定する）。
-    /// `long`（Windows は 4 バイト・Linux は 8 バイト）・`bool`（C++ は 1 バイト）・ポインタは含めない。
+    /// C と**同じレイアウトを正確に作れる**か: 完全（`complete`）で、全フィールドが整数（幅と符号つき・1-6）/
+    /// float / double。値渡し・値返し・構造体ポインタの受け渡しはこれが真のものだけ（`raw_layout` もこれで判定する）。
+    /// `long` / `wchar_t` の幅は環境で決まる（実行時に決める）。`bool` と ポインタのフィールドは含めない。
     pub fn has_exact_layout(&self) -> bool {
         self.complete
             && !self.fields.is_empty()
             && self
                 .fields
                 .iter()
-                .all(|(_, ct)| matches!(ct, CType::Int | CType::Float | CType::Double))
+                .all(|(_, ct)| matches!(ct, CType::Int { .. } | CType::Float | CType::Double))
     }
 }
 
@@ -223,10 +253,10 @@ impl CFnSig {
 fn typed_abi_ok(t: &CType, structs: &[CStructDef], param: bool) -> bool {
     let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
     match t {
-        CType::Int | CType::Long | CType::Float | CType::Double => true,
+        CType::Int { .. } | CType::Float | CType::Double => true,
         CType::Void => !param,
         CType::Ptr { inner, mutable: true } if param => {
-            matches!(**inner, CType::Int | CType::Long | CType::Float | CType::Double)
+            matches!(**inner, CType::Int { .. } | CType::Float | CType::Double)
         }
         CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } if param => exact(type_name),
         _ => false,
@@ -246,9 +276,9 @@ mod tests {
     }
     fn structs() -> Vec<CStructDef> {
         vec![
-            st("Rec", vec![CType::Int, CType::Double], true),
-            st("Named", vec![CType::Int, CType::CharPtr { wide: false, mutable: false }], true),
-            st("Rgba8", vec![CType::Int; 4], false),
+            st("Rec", vec![I32, CType::Double], true),
+            st("Named", vec![I32, CType::CharPtr { wide: false, mutable: false }], true),
+            st("Partial", vec![I32; 2], false),
         ]
     }
     fn sig(params: Vec<CType>, ret: CType) -> CFnSig {
@@ -263,16 +293,19 @@ mod tests {
     fn st_ptr(n: &str) -> CType { CType::OpaqueStructPtr { type_name: n.to_string(), mutable: false } }
     fn by_val(n: &str) -> CType { CType::ByValueStruct { type_name: n.to_string() } }
     const CSTR: CType = CType::CharPtr { wide: false, mutable: false };
+    const I32: CType = CType::Int { width: IntWidth::W32, signed: true };
+    const I64: CType = CType::Int { width: IntWidth::W64, signed: true };
+    const U8: CType = CType::Int { width: IntWidth::W8, signed: false };
 
     /// 今の Arrow から正しく呼べるもの（理由なし）
     #[test]
     fn supported_signatures() {
         let s = structs();
         for f in [
-            sig(vec![CType::Int, CType::Double], CType::Long),
-            sig(vec![CSTR], CType::Int),
+            sig(vec![I32, CType::Double], I64),
+            sig(vec![CSTR], I32),
             sig(vec![by_val("Rec")], by_val("Rec")),
-            sig(vec![st_ptr("Rec"), CType::Ptr { inner: Box::new(CType::Double), mutable: true }], CType::Int),
+            sig(vec![st_ptr("Rec"), CType::Ptr { inner: Box::new(CType::Double), mutable: true }], I32),
             sig(vec![CType::Bool], CType::Void),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
@@ -286,16 +319,16 @@ mod tests {
         let cases: Vec<(CFnSig, &str)> = vec![
             (sig(vec![], CSTR), "C string"),
             (sig(vec![], CType::CharPtr { wide: true, mutable: false }), "wchar_t"),
-            (sig(vec![], CType::Ptr { inner: Box::new(CType::Int), mutable: true }), "pointer to a number"),
+            (sig(vec![], CType::Ptr { inner: Box::new(I32), mutable: true }), "pointer to a number"),
             (sig(vec![], CType::VoidPtr), "void*"),
             (sig(vec![], st_ptr("Rec")), "pointer to struct `Rec`"),
             (sig(vec![], CType::FnPtr), "function pointer"),
-            (sig(vec![], by_val("Rgba8")), "struct `Rgba8` by value"),
+            (sig(vec![], by_val("Partial")), "struct `Partial` by value"),
             (sig(vec![CType::CharPtr { wide: false, mutable: true }], CType::Void), "output buffer"),
             (sig(vec![CType::CharPtr { wide: true, mutable: false }], CType::Void), "wide string"),
             (sig(vec![CType::VoidPtr], CType::Void), "`void*`"),
             (sig(vec![CType::FnPtr], CType::Void), "callback"),
-            (sig(vec![CType::Ptr { inner: Box::new(CType::Int), mutable: false }], CType::Void), "single value or an array"),
+            (sig(vec![CType::Ptr { inner: Box::new(I32), mutable: false }], CType::Void), "single value or an array"),
             (sig(vec![st_ptr("Named")], CType::Void), "points to struct `Named`"),
             (sig(vec![st_ptr("Unknown")], CType::Void), "points to struct `Unknown`"),
             (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
@@ -314,8 +347,9 @@ mod tests {
         let s = structs();
         assert!(s[0].has_exact_layout());
         assert!(!s[1].has_exact_layout()); // ポインタのフィールド
-        assert!(!s[2].has_exact_layout()); // 不完全（4 バイト未満の整数）
+        assert!(!s[2].has_exact_layout()); // 不完全（配列などのフィールドを読み飛ばした）
+        assert!(st("Rgba", vec![U8; 4], true).has_exact_layout()); // 4 バイト未満の整数も幅が分かる（1-6）
         assert!(!st("Empty", vec![], true).has_exact_layout());
-        assert!(!st("L", vec![CType::Long], true).has_exact_layout());
+        assert!(!st("L", vec![CType::Bool], true).has_exact_layout());
     }
 }

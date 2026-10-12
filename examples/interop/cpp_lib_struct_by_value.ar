@@ -4,7 +4,7 @@
 # アドレスで受け取っていたのに、中継 DLL の typed 経路は値で渡していて、8 バイト（x64 ではレジスタで渡る）
 # では食い違った。12・16 バイトは隠しポインタで渡るので偶然動いていた。値返しはシムの静的バッファに書いて
 # アドレスを返していた（スレッド安全でない）。今はシムも中継 DLL も構造体を値のまま受け渡す。
-# 8 バイト（Pair）・12 バイト（Vec3f）・16 バイト（Rec）を 1 つずつ、最上位・関数の中・ループの中から通す。
+# 4 バイト（Rgba8・1-6）・8 バイト（Pair）・12 バイト（Vec3f）・16 バイト（Rec）を 1 つずつ、最上位・関数の中・ループの中から通す。
 #
 # ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
 #
@@ -44,6 +44,18 @@ let vs = fp.fp_vec3_sum(Vec3f(1.0, 2.0, 3.5))
 if vs != 6.5:
     raise RuntimeError("fp_vec3_sum: got " + str(vs))
 print("fp_vec3_sum:", vs)
+
+# 4 バイト（unsigned char × 4）。1-6 で C の整数の幅を区別するまでは、4 バイト未満の整数を 4 バイトとして
+# 扱っていて 16 バイトの構造体として読み書きしていた（レイアウト不明として未対応にしていた・1-3）。
+# 128 以上の値で符号なしとして読めることも見る。
+let c = fp.fp_make_rgba(1, 2, 3, 250) mustbe Rgba8
+if c.r != 1 or c.g != 2 or c.b != 3 or c.a != 250:
+    raise RuntimeError("fp_make_rgba: got " + str(c.r) + ", " + str(c.g) + ", " + str(c.b) + ", " + str(c.a))
+print("Rgba8:", c.r, c.g, c.b, c.a)
+let cs = fp.fp_rgba_sum(Rgba8(10, 20, 30, 200))
+if cs != 260:
+    raise RuntimeError("fp_rgba_sum: got " + str(cs))
+print("fp_rgba_sum:", cs)
 
 # 関数の中・ループの中から（値返しを受けて、そのまま値渡しに使う）
 fn pair_total(let n: int) -> int:

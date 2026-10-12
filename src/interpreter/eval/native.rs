@@ -129,7 +129,7 @@ impl Interpreter {
                     // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
                     // ⚠ `out_wb` は `named_mut == Some(true)` のときだけ積まれる ＝ 必ず名前がある。
                     for (i, width) in std::mem::take(&mut ta.out_wb) {
-                        let val = ta.decode_out(i, width);
+                        let val = ta.decode_out(i, width)?;
                         let name = arg_ident_name(args, i)
                             .expect("out_wb は named mut と判定した引数にだけ積まれる")
                             .to_string();
@@ -305,7 +305,7 @@ impl Interpreter {
             unsafe { invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))? };
         // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
         for (i, width) in std::mem::take(&mut ta.out_wb) {
-            let val = ta.decode_out(i, width);
+            let val = ta.decode_out(i, width)?;
             let name = arg_ident_name(args, i)
                 .expect("out_wb は named mut と判定した引数にだけ積まれる")
                 .to_string();
@@ -390,7 +390,7 @@ impl Interpreter {
                     // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**呼び出し元へ返す**
                     // （VM のローカルは `vm_stack` の slot にあり、ここからは触れない・#48）。
                     for (i, width) in std::mem::take(&mut ta.out_wb) {
-                        wb_out.push((i as u8, ta.decode_out(i, width)));
+                        wb_out.push((i as u8, ta.decode_out(i, width)?));
                     }
                     return Ok(decode_typed_ret(&sig.ret, ret));
                 }

@@ -645,14 +645,15 @@ impl Interpreter {
         use crate::interpreter::value::{AbiTy, TypedSig};
         let ret = match sig.ret {
             CType::Void => AbiTy::Void,
-            CType::Int | CType::Long => AbiTy::I64,
+            // 中継コードが C の幅と符号どおりに受け取り、i64 に拡張して返す（1-6）
+            CType::Int { .. } => AbiTy::I64,
             CType::Float | CType::Double => AbiTy::F64,
             _ => return None,
         };
         let mut ptys = Vec::with_capacity(sig.params.len());
         for (_, ct) in &sig.params {
             match ct {
-                CType::Int | CType::Long => ptys.push(AbiTy::I64),
+                CType::Int { .. } => ptys.push(AbiTy::I64),
                 CType::Float | CType::Double => ptys.push(AbiTy::F64),
                 CType::OpaqueStructPtr { type_name, mutable } => {
                     let layout = raw_layouts.get(type_name)?.clone();
@@ -665,12 +666,15 @@ impl Interpreter {
                 // プリミティブ書き込みポインタ（`int*` / `double*`）: OutPtr スロット。
                 // 構造体ポインタと混在する関数（例: v3_norm(const V3*, double*)）を
                 // typed 経路の対象にする — ハンドル経路は構造体ポインタ引数を扱えない。
-                // 幅は rust_extern_type と同じ規約（Int→i32, Long→i64 — LLP64 既知課題）。
+                // 幅は rust_extern_type と同じ規約（C の幅と符号どおり・`long` は環境の幅・1-6）。
+                // ⚠ 以前は int を 4 バイト・long を 8 バイトに決め打ちしていて、`short*` へ 4 バイト、
+                //   Windows の `long*` へ 8 バイト書いていた。
                 CType::Ptr { inner, mutable: true } => {
                     use crate::interpreter::value::RawWidth;
                     let width = match **inner {
-                        CType::Int => RawWidth::I32,
-                        CType::Long => RawWidth::I64,
+                        CType::Int { width, signed } => RawWidth::from_ann(
+                            crate::interpreter::cpp_bridge::int_raw_ann(width, signed),
+                        )?,
                         CType::Float => RawWidth::F32,
                         CType::Double => RawWidth::F64,
                         _ => return None,

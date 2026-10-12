@@ -173,29 +173,34 @@ mod tests {
         assert!(defs[0].raw_layout().is_none());
     }
 
-    /// 4 バイト未満の整数フィールド → complete=false（`CType::Int` は 4 バイトとして扱うので
-    /// C と同じレイアウトを作れない・ffi_value_exchange_plan.md 1-3）。フィールド自体は残る
+    /// 4 バイト未満の整数フィールドも幅と符号つきで読み、C と同じレイアウトになる（ffi_value_exchange_plan.md 1-6）。
+    /// ⚠ 1-3 では `CType::Int` が幅を持たなかったので、不完全（レイアウト不明）として止めていた
     #[test]
-    fn test_narrow_int_fields_incomplete() {
-        for src in [
-            "typedef struct { unsigned char r, g, b, a; } RGBA8;",
-            "struct S { short a; int b; };",
-            "struct W { wchar_t c; int n; };",
-            "struct U { uint16_t lo; uint16_t hi; };",
-        ] {
-            let defs = parse(src);
-            assert_eq!(defs.len(), 1, "{src}");
-            assert!(!defs[0].complete, "{src}");
-            assert!(defs[0].raw_layout().is_none(), "{src}");
-            assert!(!defs[0].fields.is_empty(), "{src}");
-        }
+    fn test_narrow_int_fields_have_exact_layout() {
+        use crate::interpreter::value::RawWidth;
+        let layout_of = |defs: &[CStructDef]| {
+            assert_eq!(defs.len(), 1);
+            assert!(defs[0].complete);
+            let l = defs[0].raw_layout().expect("raw layout expected");
+            let offs: Vec<usize> = l.fields.iter().map(|d| d.byte_offset).collect();
+            let widths: Vec<RawWidth> = l.fields.iter().map(|d| d.width).collect();
+            (offs, widths)
+        };
+        let (offs, widths) = layout_of(&parse("typedef struct { unsigned char r, g, b, a; } RGBA8;"));
+        assert_eq!(offs, vec![0, 1, 2, 3]);
+        assert!(widths.iter().all(|w| matches!(w, RawWidth::U8)));
+        let (offs, widths) = layout_of(&parse("struct S { short a; int b; };"));
+        assert_eq!(offs, vec![0, 4]);
+        assert!(matches!(widths[0], RawWidth::I16));
+        let (offs, _) = layout_of(&parse("struct U { uint16_t lo; uint16_t hi; };"));
+        assert_eq!(offs, vec![0, 2]);
         // typedef で解決した幅も見る（DxLib の BYTE など）
         let custom = HashMap::new();
         let mut typedefs = HashMap::new();
         typedefs.insert("BYTE".to_string(), "unsigned char".to_string());
-        let defs = parse_header_full("struct C { BYTE r; BYTE g; };", &custom, &typedefs).1;
-        assert_eq!(defs.len(), 1);
-        assert!(!defs[0].complete);
+        let (offs, widths) = layout_of(&parse_header_full("struct C { BYTE r; BYTE g; };", &custom, &typedefs).1);
+        assert_eq!(offs, vec![0, 1]);
+        assert!(matches!(widths[0], RawWidth::U8));
     }
 
     /// ポインタは幅が決まっているので narrow ではない（4 バイト以上の整数も complete のまま）
@@ -240,12 +245,21 @@ mod tests {
         assert_eq!(layout.fields[1].byte_offset, 4);
     }
 
-    /// C の long は環境依存幅のため raw レイアウト対象外（構造体自体は保持）
+    /// C の long はプラットフォームの幅で並べる（Windows は LLP64 で 4 バイト・他は 8 バイト）。
+    /// 1-6 より前は幅が分からないとして raw レイアウトの対象外にしていた。
     #[test]
-    fn test_long_field_no_raw_layout() {
-        let defs = parse("struct L { long v; };");
+    fn test_long_field_follows_platform_width() {
+        use crate::interpreter::value::RawWidth;
+        let defs = parse("struct L { long v; int w; };");
         assert_eq!(defs.len(), 1);
-        assert!(defs[0].raw_layout().is_none());
+        let l = defs[0].raw_layout().expect("raw layout expected");
+        if cfg!(windows) {
+            assert!(matches!(l.fields[0].width, RawWidth::I32));
+            assert_eq!(l.fields[1].byte_offset, 4);
+        } else {
+            assert!(matches!(l.fields[0].width, RawWidth::I64));
+            assert_eq!(l.fields[1].byte_offset, 8);
+        }
     }
 
     /// DxLib.h の実フォーマット（タブ・複数エイリアス・改行ブレース）での VECTOR パース

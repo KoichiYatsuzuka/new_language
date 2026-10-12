@@ -44,6 +44,25 @@ Rgba8 fp_make_rgba(int r, int g, int b, int a) {
     return c;
 }
 int fp_rgba_sum(Rgba8 c) { return c.r + c.g + c.b + c.a; }
+Mat2 fp_make_mat2(void) { Mat2 m; m.m[0] = 1.0f; m.m[1] = 0.0f; m.m[2] = 0.0f; m.m[3] = 1.0f; return m; }
+float fp_mat2_trace(Mat2 m) { return m.m[0] + m.m[3]; }
+
+unsigned int fp_u32_max(void) { return 4294967295u; }
+int fp_u32_is_big(unsigned int v) { return v > 2147483647u ? 1 : 0; }
+unsigned char fp_u8_add(unsigned char a, unsigned char b) { return (unsigned char)(a + b); }
+signed char fp_i8_neg(signed char v) { return (signed char)(-v); }
+short fp_i16_min(void) { return (short)-32768; }
+unsigned short fp_u16_max(void) { return 65535u; }
+long fp_long_neg(void) { return -5L; }
+long long fp_i64_min(void) { return (-9223372036854775807LL - 1); }
+unsigned long long fp_u64_small(void) { return 42ull; }
+unsigned long long fp_u64_big(void) { return 18446744073709551615ull; }
+bool fp_is_even(int v) { return (v % 2) == 0; }
+void fp_u8_out(unsigned char* out) { if (out) *out = 250; }
+void fp_i16_out(short* out) { if (out) *out = -2; }
+void fp_long_out(long* out) { if (out) *out = -7L; }
+void fp_u64_out(unsigned long long* out, int big) { if (out) *out = big ? 18446744073709551615ull : 7ull; }
+U64Box fp_make_u64box(int big, int tag) { U64Box b; b.v = big ? 18446744073709551615ull : 9ull; b.tag = tag; return b; }
 
 void* fp_handle_new(void) { return &g_handle_payload; }
 int fp_handle_get(void* h) { return h == (void*)&g_handle_payload ? g_handle_payload : -1; }

@@ -396,6 +396,15 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 相対は書いたファイルのディレクトリから数えた場所）。DLL（`cpp-dll`）はヘッダと同じディレクトリの `Name.dll` です。
 `as` が無いときの束縛名はヘッダのファイル名（`Name`）です。
 
+**値の対応**:
+- C の整数型（`char` / `short` / `int` / `long` / `long long` / `intN_t` / `uintN_t` / `size_t` …）は Arrow の `int`
+  です。受け取るときは C の型の幅と符号どおりに広げ（Windows の `long` は 4 バイト）、渡すときは C の型の幅に
+  切り詰めます（C の暗黙の変換と同じ）
+- `unsigned long long`（`uint64_t` / `size_t`）の 2^63 以上は Arrow の `int` に入らないので `OverflowError` になります
+- `bool` は `bool`、`float` / `double` は `float`、`const char*` の引数は `str`（UTF-8・NUL を含むとエラー）です
+- 今の Arrow から正しく受け渡せない関数（ポインタを返す・`void*` を受ける・レイアウトの分からない構造体を値で
+  受け渡す など）は、使った箇所が静的エラーになります
+
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応
 - `ar_config.json` でコンパイラパス・追加フラグを設定する必要があります

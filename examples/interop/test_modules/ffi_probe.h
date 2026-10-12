@@ -11,12 +11,15 @@
 // NOTE: keep this file ASCII-only. MSVC reads sources as CP932 by default, and the
 // cpp-lib shim #includes this header; a UTF-8 comment can swallow the next line.
 #pragma once
+#include <stdbool.h>
 
 typedef struct { int id; double score; } Rec;        // 16 bytes (returned via hidden pointer on x64)
 typedef struct { int x; int y; } Pair;               // 8 bytes (returned in RAX on x64)
 typedef struct { float x, y, z; } Vec3f;             // 12 bytes
 typedef struct { int id; const char* name; } Named;  // has a pointer field
-typedef struct { unsigned char r, g, b, a; } Rgba8;  // 4 bytes: fields narrower than int (task 1-3)
+typedef struct { unsigned char r, g, b, a; } Rgba8;  // 4 bytes: fields narrower than int (tasks 1-3, 1-6)
+typedef struct { float m[4]; } Mat2;                 // has an array field: its layout is not known exactly
+typedef struct { unsigned long long v; int tag; } U64Box;  // 16 bytes: an unsigned 64-bit field (task 1-6)
 typedef struct Db Db;                                // opaque (forward declaration only)
 
 #ifdef __cplusplus
@@ -26,7 +29,7 @@ extern "C" {
 // -- strings -------------------------------------------------------------------
 const char* fp_greet(void);                 // "hello from C" (static string)
 const char* fp_echo(const char* s);         // returns the pointer it received
-const char* fp_utf8(void);                  // "日本語" in UTF-8 (9 bytes)
+const char* fp_utf8(void);                  // Japanese "nihongo" (3 characters) in UTF-8 (9 bytes)
 const char* fp_null(void);                  // NULL
 int fp_len(const char* s);                  // byte length, -1 for NULL
 void fp_fill(char* buf, int n);             // writes "filled" into buf (output buffer)
@@ -46,6 +49,26 @@ Named fp_make_named(int id);                // name = "named-<id>" (static buffe
 int fp_named_len(Named n);                  // strlen(n.name), -1 for NULL
 Rgba8 fp_make_rgba(int r, int g, int b, int a);
 int fp_rgba_sum(Rgba8 c);                   // r + g + b + a
+Mat2 fp_make_mat2(void);
+float fp_mat2_trace(Mat2 m);
+
+// -- integer widths and signedness (task 1-6) ------------------------------------
+unsigned int fp_u32_max(void);              // 4294967295
+int fp_u32_is_big(unsigned int v);          // 1 if v > 2147483647
+unsigned char fp_u8_add(unsigned char a, unsigned char b);  // (a + b) mod 256
+signed char fp_i8_neg(signed char v);       // -v
+short fp_i16_min(void);                     // -32768
+unsigned short fp_u16_max(void);            // 65535
+long fp_long_neg(void);                     // -5 (long is 4 bytes on Windows)
+long long fp_i64_min(void);                 // -9223372036854775808
+unsigned long long fp_u64_small(void);      // 42
+unsigned long long fp_u64_big(void);        // 18446744073709551615 (does not fit in a signed 64-bit int)
+bool fp_is_even(int v);
+void fp_u8_out(unsigned char* out);         // *out = 250
+void fp_i16_out(short* out);                // *out = -2
+void fp_long_out(long* out);                // *out = -7
+void fp_u64_out(unsigned long long* out, int big);  // *out = big ? 2^64-1 : 7
+U64Box fp_make_u64box(int big, int tag);    // v = big ? 2^64-1 : 9
 
 // -- pointers (handles) --------------------------------------------------------
 void* fp_handle_new(void);

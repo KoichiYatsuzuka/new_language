@@ -1,0 +1,15 @@
+# cpp_u64_overflow_error.ar — 2^63 以上の unsigned long long は Arrow の int に入らない（負例・1-6）
+#
+# Arrow の `int` は符号付き 64 ビットなので、C の `unsigned long long`（`uint64_t` / `size_t` も同じ）の
+# 2^63 以上は表せない。以前は黙って負の値にしていた（2^64-1 → -1）。今は実行時に OverflowError にする。
+# 戻り値の型はヘッダから決まるが値は呼ぶまで分からないので、静的エラーにはできない。
+# `try` / `except OverflowError` で捕まえられる（cpp_dll_int_widths.ar）。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_dll_int_widths.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("small:", fp.fp_u64_small())
+let big = fp.fp_u64_big()
+print("unreachable:", big)

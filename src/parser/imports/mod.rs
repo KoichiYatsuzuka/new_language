@@ -47,7 +47,7 @@ pub(crate) fn ctype_to_tl_str(ct: &crate::cpp_header::CType) -> String {
         CType::Bool => "bool".to_string(),
         CType::Float | CType::Double => "float".to_string(),
         CType::CharPtr { .. } => "str".to_string(),
-        CType::Int | CType::Long | CType::VoidPtr => "int".to_string(),
+        CType::Int { .. } | CType::VoidPtr => "int".to_string(),
         CType::Ptr { inner, .. } => ctype_to_tl_str(inner),
         CType::OpaqueStructPtr { .. } | CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),

@@ -20,6 +20,7 @@ mod compiler;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use crate::cpp_header::{CType, CStructDef, CFnSig};
+pub(crate) use types::{int_raw_ann, int_rust_type};
 pub use crate::cpp_header::{parse_header_full, parse_header, collect_included_headers};
 pub use crate::cpp_header::load_system_typedefs;
 pub use codegen::gen_dll_wrapper;

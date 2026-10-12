@@ -209,16 +209,13 @@ pub(crate) fn parse_struct_field_decls(
                     MemberKind::Bitfield => complete = false,
                     MemberKind::Field => {
                         let before = fields.len();
-                        let mut narrow = false;
-                        parse_field_segment(seg, custom, typedefs, &mut fields, &mut narrow);
+                        parse_field_segment(seg, custom, typedefs, &mut fields);
                         if fields.len() == before {
                             // フィールドのはずがパースできなかった（配列・未解決型など）
                             complete = false;
                         }
-                        if narrow {
-                            // 4 バイト未満の整数（`CType::Int` では幅を表せない・1-3）
-                            complete = false;
-                        }
+                        // ⚠ 1-3 では 4 バイト未満の整数のフィールドも不完全とみなしていた（`CType::Int` が幅を
+                        //   持たなかったため）。1-6 で幅と符号を持つようになったので、正確なレイアウトになる。
                     }
                 }
             }
@@ -284,14 +281,11 @@ pub(crate) fn classify_member_segment(seg: &str) -> MemberKind {
 }
 
 /// `;` 区切りの 1 フィールドセグメント（`float x, y, z` や `int flags` など）をパースし、解決済みの `(name, CType)` ペアを `out` に追加する。
-/// `narrow` は、値として持つ（ポインタでない）フィールドの型が 4 バイト未満の整数だったら `true` にする
-/// （[`is_narrow_int_type`]。`CType::Int` が 4 バイトとして扱うので、呼び出し元は構造体を不完全とみなす）。
 pub(crate) fn parse_field_segment(
     seg: &str,
     custom: &HashMap<String, String>,
     typedefs: &HashMap<String, String>,
     out: &mut Vec<(String, CType)>,
-    narrow: &mut bool,
 ) {
     // Skip constructor / method declarations (contain parentheses).
     if seg.contains('(') {
@@ -349,12 +343,8 @@ pub(crate) fn parse_field_segment(
         base_str.clone()
     };
 
-    let base_is_narrow = is_narrow_int_type(&base_str, custom, typedefs);
     match parse_c_type_str(&type_str, custom, typedefs) {
         Ok(ctype) => {
-            if total_stars == 0 && base_is_narrow {
-                *narrow = true;
-            }
             out.push((first_name.to_string(), ctype.clone()));
             for part in &parts[1..] {
                 let pw: Vec<&str> = part.split_whitespace().collect();
@@ -372,9 +362,6 @@ pub(crate) fn parse_field_segment(
                 }
                 let stars = alias_stars + extra_stars;
                 if stars == 0 {
-                    if base_is_narrow {
-                        *narrow = true;
-                    }
                     out.push((alias.to_string(), ctype.clone()));
                 } else if let Ok(ptr_ct) = parse_c_type_str(
                     &format!("{}{}", base_str, "*".repeat(stars)),

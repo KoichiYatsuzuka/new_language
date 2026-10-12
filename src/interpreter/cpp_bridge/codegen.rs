@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::super::native_api::{TL_FALSE, TL_NONE, TL_TRUE};
+use super::super::native_api::{TL_EXCEPTION, TL_FALSE, TL_NONE, TL_TRUE};
 use crate::cpp_header::types::{CStructDef, CFnSig, CType};
 
 // ── Generated Rust source header ─────────────────────────────────────────────
@@ -43,12 +43,35 @@ struct ArCallbacks {
     deep_copy:     unsafe extern "C" fn(i64) -> i64,
     to_cstr:       unsafe extern "C" fn(i64) -> *const u8,
     write_handle:  unsafe extern "C" fn(i64, i64),
+    list_append:   unsafe extern "C" fn(i64, i64) -> i64,
+    raise_exc:     unsafe extern "C" fn(i64, i64) -> i64,
 }
 
 static mut CB: *const ArCallbacks = std::ptr::null();
 
 #[no_mangle]
 pub unsafe extern "C" fn ar_init(cb: *const ArCallbacks) { CB = cb; }
+
+// A C unsigned 64-bit value of 2^63 or more does not fit in Arrow's int (ffi_value_exchange_plan.md 1-6).
+const _U64_TYPE: &[u8] = b"OverflowError";
+const _U64_MSG: &[u8] = b"a C unsigned 64-bit value of 2^63 or more does not fit in int";
+unsafe fn _overflow_u64() -> i64 {
+    ((*CB).raise_exc)(
+        ((*CB).make_str)(_U64_TYPE.as_ptr(), _U64_TYPE.len() as i32),
+        ((*CB).make_str)(_U64_MSG.as_ptr(), _U64_MSG.len() as i32),
+    )
+}
+// The typed ABI reports it through the error slot (same layout as native_api::ErrSlot).
+#[repr(C)]
+struct _ErrSlot { type_ptr: *const u8, type_len: u64, msg_ptr: *const u8, msg_len: u64 }
+unsafe fn _typed_overflow_u64(err: *mut u8) -> u32 {
+    let e = err as *mut _ErrSlot;
+    (*e).type_ptr = _U64_TYPE.as_ptr();
+    (*e).type_len = _U64_TYPE.len() as u64;
+    (*e).msg_ptr = _U64_MSG.as_ptr();
+    (*e).msg_len = _U64_MSG.len() as u64;
+    1
+}
 "#;
 
 // Platform loader inserted into dll-wrapper source.
@@ -116,8 +139,9 @@ unsafe fn _dll() -> usize {
 /// `ByValueStruct` など単純な Rust フィールドで表現できない型は `None` を返す。
 pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
     match ct {
-        CType::Int | CType::Bool => Some("i32"),
-        CType::Long => Some("i64"),
+        // 幅と符号どおり（1-6。以前は int / bool を i32、long を i64 にまとめていた）
+        CType::Int { width, signed } => Some(super::types::int_rust_type(*width, *signed)),
+        CType::Bool => Some("u8"),
         CType::Float => Some("f32"),
         CType::Double => Some("f64"),
         CType::VoidPtr
@@ -136,27 +160,20 @@ pub(crate) fn struct_is_bridgeable(def: &CStructDef) -> bool {
 }
 
 /// アリーナからハンドルを読み取り、構造体フィールドの Rust 型に変換する Rust 式を生成する。
+/// 数値のフィールドは引数・戻り値と同じ変換（`CType::from_handle`）を使う（1-6）。
+/// ⚠ ポインタのフィールドを持つ構造体は値で受け渡さない（`has_exact_layout` が偽・1-2 / 1-3）ので、
+///   ここへ来るのは数値だけ。
 fn field_from_handle(ct: &CType, handle: &str) -> String {
     match ct {
-        CType::Int => format!("((*CB).to_int)({handle}) as i32"),
-        CType::Long => format!("((*CB).to_int)({handle})"),
-        CType::Float => format!("((*CB).to_float)({handle}) as f32"),
-        CType::Double => format!("((*CB).to_float)({handle})"),
-        CType::Bool => format!("if {handle} == {TL_TRUE}i64 {{ 1i32 }} else {{ 0i32 }}"),
+        CType::Int { .. } | CType::Float | CType::Double | CType::Bool => ct.from_handle(handle),
         _ => format!("{handle} as *mut i8"),
     }
 }
 
-/// 構造体フィールドの値を tl ハンドルにラップする Rust 式を生成する。
+/// 構造体フィールドの値を tl ハンドルにラップする Rust 式を生成する（戻り値と同じ変換・1-6）。
 fn field_to_handle(ct: &CType, val: &str) -> String {
     match ct {
-        CType::Int => format!("((*CB).make_int)({val} as i64)"),
-        CType::Long => format!("((*CB).make_int)({val})"),
-        CType::Float => format!("((*CB).make_float)({val} as f64)"),
-        CType::Double => format!("((*CB).make_float)({val})"),
-        CType::Bool => {
-            format!("if {val} != 0 {{ {TL_TRUE}i64 }} else {{ {TL_FALSE}i64 }}")
-        }
+        CType::Int { .. } | CType::Float | CType::Double | CType::Bool => ct.to_handle(val),
         _ => format!("{val} as i64"),
     }
 }
@@ -293,7 +310,7 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                 ));
             }
             CType::ByValueStruct { type_name } => {
-                // 上の `by_value_ok` で raw レイアウトのある構造体だけが来る
+                // 冒頭の `CFnSig::unsupported_reason` で、C と同じレイアウトの分かる構造体だけが来る
                 let def = struct_defs[type_name.as_str()];
                 // Read each field from the Arrow instance via get_attr and build the C struct (by value)
                 for (fname, ftype) in &def.fields {
@@ -333,7 +350,7 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
     if sig.ret == CType::Void {
         s.push_str(&format!("    _fp({});\n", args.join(", ")));
     } else if let CType::ByValueStruct { type_name } = &sig.ret {
-        // 戻り値も値のまま受け取る（`by_value_ok` で raw レイアウトのある構造体だけが来る）
+        // 戻り値も値のまま受け取る（冒頭の `CFnSig::unsupported_reason` で、C と同じレイアウトの分かる構造体だけが来る）
         let def = struct_defs[type_name.as_str()];
         s.push_str(&format!(
             "    let _raw_r: _Struct_{type_name} = _fp({});\n",
@@ -345,6 +362,12 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                 "    let _{fname}_h = {};\n",
                 field_to_handle(ftype, &format!("_raw_r.{fname}"))
             ));
+            // 符号なし 64 ビットの 2^63 以上は OverflowError（1-6）。例外のハンドルをフィールドにしない
+            if ftype.to_handle_may_raise() {
+                s.push_str(&format!(
+                    "    if _{fname}_h == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}\n"
+                ));
+            }
         }
         let n_fields = def.fields.len();
         let args_items: String = def.fields.iter()
@@ -369,7 +392,14 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
         if let CType::Ptr { inner, mutable: true } = ptype {
             let h = format!("*argv.offset({i})");
             let new_h = inner.to_handle(&format!("_ptr_{pname}"));
-            s.push_str(&format!("    ((*CB).write_handle)({h}, {new_h});\n"));
+            if inner.to_handle_may_raise() {
+                // 符号なし 64 ビットの 2^63 以上は OverflowError（1-6）。例外のハンドルを書き戻さない
+                s.push_str(&format!(
+                    "    let _wb_{pname} = {new_h};\n    if _wb_{pname} == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}\n    ((*CB).write_handle)({h}, _wb_{pname});\n"
+                ));
+            } else {
+                s.push_str(&format!("    ((*CB).write_handle)({h}, {new_h});\n"));
+            }
         }
     }
 
@@ -450,11 +480,10 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
     // 引数変換: u64 スロット → C 型（コールバックなしの純キャスト／ポインタキャスト）
     for (i, (pname, ptype)) in sig.params.iter().enumerate() {
         match ptype {
-            CType::Int => {
-                s.push_str(&format!("    let _{pname}: i32 = (*_args.offset({i})) as i64 as i32;\n"));
-            }
-            CType::Long => {
-                s.push_str(&format!("    let _{pname}: i64 = (*_args.offset({i})) as i64;\n"));
+            // C の幅と符号に切り詰める（1-6。以前は int を i32、long を i64 にまとめていた）
+            CType::Int { width, signed } => {
+                let rt = super::types::int_rust_type(*width, *signed);
+                s.push_str(&format!("    let _{pname}: {rt} = (*_args.offset({i})) as i64 as {rt};\n"));
             }
             CType::Float => {
                 s.push_str(&format!("    let _{pname}: f32 = f64::from_bits(*_args.offset({i})) as f32;\n"));
@@ -494,8 +523,16 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
         CType::Void => {
             s.push_str(&format!("    {call};\n    *_ret = 0;\n"));
         }
-        CType::Int | CType::Long => {
-            s.push_str(&format!("    *_ret = ({call} as i64) as u64;\n"));
+        // 符号付きは符号拡張・符号なしはゼロ拡張（`as i64`）。符号なし 64 ビットの 2^63 以上は `int` に収まらない
+        // ので OverflowError（1-6）
+        CType::Int { width, signed } => {
+            if super::types::int_rust_type(width, signed) == "u64" {
+                s.push_str(&format!(
+                    "    let _u: u64 = {call};\n    if _u > i64::MAX as u64 {{ return _typed_overflow_u64(_err); }}\n    *_ret = _u;\n"
+                ));
+            } else {
+                s.push_str(&format!("    *_ret = ({call} as i64) as u64;\n"));
+            }
         }
         CType::Float | CType::Double => {
             s.push_str(&format!("    *_ret = ({call} as f64).to_bits();\n"));
@@ -509,22 +546,22 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpp_header::types::IntWidth;
+
+    const I32: CType = CType::Int { width: IntWidth::W32, signed: true };
 
     fn rec() -> CStructDef {
         CStructDef {
             name: "Rec".to_string(),
-            fields: vec![("id".to_string(), CType::Int), ("score".to_string(), CType::Double)],
+            fields: vec![("id".to_string(), I32), ("score".to_string(), CType::Double)],
             complete: true,
         }
     }
 
-    /// `unsigned char` × 4 — ヘッダ解析が不完全とみなす（4 バイト未満の整数・1-3）
-    fn rgba() -> CStructDef {
-        CStructDef {
-            name: "Rgba8".to_string(),
-            fields: ["r", "g", "b", "a"].iter().map(|f| (f.to_string(), CType::Int)).collect(),
-            complete: false,
-        }
+    /// 不完全な構造体（配列などのフィールドを読み飛ばした）。値で受け渡せない
+    /// 配列のフィールドを読み飛ばした構造体（`float m[4]` の `Mat2` など）。フィールドの並びが C と同じでない
+    fn incomplete() -> CStructDef {
+        CStructDef { name: "Mat2".to_string(), fields: vec![], complete: false }
     }
 
     fn by_value(name: &str, ty: &str) -> CFnSig {
@@ -547,9 +584,89 @@ mod tests {
     /// レイアウトが正確に分からない構造体（不完全・定義が無い）を値で受け渡す関数は生成しない。
     #[test]
     fn by_value_struct_without_exact_layout_is_not_generated() {
-        let defs = [rgba()];
+        let defs = [incomplete()];
         let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
-        assert_eq!(gen_dll_fn(&by_value("f", "Rgba8"), &map, &defs), "");
+        assert_eq!(gen_dll_fn(&by_value("f", "Mat2"), &map, &defs), "");
         assert_eq!(gen_dll_fn(&by_value("g", "Unknown"), &map, &defs), "");
+    }
+}
+
+#[cfg(test)]
+mod int_width_tests {
+    use super::*;
+    use crate::cpp_header::types::IntWidth;
+
+    fn f(params: Vec<CType>, ret: CType) -> CFnSig {
+        CFnSig {
+            name: "f".to_string(),
+            params: params.into_iter().enumerate().map(|(i, t)| (format!("p{i}"), t)).collect(),
+            ret,
+            namespace: None,
+            n_required: 0,
+        }
+    }
+    fn int(width: IntWidth, signed: bool) -> CType { CType::Int { width, signed } }
+
+    /// 引数・戻り値を C の幅と符号どおりに宣言する（上位のゴミを読まない・符号なしはゼロ拡張・1-6）
+    #[test]
+    fn ints_use_their_c_width_and_sign() {
+        let s = gen_dll_fn(&f(vec![int(IntWidth::W8, false), int(IntWidth::W16, true)], int(IntWidth::W32, false)), &HashMap::new(), &[]);
+        assert!(s.contains("unsafe extern \"C\" fn(u8, i16) -> u32"), "{s}");
+        assert!(s.contains("as u8;") && s.contains("as i16;"), "{s}");
+        assert!(s.contains("((*CB).make_int)(_r as i64)"), "{s}");
+        // typed 経路も同じ幅
+        assert!(s.contains("let _p0: u8 = (*_args.offset(0)) as i64 as u8;"), "{s}");
+    }
+
+    /// Windows の `long` は 4 バイト（LLP64）
+    #[test]
+    fn c_long_follows_the_platform() {
+        let s = gen_dll_fn(&f(vec![], int(IntWidth::CLong, true)), &HashMap::new(), &[]);
+        let want = if cfg!(windows) { "-> i32" } else { "-> i64" };
+        assert!(s.contains(want), "{s}");
+    }
+
+    /// 符号なし 64 ビットの 2^63 以上は `int` に収まらないので例外（ハンドル経路も typed 経路も）
+    #[test]
+    fn u64_return_reports_overflow() {
+        let s = gen_dll_fn(&f(vec![], int(IntWidth::W64, false)), &HashMap::new(), &[]);
+        assert!(s.contains("_overflow_u64()"), "{s}");
+        assert!(s.contains("_typed_overflow_u64(_err)"), "{s}");
+    }
+
+    /// C++ の bool は 1 バイトで受け取る
+    #[test]
+    fn bool_is_one_byte() {
+        let s = gen_dll_fn(&f(vec![CType::Bool], CType::Bool), &HashMap::new(), &[]);
+        assert!(s.contains("unsafe extern \"C\" fn(u8) -> u8"), "{s}");
+    }
+
+    /// 戻り値以外（値返しの構造体のフィールド・書き込みポインタの書き戻し）でも、2^63 以上なら例外のまま返す。
+    /// 例外のハンドルを値として使うと、呼び出しは正常に終わり、例外は次の呼び出しまで残ってしまう。
+    #[test]
+    fn u64_overflow_in_fields_and_writebacks_returns_the_exception() {
+        let u64t = int(IntWidth::W64, false);
+        let def = CStructDef {
+            name: "Big".to_string(),
+            fields: vec![("v".to_string(), u64t.clone()), ("tag".to_string(), int(IntWidth::W32, true))],
+            complete: true,
+        };
+        let defs = [def];
+        let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
+        let s = gen_dll_fn(&f(vec![], CType::ByValueStruct { type_name: "Big".to_string() }), &map, &defs);
+        assert!(s.contains(&format!("if _v_h == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}")), "{s}");
+        assert!(!s.contains("if _tag_h =="), "{s}");
+
+        let out = CType::Ptr { inner: Box::new(u64t), mutable: true };
+        let s = gen_dll_fn(&f(vec![out], CType::Void), &HashMap::new(), &[]);
+        assert!(s.contains(&format!("if _wb_p0 == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}")), "{s}");
+        assert!(s.contains("((*CB).write_handle)(*argv.offset(0), _wb_p0);"), "{s}");
+    }
+
+    /// 中継 DLL の文言と、typed 経路の書き戻し（`decode_out_ptr`）の文言を揃える
+    #[test]
+    fn u64_overflow_message_matches_the_interpreter() {
+        let msg = crate::interpreter::value::U64_OVERFLOW_MSG;
+        assert!(WRAPPER_HEADER.contains(&format!("b\"{msg}\"")), "{msg}");
     }
 }
