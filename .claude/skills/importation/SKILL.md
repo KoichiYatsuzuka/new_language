@@ -410,6 +410,17 @@ Not covered by `rs_loader`. Parsed by `parse_cpp_import` (imports.rs:91):
 
 At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `exec_module`).
 
+**Generated files** (`cpp_bridge/compiler.rs`):
+- `cpp-dll`: the Rust wrapper is rebuilt into `%TEMP%` on every run and loads `{stem}.dll` next to the header.
+- `cpp-lib`: the wrapper `ar_{stem}.dll`, the MSVC shim `ar_{stem}_shim.dll` and `ar_{stem}.syms` are written
+  **next to the header and reused** (they are committed for `test_modules/vec_math`). The first line of `.syms`
+  is a stamp (`cache_stamp`: FNV-1a of the generated shim + wrapper sources and the build config). A stale
+  stamp — generator, header or config changed — rebuilds them (needs MSVC). The wrapper loads the shim
+  **from its own directory**, so the files work wherever they are copied.
+  ⚠ The stamp does not cover the implementation library (`*_x64.lib`): after rebuilding only the library,
+  delete the `ar_*` files. (ffi_value_exchange_plan.md 1-5; before it, a stale cache was used forever and
+  the wrapper embedded the shim's absolute path.)
+
 For the C ABI value/struct-passing design behind this bridge (raw layout, zero-copy vs. shadow conversion, write-back), see the `c-abi-interop` skill.
 
 ---

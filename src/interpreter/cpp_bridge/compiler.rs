@@ -26,6 +26,8 @@ const HV_DLL_PREFIX: &str = "ar_";
 const TL_SYMS_EXT: &str = "syms";
 const TL_SHIM_SUFFIX: &str = "_shim";
 const MAX_COMPILE_PASSES: usize = 5;
+/// `.syms` の 1 行目に書く恒久キャッシュの刻印の接頭辞（`cache_stamp`）。
+const SYMS_STAMP_PREFIX: &str = "#stamp ";
 // RTLD_LAZY = 1 on all POSIX platforms; embedded as a literal in the PLATFORM_LOADER string.
 #[allow(dead_code)]
 const RTLD_LAZY: i32 = 1;
@@ -290,11 +292,37 @@ pub fn compile_tl_dll(
     let shim_path = header_dir.join(format!("{HV_DLL_PREFIX}{stem}{TL_SHIM_SUFFIX}.{ext}"));
     let syms_path = header_dir.join(format!("{HV_DLL_PREFIX}{stem}.{TL_SYMS_EXT}"));
 
-    // Permanent cache: wrapper DLL exists → skip compilation, read saved function list
+    // Deduplicate by name: extern "C" cannot have overloaded functions.
+    // Keep first occurrence of each name.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut effective_sigs: Vec<CFnSig> = sigs
+        .iter()
+        .filter(|s| seen.insert(s.name.clone()))
+        .cloned()
+        .collect();
+
+    let header_name = header_abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("header.h");
+    // 中継 DLL はシムを**ファイル名だけ**で指し、自分と同じディレクトリから読む（生成ローダーの `resolve`）。
+    // ⚠ 以前は絶対パスを埋め込んでいたので、生成物を別のチェックアウトへ持っていくと元の場所のシムを読んでいた。
+    let shim_name = format!("{HV_DLL_PREFIX}{stem}{TL_SHIM_SUFFIX}.{ext}");
+
+    // Permanent cache: reuse the wrapper DLL only while its stamp matches what we would generate now
+    // (ffi_value_exchange_plan.md 1-5). A stale DLL (generator, header or config changed) is rebuilt.
+    let stamp = cache_stamp(&effective_sigs, struct_defs, header_name, &shim_name, config);
     if dll_path.exists() {
-        eprintln!("CppBridge: loading '{}' (permanent)", dll_path.display());
-        let effective = read_syms_file(&syms_path, sigs);
-        return Ok((dll_path, effective));
+        match read_syms_file(&syms_path, sigs) {
+            Some((Some(saved), effective)) if saved == stamp => {
+                eprintln!("CppBridge: loading '{}' (permanent)", dll_path.display());
+                return Ok((dll_path, effective));
+            }
+            _ => eprintln!(
+                "CppBridge: '{}' is stale (generator, header or build config changed), rebuilding",
+                dll_path.display()
+            ),
+        }
     }
 
     // Find MSVC toolchain
@@ -316,20 +344,6 @@ pub fn compile_tl_dll(
                 .to_string()
         })?
     };
-
-    // Deduplicate by name: extern "C" cannot have overloaded functions.
-    // Keep first occurrence of each name.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut effective_sigs: Vec<CFnSig> = sigs
-        .iter()
-        .filter(|s| seen.insert(s.name.clone()))
-        .cloned()
-        .collect();
-
-    let header_name = header_abs
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("header.h");
 
     // Iterative compile: on C/LNK errors, extract offending function names, remove
     // them, and retry. Repeats up to MAX_COMPILE_PASSES times.
@@ -359,41 +373,80 @@ pub fn compile_tl_dll(
         }
     }
 
-    // Generate Rust wrapper source that loads shim_path at runtime.
-    // Use plain path (no \\?\ prefix) so LoadLibraryA can accept it.
-    let shim_str = strip_unc_prefix(&shim_path);
-    let wrapper_src = gen_dll_wrapper(&shim_str, &effective_sigs, struct_defs);
+    // Generate Rust wrapper source that loads the shim (next to the wrapper) at runtime.
+    let wrapper_src = gen_dll_wrapper(&shim_name, &effective_sigs, struct_defs);
 
     // Compile Rust wrapper → tl_{stem}.dll
     let wrapper_bytes = compile_wrapper(&wrapper_src, &[])?;
     std::fs::write(&dll_path, &wrapper_bytes)
         .map_err(|e| format!("CppBridge: cannot write '{}': {e}", dll_path.display()))?;
 
-    // Save the effective function list so future cache hits know what was compiled.
-    let syms: String = effective_sigs
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let _ = std::fs::write(&syms_path, syms);
+    // Save the stamp and the effective function list so future cache hits know what was compiled.
+    let names: Vec<&str> = effective_sigs.iter().map(|s| s.name.as_str()).collect();
+    let syms = format!("{SYMS_STAMP_PREFIX}{stamp}\n{}", names.join("\n"));
+    std::fs::write(&syms_path, syms)
+        .map_err(|e| format!("CppBridge: cannot write '{}': {e}", syms_path.display()))?;
 
     eprintln!("CppBridge: generated '{}'", dll_path.display());
     Ok((dll_path, effective_sigs))
 }
 
-/// `.syms` コンパニオンファイルを読み込み、コンパイル済みの `all_sigs` のサブセットを返す。
-/// ファイルが存在しない場合（初回実行前など）は全シグネチャにフォールバックする。
-fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Vec<CFnSig> {
-    if let Ok(text) = std::fs::read_to_string(syms_path) {
-        let allowed: std::collections::HashSet<&str> = text.lines().collect();
-        all_sigs
-            .iter()
-            .filter(|s| allowed.contains(s.name.as_str()))
-            .cloned()
-            .collect()
-    } else {
-        all_sigs.to_vec()
+/// 恒久キャッシュの刻印（ffi_value_exchange_plan.md 1-5）。シムと中継 DLL の**生成ソース**と、
+/// ビルドに効く設定から計算する。ヘッダの関数・構造体、ラッパーの生成内容、設定のどれが変わっても値が変わる。
+///
+/// - 生成物の置き場所には依存しない（ヘッダもシムもファイル名で入る）。別のチェックアウトでも同じ値になる
+/// - ⚠ 実装ライブラリ（`.lib`）の中身は含めない。ライブラリだけを作り直したときは生成物（`ar_*`）を消すこと
+/// - ハッシュは FNV-1a 64（`exec/mod.rs` の `simple_hash` と同じ）。Rust の版で値が変わらないものを使う
+fn cache_stamp(
+    sigs: &[CFnSig],
+    struct_defs: &[CStructDef],
+    header_name: &str,
+    shim_name: &str,
+    config: &CppBuildConfig,
+) -> String {
+    let shim_src = gen_cpp_shim_source(
+        sigs,
+        header_name,
+        &config.precompile_macros,
+        config.win32_lean_and_mean,
+    );
+    let wrapper_src = gen_dll_wrapper(shim_name, sigs, struct_defs);
+    let cfg = format!(
+        "{}|{:?}|{:?}|{:?}|{:?}",
+        config.target_arch,
+        config.cl_extra_flags,
+        config.link_extra_flags,
+        config.system_libs,
+        config.lib_patterns
+    );
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in shim_src.bytes().chain(wrapper_src.bytes()).chain(cfg.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
     }
+    format!("{h:016x}")
+}
+
+/// `.syms` コンパニオンファイルを読み込み、`(刻印, コンパイル済みの all_sigs のサブセット)` を返す。
+/// ファイルが無ければ `None`。1 行目が刻印でない（1-5 より前の）ファイルは刻印が `None`（作り直しになる）。
+fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Option<(Option<String>, Vec<CFnSig>)> {
+    let text = std::fs::read_to_string(syms_path).ok()?;
+    let mut lines = text.lines().peekable();
+    let stamp = match lines.peek() {
+        Some(first) if first.starts_with(SYMS_STAMP_PREFIX) => {
+            let s = first[SYMS_STAMP_PREFIX.len()..].trim().to_string();
+            lines.next();
+            Some(s)
+        }
+        _ => None,
+    };
+    let allowed: std::collections::HashSet<&str> = lines.collect();
+    let effective = all_sigs
+        .iter()
+        .filter(|s| allowed.contains(s.name.as_str()))
+        .cloned()
+        .collect();
+    Some((stamp, effective))
 }
 
 // ── MSVC shim compiler ────────────────────────────────────────────────────────
@@ -629,4 +682,79 @@ fn to_acp_bytes(s: &str) -> Vec<u8> {
         }
     }
     s.as_bytes().to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sig(name: &str, ret: CType) -> CFnSig {
+        CFnSig {
+            name: name.to_string(),
+            params: vec![("x".to_string(), CType::Int)],
+            ret,
+            namespace: None,
+            n_required: 1,
+        }
+    }
+
+    fn rec() -> CStructDef {
+        CStructDef {
+            name: "Rec".to_string(),
+            fields: vec![("id".to_string(), CType::Int), ("score".to_string(), CType::Double)],
+            complete: true,
+        }
+    }
+
+    /// 刻印は同じ入力なら同じ値（置き場所に依存しない・ヘッダもシムもファイル名で入る）。
+    #[test]
+    fn cache_stamp_is_deterministic() {
+        let cfg = CppBuildConfig::default();
+        let sigs = vec![sig("f", CType::Int)];
+        let a = cache_stamp(&sigs, &[rec()], "lib.h", "ar_lib_shim.dll", &cfg);
+        let b = cache_stamp(&sigs, &[rec()], "lib.h", "ar_lib_shim.dll", &cfg);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+    }
+
+    /// 関数・構造体・設定のどれが変わっても刻印が変わる（古い生成物を使い続けない）。
+    #[test]
+    fn cache_stamp_changes_with_inputs() {
+        let cfg = CppBuildConfig::default();
+        let base = cache_stamp(&[sig("f", CType::Int)], &[rec()], "lib.h", "ar_lib_shim.dll", &cfg);
+        let more_fns =
+            cache_stamp(&[sig("f", CType::Int), sig("g", CType::Int)], &[rec()], "lib.h", "ar_lib_shim.dll", &cfg);
+        let other_ret = cache_stamp(&[sig("f", CType::Double)], &[rec()], "lib.h", "ar_lib_shim.dll", &cfg);
+        let no_struct = cache_stamp(&[sig("f", CType::Int)], &[], "lib.h", "ar_lib_shim.dll", &cfg);
+        let mut cfg2 = CppBuildConfig::default();
+        cfg2.cl_extra_flags.push("/DFOO".to_string());
+        let other_cfg = cache_stamp(&[sig("f", CType::Int)], &[rec()], "lib.h", "ar_lib_shim.dll", &cfg2);
+        for other in [&more_fns, &other_ret, &no_struct, &other_cfg] {
+            assert_ne!(&base, other);
+        }
+    }
+
+    /// `.syms` の 1 行目の刻印を読み、残りを関数名として扱う。刻印の無い（1-5 より前の）ファイルは刻印 `None`。
+    #[test]
+    fn read_syms_file_parses_stamp() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let with_stamp = dir.join(format!("ar_test_syms_stamp_{pid}.syms"));
+        let legacy = dir.join(format!("ar_test_syms_legacy_{pid}.syms"));
+        std::fs::write(&with_stamp, "#stamp 0123456789abcdef\nf\ng").unwrap();
+        std::fs::write(&legacy, "f\ng").unwrap();
+        let all = vec![sig("f", CType::Int), sig("g", CType::Int), sig("h", CType::Int)];
+
+        let (stamp, eff) = read_syms_file(&with_stamp, &all).unwrap();
+        assert_eq!(stamp.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(eff.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["f", "g"]);
+
+        let (stamp, eff) = read_syms_file(&legacy, &all).unwrap();
+        assert_eq!(stamp, None);
+        assert_eq!(eff.len(), 2);
+
+        assert!(read_syms_file(&dir.join(format!("ar_test_syms_missing_{pid}.syms")), &all).is_none());
+        let _ = std::fs::remove_file(&with_stamp);
+        let _ = std::fs::remove_file(&legacy);
+    }
 }

@@ -59,9 +59,28 @@ mod _loader {
     extern "system" {
         fn LoadLibraryA(name: *const u8) -> usize;
         fn GetProcAddress(module: usize, name: *const u8) -> usize;
+        fn GetModuleHandleExA(flags: u32, addr: *const u8, module: *mut usize) -> i32;
+        fn GetModuleFileNameA(module: usize, buf: *mut u8, size: u32) -> u32;
+    }
+    static ANCHOR: u8 = 0;
+    // A relative path is taken from this wrapper DLL's own directory, so the generated
+    // files keep working when the directory is moved (cpp-lib's shim sits next to us).
+    unsafe fn resolve(path: &str) -> String {
+        if std::path::Path::new(path).is_absolute() { return path.to_string(); }
+        let mut m: usize = 0;
+        // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS (4) | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT (2)
+        if GetModuleHandleExA(6, &ANCHOR as *const u8, &mut m) == 0 { return path.to_string(); }
+        let mut buf = [0u8; 1024];
+        let n = GetModuleFileNameA(m, buf.as_mut_ptr(), buf.len() as u32) as usize;
+        if n == 0 || n >= buf.len() { return path.to_string(); }
+        let me = String::from_utf8_lossy(&buf[..n]).into_owned();
+        match std::path::Path::new(&me).parent() {
+            Some(dir) => dir.join(path).to_string_lossy().into_owned(),
+            None => path.to_string(),
+        }
     }
     pub unsafe fn load(path: &str) -> usize {
-        let p = format!("{path}\0");
+        let p = format!("{}\0", resolve(path));
         LoadLibraryA(p.as_ptr())
     }
     pub unsafe fn sym(lib: usize, name: &str) -> usize {

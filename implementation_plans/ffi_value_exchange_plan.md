@@ -254,6 +254,23 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 確認: cpp-dll で `fp_greet()` / `fp_handle_new()` / `fp_db_open()` が `None`、cs-proc で `Probe.words()` が
   整数（`1`）になる（§0 の症状が再現する）。例題は直す各タスクで足す
 
+### 1-5 実装
+
+- `cpp_bridge/compiler.rs`: `.syms` の 1 行目に刻印（`cache_stamp`。シムと中継 DLL の**生成ソース**と、ビルドに効く設定の
+  FNV-1a）を書き、恒久キャッシュは刻印が一致するときだけ使う。ヘッダ・ラッパー生成・設定のどれかが変われば作り直す。
+  刻印の無い（1-5 より前の）`.syms` も作り直しになる。`.syms` の書き込み失敗を黙って捨てていた所はエラーにした
+- ⚠ **発見**: 中継 DLL はシムを**絶対パス**で埋め込んでいた。コミット済みの `ar_vec_math.dll` は
+  `D:\repository\new_language\...\ar_vec_math_shim.dll`（**別のチェックアウト**）を読んでいて、このリポジトリで
+  シムを作り直しても使われず、別の場所に clone すると読み込めなかった。⇒ 生成ローダー（`codegen.rs` の
+  `PLATFORM_LOADER`）が相対パスを中継 DLL 自身のディレクトリから引くようにし、シムはファイル名だけで指す
+- `test_modules/ar_vec_math.*` を作り直した（刻印あり・絶対パスなし）。MSVC の設定の無いスクラッチ領域へ
+  コピーしても（同じ `precompile_macros` を置けば）作り直さずに読めることを確かめた
+- ⚠ 刻印は実装ライブラリ（`*_x64.lib`）の中身を含まない。ライブラリだけを作り直したら `ar_*` を消す
+  （skill `importation` に追記）。DxLib の実用例（追跡外）は初回に作り直しになる（MSVC が要る）
+- 単体テスト: `cpp_bridge::compiler::tests`（刻印が決定的・入力で変わる・`.syms` の読み取り）
+- ゲート: `scan_examples`（基準と同じ: `bench_ab_native.ar` のタイムアウトのみ）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl`・`compare_import_paths -A`・`compare_outputs -A`（基準 `7ffafa7`）
+
 ---
 
 ## 付録 A. 検査の記録（2026-10-12・`2aa53ed`）
