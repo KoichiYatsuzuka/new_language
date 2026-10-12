@@ -2,7 +2,7 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, FieldKind, Param, Stmt},
+    crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt},
     crate::token::Token,
 };
 use super::*;
@@ -125,6 +125,16 @@ impl Parser {
                     });
                 }
                 for sig in sigs {
+                    // 今の Arrow から正しく呼べない関数は、理由を書いた文字列のデコレータで印を付ける。
+                    // 型検査がそれを読み、使った箇所を静的エラーにする（`TypeErrorKind::FfiUnsupported`・1-2）。
+                    // 実行時は同じ判定で中継 DLL に入れない（`gen_dll_fn` / `compile_tl_dll`）。
+                    let unsupported = sig.unsupported_reason(&struct_defs);
+                    let decorators: Vec<Expr> = match &unsupported {
+                        Some(reason) => vec![Expr::Str(
+                            format!("{}{reason}", crate::cpp_header::FFI_UNSUPPORTED_MARK).into(),
+                        )],
+                        None => vec![],
+                    };
                     let ret_str = ctype_to_tl_str(&sig.ret);
                     let params: Vec<Param> = sig
                         .params
@@ -134,11 +144,13 @@ impl Parser {
                             // これにより型チェッカーの `CallMutParamWithImmutableArg` 検査が
                             // 「不変（`let`）変数を出力ポインタへ渡す」誤りを静的に捕捉する
                             // （P5 — .claude/skills/c-abi-interop/SKILL.md。従来は実行時 TypeError のみ）。
-                            let writable_ref = matches!(
-                                &ct,
-                                CType::Ptr { mutable: true, .. }
-                                    | CType::OpaqueStructPtr { mutable: true, .. }
-                            );
+                            // ⚠ 未対応の関数には求めない（呼ぶこと自体が誤りなので、エラーを重ねない）。
+                            let writable_ref = unsupported.is_none()
+                                && matches!(
+                                    &ct,
+                                    CType::Ptr { mutable: true, .. }
+                                        | CType::OpaqueStructPtr { mutable: true, .. }
+                                );
                             Param::bridge(pname, Some(ctype_to_tl_str(&ct)), writable_ref)
                         })
                         .collect();
@@ -151,7 +163,7 @@ impl Parser {
                         is_abstract: false,
                         is_static: false,
                         is_class_method: false,
-                        decorators: vec![],
+                        decorators,
                         access: Accessibility::Public,
                     });
                 }

@@ -73,6 +73,23 @@ fn py_class_factory_names(body: &[Stmt]) -> Vec<String> {
         .collect()
 }
 
+/// C/C++ のモジュールの本体（型スタブ）から、今の Arrow から正しく呼べない関数の `(名前, 理由)` を集める
+/// （ffi_value_exchange_plan.md 1-2）。パーサが理由を書いた文字列のデコレータ（`FFI_UNSUPPORTED_MARK` で始まる）
+/// を付けている（`parser/imports/cpp.rs`）。
+fn ffi_unsupported_fns(body: &[Stmt]) -> Vec<(String, String)> {
+    body.iter()
+        .filter_map(|st| match st {
+            Stmt::FnDef { name, decorators, .. } => decorators.iter().find_map(|d| match d {
+                Expr::Str(s) => s
+                    .strip_prefix(crate::cpp_header::FFI_UNSUPPORTED_MARK)
+                    .map(|reason| (name.clone(), reason.to_string())),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 impl TypeChecker {
     /// 文のスライスを順に型検査する。
     pub(crate) fn check_stmts(&mut self, stmts: &[Stmt]) {
@@ -743,6 +760,16 @@ impl TypeChecker {
                             self.py_class_factories.insert(format!("{prefix}{f}"), (depth, shown));
                         }
                     }
+                    // 今の Arrow から呼べない C/C++ の関数（1-2）。cpp 系はパッケージではなく、束縛名が
+                    // 別名かヘッダの名前なので、綴りは `束縛名.関数名`。
+                    self.ffi_unsupported.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
+                    if lang == "cpp-dll" || lang == "cpp-lib" {
+                        let depth = self.state.scope_depth();
+                        for (f, reason) in ffi_unsupported_fns(body) {
+                            let spelled = format!("{}.{f}", b.name);
+                            self.ffi_unsupported.insert(spelled.clone(), (depth, spelled, reason));
+                        }
+                    }
                     self.declare(b.name.clone(), ns_ty, false);
                 }
             }
@@ -756,6 +783,8 @@ impl TypeChecker {
                 }
                 let is_py = lang == "py" || lang == "py-int";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
+                let is_cpp = lang == "cpp-dll" || lang == "cpp-lib";
+                let unsupported = if is_cpp { ffi_unsupported_fns(body) } else { Vec::new() };
                 // CPython: 名前がモジュールに無ければサブモジュール（パーサが先に読み込んでいる）。
                 let children = self.module_children.get(&module.join(".")).cloned().unwrap_or_default();
                 // ⚠ Arrow のモジュールの名前にもサブモジュールにも無い名前は静的エラー（2026-10-02）。
@@ -782,6 +811,15 @@ impl TypeChecker {
                             .insert(bind_name.clone(), (self.state.scope_depth(), shown));
                     } else {
                         self.py_class_factories.remove(&bind_name);
+                    }
+                    // 今の Arrow から呼べない C/C++ の関数（1-2）。
+                    if let Some((_, reason)) = unsupported.iter().find(|(n, _)| n == orig_name) {
+                        self.ffi_unsupported.insert(
+                            bind_name.clone(),
+                            (self.state.scope_depth(), orig_name.clone(), reason.clone()),
+                        );
+                    } else {
+                        self.ffi_unsupported.remove(&bind_name);
                     }
                     let child_path: Vec<String> =
                         module.iter().cloned().chain([orig_name.clone()]).collect();

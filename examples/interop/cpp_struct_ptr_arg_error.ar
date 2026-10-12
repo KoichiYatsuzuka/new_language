@@ -1,0 +1,14 @@
+# cpp_struct_ptr_arg_error.ar — 構造体ポインタの引数にインスタンス以外を渡すと実行時エラー（負例・1-2）
+#
+# `fp_rec_score(const Rec* r)` の引数は型スタブ上 `Any`（構造的に同じ形の別のクラスも渡せるように・
+# c-abi-interop P6）なので、`5` を渡しても静的には通る。
+# 以前は typed 経路に合わない引数がハンドル経路へ落ち、Arrow 内部のハンドル番号をポインタとして渡して
+# プロセスごと落ちていた（exit 139・c-abi-interop P7 の残課題）。今は落とさずに TypeError にする。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_struct_ptr.ar（vec_math の V3*）
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("Rec:", fp.fp_rec_score(Rec(1, 2.5)))   # インスタンスなら呼べる
+print("unreachable:", fp.fp_rec_score(5))     # TypeError: argument 1 must be an instance of the C struct ...

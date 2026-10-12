@@ -686,11 +686,30 @@ extern "C" fn ar_to_float(h: i64) -> f64 {
 
 // ── cpp-bridge helpers ───────────────────────────────────────────────────────
 
+/// Arrow の値を C の文字列（NUL 終端・呼び出しの間だけ有効）にする。
+///
+/// ⚠ 渡せるのは `str` だけ。以前は `None` などを黙って空文字列にしていた（ffi_value_exchange_plan.md 1-2）。
+///   `str` 以外と、NUL を含む `str`（C 側では途中で切れる）はエラーを設定して **NULL** を返す。
+///   C/C++ の中継コードは NULL なら C 関数を呼ばずに戻り、呼び出しの後でエラーが例外になる。
+///   Rust の crate の中継コード（`rs_loader`）は NULL を空文字列として関数を呼ぶが、その後でエラーになる。
 extern "C" fn ar_to_cstr(h: i64) -> *const u8 {
     let s = match clone_value_at(h) {
         Value::Str(s) => s.to_string(),
-        _ => String::new(),
+        other => {
+            set_native_error(format!(
+                "TypeError: a C string (`const char*`) parameter needs a str, not '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+            ));
+            return std::ptr::null();
+        }
     };
+    if s.contains('\0') {
+        set_native_error(
+            "ValueError: a str passed to a C string (`const char*`) parameter must not contain NUL (the C side would cut it there)"
+                .to_string(),
+        );
+        return std::ptr::null();
+    }
     STATE.with(|s_tls| {
         let mut st = s_tls.borrow_mut();
         let mut bytes = s.into_bytes();
@@ -994,6 +1013,23 @@ mod tests {
 
         assert_eq!(ar_make_str(std::ptr::null(), 3), TL_NONE);
         assert!(take_error().is_some_and(|e| e.contains("invalid string")));
+    }
+
+    /// C の文字列へは str だけ。None などや NUL を含む str は、黙って空文字列にせずエラーで NULL（1-2）。
+    #[test]
+    fn to_cstr_accepts_only_str_without_nul() {
+        let h = ar_make_str(b"abc".as_ptr(), 3);
+        let p = ar_to_cstr(h);
+        assert!(!p.is_null());
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes(), b"abc");
+        assert!(take_error().is_none());
+
+        assert!(ar_to_cstr(TL_NONE).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("needs a str") && e.contains("NoneType")));
+
+        let h = ar_make_str(b"a\0b".as_ptr(), 3);
+        assert!(ar_to_cstr(h).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("NUL")));
     }
 
     /// 名前を受け取るコールバックも同じ検査を通る（不正なら呼び出しのエラー）。

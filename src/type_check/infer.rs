@@ -147,6 +147,8 @@ impl TypeChecker {
                 }
                 // `from m import make_class` した、クラスを返す Python の関数（10-16）。
                 self.check_py_class_factory_use(name, name, None);
+                // `from h import[cpp-dll] f` した、今の Arrow から呼べない C の関数（1-2）。
+                self.check_ffi_unsupported_use(name, name, None);
                 let result = found.unwrap_or(InferredType::Unresolved);
                 // ── AST 型解決層（#15b）── 参照サイトごとの型を焼く。
                 // 変数単位ではなく**参照位置単位**なのが要点で、型ガード絞り込みは
@@ -793,6 +795,10 @@ impl TypeChecker {
         if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
             self.check_py_class_factory_use(&format!("{name}.{attr}"), name, Some(span.clone()));
         }
+        // `import[cpp-dll] h as fp` の `fp.f`（今の Arrow から呼べない C の関数・1-2）。
+        if let Expr::Ident { name, .. } = object {
+            self.check_ffi_unsupported_use(&format!("{name}.{attr}"), name, Some(span.clone()));
+        }
         // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
         //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
         //    - **読み**: 組み込みの値は読める属性を持たない。実行時の属性の読み（`get_attr_val`）は
@@ -1031,6 +1037,22 @@ impl TypeChecker {
         let function = shown.clone();
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::PyClassFactoryFromArrow { function },
+            span,
+        });
+    }
+
+    /// 今の Arrow から正しく呼べない C/C++ の関数を使っていたら誤りにする（ffi_value_exchange_plan.md 1-2）。
+    ///
+    /// 引数の意味は `check_py_class_factory_use` と同じ。呼び出しに限らず、値として持ち出すのも誤り
+    /// （どの使い方でも、戻り値が壊れる・落ちる・書き込みが失われる関数なので）。
+    fn check_ffi_unsupported_use(&mut self, spelled: &str, binding: &str, span: Option<Span>) {
+        let Some((depth, shown, reason)) = self.ffi_unsupported.get(spelled) else { return };
+        if self.state.lookup_depth(binding) != Some(*depth) {
+            return;
+        }
+        let (function, reason) = (shown.clone(), reason.clone());
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::FfiUnsupported { function, reason },
             span,
         });
     }

@@ -28,8 +28,11 @@ pub enum CType {
     /// `mutable = true` → output param: value written back after the call.
     /// `mutable = false` → input param: read-only, no write-back.
     Ptr { inner: Box<CType>, mutable: bool },
-    /// `char*` / `const char*` — tl `str` ↔ null-terminated C string.
-    CharPtr,
+    /// `char*` / `const char*` / `wchar_t*` — a NUL-terminated C string.
+    /// `wide` = `wchar_t*`, `mutable` = no `const` (an output buffer: the C side writes into it).
+    /// Only `const char*` parameters cross today (Arrow `str` → UTF-8 copy for the call);
+    /// the other shapes are unsupported (`CFnSig::unsupported_reason`, ffi_value_exchange_plan.md 1-2).
+    CharPtr { wide: bool, mutable: bool },
     /// `const StructName*` or `StructName*` — opaque struct pointer.
     /// Marshaled as `void*` across the ABI; the shim casts to the real type at the call site.
     OpaqueStructPtr { type_name: String, mutable: bool },
@@ -62,7 +65,10 @@ impl CType {
                     format!("const {}*", inner.c_type_str())
                 }
             }
-            CType::CharPtr => "const char*".to_string(),
+            CType::CharPtr { wide, mutable } => {
+                let ch = if *wide { "wchar_t" } else { "char" };
+                if *mutable { format!("{ch}*") } else { format!("const {ch}*") }
+            }
             // Emit void* for opaque struct pointers; the call-site cast is handled in gen_cpp_shim_source
             CType::OpaqueStructPtr { .. } => "void*".to_string(),
             // By-value structs keep their real type: the shim passes and returns them by value, so its
@@ -108,4 +114,208 @@ pub struct CFnSig {
     /// 呼び出し側は `n_required` 以降の末尾引数を省略できる。省略された引数は
     /// 0（tl の None ハンドル、NULL ポインタまたは 0 にマーシャリングされる）で埋められる。
     pub n_required: usize,
+}
+
+// ── What can cross the boundary today (ffi_value_exchange_plan.md 1-2) ──────
+
+/// 型スタブで「この関数は今は使えない」を表すデコレータ（`Expr::Str`）の接頭辞。続きが理由。
+/// パーサ（`parser/imports/cpp.rs`）が付け、型検査（`TypeErrorKind::FfiUnsupported`）が読む。
+/// ⚠ C/C++ のスタブは実行時には実行されないので、この文字列のデコレータが評価されることはない。
+pub const FFI_UNSUPPORTED_MARK: &str = "ffi-unsupported: ";
+
+impl CStructDef {
+    /// C と**同じレイアウトを正確に作れる**か: 完全（`complete`）で、全フィールドが int（4 バイト）/ float /
+    /// double。値渡し・値返し・構造体ポインタの受け渡しはこれが真のものだけ（`raw_layout` もこれで判定する）。
+    /// `long`（Windows は 4 バイト・Linux は 8 バイト）・`bool`（C++ は 1 バイト）・ポインタは含めない。
+    pub fn has_exact_layout(&self) -> bool {
+        self.complete
+            && !self.fields.is_empty()
+            && self
+                .fields
+                .iter()
+                .all(|(_, ct)| matches!(ct, CType::Int | CType::Float | CType::Double))
+    }
+}
+
+impl CFnSig {
+    /// この関数を**今の Arrow から正しく呼べない**なら、その理由（呼べるなら `None`）。
+    ///
+    /// 型スタブの生成（パーサ）と中継 DLL の生成（実行時）の両方がこれを使う。両者で判定が
+    /// ずれないよう、ここ 1 か所に置く（規約「掬いきれなかった選択肢はエラーにする」・
+    /// ffi_value_exchange_plan.md 1-2）。以前はこうした関数も生成され、戻り値が黙って `None` になる・
+    /// Arrow 内部のハンドル番号をポインタとして渡す（落ちる）・書き込みが失われる、といった形で壊れていた。
+    /// 対応は計画書のフェーズ 3〜5 で順に入る（文字列・配列・`Ptr[T]`）。
+    pub fn unsupported_reason(&self, structs: &[CStructDef]) -> Option<String> {
+        let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
+        let ret = match &self.ret {
+            CType::CharPtr { wide: false, .. } => Some("it returns a C string (`char*`)".to_string()),
+            CType::CharPtr { wide: true, .. } => Some("it returns a wide string (`wchar_t*`)".to_string()),
+            CType::Ptr { .. } => Some("it returns a pointer to a number".to_string()),
+            CType::VoidPtr => Some("it returns `void*`".to_string()),
+            CType::OpaqueStructPtr { type_name, .. } => {
+                Some(format!("it returns a pointer to struct `{type_name}`"))
+            }
+            CType::FnPtr => Some("it returns a function pointer".to_string()),
+            CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
+                "it returns struct `{type_name}` by value, and its exact C layout is not known"
+            )),
+            _ => None,
+        };
+        if ret.is_some() {
+            return ret;
+        }
+        for (i, (name, ct)) in self.params.iter().enumerate() {
+            let p = if name.is_empty() { format!("#{i}") } else { format!("`{name}`") };
+            let why = match ct {
+                CType::CharPtr { wide: true, .. } => Some(format!("parameter {p} is a wide string (`wchar_t*`)")),
+                CType::CharPtr { mutable: true, .. } => Some(format!(
+                    "parameter {p} is `char*`, an output buffer (what the C side writes would be lost)"
+                )),
+                CType::VoidPtr => Some(format!("parameter {p} is `void*`")),
+                CType::FnPtr => Some(format!("parameter {p} is a function pointer (callback)")),
+                CType::Ptr { mutable: false, .. } => Some(format!(
+                    "parameter {p} is a `const` pointer to a number, which may be a single value or an array"
+                )),
+                CType::OpaqueStructPtr { type_name, .. } if !exact(type_name) => Some(format!(
+                    "parameter {p} points to struct `{type_name}`, and its exact C layout is not known"
+                )),
+                CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
+                    "parameter {p} passes struct `{type_name}` by value, and its exact C layout is not known"
+                )),
+                _ => None,
+            };
+            if why.is_some() {
+                return why;
+            }
+        }
+        // 構造体ポインタは typed 経路でしか受け渡せない（ハンドル経路は Arrow 内部のハンドル番号をポインタとして
+        // 渡してしまう・c-abi-interop P7 の残課題）。typed 経路に載らない型と混ざっている関数は呼べない。
+        if self.params.iter().any(|(_, t)| matches!(t, CType::OpaqueStructPtr { .. }))
+            && !self.typed_abi_eligible(structs)
+        {
+            let other = if typed_abi_ok(&self.ret, structs, false) {
+                self.params.iter().map(|(_, t)| t).find(|t| !typed_abi_ok(t, structs, true))
+            } else {
+                Some(&self.ret)
+            };
+            let what = match other {
+                Some(CType::Bool) => "`bool`",
+                Some(CType::CharPtr { .. }) => "a C string",
+                Some(CType::ByValueStruct { .. }) => "a struct returned by value",
+                _ => "another parameter type",
+            };
+            return Some(format!(
+                "it passes a struct pointer together with {what}, which the struct-pointer call path cannot carry yet"
+            ));
+        }
+        None
+    }
+
+    /// typed ABI（中継 DLL の `{name}_typed`・`AbiTy`）で呼べるか。戻り値は void / 整数 / 浮動小数、
+    /// 引数は整数 / 浮動小数 / 数値への書き込みポインタ / 正確なレイアウトを持つ構造体（ポインタ・値渡し）。
+    /// 中継 DLL の生成（`cpp_typed_eligible`）と実行時のシグネチャ（`build_cpp_typed_sig`）はこれと一致させる。
+    pub fn typed_abi_eligible(&self, structs: &[CStructDef]) -> bool {
+        typed_abi_ok(&self.ret, structs, false) && self.params.iter().all(|(_, t)| typed_abi_ok(t, structs, true))
+    }
+}
+
+/// `typed_abi_eligible` の 1 つの型の判定。`param` は引数か（戻り値は構造体・ポインタを持てない）。
+fn typed_abi_ok(t: &CType, structs: &[CStructDef], param: bool) -> bool {
+    let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
+    match t {
+        CType::Int | CType::Long | CType::Float | CType::Double => true,
+        CType::Void => !param,
+        CType::Ptr { inner, mutable: true } if param => {
+            matches!(**inner, CType::Int | CType::Long | CType::Float | CType::Double)
+        }
+        CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } if param => exact(type_name),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(name: &str, fields: Vec<CType>, complete: bool) -> CStructDef {
+        CStructDef {
+            name: name.to_string(),
+            fields: fields.into_iter().enumerate().map(|(i, t)| (format!("f{i}"), t)).collect(),
+            complete,
+        }
+    }
+    fn structs() -> Vec<CStructDef> {
+        vec![
+            st("Rec", vec![CType::Int, CType::Double], true),
+            st("Named", vec![CType::Int, CType::CharPtr { wide: false, mutable: false }], true),
+            st("Rgba8", vec![CType::Int; 4], false),
+        ]
+    }
+    fn sig(params: Vec<CType>, ret: CType) -> CFnSig {
+        CFnSig {
+            name: "f".to_string(),
+            params: params.into_iter().enumerate().map(|(i, t)| (format!("p{i}"), t)).collect(),
+            ret,
+            namespace: None,
+            n_required: 0,
+        }
+    }
+    fn st_ptr(n: &str) -> CType { CType::OpaqueStructPtr { type_name: n.to_string(), mutable: false } }
+    fn by_val(n: &str) -> CType { CType::ByValueStruct { type_name: n.to_string() } }
+    const CSTR: CType = CType::CharPtr { wide: false, mutable: false };
+
+    /// 今の Arrow から正しく呼べるもの（理由なし）
+    #[test]
+    fn supported_signatures() {
+        let s = structs();
+        for f in [
+            sig(vec![CType::Int, CType::Double], CType::Long),
+            sig(vec![CSTR], CType::Int),
+            sig(vec![by_val("Rec")], by_val("Rec")),
+            sig(vec![st_ptr("Rec"), CType::Ptr { inner: Box::new(CType::Double), mutable: true }], CType::Int),
+            sig(vec![CType::Bool], CType::Void),
+        ] {
+            assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
+        }
+    }
+
+    /// 呼べないもの: 理由に何が問題かが入る（1-2）
+    #[test]
+    fn unsupported_signatures() {
+        let s = structs();
+        let cases: Vec<(CFnSig, &str)> = vec![
+            (sig(vec![], CSTR), "C string"),
+            (sig(vec![], CType::CharPtr { wide: true, mutable: false }), "wchar_t"),
+            (sig(vec![], CType::Ptr { inner: Box::new(CType::Int), mutable: true }), "pointer to a number"),
+            (sig(vec![], CType::VoidPtr), "void*"),
+            (sig(vec![], st_ptr("Rec")), "pointer to struct `Rec`"),
+            (sig(vec![], CType::FnPtr), "function pointer"),
+            (sig(vec![], by_val("Rgba8")), "struct `Rgba8` by value"),
+            (sig(vec![CType::CharPtr { wide: false, mutable: true }], CType::Void), "output buffer"),
+            (sig(vec![CType::CharPtr { wide: true, mutable: false }], CType::Void), "wide string"),
+            (sig(vec![CType::VoidPtr], CType::Void), "`void*`"),
+            (sig(vec![CType::FnPtr], CType::Void), "callback"),
+            (sig(vec![CType::Ptr { inner: Box::new(CType::Int), mutable: false }], CType::Void), "single value or an array"),
+            (sig(vec![st_ptr("Named")], CType::Void), "points to struct `Named`"),
+            (sig(vec![st_ptr("Unknown")], CType::Void), "points to struct `Unknown`"),
+            (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
+            (sig(vec![st_ptr("Rec"), CSTR], CType::Void), "struct pointer together with a C string"),
+            (sig(vec![st_ptr("Rec")], CType::Bool), "struct pointer together with `bool`"),
+        ];
+        for (f, want) in cases {
+            let got = f.unsupported_reason(&s);
+            assert!(got.as_deref().is_some_and(|r| r.contains(want)), "{f:?} -> {got:?} (want {want:?})");
+        }
+    }
+
+    /// 正確なレイアウト: 完全で int / float / double だけ
+    #[test]
+    fn exact_layout() {
+        let s = structs();
+        assert!(s[0].has_exact_layout());
+        assert!(!s[1].has_exact_layout()); // ポインタのフィールド
+        assert!(!s[2].has_exact_layout()); // 不完全（4 バイト未満の整数）
+        assert!(!st("Empty", vec![], true).has_exact_layout());
+        assert!(!st("L", vec![CType::Long], true).has_exact_layout());
+    }
 }

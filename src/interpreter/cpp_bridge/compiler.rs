@@ -184,10 +184,11 @@ pub fn gen_cpp_shim_source(
                     name.clone()
                 };
                 match ct {
-                    // Cast away const on char pointers: DxLib output-buffer params use TCHAR* (non-const),
-                    // but our shim declares them as const char*. The explicit (char*) cast suppresses
-                    // C2664 when TCHAR=char without losing any type safety at the tl layer.
-                    CType::CharPtr => format!("(char*){n}"),
+                    // Cast away const on char pointers so the call compiles whether the header says
+                    // `const char*` or `char*` (TCHAR*). Only `const char*` parameters reach the shim
+                    // today: `char*` output buffers and `wchar_t*` are unsupported (1-2).
+                    CType::CharPtr { wide: false, .. } => format!("(char*){n}"),
+                    CType::CharPtr { wide: true, .. } => format!("(wchar_t*){n}"),
                     // Opaque struct pointer: shim param is void*; cast to real type at the call site.
                     CType::OpaqueStructPtr { type_name, mutable } => {
                         if *mutable {
@@ -291,9 +292,13 @@ pub fn compile_tl_dll(
     // Deduplicate by name: extern "C" cannot have overloaded functions.
     // Keep first occurrence of each name.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 今の Arrow から正しく呼べない関数（`CFnSig::unsupported_reason`）はシムにも中継 DLL にも入れない。
+    // 型スタブ側は同じ判定で呼び出しを静的エラーにする（1-2）。⚠ 以前は入れていて、シムのコンパイル失敗
+    // （`wchar_t*` など）の再試行で黙って落ちるか、生成されても値が壊れていた。
     let mut effective_sigs: Vec<CFnSig> = sigs
         .iter()
         .filter(|s| seen.insert(s.name.clone()))
+        .filter(|s| s.unsupported_reason(struct_defs).is_none())
         .cloned()
         .collect();
 

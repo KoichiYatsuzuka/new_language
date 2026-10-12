@@ -1,11 +1,5 @@
-#stamp 36d13b88de604725
-fp_greet
-fp_echo
-fp_utf8
-fp_null
+#stamp e5c5690e0a791cf6
 fp_len
-fp_fill
-fp_wide
 fp_make_rec
 fp_rec_score_val
 fp_make_pair
@@ -13,14 +7,3 @@ fp_pair_sum
 fp_make_vec3
 fp_vec3_sum
 fp_rec_score
-fp_rec_static
-fp_make_named
-fp_named_len
-fp_make_rgba
-fp_rgba_sum
-fp_handle_new
-fp_handle_get
-fp_db_open
-fp_db_count
-fp_db_close
-fp_sum

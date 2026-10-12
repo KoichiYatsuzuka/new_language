@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::super::native_api::{TL_FALSE, TL_TRUE};
+use super::super::native_api::{TL_FALSE, TL_NONE, TL_TRUE};
 use crate::cpp_header::types::{CStructDef, CFnSig, CType};
 
 // ── Generated Rust source header ─────────────────────────────────────────────
@@ -121,7 +121,7 @@ pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
         CType::Float => Some("f32"),
         CType::Double => Some("f64"),
         CType::VoidPtr
-        | CType::CharPtr
+        | CType::CharPtr { .. }
         | CType::OpaqueStructPtr { .. }
         | CType::Ptr { .. } => Some("*mut i8"),
         // Nested struct-by-value or function pointer → not representable
@@ -222,29 +222,23 @@ pub unsafe extern "C" fn ar_init_bridge(cb: *const ArCallbacks) {
         struct_defs.iter().filter(|d| struct_is_bridgeable(d)).map(|d| (d.name.clone(), d)).collect();
 
     for sig in sigs {
-        src.push_str(&gen_dll_fn(sig, &struct_map));
+        src.push_str(&gen_dll_fn(sig, &struct_map, struct_defs));
     }
     src
 }
 
 /// 1 つの C 関数シグネチャに対して `{name}_tl(argc, argv) -> i64` 形式の Rust ラッパー関数ソースを生成する。
-fn gen_dll_fn(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> String {
+fn gen_dll_fn(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>, all_defs: &[CStructDef]) -> String {
     let mut s = String::new();
     let n = &sig.name;
 
+    // 今の Arrow から正しく呼べない関数は生成しない（型スタブ側も同じ判定で静的エラーにする・1-2）。
     // 値渡し・値返しの構造体は、C と**同じレイアウトの** `_Struct_{name}` を**値のまま**受け渡す
     // （ffi_value_exchange_plan.md 1-3）。呼び出し規約（8 バイトならレジスタ、それ以外は隠しポインタ…）は
     // Rust の `extern "C"` が合わせる。cpp-lib のシムも構造体を値で受け渡す（`gen_cpp_shim_source`）。
     // ⚠ 以前は「アドレスを渡す・戻り値をポインタとして読む」形で、cpp-dll では呼び出し規約が合わず落ちていた。
-    // レイアウトが正確に分からない構造体（`raw_layout` が無い）は値で受け渡せないので、関数自体を生成しない
-    // （呼べばその関数が無いというエラーになる。黙って壊れた値を渡さない）。
-    let by_value_ok = |ct: &CType| match ct {
-        CType::ByValueStruct { type_name } => struct_defs
-            .get(type_name.as_str())
-            .is_some_and(|d| d.raw_layout().is_some()),
-        _ => true,
-    };
-    if !sig.params.iter().all(|(_, t)| by_value_ok(t)) || !by_value_ok(&sig.ret) {
+    // レイアウトが正確に分からない構造体（`has_exact_layout` が偽）は値で受け渡せないので、これも未対応。
+    if sig.unsupported_reason(all_defs).is_some() {
         return String::new();
     }
     let extern_type = |ct: &CType| match ct {
@@ -291,8 +285,12 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                     inner.from_handle(&h)
                 ));
             }
-            CType::CharPtr => {
-                s.push_str(&format!("    let _{pname} = ((*CB).to_cstr)({h});\n"));
+            CType::CharPtr { .. } => {
+                // `to_cstr` は str 以外・NUL を含む str ならエラーを設定して NULL を返す（1-2）。そのときは
+                // C 関数を呼ばずに戻る（呼び出しの後でエラーが例外になる）。
+                s.push_str(&format!(
+                    "    let _{pname} = ((*CB).to_cstr)({h});\n    if _{pname}.is_null() {{ return {TL_NONE}i64; }}\n"
+                ));
             }
             CType::ByValueStruct { type_name } => {
                 // 上の `by_value_ok` で raw レイアウトのある構造体だけが来る
@@ -384,21 +382,10 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
 
     // 統一 typed ABI 変種を追加生成（全プリミティブ + raw レイアウト既知の構造体ポインタ／
     // by-value 構造体のシグネチャの場合のみ）
-    if cpp_typed_eligible(sig, struct_defs) {
+    if cpp_typed_eligible(sig, all_defs) {
         s.push_str(&gen_dll_fn_typed(sig, struct_defs));
     }
     s
-}
-
-/// `CType` が「raw レイアウト既知の構造体」を指す（ポインタ or by-value）場合、
-/// その構造体名を返す。typed ABI 適格性判定・引数コード生成の両方で使う。
-fn typed_struct_name(ct: &CType) -> Option<&str> {
-    match ct {
-        CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } => {
-            Some(type_name.as_str())
-        }
-        _ => None,
-    }
 }
 
 /// C 関数が typed ABI（`{name}_typed`）でエクスポート可能か。
@@ -408,18 +395,9 @@ fn typed_struct_name(ct: &CType) -> Option<&str> {
 ///   ポインタ（`OpaqueStructPtr`）・by-value 構造体（`ByValueStruct`）、および
 ///   プリミティブ書き込みポインタ（`int*` / `double*` 等 — `AbiTy::OutPtr`）も可
 /// exec.rs 側の `build_cpp_typed_sig` と条件を一致させること。
-pub(crate) fn cpp_typed_eligible(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> bool {
-    matches!(
-        sig.ret,
-        CType::Void | CType::Int | CType::Long | CType::Float | CType::Double
-    ) && sig.params.iter().all(|(_, t)| {
-        matches!(t, CType::Int | CType::Long | CType::Float | CType::Double)
-            || matches!(t, CType::Ptr { inner, mutable: true }
-                if matches!(**inner, CType::Int | CType::Long | CType::Float | CType::Double))
-            || typed_struct_name(t)
-                .and_then(|name| struct_defs.get(name))
-                .is_some_and(|d| d.raw_layout().is_some())
-    })
+pub(crate) fn cpp_typed_eligible(sig: &CFnSig, all_defs: &[CStructDef]) -> bool {
+    // 判定は `cpp_header` の 1 か所（未対応の判定 `unsupported_reason` も同じものを使う・1-2）
+    sig.typed_abi_eligible(all_defs)
 }
 
 /// `{name}_typed(args: *const u64, ret: *mut u64, err: *mut ErrSlot) -> u32` を生成する。
@@ -559,7 +537,7 @@ mod tests {
     fn by_value_struct_is_passed_and_returned_by_value() {
         let defs = [rec()];
         let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
-        let s = gen_dll_fn(&by_value("f", "Rec"), &map);
+        let s = gen_dll_fn(&by_value("f", "Rec"), &map, &defs);
         assert!(s.contains("unsafe extern \"C\" fn(_Struct_Rec) -> _Struct_Rec"), "{s}");
         assert!(s.contains("let _v = _Struct_Rec {"), "{s}");
         assert!(s.contains("let _raw_r: _Struct_Rec = _fp(_v);"), "{s}");
@@ -571,7 +549,7 @@ mod tests {
     fn by_value_struct_without_exact_layout_is_not_generated() {
         let defs = [rgba()];
         let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
-        assert_eq!(gen_dll_fn(&by_value("f", "Rgba8"), &map), "");
-        assert_eq!(gen_dll_fn(&by_value("g", "Unknown"), &map), "");
+        assert_eq!(gen_dll_fn(&by_value("f", "Rgba8"), &map, &defs), "");
+        assert_eq!(gen_dll_fn(&by_value("g", "Unknown"), &map, &defs), "");
     }
 }

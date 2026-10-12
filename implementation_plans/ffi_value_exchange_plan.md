@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 実施中（§5）
+- 状態: フェーズ 1 完了（1-1〜1-5・§5）。1-6 は提案（利用者の判断待ち）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -311,6 +311,38 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_outputs` の差は新しい 3 本だけ（基準では落ちる・期待どおり）。負の対照で `cpp_lib_struct_by_value.ar` が
   ずれたのは、新旧で刻印が違い、交互に走らせると生成物の作り直しの表示が回によって変わるため。
   `compare_wasm_frontend` 492/492・`type_obligations` 退行なし
+
+### 1-2 実装
+
+- **判定を 1 か所に置いた**: `CFnSig::unsupported_reason`（`src/cpp_header/types.rs`）が、ヘッダから分かる時点で
+  「今の Arrow から正しく呼べない」関数を理由つきで判定する。型スタブ（パーサ）と中継 DLL（実行時）の両方が使う。
+  対象: ポインタを返す（`char*`・`wchar_t*`・`T*`・`void*`・構造体ポインタ・関数ポインタ）、`void*` / 関数ポインタ /
+  `wchar_t*` / 非 const の `char*`（出力バッファ）/ `const T*`（数値。値 1 個か配列か分からない）を受ける、
+  レイアウトの分からない構造体を受け渡す、構造体ポインタと typed 経路に載らない型（`const char*`・`bool`）が混ざる
+- **静的エラー**: パーサは未対応の関数に理由を書いた文字列のデコレータ（`FFI_UNSUPPORTED_MARK`）を付け、`mut` も
+  要求しない。型検査は `import` / `from … import` の時点でそれを集め、使った箇所を `TypeErrorKind::FfiUnsupported`
+  （`C function 'fp.fp_greet' cannot be used from Arrow yet: it returns a C string`）にする。拡張も同じ wasm で出す
+- **実行時**: 未対応の関数は中継 DLL にもシムにも入れない（`gen_dll_fn` が空を返す・`compile_tl_dll` が除く）。
+  typed 経路の適格条件を `CFnSig::typed_abi_eligible` に移した（`cpp_typed_eligible` はこれに委ねる）
+- **ハンドル経路へ落とさない**（c-abi-interop P7 の残課題）: `TypedArgs::marshal` が、構造体ポインタへのインスタンス以外・
+  数値への書き込みポインタへの数値以外を `Err` にする（数値どうしの食い違いは従来どおりハンドル経路で変換）
+- **`const char*` の引数**（`ar_to_cstr`）: str 以外・NUL を含む str は、エラーを設定して NULL を返す。中継コードは NULL
+  なら C 関数を呼ばずに戻り、呼び出しの後でエラーが例外になる
+- `CType::CharPtr { wide, mutable }`（`wchar_t*` と非 const の `char*` を区別。以前は同一視）
+- 実測した以前の症状: `fp_rec_score(5)`（構造体ポインタに整数）は segfault、`fp_len("a\0b")` は黙って 1
+- 例題: `cpp_unsupported_signature_error.ar`（8 種類の未対応がそれぞれ静的エラー）・`cpp_struct_ptr_arg_error.ar`・
+  `cpp_cstring_nul_error.ar`（実行時エラー）・`cpp_cstring_arg.ar`（`const char*` の正例・UTF-8）。
+  1-3 の `cpp_struct_by_value_layout_error.ar` も静的エラーになった。`ar_ffi_probe.*` を作り直した（未対応を除いた）
+- 単体テスト: `cpp_header::types::tests`（呼べる・呼べない・正確なレイアウト）、`value::native::marshal_tests`、
+  `native_api::callbacks::tests`（`to_cstr`）
+- VSIX を作り直した（拡張の診断が増えるため）
+- ⚠ 残したもの: ハンドル経路の数値の変換（`int` の引数に str が来ると 0）。省略された引数を 0 で埋める仕組み
+  （`DEFAULTPARAM`）がこの変換に依存しており、静的な型でほぼ防がれるので触っていない。`bool` の幅は 1-6（提案）
+- ゲート（基準 `0c6c54e`）: `scan_examples`・`force_gate` は基準と同じ（新しい例題も期待どおり）。`compare_python_impl` は
+  負例 2 本を既知の差分に登録した（参照実装は直す前と同じ壊れ方: NUL で黙って切れる・アクセス違反）。
+  `compare_import_paths` 13/13。`compare_outputs` の差 5 本はすべて意図したもの（新しい負例 3 本・1-3 の負例が静的
+  エラーになった・`cpp_lib_struct_by_value.ar` は 1-3 と同じく生成物の作り直しの表示）。`const char*` の正例は基準と一致。
+  `compare_wasm_frontend` 496/496（新しい静的エラーも拡張と一致）・`type_obligations` 退行なし
 
 ---
 

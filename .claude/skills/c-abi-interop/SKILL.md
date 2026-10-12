@@ -322,9 +322,27 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
 実装ライブラリは **`_x64.lib` サフィックス必須**（`lib_patterns` 既定値）かつ
 **`/MD` でビルド**（シムが `/MD /NODEFAULTLIB:LIBCMT` でリンクするため）。
 
-**既知の残課題**: 引数型が typed 経路に合わない場合のフォールバック先（ハンドル経路）は
-依然として構造体ポインタ引数を扱えない（誤った型の引数で segfault しうる）。
-構造体ポインタを含む関数はハンドル経路へ落とさず明示エラーにするのが将来課題。
+**既知の残課題（→ 解決: implementation_plans/ffi_value_exchange_plan.md 1-2）**: 引数型が typed 経路に
+合わない場合のフォールバック先（ハンドル経路）は構造体ポインタ引数を扱えない（誤った型の引数で segfault しうる）。
+⇒ `TypedArgs::marshal` が、構造体ポインタへのインスタンス以外・数値への書き込みポインタへの数値以外を
+`Err` にする（ハンドル経路へ落とさない）。構造体ポインタと typed 経路に載らない型（`const char*`・`bool` など）が
+混ざった関数は、未対応として静的エラーにする（下の「今の Arrow から呼べない関数」）。
+
+### 今の Arrow から呼べない関数（implementation_plans/ffi_value_exchange_plan.md 1-2）
+
+`CFnSig::unsupported_reason`（`src/cpp_header/types.rs`）が、ヘッダの段階で「正しく受け渡せない」関数を
+判定する。**型スタブ（パーサ）と中継 DLL（実行時）の両方がこの 1 か所を使う**。
+- 対象: ポインタを返す（`char*`・`wchar_t*`・`T*`・`void*`・構造体ポインタ・関数ポインタ）、
+  `void*` / 関数ポインタ / `wchar_t*` / `char*`（非 const = 出力バッファ）/ `const T*`（数値。値 1 個か配列か
+  分からない）を受ける、レイアウトの分からない構造体を受け渡す、構造体ポインタと typed 経路に載らない型が混ざる
+- 型スタブ: 関数に理由を書いた文字列のデコレータ（`FFI_UNSUPPORTED_MARK`）を付け、`mut` も要求しない。
+  型検査は import の時点でそれを集め、使った箇所を `TypeErrorKind::FfiUnsupported` にする
+- 実行時: 中継 DLL にもシムにも入れない（`gen_dll_fn` が空を返す・`compile_tl_dll` が除く）
+- `const char*` の引数（`ar_to_cstr`）: str 以外・NUL を含む str はエラー（NULL を返し、中継コードは C 関数を
+  呼ばずに戻る）。⚠ 以前は None などを黙って空文字列にし、NUL で黙って切っていた
+- `CType::CharPtr { wide, mutable }`: `wchar_t*` と非 const の `char*` を区別する（以前は同一視）
+- typed 経路の適格条件は `CFnSig::typed_abi_eligible`（`cpp_typed_eligible` はこれに委ねる。
+  `build_cpp_typed_sig` もこれと一致させること）
 
 ### 値渡し・値返しの構造体（implementation_plans/ffi_value_exchange_plan.md 1-3）
 

@@ -285,6 +285,16 @@ pub enum TypeErrorKind {
     PyClassFactoryFromArrow {
         function: String,
     },
+    /// 今の Arrow から正しく呼べない C/C++ の関数を使った（ffi_value_exchange_plan.md 1-2）。
+    ///
+    /// C の文字列・ポインタを返す、`void*` / 関数ポインタ / 出力バッファ（`char*`）/ `wchar_t*` を受け取る、
+    /// レイアウトの分からない構造体を受け渡す、など（`CFnSig::unsupported_reason`）。以前はこうした関数も
+    /// 呼べてしまい、戻り値が黙って `None` になる・ハンドル番号をポインタとして渡して落ちる・書き込みが
+    /// 失われる、といった形で壊れていた。型スタブの関数に付いた印（`FFI_UNSUPPORTED_MARK`）から引く。
+    FfiUnsupported {
+        function: String,
+        reason: String,
+    },
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -918,6 +928,10 @@ impl StaticTypeError {
             ),
             TypeErrorKind::PyClassFactoryFromArrow { function } => format!(
                 "Python function {} returns a class it defines, so it can only be used from Python code — Arrow cannot know the type of that class (use it from a Python function instead)",
+                hl_q(function)
+            ),
+            TypeErrorKind::FfiUnsupported { function, reason } => format!(
+                "C function {} cannot be used from Arrow yet: {reason}",
                 hl_q(function)
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(

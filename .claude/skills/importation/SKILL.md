@@ -410,6 +410,11 @@ Not covered by `rs_loader`. Parsed by `parse_cpp_import` (imports.rs:91):
 
 At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `exec_module`).
 
+**Functions Arrow cannot call correctly yet** (C strings / pointers returned, `void*`, callbacks, output
+buffers, `wchar_t*`, structs without an exact layout …) are marked in the stub and using them is a static
+error (`TypeErrorKind::FfiUnsupported`); they are not generated in the wrapper either. One judgement,
+`CFnSig::unsupported_reason` in `src/cpp_header/types.rs` (ffi_value_exchange_plan.md 1-2; see `c-abi-interop`).
+
 **Generated files** (`cpp_bridge/compiler.rs`):
 - `cpp-dll`: the Rust wrapper is rebuilt into `%TEMP%` on every run and loads `{stem}.dll` next to the header.
 - `cpp-lib`: the wrapper `ar_{stem}.dll`, the MSVC shim `ar_{stem}_shim.dll` and `ar_{stem}.syms` are written

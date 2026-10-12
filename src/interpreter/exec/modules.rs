@@ -956,7 +956,7 @@ impl Interpreter {
             }
             CType::Ptr { mutable: false, .. }
             | CType::OpaqueStructPtr { mutable: false, .. }
-            | CType::CharPtr => PtrParam::ConstPtr,
+            | CType::CharPtr { .. } => PtrParam::ConstPtr,
             _ => PtrParam::None,
         }
     }

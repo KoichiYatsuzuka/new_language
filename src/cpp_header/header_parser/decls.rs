@@ -433,9 +433,10 @@ pub(crate) fn parse_c_type_str(
         if ptr_count > 1 {
             return Err("multi-level pointer".to_string());
         }
-        // char* / wchar_t* → tl str
+        // char* / wchar_t* → C 文字列。`wchar_t` か、`const` が無い（出力バッファ）かを持つ（1-2）。
+        // ⚠ 以前は両方を区別せず、`wchar_t*` にも UTF-8 を渡し、`char*` の出力バッファへの書き込みを捨てていた。
         if matches!(core.as_slice(), ["char"] | ["wchar_t"]) {
-            return Ok(CType::CharPtr);
+            return Ok(CType::CharPtr { wide: core == ["wchar_t"], mutable: !is_const });
         }
         // void* → opaque integer handle
         if core == ["void"] {

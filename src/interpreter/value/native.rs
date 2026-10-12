@@ -219,7 +219,9 @@ pub enum Marshalled {
     /// 全引数を組めた ＝ typed ABI を呼んでよい。
     Ready,
     /// 実行時型がシグネチャと合わない ＝ **ハンドル経路へフォールバックする**。
-    /// ⚠ エラーではない（この形は正常系）。
+    /// ⚠ エラーではない（この形は正常系）。ただし、ハンドル経路では正しく受け渡せない食い違い
+    ///   （構造体ポインタへのインスタンス以外・数値への書き込みポインタへの数値以外）は、ここではなく
+    ///   `marshal` が `Err` を返す（ffi_value_exchange_plan.md 1-2）。
     TypeMismatch,
 }
 
@@ -268,6 +270,17 @@ impl TypedArgs {
                             self.slots[i] = slot;
                             self.cleanups.push(cleanup);
                         }
+                        // ⚠ 構造体**ポインタ**にインスタンス以外が来た。ハンドル経路は構造体ポインタを扱えない
+                        //   （Arrow 内部のハンドル番号をポインタとして渡して落ちる・c-abi-interop P7 の残課題）ので、
+                        //   落とさずにエラーにする（ffi_value_exchange_plan.md 1-2）。値渡しの構造体はハンドル経路が
+                        //   フィールドから組み立てられる（1-3）ので従来どおり。
+                        None if !*by_value => {
+                            return Err(format!(
+                                "TypeError: argument {} must be an instance of the C struct the function points to, not '{}'",
+                                i + 1,
+                                crate::interpreter::ops::typecheck::runtime_type_name(v)
+                            ))
+                        }
                         None => return Ok(Marshalled::TypeMismatch),
                     }
                 }
@@ -282,7 +295,19 @@ impl TypedArgs {
                             self.out_wb.push((i, *width));
                         }
                     }
-                    None => return Ok(Marshalled::TypeMismatch),
+                    // 数値どうしの食い違い（float を int* へ等）は従来どおりハンドル経路で変換する。
+                    None if matches!(v, Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Bool(_)) => {
+                        return Ok(Marshalled::TypeMismatch)
+                    }
+                    // ⚠ 数値でない値（None・str など）。ハンドル経路は 0 として渡して 0 を書き戻してしまう
+                    //   （黙った変換）ので、落とさずにエラーにする（1-2）。
+                    None => {
+                        return Err(format!(
+                            "TypeError: argument {} must be a number for a pointer-to-number parameter, not '{}'",
+                            i + 1,
+                            crate::interpreter::ops::typecheck::runtime_type_name(v)
+                        ))
+                    }
                 },
                 _ => return Ok(Marshalled::TypeMismatch),
             }
@@ -491,5 +516,45 @@ mod tests {
         // 型不一致（float を int* へ / 非数値）→ None（typed 経路を諦める）
         assert!(encode_out_ptr_init(&Value::Float(1.5), I32).is_none());
         assert!(encode_out_ptr_init(&Value::Bool(true), F64).is_none());
+    }
+}
+
+#[cfg(test)]
+mod marshal_tests {
+    use super::*;
+
+    fn layout() -> Arc<RawLayout> {
+        Arc::new(RawLayout::from_fields(&[("x".into(), "int32".into())]).unwrap())
+    }
+
+    /// 構造体ポインタにインスタンス以外が来たら、ハンドル経路へ落とさずエラー（ffi_value_exchange_plan.md 1-2）。
+    /// 値渡しの構造体は従来どおりハンドル経路へ（フィールドから組み立てられる・1-3）。
+    #[test]
+    fn struct_pointer_needs_an_instance() {
+        let mut ta = TypedArgs::new();
+        let ptr = AbiTy::Ptr { mutable: false, by_value: false, layout: layout() };
+        let err = ta.marshal(&[Value::Int(5)], &[ptr], &[]).err().expect("must be an error");
+        assert!(err.contains("instance of the C struct") && err.contains("'int'"), "{err}");
+
+        let mut ta = TypedArgs::new();
+        let by_value = AbiTy::Ptr { mutable: false, by_value: true, layout: layout() };
+        assert!(matches!(ta.marshal(&[Value::Int(5)], &[by_value], &[]), Ok(Marshalled::TypeMismatch)));
+    }
+
+    /// 数値への書き込みポインタに数値でない値が来たらエラー。数値どうしの食い違いは従来どおりハンドル経路へ。
+    #[test]
+    fn out_pointer_needs_a_number() {
+        let mut ta = TypedArgs::new();
+        let err = ta
+            .marshal(&[Value::None], &[AbiTy::OutPtr { width: RawWidth::F64 }], &[])
+            .err()
+            .expect("must be an error");
+        assert!(err.contains("must be a number") && err.contains("NoneType"), "{err}");
+
+        let mut ta = TypedArgs::new();
+        assert!(matches!(
+            ta.marshal(&[Value::Float(1.5)], &[AbiTy::OutPtr { width: RawWidth::I32 }], &[]),
+            Ok(Marshalled::TypeMismatch)
+        ));
     }
 }

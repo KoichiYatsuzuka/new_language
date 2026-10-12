@@ -74,6 +74,8 @@ $knownDiff = @{
     'cpp_dll_struct_by_value'        = 'Rust: 構造体を値で渡す・返す C 関数を呼べる（ffi_value_exchange_plan.md 1-3）。py: C のブリッジが値渡し・値返しの構造体を扱わず、その関数が無いという AttributeError を stdout に出す'
     'cpp_lib_struct_by_value'        = 'Rust: 構造体を値で渡す・返す C 関数を呼べる（cpp-lib・ffi_value_exchange_plan.md 1-3）。py: 値渡し・値返しの構造体を扱わず AttributeError を stdout に出す'
     'cpp_struct_by_value_layout_error' = 'どちらもエラーで止まる。Rust はレイアウト不明の構造体を値で受け渡す関数を生成せずエラーを stderr に出し（1-3）、py は AttributeError を stdout に出す'
+    'cpp_cstring_nul_error'          = 'Rust: NUL を含む str を const char* へ渡すと ValueError（ffi_value_exchange_plan.md 1-2）。py: 黙って NUL で切れて 1 を返す（直す前の Rust と同じ壊れ方）'
+    'cpp_struct_ptr_arg_error'       = 'Rust: 構造体ポインタにインスタンス以外を渡すと TypeError（1-2）。py: 整数をそのままポインタとして渡してアクセス違反（直す前の Rust は segfault）'
     'unresolved_py_int_error'        = 'Rust: 型の出所（.pyi / .py）が無い import[py-int] を構文解析の誤りにする（editor_import_resolution_plan.md 1-2）。py: 型を検査せず実行して最後まで進む'
     'module_global_assign_error'     = 'Rust: import したモジュールの let への代入・中身の書き換え・mut への型の合わない代入を StaticTypeError（enum_member_type_plan.md 6-1 で新設）。py: 静的に検査せず実行して g.LABEL = の AttributeError で止まる'
     'template_as_value'              = 'Rust: Stack[int].empty() / Counter[T].n を具体化として読む（10-9 で新設）。py: 添字として読み not subscriptable で落ちる'
