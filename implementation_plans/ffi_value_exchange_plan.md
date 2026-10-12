@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: 計画（未着手）
+- 状態: フェーズ 1 実施中（§5）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -232,7 +232,27 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 ## 5. 実施記録
 
-（未着手）
+着手順は 1-1 → 1-5 → 1-4 → 1-3 → 1-2。cpp-lib の生成物（`test_modules/ar_vec_math.dll` など）は
+リポジトリに入っていて恒久キャッシュとして読まれるので、先に 1-5 を入れないとラッパー生成の変更
+（1-2・1-3）が既存の例題に効かない。
+
+### 1-1 実装
+
+- C/C++: `examples/interop/test_modules/ffi_probe.{h,c,def}` と `build_ffi_probe.ps1`。同じソースから
+  `ffi_probe.dll`（cpp-dll）と `ffi_probe_x64.lib`（cpp-lib）を作る。文字列・値渡し/値返しの構造体（8・12・16 バイト）・
+  ポインタ型フィールドを持つ構造体・`void*`・中身を公開しない構造体のポインタ・配列を含む
+  - ⚠ ヘッダとソースは ASCII だけにした。MSVC は既定で CP932 として読み、cpp-lib のシムもこのヘッダを
+    include する。UTF-8 のコメントは次の行を食う（調査で実際に起きた）
+  - DLL の export は `.def` で行う（ソースに `__declspec(dllexport)` を書くと静的ライブラリ側にも付き、
+    シムの `/EXPORT:name=ar_shim_name` と衝突する）。import ライブラリは作らない（`/NOIMPLIB`）
+- Rust: `examples/interop/rs_crates/ffi_probe_rs`（数値だけの構造体 `Counter`、`pub String` フィールドの
+  `Person`、private フィールドと `new()` の `Account`、対応していないシグネチャ）。⚠ `Person` があるため
+  2-5 の前はこの crate の import 自体が失敗する
+- C#: `examples/interop/cs_probe`（`Probe.cs`・`Program.cs`・`build_cs_probe.ps1`）。パイプのホストは
+  `cs_proc_test/ArrowPipeHost.cs` を `<Compile Include>` で共有する（2-2 の修正が両方に効く）。
+  `bin/` `obj/` は追跡しない
+- 確認: cpp-dll で `fp_greet()` / `fp_handle_new()` / `fp_db_open()` が `None`、cs-proc で `Probe.words()` が
+  整数（`1`）になる（§0 の症状が再現する）。例題は直す各タスクで足す
 
 ---
 

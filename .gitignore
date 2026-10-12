@@ -37,3 +37,7 @@ crates/arrow-frontend/target
 #     （`examples/archived/file_io.ar` が `_tmp_new.txt` の追跡で落ちていた）
 # ⇒ 読み取りだけの例題は**自分で生成してから読む**こと。
 examples/**/_tmp_*.txt
+
+# ffi_value_exchange_plan.md 1-1 の C# フィクスチャ（ビルド成果物はプロジェクト直下へコピーされたものだけ追跡する）
+examples/interop/cs_probe/bin
+examples/interop/cs_probe/obj

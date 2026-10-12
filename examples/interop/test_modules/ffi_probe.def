@@ -1,0 +1,26 @@
+LIBRARY ffi_probe
+EXPORTS
+    fp_greet
+    fp_echo
+    fp_utf8
+    fp_null
+    fp_len
+    fp_fill
+    fp_wide
+    fp_wlen
+    fp_make_rec
+    fp_rec_score_val
+    fp_make_pair
+    fp_pair_sum
+    fp_make_vec3
+    fp_vec3_sum
+    fp_rec_score
+    fp_rec_static
+    fp_make_named
+    fp_named_len
+    fp_handle_new
+    fp_handle_get
+    fp_db_open
+    fp_db_count
+    fp_db_close
+    fp_sum
