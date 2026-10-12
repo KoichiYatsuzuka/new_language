@@ -34,9 +34,10 @@ pub enum CType {
     /// Marshaled as `void*` across the ABI; the shim casts to the real type at the call site.
     OpaqueStructPtr { type_name: String, mutable: bool },
     /// Struct/union passed by value (e.g. `VECTOR`, `MATRIX`).
-    /// Parameters: shim receives `void*` and dereferences with `*(TypeName*)ptr`.
-    /// Return type: shim writes into a per-function static buffer and returns its address.
-    /// Maps to tl `int` (opaque handle = pointer to the struct data).
+    /// Passed and returned **by value** everywhere: the Rust wrapper uses a `#[repr(C)]` mirror
+    /// `_Struct_{name}`, and the cpp-lib shim keeps the real type (ffi_value_exchange_plan.md 1-3).
+    /// Only structs whose exact layout is known (`CStructDef::raw_layout`) can cross; a function that
+    /// passes any other struct by value is not generated. The type-check stub annotates it as `Any`.
     ByValueStruct { type_name: String },
     /// Function pointer parameter (e.g. `void (*callback)(int)`).
     /// Passed as an opaque `void*`; maps to tl `function`.
@@ -64,8 +65,11 @@ impl CType {
             CType::CharPtr => "const char*".to_string(),
             // Emit void* for opaque struct pointers; the call-site cast is handled in gen_cpp_shim_source
             CType::OpaqueStructPtr { .. } => "void*".to_string(),
-            // By-value structs and fn ptrs: shim receives void* and handles the real type
-            CType::ByValueStruct { .. } | CType::FnPtr => "void*".to_string(),
+            // By-value structs keep their real type: the shim passes and returns them by value, so its
+            // signature has the same calling convention as the real function (ffi_value_exchange_plan.md 1-3).
+            CType::ByValueStruct { type_name } => type_name.clone(),
+            // Function pointers: the shim receives an opaque void*
+            CType::FnPtr => "void*".to_string(),
         }
     }
 

@@ -232,19 +232,35 @@ fn gen_dll_fn(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> Strin
     let mut s = String::new();
     let n = &sig.name;
 
+    // 値渡し・値返しの構造体は、C と**同じレイアウトの** `_Struct_{name}` を**値のまま**受け渡す
+    // （ffi_value_exchange_plan.md 1-3）。呼び出し規約（8 バイトならレジスタ、それ以外は隠しポインタ…）は
+    // Rust の `extern "C"` が合わせる。cpp-lib のシムも構造体を値で受け渡す（`gen_cpp_shim_source`）。
+    // ⚠ 以前は「アドレスを渡す・戻り値をポインタとして読む」形で、cpp-dll では呼び出し規約が合わず落ちていた。
+    // レイアウトが正確に分からない構造体（`raw_layout` が無い）は値で受け渡せないので、関数自体を生成しない
+    // （呼べばその関数が無いというエラーになる。黙って壊れた値を渡さない）。
+    let by_value_ok = |ct: &CType| match ct {
+        CType::ByValueStruct { type_name } => struct_defs
+            .get(type_name.as_str())
+            .is_some_and(|d| d.raw_layout().is_some()),
+        _ => true,
+    };
+    if !sig.params.iter().all(|(_, t)| by_value_ok(t)) || !by_value_ok(&sig.ret) {
+        return String::new();
+    }
+    let extern_type = |ct: &CType| match ct {
+        CType::ByValueStruct { type_name } => format!("_Struct_{type_name}"),
+        other => other.rust_extern_type(),
+    };
+
     // Build the C function-pointer type — pointers use their Rust extern type
-    let param_types: Vec<String> = sig
-        .params
-        .iter()
-        .map(|(_, t)| t.rust_extern_type())
-        .collect();
+    let param_types: Vec<String> = sig.params.iter().map(|(_, t)| extern_type(t)).collect();
     let fn_type = if sig.ret == CType::Void {
         format!("unsafe extern \"C\" fn({})", param_types.join(", "))
     } else {
         format!(
             "unsafe extern \"C\" fn({}) -> {}",
             param_types.join(", "),
-            sig.ret.rust_extern_type()
+            extern_type(&sig.ret)
         )
     };
 
@@ -279,29 +295,24 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                 s.push_str(&format!("    let _{pname} = ((*CB).to_cstr)({h});\n"));
             }
             CType::ByValueStruct { type_name } => {
-                if let Some(def) = struct_defs.get(type_name.as_str()) {
-                    // Read each field from the tl instance via get_attr, build C struct
-                    for (fname, ftype) in &def.fields {
-                        let attr_h = format!("((*CB).get_attr)({h}, b\"{fname}\\0\".as_ptr(), {})", fname.len());
-                        s.push_str(&format!(
-                            "    let _{pname}_{fname}: {} = {};\n",
-                            ctype_to_rust_field(ftype).unwrap(),
-                            field_from_handle(ftype, &attr_h)
-                        ));
-                    }
-                    let field_inits: String = def.fields.iter()
-                        .map(|(f, _)| format!("{f}: _{pname}_{f}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                // 上の `by_value_ok` で raw レイアウトのある構造体だけが来る
+                let def = struct_defs[type_name.as_str()];
+                // Read each field from the Arrow instance via get_attr and build the C struct (by value)
+                for (fname, ftype) in &def.fields {
+                    let attr_h = format!("((*CB).get_attr)({h}, b\"{fname}\\0\".as_ptr(), {})", fname.len());
                     s.push_str(&format!(
-                        "    let _buf_{pname} = _Struct_{type_name} {{ {field_inits} }};\n"
+                        "    let _{pname}_{fname}: {} = {};\n",
+                        ctype_to_rust_field(ftype).unwrap(),
+                        field_from_handle(ftype, &attr_h)
                     ));
-                    s.push_str(&format!(
-                        "    let _{pname} = &_buf_{pname} as *const _Struct_{type_name} as *mut i8;\n"
-                    ));
-                } else {
-                    s.push_str(&format!("    let _{pname} = {};\n", ptype.from_handle(&h)));
                 }
+                let field_inits: String = def.fields.iter()
+                    .map(|(f, _)| format!("{f}: _{pname}_{f}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                s.push_str(&format!(
+                    "    let _{pname} = _Struct_{type_name} {{ {field_inits} }};\n"
+                ));
             }
             _ => {
                 s.push_str(&format!("    let _{pname} = {};\n", ptype.from_handle(&h)));
@@ -324,32 +335,32 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
     if sig.ret == CType::Void {
         s.push_str(&format!("    _fp({});\n", args.join(", ")));
     } else if let CType::ByValueStruct { type_name } = &sig.ret {
-        s.push_str(&format!("    let _raw_r = _fp({});\n", args.join(", ")));
-        if let Some(def) = struct_defs.get(type_name.as_str()) {
-            // Read fields from the C buffer and construct a tl class instance
-            s.push_str(&format!("    let _rp = _raw_r as *const _Struct_{type_name};\n"));
-            for (fname, ftype) in &def.fields {
-                s.push_str(&format!(
-                    "    let _{fname}_h = {};\n",
-                    field_to_handle(ftype, &format!("(*_rp).{fname}"))
-                ));
-            }
-            let n_fields = def.fields.len();
-            let args_items: String = def.fields.iter()
-                .map(|(f, _)| format!("_{f}_h"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            s.push_str(&format!("    let _ctor_args = [{args_items}];\n"));
-            let nlen = type_name.len();
+        // 戻り値も値のまま受け取る（`by_value_ok` で raw レイアウトのある構造体だけが来る）
+        let def = struct_defs[type_name.as_str()];
+        s.push_str(&format!(
+            "    let _raw_r: _Struct_{type_name} = _fp({});\n",
+            args.join(", ")
+        ));
+        // Read the fields and construct an Arrow instance of the struct class
+        for (fname, ftype) in &def.fields {
             s.push_str(&format!(
-                "    let _cls = ((*CB).get_global)(b\"{type_name}\\0\".as_ptr(), {nlen});\n"
+                "    let _{fname}_h = {};\n",
+                field_to_handle(ftype, &format!("_raw_r.{fname}"))
             ));
-            s.push_str(&format!(
-                "    let _ret = if _cls != 0 {{ ((*CB).call_fn)(_cls, _ctor_args.as_ptr(), {n_fields}) }} else {{ 0i64 }};\n"
-            ));
-        } else {
-            s.push_str(&format!("    let _ret = {};\n", sig.ret.to_handle("_raw_r")));
         }
+        let n_fields = def.fields.len();
+        let args_items: String = def.fields.iter()
+            .map(|(f, _)| format!("_{f}_h"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push_str(&format!("    let _ctor_args = [{args_items}];\n"));
+        let nlen = type_name.len();
+        s.push_str(&format!(
+            "    let _cls = ((*CB).get_global)(b\"{type_name}\\0\".as_ptr(), {nlen});\n"
+        ));
+        s.push_str(&format!(
+            "    let _ret = if _cls != 0 {{ ((*CB).call_fn)(_cls, _ctor_args.as_ptr(), {n_fields}) }} else {{ 0i64 }};\n"
+        ));
     } else {
         s.push_str(&format!("    let _r = _fp({});\n", args.join(", ")));
         s.push_str(&format!("    let _ret = {};\n", sig.ret.to_handle("_r")));
@@ -515,4 +526,52 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
     }
     s.push_str("    0\n}\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec() -> CStructDef {
+        CStructDef {
+            name: "Rec".to_string(),
+            fields: vec![("id".to_string(), CType::Int), ("score".to_string(), CType::Double)],
+            complete: true,
+        }
+    }
+
+    /// `unsigned char` × 4 — ヘッダ解析が不完全とみなす（4 バイト未満の整数・1-3）
+    fn rgba() -> CStructDef {
+        CStructDef {
+            name: "Rgba8".to_string(),
+            fields: ["r", "g", "b", "a"].iter().map(|f| (f.to_string(), CType::Int)).collect(),
+            complete: false,
+        }
+    }
+
+    fn by_value(name: &str, ty: &str) -> CFnSig {
+        let st = CType::ByValueStruct { type_name: ty.to_string() };
+        CFnSig { name: name.to_string(), params: vec![("v".to_string(), st.clone())], ret: st, namespace: None, n_required: 1 }
+    }
+
+    /// 値渡し・値返しの構造体は `_Struct_` のまま受け渡す（アドレスを渡さない・戻り値をポインタとして読まない）。
+    #[test]
+    fn by_value_struct_is_passed_and_returned_by_value() {
+        let defs = [rec()];
+        let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
+        let s = gen_dll_fn(&by_value("f", "Rec"), &map);
+        assert!(s.contains("unsafe extern \"C\" fn(_Struct_Rec) -> _Struct_Rec"), "{s}");
+        assert!(s.contains("let _v = _Struct_Rec {"), "{s}");
+        assert!(s.contains("let _raw_r: _Struct_Rec = _fp(_v);"), "{s}");
+        assert!(!s.contains("as *mut i8"), "{s}");
+    }
+
+    /// レイアウトが正確に分からない構造体（不完全・定義が無い）を値で受け渡す関数は生成しない。
+    #[test]
+    fn by_value_struct_without_exact_layout_is_not_generated() {
+        let defs = [rgba()];
+        let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
+        assert_eq!(gen_dll_fn(&by_value("f", "Rgba8"), &map), "");
+        assert_eq!(gen_dll_fn(&by_value("g", "Unknown"), &map), "");
+    }
 }

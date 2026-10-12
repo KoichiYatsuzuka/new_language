@@ -196,10 +196,8 @@ pub fn gen_cpp_shim_source(
                             format!("(const {}*){n}", type_name)
                         }
                     }
-                    // By-value struct: shim param is void*; dereference to pass by value.
-                    CType::ByValueStruct { type_name } => {
-                        format!("*({type_name}*){n}")
-                    }
+                    // By-value struct: the shim takes it by value too, so pass it straight through (1-3).
+                    CType::ByValueStruct { .. } => n,
                     // Function pointer: pass opaque void* as-is (cast to fn ptr type at C++ level).
                     CType::FnPtr => n,
                     _ => n,
@@ -245,14 +243,12 @@ pub fn gen_cpp_shim_source(
             src.push_str(&format!(
                 "{dllexport}{ret_c} {def_name}({params_str}) {{ {callee}; }}\n"
             ));
-        } else if let CType::ByValueStruct { type_name } = &sig.ret {
-            // By-value struct return: write result into a per-function static buffer
-            // and return a void* pointer to it. Not thread-safe, but sufficient for
-            // single-threaded tl usage.
-            let name = &sig.name;
+        } else if let CType::ByValueStruct { .. } = &sig.ret {
+            // By-value struct return: return it by value, like the real function (1-3).
+            // ⚠ It used to be written into a per-function static buffer whose address was returned
+            //   (not thread-safe, and a different calling convention from the real function).
             src.push_str(&format!(
-                "static {type_name} _ret_buf_{name};\n\
-                 {dllexport}void* {def_name}({params_str}) {{ _ret_buf_{name} = {callee}; return (void*)&_ret_buf_{name}; }}\n"
+                "{dllexport}{ret_c} {def_name}({params_str}) {{ return {callee}; }}\n"
             ));
         } else {
             src.push_str(&format!(
@@ -756,5 +752,27 @@ mod tests {
         assert!(read_syms_file(&dir.join(format!("ar_test_syms_missing_{pid}.syms")), &all).is_none());
         let _ = std::fs::remove_file(&with_stamp);
         let _ = std::fs::remove_file(&legacy);
+    }
+}
+
+#[cfg(test)]
+mod shim_tests {
+    use super::*;
+
+    /// シムも構造体を値のまま受け渡す（実際の関数と同じ呼び出し規約・静的バッファを使わない・1-3）。
+    #[test]
+    fn shim_passes_and_returns_structs_by_value() {
+        let st = CType::ByValueStruct { type_name: "Rec".to_string() };
+        let sig = CFnSig {
+            name: "f".to_string(),
+            params: vec![("r".to_string(), st.clone())],
+            ret: st,
+            namespace: None,
+            n_required: 1,
+        };
+        let src = gen_cpp_shim_source(&[sig], "lib.h", &[], true);
+        assert!(src.contains("Rec ar_shim_f(Rec r) { return f(r); }"), "{src}");
+        assert!(!src.contains("_ret_buf_"), "{src}");
+        assert!(!src.contains("void*"), "{src}");
     }
 }

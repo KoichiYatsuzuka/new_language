@@ -38,6 +38,12 @@ Named fp_make_named(int id) {
     return n;
 }
 int fp_named_len(Named n) { return n.name ? (int)strlen(n.name) : -1; }
+Rgba8 fp_make_rgba(int r, int g, int b, int a) {
+    Rgba8 c;
+    c.r = (unsigned char)r; c.g = (unsigned char)g; c.b = (unsigned char)b; c.a = (unsigned char)a;
+    return c;
+}
+int fp_rgba_sum(Rgba8 c) { return c.r + c.g + c.b + c.a; }
 
 void* fp_handle_new(void) { return &g_handle_payload; }
 int fp_handle_get(void* h) { return h == (void*)&g_handle_payload ? g_handle_payload : -1; }

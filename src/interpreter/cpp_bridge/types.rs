@@ -27,7 +27,9 @@ impl CType {
             }
             CType::CharPtr => "*const u8".to_string(),
             CType::OpaqueStructPtr { .. } => "*mut i8".to_string(),
-            CType::ByValueStruct { .. } | CType::FnPtr => "*mut i8".to_string(),
+            CType::FnPtr => "*mut i8".to_string(),
+            // 値渡しの構造体は `_Struct_{name}` を値のまま使う（`gen_dll_fn` / `gen_dll_fn_typed` が直接書く・1-3）
+            CType::ByValueStruct { .. } => panic!("by-value structs use their `_Struct_` mirror (gen_dll_fn)"),
         }
     }
 
@@ -43,7 +45,8 @@ impl CType {
             CType::Void => "()".to_string(),
             CType::VoidPtr | CType::OpaqueStructPtr { .. } => format!("{handle} as *mut i8"),
             CType::CharPtr => format!("((*CB).to_cstr)({handle})"),
-            CType::ByValueStruct { .. } | CType::FnPtr => format!("{handle} as *mut i8"),
+            CType::FnPtr => format!("{handle} as *mut i8"),
+            CType::ByValueStruct { .. } => panic!("by-value structs are built field by field (gen_dll_fn, 1-3)"),
             CType::Ptr { .. } => panic!("use gen_ptr_init for pointer parameters"),
         }
     }
@@ -58,8 +61,8 @@ impl CType {
             CType::Bool => format!("if {val} != 0 {{ {TL_TRUE}i64 }} else {{ {TL_FALSE}i64 }}"),
             CType::Void => format!("{TL_NONE}i64"),
             CType::VoidPtr | CType::OpaqueStructPtr { .. } => format!("{val} as i64"),
-            // ByValueStruct: val is *mut i8 pointing at the shim's static buffer
-            CType::ByValueStruct { .. } | CType::FnPtr => format!("{val} as i64"),
+            CType::FnPtr => format!("{val} as i64"),
+            CType::ByValueStruct { .. } => panic!("by-value struct returns are read field by field (gen_dll_fn, 1-3)"),
             CType::CharPtr | CType::Ptr { .. } => format!("{TL_NONE}i64"), // pointers as return are opaque
         }
     }

@@ -16,6 +16,7 @@ typedef struct { int id; double score; } Rec;        // 16 bytes (returned via h
 typedef struct { int x; int y; } Pair;               // 8 bytes (returned in RAX on x64)
 typedef struct { float x, y, z; } Vec3f;             // 12 bytes
 typedef struct { int id; const char* name; } Named;  // has a pointer field
+typedef struct { unsigned char r, g, b, a; } Rgba8;  // 4 bytes: fields narrower than int (task 1-3)
 typedef struct Db Db;                                // opaque (forward declaration only)
 
 #ifdef __cplusplus
@@ -43,6 +44,8 @@ double fp_rec_score(const Rec* r);          // -1.0 for NULL
 Rec* fp_rec_static(void);                   // points at a static Rec inside the library
 Named fp_make_named(int id);                // name = "named-<id>" (static buffer)
 int fp_named_len(Named n);                  // strlen(n.name), -1 for NULL
+Rgba8 fp_make_rgba(int r, int g, int b, int a);
+int fp_rgba_sum(Rgba8 c);                   // r + g + b + a
 
 // -- pointers (handles) --------------------------------------------------------
 void* fp_handle_new(void);

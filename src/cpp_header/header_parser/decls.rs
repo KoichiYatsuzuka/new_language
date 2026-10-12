@@ -317,6 +317,45 @@ pub(crate) fn split_type_and_name(s: &str) -> Result<(String, String), String> {
     Ok((type_str, name.to_string()))
 }
 
+/// C 型文字列が **4 バイト未満の整数**（`char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` /
+/// `wchar_t`（Windows では 2 バイト）など。`typedef` で解決したものも含む）なら `true`。
+///
+/// `CType` はこれらを `Int`（4 バイト）にまとめてしまうので、構造体のフィールドに現れると C と同じレイアウトを
+/// 作れない（`unsigned char` を 4 つ並べた `COLOR_U8` を 16 バイトとして読み書きしていた）。構造体の解析は
+/// これでフィールドを見分け、`CStructDef::complete` を偽にする（ffi_value_exchange_plan.md 1-3）。
+/// ポインタは幅が決まっているので `false`。解決の順序は [`parse_c_type_str`] と同じ。
+pub(crate) fn is_narrow_int_type(
+    s: &str,
+    custom: &HashMap<String, String>,
+    typedefs: &HashMap<String, String>,
+) -> bool {
+    let s = s.trim();
+    if s.ends_with('*') {
+        return false;
+    }
+    let core: Vec<&str> = s
+        .split_whitespace()
+        .filter(|t| {
+            !matches!(*t, "const" | "volatile" | "restrict" | "__restrict" | "unsigned" | "signed")
+                && !t.starts_with('[')
+        })
+        .collect();
+    let core_str = core.join(" ");
+    if custom.contains_key(&core_str) {
+        return false; // 利用者の対応表は int / long / float … の幅で読む
+    }
+    if let Some(resolved) = typedefs.get(&core_str) {
+        // 再帰は typedef なしで 1 段だけ（`parse_c_type_str` と同じく無限ループを避ける）
+        return is_narrow_int_type(resolved, custom, &HashMap::new());
+    }
+    matches!(
+        core.as_slice(),
+        ["char"] | ["short"] | ["short", "int"] | ["wchar_t"]
+            | ["int8_t"] | ["uint8_t"] | ["int16_t"] | ["uint16_t"]
+            | ["__int8"] | ["__int16"]
+    )
+}
+
 /// C 型文字列（末尾に `*` を含む可能性あり）を `CType` にマップする。
 /// 解決順: (1) `custom`（ユーザー上書き）→ (2) `typedefs`（システム typedef エイリアス）→ (3) 組み込み C/C++ プリミティブ名。
 /// 解決できない型は `Err` を返す。

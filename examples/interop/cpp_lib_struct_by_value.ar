@@ -1,0 +1,61 @@
+# cpp_lib_struct_by_value.ar — import[cpp-lib] で構造体を値で渡す・値で返す（ffi_value_exchange_plan.md 1-3）
+#
+# 以前は 8 バイトの構造体（Pair）を値で渡すとプロセスごと落ちた（exit 139）。シムは値渡しの構造体を
+# アドレスで受け取っていたのに、中継 DLL の typed 経路は値で渡していて、8 バイト（x64 ではレジスタで渡る）
+# では食い違った。12・16 バイトは隠しポインタで渡るので偶然動いていた。値返しはシムの静的バッファに書いて
+# アドレスを返していた（スレッド安全でない）。今はシムも中継 DLL も構造体を値のまま受け渡す。
+# 8 バイト（Pair）・12 バイト（Vec3f）・16 バイト（Rec）を 1 つずつ、最上位・関数の中・ループの中から通す。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+#
+# 実行には examples/interop/test_modules/ffi_probe_x64.lib と、生成物 ar_ffi_probe.*（リポジトリにある）が要る。
+# 生成物が古ければ作り直す（MSVC が要る・1-5）。シムも構造体を値で受け渡す（以前は静的バッファを返していた）。
+# 対になる例: cpp_dll_struct_by_value.ar（cpp-dll・ライブラリを直接呼ぶ）
+# 対になる負例: cpp_struct_by_value_layout_error.ar（レイアウトの分からない構造体）
+
+import[cpp-lib] test_modules.ffi_probe as fp
+
+# 16 バイト（int + double）
+let r = fp.fp_make_rec(3, 1.5) mustbe Rec
+if r.id != 3 or r.score != 1.5:
+    raise RuntimeError("fp_make_rec: got " + str(r.id) + ", " + str(r.score))
+print("Rec:", r.id, r.score)
+let rs = fp.fp_rec_score_val(Rec(4, 2.25))
+if rs != 2.25:
+    raise RuntimeError("fp_rec_score_val: got " + str(rs))
+print("fp_rec_score_val:", rs)
+
+# 8 バイト（int × 2）
+let p = fp.fp_make_pair(2, 5) mustbe Pair
+if p.x != 2 or p.y != 5:
+    raise RuntimeError("fp_make_pair: got " + str(p.x) + ", " + str(p.y))
+print("Pair:", p.x, p.y)
+let ps = fp.fp_pair_sum(Pair(10, 20))
+if ps != 30:
+    raise RuntimeError("fp_pair_sum: got " + str(ps))
+print("fp_pair_sum:", ps)
+
+# 12 バイト（float × 3）
+let v = fp.fp_make_vec3(1.5, 2.5, 3.0) mustbe Vec3f
+if v.x != 1.5 or v.y != 2.5 or v.z != 3.0:
+    raise RuntimeError("fp_make_vec3: got " + str(v.x) + ", " + str(v.y) + ", " + str(v.z))
+print("Vec3f:", v.x, v.y, v.z)
+let vs = fp.fp_vec3_sum(Vec3f(1.0, 2.0, 3.5))
+if vs != 6.5:
+    raise RuntimeError("fp_vec3_sum: got " + str(vs))
+print("fp_vec3_sum:", vs)
+
+# 関数の中・ループの中から（値返しを受けて、そのまま値渡しに使う）
+fn pair_total(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let q = fp.fp_make_pair(i, i) mustbe Pair
+        acc += fp.fp_pair_sum(q)
+        i += 1
+    return acc
+
+let total = pair_total(5)
+if total != 20:
+    raise RuntimeError("pair_total: got " + str(total))
+print("pair_total(5):", total)

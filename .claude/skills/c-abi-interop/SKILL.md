@@ -326,6 +326,22 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
 依然として構造体ポインタ引数を扱えない（誤った型の引数で segfault しうる）。
 構造体ポインタを含む関数はハンドル経路へ落とさず明示エラーにするのが将来課題。
 
+### 値渡し・値返しの構造体（implementation_plans/ffi_value_exchange_plan.md 1-3）
+
+上の「値渡し構造体は常に防御コピー」を、**シム（cpp-lib）・中継 DLL（cpp-dll / cpp-lib）・ハンドル経路・typed 経路の
+すべてで「本当に値で受け渡す」**形に揃えた。
+- 中継 DLL は C と同じレイアウトの `#[repr(C)] _Struct_{name}` を値で受け渡す（呼び出し規約は Rust の `extern "C"`）。
+  シムは実際の型（`c_type_str` が型名を返す）で受け取り・返す。⚠ 以前のシムは値渡しを `void*` で受け取り、
+  値返しを静的バッファのアドレスで返していた。typed 経路は値で渡していたので **8 バイトの構造体で segfault**
+  （12・16 バイトは x64 の隠しポインタと偶然一致して動いていた）。cpp-dll はシムが無いので値返しで segfault
+- 値で受け渡せるのは `CStructDef::raw_layout` があるもの（完全・フィールドが int32 / float / double）だけ。
+  それ以外を値で受け渡す関数は**生成しない**（`gen_dll_fn` が空を返す）
+- ⚠ `CType::Int` は `char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` / `wchar_t` も含む（4 バイト扱い）。
+  これらのフィールドを持つ構造体はヘッダ解析が不完全（`complete = false`）とみなす（`is_narrow_int_type`）。
+  以前は `unsigned char` × 4 の構造体（DxLib の `COLOR_U8` など）を 16 バイトとして読み書きしていた（ゼロコピー渡しも）
+- 例題: `examples/interop/cpp_{dll,lib}_struct_by_value.ar`・`cpp_struct_by_value_layout_error.ar`
+  （`test_modules/ffi_probe.h`）
+
 ## 実装フェーズ
 
 | フェーズ | 内容 | 状態 |

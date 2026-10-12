@@ -173,6 +173,43 @@ mod tests {
         assert!(defs[0].raw_layout().is_none());
     }
 
+    /// 4 バイト未満の整数フィールド → complete=false（`CType::Int` は 4 バイトとして扱うので
+    /// C と同じレイアウトを作れない・ffi_value_exchange_plan.md 1-3）。フィールド自体は残る
+    #[test]
+    fn test_narrow_int_fields_incomplete() {
+        for src in [
+            "typedef struct { unsigned char r, g, b, a; } RGBA8;",
+            "struct S { short a; int b; };",
+            "struct W { wchar_t c; int n; };",
+            "struct U { uint16_t lo; uint16_t hi; };",
+        ] {
+            let defs = parse(src);
+            assert_eq!(defs.len(), 1, "{src}");
+            assert!(!defs[0].complete, "{src}");
+            assert!(defs[0].raw_layout().is_none(), "{src}");
+            assert!(!defs[0].fields.is_empty(), "{src}");
+        }
+        // typedef で解決した幅も見る（DxLib の BYTE など）
+        let custom = HashMap::new();
+        let mut typedefs = HashMap::new();
+        typedefs.insert("BYTE".to_string(), "unsigned char".to_string());
+        let defs = parse_header_full("struct C { BYTE r; BYTE g; };", &custom, &typedefs).1;
+        assert_eq!(defs.len(), 1);
+        assert!(!defs[0].complete);
+    }
+
+    /// ポインタは幅が決まっているので narrow ではない（4 バイト以上の整数も complete のまま）
+    #[test]
+    fn test_pointer_and_int32_fields_stay_complete() {
+        let defs = parse("struct N { int id; const char* name; };");
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].complete);
+        let defs = parse("struct P { int32_t a; uint32_t b; float c; };");
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].complete);
+        assert!(defs[0].raw_layout().is_some());
+    }
+
     /// 継承つきクラス → complete=false（基底部分のレイアウトが不明）
     #[test]
     fn test_inheritance_incomplete() {

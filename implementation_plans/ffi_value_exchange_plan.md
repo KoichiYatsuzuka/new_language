@@ -190,6 +190,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **1-3** | cpp-dll の by-value 構造体（引数・戻り値）の呼び出し規約を直す（ラッパーに `#[repr(C)]` の型を生成して値で受け渡す。typed 経路と同じ形） | 1-1 | 中 |
 | **1-4** | `ar_make_str` の UTF-8 検証（`from_utf8_unchecked` をやめる） | なし | 小 |
 | **1-5** | cpp-lib の恒久キャッシュ DLL を、ラッパー生成が変わったら作り直す（版の刻印） | なし | 小 |
+| **1-6** | （提案・1-3 で発見・利用者の判断待ち）C の整数型の幅と符号を区別する。今は `char` / `short` / `int` / `unsigned` / `uint32_t` をすべて `CType::Int`（符号付き 4 バイト）にまとめていて、引数・戻り値の `unsigned` の 2^31 以上が負になる・`short*` などの書き込みポインタが 4 バイト書く、などが起きうる（構造体のフィールドだけは 1-3 で「レイアウト不明」として止めた） | 1-3 | 中 |
 | **2-1** | C#: 配列・`List`・`Dictionary` の戻り値と、リストの引数をエラーにする。スタブにあるクラスを返すメソッドは `CsObject` に包む。`str` 以外の注釈（`str \| None` など）の戻り値を正しく扱う | 1-1 | 中 |
 | **2-2** | cs-proc ホスト（`ArrowPipeHost.cs`）の受信を UTF-8 で復号する | なし | 小 |
 | **2-3** | js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
@@ -268,6 +269,10 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ⚠ 刻印は実装ライブラリ（`*_x64.lib`）の中身を含まない。ライブラリだけを作り直したら `ar_*` を消す
   （skill `importation` に追記）。DxLib の実用例（追跡外）は初回に作り直しになる（MSVC が要る）
 - 単体テスト: `cpp_bridge::compiler::tests`（刻印が決定的・入力で変わる・`.syms` の読み取り）
+- ⚠ **退行（1-3 で発見・修正）**: 相対パスを中継 DLL の場所から引くようにしたため、cpp-dll（中継 DLL は `%TEMP%`）で
+  ヘッダを相対パスで import すると対象の DLL を読み込めず、中継 DLL の初期化が panic してプロセスが落ちていた。
+  ゲートに cpp-dll の例題が 1 本も無く気づけなかった。⇒ 対象の DLL を絶対パスにして渡し、先に読み込めるかを確かめて
+  普通のエラーにする（`exec/modules.rs` の cpp-dll の分岐）
 - ゲート: `scan_examples`（基準と同じ: `bench_ab_native.ar` のタイムアウトのみ）・`force_gate`（`VmForceError` 0）・
   `compare_python_impl`・`compare_import_paths -A`・`compare_outputs -A`（基準 `7ffafa7`）
 
@@ -280,6 +285,32 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   同じ検査を通す（生成コードの固定の名前なので実害は出にくいが、同じ未定義動作の形だった）
 - 単体テスト: `native_api::callbacks::tests`（正しい UTF-8・日本語・長さ 0 の NULL は受け取る、CP932・負の長さ・
   NULL はエラー、名前のコールバックもエラー）。今の Arrow の例題からは不正なバイト列を渡す手段が無いため、例題は無い
+
+### 1-3 実装
+
+- 値渡し・値返しの構造体を、シムも中継 DLL も**値のまま**受け渡す。中継 DLL は C と同じレイアウトの
+  `_Struct_{name}` を値で使い（呼び出し規約は Rust の `extern "C"` が合わせる）、cpp-lib のシムは実際の型で
+  受け取り・返す（`c_type_str` が構造体の型名を返す）。シムの値返しの静的バッファ（スレッド安全でない）は無くした
+- 実測で分かった以前の症状: cpp-dll は値返し（8・12・16 バイトすべて）で segfault。cpp-lib は **8 バイトの値渡しで
+  segfault**（シムはアドレスで受け取るのに typed 経路は値で渡していた。12・16 バイトは x64 で隠しポインタになるので
+  偶然動いていた）
+- 値で受け渡せるのは C と同じレイアウトが分かる構造体（`CStructDef::raw_layout`）だけ。それ以外を値で受け渡す関数は
+  生成しない（呼べばその関数が無いというエラー。静的エラーにするのは 1-2）
+- ⚠ **発見**: ヘッダ解析は `char` / `short` / `int8_t` / `uint8_t` / `int16_t` / `uint16_t` / `wchar_t` も
+  `CType::Int`（4 バイト）にまとめていて、`unsigned char` × 4 の構造体（DxLib の `COLOR_U8` など）を 16 バイトとして
+  読み書きしていた（ゼロコピー渡しも含む）。⇒ `is_narrow_int_type` で見分け、そうしたフィールドを持つ構造体を
+  不完全（`complete = false`）とみなす。引数・戻り値の整数の幅と符号は 1-6（提案）
+- 検査用ライブラリに `Rgba8`（`unsigned char` × 4）と `fp_make_rgba` / `fp_rgba_sum` を足した
+- 例題: `cpp_dll_struct_by_value.ar`・`cpp_lib_struct_by_value.ar`（8・12・16 バイトを最上位・関数の中・ループの中から。
+  期待値と違えば raise）・`cpp_struct_by_value_layout_error.ar`（負例）。`test_modules/ar_ffi_probe.*` を追加
+- 単体テスト: `header_parser::tests`（4 バイト未満の整数のフィールド・typedef で解決した幅・ポインタは対象外）、
+  `cpp_bridge::codegen::tests`（値のまま受け渡す・レイアウト不明なら生成しない）、`compiler::shim_tests`
+- この例題で 1-5 の退行（cpp-dll の相対パス）が見つかり、別のコミットで直した（1-5 の記録）
+- ゲート（基準 `c28b4c9`）: `scan_examples`・`force_gate` は基準と同じ（新しい例題も通る）。`compare_python_impl` は
+  新しい 3 本を既知の差分に登録した（参照実装は値渡しの構造体を扱わない）。`compare_import_paths` 13/13。
+  `compare_outputs` の差は新しい 3 本だけ（基準では落ちる・期待どおり）。負の対照で `cpp_lib_struct_by_value.ar` が
+  ずれたのは、新旧で刻印が違い、交互に走らせると生成物の作り直しの表示が回によって変わるため。
+  `compare_wasm_frontend` 492/492・`type_obligations` 退行なし
 
 ---
 
