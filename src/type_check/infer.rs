@@ -316,7 +316,10 @@ impl TypeChecker {
                     //    subscriptable`）。以前はここで要素型を返していたので、
                     //    **必ず実行時エラーになるコードに嘘の型**を与えていた。
                     //    診断は `check_subscript_index` が出す。
-                    InferredType::Set | InferredType::SetOf(_) => InferredType::Unresolved,
+                    InferredType::Set
+                    | InferredType::SetOf(_)
+                    | InferredType::FrozenSet
+                    | InferredType::FrozenSetOf(_) => InferredType::Unresolved,
                     InferredType::DictOf(_, val) => *val,
                     InferredType::Tuple(types) => {
                         // リテラル整数インデックスなら対応する要素型を返す
@@ -626,11 +629,11 @@ impl TypeChecker {
                 crate::ast::SeqEntry::Spread(x) => {
                     let ty = self.infer(x);
                     out.push(match &ty {
-                        IT::ListOf(t) | IT::FixedListOf(t) | IT::ListLikeOf(t) | IT::SetOf(t) => {
+                        IT::ListOf(t) | IT::FixedListOf(t) | IT::ListLikeOf(t) | IT::SetOf(t) | IT::FrozenSetOf(t) => {
                             (**t).clone()
                         }
                         // 要素型を持たない容器。反復はできるので `Any`。
-                        IT::List | IT::FixedList | IT::ListLike | IT::Set | IT::TupleAny => IT::Any,
+                        IT::List | IT::FixedList | IT::ListLike | IT::Set | IT::FrozenSet | IT::TupleAny => IT::Any,
                         // タプルは位置ごとの型を持つ。展開すると位置が崩れるので合成する。
                         IT::Tuple(ts) => Self::join_elem_types(ts.clone()),
                         // `str` を展開すると 1 文字ずつの `str`。
@@ -721,7 +724,7 @@ impl TypeChecker {
                     span: None,
                 });
             }
-            T::Set | T::SetOf(_) => {
+            T::Set | T::SetOf(_) | T::FrozenSet | T::FrozenSetOf(_) => {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NotSubscriptable { container: obj_ty.clone() },
                     span: None,
@@ -1105,6 +1108,7 @@ impl TypeChecker {
             T::ListLike | T::ListLikeOf(_) => &["list", "fixed_list"],
             T::Dict | T::DictOf(_, _) => &["dict"],
             T::Set | T::SetOf(_) => &["set"],
+            T::FrozenSet | T::FrozenSetOf(_) => &["frozenset"],
             T::IteratorOf(_) => &["generator"],
             _ => &[],
         }
@@ -1272,6 +1276,8 @@ impl TypeChecker {
             | T::DictOf(_, _)
             | T::Set
             | T::SetOf(_)
+            | T::FrozenSet
+            | T::FrozenSetOf(_)
             | T::Tuple(_)
             | T::TupleAny
             | T::IteratorOf(_) => Some(ty.to_string()),
@@ -1456,6 +1462,7 @@ impl TypeChecker {
             T::FixedList | T::FixedListOf(_) => "fixed_list",
             T::Dict | T::DictOf(_, _) => "dict",
             T::Set | T::SetOf(_) => "set",
+            T::FrozenSet | T::FrozenSetOf(_) => "frozenset",
             T::Tuple(_) => "tuple",
             _ => return None,
         })
@@ -1644,6 +1651,10 @@ impl TypeChecker {
             InferredType::SetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
                 guard_type: guard_type.to_string(),
                 outer_type: "set".to_string(),
+            }),
+            InferredType::FrozenSetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "frozenset".to_string(),
             }),
             InferredType::DictOf(_, _) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
                 guard_type: guard_type.to_string(),

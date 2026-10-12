@@ -67,6 +67,7 @@ for x in raw:                                  # 各要素は 0〜255 の int
 | `dict[K, V]` | `Value::Dict(...)` | 型付き辞書 |
 | `set` | `Value::Set(...)` | 要素型未知のセット |
 | `set[T]` | `Value::Set(...)` | 型付きセット |
+| `frozenset[T]` | `Value::FrozenSet(...)` | 不変でハッシュできる集合（`frozenset(xs)` で作る）。`set[T]` とは互いに代入できない。演算子の結果は左の種類、`==` と包含の比較（`<=`）は set とも書ける |
 | `tuple[T1, T2, ...]` | `Value::Tuple(...)` | 固定長異種タプル |
 
 ---

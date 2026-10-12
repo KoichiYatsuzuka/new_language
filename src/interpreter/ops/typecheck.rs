@@ -56,6 +56,7 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::Dict(_) => "dict",
         Value::Tuple(_) => "tuple",
         Value::Set(_) => "set",
+        Value::FrozenSet(_) => "frozenset",
         Value::Namespace(_) => "module",
         Value::PyObject(_) => "object",
         Value::FileObject(_) => "FileObject",
@@ -120,6 +121,7 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         "list_like" => matches!(val, Value::List(_) | Value::FrozenList { .. }),
         "dict" => matches!(val, Value::Dict(_)),
         "set" => matches!(val, Value::Set(_)),
+        "frozenset" => matches!(val, Value::FrozenSet(_)),
         "tuple" => matches!(val, Value::Tuple(_)),
         "slice" => matches!(val, Value::Slice(_)),
         // ⚠ `__call__` を持つインスタンス・クラスも「呼べる」ので `function`。
@@ -147,6 +149,7 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         }
         _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
         _ if ann.starts_with("set[") => matches!(val, Value::Set(_)),
+        _ if ann.starts_with("frozenset[") => matches!(val, Value::FrozenSet(_)),
         _ if ann.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
         // ジェネレータも外側だけ見る（フェーズ10 10-7 で `generator[T]` を注釈に書けるようにした）。
         "generator" => matches!(val, Value::Generator(_)),
@@ -193,6 +196,7 @@ impl Interpreter {
             Value::Dict(d) => !d.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
+            Value::FrozenSet(s) => !s.is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
             Value::Function(_)
             | Value::OverloadedFn(_)
@@ -466,6 +470,7 @@ impl Interpreter {
             Value::FrozenList { .. } => "fixed_list".to_string(),
             Value::Dict(_) => "dict".to_string(),
             Value::Set(_) => "set".to_string(),
+            Value::FrozenSet(_) => "frozenset".to_string(),
             Value::Tuple(_) => "tuple".to_string(),
             Value::Function(f) => format!("function({})", f.name),
             Value::OverloadedFn(_) => "function(overloaded)".to_string(),

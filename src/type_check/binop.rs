@@ -128,7 +128,9 @@ impl TypeChecker {
         // `in` は右辺が容器。左辺と**要素型**を比べる。
         let (a, b) = if matches!(op, BinOp::In | BinOp::NotIn) {
             let elem = match rt {
-                T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => (**e).clone(),
+                T::ListOf(e) | T::SetOf(e) | T::FrozenSetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => {
+                    (**e).clone()
+                }
                 T::DictOf(k, _) => (**k).clone(),
                 T::Str => T::Str,
                 // バイト列は部分列（`bytes`）か 1 バイト（`int`）を探せる（3-1）
@@ -155,6 +157,18 @@ impl TypeChecker {
         // 比べられる（ffi_value_exchange_plan.md 7-1）。⚠ 以前は `s == {1}`（`s` は `set`）が「決して真にならない」になった
         if Self::bare_container_matches(&a, &b) || Self::bare_container_matches(&b, &a) {
             return;
+        }
+        // `frozenset == set` は要素で比べる（CPython と同じ・実行時は `values_eq_expr`・タスク 3-1）。
+        // 要素型が同じ（か片方が素の容器）なら通す。
+        let set_elem = |t: &T| match t {
+            T::Set | T::FrozenSet => Some(None),
+            T::SetOf(e) | T::FrozenSetOf(e) => Some(Some((**e).clone())),
+            _ => None,
+        };
+        if let (Some(x), Some(y)) = (set_elem(&a), set_elem(&b)) {
+            if x.is_none() || y.is_none() || x == y {
+                return;
+            }
         }
         if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
             return;
@@ -413,6 +427,8 @@ impl TypeChecker {
             (List, List | ListOf(_)) | (ListOf(_), List) => true,
             (Tuple(a), Tuple(b)) => a.iter().zip(b).all(|(x, y)| Self::ordered_comparable(x, y)),
             (TupleAny, TupleAny | Tuple(_)) | (Tuple(_), TupleAny) => true,
+            // set / frozenset どうしは包含関係（実行時は `apply_binop` の集合の比較・タスク 3-1）。
+            (Set | SetOf(_) | FrozenSet | FrozenSetOf(_), Set | SetOf(_) | FrozenSet | FrozenSetOf(_)) => true,
             // 要素の `Union`（`[1, 2.5]` は `list[Union[int, float]]`）は、どの構成型も相手と比べられれば通す。
             // ⚠ 最上位の `Union` はここへ届かない（`check_binop` の冒頭が `OperationOnUnion` で弾く）。
             (Union(ts), _) => ts.iter().all(|t| Self::ordered_comparable(t, rt)),
@@ -599,24 +615,29 @@ impl TypeChecker {
         // ⚠⚠ **`use InferredType::*` が効いているので `None` は `InferredType::None` に
         //    解決される。** `Option` の `None` は `Option::None` と明示すること
         //    （ここで 1 度コンパイルエラーにして気づいた）。
+        // ⚠ frozenset も同じ（タスク 3-1）。結果は**左の種類**（`frozenset | set` は frozenset・実行時と同じ）。
+        //   大小比較は包含関係（`a <= b`）で bool。
         let set_elem = |t: &InferredType| -> Option<Option<InferredType>> {
             match t {
-                Set => Some(Option::None),
-                SetOf(e) => Some(Some((**e).clone())),
+                Set | FrozenSet => Some(Option::None),
+                SetOf(e) | FrozenSetOf(e) => Some(Some((**e).clone())),
                 _ => Option::None,
             }
         };
         if let (Some(a), Some(b)) = (set_elem(lt), set_elem(rt)) {
+            let frozen = matches!(lt, FrozenSet | FrozenSetOf(_));
+            let of = |e: InferredType| if frozen { FrozenSetOf(Box::new(e)) } else { SetOf(Box::new(e)) };
+            let bare = if frozen { FrozenSet } else { Set };
             return match op {
                 BinOp::BitOr | BinOp::BitXor => match (a, b) {
-                    (Some(x), Some(y)) => SetOf(Box::new(Self::join2(&x, &y))),
-                    _ => Set,
+                    (Some(x), Some(y)) => of(Self::join2(&x, &y)),
+                    _ => bare,
                 },
                 BinOp::BitAnd | BinOp::Sub => match a {
-                    Some(x) => SetOf(Box::new(x)),
-                    Option::None => Set,
+                    Some(x) => of(x),
+                    Option::None => bare,
                 },
-                BinOp::Eq | BinOp::NotEq => Bool,
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => Bool,
                 _ => Unresolved,
             };
         }

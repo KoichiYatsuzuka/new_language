@@ -127,7 +127,8 @@ impl TypeChecker {
             | InferredType::FixedListOf(elem)
             | InferredType::ListLikeOf(elem)
             | InferredType::IteratorOf(elem)
-            | InferredType::SetOf(elem) => (**elem).clone(),
+            | InferredType::SetOf(elem)
+            | InferredType::FrozenSetOf(elem) => (**elem).clone(),
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
             InferredType::DictOf(k, _) => (**k).clone(),
             // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
@@ -496,6 +497,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
             T::Tuple(ts) => T::Tuple(
                 ts.iter().map(|t| Self::open_never_to_any(t.clone())).collect(),

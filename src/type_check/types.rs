@@ -317,6 +317,11 @@ pub enum InferredType {
     Set,
     /// 要素型既知の集合型 `set[T]`。
     SetOf(Box<InferredType>),
+    /// 要素型未知の不変集合型 `frozenset`（python_builtins_plan.md のタスク 3-1）。`Set` と同じく注釈には書けない
+    /// （素の容器・タスク 8.1）。型テスト位置（`x is frozenset`）と Python 由来の値のためにある。
+    FrozenSet,
+    /// 要素型既知の不変集合型 `frozenset[T]`（タスク 3-1）。`set[T]` とは互いに代入できない（別の型）。
+    FrozenSetOf(Box<InferredType>),
     /// タプル型 `tuple[T1, T2, ...]`。各要素に独立した型を持つ。
     Tuple(Vec<InferredType>),
     /// **要素型も要素数も未知**のタプル型 `tuple`（タスク 8.3）。
@@ -392,6 +397,7 @@ impl InferredType {
             | Self::FixedListOf(t)
             | Self::ListLikeOf(t)
             | Self::SetOf(t)
+            | Self::FrozenSetOf(t)
             | Self::IteratorOf(t)
             | Self::TypeValOf(t) => t.for_each_type(f),
             // 構造体の要素（`Ptr[Db]`）も訪ねる（名前の存在検査の対象）
@@ -456,6 +462,7 @@ impl InferredType {
                 | Self::ListLike
                 | Self::Dict
                 | Self::Set
+                | Self::FrozenSet
                 | Self::TupleAny
         ) || matches!(self, Self::Ptr(e) if **e == PtrElem::Unknown)
     }
@@ -558,6 +565,12 @@ impl InferredType {
                 None => Self::Set,
             });
         }
+        if let Some(inner) = ann.strip_prefix("frozenset[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::FrozenSetOf(Box::new(t)),
+                None => Self::FrozenSet,
+            });
+        }
         if let Some(inner) = ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             if parts.len() >= 2 {
@@ -648,6 +661,7 @@ impl InferredType {
             "list_like" => Some(Self::ListLike),
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
+            "frozenset" => Some(Self::FrozenSet),
             // ⚠⚠ **`tuple` は静的側の表に無かった**（タスク 8.3）。`from_ann` が `None` を
             //    返すため注釈が `Unresolved`（＝万能受容体）に化け、
             //      let t: tuple = 1          # 通っていた
@@ -867,6 +881,8 @@ impl std::fmt::Display for InferredType {
             Self::DictOf(k, v) => write!(f, "dict[{k},{v}]"),
             Self::Set => write!(f, "set"),
             Self::SetOf(t) => write!(f, "set[{t}]"),
+            Self::FrozenSet => write!(f, "frozenset"),
+            Self::FrozenSetOf(t) => write!(f, "frozenset[{t}]"),
             Self::TypeVal => write!(f, "type"),
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),

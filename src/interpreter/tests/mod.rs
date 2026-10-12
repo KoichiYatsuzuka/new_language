@@ -300,8 +300,10 @@ mod a_axis_invariants {
         let declared = crate::type_check::builtins::declared_names();
         assert!(!declared.is_empty(), "builtins.ars が読めていない（構文エラー？）");
         // ① 宣言した名前は実行時に解決できる（組み込み関数・型の変換・組み込みのクラス）
+        //    名前の探索の最後の段（`builtin_value`）で引ける値も含む（`property`・python_builtins_plan.md のタスク 6-1）。
         for name in &declared {
             let known = scope.contains_key(name.as_str())
+                || interp.builtin_value(name).is_some()
                 || interp.eval_builtin_evaled(name, Vec::new()).is_some()
                 || match interp.call_type_by_name_evaled(name, Vec::new()) {
                     Ok(_) => true,

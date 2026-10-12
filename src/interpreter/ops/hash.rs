@@ -84,6 +84,7 @@ enum Tag {
     List,
     FrozenList,
     Set,
+    FrozenSet,
     Dict,
     AsyncStatus,
     Result,
@@ -282,6 +283,17 @@ impl Interpreter {
             Value::Set(rc) => {
                 h.write_u8(Tag::Set as u8);
                 let items = rc.borrow();
+                let mut acc: u64 = 0;
+                for x in items.iter() {
+                    acc ^= scramble(sub_hash(x, d, disp)?);
+                }
+                h.write_usize(items.len());
+                h.write_u64(acc);
+            }
+            // frozenset（タスク 3-1）。`set` と同じく可換に畳む。判別子が違うのは `values_eq` が
+            // `Set` と `FrozenSet` を等値にしない（型厳密）ため。`set` はそもそも辞書のキーにできない。
+            Value::FrozenSet(items) => {
+                h.write_u8(Tag::FrozenSet as u8);
                 let mut acc: u64 = 0;
                 for x in items.iter() {
                     acc ^= scramble(sub_hash(x, d, disp)?);

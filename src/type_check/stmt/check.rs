@@ -956,6 +956,7 @@ impl TypeChecker {
                     InferredType::FixedListOf(_) => Some("fixed_list"),
                     InferredType::ListLikeOf(_) => Some("list_like"),
                     InferredType::SetOf(_) => Some("set"),
+                    InferredType::FrozenSetOf(_) => Some("frozenset"),
                     InferredType::DictOf(_, _) => Some("dict"),
                     InferredType::Tuple(_) => Some("tuple"),
                     InferredType::IteratorOf(_) => Some("generator"),
@@ -1701,6 +1702,7 @@ impl TypeChecker {
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)
             | InferredType::SetOf(t)
+            | InferredType::FrozenSetOf(t)
             | InferredType::TypeValOf(t) => self.mentions_type_param(t),
             InferredType::DictOf(k, v) => {
                 self.mentions_type_param(k) || self.mentions_type_param(v)
@@ -1747,6 +1749,7 @@ impl TypeChecker {
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)
             | InferredType::SetOf(t)
+            | InferredType::FrozenSetOf(t)
             | InferredType::IteratorOf(t)
             | InferredType::TypeValOf(t) => Self::mentions_any_name(t, names),
             InferredType::DictOf(k, v) => {

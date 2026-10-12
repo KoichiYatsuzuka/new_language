@@ -307,6 +307,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Tuple(_) => "tuple",
         Value::Dict(_) => "dict",
         Value::Set(_) => "set",
+        Value::FrozenSet(_) => "frozenset",
         _ => "object",
     }
 }

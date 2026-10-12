@@ -30,6 +30,7 @@ impl Interpreter {
                 b.iter().map(|&c| Value::Int(c as i64)).collect(),
             )))),
             Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.borrow().clone())))),
+            Value::FrozenSet(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.to_vec())))),
             Value::Tuple(td) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(td.all_values().to_vec())))),
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
             //   ⚠ `values()` / `items()` は明示のメソッド。ここは `for k in d:` の形。

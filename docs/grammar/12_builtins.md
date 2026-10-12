@@ -57,9 +57,15 @@ let b = open("out.txt", mode="rb")   # バイト列
 
 ## 型の値（呼んで作る）
 
-`int` / `uint` / `float` / `str` / `bool` / `complex` / `list` / `tuple` / `dict` / `set` / `type`
+`int` / `uint` / `float` / `str` / `bool` / `complex` / `list` / `tuple` / `dict` / `set` / `frozenset` / `type`
 
-- `list(it)` / `tuple(it)` / `set(it)` は回せる値なら何でも受ける（遅延のジェネレータ・辞書のキーも）
+- `list(it)` / `tuple(it)` / `set(it)` / `frozenset(it)` は回せる値なら何でも受ける（遅延のジェネレータ・辞書のキーも）
+- `frozenset`（python_builtins_plan.md のタスク 3-1）は不変でハッシュできる集合。辞書のキー・集合の要素にできる。
+  演算子 `|` `&` `-` `^` は set と組んでよく結果は**左の種類**、`frozenset({1}) == {1}` は真、`<=` / `<` は包含関係。
+  メソッドは書き換えないものだけ（`union` / `intersection` / `difference` / `symmetric_difference` / `issubset` /
+  `issuperset` / `isdisjoint` / `copy`）。`add` などは CPython と同じ `AttributeError`。表示は `frozenset({1, 2})`。
+  ⚠ 集合の並びは作った順（CPython はハッシュの順。`set` と同じ差）
+- `bool(x)` は `if x:` と同じ規則（`__bool__` も見る。空の tuple / dict / frozenset は偽）
 - `dict()` / `dict(pairs)` / `dict(mapping)` / `dict(a=1)` を CPython と同じく受ける
 - `type(x)` はクラスの値（`type(x).__name__` / `type(x) is C` / `type(x)(..)`）。3 引数の `type(name, bases, dict)` は `TypeError`
 
@@ -102,11 +108,11 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-09 の時点で次の 43 名は Arrow にありません（`property` は 6-1 で足した）:
+CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 42 名は Arrow にありません（`property` は 6-1、`frozenset` は 3-1 で足した）:
 
 `format` `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
-`bytes` `bytearray` `memoryview` `frozenset` `object` `staticmethod` `classmethod` `super`
+`bytes` `bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
 `NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `EOFError` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 `UnicodeDecodeError` `UnicodeEncodeError`

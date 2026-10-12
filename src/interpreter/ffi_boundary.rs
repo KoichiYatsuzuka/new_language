@@ -155,6 +155,11 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
             Value::Set(items) => check_elems(&items.borrow(), elem, value),
             _ => mismatch(value),
         },
+        InferredType::FrozenSet => prim(matches!(value, Value::FrozenSet(_)), value),
+        InferredType::FrozenSetOf(elem) => match value {
+            Value::FrozenSet(items) => check_elems(items, elem, value),
+            _ => mismatch(value),
+        },
         InferredType::Dict => prim(matches!(value, Value::Dict(_)), value),
         // キーと値も照合する（5-2。⚠ 以前は外側の形だけ見ていた）
         InferredType::DictOf(kt, vt) => match value {
@@ -227,6 +232,7 @@ fn runtime_type_name(val: &Value) -> &'static str {
         Value::FrozenList { .. } => "fixed_list",
         Value::Dict(_) => "dict",
         Value::Set(_) => "set",
+        Value::FrozenSet(_) => "frozenset",
         Value::Tuple(_) => "tuple",
         Value::Instance(_) => "instance",
         Value::PyObject(_) => "python object",

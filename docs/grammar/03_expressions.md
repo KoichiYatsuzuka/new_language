@@ -167,6 +167,10 @@ list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）は CPytho
 比べ、違いが無ければ長さで決める）。list と tuple は比べられません（`TypeError`）。比べられない要素に届いた
 ときだけ `TypeError`（`(1, 'a') < (2, 3)` は `True`）。
 
+set / frozenset の大小比較は**包含関係**です（CPython と同じ）: `a <= b` は部分集合、`a < b` は真部分集合、
+`>=` / `>` はその逆。set と frozenset は組んで比べられ、`frozenset({1}) == {1}` も `True` です
+（python_builtins_plan.md のタスク 3-1）。
+
 ---
 
 ## 論理演算子

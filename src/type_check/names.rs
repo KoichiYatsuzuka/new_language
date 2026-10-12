@@ -54,8 +54,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込み関数（`eval/builtins.rs`）
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",
-    // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7）。
-    "list", "tuple",
+    // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7 / `frozenset(it)`・3-1）。
+    "list", "tuple", "frozenset",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
@@ -177,8 +177,16 @@ pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
     (
         "set",
         &[
-            "__iter__", "add", "clear", "copy", "difference", "discard", "intersection", "issubset",
-            "issuperset", "pop", "remove", "symmetric_difference", "union",
+            "__iter__", "add", "clear", "copy", "difference", "discard", "intersection", "isdisjoint",
+            "issubset", "issuperset", "pop", "remove", "symmetric_difference", "union",
+        ],
+    ),
+    // 書き換えないメソッドだけ（`classes/set_methods.rs` の `SET_QUERY_METHODS`・タスク 3-1）。
+    (
+        "frozenset",
+        &[
+            "__iter__", "copy", "difference", "intersection", "isdisjoint", "issubset", "issuperset",
+            "symmetric_difference", "union",
         ],
     ),
     ("fixed_list", &["__contains__", "__iter__", "allocated_size", "append"]),

@@ -34,12 +34,14 @@ impl Interpreter {
             "list_like" => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             "dict" => matches!(val, Value::Dict(_)),
             "set" => matches!(val, Value::Set(_)),
+            "frozenset" => matches!(val, Value::FrozenSet(_)),
             "tuple" => matches!(val, Value::Tuple(_)),
             _ if type_name.starts_with("list[") => matches!(val, Value::List(_)),
             _ if type_name.starts_with("fixed_list[") => matches!(val, Value::FrozenList { .. }),
             _ if type_name.starts_with("list_like[") => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             _ if type_name.starts_with("dict[") => matches!(val, Value::Dict(_)),
             _ if type_name.starts_with("set[") => matches!(val, Value::Set(_)),
+            _ if type_name.starts_with("frozenset[") => matches!(val, Value::FrozenSet(_)),
             _ if type_name.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
             // ⚠ `primitive_ann_matches` と同じ規則（3-3）
             _ if type_name == "Ptr" || type_name.starts_with("Ptr[") => {

@@ -614,6 +614,23 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("class Box:\n    let n: int\nlet b = Box(3)\nlet v = b.n(1)\n"));
     }
 
+    /// frozenset の型（タスク 3-1）: `frozenset(xs)` は `frozenset[要素]`、演算子の結果は左の種類、
+    /// `set[T]` とは互いに代入できない。set との `==`・包含の比較（`<=`）は通る。素の `frozenset` は注釈に書けない。
+    #[test]
+    fn frozenset_is_its_own_type() {
+        assert!(ok("let a: frozenset[int] = frozenset([1, 2])\n"));
+        assert!(ok("let e: frozenset[int] = frozenset()\n"));
+        assert!(err("let a: frozenset[str] = frozenset([1, 2])\n"));
+        assert!(err("let s: set[int] = frozenset([1])\n"));
+        assert!(err("let f: frozenset[int] = {1}\n"));
+        let fs = "let a = frozenset([1, 2])\nlet s: set[int] = {2}\n";
+        assert!(ok(&format!("{fs}let u: frozenset[int] = a | s\nlet v: set[int] = s | a\n")));
+        assert!(ok(&format!("{fs}let b: bool = a == s\nlet c: bool = a <= s\nlet d: bool = 1 in a\n")));
+        assert!(ok(&format!("{fs}let i: frozenset[int] = a.intersection(s)\nlet k: bool = a.isdisjoint(s)\n")));
+        assert!(err(&format!("{fs}let x = a[0]\n")));
+        assert!(err("let a: frozenset = frozenset([1])\n"));
+    }
+
     /// クラス側のディスクリプタ（タスク 1-12）: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は
     /// `__set__` の値の型、クラス経由の代入（`C.x = d`）はメンバーの宣言型（ディスクリプタのクラス）と照合する。
     /// `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにしない。

@@ -1,0 +1,9 @@
+# frozenset の誤り（python_builtins_plan.md のタスク 3-1）
+#
+# `frozenset[T]` と `set[T]` は別の型で、互いに代入できない（frozenset は書き換えられないので、
+# set として受け取って `add` すると壊れる）。set が要るなら `set(fs)` で作り直す。期待される出力:
+#   StaticTypeError: 's' is declared 'set[int]' but initialized with 'frozenset[int]'
+
+let fs: frozenset[int] = frozenset([1, 2])
+let s: set[int] = fs
+print(s)

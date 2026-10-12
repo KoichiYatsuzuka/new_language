@@ -269,6 +269,10 @@ fn ascii(obj: Any) -> str:
     """repr(obj) with the non-ASCII characters escaped."""
     pass
 
+fn property(fget: Any = None, fset: Any = None, fdel: Any = None, doc: Any = None):
+    """A property: a class attribute whose reads call fget(obj) and writes call fset(obj, value) (a built-in class)."""
+    pass
+
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
 
 fn str(value: Any = "") -> str:
@@ -305,6 +309,10 @@ fn set(iterable: Any = None) -> set[Any]:
 
 fn tuple(iterable: Any = None):
     """A tuple of the elements of an iterable, or an empty tuple."""
+    pass
+
+fn frozenset(iterable: Any = None) -> frozenset[Any]:
+    """An immutable, hashable set of the elements of an iterable (usable as a dict key), or an empty one."""
     pass
 
 fn slice(begin: Any, end: Any, step: Any = None) -> slice:

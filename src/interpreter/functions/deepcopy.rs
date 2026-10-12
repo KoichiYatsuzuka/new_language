@@ -58,6 +58,10 @@ impl Interpreter {
             Value::Set(items) => Value::Set(Rc::new(RefCell::new(
                 items.borrow().iter().cloned().map(Self::deep_copy_value).collect(),
             ))),
+            // frozenset も `Tuple` と同じ（容れ物は不変でも要素のインスタンスは可変・タスク 3-1）。
+            Value::FrozenSet(items) => {
+                Value::FrozenSet(Rc::new(items.iter().cloned().map(Self::deep_copy_value).collect()))
+            }
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_value).collect();
@@ -128,6 +132,9 @@ impl Interpreter {
             Value::Set(items) => Value::Set(Rc::new(RefCell::new(
                 items.borrow().iter().cloned().map(Self::deep_copy_unfrozen).collect(),
             ))),
+            Value::FrozenSet(items) => {
+                Value::FrozenSet(Rc::new(items.iter().cloned().map(Self::deep_copy_unfrozen).collect()))
+            }
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_unfrozen).collect();

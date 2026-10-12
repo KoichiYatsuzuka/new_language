@@ -26,6 +26,7 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `ListOf(T)` | Homogeneous list — all elements are `T` |
 | `Set` | Untyped set |
 | `SetOf(T)` | Homogeneous set |
+| `FrozenSet` / `FrozenSetOf(T)` | `frozenset` / `frozenset[T]` (python_builtins_plan.md 3-1). Mirrors `Set` / `SetOf` at every site; not assignable to/from `set[T]`. Set operators keep the left operand's kind; `==` and `<=` between set and frozenset are allowed (`binop.rs`) |
 | `Dict` | Untyped dict |
 | `DictOf(K, V)` | Dict with key type `K` and value type `V` |
 | `Tuple(Vec<T>)` | Fixed-length tuple with per-element types |
@@ -72,6 +73,7 @@ int   float   str   bool   None   Any   Self
 list                      # untyped
 list[int]                 # ListOf(Int)
 set[str]                  # SetOf(Str)
+frozenset[str]            # FrozenSetOf(Str)
 dict[str, int]            # DictOf(Str, Int)
 tuple[int, str, float]    # Tuple([Int, Str, Float])
 ```

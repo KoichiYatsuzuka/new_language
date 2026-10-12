@@ -773,6 +773,8 @@ impl TypeChecker {
                     | IT::ListLikeOf(_)
                     | IT::Set
                     | IT::SetOf(_)
+                    | IT::FrozenSet
+                    | IT::FrozenSetOf(_)
                     | IT::Tuple(_)
                     | IT::TupleAny
                     | IT::Str
@@ -966,6 +968,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
             T::Result(a, b) => T::Result(rec(a), rec(b)),
@@ -1377,6 +1380,8 @@ impl TypeChecker {
                 | T::DictOf(_, _)
                 | T::Set
                 | T::SetOf(_)
+                | T::FrozenSet
+                | T::FrozenSetOf(_)
                 | T::Tuple(_)
         );
         if !not_callable {
@@ -1597,6 +1602,15 @@ impl TypeChecker {
                 },
                 _ => None,
             },
+            // `frozenset()` / `frozenset(xs)`（タスク 3-1）。`list(..)` と同じ考え方。
+            "frozenset" => match arg_data {
+                [] => Some(T::FrozenSetOf(Box::new(T::Never))),
+                [(None, t)] => match Self::for_element_type(t) {
+                    T::Unresolved => None,
+                    e => Some(T::FrozenSetOf(Box::new(e))),
+                },
+                _ => None,
+            },
             // 他の組み込み関数は宣言（`src/built_in_stab/builtins.ars`）の戻り値の型
             // （`open` → `FileObject`・`repr` → `str` …）。宣言に型が無いものは `None`（従来どおり）。
             _ => super::builtins::return_type(name),
@@ -1634,10 +1648,21 @@ impl TypeChecker {
             return match recv_ty {
                 T::IteratorOf(_) => Some(recv_ty.clone()),
                 T::DictOf(k, _) => Some(T::IteratorOf(k.clone())),
-                T::ListOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) | T::SetOf(e) => {
+                T::ListOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) | T::SetOf(e) | T::FrozenSetOf(e) => {
                     Some(T::IteratorOf(e.clone()))
                 }
                 T::Str => Some(T::IteratorOf(Box::new(T::Str))),
+                _ => None,
+            };
+        }
+        // set / frozenset の書き換えないメソッド（タスク 3-1）。結果が受け手の部分集合になるもの（`copy` /
+        // `intersection` / `difference`）は受け手と同じ型。
+        // ⚠ `union` / `symmetric_difference` は引数の要素が混ざる（引数は任意のイテラブル・個数も可変）ので
+        //   返さない（嘘の型を返さない）。
+        if let T::SetOf(_) | T::FrozenSetOf(_) | T::Set | T::FrozenSet = recv_ty {
+            return match method {
+                "copy" | "intersection" | "difference" => Some(recv_ty.clone()),
+                "issubset" | "issuperset" | "isdisjoint" => Some(T::Bool),
                 _ => None,
             };
         }

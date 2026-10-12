@@ -181,6 +181,7 @@ impl Interpreter {
                 vals.iter().try_for_each(|v| self.apply_freeze_to_value(v, true))
             }
             Value::Tuple(td) => td.all_values().iter().try_for_each(|item| self.apply_freeze_to_value(item, true)),
+            Value::FrozenSet(items) => items.iter().try_for_each(|item| self.apply_freeze_to_value(item, true)),
             Value::FrozenList { state, layout } => {
                 let mut st = state.borrow_mut();
                 let exact = st.len * layout.stride;

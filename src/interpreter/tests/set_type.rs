@@ -322,3 +322,45 @@ fn test_dict_in_operator() {
     assert!(matches!(val, Value::Bool(true)));
 }
 
+
+/// frozenset（python_builtins_plan.md のタスク 3-1）: 作る・演算子（結果は左の種類）・包含の比較・
+/// set との `==`・辞書のキー・書き換えるメソッドは CPython と同じ AttributeError。
+#[test]
+fn test_frozenset_basics() {
+    let src = concat!(
+        "let a = frozenset([1, 2, 3, 2])\n",
+        "let n = len(a)\n",
+        "let shown = str(a)\n",
+        "let empty = str(frozenset())\n",
+        "let union_kind = type(a | {9}).__name__\n",
+        "let set_union_kind = type({9} | a).__name__\n",
+        "let eq_set = a == {3, 2, 1}\n",
+        "let sub = frozenset([1]) < a\n",
+        "let not_sub = a < a\n",
+        "let d = {frozenset([1, 2]): 5}\n",
+        "let got = d[frozenset([2, 1])]\n",
+        "let falsy = bool(frozenset())\n",
+    );
+    let interp = run_interp(src);
+    let shown = |v: &str| interp.get_val(v).map(|x| interp.display(&x)).unwrap_or_default();
+    assert_eq!(shown("n"), "3");
+    assert_eq!(shown("shown"), "frozenset({1, 2, 3})");
+    assert_eq!(shown("empty"), "frozenset()");
+    assert_eq!(shown("union_kind"), "frozenset");
+    assert_eq!(shown("set_union_kind"), "set");
+    for (var, want) in [("eq_set", true), ("sub", true), ("not_sub", false), ("falsy", false)] {
+        assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
+    }
+    assert!(matches!(interp.get_val("got"), Some(Value::Int(5))));
+    let err = run_err_msg("let a = frozenset([1])\na.add(2)\n");
+    assert!(err.contains("'frozenset' object has no attribute 'add'"), "{err}");
+}
+
+/// `bool(x)` は `if x:` と同じ規則（タスク 3-1 で直した）。以前は空の tuple / dict が真だった。
+#[test]
+fn test_bool_of_empty_containers() {
+    let interp = run_interp("let t = bool(())\nlet d = bool({})\nlet l = bool([0])\n");
+    for (var, want) in [("t", false), ("d", false), ("l", true)] {
+        assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
+    }
+}

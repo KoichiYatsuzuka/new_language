@@ -198,26 +198,14 @@ impl Interpreter {
                 if Rc::ptr_eq(a, b) {
                     return Ok(true);
                 }
-                let ar = a.borrow();
-                let br = b.borrow();
-                if ar.len() != br.len() {
-                    return Ok(false);
+                Self::unordered_eq(&a.borrow(), &b.borrow(), d)?
+            }
+            // frozenset どうし（タスク 3-1）。`Set` と `FrozenSet` は型厳密に別物（`values_eq_expr` の doc）。
+            (Value::FrozenSet(a), Value::FrozenSet(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return Ok(true);
                 }
-                let mut all = true;
-                for v in ar.iter() {
-                    let mut found = false;
-                    for w in br.iter() {
-                        if Self::values_eq_at(v, w, d)? {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        all = false;
-                        break;
-                    }
-                }
-                all
+                Self::unordered_eq(a, b, d)?
             }
             // 辞書は要素数と、各キーに対応する値を再帰比較（順序無関係・B2）。
             // ⚠ キーは `DictKey` として既に一意なので、`a` の各キーが `b` にも在って
@@ -309,6 +297,26 @@ impl Interpreter {
         Ok(eq)
     }
 
+    /// 集合（`set` / `frozenset`）の要素どうしの等値: 要素数が同じで、`a` のどの要素も `b` にある（順序無関係）。
+    fn unordered_eq(a: &[Value], b: &[Value], depth: u32) -> Result<bool, String> {
+        if a.len() != b.len() {
+            return Ok(false);
+        }
+        for v in a {
+            let mut found = false;
+            for w in b {
+                if Self::values_eq_at(v, w, depth)? {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// `Option<Value>` どうしの等値（`Slice` の begin/end/step 用）。
     fn opt_eq(
         a: &Option<Value>,
@@ -370,7 +378,17 @@ impl Interpreter {
     /// ⚠ 昇格は**比較のオペランドにだけ**掛かり、コンテナの中までは再帰しない
     ///   （「比較の場所でキャストする」規則の素直な帰結）。実測される差:
     ///   `1 == 1.0` は True だが `[1] == [1.0]` は False。
+    ///
+    /// ⚠ `set` と `frozenset` も**ここでだけ**比べる（`frozenset({1}) == {1}` は真・CPython と同じ・タスク 3-1）。
+    ///   値の同一性（`values_eq`）は型厳密のまま。数値の昇格と同じく、オペランドの直下だけの規則
+    ///   （`[{1}] == [frozenset({1})]` は偽。`[1] == [1.0]` が偽なのと同じ）。
     pub(crate) fn values_eq_expr(&self, a: &Value, b: &Value) -> Result<bool, String> {
+        match (a, b) {
+            (Value::Set(s), Value::FrozenSet(f)) | (Value::FrozenSet(f), Value::Set(s)) => {
+                return Self::unordered_eq(&s.borrow(), f, 0);
+            }
+            _ => {}
+        }
         match Self::numeric_eq_promoted(a, b) {
             Some(x) => Ok(x),
             None => self.values_eq(a, b),
@@ -506,6 +524,8 @@ impl Interpreter {
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            // 別の種類の値は同じ物ではない（`values_eq_expr` は set と frozenset を等しいとする・タスク 3-1）。
+            (Value::Set(_), Value::FrozenSet(_)) | (Value::FrozenSet(_), Value::Set(_)) => false,
             _ => self.values_eq_expr(a, b)?,
         })
     }

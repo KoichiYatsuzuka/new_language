@@ -529,16 +529,14 @@ impl Interpreter {
                 )),
                 _ => Err("TypeError: complex() takes at most 2 arguments".to_string()),
             },
+            // `bool(x)` は `if x:` と同じ規則（`eval_truthy`・`__bool__` も見る）。
+            // ⚠ 以前は型ごとの腕を手で並べていて、空の tuple / dict / frozenset が真になっていた（タスク 3-1 で直した）。
             "bool" => match vals.as_slice() {
                 [] => Ok(Value::Bool(false)),
-                [Value::Bool(b)] => Ok(Value::Bool(*b)),
-                [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
-                [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
-                [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
-                [Value::None] => Ok(Value::Bool(false)),
-                [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
-                [Value::Set(s)] => Ok(Value::Bool(!s.borrow().is_empty())),
-                [_] => Ok(Value::Bool(true)),
+                [x] => {
+                    let x = x.clone();
+                    Ok(Value::Bool(self.eval_truthy(&x)?))
+                }
                 _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
             },
             // `type(x)`（python_builtins_plan.md のタスク 2-2・本体は `py_type_of`）。
@@ -577,6 +575,7 @@ impl Interpreter {
                     //   以前は list / str / tuple / set だけで、`set(g())` が `'generator' object is not iterable` だった。
                     let items: Vec<Value> = match arg {
                         Value::Set(s) => s.borrow().clone(),
+                        Value::FrozenSet(s) => s.to_vec(),
                         other => self.drain_iterable(other)?,
                     };
                     let mut result: Vec<Value> = Vec::new();
@@ -586,6 +585,27 @@ impl Interpreter {
                     Ok(Value::Set(Rc::new(RefCell::new(result))))
                 }
                 _ => Err("TypeError: set() takes at most 1 argument".to_string()),
+            },
+            // `frozenset()` / `frozenset(iterable)`（python_builtins_plan.md のタスク 3-1）。`set(..)` と同じく
+            // 重複を除き、作った順に並べる。frozenset を渡せばそのまま返す（CPython も同じものを返す）。
+            "frozenset" => match vals.len() {
+                0 => Ok(Value::FrozenSet(Rc::new(Vec::new()))),
+                1 => {
+                    let arg = vals.into_iter().next().expect("checked length");
+                    if let Value::FrozenSet(_) = arg {
+                        return Ok(arg);
+                    }
+                    let items: Vec<Value> = match arg {
+                        Value::Set(s) => s.borrow().clone(),
+                        other => self.drain_iterable(other)?,
+                    };
+                    let mut result: Vec<Value> = Vec::new();
+                    for v in items {
+                        set_insert(&mut result, v, self)?;
+                    }
+                    Ok(Value::FrozenSet(Rc::new(result)))
+                }
+                n => Err(format!("TypeError: frozenset expected at most 1 argument, got {n}")),
             },
             "slice" => {
                 let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {

@@ -203,6 +203,7 @@ impl DictData {
             Value::Tuple(t) => t.all_values().iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::List(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::Set(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
+            Value::FrozenSet(items) => items.iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::Dict(rc) => {
                 let b = rc.borrow();
                 b.all_keys()

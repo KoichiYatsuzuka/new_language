@@ -7,6 +7,15 @@ use {
     crate::interpreter::{Interpreter, Value},
 };
 
+/// `set` / `frozenset` の要素（どちらでもなければ `None`）。集合の演算子・比較・メソッドの引数が使う（タスク 3-1）。
+pub(crate) fn set_like_items(v: &Value) -> Option<Vec<Value>> {
+    match v {
+        Value::Set(s) => Some(s.borrow().clone()),
+        Value::FrozenSet(s) => Some(s.to_vec()),
+        _ => None,
+    }
+}
+
 impl Interpreter {
     /// 単項演算子を適用した結果の値を返す。
     ///
@@ -161,6 +170,7 @@ impl Interpreter {
     fn membership_items(&self, container: &Value) -> Option<Vec<Value>> {
         match container {
             Value::List(rc) | Value::Set(rc) => Some(rc.borrow().clone()),
+            Value::FrozenSet(s) => Some(s.to_vec()),
             Value::Tuple(t) => Some(t.all_values().to_vec()),
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
@@ -230,34 +240,53 @@ impl Interpreter {
             return crate::interpreter::py_interop::py_rbinop(h, op, &lv);
         }
         match (op, &lv, &rv) {
-            // セット演算（算術演算より先にチェック）
-            (BinOp::BitOr, Value::Set(a), Value::Set(b)) => {
-                let mut result = a.borrow().clone();
-                for v in b.borrow().iter() {
-                    if !self.contains_eq(&result, v)? {
-                        result.push(v.clone());
+            // セット演算（算術演算より先にチェック）。`set` と `frozenset` はどう組んでもよく、結果は**左の種類**
+            // （`frozenset | set` は frozenset・CPython と同じ・タスク 3-1）。
+            (BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor, l, r)
+                if set_like_items(l).is_some() && set_like_items(r).is_some() =>
+            {
+                let a = set_like_items(l).expect("guarded");
+                let b = set_like_items(r).expect("guarded");
+                let result = match op {
+                    BinOp::BitOr => {
+                        let mut out = a;
+                        for v in b {
+                            if !self.contains_eq(&out, &v)? {
+                                out.push(v);
+                            }
+                        }
+                        out
                     }
-                }
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => {
-                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), true)?;
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::Sub, Value::Set(a), Value::Set(b)) => {
-                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), false)?;
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::BitXor, Value::Set(a), Value::Set(b)) => {
-                let a_ref = a.borrow();
-                let b_ref = b.borrow();
-                let mut result = self.filter_by_membership(&a_ref, &b_ref, false)?;
-                for v in b_ref.iter() {
-                    if !self.contains_eq(&a_ref, v)? {
-                        result.push(v.clone());
+                    BinOp::BitAnd => self.filter_by_membership(&a, &b, true)?,
+                    BinOp::Sub => self.filter_by_membership(&a, &b, false)?,
+                    _ => {
+                        let mut out = self.filter_by_membership(&a, &b, false)?;
+                        for v in &b {
+                            if !self.contains_eq(&a, v)? {
+                                out.push(v.clone());
+                            }
+                        }
+                        out
                     }
-                }
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
+                };
+                Ok(if matches!(l, Value::FrozenSet(_)) {
+                    Value::FrozenSet(Rc::new(result))
+                } else {
+                    Value::Set(Rc::new(RefCell::new(result)))
+                })
+            }
+            // 集合の大小比較は包含関係（`a <= b` は部分集合・`a < b` は真部分集合・CPython と同じ・タスク 3-1）。
+            (BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq, l, r)
+                if set_like_items(l).is_some() && set_like_items(r).is_some() =>
+            {
+                let a = set_like_items(l).expect("guarded");
+                let b = set_like_items(r).expect("guarded");
+                Ok(Value::Bool(match op {
+                    BinOp::LtEq => self.all_contained(&a, &b)?,
+                    BinOp::Lt => a.len() < b.len() && self.all_contained(&a, &b)?,
+                    BinOp::GtEq => self.all_contained(&b, &a)?,
+                    _ => a.len() > b.len() && self.all_contained(&b, &a)?,
+                }))
             }
             // 包含検査 `in` / `not in`
             (BinOp::In, item, Value::List(lst)) => {
@@ -272,6 +301,7 @@ impl Interpreter {
             (BinOp::In, item, Value::Set(s)) => {
                 Ok(Value::Bool(self.contains_eq(&s.borrow(), item)?))
             }
+            (BinOp::In, item, Value::FrozenSet(s)) => Ok(Value::Bool(self.contains_eq(s, item)?)),
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(s.contains(&**sub)))
             }
@@ -299,6 +329,7 @@ impl Interpreter {
             (BinOp::NotIn, item, Value::Set(s)) => {
                 Ok(Value::Bool(!self.contains_eq(&s.borrow(), item)?))
             }
+            (BinOp::NotIn, item, Value::FrozenSet(s)) => Ok(Value::Bool(!self.contains_eq(s, item)?)),
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(&**sub)))
             }

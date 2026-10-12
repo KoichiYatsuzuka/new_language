@@ -213,7 +213,9 @@ print(big.issubset(small))    # False
 
 # copy
 let orig = {1, 2, 3}
-let cp = orig.copy()
+# ⚠ 書き換えるので `mut`。`set.copy()` に型が付いた（`set[int]`・タスク 3-1）ので、`let cp` に `add` すると
+#   不変の束縛の書き換えとして静的に止まる（以前は型が無く素通りしていた）。
+mut cp = orig.copy()
 cp.add(4)
 print(orig)   # {1, 2, 3}  (unaffected)
 print(cp)     # {1, 2, 3, 4}

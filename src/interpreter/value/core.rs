@@ -123,6 +123,11 @@ pub enum Value {
     Tuple(Rc<TupleData>),
     /// 重複なしの可変コレクション。要素の順序は保証しない。
     Set(Rc<RefCell<Vec<Value>>>),
+    /// 不変でハッシュできる集合（`frozenset(..)`・python_builtins_plan.md のタスク 3-1）。
+    /// ⚠ `Set` と同じく線形の `Vec`（重複は `values_eq_expr` で除く）。不変なので `RefCell` を持たない。
+    /// ⚠ `values_eq` は型厳密なので `Set` とは等値にならない。`frozenset({1}) == {1}` が真になるのは
+    ///   式としての `==`（`values_eq_expr`）の規則（数値の昇格と同じ層）。
+    FrozenSet(Rc<Vec<Value>>),
     /// import されたモジュールまたは名前空間。`.` でメンバにアクセスする。
     Namespace(Rc<NamespaceData>),
     /// PyO3 経由で保持する Python オブジェクトへの参照。
@@ -266,6 +271,7 @@ impl Value {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::Set(Rc::new(RefCell::new(v)))
             }
+            Value::FrozenSet(items) => Value::FrozenSet(Rc::new(items.iter().map(|x| x.deep_clone()).collect())),
             Value::Dict(rc) => {
                 // ⚠ `deep_clone` は関数等の `Rc` を作り直すので**ハッシュを取り直す**必要が
                 //    ある（`dict_copy_with` の doc を参照）。

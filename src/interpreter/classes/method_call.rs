@@ -408,6 +408,7 @@ impl Interpreter {
                 }
             }
             Value::Set(s) => self.eval_set_method(s.clone(), method_name, evaled),
+            Value::FrozenSet(s) => self.eval_frozenset_method(s.clone(), method_name, evaled),
             Value::Generator(state) => {
                 // `close()`: 中断点へ `GeneratorExit` を投げ込み `finally` を走らせる（B13 段階 D）。
                 if method_name == "close" {

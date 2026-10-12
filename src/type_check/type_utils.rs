@@ -182,6 +182,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             // `generator[Pr]` の要素も構造的に比べる（10-7 で注釈に書けるようにした）。
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
@@ -210,6 +211,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
@@ -538,6 +540,9 @@ impl TypeChecker {
             (InferredType::Tuple(_), InferredType::TupleAny) => return true,
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches_exact(a, e),
+            // frozenset も同じ規則（タスク 3-1）。set と frozenset は互いに代入できない（別の型）。
+            (InferredType::FrozenSetOf(_), InferredType::FrozenSet) => return true,
+            (InferredType::FrozenSetOf(a), InferredType::FrozenSetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
                 return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);

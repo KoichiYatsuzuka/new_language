@@ -146,6 +146,15 @@ impl Interpreter {
                     format!("{{{}}}", parts.join(", "))
                 }
             }
+            // CPython の `frozenset({1, 2})` / `frozenset()`（タスク 3-1）。
+            Value::FrozenSet(s) => {
+                if s.is_empty() {
+                    "frozenset()".to_string()
+                } else {
+                    let parts: Vec<String> = s.iter().map(|v| self.display_repr(v)).collect();
+                    format!("frozenset({{{}}})", parts.join(", "))
+                }
+            }
             Value::Namespace(ns) => format!("<module '{}'>", ns.name),
             Value::FileObject(fd_rc) => {
                 let fd = fd_rc.borrow();
@@ -313,6 +322,14 @@ impl Interpreter {
                 let parts: Result<Vec<String>, _> =
                     items_clone.iter().map(|v| self.repr_val(v)).collect();
                 Ok(format!("{{{}}}", parts?.join(", ")))
+            }
+            Value::FrozenSet(s) => {
+                if s.is_empty() {
+                    return Ok("frozenset()".to_string());
+                }
+                let items = s.clone();
+                let parts: Result<Vec<String>, _> = items.iter().map(|v| self.repr_val(v)).collect();
+                Ok(format!("frozenset({{{}}})", parts?.join(", ")))
             }
             // インスタンス: new_type_base または __repr__ を優先して使用
             Value::Instance(inst_rc) => {
