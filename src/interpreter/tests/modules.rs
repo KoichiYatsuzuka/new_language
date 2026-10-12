@@ -395,3 +395,32 @@ fn a_py_module_property_runs_getter_and_setter() {
     assert_eq!(shown("d"), "d/b");
     assert_eq!(shown("b"), "b");
 }
+
+
+/// Python の関数の `*args` はタプル（関数の中の関数も・python_builtins_plan.md のタスク 1-16）。
+/// Arrow の関数の可変長（`let ...: T`）はリストのまま。
+#[cfg(feature = "native")]
+#[test]
+fn python_varargs_are_a_tuple() {
+    let py = "def rest(a, *xs):\n    return xs\n\ndef outer():\n    def inner(*ys):\n        return ys\n    return inner(1, 2)\n";
+    let interp = run_with_py_module(
+        py,
+        concat!(
+            "let t = z.rest(1, 2, 3)\n",
+            "let e = z.rest(1)\n",
+            "let n = z.outer()\n",
+            "fn own(let ...: int) -> int:\n",
+            "    return len(local::args)\n",
+            "let k = own(... = 4, 5)\n",
+        ),
+    )
+    .expect("run");
+    let tuple_len = |name: &str| match interp.get_val(name) {
+        Some(Value::Tuple(t)) => t.all_values().len(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(tuple_len("t"), 2);
+    assert_eq!(tuple_len("e"), 0);
+    assert_eq!(tuple_len("n"), 2);
+    assert!(matches!(interp.get_val("k"), Some(Value::Int(2))));
+}

@@ -332,7 +332,7 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
 **変換の制限**:
 - Python の `class` → Arrow のクラスに変換
 - Python の `def` → `fn` に変換
-- `*args` は可変長の仮引数、`**kwargs` はキーワード引数を受け取る仮引数として渡されます
+- `*args` はタプル（CPython と同じ・1 個も来なくても空タプル・タスク 1-16）、`**kwargs` は辞書で受ける
 
 関数本体内での変数ホイスト (if ブランチで代入された変数の前宣言) も自動で行われます。
 
@@ -340,7 +340,7 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
 タスク 1-14）。デコレータの `func.__name__`、関数の中の関数の `outer.<locals>.inner`、ラムダの `<lambda>`、
 property の getter の `p.fget.__name__`（変換器の別名ではなく元の名前）も同じになります。
 関数の中で定義した関数も Python の関数として呼ばれます（既定値・キーワード引数・`**kw` の束縛）。
-⚠ `*args` は tuple ではなく list で受けます（タスク 1-16）。
+`*args` は CPython と同じくタプルで受けます（タスク 1-16）。
 
 **組み込み**（[12_builtins.md](12_builtins.md)）:
 - Arrow に無い組み込み（`vars` / `exit` / `input` …）を参照するモジュールは、**読み込む時点で変換の誤り**です

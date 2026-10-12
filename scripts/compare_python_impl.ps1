@@ -206,6 +206,7 @@ $knownDiff = @{
     'format_spec'                    ='Rust: 書式指定の小言語（format / f-string の {x:spec} / str.format・タスク 3-4 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'format_spec_error'              ='Rust: format は str を返すので int の変数へ束縛できない（タスク 3-4 で新設）。py: 型検査をせず実行して    42 を出す'
     'py_format'                      ='Rust: Python の f-string の書式指定・str.format・__format__（タスク 3-4 で新設・CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
+    'py_varargs_tuple'               ='Rust: Python の関数の *args はタプル（タスク 1-16 で新設・CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
     'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'str_repr'                       ='Rust: 文字列の repr が CPython の unicode_repr と同じ（"it''s" / \n / \x00 の形・タスク 1-13 で新設）。py: コンテナの中の文字列を引用符なしで出す'
     'py_property_error'              ='Rust: setter の無い property への代入が CPython と同じ AttributeError（タスク 6-1 で新設）。py: import[py] したモジュールの run を引けず AttributeError'

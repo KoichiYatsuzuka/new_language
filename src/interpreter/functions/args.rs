@@ -435,12 +435,17 @@ impl Interpreter {
         // 可変長パラメータのバインド
         if let Some(vi) = variadic_idx {
             let variadic_param = &params_to_bind[vi];
-            // 明示の `... = a, b` があればそれを使い、無ければ**あふれた位置引数**を集めたリスト。
-            // ⚠ Python の `*args` は 1 個も来なくても**空タプル**なので、ここも `Value::None`
-            //   ではなく**空リスト**にする（`for v in xs` / `len(xs)` が素直に動く）。
-            //   ネイティブ `.ar` は `bind_args`（別関数）を通るので、そちらの `None` 既定は不変。
-            let local_args_val = variadic_value
-                .unwrap_or_else(|| Value::List(Rc::new(RefCell::new(overflow_positional))));
+            // 明示の `... = a, b` があればそれを使い、無ければ**あふれた位置引数**を集めたタプル。
+            // Python の `*args` は**タプル**（1 個も来なくても空タプル）なので同じにする（python_builtins_plan.md の
+            // タスク 1-16。以前はリストで、`def f(*rest): return rest` が `[2, 3]`・`rest + (1,)` が誤りだった）。
+            // ネイティブ `.ar` は `bind_args`（別関数）を通るので、そちらのリスト（`list[T]`）は不変。
+            let local_args_val = variadic_value.unwrap_or_else(|| {
+                let types = overflow_positional
+                    .iter()
+                    .map(|v| crate::interpreter::ops::typecheck::runtime_type_name(v).to_string())
+                    .collect();
+                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(overflow_positional, types)))
+            });
             result.push(("local::args".to_string(), local_args_val, variadic_param.mutable, true));
         }
 

@@ -1026,7 +1026,9 @@ pub(crate) fn convert_params(
         params.push(Param {
             name: "...".to_string(),
             mutable: true,
-            type_ann: Some("list[Any]".to_string()),
+            // Arrow の可変長の注釈は**要素の型**（`let ...: int`）。Python の `*args` の要素は何でもよいので `Any`
+            // （以前は `list[Any]` で、要素が list の可変長になっていた・タスク 1-16。値は `bind_args_relaxed` がタプルにする）。
+            type_ann: Some("Any".to_string()),
             default: None,
             variadic: true,
         });
