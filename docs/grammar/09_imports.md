@@ -343,9 +343,9 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 ⚠ `*args` は tuple ではなく list で受けます（タスク 1-16）。
 
 **組み込み**（[12_builtins.md](12_builtins.md)）:
-- Arrow に無い組み込み（`format` / `vars` / `exit` …）を参照するモジュールは、**読み込む時点で変換の誤り**です
+- Arrow に無い組み込み（`vars` / `exit` / `input` …）を参照するモジュールは、**読み込む時点で変換の誤り**です
   （実行の前・呼ばれない関数の中でも）。名前ごとに最初の行を並べます:
-  `m.py: Python builtin(s) not supported by Arrow: 'format' (line 8), 'exit' (line 12) (...)`。
+  `m.py: Python builtin(s) not supported by Arrow: 'vars' (line 8), 'exit' (line 12) (...)`。
   モジュールのどこかで束縛した名前（`def format(..)` / 代入 / 仮引数 / `import` の別名）・デコレータ・クラスの基底・
   `super().m(..)` の `super` は通します（`from m import *` のあるモジュールは調べません）。実装は
   `src/python_converter/builtins_check.rs`。
@@ -355,6 +355,9 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 - `except m.Err:`（修飾名）・`except (A, B) as e:`（型ごとに同じ本体の節を並べる）を変換します。
   組の入れ子 `except (A, (B, C)):` は変換の誤り（CPython 3.12 も実行時の `TypeError`）。
 - 組み込みの例外を継承したクラスの `super().__init__(..)` は組み込みの例外へ届き、`args` / `str(e)` が CPython と同じになります。
+
+**f-string**: `{x:.2f}` は組み込みの `format(x, ".2f")`、`!r` / `!s` / `!a` は `repr` / `str` / `ascii` に変換します
+（書式指定の中の `{w}` も・`__format__` を持つクラスはそれが呼ばれる・タスク 3-4。以前は書式指定と `!a` が変換の誤り）。
 
 **値**: `b".."` のリテラルは組み込みの `bytes([..])` に変換します（python_builtins_plan.md のタスク 3-1。
 [12_builtins.md](12_builtins.md) の「`bytes`」）。`frozenset(..)` も使えます。

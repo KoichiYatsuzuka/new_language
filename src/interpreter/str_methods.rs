@@ -5,281 +5,226 @@
 
 use regex::{Captures, Regex};
 
-use super::Value;
+use super::{Interpreter, Value};
 
 // ────────────────────────────────────────────────────────────────────────────
 // str.format(*args, **kwargs)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `"{0} {name:.2f}"` のようなテンプレート文字列に引数を埋め込む。
-///
-/// - `{}` → 自動インデックス（呼び出しごとにカウントアップ）
-/// - `{0}`, `{1}` → 位置引数インデックス
-/// - `{name}` → キーワード引数
-/// - `{0:.2f}`, `{name:>10}` → 簡易書式指定（`:` 以降）
-/// - `{{` / `}}` → エスケープされた `{` / `}`
-pub fn str_format(
-    template: &str,
-    pos_args: &[Value],
-    kw_args: &[(String, Value)],
-    display: &dyn Fn(&Value) -> String,
-) -> Result<String, String> {
-    let mut result = String::new();
-    let chars: Vec<char> = template.chars().collect();
-    let mut i = 0;
-    let mut auto_idx = 0usize;
-
-    while i < chars.len() {
-        if chars[i] == '{' {
-            if i + 1 < chars.len() && chars[i + 1] == '{' {
-                result.push('{');
-                i += 2;
-                continue;
-            }
-            i += 1; // consume {
-            let mut field = String::new();
-            while i < chars.len() && chars[i] != '}' {
-                field.push(chars[i]);
-                i += 1;
-            }
-            if i < chars.len() {
-                i += 1;
-            } // consume }
-
-            // Split field into name and format_spec
-            let (field_name, fmt_spec) = if let Some(colon) = field.find(':') {
-                (&field[..colon], &field[colon + 1..])
-            } else {
-                (field.as_str(), "")
-            };
-
-            let val = if field_name.is_empty() {
-                // Auto index
-                let v = pos_args.get(auto_idx).ok_or_else(|| {
-                    format!(
-                        "IndexError: not enough positional arguments (needed {})",
-                        auto_idx + 1
-                    )
-                })?;
-                auto_idx += 1;
-                v
-            } else if let Ok(idx) = field_name.parse::<usize>() {
-                pos_args.get(idx).ok_or_else(|| {
-                    format!("IndexError: positional argument index {idx} out of range")
-                })?
-            } else {
-                kw_args
-                    .iter()
-                    .find(|(k, _)| k == field_name)
-                    .map(|(_, v)| v)
-                    .ok_or_else(|| format!("KeyError: keyword argument '{field_name}' not found"))?
-            };
-
-            result.push_str(&apply_format_spec(val, fmt_spec, display)?);
-        } else if chars[i] == '}' {
-            if i + 1 < chars.len() && chars[i + 1] == '}' {
-                result.push('}');
-                i += 2;
-                continue;
-            }
-            result.push('}');
-            i += 1;
-        } else {
-            result.push(chars[i]);
-            i += 1;
-        }
-    }
-    Ok(result)
+/// `str.format` の置換フィールドの番号の付け方（自動と手動は混ぜられない・CPython と同じ）。
+enum FieldNumbering {
+    Unknown,
+    Auto(usize),
+    Manual,
 }
 
-/// `{:>10.2f}` のような書式指定子を値に適用する。
-///
-/// `fill`・`align`・`width`・`precision`・`type` を解析し、
-/// 整形された文字列を返す。未知の型文字の場合は `ValueError` を返す。
-fn apply_format_spec(
-    val: &Value,
-    spec: &str,
-    display: &dyn Fn(&Value) -> String,
-) -> Result<String, String> {
-    if spec.is_empty() {
-        return Ok(display(val));
+impl Interpreter {
+    /// `"{0} {name!r:>{w}}".format(..)`（python_builtins_plan.md のタスク 3-4）。CPython の `str.format` と同じ規則・文言:
+    ///
+    /// - `{}`（自動の番号）/ `{0}`（位置）/ `{name}`（キーワード）。自動と手動は混ぜられない
+    /// - 属性・添字（`{0.name}` / `{0[1]}` / `{p[key]}`。添字は数字なら int、それ以外は文字列）
+    /// - 変換（`!r` / `!s` / `!a`）と書式指定（`:spec`。中に置換フィールドを 1 段入れられる `{:{w}.{p}f}`）
+    /// - 書式は `format_value`（`format()` / f-string と同じ・`__format__` を呼ぶ）
+    /// - `{{` / `}}` は `{` / `}`
+    ///
+    /// ⚠ 以前は書式指定の解釈が粗く（`,` や `#` を黙って捨てた・`e` / `g` の綴りが違った）、変換・属性・添字が無かった。
+    pub(crate) fn py_str_format(
+        &mut self,
+        template: &str,
+        pos_args: &[Value],
+        kw_args: &[(String, Value)],
+    ) -> Result<String, String> {
+        let mut numbering = FieldNumbering::Unknown;
+        self.str_format_level(template, pos_args, kw_args, &mut numbering, 2)
     }
 
-    // Parse spec: [[fill]align][sign][#][0][width][grouping_option][.precision][type]
-    let chars: Vec<char> = spec.chars().collect();
-    let mut i = 0;
-
-    // fill + align: optional 1-char fill followed by < > ^ =
-    let (fill, align) = if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
-        (chars[0], Some(chars[1]))
-    } else if matches!(chars.first(), Some('<') | Some('>') | Some('^') | Some('=')) {
-        (' ', Some(chars[0]))
-    } else {
-        (' ', None)
-    };
-    if align.is_some() {
-        i += if fill == ' ' && matches!(chars[0], '<' | '>' | '^' | '=') {
-            1
-        } else {
-            2
-        };
-    }
-
-    // sign
-    let _sign = if i < chars.len() && matches!(chars[i], '+' | '-' | ' ') {
-        let s = chars[i];
-        i += 1;
-        Some(s)
-    } else {
-        None
-    };
-
-    // # flag (alternate form)
-    if i < chars.len() && chars[i] == '#' {
-        i += 1;
-    }
-
-    // zero flag: when '0' precedes width and no explicit align, use '0' fill with right-align
-    let zero_flag = if i < chars.len() && chars[i] == '0' && align.is_none() {
-        i += 1;
-        true
-    } else {
-        false
-    };
-    let fill = if zero_flag { '0' } else { fill };
-    let align = if zero_flag { Some('>') } else { align };
-
-    // width
-    let width_start = i;
-    while i < chars.len() && chars[i].is_ascii_digit() {
-        i += 1;
-    }
-    let width: usize = if width_start < i {
-        chars[width_start..i]
-            .iter()
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0)
-    } else {
-        0
-    };
-
-    // grouping (_  or ,)
-    if i < chars.len() && (chars[i] == '_' || chars[i] == ',') {
-        i += 1;
-    }
-
-    // .precision
-    let precision: Option<usize> = if i < chars.len() && chars[i] == '.' {
-        i += 1;
-        let p_start = i;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            i += 1;
+    fn str_format_level(
+        &mut self,
+        template: &str,
+        pos_args: &[Value],
+        kw_args: &[(String, Value)],
+        numbering: &mut FieldNumbering,
+        depth: usize,
+    ) -> Result<String, String> {
+        if depth == 0 {
+            return Err("ValueError: Max string recursion exceeded".to_string());
         }
-        Some(
-            chars[p_start..i]
+        let chars: Vec<char> = template.chars().collect();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '{' if chars.get(i + 1) == Some(&'{') => {
+                    out.push('{');
+                    i += 2;
+                }
+                '}' if chars.get(i + 1) == Some(&'}') => {
+                    out.push('}');
+                    i += 2;
+                }
+                '}' => return Err("ValueError: Single '}' encountered in format string".to_string()),
+                '{' => {
+                    // 対応する `}` まで（書式指定の中の `{w}` の入れ子を数える）。
+                    let mut level = 1;
+                    let mut j = i + 1;
+                    while j < chars.len() {
+                        match chars[j] {
+                            '{' => level += 1,
+                            '}' => {
+                                level -= 1;
+                                if level == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                    if j >= chars.len() {
+                        return Err(if i + 1 == chars.len() {
+                            "ValueError: Single '{' encountered in format string".to_string()
+                        } else {
+                            "ValueError: expected '}' before end of string".to_string()
+                        });
+                    }
+                    let field: String = chars[i + 1..j].iter().collect();
+                    out.push_str(&self.str_format_field(&field, pos_args, kw_args, numbering, depth)?);
+                    i = j + 1;
+                }
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 置換フィールド 1 つ（`{` と `}` の間）を書く。
+    fn str_format_field(
+        &mut self,
+        field: &str,
+        pos_args: &[Value],
+        kw_args: &[(String, Value)],
+        numbering: &mut FieldNumbering,
+        depth: usize,
+    ) -> Result<String, String> {
+        // フィールド名は `[..]` の外の `!` / `:` まで（添字の中の `:` は名前の一部・CPython の `parse_field`）。
+        let fc: Vec<char> = field.chars().collect();
+        let mut bracket = 0usize;
+        let mut k = 0;
+        while k < fc.len() {
+            match fc[k] {
+                '[' => bracket += 1,
+                ']' => bracket = bracket.saturating_sub(1),
+                '!' | ':' if bracket == 0 => break,
+                _ => {}
+            }
+            k += 1;
+        }
+        let name: String = fc[..k].iter().collect();
+        let mut conversion = None;
+        let mut spec = String::new();
+        if k < fc.len() && fc[k] == '!' {
+            let Some(&c) = fc.get(k + 1) else {
+                return Err("ValueError: end of string while looking for conversion specifier".to_string());
+            };
+            conversion = Some(c);
+            k += 2;
+            if k < fc.len() && fc[k] != ':' {
+                return Err("ValueError: expected ':' after conversion specifier".to_string());
+            }
+        }
+        if k < fc.len() && fc[k] == ':' {
+            spec = fc[k + 1..].iter().collect();
+        }
+        let value = self.str_format_lookup(&name, pos_args, kw_args, numbering)?;
+        let value = match conversion {
+            None => value,
+            Some('r') => Value::str(self.repr_val(&value)?),
+            Some('s') => Value::str(self.display_str(&value)?),
+            Some('a') => self.py_ascii(vec![value])?,
+            Some(c) => return Err(format!("ValueError: Unknown conversion specifier {c}")),
+        };
+        // 書式指定の中の置換フィールド（`{:{w}}`）は同じ引数で先に展開する。
+        let spec = if spec.contains('{') {
+            self.str_format_level(&spec, pos_args, kw_args, numbering, depth - 1)?
+        } else {
+            spec
+        };
+        self.format_value(&value, &spec)
+    }
+
+    /// フィールド名（`0` / `name` / 空・続く `.attr` / `[key]`）を値にする。
+    fn str_format_lookup(
+        &mut self,
+        name: &str,
+        pos_args: &[Value],
+        kw_args: &[(String, Value)],
+        numbering: &mut FieldNumbering,
+    ) -> Result<Value, String> {
+        let first_end = name.find(['.', '[']).unwrap_or(name.len());
+        let (first, mut rest) = name.split_at(first_end);
+        let mut value = if first.is_empty() {
+            let idx = match numbering {
+                FieldNumbering::Manual => {
+                    return Err(
+                        "ValueError: cannot switch from manual field specification to automatic field numbering"
+                            .to_string(),
+                    )
+                }
+                FieldNumbering::Unknown => 0,
+                FieldNumbering::Auto(n) => *n,
+            };
+            *numbering = FieldNumbering::Auto(idx + 1);
+            Self::str_format_positional(pos_args, idx)?
+        } else if let Ok(idx) = first.parse::<usize>() {
+            if matches!(numbering, FieldNumbering::Auto(_)) {
+                return Err(
+                    "ValueError: cannot switch from automatic field numbering to manual field specification".to_string(),
+                );
+            }
+            *numbering = FieldNumbering::Manual;
+            Self::str_format_positional(pos_args, idx)?
+        } else {
+            kw_args
                 .iter()
-                .collect::<String>()
-                .parse()
-                .unwrap_or(0),
-        )
-    } else {
-        None
-    };
-
-    // type
-    let type_char: Option<char> = if i < chars.len() {
-        Some(chars[i])
-    } else {
-        None
-    };
-
-    let s = match type_char {
-        Some('d') | Some('i') => match val {
-            Value::Int(n) => format!("{n}"),
-            Value::Float(f) => format!("{}", *f as i64),
-            _ => display(val),
-        },
-        Some('f') | Some('F') => {
-            let n = to_f64(val)?;
-            let prec = precision.unwrap_or(6);
-            format!("{:.prec$}", n)
-        }
-        Some('e') => {
-            let n = to_f64(val)?;
-            let prec = precision.unwrap_or(6);
-            format!("{:.prec$e}", n)
-        }
-        Some('E') => {
-            let n = to_f64(val)?;
-            let prec = precision.unwrap_or(6);
-            format!("{:.prec$E}", n)
-        }
-        Some('g') | Some('G') => {
-            let n = to_f64(val)?;
-            let prec = precision.unwrap_or(6);
-            if n.abs() < 1e-4 || n.abs() >= 10f64.powi(prec as i32) {
-                format!("{:.prec$e}", n)
-            } else {
-                format!("{:.prec$}", n)
-            }
-        }
-        Some('x') => match val {
-            Value::Int(n) => format!("{:x}", n),
-            _ => display(val),
-        },
-        Some('X') => match val {
-            Value::Int(n) => format!("{:X}", n),
-            _ => display(val),
-        },
-        Some('o') => match val {
-            Value::Int(n) => format!("{:o}", n),
-            _ => display(val),
-        },
-        Some('b') => match val {
-            Value::Int(n) => format!("{:b}", n),
-            _ => display(val),
-        },
-        Some('s') | None => {
-            let mut s = display(val);
-            if let Some(p) = precision {
-                s.truncate(p);
-            }
-            s
-        }
-        Some('%') => {
-            let n = to_f64(val)?;
-            let prec = precision.unwrap_or(6);
-            format!("{:.prec$}%", n * 100.0)
-        }
-        Some(c) => return Err(format!("ValueError: unknown format type '{c}'")),
-    };
-
-    // Apply width / alignment
-    if width > 0 && s.len() < width {
-        let pad = width - s.len();
-        let aligned = match align.unwrap_or(if matches!(val, Value::Int(_) | Value::Float(_)) {
-            '>'
-        } else {
-            '<'
-        }) {
-            '<' => format!("{}{}", s, fill.to_string().repeat(pad)),
-            '>' => format!("{}{}", fill.to_string().repeat(pad), s),
-            '^' => {
-                let left = pad / 2;
-                let right = pad - left;
-                format!(
-                    "{}{}{}",
-                    fill.to_string().repeat(left),
-                    s,
-                    fill.to_string().repeat(right)
-                )
-            }
-            _ => s,
+                .find(|(k, _)| k == first)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| format!("KeyError: '{first}'"))?
         };
-        Ok(aligned)
-    } else {
-        Ok(s)
+        while !rest.is_empty() {
+            if let Some(r) = rest.strip_prefix('.') {
+                let end = r.find(['.', '[']).unwrap_or(r.len());
+                if end == 0 {
+                    return Err("ValueError: Empty attribute in format string".to_string());
+                }
+                value = self.get_attr_val(value, &r[..end], None)?;
+                rest = &r[end..];
+            } else if let Some(r) = rest.strip_prefix('[') {
+                let end = r.find(']').ok_or_else(|| "ValueError: Missing ']' in format string".to_string())?;
+                let key = &r[..end];
+                if key.is_empty() {
+                    return Err("ValueError: Empty attribute in format string".to_string());
+                }
+                let key = match key.parse::<i64>() {
+                    Ok(n) if !key.starts_with(['-', '+']) => Value::Int(n),
+                    _ => Value::str(key),
+                };
+                value = self.eval_subscript(value, key)?;
+                rest = &r[end + 1..];
+            } else {
+                return Err("ValueError: Only '.' or '[' may follow ']' in format field specifier".to_string());
+            }
+        }
+        Ok(value)
+    }
+
+    fn str_format_positional(pos_args: &[Value], idx: usize) -> Result<Value, String> {
+        pos_args
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| format!("IndexError: Replacement index {idx} out of range for positional args tuple"))
     }
 }
 
@@ -425,27 +370,31 @@ pub fn percent_format(
                 };
                 pad_str(&s, width, left_align, if zero_pad { '0' } else { ' ' })
             }
-            'e' => {
+            // `e` / `g` は `format()` と同じ綴り（指数は符号つき 2 桁以上・`g` は末尾の 0 を消す・タスク 3-4）。
+            // ⚠ 以前は Rust の書式のまま（`%e` が `1.234568e4`、`%g` が `12345.678000`）だった。
+            'e' | 'E' | 'g' | 'G' => {
+                use crate::interpreter::ops::format_spec as fs;
                 let n = to_f64(arg)?;
-                let prec = precision.unwrap_or(6);
-                let s = format!("{:.prec$e}", n);
-                pad_str(&s, width, left_align, ' ')
-            }
-            'E' => {
-                let n = to_f64(arg)?;
-                let prec = precision.unwrap_or(6);
-                let s = format!("{:.prec$E}", n);
-                pad_str(&s, width, left_align, ' ')
-            }
-            'g' | 'G' => {
-                let n = to_f64(arg)?;
-                let prec = precision.unwrap_or(6).max(1);
-                let s = if n.abs() < 1e-4 || n.abs() >= 10f64.powi(prec as i32) {
-                    format!("{:.prec$e}", n)
+                let upper = spec.is_ascii_uppercase();
+                let alt = flags.contains('#');
+                let body = if n.is_nan() || n.is_infinite() {
+                    let b = if n.is_nan() { "nan" } else { "inf" };
+                    if upper { b.to_uppercase() } else { b.to_string() }
+                } else if matches!(spec, 'e' | 'E') {
+                    fs::float_exp(n.abs(), precision.unwrap_or(6), upper, alt)
                 } else {
-                    format!("{:.prec$}", n)
+                    fs::float_general(n.abs(), precision.unwrap_or(6), upper, alt, false)
                 };
-                pad_str(&s, width, left_align, ' ')
+                let sign = if n.is_sign_negative() && !n.is_nan() {
+                    "-"
+                } else if plus_sign {
+                    "+"
+                } else if flags.contains(' ') {
+                    " "
+                } else {
+                    ""
+                };
+                pad_str(&format!("{sign}{body}"), width, left_align, ' ')
             }
             's' => {
                 let mut s = display(arg);

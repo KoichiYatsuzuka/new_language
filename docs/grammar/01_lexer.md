@@ -173,7 +173,7 @@ src/lexer/
 **f-string の処理**:  
 `{expr}` の部分を `FStrPart::Expr(src)` として保存し、  
 `{{` / `}}` をエスケープされた `{` / `}` として扱います。  
-評価はインタープリタ側で行います。
+`src` は `=` / `!変換` / `:書式指定` を含んだままで、パーサーが分けて展開します（[03_expressions.md](03_expressions.md) の「f-string」）。
 
 **数学文字列の変換例** (LaTeX → Unicode):
 

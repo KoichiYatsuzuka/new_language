@@ -98,6 +98,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4）。f-string の `{x:spec}` はこの呼び出しに脱糖される。
+    "format",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

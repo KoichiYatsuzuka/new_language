@@ -58,6 +58,8 @@ $whitelist = @(
     'unicode_repr','is_control',
     # CPython のインスタンスの属性の辞書（cached_property が値を入れる先・タスク 6-5）
     '__dict__',
+    # CPython の書式指定の小言語の関数（formatter_unicode.c / string.Formatter・タスク 3-4）
+    'format_float_internal','format_string_internal','parse_field','parse_internal_render_format_spec',
     # CPython の関数名（Objects/bytesobject.c）。bytes の表示の出どころ（タスク 3-1）。
     'bytes_repr',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。

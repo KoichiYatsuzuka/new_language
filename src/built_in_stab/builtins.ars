@@ -269,6 +269,10 @@ fn ascii(obj: Any) -> str:
     """repr(obj) with the non-ASCII characters escaped."""
     pass
 
+fn format(value: Any, format_spec: str = "") -> str:
+    """value formatted by the format spec mini-language (same as f"{value:spec}"; calls __format__ on an instance)."""
+    pass
+
 fn property(fget: Any = None, fset: Any = None, fdel: Any = None, doc: Any = None):
     """A property: a class attribute whose reads call fget(obj) and writes call fset(obj, value) (a built-in class)."""
     pass

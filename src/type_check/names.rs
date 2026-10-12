@@ -60,6 +60,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4・f-string の `{x:spec}` の脱糖先）
+    "format",
     // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
     "property", "cached_property",
 ];

@@ -1030,6 +1030,57 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
     })
 }
 
+impl Interpreter {
+    /// `format(value, spec)` の本体（python_builtins_plan.md のタスク 3-4）。`str.format` の `{:spec}` と f-string の
+    /// `{x:spec}` も同じここを通る（書式の解釈は `ops::format_spec` の 1 つ）。
+    ///
+    /// - インスタンスは `__format__(spec)` を呼ぶ（str 以外を返すと CPython と同じ `TypeError`）
+    /// - `int` / `bool` / `float` / `str` は書式指定の小言語（`bool` は空の指定なら `True`、それ以外は整数として書く）
+    /// - それ以外（`__format__` の無いインスタンス・`None`・list …）は、空の指定なら `str(x)`、そうでなければ
+    ///   CPython の `object.__format__` と同じ `TypeError`
+    /// - ⚠ `complex` の書式指定は未対応（明示の誤り）
+    pub(crate) fn format_value(&mut self, v: &Value, spec: &str) -> Result<String, String> {
+        use crate::interpreter::ops::format_spec as fs;
+        let type_name = match v {
+            Value::Instance(i) => i.borrow().class.name.clone(),
+            other => self.type_name(other).to_string(),
+        };
+        match v {
+            Value::Instance(i) if i.borrow().class.methods.contains_key("__format__") => {
+                match self.eval_method_call_evaled(v.clone(), "__format__", vec![(None, Value::str(spec), false)])? {
+                    Value::Str(s) => Ok(s.to_string()),
+                    other => Err(format!("TypeError: __format__ must return a str, not {}", self.type_name(&other))),
+                }
+            }
+            Value::Bool(b) if spec.is_empty() => Ok(if *b { "True" } else { "False" }.to_string()),
+            Value::Bool(b) => fs::format_int(i128::from(*b), &fs::parse(spec, &type_name, Some('d'), '>')?, &type_name),
+            Value::Int(n) => fs::format_int(i128::from(*n), &fs::parse(spec, &type_name, Some('d'), '>')?, &type_name),
+            Value::UInt(n) => fs::format_int(i128::from(*n), &fs::parse(spec, &type_name, Some('d'), '>')?, &type_name),
+            Value::Float(f) => fs::format_float(*f, &fs::parse(spec, &type_name, None, '>')?, &type_name),
+            Value::Str(s) => fs::format_str(s, &fs::parse(spec, &type_name, Some('s'), '<')?, &type_name),
+            _ if spec.is_empty() => self.display_str(v),
+            Value::Complex(..) => Err("ValueError: format specifiers for complex numbers are not supported".to_string()),
+            _ => Err(format!("TypeError: unsupported format string passed to {type_name}.__format__")),
+        }
+    }
+
+    /// 組み込みの `format(value, format_spec='')`（タスク 3-4）。文言は CPython と同じ。
+    pub(crate) fn py_format(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let (v, spec) = match args.as_slice() {
+            [v] => (v, ""),
+            [v, Value::Str(s)] => (v, &**s),
+            [_, other] => {
+                return Err(format!("TypeError: format() argument 2 must be str, not {}", self.type_name(other)))
+            }
+            [] => return Err("TypeError: format expected at least 1 argument, got 0".to_string()),
+            _ => return Err(format!("TypeError: format expected at most 2 arguments, got {}", args.len())),
+        };
+        let spec = spec.to_string();
+        let v = v.clone();
+        self.format_value(&v, &spec).map(Value::str)
+    }
+}
+
 /// 組み込みのクラス `property`（python_builtins_plan.md のタスク 6-1）。CPython 3.12 の `property` と同じ振る舞いを
 /// Arrow のクラスで書いたもの。読み書きはディスクリプタのプロトコル（タスク 1-12・`eval/attrs.rs`）が
 /// `__get__` / `__set__` へ回す。

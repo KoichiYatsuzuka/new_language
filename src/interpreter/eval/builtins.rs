@@ -26,6 +26,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4）
+    "format",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -168,6 +170,8 @@ impl Interpreter {
             "oct" => Some(self.py_int_to_base(args, 8)),
             "bin" => Some(self.py_int_to_base(args, 2)),
             "ascii" => Some(self.py_ascii(args)),
+            // 書式指定の小言語（タスク 3-4）。`str.format` / f-string の `{x:spec}` と同じ本体（`format_value`）。
+            "format" => Some(self.py_format(args)),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),

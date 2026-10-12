@@ -1170,3 +1170,43 @@ fn test_block_return_no_annotation_no_check() {
     assert_str(run_get(src, "x"), "anything");
 }
 
+
+
+/// 書式指定の小言語（python_builtins_plan.md のタスク 3-4）: `format()` / f-string の `{x:spec}` / `str.format` が
+/// 同じ解釈になる。f-string の `!r` / `=` / 入れ子の書式も CPython と同じ。
+#[test]
+fn test_format_spec_entry_points_agree() {
+    let src = concat!(
+        "class M:\n",
+        "    fn __format__(self, spec: str) -> str:\n",
+        "        return \"M[\" + spec + \"]\"\n",
+        "let x = 3.14159\n",
+        "let w = 7\n",
+        "let a = format(1234, \"010,\")\n",
+        "let b = f\"{x:.2f}|{x!r}|{x=}|{x:>{w}.1f}\"\n",
+        "let c = \"{0:,}|{0!r}|{1:^5}\".format(1234567, \"ab\")\n",
+        "let d = f\"{M()}|{M():x}\"\n",
+        "let e = format(12345.678, \"e\") + \" \" + format(0.0001, \"g\")\n",
+    );
+    let interp = run_interp(src);
+    let s = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(s("a"), "00,001,234");
+    assert_eq!(s("b"), "3.14|3.14159|x=3.14159|    3.1");
+    assert_eq!(s("c"), "1,234,567|1234567| ab  ");
+    assert_eq!(s("d"), "M[]|M[x]");
+    assert_eq!(s("e"), "1.234568e+04 0.0001");
+}
+
+/// 書式の誤りは CPython と同じ文言、f-string の読めない変換・式は構文の誤り（以前は黙って捨てていた・タスク 3-4）。
+#[test]
+fn test_format_spec_errors() {
+    assert!(run_err_msg("let s = format(1, \".2\")\n").contains("Precision not allowed in integer format specifier"));
+    assert!(run_err_msg("let s = format(\"a\", \"=5\")\n").contains("'=' alignment not allowed in string format specifier"));
+    assert!(run_err_msg("let s = \"{} {0}\".format(1)\n").contains("cannot switch from automatic field numbering"));
+    let parse_err = |src: &str| prepare(src).err().expect("parse error");
+    assert!(parse_err("let x = 1\nlet s = f\"{x!q}\"\n").contains("invalid conversion character 'q'"));
+    assert!(parse_err("let x = 1\nlet s = f\"{x y}\"\n").contains("f-string: invalid expression"));
+}

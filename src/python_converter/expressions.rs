@@ -653,10 +653,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         // f-string。`desugar_fstring`（`src/parser/exprs.rs`）と**同形**に脱糖する:
         // リテラル片はそのまま、埋め込み式は `str(...)` で包み、左結合の `+` で連結する。
         //
-        // ⚠ Arrow に「書式指定」に相当する構文が無いので、`{x:.2f}` のような
-        //   **format_spec 付きは明示エラー**（FUTURE_FEATURE.md に残してある）。
-        // ⚠ 変換フラグは `!s` → `str()`、`!r` → `repr()` に写せる（どちらも Arrow に組込がある）。
-        //   `!a`（ascii）は相当する組込が無いので明示エラー。
+        // 書式指定（`{x:.2f}`）は組み込みの `format(x, spec)`、変換フラグ（`!s` / `!r` / `!a`）は
+        // `str()` / `repr()` / `ascii()` に写す（python_builtins_plan.md のタスク 3-4。以前は書式指定と `!a` が変換の誤り）。
         py::Expr::JoinedStr(j) => {
             let span = make_span(filename);
             let mut parts: Vec<Expr> = Vec::new();
@@ -664,32 +662,39 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 match v {
                     // リテラル片（`f"hi {n}"` の `"hi "` の部分）。
                     py::Expr::Constant(c) => parts.push(convert_constant(c, filename)?),
+                    // `{x!r:>10}` → `format(repr(x), ">10")`（変換の後で書式・python_builtins_plan.md のタスク 3-4）。
+                    // 書式指定は入れ子の f-string（`{x:{w}}`）なので同じ変換で文字列の連結にする。
                     py::Expr::FormattedValue(fv) => {
-                        if fv.format_spec.is_some() {
-                            return Err(format!(
-                                "{filename}: f-string format specifier (e.g. `{{x:.2f}}`) is not supported"
-                            ));
-                        }
-                        let func_name = match fv.conversion.to_char() {
-                            None | Some('s') => "str",
-                            Some('r') => "repr",
-                            Some(other) => {
-                                return Err(format!(
-                                    "{filename}: f-string conversion `!{other}` is not supported (only `!s` and `!r`)"
-                                ))
-                            }
-                        };
-                        let inner = convert_expr(&fv.value, filename)?;
-                        parts.push(Expr::Call {
+                        let call = |name: &str, args: Vec<Expr>| Expr::Call {
                             func: Box::new(Expr::Ident {
-                                name: func_name.to_string(),
+                                name: name.to_string(),
                                 node_id: 0,
                                 res: Resolution::Unresolved,
                             }),
-                            args: vec![CallArg::Positional(inner)],
+                            args: args.into_iter().map(CallArg::Positional).collect(),
                             span: span.clone(),
                             cache: Default::default(),
                             node_id: 0, // #16: py-converter は未採番
+                        };
+                        let conversion = match fv.conversion.to_char() {
+                            None => None,
+                            Some('s') => Some("str"),
+                            Some('r') => Some("repr"),
+                            Some('a') => Some("ascii"),
+                            Some(other) => {
+                                return Err(format!("{filename}: f-string conversion `!{other}` is not supported"))
+                            }
+                        };
+                        let inner = convert_expr(&fv.value, filename)?;
+                        let value = match conversion {
+                            Some(f) => call(f, vec![inner]),
+                            None => inner,
+                        };
+                        parts.push(match fv.format_spec.as_deref() {
+                            Some(spec) => call("format", vec![value, convert_expr(spec, filename)?]),
+                            None if conversion.is_some() => value,
+                            // `{x}` も CPython と同じ `format(x, '')`（`__format__` を持つクラスはそれが効く）。
+                            None => call("format", vec![value]),
                         });
                     }
                     // 仕様上ここには来ないが、来たら文字列化して連結する（黙って落とさない）。

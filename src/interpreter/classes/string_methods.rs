@@ -3,7 +3,7 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
+        regex_findall, regex_match, regex_search, regex_split, regex_sub,
     },
     crate::interpreter::{
         GeneratorState,
@@ -40,8 +40,8 @@ impl Interpreter {
                     None => pos_args.push(v),
                 }
             }
-            let display_fn = |v: &Value| self.display(v);
-            let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
+            // 書式は `format()` / f-string と同じ `format_value`（タスク 3-4）。
+            let result = self.py_str_format(&s, &pos_args, &kw_args)?;
             return Ok(Value::str(result));
         }
         // `encode(encoding="utf-8", errors="strict")` は bytes を返す（python_builtins_plan.md のタスク 3-1・`ops::codecs`）。

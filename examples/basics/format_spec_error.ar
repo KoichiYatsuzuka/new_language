@@ -1,0 +1,7 @@
+# format_spec_error.ar — `format(v, spec)` は `str` を返す（python_builtins_plan.md のタスク 3-4）
+#
+# 書式の誤り（`format(1, ".2")` など）は実行時の `ValueError`（format_spec.ar）。型は静的に決まる。
+# 期待: 静的型エラー（`int` と宣言した変数を `str` で初期化している）
+
+let width: int = format(42, ">5")
+print(width)

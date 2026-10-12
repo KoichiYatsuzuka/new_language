@@ -1644,11 +1644,11 @@ fn python_except_tuple_becomes_one_handler_per_type() {
 #[test]
 fn python_unsupported_builtins_are_rejected() {
     let conv = |src: &str| crate::python_converter::convert_python_source(src, "m.py");
-    let err = conv("def f(x):\n    return format(x)\n\ndef g():\n    exit(1)\n    return vars()\n")
+    let err = conv("def f(x):\n    return globals()\n\ndef g():\n    exit(1)\n    return vars()\n")
         .expect_err("unsupported builtins");
-    assert!(err.contains("'format' (line 2), 'exit' (line 5), 'vars' (line 6)"), "{err}");
+    assert!(err.contains("'globals' (line 2), 'exit' (line 5), 'vars' (line 6)"), "{err}");
     // 束縛した名前（def / 代入 / 仮引数 / import の別名）は組み込みを隠す。
-    conv("def format(x):\n    return x\n\ndef g():\n    return format(1)\n").expect("def shadows");
+    conv("def vars(x):\n    return x\n\ndef g():\n    return vars(1)\n").expect("def shadows");
     conv("vars = 3\n\ndef g(input):\n    return vars + input\n").expect("assignment and parameter shadow");
     conv("from os import path as exit\n\ndef g():\n    return exit\n").expect("import alias shadows");
     // 変換器が形で受ける位置。

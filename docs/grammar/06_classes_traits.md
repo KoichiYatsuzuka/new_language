@@ -718,7 +718,8 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 |---|---|
 | `__init__(mut self, ...)` | インスタンス化時 |
 | `__repr__(self)` | `repr(obj)` / コンテナの中の表示（`print([obj])` / `str((obj, 1))`）/ `__str__` が無いときの `str(obj)` / `print(obj)` |
-| `__str__(self)` | `str(obj)` / `print(obj)` / `f"{obj}"`（コンテナの中では使われない。CPython と同じ） |
+| `__str__(self)` | `str(obj)` / `print(obj)`（コンテナの中では使われない。CPython と同じ） |
+| `__format__(self, spec: str) -> str` | `format(obj, spec)` / `f"{obj:spec}"` / `f"{obj}"`（空の指定）/ `"{:spec}".format(obj)`。無ければ空の指定のときだけ `str(obj)`（[12_builtins.md](12_builtins.md) の「`format`」） |
 | `__len__(self)` | `len(obj)` |
 | `__iter__(self)` | `for x in obj` (gen メソッド) |
 | `__next__(self)` | イテレータの次要素取得 |

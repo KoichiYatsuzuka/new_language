@@ -119,6 +119,34 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 | `hash` / `ord` / `chr` | `hash` は辞書・集合の鍵と同じ値 |
 | `hex` / `oct` / `bin` / `ascii` | 接頭辞つき（`-0b101`）／非 ASCII を `\x..` に |
 | `property(fget=None, fset=None, fdel=None, doc=None)` | クラス。`getter` / `setter` / `deleter` は写した property を返す。クラス側に置くとディスクリプタとして働く（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。Python の `@property` / `@x.setter` は変換器がこれで組み立てる（[09_imports.md](09_imports.md)）。⚠ Arrow で書いたクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）で、名前を初めて引いたときに組み立てる |
+| `cached_property(func)` | クラス（`functools.cached_property`・タスク 6-5）。Python の `@cached_property` は変換器がこれで組み立てる |
+| `format(value, format_spec='')` | 書式指定の小言語（下の節）。`str` を返す |
+
+### `format` と書式指定の小言語
+
+`format(v, spec)` / f-string の `{v:spec}` / `"{:spec}".format(v)` は同じ解釈です（python_builtins_plan.md のタスク 3-4・
+実装は `interpreter/ops/format_spec.rs`）。CPython 3.12 と同じ規則・同じ誤りの文言:
+
+```text
+[[fill]align][sign][z][#][0][width][grouping][.precision][type]
+align: < > ^ =    sign: + - (空白)    z: 負の 0 を 0 に    #: 0b/0o/0x・小数点を残す
+grouping: , _（_ は 2/8/16 進なら 4 桁ごと）
+type: int → b c d o x X n（e f g % は float にして書く）／float → e E f F g G n %（無し: repr、精度つきなら g の変形）／str → s
+```
+
+```ar
+print(format(1234567, ","), format(255, "#010x"), format(3.14159, ".2f"))   # 1,234,567 0x000000ff 3.14
+print(format(12345.678, "e"), format(0.25, ".1%"), format("abc", "*^7"))    # 1.234568e+04 25.0% **abc**
+print("{0.x} {1[k]} {2!r:>6}".format(p, {"k": 1}, "s"))                     # 属性・添字・変換
+```
+
+- `bool` は空の指定なら `True` / `False`、それ以外は整数として書く（`format(True, ">3")` は `  1`）。
+- クラスは `fn __format__(self, spec: str) -> str` で書式を決められる（無ければ空の指定のときだけ `str(x)`、ほかは
+  `TypeError: unsupported format string passed to C.__format__`）。
+- `str.format` は位置・キーワード・属性（`{0.name}`）・添字（`{0[1]}` / `{d[key]}`）・変換（`!r` / `!s` / `!a`）・
+  書式の中の置換フィールド（`{:{w}}`）を受ける。自動と手動の番号は混ぜられない（CPython と同じ文言）。
+- `%` 演算子の `%e` / `%g` も同じ綴り（`1.234568e+04`）。
+- ⚠ `complex` の書式指定は未対応（`ValueError: format specifiers for complex numbers are not supported`）。
 
 ### 組み込みの名前を値として使う
 
@@ -135,10 +163,10 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 39 名は Arrow にありません（`property` は 6-1、`frozenset` /
+CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 38 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`frozenset` /
 `bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1 で足した）:
 
-`format` `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
+`vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
 `bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
 `NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `EOFError` `ImportError`

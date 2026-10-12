@@ -284,6 +284,10 @@
 
 ## (3) 書式指定（f-string の `{x:.2f}` 相当）
 
+> ✅ **実装済（2026-10-12・python_builtins_plan.md のタスク 3-4）**: 案 1（組み込みの `format(value, spec)`）を採り、
+> 書式指定の小言語を**全部**（CPython 3.12 と同じ規則・同じ文言・145 件の照合で一致）実装した。Arrow の f-string も
+> `{x:spec}` / `!r` / `!s` / `!a` / `{x=}` を `format` などへ脱糖し、変換器も同じ形に写す。以下は検討の記録。
+
 - **内容**: **Arrow に「値を書式付きで文字列化する」構文・組込が無い**。
   そのため `import[py]` の f-string 変換（python_converter 項目 19）で
   **`format_spec` 付きだけが明示エラー**になっている:

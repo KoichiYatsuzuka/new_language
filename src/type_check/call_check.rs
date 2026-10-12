@@ -1555,7 +1555,7 @@ impl TypeChecker {
             }
             // 変換・遅延の組み込み（タスク 3-3）。`map` は `f` の戻り値が分からないので付けない。
             "hash" | "ord" => Some(T::Int),
-            "chr" | "hex" | "oct" | "bin" | "ascii" => Some(T::Str),
+            "chr" | "hex" | "oct" | "bin" | "ascii" | "format" => Some(T::Str),
             "filter" | "iter" => {
                 let src = match (name, arg_data) {
                     ("filter", [_, (None, t)]) | ("iter", [(None, t)]) => Some(t),

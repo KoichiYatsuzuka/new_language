@@ -1,0 +1,18 @@
+# py_format.ar — Python のモジュールの f-string の書式指定・str.format・format()（python_builtins_plan.md のタスク 3-4）
+#
+# 変換器は `{x:spec}` を組み込みの `format(x, spec)`、`!r` / `!s` / `!a` を `repr` / `str` / `ascii` に写す
+# （書式指定の中の `{w}` も文字列の連結にする）。`__format__` を持つ Python のクラスもそれが呼ばれる。
+#
+# fm.run() は CPython と同じ出力:
+#   (1.5, -2.25) (1.50, -2.25) <   1.5,   -2.2> Vec(1.5, -2.25)
+#   apples  |1,234.50|123.4%
+#   pears   |98,765.43|9876.5%
+#        right|'na\xefve'|  mid
+#   1.230000e-04 1_000_000 0b11111111
+#   total=3 total = 003 '\xe9'
+#
+# ⚠ 以前は `{x:.2f}` が変換の誤り（f-string format specifier is not supported）、`!a` も誤りだった。
+
+import[py] test_modules.py_format as fm
+
+fm.run()

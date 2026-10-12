@@ -176,3 +176,4 @@ mod equality;
 pub(crate) mod hash;
 pub(crate) mod unicode_printable;
 pub(crate) mod codecs;
+pub(crate) mod format_spec;

@@ -1,0 +1,74 @@
+# format_spec.ar — 書式指定の小言語（format() / f-string の {x:spec} / str.format・python_builtins_plan.md のタスク 3-4）
+#
+# `[[fill]align][sign][z][#][0][width][grouping][.precision][type]` を CPython 3.12 と同じに解釈する。
+# 入口は 3 つ（`format(v, spec)` / `f"{v:spec}"` / `"{:spec}".format(v)`）で、解釈は 1 つ（`ops::format_spec`）。
+#   - f-string は Python と同じ `{式=}`（自己記述）・`!r` / `!s` / `!a`（変換）・`{x:{w}.{p}f}`（書式の中の置換）
+#   - `str.format` は位置・キーワード・属性（`{0.name}`）・添字（`{0[1]}` / `{d[key]}`）・変換・入れ子の書式
+#   - クラスは `fn __format__(self, spec: str) -> str` で自分の書式を決められる
+# 出力は CPython と同じ（format_spec.py と同じ内容）。
+# 対になる誤りの例: format_spec_error.ar（`format` は `str` を返す）
+#
+# ⚠ 以前は f-string の `:spec` / `!r` / `=` を**黙って捨てていた**（`f"{x:.2f}"` が `3.14159`）。
+#   `str.format` の `,` / `#` も捨て、`e` / `g` の綴りが違った（`%e` も `1.234568e4`）。
+
+class Money:
+    mut cents: int
+    fn __init__(mut self, let cents: int) -> None:
+        self.cents = cents
+    fn __format__(self, spec: str) -> str:
+        let units = format(self.cents / 100, ",.2f")
+        if spec == "":
+            return "$" + units
+        return format("$" + units, spec)
+    fn __repr__(self) -> str:
+        return "Money(" + str(self.cents) + ")"
+
+class Point:
+    mut x: int
+    mut y: int
+    fn __init__(mut self, let x: int, let y: int) -> None:
+        self.x = x
+        self.y = y
+
+# format()
+print(format(1234567, ","), format(255, "#010x"), format(-42, "+08d"), format(65, "c"))
+print(format(3.14159, ".2f"), format(12345.678, "e"), format(0.000012345, "g"), format(0.25, ".1%"))
+print(format("abc", "*^9"), format("abcdef", ".3"), format(True, ""), format(True, ">3"))
+print(format(1234567.891, "_.1f"), format(-0.0001, "z.2f"), format(1e16, ""), format(1.0, ".3"))
+
+# f-string
+let pi = 3.14159
+let name = "Arrow"
+let n = 1234567
+let w = 10
+print(f"{pi:.3f}|{name!r}|{name:>8}|{n:,}|{pi=}|{n = :_}|")
+print(f"{pi:{w}.{2}f}|{name!r:^{w}}|{'é'!a}|{[1, 2]!r}|")
+
+# str.format
+let p = Point(3, 4)
+let d = {"k": 7}
+print("{} + {} = {}".format(1, 2, 3))
+print("{1}-{0}-{1}".format("a", "b"))
+print("{name}: {0:>6.2f}".format(2.5, name="x"))
+print("({0.x}, {0.y}) {1[k]} {2[1]}".format(p, d, [10, 20]))
+print("{0!r} {0!s} {1:{2}}|".format("q", 5, 4))
+
+# __format__
+let m = Money(123456)
+print(f"{m}|{m:>14}|", "{:<14}|".format(m), format(m))
+
+# % の e / g は CPython と同じ綴り
+print("%e %.2E %g %g" % (12345.678, 0.000123, 0.0001, 123456789.0))
+
+# 誤りの文言も CPython と同じ
+fn show(let v: Any, let spec: str) -> None:
+    try:
+        print(format(v, spec))
+    except Exception as e:
+        print(type(e).__name__ + ": " + str(e))
+
+show(1, ".2")
+show("a", "+")
+show(1.5, "d")
+show(None, ">5")
+show(1, ",x")
