@@ -271,6 +271,16 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート: `scan_examples`（基準と同じ: `bench_ab_native.ar` のタイムアウトのみ）・`force_gate`（`VmForceError` 0）・
   `compare_python_impl`・`compare_import_paths -A`・`compare_outputs -A`（基準 `7ffafa7`）
 
+### 1-4 実装
+
+- `native_api/callbacks.rs`: ネイティブ側から受け取る `(ptr, len)` を `native_str` で検証してから `str` にする。
+  不正な UTF-8・負の長さ・長さのある NULL は呼び出しのエラー（`NativeError: … is not valid UTF-8`）にする
+  （以前は検証せずに `str` にしていて未定義動作）
+- `ar_make_str` に加え、名前を受け取るコールバック 7 か所（属性名・グローバル名・型名・メソッド名・フィールド名）も
+  同じ検査を通す（生成コードの固定の名前なので実害は出にくいが、同じ未定義動作の形だった）
+- 単体テスト: `native_api::callbacks::tests`（正しい UTF-8・日本語・長さ 0 の NULL は受け取る、CP932・負の長さ・
+  NULL はエラー、名前のコールバックもエラー）。今の Arrow の例題からは不正なバイト列を渡す手段が無いため、例題は無い
+
 ---
 
 ## 付録 A. 検査の記録（2026-10-12・`2aa53ed`）

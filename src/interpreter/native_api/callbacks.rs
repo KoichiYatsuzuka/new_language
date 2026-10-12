@@ -22,11 +22,36 @@ extern "C" fn ar_make_bool(b: i32) -> i64 {
     if b != 0 { TL_TRUE } else { TL_FALSE }
 }
 
-extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
-    let text = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize))
+/// ネイティブ側から渡された `(ptr, len)` を `&str` にする。
+///
+/// 不正な UTF-8・負の長さ・長さのある NULL は、黙って受け取らずに呼び出しのエラー（`error`）にして
+/// `None` を返す（ffi_value_exchange_plan.md 1-4・規約「掬いきれなかった選択肢はエラーにする」）。
+/// ⚠ 以前は UTF-8 を検証せずに `str` にしていて、C の `char*`（CP932 などもありうる）が来ると未定義動作だった。
+fn native_str<'a>(ptr: *const u8, len: i32, what: &str) -> Option<&'a str> {
+    let bytes: &'a [u8] = if len == 0 {
+        &[]
+    } else if len < 0 || ptr.is_null() {
+        set_native_error(format!("NativeError: invalid {what} from native code (pointer {ptr:?}, length {len})"));
+        return None;
+    } else {
+        // SAFETY: ネイティブ側が `len` バイトの有効な領域を渡す契約（C ABI の呼び出し規約）。
+        unsafe { std::slice::from_raw_parts(ptr, len as usize) }
+    };
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            set_native_error(format!("NativeError: {what} from native code is not valid UTF-8 ({e})"));
+            None
+        }
     }
-    .to_owned();
+}
+
+fn set_native_error(msg: String) {
+    STATE.with(|s| s.borrow_mut().error = Some(msg));
+}
+
+extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
+    let Some(text) = native_str(ptr, len, "string") else { return TL_NONE };
     STATE.with(|s| s.borrow_mut().push_value(Value::str(text)))
 }
 
@@ -397,10 +422,8 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
 }
 
 extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return TL_NONE };
+    let name = name.to_owned();
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
@@ -421,10 +444,8 @@ extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
 }
 
 extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let name = name.to_owned();
     let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
@@ -461,10 +482,8 @@ extern "C" fn ar_subscript(obj_h: i64, key_h: i64) -> i64 {
 }
 
 extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
+    let Some(name) = native_str(name_ptr, name_len, "global name") else { return TL_NONE };
+    let name = name.to_owned();
     let (has_err, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.interp_ptr)
@@ -549,9 +568,7 @@ extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
 }
 
 extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    };
+    let Some(name) = native_str(name_ptr, name_len, "type name") else { return TL_NONE };
     let (obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.clone_value(obj_h), st.interp_ptr)
@@ -795,10 +812,8 @@ extern "C" fn ar_call_method(
     args_ptr: *const i64,
     n_args: i32,
 ) -> i64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
+    let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
+    let name = name.to_owned();
 
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
@@ -848,9 +863,7 @@ extern "C" fn ar_call_method(
 // ── Typed field-read callbacks ─────────────────────────────────────────────
 
 extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    };
+    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
@@ -870,9 +883,7 @@ extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32)
 }
 
 extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    };
+    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0 };
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
@@ -953,3 +964,43 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     flat_len: ar_flat_len,
     fn_trampoline: ar_fn_trampoline,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 正しい UTF-8 は `str` になる（日本語を含む）。
+    #[test]
+    fn make_str_accepts_valid_utf8() {
+        let text = "日本語 abc";
+        let h = ar_make_str(text.as_ptr(), text.len() as i32);
+        assert!(take_error().is_none());
+        assert!(matches!(clone_value_at(h), Value::Str(s) if &*s == text));
+        // 長さ 0 は NULL でも空文字列（`from_raw_parts` に NULL を渡さない）
+        let h = ar_make_str(std::ptr::null(), 0);
+        assert!(take_error().is_none());
+        assert!(matches!(clone_value_at(h), Value::Str(s) if s.is_empty()));
+    }
+
+    /// 不正な UTF-8・負の長さ・長さのある NULL は、黙って受け取らずにエラーになる（1-4）。
+    #[test]
+    fn make_str_rejects_invalid_input() {
+        let cp932 = [0x93u8, 0xfa, 0x96, 0x7b]; // 「日本」の CP932
+        assert_eq!(ar_make_str(cp932.as_ptr(), cp932.len() as i32), TL_NONE);
+        assert!(take_error().is_some_and(|e| e.contains("not valid UTF-8")));
+
+        assert_eq!(ar_make_str(b"abc".as_ptr(), -1), TL_NONE);
+        assert!(take_error().is_some_and(|e| e.contains("invalid string")));
+
+        assert_eq!(ar_make_str(std::ptr::null(), 3), TL_NONE);
+        assert!(take_error().is_some_and(|e| e.contains("invalid string")));
+    }
+
+    /// 名前を受け取るコールバックも同じ検査を通る（不正なら呼び出しのエラー）。
+    #[test]
+    fn name_callbacks_reject_invalid_utf8() {
+        let bad = [0xffu8, 0xfe];
+        assert_eq!(ar_get_global(bad.as_ptr(), bad.len() as i32), TL_NONE);
+        assert!(take_error().is_some_and(|e| e.contains("global name") && e.contains("not valid UTF-8")));
+    }
+}
