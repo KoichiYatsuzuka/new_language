@@ -910,7 +910,21 @@ impl Interpreter {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("lib");
-                let dll_path = header_dir.join(format!("{stem}.dll"));
+                let dll_rel = header_dir.join(format!("{stem}.dll"));
+                // 中継 DLL は %TEMP% に置かれ、生成ローダーは相対パスを中継 DLL 自身の場所から引く
+                // （ffi_value_exchange_plan.md 1-5）。⇒ **絶対パスにして渡す**。1-5 では相対パスのまま渡していて、
+                // ヘッダを相対パスで import した cpp-dll が読み込めなくなっていた（1-3 の例題で発見）。
+                let dll_path = std::path::absolute(&dll_rel).map_err(|e| {
+                    format!("CppImport: cannot resolve '{}': {e}", dll_rel.display())
+                })?;
+                // 読み込めない DLL を渡すと、中継 DLL の初期化（`ar_init_cpp`）が panic してプロセスごと落ちる。
+                // 先に読み込めるかを確かめて、普通のエラーにする。
+                if let Err(e) = unsafe { libloading::Library::new(&dll_path) } {
+                    return Err(format!(
+                        "CppImport: cannot load '{}' (the DLL next to the header): {e}",
+                        dll_path.display()
+                    ));
+                }
                 let dll_str = dll_path.to_string_lossy().into_owned();
                 let rust_src = crate::interpreter::cpp_bridge::gen_dll_wrapper(&dll_str, &sigs, &struct_defs);
                 let dll_bytes = crate::interpreter::cpp_bridge::compile_wrapper(&rust_src, &[])?;
