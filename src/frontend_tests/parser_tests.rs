@@ -1788,9 +1788,19 @@ fn python_property_is_built_after_the_class() {
     let err = conv("class C:\n    @property\n    def x(self):\n        return 1\n    @x.setter\n    def set_x(self, v):\n        pass\n")
         .expect_err("setter with another name");
     assert!(err.contains("the method must have the property's name 'x'"), "{err}");
-    let err = conv("def logged(f):\n    return f\nclass C:\n    @logged\n    @property\n    def x(self):\n        return 1\n")
-        .expect_err("property inside another decorator");
-    assert!(err.contains("only as the outermost decorator"), "{err}");
+    // property を包むデコレータ（タスク 6-6）: 組み立てた後に `C.x = logged(C.x)` を足す。
+    let wrapped = conv("def logged(f):\n    return f\nclass C:\n    @logged\n    @property\n    def x(self):\n        return 1\n")
+        .expect("property inside another decorator");
+    let last = wrapped.last().expect("statements");
+    assert!(
+        matches!(last, Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "logged")),
+        "{last:?}"
+    );
+    let err = conv("class C:\n    @property\n    @property\n    def x(self):\n        return 1\n").expect_err("two property decorators");
+    assert!(err.contains("more than one property decorator"), "{err}");
+    let err = conv("class C:\n    @staticmethod\n    @property\n    def x(self):\n        return 1\n").expect_err("static around property");
+    assert!(err.contains("outside a property decorator is not supported"), "{err}");
     let err = conv("class C:\n    @property\n    @staticmethod\n    def x():\n        return 1\n").expect_err("static property");
     assert!(err.contains("cannot be a static or class method"), "{err}");
     let err = conv("class C:\n    @cached_property\n    def x(self):\n        return 1\n").expect_err("cached_property");

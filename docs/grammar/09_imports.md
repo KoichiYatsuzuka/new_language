@@ -373,8 +373,9 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
       def celsius(self, v):
           self._c = v               # setter だけが代入するフィールドもフィールドになる
   ```
-- ⚠ `@property` は**いちばん外側**のときだけ（`@logged @property` は変換の誤り）。`@x.setter` は同じ名前のメソッドに
-  付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
+- property を包むデコレータ（`@logged @property def x`）は CPython と同じく `logged(property(..))` になります
+  （クラスの定義の後に `C.x = logged(C.x)`・タスク 6-6）。property より内側のデコレータはメソッドに当たります。
+- ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
 - ⚠ `x = property(getx, setx)`（クラス本体に直接書く形）はまだ動きません（クラス属性の初期化式からクラス本体の名前が
   見えない）。`del obj.x` も変換の誤りです。
 - `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。

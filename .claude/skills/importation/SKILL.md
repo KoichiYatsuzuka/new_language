@@ -236,15 +236,17 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   a module with `from m import *` is not checked. Structural conversion errors are reported first.
 - `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
   (same body); a nested tuple is a conversion error (4-3 / 4-4).
-- ⚠ Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method whose
-  **outermost** decorator is `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` is
+- ⚠ Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method with a
+  decorator `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` is
   renamed (`__property_get_x` / `__property_set_x` / `__property_del_x`), `x` becomes a placeholder
   `static mut x: Any = None`, and statements **after the class** build the built-in `property`
   (`C.x = property(C.__property_get_x)`, `C.x.__set_name__(C, "x")`, `C.x = C.x.setter(..)`). Reads and
   writes then go through the descriptor protocol (1-12). `self.x = v` does not make `x` a field; fields
   are also collected from `self.attr = ..` in methods other than `__init__` (not for class-attribute or
-  method names). Conversion errors: an inner `@property` (`@logged @property`), `@x.setter` on a method
-  with another name or before `@property def x`, a static/class-method property, `@cached_property`.
+  method names). Decorators inside the property decorator apply to the method; decorators outside it
+  wrap the built property (`C.x = logged(C.x)`, 6-6). Conversion errors: two property decorators,
+  `@staticmethod` / `@classmethod` / `@abstractmethod` outside one, `@x.setter` on a method with another
+  name or before `@property def x`, a static/class-method property, `@cached_property`.
 - Cache key: `("py", key)`
 
 ### Python Interface (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)

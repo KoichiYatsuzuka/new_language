@@ -9,11 +9,11 @@
 #
 # 期待されるエラー（ParseError・変換時）:
 #
-#   ① 内側に書いた @property（本ファイルが踏む形・`@logged @property def value`）
-#      '@property' is supported only as the outermost decorator of a method (method 'C.value')
-#      ⇒ 代替: `@property` をいちばん外側にする（`@property @logged def value`）。`@x.setter` / `@x.deleter` も同じ。
-#      ⚠ いちばん外側の `@property` / `@x.setter` は変換できる（タスク 6-1・`py_property.ar`）。
-#        `@cached_property` は誤りのまま。
+#   ① property と違う名前の setter（本ファイルが踏む形・`@value.setter def set_value`）
+#      '@value.setter' on method 'C.set_value' is not supported: the method must have the property's name 'value'
+#      ⇒ 代替: setter も同じ名前にする（`@value.setter def value(self, v)`）。
+#      ⚠ `@property` / `@x.setter` は変換できる（タスク 6-1）。property を包むデコレータ（`@logged @property`）も
+#        通る（タスク 6-6・`py_property.ar`）。
 #
 #   ② モジュール直下の @staticmethod
 #      '@staticmethod' is only meaningful on a method (function 'f')

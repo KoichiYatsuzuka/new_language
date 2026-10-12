@@ -65,19 +65,14 @@ pub(crate) fn convert_decorators(
             // `@abstractmethod` は本体を持ったままでも Python では単なるマーカ。
             // 本体はそのまま変換し、Arrow 側の抽象フラグだけを立てる。
             "abstractmethod" => info.is_abstract = true,
-            // `@property` / `@x.setter` は**メソッドのいちばん外側**のときだけ `classes.rs` が受ける
-            // （このリストに来る前に取り除く・python_builtins_plan.md のタスク 6-1）。ここへ来たのは
-            // 内側に書いた形（`@logged @property`＝ property を包む）か、メソッドでない関数に付けた形。
+            // `@property` / `@x.setter` は**メソッドに付けたもの**を `classes.rs` が受ける（このリストに来る前に
+            // 取り除く・python_builtins_plan.md のタスク 6-1 / 6-6）。ここへ来たのはメソッドでない関数に付けた形。
             // `@x.setter` 等は属性形のときだけ拾う（同名のユーザデコレータを誤検出しないため）。
             "property" => {
-                return Err(format!(
-                    "{filename}: '@{name}' is supported only as the outermost decorator of a method ({target})"
-                ));
+                return Err(format!("{filename}: '@{name}' is supported only on a method ({target})"));
             }
             "setter" | "getter" | "deleter" if name.contains('.') => {
-                return Err(format!(
-                    "{filename}: '@{name}' is supported only as the outermost decorator of a method ({target})"
-                ));
+                return Err(format!("{filename}: '@{name}' is supported only on a method ({target})"));
             }
             "cached_property" => {
                 return Err(format!(

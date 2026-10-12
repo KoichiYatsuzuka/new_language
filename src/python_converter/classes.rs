@@ -69,13 +69,15 @@ fn convert_class_in(
         ))
     };
 
-    // property の名前（いちばん外側が `@property` / `@x.setter` などのメソッド・タスク 6-1）。
+    // property の名前（`@property` / `@x.setter` などをどこかに持つメソッド・タスク 6-1 / 6-6）。
     // ⚠ `self.x = v` は setter を呼ぶ代入なので、インスタンスのフィールドにしない。
     let prop_names: std::collections::HashSet<String> = c
         .body
         .iter()
         .filter_map(|s| match s {
-            py::Stmt::FunctionDef(f) if is_property_decorator(f.decorator_list.first()) => Some(f.name.to_string()),
+            py::Stmt::FunctionDef(f) if f.decorator_list.iter().any(|d| is_property_decorator(Some(d))) => {
+                Some(f.name.to_string())
+            }
             _ => None,
         })
         .collect();
@@ -201,9 +203,32 @@ fn convert_class_in(
                 }
             }
             py::Stmt::FunctionDef(f) => {
-                // いちばん外側の `@property` / `@x.setter` は取り除いて別に扱う（タスク 6-1）。
-                let prop = property_decorator(f, &class_name, filename)?;
-                let rest = if prop.is_some() { &f.decorator_list[1..] } else { &f.decorator_list[..] };
+                // `@property` / `@x.setter` は取り除いて別に扱う（タスク 6-1）。それより内側のデコレータは
+                // メソッドに、外側のデコレータは組み立てた property に当てる（タスク 6-6）。
+                let found = property_decorator(f, &class_name, filename)?;
+                let (prop, rest, outer) = match found {
+                    None => (None, &f.decorator_list[..], Vec::new()),
+                    Some((p, pos)) => {
+                        let mut outer = Vec::with_capacity(pos);
+                        for d in &f.decorator_list[..pos] {
+                            let name = expr_to_name(match d {
+                                py::Expr::Call(c) => &c.func,
+                                other => other,
+                            });
+                            let last = name.rsplit('.').next().unwrap_or("");
+                            if matches!(last, "staticmethod" | "classmethod" | "abstractmethod" | "cached_property") {
+                                return Err(format!(
+                                    "{filename}: '@{name}' outside a property decorator is not supported \
+                                     (method '{}.{}')",
+                                    class_name,
+                                    f.name.as_str()
+                                ));
+                            }
+                            outer.push(convert_expr(d, filename)?);
+                        }
+                        (Some(p), &f.decorator_list[pos + 1..], outer)
+                    }
+                };
                 let dec = convert_decorators(
                     rest,
                     filename,
@@ -239,7 +264,15 @@ fn convert_class_in(
                             access: crate::ast::Accessibility::Public,
                         });
                     }
-                    after_class.extend(property_stmts(&class_name, &pname, &method_name, p, &mut defined_props, filename)?);
+                    after_class.extend(property_stmts(
+                        &class_name,
+                        &pname,
+                        &method_name,
+                        p,
+                        outer,
+                        &mut defined_props,
+                        filename,
+                    )?);
                 }
                 let (params, renames) = convert_params(&f.args, filename)?;
                 let return_type = f.returns.as_deref().map(convert_annotation);
@@ -433,19 +466,28 @@ fn is_property_decorator(dec: Option<&py::Expr>) -> bool {
     }
 }
 
-/// `f` のいちばん外側のデコレータが property のものなら、その形。
-/// ⚠ 内側に書いた property（`@logged @property`）は `convert_decorators` が誤りにする（表せない）。
+/// `f` のデコレータの並びに property のものがあれば、その形と並びの中の位置。
+///
+/// 位置より**外側**（前）のデコレータは組み立てた property を包み（`@logged @property` は CPython の
+/// `logged(property(f))`・タスク 6-6）、**内側**（後ろ）のデコレータはメソッドそのものに当たる
+/// （`@property @abstractmethod`）。⚠ property のデコレータが 2 つあるのは誤り。
 fn property_decorator(
     f: &py::StmtFunctionDef,
     class_name: &str,
     filename: &str,
-) -> Result<Option<PropDecor>, String> {
-    let first = f.decorator_list.first();
-    if !is_property_decorator(first) {
+) -> Result<Option<(PropDecor, usize)>, String> {
+    let mut found = f.decorator_list.iter().enumerate().filter(|(_, d)| is_property_decorator(Some(d)));
+    let Some((pos, dec)) = found.next() else {
         return Ok(None);
+    };
+    if found.next().is_some() {
+        return Err(format!(
+            "{filename}: method '{class_name}.{}' has more than one property decorator",
+            f.name.as_str()
+        ));
     }
-    let Some(py::Expr::Attribute(a)) = first else {
-        return Ok(Some(PropDecor::New));
+    let py::Expr::Attribute(a) = dec else {
+        return Ok(Some((PropDecor::New, pos)));
     };
     let kind = match a.attr.as_str() {
         "getter" => PropKind::Get,
@@ -466,15 +508,20 @@ fn property_decorator(
             f.name.as_str()
         ));
     }
-    Ok(Some(PropDecor::Accessor { owner, kind }))
+    Ok(Some((PropDecor::Accessor { owner, kind }, pos)))
 }
 
 /// property を組み立てる文（クラスの定義の後に置く）。`method` は別名にしたメソッドの名前。
+/// `outer` は property より外側のデコレータ（変換済みの式・外から順）。組み立てて名前を付けた後で
+/// `C.x = outer[0](outer[1](C.x))` と包む（タスク 6-6）。
+/// ⚠ 名前（`__set_name__`）は包む前の property に付ける。CPython は包んだ後の値に付けるので、包みが
+///   property と別の物を返すときだけ違う（その property の誤りの文言に名前が入るかどうか）。
 fn property_stmts(
     class_name: &str,
     prop: &str,
     method: &str,
     decor: PropDecor,
+    outer: Vec<crate::ast::Expr>,
     defined: &mut std::collections::HashSet<String>,
     filename: &str,
 ) -> Result<Vec<Stmt>, String> {
@@ -527,6 +574,17 @@ fn property_stmts(
             attr(attr(ident(class_name), prop), "__set_name__"),
             vec![ident(class_name), Expr::Str(std::rc::Rc::from(prop))],
         )));
+    }
+    if !outer.is_empty() {
+        let wrapped = outer
+            .into_iter()
+            .rev()
+            .fold(attr(ident(class_name), prop), |inner, deco| call(deco, vec![inner]));
+        out.push(Stmt::AttrAssign {
+            target: attr(ident(class_name), prop),
+            value: wrapped,
+            span: crate::token::Span::unknown(),
+        });
     }
     Ok(out)
 }

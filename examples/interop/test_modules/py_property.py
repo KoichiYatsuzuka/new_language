@@ -42,6 +42,22 @@ class Frame:
         return self._constructor(self.data[:n])
 
 
+WRAPPED = []
+
+
+def logged(p):
+    """property を包むデコレータ（`@logged @property`・タスク 6-6）。受け取ったものを記録してそのまま返す。"""
+    WRAPPED.append(type(p).__name__)
+    return p
+
+
+class Logged:
+    @logged
+    @property
+    def v(self):
+        return 7
+
+
 class Base:
     @property
     def name(self):
@@ -77,3 +93,4 @@ def run():
     print(h.data, h.shape)
     print(Child().name)
     print(Base().name)
+    print(Logged().v, WRAPPED)
