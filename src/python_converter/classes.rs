@@ -289,15 +289,31 @@ fn convert_class_in(
                 };
                 if let Some(p) = prop {
                     let pname = f.name.to_string();
+                    // 置き場の型は getter の戻り値の注釈（Arrow から `t.x` を読んだ値の型・タスク 6-8）。無ければ `Any`。
+                    // ⚠ 実行時の置き場には property が入るが、型検査は読んだ値（`__get__` の戻り値）の型として使う
+                    //   （`static mut` の初期値・代入は実行時に型を検査しない。モジュールの本体の型の誤りは捨てる）。
+                    let ann = match (p.kind(), f.returns.as_deref()) {
+                        (PropKind::Get, Some(r)) => Some(convert_annotation(r)),
+                        _ => None,
+                    };
                     // クラスの属性の置き場（クラスの定義の後で property を入れる）。
                     if seen_fields.insert(pname.clone()) {
                         fields.push(Stmt::Field { src: None,
                             name: pname.clone(),
                             kind: FieldKind::StaticMut,
-                            type_ann: "Any".to_string(),
+                            type_ann: ann.unwrap_or_else(|| "Any".to_string()),
                             default: Some(crate::ast::Expr::None),
                             access: crate::ast::Accessibility::Public,
                         });
+                    } else if let Some(ann) = ann {
+                        // 後から注釈つきの getter を置いた形（`@x.getter`）は、その注釈にする。
+                        for st in &mut fields {
+                            if let Stmt::Field { name, kind: FieldKind::StaticMut, type_ann, .. } = st {
+                                if *name == pname {
+                                    *type_ann = ann.clone();
+                                }
+                            }
+                        }
                     }
                     // メソッドの docstring（本体の最初の文字列の式・タスク 6-7）。
                     let doc = match f.body.first() {

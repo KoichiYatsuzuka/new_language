@@ -1812,6 +1812,26 @@ fn python_property_is_built_after_the_class() {
     assert!(err.contains("cannot be a static or class method"), "{err}");
     let err = conv("class C:\n    @cached_property\n    def x(self):\n        return 1\n").expect_err("cached_property");
     assert!(err.contains("'@cached_property' is not supported"), "{err}");
+    // 置き場の型は getter の戻り値の注釈（タスク 6-8）。注釈が無ければ `Any`、後から `@x.getter` で置いた注釈も効く。
+    let placeholder = |src: &str| -> String {
+        let stmts = conv(src).expect("typed property");
+        let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("expected class: {stmts:?}") };
+        body.iter()
+            .find_map(|s| match s {
+                Stmt::Field { name, kind: FieldKind::StaticMut, type_ann, .. } if name == "x" => Some(type_ann.clone()),
+                _ => None,
+            })
+            .expect("placeholder")
+    };
+    assert_eq!(placeholder("class C:\n    @property\n    def x(self) -> float:\n        return 1.0\n"), "float");
+    assert_eq!(placeholder("class C:\n    @property\n    def x(self):\n        return 1\n"), "Any");
+    assert_eq!(
+        placeholder(concat!(
+            "class C:\n    @property\n    def x(self):\n        return 1\n",
+            "    @x.getter\n    def x(self) -> list[int]:\n        return [1]\n",
+        )),
+        "list[int]"
+    );
 }
 
 /// Python の `b".."` は組み込みの `bytes([..])` の呼び出しへ写す（python_builtins_plan.md のタスク 3-1）。

@@ -698,8 +698,9 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 ```
 
 - `fget` などには束縛しない関数（`C.get_x`。呼ぶと `self` に `obj` が入る）も普通の関数も渡せます。
-- ⚠ 型は `Any` です（`property[T]` のような精密な型は付けていません）。Arrow のソースで使うと、読んだ値の演算が
-  `OperationOnAny` になります。Arrow のクラスで同じことをしたいときは、型を付けたディスクリプタのクラス（上の節）を書いてください。
+- ⚠ `property(..)` の値そのものの型は `Any` です（`property[T]` のような型は付けていません）。Arrow のクラスで型を付けたいときは、
+  型を付けたディスクリプタのクラス（上の節）を書いてください。Python のクラスの `@property` は、getter の戻り値の注釈
+  （`def x(self) -> float`）が Arrow から読んだ値の型になります（[09_imports.md](09_imports.md)・タスク 6-8）。
 - ⚠ Arrow で書いたクラスで（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）、名前 `property` を初めて引いたときに組み立てます。
   CPython 3.12 の property は `__name__` を持たないので、名前は外から読めない欄に置いています。
 

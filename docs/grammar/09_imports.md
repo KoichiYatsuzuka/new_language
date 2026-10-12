@@ -383,6 +383,11 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
   （クラスの定義の後に `C.x = logged(C.x)`・タスク 6-6）。property より内側のデコレータはメソッドに当たります。
 - getter の docstring は property の `__doc__` になります（`@x.getter` で差し替えると付け直す。setter / deleter の
   docstring は使わない・CPython と同じ・タスク 6-7）。
+- getter の戻り値の注釈（`def celsius(self) -> float`）が、Arrow から読んだ値（`t.celsius`）の型になります
+  （置き場を `static mut celsius: float` にする・タスク 6-8）。注釈が無ければ `Any`（演算の前に `mustbe` などで確かめる）。
+  ⚠ Python の注釈は実行時に検査しないので、getter が注釈と違う型を返すと実行時の値と食い違います（CPython と同じく
+  注釈は約束でしかない）。⚠ クラスから読む `C.x`（property そのもの）も型検査はこの型として扱います。
+  ⚠ `x = property(getx)`（クラス属性に書く形）は `Any` のまま。
 - ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
 - ⚠ `del obj.x` は変換の誤りです。
 - `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
