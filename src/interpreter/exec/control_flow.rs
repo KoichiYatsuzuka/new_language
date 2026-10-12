@@ -44,6 +44,8 @@ impl Interpreter {
                 GeneratorState::materialized(crate::meta_expand::code_lines_as_values(lines)),
             ))),
             Value::Generator(_) => iter_val,
+            // ファイルは行（`readline()` を取り出すたびに呼ぶ遅延のイテレータ・python_builtins_plan.md のタスク 5-4）。
+            Value::FileObject(_) => self.py_file_lines(iter_val)?,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
             Value::PyObject(ref handle) => {
                 let items = crate::interpreter::py_interop::py_collect_iter(handle)?;

@@ -28,6 +28,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）
     "format",
+    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
+    "__py_with_exit",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -172,6 +174,16 @@ impl Interpreter {
             "ascii" => Some(self.py_ascii(args)),
             // 書式指定の小言語（タスク 3-4）。`str.format` / f-string の `{x:spec}` と同じ本体（`format_value`）。
             "format" => Some(self.py_format(args)),
+            // Python の `with` の終わり（変換器が `finally` に置く・タスク 5-4）。ファイルなら閉じる（CPython の `__exit__`）、
+            // ほかの値は何もしない（従来どおりブロックの破棄に任せる）。
+            "__py_with_exit" => Some(match args.as_slice() {
+                [Value::FileObject(fd)] => {
+                    fd.borrow_mut().close();
+                    Ok(Value::None)
+                }
+                [_] => Ok(Value::None),
+                _ => Err(format!("TypeError: __py_with_exit() takes exactly one argument ({} given)", args.len())),
+            }),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),
@@ -1061,6 +1073,8 @@ impl Interpreter {
             is_closed: false,
             file_handle: Some(file),
             detached: false,
+            // Python の形で開いたファイルは read / write を CPython の意味にする（タスク 5-4）。
+            py_mode: py_form.map(|f| f.mode),
         };
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }

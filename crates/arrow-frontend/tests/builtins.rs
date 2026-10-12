@@ -89,14 +89,17 @@ fn builtin_types_reach_the_member_table() {
     }
 }
 
-/// 組み込みの型のメソッドの結果の型も束縛の型として届く（`write` → `None`）。
+/// 組み込みの型のメソッドの結果の型も束縛の型として届く（`write_line` → `None`・`tell` → `int`）。
+/// ⚠ `write` の結果は形で決まる（Arrow の形は `None`・Python の形は書いた数・python_builtins_plan.md のタスク 5-4）ので型が無い。
 #[test]
 fn builtin_method_results_have_declared_types() {
     let v = analyze(concat!(
         "let f = open(\"a.txt\", FileOpenMode.rewrite)\n",
-        "let n = f.write(\"x\")\n",
+        "let n = f.write_line(\"x\")\n",
+        "let t = f.tell()\n",
         "let m: FileOpenMode = FileOpenMode.read\n",
         "close(f)\n",
     ));
     assert_eq!(inferred_of(&v, "n").as_deref(), Some("None"));
+    assert_eq!(inferred_of(&v, "t").as_deref(), Some("int"));
 }

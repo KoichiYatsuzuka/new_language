@@ -503,6 +503,17 @@ impl Interpreter {
                     }
                 }
             }
+            // ファイルの属性（python_builtins_plan.md のタスク 5-4）。`mode` は Python の形で開いたときのモードの文字列
+            // （Arrow の形には無い）。メソッドを値として読む形（`f.readline`）は下の腕が束縛メソッドにする。
+            Value::FileObject(fd) if matches!(attr, "closed" | "name" | "mode") => {
+                let fd = fd.borrow();
+                match (attr, &fd.py_mode) {
+                    ("closed", _) => Ok(Value::Bool(fd.is_closed)),
+                    ("name", _) => Ok(Value::str(fd.path.as_str())),
+                    (_, Some(m)) => Ok(Value::str(m.as_str())),
+                    (_, None) => Err(format!("AttributeError: 'FileObject' object has no attribute '{attr}'")),
+                }
+            }
             // 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
             Value::Function(_)
             | Value::OverloadedFn(_)

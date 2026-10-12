@@ -322,6 +322,11 @@ mod a_axis_invariants {
             }
             for alt in head.split('|') {
                 let n = alt.trim().trim_matches('"');
+                // ⚠ `__` で始まる名前は変換器が置く内部の組み込み（`__py_with_exit` など・python_builtins_plan.md）。
+                //   利用者が書く名前ではないので宣言しない（補完に出さない・⑤ の `__` のメソッドと同じ扱い）。
+                if n.starts_with("__") {
+                    continue;
+                }
                 if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     assert!(declared.iter().any(|d| d == n), "組み込み関数 '{n}' が builtins.ars に無い");
                 }
@@ -376,6 +381,7 @@ mod a_axis_invariants {
             is_closed: true,
             file_handle: None,
             detached: false,
+            py_mode: None,
         }));
         for m in &methods {
             let res = interp.exec_file_method(fd.clone(), m, &[]);

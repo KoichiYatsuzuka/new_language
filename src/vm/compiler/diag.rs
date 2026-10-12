@@ -100,6 +100,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）。f-string の `{x:spec}` はこの呼び出しに脱糖される。
     "format",
+    // 変換器が Python の `with` の終わりに置く（タスク 5-4）。
+    "__py_with_exit",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

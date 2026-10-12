@@ -62,6 +62,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4・f-string の `{x:spec}` の脱糖先）
     "format",
+    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
+    "__py_with_exit",
     // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
     "property", "cached_property",
 ];
@@ -206,6 +208,14 @@ pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
     ),
     ("fixed_list", &["__contains__", "__iter__", "allocated_size", "append"]),
     ("generator", &["__iter__", "close", "next"]),
+    // `classes/object_methods.rs` の `exec_file_method`（Arrow の名前と、Python の名前・タスク 5-4）。
+    (
+        "FileObject",
+        &[
+            "close", "flush", "read", "read_letter", "read_line", "readline", "readlines", "tell", "write",
+            "write_line", "writelines",
+        ],
+    ),
 ];
 
 /// `kind`（実行時の型の名前）の値が `name` というメソッドを持つか（[`BUILTIN_VALUE_METHODS`]）。

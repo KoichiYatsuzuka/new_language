@@ -1,0 +1,20 @@
+# py_file_methods.ar — Python のファイルのメソッド（python_builtins_plan.md のタスク 5-4）
+#
+# Python の形の open（`open(path, "w")` / `open(path)`）で開いたファイルは CPython と同じに読み書きできる:
+#   - `readline(size)` / `readlines()` / `writelines(xs)` / `close()` / `flush()` / `tell()` / `for line in f`
+#     / `iter(f.readline, "")` / 属性 `closed` / `name` / `mode`
+#   - `read()` は終わりで `""`（`read(n)` は n 文字）、`write(s)` は書いた文字の数を返す、`"rb"` は `bytes`
+#   - 閉じたファイルは `ValueError: I/O operation on closed file.`、`"a"` で読むと `OSError: not readable`
+# ⚠ Arrow の形（`open(path, FileOpenMode.read, ..)`）で開いたファイルの `read()` / `write()` は従来どおり
+#   （終わりの `read()` は `EOFError`）。`readline` などの名前は Arrow のファイルにも足した（basics/file_lines.ar）。
+#
+# pf.run(..) は CPython と同じ出力（CPython は `io.UnsupportedOperation: not readable`。Arrow は OSError として出す。
+# 文言と `except OSError` で捕まえられるのは同じ）。
+#
+# ⚠ 以前は readline / readlines / close() / for line in f が無く、read() は終わりで EOFError だった。
+# ⚠ 同じ関数の中で with open(p, "wb") の後に with open(p, "rb") で読む形（binary）は、以前は書き戻される前に
+#   読んでいた（with が破棄だけに頼っていた）。今は with の終わりで閉じる。
+
+import[py] test_modules.py_file_methods as pf
+
+pf.run("examples/interop/_tmp_py_file_methods.txt")

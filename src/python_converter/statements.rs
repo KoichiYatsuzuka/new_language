@@ -977,6 +977,8 @@ pub(crate) fn convert_stmt(
         // ----- with（`__exit__` を持たない場合のみ block 脱糖・項目 25） -----
         py::Stmt::With(w) => {
             let mut inner: Vec<Stmt> = Vec::new();
+            // 束縛した名前（`as x` / 一時変数）。抜けるときに逆の順で `__py_with_exit` へ渡す。
+            let mut bound: Vec<String> = Vec::new();
             for item in &w.items {
                 // ⚠ 同じモジュールで `__enter__` / `__exit__` を定義しているクラスの
                 //   生成なら脱糖できない（上の doc を参照）。
@@ -1000,12 +1002,15 @@ pub(crate) fn convert_stmt(
                                 "{filename}: the name '{name}' bound by `with ... as` is also assigned elsewhere in this scope; Arrow cannot shadow it inside the block (the resource would not be released) — use a different name"
                             ));
                         }
-                        inner.push(Stmt::Mut(name, None, value, crate::token::Span::unknown()));
+                        inner.push(Stmt::Mut(name.clone(), None, value, crate::token::Span::unknown()));
+                        bound.push(name);
                     }
                     // `with EXPR:` — 名前は要らないが、ブロック退出で破棄させるため
                     // 一時変数へ束縛する（式文にすると即座に捨てられてしまう）。
                     None => {
-                        inner.push(Stmt::Mut(next_temp_name("with"), None, value, crate::token::Span::unknown()));
+                        let name = next_temp_name("with");
+                        inner.push(Stmt::Mut(name.clone(), None, value, crate::token::Span::unknown()));
+                        bound.push(name);
                     }
                     Some(_) => {
                         return Err(format!(
@@ -1014,7 +1019,38 @@ pub(crate) fn convert_stmt(
                     }
                 }
             }
-            inner.extend(convert_stmts(&w.body, filename, declared)?);
+            // 抜けるとき（`return` / 例外も）に `__py_with_exit(x)` を呼ぶ: ファイルなら閉じる（CPython の
+            // `__exit__`・python_builtins_plan.md のタスク 5-4）。ほかの値は何もしない（従来どおりブロックの破棄に任せる）。
+            // ⚠ 以前はブロックの破棄だけに頼っていたが、VM はブロックの変数を関数の終わりまで持つので、同じ関数の中で
+            //   `with open(p, "w")` の後に `with open(p)` で読むと**まだ書き戻されていない**（空・`EOFError`）だった。
+            let body = convert_stmts(&w.body, filename, declared)?;
+            let exits = bound
+                .iter()
+                .rev()
+                .map(|name| {
+                    Stmt::Expr(Expr::Call {
+                        func: Box::new(Expr::Ident {
+                            name: "__py_with_exit".to_string(),
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        }),
+                        args: vec![crate::ast::CallArg::Positional(Expr::Ident {
+                            name: name.clone(),
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        })],
+                        span: crate::token::Span::unknown(),
+                        cache: Default::default(),
+                        node_id: 0,
+                    })
+                })
+                .collect();
+            inner.push(Stmt::Try {
+                body,
+                handlers: Vec::new(),
+                finally_body: Some(exits),
+                span: crate::token::Span::unknown(),
+            });
             Ok(vec![Stmt::Block(inner)])
         }
         py::Stmt::AsyncWith(_) => Err(format!(

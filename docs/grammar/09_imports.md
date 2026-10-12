@@ -363,7 +363,14 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 [12_builtins.md](12_builtins.md) の「`bytes`」）。`frozenset(..)` も使えます。
 
 **ファイル**: `open(path, "w", encoding="utf-8")` など Python の形の `open` を受けます。`with open(p) as f: return f.read()`
-（`with` の中の `return`）も動きます。
+（`with` の中の `return`）も動きます。Python の形で開いたファイルは CPython と同じに読み書きできます（`readline` /
+`readlines` / `writelines` / `for line in f` / 終わりの `read()` は `""` / `write` は書いた数 / `"rb"` は `bytes`・
+[12_builtins.md](12_builtins.md) の「ファイルのメソッド」・タスク 5-4）。
+
+**`with`**: `with EXPR as x:` は本体を `try` / `finally` で包み、抜けるとき（`return` / 例外も）に `__py_with_exit(x)` を
+呼びます。ファイルなら閉じて書き戻します（CPython の `__exit__`）。ほかの値は何もしません（ブロックの破棄に任せる）。
+⚠ 以前はブロックの破棄だけに頼っていたので、同じ関数の中で `with open(p, "w")` の後に `with open(p)` で読むと、
+まだ書き戻されていなかった（VM はブロックの変数を関数の終わりまで持つ・タスク 5-4 で直した）。
 
 **クラスの属性・property**:
 - `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。

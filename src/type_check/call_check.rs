@@ -1585,7 +1585,7 @@ impl TypeChecker {
                 [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
                 _ => None,
             },
-            "setattr" => Some(T::None),
+            "setattr" | "__py_with_exit" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
             "type" => match arg_data {

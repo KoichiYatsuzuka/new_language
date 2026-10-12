@@ -1,0 +1,37 @@
+# file_lines.ar — ファイルの行の読み書き（readline / readlines / for line in f・python_builtins_plan.md のタスク 5-4）
+#
+# どのファイル（Arrow の形でも Python の形でも）にも Python の名前がある:
+#   readline(size) / readlines() / writelines(xs) / close() / flush() / tell() / for line in f / 属性 closed・name
+#   - `readline()` は終わりで ""（誤りにしない）。`read_line()` は従来どおり終わりで EOFError
+#   - `for line in f` は取り出すたびに readline を呼ぶ（途中で抜けて続きを読める）
+# 同じ名前で意味の違う `read()` / `write()` は開き方で決まる:
+#   - Arrow の形（`open(p, FileOpenMode.read)`）: 従来どおり（終わりの `read()` は EOFError・`write` は None を返す）
+#   - Python の形（`open(p)` / `open(p, "w")`）: CPython と同じ（終わりの `read()` は ""・`read(n)`・`write` は書いた数）
+#
+# 対になる誤りの例: file_lines_error.ar（閉じたファイルを読む）
+
+let fname = "examples/basics/_tmp_file_lines.txt"
+
+# Arrow の形で書く: writelines・close()（メソッド）
+let w = open(fname, FileOpenMode.rewrite)
+w.writelines(["one\n", "two\n", "three\n"])
+print(w.tell(), w.closed)                        # 14 False
+w.close()
+print(w.closed)                                  # True
+
+# Arrow の形で読む: readline / for line in f / readlines
+let r = open(fname, FileOpenMode.read)
+print(repr(r.readline()))                        # 'one\n'
+for line in r:
+    print("line:", line.strip())                 # line: two / line: three
+print(repr(r.readline()), r.readlines())         # '' []
+# ⚠ Arrow の形の r.read() はここで EOFError（従来どおり・Python の形なら ""）
+r.close()
+
+# Python の形: read() は終わりで ""、write は書いた数を返す
+let p = open(fname, "a")
+print(p.write("four\n"), p.mode)                 # 5 a
+p.close()
+let q = open(fname)
+print(len(q.readlines()), repr(q.read()))        # 4 ''
+q.close()

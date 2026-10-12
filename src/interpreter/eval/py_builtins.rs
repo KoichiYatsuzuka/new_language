@@ -684,6 +684,23 @@ impl Interpreter {
         }
     }
 
+    /// `for line in f`（ファイルの行・python_builtins_plan.md のタスク 5-4）。取り出すたびに `f.readline()` を呼ぶ
+    /// **遅延**のイテレータ（CPython と同じく位置が 1 行ずつ進むので、途中で抜けて `readline()` を続けられる）。
+    /// 閉じたファイルは回す前に誤り（Python の形は CPython の文言）。
+    pub(crate) fn py_file_lines(&mut self, file: Value) -> Result<Value, String> {
+        if let Value::FileObject(fd) = &file {
+            let fd = fd.borrow();
+            if fd.is_closed {
+                return Err(if fd.py_mode.is_some() {
+                    "ValueError: I/O operation on closed file.".to_string()
+                } else {
+                    "IOError: I/O operation on closed file".to_string()
+                });
+            }
+        }
+        self.py_call_lazy("__py_file_lines", vec![file], "file")
+    }
+
     /// `hash(x)`。辞書・集合の鍵と同じ値（`hash_value`）。⚠ 値そのものは CPython と違う（文字列の乱数化なども無い）。
     pub(crate) fn py_hash(&mut self, args: Vec<Value>) -> Result<Value, String> {
         let [x]: [Value; 1] = args
@@ -990,6 +1007,12 @@ gen __py_iter_call(f, sentinel) -> Any:
     while v != sentinel:
         yield v
         v = f()
+
+gen __py_file_lines(f) -> Any:
+    mut line = f.readline()
+    while len(line) > 0:
+        yield line
+        line = f.readline()
 ";
 
 thread_local! {
@@ -1333,6 +1356,8 @@ pub(crate) struct PyOpenForm {
     pub(crate) binary: bool,
     /// `Encoding` の値（ASCII=0 / UTF_8=1 / UTF_8_with_BOM=2）。
     pub(crate) enc_int: i64,
+    /// 渡されたモードの文字列（`"r"` / `"wb"` …・`f.mode`・ファイルを Python の意味にする印・タスク 5-4）。
+    pub(crate) mode: String,
 }
 
 impl PyOpenForm {
@@ -1458,5 +1483,5 @@ pub(crate) fn py_open_form(
         Some(Value::Str(s)) => return Err(format!("ValueError: illegal newline value: {s}")),
         Some(_) => return Err("TypeError: open() argument 'newline' must be str or None".to_string()),
     }
-    Ok(Some(PyOpenForm { open_mode, append, binary, enc_int }))
+    Ok(Some(PyOpenForm { open_mode, append, binary, enc_int, mode }))
 }

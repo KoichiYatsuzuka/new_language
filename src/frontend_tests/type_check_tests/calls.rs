@@ -372,7 +372,15 @@ use super::*;
         assert!(err(&format!("{open}f.nope()\n")));
         assert!(err(&format!("{open}f.write(1)\n")));
         assert!(err(&format!("{open}f.read(True, False)\n")));
-        assert!(err(&format!("{open}let n: int = f.write(\"a\")\n")));
+        assert!(err(&format!("{open}let n: int = f.write_line(\"a\")\n")));
+        // Python のファイルのメソッド（python_builtins_plan.md のタスク 5-4）。`write` の戻り値は形で決まる
+        // （Arrow の形は `None`・Python の形は書いた数）ので型を付けない。`read(n)` の `n` も受ける。
+        assert!(ok(&format!(
+            "{open}let line = f.readline()\nlet n = f.write(\"a\")\nlet head = f.read(3)\nlet at: int = f.tell()\nf.flush()\nf.close()\n"
+        )));
+        assert!(err(&format!("{open}let at: str = f.tell()\n")));
+        assert!(ok(&format!("{open}let part = f.readline(2)\n")));
+        assert!(err(&format!("{open}let part = f.readline(\"2\")\n")));
     }
 
     /// 組み込みの `class` は Arrow のクラスではない（VM が `Value::Instance` と見なしてはいけない）。

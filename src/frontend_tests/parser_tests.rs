@@ -1928,3 +1928,34 @@ fn python_class_body_names_are_resolved_after_the_class() {
     };
     assert!(matches!(fbody.last(), Some(Stmt::Return(Some(Expr::Ident { name, .. }), _)) if name == "LIMIT"), "{fbody:?}");
 }
+
+
+/// Python の `with EXPR as x:` は `{ mut x = EXPR; try: 本体 finally: __py_with_exit(x) }`（python_builtins_plan.md の
+/// タスク 5-4）。抜けるとき（`return` / 例外も）にファイルを閉じる。複数の項目は逆の順に閉じる（CPython と同じ）。
+#[test]
+fn python_with_exits_in_a_finally() {
+    let stmts = crate::python_converter::convert_python_source(
+        "def load(p):\n    with open(p) as h, open(p):\n        return h.read()\n",
+        "<test>",
+    )
+    .expect("with converts");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected fn: {stmts:?}") };
+    let Some(Stmt::Block(inner)) = body.iter().find(|s| matches!(s, Stmt::Block(_))) else { panic!("{body:?}") };
+    let Some(Stmt::Try { finally_body: Some(fin), handlers, .. }) = inner.last() else { panic!("{inner:?}") };
+    assert!(handlers.is_empty());
+    let exited: Vec<&str> = fin
+        .iter()
+        .map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => match (func.as_ref(), args.as_slice()) {
+                (Expr::Ident { name, .. }, [CallArg::Positional(Expr::Ident { name: arg, .. })]) if name == "__py_with_exit" => {
+                    arg.as_str()
+                }
+                _ => panic!("{s:?}"),
+            },
+            _ => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(exited.len(), 2);
+    assert!(exited[0].starts_with("__py_with_"), "{exited:?}");
+    assert_eq!(exited[1], "h");
+}

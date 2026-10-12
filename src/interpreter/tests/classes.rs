@@ -701,6 +701,7 @@ fn builtin_value_methods_are_dispatched() {
         "mut ge = [1, 2].__iter__()\n",
         "mut fz = frozenset([1, 2])\n",
         "mut by = bytes([97, 98])\n",
+        "mut fo = open(\"target/test_tmp_value_methods.txt\", \"w\")\n",
     );
     let (stmts, mut interp) = prepare(src).unwrap();
     for stmt in &stmts {
@@ -716,6 +717,7 @@ fn builtin_value_methods_are_dispatched() {
             "generator" => "ge",
             "frozenset" => "fz",
             "bytes" => "by",
+            "FileObject" => "fo",
             other => panic!("no sample receiver for '{other}'"),
         };
         let recv = interp.get_val(var).unwrap();

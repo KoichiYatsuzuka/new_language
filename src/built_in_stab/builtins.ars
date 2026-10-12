@@ -11,6 +11,7 @@
 #     **実在するものだけ**を書く。無いものを書くと補完が存在しない関数を勧め、型検査も
 #     実行時に NameError になる呼び出しに型を付けてしまう
 #     （`interpreter/tests` の `builtins_ars_matches_the_runtime` が両方向を検査する）。
+#     ⚠ `__` で始まる実行時の組み込み（Python の変換器が置く `__py_with_exit` など）は書かない（利用者が書く名前ではない）。
 #   - 戻り値の型が**静的に決まらない**ものは `->` を書かない（型検査器は型を付けない）。
 #     `-> Any` と書かないこと: `Any` は「使う前に `mustbe` が要る型」なので、結果を使う式が
 #     すべて静的エラーになる。
@@ -66,9 +67,19 @@ enum Encoding:
     shift_JIS = 3
 
 # `open` が返すファイル。読み書きは現在位置から行う（`close` で書き戻す）。
+# ⚠ Python の形で開いたファイル（`open(path, "w")` など・python_builtins_plan.md のタスク 5-2 / 5-4）は、同じ名前の
+#   `read` / `write` が CPython の意味になる（`read(n)` は n 文字（バイト）まで・終わりは `""`、`write` は書いた数を返す）。
+#   型はどちらの形でも `FileObject` なので、`read` の引数は `backward`（Arrow）と `size`（Python）の両方を受け、
+#   `write` の戻り値は書かない（形で決まる）。
 class FileObject:
-    fn read(self, backward: bool = False):
-        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode (IOError if it is not UTF-8), bytes in byte mode."""
+    # 読むだけの属性（Python と同じ名前・python_builtins_plan.md のタスク 5-4）。⚠ `mode` は Python の形で開いた
+    #   ファイルだけにある（Arrow の形は実行時の AttributeError）。
+    let closed: bool
+    let name: str
+    let mode: str
+
+    fn read(self, backward: Union[bool, int, None] = False):
+        """Arrow form: read from the current position to the end (backward=True: from the start up to the current position). Python form: read(size=-1) reads at most size characters (bytes in binary mode); "" at the end. str in text mode (IOError / UnicodeDecodeError if it is not UTF-8), bytes in byte mode."""
         pass
 
     fn read_line(self, backward: bool = False):
@@ -79,12 +90,36 @@ class FileObject:
         """Read one character (str) in text mode, or one byte (int) in byte mode."""
         pass
 
-    fn write(self, content: Union[str, bytes]) -> None:
-        """Insert content at the current position (str in text mode, bytes in byte mode)."""
+    fn readline(self, size: Option[int] = -1):
+        """Read one line including its newline (Python); "" at the end. size limits the characters (bytes) read."""
+        pass
+
+    fn readlines(self, hint: Option[int] = -1):
+        """The remaining lines as a list, each with its newline (Python)."""
+        pass
+
+    fn write(self, content: Union[str, bytes]):
+        """Insert content at the current position (str in text mode, bytes in byte mode). Python form: returns the number of characters (bytes) written."""
         pass
 
     fn write_line(self, content: Union[str, bytes]) -> None:
         """Insert content followed by a newline at the current position."""
+        pass
+
+    fn writelines(self, lines: Any) -> None:
+        """Write every string (bytes) of an iterable, without adding newlines (Python)."""
+        pass
+
+    fn close(self) -> None:
+        """Write the buffer back and close the file (same as the function close(f))."""
+        pass
+
+    fn flush(self) -> None:
+        """Write the buffer back without closing the file."""
+        pass
+
+    fn tell(self) -> int:
+        """The current position."""
         pass
 
 # ── 組み込み関数 ────────────────────────────────────────────────────────────

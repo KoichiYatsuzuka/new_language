@@ -81,6 +81,113 @@ fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, Stri
     }
 }
 
+// ---------------------------------------------------------------------------
+// Python のファイルのメソッド用（python_builtins_plan.md のタスク 5-4・`exec_file_py_method`）
+// ---------------------------------------------------------------------------
+
+/// 引数を取らないメソッド（`close()` / `flush()` / `tell()`）。
+fn file_no_args(evaled: &[(Option<String>, Value, bool)], name: &str) -> Result<(), String> {
+    if evaled.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("TypeError: {name}() takes no arguments ({} given)", evaled.len()))
+    }
+}
+
+/// `read(size=-1)` / `readline(size=-1)` / `readlines(hint=-1)` の数。負・`None`・省略は「制限なし」。
+fn file_size_arg(
+    evaled: &[(Option<String>, Value, bool)],
+    method: &str,
+    kw_name: &str,
+) -> Result<Option<usize>, String> {
+    match evaled {
+        [] => Ok(None),
+        [(kw, v, _)] => {
+            if let Some(k) = kw.as_deref().filter(|k| *k != kw_name) {
+                return Err(format!("TypeError: {method}() got an unexpected keyword argument '{k}'"));
+            }
+            match v {
+                Value::None => Ok(None),
+                Value::Int(n) => Ok(usize::try_from(*n).ok()),
+                Value::Bool(b) => Ok(Some(usize::from(*b))),
+                other => Err(format!(
+                    "TypeError: argument should be integer or None, not '{}'",
+                    crate::interpreter::ops::typecheck::runtime_type_name(other)
+                )),
+            }
+        }
+        _ => Err(format!("TypeError: {method} expected at most 1 argument, got {}", evaled.len())),
+    }
+}
+
+/// 位置から読む範囲の終わり（バイトの添字）。`line` なら `\n` まで（含む）。`size` はテキストなら文字の数
+/// （UTF-8 の続きのバイトを飛ばして数える）、バイト列ならバイトの数。
+fn file_read_end(fd: &super::FileData, size: Option<usize>, line: bool) -> usize {
+    let start = fd.pointer;
+    let content = &fd.content;
+    let limit = if line {
+        content[start..].iter().position(|&b| b == b'\n').map_or(content.len(), |i| start + i + 1)
+    } else {
+        content.len()
+    };
+    let Some(n) = size else { return limit };
+    match fd.byte_mode {
+        ByteModeRust::Byte => (start + n).min(limit),
+        ByteModeRust::Text => {
+            let mut i = start;
+            let mut count = 0;
+            while i < limit && count < n {
+                i += 1;
+                while i < limit && (content[i] & 0xC0) == 0x80 {
+                    i += 1;
+                }
+                count += 1;
+            }
+            i
+        }
+    }
+}
+
+/// 読んだバイトを値にする。テキストは `str`（不正な UTF-8 は、Python の形は CPython と同じく `UnicodeDecodeError`、
+/// Arrow の形は `IOError`・ffi_value_exchange_plan.md 7-11）。バイト列はどちらの形も `bytes`（`bytes_to_value`）。
+fn file_bytes_value(data: &[u8], fd: &super::FileData) -> Result<Value, String> {
+    match (&fd.byte_mode, fd.py_mode.is_some()) {
+        (ByteModeRust::Text, true) => {
+            crate::interpreter::ops::codecs::decode(data, crate::interpreter::ops::codecs::Codec::Utf8, "strict")
+                .map(Value::str)
+        }
+        (mode, _) => bytes_to_value(data, mode),
+    }
+}
+
+/// 書く値をバイトにする。返すのは（バイト, 書いた数＝テキストは文字・バイト列はバイト）。
+fn file_encode(val: &Value, fd: &super::FileData) -> Result<(Vec<u8>, usize), String> {
+    let type_name = crate::interpreter::ops::typecheck::runtime_type_name(val);
+    match (&fd.byte_mode, val) {
+        (ByteModeRust::Text, Value::Str(s)) => Ok((s.as_bytes().to_vec(), s.chars().count())),
+        (ByteModeRust::Byte, Value::Bytes(b)) if fd.py_mode.is_some() => Ok((b.to_vec(), b.len())),
+        (ByteModeRust::Text, _) if fd.py_mode.is_some() => {
+            Err(format!("TypeError: write() argument must be str, not {type_name}"))
+        }
+        (ByteModeRust::Byte, _) if fd.py_mode.is_some() => {
+            Err(format!("TypeError: a bytes-like object is required, not '{type_name}'"))
+        }
+        (mode, v) => {
+            let bytes = value_to_bytes(v, mode).map_err(|e| format!("TypeError: write(): {e}"))?;
+            let n = bytes.len();
+            Ok((bytes, n))
+        }
+    }
+}
+
+/// 位置へ書いて位置を進める（Arrow の `write` と同じ**挿入**。末尾なら追記）。
+fn file_insert(fd: &mut super::FileData, bytes: &[u8]) {
+    let ptr = fd.pointer;
+    let rest = fd.content.split_off(ptr);
+    fd.content.extend_from_slice(bytes);
+    fd.content.extend_from_slice(&rest);
+    fd.pointer = ptr + bytes.len();
+}
 
 mod freeze;
 mod instantiate;

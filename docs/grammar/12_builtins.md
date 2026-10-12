@@ -49,9 +49,35 @@ let b = open("out.txt", mode="rb")   # バイト列
 - `encoding=` は UTF-8 / UTF-8-SIG / ASCII、`errors="strict"`、`newline=None / "" / "\n"`、`buffering` は受けて無視
 - ⚠ `"r+"` は明示の `NotImplementedError`（Arrow の `write` は位置へ**挿入**する。CPython は上書き）
 - ⚠ 改行は変換しない（CPython は Windows の既定で、書くときに改行を CR LF にする）
-- ⚠ 返るのは Arrow のファイル（`read` / `read_line` / `write`）。`readline` / `readlines` / `close()` /
-  `for line in f` はまだ無い（python_builtins_plan.md のタスク 5-4）
 - 失敗は OS のエラーの種類で `FileNotFoundError` / `PermissionError` / … に振り分ける（[07_exceptions.md](07_exceptions.md)）
+
+### ファイルのメソッド
+
+どのファイル（Arrow の形でも Python の形でも）にも次があります（python_builtins_plan.md のタスク 5-4）:
+
+| 名前 | 意味 |
+|---|---|
+| `readline(size=-1)` | 1 行（`\n` を含む）。終わりでは `""`（誤りにしない）。`size` はテキストなら文字の数 |
+| `readlines(hint=-1)` / `writelines(xs)` | 残りの行の list ／ 順に書く（改行は足さない） |
+| `for line in f` | 取り出すたびに `readline()` を呼ぶ（途中で抜けて続きを読める）。`iter(f.readline, "")` も同じ |
+| `close()` / `flush()` / `tell()` | 閉じる（何度でも）／閉じずにディスクへ書き戻す／位置（バイト） |
+| `closed` / `name` / `mode` | 閉じたか／パス／モードの文字列（`mode` は Python の形で開いたときだけ） |
+| `read_line()` / `read_letter()` / `write_line(s)` | Arrow の名前（終わりで `EOFError`・`backward=True` で逆向き） |
+
+同じ名前で意味の違う `read()` / `write()` は**開き方で決まります**:
+
+| | Arrow の形（`open(p, FileOpenMode.read)`） | Python の形（`open(p)` / `open(p, "w")`） |
+|---|---|---|
+| `read()` の終わり | `EOFError` | `""`（`read(n)` は n 文字・n バイト） |
+| `write(s)` の戻り値 | `None` | 書いた数（文字・バイト） |
+| バイト列（`b` / `ByteRecognizingMode.byte`） | `list[int]` | `bytes` |
+| 閉じたファイル | `IOError: I/O operation on closed file` | `ValueError: I/O operation on closed file.` |
+| 読めない／書けないモード | 読みはどのモードでも可 | `"w"` で読むと `OSError: not readable`、`"r"` で書くと `OSError: not writable` |
+
+- ⚠ CPython の「読めない／書けない」は `io.UnsupportedOperation`（`OSError` と `ValueError` の両方を継承）。Arrow の例外の
+  表は単一継承なので `OSError` にした（`except OSError` で捕まえられるのは同じ）。
+- ⚠ `seek` は無い（`"r+"` も受けない。Arrow の `write` は位置へ**挿入**するので、位置を動かせると CPython の上書きと違う）。
+- ⚠ Arrow の形の `read()` が出す `EOFError` は、Arrow の例外の表に無い名前なので `except` で捕まえられない（タスク 4-5）。
 
 ---
 

@@ -10,8 +10,8 @@
 # ⚠ 受けない形: "r+"（Arrow の write は位置へ挿入する）・UTF-8 / UTF-8-SIG / ASCII 以外の encoding・
 #   newline="\r" / "\r\n"。どれも明示のエラーで止まる。改行の変換はしない（newline="" と同じ。
 #   CPython は Windows の既定で書くときに改行を CR LF にする）。
-# ⚠ 返るのは Arrow のファイル（read / read_line / write）。Python のメソッド（readline / readlines /
-#   close() / for line in f）は別件（タスク 5-4）。
+# Python の形で開いたファイルは read / write も CPython と同じ（終わりの read() は ""・"rb" は bytes）。readline / readlines /
+#   close() / for line in f はどのファイルにもある（タスク 5-4・file_lines.ar）。
 
 let fname = "examples/basics/_tmp_py_open.txt"
 
