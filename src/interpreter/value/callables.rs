@@ -268,7 +268,7 @@ fn receiver_ptr(v: &Value) -> Option<*const ()> {
 
 /// 変換器（`python_converter::classes`）が property のメソッドに付ける別名（python_builtins_plan.md のタスク 6-1）。
 ///
-/// `tag` は `get` / `set` / `del`。同じ名前の 2 つ目からは `tag` の後に数を付ける（`x` の setter は
+/// `tag` は `get` / `set` / `del` / `cached`（`@cached_property`・タスク 6-5）。同じ名前の 2 つ目からは `tag` の後に数を付ける（`x` の setter は
 /// `__property_set_x`、2 つ目は `__property_set2_x`）。
 /// [`python_fn_name`] が元の名前（`x`）へ戻すので、**作り方と戻し方をここに並べてある**。
 /// ⚠ 使うのは変換器だけ（`native` ビルド）。エディタの wasm フロントエンドには変換器が無い。
@@ -288,7 +288,7 @@ pub(crate) fn property_method_name(tag: &str, name: &str, n: usize) -> String {
 /// ⚠ Python のモジュールから来た関数（`FnValue::is_python`）にだけ使う。
 pub(crate) fn python_fn_name(name: &str) -> &str {
     if let Some(rest) = name.strip_prefix("__property_") {
-        for tag in ["get", "set", "del"] {
+        for tag in ["get", "set", "del", "cached"] {
             let Some(r) = rest.strip_prefix(tag) else { continue };
             let r = r.trim_start_matches(|c: char| c.is_ascii_digit());
             if let Some(original) = r.strip_prefix('_').filter(|s| !s.is_empty()) {

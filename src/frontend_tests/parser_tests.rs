@@ -1810,8 +1810,38 @@ fn python_property_is_built_after_the_class() {
     assert!(err.contains("outside a property decorator is not supported"), "{err}");
     let err = conv("class C:\n    @property\n    @staticmethod\n    def x():\n        return 1\n").expect_err("static property");
     assert!(err.contains("cannot be a static or class method"), "{err}");
-    let err = conv("class C:\n    @cached_property\n    def x(self):\n        return 1\n").expect_err("cached_property");
-    assert!(err.contains("'@cached_property' is not supported"), "{err}");
+    // `@cached_property`（タスク 6-5）: 計算した値を入れるインスタンスのフィールド `x`（`Any`）と置き場の `static mut x`、
+    // 別名のメソッド。クラスの後で `C.x = cached_property(C.__property_cached_x)` と名前付け。
+    let cached = conv("from functools import cached_property\nclass C:\n    @cached_property\n    def x(self) -> int:\n        return 1\n")
+        .expect("cached_property");
+    let Some(Stmt::ClassDef { body, .. }) = cached.first() else { panic!("expected class first: {cached:?}") };
+    let members: Vec<(&str, Option<&FieldKind>, Option<&str>)> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Field { name, kind, type_ann, .. } => Some((name.as_str(), Some(kind), Some(type_ann.as_str()))),
+            Stmt::FnDef { name, .. } => Some((name.as_str(), None, None)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("x", Some(&FieldKind::Mut), Some("Any")),
+            ("x", Some(&FieldKind::StaticMut), Some("int")),
+            ("__property_cached_x", None, None),
+        ]
+    );
+    assert!(
+        matches!(&cached[1], Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "cached_property")),
+        "{cached:?}"
+    );
+    // `from functools import cached_property` は読み込まない（ほかの名前は残す）。
+    let imports = conv("from functools import cached_property, reduce\n").expect("functools import");
+    assert!(
+        matches!(imports.as_slice(), [Stmt::FromImport { names, .. }] if names.len() == 1 && names[0].0 == "reduce"),
+        "{imports:?}"
+    );
     // 置き場の型は getter の戻り値の注釈（タスク 6-8）。注釈が無ければ `Any`、後から `@x.getter` で置いた注釈も効く。
     let placeholder = |src: &str| -> String {
         let stmts = conv(src).expect("typed property");

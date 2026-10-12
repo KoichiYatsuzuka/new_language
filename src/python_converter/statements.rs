@@ -1300,8 +1300,15 @@ pub(crate) fn convert_stmt(
             let names: Vec<(String, Option<String>)> = f
                 .names
                 .iter()
+                // `functools.cached_property` は変換器が組み込みの `cached_property` へ写す（`@cached_property` を
+                // property と同じ形で組み立てる・タスク 6-5）ので、その名前は読み込まない。ほかの名前（`reduce` …）は
+                // 残して従来どおり読み込みの誤りにする。⚠ 別名（`as cp`）は `@cp` を見分けられないので残す。
+                .filter(|a| !(module == ["functools"] && a.name.as_str() == "cached_property" && a.asname.is_none()))
                 .map(|a| (a.name.to_string(), a.asname.as_ref().map(|x| x.to_string())))
                 .collect();
+            if names.is_empty() {
+                return Ok(vec![]);
+            }
             Ok(vec![Stmt::FromImport {
                 lang: "py".to_string(),
                 module,

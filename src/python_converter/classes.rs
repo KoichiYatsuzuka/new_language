@@ -293,15 +293,31 @@ fn convert_class_in(
                     // ⚠ 実行時の置き場には property が入るが、型検査は読んだ値（`__get__` の戻り値）の型として使う
                     //   （`static mut` の初期値・代入は実行時に型を検査しない。モジュールの本体の型の誤りは捨てる）。
                     let ann = match (p.kind(), f.returns.as_deref()) {
-                        (PropKind::Get, Some(r)) => Some(convert_annotation(r)),
+                        (PropKind::Get | PropKind::Cached, Some(r)) => Some(convert_annotation(r)),
                         _ => None,
                     };
                     // クラスの属性の置き場（クラスの定義の後で property を入れる）。
                     if seen_fields.insert(pname.clone()) {
+                        let ty = ann.unwrap_or_else(|| "Any".to_string());
+                        // `cached_property` は計算した値を入れる**同じ名前のインスタンスのフィールド**も置く
+                        // （CPython のインスタンスの `__dict__` の代わり・初期値なし＝読むまで未初期化・タスク 6-5）。
+                        // 実行時はフィールドが入っていればそれが勝ち、未初期化なら置き場の `cached_property` の `__get__` へ回る。
+                        // ⚠ フィールドの型は `Any`（実行時はフィールドの宣言型を検査するが、Python の注釈は約束でしかない
+                        //   ので `-> str` が `5` を返しても CPython は通す）。型検査が見る型は後ろの置き場の注釈
+                        //   （レジストリは同じ名前の後の宣言で上書きする）。
+                        if matches!(p.kind(), PropKind::Cached) {
+                            fields.push(Stmt::Field { src: None,
+                                name: pname.clone(),
+                                kind: FieldKind::Mut,
+                                type_ann: "Any".to_string(),
+                                default: None,
+                                access: crate::ast::Accessibility::Public,
+                            });
+                        }
                         fields.push(Stmt::Field { src: None,
                             name: pname.clone(),
                             kind: FieldKind::StaticMut,
-                            type_ann: ann.unwrap_or_else(|| "Any".to_string()),
+                            type_ann: ty,
                             default: Some(crate::ast::Expr::None),
                             access: crate::ast::Accessibility::Public,
                         });
@@ -586,6 +602,8 @@ enum PropKind {
     Get,
     Set,
     Del,
+    /// `@cached_property` の関数（タスク 6-5）。
+    Cached,
 }
 
 impl PropKind {
@@ -595,13 +613,14 @@ impl PropKind {
             PropKind::Get => "get",
             PropKind::Set => "set",
             PropKind::Del => "del",
+            PropKind::Cached => "cached",
         }
     }
 
-    /// property のメソッドの名前（`C.x.setter(..)`）。
+    /// property のメソッドの名前（`C.x.setter(..)`）。`cached_property` は持たない（誤りの文面にも出ない）。
     fn method(self) -> &'static str {
         match self {
-            PropKind::Get => "getter",
+            PropKind::Get | PropKind::Cached => "getter",
             PropKind::Set => "setter",
             PropKind::Del => "deleter",
         }
@@ -614,6 +633,8 @@ enum PropDecor {
     New,
     /// `@x.setter` など（`owner` は `@Base.x.setter` の `Base`。このクラスの `x` なら `None`）。
     Accessor { owner: Option<py::Expr>, kind: PropKind },
+    /// `@cached_property` / `@functools.cached_property`（タスク 6-5）。
+    Cached,
 }
 
 impl PropDecor {
@@ -621,13 +642,27 @@ impl PropDecor {
         match self {
             PropDecor::New => PropKind::Get,
             PropDecor::Accessor { kind, .. } => *kind,
+            PropDecor::Cached => PropKind::Cached,
         }
     }
 }
 
-/// デコレータが property のもの（`@property` / `@x.setter` / `@Base.x.getter` …）か。
+/// デコレータが `functools.cached_property` か（`@cached_property` / `@functools.cached_property`・タスク 6-5）。
+fn is_cached_property_decorator(dec: &py::Expr) -> bool {
+    match dec {
+        py::Expr::Name(n) => n.id.as_str() == "cached_property",
+        py::Expr::Attribute(a) => {
+            a.attr.as_str() == "cached_property"
+                && matches!(&*a.value, py::Expr::Name(m) if m.id.as_str() == "functools")
+        }
+        _ => false,
+    }
+}
+
+/// デコレータが property のもの（`@property` / `@x.setter` / `@Base.x.getter` / `@cached_property` …）か。
 fn is_property_decorator(dec: Option<&py::Expr>) -> bool {
     match dec {
+        Some(d) if is_cached_property_decorator(d) => true,
         Some(py::Expr::Name(n)) => n.id.as_str() == "property",
         Some(py::Expr::Attribute(a)) => {
             matches!(a.attr.as_str(), "getter" | "setter" | "deleter")
@@ -656,6 +691,9 @@ fn property_decorator(
             "{filename}: method '{class_name}.{}' has more than one property decorator",
             f.name.as_str()
         ));
+    }
+    if is_cached_property_decorator(dec) {
+        return Ok(Some((PropDecor::Cached, pos)));
     }
     let py::Expr::Attribute(a) = dec else {
         return Ok(Some((PropDecor::New, pos)));
@@ -727,6 +765,8 @@ fn property_stmts(
     // `@x.getter` / `@Base.x.getter` は差し替えた後で doc を付け直す（`@property` は構築子に渡す）。
     let regetter = matches!(decor, PropDecor::Accessor { .. }) && matches!(kind, PropKind::Get);
     let (value, name_it) = match decor {
+        // `cached_property(f)`。docstring は `cached_property` が `f.__doc__` から取る（CPython と同じ）。
+        PropDecor::Cached => (call(ident("cached_property"), vec![func]), true),
         PropDecor::New => match &doc {
             Some(_) => (call(ident("property"), vec![func, Expr::None, Expr::None, doc_expr()]), true),
             None => (call(ident("property"), vec![func]), true),

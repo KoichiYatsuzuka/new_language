@@ -703,6 +703,12 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
   （`def x(self) -> float`）が Arrow から読んだ値の型になります（[09_imports.md](09_imports.md)・タスク 6-8）。
 - ⚠ Arrow で書いたクラスで（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）、名前 `property` を初めて引いたときに組み立てます。
   CPython 3.12 の property は `__name__` を持たないので、名前は外から読めない欄に置いています。
+- 組み込みの `cached_property`（`functools.cached_property`・タスク 6-5）も同じく Arrow で書いた非データディスクリプタです
+  （`PY_CACHED_PROPERTY_SRC`）。初めて読んだときに計算した値をインスタンスの**同じ名前のフィールド**へ入れ、以後は
+  フィールドが勝ちます。Arrow のクラスは同じ名前を 2 度宣言できないので、使うのは Python のクラスの `@cached_property`
+  （変換器が置き場とフィールドを並べて宣言する・[09_imports.md](09_imports.md)）です。
+  ⚠ 非データディスクリプタと同じ名前のフィールドがあると、インスタンスへの代入はフィールドへ入ります（CPython の
+  インスタンスの `__dict__` と同じ）。
 
 ---
 

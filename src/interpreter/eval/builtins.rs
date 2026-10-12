@@ -58,10 +58,10 @@ impl Interpreter {
     ///
     /// 呼び出し元は名前の読みが失敗した所すべて（ツリーウォークの `eval` の識別子 3 か所・VM の `LoadGlobal` 2 か所）。
     /// ⚠ 束縛した名前が勝つ（ここへ来るのは束縛が無いときだけ）ので、`let repr = f` の利用者の値を隠さない。
-    /// ⚠ `property` は Arrow で書いたクラス（タスク 6-1）。初めて引いたときに組み立てるので `&mut self`。
+    /// ⚠ `property` / `cached_property` は Arrow で書いたクラス（タスク 6-1 / 6-5）。初めて引いたときに組み立てるので `&mut self`。
     pub(crate) fn builtin_value(&mut self, name: &str) -> Option<Value> {
-        if name == "property" {
-            return match self.py_property_class() {
+        if super::py_builtins::PY_BUILTIN_CLASS_NAMES.contains(&name) {
+            return match self.py_builtin_class(name) {
                 Ok(class) => Some(class),
                 Err(e) => {
                     eprintln!("{e}");

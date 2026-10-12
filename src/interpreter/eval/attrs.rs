@@ -615,13 +615,21 @@ impl Interpreter {
                 let inst_class = inst_rc.borrow().class.clone();
                 // クラス側のデータディスクリプタへの代入は `__set__(obj, v)`（property の setter・タスク 1-12）。
                 // `static mut` の書き換え・フィールドより先（CPython の `object.__setattr__` と同じ）。
+                // 非データディスクリプタ（`__get__` だけ）と同じ名前のフィールドがあれば、代入はフィールドへ
+                // （CPython ではインスタンスの `__dict__` へ入り、以後は読みでも勝つ。`functools.cached_property` が
+                // 値を入れる先・タスク 6-5）。そうした組は変換器だけが作る（Arrow のクラスは同じ名前を 2 度宣言できない）。
+                let mut shadowed_static = false;
                 if let Some(desc) = Self::class_level_value(&inst_class, attr) {
-                    if Self::descriptor_kind(&desc) == Some(true) {
-                        self.check_member_access(&inst_class, attr, attr)?;
-                        return self.descriptor_set(desc, Value::Instance(inst_rc), rhs);
+                    match Self::descriptor_kind(&desc) {
+                        Some(true) => {
+                            self.check_member_access(&inst_class, attr, attr)?;
+                            return self.descriptor_set(desc, Value::Instance(inst_rc), rhs);
+                        }
+                        Some(false) => shadowed_static = inst_class.field_index.contains_key(attr),
+                        None => {}
                     }
                 }
-                if Self::lookup_class_var(&inst_class, attr).is_some() {
+                if !shadowed_static && Self::lookup_class_var(&inst_class, attr).is_some() {
                     return Err(format!(
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"
                     ));
@@ -646,7 +654,7 @@ impl Interpreter {
                     }
                 }
                 // static mut 変数への代入: 共有セルを更新する
-                if let Some(cell) = inst_class.static_vars.get(attr).cloned() {
+                if let Some(cell) = inst_class.static_vars.get(attr).filter(|_| !shadowed_static).cloned() {
                     self.check_member_access(&inst_class, attr, attr)?;
                     *cell.borrow_mut() = rhs;
                     return Ok(());

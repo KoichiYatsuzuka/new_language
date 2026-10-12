@@ -56,6 +56,8 @@ $whitelist = @(
     # CPython の関数名（Objects/unicodeobject.c）と、使わなかった Rust 標準のメソッド名（`char::is_control`）。
     # 文字列の `repr` と `isprintable` の出どころと、以前の判定を説明するために言及する（タスク 1-13）。
     'unicode_repr','is_control',
+    # CPython のインスタンスの属性の辞書（cached_property が値を入れる先・タスク 6-5）
+    '__dict__',
     # CPython の関数名（Objects/bytesobject.c）。bytes の表示の出どころ（タスク 3-1）。
     'bytes_repr',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。

@@ -1099,33 +1099,81 @@ const PY_PROPERTY_SRC: &str = r#"class property:
         return f"property '{self._name}' of '{type(obj).__name__}' object has no {what}"
 "#;
 
+/// 組み込みのクラス `cached_property`（`functools.cached_property`・python_builtins_plan.md のタスク 6-5）。
+/// CPython 3.12 と同じ振る舞いを Arrow のクラスで書いたもの。
+/// - 非データディスクリプタ（`__get__` だけ）。初めて読んだときに `func(obj)` を計算してインスタンスの
+///   **同じ名前のフィールド**へ入れる。以後はフィールドが勝つ（`get_attr_val` はフィールドを非データディスクリプタより先に見る）。
+///   CPython がインスタンスの `__dict__` へ入れるのと同じ効き方。フィールドは変換器が宣言する（Arrow のインスタンスに
+///   `__dict__` は無い）。
+/// - `obj.x = v` も同じフィールドへ入る（`attr_assign_evaled` が非データディスクリプタと同じ名前のフィールドを先にする）。
+/// - 入れた後で**読み直した値**を返す（代入は値を写すので、計算した値そのものを返すと 1 回目と 2 回目で別の物になる）。
+/// - 文言は CPython と同じ。`__doc__` は `func.__doc__`（タスク 1-14）。
+/// - ⚠ `__get__` は `mut self`（`property` と同じ理由）。
+const PY_CACHED_PROPERTY_SRC: &str = r#"class cached_property:
+    mut func: Any
+    mut attrname: Any
+    mut __doc__: Any
+
+    fn __init__(mut self, func: Any) -> None:
+        self.func = func
+        self.attrname = None
+        self.__doc__ = func.__doc__
+
+    fn __set_name__(mut self, owner: Any, name: Any) -> None:
+        if self.attrname is None:
+            self.attrname = name
+        elif name != self.attrname:
+            raise TypeError("Cannot assign the same cached_property to two different names (" + repr(self.attrname) + " and " + repr(name) + ").")
+
+    fn __get__(mut self, mut obj: Any, owner: Any = None) -> Any:
+        if obj is None:
+            return self
+        if self.attrname is None:
+            raise TypeError("Cannot use cached_property instance without calling __set_name__ on it.")
+        setattr(obj, self.attrname, self.func(obj))
+        return getattr(obj, self.attrname)
+"#;
+
+/// Arrow で書いた組み込みのクラスの名前（[`Interpreter::py_builtin_class`] が組み立てる）。
+pub(crate) const PY_BUILTIN_CLASS_NAMES: &[&str] = &["property", "cached_property"];
+
 impl Interpreter {
-    /// 組み込みのクラス `property` の値（初めて引いたときに組み立てる・[`PY_PROPERTY_SRC`]）。
+    /// Arrow で書いた組み込みのクラス（`property` / `cached_property`）の値。どれかを初めて引いたときに
+    /// まとめて組み立てる（[`PY_PROPERTY_SRC`] / [`PY_CACHED_PROPERTY_SRC`]）。
     ///
     /// 自分の大域（組み込みだけ）の枠でクラスを定義するので、メソッドの本体は利用者の名前を見ない
     /// （モジュールの本体と同じ・`enter_module_frame`）。クラスの名前に修飾は付かない（`type(p).__name__` は `property`）。
-    pub(crate) fn py_property_class(&mut self) -> Result<Value, String> {
-        if let Some(class) = &self.py_property {
-            return Ok(class.clone());
+    pub(crate) fn py_builtin_class(&mut self, name: &str) -> Result<Value, String> {
+        if self.py_builtin_classes.is_none() {
+            let mut stmts = Vec::new();
+            // トレースバックのファイル名はクラスの名前（`File "<property>", line 29, in __set__`）。
+            for (src, file) in [(PY_PROPERTY_SRC, "<property>"), (PY_CACHED_PROPERTY_SRC, "<cached_property>")] {
+                let tokens = crate::lexer::Lexer::new(src, file).tokenize();
+                stmts.extend(
+                    crate::parser::Parser::new(tokens, None)
+                        .parse_program()
+                        .map_err(|e| format!("RuntimeError: internal — a builtin class does not parse: {e}"))?,
+                );
+            }
+            // ⚠ Python のモジュールの中から引かれても Arrow のクラスとして定義する（`is_python` を立てない）。
+            let prev_py = std::mem::replace(&mut self.in_python_module, false);
+            let prev_nested = std::mem::replace(&mut self.defining_nested_class, false);
+            let frame = self.enter_module_frame(&[]);
+            let result = stmts.iter().try_for_each(|st| self.exec(st).map(|_| ()));
+            let classes: std::collections::HashMap<String, Value> = PY_BUILTIN_CLASS_NAMES
+                .iter()
+                .filter_map(|n| self.scopes[0].get(n).map(|v| (n.to_string(), v.get_value())))
+                .collect();
+            self.leave_module_frame(frame);
+            self.defining_nested_class = prev_nested;
+            self.in_python_module = prev_py;
+            result.map_err(|e| format!("RuntimeError: internal — a builtin class failed: {e}"))?;
+            self.py_builtin_classes = Some(classes);
         }
-        let tokens = crate::lexer::Lexer::new(PY_PROPERTY_SRC, "<property>").tokenize();
-        let stmts = crate::parser::Parser::new(tokens, None)
-            .parse_program()
-            .map_err(|e| format!("RuntimeError: internal — the builtin 'property' does not parse: {e}"))?;
-        // ⚠ Python のモジュールの中から引かれても Arrow のクラスとして定義する（`is_python` を立てない）。
-        let prev_py = std::mem::replace(&mut self.in_python_module, false);
-        let prev_nested = std::mem::replace(&mut self.defining_nested_class, false);
-        let frame = self.enter_module_frame(&[]);
-        let result = stmts.iter().try_for_each(|st| self.exec(st).map(|_| ()));
-        let class = self.scopes[0].get("property").map(|v| v.get_value());
-        self.leave_module_frame(frame);
-        self.defining_nested_class = prev_nested;
-        self.in_python_module = prev_py;
-        result.map_err(|e| format!("RuntimeError: internal — the builtin 'property' failed: {e}"))?;
-        let class = class
-            .ok_or_else(|| "RuntimeError: internal — the builtin 'property' was not defined".to_string())?;
-        self.py_property = Some(class.clone());
-        Ok(class)
+        self.py_builtin_classes
+            .as_ref()
+            .and_then(|m| m.get(name).cloned())
+            .ok_or_else(|| format!("RuntimeError: internal — the builtin '{name}' was not defined"))
     }
 }
 

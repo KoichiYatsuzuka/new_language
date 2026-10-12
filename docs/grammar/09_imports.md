@@ -388,7 +388,14 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
   ⚠ Python の注釈は実行時に検査しないので、getter が注釈と違う型を返すと実行時の値と食い違います（CPython と同じく
   注釈は約束でしかない）。⚠ クラスから読む `C.x`（property そのもの）も型検査はこの型として扱います。
   ⚠ `x = property(getx)`（クラス属性に書く形）は `Any` のまま。
-- ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。`@cached_property` は変換の誤り。
+- ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。
+- `@cached_property`（`from functools import cached_property` / `@functools.cached_property`）は、初めて読んだときだけ
+  計算してインスタンスごとに覚えます（CPython と同じ・タスク 6-5）。メソッドは別名（`__property_cached_x`）になり、
+  置き場の `static mut x` に組み込みの `cached_property` を、計算した値は同じ名前のインスタンスのフィールド `x`
+  （CPython のインスタンスの `__dict__` の代わり）に入れます。`obj.x = v` もそのフィールドへ入ります。
+  getter の戻り値の注釈が Arrow から読んだ値の型になります（property と同じ）。
+  ⚠ `del obj.x`（覚えた値を消す）は変換の誤り。⚠ `from functools import cached_property as cp` の別名は見分けません。
+  ⚠ `import functools` は従来どおり読み込みの誤り（`from functools import cached_property` と書く）。
 - ⚠ `del obj.x` は変換の誤りです。
 - `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
 - クラス本体で先に定義した名前を引くクラス属性（`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
