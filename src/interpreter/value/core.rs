@@ -340,6 +340,8 @@ impl Value {
                 };
                 Rc::new(super::BoundMethod { receiver: b.receiver.deep_clone(), target })
             }),
+            // ⚠ `Rc<str>` も共有しない（作り直す）。
+            qualname: rc.qualname.as_deref().map(Rc::from),
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -357,6 +359,7 @@ impl Value {
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
                             vm_chunk: None,
                             bound: None,
+                            qualname: rc.qualname.as_deref().map(Rc::from),
                         })
                     })
                     .collect(),
@@ -368,6 +371,7 @@ impl Value {
                 params: crate::template_subst::unshare_params(&rc.params),
                 body: crate::template_subst::unshare_stmts(&rc.body),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
+                qualname: rc.qualname.as_deref().map(Rc::from),
             })),
             Value::Generator(rc) => {
                 let b = rc.borrow();

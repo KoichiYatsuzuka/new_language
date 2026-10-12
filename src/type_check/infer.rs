@@ -832,6 +832,19 @@ impl TypeChecker {
             self.annotations.set_resolved(node_id, InferredType::Str);
             return InferredType::Str;
         }
+        // 関数の値の名前と docstring（`f.__name__` / `f.__doc__`・python_builtins_plan.md のタスク 1-14）。
+        // 実行時は `Interpreter::function_attr`。docstring が無ければ `None`。
+        if matches!(obj_ty, InferredType::Function { .. }) {
+            let ty = match attr {
+                "__name__" | "__qualname__" => Some(InferredType::Str),
+                "__doc__" => Some(InferredType::Union(vec![InferredType::Str, InferredType::None])),
+                _ => None,
+            };
+            if let Some(ty) = ty {
+                self.annotations.set_resolved(node_id, ty.clone());
+                return ty;
+            }
+        }
         // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
         //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
         //    - **読み**: 組み込みの値は読める属性を持たない。実行時の属性の読み（`get_attr_val`）は

@@ -160,6 +160,53 @@ impl Interpreter {
             .map(|_| ())
     }
 
+    /// 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
+    ///
+    /// - `__name__` は定義の名前。Python のモジュールの関数は変換器が付けた別名を戻す
+    ///   （property の getter は `x`・持ち上げたラムダは `<lambda>`・`python_fn_name`）
+    /// - `__qualname__` は `FnValue::qualname`（メソッドは `C.m`、関数の中の関数は `outer.<locals>.inner`）。
+    ///   無ければ `__name__`（最上位の関数）
+    /// - `__doc__` は本体の先頭の文字列の文（docstring）。無ければ `None`
+    /// - 束縛メソッドは呼び先のもの。組み込みの値のメソッド（`xs.append`）は `append` / `list.append` / `None`
+    ///   （CPython と同じ）。多重定義は最初の定義のもの
+    fn function_attr(&self, f: &Value, attr: &str) -> Value {
+        use crate::interpreter::value::BoundTarget;
+        let (name, qualname, body): (&str, Option<&str>, &[crate::ast::Stmt]) = match f {
+            Value::Function(fv) => match fv.bound.as_deref() {
+                Some(b) => match &b.target {
+                    BoundTarget::Methods(ms) => return self.function_attr(&Value::Function(ms[0].clone()), attr),
+                    BoundTarget::Gen(g) => return self.function_attr(&Value::GeneratorFn(g.clone()), attr),
+                    BoundTarget::Builtin(n) => {
+                        return match attr {
+                            "__name__" => Value::str(n.as_str()),
+                            "__qualname__" => Value::str(format!("{}.{n}", self.type_name(&b.receiver))),
+                            _ => Value::None,
+                        };
+                    }
+                },
+                None => {
+                    let name = if fv.is_python { crate::interpreter::python_fn_name(&fv.name) } else { fv.name.as_str() };
+                    (name, fv.qualname.as_deref(), &fv.body)
+                }
+            },
+            Value::OverloadedFn(fns) => return self.function_attr(&Value::Function(fns[0].clone()), attr),
+            Value::GeneratorFn(g) => (g.name.as_str(), g.qualname.as_deref(), &g.body),
+            Value::NativeFunction(r) => (r.fn_name.as_str(), None, &[]),
+            Value::TemplateFn(t) => (t.name.as_str(), None, &[]),
+            Value::TemplateGenFn(t) => (t.name.as_str(), None, &[]),
+            _ => return Value::None,
+        };
+        match attr {
+            "__name__" => Value::str(name),
+            "__qualname__" => Value::str(qualname.unwrap_or(name)),
+            // パーサの docstring の取り出し（エディタの hover 用）と同じ形。
+            _ => match body.first() {
+                Some(crate::ast::Stmt::Expr(crate::ast::Expr::Str(s))) => Value::Str(s.clone()),
+                _ => Value::None,
+            },
+        }
+    }
+
     /// Resolve an attribute on any `Value`.
     /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
     ///
@@ -353,6 +400,8 @@ impl Interpreter {
             Value::Type(t) => match attr {
                 // `__name__` / `__qualname__` は Python の名前（`type(3).__name__` は `int`・タスク 2-2）。
                 "name" | "__name__" | "__qualname__" => Ok(Value::str(t.as_str())),
+                // 組み込み関数の docstring は持たない（型検査が関数の `__doc__` を `Option[str]` とするのに合わせる・タスク 1-14）。
+                "__doc__" if crate::interpreter::eval::is_builtin_function_name(t) => Ok(Value::None),
                 _ => Err(format!("AttributeError: type '{t}' has no attribute '{attr}'")),
             },
             Value::Slice(s) => match attr {
@@ -453,6 +502,17 @@ impl Interpreter {
                         None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                     }
                 }
+            }
+            // 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::GeneratorFn(_)
+            | Value::NativeFunction(_)
+            | Value::TemplateFn(_)
+            | Value::TemplateGenFn(_)
+                if matches!(attr, "__name__" | "__qualname__" | "__doc__") =>
+            {
+                Ok(self.function_attr(&obj, attr))
             }
             _ => {
                 // 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）は受け手を束縛した関数。

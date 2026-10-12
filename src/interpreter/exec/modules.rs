@@ -1072,6 +1072,7 @@ impl Interpreter {
             return_type: None,
             vm_chunk: None,
             bound: None,
+            qualname: None,
             });
 
             let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();

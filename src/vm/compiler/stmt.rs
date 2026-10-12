@@ -702,6 +702,8 @@ impl Compiler {
             // #30: 実体ごとではなく**定義サイトごと**に本体をコンパイルする。
             // 最初の呼び出しで埋まり、以降の実体は同じ `Rc<Chunk>` を共有する。
             compiled: Default::default(),
+            // 外側の名前はコンパイラが知らない（呼び出し側が `Chunk::set_nested_qualnames` で埋める）。
+            qualname: None,
         });
         self.emit(Op::MakeFn(idx));
         Some(())

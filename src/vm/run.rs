@@ -747,8 +747,14 @@ fn make_fn(
     let existing = std::mem::replace(&mut buf[slot], Value::None);
     // 入れ子 `gen`（B13 段階 E）。捕捉の集め方はここまで完全に同じで、作る値だけが違う。
     if d.is_generator {
-        buf[slot] =
-            interp.make_nested_gen_value(&d.name, &d.params, &d.body, captured, cell_captured);
+        buf[slot] = interp.make_nested_gen_value(
+            &d.name,
+            &d.params,
+            &d.body,
+            captured,
+            cell_captured,
+            d.qualname.clone(),
+        );
         return;
     }
     buf[slot] = interp.make_nested_fn_value(
@@ -762,6 +768,9 @@ fn make_fn(
         existing,
         // #30: 実体ごとに再コンパイルせず、定義サイトの器を全実体で共有する。
         Some(d.compiled.clone()),
+        d.qualname.clone(),
+        // Python の関数の中の関数は Python の関数（引数の束縛の規則・タスク 1-14）。
+        chunk.is_python,
     );
 }
 

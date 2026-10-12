@@ -336,6 +336,12 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
 
 関数本体内での変数ホイスト (if ブランチで代入された変数の前宣言) も自動で行われます。
 
+**関数の値**: `func.__name__` / `__qualname__` / `__doc__` は CPython と同じです（[05_functions.md](05_functions.md)・
+タスク 1-14）。デコレータの `func.__name__`、関数の中の関数の `outer.<locals>.inner`、ラムダの `<lambda>`、
+property の getter の `p.fget.__name__`（変換器の別名ではなく元の名前）も同じになります。
+関数の中で定義した関数も Python の関数として呼ばれます（既定値・キーワード引数・`**kw` の束縛）。
+⚠ `*args` は tuple ではなく list で受けます（タスク 1-16）。
+
 **組み込み**（[12_builtins.md](12_builtins.md)）:
 - Arrow に無い組み込み（`format` / `vars` / `exit` …）を参照するモジュールは、**読み込む時点で変換の誤り**です
   （実行の前・呼ばれない関数の中でも）。名前ごとに最初の行を並べます:

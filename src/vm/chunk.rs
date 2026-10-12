@@ -105,6 +105,12 @@ pub struct ChunkFnDef {
     pub static_captures: Vec<(String, u32)>,
     /// この定義サイトから作られた**全クロージャ実体で共有**するコンパイル済み本体（#30）。
     pub compiled: SharedFnChunk,
+    /// 作る関数の `__qualname__`（`outer.<locals>.inner`・python_builtins_plan.md のタスク 1-14）。
+    ///
+    /// ⚠ コンパイラは外側の関数の名前を知らないので `None` で積み、外側の本体をコンパイルした呼び出し側が
+    ///   [`Chunk::set_nested_qualnames`] で埋める。最上位の文の Chunk では `None` のまま（名前と同じ。
+    ///   CPython も最上位の `if` の中の `def` は名前だけ）。
+    pub qualname: Option<std::rc::Rc<str>>,
 }
 
 /// 関数本体の `enum` 定義 1 件（#68）。`Op::EnumDef(idx)` が参照する。
@@ -334,4 +340,18 @@ pub struct Chunk {
     /// ツリーウォークは外側と `Rc<RefCell<Value>>` を共有するので、値を slot へコピーすると
     /// 書き戻りが消える。可変キャプチャを含むクロージャは `vm_eligible` が偽になる。
     pub captured_slots: Vec<(String, u16)>,
+}
+
+impl Chunk {
+    /// 入れ子 `fn` / `gen` の `__qualname__` を `{outer}.<locals>.{name}` で埋める（python_builtins_plan.md のタスク 1-14）。
+    ///
+    /// `outer` はこの本体の関数の `__qualname__`。関数の本体をコンパイルした呼び出し側（`compile_fn_value` など）が
+    /// 呼ぶ。Python のモジュールの関数（`is_python`）は変換器の付けた名前を戻す（持ち上げたラムダは `<lambda>`）。
+    pub fn set_nested_qualnames(&mut self, outer: &str) {
+        let is_python = self.is_python;
+        for d in &mut self.fn_defs {
+            let name = if is_python { crate::interpreter::python_fn_name(&d.name) } else { &d.name };
+            d.qualname = Some(std::rc::Rc::from(format!("{outer}.<locals>.{name}")));
+        }
+    }
 }

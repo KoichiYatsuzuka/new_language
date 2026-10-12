@@ -1,0 +1,11 @@
+# function_attrs_error.ar — 関数の `__doc__` は `Option[str]`（docstring が無ければ `None`・タスク 1-14）
+#
+# `str` として使う前に `None` でないことを確かめる必要がある（function_attrs.ar の `if doc is str:`）。
+# 期待: 静的型エラー（`Option[str]` を `str` の変数へ束縛できない）
+
+fn area(let w: int, let h: int) -> int:
+    "Area of a rectangle."
+    return w * h
+
+let doc: str = area.__doc__
+print(doc)

@@ -60,7 +60,7 @@ fn convert_class_in(
     // property を組み立てる文（クラスの定義の後に置く・タスク 6-1）と、その状態。
     let mut after_class: Vec<Stmt> = Vec::new();
     let mut defined_props: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut prop_method_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut prop_method_count: std::collections::HashMap<(&str, String), usize> = std::collections::HashMap::new();
     // その時点までにクラス本体で束縛された名前と、メソッドの定義（別名を作るため・タスク 6-3）。
     let mut body_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut method_defs: std::collections::HashMap<String, Stmt> = std::collections::HashMap::new();
@@ -280,10 +280,11 @@ fn convert_class_in(
                                 f.name.as_str()
                             ));
                         }
-                        let base = format!("__property_{}_{}", p.kind().tag(), f.name.as_str());
-                        let n = prop_method_count.entry(base.clone()).or_insert(0usize);
+                        let key = (p.kind().tag(), f.name.to_string());
+                        let n = prop_method_count.entry(key).or_insert(0usize);
                         *n += 1;
-                        if *n == 1 { base } else { format!("{base}_{n}") }
+                        // 実行時が `__name__` を元の名前へ戻す（`python_fn_name`・タスク 1-14）。
+                        crate::interpreter::property_method_name(p.kind().tag(), f.name.as_str(), *n)
                     }
                 };
                 if let Some(p) = prop {
@@ -465,7 +466,10 @@ fn convert_class_in(
 //
 // 読み書きは組み込みの `property`（`eval/py_builtins.rs`）とディスクリプタのプロトコル（タスク 1-12）が受ける。
 // ⚠ `__set_name__` は CPython ではクラスを作るときに `type.__new__` が呼ぶ（誤りの文言に名前を入れるため）。
-// ⚠ `x = property(getx, setx)`（クラス属性に直接書く形）はクラス本体の名前を参照するので、まだ動かない。
+// ⚠ `x = property(getx, setx)`（クラス属性に直接書く形）は、クラス本体の名前を参照するクラス属性として
+//   `class_attr_value` がクラスの定義の後へ回す（タスク 6-3）。
+// ⚠ 同じ名前の setter を 2 度書くと 2 つ目は `__property_set2_x`（`property_method_name`）。
+//   `fget.__name__` は実行時が元の名前（`x`）へ戻す（`python_fn_name`・タスク 1-14）。
 
 /// クラス属性の初期化式（タスク 6-3）。クラス本体で先に束縛した名前（`body_names`）を引いていなければ
 /// そのまま `static mut` の初期値、引いていれば初期値は `None` にして、クラスの定義の後で代入する値

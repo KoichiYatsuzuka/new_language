@@ -1017,6 +1017,7 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
                         params,
                         body,
                         captured_env: std::collections::HashMap::new(),
+                        qualname: None,
                     }));
                     table.insert(name, value);
                 }
@@ -1036,7 +1037,8 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
 ///   名前は `__set_name__` で入る（変換器がクラスの定義の後で呼ぶ。CPython ではクラスを作るときに `type.__new__` が呼ぶ）。
 /// - `getter` / `setter` / `deleter` は名前ごと写した新しい property を返す（CPython 3.12 の `property_copy`）。
 /// - ⚠ CPython 3.12 の property は `__name__` を持たない（3.13 から）ので、名前は `private` のフィールドに置く。
-/// - ⚠ `__doc__` は渡した `doc` だけ（getter の docstring は引き継がない。Arrow の関数は docstring を持たない）。
+/// - ⚠ `__doc__` は渡した `doc` だけ（CPython は `doc` が無ければ getter の `__doc__` を引き継ぐ。変換器が getter の
+///   docstring を `doc` に渡すので、変換したクラスでは同じになる・タスク 6-7）。
 /// - ⚠ `obj` を書き換える getter / setter に写しを渡さないよう、仮引数は `mut obj`。
 /// - ⚠ `__get__` は `mut self`: クラスから読む `C.x` は property **そのもの**を返す（`C.x is C.x`・`C.x.__set_name__(..)`
 ///   が置いてある property に届く）。`self` のままだと `return self` が写しを返す（Arrow の値の規則）。

@@ -130,6 +130,13 @@ impl Interpreter {
         .map(|mut c| {
             // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
             c.is_python = fn_val.is_python;
+            // 入れ子の関数の `__qualname__`（`outer.<locals>.inner`・タスク 1-14）。
+            let outer = match &fn_val.qualname {
+                Some(q) => q.to_string(),
+                None if fn_val.is_python => crate::interpreter::python_fn_name(&fn_val.name).to_string(),
+                None => fn_val.name.clone(),
+            };
+            c.set_nested_qualnames(&outer);
             Rc::new(c)
         });
         if crate::interpreter::tw_stats::enabled() {
@@ -160,7 +167,11 @@ impl Interpreter {
                     &captures,
                     &mut_captures,
                 )
-                .map(Rc::new);
+                .map(|mut c| {
+                    // 入れ子の関数の `__qualname__`（`compile_fn_value` と同じ・タスク 1-14）。
+                    c.set_nested_qualnames(gen_fn.qualname.as_deref().unwrap_or(&gen_fn.name));
+                    Rc::new(c)
+                });
                 if crate::interpreter::tw_stats::enabled() {
                     crate::interpreter::tw_stats::record_compile("gen", compiled.is_some());
                 }

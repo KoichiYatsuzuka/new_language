@@ -46,6 +46,8 @@ pub struct GeneratorFnValue {
     pub globals: u32,
     /// 定義したときに走っていたクラス（[`FnValue::owner_class`] と同じ）。
     pub owner_class: Option<Rc<ClassValue>>,
+    /// `__qualname__`（[`FnValue::qualname`] と同じ）。
+    pub qualname: Option<Rc<str>>,
 }
 
 
@@ -205,6 +207,12 @@ pub struct FnValue {
     /// ⚠ `Value` に腕を足さず関数の値に持たせた（網羅の `match` を増やさない・呼び出しの経路は
     ///   ツリーウォークも VM も `exec_fn_evaled` の 1 本なので入口 1 箇所で全部に効く）。
     pub bound: Option<Rc<BoundMethod>>,
+    /// `__qualname__`（python_builtins_plan.md のタスク 1-14）。`None` は名前と同じ（最上位の関数）。
+    ///
+    /// クラスのメソッドは `C.m`（クラスを定義するとき）、関数の中の関数は `outer.<locals>.inner`
+    /// （外側の本体をコンパイルしたときに `ChunkFnDef::qualname` へ入れ、`Op::MakeFn` が写す）。
+    /// ⚠ スレッドへ送る `deep_clone` では `Rc` を共有しない（作り直す・`vm_chunk` と同じ理由）。
+    pub qualname: Option<Rc<str>>,
 }
 
 /// 束縛メソッドの中身（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8 / 1-10）。
@@ -258,6 +266,42 @@ fn receiver_ptr(v: &Value) -> Option<*const ()> {
     }
 }
 
+/// 変換器（`python_converter::classes`）が property のメソッドに付ける別名（python_builtins_plan.md のタスク 6-1）。
+///
+/// `tag` は `get` / `set` / `del`。同じ名前の 2 つ目からは `tag` の後に数を付ける（`x` の setter は
+/// `__property_set_x`、2 つ目は `__property_set2_x`）。
+/// [`python_fn_name`] が元の名前（`x`）へ戻すので、**作り方と戻し方をここに並べてある**。
+/// ⚠ 使うのは変換器だけ（`native` ビルド）。エディタの wasm フロントエンドには変換器が無い。
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+pub(crate) fn property_method_name(tag: &str, name: &str, n: usize) -> String {
+    if n <= 1 {
+        format!("__property_{tag}_{name}")
+    } else {
+        format!("__property_{tag}{n}_{name}")
+    }
+}
+
+/// 変換器が付けた関数の名前から Python の名前（`__name__`）を取り出す（python_builtins_plan.md のタスク 1-14）。
+///
+/// property のメソッドの別名（[`property_method_name`]）は元の名前、持ち上げたラムダ（変換器の
+/// `next_temp_name("lambda")` が付ける `__py_lambda_` ＋ 番号）は CPython と同じ `<lambda>`。それ以外はそのまま。
+/// ⚠ Python のモジュールから来た関数（`FnValue::is_python`）にだけ使う。
+pub(crate) fn python_fn_name(name: &str) -> &str {
+    if let Some(rest) = name.strip_prefix("__property_") {
+        for tag in ["get", "set", "del"] {
+            let Some(r) = rest.strip_prefix(tag) else { continue };
+            let r = r.trim_start_matches(|c: char| c.is_ascii_digit());
+            if let Some(original) = r.strip_prefix('_').filter(|s| !s.is_empty()) {
+                return original;
+            }
+        }
+    }
+    if name.strip_prefix("__py_lambda_").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+        return "<lambda>";
+    }
+    name
+}
+
 impl FnValue {
     /// 束縛メソッドの値を作る（タスク 1-8 / 1-10）。
     ///
@@ -284,6 +328,8 @@ impl FnValue {
             globals,
             owner_class: None,
             bound: Some(Rc::new(BoundMethod { receiver, target })),
+            // 束縛メソッドの `__qualname__` は呼び先のもの（`Interpreter::function_attr`）。
+            qualname: None,
         })
     }
 
@@ -568,6 +614,7 @@ impl ClassValue {
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
                             vm_chunk: None,
                             bound: None,
+                            qualname: rc.qualname.as_deref().map(Rc::from),
                         })
                     })
                     .collect();
@@ -588,6 +635,7 @@ impl ClassValue {
                         params: crate::template_subst::unshare_params(&rc.params),
                         body: crate::template_subst::unshare_stmts(&rc.body),
                         captured_env: deep_clone_captured_env(&rc.captured_env),
+                        qualname: rc.qualname.as_deref().map(Rc::from),
                     }),
                 )
             })

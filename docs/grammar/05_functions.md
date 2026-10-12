@@ -153,6 +153,39 @@ apply(square, 10)
 [06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）。組み込み関数の名前も値になります
 （`map(repr, xs)` / `key=len`・[12_builtins.md](12_builtins.md)）。
 
+### 関数の名前と docstring（`__name__` / `__qualname__` / `__doc__`）
+
+関数の値は Python と同じ 3 つの属性を読めます（書き換えはできません）。
+
+```ar
+fn area(let w: int, let h: int) -> int:
+    "Area of a rectangle."
+    return w * h
+
+fn outer() -> str:
+    fn inner() -> int:
+        return 1
+    return inner.__qualname__       # "outer.<locals>.inner"
+
+class Box:
+    fn get(self) -> int:
+        return 1
+
+print(area.__name__)                # area
+let doc: Option[str] = area.__doc__ # "Area of a rectangle."（docstring が無ければ None）
+print(Box.get.__qualname__)         # Box.get（メソッド。束縛メソッド b.get も同じ）
+```
+
+| 属性 | 型 | 値 |
+|---|---|---|
+| `__name__` | `str` | 定義の名前 |
+| `__qualname__` | `str` | クラスと外側の関数を含む名前（`Box.get` / `outer.<locals>.inner`）。最上位の関数は `__name__` と同じ |
+| `__doc__` | `Option[str]` | 本体の先頭の文字列の文（docstring）。無ければ `None` |
+
+- 組み込みの値のメソッドは CPython と同じ（`xs.append.__qualname__` は `list.append`、`__doc__` は `None`）。
+- ⚠ 関数の値の属性はこの 3 つだけです（任意の属性を付けることはできません）。
+- ⚠ VM に載らずツリーウォークで走る関数本体の中で定義した関数は、`__qualname__` が名前だけになります。
+
 ### 関数型アノテーション
 
 | 記法 | 意味 |
