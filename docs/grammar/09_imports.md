@@ -350,6 +350,9 @@ import[py] .py_pkg.top as pt          # 相対（このファイルのディレ�
   組の入れ子 `except (A, (B, C)):` は変換の誤り（CPython 3.12 も実行時の `TypeError`）。
 - 組み込みの例外を継承したクラスの `super().__init__(..)` は組み込みの例外へ届き、`args` / `str(e)` が CPython と同じになります。
 
+**値**: `b".."` のリテラルは組み込みの `bytes([..])` に変換します（python_builtins_plan.md のタスク 3-1。
+[12_builtins.md](12_builtins.md) の「`bytes`」）。`frozenset(..)` も使えます。
+
 **ファイル**: `open(path, "w", encoding="utf-8")` など Python の形の `open` を受けます。`with open(p) as f: return f.read()`
 （`with` の中の `return`）も動きます。
 

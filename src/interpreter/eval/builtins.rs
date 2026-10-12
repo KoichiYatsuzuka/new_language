@@ -27,7 +27,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 型（呼ぶと作る・タスク 3-1）
-    "frozenset",
+    "frozenset", "bytes",
 ];
 
 /// `open` の失敗を例外の文字列にする。OS のエラーの種類で `OSError` の派生へ振り分ける
@@ -47,10 +47,10 @@ fn open_error(e: &std::io::Error, what: &str, file_path: &str) -> String {
 }
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
-/// `list` / `tuple` / `type` / `frozenset` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
+/// `list` / `tuple` / `type` / `frozenset` / `bytes` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
 pub(crate) fn is_builtin_function_name(name: &str) -> bool {
     matches!(name, "len" | "id")
-        || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple" | "type" | "frozenset"))
+        || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple" | "type" | "frozenset" | "bytes"))
 }
 
 impl Interpreter {
@@ -131,7 +131,7 @@ impl Interpreter {
             //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
             "parse_ar" => Some(self.parse_ar_evaled(args)),
             // `list(it)` / `tuple(it)`（タスク 1-7）/ `frozenset(it)`（3-1）。本体は型の呼び出し（`call_type_by_name_evaled`）に 1 本化。
-            "list" | "tuple" | "type" | "frozenset" => Some(self.call_type_by_name_evaled(name, args)),
+            "list" | "tuple" | "type" | "frozenset" | "bytes" => Some(self.call_type_by_name_evaled(name, args)),
             // ── Python の組み込み（python_builtins_plan.md のフェーズ 2・本体は `eval/py_builtins.rs`）──
             "isinstance" => Some(match args.as_slice() {
                 [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),

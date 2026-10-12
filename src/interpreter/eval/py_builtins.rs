@@ -1127,6 +1127,101 @@ impl Interpreter {
     }
 }
 
+impl Interpreter {
+    /// `bytes()` / `bytes(n)` / `bytes(iterable)` / `bytes(s, encoding[, errors])` / `bytes(b)`
+    /// （python_builtins_plan.md のタスク 3-1）。文言は CPython 3.12 と同じ。
+    pub(crate) fn py_bytes_ctor(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {
+        let mut source: Option<Value> = None;
+        let mut encoding: Option<Value> = None;
+        let mut errors: Option<Value> = None;
+        let mut pos = 0;
+        for (name, v, _) in evaled {
+            let slot = match name.as_deref() {
+                None => {
+                    pos += 1;
+                    match pos {
+                        1 => &mut source,
+                        2 => &mut encoding,
+                        3 => &mut errors,
+                        n => return Err(format!("TypeError: bytes() takes at most 3 arguments ({n} given)")),
+                    }
+                }
+                Some("source") => &mut source,
+                Some("encoding") => &mut encoding,
+                Some("errors") => &mut errors,
+                Some(other) => {
+                    return Err(format!("TypeError: '{other}' is an invalid keyword argument for bytes()"))
+                }
+            };
+            *slot = Some(v);
+        }
+        let text = |v: Option<Value>, what: &str| -> Result<Option<String>, String> {
+            match v {
+                None => Ok(None),
+                Some(Value::Str(s)) => Ok(Some(s.to_string())),
+                Some(other) => Err(format!(
+                    "TypeError: bytes() argument '{what}' must be str, not {}",
+                    crate::interpreter::ops::typecheck::runtime_type_name(&other)
+                )),
+            }
+        };
+        let encoding = text(encoding, "encoding")?;
+        let errors = text(errors, "errors")?;
+        let Some(source) = source else {
+            if encoding.is_some() || errors.is_some() {
+                return Err("TypeError: encoding without a string argument".to_string());
+            }
+            return Ok(Value::Bytes(std::rc::Rc::from(&[][..])));
+        };
+        if let Value::Str(s) = &source {
+            let Some(enc) = encoding else {
+                return Err("TypeError: string argument without an encoding".to_string());
+            };
+            let codec = crate::interpreter::ops::codecs::Codec::lookup(&enc)?;
+            let out = crate::interpreter::ops::codecs::encode(s, codec, errors.as_deref().unwrap_or("strict"))?;
+            return Ok(Value::Bytes(out.into()));
+        }
+        if encoding.is_some() || errors.is_some() {
+            return Err("TypeError: encoding without a string argument".to_string());
+        }
+        match source {
+            Value::Bytes(b) => Ok(Value::Bytes(b)),
+            // `bytes(n)` は 0 が n 個（CPython の `bool` は int の派生なので `bytes(True)` も同じ）。
+            Value::Int(n) => {
+                if n < 0 {
+                    return Err("ValueError: negative count".to_string());
+                }
+                Ok(Value::Bytes(vec![0u8; n as usize].into()))
+            }
+            Value::Bool(t) => Ok(Value::Bytes(vec![0u8; usize::from(t)].into())),
+            Value::None | Value::Float(_) | Value::Complex(_, _) => Err(format!(
+                "TypeError: cannot convert '{}' object to bytes",
+                crate::interpreter::ops::typecheck::runtime_type_name(&source)
+            )),
+            other => {
+                let shown = crate::interpreter::ops::typecheck::runtime_type_name(&other);
+                let items = self
+                    .drain_iterable(other)
+                    .map_err(|_| format!("TypeError: cannot convert '{shown}' object to bytes"))?;
+                let mut out = Vec::with_capacity(items.len());
+                for v in items {
+                    match v {
+                        Value::Int(n) if (0..=255).contains(&n) => out.push(n as u8),
+                        Value::Int(_) => return Err("ValueError: bytes must be in range(0, 256)".to_string()),
+                        other => {
+                            return Err(format!(
+                                "TypeError: '{}' object cannot be interpreted as an integer",
+                                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+                            ))
+                        }
+                    }
+                }
+                Ok(Value::Bytes(out.into()))
+            }
+        }
+    }
+}
+
 /// Python の形の `open` の引数を Arrow の列挙の値へ写したもの（python_builtins_plan.md のタスク 5-2）。
 pub(crate) struct PyOpenForm {
     /// `FileOpenMode` の値（write=0 / rewrite=1 / read=2 / make_and_write=3）。

@@ -57,7 +57,7 @@ let b = open("out.txt", mode="rb")   # バイト列
 
 ## 型の値（呼んで作る）
 
-`int` / `uint` / `float` / `str` / `bool` / `complex` / `list` / `tuple` / `dict` / `set` / `frozenset` / `type`
+`int` / `uint` / `float` / `str` / `bytes` / `bool` / `complex` / `list` / `tuple` / `dict` / `set` / `frozenset` / `type`
 
 - `list(it)` / `tuple(it)` / `set(it)` / `frozenset(it)` は回せる値なら何でも受ける（遅延のジェネレータ・辞書のキーも）
 - `frozenset`（python_builtins_plan.md のタスク 3-1）は不変でハッシュできる集合。辞書のキー・集合の要素にできる。
@@ -66,6 +66,33 @@ let b = open("out.txt", mode="rb")   # バイト列
   `issuperset` / `isdisjoint` / `copy`）。`add` などは CPython と同じ `AttributeError`。表示は `frozenset({1, 2})`。
   ⚠ 集合の並びは作った順（CPython はハッシュの順。`set` と同じ差）
 - `bool(x)` は `if x:` と同じ規則（`__bool__` も見る。空の tuple / dict / frozenset は偽）
+
+### `bytes`
+
+不変のバイト列（python_builtins_plan.md のタスク 3-1）。結果・誤りの文言は CPython 3.12 と同じです。
+
+```ar
+let b: bytes = "héllo".encode()          # b'h\xc3\xa9llo'（encode の既定は utf-8）
+print(b[0], b[1:3], len(b))              # 104 b'\xc3\xa9' 6
+print(b.decode(), bytes([65, 66]))       # héllo b'AB'
+print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
+```
+
+- 作る: `bytes()` / `bytes(n)`（0 が n 個）/ `bytes(iterable)`（0〜255 の int）/ `bytes(s, encoding[, errors])` /
+  `s.encode(encoding="utf-8", errors="strict")`。⚠ Arrow のソースに `b".."` のリテラルは無い（Python のモジュールの
+  `b".."` は変換器が `bytes([..])` に写す）
+- 符号化は `utf-8` / `ascii` / `latin-1`（別名も・誤りの文言まで CPython と同じ）、`utf-16-le` / `utf-16-be`
+  （BOM は付けも読みもしない。`utf-16` はバイト順が決まらないので誤り）、`shift_jis`（`cp932`）とそのほかの WHATWG の名前
+  （`euc-jp` / `gbk` …）。`errors` は `strict` / `ignore` / `replace`（どの符号化でも）。失敗は
+  `UnicodeDecodeError` / `UnicodeEncodeError`（`'utf-8' codec can't decode byte 0xff in position 0: invalid start byte`）。
+  知らない符号化は `LookupError: unknown encoding: ..`（本体は `src/interpreter/ops/codecs.rs`）
+- 演算子: `+`（bytes どうし。`b + "x"` は静的な誤り）/ `*` int / `in`（int か部分列の bytes）/ 大小は辞書順 / `==`
+- メソッド: `decode` / `hex` / `count` / `find` / `rfind` / `index` / `rindex` / `startswith` / `endswith` / `replace` /
+  `split` / `join` / `strip` / `lstrip` / `rstrip` / `upper` / `lower` / `isdigit` / `isalpha` / `isalnum` / `isspace` /
+  `isascii` / `isupper` / `islower`
+- 表示は `b'..'`（`str(b)` も同じ。引用符の選び方・`\xhh` のエスケープは CPython と同じ）
+- ⚠ 無いもの: `bytearray` / `memoryview`、`bytes.fromhex`、`%` の書式、`partition` などの残りのメソッド。
+  ⚠ Python の形で開いたファイルの `"rb"` の読みは今も int の list（タスク 5-4）
 - `dict()` / `dict(pairs)` / `dict(mapping)` / `dict(a=1)` を CPython と同じく受ける
 - `type(x)` はクラスの値（`type(x).__name__` / `type(x) is C` / `type(x)(..)`）。3 引数の `type(name, bases, dict)` は `TypeError`
 
@@ -108,14 +135,14 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 42 名は Arrow にありません（`property` は 6-1、`frozenset` は 3-1 で足した）:
+CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 39 名は Arrow にありません（`property` は 6-1、`frozenset` /
+`bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1 で足した）:
 
 `format` `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
-`bytes` `bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
+`bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
 `NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `EOFError` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
-`UnicodeDecodeError` `UnicodeEncodeError`
 
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。
 - **Python のモジュール**（`import[py]`）で参照すると、読み込む時点で変換の誤りになります。呼ばれない関数の中でも

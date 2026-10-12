@@ -638,6 +638,8 @@ impl TypeChecker {
                         IT::Tuple(ts) => Self::join_elem_types(ts.clone()),
                         // `str` を展開すると 1 文字ずつの `str`。
                         IT::Str => IT::Str,
+                        // `bytes` を展開すると 1 バイトずつの `int`（タスク 3-1）。
+                        IT::Bytes => IT::Int,
                         IT::Any | IT::Unresolved => IT::Any,
                         // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
                         IT::NamedInstance(_) => IT::Any,
@@ -703,7 +705,7 @@ impl TypeChecker {
         }
         match obj_ty {
             T::List | T::ListOf(_) | T::FixedList | T::FixedListOf(_) | T::ListLike
-            | T::ListLikeOf(_) | T::Str | T::Tuple(_) => {
+            | T::ListLikeOf(_) | T::Str | T::Bytes | T::Tuple(_) => {
                 self.check_int_position(idx_ty, &format!("index of `{obj_ty}`"));
             }
             T::DictOf(key, _) => {
@@ -1103,6 +1105,7 @@ impl TypeChecker {
         use InferredType as T;
         match ty {
             T::Str => &["str"],
+            T::Bytes => &["bytes"],
             T::List | T::ListOf(_) => &["list"],
             T::FixedList | T::FixedListOf(_) => &["fixed_list"],
             T::ListLike | T::ListLikeOf(_) => &["list", "fixed_list"],

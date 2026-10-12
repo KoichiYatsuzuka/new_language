@@ -845,7 +845,22 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
         py::Constant::Str(s) => Ok(Expr::Str(Rc::from(s.as_str()))),
         py::Constant::Bool(b) => Ok(Expr::Bool(*b)),
         py::Constant::None => Ok(Expr::None),
-        py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),
+        // `b"xy"` は `bytes([120, 121])`（組み込みの `bytes`・python_builtins_plan.md のタスク 3-1）。
+        // ⚠ Arrow のソースに bytes のリテラルの構文は無いので、組み込みの呼び出しへ写す
+        //   （モジュールが `bytes` を束縛し直していれば、その値が呼ばれる。CPython のリテラルは影響を受けない）。
+        py::Constant::Bytes(b) => Ok(Expr::Call {
+            func: Box::new(Expr::Ident {
+                name: "bytes".to_string(),
+                node_id: 0,
+                res: Resolution::Unresolved,
+            }),
+            args: vec![CallArg::Positional(Expr::List(
+                b.iter().map(|&x| crate::ast::SeqEntry::Item(Expr::Int(x as i64))).collect(),
+            ))],
+            span: make_span(filename),
+            cache: Default::default(),
+            node_id: 0,
+        }),
         py::Constant::Ellipsis => Ok(Expr::None),
         // 定数タプル。要素も `Constant` なので再帰する。
         //

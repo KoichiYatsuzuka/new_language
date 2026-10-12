@@ -341,6 +341,27 @@ impl Interpreter {
             (BinOp::NotIn, item, Value::Tuple(t)) => {
                 Ok(Value::Bool(!self.contains_eq(t.all_values(), item)?))
             }
+            // bytes の包含（タスク 3-1）: 0〜255 の int か、部分列の bytes。文言は CPython と同じ。
+            (BinOp::In | BinOp::NotIn, item, Value::Bytes(hay)) => {
+                let found = match item {
+                    Value::Int(n) => {
+                        if !(0..=255).contains(n) {
+                            return Err("ValueError: byte must be in range(0, 256)".to_string());
+                        }
+                        hay.contains(&(*n as u8))
+                    }
+                    Value::Bytes(needle) => {
+                        needle.is_empty() || hay.windows(needle.len()).any(|w| w == &needle[..])
+                    }
+                    other => {
+                        return Err(format!(
+                            "TypeError: a bytes-like object is required, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
+                };
+                Ok(Value::Bool(found == matches!(op, BinOp::In)))
+            }
             (BinOp::In, _, rv) => Err(format!(
                 "TypeError: argument of type '{}' is not iterable",
                 self.type_name(rv)
@@ -355,8 +376,18 @@ impl Interpreter {
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
-            // バイト列の連結（新しい値を作る・3-1）
-            (BinOp::Add, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::bytes([&a[..], &b[..]].concat())),
+            // ── bytes（タスク 3-1）: 連結・繰り返し・包含・大小（辞書順）。文言は CPython と同じ ──
+            (BinOp::Add, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bytes([&a[..], &b[..]].concat().into())),
+            (BinOp::Add, Value::Bytes(_), other) => {
+                Err(format!("TypeError: can't concat {} to bytes", self.type_name(other)))
+            }
+            (BinOp::Mul, Value::Bytes(b), Value::Int(n)) | (BinOp::Mul, Value::Int(n), Value::Bytes(b)) => {
+                Ok(Value::Bytes(b.repeat((*n).max(0) as usize).into()))
+            }
+            (BinOp::Lt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::LtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::GtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a >= b)),
             // `Code + Code` — 行の連結（設計書 §1.2 / タスク 2-10）。
             // ⚠ 新しい `Code` を作る（左辺を壊さない）。`str` / `list` の連結と同じ。
             (BinOp::Add, Value::Code(a), Value::Code(b)) => {
@@ -513,11 +544,6 @@ impl Interpreter {
             (BinOp::Gt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a > b)),
             (BinOp::LtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a <= b)),
             (BinOp::GtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a >= b)),
-            // バイト列同士の順序比較（バイトの辞書順・3-1）
-            (BinOp::Lt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a < b)),
-            (BinOp::Gt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a > b)),
-            (BinOp::LtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a <= b)),
-            (BinOp::GtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a >= b)),
             // uint 算術・比較
             (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
             (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),

@@ -311,6 +311,10 @@ fn tuple(iterable: Any = None):
     """A tuple of the elements of an iterable, or an empty tuple."""
     pass
 
+fn bytes(source: Any = None, encoding: Option[str] = None, errors: Option[str] = None) -> bytes:
+    """An immutable byte string: bytes() empty, bytes(n) n zero bytes, bytes(ints), bytes(b) a copy, or bytes(s, encoding[, errors]) (same as s.encode(encoding, errors))."""
+    pass
+
 fn frozenset(iterable: Any = None) -> frozenset[Any]:
     """An immutable, hashable set of the elements of an iterable (usable as a dict key), or an empty one."""
     pass

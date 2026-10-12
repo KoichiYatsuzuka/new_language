@@ -172,8 +172,7 @@ pub(crate) fn py_str_repr(s: &str) -> String {
 pub(crate) mod typecheck;
 mod display;
 mod operators;
-// バイトとして扱う整数の範囲検査（`bytes(list[int])` と `int in bytes` で共有・3-1）
-pub(crate) use operators::byte_of;
 mod equality;
 pub(crate) mod hash;
 pub(crate) mod unicode_printable;
+pub(crate) mod codecs;

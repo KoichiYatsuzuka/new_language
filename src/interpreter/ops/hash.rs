@@ -175,7 +175,7 @@ impl Interpreter {
                 h.write_u8(Tag::Str as u8);
                 h.write(s.as_bytes());
             }
-            // 中身で決まる値（`str` と同じ。等値側の `values_eq` も中身で比べる・3-1）
+            // bytes（タスク 3-1）。`values_eq` は中身のバイトで比べる（`str` とは等値にならない）。
             Value::Bytes(b) => {
                 h.write_u8(Tag::Bytes as u8);
                 h.write(b);

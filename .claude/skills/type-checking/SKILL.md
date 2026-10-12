@@ -27,6 +27,7 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `Set` | Untyped set |
 | `SetOf(T)` | Homogeneous set |
 | `FrozenSet` / `FrozenSetOf(T)` | `frozenset` / `frozenset[T]` (python_builtins_plan.md 3-1). Mirrors `Set` / `SetOf` at every site; not assignable to/from `set[T]`. Set operators keep the left operand's kind; `==` and `<=` between set and frozenset are allowed (`binop.rs`) |
+| `Bytes` | `bytes` (3-1): index → `Int`, slice / `+` / `*` → `Bytes`, iteration → `Int`, `x in b` needs `Int` or `Bytes` (`binop.rs`); method results in `builtin_collection_method_return` (`s.encode()` → `Bytes`) |
 | `Dict` | Untyped dict |
 | `DictOf(K, V)` | Dict with key type `K` and value type `V` |
 | `Tuple(Vec<T>)` | Fixed-length tuple with per-element types |

@@ -700,6 +700,7 @@ fn builtin_value_methods_are_dispatched() {
         "mut fl: fixed_list[V] = [V(1.0)] => fixed_list[V]\n",
         "mut ge = [1, 2].__iter__()\n",
         "mut fz = frozenset([1, 2])\n",
+        "mut by = bytes([97, 98])\n",
     );
     let (stmts, mut interp) = prepare(src).unwrap();
     for stmt in &stmts {
@@ -714,6 +715,7 @@ fn builtin_value_methods_are_dispatched() {
             "fixed_list" => "fl",
             "generator" => "ge",
             "frozenset" => "fz",
+            "bytes" => "by",
             other => panic!("no sample receiver for '{other}'"),
         };
         let recv = interp.get_val(var).unwrap();

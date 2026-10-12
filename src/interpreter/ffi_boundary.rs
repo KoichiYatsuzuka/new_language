@@ -233,6 +233,7 @@ fn runtime_type_name(val: &Value) -> &'static str {
         Value::Dict(_) => "dict",
         Value::Set(_) => "set",
         Value::FrozenSet(_) => "frozenset",
+        Value::Bytes(_) => "bytes",
         Value::Tuple(_) => "tuple",
         Value::Instance(_) => "instance",
         Value::PyObject(_) => "python object",

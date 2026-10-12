@@ -96,7 +96,7 @@ BaseException
       │              （IOError / EnvironmentError / WindowsError は OSError と互いに捕まえ合う）
       ├── RuntimeError ── NotImplementedError / RecursionError
       ├── SyntaxError ── IndentationError ── TabError
-      ├── ValueError ── UnicodeError ── UnicodeTranslateError
+      ├── ValueError ── UnicodeError ── UnicodeTranslateError / UnicodeDecodeError / UnicodeEncodeError
       ├── Warning ── UserWarning / DeprecationWarning / FutureWarning / RuntimeWarning / …（12）
       ├── AssertionError / AttributeError / BufferError / ReferenceError / StopIteration /
       │   SystemError
@@ -109,8 +109,9 @@ BaseException
   `IsADirectoryError` / `NotADirectoryError` に振り分けます（それ以外は `IOError`）。
 - ⚠ `IOError` などの別名は CPython では `OSError` そのものですが、Arrow ではクラスが別です
   （`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
-- ⚠ `SystemExit` / `KeyboardInterrupt` / `ImportError` / `UnicodeDecodeError` / `ExceptionGroup` などは
-  まだありません（意味が要るもの）。
+- `UnicodeDecodeError` / `UnicodeEncodeError` は bytes の復号・符号化の失敗（python_builtins_plan.md のタスク 3-1・
+  文言は CPython と同じ）。⚠ CPython の 5 引数の構築子と `encoding` / `start` / `end` / `reason` の属性は無い。
+- ⚠ `SystemExit` / `KeyboardInterrupt` / `ImportError` / `ExceptionGroup` などはまだありません（意味が要るもの）。
 - `FfiTypeError` は `TypeError` の派生なので `except TypeError` でも捕まえられます。`ForeignError` は C# の例外・
   JS の `throw`・py-int で Python が投げた例外で、`message` は相手の例外の種類とメッセージ
   （`System.InvalidOperationException: boom`・`ValueError: bad`）。どちらも `implementation_plans/ffi_value_exchange_plan.md`

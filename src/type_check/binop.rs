@@ -133,9 +133,20 @@ impl TypeChecker {
                 }
                 T::DictOf(k, _) => (**k).clone(),
                 T::Str => T::Str,
-                // バイト列は部分列（`bytes`）か 1 バイト（`int`）を探せる（3-1）
-                T::Bytes if matches!(lt, T::Int) => return,
-                T::Bytes => T::Bytes,
+                // `x in b"..."` は int（1 バイト）でも bytes（部分列）でもよい（タスク 3-1）。
+                T::Bytes => {
+                    if !matches!(lt, T::Int | T::Bytes) && !Self::opaque_for_equality(lt) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::CrossTypeEquality {
+                                op: op.as_str().to_string(),
+                                left: lt.clone(),
+                                right: T::Bytes,
+                            },
+                            span: Some(span),
+                        });
+                    }
+                    return;
+                }
                 // 要素型の判らない容器・tuple は判定しない。
                 _ => return,
             };
@@ -697,7 +708,7 @@ impl TypeChecker {
                 | (Complex, Float) | (Float, Complex)
                 | (Complex, Int)   | (Int, Complex) => Complex,
                 (Str, Str) => Str,
-                // バイト列の連結（3-1）
+                // bytes の連結（タスク 3-1）。`b"a" + "b"` は TypeError（CPython と同じ）。
                 (Bytes, Bytes) => Bytes,
                 // 実測: `[1] + [2]` → `[1, 2]` ／ `(1,) + (2,)` → `(1, 2)`
                 // ⚠ 要素型は合成する（連結なのでどちらの要素も現れる）。
@@ -728,6 +739,7 @@ impl TypeChecker {
                 | (Complex, Int)   | (Int, Complex) => Complex,
                 // 実測: `"ab" * 2` / `2 * "ab"` → "abab" という文字列（`"a" * 1.5` は TypeError）
                 (Str, Int) | (Int, Str) => Str,
+                (Bytes, Int) | (Int, Bytes) => Bytes,
                 // 実測: `[1] * 2` → `[1, 1]` ／ `(1,) * 2` → `(1, 1)`
                 (ListOf(a), Int) => ListOf(a.clone()),
                 (Int, ListOf(a)) => ListOf(a.clone()),

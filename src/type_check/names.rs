@@ -55,7 +55,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",
     // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7 / `frozenset(it)`・3-1）。
-    "list", "tuple", "frozenset",
+    "list", "tuple", "frozenset", "bytes",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
@@ -133,6 +133,10 @@ pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("ValueError", "Exception"),
     ("UnicodeError", "ValueError"),
     ("UnicodeTranslateError", "UnicodeError"),
+    // bytes の符号化・復号の失敗（`ops::codecs`・タスク 3-1）。⚠ CPython の 5 引数の構築子と `encoding` / `start` /
+    //   `end` / `reason` の属性は無い（内部で起きたものは文言だけを持つ・4-2 の既知の差と同じ）。
+    ("UnicodeDecodeError", "UnicodeError"),
+    ("UnicodeEncodeError", "UnicodeError"),
     ("AccessError", "Exception"),
     // 外部言語との境界（ffi_value_exchange_plan.md 7-4・Arrow 独自）: 宣言と食い違う値（`TypeError` の派生なので
     // `except TypeError` でも捕まる）と、相手の言語で投げられた例外。
@@ -187,6 +191,15 @@ pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
         &[
             "__iter__", "copy", "difference", "intersection", "isdisjoint", "issubset", "issuperset",
             "symmetric_difference", "union",
+        ],
+    ),
+    // `classes/bytes_methods.rs`（タスク 3-1）。
+    (
+        "bytes",
+        &[
+            "__iter__", "count", "decode", "endswith", "find", "hex", "index", "isalnum", "isalpha", "isascii",
+            "isdigit", "islower", "isspace", "isupper", "join", "lower", "lstrip", "replace", "rfind", "rindex",
+            "rstrip", "split", "startswith", "strip", "upper",
         ],
     ),
     ("fixed_list", &["__contains__", "__iter__", "allocated_size", "append"]),

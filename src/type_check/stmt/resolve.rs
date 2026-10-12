@@ -129,6 +129,8 @@ impl TypeChecker {
             | InferredType::IteratorOf(elem)
             | InferredType::SetOf(elem)
             | InferredType::FrozenSetOf(elem) => (**elem).clone(),
+            // bytes の反復は 1 バイトずつの int（タスク 3-1）。
+            InferredType::Bytes => InferredType::Int,
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
             InferredType::DictOf(k, _) => (**k).clone(),
             // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
@@ -138,8 +140,6 @@ impl TypeChecker {
             }
             // 文字列の反復は 1 文字ずつの `str` を返す。
             InferredType::Str => InferredType::Str,
-            // バイト列の反復は 0〜255 の `int`（3-1）
-            InferredType::Bytes => InferredType::Int,
             _ => InferredType::Unresolved,
         }
     }

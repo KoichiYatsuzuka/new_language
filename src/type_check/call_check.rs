@@ -778,6 +778,7 @@ impl TypeChecker {
                     | IT::Tuple(_)
                     | IT::TupleAny
                     | IT::Str
+                    | IT::Bytes
                     | IT::NamedInstance(_)
             )
         };
@@ -1382,6 +1383,7 @@ impl TypeChecker {
                 | T::SetOf(_)
                 | T::FrozenSet
                 | T::FrozenSetOf(_)
+                | T::Bytes
                 | T::Tuple(_)
         );
         if !not_callable {
@@ -1602,6 +1604,8 @@ impl TypeChecker {
                 },
                 _ => None,
             },
+            // `bytes(..)`（タスク 3-1）。どの形でも bytes（失敗は実行時の誤り）。
+            "bytes" => Some(T::Bytes),
             // `frozenset()` / `frozenset(xs)`（タスク 3-1）。`list(..)` と同じ考え方。
             "frozenset" => match arg_data {
                 [] => Some(T::FrozenSetOf(Box::new(T::Never))),
@@ -1652,6 +1656,22 @@ impl TypeChecker {
                     Some(T::IteratorOf(e.clone()))
                 }
                 T::Str => Some(T::IteratorOf(Box::new(T::Str))),
+                _ => None,
+            };
+        }
+        // `s.encode()` は bytes、bytes のメソッド（タスク 3-1・`classes/bytes_methods.rs`）。
+        if matches!(recv_ty, T::Str) && method == "encode" {
+            return Some(T::Bytes);
+        }
+        if matches!(recv_ty, T::Bytes) {
+            return match method {
+                "decode" | "hex" => Some(T::Str),
+                "count" | "find" | "rfind" | "index" | "rindex" => Some(T::Int),
+                "startswith" | "endswith" | "isalnum" | "isalpha" | "isascii" | "isdigit" | "islower" | "isspace"
+                | "isupper" => Some(T::Bool),
+                "replace" | "join" | "strip" | "lstrip" | "rstrip" | "upper" | "lower" => Some(T::Bytes),
+                "split" => Some(T::ListOf(Box::new(T::Bytes))),
+                "__iter__" => Some(T::IteratorOf(Box::new(T::Int))),
                 _ => None,
             };
         }

@@ -76,6 +76,7 @@ impl Interpreter {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Complex(r1, i1), Value::Complex(r2, i2)) => r1 == r2 && i1 == i2,
             (Value::Str(a), Value::Str(b)) => a == b,
+            // bytes（タスク 3-1）。`b"a" == "a"` は偽（CPython と同じ・型が違えば等値にならない）。
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,

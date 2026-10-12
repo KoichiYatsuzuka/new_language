@@ -137,18 +137,18 @@ impl Interpreter {
                 }
                 Ok(Value::str(chars[actual as usize].to_string()))
             }
-            // バイト列の添字は 0〜255 の整数（Python と同じ・3-1）
+            // bytes の添字は 1 バイトの int（タスク 3-1）。文言は CPython と同じ（`index out of range`）。
             Value::Bytes(b) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
                     format!(
-                        "TypeError: bytes indices must be integers or Index, not '{}'",
+                        "TypeError: byte indices must be integers or slices, not {}",
                         self.type_name(&key)
                     )
                 })?;
                 let len = b.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
-                    return Err(format!("IndexError: bytes index {} out of range", idx));
+                    return Err("IndexError: index out of range".to_string());
                 }
                 Ok(Value::Int(b[actual as usize] as i64))
             }

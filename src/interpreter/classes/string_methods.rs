@@ -44,6 +44,25 @@ impl Interpreter {
             let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
             return Ok(Value::str(result));
         }
+        // `encode(encoding="utf-8", errors="strict")` は bytes を返す（python_builtins_plan.md のタスク 3-1・`ops::codecs`）。
+        // ⚠ 以前は UTF-8 のバイトを int の list で返していた（`"Hi".encode()` が `[72, 105]`。CPython は `b'Hi'`）。
+        if method_name == "encode" {
+            let (mut encoding, mut errors) = (None, None);
+            for (i, (kw, v, _)) in evaled.into_iter().enumerate() {
+                match (kw.as_deref(), i) {
+                    (Some("encoding"), _) | (None, 0) => encoding = Some(v),
+                    (Some("errors"), _) | (None, 1) => errors = Some(v),
+                    (Some(other), _) => {
+                        return Err(format!("TypeError: encode() got an unexpected keyword argument '{other}'"))
+                    }
+                    (None, n) => return Err(format!("TypeError: encode() takes at most 2 arguments ({} given)", n + 1)),
+                }
+            }
+            let encoding = self.str_arg(encoding.as_ref(), "utf-8", "encode", "encoding")?;
+            let errors = self.str_arg(errors.as_ref(), "strict", "encode", "errors")?;
+            let codec = crate::interpreter::ops::codecs::Codec::lookup(&encoding)?;
+            return Ok(Value::Bytes(crate::interpreter::ops::codecs::encode(&s, codec, &errors)?.into()));
+        }
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
 
         // Helper: extract str from first positional arg
@@ -132,14 +151,6 @@ impl Interpreter {
             // ── 大文字・小文字変換 ──────────────────────────────────────────
             // ── 文字コード（3-1）────────────────────────────────────────────
             // `s.encode(encoding="utf-8")` → bytes。変換できない文字は ValueError（黙って置き換えない）。
-            "encode" => {
-                if vals.len() > 1 {
-                    return Err(format!("TypeError: str.encode() takes at most 1 argument ({} given)", vals.len()));
-                }
-                let enc = if vals.is_empty() { "utf-8".to_string() } else { arg_str!(0, "encode") };
-                Ok(Value::bytes(crate::interpreter::encoding::encode(&s, &enc)?))
-            }
-
             "upper" => Ok(Value::str(s.to_uppercase())),
             "lower" => Ok(Value::str(s.to_lowercase())),
             "swapcase" => Ok(Value::str(

@@ -405,6 +405,10 @@ impl Interpreter {
         if type_name == "dict" {
             return self.py_dict_ctor(evaled);
         }
+        // `bytes(source, encoding, errors)`（タスク 3-1）。`encoding=` をキーワードで書けるのでここで。
+        if type_name == "bytes" {
+            return self.py_bytes_ctor(evaled);
+        }
         // 値として取り出した組み込み関数（`let f = repr` / `key=len`・タスク 1-7）は組み込み関数の表へ回す。
         // ⚠ キーワード引数つきは `eval_builtin_evaled_named`（扱う名前だけ）。扱わない名前はキーワードを受けない。
         if super::builtins::is_builtin_function_name(type_name) && !matches!(type_name, "len" | "id") {
@@ -451,35 +455,6 @@ impl Interpreter {
                     [v] => Ok(Value::str(self.display(v))),
                     _ => Err("TypeError: str() takes at most 1 argument".to_string()),
                 }
-            },
-            // `bytes()` / `bytes(b)` / `bytes(list[int])`（3-1）。文字列からは `s.encode(encoding)` で作る
-            // （Python と同じく、文字コードを書かずに文字列をバイト列にはしない）。
-            "bytes" => match vals.as_slice() {
-                [] => Ok(Value::bytes(Vec::new())),
-                [Value::Bytes(b)] => Ok(Value::bytes(b.to_vec())),
-                // `bytes(n)` は n バイトのゼロ（Python と同じ・C の出力バッファを用意する・4-7）
-                [Value::Int(n)] if *n >= 0 => Ok(Value::bytes(vec![0u8; *n as usize])),
-                [Value::Int(n)] => Err(format!("ValueError: bytes() length must be 0 or more, not {n}")),
-                [Value::List(items)] => {
-                    let mut out = Vec::with_capacity(items.borrow().len());
-                    for v in items.borrow().iter() {
-                        match v {
-                            Value::Int(n) => out.push(crate::interpreter::ops::byte_of(*n)?),
-                            other => {
-                                return Err(format!(
-                                    "TypeError: bytes() takes a list of int, but an element is '{}'",
-                                    self.type_name(other)
-                                ))
-                            }
-                        }
-                    }
-                    Ok(Value::bytes(out))
-                }
-                [Value::Str(_)] => Err(
-                    "TypeError: bytes() cannot take a str without an encoding; use s.encode(\"utf-8\")".to_string(),
-                ),
-                [other] => Err(format!("TypeError: cannot convert '{}' to bytes", self.type_name(other))),
-                _ => Err("TypeError: bytes() takes at most 1 argument".to_string()),
             },
             "int" => match vals.as_slice() {
                 [] => Ok(Value::Int(0)),
@@ -586,6 +561,8 @@ impl Interpreter {
                 }
                 _ => Err("TypeError: set() takes at most 1 argument".to_string()),
             },
+            // 位置引数だけの経路（ネイティブのコールバック・組み込み関数の表）。本体は `py_bytes_ctor`（タスク 3-1）。
+            "bytes" => self.py_bytes_ctor(vals.into_iter().map(|v| (None, v, false)).collect()),
             // `frozenset()` / `frozenset(iterable)`（python_builtins_plan.md のタスク 3-1）。`set(..)` と同じく
             // 重複を除き、作った順に並べる。frozenset を渡せばそのまま返す（CPython も同じものを返す）。
             "frozenset" => match vals.len() {

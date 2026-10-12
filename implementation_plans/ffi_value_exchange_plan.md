@@ -609,7 +609,8 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 操作: `len`・添字（`int`）・スライス（`bytes`）・反復（`int`）・`+`（連結）・`==` と順序比較（バイトの辞書順）・`in`（部分列か
   1 バイト）・dict のキーと set の要素（値で等値・ハッシュ）・`is bytes` / `mustbe bytes`・真偽値（空が偽）。表示は Python の repr
   （`b'hi\xff'`）
-- 文字コード（`src/interpreter/encoding.rs`）: `s.encode(enc="utf-8") -> bytes`・`b.decode(enc="utf-8") -> str`。`utf-8` / `utf-16-le` /
+- 文字コード（`src/interpreter/encoding.rs`。⚠ のちに python_builtins_plan.md 3-1 の実装 `src/interpreter/ops/codecs.rs` と
+  1 つにまとめた。誤りは `UnicodeDecodeError` / `UnicodeEncodeError`（`ValueError` の派生）になり、`errors=` を受ける）: `s.encode(enc="utf-8") -> bytes`・`b.decode(enc="utf-8") -> str`。`utf-8` / `utf-16-le` /
   `utf-16-be` / `ascii` / `latin-1` は自前で Python と同じ意味、`shift_jis`（= `cp932` / `sjis` / `windows-31j`。表は CP932 と同じ）と
   そのほかの WHATWG の名前は encoding_rs。変換できなければ位置つきの ValueError（置き換え文字や `&#…;` にしない）。BOM は足さず
   読まない（`utf-16` は曖昧なのでエラー）。知らない名前も ValueError
@@ -1472,7 +1473,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 参照実装（`impl_python`）に組み込み型 `bytes` を足した（Python の `bytes` をそのまま値にする）: 型名・等値・真偽・比較（辞書順）・
   `+`・`in`（部分列か 0〜255 の `int`。範囲外は ValueError）・`len`・添字（`int`）・スライス（`bytes`）・反復（`int`）・`is bytes`・
   コンストラクタ `bytes()` / `bytes(n)` / `bytes(list[int])` / `bytes(bytes)`（誤りの文言は Rust の `eval/calls.rs` と同じ）
-- `str.encode(encoding)` / `bytes.decode(encoding)`: `impl_python/interpreter/encoding.py`（Rust の `interpreter/encoding.rs` の写し）。
+- `str.encode(encoding)` / `bytes.decode(encoding)`: `impl_python/interpreter/encoding.py`（Rust の `interpreter/encoding.rs` の写し。⚠ Rust 側はのちに `ops/codecs.rs` へまとめた）。
   文字コードの名前の別名、`utf-16` を拒む（BOM を足さない・読まない）、`shift_jis` 系は CP932 の表、失敗は置き換えずに ValueError
   （文言も Rust と同じ）
 - バイト単位で開いたファイル（7-11）の `read` / `read_line` / `write` / `write_line` が `bytes` を受け渡す（以前は `list[int]`）。

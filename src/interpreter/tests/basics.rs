@@ -573,3 +573,72 @@ fn test_str_repr_matches_cpython() {
         assert!(matches!(interp.get_val(var), Some(Value::Bool(b)) if b == want), "{var}");
     }
 }
+
+/// bytes（python_builtins_plan.md のタスク 3-1）: 作る・添字は int・スライスは bytes・表示は CPython の `b'..'`・
+/// `encode` / `decode`・辞書のキー。期待値は CPython 3.12.2 の出力そのもの。
+#[test]
+fn test_bytes_basics() {
+    let src = concat!(
+        "let b = \"h\u{e9}!\".encode()\n",
+        "let shown = str(b)\n",
+        "let first = b[0]\n",
+        "let mid = str(b[1:3])\n",
+        "let n = len(b)\n",
+        "let back = b.decode()\n",
+        "let quoted = repr(bytes([105, 116, 39, 115]))\n",
+        "let cat = str(bytes([97]) + bytes([98]) * 2)\n",
+        "let has = 98 in bytes([97, 98])\n",
+        "let d = {bytes([1]): 7}\n",
+        "let got = d[bytes([1])]\n",
+    );
+    let interp = run_interp(src);
+    let shown = |v: &str| interp.get_val(v).map(|x| interp.display(&x)).unwrap_or_default();
+    assert_eq!(shown("shown"), "b'h\\xc3\\xa9!'");
+    assert_eq!(shown("first"), "104");
+    assert_eq!(shown("mid"), "b'\\xc3\\xa9'");
+    assert_eq!(shown("n"), "4");
+    assert_eq!(shown("back"), "h\u{e9}!");
+    assert_eq!(shown("quoted"), "b\"it's\"");
+    assert_eq!(shown("cat"), "b'abb'");
+    assert_eq!(shown("has"), "True");
+    assert_eq!(shown("got"), "7");
+}
+
+/// 符号化・復号の誤りの文言は CPython 3.12 と同じ（`ops::codecs`）。
+#[test]
+fn test_codec_errors_match_cpython() {
+    use crate::interpreter::ops::codecs::{decode, encode, Codec};
+    let dec = |b: &[u8], c: Codec| decode(b, c, "strict").unwrap_err();
+    assert_eq!(
+        dec(b"\xff", Codec::Utf8),
+        "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+    );
+    assert_eq!(
+        dec(b"\xe3\x81A", Codec::Utf8),
+        "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-1: invalid continuation byte"
+    );
+    assert_eq!(
+        dec(b"\xe3\x81", Codec::Utf8),
+        "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-1: unexpected end of data"
+    );
+    assert_eq!(
+        dec(b"a\xe9b", Codec::Ascii),
+        "UnicodeDecodeError: 'ascii' codec can't decode byte 0xe9 in position 1: ordinal not in range(128)"
+    );
+    assert_eq!(decode(b"\xe0\x80\x80", Codec::Utf8, "replace").unwrap(), "\u{FFFD}\u{FFFD}\u{FFFD}");
+    assert_eq!(
+        encode("a\u{e9}\u{65e5}", Codec::Ascii, "strict").unwrap_err(),
+        "UnicodeEncodeError: 'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)"
+    );
+    assert_eq!(
+        encode("\u{65e5}", Codec::Latin1, "strict").unwrap_err(),
+        "UnicodeEncodeError: 'latin-1' codec can't encode character '\\u65e5' in position 0: ordinal not in range(256)"
+    );
+    assert_eq!(encode("a\u{e9}", Codec::Ascii, "replace").unwrap(), b"a?");
+    assert_eq!(Codec::lookup("UTF8").unwrap(), Codec::Utf8);
+    assert_eq!(Codec::lookup("nope").unwrap_err(), "LookupError: unknown encoding: nope");
+    assert_eq!(
+        decode(b"\xff", Codec::Utf8, "bogus").unwrap_err(),
+        "LookupError: unknown error handler name 'bogus'"
+    );
+}

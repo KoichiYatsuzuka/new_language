@@ -250,6 +250,7 @@ fn receiver_ptr(v: &Value) -> Option<*const ()> {
         Value::Dict(r) => Some(Rc::as_ptr(r) as *const ()),
         Value::Set(r) => Some(Rc::as_ptr(r) as *const ()),
         Value::FrozenSet(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::Bytes(b) => Some(Rc::as_ptr(b) as *const u8 as *const ()),
         Value::Generator(r) => Some(Rc::as_ptr(r) as *const ()),
         Value::FrozenList { state, .. } => Some(Rc::as_ptr(state) as *const ()),
         Value::Str(s) => Some(Rc::as_ptr(s) as *const u8 as *const ()),

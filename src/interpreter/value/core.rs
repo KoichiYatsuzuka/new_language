@@ -63,6 +63,8 @@ pub enum Value {
     /// 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。C の `char*` などを、文字列に変換する前のまま受け取る型。
     /// 文字列との変換は `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う（黙って UTF-8 とみなさない）。
     /// 等値・ハッシュは中身で決まる（`str` と同じ値の型）。⚠ `deep_clone` は `Str` と同じく独立バッファを作ること。
+    /// `bytes(..)` / `"s".encode()` / Python の `b".."` で作る。添字は `int`（0〜255）、スライスは `bytes`、
+    /// 表示は CPython と同じ `b'..'`（python_builtins_plan.md のタスク 3-1）。
     Bytes(Rc<[u8]>),
     /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),

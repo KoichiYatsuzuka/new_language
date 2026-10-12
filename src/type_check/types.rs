@@ -228,7 +228,8 @@ pub enum InferredType {
     /// `str` プリミティブ型。
     Str,
     /// `bytes` — 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。`str` とは別の型で、変換は
-    /// `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う。
+    /// `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う。添字は `int`、スライス・`+` / `*` は `bytes`、
+    /// 反復は `int`（python_builtins_plan.md のタスク 3-1）。
     Bytes,
     /// `bool` プリミティブ型。
     Bool,

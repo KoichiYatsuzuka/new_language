@@ -1,0 +1,41 @@
+# bytes — 不変のバイト列（python_builtins_plan.md のタスク 3-1）
+#
+# `bytes(..)` / `"s".encode()` で作る（Arrow のソースに `b".."` のリテラルは無い。Python のモジュールの `b".."` は
+# 変換器が `bytes([..])` に写す）。添字は 1 バイトの int、スライス・`+` / `*` は bytes、表示は CPython と同じ `b'..'`。
+# 出力は CPython と同じ。
+
+let data: bytes = "héllo".encode()
+print(data, len(data), data[0], data[-1], data[1:3])
+print(bytes([65, 66, 67]), bytes(3), bytes("abc", "ascii"), bytes())
+print(data.decode(), data.decode("utf-8"), "é".encode("latin-1"))
+
+# 演算子
+let ab: bytes = bytes([97, 98])
+print(ab + ab, ab * 3, 98 in ab, ab in bytes([120, 97, 98]), ab < bytes([97, 99]), ab == bytes([97, 98]))
+
+# メソッド
+let csv: bytes = "a,b,,c".encode()
+print(csv.split(",".encode()), "x".encode().join([ab, ab]), "  hi  ".encode().strip())
+print(ab.hex(), ab.hex("-"), ab.upper(), csv.count(",".encode()), csv.find(98), csv.replace(",".encode(), ";".encode()))
+print(ab.startswith("a".encode()), "123".encode().isdigit(), data.isascii())
+
+# 反復は int・辞書のキーにできる・型の判定
+mut total = 0
+for x in ab:
+    total += x
+let names: dict[bytes, str] = {ab: "ab"}
+print(total, list(ab), names[bytes([97, 98])], isinstance(ab, bytes), type(ab).__name__)
+
+# 表示（引用符の選び方・エスケープは CPython と同じ）
+print(bytes([105, 116, 39, 115]), bytes([0, 9, 10, 255]))
+
+# 符号化・復号の誤りは CPython と同じ文言
+try:
+    let s = bytes([255]).decode()
+except UnicodeDecodeError as e:
+    print(e)
+try:
+    let b = "日本".encode("ascii")
+except UnicodeEncodeError as e:
+    print(e)
+print(bytes([97, 255, 98]).decode("utf-8", "replace"), "aé".encode("ascii", "ignore"))

@@ -631,6 +631,21 @@ fn meta_kinds_are_distinct_types() {
         assert!(err("let a: frozenset = frozenset([1])\n"));
     }
 
+    /// bytes の型（タスク 3-1）: `bytes(..)` / `s.encode()` は bytes、添字は int・スライスは bytes、
+    /// `+` は bytes どうしだけ、`in` は int か bytes、メソッドの戻り値（`decode` は str・`split` は list[bytes]）。
+    #[test]
+    fn bytes_is_its_own_type() {
+        assert!(ok("let b: bytes = \"a\".encode()\nlet c: bytes = bytes([1, 2])\n"));
+        assert!(ok("let b = bytes(3)\nlet i: int = b[0]\nlet s: bytes = b[0:2]\nlet t: bytes = b + b * 2\n"));
+        assert!(ok("let b = bytes(3)\nlet s: str = b.decode()\nlet p: list[bytes] = b.split(bytes([0]))\nlet h: bool = 0 in b\n"));
+        assert!(ok("let b = bytes(3)\nmut n = 0\nfor x in b:\n    n += x\n"));
+        assert!(err("let b: bytes = \"a\"\n"));
+        assert!(err("let s: str = \"a\".encode()\n"));
+        assert!(err("let b = bytes(3)\nlet c = b + \"x\"\n"));
+        assert!(err("let b = bytes(3)\nlet s: str = b[0]\n"));
+        assert!(err("let b = bytes(3)\nlet h = \"x\" in b\n"));
+    }
+
     /// クラス側のディスクリプタ（タスク 1-12）: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は
     /// `__set__` の値の型、クラス経由の代入（`C.x = d`）はメンバーの宣言型（ディスクリプタのクラス）と照合する。
     /// `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにしない。

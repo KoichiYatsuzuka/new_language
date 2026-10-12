@@ -156,6 +156,11 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     if obj.is_none() {
         return Value::None;
     }
+    // bytes → Value::Bytes（タスク 3-1）。⚠ bytearray / memoryview は PyObject のまま。
+    if let Ok(b) = obj.downcast::<pyo3::types::PyBytes>() {
+        use pyo3::types::PyBytesMethods;
+        return Value::Bytes(b.as_bytes().into());
+    }
     // list → Value::List
     if let Ok(list) = obj.downcast::<PyList>() {
         let items: Vec<Value> = list.iter().map(|item| py_to_tl(py, &item)).collect();

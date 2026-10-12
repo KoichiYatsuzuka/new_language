@@ -1796,3 +1796,24 @@ fn python_property_is_built_after_the_class() {
     let err = conv("class C:\n    @cached_property\n    def x(self):\n        return 1\n").expect_err("cached_property");
     assert!(err.contains("'@cached_property' is not supported"), "{err}");
 }
+
+/// Python の `b".."` は組み込みの `bytes([..])` の呼び出しへ写す（python_builtins_plan.md のタスク 3-1）。
+/// 以前は `bytes literals are not supported` の変換の誤りだった。
+#[test]
+fn python_bytes_literal_becomes_a_bytes_call() {
+    let stmts = crate::python_converter::convert_python_source("def f():\n    return b\"A\\x00\"\n", "<test>")
+        .expect("bytes literal");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected a fn: {stmts:?}") };
+    let Some(Stmt::Return(Some(value), _)) = body.first() else { panic!("expected a return: {body:?}") };
+    let Expr::Call { func, args, .. } = value else { panic!("expected a call: {value:?}") };
+    assert!(matches!(func.as_ref(), Expr::Ident { name, .. } if name == "bytes"), "{func:?}");
+    let [CallArg::Positional(Expr::List(items))] = args.as_slice() else { panic!("{args:?}") };
+    let ints: Vec<i64> = items
+        .iter()
+        .map(|e| match e {
+            crate::ast::SeqEntry::Item(Expr::Int(n)) => *n,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(ints, vec![65, 0]);
+}

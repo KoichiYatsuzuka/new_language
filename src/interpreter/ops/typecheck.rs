@@ -471,6 +471,7 @@ impl Interpreter {
             Value::Dict(_) => "dict".to_string(),
             Value::Set(_) => "set".to_string(),
             Value::FrozenSet(_) => "frozenset".to_string(),
+            Value::Bytes(_) => "bytes".to_string(),
             Value::Tuple(_) => "tuple".to_string(),
             Value::Function(f) => format!("function({})", f.name),
             Value::OverloadedFn(_) => "function(overloaded)".to_string(),

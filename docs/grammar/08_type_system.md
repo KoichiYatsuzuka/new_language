@@ -24,7 +24,7 @@ fn add(let a: int, let b: int) -> int: ...
 | `int` | `Value::Int(i64)` | 64 ビット符号付き整数 |
 | `float` | `Value::Float(f64)` | 64 ビット浮動小数点 |
 | `str` | `Value::Str(String)` | Unicode 文字列 |
-| `bytes` | `Value::Bytes(Rc<[u8]>)` | 不変のバイト列（下の「`bytes`」） |
+| `bytes` | `Value::Bytes(Rc<[u8]>)` | 不変のバイト列（`bytes(..)` / `s.encode()`）。添字は `int`、スライス・`+`（bytes どうし）・`*` は `bytes`、反復は `int`、`x in b` は `int` か `bytes`。`str` とは混ぜられない（タスク 3-1・下の「`bytes`」） |
 | `bool` | `Value::Bool(bool)` | 真偽値 (`True` / `False`) |
 | `None` | `Value::None` | 値なし |
 
@@ -46,7 +46,8 @@ for x in raw:                                  # 各要素は 0〜255 の int
 - `len` / 添字（`int`）/ スライス（`bytes`）/ 反復（`int`）/ `==` と順序比較 / `+`（連結）/ `in`（部分列、または 0〜255 の
   `int`）。`dict` のキー・`set` の要素にもなる
 - 文字コード: `utf-8`（既定）・`utf-16-le` / `utf-16-be`・`ascii`・`latin-1`・`shift_jis`（`cp932`）・その他の WHATWG の名前
-  （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `ValueError`（置き換え文字にしない）
+  （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `UnicodeDecodeError` / `UnicodeEncodeError`
+  （`ValueError` の派生）。置き換え文字（U+FFFD・`?`）にするのは `errors="replace"` と書いたときだけ
 - `bytes(n)` は n バイトのゼロ（C の出力バッファを用意するのに使う）。`bytes(str)` は `TypeError`（`s.encode(..)` を使う）。
   リテラルの構文（`b"..."`）はまだありません
 - ⚠ 以前の `str.encode()` は文字コードを無視して `list[int]` を返していました
