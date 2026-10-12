@@ -46,4 +46,4 @@ def run():
         t.celsius = 99
     except ValueError as e:
         print(e)
-    print(str(t), repr(t))
+    print(str(t), repr(t), [t])

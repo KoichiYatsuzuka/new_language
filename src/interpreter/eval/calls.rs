@@ -436,25 +436,15 @@ impl Interpreter {
         vals: Vec<Value>,
     ) -> Result<Value, String> {
         match type_name {
-            "str" => {
-                let has_instance_str = if let [Value::Instance(inst_rc)] = vals.as_slice() {
-                    inst_rc.borrow().class.methods.contains_key("__str__")
-                } else {
-                    false
-                };
-                if has_instance_str {
-                    let v = vals.into_iter().next().unwrap();
-                    return self.eval_method_call_evaled(v, "__str__", vec![])
-                        .map(|r| match r {
-                            Value::Str(s) => Value::Str(s),
-                            other => Value::str(self.display(&other)),
-                        });
+            // `print` と同じ `display_str`（`__str__` → `__repr__`・コンテナの要素は `repr`・タスク 1-15）。
+            "str" => match vals.as_slice() {
+                [] => Ok(Value::str("")),
+                [Value::Str(s)] => Ok(Value::Str(s.clone())),
+                [v] => {
+                    let v = v.clone();
+                    self.display_str(&v).map(Value::str)
                 }
-                match vals.as_slice() {
-                    [] => Ok(Value::str("")),
-                    [v] => Ok(Value::str(self.display(v))),
-                    _ => Err("TypeError: str() takes at most 1 argument".to_string()),
-                }
+                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
             },
             "int" => match vals.as_slice() {
                 [] => Ok(Value::Int(0)),

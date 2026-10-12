@@ -818,3 +818,38 @@ fn test_descriptor_without_set_rejects_assignment() {
     );
     assert!(run_err_msg(src).contains("AttributeError: __set__"), "{}", run_err_msg(src));
 }
+
+
+/// `str` / `print` は `__str__` が無ければ `__repr__`、コンテナの要素は `repr`（タスク 1-15・CPython と同じ）。
+#[test]
+fn test_str_falls_back_to_repr_and_containers_use_repr() {
+    let src = concat!(
+        "class T:\n",
+        "    mut v: int\n",
+        "    fn __init__(mut self, let v: int) -> None:\n",
+        "        self.v = v\n",
+        "    fn __repr__(self) -> str:\n",
+        "        return \"T(\" + str(self.v) + \")\"\n",
+        "class S:\n",
+        "    fn __str__(self) -> str:\n",
+        "        return \"s\"\n",
+        "    fn __repr__(self) -> str:\n",
+        "        return \"S()\"\n",
+        "let t = T(1)\n",
+        "let a = str(t)\n",
+        "let b = str([t, S()])\n",
+        "let c = f\"{(t,)}\"\n",
+        "let d = str({\"k\": t})\n",
+        "let e = str(S())\n",
+    );
+    let interp = run_interp(src);
+    let s = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(s("a"), "T(1)");
+    assert_eq!(s("b"), "[T(1), S()]");
+    assert_eq!(s("c"), "(T(1),)");
+    assert_eq!(s("d"), "{'k': T(1)}");
+    assert_eq!(s("e"), "s");
+}

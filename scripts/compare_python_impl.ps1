@@ -197,6 +197,7 @@ $knownDiff = @{
     'py_bytes'                       ='Rust: Python の b".." リテラルが組み込みの bytes に変換される（タスク 3-1 で新設・CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
     'frozenset'                      ='Rust: 不変でハッシュできる集合 frozenset（演算子・set との比較・辞書のキー・タスク 3-1 で新設・CPython と同じ出力）。py: frozenset を知らず NameError'
     'frozenset_error'                = 'Rust: frozenset[int] を set[int] へ代入する形を静的に止める（タスク 3-1 で新設）。py: frozenset を知らず NameError'
+    'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'str_repr'                       ='Rust: 文字列の repr が CPython の unicode_repr と同じ（"it''s" / \n / \x00 の形・タスク 1-13 で新設）。py: コンテナの中の文字列を引用符なしで出す'
     'py_property_error'              ='Rust: setter の無い property への代入が CPython と同じ AttributeError（タスク 6-1 で新設）。py: import[py] したモジュールの run を引けず AttributeError'
     'py_exception_hierarchy'         = 'Rust: 組み込みの例外を継承した Python のクラスを作れ、多段の継承でも except が効く（10-19 で新設）。py: import[py] したモジュールの run を引けず AttributeError'

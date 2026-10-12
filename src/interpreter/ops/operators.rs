@@ -203,19 +203,37 @@ impl Interpreter {
         inst.class.field_index.get("args").and_then(|&idx| inst.field_value(idx))
     }
 
-    /// `__str__` を持つ `Value::Instance` に対してそのメソッドを呼び出し文字列表現を返す。
-    /// 定義されていなければ `display` へフォールバック。
+    /// `str(x)` / `print(x)` の文字列（CPython の `str`）。
+    ///
+    /// インスタンスは `__str__` を呼び、無ければ `repr`（`__repr__`・CPython の `object.__str__`）。
+    /// コンテナは要素を `repr` で出す（`print([t])` が要素の `__repr__` を呼ぶ・タスク 1-15）。
+    /// ⚠ 例外（組み込みの例外の階層と、`Error` を実装した利用者の例外）は `__str__` が無くても `display`
+    ///   （`message`・CPython の `BaseException.__str__`・ffi_value_exchange_plan.md 7-3）。
     pub(crate) fn display_str(&mut self, val: &Value) -> Result<String, String> {
-        if let Value::Instance(inst_rc) = val {
-            if inst_rc.borrow().class.methods.contains_key("__str__") {
-                let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
-                return match result {
-                    Value::Str(s) => Ok(s.to_string()),
-                    other => Ok(self.display(&other)),
+        match val {
+            Value::Instance(inst_rc) => {
+                let (has_str, is_exc) = {
+                    let inst = inst_rc.borrow();
+                    let is_exc = Self::in_exception_hierarchy(&inst.class) || inst.class.is_a("Exception");
+                    (inst.class.methods.contains_key("__str__"), is_exc)
                 };
+                if has_str {
+                    let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
+                    return match result {
+                        Value::Str(s) => Ok(s.to_string()),
+                        other => Ok(self.display(&other)),
+                    };
+                }
+                if is_exc {
+                    return Ok(self.display(val));
+                }
+                self.repr_val(val)
             }
+            Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::FrozenSet(_) => {
+                self.repr_val(val)
+            }
+            _ => Ok(self.display(val)),
         }
-        Ok(self.display(val))
     }
 
     /// 二項演算子を適用した結果の値を返す。

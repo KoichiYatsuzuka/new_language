@@ -12,7 +12,7 @@
 #   5 5 5 T
 #   15 degrees Celsius
 #   too hot
-#   Temperature(15) Temperature(15)
+#   Temperature(15) Temperature(15) [Temperature(15)]
 #
 # ⚠ 以前は `DOUBLE = LIMIT * 2` などが `NameError`、`__repr__ = __str__` は黙って捨てられ、
 #   `describe = lambda self: ..` は `missing argument 'self'` だった。
