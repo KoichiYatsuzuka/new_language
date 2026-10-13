@@ -1,0 +1,13 @@
+# ptr_method_error.ar — Ptr でできない操作は静的エラー（負例・ffi_value_exchange_plan.md 3-3）
+#
+# - アドレスは取り出せない（`release()` / `to_list()` / `to_bytes()` しか無い・D-3）
+# - `to_bytes()` は文字データ（int8 / uint8 / uint16）の Ptr だけ
+# - `Ptr[void]` は要素型が分からないので展開できない（`p mustbe Ptr[T]` で変換してから）
+# 対になる正例: ptr_types.ar
+
+fn f(let p: Ptr[int32]) -> None:
+    let a = p.address()
+    let b = p.to_bytes()
+
+fn g(let p: Ptr[void]) -> None:
+    let xs = p.to_list()

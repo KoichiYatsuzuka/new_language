@@ -106,6 +106,11 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         InferredType::Float => prim(matches!(value, Value::Float(_)), value),
         InferredType::Str => prim(matches!(value, Value::Str(_)), value),
         InferredType::Bytes => prim(matches!(value, Value::Bytes(_)), value),
+        // `Ptr[T]`（3-3）: 要素型まで照合する（`ptr_ann_matches` と同じ規則。`is` / `mustbe` と揃える）
+        InferredType::Ptr(_) => prim(
+            crate::interpreter::value::ptr_ann_matches(&declared.to_string(), value).unwrap_or(false),
+            value,
+        ),
         InferredType::Bool => prim(matches!(value, Value::Bool(_)), value),
         InferredType::None => prim(matches!(value, Value::None), value),
         InferredType::Complex => prim(matches!(value, Value::Complex(_, _)), value),

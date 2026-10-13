@@ -701,7 +701,9 @@ impl TypeChecker {
     /// ⚠ スカラ（`int` 等）は**対象にしない**。書き戻らないのは同じだが、
     /// そこまで緩めるかは仕様の話で、本件（関数を渡せない）とは別。
     fn mut_arg_exempt(ty: &InferredType) -> bool {
-        matches!(ty, InferredType::Function { .. })
+        // `Ptr` も書き戻しようがない（Arrow から中身を書き換える手段が無い・D-11）。`T*` の引数へ `let` の
+        // `Ptr` を渡せる（ffi_value_exchange_plan.md 3-3）
+        matches!(ty, InferredType::Function { .. } | InferredType::Ptr(_))
     }
 
     /// 呼び出し引数に `*xs` / `**d` の展開が含まれるか。
@@ -1507,6 +1509,10 @@ impl TypeChecker {
         match (recv_ty, method) {
             (T::Str, "encode") => return Some(T::Bytes),
             (T::Bytes, "decode") => return Some(T::Str),
+            // `Ptr[T]`（3-3）。できない組み合わせは `check_ptr_method` が報告する
+            (T::Ptr(_), "release") => return Some(T::None),
+            (T::Ptr(e), "to_list") => return e.list_elem().map(|t| T::ListOf(Box::new(t))),
+            (T::Ptr(e), "to_bytes") if e.is_char() => return Some(T::Bytes),
             _ => {}
         }
         // ジェネレータ（`generator[T]`・フェーズ10 10-7）。`next()` は要素 1 つ、`close()` は `None`。
@@ -1540,6 +1546,10 @@ impl TypeChecker {
         span: &crate::token::Span,
     ) {
         use InferredType as T;
+        if let T::Ptr(elem) = recv_ty {
+            self.check_ptr_method(recv_ty, elem, method, arg_data, span);
+            return;
+        }
         let elem = match (recv_ty, method) {
             (T::ListOf(e), "append")
             | (T::FixedListOf(e), "append")
@@ -1727,6 +1737,51 @@ impl TypeChecker {
                     positional_idx += 1;
                 }
             }
+        }
+    }
+
+    /// `Ptr[T]` のメソッド（ffi_value_exchange_plan.md 3-3）。`release()` / `to_list()` / `to_bytes()` だけ。
+    ///
+    /// - `to_list()` は要素型が分かるときだけ（`Ptr[void]` は `mustbe Ptr[T]` で変換してから）
+    /// - `to_bytes()` は文字型の要素（`int8` / `uint8` / `uint16`）のときだけ
+    /// - ほかのメソッドは無い（アドレスを取り出す手段を作らない・D-3）
+    fn check_ptr_method(
+        &mut self,
+        recv_ty: &InferredType,
+        elem: &super::types::PtrElem,
+        method: &str,
+        arg_data: &[(Option<String>, InferredType)],
+        span: &crate::token::Span,
+    ) {
+        use super::types::PtrElem;
+        let reason = match method {
+            "release" | "to_list" | "to_bytes" if !arg_data.is_empty() => {
+                Some(format!("{method}() takes no arguments"))
+            }
+            "release" => None,
+            "to_list" => match elem {
+                PtrElem::Void | PtrElem::Unknown => Some(
+                    "its element type is unknown, so there is nothing to read; convert it first with `p mustbe Ptr[T]`"
+                        .to_string(),
+                ),
+                PtrElem::Num(_) | PtrElem::Type(_) => None,
+            },
+            "to_bytes" if elem.is_char() => None,
+            "to_bytes" => Some(
+                "only a Ptr to character data (int8 / uint8 / uint16) can be copied into bytes; use to_list()"
+                    .to_string(),
+            ),
+            _ => Some("a Ptr only has release(), to_list() and to_bytes() (its address is never exposed)".to_string()),
+        };
+        if let Some(reason) = reason {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::PtrMethodUnavailable {
+                    ptr_ty: recv_ty.clone(),
+                    method: method.to_string(),
+                    reason,
+                },
+                span: Some(span.clone()),
+            });
         }
     }
 

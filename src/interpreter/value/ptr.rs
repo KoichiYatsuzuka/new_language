@@ -174,6 +174,73 @@ impl PtrHandle {
         }
     }
 
+    /// `p.to_list()`（3-3・D-10）。指す先の要素を Arrow の値へコピーする（展開した `list` は元のポインタとつながらない）。
+    ///
+    /// ⚠ 要素の型は作られたときの型（`elem_type`）で読む。数値だけ。構造体の要素はまだ展開できない（4-6）、
+    ///   `void` は読めない、長さの分からない生のポインタ（D-7）も読めない。どれも誤り。
+    /// ⚠ 中身を信じる根拠は `PtrProtocol` の規約（D-15: Arrow が参照している間は有効）。
+    pub fn read_list(&self) -> Result<Vec<super::Value>, String> {
+        let Some(width) = num_width(&self.elem_type) else {
+            return Err(match self.elem_type.as_str() {
+                "void" => "TypeError: Ptr[void] has no element type to read; convert it first with `p mustbe Ptr[T]`"
+                    .to_string(),
+                other => format!("TypeError: expanding Ptr[{other}] into a list of structs is not supported yet"),
+            });
+        };
+        let len = self.known_length()?;
+        let addr = self.address()?;
+        (0..len)
+            .map(|i| {
+                // SAFETY: `PtrProtocol` が `length` 個の要素が `address` から並ぶと保証する（D-15）。並びの境界は
+                // 揃っていないかもしれないので `read_unaligned`。
+                unsafe { read_num(&self.elem_type, (addr as usize + i * width) as *const u8) }
+            })
+            .collect()
+    }
+
+    /// `p.to_bytes()`（3-3・D-9）。文字データ（`int8` / `uint8` / `uint16`）を `bytes` へコピーする。長さが無くても
+    /// NUL 終端（flags）なら NUL の手前まで。`uint16`（`wchar_t` / char16_t）は UTF-16LE のバイト列になる。
+    pub fn read_bytes(&self) -> Result<Vec<u8>, String> {
+        let width = match self.elem_type.as_str() {
+            "int8" | "uint8" => 1,
+            "uint16" => 2,
+            other => {
+                return Err(format!(
+                    "TypeError: only a Ptr to character data (int8 / uint8 / uint16) can be copied into bytes, not Ptr[{other}]; use to_list()"
+                ))
+            }
+        };
+        let addr = self.address()?;
+        let count = match self.length {
+            Some(n) => n as usize,
+            None if self.flags & PTR_FLAG_NUL_TERMINATED != 0 => {
+                // SAFETY: NUL 終端と flags が言っている（D-15）。
+                let mut n = 0usize;
+                while unsafe { std::ptr::read_unaligned((addr as usize + n * width) as *const u8) } != 0
+                    || (width == 2
+                        && unsafe { std::ptr::read_unaligned((addr as usize + n * width + 1) as *const u8) } != 0)
+                {
+                    n += 1;
+                }
+                n
+            }
+            None => return Err(self.no_length_error()),
+        };
+        // SAFETY: `count` 個の要素が並ぶ（`length` か NUL 終端・D-15）。
+        Ok(unsafe { std::slice::from_raw_parts(addr as *const u8, count * width) }.to_vec())
+    }
+
+    fn known_length(&self) -> Result<usize, String> {
+        self.length.map(|n| n as usize).ok_or_else(|| self.no_length_error())
+    }
+
+    fn no_length_error(&self) -> String {
+        format!(
+            "ValueError: Ptr[{}] has no length (it came from a raw pointer), so it cannot be expanded",
+            self.elem_type
+        )
+    }
+
     /// 表示（`<Ptr[int32]>`）。⚠ アドレスは出さない（D-3: アドレスを取り出す手段を作らない）。
     pub fn display(&self) -> String {
         let len = match self.length {
@@ -187,6 +254,65 @@ impl PtrHandle {
         };
         format!("<Ptr[{}]{len}{state}>", self.elem_type)
     }
+}
+
+/// 数値の要素 1 つの幅（バイト）。数値でなければ `None`。
+fn num_width(elem: &str) -> Option<usize> {
+    Some(match elem {
+        "int8" | "uint8" => 1,
+        "int16" | "uint16" => 2,
+        "int32" | "uint32" | "float32" => 4,
+        "int64" | "uint64" | "float64" => 8,
+        _ => return None,
+    })
+}
+
+/// 数値の要素 1 つを読む（符号拡張・`float32` は `float` へ広げる）。`uint64` の 2^63 以上は `int` に入らないので
+/// OverflowError（1-6 と同じ）。
+///
+/// # Safety
+/// `p` から `num_width(elem)` バイトが読めること。
+unsafe fn read_num(elem: &str, p: *const u8) -> Result<super::Value, String> {
+    use super::Value;
+    use std::ptr::read_unaligned as rd;
+    Ok(match elem {
+        "int8" => Value::Int(rd(p as *const i8) as i64),
+        "uint8" => Value::Int(rd(p) as i64),
+        "int16" => Value::Int(rd(p as *const i16) as i64),
+        "uint16" => Value::Int(rd(p as *const u16) as i64),
+        "int32" => Value::Int(rd(p as *const i32) as i64),
+        "uint32" => Value::Int(rd(p as *const u32) as i64),
+        "int64" => Value::Int(rd(p as *const i64)),
+        "uint64" => {
+            let v = rd(p as *const u64);
+            Value::Int(i64::try_from(v).map_err(|_| format!("OverflowError: {}", super::U64_OVERFLOW_MSG))?)
+        }
+        "float32" => Value::Float(rd(p as *const f32) as f64),
+        "float64" => Value::Float(rd(p as *const f64)),
+        other => unreachable!("read_num on a non-numeric element '{other}' (num_width rejects it first)"),
+    })
+}
+
+/// 型の注釈 `Ptr` / `Ptr[T]` が値に当てはまるか（`is` / `mustbe` / `case`・宣言した型の照合・3-3）。`Ptr` の注釈でなければ `None`。
+///
+/// - `Ptr` / `Ptr[void]` はどの `Ptr` にも当てはまる（どの `Ptr` も `Ptr[void]` として渡せる）
+/// - `Ptr[T]` は**元の要素型**が `T` の `Ptr` だけ（`Ptr[void]` として受け取っても、作られたときの型を覚えている。
+///   だから `p mustbe Ptr[Db]` は元が `Db` のときだけ成功する・D-3）。モジュールの名前で修飾した構造体（`m.Db`）は
+///   最後の名前で比べる（要素の型名は C のヘッダの名前・D-12）
+pub(crate) fn ptr_ann_matches(ann: &str, val: &super::Value) -> Option<bool> {
+    let elem = if ann == "Ptr" {
+        None
+    } else {
+        Some(ann.strip_prefix("Ptr[")?.strip_suffix(']')?)
+    };
+    let super::Value::Ptr(p) = val else {
+        return Some(false);
+    };
+    let Some(elem) = elem.map(|e| e.split_whitespace().collect::<String>()) else {
+        return Some(true);
+    };
+    let bare = elem.rsplit('.').next().unwrap_or(&elem);
+    Some(elem == "void" || elem == p.elem_type || bare == p.elem_type)
 }
 
 impl Drop for PtrHandle {
@@ -280,6 +406,64 @@ mod tests {
         assert_eq!(p.display(), "<Ptr[float64] len=2>");
         let q = PtrHandle::new(0xdead_beef, "Db", 0, None, PtrOwner::Borrowed, None).unwrap();
         assert_eq!(q.display(), "<Ptr[Db]>");
+    }
+
+    fn borrowed_over<T>(buf: &[T], elem: &str, length: Option<i64>, flags: u32) -> PtrHandle {
+        PtrHandle::new(buf.as_ptr() as u64, elem, flags, length, PtrOwner::Borrowed, None).unwrap()
+    }
+
+    #[test]
+    fn to_list_reads_each_width() {
+        use super::super::Value;
+        let ints: [i32; 3] = [1, -2, 3];
+        let got = borrowed_over(&ints, "int32", Some(3), 0).read_list().unwrap();
+        assert!(matches!(got.as_slice(), [Value::Int(1), Value::Int(-2), Value::Int(3)]), "{got:?}");
+        let bytes: [u8; 2] = [0xff, 7];
+        let got = borrowed_over(&bytes, "int8", Some(2), 0).read_list().unwrap();
+        assert!(matches!(got.as_slice(), [Value::Int(-1), Value::Int(7)]), "sign-extends int8: {got:?}");
+        let floats: [f32; 1] = [0.5];
+        let got = borrowed_over(&floats, "float32", Some(1), 0).read_list().unwrap();
+        assert!(matches!(got.as_slice(), [Value::Float(f)] if *f == 0.5));
+        let big: [u64; 1] = [u64::MAX];
+        let e = borrowed_over(&big, "uint64", Some(1), 0).read_list().unwrap_err();
+        assert!(e.starts_with("OverflowError"), "{e}");
+    }
+
+    #[test]
+    fn to_list_refuses_what_it_cannot_read() {
+        let ints: [i32; 1] = [1];
+        assert!(borrowed_over(&ints, "int32", None, 0).read_list().unwrap_err().contains("no length"));
+        assert!(borrowed_over(&ints, "void", Some(1), 0).read_list().unwrap_err().contains("mustbe"));
+        assert!(borrowed_over(&ints, "Db", Some(1), 0).read_list().unwrap_err().contains("not supported yet"));
+    }
+
+    #[test]
+    fn to_bytes_copies_character_data() {
+        let text = *b"hi\0zz";
+        assert_eq!(borrowed_over(&text, "uint8", Some(2), 0).read_bytes().unwrap(), b"hi");
+        // 長さが無くても NUL 終端なら NUL の手前まで
+        assert_eq!(borrowed_over(&text, "uint8", None, PTR_FLAG_NUL_TERMINATED).read_bytes().unwrap(), b"hi");
+        let wide: [u16; 3] = [0x61, 0x3042, 0];
+        assert_eq!(
+            borrowed_over(&wide, "uint16", None, PTR_FLAG_NUL_TERMINATED).read_bytes().unwrap(),
+            vec![0x61, 0x00, 0x42, 0x30]
+        );
+        assert!(borrowed_over(&text, "uint8", None, 0).read_bytes().is_err());
+        let ints: [i32; 1] = [1];
+        assert!(borrowed_over(&ints, "int32", Some(1), 0).read_bytes().unwrap_err().contains("character data"));
+    }
+
+    #[test]
+    fn annotation_matches_the_original_element_type() {
+        use super::super::Value;
+        let p = Value::Ptr(Arc::new(PtrHandle::new(1, "Db", 0, None, PtrOwner::Borrowed, None).unwrap()));
+        assert_eq!(ptr_ann_matches("Ptr", &p), Some(true));
+        assert_eq!(ptr_ann_matches("Ptr[void]", &p), Some(true));
+        assert_eq!(ptr_ann_matches("Ptr[Db]", &p), Some(true));
+        assert_eq!(ptr_ann_matches("Ptr[m.Db]", &p), Some(true));
+        assert_eq!(ptr_ann_matches("Ptr[File]", &p), Some(false));
+        assert_eq!(ptr_ann_matches("Ptr[int32]", &Value::Int(1)), Some(false));
+        assert_eq!(ptr_ann_matches("list[int]", &p), None);
     }
 
     #[test]

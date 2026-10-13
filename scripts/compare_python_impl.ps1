@@ -82,6 +82,7 @@ $knownDiff = @{
     'bytes_basics'                   = 'Rust: 組み込み型 bytes（ffi_value_exchange_plan.md 3-1）。py: bytes も str.encode も無く NameError（⇒ 7-10）'
     'bytes_decode_error'             = 'Rust: 文字コードに合わない decode は ValueError（3-1）。py: str.encode が無く AttributeError（⇒ 7-10）'
     'bytes_str_mix_error'            = 'Rust: bytes と str を混ぜると StaticTypeError（3-1）。py: str.encode が無く実行時の AttributeError（⇒ 7-10）'
+    'ptr_types'                      = 'Rust: Ptr[T] の型（ffi_value_exchange_plan.md 3-3）。py: Ptr[int32] の注釈を構文解析できず ParseError（⇒ 7-10）'
     'cs_proc_values'                 = 'Rust: C# の値を型スタブの宣言どおりに受け渡す（nullable 注釈・CsObject・ffi_value_exchange_plan.md 2-1）。py: import[cs-proc] で `cs_probe/cs_probe.dll`（パッケージのディレクトリ）を探さず ParseError'
     'cs_proc_utf8'                   = 'Rust: Arrow から C# へ非 ASCII の文字列を送る（ffi_value_exchange_plan.md 2-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'

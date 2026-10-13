@@ -618,6 +618,15 @@ impl TypeChecker {
             return;
         }
         self.check_ann_names_exist(&ty, ann, what);
+        // `Ptr[int]` など、C の幅を持たない要素（3-3）
+        let mut bad = Vec::new();
+        ty.collect_bad_ptr_elems(&mut bad);
+        for elem in bad {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::PtrElemNotCType { elem, what: what.to_string() },
+                span: None,
+            });
+        }
         if !ty.is_bare_container() {
             return;
         }

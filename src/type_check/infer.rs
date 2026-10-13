@@ -1257,7 +1257,13 @@ impl TypeChecker {
         ) else {
             return;
         };
-        if a == b {
+        // `Ptr` どうしは要素型も実行時に見る（3-3）。要素型の分かっている `Ptr[A]` は `Ptr[B]` にならない
+        // （`Ptr[void]` / 素の `Ptr` からは成功しうる・どの `Ptr` も `Ptr[void]` にはなる）
+        let ptr_mismatch = match (src_ty, target_ty) {
+            (InferredType::Ptr(from), InferredType::Ptr(to)) => !to.accepts(from) && !from.accepts(to),
+            _ => false,
+        };
+        if a == b && !ptr_mismatch {
             return;
         }
         self.report_error(StaticTypeError {
@@ -1280,9 +1286,11 @@ impl TypeChecker {
             T::Float => "float",
             T::Complex => "complex",
             T::Str => "str",
+            T::Bytes => "bytes",
             T::Bool => "bool",
             T::None => "None",
             T::Undefined => "Undefined",
+            T::Ptr(_) => "Ptr",
             T::List | T::ListOf(_) => "list",
             T::FixedList | T::FixedListOf(_) => "fixed_list",
             T::Dict | T::DictOf(_, _) => "dict",

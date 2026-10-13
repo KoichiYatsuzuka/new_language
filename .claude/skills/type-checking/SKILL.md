@@ -19,6 +19,7 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `Float` | `float` primitive |
 | `Str` | `str` primitive |
 | `Bytes` | `bytes` primitive — immutable byte string (`s.encode(enc)` / `b.decode(enc)`; index and iteration give `int`; ffi plan 3-1) |
+| `Ptr(Box<PtrElem>)` | `Ptr[T]` — external memory (ffi plan 3-3). `PtrElem` keeps the C width (`Num("int32")`), `Void`, `Type(struct)` or `Unknown` (bare `Ptr`, type tests only). Any `Ptr` → `Ptr[void]` implicitly; back only via `mustbe Ptr[T]`. Methods `release` / `to_list` (`list[T]`) / `to_bytes` (char elements only) — others are `PtrMethodUnavailable`; `Ptr[int]` is `PtrElemNotCType` |
 | `Bool` | `bool` primitive |
 | `None` | `None` value |
 | `List` | Untyped list |

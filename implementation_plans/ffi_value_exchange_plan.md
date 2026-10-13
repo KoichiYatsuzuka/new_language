@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1・2 完了（1-1〜1-6・2-1〜2-6・§5）。フェーズ 3 着手
+- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）。フェーズ 4 は未着手
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
@@ -201,7 +201,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **2-6** | ✅ py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
 | **3-1** | ✅ 組み込み型 `bytes` を足す（D-9・§5）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | ✅ 値の種類 `Ptr` を足す（D-3・§5）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
-| **3-3** | 型検査: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
+| **3-3** | ✅ 型検査（§5）: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
 | **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | 生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
@@ -224,7 +224,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
-| **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode` を足す。今は `bytes` の名前も `str.encode` も無いので、`compare_python_impl` が `bytes` の意味論を守れない（3-1 の 3 本は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1 で発見） | 3-1 | 小 |
+| **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 
@@ -609,6 +609,34 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート（基準 `338ef86`・制限時間つき）: `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl`
   clean（170/170）・`compare_outputs` 427/427 一致（負の対照 427/427）・`compare_import_paths` 13/13・`hash_eq_identity` 一致・
   `stale_doc_refs` 0 件。`cargo test` 1104 件・拡張の wasm クレートの 688 件が通る。型検査・拡張の表示は変えていない
+
+### 3-3 実装
+
+- 型 `InferredType::Ptr(Box<PtrElem>)`（`src/type_check/types.rs`）。要素は `PtrElem`: C の幅つきの数値（`Num("int32")`）・
+  `Void`・構造体（`Type(NamedInstance)`）・要素型不明（素の `Ptr`。型テストだけ）。⚠ `InferredType` とは別に持つのは C の幅が
+  要るから（`int32` も `int64` も `InferredType` では `Int`）
+- 規則: 同じ要素型どうしと、どの `Ptr` から `Ptr[void]` へは暗黙に渡せる。`Ptr[void]` → `Ptr[T]` は `p mustbe Ptr[T]`
+  （実行時に**作られたときの要素型**と照合・`ptr_ann_matches`）。要素型の分かっている `Ptr` どうしの `mustbe` は
+  `MustBeCanNeverSucceed`。`is Ptr[T]` も実行時に判定できるので `GuardTypeNotTestable` にしない
+- 注釈: 要素は C の型・構造体・`void` だけ（`Ptr[int]` / `Ptr[str]` は新設の `PtrElemNotCType`）。素の `Ptr` は
+  `BareContainerAnnotation`。構造体の名前は存在検査の対象
+- メソッド: `release() -> None`・`to_list() -> list[T]`（数値は `int` / `float`）・`to_bytes() -> bytes`（`int8` / `uint8` /
+  `uint16` だけ）。それ以外のメソッド・`Ptr[void]` の `to_list()`・文字型でない `to_bytes()`・引数つきは新設の
+  `PtrMethodUnavailable`（アドレスを取り出す手段を作らない・D-3）
+- `mut` の仮引数（`T*` の引数）へ `let` の `Ptr` を渡せる（`mut_arg_exempt`。Arrow から中身を書き換えられないので
+  関数値と同じ扱い）
+- 実行時: `to_list()` は要素型の幅で読む（符号拡張・`float32` は広げる・`uint64` の 2^63 以上は OverflowError）。
+  `to_bytes()` は長さか NUL 終端（flags）まで。構造体の要素・`void`・長さの無い生のポインタは誤り（構造体は 4-6）。
+  型の照合は `primitive_ann_matches` と `value_matches_type`（2 つ目の表）と FFI 境界の検査が同じ `ptr_ann_matches` を使う
+- 型の木を歩く処理を `InferredType::for_each_type` 1 本にした（`collect_type_names` と `Ptr` の要素の検査が共有）
+- ついでに直したもの: `mustbe` の成否の検査が `bytes` を知らなかった（`b mustbe str` が素通し）
+- 例題: `typing/ptr_types.ar`（受け取る側の型検査と `is Ptr` の実行時判定・期待値と違えば raise）・
+  `ptr_method_error.ar`・`ptr_type_error.ar`（静的エラー 3 件・5 件）。⚠ 値を作る例題は 4-3 / 4-5 で足す
+- 拡張: 構文の色付けに `Ptr` を足した。文書: `docs/grammar/08_type_system.md`、skill `type-checking`
+- ゲート（基準 `f7e92a5`・制限時間つき）: `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl`
+  clean（172/172。`ptr_types.ar` は既知の差分、エラー例題 2 本は標準出力が空で一致）・`compare_outputs` の差 3 本は新しい
+  例題だけ（負の対照 430/430）・`compare_import_paths` 13/13・`compare_wasm_frontend` 517/517・`type_obligations` 退行なし・
+  `hash_eq_identity` 一致・`stale_doc_refs` 0 件。`cargo test` 1118 件・拡張の wasm クレートの 692 件が通る。VSIX を作り直した
 
 ---
 

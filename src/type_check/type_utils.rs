@@ -541,6 +541,9 @@ impl TypeChecker {
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
                 return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
             }
+            // `Ptr[T]`（3-3）: 同じ要素型どうしと、どの `Ptr` から `Ptr[void]` へ（`void*` の引数）。
+            // ⚠ 逆（`Ptr[void]` → `Ptr[T]`）は許さない。`mustbe Ptr[T]` で検査して変換する（D-3）
+            (InferredType::Ptr(a), InferredType::Ptr(e)) => return e.accepts(a),
             _ => {}
         }
         if let InferredType::Union(union_types) = expected {

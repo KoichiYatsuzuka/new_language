@@ -586,6 +586,23 @@ pub enum TypeErrorKind {
         /// どこの注釈か（`variable 'xs'` / `parameter 'v' of function 'f'` など）。
         what: String,
     },
+    /// `Ptr[T]` の要素に C の型でも構造体でもない型を書いた（`Ptr[int]` / `Ptr[str]`・ffi_value_exchange_plan.md 3-3）。
+    /// ⚠ Arrow の `int` / `float` は C の幅を持たないので、指す先を読めない。
+    PtrElemNotCType {
+        /// 書かれていた要素の型。
+        elem: InferredType,
+        /// どこの注釈か。
+        what: String,
+    },
+    /// `Ptr` に無いメソッド、またはその要素型ではできない操作（`Ptr[void].to_list()` / `Ptr[int32].to_bytes()`・3-3）。
+    /// ⚠ アドレスを取り出す手段は無い（D-3）。
+    PtrMethodUnavailable {
+        /// 受け手の型（`Ptr[int32]`）。
+        ptr_ty: InferredType,
+        method: String,
+        /// できない理由と、代わりに書けるもの。
+        reason: String,
+    },
     /// `enum` のバリアント値が `int` でない。
     ///
     /// ⚠ 実行時の `build_enum_classes` も同じ検査をするが、**定義が実行されない経路**
@@ -1104,6 +1121,8 @@ impl StaticTypeError {
                 let example = match ann.as_str() {
                     "dict" => "dict[str, int]".to_string(),
                     "tuple" => "tuple[int, str]".to_string(),
+                    // `Ptr` の要素は C の幅つきの型（3-3）
+                    "Ptr" => "Ptr[int32]".to_string(),
                     other => format!("{other}[int]"),
                 };
                 format!(
@@ -1114,6 +1133,15 @@ impl StaticTypeError {
                     hl_q(&example),
                 )
             }
+            TypeErrorKind::PtrElemNotCType { elem, what } => format!(
+                "{what}: {} cannot be the element of a Ptr; write a C type with its width                  (int8 … int64, uint8 … uint64, float32, float64), a struct, or void",
+                hl_q(&elem.to_string()),
+            ),
+            TypeErrorKind::PtrMethodUnavailable { ptr_ty, method, reason } => format!(
+                "{} has no usable method {}: {reason}",
+                hl_q(&ptr_ty.to_string()),
+                hl_q(method),
+            ),
             TypeErrorKind::EnumVariantNotInt { enum_name, variant, got } => format!(
                 "enum variant {} of {} must be int, got {}",
                 hl_q(variant), hl_q(enum_name), hl_q(got)

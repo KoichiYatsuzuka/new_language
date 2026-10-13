@@ -137,6 +137,8 @@ impl TypeChecker {
             "float" => InferredType::Float,
             "str" => InferredType::Str,
             "bytes" => InferredType::Bytes,
+            // 要素型を問わない `x is Ptr`（`Ptr[T]` は下の `[` の腕・3-3）
+            "Ptr" => InferredType::Ptr(Box::new(super::types::PtrElem::Unknown)),
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
             "Undefined" => InferredType::Undefined,

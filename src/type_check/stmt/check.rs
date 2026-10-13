@@ -921,6 +921,28 @@ impl TypeChecker {
                     span: None,
                 });
             }
+            // `Ptr[T]` は要素型まで実行時に判定できる（ffi_value_exchange_plan.md 3-3・`ptr_ann_matches`）。
+            // 構造体の要素は名前が在るか、それ以外は C の型か（注釈と同じ規則）を見る。
+            Some(InferredType::Ptr(ref e)) => {
+                let crate::type_check::PtrElem::Type(t) = &**e else { return };
+                if !matches!(t, InferredType::NamedInstance(_) | InferredType::GenericInstance { .. }) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::PtrElemNotCType { elem: t.clone(), what: "type guard".to_string() },
+                        span: None,
+                    });
+                    return;
+                }
+                let mut names = Vec::new();
+                t.collect_type_names(&mut names);
+                for n in names {
+                    if !self.report_unimported_module_type(&n) && !self.type_name_exists(&n) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::UnknownGuardType { type_name: type_name.to_string() },
+                            span: None,
+                        });
+                    }
+                }
+            }
             // 型引数つきの組み込み型は `is` で判定できない（`GuardTypeNotTestable` の doc）。
             // 容器（`list[int]` …）は外側しか確かめられず、`Union[..]` / 関数型などは実行時の `is`
             // （`value_is_type`・クラス名と組み込みの型名だけを見る）では常に偽になる。

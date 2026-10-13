@@ -1,0 +1,52 @@
+# ptr_types.ar — 外部のメモリを指す Ptr[T] の型（ffi_value_exchange_plan.md 3-2・3-3・D-3）
+#
+# `Ptr[T]` は外部の関数だけが返す（Arrow からは作れない。返すブリッジはフェーズ 4 で入る）。ここでは受け取る側の
+# 関数が型検査を通ることと、`is Ptr` の実行時の判定を確かめる。
+#   - T は C の幅つきの型（int8 … int64・uint8 … uint64・float32・float64）・構造体・void
+#   - `p.to_list()` は `list[T]`（C の幅で読んで Arrow の int / float にしたコピー）
+#   - `p.to_bytes()` は文字データ（int8 / uint8 / uint16）だけ。文字列にするには文字コードを書く
+#   - どの Ptr も Ptr[void] として渡せる。逆は `p mustbe Ptr[T]`（作られたときの要素型と一致するときだけ成功）
+#   - `p.release()` で今すぐ解放できる（しなくても最後の参照がなくなったときに 1 回だけ解放される）
+#   - アドレスを取り出す手段は無い
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+fn sum_ints(let p: Ptr[int32]) -> int:
+    mut total = 0
+    for x in p.to_list():
+        total += x
+    return total
+
+fn forget_type(let p: Ptr[int32]) -> Ptr[void]:
+    return p
+
+fn as_ints(let p: Ptr[void]) -> list[int]:
+    let q = p mustbe Ptr[int32]
+    return q.to_list()
+
+fn c_text(let p: Ptr[uint8]) -> str:
+    return p.to_bytes().decode("utf-8")
+
+fn wide_text(let p: Ptr[uint16]) -> str:
+    return p.to_bytes().decode("utf-16-le")
+
+fn finish(let p: Ptr[void]) -> None:
+    p.release()
+
+# 書き込み用ポインタの引数（`mut`）にも `let` の Ptr を渡せる（Arrow から中身は書き換えられない）
+fn fill(mut out: Ptr[float64]) -> None:
+    return
+
+fn pass_through(let p: Ptr[float64]) -> None:
+    fill(p)
+
+# 実行時: Ptr でない値は `is Ptr` も `is Ptr[T]` も偽
+let values: list[Any] = [3, "s", "abc".encode(), None]
+for v in values:
+    check("not a Ptr", not (v is Ptr) and not (v is Ptr[void]) and not (v is Ptr[int32]))
+print("Ptr types checked")

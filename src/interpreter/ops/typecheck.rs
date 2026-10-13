@@ -123,6 +123,10 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
             Value::Class(cls) => cls.methods.contains_key("__call__"),
             _ => false,
         },
+        // `Ptr` / `Ptr[T]` は要素型まで見る（3-3・`ptr_ann_matches` の doc）
+        _ if ann == "Ptr" || ann.starts_with("Ptr[") => {
+            crate::interpreter::value::ptr_ann_matches(ann, val).unwrap_or(false)
+        }
         // 型引数つきの容器表記は外側だけ見る（要素型は静的検査の担当）。
         _ if ann.starts_with("list[") => matches!(val, Value::List(_)),
         _ if ann.starts_with("fixed_list[") => matches!(val, Value::FrozenList { .. }),

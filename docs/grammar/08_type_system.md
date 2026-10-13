@@ -70,6 +70,42 @@ for x in raw:                                  # 各要素は 0〜255 の int
 
 ---
 
+## `Ptr[T]` — 外部のメモリを指す値
+
+外部の関数（C / C++ などのブリッジ）が返すポインタを、中身を展開しないまま持つ型です
+（`implementation_plans/ffi_value_exchange_plan.md` D-3）。**コンストラクタは無く**、Arrow から作ることはできません
+（外部の関数が返します）。
+
+```arrow
+fn sum_ints(let p: Ptr[int32]) -> int:
+    mut total = 0
+    for x in p.to_list():        # list[int]: C の int32 を読んで Arrow の int にしたコピー
+        total += x
+    return total
+
+fn text(let p: Ptr[uint8]) -> str:
+    return p.to_bytes().decode("utf-8")   # 文字データだけ bytes にできる
+
+fn as_ints(let p: Ptr[void]) -> list[int]:
+    let q = p mustbe Ptr[int32]           # void から戻すときは検査して変換する
+    return q.to_list()
+```
+
+- **`T`** は C の幅つきの型（`int8` … `int64`・`uint8` … `uint64`・`float32`・`float64`）・構造体・`void`。
+  Arrow の `int` / `float` は幅を持たないので書けません（`Ptr[int]` は静的エラー）。要素型を書かない `Ptr` も注釈には
+  書けません（`x is Ptr` のような型テストでは書けます）
+- **できること**: `==`（同じ `Ptr` のコピーどうしだけが等しい）・外部の関数へ渡し返す・`p.release()`・
+  `p.to_list() -> list[T]`・`p.to_bytes() -> bytes`（要素が `int8` / `uint8` / `uint16` のときだけ）。展開した値はコピーで、
+  元のポインタとはつながりません
+- **できないこと**: アドレスの取得・加算、整数からの生成、中身の書き込み（静的エラー）
+- **変換**: どの `Ptr[T]` も `Ptr[void]` として渡せます。逆は `p mustbe Ptr[T]` で、作られたときの要素型と一致するときだけ
+  成功します。要素型の分かっている `Ptr` どうし（`Ptr[int32]` と `Ptr[int64]`、`Ptr[Db]` と `Ptr[File]`）は別の型です
+- **解放**: 所有しているメモリは、最後の参照がなくなったとき（または `p.release()`）に 1 回だけ解放されます。コピーは同じ
+  メモリを共有します。借用しているもの（外部が持ち続けるメモリ）を `release()` すると `ValueError` です
+- 書き込み用ポインタの引数（`mut`）にも `let` の `Ptr` を渡せます（Arrow から中身を書き換える手段が無いため）
+
+---
+
 ## 特殊型
 
 ### `Any` — 動的型エスケープ

@@ -41,6 +41,10 @@ impl Interpreter {
             _ if type_name.starts_with("dict[") => matches!(val, Value::Dict(_)),
             _ if type_name.starts_with("set[") => matches!(val, Value::Set(_)),
             _ if type_name.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
+            // ⚠ `primitive_ann_matches` と同じ規則（3-3）
+            _ if type_name == "Ptr" || type_name.starts_with("Ptr[") => {
+                crate::interpreter::value::ptr_ann_matches(type_name, val).unwrap_or(false)
+            }
             _ => {
                 if let Value::Instance(inst) = val {
                     inst.borrow().class.name == type_name

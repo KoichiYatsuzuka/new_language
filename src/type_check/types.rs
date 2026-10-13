@@ -154,6 +154,68 @@ pub struct ModuleVars {
     pub attrs: HashMap<String, VarAttr>,
 }
 
+/// `Ptr[T]` の要素（ffi_value_exchange_plan.md 3-3・D-3・D-12）。
+///
+/// ⚠ `InferredType` とは別に持つ。C の幅が要るから（`Ptr[int32]` と `Ptr[int64]` は指す先の並びが違う別の型だが、
+///   `InferredType` では `int32` も `int64` も `Int` になる）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PtrElem {
+    /// 要素型を書いていない `Ptr`（型テストの `x is Ptr` だけ。注釈では書けない・`is_bare_container`）。
+    Unknown,
+    /// `Ptr[void]`。どの `Ptr` もここへ暗黙に変換できる（`void*` の引数はどの `Ptr` でも受ける）。展開はできない
+    Void,
+    /// C の幅つきの数値（`int8` … `uint64` / `float32` / `float64`）。名前は `ast::c_abi_base_type` が知っている綴り
+    Num(&'static str),
+    /// 構造体・クラス（`NamedInstance` など）。`Ptr[Db]` と `Ptr[FILE]` は別の型
+    Type(InferredType),
+}
+
+impl PtrElem {
+    /// 注釈の要素（`Ptr[...]` の中身）から作る。
+    pub fn from_ann(inner: &str) -> Self {
+        const NUMS: [&str; 10] =
+            ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64"];
+        if inner == "void" {
+            return Self::Void;
+        }
+        if let Some(n) = NUMS.iter().find(|n| **n == inner) {
+            return Self::Num(n);
+        }
+        Self::Type(InferredType::from_ann(inner).unwrap_or_else(|| InferredType::NamedInstance(inner.to_string())))
+    }
+
+    /// `to_list()` の要素の型。展開できない（`void` / 要素型不明）なら `None`。
+    pub fn list_elem(&self) -> Option<InferredType> {
+        match self {
+            Self::Num(n) => InferredType::from_ann(crate::ast::c_abi_base_type(n)?),
+            Self::Type(t) => Some(t.clone()),
+            Self::Void | Self::Unknown => None,
+        }
+    }
+
+    /// `to_bytes()` ができる文字型か（`char` = `int8` / `uint8`、`wchar_t` / char16_t = `uint16`）。
+    pub fn is_char(&self) -> bool {
+        matches!(self, Self::Num("int8" | "uint8" | "uint16"))
+    }
+
+    /// `Ptr[self]` を期待する場所へ `Ptr[arg]` を渡せるか。同じ要素型どうしと、どの `Ptr` から `Ptr[void]` へ
+    /// （逆向きの `Ptr[void]` → `Ptr[T]` は `mustbe Ptr[T]` で検査して変換する）。
+    pub fn accepts(&self, arg: &PtrElem) -> bool {
+        matches!(self, Self::Void | Self::Unknown) || self == arg
+    }
+}
+
+impl std::fmt::Display for PtrElem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown => Ok(()),
+            Self::Void => write!(f, "void"),
+            Self::Num(n) => write!(f, "{n}"),
+            Self::Type(t) => write!(f, "{t}"),
+        }
+    }
+}
+
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
@@ -200,6 +262,9 @@ pub enum InferredType {
     ListLike,
     /// 要素型既知の抽象リスト型 `list_like[T]`。
     ListLikeOf(Box<InferredType>),
+    /// 外部のメモリを指す `Ptr[T]`（ffi_value_exchange_plan.md 3-3・D-3）。コンストラクタは無く、外部の関数だけが返す。
+    /// できるのは比較・C へ渡し返す・`release()`・`to_list()` / `to_bytes()`。アドレスは見せない。
+    Ptr(Box<PtrElem>),
     /// **要素型既知のイテレータ**（`enumerate` / `zip` の戻り値、`gen` の産出列）。
     ///
     /// ⚠⚠ `ListOf` / `ListLikeOf` で代用してはいけない。実行時の値は
@@ -305,14 +370,15 @@ pub enum InferredType {
 }
 
 impl InferredType {
-    /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
-    pub fn collect_type_names(&self, out: &mut Vec<String>) {
+    /// 型と、その中に現れる型を**前順で**すべて訪ねる（`collect_type_names` と `Ptr` の要素の検査が共有する唯一の歩き方）。
+    ///
+    /// ⚠ `_ => {}` は子を持たない型（プリミティブ・素の容器・`Namespace` など）。子を持つ変種を足したら、ここに足すこと。
+    pub fn for_each_type(&self, f: &mut dyn FnMut(&InferredType)) {
+        f(self);
         match self {
-            Self::NamedInstance(n) | Self::Protocol(n) => out.push(n.clone()),
-            Self::GenericInstance { name, args } => {
-                out.push(name.clone());
+            Self::GenericInstance { args, .. } => {
                 for a in args {
-                    a.collect_type_names(out);
+                    a.for_each_type(f);
                 }
             }
             Self::ListOf(t)
@@ -320,24 +386,53 @@ impl InferredType {
             | Self::ListLikeOf(t)
             | Self::SetOf(t)
             | Self::IteratorOf(t)
-            | Self::TypeValOf(t) => t.collect_type_names(out),
+            | Self::TypeValOf(t) => t.for_each_type(f),
+            // 構造体の要素（`Ptr[Db]`）も訪ねる（名前の存在検査の対象）
+            Self::Ptr(e) => {
+                if let PtrElem::Type(t) = &**e {
+                    t.for_each_type(f);
+                }
+            }
             Self::DictOf(k, v) | Self::Result(k, v) => {
-                k.collect_type_names(out);
-                v.collect_type_names(out);
+                k.for_each_type(f);
+                v.for_each_type(f);
             }
             Self::Union(ts) | Self::Intersection(ts) | Self::Tuple(ts) => {
                 for t in ts {
-                    t.collect_type_names(out);
+                    t.for_each_type(f);
                 }
             }
             Self::Function { params, return_type } => {
                 for p in params.iter().flatten() {
-                    p.ty.collect_type_names(out);
+                    p.ty.for_each_type(f);
                 }
-                return_type.collect_type_names(out);
+                return_type.for_each_type(f);
             }
             _ => {}
         }
+    }
+
+    /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
+    pub fn collect_type_names(&self, out: &mut Vec<String>) {
+        self.for_each_type(&mut |t| match t {
+            Self::NamedInstance(n) | Self::Protocol(n) => out.push(n.clone()),
+            Self::GenericInstance { name, .. } => out.push(name.clone()),
+            _ => {}
+        });
+    }
+
+    /// `Ptr[T]` の要素に書けない型（C の型でも構造体でもないもの: `Ptr[int]` / `Ptr[str]` / `Ptr[list[int]]` …）を集める（3-3）。
+    /// ⚠ Arrow の `int` は C の幅を持たないので、指す先を読めない。`int32` / `int64` などと書く。
+    pub fn collect_bad_ptr_elems(&self, out: &mut Vec<InferredType>) {
+        self.for_each_type(&mut |t| {
+            if let Self::Ptr(e) = t {
+                if let PtrElem::Type(inner) = &**e {
+                    if !matches!(inner, Self::NamedInstance(_) | Self::GenericInstance { .. }) {
+                        out.push(inner.clone());
+                    }
+                }
+            }
+        });
     }
 
     /// **要素型を知らない容器型**か（タスク 8.1・案 A）。
@@ -355,7 +450,7 @@ impl InferredType {
                 | Self::Dict
                 | Self::Set
                 | Self::TupleAny
-        )
+        ) || matches!(self, Self::Ptr(e) if **e == PtrElem::Unknown)
     }
 
     /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
@@ -425,6 +520,10 @@ impl InferredType {
                 Some(t) => Self::ListOf(Box::new(t)),
                 None => Self::List,
             });
+        }
+        // `Ptr[T]`（3-3）。要素の C の幅を保つ（`PtrElem` の doc）
+        if let Some(inner) = ann.strip_prefix("Ptr[").and_then(|s| s.strip_suffix(']')) {
+            return Some(Self::Ptr(Box::new(PtrElem::from_ann(inner.trim()))));
         }
         // `generator[T]`（`IteratorOf` の表示形・フェーズ10 10-7）。`gen` の呼び出しの結果に
         // 要素型が付いたので、それを受ける関数の戻り値・仮引数にも書けるようにした。
@@ -508,6 +607,8 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "Undefined" => Some(Self::Undefined),
+            // 要素型を書かない `Ptr`（型テストの `x is Ptr` だけ。注釈では素の容器と同じく弾く）
+            "Ptr" => Some(Self::Ptr(Box::new(PtrElem::Unknown))),
             // メタプログラミングの型（設計書 §1.2 / §1.5）。
             "Code" => Some(Self::Code),
             "meta_instance" => Some(Self::Meta(MetaKind::Instance)),
@@ -752,6 +853,8 @@ impl std::fmt::Display for InferredType {
             Self::FixedListOf(t) => write!(f, "fixed_list[{t}]"),
             Self::ListLike => write!(f, "list_like"),
             Self::ListLikeOf(t) => write!(f, "list_like[{t}]"),
+            Self::Ptr(e) if **e == PtrElem::Unknown => write!(f, "Ptr"),
+            Self::Ptr(e) => write!(f, "Ptr[{e}]"),
             Self::Dict => write!(f, "dict"),
             Self::DictOf(k, v) => write!(f, "dict[{k},{v}]"),
             Self::Set => write!(f, "set"),

@@ -1,0 +1,23 @@
+# ptr_type_error.ar — Ptr[T] の型の誤り（負例・ffi_value_exchange_plan.md 3-3）
+#
+# - 要素は C の幅つきの型（Arrow の `int` は幅を持たないので `int32` / `int64` と書く）・構造体・void
+# - 要素型を書かない `Ptr` は注釈に書けない（型テストの `x is Ptr` は書ける）
+# - `Ptr[void]` を `Ptr[T]` へ黙っては渡せない（`p mustbe Ptr[T]` で変換する）。幅が違えば別の型
+# - 要素型の分かっている Ptr どうしの `mustbe` は成功しえない
+# 対になる正例: ptr_types.ar
+
+fn takes_ints(let p: Ptr[int32]) -> None:
+    return
+
+fn wrong_elem(let p: Ptr[int]) -> None:
+    return
+
+fn bare(let p: Ptr) -> None:
+    return
+
+fn from_void(let p: Ptr[void]) -> None:
+    takes_ints(p)
+
+fn other_width(let p: Ptr[int64]) -> None:
+    takes_ints(p)
+    let q = p mustbe Ptr[float64]
