@@ -517,3 +517,44 @@ fn test_exception_args_str_repr() {
     assert!(run_err_msg("let e = ValueError(message=\"x\")\n")
         .contains("ValueError() takes no keyword arguments"));
 }
+
+
+/// Arrow のファイルの `EOFError` / `BOFError` を捕まえられる（python_builtins_plan.md のタスク 4-5）。以前は例外の表に無い
+/// 名前だったので、`except Exception` も素の `except:` も素通りしてプログラムが止まった。
+#[test]
+fn test_file_eof_and_bof_are_catchable() {
+    let path = "target/test_tmp_eof_bof.txt";
+    let src = format!(
+        concat!(
+            "let w = open(\"{p}\", FileOpenMode.rewrite)\n",
+            "w.write(\"x\")\n",
+            "w.close()\n",
+            "let r = open(\"{p}\", FileOpenMode.read)\n",
+            "let s = r.read()\n",
+            "mut eof = \"\"\n",
+            "try:\n",
+            "    r.read()\n",
+            "except EOFError as e:\n",
+            "    eof = type(e).__name__ + \":\" + str(e)\n",
+            "let back = r.read(backward=True)\n",
+            "mut bof = \"\"\n",
+            "try:\n",
+            "    r.read(backward=True)\n",
+            "except BOFError as e:\n",
+            "    bof = type(e).__name__\n",
+            "mut generic = false\n",
+            "try:\n",
+            "    let t = r.read()\n",
+            "    r.read()\n",
+            "except:\n",
+            "    generic = true\n",
+        ),
+        p = path
+    );
+    let src = src.replace("false", "False").replace("true", "True");
+    let interp = run_interp(&src);
+    assert!(matches!(interp.get_val("eof"), Some(Value::Str(s)) if &*s == "EOFError:EOF"));
+    assert!(matches!(interp.get_val("bof"), Some(Value::Str(s)) if &*s == "BOFError"));
+    assert!(matches!(interp.get_val("generic"), Some(Value::Bool(true))));
+    let _ = std::fs::remove_file(path);
+}

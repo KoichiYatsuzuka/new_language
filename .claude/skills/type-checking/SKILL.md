@@ -431,8 +431,8 @@ Other built-in runtime types usable as annotations / type guards without members
 `slice`, and the built-in new_types `Path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
 `pointer` was missing until 2026-09-30 although the runtime registers it as `new_type pointer: uint`).
 
-Exception classes registered: the 62 classes of `names::BUILTIN_EXCEPTIONS` (CPython 3.12's hierarchy
-plus Arrow's `AccessError` and the FFI boundary's `FfiTypeError` (a `TypeError`) / `ForeignError`;
+Exception classes registered: the 66 classes of `names::BUILTIN_EXCEPTIONS` (CPython 3.12's hierarchy
+plus Arrow's `AccessError` / `BOFError` and the FFI boundary's `FfiTypeError` (a `TypeError`) / `ForeignError`;
 python_builtins_plan.md 4-1, ffi_value_exchange_plan.md 7-4). `class_bases` holds `Error` followed by **all ancestors
 flattened** (`names::builtin_exception_bases(name, false)`), so `let e: LookupError = KeyError(..)`
 type-checks. ⚠ The `OSError` aliases (`IOError` / `EnvironmentError` / `WindowsError`) are children of

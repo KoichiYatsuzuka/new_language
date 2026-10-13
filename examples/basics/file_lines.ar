@@ -25,7 +25,10 @@ print(repr(r.readline()))                        # 'one\n'
 for line in r:
     print("line:", line.strip())                 # line: two / line: three
 print(repr(r.readline()), r.readlines())         # '' []
-# ⚠ Arrow の形の r.read() はここで EOFError（従来どおり・Python の形なら ""）
+try:
+    r.read()                                     # Arrow の形は終わりで EOFError（従来どおり・Python の形なら ""）
+except EOFError as e:
+    print("EOFError:", e)                        # EOFError: EOF
 r.close()
 
 # Python の形: read() は終わりで ""、write は書いた数を返す

@@ -1,0 +1,50 @@
+# eof_error.ar — Arrow のファイルの EOFError / BOFError を捕まえる（python_builtins_plan.md のタスク 4-5）
+#
+# Arrow の形で開いたファイルの `read()` / `read_line()` / `read_letter()` は終わりで `EOFError: EOF`、
+# 逆向き（`backward=True`）で先頭に着くと `BOFError: BOF` を出す。
+#   - `EOFError` は CPython と同じ組み込みの例外（`Exception` の子）。`BOFError` は Arrow 独自（`Exception` の子）
+#   - `except EOFError` / `except Exception` / 素の `except:` で捕まえられる。`raise EOFError("..")` も書ける
+# ⚠ 以前は表に無い名前だったので、`except EOFError` は静的な誤り、`except Exception` も素の `except:` も
+#   捕まえず、プログラムが止まった。
+
+let fname = "examples/exceptions/_tmp_eof_error.txt"
+let w = open(fname, FileOpenMode.rewrite)
+w.write_line("one")
+w.write_line("two")
+w.close()
+
+# 終わりまで 1 行ずつ読み、EOFError で抜ける（Arrow の read_line の書き方）
+let r = open(fname, FileOpenMode.read)
+mut lines: list[str] = []
+try:
+    while True:
+        lines.append(r.read_line().strip())
+except EOFError as e:
+    print(lines, "/", type(e).__name__, e, isinstance(e, Exception))
+
+# 逆向きに先頭まで読むと BOFError
+try:
+    while True:
+        print("back:", r.read_line(backward=True).strip())
+except BOFError as e:
+    print(type(e).__name__, e)
+r.close()
+
+# Exception でも捕まる。自分で送出もできる
+fn first_char(let path: str) -> str:
+    let f = open(path, FileOpenMode.read)
+    let c = f.read_letter()
+    f.close()
+    return c
+
+try:
+    let empty = open("examples/exceptions/_tmp_eof_empty.txt", FileOpenMode.rewrite)
+    empty.close()
+    print(first_char("examples/exceptions/_tmp_eof_empty.txt"))
+except Exception as e:
+    print("Exception caught:", type(e).__name__)
+
+try:
+    raise EOFError("no more input")
+except EOFError as e:
+    print(e.args)

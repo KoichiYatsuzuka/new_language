@@ -82,8 +82,8 @@ pub(crate) fn is_runtime_builtin_name(name: &str) -> bool {
 /// （以前は 3 つの表を手で揃えていた）。
 ///
 /// - 親が `""` なのは根（`BaseException`）だけ。
-/// - `AccessError` は Arrow 独自（アクセス制御の違反）。`FfiTypeError` / `ForeignError` も Arrow 独自（外部言語との境界・
-///   ffi_value_exchange_plan.md 7-4）。
+/// - `AccessError` は Arrow 独自（アクセス制御の違反）。`BOFError` も Arrow 独自（ファイルを逆向きに読んで先頭に着いた）。
+///   `FfiTypeError` / `ForeignError` も Arrow 独自（外部言語との境界・ffi_value_exchange_plan.md 7-4）。
 /// - `IOError` / `EnvironmentError` / `WindowsError` は CPython では `OSError` **そのもの**（別名）。
 ///   ここでは `OSError` の子として載せ、互いに捕まえ合うのは [`builtin_exception_bases`] で作る。
 ///   ⚠ クラスは別のまま（`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
@@ -100,6 +100,9 @@ pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("AssertionError", "Exception"),
     ("AttributeError", "Exception"),
     ("BufferError", "Exception"),
+    // Arrow のファイルの `read()` / `read_line()` / `read_letter()` が終わりで出す（`EOFError: EOF`・タスク 4-5）。
+    // ⚠ 以前は表に無かったので、`except EOFError` は静的な誤り、`except Exception` も素の `except:` も捕まえなかった。
+    ("EOFError", "Exception"),
     ("LookupError", "Exception"),
     ("IndexError", "LookupError"),
     ("KeyError", "LookupError"),
@@ -146,6 +149,9 @@ pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
     // `except TypeError` でも捕まる）と、相手の言語で投げられた例外。
     ("FfiTypeError", "TypeError"),
     ("ForeignError", "Exception"),
+    // Arrow 独自: ファイルを逆向きに読んで（`read(backward=True)` など）先頭に着いたとき（`BOFError: BOF`・タスク 4-5）。
+    // `EOFError` の向きを逆にしたものだが、子にはしない（`except EOFError` が逆向きの終わりまで捕まえると読み違える）。
+    ("BOFError", "Exception"),
     ("Warning", "Exception"),
     ("BytesWarning", "Warning"),
     ("DeprecationWarning", "Warning"),

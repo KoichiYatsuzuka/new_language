@@ -95,7 +95,7 @@ let b = open("out.txt", mode="rb")   # バイト列
 - ⚠ CPython の「読めない／書けない」は `io.UnsupportedOperation`（`OSError` と `ValueError` の両方を継承）。Arrow の例外の
   表は単一継承なので `OSError` にした（`except OSError` で捕まえられるのは同じ）。
 - ⚠ `seek` は無い（`"r+"` も受けない。Arrow の `write` は位置へ**挿入**するので、位置を動かせると CPython の上書きと違う）。
-- ⚠ Arrow の形の `read()` が出す `EOFError` は、Arrow の例外の表に無い名前なので `except` で捕まえられない（タスク 4-5）。
+- Arrow の形の `read()` が出す `EOFError` は `except EOFError` で捕まえられる（逆向きの `BOFError` も・タスク 4-5）。
 
 ---
 
@@ -207,13 +207,13 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-12 の時点で次の 38 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`frozenset` /
+CPython 3.12 の組み込み 153 名のうち、2026-10-13 の時点で次の 37 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`EOFError` は 4-5、`frozenset` /
 `bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1 で足した）:
 
 `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
 `bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
-`NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `EOFError` `ImportError`
+`NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。

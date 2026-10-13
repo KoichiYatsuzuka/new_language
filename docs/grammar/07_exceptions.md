@@ -80,7 +80,7 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 ## 組み込み例外クラス
 
-すべての組み込み例外クラスは `Error` trait を実装し、**CPython 3.12 と同じ階層**を持ちます（Arrow 独自の 3 つを含めて 62 クラス）。
+すべての組み込み例外クラスは `Error` trait を実装し、**CPython 3.12 と同じ階層**を持ちます（Arrow 独自の 4 つを含めて 66 クラス）。
 表は `src/type_check/names.rs` の `BUILTIN_EXCEPTIONS`（名前と親）1 つで、実行時の登録・内部エラーの変換・
 型検査がみなここを読みます。
 
@@ -98,17 +98,21 @@ BaseException
       ├── SyntaxError ── IndentationError ── TabError
       ├── ValueError ── UnicodeError ── UnicodeTranslateError / UnicodeDecodeError / UnicodeEncodeError
       ├── Warning ── UserWarning / DeprecationWarning / FutureWarning / RuntimeWarning / …（12）
-      ├── AssertionError / AttributeError / BufferError / ReferenceError / StopIteration /
+      ├── AssertionError / AttributeError / BufferError / EOFError / ReferenceError / StopIteration /
       │   SystemError
       ├── TypeError ── FfiTypeError  ← Arrow 独自（外部言語の関数が型スタブの宣言と食い違う値を返した）
       ├── ForeignError               ← Arrow 独自（外部言語の側で投げられた例外）
-      └── AccessError                ← Arrow 独自（private / protected の違反）
+      ├── AccessError                ← Arrow 独自（private / protected の違反）
+      └── BOFError                   ← Arrow 独自（ファイルを逆向きに読んで先頭に着いた）
 ```
 
 - `open` の失敗は OS のエラーの種類で `FileNotFoundError` / `PermissionError` / `FileExistsError` /
   `IsADirectoryError` / `NotADirectoryError` に振り分けます（それ以外は `IOError`）。
 - ⚠ `IOError` などの別名は CPython では `OSError` そのものですが、Arrow ではクラスが別です
   （`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
+- Arrow のファイルの `read()` / `read_line()` / `read_letter()` は終わりで `EOFError: EOF`、逆向き（`backward=True`）で
+  先頭に着くと `BOFError: BOF` を出します（タスク 4-5 で捕まえられるようにした。以前は表に無い名前で、`except` を
+  素通りしてプログラムが止まった）。Python の形で開いたファイルの `read()` / `readline()` は終わりで `"`。
 - `UnicodeDecodeError` / `UnicodeEncodeError` は bytes の復号・符号化の失敗（python_builtins_plan.md のタスク 3-1・
   文言は CPython と同じ）。⚠ CPython の 5 引数の構築子と `encoding` / `start` / `end` / `reason` の属性は無い。
 - ⚠ `SystemExit` / `KeyboardInterrupt` / `ImportError` / `ExceptionGroup` などはまだありません（意味が要るもの）。
