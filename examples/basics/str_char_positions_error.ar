@@ -1,0 +1,7 @@
+# str_char_positions_error.ar — `index` は見つからなければ CPython と同じ誤り（python_builtins_plan.md のタスク 1-17）
+#
+# `find` は -1 を返すが、`index` は ValueError。範囲（文字の番号）の外は探さない。
+# 期待: ValueError: substring not found
+
+let s = "γάμμα"
+print(s.index("μ", 0, 2))

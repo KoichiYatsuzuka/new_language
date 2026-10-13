@@ -1,0 +1,26 @@
+# str_char_positions.ar — 文字列の長さと位置は文字の単位（python_builtins_plan.md のタスク 1-17）
+#
+# `len` / `find` / `rfind` / `index` / `rindex` / `count` / `startswith` / `endswith` の位置と範囲は、添字（`s[i]`）・
+# 切り出し（`s[i:j]`）・`for c in s` と同じ**文字の番号**（CPython と同じ。負は後ろから・`None` は省略と同じ）。
+# `zfill` / `expandtabs` / `%5s` / `%.3s` の幅も文字の数。出力は CPython と同じ。
+# 対になる誤りの例: str_char_positions_error.ar（`index` で見つからない）
+#
+# ⚠ 以前はバイトの単位で、`len("γάμμα")` が 10、`"γάμμα".find("μ")` が 4、文字の途中の位置を渡すと
+#   Rust のパニックで落ちた。`startswith(p, start)` は `start` を黙って捨てていた。
+
+let s = "γάμμα-μ"
+print(len(s), len(""), len("abc"), s[len(s) - 1])
+print(s.find("μ"), s.rfind("μ"), s.index("μ"), s.rindex("μ"), s.count("μ"))
+print(s.find("μ", 3), s.find("μ", -2), s.find("μ", 0, 3), s.find("μ", None, 3), s.find("μ", 9))
+print(s.find(""), s.find("", 7), s.find("", 8), s.count(""), s.count("", 2, 4), s.count("μ", -3))
+print(s.startswith("μ", 2), s.startswith(("x", "γ")), s.endswith("μ", 0, 4), s.endswith(("α", "-"), None, 6))
+print(s.startswith("", 7), s.startswith("", 8), s.endswith("μ", -1))
+
+# 位置で切り出すと探した文字に当たる
+let i = s.find("-")
+print(s[:i], s[i + 1:])
+
+# 幅
+print("-42".zfill(6), "+7".zfill(4), "γά".zfill(5), "abc".zfill(2))
+print(repr("ab\tc\td".expandtabs(4)), repr("é\tx\nab\tc".expandtabs()), repr("a\tb".expandtabs(0)))
+print("[%5s][%-5s][%.2s]" % ("γά", "γά", "γάμμα"))

@@ -33,6 +33,24 @@ print(repr("日本"))             # '日本'（表示できる非 ASCII はそ�
 - 「表示できる」の判定は CPython の `str.isprintable()` と同じ表（`ops/unicode_printable.rs`。CPython 3.12.2 から生成）で、
   `s.isprintable()` も同じ表を使います。
 
+### 文字列の長さと位置
+
+文字列の長さと位置は**文字の単位**です（添字 `s[i]`・切り出し `s[i:j]`・`for c in s` と同じ・CPython と同じ・
+python_builtins_plan.md のタスク 1-17）:
+
+```ar
+let s = "γάμμα-μ"
+print(len(s), s.find("μ"), s.rfind("μ"), s.find("μ", -2))   # 7 2 6 6
+print(s[:s.find("-")])                                      # γάμμα
+print("-42".zfill(6), repr("ab\tc".expandtabs(4)))          # -00042 'ab  c'
+```
+
+- `find` / `rfind` / `index` / `rindex` / `count` / `startswith` / `endswith` の `start` / `end` は文字の番号（負は後ろから・
+  `None` は省略と同じ）。`startswith` / `endswith` は文字列の組も受ける（どれかに当たれば真）
+- `zfill` / `ljust` / `rjust` / `center` / `expandtabs` / `%5s` / `%.3s` / `format` の幅・精度も文字の数
+- ⚠ 以前は `len` / `find` などがバイトの単位で（`len("γάμμα")` が 10）、文字の途中の位置を渡すと落ちていた
+- バイトの単位は `bytes`（`s.encode()`）で扱う
+
 ### `open`
 
 Arrow の形（`open(path, FileOpenMode.read, StartPoint.top, ByteRecognizingMode.text, Encoding.UTF_8)`）に加えて、

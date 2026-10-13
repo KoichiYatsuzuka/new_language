@@ -398,8 +398,9 @@ pub fn percent_format(
             }
             's' => {
                 let mut s = display(arg);
+                // 精度は文字の数（⚠ 以前はバイトで切り、文字の途中なら Rust のパニックで落ちた・タスク 1-17）。
                 if let Some(p) = precision {
-                    s.truncate(p);
+                    s = s.chars().take(p).collect();
                 }
                 pad_str(&s, width, left_align, ' ')
             }
@@ -456,11 +457,13 @@ fn to_i64(val: &Value) -> Result<i64, String> {
 
 /// 文字列 `s` を指定した `width` に合わせてパディングする。
 /// `left_align` が `true` の場合は左寄せ、`false` の場合は右寄せ。`fill` はパディング文字。
+/// 幅は文字の数（⚠ 以前はバイトの数で、非 ASCII を詰め足りなかった・タスク 1-17）。
 fn pad_str(s: &str, width: usize, left_align: bool, fill: char) -> String {
-    if s.len() >= width {
+    let n = s.chars().count();
+    if n >= width {
         return s.to_string();
     }
-    let pad = width - s.len();
+    let pad = width - n;
     if left_align {
         format!("{}{}", s, fill.to_string().repeat(pad))
     } else {

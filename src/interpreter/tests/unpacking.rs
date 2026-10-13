@@ -599,3 +599,23 @@ fn test_cast_cross_new_type_same_base() {
     }
 }
 
+
+
+/// 文字列の長さと位置は文字の単位（python_builtins_plan.md のタスク 1-17）。以前はバイトの単位で、文字の途中の
+/// `start` を渡すと Rust のパニックで落ちた。
+#[test]
+fn test_str_positions_are_char_based() {
+    let int = |src: &str| match eval_expr(src) {
+        Value::Int(n) => n,
+        other => panic!("{src}: {other:?}"),
+    };
+    assert_eq!(int(r#"len("γάμμα")"#), 5);
+    assert_eq!(int(r#""γάμμα-μ".find("μ")"#), 2);
+    assert_eq!(int(r#""γάμμα-μ".rfind("μ")"#), 6);
+    assert_eq!(int(r#""γάμμα-μ".find("μ", 3)"#), 3);
+    assert_eq!(int(r#""γάμμα-μ".find("μ", -2)"#), 6);
+    assert_eq!(int(r#""γάμμα-μ".count("μ", -3)"#), 1);
+    assert!(matches!(eval_expr(r#""γάμμα".startswith("μ", 2)"#), Value::Bool(true)));
+    assert!(matches!(eval_expr(r#""-42".zfill(6)"#), Value::Str(ref s) if &**s == "-00042"));
+    assert!(matches!(eval_expr(r#""ab\tc".expandtabs(4)"#), Value::Str(ref s) if &**s == "ab  c"));
+}
