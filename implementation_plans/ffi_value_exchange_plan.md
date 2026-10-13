@@ -10,7 +10,8 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1・2 完了（1-1〜1-6・2-1〜2-6・§5）
+- 状態: フェーズ 1・2 完了（1-1〜1-6・2-1〜2-6・§5）。フェーズ 3 着手
+- 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -182,6 +183,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - フェーズ 4: `PtrProtocol` の定義と、境界での変換（C/C++）
 - フェーズ 5: 他言語への波及
 - フェーズ 6: 非同期タスクからの外部関数呼び出し（別タスク・D-6）
+- フェーズ 7: フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題（2026-10-13 起票・どれも独立に着手できる）
 
 | タスク | 内容 | 前提 | 規模 |
 |---|---|---|---|
@@ -213,6 +215,15 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。`Vec<T>`・`Option<T>`・`&[T]`・`String` フィールドを `PtrProtocol` で受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
 | **6-1** | 非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
+| **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
+| **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
+| **7-3** | 例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
+| **7-4** | `FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
+| **7-5** | 字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
+| **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
+| **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
+| **7-8** | Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
+| **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -413,7 +424,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 文書: `docs/grammar/09_imports.md` に「C# の値の対応」、skill `importation` に C# の節。VSIX を作り直した
 - ⚠ 残したもの: nullable 注釈の無い（古い）アセンブリの null は TypeError で、逃げ道が無い（Kotlin のプラットフォーム型のような
   扱いは必要になったら検討）。外部言語のスタブのクラスは型検査では素の名前（`Person`）で、`cp.Person` は型の位置で
-  解決されない（既存・`is cp.Person` は静的エラー）。C# の例外は `CsProc: …` のままで `except` で捕まえられない（既存）
+  解決されない（既存・`is cp.Person` は静的エラー・⇒ 7-6）。C# の例外は `CsProc: …` のままで `except` で捕まえられない（既存・⇒ 7-4）
 - ゲート（基準 `9fccf26`）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` は新しい 2 本を
   既知の差分に登録した（参照実装は `cs_probe/cs_probe.dll` を見つけられず ParseError。静的エラーの例は一致）。
   `compare_outputs` の差 4 本はすべて意図したもの（新しい 3 本と、確認を足した `cs_interop_test.ar`。基準では `string?` の
@@ -431,7 +442,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 例題: `cs_proc_utf8.ar`（日本語・アクセント・絵文字・空文字列の往復、C# 側のバイト数、オブジェクトに入れた名前。
   期待値と違えば raise）。Arrow の文字列は常に正しい UTF-8 なので、エラーの例題は無い
 - ⚠ 見つけたもの（範囲外・既存）: Arrow の `len(str)` は UTF-8 のバイト数を返す（`len("日本語")` は 9）が、添字と反復は
-  文字単位（参照実装の `len` は 3）。外部言語とは関係しない言語の意味論の問題
+  文字単位（参照実装の `len` は 3）。外部言語とは関係しない言語の意味論の問題。⇒ 7-2 として起票
 - ゲート（基準 `4c39493`）: `scan_examples`・`force_gate` は基準と同じ。`compare_python_impl` は新しい 1 本を既知の差分に登録して
   clean。`compare_outputs` 416/416・`compare_import_paths` 13/13（Rust は変えていないので両方の exe が直したホストを使う。
   直す前の値は上の実測）
@@ -461,7 +472,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `js_proc_container_return_error.ar`（FfiTypeError）・`js_proc_dict_arg_error.ar`（TypeError）
 - 単体テスト: `ffi_boundary::tests`（int → float・要素への再帰・`Option[float]`・2^63 以上と NaN の拒否）
 - 文書: `docs/grammar/09_imports.md` の js-proc の型タグ、skill `importation` の js-proc の型エンコーディング
-- ⚠ 残したもの: FfiTypeError は例外クラスとして登録されておらず `except` で捕まえられない（既存）。node のプロセスが
+- ⚠ 残したもの: FfiTypeError は例外クラスとして登録されておらず `except` で捕まえられない（既存・⇒ 7-4）。node のプロセスが
   実行ごとに残る（2-4）
 - ⚠ **ゲートが 7 時間止まった**: `compare_python_impl.ps1` が子プロセスの出力をパイプで読んでいて、新しい js-proc の例題が
   残した node（2-4）がパイプを握ったまま `.Result` が返らなかった。出力をファイルへ落とすよう直し（`compare_outputs.ps1` と
@@ -536,11 +547,11 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 検査用: `examples/interop/py_int_probe.py`。例題: `py_int_values.ar`（期待値と違えば raise）・`py_int_instance_arg_error.ar`
 - 文書: `docs/grammar/09_imports.md` の py-int、skill `importation`
 - ⚠ 残したもの: `-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError（宣言と違う値として。C / C# / Rust の
-  OverflowError とは違う）。Python のスタブの型の変換は `frozenset[T]` を知らず `Any`、`set[tuple[int, int]]` を `set[tuple]` に
-  する（既存）
+  OverflowError とは違う・⇒ 7-9）。Python のスタブの型の変換は `frozenset[T]` を知らず `Any`、`set[tuple[int, int]]` を `set[tuple]` に
+  する（既存・⇒ 7-8）
 - ⚠ 見つけたもの（範囲外・既存の型検査の不具合）: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python の
   スタブの `set`）と要素型付きのリテラルの `==` が「決して真にならない」という偽の静的エラーになる
-  （`let s = a mustbe set` の後の `s == {1}`）。新しいタスクとして提案する
+  （`let s = a mustbe set` の後の `s == {1}`）。⇒ 7-1 として起票
 - ゲート（基準 `121218a`・制限時間つき）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` は
   新しい 2 本を既知の差分に登録して clean（参照実装は Arrow の set / インスタンスを内部の値のまま Python へ渡す）。
   `compare_outputs` の差 2 本は新しい例題（基準では set が FfiTypeError・型名が 'unknown'）、負の対照 424/424。
