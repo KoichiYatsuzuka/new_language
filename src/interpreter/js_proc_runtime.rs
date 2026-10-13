@@ -50,6 +50,11 @@ fn launch(node_exe: &Path, bridge_script: &Path, bridge_root: &Path) -> Result<P
 }
 
 // ── Global bridge registry (shared across threads) ───────────────────────────
+//
+// ⚠ This table is a static and is never dropped, so `PipeConn`'s `Drop` (which sends "quit") does not run at exit.
+//   The bridge therefore exits by itself when the pipe closes (`bridge/js_bridge.cjs`, socket 'close'), which also
+//   covers Arrow crashing or being killed (ffi_value_exchange_plan.md 2-4). Before that, one node process was left
+//   behind per run.
 
 fn global_bridges() -> &'static Mutex<HashMap<PathBuf, PipeConn>> {
     static BRIDGES: OnceLock<Mutex<HashMap<PathBuf, PipeConn>>> = OnceLock::new();

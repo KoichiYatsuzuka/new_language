@@ -619,6 +619,10 @@ Value::JsProcFn {
 
 ### ブリッジスクリプト (`bridge/js_bridge.cjs`)
 
+⚠ **ブリッジは Arrow との接続が閉じたら自分で終了する**（socket `close`・ffi_value_exchange_plan.md 2-4）。Arrow のブリッジの表は
+静的で終了時に破棄されず、`quit` は送られない。以前は実行ごとに node が残り、親の stderr を握ってパイプで読むスクリプトを
+止めた。60 秒接続が無くても終了する。
+
 IPC サーバー本体。起動引数: `node js_bridge.cjs <pipe_name> <bridge_root>`。
 
 - **`Module._load` オーバーライド**: `require('vscode')` を `{bridge_root}/out_debug/vscode_mock` にリダイレクト（VS Code 拡張モジュールをホスト外で動かすため）

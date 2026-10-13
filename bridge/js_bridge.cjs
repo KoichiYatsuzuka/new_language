@@ -172,12 +172,30 @@ const server = net.createServer((socket) => {
     });
 
     socket.on('error', (e) => process.stderr.write(`js_bridge socket error: ${e}\n`));
+
+    // Arrow is the only client of this bridge. When it disconnects - normally, or because it crashed or was
+    // killed - there is nobody left to serve, so exit (ffi_value_exchange_plan.md 2-4). The bridge used to keep
+    // listening: Arrow keeps its bridges in a process-wide table that is never dropped, so the "quit" request
+    // was never sent and one node process was left behind per run (holding the parent's stderr open, which
+    // made a gate script wait forever).
+    socket.on('close', () => {
+        server.close();
+        process.exit(0);
+    });
 });
 
 server.on('error', (e) => {
     process.stderr.write(`js_bridge server error: ${e}\n`);
     process.exit(1);
 });
+
+// If Arrow never connects (it died between spawning us and opening the pipe), do not wait forever.
+const CONNECT_TIMEOUT_MS = 60 * 1000;
+const connectTimer = setTimeout(() => {
+    process.stderr.write(`js_bridge: no connection within ${CONNECT_TIMEOUT_MS / 1000} s, exiting\n`);
+    process.exit(1);
+}, CONNECT_TIMEOUT_MS);
+server.on('connection', () => clearTimeout(connectTimer));
 
 server.listen(PIPE_NAME, () => {
     // Signal Arrow runtime that the pipe is ready.
