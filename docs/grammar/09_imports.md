@@ -354,6 +354,12 @@ let mean = np.mean(arr)
 - GIL (Global Interpreter Lock) により並列化は不可
 - `Value::PyObject` として扱われる
 
+**値の対応**: `int` / `float` / `str` / `bool` / `None` / list / tuple / dict / set（`frozenset` も Arrow の set）は
+双方向に変換します。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
+受け取ります（以前は黙って `float` に変換し精度を失っていました）。Arrow の set に入れられない要素を含む set は、dict と
+同じく丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
+型名はクラス名）。
+
 ---
 ## Rust crate (`[rs]`)
 

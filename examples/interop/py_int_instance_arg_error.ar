@@ -1,0 +1,15 @@
+# py_int_instance_arg_error.ar — Arrow のインスタンスは Python へ渡せない（負例・2-6）
+#
+# Arrow のクラスのインスタンスを Python の関数に渡すと TypeError。以前は型名が 'unknown' と出て、何を渡したのか
+# 分からなかった。今はクラス名（'Point'）を出す。
+#
+# 対になる正例: py_int_values.ar
+
+import[py-int] py_int_probe as pp
+
+class Point:
+    let x: int
+    let y: int
+
+print("set:", pp.kind({1}))
+print("unreachable:", pp.kind(Point(1, 2)))

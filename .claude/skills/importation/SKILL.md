@@ -247,6 +247,12 @@ plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 
 Parsing errors in `.pyi` / `.py` files are silently ignored (best-effort via `unwrap_or_default()`).
 
+**Value conversion** (`src/interpreter/py_interop.rs` — `ar_to_py` / `py_to_tl`, ffi_value_exchange_plan.md 2-6):
+set / frozenset ↔ Arrow set (a set with an element Arrow cannot hold stays a `PyObject`, like dict). Only `float`
+instances become `float`, and a Python `int` that does not fit in i64 stays a `PyObject` — ⚠ both used to be converted
+to `float` silently (`2**70`, `Decimal("0.1")`). Values Python cannot take (Arrow instances) are `TypeError` naming the
+class (it used to say `'unknown'`).
+
 ---
 
 ## Rust Crate Import (`import[rs]`)

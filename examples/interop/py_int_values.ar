@@ -1,0 +1,46 @@
+# py_int_values.ar — import[py-int] で set・大きな整数・Decimal を受け渡す（ffi_value_exchange_plan.md 2-6）
+#
+# 以前は次のように黙って違う値になるか、理由の分からない誤りになっていた:
+#   - Arrow の set を渡す → TypeError（型名が 'unknown'）。Python の set を受け取る → Python のオブジェクトのまま
+#   - i64 に入らない Python の int（2**70）→ 黙って float（1.1805916207174113e+21・精度を失う）
+#   - Decimal("0.1") など `__float__` を持つ値 → 黙って float（0.1 の誤差が入る）
+# 今は set ↔ set で受け渡し、i64 に入らない int と Decimal は Python のオブジェクトのまま渡す（Python へ戻せば値は元のまま）。
+# Arrow のインスタンスは Python へ渡せないので TypeError（型名はクラス名・py_int_instance_arg_error.ar）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+
+import[py-int] py_int_probe as pp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── set ───────────────────────────────────────────────────────────────────────
+let s = pp.make_set()
+check("Python set arrives as an Arrow set", s is set and s == {1, 2, 3})
+let fs = pp.make_frozenset()
+check("frozenset arrives as an Arrow set", fs is set and pp.size(fs) == 2 and pp.contains(fs, "a"))
+let st = pp.set_of_tuples()
+check("set of tuples", st is set and pp.size(st) == 2 and pp.contains(st, (1, 2)))
+check("Arrow set arrives as a Python set", pp.kind({1, 2}) == "set" and pp.size({1, 2, 2}) == 2)
+check("membership on the Python side", pp.contains({"x", "y"}, "y"))
+
+# ── i64 に入らない int・Decimal は Python のオブジェクトのまま ────────────────────
+let b = pp.big()
+check("2**70 is not turned into a float", not (b is float) and not (b is int))
+check("2**70 + 1 computed in Python", pp.big_text(b) == "1180591620717411303425")
+let d = pp.dec()
+check("Decimal is not turned into a float", not (d is float))
+check("Decimal arithmetic stays exact", pp.dec_text(d) == "0.3")
+
+# ── 関数の中・ループの中から ──────────────────────────────────────────────────
+fn total(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += pp.size(pp.make_set())
+        i += 1
+    return acc
+
+check("sets in a loop", total(3) == 9)

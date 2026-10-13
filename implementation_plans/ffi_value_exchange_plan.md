@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1〜2-5 完了）
+- 状態: フェーズ 1・2 完了（1-1〜1-6・2-1〜2-6・§5）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -196,7 +196,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **2-3** | ✅ js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
 | **2-4** | ✅ js-proc の node プロセスが終了時に残る問題を直す | なし | 小 |
 | **2-5** | ✅ rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
-| **2-6** | py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
+| **2-6** | ✅ py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
 | **3-1** | 組み込み型 `bytes` を足す（D-9）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | 値の種類 `Ptr` を足す（D-3）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | 型検査: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
@@ -521,6 +521,30 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   負の対照（基準どうし）でも同じ 3 本がずれたのは、基準が構造体を `HashMap` の順で並べて生成するため cargo のエラーの行番号が
   回ごとに変わるから（今は名前順に並べるので、新しい exe の出力は毎回同じ）。`compare_import_paths` 13/13・
   `compare_wasm_frontend` 509/509・`type_obligations` 退行なし・`stale_doc_refs` 0・`cargo test` 1087 件すべて成功
+
+
+### 2-6 実装
+
+- `py_interop.rs`: Arrow の set → Python の set、Python の set / frozenset → Arrow の set。Arrow の set に入れられない要素
+  （list など・PyObject）を含む set は、dict と同じく要素を捨てずに丸ごと PyObject で渡す
+- 変換できない値のエラーに型名を出す（インスタンスはクラス名・それ以外は `runtime_type_name`。以前は `'unknown'`）
+- ⚠ ついでに直した黙った変換: i64 に入らない Python の int は f64 への変換に落ちて**黙って float**（精度を失う）になっていた →
+  PyObject のまま。`__float__` を持つ値（`Decimal` / `Fraction`）も黙って float になっていた → `float` のインスタンスだけ float に
+- 実測した以前の症状（`121218a`）: `2**70` → `1180591620717411300000`（float）、`Decimal("0.1")` → `0.1`（float）、
+  Arrow の set を渡す → `cannot convert tl value of type 'unknown' to Python`、Python の set → PyObject（`set[int]` と宣言した
+  関数は FfiTypeError）
+- 検査用: `examples/interop/py_int_probe.py`。例題: `py_int_values.ar`（期待値と違えば raise）・`py_int_instance_arg_error.ar`
+- 文書: `docs/grammar/09_imports.md` の py-int、skill `importation`
+- ⚠ 残したもの: `-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError（宣言と違う値として。C / C# / Rust の
+  OverflowError とは違う）。Python のスタブの型の変換は `frozenset[T]` を知らず `Any`、`set[tuple[int, int]]` を `set[tuple]` に
+  する（既存）
+- ⚠ 見つけたもの（範囲外・既存の型検査の不具合）: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python の
+  スタブの `set`）と要素型付きのリテラルの `==` が「決して真にならない」という偽の静的エラーになる
+  （`let s = a mustbe set` の後の `s == {1}`）。新しいタスクとして提案する
+- ゲート（基準 `121218a`・制限時間つき）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` は
+  新しい 2 本を既知の差分に登録して clean（参照実装は Arrow の set / インスタンスを内部の値のまま Python へ渡す）。
+  `compare_outputs` の差 2 本は新しい例題（基準では set が FfiTypeError・型名が 'unknown'）、負の対照 424/424。
+  `compare_import_paths` 13/13。型検査・拡張は変えていない
 
 ---
 

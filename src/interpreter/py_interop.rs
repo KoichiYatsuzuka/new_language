@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::types::{
-    PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule, PyTuple, PyTupleMethods,
+    PyAnyMethods, PyDict, PyDictMethods, PyFloat, PyFrozenSet, PyInt, PyList, PyListMethods, PyModule, PySet,
+    PyTuple, PyTupleMethods,
 };
 
 use crate::ast::BinOp;
@@ -65,9 +66,16 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             }
             Ok(dict.into())
         }
+        // ⚠ 以前は set を受け付けず、型名が 'unknown' の TypeError になっていた（ffi_value_exchange_plan.md 2-6）
+        Value::Set(items) => {
+            let py_items: Vec<PyObject> =
+                items.borrow().iter().map(|v| ar_to_py(py, v)).collect::<PyResult<_>>()?;
+            Ok(PySet::new_bound(py, &py_items)?.into())
+        }
+        Value::UInt(n) => Ok(n.to_object(py)),
         Value::PyObject(h) => Ok(h.inner.clone_ref(py)),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-            "cannot convert tl value of type '{}' to Python",
+            "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)
         ))),
     }
@@ -93,8 +101,17 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     if let Ok(n) = obj.extract::<i64>() {
         return Value::Int(n);
     }
-    if let Ok(f) = obj.extract::<f64>() {
-        return Value::Float(f);
+    // ⚠ 2-6: Python の int で i64 に入らないものは、下の f64 への変換に落ちて**黙って float**（精度を失う）になっていた。
+    //   Python のオブジェクトのまま渡す（値を失わず、演算は Python 側で行える）。
+    if obj.is_instance_of::<PyInt>() {
+        return Value::PyObject(Arc::new(PyObjHandle { inner: obj.clone().unbind() }));
+    }
+    // ⚠ 2-6: float だけを float にする。以前は `__float__` を持つもの（`Decimal` / `Fraction` など）も黙って float に
+    //   変換していた（`Decimal("0.1")` の精度が失われる）。それらは Python のオブジェクトのまま渡す。
+    if obj.is_instance_of::<PyFloat>() {
+        if let Ok(f) = obj.extract::<f64>() {
+            return Value::Float(f);
+        }
     }
     if let Ok(s) = obj.extract::<String>() {
         return Value::str(s);
@@ -113,7 +130,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         let mut types = Vec::new();
         for item in tup.iter() {
             let v = py_to_tl(py, &item);
-            types.push(type_name_of(&v).to_string());
+            types.push(type_name_of(&v));
             values.push(v);
         }
         return Value::Tuple(Rc::new(TupleData::new(values, types)));
@@ -134,6 +151,33 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         }
         if all_keys_ok {
             return Value::Dict(Rc::new(RefCell::new(dict)));
+        }
+    }
+    // set / frozenset → Value::Set（2-6。以前は Python のオブジェクトのままだった）。
+    // ⚠ Arrow の set に入れられない要素（list / dict / PyObject など）を含むなら、dict と同じく要素を捨てずに
+    //   丸ごと Python のオブジェクトのまま渡す。
+    if obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>() {
+        if let Ok(iter) = obj.iter() {
+            let mut items: Vec<Value> = Vec::new();
+            let mut ok = true;
+            for item in iter {
+                let Ok(item) = item else { ok = false; break };
+                let v = py_to_tl(py, &item);
+                if DictData::reject_key(&v).is_some() || matches!(v, Value::PyObject(_)) {
+                    ok = false;
+                    break;
+                }
+                match items.iter().try_fold(false, |found, e| {
+                    crate::interpreter::Interpreter::values_eq_pure(e, &v).map(|eq| found || eq)
+                }) {
+                    Ok(false) => items.push(v),
+                    Ok(true) => {}
+                    Err(_) => { ok = false; break; }
+                }
+            }
+            if ok {
+                return Value::Set(Rc::new(RefCell::new(items)));
+            }
         }
     }
     // その他 → PyObject（opaque ラップ）
@@ -405,19 +449,14 @@ fn build_py_args<'py>(
     Ok((args_tuple, kwargs))
 }
 
-/// Value のランタイム型名を返す（エラーメッセージ用）。
-fn type_name_of(val: &Value) -> &'static str {
+/// Value のランタイム型名を返す（エラーメッセージ・タプルの要素型名用）。
+/// ⚠ 2-6: 以前は表に無い型を 'unknown' と出していた（Arrow のインスタンス・set など）。インスタンスはクラス名、
+///   それ以外は実行時の型名（`runtime_type_name`）。
+fn type_name_of(val: &Value) -> String {
     match val {
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "str",
-        Value::Bool(_) => "bool",
-        Value::None => "NoneType",
-        Value::List(_) => "list",
-        Value::Dict(_) => "dict",
-        Value::Tuple(_) => "tuple",
-        Value::PyObject(_) => "object",
-        Value::Slice(_) => "slice",
-        _ => "unknown",
+        Value::None => "NoneType".to_string(),
+        Value::Instance(inst) => inst.borrow().class.name.clone(),
+        Value::CsObject(o) => o.class_name.clone(),
+        other => crate::interpreter::ops::typecheck::runtime_type_name(other).to_string(),
     }
 }
