@@ -448,6 +448,25 @@ impl Interpreter {
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"
                     ));
                 }
+                // `import[rs]` の構造体のフィールド: Rust の値そのものを書き換える（生成した `set_{field}` が
+                // 構造体と、Arrow 側に写したフィールドの両方を更新する・ffi_value_exchange_plan.md 2-5）。
+                // ⚠ 以前は Arrow 側の写しだけが変わり、Rust のメソッドは古い値を見ていた。
+                // ⚠ ネイティブ側からの `set_attr`（写しの更新）は `set_attr_val` を通るので、ここへは来ない（再入しない）。
+                if inst_class.field_index.contains_key("__rs_handle__") && attr != "__rs_handle__" {
+                    let setter = format!("set_{attr}");
+                    if crate::interpreter::native_api::lookup_native_method_ptr(&inst_class.name, &setter).is_some() {
+                        self.check_member_access(&inst_class, attr, attr)?;
+                        return match crate::interpreter::native_api::try_dispatch_native_method(
+                            self,
+                            Value::Instance(inst_rc.clone()),
+                            &setter,
+                            vec![rhs],
+                        ) {
+                            Some(r) => r.map(|_| ()),
+                            None => Err(format!("NativeError: setter '{setter}' of '{}' is not loaded", inst_class.name)),
+                        };
+                    }
+                }
                 // static mut 変数への代入: 共有セルを更新する
                 if let Some(cell) = inst_class.static_vars.get(attr).cloned() {
                     self.check_member_access(&inst_class, attr, attr)?;

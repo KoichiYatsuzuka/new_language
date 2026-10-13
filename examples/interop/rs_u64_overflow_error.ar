@@ -1,0 +1,12 @@
+# rs_u64_overflow_error.ar — 2^63 以上の Rust の u64 は Arrow の int に入らない（負例・2-5）
+#
+# Arrow の `int` は符号付き 64 ビット。以前は中継 DLL が `as i64` で黙って折り返していた（u64::MAX → -1）。
+# 今は OverflowError にする（`try` / `except OverflowError` で捕まえられる・rs_values.ar）。C の `unsigned long long`
+# （1-6）・C# の `ulong`（2-1）と同じ扱い。
+#
+# 実行には cargo が要る（rs_crates/ffi_probe_rs）。対になる正例: rs_values.ar
+
+import[rs] ffi_probe_rs as fp
+
+print("small:", fp.small_u64())
+print("unreachable:", fp.huge_u64())

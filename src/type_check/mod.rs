@@ -37,6 +37,18 @@ use crate::ast::Stmt;
 /// （ffi_value_exchange_plan.md 1-2・2-1）。
 /// C/C++ のスタブは文字列のデコレータ（`parser/imports/cpp.rs`）、C# のスタブはメソッドの本体の先頭の文字列
 /// （`cs_assembly::stub_gen::mark_unsupported`。C# のスタブはクラスとして実行され、デコレータが適用されるため）。
+/// 印を付ける外部言語の関数・メソッドを、誤りの文で何と呼ぶか（2-1・2-5）。
+pub(crate) fn ffi_kind(lang: &str, method: bool) -> &'static str {
+    match (lang, method) {
+        ("cpp-dll" | "cpp-lib", _) => "C function",
+        ("cs-dll" | "cs-proc", _) => "C# method",
+        ("rs", false) => "Rust function",
+        ("rs", true) => "Rust method",
+        (_, false) => "external function",
+        (_, true) => "external method",
+    }
+}
+
 pub(crate) fn ffi_unsupported_reason(st: &Stmt) -> Option<String> {
     use crate::ast::Expr;
     let Stmt::FnDef { decorators, body, .. } = st else { return None };
@@ -126,7 +138,7 @@ pub struct TypeChecker {
     /// 今の Arrow から正しく呼べない C/C++ の関数（ffi_value_exchange_plan.md 1-2）の束縛の綴り。
     /// キー: fp.fp_greet（`import[cpp-dll] h as fp`）/ fp_greet（from h import[cpp-dll] fp_greet）。
     /// 値: (束縛のスコープの深さ, 表示名, 理由)。`py_class_factories` と同じ形で、使った箇所を誤りにする。
-    ffi_unsupported: HashMap<String, (usize, String, String)>,
+    ffi_unsupported: HashMap<String, (usize, String, String, &'static str)>,
     /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
     stmt_pos: Option<crate::token::Span>,
     /// 変数を束縛した記録（[`BindingRecord`]）。`None` のあいだは記録しない

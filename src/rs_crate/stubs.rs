@@ -5,11 +5,44 @@ use super::*;
 
 // ── Stub generation ───────────────────────────────────────────────────────────
 
-pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
+/// 未対応の関数・メソッドの本体に置く印（`FFI_UNSUPPORTED_MARK` で始まる docstring・2-5）。型検査が読んで、使った箇所を
+/// 静的エラーにする（`type_check::ffi_unsupported_reason`）。C# のスタブと同じくデコレータは使わない（クラスとして
+/// 実行されるとデコレータが適用される）。
+fn unsupported_body(reason: &str) -> Vec<Stmt> {
+    vec![Stmt::Expr(Expr::Str(format!("{}{reason}", crate::cpp_header::FFI_UNSUPPORTED_MARK).into()))]
+}
+
+/// 未対応の関数・メソッドの型スタブ（引数・戻り値の型は分かる範囲で。分からなければ `Any`）。
+fn unsupported_fn_stub(u: &RsUnsupported, receiver: Option<bool>) -> Stmt {
+    let mut params: Vec<Param> = match receiver {
+        Some(mutable) => vec![Param::bridge("self", None, mutable)],
+        None => vec![],
+    };
+    params.extend(u.params.iter().map(|p| Param::bridge(&p.name, Some(rust_type_to_ar(&p.rust_type).to_string()), false)));
+    Stmt::FnDef { src: None,
+        name: u.name.clone(),
+        template_params: vec![],
+        params,
+        return_type: Some(u.return_type.as_deref().map(|r| rust_type_to_ar(r).to_string()).unwrap_or_else(|| "None".to_string())),
+        body: unsupported_body(&u.reason),
+        is_abstract: true,
+        is_static: false,
+        is_class_method: false,
+        decorators: vec![],
+        access: Accessibility::Public,
+    }
+}
+
+pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig], unsupported: &[RsUnsupported]) -> Vec<Stmt> {
     let mut stmts: Vec<Stmt> = Vec::new();
 
+    // 今の Arrow から呼べない関数（2-5）。以前は import 時に黙って消えていた。
+    for u in unsupported {
+        stmts.push(unsupported_fn_stub(u, None));
+    }
+
     // Free function stubs
-    // 値引数は常に不変（`&mut T` 引数を持つ関数は is_abi_compatible で除外済み —
+    // 値引数は常に不変（`&mut T` 引数を持つ関数は `is_param_type` が拒否し、未対応として印付きで載る —
     // もし将来対応する場合は writable_ref=true で `mut` マーキングすること。Param::bridge 参照）。
     for sig in fns {
         let params: Vec<Param> = sig.params.iter()
@@ -76,7 +109,8 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
                 template_params: vec![],
                 params,
                 return_type: None,
-                body: vec![],
+                // Arrow から構築できない構造体（2-5）。メソッドの戻り値として受け取った値は使える。
+                body: st.ctor_unsupported.as_deref().map(unsupported_body).unwrap_or_default(),
                 is_abstract: true,
                 is_static: false,
                 is_class_method: false,
@@ -138,7 +172,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
 
         // Method stubs
         // `&mut self` レシーバは Arrow の `mut self` として型検査される（Param::bridge）。
-        // 値引数の `&mut T` は is_abi_compatible が拒否するため常に不変。
+        // 値引数の `&mut T` は `is_param_type` が拒否するため常に不変（未対応のメソッドとして載る）。
         for m in &st.methods {
             let mut params = vec![Param::bridge("self", None, m.self_mutable)];
             for p in &m.params {
@@ -163,6 +197,11 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
                 decorators: vec![],
                 access: Accessibility::Public,
             });
+        }
+
+        // 今の Arrow から呼べないメソッド（2-5）
+        for u in &st.unsupported_methods {
+            class_body.push(unsupported_fn_stub(u, Some(false)));
         }
 
         stmts.push(Stmt::ClassDef { src: None,

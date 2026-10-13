@@ -302,33 +302,31 @@ Runs `cargo metadata` to resolve the actual crate source directory via the resol
 
 Walks all `.rs` files under the crate's `src/` directory recursively.
 
-**Free functions** — accepted when:
-- Starts with `pub fn` at the top level of a file (not inside an `impl` block)
-- No generic type parameters (`<`)
-- All parameter types and return type are ABI-compatible (see below)
+Source: `src/rs_crate/parse.rs` (shared with the VS Code wasm). Signatures may span several lines
+(`signature_text`; rustfmt-wrapped functions used to vanish).
 
-**Structs** — accepted when (`parse_struct_sigs`, rs_loader.rs:627):
-- `pub struct Name {` at the top level (no generics)
-- At least one `pub` field with an ABI-compatible type
-- Constructor: `pub fn new(...) -> Self` in `impl Name { }` (preferred), otherwise all-pub-field struct literal
+**Free functions** (`parse_fn_sigs` / `classify_fn_sig`) — a top-level `pub fn` whose parameter and return types are
+accepted (below) is callable. ⚠ Every other one (generic, `Vec<String>`, `&[i64]`, `&mut T`, tuples …) is returned as
+`RsUnsupported` with a reason, put into the stub with a mark, and using it is a static `FfiUnsupported` error
+("Rust function"). Before ffi_value_exchange_plan.md 2-5 they disappeared silently.
 
-**Methods** — accepted when (`parse_method_line`, rs_loader.rs:871):
-- Inside `impl Name {` (no trait impl, no generics)
-- `&self` or `&mut self` receiver
-- All param types ABI-compatible
-- Return type is ABI-compatible or is a struct defined in the same crate
+**Structs** (`parse_struct_sigs`) — every non-generic `pub struct Name {`, including ones without `pub` fields.
+Construction: `pub fn new(..) -> Self` if present (`classify_method` returns `MethodKind::New`), else a struct
+literal when every field is `pub` and passable; otherwise `ctor_unsupported` marks `__init__` (constructing is a static
+error, a value returned by a method is still usable). ⚠ Before 2-5 `new` was never found (associated functions were
+dropped), so a struct with private fields made the whole import fail at the wrapper build.
 
-**ABI-compatible types** (`is_abi_compatible`, rs_loader.rs:946):
+**Methods** (`collect_impl_items` / `classify_method`) — `&self` / `&mut self` receivers. `-> Self` returns the struct.
+Associated functions other than `new`, methods taking `self` by value, generic methods and unsupported types are marked
+("Rust method").
+
+**Types by position** (`is_param_type` / `is_return_type` / `is_field_type`):
 ```
-i8 i16 i32 i64 i128 isize
-u8 u16 u32 u64 u128 usize
-f32 f64
-bool
-String  &str  &String
-&[u8]           → passed/received as HV str
-Vec<u8>         → returned as hex str
-[u8; N]         → returned as hex str
+integers (i8..i128, u8..u128, isize, usize), f32, f64, bool, String   — everywhere
+&str  &String  &[u8]                                                     — parameters only (&str also as a return)
+Vec<u8>  [u8; N]                                                         — return values only (hex str; bytes in 5-4)
 ```
+Integers are range-checked both ways (`try_from` in the wrapper → OverflowError; they used to wrap around with `as`).
 
 **Re-export whitelist** (`collect_reexports`, rs_loader.rs:411):
 If `lib.rs` defines `pub fn` or `pub struct` directly, or uses `pub use ..::*` / `pub use ..::Name`, only those names are exposed. This prevents pulling in internal helpers.
@@ -344,10 +342,16 @@ Writes an auto-generated `lib.rs` to the temp project. The generated code:
 - For each **free function**: exports `{fn_name}_tl(args: *const i64, n: i32) -> i64`. Decodes handles to Rust types, calls the real function, encodes the return value back to a handle.
 - For each **struct**:
   - One static `OnceLock<Mutex<HashMap<i64, StructName>>>` arena + atomic counter.
-  - `{StructName}____init___tl` — constructs the struct, stores it in the arena keyed by a fresh integer, writes the key back into the HV instance as `__rs_handle__`.
+  - `{StructName}____init___tl` — constructs the struct (or **adopts** a value a method returned, waiting in the
+    thread-local `ADOPT_{NAME}` slot), stores it in the arena keyed by a fresh integer, writes the key back into the HV
+    instance as `__rs_handle__`, and copies the fields into the instance (`_sync_fields_{name}`).
   - `{StructName}__drop_tl` — removes the key from the arena.
-  - `{StructName}__get_{field}_tl` / `{StructName}__set_{field}_tl` — field access.
-  - `{StructName}__{method}_tl` — method dispatch via arena lookup.
+  - `{StructName}__get_{field}_tl` / `{StructName}__set_{field}_tl` — field access. ⚠ `obj.field = v` from Arrow is
+    routed to the setter (`attr_assign_evaled`), so the Rust value changes too (2-5; it used to change only the copy).
+  - `{StructName}__{method}_tl` — method dispatch via arena lookup. `&mut self` methods copy the fields back
+    afterwards (2-5; `obj.field` used to keep the value from construction time). A returned struct is put into the
+    adoption slot and the class is called (⚠ it used to be rebuilt from its fields through the constructor: wrong with
+    `new()`, a build error with private fields).
 
 Runs `cargo build --release` on the temp project. On success, reads the resulting DLL/SO bytes and deletes the temp directory.
 
@@ -358,6 +362,7 @@ Calls `cache_native(module_name, exports, dll_bytes)` to store the DLL bytes in 
 Returns `Vec<Stmt>` stubs (`make_stubs`, rs_loader.rs:1035):
 - `Stmt::FnDef` for each free function — empty body, HV types, `is_abstract: true`
 - `Stmt::ClassDef` for each struct — with field stubs, `__init__`, `drop`, getter/setter, and method stubs
+- Unsupported functions / methods / constructors carry the `FFI_UNSUPPORTED_MARK` docstring as their body (2-5)
 
 These stubs are embedded in `Stmt::Import.body` and used by the type checker and runtime.
 

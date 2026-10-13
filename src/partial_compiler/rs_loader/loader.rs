@@ -20,7 +20,7 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
 
     let (crate_src_dir, crate_ident) = prepare_wrapper(&source, &stem, &tmp)?;
 
-    let (fns, structs) = scan_all_sigs(&crate_src_dir, &crate_ident);
+    let (fns, structs, unsupported) = scan_all_sigs(&crate_src_dir, &crate_ident);
 
     if fns.is_empty() && structs.is_empty() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -99,7 +99,7 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
     }
 
     cache_native(module_name, exports, dll_bytes);
-    Ok(make_stubs(&fns, &structs))
+    Ok(make_stubs(&fns, &structs, &unsupported))
 }
 
 // ── Digest dependency helpers ─────────────────────────────────────────────────

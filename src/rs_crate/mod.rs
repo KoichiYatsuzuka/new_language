@@ -42,6 +42,21 @@ pub(crate) struct RsStructSig {
     /// ⚠ 読むのは中継 DLL の生成（`partial_compiler/rs_loader`・CLI だけ）。
     #[cfg_attr(feature = "editor", allow(dead_code))]
     pub(crate) use_new_fn: bool,
+    /// Arrow から構築できない理由（private フィールドがあって呼べる `new` が無い など・2-5）。`Some` なら
+    /// `__init__` を未対応として印を付け、構築を静的エラーにする。
+    pub(crate) ctor_unsupported: Option<String>,
+    /// 今の Arrow から呼べないメソッド（型・ジェネリック・`self` の無い関連関数・2-5）。
+    pub(crate) unsupported_methods: Vec<RsUnsupported>,
+}
+
+/// 今の Arrow から呼べない関数・メソッドと、その理由（ffi_value_exchange_plan.md 2-5）。
+/// 型スタブに印付きで載せ、使った箇所を静的エラーにする（以前は import 時に黙って消えていた）。
+#[derive(Clone)]
+pub(crate) struct RsUnsupported {
+    pub(crate) name: String,
+    pub(crate) params: Vec<RsParam>,
+    pub(crate) return_type: Option<String>,
+    pub(crate) reason: String,
 }
 
 pub(crate) struct RsField {
@@ -192,10 +207,10 @@ pub(crate) fn load_types(
     let Some((crate_src_dir, crate_ident)) = local_crate_src(&source) else {
         return Err(format!("import[rs] `{module_name}`: only local crates (rust.crates_path) are supported"));
     };
-    let (fns, structs) = scan_all_sigs(&crate_src_dir, &crate_ident);
+    let (fns, structs, unsupported) = scan_all_sigs(&crate_src_dir, &crate_ident);
     if fns.is_empty() && structs.is_empty() {
         return Err(no_compatible_items(module_name));
     }
-    Ok(make_stubs(&fns, &structs))
+    Ok(make_stubs(&fns, &structs, &unsupported))
 }
 

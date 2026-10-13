@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1〜2-4 完了）
+- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1〜2-5 完了）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -195,7 +195,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **2-2** | ✅ cs-proc ホスト（`ArrowPipeHost.cs`）の受信を UTF-8 で復号する | なし | 小 |
 | **2-3** | ✅ js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
 | **2-4** | ✅ js-proc の node プロセスが終了時に残る問題を直す | なし | 小 |
-| **2-5** | rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
+| **2-5** | ✅ rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
 | **2-6** | py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
 | **3-1** | 組み込み型 `bytes` を足す（D-9）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | 値の種類 `Ptr` を足す（D-3）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
@@ -485,6 +485,42 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - 例題は足していない（値の受け渡しは変わらない）。ゲートを走らせる手元のスクリプトが、各ゲートの後に残った node を数えて警告する
 - ゲート（基準 `9f0aedb`・制限時間つき）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl`
   clean・`compare_outputs` 419/419（負の対照も 419/419）・`compare_import_paths` 13/13。どのゲートの後にも node は残らなかった
+
+
+### 2-5 実装
+
+- **呼べないシグネチャの報告**（`src/rs_crate/parse.rs`）: 関数・メソッドを「呼べる」「呼べない（理由つき・`RsUnsupported`）」に
+  分け、呼べないものも印付きで型スタブに載せる。型検査が使った箇所を `FfiUnsupported` にする（モジュールの関数は
+  "Rust function"、クラスのメソッドは "Rust method"、構築は "Rust constructor"）。⚠ 以前は import 時に黙って消え、
+  使うと「そんな名前は無い」になっていた。対象: コレクション・`Option`・タプル・スライス・`&mut` の引数・ジェネリック・
+  `self` の無い関連関数（`new` 以外）・`self` を消費するメソッド・作れない構造体の構築
+- **`new()` を使う構築**: `new` を探す処理が `self` の無い関数を捨てていたので、`new` は一度も使われず、private フィールドの
+  ある構造体は構造体リテラルでビルドに失敗して **import 全体が落ちていた**。`new` → 構造体リテラル（全フィールドが `pub` で
+  渡せる型のとき）→ どちらも無理なら構築を未対応（メソッドの戻り値としては使える）。`pub` フィールドの無い構造体も拾う
+- **`pub String` フィールドのセッター**: 値を構造体へ移した後に読んでいてビルドに失敗していた（同じく import 全体が落ちた）。
+  Arrow 側へ写す値を移す前に作る
+- **フィールドの値**: `&mut self` のメソッドの後に Rust の値を Arrow 側のフィールドへ写し直す（`_sync_fields_*`）。逆向きに、
+  Arrow から `obj.field = v` と代入すると生成したセッターを呼ぶ（`attr_assign_evaled`）。⚠ 以前は構築時の値のまま、代入は
+  Arrow 側の写しだけが変わった
+- **戻り値の構造体**: 戻り値をスレッドローカルの枠（`ADOPT_*`）に置いてクラスを呼び、`__init__` がそれを引き取る。⚠ 以前は
+  戻り値のフィールドから**構築関数を通して作り直していて**、`new` の引数がフィールドと違うと誤り、private フィールドでビルド失敗
+- **ほかに直したもの**: 複数行のシグネチャ（rustfmt の折り返し）を読む（以前は黙って消えた）。`-> Self` のメソッドを構造体の
+  戻り値として扱う（以前は消えた）。整数の範囲を検査する（`try_from`・Arrow の int に入らない戻り値・Rust の型に入らない引数は
+  OverflowError。以前は `as` で黙って折り返した）。引数にしか使えない型（`&[u8]`）・戻り値にしか使えない型（`Vec<u8>` /
+  `[u8; N]`）を分けた（以前は `Vec<u8>` の引数でビルドに失敗した）
+- 実測した以前の症状（`552548b`）: `import[rs] ffi_probe_rs` が `cannot construct Account with struct literal syntax due to private
+  fields` と `borrow of moved value: _val` でビルドに失敗した
+- 検査用: `ffi_probe_rs` に `-> Self`・作れない構造体（`Sealed`）・`pub` フィールドの無い構造体（`Secret`）・複数行のシグネチャ・
+  整数の範囲・呼べないシグネチャを足した
+- 例題: `rs_values.ar`（期待値と違えば raise）・`rs_unsupported_signature_error.ar`（9 か所の静的エラー）・`rs_u64_overflow_error.ar`
+- 単体テスト: `rs_crate::parse::probe_tests`（構築の方法・メソッドの分類・関数の分類・型の位置）
+- 文書: `docs/grammar/09_imports.md` の Rust、skill `importation` の Rust の節。VSIX を作り直した
+- ⚠ 残したもの: `Vec<String>` などの受け渡し（5-4）。`pub` フィールドのうち渡せない型のものは型スタブに載らない（使うと「無い」）
+- ゲート（基準 `552548b`・制限時間つき）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` clean
+  （新しい 3 本は cargo に依存するので比較から外した）。`compare_outputs` の差 3 本は新しい例題（基準では中継 DLL のビルドに失敗）。
+  負の対照（基準どうし）でも同じ 3 本がずれたのは、基準が構造体を `HashMap` の順で並べて生成するため cargo のエラーの行番号が
+  回ごとに変わるから（今は名前順に並べるので、新しい exe の出力は毎回同じ）。`compare_import_paths` 13/13・
+  `compare_wasm_frontend` 509/509・`type_obligations` 退行なし・`stale_doc_refs` 0・`cargo test` 1087 件すべて成功
 
 ---
 

@@ -247,7 +247,7 @@ libloading で解決）ため、スタブの mutability 変更は実行時挙動
 |---|---|---|
 | C/C++ | 非 const `T*` / `VECTOR*` | `src/parser/imports/cpp.rs`（P5 から継続） |
 | C# | `ref`/`out`（ELEMENT_TYPE_BYREF） | `src/parser/cs_assembly/stub_gen.rs`（従来は byref 情報を破棄し常に不変扱いだった） |
-| Rust | `&mut self` レシーバのみ | `src/partial_compiler/rs_loader/stubs.rs`。`&mut T` 値引数は `is_abi_compatible` が関数ごと除外するため対象なし（将来対応時は writable_ref=true 必須） |
+| Rust | `&mut self` レシーバのみ | `src/partial_compiler/rs_loader/stubs.rs`。`&mut T` 値引数は `is_param_type` が拒否し、その関数は未対応として印付きで載る（ffi_value_exchange_plan.md 2-5。将来対応時は writable_ref=true 必須） |
 
 **C# の制限**: `in`（読み取り専用参照）もシグネチャ上 BYREF のため `mut` 扱い
 （過剰に厳しい側 — `mut` 変数を渡せば通る）。VS Code 拡張 `cs_assembly.ts` の

@@ -1046,14 +1046,14 @@ impl TypeChecker {
     /// 引数の意味は `check_py_class_factory_use` と同じ。呼び出しに限らず、値として持ち出すのも誤り
     /// （どの使い方でも、戻り値が壊れる・落ちる・書き込みが失われる関数なので）。
     fn check_ffi_unsupported_use(&mut self, spelled: &str, binding: &str, span: Option<Span>) {
-        let Some((depth, shown, reason)) = self.ffi_unsupported.get(spelled) else { return };
+        let Some((depth, shown, reason, what)) = self.ffi_unsupported.get(spelled) else { return };
         if self.state.lookup_depth(binding) != Some(*depth) {
             return;
         }
-        let (function, reason) = (shown.clone(), reason.clone());
+        let (function, reason, what) = (shown.clone(), reason.clone(), what.to_string());
         self.report_error(StaticTypeError {
-            // 印の付いたモジュールの関数は C/C++ のスタブだけ（C# はクラスのメソッドで `TypeRegistry::ffi_unsupported_method` が引く）
-            kind: TypeErrorKind::FfiUnsupported { what: "C function".to_string(), function, reason },
+            // 印の付いたモジュールの関数は C/C++ と Rust のスタブ（クラスのメソッドは `TypeRegistry::ffi_unsupported_method` が引く）
+            kind: TypeErrorKind::FfiUnsupported { what, function, reason },
             span,
         });
     }

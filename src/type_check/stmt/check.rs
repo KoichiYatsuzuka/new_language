@@ -760,11 +760,13 @@ impl TypeChecker {
                     // 今の Arrow から呼べない C/C++ の関数（1-2）。cpp 系はパッケージではなく、束縛名が
                     // 別名かヘッダの名前なので、綴りは `束縛名.関数名`。
                     self.ffi_unsupported.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
-                    if lang == "cpp-dll" || lang == "cpp-lib" {
+                    // C/C++（1-2）と Rust（2-5）のスタブはモジュールの関数に印を付ける
+                    if matches!(lang.as_str(), "cpp-dll" | "cpp-lib" | "rs") {
                         let depth = self.state.scope_depth();
+                        let what = crate::type_check::ffi_kind(lang, false);
                         for (f, reason) in ffi_unsupported_fns(body) {
                             let spelled = format!("{}.{f}", b.name);
-                            self.ffi_unsupported.insert(spelled.clone(), (depth, spelled, reason));
+                            self.ffi_unsupported.insert(spelled.clone(), (depth, spelled, reason, what));
                         }
                     }
                     self.declare(b.name.clone(), ns_ty, false);
@@ -780,8 +782,9 @@ impl TypeChecker {
                 }
                 let is_py = lang == "py" || lang == "py-int";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
-                let is_cpp = lang == "cpp-dll" || lang == "cpp-lib";
-                let unsupported = if is_cpp { ffi_unsupported_fns(body) } else { Vec::new() };
+                let marks_fns = matches!(lang.as_str(), "cpp-dll" | "cpp-lib" | "rs");
+                let unsupported = if marks_fns { ffi_unsupported_fns(body) } else { Vec::new() };
+                let what = crate::type_check::ffi_kind(lang, false);
                 // CPython: 名前がモジュールに無ければサブモジュール（パーサが先に読み込んでいる）。
                 let children = self.module_children.get(&module.join(".")).cloned().unwrap_or_default();
                 // ⚠ Arrow のモジュールの名前にもサブモジュールにも無い名前は静的エラー（2026-10-02）。
@@ -813,7 +816,7 @@ impl TypeChecker {
                     if let Some((_, reason)) = unsupported.iter().find(|(n, _)| n == orig_name) {
                         self.ffi_unsupported.insert(
                             bind_name.clone(),
-                            (self.state.scope_depth(), orig_name.clone(), reason.clone()),
+                            (self.state.scope_depth(), orig_name.clone(), reason.clone(), what),
                         );
                     } else {
                         self.ffi_unsupported.remove(&bind_name);

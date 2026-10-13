@@ -72,6 +72,8 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     /// 「Arrow のクラス」に見えてしまう（実際 `event_cs_handler.ar` で
     /// `Value::CsObject` を `Value::Instance` 前提の op に流して落ちた）。
     foreign_depth: u32,
+    /// 今集めている外部言語のスタブの言語タグ（誤りの文で `C# method` / `Rust method` と呼び分ける・2-5）。
+    foreign_lang: Option<String>,
     /// 今集めている文が属する文脈（`TypeRegistry::name_scopes` の添字・0 がメイン・フェーズ10 10-8）。
     /// `import` の別名・`from import` した名前をこの文脈の表に控える。
     cur_scope: usize,
@@ -269,6 +271,7 @@ impl TypeRegistryBuilder {
             seen_modules: HashSet::new(),
             seen_instances: HashSet::new(),
             foreign_depth: 0,
+            foreign_lang: None,
             cur_scope: 0,
             module_prefix: None,
         }
@@ -550,7 +553,9 @@ impl TypeRegistryBuilder {
                         } else {
                             // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
                             self.foreign_depth += 1;
+                            let prev_lang = self.foreign_lang.replace(lang.clone());
                             self.collect(body);
+                            self.foreign_lang = prev_lang;
                             self.foreign_depth -= 1;
                         }
                     } else if !instances.is_empty() {
@@ -788,12 +793,13 @@ impl TypeRegistryBuilder {
             }
         }
         self.reg.class_method_sigs.insert(name.to_string(), cls_methods);
-        // 今の Arrow から呼べない外部言語のメソッド（C# のスタブの印・2-1）
-        let unsupported: HashMap<String, String> = body
+        // 今の Arrow から呼べない外部言語のメソッド（C# / Rust のスタブの印・2-1・2-5）
+        let what = crate::type_check::ffi_kind(self.foreign_lang.as_deref().unwrap_or(""), true);
+        let unsupported: HashMap<String, (&'static str, String)> = body
             .iter()
             .filter_map(|s| match s {
                 Stmt::FnDef { name: mname, .. } => {
-                    crate::type_check::ffi_unsupported_reason(s).map(|r| (mname.clone(), r))
+                    crate::type_check::ffi_unsupported_reason(s).map(|r| (mname.clone(), (what, r)))
                 }
                 _ => None,
             })

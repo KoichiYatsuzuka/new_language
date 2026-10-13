@@ -1,0 +1,79 @@
+# rs_values.ar — import[rs] で Rust の値と構造体を受け渡す（ffi_value_exchange_plan.md 2-5）
+#
+# 2-5 より前は、検査用の crate（rs_crates/ffi_probe_rs）を import するだけで失敗していた:
+#   - `pub String` フィールドのセッターの生成コードがコンパイルできなかった（値を移した後に読んでいた）
+#   - `pub fn new` が一度も使われず、private フィールドのある構造体を構造体リテラルで作ろうとしてコンパイルできなかった
+# ほかに、`&mut self` のメソッドがフィールドを書き換えても Arrow 側の `c.n` は古い値のまま、Arrow から `p.name = ..` と
+# 代入しても Rust の値は変わらず、`-> Self` のメソッド・`pub` フィールドの無い構造体・複数行のシグネチャは黙って消え、
+# `u64` の 2^63 以上や `u8` の範囲外は黙って折り返していた。
+# 呼べない関数・メソッドは静的エラー（rs_unsupported_signature_error.ar）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 実行には cargo が要る（rs_crates/ffi_probe_rs を中継 DLL ごとビルドする。ar_config.json の rust.crates_path）。
+
+import[rs] ffi_probe_rs as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 関数 ──────────────────────────────────────────────────────────────────────
+check("String return", fp.greet() == "hello from Rust")
+check("&str argument", fp.echo("日本語") == "日本語")
+check("multi-line signature", fp.add_three(1, 2, 3) == 6)
+check("u8 arithmetic", fp.add_u8(250, 10) == 4)
+check("u64 that fits", fp.small_u64() == 7)
+
+# ── フィールドは Rust の値と一致する ───────────────────────────────────────────
+mut c = fp.Counter(3)
+c.add_len("abcd")
+check("&mut self method updates c.n", c.n == 7 and c.get_n() == 7)
+c.n = 10
+check("assignment reaches Rust", c.label() == "count=10")
+check("-> Self", c.doubled().n == 20)
+check("returned struct", c.plus(5).n == 15)
+
+mut p = fp.Person("Ann", 30)
+p.name = "Bob"
+check("String field assignment reaches Rust", p.hello() == "I am Bob (30)" and p.name == "Bob")
+p.set_age(31)
+check("generated setter", p.age == 31 and p.hello() == "I am Bob (31)")
+
+# ── new() で作る（private フィールド）・pub フィールドの無い構造体 ─────────────
+mut a = fp.Account(7, 100)
+a.deposit(5)
+check("new() and a private field", a.id() == 7 and a.balance == 105)
+let s = fp.Secret(42)
+check("struct without pub fields", s.reveal() == 42)
+
+# ── Arrow からは作れないが、メソッドの戻り値としては使える ─────────────────────
+let sealed = c.seal()
+check("returned value of an unconstructible struct", sealed.value() == 10)
+
+# ── 範囲外の整数は OverflowError（以前は黙って折り返した）──────────────────────
+mut n = 0
+try:
+    let big = fp.huge_u64()
+    print("unreachable:", big)
+except OverflowError as e:
+    n += 1
+    print("u64::MAX: OverflowError: " + e.message)
+try:
+    let w = fp.add_u8(300, 1)
+    print("unreachable:", w)
+except OverflowError as e:
+    n += 1
+    print("300 for u8: OverflowError: " + e.message)
+check("both overflows raised", n == 2)
+
+# ── 関数の中・ループの中から ──────────────────────────────────────────────────
+fn grow(let times: int) -> int:
+    mut k = fp.Counter(0)
+    mut i = 0
+    while i < times:
+        k.add_len("xy")
+        i += 1
+    return k.n
+
+check("field updates in a loop", grow(4) == 8)

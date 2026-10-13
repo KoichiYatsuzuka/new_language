@@ -411,11 +411,11 @@ impl TypeChecker {
                 }
             }
             // 今の Arrow から正しく呼べない C# のメソッド（コレクションを受け渡す など・2-1）
-            if let Some(reason) = self.registry.ffi_unsupported_method(cls_name, method_name) {
-                let reason = reason.to_string();
+            if let Some((what, reason)) = self.registry.ffi_unsupported_method(cls_name, method_name) {
+                let (what, reason) = (what.to_string(), reason.to_string());
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::FfiUnsupported {
-                        what: "C# method".to_string(),
+                        what,
                         function: format!("{cls_name}.{method_name}"),
                         reason,
                     },
@@ -478,6 +478,15 @@ impl TypeChecker {
                 //    but 1 were given` で落ちる（実測）。
                 if self.registry.arrow_class_names().contains(fname.as_str()) {
                     self.check_self_type_params(fname, "__init__", &arg_data);
+                }
+                // Arrow から構築できない外部言語のクラス（private フィールドで `new` の無い Rust の構造体・2-5）。
+                // メソッドの戻り値として受け取った値は使えるので、誤りにするのは構築だけ。
+                if let Some((what, reason)) = self.registry.ffi_unsupported_method(fname, "__init__") {
+                    let (what, reason) = (what.replace(" method", " constructor"), reason.to_string());
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::FfiUnsupported { what, function: format!("{fname}(...)"), reason },
+                        span: None,
+                    });
                 }
                 return InferredType::NamedInstance(fname.clone());
             }

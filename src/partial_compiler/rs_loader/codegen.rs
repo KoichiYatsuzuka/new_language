@@ -15,6 +15,7 @@ use std::collections::HashMap;
 const TL_NONE:  i64 = 0;
 const TL_TRUE:  i64 = 1;
 const TL_FALSE: i64 = 2;
+const TL_EXCEPTION: i64 = -2;
 
 #[repr(C)]
 struct ArCallbacks {
@@ -75,6 +76,20 @@ unsafe fn cb_set_attr(obj_h: i64, name: &[u8], val_h: i64) {
     ((*CB).set_attr)(obj_h, name.as_ptr(), name.len() as i32, val_h)
 }
 
+// Raise an Arrow exception from the wrapper (returns TL_EXCEPTION; the caller returns it) — 2-5.
+unsafe fn _raise(ty: &[u8], msg: &str) -> i64 {
+    ((*CB).raise_exc)(cb_make_str(ty.as_ptr(), ty.len() as i32), cb_make_str(msg.as_ptr(), msg.len() as i32))
+}
+unsafe fn _overflow_in(name: &str, ty: &str) -> i64 {
+    _raise(b"OverflowError", &format!("argument `{name}` does not fit in the Rust type `{ty}`"))
+}
+unsafe fn _overflow_out(what: &str) -> i64 {
+    _raise(b"OverflowError", &format!("{what} is 2^63 or more (or below -2^63) and does not fit in int"))
+}
+unsafe fn _dropped(ty: &[u8]) -> i64 {
+    _raise(b"RuntimeError", &format!("the Rust `{}` object has been dropped", String::from_utf8_lossy(ty)))
+}
+
 unsafe fn handle_to_string(h: i64) -> String {
     let ptr = cb_to_cstr(h);
     if ptr.is_null() { return String::new(); }
@@ -86,9 +101,9 @@ unsafe fn handle_to_string(h: i64) -> String {
 pub(crate) fn lib_rs(fns: &[RsFnSig], structs: &[RsStructSig], crate_ident: &str) -> String {
     let mut out = ABI_HEADER.to_string();
 
-    // Struct arenas (one static arena + counter per struct)
+    // Struct arenas (one static arena + counter + adoption slot + field sync per struct)
     for st in structs {
-        out.push_str(&struct_arena_decl(&st.name, crate_ident));
+        out.push_str(&struct_arena_decl(st, crate_ident));
     }
 
     // Free function wrappers
@@ -104,16 +119,33 @@ pub(crate) fn lib_rs(fns: &[RsFnSig], structs: &[RsStructSig], crate_ident: &str
     out
 }
 
-/// Generate the static arena declaration for a struct using OnceLock for lazy init.
-pub(crate) fn struct_arena_decl(struct_name: &str, crate_ident: &str) -> String {
+/// Generate the static arena declaration for a struct using OnceLock for lazy init, the adoption slot and the
+/// field-sync helper (ffi_value_exchange_plan.md 2-5).
+pub(crate) fn struct_arena_decl(st: &RsStructSig, crate_ident: &str) -> String {
+    let struct_name = &st.name;
     let lock_ident = arena_lock_ident(struct_name);
     let getter = arena_getter_fn(struct_name);
     let counter = counter_ident(struct_name);
+    let adopt = adopt_ident(struct_name);
+    let sync = sync_fn(struct_name);
+    // Field sync: copy every field of the Rust value into the Arrow instance's fields. Returns TL_EXCEPTION when
+    // a value does not fit (an Arrow `int` from a u64 field ≥ 2^63).
+    let mut sync_body = String::new();
+    for field in &st.fields {
+        let fname = &field.name;
+        sync_body.push_str(&format!(
+            "    let _fh = {};\n    if _fh == TL_EXCEPTION {{ return TL_EXCEPTION; }}\n    cb_set_attr(self_h, b\"{fname}\", _fh);\n",
+            rust_value_to_handle_of(&format!("obj.{fname}"), &field.rust_type, fname)
+        ));
+    }
     format!(
         "static {lock_ident}: OnceLock<Mutex<HashMap<i64, {crate_ident}::{struct_name}>>> = OnceLock::new();\n\
          fn {getter}() -> &'static Mutex<HashMap<i64, {crate_ident}::{struct_name}>> {{\n    \
          {lock_ident}.get_or_init(|| Mutex::new(HashMap::new()))\n}}\n\
-         static {counter}: AtomicI64 = AtomicI64::new(1);\n\n"
+         static {counter}: AtomicI64 = AtomicI64::new(1);\n\
+         // A value returned by a method, waiting to be adopted by the next `__init__` (instead of constructing).\n\
+         thread_local! {{ static {adopt}: std::cell::RefCell<Option<{crate_ident}::{struct_name}>> = std::cell::RefCell::new(None); }}\n\
+         unsafe fn {sync}(self_h: i64, obj: &{crate_ident}::{struct_name}) -> i64 {{\n{sync_body}    TL_NONE\n}}\n\n"
     )
 }
 
@@ -129,6 +161,16 @@ pub(crate) fn arena_getter_fn(struct_name: &str) -> String {
 
 pub(crate) fn counter_ident(struct_name: &str) -> String {
     format!("COUNTER_{}", struct_name.to_uppercase())
+}
+
+/// The thread-local slot holding a returned value to adopt (2-5).
+pub(crate) fn adopt_ident(struct_name: &str) -> String {
+    format!("ADOPT_{}", struct_name.to_uppercase())
+}
+
+/// The helper that copies the Rust value's fields into the Arrow instance (2-5).
+pub(crate) fn sync_fn(struct_name: &str) -> String {
+    format!("_sync_fields_{}", struct_name.to_lowercase())
 }
 
 /// Generate all wrappers for a struct: __init__, drop, field getters/setters, methods.
@@ -147,67 +189,61 @@ pub(crate) fn struct_wrappers(st: &RsStructSig, crate_ident: &str, all_structs: 
 }
 
 /// `{StructName}____init___tl` — constructor wrapper.
+///
+/// A value returned by a method is waiting in the adoption slot when the method constructs the Arrow instance
+/// through the class (`struct_method_wrapper`): take it instead of constructing a new one. ⚠ Before task 2-5 the
+/// returned struct was rebuilt from its fields through the constructor — wrong when `new()` is used (its
+/// parameters are not the fields) and a build error with private fields.
 pub(crate) fn struct_init_wrapper(st: &RsStructSig, crate_ident: &str) -> String {
     let name = &st.name;
     let arena = format!("{}()", arena_getter_fn(name));
     let counter = counter_ident(name);
+    let adopt = adopt_ident(name);
+    let sync = sync_fn(name);
     // Symbol: method_symbol(name, "__init__") = "{name}____init__", + "_tl"
     let sym = format!("{name}____init___tl");
 
-    let mut out = format!(
-        "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n"
-    );
-    out.push_str("    let self_h = *args.add(0);\n");
-
-    // Decode constructor args starting at index 1
-    for (i, p) in st.ctor_params.iter().enumerate() {
-        out.push_str(&param_conversion(i + 1, &p.name, &p.rust_type));
+    let mut construct = String::new();
+    match &st.ctor_unsupported {
+        // Construction from Arrow is a static error (the stub's `__init__` is marked); this is the runtime guard.
+        Some(why) => {
+            let msg = format!("Rust struct `{name}` cannot be constructed from Arrow: {why}").replace('"', "'");
+            construct.push_str(&format!("            return _raise(b\"TypeError\", \"{msg}\");\n"));
+        }
+        None => {
+            for (i, p) in st.ctor_params.iter().enumerate() {
+                construct.push_str(&indent(&param_conversion(i + 1, &p.name, &p.rust_type), 8));
+            }
+            let args: Vec<String> = st.ctor_params.iter().map(|p| p.name.clone()).collect();
+            if st.use_new_fn {
+                construct.push_str(&format!("            {crate_ident}::{name}::new({})\n", args.join(", ")));
+            } else {
+                let field_inits: Vec<String> = args.iter().map(|a| format!("{a}: {a}")).collect();
+                construct.push_str(&format!("            {crate_ident}::{name} {{ {} }}\n", field_inits.join(", ")));
+            }
+        }
     }
 
-    // Build the struct instance
-    if st.use_new_fn {
-        let args: Vec<String> = st.ctor_params.iter().map(|p| p.name.clone()).collect();
-        out.push_str(&format!(
-            "    let _instance = {crate_ident}::{name}::new({});\n",
-            args.join(", ")
-        ));
-    } else {
-        let field_inits: Vec<String> = st.ctor_params.iter()
-            .map(|p| format!("{}: {}", p.name, p.name))
-            .collect();
-        out.push_str(&format!(
-            "    let _instance = {crate_ident}::{name} {{ {} }};\n",
-            field_inits.join(", ")
-        ));
-    }
+    format!(
+        "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n    \
+         let self_h = *args.add(0);\n    \
+         let _instance = match {adopt}.with(|a| a.borrow_mut().take()) {{\n        \
+         Some(_v) => _v,\n        \
+         None => {{\n{construct}        }}\n    \
+         }};\n    \
+         let _key = {counter}.fetch_add(1, Ordering::SeqCst);\n    \
+         let _key_h = cb_make_int(_key);\n    \
+         cb_set_attr(self_h, b\"__rs_handle__\", _key_h);\n    \
+         let _synced = {sync}(self_h, &_instance);\n    \
+         {arena}.lock().unwrap().insert(_key, _instance);\n    \
+         if _synced == TL_EXCEPTION {{ return TL_EXCEPTION; }}\n    \
+         TL_NONE\n}}\n\n"
+    )
+}
 
-    // Store in arena
-    out.push_str(&format!(
-        "    let _key = {counter}.fetch_add(1, Ordering::SeqCst);\n"
-    ));
-    out.push_str(&format!(
-        "    {arena}.lock().unwrap().insert(_key, _instance);\n"
-    ));
-
-    // Store __rs_handle__ in the HV instance
-    out.push_str("    let _key_h = cb_make_int(_key);\n");
-    out.push_str("    cb_set_attr(self_h, b\"__rs_handle__\", _key_h);\n");
-
-    // Also populate HV field cache from the arena
-    for field in &st.fields {
-        let fname = &field.name;
-        let ftype = &field.rust_type;
-        out.push_str(&format!(
-            "    {{\n        let _arena = {arena}.lock().unwrap();\n        \
-             if let Some(_obj) = _arena.get(&_key) {{\n            \
-             let _fh = {};\n            \
-             cb_set_attr(self_h, b\"{fname}\", _fh);\n        }}\n    }}\n",
-            rust_value_to_handle("_obj", fname, ftype)
-        ));
-    }
-
-    out.push_str("    TL_NONE\n}\n\n");
-    out
+fn indent(code: &str, by: usize) -> String {
+    let pad = " ".repeat(by);
+    code.lines().map(|l| format!("{pad}{l}\n")).collect()
 }
 
 /// `{StructName}__drop_tl` — destructor wrapper.
@@ -229,7 +265,7 @@ pub(crate) fn struct_getter_wrapper(struct_name: &str, field: &RsField) -> Strin
     let arena = format!("{}()", arena_getter_fn(struct_name));
     let fname = &field.name;
     let sym = format!("{struct_name}__get_{fname}_tl");
-    let result_expr = rust_value_to_handle("_obj", fname, &field.rust_type);
+    let result_expr = rust_value_to_handle_of(&format!("_obj.{fname}"), &field.rust_type, fname);
     format!(
         "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n    \
          let self_h = *args.add(0);\n    \
@@ -238,39 +274,46 @@ pub(crate) fn struct_getter_wrapper(struct_name: &str, field: &RsField) -> Strin
          let _arena = {arena}.lock().unwrap();\n    \
          match _arena.get(&_key) {{\n        \
          Some(_obj) => {result_expr},\n        \
-         None => TL_NONE,\n    \
+         None => _dropped(b\"{struct_name}\"),\n    \
          }}\n}}\n\n"
     )
 }
 
-/// `{StructName}__set_{field}_tl` — field setter.
+/// `{StructName}__set_{field}_tl` — field setter (also called for `obj.field = v` from Arrow — 2-5).
+/// ⚠ The Arrow-side copy is computed **before** the value moves into the struct (it used to read `_val` after
+/// moving it, which did not compile for `String` fields and made the whole crate import fail).
 pub(crate) fn struct_setter_wrapper(struct_name: &str, field: &RsField) -> String {
     let arena = format!("{}()", arena_getter_fn(struct_name));
     let fname = &field.name;
     let sym = format!("{struct_name}__set_{fname}_tl");
     let decode = param_conversion(1, "_val", &field.rust_type);
-    let val_handle = rust_value_to_handle_of("_val", &field.rust_type);
+    let val_handle = rust_value_to_handle_of("_val", &field.rust_type, fname);
     format!(
         "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n    \
          let self_h = *args.add(0);\n{decode}    \
+         let _fh = {val_handle};\n    \
          let _key_h = cb_get_attr(self_h, b\"__rs_handle__\");\n    \
          let _key = cb_to_int(_key_h);\n    \
          let mut _arena = {arena}.lock().unwrap();\n    \
-         if let Some(_obj) = _arena.get_mut(&_key) {{\n        \
-         _obj.{fname} = _val;\n    }}\n    \
+         match _arena.get_mut(&_key) {{\n        \
+         Some(_obj) => _obj.{fname} = _val,\n        \
+         None => return _dropped(b\"{struct_name}\"),\n    \
+         }}\n    \
          drop(_arena);\n    \
-         let _fh = {val_handle};\n    \
          cb_set_attr(self_h, b\"{fname}\", _fh);\n    \
          TL_NONE\n}}\n\n"
     )
 }
 
 /// `{StructName}__{method_name}_tl` — method wrapper.
-/// `all_structs` is needed to look up the return struct's ctor params.
-pub(crate) fn struct_method_wrapper(struct_name: &str, m: &RsMethodSig, _crate_ident: &str, all_structs: &[RsStructSig]) -> String {
+/// `&mut self` methods copy the fields back into the Arrow instance afterwards (2-5: `obj.field` used to keep the
+/// value from construction time). A returned struct is handed to the class through the adoption slot.
+pub(crate) fn struct_method_wrapper(struct_name: &str, m: &RsMethodSig, crate_ident: &str, all_structs: &[RsStructSig]) -> String {
     let arena = format!("{}()", arena_getter_fn(struct_name));
+    let sync = sync_fn(struct_name);
     let mname = &m.name;
     let sym = format!("{struct_name}__{mname}_tl");
+    let _ = crate_ident;
 
     let mut out = format!(
         "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n"
@@ -285,96 +328,74 @@ pub(crate) fn struct_method_wrapper(struct_name: &str, m: &RsMethodSig, _crate_i
 
     let args_call: Vec<String> = m.params.iter().map(|p| p.name.clone()).collect();
     let call_expr = format!("_obj.{mname}({})", args_call.join(", "));
+    let (lock_kw, borrow) = if m.self_mutable { ("mut ", "get_mut(&_key)") } else { ("", "get(&_key)") };
+    out.push_str(&format!("    let {lock_kw}_arena = {arena}.lock().unwrap();\n"));
+    out.push_str(&format!(
+        "    let _obj = match _arena.{borrow} {{ Some(_o) => _o, None => return _dropped(b\"{struct_name}\") }};\n"
+    ));
+    let sync_after = if m.self_mutable {
+        format!("    if {sync}(self_h, _obj) == TL_EXCEPTION {{ return TL_EXCEPTION; }}\n")
+    } else {
+        String::new()
+    };
 
     if let Some(ret_struct_name) = &m.return_struct {
-        // Returns a struct — extract field values before releasing the arena lock,
-        // then call cb_call_fn to construct the HV instance.
-        let ret_struct = all_structs.iter().find(|s| &s.name == ret_struct_name);
-        let ctor_params: &[RsParam] = ret_struct
-            .map(|s| s.ctor_params.as_slice())
-            .unwrap_or(&[]);
-
-        // Open arena block
-        let lock_kw = if m.self_mutable { "mut " } else { "" };
-        out.push_str(&format!("    let {lock_kw}_arena = {arena}.lock().unwrap();\n"));
-        out.push_str(&format!("    let _found = _arena.{borrow};\n",
-            borrow = if m.self_mutable { "get_mut(&_key)" } else { "get(&_key)" }
-        ));
-        out.push_str("    if _found.is_none() { return TL_NONE; }\n");
-        out.push_str("    let _obj = _found.unwrap();\n");
+        let adopt = adopt_ident(ret_struct_name);
+        // Arrow's `__init__` of the returned class takes this many arguments; they are ignored while adopting.
+        let n_ctor = all_structs
+            .iter()
+            .find(|s| &s.name == ret_struct_name)
+            .map_or(0, |s| s.ctor_params.len());
         out.push_str(&format!("    let _rval = {call_expr};\n"));
-
-        // Extract each ctor field from the result before lock is dropped
-        for (i, p) in ctor_params.iter().enumerate() {
-            let t = &p.rust_type;
-            let fname = &p.name;
-            out.push_str(&format!("    let _ret_{i}: {t} = _rval.{fname};\n"));
-        }
-        out.push_str("    drop(_arena);\n"); // explicit drop = release lock before callbacks
-
-        // Build HV instance via cb_get_global + cb_call_fn
+        out.push_str(&sync_after);
+        out.push_str("    drop(_arena); // release the lock before calling back into Arrow\n");
+        out.push_str(&format!("    {adopt}.with(|a| *a.borrow_mut() = Some(_rval));\n"));
         out.push_str(&format!(
             "    let _cls_h = ((*CB).get_global)(\"{ret_struct_name}\".as_ptr(), {n});\n",
             n = ret_struct_name.len()
         ));
-
-        // Build ctor arg handles
-        let handle_exprs: Vec<String> = ctor_params.iter().enumerate()
-            .map(|(i, p)| rust_value_to_handle_of(&format!("_ret_{i}"), &p.rust_type))
-            .collect();
-        if handle_exprs.is_empty() {
-            out.push_str("    let _ctor: [i64; 0] = [];\n");
-        } else {
-            out.push_str(&format!("    let _ctor = [{}];\n", handle_exprs.join(", ")));
-        }
-        out.push_str("    ((*CB).call_fn)(_cls_h, _ctor.as_ptr(), _ctor.len() as i32)\n");
-        out.push_str("}\n\n");
+        out.push_str(&format!("    let _ctor: [i64; {n_ctor}] = [TL_NONE; {n_ctor}];\n"));
+        out.push_str("    let _r = ((*CB).call_fn)(_cls_h, _ctor.as_ptr(), _ctor.len() as i32);\n");
+        // If `__init__` never ran (the class could not be found), do not leave the value for the next construction.
+        out.push_str(&format!("    {adopt}.with(|a| a.borrow_mut().take());\n"));
+        out.push_str("    _r\n}\n\n");
     } else {
-        // Primitive / void return — original path
-        let obj_borrow = if m.self_mutable { "get_mut(&_key)" } else { "get(&_key)" };
-        if m.self_mutable {
-            out.push_str(&format!("    let mut _arena = {arena}.lock().unwrap();\n"));
-        } else {
-            out.push_str(&format!("    let _arena = {arena}.lock().unwrap();\n"));
-        }
-        out.push_str(&format!("    match _arena.{obj_borrow} {{\n"));
-        out.push_str("        None => TL_NONE,\n");
         out.push_str(&format!(
-            "        Some(_obj) => {{\n{}\n        }},\n    }}\n}}\n\n",
+            "    let _ret: i64 = {{ {} }};\n",
             return_conversion_expr(&call_expr, m.return_type.as_deref())
         ));
+        out.push_str(&sync_after);
+        out.push_str("    _ret\n}\n\n");
     }
-
     out
 }
 
-/// Generate a Rust expression that converts an arena object's field to an i64 handle.
-/// `obj_var` is the variable holding a reference to the struct.
-pub(crate) fn rust_value_to_handle(obj_var: &str, field: &str, rust_type: &str) -> String {
-    let field_expr = format!("{obj_var}.{field}");
-    rust_value_to_handle_of(&field_expr, rust_type)
-}
-
 /// Generate a Rust expression that converts a value expression to an i64 handle.
-pub(crate) fn rust_value_to_handle_of(expr: &str, rust_type: &str) -> String {
+/// Integers that do not fit in Arrow's `int` (i64) raise OverflowError (2-5: `u64` / `usize` / `u128` / `i128` used
+/// to wrap around with `as i64`). `what` names the value in the message.
+pub(crate) fn rust_value_to_handle_of(expr: &str, rust_type: &str, what: &str) -> String {
     match rust_type.trim() {
-        "i64" | "isize" => format!("cb_make_int({expr})"),
-        "i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "u128" | "i128" =>
-            format!("cb_make_int({expr} as i64)"),
+        "i64" | "isize" => format!("cb_make_int({expr} as i64)"),
+        "i32" | "i16" | "i8" | "u32" | "u16" | "u8" => format!("cb_make_int({expr} as i64)"),
+        "u64" | "usize" | "u128" | "i128" => format!(
+            "match i64::try_from({expr}) {{ Ok(_n) => cb_make_int(_n), Err(_) => _overflow_out(\"the Rust field `{what}`\") }}"
+        ),
         "f64" => format!("cb_make_float({expr})"),
         "f32" => format!("cb_make_float({expr} as f64)"),
         "bool" => format!("if {expr} {{ TL_TRUE }} else {{ TL_FALSE }}"),
-        "String" => format!("cb_make_str({expr}.as_ptr(), {expr}.len() as i32)"),
-        "&str" | "&String" => format!("cb_make_str({expr}.as_ptr(), {expr}.len() as i32)"),
-        _ => format!("cb_make_int({expr} as i64)"),
+        "String" | "&str" | "&String" => format!("cb_make_str({expr}.as_ptr(), {expr}.len() as i32)"),
+        other => format!("_raise(b\"TypeError\", \"cannot convert a Rust `{other}` to an Arrow value\")"),
     }
 }
 
+/// Decode argument `i` into a Rust local `name`. Integers that do not fit the Rust type raise OverflowError
+/// (2-5: they used to wrap around with `as`, e.g. 300 for a `u8` became 44, -1 for a `u64` became 2^64-1).
 pub(crate) fn param_conversion(i: usize, name: &str, rust_type: &str) -> String {
     match rust_type.trim() {
-        "i64" | "isize" => format!("    let {name}: i64 = cb_to_int(*args.add({i}));\n"),
-        t @ ("i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "u128" | "i128") =>
-            format!("    let {name}: {t} = cb_to_int(*args.add({i})) as {t};\n"),
+        "i64" | "isize" => format!("    let {name}: {t} = cb_to_int(*args.add({i})) as {t};\n", t = rust_type.trim()),
+        t @ ("i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "u128" | "i128") => format!(
+            "    let {name}: {t} = match {t}::try_from(cb_to_int(*args.add({i}))) {{ Ok(_v) => _v, Err(_) => return _overflow_in(\"{name}\", \"{t}\") }};\n"
+        ),
         "f64" => format!("    let {name}: f64 = cb_to_float(*args.add({i}));\n"),
         "f32" => format!("    let {name}: f32 = cb_to_float(*args.add({i})) as f32;\n"),
         "bool" => format!("    let {name}: bool = *args.add({i}) == TL_TRUE;\n"),
@@ -389,7 +410,8 @@ pub(crate) fn param_conversion(i: usize, name: &str, rust_type: &str) -> String 
             format!(
                 "    let _bytes_{name}: String = handle_to_string(*args.add({i}));\n    let {name}: &[u8] = _bytes_{name}.as_bytes();\n"
             ),
-        _ => format!("    let {name}: i64 = *args.add({i});\n"),
+        // The scanner only lets the types above through (`is_param_type`).
+        other => format!("    return _raise(b\"TypeError\", \"cannot pass an Arrow value as a Rust `{other}`\");\n"),
     }
 }
 
@@ -403,8 +425,11 @@ pub(crate) fn return_conversion_expr(call: &str, rust_type: Option<&str>) -> Str
             format!("{call};\n            TL_NONE"),
         Some("i64" | "isize") =>
             format!("cb_make_int({call})"),
-        Some("i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "u128" | "i128") =>
+        Some("i32" | "i16" | "i8" | "u32" | "u16" | "u8") =>
             format!("cb_make_int(({call}) as i64)"),
+        // ⚠ 2^63 以上（負の i128）は Arrow の int に入らないので OverflowError（2-5。以前は `as i64` で黙って折り返した）
+        Some("u64" | "usize" | "u128" | "i128") =>
+            format!("match i64::try_from({call}) {{ Ok(_n) => cb_make_int(_n), Err(_) => _overflow_out(\"the Rust return value\") }}"),
         Some("f64") =>
             format!("cb_make_float({call})"),
         Some("f32") =>
@@ -424,8 +449,9 @@ pub(crate) fn return_conversion_expr(call: &str, rust_type: Option<&str>) -> Str
         Some(t) if is_fixed_byte_array(t) => {
             format!("{{ let _r = {call};\n            let _hex = _r.iter().map(|b| format!(\"{{:02x}}\", b)).collect::<String>();\n            cb_make_str(_hex.as_ptr(), _hex.len() as i32) }}")
         }
-        Some(_) =>
-            format!("{{ let _r: i64 = {call} as i64;\n            cb_make_int(_r) }}"),
+        // The scanner only lets the types above through (`is_return_type`).
+        Some(other) =>
+            format!("{{ let _ = {call}; _raise(b\"TypeError\", \"cannot convert a Rust `{other}` to an Arrow value\") }}"),
     }
 }
 

@@ -28,8 +28,8 @@ pub(super) struct TypeRegistry {
     /// クラスメソッドのシグネチャ。キー: クラス名 → (メソッド名 → 候補)。
     class_method_sigs: HashMap<String, HashMap<String, Vec<FnSig>>>,
     /// 今の Arrow から正しく呼べない外部言語のメソッド（C# のスタブ・ffi_value_exchange_plan.md 2-1）。
-    /// キー: クラス名 → (メソッド名 → 理由)。型スタブの印（`ffi_unsupported_reason`）から集める。
-    class_method_ffi_unsupported: HashMap<String, HashMap<String, String>>,
+    /// キー: クラス名 → (メソッド名 → (何のメソッドか・理由))。型スタブの印（`ffi_unsupported_reason`）から集める。
+    class_method_ffi_unsupported: HashMap<String, HashMap<String, (&'static str, String)>>,
     /// トレイトメソッドのシグネチャ（Intersection 適合チェックで使用）。
     trait_method_sigs: HashMap<String, HashMap<String, Vec<FnSig>>>,
     /// トレイトフィールドの詳細（Intersection 適合チェックで使用）。
@@ -351,11 +351,12 @@ impl TypeRegistry {
     }
 
     /// 今の Arrow から正しく呼べない外部言語のメソッドなら、その理由（2-1）。
-    pub(super) fn ffi_unsupported_method(&self, class: &str, method: &str) -> Option<&str> {
+    /// 戻り値は（`C# method` / `Rust method` …・理由）。
+    pub(super) fn ffi_unsupported_method(&self, class: &str, method: &str) -> Option<(&'static str, &str)> {
         self.class_method_ffi_unsupported
             .get(&*self.resolve(class))
             .and_then(|m| m.get(method))
-            .map(String::as_str)
+            .map(|(what, reason)| (*what, reason.as_str()))
     }
 
     /// クラスの基底クラス・トレイト名。

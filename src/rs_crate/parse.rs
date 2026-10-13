@@ -16,9 +16,10 @@ pub(crate) fn collect_reexports(src_dir: &Path) -> std::collections::HashSet<Str
     let lib_rs = src_dir.join("lib.rs");
     let Ok(text) = crate::import_fs::read_to_string(&lib_rs) else { return set };
     for line in text.lines() {
+        // ⚠ 呼べない関数の名前も載せる（未対応として報告するため・2-5）
         if line.starts_with("pub fn ") {
-            if let Some(sig) = parse_single_line_sig(line.trim()) {
-                set.insert(sig.name);
+            if let Some(name) = fn_name_of(line) {
+                set.insert(name);
             }
         }
         if line.starts_with("pub struct ") {
@@ -56,8 +57,8 @@ pub(crate) fn follow_pub_use(
                     let next_dir = candidate.parent().unwrap_or(module_dir).to_path_buf();
                     for mline in text.lines() {
                         if mline.starts_with("pub fn ") {
-                            if let Some(sig) = parse_single_line_sig(mline.trim()) {
-                                out.insert(sig.name);
+                            if let Some(name) = fn_name_of(mline) {
+                                out.insert(name);
                             }
                         }
                         if mline.starts_with("pub struct ") {
@@ -92,6 +93,7 @@ pub(crate) fn collect_sigs(
     dir: &Path,
     fns: &mut Vec<RsFnSig>,
     structs: &mut Vec<RsStructSig>,
+    unsupported: &mut Vec<RsUnsupported>,
     seen_fns: &mut std::collections::HashSet<String>,
     seen_structs: &mut std::collections::HashSet<String>,
 ) {
@@ -101,12 +103,18 @@ pub(crate) fn collect_sigs(
     };
     for path in entries {
         if crate::import_fs::is_dir(&path) {
-            collect_sigs(&path, fns, structs, seen_fns, seen_structs);
+            collect_sigs(&path, fns, structs, unsupported, seen_fns, seen_structs);
         } else if path.extension().is_some_and(|e| e == "rs") {
             if let Ok(text) = crate::import_fs::read_to_string(&path) {
-                for sig in parse_fn_sigs(&text) {
+                let (ok, bad) = parse_fn_sigs(&text);
+                for sig in ok {
                     if seen_fns.insert(sig.name.clone()) {
                         fns.push(sig);
+                    }
+                }
+                for u in bad {
+                    if seen_fns.insert(u.name.clone()) {
+                        unsupported.push(u);
                     }
                 }
                 for st in parse_struct_sigs(&text) {
@@ -120,16 +128,19 @@ pub(crate) fn collect_sigs(
 }
 
 /// Top-level scan: collects free functions, structs, AND digest-pattern wrappers.
+/// The third element is the free functions Arrow cannot call yet, with the reason (ffi_value_exchange_plan.md 2-5:
+/// they used to disappear silently at import).
 pub(crate) fn scan_all_sigs(
     src_dir: &Path,
     crate_ident: &str,
-) -> (Vec<RsFnSig>, Vec<RsStructSig>) {
+) -> (Vec<RsFnSig>, Vec<RsStructSig>, Vec<RsUnsupported>) {
     let whitelist = collect_reexports(src_dir);
     let mut fns: Vec<RsFnSig> = Vec::new();
     let mut structs: Vec<RsStructSig> = Vec::new();
+    let mut unsupported: Vec<RsUnsupported> = Vec::new();
     let mut seen_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_structs: std::collections::HashSet<String> = std::collections::HashSet::new();
-    collect_sigs(src_dir, &mut fns, &mut structs, &mut seen_fns, &mut seen_structs);
+    collect_sigs(src_dir, &mut fns, &mut structs, &mut unsupported, &mut seen_fns, &mut seen_structs);
 
     // Detect Digest-trait pattern and synthesise one-shot hash functions.
     for dig_fn in collect_digest_fns(src_dir, crate_ident) {
@@ -147,66 +158,129 @@ pub(crate) fn scan_all_sigs(
             .collect();
         fns.retain(|s| whitelist.contains(&s.name) || digest_names.contains(&s.name));
         structs.retain(|s| whitelist.contains(&s.name));
+        unsupported.retain(|u| whitelist.contains(&u.name));
     }
-    (fns, structs)
+    (fns, structs, unsupported)
+}
+
+// ── Signature text ────────────────────────────────────────────────────────────
+
+/// `pub fn` から始まるシグネチャを、複数行に分かれていても 1 行にまとめる（2-5）。
+/// 括弧が閉じ、本体の `{` か `;` が現れるまでの行をつなぐ。戻り値は（まとめた文字列、消費した行数）。
+/// ⚠ 以前は 1 行に収まるシグネチャしか読めず、`rustfmt` が折り返した関数は黙って消えていた。
+pub(crate) fn signature_text(lines: &[&str], start: usize) -> (String, usize) {
+    let mut text = String::new();
+    let mut depth = 0i32;
+    let mut opened = false;
+    let mut n = 0;
+    for line in &lines[start..] {
+        n += 1;
+        let t = line.trim();
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(t);
+        for c in t.chars() {
+            match c {
+                '(' => { depth += 1; opened = true; }
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 && (t.contains('{') || t.ends_with(';')) {
+            break;
+        }
+        if n > 40 {
+            break;
+        }
+    }
+    (text, n)
+}
+
+/// `pub fn name` の関数名（シグネチャが読めなくても名前だけは取る）。
+pub(crate) fn fn_name_of(text: &str) -> Option<String> {
+    let rest = text.trim().strip_prefix("pub fn ")?;
+    let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_string())
+}
+
+/// 型が渡せないときの説明（`parameter `x` is …` / `it returns …` に続ける）。
+fn type_problem(t: &str) -> String {
+    let t = t.trim();
+    if t.starts_with("&mut ") {
+        format!("`{t}`, a mutable reference, which cannot cross the bridge")
+    } else {
+        format!("`{t}`, which cannot cross the bridge yet")
+    }
+}
+
+/// 戻り値の型の文字列（`-> T` の `T`。`where` 節と本体の `{` の手前まで）。
+fn return_type_of(after_params: &str) -> Option<String> {
+    let ret = after_params.trim_start().strip_prefix("->")?.trim_start();
+    let mut end = ret.find(['{', ';']).unwrap_or(ret.len());
+    if let Some(w) = ret.find(" where ") {
+        end = end.min(w);
+    }
+    let t = ret[..end].trim().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 // ── Signature parsing — free functions ───────────────────────────────────────
 
-pub(crate) fn parse_fn_sigs(source: &str) -> Vec<RsFnSig> {
-    let mut sigs = Vec::new();
-    for line in source.lines() {
-        if line.starts_with("pub fn ") {
-            if let Some(sig) = parse_single_line_sig(line.trim()) {
-                sigs.push(sig);
+/// 最上位の `pub fn` を、Arrow から呼べるもの（`Ok`）と呼べないもの（理由つき）に分ける。
+pub(crate) fn parse_fn_sigs(source: &str) -> (Vec<RsFnSig>, Vec<RsUnsupported>) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut ok = Vec::new();
+    let mut bad = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].starts_with("pub fn ") {
+            let (text, n) = signature_text(&lines, i);
+            match classify_fn_sig(&text) {
+                Some(Ok(sig)) => ok.push(sig),
+                Some(Err(u)) => bad.push(u),
+                None => {}
             }
+            i += n;
+        } else {
+            i += 1;
         }
     }
-    sigs
+    (ok, bad)
 }
 
-pub(crate) fn parse_single_line_sig(line: &str) -> Option<RsFnSig> {
-    let rest = line.strip_prefix("pub fn ")?;
-
-    let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_')?;
-    let name = rest[..name_end].to_string();
-    let rest = rest[name_end..].trim_start();
-
-    if rest.starts_with('<') {
-        return None;
-    }
-    if !rest.starts_with('(') {
-        return None;
-    }
-    let paren_end = find_matching(rest, '(', ')')?;
-    let params_str = &rest[1..paren_end];
-    let rest = rest[paren_end + 1..].trim_start();
-
-    let return_type = if rest.starts_with("->") {
-        let ret = rest[2..].trim_start();
-        let end = ret
-            .find(['{', ';', 'w'])
-            .unwrap_or(ret.len());
-        let t = ret[..end].trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
-    } else {
-        None
+/// 1 行にまとめたシグネチャを読む。名前すら読めなければ `None`。
+pub(crate) fn classify_fn_sig(text: &str) -> Option<Result<RsFnSig, RsUnsupported>> {
+    let name = fn_name_of(text)?;
+    let unsupported = |params: Vec<RsParam>, ret: Option<String>, reason: String| {
+        Some(Err(RsUnsupported { name: name.clone(), params, return_type: ret, reason }))
     };
-
-    if let Some(ref rt) = return_type {
-        if !is_abi_compatible(rt) {
-            return None;
+    let rest = text.trim().strip_prefix("pub fn ")?[name.len()..].trim_start();
+    if rest.starts_with('<') {
+        // 引数の個数は型スタブに出す（型は `Any`）。出さないと「引数の個数が違う」という偽の誤りが重なる。
+        let after = find_matching(rest, '<', '>').map_or("", |e| rest[e + 1..].trim_start());
+        let params = find_matching(after, '(', ')').map(|e| parse_params(&after[1..e])).unwrap_or_default();
+        let params = params.into_iter().filter(|p| !matches!(p.name.as_str(), "self")).collect();
+        return unsupported(params, None, "it is generic".to_string());
+    }
+    let Some(paren_end) = rest.starts_with('(').then(|| find_matching(rest, '(', ')')).flatten() else {
+        return unsupported(vec![], None, "its signature could not be read".to_string());
+    };
+    let params = parse_params(&rest[1..paren_end]);
+    let return_type = return_type_of(&rest[paren_end + 1..]);
+    if let Some(rt) = &return_type {
+        if !is_return_type(rt) {
+            let why = format!("it returns {}", type_problem(rt));
+            return unsupported(params, return_type.clone(), why);
         }
     }
-
-    let params = parse_params(params_str);
     for p in &params {
-        if !is_abi_compatible(&p.rust_type) {
-            return None;
+        if !is_param_type(&p.rust_type) {
+            let why = format!("parameter `{}` is {}", p.name, type_problem(&p.rust_type));
+            return unsupported(params.clone(), return_type, why);
         }
     }
-
-    Some(RsFnSig { name, params, return_type, digest_type: None })
+    Some(Ok(RsFnSig { name, params, return_type, digest_type: None }))
 }
 
 // ── Signature parsing — structs and impl blocks ───────────────────────────────
@@ -223,54 +297,57 @@ pub(crate) fn extract_struct_name(line: &str) -> Option<String> {
     Some(name)
 }
 
+/// `pub struct Name { ... }` のフィールドの読み取り結果。
+pub(crate) struct StructFields {
+    /// Arrow から読み書きできる `pub` フィールド
+    pub(crate) fields: Vec<RsField>,
+    /// private フィールド、または Arrow が渡せない型の `pub` フィールドがある（構造体リテラルで作れない）
+    pub(crate) literal_blocked: bool,
+}
+
 /// Parse all `pub struct Name { ... }` and `impl Name { ... }` blocks from source.
-/// Returns a list of `RsStructSig` for each struct that has at least one
-/// ABI-compatible field or is fully constructible.
+///
+/// 構築の方法: `pub fn new(..) -> Self` があればそれ、無ければ（全フィールドが `pub` で渡せる型なら）構造体リテラル。
+/// どちらも使えなければ構築を未対応として印を付ける（2-5）。⚠ 以前は `new` を見つける処理が `self` の無い関数を
+/// 捨てていたので `new` は一度も使われず、private フィールドを持つ構造体は中継 DLL のビルドが失敗して import 全体が
+/// 落ちていた。`pub` フィールドが 1 つも無い構造体（`new` とメソッドだけで使う型）も黙って捨てていた。
 pub(crate) fn parse_struct_sigs(source: &str) -> Vec<RsStructSig> {
-    // Collect struct field definitions and impl methods separately,
-    // then combine by struct name.
     let struct_fields = collect_struct_fields(source);
     let known_names: Vec<String> = struct_fields.keys().cloned().collect();
-    let impl_methods = collect_impl_methods(source, &known_names);
+    let mut impl_items = collect_impl_items(source, &known_names);
 
     let mut result = Vec::new();
-    for (struct_name, fields) in struct_fields {
-        // Need at least one pub field
-        if fields.is_empty() { continue; }
-
-        let methods = impl_methods
-            .get(&struct_name)
-            .cloned()
-            .unwrap_or_default();
-
-        // Determine constructor params: prefer fn new(), fall back to field order
-        let (ctor_params, use_new_fn) = if let Some(new_method) =
-            methods.iter().find(|m| m.name == "new" && m.return_type.as_deref() == Some("Self"))
-        {
-            (new_method.params.iter().map(|p| RsParam { name: p.name.clone(), rust_type: p.rust_type.clone() }).collect(), true)
-        } else {
-            (fields.iter().map(|f| RsParam { name: f.name.clone(), rust_type: f.rust_type.clone() }).collect(), false)
+    for (struct_name, sf) in struct_fields {
+        let items = impl_items.remove(&struct_name).unwrap_or_default();
+        let literal_ok = !sf.literal_blocked;
+        let (ctor_params, use_new_fn, ctor_unsupported) = match items.new_fn {
+            Some(Ok(params)) => (params, true, None),
+            Some(Err(_)) | None if literal_ok => (
+                sf.fields.iter().map(|f| RsParam { name: f.name.clone(), rust_type: f.rust_type.clone() }).collect(),
+                false,
+                None,
+            ),
+            Some(Err(why)) => (vec![], false, Some(format!("its `new` cannot be called: {why}"))),
+            None => (
+                vec![],
+                false,
+                Some("it has private fields (or fields Arrow cannot pass) and no `pub fn new(..) -> Self`".to_string()),
+            ),
         };
-
-        // Filter out the special `new` function from methods (it becomes __init__)
-        let methods: Vec<RsMethodSig> = methods
-            .into_iter()
-            .filter(|m| m.name != "new")
-            .collect();
-
         result.push(RsStructSig {
             name: struct_name,
-            fields,
-            methods,
+            fields: sf.fields,
+            methods: items.methods,
             ctor_params,
             use_new_fn,
+            ctor_unsupported,
+            unsupported_methods: items.unsupported,
         });
     }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
     result
 }
 
-/// Scan source for `pub struct Name { pub field: Type, ... }` definitions.
-/// Returns a map of struct_name → Vec<RsField> (only pub ABI-compatible fields).
 // ── Digest-trait pattern detection ───────────────────────────────────────────
 
 /// Detect crates that follow the RustCrypto `Digest` pattern:
@@ -357,7 +434,8 @@ pub(crate) fn to_snake_case(s: &str) -> String {
     out
 }
 
-pub(crate) fn collect_struct_fields(source: &str) -> HashMap<String, Vec<RsField>> {
+/// Scan source for `pub struct Name { ... }` definitions (every brace-delimited, non-generic one).
+pub(crate) fn collect_struct_fields(source: &str) -> HashMap<String, StructFields> {
     let mut result = HashMap::new();
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
@@ -371,24 +449,24 @@ pub(crate) fn collect_struct_fields(source: &str) -> HashMap<String, Vec<RsField
                 // Only support brace-delimited structs
                 if line.contains('{') {
                     let mut fields = Vec::new();
+                    let mut literal_blocked = false;
                     let mut depth = line.chars().filter(|&c| c == '{').count() as i32
                         - line.chars().filter(|&c| c == '}').count() as i32;
                     i += 1;
                     while i < lines.len() && depth > 0 {
                         let fline = lines[i].trim();
-                        // Parse `pub field_name: Type,`
-                        if depth == 1 {
-                            if let Some(field) = parse_struct_field_line(fline) {
-                                fields.push(field);
+                        if depth == 1 && is_field_line(fline) {
+                            match parse_struct_field_line(fline) {
+                                Some(field) => fields.push(field),
+                                // private, or a pub field of a type Arrow cannot pass
+                                None => literal_blocked = true,
                             }
                         }
                         depth += fline.chars().filter(|&c| c == '{').count() as i32;
                         depth -= fline.chars().filter(|&c| c == '}').count() as i32;
                         i += 1;
                     }
-                    if !fields.is_empty() {
-                        result.insert(name, fields);
-                    }
+                    result.insert(name, StructFields { fields, literal_blocked });
                     continue;
                 }
             }
@@ -396,6 +474,15 @@ pub(crate) fn collect_struct_fields(source: &str) -> HashMap<String, Vec<RsField
         i += 1;
     }
     result
+}
+
+/// フィールドの行か（`name: Type,`・`pub name: Type,`）。属性・コメント・閉じ括弧は除く。
+fn is_field_line(line: &str) -> bool {
+    !line.is_empty()
+        && !line.starts_with("//")
+        && !line.starts_with('#')
+        && !line.starts_with('}')
+        && line.contains(':')
 }
 
 /// Parse a single struct field line like `pub field_name: Type,`.
@@ -413,16 +500,24 @@ pub(crate) fn parse_struct_field_line(line: &str) -> Option<RsField> {
         return None;
     }
     let type_str = rest[colon + 1..].trim().trim_end_matches(',').trim().to_string();
-    if !is_abi_compatible(&type_str) { return None; }
+    if !is_field_type(&type_str) { return None; }
     Some(RsField { name, rust_type: type_str })
 }
 
+/// `impl Name { ... }` から拾ったもの。
+#[derive(Default)]
+pub(crate) struct ImplItems {
+    pub(crate) methods: Vec<RsMethodSig>,
+    pub(crate) unsupported: Vec<RsUnsupported>,
+    /// `pub fn new(..) -> Self`（引数が渡せる型なら `Ok`、渡せなければ理由）。
+    pub(crate) new_fn: Option<Result<Vec<RsParam>, String>>,
+}
+
 /// Scan source for `impl Name { pub fn ... }` blocks.
-/// Returns a map of struct_name → Vec<RsMethodSig>.
 /// `known_structs` lists struct names defined in the same source so that
 /// struct-valued return types are accepted (not filtered out).
-pub(crate) fn collect_impl_methods(source: &str, known_structs: &[String]) -> HashMap<String, Vec<RsMethodSig>> {
-    let mut result: HashMap<String, Vec<RsMethodSig>> = HashMap::new();
+pub(crate) fn collect_impl_items(source: &str, known_structs: &[String]) -> HashMap<String, ImplItems> {
+    let mut result: HashMap<String, ImplItems> = HashMap::new();
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
 
@@ -447,15 +542,25 @@ pub(crate) fn collect_impl_methods(source: &str, known_structs: &[String]) -> Ha
             i += 1;
 
             while i < lines.len() && depth > 0 {
-                let mline = lines[i];
-                let mt = mline.trim();
-
+                let mt = lines[i].trim();
                 if depth == 1 && mt.starts_with("pub fn ") {
-                    if let Some(msig) = parse_method_line(mt, known_structs) {
-                        result.entry(struct_name.clone()).or_default().push(msig);
+                    let (text, n) = signature_text(&lines, i);
+                    let items = result.entry(struct_name.clone()).or_default();
+                    match classify_method(&text, &struct_name, known_structs) {
+                        Some(MethodKind::Method(m)) => items.methods.push(m),
+                        Some(MethodKind::New(r)) => items.new_fn = Some(r),
+                        Some(MethodKind::Unsupported(u)) => items.unsupported.push(u),
+                        None => {}
                     }
+                    // the signature lines may contain braces (the body's `{` on the last line)
+                    for l in &lines[i..i + n] {
+                        let t = l.trim();
+                        depth += t.chars().filter(|&c| c == '{').count() as i32;
+                        depth -= t.chars().filter(|&c| c == '}').count() as i32;
+                    }
+                    i += n;
+                    continue;
                 }
-
                 depth += mt.chars().filter(|&c| c == '{').count() as i32;
                 depth -= mt.chars().filter(|&c| c == '}').count() as i32;
                 i += 1;
@@ -467,77 +572,94 @@ pub(crate) fn collect_impl_methods(source: &str, known_structs: &[String]) -> Ha
     result
 }
 
-/// Parse a method signature line like `pub fn method(&self, x: f64) -> f64 {`.
-/// Returns `None` for generics, incompatible types, or non-self methods.
-/// `known_structs` allows struct-typed return values (wrapped via `cb_call_fn`).
-pub(crate) fn parse_method_line(line: &str, known_structs: &[String]) -> Option<RsMethodSig> {
-    let rest = line.strip_prefix("pub fn ")?;
-
-    let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_')?;
-    let name = rest[..name_end].to_string();
-    let rest = rest[name_end..].trim_start();
-
-    // Skip generic methods
-    if rest.starts_with('<') { return None; }
-    if !rest.starts_with('(') { return None; }
-
-    let paren_end = find_matching(rest, '(', ')')?;
-    let params_str = &rest[1..paren_end];
-    let rest = rest[paren_end + 1..].trim_start();
-
-    // Determine self kind
-    let (self_present, self_mutable, params_without_self) = parse_self_params(params_str)?;
-    if !self_present { return None; }
-
-    // Parse remaining params — only primitive types allowed for parameters
-    let params = parse_params(params_without_self);
-    for p in &params {
-        if !is_abi_compatible(&p.rust_type) { return None; }
-    }
-
-    // Parse return type — primitive or known struct
-    let (return_type, return_struct) = if rest.starts_with("->") {
-        let ret = rest[2..].trim_start();
-        let end = ret.find(['{', ';']).unwrap_or(ret.len());
-        let t = ret[..end].trim().to_string();
-        if t == "Self" { return None; }
-        if t.is_empty() {
-            (None, None)
-        } else if is_abi_compatible(&t) {
-            (Some(t), None)
-        } else if known_structs.contains(&t) {
-            // Return type is a struct defined in this crate — constructible via cb_call_fn
-            (None, Some(t))
-        } else {
-            return None;
-        }
-    } else {
-        (None, None)
-    };
-
-    Some(RsMethodSig { name, params, self_mutable, return_type, return_struct })
+/// `impl` の中の `pub fn` の分類。
+pub(crate) enum MethodKind {
+    Method(RsMethodSig),
+    /// `pub fn new(..) -> Self`
+    New(Result<Vec<RsParam>, String>),
+    Unsupported(RsUnsupported),
 }
 
-/// Split `&self, x: f64, y: f64` into (has_self, is_mut_self, "x: f64, y: f64").
+/// Parse a method signature (already joined into one line) like `pub fn method(&self, x: f64) -> f64 {`.
+/// `-> Self` は構造体自身（2-5。以前は捨てていた）。`self` の無い関数は `new` 以外未対応、`self` を値で受ける
+/// （消費する）メソッドも未対応（中継 DLL はオブジェクトを表から借りて呼ぶので、取り出せない）。
+pub(crate) fn classify_method(text: &str, struct_name: &str, known_structs: &[String]) -> Option<MethodKind> {
+    let name = fn_name_of(text)?;
+    let unsupported = |params: Vec<RsParam>, ret: Option<String>, reason: String| {
+        Some(MethodKind::Unsupported(RsUnsupported { name: name.clone(), params, return_type: ret, reason }))
+    };
+    let rest = text.trim().strip_prefix("pub fn ")?[name.len()..].trim_start();
+    if rest.starts_with('<') {
+        // 引数の個数は型スタブに出す（型は `Any`）。出さないと「引数の個数が違う」という偽の誤りが重なる。
+        let after = find_matching(rest, '<', '>').map_or("", |e| rest[e + 1..].trim_start());
+        let params = find_matching(after, '(', ')').map(|e| parse_params(&after[1..e])).unwrap_or_default();
+        let params = params.into_iter().filter(|p| !matches!(p.name.as_str(), "self")).collect();
+        return unsupported(params, None, "it is generic".to_string());
+    }
+    let Some(paren_end) = rest.starts_with('(').then(|| find_matching(rest, '(', ')')).flatten() else {
+        return unsupported(vec![], None, "its signature could not be read".to_string());
+    };
+    let params_str = &rest[1..paren_end];
+    let return_type = return_type_of(&rest[paren_end + 1..]);
+    let returns_self = return_type.as_deref().is_some_and(|t| t == "Self" || t == struct_name);
+
+    let Some((self_mutable, by_value, params_without_self)) = parse_self_params(params_str) else {
+        // no `self`: an associated function
+        let params = parse_params(params_str);
+        if name == "new" && returns_self {
+            return Some(MethodKind::New(match params.iter().find(|p| !is_param_type(&p.rust_type)) {
+                None => Ok(params),
+                Some(p) => Err(format!("parameter `{}` is {}", p.name, type_problem(&p.rust_type))),
+            }));
+        }
+        return unsupported(
+            params,
+            return_type,
+            "it is an associated function (no `self`), which cannot be called yet".to_string(),
+        );
+    };
+    let params = parse_params(params_without_self);
+    if by_value {
+        return unsupported(params, return_type, "it takes `self` by value (it consumes the object)".to_string());
+    }
+    for p in &params {
+        if !is_param_type(&p.rust_type) {
+            let why = format!("parameter `{}` is {}", p.name, type_problem(&p.rust_type));
+            return unsupported(params.clone(), return_type, why);
+        }
+    }
+    let (ret_prim, return_struct) = match return_type.as_deref() {
+        None | Some("()") => (None, None),
+        Some(_) if returns_self => (None, Some(struct_name.to_string())),
+        Some(t) if is_return_type(t) => (Some(t.to_string()), None),
+        Some(t) if known_structs.iter().any(|k| k == t) => (None, Some(t.to_string())),
+        Some(t) => {
+            let why = format!("it returns {}", type_problem(t));
+            return unsupported(params, return_type.clone(), why);
+        }
+    };
+    Some(MethodKind::Method(RsMethodSig { name, params, self_mutable, return_type: ret_prim, return_struct }))
+}
+
+/// Split `&self, x: f64, y: f64` into (is_mut, by_value, "x: f64, y: f64").
 /// Returns None if the params string has no self at all.
 pub(crate) fn parse_self_params(params: &str) -> Option<(bool, bool, &str)> {
     let trimmed = params.trim();
     if trimmed.is_empty() { return None; }
 
-    // Check for self variants at the start
-    for (prefix, mutable) in &[
-        ("&mut self,", true),
-        ("&mut self", true),
-        ("mut self,", true),
-        ("mut self", true),
-        ("&self,", false),
-        ("&self", false),
-        ("self,", false),
-        ("self", false),
+    // (prefix, mutable, by value)
+    for (prefix, mutable, by_value) in &[
+        ("&mut self", true, false),
+        ("&self", false, false),
+        ("mut self", true, true),
+        ("self", false, true),
     ] {
-        if trimmed.starts_with(prefix) {
-            let rest = trimmed[prefix.len()..].trim_start_matches(',').trim();
-            return Some((true, *mutable, rest));
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            // `selfish: T` is not `self`
+            if rest.is_empty() || rest.trim_start().starts_with(',') {
+                let rest = rest.trim_start().trim_start_matches(',').trim();
+                return Some((*mutable, *by_value, rest));
+            }
         }
     }
     None
@@ -545,29 +667,40 @@ pub(crate) fn parse_self_params(params: &str) -> Option<(bool, bool, &str)> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// 注意: `&mut T` は**意図的に**非対応（この関数が拒否 → 該当関数/メソッドは
-/// スタブ生成ごと除外される）。将来対応する場合は、stubs.rs 側で該当パラメータを
+/// 注意: `&mut T` は**意図的に**非対応（`is_param_type` が拒否 → 該当関数/メソッドは
+/// 未対応として印付きでスタブに載る・2-5）。将来対応する場合は、stubs.rs 側で該当パラメータを
 /// `Param::bridge(…, writable_ref=true)` で `mut` マーキングし、cpp/C# ブリッジと
 /// 同じ静的可変性検査（CallMutParamWithImmutableArg）を維持すること。
-pub(crate) fn is_abi_compatible(t: &str) -> bool {
+/// 中継 DLL が**引数**として受け取れる型（2-5）。⚠ `Vec<u8>` / `[u8; N]` は戻り値だけ（引数にすると中継 DLL の
+/// ビルドが失敗し、import 全体が落ちていた）。
+pub(crate) fn is_param_type(t: &str) -> bool {
+    matches!(
+        t.trim(),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+        | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+        | "f32" | "f64" | "bool" | "String" | "&str" | "&String" | "&[u8]"
+    )
+}
+
+/// 中継 DLL が**戻り値**として返せる型（2-5）。⚠ `&[u8]` / `&String` は返せない（同上）。
+pub(crate) fn is_return_type(t: &str) -> bool {
     let t = t.trim();
-    if matches!(
+    matches!(
         t,
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
         | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-        | "f32" | "f64"
-        | "bool"
-        | "String" | "&str" | "&String"
-        | "&[u8]"   // byte slice input → HV str
-        | "Vec<u8>" // byte vec output → HV str (hex)
-    ) {
-        return true;
-    }
-    // Fixed-size byte arrays: [u8; N] — output as hex str
-    if is_fixed_byte_array(t) {
-        return true;
-    }
-    false
+        | "f32" | "f64" | "bool" | "String" | "&str" | "Vec<u8>"
+    ) || is_fixed_byte_array(t)
+}
+
+/// 構造体の `pub` フィールドとして読み書きできる型（ゲッターとセッターの両方が要る・2-5）。
+pub(crate) fn is_field_type(t: &str) -> bool {
+    matches!(
+        t.trim(),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+        | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+        | "f32" | "f64" | "bool" | "String"
+    )
 }
 
 /// Returns true for `[u8; N]` where N is a decimal integer.
@@ -636,3 +769,67 @@ pub(crate) fn rust_type_to_ar(rt: &str) -> &'static str {
     }
 }
 
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    fn probe_src() -> String {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .map(|d| d.join("examples/interop/rs_crates/ffi_probe_rs/src/lib.rs"))
+            .find(|p| p.exists())
+            .expect("ffi_probe_rs/src/lib.rs");
+        std::fs::read_to_string(p).unwrap()
+    }
+
+    /// `new()` があればそれで、無ければ構造体リテラルで、どちらも無理なら構築を未対応にする（2-5）。
+    #[test]
+    fn construction_follows_new_or_literal() {
+        let structs = parse_struct_sigs(&probe_src());
+        let get = |n: &str| structs.iter().find(|s| s.name == n).unwrap_or_else(|| panic!("{n}"));
+        assert!(get("Account").use_new_fn && get("Account").ctor_unsupported.is_none());
+        assert!(get("Person").use_new_fn);
+        assert!(!get("Counter").use_new_fn && get("Counter").ctor_unsupported.is_none());
+        // `pub` フィールドが無くても型として拾う
+        assert!(get("Secret").use_new_fn && get("Secret").fields.is_empty());
+        assert!(get("Sealed").ctor_unsupported.as_deref().is_some_and(|w| w.contains("private fields")));
+    }
+
+    /// `-> Self` は構造体自身。`self` の無い関連関数と `self` を消費するメソッドは理由つきで未対応（2-5）。
+    #[test]
+    fn methods_are_classified() {
+        let structs = parse_struct_sigs(&probe_src());
+        let counter = structs.iter().find(|s| s.name == "Counter").unwrap();
+        let doubled = counter.methods.iter().find(|m| m.name == "doubled").expect("doubled");
+        assert_eq!(doubled.return_struct.as_deref(), Some("Counter"));
+        let seal = counter.methods.iter().find(|m| m.name == "seal").expect("seal");
+        assert_eq!(seal.return_struct.as_deref(), Some("Sealed"));
+        let why = |n: &str| counter.unsupported_methods.iter().find(|u| u.name == n).map(|u| u.reason.clone());
+        assert!(why("zero").is_some_and(|w| w.contains("associated function")));
+        assert!(why("into_n").is_some_and(|w| w.contains("by value")));
+    }
+
+    /// 複数行のシグネチャも読む。呼べない関数は理由つきで返す（以前は黙って消えた）。
+    #[test]
+    fn free_functions_are_classified() {
+        let (ok, bad) = parse_fn_sigs(&probe_src());
+        assert!(ok.iter().any(|f| f.name == "add_three" && f.params.len() == 3));
+        let why = |n: &str| bad.iter().find(|u| u.name == n).map(|u| u.reason.clone()).unwrap_or_default();
+        assert!(why("words").starts_with("it returns `Vec<String>`"));
+        assert!(why("sum").starts_with("parameter `xs` is `&[i64]`"));
+        assert!(why("count_bytes").starts_with("parameter `v` is `Vec<u8>`"));
+        assert!(why("bump").contains("mutable reference"));
+        assert_eq!(why("ident"), "it is generic");
+        assert_eq!(bad.iter().find(|u| u.name == "ident").unwrap().params.len(), 1);
+        assert!(ok.iter().all(|f| !["words", "sum", "count_bytes", "bump", "ident"].contains(&f.name.as_str())));
+    }
+
+    #[test]
+    fn types_are_accepted_by_position() {
+        assert!(is_param_type("&[u8]") && !is_return_type("&[u8]"));
+        assert!(is_return_type("Vec<u8>") && !is_param_type("Vec<u8>"));
+        assert!(is_return_type("[u8; 32]") && !is_param_type("[u8; 32]"));
+        assert!(is_field_type("String") && !is_field_type("&str") && !is_field_type("Vec<u8>"));
+    }
+}
