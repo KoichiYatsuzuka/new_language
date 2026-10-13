@@ -5,6 +5,8 @@
 //   Request:  {"id":N,"op":"static"|"new"|"inst"|"quit","cls":"Name","mth":"method","hnd":handle,"args":[...]}
 //   Response: {"id":N,"ok":<value>} | {"id":N,"err":"message"}
 //   Arg/result tags: "i"=int64, "f"=float64, "b"=bool, "s"=string, "h"=handle, "n"=null
+//   Result only: "o" = an integer that does not fit in int64 (ulong >= 2^63), as a decimal string
+//   (Arrow raises OverflowError for it; ffi_value_exchange_plan.md 2-1)
 
 using System;
 using System.Collections.Generic;
@@ -221,18 +223,33 @@ internal sealed class ArrowPipeHost
 
     private object? ConvertArg(JsonElement arg, Type targetType)
     {
-        if (!arg.TryGetProperty("t", out var tagElem)) return null;
-        string t = tagElem.GetString() ?? "n";
+        // A missing or unknown tag is an error (it used to become null silently; plan 2-1).
+        if (!arg.TryGetProperty("t", out var tagElem))
+            throw new Exception($"argument without a type tag: {arg}");
+        string t = tagElem.GetString() ?? "";
+        // `long?` / `double?` parameters take the underlying type (Convert.ChangeType cannot target Nullable<T>).
+        Type target = Nullable.GetUnderlyingType(targetType) ?? targetType;
 
         return t switch
         {
-            "i" => Convert.ChangeType(arg.GetProperty("v").GetInt64(), targetType),
-            "f" => Convert.ChangeType(arg.GetProperty("v").GetDouble(), targetType),
+            "i" => Convert.ChangeType(arg.GetProperty("v").GetInt64(), target),
+            "f" => Convert.ChangeType(arg.GetProperty("v").GetDouble(), target),
             "b" => arg.GetProperty("v").GetBoolean(),
+            "s" when target == typeof(char) => SingleChar(arg.GetProperty("v").GetString()!),
             "s" => arg.GetProperty("v").GetString(),
-            "h" => _objTable.TryGetValue(arg.GetProperty("v").GetInt64(), out var ho) ? ho : null,
-            _   => null,
+            "h" => _objTable.TryGetValue(arg.GetProperty("v").GetInt64(), out var ho)
+                ? ho
+                : throw new Exception($"object handle {arg.GetProperty("v").GetInt64()} not found"),
+            "n" => null,
+            _   => throw new Exception($"unknown argument type tag '{t}'"),
         };
+    }
+
+    private static char SingleChar(string s)
+    {
+        if (s.Length != 1)
+            throw new Exception($"a C# char takes a string of length 1, got {s.Length} characters");
+        return s[0];
     }
 
     // ── Result encoding ──────────────────────────────────────────────────────
@@ -240,12 +257,22 @@ internal sealed class ArrowPipeHost
     private object? EncodeResult(object? result, Type returnType)
     {
         if (returnType == typeof(void) || result == null) return null;
+        // Every primitive goes back by value. Only class instances become handles (plan 2-1: char / byte / short /
+        // ushort / sbyte / ulong used to fall into StoreHandle and reached Arrow as a handle number).
         return result switch
         {
             string s => new { t = "s", v = s },
+            char   c => new { t = "s", v = c.ToString() },
             int    i => new { t = "i", v = (long)i },
             long   l => new { t = "i", v = l },
             uint   u => new { t = "i", v = (long)u },
+            short  h => new { t = "i", v = (long)h },
+            ushort h => new { t = "i", v = (long)h },
+            byte   y => new { t = "i", v = (long)y },
+            sbyte  y => new { t = "i", v = (long)y },
+            ulong  u => u <= long.MaxValue
+                ? new { t = "i", v = (object)(long)u }
+                : new { t = "o", v = (object)u.ToString() },
             double d => new { t = "f", v = d },
             float  f => new { t = "f", v = (double)f },
             bool   b => new { t = "b", v = b },

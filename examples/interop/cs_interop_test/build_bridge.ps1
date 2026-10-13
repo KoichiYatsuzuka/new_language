@@ -52,7 +52,11 @@ try {
 Write-Host "=== Regenerating ArrowBridge.ars stub ===" -ForegroundColor Cyan
 Push-Location $repoRoot
 try {
-    cargo run -- --compile-cs examples/interop/cs_interop_test/ArrowBridge.dll
+    # cargo writes progress ("Compiling ...") to stderr. Under $ErrorActionPreference = "Stop", PowerShell 5.1 turns
+    # that into a terminating NativeCommandError, so the step failed whenever cargo had to compile. Judge by the exit code.
+    $ErrorActionPreference = "Continue"
+    cargo run -- --compile-cs examples/interop/cs_interop_test/ArrowBridge.dll 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { Write-Error "cargo run --compile-cs failed ($LASTEXITCODE)"; exit 1 }
 } finally {
     Pop-Location
 }

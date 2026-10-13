@@ -244,6 +244,7 @@ impl TypeRegistryBuilder {
             reg: TypeRegistry {
                 fn_sigs: HashMap::new(),
                 class_method_sigs: HashMap::new(),
+                class_method_ffi_unsupported: HashMap::new(),
                 trait_method_sigs: HashMap::new(),
                 trait_field_details: HashMap::new(),
                 known_class_names,
@@ -787,6 +788,19 @@ impl TypeRegistryBuilder {
             }
         }
         self.reg.class_method_sigs.insert(name.to_string(), cls_methods);
+        // 今の Arrow から呼べない外部言語のメソッド（C# のスタブの印・2-1）
+        let unsupported: HashMap<String, String> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::FnDef { name: mname, .. } => {
+                    crate::type_check::ffi_unsupported_reason(s).map(|r| (mname.clone(), r))
+                }
+                _ => None,
+            })
+            .collect();
+        if !unsupported.is_empty() {
+            self.reg.class_method_ffi_unsupported.insert(name.to_string(), unsupported);
+        }
     }
 
     /// クラス本体のフィールド・アクセス指定・スタティックメソッドを収集する。

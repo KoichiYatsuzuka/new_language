@@ -341,22 +341,20 @@ impl Interpreter {
                 let bp = obj_data.bridge_path.clone();
                 let is_proc = obj_data.is_proc;
                 let class = obj_data.class.clone();
-                let ret_type: Option<String> = class
-                    .methods
-                    .get(attr)
-                    .and_then(|ov| ov.first())
-                    .and_then(|f| f.return_type.clone());
+                let (param_types, ret_type) = crate::interpreter::cs_values::method_types(&class, attr);
                 if is_proc {
                     crate::interpreter::cs_proc_runtime::call_instance(
                         &bp, &class_name, handle, attr, &[],
                         ret_type.as_deref(),
-                    ).map_err(|e| format!("CsProc: property '{attr}' on '{class_name}': {e}"))
+                    ).map_err(|e| crate::interpreter::cs_values::tag_error(
+                        &format!("CsProc: property '{attr}' on '{class_name}'"), e))
                 } else {
                     match crate::interpreter::cs_dll_runtime::get_bridge(&bp) {
                         Some(bridge) => crate::interpreter::cs_dll_runtime::call_instance(
                             &bridge, &class_name, handle, attr, &[],
-                            ret_type.as_deref(),
-                        ).map_err(|e| format!("CsDll: property '{attr}' on '{class_name}': {e}")),
+                            &param_types, ret_type.as_deref(),
+                        ).map_err(|e| crate::interpreter::cs_values::tag_error(
+                            &format!("CsDll: property '{attr}' on '{class_name}'"), e)),
                         None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                     }
                 }

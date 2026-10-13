@@ -53,7 +53,8 @@ impl Interpreter {
             if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
                 let handle =
                     crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
-                        .map_err(|e| format!("CsDll: constructor for '{class_name}' failed: {e}"))?;
+                        .map_err(|e| crate::interpreter::cs_values::tag_error(
+                            &format!("CsDll: constructor for '{class_name}' failed"), e))?;
                 return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
                     class_name: class_name.clone(),
                     handle,
@@ -68,7 +69,8 @@ impl Interpreter {
             let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
             let handle =
                 crate::interpreter::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)
-                    .map_err(|e| format!("CsProc: constructor for '{class_name}' failed: {e}"))?;
+                    .map_err(|e| crate::interpreter::cs_values::tag_error(
+                        &format!("CsProc: constructor for '{class_name}' failed"), e))?;
             return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
                 class_name: class_name.clone(),
                 handle,

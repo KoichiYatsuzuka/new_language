@@ -42,11 +42,7 @@ impl Interpreter {
         if let Some(Value::Str(bp)) = cls.class_vars.get("__cs_bridge_path__") {
             let bp_path = std::path::PathBuf::from(&**bp);
             let class_name = cls.name.clone();
-            let ret_type: Option<String> = cls
-                .methods
-                .get(method_name)
-                .and_then(|overloads| overloads.first())
-                .and_then(|f| f.return_type.clone());
+            let (param_types, ret_type) = crate::interpreter::cs_values::method_types(&cls, method_name);
             if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
                 let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 return crate::interpreter::cs_dll_runtime::call_static(
@@ -54,20 +50,17 @@ impl Interpreter {
                     &class_name,
                     method_name,
                     &arg_vals,
+                    &param_types,
                     ret_type.as_deref(),
                 )
-                .map_err(|e| format!("CsDll: {e}"));
+                .map_err(|e| crate::interpreter::cs_values::tag_error("CsDll", e));
             }
         }
         // cs-proc static method dispatch
         if let Some(Value::Str(pp)) = cls.class_vars.get("__cs_proc_path__") {
             let pp_path = std::path::PathBuf::from(&**pp);
             let class_name = cls.name.clone();
-            let ret_type: Option<String> = cls
-                .methods
-                .get(method_name)
-                .and_then(|overloads| overloads.first())
-                .and_then(|f| f.return_type.clone());
+            let (_, ret_type) = crate::interpreter::cs_values::method_types(&cls, method_name);
             let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             return crate::interpreter::cs_proc_runtime::call_static(
                 &pp_path,
@@ -76,7 +69,7 @@ impl Interpreter {
                 &arg_vals,
                 ret_type.as_deref(),
             )
-            .map_err(|e| format!("CsProc: {e}"));
+            .map_err(|e| crate::interpreter::cs_values::tag_error("CsProc", e));
         }
 
         // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可

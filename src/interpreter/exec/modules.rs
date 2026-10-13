@@ -185,11 +185,10 @@ impl Interpreter {
             eprintln!("Warning: cs-dll bridge not loaded: {e}");
             return Ok(stub_ns);
         }
-        Ok(Self::inject_class_var(
-            &stub_ns,
-            "__cs_bridge_path__",
-            &bp.to_string_lossy(),
-        ))
+        let ns = Self::inject_class_var(&stub_ns, "__cs_bridge_path__", &bp.to_string_lossy());
+        // 戻り値のハンドルを `CsObject` に包むときにクラスを引けるようにする（2-1）
+        crate::interpreter::cs_values::register_classes(&bp, &ns);
+        Ok(ns)
     }
 
     /// `{Name}_native.dll` の探索（`import[cs-dll]`）。
@@ -239,11 +238,10 @@ impl Interpreter {
             eprintln!("Warning: cs-proc host not started: {e}");
             return Ok(stub_ns);
         }
-        Ok(Self::inject_class_var(
-            &stub_ns,
-            "__cs_proc_path__",
-            &pp.to_string_lossy(),
-        ))
+        let ns = Self::inject_class_var(&stub_ns, "__cs_proc_path__", &pp.to_string_lossy());
+        // 戻り値のハンドルを `CsObject` に包むときにクラスを引けるようにする（2-1）
+        crate::interpreter::cs_values::register_classes(&pp, &ns);
+        Ok(ns)
     }
 
     /// `{Name}_proc.exe` → `{Name}.exe` の順で探す（`import[cs-proc]`）。

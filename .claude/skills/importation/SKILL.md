@@ -430,6 +430,29 @@ For the C ABI value/struct-passing design behind this bridge (raw layout, zero-c
 
 ---
 
+## C# Imports (`import[cs-dll]`, `import[cs-proc]`)
+
+Stubs come only from the managed assembly's ECMA-335 metadata (`src/parser/cs_assembly/` — `load_cs_module` in
+`cs_js_modules.rs`); there is no `.ars` route (`--compile-cs` writes one for reading only). Both bridges share
+the value rules in `src/interpreter/cs_values.rs` (ffi_value_exchange_plan.md 2-1; user doc: "C# の値の対応" in
+`docs/grammar/09_imports.md`):
+- **Nullable annotations** are read (`NullableAttribute` / `NullableContextAttribute`, `parse.rs::read_nullable`):
+  `string?` / `Person?` → `Option[str]` / `Option[Person]`. The metadata signature alone cannot tell `string` from
+  `string?`. A null for a non-`?` reference type is a `TypeError` at the boundary (also for assemblies without
+  nullable annotations).
+- **Unsupported signatures** (collections, tuples, delegates, type parameters, other assemblies' types, interfaces)
+  are marked in the stub (`stub_gen.rs::cs_unsupported_reason`) and using them is `TypeErrorKind::FfiUnsupported`
+  (`call_check.rs` via `TypeRegistry::ffi_unsupported_method`). ⚠ The mark is a docstring at the start of the method
+  body, not a decorator as for C/C++: C# stubs are executed as classes and `exec_class_def` applies method decorators.
+  `type_check::ffi_unsupported_reason` reads both forms.
+- **Return values** are read by the declared type: a class handle becomes `Value::CsObject` (classes are looked up
+  per bridge in `cs_values::register_classes`, called by `import_cs_dll` / `import_cs_proc`).
+- **cs-dll lays out argument slots from the declared parameter types** (`cs_dll_runtime::encode_args`; `None` for
+  `Option[str]` = `(0, -1)`), at most 8 slots. The NativeAOT exports are hand-written
+  (`examples/interop/cs_interop_test/ArrowExports.cs`; a generator is task 5-1).
+- Errors that carry an exception type keep it (`cs_values::tag_error`), so `except TypeError` catches them; other
+  bridge errors are prefixed `CsProc:` / `CsDll:`.
+
 ## Node.js IPC サブプロセス (`import[js-proc]`)
 
 ### 概要

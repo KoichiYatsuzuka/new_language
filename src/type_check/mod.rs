@@ -33,6 +33,23 @@ use registry::TypeRegistry;
 use std::collections::HashMap;
 use crate::ast::Stmt;
 
+/// 型スタブの関数に付いた「今の Arrow からは正しく使えない」印（`FFI_UNSUPPORTED_MARK`）の理由
+/// （ffi_value_exchange_plan.md 1-2・2-1）。
+/// C/C++ のスタブは文字列のデコレータ（`parser/imports/cpp.rs`）、C# のスタブはメソッドの本体の先頭の文字列
+/// （`cs_assembly::stub_gen::mark_unsupported`。C# のスタブはクラスとして実行され、デコレータが適用されるため）。
+pub(crate) fn ffi_unsupported_reason(st: &Stmt) -> Option<String> {
+    use crate::ast::Expr;
+    let Stmt::FnDef { decorators, body, .. } = st else { return None };
+    let marked = |e: &Expr| match e {
+        Expr::Str(s) => s.strip_prefix(crate::cpp_header::FFI_UNSUPPORTED_MARK).map(str::to_string),
+        _ => None,
+    };
+    decorators.iter().find_map(marked).or_else(|| match body.first() {
+        Some(Stmt::Expr(e)) => marked(e),
+        _ => None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // TypeChecker
 // ---------------------------------------------------------------------------

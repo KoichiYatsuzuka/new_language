@@ -1,0 +1,29 @@
+# cs_proc_unsupported_signature_error.ar — 今の Arrow と C# の間で受け渡せないメソッドは静的エラー（負例・2-1）
+#
+# 以前はコレクションやオブジェクトの戻り値が整数（C# 側のハンドル番号）になり、リストの引数は C# に `null` が
+# 届いていた。型スタブ（C# のメタデータから作る）の宣言は `list[str]` などなので、型検査は通っていた。
+# 今は型スタブを作るときに判定し（`cs_assembly::stub_gen::cs_unsupported_reason`）、使った箇所を静的エラーに
+# する（`TypeErrorKind::FfiUnsupported`）。コレクションの受け渡しはフェーズ 5（5-2）で対応する。
+#
+# 7 種類（戻り値のコレクション・引数のコレクション・dict・デリゲート・タプル・型変数・他のアセンブリの型）と、
+# インスタンスメソッド。どれも実行前に止まる。
+#
+# 実行には examples/interop/cs_probe/cs_probe.dll が要る（型スタブの元。build_cs_probe.ps1）。
+# 対になる正例: cs_proc_values.ar
+
+import[cs-proc] cs_probe as cp
+from cs_probe import[cs-proc] Probe
+
+let words = cp.Probe.words("a b")
+let total = Probe.sum([1, 2, 3])
+let counts = cp.Probe.counts("aab")
+fn inc(let x: int) -> int:
+    return x + 1
+
+let applied = cp.Probe.apply(inc, 2)
+let pair = cp.Probe.pair()
+let first = cp.Probe.first([1, 2])
+let sb = cp.Probe.builder()
+
+let p = cp.Probe.make_person("bob")
+let names = p.nicknames()

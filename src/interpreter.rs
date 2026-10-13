@@ -54,6 +54,11 @@ pub(crate) mod cs_proc_runtime;
 #[cfg(not(feature = "native"))]
 #[path = "interpreter/cs_proc_runtime_stub.rs"]
 pub(crate) mod cs_proc_runtime;
+// C#（cs-proc / cs-dll）と Arrow の値の受け渡しの規則（ffi_value_exchange_plan.md 2-1）。値の判定だけなので両ビルド共通。
+// ⚠ 評価コア・拡張の wasm ではブリッジがスタブなので、呼び出し側の 2 つ（`method_types` / `tag_error`）以外は使われない。
+#[path = "interpreter/cs_values.rs"]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+pub(crate) mod cs_values;
 #[path = "interpreter/js_proc_runtime.rs"]
 // ⚠ Node.js ブリッジ。評価コアでは同名スタブへ差し替える（#5）。
 #[cfg(feature = "native")]

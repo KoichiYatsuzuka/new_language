@@ -112,7 +112,18 @@ impl<'a> SigReader<'a> {
     }
 
     // Parse MethodDefSig: calling convention, gen params, return type, params
+    #[cfg(test)]
     pub(crate) fn parse_method_sig(&mut self, generic_param_names: &[String]) -> (String, Vec<(String, bool)>) {
+        let (ret, params) = self.parse_method_sig_refs(generic_param_names);
+        (ret.0, params.into_iter().map(|(ty, byref, _)| (ty, byref)).collect())
+    }
+
+    /// [`Self::parse_method_sig`] に、各型が**参照型か**を添えたもの（2-1）。
+    /// 戻り値は `((型, 参照型か), [(型, BYREF か, 参照型か)])`。nullable 注釈は参照型にだけ意味がある。
+    pub(crate) fn parse_method_sig_refs(
+        &mut self,
+        generic_param_names: &[String],
+    ) -> ((String, bool), Vec<(String, bool, bool)>) {
         let calling = self.eat();
         let is_generic = calling & 0x10 != 0;
         let _is_instance = calling & 0x20 != 0;
@@ -121,16 +132,36 @@ impl<'a> SigReader<'a> {
             let _gen_count = self.eat_uint();
         }
         let param_count = self.eat_uint() as usize;
+        let ret_is_ref = self.top_is_reference();
         let ret = self.parse_type();
         let mut params = Vec::with_capacity(param_count);
         for _ in 0..param_count {
             if self.peek() == ET_SENTINEL { self.eat(); continue; }
             let is_byref = self.peek() == ET_BYREF;
+            let is_ref = self.top_is_reference();
             let ty = self.parse_type();
-            params.push((ty, is_byref));
+            params.push((ty, is_byref, is_ref));
         }
         let _ = generic_param_names;
-        (ret, params)
+        ((ret, ret_is_ref), params)
+    }
+
+    /// 次の型が参照型（`string` / クラス / `object` / 配列 / 参照型のジェネリック）か。読み進めない。
+    /// BYREF（`ref` / `out`）は中の型で決める。型変数（`T`）は分からないので偽（nullable 注釈を当てない）。
+    pub(crate) fn top_is_reference(&self) -> bool {
+        let mut pos = self.pos;
+        loop {
+            match self.data.get(pos).copied().unwrap_or(0) {
+                ET_CMOD_REQD | ET_CMOD_OPT => {
+                    let (_, n) = decompress_uint(self.data, pos + 1);
+                    pos += 1 + n;
+                }
+                ET_BYREF => pos += 1,
+                ET_STRING | ET_CLASS | ET_OBJECT | ET_SZARRAY | ET_ARRAY => return true,
+                ET_GENERICINST => return self.data.get(pos + 1).copied() == Some(ET_CLASS),
+                _ => return false,
+            }
+        }
     }
 }
 

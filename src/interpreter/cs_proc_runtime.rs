@@ -11,11 +11,15 @@
 // Arg/result type tags:
 //   "i" = int64    "f" = float64    "b" = bool
 //   "s" = string   "h" = handle     "n" = null
+//   "o" = (result only) an integer that does not fit in int64 (C# ulong ≥ 2^63), as a decimal string
+//
+// What each declared type may receive is decided in `super::cs_values` (shared with cs-dll · plan 2-1).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::cs_values::{self, CsDecl, CsKind};
 use super::proc_bridge::{new_pipe_name, PipeConn};
 use super::Value;
 
@@ -69,17 +73,20 @@ pub fn call_static(
     args: &[Value],
     ret_type: Option<&str>,
 ) -> Result<Value, String> {
+    let what = format!("{class_name}.{method}");
+    let decl = cs_values::decl_of(ret_type)?;
+    let args = encode_args(proc_path, args, &what)?;
     with_bridge(proc_path, |bridge| {
         let ok = bridge.send_recv(
             serde_json::json!({
                 "op": "static",
                 "cls": class_name,
                 "mth": method,
-                "args": encode_args(args),
+                "args": args,
             }),
             TAG,
         )?;
-        Ok(decode_result(&ok, ret_type))
+        decode_result(&ok, &decl, proc_path, &what)
     })
 }
 
@@ -89,17 +96,22 @@ pub fn call_constructor(
     class_name: &str,
     args: &[Value],
 ) -> Result<i64, String> {
+    let what = format!("{class_name}.__init__");
+    let args = encode_args(proc_path, args, &what)?;
     with_bridge(proc_path, |bridge| {
         let ok = bridge.send_recv(
             serde_json::json!({
                 "op": "new",
                 "cls": class_name,
-                "args": encode_args(args),
+                "args": args,
             }),
             TAG,
         )?;
-        // Response: {"t":"h","v": handle}
-        Ok(ok.get("v").and_then(|v| v.as_i64()).unwrap_or(0))
+        // Response: {"t":"h","v": handle}。⚠ 以前は読めなければ 0（無いオブジェクト）にしていた。
+        match ok.get("v").and_then(|v| v.as_i64()) {
+            Some(h) if h > 0 => Ok(h),
+            _ => Err(format!("{TAG}: the host did not return an object for '{class_name}' (got {ok})")),
+        }
     })
 }
 
@@ -112,6 +124,9 @@ pub fn call_instance(
     args: &[Value],
     ret_type: Option<&str>,
 ) -> Result<Value, String> {
+    let what = format!("{class_name}.{method}");
+    let decl = cs_values::decl_of(ret_type)?;
+    let args = encode_args(proc_path, args, &what)?;
     with_bridge(proc_path, |bridge| {
         let ok = bridge.send_recv(
             serde_json::json!({
@@ -119,11 +134,11 @@ pub fn call_instance(
                 "cls": class_name,
                 "hnd": handle,
                 "mth": method,
-                "args": encode_args(args),
+                "args": args,
             }),
             TAG,
         )?;
-        Ok(decode_result(&ok, ret_type))
+        decode_result(&ok, &decl, proc_path, &what)
     })
 }
 
@@ -145,43 +160,70 @@ where
 
 // ── Encoding / decoding ──────────────────────────────────────────────────────
 
-fn encode_args(args: &[Value]) -> serde_json::Value {
-    serde_json::Value::Array(args.iter().map(encode_arg).collect())
-}
-
-fn encode_arg(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Int(n) => serde_json::json!({"t": "i", "v": n}),
-        Value::UInt(n) => serde_json::json!({"t": "i", "v": n}),
-        Value::Float(f) => serde_json::json!({"t": "f", "v": f}),
-        Value::Bool(b) => serde_json::json!({"t": "b", "v": b}),
-        Value::Str(s) => serde_json::json!({"t": "s", "v": &**s}),
-        Value::CsObject(o) => serde_json::json!({"t": "h", "v": o.handle}),
-        Value::None => serde_json::json!({"t": "n"}),
-        _ => serde_json::json!({"t": "n"}),
-    }
-}
-
-fn decode_result(v: &serde_json::Value, ret_type: Option<&str>) -> Value {
-    if v.is_null() {
-        return Value::None;
-    }
-    let t = v.get("t").and_then(|t| t.as_str()).unwrap_or("i");
-    let val = v.get("v");
-    match t {
-        "s" => Value::str(val.and_then(|v| v.as_str()).unwrap_or("").to_string()),
-        "f" => Value::Float(val.and_then(|v| v.as_f64()).unwrap_or(0.0)),
-        "b" => Value::Bool(val.and_then(|v| v.as_bool()).unwrap_or(false)),
-        "n" => Value::None,
-        // "h": object handle returned as int; caller wraps in CsObject if needed
-        _ => {
-            let n = val.and_then(|v| v.as_i64()).unwrap_or(0);
-            match ret_type {
-                Some("float") => Value::Float(f64::from_bits(n as u64)),
-                Some("bool") => Value::Bool(n != 0),
-                Some("None") | Some("void") => Value::None,
-                _ => Value::Int(n),
+/// 引数を JSON にする。運べない値（list / dict / インスタンス …）はエラー（2-1）。
+/// ⚠ 以前は `_ => null` で、リストを渡すと C# 側に `null` が届いていた。
+fn encode_args(proc_path: &Path, args: &[Value], what: &str) -> Result<serde_json::Value, String> {
+    let mut out = Vec::with_capacity(args.len());
+    for (i, v) in args.iter().enumerate() {
+        out.push(match v {
+            Value::Int(n) => serde_json::json!({"t": "i", "v": n}),
+            Value::UInt(n) => serde_json::json!({"t": "i", "v": n}),
+            Value::Float(f) => serde_json::json!({"t": "f", "v": f}),
+            Value::Bool(b) => serde_json::json!({"t": "b", "v": b}),
+            Value::Str(s) => serde_json::json!({"t": "s", "v": &**s}),
+            Value::CsObject(o) => {
+                cs_values::check_same_bridge(o, proc_path, true, i, what)?;
+                serde_json::json!({"t": "h", "v": o.handle})
             }
+            Value::None => serde_json::json!({"t": "n"}),
+            other => return Err(cs_values::unsupported_arg(other, i, what)),
+        });
+    }
+    Ok(serde_json::Value::Array(out))
+}
+
+/// ホストの返した値を、宣言された型で受け取る（2-1）。
+/// ⚠ 以前は宣言を見ずにタグだけで読み、オブジェクトのハンドル（`"h"`）は整数に、読めない値は `""` / `0` にしていた。
+fn decode_result(v: &serde_json::Value, decl: &CsDecl, proc_path: &Path, what: &str) -> Result<Value, String> {
+    if v.is_null() {
+        return cs_values::null_result(decl, what);
+    }
+    let malformed = || format!("{TAG}: malformed result from the host for '{what}': {v}");
+    let t = v.get("t").and_then(|t| t.as_str()).ok_or_else(malformed)?;
+    let val = v.get("v");
+    let any = decl.kind == CsKind::Any;
+    match t {
+        "n" => cs_values::null_result(decl, what),
+        "i" if decl.kind == CsKind::Int || any => {
+            Ok(Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?))
         }
+        "f" if decl.kind == CsKind::Float || any => {
+            Ok(Value::Float(val.and_then(|v| v.as_f64()).ok_or_else(malformed)?))
+        }
+        "b" if decl.kind == CsKind::Bool || any => {
+            Ok(Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?))
+        }
+        "s" if decl.kind == CsKind::Str || any => {
+            Ok(Value::str(val.and_then(|v| v.as_str()).ok_or_else(malformed)?.to_string()))
+        }
+        // C# の ulong の 2^63 以上（cpp ブリッジの `unsigned long long` と同じ扱い・1-6）
+        "o" if decl.kind == CsKind::Int || any => Err(format!(
+            "OverflowError: C# method '{what}' returned {}, which does not fit in int",
+            val.and_then(|v| v.as_str()).unwrap_or("?")
+        )),
+        "h" => {
+            let h = val.and_then(|v| v.as_i64()).ok_or_else(malformed)?;
+            cs_values::object_result(decl, proc_path, true, h, what)
+        }
+        "i" | "f" | "b" | "s" | "o" => {
+            let got = match t {
+                "i" | "o" => "an integer",
+                "f" => "a float",
+                "b" => "a bool",
+                _ => "a string",
+            };
+            Err(cs_values::mismatched_result(decl, got, what))
+        }
+        _ => Err(malformed()),
     }
 }

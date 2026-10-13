@@ -410,6 +410,18 @@ impl TypeChecker {
                     }
                 }
             }
+            // 今の Arrow から正しく呼べない C# のメソッド（コレクションを受け渡す など・2-1）
+            if let Some(reason) = self.registry.ffi_unsupported_method(cls_name, method_name) {
+                let reason = reason.to_string();
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::FfiUnsupported {
+                        what: "C# method".to_string(),
+                        function: format!("{cls_name}.{method_name}"),
+                        reason,
+                    },
+                    span: None,
+                });
+            }
             // self/cls is passed implicitly; check_self_type_params accounts for the +1
             let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
             return ret_ty.unwrap_or(InferredType::Unresolved);

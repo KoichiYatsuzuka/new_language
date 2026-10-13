@@ -1052,7 +1052,8 @@ impl TypeChecker {
         }
         let (function, reason) = (shown.clone(), reason.clone());
         self.report_error(StaticTypeError {
-            kind: TypeErrorKind::FfiUnsupported { function, reason },
+            // 印の付いたモジュールの関数は C/C++ のスタブだけ（C# はクラスのメソッドで `TypeRegistry::ffi_unsupported_method` が引く）
+            kind: TypeErrorKind::FfiUnsupported { what: "C function".to_string(), function, reason },
             span,
         });
     }

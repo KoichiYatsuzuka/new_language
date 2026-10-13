@@ -162,7 +162,30 @@ impl TildeLayout {
         let threshold = (1u32 << (16 - tag_bits)).saturating_sub(1);
         if max_rows > threshold { 4 } else { 2 }
     }
+    /// HasCustomAttribute（ECMA-335 §II.24.2.6・5 ビットのタグ）の幅。タグの値は [`HAS_CUSTOM_ATTRIBUTE`] の並び。
+    /// ⚠ 以前は表の並びが規格と違い（同じ表が 2 回・File など 5 つが抜けていた）、幅の計算にしか使っていなかった。
+    ///   nullable 注釈を読む（2-1）ので、値も読む。
+    pub(crate) fn has_custom_attribute_idx(&self) -> usize {
+        self.coded_idx(&HAS_CUSTOM_ATTRIBUTE, 5)
+    }
+    /// CustomAttributeType（3 ビットのタグ。2 = MethodDef・3 = MemberRef）の幅。
+    pub(crate) fn custom_attribute_type_idx(&self) -> usize {
+        self.coded_idx(&[T_METHODDEF, T_MEMBERREF], 3)
+    }
+    /// MemberRefParent（3 ビットのタグ。0 = TypeDef・1 = TypeRef・2 = ModuleRef・3 = MethodDef・4 = TypeSpec）の幅。
+    pub(crate) fn member_ref_parent_idx(&self) -> usize {
+        self.coded_idx(&[T_TYPEDEF, T_TYPEREF, T_MODULEREF, T_METHODDEF, T_TYPESPEC], 3)
+    }
 }
+
+/// HasCustomAttribute のタグの値の順に並べた表（ECMA-335 §II.24.2.6）。
+/// 0 = MethodDef・3 = TypeDef・4 = Param が nullable 注釈（2-1）で使う所。
+pub(crate) const HAS_CUSTOM_ATTRIBUTE: [usize; 22] = [
+    T_METHODDEF, T_FIELD, T_TYPEREF, T_TYPEDEF, T_PARAM, T_INTERFACEIMPL, T_MEMBERREF, T_MODULE,
+    0x0E /*DeclSecurity*/, T_PROPERTY, 0x14 /*Event*/, T_STANDALONESIG, T_MODULEREF, T_TYPESPEC,
+    T_ASSEMBLY, T_ASSEMBLYREF, 0x26 /*File*/, 0x27 /*ExportedType*/, 0x28 /*ManifestResource*/,
+    T_GENERICPARAM, 0x2C /*GenericParamConstraint*/, 0x2B /*MethodSpec*/,
+];
 
 
 pub(crate) fn parse_tilde(data: &[u8], tilde_start: usize) -> TildeLayout {
@@ -229,11 +252,10 @@ impl TildeLayout {
         self.table_row_sizes[T_METHODDEF] = 4 + 2 + 2 + s + b + pa;
         self.table_row_sizes[T_PARAM] = 2 + 2 + s;
         self.table_row_sizes[T_INTERFACEIMPL] = td + type_def_or_ref;
-        self.table_row_sizes[T_MEMBERREF] = self.coded_idx(&[T_TYPEREF, T_MODULEREF, T_METHODDEF, T_TYPEDEF, T_TYPESPEC], 3) + s + b;
+        self.table_row_sizes[T_MEMBERREF] = self.member_ref_parent_idx() + s + b;
         self.table_row_sizes[0x0B /*Constant*/] = 2 + self.coded_idx(&[T_FIELD, T_PARAM, 0x17], 2) + b;
-        self.table_row_sizes[0x0C /*CustomAttribute*/] =
-            self.coded_idx(&[T_METHODDEF, T_FIELD, T_TYPEREF, T_TYPEDEF, T_PARAM, T_INTERFACEIMPL, T_MEMBERREF, T_MODULE, 0x0E, T_PROPERTY, 0x14, T_STANDALONESIG, T_MODULEREF, T_TYPESPEC, T_ASSEMBLY, T_ASSEMBLYREF, T_FIELD, T_PARAM, 0x2A], 5)
-            + self.coded_idx(&[T_METHODDEF, T_MEMBERREF], 3) + b;
+        self.table_row_sizes[T_CUSTOMATTRIBUTE] =
+            self.has_custom_attribute_idx() + self.custom_attribute_type_idx() + b;
         self.table_row_sizes[0x0D /*FieldMarshal*/] = self.coded_idx(&[T_FIELD, T_PARAM], 1) + b;
         self.table_row_sizes[0x0E /*DeclSecurity*/] = 2 + self.coded_idx(&[T_TYPEDEF, T_METHODDEF, T_ASSEMBLY], 2) + b;
         self.table_row_sizes[0x0F /*ClassLayout*/] = 2 + 4 + td;

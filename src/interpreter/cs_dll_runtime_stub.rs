@@ -47,17 +47,20 @@ pub fn call_static(
     class_name: &str,
     method: &str,
     _args: &[Value],
+    _param_types: &[Option<String>],
     _ret_type: Option<&str>,
 ) -> Result<Value, String> {
     Err(unavailable(&format!("static method '{class_name}.{method}'")))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn call_instance(
     _bridge: &BridgeLib,
     class_name: &str,
     _handle: i64,
     method: &str,
     _args: &[Value],
+    _param_types: &[Option<String>],
     _ret_type: Option<&str>,
 ) -> Result<Value, String> {
     Err(unavailable(&format!("method '{class_name}.{method}'")))

@@ -73,4 +73,27 @@ print("IsNullOrEmpty('') =", is_empty)   # expected 1 (true)
 let not_empty = bridge.TextProcessor.IsNullOrEmpty("hello")
 print("IsNullOrEmpty('hello') =", not_empty)  # expected 0 (false)
 
+# ── オブジェクト・nullable の戻り値と、null の文字列引数（ffi_value_exchange_plan.md 2-1）───────
+# 以前はオブジェクトを返すメソッドが整数（ハンドル番号）を返し、`string?` の引数に None を渡すと
+# 後ろの引数が 1 つずれていた（文字列は (ptr, len) の 2 つなのに、None を 1 つで積んでいた）。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+let copy = tp.Clone()
+if copy.getText() != tp.getText():
+    raise ValueError("Clone: got " + copy.getText())
+copy.Append("!")
+if tp.getText() == copy.getText():
+    raise ValueError("Clone shares the object")
+print("Clone() is a separate C# object:", copy.getText())
+
+let w = tp.FindWord("World")
+if (w mustbe str) != "World":
+    raise ValueError("FindWord(World)")
+if tp.FindWord("absent") is not None:
+    raise ValueError("FindWord(absent) should be None")
+print("FindWord: string? returns a value or None")
+
+if not bridge.TextProcessor.IsNullOrEmpty(None):
+    raise ValueError("IsNullOrEmpty(None) should be True")
+print("IsNullOrEmpty(None) =", bridge.TextProcessor.IsNullOrEmpty(None))
+
 print("=== All cs-dll tests passed ===")

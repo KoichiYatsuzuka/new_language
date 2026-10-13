@@ -41,3 +41,5 @@ examples/**/_tmp_*.txt
 # ffi_value_exchange_plan.md 1-1 の C# フィクスチャ（ビルド成果物はプロジェクト直下へコピーされたものだけ追跡する）
 examples/interop/cs_probe/bin
 examples/interop/cs_probe/obj
+# NativeAOT publish writes a new hash-named list each time (cs_interop_test build_bridge.ps1)
+examples/interop/cs_interop_test/obj/**/PublishOutputs.*.txt

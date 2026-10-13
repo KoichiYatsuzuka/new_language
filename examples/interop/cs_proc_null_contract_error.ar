@@ -1,0 +1,15 @@
+# cs_proc_null_contract_error.ar — null にならないはずの C# の戻り値が null なら TypeError（負例・2-1）
+#
+# C# の nullable 注釈で `string`（`?` なし）と宣言したメソッドが null を返した（C# 側の約束違反）。型スタブは
+# `str` なので、以前は `str` の変数に `None` が黙って入り、後の `.upper()` などで初めて落ちていた。今は境界で
+# TypeError にする（`cs_values::null_result`）。`string?` と宣言したメソッドの null は `None`（`Option[str]`）。
+# nullable 注釈の無いアセンブリの参照型も同じ扱い（`str` として宣言し、null なら TypeError）。
+#
+# 実行には examples/interop/cs_probe/cs_probe.exe と cs_probe.dll が要る（build_cs_probe.ps1）。
+# 対になる正例: cs_proc_values.ar（`try` で捕まえる形）
+
+import[cs-proc] cs_probe as cp
+
+print("maybe(False):", cp.Probe.maybe(False))
+let s = cp.Probe.broken_contract()
+print("unreachable:", s.upper())

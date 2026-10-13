@@ -440,24 +440,21 @@ impl Interpreter {
                 let bp = obj_data.bridge_path.clone();
                 let is_proc = obj_data.is_proc;
                 let class = obj_data.class.clone();
-                let ret_type: Option<String> = class
-                    .methods
-                    .get(method_name)
-                    .and_then(|overloads| overloads.first())
-                    .and_then(|f| f.return_type.clone());
+                let (param_types, ret_type) =
+                    crate::interpreter::cs_values::method_types(&class, method_name);
                 let evaled = evaled;
                 let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 if is_proc {
                     crate::interpreter::cs_proc_runtime::call_instance(
                         &bp, &class_name, handle, method_name, &arg_vals,
                         ret_type.as_deref(),
-                    ).map_err(|e| format!("CsProc: {e}"))
+                    ).map_err(|e| crate::interpreter::cs_values::tag_error("CsProc", e))
                 } else {
                     match crate::interpreter::cs_dll_runtime::get_bridge(&bp) {
                         Some(bridge) => crate::interpreter::cs_dll_runtime::call_instance(
                             &bridge, &class_name, handle, method_name, &arg_vals,
-                            ret_type.as_deref(),
-                        ).map_err(|e| format!("CsDll: {e}")),
+                            &param_types, ret_type.as_deref(),
+                        ).map_err(|e| crate::interpreter::cs_values::tag_error("CsDll", e)),
                         None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                     }
                 }

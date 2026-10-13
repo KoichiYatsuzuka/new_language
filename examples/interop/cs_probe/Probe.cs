@@ -14,6 +14,8 @@ public class Person
     public string hello() => "I am " + Name;
     public string get_name() => Name;
     public Person older(long by) => new Person(Name + "+", Age + by);
+    public Person? best_friend() => null;                 // nullable class return (task 2-1)
+    public string[] nicknames() => new[] { Name };        // collection return: a static error (task 2-1)
 }
 
 public class Probe
@@ -41,4 +43,31 @@ public class Probe
     // objects
     public static Person make_person(string name) => new Person(name, 20);
     public static string describe(Person p) => p == null ? "null" : p.Name;
+
+    // nullable annotations (task 2-1): `string?` / `Person?` / `long?` become Option[...] in the stub
+    public static string? maybe(bool b) => b ? "yes" : null;
+    public static long? maybe_num(bool b) => b ? 7 : null;
+    public static Person? find(string name) => name == "nobody" ? null : new Person(name, 30);
+    public static string describe_opt(Person? p) => p == null ? "none" : p.Name;
+    public static long add_opt(long a, long? b) => a + (b ?? 100);
+    public static string broken_contract() => null!;     // declared non-null, returns null
+
+    // small value types (task 2-1): the host used to send these back as object handles
+    public static char initial(string s) => s[0];
+    public static string twice(char c) => new string(c, 2);
+    public static byte low_byte(long v) => (byte)v;
+    public static short neg_short() => -12;
+    public static ushort big_ushort() => 65000;
+    public static ulong huge_ulong() => ulong.MaxValue;
+    public static ulong small_ulong() => 9;
+
+    // `object` returns: primitives come back by value, objects of unknown class are an error
+    public static object any_str() => "object string";
+    public static object any_obj() => new Person("anon", 1);
+
+    // signatures Arrow cannot use yet (task 2-1: static errors)
+    public static System.Text.StringBuilder builder() => new System.Text.StringBuilder("sb");
+    public static T first<T>(T[] xs) => xs[0];
+    public static long apply(System.Func<long, long> f, long x) => f(x);
+    public static (long, string) pair() => (1, "one");
 }

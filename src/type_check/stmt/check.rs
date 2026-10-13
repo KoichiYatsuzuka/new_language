@@ -79,12 +79,9 @@ fn py_class_factory_names(body: &[Stmt]) -> Vec<String> {
 fn ffi_unsupported_fns(body: &[Stmt]) -> Vec<(String, String)> {
     body.iter()
         .filter_map(|st| match st {
-            Stmt::FnDef { name, decorators, .. } => decorators.iter().find_map(|d| match d {
-                Expr::Str(s) => s
-                    .strip_prefix(crate::cpp_header::FFI_UNSUPPORTED_MARK)
-                    .map(|reason| (name.clone(), reason.to_string())),
-                _ => None,
-            }),
+            Stmt::FnDef { name, .. } => {
+                crate::type_check::ffi_unsupported_reason(st).map(|reason| (name.clone(), reason))
+            }
             _ => None,
         })
         .collect()

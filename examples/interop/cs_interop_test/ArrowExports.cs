@@ -192,6 +192,19 @@ public static unsafe class ArrowExports
         ObjTable.Get<TextProcessor>(handle).Append(s);
     }
 
+    // object / nullable returns (ffi_value_exchange_plan.md 2-1): a handle, and a null string as (NULL, -1)
+    [UnmanagedCallersOnly(EntryPoint = "TextProcessor_inst_Clone")]
+    public static long TextProcessor_inst_Clone(long handle)
+        => ObjTable.Store(ObjTable.Get<TextProcessor>(handle).Clone());
+
+    [UnmanagedCallersOnly(EntryPoint = "TextProcessor_inst_FindWord")]
+    public static void TextProcessor_inst_FindWord(long handle, byte* w, int wLen, byte** out_ptr, int* out_len)
+    {
+        string? r = ObjTable.Get<TextProcessor>(handle).FindWord(Marshal.PtrToStringUTF8((IntPtr)w, wLen));
+        if (r == null) { *out_ptr = null; *out_len = -1; return; }
+        WriteString(r, out_ptr, out_len);
+    }
+
     // ── TextProcessor — static methods ───────────────────────────────────────
 
     [UnmanagedCallersOnly(EntryPoint = "TextProcessor_Repeat")]

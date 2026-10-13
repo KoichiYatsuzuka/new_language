@@ -203,6 +203,26 @@ pub(crate) struct ParsedAssembly {
     all_methods: Vec<CsMethod>,
     all_params: Vec<CsParam>,
     type_names: HashMap<u32, String>,
+    nullable: NullableInfo,
+}
+
+
+/// C# の nullable 注釈（`NullableAttribute` / `NullableContextAttribute`）から読んだ値（2-1）。
+/// 値は 0 = 注釈なし（nullable を有効にしていないアセンブリ）・1 = null にならない・2 = null になりうる。
+///
+/// ⚠ メタデータのシグネチャには `string` と `string?` の区別が無い（同じ ELEMENT_TYPE_STRING）。区別は
+///   この 2 つの属性にだけある。読まないと `string?` を返すメソッドの null が、型スタブ上は `str` の値に
+///   `None` として黙って入る。
+#[derive(Debug, Default)]
+pub(crate) struct NullableInfo {
+    /// Param の行（1 始まり）→ その型の先頭の参照型の値（`NullableAttribute`）。戻り値は Sequence 0 の行。
+    param: HashMap<u32, u8>,
+    /// MethodDef の行 → そのメソッドの既定値（`NullableContextAttribute`）。
+    method_ctx: HashMap<u32, u8>,
+    /// TypeDef の行 → その型の既定値（`NullableContextAttribute`）。
+    type_ctx: HashMap<u32, u8>,
+    /// 入れ子の型の行 → 外側の型の行（NestedClass）。既定値は外側の型から受け継ぐ。
+    enclosing: HashMap<u32, u32>,
 }
 
 
@@ -263,6 +283,10 @@ pub(crate) struct SigReader<'a> {
 
 
 const T_STANDALONESIG: usize = 0x11;
+
+const T_CUSTOMATTRIBUTE: usize = 0x0C;
+
+const T_NESTEDCLASS: usize = 0x29;
 
 mod metadata;
 mod signature;

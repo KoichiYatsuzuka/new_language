@@ -23,6 +23,8 @@ EXPORTS
    TextProcessor_inst_Contains
    TextProcessor_inst_Replace
    TextProcessor_inst_Append
+   TextProcessor_inst_Clone
+   TextProcessor_inst_FindWord
    TextProcessor_Repeat
    TextProcessor_IsNullOrEmpty
    EventSource_StartTimer

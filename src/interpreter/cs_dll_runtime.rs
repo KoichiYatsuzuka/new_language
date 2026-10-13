@@ -6,19 +6,23 @@
 // ABI contract (NativeAOT bridge side):
 //   int/bool args    → i64 direct
 //   float args       → i64 bit pattern via f64::to_bits
-//   string args      → (*const u8, i32) = (UTF-8 ptr, byte length)
-//   handle args      → i64 object id
+//   string args      → (*const u8, i32) = (UTF-8 ptr, byte length); null string = (0, -1)
+//   handle args      → i64 object id; null object = 0
 //   void return      → ignored
 //   int return       → i64 direct
 //   float return     → i64 bit pattern
-//   string return    → (*mut u8, *mut i32) out-params; free with arrow_bridge_free_str
-//   handle return    → i64 object id
+//   string return    → (*mut u8, *mut i32) out-params; free with arrow_bridge_free_str; null = NULL / len < 0
+//   handle return    → i64 object id; null = 0
+//
+// The slots are laid out from the stub's declared types, and what each declared type may receive is decided
+// in `super::cs_values` (shared with cs-proc · ffi_value_exchange_plan.md 2-1).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::cs_values::{self, CsKind};
 use super::Value;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +41,8 @@ thread_local! {
 
 pub struct BridgeLib {
     lib: libloading::Library,
+    /// 読み込んだパス（戻り値のオブジェクトの `CsObject::bridge_path`・ブリッジの取り違えの検査に使う）
+    path: PathBuf,
 }
 
 impl BridgeLib {
@@ -45,7 +51,7 @@ impl BridgeLib {
             libloading::Library::new(path)
                 .map_err(|e| format!("CsDll: cannot load bridge '{}': {e}", path.display()))?
         };
-        Ok(Arc::new(BridgeLib { lib }))
+        Ok(Arc::new(BridgeLib { lib, path: path.to_path_buf() }))
     }
 
     // Look up an exported symbol by name.
@@ -114,7 +120,15 @@ pub fn call_constructor(
             )
         })?;
 
-    let handle = unsafe { call_bridge_fn(ptr, args, None)? };
+    // コンストラクタの引数の型はスタブに無い（`__init__(self)` だけ）ので、値の種類で並べる。
+    let what = format!("{class_name}.__init__");
+    let slots = encode_args(bridge, args, &[], None, &what)?;
+    check_slot_count(slots.len(), &what)?;
+    let handle = unsafe { call_variadic(ptr, &slots) };
+    // ⚠ 以前は 0（無いオブジェクト）もそのまま `CsObject` にしていた。オブジェクト表は 1 より大きい番号を返す。
+    if handle == 0 {
+        return Err(format!("CsDll: the constructor of '{class_name}' returned no object"));
+    }
     Ok(handle)
 }
 
@@ -123,25 +137,21 @@ pub fn call_constructor(
 // ---------------------------------------------------------------------------
 
 /// Call a static bridge method: `{ClassName}_{method}(args...)`.
-/// `ret_type` is the Arrow type annotation string (e.g. "int", "float", "str", class name).
+/// `param_types` / `ret_type` are the Arrow type annotations of the stub (e.g. "int", "Option[str]", class name).
 pub fn call_static(
     bridge: &BridgeLib,
     class_name: &str,
     method: &str,
     args: &[Value],
+    param_types: &[Option<String>],
     ret_type: Option<&str>,
 ) -> Result<Value, String> {
     let sym_name = format!("{class_name}_{method}");
     let ptr = bridge.sym_ptr(&sym_name).ok_or_else(|| {
         format!("CsDll: bridge has no export '{sym_name}'")
     })?;
-
-    if matches_str_ret(ret_type) {
-        return unsafe { call_returning_str(bridge, ptr, args, None) };
-    }
-
-    let raw = unsafe { call_bridge_fn(ptr, args, None)? };
-    Ok(raw_to_value(raw, ret_type))
+    let what = format!("{class_name}.{method}");
+    call_typed(bridge, ptr, args, param_types, ret_type, None, &what)
 }
 
 // ---------------------------------------------------------------------------
@@ -149,140 +159,183 @@ pub fn call_static(
 // ---------------------------------------------------------------------------
 
 /// Call an instance bridge method: `{ClassName}_inst_{method}(handle, args...)`.
+#[allow(clippy::too_many_arguments)]
 pub fn call_instance(
     bridge: &BridgeLib,
     class_name: &str,
     handle: i64,
     method: &str,
     args: &[Value],
+    param_types: &[Option<String>],
     ret_type: Option<&str>,
 ) -> Result<Value, String> {
     let sym_name = format!("{class_name}_inst_{method}");
     let ptr = bridge.sym_ptr(&sym_name).ok_or_else(|| {
         format!("CsDll: bridge has no export '{sym_name}'")
     })?;
-
-    if matches_str_ret(ret_type) {
-        return unsafe { call_returning_str(bridge, ptr, args, Some(handle)) };
-    }
-
-    let raw = unsafe { call_bridge_fn(ptr, args, Some(handle))? };
-
-    // Void returns (fn returns void in C#) → result is undefined; return None
-    if ret_type.map(|t| t == "None" || t == "void").unwrap_or(false) {
-        return Ok(Value::None);
-    }
-    Ok(raw_to_value(raw, ret_type))
+    let what = format!("{class_name}.{method}");
+    call_typed(bridge, ptr, args, param_types, ret_type, Some(handle), &what)
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Convert an Arrow Value to the i64 representation expected by the bridge.
-fn value_to_i64(v: &Value) -> i64 {
-    match v {
-        Value::Int(n) => *n,
-        Value::UInt(n) => *n as i64,
-        Value::Bool(b) => if *b { 1 } else { 0 },
-        Value::Float(f) => f.to_bits() as i64,
-        Value::CsObject(o) => o.handle,
-        Value::None => 0,
-        _ => 0,
-    }
-}
-
-/// Convert a raw i64 result to an Arrow Value based on the return type annotation.
-fn raw_to_value(raw: i64, ret_type: Option<&str>) -> Value {
-    match ret_type {
-        Some("float") => Value::Float(f64::from_bits(raw as u64)),
-        Some("bool") => Value::Bool(raw != 0),
-        Some("None") | Some("void") => Value::None,
-        _ => Value::Int(raw),
-    }
-}
-
-fn matches_str_ret(ret_type: Option<&str>) -> bool {
-    matches!(ret_type, Some("str"))
-}
-
-/// Call a bridge function that returns a UTF-8 string via out-params
-/// `(byte** out_ptr, int* out_len)` appended after the normal args.
-/// Calls `arrow_bridge_free_str` to free the returned buffer.
-unsafe fn call_returning_str(
+/// 引数を宣言された型で並べ、戻り値を宣言された型で受け取る（2-1）。
+///
+/// ⚠ 呼ぶ前に全部確かめる（受け取れない戻り値の型・多すぎる引数）。呼んでからエラーにすると C# 側の
+///   副作用だけが起きる。
+fn call_typed(
     bridge: &BridgeLib,
     ptr: usize,
     args: &[Value],
+    param_types: &[Option<String>],
+    ret_type: Option<&str>,
     self_handle: Option<i64>,
+    what: &str,
 ) -> Result<Value, String> {
-    let mut out_ptr: *mut u8 = std::ptr::null_mut();
-    let mut out_len: i32 = 0;
-
-    // Build arg i64 array
-    let mut i64_args: Vec<i64> = Vec::new();
-    if let Some(h) = self_handle {
-        i64_args.push(h);
-    }
-    for v in args {
-        match v {
-            Value::Str(s) => {
-                // String arg — push ptr and len separately
-                let bytes = s.as_bytes();
-                i64_args.push(bytes.as_ptr() as i64);
-                i64_args.push(bytes.len() as i64);
-            }
-            other => i64_args.push(value_to_i64(other)),
+    let decl = cs_values::decl_of(ret_type)?;
+    match (&decl.kind, decl.optional) {
+        // 数値・bool の null を表す取り決めがブリッジに無い（手書きの export は値をそのまま返す）
+        (CsKind::Int | CsKind::Float | CsKind::Bool, true) => {
+            return Err(format!(
+                "TypeError: C# method '{what}' returns `{}`, but the cs-dll bridge has no way to return null for it yet",
+                decl.shown
+            ));
         }
+        // ⚠ 以前はハンドルの番号をそのまま整数にしていた
+        (CsKind::Any, _) => {
+            return Err(format!(
+                "TypeError: C# method '{what}' returns `object`, which the cs-dll bridge cannot read \
+                 (return a class of this assembly or a primitive instead)"
+            ));
+        }
+        _ => {}
     }
-    // Append out-param pointers
-    i64_args.push(&mut out_ptr as *mut *mut u8 as i64);
-    i64_args.push(&mut out_len as *mut i32 as i64);
+    let mut slots = encode_args(bridge, args, param_types, self_handle, what)?;
 
-    // We call as a variadic-style function.  Since we pre-built the arg list,
-    // dispatch through a trampoline indexed on argc.
-    call_variadic(ptr, &i64_args);
-
-    if out_ptr.is_null() || out_len < 0 {
-        return Ok(Value::None);
+    if decl.kind == CsKind::Str {
+        // 文字列の戻り値は末尾の出力引数 `(byte** out_ptr, int* out_len)` で受け取る
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: i32 = 0;
+        slots.push(&mut out_ptr as *mut *mut u8 as i64);
+        slots.push(&mut out_len as *mut i32 as i64);
+        check_slot_count(slots.len(), what)?;
+        unsafe { call_variadic(ptr, &slots) };
+        if out_ptr.is_null() || out_len < 0 {
+            return cs_values::null_result(&decl, what);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len as usize) };
+        // ⚠ 以前は `from_utf8_lossy`（壊れたバイトを黙って置き換えていた）
+        let s = std::str::from_utf8(bytes).map(str::to_string).map_err(|e| {
+            format!("ValueError: C# method '{what}' returned a string that is not valid UTF-8 ({e})")
+        });
+        // Release the C# heap allocation
+        if let Some(free_ptr) = bridge.sym_ptr("arrow_bridge_free_str") {
+            let free_fn: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(free_ptr) };
+            unsafe { free_fn(out_ptr) };
+        }
+        return Ok(Value::str(s?));
     }
-    let bytes = std::slice::from_raw_parts(out_ptr, out_len as usize);
-    let s = String::from_utf8_lossy(bytes).into_owned();
 
-    // Release the C# heap allocation
-    if let Some(free_ptr) = bridge.sym_ptr("arrow_bridge_free_str") {
-        let free_fn: unsafe extern "C" fn(*mut u8) = std::mem::transmute(free_ptr);
-        free_fn(out_ptr);
+    check_slot_count(slots.len(), what)?;
+    let raw = unsafe { call_variadic(ptr, &slots) };
+    match &decl.kind {
+        CsKind::Void => Ok(Value::None),
+        CsKind::Int => Ok(Value::Int(raw)),
+        CsKind::Float => Ok(Value::Float(f64::from_bits(raw as u64))),
+        CsKind::Bool => Ok(Value::Bool(raw != 0)),
+        CsKind::Class(_) => cs_values::object_result(&decl, &bridge.path, false, raw, what),
+        CsKind::Str | CsKind::Any => unreachable!("handled above"),
     }
-    Ok(Value::str(s))
 }
 
-/// Low-level bridge call: passes i64 args (possibly with a leading self handle)
-/// through a cdecl/stdcall function and returns a raw i64 result.
-unsafe fn call_bridge_fn(
-    ptr: usize,
+/// 引数を i64 のスロットに並べる（文字列は `(ptr, len)` の 2 つ・null の文字列は `(0, -1)`）。
+///
+/// 並べ方は**宣言された型**で決める（2-1）。⚠ 以前は値の種類で決めていて、`string?` の引数に `None` を渡すと
+/// 1 スロットしか積まず、後ろの引数が 1 つずつずれた。運べない値（list など）は 0 にしていた。
+/// 宣言の無い引数（コンストラクタ）と `object` の引数は、値の種類で並べる。
+fn encode_args(
+    bridge: &BridgeLib,
     args: &[Value],
+    param_types: &[Option<String>],
     self_handle: Option<i64>,
-) -> Result<i64, String> {
-    let mut i64_args: Vec<i64> = Vec::new();
+    what: &str,
+) -> Result<Vec<i64>, String> {
+    let mut slots: Vec<i64> = Vec::new();
     if let Some(h) = self_handle {
-        i64_args.push(h);
+        slots.push(h);
     }
-    for v in args {
-        match v {
-            Value::Str(s) => {
+    for (i, v) in args.iter().enumerate() {
+        let decl = cs_values::decl_of(param_types.get(i).and_then(|t| t.as_deref()))?;
+        let any = decl.kind == CsKind::Any;
+        match (&decl.kind, v) {
+            (CsKind::Str, Value::Str(s)) | (CsKind::Any, Value::Str(s)) => {
                 let bytes = s.as_bytes();
-                i64_args.push(bytes.as_ptr() as i64);
-                i64_args.push(bytes.len() as i64);
+                slots.push(bytes.as_ptr() as i64);
+                slots.push(bytes.len() as i64);
             }
-            other => i64_args.push(value_to_i64(other)),
+            (CsKind::Str, Value::None) if decl.optional => {
+                slots.push(0);
+                slots.push(-1);
+            }
+            (CsKind::Int, Value::Int(n)) => slots.push(*n),
+            (CsKind::Int, Value::UInt(n)) => slots.push(*n as i64),
+            (CsKind::Float, Value::Float(f)) => slots.push(f.to_bits() as i64),
+            (CsKind::Bool, Value::Bool(b)) => slots.push(i64::from(*b)),
+            (CsKind::Class(_), Value::CsObject(o)) => {
+                cs_values::check_same_bridge(o, &bridge.path, false, i, what)?;
+                slots.push(o.handle);
+            }
+            (CsKind::Class(_), Value::None) if decl.optional => slots.push(0),
+            (CsKind::Any, Value::Int(n)) => slots.push(*n),
+            (CsKind::Any, Value::UInt(n)) => slots.push(*n as i64),
+            (CsKind::Any, Value::Float(f)) => slots.push(f.to_bits() as i64),
+            (CsKind::Any, Value::Bool(b)) => slots.push(i64::from(*b)),
+            (CsKind::Any, Value::CsObject(o)) => {
+                cs_values::check_same_bridge(o, &bridge.path, false, i, what)?;
+                slots.push(o.handle);
+            }
+            (CsKind::Any, Value::None) => slots.push(0),
+            (CsKind::Int | CsKind::Float | CsKind::Bool, Value::None) if decl.optional => {
+                return Err(format!(
+                    "TypeError: argument {} of C# method '{what}' is None, but the cs-dll bridge has no way to pass \
+                     null for `{}` yet",
+                    i + 1,
+                    decl.shown
+                ));
+            }
+            (_, Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_)
+                | Value::CsObject(_) | Value::None) if !any => {
+                return Err(format!(
+                    "TypeError: argument {} of C# method '{what}' must be `{}`, not '{}'",
+                    i + 1,
+                    decl.shown,
+                    crate::interpreter::ops::typecheck::runtime_type_name(v)
+                ));
+            }
+            (_, other) => return Err(cs_values::unsupported_arg(other, i, what)),
         }
     }
-    Ok(call_variadic(ptr, &i64_args))
+    Ok(slots)
+}
+
+/// `call_variadic` が渡せるのは 8 スロットまで（⚠ 以前は 9 個目から黙って捨てていた）。
+fn check_slot_count(n: usize, what: &str) -> Result<(), String> {
+    if n > 8 {
+        Err(format!(
+            "TypeError: C# method '{what}' needs {n} argument slots, but the cs-dll bridge passes at most 8 \
+             (a string takes 2, a string return value 2 more)"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Call an arbitrary C function pointer with up to 8 i64 arguments.
 /// Uses the x86-64 Windows ABI (RCX, RDX, R8, R9 then stack).
 /// Returns the i64 result (for void functions the result is undefined/zero).
+/// ⚠ 呼ぶ側が `check_slot_count` で 8 以下を確かめておくこと。
 unsafe fn call_variadic(ptr: usize, args: &[i64]) -> i64 {
     // Pad to at least 4 args (Windows ABI requires shadow space for 4 regs).
     let a0 = args.first().copied().unwrap_or(0);

@@ -411,6 +411,30 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 
 ---
 
+## C# の値の対応（`[cs-dll]` / `[cs-proc]` 共通）
+
+型スタブは C# のアセンブリ（`{Name}.dll`）のメタデータから作ります。メソッドの引数・戻り値はその宣言どおりに
+受け渡し、宣言に合わない値はエラーにします（黙って `None` や整数にしません）。
+
+| C# の型 | Arrow の型 | 備考 |
+|---|---|---|
+| `long` / `int` / `short` / `byte` / `ulong` … | `int` | `ulong` の 2^63 以上は `OverflowError` |
+| `double` / `float` | `float` | |
+| `bool` | `bool` | |
+| `string` / `char` | `str` | `char` を渡すときは長さ 1 の `str` |
+| `string?` / `Person?` / `long?` | `Option[str]` / `Option[Person]` / `Option[int]` | C# の nullable 注釈を読みます。null は `None` |
+| このアセンブリの公開クラス | そのクラス（値は C# のオブジェクト） | `x is Person` / `mustbe Person` で絞り込めます |
+| `object` | `Any` | 中身が数値・文字列ならその値。クラスが分からないオブジェクトは `TypeError` |
+| `void` | `None` | |
+
+- `?` の無い参照型（`string` / `Person`）のメソッドが null を返したら `TypeError` です（C# 側の約束違反）。
+  nullable 注釈を有効にしていない（`<Nullable>` の無い）アセンブリの参照型も同じ扱いです。
+- 次の型を受け渡すメソッドは、使った箇所が静的エラーになります: 配列・`List` などのコレクション・`Dictionary`・
+  タプル・デリゲート・型変数（ジェネリックなメソッド）・他のアセンブリの型・インターフェース。
+- C# のオブジェクトは、それを作ったブリッジ（同じ DLL / 同じホスト）へだけ渡せます。
+
+---
+
 ## .NET NativeAOT DLL (`[cs-dll]`)
 
 C# の NativeAOT でコンパイルしたネイティブ DLL を Arrow から直接呼び出します。
@@ -490,8 +514,12 @@ public static unsafe class FormBridgeExports
 |-----------|-------------------|
 | `int` / `bool` | `i64` 直値 |
 | `float` | `i64` ビットパターン (IEEE-754 reinterpret) |
-| `str` | `(byte* ptr, int len)` の 2 引数ペア (UTF-8) |
-| C# オブジェクトハンドル | `i64` ハンドル値 |
+| `str` | `(byte* ptr, int len)` の 2 引数ペア (UTF-8)。`Option[str]` の `None` は `(NULL, -1)` |
+| C# オブジェクトハンドル | `i64` ハンドル値。`Option[クラス]` の `None` は `0` |
+
+引数の並べ方は**型スタブの宣言**で決めます（値の種類ではありません）。全部で 8 スロットまで（文字列は 2、
+文字列の戻り値の出力引数がさらに 2）で、超えるとエラーです。`Option[int]` / `Option[float]` / `Option[bool]`
+の `None` を渡す取り決めはまだ無いので、渡すとエラーになります。
 
 #### エクスポート名の命名規則
 
@@ -510,9 +538,11 @@ public static unsafe class FormBridgeExports
 | `int` / `long` → `"int"` | `i64` 直値 |
 | `float` / `double` → `"float"` | `i64` ビットパターンを `f64` に reinterpret |
 | `bool` → `"bool"` | `raw != 0` |
-| `string` → `"str"` | `(byte** out_ptr, int* out_len)` 出力引数、`arrow_bridge_free_str` で解放 |
+| `string` → `"str"` | `(byte** out_ptr, int* out_len)` 出力引数、`arrow_bridge_free_str` で解放。null は `out_ptr = NULL`（または `out_len < 0`） |
 | `void` → `"None"` | 無視 |
-| オブジェクト → `"int"` | `i64` ハンドル (Arrow は `CsObject` として保持) |
+| このアセンブリのクラス → クラス名 | `i64` ハンドル (Arrow は C# のオブジェクトとして保持)。null は `0` |
+
+`object`（`Any`）と `long?` などの値型の nullable は、ハンドル・null の取り決めが無いので、呼ぶ前にエラーにします。
 
 文字列を返す関数は引数リストの末尾に `(byte** out_ptr, int* out_len)` の 2 引数を自動付加して呼び出されます。
 
@@ -655,7 +685,9 @@ Request:  {"id":N,"op":"static"|"new"|"inst"|"quit","cls":"Name","mth":"method",
 Response: {"id":N,"ok":<value>} | {"id":N,"err":"message"}
 ```
 
-引数タグ: `"i"` = int64、`"f"` = float64、`"b"` = bool、`"s"` = string、`"h"` = ハンドル、`"n"` = null
+引数タグ: `"i"` = int64、`"f"` = float64、`"b"` = bool、`"s"` = string、`"h"` = ハンドル、`"n"` = null。
+戻り値だけ `"o"`（int64 に入らない整数 = `ulong` の 2^63 以上。10 進の文字列）があり、Arrow は `OverflowError` にします。
+戻り値は宣言された型で読みます（「C# の値の対応」）。
 
 ### C# ホストの作成
 
@@ -742,12 +774,16 @@ Arrow                           C# Host (ArrowPipeHost)
 ```
 
 戻り値の型変換（EncodeResult）：
-- `string` → `{"t":"s","v":"..."}`
-- `int`/`long` → `{"t":"i","v":N}`
+- `string` / `char` → `{"t":"s","v":"..."}`
+- `int`/`long`/`short`/`ushort`/`byte`/`sbyte`/`uint` → `{"t":"i","v":N}`
+- `ulong` → 2^63 未満は `{"t":"i","v":N}`、以上は `{"t":"o","v":"18446744073709551615"}`
 - `double`/`float` → `{"t":"f","v":N}`
 - `bool` → `{"t":"b","v":true/false}`
 - `void`/`null` → `null`
-- その他（参照型）→ ObjTable に登録し `{"t":"h","v":handle}`
+- その他（クラスのインスタンス）→ ObjTable に登録し `{"t":"h","v":handle}`
+
+引数の変換（ConvertArg）は `long?` などの nullable な値型を受け、`char` には長さ 1 の文字列を受けます。
+タグの無い・知らない引数、表に無いハンドルはエラーです（以前は黙って `null` にしていました）。
 
 ---
 

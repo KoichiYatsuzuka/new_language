@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 完了（1-1〜1-6・§5）
+- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1 完了）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -191,7 +191,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **1-4** | `ar_make_str` の UTF-8 検証（`from_utf8_unchecked` をやめる） | なし | 小 |
 | **1-5** | cpp-lib の恒久キャッシュ DLL を、ラッパー生成が変わったら作り直す（版の刻印） | なし | 小 |
 | **1-6** | （1-3 で発見・2026-10-13 利用者が採用）C の整数型の幅と符号を区別する。`char` / `short` / `int` / `unsigned` / `uint32_t` などを `CType::Int`（符号付き 4 バイト）にまとめていて、`unsigned` の 2^31 以上が負になる・`unsigned char` の戻り値でレジスタの上位のごみまで読む・`short*` などの書き込みポインタが 4 バイト書く、などが起きていた（構造体のフィールドだけは 1-3 で「レイアウト不明」として止めていた）。Windows の `long`（4 バイト）・`bool`（1 バイト）も同じ | 1-3 | 中 |
-| **2-1** | C#: 配列・`List`・`Dictionary` の戻り値と、リストの引数をエラーにする。スタブにあるクラスを返すメソッドは `CsObject` に包む。`str` 以外の注釈（`str \| None` など）の戻り値を正しく扱う | 1-1 | 中 |
+| **2-1** | ✅ C#: 配列・`List`・`Dictionary` の戻り値と、リストの引数をエラーにする。スタブにあるクラスを返すメソッドは `CsObject` に包む。`str` 以外の注釈（`str \| None` など）の戻り値を正しく扱う（C# の nullable 注釈を読む・§5） | 1-1 | 中 |
 | **2-2** | cs-proc ホスト（`ArrowPipeHost.cs`）の受信を UTF-8 で復号する | なし | 小 |
 | **2-3** | js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
 | **2-4** | js-proc の node プロセスが終了時に残る問題を直す | なし | 小 |
@@ -377,6 +377,49 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   ずれる生成物の作り直しの表示で、`Cpp` の行を除いた出力は基準と一致した（1-3 と同じ）。`compare_wasm_frontend` 499/499・
   `type_obligations` 退行なし・`cargo test` 1077 件すべて成功
 - `stale_doc_refs` で、1-2 で消した `by_value_ok` を指したままのコメント 2 か所（`codegen.rs`）が見つかり、今の判定（`CFnSig::unsupported_reason`）に直した
+
+### 2-1 実装
+
+- **型スタブ**（`parser/cs_assembly/`）:
+  - C# の nullable 注釈（`NullableAttribute` / `NullableContextAttribute`）を読み、`string?` / `Person?` を `Option[str]` /
+    `Option[Person]` にした（`parse.rs::read_nullable`・`NullableInfo`）。⚠ メタデータのシグネチャには `string` と `string?` の
+    区別が無く、読まないと null が `str` の値に `None` として黙って入る。`str | None` の戻り値を正しく扱うには、これが要った
+  - 受け渡せない型（コレクション・タプル・デリゲート・型変数・他のアセンブリの型・インターフェース）を使うメソッドに印を
+    付け（`stub_gen.rs::cs_unsupported_reason`）、型検査が使った箇所を `FfiUnsupported` にする（クラスのメソッドへ広げた:
+    `TypeRegistry::ffi_unsupported_method`・`call_check.rs`）。⚠ 印は 1-2 のデコレータではなく**メソッドの本体の先頭の
+    文字列**: C# のスタブはクラスとして実行され、メソッドのデコレータが適用される
+  - `HasCustomAttribute` の表の並びを規格どおりにした（以前は幅の計算にしか使っておらず、表が重複・欠落していた）
+- **実行時**（`interpreter/cs_values.rs` を cs-proc / cs-dll で共有）: 戻り値は型スタブの宣言で読む。クラスのハンドルは
+  `CsObject` に包む（ブリッジごとにクラスを控える）。null は `Option[T]` / `None` / `Any` のときだけ `None`、それ以外は
+  TypeError。`object` の値でクラスの分からないオブジェクトは TypeError。運べない引数・別のブリッジの `CsObject` はエラー。
+  例外の種類が付いたエラーは `CsProc:` を付けず、`except` で捕まえられるようにした（`tag_error`）
+  - cs-proc: 宣言とタグの食い違い・壊れた応答はエラー（以前は `""` / `0`）。`ulong` の 2^63 以上は OverflowError（タグ `o`）
+  - cs-dll: 引数を**宣言された型で**並べる（`Option[str]` の `None` は `(NULL, -1)`）。以前は値の種類で並べ、`string?` に
+    `None` を渡すと後ろの引数が 1 つずつずれた。8 スロットを超えたら黙って捨てずにエラー。文字列の戻り値は UTF-8 を検査
+    （以前は `from_utf8_lossy`）。`object` と値型の nullable の戻り値は取り決めが無いので呼ぶ前にエラー
+- **C# ホスト**（`ArrowPipeHost.cs`・cs_probe と cs_proc_test が共有）: `char` / `byte` / `short` / `ushort` / `sbyte` /
+  `ulong` の戻り値をハンドルにせず値で返す。`long?` などの引数を受ける（`Convert.ChangeType` は `Nullable<T>` を扱えない）。
+  `char` の引数に長さ 1 の文字列。タグの無い引数・表に無いハンドルはエラー（以前は黙って `null`）
+- `x is Person` / `mustbe Person` が C# のオブジェクトで真にならなかった（`value_is_type` にアームが無かった）のを直した。
+  `Option[Person]` を絞り込むのに要る
+- 実測した以前の症状（`9fccf26`）: `make_person("bob")` → `1`、`words("a b")` → `2`（どちらもハンドル番号）、`string?` の null と
+  約束違反の null → `str` の変数に `None`
+- 検査用: `cs_probe/Probe.cs` に nullable・小さな値型・`object`・未対応のシグネチャのメンバーを足した。cs-dll は
+  `cs_interop_test` に `Clone()`（オブジェクトの戻り値）・`FindWord()`（`string?`）と export を足し、NativeAOT で作り直した。
+  `build_bridge.ps1` が cargo の進捗表示（stderr）で必ず失敗していたのを直した
+- 例題: `cs_proc_values.ar`（期待値と違えば raise）・`cs_proc_unsupported_signature_error.ar`（8 か所の静的エラー）・
+  `cs_proc_null_contract_error.ar`。`cs_interop_test.ar` に cs-dll の確認を足した
+- 単体テスト: `cs_assembly::parse::probe_tests`（実際の `cs_probe.dll` で nullable と未対応の印）、`cs_values::tests`
+- 文書: `docs/grammar/09_imports.md` に「C# の値の対応」、skill `importation` に C# の節。VSIX を作り直した
+- ⚠ 残したもの: nullable 注釈の無い（古い）アセンブリの null は TypeError で、逃げ道が無い（Kotlin のプラットフォーム型のような
+  扱いは必要になったら検討）。外部言語のスタブのクラスは型検査では素の名前（`Person`）で、`cp.Person` は型の位置で
+  解決されない（既存・`is cp.Person` は静的エラー）。C# の例外は `CsProc: …` のままで `except` で捕まえられない（既存）
+- ゲート（基準 `9fccf26`）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。`compare_python_impl` は新しい 2 本を
+  既知の差分に登録した（参照実装は `cs_probe/cs_probe.dll` を見つけられず ParseError。静的エラーの例は一致）。
+  `compare_outputs` の差 4 本はすべて意図したもの（新しい 3 本と、確認を足した `cs_interop_test.ar`。基準では `string?` の
+  引数に `None` を渡すと静的エラー）。負の対照は 415/415。`compare_import_paths` の差は同じ `cs_interop_test.ar` だけ。
+  `compare_wasm_frontend` 502/502（拡張のクレートのテストも、例題の DLL をリポジトリの直下から探すよう直して通過）・
+  `type_obligations` 退行なし・`stale_doc_refs` 0・`cargo test` 1082 件すべて成功
 
 ---
 

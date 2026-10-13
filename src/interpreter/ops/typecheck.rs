@@ -335,6 +335,19 @@ impl Interpreter {
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",
+            // C# のオブジェクト（cs-dll / cs-proc）。⚠ 以前はこのアームが無く、`x is Person` / `mustbe Person` /
+            //   `case Person:` がどれも偽だった。型スタブが `Option[Person]` を返すようになり（nullable 注釈・
+            //   ffi_value_exchange_plan.md 2-1）、絞り込みに要る。
+            Value::CsObject(o) => {
+                if o.class.name == type_name {
+                    return true;
+                }
+                // 名前空間を通した型名（`cp.Person`）
+                type_name.contains('.')
+                    && self.dotted_class(type_name).is_some_and(|cls| {
+                        std::rc::Rc::ptr_eq(&cls, &o.class) || cls.class_id == o.class.class_id
+                    })
+            }
             _ => false,
         }
     }
@@ -395,6 +408,7 @@ impl Interpreter {
             Value::NativeFunction(n) => format!("function({})", n.fn_name),
             Value::Class(c) => format!("class({})", c.name),
             Value::Instance(i) => i.borrow().class.name.clone(),
+            Value::CsObject(o) => o.class_name.clone(),
             Value::Slice(_) => "slice".to_string(),
             _ => "unknown".to_string(),
         }

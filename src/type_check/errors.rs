@@ -292,6 +292,8 @@ pub enum TypeErrorKind {
     /// 呼べてしまい、戻り値が黙って `None` になる・ハンドル番号をポインタとして渡して落ちる・書き込みが
     /// 失われる、といった形で壊れていた。型スタブの関数に付いた印（`FFI_UNSUPPORTED_MARK`）から引く。
     FfiUnsupported {
+        /// 何の関数か（`C function` / `C# method`）。
+        what: String,
         function: String,
         reason: String,
     },
@@ -930,8 +932,8 @@ impl StaticTypeError {
                 "Python function {} returns a class it defines, so it can only be used from Python code — Arrow cannot know the type of that class (use it from a Python function instead)",
                 hl_q(function)
             ),
-            TypeErrorKind::FfiUnsupported { function, reason } => format!(
-                "C function {} cannot be used from Arrow yet: {reason}",
+            TypeErrorKind::FfiUnsupported { what, function, reason } => format!(
+                "{what} {} cannot be used from Arrow yet: {reason}",
                 hl_q(function)
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(

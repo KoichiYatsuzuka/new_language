@@ -1,8 +1,8 @@
 // cs_assembly/stub_gen.rs — Arrow スタブ生成関数: .ars テキスト描画、スタブ構築、シグネチャ復号、演算子名/パラメータ名処理。
 
 use {
-    std::collections::HashMap,
-    crate::ast::{Accessibility, Param, Stmt, TemplateParam},
+    std::collections::{HashMap, HashSet},
+    crate::ast::{Accessibility, Expr, Param, Stmt, TemplateParam},
 };
 use super::*;
 
@@ -24,11 +24,13 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
     let methods    = &pa.all_methods;
     let params     = &pa.all_params;
     let type_names = &pa.type_names;
+    let nullable   = &pa.nullable;
 
     let mut out   = String::new();
     let mut first = true;
 
-    for td in typedefs {
+    for (td_i, td) in typedefs.iter().enumerate() {
+        let td_row = td_i as u32 + 1;
         let vis = td.flags & 0x07;
         if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC { continue; }
         if td.name.is_empty() || td.name == "<Module>"   { continue; }
@@ -88,7 +90,8 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
                 if m.name == ".ctor" || m.name == ".cctor" { continue; }
                 if let Some(op) = operator_name(&m.name) {
                     let (ret, sig_params) = decode_method_sig(
-                        data, streams, layout, m, params, type_names, &td.generic_param_names);
+                        data, streams, layout, m, params, type_names, &td.generic_param_names,
+                        nullable, md_1 as u32, td_row);
                     let mut p_parts = vec!["self: Self".to_string()];
                     for (i, (ty, _)) in sig_params.iter().enumerate() {
                         p_parts.push(format!("p{i}: {ty}"));
@@ -107,7 +110,8 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
             };
 
             let (ret_type, sig_params) = decode_method_sig(
-                data, streams, layout, m, params, type_names, &td.generic_param_names);
+                data, streams, layout, m, params, type_names, &td.generic_param_names,
+                nullable, md_1 as u32, td_row);
 
             let mut p_parts: Vec<String> = if m.is_static {
                 vec![]
@@ -217,10 +221,13 @@ pub(crate) fn generate_stubs(
     methods: &[CsMethod],
     params: &[CsParam],
     type_names: &HashMap<u32, String>,
+    nullable: &NullableInfo,
 ) -> Result<Vec<Stmt>, String> {
     let mut stmts: Vec<Stmt> = Vec::new();
+    let classes = stub_class_names(typedefs);
 
-    for td in typedefs.iter() {
+    for (td_i, td) in typedefs.iter().enumerate() {
+        let td_row = td_i as u32 + 1;
         // Skip non-public types (top-level: Public=1; nested: NestedPublic=2)
         let vis = td.flags & 0x07;
         if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC {
@@ -289,13 +296,19 @@ pub(crate) fn generate_stubs(
                     // Operator overload
                     let (ret, sig_params) = decode_method_sig(
                         data, streams, layout, m, params, type_names, &td.generic_param_names,
+                        nullable, md_1 as u32, td_row,
                     );
                     let mut arrow_params = vec![make_param("self", "Self", false)];
                     for (i, (ty, is_byref)) in sig_params.iter().enumerate() {
                         let pname = format!("p{i}");
                         arrow_params.push(make_param(&pname, ty, *is_byref));
                     }
-                    body_stmts.push(make_fn_stub(op, arrow_params, &ret, false, is_interface, vec![]));
+                    let unsupported = cs_unsupported_reason(
+                        &ret, &arrow_params, &classes, &td.generic_param_names, &m.generic_param_names);
+                    body_stmts.push(mark_unsupported(
+                        make_fn_stub(op, arrow_params, &ret, false, is_interface, vec![]),
+                        unsupported,
+                    ));
                     continue;
                 }
                 continue; // skip other special names
@@ -311,6 +324,7 @@ pub(crate) fn generate_stubs(
             // Parse signature
             let (ret_type, sig_params) = decode_method_sig(
                 data, streams, layout, m, params, type_names, &td.generic_param_names,
+                nullable, md_1 as u32, td_row,
             );
 
             // Build Arrow params
@@ -357,13 +371,11 @@ pub(crate) fn generate_stubs(
                 _ => ret_type,
             };
 
-            body_stmts.push(make_fn_stub(
-                &arrow_name,
-                arrow_params,
-                &eff_ret,
-                m.is_static,
-                is_interface,
-                tmpl,
+            let unsupported = cs_unsupported_reason(
+                &eff_ret, &arrow_params, &classes, &td.generic_param_names, &m.generic_param_names);
+            body_stmts.push(mark_unsupported(
+                make_fn_stub(&arrow_name, arrow_params, &eff_ret, m.is_static, is_interface, tmpl),
+                unsupported,
             ));
         }
 
@@ -392,14 +404,19 @@ pub(crate) fn generate_stubs(
 
 
 // Decode a method's signature blob → (return_type_arrow, [(param_type, is_byref)])
+/// null になりうる参照型（`string?` / `Person?`）は `Option[T]` にする（nullable 注釈・2-1）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_method_sig(
     data: &[u8],
     streams: &Streams,
     _layout: &TildeLayout,
     m: &CsMethod,
-    _params: &[CsParam],
+    params: &[CsParam],
     type_names: &HashMap<u32, String>,
     type_params: &[String],
+    nullable: &NullableInfo,
+    method_row: u32,
+    td_row: u32,
 ) -> (String, Vec<(String, bool)>) {
     let blob = read_blob(data, streams.blob_off, m.sig_blob_idx);
     let mut reader = SigReader {
@@ -409,8 +426,115 @@ pub(crate) fn decode_method_sig(
         type_params,
         method_params: &m.generic_param_names,
     };
-    let (ret, sig_params) = reader.parse_method_sig(&m.generic_param_names);
+    let ((ret, ret_is_ref), sig_params) = reader.parse_method_sig_refs(&m.generic_param_names);
+    let flag = |seq: u16| nullable.flag(m, method_row, td_row, params, seq);
+    let ret = if ret_is_ref { apply_nullable(ret, flag(0)) } else { ret };
+    let sig_params = sig_params
+        .into_iter()
+        .enumerate()
+        .map(|(i, (ty, byref, is_ref))| {
+            let ty = if is_ref { apply_nullable(ty, flag(i as u16 + 1)) } else { ty };
+            (ty, byref)
+        })
+        .collect();
     (ret, sig_params)
+}
+
+
+/// nullable の値が 2（null になりうる）なら `Option[T]` にする（2-1）。`object`（`Any`）は `None` も含むのでそのまま。
+/// ⚠ 0（注釈なし）は `T` のまま。実行時に null が来たら例外にする（`cs_values`）。Kotlin がプラットフォーム型の値を
+///   null にならない型へ入れるときに検査するのと同じ扱い。
+fn apply_nullable(ty: String, flag: u8) -> String {
+    if flag == 2 && ty != "Any" && !ty.starts_with("Option[") {
+        format!("Option[{ty}]")
+    } else {
+        ty
+    }
+}
+
+
+/// 型スタブにクラスとして出す型の名前（公開・インターフェースでない・コンパイラが作ったものでない）。
+/// メソッドが受け渡す型がこの中にあれば、実行時に `CsObject` として扱える（2-1）。
+fn stub_class_names(typedefs: &[CsTypeDef]) -> HashSet<String> {
+    typedefs
+        .iter()
+        .filter(|td| {
+            let vis = td.flags & 0x07;
+            (vis == TD_PUBLIC || vis == TD_NESTED_PUBLIC)
+                && td.flags & TD_INTERFACE == 0
+                && !td.name.is_empty()
+                && td.name != "<Module>"
+                && !td.name.starts_with('<')
+                && !td.name.starts_with('_')
+        })
+        .map(|td| td.name.clone())
+        .collect()
+}
+
+
+/// C# のメソッドが、今の Arrow と C# の間で受け渡せない型を使っていれば理由を返す（2-1）。
+///
+/// 受け渡せるのは `int` / `float` / `bool` / `str` / `None` / `Any`（`object`）と、このアセンブリの公開クラス
+/// （`CsObject`）、およびそれらの `Option[T]`。コレクション・デリゲート・タプル・型変数・他のアセンブリの型・
+/// インターフェースは、使った箇所を静的エラーにする（`TypeErrorKind::FfiUnsupported`）。
+/// ⚠ 以前はコレクションやオブジェクトの戻り値が整数（ホスト側のハンドル番号）になり、リストの引数は C# に
+///   `null` が届いていた（型スタブは `list[str]` / `Person` と宣言していた）。
+pub(crate) fn cs_unsupported_reason(
+    ret: &str,
+    params: &[Param],
+    classes: &HashSet<String>,
+    class_type_params: &[String],
+    method_type_params: &[String],
+) -> Option<String> {
+    // 型が受け渡せなければ、その型を説明する句（`it returns `T`, …` / `parameter `p` is `T`, …` に続ける）
+    let check = |ty: &str| -> Option<&'static str> {
+        let inner = ty.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')).unwrap_or(ty);
+        let head = inner.split('[').next().unwrap_or(inner);
+        match head {
+            "None" | "int" | "float" | "bool" | "str" | "Any" | "Self" => None,
+            "list" | "dict" | "set" => Some("a C# collection, which cannot cross the bridge yet"),
+            "tuple" => Some("a C# tuple, which cannot cross the bridge yet"),
+            "function" => Some("a C# delegate, which cannot cross the bridge yet"),
+            _ if class_type_params.iter().chain(method_type_params).any(|t| t == head) => {
+                Some("a generic type parameter, which cannot cross the bridge")
+            }
+            _ if inner.contains('[') => Some("a generic C# type, which cannot cross the bridge yet"),
+            _ if classes.contains(inner) => None,
+            _ => Some("which is not a public class of this assembly"),
+        }
+    };
+    if let Some(why) = check(ret) {
+        return Some(format!("it returns `{ret}`, {why}"));
+    }
+    for p in params {
+        if let Some(ty) = p.type_ann.as_deref() {
+            if let Some(why) = check(ty) {
+                return Some(format!("parameter `{}` is `{ty}`, {why}", p.name));
+            }
+        }
+    }
+    None
+}
+
+
+/// 未対応のメソッドの本体に、理由を書いた文字列（`FFI_UNSUPPORTED_MARK` で始まる docstring）を置く（2-1）。
+/// 型検査がそれを読み、使った箇所を静的エラーにする。
+/// ⚠ C/C++ の型スタブ（`parser/imports/cpp.rs`）はデコレータで印を付けるが、C# のスタブはクラスの本体として
+///   実行される（`exec_class_def` がメソッドのデコレータを適用する）ので、文字列のデコレータは置けない。
+///   本体はブリッジへ呼び出しが行くので実行されない。
+fn mark_unsupported(stub: Stmt, reason: Option<String>) -> Stmt {
+    let Some(reason) = reason else { return stub };
+    match stub {
+        Stmt::FnDef { src, name, template_params, params, return_type, mut body, is_abstract, is_static,
+                      is_class_method, decorators, access } => {
+            body.insert(0, Stmt::Expr(Expr::Str(
+                format!("{}{reason}", crate::cpp_header::FFI_UNSUPPORTED_MARK).into(),
+            )));
+            Stmt::FnDef { src, name, template_params, params, return_type, body, is_abstract, is_static,
+                          is_class_method, decorators, access }
+        }
+        other => other,
+    }
 }
 
 
