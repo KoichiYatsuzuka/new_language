@@ -5,8 +5,8 @@ use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::CallArg,
     crate::interpreter::{
-        ByteModeRust, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, TupleData, Value,
+        ByteModeRust, FileData, FileOpenModeRust,
+        Interpreter, Value,
     },
 };
 use super::*;
@@ -34,6 +34,15 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "frozenset", "bytes",
 ];
 
+/// `next` の引数の数の誤り（CPython と同じ文言）。
+fn next_arity_error(n: usize) -> String {
+    if n == 0 {
+        "TypeError: next expected at least 1 argument, got 0".to_string()
+    } else {
+        format!("TypeError: next expected at most 2 arguments, got {n}")
+    }
+}
+
 /// `open` の失敗を例外の文字列にする。OS のエラーの種類で `OSError` の派生へ振り分ける
 /// （CPython と同じ・python_builtins_plan.md のタスク 4-1）。以前はどれも `IOError` だった。
 /// ⚠ 文言（`cannot open '..': <OS の文言>`）は変えていない。CPython は `[Errno 2] No such file or directory: '..'`。
@@ -58,6 +67,31 @@ pub(crate) fn is_builtin_function_name(name: &str) -> bool {
 }
 
 impl Interpreter {
+    /// `enumerate(iterable, start=0)` の引数（3 つの入口で同じ解釈・python_builtins_plan.md のタスク 3-5）。
+    /// `start` は位置でもキーワードでも渡せる（CPython と同じ）。文言も CPython と同じ。
+    /// ⚠ 以前は 3 つの入口が別々に書かれ、どれも位置の `start`（`enumerate(xs, 1)`）を受けなかった。
+    fn enumerate_args(&self, mut positional: Vec<Value>, start_kw: Option<Value>) -> Result<(Value, i64), String> {
+        let given = positional.len() + usize::from(start_kw.is_some());
+        if positional.is_empty() {
+            return Err("TypeError: enumerate() missing required argument 'iterable' (pos 1)".to_string());
+        }
+        if given > 2 {
+            return Err(format!("TypeError: enumerate() takes at most 2 arguments ({given} given)"));
+        }
+        let start = match start_kw.or_else(|| (positional.len() == 2).then(|| positional.pop().expect("len 2"))) {
+            None => 0,
+            Some(Value::Int(n)) => n,
+            Some(Value::Bool(b)) => i64::from(b),
+            Some(other) => {
+                return Err(format!(
+                    "TypeError: '{}' object cannot be interpreted as an integer",
+                    self.type_name(&other)
+                ))
+            }
+        };
+        Ok((positional.into_iter().next().expect("len >= 1"), start))
+    }
+
     /// 束縛されていない名前 `name` の**組み込みの値**（名前の探索の最後の段・タスク 1-7）。組み込みでなければ `None`。
     ///
     /// 呼び出し元は名前の読みが失敗した所すべて（ツリーウォークの `eval` の識別子 3 か所・VM の `LoadGlobal` 2 か所）。
@@ -250,19 +284,14 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap();
                 Some(self.len_of(val))
             }
+            // `next(it)` / `next(it, default)`（本体は `py_next`・タスク 3-5）。
             "next" => {
-                if args.len() != 1 {
-                    return Some(Err("TypeError: next() takes exactly one argument".to_string()));
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(next_arity_error(args.len())));
                 }
-                let val = args.into_iter().next().unwrap();
-                Some(match val {
-                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
-                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
-                    other => Err(format!(
-                        "TypeError: '{}' object is not an iterator",
-                        self.type_name(&other)
-                    )),
-                })
+                let mut it = args.into_iter();
+                let v = it.next().expect("len >= 1");
+                Some(self.py_next(v, it.next()))
             }
             "repr" => {
                 if args.len() != 1 {
@@ -278,19 +307,11 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap();
                 Some(self.call_type_by_name_evaled("id", vec![val]))
             }
-            "enumerate" => {
-                // VM は位置引数のみ渡す（`start=` キーワードは compile_call_args が bail）。
-                // ツリーウォークの位置引数 1 個・start=0 の経路と一致。
-                if args.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        args.len()
-                    )));
-                }
-                let iterable = args.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, 0))
-            }
-            "zip" => Some(self.zip_core(args)),
+            // VM は位置引数のみ渡す（`start=` キーワードは `eval_builtin_evaled_named`）。`enumerate(it, 10)` も受ける。
+            "enumerate" => Some(
+                self.enumerate_args(args, None).and_then(|(it, start)| self.py_enumerate(it, start)),
+            ),
+            "zip" => Some(self.py_zip(args)),
             "getenv" => {
                 if args.is_empty() || args.len() > 2 {
                     return Some(Err(
@@ -323,48 +344,6 @@ impl Interpreter {
             }
             _ => None,
         }
-    }
-
-    /// enumerate のコア: 評価済みの反復対象と開始値からタプル列（`(index, value)`）の
-    /// Generator を作る。CallArg 版（`eval_builtin_ident_call`）と評価済み版（VM の
-    /// `eval_builtin_evaled`）で共有し、意味論の分岐を防ぐ。
-    pub(crate) fn enumerate_core(&mut self, iterable: Value, start: i64) -> Result<Value, String> {
-        let items = self.drain_iterable(iterable)?;
-        let tuples: Vec<Value> = items
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let idx = start + i as i64;
-                let type_str = self.type_name(&v).to_string();
-                Value::Tuple(Rc::new(TupleData::new(
-                    vec![Value::Int(idx), v],
-                    vec!["int".to_string(), type_str],
-                )))
-            })
-            .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
-    }
-
-    /// zip のコア: 評価済みの反復対象群から、最短長ぶんのタプル列の Generator を作る。
-    /// CallArg 版と評価済み版で共有する。
-    pub(crate) fn zip_core(&mut self, iters_vals: Vec<Value>) -> Result<Value, String> {
-        let mut iters: Vec<Vec<Value>> = Vec::new();
-        for v in iters_vals {
-            iters.push(self.drain_iterable(v)?);
-        }
-        if iters.is_empty() {
-            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(vec![])))));
-        }
-        let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
-        let tuples: Vec<Value> = (0..min_len)
-            .map(|i| {
-                let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
-                let types: Vec<String> =
-                    vals.iter().map(|v| self.type_name(v).to_string()).collect();
-                Value::Tuple(Rc::new(TupleData::new(vals, types)))
-            })
-            .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
     }
 
     pub(crate) fn eval_builtin_ident_call(
@@ -412,24 +391,21 @@ impl Interpreter {
                 self.emit_print(&parts.join(" "));
                 Some(Ok(Value::None))
             }
+            // `next(it)` / `next(it, default)`（評価済みの入口と同じ本体 `py_next`・タスク 3-5）。
             "next" => {
-                if args.len() != 1 {
-                    return Some(Err(
-                        "TypeError: next() takes exactly one argument".to_string()
-                    ));
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(next_arity_error(args.len())));
                 }
-                let val = match self.eval(args[0].expr()) {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
-                };
-                Some(match val {
-                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
-                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
-                    other => Err(format!(
-                        "TypeError: '{}' object is not an iterator",
-                        self.type_name(&other)
-                    )),
-                })
+                let mut vals = Vec::with_capacity(args.len());
+                for a in args {
+                    match self.eval(a.expr()) {
+                        Ok(v) => vals.push(v),
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                let mut it = vals.into_iter();
+                let v = it.next().expect("len >= 1");
+                Some(self.py_next(v, it.next()))
             }
             "repr" => {
                 if args.len() != 1 {
@@ -572,24 +548,7 @@ impl Interpreter {
                         }
                     }
                 }
-                if positional.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        positional.len()
-                    )));
-                }
-                let start = match start_val {
-                    Some(Value::Int(n)) => n,
-                    Some(other) => {
-                        return Some(Err(format!(
-                            "TypeError: enumerate() 'start' must be int, not '{}'",
-                            self.type_name(&other)
-                        )))
-                    }
-                    None => 0i64,
-                };
-                let iterable = positional.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, start))
+                Some(self.enumerate_args(positional, start_val).and_then(|(it, start)| self.py_enumerate(it, start)))
             }
             "zip" => {
                 for arg in args.iter() {
@@ -606,7 +565,7 @@ impl Interpreter {
                         Err(e) => return Some(Err(e)),
                     }
                 }
-                Some(self.zip_core(iters_vals))
+                Some(self.py_zip(iters_vals))
             }
             "getenv" => {
                 if args.is_empty() || args.len() > 2 {
@@ -737,24 +696,7 @@ impl Interpreter {
                         }
                     }
                 }
-                if positional.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        positional.len()
-                    )));
-                }
-                let start = match start_val {
-                    Some(Value::Int(n)) => n,
-                    Some(other) => {
-                        return Some(Err(format!(
-                            "TypeError: enumerate() 'start' must be int, not '{}'",
-                            self.type_name(&other)
-                        )))
-                    }
-                    None => 0i64,
-                };
-                let iterable = positional.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, start))
+                Some(self.enumerate_args(positional, start_val).and_then(|(it, start)| self.py_enumerate(it, start)))
             }
             // `open` の評価済み版は元から名前つきの 3 つ組を受け取る（そのまま渡せる）。
             "open" => Some(

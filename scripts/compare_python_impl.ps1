@@ -213,6 +213,7 @@ $knownDiff = @{
     'str_char_positions'             ='Rust: 文字列の長さと位置は文字の単位（len / find / startswith の start・end / zfill / expandtabs・タスク 1-17 で新設・CPython と同じ出力）。py: str に rfind が無く AttributeError'
     'str_char_positions_error'       ='Rust: index で見つからなければ CPython と同じ ValueError（タスク 1-17 で新設）。py: str に index が無く AttributeError'
     'eof_error'                      ='Rust: Arrow のファイルの EOFError / BOFError を捕まえられる（タスク 4-5 で新設）。py: read_line が終わりで誤りを出さず while True が終わらない'
+    'lazy_iterators'                 ='Rust: enumerate / zip が遅延のジェネレーター・next(it, default)・EndOfIteration を except StopIteration で捕まえる（タスク 3-5 で新設・CPython と同じ出力）。py: enumerate が元を先に全部取り出す'
     'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'str_repr'                       ='Rust: 文字列の repr が CPython の unicode_repr と同じ（"it''s" / \n / \x00 の形・タスク 1-13 で新設）。py: コンテナの中の文字列を引用符なしで出す'
     'py_property_error'              ='Rust: setter の無い property への代入が CPython と同じ AttributeError（タスク 6-1 で新設）。py: import[py] したモジュールの run を引けず AttributeError'

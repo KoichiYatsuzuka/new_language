@@ -490,6 +490,7 @@ for v in r:
 - `__iter__()` はジェネレータ（`Value::Generator`）を返さなければならない
 - ジェネレータが終端に達した後に `.next()` を呼ぶと `EndOfIteration: generator is exhausted` エラーを送出する
 - `for` ループはこの `EndOfIteration` を内部でキャッチしてループを終了する（エラーはループ外に伝播しない）
+- `EndOfIteration` は `StopIteration` の子の組み込みの例外で、`except EndOfIteration` / `except StopIteration`（Python の書き方）で捕まえられる。`next(it, default)` は尽きていれば `default` を返す（python_builtins_plan.md のタスク 3-5）
 - `break` / `continue` はイテレータベースのループでも通常通り動作する
 - `gen_methods` はクラスボディの `Stmt::GenDef` から収集され、`ClassValue` に格納される。`new_type` や テンプレートクラスのコピー時にも引き継がれる
 

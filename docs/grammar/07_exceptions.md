@@ -80,7 +80,7 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 ## 組み込み例外クラス
 
-すべての組み込み例外クラスは `Error` trait を実装し、**CPython 3.12 と同じ階層**を持ちます（Arrow 独自の 4 つを含めて 66 クラス）。
+すべての組み込み例外クラスは `Error` trait を実装し、**CPython 3.12 と同じ階層**を持ちます（Arrow 独自の 5 つを含めて 67 クラス）。
 表は `src/type_check/names.rs` の `BUILTIN_EXCEPTIONS`（名前と親）1 つで、実行時の登録・内部エラーの変換・
 型検査がみなここを読みます。
 
@@ -98,8 +98,9 @@ BaseException
       ├── SyntaxError ── IndentationError ── TabError
       ├── ValueError ── UnicodeError ── UnicodeTranslateError / UnicodeDecodeError / UnicodeEncodeError
       ├── Warning ── UserWarning / DeprecationWarning / FutureWarning / RuntimeWarning / …（12）
-      ├── AssertionError / AttributeError / BufferError / EOFError / ReferenceError / StopIteration /
+      ├── AssertionError / AttributeError / BufferError / EOFError / ReferenceError /
       │   SystemError
+      ├── StopIteration ── EndOfIteration  ← Arrow 独自（尽きたイテレータの `next()`・`for` が内部で受ける）
       ├── TypeError ── FfiTypeError  ← Arrow 独自（外部言語の関数が型スタブの宣言と食い違う値を返した）
       ├── ForeignError               ← Arrow 独自（外部言語の側で投げられた例外）
       ├── AccessError                ← Arrow 独自（private / protected の違反）

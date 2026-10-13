@@ -1,0 +1,67 @@
+# lazy_iterators.ar — enumerate / zip はジェネレーター（python_builtins_plan.md のタスク 3-5）
+#
+# `enumerate` / `zip` は取り出すたびに元を 1 つ進める**遅延のジェネレーター**（CPython と同じ）:
+#   - 作った時点では何も取り出さない・途中で抜ければ残りは取り出さない
+#   - `zip` はどれかが尽きたらそこで終わり、それより後ろの列は進めない
+#   - 元と位置を共有する（`enumerate(src)` の後で `next(src)` は続き）・無限のジェネレーターも使える
+# あわせて `next(it, default)`（尽きたら既定値）と、尽きた `next(it)` の `EndOfIteration` を
+# `except StopIteration` / `except EndOfIteration` で捕まえられるようにした（`EndOfIteration` は `StopIteration` の子）。
+# 出力は CPython と同じ（最後の `EndOfIteration` の節は Arrow だけ）。
+#
+# ⚠ 以前は `enumerate` / `zip` が元を**先に全部取り出して**いた（無限の列で終わらない・`enumerate(src)` の後の
+#   `next(src)` が止まる）。尽きた `next(it)` は捕まえられず、`next(it, default)` は無かった。
+
+gen counted(let tag: str, let n: int) -> int:
+    for i in range(n):
+        print(tag, i)
+        yield i
+
+gen naturals() -> int:
+    mut i = 0
+    while True:
+        yield i
+        i = i + 1
+
+# 作った時点では取り出さない
+let e = enumerate(counted("A", 3))
+print("created")
+print(next(e))
+
+# 途中で抜けたら残りは取り出さない
+for i, v in enumerate(counted("B", 4)):
+    if i == 1:
+        break
+
+# zip は短い方が尽きたら終わり（長い方を余計に進めない）
+for a, b in zip(counted("C", 2), counted("D", 5)):
+    print(a, b)
+
+# 元と位置を共有する
+let src = counted("E", 4)
+let en = enumerate(src, 10)
+print(next(en))
+print(next(src))
+print(next(en))
+
+# 無限のジェネレーター
+mut taken: list[int] = []
+for i, v in enumerate(naturals()):
+    if i == 3:
+        break
+    taken.append(v)
+print(taken, list(zip(naturals(), "ab")))
+
+# next(it, default) と StopIteration
+let g = counted("F", 1)
+print(next(g), next(g, -1))
+try:
+    next(g)
+except StopIteration:
+    print("StopIteration")
+print(list(zip([1, 2], [3, 4], [5])), list(zip()))
+
+# Arrow の名前でも捕まる（`EndOfIteration` は `StopIteration` の子・Arrow だけ）
+try:
+    next(g)
+except EndOfIteration as e:
+    print(type(e).__name__, isinstance(e, StopIteration))

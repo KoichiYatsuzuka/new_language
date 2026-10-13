@@ -637,8 +637,70 @@ impl Interpreter {
         Ok(Value::Generator(self.py_iter_state(v)?))
     }
 
+    /// `enumerate(it, start=0)`。**遅延**のジェネレータ（python_builtins_plan.md のタスク 3-5）。
+    ///
+    /// 取り出すたびに元を 1 つ進めるので、ジェネレータと同じに振る舞う: 作った時点では何も取り出さない・
+    /// 途中で抜ければ残りは取り出さない・元と位置を共有する（`enumerate(g)` の後で `next(g)` は続き）・無限の列も使える。
+    /// ⚠ 以前は元を**先に全部取り出して**から組の列を作っていた（無限の列で終わらず、元は空になっていた）。
+    pub(crate) fn py_enumerate(&mut self, iterable: Value, start: i64) -> Result<Value, String> {
+        let src = self.py_eager_iter(iterable)?;
+        self.py_call_lazy("__py_enumerate", vec![src, Value::Int(start)], "enumerate")
+    }
+
+    /// `zip(*iterables)`。**遅延**のジェネレータ（タスク 3-5）。取り出すたびに各列を前から順に 1 つ進め、どれかが
+    /// 尽きたらそこで終わる（それより後ろの列は進めない・CPython と同じ）。
+    /// ⚠ 以前は全部の列を**先に最後まで取り出して**いた（長い方・無限の列も回し切った）。
+    pub(crate) fn py_zip(&mut self, iterables: Vec<Value>) -> Result<Value, String> {
+        let its = iterables.into_iter().map(|v| self.py_eager_iter(v)).collect::<Result<Vec<_>, _>>()?;
+        // 2 つの列（いちばん多い形）は専用の本体（行のリストと `tuple` を作らないぶん倍ほど速い・同じ意味）。
+        if let [a, b] = its.as_slice() {
+            return self.py_call_lazy("__py_zip2", vec![a.clone(), b.clone()], "zip");
+        }
+        self.py_call_lazy(
+            "__py_zip",
+            vec![Value::List(std::rc::Rc::new(std::cell::RefCell::new(its)))],
+            "zip",
+        )
+    }
+
+    /// `next(it)` / `next(it, default)`（タスク 3-5）。尽きていれば `default` を返す（無ければ `EndOfIteration`・
+    /// `StopIteration` の子なので `except StopIteration` で捕まる）。インスタンスは `__next__` を呼び、それが
+    /// `StopIteration`（その子を含む）を出したら `default`。
+    pub(crate) fn py_next(&mut self, it: Value, default: Option<Value>) -> Result<Value, String> {
+        match it {
+            Value::Generator(state) => match self.gen_next(&state)? {
+                Some(v) => Ok(v),
+                None => default.ok_or_else(|| "EndOfIteration: generator is exhausted".to_string()),
+            },
+            v @ Value::Instance(_) => {
+                let r = self.eval_method_call_evaled(v, "__next__", vec![]);
+                match (r, default) {
+                    (Err(e), Some(d)) if self.is_stop_iteration(&e) => Ok(d),
+                    (r, _) => r,
+                }
+            }
+            other => Err(format!("TypeError: '{}' object is not an iterator", self.type_name(&other))),
+        }
+    }
+
+    /// 誤りが `StopIteration`（その子の `EndOfIteration` を含む）か。送出した例外（`raise StopIteration`）なら
+    /// それを取り除く（`next(it, default)` が受け止めるので）。
+    fn is_stop_iteration(&mut self, e: &str) -> bool {
+        if e == crate::interpreter::RAISE_SENTINEL {
+            let is_stop = matches!(
+                self.current_exception.as_ref().map(|r| &r.exception),
+                Some(Value::Instance(i)) if i.borrow().class.is_a("StopIteration")
+            );
+            if is_stop {
+                self.current_exception = None;
+            }
+            return is_stop;
+        }
+        e.starts_with("EndOfIteration") || e.starts_with("StopIteration")
+    }
+
     /// `map(f, *iterables)`。**遅延**（取り出すたびに `f` を呼ぶ・CPython と同じ）。
-    /// ⚠ 回す値が 2 つ以上のときは `zip` で先にまとめる（短い方で止まるのは同じだが、無限の列は回り切らない）。
+    /// 回す値が 2 つ以上のときは `zip`（遅延・タスク 3-5）で組にしてから呼ぶ。
     pub(crate) fn py_map(&mut self, args: Vec<Value>) -> Result<Value, String> {
         if args.len() < 2 {
             return Err("TypeError: map() must have at least two arguments.".to_string());
@@ -650,7 +712,7 @@ impl Interpreter {
             let src = self.py_eager_iter(rest.into_iter().next().expect("len 1"))?;
             self.py_call_lazy("__py_map", vec![f, src], "map")
         } else {
-            let zipped = self.zip_core(rest)?;
+            let zipped = self.py_zip(rest)?;
             self.py_call_lazy("__py_map_star", vec![f, zipped], "map")
         }
     }
@@ -1007,6 +1069,34 @@ gen __py_iter_call(f, sentinel) -> Any:
     while v != sentinel:
         yield v
         v = f()
+
+gen __py_enumerate(it, start) -> Any:
+    mut i = start
+    for x in it:
+        yield (i, x)
+        i = i + 1
+
+gen __py_zip2(a, b) -> Any:
+    for x in a:
+        mut y = None
+        try:
+            y = next(b)
+        except StopIteration:
+            break
+        yield (x, y)
+
+gen __py_zip(its) -> Any:
+    mut going = len(its) > 0
+    while going:
+        mut row = []
+        for it in its:
+            if going:
+                try:
+                    row.append(next(it))
+                except StopIteration:
+                    going = False
+        if going:
+            yield tuple(row)
 
 gen __py_file_lines(f) -> Any:
     mut line = f.readline()

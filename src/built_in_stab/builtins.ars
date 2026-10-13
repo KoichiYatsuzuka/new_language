@@ -144,8 +144,8 @@ fn zip(let ...: Any):
     """Generator of tuples pairing the elements of any number of iterables (positional only); stops at the shortest."""
     pass
 
-fn next(iterator: Any):
-    """Advance a generator (or an object with `__next__`) and return the next value."""
+fn next(iterator: Any, default: Any = None):
+    """Advance a generator (or an object with `__next__`) and return the next value. When it is exhausted, return default if given (next(it, default)), else raise StopIteration."""
     pass
 
 fn repr(value: Any) -> str:

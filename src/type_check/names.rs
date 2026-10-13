@@ -132,6 +132,10 @@ pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("NotImplementedError", "RuntimeError"),
     ("RecursionError", "RuntimeError"),
     ("StopIteration", "Exception"),
+    // Arrow 独自: 尽きたイテレータの `next()`（`EndOfIteration: generator is exhausted`・`for` が内部で受ける印）。
+    // `StopIteration` の子なので `except StopIteration`（Python の書き方）でも `except EndOfIteration` でも捕まる
+    // （python_builtins_plan.md のタスク 3-5。以前は表に無い名前で、どの `except` も素通りしてプログラムが止まった）。
+    ("EndOfIteration", "StopIteration"),
     ("SyntaxError", "Exception"),
     ("IndentationError", "SyntaxError"),
     ("TabError", "IndentationError"),
