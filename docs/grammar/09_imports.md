@@ -871,13 +871,20 @@ Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 
 | タグ | Arrow 型 | JavaScript 型 |
 |------|----------|---------------|
-| `"i"` | `int` | `number` (整数) |
-| `"f"` | `float` | `number` (小数) |
+| `"i"` | `int` | `number`（安全な整数 = 絶対値 2^53 未満） |
+| `"f"` | `float` | `number`（それ以外。NaN / ±Infinity は文字列 `"NaN"` / `"Infinity"` / `"-Infinity"`） |
 | `"b"` | `bool` | `boolean` |
 | `"s"` | `str` | `string` |
 | `"n"` | `None` | `null` / `undefined` |
-| `"a"` | `List` | `Array` |
-| `"o"` | `List[str]` (`"k=v"` 形式) | `Object` |
+| `"a"` | `list` | `Array` |
+| `"o"` | （エラー） | `Object`。まだ受け取れない（`TypeError`） |
+| `"x"` | （エラー） | 関数・`Symbol`・`BigInt`。受け取れない（`TypeError`） |
+
+JS の数値には整数と小数の区別が無いので、戻り値は `.ars` に書いた型で読みます: `-> float` の関数が `2.0`
+（整数値）を返せば `2.0`、`-> int` の関数が整数値の小数を返せば `int`。`list[float]` などコンテナの要素にも同じ
+規則を当てます。宣言と食い違う値（`-> list[int]` が `[1, "two"]` を返す・小数を `int` で返す）は `FfiTypeError` です。
+引数に渡せるのは数値・文字列・`bool`・`None`・リストで、dict / tuple / set / インスタンスは `TypeError` です
+（以前は JS 側に `null` が届き、オブジェクトの戻り値は `"k=v"` の文字列のリストになっていました）。
 
 ### `list` 操作
 

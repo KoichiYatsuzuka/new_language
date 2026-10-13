@@ -151,7 +151,7 @@ impl TypeChecker {
         body: &[Stmt],
     ) -> std::collections::HashMap<String, InferredType> {
         let prev = self.registry.enter_module_scope(&module.join("."));
-        let mut raw = self.collect_module_types(body);
+        let mut raw = self.collect_module_types(lang, body);
         // Arrow のモジュールは、関数の型をレジストリのシグネチャ（修飾名の型で集めてある）から取る。
         // ⚠ `collect_module_types` は戻り値の型をプリミティブしか読まない（外部言語のスタブ向け）ので、
         //   `fn make() -> Tag` の結果の型が「分からない」になっていた。`enum` もクラスと同じく出す。
@@ -347,6 +347,7 @@ impl TypeChecker {
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
     pub(crate) fn collect_module_types(
         &self,
+        lang: &str,
         body: &[Stmt],
     ) -> std::collections::HashMap<String, InferredType> {
         let mut map = std::collections::HashMap::new();
@@ -361,9 +362,19 @@ impl TypeChecker {
                     );
                 }
                 Stmt::FnDef { name, params, return_type, .. } => {
+                    // ⚠ js-proc の型は利用者が Arrow の構文で書いた `.ars` なので、戻り値の型をそのまま読む
+                    //   （`list[int]` / `Option[str]`・ffi_value_exchange_plan.md 2-3）。以前はプリミティブしか読まず、
+                    //   コンテナを返す関数の型が「分からない」になって、静的な検査も境界の照合も効かなかった。
+                    //   Python のスタブは綴りが Arrow の型と限らない（`List[int]` など）ので従来どおり。
                     let ret = return_type
                         .as_deref()
-                        .map(Self::type_ann_to_inferred)
+                        .map(|t| {
+                            if lang == "js-proc" {
+                                InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                            } else {
+                                Self::type_ann_to_inferred(t)
+                            }
+                        })
                         .unwrap_or(InferredType::Unresolved);
                     // ★ Python の `*args` / `**kwargs` を持つ関数は**引数リストを公開しない**。
                     //

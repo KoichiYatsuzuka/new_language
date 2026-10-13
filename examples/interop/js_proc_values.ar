@@ -1,0 +1,93 @@
+# js_proc_values.ar — import[js-proc] で JS の値を型スタブの宣言どおりに受け渡す（ffi_value_exchange_plan.md 2-3）
+#
+# 以前は次のように黙って違う値になるか、正しいコードが落ちていた（実測・2-3 の直前）:
+#   - `-> float` の関数が `2.0` を返す → FfiTypeError（JS の 2.0 は整数値として届き、float と照合していた）
+#   - `-> list[float]` が `[1.0, 2.5]` を返す → `[1, 2.5]`（コンテナの戻り値は型スタブの型が読まれず照合されなかった）
+#   - NaN / -Infinity → 0.0、int64 に入らない整数 → 0、関数・BigInt → 文字列
+#   - JS のオブジェクト → `"k=v"` の文字列のリスト、dict / tuple / set の引数 → JS に null
+# 今は宣言型で数値を寄せ（int ↔ float・要素へ再帰）、運べない値は TypeError（`except` で捕まえられる）。
+# 宣言と食い違う値は FfiTypeError（js_proc_container_return_error.ar）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 実行には Node.js が要る（型は js_probe.ars、実装は js_probe.js）。
+
+import[js-proc] js_probe as jp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 数値は宣言型で寄せる ──────────────────────────────────────────────────────
+let wf = jp.whole_float()
+check("float declared, JS returns 2.0", wf is float and wf == 2.0)
+check("float declared, JS returns 2.5", jp.half() == 2.5)
+let fl = jp.floats()
+check("list[float]: integral elements become float", fl[0] is float and fl[0] == 1.0 and fl[1] == 2.5)
+check("list[int]", jp.ints() == [1, 2, 3])
+check("list[list[int]]", jp.nested() == [[1, 2], [3]])
+let nan = jp.not_a_number()
+check("NaN stays NaN", nan != nan)
+check("-Infinity stays -Infinity", jp.infinite() < -1.0e308)
+
+# ── 引数 ──────────────────────────────────────────────────────────────────────
+check("list argument", jp.type_of([1, 2]) == "array")
+check("list length in JS", jp.count([1, 2, 3]) == 3)
+check("float argument", (jp.echo(2.5) mustbe float) == 2.5)
+check("string round trip", (jp.echo("日本語") mustbe str) == "日本語")
+check("string from JS", jp.utf8() == "日本語")
+check("undefined is None", jp.nothing() is None)
+
+# ── 運べない値は TypeError（以前は "k=v" / 文字列 / null）───────────────────────
+fn rejected(let label: str, let what: str) -> None:
+    print(label + " TypeError OK: " + what)
+
+mut n = 0
+try:
+    let o = jp.obj()
+    print("unreachable:", o)
+except TypeError as e:
+    n += 1
+    rejected("object return", e.message)
+try:
+    let f = jp.fn_value()
+    print("unreachable:", f)
+except TypeError as e:
+    n += 1
+    rejected("function return", e.message)
+try:
+    let b = jp.big_int()
+    print("unreachable:", b)
+except TypeError as e:
+    n += 1
+    rejected("BigInt return", e.message)
+try:
+    let t = jp.type_of({"a": 1})
+    print("unreachable:", t)
+except TypeError as e:
+    n += 1
+    rejected("dict argument", e.message)
+try:
+    let t = jp.type_of((1, 2))
+    print("unreachable:", t)
+except TypeError as e:
+    n += 1
+    rejected("tuple argument", e.message)
+try:
+    let t = jp.type_of({1, 2})
+    print("unreachable:", t)
+except TypeError as e:
+    n += 1
+    rejected("set argument", e.message)
+check("all 6 rejected", n == 6)
+
+# ── 関数の中・ループの中から ──────────────────────────────────────────────────
+fn total(let k: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < k:
+        acc += jp.whole_float()
+        i += 1
+    return acc
+
+check("float results in a loop", total(3) == 6.0)

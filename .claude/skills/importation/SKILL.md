@@ -571,7 +571,9 @@ pub fn call_function(bridge_key: &str, module_name: &str, fn_name: &str, args: &
 | `Str(s)` | `{"t":"s","v":s}` |
 | `None` | `{"t":"n"}` |
 | `List(items)` | `{"t":"a","v":[...]}` |
-| その他 | `{"t":"n"}` |
+| その他（dict / tuple / set / インスタンス …） | `TypeError`（⚠ 以前は `{"t":"n"}` で JS に `null` が届いた・ffi_value_exchange_plan.md 2-3） |
+
+非有限の float は `{"t":"f","v":"NaN"}` のように文字列で送る（JSON に NaN / ±Infinity は無い）。
 
 **JSON → Arrow** (`decode_result`):
 
@@ -583,7 +585,14 @@ pub fn call_function(bridge_key: &str, module_name: &str, fn_name: &str, args: &
 | `"b"` | `Value::Bool` |
 | `"n"` | `Value::None` |
 | `"a"` | `Value::List` (再帰デコード) |
-| `"o"` | `Value::List` (`"k=v"` 形式の文字列リスト) |
+| `"o"` | `TypeError`（⚠ 以前は `"k=v"` の文字列のリスト。受け渡しはフェーズ 5・5-2） |
+| `"x"` | `TypeError`（関数・Symbol・BigInt。以前は文字列） |
+| 読めない値・知らないタグ | エラー（⚠ 以前は `""` / `0` / 整数） |
+
+JS の数値は整数と小数の区別が無い。ブリッジ（`bridge/js_bridge.cjs`）は安全な整数を `"i"`、それ以外を `"f"` で送り、
+宣言型との差は `ffi_boundary::JavaScriptChecker`（`js_coerce`）が寄せる（`float` 宣言に整数値 → `Float`、`int` 宣言に
+整数値の `Float` → `Int`、コンテナは要素へ再帰）。js-proc の型スタブの戻り値は Arrow の型として読む
+（`collect_module_types`。⚠ 以前はプリミティブだけで、コンテナを返す関数は照合されなかった）。
 
 ### `Value::JsProcFn`
 

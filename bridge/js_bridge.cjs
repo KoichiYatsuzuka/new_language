@@ -9,11 +9,15 @@
 //   Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 //
 // Arg/result type tags:
-//   "i" = int    "f" = float    "b" = bool
+//   "i" = int (a safe integer, |x| <= 2^53 - 1)    "f" = float (any other number)    "b" = bool
 //   "s" = string "n" = null/undefined
-//   "a" = array  "o" = object (encoded as {key: {t,v}, ...})
+//   "a" = array  "o" = object (encoded as {key: {t,v}, ...}; Arrow cannot take it yet, plan 5-2)
+//   NaN / Infinity / -Infinity travel as "f" with the string "NaN" / "Infinity" / "-Infinity" (JSON has no such numbers)
+//   "x" = (result only) a value that cannot be carried (function / symbol / BigInt), with its typeof as the payload.
+//         Arrow raises TypeError for it; these used to become strings silently (ffi_value_exchange_plan.md 2-3).
 
 const net  = require('net');
+const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs   = require('fs');
 
@@ -72,7 +76,12 @@ function encodeValue(val) {
     if (val === null || val === undefined) return { t: 'n' };
     if (typeof val === 'boolean') return { t: 'b', v: val };
     if (typeof val === 'number') {
-        return Number.isInteger(val) ? { t: 'i', v: val } : { t: 'f', v: val };
+        if (Number.isNaN(val)) return { t: 'f', v: 'NaN' };
+        if (!Number.isFinite(val)) return { t: 'f', v: val > 0 ? 'Infinity' : '-Infinity' };
+        // Only safe integers go as "i": beyond 2^53 JSON.stringify prints the shortest round-trip digits
+        // (2**60 -> "1152921504606847000"), which is not the integer the double holds. Those go as "f" and Arrow
+        // turns them back into an exact int when the stub declares int.
+        return Number.isSafeInteger(val) ? { t: 'i', v: val } : { t: 'f', v: val };
     }
     if (typeof val === 'string') return { t: 's', v: val };
     if (Array.isArray(val)) return { t: 'a', v: val.map(encodeValue) };
@@ -81,21 +90,24 @@ function encodeValue(val) {
         for (const [k, v] of Object.entries(val)) obj[k] = encodeValue(v);
         return { t: 'o', v: obj };
     }
-    return { t: 's', v: String(val) };
+    return { t: 'x', v: typeof val };
 }
 
 function decodeArg(a) {
-    if (!a || a.t === 'n') return null;
-    if (a.t === 'b') return Boolean(a.v);
-    if (a.t === 'i' || a.t === 'f') return Number(a.v);
-    if (a.t === 's') return String(a.v);
-    if (a.t === 'a') return (a.v || []).map(decodeArg);
-    if (a.t === 'o') {
-        const obj = {};
-        for (const [k, v] of Object.entries(a.v || {})) obj[k] = decodeArg(v);
-        return obj;
+    if (!a || typeof a.t !== 'string') throw new Error(`argument without a type tag: ${JSON.stringify(a)}`);
+    switch (a.t) {
+        case 'n': return null;
+        case 'b': return Boolean(a.v);
+        case 'i': case 'f': return Number(a.v);   // Number("NaN") / Number("Infinity") work too
+        case 's': return String(a.v);
+        case 'a': return (a.v || []).map(decodeArg);
+        case 'o': {
+            const obj = {};
+            for (const [k, v] of Object.entries(a.v || {})) obj[k] = decodeArg(v);
+            return obj;
+        }
+        default: throw new Error(`unknown argument type tag '${a.t}'`);
     }
-    return null;
 }
 
 // ── Request handler ───────────────────────────────────────────────────────────
@@ -125,9 +137,12 @@ async function handleRequest(req) {
 // ── Named-pipe server ─────────────────────────────────────────────────────────
 const server = net.createServer((socket) => {
     let buf = '';
+    // A multi-byte UTF-8 character can be split across two chunks; StringDecoder keeps the partial bytes
+    // (chunk.toString('utf8') turned each half into U+FFFD).
+    const decoder = new StringDecoder('utf8');
 
     socket.on('data', (chunk) => {
-        buf += chunk.toString('utf8');
+        buf += decoder.write(chunk);
         let nl;
         while ((nl = buf.indexOf('\n')) !== -1) {
             const line = buf.slice(0, nl).trim();

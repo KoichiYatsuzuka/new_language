@@ -41,6 +41,7 @@ $skip = @(
     'debug_demo', 'async_bench', 'async_demo', 'spider_render', 'spider_solitaire',
     'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
     'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
+    'js_proc_values', 'js_proc_container_return_error', 'js_proc_dict_arg_error',
     'importation'
 )
 
@@ -357,26 +358,31 @@ $examples = $categoryDirs | ForEach-Object {
 } | Sort-Object FullName
 
 # 1 プロセスを制限時間つきで走らせて stdout を返す（$null = タイムアウト）。
-# ⚠ stdout/stderr は**非同期で同時に読む**。逐次 ReadToEnd はデッドロックする（#38）。
+# ⚠⚠ 出力は**パイプではなくファイル**へ落とす（skill `vm-pitfalls` §4・compare_outputs.ps1 と同じ）。
+#    js-proc / cs-proc の例題は子プロセス（node など）を起こし、それが arrow.exe より長生きしてパイプの書き込み端を
+#    握る。以前はパイプを `ReadToEndAsync` で読んでいたので、arrow.exe が終わっても `.Result` が**永久に返らず**、
+#    ゲート全体が 7 時間以上止まった（2026-10-13・ffi_value_exchange_plan.md 2-3 の例題で発覚）。
+# ⚠ 読み方は以前と同じコンソールのエンコーディング（パイプの既定）。変えると非 ASCII の出力の比較が変わる。
+#    書き込み側（長生きした子）がファイルを開いたままでも読めるよう、共有モードは ReadWrite。
+$tmpDir = Join-Path $env:TEMP "compare_python_impl_$PID"
+New-Item -ItemType Directory -Force $tmpDir | Out-Null
+function Read-Shared([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+    try { return (New-Object IO.StreamReader($fs, [Console]::OutputEncoding)).ReadToEnd() } finally { $fs.Dispose() }
+}
 function Invoke-Impl {
     param([string]$File, [string]$Arguments, [int]$Limit)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $File
-    $psi.Arguments = $Arguments
-    $psi.WorkingDirectory = $repo
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $o = $p.StandardOutput.ReadToEndAsync()
-    $e = $p.StandardError.ReadToEndAsync()
+    $o = Join-Path $tmpDir ([Guid]::NewGuid().ToString() + '.out')
+    $e = Join-Path $tmpDir ([Guid]::NewGuid().ToString() + '.err')
+    $p = Start-Process -FilePath $File -ArgumentList $Arguments -WorkingDirectory $repo -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o -RedirectStandardError $e
     if (-not $p.WaitForExit($Limit * 1000)) {
-        try { $p.Kill() } catch {}
+        # 子プロセスごと止める（`Kill()` は arrow.exe だけで、node などが残る）
+        & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
         return $null
     }
-    [void]$e.Result
-    return $o.Result
+    return (Read-Shared $o)
 }
 
 function Normalize([string]$s) {
@@ -451,6 +457,7 @@ if ($ShowSkipped -and $skipRows.Count -gt 0) {
 }
 
 Write-Host ''
+Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
 if ($diff -eq 0 -and $timeout -eq 0) {
     Write-Host 'PYTHON-DIFF: clean' -ForegroundColor Green
     exit 0

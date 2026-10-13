@@ -72,7 +72,9 @@ foreach ($f in $examples) {
     }
     $code = $proc.ExitCode
     if ($code -ne 0) {
-        $err = $errTask.Result
+        # ⚠ 子プロセス（js-proc の node など）が arrow.exe より長生きすると stderr のパイプが閉じず、`.Result` が
+        #   永久に返らない（2026-10-13 に compare_python_impl.ps1 で 7 時間止まった）。待つのは 10 秒まで。
+        $err = if ($errTask.Wait(10000)) { $errTask.Result } else { '(stderr is held open by a child process)' }
         $line = ($err -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join ' | '
         $line = ($line -replace '\x1b\[[0-9;]*m', '') -replace '\s+', ' '
         Write-Host "FAIL`t$($f.Name)`t$($line.Trim())"

@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1・2-2 完了）
+- 状態: フェーズ 1 完了（1-1〜1-6・§5）。フェーズ 2 着手（2-1〜2-3 完了）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
 - 改訂: 2026-10-12 U-10・U-11 を決定（D-14・D-15）。未決事項なし
@@ -193,7 +193,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **1-6** | （1-3 で発見・2026-10-13 利用者が採用）C の整数型の幅と符号を区別する。`char` / `short` / `int` / `unsigned` / `uint32_t` などを `CType::Int`（符号付き 4 バイト）にまとめていて、`unsigned` の 2^31 以上が負になる・`unsigned char` の戻り値でレジスタの上位のごみまで読む・`short*` などの書き込みポインタが 4 バイト書く、などが起きていた（構造体のフィールドだけは 1-3 で「レイアウト不明」として止めていた）。Windows の `long`（4 バイト）・`bool`（1 バイト）も同じ | 1-3 | 中 |
 | **2-1** | ✅ C#: 配列・`List`・`Dictionary` の戻り値と、リストの引数をエラーにする。スタブにあるクラスを返すメソッドは `CsObject` に包む。`str` 以外の注釈（`str \| None` など）の戻り値を正しく扱う（C# の nullable 注釈を読む・§5） | 1-1 | 中 |
 | **2-2** | ✅ cs-proc ホスト（`ArrowPipeHost.cs`）の受信を UTF-8 で復号する | なし | 小 |
-| **2-3** | js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
+| **2-3** | ✅ js-proc: オブジェクトの戻り値（`"k=v"`）と、dict / tuple / set / インスタンスの引数をエラーにする。境界の型照合で float 宣言への整数値を通し、コンテナ宣言の戻り値も照合する | なし | 小 |
 | **2-4** | js-proc の node プロセスが終了時に残る問題を直す | なし | 小 |
 | **2-5** | rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
 | **2-6** | py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
@@ -435,6 +435,42 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート（基準 `4c39493`）: `scan_examples`・`force_gate` は基準と同じ。`compare_python_impl` は新しい 1 本を既知の差分に登録して
   clean。`compare_outputs` 416/416・`compare_import_paths` 13/13（Rust は変えていないので両方の exe が直したホストを使う。
   直す前の値は上の実測）
+
+
+### 2-3 実装
+
+- **境界の照合**（`ffi_boundary::JavaScriptChecker`）: 「数値は常に Float で届く」前提で書かれていたが、ブリッジは整数値を
+  `"i"` で送っていた。実際の表現に合わせて書き直した（`js_coerce`）: `float` 宣言に整数値 → `Float`（JS の値はもともと f64
+  なので正確）、`int` 宣言に整数値の `Float` → `Int`（int64 に入るときだけ）、`list[float]` / `list[list[int]]` /
+  `Option[float]` は要素・選択肢へ再帰。⚠ 以前は `-> float` の関数が `2.0` を返すと FfiTypeError になっていた
+- **コンテナの戻り値の照合**: js-proc の型スタブ（`.ars`・Arrow の構文）の戻り値を Arrow の型として読むようにした
+  （`collect_module_types` に言語を渡す）。⚠ 以前はプリミティブしか読まず、`-> list[int]` の関数の型は「分からない」になり、
+  静的な検査も境界の照合も効かなかった（`[1, "two"]` が `list[int]` の変数に入った）。Python のスタブは綴りが Arrow の型と
+  限らないので従来どおり
+- **運べない値はエラー**（`js_proc_runtime.rs`）: dict / tuple / set / インスタンスの引数は TypeError（以前は JS に `null`）。
+  オブジェクトの戻り値（`"o"`）・関数 / Symbol / BigInt（新しいタグ `"x"`）は TypeError（以前は `"k=v"` の文字列のリスト・
+  文字列）。読めない値・知らないタグはエラー（以前は `""` / `0` / 整数）。TypeError は `except` で捕まえられる
+- **ブリッジ**（`bridge/js_bridge.cjs`）: 整数は安全な整数（2^53 未満）だけ `"i"`、それ以外は `"f"`（`JSON.stringify` は
+  2^53 以上で最短の往復表現を出し、double の持つ整数と違う桁になる）。NaN / ±Infinity は文字列で送る（以前は JSON の
+  `null` → 0.0）。知らない引数のタグはエラー。受信を `StringDecoder` で復号する（チャンクの境目で UTF-8 が割れると壊れていた）
+- 実測した以前の症状（`81b5688`）: `whole_float()` → FfiTypeError、`floats()`（`list[float]`）→ `[1, 2.5]`、
+  `mixed()`（`list[int]`）→ `[1, 'two']`、`1e20`（`int`）→ 0、NaN / -Infinity → 0.0、オブジェクト → `['a=1', 'b=x']`、関数 →
+  文字列、`type_of({"a": 1})` / tuple / set → `"null"`
+- 検査用: `examples/interop/js_probe.js` / `js_probe.ars`（1-1 では作っていなかった）
+- 例題: `js_proc_values.ar`（期待値と違えば raise。運べない値 6 種を `except TypeError` で捕まえる）・
+  `js_proc_container_return_error.ar`（FfiTypeError）・`js_proc_dict_arg_error.ar`（TypeError）
+- 単体テスト: `ffi_boundary::tests`（int → float・要素への再帰・`Option[float]`・2^63 以上と NaN の拒否）
+- 文書: `docs/grammar/09_imports.md` の js-proc の型タグ、skill `importation` の js-proc の型エンコーディング
+- ⚠ 残したもの: FfiTypeError は例外クラスとして登録されておらず `except` で捕まえられない（既存）。node のプロセスが
+  実行ごとに残る（2-4）
+- ⚠ **ゲートが 7 時間止まった**: `compare_python_impl.ps1` が子プロセスの出力をパイプで読んでいて、新しい js-proc の例題が
+  残した node（2-4）がパイプを握ったまま `.Result` が返らなかった。出力をファイルへ落とすよう直し（`compare_outputs.ps1` と
+  同じ・skill `vm-pitfalls` §4）、制限時間を超えたら子プロセスごと止める。`scan_examples.ps1` の stderr の待ちも 10 秒までにした。
+  新しい js-proc の例題は既存の js-proc の例題と同じく参照実装との比較から外した（外部プロセスに依存）
+- ゲート（基準 `81b5688`・各ゲートに制限時間を付けた実行）: `scan_examples`・`force_gate`（`VmForceError` 0）は基準と同じ。
+  `compare_python_impl` は clean（170/170。新しい 3 本は外部プロセス依存として比較から外した）。`compare_outputs` の差 3 本は
+  新しい例題（基準では `whole_float()` の FfiTypeError などで違う）、負の対照 419/419。`compare_import_paths` 13/13。
+  `compare_wasm_frontend` 506/506・`type_obligations` 退行なし・`stale_doc_refs` 0・`cargo test` 1083 件すべて成功
 
 ---
 
