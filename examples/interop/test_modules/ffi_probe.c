@@ -81,3 +81,39 @@ int fp_count_int(int v) { g_calls++; return v; }
 int fp_count_flag(bool b) { g_calls++; return b ? 1 : 0; }
 int fp_count_double(double d) { g_calls++; return (int)d; }
 int fp_call_count(void) { return g_calls; }
+
+static int g_released = 0;
+static void fp_release_squares(void* ctx, uint64_t address) { (void)ctx; g_released++; free((void*)(uintptr_t)address); }
+ArPtrProtocol fp_squares(int n) {
+    ArPtrProtocol p = { 0, "int32", 0, 0, 0, fp_release_squares, NULL };
+    if (n <= 0) return p;
+    int32_t* xs = (int32_t*)malloc(sizeof(int32_t) * (size_t)n);
+    if (!xs) return p;
+    for (int i = 0; i < n; i++) xs[i] = i * i;
+    p.address = (uint64_t)(uintptr_t)xs;
+    p.length = n;
+    return p;
+}
+static const char g_static_text[] = "hello";
+ArPtrProtocol fp_static_text(void) {
+    ArPtrProtocol p = { (uint64_t)(uintptr_t)g_static_text, "uint8", AR_PTR_STATIC | AR_PTR_NUL_TERMINATED | AR_PTR_CONST,
+                        0, -1, NULL, NULL };
+    return p;
+}
+ArPtrProtocol fp_no_release(void) {
+    ArPtrProtocol p = { (uint64_t)(uintptr_t)g_static_text, "uint8", 0, 0, 5, NULL, NULL };
+    return p;
+}
+int fp_released(void) { return g_released; }
+int fp_protocol_sum(const ArPtrProtocol* p) {
+    if (!p || !p->elem_type || strcmp(p->elem_type, "int32") != 0) return -1;
+    const int32_t* xs = (const int32_t*)(uintptr_t)p->address;
+    int s = 0;
+    for (int64_t i = 0; i < p->length; i++) s += xs[i];
+    return s;
+}
+void fp_protocol_free(ArPtrProtocol* p) {
+    if (!p || p->address == 0) return;
+    if (p->release) p->release(p->release_ctx, p->address);
+    p->address = 0;
+}

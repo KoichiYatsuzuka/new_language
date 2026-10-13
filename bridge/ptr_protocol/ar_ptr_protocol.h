@@ -1,37 +1,43 @@
 /*
- * ar_ptr_protocol.h — Arrow とポインタを受け渡す約束（PtrProtocol・ffi_value_exchange_plan.md 4-1・D-1）
+ * ar_ptr_protocol.h - how C/C++ passes pointers to and from Arrow (PtrProtocol).
+ * (implementation_plans/ffi_value_exchange_plan.md, tasks 4-1 / D-1)
  *
- * 配列・文字データ・所有権のあるメモリを Arrow と受け渡すときは、生のポインタではなくこの構造体で渡す。
- * 長さ・要素の型・解放の責任を、ここにだけ書く（D-7。SAL 注釈や補足の宣言は読まない）。
- * 仕様: docs/ptr_protocol.md（C# の写しは ArPtrProtocol.cs。値は 3 つで同じにすること）
+ * Pass arrays, character data and owned memory as this struct instead of a raw pointer.
+ * The length, the element type and who releases the memory are written here and nowhere else
+ * (Arrow does not read SAL annotations or other side declarations).
+ * Spec: docs/ptr_protocol.md. The C# mirror is ArPtrProtocol.cs; keep the three in sync.
+ *
+ * NOTE: keep this file ASCII-only. MSVC reads sources as CP932 by default, and a UTF-8
+ * comment can swallow the next line of a header that includes this one.
  *
  *   ArPtrProtocol p;
- *   p.address     = (uint64_t)(uintptr_t)data;   // 先頭のアドレス（NULL は 0）
- *   p.elem_type   = "int32";                     // 要素の型名（静的な文字列・下の表）
- *   p.flags       = 0;                           // AR_PTR_CONST など
+ *   p.address     = (uint64_t)(uintptr_t)data;   // first element (NULL is 0)
+ *   p.elem_type   = "int32";                     // element type name (a static string, table below)
+ *   p.flags       = 0;                           // AR_PTR_CONST, ...
  *   p._reserved   = 0;
- *   p.length      = n;                           // 要素の数（単体は 1）
- *   p.release     = my_free;                     // Arrow が使い終わったら 1 回だけ呼ぶ
- *   p.release_ctx = NULL;                        // release に渡す情報
+ *   p.length      = n;                           // number of elements (1 for a single value)
+ *   p.release     = my_free;                     // Arrow calls it exactly once when done
+ *   p.release_ctx = NULL;                        // passed back to release
  *
- * 要素の型名（elem_type）→ Arrow の型:
- *   "int8" "int16" "int32" "int64" "uint8" "uint16" "uint32" "uint64"  → Ptr[int8] … （to_list() は list[int]）
- *   "float32" "float64"                                                 → Ptr[float32] …（to_list() は list[float]）
- *   "uint8"（char のバイト列）・"uint16"（wchar_t / char16_t の UTF-16）  → to_bytes() で bytes にできる
- *   ヘッダの構造体の名前（"Point" など）                                  → Ptr[Point]
- *   "void"                                                              → Ptr[void]（展開できない）
- *   ⚠ 知らない名前は Arrow 側でエラーになる（D-4）。bool は使わない（C# の UnmanagedCallersOnly と
- *     Arrow の C 互換レイアウトに載らない）。真偽値の配列は uint8 にする。
+ * Element type names (elem_type) -> Arrow type:
+ *   "int8" "int16" "int32" "int64" "uint8" "uint16" "uint32" "uint64" -> Ptr[int8] ... (to_list() gives list[int])
+ *   "float32" "float64"                                               -> Ptr[float32] ... (to_list() gives list[float])
+ *   "uint8" (char bytes), "uint16" (wchar_t / char16_t UTF-16)         -> to_bytes() gives bytes
+ *   a struct name from the header ("Point")                           -> Ptr[Point]
+ *   "void"                                                            -> Ptr[void] (cannot be expanded)
+ *   An unknown name is an error on the Arrow side. Do not use bool (it does not fit C#'s
+ *   UnmanagedCallersOnly nor Arrow's C-compatible layout); use uint8 for arrays of flags.
  *
- * 解放の約束（D-15）:
- *   - Arrow は最後の参照がなくなったとき（または p.release()）に release(release_ctx, address) を 1 回だけ呼ぶ。
- *     それまで address の指すメモリは有効で、中身も変わらないこと（Arrow はいつでも to_list() で読む）
- *   - release が NULL でよいのは flags に AR_PTR_STATIC があるときだけ（DLL のアンロードまで有効で中身も
- *     変わらないメモリ）。STATIC の無い NULL は Arrow 側でエラー
- *   - 次の呼び出しで上書きされる一時的なバッファを渡してはいけない（コピーして release を付けて渡す）
- *   - Arrow から C へ渡したもの（引数）は、その呼び出しの間だけ有効。保持したいなら C の側でコピーする
- *   - C の関数の側で解放するときは ArPtrProtocol* で受け取り、解放したら address を 0 に書き戻す。
- *     Arrow は呼び出しの後でそれを見て、その Ptr を使えなくする
+ * Releasing:
+ *   - Arrow calls release(release_ctx, address) exactly once, when the last reference goes away
+ *     (or on p.release()). Until then the memory must stay valid and unchanged: Arrow may read it
+ *     with to_list() at any time.
+ *   - release may be NULL only with AR_PTR_STATIC (valid and unchanged until the DLL is unloaded).
+ *     A NULL release without STATIC is an error on the Arrow side.
+ *   - Never pass a temporary buffer that the next call overwrites; copy it and attach a release.
+ *   - What Arrow passes to C (arguments) is valid only during the call; copy it to keep it.
+ *   - To release on the C side, take ArPtrProtocol* and write address = 0 after freeing.
+ *     Arrow checks it after the call and makes that Ptr unusable (release is not called).
  */
 #ifndef AR_PTR_PROTOCOL_H
 #define AR_PTR_PROTOCOL_H
@@ -42,25 +48,25 @@
 extern "C" {
 #endif
 
-/* flags（ビットの組み合わせ）。⚠ src/interpreter/value/ptr.rs の PTR_FLAG_* と同じ値 */
-#define AR_PTR_CONST          1u  /* Arrow から書き換えない（読むだけのメモリ） */
-#define AR_PTR_NUL_TERMINATED 2u  /* 文字データが NUL で終わる（length は NUL を含まない数か、分からなければ -1） */
-#define AR_PTR_STATIC         4u  /* DLL のアンロードまで有効で中身も変わらない（release は NULL でよい） */
+/* flags (bit set). Same values as PTR_FLAG_* in src/interpreter/value/ptr.rs */
+#define AR_PTR_CONST          1u  /* Arrow does not write to it (read-only memory) */
+#define AR_PTR_NUL_TERMINATED 2u  /* character data ends with NUL (length excludes it, or -1 if unknown) */
+#define AR_PTR_STATIC         4u  /* valid and unchanged until the DLL is unloaded (release may be NULL) */
 
-/* 解放関数。ctx は release_ctx、address は渡したときの address */
+/* Release function. ctx is release_ctx, address is the address that was passed. */
 typedef void (*ArPtrRelease)(void* ctx, uint64_t address);
 
 typedef struct ArPtrProtocol {
-    uint64_t     address;     /* 先頭のアドレス（NULL は 0） */
-    const char*  elem_type;   /* 要素の型名（静的な文字列・上の表） */
-    uint32_t     flags;       /* AR_PTR_* の組み合わせ */
-    uint32_t     _reserved;   /* 0 にする（並びを C# と揃えるための明示の詰め物） */
-    int64_t      length;      /* 要素の数（単体は 1。NUL 終端で数えない場合は -1） */
-    ArPtrRelease release;     /* 解放関数（NULL は AR_PTR_STATIC のときだけ） */
-    void*        release_ctx; /* 解放に要る情報（ヒープ・GCHandle・vector の本体など） */
+    uint64_t     address;     /* first element (NULL is 0) */
+    const char*  elem_type;   /* element type name (a static string, table above) */
+    uint32_t     flags;       /* AR_PTR_* */
+    uint32_t     _reserved;   /* 0 (explicit padding so that C# lays it out the same way) */
+    int64_t      length;      /* number of elements (1 for a single value; -1 = count up to NUL) */
+    ArPtrRelease release;     /* release function (NULL only with AR_PTR_STATIC) */
+    void*        release_ctx; /* what release needs (heap, GCHandle, the owning vector, ...) */
 } ArPtrProtocol;
 
-/* 64 ビットの環境で 48 バイト。Arrow（Rust）と C# の写しが同じ並びであることを前提にしている */
+/* 48 bytes on 64-bit targets. Arrow (Rust) and the C# mirror rely on the same layout. */
 typedef char ar_ptr_protocol_size_check[(sizeof(void*) != 8 || sizeof(ArPtrProtocol) == 48) ? 1 : -1];
 
 #ifdef __cplusplus

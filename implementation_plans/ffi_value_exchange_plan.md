@@ -203,7 +203,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **3-2** | ✅ 値の種類 `Ptr` を足す（D-3・§5）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | ✅ 型検査（§5）: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
 | **4-1** | ✅（§5）`PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
-| **4-2** | ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
+| **4-2** | ✅（§5）ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | 生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
 | **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
@@ -682,6 +682,29 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート（基準 `1132ded`・制限時間つき）: 実行時の挙動は変えていない（定数・型を足しただけ）。`compare_outputs` 433/433 一致
   （負の対照 433/433）・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（172/172）・
   `compare_import_paths` 13/13・`stale_doc_refs` 0 件。`cargo test` 1123 件・拡張の wasm クレートの 694 件が通る
+
+### 4-2 実装
+
+- `CType::PtrProtocol { by_pointer, mutable }`（`src/cpp_header/types.rs`）。`ArPtrProtocol`（値）・`ArPtrProtocol*`・
+  `const ArPtrProtocol*`（`struct` 付きも）を、引数・戻り値・構造体のフィールドで認識する。⚠ ヘッダ解析は `#include` を
+  辿らないので**名前で**見分ける（利用者の対応表の後・typedef の表の前）。共有ヘッダの定義そのもの（取り込んだ・写した
+  もの）は Arrow のクラスにしない
+- 受け渡しは 4-4・4-5・4-7 で入るので、使う関数は理由つきで使えない（`unsupported_reason`。例:
+  ``it returns `ArPtrProtocol`, which Arrow cannot receive yet``）。以前は知らない構造体として扱われ、「レイアウトが
+  分からない」という理由で止まっていた。ポインタを返す（`ArPtrProtocol*`）関数は今後も使えない（値で返す）
+- 型スタブ: 戻り値（値）は `Option[Ptr[void]]`（要素の型は実行時に届くので `p mustbe Ptr[T]` で照合して戻す・
+  D-10・D-12）、ポインタの引数は `Ptr[void]`。値・`const` ポインタの引数（Arrow → C）の型は 4-7 で決める
+- `ArPtrProtocol` のフィールドを持つ構造体は正確なレイアウトにならない（展開は 4-6）
+- ⚠ 4-1 の共有ヘッダを ASCII にした（英語のコメント）。利用者の C のコードに取り込まれ、MSVC は既定で CP932 として
+  読むので、UTF-8 のコメントが次の行を飲み込みうる（`ffi_probe.h` の注意と同じ）。単体テストが ASCII を見る
+- 検査用の `ffi_probe` に `ArPtrProtocol` を受け渡す関数を足した（`fp_squares` / `fp_static_text` / `fp_no_release` /
+  `fp_released` / `fp_protocol_sum` / `fp_protocol_free`。使うのは 4-4・4-5・4-7）。`ffi_probe.h` が共有ヘッダを取り込み、
+  cpp-dll・cpp-lib（シム）とも既存の例題が通ることを確かめた
+- 例題: `interop/cpp_ptr_protocol_pending_error.ar`（静的エラー 2 件。⚠ 4-5 で正例に置き換える）。単体テスト 1 本
+- ゲート（基準 `d21894c`・制限時間つき）: `compare_outputs` の差は新しい例題だけ（負の対照 434/434）・`scan_examples`（基準と
+  同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（172/172・新しい例題は既知の差分）・`compare_import_paths`
+  13/13・`compare_wasm_frontend` 521/521・`type_obligations` 退行なし・`check_ptr_protocol` 一致・`stale_doc_refs` 0 件。
+  `cargo test` 1124 件が通る。VSIX を作り直した
 
 ---
 

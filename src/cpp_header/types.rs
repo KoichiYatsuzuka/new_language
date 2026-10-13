@@ -64,6 +64,13 @@ pub enum CType {
     /// Function pointer parameter (e.g. `void (*callback)(int)`).
     /// Passed as an opaque `void*`; maps to tl `function`.
     FnPtr,
+    /// `ArPtrProtocol`（`bridge/ptr_protocol/ar_ptr_protocol.h`・ffi_value_exchange_plan.md 4-1・4-2）。配列・文字データ・
+    /// 所有権のあるメモリを、長さ・要素の型名・解放の責任と一緒に受け渡す。
+    /// `by_pointer` = `ArPtrProtocol*`、`mutable` = ポインタに `const` が無い（C の側で解放して `address` を 0 に書き戻せる）。
+    /// ⚠ ヘッダ解析は `#include` を辿らないので、**名前で**見分ける（`parse_c_type_str`）。
+    /// ⚠ 受け渡しは 4-4（`ArPtrProtocol*` の引数）・4-5（戻り値）・4-7（Arrow → C の引数）で入る。それまでは
+    ///   `CFnSig::unsupported_reason` が止める（中継コードの生成にも型スタブにも来ない）。
+    PtrProtocol { by_pointer: bool, mutable: bool },
 }
 
 impl CType {
@@ -106,6 +113,9 @@ impl CType {
             CType::ByValueStruct { type_name } => type_name.clone(),
             // Function pointers: the shim receives an opaque void*
             CType::FnPtr => "void*".to_string(),
+            CType::PtrProtocol { by_pointer: false, .. } => "ArPtrProtocol".to_string(),
+            CType::PtrProtocol { by_pointer: true, mutable: true } => "ArPtrProtocol*".to_string(),
+            CType::PtrProtocol { by_pointer: true, mutable: false } => "const ArPtrProtocol*".to_string(),
         }
     }
 
@@ -186,6 +196,13 @@ impl CFnSig {
                 Some(format!("it returns a pointer to struct `{type_name}`"))
             }
             CType::FnPtr => Some("it returns a function pointer".to_string()),
+            // ⚠ 受け取り（`Option[Ptr[T]]` にする）は 4-5 で入る（4-2 では認識だけ）
+            CType::PtrProtocol { by_pointer: false, .. } => {
+                Some("it returns `ArPtrProtocol`, which Arrow cannot receive yet".to_string())
+            }
+            CType::PtrProtocol { by_pointer: true, .. } => Some(
+                "it returns a pointer to `ArPtrProtocol` (return the struct itself by value)".to_string(),
+            ),
             CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
                 "it returns struct `{type_name}` by value, and its exact C layout is not known"
             )),
@@ -203,6 +220,10 @@ impl CFnSig {
                 )),
                 CType::VoidPtr => Some(format!("parameter {p} is `void*`")),
                 CType::FnPtr => Some(format!("parameter {p} is a function pointer (callback)")),
+                // ⚠ 受け渡しは 4-4（`ArPtrProtocol*`）・4-7（値・`const ArPtrProtocol*`）で入る（4-2 では認識だけ）
+                CType::PtrProtocol { .. } => Some(format!(
+                    "parameter {p} is `ArPtrProtocol`, which Arrow cannot pass yet"
+                )),
                 CType::Ptr { mutable: false, .. } => Some(format!(
                     "parameter {p} is a `const` pointer to a number, which may be a single value or an array"
                 )),

@@ -154,6 +154,8 @@ pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
         | CType::Ptr { .. } => Some("*mut i8"),
         // Nested struct-by-value or function pointer → not representable
         CType::ByValueStruct { .. } | CType::FnPtr => None,
+        // `ArPtrProtocol` のフィールドは構造体の展開（4-6）で扱う。それまでは写しを作らない
+        CType::PtrProtocol { .. } => None,
         CType::Void => None,
     }
 }

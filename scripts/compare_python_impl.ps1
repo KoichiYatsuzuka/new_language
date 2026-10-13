@@ -82,6 +82,7 @@ $knownDiff = @{
     'bytes_basics'                   = 'Rust: 組み込み型 bytes（ffi_value_exchange_plan.md 3-1）。py: bytes も str.encode も無く NameError（⇒ 7-10）'
     'bytes_decode_error'             = 'Rust: 文字コードに合わない decode は ValueError（3-1）。py: str.encode が無く AttributeError（⇒ 7-10）'
     'bytes_str_mix_error'            = 'Rust: bytes と str を混ぜると StaticTypeError（3-1）。py: str.encode が無く実行時の AttributeError（⇒ 7-10）'
+    'cpp_ptr_protocol_pending_error' = 'Rust: ArPtrProtocol を受け渡す C の関数を使うと理由つきの StaticTypeError（ffi_value_exchange_plan.md 4-2）。py: その関数を中継しないので AttributeError を stdout に出す'
     'cpp_native_arg_check'           = 'Rust: 素の function 型を通して C の数値・bool の引数へ数値でない値を渡すと TypeError、C の関数は呼ばない（ffi_value_exchange_plan.md 7-12）。py: function 型の仮引数へ具体的な関数型を渡せず StaticTypeError'
     'cpp_native_arg_error'           = 'Rust: C の int の引数へ str を渡すと TypeError（7-12）。py: function 型の仮引数へ具体的な関数型を渡せず StaticTypeError'
     'ptr_types'                      = 'Rust: Ptr[T] の型（ffi_value_exchange_plan.md 3-3）。py: Ptr[int32] の注釈を構文解析できず ParseError（⇒ 7-10）'

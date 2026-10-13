@@ -38,7 +38,10 @@ pub fn parse_header_full(
         }
     }
 
-    let structs = parse_struct_bodies(&stripped, custom, typedefs);
+    let mut structs = parse_struct_bodies(&stripped, custom, typedefs);
+    // 共有ヘッダの `ArPtrProtocol` そのもの（取り込んだヘッダ・写した定義）は Arrow のクラスにしない。
+    // 受け渡しは型として扱う（`CType::PtrProtocol`・4-2）
+    structs.retain(|d| d.name != "ArPtrProtocol");
     (sigs, structs)
 }
 
@@ -307,3 +310,39 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod ptr_protocol_tests {
+    use super::*;
+
+    /// `ArPtrProtocol` を引数・戻り値・構造体のフィールドで認識する（ffi_value_exchange_plan.md 4-2）。
+    /// 受け渡しはまだ無いので、使う関数は理由つきで使えない。共有ヘッダの定義を写してあってもクラスにしない。
+    #[test]
+    fn recognises_ptr_protocol() {
+        let header = r#"
+            #include "ar_ptr_protocol.h"
+            typedef struct ArPtrProtocol { uint64_t address; const char* elem_type; } ArPtrProtocol;
+            ArPtrProtocol make_squares(int n);
+            void free_it(ArPtrProtocol* p);
+            int count(const struct ArPtrProtocol* p);
+            int pass(ArPtrProtocol p);
+            ArPtrProtocol* bad(void);
+            typedef struct { int n; ArPtrProtocol data; } Holder;
+        "#;
+        let (sigs, structs) = parse_header_full(header, &HashMap::new(), &HashMap::new());
+        let get = |name: &str| sigs.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(get("make_squares").ret, CType::PtrProtocol { by_pointer: false, mutable: false });
+        assert_eq!(get("free_it").params[0].1, CType::PtrProtocol { by_pointer: true, mutable: true });
+        assert_eq!(get("count").params[0].1, CType::PtrProtocol { by_pointer: true, mutable: false });
+        assert_eq!(get("pass").params[0].1, CType::PtrProtocol { by_pointer: false, mutable: false });
+        assert_eq!(get("bad").ret, CType::PtrProtocol { by_pointer: true, mutable: true });
+        for name in ["make_squares", "free_it", "count", "pass", "bad"] {
+            let why = get(name).unsupported_reason(&structs).unwrap_or_default();
+            assert!(why.contains("ArPtrProtocol"), "{name}: {why}");
+        }
+        assert!(structs.iter().all(|d| d.name != "ArPtrProtocol"), "the protocol itself is not a class");
+        let holder = structs.iter().find(|d| d.name == "Holder").expect("Holder");
+        assert_eq!(holder.fields[1].1, CType::PtrProtocol { by_pointer: false, mutable: false });
+        assert!(!holder.has_exact_layout(), "a struct with an ArPtrProtocol field is expanded in 4-6");
+    }
+}

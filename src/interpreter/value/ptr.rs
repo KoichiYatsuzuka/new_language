@@ -492,6 +492,9 @@ mod tests {
     fn protocol_files_agree() {
         let header = include_str!("../../../bridge/ptr_protocol/ar_ptr_protocol.h");
         let cs = include_str!("../../../bridge/ptr_protocol/ArPtrProtocol.cs");
+        // 利用者の C のコードに取り込まれるので ASCII だけ（MSVC は既定で CP932 として読み、UTF-8 のコメントが
+        // 次の行を飲み込みうる・4-2 で直した）
+        assert!(header.is_ascii(), "ar_ptr_protocol.h must be ASCII-only");
         let c_define = |name: &str| -> u32 {
             let line = header.lines().find(|l| l.starts_with(&format!("#define {name} "))).expect(name);
             line.split_whitespace().nth(2).unwrap().trim_end_matches('u').parse().unwrap()

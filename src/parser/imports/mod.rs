@@ -51,6 +51,11 @@ pub(crate) fn ctype_to_tl_str(ct: &crate::cpp_header::CType) -> String {
         CType::Ptr { inner, .. } => ctype_to_tl_str(inner),
         CType::OpaqueStructPtr { .. } | CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),
+        // `ArPtrProtocol`（4-2）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
+        // 照合して戻す・D-10・D-12）。ポインタの引数は `Ptr[void]`（どの `Ptr` も渡せる）。
+        // ⚠ 値・`const` ポインタの引数（Arrow → C の `list` など）の型は 4-7 で決める。今は関数ごと使えない
+        CType::PtrProtocol { by_pointer: false, .. } => "Option[Ptr[void]]".to_string(),
+        CType::PtrProtocol { by_pointer: true, .. } => "Ptr[void]".to_string(),
     }
 }
 

@@ -1,4 +1,4 @@
-#stamp 2fe8db62f7a5fd24
+#stamp 7b56128aa8badbe5
 fp_len
 fp_make_rec
 fp_rec_score_val
@@ -29,3 +29,4 @@ fp_count_int
 fp_count_flag
 fp_count_double
 fp_call_count
+fp_released

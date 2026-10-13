@@ -1,0 +1,12 @@
+# cpp_ptr_protocol_pending_error.ar — ArPtrProtocol を受け渡す C の関数はまだ呼べない（負例・ffi_value_exchange_plan.md 4-2）
+#
+# ヘッダ解析は ArPtrProtocol（bridge/ptr_protocol/ar_ptr_protocol.h・仕様は docs/ptr_protocol.md）を引数・戻り値・
+# 構造体のフィールドで認識する。受け渡しは 4-4・4-5・4-7 で入るので、今は使った箇所が理由つきの静的エラーになる
+# （以前は ArPtrProtocol を知らない構造体として扱い、レイアウトが分からないという理由で止めていた）。
+# ⚠ 4-5 で受け取りが入ったら、この例題は正例に置き換える。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let p = fp.fp_squares(3)
+print("unreachable:", fp.fp_protocol_sum(p))

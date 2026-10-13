@@ -65,6 +65,10 @@ impl CType {
             CType::CharPtr { wide: true, .. } => "*const u16".to_string(),
             CType::OpaqueStructPtr { .. } => "*mut i8".to_string(),
             CType::FnPtr => "*mut i8".to_string(),
+            // 受け渡しは 4-4・4-5・4-7。それまで `CFnSig::unsupported_reason` が関数ごと止める（4-2）
+            CType::PtrProtocol { .. } => {
+                panic!("ArPtrProtocol reached the wrapper generator (CFnSig::unsupported_reason)")
+            }
             // 値渡しの構造体は `_Struct_{name}` を値のまま使う（`gen_dll_fn` / `gen_dll_fn_typed` が直接書く・1-3）
             CType::ByValueStruct { .. } => panic!("by-value structs use their `_Struct_` mirror (gen_dll_fn)"),
         }
@@ -96,6 +100,9 @@ impl CType {
             }
             CType::ByValueStruct { .. } => panic!("by-value structs are built field by field (gen_dll_fn, 1-3)"),
             CType::Ptr { .. } => panic!("use gen_ptr_init for pointer parameters"),
+            CType::PtrProtocol { .. } => {
+                panic!("ArPtrProtocol parameter reached the wrapper generator (CFnSig::unsupported_reason)")
+            }
         }
     }
 
@@ -121,6 +128,9 @@ impl CType {
                 panic!("unsupported return type reached the wrapper generator (CFnSig::unsupported_reason)")
             }
             CType::ByValueStruct { .. } => panic!("by-value struct returns are read field by field (gen_dll_fn, 1-3)"),
+            CType::PtrProtocol { .. } => {
+                panic!("ArPtrProtocol return reached the wrapper generator (CFnSig::unsupported_reason)")
+            }
         }
     }
 

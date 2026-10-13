@@ -48,3 +48,9 @@ EXPORTS
     fp_count_flag
     fp_count_double
     fp_call_count
+    fp_squares
+    fp_static_text
+    fp_no_release
+    fp_released
+    fp_protocol_sum
+    fp_protocol_free

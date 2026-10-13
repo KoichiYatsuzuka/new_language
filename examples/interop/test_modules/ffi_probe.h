@@ -12,6 +12,7 @@
 // cpp-lib shim #includes this header; a UTF-8 comment can swallow the next line.
 #pragma once
 #include <stdbool.h>
+#include "../../../bridge/ptr_protocol/ar_ptr_protocol.h"
 
 typedef struct { int id; double score; } Rec;        // 16 bytes (returned via hidden pointer on x64)
 typedef struct { int x; int y; } Pair;               // 8 bytes (returned in RAX on x64)
@@ -85,6 +86,14 @@ int fp_count_int(int v);                    // returns v
 int fp_count_flag(bool b);                  // returns 1 for true, 0 for false
 int fp_count_double(double d);              // returns (int)d
 int fp_call_count(void);                    // number of fp_count_* calls so far
+
+// -- PtrProtocol (tasks 4-2 ... 4-7) -------------------------------------------------
+ArPtrProtocol fp_squares(int n);             // int32 squares 0..n-1, owned: Arrow releases it (n <= 0: NULL)
+ArPtrProtocol fp_static_text(void);          // "hello" as uint8, STATIC and NUL-terminated (length -1)
+ArPtrProtocol fp_no_release(void);           // invalid on purpose: owned memory without a release function
+int fp_released(void);                       // how many fp_squares buffers have been released
+int fp_protocol_sum(const ArPtrProtocol* p); // sum of int32 elements (-1 if the element type is not int32)
+void fp_protocol_free(ArPtrProtocol* p);     // frees a fp_squares buffer and writes address = 0
 
 #ifdef __cplusplus
 }

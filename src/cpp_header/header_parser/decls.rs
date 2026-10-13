@@ -405,6 +405,17 @@ pub(crate) fn parse_c_type_str(
         });
     }
 
+    // ── ArPtrProtocol（ffi_value_exchange_plan.md 4-1・4-2）──────────────────────
+    // ⚠ ヘッダは `#include` を辿らずに読むので、共有ヘッダの定義は見えない。**名前で**見分ける（`struct` 付きも）。
+    //   利用者の対応表（1.）は先に見る（上書きを許す）。typedef の表より先に見る（ヘッダに定義を写してあっても同じ扱い）。
+    if matches!(core.as_slice(), ["ArPtrProtocol"] | ["struct", "ArPtrProtocol"]) {
+        if ptr_count > 1 {
+            return Err("multi-level pointer".to_string());
+        }
+        let by_pointer = ptr_count == 1;
+        return Ok(CType::PtrProtocol { by_pointer, mutable: by_pointer && !is_const });
+    }
+
     // ── 2. System typedef aliases ────────────────────────────────────────────
     // Look up the base type name in the pre-resolved typedef map.
     // The resolved value may itself carry a trailing `*` (e.g. HWND → "void*").
