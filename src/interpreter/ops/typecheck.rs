@@ -48,6 +48,7 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::PyObject(_) => "object",
         Value::FileObject(_) => "FileObject",
         Value::NativeFunction(_) => "function",
+        Value::Ptr(_) => "Ptr",
         Value::Slice(_) => "slice",
         Value::AsyncManager(_) => "AsyncManager",
         Value::AsyncStatusVal(_) => "Async",
@@ -193,6 +194,8 @@ impl Interpreter {
             | Value::PyObject(_)
             | Value::FileObject(_)
             | Value::NativeFunction(_)
+            // ⚠ NULL の `Ptr` は無い（NULL は `None`・D-8）ので常に真。解放済みでも真（使えば誤り）
+            | Value::Ptr(_)
             | Value::Slice(_)
             | Value::AsyncManager(_)
             | Value::AsyncStatusVal(_)
@@ -409,6 +412,7 @@ impl Interpreter {
             Value::OverloadedFn(_) => "function(overloaded)".to_string(),
             Value::GeneratorFn(g) => format!("generator_fn({})", g.name),
             Value::NativeFunction(n) => format!("function({})", n.fn_name),
+            Value::Ptr(p) => format!("Ptr[{}]", p.elem_type()),
             Value::Class(c) => format!("class({})", c.name),
             Value::Instance(i) => i.borrow().class.name.clone(),
             Value::CsObject(o) => o.class_name.clone(),

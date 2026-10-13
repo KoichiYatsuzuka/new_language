@@ -105,6 +105,7 @@ mod method_call;
 // ⚠ **1 レシーバ = 1 ファイル**。`eval_method_call_full` のアームは委譲 1〜7 行に保つこと。
 mod async_manager_methods;
 mod bytes_methods;
+mod ptr_methods;
 mod class_methods;
 mod frozen_list_methods;
 mod object_methods;

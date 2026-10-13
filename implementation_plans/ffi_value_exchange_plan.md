@@ -200,7 +200,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **2-5** | ✅ rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
 | **2-6** | ✅ py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
 | **3-1** | ✅ 組み込み型 `bytes` を足す（D-9・§5）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
-| **3-2** | 値の種類 `Ptr` を足す（D-3）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
+| **3-2** | ✅ 値の種類 `Ptr` を足す（D-3・§5）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | 型検査: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
 | **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
@@ -226,6 +226,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode` を足す。今は `bytes` の名前も `str.encode` も無いので、`compare_python_impl` が `bytes` の意味論を守れない（3-1 の 3 本は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1 で発見） | 3-1 | 小 |
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
+| **7-12** | C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -585,6 +586,29 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `built_in.ar`（`"Hi".encode()` の表示が `b'Hi'` に）と新しい例題 3 本、負の対照 427/427。`compare_import_paths` 13/13。
   `compare_wasm_frontend` 514/514・`type_obligations` 退行なし・`hash_eq_identity` 一致・`stale_doc_refs` 0 件。`cargo test` 1092 件・
   拡張の wasm クレートの 676 件が通る。VSIX を作り直した
+
+### 3-2 実装
+
+- 値の種類 `Value::Ptr(Arc<PtrHandle>)`（`src/interpreter/value/ptr.rs`）。持つもの: アドレス（0 では作れない。NULL は `None`・
+  D-8）・要素の型名（D-12 の ABI 側の名前。Arrow の型への対応は 3-3）・flags（`PTR_FLAG_CONST` / `PTR_FLAG_NUL_TERMINATED` /
+  `PTR_FLAG_STATIC`。⚠ 4-1 の共有ヘッダと同じ値にする）・長さ（生のポインタは分からないので無し）・所有（`Owned` は解放関数と
+  ctx / `Static` / `Borrowed`）・状態（使える / 解放済み / C の側で解放済み）・DLL への参照（`PtrKeepAlive`。ブリッジごとに
+  ライブラリの型が違うので `Arc<dyn Any + Send + Sync>`）
+- 解放: 最後の参照がなくなったとき（`Drop`）か `p.release()` で 1 回だけ。コピーも `deep_clone`（非同期タスクへ渡すとき）も
+  共有する。`release()` は借用・STATIC・解放済み・C の側で解放済みのものには ValueError（黙って何もしない、にしない）。
+  `invalidate()`（4-5 で使う）は解放関数を呼ばずに使えなくする
+- 等値・ハッシュは同一性（`Arc::ptr_eq` / `Arc::as_ptr`）。同じアドレスを指す別の `Ptr` は等しくない。表示は
+  `<Ptr[int32] len=4>`（アドレスを出さない・D-3）、型名は `Ptr`、真偽値は常に真。網羅的な match は 4 箇所（型名・真偽値・
+  表示・ハッシュ）、`_` で受けている箇所は従来どおりエラーか「等しくない」
+- インタプリタの `native_libs` を `Arc<NativeLibWrapper>` にした（`Ptr` が DLL を生かしておけるように）
+- ⚠ Arrow から `Ptr` を作る手段はまだ無い（作るのは 4-3・4-5 のブリッジ）。そのため例題は無く、単体テスト（`value/ptr.rs` 7 本・
+  `interpreter/tests/ptr.rs` 5 本）で確かめた。`value/ptr.rs` の dead_code の抑止は 4-3 で外す
+- ⚠ 実装中に踏んだもの: `release()` の 2 回目が、錠を持ったまま `address()` で同じ `Mutex` を取り直して止まった（テストが
+  待ち続けた）。状態を引数で渡す形にした
+- ⚠ 見つけたもの: C のハンドル経路の数値の取り出しが数値でない値を黙って 0 にする（⇒ 7-12。4-3 の前に要る）
+- ゲート（基準 `338ef86`・制限時間つき）: `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl`
+  clean（170/170）・`compare_outputs` 427/427 一致（負の対照 427/427）・`compare_import_paths` 13/13・`hash_eq_identity` 一致・
+  `stale_doc_refs` 0 件。`cargo test` 1104 件・拡張の wasm クレートの 688 件が通る。型検査・拡張の表示は変えていない
 
 ---
 

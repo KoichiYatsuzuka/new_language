@@ -809,7 +809,7 @@ impl Interpreter {
             }
         }
 
-        self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));
+        self.native_libs.insert(lib_path_buf, std::sync::Arc::new(NativeLibWrapper(lib)));
 
         let ns = Rc::new(NamespaceData {
             name: module.join("."),
@@ -1145,7 +1145,7 @@ impl Interpreter {
             }
         }
 
-        self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));
+        self.native_libs.insert(lib_path_buf, std::sync::Arc::new(NativeLibWrapper(lib)));
 
         Ok(Rc::new(NamespaceData {
             name: module_name.to_string(),

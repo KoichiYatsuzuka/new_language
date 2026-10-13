@@ -212,6 +212,7 @@ mod events_external;
 mod unpacking;
 mod mustbe;
 mod hashing;
+mod ptr;
 mod alias;
 mod modules;
 

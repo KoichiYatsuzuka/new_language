@@ -134,6 +134,12 @@ pub enum Value {
     /// Natively compiled function from a shared library.
     /// Call it via `libloading` using the `{fn_name}_tl` exported symbol.
     NativeFunction(Arc<NativeFnRef>),
+    /// 外部のメモリを指す値 `Ptr[T]`（ffi_value_exchange_plan.md 3-2・D-3）。中身は `value/ptr.rs`。
+    /// ⚠ コピーは共有する（`deep_clone` も `Arc` を共有）。解放は最後の参照がなくなったときに 1 回だけ。
+    /// ⚠ 等値・ハッシュは同一性（同じ `PtrHandle` か）。アドレスでは比べない（アドレスを見せない・D-3）。
+    // ⚠ 作るのはフェーズ 4 のブリッジ（4-3 の生のポインタ・4-5 の `PtrProtocol`）。それまでは単体テストだけが作る。
+    #[allow(dead_code)]
+    Ptr(Arc<super::PtrHandle>),
     /// スライス値: `obj[begin:end:step]` または `slice(begin, end, step)` で生成される。
     /// begin/end は Optional[Index]、step は Optional[int]。
     Slice(Rc<SliceValue>),
@@ -375,6 +381,8 @@ impl Value {
             // Arc-wrapped types: atomic refcount, safe to share across threads
             Value::PyObject(arc) => Value::PyObject(Arc::clone(arc)),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
+            // ⚠ 共有する（コピーは同じメモリを指し、解放は最後の参照で 1 回・3-2）
+            Value::Ptr(arc) => Value::Ptr(Arc::clone(arc)),
             Value::ResultVal { ok, inner } => Value::ResultVal {
                 ok: *ok,
                 inner: Box::new(inner.deep_clone()),

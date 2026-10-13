@@ -52,7 +52,7 @@ pub struct Interpreter {
 }
 ```
 
-`Value` enum covers: `Int(i64)`, `UInt(u64)`, `Float(f64)`, `Bool(bool)`, `Str(String)`, `Bytes(Rc<[u8]>)` (immutable byte string — `src/interpreter/encoding.rs`, `classes/bytes_methods.rs`), `None`, `List(Rc<RefCell<Vec<Value>>>)`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Set(Rc<RefCell<Vec<Value>>>)`, `Slice(SliceValue)`, `Function(Rc<FnValue>)`, `OverloadedFn(...)`, `GeneratorFn(...)`, `Generator(Rc<RefCell<GeneratorState>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `Namespace(Rc<NamespaceData>)`, `NativeFn(Rc<NativeFnRef>)`, `PyObject(...)`, `...`
+`Value` enum covers: `Int(i64)`, `UInt(u64)`, `Float(f64)`, `Bool(bool)`, `Str(String)`, `Bytes(Rc<[u8]>)` (immutable byte string — `src/interpreter/encoding.rs`, `classes/bytes_methods.rs`), `None`, `List(Rc<RefCell<Vec<Value>>>)`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Set(Rc<RefCell<Vec<Value>>>)`, `Slice(SliceValue)`, `Function(Rc<FnValue>)`, `OverloadedFn(...)`, `GeneratorFn(...)`, `Generator(Rc<RefCell<GeneratorState>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `Namespace(Rc<NamespaceData>)`, `NativeFn(Rc<NativeFnRef>)`, `Ptr(Arc<PtrHandle>)` (external memory — `value/ptr.rs`; copies share, released once by `Drop` or `release()`, eq/hash by identity, the address is never exposed), `PyObject(...)`, `...`
 
 `Var` wraps a `Value` plus a mutability flag; mutable variables may store a shared `Rc<RefCell<Value>>` cell for closure capture.
 

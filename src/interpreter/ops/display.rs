@@ -154,6 +154,8 @@ impl Interpreter {
             #[cfg(not(feature = "native"))]
             Value::PyObject(_) => "<PyObject>".to_string(),
             Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
+            // ⚠ アドレスは出さない（D-3）
+            Value::Ptr(p) => p.display(),
             Value::Slice(s) => {
                 let b = s
                     .begin

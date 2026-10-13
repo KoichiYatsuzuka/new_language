@@ -625,7 +625,9 @@ pub struct Interpreter {
     /// ⚠ メタ関数を 1 つも持たないプログラムでは**展開器は足さない**（推論が起きえない
     ///   ので、AST を複製する手間をかけない）。
     pub(self) meta_prefix: Rc<RefCell<Vec<crate::ast::Stmt>>>,
-    pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
+    /// 読み込んだ DLL。⚠ `Arc` なのは、DLL の中のメモリを指す `Ptr`（3-2）が DLL を生かしておくため
+    /// （`PtrHandle` の `lib`。インタプリタより長く残った `Ptr` が解放関数を呼ぶ）。
+    pub(self) native_libs: HashMap<PathBuf, std::sync::Arc<NativeLibWrapper>>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
     /// イベントループの状態 4 本（#67 で `event_loop::EventState` へ束ねた）。

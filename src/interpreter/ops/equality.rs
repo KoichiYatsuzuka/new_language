@@ -300,6 +300,8 @@ impl Interpreter {
             (Value::Meta(a), Value::Meta(b)) => Rc::ptr_eq(a, b),
             (Value::PyObject(a), Value::PyObject(b)) => std::sync::Arc::ptr_eq(a, b),
             (Value::NativeFunction(a), Value::NativeFunction(b)) => std::sync::Arc::ptr_eq(a, b),
+            // 同じ `PtrHandle`（コピー）どうしだけが等しい（3-2）。同じアドレスを指す別の `Ptr` は等しくない
+            (Value::Ptr(a), Value::Ptr(b)) => std::sync::Arc::ptr_eq(a, b),
 
             _ => false,
         };
