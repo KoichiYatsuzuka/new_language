@@ -11,7 +11,7 @@
 # コレクションを受け渡すメソッドは静的エラー（cs_proc_unsupported_signature_error.ar）。
 #
 # ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
-# ⚠ Arrow から C# へ非 ASCII の文字列を送ると化ける（2-2 で直す）ので、ここでは送らない。
+# 非 ASCII の文字列の受け渡しは cs_proc_utf8.ar（2-2）。
 #
 # 実行には examples/interop/cs_probe/cs_probe.exe と cs_probe.dll が要る（build_cs_probe.ps1）。
 

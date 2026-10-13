@@ -134,15 +134,20 @@ internal sealed class ArrowPipeHost
 
     // ── Raw pipe line I/O (no StreamReader buffering) ─────────────────────────
 
+    // Arrow sends UTF-8. Collect the bytes of one line and decode them together (plan 2-2): this used to append
+    // each byte as a char ((char)b), so every non-ASCII string sent from Arrow arrived garbled.
+    // Invalid UTF-8 throws (it cannot come from Arrow, whose strings are always valid).
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     private static string? ReadPipeLine(Stream s)
     {
-        var buf = new System.Text.StringBuilder();
+        var buf = new MemoryStream();
         while (true)
         {
             int b = s.ReadByte();
-            if (b == -1) return buf.Length > 0 ? buf.ToString() : null;
-            if (b == (byte)'\n') return buf.ToString();
-            if (b != (byte)'\r') buf.Append((char)b);
+            if (b == -1) return buf.Length > 0 ? StrictUtf8.GetString(buf.ToArray()) : null;
+            if (b == (byte)'\n') return StrictUtf8.GetString(buf.ToArray());
+            if (b != (byte)'\r') buf.WriteByte((byte)b);
         }
     }
 

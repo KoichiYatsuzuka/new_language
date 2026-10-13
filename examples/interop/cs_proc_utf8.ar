@@ -1,0 +1,35 @@
+# cs_proc_utf8.ar — import[cs-proc] で Arrow から C# へ非 ASCII の文字列を送る（ffi_value_exchange_plan.md 2-2）
+#
+# C# のホスト（ArrowPipeHost.cs）は受け取った JSON を 1 バイトずつ文字にしていた（`(char)b`）ので、Arrow から
+# 送った非 ASCII の文字列が化けていた。実測（2-2 の直前）: `echo("日本語")` → 18 文字の化けた文字列、
+# `byte_len("日本語")` → 18（UTF-8 では 9 バイト）。C# から Arrow へ返す向きは以前から UTF-8 で正しかった。
+# 今は 1 行のバイト列をまとめて UTF-8 として復号する（不正なバイト列は例外。Arrow の文字列は常に正しい UTF-8）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+#
+# 実行には examples/interop/cs_probe/cs_probe.exe と cs_probe.dll が要る（build_cs_probe.ps1）。
+
+import[cs-proc] cs_probe as cp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# Arrow → C# → Arrow の往復
+for s in ["日本語", "café", "😀 emoji", "ascii only", ""]:
+    let back = cp.Probe.echo(s)
+    check("echo round trip [" + s + "]", back == s)
+
+# C# 側で UTF-8 のバイト数を数える（C# が受け取った文字列そのものを見る）
+check("byte_len(日本語) == 9", cp.Probe.byte_len("日本語") == 9)
+check("byte_len(café) == 5", cp.Probe.byte_len("café") == 5)
+check("byte_len(😀) == 4", cp.Probe.byte_len("😀") == 4)
+
+# C# → Arrow（以前から正しい向き）
+check("utf8() from C#", cp.Probe.utf8() == "日本語")
+
+# オブジェクトの中に入れて取り出す
+let p = cp.Probe.make_person("山田")
+check("name stored in a C# object", p.get_name() == "山田")
+check("instance method with a non-ASCII result", p.hello() == "I am 山田")

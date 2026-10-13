@@ -76,6 +76,7 @@ $knownDiff = @{
     'cpp_struct_by_value_layout_error' = 'どちらもエラーで止まる。Rust はレイアウト不明の構造体を値で受け渡す関数を生成せずエラーを stderr に出し（1-3）、py は AttributeError を stdout に出す'
     'cpp_cstring_nul_error'          = 'Rust: NUL を含む str を const char* へ渡すと ValueError（ffi_value_exchange_plan.md 1-2）。py: 黙って NUL で切れて 1 を返す（直す前の Rust と同じ壊れ方）'
     'cs_proc_values'                 = 'Rust: C# の値を型スタブの宣言どおりに受け渡す（nullable 注釈・CsObject・ffi_value_exchange_plan.md 2-1）。py: import[cs-proc] で `cs_probe/cs_probe.dll`（パッケージのディレクトリ）を探さず ParseError'
+    'cs_proc_utf8'                   = 'Rust: Arrow から C# へ非 ASCII の文字列を送る（ffi_value_exchange_plan.md 2-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'
     'cpp_dll_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）。py: unsigned int の最大値を -1 として読み、例題の検査が ValueError で止まる（直す前の Rust と同じ）'
     'cpp_lib_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（cpp-lib・1-6）。py: long を返す関数などを関数一覧に入れず AttributeError で止まる'
