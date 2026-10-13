@@ -74,7 +74,8 @@ for x in raw:                                  # 各要素は 0〜255 の int
 
 外部の関数（C / C++ などのブリッジ）が返すポインタを、中身を展開しないまま持つ型です
 （`implementation_plans/ffi_value_exchange_plan.md` D-3）。**コンストラクタは無く**、Arrow から作ることはできません
-（外部の関数が返します）。
+（外部の関数が返します）。外部の関数との受け渡しの約束（長さ・要素の型名・解放の責任）は
+[`docs/ptr_protocol.md`](../ptr_protocol.md) にあります。
 
 ```arrow
 fn sum_ints(let p: Ptr[int32]) -> int:

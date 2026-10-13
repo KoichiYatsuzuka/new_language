@@ -202,7 +202,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **3-1** | ✅ 組み込み型 `bytes` を足す（D-9・§5）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | ✅ 値の種類 `Ptr` を足す（D-3・§5）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | ✅ 型検査（§5）: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
-| **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
+| **4-1** | ✅（§5）`PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | 生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
@@ -663,6 +663,25 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `cpp_struct_ptr.ar` が差。⚠ 後者と負の対照の差（`cpp_default_arg_native_call.ar` など 3 本）は、中継コードの生成が変わった
   ので新旧のバイナリを交互に走らせるたびに中継 DLL を作り直し、その表示が混ざったもの。各バイナリで 2 回目（作り直し
   なし）の出力を比べると 3 本とも同一だった。`stale_doc_refs` 0 件。`cargo test` 1121 件・拡張の wasm クレートの 692 件が通る
+
+### 4-1 実装
+
+- 共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`（`ArPtrProtocol`・flags は `AR_PTR_CONST` / `AR_PTR_NUL_TERMINATED` /
+  `AR_PTR_STATIC`・解放関数の型 `ArPtrRelease`）、C# の写し `bridge/ptr_protocol/ArPtrProtocol.cs`（`ArrowInterop` 名前空間・
+  `[StructLayout(Sequential)]`・関数ポインタ `delegate* unmanaged`）、Rust の写し `PtrProtocolRaw`（`value/ptr.rs`）、
+  仕様 `docs/ptr_protocol.md`（型名の表・flags・解放の約束・例）
+- ⚠ 名前は `ArPtrProtocol`（D-1 の `PtrProtocol` に接頭辞を付けた。利用者のコードの名前とぶつからないように）
+- ⚠ D-1 の並びの `flags`（4 バイト）と `length`（8 バイト）の間には詰め物が入るので、`_reserved`（0）として明示した
+  （C# と並びを取り違えないため）。64 ビットで 48 バイト。`length` は「NUL 終端で数えない」ときに -1 を許す
+- 型名（D-12）: `int8` … `uint64`・`float32` / `float64`・構造体の名前・`void`。文字データは `uint8`（`char`）と `uint16`
+  （`wchar_t` / `char16_t`）。`bool` は使わない（真偽値の配列は `uint8`）
+- 一致の網: 単体テスト 2 本（flags の値と欄の順序を C のヘッダ・C# のソースから読んで突き合わせる、Rust の写しの大きさと
+  欄の位置）と `scripts/check_ptr_protocol.ps1`（C・C++・C# を実際にコンパイルして大きさ・欄の位置・flags を出し、Rust の
+  期待値と比べる。3 つとも一致）
+- 文書: `docs/grammar/09_imports.md` の cpp の節（7-12 の挙動も書き足した）・`08_type_system.md` の `Ptr[T]` から案内
+- ゲート（基準 `1132ded`・制限時間つき）: 実行時の挙動は変えていない（定数・型を足しただけ）。`compare_outputs` 433/433 一致
+  （負の対照 433/433）・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（172/172）・
+  `compare_import_paths` 13/13・`stale_doc_refs` 0 件。`cargo test` 1123 件・拡張の wasm クレートの 694 件が通る
 
 ---
 

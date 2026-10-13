@@ -417,6 +417,11 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   切り詰めます（C の暗黙の変換と同じ）
 - `unsigned long long`（`uint64_t` / `size_t`）の 2^63 以上は Arrow の `int` に入らないので `OverflowError` になります
 - `bool` は `bool`、`float` / `double` は `float`、`const char*` の引数は `str`（UTF-8・NUL を含むとエラー）です
+- 数値・`bool` の引数に合わない値（`None`・`str`・`list` …）が届いたら `TypeError` で、C の関数は呼ばれません。静的な
+  検査が止めない経路（素の `function` 型を通した呼び出しなど）でも同じです（`examples/interop/cpp_native_arg_check.ar`）。
+  `float` → `int` の切り捨てと `bool` → 0 / 1 は C の暗黙の変換のままです。Rust の crate（`[rs]`）も同じです
+- 配列・文字データ・所有権のあるメモリは `PtrProtocol` で受け渡します（[ptr_protocol.md](../ptr_protocol.md)。
+  共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`）
 - 今の Arrow から正しく受け渡せない関数（ポインタを返す・`void*` を受ける・レイアウトの分からない構造体を値で
   受け渡す など）は、使った箇所が静的エラーになります
 

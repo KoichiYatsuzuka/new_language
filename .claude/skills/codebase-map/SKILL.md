@@ -497,6 +497,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   ab_bench_modes.ps1 (165)
   annot_diff.ps1 (58)
   annot_unresolved.ps1 (87)
+  check_ptr_protocol.ps1 (118)
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (135)
   compare_outputs.ps1 (140)
@@ -541,7 +542,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (32)
-  CLAUDE.md (154)
+  CLAUDE.md (155)
   README.md (317)
 ```
 _Generated 2026-10-14 by generate-codebase-map.ps1_

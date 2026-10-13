@@ -24,12 +24,33 @@ use std::sync::{Arc, Mutex};
 /// 指す先を持つ DLL を生かしておくための参照（cpp の `NativeLibWrapper`・cs-dll / rs のライブラリなど、ブリッジごとに型が違う）。
 pub type PtrKeepAlive = Arc<dyn std::any::Any + Send + Sync>;
 
-/// `PtrProtocol` の flags（D-1・D-15）。⚠ 4-1 の共有ヘッダ（`ar_ptr_protocol.h`）と同じ値にすること。
+/// `PtrProtocol` の flags（D-1・D-15）。⚠ 共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`（`AR_PTR_*`）と
+/// C# の写し `ArPtrProtocol.cs` と同じ値にすること（単体テスト `protocol_files_agree` が突き合わせる）。
 pub const PTR_FLAG_CONST: u32 = 1;
 /// 文字データが NUL 終端である（`length` は NUL を含まない）。
 pub const PTR_FLAG_NUL_TERMINATED: u32 = 2;
 /// DLL のアンロードまで有効で中身も変わらない。`release` が NULL でよいのはこのときだけ（D-15）。
 pub const PTR_FLAG_STATIC: u32 = 4;
+
+/// `ArPtrProtocol`（`bridge/ptr_protocol/ar_ptr_protocol.h`・4-1）の写し。C / C# と**同じ並び**（64 ビットで 48 バイト）。
+/// ⚠ 並びを変えるときは 3 つ（C のヘッダ・C# の写し・これ）を同時に直す（単体テスト `protocol_layout_matches_the_header`）。
+/// 受け渡しは 4-4 / 4-5（`Ptr` との変換）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PtrProtocolRaw {
+    /// 先頭のアドレス（NULL は 0）。
+    pub address: u64,
+    /// 要素の型名（NUL 終端の静的な文字列・D-12）。
+    pub elem_type: *const std::ffi::c_char,
+    pub flags: u32,
+    /// 0（並びを C# と揃えるための明示の詰め物）。
+    pub _reserved: u32,
+    /// 要素の数（単体は 1。NUL 終端で数えない場合は -1）。
+    pub length: i64,
+    /// 解放関数。`None` は STATIC のときだけ（D-15）。
+    pub release: Option<ReleaseFn>,
+    pub release_ctx: *mut std::ffi::c_void,
+}
 
 /// 解放関数（`PtrProtocol` の `release`）。`ctx` は確保した側が渡した `PtrProtocol.release_ctx`（C の構造体のフィールド）。
 pub type ReleaseFn = unsafe extern "C" fn(ctx: *mut std::ffi::c_void, address: u64);
@@ -464,6 +485,48 @@ mod tests {
         assert_eq!(ptr_ann_matches("Ptr[File]", &p), Some(false));
         assert_eq!(ptr_ann_matches("Ptr[int32]", &Value::Int(1)), Some(false));
         assert_eq!(ptr_ann_matches("list[int]", &p), None);
+    }
+
+    /// 共有ヘッダ・C# の写しの flags の値がこちらと同じ（4-1）。
+    #[test]
+    fn protocol_files_agree() {
+        let header = include_str!("../../../bridge/ptr_protocol/ar_ptr_protocol.h");
+        let cs = include_str!("../../../bridge/ptr_protocol/ArPtrProtocol.cs");
+        let c_define = |name: &str| -> u32 {
+            let line = header.lines().find(|l| l.starts_with(&format!("#define {name} "))).expect(name);
+            line.split_whitespace().nth(2).unwrap().trim_end_matches('u').parse().unwrap()
+        };
+        let cs_const = |name: &str| -> u32 {
+            let key = format!("public const uint {name} = ");
+            let line = cs.lines().find(|l| l.contains(&key)).expect(name);
+            line.split(&key).nth(1).unwrap().trim_end_matches(';').trim().parse().unwrap()
+        };
+        assert_eq!(c_define("AR_PTR_CONST"), PTR_FLAG_CONST);
+        assert_eq!(c_define("AR_PTR_NUL_TERMINATED"), PTR_FLAG_NUL_TERMINATED);
+        assert_eq!(c_define("AR_PTR_STATIC"), PTR_FLAG_STATIC);
+        assert_eq!(cs_const("Const"), PTR_FLAG_CONST);
+        assert_eq!(cs_const("NulTerminated"), PTR_FLAG_NUL_TERMINATED);
+        assert_eq!(cs_const("Static"), PTR_FLAG_STATIC);
+        // 欄の並び（名前の順）も同じ
+        let order = |text: &str, names: &[&str]| -> Vec<usize> { names.iter().map(|n| text.find(n).expect(n)).collect() };
+        let c = order(header, &["uint64_t     address;", "elem_type;", "flags;", "_reserved;", "length;", "release;", "release_ctx;"]);
+        let k = order(cs, &["ulong Address;", "ElemType;", "uint Flags;", "uint Reserved;", "long Length;", "> Release;", "ReleaseCtx;"]);
+        assert!(c.windows(2).all(|w| w[0] < w[1]), "header field order");
+        assert!(k.windows(2).all(|w| w[0] < w[1]), "C# field order");
+    }
+
+    /// 写しの並びが C のヘッダと同じ（64 ビットで 48 バイト・欄の位置）。
+    #[test]
+    fn protocol_layout_matches_the_header() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<PtrProtocolRaw>(), 48);
+        assert_eq!(offset_of!(PtrProtocolRaw, address), 0);
+        assert_eq!(offset_of!(PtrProtocolRaw, elem_type), 8);
+        assert_eq!(offset_of!(PtrProtocolRaw, flags), 16);
+        assert_eq!(offset_of!(PtrProtocolRaw, _reserved), 20);
+        assert_eq!(offset_of!(PtrProtocolRaw, length), 24);
+        assert_eq!(offset_of!(PtrProtocolRaw, release), 32);
+        assert_eq!(offset_of!(PtrProtocolRaw, release_ctx), 40);
     }
 
     #[test]
