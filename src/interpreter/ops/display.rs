@@ -20,6 +20,8 @@ impl Interpreter {
             //   `Code` を実行時に表示する場面は展開漏れのときだけなので、これで足りる。
             Value::Code(lines) => format!("<Code: {} line(s)>", lines.len()),
             Value::Meta(m) => format!("<{} {}>", self.type_name(val), m.name),
+            // Python と同じ表記（`b'abc\xe9'`）。`print` でも `str()` でも同じ（3-1）。
+            Value::Bytes(b) => bytes_repr(b),
             Value::Int(n) => n.to_string(),
             Value::UInt(n) => n.to_string(),
             Value::Float(f) => {
@@ -314,4 +316,29 @@ impl Interpreter {
         }
     }
 
+}
+
+/// バイト列の表記（Python の `repr(bytes)` と同じ・3-1）。印字できる ASCII はそのまま、`\` と引用符はエスケープ、
+/// タブ・改行・復帰は `\t` `\n` `\r`、それ以外は `\xNN`。`'` を含み `"` を含まないときだけ `"` で囲む。
+pub(crate) fn bytes_repr(b: &[u8]) -> String {
+    let quote = if b.contains(&b'\'') && !b.contains(&b'"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(b.len() + 3);
+    out.push('b');
+    out.push(quote);
+    for &c in b {
+        match c {
+            b'\\' => out.push_str("\\\\"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            c if c as char == quote => {
+                out.push('\\');
+                out.push(quote);
+            }
+            0x20..=0x7e => out.push(c as char),
+            c => out.push_str(&format!("\\x{c:02x}")),
+        }
+    }
+    out.push(quote);
+    out
 }

@@ -55,7 +55,7 @@ For full details (all `InferredType` variants, inference rules, compatibility/co
 
 Tree-walk interpreter. `exec(stmt)` / `eval(expr)` dispatch on the AST recursively. Lexical scopes are a `Vec<HashMap>` searched tail-to-head.
 
-- **Values**: `Int`, `Float`, `Bool`, `Str`, `None`, `List`, `Dict`, `Tuple`, `Set`, `Slice`, `Function`, `Generator`, `Class`, `Instance`, `Namespace`, `NativeFn`, `PyObject`
+- **Values**: `Int`, `Float`, `Bool`, `Str`, `Bytes`, `None`, `List`, `Dict`, `Tuple`, `Set`, `Slice`, `Function`, `Generator`, `Class`, `Instance`, `Namespace`, `NativeFn`, `PyObject`
 - **Mutability**: `let` → immutable; `mut` → mutable (deep-copied on declaration); `freeze` makes a variable immutable; `static mut` → single shared cell keyed by source position
 - **Closures**: `let` captures are deep-copied; `mut` captures share an `Rc<RefCell<Value>>` cell with the outer scope
 - **Control-flow signals**: `return` via `ExecResult`; `break` via `BREAK_SENTINEL` error string propagating through `eval()`; `block_return` / `loop_yield` via thread-locals `BLOCK_YIELDS` and `RAISE_SENTINEL`

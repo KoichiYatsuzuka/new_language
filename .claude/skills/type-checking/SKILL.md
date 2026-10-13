@@ -18,6 +18,7 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `Int` | `int` primitive |
 | `Float` | `float` primitive |
 | `Str` | `str` primitive |
+| `Bytes` | `bytes` primitive — immutable byte string (`s.encode(enc)` / `b.decode(enc)`; index and iteration give `int`; ffi plan 3-1) |
 | `Bool` | `bool` primitive |
 | `None` | `None` value |
 | `List` | Untyped list |
@@ -179,6 +180,7 @@ See the table below. `Any` or `Union` on either side → error (explicit downcas
 | `+` | `int + int` | `Int` |
 | `+` | `float + float`, mixed int/float | `Float` |
 | `+` | `str + str` | `Str` |
+| `+` | `bytes + bytes` | `Bytes` (mixing `bytes` and `str` is an error) |
 | `-`, `*`, `**` | int, int | `Int` |
 | `-`, `*`, `**` | float or mixed | `Float` |
 | `/` | any | `Float` |
@@ -186,7 +188,7 @@ See the table below. `Any` or `Union` on either side → error (explicit downcas
 | `&`, `\|`, `^`, `<<`, `>>` | — | `Int` |
 | `\|`, `&`, `^`, `-` (set–set) | `Set, Set` | `Set` |
 
-Ordered comparisons (`<`, `>`, `<=`, `>=`) are only valid between: `int/int`, `float/float`, `int/float`, `float/int`, `str/str`. Any other pair → `IncompatibleComparison` error.
+Ordered comparisons (`<`, `>`, `<=`, `>=`) are only valid between: `int/int`, `float/float`, `int/float`, `float/int`, `str/str`, `bytes/bytes`. Any other pair → `IncompatibleComparison` error.
 
 ### Function calls
 
@@ -395,6 +397,7 @@ seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives t
 | `int` | `TypeValOf(Int)` |
 | `float` | `TypeValOf(Float)` |
 | `str` | `TypeValOf(Str)` |
+| `bytes` | `TypeValOf(Bytes)` |
 | `bool` | `TypeValOf(Bool)` |
 | `Any` | `TypeValOf(Any)` |
 | `function` | `TypeValOf(Function { None, Any })` |

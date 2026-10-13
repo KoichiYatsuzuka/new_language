@@ -19,6 +19,9 @@ terminal_size = "0.4"
 regex = "1"
 indexmap = "2"
 serde_json = "1"
+# `bytes.decode` / `str.encode` の Shift_JIS などの文字コード（ffi_value_exchange_plan.md 3-1・D-13）。
+# UTF-8 / UTF-16 / ASCII / Latin-1 は自前（Python と同じ意味）。wasm にも載る。
+encoding_rs = "0.8"
 # ⚠ **ネイティブ専用の依存**（wasm32 に載らない）。`native` feature で有効化する。
 # これらを無効にしたビルドが「評価コア」で、VS Code 拡張（wasm）へ持ち込める範囲になる。
 # 詳細と作業分割は implementation_logs/eval_core_extraction_plan.md を参照。

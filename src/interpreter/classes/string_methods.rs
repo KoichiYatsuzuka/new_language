@@ -130,6 +130,16 @@ impl Interpreter {
             }
 
             // ── 大文字・小文字変換 ──────────────────────────────────────────
+            // ── 文字コード（3-1）────────────────────────────────────────────
+            // `s.encode(encoding="utf-8")` → bytes。変換できない文字は ValueError（黙って置き換えない）。
+            "encode" => {
+                if vals.len() > 1 {
+                    return Err(format!("TypeError: str.encode() takes at most 1 argument ({} given)", vals.len()));
+                }
+                let enc = if vals.is_empty() { "utf-8".to_string() } else { arg_str!(0, "encode") };
+                Ok(Value::bytes(crate::interpreter::encoding::encode(&s, &enc)?))
+            }
+
             "upper" => Ok(Value::str(s.to_uppercase())),
             "lower" => Ok(Value::str(s.to_lowercase())),
             "swapcase" => Ok(Value::str(
@@ -491,12 +501,6 @@ impl Interpreter {
             "expandtabs" => {
                 let tabsize = arg_int!(0, 8).max(0) as usize;
                 Ok(Value::str(s.replace('\t', &" ".repeat(tabsize))))
-            }
-            "encode" => {
-                // 簡易実装: UTF-8 バイト列を int のリストで返す
-                let bytes: Vec<Value> =
-                    s.as_bytes().iter().map(|b| Value::Int(*b as i64)).collect();
-                Ok(Value::List(Rc::new(RefCell::new(bytes))))
             }
             "chars" => {
                 // 文字リストを返す

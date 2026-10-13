@@ -165,6 +165,9 @@ pub enum InferredType {
     Complex,
     /// `str` プリミティブ型。
     Str,
+    /// `bytes` — 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。`str` とは別の型で、変換は
+    /// `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う。
+    Bytes,
     /// `bool` プリミティブ型。
     Bool,
     /// `None` 型（値が存在しないことを表す）。
@@ -501,6 +504,7 @@ impl InferredType {
             "float" => Some(Self::Float),
             "complex" => Some(Self::Complex),
             "str" => Some(Self::Str),
+            "bytes" => Some(Self::Bytes),
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "Undefined" => Some(Self::Undefined),
@@ -726,6 +730,7 @@ impl std::fmt::Display for InferredType {
             Self::Float => write!(f, "float"),
             Self::Complex => write!(f, "complex"),
             Self::Str => write!(f, "str"),
+            Self::Bytes => write!(f, "bytes"),
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
             Self::Undefined => write!(f, "Undefined"),

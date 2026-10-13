@@ -25,6 +25,10 @@ impl Interpreter {
                 let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(chars))))
             }
+            // バイト列は 0〜255 の整数（`collect_iterable` と同じ規則・3-1）
+            Value::Bytes(b) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(
+                b.iter().map(|&c| Value::Int(c as i64)).collect(),
+            )))),
             Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.borrow().clone())))),
             Value::Tuple(td) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(td.all_values().to_vec())))),
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。

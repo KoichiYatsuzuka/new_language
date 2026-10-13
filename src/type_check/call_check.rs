@@ -388,6 +388,7 @@ impl TypeChecker {
                     InferredType::Int
                         | InferredType::Float
                         | InferredType::Str
+                        | InferredType::Bytes
                         | InferredType::Bool
                         | InferredType::Complex
                 ) {
@@ -1502,6 +1503,12 @@ impl TypeChecker {
         method: &str,
     ) -> Option<InferredType> {
         use InferredType as T;
+        // 文字コードの変換（3-1）。⚠ ほかの `str` のメソッドはまだ型が無い（結果は `Unresolved`）。
+        match (recv_ty, method) {
+            (T::Str, "encode") => return Some(T::Bytes),
+            (T::Bytes, "decode") => return Some(T::Str),
+            _ => {}
+        }
         // ジェネレータ（`generator[T]`・フェーズ10 10-7）。`next()` は要素 1 つ、`close()` は `None`。
         // ⚠ 以前は結果に型が無く、`let v: str = g.next()` が通っていた（`for` と同じ穴）。
         if let T::IteratorOf(elem) = recv_ty {

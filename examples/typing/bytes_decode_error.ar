@@ -1,0 +1,10 @@
+# bytes_decode_error.ar — 文字コードに合わないバイト列の decode は ValueError（負例・3-1）
+#
+# 置き換え文字（U+FFFD）に黙って変換しない。どの位置で失敗したかを出す。`try` / `except ValueError` で
+# 捕まえられる（bytes_basics.ar）。
+# 対になる正例: bytes_basics.ar
+
+let ok = "abc".encode().decode("utf-8")
+print("ok:", ok)
+let bad = bytes([97, 98, 255]).decode("utf-8")
+print("unreachable:", bad)

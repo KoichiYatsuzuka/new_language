@@ -136,6 +136,7 @@ impl TypeChecker {
             "int" => InferredType::Int,
             "float" => InferredType::Float,
             "str" => InferredType::Str,
+            "bytes" => InferredType::Bytes,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
             "Undefined" => InferredType::Undefined,

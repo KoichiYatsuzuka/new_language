@@ -199,7 +199,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **2-4** | ✅ js-proc の node プロセスが終了時に残る問題を直す | なし | 小 |
 | **2-5** | ✅ rs: 対応していないシグネチャを import 時に報告する。`pub String` フィールドのセッター、`new()` を使う構築、ネイティブ側の書き換え後のフィールド値を直す | 1-1 | 中 |
 | **2-6** | ✅ py-int: Python の set を Arrow の set に、Arrow の set を Python の set に変換する。変換できない値のエラーに型名を出す | なし | 小 |
-| **3-1** | 組み込み型 `bytes` を足す（D-9）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
+| **3-1** | ✅ 組み込み型 `bytes` を足す（D-9・§5）: 値の種類・型検査・`len` / 添字 / スライス / 反復 / 比較・`decode(encoding)`・`str.encode(encoding)`。リテラル構文（`b"..."`）は含めない | なし | 中 |
 | **3-2** | 値の種類 `Ptr` を足す（D-3）: `Arc`・`Drop` で `release` を 1 回・DLL への参照・無効化の状態。網羅的な match の全箇所、等値とハッシュは同一性で | なし | 中 |
 | **3-3** | 型検査: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
 | **4-1** | `PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
@@ -224,6 +224,8 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
+| **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode` を足す。今は `bytes` の名前も `str.encode` も無いので、`compare_python_impl` が `bytes` の意味論を守れない（3-1 の 3 本は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1 で発見） | 3-1 | 小 |
+| **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -556,6 +558,33 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   新しい 2 本を既知の差分に登録して clean（参照実装は Arrow の set / インスタンスを内部の値のまま Python へ渡す）。
   `compare_outputs` の差 2 本は新しい例題（基準では set が FfiTypeError・型名が 'unknown'）、負の対照 424/424。
   `compare_import_paths` 13/13。型検査・拡張は変えていない
+
+### 3-1 実装
+
+- 値の種類 `Value::Bytes(Rc<[u8]>)`（不変）と型 `InferredType::Bytes`。`bytes()` / `bytes(b)` / `bytes(list[int])`（0〜255 の外は
+  ValueError・int 以外の要素は TypeError）。`bytes(str)` は TypeError（Python と同じく文字コードを書かせる）
+- 操作: `len`・添字（`int`）・スライス（`bytes`）・反復（`int`）・`+`（連結）・`==` と順序比較（バイトの辞書順）・`in`（部分列か
+  1 バイト）・dict のキーと set の要素（値で等値・ハッシュ）・`is bytes` / `mustbe bytes`・真偽値（空が偽）。表示は Python の repr
+  （`b'hi\xff'`）
+- 文字コード（`src/interpreter/encoding.rs`）: `s.encode(enc="utf-8") -> bytes`・`b.decode(enc="utf-8") -> str`。`utf-8` / `utf-16-le` /
+  `utf-16-be` / `ascii` / `latin-1` は自前で Python と同じ意味、`shift_jis`（= `cp932` / `sjis` / `windows-31j`。表は CP932 と同じ）と
+  そのほかの WHATWG の名前は encoding_rs。変換できなければ位置つきの ValueError（置き換え文字や `&#…;` にしない）。BOM は足さず
+  読まない（`utf-16` は曖昧なのでエラー）。知らない名前も ValueError
+- 型検査: `bytes` と `str` を混ぜる（代入・`+`・`in`）と静的エラー。添字は `int`、`str.encode` → `bytes`、`bytes.decode` → `str`。
+  型検査の組み込み名の表（`RUNTIME_BUILTIN_NAMES`）に `bytes`
+- ⚠ 変えた挙動: `str.encode()` は以前、文字コードの引数を無視して UTF-8 の `list[int]` を返していた → `bytes`（`built_in.ar` の出力が
+  `[72, 105]` から `b'Hi'` に）。`bytes` が組み込みの名前になり、変数名に使うと静的エラーなので、使っていた例題 2 本
+  （`built_in.ar`・`archived/file_io.ar`）を改名
+- ⚠ 範囲外: リテラル `b"..."`（計画どおり）。バイト単位のファイルの `read()` / `write()` はまだ `list[int]`（⇒ 7-11）。参照実装に
+  `bytes` が無く、新しい例題 3 本は `compare_python_impl` の既知の差分（⇒ 7-10）
+- 例題: `typing/bytes_basics.ar`（期待値と違えば raise）・`bytes_decode_error.ar`（実行時 ValueError）・`bytes_str_mix_error.ar`
+  （静的エラー 4 件）
+- 文書: `docs/grammar/08_type_system.md`、skill `type-checking` / `interpreter-internals` / `architecture-overview`
+- ゲート（基準 `a1897bd`・制限時間つき）: `scan_examples`（基準と同じ。`bench_ab_native` のタイムアウトだけ）・`force_gate`
+  （`VmForceError` 0）。`compare_python_impl` は新しい 3 本を既知の差分に登録して clean（170/170）。`compare_outputs` の差 4 本は
+  `built_in.ar`（`"Hi".encode()` の表示が `b'Hi'` に）と新しい例題 3 本、負の対照 427/427。`compare_import_paths` 13/13。
+  `compare_wasm_frontend` 514/514・`type_obligations` 退行なし・`hash_eq_identity` 一致・`stale_doc_refs` 0 件。`cargo test` 1092 件・
+  拡張の wasm クレートの 676 件が通る。VSIX を作り直した
 
 ---
 

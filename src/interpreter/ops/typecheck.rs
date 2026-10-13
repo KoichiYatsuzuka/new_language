@@ -18,6 +18,7 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::Float(_) => "float",
         Value::Complex(_, _) => "complex",
         Value::Str(_) => "str",
+        Value::Bytes(_) => "bytes",
         Value::Bool(_) => "bool",
         Value::None => "NoneType",
         Value::Undefined => "Undefined",
@@ -99,6 +100,7 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         "float" => matches!(val, Value::Float(_)),
         "complex" => matches!(val, Value::Complex(_, _)),
         "str" => matches!(val, Value::Str(_)),
+        "bytes" => matches!(val, Value::Bytes(_)),
         "bool" => matches!(val, Value::Bool(_)),
         "list" => matches!(val, Value::List(_)),
         "fixed_list" => matches!(val, Value::FrozenList { .. }),
@@ -162,6 +164,7 @@ impl Interpreter {
             Value::Float(f) => *f != 0.0,
             Value::Complex(re, im) => *re != 0.0 || *im != 0.0,
             Value::Str(s) => !s.is_empty(),
+            Value::Bytes(b) => !b.is_empty(),
             Value::None => false,
             Value::Undefined => false,
             // 空の `Code`（設計書 §1.2 の B-2）は偽。`if frag:` で「何も出さない」を書ける。

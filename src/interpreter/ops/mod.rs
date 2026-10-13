@@ -27,5 +27,7 @@ fn format_fn_params(params: &[Param]) -> String {
 pub(crate) mod typecheck;
 mod display;
 mod operators;
+// バイトとして扱う整数の範囲検査（`bytes(list[int])` と `int in bytes` で共有・3-1）
+pub(crate) use operators::byte_of;
 mod equality;
 pub(crate) mod hash;

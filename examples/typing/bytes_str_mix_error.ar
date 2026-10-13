@@ -1,0 +1,11 @@
+# bytes_str_mix_error.ar — bytes と str は別の型（負例・3-1）
+#
+# バイト列と文字列を、文字コードを書かずに混ぜることはできない（静的エラー）。変換は `s.encode(enc)` /
+# `b.decode(enc)` で明示的に行う。
+# 対になる正例: bytes_basics.ar
+
+let b: bytes = "abc".encode()
+let s: str = b
+let joined = b + "d"
+let first: str = b[0]
+let found = "a" in b

@@ -23,7 +23,7 @@ use crate::ast::{Expr, Stmt};
 ///   `checker_knows_every_runtime_builtin_name` が**両方向**を突き合わせている。表を変えたら両方を直すこと。
 pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込みの型（`register_builtin_globals`）
-    "int", "uint", "str", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
+    "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
     "pointer", "id", "Error",
     // 組み込みの例外クラス
     "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",

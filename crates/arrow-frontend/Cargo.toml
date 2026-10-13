@@ -19,6 +19,8 @@ regex = "1"
 #   **純 Rust のパーサなので wasm32 に載る**（editor_import_resolution_plan.md 2-2 で確かめた）。
 #   ルート crate では `native` に入っているが、それは Python 相互運用（pyo3）と一緒に外すため。
 rustpython-parser = "0.4"
+# ⚠ 評価コアの `bytes.decode` / `str.encode`（Shift_JIS など・ffi_value_exchange_plan.md 3-1）。純 Rust で wasm32 に載る。
+encoding_rs = "0.8"
 
 [features]
 default = ["editor"]

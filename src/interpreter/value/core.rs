@@ -60,6 +60,10 @@ pub enum Value {
     /// ただし **`deep_clone` は必ず独立バッファを作ること**（async のスレッド間 share-nothing。
     /// `Rc` の参照カウントは非アトミックなので共有したまま送ると壊れる）。
     Str(Rc<str>),
+    /// 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。C の `char*` などを、文字列に変換する前のまま受け取る型。
+    /// 文字列との変換は `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う（黙って UTF-8 とみなさない）。
+    /// 等値・ハッシュは中身で決まる（`str` と同じ値の型）。⚠ `deep_clone` は `Str` と同じく独立バッファを作ること。
+    Bytes(Rc<[u8]>),
     /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),
     /// `None` リテラル。Python の `None` に相当する。
@@ -212,6 +216,11 @@ impl Value {
         Value::Str(s.into())
     }
 
+    /// バイト列の値を作る（3-1）。
+    pub fn bytes(b: impl Into<Rc<[u8]>>) -> Value {
+        Value::Bytes(b.into())
+    }
+
     /// Create a fully independent deep copy with no shared Rc pointers.
     /// Used before sending values across thread boundaries for async tasks.
     pub fn deep_clone(&self) -> Value {
@@ -222,6 +231,8 @@ impl Value {
             Value::Complex(re, im) => Value::Complex(*re, *im),
             // Rc の参照カウントは非アトミック。スレッド間送出では共有せず必ず複製する（#15）。
             Value::Str(s) => Value::Str(Rc::from(&**s)),
+            // ⚠ `str` と同じく独立したバッファにする（下の `other => other.clone()` だと `Rc` を共有したまま送る）
+            Value::Bytes(b) => Value::Bytes(Rc::from(&**b)),
             Value::Bool(b) => Value::Bool(*b),
             Value::None => Value::None,
             Value::Undefined => Value::Undefined,

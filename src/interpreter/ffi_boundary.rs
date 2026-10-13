@@ -105,6 +105,7 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         InferredType::Int => prim(matches!(value, Value::Int(_) | Value::UInt(_)), value),
         InferredType::Float => prim(matches!(value, Value::Float(_)), value),
         InferredType::Str => prim(matches!(value, Value::Str(_)), value),
+        InferredType::Bytes => prim(matches!(value, Value::Bytes(_)), value),
         InferredType::Bool => prim(matches!(value, Value::Bool(_)), value),
         InferredType::None => prim(matches!(value, Value::None), value),
         InferredType::Complex => prim(matches!(value, Value::Complex(_, _)), value),

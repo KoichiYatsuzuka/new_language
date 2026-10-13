@@ -287,7 +287,7 @@ impl TypeChecker {
                 //    クラスは `__getitem__` へ委譲 ／ それ以外は実行時 TypeError。
                 if Self::is_slice_type(&idx_ty) {
                     let result = match &obj_ty {
-                        InferredType::List | InferredType::ListOf(_) | InferredType::Str => {
+                        InferredType::List | InferredType::ListOf(_) | InferredType::Str | InferredType::Bytes => {
                             obj_ty.clone()
                         }
                         // ⚠ tuple は**要素数が変わる**ので静的には決められない。
@@ -314,6 +314,10 @@ impl TypeChecker {
                         } else {
                             InferredType::Unresolved
                         }
+                    }
+                    // バイト列の添字は 0〜255 の `int`（3-1）
+                    InferredType::Bytes => {
+                        if matches!(idx_ty, InferredType::Int) { InferredType::Int } else { InferredType::Unresolved }
                     }
                     InferredType::Str => {
                         // 文字列の添字は文字列を返す

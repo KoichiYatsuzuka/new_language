@@ -131,6 +131,9 @@ impl TypeChecker {
                 T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => (**e).clone(),
                 T::DictOf(k, _) => (**k).clone(),
                 T::Str => T::Str,
+                // バイト列は部分列（`bytes`）か 1 バイト（`int`）を探せる（3-1）
+                T::Bytes if matches!(lt, T::Int) => return,
+                T::Bytes => T::Bytes,
                 // 要素型の判らない容器・tuple は判定しない。
                 _ => return,
             };
@@ -385,6 +388,7 @@ impl TypeChecker {
                 | (Int, Float)
                 | (Float, Int)
                 | (Str, Str)
+                | (Bytes, Bytes)
         )
     }
 
@@ -633,6 +637,8 @@ impl TypeChecker {
                 | (Complex, Float) | (Float, Complex)
                 | (Complex, Int)   | (Int, Complex) => Complex,
                 (Str, Str) => Str,
+                // バイト列の連結（3-1）
+                (Bytes, Bytes) => Bytes,
                 // 実測: `[1] + [2]` → `[1, 2]` ／ `(1,) + (2,)` → `(1, 2)`
                 // ⚠ 要素型は合成する（連結なのでどちらの要素も現れる）。
                 (ListOf(a), ListOf(b)) => ListOf(Box::new(Self::join2(a, b))),

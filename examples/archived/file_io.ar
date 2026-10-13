@@ -83,9 +83,9 @@ bf.write([72, 101, 108, 108, 111])   # "Hello" in bytes
 close(bf)
 
 let br = open("examples/_tmp_bytes.txt", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)
-let bytes = br.read()
+let data = br.read()
 close(br)
-print(bytes)   # [72, 101, 108, 108, 111]
+print(data)   # [72, 101, 108, 108, 111]
 
 # クリーンアップ (make_and_write 再実行のため)
 # (本来は例外処理や os モジュールを使うが、デモなので省略)

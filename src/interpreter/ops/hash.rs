@@ -70,6 +70,7 @@ enum Tag {
     Float,
     Complex,
     Str,
+    Bytes,
     Bool,
     None,
     Undefined,
@@ -172,6 +173,11 @@ impl Interpreter {
             Value::Str(s) => {
                 h.write_u8(Tag::Str as u8);
                 h.write(s.as_bytes());
+            }
+            // 中身で決まる値（`str` と同じ。等値側の `values_eq` も中身で比べる・3-1）
+            Value::Bytes(b) => {
+                h.write_u8(Tag::Bytes as u8);
+                h.write(b);
             }
             Value::Bool(b) => {
                 h.write_u8(Tag::Bool as u8);

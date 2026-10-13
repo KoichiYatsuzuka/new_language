@@ -236,6 +236,9 @@ impl Interpreter {
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(s.contains(&**sub)))
             }
+            // バイト列（3-1・Python と同じ）: 部分列か、0〜255 の整数がバイトとして含まれるか
+            (BinOp::In, Value::Bytes(sub), Value::Bytes(s)) => Ok(Value::Bool(bytes_contains(s, sub))),
+            (BinOp::In, Value::Int(n), Value::Bytes(s)) => Ok(Value::Bool(s.contains(&byte_of(*n)?))),
             // ⚠ キーにできない値の包含検査は `false` ではなく**エラー**（B1-a）。
             // ⚠ `apply_binop` は `&self` なので `__hash__` / `__eq__` を回せない。
             //    ⇒ 純粋な経路で引く。ディスパッチが要る形は `apply_binop_dyn` が先に処理する。
@@ -260,6 +263,8 @@ impl Interpreter {
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(&**sub)))
             }
+            (BinOp::NotIn, Value::Bytes(sub), Value::Bytes(s)) => Ok(Value::Bool(!bytes_contains(s, sub))),
+            (BinOp::NotIn, Value::Int(n), Value::Bytes(s)) => Ok(Value::Bool(!s.contains(&byte_of(*n)?))),
             (BinOp::NotIn, item, Value::Dict(d)) => {
                 Ok(Value::Bool(Self::dict_get_pure(&d.borrow(), item)?.is_none()))
             }
@@ -280,6 +285,8 @@ impl Interpreter {
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
+            // バイト列の連結（新しい値を作る・3-1）
+            (BinOp::Add, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::bytes([&a[..], &b[..]].concat())),
             // `Code + Code` — 行の連結（設計書 §1.2 / タスク 2-10）。
             // ⚠ 新しい `Code` を作る（左辺を壊さない）。`str` / `list` の連結と同じ。
             (BinOp::Add, Value::Code(a), Value::Code(b)) => {
@@ -415,6 +422,11 @@ impl Interpreter {
             (BinOp::Gt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a > b)),
             (BinOp::LtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a <= b)),
             (BinOp::GtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a >= b)),
+            // バイト列同士の順序比較（バイトの辞書順・3-1）
+            (BinOp::Lt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::LtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::GtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a >= b)),
             // uint 算術・比較
             (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
             (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
@@ -547,4 +559,14 @@ impl Interpreter {
         }
     }
 
+}
+
+/// `sub` が `s` の部分列か（`b"bc" in b"abc"`・3-1）。空の列はどこにでも含まれる（Python と同じ）。
+fn bytes_contains(s: &[u8], sub: &[u8]) -> bool {
+    sub.is_empty() || s.windows(sub.len()).any(|w| w == sub)
+}
+
+/// バイトとして扱う整数（0〜255。範囲外は Python と同じく ValueError・3-1）。
+pub(crate) fn byte_of(n: i64) -> Result<u8, String> {
+    u8::try_from(n).map_err(|_| format!("ValueError: byte must be in range(0, 256), not {n}"))
 }

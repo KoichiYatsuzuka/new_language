@@ -24,8 +24,31 @@ fn add(let a: int, let b: int) -> int: ...
 | `int` | `Value::Int(i64)` | 64 ビット符号付き整数 |
 | `float` | `Value::Float(f64)` | 64 ビット浮動小数点 |
 | `str` | `Value::Str(String)` | Unicode 文字列 |
+| `bytes` | `Value::Bytes(Rc<[u8]>)` | 不変のバイト列（下の「`bytes`」） |
 | `bool` | `Value::Bool(bool)` | 真偽値 (`True` / `False`) |
 | `None` | `Value::None` | 値なし |
+
+### `bytes` — バイト列
+
+C の `char*` などを、文字列に変換する前のまま扱うための不変のバイト列です。`str` とは別の型で、
+相互の変換は文字コードを書いて明示的に行います（黙って UTF-8 とみなしません）。
+
+```ar
+let b: bytes = "日本語".encode("shift_jis")   # str → bytes
+let s: str = b.decode("cp932")                 # bytes → str
+let raw = bytes([104, 105, 255])               # 0〜255 の int のリストから
+print(raw)                                     # b'hi\xff'
+print(len(raw), raw[0], raw[0:2])              # 3 104 b'hi'
+for x in raw:                                  # 各要素は 0〜255 の int
+    print(x)
+```
+
+- `len` / 添字（`int`）/ スライス（`bytes`）/ 反復（`int`）/ `==` と順序比較 / `+`（連結）/ `in`（部分列、または 0〜255 の
+  `int`）。`dict` のキー・`set` の要素にもなる
+- 文字コード: `utf-8`（既定）・`utf-16-le` / `utf-16-be`・`ascii`・`latin-1`・`shift_jis`（`cp932`）・その他の WHATWG の名前
+  （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `ValueError`（置き換え文字にしない）
+- `bytes(str)` は `TypeError`（`s.encode(..)` を使う）。リテラルの構文（`b"..."`）はまだありません
+- ⚠ 以前の `str.encode()` は文字コードを無視して `list[int]` を返していました
 
 ---
 

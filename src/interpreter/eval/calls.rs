@@ -428,6 +428,32 @@ impl Interpreter {
                     _ => Err("TypeError: str() takes at most 1 argument".to_string()),
                 }
             },
+            // `bytes()` / `bytes(b)` / `bytes(list[int])`（3-1）。文字列からは `s.encode(encoding)` で作る
+            // （Python と同じく、文字コードを書かずに文字列をバイト列にはしない）。
+            "bytes" => match vals.as_slice() {
+                [] => Ok(Value::bytes(Vec::new())),
+                [Value::Bytes(b)] => Ok(Value::bytes(b.to_vec())),
+                [Value::List(items)] => {
+                    let mut out = Vec::with_capacity(items.borrow().len());
+                    for v in items.borrow().iter() {
+                        match v {
+                            Value::Int(n) => out.push(crate::interpreter::ops::byte_of(*n)?),
+                            other => {
+                                return Err(format!(
+                                    "TypeError: bytes() takes a list of int, but an element is '{}'",
+                                    self.type_name(other)
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::bytes(out))
+                }
+                [Value::Str(_)] => Err(
+                    "TypeError: bytes() cannot take a str without an encoding; use s.encode(\"utf-8\")".to_string(),
+                ),
+                [other] => Err(format!("TypeError: cannot convert '{}' to bytes", self.type_name(other))),
+                _ => Err("TypeError: bytes() takes at most 1 argument".to_string()),
+            },
             "int" => match vals.as_slice() {
                 [] => Ok(Value::Int(0)),
                 [Value::Int(n)] => Ok(Value::Int(*n)),

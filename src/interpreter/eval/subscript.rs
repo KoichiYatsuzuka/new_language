@@ -26,6 +26,7 @@ impl Interpreter {
             "int" => matches!(val, Value::Int(_)),
             "float" => matches!(val, Value::Float(_) | Value::Int(_)),
             "str" => matches!(val, Value::Str(_)),
+            "bytes" => matches!(val, Value::Bytes(_)),
             "bool" => matches!(val, Value::Bool(_)),
             "None" => matches!(val, Value::None),
             "list" => matches!(val, Value::List(_)),
@@ -130,6 +131,21 @@ impl Interpreter {
                 }
                 Ok(Value::str(chars[actual as usize].to_string()))
             }
+            // バイト列の添字は 0〜255 の整数（Python と同じ・3-1）
+            Value::Bytes(b) => {
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: bytes indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
+                let len = b.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(format!("IndexError: bytes index {} out of range", idx));
+                }
+                Ok(Value::Int(b[actual as usize] as i64))
+            }
             Value::Tuple(td) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
                     format!(
@@ -196,6 +212,10 @@ impl Interpreter {
                 let len = chars.len() as i64;
                 let indices = compute_slice_indices(len, begin, end, step);
                 Ok(Value::str(indices.into_iter().map(|i| chars[i]).collect::<String>()))
+            }
+            Value::Bytes(b) => {
+                let indices = compute_slice_indices(b.len() as i64, begin, end, step);
+                Ok(Value::bytes(indices.into_iter().map(|i| b[i]).collect::<Vec<u8>>()))
             }
             Value::Tuple(td) => {
                 let vals = td.all_values();
@@ -292,6 +312,8 @@ impl Interpreter {
             }
             Value::Tuple(td) => Ok(td.all_values().to_vec()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
+            // バイト列は 0〜255 の整数（`make_for_iterator` と同じ規則・3-1）
+            Value::Bytes(b) => Ok(b.iter().map(|&c| Value::Int(c as i64)).collect()),
             Value::Set(items) => Ok(items.borrow().clone()),
             // ★ 辞書は**キー**を返す（`make_for_iterator` と同じ規則にすること）。
             Value::Dict(ref d) => Ok(d.borrow().all_keys()),

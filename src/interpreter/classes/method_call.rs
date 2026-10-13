@@ -292,6 +292,7 @@ impl Interpreter {
                 }
             }
             Value::Str(s) => self.eval_str_method(s.clone(), method_name, evaled),
+            Value::Bytes(b) => self.eval_bytes_method(b.clone(), method_name, evaled),
             Value::Complex(re, im) => {
                 let re = *re;
                 let im = *im;

@@ -137,6 +137,8 @@ impl TypeChecker {
             }
             // 文字列の反復は 1 文字ずつの `str` を返す。
             InferredType::Str => InferredType::Str,
+            // バイト列の反復は 0〜255 の `int`（3-1）
+            InferredType::Bytes => InferredType::Int,
             _ => InferredType::Unresolved,
         }
     }
@@ -456,6 +458,7 @@ impl TypeChecker {
             "int" => InferredType::Int,
             "float" => InferredType::Float,
             "str" => InferredType::Str,
+            "bytes" => InferredType::Bytes,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
             "Any" => InferredType::Any,
