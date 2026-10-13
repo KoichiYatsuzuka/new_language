@@ -289,6 +289,13 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 | 32 | `call_method` | `i64(i64, ptr, i32, ptr, i32)` |
 | 33 | `get_float_field` | `double(i64, ptr, i32)` |
 | 34 | `get_int_field` | `i64(i64, ptr, i32)` |
+| 35 | `flat_data_ptr` | `i64(i64)` |
+| 36 | `flat_len` | `i64(i64)` |
+| 37 | `fn_trampoline` | `ptr(i64)` |
+| 38 | `to_bool` | `i32(i64)` — `True` / `False` only; anything else sets a TypeError (ffi plan 7-12) |
+| 39 | `pending_error` | `i32()` — 1 if an argument conversion set an error; the cpp / rs wrappers then return without calling the native function (7-12) |
+
+⚠ `to_int` (22) / `to_float` (23) accept numbers only (`float` truncates, `bool` is 0 / 1); a non-number (`None`, `str`, `list`, `Ptr` …) sets a TypeError and returns 0 (7-12 — it used to return 0 silently). New fields go **at the end**: the cpp / rs wrappers declare a prefix of the struct and the LLVM code indexes it.
 
 ### Generated Function Variants
 

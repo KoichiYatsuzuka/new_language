@@ -1,4 +1,4 @@
-#stamp 490ad174b071735d
+#stamp 2fe8db62f7a5fd24
 fp_len
 fp_make_rec
 fp_rec_score_val
@@ -25,3 +25,7 @@ fp_i16_out
 fp_long_out
 fp_u64_out
 fp_make_u64box
+fp_count_int
+fp_count_flag
+fp_count_double
+fp_call_count

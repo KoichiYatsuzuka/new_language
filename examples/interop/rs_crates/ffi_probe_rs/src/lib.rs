@@ -155,3 +155,29 @@ pub fn ident<T>(x: T) -> T {
 pub fn bump(n: &mut i64) {
     *n += 1;
 }
+
+// ── 引数の検査（タスク 7-12）: count_* の呼び出しを数えて、誤った引数で呼ばれていないかを確かめる ──
+static CALLS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+fn counted() {
+    CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+pub fn count_i64(v: i64) -> i64 {
+    counted();
+    v
+}
+pub fn count_flag(b: bool) -> i64 {
+    counted();
+    b as i64
+}
+pub fn count_f64(d: f64) -> i64 {
+    counted();
+    d as i64
+}
+pub fn count_text(s: &str) -> i64 {
+    counted();
+    s.len() as i64
+}
+pub fn call_count() -> i64 {
+    CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}

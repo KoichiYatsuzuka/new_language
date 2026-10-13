@@ -1,0 +1,44 @@
+# rs_native_arg_check.ar — Rust の数値・bool・文字列の引数に合わない値が届いたら TypeError にし、Rust の関数を
+# 呼ばない（ffi_value_exchange_plan.md 7-12）
+#
+# 素の `function` 型の変数を通すと引数は静的に照合されない。以前はそこで数値でない値が黙って 0 に、`bool` の引数は
+# `True` 以外が黙って偽に、`&str` の引数は `str` 以外が空文字列になり、その値で Rust の関数が呼ばれていた
+# （文字列だけは呼んだ後でエラーになった）。今は TypeError にして、Rust の関数は呼ばない。
+# 数値どうしは従来どおり（`float` は切り捨て・`bool` は 0 / 1）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 実行には cargo が要る（rs_crates/ffi_probe_rs を中継 DLL ごとビルドする。ar_config.json の rust.crates_path）。
+# 対になる例: cpp_native_arg_check.ar（C）
+
+import[rs] ffi_probe_rs as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# 引数を静的に照合しない呼び出し（`function` 型の仮引数を通す）。戻り値は `Any` なので `mustbe` で取り出す
+fn call(let f: function, let arg: Any) -> int:
+    return f(arg) mustbe int
+
+check("int is passed", call(fp.count_i64, 7) == 7)
+check("float to int truncates", call(fp.count_i64, 3.7) == 3)
+check("bool parameter", call(fp.count_flag, True) == 1 and call(fp.count_flag, False) == 0)
+check("int to f64 widens", call(fp.count_f64, 5) == 5)
+check("str parameter", call(fp.count_text, "abc") == 3)
+let before = fp.call_count()
+
+fn rejected(let label: str, let f: function, let arg: Any) -> None:
+    mut message = ""
+    try:
+        print("unreachable:", call(f, arg))
+    except TypeError as e:
+        message = e.message
+    check(label + " -> TypeError (" + message + ")", message != "")
+
+rejected("str to i64", fp.count_i64, "abc")
+rejected("None to i64", fp.count_i64, None)
+rejected("list to f64", fp.count_f64, [1.5])
+rejected("int to bool", fp.count_flag, 1)
+rejected("None to &str", fp.count_text, None)
+check("the Rust function was not called", fp.call_count() == before)

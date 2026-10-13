@@ -75,3 +75,9 @@ int fp_db_count(Db* db) { return db ? db->count : -1; }
 void fp_db_close(Db* db) { free(db); }
 
 int fp_sum(const int* xs, int n) { int s = 0; for (int i = 0; i < n; i++) s += xs[i]; return s; }
+
+static int g_calls = 0;
+int fp_count_int(int v) { g_calls++; return v; }
+int fp_count_flag(bool b) { g_calls++; return b ? 1 : 0; }
+int fp_count_double(double d) { g_calls++; return (int)d; }
+int fp_call_count(void) { return g_calls; }

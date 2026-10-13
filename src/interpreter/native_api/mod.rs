@@ -468,6 +468,15 @@ pub struct ArCallbacks {
 
     // ── Function-object trampoline (field 37) ─────────────────────────────────
     pub fn_trampoline: extern "C" fn(i64) -> *const (),
+
+    // ── Strict argument conversion (fields 38-39・ffi_value_exchange_plan.md 7-12) ──
+    // ⚠ 末尾に足すこと。中継コード（cpp / rs）は**この構造体の先頭部分だけ**を宣言しているので、途中に足すと
+    //   既存の生成コードの添字がずれる（LLVM の生成コードは添字で引く・`llvm_codegen` の `CB_*`）。
+    /// `bool` の引数（C の `bool`・Rust の `bool`）を 0 / 1 にする。`True` / `False` 以外はエラーを設定して 0。
+    pub to_bool: extern "C" fn(i64) -> i32,
+    /// 引数の変換でエラーが設定されたか（1 = 設定された）。中継コードは引数を全部変換した後にこれを見て、
+    /// 1 なら C / Rust の関数を**呼ばずに**戻る（呼び出しの後でエラーが例外になる）。
+    pub pending_error: extern "C" fn() -> i32,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

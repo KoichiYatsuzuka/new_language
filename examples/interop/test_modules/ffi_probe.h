@@ -80,6 +80,12 @@ void fp_db_close(Db* db);
 // -- arrays --------------------------------------------------------------------
 int fp_sum(const int* xs, int n);
 
+// -- argument checks (task 7-12): each fp_count_* call is counted, so a test can see whether it was called -----
+int fp_count_int(int v);                    // returns v
+int fp_count_flag(bool b);                  // returns 1 for true, 0 for false
+int fp_count_double(double d);              // returns (int)d
+int fp_call_count(void);                    // number of fp_count_* calls so far
+
 #ifdef __cplusplus
 }
 #endif

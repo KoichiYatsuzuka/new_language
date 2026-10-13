@@ -652,36 +652,98 @@ extern "C" fn ar_deep_copy(h: i64) -> i64 {
     push_handle(copied)
 }
 
+/// ネイティブの `int` を取り出す（C / Rust の整数の引数・ネイティブコンパイルの生成コードの開封）。
+///
+/// 数値どうしは C の暗黙の変換と同じ（`float` は切り捨て・`bool` は 0 / 1・幅への切り詰めは中継コード）。
+/// ⚠ **数値でない値（`None`・`str`・`list`・`Ptr` …）はエラー**を設定して 0 を返す（7-12）。以前は黙って 0 にしていて、
+///   素の `function` 型の変数を通して `fp.fp_is_even("abc")` が `True` を返していた（実測）。中継コードは
+///   `pending_error` を見て C / Rust の関数を呼ばずに戻る。
 extern "C" fn ar_to_int(h: i64) -> i64 {
     match h {
-        TL_NONE => 0,
         TL_TRUE => 1,
         TL_FALSE => 0,
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => n - 3,
-        n => STATE.with(|s| match s.borrow().arena.get(n as usize) {
-            Some(Value::Int(v)) => *v,
-            Some(Value::UInt(v)) => *v as i64,
-            Some(Value::Float(f)) => *f as i64,
-            Some(Value::Bool(b)) => *b as i64,
-            _ => 0,
+        n => {
+            let r = STATE.with(|s| match s.borrow().arena.get(n as usize) {
+                Some(Value::Int(v)) => Some(*v),
+                Some(Value::UInt(v)) => Some(*v as i64),
+                Some(Value::Float(f)) => Some(*f as i64),
+                Some(Value::Bool(b)) => Some(*b as i64),
+                _ => None,
+            });
+            r.unwrap_or_else(|| {
+                let got = handle_type_name(n);
+                set_argument_error(format!("TypeError: a native int argument must be a number, not '{got}'"));
+                0
+            })
+        }
+    }
+}
+
+/// ネイティブの `float` を取り出す。規則は [`ar_to_int`] と同じ（`int` は広げる・数値でない値はエラー・7-12）。
+extern "C" fn ar_to_float(h: i64) -> f64 {
+    match h {
+        TL_TRUE => 1.0,
+        TL_FALSE => 0.0,
+        n if n >= 3 && (n as usize) < INT_CACHE_BASE => (n - 3) as f64,
+        n => {
+            let r = STATE.with(|s| match s.borrow().arena.get(n as usize) {
+                Some(Value::Int(v)) => Some(*v as f64),
+                Some(Value::UInt(v)) => Some(*v as f64),
+                Some(Value::Float(f)) => Some(*f),
+                Some(Value::Bool(b)) => Some(*b as u8 as f64),
+                _ => None,
+            });
+            r.unwrap_or_else(|| {
+                let got = handle_type_name(n);
+                set_argument_error(format!("TypeError: a native float argument must be a number, not '{got}'"));
+                0.0
+            })
+        }
+    }
+}
+
+/// ネイティブの `bool` を取り出す（7-12）。`True` / `False` だけ。以前は中継コードが `h == TL_TRUE` と比べていて、
+/// `True` 以外は何でも黙って偽になっていた。
+extern "C" fn ar_to_bool(h: i64) -> i32 {
+    match h {
+        TL_TRUE => 1,
+        TL_FALSE => 0,
+        n => {
+            let got = handle_type_name(n);
+            set_argument_error(format!("TypeError: a native bool argument must be a bool, not '{got}'"));
+            0
+        }
+    }
+}
+
+/// 引数の変換でエラーが設定されたか（7-12・`ArCallbacks::pending_error` の doc）。
+extern "C" fn ar_pending_error() -> i32 {
+    STATE.with(|s| s.borrow().error.is_some() as i32)
+}
+
+/// ハンドルの値の型名（エラーの表示用）。⚠ `None` / `True` / `False` / 小さい整数はアリーナに入らず番号で表す
+/// （`push_value`）ので、番号で見分けてからアリーナを引く。
+fn handle_type_name(h: i64) -> String {
+    use crate::interpreter::ops::typecheck::runtime_type_name;
+    match h {
+        TL_NONE => runtime_type_name(&Value::None).to_string(),
+        TL_TRUE | TL_FALSE => "bool".to_string(),
+        n if n >= 3 && (n as usize) < INT_CACHE_BASE => "int".to_string(),
+        n => STATE.with(|s| {
+            s.borrow().arena.get(n as usize).map_or("invalid handle".to_string(), |v| runtime_type_name(v).to_string())
         }),
     }
 }
 
-extern "C" fn ar_to_float(h: i64) -> f64 {
-    match h {
-        TL_NONE => 0.0,
-        TL_TRUE => 1.0,
-        TL_FALSE => 0.0,
-        n if n >= 3 && (n as usize) < INT_CACHE_BASE => (n - 3) as f64,
-        n => STATE.with(|s| match s.borrow().arena.get(n as usize) {
-            Some(Value::Int(v)) => *v as f64,
-            Some(Value::UInt(v)) => *v as f64,
-            Some(Value::Float(f)) => *f,
-            Some(Value::Bool(b)) => *b as u8 as f64,
-            _ => 0.0,
-        }),
-    }
+/// 引数の変換の誤りを設定する。⚠ **最初の誤りを残す**（2 つ目の引数の誤りで 1 つ目を上書きしない）。
+fn set_argument_error(msg: String) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_none() {
+            st.error = Some(msg);
+        }
+    });
 }
 
 // ── cpp-bridge helpers ───────────────────────────────────────────────────────
@@ -982,6 +1044,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     flat_data_ptr: ar_flat_data_ptr,
     flat_len: ar_flat_len,
     fn_trampoline: ar_fn_trampoline,
+    to_bool: ar_to_bool,
+    pending_error: ar_pending_error,
 };
 
 #[cfg(test)]
@@ -1030,6 +1094,43 @@ mod tests {
         let h = ar_make_str(b"a\0b".as_ptr(), 3);
         assert!(ar_to_cstr(h).is_null());
         assert!(take_error().is_some_and(|e| e.contains("NUL")));
+    }
+
+    /// 数値でない値は 0 にせずエラーにする。最初の誤りを残す。数値どうしは C の暗黙の変換のまま（7-12）。
+    #[test]
+    fn to_int_and_to_float_reject_non_numbers() {
+        let s = ar_make_str(b"abc".as_ptr(), 3);
+        assert_eq!(ar_pending_error(), 0);
+        assert_eq!(ar_to_int(s), 0);
+        assert_eq!(ar_pending_error(), 1);
+        // 2 つ目の誤りで 1 つ目を上書きしない
+        assert_eq!(ar_to_float(TL_NONE), 0.0);
+        assert!(take_error().is_some_and(|e| e.contains("int argument must be a number") && e.contains("'str'")));
+        assert_eq!(ar_pending_error(), 0);
+        assert_eq!(ar_to_float(TL_NONE), 0.0);
+        assert!(take_error().is_some_and(|e| e.contains("float argument") && e.contains("NoneType")));
+        let xs = ar_make_list(std::ptr::null(), 0);
+        assert_eq!(ar_to_int(xs), 0);
+        assert!(take_error().is_some_and(|e| e.contains("'list'")));
+        // 数値どうし
+        assert_eq!(ar_to_int(push_handle(Value::Float(3.7))), 3);
+        assert_eq!(ar_to_int(TL_TRUE), 1);
+        assert_eq!(ar_to_int(push_handle(Value::Int(1 << 40))), 1 << 40);
+        assert_eq!(ar_to_float(push_handle(Value::Int(5))), 5.0);
+        assert!(take_error().is_none());
+    }
+
+    /// `bool` の引数は `True` / `False` だけ。以前は `True` 以外を黙って偽にしていた（7-12）。
+    #[test]
+    fn to_bool_accepts_only_bools() {
+        assert_eq!(ar_to_bool(TL_TRUE), 1);
+        assert_eq!(ar_to_bool(TL_FALSE), 0);
+        assert!(take_error().is_none());
+        // 小さい整数はアリーナに入らない（番号で表す）ので、型名を取り違えない
+        assert_eq!(ar_to_bool(push_handle(Value::Int(1))), 0);
+        assert!(take_error().is_some_and(|e| e.contains("must be a bool") && e.contains("'int'")));
+        assert_eq!(ar_to_bool(TL_NONE), 0);
+        assert!(take_error().is_some_and(|e| e.contains("NoneType")));
     }
 
     /// 名前を受け取るコールバックも同じ検査を通る（不正なら呼び出しのエラー）。

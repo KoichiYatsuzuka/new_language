@@ -45,6 +45,10 @@ struct ArCallbacks {
     write_handle:  unsafe extern "C" fn(i64, i64),
     list_append:   unsafe extern "C" fn(i64, i64) -> i64,
     raise_exc:     unsafe extern "C" fn(i64, i64) -> i64,
+    // fields 29-37: not used by this wrapper (declared only to reach the fields after them)
+    _unused_29_37: [usize; 9],
+    to_bool:       unsafe extern "C" fn(i64) -> i32,
+    pending_error: unsafe extern "C" fn() -> i32,
 }
 
 static mut CB: *const ArCallbacks = std::ptr::null();
@@ -335,6 +339,12 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
         }
     }
 
+    // 引数の変換（`to_int` / `to_float` / `to_bool` / 構造体のフィールド）でエラーが出たら、C 関数を呼ばずに戻る
+    // （呼び出しの後でエラーが例外になる・7-12）。以前は数値でない値を黙って 0 にして呼んでいた。
+    if !sig.params.is_empty() {
+        s.push_str(&format!("    if ((*CB).pending_error)() != 0 {{ return {TL_NONE}i64; }}\n"));
+    }
+
     // Build call argument list
     let args: Vec<String> = sig
         .params
@@ -579,6 +589,23 @@ mod tests {
         assert!(s.contains("let _v = _Struct_Rec {"), "{s}");
         assert!(s.contains("let _raw_r: _Struct_Rec = _fp(_v);"), "{s}");
         assert!(!s.contains("as *mut i8"), "{s}");
+    }
+
+    /// 引数を変換した後、エラーが設定されていれば C の関数を呼ばずに戻る。`bool` の引数は `to_bool`（7-12）。
+    #[test]
+    fn wrapper_returns_before_the_call_when_an_argument_fails() {
+        let sig = CFnSig {
+            name: "f".to_string(),
+            params: vec![("n".to_string(), CType::Int { width: IntWidth::W32, signed: true }), ("b".to_string(), CType::Bool)],
+            ret: CType::Int { width: IntWidth::W32, signed: true },
+            namespace: None,
+            n_required: 2,
+        };
+        let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
+        let check = s.find("((*CB).pending_error)() != 0").expect(&s);
+        let call = s.find("_fp(").expect(&s);
+        assert!(check < call, "{s}");
+        assert!(s.contains("((*CB).to_bool)(*argv.offset(1)) as u8"), "{s}");
     }
 
     /// レイアウトが正確に分からない構造体（不完全・定義が無い）を値で受け渡す関数は生成しない。

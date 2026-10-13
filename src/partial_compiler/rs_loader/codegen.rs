@@ -52,6 +52,10 @@ struct ArCallbacks {
     get_cell:      unsafe extern "C" fn(i64) -> i64,
     set_cell:      unsafe extern "C" fn(i64, i64),
     call_method:   unsafe extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
+    // fields 33-37: not used by this wrapper (declared only to reach the fields after them)
+    _unused_33_37: [usize; 5],
+    to_bool:       unsafe extern "C" fn(i64) -> i32,
+    pending_error: unsafe extern "C" fn() -> i32,
 }
 
 static mut CB: *const ArCallbacks = std::ptr::null();
@@ -65,6 +69,9 @@ pub unsafe extern "C" fn ar_init(cb: *const ArCallbacks) { CB = cb; }
 #[inline(always)] unsafe fn cb_to_int(h: i64) -> i64     { ((*CB).to_int)(h) }
 #[inline(always)] unsafe fn cb_to_float(h: i64) -> f64   { ((*CB).to_float)(h) }
 #[inline(always)] unsafe fn cb_to_cstr(h: i64) -> *const u8 { ((*CB).to_cstr)(h) }
+#[inline(always)] unsafe fn cb_to_bool(h: i64) -> bool    { ((*CB).to_bool)(h) != 0 }
+// An argument conversion set an error (7-12): return without calling the Rust function.
+#[inline(always)] unsafe fn cb_pending_error() -> bool   { ((*CB).pending_error)() != 0 }
 
 #[inline(always)]
 unsafe fn cb_get_attr(obj_h: i64, name: &[u8]) -> i64 {
@@ -214,6 +221,7 @@ pub(crate) fn struct_init_wrapper(st: &RsStructSig, crate_ident: &str) -> String
             for (i, p) in st.ctor_params.iter().enumerate() {
                 construct.push_str(&indent(&param_conversion(i + 1, &p.name, &p.rust_type), 8));
             }
+            construct.push_str(&indent(PENDING_CHECK, 8));
             let args: Vec<String> = st.ctor_params.iter().map(|p| p.name.clone()).collect();
             if st.use_new_fn {
                 construct.push_str(&format!("            {crate_ident}::{name}::new({})\n", args.join(", ")));
@@ -286,7 +294,7 @@ pub(crate) fn struct_setter_wrapper(struct_name: &str, field: &RsField) -> Strin
     let arena = format!("{}()", arena_getter_fn(struct_name));
     let fname = &field.name;
     let sym = format!("{struct_name}__set_{fname}_tl");
-    let decode = param_conversion(1, "_val", &field.rust_type);
+    let decode = format!("{}{PENDING_CHECK}", param_conversion(1, "_val", &field.rust_type));
     let val_handle = rust_value_to_handle_of("_val", &field.rust_type, fname);
     format!(
         "#[no_mangle]\npub unsafe extern \"C\" fn {sym}(args: *const i64, _n: i32) -> i64 {{\n    \
@@ -325,6 +333,7 @@ pub(crate) fn struct_method_wrapper(struct_name: &str, m: &RsMethodSig, crate_id
     for (i, p) in m.params.iter().enumerate() {
         out.push_str(&param_conversion(i + 1, &p.name, &p.rust_type));
     }
+    out.push_str(PENDING_CHECK);
 
     let args_call: Vec<String> = m.params.iter().map(|p| p.name.clone()).collect();
     let call_expr = format!("_obj.{mname}({})", args_call.join(", "));
@@ -388,6 +397,11 @@ pub(crate) fn rust_value_to_handle_of(expr: &str, rust_type: &str, what: &str) -
     }
 }
 
+/// Emitted after all arguments are decoded: if a conversion set an error (a number parameter got a `str`, a
+/// `String` parameter got `None` …), return without calling the Rust code — the error becomes an exception after
+/// the call (7-12). It used to call the Rust code with `0` / `false` / `""` in place of the argument.
+const PENDING_CHECK: &str = "    if cb_pending_error() { return TL_NONE; }\n";
+
 /// Decode argument `i` into a Rust local `name`. Integers that do not fit the Rust type raise OverflowError
 /// (2-5: they used to wrap around with `as`, e.g. 300 for a `u8` became 44, -1 for a `u64` became 2^64-1).
 pub(crate) fn param_conversion(i: usize, name: &str, rust_type: &str) -> String {
@@ -398,7 +412,8 @@ pub(crate) fn param_conversion(i: usize, name: &str, rust_type: &str) -> String 
         ),
         "f64" => format!("    let {name}: f64 = cb_to_float(*args.add({i}));\n"),
         "f32" => format!("    let {name}: f32 = cb_to_float(*args.add({i})) as f32;\n"),
-        "bool" => format!("    let {name}: bool = *args.add({i}) == TL_TRUE;\n"),
+        // `True` / `False` 以外はエラー（7-12。以前は `True` 以外を黙って偽にしていた）
+        "bool" => format!("    let {name}: bool = cb_to_bool(*args.add({i}));\n"),
         "String" =>
             format!("    let {name}: String = handle_to_string(*args.add({i}));\n"),
         "&str" | "&String" =>
@@ -469,6 +484,7 @@ pub(crate) fn fn_wrapper(sig: &RsFnSig, crate_ident: &str) -> String {
     for (i, p) in sig.params.iter().enumerate() {
         out.push_str(&param_conversion(i, &p.name, &p.rust_type));
     }
+    out.push_str(PENDING_CHECK);
 
     let args: Vec<String> = sig.params.iter().map(|p| p.name.clone()).collect();
     let call = format!("{crate_ident}::{name}({})", args.join(", "));

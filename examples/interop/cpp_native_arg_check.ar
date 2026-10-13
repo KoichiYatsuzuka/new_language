@@ -1,0 +1,48 @@
+# cpp_native_arg_check.ar — C の数値・bool の引数に数値でない値が届いたら TypeError にし、C の関数を呼ばない（7-12）
+#
+# 型検査は `int` の引数へ `str` を渡すのを止めるが、素の `function` 型の変数を通すと引数は照合されない。以前はそこで
+# 数値でない値（`None`・`str`・`list` …）が黙って 0 になり、`bool` の引数は `True` 以外が黙って偽になって、その値で
+# C の関数が呼ばれていた（実測: `fp_is_even("abc")` が `True`）。今は TypeError にして、C の関数は呼ばない。
+# 数値どうしは C の暗黙の変換のまま（`float` は切り捨て・`bool` は 0 / 1・`int` は `double` へ広げる）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_native_arg_error.ar（捕まえない TypeError・cpp-lib）。Rust の crate は rs_native_arg_check.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# 引数を静的に照合しない呼び出し（`function` 型の仮引数を通す）。戻り値は `Any` なので `mustbe` で取り出す
+fn call(let f: function, let arg: Any) -> int:
+    return f(arg) mustbe int
+
+let count_int = fp.fp_count_int
+let count_flag = fp.fp_count_flag
+let count_double = fp.fp_count_double
+
+check("int is passed", call(count_int, 7) == 7)
+check("float to int truncates (C conversion)", call(count_int, 3.7) == 3)
+check("bool to int is 0 / 1", call(count_int, True) == 1)
+check("int to double widens", call(count_double, 5) == 5)
+check("bool parameter", call(count_flag, True) == 1 and call(count_flag, False) == 0)
+let before = fp.fp_call_count()
+
+fn rejected(let label: str, let f: function, let arg: Any) -> None:
+    mut message = ""
+    try:
+        print("unreachable:", call(f, arg))
+    except TypeError as e:
+        message = e.message
+    check(label + " -> TypeError (" + message + ")", message != "")
+
+rejected("str to int", count_int, "abc")
+rejected("None to int", count_int, None)
+rejected("list to int", count_int, [1])
+rejected("str to double", count_double, "1.5")
+rejected("int to bool", count_flag, 1)
+rejected("None to bool", count_flag, None)
+check("the C function was not called", fp.fp_call_count() == before)

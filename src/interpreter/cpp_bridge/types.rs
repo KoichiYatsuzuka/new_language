@@ -84,7 +84,8 @@ impl CType {
             }
             CType::Float => format!("((*CB).to_float)({handle}) as f32"),
             CType::Double => format!("((*CB).to_float)({handle})"),
-            CType::Bool => format!("if {handle} == {TL_TRUE}i64 {{ 1u8 }} else {{ 0u8 }}"),
+            // `True` / `False` 以外はエラー（7-12。以前は `True` 以外を黙って偽にしていた）
+            CType::Bool => format!("((*CB).to_bool)({handle}) as u8"),
             CType::Void => "()".to_string(),
             // 構造体ポインタは typed 経路で受け渡す（`AbiTy::Ptr`）。typed 経路に合わない引数はハンドル経路へ
             // 落とさずエラーにする（`TypedArgs::marshal`・1-2）ので、ここは typed の関数が見つからないときだけ。

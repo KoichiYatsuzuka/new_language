@@ -116,7 +116,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (257 files, 103838 lines)
+src/  (257 files, 104055 lines)
   ar_config.rs (249)
   arc_format.rs (123)
   ast.rs (1648)
@@ -209,10 +209,10 @@ src/  (257 files, 103838 lines)
       set_methods.rs (149)
       string_methods.rs (615)
     cpp_bridge/
-      codegen.rs (672)
+      codegen.rs (699)
       compiler.rs (786)
       mod.rs (31)
-      types.rs (158)
+      types.rs (159)
     eval/
       attrs.rs (646)
       builtins.rs (952)
@@ -238,8 +238,8 @@ src/  (257 files, 103838 lines)
       mod.rs (7)
       overload.rs (223)
     native_api/
-      callbacks.rs (1042)
-      mod.rs (476)
+      callbacks.rs (1143)
+      mod.rs (485)
     ops/
       display.rs (346)
       equality.rs (555)
@@ -285,7 +285,7 @@ src/  (257 files, 103838 lines)
       mod.rs (26)
       native.rs (584)
       objects.rs (158)
-      ptr.rs (480)
+      ptr.rs (543)
   lexer/
     chars.rs (45)
     editor_tokens.rs (144)
@@ -343,7 +343,7 @@ src/  (257 files, 103838 lines)
       mod.rs (1120)
       stmt.rs (433)
     rs_loader/
-      codegen.rs (494)
+      codegen.rs (510)
       loader.rs (229)
       mod.rs (44)
   python_converter/
@@ -486,7 +486,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
   exceptions/ (9 .ar)
-  interop/ (133 .ar)
+  interop/ (136 .ar)
   practical_examples/ (8 .ar)
   repl/ (0 .ar)
   typing/ (117 .ar)
@@ -544,5 +544,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (154)
   README.md (317)
 ```
-_Generated 2026-10-13 by generate-codebase-map.ps1_
+_Generated 2026-10-14 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

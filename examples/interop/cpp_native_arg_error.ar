@@ -1,0 +1,14 @@
+# cpp_native_arg_error.ar — C の数値の引数に数値でない値を渡すと TypeError（負例・ffi_value_exchange_plan.md 7-12）
+#
+# 素の `function` 型の変数を通すと引数は静的に照合されない。以前は `"abc"` が黙って 0 になり、その値で C の関数が
+# 呼ばれていた。今は C の関数を呼ばずに TypeError になる（cpp-lib のシム経由でも同じ）。
+# 実行には examples/interop/test_modules/ffi_probe_x64.lib が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_native_arg_check.ar
+
+import[cpp-lib] test_modules.ffi_probe as fp
+
+fn call(let f: function, let arg: Any) -> Any:
+    return f(arg)
+
+print("calls before:", fp.fp_call_count())
+print("unreachable:", call(fp.fp_count_int, "abc"))

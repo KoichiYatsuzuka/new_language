@@ -44,3 +44,7 @@ EXPORTS
     fp_db_count
     fp_db_close
     fp_sum
+    fp_count_int
+    fp_count_flag
+    fp_count_double
+    fp_call_count

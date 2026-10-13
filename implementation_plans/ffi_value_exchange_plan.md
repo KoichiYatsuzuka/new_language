@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）。フェーズ 4 は未着手
+- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）・7-12 完了。フェーズ 4 着手
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
@@ -226,7 +226,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
-| **7-12** | C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
+| **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -637,6 +637,32 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   clean（172/172。`ptr_types.ar` は既知の差分、エラー例題 2 本は標準出力が空で一致）・`compare_outputs` の差 3 本は新しい
   例題だけ（負の対照 430/430）・`compare_import_paths` 13/13・`compare_wasm_frontend` 517/517・`type_obligations` 退行なし・
   `hash_eq_identity` 一致・`stale_doc_refs` 0 件。`cargo test` 1118 件・拡張の wasm クレートの 692 件が通る。VSIX を作り直した
+
+### 7-12 実装
+
+- 実測（`7f37f84`）: 型検査は `int` の引数へ `Any` / `str` を渡すのを止めるが、**素の `function` 型の変数・仮引数を通すと
+  引数は照合されない**。そこで C の `int` の引数へ `"abc"` / `None` / `[1]` を渡すと黙って 0、`bool` の引数は `True` 以外が
+  黙って偽になり、その値で C の関数が呼ばれていた（`fp_is_even("abc")` → `True`）。Rust の crate も同じで、`&str` の引数は
+  `None` で空文字列のまま関数を呼び、呼んだ後でエラーになっていた
+- `ar_to_int` / `ar_to_float`: 数値でない値（`None`・`str`・`list`・`Ptr` …）はエラーを設定して 0（最初の誤りを残す）。
+  数値どうしは C の暗黙の変換のまま（`float` の切り捨て・`bool` の 0 / 1・`int` → `double`）
+- コールバックを 2 つ足した: `to_bool`（`True` / `False` だけ）・`pending_error`。cpp / rs の中継コードは引数を全部変換した
+  後に `pending_error` を見て、**関数を呼ばずに**戻る（呼び出しの後でエラーが例外になる）。値渡しの構造体のフィールドの
+  取り出し・Rust の `String` / `&str` の引数も同じ網に入る
+- ⚠ コールバックの表（`ArCallbacks`）には末尾に足すこと。cpp / rs の中継コードは表の先頭部分だけを宣言し、ネイティブ
+  コンパイルの生成コードは添字で引く。3 つの写しの欄の並びが一致することを確かめた（skill `partial-compile` の表）
+- ネイティブコンパイルの生成コードも `to_int` / `to_float` で値を開くので、同じ規則になる（数値でない値を黙って 0 にしない）
+- 検査用に `ffi_probe` へ `fp_count_*` / `fp_call_count`、`ffi_probe_rs` へ `count_*` / `call_count` を足した（呼ばれた回数で
+  「誤った引数では呼ばれていない」を確かめる）
+- 例題: `interop/cpp_native_arg_check.ar`（cpp-dll・期待値と違えば raise）・`cpp_native_arg_error.ar`（cpp-lib・捕まえない
+  TypeError）・`rs_native_arg_check.ar`。単体テスト 3 本（`callbacks.rs` 2 本・`cpp_bridge/codegen.rs` 1 本）
+- ⚠ 残したもの: 素の `function` 型を通すと引数が静的に照合されないこと自体（型検査の設計どおり。実行時の境界で止める）。
+  `const char*` の引数のエラーの文言は 1-2 のまま（Rust の `&str` の引数でも C の文字列と言う）
+- ゲート（基準 `7f37f84`・制限時間つき）: `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl`
+  clean（172/172）・`compare_outputs` の差は新しい例題 3 本と `cpp_lib_int_widths.ar`、`compare_import_paths` は
+  `cpp_struct_ptr.ar` が差。⚠ 後者と負の対照の差（`cpp_default_arg_native_call.ar` など 3 本）は、中継コードの生成が変わった
+  ので新旧のバイナリを交互に走らせるたびに中継 DLL を作り直し、その表示が混ざったもの。各バイナリで 2 回目（作り直し
+  なし）の出力を比べると 3 本とも同一だった。`stale_doc_refs` 0 件。`cargo test` 1121 件・拡張の wasm クレートの 692 件が通る
 
 ---
 
