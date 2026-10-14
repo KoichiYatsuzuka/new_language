@@ -77,6 +77,8 @@ pub(crate) fn ctype_to_tl_str(
         CType::Ptr { .. } => ptr_of(ct),
         CType::OpaqueStructPtr { type_name, .. } if pos == CPos::Param && exact(type_name) => "Any".to_string(),
         CType::OpaqueStructPtr { .. } => ptr_of(ct),
+        // 値返しの構造体は、その構造体のクラスの型（4-6）。引数は `Any`（形の合う別のクラスも渡せる・c-abi-interop P6）
+        CType::ByValueStruct { type_name } if pos == CPos::Return => type_name.clone(),
         CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),
         // `ArPtrProtocol`（4-2・4-4）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で

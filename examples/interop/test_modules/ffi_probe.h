@@ -97,6 +97,13 @@ void fp_protocol_free(ArPtrProtocol* p);     // frees a fp_squares buffer and wr
 const char* fp_protocol_type(ArPtrProtocol p); // the element type name it received ("(null)" for NULL)
 int fp_rec_label(const Rec* r, const char* label); // r->id + strlen(label): a struct pointer and a C string together (4-4)
 
+// -- structs with pointer fields and arrays of structs (task 4-6) ------------------------------
+typedef struct { int tag; ArPtrProtocol data; } Tagged;  // a struct that owns an int32 array
+Tagged fp_tagged(int n);                     // tag = n, data = fp_squares(n)
+int fp_tagged_sum(Tagged t);                 // tag + the sum of data (passes the struct back by value)
+ArPtrProtocol fp_pairs(int n);               // Pair[n] = {i, 2*i}, owned (released by Arrow)
+ArPtrProtocol fp_named_list(void);           // Named[2] (pointer fields), STATIC
+
 #ifdef __cplusplus
 }
 #endif

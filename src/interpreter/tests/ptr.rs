@@ -80,6 +80,21 @@ fn equality_and_hash_are_identity() {
     assert!(Interpreter::default_hash(&p).is_ok());
 }
 
+/// C の構造体のバイト列から、コンストラクタを呼ばずにインスタンスを作る（4-6）。2^63 以上の符号なし 64 ビットは OverflowError。
+#[test]
+fn instances_from_c_bytes() {
+    use crate::interpreter::InstanceData;
+    let Value::Class(class) = run_get("class S:\n    mut x: int32\n    mut y: int32\n", "S") else { panic!("class") };
+    let bytes = [7i32.to_le_bytes(), (-2i32).to_le_bytes()].concat();
+    let inst = InstanceData::from_c_bytes(class.clone(), &bytes).unwrap();
+    assert!(matches!(inst.field_value(0), Some(Value::Int(7))));
+    assert!(matches!(inst.field_value(1), Some(Value::Int(-2))));
+    assert!(InstanceData::from_c_bytes(class, &bytes[..4]).is_err(), "too few bytes");
+    let Value::Class(big) = run_get("class B:\n    mut v: uint64\n", "B") else { panic!("class") };
+    let e = InstanceData::from_c_bytes(big, &u64::MAX.to_le_bytes()).err().unwrap();
+    assert!(e.starts_with("OverflowError"), "{e}");
+}
+
 #[test]
 fn display_and_type_name_hide_the_address() {
     let interp = Interpreter::new();

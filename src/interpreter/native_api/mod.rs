@@ -505,6 +505,12 @@ pub struct ArCallbacks {
     /// `ArPtrProtocol` の戻り値（中継コードの局所変数を指す）を `Ptr`（所有・STATIC）にする。`structs` はそのヘッダの
     /// 構造体の名前を `,` でつないだもの（要素の型名の照合）。誤りはエラーを設定して `None`。
     pub protocol_ret: extern "C" fn(*const u8, *const u8, i32) -> i64,
+
+    // ── Struct values (fields 47-48・4-6) ──
+    /// 値返しの構造体（正確なレイアウト）: C のバイト列をクラス `cls` のインスタンスへ写す（コンストラクタは呼ばない）。
+    pub make_raw_instance: extern "C" fn(i64, *const u8, i64) -> i64,
+    /// 値返しの構造体（ポインタのフィールドあり）: 変換済みのフィールドの値を宣言順に入れたインスタンスを作る（同上）。
+    pub make_instance: extern "C" fn(i64, *const i64, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

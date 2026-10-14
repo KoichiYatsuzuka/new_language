@@ -806,6 +806,63 @@ extern "C" fn ar_protocol_ret(raw: *const u8, structs: *const u8, structs_len: i
     }
 }
 
+/// クラスのハンドルから C の構造体のクラスを取り出す（4-6）。
+fn struct_class_at(cls_h: i64) -> Result<std::rc::Rc<crate::interpreter::ClassValue>, String> {
+    match clone_value_at(cls_h) {
+        Value::Class(c) => Ok(c),
+        other => Err(format!(
+            "RuntimeError: expected the class of a C struct, got '{}'",
+            crate::interpreter::ops::typecheck::runtime_type_name(&other)
+        )),
+    }
+}
+
+/// 値返しの構造体（正確なレイアウト・4-6）: C のバイト列をそのまま写したインスタンス（コンストラクタは呼ばない）。
+/// ⚠ 以前はフィールドを 1 つずつハンドルにしてコンストラクタへ渡して作り直していた。
+extern "C" fn ar_make_raw_instance(cls_h: i64, ptr: *const u8, len: i64) -> i64 {
+    let r = struct_class_at(cls_h).and_then(|class| {
+        // SAFETY: 中継コードが値返しの構造体の局所変数と、その `size_of` を渡す
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        crate::interpreter::InstanceData::from_c_bytes(class, bytes)
+    });
+    match r {
+        Ok(inst) => push_handle(Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst)))),
+        Err(e) => {
+            set_argument_error(e);
+            TL_NONE
+        }
+    }
+}
+
+/// 値返しの構造体（ポインタのフィールドあり・4-6）: 変換済みのフィールドの値（宣言順）を入れたインスタンス。
+/// コンストラクタは呼ばない。フィールドの変換で誤りが出ていたら（`pending_error`）何も作らない。
+extern "C" fn ar_make_instance(cls_h: i64, handles: *const i64, n: i32) -> i64 {
+    if ar_pending_error() != 0 {
+        return TL_NONE;
+    }
+    let class = match struct_class_at(cls_h) {
+        Ok(c) => c,
+        Err(e) => {
+            set_argument_error(e);
+            return TL_NONE;
+        }
+    };
+    if n < 0 || n as usize != class.field_count {
+        set_argument_error(format!(
+            "RuntimeError: struct '{}' has {} fields, but {n} values were given",
+            class.name, class.field_count
+        ));
+        return TL_NONE;
+    }
+    let mut inst = crate::interpreter::InstanceData::new_empty(class, 0);
+    for i in 0..n as usize {
+        // SAFETY: 中継コードが `n` 個のハンドルの配列を渡す
+        let v = clone_value_at(unsafe { *handles.add(i) });
+        inst.store_field(i, v, true);
+    }
+    push_handle(Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst))))
+}
+
 /// ハンドルの値の型名（エラーの表示用）。⚠ `None` / `True` / `False` / 小さい整数はアリーナに入らず番号で表す
 /// （`push_value`）ので、番号で見分けてからアリーナを引く。
 fn handle_type_name(h: i64) -> String {
@@ -1137,6 +1194,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     protocol_arg: ar_protocol_arg,
     protocol_done: ar_protocol_done,
     protocol_ret: ar_protocol_ret,
+    make_raw_instance: ar_make_raw_instance,
+    make_instance: ar_make_instance,
 };
 
 #[cfg(test)]

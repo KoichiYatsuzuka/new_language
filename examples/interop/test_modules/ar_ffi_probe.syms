@@ -1,4 +1,4 @@
-#stamp 1bcd4a9443a4d74a
+#stamp 43249058535256cf
 fp_greet
 fp_echo
 fp_utf8
@@ -13,6 +13,8 @@ fp_make_vec3
 fp_vec3_sum
 fp_rec_score
 fp_rec_static
+fp_make_named
+fp_named_len
 fp_make_rgba
 fp_rgba_sum
 fp_u32_max
@@ -48,3 +50,7 @@ fp_protocol_sum
 fp_protocol_free
 fp_protocol_type
 fp_rec_label
+fp_tagged
+fp_tagged_sum
+fp_pairs
+fp_named_list

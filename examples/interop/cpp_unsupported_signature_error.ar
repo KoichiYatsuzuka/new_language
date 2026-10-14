@@ -4,11 +4,11 @@
 #   - char* の出力バッファ … C 側の書き込みが捨てられる
 #   - wchar_t* の引数 … UTF-8 のバイト列を渡していた
 #   - const int* … 値 1 個へのポインタを渡すが、C 側は配列として読むかもしれない
-#   - ポインタのフィールドを持つ構造体の値渡し … レイアウトを正しく作れない
 # 今はヘッダから分かる時点で「未対応」と判定し（CFnSig::unsupported_reason）、使った箇所ごとに
 # 理由つきの静的エラーにする。
 # ⚠ ポインタを返す関数（`char*` → bytes・ほか → Ptr[T]）と `void*`・中身の見えない構造体ポインタを受ける関数は
-#   4-3 で使えるようになった（cpp_raw_pointers.ar）。出力バッファと配列は 4-7、構造体の展開は 4-6 で入る。
+#   4-3 で使えるようになった（cpp_raw_pointers.ar）。ポインタのフィールドを持つ構造体の値渡しは 4-6 で使えるように
+#   なった（cpp_struct_expand.ar）。出力バッファと配列は 4-7 で入る。
 #
 # 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
 # ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
@@ -18,4 +18,3 @@ import[cpp-dll] test_modules.ffi_probe as fp
 fp.fp_wlen("wide".encode("utf-16-le"))      # parameter `s` is a wide string (`wchar_t*`)
 fp.fp_fill("buffer".encode(), 8)            # parameter `buf` is `char*`, an output buffer
 fp.fp_sum(1, 1)                             # parameter `xs` is a `const` pointer to a number（値 1 個か配列か分からない）
-fp.fp_named_len(Named(1, "x".encode()))     # parameter `n` passes struct `Named` by value（ポインタのフィールドを持つ）

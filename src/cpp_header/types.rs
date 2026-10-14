@@ -200,6 +200,34 @@ pub struct CFnSig {
 pub const FFI_UNSUPPORTED_MARK: &str = "ffi-unsupported: ";
 
 impl CStructDef {
+    /// この構造体を値で受け渡せない理由（受け渡せるなら `None`・4-6）。`ret` は戻り値か。
+    ///
+    /// フィールドは数値・`bool`・ポインタ（D-7: `char*` は `bytes`、ほかは `Ptr`）・`ArPtrProtocol`（値）。不完全な
+    /// レイアウト（配列・ビットフィールドを読み飛ばした）・関数ポインタ・入れ子の構造体は渡せない。引数では、C が書き込む
+    /// かもしれない `char*` と `wchar_t*` のフィールドも渡せない（呼び出しの間だけのコピーを渡すので書き込みが失われる・
+    /// 出力バッファは 4-7）。⚠ ヘッダが構造体と宣言していない名前へのポインタのフィールドも渡せない。
+    pub fn by_value_reason(&self, structs: &[CStructDef], ret: bool) -> Option<String> {
+        if !self.complete || self.fields.is_empty() {
+            return Some("its exact C layout is not known".to_string());
+        }
+        let known = |name: &str| structs.iter().any(|d| d.name == name);
+        for (fname, ft) in &self.fields {
+            let ok = match ft {
+                CType::Int { .. } | CType::Float | CType::Double | CType::Bool => true,
+                CType::CharPtr { wide: false, mutable: false } => true,
+                CType::CharPtr { .. } => ret,
+                CType::VoidPtr | CType::Ptr { .. } => true,
+                CType::OpaqueStructPtr { type_name, .. } => known(type_name),
+                CType::PtrProtocol { by_pointer: false, .. } => true,
+                _ => false,
+            };
+            if !ok {
+                return Some(format!("its field `{fname}` cannot be passed in a struct by value"));
+            }
+        }
+        None
+    }
+
     /// C と**同じレイアウトを正確に作れる**か: 完全（`complete`）で、全フィールドが整数（幅と符号つき・1-6）/
     /// float / double。値渡し・値返し・構造体ポインタの受け渡しはこれが真のものだけ（`raw_layout` もこれで判定する）。
     /// `long` / `wchar_t` の幅は環境で決まる（実行時に決める）。`bool` と ポインタのフィールドは含めない。
@@ -226,6 +254,11 @@ impl CFnSig {
         // ヘッダが構造体と宣言した名前か（本体の無い前方宣言を含む・4-3）。⚠ 解決できない typedef（`TCHAR` など）も
         // 構造体ポインタに見えるので、宣言の無い名前は `Ptr` にしない（`const TCHAR*` は実は C の文字列）。
         let known = |name: &str| structs.iter().any(|d| d.name == name);
+        // 値で受け渡す構造体の理由（4-6）。定義の無い名前は「レイアウトが分からない」
+        let struct_reason = |name: &str, ret: bool| match structs.iter().find(|d| d.name == name) {
+            Some(d) => d.by_value_reason(structs, ret),
+            None => Some("its exact C layout is not known".to_string()),
+        };
         // ⚠ ポインタの戻り値は 4-3 で受け取れるようになった（`char*` / `wchar_t*` → `bytes`、ほか → 借用の `Ptr[T]`・
         //   NULL → `None`・D-7・D-8）。以前はどれもここで使えない関数にしていた（1-2）。
         let ret = match &self.ret {
@@ -237,9 +270,10 @@ impl CFnSig {
             CType::PtrProtocol { by_pointer: true, .. } => Some(
                 "it returns a pointer to `ArPtrProtocol` (return the struct itself by value)".to_string(),
             ),
-            CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
-                "it returns struct `{type_name}` by value, and its exact C layout is not known"
-            )),
+            // 4-6: ポインタのフィールドを持つ構造体も D-7 の規則で受け取れる（`by_value_reason`）
+            CType::ByValueStruct { type_name } => struct_reason(type_name, true).map(|why| {
+                format!("it returns struct `{type_name}` by value, and {why}")
+            }),
             _ => None,
         };
         if ret.is_some() {
@@ -261,9 +295,9 @@ impl CFnSig {
                 CType::Ptr { mutable: false, .. } => Some(format!(
                     "parameter {p} is a `const` pointer to a number, which may be a single value or an array"
                 )),
-                CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
-                    "parameter {p} passes struct `{type_name}` by value, and its exact C layout is not known"
-                )),
+                CType::ByValueStruct { type_name } => struct_reason(type_name, false).map(|why| {
+                    format!("parameter {p} passes struct `{type_name}` by value, and {why}")
+                }),
                 _ => None,
             };
             if why.is_some() {
@@ -342,6 +376,8 @@ mod tests {
             st("Rec", vec![I32, CType::Double], true),
             st("Named", vec![I32, CType::CharPtr { wide: false, mutable: false }], true),
             st("Partial", vec![I32; 2], false),
+            st("WithCallback", vec![I32, CType::FnPtr], true),
+            st("OutBuf", vec![I32, CType::CharPtr { wide: false, mutable: true }], true),
         ]
     }
     fn sig(params: Vec<CType>, ret: CType) -> CFnSig {
@@ -388,6 +424,10 @@ mod tests {
             sig(vec![CType::PtrProtocol { by_pointer: false, mutable: false }, st_ptr("Rec")], CSTR),
             // 4-5: `ArPtrProtocol` の値返し
             sig(vec![I32], CType::PtrProtocol { by_pointer: false, mutable: false }),
+            // 4-6: ポインタのフィールドを持つ構造体の値渡し・値返し（D-7 の規則）。`char*` のフィールドは戻り値なら受け取れる
+            sig(vec![by_val("Named")], CType::Void),
+            sig(vec![], by_val("Named")),
+            sig(vec![], by_val("OutBuf")),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
         }
@@ -422,7 +462,10 @@ mod tests {
             (sig(vec![CType::FnPtr], CType::Void), "callback"),
             (sig(vec![CType::Ptr { inner: Box::new(I32), mutable: false }], CType::Void), "single value or an array"),
             (sig(vec![st_ptr("Unknown")], CType::Void), "does not declare as a struct"),
-            (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
+            // 構造体に関数ポインタのフィールド（4-6 でも渡せない）
+            (sig(vec![by_val("WithCallback")], CType::Void), "field `f1` cannot be passed in a struct by value"),
+            // 引数では、C が書き込むかもしれない `char*` のフィールドは渡せない（戻り値なら受け取れる）
+            (sig(vec![by_val("OutBuf")], CType::Void), "field `f1` cannot be passed in a struct by value"),
             // 型つき経路に載らない形（値返しの構造体）と、インスタンスを渡す構造体ポインタは混ぜられない
             (sig(vec![st_ptr("Rec")], by_val("Rec")), "struct pointer together with a struct returned by value"),
             // `ArPtrProtocol*` を返す関数は誰が持つか決められない（値で返す）

@@ -251,6 +251,15 @@ impl PtrHandle {
         Ok(unsafe { std::slice::from_raw_parts(addr as *const u8, count * width) }.to_vec())
     }
 
+    /// 構造体の配列を `elem_size` バイトずつに分けてコピーする（`Ptr[構造体].to_list()`・4-6）。長さが要る。
+    pub fn read_struct_elements(&self, elem_size: usize) -> Result<Vec<Vec<u8>>, String> {
+        let len = self.known_length()?;
+        let addr = self.address()?;
+        // SAFETY: `PtrProtocol` が `length` 個の要素が並ぶと保証する（D-15）
+        let all = unsafe { std::slice::from_raw_parts(addr as usize as *const u8, len * elem_size) };
+        Ok(all.chunks_exact(elem_size.max(1)).map(|c| c.to_vec()).collect())
+    }
+
     fn known_length(&self) -> Result<usize, String> {
         self.length.map(|n| n as usize).ok_or_else(|| self.no_length_error())
     }
@@ -480,6 +489,11 @@ pub(crate) fn ptr_from_protocol(raw: &PtrProtocolRaw, known_structs: &[Arc<str>]
     };
     let h = PtrHandle::new(raw.address, elem, raw.flags, length, owner, None)?;
     Ok(super::Value::Ptr(Arc::new(h)))
+}
+
+/// 数値の要素の名前か（`int8` … `float64`）。
+pub(crate) fn is_num_elem(elem: &str) -> bool {
+    num_width(elem).is_some()
 }
 
 /// 数値の要素 1 つの幅（バイト）。数値でなければ `None`。

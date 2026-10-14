@@ -426,6 +426,9 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   | `const char*` の引数 | `bytes` か `None`（NUL を含むと `ValueError`）。**`str` は静的エラー**: ライブラリの文字コードで `s.encode("utf-8")` / `s.encode("cp932")` |
   | `void*` の引数 | どの `Ptr` でも、または `None` |
   | 構造体ポインタの引数 | 正確なレイアウトの構造体はインスタンス（書き戻しあり）か `Ptr[構造体名]`。前方宣言だけの構造体は `Ptr[構造体名]` か `None` |
+  | 構造体の値返し | その構造体のクラスのインスタンス（コピー）。正確なレイアウトはバイト列をそのまま写し、ポインタのフィールドは上の規則（`char*` → `bytes`、ほか → `Ptr`、`ArPtrProtocol` → 所有の `Ptr`）。コンストラクタは呼ばない |
+  | 構造体の値渡し | インスタンス。ポインタのフィールドも上の規則で組み立てる（`bytes` は呼び出しの間だけのコピー）。C が書き込むかもしれない `char*` / `wchar_t*` のフィールド・関数ポインタ・入れ子の構造体は渡せない |
+  | 構造体の配列（`ArPtrProtocol`） | `Ptr[構造体].to_list()` で `list[構造体]`（正確なレイアウトの構造体だけ・⇒ 7-14） |
   | `ArPtrProtocol` の戻り値（値返し） | `Option[Ptr[void]]`（所有なら最後の参照か `release()` で 1 回だけ解放・STATIC は解放しない）。`p mustbe Ptr[int32]` で要素型を照合してから `to_list()` / `to_bytes()` |
   | `ArPtrProtocol`（値・`const` ポインタ・ポインタ）の引数 | `Ptr` か `None`。`ArPtrProtocol*` を受けた関数が解放して `address` を 0 に書き戻すと、その `Ptr` は使えなくなる（`docs/ptr_protocol.md`） |
   | 数値の書き込みポインタ（`int*` / `double*`）の引数 | 名前つきの `mut` 変数（呼び出しの後で書き戻す） |

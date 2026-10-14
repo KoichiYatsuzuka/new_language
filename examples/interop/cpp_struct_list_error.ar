@@ -1,0 +1,13 @@
+# cpp_struct_list_error.ar — ポインタのフィールドを持つ構造体の配列は to_list() できない（負例・ffi_value_exchange_plan.md 4-6）
+#
+# `Ptr[構造体].to_list()` で展開できるのは、正確なレイアウト（フィールドがすべて数値）の構造体の配列だけ。ポインタの
+# フィールドを持つ構造体（ここでは `Named` の `const char* name`）の配列は TypeError（黙って読み違えない・⇒ 7-14）。
+# 1 つずつの値返し・値渡しは扱える（cpp_struct_expand.ar）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_struct_expand.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let names = fp.fp_named_list() mustbe Ptr[Named]
+print(names)
+print("unreachable:", names.to_list())

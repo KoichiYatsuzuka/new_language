@@ -56,6 +56,8 @@ struct ArCallbacks {
     protocol_arg:  unsafe extern "C" fn(i64, *mut u8, i32),
     protocol_done: unsafe extern "C" fn(i64, u64),
     protocol_ret:  unsafe extern "C" fn(*const u8, *const u8, i32) -> i64,
+    make_raw_instance: unsafe extern "C" fn(i64, *const u8, i64) -> i64,
+    make_instance: unsafe extern "C" fn(i64, *const i64, i32) -> i64,
 }
 
 // ArPtrProtocol (bridge/ptr_protocol/ar_ptr_protocol.h, 4-1). Same layout as Arrow's PtrProtocolRaw; only passed through.
@@ -187,8 +189,9 @@ pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
         | CType::Ptr { .. } => Some("*mut i8"),
         // Nested struct-by-value or function pointer → not representable
         CType::ByValueStruct { .. } | CType::FnPtr => None,
-        // `ArPtrProtocol` のフィールドは構造体の展開（4-6）で扱う。それまでは写しを作らない
-        CType::PtrProtocol { .. } => None,
+        // `ArPtrProtocol` のフィールド（4-6）は写しをそのまま持つ。ポインタで持つものは渡せない（`unsupported_reason`）
+        CType::PtrProtocol { by_pointer: false, .. } => Some("_ArPtrProtocol"),
+        CType::PtrProtocol { by_pointer: true, .. } => Some("*mut i8"),
         CType::Void => None,
     }
 }
@@ -199,21 +202,40 @@ pub(crate) fn struct_is_bridgeable(def: &CStructDef) -> bool {
 }
 
 /// アリーナからハンドルを読み取り、構造体フィールドの Rust 型に変換する Rust 式を生成する。
-/// 数値のフィールドは引数・戻り値と同じ変換（`CType::from_handle`）を使う（1-6）。
-/// ⚠ ポインタのフィールドを持つ構造体は値で受け渡さない（`has_exact_layout` が偽・1-2 / 1-3）ので、
-///   ここへ来るのは数値だけ。
+/// 数値のフィールドは引数・戻り値と同じ変換（`CType::from_handle`）を使う（1-6）。ポインタのフィールドは D-7 の規則
+/// （4-6）: `const char*` は `bytes` か `None`、`void*`・構造体・数値へのポインタは `Ptr` か `None`。
+/// ⚠ 以前はポインタのフィールドに Arrow 内部のハンドル番号をそのまま入れるコードを生成していた（値渡しの構造体は
+///   `has_exact_layout` で止めていたので実際には生成されなかった）。
+/// ⚠ `ArPtrProtocol` のフィールドは文になるので `gen_dll_fn` が直接書く。ほかは `CStructDef::by_value_reason` が止める。
 fn field_from_handle(ct: &CType, handle: &str) -> String {
     match ct {
         CType::Int { .. } | CType::Float | CType::Double | CType::Bool => ct.from_handle(handle),
-        _ => format!("{handle} as *mut i8"),
+        CType::CharPtr { wide: false, mutable: false } => format!("((*CB).bytes_arg)({handle}) as *mut i8"),
+        CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
+            let elem = ct.ptr_elem_name().expect("a pointer type has an element name");
+            format!("((*CB).ptr_arg)({handle}, b\"{elem}\".as_ptr(), {}) as usize as *mut i8", elem.len())
+        }
+        other => panic!("struct field {other:?} cannot be passed by value (CStructDef::by_value_reason)"),
     }
 }
 
-/// 構造体フィールドの値を tl ハンドルにラップする Rust 式を生成する（戻り値と同じ変換・1-6）。
-fn field_to_handle(ct: &CType, val: &str) -> String {
+/// 構造体フィールドの値を tl ハンドルにラップする Rust 式を生成する（戻り値と同じ変換・1-6）。ポインタのフィールドは
+/// D-7 の規則（4-6）: `char*` / `wchar_t*` は `bytes`、ほかのポインタは借用の `Ptr`、`ArPtrProtocol` は所有の `Ptr`
+/// （要素の型名を `structs`（`,` 区切りの構造体名）と照合する）。NULL は `None`。
+fn field_to_handle(ct: &CType, val: &str, structs: &str) -> String {
     match ct {
         CType::Int { .. } | CType::Float | CType::Double | CType::Bool => ct.to_handle(val),
-        _ => format!("{val} as i64"),
+        CType::CharPtr { wide: false, .. } => format!("_cstr_to_handle({val} as *const u8)"),
+        CType::CharPtr { wide: true, .. } => format!("_wstr_to_handle({val} as *const u16)"),
+        CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
+            let elem = ct.ptr_elem_name().expect("a pointer type has an element name");
+            format!("((*CB).make_ptr)({val} as usize as u64, b\"{elem}\".as_ptr(), {})", elem.len())
+        }
+        CType::PtrProtocol { by_pointer: false, .. } => format!(
+            "((*CB).protocol_ret)(&{val} as *const _ArPtrProtocol as *const u8, b\"{structs}\".as_ptr(), {})",
+            structs.len()
+        ),
+        other => panic!("struct field {other:?} cannot be returned by value (CStructDef::by_value_reason)"),
     }
 }
 
@@ -359,9 +381,16 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
             CType::ByValueStruct { type_name } => {
                 // 冒頭の `CFnSig::unsupported_reason` で、C と同じレイアウトの分かる構造体だけが来る
                 let def = struct_defs[type_name.as_str()];
-                // Read each field from the Arrow instance via get_attr and build the C struct (by value)
+                // Read each field from the Arrow instance via get_attr and build the C struct (by value).
+                // ポインタのフィールドは D-7 の規則（4-6・`field_from_handle`）。誤りは下の `pending_error` で拾う
                 for (fname, ftype) in &def.fields {
                     let attr_h = format!("((*CB).get_attr)({h}, b\"{fname}\\0\".as_ptr(), {})", fname.len());
+                    if let CType::PtrProtocol { by_pointer: false, .. } = ftype {
+                        s.push_str(&format!(
+                            "    let mut _{pname}_{fname}: _ArPtrProtocol = std::mem::zeroed();\n    ((*CB).protocol_arg)({attr_h}, &mut _{pname}_{fname} as *mut _ArPtrProtocol as *mut u8, 0);\n"
+                        ));
+                        continue;
+                    }
                     s.push_str(&format!(
                         "    let _{pname}_{fname}: {} = {};\n",
                         ctype_to_rust_field(ftype).unwrap(),
@@ -411,32 +440,37 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
             "    let _raw_r: _Struct_{type_name} = _fp({});\n",
             args.join(", ")
         ));
-        // Read the fields and construct an Arrow instance of the struct class
-        for (fname, ftype) in &def.fields {
-            s.push_str(&format!(
-                "    let _{fname}_h = {};\n",
-                field_to_handle(ftype, &format!("_raw_r.{fname}"))
-            ));
-            // 符号なし 64 ビットの 2^63 以上は OverflowError（1-6）。例外のハンドルをフィールドにしない
-            if ftype.to_handle_may_raise() {
-                s.push_str(&format!(
-                    "    if _{fname}_h == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}\n"
-                ));
-            }
-        }
-        let n_fields = def.fields.len();
-        let args_items: String = def.fields.iter()
-            .map(|(f, _)| format!("_{f}_h"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        s.push_str(&format!("    let _ctor_args = [{args_items}];\n"));
+        // コンストラクタは呼ばない（4-6）: 正確なレイアウトなら C のバイト列をそのまま写し、ポインタのフィールドを持つ
+        // 構造体は D-7 の規則で変換したフィールドを宣言順に入れる。⚠ 以前はフィールドをコンストラクタへ渡して作り直していた
         let nlen = type_name.len();
         s.push_str(&format!(
             "    let _cls = ((*CB).get_global)(b\"{type_name}\\0\".as_ptr(), {nlen});\n"
         ));
-        s.push_str(&format!(
-            "    let _ret = if _cls != 0 {{ ((*CB).call_fn)(_cls, _ctor_args.as_ptr(), {n_fields}) }} else {{ 0i64 }};\n"
-        ));
+        if def.has_exact_layout() {
+            s.push_str(&format!(
+                "    let _ret = if _cls != 0 {{ ((*CB).make_raw_instance)(_cls, &_raw_r as *const _Struct_{type_name} as *const u8, std::mem::size_of::<_Struct_{type_name}>() as i64) }} else {{ 0i64 }};\n"
+            ));
+        } else {
+            let names = all_defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(",");
+            for (fname, ftype) in &def.fields {
+                s.push_str(&format!(
+                    "    let _{fname}_h = {};\n",
+                    field_to_handle(ftype, &format!("_raw_r.{fname}"), &names)
+                ));
+                // 符号なし 64 ビットの 2^63 以上は OverflowError（1-6）。例外のハンドルをフィールドにしない
+                if ftype.to_handle_may_raise() {
+                    s.push_str(&format!(
+                        "    if _{fname}_h == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}\n"
+                    ));
+                }
+            }
+            let n_fields = def.fields.len();
+            let items: String = def.fields.iter().map(|(f, _)| format!("_{f}_h")).collect::<Vec<_>>().join(", ");
+            s.push_str(&format!("    let _fields = [{items}];\n"));
+            s.push_str(&format!(
+                "    let _ret = if _cls != 0 {{ ((*CB).make_instance)(_cls, _fields.as_ptr(), {n_fields}) }} else {{ 0i64 }};\n"
+            ));
+        }
     } else if let CType::PtrProtocol { by_pointer: false, .. } = &sig.ret {
         // `ArPtrProtocol` の値返し（4-5）: `Ptr` にする（要素の型名はこのヘッダの構造体と照合する）
         let names = all_defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(",");
@@ -851,11 +885,28 @@ mod int_width_tests {
             fields: vec![("v".to_string(), u64t.clone()), ("tag".to_string(), int(IntWidth::W32, true))],
             complete: true,
         };
-        let defs = [def];
+        // 正確なレイアウトの構造体は C のバイト列を写す（4-6）。2^63 以上は `InstanceData::from_c_bytes` が OverflowError
+        let named = CStructDef {
+            name: "BigName".to_string(),
+            fields: vec![
+                ("v".to_string(), u64t.clone()),
+                ("name".to_string(), CType::CharPtr { wide: false, mutable: false }),
+            ],
+            complete: true,
+        };
+        let defs = [def, named];
         let map: HashMap<String, &CStructDef> = defs.iter().map(|d| (d.name.clone(), d)).collect();
         let s = gen_dll_fn(&f(vec![], CType::ByValueStruct { type_name: "Big".to_string() }), &map, &defs);
+        assert!(s.contains("((*CB).make_raw_instance)(_cls, &_raw_r as *const _Struct_Big as *const u8"), "{s}");
+        assert!(!s.contains("call_fn"), "no constructor call: {s}");
+        // ポインタのフィールドを持つ構造体はフィールドごとに変換する（D-7）。2^63 以上は例外のまま返す
+        let s = gen_dll_fn(&f(vec![], CType::ByValueStruct { type_name: "BigName".to_string() }), &map, &defs);
         assert!(s.contains(&format!("if _v_h == {TL_EXCEPTION}i64 {{ return {TL_EXCEPTION}i64; }}")), "{s}");
-        assert!(!s.contains("if _tag_h =="), "{s}");
+        assert!(s.contains("let _name_h = _cstr_to_handle(_raw_r.name as *const u8);"), "{s}");
+        assert!(s.contains("((*CB).make_instance)(_cls, _fields.as_ptr(), 2)"), "{s}");
+        // 値渡しの引数: `const char*` のフィールドは `bytes_arg`
+        let s = gen_dll_fn(&f(vec![CType::ByValueStruct { type_name: "BigName".to_string() }], CType::Void), &map, &defs);
+        assert!(s.contains("let _p0_name: *mut i8 = ((*CB).bytes_arg)("), "{s}");
 
         let out = CType::Ptr { inner: Box::new(u64t), mutable: true };
         let s = gen_dll_fn(&f(vec![out], CType::Void), &HashMap::new(), &[]);

@@ -56,3 +56,7 @@ EXPORTS
     fp_protocol_free
     fp_protocol_type
     fp_rec_label
+    fp_tagged
+    fp_tagged_sum
+    fp_pairs
+    fp_named_list

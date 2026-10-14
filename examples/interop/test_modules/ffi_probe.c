@@ -114,6 +114,24 @@ int fp_protocol_sum(const ArPtrProtocol* p) {
 }
 const char* fp_protocol_type(ArPtrProtocol p) { return p.elem_type ? p.elem_type : "(null)"; }
 int fp_rec_label(const Rec* r, const char* label) { return (r ? r->id : -1000) + (label ? (int)strlen(label) : -1); }
+Tagged fp_tagged(int n) { Tagged t; t.tag = n; t.data = fp_squares(n); return t; }
+int fp_tagged_sum(Tagged t) { return t.tag + fp_protocol_sum(&t.data); }
+static void fp_release_pairs(void* ctx, uint64_t address) { (void)ctx; g_released++; free((void*)(uintptr_t)address); }
+ArPtrProtocol fp_pairs(int n) {
+    ArPtrProtocol p = { 0, "Pair", 0, 0, 0, fp_release_pairs, NULL };
+    if (n <= 0) return p;
+    Pair* xs = (Pair*)malloc(sizeof(Pair) * (size_t)n);
+    if (!xs) return p;
+    for (int i = 0; i < n; i++) { xs[i].x = i; xs[i].y = 2 * i; }
+    p.address = (uint64_t)(uintptr_t)xs;
+    p.length = n;
+    return p;
+}
+static Named g_named_list[2] = { { 1, "one" }, { 2, "two" } };
+ArPtrProtocol fp_named_list(void) {
+    ArPtrProtocol p = { (uint64_t)(uintptr_t)g_named_list, "Named", AR_PTR_STATIC | AR_PTR_CONST, 0, 2, NULL, NULL };
+    return p;
+}
 void fp_protocol_free(ArPtrProtocol* p) {
     if (!p || p->address == 0) return;
     if (p->release) p->release(p->release_ctx, p->address);

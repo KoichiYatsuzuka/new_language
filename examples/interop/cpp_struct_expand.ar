@@ -1,0 +1,50 @@
+# cpp_struct_expand.ar — C の構造体を Arrow の値へ展開する（正例・ffi_value_exchange_plan.md 4-6・D-2・D-7）
+#
+#   - 値返しの構造体: 正確なレイアウト（フィールドがすべて数値）なら C のバイト列をそのままインスタンスへ写す。ポインタの
+#     フィールドを持つ構造体も、D-7 の規則（`char*` → bytes、ほかのポインタ → 借用の Ptr、ArPtrProtocol → 所有の Ptr）で
+#     フィールドを変換して受け取る。⚠ 4-6 より前はコンストラクタにフィールドを 1 つずつ渡して作り直していて、ポインタの
+#     フィールドを持つ構造体は値で受け渡せなかった
+#   - 値渡しの引数: ポインタのフィールドも同じ規則で C の構造体を組み立てる（bytes は呼び出しの間だけのコピー）
+#   - 構造体の配列: ArPtrProtocol で届いた Ptr[構造体] を `to_list()` で list[構造体] にする（要素ごとのコピー）
+# 展開した値はコピーで、元の C のメモリとはつながらない（D-2）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_struct_list_error.ar・cpp_struct_by_value_layout_error.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 値返し ──────────────────────────────────────────────────────────────────────
+let r = fp.fp_make_rec(5, 2.5)
+check("exact layout: copied into the instance", r.id == 5 and r.score == 2.5)
+let c = fp.fp_make_rgba(1, 2, 3, 4)
+check("4-byte struct round trip", fp.fp_rgba_sum(c) == 10)
+let n = fp.fp_make_named(3)
+print(n.name)
+check("char* field becomes bytes", n.id == 3 and n.name == "named-3".encode())
+
+# ── 値渡し（ポインタのフィールドあり）────────────────────────────────────────────────
+check("bytes field passed as const char*", fp.fp_named_len(Named(1, "abcd".encode())) == 4)
+check("None field is NULL", fp.fp_named_len(Named(1, None)) == -1)
+
+# ── ArPtrProtocol のフィールド（所有の Ptr）─────────────────────────────────────────
+let before = fp.fp_released()
+let t = fp.fp_tagged(3)
+print(t.data)
+check("struct with an owned array field", t.tag == 3 and (t.data mustbe Ptr[int32]).to_list() == [0, 1, 4])
+check("pass the struct back by value", fp.fp_tagged_sum(t) == 8)
+(t.data mustbe Ptr[int32]).release()
+check("the field's memory is released once", fp.fp_released() == before + 1)
+
+# ── 構造体の配列 ────────────────────────────────────────────────────────────────────
+let pairs = (fp.fp_pairs(3) mustbe Ptr[Pair]).to_list()
+check("Ptr[Pair].to_list() gives list[Pair]", len(pairs) == 3 and pairs[2].x == 2 and pairs[2].y == 4)
+mut total = 0
+for p in pairs:
+    total += fp.fp_pair_sum(p)
+check("each element is an independent Pair", total == 9)

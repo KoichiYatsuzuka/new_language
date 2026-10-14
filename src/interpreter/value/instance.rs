@@ -116,6 +116,14 @@ impl RawLayout {
         let total_bytes = offset.div_ceil(8) * 8;
         Some(RawLayout { fields: descs, total_bytes })
     }
+
+    /// C の sizeof（最後のフィールドの終わりを、いちばん大きいフィールドの幅に切り上げたもの・4-6）。配列の要素の間隔。
+    /// ⚠ `total_bytes` は 8 の倍数に切り上げてあるので C の sizeof とは限らない（`unsigned char` 4 つは C では 4 バイト）。
+    pub fn c_size(&self) -> usize {
+        let align = self.fields.iter().map(|f| f.width.byte_width()).max().unwrap_or(1);
+        let end = self.fields.iter().map(|f| f.byte_offset + f.width.byte_width()).max().unwrap_or(0);
+        end.div_ceil(align) * align
+    }
 }
 
 
@@ -159,6 +167,40 @@ impl InstanceData {
             ),
         };
         InstanceData { raw, class, boxed_fields }
+    }
+
+    /// C の構造体のバイト列から、コンストラクタを呼ばずにインスタンスを作る（値返し・構造体の配列の展開・4-6）。
+    /// クラスは C と同じ raw レイアウトを持つこと。全フィールドを初期化済み・書き換え可能にする（C の構造体のクラスは
+    /// フィールドがすべて `mut`）。
+    pub fn from_c_bytes(class: Rc<ClassValue>, bytes: &[u8]) -> Result<InstanceData, String> {
+        let Some(layout) = class.raw_layout.clone() else {
+            return Err(format!("TypeError: class '{}' does not have the C layout of a struct", class.name));
+        };
+        let size = layout.c_size();
+        if bytes.len() < size {
+            return Err(format!(
+                "RuntimeError: struct '{}' needs {size} bytes, but {} were given",
+                class.name,
+                bytes.len()
+            ));
+        }
+        // 符号なし 64 ビットの 2^63 以上は Arrow の `int` に入らないので、境界で OverflowError（1-6 と同じ。写したまま
+        // にすると、フィールドを読んだときに黙って負になる）
+        for f in &layout.fields {
+            if matches!(f.width, RawWidth::U64) {
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&bytes[f.byte_offset..f.byte_offset + 8]);
+                if u64::from_le_bytes(b8) > i64::MAX as u64 {
+                    return Err(format!("OverflowError: {}", super::U64_OVERFLOW_MSG));
+                }
+            }
+        }
+        let mut inst = InstanceData::new_empty(class, 0);
+        inst.raw_bytes_mut()[..size].copy_from_slice(&bytes[..size]);
+        // 初期化済みの印（初期化のビットマップ・raw レイアウトは 24 フィールドまで）
+        let n = layout.fields.len();
+        inst.flags_or(if n >= 32 { u32::MAX } else { (1u32 << n) - 1 });
+        Ok(inst)
     }
 
     /// ヘッダブロックを構築する（raw フィールド領域 `extra_bytes` バイト付き）。
@@ -487,4 +529,25 @@ pub fn apply_shadow_raw(inst: &mut InstanceData, layout: &RawLayout, bytes: &[u8
         }
     }
     true
+}
+
+
+#[cfg(test)]
+mod c_size_tests {
+    use super::*;
+
+    /// C の sizeof（配列の要素の間隔・4-6）。`total_bytes` は 8 の倍数に切り上げてあるので別物。
+    #[test]
+    fn c_size_is_sizeof() {
+        let rgba = RawLayout::from_fields(&[
+            ("r".into(), "uint8".into()),
+            ("g".into(), "uint8".into()),
+            ("b".into(), "uint8".into()),
+            ("a".into(), "uint8".into()),
+        ])
+        .unwrap();
+        assert_eq!((rgba.c_size(), rgba.total_bytes), (4, 8));
+        let pair = RawLayout::from_fields(&[("x".into(), "int32".into()), ("y".into(), "float64".into())]).unwrap();
+        assert_eq!(pair.c_size(), 16);
+    }
 }

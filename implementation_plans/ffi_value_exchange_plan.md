@@ -207,7 +207,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-3** | ✅（§5）生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | ✅（§5）typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
 | **4-5** | ✅（§5）`PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
-| **4-6** | 構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
+| **4-6** | ✅（§5）構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
 | **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | cs-dll: C# 側の `PtrProtocol` で配列・`List`・`byte[]` を受け渡す（export の生成器が要る。今は手書き）。`IntPtr` / `nint` ↔ `Ptr`、`byte[]` ↔ `bytes` | 2-1・3-1・4-5 | 大 |
 | **5-2** | cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
@@ -228,6 +228,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
+| **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -791,6 +792,34 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   でも出る。2 回目の出力は同一。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ）。`scan_examples`（基準と同じ）・
   `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 527/527・`type_obligations`
   退行なし・`stale_doc_refs` 0 件。`cargo test` 1136 件・拡張の wasm クレートの 701 件が通る。VSIX を作り直した
+
+### 4-6 実装
+
+- 値返しの構造体: コンストラクタにフィールドを渡して作り直すのをやめた。正確なレイアウトの構造体は C のバイト列をそのまま
+  インスタンスの raw ブロックへ写す（`InstanceData::from_c_bytes`・コールバック `make_raw_instance`）。ポインタのフィールドを
+  持つ構造体は D-7 の規則（`char*` / `wchar_t*` → `bytes`、ほかのポインタ → 借用の `Ptr`、`ArPtrProtocol` → 所有の `Ptr`）で
+  フィールドを変換し、宣言順に入れる（`make_instance`）。コールバックは表の 47〜48。型スタブの戻り値の型を構造体のクラスに
+  した（以前は `Any` で、フィールドを読むのに毎回キャストが要った。引数は `Any` のまま）
+- 値渡しの構造体: ポインタのフィールドも同じ規則で組み立てる（`const char*` は `bytes_arg`、ポインタは `ptr_arg`、
+  `ArPtrProtocol` は `protocol_arg`）。⚠ 以前の生成コードはポインタのフィールドに Arrow 内部のハンドル番号をそのまま入れて
+  いた（値渡しを止めていたので生成されなかった）
+- 受け渡せるかの判定は `CStructDef::by_value_reason`（戻り値と引数で違う: 引数では C が書き込むかもしれない `char*` と
+  `wchar_t*` のフィールドを渡せない）。不完全なレイアウト・関数ポインタ・入れ子の構造体は従来どおり使えない
+- 構造体の配列: `Ptr[構造体].to_list()` で `list[構造体]`（要素ごとに `from_c_bytes`。要素の間隔は C の `sizeof` =
+  `RawLayout::c_size`。⚠ `total_bytes` は 8 の倍数に切り上げてあるので別物）。クラスは名前で引く（中継コードの `get_global`
+  と同じく大域に登録されているもの）。ポインタのフィールドを持つ構造体の配列は TypeError（⇒ 7-14）
+- ⚠ 実装中に踏んだもの: バイト列を写す形にしたら、1-6 の「符号なし 64 ビットの 2^63 以上は境界で OverflowError」を通らなく
+  なった（`U64Box` が黙って負になる）。`from_c_bytes` で確かめるようにした（例題 `cpp_dll_int_widths.ar` が止めた）
+- 検査用の `ffi_probe` に `Tagged`（`ArPtrProtocol` のフィールド）・`fp_tagged` / `fp_tagged_sum`・`fp_pairs`（`Pair` の配列）・
+  `fp_named_list`（`Named` の配列）を足した
+- 例題: `interop/cpp_struct_expand.ar`（期待値と違えば raise）・`cpp_struct_list_error.ar`。`cpp_unsupported_signature_error.ar`
+  から使えるようになった関数を外した。単体テスト 2 本（`c_size`・`from_c_bytes`）と生成コード・判定のテストの更新
+- 文書: `docs/grammar/09_imports.md` の表
+- ゲート（基準 `70eb811`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本と、中継 DLL の作り直しの表示 2 本（負の対照
+  でも出る。2 回目の出力は同一。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ）。値返しの構造体を受け取る既存の例題
+  （`cpp_dll_struct_by_value.ar` / `cpp_lib_struct_by_value.ar`）は基準と同じ出力。`scan_examples`（基準と同じ）・`force_gate`
+  （`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 529/529・`type_obligations` 退行なし・
+  `stale_doc_refs` 0 件。`cargo test` 1138 件・拡張の wasm クレートの 703 件が通る。VSIX を作り直した
 
 ---
 
