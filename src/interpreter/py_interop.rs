@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::types::{
-    PyAnyMethods, PyDict, PyDictMethods, PyFloat, PyFrozenSet, PyInt, PyList, PyListMethods, PyModule, PySet,
-    PyTuple, PyTupleMethods,
+    PyAnyMethods, PyByteArray, PyBytes, PyDict, PyDictMethods, PyFloat, PyFrozenSet, PyInt, PyList, PyListMethods,
+    PyMemoryView, PyModule, PySet, PyTuple, PyTupleMethods,
 };
 
 use crate::ast::BinOp;
@@ -73,6 +73,8 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             Ok(PySet::new_bound(py, &py_items)?.into())
         }
         Value::UInt(n) => Ok(n.to_object(py)),
+        // bytes → Python の bytes（コピー・ffi_value_exchange_plan.md 5-3）。⚠ 以前は TypeError
+        Value::Bytes(b) => Ok(PyBytes::new_bound(py, b).into()),
         Value::PyObject(h) => Ok(h.inner.clone_ref(py)),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "cannot pass an Arrow value of type '{}' to Python",
@@ -115,6 +117,23 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     }
     if let Ok(s) = obj.extract::<String>() {
         return Value::str(s);
+    }
+    // bytes / bytearray → Arrow の bytes（コピー・5-3・D-9）。⚠ 以前は Python のオブジェクトのままだった
+    if let Ok(b) = obj.downcast::<PyBytes>() {
+        return Value::bytes(b.as_bytes().to_vec());
+    }
+    if let Ok(b) = obj.downcast::<PyByteArray>() {
+        return Value::bytes(b.to_vec());
+    }
+    // memoryview は 1 バイトの要素（`B` / `b` / `c`）のものだけ bytes にする。int32 などの view をバイト列にすると
+    // 別の表現に黙って変わるので、Python のオブジェクトのまま渡す
+    if obj.is_instance_of::<PyMemoryView>() {
+        let byte_view = obj.getattr("format").and_then(|f| f.extract::<String>()).is_ok_and(|f| matches!(f.as_str(), "B" | "b" | "c"));
+        if byte_view {
+            if let Ok(b) = obj.call_method0("tobytes").and_then(|b| b.downcast_into::<PyBytes>().map_err(PyErr::from)) {
+                return Value::bytes(b.as_bytes().to_vec());
+            }
+        }
     }
     if obj.is_none() {
         return Value::None;

@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了。フェーズ 5 着手（5-1・5-2）
+- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了。フェーズ 5 着手（5-1〜5-3）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -229,7 +229,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-7** | ✅（§5）Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | ✅（§5）cs-dll: `[UnmanagedCallersOnly]` の export（今は利用者が手書き）を生成する（`arrow --gen-cs-exports X.dll`。Arrow の CLI が型スタブと同じ読み方で C# を書く・利用者の判断）。今の ABI（数値・文字列・クラスのハンドル・nullable）を生成し、C# の例外を Arrow の例外にする（今はプロセスが落ちる）・整数の幅を確かめる（今は黙って切る）。例題の手書きの export を置き換える | 2-1 | 中 |
 | **5-2** | ✅（§5）cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
-| **5-3** | py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
+| **5-3** | ✅（§5）py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
 | **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
 | **5-5** | cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | 非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
@@ -974,6 +974,25 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・
   `compare_wasm_frontend` 536/536・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1152 件・拡張の wasm
   クレートの 710 件が通る。VSIX を作り直した
+
+### 5-3 実装
+
+- py-int（`interpreter/py_interop.rs`）: Arrow の bytes → Python の `bytes`。Python の `bytes` / `bytearray` → Arrow の bytes
+  （コピー。bytearray をあとで書き換えても Arrow へは伝わらない・D-11）。`memoryview` は要素が 1 バイト（`B` / `b` / `c`）
+  のものだけ bytes にし、int32 などの view は Python のオブジェクトのまま渡す（バイト列にすると別の表現に黙って変わる）。
+  ⚠ 以前は Python のバイト列は Python のオブジェクトのまま届き、Arrow の bytes を渡すと TypeError だった
+- 型スタブ: 注釈の `bytearray` / `memoryview` を `bytes` と読む（`.py` の行単位の抽出 `py_stub_extract::py_type_to_arrow` と
+  `.pyi` の変換器 `python_converter::annotations::map_type_name` の両方）。要素が 1 バイトでない `memoryview` を返すと
+  境界の照合で FfiTypeError になる
+- 検査用の `py_int_probe.py` に `make_bytes` / `make_bytearray` / `make_view` / `int_view` / `decode_utf8` を足した
+- 例題: `interop/py_int_bytes.ar`（期待値と違えば raise）。単体テスト 2 本（注釈の読み方）
+- 文書: `docs/grammar/09_imports.md`（py-int の値の対応）
+- ゲート（基準 `79b4321`・制限時間つき）: `compare_outputs` の差は新しい例題 `py_int_bytes` だけ。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean
+  （175/175）・`compare_wasm_frontend` 537/537・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1154 件・
+  拡張の wasm クレートの 712 件が通る。VSIX を作り直した。⚠ ゲートの 1 回目は wasm クレートのテスト
+  `test_dict_keys_are_type_strict` が落ちた（乱数のシード次第で落ちる既存の不具合・⇒ 7-17）。続けて 6 回は通り、比較は
+  走らせ直して一致
 
 ---
 

@@ -1,4 +1,5 @@
 """py_int_probe.py — import[py-int] の値の受け渡しを確かめる（implementation_plans/ffi_value_exchange_plan.md 2-6）。"""
+import array
 from decimal import Decimal
 
 
@@ -40,3 +41,24 @@ def dec():
 
 def dec_text(d) -> str:
     return str(d * 3)
+
+
+# bytes (task 5-3)
+def make_bytes() -> bytes:
+    return b"hi\x00\xff"
+
+
+def make_bytearray() -> bytearray:
+    return bytearray(b"ab")
+
+
+def make_view() -> memoryview:
+    return memoryview(b"xyz")
+
+
+def int_view():
+    return memoryview(array.array("i", [1, 2]))
+
+
+def decode_utf8(b) -> str:
+    return b.decode("utf-8")

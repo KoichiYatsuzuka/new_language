@@ -1,0 +1,25 @@
+# py_int_bytes.ar — import[py-int] で Python のバイト列と Arrow の bytes を受け渡す（正例・ffi_value_exchange_plan.md 5-3・D-9）
+#
+#   - Python の `bytes` / `bytearray` → Arrow の bytes（コピー。bytearray の書き換えは Arrow へ伝わらない・D-11）
+#   - `memoryview` は要素が 1 バイト（`B` / `b` / `c`）のものだけ bytes にする。int32 などの view はバイト列にすると
+#     別の表現に黙って変わるので、Python のオブジェクトのまま渡す
+#   - Arrow の bytes → Python の `bytes`
+#   - `.pyi` / `.py` の注釈の `bytearray` / `memoryview` は `bytes` と読む
+# ⚠ 5-3 より前は、Python のバイト列は Python のオブジェクトのまま届き、Arrow の bytes を渡すと TypeError だった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import[py-int] py_int_probe as pp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let b = pp.make_bytes()
+check("Python bytes -> bytes", b is bytes and len(b) == 4 and b[0:2] == "hi".encode() and b[2] == 0 and b[3] == 255)
+check("bytearray -> bytes", pp.make_bytearray() == "ab".encode())
+check("memoryview of bytes -> bytes", pp.make_view() == "xyz".encode())
+check("bytes -> Python bytes", pp.kind("abc".encode()) == "bytes" and pp.decode_utf8("日本".encode()) == "日本")
+let iv = pp.int_view()
+check("memoryview of int32 stays a Python object", pp.kind(iv) == "memoryview" and pp.size(iv) == 2)

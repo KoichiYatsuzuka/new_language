@@ -69,6 +69,9 @@ pub(crate) fn map_type_name(name: &str) -> String {
         "Optional" => "Option".to_string(),
         "Union" => "Union".to_string(),
         "Any" => "Any".to_string(),
+        // Python のバイト列はどれも Arrow の bytes として受け取る（py-int・ffi_value_exchange_plan.md 5-3）。memoryview の
+        // 要素が 1 バイトでなければ Python のオブジェクトのまま届き、境界の照合で FfiTypeError になる
+        "bytearray" | "memoryview" => "bytes".to_string(),
         other => other.to_string(),
     }
 }
@@ -116,4 +119,18 @@ pub(crate) fn register_type_alias(name: String, expanded: String) {
 /// 登録済みエイリアスなら展開後の型文字列を返す。
 pub(crate) fn lookup_type_alias(name: &str) -> Option<String> {
     TYPE_ALIASES.with(|t| t.borrow().get(name).cloned())
+}
+
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::*;
+
+    /// `.pyi` の `bytearray` / `memoryview` も `bytes`（ffi_value_exchange_plan.md 5-3）。
+    #[test]
+    fn byte_sequences_are_bytes() {
+        for n in ["bytes", "bytearray", "memoryview"] {
+            assert_eq!(map_type_name(n), "bytes", "{n}");
+        }
+    }
 }

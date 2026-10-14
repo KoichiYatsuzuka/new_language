@@ -358,6 +358,9 @@ fn py_type_to_arrow(ann: &str) -> String {
     match a {
         "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes"
         | "list" | "dict" | "tuple" | "set" => a.to_string(),
+        // Python のバイト列はどれも Arrow の bytes として受け取る（ffi_value_exchange_plan.md 5-3）。要素が 1 バイトでない
+        // memoryview は Python のオブジェクトのまま届き、境界の照合で FfiTypeError になる
+        "bytearray" | "memoryview" => "bytes".to_string(),
         // Union[...] はそのまま（from_ann で処理）
         _ if a.starts_with("Union[") => a.to_string(),
         // 大文字始まりのクラス名はそのまま（NamedInstance として解釈される）
@@ -368,5 +371,20 @@ fn py_type_to_arrow(ann: &str) -> String {
         }
         // 不明・複雑な型 → Any
         _ => "Any".to_string(),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Python のバイト列の注釈はどれも `bytes`（ffi_value_exchange_plan.md 5-3）。
+    #[test]
+    fn byte_sequences_are_bytes() {
+        assert_eq!(py_type_to_arrow("bytes"), "bytes");
+        assert_eq!(py_type_to_arrow("bytearray"), "bytes");
+        assert_eq!(py_type_to_arrow("Optional[memoryview]"), "Option[bytes]");
+        assert_eq!(py_type_to_arrow("list[bytearray]"), "list[bytes]");
     }
 }

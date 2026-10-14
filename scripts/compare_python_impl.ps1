@@ -79,6 +79,7 @@ $knownDiff = @{
     'cpp_cstring_nul_error'          = 'Rust: NUL を含む str を const char* へ渡すと ValueError（ffi_value_exchange_plan.md 1-2）。py: 黙って NUL で切れて 1 を返す（直す前の Rust と同じ壊れ方）'
     'py_int_values'                  = 'Rust: py-int で set ↔ set を変換し、i64 に入らない int と Decimal を Python のオブジェクトのまま渡す（ffi_value_exchange_plan.md 2-6）。py: Arrow の set を内部の TlSet のまま Python へ渡すので、型の検査で ValueError'
     'py_int_instance_arg_error'      = 'Rust: Arrow のインスタンスを Python へ渡すと TypeError（型名はクラス名・2-6）。py: 内部の TlInstance のまま渡して通る'
+    'py_int_bytes'                   = 'Rust: py-int で Python の bytes / bytearray / memoryview と Arrow の bytes を受け渡す（ffi_value_exchange_plan.md 5-3）。py: bytes も str.encode も無い（⇒ 7-10）'
     'bytes_basics'                   = 'Rust: 組み込み型 bytes（ffi_value_exchange_plan.md 3-1）。py: bytes も str.encode も無く NameError（⇒ 7-10）'
     'bytes_decode_error'             = 'Rust: 文字コードに合わない decode は ValueError（3-1）。py: str.encode が無く AttributeError（⇒ 7-10）'
     'bytes_str_mix_error'            = 'Rust: bytes と str を混ぜると StaticTypeError（3-1）。py: str.encode が無く実行時の AttributeError（⇒ 7-10）'
