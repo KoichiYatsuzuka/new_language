@@ -65,22 +65,22 @@ enum Encoding:
 # `open` が返すファイル。読み書きは現在位置から行う（`close` で書き戻す）。
 class FileObject:
     fn read(self, backward: bool = False):
-        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode, list[int] in byte mode."""
+        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode (IOError if it is not UTF-8), bytes in byte mode."""
         pass
 
     fn read_line(self, backward: bool = False):
-        """Read one line from the current position (backward=True: the line before it). str in text mode, list[int] in byte mode."""
+        """Read one line from the current position (backward=True: the line before it). str in text mode, bytes in byte mode."""
         pass
 
     fn read_letter(self, backward: bool = False):
         """Read one character (str) in text mode, or one byte (int) in byte mode."""
         pass
 
-    fn write(self, content: Union[str, list[int]]) -> None:
-        """Insert content at the current position (str in text mode, list[int] in byte mode)."""
+    fn write(self, content: Union[str, bytes]) -> None:
+        """Insert content at the current position (str in text mode, bytes in byte mode)."""
         pass
 
-    fn write_line(self, content: Union[str, list[int]]) -> None:
+    fn write_line(self, content: Union[str, bytes]) -> None:
         """Insert content followed by a newline at the current position."""
         pass
 

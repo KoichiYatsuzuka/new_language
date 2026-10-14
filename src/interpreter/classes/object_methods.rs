@@ -177,7 +177,7 @@ impl Interpreter {
                     fd.pointer = fd.content.len();
                     result
                 };
-                Ok(bytes_to_value(&data, &fd.byte_mode))
+                bytes_to_value(&data, &fd.byte_mode)
             }
             "read_line" => {
                 let backward = file_bool_arg(evaled, "backward", false)?;
@@ -200,7 +200,7 @@ impl Interpreter {
                     };
                     let data = fd.content[fd.pointer..end].to_vec();
                     fd.pointer = end;
-                    Ok(bytes_to_value(&data, &fd.byte_mode))
+                    bytes_to_value(&data, &fd.byte_mode)
                 } else {
                     // 現在位置の直前の \n をスキップしてその前の \n を探す
                     let p = fd.pointer;
@@ -216,7 +216,7 @@ impl Interpreter {
                     };
                     let data = fd.content[start..p].to_vec();
                     fd.pointer = start;
-                    Ok(bytes_to_value(&data, &fd.byte_mode))
+                    bytes_to_value(&data, &fd.byte_mode)
                 }
             }
             "read_letter" => {

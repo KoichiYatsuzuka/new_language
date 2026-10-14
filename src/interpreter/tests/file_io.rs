@@ -208,28 +208,43 @@ fn test_file_insert_midpoint() {
     );
 }
 
-/// file_byte_mode_write_read のテスト。
+/// バイト単位のファイルは `bytes` を読み書きする（ffi_value_exchange_plan.md 7-11。以前は `list[int]`）。
 #[test]
 fn test_file_byte_mode_write_read() {
     let p = temp_path("byte_mode");
     cleanup(&p);
     let src = format!(
         "let f = open(\"{p}\", FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)\n\
-         f.write([72, 105])\nclose(f)\n\
+         f.write(bytes([72, 105]))\nclose(f)\n\
          let g = open(\"{p}\", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)\n\
          let r = g.read()\nclose(g)\n"
     );
     let interp = run_interp(&src);
     let val = interp.get_val("r").unwrap();
     cleanup(&p);
-    // r should be [72, 105]
-    if let Value::List(items) = val {
-        let items = items.borrow();
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Value::Int(72)));
-        assert!(matches!(items[1], Value::Int(105)));
-    } else {
-        panic!("expected list of bytes");
+    match val {
+        Value::Bytes(b) => assert_eq!(&*b, b"Hi"),
+        other => panic!("expected bytes, got {other:?}"),
+    }
+}
+
+/// テキストで開いたファイルの `read()` は UTF-8 でなければ IOError（7-11。以前は U+FFFD に黙って置き換えていた）。
+#[test]
+fn test_file_text_read_of_invalid_utf8_is_an_error() {
+    let p = temp_path("invalid_utf8");
+    cleanup(&p);
+    std::fs::write(&p, [b'a', 0xFF, b'b']).unwrap();
+    let src = format!(
+        "let g = open(\"{p}\", FileOpenMode.read)\n\
+         mut msg = \"\"\n\
+         try:\n    let r = g.read()\nexcept IOError as e:\n    msg = e.message\n\
+         close(g)\n"
+    );
+    let val = run_get(&src, "msg");
+    cleanup(&p);
+    match val {
+        Value::Str(m) => assert!(m.contains("UTF-8"), "{m}"),
+        other => panic!("expected the IOError message, got {other:?}"),
     }
 }
 

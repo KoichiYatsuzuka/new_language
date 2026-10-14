@@ -360,13 +360,15 @@ use super::*;
     }
 
     /// `FileObject` のメソッドは存在・引数の個数・引数の型・戻り値の型が検査される。
-    /// 読みの結果（テキストなら `str`・バイトなら `list[int]`）は実行時にしか決まらないので型を付けない。
+    /// 読みの結果（テキストなら `str`・バイトなら `bytes`）は実行時にしか決まらないので型を付けない。
+    /// 書く中身は `Union[str, bytes]`（ffi_value_exchange_plan.md 7-11。以前のバイト単位は `list[int]`）。
     #[test]
     fn file_object_methods_are_checked() {
         let open = "let f = open(\"a.txt\", FileOpenMode.rewrite)\n";
         assert!(ok(&format!(
-            "{open}let s: str = f.read()\nlet t = f.read_line(backward = True)\nf.write(\"x\")\nf.write_line([1, 2])\n"
+            "{open}let s: str = f.read()\nlet t = f.read_line(backward = True)\nf.write(\"x\")\nf.write_line(bytes([1, 2]))\n"
         )));
+        assert!(err(&format!("{open}f.write_line([1, 2])\n")));
         assert!(err(&format!("{open}f.nope()\n")));
         assert!(err(&format!("{open}f.write(1)\n")));
         assert!(err(&format!("{open}f.read(True, False)\n")));

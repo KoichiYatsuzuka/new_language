@@ -214,13 +214,13 @@ close(nfr)
 
 # byte mode
 let bf = open("examples/basics/_tmp_bytes.txt", FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)
-bf.write([72, 101, 108, 108, 111])   # "Hello" in bytes
+bf.write(bytes([72, 101, 108, 108, 111]))   # "Hello" in bytes (byte mode reads and writes bytes)
 close(bf)
 
 let br = open("examples/basics/_tmp_bytes.txt", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)
 let data = br.read()
 close(br)
-print(data)   # [72, 101, 108, 108, 111]
+print(data)   # b'Hello'
 
 # ── 5. String features ────────────────────────────────────────────────────────
 

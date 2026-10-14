@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-12・7-15〜7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -244,7 +244,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-8** | ✅（§5）Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | ✅（§5）境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
-| **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
+| **7-11** | ✅（§5）バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 | **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
@@ -258,6 +258,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
 | **7-23** | 参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
+| **7-25** | 組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1298,6 +1299,27 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   13/13・`scan_examples`（基準と同じ。前段の `test_build_gate` が評価コアも見て ok）・`force_gate`（`VmForceError` 0）・
   `compare_python_impl` clean（179/179）・`compare_wasm_frontend` 555/555・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
   `cargo test` 1173 件・拡張の wasm クレートの 726 件が通る。VSIX を作り直した
+
+### 7-11 実装
+
+- バイト単位で開いたファイル（`ByteRecognizingMode.byte`）の `read()` / `read_line()` は `bytes`、`write()` / `write_line()` は
+  `bytes` を受け取る（`classes/mod.rs` の `bytes_to_value` / `value_to_bytes`。Python の `"rb"` / `"wb"` と同じ）。`read_letter()` は
+  1 バイトの `int` のまま（`bytes` の添字と同じ）。list を書けば理由つきのエラー（`write `bytes(xs)``）、型スタブの `write*` の
+  引数は `Union[str, bytes]`（静的エラーになる）
+- テキストで開いたファイルの一括の読み（`read()` / `read_line()`）は、UTF-8 でなければ `IOError`。⚠ 以前は U+FFFD に黙って
+  置き換えていた（1 文字ずつ読む `read_letter` は以前からエラーで、揃っていなかった）
+- 移行: `basics/built_in.ar`（`bf.write(bytes([...]))`・出力は `b'Hello'`）。型検査のテスト `file_object_methods_are_checked`
+- ⚠ 調べる中で見つけたもの: 組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に
+  `NameError: variable 'path' is already declared`（参照実装も同じ。関数名の `repr` なら通る）⇒ 7-25
+- 単体テスト `test_file_byte_mode_write_read`（`bytes` に更新）・`test_file_text_read_of_invalid_utf8_is_an_error`。例題:
+  `basics/file_bytes.ar`（期待値と違えば raise。基準の exe では静的エラー）・`basics/file_bytes_list_error.ar`。参照実装は `bytes` が
+  無いので既知の差（⇒ 7-10）
+- 文書: skill `type-checking`（`FileObject`）。文法の文書にはファイル入出力の節が無い
+- ゲート（基準 `611846d`・制限時間つき）: `compare_outputs` の差は 4 本（463/467）で、どれも意図した変化: 新しい例題 2 本・
+  `built_in`（`b'Hello'`）・`typing/builtin_return_types_error`（`write` の引数の型の表示が `Union[str, bytes]`。例題のコメントも直した）。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（180/180）・
+  `compare_wasm_frontend` 557/557・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1174 件・拡張の wasm クレートの
+  727 件が通る。VSIX を作り直した
 
 ---
 

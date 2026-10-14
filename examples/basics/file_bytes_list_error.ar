@@ -1,0 +1,10 @@
+# file_bytes_list_error.ar — バイト単位で開いたファイルへ list[int] を書く（負例・ffi_value_exchange_plan.md 7-11）
+#
+# バイト単位のファイルの `write()` は `bytes` を受け取る（`Union[str, bytes]`）。list は `bytes(xs)` で作ってから渡す。
+# 期待: StaticTypeError — `write` の引数 `content` は `Union[str, bytes]` で、`list[int]` は渡せない
+# ⚠ 7-11 より前はバイト単位の読み書きが `list[int]` だった（Python の `"rb"` / `"wb"` と違った）。
+# 対になる正例: file_bytes.ar
+
+let f = open("examples/basics/_tmp_file_bytes_error.txt", FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)
+f.write([72, 105])
+close(f)

@@ -1,0 +1,40 @@
+# file_bytes.ar — バイト単位で開いたファイルは bytes を読み書きする（正例・ffi_value_exchange_plan.md 7-11）
+#
+# `open(path, mode, StartPoint.top, ByteRecognizingMode.byte)` で開いたファイルの `read()` / `read_line()` は `bytes`、
+# `write()` / `write_line()` は `bytes` を受け取る（Python の `"rb"` / `"wb"` と同じ）。`read_letter()` は 1 バイトの `int`。
+# テキストで開いたファイルは UTF-8 として読み、UTF-8 でなければ IOError。
+# ⚠ 7-11 より前はバイト単位の読み書きが `list[int]` で、テキストの `read()` は不正な UTF-8 を U+FFFD に黙って置き換えていた。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 対になる負例: file_bytes_list_error.ar
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let file_name = "examples/basics/_tmp_file_bytes.txt"
+let w = open(file_name, FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)
+w.write(bytes([72, 105, 10, 0, 255]))   # "Hi\n", 0x00, 0xFF
+w.write_line("end".encode())
+close(w)
+
+let r = open(file_name, FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)
+let first = r.read_line()
+check("read_line is bytes", first == bytes([72, 105, 10]))
+let one = r.read_letter()
+check("read_letter is one byte (int)", one == 0)
+let rest = r.read()
+check("read is bytes", rest == bytes([255, 101, 110, 100, 10]))
+close(r)
+
+# テキストで開くと UTF-8 として読む。0xFF は UTF-8 にならないので IOError
+let t = open(file_name, FileOpenMode.read)
+mut message = ""
+try:
+    let s = t.read()
+    print("unreachable:", s)
+except IOError as e:
+    message = e.message
+close(t)
+check("a file that is not UTF-8 read as text is an IOError", message != "")

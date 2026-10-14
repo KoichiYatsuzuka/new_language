@@ -415,7 +415,10 @@ Built-in **types declared in `src/built_in_stab/builtins.ars`** (`builtins::type
   are checked like a user enum (`FileOpenMode.bogus` is an error).
 - `class FileObject` (result of `open`) — its methods `read` / `read_line` / `read_letter` /
   `write` / `write_line` are checked for existence, argument count and types; `write*` return `None`,
-  the `read*` results stay `Unresolved` (text vs byte mode is a runtime choice).
+  the `read*` results stay `Unresolved` (text vs byte mode is a runtime choice). `write*` take
+  `Union[str, bytes]`: a byte-mode file reads and writes `bytes` (`read_letter` gives one byte as `int`), and a
+  text-mode `read` of non-UTF-8 is an `IOError` (ffi_value_exchange_plan.md 7-11; it used to be `list[int]` and
+  a silent U+FFFD replacement).
 - ⚠ These classes are collected with `foreign_depth` raised, so they are **not** in
   `arrow_class_names` (the VM must not treat `Value::FileObject` as `Value::Instance`).
 - ⚠ Declaring any method closes the member set — every runtime method must be listed

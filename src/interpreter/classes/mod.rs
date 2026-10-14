@@ -3,9 +3,6 @@
 // クラスのインスタンス化、メソッド呼び出し、継承チェーン探索、組み込み型メソッドディスパッチを提供する。
 // このファイルは共有の自由ヘルパー(ファイル引数解析・バイト変換)を保持し、役割別サブモジュールを宣言する。
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use super::{ByteModeRust, Value};
 
 // ---------------------------------------------------------------------------
@@ -54,44 +51,32 @@ fn file_content_arg<'a>(
     }
 }
 
-/// `Vec<u8>` をバイトモードに応じた `Value` に変換する。
-/// - Text モード: UTF-8 として `Value::Str` に変換
-/// - Byte モード: バイト値のリスト `Value::List[Value::Int]` に変換
-fn bytes_to_value(data: &[u8], byte_mode: &ByteModeRust) -> Value {
+/// ファイルから読んだバイト列を値にする。
+/// - Text モード: UTF-8 として `str`。⚠ 不正な UTF-8 は `IOError`（ffi_value_exchange_plan.md 7-11。以前は U+FFFD に黙って
+///   置き換えていた。1 文字ずつ読む `read_letter` は以前からエラー）
+/// - Byte モード: `bytes`（7-11。以前は `list[int]`。Python の `"rb"` と同じ）
+fn bytes_to_value(data: &[u8], byte_mode: &ByteModeRust) -> Result<Value, String> {
     match byte_mode {
-        ByteModeRust::Text => Value::str(String::from_utf8_lossy(data).into_owned()),
-        ByteModeRust::Byte => Value::List(Rc::new(RefCell::new(
-            data.iter().map(|&b| Value::Int(b as i64)).collect(),
-        ))),
+        ByteModeRust::Text => std::str::from_utf8(data)
+            .map(|s| Value::str(s.to_string()))
+            .map_err(|_| "IOError: invalid UTF-8 in file (open it with ByteRecognizingMode.byte to read bytes)".to_string()),
+        ByteModeRust::Byte => Ok(Value::bytes(data.to_vec())),
     }
 }
 
-/// `Value` をバイトモードに応じた `Vec<u8>` に変換する。
-/// - Text モード: `Value::Str` → UTF-8 バイト列
-/// - Byte モード: `Value::List[Value::Int]` → バイト列
+/// `Value` をバイトモードに応じた `Vec<u8>` に変換する（`write` / `write_line` の中身）。
+/// - Text モード: `str` → UTF-8 のバイト列
+/// - Byte モード: `bytes`（7-11。以前は `list[int]`。list は `bytes(xs)` で作るよう促す）
 fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, String> {
     match byte_mode {
         ByteModeRust::Text => match val {
             Value::Str(s) => Ok(s.as_bytes().to_vec()),
-            _ => Err("write() content must be str in text mode".to_string()),
+            _ => Err("content must be str in text mode".to_string()),
         },
         ByteModeRust::Byte => match val {
-            Value::List(items) => {
-                let mut out = Vec::new();
-                for item in items.borrow().iter() {
-                    match item {
-                        Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
-                        Value::Int(n) => {
-                            return Err(format!("write() byte value {n} out of range 0-255"))
-                        }
-                        _ => {
-                            return Err("write() content must be list[int] in byte mode".to_string())
-                        }
-                    }
-                }
-                Ok(out)
-            }
-            _ => Err("write() content must be list[int] in byte mode".to_string()),
+            Value::Bytes(b) => Ok(b.to_vec()),
+            Value::List(_) => Err("content must be bytes in byte mode (got a list; write `bytes(xs)`)".to_string()),
+            _ => Err("content must be bytes in byte mode".to_string()),
         },
     }
 }

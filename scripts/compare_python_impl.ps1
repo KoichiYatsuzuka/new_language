@@ -81,6 +81,7 @@ $knownDiff = @{
     'py_int_instance_arg_error'      = 'Rust: Arrow のインスタンスを Python へ渡すと TypeError（型名はクラス名・2-6）。py: 内部の TlInstance のまま渡して通る'
     'py_int_bytes'                   = 'Rust: py-int で Python の bytes / bytearray / memoryview と Arrow の bytes を受け渡す（ffi_value_exchange_plan.md 5-3）。py: bytes も str.encode も無い（⇒ 7-10）'
     'bytes_basics'                   = 'Rust: 組み込み型 bytes（ffi_value_exchange_plan.md 3-1）。py: bytes も str.encode も無く NameError（⇒ 7-10）'
+    'file_bytes'                     = 'Rust: バイト単位のファイルは bytes を読み書きする（ffi_value_exchange_plan.md 7-11）。py: bytes も str.encode も無い（⇒ 7-10）'
     'bytes_decode_error'             = 'Rust: 文字コードに合わない decode は ValueError（3-1）。py: str.encode が無く AttributeError（⇒ 7-10）'
     'bytes_str_mix_error'            = 'Rust: bytes と str を混ぜると StaticTypeError（3-1）。py: str.encode が無く実行時の AttributeError（⇒ 7-10）'
     'cpp_cstring_arg'                = 'Rust: const char* の引数は bytes（ffi_value_exchange_plan.md 4-3・D-13）。py: str.encode が無く（⇒ 7-10）何も出さずに止まる'
