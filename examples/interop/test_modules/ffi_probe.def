@@ -60,3 +60,8 @@ EXPORTS
     fp_tagged_sum
     fp_pairs
     fp_named_list
+    fp_sum64
+    fp_double64
+    fp_sumf
+    fp_pairs_total
+    fp_bytes_sum

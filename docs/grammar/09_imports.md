@@ -430,7 +430,8 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   | 構造体の値渡し | インスタンス。ポインタのフィールドも上の規則で組み立てる（`bytes` は呼び出しの間だけのコピー）。C が書き込むかもしれない `char*` / `wchar_t*` のフィールド・関数ポインタ・入れ子の構造体は渡せない |
   | 構造体の配列（`ArPtrProtocol`） | `Ptr[構造体].to_list()` で `list[構造体]`（正確なレイアウトの構造体だけ・⇒ 7-14） |
   | `ArPtrProtocol` の戻り値（値返し） | `Option[Ptr[void]]`（所有なら最後の参照か `release()` で 1 回だけ解放・STATIC は解放しない）。`p mustbe Ptr[int32]` で要素型を照合してから `to_list()` / `to_bytes()` |
-  | `ArPtrProtocol`（値・`const` ポインタ・ポインタ）の引数 | `Ptr` か `None`。`ArPtrProtocol*` を受けた関数が解放して `address` を 0 に書き戻すと、その `Ptr` は使えなくなる（`docs/ptr_protocol.md`） |
+  | `ArPtrProtocol`（値・`const` ポインタ・ポインタ）の引数 | `Ptr` か `None`。`ArPtrProtocol*` を受けた関数が解放して `address` を 0 に書き戻すと、その `Ptr` は使えなくなる（`docs/ptr_protocol.md`）。`list` / `bytes` も渡せる（呼び出しの間だけのコピー。要素の型は int → `int64`・float → `float64`・C の構造体 → 構造体名・bytes → `uint8`。`ArPtrProtocol*` へ `mut` の list を渡すと C が書いた中身が書き戻される） |
+  | `char*`（書き込み用・出力バッファ）の引数 | `mut` の `bytes`（`bytes(n)` で用意する）。C が書いた中身が同じ長さの `bytes` として変数へ書き戻される |
   | 数値の書き込みポインタ（`int*` / `double*`）の引数 | 名前つきの `mut` 変数（呼び出しの後で書き戻す） |
   | NULL | `None` |
 

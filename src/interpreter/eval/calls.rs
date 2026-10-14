@@ -433,6 +433,9 @@ impl Interpreter {
             "bytes" => match vals.as_slice() {
                 [] => Ok(Value::bytes(Vec::new())),
                 [Value::Bytes(b)] => Ok(Value::bytes(b.to_vec())),
+                // `bytes(n)` は n バイトのゼロ（Python と同じ・C の出力バッファを用意する・4-7）
+                [Value::Int(n)] if *n >= 0 => Ok(Value::bytes(vec![0u8; *n as usize])),
+                [Value::Int(n)] => Err(format!("ValueError: bytes() length must be 0 or more, not {n}")),
                 [Value::List(items)] => {
                     let mut out = Vec::with_capacity(items.borrow().len());
                     for v in items.borrow().iter() {

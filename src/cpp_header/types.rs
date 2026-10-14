@@ -283,9 +283,7 @@ impl CFnSig {
             let p = if name.is_empty() { format!("#{i}") } else { format!("`{name}`") };
             let why = match ct {
                 CType::CharPtr { wide: true, .. } => Some(format!("parameter {p} is a wide string (`wchar_t*`)")),
-                CType::CharPtr { mutable: true, .. } => Some(format!(
-                    "parameter {p} is `char*`, an output buffer (what the C side writes would be lost)"
-                )),
+                // ⚠ `char*` の出力バッファは 4-7 から `mut` の `bytes` を受け、呼び出しの後で書き戻す（以前は書き込みが失われた）
                 // ⚠ `void*`・レイアウトの分からない構造体ポインタは 4-3 から `Ptr` / `None` を受ける（以前は使えなかった）
                 CType::FnPtr => Some(format!("parameter {p} is a function pointer (callback)")),
                 CType::OpaqueStructPtr { type_name, .. } if !known(type_name) => Some(format!(
@@ -428,6 +426,8 @@ mod tests {
             sig(vec![by_val("Named")], CType::Void),
             sig(vec![], by_val("Named")),
             sig(vec![], by_val("OutBuf")),
+            // 4-7: `char*` の出力バッファ（`mut` の bytes へ書き戻す）
+            sig(vec![CType::CharPtr { wide: false, mutable: true }, I32], CType::Void),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
         }
@@ -457,7 +457,6 @@ mod tests {
             // 構造体と宣言されていない名前（解決できない typedef など）へのポインタ（4-3）
             (sig(vec![], st_ptr("Unknown")), "does not declare as a struct"),
             (sig(vec![], by_val("Partial")), "struct `Partial` by value"),
-            (sig(vec![CType::CharPtr { wide: false, mutable: true }], CType::Void), "output buffer"),
             (sig(vec![CType::CharPtr { wide: true, mutable: false }], CType::Void), "wide string"),
             (sig(vec![CType::FnPtr], CType::Void), "callback"),
             (sig(vec![CType::Ptr { inner: Box::new(I32), mutable: false }], CType::Void), "single value or an array"),

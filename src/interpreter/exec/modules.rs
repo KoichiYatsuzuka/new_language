@@ -972,11 +972,18 @@ impl Interpreter {
     /// 乗らない場合のみ従来のハンドルベース書き戻しにフォールバックする。
     // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
     #[cfg(feature = "native")]
-    pub(crate) fn sig_to_ptr_param_fn(ct: &crate::interpreter::cpp_bridge::CType) -> crate::interpreter::PtrParam {
+    pub(crate) fn sig_to_ptr_param_fn(
+        ct: &crate::interpreter::cpp_bridge::CType,
+        raw_layouts: &HashMap<String, Arc<crate::interpreter::value::RawLayout>>,
+    ) -> crate::interpreter::PtrParam {
         use crate::interpreter::cpp_bridge::CType;
         use crate::interpreter::PtrParam;
         match ct {
-            CType::Ptr { mutable: true, .. } | CType::OpaqueStructPtr { mutable: true, .. } => {
+            // 書き戻すもの（名前つきの `mut` 変数を求める）: 数値の書き込みポインタ・インスタンスを渡す（正確なレイアウトの）
+            // 構造体ポインタ・`char*` の出力バッファ（4-7）。⚠ レイアウトの分からない構造体ポインタは `Ptr` を渡して何も書き
+            // 戻さない（4-3）ので含めない（含めると `let` の `Ptr` を渡せなくなる）
+            CType::Ptr { mutable: true, .. } | CType::CharPtr { wide: false, mutable: true } => PtrParam::MutPtr,
+            CType::OpaqueStructPtr { mutable: true, type_name } if raw_layouts.contains_key(type_name) => {
                 PtrParam::MutPtr
             }
             CType::Ptr { mutable: false, .. }
@@ -1130,7 +1137,7 @@ impl Interpreter {
                 let ptr_params: Vec<crate::interpreter::PtrParam> = sig
                     .params
                     .iter()
-                    .map(|(_, ct)| Self::sig_to_ptr_param_fn(ct))
+                    .map(|(_, ct)| Self::sig_to_ptr_param_fn(ct, &raw_layouts))
                     .collect();
                 // typed ABI: 全プリミティブ + raw レイアウト既知の構造体シグネチャなら
                 // {name}_typed を解決する

@@ -1,0 +1,46 @@
+# cpp_list_to_c.ar — Arrow の list / bytes を C へ渡し、書き込まれた中身を受け取る（正例・ffi_value_exchange_plan.md 4-7・D-14・D-15）
+#
+#   - `ArPtrProtocol` の引数へ `list` / `bytes` を渡す: 呼び出しの間だけ有効なコピーになる（C は持ち続けてはいけない）。
+#     要素の型は中身で決まる: int → "int64"、float → "float64"、C の構造体のインスタンス → 構造体名、bytes → "uint8"
+#     （C の側は elem_type を見て読む。`int32` を期待する関数に list[int] を渡すと、C の側が型の違いに気づく）
+#   - `ArPtrProtocol*`（書き込み用）へ `mut` の list を渡すと、C が書いた中身が呼び出しの後で list へ書き戻される
+#   - `char*` の出力バッファへ `mut` の bytes を渡すと、C が書いた中身が同じ長さの bytes として変数へ書き戻される
+#     （`bytes(n)` で n バイトのゼロを用意する）
+#   - 要素の型が決まらない list（空・種類の混在）は TypeError
+# ⚠ 4-7 より前は、list を C へ渡す手段が無く、`char*` の出力バッファを受ける関数は使えなかった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_output_buffer_let_error.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── list / bytes を ArPtrProtocol として渡す ──────────────────────────────────────────
+check("list[int] is an int64 array", fp.fp_sum64([1, 2, 3]) == 6)
+check("list[float] is a float64 array", fp.fp_sumf([1.5, 2.5]) == 4.0)
+check("list of C structs", fp.fp_pairs_total([Pair(1, 2), Pair(3, 4)]) == 10)
+check("bytes is a uint8 array (by value)", fp.fp_bytes_sum("AB".encode()) == 131)
+check("the library sees int64, not int32", fp.fp_protocol_sum([1, 2]) == -1)
+
+# ── 書き戻し（D-14）────────────────────────────────────────────────────────────────
+mut xs = [1, 2, 3]
+fp.fp_double64(xs)
+print(xs)
+check("the library wrote into the list", xs == [2, 4, 6])
+mut buf = bytes(10)
+fp.fp_fill(buf, 10)
+print(buf)
+check("output buffer written back", buf[0:6] == "filled".encode() and len(buf) == 10)
+
+# ── 型の決まらない list ─────────────────────────────────────────────────────────────
+mut message = ""
+try:
+    print("unreachable:", fp.fp_sum64([1, 2.5]))
+except TypeError as e:
+    message = e.message
+check("mixed element types -> TypeError (" + message + ")", message != "")

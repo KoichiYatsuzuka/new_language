@@ -58,6 +58,7 @@ struct ArCallbacks {
     protocol_ret:  unsafe extern "C" fn(*const u8, *const u8, i32) -> i64,
     make_raw_instance: unsafe extern "C" fn(i64, *const u8, i64) -> i64,
     make_instance: unsafe extern "C" fn(i64, *const i64, i32) -> i64,
+    bytes_buf_arg: unsafe extern "C" fn(i64, *mut i64) -> *mut u8,
 }
 
 // ArPtrProtocol (bridge/ptr_protocol/ar_ptr_protocol.h, 4-1). Same layout as Arrow's PtrProtocolRaw; only passed through.
@@ -363,6 +364,13 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                     inner.from_handle(&h)
                 ));
             }
+            // `char*`（書き込み用）は出力バッファ（4-7・D-14）: `bytes` のコピーを渡し、呼び出しの後で同じ長さの `bytes` として
+            // 書き戻す（下の書き戻し）。名前つきの `mut` 変数なら呼び出し元の変数へ戻る（`PtrParam::MutPtr`）
+            CType::CharPtr { wide: false, mutable: true } => {
+                s.push_str(&format!(
+                    "    let mut _n_{pname}: i64 = 0;\n    let _{pname} = ((*CB).bytes_buf_arg)({h}, &mut _n_{pname});\n"
+                ));
+            }
             CType::CharPtr { .. } => {
                 // `const char*` は `bytes` か `None`（NULL・4-3・D-13）。`str` や NUL を含む `bytes` は `bytes_arg` が
                 // エラーを設定し、下の `pending_error` で C 関数を呼ばずに戻る（呼び出しの後でエラーが例外になる）。
@@ -488,6 +496,15 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
     for (i, (pname, ptype)) in sig.params.iter().enumerate() {
         if let CType::PtrProtocol { by_pointer: true, mutable: true } = ptype {
             s.push_str(&format!("    ((*CB).protocol_done)(*argv.offset({i}), _{pname}.address);\n"));
+        }
+    }
+
+    // 出力バッファ（4-7）: C が書いた中身を同じ長さの `bytes` にして書き戻す
+    for (i, (pname, ptype)) in sig.params.iter().enumerate() {
+        if let CType::CharPtr { wide: false, mutable: true } = ptype {
+            s.push_str(&format!(
+                "    if !_{pname}.is_null() {{ ((*CB).write_handle)(*argv.offset({i}), ((*CB).make_bytes)(_{pname}, _n_{pname})); }}\n"
+            ));
         }
     }
 
@@ -796,6 +813,22 @@ mod tests {
         let s = gen_dll_fn(&sig, &map, &defs);
         assert!(s.contains("std::ptr::write((*_ret) as usize as *mut _ArPtrProtocol, _fp(_n));"), "{s}");
         assert!(s.contains("((*CB).protocol_ret)(&_r as *const _ArPtrProtocol as *const u8, b\"Rec\".as_ptr(), 3)"), "{s}");
+    }
+
+    /// `char*` の出力バッファ（4-7）: `bytes_buf_arg` でコピーを渡し、呼び出しの後で同じ長さの bytes として書き戻す。
+    #[test]
+    fn output_buffer_is_written_back() {
+        let sig = CFnSig {
+            name: "fill".to_string(),
+            params: vec![("buf".to_string(), CType::CharPtr { wide: false, mutable: true }), ("n".to_string(), I32)],
+            ret: CType::Void,
+            namespace: None,
+            n_required: 2,
+        };
+        let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
+        assert!(s.contains("let _buf = ((*CB).bytes_buf_arg)(*argv.offset(0), &mut _n_buf);"), "{s}");
+        assert!(s.contains("((*CB).write_handle)(*argv.offset(0), ((*CB).make_bytes)(_buf, _n_buf));"), "{s}");
+        assert!(!cpp_typed_eligible(&sig, &[]), "an output buffer goes through the handle path");
     }
 
     /// 引数を変換した後、エラーが設定されていれば C の関数を呼ばずに戻る。`bool` の引数は `to_bool`（7-12）。

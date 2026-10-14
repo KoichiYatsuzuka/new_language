@@ -343,6 +343,10 @@ pub(crate) fn c_string_arg(v: &super::Value) -> Result<Option<Vec<u8>>, String> 
 /// - 返す `PtrProtocolArg` は呼び出しが終わるまで生かしておく（構造体と要素の型名の文字列を指すため）。`writable` なら
 ///   呼び出しの後で `finish` を呼ぶ（C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする・D-3）
 pub(crate) fn protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolArg, String> {
+    // Arrow の `list` / `bytes` は呼び出しの間だけ有効なコピーとして渡す（4-7・D-15）
+    if let super::Value::List(_) | super::Value::Bytes(_) = v {
+        return copied_protocol_arg(v, writable);
+    }
     let (raw, elem, ptr) = match v {
         super::Value::None => (
             PtrProtocolRaw {
@@ -383,7 +387,110 @@ pub(crate) fn protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtoc
             ))
         }
     };
-    Ok(PtrProtocolArg { raw: Box::new(raw), _elem: elem, ptr })
+    Ok(PtrProtocolArg { raw: Box::new(raw), _elem: elem, ptr, buf: Vec::new(), writeback: None })
+}
+
+/// Arrow の `list` / `bytes` を、呼び出しの間だけ有効なコピーの `ArPtrProtocol` にする（4-7・D-15）。
+///
+/// 要素の型は中身で決める: `int` → `int64`、`float` → `float64`、正確なレイアウトの構造体のインスタンス → 構造体名
+/// （C の sizeof ずつ並べる）、`bytes` → `uint8`。空の `list`・種類の混ざった `list`・それ以外の要素は型が決まらないので誤り。
+/// 解放関数は NULL・STATIC は付けない（C が持ち続けてはいけない）。`writable`（`ArPtrProtocol*`）なら呼び出しの後で、C が
+/// 書いた中身を `list` へ書き戻す（D-14。`bytes` は書き換えられないので渡せない）。
+fn copied_protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolArg, String> {
+    use super::Value;
+    let (elem, data, count, writeback): (String, Vec<u8>, usize, Option<ListWriteBack>) = match v {
+        Value::Bytes(b) => {
+            if writable {
+                return Err(
+                    "TypeError: bytes cannot receive what the library writes into an `ArPtrProtocol*`; pass a mut list[int]"
+                        .to_string(),
+                );
+            }
+            ("uint8".to_string(), b.to_vec(), b.len(), None)
+        }
+        Value::List(items_rc) => {
+            let items = items_rc.borrow();
+            if items.is_empty() {
+                return Err("TypeError: an empty list cannot be passed as `ArPtrProtocol` (its element type is unknown)".to_string());
+            }
+            let kind = match &items[0] {
+                Value::Int(_) => ListKind::Int,
+                Value::Float(_) => ListKind::Float,
+                Value::Instance(inst) => {
+                    let class = inst.borrow().class.clone();
+                    match &class.raw_layout {
+                        Some(l) => ListKind::Struct(class.clone(), l.c_size()),
+                        None => {
+                            return Err(format!(
+                                "TypeError: a list of '{}' cannot be passed as `ArPtrProtocol` (it needs a struct with an exact C layout)",
+                                class.name
+                            ))
+                        }
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "TypeError: a list of '{}' cannot be passed as `ArPtrProtocol` (int, float or a C struct)",
+                        crate::interpreter::ops::typecheck::runtime_type_name(other)
+                    ))
+                }
+            };
+            let mut data = Vec::new();
+            for (i, x) in items.iter().enumerate() {
+                match (&kind, x) {
+                    (ListKind::Int, Value::Int(n)) => data.extend_from_slice(&n.to_le_bytes()),
+                    (ListKind::Float, Value::Float(f)) => data.extend_from_slice(&f.to_le_bytes()),
+                    (ListKind::Struct(class, size), Value::Instance(inst)) if std::rc::Rc::ptr_eq(&inst.borrow().class, class) => {
+                        data.extend_from_slice(&inst.borrow().raw_bytes()[..*size]);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "TypeError: element {i} of the list does not match the first element ('{}'); an `ArPtrProtocol` holds one element type",
+                            crate::interpreter::ops::typecheck::runtime_type_name(x)
+                        ))
+                    }
+                }
+            }
+            let elem = match &kind {
+                ListKind::Int => "int64".to_string(),
+                ListKind::Float => "float64".to_string(),
+                ListKind::Struct(class, _) => class.name.clone(),
+            };
+            let n = items.len();
+            drop(items);
+            (elem, data, n, writable.then(|| ListWriteBack { list: items_rc.clone(), kind }))
+        }
+        _ => unreachable!("copied_protocol_arg takes a list or bytes"),
+    };
+    // 8 バイト境界に置く（C が int64 / double の配列として読む）
+    let mut buf = vec![0u64; data.len().div_ceil(8).max(1)];
+    // SAFETY: `buf` は `data.len()` バイト以上ある
+    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buf.as_mut_ptr() as *mut u8, data.len()) };
+    let elem_c = std::ffi::CString::new(elem).map_err(|_| "ValueError: element type contains NUL".to_string())?;
+    let raw = PtrProtocolRaw {
+        address: buf.as_ptr() as u64,
+        elem_type: elem_c.as_ptr(),
+        flags: if writable { 0 } else { PTR_FLAG_CONST },
+        _reserved: 0,
+        length: count as i64,
+        release: None,
+        release_ctx: std::ptr::null_mut(),
+    };
+    Ok(PtrProtocolArg { raw: Box::new(raw), _elem: Some(elem_c), ptr: None, buf, writeback })
+}
+
+/// `list` の要素の種類（`ArPtrProtocol` へのコピーと書き戻し・4-7）。
+enum ListKind {
+    Int,
+    Float,
+    /// 構造体のクラスと C の sizeof
+    Struct(std::rc::Rc<crate::interpreter::ClassValue>, usize),
+}
+
+/// 呼び出しの後で `list` へ書き戻すもの（`ArPtrProtocol*`・4-7・D-14）。
+struct ListWriteBack {
+    list: std::rc::Rc<std::cell::RefCell<Vec<super::Value>>>,
+    kind: ListKind,
 }
 
 /// [`protocol_arg`] が組み立てた構造体（呼び出しの間だけ生きる）。
@@ -394,6 +501,10 @@ pub struct PtrProtocolArg {
     _elem: Option<std::ffi::CString>,
     /// C の側で解放できる（`ArPtrProtocol*`）ときの元の `Ptr`。
     ptr: Option<Arc<PtrHandle>>,
+    /// `list` / `bytes` のコピー（`raw.address` が指す・4-7）。
+    buf: Vec<u64>,
+    /// 呼び出しの後で `list` へ書き戻すもの（`ArPtrProtocol*` に `list` を渡したとき・4-7）。
+    writeback: Option<ListWriteBack>,
 }
 
 impl PtrProtocolArg {
@@ -403,12 +514,45 @@ impl PtrProtocolArg {
     }
 
     /// 呼び出しの後で呼ぶ。C の側で解放されて `address` が 0 に書き戻されていたら、その `Ptr` を使えなくする。
+    /// `list` を `ArPtrProtocol*` で渡していたら、C が書いた中身を `list` の要素へ書き戻す（4-7・D-14。要素の数は変えない）。
     pub fn finish(self) {
         if let Some(p) = &self.ptr {
             if self.raw.address == 0 {
                 p.invalidate();
             }
         }
+        if let Some(wb) = &self.writeback {
+            // ⚠ C が `address` を書き換えた（解放したつもり・別の領域を指した）ら、中身は読まない
+            if self.raw.address != self.buf.as_ptr() as u64 {
+                return;
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(self.buf.as_ptr() as *const u8, self.buf.len() * 8) };
+            let mut items = wb.list.borrow_mut();
+            for (i, item) in items.iter_mut().enumerate() {
+                match &wb.kind {
+                    ListKind::Int => {
+                        let mut b = [0u8; 8];
+                        b.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+                        *item = super::Value::Int(i64::from_le_bytes(b));
+                    }
+                    ListKind::Float => {
+                        let mut b = [0u8; 8];
+                        b.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+                        *item = super::Value::Float(f64::from_le_bytes(b));
+                    }
+                    ListKind::Struct(_, size) => {
+                        if let super::Value::Instance(inst) = item {
+                            inst.borrow_mut().raw_bytes_mut()[..*size].copy_from_slice(&bytes[i * size..(i + 1) * size]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// C が `ArPtrProtocol*` の `address` に書いた値を受け取る（ハンドル経路は中継コードの局所変数に書かれる・4-7）。
+    pub fn set_address_after(&mut self, address: u64) {
+        self.raw.address = address;
     }
 }
 
@@ -787,6 +931,36 @@ mod tests {
         assert!(e.contains("no release function") && e.contains("AR_PTR_STATIC"), "{e}");
         let e = ptr_from_protocol(&raw(0x10, c"int32", 0, -1, Some(noop_release)), &structs).unwrap_err();
         assert!(e.contains("-1 is allowed only with AR_PTR_NUL_TERMINATED"), "{e}");
+    }
+
+    /// Arrow の `list` / `bytes` を、呼び出しの間だけのコピーの `ArPtrProtocol` にする（4-7）。書き込み用なら書き戻す。
+    #[test]
+    fn lists_and_bytes_as_protocol_arguments() {
+        use super::super::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let elem = |a: &PtrProtocolArg| unsafe { std::ffi::CStr::from_ptr(a.raw.elem_type) }.to_str().unwrap().to_string();
+        let a = protocol_arg(&Value::List(Rc::new(RefCell::new(vec![Value::Int(1), Value::Int(-2)]))), false).unwrap();
+        assert_eq!((elem(&a).as_str(), a.raw.length, a.raw.flags), ("int64", 2, PTR_FLAG_CONST));
+        assert!(a.raw.release.is_none(), "Arrow keeps the memory; the library must not free it");
+        let xs = unsafe { std::slice::from_raw_parts(a.raw.address as usize as *const i64, 2) };
+        assert_eq!(xs, &[1, -2]);
+        let f = protocol_arg(&Value::List(Rc::new(RefCell::new(vec![Value::Float(0.5)]))), false).unwrap();
+        assert_eq!(elem(&f), "float64");
+        let b = protocol_arg(&Value::bytes(b"hi".to_vec()), false).unwrap();
+        assert_eq!((elem(&b).as_str(), b.raw.length), ("uint8", 2));
+        // 型の決まらないもの・書き戻せないもの
+        let empty = Value::List(Rc::new(RefCell::new(vec![])));
+        assert!(protocol_arg(&empty, false).err().unwrap().contains("empty list"));
+        let mixed = Value::List(Rc::new(RefCell::new(vec![Value::Int(1), Value::Float(2.0)])));
+        assert!(protocol_arg(&mixed, false).err().unwrap().contains("element 1"));
+        assert!(protocol_arg(&Value::bytes(b"x".to_vec()), true).err().unwrap().contains("mut list"));
+        // 書き込み用: C が書いた中身を list へ戻す
+        let list = Rc::new(RefCell::new(vec![Value::Int(1), Value::Int(2)]));
+        let w = protocol_arg(&Value::List(list.clone()), true).unwrap();
+        unsafe { *(w.raw.address as usize as *mut i64).add(1) = 40 };
+        w.finish();
+        assert!(matches!(list.borrow()[1], Value::Int(40)));
     }
 
     #[test]

@@ -21,18 +21,19 @@ fn check(let label: str, let ok: bool) -> None:
     print(label + " OK")
 
 # ── 構造体ポインタと C の文字列が混ざる関数 ─────────────────────────────────────
+# ⚠ `Option[bytes]` は `==` の前に `mustbe bytes` で取り出す（Union への演算は静的エラー。`None` かどうかは `is None`）
 check("struct pointer + const char*", fp.fp_rec_label(Rec(7, 1.5), "abc".encode()) == 10)
 let r = fp.fp_rec_static()
 check("Ptr[Rec] passed back to const Rec*", fp.fp_rec_label(r, "ab".encode()) == 9)
 check("bool in and out", fp.fp_is_even(4) and fp.fp_count_flag(True) == 1)
-check("returned pointer into the argument", fp.fp_echo("hello".encode()) == "hello".encode())
+check("returned pointer into the argument", (fp.fp_echo("hello".encode()) mustbe bytes) == "hello".encode())
 
 # ── ArPtrProtocol の引数 ────────────────────────────────────────────────────────
 let h = fp.fp_handle_new()
-check("protocol by value carries the element type", fp.fp_protocol_type(h) == "void".encode())
-check("None is a NULL protocol", fp.fp_protocol_type(None) == "(null)".encode())
+check("protocol by value carries the element type", (fp.fp_protocol_type(h) mustbe bytes) == "void".encode())
+check("None is a NULL protocol", (fp.fp_protocol_type(None) mustbe bytes) == "(null)".encode())
 let db = fp.fp_db_open("x".encode())
-check("element type of Ptr[Db]", fp.fp_protocol_type(db) == "Db".encode())
+check("element type of Ptr[Db]", (fp.fp_protocol_type(db) mustbe bytes) == "Db".encode())
 fp.fp_db_close(db)
 
 fp.fp_protocol_free(h)

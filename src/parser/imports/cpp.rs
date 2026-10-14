@@ -184,10 +184,14 @@ impl Parser {
                             // ⚠ 構造体ポインタは、インスタンスを渡して書き戻す（正確なレイアウトの）ものだけ。レイアウトの
                             //   分からない構造体ポインタは `Ptr` を渡し、何も書き戻さない（4-3）。
                             let exact = |name: &str| struct_defs.iter().any(|d| d.name == name && d.has_exact_layout());
+                            // ⚠ `char*` の出力バッファ・`ArPtrProtocol*`（`list` へ書き戻す）も `mut` を求める（4-7・D-14）。
+                            //   `Ptr` は書き戻しようがないので `let` のまま渡せる（型検査の `mut_arg_exempt`）
                             let writable_ref = unsupported.is_none()
                                 && match &ct {
                                     CType::Ptr { mutable: true, .. } => true,
                                     CType::OpaqueStructPtr { mutable: true, type_name } => exact(type_name),
+                                    CType::CharPtr { wide: false, mutable: true } => true,
+                                    CType::PtrProtocol { by_pointer: true, mutable: true } => true,
                                     _ => false,
                                 };
                             Param::bridge(pname, Some(ctype_to_tl_str(&ct, super::CPos::Param, &struct_defs)), writable_ref)

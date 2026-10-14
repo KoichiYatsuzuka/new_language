@@ -87,5 +87,6 @@ match p:
 ```
 
 C/C++（`import[cpp-dll]` / `import[cpp-lib]`）では、ヘッダの `ArPtrProtocol` を認識し（4-2）、引数へ `Ptr` / `None` を渡し（4-4）、
-値返しを `Option[Ptr[void]]` として受け取ります（4-5・`examples/interop/cpp_ptr_protocol.ar`）。⚠ Arrow の `list` から組み立てて
-渡すのは 4-7、C# / Rust の受け渡しはフェーズ 5 で入ります。
+値返しを `Option[Ptr[void]]` として受け取ります（4-5・`examples/interop/cpp_ptr_protocol.ar`）。Arrow の `list` / `bytes` を渡すと、
+呼び出しの間だけ有効なコピーの `ArPtrProtocol` になります（4-7・`cpp_list_to_c.ar`。要素の型は int → `"int64"`・float →
+`"float64"`・C の構造体 → 構造体名・bytes → `"uint8"`、解放関数は NULL）。⚠ C# / Rust の受け渡しはフェーズ 5 で入ります。

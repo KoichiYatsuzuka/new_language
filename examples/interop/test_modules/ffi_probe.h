@@ -104,6 +104,13 @@ int fp_tagged_sum(Tagged t);                 // tag + the sum of data (passes th
 ArPtrProtocol fp_pairs(int n);               // Pair[n] = {i, 2*i}, owned (released by Arrow)
 ArPtrProtocol fp_named_list(void);           // Named[2] (pointer fields), STATIC
 
+// -- Arrow lists / bytes passed as ArPtrProtocol (task 4-7) -------------------------------------
+long long fp_sum64(const ArPtrProtocol* p);  // sum of "int64" elements (-1 for another element type)
+void fp_double64(ArPtrProtocol* p);          // doubles each "int64" element in place
+double fp_sumf(const ArPtrProtocol* p);      // sum of "float64" elements (-1.0 for another element type)
+int fp_pairs_total(const ArPtrProtocol* p);  // sum of x + y over "Pair" elements (-1 for another element type)
+int fp_bytes_sum(ArPtrProtocol p);           // sum of "uint8" elements, by value (-1 for another element type)
+
 #ifdef __cplusplus
 }
 #endif

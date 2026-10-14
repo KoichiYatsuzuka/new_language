@@ -47,7 +47,8 @@ for x in raw:                                  # 各要素は 0〜255 の int
   `int`）。`dict` のキー・`set` の要素にもなる
 - 文字コード: `utf-8`（既定）・`utf-16-le` / `utf-16-be`・`ascii`・`latin-1`・`shift_jis`（`cp932`）・その他の WHATWG の名前
   （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `ValueError`（置き換え文字にしない）
-- `bytes(str)` は `TypeError`（`s.encode(..)` を使う）。リテラルの構文（`b"..."`）はまだありません
+- `bytes(n)` は n バイトのゼロ（C の出力バッファを用意するのに使う）。`bytes(str)` は `TypeError`（`s.encode(..)` を使う）。
+  リテラルの構文（`b"..."`）はまだありません
 - ⚠ 以前の `str.encode()` は文字コードを無視して `list[int]` を返していました
 
 ---

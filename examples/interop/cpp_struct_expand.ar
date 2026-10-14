@@ -26,7 +26,8 @@ let c = fp.fp_make_rgba(1, 2, 3, 4)
 check("4-byte struct round trip", fp.fp_rgba_sum(c) == 10)
 let n = fp.fp_make_named(3)
 print(n.name)
-check("char* field becomes bytes", n.id == 3 and n.name == "named-3".encode())
+# ⚠ `char*` のフィールドは `Option[bytes]`（NULL なら None）。`==` の前に `mustbe bytes` で取り出す
+check("char* field becomes bytes", n.id == 3 and (n.name mustbe bytes) == "named-3".encode())
 
 # ── 値渡し（ポインタのフィールドあり）────────────────────────────────────────────────
 check("bytes field passed as const char*", fp.fp_named_len(Named(1, "abcd".encode())) == 4)

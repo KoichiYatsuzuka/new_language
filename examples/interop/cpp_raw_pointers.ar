@@ -20,15 +20,16 @@ fn check(let label: str, let ok: bool) -> None:
     print(label + " OK")
 
 # ── 文字列の戻り値は bytes ──────────────────────────────────────────────────────
+# ⚠ `Option[bytes]` は `==` の前に `mustbe bytes` で取り出す（Union への演算は静的エラー。`None` かどうかは `is None`）
 let greet = fp.fp_greet()
 print(greet)
-check("char* return is bytes", greet == "hello from C".encode())
+check("char* return is bytes", (greet mustbe bytes) == "hello from C".encode())
 let u = fp.fp_utf8()
 check("decode with the encoding", u is bytes and (u mustbe bytes).decode("utf-8") == "日本語")
 check("NULL is None", fp.fp_null() is None)
 let w = fp.fp_wide()
 check("wchar_t* return is UTF-16LE bytes", w is bytes and (w mustbe bytes).decode("utf-16-le") == "wide")
-check("const char* takes bytes", fp.fp_echo("abc".encode()) == "abc".encode())
+check("const char* takes bytes", (fp.fp_echo("abc".encode()) mustbe bytes) == "abc".encode())
 check("None is NULL", fp.fp_len(None) == -1)
 
 # ── ほかのポインタは Ptr（借用）─────────────────────────────────────────────────

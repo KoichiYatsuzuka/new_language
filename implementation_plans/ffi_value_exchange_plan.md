@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）・7-12・7-15 完了。フェーズ 4 着手
+- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
@@ -208,7 +208,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-4** | ✅（§5）typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
 | **4-5** | ✅（§5）`PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | ✅（§5）構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
-| **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
+| **4-7** | ✅（§5）Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | cs-dll: C# 側の `PtrProtocol` で配列・`List`・`byte[]` を受け渡す（export の生成器が要る。今は手書き）。`IntPtr` / `nint` ↔ `Ptr`、`byte[]` ↔ `bytes` | 2-1・3-1・4-5 | 大 |
 | **5-2** | cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
@@ -835,6 +835,44 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   単体テスト 3 本（`union_types.rs`）
 - 文書: `docs/grammar/08_type_system.md` の Union・skill `type-checking` の適合判定
 - ゲート: 4-7 と合わせて走らせた（4-7 の記録）
+
+### 4-7 実装
+
+- `list` / `bytes` → `ArPtrProtocol` の引数: 呼び出しの間だけ有効なコピーを作る（`copied_protocol_arg`・`value/ptr.rs`）。要素の型は
+  中身で決める（int → `"int64"`・float → `"float64"`・C の構造体のインスタンス → 構造体名で `RawLayout::c_size` ずつ並べる・
+  bytes → `"uint8"`）。空の list・種類の混ざった list は TypeError（C の側が読む形が決まらない）。flags は書き込み用でなければ
+  CONST、解放関数は NULL（Arrow が持つ・D-15）。コピーは型つき経路では後片付け（`PtrArgCleanup::Protocol`）まで、ハンドル
+  経路では `STATE.protocol_args` が最も外側の呼び出しを抜けるまで持つ（呼び出しの後で `protocol_done` が書き戻すため）
+- 書き戻し（D-14）: `ArPtrProtocol*` へ `mut` の list を渡すと、`address` が変わっていなければ C が書いた中身を list へ戻す
+  （`ListWriteBack`。構造体の要素はフィールドへ）。`address` が 0 に書き戻されたら `Ptr` を無効にする規則（4-4）はそのまま。
+  書き込み用へ `bytes` を渡すのは TypeError（`bytes` は不変）
+- `char*`（非 const）の出力バッファ: 未対応（1-2）から外した。`mut` の `bytes` のコピーを渡し（コールバック 49
+  `bytes_buf_arg`）、呼び出しの後で同じ長さの `bytes` として変数へ書き戻す（ハンドル経路のみ。typed 経路には載せない）。
+  バッファは `bytes(n)`（n バイトのゼロ・負は ValueError）で用意する
+- 型スタブ: `ArPtrProtocol` の引数を `Union[Ptr[void], list[Any], bytes, None]` にした。`char*` の出力バッファと
+  `ArPtrProtocol*` は `mut` を求める（`writable_ref`）ので、`let` を渡すと静的エラー。実行時の書き戻しの印（`PtrParam::MutPtr`）は
+  実際に書き戻すものだけにした（数値の書き込みポインタ・正確なレイアウトの構造体ポインタ・出力バッファ）。⚠ レイアウトの
+  分からない構造体ポインタは `Ptr` を渡すだけで何も書き戻さないので外した
+- ⚠ 実装中に見つけた退行（4-3 から）: 型検査が cpp のスタブの戻り値の型をプリミティブしか読まず（`collect_module_types`）、
+  `Option[bytes]` / `Option[Ptr[T]]` / 構造体を返す関数の結果が「分からない」になっていた。4-7 で `ArPtrProtocol*` の引数が
+  `mut` を求めるようになり、`let h = fp.fp_handle_new()` を渡すと偽の静的エラーになって見つかった（`mut_arg_exempt` は
+  `Ptr` を免除するが、型が分からないと効かない）。js-proc と同じく `InferredType::from_ann` で読むようにした（cpp のスタブは
+  Arrow が Arrow の綴りで作る）。型が付いたことで、`char*` の戻り値（`Option[bytes]`）を `mustbe` せずに `==` で比べていた
+  例題 3 本（`cpp_raw_pointers` / `cpp_struct_expand` / `cpp_typed_pointers`）を直し、より広い Union へ渡せない穴（⇒ 7-15・
+  先に直した）も見つかった
+- 検査用の `ffi_probe` に `fp_sum64` / `fp_double64` / `fp_sumf` / `fp_pairs_total` / `fp_bytes_sum` を足した
+- 例題: `interop/cpp_list_to_c.ar`（期待値と違えば raise）・`cpp_output_buffer_let_error.ar`。`cpp_ptr_protocol_arg_error.ar` は
+  list が渡せるようになったので `str` / `int` / `dict` を渡す負例にした。`cpp_unsupported_signature_error.ar` から `fp_fill` を
+  外した。単体テスト 3 本（list / bytes / 構造体の list のコピーと書き戻し・出力バッファの生成コード）と判定のテストの更新
+- 文書: `docs/grammar/09_imports.md` の表・`docs/ptr_protocol.md`・`docs/grammar/08_type_system.md`（`bytes(n)`）・skill
+  `c-abi-interop`・`partial-compile`（コールバック 49）
+- ゲート（基準 `7508f34`・7-15 と合わせて・制限時間つき）: `compare_outputs` の差は新しい例題 3 本（`cpp_list_to_c` /
+  `cpp_output_buffer_let_error`・7-15 の `union_widening`）・負例にし直した `cpp_ptr_protocol_arg_error`・`cpp_ptr_arg_error`（12 行目の
+  `Ptr[void]` → `Db*` が静的エラーとして見つかるようになった。例題の説明どおりで、以前は戻り値の型が分からず素通りしていた）と、
+  中継 DLL の作り直しの表示 2 本（負の対照でも出る。2 回目の出力は同一。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ）。
+  `mustbe` を足した既存の例題 3 本は基準と同じ出力。`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl` clean（174/174）・`compare_wasm_frontend` 533/533・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
+  `cargo test` 1144 件・拡張の wasm クレートの 705 件が通る。VSIX を作り直した
 
 ---
 

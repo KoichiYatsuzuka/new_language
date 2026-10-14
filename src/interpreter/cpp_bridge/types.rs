@@ -61,6 +61,7 @@ impl CType {
                     format!("*const {}", inner.rust_extern_type())
                 }
             }
+            CType::CharPtr { wide: false, mutable: true } => "*mut u8".to_string(),
             CType::CharPtr { wide: false, .. } => "*const u8".to_string(),
             CType::CharPtr { wide: true, .. } => "*const u16".to_string(),
             CType::OpaqueStructPtr { .. } => "*mut i8".to_string(),

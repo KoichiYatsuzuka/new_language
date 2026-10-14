@@ -1,0 +1,13 @@
+# cpp_output_buffer_let_error.ar — C の出力バッファ（char*）へ let の bytes を渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-7・D-14）
+#
+# 出力バッファは、C が書いた中身を呼び出しの後で変数へ書き戻すので `mut` の変数を求める（数値の書き込みポインタと同じ）。
+# `ArPtrProtocol*` へ list を渡す場合も同じ（書き戻すため）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_list_to_c.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let buf = bytes(8)
+fp.fp_fill(buf, 8)
+let xs = [1, 2]
+fp.fp_double64(xs)

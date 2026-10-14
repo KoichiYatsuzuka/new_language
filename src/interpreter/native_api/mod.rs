@@ -153,7 +153,7 @@ struct NativeCallState {
     /// Scratch C-string buffers produced by `ar_to_cstr`; cleared at outermost exit.
     cstr_bufs: Vec<Vec<u8>>,
     /// `ArPtrProtocol` arguments built by `ar_protocol_arg` (their element-type strings); cleared at outermost exit (4-4).
-    protocol_args: Vec<crate::interpreter::PtrProtocolArg>,
+    protocol_args: Vec<(i64, crate::interpreter::PtrProtocolArg)>,
     /// Native method dispatch table: (class_name, method_name) → fn_ptr.
     native_methods: HashMap<(String, String), usize>,
 }
@@ -511,6 +511,11 @@ pub struct ArCallbacks {
     pub make_raw_instance: extern "C" fn(i64, *const u8, i64) -> i64,
     /// 値返しの構造体（ポインタのフィールドあり）: 変換済みのフィールドの値を宣言順に入れたインスタンスを作る（同上）。
     pub make_instance: extern "C" fn(i64, *const i64, i32) -> i64,
+
+    // ── Output buffers (field 49・4-7) ──
+    /// `char*`（書き込み用）の引数: `bytes` のコピー（NUL を含んでよい・末尾に NUL を 1 つ足す）を作り、そのアドレスを返して
+    /// 長さを `len` に書く。`None` は NULL。呼び出しの後で中継コードが `make_bytes` で読み直して `write_handle` で書き戻す。
+    pub bytes_buf_arg: extern "C" fn(i64, *mut i64) -> *mut u8,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

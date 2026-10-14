@@ -132,6 +132,40 @@ ArPtrProtocol fp_named_list(void) {
     ArPtrProtocol p = { (uint64_t)(uintptr_t)g_named_list, "Named", AR_PTR_STATIC | AR_PTR_CONST, 0, 2, NULL, NULL };
     return p;
 }
+static int fp_is(const ArPtrProtocol* p, const char* t) { return p && p->elem_type && strcmp(p->elem_type, t) == 0; }
+long long fp_sum64(const ArPtrProtocol* p) {
+    if (!fp_is(p, "int64")) return -1;
+    const long long* xs = (const long long*)(uintptr_t)p->address;
+    long long s = 0;
+    for (int64_t i = 0; i < p->length; i++) s += xs[i];
+    return s;
+}
+void fp_double64(ArPtrProtocol* p) {
+    if (!fp_is(p, "int64")) return;
+    long long* xs = (long long*)(uintptr_t)p->address;
+    for (int64_t i = 0; i < p->length; i++) xs[i] *= 2;
+}
+double fp_sumf(const ArPtrProtocol* p) {
+    if (!fp_is(p, "float64")) return -1.0;
+    const double* xs = (const double*)(uintptr_t)p->address;
+    double s = 0;
+    for (int64_t i = 0; i < p->length; i++) s += xs[i];
+    return s;
+}
+int fp_pairs_total(const ArPtrProtocol* p) {
+    if (!fp_is(p, "Pair")) return -1;
+    const Pair* xs = (const Pair*)(uintptr_t)p->address;
+    int s = 0;
+    for (int64_t i = 0; i < p->length; i++) s += xs[i].x + xs[i].y;
+    return s;
+}
+int fp_bytes_sum(ArPtrProtocol p) {
+    if (!fp_is(&p, "uint8")) return -1;
+    const unsigned char* xs = (const unsigned char*)(uintptr_t)p.address;
+    int s = 0;
+    for (int64_t i = 0; i < p.length; i++) s += xs[i];
+    return s;
+}
 void fp_protocol_free(ArPtrProtocol* p) {
     if (!p || p->address == 0) return;
     if (p->release) p->release(p->release_ctx, p->address);

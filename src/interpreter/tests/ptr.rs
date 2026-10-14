@@ -95,6 +95,23 @@ fn instances_from_c_bytes() {
     assert!(e.starts_with("OverflowError"), "{e}");
 }
 
+/// 構造体のインスタンスの `list` を `ArPtrProtocol` にする（C の sizeof ずつ並べる・4-7）。書き込み用なら書き戻す。
+#[test]
+fn struct_list_as_protocol_argument() {
+    use crate::interpreter::value::protocol_arg;
+    let interp = run_interp("class P:\n    mut x: int32\n    mut y: int32\nmut ps = [P(1, 2), P(3, 4)]\n");
+    let list = interp.get_val("ps").unwrap();
+    let a = protocol_arg(&list, true).unwrap();
+    assert_eq!(unsafe { std::ffi::CStr::from_ptr(a.raw.elem_type) }.to_bytes(), b"P");
+    let xs = unsafe { std::slice::from_raw_parts_mut(a.raw.address as usize as *mut i32, 4) };
+    assert_eq!(xs, &[1, 2, 3, 4]);
+    xs[3] = 40;
+    a.finish();
+    let Value::List(items) = &list else { unreachable!() };
+    let Value::Instance(second) = &items.borrow()[1] else { unreachable!() };
+    assert!(matches!(second.borrow().field_value(1), Some(Value::Int(40))));
+}
+
 #[test]
 fn display_and_type_name_hide_the_address() {
     let interp = Interpreter::new();

@@ -773,7 +773,7 @@ extern "C" fn ar_protocol_arg(h: i64, out: *mut u8, writable: i32) {
         Ok(arg) => {
             // SAFETY: `out` は中継コードの `_ArPtrProtocol`（`PtrProtocolRaw` と同じ並び・単体テストが守る）を指す
             unsafe { *(out as *mut crate::interpreter::value::PtrProtocolRaw) = *arg.raw };
-            STATE.with(|s| s.borrow_mut().protocol_args.push(arg));
+            STATE.with(|s| s.borrow_mut().protocol_args.push((h, arg)));
         }
         Err(e) => set_argument_error(e),
     }
@@ -782,11 +782,45 @@ extern "C" fn ar_protocol_arg(h: i64, out: *mut u8, writable: i32) {
 /// `ArPtrProtocol*` の引数の呼び出し後（ハンドル経路・4-4）。C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする
 /// （解放関数はもう呼ばない・D-3）。
 extern "C" fn ar_protocol_done(h: i64, address_after: u64) {
-    if address_after == 0 {
-        if let Value::Ptr(p) = clone_value_at(h) {
-            p.invalidate();
-        }
+    // `protocol_arg` が組み立てた引数を探して、型つき経路と同じ後処理（`PtrProtocolArg::finish`）をする:
+    // `Ptr` を無効にする・`list` へ書き戻す（4-7）
+    let arg = STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let i = st.protocol_args.iter().rposition(|(ah, _)| *ah == h)?;
+        Some(st.protocol_args.remove(i).1)
+    });
+    if let Some(mut arg) = arg {
+        arg.set_address_after(address_after);
+        arg.finish();
     }
+}
+
+/// `char*` の出力バッファ（4-7・D-14）: `bytes` のコピーを作る（NUL を含んでよい）。`None` は NULL。
+extern "C" fn ar_bytes_buf_arg(h: i64, len: *mut i64) -> *mut u8 {
+    let data = match clone_value_at(h) {
+        Value::None => {
+            unsafe { *len = 0 };
+            return std::ptr::null_mut();
+        }
+        Value::Bytes(b) => b,
+        other => {
+            set_argument_error(format!(
+                "TypeError: a C output buffer (`char*`) parameter needs bytes (e.g. bytes(64)), not '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+            ));
+            unsafe { *len = 0 };
+            return std::ptr::null_mut();
+        }
+    };
+    // SAFETY: 中継コードの局所変数
+    unsafe { *len = data.len() as i64 };
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let mut buf = data.to_vec();
+        buf.push(0);
+        st.cstr_bufs.push(buf);
+        st.cstr_bufs.last_mut().unwrap().as_mut_ptr()
+    })
 }
 
 /// `ArPtrProtocol` の戻り値（ハンドル経路・4-5）。規則は型つき経路と共有（`value::ptr_from_protocol`）。
@@ -1196,6 +1230,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     protocol_ret: ar_protocol_ret,
     make_raw_instance: ar_make_raw_instance,
     make_instance: ar_make_instance,
+    bytes_buf_arg: ar_bytes_buf_arg,
 };
 
 #[cfg(test)]

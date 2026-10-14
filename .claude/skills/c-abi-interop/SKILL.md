@@ -350,13 +350,24 @@ typed 経路を通る。
 ポインタを返しうるため・`const char* echo(const char* s)`）。`ArPtrProtocol*` の引数は呼び出しの後で `address` が 0 なら
 その `Ptr` を無効にする（`PtrProtocolArg::finish`・ハンドル経路は `protocol_done`）。
 
+Arrow → C（4-7・D-14）: `ArPtrProtocol` の引数へ `list` / `bytes` を渡すと、`copied_protocol_arg`（`value/ptr.rs`）が呼び出しの
+間だけのコピーを作る（要素の型は中身で決める: int → `int64`・float → `float64`・C の構造体のインスタンス → 構造体名で
+`RawLayout::c_size` ずつ並べる・bytes → `uint8`。空・混在は TypeError。解放関数は NULL）。`ArPtrProtocol*` へ `mut` の list を
+渡すと、`address` が変わっていなければ呼び出しの後で中身を list へ書き戻す（`ListWriteBack`）。ハンドル経路ではコピーを
+`STATE.protocol_args` が最も外側の呼び出しを抜けるまで持つ。`char*`（非 const）は出力バッファ: `mut` の `bytes` のコピーを
+渡し（`bytes_buf_arg`）、呼び出しの後で同じ長さの `bytes` として変数へ書き戻す（`bytes(n)` で用意する）。どちらも
+型スタブで `mut` を求める（`writable_ref`）ので、`let` を渡すと静的エラー。
+⚠ 型検査は cpp のスタブの戻り値の型を `InferredType::from_ann` で読む（`collect_module_types`・4-7）。以前はプリミティブしか
+読まず、4-3 以降 `Option[bytes]` / `Option[Ptr[T]]` の戻り値が「分からない」になっていた（`mut` を求める引数へ `let` の
+`Ptr` を渡すと偽のエラー）。`char*` の戻り値は `Option[bytes]` なので、`==` の前に `mustbe bytes` で取り出す。
+
 ### 今の Arrow から呼べない関数（implementation_plans/ffi_value_exchange_plan.md 1-2）
 
 `CFnSig::unsupported_reason`（`src/cpp_header/types.rs`）が、ヘッダの段階で「正しく受け渡せない」関数を
 判定する。**型スタブ（パーサ）と中継 DLL（実行時）の両方がこの 1 か所を使う**。
 - 対象: ポインタを返す（`char*`・`wchar_t*`・`T*`・`void*`・構造体ポインタ・関数ポインタ）、
-  `void*` / 関数ポインタ / `wchar_t*` / `char*`（非 const = 出力バッファ）/ `const T*`（数値。値 1 個か配列か
-  分からない）を受ける、レイアウトの分からない構造体を受け渡す、構造体ポインタと typed 経路に載らない型が混ざる
+  `void*` / 関数ポインタ / `wchar_t*` / `const T*`（数値。値 1 個か配列か
+  分からない）を受ける（⚠ `char*` の出力バッファは 4-7 から使える）、レイアウトの分からない構造体を受け渡す、構造体ポインタと typed 経路に載らない型が混ざる
 - 型スタブ: 関数に理由を書いた文字列のデコレータ（`FFI_UNSUPPORTED_MARK`）を付け、`mut` も要求しない。
   型検査は import の時点でそれを集め、使った箇所を `TypeErrorKind::FfiUnsupported` にする
 - 実行時: 中継 DLL にもシムにも入れない（`gen_dll_fn` が空を返す・`compile_tl_dll` が除く）

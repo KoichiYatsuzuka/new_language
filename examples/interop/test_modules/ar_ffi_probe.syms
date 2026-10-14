@@ -1,9 +1,10 @@
-#stamp 43249058535256cf
+#stamp 50b2a6e3a5911bb9
 fp_greet
 fp_echo
 fp_utf8
 fp_null
 fp_len
+fp_fill
 fp_wide
 fp_make_rec
 fp_rec_score_val
@@ -54,3 +55,8 @@ fp_tagged
 fp_tagged_sum
 fp_pairs
 fp_named_list
+fp_sum64
+fp_double64
+fp_sumf
+fp_pairs_total
+fp_bytes_sum

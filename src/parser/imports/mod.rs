@@ -81,9 +81,9 @@ pub(crate) fn ctype_to_tl_str(
         CType::ByValueStruct { type_name } if pos == CPos::Return => type_name.clone(),
         CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),
-        // `ArPtrProtocol`（4-2・4-4）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
-        // 照合して戻す・D-10・D-12）。引数はどの形でも `Ptr` か `None`（どの `Ptr` も渡せる）。
-        // ⚠ `list` から組み立てて渡すのは 4-7（そのとき引数の型を広げる）
+        // `ArPtrProtocol`（4-2・4-4・4-7）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
+        // 照合して戻す・D-10・D-12）。引数は `Ptr`・`list`（int / float / C の構造体・呼び出しの間だけのコピー）・`bytes`・`None`
+        CType::PtrProtocol { .. } if pos == CPos::Param => "Union[Ptr[void], list[Any], bytes, None]".to_string(),
         CType::PtrProtocol { .. } => "Option[Ptr[void]]".to_string(),
     }
 }

@@ -298,11 +298,12 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 | 41 | `make_ptr` | `i64(u64, ptr, i32)` — pointer return → borrowed Ptr[elem]; NULL → None (4-3) |
 | 42 | `bytes_arg` | `ptr(i64)` — `const char*` argument from bytes / None (4-3) |
 | 43 | `ptr_arg` | `u64(i64, ptr, i32)` — `void*` / struct pointer argument from Ptr / None (4-3) |
-| 44 | `protocol_arg` | `void(i64, ptr, i32)` — builds an `ArPtrProtocol` argument from Ptr / None (4-4) |
-| 45 | `protocol_done` | `void(i64, u64)` — after an `ArPtrProtocol*` argument: address 0 → invalidate the Ptr (4-4) |
+| 44 | `protocol_arg` | `void(i64, ptr, i32)` — builds an `ArPtrProtocol` argument from Ptr / None (4-4), or from a list / bytes as a copy that lives until the outermost native call returns (4-7) |
+| 45 | `protocol_done` | `void(i64, u64)` — after an `ArPtrProtocol*` argument: address 0 → invalidate the Ptr (4-4); a `mut` list gets what C wrote (4-7) |
 | 46 | `protocol_ret` | `i64(ptr, ptr, i32)` — an `ArPtrProtocol` return value → owned / static Ptr; struct names to check the element type (4-5) |
 | 47 | `make_raw_instance` | `i64(i64, ptr, i64)` — by-value struct return with an exact layout → instance by copying the bytes (no constructor; 4-6) |
 | 48 | `make_instance` | `i64(i64, ptr, i32)` — by-value struct return with pointer fields → instance from converted field handles (no constructor; 4-6) |
+| 49 | `bytes_buf_arg` | `ptr(i64, ptr)` — `char*` output buffer: a copy of the bytes and its length; the wrapper writes it back as bytes of the same length (`write_handle` + `make_bytes`; 4-7) |
 
 ⚠ `to_int` (22) / `to_float` (23) accept numbers only (`float` truncates, `bool` is 0 / 1); a non-number (`None`, `str`, `list`, `Ptr` …) sets a TypeError and returns 0 (7-12 — it used to return 0 silently). New fields go **at the end**: the cpp / rs wrappers declare a prefix of the struct and the LLVM code indexes it.
 

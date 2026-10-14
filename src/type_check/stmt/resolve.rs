@@ -367,11 +367,14 @@ impl TypeChecker {
                     // ⚠ js-proc の型は利用者が Arrow の構文で書いた `.ars` なので、戻り値の型をそのまま読む
                     //   （`list[int]` / `Option[str]`・ffi_value_exchange_plan.md 2-3）。以前はプリミティブしか読まず、
                     //   コンテナを返す関数の型が「分からない」になって、静的な検査も境界の照合も効かなかった。
+                    //   cpp のスタブも Arrow が Arrow の綴りで作る（`ctype_to_tl_str`）ので同じ（4-7）。⚠ 4-3 で戻り値が
+                    //   `Option[bytes]` / `Option[Ptr[T]]` になってから型が「分からない」になり、`mut` を求める
+                    //   `ArPtrProtocol*` の引数へ `let` の `Ptr` を渡すと偽の静的エラーになっていた。
                     //   Python のスタブは綴りが Arrow の型と限らない（`List[int]` など）ので従来どおり。
                     let ret = return_type
                         .as_deref()
                         .map(|t| {
-                            if lang == "js-proc" {
+                            if matches!(lang, "js-proc" | "cpp-dll" | "cpp-lib") {
                                 InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                             } else {
                                 Self::type_ann_to_inferred(t)

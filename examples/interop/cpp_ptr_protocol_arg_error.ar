@@ -1,10 +1,17 @@
-# cpp_ptr_protocol_arg_error.ar — ArPtrProtocol の引数へ Ptr / None 以外を渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-4）
+# cpp_ptr_protocol_arg_error.ar — ArPtrProtocol の引数へ渡せない値を渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-4・4-7）
 #
-# ArPtrProtocol の引数は、外部から受け取った Ptr を渡し返すか None（NULL）を渡す。Arrow の list から組み立てて渡すのは
-# 4-7 で入る（今は静的エラー）。
+# ArPtrProtocol の引数に渡せるのは、外部から受け取った Ptr・list（int / float / C の構造体）・bytes・None（NULL）。
+# それ以外は C の側で読む形が決まらないので静的エラー:
+#   - str … 文字コードが決まらない（`.encode()` で bytes にしてから渡す）
+#   - int … アドレスを整数で渡す手段は無い（Ptr を渡し返す）
+#   - dict … 配列にならない
+# ⚠ 4-4 では list も静的エラーだった（4-7 で渡せるようになった・cpp_list_to_c.ar）。
+# ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
 # 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
-# 対になる正例: cpp_typed_pointers.ar
+# 対になる正例: cpp_typed_pointers.ar・cpp_list_to_c.ar
 
 import[cpp-dll] test_modules.ffi_probe as fp
 
-print(fp.fp_protocol_type([1, 2, 3]))
+print(fp.fp_protocol_type("abc"))
+print(fp.fp_protocol_type(3))
+print(fp.fp_protocol_type({1: 2}))
