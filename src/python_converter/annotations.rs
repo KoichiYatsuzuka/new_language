@@ -66,6 +66,9 @@ pub(crate) fn map_type_name(name: &str) -> String {
         "Dict" => "dict".to_string(),
         "tuple" => "tuple".to_string(),
         "Tuple" => "tuple".to_string(),
+        // frozenset も実行時は Arrow の set で届く（ffi_value_exchange_plan.md 7-8。以前は `Set` / `FrozenSet` / `frozenset` が
+        // そのままの名前で残り、知らない型になっていた）
+        "Set" | "FrozenSet" | "frozenset" => "set".to_string(),
         "Optional" => "Option".to_string(),
         "Union" => "Union".to_string(),
         "Any" => "Any".to_string(),
@@ -125,6 +128,14 @@ pub(crate) fn lookup_type_alias(name: &str) -> Option<String> {
 #[cfg(test)]
 mod bytes_tests {
     use super::*;
+
+    /// `set` / `frozenset` はどれも Arrow の `set`（7-8）。
+    #[test]
+    fn sets_are_set() {
+        for n in ["set", "Set", "frozenset", "FrozenSet"] {
+            assert_eq!(map_type_name(n), "set", "{n}");
+        }
+    }
 
     /// `.pyi` の `bytearray` / `memoryview` も `bytes`（ffi_value_exchange_plan.md 5-3）。
     #[test]

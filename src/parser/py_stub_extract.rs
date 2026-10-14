@@ -309,60 +309,45 @@ fn py_literal_type(expr: &str) -> &'static str {
 }
 
 /// Python 型アノテーション文字列を Arrow の `from_ann` が解釈できる文字列に変換する。
+///
+/// ⚠ 角括弧の中は入れ子を数えて区切る（ffi_value_exchange_plan.md 7-8）。以前は前方一致で処理していて、`dict[K, V]` /
+///   `tuple[...]` は要素型を捨て（`set[tuple[int, int]]` → `set[tuple]`）、`frozenset[T]` は `Any`、`Union[...]` は中を変換
+///   しないまま、角括弧を含む `X | None` は `Any` になっていた。要素型が落ちると境界の照合（`ffi_boundary`）が要素を見ない。
+/// ⚠ Arrow が表せない型（`Sequence[T]` / `Callable[...]` / `Literal[...]` / 可変長の `tuple[int, ...]` の要素など）は
+///   検査しない側（`Any` / 素の `tuple`）に倒す（Python の注釈は強制されないので、狭く読むと正しい値を拒む）。
 fn py_type_to_arrow(ann: &str) -> String {
     let a = ann.trim();
-    // Optional[T] → Option[T]
-    if let Some(inner) = a.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) {
-        return format!("Option[{}]", py_type_to_arrow(inner));
+    // PEP 604: 最上位（角括弧の外）の `|`
+    let alternatives = split_top_level(a, '|');
+    if alternatives.len() > 1 {
+        return union_of(alternatives.iter().map(|t| py_type_to_arrow(t)).collect());
     }
-    // List[T] → list[T]
-    if let Some(inner) = a.strip_prefix("List[").and_then(|s| s.strip_suffix(']')) {
-        return format!("list[{}]", py_type_to_arrow(inner));
+    // ジェネリクス `Base[args]`（`typing.List[int]` の `typing.` は落とす）
+    if let Some((base, inner)) = a.strip_suffix(']').and_then(|s| s.split_once('[')) {
+        let base = base.trim().rsplit('.').next().unwrap_or("").trim();
+        let raw_args = split_top_level(inner, ',');
+        let args: Vec<String> = raw_args.iter().map(|t| py_type_to_arrow(t)).collect();
+        return match (base, args.as_slice()) {
+            ("Optional", [t]) => union_of(vec![t.clone(), "None".to_string()]),
+            ("Union", ts) if !ts.is_empty() => union_of(ts.to_vec()),
+            ("List" | "list", [t]) => format!("list[{t}]"),
+            // frozenset も実行時は Arrow の set で届く（`py_to_tl`・2-6）
+            ("Set" | "set" | "FrozenSet" | "frozenset", [t]) => format!("set[{t}]"),
+            ("Dict" | "dict", [k, v]) => format!("dict[{k}, {v}]"),
+            // 可変長（`tuple[int, ...]`）と空（`tuple[()]`）は要素の並びを Arrow で書けないので素の `tuple`（形だけ照合）
+            ("Tuple" | "tuple", _) if raw_args.iter().any(|t| matches!(t.trim(), "..." | "()")) => "tuple".to_string(),
+            ("Tuple" | "tuple", ts) if !ts.is_empty() => format!("tuple[{}]", ts.join(", ")),
+            // 知らないジェネリクス（`Sequence[T]` / `Callable[...]` / 利用者のクラス `Box[int]` など）は検査しない
+            _ => "Any".to_string(),
+        };
     }
-    // Set[T] → set[T]
-    if let Some(inner) = a.strip_prefix("Set[").and_then(|s| s.strip_suffix(']')) {
-        return format!("set[{}]", py_type_to_arrow(inner));
-    }
-    // ── PEP 585: 小文字の組み込みジェネリクス（Python 3.9+）──
-    // `typing.List[T]` 等の旧表記だけを見ていると、現代的な `-> list[int]` が
-    // 下の catch-all で `Any` に落ち、**スタブが要素型の情報を失う**。
-    // そうなると FFI 境界検査（`ffi_boundary`）も `Any` は検査不能として素通しするため、
-    // 「スタブを整備するほど検査が効く」という設計が成立しない。ここで拾う。
-    if let Some(inner) = a.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
-        return format!("list[{}]", py_type_to_arrow(inner));
-    }
-    if let Some(inner) = a.strip_prefix("set[").and_then(|s| s.strip_suffix(']')) {
-        return format!("set[{}]", py_type_to_arrow(inner));
-    }
-    // Dict / dict → dict（キー・値の型は保守的に落とす）
-    if a.starts_with("Dict[") || a.starts_with("dict[") { return "dict".to_string(); }
-    // Tuple / tuple → tuple
-    if a.starts_with("Tuple[") || a.starts_with("tuple[") { return "tuple".to_string(); }
-    // ── PEP 604: `X | None` / `X | Y`（Python 3.10+）──
-    // 角括弧を含む場合は入れ子の区切りと紛れるため対象外にする（保守的）。
-    if !a.contains('[') {
-        if let Some((l, r)) = a.split_once('|') {
-            let (l, r) = (l.trim(), r.trim());
-            if !l.is_empty() && !r.is_empty() {
-                return if r == "None" {
-                    format!("Option[{}]", py_type_to_arrow(l))
-                } else if l == "None" {
-                    format!("Option[{}]", py_type_to_arrow(r))
-                } else {
-                    format!("Union[{}, {}]", py_type_to_arrow(l), py_type_to_arrow(r))
-                };
-            }
-        }
-    }
-    // プリミティブ型はそのまま
     match a {
         "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes"
         | "list" | "dict" | "tuple" | "set" => a.to_string(),
+        "frozenset" => "set".to_string(),
         // Python のバイト列はどれも Arrow の bytes として受け取る（ffi_value_exchange_plan.md 5-3）。要素が 1 バイトでない
         // memoryview は Python のオブジェクトのまま届き、境界の照合で FfiTypeError になる
         "bytearray" | "memoryview" => "bytes".to_string(),
-        // Union[...] はそのまま（from_ann で処理）
-        _ if a.starts_with("Union[") => a.to_string(),
         // 大文字始まりのクラス名はそのまま（NamedInstance として解釈される）
         _ if a.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && a.chars().all(|c| c.is_alphanumeric() || c == '_') =>
@@ -374,6 +359,37 @@ fn py_type_to_arrow(ann: &str) -> String {
     }
 }
 
+/// 型の選択肢を Arrow の型にする: `None` との 2 択は `Option[T]`、`Any` を含めば `Any`（どの値も入る）。
+fn union_of(types: Vec<String>) -> String {
+    if types.iter().any(|t| t == "Any") {
+        return "Any".to_string();
+    }
+    let others: Vec<&String> = types.iter().filter(|t| *t != "None").collect();
+    if types.len() == 2 && others.len() == 1 {
+        return format!("Option[{}]", others[0]);
+    }
+    format!("Union[{}]", types.join(", "))
+}
+
+/// `sep` で区切る。角括弧・丸括弧の中の `sep` では区切らない（`dict[str, tuple[int, int]]` の中の `,` など）。
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(s[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(s[start..].trim());
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -386,5 +402,27 @@ mod tests {
         assert_eq!(py_type_to_arrow("bytearray"), "bytes");
         assert_eq!(py_type_to_arrow("Optional[memoryview]"), "Option[bytes]");
         assert_eq!(py_type_to_arrow("list[bytearray]"), "list[bytes]");
+    }
+
+    /// 要素型を落とさない（7-8）。以前は `dict[K, V]` → `dict`・`set[tuple[int, int]]` → `set[tuple]`・`frozenset[T]` → `Any`・
+    /// `Union[List[int], None]` は中を変換しないまま・`list[int] | None` → `Any` だった。
+    #[test]
+    fn element_types_are_kept() {
+        assert_eq!(py_type_to_arrow("set[tuple[int, int]]"), "set[tuple[int, int]]");
+        assert_eq!(py_type_to_arrow("frozenset[str]"), "set[str]");
+        assert_eq!(py_type_to_arrow("FrozenSet[int]"), "set[int]");
+        assert_eq!(py_type_to_arrow("dict[str, list[int]]"), "dict[str, list[int]]");
+        assert_eq!(py_type_to_arrow("Dict[str, Tuple[int, float]]"), "dict[str, tuple[int, float]]");
+        assert_eq!(py_type_to_arrow("Union[List[int], None]"), "Option[list[int]]");
+        assert_eq!(py_type_to_arrow("Union[int, str, None]"), "Union[int, str, None]");
+        assert_eq!(py_type_to_arrow("list[int] | None"), "Option[list[int]]");
+        assert_eq!(py_type_to_arrow("int | str"), "Union[int, str]");
+        assert_eq!(py_type_to_arrow("typing.Optional[typing.List[str]]"), "Option[list[str]]");
+        // Arrow が表せないものは検査しない側
+        assert_eq!(py_type_to_arrow("tuple[int, ...]"), "tuple");
+        assert_eq!(py_type_to_arrow("Sequence[int]"), "Any");
+        assert_eq!(py_type_to_arrow("Callable[[int], str]"), "Any");
+        assert_eq!(py_type_to_arrow("Optional[Any]"), "Any");
+        assert_eq!(py_type_to_arrow("Person"), "Person");
     }
 }

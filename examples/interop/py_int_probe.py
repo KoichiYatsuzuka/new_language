@@ -39,6 +39,26 @@ def big_in_list() -> list[int]:
     return [1, 2 ** 70]
 
 
+def pairs() -> set[tuple[int, int]]:           # element types are kept in the stub (plan 7-8)
+    return {(1, 2), (3, 4)}
+
+
+def frozen() -> frozenset[str]:
+    return frozenset({"a"})
+
+
+def table() -> dict[str, list[int]]:
+    return {"a": [1, 2]}
+
+
+def lying_pairs() -> set[tuple[int, int]]:     # breaks its own annotation: the boundary sees the elements now
+    return {(1, "x")}
+
+
+def lying_table() -> dict[str, int]:
+    return {"a": "x"}
+
+
 def big_text(x) -> str:
     return str(x + 1)
 

@@ -348,6 +348,10 @@ let mean = np.mean(arr)
 
 **特徴**:
 - `.pyi` スタブファイルがあれば型チェックに使用（探索は `[py]` と同じ順。`.pyi` → `.py`）
+  - 注釈は要素型まで Arrow の型にします: `set[tuple[int, int]]`・`dict[str, list[int]]`・`frozenset[str]`（→ `set[str]`）・
+    `Optional[T]` / `T | None`（→ `Option[T]`）。戻り値の要素も境界で照合します（宣言に反すれば `FfiTypeError`）。
+    Arrow が表せない型（`Sequence[T]`・`Callable[...]`・`tuple[int, ...]` の要素）は照合しません
+    （`implementation_plans/ffi_value_exchange_plan.md` 7-8。以前は `dict[K, V]` → `dict`・`frozenset[T]` → `Any` と要素型を落としていました）
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

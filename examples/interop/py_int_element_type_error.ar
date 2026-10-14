@@ -1,0 +1,13 @@
+# py_int_element_type_error.ar — Python の関数が注釈の要素型に反する値を返す（負例・ffi_value_exchange_plan.md 7-8）
+#
+# `lying_table() -> dict[str, int]` が `{"a": "x"}` を返す。型スタブは `dict[str, int]` で、境界が値の型まで照合する。
+# 期待: FfiTypeError: python function `pp.lying_table` is declared to return `dict[str,int]` but returned `dict` ...
+# ⚠ 7-8 より前は型スタブが `dict` と要素型を落としていたので、黙って通った（`unreachable` まで進んだ）。
+# 実行には Python（py_int_probe.py）が要る。
+# 対になる正例: py_int_element_types.ar
+
+import[py-int] py_int_probe as pp
+
+print("before")
+let t = pp.lying_table()
+print("unreachable:", t)
