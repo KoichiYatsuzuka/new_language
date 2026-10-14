@@ -12,6 +12,8 @@ ABI contract (NativeAOT bridge side):
   float return   → c_int64 bit pattern
   string return  → (void** out_ptr, int* out_len) out-params; freed by arrow_bridge_free_str
   handle return  → c_int64 object id
+  errors         → a generated bridge (`arrow --gen-cs-exports`, ffi_value_exchange_plan.md 5-1) keeps C# exceptions
+                   and argument errors for arrow_bridge_take_error(byte** out_ptr, int* out_len), read after every call
 """
 
 from __future__ import annotations
@@ -101,6 +103,50 @@ def matches_str_ret(ret_type: Optional[str]) -> bool:
     return ret_type == "str"
 
 # ---------------------------------------------------------------------------
+# Errors from a generated bridge (5-1)
+# ---------------------------------------------------------------------------
+
+class CsBridgeError(Exception):
+    """An error reported by the bridge. `kind` is the Arrow exception type ("TypeError" ...), or None for a C#
+    exception (the message then starts with "CsDll: ", like the Rust implementation's `tag_error`)."""
+
+    def __init__(self, kind: Optional[str], message: str):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+_TYPED = ("TypeError", "ValueError", "OverflowError")
+
+
+def _take_error(bridge: BridgeLib) -> None:
+    """After every call: raise what a generated bridge kept (arrow_bridge_take_error). Hand-written bridges lack it."""
+    fn = bridge.raw_fn("arrow_bridge_take_error")
+    if fn is None:
+        return
+    fn.restype = None
+    fn.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_int)]
+    out_ptr = ctypes.c_void_p(0)
+    out_len = ctypes.c_int(-1)
+    fn(ctypes.byref(out_ptr), ctypes.byref(out_len))
+    if not out_ptr.value or out_len.value < 0:
+        return
+    msg = ctypes.string_at(out_ptr.value, out_len.value).decode("utf-8", errors="replace")
+    _free_str(bridge, out_ptr.value)
+    for kind in _TYPED:
+        if msg.startswith(kind + ": "):
+            raise CsBridgeError(kind, msg[len(kind) + 2:])
+    raise CsBridgeError(None, "CsDll: " + msg)
+
+
+def _free_str(bridge: BridgeLib, ptr: int) -> None:
+    free_fn = bridge.raw_fn("arrow_bridge_free_str")
+    if free_fn is not None:
+        free_fn.restype = None
+        free_fn.argtypes = [ctypes.c_void_p]
+        free_fn(ptr)
+
+# ---------------------------------------------------------------------------
 # Internal bridge call helpers
 # ---------------------------------------------------------------------------
 
@@ -136,6 +182,7 @@ def _call_bridge_fn(bridge: BridgeLib, sym_name: str,
     fn.argtypes = [type(a) for a in c_args]
     result = fn(*c_args)
     _ = keep_alive  # prevent GC
+    _take_error(bridge)
     return int(result)
 
 
@@ -160,6 +207,12 @@ def _call_returning_str(bridge: BridgeLib, sym_name: str,
     ]
     fn(*c_args, ctypes.byref(out_ptr), ctypes.byref(out_len))
     _ = keep_alive
+    try:
+        _take_error(bridge)
+    except CsBridgeError:
+        if out_ptr.value:
+            _free_str(bridge, out_ptr.value)
+        raise
 
     if not out_ptr.value or out_len.value < 0:
         return ""
@@ -186,6 +239,11 @@ def call_constructor(bridge: BridgeLib, class_name: str, args: list) -> int:
     fallback = f"{class_name}_new"
 
     sym_name = numbered if bridge.sym_fn(numbered) is not None else fallback
+    # A generated bridge exports one constructor per argument count (5-1): no export means no such constructor
+    if bridge.sym_fn(numbered) is None and bridge.sym_fn("arrow_bridge_take_error") is not None:
+        raise CsBridgeError(
+            "TypeError", f"C# class '{class_name}' has no public constructor that takes {len(args)} argument(s)"
+        )
     if bridge.sym_fn(sym_name) is None:
         raise RuntimeError(
             f"CsDll: no constructor export for '{class_name}' "

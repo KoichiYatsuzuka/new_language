@@ -1387,7 +1387,18 @@ class Interpreter:
         from . import cs_dll_runtime
         bridge = cs_dll_runtime.load_bridge(Path(bridge_path))
         ret_type = self._cs_ret_type(cls.methods, method)
-        return cs_dll_runtime.call_static(bridge, cls.name, method, args, ret_type)
+        return self._cs_dll_guard(lambda: cs_dll_runtime.call_static(bridge, cls.name, method, args, ret_type))
+
+    def _cs_dll_guard(self, call):
+        """Turn an error reported by a cs-dll bridge into an Arrow exception (ffi_value_exchange_plan.md 5-1)."""
+        from .cs_dll_runtime import CsBridgeError
+        try:
+            return call()
+        except CsBridgeError as e:
+            if e.kind is None:
+                # a C# exception: not catchable by type yet (task 7-4), reported like the Rust implementation
+                raise RaiseSignal(_make_error_instance("RuntimeError", e.message, self._known_classes), e.message)
+            raise RaiseSignal(_make_error_instance(e.kind, e.message, self._known_classes), f"{e.kind}: {e.message}")
 
     def _cs_proc_call_static(self, cls: "TlClass", method: str, args: list,
                              proc_path: str) -> Value:
@@ -1406,9 +1417,9 @@ class Interpreter:
                 obj.bridge_path, obj.class_name, obj.handle, method, args, ret_type
             )
         bridge = cs_dll_runtime.load_bridge(Path(obj.bridge_path))
-        return cs_dll_runtime.call_instance(
+        return self._cs_dll_guard(lambda: cs_dll_runtime.call_instance(
             bridge, obj.class_name, obj.handle, method, args, ret_type
-        )
+        ))
 
     def _copy_value(self, val: Value) -> Value:
         """copy() メソッドのロジック: __copy__ を優先し、なければ deep_clone_unfrozen を使用する。"""
@@ -1776,7 +1787,7 @@ class Interpreter:
             from .value import TlCsObject
             from . import cs_dll_runtime
             bridge = cs_dll_runtime.load_bridge(Path(bridge_path))
-            handle = cs_dll_runtime.call_constructor(bridge, cls.name, args)
+            handle = self._cs_dll_guard(lambda: cs_dll_runtime.call_constructor(bridge, cls.name, args))
             return TlCsObject(
                 handle=handle,
                 class_name=cls.name,
