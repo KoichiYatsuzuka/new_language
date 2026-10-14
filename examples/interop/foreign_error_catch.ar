@@ -1,0 +1,72 @@
+# foreign_error_catch.ar — 外部言語との境界のエラーを except で捕まえる（正例・ffi_value_exchange_plan.md 7-4）
+#
+# 組み込みの例外が 2 つある:
+#   - `ForeignError`: 相手の言語で投げられた例外（C# の例外・JS の throw）。メッセージは相手の例外の種類とメッセージ
+#     （`System.InvalidOperationException: boom`・`Error: boom`）
+#   - `FfiTypeError`: 型スタブの宣言と食い違う値が返った（`TypeError` の派生なので `except TypeError` でも捕まえられる）
+# どちらも `except Exception` で捕まえられる。
+# ⚠ 7-4 より前はどれも例外クラスとして登録されておらず（`CsDll: …` / `cs-proc remote: …` / `js-proc remote: …` /
+#   `FfiTypeError: …` の文字列のまま）、`except` で捕まえられなかった。cs-proc のホストは例外の種類も送っていなかった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll（build_bridge.ps1）と
+# examples/interop/cs_probe/cs_probe.exe・cs_probe.dll（build_cs_probe.ps1）と Node.js が要る。
+# 対になる負例: cs_dll_exception_error.ar（捕まえない ForeignError）・js_proc_container_return_error.ar（捕まえない FfiTypeError）
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+import[cs-proc] cs_probe as cp
+import[js-proc] js_probe as jp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── ForeignError ────────────────────────────────────────────────────────────
+mut message = ""
+try:
+    print(bridge.Calculator.Divide(1.0, 0.0))
+except ForeignError as e:
+    message = e.message
+check("cs-dll: a C# exception is a ForeignError (" + message + ")", message == "System.DivideByZeroException: Cannot divide by zero")
+
+message = ""
+try:
+    print(cp.Probe.fail("boom"))
+except ForeignError as e:
+    message = e.message
+check("cs-proc: a C# exception is a ForeignError (" + message + ")", message == "System.InvalidOperationException: boom")
+
+message = ""
+try:
+    print(jp.fail("boom"))
+except ForeignError as e:
+    message = e.message
+check("js-proc: a thrown JS error is a ForeignError (" + message + ")", message == "Error: boom")
+
+mut caught = False
+try:
+    print(cp.Probe.fail("again"))
+except Exception:
+    caught = True
+check("except Exception catches a ForeignError", caught)
+
+# ── FfiTypeError ────────────────────────────────────────────────────────────
+caught = False
+try:
+    let xs: list[int] = jp.mixed()
+    print("unreachable:", xs)
+except FfiTypeError:
+    caught = True
+check("a value that breaks the stub is an FfiTypeError", caught)
+
+caught = False
+try:
+    let ys: list[int] = jp.mixed()
+    print("unreachable:", ys)
+except TypeError:
+    caught = True
+check("FfiTypeError is a TypeError", caught)
+
+# 呼び出しの後もブリッジはそのまま使える
+check("the bridges still work", bridge.Calculator.Add(2, 3) == 5 and cp.Probe.greet() == "hello from C#" and jp.half() == 2.5)

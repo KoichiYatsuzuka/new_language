@@ -412,3 +412,46 @@ fn test_exception_str_is_its_message() {
     assert_eq!(get("r"), "ValueError('bad value')");
     assert_eq!(get("l"), "[ValueError('bad value')]");
 }
+
+/// 外部言語との境界の例外（ffi_value_exchange_plan.md 7-4）。`FfiTypeError` は `TypeError` の派生、どちらも
+/// `except Exception` で捕まえられる。
+#[test]
+fn test_ffi_exceptions_are_catchable() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    raise FfiTypeError(\"f\")\n",
+        "except TypeError as e:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise ForeignError(\"System.InvalidOperationException: boom\")\n",
+        "except ForeignError as e:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise FfiTypeError(\"g\")\n",
+        "except Exception as e:\n",
+        "    caught = caught + 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(3)), "{v:?}");
+}
+
+/// ブリッジが返す内部エラーの文字列が、組み込みの例外の一覧から例外になる（7-4。以前は写しの表 `CATCHABLE` に
+/// `FfiTypeError` / `ForeignError` が無く、`except` で捕まえられなかった）。
+#[test]
+fn test_bridge_error_strings_become_exceptions() {
+    let mut interp = run_interp("let x = 1\n");
+    for (msg, class) in [
+        ("ForeignError: System.InvalidOperationException: boom", "ForeignError"),
+        ("FfiTypeError: javascript function `f` is declared to return `int` but returned `str`", "FfiTypeError"),
+        ("TypeError: x", "TypeError"),
+    ] {
+        let raised = interp.make_internal_raised_error(msg).unwrap_or_else(|| panic!("not an exception: {msg}"));
+        match &raised.exception {
+            Value::Instance(i) => assert_eq!(i.borrow().class.name, class, "{msg}"),
+            other => panic!("{msg}: expected an exception instance, got {other:?}"),
+        }
+    }
+    // ブリッジの基盤のエラー（接頭辞が組み込みの例外でない）はそのまま
+    assert!(interp.make_internal_raised_error("CsDll: cannot load bridge 'x'").is_none());
+}

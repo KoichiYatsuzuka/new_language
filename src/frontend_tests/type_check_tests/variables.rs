@@ -482,6 +482,31 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
     }
 
+    /// 外部言語との境界の例外（ffi_value_exchange_plan.md 7-4）は組み込みの例外クラス。`except` に書け、
+    /// `FfiTypeError` は `TypeError` の欄にも入る（実行時の `builtin_exception_parent` と同じ）。
+    #[test]
+    fn ffi_exceptions_are_builtin_exception_classes() {
+        let src = concat!(
+            "try:
+",
+            "    raise ForeignError(\"boom\")
+",
+            "except ForeignError as e:
+",
+            "    print(e.message)
+",
+            "except FfiTypeError as e:
+",
+            "    print(e.message)
+",
+            "let t: TypeError = FfiTypeError(\"f\")
+",
+            "let x: Exception = ForeignError(\"g\")
+",
+        );
+        assert!(ok(src), "{:?}", check(src));
+    }
+
     /// `Exception` はすべての例外の基底（フェーズ10 10-19）。組み込みの例外も `Error` を実装した利用者の
     /// 例外も `Exception` の欄・引数に入る。`except Error` は `except Exception` を促す誤り。
     #[test]

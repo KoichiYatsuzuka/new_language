@@ -108,7 +108,10 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .collect();
 
     Rc::new(ClassValue {
-        bases: vec!["Error".to_string()],
+        bases: std::iter::once("Error")
+            .chain(builtin_exception_parent(class_name))
+            .map(str::to_string)
+            .collect(),
         methods,
         field_defaults,
         field_mutability,
@@ -122,10 +125,13 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
 
 /// 組み込みの例外クラスの名前（実行時の一覧）。
 ///
-/// ⚠ 3 つの一覧（ここ / `type_check` の `EXCEPTION_CLASS_NAMES` / `exceptions.rs` の `CATCHABLE`）を揃えること。
+/// ⚠ 型検査の 2 つの一覧（`type_check::registry::builder` の `EXCEPTION_CLASS_NAMES` と `type_check::names` の
+///   `RUNTIME_BUILTIN_NAMES`）と揃えること（型検査は wasm にも入るので、ここを直接は引けない）。内部エラーの文字列を
+///   例外へ変える表（`make_internal_raised_error`）は ffi_value_exchange_plan.md 7-4 からこの一覧そのもの
+///   （[`builtin_exception_of`]）で、以前は 3 つ目の写し `CATCHABLE` だった。
 /// ⚠ Python のクラスがこれらを継承したときのフィールドの並びにも使う（`Interpreter::new` が
 ///   `py_class_field_order` へ載せる・フェーズ10 10-19）。
-pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 19] = [
+pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 21] = [
     "Exception",
     "ValueError",
     "TypeError",
@@ -145,7 +151,27 @@ pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 19] = [
     "AccessError",
     "RecursionError",
     "GeneratorExit",
+    // 外部言語との境界（7-4）: 宣言と食い違う値（`TypeError` の派生）と、相手の言語で投げられた例外
+    "FfiTypeError",
+    "ForeignError",
 ];
+
+/// 組み込みの例外クラスの、`Error` のほかの基底（7-4）。`FfiTypeError` は `except TypeError` でも捕まえられる。
+/// ⚠ ほかの例外は `Error` だけ（`None` が正しい）。
+pub(crate) fn builtin_exception_parent(name: &str) -> Option<&'static str> {
+    match name {
+        "FfiTypeError" => Some("TypeError"),
+        _ => None,
+    }
+}
+
+/// `"ValueError: …"` の形の内部エラーなら、その組み込みの例外クラスの名前（7-4）。
+/// `make_internal_raised_error` がこれで例外に変え、外部言語のブリッジはこれで「もう種類が付いたエラー」を見分ける。
+pub(crate) fn builtin_exception_of(msg: &str) -> Option<&'static str> {
+    BUILTIN_EXCEPTION_NAMES.iter().copied().find(|name| {
+        msg.starts_with(name) && matches!(msg.as_bytes().get(name.len()), None | Some(b':') | Some(b' '))
+    })
+}
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
 /// 生成クラスは `mut value: <prim_type>` フィールドと `__init__(mut self, value: <prim_type>)` を持つ。

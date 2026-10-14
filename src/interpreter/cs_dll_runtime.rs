@@ -96,7 +96,14 @@ impl BridgeLib {
             Err(e) => format!("the C# bridge reported an error whose message is not valid UTF-8 ({e})"),
         };
         self.free_str(ptr);
-        Err(msg)
+        // ブリッジが記録するのは、自分で作った Arrow のエラー（`ArrowBridgeError`: `TypeError: …` など・種類つき）か、
+        // C# で投げられた例外（`System.DivideByZeroException: …`）。後者は `ForeignError`（7-4。以前は `CsDll: …` の
+        // ままで、`except` で捕まえられなかった）
+        if crate::interpreter::built_in_types::builtin_exception_of(&msg).is_some() {
+            Err(msg)
+        } else {
+            Err(format!("ForeignError: {msg}"))
+        }
     }
 
     // Look up an exported symbol by name.

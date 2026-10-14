@@ -545,8 +545,8 @@ dotnet publish {Name}.csproj -r win-x64 -c Release --self-contained          # N
 
 一式は `examples/interop/cs_interop_test/build_bridge.ps1`。生成した export は次のことをします:
 
-- C# の例外を捕まえて Arrow のエラーにする（`CsDll: System.DivideByZeroException: …`）。⚠ 手書きの export が例外を
-  漏らすとプロセスごと落ちます
+- C# の例外を捕まえて Arrow の `ForeignError` にする（`ForeignError: System.DivideByZeroException: …`・`except ForeignError` で
+  捕まえられる。7-4）。⚠ 手書きの export が例外を漏らすとプロセスごと落ちます
 - 整数を C# の型の幅で確かめる（`int` へ 2^31 を渡すと `OverflowError`・`ulong` の戻り値の 2^63 以上も `OverflowError`）。
   `char` は 1 文字の `str`（UTF-16 の 1 単位でなければ `ValueError`）、`Task<T>` は待ってから `T` を返す
 - 作れないメンバー（型スタブが未対応としたもの・`object` の引数・`ref` / `out`・ジェネリック・演算子）は作らず、
@@ -988,7 +988,9 @@ Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 
 JS の数値には整数と小数の区別が無いので、戻り値は `.ars` に書いた型で読みます: `-> float` の関数が `2.0`
 （整数値）を返せば `2.0`、`-> int` の関数が整数値の小数を返せば `int`。`list[float]` などコンテナの要素にも同じ
-規則を当てます。宣言と食い違う値（`-> list[int]` が `[1, "two"]` を返す・小数を `int` で返す）は `FfiTypeError` です。
+規則を当てます。宣言と食い違う値（`-> list[int]` が `[1, "two"]` を返す・小数を `int` で返す）は `FfiTypeError`（`TypeError`
+の派生の組み込み例外）、JS の側で投げられた例外は `ForeignError`（`message` は `Error: boom` のように `String(err)`）です。
+cs-proc のホストで投げられた C# の例外も `ForeignError`（`System.InvalidOperationException: boom`）です（7-4）。
 `dict[str, float]` の値・`set[float]` の要素・`tuple[int, float]` の要素にも同じ規則を当てます。
 dict / tuple / set / bytes は中身ごとコピーして運びます（`implementation_plans/ffi_value_exchange_plan.md` 5-2）。
 Arrow のクラスのインスタンス・関数・`Ptr`（別プロセスでは意味が無い）は `TypeError` です（以前は JS 側に `null` が

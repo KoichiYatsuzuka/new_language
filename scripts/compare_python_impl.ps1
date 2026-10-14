@@ -107,6 +107,7 @@ $knownDiff = @{
     'async_cs_calls'                 = 'Rust: 非同期タスクの中から C# を呼ぶ（ffi_value_exchange_plan.md 6-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'async_thread_bound'             = 'Rust: スレッドに縛られる値はタスクへ切り離した複製を送る（ffi_value_exchange_plan.md 7-19）。py: AsyncManager が無く NameError'
     'async_thread_bound_error'       = 'Rust: メインの Signal をタスクの中で使うと RuntimeError（7-19）。py: AsyncManager が無く NameError'
+    'foreign_error_catch'            = 'Rust: 外部言語の例外を ForeignError・FfiTypeError で捕まえる（ffi_value_exchange_plan.md 7-4）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cs_dll_array_arg_error'         = 'Rust: cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと StaticTypeError（5-5）。py: 型スタブの型が違うので検査されず呼んで C# 側の例外'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'
     'cpp_dll_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）。py: unsigned int の最大値を -1 として読み、例題の検査が ValueError で止まる（直す前の Rust と同じ）'

@@ -3,6 +3,8 @@
 # `js_probe.ars` は `mixed() -> list[int]` と宣言しているが、JS の実装は `[1, "two"]` を返す（JS は型を守らない）。
 # 以前は js-proc のスタブの戻り値がプリミティブしか読まれず（`collect_module_types`）、コンテナを返す関数は照合
 # されなかったので、`list[int]` の変数に文字列が黙って入っていた。今は要素まで照合して FfiTypeError にする。
+# FfiTypeError は `TypeError` の派生の組み込み例外で、`except FfiTypeError` / `except TypeError` で捕まえられる（7-4・
+# foreign_error_catch.ar）。
 #
 # 実行には Node.js が要る（型は js_probe.ars、実装は js_probe.js）。
 # 対になる正例: js_proc_values.ar

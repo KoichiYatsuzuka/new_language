@@ -16,7 +16,7 @@ use super::{NameScope, TypeRegistry};
 
 /// 組み込みで登録される例外クラス名。`TypeChecker::new` がグローバルスコープの
 /// 束縛を作る際にも使うため公開している。
-pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
+pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 21] = [
     "Exception",
     "ValueError",
     "TypeError",
@@ -40,6 +40,10 @@ pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
     "RecursionError",
     // `close()` が中断点へ投げ込む（bug_fix.md B13 段階 D）。
     "GeneratorExit",
+    // 外部言語との境界（ffi_value_exchange_plan.md 7-4）。⚠ 実行時の `builtin_exception_parent` と同じく、
+    //   `FfiTypeError` の基底には `TypeError` も入れる（下の `class_bases`）
+    "FfiTypeError",
+    "ForeignError",
 ];
 
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。
@@ -233,7 +237,11 @@ impl TypeRegistryBuilder {
             HashMap::new();
         for class_name in EXCEPTION_CLASS_NAMES {
             known_class_names.insert(class_name.to_string());
-            class_bases.insert(class_name.to_string(), vec!["Error".to_string()]);
+            let mut bases = vec!["Error".to_string()];
+            if class_name == "FfiTypeError" {
+                bases.push("TypeError".to_string());
+            }
+            class_bases.insert(class_name.to_string(), bases);
             class_field_details.insert(class_name.to_string(), exc_fields.clone());
         }
         // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、

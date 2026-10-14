@@ -415,11 +415,11 @@ pub(crate) fn check_same_bridge(o: &CsObjectData, bridge: &Path, is_proc: bool, 
     }
 }
 
-/// 呼び出し元がエラーに付ける接頭辞（`CsProc:` / `CsDll:`）。例外の種類が付いたエラー（`TypeError: …`）には付けない
-/// （付けると `except TypeError` で捕まえられなくなる・`make_internal_raised_error`）。
+/// 呼び出し元がエラーに付ける接頭辞（`CsProc:` / `CsDll:`）。例外の種類が付いたエラー（`TypeError: …`・C# の例外の
+/// `ForeignError: …` など組み込みの例外の名前で始まるもの）には付けない（付けると `except` で捕まえられなくなる・
+/// `make_internal_raised_error`）。⚠ 以前は `TypeError` / `ValueError` / `OverflowError` の 3 つだけを見ていた（7-4）。
 pub(crate) fn tag_error(prefix: &str, e: String) -> String {
-    const TYPED: &[&str] = &["TypeError:", "ValueError:", "OverflowError:"];
-    if TYPED.iter().any(|t| e.starts_with(t)) {
+    if super::built_in_types::builtin_exception_of(&e).is_some() {
         e
     } else {
         format!("{prefix}: {e}")
@@ -477,5 +477,10 @@ mod tests {
     fn typed_errors_keep_their_type() {
         assert_eq!(tag_error("CsProc", "TypeError: x".to_string()), "TypeError: x");
         assert_eq!(tag_error("CsProc", "pipe closed".to_string()), "CsProc: pipe closed");
+        // C# で投げられた例外（7-4）
+        assert_eq!(
+            tag_error("CsDll", "ForeignError: System.InvalidOperationException: boom".to_string()),
+            "ForeignError: System.InvalidOperationException: boom"
+        );
     }
 }

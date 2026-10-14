@@ -29,7 +29,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
     "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
     "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
-    "GeneratorExit",
+    "GeneratorExit", "FfiTypeError", "ForeignError",
     // 組み込みのクラス・列挙・名前空間
     "path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop",

@@ -130,7 +130,10 @@ internal sealed class ArrowPipeHost
             }
             catch (Exception ex)
             {
-                string msg = ex.InnerException?.Message ?? ex.Message;
+                // The exception thrown by the invoked member (reflection wraps it), with its type like cs-dll's
+                // generated exports: "System.InvalidOperationException: boom" (Arrow raises it as ForeignError, plan 7-4).
+                Exception thrown = ex.InnerException ?? ex;
+                string msg = $"{thrown.GetType().FullName}: {thrown.Message}";
                 WritePipeLine(server, JsonSerializer.Serialize(new { id, err = msg }));
             }
         }

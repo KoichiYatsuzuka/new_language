@@ -108,7 +108,10 @@ impl PipeConn {
             .map_err(|e| format!("{tag}: bad JSON response: {e}\nraw: {resp}"))?;
 
         if let Some(err) = v.get("err").and_then(|e| e.as_str()) {
-            return Err(format!("{tag} remote: {err}"));
+            // 相手（C# のホスト・Node.js のブリッジ）が要求を処理する中で起きたエラー（投げられた例外）は `ForeignError`
+            // （7-4。以前は `{tag} remote: …` のままで、`except` で捕まえられなかった）。⚠ 相手は Arrow の種類つきの
+            // エラーを作らないので、`TypeError: …` で始まっても（JS の TypeError）それは相手の言語の例外
+            return Err(format!("ForeignError: {err}"));
         }
 
         Ok(v["ok"].clone())

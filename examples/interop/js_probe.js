@@ -2,6 +2,7 @@
 // 型は隣の js_probe.ars に書く。Keep this file ASCII-only except for utf8().
 
 // numbers: JS has only doubles, so 2.0 is indistinguishable from 2
+function fail(why) { throw new Error(why); }      // Arrow raises it as ForeignError (plan 7-4)
 function whole_float() { return 2.0; }
 function half() { return 2.5; }
 function ints() { return [1, 2, 3]; }
@@ -43,5 +44,5 @@ function nothing() { return undefined; }
 module.exports = {
     whole_float, half, ints, floats, nested, mixed, big, not_a_number, infinite,
     obj, map_obj, set_obj, buf, pair, sum_values, kind, fn_value, big_int, instance,
-    echo, type_of, count, utf8, nothing,
+    echo, type_of, count, utf8, nothing, fail,
 };

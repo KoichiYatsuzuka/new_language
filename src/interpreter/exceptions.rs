@@ -39,37 +39,9 @@ impl Interpreter {
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
     /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
     pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
-        const CATCHABLE: &[&str] = &[
-            "ZeroDivisionError",
-            "NotImplementedError",
-            "AttributeError",
-            "ArithmeticError",
-            "AssertionError",
-            "OverflowError",
-            "AccessError",
-            "RuntimeError",
-            "ValueError",
-            "TypeError",
-            "NameError",
-            "IndexError",
-            "KeyError",
-            "IOError",
-            "OSError",
-            "StopIteration",
-            // ⚠⚠ ここに無いと `Err("RecursionError: ...")` が例外に変換されず、
-            //    `except RecursionError:` で**捕まえられない**。`values_eq` は以前から
-            //    この文言を返していたのに登録が抜けていた（実測）。
-            "RecursionError",
-            "GeneratorExit",
-            "Exception",
-        ];
-
-        let class_name = CATCHABLE.iter().find(|&&cn| {
-            msg.starts_with(cn)
-                && (msg.len() == cn.len()
-                    || msg.as_bytes().get(cn.len()).copied() == Some(b':')
-                    || msg.as_bytes().get(cn.len()).copied() == Some(b' '))
-        })?;
+        // ⚠⚠ 組み込みの例外の一覧そのもので引く（ffi_value_exchange_plan.md 7-4）。以前は写しの表 `CATCHABLE` で、
+        //    `FfiTypeError` が載っていなかったので `except` で捕まえられなかった（`RecursionError` も一度抜けていた）。
+        let class_name = super::built_in_types::builtin_exception_of(msg)?;
 
         let message = msg[class_name.len()..]
             .trim_start_matches(':')

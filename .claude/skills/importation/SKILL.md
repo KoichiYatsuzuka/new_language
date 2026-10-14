@@ -477,6 +477,11 @@ the value rules in `src/interpreter/cs_values.rs` (ffi_value_exchange_plan.md 2-
   `cs_assembly/model.rs::assembly_model` (the stub walkers used to be duplicated), and one type decoder,
   `signature.rs::CsTy` (`CsTy::arrow()` is the stub spelling). Generated exports catch C# exceptions / argument
   errors and keep them for `arrow_bridge_take_error`, which `BridgeLib::take_error` reads after every call.
+  A C# exception (`System.X: …`) becomes the built-in exception `ForeignError`; the bridge's own typed errors
+  (`TypeError: …`) stay as they are (`built_in_types::builtin_exception_of`). Errors a cs-proc / js-proc host
+  reports (`{"err": …}`, `proc_bridge::PipeConn::send_recv`) are always `ForeignError`; the cs-proc host sends
+  the exception type too. `FfiTypeError` (stub/value mismatch) is a built-in exception deriving from `TypeError`
+  (ffi_value_exchange_plan.md 7-4).
   `[UnmanagedCallersOnly]` methods (hand-written exports) are left out of the stub (`NullableInfo::unmanaged_entries`).
   Build: `examples/interop/cs_interop_test/build_bridge.ps1` (managed build without the generated file → generate →
   NativeAOT publish).

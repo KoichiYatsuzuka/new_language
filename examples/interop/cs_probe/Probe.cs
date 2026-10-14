@@ -20,6 +20,9 @@ public class Person
 
 public class Probe
 {
+    // exceptions: Arrow raises them as ForeignError (plan 7-4)
+    public static long fail(string why) => throw new InvalidOperationException(why);
+
     // strings
     public static string greet() => "hello from C#";
     public static string echo(string s) => s;
