@@ -354,6 +354,7 @@ mod a_axis_invariants {
             pointer: 0,
             is_closed: true,
             file_handle: None,
+            detached: false,
         }));
         for m in &methods {
             let res = interp.exec_file_method(fd.clone(), m, &[]);

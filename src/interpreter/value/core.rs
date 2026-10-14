@@ -375,9 +375,19 @@ impl Value {
                 }))
             }
             // TemplateFn / TemplateClass / TemplateGenFn contain only Clone data (no RefCell)
-            Value::TemplateFn(rc) => Value::TemplateFn(rc.clone()),
-            Value::TemplateClass(rc) => Value::TemplateClass(rc.clone()),
-            Value::TemplateGenFn(rc) => Value::TemplateGenFn(rc.clone()),
+            // ⚠ テンプレートも `Rc` を別に作る（7-19。以前は `rc.clone()` で共有したまま送っていた）
+            Value::TemplateFn(rc) => Value::TemplateFn(Rc::new(TemplateFnValue {
+                name: rc.name.clone(),
+                template_params: rc.template_params.clone(),
+            })),
+            Value::TemplateClass(rc) => Value::TemplateClass(Rc::new(TemplateClassValue {
+                name: rc.name.clone(),
+                template_params: rc.template_params.clone(),
+            })),
+            Value::TemplateGenFn(rc) => Value::TemplateGenFn(Rc::new(TemplateGenFnValue {
+                name: rc.name.clone(),
+                template_params: rc.template_params.clone(),
+            })),
             // Arc-wrapped types: atomic refcount, safe to share across threads
             Value::PyObject(arc) => Value::PyObject(Arc::clone(arc)),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
@@ -396,8 +406,30 @@ impl Value {
                 ok: *ok,
                 inner: Box::new(inner.deep_clone()),
             },
-            // Primitive type tags, async values — just clone
-            other => other.clone(),
+            // ⚠⚠ ここから下は 7-19 で `other => other.clone()` を外して並べた（`Value` に種類を足したら、ここで
+            //   送り方を決めさせる）。以前は下の `Rc` を持つ種類が `Rc` を共有したままワーカーへ送られていた。
+            Value::Type(s) => Value::Type(s.clone()),
+            Value::Trait(s) => Value::Trait(s.clone()),
+            Value::Protocol(s) => Value::Protocol(s.clone()),
+            Value::AsyncStatusVal(s) => Value::AsyncStatusVal(s.clone()),
+            Value::JsProcFn(d) => Value::JsProcFn(d.clone()),
+            // ⚠ `Code` / `Meta` の中の AST（文字列リテラルの `Rc<str>` など）はまだ共有している（関数の本体と同じ）⇒ 7-21
+            Value::Code(rc) => Value::Code(Rc::new((**rc).clone())),
+            Value::Meta(rc) => Value::Meta(Rc::new(MetaValue {
+                decl: Rc::new((*rc.decl).clone()),
+                ..(**rc).clone()
+            })),
+            // スレッドに縛られる値（ファイル・`AsyncManager`・`Signal`・`EventLoop`）は、中身を運べないので切り離した
+            // 複製にする。タスクの中で使うとエラー（`async_mgr::ensure_attached`）。`EventLoop` はワーカーが自分の
+            // ものに差し替える（`async_mgr::run_task`）
+            Value::FileObject(rc) => Value::FileObject(Rc::new(RefCell::new(rc.borrow().detached_copy()))),
+            Value::AsyncManager(rc) => Value::AsyncManager(Rc::new(RefCell::new(rc.borrow().detached_copy()))),
+            Value::Signal(_) => Value::Signal(Rc::new(RefCell::new(
+                crate::interpreter::event_loop::SignalData::detached(),
+            ))),
+            Value::EventLoop(_) => Value::EventLoop(Rc::new(RefCell::new(
+                crate::interpreter::event_loop::EventLoopData::detached(),
+            ))),
         }
     }
 }

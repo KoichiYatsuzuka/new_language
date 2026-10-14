@@ -218,6 +218,7 @@ impl Interpreter {
             .get_var(target)
             .map(|v| v.get_value())
             .ok_or_else(|| format!("NameError: '{}' is not defined", target))?;
+        crate::interpreter::async_mgr::ensure_attached(&mgr_val)?;
 
         let mgr_rc = match mgr_val {
             Value::AsyncManager(rc) => rc,
@@ -247,6 +248,7 @@ impl Interpreter {
         body: &[Stmt],
         captured: Vec<(String, Value, bool)>,
     ) -> Result<(), String> {
+        crate::interpreter::async_mgr::ensure_attached(&mgr)?;
         let mgr_rc = match mgr {
             Value::AsyncManager(rc) => rc,
             other => {
@@ -321,6 +323,7 @@ impl Interpreter {
         is_once: bool,
         is_async: bool,
     ) -> Result<ExecResult, String> {
+        crate::interpreter::async_mgr::ensure_attached(&source_val)?;
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc
@@ -352,6 +355,7 @@ impl Interpreter {
         source_val: Value,
         handler_val: Value,
     ) -> Result<ExecResult, String> {
+        crate::interpreter::async_mgr::ensure_attached(&source_val)?;
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc.borrow_mut().unsubscribe_by_value(&handler_val);

@@ -119,10 +119,27 @@ pub struct FileData {
     pub is_closed: bool,
     /// ファイルハンドル。書き込みモードでは排他ロックとして機能し、close 時に None にセット。
     pub file_handle: Option<std::fs::File>,
+    /// 非同期タスクへ送った複製（7-19）。使うとエラー（`async_mgr::ensure_attached`）。
+    pub detached: bool,
 }
 
 
 impl FileData {
+    /// 非同期タスクへ送る、切り離した複製（7-19）。中身もハンドルも持たない（閉じた扱い）ので、破棄しても
+    /// ディスクへは書かない。⚠ 同じファイルを 2 つのバッファで持つと、閉じたときに後の方が前の方を上書きする。
+    pub fn detached_copy(&self) -> FileData {
+        FileData {
+            path: self.path.clone(),
+            mode: self.mode.clone(),
+            byte_mode: self.byte_mode.clone(),
+            content: Vec::new(),
+            pointer: 0,
+            is_closed: true,
+            file_handle: None,
+            detached: true,
+        }
+    }
+
     /// バッファをディスクに書き戻してファイルハンドルを閉じる。
     /// 書き込みモード (`write` / `rewrite` / `make_and_write`) のみ実際に書き戻す。
     /// 既に close 済みの場合は何もしない。

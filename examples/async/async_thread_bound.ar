@@ -1,0 +1,58 @@
+# async_thread_bound.ar — スレッドに縛られる値と非同期タスク（正例・ffi_value_exchange_plan.md 7-19）
+#
+# タスクへ送る値は複製する。ファイル・AsyncManager・Signal は中身を別のスレッドへ運べないので、タスクには
+# 「切り離した複製」が届き、タスクの中で使うと RuntimeError になる（`mut` の変数でも同じ）。タスクの中で作ったものは
+# 使える。EventLoop はインタプリタに 1 つなので、タスクの中の `EventLoop` はそのワーカー自身のイベントループになる。
+# ⚠ 7-19 より前は、これらの値の `Rc` を共有したまま別のスレッドへ送っていた。タスクの中の `mng.results` はメインの
+#   表を読み、タスクの中の `EventLoop.run()` はメインのイベントループを動かしていた。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 対になる負例: async_thread_bound_error.ar
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+fn on_main_tick(mut v: int) -> None:
+    print("main handler got", v)
+
+fn on_task_tick(mut v: int) -> None:
+    print("task handler got", v)
+
+let ticks = Signal[int]()
+ticks on on_main_tick
+
+mut mng = AsyncManager(num_thread=1)
+# タスクの中で作った Signal と、ワーカー自身の EventLoop は使える
+# （`once` のハンドラは呼ばれると外れるので、handler_count が 1 → 0 になれば呼ばれた）
+mng <- async->list[int]:
+    let own = Signal[int]()
+    own once on_task_tick
+    let before = own.handler_count
+    own.emit_async(7)
+    EventLoop.run(0.5)
+    block_return [before, own.handler_count]
+# メインの Signal はタスクの中では使えない
+mng <- async->int:
+    ticks.emit(1)
+    block_return 1
+# AsyncManager も使えない（`mng` は `mut` だが共有しない）
+mng <- async->int:
+    block_return len(mng.results)
+# 使わなければ何も起きない
+mng <- async->int:
+    block_return 40 + 2
+mng.wait_for_finish()
+
+let errors = mng.error_list
+let results = mng.results
+check("signal and event loop made in the task", errors[0] is None and results[0] == [1, 0])
+let e1 = errors[1] mustbe str
+check("main thread's Signal in a task -> RuntimeError (" + e1 + ")", "cannot be used inside an async task" in e1)
+let e2 = errors[2] mustbe str
+check("main thread's AsyncManager in a task -> RuntimeError (" + e2 + ")", "cannot be used inside an async task" in e2)
+check("a task that does not touch them", errors[3] is None and results[3] == 42)
+# メインスレッドではそのまま使える
+ticks.emit(5)
+check("main thread still uses its Signal", ticks.handler_count == 1)

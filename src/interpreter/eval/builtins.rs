@@ -75,6 +75,10 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap();
                 Some(match val {
                     Value::FileObject(fd_rc) => {
+                        // タスクへ送った複製（7-19）
+                        if fd_rc.borrow().detached {
+                            return Some(crate::interpreter::async_mgr::ensure_attached(&Value::FileObject(fd_rc)).map(|_| Value::None));
+                        }
                         fd_rc.borrow_mut().close();
                         Ok(Value::None)
                     }
@@ -373,6 +377,10 @@ impl Interpreter {
                 };
                 Some(match val {
                     Value::FileObject(fd_rc) => {
+                        // タスクへ送った複製（7-19）
+                        if fd_rc.borrow().detached {
+                            return Some(crate::interpreter::async_mgr::ensure_attached(&Value::FileObject(fd_rc)).map(|_| Value::None));
+                        }
                         fd_rc.borrow_mut().close();
                         Ok(Value::None)
                     }
@@ -885,6 +893,7 @@ impl Interpreter {
             pointer,
             is_closed: false,
             file_handle: Some(file),
+            detached: false,
         };
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }

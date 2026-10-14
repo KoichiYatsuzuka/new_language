@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-12・7-15・7-17・7-18 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-12・7-15・7-17・7-18・7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -252,7 +252,10 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-16** | C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 | **7-17** | ✅（§5）dict のキーの照合が、乱数のシード次第で型厳密でなくなる。`dict_get` / `dict_set` がキーの等値に式としての比較（`3 == 3.0` は真）を使っていた。ハッシュは型で分けているが、表の内部はハッシュの下位の手がかりが一致した別のキーにも等値を問うので、`d[3]` と `d[3.0]` が同じキーになることがあった（拡張のクレートのテスト `test_dict_keys_are_type_strict` が 5-3 のゲートで落ちて発見・およそ数回に 1 回） | なし | 小 |
 | **7-18** | ✅（§5）`len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
-| **7-19** | 非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
+| **7-19** | ✅（§5）非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
+| **7-20** | `mut` の変数を非同期タスクへ `Rc` を共有したまま送る（`async_mgr::clone_for_task`）。タスクの中の `xs.append(..)` がメインのリストを別のスレッドから書き換える（データ競合。再束縛 `n = 5` は伝わらない）。文書も食い違っている（`docs/grammar/10_special_features.md` は共有、`.claude/rules/language-differences.md` は複製と書く）。`let` と同じく複製にするか、明示的な共有の仕組み（CLAUDE.md の Async enhancements の Mutex のような型）へ移すかを決める（7-19 で発見・設計判断が要る） | なし | 中 |
+| **7-21** | 非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
+| **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1117,6 +1120,36 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend`
   544/544・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1160 件が通る（解釈側だけの変更なので VSIX は
   作り直していない）
+
+### 7-19 実装
+
+- タスクへ送る値の複製（`Value::deep_clone`）から `other => other.clone()` を外し、種類をすべて並べた（`Value` に種類を
+  足すと、ここで送り方を決めないとコンパイルが通らない）。`Rc` を持つ種類は `Rc` を別に作る: テンプレート 3 種・`Code`・`Meta`
+  （⚠ 中の AST の `Rc` はまだ共有 ⇒ 7-21）
+- スレッドに縛られる値（ファイル・`AsyncManager`・`Signal`・`EventLoop`）は中身を運べないので、**切り離した複製**にする
+  （`FileData::detached_copy` など。中身もハンドルも持たず、破棄してもディスクへ書かない）。タスクの中で使うと RuntimeError
+  （`async_mgr::ensure_attached`。メソッドの入口・属性・`<-`・`on` / `off`・`close()`）。`mut` の変数でも共有しない
+  （`clone_for_task`。よくある `mut mng = AsyncManager(..)` が全タスクへ `Rc` を共有したまま送られていた）
+- `EventLoop` はインタプリタに 1 つ（組み込みの大域）なので、ワーカーは送られてきた `EventLoop` を自分のものに差し替える
+  （`run_task`）。⚠ 以前は大域ごと送られ、ワーカーの `EventLoop` がメインのものを指していた。タスクの中の
+  `sig.emit_async(..)` はワーカーのキューへ積むのに `EventLoop.run()` はメインのキューを処理するので、ハンドラが呼ばれなかった
+- 見えている大域の名前は、大域の複製と同じ値を使う（`capture_vars`）。⚠ テンプレートの `Rc` を作り直したとき、見えている名前と
+  大域を別々に複製していたので、ワーカーの中で 1 つの大域が 2 つの値になり、タスクの本体の `Box[int](7)` が `TemplateError` で
+  **黙って `None`** になった（`compare_outputs` が `typing/template_contexts.ar` で捕まえた。exit code では見えないので単体テスト
+  `test_template_instance_in_a_task_matches_its_template` で固定し、別々に複製すると落ちることを確かめた）。`let` の大域を
+  2 回ずつ複製していたのも 1 回になる
+- 基準の exe で確かめた以前の挙動: タスクの中の `ticks.emit(1)` がメインのハンドラをワーカーのスレッドで呼ぶ、`mng.results` が
+  メインの表を読む、タスクの中で作った Signal の `emit_async` が `EventLoop.run()` で処理されない
+- ⚠ 調べる中で見つけたもの: `mut` の変数そのものの共有（⇒ 7-20）、タスクへ送る AST の `Rc`（⇒ 7-21）、タスクの本体で
+  本体の `mut` 変数を捕まえる入れ子の関数が `VmForceError` になる（⇒ 7-22）
+- 単体テスト `test_deep_clone_detaches_thread_bound_values`・`test_deep_clone_of_template_fn_shares_no_rc`・
+  `test_template_instance_in_a_task_matches_its_template`。例題:
+  `async/async_thread_bound.ar`（期待値と違えば raise。基準の exe では落ちる）・`async/async_thread_bound_error.ar`
+- 文書: `docs/grammar/10_special_features.md`（非同期タスク）
+- ゲート（基準 `6488d0d`・制限時間つき）: `compare_outputs` 456/456 一致（⚠ `async` は対象外。新しい例題は `scan_examples` で見て、
+  基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`
+  （`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 546/546・`type_obligations` 退行なし・
+  `stale_doc_refs` 0 件。`cargo test` 1163 件が通る（解釈側だけの変更なので VSIX は作り直していない）
 
 ---
 

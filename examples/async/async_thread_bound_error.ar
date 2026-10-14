@@ -1,0 +1,20 @@
+# async_thread_bound_error.ar — メインスレッドの Signal を非同期タスクの中で使う（負例・ffi_value_exchange_plan.md 7-19）
+#
+# Signal・AsyncManager・ファイルは別のスレッドへ運べないので、タスクに届くのは切り離した複製。使うと RuntimeError。
+# `raise_immediately=True` なので `wait_for_finish` がそのエラーを送出する。
+# 期待: RuntimeError: this Signal belongs to the thread that created it and cannot be used inside an async task ...
+# ⚠ 7-19 より前は、メインのハンドラがワーカーのスレッドで（`Rc` を共有したまま）呼ばれていた。
+# 対になる正例: async_thread_bound.ar
+
+fn on_tick(mut v: int) -> None:
+    print("tick", v)
+
+let ticks = Signal[int]()
+ticks on on_tick
+
+mut mng = AsyncManager(num_thread=1, raise_immediately=True)
+mng <- async->int:
+    ticks.emit(1)
+    block_return 1
+mng.wait_for_finish()
+print("unreachable")

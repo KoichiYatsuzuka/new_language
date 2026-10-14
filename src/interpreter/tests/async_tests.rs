@@ -212,3 +212,74 @@ fn test_deep_clone_of_cs_object_keeps_the_handle_and_shares_no_rc() {
     assert!(!Rc::ptr_eq(a, b), "deep_clone shared the CsObject Rc");
     assert!(!Rc::ptr_eq(&a.class, &b.class), "deep_clone shared the stub class Rc");
 }
+
+/// タスクへ送る、スレッドに縛られる値（ffi_value_exchange_plan.md 7-19）。`Rc` を別に作った「切り離した複製」になり、
+/// 使うとエラー（元の値はそのまま使える）。⚠ 以前は `deep_clone` の `other => other.clone()` に落ち、`Rc` を共有した
+/// まま送っていた（タスクの中の `mng.results` はメインの表を読み、`ticks.emit(..)` はメインのハンドラをワーカーで呼んだ）。
+#[test]
+fn test_deep_clone_detaches_thread_bound_values() {
+    use crate::interpreter::async_mgr::ensure_attached;
+    use std::rc::Rc;
+    let interp = run_interp("let s = Signal[int]()\nmut mng = AsyncManager(num_thread=1)\n");
+    for name in ["s", "mng", "EventLoop"] {
+        let original = interp.get_val(name).unwrap_or_else(|| panic!("{name} must exist"));
+        let cloned = original.deep_clone();
+        let shared = match (&original, &cloned) {
+            (Value::Signal(a), Value::Signal(b)) => Rc::ptr_eq(a, b),
+            (Value::AsyncManager(a), Value::AsyncManager(b)) => Rc::ptr_eq(a, b),
+            (Value::EventLoop(a), Value::EventLoop(b)) => Rc::ptr_eq(a, b),
+            _ => panic!("{name}: deep_clone changed the kind of value"),
+        };
+        assert!(!shared, "{name}: deep_clone shared the Rc");
+        assert!(ensure_attached(&original).is_ok(), "{name}: the original must stay usable");
+        let err = ensure_attached(&cloned).expect_err("the copy must not be usable");
+        assert!(err.contains("cannot be used inside an async task"), "{name}: {err}");
+    }
+}
+
+/// テンプレートの値もタスクへ送るときに `Rc` を別に作る（7-19。以前は明示的に `rc.clone()` で共有していた）。
+#[test]
+fn test_deep_clone_of_template_fn_shares_no_rc() {
+    use std::rc::Rc;
+    let interp = run_interp("fn show[T](let x: T) -> str:\n    return str(x)\n");
+    let original = interp.get_val("show").expect("show must exist");
+    match (&original, &original.deep_clone()) {
+        (Value::TemplateFn(a), Value::TemplateFn(b)) => {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.template_params.len(), b.template_params.len());
+            assert!(!Rc::ptr_eq(a, b), "deep_clone shared the template Rc");
+        }
+        _ => panic!("expected Value::TemplateFn on both sides"),
+    }
+}
+
+/// タスクの本体でテンプレートを具体化する（7-19）。見えている大域の名前は大域の複製と同じ値でなければならない。
+/// ⚠ 7-19 でテンプレートの `Rc` を作り直したとき、見えている名前と大域を別々に複製していたので、本体の `Box` と
+///   具体化のキャッシュの鍵（大域の `Box` の同一性）が別の値になり、`TemplateError` で結果が黙って `None` になった
+///   （`examples/typing/template_contexts.ar` は exit code では気づけない）。
+#[test]
+fn test_template_instance_in_a_task_matches_its_template() {
+    let src = concat!(
+        "class Box[T]:\n",
+        "    mut v: T\n",
+        "    fn get(self) -> T:\n",
+        "        return self.v\n",
+        "mut mng = AsyncManager(num_thread=1)\n",
+        "mng <- async->int:\n",
+        "    block_return Box[int](7).get()\n",
+        "mng.wait_for_finish()\n",
+        "let errors = mng.error_list\n",
+        "let results = mng.results\n",
+    );
+    let interp = run_interp(src);
+    let errors = match interp.get_val("errors") {
+        Some(Value::List(l)) => l.borrow().clone(),
+        other => panic!("expected the error list, got {other:?}"),
+    };
+    assert!(matches!(errors.as_slice(), [Value::None]), "the task failed: {errors:?}");
+    let results = match interp.get_val("results") {
+        Some(Value::List(l)) => l.borrow().clone(),
+        other => panic!("expected the results, got {other:?}"),
+    };
+    assert!(matches!(results.as_slice(), [Value::Int(7)]), "unexpected results: {results:?}");
+}

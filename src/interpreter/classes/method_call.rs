@@ -204,6 +204,8 @@ impl Interpreter {
         if let Some(e) = self.meta_forbidden_receiver(&obj) {
             return Err(e);
         }
+        // タスクへ送った、スレッドに縛られる値の複製（7-19）
+        crate::interpreter::async_mgr::ensure_attached(&obj)?;
         // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
         if let Value::ResultVal { ok, .. } = &obj {
             if !evaled.is_empty() {

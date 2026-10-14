@@ -133,6 +133,8 @@ pub struct AsyncManagerData {
     running: Vec<RunningSlot>,
     /// すべてのスレッドに中断を要求するフラグ（`AsyncManager` がドロップされたとき設定される）。
     abort: Arc<AtomicBool>,
+    /// 非同期タスクへ送った複製（7-19）。使うとエラー（[`ensure_attached`]）。
+    detached: bool,
 }
 
 impl std::fmt::Debug for AsyncManagerData {
@@ -159,7 +161,13 @@ impl AsyncManagerData {
             pending: VecDeque::new(),
             running: Vec::new(),
             abort: Arc::new(AtomicBool::new(false)),
+            detached: false,
         }
+    }
+
+    /// 非同期タスクへ送る、切り離した複製（7-19）。タスクも結果も運ばない（スレッドは送れない）。
+    pub fn detached_copy(&self) -> Self {
+        Self { detached: true, ..Self::new(self.num_thread, self.raise_immediately) }
     }
 
     /// 新しいタスクを登録し、スレッドスロットが空いていれば即座に実行を開始する。
@@ -288,7 +296,7 @@ impl AsyncManagerData {
 /// スレッド内でタスク本体を実行し、結果またはエラーを `ThreadResult` として返す。
 fn run_task(
     body: Vec<Stmt>,
-    env: TaskEnv,
+    mut env: TaskEnv,
     abort: Arc<AtomicBool>,
 ) -> ThreadResult {
     if abort.load(Ordering::Relaxed) {
@@ -299,6 +307,16 @@ fn run_task(
     }
 
     let mut interp = Interpreter::new();
+    // イベントループはインタプリタに 1 つ（組み込みの大域 `EventLoop`）。送られてきた `EventLoop`（`deep_clone` が
+    // 切り離した複製）はワーカー自身のものにする（7-19）。⚠ 黙って差し替えるのが仕様: `EventLoop` の値はどれも
+    // 「このインタプリタのイベントループ」で、メインのものはワーカーから動かせない。以前は大域ごと送られて、
+    // ワーカーの `EventLoop` がメインのものを `Rc` で共有していた
+    let own_loop = interp.event_loop_value.clone();
+    for (_, v, _) in env.globals.iter_mut().flatten().chain(env.vars.iter_mut()) {
+        if matches!(v, Value::EventLoop(_)) {
+            *v = own_loop.clone();
+        }
+    }
     // C# のクラスの表はスレッドごと（クラスが `Rc`）なので、送られてきた値から登録し直す（6-2）
     crate::interpreter::cs_values::register_task_classes(
         env.globals.iter().flatten().chain(env.vars.iter()).map(|(_, v, _)| v),
@@ -409,35 +427,65 @@ pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
         })
         .collect();
     let native_libs = interp.native_libs.iter().map(|(p, l)| (p.clone(), l.clone())).collect();
-    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx, submodules, native_libs }
+    let vars = capture_vars(interp, &globals[cur_globals as usize]);
+    TaskEnv { vars, globals, cur_globals, class_ctx, submodules, native_libs }
 }
 
 /// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。
 /// `mut` は Rc クローン（変更が伝播）、`let` はディープクローン（独立コピー）。
 pub(super) fn clone_for_task(var: &Var) -> Value {
-    if var.is_mutable() {
-        var.get_value().clone()
+    let value = var.get_value();
+    // ⚠ スレッドに縛られる値は `mut` でも共有しない（7-19）。`mut mng = AsyncManager(..)` が全タスクへ `Rc` を
+    //   共有したまま送られ、ワーカーの終了時に別スレッドで参照カウントを減らしていた
+    let thread_bound = matches!(
+        value,
+        Value::FileObject(_) | Value::AsyncManager(_) | Value::Signal(_) | Value::EventLoop(_)
+    );
+    if var.is_mutable() && !thread_bound {
+        value.clone()
     } else {
-        var.get_value().deep_clone()
+        value.deep_clone()
     }
 }
 
+/// タスクへ送った、スレッドに縛られる値（ファイル・`AsyncManager`・`Signal`・`EventLoop`）の複製を使おうとしたら
+/// 誤り（7-19。`Value::deep_clone` が切り離した複製を作る）。メソッド・属性・`<-`・`on` / `off`・`close()` が呼ぶ。
+pub(crate) fn ensure_attached(v: &Value) -> Result<(), String> {
+    let kind = match v {
+        Value::FileObject(rc) if rc.borrow().detached => "file object",
+        Value::AsyncManager(rc) if rc.borrow().detached => "AsyncManager",
+        Value::Signal(rc) if rc.borrow().detached => "Signal",
+        Value::EventLoop(rc) if rc.borrow().detached => "EventLoop",
+        _ => return Ok(()),
+    };
+    Err(format!(
+        "RuntimeError: this {kind} belongs to the thread that created it and cannot be used inside an async task \
+         (create it inside the task, or pass the data it holds)"
+    ))
+}
+
 /// 見えている名前（現関数のローカル＋今の大域）の複製。
-fn capture_vars(interp: &Interpreter) -> Vec<(String, Value, bool)> {
+///
+/// ⚠ 大域の名前は、大域の複製（`cur_globals`・`snapshot_globals_for_task` が作ったもの）と**同じ値**を使う（7-19）。
+///   別々に複製すると、ワーカーの中で 1 つの大域が 2 つの値になり、同一性で引く表が外れる（テンプレートの具体化の
+///   キャッシュ: 本体の `Box[int](7)` が `TemplateError` になった）。どちらも同じワーカーへ送るので共有してよい。
+fn capture_vars(interp: &Interpreter, cur_globals: &[(String, Value, bool)]) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();
     // 可視スコープ = 現関数のローカル（frame_floor..、内側優先）+ グローバル（0）。
     // 呼び出し元のローカルは隔離されているため対象外。
     let floor = interp.frame_floor;
-    let visible = interp.scopes[floor..]
-        .iter()
-        .rev()
-        .chain(std::iter::once(&interp.scopes[0]));
-    for scope in visible {
+    for scope in interp.scopes[floor..].iter().rev() {
         for (name, var) in scope.iter() {
             if seen.insert(name.clone()) {
                 env.push((name.clone(), clone_for_task(var), var.is_mutable()));
             }
+        }
+    }
+    // 今の大域（`scopes[0]`）は、その複製をそのまま使う（同じ名前・同じ並び）
+    for (name, value, is_mutable) in cur_globals {
+        if seen.insert(name.clone()) {
+            env.push((name.clone(), value.clone(), *is_mutable));
         }
     }
     env

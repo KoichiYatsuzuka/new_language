@@ -121,6 +121,8 @@ impl Interpreter {
         attr: &str,
         cache: Option<&crate::ast::AttrCache>,
     ) -> Result<Value, String> {
+        // タスクへ送った、スレッドに縛られる値の複製（7-19。`mng.results` が空のリストを黙って返していた）
+        crate::interpreter::async_mgr::ensure_attached(&obj)?;
         match &obj {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();

@@ -49,6 +49,8 @@ pub struct SignalData {
     pub next_id: u64,
     /// `sig.external_id` 初回アクセス時に発番され、external_handler_registry に登録される。
     pub external_id: Option<u64>,
+    /// 非同期タスクへ送った複製（7-19）。使うとエラー（`async_mgr::ensure_attached`）。
+    pub detached: bool,
 }
 
 impl SignalData {
@@ -57,7 +59,13 @@ impl SignalData {
             handlers: Vec::new(),
             next_id: 1,
             external_id: None,
+            detached: false,
         }
+    }
+
+    /// 非同期タスクへ送る、切り離した複製（7-19）。ハンドラは運ばない。
+    pub fn detached() -> Self {
+        Self { detached: true, ..Self::new() }
     }
 
     /// ハンドラを登録して割り当てた ID を返す。
@@ -128,6 +136,9 @@ pub struct EventLoopData {
     pub signal_queue: VecDeque<(Rc<RefCell<SignalData>>, Value)>,
     /// `EventLoop.post(fn)` で積まれたコールバック。メインスレッドで実行される。
     pub post_queue: VecDeque<Value>,
+    /// 非同期タスクへ送った複製（7-19）。ワーカーのトップレベルの値は自分のものに差し替えるので、残るのは
+    /// コンテナの中に入っていたものだけ。使うとエラー（`async_mgr::ensure_attached`）。
+    pub detached: bool,
 }
 
 impl EventLoopData {
@@ -135,7 +146,13 @@ impl EventLoopData {
         Self {
             signal_queue: VecDeque::new(),
             post_queue: VecDeque::new(),
+            detached: false,
         }
+    }
+
+    /// 非同期タスクへ送る、切り離した複製（7-19）。
+    pub fn detached() -> Self {
+        Self { detached: true, ..Self::new() }
     }
 
     /// キューに処理すべき項目があれば `true`。
