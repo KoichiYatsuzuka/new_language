@@ -83,6 +83,10 @@ impl Lexer {
     /// # 戻り値
     /// 初期状態の `Lexer`
     pub fn new(source: &str, filename: impl Into<Arc<str>>) -> Self {
+        // 先頭の UTF-8 の BOM（U+FEFF）は読み飛ばす（ffi_value_exchange_plan.md 7-5。PowerShell 5.1 の
+        // `Set-Content -Encoding UTF8` などが付ける。以前は `unexpected token` の ParseError になった）。
+        // ⚠ 読み飛ばしてから位置を数えるので、1 行目の列は BOM を見せないエディタと同じになる
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
         // ソーステキストを文字配列に展開し、位置テーブルを構築する
         let chars: Vec<char> = source.chars().collect();
         let positions = compute_positions(&chars);

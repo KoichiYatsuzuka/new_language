@@ -12,6 +12,12 @@ src/lexer/
 
 ---
 
+## ソースの文字コード
+
+ソースは UTF-8 です。先頭の BOM（U+FEFF。PowerShell 5.1 の `Set-Content -Encoding UTF8` などが付ける）は読み飛ばし、
+位置は BOM を数えません（1 行目の列はエディタの表示と同じ）。先頭以外の U+FEFF は読み飛ばしません
+（`implementation_plans/ffi_value_exchange_plan.md` 7-5。以前は `unexpected token` の ParseError でした）。
+
 ## トークンの種類
 
 ### 変数宣言キーワード

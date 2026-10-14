@@ -1,0 +1,9 @@
+﻿# bom_source.ar — 先頭に UTF-8 の BOM（U+FEFF）が付いたソース（正例・ffi_value_exchange_plan.md 7-5）
+#
+# ⚠ このファイルは先頭に BOM を持つ（PowerShell 5.1 の `Set-Content -Encoding UTF8` などが付ける）。字句解析は先頭の
+#   BOM を読み飛ばす。以前は `unexpected token` の ParseError で、1 行目から読めなかった。
+# ⚠ エディタによっては保存し直すと BOM が消える。消えるとこの例題は何も確かめなくなる（`bom_source` の検査は
+#   単体テスト `test_leading_bom_is_skipped` が決定的に押さえる）。
+
+let greeting = "BOM ok"
+print(greeting)

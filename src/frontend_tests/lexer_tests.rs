@@ -313,3 +313,15 @@
         assert_eq!(tokens[3], Token::Dot);
         assert_eq!(tokens[4], Token::Ident("field".to_string()));
     }
+
+    /// 先頭の UTF-8 の BOM は読み飛ばす（ffi_value_exchange_plan.md 7-5）。位置は BOM を数えない（1 行目 1 列）。
+    /// ⚠ 以前は BOM が知らない文字として `unexpected token` の ParseError になった。
+    #[test]
+    fn test_leading_bom_is_skipped() {
+        let spanned = Lexer::new("\u{feff}let x = 1\n", "").tokenize();
+        assert_eq!(spanned[0].token, Token::Let);
+        assert_eq!((spanned[0].span.line, spanned[0].span.col), (1, 1));
+        assert_eq!(lex("\u{feff}let x = 1\n"), lex("let x = 1\n"));
+        // 先頭以外の U+FEFF は読み飛ばさない（ファイルの BOM ではない）
+        assert_ne!(lex("let x = 1\n\u{feff}let y = 2\n"), lex("let x = 1\nlet y = 2\n"));
+    }

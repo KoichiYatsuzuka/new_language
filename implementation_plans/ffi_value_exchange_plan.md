@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3・7-4・7-12・7-15・7-17・7-18・7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-12・7-15・7-17・7-18・7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -238,7 +238,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
 | **7-3** | ✅（§5）例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
 | **7-4** | ✅（§5）`FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
-| **7-5** | 字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
+| **7-5** | ✅（§5）字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
 | **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
 | **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
@@ -1197,6 +1197,20 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean
   （176/176）・`compare_wasm_frontend` 548/548・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1167 件・拡張の
   wasm クレートの 722 件が通る。VSIX を作り直した
+
+### 7-5 実装
+
+- 字句解析（Rust の `Lexer::new`・参照実装の `Lexer.__init__`）が先頭の UTF-8 の BOM（U+FEFF）を読み飛ばす。読み飛ばしてから
+  位置を数えるので、1 行目の列は BOM を見せないエディタと同じ。先頭以外の U+FEFF はそのまま（ファイルの BOM ではない）。
+  ⚠ 以前は `unexpected token` の ParseError で、PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが 1 行目から
+  読めなかった。字句解析は import 先・`.ars` にも同じものを使うので、それらの BOM も読み飛ばす
+- 単体テスト `test_leading_bom_is_skipped`。例題: `basics/bom_source.ar`（先頭に BOM を持つ。基準の exe では ParseError。参照実装と
+  出力が一致する）
+- 文書: `docs/grammar/01_lexer.md`（ソースの文字コード）
+- ゲート（基準 `bf26f0d`・制限時間つき）: `compare_outputs` の差は新しい例題 `bom_source` だけ（458/459）。`compare_import_paths`
+  13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（177/177。新しい例題も一致）・
+  `compare_wasm_frontend` 549/549・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1168 件・拡張の wasm クレートの
+  722 件が通る。VSIX を作り直した
 
 ---
 
