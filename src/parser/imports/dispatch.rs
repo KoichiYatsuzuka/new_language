@@ -339,10 +339,19 @@ impl Parser {
     /// crate の型スタブ。CLI は実行時の中継 DLL も `cargo build` して登録する（`rs_loader::load`）。
     /// 拡張（`editor`）は型を読むだけ（`rs_crate::load_types`・`cargo` を起動しない・D-3）。
     fn load_rs_crate(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -> Result<Vec<Stmt>, String> {
-        #[cfg(not(feature = "editor"))]
+        #[cfg(all(feature = "native", not(feature = "editor")))]
         return crate::partial_compiler::rs_loader::load(module_name, search_dirs, version);
         #[cfg(feature = "editor")]
         return crate::rs_crate::load_types(module_name, search_dirs, version);
+        // ⚠ 評価コアのビルド（`--no-default-features`）は中継 DLL を作れず読み込めもしない（`libloading` は `native` の
+        //   依存）ので、型だけ読んでも実行できない。理由つきのエラーにする（7-7。以前はビルドそのものが通らなかった）
+        #[cfg(not(any(feature = "native", feature = "editor")))]
+        {
+            let _ = (search_dirs, version);
+            Err(format!(
+                "import[rs] '{module_name}' needs the default `native` feature (this build cannot build or load the wrapper DLL)"
+            ))
+        }
     }
 
     /// `[X.Y.Z]` 形式のバージョンブラケットをパースして文字列で返す。

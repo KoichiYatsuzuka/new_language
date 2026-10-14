@@ -22,6 +22,11 @@
 # ⚠ `crates/arrow-frontend` は**ワークスペース外**（`Cargo.toml` の `exclude`）なので
 #   ここには含まれない。あちらは `compare_wasm_frontend.ps1` が受け持つ。
 #
+# ⚠ 評価コアのビルド（`cargo check --no-default-features`・FFI と Python 相互運用を外したもの）も見る
+#   （ffi_value_exchange_plan.md 7-7）。`native` 限定のモジュールを条件なしで参照すると、既定のビルドは通るのに
+#   こちらだけ通らなくなる（`parser/imports` が `python_converter` / `rs_loader` を参照して、気づかれないまま壊れていた）。
+#   機能の組が違うので `target/nodefault` に分けてビルドする（`target/debug` のキャッシュを崩さない）。
+#
 # 使い方: ./scripts/test_build_gate.ps1
 #   他のゲートからは `scan_examples.ps1` / `force_gate.ps1` が前段として呼ぶ
 #   （そちらは `-SkipTestBuild` で飛ばせる）。
@@ -35,6 +40,13 @@ try {
     #   NativeCommandError になって成功でも $? が false になる（CLAUDE.md の注意）。
     cargo test --no-run --quiet
     $code = $LASTEXITCODE
+    # 評価コアでは使われない関数などの警告（dead_code など）は数十件あるので出さない（見るのはビルドが通るかだけ）
+    $saved = @($env:CARGO_TARGET_DIR, $env:RUSTFLAGS)
+    $env:CARGO_TARGET_DIR = Join-Path $repo 'target' | Join-Path -ChildPath 'nodefault'
+    $env:RUSTFLAGS = '-A warnings'
+    cargo check --no-default-features --quiet
+    $coreCode = $LASTEXITCODE
+    $env:CARGO_TARGET_DIR, $env:RUSTFLAGS = $saved
 }
 finally {
     Pop-Location
@@ -46,6 +58,13 @@ if ($code -ne 0) {
     Write-Host '  ⚠ release ゲートは全部緑のままになるので、ここで止めること。' -ForegroundColor Yellow
     Write-Host '  よくある原因: 新しい Op を vm/compiler/mod.rs の storage_operands に' -ForegroundColor Yellow
     Write-Host '                登録し忘れ / AST 変更に src/frontend_tests/ が追随していない。' -ForegroundColor Yellow
+    exit 1
+}
+if ($coreCode -ne 0) {
+    Write-Host ''
+    Write-Host 'TEST-BUILD-GATE: FAILED — 評価コア（cargo check --no-default-features）がビルドできない' -ForegroundColor Red
+    Write-Host '  よくある原因: native 限定のモジュール（python_converter / rs_loader / pyo3 など）を' -ForegroundColor Yellow
+    Write-Host '                #[cfg(feature = "native")] なしで参照している。' -ForegroundColor Yellow
     exit 1
 }
 

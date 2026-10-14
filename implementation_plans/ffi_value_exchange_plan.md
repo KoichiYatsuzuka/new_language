@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-8・7-9・7-12・7-15〜7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-12・7-15〜7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -240,7 +240,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-4** | ✅（§5）`FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
 | **7-5** | ✅（§5）字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
 | **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
-| **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
+| **7-7** | ✅（§5）評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | ✅（§5）Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | ✅（§5）境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
@@ -1282,6 +1282,22 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（179/179）・
   `compare_wasm_frontend` 555/555・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1173 件・拡張の wasm クレートの
   726 件が通る。VSIX を作り直した
+
+### 7-7 実装
+
+- 評価コアのビルド（`cargo check --no-default-features`）が通るようにした。原因は 2 件（名前解決で止まっていたので、直した後に
+  別のエラーが出ないことも確かめた）: `parser/imports/py_modules.rs` が `native` 限定の `python_converter` を、`dispatch.rs` が
+  `rs_loader` を条件なしで参照していた。変換器の無いビルドでは `import[py]` / `.pyi` の読み込み（`convert_python`）と
+  `import[rs]`（`load_rs_crate`）を理由つきのエラーにする（評価コアは Python の変換器も中継 DLL の読み込みも持たないので、
+  通しても実行できない）。拡張のクレート（`editor`）は従来どおり変換器と `rs_crate::load_types` を使う
+- 網: `scripts/test_build_gate.ps1`（`scan_examples` / `force_gate` が前段で呼ぶ）が評価コアのビルドも見る（`target/nodefault`
+  に分け、警告は抑える。キャッシュが効けば十数秒）。負の対照を取った（`python_converter` の無条件の参照を戻すと
+  `TEST-BUILD-GATE: FAILED — 評価コア…` で止まる）
+- 文書: CLAUDE.md のゲートの表・`implementation_logs/BYTECODE_VM_PLAN.md` のスクリプトの表
+- ゲート（基準 `f43fce8`・制限時間つき）: `compare_outputs` 465/465 一致（既定のビルドの挙動は変えていない）・`compare_import_paths`
+  13/13・`scan_examples`（基準と同じ。前段の `test_build_gate` が評価コアも見て ok）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl` clean（179/179）・`compare_wasm_frontend` 555/555・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
+  `cargo test` 1173 件・拡張の wasm クレートの 726 件が通る。VSIX を作り直した
 
 ---
 

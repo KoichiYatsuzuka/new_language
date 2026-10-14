@@ -2,11 +2,29 @@
 
 use {
     crate::parser::Parser,
-    crate::ast::Stmt, crate::module_path, crate::python_converter,
+    crate::ast::Stmt, crate::module_path,
     super::dispatch::LoadedModule,
     std::path::{Path, PathBuf},
 };
 use super::*;
+
+/// Python のソースを Arrow の文へ写す（`python_converter`）。
+///
+/// ⚠ 評価コアのビルド（`--no-default-features`）には変換器が無い（`rustpython-parser` は `native` の依存）ので、
+///   `import[py]` と `.pyi` の読み込みは理由つきのエラー（ffi_value_exchange_plan.md 7-7。以前はこのファイルが
+///   `python_converter` を無条件に参照していて、評価コアのビルドそのものが通らなかった）。拡張のクレート（`editor`）は
+///   変換器を取り込んでいる。
+fn convert_python(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
+    #[cfg(any(feature = "native", feature = "editor"))]
+    return crate::python_converter::convert_python_source(source, filename);
+    #[cfg(not(any(feature = "native", feature = "editor")))]
+    {
+        let _ = source;
+        Err(format!(
+            "cannot read Python source '{filename}': this build has no Python converter (build with the default `native` feature)"
+        ))
+    }
+}
 
 impl Parser {
     /// Python の import の探索先（[`crate::module_path`] の規則・CPython と同じ）。
@@ -158,7 +176,7 @@ impl Parser {
 
         let filename = shown_path.to_string_lossy().to_string();
         // ⚠ 変換が失敗しても `self.loading` を残さない（次の import で偽の循環になる）。
-        let converted = python_converter::convert_python_source(&source, &filename);
+        let converted = convert_python(&source, &filename);
         let mut body = match converted {
             Ok(b) => b,
             Err(e) => {
@@ -367,7 +385,7 @@ impl Parser {
             //   利用者の `.pyi` は今までどおり黙って精度を落とすだけにするが、
             //   **同梱スタブは自分で書いたもの**なので、失敗したら警告を出す
             //   （黙って精度が落ちると「スタブを整備したのに検査が効かない」に気付けない）。
-            let mut converted = match python_converter::convert_python_source(source, &filename) {
+            let mut converted = match convert_python(source, &filename) {
                 Ok(stmts) => stmts,
                 // ⚠ **同梱スタブは自分で書いたもの**なので、変換できないのは誤り（以前は警告を出して
                 //   行単位の抽出へ落ちていた・`editor_import_resolution_plan.md` 1-2）。

@@ -68,7 +68,7 @@ python -m impl_python examples/basics/control_flow.ar
 
 | Script | What it checks | Run it when |
 |---|---|---|
-| `test_build_gate.ps1` | **`cargo test`（debug）がビルドできるか**（`cargo test --no-run`） | **毎回**（`scan_examples` / `force_gate` が前段で自動実行。`-SkipTestBuild` で飛ばせる） |
+| `test_build_gate.ps1` | **`cargo test`（debug）がビルドできるか**（`cargo test --no-run`）と、**評価コア**（`cargo check --no-default-features`・`target/nodefault`）がビルドできるか | **毎回**（`scan_examples` / `force_gate` が前段で自動実行。`-SkipTestBuild` で飛ばせる） |
 | `scan_examples.ps1` | 全例題が失敗しないか（タイムアウト付き） | **毎回** |
 | `force_gate.ps1` | VM に載らない構文が無いか（`VmForceError` 0 件） | **毎回** |
 | `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **毎回**（意味論を守る唯一の網） |
