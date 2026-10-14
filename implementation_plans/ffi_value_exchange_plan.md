@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-19・7-23 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -256,7 +256,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-20** | `mut` の変数を非同期タスクへ `Rc` を共有したまま送る（`async_mgr::clone_for_task`）。タスクの中の `xs.append(..)` がメインのリストを別のスレッドから書き換える（データ競合。再束縛 `n = 5` は伝わらない）。文書も食い違っている（`docs/grammar/10_special_features.md` は共有、`.claude/rules/language-differences.md` は複製と書く）。`let` と同じく複製にするか、明示的な共有の仕組み（CLAUDE.md の Async enhancements の Mutex のような型）へ移すかを決める（7-19 で発見・設計判断が要る） | なし | 中 |
 | **7-21** | 非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
 | **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
-| **7-23** | 参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
+| **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | 組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 
@@ -1320,6 +1320,15 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（180/180）・
   `compare_wasm_frontend` 557/557・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1174 件・拡張の wasm クレートの
   727 件が通る。VSIX を作り直した
+
+### 7-23 実装
+
+- 参照実装（`impl_python/interpreter/value.py`）の `display` が、コンテナ（list / fixed_list / dict / tuple / set）の要素を Rust の
+  `display_repr` と同じ形で並べる（`_display_repr`: str は `'...'`（エスケープなし・Rust の `'{s}'` と同じ）、例外は
+  `ValueError('…')`、ほかは `display`）。⚠ 以前は要素にも `display` を使っていて、`print(["a"])` が `[a]` になっていた
+- 効果: `compare_python_impl` で照合できる例題が 180 本 → 190 本（既知の差 10 件が一致するようになり、表から外した。新たな差は 0）。
+  残る既知の差のうち理由にこの差を挙げていた 2 件（`list_concat_repeat`・`builtin_args`）は、残る理由だけに書き直した
+- Rust 側は変えていない（参照実装の SHA 行は `2fc1e59`）
 
 ---
 

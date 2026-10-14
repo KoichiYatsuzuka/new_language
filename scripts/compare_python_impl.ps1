@@ -57,7 +57,7 @@ $knownDiff = @{
     'tuple_subscript'                = 'Rust: 添字の中の , は組になる（d[x, y] は d[(x, y)]・4-2 で新設）。py: この構文を読めず何も出さない'
     'import_namespace'               = 'Rust と py で名前空間の分離は一致（6 行目まで同じ）。py: AsyncManager が無いので非同期の節で NameError'
     'import_namespace_error'         = 'どちらも NameError（修飾なしのモジュールの名前）。py は失敗を stdout に出し、Rust は stderr に出す'
-    'builtin_args'                   = 'py: タプルの中の文字列を引用符なしで表示し（(1, x, True)）、enumerate の start を無視して 0 から数える（どちらも実行時の差。Rust 側の引数の静的検査は builtins.ars の宣言から・2026-10-01）'
+    'builtin_args'                   = 'py: enumerate の start を無視して 0 から数える（実行時の差。タプルの中の文字列の表示は 7-23 で揃えた。Rust 側の引数の静的検査は builtins.ars の宣言から・2026-10-01）'
     'builtin_args_error'             = 'Rust: 組み込み関数の引数（個数・キーワード引数の名前・型）を builtins.ars の仮引数で検査して StaticTypeError。py: 組み込みの引数を静的に検査しないので実行してしまう'
     'builtin_return_types'           = 'py: 実行時の `f is FileObject` が False（Rust は True）で raise し、組み込みの `getenv` も無い（NameError）。Rust 側は builtins.ars の宣言から組み込みの戻り値の型を取る（2026-09-30）'
     'builtin_return_types_error'     = 'Rust: 組み込みの戻り値の型（open → FileObject・repr / getenv → str）と組み込みの列挙・FileObject のメソッド（builtins.ars）で StaticTypeError。py: それらを知らず、getenv も無いので NameError で止まる'
@@ -163,24 +163,18 @@ $knownDiff = @{
     'enum_member_type_error'         = 'py: enum .value の静的型が無い（int を str 変数へ入れて実行してしまう・タスク 2.3 で新設）'
     'enum_member_is_enum_type_error' = 'Rust: 別の enum との比較・代入、インスタンスからのメンバー（m.PLANE）・型の値からの value・廃止した enum_item_Color を StaticTypeError（enum_member_type_plan.md 4-1 で新設）。py: 静的に検査せず実行して m.PLANE の AttributeError で止まる'
     'and_or_result_type_error'       = 'py: and/or の結果型検査が無い（bool 変数に int を入れて実行してしまう・タスク 2.5 で新設）'
-    'collection_elem_synthesis'      = 'py: list 内の str の表示形式が違う（py は引用符を付けない・タスク 2.7 で新設）'
     'collection_elem_synthesis_error' = 'py: 混在リテラルの要素型合成が無い（list[int] へ混在を入れて実行してしまう・タスク 2.7 で新設）'
     'except_bind_and_match_expr'     = 'py: raise した例外への line 焼き込みが未実装（0 を返す・raise_span_fields と同根・タスク 2.8 で新設）'
     'except_bind_and_match_expr_error' = 'py: except as の束縛型と組み込み例外のフィールド型が無い（str を int 変数へ入れて実行してしまう・タスク 2.8 で新設）'
     'validity_checks'                = 'py: テンプレート型変数に対する is ガードが未対応（0 を返す・タスク 3.4 で新設）'
     'validity_checks_error'          = 'py: 型ガードの型名の存在検査が無い（死んだ腕のまま実行してしまう・タスク 3.4 で新設）'
     'validity_checks_enum_error'     = 'py: enum バリアント値の静的検査が無い（未呼出関数内を見逃す・タスク 3.4 で新設）'
-    'upcast_only'                    = 'py: list 内の str の表示形式が違う（py は引用符を付けない・タスク 4.1 で新設）'
     'upcast_only_error'              = 'py: 容器の適合方向を検査しないので素通りして実行してしまう（タスク 4.1 で新設・8.1 で list[Any] → list[int] へ書き換え）'
     'arith_operand_check'            = 'py: str % int（書式化）が未実装（TypeError になる・タスク 4.4 で新設）'
     'arith_operand_check_error'      = 'py: 算術の被演算子の静的検査が無い（実行時の TypeError になる・タスク 4.4 で新設）'
     'user_cast_site_error'           = 'py: __cast__ の受理地点を絞る検査が無い（int 変数に Conv が居座ったまま実行してしまう・タスク 4.3 で新設）'
     'compound_assign_two_stage'      = 'py: str %= int（書式化）が未実装（TypeError になる・arith_operand_check と同じ理由・タスク 5.1 で新設）'
     'compound_assign_two_stage_error' = 'py: 複合代入の結果型の検査が無い（Vec 変数に str が居座ったまま実行してしまう・タスク 5.1 で新設）'
-    'block_expr_value_static'        = 'py: list 内の str の表示形式が違う（py は引用符を付けない・upcast_only と同じ理由・タスク 5.2 で新設）'
-    'subscript_static'               = 'py: dict 内の str の表示形式が違う（py は引用符を付けない・タスク 5.2b で新設）'
-    'collection_method_args'         = 'py: list/set 内の str の表示形式が違う（py は引用符を付けない・タスク 5.2c で新設）'
-    'dict_items'                     = 'py: tuple 内の str の表示形式が違う（py は引用符を付けない・items() 自体は impl_python にも在り同形・C5 で新設）'
     'collection_method_args_error'   = 'py: 可変長引数の要素型検査が無い（型が混ざったまま実行してしまう・タスク 5.2c で新設）'
     'new_type_ctor_arg'              = 'py: new_type の連鎖（Kg: Meters: float）が未実装で Kg(None) になる・タスク 5.6 で新設'
     'runtime_type_predicates'        = 'py: 実行時型判定の統一（uint と int の相互許容）が未実装で x is int が False になる・タスク 6.1 で新設'
@@ -296,7 +290,6 @@ $knownDiff = @{
     'swd_nested_runner'              = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     'typed_abi'                      = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     # (c) 値の表示形式（repr）の違い
-    'block_return_typecheck'         = 'py: リスト内の str を引用符なしで表示する'
     'other_typing'                   = 'py: リスト repr と一部の型推論が違う'
     'result'                         = 'py: Result の repr が違う（Ok(5.0) と 5.0）'
     # ⚠ 内包表記は Arrow の**新しいネイティブ構文**（2026-08-28）。impl_python は同期点が古く
@@ -315,11 +308,10 @@ $knownDiff = @{
     'dict_key_dunder'                = 'py 古い: 辞書が __hash__ / __eq__ を見ない（実測 len が 3 になり、続く索引が KeyError）'
     # ⚠ B5（list / tuple の + と *）で新設。**実測して確認済み**。
     #    py は list + list / list * int は対応しているが tuple + tuple が無い。
-    'list_concat_repeat'             = 'py 古い: tuple + tuple が未対応（実測 RuntimeError）。加えてリスト内の str を引用符なしで表示する'
+    'list_concat_repeat'             = 'py 古い: tuple + tuple が未対応（実測 RuntimeError）'
     'list_concat_repeat_error'       = 'py: 実行時エラーの出力形式が違う（Rust は色付きトレースバック・py は 1 行）'
     # ⚠ B6（モジュール本体からの自己呼び出し）で新設。**実測して確認済み**。
     #    py は自己呼び出し自体は正しく動く（差分は repr だけ）＝ Rust の修正が参照実装と一致した証拠。
-    'module_selfcall'                = 'py: リスト内の str を引用符なしで表示する（実測 `[hi 0, hi 1, hi 2]`）。自己呼び出し自体は py も動く'
     'module_async_body'              = 'py: AsyncManager そのものが未実装（実測 NameError）'
     # ⚠ B9（Set / Tuple の複製）で新設。**実測して確認済み**。py にも同じバグがある
     #    （代入で set が共有され `let s = {1}; mut t = s; t.add(9)` で s が {1, 9} になる）。
@@ -360,14 +352,12 @@ $knownDiff = @{
     # ⚠ フェーズ 8（要素型を捨てる経路を塞ぐ）で新設。**実測して確認済み**。
     'elem_type_kept_error'           = 'py: 型注釈の要素型を検査しないので素通りして「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.2）'
     'bare_tuple_annotation_error'    = 'py: 型注釈を捨てるので let t: tuple = 1 が通り「ここには到達しない」まで出る（Rust は StaticTypeError で停止・8.3）'
-    'bare_tuple_annotation'          = 'py: タプル内の str を引用符なしで表示する（実測 `(1, a)`）。list_concat_repeat と同じ repr の差で、タプルの受け渡し自体は py も動く'
     # ⚠ タスク 8.1（素の容器型注釈の禁止・案 A）の移行で新しく食い違った。**実測して確認済み**。
     #   どちらも以前は「実行時のフィールド型検査」を見せる例題だったが、素の `list` が
     #   書けなくなり `list[Any]` になったので **Rust は静的に停止**するようになった。
     #   py は静的検査を持たないので 1 行目から出力が出る。
     'field_class_type_error'         = 'py: フィールド代入の静的型検査が無く素通りする（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
     'field_type_runtime_error'       = 'py: 同上（Rust は 8.1 以降 StaticTypeError で停止し何も出力しない）'
-    'literal_element_check'          = 'py: リスト内の str を引用符なしで表示する（実測 `[a, b]`）。list_concat_repeat と同じ repr の差'
     # ⚠ タスク 9.9（テンプレート trait の型引数）で新設。**実測して確認済み**。
     'trait_template_args_error'      = 'py: テンプレート trait の型引数を照合しないので素通りして「ここには到達しない」まで出る（Rust は StaticTypeError で停止・9.9）'
     # ⚠ タスク 8.5（注釈の型名が実在するか）で新設。**実測して確認済み**。

@@ -718,6 +718,19 @@ def _exception_message(inst):
     return inst.field_value(idx)
 
 
+def _display_repr(v: "Value") -> str:
+    """An element inside a container, like Rust's Interpreter::display_repr (ops/display.rs).
+
+    A str is put in single quotes without escaping (Rust's `'{s}'`), an exception is ValueError('msg') (7-3),
+    anything else is shown as by display().
+    """
+    if isinstance(v, str):
+        return f"'{v}'"
+    if isinstance(v, TlInstance) and _is_exception_class(v.cls):
+        return repr(v)
+    return display(v)
+
+
 def display(v: "Value") -> str:
     """Return the user-visible string representation (like print())."""
     if v is None:
@@ -735,24 +748,26 @@ def display(v: "Value") -> str:
         return repr(v)
     if isinstance(v, str):
         return v
+    # Container elements use the element form (Rust's display_repr): a str is quoted, so print(["a"]) shows ['a'].
+    # (ffi_value_exchange_plan.md 7-23: it used to print [a], which made every such example a known difference.)
     if isinstance(v, TlFixedList):
-        return "[" + ", ".join(display(x) for x in v.items) + "]"
+        return "[" + ", ".join(_display_repr(x) for x in v.items) + "]"
     if isinstance(v, TlList):
-        return "[" + ", ".join(display(x) for x in v.items) + "]"
+        return "[" + ", ".join(_display_repr(x) for x in v.items) + "]"
     if isinstance(v, TlDict):
         pairs = ", ".join(
-            f"{display(k)}: {display(val)}"
+            f"{_display_repr(k)}: {_display_repr(val)}"
             for k, val in zip(v.keys, v.values)
         )
         return "{" + pairs + "}"
     if isinstance(v, TlTuple):
         if len(v.values) == 1:
-            return f"({display(v.values[0])},)"
-        return "(" + ", ".join(display(x) for x in v.values) + ")"
+            return f"({_display_repr(v.values[0])},)"
+        return "(" + ", ".join(_display_repr(x) for x in v.values) + ")"
     if isinstance(v, TlSet):
         if not v.items:
             return "set()"
-        return "{" + ", ".join(display(x) for x in v.items) + "}"
+        return "{" + ", ".join(_display_repr(x) for x in v.items) + "}"
     if isinstance(v, TlInstance):
         cls = v.cls
         if cls.new_type_base is not None:
