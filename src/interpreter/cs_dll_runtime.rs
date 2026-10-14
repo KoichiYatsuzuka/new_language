@@ -26,7 +26,6 @@
 // The slots are laid out from the stub's declared types, and what each declared type may receive is decided
 // in `super::cs_values` (shared with cs-proc · ffi_value_exchange_plan.md 2-1).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,13 +34,15 @@ use super::cs_values::{self, CsKind};
 use super::Value;
 
 // ---------------------------------------------------------------------------
-// Thread-local bridge registry
+// Process-wide bridge registry
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    /// Loaded bridge DLLs, keyed by their canonical path.
-    static CS_BRIDGES: RefCell<HashMap<PathBuf, Arc<BridgeLib>>> =
-        RefCell::new(HashMap::new());
+/// Loaded bridge DLLs, keyed by their canonical path. ⚠ Process-wide (ffi_value_exchange_plan.md 6-2): it used to be
+/// thread-local, so an async task's worker thread found no bridge — a static method / constructor call then fell
+/// through to the stub body and returned None silently. A loaded DLL is the same for every thread.
+fn bridges() -> &'static std::sync::Mutex<HashMap<PathBuf, Arc<BridgeLib>>> {
+    static CS_BRIDGES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<BridgeLib>>>> = std::sync::OnceLock::new();
+    CS_BRIDGES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 // ---------------------------------------------------------------------------
@@ -116,28 +117,26 @@ impl BridgeLib {
 pub fn load_bridge(path: &Path) -> Result<Arc<BridgeLib>, String> {
     let canon = path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf());
-    CS_BRIDGES.with(|m| {
-        let mut map = m.borrow_mut();
-        if let Some(existing) = map.get(&canon) {
-            return Ok(Arc::clone(existing));
-        }
-        let bridge = BridgeLib::load(path)?;
-        // ar_event_fire は arrow.exe 内のシンボルで DLL 側からは解決できないため、
-        // ブリッジが `arrow_bridge_set_event_fire` をエクスポートしていれば
-        // 関数ポインタを注入する (シンボルが無い旧 DLL では何もしない)。
-        if let Some(p) = bridge.sym_ptr("arrow_bridge_set_event_fire") {
-            let setter: unsafe extern "C" fn(usize) = unsafe { std::mem::transmute(p) };
-            unsafe { setter(crate::interpreter::event_loop::ar_event_fire as *const () as usize) };
-        }
-        map.insert(canon.clone(), Arc::clone(&bridge));
-        Ok(bridge)
-    })
+    let mut map = bridges().lock().map_err(|_| "CsDll: the bridge registry is poisoned".to_string())?;
+    if let Some(existing) = map.get(&canon) {
+        return Ok(Arc::clone(existing));
+    }
+    let bridge = BridgeLib::load(path)?;
+    // ar_event_fire は arrow.exe 内のシンボルで DLL 側からは解決できないため、
+    // ブリッジが `arrow_bridge_set_event_fire` をエクスポートしていれば
+    // 関数ポインタを注入する (シンボルが無い旧 DLL では何もしない)。
+    if let Some(p) = bridge.sym_ptr("arrow_bridge_set_event_fire") {
+        let setter: unsafe extern "C" fn(usize) = unsafe { std::mem::transmute(p) };
+        unsafe { setter(crate::interpreter::event_loop::ar_event_fire as *const () as usize) };
+    }
+    map.insert(canon.clone(), Arc::clone(&bridge));
+    Ok(bridge)
 }
 
 /// Retrieve a previously loaded bridge by path.
 pub fn get_bridge(path: &Path) -> Option<Arc<BridgeLib>> {
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    CS_BRIDGES.with(|m| m.borrow().get(&canon).cloned())
+    bridges().lock().ok().and_then(|m| m.get(&canon).cloned())
 }
 
 // ---------------------------------------------------------------------------

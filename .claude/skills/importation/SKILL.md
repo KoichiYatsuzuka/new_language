@@ -593,7 +593,11 @@ fn global_bridges() -> &'static Mutex<HashMap<PathBuf, PipeConn>> {
 }
 ```
 
-`cs_proc_runtime.rs` が `thread_local!` を使うのとは異なります（どちらも中身は共有 `PipeConn`）。
+C# の登録表も同じくプロセスで 1 つです（`ffi_value_exchange_plan.md` 6-2）: cs-proc のホスト（`cs_proc_runtime::procs`）と
+cs-dll の DLL（`cs_dll_runtime::bridges`）。⚠ 以前はどちらも `thread_local!` で、非同期タスクのワーカーからは見えなかった
+（cs-proc は `bridge not launched`、cs-dll の静的メソッドとコンストラクタは型スタブの本体へ落ちて黙って `None`）。今は
+ブリッジが見つからなければ `CsDll: bridge DLL not loaded for '…'` のエラー。C# のクラスの表（`cs_values::CS_CLASSES`）は
+クラスが `Rc` なのでスレッドごとのままで、ワーカーは送られてきた値から登録し直す（`cs_values::register_task_classes`）。
 
 #### 公開 API
 

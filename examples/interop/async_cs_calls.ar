@@ -1,0 +1,65 @@
+# async_cs_calls.ar — 非同期タスクの中から C# を呼ぶ（正例・ffi_value_exchange_plan.md 6-2）
+#
+# C# のブリッジ（cs-dll の DLL・cs-proc のホスト）の登録表はプロセスで 1 つで、タスクのワーカーも同じものを使う。
+# ⚠ 6-2 より前は登録表がスレッドごとで、ワーカーからは見えなかった:
+#   - cs-dll の静的メソッドとコンストラクタは型スタブの本体へ落ち、黙って None（コンストラクタは C# のオブジェクトで
+#     ないインスタンス）になった
+#   - cs-proc は `bridge not launched` で落ちた
+# C# のオブジェクトを返すメソッドをタスクの中で呼べるよう、ワーカーは送られてきた値から C# のクラスを登録し直す。
+# C# のオブジェクトをタスクへ送ると、同じオブジェクト（同じハンドル）を指す。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll（build_bridge.ps1）と
+# examples/interop/cs_probe/cs_probe.exe・cs_probe.dll（build_cs_probe.ps1）が要る。
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+import[cs-proc] cs_probe as cp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let calc = bridge.Calculator(100.0)
+calc.Accumulate(25.0)
+let person = cp.Probe.make_person("bob")
+
+mut mng = AsyncManager(num_thread=2)
+# ── cs-dll ──────────────────────────────────────────────────────────────────
+mng <- async->int:
+    block_return bridge.Calculator.Add(2, 3)
+mng <- async->float:
+    let c = bridge.Calculator(10.0)
+    c.Accumulate(5.0)
+    block_return c.GetAccumulated()
+mng <- async->float:
+    block_return calc.GetAccumulated()
+mng <- async->str:
+    let t = bridge.TextProcessor("abc")
+    block_return t.Clone().ToUpper()
+# ── cs-proc ─────────────────────────────────────────────────────────────────
+mng <- async->str:
+    block_return cp.Probe.greet()
+mng <- async->str:
+    block_return cp.Probe.make_person("amy").hello()
+mng <- async->str:
+    block_return person.older(1).get_name()
+mng.wait_for_finish()
+
+let errors = mng.error_list
+mut i = 0
+while i < 7:
+    if errors[i] is not None:
+        print("task", i, "failed:", errors[i])
+    i = i + 1
+check("no task failed", errors == [None, None, None, None, None, None, None])
+let results = mng.results
+check("cs-dll static method in a task", results[0] == 5)
+check("cs-dll constructor in a task", results[1] == 15.0)
+check("cs-dll object made by the main thread", results[2] == 125.0)
+check("cs-dll method returning a C# object in a task", results[3] == "ABC")
+check("cs-proc static method in a task", results[4] == "hello from C#")
+check("cs-proc method returning a C# object in a task", results[5] == "I am amy")
+check("cs-proc object made by the main thread", results[6] == "bob+")
+# メインスレッドのオブジェクトはそのまま使える
+check("main thread still uses its objects", calc.GetAccumulated() == 125.0 and person.get_name() == "bob")

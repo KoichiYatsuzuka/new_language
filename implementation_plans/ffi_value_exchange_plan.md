@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜5 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・§5）・7-12・7-15・7-17・7-18 完了。フェーズ 6 着手（6-1）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-12・7-15・7-17・7-18 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -233,7 +233,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **5-4** | ✅（§5）rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
 | **5-5** | ✅（§5）cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | ✅（§5）非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
-| **6-2** | cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
+| **6-2** | ✅（§5）cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
 | **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
 | **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
 | **7-3** | 例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
@@ -252,6 +252,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-16** | C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 | **7-17** | ✅（§5）dict のキーの照合が、乱数のシード次第で型厳密でなくなる。`dict_get` / `dict_set` がキーの等値に式としての比較（`3 == 3.0` は真）を使っていた。ハッシュは型で分けているが、表の内部はハッシュの下位の手がかりが一致した別のキーにも等値を問うので、`d[3]` と `d[3.0]` が同じキーになることがあった（拡張のクレートのテスト `test_dict_keys_are_type_strict` が 5-3 のゲートで落ちて発見・およそ数回に 1 回） | なし | 小 |
 | **7-18** | ✅（§5）`len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
+| **7-19** | 非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1090,6 +1091,31 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   新しい例題は `scan_examples` が通ることを見て、基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend`
   543/543・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1159 件が通る（解釈側だけの変更なので VSIX は
+  作り直していない）
+
+### 6-2 実装
+
+- C# の登録表をプロセスで 1 つにした（js-proc と同じ `OnceLock<Mutex<HashMap>>`）: cs-dll の DLL（`cs_dll_runtime::bridges`）と
+  cs-proc のホスト（`cs_proc_runtime::procs`）。⚠ 以前はどちらも `thread_local!` で、非同期タスクのワーカーからは見えなかった。
+  基準の exe で、タスクの中の cs-dll の静的メソッドとコンストラクタが**黙って `None`** を返し（型スタブの本体 `pass` へ落ちる。
+  `async->int` のタスクの結果が `None`）、cs-proc は `bridge not launched` で落ちることを確かめた
+- cs-dll のクラスでブリッジが見つからなければエラー（`CsDll: bridge DLL not loaded for '…'`。`class_methods.rs` /
+  `instantiate.rs`）。以前は型スタブの本体へ落ちていた
+- C# のクラスの表（`cs_values::CS_CLASSES`）はクラスが `Rc` なのでスレッドごとのまま。ワーカーは送られてきた大域・変数から
+  C# のスタブのクラスを登録し直す（`cs_values::register_task_classes`。名前空間と直接束縛したクラスの両方）。無いと、タスクの中で
+  C# のオブジェクトを返すメソッドが「モジュールにそのクラスが無い」になる
+- ⚠ 調べる中で見つけた不具合: タスクへ送る値の複製（`Value::deep_clone`）に `CsObject` の分岐が無く、`other => other.clone()` で
+  `Rc`（とスタブのクラス）を共有したままワーカーへ送っていた（参照カウントは非アトミック）。ハンドル・ブリッジ・クラス名はそのまま、
+  `Rc` を別に作るようにした（単体テスト `test_deep_clone_of_cs_object_keeps_the_handle_and_shares_no_rc`）。同じ形の種類がほかにも
+  ある（`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop`）⇒ 7-19
+- ⚠ 1 つのホストへの要求は順に送る（`Mutex` を呼び出しの間持つ。js-proc と同じ）。タスクを並べても cs-proc の処理は並列にならない
+- 例題: `interop/async_cs_calls.ar`（タスクの中から cs-dll の静的メソッド・コンストラクタ・メインスレッドで作ったオブジェクト・
+  C# のオブジェクトを返すメソッド、cs-proc の静的メソッド・C# のオブジェクトを返すメソッド・メインスレッドで受け取ったオブジェクト。
+  期待値と違えば raise。基準の exe では 7 つのうち 5 つのタスクが落ち、2 つが `None`）
+- 文書: `docs/grammar/10_special_features.md`（非同期タスク）・skill `importation`
+- ゲート（基準 `9728762`・制限時間つき）: `compare_outputs` の差は新しい例題 `async_cs_calls` だけ（455/456）。`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend`
+  544/544・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1160 件が通る（解釈側だけの変更なので VSIX は
   作り直していない）
 
 ---

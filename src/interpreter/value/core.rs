@@ -383,6 +383,15 @@ impl Value {
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
             // ⚠ 共有する（コピーは同じメモリを指し、解放は最後の参照で 1 回・3-2）
             Value::Ptr(arc) => Value::Ptr(Arc::clone(arc)),
+            // C# のオブジェクトは同じハンドル（ブリッジの表はプロセスで 1 つ・6-2）。`Rc` は別に作る
+            // ⚠ 以前は下の `other => other.clone()` に落ち、`Rc`（とスタブのクラス）を共有したままワーカーへ送っていた
+            Value::CsObject(o) => Value::CsObject(Rc::new(CsObjectData {
+                class_name: o.class_name.clone(),
+                handle: o.handle,
+                bridge_path: o.bridge_path.clone(),
+                class: Rc::new(o.class.deep_clone()),
+                is_proc: o.is_proc,
+            })),
             Value::ResultVal { ok, inner } => Value::ResultVal {
                 ok: *ok,
                 inner: Box::new(inner.deep_clone()),

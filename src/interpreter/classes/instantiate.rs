@@ -50,7 +50,12 @@ impl Interpreter {
         if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
             let bp_path = std::path::PathBuf::from(&**bp);
             let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
-            if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
+            // ⚠ ブリッジが無ければエラー（6-2。以前は Arrow のスタブの `__init__` へ落ちて、C# のオブジェクトでない
+            //   インスタンスを黙って作った）
+            let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) else {
+                return Err(format!("CsDll: bridge DLL not loaded for '{class_name}'"));
+            };
+            {
                 let handle = crate::interpreter::cs_values::ctor_types(&class, arg_vals.len())
                     .and_then(|types| {
                         crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals, &types)

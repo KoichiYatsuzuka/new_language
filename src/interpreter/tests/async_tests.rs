@@ -181,3 +181,34 @@ x <- async->int:
     assert!(run(src).is_err());
 }
 
+/// タスクへ送る C# のオブジェクト（ffi_value_exchange_plan.md 6-2）。ハンドル・ブリッジ・クラス名はそのまま、`Rc`
+/// （外側とスタブのクラス）は別に作る。⚠ 以前は `deep_clone` の `other => other.clone()` に落ち、`Rc` を共有したまま
+/// ワーカーへ送っていた（参照カウントは非アトミックなので、スレッドをまたぐと壊れうる）。
+#[test]
+fn test_deep_clone_of_cs_object_keeps_the_handle_and_shares_no_rc() {
+    use std::rc::Rc;
+    let interp = run_interp("class Person:
+    pass
+");
+    let class = match interp.get_val("Person") {
+        Some(Value::Class(c)) => c,
+        other => panic!("expected the class Person, got {other:?}"),
+    };
+    let original = Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
+        class_name: "Person".to_string(),
+        handle: 42,
+        bridge_path: std::path::PathBuf::from("bridge.dll"),
+        class,
+        is_proc: true,
+    }));
+    let cloned = original.deep_clone();
+    let (a, b) = match (&original, &cloned) {
+        (Value::CsObject(a), Value::CsObject(b)) => (a, b),
+        _ => panic!("expected Value::CsObject on both sides"),
+    };
+    assert_eq!((b.handle, b.class_name.as_str(), b.is_proc), (42, "Person", true));
+    assert_eq!(b.bridge_path, a.bridge_path);
+    assert_eq!(b.class.name, a.class.name);
+    assert!(!Rc::ptr_eq(a, b), "deep_clone shared the CsObject Rc");
+    assert!(!Rc::ptr_eq(&a.class, &b.class), "deep_clone shared the stub class Rc");
+}

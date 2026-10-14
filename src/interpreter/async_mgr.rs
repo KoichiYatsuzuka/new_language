@@ -299,6 +299,10 @@ fn run_task(
     }
 
     let mut interp = Interpreter::new();
+    // C# のクラスの表はスレッドごと（クラスが `Rc`）なので、送られてきた値から登録し直す（6-2）
+    crate::interpreter::cs_values::register_task_classes(
+        env.globals.iter().flatten().chain(env.vars.iter()).map(|(_, v, _)| v),
+    );
     // 各モジュールの大域を同じ添字に置き、タスクを出したコードの大域へ切り替える（`TaskEnv` の doc）。
     interp.install_task_globals(env.globals, env.cur_globals);
     interp.current_class = env.class_ctx.map(std::rc::Rc::new);

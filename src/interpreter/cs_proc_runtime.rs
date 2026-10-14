@@ -14,7 +14,6 @@
 //
 // What each declared type may receive is decided in `super::cs_values` (shared with cs-dll · plan 2-1).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -40,10 +39,14 @@ fn launch(proc_path: &Path) -> Result<PipeConn, String> {
     PipeConn::connect(child, &pipe_name, TAG)
 }
 
-// ── Thread-local proc registry ───────────────────────────────────────────────
+// ── Process-wide proc registry ───────────────────────────────────────────────
 
-thread_local! {
-    static CS_PROCS: RefCell<HashMap<PathBuf, PipeConn>> = RefCell::new(HashMap::new());
+/// The hosts, keyed by their canonical path. ⚠ Process-wide (ffi_value_exchange_plan.md 6-2, like js-proc): it used to
+/// be thread-local, so a call from an async task failed with `bridge not launched`. One host serves every thread; the
+/// mutex serialises the requests on its pipe.
+fn procs() -> &'static std::sync::Mutex<HashMap<PathBuf, PipeConn>> {
+    static CS_PROCS: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, PipeConn>>> = std::sync::OnceLock::new();
+    CS_PROCS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 /// Launch (and cache) a proc bridge for the given executable path.
@@ -51,15 +54,13 @@ pub fn launch_proc(proc_path: &Path) -> Result<(), String> {
     let canon = proc_path
         .canonicalize()
         .unwrap_or_else(|_| proc_path.to_path_buf());
-    CS_PROCS.with(|m| {
-        let mut map = m.borrow_mut();
-        if map.contains_key(&canon) {
-            return Ok(());
-        }
-        let bridge = launch(proc_path)?;
-        map.insert(canon, bridge);
-        Ok(())
-    })
+    let mut map = procs().lock().map_err(|_| format!("{TAG}: the host registry is poisoned"))?;
+    if map.contains_key(&canon) {
+        return Ok(());
+    }
+    let bridge = launch(proc_path)?;
+    map.insert(canon, bridge);
+    Ok(())
 }
 
 // ── Public call API ──────────────────────────────────────────────────────────
@@ -148,13 +149,11 @@ where
     let canon = proc_path
         .canonicalize()
         .unwrap_or_else(|_| proc_path.to_path_buf());
-    CS_PROCS.with(|m| {
-        let mut map = m.borrow_mut();
-        let bridge = map.get_mut(&canon).ok_or_else(|| {
-            format!("{TAG}: bridge not launched for '{}'", proc_path.display())
-        })?;
-        f(bridge)
-    })
+    let mut map = procs().lock().map_err(|_| format!("{TAG}: the host registry is poisoned"))?;
+    let bridge = map.get_mut(&canon).ok_or_else(|| {
+        format!("{TAG}: bridge not launched for '{}'", proc_path.display())
+    })?;
+    f(bridge)
 }
 
 // ── Encoding / decoding ──────────────────────────────────────────────────────

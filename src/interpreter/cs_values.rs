@@ -47,6 +47,41 @@ pub(crate) fn register_classes(bridge: &Path, ns: &NamespaceData) {
     });
 }
 
+/// 非同期タスクのワーカーで、送られてきた値の中の C# のクラスを登録し直す（6-2）。
+/// ⚠ クラスは `Rc` なので表はスレッドごと。ワーカーは自分の複製から作る（無いと、タスクの中で C# のオブジェクトを
+///   受け取るとき「モジュールにそのクラスが無い」になる）。名前空間（`import[cs-*] m as x`）と、直接束縛したクラス
+///   （`from m import[cs-*] C`）の両方を見る。
+pub(crate) fn register_task_classes<'a>(values: impl Iterator<Item = &'a Value>) {
+    for v in values {
+        match v {
+            Value::Namespace(ns) => {
+                if let Some(path) = ns.members.values().find_map(|m| match m {
+                    Value::Class(c) => bridge_path_of(c),
+                    _ => None,
+                }) {
+                    register_classes(&path, ns);
+                }
+            }
+            Value::Class(c) => {
+                if let Some(path) = bridge_path_of(c) {
+                    CS_CLASSES.with(|m| {
+                        m.borrow_mut().entry(canon(&path)).or_default().insert(c.name.clone(), c.clone());
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// C# のスタブのクラスなら、そのブリッジのパス（`__cs_bridge_path__` / `__cs_proc_path__`）。
+fn bridge_path_of(c: &ClassValue) -> Option<PathBuf> {
+    match c.class_vars.get("__cs_bridge_path__").or_else(|| c.class_vars.get("__cs_proc_path__")) {
+        Some(Value::Str(p)) => Some(PathBuf::from(&**p)),
+        _ => None,
+    }
+}
+
 fn lookup_class(bridge: &Path, name: &str) -> Option<Rc<ClassValue>> {
     CS_CLASSES.with(|m| m.borrow().get(&canon(bridge)).and_then(|cs| cs.get(name).cloned()))
 }

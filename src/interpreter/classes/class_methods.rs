@@ -43,7 +43,11 @@ impl Interpreter {
             let bp_path = std::path::PathBuf::from(&**bp);
             let class_name = cls.name.clone();
             let (param_types, ret_type) = crate::interpreter::cs_values::method_types(&cls, method_name);
-            if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
+            // ⚠ ブリッジが無ければエラー（6-2。以前はスタブの本体 `pass` へ落ちて黙って None を返した）
+            let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) else {
+                return Err(format!("CsDll: bridge DLL not loaded for '{class_name}'"));
+            };
+            {
                 let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 return crate::interpreter::cs_dll_runtime::call_static(
                     &bridge,

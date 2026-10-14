@@ -121,7 +121,11 @@ let results = mng.results
 
 **外部言語の関数**: タスクの中からも呼べます。読み込んだ DLL の表はタスクのインタプリタへ渡します
 （`implementation_plans/ffi_value_exchange_plan.md` 6-1。以前はタスクの中で初めて呼ぶ C の関数が
-`native library not loaded` になっていました）。
+`native library not loaded` になっていました）。C# のブリッジ（cs-dll の DLL・cs-proc のホスト）と js-proc の
+ホストは、プロセスで 1 つのものをすべてのスレッドで使います（6-2。以前の C# の表はスレッドごとで、タスクの中の
+cs-dll の静的メソッドとコンストラクタは黙って `None` になり、cs-proc は `bridge not launched` で落ちていました）。
+C# のオブジェクトをタスクへ送ると、同じオブジェクト（同じハンドル）を指します。
+⚠ 1 つのホストへの要求は 1 つずつ順に送ります（タスクを並べても cs-proc / js-proc の処理は並列になりません）。
 
 ---
 
