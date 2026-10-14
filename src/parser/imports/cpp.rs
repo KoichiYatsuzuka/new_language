@@ -103,13 +103,49 @@ impl Parser {
                 // Generate Stmt::ClassDef stubs for C structs so the type checker
                 // knows about their fields.
                 for sdef in &struct_defs {
+                    // 中身の見えない構造体（前方宣言だけの `Db`）は `Ptr[Db]` の要素として型の名前になる（4-3）。
+                    // Arrow から作ることはできない（`__init__` に印。実行時のモジュールにもクラスは無い）。
+                    if sdef.fields.is_empty() {
+                        let name = &sdef.name;
+                        let reason = format!(
+                            "struct `{name}` is opaque (the header does not show its fields); the C side creates it and Arrow passes it as Ptr[{name}]"
+                        );
+                        stmts.push(Stmt::ClassDef { src: None,
+                            name: name.clone(),
+                            template_params: vec![],
+                            bases: vec![],
+                            base_args: vec![],
+                            decorators: vec![],
+                            body: vec![Stmt::FnDef { src: None,
+                                name: "__init__".to_string(),
+                                template_params: vec![],
+                                params: vec![Param {
+                                    name: "self".to_string(),
+                                    mutable: true,
+                                    type_ann: None,
+                                    default: None,
+                                    variadic: false,
+                                }],
+                                return_type: None,
+                                body: vec![Stmt::Expr(Expr::Str(
+                                    format!("{}{reason}", crate::cpp_header::FFI_UNSUPPORTED_MARK).into(),
+                                ))],
+                                is_abstract: true,
+                                is_static: false,
+                                is_class_method: false,
+                                decorators: vec![],
+                                access: Accessibility::Public,
+                            }],
+                        });
+                        continue;
+                    }
                     let field_stmts = sdef
                         .fields
                         .iter()
                         .map(|(fname, fct)| Stmt::Field { src: None,
                             name: fname.clone(),
                             kind: FieldKind::Mut,
-                            type_ann: ctype_to_tl_str(fct),
+                            type_ann: ctype_to_tl_str(fct, super::CPos::Field, &struct_defs),
                             default: None,
                             access: Accessibility::Public,
                         })
@@ -135,7 +171,7 @@ impl Parser {
                         )],
                         None => vec![],
                     };
-                    let ret_str = ctype_to_tl_str(&sig.ret);
+                    let ret_str = ctype_to_tl_str(&sig.ret, super::CPos::Return, &struct_defs);
                     let params: Vec<Param> = sig
                         .params
                         .into_iter()
@@ -145,13 +181,16 @@ impl Parser {
                             // 「不変（`let`）変数を出力ポインタへ渡す」誤りを静的に捕捉する
                             // （P5 — .claude/skills/c-abi-interop/SKILL.md。従来は実行時 TypeError のみ）。
                             // ⚠ 未対応の関数には求めない（呼ぶこと自体が誤りなので、エラーを重ねない）。
+                            // ⚠ 構造体ポインタは、インスタンスを渡して書き戻す（正確なレイアウトの）ものだけ。レイアウトの
+                            //   分からない構造体ポインタは `Ptr` を渡し、何も書き戻さない（4-3）。
+                            let exact = |name: &str| struct_defs.iter().any(|d| d.name == name && d.has_exact_layout());
                             let writable_ref = unsupported.is_none()
-                                && matches!(
-                                    &ct,
-                                    CType::Ptr { mutable: true, .. }
-                                        | CType::OpaqueStructPtr { mutable: true, .. }
-                                );
-                            Param::bridge(pname, Some(ctype_to_tl_str(&ct)), writable_ref)
+                                && match &ct {
+                                    CType::Ptr { mutable: true, .. } => true,
+                                    CType::OpaqueStructPtr { mutable: true, type_name } => exact(type_name),
+                                    _ => false,
+                                };
+                            Param::bridge(pname, Some(ctype_to_tl_str(&ct, super::CPos::Param, &struct_defs)), writable_ref)
                         })
                         .collect();
                     stmts.push(Stmt::FnDef { src: None,

@@ -1,0 +1,57 @@
+# cpp_raw_pointers.ar — C の生のポインタを受け渡す既定の規則（正例・ffi_value_exchange_plan.md 4-3・D-7・D-8・D-9・D-13）
+#
+#   - `char*` / `wchar_t*` の戻り値 → `Option[bytes]`（NUL 終端の借用をコピーする。`wchar_t` は UTF-16LE）。
+#     文字列にするには文字コードを書く（`b.decode("utf-8")`）
+#   - ほかのポインタの戻り値 → 借用の `Option[Ptr[T]]`（`void*` は `Ptr[void]`、構造体は `Ptr[構造体名]`）。Arrow は解放しない
+#   - `void*` / 中身の見えない構造体ポインタの引数 → `Ptr`（渡し返す）か `None`（NULL）
+#   - `const char*` の引数 → `bytes` か `None`（`str` は静的エラー・cpp_cstring_str_arg_error.ar）
+#   - NULL は `None`
+# ⚠ 4-3 より前は、どの関数も使えなかった（ポインタを返す・`void*` を受ける・中身の見えない構造体ポインタを受ける）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_ptr_arg_error.ar・cpp_cstring_str_arg_error.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 文字列の戻り値は bytes ──────────────────────────────────────────────────────
+let greet = fp.fp_greet()
+print(greet)
+check("char* return is bytes", greet == "hello from C".encode())
+let u = fp.fp_utf8()
+check("decode with the encoding", u is bytes and (u mustbe bytes).decode("utf-8") == "日本語")
+check("NULL is None", fp.fp_null() is None)
+let w = fp.fp_wide()
+check("wchar_t* return is UTF-16LE bytes", w is bytes and (w mustbe bytes).decode("utf-16-le") == "wide")
+check("const char* takes bytes", fp.fp_echo("abc".encode()) == "abc".encode())
+check("None is NULL", fp.fp_len(None) == -1)
+
+# ── ほかのポインタは Ptr（借用）─────────────────────────────────────────────────
+let h = fp.fp_handle_new()
+print(h)
+check("void* round trip", fp.fp_handle_get(h) == 4242)
+check("None for void*", fp.fp_handle_get(None) == -1)
+let db = fp.fp_db_open("named".encode())
+print(db)
+check("opaque struct pointer round trip", fp.fp_db_count(db) == 5)
+check("Ptr[Db] can go to a void* parameter", fp.fp_handle_get(db) == -1)
+check("is Ptr[Db]", db is Ptr[Db] and not (db is Ptr[Rec]))
+fp.fp_db_close(db)
+let r = fp.fp_rec_static()
+check("struct pointer return is Ptr[Rec]", r is Ptr[Rec])
+
+# ── 静的に照合されない経路で、要素型の合わない Ptr を渡すと TypeError（C の関数は呼ばない）───────────────
+fn call(let f: function, let arg: Any) -> Any:
+    return f(arg)
+
+mut message = ""
+try:
+    print("unreachable:", call(fp.fp_db_count, h))
+except TypeError as e:
+    message = e.message
+check("Ptr[void] to Db* -> TypeError (" + message + ")", message != "")

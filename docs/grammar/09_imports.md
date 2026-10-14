@@ -416,14 +416,30 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   です。受け取るときは C の型の幅と符号どおりに広げ（Windows の `long` は 4 バイト）、渡すときは C の型の幅に
   切り詰めます（C の暗黙の変換と同じ）
 - `unsigned long long`（`uint64_t` / `size_t`）の 2^63 以上は Arrow の `int` に入らないので `OverflowError` になります
-- `bool` は `bool`、`float` / `double` は `float`、`const char*` の引数は `str`（UTF-8・NUL を含むとエラー）です
+- `bool` は `bool`、`float` / `double` は `float` です
+- **生のポインタ**（`implementation_plans/ffi_value_exchange_plan.md` D-7・D-8・D-9・D-13）:
+
+  | C | Arrow |
+  |---|---|
+  | `char*` / `wchar_t*` の戻り値 | `Option[bytes]`（NUL 終端の借用をコピー。`wchar_t` は UTF-16LE。文字列にするには `b.decode("utf-8")` など） |
+  | ほかのポインタの戻り値（`void*`・構造体ポインタ・`int*`） | 借用の `Option[Ptr[T]]`（`void*` は `Ptr[void]`、構造体は `Ptr[構造体名]`、`int*` は `Ptr[int32]`。Arrow は解放しない） |
+  | `const char*` の引数 | `bytes` か `None`（NUL を含むと `ValueError`）。**`str` は静的エラー**: ライブラリの文字コードで `s.encode("utf-8")` / `s.encode("cp932")` |
+  | `void*` の引数 | どの `Ptr` でも、または `None` |
+  | 構造体ポインタの引数 | 正確なレイアウトの構造体はインスタンス（書き戻しあり）。前方宣言だけの構造体は `Ptr[構造体名]` か `None` |
+  | 数値の書き込みポインタ（`int*` / `double*`）の引数 | 名前つきの `mut` 変数（呼び出しの後で書き戻す） |
+  | NULL | `None` |
+
+  ⚠ 4-3 より前は `const char*` が `str` を受けて黙って UTF-8 で渡し、ポインタを返す関数・`void*` を受ける関数は使えなかった
+  （`examples/interop/cpp_raw_pointers.ar`・`cpp_cstring_arg.ar`）。前方宣言だけの構造体（`typedef struct Db Db;`）は、
+  型の名前としてだけ使える（Arrow から作ることはできない）
 - 数値・`bool` の引数に合わない値（`None`・`str`・`list` …）が届いたら `TypeError` で、C の関数は呼ばれません。静的な
   検査が止めない経路（素の `function` 型を通した呼び出しなど）でも同じです（`examples/interop/cpp_native_arg_check.ar`）。
   `float` → `int` の切り捨てと `bool` → 0 / 1 は C の暗黙の変換のままです。Rust の crate（`[rs]`）も同じです
 - 配列・文字データ・所有権のあるメモリは `PtrProtocol` で受け渡します（[ptr_protocol.md](../ptr_protocol.md)。
   共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`）
-- 今の Arrow から正しく受け渡せない関数（ポインタを返す・`void*` を受ける・レイアウトの分からない構造体を値で
-  受け渡す など）は、使った箇所が静的エラーになります
+- 今の Arrow から正しく受け渡せない関数（`char*` の出力バッファ・`wchar_t*` の引数・`const int*` などの配列の引数・
+  関数ポインタ・レイアウトの分からない構造体を値で受け渡す・ヘッダが構造体と宣言していない名前（解決できない typedef）への
+  ポインタ・`ArPtrProtocol` を受け渡す など）は、使った箇所が理由つきの静的エラーになります
 
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応

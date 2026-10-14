@@ -722,6 +722,103 @@ extern "C" fn ar_pending_error() -> i32 {
     STATE.with(|s| s.borrow().error.is_some() as i32)
 }
 
+/// `char*` / `wchar_t*` の戻り値（4-3・D-9）。`len` バイトを `bytes` へコピーする（借用なので解放しない・D-7）。
+extern "C" fn ar_make_bytes(ptr: *const u8, len: i64) -> i64 {
+    if len < 0 || (ptr.is_null() && len > 0) {
+        set_argument_error(format!("RuntimeError: invalid byte string from native code (len {len})"));
+        return TL_NONE;
+    }
+    // SAFETY: 中継コードが NUL 終端の長さ（`wchar_t` は 2 倍）を数えて渡す。長さ 0 は NULL でも空。
+    let data = if len == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec() };
+    push_handle(Value::bytes(data))
+}
+
+/// ポインタの戻り値（4-3・D-7・D-8）。借用の `Ptr[elem]`（Arrow は解放しない）。NULL は `None`。
+/// ⚠ DLL への参照は持たせない: C の DLL は中継 DLL が `LoadLibrary` したまま解放しないので、プロセスが終わるまで
+///   アンロードされない（`PtrProtocol` の解放関数を持つ所有の `Ptr` は 4-5 で扱う）。
+extern "C" fn ar_make_ptr(address: u64, elem: *const u8, elem_len: i32) -> i64 {
+    if address == 0 {
+        return TL_NONE;
+    }
+    let Some(elem) = native_str(elem, elem_len, "pointer element type") else { return TL_NONE };
+    match crate::interpreter::PtrHandle::new(address, elem, 0, None, crate::interpreter::PtrOwner::Borrowed, None) {
+        Ok(h) => push_handle(Value::Ptr(std::sync::Arc::new(h))),
+        Err(e) => {
+            set_argument_error(e);
+            TL_NONE
+        }
+    }
+}
+
+/// `const char*` の引数（4-3・D-13）。`bytes` は NUL を付けたコピー（最外のネイティブ呼び出しが終わるまで有効）、
+/// `None` は NULL（D-8）。`str` は文字コードを書かせるためにエラー（黙って UTF-8 にしない）。NUL を含む `bytes` は
+/// C の側で途中で切れるのでエラー。誤りは `pending_error` で拾われ、C の関数は呼ばれない（7-12）。
+extern "C" fn ar_bytes_arg(h: i64) -> *const u8 {
+    let v = clone_value_at(h);
+    let data = match v {
+        Value::Bytes(b) => b,
+        Value::None => return std::ptr::null(),
+        Value::Str(_) => {
+            set_argument_error(
+                "TypeError: a C string (`const char*`) parameter needs bytes, not 'str'; encode it (e.g. s.encode(\"utf-8\"))"
+                    .to_string(),
+            );
+            return std::ptr::null();
+        }
+        other => {
+            set_argument_error(format!(
+                "TypeError: a C string (`const char*`) parameter needs bytes, not '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+            ));
+            return std::ptr::null();
+        }
+    };
+    if data.contains(&0) {
+        set_argument_error(
+            "ValueError: bytes passed to a C string (`const char*`) parameter must not contain NUL (the C side would cut it there)"
+                .to_string(),
+        );
+        return std::ptr::null();
+    }
+    STATE.with(|s_tls| {
+        let mut st = s_tls.borrow_mut();
+        let mut buf = data.to_vec();
+        buf.push(0u8);
+        st.cstr_bufs.push(buf);
+        st.cstr_bufs.last().unwrap().as_ptr()
+    })
+}
+
+/// `void*` / 構造体ポインタの引数（4-3・D-3・D-8）。`Ptr` のアドレスか、`None` の 0。要素型は作られたときの型で照合する
+/// （`void` はどの `Ptr` も受ける）。解放済み・C の側で解放済みの `Ptr` はエラー。
+extern "C" fn ar_ptr_arg(h: i64, elem: *const u8, elem_len: i32) -> u64 {
+    let Some(elem) = native_str(elem, elem_len, "pointer element type") else { return 0 };
+    match clone_value_at(h) {
+        Value::None => 0,
+        v @ Value::Ptr(_) => {
+            let Value::Ptr(p) = &v else { unreachable!() };
+            if crate::interpreter::value::ptr_ann_matches(&format!("Ptr[{elem}]"), &v) != Some(true) {
+                set_argument_error(format!(
+                    "TypeError: a `{elem}*` parameter needs a Ptr[{elem}] (or Ptr[void] for void*), not Ptr[{}]",
+                    p.elem_type()
+                ));
+                return 0;
+            }
+            p.address().unwrap_or_else(|e| {
+                set_argument_error(e);
+                0
+            })
+        }
+        other => {
+            set_argument_error(format!(
+                "TypeError: a `{elem}*` parameter needs a Ptr or None, not '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+            ));
+            0
+        }
+    }
+}
+
 /// ハンドルの値の型名（エラーの表示用）。⚠ `None` / `True` / `False` / 小さい整数はアリーナに入らず番号で表す
 /// （`push_value`）ので、番号で見分けてからアリーナを引く。
 fn handle_type_name(h: i64) -> String {
@@ -1046,6 +1143,10 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     fn_trampoline: ar_fn_trampoline,
     to_bool: ar_to_bool,
     pending_error: ar_pending_error,
+    make_bytes: ar_make_bytes,
+    make_ptr: ar_make_ptr,
+    bytes_arg: ar_bytes_arg,
+    ptr_arg: ar_ptr_arg,
 };
 
 #[cfg(test)]
@@ -1131,6 +1232,55 @@ mod tests {
         assert!(take_error().is_some_and(|e| e.contains("must be a bool") && e.contains("'int'")));
         assert_eq!(ar_to_bool(TL_NONE), 0);
         assert!(take_error().is_some_and(|e| e.contains("NoneType")));
+    }
+
+    /// `char*` の戻り値は bytes、ほかのポインタは借用の Ptr、NULL は None（4-3）。
+    #[test]
+    fn raw_pointer_returns() {
+        let text = b"hi\0";
+        let h = ar_make_bytes(text.as_ptr(), 2);
+        assert!(matches!(clone_value_at(h), Value::Bytes(b) if &*b == b"hi"));
+        assert!(matches!(clone_value_at(ar_make_bytes(std::ptr::null(), 0)), Value::Bytes(b) if b.is_empty()));
+        assert_eq!(ar_make_ptr(0, b"void".as_ptr(), 4), TL_NONE);
+        let p = ar_make_ptr(0x1000, b"Db".as_ptr(), 2);
+        match clone_value_at(p) {
+            Value::Ptr(p) => {
+                assert_eq!(p.elem_type(), "Db");
+                assert!(p.release().unwrap_err().contains("borrowed"), "Arrow never frees a raw pointer");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(take_error().is_none());
+    }
+
+    /// `const char*` の引数は bytes か None。str・NUL を含む bytes はエラー（4-3・D-13）。
+    #[test]
+    fn bytes_arg_takes_bytes_or_none() {
+        let b = push_handle(Value::bytes(b"abc".to_vec()));
+        let p = ar_bytes_arg(b);
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes(), b"abc");
+        assert!(ar_bytes_arg(TL_NONE).is_null());
+        assert!(take_error().is_none(), "None is NULL, not an error");
+        let s = ar_make_str(b"abc".as_ptr(), 3);
+        assert!(ar_bytes_arg(s).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("needs bytes, not 'str'") && e.contains("encode")));
+        let nul = push_handle(Value::bytes(b"a\0b".to_vec()));
+        assert!(ar_bytes_arg(nul).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("NUL")));
+    }
+
+    /// `void*` / 構造体ポインタの引数は Ptr（要素型を照合）か None（4-3）。
+    #[test]
+    fn ptr_arg_checks_the_element_type() {
+        let db = ar_make_ptr(0x2000, b"Db".as_ptr(), 2);
+        assert_eq!(ar_ptr_arg(db, b"Db".as_ptr(), 2), 0x2000);
+        assert_eq!(ar_ptr_arg(db, b"void".as_ptr(), 4), 0x2000, "any Ptr goes to void*");
+        assert_eq!(ar_ptr_arg(TL_NONE, b"Db".as_ptr(), 2), 0);
+        assert!(take_error().is_none());
+        assert_eq!(ar_ptr_arg(db, b"File".as_ptr(), 4), 0);
+        assert!(take_error().is_some_and(|e| e.contains("Ptr[File]") && e.contains("Ptr[Db]")));
+        assert_eq!(ar_ptr_arg(push_handle(Value::Int(1 << 40)), b"void".as_ptr(), 4), 0);
+        assert!(take_error().is_some_and(|e| e.contains("needs a Ptr or None") && e.contains("'int'")));
     }
 
     /// 名前を受け取るコールバックも同じ検査を通る（不正なら呼び出しのエラー）。

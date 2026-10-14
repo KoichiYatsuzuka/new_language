@@ -1,5 +1,10 @@
-#stamp 7b56128aa8badbe5
+#stamp bf0be9b41ce4d717
+fp_greet
+fp_echo
+fp_utf8
+fp_null
 fp_len
+fp_wide
 fp_make_rec
 fp_rec_score_val
 fp_make_pair
@@ -7,6 +12,7 @@ fp_pair_sum
 fp_make_vec3
 fp_vec3_sum
 fp_rec_score
+fp_rec_static
 fp_make_rgba
 fp_rgba_sum
 fp_u32_max
@@ -25,6 +31,11 @@ fp_i16_out
 fp_long_out
 fp_u64_out
 fp_make_u64box
+fp_handle_new
+fp_handle_get
+fp_db_open
+fp_db_count
+fp_db_close
 fp_count_int
 fp_count_flag
 fp_count_double

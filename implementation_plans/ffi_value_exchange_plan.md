@@ -204,7 +204,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **3-3** | ✅ 型検査（§5）: `Ptr[T]` を組み込みのジェネリック型として宣言（コンストラクタなし・`fixed_list[T]` と同じ置き方）。`to_list() -> list[T]`、`to_bytes() -> bytes`（要素が文字型のときだけ。それ以外は静的エラー）。ハンドルの引数に `mut` を要求しない。`Ptr[void]` → `Ptr[T]` の検査付き変換 | 3-2 | 中 |
 | **4-1** | ✅（§5）`PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ✅（§5）ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
-| **4-3** | 生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
+| **4-3** | ✅（§5）生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
 | **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | 構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
@@ -227,6 +227,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
+| **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -705,6 +706,41 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（172/172・新しい例題は既知の差分）・`compare_import_paths`
   13/13・`compare_wasm_frontend` 521/521・`type_obligations` 退行なし・`check_ptr_protocol` 一致・`stale_doc_refs` 0 件。
   `cargo test` 1124 件が通る。VSIX を作り直した
+
+### 4-3 実装
+
+- 型スタブ（`ctype_to_tl_str` が位置（引数・戻り値・フィールド）を受けるようにした）: `char*` / `wchar_t*` → `Option[bytes]`、
+  ほかのポインタの戻り値・`void*` の引数・レイアウトの分からない構造体ポインタの引数 → `Option[Ptr[T]]`（`T` は
+  `CType::ptr_elem_name`: `void` / 構造体名 / `int32` など）。数値の書き込みポインタの引数は従来どおり指す先の型、正確な
+  レイアウトの構造体ポインタの引数は `Any`（インスタンス）
+- 実行時（ハンドル経路の中継コード）: コールバックを 4 つ足した（`make_bytes` / `make_ptr` / `bytes_arg` / `ptr_arg`・表の
+  40〜43）。`char*` の戻り値は NUL までをコピーした `bytes`（`wchar_t*` は UTF-16LE）、ほかのポインタの戻り値は借用の
+  `Ptr[T]`（Arrow は解放しない）、NULL は `None`。`const char*` の引数は `bytes` か `None`（`str`・NUL を含む `bytes` は
+  エラーで C の関数を呼ばない）、`void*` / 構造体ポインタの引数は要素型の合う `Ptr` か `None`。⚠ 型つき経路での
+  `Ptr` / `bytes` の受け渡しは 4-4（`char*` / `void*` を含む関数は型つき経路に載らないのでハンドル経路で動く）
+- D-13: `const char*` へ `str` を渡すと静的エラーで、文面が `.encode(...)` を促す（`CallArgTypeMismatch` の文面）
+- 構造体として宣言された名前だけを `Ptr[T]` にする: 前方宣言（`typedef struct Db Db;` / `struct Db;`）を集めて、中身の無い
+  構造体の定義として持つ。宣言の無い名前（解決できない typedef）へのポインタは理由つきで使えない。⚠ 実装中に DxLib の
+  `const TCHAR*` が「構造体 `TCHAR` へのポインタ」に見えて `Ptr[TCHAR]` を受ける関数になってしまうのを見つけて止めた
+  （`TCHAR` は Windows の `tchar.h` の typedef で、実は C の文字列）。`struct Name*` の `struct` も外して突き合わせる
+- 中身の見えない構造体は、型スタブにフィールドの無いクラスとして置く（`Ptr[Db]` の名前になる。Arrow から作ると理由つきの
+  静的エラー）。実行時のクラスは作らない
+- レイアウトの分からない構造体ポインタの引数は、`Ptr` を渡すので `mut` を要求しない（書き戻すのは正確なレイアウトの
+  インスタンスだけ）。`Option[Ptr[T]]` の `let` も `mut` の仮引数へ渡せる（`mut_arg_exempt`）
+- ⚠ 直ったもの: ハンドル経路は構造体ポインタの引数に Arrow 内部のハンドル番号をそのままポインタとして渡していた
+  （skill `c-abi-interop` P7 の残課題・落ちうる）。今は `ptr_arg` が `Ptr` 以外をエラーにする
+- 移行: `cpp_cstring_arg.ar` / `cpp_cstring_nul_error.ar`（`str` → `bytes`）、`cpp_unsupported_signature_error.ar`（使えるように
+  なった関数を外した）、DxLib の実用例の文字列の引数を `.encode("cp932")` に（⚠ 実用例は `TCHAR` などのため今は動かない・
+  ⇒ 7-13）
+- 例題: `interop/cpp_raw_pointers.ar`（期待値と違えば raise）・`cpp_cstring_str_arg_error.ar`・`cpp_ptr_arg_error.ar`。
+  単体テスト 6 本（コールバック 3・前方宣言 1・生成コード 1・要素の型名 1）と既存のテストの更新
+- 文書: `docs/grammar/09_imports.md` の cpp の節（表）
+- ゲート（基準 `d0737cc`・制限時間つき）: `compare_outputs` の差は変えた・足した例題 6 本と `cpp_lib_int_widths.ar` /
+  `cpp_default_arg_native_call.ar`、`compare_import_paths` は `cpp_struct_ptr.ar` が差。⚠ 後者 3 本と負の対照の差は、中継コードの
+  生成が変わったので新旧を交互に走らせるたびに中継 DLL を作り直した表示（2 回目の出力を比べると 3 本とも同一）。
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171・変えた例題 4 本は
+  既知の差分）・`compare_wasm_frontend` 524/524・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1130 件・
+  拡張の wasm クレートの 697 件が通る。VSIX を作り直した
 
 ---
 

@@ -703,7 +703,12 @@ impl TypeChecker {
     fn mut_arg_exempt(ty: &InferredType) -> bool {
         // `Ptr` も書き戻しようがない（Arrow から中身を書き換える手段が無い・D-11）。`T*` の引数へ `let` の
         // `Ptr` を渡せる（ffi_value_exchange_plan.md 3-3）
-        matches!(ty, InferredType::Function { .. } | InferredType::Ptr(_))
+        match ty {
+            InferredType::Function { .. } | InferredType::Ptr(_) => true,
+            // `Option[Ptr[T]]`（ポインタの戻り値・4-3）も同じ（`None` も書き戻しようがない）
+            InferredType::Union(ts) => ts.iter().all(|t| matches!(t, InferredType::Ptr(_) | InferredType::None)),
+            _ => false,
+        }
     }
 
     /// 呼び出し引数に `*xs` / `**d` の展開が含まれるか。

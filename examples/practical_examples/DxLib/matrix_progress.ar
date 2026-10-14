@@ -33,7 +33,7 @@ dx.SetWaitVSyncFlag(0)
 if dx.DxLib_Init() == -1:
     raise RuntimeError("DxLib_Init failed")
 
-dx.SetWindowTextDX("Matrix Computation (async) - A = A x B  [2000x2000]")
+dx.SetWindowTextDX("Matrix Computation (async) - A = A x B  [2000x2000]".encode("cp932"))
 
 # ── Shared state + matrix computer ────────────────────────────────────────────
 # Both are PyObjects (Arc-wrapped).  deep_clone() for Arc = Arc::clone(), so
@@ -90,21 +90,21 @@ while running:
     dx.ClearDrawScreen()
 
     # Header
-    dx.DrawString(GRID_X, 10, "Matrix iteration (async): A = normalize( A x B )  [2000x2000]", white)
-    dx.DrawString(GRID_X, 32, "Top-left 8x8 submatrix — colour map: cold (blue) to warm (red)", blue)
-    dx.DrawString(GRID_X, 54, "Step " + str(cur_step) + " / " + str(total_s) + "   (" + str(pct) + "%)", lgray)
+    dx.DrawString(GRID_X, 10, "Matrix iteration (async): A = normalize( A x B )  [2000x2000]".encode("cp932"), white)
+    dx.DrawString(GRID_X, 32, "Top-left 8x8 submatrix - colour map: cold (blue) to warm (red)".encode("cp932"), blue)
+    dx.DrawString(GRID_X, 54, ("Step " + str(cur_step) + " / " + str(total_s) + "   (" + str(pct) + "%)").encode("cp932"), lgray)
 
     # Column headers  C0 … C7
     mut hdr = 0
     while hdr < DISPLAY_COLS:
-        dx.DrawString(GRID_X + hdr * CELL_W + 28, 75, "C" + str(hdr), dgray)
+        dx.DrawString(GRID_X + hdr * CELL_W + 28, 75, ("C" + str(hdr)).encode("cp932"), dgray)
         hdr += 1
 
     # 8×8 matrix grid
     mut idx = 0
     mut ri  = 0
     while ri < DISPLAY_ROWS:
-        dx.DrawString(GRID_X - 30, GRID_Y + ri * CELL_H + 14, "R" + str(ri), dgray)
+        dx.DrawString(GRID_X - 30, GRID_Y + ri * CELL_H + 14, ("R" + str(ri)).encode("cp932"), dgray)
         mut ci = 0
         while ci < DISPLAY_COLS:
             let cell_x = GRID_X + ci * CELL_W
@@ -117,7 +117,7 @@ while running:
 
             # Numeric value (first 6 chars of float string, e.g. "0.4321")
             let v = flat_vals[idx]
-            dx.DrawString(cell_x + 4, cell_y + 14, str(v)[0:6], white)
+            dx.DrawString(cell_x + 4, cell_y + 14, str(v)[0:6].encode("cp932"), white)
 
             idx += 1
             ci  += 1
@@ -133,9 +133,9 @@ while running:
         dx.DrawFillBox(BAR_X, BAR_Y, BAR_X + fill_w, BAR_Y + BAR_H, bar_col)
 
     if is_done:
-        dx.DrawString(BAR_X, BAR_Y + BAR_H + 12, "Done!  Completed " + str(total_s) + " steps.  Close window to exit.", yellow)
+        dx.DrawString(BAR_X, BAR_Y + BAR_H + 12, ("Done!  Completed " + str(total_s) + " steps.  Close window to exit.").encode("cp932"), yellow)
     else:
-        dx.DrawString(BAR_X, BAR_Y + BAR_H + 12, "Computing in async thread...  Close window to abort.", red)
+        dx.DrawString(BAR_X, BAR_Y + BAR_H + 12, "Computing in async thread...  Close window to abort.".encode("cp932"), red)
 
     dx.ScreenFlip()
     #dx.WaitTimer(16)   # 60 fps target; compute thread runs concurrently

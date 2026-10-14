@@ -1,11 +1,14 @@
-# cpp_cstring_arg.ar — `const char*` の引数へ str を渡す（正例・ffi_value_exchange_plan.md 1-2）
+# cpp_cstring_arg.ar — `const char*` の引数へ bytes を渡す（正例・ffi_value_exchange_plan.md 1-2・4-3・D-13）
 #
-# Arrow の str は UTF-8 の NUL 終端の一時コピーとして渡る（呼び出しの間だけ有効）。
-# `const char*` の引数は今の Arrow から正しく受け渡せる形の 1 つで、ここで確かめる。
+# `const char*` の引数は bytes と、NULL を表す None だけを受ける。文字列は、ライブラリが期待する文字コードを書いて
+# bytes にしてから渡す（`s.encode("utf-8")` / `s.encode("cp932")`）。bytes は NUL を付けた一時コピーとして渡る
+# （呼び出しの間だけ有効）。
+# ⚠ 4-3 より前は str を受け、黙って UTF-8 で渡していた（Shift-JIS のライブラリでは黙って文字化けする）。今は str を
+#   渡すと静的エラー（cpp_cstring_str_arg_error.ar）。
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 #
 # 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
-# 対になる負例: cpp_cstring_nul_error.ar（NUL を含む str）・cpp_unsupported_signature_error.ar
+# 対になる負例: cpp_cstring_nul_error.ar（NUL を含む bytes）・cpp_cstring_str_arg_error.ar（str）
 
 import[cpp-dll] test_modules.ffi_probe as fp
 
@@ -14,15 +17,17 @@ fn check(let label: str, let got: int, let want: int) -> None:
         raise RuntimeError(label + ": expected " + str(want) + " but got " + str(got))
     print(label, got)
 
-check("fp_len(abc)", fp.fp_len("abc"), 3)
-check("fp_len(empty)", fp.fp_len(""), 0)
-check("fp_len(nihongo) bytes", fp.fp_len("日本語"), 9)
+check("fp_len(abc)", fp.fp_len("abc".encode()), 3)
+check("fp_len(empty)", fp.fp_len(bytes()), 0)
+check("fp_len(nihongo) utf-8 bytes", fp.fp_len("日本語".encode("utf-8")), 9)
+check("fp_len(nihongo) cp932 bytes", fp.fp_len("日本語".encode("cp932")), 6)
+check("fp_len(None) is NULL", fp.fp_len(None), -1)
 
 # 関数の中・ループの中から（一時コピーが呼び出しごとに作られ、捨てられる）
 fn total_len(let words: list[str]) -> int:
     mut acc = 0
     for w in words:
-        acc += fp.fp_len(w)
+        acc += fp.fp_len(w.encode())
     return acc
 
 check("total_len", total_len(["a", "bb", "ccc", "あ"]), 9)

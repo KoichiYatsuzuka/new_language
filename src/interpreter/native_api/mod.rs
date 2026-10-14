@@ -477,6 +477,17 @@ pub struct ArCallbacks {
     /// 引数の変換でエラーが設定されたか（1 = 設定された）。中継コードは引数を全部変換した後にこれを見て、
     /// 1 なら C / Rust の関数を**呼ばずに**戻る（呼び出しの後でエラーが例外になる）。
     pub pending_error: extern "C" fn() -> i32,
+
+    // ── Raw pointers (fields 40-43・ffi_value_exchange_plan.md 4-3・D-7・D-8・D-13) ──
+    /// `char*` / `wchar_t*` の戻り値を `bytes` にする（`len` バイトをコピーする。NUL 終端の長さは中継コードが数える）。
+    pub make_bytes: extern "C" fn(*const u8, i64) -> i64,
+    /// ポインタの戻り値を借用の `Ptr[elem]` にする（Arrow は解放しない・D-7）。アドレス 0（NULL）は `None`（D-8）。
+    pub make_ptr: extern "C" fn(u64, *const u8, i32) -> i64,
+    /// `const char*` の引数: `bytes`（NUL を付けたコピー・最外のネイティブ呼び出しが終わるまで有効）か `None`（NULL）。
+    /// `str` はエラー（文字コードを書かせる・D-13）。
+    pub bytes_arg: extern "C" fn(i64) -> *const u8,
+    /// `void*` / 構造体ポインタの引数: `Ptr`（要素型が `elem` と合うもの。`"void"` はどれでも）か `None`（NULL）。
+    pub ptr_arg: extern "C" fn(i64, *const u8, i32) -> u64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

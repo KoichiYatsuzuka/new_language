@@ -91,11 +91,18 @@ impl CType {
             // `True` / `False` 以外はエラー（7-12。以前は `True` 以外を黙って偽にしていた）
             CType::Bool => format!("((*CB).to_bool)({handle}) as u8"),
             CType::Void => "()".to_string(),
-            // 構造体ポインタは typed 経路で受け渡す（`AbiTy::Ptr`）。typed 経路に合わない引数はハンドル経路へ
-            // 落とさずエラーにする（`TypedArgs::marshal`・1-2）ので、ここは typed の関数が見つからないときだけ。
-            CType::OpaqueStructPtr { .. } => format!("{handle} as *mut i8"),
-            CType::CharPtr { wide: false, mutable: false } => format!("((*CB).to_cstr)({handle})"),
-            CType::CharPtr { .. } | CType::VoidPtr | CType::FnPtr => {
+            // 構造体ポインタ・`void*` は `Ptr`（要素型を照合）か `None`（NULL）を渡す（4-3・D-3・D-8）。⚠ 以前は
+            // 構造体ポインタに Arrow 内部のハンドル番号をそのままポインタとして渡していた（落ちる・c-abi-interop P7 の
+            // 残課題）。正確なレイアウトの構造体のインスタンスは typed 経路（`AbiTy::Ptr`）が受け渡すので、ここへ来ない
+            // （来たら `ptr_arg` がエラーにする）。
+            CType::OpaqueStructPtr { type_name, .. } => format!(
+                "((*CB).ptr_arg)({handle}, b\"{type_name}\".as_ptr(), {}) as usize as *mut i8",
+                type_name.len()
+            ),
+            CType::VoidPtr => format!("((*CB).ptr_arg)({handle}, b\"void\".as_ptr(), 4) as usize as *mut i8"),
+            // `const char*` は `bytes` か `None`（4-3・D-13）
+            CType::CharPtr { wide: false, mutable: false } => format!("((*CB).bytes_arg)({handle})"),
+            CType::CharPtr { .. } | CType::FnPtr => {
                 panic!("unsupported parameter type reached the wrapper generator (CFnSig::unsupported_reason)")
             }
             CType::ByValueStruct { .. } => panic!("by-value structs are built field by field (gen_dll_fn, 1-3)"),
@@ -124,7 +131,15 @@ impl CType {
             CType::Double => format!("((*CB).make_float)({val})"),
             CType::Bool => format!("if {val} != 0 {{ {TL_TRUE}i64 }} else {{ {TL_FALSE}i64 }}"),
             CType::Void => format!("{TL_NONE}i64"),
-            CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::FnPtr | CType::CharPtr { .. } | CType::Ptr { .. } => {
+            // `char*` / `wchar_t*` は `bytes`（NUL 終端の借用をコピーする）、ほかのポインタは借用の `Ptr[要素]`。
+            // NULL は `None`（4-3・D-7・D-8・D-9）。⚠ 以前はどれも使えない関数にしていた（1-2）。
+            CType::CharPtr { wide: false, .. } => format!("_cstr_to_handle({val} as *const u8)"),
+            CType::CharPtr { wide: true, .. } => format!("_wstr_to_handle({val} as *const u16)"),
+            CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
+                let elem = self.ptr_elem_name().expect("a pointer type has an element name");
+                format!("((*CB).make_ptr)({val} as usize as u64, b\"{elem}\".as_ptr(), {})", elem.len())
+            }
+            CType::FnPtr => {
                 panic!("unsupported return type reached the wrapper generator (CFnSig::unsupported_reason)")
             }
             CType::ByValueStruct { .. } => panic!("by-value struct returns are read field by field (gen_dll_fn, 1-3)"),

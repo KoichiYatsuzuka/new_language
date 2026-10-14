@@ -1011,6 +1011,10 @@ impl Interpreter {
         // Build tl class values for each C struct so that tl code can construct
         // and access struct instances, and native code can call get_global/call_fn.
         for sdef in struct_defs {
+            // 中身の見えない構造体（前方宣言だけ・4-3）は Arrow のクラスにしない（C の側が作り、`Ptr[T]` で受け渡す）
+            if sdef.fields.is_empty() {
+                continue;
+            }
             use crate::interpreter::{ClassValue, FnValue};
             use crate::ast::Param;
             use crate::token::Span;

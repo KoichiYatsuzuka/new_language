@@ -39,10 +39,45 @@ pub fn parse_header_full(
     }
 
     let mut structs = parse_struct_bodies(&stripped, custom, typedefs);
+    // 前方宣言だけの構造体（`typedef struct Db Db;` / `struct Db;`）も「構造体の名前」として持つ（フィールドは空・
+    // 不完全・4-3）。ポインタの引数・戻り値で `Ptr[Db]` を受け渡せるのは、ヘッダが構造体と宣言した名前だけにする
+    // （`CFnSig::unsupported_reason`）。⚠ 解決できない typedef（`TCHAR` / `HWND` …）も構造体ポインタに見えるので、
+    //   それを `Ptr[TCHAR]` にしてしまわないため（`const TCHAR*` は実は C の文字列）。
+    for name in forward_declared_structs(&stripped) {
+        if !structs.iter().any(|d| d.name == name) {
+            structs.push(CStructDef { name, fields: Vec::new(), complete: false });
+        }
+    }
     // 共有ヘッダの `ArPtrProtocol` そのもの（取り込んだヘッダ・写した定義）は Arrow のクラスにしない。
     // 受け渡しは型として扱う（`CType::PtrProtocol`・4-2）
     structs.retain(|d| d.name != "ArPtrProtocol");
     (sigs, structs)
+}
+
+/// 本体の無い構造体の宣言（`typedef struct Tag Alias;` → `Tag` と `Alias`、`struct Tag;` → `Tag`）の名前を集める（4-3）。
+/// ⚠ 本体のある定義（`typedef struct { … } Rec;`）は `parse_struct_bodies` が扱うので、ここでは `{` / `}` の後ろだけを見る。
+fn forward_declared_structs(stripped: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for seg in stripped.split(';') {
+        let tail = seg.rsplit(|c| c == '{' || c == '}').next().unwrap_or("");
+        let words: Vec<&str> = tail
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .flat_map(|l| l.split_whitespace())
+            .collect();
+        let ident = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let names: Vec<&str> = match words.as_slice() {
+            ["typedef", "struct", tag, alias] if ident(tag) && ident(alias) => vec![tag, alias],
+            ["struct", tag] if ident(tag) => vec![tag],
+            _ => vec![],
+        };
+        for n in names {
+            if !out.iter().any(|o| o == n) {
+                out.push(n.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// C/C++ ヘッダから関数シグネチャのみを解析して返す（構造体定義は無視）。
@@ -344,5 +379,33 @@ mod ptr_protocol_tests {
         let holder = structs.iter().find(|d| d.name == "Holder").expect("Holder");
         assert_eq!(holder.fields[1].1, CType::PtrProtocol { by_pointer: false, mutable: false });
         assert!(!holder.has_exact_layout(), "a struct with an ArPtrProtocol field is expanded in 4-6");
+    }
+
+    /// 本体の無い構造体の宣言を「構造体の名前」として持つ（4-3）。解決できない typedef（`TCHAR`）へのポインタは
+    /// 構造体ではないので使えないまま。
+    #[test]
+    fn forward_declared_structs_are_known() {
+        let header = r#"
+            typedef struct Db Db;
+            struct Window;
+            typedef struct { int x; } Point;
+            Db* open_db(const char* name);
+            int count(Db* db);
+            void show(struct Window* w);
+            int draw(const TCHAR* s);
+        "#;
+        let (sigs, structs) = parse_header_full(header, &HashMap::new(), &HashMap::new());
+        for name in ["Db", "Window"] {
+            let d = structs.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("{name}"));
+            assert!(d.fields.is_empty() && !d.complete);
+        }
+        assert_eq!(structs.iter().filter(|d| d.name == "Point").count(), 1, "a struct with a body is not added twice");
+        let get = |name: &str| sigs.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(get("open_db").unsupported_reason(&structs), None);
+        assert_eq!(get("count").unsupported_reason(&structs), None);
+        assert_eq!(get("show").params[0].1, CType::OpaqueStructPtr { type_name: "Window".to_string(), mutable: true });
+        assert_eq!(get("show").unsupported_reason(&structs), None);
+        let why = get("draw").unsupported_reason(&structs).unwrap_or_default();
+        assert!(why.contains("TCHAR") && why.contains("does not declare as a struct"), "{why}");
     }
 }

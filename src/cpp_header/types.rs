@@ -74,6 +74,42 @@ pub enum CType {
 }
 
 impl CType {
+    /// ポインタの指す先の要素の型名（`PtrProtocol` と同じ名前・D-12）。`Ptr[T]` の `T` に使う（4-3）。
+    /// `void*` → `void`、構造体ポインタ → 構造体名、数値のポインタ → `int32` など、`char*` → `uint8`、`wchar_t*` → `uint16`。
+    /// ポインタでなければ `None`。
+    pub fn ptr_elem_name(&self) -> Option<String> {
+        match self {
+            CType::VoidPtr => Some("void".to_string()),
+            CType::OpaqueStructPtr { type_name, .. } => Some(type_name.clone()),
+            CType::Ptr { inner, .. } => inner.c_elem_name(),
+            CType::CharPtr { wide: false, .. } => Some("uint8".to_string()),
+            CType::CharPtr { wide: true, .. } => Some(if cfg!(windows) { "uint16" } else { "int32" }.to_string()),
+            _ => None,
+        }
+    }
+
+    /// 数値の C の幅つきの名前（`int8` … `uint64`・`float32` / `float64`）。C の `bool` は 1 バイトなので `uint8`。
+    /// ⚠ `long` と `wchar_t` の幅は環境で決まる（Windows は 4 バイト・2 バイト）。
+    pub fn c_elem_name(&self) -> Option<String> {
+        Some(match self {
+            CType::Int { width, signed } => {
+                let bits = match width {
+                    IntWidth::W8 => 8,
+                    IntWidth::W16 => 16,
+                    IntWidth::W32 => 32,
+                    IntWidth::W64 => 64,
+                    IntWidth::CLong => if cfg!(windows) { 32 } else { 64 },
+                    IntWidth::WChar => if cfg!(windows) { 16 } else { 32 },
+                };
+                format!("{}int{bits}", if *signed { "" } else { "u" })
+            }
+            CType::Float => "float32".to_string(),
+            CType::Double => "float64".to_string(),
+            CType::Bool => "uint8".to_string(),
+            _ => return None,
+        })
+    }
+
     /// 生成された C++ シム ソースで使用する C 型文字列を返す。
     pub fn c_type_str(&self) -> String {
         match self {
@@ -187,15 +223,16 @@ impl CFnSig {
     /// 対応は計画書のフェーズ 3〜5 で順に入る（文字列・配列・`Ptr[T]`）。
     pub fn unsupported_reason(&self, structs: &[CStructDef]) -> Option<String> {
         let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
+        // ヘッダが構造体と宣言した名前か（本体の無い前方宣言を含む・4-3）。⚠ 解決できない typedef（`TCHAR` など）も
+        // 構造体ポインタに見えるので、宣言の無い名前は `Ptr` にしない（`const TCHAR*` は実は C の文字列）。
+        let known = |name: &str| structs.iter().any(|d| d.name == name);
+        // ⚠ ポインタの戻り値は 4-3 で受け取れるようになった（`char*` / `wchar_t*` → `bytes`、ほか → 借用の `Ptr[T]`・
+        //   NULL → `None`・D-7・D-8）。以前はどれもここで使えない関数にしていた（1-2）。
         let ret = match &self.ret {
-            CType::CharPtr { wide: false, .. } => Some("it returns a C string (`char*`)".to_string()),
-            CType::CharPtr { wide: true, .. } => Some("it returns a wide string (`wchar_t*`)".to_string()),
-            CType::Ptr { .. } => Some("it returns a pointer to a number".to_string()),
-            CType::VoidPtr => Some("it returns `void*`".to_string()),
-            CType::OpaqueStructPtr { type_name, .. } => {
-                Some(format!("it returns a pointer to struct `{type_name}`"))
-            }
             CType::FnPtr => Some("it returns a function pointer".to_string()),
+            CType::OpaqueStructPtr { type_name, .. } if !known(type_name) => Some(format!(
+                "it returns a pointer to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
+            )),
             // ⚠ 受け取り（`Option[Ptr[T]]` にする）は 4-5 で入る（4-2 では認識だけ）
             CType::PtrProtocol { by_pointer: false, .. } => {
                 Some("it returns `ArPtrProtocol`, which Arrow cannot receive yet".to_string())
@@ -218,17 +255,17 @@ impl CFnSig {
                 CType::CharPtr { mutable: true, .. } => Some(format!(
                     "parameter {p} is `char*`, an output buffer (what the C side writes would be lost)"
                 )),
-                CType::VoidPtr => Some(format!("parameter {p} is `void*`")),
+                // ⚠ `void*`・レイアウトの分からない構造体ポインタは 4-3 から `Ptr` / `None` を受ける（以前は使えなかった）
                 CType::FnPtr => Some(format!("parameter {p} is a function pointer (callback)")),
+                CType::OpaqueStructPtr { type_name, .. } if !known(type_name) => Some(format!(
+                    "parameter {p} points to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
+                )),
                 // ⚠ 受け渡しは 4-4（`ArPtrProtocol*`）・4-7（値・`const ArPtrProtocol*`）で入る（4-2 では認識だけ）
                 CType::PtrProtocol { .. } => Some(format!(
                     "parameter {p} is `ArPtrProtocol`, which Arrow cannot pass yet"
                 )),
                 CType::Ptr { mutable: false, .. } => Some(format!(
                     "parameter {p} is a `const` pointer to a number, which may be a single value or an array"
-                )),
-                CType::OpaqueStructPtr { type_name, .. } if !exact(type_name) => Some(format!(
-                    "parameter {p} points to struct `{type_name}`, and its exact C layout is not known"
                 )),
                 CType::ByValueStruct { type_name } if !exact(type_name) => Some(format!(
                     "parameter {p} passes struct `{type_name}` by value, and its exact C layout is not known"
@@ -241,7 +278,9 @@ impl CFnSig {
         }
         // 構造体ポインタは typed 経路でしか受け渡せない（ハンドル経路は Arrow 内部のハンドル番号をポインタとして
         // 渡してしまう・c-abi-interop P7 の残課題）。typed 経路に載らない型と混ざっている関数は呼べない。
-        if self.params.iter().any(|(_, t)| matches!(t, CType::OpaqueStructPtr { .. }))
+        // ⚠ レイアウトの分からない構造体ポインタは `Ptr` としてハンドル経路で渡せる（4-3）ので、この規則の対象は
+        //   インスタンスを渡す（正確なレイアウトの）構造体ポインタだけ。
+        if self.params.iter().any(|(_, t)| matches!(t, CType::OpaqueStructPtr { type_name, .. } if exact(type_name)))
             && !self.typed_abi_eligible(structs)
         {
             let other = if typed_abi_ok(&self.ret, structs, false) {
@@ -328,9 +367,35 @@ mod tests {
             sig(vec![by_val("Rec")], by_val("Rec")),
             sig(vec![st_ptr("Rec"), CType::Ptr { inner: Box::new(CType::Double), mutable: true }], I32),
             sig(vec![CType::Bool], CType::Void),
+            // 4-3: ポインタの戻り値（`char*` / `wchar_t*` → bytes、ほか → Ptr[T]）と、`void*`・構造体と宣言された名前への
+            // ポインタ（レイアウトが分からなくても `Ptr[T]` で渡せる）の引数
+            sig(vec![], CSTR),
+            sig(vec![], CType::CharPtr { wide: true, mutable: false }),
+            sig(vec![], CType::Ptr { inner: Box::new(I32), mutable: true }),
+            sig(vec![], CType::VoidPtr),
+            sig(vec![], st_ptr("Rec")),
+            sig(vec![], st_ptr("Partial")),
+            sig(vec![CType::VoidPtr], CType::Void),
+            sig(vec![st_ptr("Named")], CType::Void),
+            sig(vec![st_ptr("Partial"), CSTR], I32),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
         }
+    }
+
+    /// ポインタの指す先の要素の型名（D-12・4-3）
+    #[test]
+    fn pointer_element_names() {
+        assert_eq!(CType::VoidPtr.ptr_elem_name().as_deref(), Some("void"));
+        assert_eq!(st_ptr("Rec").ptr_elem_name().as_deref(), Some("Rec"));
+        assert_eq!(CSTR.ptr_elem_name().as_deref(), Some("uint8"));
+        let p = |t: CType| CType::Ptr { inner: Box::new(t), mutable: false }.ptr_elem_name();
+        assert_eq!(p(I32).as_deref(), Some("int32"));
+        assert_eq!(p(U8).as_deref(), Some("uint8"));
+        assert_eq!(p(I64).as_deref(), Some("int64"));
+        assert_eq!(p(CType::Float).as_deref(), Some("float32"));
+        assert_eq!(p(CType::Double).as_deref(), Some("float64"));
+        assert_eq!(I32.ptr_elem_name(), None);
     }
 
     /// 呼べないもの: 理由に何が問題かが入る（1-2）
@@ -338,20 +403,15 @@ mod tests {
     fn unsupported_signatures() {
         let s = structs();
         let cases: Vec<(CFnSig, &str)> = vec![
-            (sig(vec![], CSTR), "C string"),
-            (sig(vec![], CType::CharPtr { wide: true, mutable: false }), "wchar_t"),
-            (sig(vec![], CType::Ptr { inner: Box::new(I32), mutable: true }), "pointer to a number"),
-            (sig(vec![], CType::VoidPtr), "void*"),
-            (sig(vec![], st_ptr("Rec")), "pointer to struct `Rec`"),
             (sig(vec![], CType::FnPtr), "function pointer"),
+            // 構造体と宣言されていない名前（解決できない typedef など）へのポインタ（4-3）
+            (sig(vec![], st_ptr("Unknown")), "does not declare as a struct"),
             (sig(vec![], by_val("Partial")), "struct `Partial` by value"),
             (sig(vec![CType::CharPtr { wide: false, mutable: true }], CType::Void), "output buffer"),
             (sig(vec![CType::CharPtr { wide: true, mutable: false }], CType::Void), "wide string"),
-            (sig(vec![CType::VoidPtr], CType::Void), "`void*`"),
             (sig(vec![CType::FnPtr], CType::Void), "callback"),
             (sig(vec![CType::Ptr { inner: Box::new(I32), mutable: false }], CType::Void), "single value or an array"),
-            (sig(vec![st_ptr("Named")], CType::Void), "points to struct `Named`"),
-            (sig(vec![st_ptr("Unknown")], CType::Void), "points to struct `Unknown`"),
+            (sig(vec![st_ptr("Unknown")], CType::Void), "does not declare as a struct"),
             (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
             (sig(vec![st_ptr("Rec"), CSTR], CType::Void), "struct pointer together with a C string"),
             (sig(vec![st_ptr("Rec")], CType::Bool), "struct pointer together with `bool`"),

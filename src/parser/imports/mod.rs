@@ -40,16 +40,44 @@ pub(crate) use crate::parser::py_stub_extract::extract_py_type_stubs;
 ///   構造互換な別名クラスのシャドウ変換（`MyVec` → `VECTOR*`、SKILL.md P3）と
 ///   int ハンドル経路の両方を静的に壊すため。可変性検査（`mut`）は型注釈と
 ///   独立に `Param::mutable` で機能する。
-pub(crate) fn ctype_to_tl_str(ct: &crate::cpp_header::CType) -> String {
+/// C の型が型スタブのどこに現れるか（4-3 でポインタの型が位置で変わるようになった）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CPos {
+    Param,
+    Return,
+    Field,
+}
+
+/// C の型を型スタブの注釈にする。
+///
+/// 生のポインタの既定の規則（ffi_value_exchange_plan.md 4-3・D-7・D-8・D-13）:
+/// - `char*` / `wchar_t*` → `Option[bytes]`（戻り値は NUL 終端の借用をコピーした `bytes`、`wchar_t` は UTF-16LE。引数の
+///   `const char*` は `bytes` だけ受ける。`str` は静的エラーにして文字コードを書かせる）
+/// - ほかのポインタの戻り値・`void*` の引数・レイアウトの分からない構造体ポインタの引数 → `Option[Ptr[T]]`（NULL は `None`）
+/// - 数値の書き込みポインタの引数は指す先の型（書き戻し・D-14）、正確なレイアウトの構造体ポインタの引数は `Any`
+///   （インスタンスを渡す・形の合う別のクラスも渡せる・c-abi-interop P6）
+/// ⚠ 以前は `char*` を `str`、`void*` を `int` と注釈していた。
+pub(crate) fn ctype_to_tl_str(
+    ct: &crate::cpp_header::CType,
+    pos: CPos,
+    structs: &[crate::cpp_header::CStructDef],
+) -> String {
     use crate::cpp_header::CType;
+    let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
+    let ptr_of = |ct: &CType| format!("Option[Ptr[{}]]", ct.ptr_elem_name().unwrap_or_else(|| "void".to_string()));
     match ct {
         CType::Void => "None".to_string(),
         CType::Bool => "bool".to_string(),
         CType::Float | CType::Double => "float".to_string(),
-        CType::CharPtr { .. } => "str".to_string(),
-        CType::Int { .. } | CType::VoidPtr => "int".to_string(),
-        CType::Ptr { inner, .. } => ctype_to_tl_str(inner),
-        CType::OpaqueStructPtr { .. } | CType::ByValueStruct { .. } => "Any".to_string(),
+        CType::CharPtr { .. } => "Option[bytes]".to_string(),
+        CType::Int { .. } => "int".to_string(),
+        CType::VoidPtr => ptr_of(ct),
+        // 数値の書き込みポインタの引数は、書き戻す値の型（D-14）
+        CType::Ptr { inner, .. } if pos == CPos::Param => ctype_to_tl_str(inner, pos, structs),
+        CType::Ptr { .. } => ptr_of(ct),
+        CType::OpaqueStructPtr { type_name, .. } if pos == CPos::Param && exact(type_name) => "Any".to_string(),
+        CType::OpaqueStructPtr { .. } => ptr_of(ct),
+        CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),
         // `ArPtrProtocol`（4-2）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
         // 照合して戻す・D-10・D-12）。ポインタの引数は `Ptr[void]`（どの `Ptr` も渡せる）。

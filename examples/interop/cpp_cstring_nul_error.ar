@@ -1,13 +1,13 @@
-# cpp_cstring_nul_error.ar — NUL を含む str を `const char*` へ渡すと実行時エラー（負例・1-2）
+# cpp_cstring_nul_error.ar — NUL を含む bytes を `const char*` へ渡すと実行時エラー（負例・1-2・4-3）
 #
-# C の文字列は NUL で終わるので、"a\0b" を渡すと C 側では "a" に見える。以前は黙って途中で切れ、
+# C の文字列は NUL で終わるので、"a\0b" のバイト列を渡すと C 側では "a" に見える。以前は黙って途中で切れ、
 # `fp_len("a\0b")` が 1 を返していた。今は渡す前に ValueError にする（C 関数は呼ばない）。
-# str 以外（None など）を渡した場合も、黙って空文字列にせず TypeError にする（静的に分かる場合は静的エラー）。
+# bytes と None 以外を渡した場合も TypeError にする（静的に分かる場合は静的エラー・cpp_cstring_str_arg_error.ar）。
 #
 # 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
 # 対になる正例: cpp_cstring_arg.ar
 
 import[cpp-dll] test_modules.ffi_probe as fp
 
-print("ok:", fp.fp_len("ab"))
-print("unreachable:", fp.fp_len("a\0b"))
+print("ok:", fp.fp_len("ab".encode()))
+print("unreachable:", fp.fp_len("a\0b".encode()))

@@ -330,6 +330,18 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
 ⇒ `TypedArgs::marshal` が、構造体ポインタへのインスタンス以外・数値への書き込みポインタへの数値以外を
 `Err` にする（ハンドル経路へ落とさない）。構造体ポインタと typed 経路に載らない型（`const char*`・`bool` など）が
 混ざった関数は、未対応として静的エラーにする（下の「今の Arrow から呼べない関数」）。
+さらに 4-3 で、ハンドル経路の構造体ポインタ・`void*` の引数は `ptr_arg` コールバック（`Ptr` のアドレスか `None` の
+NULL・要素型を照合）を通すようになった。インスタンスなど `Ptr` 以外が届いてもエラーで、ハンドル番号をポインタとして
+渡すことはもう無い。
+
+### 生のポインタの既定の規則（implementation_plans/ffi_value_exchange_plan.md 4-3）
+
+`char*` / `wchar_t*` の戻り値 → `Option[bytes]`（`make_bytes`）、ほかのポインタの戻り値 → 借用の `Option[Ptr[T]]`
+（`make_ptr`・Arrow は解放しない）、`const char*` の引数 → `bytes` か `None`（`bytes_arg`・`str` は静的エラー・D-13）、
+`void*` / レイアウトの分からない構造体ポインタの引数 → `Ptr` か `None`（`ptr_arg`）。`Ptr[T]` を受け渡すのは、ヘッダが
+構造体と宣言した名前（前方宣言 `typedef struct Db Db;` を含む）だけ。解決できない typedef（`TCHAR` など）へのポインタは
+理由つきで使えない。インスタンスを渡して書き戻す構造体ポインタ（P3〜P7）は正確なレイアウトのものだけで、従来どおり
+typed 経路を通る。型つき経路での `Ptr` / `bytes` の受け渡しは 4-4。
 
 ### 今の Arrow から呼べない関数（implementation_plans/ffi_value_exchange_plan.md 1-2）
 

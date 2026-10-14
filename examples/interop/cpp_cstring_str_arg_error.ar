@@ -1,0 +1,11 @@
+# cpp_cstring_str_arg_error.ar — `const char*` の引数へ str を渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-3・D-13）
+#
+# 文字列は、ライブラリが期待する文字コードを書いて bytes にしてから渡す（`s.encode("utf-8")` / `s.encode("cp932")`）。
+# 黙って UTF-8 にすると、Shift-JIS などのライブラリで文字化けが黙って起きるため。エラーの文面が `.encode(...)` を促す。
+# ⚠ 4-3 より前は str を受け、UTF-8 で渡していた。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_cstring_arg.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print(fp.fp_len("abc"))

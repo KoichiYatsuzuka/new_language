@@ -1,8 +1,12 @@
-# dxlib_string.tl — Verify that const char* parameters work correctly.
+# dxlib_string.ar — pass strings to DxLib's `const TCHAR*` parameters.
 #
 # Calls SetWindowText (sets the window title bar) and DrawString (renders
-# text on screen) — both take a `const char*` that the bridge converts
-# automatically from a tl `str` value via tl_to_cstr.
+# text on screen). A C string parameter takes bytes (ffi_value_exchange_plan.md
+# 4-3 / D-13): encode the str in the library's encoding — DxLib uses Shift-JIS
+# (cp932) unless SetUseCharCodeFormat says otherwise. Passing a str used to be
+# converted to UTF-8 silently, which garbles Japanese text in DxLib.
+# NOTE: `TCHAR` is not resolved by the header parser yet, so these functions are
+# reported as unusable for now (ffi_value_exchange_plan.md 7-13).
 
 import[cpp-lib] DxLib.DxLib as dx
 
@@ -14,7 +18,7 @@ if dx.DxLib_Init() == -1:
     raise RuntimeError("DxLib_Init failed")
 
 # Pass a tl string to a const char* parameter
-dx.SetWindowTextDX("tl language - string test")
+dx.SetWindowTextDX("Arrow - string test".encode("cp932"))
 
 const FPS      = 60
 const FRAME_MS = 1000 / FPS
@@ -34,9 +38,9 @@ while running == 1:
     dx.ClearDrawScreen()
 
     # Draw several strings — each passes a tl str as const char*
-    dx.DrawString(20,  40, "Hello from tl language!",    white)
-    dx.DrawString(20,  70, "const char* works correctly", yellow)
-    dx.DrawString(20, 100, "Automatic str -> C string",   cyan)
+    dx.DrawString(20,  40, "Hello from Arrow!".encode("cp932"),            white)
+    dx.DrawString(20,  70, "日本語も Shift-JIS で渡す".encode("cp932"),     yellow)
+    dx.DrawString(20, 100, "str -> bytes with an explicit encoding".encode("cp932"), cyan)
 
     dx.ScreenFlip()
     dx.WaitTimer(FRAME_MS)

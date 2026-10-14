@@ -49,6 +49,23 @@ struct ArCallbacks {
     _unused_29_37: [usize; 9],
     to_bool:       unsafe extern "C" fn(i64) -> i32,
     pending_error: unsafe extern "C" fn() -> i32,
+    make_bytes:    unsafe extern "C" fn(*const u8, i64) -> i64,
+    make_ptr:      unsafe extern "C" fn(u64, *const u8, i32) -> i64,
+    bytes_arg:     unsafe extern "C" fn(i64) -> *const u8,
+    ptr_arg:       unsafe extern "C" fn(i64, *const u8, i32) -> u64,
+}
+
+// `char*` / `wchar_t*` return values become bytes (NUL not included; wchar_t as UTF-16LE). NULL is None (4-3).
+unsafe fn _cstr_to_handle(p: *const u8) -> i64 {
+    if p.is_null() { return 0; }
+    let n = std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes().len();
+    ((*CB).make_bytes)(p, n as i64)
+}
+unsafe fn _wstr_to_handle(p: *const u16) -> i64 {
+    if p.is_null() { return 0; }
+    let mut n = 0usize;
+    while *p.add(n) != 0 { n += 1; }
+    ((*CB).make_bytes)(p as *const u8, (n * 2) as i64)
 }
 
 static mut CB: *const ArCallbacks = std::ptr::null();
@@ -309,11 +326,10 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                 ));
             }
             CType::CharPtr { .. } => {
-                // `to_cstr` は str 以外・NUL を含む str ならエラーを設定して NULL を返す（1-2）。そのときは
-                // C 関数を呼ばずに戻る（呼び出しの後でエラーが例外になる）。
-                s.push_str(&format!(
-                    "    let _{pname} = ((*CB).to_cstr)({h});\n    if _{pname}.is_null() {{ return {TL_NONE}i64; }}\n"
-                ));
+                // `const char*` は `bytes` か `None`（NULL・4-3・D-13）。`str` や NUL を含む `bytes` は `bytes_arg` が
+                // エラーを設定し、下の `pending_error` で C 関数を呼ばずに戻る（呼び出しの後でエラーが例外になる）。
+                // ⚠ 以前は `str` を UTF-8 で渡していた（Shift-JIS のライブラリで黙って文字化けする・D-13）
+                s.push_str(&format!("    let _{pname} = {};\n", ptype.from_handle(&h)));
             }
             CType::ByValueStruct { type_name } => {
                 // 冒頭の `CFnSig::unsupported_reason` で、C と同じレイアウトの分かる構造体だけが来る
@@ -591,6 +607,33 @@ mod tests {
         assert!(s.contains("let _v = _Struct_Rec {"), "{s}");
         assert!(s.contains("let _raw_r: _Struct_Rec = _fp(_v);"), "{s}");
         assert!(!s.contains("as *mut i8"), "{s}");
+    }
+
+    /// 生のポインタ（4-3）: `const char*` の引数は `bytes_arg`、`void*` の引数は `ptr_arg`、`char*` の戻り値は bytes、
+    /// ほかのポインタの戻り値は借用の `Ptr`。
+    #[test]
+    fn raw_pointer_parameters_and_returns() {
+        let cstr = CType::CharPtr { wide: false, mutable: false };
+        let s = gen_dll_fn(
+            &CFnSig {
+                name: "f".to_string(),
+                params: vec![("s".to_string(), cstr.clone()), ("h".to_string(), CType::VoidPtr)],
+                ret: cstr,
+                namespace: None,
+                n_required: 2,
+            },
+            &HashMap::new(),
+            &[],
+        );
+        assert!(s.contains("((*CB).bytes_arg)(*argv.offset(0))"), "{s}");
+        assert!(s.contains("((*CB).ptr_arg)(*argv.offset(1), b\"void\".as_ptr(), 4)"), "{s}");
+        assert!(s.contains("_cstr_to_handle("), "{s}");
+        let s = gen_dll_fn(
+            &CFnSig { name: "g".to_string(), params: vec![], ret: CType::VoidPtr, namespace: None, n_required: 0 },
+            &HashMap::new(),
+            &[],
+        );
+        assert!(s.contains("((*CB).make_ptr)("), "{s}");
     }
 
     /// 引数を変換した後、エラーが設定されていれば C の関数を呼ばずに戻る。`bool` の引数は `to_bool`（7-12）。

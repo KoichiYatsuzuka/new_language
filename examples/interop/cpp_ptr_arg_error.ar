@@ -1,0 +1,13 @@
+# cpp_ptr_arg_error.ar — ポインタの引数へ合わないものを渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-3・D-3）
+#
+# - 構造体ポインタの引数（`Db*`）は `Ptr[Db]` か `None`。`Ptr[void]` は `p mustbe Ptr[Db]` で検査して変換してから
+# - アドレスを整数で渡すことはできない（整数から Ptr を作れない）
+# ⚠ 4-3 より前、`void*` の引数は int（Arrow 内部の値）を受けていた。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_raw_pointers.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let h = fp.fp_handle_new()
+print(fp.fp_db_count(h))
+print(fp.fp_handle_get(12345))

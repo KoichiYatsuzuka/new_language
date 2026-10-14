@@ -789,8 +789,20 @@ impl StaticTypeError {
                 } else {
                     format!("argument {param_index}")
                 };
+                // `str` を `bytes` の引数（C の `const char*` など）へ渡したら、文字コードを書かせる（D-13・4-3）。
+                // 黙って UTF-8 にすると、Shift-JIS などのライブラリで文字化けが黙って起きるため。
+                let mentions_bytes = |t: &InferredType| match t {
+                    InferredType::Bytes => true,
+                    InferredType::Union(ts) => ts.contains(&InferredType::Bytes),
+                    _ => false,
+                };
+                let hint = if *got == InferredType::Str && mentions_bytes(expected) {
+                    "; encode the str with the encoding the library expects (e.g. s.encode(\"utf-8\") or s.encode(\"cp932\"))"
+                } else {
+                    ""
+                };
                 format!(
-                    "{which} of {} expects {} but got {}",
+                    "{which} of {} expects {} but got {}{hint}",
                     hl_q(func_name), hl_q(expected), hl_q(got)
                 )
             }

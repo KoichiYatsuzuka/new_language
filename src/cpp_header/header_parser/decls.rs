@@ -383,6 +383,12 @@ pub(crate) fn parse_c_type_str(
         .copied()
         .collect();
 
+    // `struct Name` は `Name` と同じ型（C の構造体タグ・4-3）。前方宣言（`typedef struct Name Name;` / `struct Name;`）や
+    // 本体のある定義の名前と突き合わせるので、ここで外す。⚠ 外さないと `struct Window*` が知らない名前になる。
+    let core: Vec<&str> = match core.as_slice() {
+        ["struct", rest @ ..] if !rest.is_empty() => rest.to_vec(),
+        _ => core,
+    };
     let core_str = core.join(" ");
 
     // ── 1. User custom type mappings ─────────────────────────────────────────
