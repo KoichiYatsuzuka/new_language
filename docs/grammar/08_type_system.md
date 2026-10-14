@@ -137,6 +137,10 @@ if result is int:
 Union 型の変数に対して演算子を適用すると  
 静的型エラー `OperationOnUnion` が報告されます。
 
+Union の値は、**どの構成型も受かる**型へ渡せます（引数・変数・戻り値）。`Option[int]` は `Union[int, str, None]` へ
+渡せますが、`Union[int, str]` は `Option[int]` へ渡せません（`str` が来うる。先に `is int` / `mustbe int` で絞る）。
+構成型の順序は問いません。
+
 ### `Intersection[T1, T2, ...]` — 交差型
 
 `Intersection[T1, T2, ...]` は、値が **すべての構成型を同時に満たす** ことを表す型です。  

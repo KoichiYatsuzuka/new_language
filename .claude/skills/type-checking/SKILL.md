@@ -258,7 +258,8 @@ Rules applied in order:
    - `SetOf(A)` ↔ `SetOf(E)` recursively
    - `DictOf(_, _)` ↔ `Dict` (both directions)
    - `DictOf(AK, AV)` ↔ `DictOf(EK, EV)` recursively on both key and value
-7. `expected == Union(ts)` → compatible if `arg_ty` is compatible with any member of `ts`.
+7. `arg_ty == Union(as)` → compatible if **every** member of `as` is compatible with `expected` (`Option[int]` → `Union[int, str, None]`, `Option[Ptr[Db]]` → `Option[Ptr[void]]`). ⚠ Before `ffi_value_exchange_plan.md` 7-15 a Union argument was matched as a whole against one member of the expected Union, so it only fitted the same Union.
+   Then `expected == Union(ts)` → compatible if `arg_ty` is compatible with any member of `ts`.
 8. If `arg_ty == NamedInstance(C)` and `C` has a `__cast__[ExpectedType]` method → **compatible** (implicit cast path).
 9. Otherwise → **incompatible**.
 

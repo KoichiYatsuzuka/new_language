@@ -35,6 +35,45 @@ use super::*;
         )));
     }
 
+    /// より広い Union へは渡せる（どの構成型も受かる・7-15）。以前は Union の実引数を 1 つの構成型で丸ごと照合して弾いた。
+    #[test]
+    fn union_arg_to_wider_union_ok() {
+        assert!(ok(concat!(
+            "fn f(x: Union[int, str, None]) -> None:\n    pass\n",
+            "fn g(x: Option[int]) -> None:\n    f(x)\n",
+            "fn h(x: Option[int]) -> Union[int, str, None]:\n    return x\n",
+            "fn k(x: Union[int, str]) -> None:\n    let y: Union[str, int, None] = x\n",
+        )));
+    }
+
+    /// 構成型の 1 つでも受からなければ弾く（`Union[int, str]` → `Option[int]` は `str` が来うる・7-15）。
+    #[test]
+    fn union_arg_with_extra_member_err() {
+        let errors = check(concat!(
+            "fn f(x: Option[int]) -> None:\n    pass\n",
+            "fn g(x: Union[int, str]) -> None:\n    f(x)\n",
+        ));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    /// `Option[Ptr[T]]` は `Option[Ptr[void]]`（C の `void*` の引数）へ渡せる。逆は弾く（7-15・3-3）。
+    #[test]
+    fn option_ptr_to_option_void_ptr() {
+        assert!(ok(concat!(
+            "fn f(p: Option[Ptr[void]]) -> None:\n    pass\n",
+            "fn g(q: Option[Ptr[int32]]) -> None:\n    f(q)\n",
+        )));
+        let errors = check(concat!(
+            "fn f(p: Option[Ptr[int32]]) -> None:\n    pass\n",
+            "fn g(q: Option[Ptr[void]]) -> None:\n    f(q)\n",
+        ));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
     /// union_value_binary_op_err のテスト。
     #[test]
     fn union_value_binary_op_err() {

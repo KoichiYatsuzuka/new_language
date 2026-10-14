@@ -1,0 +1,18 @@
+# union_widening_error.ar — 構成型の 1 つでも受からない Union へは渡せない（負例・ffi_value_exchange_plan.md 7-15）
+#
+# `Union[int, str]` の値は `str` かもしれないので `Option[int]` へは渡せない。先に `mustbe int` で取り出す。
+# ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
+# 対になる正例: union_widening.ar
+
+fn take(let x: Option[int]) -> int:
+    if x is None:
+        return 0
+    return x mustbe int
+
+fn pick(let n: int) -> Union[int, str]:
+    if n > 0:
+        return n
+    return "neg"
+
+print(take(pick(1)))
+let y: Union[int, None] = pick(2)

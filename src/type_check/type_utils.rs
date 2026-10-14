@@ -546,6 +546,15 @@ impl TypeChecker {
             (InferredType::Ptr(a), InferredType::Ptr(e)) => return e.accepts(a),
             _ => {}
         }
+        // ── `Union` の実引数は**どの構成型も**期待に合えばよい（7-15）──────────────
+        //
+        // ⚠⚠ 以前は下の腕で「期待の構成型の**どれか 1 つ**が実引数の Union **全体**を受けるか」だけを見ていたので、
+        //    より広い Union へ渡せなかった（`Option[int]` → `Union[int, str, None]`、C の関数が返した
+        //    `Option[Ptr[Db]]` → `void*` の引数 `Option[Ptr[void]]`）。どの構成型も受かるなら、実行時に
+        //    どれが来ても期待に合うので健全。
+        if let InferredType::Union(arg_types) = arg_ty {
+            return arg_types.iter().all(|at| self.type_matches_exact(at, expected));
+        }
         if let InferredType::Union(union_types) = expected {
             return union_types.iter().any(|ut| self.type_matches_exact(arg_ty, ut));
         }

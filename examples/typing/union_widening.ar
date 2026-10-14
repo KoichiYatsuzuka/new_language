@@ -1,0 +1,43 @@
+# union_widening.ar — Union の値は、どの構成型も受かるより広い Union へ渡せる（正例・ffi_value_exchange_plan.md 7-15）
+#
+#   - `Option[int]`（= `Union[int, None]`）→ `Union[int, str, None]` の引数・変数・戻り値
+#   - 構成型の順序は問わない（`Union[int, str]` → `Union[str, int, None]`）
+# ⚠ 7-15 より前は、Union の値を期待の構成型 1 つで丸ごと照合していたので、同じ Union にしか渡せなかった
+#   （C の関数が返した `Option[Ptr[Db]]` を `void*` の引数 `Option[Ptr[void]]` へ渡せなかった）。
+#
+# ⚠ 期待値と違えば raise する。
+# 対になる負例: union_widening_error.ar
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+fn describe(let x: Union[int, str, None]) -> str:
+    if x is None:
+        return "none"
+    if x is int:
+        return "int " + str(x mustbe int)
+    return "str " + (x mustbe str)
+
+fn find(let xs: list[int], let target: int) -> Option[int]:
+    for i in range(len(xs)):
+        if xs[i] == target:
+            return i
+    return None
+
+fn widen(let x: Option[int]) -> Union[int, str, None]:
+    return x
+
+let hit = find([4, 5, 6], 5)
+let miss = find([4, 5, 6], 9)
+check("Option[int] to a wider Union parameter", describe(hit) == "int 1" and describe(miss) == "none")
+check("as a return value", describe(widen(hit)) == "int 1")
+
+fn pick(let n: int) -> Union[int, str]:
+    if n > 0:
+        return n
+    return "neg"
+
+let w: Union[str, int, None] = pick(-1)
+check("member order does not matter", describe(w) == "str neg")

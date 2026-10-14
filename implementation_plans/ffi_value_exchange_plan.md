@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）・7-12 完了。フェーズ 4 着手
+- 状態: フェーズ 1〜3 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・§5）・7-12・7-15 完了。フェーズ 4 着手
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
@@ -229,6 +229,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 | **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
+| **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -820,6 +821,20 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   （`cpp_dll_struct_by_value.ar` / `cpp_lib_struct_by_value.ar`）は基準と同じ出力。`scan_examples`（基準と同じ）・`force_gate`
   （`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 529/529・`type_obligations` 退行なし・
   `stale_doc_refs` 0 件。`cargo test` 1138 件・拡張の wasm クレートの 703 件が通る。VSIX を作り直した
+
+### 7-15 実装
+
+- 型の適合判定（`TypeChecker::type_matches_exact`）: Union の実引数は、**どの構成型も**期待に合えば受ける。以前は期待の
+  Union の構成型 1 つで実引数の Union を丸ごと照合していたので、同じ Union にしか渡せなかった（`Option[int]` →
+  `Union[int, str, None]`・C の関数が返した `Option[Ptr[Db]]` → `void*` の引数 `Option[Ptr[void]]`）。引数・変数・戻り値の
+  すべてがこの関数を通る。構成型の 1 つでも合わなければ従来どおり弾く（`Union[int, str]` → `Option[int]`）
+- 4-7 で cpp のスタブの戻り値の型を読むようにしたら、`fp.fp_handle_get(db)`（3-3 の「どの `Ptr` も `void*` へ渡せる」）と
+  `ArPtrProtocol` の引数（`Union[Ptr[void], list[Any], bytes, None]`）へ C の戻り値を渡す形が静的エラーになって見つかった
+- 参照実装（`impl_python/type_check/type_utils.py::_type_matches`）にも同じ規則を入れた（同じ穴があった・別のコミット）
+- 例題: `typing/union_widening.ar`（期待値と違えば raise・4-6 の exe では 5 件の静的エラー）・`union_widening_error.ar`。
+  単体テスト 3 本（`union_types.rs`）
+- 文書: `docs/grammar/08_type_system.md` の Union・skill `type-checking` の適合判定
+- ゲート: 4-7 と合わせて走らせた（4-7 の記録）
 
 ---
 
