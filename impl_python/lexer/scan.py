@@ -29,6 +29,9 @@ class Lexer(_LexerChars, _LexerKeyword, _LexerLiteral, _LexerSymbol):
     """Python-style indentation lexer producing Spanned token lists."""
 
     def __init__(self, source: str, filename: str = "") -> None:
+        # skip a UTF-8 BOM (U+FEFF) at the start, like the Rust lexer (ffi_value_exchange_plan.md 7-5)
+        if source.startswith("\ufeff"):
+            source = source[1:]
         self._chars: list[str] = list(source)
         self._pos: int = 0
         self._positions: list[tuple[int, int]] = _compute_positions(self._chars)
