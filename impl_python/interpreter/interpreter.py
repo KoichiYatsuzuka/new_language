@@ -249,8 +249,10 @@ class Interpreter:
                 return None
             init_fn = _make_native("__init__", _init)
 
+            # FfiTypeError is also a TypeError (ffi_value_exchange_plan.md 7-4)
+            bases = ["Error", "TypeError"] if cls_name == "FfiTypeError" else ["Error"]
             cls = TlClass(
-                name=cls_name, bases=["Error"], methods={"__init__": [init_fn]},
+                name=cls_name, bases=bases, methods={"__init__": [init_fn]},
                 gen_methods={},
                 field_defaults=[
                     ("message", None, False), ("code_context", "", False),
@@ -273,6 +275,7 @@ class Interpreter:
             "IndexError", "KeyError", "ZeroDivisionError", "RuntimeError",
             "StopIteration", "NotImplementedError", "OverflowError",
             "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError",
+            "FfiTypeError", "ForeignError",
         ]
         for cname in ERROR_CLASSES:
             cls = _make_error_class(cname)
