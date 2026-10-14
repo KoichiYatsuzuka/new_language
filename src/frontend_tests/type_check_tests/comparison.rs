@@ -72,6 +72,17 @@ use super::*;
         assert!(err(r#"True != "x""#));
     }
 
+    /// 要素型の無いコンテナ（`x mustbe set` の結果）は、同じ種類の要素型つきのものと比べられる（ffi_value_exchange_plan.md
+    /// 7-1。以前は「決して真にならない」の偽の静的エラー）。種類が違えば従来どおり誤り。
+    #[test]
+    fn eq_bare_container_with_typed_container_ok() {
+        assert!(ok("let a: Any = {1}\nlet s = a mustbe set\nlet r = s == {1}\n"));
+        assert!(ok("let b: Any = [1]\nlet l = b mustbe list\nlet r = l == [1]\nlet r2 = [1] != l\n"));
+        assert!(ok("let c: Any = {\"k\": 1}\nlet d = c mustbe dict\nlet r = d == {\"k\": 1}\n"));
+        assert!(ok("let t: Any = (1, \"x\")\nlet u = t mustbe tuple\nlet r = u == (1, \"x\")\n"));
+        assert!(err("let a: Any = {1}\nlet s = a mustbe set\nlet r = s == [1]\n"));
+    }
+
     /// 数値族（`int` / `float` / `complex`）は相互に比較できる。
     ///
     /// ⚠ 実行時が `uint → int → float` の昇格ラティスで比べるので、ここを厳密にすると

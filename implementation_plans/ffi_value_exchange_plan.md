@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-8・7-9・7-12・7-15〜7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-8・7-9・7-12・7-15〜7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -234,7 +234,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **5-5** | ✅（§5）cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | ✅（§5）非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | ✅（§5）cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
-| **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
+| **7-1** | ✅（§5）型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
 | **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
 | **7-3** | ✅（§5）例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
 | **7-4** | ✅（§5）`FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
@@ -1266,6 +1266,21 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート（基準 `ad9c651`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（462/464。既存の py-int の例題は基準と同じ）。
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（178/178）・
   `compare_wasm_frontend` 554/554・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1172 件・拡張の wasm クレートの
+  726 件が通る。VSIX を作り直した
+
+### 7-1 実装
+
+- 型検査の等値の判定（`check_equality`）で、要素型の無いコンテナ（`x mustbe set` の結果・Python のスタブの素の `set`）は、
+  同じ種類の要素型つきのもの（`{1}` は `set[int]`）と比べられるようにした（`bare_container_matches`。list 系・set・dict・tuple）。
+  要素が合うかは実行してみないと分からない。種類が違う比較（`set` と `list[int]`）は従来どおり静的エラー
+- ⚠ 以前は `s == {1}` が「`==` between `set` and `set[int]` can never be true」の偽の静的エラーだった（基準の exe で 4 件）
+- 参照実装にはこの静的検査が無い（直す所は無い）
+- 単体テスト `eq_bare_container_with_typed_container_ok`。例題: `typing/bare_container_eq.ar`（期待値と違えば raise。参照実装と
+  出力が一致する）
+- 文書: `docs/grammar/08_type_system.md`（`mustbe` の静的型）
+- ゲート（基準 `febb2c1`・制限時間つき）: `compare_outputs` の差は新しい例題 `bare_container_eq` だけ（464/465）。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（179/179）・
+  `compare_wasm_frontend` 555/555・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1173 件・拡張の wasm クレートの
   726 件が通る。VSIX を作り直した
 
 ---

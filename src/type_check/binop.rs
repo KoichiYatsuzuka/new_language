@@ -151,6 +151,11 @@ impl TypeChecker {
         if numeric(&a) && numeric(&b) {
             return;
         }
+        // 要素型の無いコンテナ（`x mustbe set` の結果・Python のスタブの素の `set`）は、同じ種類の要素型つきのものと
+        // 比べられる（ffi_value_exchange_plan.md 7-1）。⚠ 以前は `s == {1}`（`s` は `set`）が「決して真にならない」になった
+        if Self::bare_container_matches(&a, &b) || Self::bare_container_matches(&b, &a) {
+            return;
+        }
         if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
             return;
         }
@@ -172,6 +177,23 @@ impl TypeChecker {
     /// **`Option` 側がもともと `is None` を使う**ことで成立している。
     /// ⚠ クラス（`NamedInstance` / `GenericInstance`）は**含めない**。変種 C は
     /// `__eq__` の宣言を見て判定する。
+    /// `bare` が要素型の無いコンテナで、`other` が同じ種類のコンテナなら真（7-1）。要素型が無いので、要素が合うかは
+    /// 実行してみないと分からない（等値は成り立ちうる）。
+    fn bare_container_matches(bare: &InferredType, other: &InferredType) -> bool {
+        use InferredType as T;
+        let listish = |t: &T| {
+            matches!(t, T::List | T::ListOf(_) | T::ListLike | T::ListLikeOf(_) | T::FixedList | T::FixedListOf(_))
+        };
+        match bare {
+            T::List | T::ListLike | T::FixedList => listish(other),
+            T::Set => matches!(other, T::Set | T::SetOf(_)),
+            T::Dict => matches!(other, T::Dict | T::DictOf(..)),
+            T::TupleAny => matches!(other, T::TupleAny | T::Tuple(_)),
+            // 要素型を持つ・コンテナでない型は対象外（ほかの規則で判定する）
+            _ => false,
+        }
+    }
+
     fn opaque_for_equality(ty: &InferredType) -> bool {
         use InferredType as T;
         matches!(

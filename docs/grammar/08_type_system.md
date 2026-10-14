@@ -352,6 +352,11 @@ let g = f mustbe function[()->int]   # 静的型: ()->int
 let r = g()                          # 静的型: int
 ```
 
+`xs mustbe list` のように要素型を書かなければ、静的型は要素型の無い `list` です。要素型の無いコンテナは、同じ種類の
+要素型つきのもの（`[1, 2]` は `list[int]`）と `==` / `!=` で比べられます（要素が合うかは実行してみないと分からないので。
+`implementation_plans/ffi_value_exchange_plan.md` 7-1。以前は「決して真にならない」の静的エラーでした）。`set` と `list[int]`
+のように種類が違えば静的エラーです。
+
 ### 警告
 
 要素型付きコレクション (`list[int]` 等) やシグネチャ付き `function` を `mustbe` に使用すると  

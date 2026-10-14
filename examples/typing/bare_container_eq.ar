@@ -1,0 +1,31 @@
+# bare_container_eq.ar — 要素型の無いコンテナを要素型つきのコンテナと == で比べる（正例・ffi_value_exchange_plan.md 7-1）
+#
+# `x mustbe set` の結果（要素型が分からないので素の `set`）や Python のスタブの素の `set` は、同じ種類の要素型つきのもの
+# （`{1, 2}` は `set[int]`）と比べられる。要素が合うかは実行してみないと分からない。
+# ⚠ 7-1 より前は「`==` between `set` and `set[int]` can never be true」の偽の静的エラーだった。種類が違う比較
+#   （`set` と `list[int]`）は従来どおり静的エラー。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let a: Any = {1, 2}
+let s = a mustbe set
+check("set == set[int]", s == {1, 2})
+check("set != set[int]", s != {3})
+
+let b: Any = [1, 2]
+let l = b mustbe list
+check("list == list[int]", l == [1, 2])
+check("list[int] != list", [2, 1] != l)
+
+let c: Any = {"k": 1}
+let d = c mustbe dict
+check("dict == dict[str, int]", d == {"k": 1})
+
+let t: Any = (1, "x")
+let u = t mustbe tuple
+check("tuple == tuple[int, str]", u == (1, "x"))
