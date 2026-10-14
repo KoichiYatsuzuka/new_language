@@ -440,6 +440,10 @@ class TlInstance:
             idx = self.cls.field_index.get("__value__")
             if idx is not None and self.slot_initialized(idx):
                 return f"{cls_name}({_repr_val(self.field_value(idx))})"
+        # an exception is ValueError('bad value') like Python's repr(e) (ffi_value_exchange_plan.md 7-3)
+        if _is_exception_class(self.cls):
+            msg = _exception_message(self)
+            return f"{cls_name}({'' if msg is _NO_MESSAGE else _repr_val(msg)})"
         return f"<{cls_name} object>"
 
 
@@ -698,6 +702,22 @@ def type_name(v: "Value") -> str:
     return "unknown"
 
 
+_NO_MESSAGE = object()
+
+
+def _is_exception_class(cls) -> bool:
+    """Built-in exceptions and classes implementing Error (Rust: ClassValue::is_a("Exception"))."""
+    return cls.name == "Exception" or "Error" in cls.bases or "Exception" in cls.bases
+
+
+def _exception_message(inst):
+    """The `message` field, or _NO_MESSAGE when it was never set (7-3)."""
+    idx = inst.cls.field_index.get("message")
+    if idx is None or not inst.slot_initialized(idx):
+        return _NO_MESSAGE
+    return inst.field_value(idx)
+
+
 def display(v: "Value") -> str:
     """Return the user-visible string representation (like print())."""
     if v is None:
@@ -739,6 +759,10 @@ def display(v: "Value") -> str:
             idx = cls.field_index.get("__value__")
             if idx is not None and v.slot_initialized(idx):
                 return f"{cls.name}({display(v.field_value(idx))})"
+        # an exception prints its message like Python's str(e); "" when it has none (7-3)
+        if _is_exception_class(cls):
+            msg = _exception_message(v)
+            return "" if msg is _NO_MESSAGE else display(msg)
         return f"<{cls.name} object>"
     if isinstance(v, TlClass):
         return f"<class {v.name}>"
