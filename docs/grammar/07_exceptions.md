@@ -107,6 +107,21 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 `code_context`/`file`/`line`/`col` は `raise` 実行時にインタープリタが自動設定します。
 
+### 例外の表示
+
+Python と同じく、`str(e)` と `print(e)` は例外のメッセージ（`message`）、`repr(e)` は `ValueError('bad value')` の形です
+（組み込みの例外も、`Error` を実装した利用者の例外も同じ。メッセージが無ければ `str(e)` は空文字列）。
+`__str__` / `__repr__` を定義すればそれが優先します（`implementation_plans/ffi_value_exchange_plan.md` 7-3。
+以前は `<ValueError object at 0x…>` で、アドレスが実行のたびに変わりました）。
+
+```ar
+try:
+    raise ValueError("bad value")
+except ValueError as e:
+    print(e)         # bad value
+    print(repr(e))   # ValueError('bad value')
+```
+
 ---
 
 ## カスタム例外クラス

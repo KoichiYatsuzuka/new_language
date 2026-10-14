@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-12・7-15・7-17・7-18・7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3・7-12・7-15・7-17・7-18・7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -236,7 +236,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **6-2** | ✅（§5）cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
 | **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
 | **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
-| **7-3** | 例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
+| **7-3** | ✅（§5）例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
 | **7-4** | `FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
 | **7-5** | 字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
 | **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
@@ -256,6 +256,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-20** | `mut` の変数を非同期タスクへ `Rc` を共有したまま送る（`async_mgr::clone_for_task`）。タスクの中の `xs.append(..)` がメインのリストを別のスレッドから書き換える（データ競合。再束縛 `n = 5` は伝わらない）。文書も食い違っている（`docs/grammar/10_special_features.md` は共有、`.claude/rules/language-differences.md` は複製と書く）。`let` と同じく複製にするか、明示的な共有の仕組み（CLAUDE.md の Async enhancements の Mutex のような型）へ移すかを決める（7-19 で発見・設計判断が要る） | なし | 中 |
 | **7-21** | 非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
 | **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
+| **7-23** | 参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1150,6 +1151,24 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`
   （`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 546/546・`type_obligations` 退行なし・
   `stale_doc_refs` 0 件。`cargo test` 1163 件が通る（解釈側だけの変更なので VSIX は作り直していない）
+
+### 7-3 実装
+
+- 例外のインスタンス（`ClassValue::is_a("Exception")`: 組み込みの例外と `Error` を実装したクラス）の表示を Python に揃えた:
+  `str(e)` / `print(e)` はメッセージ（`message` 欄。無ければ空文字列）、`repr(e)` とリストの中の表示は `ValueError('bad value')`。
+  `__str__` / `__repr__` があればそれが優先（従来どおり）。Rust は `ops/display.rs`（`display` / `display_repr` / `repr_val`）、
+  参照実装は `value.py`（`display` / `TlInstance.__repr__`）。⚠ 以前は Rust が `<ValueError object at 0x…>`（アドレスが実行の
+  たびに変わる）、参照実装が `<ValueError object>` だった
+- ⚠ 調べる中で見つけたもの: 参照実装の `print(list)` / `str(list)` が要素の文字列を引用符なしで出す（`['a']` が `[a]`）⇒ 7-23。
+  例題はこの差に触れない形にした（リストの中の例外の表示は単体テストで見る）
+- 単体テスト `test_exception_str_is_its_message`。例題: `exceptions/exception_str.ar`（期待値と違えば raise。基準の exe では落ちる。
+  参照実装と出力が一致する）
+- 文書: `docs/grammar/07_exceptions.md`（例外の表示）
+- ゲート（基準 `d9443aa`・制限時間つき）: `compare_outputs` の差は新しい例題と `exceptions/traceback_frame_names.ar`
+  （`caught: <ZeroDivisionError object at 0x…>` → `caught: division by zero`・意図した変化）だけ（455/457）。`compare_import_paths`
+  13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（176/176。新しい例題も一致）・
+  `compare_wasm_frontend` 547/547・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1164 件が通る（解釈側だけの
+  変更なので VSIX は作り直していない）
 
 ---
 

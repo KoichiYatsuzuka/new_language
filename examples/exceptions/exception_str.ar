@@ -1,0 +1,49 @@
+# exception_str.ar — 例外の str(e) / print(e) はメッセージ（正例・ffi_value_exchange_plan.md 7-3）
+#
+# Python と同じく、`str(e)` と `print(e)` は例外のメッセージ、`repr(e)`（Rust ではリストの中の表示も）は `ValueError('bad value')`。
+# 組み込みの例外も、`Error` を実装した利用者の例外も同じ。`__str__` / `__repr__` を定義すればそれが優先する。
+# ⚠ 7-3 より前は `<ValueError object at 0x…>` で、アドレスが実行のたびに変わった（出力を比べるゲートもずれた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+class ParseFailure(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+class Loud(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+    fn __str__(self) -> str:
+        return "LOUD: " + self.message
+
+try:
+    raise ValueError("bad value")
+except ValueError as e:
+    print(e)
+    check("str(e) of a built-in exception", str(e) == "bad value")
+    check("repr(e)", repr(e) == "ValueError('bad value')")
+
+try:
+    raise ParseFailure("unexpected token")
+except ParseFailure as e:
+    check("str(e) of a user exception", str(e) == "unexpected token")
+    check("repr(e) of a user exception", repr(e) == "ParseFailure('unexpected token')")
+
+try:
+    raise Loud("hey")
+except Loud as e:
+    check("__str__ wins", str(e) == "LOUD: hey")
+
+# インタプリタが投げる例外も同じ（メッセージを持つ）
+try:
+    let xs = [1]
+    print(xs[3])
+except IndexError as e:
+    let text = str(e)
+    check("an internal error prints its message", text != "" and not ("object at" in text))

@@ -77,7 +77,13 @@ impl Interpreter {
             }
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
-                let class_name = i.borrow().class.name.clone();
+                let inst = i.borrow();
+                // 例外はメッセージ（7-3・Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが
+                //   実行のたびに変わった。メッセージが無い（`ValueError()`）ときは空文字列（Python と同じ）
+                if inst.class.is_a("Exception") {
+                    return exception_message(&inst).map(|m| self.display(&m)).unwrap_or_default();
+                }
+                let class_name = inst.class.name.clone();
                 let addr = Rc::as_ptr(i) as usize;
                 format!("<{} object at 0x{:x}>", class_name, addr)
             }
@@ -229,6 +235,12 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
+            // 例外は `ValueError('bad value')`（7-3・Python の `repr(e)` と同じ）。メッセージが無ければ `ValueError()`
+            Value::Instance(i) if i.borrow().class.is_a("Exception") => {
+                let inst = i.borrow();
+                let message = exception_message(&inst).map(|m| self.display_repr(&m)).unwrap_or_default();
+                format!("{}({message})", inst.class.name)
+            }
             _ => self.display(val),
         }
     }
@@ -310,14 +322,20 @@ impl Interpreter {
                     };
                 }
 
-                // デフォルト: <ClassName object at 0xADDR>
-                Ok(self.display(val))
+                // 例外は `ValueError('bad value')`（7-3）、ほかは <ClassName object at 0xADDR>
+                Ok(self.display_repr(val))
             }
             // その他の型はデフォルト表示
             _ => Ok(self.display_repr(val)),
         }
     }
 
+}
+
+/// 例外のメッセージ（`message` 欄・7-3）。まだ入っていなければ `None`。
+fn exception_message(inst: &crate::interpreter::InstanceData) -> Option<Value> {
+    let idx = *inst.class.field_index.get("message")?;
+    inst.field_value(idx)
 }
 
 /// バイト列の表記（Python の `repr(bytes)` と同じ・3-1）。印字できる ASCII はそのまま、`\` と引用符はエスケープ、

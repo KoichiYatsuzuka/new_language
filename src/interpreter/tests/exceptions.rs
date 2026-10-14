@@ -387,3 +387,28 @@ fn test_except_exception_catches_every_exception() {
     let v = run_get(src, "caught");
     assert!(matches!(v, Value::Int(3)), "{v:?}");
 }
+
+/// 例外の `str(e)` / `repr(e)` / リストの中の表示（ffi_value_exchange_plan.md 7-3・Python と同じ）。
+/// ⚠ 以前は `<ValueError object at 0x…>` で、アドレスが実行のたびに変わった。
+#[test]
+fn test_exception_str_is_its_message() {
+    let src = concat!(
+        "mut s = \"\"\n",
+        "mut r = \"\"\n",
+        "mut l = \"\"\n",
+        "try:\n",
+        "    raise ValueError(\"bad value\")\n",
+        "except ValueError as e:\n",
+        "    s = str(e)\n",
+        "    r = repr(e)\n",
+        "    l = str([e])\n",
+    );
+    let interp = run_interp(src);
+    let get = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: expected a str, got {other:?}"),
+    };
+    assert_eq!(get("s"), "bad value");
+    assert_eq!(get("r"), "ValueError('bad value')");
+    assert_eq!(get("l"), "[ValueError('bad value')]");
+}
