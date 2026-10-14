@@ -102,6 +102,7 @@ $knownDiff = @{
     'cs_proc_collections'            = 'Rust: cs-proc でコレクションと bytes をコピーで受け渡す（ffi_value_exchange_plan.md 5-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cs_dll_exception_error'         = 'Rust: C# の例外を Arrow のエラーにして止まる（stderr・ffi_value_exchange_plan.md 5-1）。py: 同じエラーで止まるが、捕まえていない例外を stdout に出す'
     'cs_dll_collections'             = 'Rust: cs-dll でバイト列・ポインタ・数値の配列・list を受け渡す（ffi_value_exchange_plan.md 5-5）。py: bytes / Ptr が無い（⇒ 7-10）'
+    'async_native_call'              = 'Rust: 非同期タスクの中から C の関数を呼ぶ（ffi_value_exchange_plan.md 6-1）。py: AsyncManager が無く NameError'
     'cs_dll_array_arg_error'         = 'Rust: cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと StaticTypeError（5-5）。py: 型スタブの型が違うので検査されず呼んで C# 側の例外'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'
     'cpp_dll_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）。py: unsigned int の最大値を -1 として読み、例題の検査が ValueError で止まる（直す前の Rust と同じ）'

@@ -64,6 +64,12 @@ pub(super) struct TaskEnv {
     /// ⚠ これが無いと、タスクの中の `a.b`（`import a.b` の後の属性）が `AttributeError` になる
     ///   （サブモジュールは名前空間の値ではなくインタプリタの表に付いている）。
     pub(super) submodules: Vec<(String, String, Value)>,
+    /// 読み込んだ DLL の表（`Interpreter::native_libs` の複製・ffi_value_exchange_plan.md 6-1）。
+    ///
+    /// ⚠ これが無いと、タスクの中で初めて呼ぶ C の関数（ハンドル経路の `{name}_tl` はシンボルを呼び出しのときに
+    ///   引く）が `native library not loaded` になっていた。メインスレッドで一度呼んでいれば、AST に残った関数の
+    ///   ポインタを使うので動いた（型つき経路は読み込みのときに引くので動いた）。`Arc` なので DLL は共有する。
+    pub(super) native_libs: Vec<(std::path::PathBuf, std::sync::Arc<crate::interpreter::NativeLibWrapper>)>,
 }
 
 /// スレッド境界を越えてタスクの環境を送るためのラッパー。
@@ -299,6 +305,7 @@ fn run_task(
     for (parent, name, v) in env.submodules {
         interp.submodules.entry(parent).or_default().insert(name, v);
     }
+    interp.native_libs.extend(env.native_libs);
     let env = env.vars;
 
     // ── VM 経路（#32）──────────────────────────────────────────────────────
@@ -397,7 +404,8 @@ pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
             children.iter().map(move |(name, v)| (parent.clone(), name.clone(), v.deep_clone()))
         })
         .collect();
-    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx, submodules }
+    let native_libs = interp.native_libs.iter().map(|(p, l)| (p.clone(), l.clone())).collect();
+    TaskEnv { vars: capture_vars(interp), globals, cur_globals, class_ctx, submodules, native_libs }
 }
 
 /// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。

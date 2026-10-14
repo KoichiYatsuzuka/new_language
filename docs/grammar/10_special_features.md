@@ -119,6 +119,10 @@ let results = mng.results
 
 **注意**: `PyObject` をキャプチャすると Python の GIL により並列化されません。
 
+**外部言語の関数**: タスクの中からも呼べます。読み込んだ DLL の表はタスクのインタプリタへ渡します
+（`implementation_plans/ffi_value_exchange_plan.md` 6-1。以前はタスクの中で初めて呼ぶ C の関数が
+`native library not loaded` になっていました）。
+
 ---
 
 ## デバッガ (`break_point`)
