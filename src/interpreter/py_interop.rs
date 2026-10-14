@@ -324,6 +324,19 @@ pub fn py_setitem(handle: &PyObjHandle, key: &Value, val: &Value) -> Result<(), 
     .map_err(|e| format!("IndexError: Python __setitem__ failed: {e}"))
 }
 
+/// Python の int（`bool` を除く）なら、その表記（`str(obj)`）。i64 に入らない int は Python のオブジェクトのまま届くので、
+/// 境界検査が OverflowError の文面に使う（`ffi_boundary`・7-9）。
+pub fn py_int_text(handle: &PyObjHandle) -> Option<String> {
+    Python::with_gil(|py| {
+        let obj = handle.inner.bind(py);
+        if obj.is_instance_of::<PyInt>() && !obj.is_instance_of::<pyo3::types::PyBool>() {
+            obj.str().ok().map(|s| s.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// `len(obj)`: Python の `__len__` を呼び出す。
 pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {

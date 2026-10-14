@@ -358,7 +358,8 @@ let mean = np.mean(arr)
 bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryview` を Arrow の `bytes` にコピー・5-3。注釈の
 `bytearray` / `memoryview` も `bytes` と読む。int32 などの `memoryview` は Python のオブジェクトのまま）は
 双方向に変換します。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
-受け取ります（以前は黙って `float` に変換し精度を失っていました）。Arrow の set に入れられない要素を含む set は、dict と
+受け取ります（以前は黙って `float` に変換し精度を失っていました）。ただし `-> int` など `int` を宣言した場所に i64 に入らない
+`int` が返れば、C / C# / Rust と同じく `OverflowError` です（7-9。以前は `FfiTypeError`）。Arrow の set に入れられない要素を含む set は、dict と
 同じく丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
 型名はクラス名）。
 
@@ -991,7 +992,7 @@ Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 JS の数値には整数と小数の区別が無いので、戻り値は `.ars` に書いた型で読みます: `-> float` の関数が `2.0`
 （整数値）を返せば `2.0`、`-> int` の関数が整数値の小数を返せば `int`。`list[float]` などコンテナの要素にも同じ
 規則を当てます。宣言と食い違う値（`-> list[int]` が `[1, "two"]` を返す・小数を `int` で返す）は `FfiTypeError`（`TypeError`
-の派生の組み込み例外）、JS の側で投げられた例外は `ForeignError`（`message` は `Error: boom` のように `String(err)`）です。
+の派生の組み込み例外）、整数値だが int64 に入らない数（`-> int` が `1e20` を返す）は `OverflowError`（7-9）、JS の側で投げられた例外は `ForeignError`（`message` は `Error: boom` のように `String(err)`）です。
 cs-proc のホストで投げられた C# の例外も `ForeignError`（`System.InvalidOperationException: boom`）です（7-4）。
 `dict[str, float]` の値・`set[float]` の要素・`tuple[int, float]` の要素にも同じ規則を当てます。
 dict / tuple / set / bytes は中身ごとコピーして運びます（`implementation_plans/ffi_value_exchange_plan.md` 5-2）。

@@ -1,0 +1,12 @@
+# py_int_overflow_error.ar — `-> int` の Python の関数が int（64 ビット）に入らない整数を返す（負例・ffi_value_exchange_plan.md 7-9）
+#
+# 期待: OverflowError: python function `pp.big_declared` returned 1180591620717411303424, which does not fit in `int` ...
+# ⚠ 7-9 より前は FfiTypeError（型の不一致）で、C / C# / Rust の OverflowError と違った。
+# 実行には Python（py_int_probe.py）が要る。
+# 対になる正例: ffi_int_overflow.ar
+
+import[py-int] py_int_probe as pp
+
+print("before")
+let n: int = pp.big_declared()
+print("unreachable:", n)

@@ -31,6 +31,14 @@ def big():
     return 2 ** 70
 
 
+def big_declared() -> int:      # declared int, but does not fit in Arrow's int (plan 7-9)
+    return 2 ** 70
+
+
+def big_in_list() -> list[int]:
+    return [1, 2 ** 70]
+
+
 def big_text(x) -> str:
     return str(x + 1)
 

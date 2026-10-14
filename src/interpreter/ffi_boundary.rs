@@ -45,6 +45,9 @@ pub(crate) enum Verdict {
     Mismatch { actual: String },
     /// この宣言型は動的に検査できないので通す（`Any` / `Unresolved` / 関数型など）。
     Unverifiable,
+    /// `int` を宣言した場所に、int（i64）に入らない整数が届いた（7-9）。C / C# / Rust と同じく OverflowError にする。
+    /// `value` は届いた整数の表記。
+    Overflow { value: String },
 }
 
 /// 外部言語ごとの境界検査器。
@@ -254,7 +257,54 @@ impl BoundaryChecker for PythonChecker {
     }
 
     fn check(&self, value: &Value, declared: &InferredType) -> Verdict {
-        check_common(value, declared)
+        // ⚠ i64 に入らない Python の int は Python のオブジェクトのまま届く（`py_to_tl`・2-6）。`int` を宣言した場所に
+        //   来たら OverflowError（7-9。以前は型の不一致の FfiTypeError で、C / C# / Rust の OverflowError と違った）
+        refine_overflow(check_common(value, declared), value, declared, &|v| match v {
+            Value::PyObject(h) => crate::interpreter::py_interop::py_int_text(h),
+            _ => None,
+        })
+    }
+}
+
+/// 不一致の原因が「`int` を宣言した場所に int（i64）に入らない整数が来た」ことなら `Overflow` にする（7-9）。
+/// `oversized` は言語ごとの「入らない整数」の見分け方（入らない整数ならその表記）。
+fn refine_overflow(
+    verdict: Verdict,
+    value: &Value,
+    declared: &InferredType,
+    oversized: &dyn Fn(&Value) -> Option<String>,
+) -> Verdict {
+    match verdict {
+        Verdict::Mismatch { actual } => match oversized_int(value, declared, oversized) {
+            Some(shown) => Verdict::Overflow { value: shown },
+            None => Verdict::Mismatch { actual },
+        },
+        other => other,
+    }
+}
+
+/// `declared` の中で `int` を宣言した場所に届いた、int に入らない整数（コンテナ・`Option` / `Union` の中も見る）。
+/// ⚠ 不一致と判定された値にだけ使う（`Union[int, Any]` のように入る値には使わない）。
+fn oversized_int(value: &Value, declared: &InferredType, oversized: &dyn Fn(&Value) -> Option<String>) -> Option<String> {
+    match declared {
+        InferredType::Int => oversized(value),
+        InferredType::Union(types) => types.iter().find_map(|t| oversized_int(value, t, oversized)),
+        InferredType::ListOf(elem) | InferredType::ListLikeOf(elem) | InferredType::SetOf(elem) => match value {
+            Value::List(items) | Value::Set(items) => items.borrow().iter().find_map(|v| oversized_int(v, elem, oversized)),
+            _ => None,
+        },
+        InferredType::DictOf(kt, vt) => match value {
+            Value::Dict(d) => d.borrow().all_pairs().iter().find_map(|(k, v)| {
+                oversized_int(k, kt, oversized).or_else(|| oversized_int(v, vt, oversized))
+            }),
+            _ => None,
+        },
+        InferredType::Tuple(types) => match value {
+            Value::Tuple(td) => td.all_values().iter().zip(types).find_map(|(v, t)| oversized_int(v, t, oversized)),
+            _ => None,
+        },
+        // ほかの宣言型の中に `int` は無い（ここで見つからなければ、不一致は型の違い）
+        _ => None,
     }
 }
 
@@ -277,7 +327,7 @@ impl BoundaryChecker for JavaScriptChecker {
     }
 
     fn check(&self, value: &Value, declared: &InferredType) -> Verdict {
-        match js_coerce(value, declared) {
+        let verdict = match js_coerce(value, declared) {
             // ⚠ 寄せた値も照合し直す（5-2）。以前はそのまま通していたので、`list[float]` の `[1, "two"]` は `1` を寄せた
             //   時点で `"two"` が照合されずに通った
             Ok(Some(v)) => match check_common(&v, declared) {
@@ -286,7 +336,14 @@ impl BoundaryChecker for JavaScriptChecker {
             },
             Ok(None) => check_common(value, declared),
             Err(()) => mismatch(value),
-        }
+        };
+        // 整数値だが int64 に入らない数（`1e20`・2^63）は OverflowError（7-9。以前は FfiTypeError）。小数・NaN は不一致のまま
+        refine_overflow(verdict, value, declared, &|v| match v {
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 && (*f < i64::MIN as f64 || *f >= i64::MAX as f64) => {
+                Some(format!("{f:.0}"))
+            }
+            _ => None,
+        })
     }
 }
 
@@ -458,7 +515,8 @@ mod tests {
             Verdict::Coerce(Value::Int(3)) => {}
             other => panic!("expected Coerce(Int(3)), got {other:?}"),
         }
-        assert!(is_mismatch(&c.check(&Value::Float(1e20), &InferredType::Int)));
+        // int64 に入らない整数値は OverflowError（7-9。以前は不一致・`javascript_integral_out_of_range_is_overflow`）
+        assert!(matches!(c.check(&Value::Float(1e20), &InferredType::Int), Verdict::Overflow { .. }));
         assert!(is_mismatch(&c.check(&Value::Float(f64::NAN), &InferredType::Int)));
     }
 
@@ -532,6 +590,24 @@ mod tests {
     }
 
     // ── 言語の登録 ──
+
+    /// 整数値だが int64 に入らない JS の数は OverflowError（7-9）。小数・NaN は不一致のまま。コンテナ・`Option` の中も見る。
+    #[test]
+    fn javascript_integral_out_of_range_is_overflow() {
+        let c = checker_for("js-proc").unwrap();
+        let overflow = |v: &Verdict| matches!(v, Verdict::Overflow { value } if value == "100000000000000000000");
+        assert!(overflow(&c.check(&Value::Float(1e20), &InferredType::Int)));
+        assert!(overflow(&c.check(&list(vec![Value::Int(1), Value::Float(1e20)]), &InferredType::ListOf(Box::new(InferredType::Int)))));
+        let opt_int = InferredType::Union(vec![InferredType::Int, InferredType::None]);
+        assert!(overflow(&c.check(&Value::Float(1e20), &opt_int)));
+        assert!(matches!(c.check(&Value::Float(-1e20), &InferredType::Int), Verdict::Overflow { .. }));
+        // 2^63 ちょうども入らない（`i64::MAX as f64` は 2^63 に丸まる）
+        assert!(matches!(c.check(&Value::Float(9223372036854775808.0), &InferredType::Int), Verdict::Overflow { .. }));
+        // 本当の型の違いは不一致のまま
+        assert!(is_mismatch(&c.check(&Value::Float(2.5), &InferredType::Int)));
+        assert!(is_mismatch(&c.check(&Value::Float(f64::NAN), &InferredType::Int)));
+        assert!(is_mismatch(&c.check(&Value::Float(1e20), &InferredType::Str)));
+    }
 
     #[test]
     fn only_dynamic_languages_are_checked() {

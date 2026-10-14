@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-12・7-15〜7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-9・7-12・7-15〜7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -242,7 +242,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
 | **7-7** | 評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
-| **7-9** | 境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
+| **7-9** | ✅（§5）境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
 | **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
@@ -1227,6 +1227,26 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（178/178）・
   `compare_wasm_frontend` 550/550・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1169 件・拡張の wasm クレートの
   723 件が通る。VSIX を作り直した
+
+### 7-9 実装
+
+- 境界検査の判定に `Verdict::Overflow` を足した。Python（py / py-int）と JavaScript（js-proc）の検査器は、不一致と判定した
+  とき、その原因が「`int` を宣言した場所に int（64 ビット）に入らない整数が来た」ことなら `Overflow` にする
+  （`refine_overflow` / `oversized_int`。`Option` / `Union` とコンテナの中も見る）。`check_ffi_return` は C / C# / Rust と同じく
+  `OverflowError: python function `f` returned 1180591620717411303424, which does not fit in `int` (64-bit; declared `int`)` を送出する。
+  Python は i64 に入らない int が Python のオブジェクトのまま届く（2-6）ので `py_interop::py_int_text` で見分け、JS は整数値で
+  int64 の範囲外の `Float`（`1e20`・2^63）
+- ⚠ 以前はどれも型の不一致（`FfiTypeError`）だった。本当の型の違い（小数を `int` で返す・`list[int]` に str）は `FfiTypeError` のまま。
+  宣言が `int` でない大きな整数は従来どおり Python のオブジェクトのまま受け取る
+- 検査用の関数: `py_int_probe.py` の `big_declared`（`-> int`）・`big_in_list`（`-> list[int]`）
+- 単体テスト `javascript_integral_out_of_range_is_overflow`（`javascript_coerces_integral_float_to_int` の `1e20` も Overflow に
+  更新）。例題: `interop/ffi_int_overflow.ar`（期待値と違えば raise。基準の exe では FfiTypeError で落ちる）・
+  `interop/py_int_overflow_error.ar`。参照実装は境界の検査が無く int に 64 ビットの上限も無いので既知の差
+- 文書: `docs/grammar/09_imports.md`（Python・JavaScript の値）
+- ゲート（基準 `f63d008`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（460/462）。`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（178/178）・`compare_wasm_frontend`
+  552/552・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1170 件が通る（解釈側だけの変更なので VSIX は
+  作り直していない）
 
 ---
 

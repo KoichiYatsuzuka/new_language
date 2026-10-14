@@ -56,27 +56,33 @@ impl Interpreter {
             return Ok(value);
         };
 
-        match checker.check(&value, &declared) {
-            Verdict::Ok | Verdict::Unverifiable => Ok(value),
-            Verdict::Coerce(v) => Ok(v),
-            Verdict::Mismatch { actual } => {
-                let where_ = call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
-                let msg = format!(
-                    "FfiTypeError: {} function `{}` is declared to return `{}` but returned `{}` at {}",
-                    checker.lang(),
-                    callee_name,
-                    declared,
-                    actual,
-                    where_
-                );
-                match self.make_internal_raised_error(&msg) {
-                    Some(raised) => {
-                        self.current_exception = Some(raised);
-                        Err(crate::interpreter::RAISE_SENTINEL.to_string())
-                    }
-                    None => Err(msg),
-                }
+        let what = match checker.check(&value, &declared) {
+            Verdict::Ok | Verdict::Unverifiable => return Ok(value),
+            Verdict::Coerce(v) => return Ok(v),
+            Verdict::Mismatch { actual } => format!(
+                "FfiTypeError: {} function `{}` is declared to return `{}` but returned `{}`",
+                checker.lang(),
+                callee_name,
+                declared,
+                actual
+            ),
+            // C / C# / Rust と同じく OverflowError（7-9）
+            Verdict::Overflow { value: shown } => format!(
+                "OverflowError: {} function `{}` returned {}, which does not fit in `int` (64-bit; declared `{}`)",
+                checker.lang(),
+                callee_name,
+                shown,
+                declared
+            ),
+        };
+        let where_ = call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
+        let msg = format!("{what} at {where_}");
+        match self.make_internal_raised_error(&msg) {
+            Some(raised) => {
+                self.current_exception = Some(raised);
+                Err(crate::interpreter::RAISE_SENTINEL.to_string())
             }
+            None => Err(msg),
         }
     }
 

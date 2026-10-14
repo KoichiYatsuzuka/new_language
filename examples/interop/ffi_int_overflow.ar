@@ -1,0 +1,55 @@
+# ffi_int_overflow.ar — 外部言語から int（64 ビット）に入らない整数が返ったら OverflowError（正例・ffi_value_exchange_plan.md 7-9）
+#
+# C / C# / Rust の境界は以前から OverflowError。Python（py-int）と JavaScript（js-proc）も同じにした:
+#   - `-> int` と宣言した Python の関数が 2**70 を返す（Python の int は桁に上限が無い）
+#   - `-> list[int]` の要素に 2**70 が混ざる
+#   - `-> int` と宣言した JS の関数が 1e20 を返す（整数値だが int64 に入らない）
+# ⚠ 7-9 より前はどれも型の不一致（FfiTypeError）だった。小数を `int` で返すような本当の型の違いは FfiTypeError のまま。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には Python（py_int_probe.py）と Node.js（js_probe.js）が要る。
+# 対になる負例: py_int_overflow_error.ar
+
+import[py-int] py_int_probe as pp
+import[js-proc] js_probe as jp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+mut message = ""
+try:
+    let n: int = pp.big_declared()
+    print("unreachable:", n)
+except OverflowError as e:
+    message = e.message
+check("python: 2**70 for `-> int` is an OverflowError", "1180591620717411303424" in message)
+
+message = ""
+try:
+    let xs: list[int] = pp.big_in_list()
+    print("unreachable:", xs)
+except OverflowError as e:
+    message = e.message
+check("python: 2**70 inside `-> list[int]` is an OverflowError", "1180591620717411303424" in message)
+
+message = ""
+try:
+    let b: int = jp.big()
+    print("unreachable:", b)
+except OverflowError as e:
+    message = e.message
+check("javascript: 1e20 for `-> int` is an OverflowError", "100000000000000000000" in message)
+
+# 本当の型の違いは FfiTypeError のまま
+mut caught = False
+try:
+    let ys: list[int] = jp.mixed()
+    print("unreachable:", ys)
+except FfiTypeError:
+    caught = True
+check("a str in `-> list[int]` stays an FfiTypeError", caught)
+
+# 大きな整数でも、宣言が int でなければ Python のオブジェクトのまま受け取れる（2-6）
+check("an undeclared big int is still a Python object", pp.big_text(pp.big()) == "1180591620717411303425")

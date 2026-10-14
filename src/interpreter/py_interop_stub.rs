@@ -60,6 +60,11 @@ pub fn py_setitem(_handle: &PyObjHandle, _key: &Value, _val: &Value) -> Result<(
     Err(unavailable("Python subscript assignment"))
 }
 
+/// 評価コアのビルドには Python のオブジェクトが無い（`py_interop::py_int_text` の写し）。
+pub fn py_int_text(_handle: &PyObjHandle) -> Option<String> {
+    None
+}
+
 pub fn py_len(_handle: &PyObjHandle) -> Result<Value, String> {
     Err(unavailable("`len()` on a Python object"))
 }
