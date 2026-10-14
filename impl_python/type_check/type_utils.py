@@ -38,6 +38,10 @@ class _TypeCheckerUtils:
             if isinstance(arg_ty, TyTypeValOf):
                 return self._type_val_compatible(arg_ty.inner, expected.inner)
             return False
+        # A Union argument fits when every member fits (ffi_value_exchange_plan.md 7-15):
+        # Option[int] -> Union[int, str, None]. It used to be matched as a whole against one member.
+        if isinstance(arg_ty, TyUnion):
+            return all(self._type_matches(t, expected) for t in arg_ty.types)
         if isinstance(expected, TyUnion):
             return any(self._type_matches(arg_ty, t) for t in expected.types)
         # Intersection: arg must match ALL constituent types

@@ -1,4 +1,4 @@
-# git SHA: 3361350159cad1a7fa5cd30901ff27a8f46bc688
+# git SHA: 408cc8fd2db471ec7c41f69014f7e770a5a6c0bf
 """Command-line entry point for the Python implementation (mirrors src/main.rs)."""
 from __future__ import annotations
 import sys
