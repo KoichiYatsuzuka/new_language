@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜5 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・§5）・7-12・7-15・7-17 完了。フェーズ 6 着手（6-1）
+- 状態: フェーズ 1〜5 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・§5）・7-12・7-15・7-17・7-18 完了。フェーズ 6 着手（6-1）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -251,7 +251,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
 | **7-16** | C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 | **7-17** | ✅（§5）dict のキーの照合が、乱数のシード次第で型厳密でなくなる。`dict_get` / `dict_set` がキーの等値に式としての比較（`3 == 3.0` は真）を使っていた。ハッシュは型で分けているが、表の内部はハッシュの下位の手がかりが一致した別のキーにも等値を問うので、`d[3]` と `d[3.0]` が同じキーになることがあった（拡張のクレートのテスト `test_dict_keys_are_type_strict` が 5-3 のゲートで落ちて発見・およそ数回に 1 回） | なし | 小 |
-| **7-18** | `len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
+| **7-18** | ✅（§5）`len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1077,6 +1077,20 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend`
   542/542・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1159 件・拡張の wasm クレートの 715 件が通る。
   VSIX を作り直した
+
+### 7-18 実装
+
+- 組み込みの `len` の本体を `Interpreter::len_of`（`eval/builtins.rs`）1 つにまとめ、3 つの呼び出し経路（`eval/builtins.rs`
+  の評価済みの値・式の 2 つと `eval/calls.rs` の 1 つ）から呼ぶ。`calls.rs` の写しは `bytes` と Python のオブジェクトを
+  知らず、それを通るタスクの本体では `len(bytes)` が `TypeError: object of type 'bytes' has no len()` になっていた
+  （基準の exe で再現）。ほかの 2 つは同じ規則だった（dict の `all_keys().len()` は `len()` と同じ値）
+- 例題: `async/async_builtin_len.ar`（タスクの本体で bytes / dict / set / tuple / str / list / `__len__` の `len`。期待値と
+  違えば raise。基準の exe では失敗する）。参照実装は `str.encode` が無いので既知の差（⇒ 7-10）
+- ゲート（基準 `797d77d`・制限時間つき）: `compare_outputs` 455/455 一致（⚠ `async` は対象外なので新しい例題は入らない。
+  新しい例題は `scan_examples` が通ることを見て、基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend`
+  543/543・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1159 件が通る（解釈側だけの変更なので VSIX は
+  作り直していない）
 
 ---
 

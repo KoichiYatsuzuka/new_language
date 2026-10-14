@@ -1,0 +1,42 @@
+# async_builtin_len.ar — 非同期タスクの本体で組み込みの len を使う（正例・ffi_value_exchange_plan.md 7-18）
+#
+# ⚠ 7-18 より前は `len` の実装が 3 つあり、そのうち 1 つ（`eval/calls.rs`）が `bytes` を知らなかった。
+#   その経路を通るタスクの本体では `len(bytes)` が `TypeError: object of type 'bytes' has no len()` になった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+class Bag:
+    mut items: list[int]
+
+    fn __init__(mut self, let items: list[int]) -> None:
+        self.items = items
+
+    fn __len__(self) -> int:
+        return len(self.items)
+
+let data = "hello".encode()
+let table = {"a": 1, "b": 2}
+let tags = {1, 2, 3}
+let pair = (1, "x")
+let bag = Bag([1, 2, 3, 4])
+
+mut mng = AsyncManager(num_thread=2)
+mng <- async->list[int]:
+    block_return [len(data), len(table), len(tags), len(pair), len("abc"), len([1, 2]), len(bag)]
+mng.wait_for_finish()
+
+let errors = mng.error_list
+check("no task failed", errors[0] is None)
+let lens = mng.results[0] mustbe list
+check("bytes", lens[0] == 5)
+check("dict", lens[1] == 2)
+check("set", lens[2] == 3)
+check("tuple", lens[3] == 2)
+check("str", lens[4] == 3)
+check("list", lens[5] == 2)
+check("__len__", lens[6] == 4)

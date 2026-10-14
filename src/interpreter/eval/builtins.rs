@@ -114,36 +114,7 @@ impl Interpreter {
                     return Some(Err("TypeError: len() takes exactly one argument".to_string()));
                 }
                 let val = args.into_iter().next().unwrap();
-                let has_instance_len = if let Value::Instance(inst_rc) = &val {
-                    inst_rc.borrow().class.methods.contains_key("__len__")
-                } else {
-                    false
-                };
-                if has_instance_len {
-                    return Some(self.eval_method_call_evaled(val, "__len__", vec![]).and_then(
-                        |r| match r {
-                            Value::Int(n) => Ok(Value::Int(n)),
-                            other => Err(format!(
-                                "TypeError: __len__ must return int, not '{}'",
-                                self.type_name(&other)
-                            )),
-                        },
-                    ));
-                }
-                Some(match &val {
-                    Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
-                    Value::FrozenList { ref state, .. } => Ok(Value::Int(state.borrow().len as i64)),
-                    Value::Str(s) => Ok(Value::Int(s.len() as i64)),
-                    Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
-                    Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
-                    Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
-                    Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
-                    Value::PyObject(handle) => crate::interpreter::py_interop::py_len(handle),
-                    _ => Err(format!(
-                        "TypeError: object of type '{}' has no len()",
-                        self.type_name(&val)
-                    )),
-                })
+                Some(self.len_of(val))
             }
             "next" => {
                 if args.len() != 1 {
@@ -363,38 +334,7 @@ impl Interpreter {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                // Instance の __len__ を優先チェック（borrow を落としてから呼び出す）
-                let has_instance_len = if let Value::Instance(inst_rc) = &val {
-                    inst_rc.borrow().class.methods.contains_key("__len__")
-                } else {
-                    false
-                };
-                if has_instance_len {
-                    return Some(
-                        self.eval_method_call_evaled(val, "__len__", vec![])
-                            .and_then(|r| match r {
-                                Value::Int(n) => Ok(Value::Int(n)),
-                                other => Err(format!(
-                                    "TypeError: __len__ must return int, not '{}'",
-                                    self.type_name(&other)
-                                )),
-                            }),
-                    );
-                }
-                Some(match &val {
-                    Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
-                    Value::FrozenList { ref state, .. } => Ok(Value::Int(state.borrow().len as i64)),
-                    Value::Str(s) => Ok(Value::Int(s.len() as i64)),
-                    Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
-                    Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
-                    Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
-                    Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
-                    Value::PyObject(handle) => crate::interpreter::py_interop::py_len(handle),
-                    _ => Err(format!(
-                        "TypeError: object of type '{}' has no len()",
-                        self.type_name(&val)
-                    )),
-                })
+                Some(self.len_of(val))
             }
             // ── mutable flat-list built-ins ───────────────────────────────────
             // 本体は `eval_builtin_flat_evaled`（評価済み引数版）に 1 本化してある（#27-c）。
@@ -949,4 +889,36 @@ impl Interpreter {
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }
 
+}
+
+impl Interpreter {
+    /// 組み込みの `len(x)` の本体（7-18）。`__len__` を持つインスタンスはそれを呼ぶ。
+    ///
+    /// ⚠ 以前は 3 つの呼び出し経路（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）がそれぞれ同じ規則を写していて、
+    ///   3-1 で `bytes` を足したときに `calls.rs` の写しだけ取りこぼした（Python のオブジェクトも無かった）。型注釈の無い
+    ///   経路（非同期タスクの本体など）の `len(bytes)` が TypeError になっていた。
+    pub(crate) fn len_of(&mut self, val: Value) -> Result<Value, String> {
+        let has_instance_len = match &val {
+            Value::Instance(inst_rc) => inst_rc.borrow().class.methods.contains_key("__len__"),
+            _ => false,
+        };
+        if has_instance_len {
+            // borrow を落としてから呼ぶ
+            return self.eval_method_call_evaled(val, "__len__", vec![]).and_then(|r| match r {
+                Value::Int(n) => Ok(Value::Int(n)),
+                other => Err(format!("TypeError: __len__ must return int, not '{}'", self.type_name(&other))),
+            });
+        }
+        match &val {
+            Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
+            Value::FrozenList { state, .. } => Ok(Value::Int(state.borrow().len as i64)),
+            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+            Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
+            Value::Dict(d) => Ok(Value::Int(d.borrow().len() as i64)),
+            Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
+            Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
+            Value::PyObject(handle) => crate::interpreter::py_interop::py_len(handle),
+            _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
+        }
+    }
 }

@@ -653,36 +653,9 @@ impl Interpreter {
                 inst.store_field(0, Value::UInt(raw), true);
                 Ok(Value::Instance(Rc::new(RefCell::new(inst))))
             }
-            "len" => {
-                let has_instance_len = if let [Value::Instance(inst_rc)] = vals.as_slice() {
-                    inst_rc.borrow().class.methods.contains_key("__len__")
-                } else {
-                    false
-                };
-                if has_instance_len {
-                    let v = vals.into_iter().next().unwrap();
-                    return self.eval_method_call_evaled(v, "__len__", vec![])
-                        .and_then(|r| match r {
-                            Value::Int(n) => Ok(Value::Int(n)),
-                            other => Err(format!(
-                                "TypeError: __len__ must return int, not '{}'",
-                                self.type_name(&other)
-                            )),
-                        });
-                }
-                match vals.as_slice() {
-                    [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
-                    [Value::FrozenList { state, .. }] => Ok(Value::Int(state.borrow().len as i64)),
-                    [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
-                    [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
-                    [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
-                    [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
-                    [other] => Err(format!(
-                        "TypeError: object of type '{}' has no len()",
-                        self.type_name(other)
-                    )),
-                    _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
-                }
+            "len" => match <[Value; 1]>::try_from(vals) {
+                Ok([v]) => self.len_of(v),
+                Err(_) => Err("TypeError: len() takes exactly 1 argument".to_string()),
             },
             // Result コンストラクタ: Ok(value) / Err(error)
             "Ok" => match vals.as_slice() {
