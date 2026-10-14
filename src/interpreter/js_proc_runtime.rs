@@ -13,15 +13,16 @@
 // Request:  {"id":N,"op":"list"|"call"|"quit","module":"a/b","fn":"name","args":[...]}
 // Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 //
-// Arg/result type tags:
-//   "i" = int64    "f" = float64    "b" = bool
-//   "s" = string   "n" = null       "a" = array
-//   "f" with a string payload "NaN" / "Infinity" / "-Infinity" (JSON has no such numbers)
-//   "o" = (result only) a JS object — it cannot cross the bridge yet (plan 5-2), so decoding it is an error
-//   "x" = (result only) a function / symbol / BigInt (payload: its typeof) — an error too
+// Arg/result type tags: `super::proc_values` (shared with cs-proc · plan 5-2): i / f / b / s / n and the copied
+// containers a (array) / u (tuple → a JS array) / d (dict → a JS object when every key is a str, else a Map;
+// [[key, value], …]) / e (set → Set) / y (bytes → Buffer, base64).
+//   "o" = (result only) a plain JS object, {key: {t,v}, …} → dict[str, …]
+//   "x" = (result only) what cannot be carried: a function / symbol / BigInt / an instance of a class (payload: its
+//         typeof or class name) — an error
 //
 // Values the bridge cannot carry are errors in both directions (ffi_value_exchange_plan.md 2-3): a dict / tuple /
 // set / instance argument used to reach JS as `null`, and an object result became a list of "k=v" strings.
+// Since 5-2 dicts / tuples / sets / bytes are copied; Arrow instances, functions and Ptr are still errors.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -149,43 +150,17 @@ where
 fn encode_args(args: &[Value], what: &str) -> Result<serde_json::Value, String> {
     let mut out = Vec::with_capacity(args.len());
     for (i, v) in args.iter().enumerate() {
-        out.push(encode_arg(v).map_err(|got| {
-            format!(
-                "TypeError: argument {} of JS function '{what}' is (or contains) a '{got}', which cannot cross the js-proc bridge yet",
-                i + 1
-            )
-        })?);
+        out.push(
+            super::proc_values::encode(v, &super::proc_values::Peer::Js)
+                .map_err(|e| e.message(i, &format!("JS function '{what}'"), "js-proc"))?,
+        );
     }
     Ok(serde_json::Value::Array(out))
 }
 
-/// 1 つの値を JSON にする。運べない値は、その型名を `Err` で返す。
-/// ⚠ 以前は `_ => null` で、dict / tuple / set / インスタンスを渡すと JS 側に `null` が届いていた（2-3）。
-fn encode_arg(v: &Value) -> Result<serde_json::Value, &'static str> {
-    Ok(match v {
-        Value::Int(n)  => serde_json::json!({"t":"i","v": n}),
-        Value::UInt(n) => serde_json::json!({"t":"i","v": n}),
-        Value::Float(f) if f.is_finite() => serde_json::json!({"t":"f","v": f}),
-        // JSON に NaN / ±Infinity は無い（serde_json は null にしてしまう）ので文字列で送る
-        Value::Float(f) => serde_json::json!({"t":"f","v": non_finite_name(*f)}),
-        Value::Bool(b)  => serde_json::json!({"t":"b","v": b}),
-        Value::Str(s)   => serde_json::json!({"t":"s","v": &**s}),
-        Value::None     => serde_json::json!({"t":"n"}),
-        Value::List(rc) => {
-            let arr = rc.borrow().iter().map(encode_arg).collect::<Result<Vec<_>, _>>()?;
-            serde_json::json!({"t":"a","v": arr})
-        }
-        other => return Err(crate::interpreter::ops::typecheck::runtime_type_name(other)),
-    })
-}
-
-fn non_finite_name(f: f64) -> &'static str {
-    if f.is_nan() { "NaN" } else if f > 0.0 { "Infinity" } else { "-Infinity" }
-}
-
-/// JS の返した値を Arrow の値にする（2-3）。
+/// JS の返した値を Arrow の値にする（2-3）。宣言との照合と数値の寄せは `ffi_boundary`。
 /// ⚠ 以前はオブジェクトを `"k=v"` の文字列のリストにし、読めない値（int64 に入らない整数・NaN など）を `0` / `0.0` に、
-///   知らないタグを整数にしていた。どれもエラーにする（オブジェクトの受け渡しはフェーズ 5・5-2）。
+///   知らないタグを整数にしていた。どれもエラーにする。オブジェクト・Map・Set・Uint8Array は 5-2 からコピーで受け取る。
 fn decode_result(v: &serde_json::Value, what: &str) -> Result<Value, String> {
     if v.is_null() {
         return Ok(Value::None);
@@ -193,37 +168,50 @@ fn decode_result(v: &serde_json::Value, what: &str) -> Result<Value, String> {
     let malformed = || format!("{TAG}: malformed result from the bridge for '{what}': {v}");
     let t = v.get("t").and_then(|t| t.as_str()).ok_or_else(malformed)?;
     let val = v.get("v");
+    let items = || val.and_then(|v| v.as_array()).ok_or_else(malformed);
+    let each = |xs: &Vec<serde_json::Value>| xs.iter().map(|e| decode_result(e, what)).collect::<Result<Vec<_>, _>>();
     Ok(match t {
         "n" => Value::None,
         "s" => Value::str(val.and_then(|v| v.as_str()).ok_or_else(malformed)?),
         "b" => Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?),
         "i" => Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?),
-        "f" => match val {
-            Some(serde_json::Value::String(s)) => match s.as_str() {
-                "NaN" => Value::Float(f64::NAN),
-                "Infinity" => Value::Float(f64::INFINITY),
-                "-Infinity" => Value::Float(f64::NEG_INFINITY),
-                _ => return Err(malformed()),
-            },
-            Some(n) => Value::Float(n.as_f64().ok_or_else(malformed)?),
-            None => return Err(malformed()),
-        },
-        "a" => {
-            let arr = val.and_then(|v| v.as_array()).ok_or_else(malformed)?;
-            let items = arr.iter().map(|e| decode_result(e, what)).collect::<Result<Vec<_>, _>>()?;
-            Value::List(std::rc::Rc::new(std::cell::RefCell::new(items)))
+        "f" => Value::Float(super::proc_values::decode_float(val).ok_or_else(malformed)?),
+        "a" => Value::List(std::rc::Rc::new(std::cell::RefCell::new(each(items()?)?))),
+        "e" => super::proc_values::make_set(each(items()?)?).map_err(|e| in_result(e, what))?,
+        "d" => {
+            let pairs = items()?
+                .iter()
+                .map(|p| match p.as_array().map(Vec::as_slice) {
+                    Some([k, x]) => Ok((decode_result(k, what)?, decode_result(x, what)?)),
+                    _ => Err(malformed()),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            super::proc_values::make_dict(pairs).map_err(|e| in_result(e, what))?
         }
+        // 素のオブジェクト → dict[str, …]
+        "o" => {
+            let obj = val.and_then(|v| v.as_object()).ok_or_else(malformed)?;
+            let pairs = obj
+                .iter()
+                .map(|(k, x)| Ok((Value::str(k.as_str()), decode_result(x, what)?)))
+                .collect::<Result<Vec<_>, String>>()?;
+            super::proc_values::make_dict(pairs).map_err(|e| in_result(e, what))?
+        }
+        "y" => Value::bytes(
+            super::proc_values::base64_decode(val.and_then(|v| v.as_str()).ok_or_else(malformed)?)
+                .map_err(|e| format!("{TAG}: {e} from the bridge for '{what}'"))?,
+        ),
         "x" => {
             return Err(format!(
                 "TypeError: JS function '{what}' returned (or its result contains) a JS {}, which cannot cross the js-proc bridge",
                 val.and_then(|v| v.as_str()).unwrap_or("value")
             ))
         }
-        "o" => {
-            return Err(format!(
-                "TypeError: JS function '{what}' returned (or its result contains) an object, which cannot cross the js-proc bridge yet (return an array or primitive values)"
-            ))
-        }
         _ => return Err(malformed()),
     })
+}
+
+/// 受け取った値を Arrow の dict / set にできなかったとき（キーが None など）。
+fn in_result(e: String, what: &str) -> String {
+    format!("{e} (in the result of JS function '{what}')")
 }

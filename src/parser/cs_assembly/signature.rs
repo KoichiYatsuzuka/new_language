@@ -221,7 +221,7 @@ pub(crate) enum CsTy {
 }
 
 impl CsTy {
-    /// Arrow の型の綴り（型スタブ・`.ars`）。⚠ 5-1 より前のデコーダが返していた綴りと同じ。
+    /// Arrow の型の綴り（型スタブ・`.ars`）。⚠ 5-1 より前のデコーダが返していた綴りと同じ（`byte[]` だけ 5-2 から `bytes`）。
     pub(crate) fn arrow(&self) -> String {
         match self {
             CsTy::Void => "None".to_string(),
@@ -232,6 +232,8 @@ impl CsTy {
             CsTy::Object | CsTy::Unknown => "Any".to_string(),
             CsTy::Named { name, .. } => name.clone(),
             CsTy::Generic { base, args, .. } => map_generic(base, args.iter().map(CsTy::arrow).collect()),
+            // `byte[]` は `bytes`（D-9・5-2）
+            CsTy::Array(elem) if **elem == CsTy::Int { bits: 8, signed: false } => "bytes".to_string(),
             CsTy::Array(elem) | CsTy::MdArray(elem) => format!("list[{}]", elem.arrow()),
             CsTy::Var(name) => name.clone(),
             CsTy::FnPtr => "function".to_string(),

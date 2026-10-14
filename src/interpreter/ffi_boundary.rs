@@ -153,10 +153,21 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
             _ => mismatch(value),
         },
         InferredType::Dict => prim(matches!(value, Value::Dict(_)), value),
-        InferredType::DictOf(_, _) => {
-            // キー/値の型は Dict の内部表現に踏み込む必要があるため外側の形のみ検査する。
-            prim(matches!(value, Value::Dict(_)), value)
-        }
+        // キーと値も照合する（5-2。⚠ 以前は外側の形だけ見ていた）
+        InferredType::DictOf(kt, vt) => match value {
+            Value::Dict(d) => {
+                for (k, v) in d.borrow().all_pairs() {
+                    for (x, t) in [(&k, &**kt), (&v, &**vt)] {
+                        match check_common(x, t) {
+                            Verdict::Ok | Verdict::Unverifiable => {}
+                            _ => return mismatch(value),
+                        }
+                    }
+                }
+                Verdict::Ok
+            }
+            _ => mismatch(value),
+        },
         InferredType::Tuple(types) => match value {
             Value::Tuple(td) => {
                 let vals = td.all_values();
@@ -267,7 +278,12 @@ impl BoundaryChecker for JavaScriptChecker {
 
     fn check(&self, value: &Value, declared: &InferredType) -> Verdict {
         match js_coerce(value, declared) {
-            Ok(Some(v)) => Verdict::Coerce(v),
+            // ⚠ 寄せた値も照合し直す（5-2）。以前はそのまま通していたので、`list[float]` の `[1, "two"]` は `1` を寄せた
+            //   時点で `"two"` が照合されずに通った
+            Ok(Some(v)) => match check_common(&v, declared) {
+                Verdict::Ok | Verdict::Unverifiable => Verdict::Coerce(v),
+                _ => mismatch(value),
+            },
             Ok(None) => check_common(value, declared),
             Err(()) => mismatch(value),
         }
@@ -301,6 +317,48 @@ fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()
                 }
             }
             Ok(changed.then(|| Value::List(std::rc::Rc::new(std::cell::RefCell::new(out)))))
+        }
+        // dict の値・set の要素も寄せる（5-2）
+        (InferredType::DictOf(kt, vt), Value::Dict(d)) => {
+            let pairs = d.borrow().all_pairs();
+            let mut changed = false;
+            let mut out = Vec::with_capacity(pairs.len());
+            for (k, v) in pairs {
+                let (k2, v2) = (js_coerce(&k, kt)?, js_coerce(&v, vt)?);
+                changed |= k2.is_some() || v2.is_some();
+                out.push((k2.unwrap_or(k), v2.unwrap_or(v)));
+            }
+            if !changed {
+                return Ok(None);
+            }
+            let mut dict = crate::interpreter::value::DictData::new("Any".to_string(), "Any".to_string());
+            for (k, v) in out {
+                crate::interpreter::Interpreter::dict_set_pure(&mut dict, k, v).map_err(|_| ())?;
+            }
+            Ok(Some(Value::Dict(std::rc::Rc::new(std::cell::RefCell::new(dict)))))
+        }
+        (InferredType::SetOf(elem), Value::Set(items)) => {
+            let items = items.borrow();
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for v in items.iter() {
+                let c = js_coerce(v, elem)?;
+                changed |= c.is_some();
+                out.push(c.unwrap_or_else(|| v.clone()));
+            }
+            Ok(changed.then(|| Value::Set(std::rc::Rc::new(std::cell::RefCell::new(out)))))
+        }
+        // JS にタプルは無い（配列で返る）ので、宣言がタプルなら同じ長さの配列をタプルにする（5-2）
+        (InferredType::Tuple(types), Value::List(items)) if items.borrow().len() == types.len() => {
+            let items = items.borrow();
+            let mut vals = Vec::with_capacity(items.len());
+            let mut names = Vec::with_capacity(items.len());
+            for (v, t) in items.iter().zip(types) {
+                let v = js_coerce(v, t)?.unwrap_or_else(|| v.clone());
+                names.push(crate::interpreter::ops::typecheck::element_type_name(&v));
+                vals.push(v);
+            }
+            Ok(Some(Value::Tuple(std::rc::Rc::new(crate::interpreter::value::TupleData::new(vals, names)))))
         }
         // `Option[float]` など: 値に合う選択肢があればそのまま、寄せれば合う選択肢があれば寄せる
         (InferredType::Union(variants), _) => {
@@ -441,6 +499,29 @@ mod tests {
         assert!(is_mismatch(&c.check(&list(vec![Value::Float(1.5)]), &ints)));
         let nested = InferredType::ListOf(Box::new(InferredType::ListOf(Box::new(InferredType::Float))));
         assert!(matches!(c.check(&list(vec![list(vec![Value::Int(1)])]), &nested), Verdict::Coerce(_)));
+    }
+
+    /// 寄せた値も照合し直す・dict の値と set の要素も寄せる・配列を宣言のタプルにする（5-2）。
+    #[test]
+    fn javascript_coerces_containers_and_rechecks() {
+        let floats = InferredType::ListOf(Box::new(InferredType::Float));
+        assert!(is_mismatch(&JavaScriptChecker.check(&list(vec![Value::Int(1), Value::str("two")]), &floats)));
+        let d = InferredType::DictOf(Box::new(InferredType::Str), Box::new(InferredType::Float));
+        let mut dict = crate::interpreter::value::DictData::new("Any".to_string(), "Any".to_string());
+        crate::interpreter::Interpreter::dict_set_pure(&mut dict, Value::str("a"), Value::Int(2)).unwrap();
+        let dv = Value::Dict(Rc::new(RefCell::new(dict)));
+        match JavaScriptChecker.check(&dv, &d) {
+            Verdict::Coerce(Value::Dict(x)) => assert!(matches!(x.borrow().all_pairs()[0].1, Value::Float(f) if f == 2.0)),
+            other => panic!("{other:?}"),
+        }
+        let wrong = InferredType::DictOf(Box::new(InferredType::Str), Box::new(InferredType::Str));
+        assert!(is_mismatch(&JavaScriptChecker.check(&dv, &wrong)), "dict values are checked");
+        let t = InferredType::Tuple(vec![InferredType::Int, InferredType::Float]);
+        match JavaScriptChecker.check(&list(vec![Value::Int(1), Value::Int(2)]), &t) {
+            Verdict::Coerce(Value::Tuple(td)) => assert!(matches!(td.all_values()[1], Value::Float(f) if f == 2.0)),
+            other => panic!("{other:?}"),
+        }
+        assert!(is_mismatch(&JavaScriptChecker.check(&list(vec![Value::Int(1)]), &t)), "length");
     }
 
     #[test]

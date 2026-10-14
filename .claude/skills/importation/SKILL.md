@@ -472,6 +472,16 @@ the value rules in `src/interpreter/cs_values.rs` (ffi_value_exchange_plan.md 2-
   NativeAOT publish).
 - Errors that carry an exception type keep it (`cs_values::tag_error`), so `except TypeError` catches them; other
   bridge errors are prefixed `CsProc:` / `CsDll:`.
+- **The stub depends on the bridge** (task 5-2): `load_cs_assembly(path, CsBridge::Proc | Dll)`. cs-proc copies
+  collections (`list` / `tuple` / `dict` / `set`, element types checked recursively in `stub_gen.rs::type_reason`)
+  and `bytes` (`byte[]` — `CsTy::arrow` spells it `bytes`); cs-dll still marks them unsupported (5-5) and
+  `cs_dll_runtime::dll_decl` rejects them at runtime. `cs_values::CsKind` has the container kinds.
+- **Process bridges share one value representation**: `src/interpreter/proc_values.rs` (tags a / u / d / e / y on top of
+  i / f / b / s / n / h; `Ptr` is a TypeError — no meaning in another process, D-5). cs-proc decodes by the declared
+  type (`cs_proc_runtime::decode_result`, recursive); js-proc decodes by tag and `ffi_boundary::JavaScriptChecker`
+  coerces numbers inside lists / dicts / sets / tuples (and turns a JS array into a declared tuple). The C# host
+  (`examples/interop/cs_proc_test/ArrowPipeHost.cs`, shared by cs_probe) rebuilds arguments as the parameter's C# type
+  and awaits `Task<T>`; `bridge/js_bridge.cjs` maps dicts to plain objects (all-str keys) or `Map`.
 
 ## Node.js IPC サブプロセス (`import[js-proc]`)
 

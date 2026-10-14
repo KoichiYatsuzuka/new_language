@@ -41,7 +41,7 @@ $skip = @(
     'debug_demo', 'async_bench', 'async_demo', 'spider_render', 'spider_solitaire',
     'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
     'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
-    'js_proc_values', 'js_proc_container_return_error', 'js_proc_dict_arg_error',
+    'js_proc_values', 'js_proc_container_return_error', 'js_proc_instance_arg_error',
     'rs_values', 'rs_unsupported_signature_error', 'rs_u64_overflow_error', 'rs_native_arg_check',
     'importation'
 )
@@ -98,6 +98,7 @@ $knownDiff = @{
     'ptr_types'                      = 'Rust: Ptr[T] の型（ffi_value_exchange_plan.md 3-3）。py: Ptr[int32] の注釈を構文解析できず ParseError（⇒ 7-10）'
     'cs_proc_values'                 = 'Rust: C# の値を型スタブの宣言どおりに受け渡す（nullable 注釈・CsObject・ffi_value_exchange_plan.md 2-1）。py: import[cs-proc] で `cs_probe/cs_probe.dll`（パッケージのディレクトリ）を探さず ParseError'
     'cs_proc_utf8'                   = 'Rust: Arrow から C# へ非 ASCII の文字列を送る（ffi_value_exchange_plan.md 2-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
+    'cs_proc_collections'            = 'Rust: cs-proc でコレクションと bytes をコピーで受け渡す（ffi_value_exchange_plan.md 5-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cs_dll_exception_error'         = 'Rust: C# の例外を Arrow のエラーにして止まる（stderr・ffi_value_exchange_plan.md 5-1）。py: 同じエラーで止まるが、捕まえていない例外を stdout に出す'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'
     'cpp_dll_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）。py: unsigned int の最大値を -1 として読み、例題の検査が ValueError で止まる（直す前の Rust と同じ）'

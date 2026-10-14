@@ -4,7 +4,8 @@
 // その規則をここに 1 か所にまとめる:
 //   - 戻り値は型スタブの注釈（`str` / `Option[str]` / `Person` …）で読む。クラスはハンドルを `CsObject` に包む
 //   - null は `Option[T]`（C# の `string?` などの nullable 注釈）と `None` / `Any` のときだけ `None`。それ以外は TypeError
-//   - コレクション・デリゲート・タプルなど、まだ運べない型の値はエラー（黙って `null` / 整数にしない）
+//   - コレクション（`list` / `tuple` / `dict` / `set`）と `bytes` は cs-proc だけがコピーで運ぶ（5-2・D-5）。cs-dll は
+//     まだ運べない（5-5）。デリゲートなど運べない型の値はエラー（黙って `null` / 整数にしない）
 //
 // ⚠ 以前は戻り値のクラスやコレクションが整数（C# 側のハンドル番号）になり、リストの引数は C# に `null` として
 //   届いていた（`.claude/rules/regulations.md` の「掬いきれなかった選択肢はエラーにする」）。
@@ -91,6 +92,23 @@ pub(crate) enum CsKind {
     Class(String),
     /// `object`（中身で決める）
     Any,
+    /// `bytes`（C# の `byte[]`・cs-proc だけ・5-2）
+    Bytes,
+    /// `list[T]`（C# の配列・`List<T>` など・cs-proc だけ・5-2）
+    List(Box<CsDecl>),
+    /// `tuple[A, B, …]`（C# の `ValueTuple` / `Tuple`・cs-proc だけ・5-2）
+    Tuple(Vec<CsDecl>),
+    /// `dict[K, V]`（C# の `Dictionary<K, V>` など・cs-proc だけ・5-2）
+    Dict(Box<CsDecl>, Box<CsDecl>),
+    /// `set[T]`（C# の `HashSet<T>` など・cs-proc だけ・5-2）
+    Set(Box<CsDecl>),
+}
+
+impl CsKind {
+    /// コピーで運ぶ種類（コレクションと `bytes`）。cs-dll はまだ運べない（5-5）。
+    pub(crate) fn is_container(&self) -> bool {
+        matches!(self, CsKind::Bytes | CsKind::List(_) | CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_))
+    }
 }
 
 /// 宣言された型（`Option[T]` / `T | None` なら `optional`）。
@@ -110,11 +128,16 @@ impl CsDecl {
 }
 
 /// 型スタブの注釈を読む。注釈が無ければ `object` と同じ扱い。
-/// コレクションなど、まだ運べない型は TypeError（型スタブの静的エラーを通らない経路の守り）。
+/// コレクションは中身の型まで読む（5-2）。デリゲートなど運べない型は TypeError（型スタブの静的エラーを通らない経路の守り）。
 pub(crate) fn decl_of(ann: Option<&str>) -> Result<CsDecl, String> {
     let Some(ann) = ann.map(str::trim) else {
         return Ok(CsDecl { kind: CsKind::Any, optional: true, shown: "Any".to_string() });
     };
+    parse_decl(ann)
+}
+
+fn parse_decl(ann: &str) -> Result<CsDecl, String> {
+    let ann = ann.trim();
     let (inner, optional) = if let Some(i) = ann.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')) {
         (i.trim(), true)
     } else if let Some((a, b)) = ann.split_once('|') {
@@ -132,12 +155,45 @@ pub(crate) fn decl_of(ann: Option<&str>) -> Result<CsDecl, String> {
         "bool" => CsKind::Bool,
         "str" => CsKind::Str,
         "Any" => CsKind::Any,
-        other if other.contains('[') || matches!(other, "list" | "dict" | "set" | "tuple" | "function") => {
-            return Err(format!("TypeError: a value of type `{other}` cannot cross the C# bridge yet"));
-        }
-        other => CsKind::Class(other.to_string()),
+        "bytes" => CsKind::Bytes,
+        other => match other.split_once('[').and_then(|(head, rest)| Some((head, rest.strip_suffix(']')?))) {
+            Some((head, args)) => {
+                let args = split_top_level(args);
+                let one = |i: usize| parse_decl(args[i]).map(Box::new);
+                match (head, args.len()) {
+                    ("list", 1) => CsKind::List(one(0)?),
+                    ("set", 1) => CsKind::Set(one(0)?),
+                    ("dict", 2) => CsKind::Dict(one(0)?, one(1)?),
+                    ("tuple", n) if n > 0 => CsKind::Tuple(args.iter().map(|a| parse_decl(a)).collect::<Result<_, _>>()?),
+                    _ => return Err(format!("TypeError: a value of type `{other}` cannot cross the C# bridge")),
+                }
+            }
+            None if matches!(other, "list" | "dict" | "set" | "tuple" | "function") => {
+                return Err(format!("TypeError: a value of type `{other}` cannot cross the C# bridge"));
+            }
+            None => CsKind::Class(other.to_string()),
+        },
     };
     Ok(CsDecl { kind, optional, shown: ann.to_string() })
+}
+
+/// `int, dict[str, int]` を最上位のカンマで分ける。
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(s[start..].trim());
+    out
 }
 
 /// C# から null（cs-proc の `null` / cs-dll の NULL の文字列・ハンドル 0）が返ってきたとき。
@@ -244,9 +300,23 @@ mod tests {
         assert_eq!((d.kind, d.optional), (CsKind::Class("Person".to_string()), false));
         assert_eq!(decl_of(Some("None")).unwrap().kind, CsKind::Void);
         assert_eq!(decl_of(None).unwrap().kind, CsKind::Any);
-        for bad in ["list[str]", "dict[str,int]", "function", "tuple[int,str]", "int | str"] {
+        for bad in ["function", "list", "Box[int]", "int | str", "dict[str]"] {
             assert!(decl_of(Some(bad)).unwrap_err().starts_with("TypeError:"), "{bad}");
         }
+    }
+
+    /// コレクションは中身の型まで読む（5-2）。
+    #[test]
+    fn reads_container_declarations() {
+        let d = decl_of(Some("dict[str, list[Option[int]]]")).unwrap();
+        let CsKind::Dict(k, v) = d.kind else { panic!("dict") };
+        assert_eq!(k.kind, CsKind::Str);
+        let CsKind::List(e) = v.kind else { panic!("list") };
+        assert_eq!((e.kind.clone(), e.optional), (CsKind::Int, true));
+        let t = decl_of(Some("Option[tuple[int,str]]")).unwrap();
+        assert!(t.optional && matches!(&t.kind, CsKind::Tuple(xs) if xs.len() == 2));
+        assert_eq!(decl_of(Some("bytes")).unwrap().kind, CsKind::Bytes);
+        assert!(decl_of(Some("set[Person]")).unwrap().kind.is_container());
     }
 
     #[test]

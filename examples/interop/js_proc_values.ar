@@ -6,12 +6,14 @@
 #   - NaN / -Infinity → 0.0、int64 に入らない整数 → 0、関数・BigInt → 文字列
 #   - JS のオブジェクト → `"k=v"` の文字列のリスト、dict / tuple / set の引数 → JS に null
 # 今は宣言型で数値を寄せ（int ↔ float・要素へ再帰）、運べない値は TypeError（`except` で捕まえられる）。
+# 5-2 から dict / tuple / set / bytes と JS のオブジェクト・Map・Set・Buffer はコピーで運ぶ。
 # 宣言と食い違う値は FfiTypeError（js_proc_container_return_error.ar）。
 #
 # ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
 # 実行には Node.js が要る（型は js_probe.ars、実装は js_probe.js）。
 
 import[js-proc] js_probe as jp
+import[cpp-dll] test_modules.ffi_probe as fp
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:
@@ -38,17 +40,28 @@ check("string round trip", (jp.echo("日本語") mustbe str) == "日本語")
 check("string from JS", jp.utf8() == "日本語")
 check("undefined is None", jp.nothing() is None)
 
+# ── コンテナはコピーで運ぶ（5-2。以前は TypeError、その前は "k=v" / null）──────────────────
+let o = jp.obj()
+check("plain object -> dict[str, ...]", o is dict and len(o mustbe dict[str, Any]) == 2)
+check("Map -> dict", jp.map_obj() == {1: "one", 2: "two"})
+check("Set -> set (equal elements merged)", jp.set_obj() == {1, 2, 3})
+check("Buffer -> bytes", jp.buf() == "hi".encode())
+let p = jp.pair()
+check("array -> declared tuple (elements coerced)", p is tuple and p == (1, 2.0))
+check("dict -> object", jp.sum_values({"a": 1, "b": 2}) == 3)
+check("dict with int keys -> Map", jp.kind({1: "x"}) == "Map:1")
+check("tuple -> array", jp.kind((1, 2, 3)) == "array:3")
+check("set -> Set", jp.kind({1, 2}) == "Set:2")
+check("bytes -> Buffer", jp.kind("abc".encode()) == "bytes:3")
+
 # ── 運べない値は TypeError（以前は "k=v" / 文字列 / null）───────────────────────
 fn rejected(let label: str, let what: str) -> None:
     print(label + " TypeError OK: " + what)
 
+class Point:
+    mut x: int
+
 mut n = 0
-try:
-    let o = jp.obj()
-    print("unreachable:", o)
-except TypeError as e:
-    n += 1
-    rejected("object return", e.message)
 try:
     let f = jp.fn_value()
     print("unreachable:", f)
@@ -62,24 +75,25 @@ except TypeError as e:
     n += 1
     rejected("BigInt return", e.message)
 try:
-    let t = jp.type_of({"a": 1})
-    print("unreachable:", t)
+    let d = jp.instance()
+    print("unreachable:", d)
 except TypeError as e:
     n += 1
-    rejected("dict argument", e.message)
+    rejected("class instance return", e.message)
 try:
-    let t = jp.type_of((1, 2))
+    let t = jp.type_of(Point(1))
     print("unreachable:", t)
 except TypeError as e:
     n += 1
-    rejected("tuple argument", e.message)
+    rejected("Arrow instance argument", e.message)
+# Ptr は別プロセスでは意味が無い（D-5）。⚠ 実行には ffi_probe.dll も要る
 try:
-    let t = jp.type_of({1, 2})
+    let t = jp.type_of(fp.fp_handle_new())
     print("unreachable:", t)
 except TypeError as e:
     n += 1
-    rejected("set argument", e.message)
-check("all 6 rejected", n == 6)
+    rejected("Ptr argument", e.message)
+check("all 5 rejected", n == 5)
 
 # ── 関数の中・ループの中から ──────────────────────────────────────────────────
 fn total(let k: int) -> float:

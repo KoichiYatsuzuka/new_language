@@ -18,7 +18,7 @@ impl Parser {
     /// ⚠ 以前は 2 の後に `root_dir`（エントリのディレクトリ）も見ていた（2026-10-02 に外した）。
     ///
     /// DLL が見つからない場合は警告を出して空スタブを返す（型なし・実行時に解決）。
-    /// `is_proc` は IPC サブプロセス方式かを示すが、型スタブは両方式で共通。
+    /// `is_proc` は IPC サブプロセス方式か。受け渡せる型が違う（cs-proc はコレクションと `bytes` をコピーで運ぶ・5-2）。
     pub(crate) fn load_cs_module(&mut self, level: u32, module: &[String], is_proc: bool) -> Result<Vec<Stmt>, String> {
         let last = module.last().cloned().unwrap_or_default();
         let dll_name = format!("{last}.dll");
@@ -65,7 +65,10 @@ impl Parser {
         //    出して空の body（型なし）にしていた。未解決の import は黙って型情報を落とさない。
         let kind = if is_proc { "cs-proc" } else { "cs-dll" };
         let body = match dll_path {
-            Some(path) => crate::parser::cs_assembly::load_cs_assembly(&path)
+            Some(path) => crate::parser::cs_assembly::load_cs_assembly(
+                &path,
+                if is_proc { crate::parser::cs_assembly::CsBridge::Proc } else { crate::parser::cs_assembly::CsBridge::Dll },
+            )
                 .map_err(|e| format!("import[{kind}] '{}': cannot read the .NET metadata of '{}': {e}", module.join("."), path.display()))?,
             None => {
                 return Err(format!(

@@ -376,9 +376,10 @@ impl NullableInfo {
 
 /// Read a .NET assembly and return a map of (type_coded_index → Arrow type name)
 /// plus all type definitions for stub generation.
-pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
+/// `bridge` で受け渡せる型が違う（cs-proc はコレクションと `bytes` をコピーで運ぶ・5-2）。
+pub fn load_cs_assembly(path: &Path, bridge: CsBridge) -> Result<Vec<Stmt>, String> {
     let pa = parse_assembly(path)?;
-    generate_stubs(&pa)
+    generate_stubs(&pa, bridge)
 }
 
 
@@ -388,7 +389,7 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
 /// and `stub_text` is written to the `.ars` file.
 pub fn generate_cs_stub_text(path: &Path) -> Result<(Vec<Stmt>, String), String> {
     let pa = parse_assembly(path)?;
-    let stmts = generate_stubs(&pa)?;
+    let stmts = generate_stubs(&pa, CsBridge::Dll)?;
     let xml_path = path.with_extension("xml");
     let docs = parse_xml_docs(&xml_path);
     let text = render_cs_ars_text(&pa, &docs);
@@ -424,9 +425,13 @@ mod probe_tests {
     }
 
     fn probe_stubs() -> HashMap<String, (Vec<String>, String, Option<String>)> {
+        probe_stubs_for(CsBridge::Dll)
+    }
+
+    fn probe_stubs_for(bridge: CsBridge) -> HashMap<String, (Vec<String>, String, Option<String>)> {
         let dll = probe_dll();
         let mut out = HashMap::new();
-        for st in load_cs_assembly(&dll).expect("cs_probe.dll") {
+        for st in load_cs_assembly(&dll, bridge).expect("cs_probe.dll") {
             let Stmt::ClassDef { name: cls, body, .. } = st else { continue };
             for m in body {
                 let Stmt::FnDef { name, params, return_type, body, .. } = m else { continue };
@@ -461,6 +466,21 @@ mod probe_tests {
         // 値型の `char` は nullable の文脈に関わらず `str` のまま
         assert_eq!(sig("Probe.initial").1, "str");
         assert_eq!(sig("Probe.any_obj").1, "Any");
+    }
+
+    /// cs-proc はコレクションと `bytes` をコピーで運ぶ（5-2）。中身が受け渡せない型なら未対応のまま。
+    #[test]
+    fn cs_proc_carries_collections() {
+        let st = probe_stubs_for(CsBridge::Proc);
+        let why = |k: &str| st.get(k).unwrap_or_else(|| panic!("{k} missing")).2.clone();
+        for k in ["Probe.words", "Probe.words_list", "Probe.counts", "Probe.ints", "Probe.sum", "Probe.join", "Probe.pair",
+                  "Person.nicknames"] {
+            assert_eq!(why(k), None, "{k}");
+        }
+        assert_eq!(st.get("Probe.counts").map(|(_, r, _)| r.as_str()), Some("dict[str,int]"));
+        assert!(why("Probe.apply").is_some_and(|w| w.contains("delegate")));
+        assert!(why("Probe.first").is_some(), "a generic method stays unsupported");
+        assert!(why("Probe.builder").is_some(), "another assembly's type stays unsupported");
     }
 
     /// 公開のコンストラクタは `__init__` のオーバーロードになる（5-1・実行時はこの型で引数を並べる）。

@@ -11,10 +11,15 @@
 // Arg/result type tags:
 //   "i" = int (a safe integer, |x| <= 2^53 - 1)    "f" = float (any other number)    "b" = bool
 //   "s" = string "n" = null/undefined
-//   "a" = array  "o" = object (encoded as {key: {t,v}, ...}; Arrow cannot take it yet, plan 5-2)
+//   "a" = array  "o" = (result only) a plain object, {key: {t,v}, ...} (Arrow: dict[str, ...])
+//   "u" = (argument only) an Arrow tuple -> a JS array (JS has no tuples)
+//   "d" = dict, [[key, value], ...]: an Arrow dict becomes a plain object when every key is a string, else a Map;
+//         a JS Map comes back as "d"
+//   "e" = set <-> Set    "y" = bytes <-> Buffer / Uint8Array (base64)          (ffi_value_exchange_plan.md 5-2)
 //   NaN / Infinity / -Infinity travel as "f" with the string "NaN" / "Infinity" / "-Infinity" (JSON has no such numbers)
-//   "x" = (result only) a value that cannot be carried (function / symbol / BigInt), with its typeof as the payload.
-//         Arrow raises TypeError for it; these used to become strings silently (ffi_value_exchange_plan.md 2-3).
+//   "x" = (result only) a value that cannot be carried (function / symbol / BigInt / an instance of a class), with its
+//         typeof or class name as the payload. Arrow raises TypeError for it; these used to become strings silently
+//         (ffi_value_exchange_plan.md 2-3).
 
 const net  = require('net');
 const { StringDecoder } = require('string_decoder');
@@ -85,7 +90,16 @@ function encodeValue(val) {
     }
     if (typeof val === 'string') return { t: 's', v: val };
     if (Array.isArray(val)) return { t: 'a', v: val.map(encodeValue) };
+    if (val instanceof Map) return { t: 'd', v: [...val.entries()].map(([k, v]) => [encodeValue(k), encodeValue(v)]) };
+    if (val instanceof Set) return { t: 'e', v: [...val].map(encodeValue) };
+    if (val instanceof Uint8Array) return { t: 'y', v: Buffer.from(val.buffer, val.byteOffset, val.byteLength).toString('base64') };
     if (typeof val === 'object') {
+        // Only plain objects become a dict. An instance of a class (Date, a user class ...) has behaviour that a dict
+        // would silently drop, so it cannot be carried (5-2).
+        const proto = Object.getPrototypeOf(val);
+        if (proto !== Object.prototype && proto !== null) {
+            return { t: 'x', v: `object of class ${(val.constructor && val.constructor.name) || '?'}` };
+        }
         const obj = {};
         for (const [k, v] of Object.entries(val)) obj[k] = encodeValue(v);
         return { t: 'o', v: obj };
@@ -100,11 +114,18 @@ function decodeArg(a) {
         case 'b': return Boolean(a.v);
         case 'i': case 'f': return Number(a.v);   // Number("NaN") / Number("Infinity") work too
         case 's': return String(a.v);
-        case 'a': return (a.v || []).map(decodeArg);
-        case 'o': {
-            const obj = {};
-            for (const [k, v] of Object.entries(a.v || {})) obj[k] = decodeArg(v);
-            return obj;
+        case 'a': case 'u': return (a.v || []).map(decodeArg);
+        case 'e': return new Set((a.v || []).map(decodeArg));
+        case 'y': return Buffer.from(a.v || '', 'base64');
+        case 'd': {
+            const pairs = (a.v || []).map(([k, v]) => [decodeArg(k), decodeArg(v)]);
+            // A plain object when every key is a string (what JS APIs usually take), else a Map
+            if (pairs.every(([k]) => typeof k === 'string')) {
+                const obj = {};
+                for (const [k, v] of pairs) obj[k] = v;
+                return obj;
+            }
+            return new Map(pairs);
         }
         default: throw new Error(`unknown argument type tag '${a.t}'`);
     }

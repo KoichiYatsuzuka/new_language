@@ -12,10 +12,26 @@ function big() { return 1e20; }                  // an integer that does not fit
 function not_a_number() { return NaN; }
 function infinite() { return -Infinity; }
 
-// values the bridge cannot carry yet (phase 5-2)
-function obj() { return { a: 1, b: "x" }; }
+// containers are copied (ffi_value_exchange_plan.md 5-2)
+function obj() { return { a: 1, b: "x" }; }          // a plain object -> dict[str, ...]
+function map_obj() { return new Map([[1, "one"], [2, "two"]]); }
+function set_obj() { return new Set([1, 2, 2, 3]); }
+function buf() { return Buffer.from("hi"); }
+function pair() { return [1, 2.0]; }                 // declared tuple[int, float]: JS has no tuples
+function sum_values(d) { return Object.values(d).reduce((a, b) => a + b, 0); }
+function kind(x) {
+    if (x === null) return "null";
+    if (Array.isArray(x)) return "array:" + x.length;
+    if (x instanceof Map) return "Map:" + x.size;
+    if (x instanceof Set) return "Set:" + x.size;
+    if (x instanceof Uint8Array) return "bytes:" + x.length;
+    return typeof x;
+}
+
+// values the bridge cannot carry
 function fn_value() { return function () { return 1; }; }
 function big_int() { return 10n; }
+function instance() { return new Date(0); }          // an instance of a class: not a plain object
 
 // arguments
 function echo(x) { return x; }
@@ -26,5 +42,6 @@ function nothing() { return undefined; }
 
 module.exports = {
     whole_float, half, ints, floats, nested, mixed, big, not_a_number, infinite,
-    obj, fn_value, big_int, echo, type_of, count, utf8, nothing,
+    obj, map_obj, set_obj, buf, pair, sum_values, kind, fn_value, big_int, instance,
+    echo, type_of, count, utf8, nothing,
 };

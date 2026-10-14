@@ -1,0 +1,54 @@
+# cs_proc_collections.ar — cs-proc でコレクションと bytes をコピーで受け渡す（正例・ffi_value_exchange_plan.md 5-2・D-5）
+#
+# 別プロセスではアドレスに意味が無いので、中身をコピーして運ぶ:
+#   - 戻り値: 配列・`List<T>` → list[T]、`Dictionary<K, V>` → dict[K, V]、`HashSet<T>` → set[T]、
+#     `ValueTuple` → tuple、`byte[]` → bytes（D-9）。入れ子も、要素が C# のオブジェクトでもよい
+#   - 引数: 同じものを、C# のメソッドの引数の型（`long[]` / `List<string>` / `HashSet<string>` / `(long, string)` /
+#     `Dictionary<string, long>` / `byte[]` …）に作り直して渡す
+#   - `Task<T>` を返すメソッドは待ってから T を返す（以前はホストが Task をハンドルとして返していた）
+#   - 型スタブが null を許さない要素に null が来たら TypeError
+# ⚠ 5-2 より前は、コレクションを受け渡すメソッドは使った箇所が静的エラーだった（その前は整数ハンドル・null）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_probe/cs_probe.exe が要る（build_cs_probe.ps1）。
+# 対になる負例: cs_proc_unsupported_signature_error.ar
+
+import[cs-proc] cs_probe as cp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 戻り値 ───────────────────────────────────────────────────────────────────
+check("string[] -> list[str]", cp.Probe.words("a b c") == ["a", "b", "c"])
+check("List<string> -> list[str]", cp.Probe.words_list("x y") == ["x", "y"])
+check("long[] -> list[int]", cp.Probe.ints() == [1, 2, 3])
+check("Dictionary -> dict", cp.Probe.counts("aab") == {"a": 2, "b": 1})
+check("ValueTuple -> tuple", cp.Probe.pair() == (1, "one"))
+check("HashSet -> set", cp.Probe.uniq([1, 1, 2]) == {1, 2})
+check("byte[] -> bytes", cp.Probe.raw("hi") == "hi".encode())
+check("nested Dictionary<long, List<string>>", cp.Probe.groups() == {1: ["x"], 2: ["y", "z"]})
+check("double[] round trip", cp.Probe.halves([1.0, 3.0]) == [0.5, 1.5])
+let holes = cp.Probe.holes()
+check("List<long?> -> list[Option[int]]", len(holes) == 3 and holes[1] is None and (holes[2] mustbe int) == 3)
+let people = cp.Probe.people()
+check("List<Person> -> a list of C# objects", len(people) == 2 and people[1].get_name() == "b")
+check("Task<long> is awaited", cp.Probe.later(21) == 42)
+
+# ── 引数 ─────────────────────────────────────────────────────────────────────
+check("list -> long[]", cp.Probe.sum([1, 2, 3]) == 6)
+check("list -> List<string>", cp.Probe.join(["a", "b"]) == "a|b")
+check("set -> HashSet<string>", cp.Probe.set_size({"a", "b"}) == 2)
+check("tuple -> (long, string)", cp.Probe.pair_text((7, "x")) == "7:x")
+check("dict -> Dictionary<string, long>", cp.Probe.dict_total({"a": 1, "b": 2}) == 3)
+check("bytes -> byte[]", cp.Probe.from_raw("日本".encode()) == "日本")
+check("C# objects in a list argument", cp.Probe.total_age(people) == 3)
+
+# ── 型スタブが null を許さない要素に null ───────────────────────────────────────
+mut message = ""
+try:
+    print("unreachable:", cp.Probe.with_null())
+except TypeError as e:
+    message = e.message
+check("null element in a list[str] -> TypeError (" + message + ")", message != "")

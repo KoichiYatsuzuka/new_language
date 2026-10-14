@@ -8,9 +8,8 @@
 // Request:  {"id":N,"op":"static"|"new"|"inst"|"quit","cls":"ClassName","mth":"method","hnd":handle,"args":[...]}
 // Response: {"id":N,"ok":<value>} | {"id":N,"err":"message"}
 //
-// Arg/result type tags:
-//   "i" = int64    "f" = float64    "b" = bool
-//   "s" = string   "h" = handle     "n" = null
+// Arg/result type tags: `super::proc_values` (shared with js-proc · plan 5-2): i / f / b / s / n / h and the copied
+// containers a (list) / u (tuple) / d (dict, [[key, value], …]) / e (set) / y (bytes, base64).
 //   "o" = (result only) an integer that does not fit in int64 (C# ulong ≥ 2^63), as a decimal string
 //
 // What each declared type may receive is decided in `super::cs_values` (shared with cs-dll · plan 2-1).
@@ -160,29 +159,21 @@ where
 
 // ── Encoding / decoding ──────────────────────────────────────────────────────
 
-/// 引数を JSON にする。運べない値（list / dict / インスタンス …）はエラー（2-1）。
-/// ⚠ 以前は `_ => null` で、リストを渡すと C# 側に `null` が届いていた。
+/// 引数を JSON にする（`proc_values`・コレクションと bytes はコピー・5-2）。運べない値はエラー。
+/// ⚠ 以前は `_ => null` で、リストを渡すと C# 側に `null` が届いていた（2-1 でエラーにし、5-2 でコピーで運ぶようにした）。
 fn encode_args(proc_path: &Path, args: &[Value], what: &str) -> Result<serde_json::Value, String> {
+    let peer = super::proc_values::Peer::Cs(proc_path);
     let mut out = Vec::with_capacity(args.len());
     for (i, v) in args.iter().enumerate() {
-        out.push(match v {
-            Value::Int(n) => serde_json::json!({"t": "i", "v": n}),
-            Value::UInt(n) => serde_json::json!({"t": "i", "v": n}),
-            Value::Float(f) => serde_json::json!({"t": "f", "v": f}),
-            Value::Bool(b) => serde_json::json!({"t": "b", "v": b}),
-            Value::Str(s) => serde_json::json!({"t": "s", "v": &**s}),
-            Value::CsObject(o) => {
-                cs_values::check_same_bridge(o, proc_path, true, i, what)?;
-                serde_json::json!({"t": "h", "v": o.handle})
-            }
-            Value::None => serde_json::json!({"t": "n"}),
-            other => return Err(cs_values::unsupported_arg(other, i, what)),
-        });
+        out.push(
+            super::proc_values::encode(v, &peer)
+                .map_err(|e| e.message(i, &format!("C# method '{what}'"), "cs-proc"))?,
+        );
     }
     Ok(serde_json::Value::Array(out))
 }
 
-/// ホストの返した値を、宣言された型で受け取る（2-1）。
+/// ホストの返した値を、宣言された型で受け取る（2-1）。コレクションは要素の宣言で読む（5-2）。
 /// ⚠ 以前は宣言を見ずにタグだけで読み、オブジェクトのハンドル（`"h"`）は整数に、読めない値は `""` / `0` にしていた。
 fn decode_result(v: &serde_json::Value, decl: &CsDecl, proc_path: &Path, what: &str) -> Result<Value, String> {
     if v.is_null() {
@@ -191,36 +182,75 @@ fn decode_result(v: &serde_json::Value, decl: &CsDecl, proc_path: &Path, what: &
     let malformed = || format!("{TAG}: malformed result from the host for '{what}': {v}");
     let t = v.get("t").and_then(|t| t.as_str()).ok_or_else(malformed)?;
     let val = v.get("v");
-    let any = decl.kind == CsKind::Any;
-    match t {
-        "n" => cs_values::null_result(decl, what),
-        "i" if decl.kind == CsKind::Int || any => {
-            Ok(Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?))
+    let any_decl = CsDecl { kind: CsKind::Any, optional: true, shown: "Any".to_string() };
+    let items = || val.and_then(|v| v.as_array()).ok_or_else(malformed);
+    // 要素を、その宣言で読む
+    let each = |xs: &Vec<serde_json::Value>, d: &CsDecl| -> Result<Vec<Value>, String> {
+        xs.iter().map(|x| decode_result(x, d, proc_path, what)).collect()
+    };
+    match (t, &decl.kind) {
+        ("n", _) => cs_values::null_result(decl, what),
+        ("i", CsKind::Int | CsKind::Any) => Ok(Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?)),
+        ("f", CsKind::Float | CsKind::Any) => {
+            Ok(Value::Float(super::proc_values::decode_float(val).ok_or_else(malformed)?))
         }
-        "f" if decl.kind == CsKind::Float || any => {
-            Ok(Value::Float(val.and_then(|v| v.as_f64()).ok_or_else(malformed)?))
-        }
-        "b" if decl.kind == CsKind::Bool || any => {
-            Ok(Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?))
-        }
-        "s" if decl.kind == CsKind::Str || any => {
+        ("b", CsKind::Bool | CsKind::Any) => Ok(Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?)),
+        ("s", CsKind::Str | CsKind::Any) => {
             Ok(Value::str(val.and_then(|v| v.as_str()).ok_or_else(malformed)?.to_string()))
         }
         // C# の ulong の 2^63 以上（cpp ブリッジの `unsigned long long` と同じ扱い・1-6）
-        "o" if decl.kind == CsKind::Int || any => Err(format!(
+        ("o", CsKind::Int | CsKind::Any) => Err(format!(
             "OverflowError: C# method '{what}' returned {}, which does not fit in int",
             val.and_then(|v| v.as_str()).unwrap_or("?")
         )),
-        "h" => {
+        ("h", _) => {
             let h = val.and_then(|v| v.as_i64()).ok_or_else(malformed)?;
             cs_values::object_result(decl, proc_path, true, h, what)
         }
-        "i" | "f" | "b" | "s" | "o" => {
+        // コピーで運んだコレクション・bytes（5-2）
+        ("a", CsKind::List(e)) => Ok(Value::List(std::rc::Rc::new(RefCell::new(each(items()?, e)?)))),
+        ("a", CsKind::Any) => Ok(Value::List(std::rc::Rc::new(RefCell::new(each(items()?, &any_decl)?)))),
+        ("u", CsKind::Tuple(es)) => {
+            let xs = items()?;
+            if xs.len() != es.len() {
+                return Err(cs_values::mismatched_result(decl, &format!("a tuple of {}", xs.len()), what));
+            }
+            let vals = xs.iter().zip(es).map(|(x, d)| decode_result(x, d, proc_path, what)).collect::<Result<_, _>>()?;
+            Ok(super::proc_values::make_tuple(vals))
+        }
+        ("u", CsKind::Any) => Ok(super::proc_values::make_tuple(each(items()?, &any_decl)?)),
+        ("e", CsKind::Set(e)) => super::proc_values::make_set(each(items()?, e)?),
+        ("e", CsKind::Any) => super::proc_values::make_set(each(items()?, &any_decl)?),
+        ("d", CsKind::Dict(..) | CsKind::Any) => {
+            let (kd, vd) = match &decl.kind {
+                CsKind::Dict(k, x) => (&**k, &**x),
+                _ => (&any_decl, &any_decl),
+            };
+            let pairs = items()?
+                .iter()
+                .map(|p| match p.as_array().map(Vec::as_slice) {
+                    Some([k, x]) => Ok((decode_result(k, kd, proc_path, what)?, decode_result(x, vd, proc_path, what)?)),
+                    _ => Err(malformed()),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            super::proc_values::make_dict(pairs)
+        }
+        ("y", CsKind::Bytes | CsKind::Any) => {
+            let b = super::proc_values::base64_decode(val.and_then(|v| v.as_str()).ok_or_else(malformed)?)
+                .map_err(|e| format!("{TAG}: {e} from the host for '{what}'"))?;
+            Ok(Value::bytes(b))
+        }
+        ("i" | "f" | "b" | "s" | "o" | "a" | "u" | "e" | "d" | "y", _) => {
             let got = match t {
                 "i" | "o" => "an integer",
                 "f" => "a float",
                 "b" => "a bool",
-                _ => "a string",
+                "s" => "a string",
+                "a" => "a list",
+                "u" => "a tuple",
+                "e" => "a set",
+                "d" => "a dict",
+                _ => "bytes",
             };
             Err(cs_values::mismatched_result(decl, got, what))
         }

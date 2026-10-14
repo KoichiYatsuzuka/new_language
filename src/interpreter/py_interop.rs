@@ -449,14 +449,7 @@ fn build_py_args<'py>(
     Ok((args_tuple, kwargs))
 }
 
-/// Value のランタイム型名を返す（エラーメッセージ・タプルの要素型名用）。
-/// ⚠ 2-6: 以前は表に無い型を 'unknown' と出していた（Arrow のインスタンス・set など）。インスタンスはクラス名、
-///   それ以外は実行時の型名（`runtime_type_name`）。
+/// Value のランタイム型名を返す（エラーメッセージ・タプルの要素型名用・[`element_type_name`]）。
 fn type_name_of(val: &Value) -> String {
-    match val {
-        Value::None => "NoneType".to_string(),
-        Value::Instance(inst) => inst.borrow().class.name.clone(),
-        Value::CsObject(o) => o.class_name.clone(),
-        other => crate::interpreter::ops::typecheck::runtime_type_name(other).to_string(),
-    }
+    crate::interpreter::ops::typecheck::element_type_name(val)
 }

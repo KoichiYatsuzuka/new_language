@@ -1,0 +1,16 @@
+# js_proc_instance_arg_error.ar — js-proc の関数に Arrow のクラスのインスタンスを渡すと TypeError（負例・2-3・5-2）
+#
+# 別プロセスへはコピーで運ぶので、運べるのは数値・文字列・bool・None・list・tuple・dict・set・bytes だけ。
+# クラスのインスタンス（メソッドを持つ）・関数・Ptr は運べない。以前は黙って JS 側に `null` が届いていた。
+# ⚠ 5-2 より前は dict / tuple / set も TypeError だった（このファイルは js_proc_dict_arg_error.ar だった）。
+#
+# 実行には Node.js が要る（型は js_probe.ars、実装は js_probe.js）。
+# 対になる正例: js_proc_values.ar（`try` で捕まえる形）
+
+import[js-proc] js_probe as jp
+
+class Point:
+    mut x: int
+
+print("dict:", jp.type_of({"a": 1}))
+print("unreachable:", jp.type_of(Point(1)))

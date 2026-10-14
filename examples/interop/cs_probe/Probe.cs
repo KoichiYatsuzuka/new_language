@@ -65,6 +65,22 @@ public class Probe
     public static object any_str() => "object string";
     public static object any_obj() => new Person("anon", 1);
 
+    // collections / bytes / Task<T> copied through cs-proc (task 5-2)
+    public static byte[] raw(string s) => System.Text.Encoding.UTF8.GetBytes(s);
+    public static string from_raw(byte[] b) => System.Text.Encoding.UTF8.GetString(b);
+    public static HashSet<long> uniq(long[] xs) => new HashSet<long>(xs);
+    public static long set_size(HashSet<string> s) => s.Count;
+    public static string pair_text((long, string) p) => p.Item1 + ":" + p.Item2;
+    public static List<Person> people() => new List<Person> { new Person("a", 1), new Person("b", 2) };
+    public static long total_age(List<Person> ps) { long t = 0; foreach (var p in ps) t += p.Age; return t; }
+    public static Dictionary<long, List<string>> groups() =>
+        new Dictionary<long, List<string>> { [1] = new List<string> { "x" }, [2] = new List<string> { "y", "z" } };
+    public static long dict_total(Dictionary<string, long> d) { long t = 0; foreach (var v in d.Values) t += v; return t; }
+    public static double[] halves(double[] xs) { var r = new double[xs.Length]; for (int i = 0; i < xs.Length; i++) r[i] = xs[i] / 2; return r; }
+    public static List<long?> holes() => new List<long?> { 1, null, 3 };
+    public static string[] with_null() => new string[] { "a", null! };   // declared string[]: a null element breaks it
+    public static System.Threading.Tasks.Task<long> later(long x) => System.Threading.Tasks.Task.Run(() => x * 2);
+
     // signatures Arrow cannot use yet (task 2-1: static errors)
     public static System.Text.StringBuilder builder() => new System.Text.StringBuilder("sb");
     public static T first<T>(T[] xs) => xs[0];

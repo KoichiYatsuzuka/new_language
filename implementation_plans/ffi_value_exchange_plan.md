@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了。フェーズ 5 着手（5-1）
+- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了。フェーズ 5 着手（5-1・5-2）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -228,7 +228,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-6** | ✅（§5）構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
 | **4-7** | ✅（§5）Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | ✅（§5）cs-dll: `[UnmanagedCallersOnly]` の export（今は利用者が手書き）を生成する（`arrow --gen-cs-exports X.dll`。Arrow の CLI が型スタブと同じ読み方で C# を書く・利用者の判断）。今の ABI（数値・文字列・クラスのハンドル・nullable）を生成し、C# の例外を Arrow の例外にする（今はプロセスが落ちる）・整数の幅を確かめる（今は黙って切る）。例題の手書きの export を置き換える | 2-1 | 中 |
-| **5-2** | cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
+| **5-2** | ✅（§5）cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
 | **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
 | **5-5** | cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
@@ -937,6 +937,43 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 535/535・
   `type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1147 件・拡張の wasm クレートの 707 件が通る。
   VSIX を作り直した
+
+### 5-2 実装
+
+- 値の表現（cs-proc・js-proc 共通・`interpreter/proc_values.rs`）に tuple `u`・dict `d`（`[[キー, 値], …]`）・set `e`・
+  bytes `y`（base64）を足し、cs-proc にも list `a` を足した。中身ごとコピーして運ぶ（D-5）。`Ptr` は別プロセスでは
+  意味が無いので TypeError（`to_list()` / `to_bytes()` でコピーしてから渡す）。Arrow のクラスのインスタンス・関数は
+  引き続き TypeError（型名はクラス名で出す）
+- js-proc: JS の素のオブジェクト（プロトタイプが `Object.prototype` か `null`）→ `dict[str, …]`、`Map` → dict、`Set` → set、
+  `Buffer` / `Uint8Array` → bytes。Arrow の dict はキーがすべて `str` なら素のオブジェクト、それ以外は `Map` にする。
+  クラスのインスタンス（`Date` など）の戻り値は TypeError（メソッドを持つので dict にすると黙って落ちる）。戻り値の照合
+  （`ffi_boundary`）で dict の値・set の要素・タプルの要素にも数値の寄せを当て、JS の配列を宣言のタプルにする
+- ⚠ 見つけて直した不具合（`ffi_boundary`）: 寄せた値を照合し直していなかったので、`list[float]` と宣言した関数が
+  `[1, "two"]` を返すと、`1` を寄せた時点で `"two"` が照合されずに通った。`dict[K, V]` の宣言は外側の形しか見ていな
+  かった（キーと値も照合するようにした）
+- cs-proc: 型スタブがブリッジを知るようにした（`CsBridge`・`load_cs_assembly(path, bridge)`）。cs-proc はコレクション
+  （中身も受け渡せる型のもの・`type_reason` が再帰で確かめる）と `byte[]`（型スタブの綴りを `bytes` にした・D-9）を
+  受け渡せる。cs-dll は引き続き未対応（⇒ 5-5・実行時も `dll_decl` が止める）。戻り値は宣言の型で読む
+  （`cs_values::CsKind` にコレクションを足し、`decode_result` が要素の宣言で再帰）。要素が C# のオブジェクトでもよい。
+  型スタブが null を許さない要素の null は TypeError
+- C# のホスト（`ArrowPipeHost.cs`・cs_probe と共有）: 引数をメソッドの引数の C# の型に作り直す（`T[]` / `List<T>` /
+  `IEnumerable<T>` … / `ValueTuple` / `Dictionary<K, V>` … / `HashSet<T>` … / `byte[]`。C# で等しくなるキーは
+  `Add` で例外にする）。戻り値の配列・`IEnumerable`・`IDictionary`・`ISet`・タプル・`KeyValuePair`・`byte[]` をタグつきで返す。
+  ⚠ 見つけて直した不具合: `Task<T>` を返すメソッドは、型スタブが `T` と宣言しているのにホストが Task をハンドルとして
+  返していた（待ってから T を返すようにした）
+- 検査用の `cs_probe` に `raw` / `from_raw` / `uniq` / `set_size` / `pair_text` / `people` / `total_age` / `groups` /
+  `dict_total` / `halves` / `holes` / `with_null` / `later` を、`js_probe` に `map_obj` / `set_obj` / `buf` / `pair` /
+  `sum_values` / `kind` / `instance` を足した
+- 例題: `interop/cs_proc_collections.ar`（期待値と違えば raise）。`js_proc_values.ar` を書き直した（コピーで運ぶもの・
+  運べないもの 5 種類）。`js_proc_dict_arg_error.ar` は dict が運べるようになったので `js_proc_instance_arg_error.ar`
+  （Arrow のインスタンス）にした。`cs_proc_unsupported_signature_error.ar` はコレクションを外し、残る 3 種類にした。
+  単体テスト 5 本（base64・コンテナの符号化・C# の宣言のコンテナ・cs-proc の型スタブ・JS の寄せ）
+- 文書: `docs/grammar/09_imports.md`（C# の値・js-proc の型タグ）・skill `importation`
+- ゲート（基準 `be8290d`・制限時間つき）: `compare_outputs` の差は新しい例題・書き直した例題 3 本
+  （`cs_proc_collections` / `js_proc_values` / `js_proc_instance_arg_error`）だけ。`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・
+  `compare_wasm_frontend` 536/536・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1152 件・拡張の wasm
+  クレートの 710 件が通る。VSIX を作り直した
 
 ---
 

@@ -69,6 +69,10 @@ pub(crate) mod js_proc_runtime;
 #[cfg(not(feature = "native"))]
 #[path = "interpreter/js_proc_runtime_stub.rs"]
 pub(crate) mod js_proc_runtime;
+// 別プロセスのブリッジ（cs-proc・js-proc）の値の表現（ffi_value_exchange_plan.md 5-2）。両ブリッジの実行時だけが使う。
+#[path = "interpreter/proc_values.rs"]
+#[cfg(feature = "native")]
+pub(crate) mod proc_values;
 
 /// FFI 境界検査（#16）: 動的型付け言語から Arrow へ入る値をスタブ宣言型と突き合わせる。
 // ⚠ **`#[path]` を明示する**。このファイルは `crates/arrow-frontend` から

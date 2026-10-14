@@ -8,7 +8,8 @@
 # 今は型スタブの宣言で読む。`string?` / `Person?` / `long?` は `Option[...]`（C# の nullable 注釈を読む）、
 # クラスは `CsObject`、`ulong` の 2^63 以上は OverflowError、`object` で宣言された値のうち中身のクラスが
 # 分からないもの・null にならないはずの戻り値の null は TypeError。
-# コレクションを受け渡すメソッドは静的エラー（cs_proc_unsupported_signature_error.ar）。
+# コレクションと bytes は 5-2 からコピーで受け渡す（cs_proc_collections.ar）。デリゲートなどを受け渡すメソッドは静的エラー
+# （cs_proc_unsupported_signature_error.ar）。
 #
 # ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
 # 非 ASCII の文字列の受け渡しは cs_proc_utf8.ar（2-2）。

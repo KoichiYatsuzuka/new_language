@@ -16,11 +16,12 @@ use super::*;
 ///
 /// The output format mirrors `stub_gen::generate_stub` but includes
 /// `"""summary"""` on the first body line of each class/method that has a doc entry.
+/// ⚠ `.ars` はどのブリッジで読むか分からないので cs-dll の判定で書く（印は出さない）。型は両方で同じ。
 pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, String>) -> String {
     let mut out   = String::new();
     let mut first = true;
 
-    for c in assembly_model(pa) {
+    for c in assembly_model(pa, CsBridge::Dll) {
         let tparams = if c.generic_param_names.is_empty() {
             String::new()
         } else {
@@ -139,10 +140,10 @@ pub(crate) fn make_fn_stub(
 }
 
 
-pub(crate) fn generate_stubs(pa: &ParsedAssembly) -> Result<Vec<Stmt>, String> {
+pub(crate) fn generate_stubs(pa: &ParsedAssembly, bridge: CsBridge) -> Result<Vec<Stmt>, String> {
     let mut stmts: Vec<Stmt> = Vec::new();
 
-    for c in assembly_model(pa) {
+    for c in assembly_model(pa, bridge) {
         let template_params: Vec<TemplateParam> = c
             .generic_param_names
             .iter()
@@ -237,11 +238,12 @@ pub(crate) fn stub_class_names(typedefs: &[CsTypeDef]) -> HashSet<String> {
 }
 
 
-/// C# のメソッドが、今の Arrow と C# の間で受け渡せない型を使っていれば理由を返す（2-1）。
+/// C# のメソッドが、今の Arrow と C# の間で受け渡せない型を使っていれば理由を返す（2-1・5-2）。
 ///
 /// 受け渡せるのは `int` / `float` / `bool` / `str` / `None` / `Any`（`object`）と、このアセンブリの公開クラス
-/// （`CsObject`）、およびそれらの `Option[T]`。コレクション・デリゲート・タプル・型変数・他のアセンブリの型・
-/// インターフェースは、使った箇所を静的エラーにする（`TypeErrorKind::FfiUnsupported`）。
+/// （`CsObject`）、およびそれらの `Option[T]`。cs-proc はさらにコレクション（`list` / `tuple` / `dict` / `set`・中身も
+/// 受け渡せる型のもの）と `bytes` をコピーで運ぶ（5-2）。デリゲート・型変数・他のアセンブリの型・インターフェース
+/// （と cs-dll のコレクション）は、使った箇所を静的エラーにする（`TypeErrorKind::FfiUnsupported`）。
 /// ⚠ 以前はコレクションやオブジェクトの戻り値が整数（ホスト側のハンドル番号）になり、リストの引数は C# に
 ///   `null` が届いていた（型スタブは `list[str]` / `Person` と宣言していた）。
 pub(crate) fn cs_unsupported_reason(
@@ -250,33 +252,76 @@ pub(crate) fn cs_unsupported_reason(
     classes: &HashSet<String>,
     class_type_params: &[String],
     method_type_params: &[String],
+    bridge: CsBridge,
 ) -> Option<String> {
-    // 型が受け渡せなければ、その型を説明する句（`it returns `T`, …` / `parameter `p` is `T`, …` に続ける）
-    let check = |ty: &str| -> Option<&'static str> {
-        let inner = ty.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')).unwrap_or(ty);
-        let head = inner.split('[').next().unwrap_or(inner);
-        match head {
-            "None" | "int" | "float" | "bool" | "str" | "Any" | "Self" => None,
-            "list" | "dict" | "set" => Some("a C# collection, which cannot cross the bridge yet"),
-            "tuple" => Some("a C# tuple, which cannot cross the bridge yet"),
-            "function" => Some("a C# delegate, which cannot cross the bridge yet"),
-            _ if class_type_params.iter().chain(method_type_params).any(|t| t == head) => {
-                Some("a generic type parameter, which cannot cross the bridge")
-            }
-            _ if inner.contains('[') => Some("a generic C# type, which cannot cross the bridge yet"),
-            _ if classes.contains(inner) => None,
-            _ => Some("which is not a public class of this assembly"),
-        }
-    };
-    if let Some(why) = check(ret) {
+    let ctx = TypeCtx { classes, type_params: class_type_params.iter().chain(method_type_params).collect(), bridge };
+    if let Some(why) = type_reason(ret, &ctx) {
         return Some(format!("it returns `{ret}`, {why}"));
     }
     for (name, ty) in params {
-        if let Some(why) = check(ty) {
+        if let Some(why) = type_reason(ty, &ctx) {
             return Some(format!("parameter `{name}` is `{ty}`, {why}"));
         }
     }
     None
+}
+
+struct TypeCtx<'a> {
+    classes: &'a HashSet<String>,
+    type_params: Vec<&'a String>,
+    bridge: CsBridge,
+}
+
+/// 型が受け渡せなければ、その型を説明する句（`it returns `T`, …` / `parameter `p` is `T`, …` に続ける）。
+fn type_reason(ty: &str, ctx: &TypeCtx) -> Option<String> {
+    let inner = ty.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')).unwrap_or(ty);
+    let (head, args) = match inner.split_once('[') {
+        Some((h, rest)) => (h, rest.strip_suffix(']')),
+        None => (inner, None),
+    };
+    let dll = ctx.bridge == CsBridge::Dll;
+    match head {
+        "None" | "int" | "float" | "bool" | "str" | "Any" | "Self" => None,
+        "bytes" if dll => Some("a byte array, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string()),
+        "bytes" => None,
+        "tuple" if dll => Some("a C# tuple, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string()),
+        "list" | "dict" | "set" if dll => {
+            Some("a C# collection, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string())
+        }
+        // cs-proc: 中身も受け渡せるなら運ぶ（5-2）
+        "list" | "dict" | "set" | "tuple" => match args {
+            Some(a) => split_type_args(a)
+                .into_iter()
+                .find_map(|t| type_reason(t, ctx).map(|why| format!("a C# collection of `{t}`, {why}"))),
+            None => Some("a C# collection without element types".to_string()),
+        },
+        "function" => Some("a C# delegate, which cannot cross the bridge yet".to_string()),
+        _ if ctx.type_params.iter().any(|t| t.as_str() == head) => {
+            Some("a generic type parameter, which cannot cross the bridge".to_string())
+        }
+        _ if args.is_some() => Some("a generic C# type, which cannot cross the bridge yet".to_string()),
+        _ if ctx.classes.contains(inner) => None,
+        _ => Some("which is not a public class of this assembly".to_string()),
+    }
+}
+
+/// `int,dict[str,int]` を最上位のカンマで分ける。
+fn split_type_args(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(s[start..].trim());
+    out
 }
 
 

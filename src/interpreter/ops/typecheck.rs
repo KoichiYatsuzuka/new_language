@@ -8,6 +8,18 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
     Some(inner.trim())
 }
 
+/// 外部言語から受け取った値の型名（タプルの要素型名・エラーメッセージ用）。インスタンスはクラス名、`None` は
+/// `NoneType`、それ以外は [`runtime_type_name`]。py-int（2-6）と cs-proc / js-proc（5-2）が使う。
+/// ⚠ 2-6 より前の py-int は表に無い型を 'unknown' と出していた。
+pub(crate) fn element_type_name(val: &Value) -> String {
+    match val {
+        Value::None => "NoneType".to_string(),
+        Value::Instance(inst) => inst.borrow().class.name.clone(),
+        Value::CsObject(o) => o.class_name.clone(),
+        other => runtime_type_name(other).to_string(),
+    }
+}
+
 /// 値のランタイム型名（エラーメッセージ用）。**`Interpreter` を持たない場所でも使う**ため
 /// 自由関数にしてある（`DictData::reject_key` がキーの型名を出すのに要る・B1-a）。
 /// `Interpreter::type_name` はこれに委譲するだけ。

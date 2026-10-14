@@ -9,6 +9,15 @@ use std::collections::HashSet;
 
 use super::*;
 
+/// どのブリッジの型スタブか（受け渡せる型が違う・5-2）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CsBridge {
+    /// `import[cs-dll]`（同じプロセス・C ABI。コレクションと `bytes` はまだ受け渡せない・5-5）
+    Dll,
+    /// `import[cs-proc]`（別プロセス・JSON。コレクションと `bytes` はコピーで運ぶ・5-2・D-5）
+    Proc,
+}
+
 /// 型スタブに出す型（クラス・インターフェース）。
 pub(crate) struct CsClassModel {
     /// スタブの名前（TypeDef の名前）
@@ -85,8 +94,8 @@ pub(crate) fn is_stub_type(td: &CsTypeDef) -> bool {
         && !td.name.starts_with('_')
 }
 
-/// アセンブリの公開型と公開メンバーの一覧。
-pub(crate) fn assembly_model(pa: &ParsedAssembly) -> Vec<CsClassModel> {
+/// アセンブリの公開型と公開メンバーの一覧。`bridge` は未対応の判定（[`cs_unsupported_reason`]）に使う。
+pub(crate) fn assembly_model(pa: &ParsedAssembly, bridge: CsBridge) -> Vec<CsClassModel> {
     let classes = stub_class_names(&pa.typedefs);
     let mut out = Vec::new();
     for (td_i, td) in pa.typedefs.iter().enumerate() {
@@ -118,7 +127,7 @@ pub(crate) fn assembly_model(pa: &ParsedAssembly) -> Vec<CsClassModel> {
                 }
                 None => MemberRole::Method,
             };
-            out_member(pa, td, td_row, md_1 as u32, m, role, &classes, &mut members);
+            out_member(pa, td, td_row, md_1 as u32, m, role, &classes, bridge, &mut members);
         }
         out.push(CsClassModel {
             name: td.name.clone(),
@@ -142,6 +151,7 @@ fn out_member(
     m: &CsMethod,
     role: MemberRole,
     classes: &HashSet<String>,
+    bridge: CsBridge,
     members: &mut Vec<CsMemberModel>,
 ) {
     let ((ret, ret_ann), sig) = decode_member_sig(pa, m, md_row, td_row, &td.generic_param_names);
@@ -190,7 +200,7 @@ fn out_member(
     };
     let anns: Vec<(&str, &str)> = params.iter().map(|p| (p.name.as_str(), p.ann.as_str())).collect();
     let unsupported =
-        cs_unsupported_reason(&ret_ann, &anns, classes, &td.generic_param_names, &m.generic_param_names);
+        cs_unsupported_reason(&ret_ann, &anns, classes, &td.generic_param_names, &m.generic_param_names, bridge);
     members.push(CsMemberModel {
         role,
         cs_name: m.name.clone(),

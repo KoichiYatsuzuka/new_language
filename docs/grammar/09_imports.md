@@ -472,8 +472,12 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 
 - `?` の無い参照型（`string` / `Person`）のメソッドが null を返したら `TypeError` です（C# 側の約束違反）。
   nullable 注釈を有効にしていない（`<Nullable>` の無い）アセンブリの参照型も同じ扱いです。
-- 次の型を受け渡すメソッドは、使った箇所が静的エラーになります: 配列・`List` などのコレクション・`Dictionary`・
-  タプル・デリゲート・型変数（ジェネリックなメソッド）・他のアセンブリの型・インターフェース。
+- コレクションと `byte[]` は **cs-proc だけ**がコピーで運びます（5-2）: 配列・`List<T>` など → `list[T]`、
+  `Dictionary<K, V>` → `dict[K, V]`、`HashSet<T>` → `set[T]`、`ValueTuple` → `tuple[…]`、`byte[]` → `bytes`。
+  引数は C# のメソッドの引数の型に作り直して渡します。要素が C# のオブジェクトでもかまいません。cs-dll はまだ
+  運べません（⇒ 5-5）。`Task<T>` を返すメソッドは待ってから `T` を返します（cs-proc）。
+- 次の型を受け渡すメソッドは、使った箇所が静的エラーになります: デリゲート・型変数（ジェネリックなメソッド）・
+  他のアセンブリの型・インターフェース（cs-dll ではコレクション・`byte[]` も）。
 - C# のオブジェクトは、それを作ったブリッジ（同じ DLL / 同じホスト）へだけ渡せます。
 - 公開のコンストラクタは型スタブの `__init__`（コンストラクタごとに 1 つ）になり、引数の個数で選んでその型で渡します
   （その個数のコンストラクタが無ければ `TypeError`）。
@@ -957,14 +961,20 @@ Response: {"id":N,"ok":{t,v}} | {"id":N,"err":"message"}
 | `"s"` | `str` | `string` |
 | `"n"` | `None` | `null` / `undefined` |
 | `"a"` | `list` | `Array` |
-| `"o"` | （エラー） | `Object`。まだ受け取れない（`TypeError`） |
-| `"x"` | （エラー） | 関数・`Symbol`・`BigInt`。受け取れない（`TypeError`） |
+| `"u"` | `tuple`（引数だけ） | `Array`（JS にタプルは無い。戻り値を `tuple[…]` と宣言すれば同じ長さの配列をタプルにする） |
+| `"d"` | `dict` | キーがすべて `str` なら素のオブジェクト、それ以外は `Map`。`Map` の戻り値も `dict` |
+| `"o"` | `dict[str, …]`（戻り値だけ） | 素のオブジェクト（プロトタイプが `Object.prototype` か `null`） |
+| `"e"` | `set` | `Set` |
+| `"y"` | `bytes` | `Buffer` / `Uint8Array`（base64 で運ぶ） |
+| `"x"` | （エラー） | 関数・`Symbol`・`BigInt`・クラスのインスタンス（`Date` など）。受け取れない（`TypeError`） |
 
 JS の数値には整数と小数の区別が無いので、戻り値は `.ars` に書いた型で読みます: `-> float` の関数が `2.0`
 （整数値）を返せば `2.0`、`-> int` の関数が整数値の小数を返せば `int`。`list[float]` などコンテナの要素にも同じ
 規則を当てます。宣言と食い違う値（`-> list[int]` が `[1, "two"]` を返す・小数を `int` で返す）は `FfiTypeError` です。
-引数に渡せるのは数値・文字列・`bool`・`None`・リストで、dict / tuple / set / インスタンスは `TypeError` です
-（以前は JS 側に `null` が届き、オブジェクトの戻り値は `"k=v"` の文字列のリストになっていました）。
+`dict[str, float]` の値・`set[float]` の要素・`tuple[int, float]` の要素にも同じ規則を当てます。
+dict / tuple / set / bytes は中身ごとコピーして運びます（`implementation_plans/ffi_value_exchange_plan.md` 5-2）。
+Arrow のクラスのインスタンス・関数・`Ptr`（別プロセスでは意味が無い）は `TypeError` です（以前は JS 側に `null` が
+届き、オブジェクトの戻り値は `"k=v"` の文字列のリストになっていました）。
 
 ### `list` 操作
 

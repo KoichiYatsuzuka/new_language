@@ -38,7 +38,7 @@ enum RetAbi {
 
 /// 生成する C# のソース。`source` はメッセージ用の DLL の名前。
 pub(crate) fn generate_cs_exports(pa: &ParsedAssembly, source: &str) -> String {
-    let model = assembly_model(pa);
+    let model = assembly_model(pa, CsBridge::Dll);
     // 型スタブにクラスとして出す、ジェネリックでない型（ハンドルで受け渡す）: スタブの名前 → C# の名前
     let classes: HashMap<String, String> = model
         .iter()

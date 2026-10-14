@@ -238,7 +238,7 @@ fn call_typed(
     self_handle: Option<i64>,
     what: &str,
 ) -> Result<Value, String> {
-    let decl = cs_values::decl_of(ret_type)?;
+    let decl = dll_decl(ret_type, what)?;
     match (&decl.kind, decl.optional) {
         // 数値・bool の null を表す取り決めがブリッジに無い（手書きの export は値をそのまま返す）
         (CsKind::Int | CsKind::Float | CsKind::Bool, true) => {
@@ -295,7 +295,22 @@ fn call_typed(
         CsKind::Bool => Ok(Value::Bool(raw != 0)),
         CsKind::Class(_) => cs_values::object_result(&decl, &bridge.path, false, raw, what),
         CsKind::Str | CsKind::Any => unreachable!("handled above"),
+        CsKind::Bytes | CsKind::List(_) | CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_) => {
+            unreachable!("rejected by dll_decl")
+        }
     }
+}
+
+/// cs-dll の宣言（コレクションと `bytes` はまだ運べない・5-5）。cs-proc はコピーで運ぶ（5-2）。
+fn dll_decl(ann: Option<&str>, what: &str) -> Result<cs_values::CsDecl, String> {
+    let decl = cs_values::decl_of(ann)?;
+    if decl.kind.is_container() {
+        return Err(format!(
+            "TypeError: C# method '{what}' passes a `{}`, which cannot cross the cs-dll bridge yet (use cs-proc)",
+            decl.shown
+        ));
+    }
+    Ok(decl)
 }
 
 /// 引数を i64 のスロットに並べる（文字列は `(ptr, len)` の 2 つ・null の文字列は `(0, -1)`）。
@@ -315,7 +330,7 @@ fn encode_args(
         slots.push(h);
     }
     for (i, v) in args.iter().enumerate() {
-        let decl = cs_values::decl_of(param_types.get(i).and_then(|t| t.as_deref()))?;
+        let decl = dll_decl(param_types.get(i).and_then(|t| t.as_deref()), what)?;
         let any = decl.kind == CsKind::Any;
         match (&decl.kind, v) {
             (CsKind::Str, Value::Str(s)) | (CsKind::Any, Value::Str(s)) => {
