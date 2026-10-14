@@ -518,6 +518,21 @@ mod probe_tests {
         assert!(text.contains("// skipped Probe.first: "), "generic method");
     }
 
+    /// `ref` / `out` の引数を持つメソッドは、どちらのブリッジでも未対応（7-16。書き戻さないので）。
+    #[test]
+    fn byref_methods_are_marked() {
+        for bridge in [CsBridge::Dll, CsBridge::Proc] {
+            let st = probe_stubs_for(bridge);
+            let why = |k: &str| st.get(k).unwrap_or_else(|| panic!("{k} missing")).2.clone();
+            assert_eq!(
+                why("Probe.try_parse").as_deref(),
+                Some("parameter `value` is `ref` / `out`, which Arrow does not write back")
+            );
+            assert!(why("Probe.bump").is_some_and(|w| w.contains("`ref` / `out`")));
+            assert_eq!(why("Probe.greet"), None);
+        }
+    }
+
     /// cs-dll: dict・set・タプル・デリゲート・型変数・他のアセンブリの型を使うメソッドだけに印が付く（2-1・5-5）。
     /// 配列・list・bytes は 5-5 から受け渡せる（数値の配列は `Ptr[T]`）。
     #[test]

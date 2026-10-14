@@ -1,0 +1,17 @@
+# cs_proc_byref_error.ar — `ref` / `out` の引数を持つ C# のメソッドは静的エラー（負例・ffi_value_exchange_plan.md 7-16）
+#
+# `Probe.try_parse(string s, out long value)` の `value` は C# が書き込むが、Arrow は呼んだ後に書き戻さない。
+# 型スタブはそのメソッドに未対応の印を付け、使った箇所が静的エラーになる（cs-dll も同じ）。
+# 期待: StaticTypeError — parameter `value` is `ref` / `out`, which Arrow does not write back
+# ⚠ 7-16 より前は型スタブがその引数を `mut` にしていたので型検査を通り、実行すると cs-proc はホストが引数を変換
+#   できずに `System.InvalidCastException: Invalid cast from 'System.Int64' to 'System.Int64&'` で落ちた。cs-dll は
+#   export を作らないので「export が無い」エラーだった。
+#
+# 実行には examples/interop/cs_probe/cs_probe.dll が要る（型スタブの元。build_cs_probe.ps1）。
+# 対になる正例: cs_proc_values.ar
+
+import[cs-proc] cs_probe as cp
+
+mut n = 0
+let ok = cp.Probe.try_parse("12", n)
+print(ok, n)

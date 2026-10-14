@@ -190,9 +190,6 @@ fn member_export(
     if matches!(m.role, MemberRole::Setter(_)) && m.sig_len != 1 {
         return Err("an indexer setter".to_string());
     }
-    if let Some(p) = m.params.iter().find(|p| p.byref) {
-        return Err(format!("parameter `{}` is `ref` / `out` (not written back yet ⇒ 7-16)", p.name));
-    }
     let what = format!("{}.{}", c.name, m.arrow_name);
     let mut decls: Vec<String> = Vec::new();
     let mut args: Vec<String> = Vec::new();

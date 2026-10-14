@@ -199,8 +199,13 @@ fn out_member(
         _ => ret_ann,
     };
     let anns: Vec<(&str, &str)> = params.iter().map(|p| (p.name.as_str(), p.ann.as_str())).collect();
-    let unsupported =
-        cs_unsupported_reason(&ret_ann, &anns, classes, &td.generic_param_names, &m.generic_param_names, bridge);
+    // ⚠ `ref` / `out` の引数は書き戻さないので未対応（ffi_value_exchange_plan.md 7-16）。以前は型スタブがその引数を
+    //   `mut` にしていた（P6）ので呼べそうに見え、実行すると cs-proc はホストが引数を変換できず（`long` → `long&`・
+    //   `InvalidCastException`）、cs-dll は export を作らないので「export が無い」エラーになった
+    let unsupported = match params.iter().find(|p| p.byref) {
+        Some(p) => Some(format!("parameter `{}` is `ref` / `out`, which Arrow does not write back", p.name)),
+        None => cs_unsupported_reason(&ret_ann, &anns, classes, &td.generic_param_names, &m.generic_param_names, bridge),
+    };
     members.push(CsMemberModel {
         role,
         cs_name: m.name.clone(),

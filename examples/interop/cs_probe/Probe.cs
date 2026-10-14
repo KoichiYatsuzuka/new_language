@@ -20,6 +20,10 @@ public class Person
 
 public class Probe
 {
+    // ref / out: Arrow does not write them back, so the stub marks these unsupported (a static error, plan 7-16)
+    public static bool try_parse(string s, out long value) => long.TryParse(s, out value);
+    public static void bump(ref long x) { x += 1; }
+
     // exceptions: Arrow raises them as ForeignError (plan 7-4)
     public static long fail(string why) => throw new InvalidOperationException(why);
 

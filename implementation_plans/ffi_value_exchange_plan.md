@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-12・7-15・7-17・7-18・7-19 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-3〜7-5・7-12・7-15〜7-19 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -249,7 +249,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 | **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
 | **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
-| **7-16** | C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
+| **7-16** | ✅（§5）C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 | **7-17** | ✅（§5）dict のキーの照合が、乱数のシード次第で型厳密でなくなる。`dict_get` / `dict_set` がキーの等値に式としての比較（`3 == 3.0` は真）を使っていた。ハッシュは型で分けているが、表の内部はハッシュの下位の手がかりが一致した別のキーにも等値を問うので、`d[3]` と `d[3.0]` が同じキーになることがあった（拡張のクレートのテスト `test_dict_keys_are_type_strict` が 5-3 のゲートで落ちて発見・およそ数回に 1 回） | なし | 小 |
 | **7-18** | ✅（§5）`len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
 | **7-19** | ✅（§5）非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
@@ -1211,6 +1211,22 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（177/177。新しい例題も一致）・
   `compare_wasm_frontend` 549/549・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1168 件・拡張の wasm クレートの
   722 件が通る。VSIX を作り直した
+
+### 7-16 実装
+
+- `ref` / `out` の引数を持つ C# のメソッドは、型スタブが未対応の印を付ける（`model.rs`・cs-dll も cs-proc も）。使った箇所が
+  静的エラー（`FfiUnsupported`: `parameter `value` is `ref` / `out`, which Arrow does not write back`）。書き戻しは実装しない
+  （行の「書き戻すか、未対応として静的エラーにする」のうち後者）。生成器（`export_gen.rs`）の同じ判定は型スタブの印に含まれるので消した
+- ⚠ 基準の exe で確かめた以前の挙動: 型スタブがその引数を `mut` にしていた（P6）ので型検査を通り、cs-proc はホストが引数を
+  変換できずに `System.InvalidCastException: Invalid cast from 'System.Int64' to 'System.Int64&'` で落ちた（行が想定していた
+  「黙って失われる」ではなかった）。cs-dll は export を作らないので「export が無い」エラー
+- 検査用のメソッド `Probe.try_parse`（`out`）・`Probe.bump`（`ref`）を足して `cs_probe` を作り直した
+- 単体テスト `byref_methods_are_marked`（cs-dll と cs-proc の型スタブ）。例題: `interop/cs_proc_byref_error.ar`（負例）
+- 文書: `docs/grammar/09_imports.md`（C# の値の対応）
+- ゲート（基準 `bf83f2f`・制限時間つき）: `compare_outputs` の差は新しい負例 `cs_proc_byref_error` だけ（459/460）。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（178/178）・
+  `compare_wasm_frontend` 550/550・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1169 件・拡張の wasm クレートの
+  723 件が通る。VSIX を作り直した
 
 ---
 
