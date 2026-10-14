@@ -244,7 +244,7 @@ pub fn gen_cpp_shim_source(
             src.push_str(&format!(
                 "{dllexport}{ret_c} {def_name}({params_str}) {{ {callee}; }}\n"
             ));
-        } else if let CType::ByValueStruct { .. } = &sig.ret {
+        } else if matches!(&sig.ret, CType::ByValueStruct { .. } | CType::PtrProtocol { by_pointer: false, .. }) {
             // By-value struct return: return it by value, like the real function (1-3).
             // ⚠ It used to be written into a per-function static buffer whose address was returned
             //   (not thread-safe, and a different calling convention from the real function).

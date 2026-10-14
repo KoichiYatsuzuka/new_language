@@ -63,6 +63,9 @@ pub enum AbiTy {
     /// `ArPtrProtocol` の引数（値・`const` ポインタ・`writable` は書き込み用ポインタ・4-4）。スロットは組み立てた構造体の
     /// アドレス（値渡しは中継コードがそこからコピーする）。
     Protocol { writable: bool },
+    /// `ArPtrProtocol` の戻り値（値返し・4-5）。`*_ret` に呼び出し側の領域のアドレスを入れて呼び、中継コードがそこへ構造体を
+    /// 書く（`invoke_typed_abi`）。`structs` はそのヘッダが宣言した構造体の名前（要素の型名の照合・D-12）。
+    ProtocolRet { structs: Arc<[Arc<str>]> },
     /// プリミティブ書き込みポインタ引数（`int*` / `double*` 等、非 const）。
     /// 呼び出し側がローカル u64 スロットに初期値を width 幅でエンコードして
     /// そのアドレスを渡し、呼び出し後にデコードして名前付き `mut` 変数へ書き戻す
@@ -176,6 +179,19 @@ pub unsafe fn invoke_typed_abi(
     ret_ty: &AbiTy,
 ) -> Result<Value, String> {
     let mut ret: u64 = 0;
+    // `ArPtrProtocol` の値返し（4-5）: 中継コードが構造体を書く領域。`ret` にそのアドレスを入れて渡す
+    let mut proto_ret = super::PtrProtocolRaw {
+        address: 0,
+        elem_type: std::ptr::null(),
+        flags: 0,
+        _reserved: 0,
+        length: 0,
+        release: None,
+        release_ctx: std::ptr::null_mut(),
+    };
+    if matches!(ret_ty, AbiTy::ProtocolRet { .. }) {
+        ret = std::ptr::addr_of_mut!(proto_ret) as u64;
+    }
     let mut err = crate::interpreter::native_api::ErrSlot::default();
     let status = {
         let f: unsafe extern "C" fn(
@@ -213,6 +229,10 @@ pub fn decode_typed_ret(ret_ty: &AbiTy, ret: u64) -> Result<Value, String> {
         // SAFETY: 中継コードが C の関数の戻り値（NUL 終端の文字列か NULL）をそのまま返す
         AbiTy::CStr { wide } => unsafe { super::c_string_ret(ret, *wide) },
         AbiTy::PtrVal { elem } => super::raw_pointer_ret(ret, elem)?,
+        // `ret` は `invoke_typed_abi` が用意した領域のアドレス（中継コードがそこへ構造体を書いた）
+        AbiTy::ProtocolRet { structs } => {
+            super::ptr_from_protocol(unsafe { &*(ret as usize as *const super::PtrProtocolRaw) }, structs)?
+        }
         AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } | AbiTy::Bytes | AbiTy::Protocol { .. } => {
             unreachable!("typed ABI ret excludes argument-only kinds")
         }

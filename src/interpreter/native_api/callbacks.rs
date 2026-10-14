@@ -789,6 +789,23 @@ extern "C" fn ar_protocol_done(h: i64, address_after: u64) {
     }
 }
 
+/// `ArPtrProtocol` の戻り値（ハンドル経路・4-5）。規則は型つき経路と共有（`value::ptr_from_protocol`）。
+extern "C" fn ar_protocol_ret(raw: *const u8, structs: *const u8, structs_len: i32) -> i64 {
+    let names: Vec<std::sync::Arc<str>> = match native_str(structs, structs_len, "struct names") {
+        Some(s) => s.split(',').filter(|n| !n.is_empty()).map(std::sync::Arc::from).collect(),
+        None => return TL_NONE,
+    };
+    // SAFETY: `raw` は中継コードの `_ArPtrProtocol`（`PtrProtocolRaw` と同じ並び）を指す
+    let raw = unsafe { &*(raw as *const crate::interpreter::value::PtrProtocolRaw) };
+    match crate::interpreter::value::ptr_from_protocol(raw, &names) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            set_argument_error(e);
+            TL_NONE
+        }
+    }
+}
+
 /// ハンドルの値の型名（エラーの表示用）。⚠ `None` / `True` / `False` / 小さい整数はアリーナに入らず番号で表す
 /// （`push_value`）ので、番号で見分けてからアリーナを引く。
 fn handle_type_name(h: i64) -> String {
@@ -1119,6 +1136,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     ptr_arg: ar_ptr_arg,
     protocol_arg: ar_protocol_arg,
     protocol_done: ar_protocol_done,
+    protocol_ret: ar_protocol_ret,
 };
 
 #[cfg(test)]

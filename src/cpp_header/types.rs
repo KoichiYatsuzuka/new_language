@@ -233,10 +233,7 @@ impl CFnSig {
             CType::OpaqueStructPtr { type_name, .. } if !known(type_name) => Some(format!(
                 "it returns a pointer to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
             )),
-            // ⚠ 受け取り（`Option[Ptr[T]]` にする）は 4-5 で入る（4-2 では認識だけ）
-            CType::PtrProtocol { by_pointer: false, .. } => {
-                Some("it returns `ArPtrProtocol`, which Arrow cannot receive yet".to_string())
-            }
+            // ⚠ `ArPtrProtocol` の値返しは 4-5 から `Option[Ptr[T]]` で受け取る。ポインタを返すものは誰が持つか決められない
             CType::PtrProtocol { by_pointer: true, .. } => Some(
                 "it returns a pointer to `ArPtrProtocol` (return the struct itself by value)".to_string(),
             ),
@@ -324,7 +321,7 @@ fn typed_abi_ok(t: &CType, structs: &[CStructDef], param: bool) -> bool {
         CType::CharPtr { wide: false, mutable: false } if param => true,
         CType::CharPtr { .. } => !param,
         CType::Ptr { .. } => !param,
-        CType::PtrProtocol { .. } => param,
+        CType::PtrProtocol { by_pointer, .. } => param || !*by_pointer,
         _ => false,
     }
 }
@@ -389,6 +386,8 @@ mod tests {
             sig(vec![st_ptr("Rec")], CType::Bool),
             sig(vec![CType::PtrProtocol { by_pointer: true, mutable: true }], I32),
             sig(vec![CType::PtrProtocol { by_pointer: false, mutable: false }, st_ptr("Rec")], CSTR),
+            // 4-5: `ArPtrProtocol` の値返し
+            sig(vec![I32], CType::PtrProtocol { by_pointer: false, mutable: false }),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
         }
@@ -426,8 +425,8 @@ mod tests {
             (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
             // 型つき経路に載らない形（値返しの構造体）と、インスタンスを渡す構造体ポインタは混ぜられない
             (sig(vec![st_ptr("Rec")], by_val("Rec")), "struct pointer together with a struct returned by value"),
-            // `ArPtrProtocol` を返す関数は 4-5 まで使えない
-            (sig(vec![], CType::PtrProtocol { by_pointer: false, mutable: false }), "cannot receive yet"),
+            // `ArPtrProtocol*` を返す関数は誰が持つか決められない（値で返す）
+            (sig(vec![], CType::PtrProtocol { by_pointer: true, mutable: false }), "return the struct itself by value"),
         ];
         for (f, want) in cases {
             let got = f.unsupported_reason(&s);

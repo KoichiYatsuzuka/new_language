@@ -86,4 +86,6 @@ match p:
     is Ptr[int32]: print(p.to_list())   # [0, 1, 4, 9]
 ```
 
-⚠ Arrow 側の受け取り（ヘッダ解析・型スタブ・実行時の変換）はフェーズ 4 の 4-2〜4-5 で入ります。
+C/C++（`import[cpp-dll]` / `import[cpp-lib]`）では、ヘッダの `ArPtrProtocol` を認識し（4-2）、引数へ `Ptr` / `None` を渡し（4-4）、
+値返しを `Option[Ptr[void]]` として受け取ります（4-5・`examples/interop/cpp_ptr_protocol.ar`）。⚠ Arrow の `list` から組み立てて
+渡すのは 4-7、C# / Rust の受け渡しはフェーズ 5 で入ります。

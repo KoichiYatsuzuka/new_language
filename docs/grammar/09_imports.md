@@ -426,6 +426,7 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   | `const char*` の引数 | `bytes` か `None`（NUL を含むと `ValueError`）。**`str` は静的エラー**: ライブラリの文字コードで `s.encode("utf-8")` / `s.encode("cp932")` |
   | `void*` の引数 | どの `Ptr` でも、または `None` |
   | 構造体ポインタの引数 | 正確なレイアウトの構造体はインスタンス（書き戻しあり）か `Ptr[構造体名]`。前方宣言だけの構造体は `Ptr[構造体名]` か `None` |
+  | `ArPtrProtocol` の戻り値（値返し） | `Option[Ptr[void]]`（所有なら最後の参照か `release()` で 1 回だけ解放・STATIC は解放しない）。`p mustbe Ptr[int32]` で要素型を照合してから `to_list()` / `to_bytes()` |
   | `ArPtrProtocol`（値・`const` ポインタ・ポインタ）の引数 | `Ptr` か `None`。`ArPtrProtocol*` を受けた関数が解放して `address` を 0 に書き戻すと、その `Ptr` は使えなくなる（`docs/ptr_protocol.md`） |
   | 数値の書き込みポインタ（`int*` / `double*`）の引数 | 名前つきの `mut` 変数（呼び出しの後で書き戻す） |
   | NULL | `None` |

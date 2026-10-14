@@ -638,6 +638,7 @@ impl Interpreter {
     pub(crate) fn build_cpp_typed_sig(
         sig: &crate::interpreter::cpp_bridge::CFnSig,
         raw_layouts: &HashMap<String, Arc<crate::interpreter::value::RawLayout>>,
+        struct_names: &Arc<[Arc<str>]>,
     ) -> Option<crate::interpreter::value::TypedSig> {
         use crate::interpreter::cpp_bridge::CType;
         use crate::interpreter::value::{AbiTy, TypedSig};
@@ -652,6 +653,8 @@ impl Interpreter {
             CType::Bool => AbiTy::Bool,
             CType::CharPtr { wide, .. } => AbiTy::CStr { wide: *wide },
             CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => AbiTy::PtrVal { elem: elem_of(&sig.ret)? },
+            // 4-5: `ArPtrProtocol` の値返し → `Option[Ptr[T]]`（要素の型名はそのヘッダの構造体と照合する）
+            CType::PtrProtocol { by_pointer: false, .. } => AbiTy::ProtocolRet { structs: struct_names.clone() },
             _ => return None,
         };
         let mut ptys = Vec::with_capacity(sig.params.len());
@@ -1023,6 +1026,8 @@ impl Interpreter {
         // C 構造体名 → raw レイアウトの共有マップ。typed ABI シグネチャ（`AbiTy::Ptr`）は
         // `NativeFnRef` 越しに `Send + Sync` が要求されるため `Arc` で保持する。
         // クラス側の `raw_layout`（`Rc`）はクラス生成時に個別に複製する（構築は起動時 1 回のみ）。
+        // `ArPtrProtocol` の要素の型名と照合する構造体の名前（4-5・D-12）
+        let struct_names: Arc<[Arc<str>]> = struct_defs.iter().map(|d| Arc::from(d.name.as_str())).collect();
         let raw_layouts: HashMap<String, Arc<crate::interpreter::value::RawLayout>> = struct_defs
             .iter()
             .filter_map(|d| d.raw_layout().map(|l| (d.name.clone(), Arc::new(l))))
@@ -1129,7 +1134,7 @@ impl Interpreter {
                     .collect();
                 // typed ABI: 全プリミティブ + raw レイアウト既知の構造体シグネチャなら
                 // {name}_typed を解決する
-                let typed_sig = Self::build_cpp_typed_sig(sig, &raw_layouts);
+                let typed_sig = Self::build_cpp_typed_sig(sig, &raw_layouts, &struct_names);
                 let typed_ptr = if typed_sig.is_some() {
                     let tsym = format!("{}_typed\0", sig.name);
                     match unsafe {

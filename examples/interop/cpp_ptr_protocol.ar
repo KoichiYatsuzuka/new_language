@@ -1,0 +1,68 @@
+# cpp_ptr_protocol.ar — ArPtrProtocol で返された配列・文字データを Ptr[T] で受け取る（正例・ffi_value_exchange_plan.md 4-5・D-10・D-15）
+#
+# ArPtrProtocol（bridge/ptr_protocol/ar_ptr_protocol.h・仕様は docs/ptr_protocol.md）で返されたものは Option[Ptr[void]]
+# として受け取り、`p mustbe Ptr[T]` で要素型を照合してから展開する（`to_list()` / `to_bytes()`・どちらもコピー）。
+#   - 解放関数のある Ptr は、`release()` か最後の参照がなくなったときに解放関数を 1 回だけ呼ぶ（コピーは共有）
+#   - STATIC（DLL のアンロードまで有効）は解放しない。NUL 終端なら長さが無くても to_bytes() できる
+#   - C の側で解放する関数（ArPtrProtocol* を受けて address を 0 に書き戻す）へ渡すと、その Ptr は使えなくなる
+#   - NULL は None
+# ⚠ 4-5 より前は ArPtrProtocol を返す関数は使えなかった（4-2 の負例 cpp_ptr_protocol_pending_error.ar を置き換えた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_ptr_protocol_release_error.ar（解放関数も STATIC も無い）
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 所有の配列 ──────────────────────────────────────────────────────────────────
+let p = fp.fp_squares(4)
+print(p)
+let squares = p mustbe Ptr[int32]
+check("to_list() copies the int32 array", squares.to_list() == [0, 1, 4, 9])
+check("pass it back as a const ArPtrProtocol*", fp.fp_protocol_sum(squares) == 14)
+let base = fp.fp_released()
+squares.release()
+check("release() calls the library's release function once", fp.fp_released() == base + 1)
+mut message = ""
+try:
+    squares.release()
+except ValueError as e:
+    message = e.message
+check("a second release() is an error (" + message + ")", message != "")
+
+# 最後の参照がなくなったとき（関数を抜けたとき）にも 1 回だけ解放する
+fn use_and_drop() -> int:
+    let q = fp.fp_squares(3) mustbe Ptr[int32]
+    let copy = q
+    return copy.to_list()[2]
+
+let before = fp.fp_released()
+check("use inside a function", use_and_drop() == 4)
+check("dropped once when the last copy goes away", fp.fp_released() == before + 1)
+
+# C の側で解放する関数へ渡す（address が 0 に書き戻される）
+let r = fp.fp_squares(2) mustbe Ptr[int32]
+let before_free = fp.fp_released()
+fp.fp_protocol_free(r)
+check("the library released it", fp.fp_released() == before_free + 1)
+print(r)
+message = ""
+try:
+    print("unreachable:", r.to_list())
+except ValueError as e:
+    message = e.message
+check("a Ptr freed by C cannot be used (" + message + ")", message != "")
+
+# ── STATIC で NUL 終端の文字データ ─────────────────────────────────────────────────
+let t = fp.fp_static_text() mustbe Ptr[uint8]
+print(t)
+check("to_bytes() up to NUL", t.to_bytes() == "hello".encode())
+check("decode the bytes", t.to_bytes().decode("utf-8") == "hello")
+
+# ── NULL は None ───────────────────────────────────────────────────────────────────
+check("NULL is None", fp.fp_squares(0) is None)

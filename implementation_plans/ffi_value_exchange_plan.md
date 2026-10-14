@@ -206,7 +206,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-2** | ✅（§5）ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | ✅（§5）生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
 | **4-4** | ✅（§5）typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
-| **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
+| **4-5** | ✅（§5）`PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | 構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
 | **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
 | **5-1** | cs-dll: C# 側の `PtrProtocol` で配列・`List`・`byte[]` を受け渡す（export の生成器が要る。今は手書き）。`IntPtr` / `nint` ↔ `Ptr`、`byte[]` ↔ `bytes` | 2-1・3-1・4-5 | 大 |
@@ -770,6 +770,27 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   2 回目の出力は同一）。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ理由（2 回目は同一）。`scan_examples`（基準と同じ）・
   `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 526/526・`type_obligations`
   退行なし・`stale_doc_refs` 0 件。`cargo test` 1134 件・拡張の wasm クレートの 700 件が通る。VSIX を作り直した
+
+### 4-5 実装
+
+- `ArPtrProtocol` の値返しを `Option[Ptr[void]]` として受け取る（型スタブは 4-2 のまま）。変換は `value/ptr.rs` の
+  `ptr_from_protocol` 1 か所（型つき経路とハンドル経路が共有）: 要素の型名は数値・`void`・そのヘッダが宣言した構造体だけ
+  （知らない名前は ValueError・D-12）、`length` は 0 以上か、NUL 終端のときだけ -1、解放関数があれば所有（最後の参照か
+  `release()` で 1 回だけ呼ぶ）、NULL でよいのは STATIC のときだけ（D-15・違反は ValueError でメモリは解放しない）、
+  アドレス 0 は `None`
+- 型つき経路: `AbiTy::ProtocolRet`。`invoke_typed_abi` が受け取りの領域を用意して `*_ret` にそのアドレスを入れ、中継コードが
+  そこへ構造体を書く（`_ret` は 1 語なので、48 バイトの構造体は呼び出し側の領域で受ける）。ハンドル経路: コールバック
+  `protocol_ret`（表の 46）に構造体の名前の一覧を渡す。cpp-lib のシムは構造体の値返しと同じくキャストせずに返す
+- ⚠ DLL への参照は持たせていない: 解放関数は C の DLL（cpp-lib はシムの DLL）の中にあり、中継 DLL が `LoadLibrary` した
+  まま解放しないので、プロセスが終わるまでアンロードされない（D-3 の「`Ptr` が残っている間はアンロードしない」は満たす）
+- 例題: `interop/cpp_ptr_protocol.ar`（展開・`release()` で 1 回・関数を抜けたときに 1 回・C の側で解放されたら使えない・
+  STATIC の文字データ・NULL。期待値と違えば raise）・`cpp_ptr_protocol_release_error.ar`（D-15）。4-2 の負例
+  `cpp_ptr_protocol_pending_error.ar` は正例に置き換えて消した。単体テスト 2 本と既存のテストの更新
+- 文書: `docs/ptr_protocol.md`（C/C++ の対応状況）・`docs/grammar/09_imports.md` の表
+- ゲート（基準 `14edb56`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本と、中継 DLL の作り直しの表示 2 本（負の対照
+  でも出る。2 回目の出力は同一。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ）。`scan_examples`（基準と同じ）・
+  `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 527/527・`type_obligations`
+  退行なし・`stale_doc_refs` 0 件。`cargo test` 1136 件・拡張の wasm クレートの 701 件が通る。VSIX を作り直した
 
 ---
 

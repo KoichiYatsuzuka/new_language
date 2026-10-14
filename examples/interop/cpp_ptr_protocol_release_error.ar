@@ -1,0 +1,10 @@
+# cpp_ptr_protocol_release_error.ar — 解放関数も STATIC も無い ArPtrProtocol は受け取らない（負例・ffi_value_exchange_plan.md 4-5・D-15）
+#
+# ArPtrProtocol には解放の責任を必ず書く: 解放関数を付けるか、DLL のアンロードまで有効なら AR_PTR_STATIC にする。
+# どちらも無いと、誰が解放するか分からないので ValueError（黙って借用として扱わない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_ptr_protocol.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("unreachable:", fp.fp_no_release())

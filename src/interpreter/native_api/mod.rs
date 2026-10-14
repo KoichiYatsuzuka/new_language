@@ -500,6 +500,11 @@ pub struct ArCallbacks {
     pub protocol_arg: extern "C" fn(i64, *mut u8, i32),
     /// `ArPtrProtocol*` の引数の呼び出し後: C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする。
     pub protocol_done: extern "C" fn(i64, u64),
+
+    // ── ArPtrProtocol return values on the handle path (field 46・4-5) ──
+    /// `ArPtrProtocol` の戻り値（中継コードの局所変数を指す）を `Ptr`（所有・STATIC）にする。`structs` はそのヘッダの
+    /// 構造体の名前を `,` でつないだもの（要素の型名の照合）。誤りはエラーを設定して `None`。
+    pub protocol_ret: extern "C" fn(*const u8, *const u8, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

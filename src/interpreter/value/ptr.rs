@@ -438,6 +438,50 @@ pub(crate) fn raw_pointer_ret(address: u64, elem: &str) -> Result<super::Value, 
     Ok(super::Value::Ptr(Arc::new(h)))
 }
 
+/// 外部の関数が返した `ArPtrProtocol` を `Ptr` にする（4-5・D-10・D-12・D-15）。アドレス 0（NULL）は `None`。
+///
+/// - 要素の型名は数値（`int8` … `float64`）・`void`・そのヘッダが宣言した構造体（`known_structs`）だけ。知らない名前は誤り
+/// - `length` は 0 以上、または NUL 終端（`AR_PTR_NUL_TERMINATED`）のときだけ -1（数えない）
+/// - 解放関数があれば所有（最後の参照で 1 回だけ呼ぶ）。NULL でよいのは `AR_PTR_STATIC` のときだけ
+/// ⚠ 誤りのとき、メモリは解放しない（解放関数を信じられない形で届いたため。漏れても落ちない側に倒す）。
+pub(crate) fn ptr_from_protocol(raw: &PtrProtocolRaw, known_structs: &[Arc<str>]) -> Result<super::Value, String> {
+    if raw.address == 0 {
+        return Ok(super::Value::None);
+    }
+    if raw.elem_type.is_null() {
+        return Err("ValueError: an ArPtrProtocol from the library has no element type (elem_type is NULL)".to_string());
+    }
+    // SAFETY: `elem_type` は静的な NUL 終端の文字列という約束（D-12・`ar_ptr_protocol.h`）
+    let elem = unsafe { std::ffi::CStr::from_ptr(raw.elem_type) }
+        .to_str()
+        .map_err(|_| "ValueError: the element type of an ArPtrProtocol is not valid UTF-8".to_string())?;
+    if num_width(elem).is_none() && elem != "void" && !known_structs.iter().any(|s| &**s == elem) {
+        return Err(format!(
+            "ValueError: unknown element type '{elem}' in an ArPtrProtocol (expected int8 … int64, uint8 … uint64, float32, float64, void, or a struct declared in the header)"
+        ));
+    }
+    let length = match raw.length {
+        n if n >= 0 => Some(n),
+        -1 if raw.flags & PTR_FLAG_NUL_TERMINATED != 0 => None,
+        n => {
+            return Err(format!(
+                "ValueError: an ArPtrProtocol has length {n}; -1 is allowed only with AR_PTR_NUL_TERMINATED"
+            ))
+        }
+    };
+    let owner = match raw.release {
+        Some(release) => PtrOwner::Owned { release, ctx: raw.release_ctx as usize },
+        None if raw.flags & PTR_FLAG_STATIC != 0 => PtrOwner::Static,
+        None => {
+            return Err(format!(
+                "ValueError: an ArPtrProtocol (Ptr[{elem}]) has no release function and is not AR_PTR_STATIC; the library must say who frees it"
+            ))
+        }
+    };
+    let h = PtrHandle::new(raw.address, elem, raw.flags, length, owner, None)?;
+    Ok(super::Value::Ptr(Arc::new(h)))
+}
+
 /// 数値の要素 1 つの幅（バイト）。数値でなければ `None`。
 fn num_width(elem: &str) -> Option<usize> {
     Some(match elem {
@@ -691,6 +735,44 @@ mod tests {
         assert_eq!(offset_of!(PtrProtocolRaw, length), 24);
         assert_eq!(offset_of!(PtrProtocolRaw, release), 32);
         assert_eq!(offset_of!(PtrProtocolRaw, release_ctx), 40);
+    }
+
+    fn raw(address: u64, elem: &'static std::ffi::CStr, flags: u32, length: i64, release: Option<ReleaseFn>) -> PtrProtocolRaw {
+        PtrProtocolRaw {
+            address,
+            elem_type: elem.as_ptr(),
+            flags,
+            _reserved: 0,
+            length,
+            release,
+            release_ctx: std::ptr::null_mut(),
+        }
+    }
+
+    unsafe extern "C" fn noop_release(_ctx: *mut std::ffi::c_void, _address: u64) {}
+
+    /// 返された `ArPtrProtocol` の受け取り（4-5・D-12・D-15）。
+    #[test]
+    fn protocol_return_values() {
+        use super::super::Value;
+        let structs: Vec<Arc<str>> = vec![Arc::from("Point")];
+        // 所有・STATIC・NULL
+        let v = ptr_from_protocol(&raw(0x10, c"int32", 0, 3, Some(noop_release)), &structs).unwrap();
+        assert!(matches!(&v, Value::Ptr(p) if p.elem_type() == "int32" && p.length() == Some(3)
+            && matches!(p.owner(), PtrOwner::Owned { .. })));
+        let v = ptr_from_protocol(&raw(0x10, c"uint8", PTR_FLAG_STATIC | PTR_FLAG_NUL_TERMINATED, -1, None), &structs)
+            .unwrap();
+        assert!(matches!(&v, Value::Ptr(p) if p.length().is_none() && matches!(p.owner(), PtrOwner::Static)));
+        assert!(matches!(ptr_from_protocol(&raw(0, c"int32", 0, 0, None), &structs).unwrap(), Value::None));
+        // 構造体はヘッダが宣言したものだけ
+        assert!(ptr_from_protocol(&raw(0x10, c"Point", 0, 1, Some(noop_release)), &structs).is_ok());
+        let e = ptr_from_protocol(&raw(0x10, c"Pont", 0, 1, Some(noop_release)), &structs).unwrap_err();
+        assert!(e.contains("unknown element type 'Pont'"), "{e}");
+        // 解放の責任が無い・長さが不正
+        let e = ptr_from_protocol(&raw(0x10, c"int32", 0, 3, None), &structs).unwrap_err();
+        assert!(e.contains("no release function") && e.contains("AR_PTR_STATIC"), "{e}");
+        let e = ptr_from_protocol(&raw(0x10, c"int32", 0, -1, Some(noop_release)), &structs).unwrap_err();
+        assert!(e.contains("-1 is allowed only with AR_PTR_NUL_TERMINATED"), "{e}");
     }
 
     #[test]
