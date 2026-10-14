@@ -277,6 +277,167 @@ impl PtrHandle {
     }
 }
 
+// ── C へ渡すときの規則（4-3・4-4）。ハンドル経路のコールバックと型つき経路（`TypedArgs::marshal`）が共有する唯一の定義 ──
+
+/// `void*` / 構造体ポインタの引数に渡すアドレス。`Ptr`（要素型が `elem` と合うもの・`void` はどれでも）か `None`（0）。
+/// 解放済み・C の側で解放済みの `Ptr` と、それ以外の値はエラー。
+pub(crate) fn ptr_arg_address(v: &super::Value, elem: &str) -> Result<u64, String> {
+    match v {
+        super::Value::None => Ok(0),
+        super::Value::Ptr(p) => {
+            if ptr_ann_matches(&format!("Ptr[{elem}]"), v) != Some(true) {
+                return Err(format!(
+                    "TypeError: a `{elem}*` parameter needs a Ptr[{elem}] (or Ptr[void] for void*), not Ptr[{}]",
+                    p.elem_type
+                ));
+            }
+            p.address()
+        }
+        other => Err(format!(
+            "TypeError: a `{elem}*` parameter needs a Ptr or None, not '{}'",
+            crate::interpreter::ops::typecheck::runtime_type_name(other)
+        )),
+    }
+}
+
+/// `const char*` の引数に渡すバイト列（NUL を付けたコピー）。`bytes` か `None`（`None` を返す＝NULL）。
+/// `str` は文字コードを書かせるためにエラー（D-13）、NUL を含む `bytes` は C の側で途中で切れるのでエラー。
+pub(crate) fn c_string_arg(v: &super::Value) -> Result<Option<Vec<u8>>, String> {
+    match v {
+        super::Value::None => Ok(None),
+        super::Value::Bytes(b) => {
+            if b.contains(&0) {
+                return Err(
+                    "ValueError: bytes passed to a C string (`const char*`) parameter must not contain NUL (the C side would cut it there)"
+                        .to_string(),
+                );
+            }
+            let mut buf = b.to_vec();
+            buf.push(0);
+            Ok(Some(buf))
+        }
+        super::Value::Str(_) => Err(
+            "TypeError: a C string (`const char*`) parameter needs bytes, not 'str'; encode it (e.g. s.encode(\"utf-8\"))"
+                .to_string(),
+        ),
+        other => Err(format!(
+            "TypeError: a C string (`const char*`) parameter needs bytes, not '{}'",
+            crate::interpreter::ops::typecheck::runtime_type_name(other)
+        )),
+    }
+}
+
+/// `ArPtrProtocol` の引数に渡す構造体を `Ptr` から組み立てる（4-4）。`None` はアドレス 0 の構造体。
+///
+/// - 解放関数を渡すのは、C の側で解放できる `ArPtrProtocol*`（`writable`）のときだけ。値渡し・`const` ポインタでは
+///   NULL にする（C が黙って解放すると、Arrow が後でもう一度解放してしまうため）
+/// - 返す `PtrProtocolArg` は呼び出しが終わるまで生かしておく（構造体と要素の型名の文字列を指すため）。`writable` なら
+///   呼び出しの後で `finish` を呼ぶ（C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする・D-3）
+pub(crate) fn protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolArg, String> {
+    let (raw, elem, ptr) = match v {
+        super::Value::None => (
+            PtrProtocolRaw {
+                address: 0,
+                elem_type: std::ptr::null(),
+                flags: 0,
+                _reserved: 0,
+                length: 0,
+                release: None,
+                release_ctx: std::ptr::null_mut(),
+            },
+            None,
+            None,
+        ),
+        super::Value::Ptr(p) => {
+            let address = p.address()?;
+            let elem = std::ffi::CString::new(p.elem_type.clone())
+                .map_err(|_| format!("ValueError: Ptr element type '{}' contains NUL", p.elem_type))?;
+            let (release, release_ctx) = match (writable, p.owner) {
+                (true, PtrOwner::Owned { release, ctx }) => (Some(release), ctx as *mut std::ffi::c_void),
+                _ => (None, std::ptr::null_mut()),
+            };
+            let raw = PtrProtocolRaw {
+                address,
+                elem_type: elem.as_ptr(),
+                flags: p.flags,
+                _reserved: 0,
+                length: p.length.unwrap_or(-1),
+                release,
+                release_ctx,
+            };
+            (raw, Some(elem), writable.then(|| p.clone()))
+        }
+        other => {
+            return Err(format!(
+                "TypeError: an `ArPtrProtocol` parameter needs a Ptr or None, not '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(other)
+            ))
+        }
+    };
+    Ok(PtrProtocolArg { raw: Box::new(raw), _elem: elem, ptr })
+}
+
+/// [`protocol_arg`] が組み立てた構造体（呼び出しの間だけ生きる）。
+pub struct PtrProtocolArg {
+    /// C へ渡す構造体（`Box` なのでアドレスが動かない）。
+    pub raw: Box<PtrProtocolRaw>,
+    /// `raw.elem_type` が指す文字列。
+    _elem: Option<std::ffi::CString>,
+    /// C の側で解放できる（`ArPtrProtocol*`）ときの元の `Ptr`。
+    ptr: Option<Arc<PtrHandle>>,
+}
+
+impl PtrProtocolArg {
+    /// 構造体のアドレス（`ArPtrProtocol*` の引数、値渡しなら中継コードがここからコピーする）。
+    pub fn address(&self) -> u64 {
+        &*self.raw as *const PtrProtocolRaw as u64
+    }
+
+    /// 呼び出しの後で呼ぶ。C の側で解放されて `address` が 0 に書き戻されていたら、その `Ptr` を使えなくする。
+    pub fn finish(self) {
+        if let Some(p) = &self.ptr {
+            if self.raw.address == 0 {
+                p.invalidate();
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for PtrProtocolArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PtrProtocolArg {{ address: {:#x} }}", self.raw.address)
+    }
+}
+
+/// 型つき経路の戻り値（`char*` / `wchar_t*`）を `bytes` へ（NUL までをコピーする・`wchar_t` は UTF-16LE）。NULL は `None`。
+///
+/// # Safety
+/// `address` は NUL 終端の文字列を指すか 0 であること（C の関数の戻り値）。
+pub(crate) unsafe fn c_string_ret(address: u64, wide: bool) -> super::Value {
+    if address == 0 {
+        return super::Value::None;
+    }
+    if wide {
+        let p = address as usize as *const u16;
+        let mut n = 0usize;
+        while *p.add(n) != 0 {
+            n += 1;
+        }
+        super::Value::bytes(std::slice::from_raw_parts(p as *const u8, n * 2).to_vec())
+    } else {
+        super::Value::bytes(std::ffi::CStr::from_ptr(address as usize as *const std::ffi::c_char).to_bytes().to_vec())
+    }
+}
+
+/// 型つき経路の戻り値（`void*` / 構造体・数値のポインタ）を借用の `Ptr[elem]` へ（Arrow は解放しない・D-7）。NULL は `None`。
+pub(crate) fn raw_pointer_ret(address: u64, elem: &str) -> Result<super::Value, String> {
+    if address == 0 {
+        return Ok(super::Value::None);
+    }
+    let h = PtrHandle::new(address, elem, 0, None, PtrOwner::Borrowed, None)?;
+    Ok(super::Value::Ptr(Arc::new(h)))
+}
+
 /// 数値の要素 1 つの幅（バイト）。数値でなければ `None`。
 fn num_width(elem: &str) -> Option<usize> {
     Some(match elem {

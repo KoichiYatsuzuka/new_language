@@ -79,11 +79,10 @@ pub(crate) fn ctype_to_tl_str(
         CType::OpaqueStructPtr { .. } => ptr_of(ct),
         CType::ByValueStruct { .. } => "Any".to_string(),
         CType::FnPtr => "function".to_string(),
-        // `ArPtrProtocol`（4-2）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
-        // 照合して戻す・D-10・D-12）。ポインタの引数は `Ptr[void]`（どの `Ptr` も渡せる）。
-        // ⚠ 値・`const` ポインタの引数（Arrow → C の `list` など）の型は 4-7 で決める。今は関数ごと使えない
-        CType::PtrProtocol { by_pointer: false, .. } => "Option[Ptr[void]]".to_string(),
-        CType::PtrProtocol { by_pointer: true, .. } => "Ptr[void]".to_string(),
+        // `ArPtrProtocol`（4-2・4-4）: 受け取りは `Option[Ptr[void]]`（要素の型は実行時に届くので、`p mustbe Ptr[T]` で
+        // 照合して戻す・D-10・D-12）。引数はどの形でも `Ptr` か `None`（どの `Ptr` も渡せる）。
+        // ⚠ `list` から組み立てて渡すのは 4-7（そのとき引数の型を広げる）
+        CType::PtrProtocol { .. } => "Option[Ptr[void]]".to_string(),
     }
 }
 

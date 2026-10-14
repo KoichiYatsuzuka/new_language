@@ -641,11 +641,17 @@ impl Interpreter {
     ) -> Option<crate::interpreter::value::TypedSig> {
         use crate::interpreter::cpp_bridge::CType;
         use crate::interpreter::value::{AbiTy, TypedSig};
-        let ret = match sig.ret {
+        // ⚠ `cpp_header::types::typed_abi_ok` と同じ対応にすること（適格と判定したのに組めないと中継 DLL と食い違う）
+        let elem_of = |ct: &CType| -> Option<Arc<str>> { ct.ptr_elem_name().map(|e| Arc::from(e.as_str())) };
+        let ret = match &sig.ret {
             CType::Void => AbiTy::Void,
             // 中継コードが C の幅と符号どおりに受け取り、i64 に拡張して返す（1-6）
             CType::Int { .. } => AbiTy::I64,
             CType::Float | CType::Double => AbiTy::F64,
+            // 4-4: `bool`・`char*` / `wchar_t*`（→ bytes）・ほかのポインタ（→ 借用の Ptr）
+            CType::Bool => AbiTy::Bool,
+            CType::CharPtr { wide, .. } => AbiTy::CStr { wide: *wide },
+            CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => AbiTy::PtrVal { elem: elem_of(&sig.ret)? },
             _ => return None,
         };
         let mut ptys = Vec::with_capacity(sig.params.len());
@@ -653,13 +659,27 @@ impl Interpreter {
             match ct {
                 CType::Int { .. } => ptys.push(AbiTy::I64),
                 CType::Float | CType::Double => ptys.push(AbiTy::F64),
-                CType::OpaqueStructPtr { type_name, mutable } => {
-                    let layout = raw_layouts.get(type_name)?.clone();
-                    ptys.push(AbiTy::Ptr { mutable: *mutable, by_value: false, layout });
-                }
+                // 正確なレイアウトの構造体ポインタはインスタンス（ゼロコピー・シャドウ）か `Ptr`、レイアウトの分からない
+                // 構造体ポインタは `Ptr` だけ（4-4）
+                CType::OpaqueStructPtr { type_name, mutable } => match raw_layouts.get(type_name) {
+                    Some(layout) => ptys.push(AbiTy::Ptr {
+                        mutable: *mutable,
+                        by_value: false,
+                        layout: layout.clone(),
+                        elem: Arc::from(type_name.as_str()),
+                    }),
+                    None => ptys.push(AbiTy::PtrVal { elem: Arc::from(type_name.as_str()) }),
+                },
                 CType::ByValueStruct { type_name } => {
                     let layout = raw_layouts.get(type_name)?.clone();
-                    ptys.push(AbiTy::Ptr { mutable: false, by_value: true, layout });
+                    ptys.push(AbiTy::Ptr { mutable: false, by_value: true, layout, elem: Arc::from(type_name.as_str()) });
+                }
+                // 4-4: `bool`・`const char*`（bytes）・`void*`（Ptr）・`ArPtrProtocol`
+                CType::Bool => ptys.push(AbiTy::Bool),
+                CType::CharPtr { wide: false, mutable: false } => ptys.push(AbiTy::Bytes),
+                CType::VoidPtr => ptys.push(AbiTy::PtrVal { elem: Arc::from("void") }),
+                CType::PtrProtocol { by_pointer, mutable } => {
+                    ptys.push(AbiTy::Protocol { writable: *by_pointer && *mutable })
                 }
                 // プリミティブ書き込みポインタ（`int*` / `double*`）: OutPtr スロット。
                 // 構造体ポインタと混在する関数（例: v3_norm(const V3*, double*)）を

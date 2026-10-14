@@ -54,3 +54,5 @@ EXPORTS
     fp_released
     fp_protocol_sum
     fp_protocol_free
+    fp_protocol_type
+    fp_rec_label

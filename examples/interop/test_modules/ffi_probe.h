@@ -94,6 +94,8 @@ ArPtrProtocol fp_no_release(void);           // invalid on purpose: owned memory
 int fp_released(void);                       // how many fp_squares buffers have been released
 int fp_protocol_sum(const ArPtrProtocol* p); // sum of int32 elements (-1 if the element type is not int32)
 void fp_protocol_free(ArPtrProtocol* p);     // frees a fp_squares buffer and writes address = 0
+const char* fp_protocol_type(ArPtrProtocol p); // the element type name it received ("(null)" for NULL)
+int fp_rec_label(const Rec* r, const char* label); // r->id + strlen(label): a struct pointer and a C string together (4-4)
 
 #ifdef __cplusplus
 }

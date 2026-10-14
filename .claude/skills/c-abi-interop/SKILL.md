@@ -341,7 +341,14 @@ NULL・要素型を照合）を通すようになった。インスタンスな�
 `void*` / レイアウトの分からない構造体ポインタの引数 → `Ptr` か `None`（`ptr_arg`）。`Ptr[T]` を受け渡すのは、ヘッダが
 構造体と宣言した名前（前方宣言 `typedef struct Db Db;` を含む）だけ。解決できない typedef（`TCHAR` など）へのポインタは
 理由つきで使えない。インスタンスを渡して書き戻す構造体ポインタ（P3〜P7）は正確なレイアウトのものだけで、従来どおり
-typed 経路を通る。型つき経路での `Ptr` / `bytes` の受け渡しは 4-4。
+typed 経路を通る。
+
+型つき経路（4-4）: `AbiTy` に `Bool` / `Bytes`（`const char*`）/ `CStr`（`char*` の戻り値）/ `PtrVal`（`void*`・構造体・数値の
+ポインタ）/ `Protocol`（`ArPtrProtocol` の引数）を足し、`AbiTy::Ptr`（正確なレイアウトの構造体ポインタ）はインスタンスに加えて
+`Ptr[構造体]` も受ける。規則は `value/ptr.rs` の共通関数（`c_string_arg` / `ptr_arg_address` / `protocol_arg`）で、ハンドル経路の
+コールバックと同じもの。⚠ `invoke_typed_abi` は**後片付けの前に**戻り値をデコードする（C の関数が引数のバッファを指す
+ポインタを返しうるため・`const char* echo(const char* s)`）。`ArPtrProtocol*` の引数は呼び出しの後で `address` が 0 なら
+その `Ptr` を無効にする（`PtrProtocolArg::finish`・ハンドル経路は `protocol_done`）。
 
 ### 今の Arrow から呼べない関数（implementation_plans/ffi_value_exchange_plan.md 1-2）
 

@@ -351,7 +351,7 @@ mod ptr_protocol_tests {
     use super::*;
 
     /// `ArPtrProtocol` を引数・戻り値・構造体のフィールドで認識する（ffi_value_exchange_plan.md 4-2）。
-    /// 受け渡しはまだ無いので、使う関数は理由つきで使えない。共有ヘッダの定義を写してあってもクラスにしない。
+    /// 引数は 4-4 から使える。戻り値は 4-5 まで理由つきで使えない。共有ヘッダの定義を写してあってもクラスにしない。
     #[test]
     fn recognises_ptr_protocol() {
         let header = r#"
@@ -371,9 +371,13 @@ mod ptr_protocol_tests {
         assert_eq!(get("count").params[0].1, CType::PtrProtocol { by_pointer: true, mutable: false });
         assert_eq!(get("pass").params[0].1, CType::PtrProtocol { by_pointer: false, mutable: false });
         assert_eq!(get("bad").ret, CType::PtrProtocol { by_pointer: true, mutable: true });
-        for name in ["make_squares", "free_it", "count", "pass", "bad"] {
+        // 戻り値（値返し）は 4-5 まで使えない・ポインタを返すものは使えない。引数は 4-4 から `Ptr` / `None` を渡せる
+        for name in ["make_squares", "bad"] {
             let why = get(name).unsupported_reason(&structs).unwrap_or_default();
             assert!(why.contains("ArPtrProtocol"), "{name}: {why}");
+        }
+        for name in ["free_it", "count", "pass"] {
+            assert_eq!(get(name).unsupported_reason(&structs), None, "{name}");
         }
         assert!(structs.iter().all(|d| d.name != "ArPtrProtocol"), "the protocol itself is not a class");
         let holder = structs.iter().find(|d| d.name == "Holder").expect("Holder");

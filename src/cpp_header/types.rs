@@ -260,10 +260,7 @@ impl CFnSig {
                 CType::OpaqueStructPtr { type_name, .. } if !known(type_name) => Some(format!(
                     "parameter {p} points to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
                 )),
-                // ⚠ 受け渡しは 4-4（`ArPtrProtocol*`）・4-7（値・`const ArPtrProtocol*`）で入る（4-2 では認識だけ）
-                CType::PtrProtocol { .. } => Some(format!(
-                    "parameter {p} is `ArPtrProtocol`, which Arrow cannot pass yet"
-                )),
+                // ⚠ `ArPtrProtocol` の引数は 4-4 から `Ptr` / `None` を受ける（`list` から組み立てるのは 4-7）
                 CType::Ptr { mutable: false, .. } => Some(format!(
                     "parameter {p} is a `const` pointer to a number, which may be a single value or an array"
                 )),
@@ -312,13 +309,22 @@ impl CFnSig {
 /// `typed_abi_eligible` の 1 つの型の判定。`param` は引数か（戻り値は構造体・ポインタを持てない）。
 fn typed_abi_ok(t: &CType, structs: &[CStructDef], param: bool) -> bool {
     let exact = |name: &str| structs.iter().any(|d| d.name == name && d.has_exact_layout());
+    let known = |name: &str| structs.iter().any(|d| d.name == name);
+    // ⚠ `exec::modules::build_cpp_typed_sig` と同じ対応にすること（中継 DLL の `_typed` とインタプリタのシグネチャが一致する）
     match t {
         CType::Int { .. } | CType::Float | CType::Double => true,
         CType::Void => !param,
         CType::Ptr { inner, mutable: true } if param => {
             matches!(**inner, CType::Int { .. } | CType::Float | CType::Double)
         }
-        CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } if param => exact(type_name),
+        CType::ByValueStruct { type_name } if param => exact(type_name),
+        // 4-4: 構造体ポインタはインスタンス（正確なレイアウト）か `Ptr`（構造体と宣言された名前）。戻り値は借用の `Ptr`
+        CType::OpaqueStructPtr { type_name, .. } => known(type_name),
+        CType::Bool | CType::VoidPtr => true,
+        CType::CharPtr { wide: false, mutable: false } if param => true,
+        CType::CharPtr { .. } => !param,
+        CType::Ptr { .. } => !param,
+        CType::PtrProtocol { .. } => param,
         _ => false,
     }
 }
@@ -378,6 +384,11 @@ mod tests {
             sig(vec![CType::VoidPtr], CType::Void),
             sig(vec![st_ptr("Named")], CType::Void),
             sig(vec![st_ptr("Partial"), CSTR], I32),
+            // 4-4: 正確なレイアウトの構造体ポインタと C の文字列・bool が混ざっても型つき経路で渡せる
+            sig(vec![st_ptr("Rec"), CSTR], CType::Void),
+            sig(vec![st_ptr("Rec")], CType::Bool),
+            sig(vec![CType::PtrProtocol { by_pointer: true, mutable: true }], I32),
+            sig(vec![CType::PtrProtocol { by_pointer: false, mutable: false }, st_ptr("Rec")], CSTR),
         ] {
             assert_eq!(f.unsupported_reason(&s), None, "{f:?}");
         }
@@ -413,8 +424,10 @@ mod tests {
             (sig(vec![CType::Ptr { inner: Box::new(I32), mutable: false }], CType::Void), "single value or an array"),
             (sig(vec![st_ptr("Unknown")], CType::Void), "does not declare as a struct"),
             (sig(vec![by_val("Named")], CType::Void), "passes struct `Named` by value"),
-            (sig(vec![st_ptr("Rec"), CSTR], CType::Void), "struct pointer together with a C string"),
-            (sig(vec![st_ptr("Rec")], CType::Bool), "struct pointer together with `bool`"),
+            // 型つき経路に載らない形（値返しの構造体）と、インスタンスを渡す構造体ポインタは混ぜられない
+            (sig(vec![st_ptr("Rec")], by_val("Rec")), "struct pointer together with a struct returned by value"),
+            // `ArPtrProtocol` を返す関数は 4-5 まで使えない
+            (sig(vec![], CType::PtrProtocol { by_pointer: false, mutable: false }), "cannot receive yet"),
         ];
         for (f, want) in cases {
             let got = f.unsupported_reason(&s);

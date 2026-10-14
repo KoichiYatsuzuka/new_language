@@ -112,6 +112,8 @@ int fp_protocol_sum(const ArPtrProtocol* p) {
     for (int64_t i = 0; i < p->length; i++) s += xs[i];
     return s;
 }
+const char* fp_protocol_type(ArPtrProtocol p) { return p.elem_type ? p.elem_type : "(null)"; }
+int fp_rec_label(const Rec* r, const char* label) { return (r ? r->id : -1000) + (label ? (int)strlen(label) : -1); }
 void fp_protocol_free(ArPtrProtocol* p) {
     if (!p || p->address == 0) return;
     if (p->release) p->release(p->release_ctx, p->address);

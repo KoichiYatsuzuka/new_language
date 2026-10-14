@@ -261,12 +261,9 @@ fn try_typed_fast_call(fn_val: &Value, args_ptr: *const i64, n_args: i32) -> Opt
         return None;
     }
 
-    // 構造体ポインタ引数（`AbiTy::Ptr`）を含む場合はゼロコピー／シャドウ変換を解決する
-    // 別経路を通る（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。
-    let has_ptr = sig
-        .params
-        .iter()
-        .any(|p| matches!(p, AbiTy::Ptr { .. } | AbiTy::OutPtr { .. }));
+    // 数値（`I64` / `F64`）以外の引数（構造体ポインタ・書き込みポインタ・`bool`・`bytes`・`Ptr`・`ArPtrProtocol`）を
+    // 含む場合は、値に戻して共有の `marshal` を通す（P3/P4・4-4 — .claude/skills/c-abi-interop/SKILL.md）。
+    let has_ptr = sig.params.iter().any(|p| !matches!(p, AbiTy::I64 | AbiTy::F64));
     // ⚠⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
     let mut ta = TypedArgs::new();
 
@@ -295,29 +292,18 @@ fn try_typed_fast_call(fn_val: &Value, args_ptr: *const i64, n_args: i32) -> Opt
     // 呼び出し本体は 4 経路で共有（#54 / #76）。⚠ この層はエラーを戻り値で返せないので
     // `STATE.error` に載せて TL_NONE を返す — 違いはそこだけ。
     // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
-    let ret = match unsafe {
-        crate::interpreter::value::invoke_typed_abi(
-            typed_ptr,
-            &ta.slots,
-            std::mem::take(&mut ta.cleanups),
-        )
+    // 戻り値は呼び出し本体が引数のバッファの生きているうちにデコードする（4-4・`invoke_typed_abi`）。
+    // ⚠ OutPtr の書き戻しは無い（名前が無いので安全側 ＝ `ta.out_wb` は常に空）。
+    match unsafe {
+        crate::interpreter::value::invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups), &sig.ret)
     } {
-        Ok(r) => r,
+        // 小整数はキャッシュ済みハンドル（`push_handle` が STATE を触らない）・`None` は TL_NONE
+        Ok(v) => Some(push_handle(v)),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
-            return Some(TL_NONE);
+            Some(TL_NONE)
         }
-    };
-    // ⚠ OutPtr の書き戻しは無い（名前が無いので安全側 ＝ `ta.out_wb` は常に空）。
-    Some(match sig.ret {
-        // 小整数はキャッシュ済みハンドル（STATE アクセスなし）
-        AbiTy::I64 => push_handle(Value::Int(ret as i64)),
-        AbiTy::F64 => push_handle(Value::Float(f64::from_bits(ret))),
-        AbiTy::Void => TL_NONE,
-        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-        }
-    })
+    }
 }
 
 /// 関数ハンドルと引数ハンドル配列を受け取り関数を呼び出す C コールバック。
@@ -754,67 +740,51 @@ extern "C" fn ar_make_ptr(address: u64, elem: *const u8, elem_len: i32) -> i64 {
 /// `None` は NULL（D-8）。`str` は文字コードを書かせるためにエラー（黙って UTF-8 にしない）。NUL を含む `bytes` は
 /// C の側で途中で切れるのでエラー。誤りは `pending_error` で拾われ、C の関数は呼ばれない（7-12）。
 extern "C" fn ar_bytes_arg(h: i64) -> *const u8 {
-    let v = clone_value_at(h);
-    let data = match v {
-        Value::Bytes(b) => b,
-        Value::None => return std::ptr::null(),
-        Value::Str(_) => {
-            set_argument_error(
-                "TypeError: a C string (`const char*`) parameter needs bytes, not 'str'; encode it (e.g. s.encode(\"utf-8\"))"
-                    .to_string(),
-            );
-            return std::ptr::null();
+    // 規則は型つき経路と共有（`value::c_string_arg`）
+    match crate::interpreter::value::c_string_arg(&clone_value_at(h)) {
+        Ok(None) => std::ptr::null(),
+        Ok(Some(buf)) => STATE.with(|s_tls| {
+            let mut st = s_tls.borrow_mut();
+            st.cstr_bufs.push(buf);
+            st.cstr_bufs.last().unwrap().as_ptr()
+        }),
+        Err(e) => {
+            set_argument_error(e);
+            std::ptr::null()
         }
-        other => {
-            set_argument_error(format!(
-                "TypeError: a C string (`const char*`) parameter needs bytes, not '{}'",
-                crate::interpreter::ops::typecheck::runtime_type_name(&other)
-            ));
-            return std::ptr::null();
-        }
-    };
-    if data.contains(&0) {
-        set_argument_error(
-            "ValueError: bytes passed to a C string (`const char*`) parameter must not contain NUL (the C side would cut it there)"
-                .to_string(),
-        );
-        return std::ptr::null();
     }
-    STATE.with(|s_tls| {
-        let mut st = s_tls.borrow_mut();
-        let mut buf = data.to_vec();
-        buf.push(0u8);
-        st.cstr_bufs.push(buf);
-        st.cstr_bufs.last().unwrap().as_ptr()
-    })
 }
 
 /// `void*` / 構造体ポインタの引数（4-3・D-3・D-8）。`Ptr` のアドレスか、`None` の 0。要素型は作られたときの型で照合する
 /// （`void` はどの `Ptr` も受ける）。解放済み・C の側で解放済みの `Ptr` はエラー。
 extern "C" fn ar_ptr_arg(h: i64, elem: *const u8, elem_len: i32) -> u64 {
     let Some(elem) = native_str(elem, elem_len, "pointer element type") else { return 0 };
-    match clone_value_at(h) {
-        Value::None => 0,
-        v @ Value::Ptr(_) => {
-            let Value::Ptr(p) = &v else { unreachable!() };
-            if crate::interpreter::value::ptr_ann_matches(&format!("Ptr[{elem}]"), &v) != Some(true) {
-                set_argument_error(format!(
-                    "TypeError: a `{elem}*` parameter needs a Ptr[{elem}] (or Ptr[void] for void*), not Ptr[{}]",
-                    p.elem_type()
-                ));
-                return 0;
-            }
-            p.address().unwrap_or_else(|e| {
-                set_argument_error(e);
-                0
-            })
+    // 規則は型つき経路と共有（`value::ptr_arg_address`）
+    crate::interpreter::value::ptr_arg_address(&clone_value_at(h), elem).unwrap_or_else(|e| {
+        set_argument_error(e);
+        0
+    })
+}
+
+/// `ArPtrProtocol` の引数（ハンドル経路・4-4）。`Ptr` か `None` から構造体を組み立てて `out` へ書く（規則は型つき経路と共有の
+/// `value::protocol_arg`）。要素の型名の文字列は最外のネイティブ呼び出しが終わるまで生かす。
+extern "C" fn ar_protocol_arg(h: i64, out: *mut u8, writable: i32) {
+    match crate::interpreter::value::protocol_arg(&clone_value_at(h), writable != 0) {
+        Ok(arg) => {
+            // SAFETY: `out` は中継コードの `_ArPtrProtocol`（`PtrProtocolRaw` と同じ並び・単体テストが守る）を指す
+            unsafe { *(out as *mut crate::interpreter::value::PtrProtocolRaw) = *arg.raw };
+            STATE.with(|s| s.borrow_mut().protocol_args.push(arg));
         }
-        other => {
-            set_argument_error(format!(
-                "TypeError: a `{elem}*` parameter needs a Ptr or None, not '{}'",
-                crate::interpreter::ops::typecheck::runtime_type_name(&other)
-            ));
-            0
+        Err(e) => set_argument_error(e),
+    }
+}
+
+/// `ArPtrProtocol*` の引数の呼び出し後（ハンドル経路・4-4）。C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする
+/// （解放関数はもう呼ばない・D-3）。
+extern "C" fn ar_protocol_done(h: i64, address_after: u64) {
+    if address_after == 0 {
+        if let Value::Ptr(p) = clone_value_at(h) {
+            p.invalidate();
         }
     }
 }
@@ -1147,6 +1117,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     make_ptr: ar_make_ptr,
     bytes_arg: ar_bytes_arg,
     ptr_arg: ar_ptr_arg,
+    protocol_arg: ar_protocol_arg,
+    protocol_done: ar_protocol_done,
 };
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use {
     },
     // typed ABI の仕組み（引数マーシャリング・呼び出し・戻り値デコード）は
     // すべて `value::native` に 1 箇所で置いてある（#54 / #76）。
-    crate::interpreter::value::{decode_typed_ret, invoke_typed_abi, Marshalled, TypedArgs},
+    crate::interpreter::value::{invoke_typed_abi, Marshalled, TypedArgs},
 };
 
 /// 引数 `i` が名前付き変数（`Expr::Ident`）ならその名前（#76）。
@@ -124,7 +124,7 @@ impl Interpreter {
                 ) {
                     // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
                     let ret = unsafe {
-                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))?
+                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups), &sig.ret)?
                     };
                     // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
                     // ⚠ `out_wb` は `named_mut == Some(true)` のときだけ積まれる ＝ 必ず名前がある。
@@ -135,7 +135,7 @@ impl Interpreter {
                             .to_string();
                         self.assign_var(&name, val)?;
                     }
-                    return Ok(decode_typed_ret(&sig.ret, ret));
+                    return Ok(ret);
                 }
             }
         }
@@ -301,8 +301,9 @@ impl Interpreter {
         let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
         // SAFETY: この経路はインラインキャッシュ命中時のみで、キャッシュには typed_sig 付きの
         // `NativeFnRef` しか入らない（`eval_call` の充填条件）。
-        let ret =
-            unsafe { invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))? };
+        let ret = unsafe {
+            invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups), &sig.ret)?
+        };
         // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
         for (i, width) in std::mem::take(&mut ta.out_wb) {
             let val = ta.decode_out(i, width)?;
@@ -311,7 +312,7 @@ impl Interpreter {
                 .to_string();
             self.assign_var(&name, val)?;
         }
-        Ok(decode_typed_ret(&sig.ret, ret))
+        Ok(ret)
     }
 
     pub(crate) fn dispatch_native_evaled(
@@ -385,14 +386,14 @@ impl Interpreter {
                 ) {
                     // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
                     let ret = unsafe {
-                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))?
+                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups), &sig.ret)?
                     };
                     // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**呼び出し元へ返す**
                     // （VM のローカルは `vm_stack` の slot にあり、ここからは触れない・#48）。
                     for (i, width) in std::mem::take(&mut ta.out_wb) {
                         wb_out.push((i as u8, ta.decode_out(i, width)?));
                     }
-                    return Ok(decode_typed_ret(&sig.ret, ret));
+                    return Ok(ret);
                 }
             }
         }

@@ -205,7 +205,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-1** | ✅（§5）`PtrProtocol` を定める: 共有ヘッダ（`ar_ptr_protocol.h`）・型名（D-12）と flags（const・NUL 終端・STATIC）の表・解放の規約（D-15）・C# の `[StructLayout(Sequential)]` の写し・仕様の文書。`bool` は使わない（C# の `UnmanagedCallersOnly` と Arrow の C 互換レイアウトに載らない） | なし | 小 |
 | **4-2** | ✅（§5）ヘッダ解析が `PtrProtocol`（引数・戻り値・構造体のフィールド）を認識する | 4-1 | 小 |
 | **4-3** | ✅（§5）生のポインタの既定の規則（D-7・D-8）を型スタブと実行時の両方に入れる: `char*` / `wchar_t*` の戻り値 → `Option[bytes]`、それ以外のポインタの戻り値 → `Option[Ptr[T]]`、`void*` の引数 → `Ptr`（今は `int`）、`char*` の引数 → `bytes`（D-13）、`None` → NULL。既存の例題（DxLib の実用例など）で影響する箇所を洗い出して移行する | 1-2・1-4・1-5・3-1・3-3 | 中 |
-| **4-4** | typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
+| **4-4** | ✅（§5）typed ABI に `Ptr`・`bytes`・`PtrProtocol` の受け渡しを足す（4 つの呼び出し経路と `cpp_typed_eligible` / `build_cpp_typed_sig`）。`PtrProtocol*` の引数で `address` が 0 に書き戻されたら `Ptr` を無効にする | 4-2・4-3 | 中 |
 | **4-5** | `PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | 構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
 | **4-7** | Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
@@ -741,6 +741,35 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171・変えた例題 4 本は
   既知の差分）・`compare_wasm_frontend` 524/524・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1130 件・
   拡張の wasm クレートの 697 件が通る。VSIX を作り直した
+
+### 4-4 実装
+
+- `AbiTy` に `Bool` / `Bytes`（`const char*` の引数）/ `CStr`（`char*` / `wchar_t*` の戻り値）/ `PtrVal`（`void*`・構造体・数値の
+  ポインタの引数と戻り値）/ `Protocol`（`ArPtrProtocol` の引数）を足し、`AbiTy::Ptr`（正確なレイアウトの構造体ポインタ）は
+  構造体の名前を持って、インスタンスに加えて `Ptr[構造体]` も受ける（値渡しは `None` を受けない）。中継コードの `_typed` は
+  純粋なキャストのまま（スロットはアドレスか 0/1）。適格の判定（`typed_abi_ok`）とシグネチャ（`build_cpp_typed_sig`）を揃えた
+- 規則は `value/ptr.rs` の共通関数（`c_string_arg` / `ptr_arg_address` / `protocol_arg`）に置き、ハンドル経路のコールバック
+  （`bytes_arg` / `ptr_arg`）も同じものを使う（2 か所に書くとずれるため）
+- `ArPtrProtocol` の引数（値・`const` ポインタ・ポインタ）は `Ptr` / `None` から構造体を組み立てて渡す。解放関数を渡すのは
+  C の側で解放できる `ArPtrProtocol*` のときだけ（値・`const` では NULL）。呼び出しの後で `address` が 0 なら、その `Ptr` を
+  無効にする（以後の使用は ValueError・解放はもう呼ばない・D-3）。ハンドル経路もコールバック 2 つ（`protocol_arg` /
+  `protocol_done`・表の 44〜45）で同じことをする（数値の食い違いで型つき経路から落ちたときに使う）
+- ⚠ 実装中に見つけて直したもの: `invoke_typed_abi` は後片付け（引数のバッファの解放）の後で戻り値を読んでいた。C の関数が
+  引数のバッファを指すポインタを返す（`fp_echo`）と解放済みの領域を読むので、後片付けの前にデコードするようにした
+  （4-3 までは `char*` を含む関数が型つき経路に載らなかったので起きていなかった）。`ar_call_fn` の戻り値の自前の `match` も
+  共通のデコードに寄せた
+- これで、正確なレイアウトの構造体ポインタと C の文字列・`bool` が混ざった関数が呼べる（以前は「構造体ポインタの経路が
+  運べない」として使えなかった）。値返しの構造体と混ざるものは引き続き使えない
+- 型スタブ: `ArPtrProtocol` の引数はどの形でも `Option[Ptr[void]]`（`list` から組み立てるのは 4-7）
+- 検査用の `ffi_probe` に `fp_protocol_type`（値で受けて要素の型名を返す）・`fp_rec_label`（構造体ポインタ＋`const char*`）を足した
+- 例題: `interop/cpp_typed_pointers.ar`（期待値と違えば raise）・`cpp_ptr_protocol_arg_error.ar`。`cpp_ptr_protocol_pending_error.ar`
+  は戻り値だけの負例にした。単体テスト 4 本（引数 2・戻り値 1・生成コード 1）と既存のテストの更新
+- 文書: `docs/grammar/09_imports.md` の表、skill `c-abi-interop` / `partial-compile`（コールバックの表）
+- ゲート（基準 `bd1f1ad`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本・`cpp_ptr_protocol_pending_error.ar`（負例が
+  1 件に）・`cpp_struct_ptr_arg_error.ar`（文面に「またはその Ptr」）と、中継 DLL の作り直しの表示 2 本（負の対照でも出る。
+  2 回目の出力は同一）。`compare_import_paths` の `cpp_struct_ptr.ar` も同じ理由（2 回目は同一）。`scan_examples`（基準と同じ）・
+  `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（171/171）・`compare_wasm_frontend` 526/526・`type_obligations`
+  退行なし・`stale_doc_refs` 0 件。`cargo test` 1134 件・拡張の wasm クレートの 700 件が通る。VSIX を作り直した
 
 ---
 

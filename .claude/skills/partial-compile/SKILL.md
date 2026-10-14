@@ -294,6 +294,12 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 | 37 | `fn_trampoline` | `ptr(i64)` |
 | 38 | `to_bool` | `i32(i64)` — `True` / `False` only; anything else sets a TypeError (ffi plan 7-12) |
 | 39 | `pending_error` | `i32()` — 1 if an argument conversion set an error; the cpp / rs wrappers then return without calling the native function (7-12) |
+| 40 | `make_bytes` | `i64(ptr, i64)` — `char*` / `wchar_t*` return → bytes (4-3) |
+| 41 | `make_ptr` | `i64(u64, ptr, i32)` — pointer return → borrowed Ptr[elem]; NULL → None (4-3) |
+| 42 | `bytes_arg` | `ptr(i64)` — `const char*` argument from bytes / None (4-3) |
+| 43 | `ptr_arg` | `u64(i64, ptr, i32)` — `void*` / struct pointer argument from Ptr / None (4-3) |
+| 44 | `protocol_arg` | `void(i64, ptr, i32)` — builds an `ArPtrProtocol` argument from Ptr / None (4-4) |
+| 45 | `protocol_done` | `void(i64, u64)` — after an `ArPtrProtocol*` argument: address 0 → invalidate the Ptr (4-4) |
 
 ⚠ `to_int` (22) / `to_float` (23) accept numbers only (`float` truncates, `bool` is 0 / 1); a non-number (`None`, `str`, `list`, `Ptr` …) sets a TypeError and returns 0 (7-12 — it used to return 0 silently). New fields go **at the end**: the cpp / rs wrappers declare a prefix of the struct and the LLVM code indexes it.
 

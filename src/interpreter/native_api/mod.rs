@@ -152,6 +152,8 @@ struct NativeCallState {
     pending_raise: Option<(String, String)>,
     /// Scratch C-string buffers produced by `ar_to_cstr`; cleared at outermost exit.
     cstr_bufs: Vec<Vec<u8>>,
+    /// `ArPtrProtocol` arguments built by `ar_protocol_arg` (their element-type strings); cleared at outermost exit (4-4).
+    protocol_args: Vec<crate::interpreter::PtrProtocolArg>,
     /// Native method dispatch table: (class_name, method_name) → fn_ptr.
     native_methods: HashMap<(String, String), usize>,
 }
@@ -207,6 +209,7 @@ thread_local! {
             error: None,
             pending_raise: None,
             cstr_bufs: Vec::new(),
+            protocol_args: Vec::new(),
             native_methods: HashMap::new(),
         }
     });
@@ -248,6 +251,7 @@ pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
             st.arena.truncate(arena_save);
             st.iter_table.truncate(iter_save);
             st.cstr_bufs.clear();
+            st.protocol_args.clear();
         }
         result
     })
@@ -267,6 +271,7 @@ pub fn abort_native_call(is_outermost: bool) {
             st.arena.truncate(arena_save);
             st.iter_table.truncate(iter_save);
             st.cstr_bufs.clear();
+            st.protocol_args.clear();
         }
     })
 }
@@ -488,6 +493,13 @@ pub struct ArCallbacks {
     pub bytes_arg: extern "C" fn(i64) -> *const u8,
     /// `void*` / 構造体ポインタの引数: `Ptr`（要素型が `elem` と合うもの。`"void"` はどれでも）か `None`（NULL）。
     pub ptr_arg: extern "C" fn(i64, *const u8, i32) -> u64,
+
+    // ── ArPtrProtocol arguments on the handle path (fields 44-45・4-4) ──
+    /// `ArPtrProtocol` の引数: `Ptr`（か `None`）から構造体を組み立てて `out`（中継コードの局所変数）へ書く。
+    /// `writable` は `ArPtrProtocol*`（C の側で解放できる）。要素の型名の文字列は最外の呼び出しが終わるまで生きる。
+    pub protocol_arg: extern "C" fn(i64, *mut u8, i32),
+    /// `ArPtrProtocol*` の引数の呼び出し後: C が `address` を 0 に書き戻していたら、その `Ptr` を使えなくする。
+    pub protocol_done: extern "C" fn(i64, u64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

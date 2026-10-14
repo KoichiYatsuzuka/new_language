@@ -53,6 +53,21 @@ struct ArCallbacks {
     make_ptr:      unsafe extern "C" fn(u64, *const u8, i32) -> i64,
     bytes_arg:     unsafe extern "C" fn(i64) -> *const u8,
     ptr_arg:       unsafe extern "C" fn(i64, *const u8, i32) -> u64,
+    protocol_arg:  unsafe extern "C" fn(i64, *mut u8, i32),
+    protocol_done: unsafe extern "C" fn(i64, u64),
+}
+
+// ArPtrProtocol (bridge/ptr_protocol/ar_ptr_protocol.h, 4-1). Same layout as Arrow's PtrProtocolRaw; only passed through.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct _ArPtrProtocol {
+    address: u64,
+    elem_type: *const u8,
+    flags: u32,
+    _reserved: u32,
+    length: i64,
+    release: usize,
+    release_ctx: usize,
 }
 
 // `char*` / `wchar_t*` return values become bytes (NUL not included; wchar_t as UTF-16LE). NULL is None (4-3).
@@ -331,6 +346,15 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
                 // ⚠ 以前は `str` を UTF-8 で渡していた（Shift-JIS のライブラリで黙って文字化けする・D-13）
                 s.push_str(&format!("    let _{pname} = {};\n", ptype.from_handle(&h)));
             }
+            // `ArPtrProtocol`（4-4）: `Ptr` か `None` から構造体を組み立てる。書き込み用ポインタは呼び出しの後で、C が
+            // `address` を 0 に書き戻したかを伝える（下の `protocol_done`）
+            CType::PtrProtocol { by_pointer, mutable } => {
+                let writable = *by_pointer && *mutable;
+                s.push_str(&format!(
+                    "    let mut _{pname}: _ArPtrProtocol = std::mem::zeroed();\n    ((*CB).protocol_arg)({h}, &mut _{pname} as *mut _ArPtrProtocol as *mut u8, {});\n",
+                    writable as i32
+                ));
+            }
             CType::ByValueStruct { type_name } => {
                 // 冒頭の `CFnSig::unsupported_reason` で、C と同じレイアウトの分かる構造体だけが来る
                 let def = struct_defs[type_name.as_str()];
@@ -370,6 +394,8 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
         .map(|(pname, ptype)| match ptype {
             CType::Ptr { mutable: true, .. } => format!("&mut _ptr_{pname}"),
             CType::Ptr { mutable: false, .. } => format!("&_ptr_{pname}"),
+            CType::PtrProtocol { by_pointer: true, mutable: true } => format!("&mut _{pname} as *mut _ArPtrProtocol"),
+            CType::PtrProtocol { by_pointer: true, mutable: false } => format!("&_{pname} as *const _ArPtrProtocol"),
             _ => format!("_{pname}"),
         })
         .collect();
@@ -413,6 +439,13 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
     } else {
         s.push_str(&format!("    let _r = _fp({});\n", args.join(", ")));
         s.push_str(&format!("    let _ret = {};\n", sig.ret.to_handle("_r")));
+    }
+
+    // `ArPtrProtocol*`（C の側で解放できる）: `address` が 0 に書き戻されていたら Arrow の `Ptr` を使えなくする（4-4）
+    for (i, (pname, ptype)) in sig.params.iter().enumerate() {
+        if let CType::PtrProtocol { by_pointer: true, mutable: true } = ptype {
+            s.push_str(&format!("    ((*CB).protocol_done)(*argv.offset({i}), _{pname}.address);\n"));
+        }
     }
 
     // Write-back for mutable pointer params (after call, before return)
@@ -473,11 +506,17 @@ pub(crate) fn cpp_typed_eligible(sig: &CFnSig, all_defs: &[CStructDef]) -> bool 
 fn gen_dll_fn_typed(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> String {
     let n = &sig.name;
 
+    // 正確なレイアウトの構造体（`_Struct_` の写しがある）か。レイアウトの分からない構造体ポインタは `Ptr` のアドレスを
+    // そのまま渡す（4-4）。⚠ `build_cpp_typed_sig` の `raw_layouts` と同じ判定
+    let exact = |name: &str| struct_defs.get(name).is_some_and(|d| d.has_exact_layout());
     let param_types: Vec<String> = sig.params.iter().map(|(_, t)| match t {
-        CType::OpaqueStructPtr { type_name, mutable } => {
+        CType::OpaqueStructPtr { type_name, mutable } if exact(type_name) => {
             if *mutable { format!("*mut _Struct_{type_name}") } else { format!("*const _Struct_{type_name}") }
         }
         CType::ByValueStruct { type_name } => format!("_Struct_{type_name}"),
+        CType::PtrProtocol { by_pointer: false, .. } => "_ArPtrProtocol".to_string(),
+        CType::PtrProtocol { by_pointer: true, mutable: true } => "*mut _ArPtrProtocol".to_string(),
+        CType::PtrProtocol { by_pointer: true, mutable: false } => "*const _ArPtrProtocol".to_string(),
         other => other.rust_extern_type(),
     }).collect();
     let fn_type = if sig.ret == CType::Void {
@@ -519,10 +558,31 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
             CType::Double => {
                 s.push_str(&format!("    let _{pname}: f64 = f64::from_bits(*_args.offset({i}));\n"));
             }
-            CType::OpaqueStructPtr { type_name, mutable } => {
+            CType::OpaqueStructPtr { type_name, mutable } if exact(type_name) => {
                 let kw = if *mutable { "mut" } else { "const" };
                 s.push_str(&format!(
                     "    let _{pname} = (*_args.offset({i})) as usize as *{kw} _Struct_{type_name};\n"
+                ));
+            }
+            // 4-4: スロットはアドレス（`Ptr` / `bytes` のコピー / 組み立てた `ArPtrProtocol`）か 0/1（`bool`）
+            CType::OpaqueStructPtr { .. } | CType::VoidPtr => {
+                s.push_str(&format!("    let _{pname} = (*_args.offset({i})) as usize as *mut i8;\n"));
+            }
+            CType::CharPtr { wide: false, mutable: false } => {
+                s.push_str(&format!("    let _{pname} = (*_args.offset({i})) as usize as *const u8;\n"));
+            }
+            CType::Bool => {
+                s.push_str(&format!("    let _{pname}: u8 = (*_args.offset({i}) != 0) as u8;\n"));
+            }
+            CType::PtrProtocol { by_pointer: false, .. } => {
+                s.push_str(&format!(
+                    "    let _{pname} = *((*_args.offset({i})) as usize as *const _ArPtrProtocol);\n"
+                ));
+            }
+            CType::PtrProtocol { by_pointer: true, mutable } => {
+                let kw = if *mutable { "mut" } else { "const" };
+                s.push_str(&format!(
+                    "    let _{pname} = (*_args.offset({i})) as usize as *{kw} _ArPtrProtocol;\n"
                 ));
             }
             CType::ByValueStruct { type_name } => {
@@ -564,6 +624,13 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
         }
         CType::Float | CType::Double => {
             s.push_str(&format!("    *_ret = ({call} as f64).to_bits();\n"));
+        }
+        // 4-4: `bool` は 0/1、ポインタはアドレス（Arrow 側が bytes / 借用の Ptr にする・`decode_typed_ret`）
+        CType::Bool => {
+            s.push_str(&format!("    *_ret = ({call} != 0) as u64;\n"));
+        }
+        CType::CharPtr { .. } | CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
+            s.push_str(&format!("    *_ret = {call} as usize as u64;\n"));
         }
         _ => unreachable!(),
     }
@@ -634,6 +701,35 @@ mod tests {
             &[],
         );
         assert!(s.contains("((*CB).make_ptr)("), "{s}");
+    }
+
+    /// 型つき経路（4-4）: `bool`・`const char*`・`void*`・`ArPtrProtocol*` の引数と、`char*` の戻り値を純粋なキャストで渡す。
+    /// ハンドル経路の `ArPtrProtocol*` は `protocol_arg` で組み立て、呼び出しの後で `protocol_done` を呼ぶ。
+    #[test]
+    fn typed_wrapper_for_pointers_and_protocols() {
+        let sig = CFnSig {
+            name: "f".to_string(),
+            params: vec![
+                ("b".to_string(), CType::Bool),
+                ("s".to_string(), CType::CharPtr { wide: false, mutable: false }),
+                ("v".to_string(), CType::VoidPtr),
+                ("p".to_string(), CType::PtrProtocol { by_pointer: true, mutable: true }),
+            ],
+            ret: CType::CharPtr { wide: false, mutable: false },
+            namespace: None,
+            n_required: 4,
+        };
+        assert!(cpp_typed_eligible(&sig, &[]));
+        let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
+        assert!(s.contains("pub unsafe extern \"C\" fn f_typed("), "{s}");
+        assert!(s.contains("let _b: u8 = (*_args.offset(0) != 0) as u8;"), "{s}");
+        assert!(s.contains("let _s = (*_args.offset(1)) as usize as *const u8;"), "{s}");
+        assert!(s.contains("let _v = (*_args.offset(2)) as usize as *mut i8;"), "{s}");
+        assert!(s.contains("let _p = (*_args.offset(3)) as usize as *mut _ArPtrProtocol;"), "{s}");
+        assert!(s.contains("*_ret = _fp(_b, _s, _v, _p) as usize as u64;"), "{s}");
+        // ハンドル経路
+        assert!(s.contains("((*CB).protocol_arg)(*argv.offset(3), &mut _p as *mut _ArPtrProtocol as *mut u8, 1);"), "{s}");
+        assert!(s.contains("((*CB).protocol_done)(*argv.offset(3), _p.address);"), "{s}");
     }
 
     /// 引数を変換した後、エラーが設定されていれば C の関数を呼ばずに戻る。`bool` の引数は `to_bool`（7-12）。

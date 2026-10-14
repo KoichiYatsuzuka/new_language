@@ -49,7 +49,20 @@ pub enum AbiTy {
         /// by-value 構造体引数。値渡し意味論のため決して write-back の対象にならない。
         by_value: bool,
         layout: Arc<RawLayout>,
+        /// 構造体の名前。インスタンスの代わりに `Ptr[名前]` も渡せる（4-4）。
+        elem: Arc<str>,
     },
+    /// C の `bool`（引数・戻り値・4-4）。
+    Bool,
+    /// `const char*` の引数（`bytes` か `None`・4-4・D-13）。スロットは NUL を付けたコピーのアドレス。
+    Bytes,
+    /// `char*` / `wchar_t*` の戻り値（`Option[bytes]`・4-4）。スロットは C が返したアドレス。
+    CStr { wide: bool },
+    /// `void*` / 構造体・数値へのポインタ（引数は `Ptr` か `None`、戻り値は借用の `Ptr[elem]`・4-4）。スロットはアドレス。
+    PtrVal { elem: Arc<str> },
+    /// `ArPtrProtocol` の引数（値・`const` ポインタ・`writable` は書き込み用ポインタ・4-4）。スロットは組み立てた構造体の
+    /// アドレス（値渡しは中継コードがそこからコピーする）。
+    Protocol { writable: bool },
     /// プリミティブ書き込みポインタ引数（`int*` / `double*` 等、非 const）。
     /// 呼び出し側がローカル u64 スロットに初期値を width 幅でエンコードして
     /// そのアドレスを渡し、呼び出し後にデコードして名前付き `mut` 変数へ書き戻す
@@ -134,6 +147,9 @@ pub enum PtrArgCleanup {
         layout: Arc<RawLayout>,
         shadow: Vec<u8>,
     },
+    /// `ArPtrProtocol` の引数（4-4）。呼び出しの間だけ生かし、書き込み用ポインタなら C が `address` を 0 に
+    /// 書き戻していたかを見る（`PtrProtocolArg::finish`）。
+    Protocol(super::PtrProtocolArg),
 }
 
 
@@ -147,8 +163,7 @@ pub enum PtrArgCleanup {
 /// #48 の実バグ（VM 経路だけ書き戻しが起きず 0.0 を返す）は、まさにこの二重化が原因。
 /// **3 経路で違ってよいのは「書き戻し先をどこへ返すか」だけ**なので、呼び出し自体はここに集約する。
 ///
-/// 成功時は raw な戻り値（`u64`）を返す。呼び出し側が `sig.ret` に従って
-/// [`decode_typed_ret`] でデコードすること。
+/// 成功時は `ret_ty` に従ってデコードした戻り値を返す（[`decode_typed_ret`]。引数のバッファが生きているうちに読む）。
 ///
 /// # Safety
 /// `typed_ptr` は `build_cpp_typed_sig` が検証した **typed ABI の関数ポインタ**でなければならない
@@ -158,7 +173,8 @@ pub unsafe fn invoke_typed_abi(
     typed_ptr: usize,
     slots: &[u64],
     cleanups: Vec<PtrArgCleanup>,
-) -> Result<u64, String> {
+    ret_ty: &AbiTy,
+) -> Result<Value, String> {
     let mut ret: u64 = 0;
     let mut err = crate::interpreter::native_api::ErrSlot::default();
     let status = {
@@ -169,30 +185,38 @@ pub unsafe fn invoke_typed_abi(
         ) -> u32 = std::mem::transmute(typed_ptr);
         f(slots.as_ptr(), &mut ret, &mut err)
     };
+    // ⚠ 戻り値は**後処理の前に**読む（4-4）。C の関数は引数のバッファを指すポインタを返しうる（`const char* echo(const char* s)`）
+    //   ので、`bytes` のコピー・組み立てた `ArPtrProtocol` を解放してから読むと解放済みの領域を読む。
+    let value = if status == 0 { Some(decode_typed_ret(ret_ty, ret)) } else { None };
     // ⚠ **cleanup は成否によらず必ず走らせる**（3 経路とも元からこの順序だった）。
     for c in cleanups {
         crate::interpreter::value::finish_ptr_arg_cleanup(c);
     }
-    if status != 0 {
+    match value {
+        Some(v) => v,
         // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
-        return Err(err.to_error_string());
+        None => Err(err.to_error_string()),
     }
-    Ok(ret)
 }
 
 /// typed ABI の raw な戻り値を `Value` へデコードする（#54 で 1 本化）。
 ///
-/// ⚠ typed ABI の戻り値に `Ptr`/`OutPtr` は使わない（`build_cpp_typed_sig` が除外する）。
-pub fn decode_typed_ret(ret_ty: &AbiTy, ret: u64) -> Value {
+/// ⚠ typed ABI の戻り値に `Ptr`/`OutPtr`・引数専用の種類は使わない（`build_cpp_typed_sig` が除外する）。
+/// ポインタの戻り値（4-4）: `char*` / `wchar_t*` は `bytes`、ほかは借用の `Ptr[elem]`、NULL は `None`。
+pub fn decode_typed_ret(ret_ty: &AbiTy, ret: u64) -> Result<Value, String> {
     use AbiTy;
-    match ret_ty {
+    Ok(match ret_ty {
         AbiTy::I64 => Value::Int(ret as i64),
         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
         AbiTy::Void => Value::None,
-        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+        AbiTy::Bool => Value::Bool(ret != 0),
+        // SAFETY: 中継コードが C の関数の戻り値（NUL 終端の文字列か NULL）をそのまま返す
+        AbiTy::CStr { wide } => unsafe { super::c_string_ret(ret, *wide) },
+        AbiTy::PtrVal { elem } => super::raw_pointer_ret(ret, elem)?,
+        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } | AbiTy::Bytes | AbiTy::Protocol { .. } => {
+            unreachable!("typed ABI ret excludes argument-only kinds")
         }
-    }
+    })
 }
 
 /// typed ABI 引数マーシャリングの**唯一の実装**（#76）。
@@ -272,7 +296,17 @@ impl TypedArgs {
                 (Value::Float(f), AbiTy::F64) => self.slots[i] = f.to_bits(),
                 // int → float 引数の自動昇格（ハンドル経路の `ar_to_float` と同義）。
                 (Value::Int(n), AbiTy::F64) => self.slots[i] = (*n as f64).to_bits(),
-                (_, AbiTy::Ptr { mutable, by_value, layout }) => {
+                // 構造体ポインタへ `Ptr[構造体]` を渡し返す（4-4）。値渡しの構造体は指す先からコピーする（中継コード）ので
+                // NULL は渡せない。
+                (Value::Ptr(_), AbiTy::Ptr { elem, .. }) => self.slots[i] = super::ptr_arg_address(v, elem)?,
+                (Value::None, AbiTy::Ptr { by_value: false, .. }) => self.slots[i] = 0,
+                (Value::None, AbiTy::Ptr { by_value: true, elem, .. }) => {
+                    return Err(format!(
+                        "TypeError: argument {} passes struct `{elem}` by value, so it needs an instance or a Ptr, not None",
+                        i + 1
+                    ))
+                }
+                (_, AbiTy::Ptr { mutable, by_value, layout, .. }) => {
                     match resolve_typed_ptr_arg(v, *mutable, *by_value, layout, nm)? {
                         Some((slot, cleanup)) => {
                             self.slots[i] = slot;
@@ -284,7 +318,7 @@ impl TypedArgs {
                         //   フィールドから組み立てられる（1-3）ので従来どおり。
                         None if !*by_value => {
                             return Err(format!(
-                                "TypeError: argument {} must be an instance of the C struct the function points to, not '{}'",
+                                "TypeError: argument {} must be an instance of the C struct the function points to (or a Ptr to it), not '{}'",
                                 i + 1,
                                 crate::interpreter::ops::typecheck::runtime_type_name(v)
                             ))
@@ -317,6 +351,22 @@ impl TypedArgs {
                         ))
                     }
                 },
+                // ── 4-4: 真偽値・生のポインタ・`ArPtrProtocol`（規則は `value/ptr.rs` の共通関数）──
+                (Value::Bool(b), AbiTy::Bool) => self.slots[i] = *b as u64,
+                (_, AbiTy::Bytes) => match super::c_string_arg(v)? {
+                    Some(buf) => {
+                        // ⚠ `Vec` を後処理へ移してもヒープ上の中身は動かないので、スロットのアドレスは有効なまま
+                        self.slots[i] = buf.as_ptr() as u64;
+                        self.cleanups.push(PtrArgCleanup::KeepAlive(buf));
+                    }
+                    None => self.slots[i] = 0,
+                },
+                (_, AbiTy::PtrVal { elem }) => self.slots[i] = super::ptr_arg_address(v, elem)?,
+                (_, AbiTy::Protocol { writable }) => {
+                    let arg = super::protocol_arg(v, *writable)?;
+                    self.slots[i] = arg.address();
+                    self.cleanups.push(PtrArgCleanup::Protocol(arg));
+                }
                 _ => return Ok(Marshalled::TypeMismatch),
             }
         }
@@ -399,6 +449,7 @@ pub fn resolve_typed_ptr_arg(
 pub fn finish_ptr_arg_cleanup(cleanup: PtrArgCleanup) {
     match cleanup {
         PtrArgCleanup::None | PtrArgCleanup::KeepAlive(_) => {}
+        PtrArgCleanup::Protocol(arg) => arg.finish(),
         PtrArgCleanup::WriteBack {
             inst,
             layout,
@@ -556,13 +607,94 @@ mod marshal_tests {
     #[test]
     fn struct_pointer_needs_an_instance() {
         let mut ta = TypedArgs::new();
-        let ptr = AbiTy::Ptr { mutable: false, by_value: false, layout: layout() };
+        let ptr = AbiTy::Ptr { mutable: false, by_value: false, layout: layout(), elem: Arc::from("P") };
         let err = ta.marshal(&[Value::Int(5)], &[ptr], &[]).err().expect("must be an error");
-        assert!(err.contains("instance of the C struct") && err.contains("'int'"), "{err}");
+        assert!(err.contains("instance of the C struct") && err.contains("or a Ptr") && err.contains("'int'"), "{err}");
 
         let mut ta = TypedArgs::new();
-        let by_value = AbiTy::Ptr { mutable: false, by_value: true, layout: layout() };
+        let by_value = AbiTy::Ptr { mutable: false, by_value: true, layout: layout(), elem: Arc::from("P") };
         assert!(matches!(ta.marshal(&[Value::Int(5)], &[by_value], &[]), Ok(Marshalled::TypeMismatch)));
+    }
+
+    fn borrowed(address: u64, elem: &str) -> Value {
+        let h = crate::interpreter::PtrHandle::new(address, elem, 0, None, crate::interpreter::PtrOwner::Borrowed, None)
+            .unwrap();
+        Value::Ptr(Arc::new(h))
+    }
+
+    /// 型つき経路の `bool`・`bytes`・`Ptr`（4-4）。規則はハンドル経路と共有（`value/ptr.rs`）。
+    #[test]
+    fn typed_bool_bytes_and_pointers() {
+        let mut ta = TypedArgs::new();
+        let vals = [Value::Bool(true), Value::bytes(b"ab".to_vec()), Value::None, borrowed(0x40, "Db"), Value::None];
+        let tys = [
+            AbiTy::Bool,
+            AbiTy::Bytes,
+            AbiTy::Bytes,
+            AbiTy::PtrVal { elem: Arc::from("Db") },
+            AbiTy::PtrVal { elem: Arc::from("void") },
+        ];
+        assert!(matches!(ta.marshal(&vals, &tys, &[]), Ok(Marshalled::Ready)));
+        assert_eq!(ta.slots[0], 1);
+        // SAFETY: スロットは `ta.cleanups` が生かしている NUL 終端のコピーを指す
+        let s = unsafe { std::ffi::CStr::from_ptr(ta.slots[1] as usize as *const std::ffi::c_char) };
+        assert_eq!(s.to_bytes(), b"ab");
+        assert_eq!(ta.slots[2], 0, "None is NULL");
+        assert_eq!(ta.slots[3], 0x40);
+        assert_eq!(ta.slots[4], 0);
+        // 合わない値はハンドル経路へ落とさずエラー
+        let mut ta = TypedArgs::new();
+        let e = ta.marshal(&[Value::str("x")], &[AbiTy::Bytes], &[]).err().unwrap();
+        assert!(e.contains("needs bytes, not 'str'"), "{e}");
+        let e = ta.marshal(&[borrowed(0x40, "Db")], &[AbiTy::PtrVal { elem: Arc::from("File") }], &[]).err().unwrap();
+        assert!(e.contains("Ptr[File]"), "{e}");
+        // 構造体ポインタへ `Ptr[構造体]`（値渡しは None を受けない）
+        let ptr = AbiTy::Ptr { mutable: false, by_value: false, layout: layout(), elem: Arc::from("P") };
+        let mut ta = TypedArgs::new();
+        assert!(matches!(ta.marshal(&[borrowed(0x80, "P")], &[ptr], &[]), Ok(Marshalled::Ready)));
+        assert_eq!(ta.slots[0], 0x80);
+        let by_value = AbiTy::Ptr { mutable: false, by_value: true, layout: layout(), elem: Arc::from("P") };
+        let e = TypedArgs::new().marshal(&[Value::None], &[by_value], &[]).err().unwrap();
+        assert!(e.contains("by value"), "{e}");
+    }
+
+    /// `ArPtrProtocol` の引数（4-4）: `Ptr` から組み立て、書き込み用ポインタで C が `address` を 0 にしたら使えなくする。
+    /// 値渡し・`const` では解放関数を渡さない。
+    #[test]
+    fn typed_protocol_arguments() {
+        let p = borrowed(0x100, "int32");
+        let mut ta = TypedArgs::new();
+        assert!(matches!(
+            ta.marshal(&[p.clone(), p.clone()], &[AbiTy::Protocol { writable: false }, AbiTy::Protocol { writable: true }], &[]),
+            Ok(Marshalled::Ready)
+        ));
+        // SAFETY: スロットは `ta.cleanups` が生かしている構造体を指す
+        let ro = unsafe { &*(ta.slots[0] as usize as *const super::super::PtrProtocolRaw) };
+        assert_eq!(ro.address, 0x100);
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(ro.elem_type) }.to_bytes(), b"int32");
+        assert_eq!(ro.length, -1, "a raw pointer has no length");
+        assert!(ro.release.is_none());
+        // C の側で解放して address を 0 に書き戻した
+        let rw = unsafe { &mut *(ta.slots[1] as usize as *mut super::super::PtrProtocolRaw) };
+        rw.address = 0;
+        for c in std::mem::take(&mut ta.cleanups) {
+            finish_ptr_arg_cleanup(c);
+        }
+        let Value::Ptr(h) = &p else { unreachable!() };
+        assert!(!h.is_live(), "the library freed it");
+    }
+
+    /// 戻り値（4-4）: `char*` は bytes、ほかのポインタは借用の Ptr、NULL は None、`bool` は真偽値。
+    #[test]
+    fn typed_pointer_returns() {
+        let text = b"hey\0";
+        let v = decode_typed_ret(&AbiTy::CStr { wide: false }, text.as_ptr() as u64).unwrap();
+        assert!(matches!(v, Value::Bytes(b) if &*b == b"hey"));
+        assert!(matches!(decode_typed_ret(&AbiTy::CStr { wide: false }, 0).unwrap(), Value::None));
+        let v = decode_typed_ret(&AbiTy::PtrVal { elem: Arc::from("Db") }, 0x40).unwrap();
+        assert!(matches!(&v, Value::Ptr(p) if p.elem_type() == "Db"));
+        assert!(matches!(decode_typed_ret(&AbiTy::PtrVal { elem: Arc::from("Db") }, 0).unwrap(), Value::None));
+        assert!(matches!(decode_typed_ret(&AbiTy::Bool, 1).unwrap(), Value::Bool(true)));
     }
 
     /// 数値への書き込みポインタに数値でない値が来たらエラー。数値どうしの食い違いは従来どおりハンドル経路へ。

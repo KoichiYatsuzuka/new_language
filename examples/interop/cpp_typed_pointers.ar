@@ -1,0 +1,45 @@
+# cpp_typed_pointers.ar — 型つき経路で bool・bytes・Ptr・ArPtrProtocol を受け渡す（正例・ffi_value_exchange_plan.md 4-4）
+#
+# 4-3 の生のポインタの規則（cpp_raw_pointers.ar）を、型つき経路（中継 DLL の `{name}_typed`・コールバックなし）でも
+# 受け渡せるようにした。これで次のことができる:
+#   - 正確なレイアウトの構造体ポインタと `const char*` / `bool` が混ざった関数を呼ぶ（以前は使えなかった）
+#   - 構造体ポインタの引数へ、インスタンスの代わりに `Ptr[構造体]` を渡し返す
+#   - `ArPtrProtocol` の引数へ `Ptr` / `None` を渡す。`ArPtrProtocol*` を受けた C の関数が解放して `address` を 0 に
+#     書き戻すと、その `Ptr` は使えなくなる（以後の使用は ValueError・解放はもう呼ばない）。値渡し・`const` ポインタ
+#     では解放関数を渡さない（C が黙って解放できないように）
+#   - C の関数が引数のバッファを指すポインタを返しても正しく読む（後片付けの前に戻り値を読む）
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: cpp_ptr_protocol_arg_error.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── 構造体ポインタと C の文字列が混ざる関数 ─────────────────────────────────────
+check("struct pointer + const char*", fp.fp_rec_label(Rec(7, 1.5), "abc".encode()) == 10)
+let r = fp.fp_rec_static()
+check("Ptr[Rec] passed back to const Rec*", fp.fp_rec_label(r, "ab".encode()) == 9)
+check("bool in and out", fp.fp_is_even(4) and fp.fp_count_flag(True) == 1)
+check("returned pointer into the argument", fp.fp_echo("hello".encode()) == "hello".encode())
+
+# ── ArPtrProtocol の引数 ────────────────────────────────────────────────────────
+let h = fp.fp_handle_new()
+check("protocol by value carries the element type", fp.fp_protocol_type(h) == "void".encode())
+check("None is a NULL protocol", fp.fp_protocol_type(None) == "(null)".encode())
+let db = fp.fp_db_open("x".encode())
+check("element type of Ptr[Db]", fp.fp_protocol_type(db) == "Db".encode())
+fp.fp_db_close(db)
+
+fp.fp_protocol_free(h)
+print(h)
+mut message = ""
+try:
+    print("unreachable:", fp.fp_handle_get(h))
+except ValueError as e:
+    message = e.message
+check("a Ptr freed by C cannot be used (" + message + ")", message != "")

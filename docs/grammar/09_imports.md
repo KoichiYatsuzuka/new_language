@@ -425,12 +425,14 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   | ほかのポインタの戻り値（`void*`・構造体ポインタ・`int*`） | 借用の `Option[Ptr[T]]`（`void*` は `Ptr[void]`、構造体は `Ptr[構造体名]`、`int*` は `Ptr[int32]`。Arrow は解放しない） |
   | `const char*` の引数 | `bytes` か `None`（NUL を含むと `ValueError`）。**`str` は静的エラー**: ライブラリの文字コードで `s.encode("utf-8")` / `s.encode("cp932")` |
   | `void*` の引数 | どの `Ptr` でも、または `None` |
-  | 構造体ポインタの引数 | 正確なレイアウトの構造体はインスタンス（書き戻しあり）。前方宣言だけの構造体は `Ptr[構造体名]` か `None` |
+  | 構造体ポインタの引数 | 正確なレイアウトの構造体はインスタンス（書き戻しあり）か `Ptr[構造体名]`。前方宣言だけの構造体は `Ptr[構造体名]` か `None` |
+  | `ArPtrProtocol`（値・`const` ポインタ・ポインタ）の引数 | `Ptr` か `None`。`ArPtrProtocol*` を受けた関数が解放して `address` を 0 に書き戻すと、その `Ptr` は使えなくなる（`docs/ptr_protocol.md`） |
   | 数値の書き込みポインタ（`int*` / `double*`）の引数 | 名前つきの `mut` 変数（呼び出しの後で書き戻す） |
   | NULL | `None` |
 
   ⚠ 4-3 より前は `const char*` が `str` を受けて黙って UTF-8 で渡し、ポインタを返す関数・`void*` を受ける関数は使えなかった
-  （`examples/interop/cpp_raw_pointers.ar`・`cpp_cstring_arg.ar`）。前方宣言だけの構造体（`typedef struct Db Db;`）は、
+  （`examples/interop/cpp_raw_pointers.ar`・`cpp_cstring_arg.ar`）。4-4 から、正確なレイアウトの構造体ポインタと C の文字列・
+  `bool` が混ざった関数も呼べる（`cpp_typed_pointers.ar`）。前方宣言だけの構造体（`typedef struct Db Db;`）は、
   型の名前としてだけ使える（Arrow から作ることはできない）
 - 数値・`bool` の引数に合わない値（`None`・`str`・`list` …）が届いたら `TypeError` で、C の関数は呼ばれません。静的な
   検査が止めない経路（素の `function` 型を通した呼び出しなど）でも同じです（`examples/interop/cpp_native_arg_check.ar`）。

@@ -1,0 +1,10 @@
+# cpp_ptr_protocol_arg_error.ar — ArPtrProtocol の引数へ Ptr / None 以外を渡すと静的エラー（負例・ffi_value_exchange_plan.md 4-4）
+#
+# ArPtrProtocol の引数は、外部から受け取った Ptr を渡し返すか None（NULL）を渡す。Arrow の list から組み立てて渡すのは
+# 4-7 で入る（今は静的エラー）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_typed_pointers.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print(fp.fp_protocol_type([1, 2, 3]))

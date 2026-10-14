@@ -1,4 +1,4 @@
-#stamp bf0be9b41ce4d717
+#stamp efcc3235b4d03d71
 fp_greet
 fp_echo
 fp_utf8
@@ -41,3 +41,7 @@ fp_count_flag
 fp_count_double
 fp_call_count
 fp_released
+fp_protocol_sum
+fp_protocol_free
+fp_protocol_type
+fp_rec_label
