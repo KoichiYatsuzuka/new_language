@@ -329,9 +329,16 @@ Associated functions other than `new`, methods taking `self` by value, generic m
 **Types by position** (`is_param_type` / `is_return_type` / `is_field_type`):
 ```
 integers (i8..i128, u8..u128, isize, usize), f32, f64, bool, String   — everywhere
-&str  &String  &[u8]                                                     — parameters only (&str also as a return)
-Vec<u8>  [u8; N]                                                         — return values only (hex str; bytes in 5-4)
+&str  &String  &[u8]  &[num]  &[String]  &[&str]                         — parameters only (&str also as a return)
+Vec<u8>  Vec<num>  Vec<String>  Option<scalar>                           — parameters and return values
+[u8; N]  Vec<bool>                                                       — return values only
 ```
+(5-4 · D-16) bytes cross as `bytes` (`_bytes_arg` / `make_bytes`; they used to be a hex `str`). A numeric `Vec<T>` return
+becomes an owned `Ptr[T]` (`_ptr_from_vec`: boxed slice + `_release_vec` through `protocol_ret`); a numeric slice / Vec
+parameter takes a `Ptr[T]` of that element type (`protocol_arg`) or a list checked element by element (`_num_vec_arg`).
+`Vec<String>` / `Vec<bool>` are expanded to lists. The wrapper's `ArCallbacks` mirror now reaches field 49
+(`callback_mirror_keeps_the_positions` guards the positions). Stub types: `rust_type_to_ar` (returns / fields) and
+`rust_param_type_to_ar` (parameters: `Union[Ptr[int32], list[int]]`).
 Integers are range-checked both ways (`try_from` in the wrapper → OverflowError; they used to wrap around with `as`).
 
 **Re-export whitelist** (`collect_reexports`, rs_loader.rs:411):
@@ -380,7 +387,10 @@ These stubs are embedded in `Stmt::Import.body` and used by the type checker and
 | `f32`, `f64` | `float` |
 | `bool` | `bool` |
 | `String`, `&str`, `&String` | `str` |
-| `&[u8]`, `Vec<u8>`, `[u8; N]` | `str` |
+| `&[u8]`, `Vec<u8>`, `[u8; N]` | `bytes` (5-4; a hex `str` before) |
+| numeric `Vec<T>` (return) / `&[T]`, `Vec<T>` (param) | `Ptr[T]` / `Union[Ptr[T], list[int or float]]` |
+| `Vec<String>`, `Vec<bool>` | `list[str]`, `list[bool]` |
+| `Option<T>` | `Option[T]` |
 
 ---
 

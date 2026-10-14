@@ -18,7 +18,7 @@ fn unsupported_fn_stub(u: &RsUnsupported, receiver: Option<bool>) -> Stmt {
         Some(mutable) => vec![Param::bridge("self", None, mutable)],
         None => vec![],
     };
-    params.extend(u.params.iter().map(|p| Param::bridge(&p.name, Some(rust_type_to_ar(&p.rust_type).to_string()), false)));
+    params.extend(u.params.iter().map(|p| Param::bridge(&p.name, Some(rust_param_type_to_ar(&p.rust_type)), false)));
     Stmt::FnDef { src: None,
         name: u.name.clone(),
         template_params: vec![],
@@ -46,7 +46,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig], unsupported: 
     // もし将来対応する場合は writable_ref=true で `mut` マーキングすること。Param::bridge 参照）。
     for sig in fns {
         let params: Vec<Param> = sig.params.iter()
-            .map(|p| Param::bridge(&p.name, Some(rust_type_to_ar(&p.rust_type).to_string()), false))
+            .map(|p| Param::bridge(&p.name, Some(rust_param_type_to_ar(&p.rust_type)), false))
             .collect();
         stmts.push(Stmt::FnDef { src: None,
             name: sig.name.clone(),
@@ -99,7 +99,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig], unsupported: 
                 params.push(Param {
                     name: cp.name.clone(),
                     mutable: false,
-                    type_ann: Some(rust_type_to_ar(&cp.rust_type).to_string()),
+                    type_ann: Some(rust_param_type_to_ar(&cp.rust_type)),
                     default: None,
                     variadic: false,
                 });
@@ -178,7 +178,7 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig], unsupported: 
             for p in &m.params {
                 params.push(Param::bridge(
                     &p.name,
-                    Some(rust_type_to_ar(&p.rust_type).to_string()),
+                    Some(rust_param_type_to_ar(&p.rust_type)),
                     false,
                 ));
             }

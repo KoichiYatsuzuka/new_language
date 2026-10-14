@@ -56,6 +56,14 @@ struct ArCallbacks {
     _unused_33_37: [usize; 5],
     to_bool:       unsafe extern "C" fn(i64) -> i32,
     pending_error: unsafe extern "C" fn() -> i32,
+    // fields 40-49 (ffi_value_exchange_plan.md 5-4): bytes / ArPtrProtocol. 41-43 / 45 / 47-48 are not used here
+    make_bytes:    unsafe extern "C" fn(*const u8, i64) -> i64,
+    _unused_41_43: [usize; 3],
+    protocol_arg:  unsafe extern "C" fn(i64, *mut u8, i32),
+    _unused_45:    usize,
+    protocol_ret:  unsafe extern "C" fn(*const u8, *const u8, i32) -> i64,
+    _unused_47_48: [usize; 2],
+    bytes_buf_arg: unsafe extern "C" fn(i64, *mut i64) -> *mut u8,
 }
 
 static mut CB: *const ArCallbacks = std::ptr::null();
@@ -101,6 +109,154 @@ unsafe fn handle_to_string(h: i64) -> String {
     let ptr = cb_to_cstr(h);
     if ptr.is_null() { return String::new(); }
     std::ffi::CStr::from_ptr(ptr as *const i8).to_string_lossy().into_owned()
+}
+
+// ── bytes / Vec / slices (ffi_value_exchange_plan.md 5-4 · D-16) ─────────────
+const TL_STOP_ITER: i64 = -1;
+
+/// The same layout as Arrow's `PtrProtocolRaw` / `bridge/ptr_protocol/ar_ptr_protocol.h` (48 bytes).
+#[repr(C)]
+struct _ArPtrProtocol {
+    address: u64,
+    elem_type: *const u8,
+    flags: u32,
+    length: i64,
+    release: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64)>,
+    release_ctx: *mut std::ffi::c_void,
+}
+
+unsafe fn cb_is(h: i64, ty: &[u8]) -> bool { ((*CB).is_type)(h, ty.as_ptr(), ty.len() as i32) == TL_TRUE }
+
+/// A bytes argument (a copy). None is a TypeError (take `Option<..>` for it); a value that is not bytes leaves an
+/// error pending, so the wrapper returns before calling the Rust code.
+unsafe fn _bytes_arg(h: i64, name: &str) -> Result<Vec<u8>, i64> {
+    if h == TL_NONE {
+        return Err(_raise(b"TypeError", &format!("argument `{name}` is None, but the Rust parameter takes bytes")));
+    }
+    let mut n: i64 = 0;
+    let p = ((*CB).bytes_buf_arg)(h, &mut n);
+    if p.is_null() || n <= 0 { return Ok(Vec::new()); }
+    Ok(std::slice::from_raw_parts(p, n as usize).to_vec())
+}
+
+/// The numbers that cross as a slice / Vec: the ArPtrProtocol element name and how an Arrow number becomes one.
+trait _ArNum: Copy + 'static {
+    const NAME: &'static str;
+    const CNAME: &'static [u8];
+    const FLOAT: bool;
+    fn from_i64(v: i64) -> Option<Self>;
+    fn from_f64(v: f64) -> Self;
+}
+macro_rules! _ar_int {
+    ($($t:ty => $n:literal),*) => { $(impl _ArNum for $t {
+        const NAME: &'static str = $n;
+        const CNAME: &'static [u8] = concat!($n, "\0").as_bytes();
+        const FLOAT: bool = false;
+        fn from_i64(v: i64) -> Option<Self> { <$t>::try_from(v).ok() }
+        fn from_f64(_: f64) -> Self { unreachable!() }
+    })* }
+}
+_ar_int!(i8 => "int8", i16 => "int16", i32 => "int32", i64 => "int64", isize => "int64",
+         u16 => "uint16", u32 => "uint32", u64 => "uint64", usize => "uint64");
+impl _ArNum for f32 {
+    const NAME: &'static str = "float32";
+    const CNAME: &'static [u8] = b"float32\0";
+    const FLOAT: bool = true;
+    fn from_i64(_: i64) -> Option<Self> { None }
+    fn from_f64(v: f64) -> Self { v as f32 }
+}
+impl _ArNum for f64 {
+    const NAME: &'static str = "float64";
+    const CNAME: &'static [u8] = b"float64\0";
+    const FLOAT: bool = true;
+    fn from_i64(_: i64) -> Option<Self> { None }
+    fn from_f64(v: f64) -> Self { v }
+}
+
+/// A numeric slice / Vec argument (a copy): a list (each element must be an int / a float, and fit the Rust type) or
+/// a Ptr[T] of exactly that element type (read through ArPtrProtocol). Nothing is converted silently (no float to
+/// int, no int to float: D-5).
+unsafe fn _num_vec_arg<T: _ArNum>(h: i64, name: &str) -> Result<Vec<T>, i64> {
+    if h == TL_NONE {
+        return Err(_raise(b"TypeError", &format!("argument `{name}` is None, but the Rust parameter takes [{}]", T::NAME)));
+    }
+    if cb_is(h, b"list") {
+        let it = ((*CB).iter_from)(h);
+        let mut out = Vec::new();
+        let mut k = 0usize;
+        loop {
+            let x = ((*CB).iter_next)(it);
+            if x == TL_STOP_ITER || cb_pending_error() { break; }
+            if T::FLOAT {
+                if !cb_is(x, b"float") {
+                    return Err(_raise(b"TypeError", &format!("element {k} of argument `{name}` is not a float (the Rust parameter takes [{}])", T::NAME)));
+                }
+                out.push(T::from_f64(cb_to_float(x)));
+            } else {
+                if !cb_is(x, b"int") || cb_is(x, b"bool") {
+                    return Err(_raise(b"TypeError", &format!("element {k} of argument `{name}` is not an int (the Rust parameter takes [{}])", T::NAME)));
+                }
+                match T::from_i64(cb_to_int(x)) {
+                    Some(v) => out.push(v),
+                    None => return Err(_raise(b"OverflowError", &format!("element {k} of argument `{name}` does not fit in the Rust type `{}`", T::NAME))),
+                }
+            }
+            k += 1;
+        }
+        return Ok(out);
+    }
+    let mut p: _ArPtrProtocol = std::mem::zeroed();
+    ((*CB).protocol_arg)(h, &mut p as *mut _ArPtrProtocol as *mut u8, 0);
+    if cb_pending_error() { return Ok(Vec::new()); }
+    let et = if p.elem_type.is_null() { "?" } else {
+        std::ffi::CStr::from_ptr(p.elem_type as *const std::ffi::c_char).to_str().unwrap_or("?")
+    };
+    if et != T::NAME {
+        return Err(_raise(b"TypeError", &format!("argument `{name}` holds {et}, but the Rust parameter takes [{}]", T::NAME)));
+    }
+    if p.address == 0 || p.length <= 0 { return Ok(Vec::new()); }
+    Ok(std::slice::from_raw_parts(p.address as *const T, p.length as usize).to_vec())
+}
+
+/// A list[str] argument (`Vec<String>` / `&[String]` / `&[&str]`).
+unsafe fn _str_vec_arg(h: i64, name: &str) -> Result<Vec<String>, i64> {
+    if h == TL_NONE || !cb_is(h, b"list") {
+        return Err(_raise(b"TypeError", &format!("argument `{name}` must be a list of str")));
+    }
+    let it = ((*CB).iter_from)(h);
+    let mut out = Vec::new();
+    let mut k = 0usize;
+    loop {
+        let x = ((*CB).iter_next)(it);
+        if x == TL_STOP_ITER || cb_pending_error() { break; }
+        if !cb_is(x, b"str") {
+            return Err(_raise(b"TypeError", &format!("element {k} of argument `{name}` is not a str")));
+        }
+        out.push(handle_to_string(x));
+        k += 1;
+    }
+    Ok(out)
+}
+
+unsafe extern "C" fn _release_vec<T>(ctx: *mut std::ffi::c_void, address: u64) {
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(address as *mut T, ctx as usize)));
+}
+
+/// A numeric Vec return value → an owned Ptr[T] (D-16): the buffer moves into a boxed slice, and Arrow calls
+/// `_release_vec` once when the last reference goes (or on `release()`).
+unsafe fn _ptr_from_vec<T: _ArNum>(v: Vec<T>) -> i64 {
+    let b = v.into_boxed_slice();
+    let len = b.len();
+    let address = Box::into_raw(b) as *mut T as u64;
+    let p = _ArPtrProtocol {
+        address,
+        elem_type: T::CNAME.as_ptr(),
+        flags: 0,
+        length: len as i64,
+        release: Some(_release_vec::<T>),
+        release_ctx: len as *mut std::ffi::c_void,
+    };
+    ((*CB).protocol_ret)(&p as *const _ArPtrProtocol as *const u8, b"".as_ptr(), 0)
 }
 
 "#;
@@ -420,13 +576,45 @@ pub(crate) fn param_conversion(i: usize, name: &str, rust_type: &str) -> String 
             format!(
                 "    let _owned_{name}: String = handle_to_string(*args.add({i}));\n    let {name}: &str = &_owned_{name};\n"
             ),
-        // &[u8]: decode str handle → String → take bytes slice
-        "&[u8]" =>
-            format!(
-                "    let _bytes_{name}: String = handle_to_string(*args.add({i}));\n    let {name}: &[u8] = _bytes_{name}.as_bytes();\n"
-            ),
-        // The scanner only lets the types above through (`is_param_type`).
-        other => format!("    return _raise(b\"TypeError\", \"cannot pass an Arrow value as a Rust `{other}`\");\n"),
+        // bytes（5-4・D-9）。⚠ 以前の `&[u8]` は str を受けて UTF-8 のバイト列を渡していた
+        "&[u8]" => format!(
+            "    let _bytes_{name}: Vec<u8> = match _bytes_arg(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n    let {name}: &[u8] = &_bytes_{name};\n"
+        ),
+        "Vec<u8>" => format!(
+            "    let {name}: Vec<u8> = match _bytes_arg(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n"
+        ),
+        // list[str]
+        "Vec<String>" => format!(
+            "    let {name}: Vec<String> = match _str_vec_arg(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n"
+        ),
+        "&[String]" => format!(
+            "    let _strs_{name}: Vec<String> = match _str_vec_arg(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n    let {name}: &[String] = &_strs_{name};\n"
+        ),
+        "&[&str]" => format!(
+            "    let _strs_{name}: Vec<String> = match _str_vec_arg(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n    let _refs_{name}: Vec<&str> = _strs_{name}.iter().map(|s| s.as_str()).collect();\n    let {name}: &[&str] = &_refs_{name};\n"
+        ),
+        t => {
+            // 数値の Vec / slice（`Ptr[T]` か list・5-4・D-16）
+            if let Some(e) = generic_inner(t, "Vec<").filter(|e| num_elem(e).is_some()) {
+                return format!(
+                    "    let {name}: Vec<{e}> = match _num_vec_arg::<{e}>(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n"
+                );
+            }
+            if let Some(e) = slice_inner(t).filter(|e| num_elem(e).is_some()) {
+                return format!(
+                    "    let _nums_{name}: Vec<{e}> = match _num_vec_arg::<{e}>(*args.add({i}), \"{name}\") {{ Ok(_v) => _v, Err(_e) => return _e }};\n    let {name}: &[{e}] = &_nums_{name};\n"
+                );
+            }
+            // `Option<T>`: None か T
+            if let Some(inner) = generic_inner(t, "Option<") {
+                let some = param_conversion(i, &format!("_some_{name}"), inner);
+                return format!(
+                    "    let {name}: Option<{inner}> = if *args.add({i}) == TL_NONE {{ None }} else {{\n{some}    Some(_some_{name}) }};\n"
+                );
+            }
+            // The scanner only lets the types above through (`is_param_type`).
+            format!("    return _raise(b\"TypeError\", \"cannot pass an Arrow value as a Rust `{t}`\");\n")
+        }
     }
 }
 
@@ -457,12 +645,28 @@ pub(crate) fn return_conversion_expr(call: &str, rust_type: Option<&str>) -> Str
         Some("&str") => {
             format!("{{ let _r: &str = {call};\n            cb_make_str(_r.as_ptr(), _r.len() as i32) }}")
         }
-        // Byte-array output: hex-encode → return as str handle
+        // bytes（5-4・D-9）。⚠ 以前は 16 進文字列（`"6869"`）だった
         Some("Vec<u8>") => {
-            format!("{{ let _r: Vec<u8> = {call};\n            let _hex = _r.iter().map(|b| format!(\"{{:02x}}\", b)).collect::<String>();\n            cb_make_str(_hex.as_ptr(), _hex.len() as i32) }}")
+            format!("{{ let _r: Vec<u8> = {call};\n            ((*CB).make_bytes)(_r.as_ptr(), _r.len() as i64) }}")
         }
         Some(t) if is_fixed_byte_array(t) => {
-            format!("{{ let _r = {call};\n            let _hex = _r.iter().map(|b| format!(\"{{:02x}}\", b)).collect::<String>();\n            cb_make_str(_hex.as_ptr(), _hex.len() as i32) }}")
+            format!("{{ let _r = {call};\n            ((*CB).make_bytes)(_r.as_ptr(), _r.len() as i64) }}")
+        }
+        // list[str] / list[bool]（要素がそれぞれ別の値・D-16）
+        Some("Vec<String>") => format!(
+            "{{ let _r: Vec<String> = {call};\n            let _hs: Vec<i64> = _r.iter().map(|_s| cb_make_str(_s.as_ptr(), _s.len() as i32)).collect();\n            ((*CB).make_list)(_hs.as_ptr(), _hs.len() as i32) }}"
+        ),
+        Some("Vec<bool>") => format!(
+            "{{ let _r: Vec<bool> = {call};\n            let _hs: Vec<i64> = _r.iter().map(|&_b| if _b {{ TL_TRUE }} else {{ TL_FALSE }}).collect();\n            ((*CB).make_list)(_hs.as_ptr(), _hs.len() as i32) }}"
+        ),
+        // 数値の Vec → 所有の Ptr[T]（D-16）
+        Some(t) if generic_inner(t, "Vec<").is_some_and(|e| num_elem(e).is_some()) => {
+            format!("_ptr_from_vec::<{}>({call})", generic_inner(t, "Vec<").unwrap_or(""))
+        }
+        // Option<T>: None か T
+        Some(t) if generic_inner(t, "Option<").is_some() => {
+            let inner = generic_inner(t, "Option<").unwrap_or("");
+            format!("match {call} {{\n            Some(_o) => {},\n            None => TL_NONE }}", return_conversion_expr("_o", Some(inner)))
         }
         // The scanner only lets the types above through (`is_return_type`).
         Some(other) =>
@@ -507,4 +711,48 @@ pub(crate) fn digest_wrapper(fn_name: &str, type_path: &str) -> String {
          cb_make_str(_hex.as_ptr(), _hex.len() as i32)\n\
          }}\n\n"
     )
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// bytes / 数値の Vec・slice / list[str] / Option の変換を生成する（5-4）。16 進文字列はもう作らない。
+    #[test]
+    fn collection_conversions() {
+        assert!(param_conversion(0, "xs", "&[i32]").contains("_num_vec_arg::<i32>(*args.add(0), \"xs\")"));
+        assert!(param_conversion(1, "v", "Vec<u8>").contains("_bytes_arg(*args.add(1), \"v\")"));
+        assert!(param_conversion(0, "ws", "&[&str]").contains("_str_vec_arg(*args.add(0), \"ws\")"));
+        let opt = param_conversion(2, "s", "Option<String>");
+        assert!(opt.contains("if *args.add(2) == TL_NONE { None }") && opt.contains("Some(_some_s)"), "{opt}");
+        assert_eq!(return_conversion_expr("f()", Some("Vec<i32>")), "_ptr_from_vec::<i32>(f())");
+        let b = return_conversion_expr("f()", Some("Vec<u8>"));
+        assert!(b.contains("make_bytes") && !b.contains("02x"), "{b}");
+        let o = return_conversion_expr("f()", Some("Option<i64>"));
+        assert!(o.contains("Some(_o) => cb_make_int(_o)") && o.contains("None => TL_NONE"), "{o}");
+    }
+
+    /// 中継 DLL の `ArCallbacks` の写しは、本物（`native_api/mod.rs`）と同じ位置に欄を置く。`[usize; N]` は N 欄。
+    #[test]
+    fn callback_mirror_keeps_the_positions() {
+        let body = ABI_HEADER.split("struct ArCallbacks {").nth(1).and_then(|b| b.split("
+}").next()).expect("struct");
+        let mut slot = 0usize;
+        let mut at = std::collections::HashMap::new();
+        for line in body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")) {
+            let (name, ty) = line.split_once(':').expect("field");
+            at.insert(name.trim().to_string(), slot);
+            slot += match ty.trim().strip_prefix("[usize;").and_then(|n| n.trim().strip_suffix("],")) {
+                Some(n) => n.trim().parse::<usize>().expect("count"),
+                None => 1,
+            };
+        }
+        assert_eq!(at["to_bool"], 38);
+        assert_eq!(at["pending_error"], 39);
+        assert_eq!(at["make_bytes"], 40);
+        assert_eq!(at["protocol_arg"], 44);
+        assert_eq!(at["protocol_ret"], 46);
+        assert_eq!(at["bytes_buf_arg"], 49);
+    }
 }

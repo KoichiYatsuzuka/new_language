@@ -2,19 +2,17 @@
 #
 # 以前はこうした関数・メソッドは import 時に**黙って消え**、使うと「そんな名前は無い」という誤りになっていた
 # （型スタブにも載らないので理由が分からない）。今は理由を書いた印を付けて型スタブに載せ、使った箇所を
-# 静的エラーにする（`TypeErrorKind::FfiUnsupported`）。`Vec<String>` などの受け渡しはフェーズ 5（5-4）で対応する。
+# 静的エラーにする（`TypeErrorKind::FfiUnsupported`）。
+# ⚠ 5-4 から `Vec<String>`・数値の slice・`Vec<u8>` の引数は受け渡せる（rs_collections.ar）。
 #
-# 9 種類: コレクションの戻り値・スライスの引数・ジェネリック・`Vec<u8>` の引数・`&mut` の引数・タプルの戻り値・
-# Arrow から作れない構造体の構築・`self` の無い関連関数・`self` を消費するメソッド。どれも実行前に止まる。
+# 6 種類: ジェネリック・`&mut` の引数・タプルの戻り値・Arrow から作れない構造体の構築・`self` の無い関連関数・
+# `self` を消費するメソッド。どれも実行前に止まる。
 #
 # 実行には cargo が要る（rs_crates/ffi_probe_rs）。対になる正例: rs_values.ar
 
 import[rs] ffi_probe_rs as fp
 
-let w = fp.words("a b")
-let total = fp.sum([1, 2])
 let same = fp.ident(1)
-let n = fp.count_bytes("x")
 mut k = 1
 fp.bump(k)
 let pr = fp.pair()

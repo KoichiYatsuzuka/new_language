@@ -217,7 +217,21 @@ fn type_problem(t: &str) -> String {
 /// 戻り値の型の文字列（`-> T` の `T`。`where` 節と本体の `{` の手前まで）。
 fn return_type_of(after_params: &str) -> Option<String> {
     let ret = after_params.trim_start().strip_prefix("->")?.trim_start();
-    let mut end = ret.find(['{', ';']).unwrap_or(ret.len());
+    // 括弧の外の `{` / `;` で切る（5-4）。⚠ 以前は `[u8; 4]` の中の `;` で切って `[u8` と読み、`[u8; N]` を返す関数は
+    //   型の分からない関数として未対応になっていた
+    let mut depth = 0i32;
+    let mut end = ret.len();
+    for (i, c) in ret.char_indices() {
+        match c {
+            '[' | '(' | '<' => depth += 1,
+            ']' | ')' | '>' => depth -= 1,
+            '{' | ';' if depth <= 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
     if let Some(w) = ret.find(" where ") {
         end = end.min(w);
     }
@@ -671,26 +685,62 @@ pub(crate) fn parse_self_params(params: &str) -> Option<(bool, bool, &str)> {
 /// 未対応として印付きでスタブに載る・2-5）。将来対応する場合は、stubs.rs 側で該当パラメータを
 /// `Param::bridge(…, writable_ref=true)` で `mut` マーキングし、cpp/C# ブリッジと
 /// 同じ静的可変性検査（CallMutParamWithImmutableArg）を維持すること。
-/// 中継 DLL が**引数**として受け取れる型（2-5）。⚠ `Vec<u8>` / `[u8; N]` は戻り値だけ（引数にすると中継 DLL の
-/// ビルドが失敗し、import 全体が落ちていた）。
+/// 中継 DLL が**引数**として受け取れる型（2-5・5-4）。`&[u8]` / `Vec<u8>` は bytes、数値の `&[T]` / `Vec<T>` は `Ptr[T]` か
+/// list（コピー）、`Vec<String>` / `&[String]` / `&[&str]` は list[str]、`Option<T>` は None か T。
 pub(crate) fn is_param_type(t: &str) -> bool {
+    let t = t.trim();
+    is_scalar_type(t)
+        || matches!(t, "&str" | "&String" | "&[u8]" | "Vec<u8>" | "Vec<String>" | "&[String]" | "&[&str]")
+        || generic_inner(t, "Vec<").or_else(|| slice_inner(t)).is_some_and(|e| num_elem(e).is_some())
+        || generic_inner(t, "Option<").is_some_and(is_scalar_type)
+}
+
+/// 中継 DLL が**戻り値**として返せる型（2-5・5-4）。`Vec<u8>` / `[u8; N]` は bytes（以前は 16 進文字列）、数値の `Vec<T>` は
+/// 所有の `Ptr[T]`（D-16）、`Vec<String>` / `Vec<bool>` は list、`Option<T>` は None か T。⚠ `&[u8]` / `&String` は返せない。
+pub(crate) fn is_return_type(t: &str) -> bool {
+    let t = t.trim();
+    is_scalar_type(t)
+        || matches!(t, "&str" | "Vec<u8>" | "Vec<String>" | "Vec<bool>")
+        || is_fixed_byte_array(t)
+        || generic_inner(t, "Vec<").is_some_and(|e| num_elem(e).is_some())
+        || generic_inner(t, "Option<").is_some_and(is_scalar_type)
+}
+
+/// 数値・bool・`String`（`Option<T>` の中身にもなる）。
+fn is_scalar_type(t: &str) -> bool {
     matches!(
         t.trim(),
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
         | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-        | "f32" | "f64" | "bool" | "String" | "&str" | "&String" | "&[u8]"
+        | "f32" | "f64" | "bool" | "String"
     )
 }
 
-/// 中継 DLL が**戻り値**として返せる型（2-5）。⚠ `&[u8]` / `&String` は返せない（同上）。
-pub(crate) fn is_return_type(t: &str) -> bool {
-    let t = t.trim();
-    matches!(
-        t,
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-        | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-        | "f32" | "f64" | "bool" | "String" | "&str" | "Vec<u8>"
-    ) || is_fixed_byte_array(t)
+/// 数値の要素型 → `ArPtrProtocol` の要素の型名（`Vec<T>` / `&[T]`・5-4）。`u8` は bytes（D-9）、`bool` は list
+/// （`Ptr` の要素に bool は無い）、`i128` / `u128` は C の型に無いので対象外。
+pub(crate) fn num_elem(t: &str) -> Option<&'static str> {
+    Some(match t.trim() {
+        "i8" => "int8",
+        "i16" => "int16",
+        "i32" => "int32",
+        "i64" | "isize" => "int64",
+        "u16" => "uint16",
+        "u32" => "uint32",
+        "u64" | "usize" => "uint64",
+        "f32" => "float32",
+        "f64" => "float64",
+        _ => return None,
+    })
+}
+
+/// `Vec<T>` / `Option<T>` の `T`（`head` は `"Vec<"` などの頭）。
+pub(crate) fn generic_inner<'a>(t: &'a str, head: &str) -> Option<&'a str> {
+    t.trim().strip_prefix(head)?.strip_suffix('>').map(str::trim)
+}
+
+/// `&[T]` の `T`。
+pub(crate) fn slice_inner(t: &str) -> Option<&str> {
+    t.trim().strip_prefix("&[")?.strip_suffix(']').map(str::trim)
 }
 
 /// 構造体の `pub` フィールドとして読み書きできる型（ゲッターとセッターの両方が要る・2-5）。
@@ -754,19 +804,48 @@ pub(crate) fn parse_one_param(s: &str) -> Option<RsParam> {
     Some(RsParam { name, rust_type })
 }
 
-pub(crate) fn rust_type_to_ar(rt: &str) -> &'static str {
-    match rt.trim() {
+/// 戻り値・フィールドの Arrow の型（引数は [`rust_param_type_to_ar`]）。
+pub(crate) fn rust_type_to_ar(rt: &str) -> String {
+    let t = rt.trim();
+    if let Some(inner) = generic_inner(t, "Option<") {
+        return format!("Option[{}]", rust_type_to_ar(inner));
+    }
+    if let Some(e) = generic_inner(t, "Vec<").or_else(|| slice_inner(t)) {
+        if let Some(n) = num_elem(e) {
+            return format!("Ptr[{n}]");
+        }
+        match e {
+            // ⚠ 5-4 より前は 16 進文字列（`"6869"`）だった
+            "u8" => return "bytes".to_string(),
+            "String" | "&str" => return "list[str]".to_string(),
+            "bool" => return "list[bool]".to_string(),
+            _ => {}
+        }
+    }
+    match t {
         "i8" | "i16" | "i32" | "i64" | "i128"
         | "u8" | "u16" | "u32" | "u64" | "u128"
         | "isize" | "usize" => "int",
         "f32" | "f64" => "float",
         "bool" => "bool",
         "String" | "&str" | "&String" => "str",
-        // Byte types: pass as / return as str (input = raw bytes; output = hex)
-        "&[u8]" | "Vec<u8>" => "str",
-        _ if is_fixed_byte_array(rt.trim()) => "str",
+        _ if is_fixed_byte_array(t) => "bytes",
         _ => "Any",
     }
+    .to_string()
+}
+
+/// 引数の Arrow の型（5-4）。数値の `&[T]` / `Vec<T>` は `Ptr[T]`（Rust や C から受け取ったもの）か list（コピー）を受ける。
+pub(crate) fn rust_param_type_to_ar(rt: &str) -> String {
+    let t = rt.trim();
+    if let Some(inner) = generic_inner(t, "Option<") {
+        return format!("Option[{}]", rust_param_type_to_ar(inner));
+    }
+    if let Some(n) = generic_inner(t, "Vec<").or_else(|| slice_inner(t)).and_then(num_elem) {
+        let list = if n.starts_with("float") { "float" } else { "int" };
+        return format!("Union[Ptr[{n}], list[{list}]]");
+    }
+    rust_type_to_ar(t)
 }
 
 
@@ -816,20 +895,40 @@ mod probe_tests {
         let (ok, bad) = parse_fn_sigs(&probe_src());
         assert!(ok.iter().any(|f| f.name == "add_three" && f.params.len() == 3));
         let why = |n: &str| bad.iter().find(|u| u.name == n).map(|u| u.reason.clone()).unwrap_or_default();
-        assert!(why("words").starts_with("it returns `Vec<String>`"));
-        assert!(why("sum").starts_with("parameter `xs` is `&[i64]`"));
-        assert!(why("count_bytes").starts_with("parameter `v` is `Vec<u8>`"));
+        // 5-4: Vec<String> / &[i64] / Vec<u8> / Option<String> は受け渡せる
+        for n in ["words", "sum", "count_bytes", "maybe"] {
+            assert!(ok.iter().any(|f| f.name == n), "{n}");
+        }
+        assert!(why("pair").starts_with("it returns `(i32, String)`"));
         assert!(why("bump").contains("mutable reference"));
         assert_eq!(why("ident"), "it is generic");
         assert_eq!(bad.iter().find(|u| u.name == "ident").unwrap().params.len(), 1);
-        assert!(ok.iter().all(|f| !["words", "sum", "count_bytes", "bump", "ident"].contains(&f.name.as_str())));
+        assert!(ok.iter().all(|f| !["pair", "bump", "ident"].contains(&f.name.as_str())));
     }
 
     #[test]
     fn types_are_accepted_by_position() {
         assert!(is_param_type("&[u8]") && !is_return_type("&[u8]"));
-        assert!(is_return_type("Vec<u8>") && !is_param_type("Vec<u8>"));
+        assert!(is_return_type("Vec<u8>") && is_param_type("Vec<u8>"));
         assert!(is_return_type("[u8; 32]") && !is_param_type("[u8; 32]"));
         assert!(is_field_type("String") && !is_field_type("&str") && !is_field_type("Vec<u8>"));
+        // 5-4: 数値の Vec / slice・Vec<String>・Option<T>
+        assert!(is_param_type("&[i32]") && is_param_type("Vec<f64>") && is_return_type("Vec<u32>"));
+        assert!(!is_return_type("&[i32]") && !is_param_type("Vec<i128>") && !is_param_type("Vec<bool>"));
+        assert!(is_param_type("&[&str]") && is_return_type("Vec<String>") && is_return_type("Vec<bool>"));
+        assert!(is_param_type("Option<String>") && is_return_type("Option<i64>") && !is_param_type("Option<&str>"));
+    }
+
+    /// 型スタブの型（5-4・D-16）。数値の Vec は `Ptr[T]`、引数は `Ptr[T]` か list を受ける。
+    #[test]
+    fn arrow_types_of_collections() {
+        assert_eq!(rust_type_to_ar("Vec<u8>"), "bytes");
+        assert_eq!(rust_type_to_ar("[u8; 4]"), "bytes");
+        assert_eq!(rust_type_to_ar("Vec<i32>"), "Ptr[int32]");
+        assert_eq!(rust_type_to_ar("Vec<String>"), "list[str]");
+        assert_eq!(rust_type_to_ar("Option<String>"), "Option[str]");
+        assert_eq!(rust_param_type_to_ar("&[f64]"), "Union[Ptr[float64], list[float]]");
+        assert_eq!(rust_param_type_to_ar("Vec<usize>"), "Union[Ptr[uint64], list[int]]");
+        assert_eq!(rust_param_type_to_ar("&[u8]"), "bytes");
     }
 }

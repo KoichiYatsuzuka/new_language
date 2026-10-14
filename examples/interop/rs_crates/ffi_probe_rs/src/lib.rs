@@ -109,7 +109,7 @@ pub fn utf8() -> String {
 pub fn byte_len(s: &str) -> usize {
     s.len()
 }
-/// 今は 16 進文字列（"6869"）で返る（bytes にするのは 5-4）。
+/// bytes で返る（5-4。以前は 16 進文字列 "6869"）。
 pub fn bytes_out() -> Vec<u8> {
     vec![104, 105]
 }
@@ -133,7 +133,7 @@ pub fn huge_u64() -> u64 {
     u64::MAX
 }
 
-// ── 今の Arrow から呼べないシグネチャ（印付きで型スタブに載り、使うと静的エラー）──────
+// ── Vec / slice / Option（5-4・D-16。2-5 では印付きで型スタブに載り、使うと静的エラーだった）──────
 pub fn words(s: &str) -> Vec<String> {
     s.split(' ').map(|w| w.to_string()).collect()
 }
@@ -143,11 +143,40 @@ pub fn maybe(s: &str) -> Option<String> {
 pub fn sum(xs: &[i64]) -> i64 {
     xs.iter().sum()
 }
-pub fn pair() -> (i32, String) {
-    (1, "one".to_string())
-}
 pub fn count_bytes(v: Vec<u8>) -> usize {
     v.len()
+}
+pub fn ints(n: i32) -> Vec<i32> {
+    (0..n).collect()
+}
+pub fn sum32(xs: &[i32]) -> i64 {
+    xs.iter().map(|&x| x as i64).sum()
+}
+pub fn halves(xs: &[f64]) -> Vec<f64> {
+    xs.iter().map(|x| x / 2.0).collect()
+}
+pub fn empty() -> Vec<u32> {
+    Vec::new()
+}
+pub fn flags() -> Vec<bool> {
+    vec![true, false]
+}
+pub fn join(ws: &[&str]) -> String {
+    ws.join("|")
+}
+pub fn fixed() -> [u8; 4] {
+    [1, 2, 3, 4]
+}
+pub fn maybe_num(b: bool) -> Option<i64> {
+    if b { Some(7) } else { None }
+}
+pub fn opt_len(s: Option<String>) -> i64 {
+    s.map(|x| x.len() as i64).unwrap_or(-1)
+}
+
+// ── 今の Arrow から呼べないシグネチャ（印付きで型スタブに載り、使うと静的エラー）──────
+pub fn pair() -> (i32, String) {
+    (1, "one".to_string())
 }
 pub fn ident<T>(x: T) -> T {
     x

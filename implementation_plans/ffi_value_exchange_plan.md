@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15・7-17 完了。フェーズ 5 着手（5-1〜5-3）
+- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15・7-17 完了。フェーズ 5 着手（5-1〜5-4）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -230,7 +230,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **5-1** | ✅（§5）cs-dll: `[UnmanagedCallersOnly]` の export（今は利用者が手書き）を生成する（`arrow --gen-cs-exports X.dll`。Arrow の CLI が型スタブと同じ読み方で C# を書く・利用者の判断）。今の ABI（数値・文字列・クラスのハンドル・nullable）を生成し、C# の例外を Arrow の例外にする（今はプロセスが落ちる）・整数の幅を確かめる（今は黙って切る）。例題の手書きの export を置き換える | 2-1 | 中 |
 | **5-2** | ✅（§5）cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | ✅（§5）py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
-| **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
+| **5-4** | ✅（§5）rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
 | **5-5** | cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | 非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
@@ -1008,6 +1008,34 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ゲート（基準 `bbd7cfa`・制限時間つき）: `compare_outputs` 450/450 一致（差なし）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・
   `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 537/537・`type_obligations`
   退行なし・`stale_doc_refs` 0 件。`cargo test` 1155 件・拡張の wasm クレートの 713 件が通る。VSIX を作り直した
+
+### 5-4 実装
+
+- rs の中継 DLL（`rs_loader/codegen.rs`）: `ArCallbacks` の写しを 49 番（`bytes_buf_arg`）まで広げ、`_ArPtrProtocol` の写しを
+  足した（欄の位置は単体テスト `callback_mirror_keeps_the_positions` が守る）
+- bytes（D-9）: `Vec<u8>` / `[u8; N]` の戻り値 → bytes（`make_bytes`。⚠ 以前は 16 進文字列 `"6869"`）、`&[u8]` / `Vec<u8>` の
+  引数 ← bytes（`bytes_buf_arg` のコピー。⚠ 以前の `&[u8]` は str を受けて UTF-8 のバイト列を渡していた）。RustCrypto の
+  digest の合成関数（`(input: str) -> str` の 16 進）はその API の取り決めなのでそのまま
+- 数値の `Vec<T>`（D-16）: 戻り値 → 所有の `Ptr[T]`（`into_boxed_slice` したバッファを `protocol_ret` で渡し、Arrow が最後の
+  参照か `release()` で `_release_vec` を 1 回呼ぶ）。引数（`&[T]` / `Vec<T>`）← 同じ要素型の `Ptr[T]`（`protocol_arg` で
+  読む）か list（要素ごとに int / float を確かめ、Rust の型に入らなければ OverflowError。int と float は暗黙に変換しない・
+  D-5。空の list も受ける）。`u8` は bytes、`bool` は `Ptr` の要素型に無いので list、`i128` / `u128` は対象外
+- `Vec<String>` / `Vec<bool>` の戻り値 → list（要素がそれぞれ別の値・D-16）、`Vec<String>` / `&[String]` / `&[&str]` の
+  引数 ← list[str]。`Option<T>`（T は数値・bool・`String`）は None か T
+- 型スタブ: 戻り値・フィールドは `rust_type_to_ar`（`Ptr[int32]` など）、引数は `rust_param_type_to_ar`
+  （`Union[Ptr[int32], list[int]]`）。`String` のフィールドは 2-5 で受け渡せるようになっている
+- ⚠ 見つけて直した不具合: シグネチャの戻り値の型を `[u8; 4]` の中の `;` で切って `[u8` と読んでいたので、`[u8; N]` を
+  返す関数は（受け渡せる型なのに）未対応になっていた（2-5 から。括弧の外の `;` / `{` で切るようにした）
+- 検査用の `ffi_probe_rs` に `ints` / `sum32` / `halves` / `empty` / `flags` / `join` / `fixed` / `maybe_num` / `opt_len` を
+  足した（`words` / `maybe` / `sum` / `count_bytes` は 2-5 では未対応の印つきだった）
+- 例題: `interop/rs_collections.ar`（期待値と違えば raise・`release()` の後の使用は ValueError）・`rs_slice_arg_error.ar`。
+  `rs_unsupported_signature_error.ar` から受け渡せるようになった関数を外した。単体テスト 4 本（型の受け付け・型スタブの
+  型・生成コード・コールバック表の位置）
+- 文書: `docs/grammar/09_imports.md`（対応する Rust 型）・skill `importation`
+- ゲート（基準 `2eba5ff`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本（`rs_collections` / `rs_slice_arg_error`）だけ。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean
+  （175/175）・`compare_wasm_frontend` 539/539・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1158 件・
+  拡張の wasm クレートの 714 件が通る。VSIX を作り直した
 
 ---
 

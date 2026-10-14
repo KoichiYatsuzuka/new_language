@@ -42,7 +42,7 @@ $skip = @(
     'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
     'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
     'js_proc_values', 'js_proc_container_return_error', 'js_proc_instance_arg_error',
-    'rs_values', 'rs_unsupported_signature_error', 'rs_u64_overflow_error', 'rs_native_arg_check',
+    'rs_values', 'rs_unsupported_signature_error', 'rs_u64_overflow_error', 'rs_native_arg_check', 'rs_collections', 'rs_slice_arg_error',
     'importation'
 )
 

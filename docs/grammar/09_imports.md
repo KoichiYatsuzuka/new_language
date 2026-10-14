@@ -385,7 +385,13 @@ let r = re.Regex("\\d+")
 - `f32`/`f64` → `float`
 - `bool` → `bool`
 - `String`/`&str` → `str`
-- `&[u8]`（引数）/ `Vec<u8>`・`[u8; N]`（戻り値・16 進の `str`）
+- `&[u8]` / `Vec<u8>` / `[u8; N]`（戻り値）→ `bytes`（5-4。以前は 16 進の `str`）
+- 数値の `Vec<T>`（戻り値）→ 所有の `Ptr[T]`（`Vec<i32>` は `Ptr[int32]`。要素は連続したメモリなので `Ptr` で受け取り、
+  `to_list()` で展開する・D-16。最後の参照か `release()` で Rust 側が 1 回だけ解放する）。数値の `&[T]` / `Vec<T>` の引数は
+  同じ要素型の `Ptr[T]` か `list`（要素ごとに型と範囲を確かめる。int と float は暗黙に変換しない）
+- `Vec<String>` / `Vec<bool>` → `list[str]` / `list[bool]`（要素がそれぞれ別の値なので展開する）。`list[str]` → `Vec<String>` /
+  `&[String]` / `&[&str]`
+- `Option<T>` → `Option[T]`（`None` か `T`）
 
 クレートの `src/lib.rs` から `pub fn` と `pub struct` を自動検出して中継 DLL を生成します（複数行に折り返した
 シグネチャも読みます）。

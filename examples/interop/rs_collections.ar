@@ -1,0 +1,60 @@
+# rs_collections.ar — import[rs] で Vec / slice / Option / bytes を受け渡す（正例・ffi_value_exchange_plan.md 5-4・D-16）
+#
+#   - `Vec<u8>` / `[u8; N]` → bytes（以前は 16 進文字列）、bytes → `&[u8]` / `Vec<u8>`
+#   - 数値の `Vec<T>` → 所有の `Ptr[T]`（要素は連続したメモリ・D-16。最後の参照で Rust 側が解放する）。`to_list()` で展開
+#   - 数値の `&[T]` / `Vec<T>` の引数 → `Ptr[T]`（同じ要素型）か list（要素ごとに型と範囲を確かめる・int と float は混ぜない）
+#   - `Vec<String>` / `Vec<bool>` → list（要素がそれぞれ別の値なので展開する・D-16）、list[str] → `&[&str]` など
+#   - `Option<T>` → None か T
+# ⚠ 5-4 より前は、Vec / slice / Option を使う関数は使った箇所が静的エラーだった（2-5）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には cargo が要る（rs_crates/ffi_probe_rs）。対になる負例: rs_slice_arg_error.ar
+
+import[rs] ffi_probe_rs as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── bytes ────────────────────────────────────────────────────────────────────
+check("Vec<u8> -> bytes", fp.bytes_out() == "hi".encode())
+let f = fp.fixed()
+check("[u8; 4] -> bytes", len(f) == 4 and f[3] == 4)
+check("bytes -> Vec<u8>", fp.count_bytes("日本".encode()) == 6)
+
+# ── 数値の Vec / slice ──────────────────────────────────────────────────────────
+let p = fp.ints(4)
+check("Vec<i32> -> Ptr[int32]", p.to_list() == [0, 1, 2, 3])
+check("Ptr[int32] back to &[i32]", fp.sum32(p) == 6)
+check("list -> &[i32]", fp.sum32([1, 2, 3]) == 6)
+check("list -> &[i64]", fp.sum([10, 20]) == 30)
+check("empty list", fp.sum32([]) == 0)
+check("&[f64] -> Vec<f64>", fp.halves([1.0, 3.0]).to_list() == [0.5, 1.5])
+check("empty Vec", len(fp.empty().to_list()) == 0)
+let q = fp.ints(2)
+q.release()
+mut released = ""
+try:
+    print("unreachable:", q.to_list())
+except ValueError as e:
+    released = e.message
+check("release() frees the Vec once; the Ptr cannot be used after (" + released + ")", released != "")
+
+mut message = ""
+try:
+    print("unreachable:", fp.sum32([1, 4294967296]))
+except OverflowError as e:
+    message = e.message
+check("element out of range -> OverflowError (" + message + ")", message != "")
+
+# ── list[str] / list[bool] ──────────────────────────────────────────────────────
+check("Vec<String> -> list[str]", fp.words("a b") == ["a", "b"])
+check("Vec<bool> -> list[bool]", fp.flags() == [True, False])
+check("list[str] -> &[&str]", fp.join(["x", "y"]) == "x|y")
+
+# ── Option ───────────────────────────────────────────────────────────────────
+check("Option<String> None", fp.maybe("") is None)
+check("Option<String> Some", (fp.maybe("z") mustbe str) == "z")
+check("Option<i64>", fp.maybe_num(False) is None and (fp.maybe_num(True) mustbe int) == 7)
+check("Option<String> argument", fp.opt_len(None) == -1 and fp.opt_len("abc") == 3)

@@ -1,0 +1,11 @@
+# rs_slice_arg_error.ar — Rust の数値の slice へ合わない list を渡すと静的エラー（負例・ffi_value_exchange_plan.md 5-4）
+#
+# `sum32(xs: &[i32])` の引数は `Union[Ptr[int32], list[int]]`。list[str] や list[float] は静的エラー
+# （int と float は暗黙に変換しない・D-5）。
+# ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
+# 実行には cargo が要る（rs_crates/ffi_probe_rs）。対になる正例: rs_collections.ar
+
+import[rs] ffi_probe_rs as fp
+
+print(fp.sum32(["a", "b"]))
+print(fp.sum32([1.5, 2.5]))
