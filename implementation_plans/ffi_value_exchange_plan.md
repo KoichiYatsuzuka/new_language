@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15・7-17 完了。フェーズ 5 着手（5-1〜5-4）
+- 状態: フェーズ 1〜5 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・§5）・7-12・7-15・7-17 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -231,7 +231,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **5-2** | ✅（§5）cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | ✅（§5）py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
 | **5-4** | ✅（§5）rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
-| **5-5** | cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
+| **5-5** | ✅（§5）cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | 非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
 | **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
@@ -1036,6 +1036,31 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean
   （175/175）・`compare_wasm_frontend` 539/539・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1158 件・
   拡張の wasm クレートの 714 件が通る。VSIX を作り直した
+
+### 5-5 実装
+
+- 型スタブ（cs-dll だけ・`model.rs::stub_ann`）: `IntPtr` / `nint` → `Option[Ptr[void]]`、数値の配列 → 戻り値 `Ptr[int32]` など・
+  引数 `Union[Ptr[int32], list[int]]`（nullable 注釈があれば `Option[...]` / `None` を足す）、`byte[]` → `bytes`、`List<T>` /
+  数値でない要素の配列（`string[]` / `bool[]` / クラスの配列）→ `list[T]`（D-16）。dict・set・タプル・入れ子のコレクションは
+  cs-dll では引き続き未対応（cs-proc はコピーで運ぶ）。cs-proc の型スタブは変えていない（`IntPtr` は `int` のまま・別プロセス）
+- 実行時（`cs_dll_runtime`）: bytes は文字列と同じ `(ptr, len)`。数値の配列の引数は `ArPtrProtocol*`（`Ptr[T]`、または list の
+  コピー。空の list は宣言の要素型で長さ 0 にする `protocol_arg_declared`）。戻り値は末尾の `ArPtrProtocol*` へブリッジが
+  書き、`ptr_from_protocol` で所有の `Ptr[T]` にする。list は cs-proc と同じタグつきの JSON（`proc_values`）を文字列で
+  受け渡し、同じ復号器（`cs_values::decode_tagged`・cs-proc の `decode_result` から移した）で読む。`IntPtr` はアドレス
+  （`ptr_arg_address` / 借用の `PtrHandle`）
+- 生成器（`export_gen.rs`）: `ArrowAbi.Bytes` / `WriteBytes`、`ArrowAbi.Array<T>`（同じ要素型の `Ptr` はそのまま、list の
+  `int64` / `float64` は要素ごとに `CreateChecked`・入らなければ OverflowError）/ `WriteArray<T>`（`NativeMemory` へ複製し、
+  解放関数 `FreeArray` をつける。C# が持ち続ける配列を後から書き換えても Arrow の `Ptr` は変わらない・D-11）、
+  `ArrowJson.ParseList` / `WriteList`（`Utf8JsonWriter` / `JsonDocument`・リフレクションを使わないので NativeAOT で動く）。
+  `ArPtrProtocol` は共有の写し `bridge/ptr_protocol/ArPtrProtocol.cs` を使う（プロジェクトにリンクする）
+- 例題のプロジェクトに検査用のクラス `Buffers` を足し、`ArPtrProtocol.cs` をリンクした
+- 例題: `interop/cs_dll_collections.ar`（期待値と違えば raise）・`cs_dll_array_arg_error.ar`。単体テストの更新・追加
+  （cs-dll の型スタブの型・生成コード・宣言の読み方・空の list）
+- 文書: `docs/grammar/09_imports.md`（C# の値・cs-dll の ABI・export の生成）・skill `importation`
+- ゲート（基準 `d1cf5d1`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本（`cs_dll_collections` / `cs_dll_array_arg_error`）
+  だけ（既存の C# の例題は新しいブリッジで基準と同じ出力）。`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・
+  `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 541/541・`type_obligations`
+  退行なし・`stale_doc_refs` 0 件。`cargo test` 1159 件・拡張の wasm クレートの 715 件が通る。VSIX を作り直した
 
 ---
 

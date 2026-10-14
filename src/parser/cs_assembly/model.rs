@@ -154,7 +154,7 @@ fn out_member(
     bridge: CsBridge,
     members: &mut Vec<CsMemberModel>,
 ) {
-    let ((ret, ret_ann), sig) = decode_member_sig(pa, m, md_row, td_row, &td.generic_param_names);
+    let ((ret, ret_ann), sig) = decode_member_sig(pa, m, md_row, td_row, &td.generic_param_names, bridge);
     let sig_len = sig.len();
     let arrow_name = match &role {
         MemberRole::Getter(prop) => format!("get{prop}"),
@@ -223,6 +223,7 @@ fn decode_member_sig(
     method_row: u32,
     td_row: u32,
     type_params: &[String],
+    bridge: CsBridge,
 ) -> ((CsTy, String), Vec<(CsTy, String, bool)>) {
     let blob = read_blob(&pa.data, pa.streams.blob_off, m.sig_blob_idx);
     let mut reader = SigReader {
@@ -234,16 +235,37 @@ fn decode_member_sig(
     };
     let ((ret, ret_is_ref), sig) = reader.parse_method_sig_tys();
     let flag = |seq: u16| pa.nullable.flag(m, method_row, td_row, &pa.all_params, seq);
-    let ret_ann = if ret_is_ref { apply_nullable(ret.arrow(), flag(0)) } else { ret.arrow() };
+    let ret_ann = stub_ann(&ret, bridge, false);
+    let ret_ann = if ret_is_ref { apply_nullable(ret_ann, flag(0)) } else { ret_ann };
     let sig = sig
         .into_iter()
         .enumerate()
         .map(|(i, (ty, byref, is_ref))| {
-            let ann = if is_ref { apply_nullable(ty.arrow(), flag(i as u16 + 1)) } else { ty.arrow() };
+            let ann = stub_ann(&ty, bridge, true);
+            let ann = if is_ref { apply_nullable(ann, flag(i as u16 + 1)) } else { ann };
             (ty, ann, byref)
         })
         .collect();
     ((ret, ret_ann), sig)
+}
+
+/// 型スタブの Arrow の型。cs-dll は `IntPtr` / `nint` → `Option[Ptr[void]]`（借用・0 は None）、数値の配列 →
+/// 戻り値 `Ptr[T]`・引数 `Union[Ptr[T], list[…]]`（要素は連続したメモリ・D-16・5-5）。cs-proc は別プロセスへコピーで運ぶ
+/// ので `list[T]` のまま（D-5）。
+fn stub_ann(ty: &CsTy, bridge: CsBridge, param: bool) -> String {
+    if bridge == CsBridge::Dll {
+        match ty {
+            CsTy::NInt { .. } => return "Option[Ptr[void]]".to_string(),
+            CsTy::Array(e) => {
+                if let Some(n) = e.ptr_elem() {
+                    let list = if n.starts_with("float") { "float" } else { "int" };
+                    return if param { format!("Union[Ptr[{n}], list[{list}]]") } else { format!("Ptr[{n}]") };
+                }
+            }
+            _ => {}
+        }
+    }
+    ty.arrow()
 }
 
 /// 型の C# のソースでの名前（名前空間・外側の型つき）。

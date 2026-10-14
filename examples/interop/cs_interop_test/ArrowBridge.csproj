@@ -11,6 +11,10 @@
   </PropertyGroup>
   <!-- ArrowExports.g.cs is generated from this assembly (the gen-cs-exports mode of arrow, ffi_value_exchange_plan.md 5-1).
        build_bridge.ps1 first builds without it (-p:ArrowGenerated=false), so a stale copy cannot break the build. -->
+  <!-- The C# copy of ArPtrProtocol (one source, checked by scripts/check_ptr_protocol.ps1): numeric arrays use it (5-5) -->
+  <ItemGroup>
+    <Compile Include="..\..\..\bridge\ptr_protocol\ArPtrProtocol.cs" Link="ArPtrProtocol.cs" />
+  </ItemGroup>
   <ItemGroup Condition="'$(ArrowGenerated)' == 'false'">
     <Compile Remove="ArrowExports.g.cs" />
   </ItemGroup>

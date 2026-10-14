@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::cs_values::{self, CsDecl, CsKind};
+use super::cs_values::{self, CsDecl};
 use super::proc_bridge::{new_pipe_name, PipeConn};
 use super::Value;
 
@@ -173,87 +173,7 @@ fn encode_args(proc_path: &Path, args: &[Value], what: &str) -> Result<serde_jso
     Ok(serde_json::Value::Array(out))
 }
 
-/// ホストの返した値を、宣言された型で受け取る（2-1）。コレクションは要素の宣言で読む（5-2）。
-/// ⚠ 以前は宣言を見ずにタグだけで読み、オブジェクトのハンドル（`"h"`）は整数に、読めない値は `""` / `0` にしていた。
+/// ホストの返した値を、宣言された型で受け取る（2-1・5-2。規則は cs-dll と共有・[`cs_values::decode_tagged`]）。
 fn decode_result(v: &serde_json::Value, decl: &CsDecl, proc_path: &Path, what: &str) -> Result<Value, String> {
-    if v.is_null() {
-        return cs_values::null_result(decl, what);
-    }
-    let malformed = || format!("{TAG}: malformed result from the host for '{what}': {v}");
-    let t = v.get("t").and_then(|t| t.as_str()).ok_or_else(malformed)?;
-    let val = v.get("v");
-    let any_decl = CsDecl { kind: CsKind::Any, optional: true, shown: "Any".to_string() };
-    let items = || val.and_then(|v| v.as_array()).ok_or_else(malformed);
-    // 要素を、その宣言で読む
-    let each = |xs: &Vec<serde_json::Value>, d: &CsDecl| -> Result<Vec<Value>, String> {
-        xs.iter().map(|x| decode_result(x, d, proc_path, what)).collect()
-    };
-    match (t, &decl.kind) {
-        ("n", _) => cs_values::null_result(decl, what),
-        ("i", CsKind::Int | CsKind::Any) => Ok(Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?)),
-        ("f", CsKind::Float | CsKind::Any) => {
-            Ok(Value::Float(super::proc_values::decode_float(val).ok_or_else(malformed)?))
-        }
-        ("b", CsKind::Bool | CsKind::Any) => Ok(Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?)),
-        ("s", CsKind::Str | CsKind::Any) => {
-            Ok(Value::str(val.and_then(|v| v.as_str()).ok_or_else(malformed)?.to_string()))
-        }
-        // C# の ulong の 2^63 以上（cpp ブリッジの `unsigned long long` と同じ扱い・1-6）
-        ("o", CsKind::Int | CsKind::Any) => Err(format!(
-            "OverflowError: C# method '{what}' returned {}, which does not fit in int",
-            val.and_then(|v| v.as_str()).unwrap_or("?")
-        )),
-        ("h", _) => {
-            let h = val.and_then(|v| v.as_i64()).ok_or_else(malformed)?;
-            cs_values::object_result(decl, proc_path, true, h, what)
-        }
-        // コピーで運んだコレクション・bytes（5-2）
-        ("a", CsKind::List(e)) => Ok(Value::List(std::rc::Rc::new(RefCell::new(each(items()?, e)?)))),
-        ("a", CsKind::Any) => Ok(Value::List(std::rc::Rc::new(RefCell::new(each(items()?, &any_decl)?)))),
-        ("u", CsKind::Tuple(es)) => {
-            let xs = items()?;
-            if xs.len() != es.len() {
-                return Err(cs_values::mismatched_result(decl, &format!("a tuple of {}", xs.len()), what));
-            }
-            let vals = xs.iter().zip(es).map(|(x, d)| decode_result(x, d, proc_path, what)).collect::<Result<_, _>>()?;
-            Ok(super::proc_values::make_tuple(vals))
-        }
-        ("u", CsKind::Any) => Ok(super::proc_values::make_tuple(each(items()?, &any_decl)?)),
-        ("e", CsKind::Set(e)) => super::proc_values::make_set(each(items()?, e)?),
-        ("e", CsKind::Any) => super::proc_values::make_set(each(items()?, &any_decl)?),
-        ("d", CsKind::Dict(..) | CsKind::Any) => {
-            let (kd, vd) = match &decl.kind {
-                CsKind::Dict(k, x) => (&**k, &**x),
-                _ => (&any_decl, &any_decl),
-            };
-            let pairs = items()?
-                .iter()
-                .map(|p| match p.as_array().map(Vec::as_slice) {
-                    Some([k, x]) => Ok((decode_result(k, kd, proc_path, what)?, decode_result(x, vd, proc_path, what)?)),
-                    _ => Err(malformed()),
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            super::proc_values::make_dict(pairs)
-        }
-        ("y", CsKind::Bytes | CsKind::Any) => {
-            let b = super::proc_values::base64_decode(val.and_then(|v| v.as_str()).ok_or_else(malformed)?)
-                .map_err(|e| format!("{TAG}: {e} from the host for '{what}'"))?;
-            Ok(Value::bytes(b))
-        }
-        ("i" | "f" | "b" | "s" | "o" | "a" | "u" | "e" | "d" | "y", _) => {
-            let got = match t {
-                "i" | "o" => "an integer",
-                "f" => "a float",
-                "b" => "a bool",
-                "s" => "a string",
-                "a" => "a list",
-                "u" => "a tuple",
-                "e" => "a set",
-                "d" => "a dict",
-                _ => "bytes",
-            };
-            Err(cs_values::mismatched_result(decl, got, what))
-        }
-        _ => Err(malformed()),
-    }
+    cs_values::decode_tagged(v, decl, proc_path, true, what)
 }

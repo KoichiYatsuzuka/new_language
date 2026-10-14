@@ -1,0 +1,14 @@
+# cs_dll_array_arg_error.ar — cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと静的エラー（負例・ffi_value_exchange_plan.md 5-5）
+#
+#   - `int[] xs` は `Union[Ptr[int32], list[int]]`: list[str] は渡せない（list[float] も・int と float は暗黙に変換しない）
+#   - `List<string> xs` は `list[str]`: list[int] は渡せない
+#   - `IntPtr p` は `Option[Ptr[void]]`: 整数のアドレスは渡せない（5-5 より前は int として渡っていた）
+# ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge.dll が要る（型スタブの元。build_bridge.ps1）。
+# 対になる正例: cs_dll_collections.ar
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+print(bridge.Buffers.Sum(["a", "b"]))
+print(bridge.Buffers.Join([1, 2]))
+print(bridge.Buffers.SameHandle(4096))

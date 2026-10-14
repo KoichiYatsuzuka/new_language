@@ -102,13 +102,9 @@ pub(crate) enum CsKind {
     Dict(Box<CsDecl>, Box<CsDecl>),
     /// `set[T]`（C# の `HashSet<T>` など・cs-proc だけ・5-2）
     Set(Box<CsDecl>),
-}
-
-impl CsKind {
-    /// コピーで運ぶ種類（コレクションと `bytes`）。cs-dll はまだ運べない（5-5）。
-    pub(crate) fn is_container(&self) -> bool {
-        matches!(self, CsKind::Bytes | CsKind::List(_) | CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_))
-    }
+    /// `Ptr[T]`（cs-dll だけ・5-5）: `void` は `IntPtr` / `nint`（アドレス）、ほかは数値の配列（`ArPtrProtocol` で運ぶ）。
+    /// 引数の注釈 `Union[Ptr[T], list[…]]` も同じ種類（list はコピーして渡す）
+    Ptr(String),
 }
 
 /// 宣言された型（`Option[T]` / `T | None` なら `optional`）。
@@ -140,7 +136,7 @@ fn parse_decl(ann: &str) -> Result<CsDecl, String> {
     let ann = ann.trim();
     let (inner, optional) = if let Some(i) = ann.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')) {
         (i.trim(), true)
-    } else if let Some((a, b)) = ann.split_once('|') {
+    } else if let Some((a, b)) = ann.split_once('|').filter(|_| !ann.starts_with("Union[")) {
         match (a.trim(), b.trim()) {
             (t, "None") | ("None", t) => (t, true),
             _ => return Err(format!("TypeError: the C# bridge cannot pass a value of the union type `{ann}`")),
@@ -156,6 +152,19 @@ fn parse_decl(ann: &str) -> Result<CsDecl, String> {
         "str" => CsKind::Str,
         "Any" => CsKind::Any,
         "bytes" => CsKind::Bytes,
+        // cs-dll の配列の引数（5-5）: `Union[Ptr[T], list[…]]`（None があれば `Option`）
+        other if other.starts_with("Union[") => {
+            let members = split_top_level(&other["Union[".len()..other.len() - 1]);
+            let ptr = members.iter().find_map(|m| m.strip_prefix("Ptr[").and_then(|r| r.strip_suffix(']')));
+            let rest_ok = members.iter().all(|m| m.starts_with("Ptr[") || m.starts_with("list[") || *m == "None");
+            match ptr {
+                Some(e) if rest_ok => {
+                    let optional = optional || members.contains(&"None");
+                    return Ok(CsDecl { kind: CsKind::Ptr(e.to_string()), optional, shown: ann.to_string() });
+                }
+                _ => return Err(format!("TypeError: the C# bridge cannot pass a value of the union type `{other}`")),
+            }
+        }
         other => match other.split_once('[').and_then(|(head, rest)| Some((head, rest.strip_suffix(']')?))) {
             Some((head, args)) => {
                 let args = split_top_level(args);
@@ -165,6 +174,7 @@ fn parse_decl(ann: &str) -> Result<CsDecl, String> {
                     ("set", 1) => CsKind::Set(one(0)?),
                     ("dict", 2) => CsKind::Dict(one(0)?, one(1)?),
                     ("tuple", n) if n > 0 => CsKind::Tuple(args.iter().map(|a| parse_decl(a)).collect::<Result<_, _>>()?),
+                    ("Ptr", 1) => CsKind::Ptr(args[0].to_string()),
                     _ => return Err(format!("TypeError: a value of type `{other}` cannot cross the C# bridge")),
                 }
             }
@@ -247,6 +257,101 @@ pub(crate) fn object_result(
     }
 }
 
+/// C# から JSON のタグつきの値（`proc_values` の表現）で届いた値を、宣言された型で受け取る（2-1・5-2）。
+/// cs-proc の戻り値と、cs-dll の list の戻り値（5-5）が使う。コレクションは要素の宣言で読む。
+/// ⚠ 以前の cs-proc は宣言を見ずにタグだけで読み、オブジェクトのハンドル（`"h"`）は整数に、読めない値は `""` / `0` に
+///   していた。
+#[cfg(feature = "native")]
+pub(crate) fn decode_tagged(
+    v: &serde_json::Value,
+    decl: &CsDecl,
+    bridge: &Path,
+    is_proc: bool,
+    what: &str,
+) -> Result<Value, String> {
+    if v.is_null() {
+        return null_result(decl, what);
+    }
+    let tag = if is_proc { "cs-proc" } else { "cs-dll" };
+    let malformed = || format!("{tag}: malformed result from the bridge for '{what}': {v}");
+    let t = v.get("t").and_then(|t| t.as_str()).ok_or_else(malformed)?;
+    let val = v.get("v");
+    let any_decl = CsDecl { kind: CsKind::Any, optional: true, shown: "Any".to_string() };
+    let items = || val.and_then(|v| v.as_array()).ok_or_else(malformed);
+    // 要素を、その宣言で読む
+    let each = |xs: &Vec<serde_json::Value>, d: &CsDecl| -> Result<Vec<Value>, String> {
+        xs.iter().map(|x| decode_tagged(x, d, bridge, is_proc, what)).collect()
+    };
+    match (t, &decl.kind) {
+        ("n", _) => null_result(decl, what),
+        ("i", CsKind::Int | CsKind::Any) => Ok(Value::Int(val.and_then(|v| v.as_i64()).ok_or_else(malformed)?)),
+        ("f", CsKind::Float | CsKind::Any) => {
+            Ok(Value::Float(super::proc_values::decode_float(val).ok_or_else(malformed)?))
+        }
+        ("b", CsKind::Bool | CsKind::Any) => Ok(Value::Bool(val.and_then(|v| v.as_bool()).ok_or_else(malformed)?)),
+        ("s", CsKind::Str | CsKind::Any) => {
+            Ok(Value::str(val.and_then(|v| v.as_str()).ok_or_else(malformed)?.to_string()))
+        }
+        // C# の ulong の 2^63 以上（cpp ブリッジの `unsigned long long` と同じ扱い・1-6）
+        ("o", CsKind::Int | CsKind::Any) => Err(format!(
+            "OverflowError: C# method '{what}' returned {}, which does not fit in int",
+            val.and_then(|v| v.as_str()).unwrap_or("?")
+        )),
+        ("h", _) => {
+            let h = val.and_then(|v| v.as_i64()).ok_or_else(malformed)?;
+            object_result(decl, bridge, is_proc, h, what)
+        }
+        // コピーで運んだコレクション・bytes（5-2）
+        ("a", CsKind::List(e)) => Ok(Value::List(Rc::new(RefCell::new(each(items()?, e)?)))),
+        ("a", CsKind::Any) => Ok(Value::List(Rc::new(RefCell::new(each(items()?, &any_decl)?)))),
+        ("u", CsKind::Tuple(es)) => {
+            let xs = items()?;
+            if xs.len() != es.len() {
+                return Err(mismatched_result(decl, &format!("a tuple of {}", xs.len()), what));
+            }
+            let vals = xs.iter().zip(es).map(|(x, d)| decode_tagged(x, d, bridge, is_proc, what)).collect::<Result<_, _>>()?;
+            Ok(super::proc_values::make_tuple(vals))
+        }
+        ("u", CsKind::Any) => Ok(super::proc_values::make_tuple(each(items()?, &any_decl)?)),
+        ("e", CsKind::Set(e)) => super::proc_values::make_set(each(items()?, e)?),
+        ("e", CsKind::Any) => super::proc_values::make_set(each(items()?, &any_decl)?),
+        ("d", CsKind::Dict(..) | CsKind::Any) => {
+            let (kd, vd) = match &decl.kind {
+                CsKind::Dict(k, x) => (&**k, &**x),
+                _ => (&any_decl, &any_decl),
+            };
+            let pairs = items()?
+                .iter()
+                .map(|p| match p.as_array().map(Vec::as_slice) {
+                    Some([k, x]) => Ok((decode_tagged(k, kd, bridge, is_proc, what)?, decode_tagged(x, vd, bridge, is_proc, what)?)),
+                    _ => Err(malformed()),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            super::proc_values::make_dict(pairs)
+        }
+        ("y", CsKind::Bytes | CsKind::Any) => {
+            let b = super::proc_values::base64_decode(val.and_then(|v| v.as_str()).ok_or_else(malformed)?)
+                .map_err(|e| format!("{tag}: {e} from the bridge for '{what}'"))?;
+            Ok(Value::bytes(b))
+        }
+        ("i" | "f" | "b" | "s" | "o" | "a" | "u" | "e" | "d" | "y", _) => {
+            let got = match t {
+                "i" | "o" => "an integer",
+                "f" => "a float",
+                "b" => "a bool",
+                "s" => "a string",
+                "a" => "a list",
+                "u" => "a tuple",
+                "e" => "a set",
+                "d" => "a dict",
+                _ => "bytes",
+            };
+            Err(mismatched_result(decl, got, what))
+        }
+        _ => Err(malformed()),
+    }
+}
+
 /// 宣言と違う種類の値が返ってきたとき（ブリッジの約束違反）。
 pub(crate) fn mismatched_result(decl: &CsDecl, got: &str, what: &str) -> String {
     format!("TypeError: C# method '{what}' returned {got}, but its return type is `{}`", decl.shown)
@@ -316,7 +421,12 @@ mod tests {
         let t = decl_of(Some("Option[tuple[int,str]]")).unwrap();
         assert!(t.optional && matches!(&t.kind, CsKind::Tuple(xs) if xs.len() == 2));
         assert_eq!(decl_of(Some("bytes")).unwrap().kind, CsKind::Bytes);
-        assert!(decl_of(Some("set[Person]")).unwrap().kind.is_container());
+        assert!(matches!(decl_of(Some("set[Person]")).unwrap().kind, CsKind::Set(_)));
+        // cs-dll の IntPtr / 数値の配列（5-5）
+        assert_eq!(decl_of(Some("Option[Ptr[void]]")).unwrap().kind, CsKind::Ptr("void".to_string()));
+        let a = decl_of(Some("Union[Ptr[int32], list[int], None]")).unwrap();
+        assert_eq!((a.kind, a.optional), (CsKind::Ptr("int32".to_string()), true));
+        assert!(decl_of(Some("Union[Ptr[int32], str]")).is_err());
     }
 
     #[test]

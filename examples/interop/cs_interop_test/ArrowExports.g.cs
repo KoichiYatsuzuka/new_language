@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 
 namespace ArrowGenerated;
@@ -101,6 +102,177 @@ internal static unsafe class ArrowAbi
 
     internal static long FromUInt64(ulong v, string what) =>
         v <= long.MaxValue ? (long)v : throw new ArrowBridgeError($"OverflowError: C# method '{what}' returned {v}, which does not fit in int");
+
+    // ── bytes / numeric arrays (ffi_value_exchange_plan.md 5-5) ──
+
+    internal static byte[]? Bytes(byte* p, int n) => n < 0 ? null : new ReadOnlySpan<byte>(p, n).ToArray();
+
+    /// Copied into unmanaged memory; Arrow frees it with arrow_bridge_free_str.
+    internal static void WriteBytes(byte[]? b, byte** outPtr, int* outLen)
+    {
+        if (b is null) { *outPtr = null; *outLen = -1; return; }
+        byte* p = (byte*)NativeMemory.Alloc((nuint)Math.Max(b.Length, 1));
+        b.AsSpan().CopyTo(new Span<byte>(p, b.Length));
+        *outPtr = p;
+        *outLen = b.Length;
+    }
+
+    /// Element type names live for the whole process (ArPtrProtocol's elem_type is a static string).
+    private static readonly Dictionary<string, IntPtr> ElemNames = new();
+
+    private static byte* ElemName(string name)
+    {
+        lock (ElemNames)
+        {
+            if (!ElemNames.TryGetValue(name, out var p)) { p = Marshal.StringToCoTaskMemUTF8(name); ElemNames[name] = p; }
+            return (byte*)p;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void FreeArray(void* ctx, ulong address) => NativeMemory.Free((void*)address);
+
+    /// A numeric array return value: a copy in unmanaged memory with a release function, so Arrow owns it (D-16).
+    /// The C# array itself is not shared: C# may keep and change it later (D-11).
+    internal static void WriteArray<T>(T[]? a, string elem, global::ArrowInterop.ArPtrProtocol* o) where T : unmanaged
+    {
+        *o = default;
+        if (a is null) return;
+        nuint size = (nuint)a.Length * (nuint)sizeof(T);
+        void* p = NativeMemory.Alloc(size == 0 ? 1 : size);
+        a.AsSpan().CopyTo(new Span<T>(p, a.Length));
+        o->Address = (ulong)p;
+        o->ElemType = ElemName(elem);
+        o->Length = a.Length;
+        o->Release = &FreeArray;
+        o->ReleaseCtx = null;
+    }
+
+    /// A numeric array argument: a Ptr of exactly that element type, or a copy of an Arrow list (int64 / float64) whose
+    /// elements must fit (no float to int, no int to float).
+    internal static T[]? Array<T>(global::ArrowInterop.ArPtrProtocol* p, string elem, int index, string what)
+        where T : unmanaged, System.Numerics.INumber<T>
+    {
+        if (p == null || p->Address == 0) return null;
+        string got = p->ElemType == null ? "?" : Marshal.PtrToStringUTF8((IntPtr)p->ElemType) ?? "?";
+        int n = checked((int)p->Length);
+        if (got == elem) return new ReadOnlySpan<T>((void*)p->Address, n).ToArray();
+        bool isFloat = elem.StartsWith("float");
+        var r = new T[n];
+        try
+        {
+            if (got == "int64" && !isFloat)
+            {
+                long* src = (long*)p->Address;
+                for (int k = 0; k < n; k++) r[k] = T.CreateChecked(src[k]);
+                return r;
+            }
+            if (got == "float64" && isFloat)
+            {
+                double* src = (double*)p->Address;
+                for (int k = 0; k < n; k++) r[k] = T.CreateChecked(src[k]);
+                return r;
+            }
+        }
+        catch (OverflowException)
+        {
+            throw new ArrowBridgeError($"OverflowError: an element of argument {index} of C# method '{what}' does not fit in C# `{typeof(T).Name}`");
+        }
+        throw new ArrowBridgeError($"TypeError: argument {index} of C# method '{what}' holds {got}, but the C# parameter takes {elem}[]");
+    }
+}
+
+/// Lists cross as the tagged JSON of Arrow's process bridges (src/interpreter/proc_values.rs · 5-5):
+/// {"t":"a","v":[{"t":"i","v":1}, …]}. Utf8JsonWriter / JsonDocument need no reflection (NativeAOT).
+internal static unsafe class ArrowJson
+{
+    private static string Tag(JsonElement e) => e.GetProperty("t").GetString() ?? "";
+
+    private static ArrowBridgeError NotA(int k, int index, string what, string want) =>
+        new($"TypeError: element {k} of argument {index} of C# method '{what}' is not {want}");
+
+    internal static List<T>? ParseList<T>(byte* p, int n, int index, string what, Func<JsonElement, int, T> elem)
+    {
+        if (n < 0) return null;
+        using var doc = JsonDocument.Parse(new ReadOnlySpan<byte>(p, n).ToArray());
+        var root = doc.RootElement;
+        if (Tag(root) != "a") throw new ArrowBridgeError($"TypeError: argument {index} of C# method '{what}' must be a list");
+        var list = new List<T>();
+        int k = 0;
+        foreach (var e in root.GetProperty("v").EnumerateArray()) list.Add(elem(e, k++));
+        return list;
+    }
+
+    internal static bool IsNone(JsonElement e) => Tag(e) == "n";
+    internal static long RInt(JsonElement e, int k, int i, string w) => Tag(e) == "i" ? e.GetProperty("v").GetInt64() : throw NotA(k, i, w, "an int");
+    internal static bool RBool(JsonElement e, int k, int i, string w) => Tag(e) == "b" ? e.GetProperty("v").GetBoolean() : throw NotA(k, i, w, "a bool");
+    internal static string? RStr(JsonElement e, int k, int i, string w) =>
+        Tag(e) switch { "s" => e.GetProperty("v").GetString(), "n" => null, _ => throw NotA(k, i, w, "a str") };
+    internal static char RChar(JsonElement e, int k, int i, string w)
+    {
+        string? s = RStr(e, k, i, w);
+        if (s is null || s.Length != 1) throw new ArrowBridgeError($"ValueError: element {k} of argument {i} of C# method '{w}' must be a str of one UTF-16 unit");
+        return s[0];
+    }
+    internal static double RFloat(JsonElement e, int k, int i, string w)
+    {
+        if (Tag(e) != "f") throw NotA(k, i, w, "a float");
+        var v = e.GetProperty("v");
+        return v.ValueKind != JsonValueKind.String ? v.GetDouble() : v.GetString() switch
+        {
+            "NaN" => double.NaN,
+            "Infinity" => double.PositiveInfinity,
+            "-Infinity" => double.NegativeInfinity,
+            _ => throw NotA(k, i, w, "a float"),
+        };
+    }
+    internal static T? RObj<T>(JsonElement e, int k, int i, string w) where T : class =>
+        Tag(e) switch { "h" => ArrowObjects.Get<T>(e.GetProperty("v").GetInt64(), i, w), "n" => null, _ => throw NotA(k, i, w, $"a {typeof(T).Name}") };
+
+    internal static void WriteList<T>(IEnumerable<T>? xs, Action<Utf8JsonWriter, T> elem, byte** outPtr, int* outLen)
+    {
+        if (xs is null) { *outPtr = null; *outLen = -1; return; }
+        var buf = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var w = new Utf8JsonWriter(buf))
+        {
+            w.WriteStartObject();
+            w.WriteString("t", "a");
+            w.WritePropertyName("v");
+            w.WriteStartArray();
+            foreach (var x in xs) elem(w, x);
+            w.WriteEndArray();
+            w.WriteEndObject();
+        }
+        ArrowAbi.WriteBytes(buf.WrittenSpan.ToArray(), outPtr, outLen);
+    }
+
+    private static void Tagged(Utf8JsonWriter w, string t) { w.WriteStartObject(); w.WriteString("t", t); }
+    internal static void WNone(Utf8JsonWriter w) { Tagged(w, "n"); w.WriteEndObject(); }
+    internal static void WInt(Utf8JsonWriter w, long v) { Tagged(w, "i"); w.WriteNumber("v", v); w.WriteEndObject(); }
+    /// ulong of 2^63 or more: "o" (Arrow raises OverflowError, like cs-proc)
+    internal static void WUInt(Utf8JsonWriter w, ulong v)
+    {
+        if (v <= long.MaxValue) { WInt(w, (long)v); return; }
+        Tagged(w, "o"); w.WriteString("v", v.ToString()); w.WriteEndObject();
+    }
+    internal static void WFloat(Utf8JsonWriter w, double v)
+    {
+        Tagged(w, "f");
+        if (double.IsFinite(v)) w.WriteNumber("v", v);
+        else w.WriteString("v", double.IsNaN(v) ? "NaN" : v > 0 ? "Infinity" : "-Infinity");
+        w.WriteEndObject();
+    }
+    internal static void WBool(Utf8JsonWriter w, bool v) { Tagged(w, "b"); w.WriteBoolean("v", v); w.WriteEndObject(); }
+    internal static void WStr(Utf8JsonWriter w, string? v)
+    {
+        if (v is null) { WNone(w); return; }
+        Tagged(w, "s"); w.WriteString("v", v); w.WriteEndObject();
+    }
+    internal static void WObj(Utf8JsonWriter w, object? v)
+    {
+        if (v is null) { WNone(w); return; }
+        Tagged(w, "h"); w.WriteNumber("v", ArrowObjects.Store(v)); w.WriteEndObject();
+    }
 }
 
 internal static unsafe class ArrowExports
@@ -113,6 +285,225 @@ internal static unsafe class ArrowExports
 
     [UnmanagedCallersOnly(EntryPoint = "arrow_bridge_take_error")]
     public static void TakeError(byte** outPtr, int* outLen) => ArrowAbi.WriteStr(ArrowAbi.TakeError(), outPtr, outLen);
+
+    // ── ArPtrProtocol ──
+
+    // ── Buffers ──
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Raw")]
+    public static void Buffers_Raw(byte* a0, int a0n, byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Raw";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Raw(ArrowAbi.Str(a0, a0n)!);
+            ArrowAbi.WriteBytes(r, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_FromRaw")]
+    public static void Buffers_FromRaw(byte* a0, int a0n, byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.FromRaw";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.FromRaw(ArrowAbi.Bytes(a0, a0n)!);
+            ArrowAbi.WriteStr(r, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_NoBytes")]
+    public static void Buffers_NoBytes(byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.NoBytes";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.NoBytes();
+            ArrowAbi.WriteBytes(r, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Squares")]
+    public static void Buffers_Squares(long a0, global::ArrowInterop.ArPtrProtocol* outArr)
+    {
+        const string what = "Buffers.Squares";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Squares(ArrowAbi.ToInt32(a0, 1, what));
+            ArrowAbi.WriteArray<int>(r, "int32", outArr);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outArr = default(global::ArrowInterop.ArPtrProtocol); return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Sum")]
+    public static long Buffers_Sum(global::ArrowInterop.ArPtrProtocol* a0)
+    {
+        const string what = "Buffers.Sum";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Sum(ArrowAbi.Array<int>(a0, "int32", 1, what)!);
+            return (long)r;
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Halves")]
+    public static void Buffers_Halves(global::ArrowInterop.ArPtrProtocol* a0, global::ArrowInterop.ArPtrProtocol* outArr)
+    {
+        const string what = "Buffers.Halves";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Halves(ArrowAbi.Array<double>(a0, "float64", 1, what)!);
+            ArrowAbi.WriteArray<double>(r, "float64", outArr);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outArr = default(global::ArrowInterop.ArPtrProtocol); return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_NoArray")]
+    public static void Buffers_NoArray(global::ArrowInterop.ArPtrProtocol* outArr)
+    {
+        const string what = "Buffers.NoArray";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.NoArray();
+            ArrowAbi.WriteArray<long>(r, "int64", outArr);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outArr = default(global::ArrowInterop.ArPtrProtocol); return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Kept")]
+    public static void Buffers_Kept(global::ArrowInterop.ArPtrProtocol* outArr)
+    {
+        const string what = "Buffers.Kept";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Kept();
+            ArrowAbi.WriteArray<int>(r, "int32", outArr);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outArr = default(global::ArrowInterop.ArPtrProtocol); return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_ChangeKept")]
+    public static void Buffers_ChangeKept()
+    {
+        const string what = "Buffers.ChangeKept";
+        try
+        {
+            global::ArrowBridge.Buffers.ChangeKept();
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Words")]
+    public static void Buffers_Words(byte* a0, int a0n, byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Words";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Words(ArrowAbi.Str(a0, a0n)!);
+            ArrowJson.WriteList<string>(r, (w, x) => { ArrowJson.WStr(w, x); }, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Join")]
+    public static void Buffers_Join(byte* a0, int a0n, byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Join";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Join(ArrowJson.ParseList<string>(a0, a0n, 1, what, (e, k) => ArrowJson.RStr(e, k, 1, what))!);
+            ArrowAbi.WriteStr(r, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Flags")]
+    public static void Buffers_Flags(byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Flags";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Flags();
+            ArrowJson.WriteList<bool>(r, (w, x) => { ArrowJson.WBool(w, x); }, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_CountTrue")]
+    public static long Buffers_CountTrue(byte* a0, int a0n)
+    {
+        const string what = "Buffers.CountTrue";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.CountTrue(ArrowJson.ParseList<bool>(a0, a0n, 1, what, (e, k) => ArrowJson.RBool(e, k, 1, what))?.ToArray()!);
+            return (long)r;
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Holes")]
+    public static void Buffers_Holes(byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Holes";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Holes();
+            ArrowJson.WriteList<long?>(r, (w, x) => { if (x is null) ArrowJson.WNone(w); else ArrowJson.WInt(w, x.Value); }, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Processors")]
+    public static void Buffers_Processors(byte** outPtr, int* outLen)
+    {
+        const string what = "Buffers.Processors";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Processors();
+            ArrowJson.WriteList<global::ArrowBridge.TextProcessor>(r, (w, x) => { ArrowJson.WObj(w, x); }, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_TotalLength")]
+    public static long Buffers_TotalLength(byte* a0, int a0n)
+    {
+        const string what = "Buffers.TotalLength";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.TotalLength(ArrowJson.ParseList<global::ArrowBridge.TextProcessor>(a0, a0n, 1, what, (e, k) => ArrowJson.RObj<global::ArrowBridge.TextProcessor>(e, k, 1, what))!);
+            return (long)r;
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_Handle")]
+    public static long Buffers_Handle()
+    {
+        const string what = "Buffers.Handle";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.Handle();
+            return (long)r;
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Buffers_SameHandle")]
+    public static long Buffers_SameHandle(long a0)
+    {
+        const string what = "Buffers.SameHandle";
+        try
+        {
+            var r = global::ArrowBridge.Buffers.SameHandle((nint)a0);
+            return (long)r;
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); return 0; }
+    }
+
 
     // ── Calculator ──
     [UnmanagedCallersOnly(EntryPoint = "Calculator_new_0")]
@@ -446,7 +837,19 @@ internal static unsafe class ArrowExports
         catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
     }
 
-    // skipped TextProcessor.Split: it returns `list[str]`, a C# collection, which cannot cross the bridge yet (the type stub marks it unsupported)
+    [UnmanagedCallersOnly(EntryPoint = "TextProcessor_inst_Split")]
+    public static void TextProcessor_inst_Split(long self, byte* a0, int a0n, byte** outPtr, int* outLen)
+    {
+        const string what = "TextProcessor.Split";
+        try
+        {
+            var obj = ArrowObjects.Get<global::ArrowBridge.TextProcessor>(self, 0, what);
+            var r = obj.Split(ArrowAbi.Str(a0, a0n)!);
+            ArrowJson.WriteList<string>(r, (w, x) => { ArrowJson.WStr(w, x); }, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "TextProcessor_inst_Append")]
     public static void TextProcessor_inst_Append(long self, byte* a0, int a0n)
     {
@@ -497,7 +900,18 @@ internal static unsafe class ArrowExports
         catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
     }
 
-    // skipped TextProcessor.Join: parameter `parts` is `list[str]`, a C# collection, which cannot cross the bridge yet (the type stub marks it unsupported)
+    [UnmanagedCallersOnly(EntryPoint = "TextProcessor_Join")]
+    public static void TextProcessor_Join(byte* a0, int a0n, byte* a1, int a1n, byte** outPtr, int* outLen)
+    {
+        const string what = "TextProcessor.Join";
+        try
+        {
+            var r = global::ArrowBridge.TextProcessor.Join(ArrowAbi.Str(a0, a0n)!, ArrowJson.ParseList<string>(a1, a1n, 2, what, (e, k) => ArrowJson.RStr(e, k, 2, what))?.ToArray()!);
+            ArrowAbi.WriteStr(r, outPtr, outLen);
+        }
+        catch (Exception e) { ArrowAbi.SetError(e); *outPtr = null; *outLen = -1; return; }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "TextProcessor_IsNullOrEmpty")]
     public static long TextProcessor_IsNullOrEmpty(byte* a0, int a0n)
     {

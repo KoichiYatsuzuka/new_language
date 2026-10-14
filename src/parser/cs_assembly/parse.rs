@@ -508,23 +508,30 @@ mod probe_tests {
         assert!(text.contains("(long?)(a1)"), "long? argument");
         assert!(text.contains("return ArrowObjects.Store(new global::Person(ArrowAbi.Str(a0, a0n)!, a1));"), "constructor");
         assert!(text.contains("catch (Exception e) { ArrowAbi.SetError(e);"), "exceptions are caught");
+        // 5-5: 配列・list・bytes（JSON / ArPtrProtocol）
+        assert!(text.contains("ArrowJson.WriteList<string>(r, (w, x) => { ArrowJson.WStr(w, x); }, outPtr, outLen)"), "string[] return");
+        assert!(text.contains("ArrowAbi.WriteArray<long>(r, \"int64\", outArr)"), "long[] return");
+        assert!(text.contains("ArrowAbi.Array<long>(a0, \"int64\", 1, what)!"), "long[] argument");
         // 作らないものは理由つき
-        assert!(text.contains("// skipped Probe.words: it returns `list[str]`"), "collection");
+        assert!(text.contains("// skipped Probe.counts: it returns `dict[str,int]`"), "dict (cs-dll)");
         assert!(text.contains("// skipped Probe.any_str: it returns `object`"), "object return");
         assert!(text.contains("// skipped Probe.first: "), "generic method");
     }
 
-    /// コレクション・デリゲート・タプル・型変数・他のアセンブリの型を使うメソッドだけに印が付く（2-1）。
+    /// cs-dll: dict・set・タプル・デリゲート・型変数・他のアセンブリの型を使うメソッドだけに印が付く（2-1・5-5）。
+    /// 配列・list・bytes は 5-5 から受け渡せる（数値の配列は `Ptr[T]`）。
     #[test]
     fn unsupported_methods_are_marked() {
         let st = probe_stubs();
         let why = |k: &str| st.get(k).unwrap_or_else(|| panic!("{k} missing")).2.clone();
-        for k in ["Probe.words", "Probe.words_list", "Probe.counts", "Probe.ints"] {
-            assert!(why(k).is_some_and(|w| w.starts_with("it returns `") && w.contains("a C# collection")), "{k}");
+        assert!(why("Probe.counts").is_some_and(|w| w.starts_with("it returns `") && w.contains("a C# collection")));
+        for k in ["Probe.words", "Probe.words_list", "Probe.ints", "Probe.sum", "Probe.join", "Probe.raw", "Probe.halves"] {
+            assert_eq!(why(k), None, "{k}");
         }
-        for k in ["Probe.sum", "Probe.join"] {
-            assert!(why(k).is_some_and(|w| w.starts_with("parameter `xs` is `list[")), "{k}");
-        }
+        let ty = |k: &str| st.get(k).map(|(ps, r, _)| (ps.join(", "), r.clone())).unwrap_or_default();
+        assert_eq!(ty("Probe.ints").1, "Ptr[int64]");
+        assert_eq!(ty("Probe.sum").0, "Union[Ptr[int64], list[int]]");
+        assert_eq!(ty("Probe.words").1, "list[str]");
         assert!(why("Probe.apply").is_some_and(|w| w.contains("delegate")));
         assert!(why("Probe.pair").is_some_and(|w| w.contains("tuple")));
         assert!(why("Probe.first").is_some_and(|w| w == "it returns `T`, a generic type parameter, which cannot cross the bridge"));

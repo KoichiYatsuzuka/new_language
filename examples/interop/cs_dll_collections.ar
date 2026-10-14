@@ -1,0 +1,61 @@
+# cs_dll_collections.ar — cs-dll でバイト列・ポインタ・数値の配列・list を受け渡す（正例・ffi_value_exchange_plan.md 5-5・D-16）
+#
+#   - `byte[]` ↔ bytes（D-9）
+#   - 数値の `T[]` → 所有の `Ptr[T]`（C# の配列は GC が動かすので、生成した export がアンマネージドのメモリへ複製して
+#     解放関数をつける。C# が持ち続ける配列を後から書き換えても、Arrow の Ptr の中身は変わらない・D-11）。
+#     引数は同じ要素型の `Ptr[T]` か list（要素ごとに型と範囲を確かめる）
+#   - `List<T>` / `string[]` / `bool[]` → list（要素がそれぞれ別のオブジェクト・内部の配列が差し替わる。境界で展開する）
+#   - `IntPtr` ↔ 借用の `Ptr[void]`（Arrow は解放しない・0 は None）
+# ⚠ 5-5 より前は、これらを受け渡すメソッドは使った箇所が静的エラーだった（`IntPtr` は int として渡っていた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll が要る（build_bridge.ps1）。
+# 対になる負例: cs_dll_array_arg_error.ar
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let B = bridge.Buffers
+
+# ── byte[] ────────────────────────────────────────────────────────────────────
+check("byte[] -> bytes", B.Raw("日本") == "日本".encode())
+check("bytes -> byte[]", B.FromRaw("abc".encode()) == "abc")
+check("null byte[] -> None", B.NoBytes() is None)
+
+# ── 数値の配列 ─────────────────────────────────────────────────────────────────
+let sq = B.Squares(4)
+check("int[] -> Ptr[int32]", sq.to_list() == [0, 1, 4, 9])
+check("Ptr[int32] back to int[]", B.Sum(sq) == 14)
+check("list -> int[]", B.Sum([1, 2, 3]) == 6)
+check("empty list -> int[]", B.Sum([]) == 0)
+check("double[] round trip", B.Halves([1.0, 3.0]).to_list() == [0.5, 1.5])
+check("null long[] -> None", B.NoArray() is None)
+let kept = B.Kept()
+B.ChangeKept()
+check("a copy: C# changing its array does not change the Ptr", kept.to_list() == [1, 2, 3])
+
+mut message = ""
+try:
+    print("unreachable:", B.Sum([1, 4294967296]))
+except OverflowError as e:
+    message = e.message
+check("element out of range -> OverflowError (" + message + ")", message != "")
+
+# ── list ─────────────────────────────────────────────────────────────────────
+check("List<string> -> list[str]", B.Words("a b c") == ["a", "b", "c"])
+check("list[str] -> List<string>", B.Join(["x", "y"]) == "x|y")
+check("bool[] <-> list[bool]", B.Flags() == [True, False] and B.CountTrue([True, True, False]) == 2)
+let holes = B.Holes()
+check("List<long?> -> list[Option[int]]", len(holes) == 3 and holes[1] is None)
+let ps = B.Processors()
+check("List<TextProcessor> -> C# objects", len(ps) == 2 and ps[1].getText() == "bb")
+check("C# objects in a list argument", B.TotalLength(ps) == 3)
+check("string[] (existing TextProcessor.Split)", bridge.TextProcessor("a,b").Split(",") == ["a", "b"])
+
+# ── IntPtr ───────────────────────────────────────────────────────────────────
+let h = B.Handle()
+check("IntPtr -> Ptr[void] and back", h is Ptr[void] and B.SameHandle(h) == 1 and B.SameHandle(None) == 0)

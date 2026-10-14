@@ -21,6 +21,8 @@ use super::Value;
 pub(crate) enum Peer<'a> {
     /// cs-proc のホスト（そのホストの `CsObject` はハンドルで送れる）
     Cs(&'a Path),
+    /// cs-dll の DLL（list を JSON で渡す・5-5。その DLL の `CsObject` はハンドルで送れる）
+    CsDll(&'a Path),
     Js,
 }
 
@@ -81,6 +83,9 @@ pub(crate) fn encode(v: &Value, peer: &Peer) -> Result<serde_json::Value, Encode
         Value::Bytes(b) => serde_json::json!({"t": "y", "v": base64_encode(b)}),
         Value::CsObject(o) => match peer {
             Peer::Cs(path) if o.is_proc && same_path(&o.bridge_path, path) => {
+                serde_json::json!({"t": "h", "v": o.handle})
+            }
+            Peer::CsDll(path) if !o.is_proc && same_path(&o.bridge_path, path) => {
                 serde_json::json!({"t": "h", "v": o.handle})
             }
             _ => return Err(EncodeError::ForeignObject(o.bridge_path.display().to_string())),

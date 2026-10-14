@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ArrowBridge")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7dae71fa66569065e3d8e9032a299fbbfb56991d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d1cf5d184c676c681fa197d748e341e5c0f4fd84")]
 [assembly: System.Reflection.AssemblyProductAttribute("ArrowBridge")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ArrowBridge")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

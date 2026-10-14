@@ -13,6 +13,12 @@
 //   float return     → i64 bit pattern
 //   string return    → (*mut u8, *mut i32) out-params; free with arrow_bridge_free_str; null = NULL / len < 0
 //   handle return    → i64 object id; null = 0
+//   bytes            → like a string (`byte[]` ↔ bytes · plan 5-5)
+//   IntPtr / nint    → i64 address ↔ a borrowed Ptr[void] (0 = None · 5-5)
+//   numeric T[]      → argument: `ArPtrProtocol*` (a Ptr[T], or a copy of a list); return: an `ArPtrProtocol*`
+//                      out-param filled by the bridge (copied into unmanaged memory, with a release function) →
+//                      an owned Ptr[T] (D-16 · 5-5)
+//   list[T]          → the tagged JSON of `proc_values` (shared with cs-proc) as a string, both ways (5-5)
 //   errors           → a generated bridge (`arrow --gen-cs-exports`・5-1) catches C# exceptions and argument errors and
 //                      keeps the message for `arrow_bridge_take_error(byte** out_ptr, int* out_len)`, which Arrow
 //                      calls after every call (NULL = no error). Hand-written bridges without it are unchanged.
@@ -165,7 +171,7 @@ pub fn call_constructor(
     //   `double` として読まれ、`float` を渡しても手書きの export が `double` の引数をレジスタ（XMM0）で受けて 0 になった
     //   （`cs_interop_test.ar` の `Calculator(100.0)` が黙って 0 で始まっていた）。
     let what = format!("{class_name}.__init__");
-    let slots = encode_args(bridge, args, param_types, None, &what)?;
+    let (slots, _keep) = encode_args(bridge, args, param_types, None, &what)?;
     check_slot_count(slots.len(), &what)?;
     let handle = unsafe { call_variadic(ptr, &slots) };
     bridge.take_error()?;
@@ -256,9 +262,24 @@ fn call_typed(
         }
         _ => {}
     }
-    let mut slots = encode_args(bridge, args, param_types, self_handle, what)?;
+    let (mut slots, _keep) = encode_args(bridge, args, param_types, self_handle, what)?;
 
-    if decl.kind == CsKind::Str {
+    // 数値の配列（5-5・D-16）: ブリッジがアンマネージドのメモリへ複製し、解放関数つきの `ArPtrProtocol` を書く
+    if let CsKind::Ptr(elem) = &decl.kind {
+        if elem != "void" {
+            // SAFETY: 全欄 0（解放関数は None）は有効な値
+            let mut out: crate::interpreter::value::PtrProtocolRaw = unsafe { std::mem::zeroed() };
+            slots.push(&mut out as *mut crate::interpreter::value::PtrProtocolRaw as i64);
+            check_slot_count(slots.len(), what)?;
+            unsafe { call_variadic(ptr, &slots) };
+            bridge.take_error()?;
+            let v = crate::interpreter::value::ptr_from_protocol(&out, &[])
+                .map_err(|e| format!("{e} (the result of C# method '{what}')"))?;
+            return if matches!(v, Value::None) { cs_values::null_result(&decl, what) } else { Ok(v) };
+        }
+    }
+
+    if matches!(decl.kind, CsKind::Str | CsKind::Bytes | CsKind::List(_)) {
         // 文字列の戻り値は末尾の出力引数 `(byte** out_ptr, int* out_len)` で受け取る
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
         let mut out_len: i32 = 0;
@@ -276,13 +297,20 @@ fn call_typed(
             return cs_values::null_result(&decl, what);
         }
         let bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len as usize) };
-        // ⚠ 以前は `from_utf8_lossy`（壊れたバイトを黙って置き換えていた）
-        let s = std::str::from_utf8(bytes).map(str::to_string).map_err(|e| {
-            format!("ValueError: C# method '{what}' returned a string that is not valid UTF-8 ({e})")
-        });
+        let result = match &decl.kind {
+            CsKind::Bytes => Ok(Value::bytes(bytes.to_vec())),
+            // list（5-5）: `proc_values` のタグつきの JSON を cs-proc と同じ規則で読む
+            CsKind::List(_) => serde_json::from_slice::<serde_json::Value>(bytes)
+                .map_err(|e| format!("CsDll: malformed list from the bridge for '{what}': {e}"))
+                .and_then(|j| cs_values::decode_tagged(&j, &decl, &bridge.path, false, what)),
+            // ⚠ 以前は `from_utf8_lossy`（壊れたバイトを黙って置き換えていた）
+            _ => std::str::from_utf8(bytes).map(|s| Value::str(s.to_string())).map_err(|e| {
+                format!("ValueError: C# method '{what}' returned a string that is not valid UTF-8 ({e})")
+            }),
+        };
         // Release the C# heap allocation
         bridge.free_str(out_ptr);
-        return Ok(Value::str(s?));
+        return result;
     }
 
     check_slot_count(slots.len(), what)?;
@@ -294,17 +322,26 @@ fn call_typed(
         CsKind::Float => Ok(Value::Float(f64::from_bits(raw as u64))),
         CsKind::Bool => Ok(Value::Bool(raw != 0)),
         CsKind::Class(_) => cs_values::object_result(&decl, &bridge.path, false, raw, what),
-        CsKind::Str | CsKind::Any => unreachable!("handled above"),
-        CsKind::Bytes | CsKind::List(_) | CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_) => {
-            unreachable!("rejected by dll_decl")
-        }
+        // `IntPtr` / `nint`（5-5）: 借用の Ptr[void]（Arrow は解放しない・D-7）。0 は NULL
+        CsKind::Ptr(_) if raw == 0 => cs_values::null_result(&decl, what),
+        CsKind::Ptr(_) => crate::interpreter::PtrHandle::new(raw as u64, "void", 0, None, crate::interpreter::PtrOwner::Borrowed, None)
+            .map(|h| Value::Ptr(std::sync::Arc::new(h))),
+        CsKind::Str | CsKind::Any | CsKind::Bytes | CsKind::List(_) => unreachable!("handled above"),
+        CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_) => unreachable!("rejected by dll_decl"),
     }
 }
 
-/// cs-dll の宣言（コレクションと `bytes` はまだ運べない・5-5）。cs-proc はコピーで運ぶ（5-2）。
+/// 呼び出しの間だけ生かしておくもの（slot が指す・5-5）。
+#[derive(Default)]
+struct Keep {
+    protocols: Vec<crate::interpreter::value::PtrProtocolArg>,
+    texts: Vec<String>,
+}
+
+/// cs-dll の宣言。`bytes` と `list` は運ぶ（5-5）が、tuple / dict / set はまだ運べない（cs-proc はコピーで運ぶ・5-2）。
 fn dll_decl(ann: Option<&str>, what: &str) -> Result<cs_values::CsDecl, String> {
     let decl = cs_values::decl_of(ann)?;
-    if decl.kind.is_container() {
+    if matches!(decl.kind, CsKind::Tuple(_) | CsKind::Dict(..) | CsKind::Set(_)) {
         return Err(format!(
             "TypeError: C# method '{what}' passes a `{}`, which cannot cross the cs-dll bridge yet (use cs-proc)",
             decl.shown
@@ -324,8 +361,9 @@ fn encode_args(
     param_types: &[Option<String>],
     self_handle: Option<i64>,
     what: &str,
-) -> Result<Vec<i64>, String> {
+) -> Result<(Vec<i64>, Keep), String> {
     let mut slots: Vec<i64> = Vec::new();
+    let mut keep = Keep::default();
     if let Some(h) = self_handle {
         slots.push(h);
     }
@@ -351,6 +389,43 @@ fn encode_args(
                 slots.push(o.handle);
             }
             (CsKind::Class(_), Value::None) if decl.optional => slots.push(0),
+            // bytes（5-5）: 文字列と同じ (ptr, len)。None は (0, -1)
+            (CsKind::Bytes, Value::Bytes(b)) => {
+                slots.push(b.as_ptr() as i64);
+                slots.push(b.len() as i64);
+            }
+            (CsKind::Bytes | CsKind::List(_), Value::None) if decl.optional => {
+                slots.push(0);
+                slots.push(-1);
+            }
+            // list（5-5）: `proc_values` のタグつきの JSON（cs-proc と同じ表現）
+            (CsKind::List(_), Value::List(_)) => {
+                let j = super::proc_values::encode(v, &super::proc_values::Peer::CsDll(&bridge.path))
+                    .map_err(|e| e.message(i, &format!("C# method '{what}'"), "cs-dll"))?;
+                let text = j.to_string();
+                slots.push(text.as_ptr() as i64);
+                slots.push(text.len() as i64);
+                keep.texts.push(text);
+            }
+            // `IntPtr` / `nint`（5-5）: どの Ptr のアドレスでも、None は 0
+            (CsKind::Ptr(e), _) if e == "void" => {
+                let a = crate::interpreter::value::ptr_arg_address(v, "void")
+                    .map_err(|e| format!("{e} (argument {} of C# method '{what}')", i + 1))?;
+                slots.push(a as i64);
+            }
+            (CsKind::Ptr(e), Value::None) if !decl.optional => {
+                return Err(format!(
+                    "TypeError: argument {} of C# method '{what}' is None, but the C# parameter takes {e}[]",
+                    i + 1
+                ));
+            }
+            // 数値の配列（5-5）: Ptr[T] か list のコピーを `ArPtrProtocol` にする（呼び出しの間だけ生かす）
+            (CsKind::Ptr(e), _) => {
+                let a = crate::interpreter::value::protocol_arg_declared(v, false, e)
+                    .map_err(|e| format!("{e} (argument {} of C# method '{what}')", i + 1))?;
+                slots.push(a.address() as i64);
+                keep.protocols.push(a);
+            }
             (CsKind::Any, Value::Int(n)) => slots.push(*n),
             (CsKind::Any, Value::UInt(n)) => slots.push(*n as i64),
             (CsKind::Any, Value::Float(f)) => slots.push(f.to_bits() as i64),
@@ -380,7 +455,7 @@ fn encode_args(
             (_, other) => return Err(cs_values::unsupported_arg(other, i, what)),
         }
     }
-    Ok(slots)
+    Ok((slots, keep))
 }
 
 /// `call_variadic` が渡せるのは 8 スロットまで（⚠ 以前は 9 個目から黙って捨てていた）。

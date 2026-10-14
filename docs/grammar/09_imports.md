@@ -480,12 +480,16 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 
 - `?` の無い参照型（`string` / `Person`）のメソッドが null を返したら `TypeError` です（C# 側の約束違反）。
   nullable 注釈を有効にしていない（`<Nullable>` の無い）アセンブリの参照型も同じ扱いです。
-- コレクションと `byte[]` は **cs-proc だけ**がコピーで運びます（5-2）: 配列・`List<T>` など → `list[T]`、
+- コレクションと `byte[]` は cs-proc がコピーで運びます（5-2）: 配列・`List<T>` など → `list[T]`、
   `Dictionary<K, V>` → `dict[K, V]`、`HashSet<T>` → `set[T]`、`ValueTuple` → `tuple[…]`、`byte[]` → `bytes`。
-  引数は C# のメソッドの引数の型に作り直して渡します。要素が C# のオブジェクトでもかまいません。cs-dll はまだ
-  運べません（⇒ 5-5）。`Task<T>` を返すメソッドは待ってから `T` を返します（cs-proc）。
+  引数は C# のメソッドの引数の型に作り直して渡します。要素が C# のオブジェクトでもかまいません。
+  `Task<T>` を返すメソッドは待ってから `T` を返します（cs-proc）。
+- cs-dll（同じプロセス・5-5・D-16）: `byte[]` ↔ `bytes`、数値の配列（`int[]` / `double[]` …）→ `Ptr[int32]` などの所有の
+  `Ptr`（C# の配列は GC が動かすので、アンマネージドのメモリへ複製して渡す。`to_list()` で展開）。引数は同じ要素型の
+  `Ptr` か list（`Union[Ptr[int32], list[int]]`）。`List<T>` / `string[]` / `bool[]` → `list[T]`（境界で展開）、
+  `IntPtr` / `nint` ↔ 借用の `Ptr[void]`（0 は None）。dict・set・タプルは cs-dll ではまだ運べません。
 - 次の型を受け渡すメソッドは、使った箇所が静的エラーになります: デリゲート・型変数（ジェネリックなメソッド）・
-  他のアセンブリの型・インターフェース（cs-dll ではコレクション・`byte[]` も）。
+  他のアセンブリの型・インターフェース（cs-dll では dict・set・タプル・入れ子のコレクションも）。
 - C# のオブジェクトは、それを作ったブリッジ（同じ DLL / 同じホスト）へだけ渡せます。
 - 公開のコンストラクタは型スタブの `__init__`（コンストラクタごとに 1 つ）になり、引数の個数で選んでその型で渡します
   （その個数のコンストラクタが無ければ `TypeError`）。
@@ -547,6 +551,9 @@ dotnet publish {Name}.csproj -r win-x64 -c Release --self-contained          # N
   `char` は 1 文字の `str`（UTF-16 の 1 単位でなければ `ValueError`）、`Task<T>` は待ってから `T` を返す
 - 作れないメンバー（型スタブが未対応としたもの・`object` の引数・`ref` / `out`・ジェネリック・演算子）は作らず、
   理由をコメントで残す（Arrow から呼ぶと「export が無い」エラー）
+- 数値の配列を受け渡すメソッドがあれば、`bridge/ptr_protocol/ArPtrProtocol.cs` をプロジェクトに入れる
+  （`<Compile Include="…\bridge\ptr_protocol\ArPtrProtocol.cs" Link="ArPtrProtocol.cs" />`・5-5）。list は 5-2 と同じ
+  タグつきの JSON を文字列で受け渡す（`Utf8JsonWriter` / `JsonDocument` なので NativeAOT でも動く）
 
 生成したクラスは `internal` なので型スタブには出ません。`[UnmanagedCallersOnly]` の付いたメソッド（手書きの export）も
 型スタブに出しません。以下は export を手で書く場合の設計です。
@@ -621,6 +628,9 @@ public static unsafe class FormBridgeExports
 | コンストラクタ | `{ClassName}_new_{argc}` または `{ClassName}_new` |
 | 文字列バッファ解放 | `arrow_bridge_free_str(byte*)` (固定名) |
 | オブジェクト解放 | `arrow_bridge_release(i64)` (固定名) |
+| `byte[]` / list（5-5） | 文字列と同じ `(byte*, int)`（list はタグつきの JSON）。戻り値は末尾の `(byte** out_ptr, int* out_len)` |
+| 数値の配列（5-5） | 引数は `ArPtrProtocol*`（1 スロット）。戻り値は末尾の `ArPtrProtocol*` へブリッジが書く（解放関数つき） |
+| `IntPtr`（5-5） | アドレスの `i64`（Arrow では借用の `Ptr[void]`・0 は None） |
 | エラーの引き取り（任意） | `arrow_bridge_take_error(byte** out_ptr, int* out_len)`（固定名）。Arrow が呼び出しのたびに呼び、`out_ptr` が NULL でなければその文字列をエラーにする（`TypeError: ` / `ValueError: ` / `OverflowError: ` で始まればその例外）。生成した export が持つ |
 
 #### 戻り値

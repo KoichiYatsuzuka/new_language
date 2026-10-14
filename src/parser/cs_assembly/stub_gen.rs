@@ -220,7 +220,11 @@ pub(crate) fn generate_stubs(pa: &ParsedAssembly, bridge: CsBridge) -> Result<Ve
 ///   null にならない型へ入れるときに検査するのと同じ扱い。
 pub(crate) fn apply_nullable(ty: String, flag: u8) -> String {
     if flag == 2 && ty != "Any" && !ty.starts_with("Option[") {
-        format!("Option[{ty}]")
+        // cs-dll の配列の引数 `Union[Ptr[T], list[…]]` は None を構成型に足す（5-5）
+        match ty.strip_prefix("Union[").and_then(|r| r.strip_suffix(']')) {
+            Some(members) => format!("Union[{members}, None]"),
+            None => format!("Option[{ty}]"),
+        }
     } else {
         ty
     }
@@ -282,12 +286,19 @@ fn type_reason(ty: &str, ctx: &TypeCtx) -> Option<String> {
     let dll = ctx.bridge == CsBridge::Dll;
     match head {
         "None" | "int" | "float" | "bool" | "str" | "Any" | "Self" => None,
-        "bytes" if dll => Some("a byte array, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string()),
         "bytes" => None,
+        // cs-dll の IntPtr / 数値の配列（5-5）
+        "Ptr" | "Union" if dll => None,
         "tuple" if dll => Some("a C# tuple, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string()),
-        "list" | "dict" | "set" if dll => {
-            Some("a C# collection, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string())
-        }
+        "dict" | "set" if dll => Some("a C# collection, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string()),
+        // cs-dll の list（5-5）: 要素は数値・bool・str・このアセンブリのクラス（とその Option）だけ
+        "list" if dll => match args {
+            Some(a) if a.contains('[') && !a.starts_with("Option[") => {
+                Some("a nested C# collection, which cannot cross the cs-dll bridge yet (use cs-proc)".to_string())
+            }
+            Some(a) => type_reason(a, ctx).map(|why| format!("a C# collection of `{a}`, {why}")),
+            None => Some("a C# collection without element types".to_string()),
+        },
         // cs-proc: 中身も受け渡せるなら運ぶ（5-2）
         "list" | "dict" | "set" | "tuple" => match args {
             Some(a) => split_type_args(a)

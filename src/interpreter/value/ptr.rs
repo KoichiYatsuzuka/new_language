@@ -345,7 +345,7 @@ pub(crate) fn c_string_arg(v: &super::Value) -> Result<Option<Vec<u8>>, String> 
 pub(crate) fn protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolArg, String> {
     // Arrow の `list` / `bytes` は呼び出しの間だけ有効なコピーとして渡す（4-7・D-15）
     if let super::Value::List(_) | super::Value::Bytes(_) = v {
-        return copied_protocol_arg(v, writable);
+        return copied_protocol_arg(v, writable, None);
     }
     let (raw, elem, ptr) = match v {
         super::Value::None => (
@@ -396,7 +396,16 @@ pub(crate) fn protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtoc
 /// （C の sizeof ずつ並べる）、`bytes` → `uint8`。空の `list`・種類の混ざった `list`・それ以外の要素は型が決まらないので誤り。
 /// 解放関数は NULL・STATIC は付けない（C が持ち続けてはいけない）。`writable`（`ArPtrProtocol*`）なら呼び出しの後で、C が
 /// 書いた中身を `list` へ書き戻す（D-14。`bytes` は書き換えられないので渡せない）。
-fn copied_protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolArg, String> {
+/// [`protocol_arg`] の、宣言から要素の型が分かる呼び出し用（cs-dll の配列の引数・5-5）。空の list は宣言の要素型で長さ 0 にする
+/// （[`protocol_arg`] は要素の型が決まらないので TypeError）。
+pub(crate) fn protocol_arg_declared(v: &super::Value, writable: bool, elem: &str) -> Result<PtrProtocolArg, String> {
+    match v {
+        super::Value::List(items) if items.borrow().is_empty() => copied_protocol_arg(v, writable, Some(elem)),
+        _ => protocol_arg(v, writable),
+    }
+}
+
+fn copied_protocol_arg(v: &super::Value, writable: bool, empty_elem: Option<&str>) -> Result<PtrProtocolArg, String> {
     use super::Value;
     let (elem, data, count, writeback): (String, Vec<u8>, usize, Option<ListWriteBack>) = match v {
         Value::Bytes(b) => {
@@ -410,6 +419,9 @@ fn copied_protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolAr
         }
         Value::List(items_rc) => {
             let items = items_rc.borrow();
+            if let (true, Some(elem)) = (items.is_empty(), empty_elem) {
+                return finish_copied(elem.to_string(), Vec::new(), 0, None, writable);
+            }
             if items.is_empty() {
                 return Err("TypeError: an empty list cannot be passed as `ArPtrProtocol` (its element type is unknown)".to_string());
             }
@@ -462,6 +474,17 @@ fn copied_protocol_arg(v: &super::Value, writable: bool) -> Result<PtrProtocolAr
         }
         _ => unreachable!("copied_protocol_arg takes a list or bytes"),
     };
+    finish_copied(elem, data, count, writeback, writable)
+}
+
+/// コピーしたバイト列を `ArPtrProtocol` にする（[`copied_protocol_arg`] の後半）。
+fn finish_copied(
+    elem: String,
+    data: Vec<u8>,
+    count: usize,
+    writeback: Option<ListWriteBack>,
+    writable: bool,
+) -> Result<PtrProtocolArg, String> {
     // 8 バイト境界に置く（C が int64 / double の配列として読む）
     let mut buf = vec![0u64; data.len().div_ceil(8).max(1)];
     // SAFETY: `buf` は `data.len()` バイト以上ある
@@ -961,6 +984,18 @@ mod tests {
         unsafe { *(w.raw.address as usize as *mut i64).add(1) = 40 };
         w.finish();
         assert!(matches!(list.borrow()[1], Value::Int(40)));
+    }
+
+    /// 宣言から要素の型が分かる呼び出し（cs-dll の配列・5-5）は、空の list を宣言の要素型の長さ 0 にする。
+    #[test]
+    fn empty_list_takes_the_declared_element_type() {
+        use super::super::Value;
+        let empty = Value::List(std::rc::Rc::new(std::cell::RefCell::new(vec![])));
+        let a = protocol_arg_declared(&empty, false, "int32").unwrap();
+        let elem = unsafe { std::ffi::CStr::from_ptr(a.raw.elem_type) }.to_str().unwrap().to_string();
+        assert_eq!((elem.as_str(), a.raw.length), ("int32", 0));
+        assert_ne!(a.raw.address, 0, "an empty array, not NULL");
+        assert!(protocol_arg(&empty, false).is_err(), "without a declaration the element type is unknown");
     }
 
     #[test]

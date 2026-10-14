@@ -221,6 +221,23 @@ pub(crate) enum CsTy {
 }
 
 impl CsTy {
+    /// cs-dll で `Ptr[T]` として受け渡す配列の要素（`ArPtrProtocol` の要素の型名・5-5・D-16）。`byte[]` は bytes、`bool[]` /
+    /// `char[]` / `IntPtr[]` は対象外（list か未対応）。
+    pub(crate) fn ptr_elem(&self) -> Option<&'static str> {
+        Some(match self {
+            CsTy::Int { bits: 8, signed: true } => "int8",
+            CsTy::Int { bits: 16, signed: true } => "int16",
+            CsTy::Int { bits: 16, signed: false } => "uint16",
+            CsTy::Int { bits: 32, signed: true } => "int32",
+            CsTy::Int { bits: 32, signed: false } => "uint32",
+            CsTy::Int { bits: 64, signed: true } => "int64",
+            CsTy::Int { bits: 64, signed: false } => "uint64",
+            CsTy::Float { bits: 32 } => "float32",
+            CsTy::Float { bits: 64 } => "float64",
+            _ => return None,
+        })
+    }
+
     /// Arrow の型の綴り（型スタブ・`.ars`）。⚠ 5-1 より前のデコーダが返していた綴りと同じ（`byte[]` だけ 5-2 から `bytes`）。
     pub(crate) fn arrow(&self) -> String {
         match self {

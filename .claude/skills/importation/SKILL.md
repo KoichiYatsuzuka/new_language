@@ -480,6 +480,15 @@ the value rules in `src/interpreter/cs_values.rs` (ffi_value_exchange_plan.md 2-
   `[UnmanagedCallersOnly]` methods (hand-written exports) are left out of the stub (`NullableInfo::unmanaged_entries`).
   Build: `examples/interop/cs_interop_test/build_bridge.ps1` (managed build without the generated file → generate →
   NativeAOT publish).
+- **cs-dll values beyond scalars** (5-5 · D-16): the stub types come from `model.rs::stub_ann` (cs-dll only):
+  `IntPtr` → `Option[Ptr[void]]`, numeric `T[]` → `Ptr[T]` (return) / `Union[Ptr[T], list[…]]` (param, parsed as
+  `CsKind::Ptr` by `cs_values::decl_of`), `byte[]` → `bytes`, `List<T>` / non-numeric arrays → `list[T]`. Runtime
+  (`cs_dll_runtime`): bytes and lists travel like strings (lists as the tagged JSON of `proc_values`, decoded by the
+  shared `cs_values::decode_tagged`), numeric arrays as `ArPtrProtocol*` (`protocol_arg_declared` — an empty list takes
+  the declared element type — and an out-param read with `ptr_from_protocol`), `IntPtr` as an address
+  (`ptr_arg_address` / a borrowed `PtrHandle`). The generator emits `ArrowAbi.Array/WriteArray` (copy into
+  `NativeMemory`, release `FreeArray`) and `ArrowJson.ParseList/WriteList`; projects link
+  `bridge/ptr_protocol/ArPtrProtocol.cs`.
 - Errors that carry an exception type keep it (`cs_values::tag_error`), so `except TypeError` catches them; other
   bridge errors are prefixed `CsProc:` / `CsDll:`.
 - **The stub depends on the bridge** (task 5-2): `load_cs_assembly(path, CsBridge::Proc | Dll)`. cs-proc copies

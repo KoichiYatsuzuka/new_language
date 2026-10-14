@@ -4,6 +4,24 @@ EXPORTS
    arrow_bridge_release
    arrow_bridge_free_str
    arrow_bridge_take_error
+   Buffers_Raw
+   Buffers_FromRaw
+   Buffers_NoBytes
+   Buffers_Squares
+   Buffers_Sum
+   Buffers_Halves
+   Buffers_NoArray
+   Buffers_Kept
+   Buffers_ChangeKept
+   Buffers_Words
+   Buffers_Join
+   Buffers_Flags
+   Buffers_CountTrue
+   Buffers_Holes
+   Buffers_Processors
+   Buffers_TotalLength
+   Buffers_Handle
+   Buffers_SameHandle
    Calculator_new_0
    Calculator_new_1
    Calculator_Add
@@ -31,10 +49,12 @@ EXPORTS
    TextProcessor_inst_Trim
    TextProcessor_inst_Contains
    TextProcessor_inst_Replace
+   TextProcessor_inst_Split
    TextProcessor_inst_Append
    TextProcessor_inst_Clone
    TextProcessor_inst_FindWord
    TextProcessor_Repeat
+   TextProcessor_Join
    TextProcessor_IsNullOrEmpty
    TextProcessor_inst_FirstChar
    TextProcessor_RepeatChar
