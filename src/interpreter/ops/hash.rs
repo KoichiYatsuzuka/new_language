@@ -476,7 +476,7 @@ impl Interpreter {
         //    `&mut Interpreter` を掴んでよい。これが `raw_entry` を使う理由そのもの。
         let borrowed = d.borrow();
         let me = &mut *self;
-        borrowed.get_with(hash, |stored| me.values_eq_dyn(key, stored))
+        borrowed.get_with(hash, |stored| me.values_eq_key(key, stored))
     }
 
     /// 辞書に `key -> value` を入れる（既にあれば更新）。`__hash__` / `__eq__` を尊重する。
@@ -501,7 +501,7 @@ impl Interpreter {
         let idx = {
             let borrowed = d.borrow();
             let me = &mut *self;
-            borrowed.index_of_with(hash, |stored| me.values_eq_dyn(&key, stored))?
+            borrowed.index_of_with(hash, |stored| me.values_eq_key(&key, stored))?
         };
         // フェーズ 2: 可変借用で書く（クロージャを走らせないので再入しない）。
         // ⚠ **キーだけでなく値も複製する**（L4）。共有したままだと

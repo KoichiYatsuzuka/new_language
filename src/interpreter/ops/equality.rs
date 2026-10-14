@@ -450,6 +450,21 @@ impl Interpreter {
         self.values_eq_expr(a, b)
     }
 
+    /// 辞書のキーの照合（`__eq__` を尊重し、ほかは**型厳密**な [`Interpreter::values_eq`]・7-17）。
+    ///
+    /// ⚠⚠ [`Interpreter::values_eq_dyn`]（式としての比較・`3 == 3.0` は真）を使ってはいけない。ハッシュは型で分けて
+    ///    いるが、表の内部（hashbrown）はハッシュの下位 7 ビットの手がかりが一致した**別のキー**にも等値を問う。
+    ///    式の比較だと、乱数のシード次第で `d[3]` と `d[3.0]` が同じキーになっていた（`test_dict_keys_are_type_strict`
+    ///    がまれに落ち、`test_dict_keys_stay_strict_across_seeds` は必ず落ちた）。
+    pub(crate) fn values_eq_key(&mut self, a: &Value, b: &Value) -> Result<bool, String> {
+        if let Value::Instance(inst) = a {
+            if inst.borrow().class.methods.contains_key("__eq__") {
+                return self.values_eq_dyn(a, b);
+            }
+        }
+        self.values_eq(a, b)
+    }
+
     /// `hay` に `needle` と等値な要素があるか（`__eq__` を尊重する版）。
     /// ⚠ `__eq__` は**左オペランド**で引くので、`needle` を左にして呼ぶこと。
     pub(crate) fn contains_eq_dyn(

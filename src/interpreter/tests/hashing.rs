@@ -284,6 +284,35 @@ fn test_dict_keys_are_type_strict() {
     assert!(matches!(v, Value::Int(4)), "3 / 3.0 / True / 1 は 4 つの別キー: {v:?}");
 }
 
+/// 7-17: 表の内部はハッシュの下位 7 ビットの手がかりが一致した**別のキー**にも等値を問うので、キーの照合が型厳密で
+/// ないと、乱数のシード次第で `d[3]` と `d[3.0]` が同じキーになる（上のテストがまれに落ちていた）。小さな辞書を多数
+/// 作れば手がかりは必ずどこかで一致するので、型厳密でなければほぼ必ず落ちる。
+#[test]
+fn test_dict_keys_stay_strict_across_seeds() {
+    let (v, _i) = run_last(concat!(
+        "mut bad = 0
+",
+        "mut i = 0
+",
+        "while i < 2000:
+",
+        "    mut d = {}
+",
+        "    d[i] = 1
+",
+        "    d[float(i)] = 2
+",
+        "    if len(d) != 2 or d[i] != 1:
+",
+        "        bad += 1
+",
+        "    i += 1
+",
+        "bad",
+    ));
+    assert!(matches!(v, Value::Int(0)), "int and float keys merged in some dicts: {v:?}");
+}
+
 /// キーは**挿入時に複製**される。元の変数を書き換えても辞書側は変わらない。
 /// ⚠ 参照を共有したままだと、あとで中身を変えられてハッシュと食い違い、
 /// 「入れたのに引けない」辞書になる。
