@@ -459,8 +459,17 @@ the value rules in `src/interpreter/cs_values.rs` (ffi_value_exchange_plan.md 2-
 - **Return values** are read by the declared type: a class handle becomes `Value::CsObject` (classes are looked up
   per bridge in `cs_values::register_classes`, called by `import_cs_dll` / `import_cs_proc`).
 - **cs-dll lays out argument slots from the declared parameter types** (`cs_dll_runtime::encode_args`; `None` for
-  `Option[str]` = `(0, -1)`), at most 8 slots. The NativeAOT exports are hand-written
-  (`examples/interop/cs_interop_test/ArrowExports.cs`; a generator is task 5-1).
+  `Option[str]` = `(0, -1)`), at most 8 slots. Constructors use the `__init__` overload with that many parameters
+  (`cs_values::ctor_types`; the stub has one `__init__` per public constructor since 5-1 — the type checker ignores
+  foreign constructors' arguments).
+- **The NativeAOT exports are generated** (task 5-1): `arrow --gen-cs-exports X.dll -o ArrowExports.g.cs`
+  (`cs_assembly/export_gen.rs`, CLI in `main.rs`). Stubs, `.ars` and the generator all read one member list,
+  `cs_assembly/model.rs::assembly_model` (the stub walkers used to be duplicated), and one type decoder,
+  `signature.rs::CsTy` (`CsTy::arrow()` is the stub spelling). Generated exports catch C# exceptions / argument
+  errors and keep them for `arrow_bridge_take_error`, which `BridgeLib::take_error` reads after every call.
+  `[UnmanagedCallersOnly]` methods (hand-written exports) are left out of the stub (`NullableInfo::unmanaged_entries`).
+  Build: `examples/interop/cs_interop_test/build_bridge.ps1` (managed build without the generated file → generate →
+  NativeAOT publish).
 - Errors that carry an exception type keep it (`cs_values::tag_error`), so `except TypeError` catches them; other
   bridge errors are prefixed `CsProc:` / `CsDll:`.
 

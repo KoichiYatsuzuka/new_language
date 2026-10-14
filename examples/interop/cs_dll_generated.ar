@@ -1,0 +1,72 @@
+# cs_dll_generated.ar — 生成した cs-dll の export で値を受け渡す（正例・ffi_value_exchange_plan.md 5-1）
+#
+# ブリッジの export は `arrow --gen-cs-exports` が型スタブと同じ読み方で生成する（cs_interop_test/build_bridge.ps1）。
+#   - コンストラクタの引数は、型スタブの `__init__`（公開のコンストラクタごとに 1 つ）の型で渡す
+#     ⚠ 以前は値の種類で並べ、手書きの export が `double` をレジスタで受けていたので `Calculator(100.0)` が 0 で始まった
+#   - 整数は C# の型の幅に入るかを確かめる（入らなければ OverflowError。⚠ 以前は黙って切っていた）。
+#     `ulong` の戻り値が int に入らなければ OverflowError
+#   - `char` は 1 文字の str（UTF-16 の 1 単位でなければ ValueError）、`Task<T>` は待ってから T を返す
+#   - 引数の個数に合うコンストラクタが無ければ TypeError
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll が要る（build_bridge.ps1）。
+# 対になる負例: cs_dll_exception_error.ar
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── コンストラクタ ─────────────────────────────────────────────────────────────
+let calc = bridge.Calculator(100.0)
+calc.Accumulate(25.0)
+check("constructor takes a double", calc.GetAccumulated() == 125.0)
+
+mut message = ""
+try:
+    let bad = bridge.Calculator(1.0, 2.0, 3.0)
+    print("unreachable:", bad)
+except TypeError as e:
+    message = e.message
+check("no constructor with 3 arguments -> TypeError (" + message + ")", message != "")
+
+# ── 整数の幅 ─────────────────────────────────────────────────────────────────
+check("byte arguments", bridge.Calculator.AddBytes(200, 55) == 255)
+check("uint return", bridge.Calculator.MaxUInt() == 4294967295)
+
+message = ""
+try:
+    print("unreachable:", bridge.Calculator.Add(2147483648, 0))
+except OverflowError as e:
+    message = e.message
+check("int argument out of range -> OverflowError (" + message + ")", message != "")
+
+message = ""
+try:
+    print("unreachable:", bridge.Calculator.AddBytes(256, 1))
+except OverflowError as e:
+    message = e.message
+check("byte argument out of range -> OverflowError (" + message + ")", message != "")
+
+message = ""
+try:
+    print("unreachable:", bridge.Calculator.MaxULong())
+except OverflowError as e:
+    message = e.message
+check("ulong return out of range -> OverflowError (" + message + ")", message != "")
+
+# ── char・Task<T> ─────────────────────────────────────────────────────────────
+let tp = bridge.TextProcessor("Hi")
+check("char return is a str", tp.FirstChar() == "H")
+check("char argument", bridge.TextProcessor.RepeatChar("x", 3) == "xxx")
+
+message = ""
+try:
+    print("unreachable:", bridge.TextProcessor.RepeatChar("xy", 1))
+except ValueError as e:
+    message = e.message
+check("char argument must be one character -> ValueError (" + message + ")", message != "")
+
+check("Task<int> is awaited", bridge.Calculator.AddAsync(2, 3) == 5)

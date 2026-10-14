@@ -10,7 +10,8 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了
+- 状態: フェーズ 1〜4 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・§5）・7-12・7-15 完了。フェーズ 5 着手（5-1）
+- 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
 - 改訂: 2026-10-12 U-5（再）・U-7〜U-9 を決定（D-10〜D-13）。U-8 を (b) にしたため展開は Arrow 側で明示的に行う
@@ -171,6 +172,23 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   - 逆向き（Arrow → C の引数）は呼び出しの間だけ有効。C が保持したい場合は C 側でコピーする（C の慣習・今の
     `char*` の引数と同じ）
 
+- **D-16**（2026-10-14・利用者の判断）: C# / Rust の配列・コレクションの受け取り方は、**メモリ上のイメージで決める**。
+  C/C++ と同じく先頭アドレスと長さで表せるものは `Ptr[T]`（D-10 と同じく、使う側が `to_list()` で展開）、
+  先頭アドレスと長さだけでは表せないものは境界でその都度 `list` に展開する。`byte[]` / `Vec<u8>` は D-9 のとおり
+  `bytes`。実測は付録 B（C# / Rust のコレクション）:
+  | 型 | メモリ上のイメージ | Arrow |
+  |---|---|---|
+  | C# の数値の `T[]` | GC ヒープのオブジェクト（型ポインタ・長さの後に要素が連続）。固定しないと GC が動かす | `Option[Ptr[T]]` |
+  | C# の `List<T>` | 内部の配列 `_items` と要素数 `_size` を持つ別のオブジェクト。増えると配列を作り直す | `list[T]` |
+  | C# の `string[]`・クラスの配列 | 要素は参照（GC が動かすオブジェクトへのポインタ） | `list[T]` |
+  | Rust の数値の `Vec<T>` | (ポインタ, 長さ, 容量)。要素はヒープに連続し、`Vec` を動かしてもバッファは動かない | `Option[Ptr[T]]` |
+  | Rust の `Vec<String>` など | 要素がそれぞれ (ポインタ, 容量, 長さ) を持つ | `list[T]` |
+  - C# は、C# 側が持ち続ける配列（フィールドなど）を返すことがあるので、ブリッジがアンマネージドのメモリへ
+    複製して `PtrProtocol` で渡す（`release` で解放）。共有したまま C# が書き換えると Arrow の `Ptr` の中身が
+    変わる（D-11 に反する）
+  - 別プロセスのブリッジ（cs-proc・js-proc）は D-5 のとおりコピーで運ぶので、どれも `list` / `bytes`
+  - 引数は `Ptr[T]`・`list`・（`byte[]` / `Vec<u8>` なら）`bytes` を受ける（呼び出しの間だけのコピー・D-15）
+
 ### 未決事項
 
 なし（2026-10-12 時点）。
@@ -209,10 +227,11 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **4-5** | ✅（§5）`PtrProtocol` の戻り値を `Option[Ptr[T]]` で受け取り、`to_list()` / `to_bytes()` で展開できるようにする（D-10）。`release` は `Ptr` の `Drop` / `release()` で 1 回だけ呼ぶ。STATIC の無い NULL の `release` はエラー（D-15） | 4-4 | 中 |
 | **4-6** | ✅（§5）構造体を展開する: by-value の構造体は境界で（C 互換レイアウトのものは memcpy）、ポインタ型フィールドは D-7 / `PtrProtocol` の規則で、構造体の配列は `Ptr[構造体].to_list()` で。今の「コンストラクタにフィールドを 1 つずつ渡す」再構築をやめる | 1-3・4-5 | 中 |
 | **4-7** | ✅（§5）Arrow → C: `list` → `PtrProtocol` の引数（呼び出しの間だけ有効なコピーを渡す・D-15）、`bytes` → `char*`。`mut` の `list` と出力バッファは呼び出しの後に書き戻す（D-14） | 4-5 | 中 |
-| **5-1** | cs-dll: C# 側の `PtrProtocol` で配列・`List`・`byte[]` を受け渡す（export の生成器が要る。今は手書き）。`IntPtr` / `nint` ↔ `Ptr`、`byte[]` ↔ `bytes` | 2-1・3-1・4-5 | 大 |
+| **5-1** | ✅（§5）cs-dll: `[UnmanagedCallersOnly]` の export（今は利用者が手書き）を生成する（`arrow --gen-cs-exports X.dll`。Arrow の CLI が型スタブと同じ読み方で C# を書く・利用者の判断）。今の ABI（数値・文字列・クラスのハンドル・nullable）を生成し、C# の例外を Arrow の例外にする（今はプロセスが落ちる）・整数の幅を確かめる（今は黙って切る）。例題の手書きの export を置き換える | 2-1 | 中 |
 | **5-2** | cs-proc / js-proc: 値表現に dict / tuple / set / 配列 / `bytes` を足してコピーで運ぶ。`Ptr` を渡したらエラー | 2-1・2-3・3-1・3-2 | 中 |
 | **5-3** | py-int: Python の `bytes` / `bytearray` / `memoryview` ↔ Arrow の `bytes` | 2-6・3-1 | 小 |
-| **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。`Vec<T>`・`Option<T>`・`&[T]`・`String` フィールドを `PtrProtocol` で受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
+| **5-4** | rs: `Vec<u8>` → `bytes`（今は 16 進文字列）。数値の `Vec<T>` → `Option[Ptr[T]]`、`Vec<String>` など → `list[T]`（D-16）。`Option<T>`・`&[T]`・`String` フィールドを受け渡す（ラッパーは生成した Rust なので素直に書ける） | 2-5・3-1・4-5 | 中 |
+| **5-5** | cs-dll: `byte[]` ↔ `bytes`、`IntPtr` / `nint` ↔ `Ptr`、数値の `T[]` ↔ `Option[Ptr[T]]`（アンマネージドへ複製して `PtrProtocol` で渡す）、`List<T>` / `string[]` → `list[T]`（D-16）。引数は `Ptr`・`list`・`bytes` を受ける。cs-proc の型スタブは D-5 のとおり `list` / `bytes`（5-2） | 3-1・4-5・5-1 | 中 |
 | **6-1** | 非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
 | **7-1** | 型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
@@ -230,6 +249,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 | **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
 | **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
+| **7-16** | C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -874,6 +894,50 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_python_impl` clean（174/174）・`compare_wasm_frontend` 533/533・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
   `cargo test` 1144 件・拡張の wasm クレートの 705 件が通る。VSIX を作り直した
 
+### 5-1 実装
+
+- 生成器: `arrow --gen-cs-exports X.dll [-o out.cs]`（`cs_assembly/export_gen.rs`）。マネージドの DLL のメタデータから、
+  Arrow が呼ぶ `[UnmanagedCallersOnly]` の export を C# で書く（利用者の判断で Arrow の CLI に置いた）。名前と ABI は
+  手書きのときと同じ（`{Class}_new_{個数}` / `{Class}_{name}` / `{Class}_inst_{name}`・整数は `long`・浮動小数は `long` の
+  ビット列・文字列は `(byte*, int)`・クラスはハンドル）。生成したクラスは `internal` なので型スタブに出ない
+- 型の読み方を 1 つにした: シグネチャのデコーダが C# の型（`CsTy`）を返し、型スタブの綴りは `CsTy::arrow()`（以前の
+  綴りと同じ）。アセンブリの歩き方も 1 つにした（`cs_assembly/model.rs::assembly_model`）。⚠ 以前は型スタブと `.ars` が
+  それぞれ歩いていた。生成器が 3 本目を持つと export の名前・型がスタブとずれるので、3 者が同じ一覧を読む。`.ars` は
+  前後で `__init__` の行だけが変わることを 4 つの DLL で確かめた
+- 生成した export は C# の例外と引数の誤りを捕まえ、`arrow_bridge_take_error` に預ける。Arrow は呼び出しのたびに
+  引き取って例外にする（`BridgeLib::take_error`・`TypeError` / `ValueError` / `OverflowError` で始まればその例外、ほかは
+  `CsDll:`）。⚠ 手書きの export は例外を捕まえておらず、`Calculator.Divide(1.0, 0.0)` でプロセスごと落ちた
+- 整数を C# の型の幅で確かめる（`int` へ 2^31 は `OverflowError`。⚠ 手書きの export は `(int)a` で黙って切っていた）。
+  `ulong` の戻り値の 2^63 以上も `OverflowError`。`char` は 1 文字の `str`（UTF-16 の 1 単位でなければ `ValueError`・
+  文字列は置き換えずに例外にする UTF-8 で読み書き）。`Task<T>` は待って `T` を返す
+- 作れないもの（型スタブが未対応としたもの・`object` の引数・`ref` / `out`（⇒ 7-16）・ジェネリック・演算子・抽象クラスの
+  コンストラクタ・添字つきの setter・2 つ目以降のオーバーロード）は作らず、理由をコメントで残す
+- ⚠ 見つけて直した不具合: cs-dll のコンストラクタは型スタブに引数の型が無く（`__init__(self)` だけ）、値の種類で並べて
+  いた。手書きの export は `double` の引数をレジスタ（XMM0）で受けるので、`cs_interop_test.ar` の
+  `Calculator(100.0)` は黙って 0 で始まっていた（例題は `expected 125.0` と書いて 25.0 を出していたが、値を確かめて
+  いないのでゲートは緑だった）。生成した export は浮動小数を `long` のビット列で受けるので 125.0 になる。さらに型スタブに
+  公開のコンストラクタごとの `__init__` を載せ、実行時は引数の個数で選んでその型で並べる（`cs_values::ctor_types`。
+  その個数が無ければ `TypeError`。`double` を受けるコンストラクタへ `int` を渡すと、以前は整数のビット列が `double` と
+  して読まれ、今は `TypeError`）。型検査は外部言語のコンストラクタの引数を
+  見ないので静的な結果は変わらない。未対応の印は全部のコンストラクタが未対応のときだけ付ける（印はメソッドの名前
+  ごとに集めるので、1 つに付けるとクラスを構築できなくなる）
+- `[UnmanagedCallersOnly]` の付いたメソッド（手書きの export）を型スタブから外した（`NullableInfo::unmanaged_entries`）。
+  ⚠ 以前は `ArrowExports` クラスがメソッドごと型スタブに出ていた
+- 例題のプロジェクト（`cs_interop_test`）を生成した export に移した: `ArrowExports.cs` を消し、`build_bridge.ps1` を
+  2 段（生成物を外したマネージドのビルド → 生成 → NativeAOT）にした。`ArrowBridge.csproj` は `-p:ArrowGenerated=false`
+  のとき `ArrowExports.g.cs` を外す。C# に検査用のメンバー（`AddBytes` / `MaxUInt` / `MaxULong` / `AddAsync` /
+  `FirstChar` / `RepeatChar`）を足した
+- 参照実装（`impl_python/interpreter/cs_dll_runtime.py`）も同じ規則にした（エラーの引き取り・生成したブリッジで
+  その個数のコンストラクタが無ければ `TypeError`）
+- 例題: `interop/cs_dll_generated.ar`（期待値と違えば raise）・`cs_dll_exception_error.ar`。単体テスト 3 本（`__init__` の
+  オーバーロード・`cs_probe.dll` から生成した export・C# の型のデコード）
+- 文書: `docs/grammar/09_imports.md`（export の生成・ABI）・skill `importation`・CLAUDE.md のコマンド
+- ゲート（基準 `7dae71f`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（`cs_interop_test.ar` の
+  125.0 は基準の exe でも新しいブリッジを読むので一致する）。`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・
+  `force_gate`（`VmForceError` 0）・`compare_python_impl` clean（175/175）・`compare_wasm_frontend` 535/535・
+  `type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1147 件・拡張の wasm クレートの 707 件が通る。
+  VSIX を作り直した
+
 ---
 
 ## 付録 A. 検査の記録（2026-10-12・`2aa53ed`）
@@ -942,3 +1006,16 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 `xs[i]` のループ 164 ns/要素、Arrow で `P3(1.0, 2.0, 3.0)` を作る 1.2 µs。
 メモリ（概算）: `list` の要素は 1 個 32 バイトなので、uint8 は 32 倍・int32 は 8 倍・double は 4 倍、
 構造体の配列は約 10 倍に膨らむ。
+
+**C# / Rust のコレクションのメモリ上のイメージ**（2026-10-14・.NET 8 x64 release・rustc release。D-16）
+
+| 型 | 測ったこと | 結果 |
+|---|---|---|
+| C# `int[]` | 先頭要素とオブジェクトの差・先頭要素の 8 バイト前・オブジェクトの先頭 | 16 バイト・長さ（int32）・型ポインタ（MethodTable）。要素は 4 バイト間隔で連続 |
+| C# `int[]` | 固定しない配列の番地は、圧縮する GC の後で変わるか | 20 回中 20 回変わった |
+| C# `int[]` | `GCHandle.Alloc(.., Pinned)` で固定した配列 | 20 回中 0 回 |
+| C# `List<int>` | 中身 | 内部の配列 `_items`（長さ 4）と `_size`（3）。10 個足すと配列が別物になる（長さ 16） |
+| C# `string[]` | 要素 | 文字列オブジェクトへの参照（8 バイト） |
+| Rust `Vec<i32>` | 大きさと中身 | 24 バイト（ポインタ・長さ・容量。並びは Rust が定めない）。要素は 4 バイト間隔で連続 |
+| Rust `Vec<i32>` | 容量を超えて足す・`Vec` を動かす | バッファが別物になる・バッファは動かない |
+| Rust `&[i32]` / `String` | 大きさ | 16 バイト（ポインタ・長さ）/ 24 バイト（要素ごとにポインタ・容量・長さ） |

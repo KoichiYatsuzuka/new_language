@@ -26,4 +26,8 @@ public class TextProcessor
     public static string Repeat(string s, int times) => string.Concat(Enumerable.Repeat(s, times));
     public static string Join(string sep, string[] parts) => string.Join(sep, parts);
     public static bool IsNullOrEmpty(string? s) => string.IsNullOrEmpty(s);
+
+    // `char` is a str of one UTF-16 unit (ffi_value_exchange_plan.md 5-1)
+    public char FirstChar() => _text[0];
+    public static string RepeatChar(char c, int times) => new string(c, times);
 }

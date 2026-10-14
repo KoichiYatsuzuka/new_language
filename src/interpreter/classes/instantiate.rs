@@ -51,10 +51,12 @@ impl Interpreter {
             let bp_path = std::path::PathBuf::from(&**bp);
             let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
             if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
-                let handle =
-                    crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
-                        .map_err(|e| crate::interpreter::cs_values::tag_error(
-                            &format!("CsDll: constructor for '{class_name}' failed"), e))?;
+                let handle = crate::interpreter::cs_values::ctor_types(&class, arg_vals.len())
+                    .and_then(|types| {
+                        crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals, &types)
+                    })
+                    .map_err(|e| crate::interpreter::cs_values::tag_error(
+                        &format!("CsDll: constructor for '{class_name}' failed"), e))?;
                 return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
                     class_name: class_name.clone(),
                     handle,

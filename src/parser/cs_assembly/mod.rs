@@ -198,7 +198,6 @@ pub(crate) struct TildeLayout {
 pub(crate) struct ParsedAssembly {
     data: Vec<u8>,
     streams: Streams,
-    layout: TildeLayout,
     typedefs: Vec<CsTypeDef>,
     all_methods: Vec<CsMethod>,
     all_params: Vec<CsParam>,
@@ -223,6 +222,8 @@ pub(crate) struct NullableInfo {
     type_ctx: HashMap<u32, u8>,
     /// 入れ子の型の行 → 外側の型の行（NestedClass）。既定値は外側の型から受け継ぐ。
     enclosing: HashMap<u32, u32>,
+    /// `[UnmanagedCallersOnly]` の付いた MethodDef の行（手書きの export・5-1）。型スタブにも生成する export にも出さない
+    unmanaged_entries: std::collections::HashSet<u32>,
 }
 
 
@@ -293,7 +294,14 @@ mod signature;
 mod parse;
 mod xml_docs;
 mod stub_gen;
+mod model;
+#[cfg(not(feature = "editor"))]
+mod export_gen;
 pub(crate) use metadata::*;
 pub(crate) use parse::*;
 pub(crate) use xml_docs::*;
 pub(crate) use stub_gen::*;
+pub(crate) use model::*;
+#[cfg(not(feature = "editor"))]
+pub(crate) use export_gen::generate_cs_exports;
+pub(crate) use signature::CsTy;

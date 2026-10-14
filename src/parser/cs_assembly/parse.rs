@@ -231,7 +231,7 @@ pub(crate) fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
 
     let nullable = read_nullable(&data, &streams, &layout, &typedefs, &type_names);
 
-    Ok(ParsedAssembly { data, streams, layout, typedefs, all_methods, all_params, type_names, nullable })
+    Ok(ParsedAssembly { data, streams, typedefs, all_methods, all_params, type_names, nullable })
 }
 
 
@@ -301,6 +301,11 @@ fn read_nullable(
             3 => member_ref_class(ty >> 3),
             _ => None,
         };
+        // `[UnmanagedCallersOnly]` のメソッドは C ABI の入口（手書きの export）。マネージドのコードからは呼べない（5-1）
+        if attr == Some("UnmanagedCallersOnlyAttribute") && parent & 0x1F == 0 {
+            info.unmanaged_entries.insert(parent >> 5);
+            continue;
+        }
         let is_context = match attr {
             Some("NullableContextAttribute") => true,
             Some("NullableAttribute") => false,
@@ -373,10 +378,7 @@ impl NullableInfo {
 /// plus all type definitions for stub generation.
 pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
     let pa = parse_assembly(path)?;
-    generate_stubs(
-        &pa.data, &pa.streams, &pa.layout,
-        &pa.typedefs, &pa.all_methods, &pa.all_params, &pa.type_names, &pa.nullable,
-    )
+    generate_stubs(&pa)
 }
 
 
@@ -386,14 +388,20 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
 /// and `stub_text` is written to the `.ars` file.
 pub fn generate_cs_stub_text(path: &Path) -> Result<(Vec<Stmt>, String), String> {
     let pa = parse_assembly(path)?;
-    let stmts = generate_stubs(
-        &pa.data, &pa.streams, &pa.layout,
-        &pa.typedefs, &pa.all_methods, &pa.all_params, &pa.type_names, &pa.nullable,
-    )?;
+    let stmts = generate_stubs(&pa)?;
     let xml_path = path.with_extension("xml");
     let docs = parse_xml_docs(&xml_path);
     let text = render_cs_ars_text(&pa, &docs);
     Ok((stmts, text))
+}
+
+
+/// cs-dll の export（`[UnmanagedCallersOnly]` の中継関数）の C# を、マネージドの DLL から作る（`--gen-cs-exports`・5-1）。
+#[cfg(not(feature = "editor"))]
+pub fn generate_cs_exports_text(path: &Path) -> Result<String, String> {
+    let pa = parse_assembly(path)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(generate_cs_exports(&pa, &name))
 }
 
 
@@ -404,15 +412,19 @@ mod probe_tests {
 
     /// `examples/interop/cs_probe/cs_probe.dll`（build_cs_probe.ps1・nullable 有効）の型スタブ。
     /// キーは `クラス.メソッド`、値は `(引数の型, 戻り値の型, 未対応の理由)`。
-    fn probe_stubs() -> HashMap<String, (Vec<String>, String, Option<String>)> {
+    fn probe_dll() -> std::path::PathBuf {
         // ⚠ 拡張のクレート（`crates/arrow-frontend`）も同じファイルを取り込んでテストするので、リポジトリの直下を
         //   クレートの場所から上へ探す（`compare_wasm_frontend.ps1` の前段で走る）。
         let rel = Path::new("examples/interop/cs_probe/cs_probe.dll");
-        let dll = Path::new(env!("CARGO_MANIFEST_DIR"))
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .map(|d| d.join(rel))
             .find(|p| p.exists())
-            .expect("examples/interop/cs_probe/cs_probe.dll (build_cs_probe.ps1)");
+            .expect("examples/interop/cs_probe/cs_probe.dll (build_cs_probe.ps1)")
+    }
+
+    fn probe_stubs() -> HashMap<String, (Vec<String>, String, Option<String>)> {
+        let dll = probe_dll();
         let mut out = HashMap::new();
         for st in load_cs_assembly(&dll).expect("cs_probe.dll") {
             let Stmt::ClassDef { name: cls, body, .. } = st else { continue };
@@ -449,6 +461,37 @@ mod probe_tests {
         // 値型の `char` は nullable の文脈に関わらず `str` のまま
         assert_eq!(sig("Probe.initial").1, "str");
         assert_eq!(sig("Probe.any_obj").1, "Any");
+    }
+
+    /// 公開のコンストラクタは `__init__` のオーバーロードになる（5-1・実行時はこの型で引数を並べる）。
+    #[test]
+    fn constructors_become_init_overloads() {
+        let st = probe_stubs();
+        let (ps, ret, why) = st.get("Person.__init__").expect("Person.__init__");
+        assert_eq!((ps.join(", "), ret.as_str(), why), ("str, int".to_string(), "None", &None));
+        assert_eq!(st.get("Probe.__init__").map(|(ps, _, _)| ps.len()), Some(0), "the implicit default constructor");
+    }
+
+    /// `--gen-cs-exports`（5-1）: 型スタブと同じ名前・型の export を作り、作らないものは理由を残す。
+    #[cfg(not(feature = "editor"))]
+    #[test]
+    fn generates_exports_for_the_probe() {
+        let text = generate_cs_exports_text(&probe_dll()).expect("exports");
+        for entry in ["Person_new_2", "Person_inst_hello", "Person_inst_older", "Probe_greet", "Probe_echo", "Probe_maybe",
+                      "Probe_initial", "Probe_twice", "Probe_low_byte", "Probe_huge_ulong", "Probe_add_opt", "Probe_describe_opt",
+                      "arrow_bridge_release", "arrow_bridge_free_str", "arrow_bridge_take_error"] {
+            assert!(text.contains(&format!("EntryPoint = \"{entry}\"")), "{entry}");
+        }
+        // 整数の幅と `ulong` の戻り値を確かめる・nullable のクラスの引数は 0 を null にする・`long?` は値型の nullable
+        assert!(text.contains("return ArrowAbi.FromUInt64(r, what);"), "ulong return");
+        assert!(text.contains("a0 == 0 ? null : ArrowObjects.Get<global::Person>(a0, 1, what)"), "Person? argument");
+        assert!(text.contains("(long?)(a1)"), "long? argument");
+        assert!(text.contains("return ArrowObjects.Store(new global::Person(ArrowAbi.Str(a0, a0n)!, a1));"), "constructor");
+        assert!(text.contains("catch (Exception e) { ArrowAbi.SetError(e);"), "exceptions are caught");
+        // 作らないものは理由つき
+        assert!(text.contains("// skipped Probe.words: it returns `list[str]`"), "collection");
+        assert!(text.contains("// skipped Probe.any_str: it returns `object`"), "object return");
+        assert!(text.contains("// skipped Probe.first: "), "generic method");
     }
 
     /// コレクション・デリゲート・タプル・型変数・他のアセンブリの型を使うメソッドだけに印が付く（2-1）。

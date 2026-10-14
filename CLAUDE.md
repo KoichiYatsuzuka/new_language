@@ -29,6 +29,7 @@ cargo clippy                       # Lint
 cargo fmt                          # Format
 cargo run -- --compile <file.ar>   # Partially compile a module (see partial-compile skill)
 cargo run -- --compile-cs <file.dll> # Generate .ars stub from a .NET DLL (import[cs-dll]/import[cs-proc])
+cargo run -- --gen-cs-exports <managed.dll> -o <file.cs> # Generate the cs-dll [UnmanagedCallersOnly] exports (C#)
 ```
 
 ### VS Code 拡張のフロントエンド（wasm）

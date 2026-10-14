@@ -36,4 +36,10 @@ public class Calculator
 
     public static double Pi => Math.PI;
     public static double E => Math.E;
+
+    // Widths, unsigned values and Task<T> through the generated exports (ffi_value_exchange_plan.md 5-1)
+    public static byte AddBytes(byte a, byte b) => (byte)(a + b);
+    public static uint MaxUInt() => uint.MaxValue;
+    public static ulong MaxULong() => ulong.MaxValue;
+    public static Task<int> AddAsync(int a, int b) => Task.FromResult(a + b);
 }

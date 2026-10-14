@@ -38,6 +38,7 @@ pub fn call_constructor(
     _bridge: &BridgeLib,
     class_name: &str,
     _args: &[Value],
+    _param_types: &[Option<String>],
 ) -> Result<i64, String> {
     Err(unavailable(&format!("constructing '{class_name}'")))
 }

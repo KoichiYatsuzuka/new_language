@@ -9,4 +9,9 @@
     <AssemblyName>ArrowBridge</AssemblyName>
     <RootNamespace>ArrowBridge</RootNamespace>
   </PropertyGroup>
+  <!-- ArrowExports.g.cs is generated from this assembly (the gen-cs-exports mode of arrow, ffi_value_exchange_plan.md 5-1).
+       build_bridge.ps1 first builds without it (-p:ArrowGenerated=false), so a stale copy cannot break the build. -->
+  <ItemGroup Condition="'$(ArrowGenerated)' == 'false'">
+    <Compile Remove="ArrowExports.g.cs" />
+  </ItemGroup>
 </Project>

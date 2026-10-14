@@ -475,6 +475,8 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 - 次の型を受け渡すメソッドは、使った箇所が静的エラーになります: 配列・`List` などのコレクション・`Dictionary`・
   タプル・デリゲート・型変数（ジェネリックなメソッド）・他のアセンブリの型・インターフェース。
 - C# のオブジェクトは、それを作ったブリッジ（同じ DLL / 同じホスト）へだけ渡せます。
+- 公開のコンストラクタは型スタブの `__init__`（コンストラクタごとに 1 つ）になり、引数の個数で選んでその型で渡します
+  （その個数のコンストラクタが無ければ `TypeError`）。
 
 ---
 
@@ -504,6 +506,38 @@ let ok = tp.Confirmed
 |----------|------|
 | `{Name}.dll` | 管理 DLL (ECMA-335 メタデータ、型スタブ生成用) |
 | `{Name}_native.dll` | NativeAOT ネイティブ DLL (実際の実行時呼び出し先) |
+
+### export を生成する（`--gen-cs-exports`）
+
+Arrow が呼ぶ `[UnmanagedCallersOnly]` の中継関数（export）は、管理 DLL のメタデータから生成できます
+（`implementation_plans/ffi_value_exchange_plan.md` 5-1）。型スタブと同じ読み方で作るので、Arrow が呼ぶ名前と型の
+export だけが並びます。
+
+```bash
+dotnet build {Name}.csproj -r win-x64 -c Release -p:ArrowGenerated=false     # 1 回目（生成物を除く）
+arrow --gen-cs-exports bin/Release/net8.0/win-x64/{Name}.dll -o ArrowExports.g.cs
+dotnet publish {Name}.csproj -r win-x64 -c Release --self-contained          # NativeAOT（生成物を含む）
+```
+
+1 回目のビルドは、古い生成物が消えたメソッドを呼んでいても通るように `ArrowExports.g.cs` を外します:
+
+```xml
+<ItemGroup Condition="'$(ArrowGenerated)' == 'false'">
+  <Compile Remove="ArrowExports.g.cs" />
+</ItemGroup>
+```
+
+一式は `examples/interop/cs_interop_test/build_bridge.ps1`。生成した export は次のことをします:
+
+- C# の例外を捕まえて Arrow のエラーにする（`CsDll: System.DivideByZeroException: …`）。⚠ 手書きの export が例外を
+  漏らすとプロセスごと落ちます
+- 整数を C# の型の幅で確かめる（`int` へ 2^31 を渡すと `OverflowError`・`ulong` の戻り値の 2^63 以上も `OverflowError`）。
+  `char` は 1 文字の `str`（UTF-16 の 1 単位でなければ `ValueError`）、`Task<T>` は待ってから `T` を返す
+- 作れないメンバー（型スタブが未対応としたもの・`object` の引数・`ref` / `out`・ジェネリック・演算子）は作らず、
+  理由をコメントで残す（Arrow から呼ぶと「export が無い」エラー）
+
+生成したクラスは `internal` なので型スタブには出ません。`[UnmanagedCallersOnly]` の付いたメソッド（手書きの export）も
+型スタブに出しません。以下は export を手で書く場合の設計です。
 
 管理 DLL (`{Name}.dll`) は探索の起点（ドット無しはエントリのディレクトリ、相対は書いたファイルから数えた場所）の
 `path/to/{Name}.dll` → `{Name}.dll` → `{Name}/{Name}.dll`（単一セグメントのとき）の順に探し、ドット無しの書き方なら
@@ -560,8 +594,10 @@ public static unsafe class FormBridgeExports
 | `str` | `(byte* ptr, int len)` の 2 引数ペア (UTF-8)。`Option[str]` の `None` は `(NULL, -1)` |
 | C# オブジェクトハンドル | `i64` ハンドル値。`Option[クラス]` の `None` は `0` |
 
-引数の並べ方は**型スタブの宣言**で決めます（値の種類ではありません）。全部で 8 スロットまで（文字列は 2、
-文字列の戻り値の出力引数がさらに 2）で、超えるとエラーです。`Option[int]` / `Option[float]` / `Option[bool]`
+引数の並べ方は**型スタブの宣言**で決めます（値の種類ではありません）。コンストラクタは、引数の個数で選んだ
+`__init__` の宣言で並べます。全部で 8 スロットまで（文字列は 2、文字列の戻り値の出力引数がさらに 2）で、
+超えるとエラーです。⚠ export の浮動小数の引数は `double` ではなく `long`（ビット列）で受けてください
+（Arrow は整数のレジスタで渡します）。`Option[int]` / `Option[float]` / `Option[bool]`
 の `None` を渡す取り決めはまだ無いので、渡すとエラーになります。
 
 #### エクスポート名の命名規則
@@ -573,6 +609,7 @@ public static unsafe class FormBridgeExports
 | コンストラクタ | `{ClassName}_new_{argc}` または `{ClassName}_new` |
 | 文字列バッファ解放 | `arrow_bridge_free_str(byte*)` (固定名) |
 | オブジェクト解放 | `arrow_bridge_release(i64)` (固定名) |
+| エラーの引き取り（任意） | `arrow_bridge_take_error(byte** out_ptr, int* out_len)`（固定名）。Arrow が呼び出しのたびに呼び、`out_ptr` が NULL でなければその文字列をエラーにする（`TypeError: ` / `ValueError: ` / `OverflowError: ` で始まればその例外）。生成した export が持つ |
 
 #### 戻り値
 

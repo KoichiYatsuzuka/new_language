@@ -13,6 +13,9 @@
 //   float return     → i64 bit pattern
 //   string return    → (*mut u8, *mut i32) out-params; free with arrow_bridge_free_str; null = NULL / len < 0
 //   handle return    → i64 object id; null = 0
+//   errors           → a generated bridge (`arrow --gen-cs-exports`・5-1) catches C# exceptions and argument errors and
+//                      keeps the message for `arrow_bridge_take_error(byte** out_ptr, int* out_len)`, which Arrow
+//                      calls after every call (NULL = no error). Hand-written bridges without it are unchanged.
 //
 // The slots are laid out from the stub's declared types, and what each declared type may receive is decided
 // in `super::cs_values` (shared with cs-proc · ffi_value_exchange_plan.md 2-1).
@@ -43,6 +46,10 @@ pub struct BridgeLib {
     lib: libloading::Library,
     /// 読み込んだパス（戻り値のオブジェクトの `CsObject::bridge_path`・ブリッジの取り違えの検査に使う）
     path: PathBuf,
+    /// `arrow_bridge_take_error`（生成した export だけが持つ・5-1）
+    take_error: Option<usize>,
+    /// `arrow_bridge_free_str`
+    free_str: Option<usize>,
 }
 
 impl BridgeLib {
@@ -51,7 +58,38 @@ impl BridgeLib {
             libloading::Library::new(path)
                 .map_err(|e| format!("CsDll: cannot load bridge '{}': {e}", path.display()))?
         };
-        Ok(Arc::new(BridgeLib { lib, path: path.to_path_buf() }))
+        let mut b = BridgeLib { lib, path: path.to_path_buf(), take_error: None, free_str: None };
+        b.take_error = b.sym_ptr("arrow_bridge_take_error");
+        b.free_str = b.sym_ptr("arrow_bridge_free_str");
+        Ok(Arc::new(b))
+    }
+
+    /// C# が確保した文字列を返す（`arrow_bridge_free_str`）。
+    fn free_str(&self, p: *mut u8) {
+        if let Some(f) = self.free_str {
+            let free_fn: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(f) };
+            unsafe { free_fn(p) };
+        }
+    }
+
+    /// 呼び出しの後で、生成した export が預けたエラー（C# の例外・引数の幅の誤り・5-1）を引き取る。
+    /// ⚠ 呼び出しの直後に必ず呼ぶ（スレッドごとに 1 つしか預からない）。
+    fn take_error(&self) -> Result<(), String> {
+        let Some(f) = self.take_error else { return Ok(()) };
+        let take: unsafe extern "C" fn(*mut *mut u8, *mut i32) = unsafe { std::mem::transmute(f) };
+        let mut ptr: *mut u8 = std::ptr::null_mut();
+        let mut len: i32 = -1;
+        unsafe { take(&mut ptr, &mut len) };
+        if ptr.is_null() || len < 0 {
+            return Ok(());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        let msg = match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(e) => format!("the C# bridge reported an error whose message is not valid UTF-8 ({e})"),
+        };
+        self.free_str(ptr);
+        Err(msg)
     }
 
     // Look up an exported symbol by name.
@@ -103,10 +141,12 @@ pub fn get_bridge(path: &Path) -> Option<Arc<BridgeLib>> {
 /// Call a NativeAOT bridge constructor.
 /// Tries `{ClassName}_new_{argc}` first, then `{ClassName}_new` as a fallback.
 /// Returns the i64 object handle on success.
+/// `param_types` は引数の個数で選んだコンストラクタの型（[`cs_values::ctor_types`]・5-1）。
 pub fn call_constructor(
     bridge: &BridgeLib,
     class_name: &str,
     args: &[Value],
+    param_types: &[Option<String>],
 ) -> Result<i64, String> {
     // Prefer the numbered variant first (Calculator_new_0, Calculator_new_1, …)
     let numbered = format!("{class_name}_new_{}", args.len());
@@ -120,11 +160,15 @@ pub fn call_constructor(
             )
         })?;
 
-    // コンストラクタの引数の型はスタブに無い（`__init__(self)` だけ）ので、値の種類で並べる。
+    // 引数は、型スタブの `__init__`（公開のコンストラクタごとに 1 つ）の型で並べる（5-1）。
+    // ⚠ 以前はスタブに型が無く、値の種類で並べていた。`double` を受けるコンストラクタへ `int` を渡すと整数のビット列が
+    //   `double` として読まれ、`float` を渡しても手書きの export が `double` の引数をレジスタ（XMM0）で受けて 0 になった
+    //   （`cs_interop_test.ar` の `Calculator(100.0)` が黙って 0 で始まっていた）。
     let what = format!("{class_name}.__init__");
-    let slots = encode_args(bridge, args, &[], None, &what)?;
+    let slots = encode_args(bridge, args, param_types, None, &what)?;
     check_slot_count(slots.len(), &what)?;
     let handle = unsafe { call_variadic(ptr, &slots) };
+    bridge.take_error()?;
     // ⚠ 以前は 0（無いオブジェクト）もそのまま `CsObject` にしていた。オブジェクト表は 1 より大きい番号を返す。
     if handle == 0 {
         return Err(format!("CsDll: the constructor of '{class_name}' returned no object"));
@@ -222,6 +266,12 @@ fn call_typed(
         slots.push(&mut out_len as *mut i32 as i64);
         check_slot_count(slots.len(), what)?;
         unsafe { call_variadic(ptr, &slots) };
+        if let Err(e) = bridge.take_error() {
+            if !out_ptr.is_null() {
+                bridge.free_str(out_ptr);
+            }
+            return Err(e);
+        }
         if out_ptr.is_null() || out_len < 0 {
             return cs_values::null_result(&decl, what);
         }
@@ -231,15 +281,13 @@ fn call_typed(
             format!("ValueError: C# method '{what}' returned a string that is not valid UTF-8 ({e})")
         });
         // Release the C# heap allocation
-        if let Some(free_ptr) = bridge.sym_ptr("arrow_bridge_free_str") {
-            let free_fn: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(free_ptr) };
-            unsafe { free_fn(out_ptr) };
-        }
+        bridge.free_str(out_ptr);
         return Ok(Value::str(s?));
     }
 
     check_slot_count(slots.len(), what)?;
     let raw = unsafe { call_variadic(ptr, &slots) };
+    bridge.take_error()?;
     match &decl.kind {
         CsKind::Void => Ok(Value::None),
         CsKind::Int => Ok(Value::Int(raw)),

@@ -1,6 +1,9 @@
 EXPORTS
    DotNetRuntimeDebugHeader DATA
+   arrow_bridge_set_event_fire
    arrow_bridge_release
+   arrow_bridge_free_str
+   arrow_bridge_take_error
    Calculator_new_0
    Calculator_new_1
    Calculator_Add
@@ -9,12 +12,18 @@ EXPORTS
    Calculator_Divide
    Calculator_Power
    Calculator_Sqrt
-   Calculator_getPi
-   Calculator_getE
    Calculator_inst_Accumulate
    Calculator_inst_GetAccumulated
    Calculator_inst_Reset
-   TextProcessor_new
+   Calculator_getPi
+   Calculator_getE
+   Calculator_AddBytes
+   Calculator_MaxUInt
+   Calculator_MaxULong
+   Calculator_AddAsync
+   EventSource_StartTimer
+   EventSource_FireOnce
+   TextProcessor_new_1
    TextProcessor_inst_getText
    TextProcessor_inst_getLength
    TextProcessor_inst_ToUpper
@@ -27,7 +36,5 @@ EXPORTS
    TextProcessor_inst_FindWord
    TextProcessor_Repeat
    TextProcessor_IsNullOrEmpty
-   EventSource_StartTimer
-   EventSource_FireOnce
-   arrow_bridge_free_str
-   arrow_bridge_set_event_fire
+   TextProcessor_inst_FirstChar
+   TextProcessor_RepeatChar

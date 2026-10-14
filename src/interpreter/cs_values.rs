@@ -62,6 +62,23 @@ pub(crate) fn method_types(class: &ClassValue, method: &str) -> (Vec<Option<Stri
     }
 }
 
+/// 引数の個数で選んだコンストラクタの、引数（`self` を除く）の注釈（5-1）。
+/// 型スタブの `__init__` は公開のコンストラクタごとに 1 つある（同じ個数なら先頭・export の生成器と同じ）。
+/// その個数のコンストラクタが無ければ TypeError（⚠ 以前はスタブに型が無く、値の種類で並べていた）。
+pub(crate) fn ctor_types(class: &ClassValue, argc: usize) -> Result<Vec<Option<String>>, String> {
+    let ctors = class.methods.get("__init__").map(|ov| ov.as_slice()).unwrap_or(&[]);
+    ctors
+        .iter()
+        .map(|f| f.params.iter().filter(|p| p.name != "self").map(|p| p.type_ann.clone()).collect::<Vec<_>>())
+        .find(|ps| ps.len() == argc)
+        .ok_or_else(|| {
+            format!(
+                "TypeError: C# class '{}' has no public constructor that takes {argc} argument(s)",
+                class.name
+            )
+        })
+}
+
 /// 型スタブの注釈が表す C# の値の種類。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CsKind {

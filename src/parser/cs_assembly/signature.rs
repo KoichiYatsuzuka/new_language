@@ -28,74 +28,89 @@ impl<'a> SigReader<'a> {
         }
     }
 
-    // Parse one Type element; returns Arrow type string.
+    /// 型を 1 つ読み、Arrow の型の綴りで返す（[`CsTy::arrow`]）。
     pub(crate) fn parse_type(&mut self) -> String {
+        self.parse_ty().arrow()
+    }
+
+    /// 型を 1 つ読み、C# の型のまま返す（5-1）。型スタブ（[`CsTy::arrow`]）と export の生成器（`export_gen`）が
+    /// 同じデコード結果を読む（⚠ 型の読み方を 2 つ持つと、スタブと export の型がずれる）。
+    pub(crate) fn parse_ty(&mut self) -> CsTy {
         self.skip_cmods();
         match self.eat() {
-            ET_VOID    => "None".to_string(),
-            ET_BOOLEAN => "bool".to_string(),
-            ET_CHAR    => "str".to_string(),
-            ET_I1 | ET_U1 | ET_I2 | ET_U2 | ET_I4 | ET_U4 |
-            ET_I8 | ET_U8 | ET_I | ET_U => "int".to_string(),
-            ET_R4 | ET_R8 => "float".to_string(),
-            ET_STRING  => "str".to_string(),
-            ET_OBJECT  => "Any".to_string(),
+            ET_VOID    => CsTy::Void,
+            ET_BOOLEAN => CsTy::Bool,
+            ET_CHAR    => CsTy::Char,
+            ET_I1 => CsTy::Int { bits: 8, signed: true },
+            ET_U1 => CsTy::Int { bits: 8, signed: false },
+            ET_I2 => CsTy::Int { bits: 16, signed: true },
+            ET_U2 => CsTy::Int { bits: 16, signed: false },
+            ET_I4 => CsTy::Int { bits: 32, signed: true },
+            ET_U4 => CsTy::Int { bits: 32, signed: false },
+            ET_I8 => CsTy::Int { bits: 64, signed: true },
+            ET_U8 => CsTy::Int { bits: 64, signed: false },
+            ET_I => CsTy::NInt { signed: true },
+            ET_U => CsTy::NInt { signed: false },
+            ET_R4 => CsTy::Float { bits: 32 },
+            ET_R8 => CsTy::Float { bits: 64 },
+            ET_STRING  => CsTy::Str,
+            ET_OBJECT  => CsTy::Object,
             ET_BYREF   => {
                 // byref → same type (out/ref handled at param level)
-                self.parse_type()
+                self.parse_ty()
             }
-            ET_VALUETYPE | ET_CLASS => {
+            kind @ (ET_VALUETYPE | ET_CLASS) => {
                 let token = self.eat_uint();
-                self.type_names.get(&token).cloned().unwrap_or_else(|| "Any".to_string())
+                match self.type_names.get(&token) {
+                    Some(name) => CsTy::Named { name: name.clone(), value_type: kind == ET_VALUETYPE },
+                    None => CsTy::Unknown,
+                }
             }
             ET_GENERICINST => {
-                self.eat(); // CLASS or VALUETYPE
+                let kind = self.eat(); // CLASS or VALUETYPE
                 let token = self.eat_uint();
                 let base = self.type_names.get(&token).cloned().unwrap_or_default();
                 let argc = self.eat_uint() as usize;
                 let mut args = Vec::with_capacity(argc);
                 for _ in 0..argc {
-                    args.push(self.parse_type());
+                    args.push(self.parse_ty());
                 }
-                map_generic(&base, args)
+                CsTy::Generic { base, args, value_type: kind == ET_VALUETYPE }
             }
             ET_SZARRAY => {
                 self.skip_cmods();
-                let elem = self.parse_type();
-                format!("list[{elem}]")
+                CsTy::Array(Box::new(self.parse_ty()))
             }
             ET_ARRAY => {
-                // multi-dim array: Type ArrayShape — just return list[T]
-                let elem = self.parse_type();
+                // multi-dim array: Type ArrayShape
+                let elem = self.parse_ty();
                 // skip ArrayShape (rank + sizes + lobounds)
-                let rank = self.eat_uint();
+                let _rank = self.eat_uint();
                 let nsizes = self.eat_uint();
                 for _ in 0..nsizes { self.eat_uint(); }
                 let nlb = self.eat_uint();
                 for _ in 0..nlb { self.eat_uint(); }
-                let _ = rank;
-                format!("list[{elem}]")
+                CsTy::MdArray(Box::new(elem))
             }
             ET_VAR => {
                 let idx = self.eat_uint() as usize;
-                self.type_params.get(idx).cloned().unwrap_or_else(|| format!("T{idx}"))
+                CsTy::Var(self.type_params.get(idx).cloned().unwrap_or_else(|| format!("T{idx}")))
             }
             ET_MVAR => {
                 let idx = self.eat_uint() as usize;
-                self.method_params.get(idx).cloned().unwrap_or_else(|| format!("M{idx}"))
+                CsTy::Var(self.method_params.get(idx).cloned().unwrap_or_else(|| format!("M{idx}")))
             }
             ET_FNPTR => {
                 // skip entire MethodDefSig
                 self.skip_method_sig();
-                "function".to_string()
+                CsTy::FnPtr
             }
             ET_PTR => {
                 self.skip_cmods();
-                self.parse_type();
-                "int".to_string() // raw pointer → int handle
+                CsTy::RawPtr(Box::new(self.parse_ty()))
             }
-            ET_SENTINEL | ET_PINNED => self.parse_type(),
-            _ => "Any".to_string(),
+            ET_SENTINEL | ET_PINNED => self.parse_ty(),
+            _ => CsTy::Unknown,
         }
     }
 
@@ -120,29 +135,34 @@ impl<'a> SigReader<'a> {
 
     /// [`Self::parse_method_sig`] に、各型が**参照型か**を添えたもの（2-1）。
     /// 戻り値は `((型, 参照型か), [(型, BYREF か, 参照型か)])`。nullable 注釈は参照型にだけ意味がある。
+    #[cfg(test)]
     pub(crate) fn parse_method_sig_refs(
         &mut self,
-        generic_param_names: &[String],
+        _generic_param_names: &[String],
     ) -> ((String, bool), Vec<(String, bool, bool)>) {
+        let ((ret, ret_is_ref), params) = self.parse_method_sig_tys();
+        ((ret.arrow(), ret_is_ref), params.into_iter().map(|(t, byref, is_ref)| (t.arrow(), byref, is_ref)).collect())
+    }
+
+    /// [`Self::parse_method_sig_refs`] の C# の型のまま版（5-1）。
+    pub(crate) fn parse_method_sig_tys(&mut self) -> ((CsTy, bool), Vec<(CsTy, bool, bool)>) {
         let calling = self.eat();
         let is_generic = calling & 0x10 != 0;
         let _is_instance = calling & 0x20 != 0;
-
         if is_generic {
             let _gen_count = self.eat_uint();
         }
         let param_count = self.eat_uint() as usize;
         let ret_is_ref = self.top_is_reference();
-        let ret = self.parse_type();
+        let ret = self.parse_ty();
         let mut params = Vec::with_capacity(param_count);
         for _ in 0..param_count {
             if self.peek() == ET_SENTINEL { self.eat(); continue; }
             let is_byref = self.peek() == ET_BYREF;
             let is_ref = self.top_is_reference();
-            let ty = self.parse_type();
+            let ty = self.parse_ty();
             params.push((ty, is_byref, is_ref));
         }
-        let _ = generic_param_names;
         ((ret, ret_is_ref), params)
     }
 
@@ -161,6 +181,61 @@ impl<'a> SigReader<'a> {
                 ET_GENERICINST => return self.data.get(pos + 1).copied() == Some(ET_CLASS),
                 _ => return false,
             }
+        }
+    }
+}
+
+
+/// メタデータのシグネチャから読んだ C# の型（5-1）。
+///
+/// 型スタブは [`CsTy::arrow`] で Arrow の型の綴りにし、export の生成器（`export_gen`）は C# の型のまま読む。
+/// ⚠ 以前はデコーダが Arrow の綴り（`int` など）を直接返していたので、`int` と `long` や `IntPtr` の区別が
+///   残らず、C# のコードを生成できなかった。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CsTy {
+    Void,
+    Bool,
+    Char,
+    /// `sbyte` … `ulong`
+    Int { bits: u8, signed: bool },
+    /// `IntPtr` / `nint`（signed）・`UIntPtr` / `nuint`
+    NInt { signed: bool },
+    /// `float`（32）・`double`（64）
+    Float { bits: u8 },
+    Str,
+    Object,
+    /// 名前で引いた型（このアセンブリのクラス・構造体・enum、他のアセンブリの型）。`value_type` は構造体・enum
+    Named { name: String, value_type: bool },
+    /// ジェネリック型の具体化（`List<int>` / `Nullable<long>` / `Task<string>` …）。`base` は名前空間つき・アリティなし
+    Generic { base: String, args: Vec<CsTy>, value_type: bool },
+    /// 1 次元・0 始まりの配列（`T[]`）
+    Array(Box<CsTy>),
+    /// 多次元の配列（`T[,]`）
+    MdArray(Box<CsTy>),
+    /// 型変数（`T`）
+    Var(String),
+    FnPtr,
+    RawPtr(Box<CsTy>),
+    /// 読めなかった型
+    Unknown,
+}
+
+impl CsTy {
+    /// Arrow の型の綴り（型スタブ・`.ars`）。⚠ 5-1 より前のデコーダが返していた綴りと同じ。
+    pub(crate) fn arrow(&self) -> String {
+        match self {
+            CsTy::Void => "None".to_string(),
+            CsTy::Bool => "bool".to_string(),
+            CsTy::Char | CsTy::Str => "str".to_string(),
+            CsTy::Int { .. } | CsTy::NInt { .. } => "int".to_string(),
+            CsTy::Float { .. } => "float".to_string(),
+            CsTy::Object | CsTy::Unknown => "Any".to_string(),
+            CsTy::Named { name, .. } => name.clone(),
+            CsTy::Generic { base, args, .. } => map_generic(base, args.iter().map(CsTy::arrow).collect()),
+            CsTy::Array(elem) | CsTy::MdArray(elem) => format!("list[{}]", elem.arrow()),
+            CsTy::Var(name) => name.clone(),
+            CsTy::FnPtr => "function".to_string(),
+            CsTy::RawPtr(_) => "int".to_string(), // raw pointer → int handle
         }
     }
 }
@@ -254,6 +329,17 @@ mod tests {
         let (ret, params) = read_sig(&[0x20, 0x01, ET_VOID, ET_BYREF, ET_R8]);
         assert_eq!(ret, "None");
         assert_eq!(params, vec![("float".to_string(), true)]);
+    }
+
+    /// C# の型のまま読む（5-1）。Arrow の綴りは以前と同じ（`ulong` / `IntPtr` は `int`、`float` は `float`）。
+    #[test]
+    fn method_sig_keeps_cs_types() {
+        let type_names = HashMap::new();
+        let mut r = SigReader { data: &[0x00, 0x02, ET_U8, ET_I, ET_R4], pos: 0, type_names: &type_names, type_params: &[], method_params: &[] };
+        let ((ret, _), params) = r.parse_method_sig_tys();
+        assert_eq!(ret, CsTy::Int { bits: 64, signed: false });
+        assert_eq!(params.iter().map(|(t, _, _)| t.clone()).collect::<Vec<_>>(), vec![CsTy::NInt { signed: true }, CsTy::Float { bits: 32 }]);
+        assert_eq!((ret.arrow(), params[0].0.arrow(), params[1].0.arrow()), ("int".to_string(), "int".to_string(), "float".to_string()));
     }
 
     /// BYREF フラグが `make_param` の `mutable`（Arrow の `mut` パラメータ）へ伝播する。

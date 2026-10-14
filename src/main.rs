@@ -59,6 +59,9 @@ enum Mode {
     Compile(String),
     /// C# スタブ生成モード: .NET DLL から `.ars` スタブファイルを生成する。
     CompileCs(String),
+    /// cs-dll の export 生成モード: .NET DLL（マネージド）から `[UnmanagedCallersOnly]` の中継関数の C# を生成する
+    /// （第 2 要素は出力先・ffi_value_exchange_plan.md 5-1）。
+    GenCsExports(String, Option<String>),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
     Stdin,
     /// REPL モード: stdin からブロックを受け取り、インタープリタを維持しながら実行する。
@@ -93,6 +96,23 @@ fn parse_args() -> Mode {
                         eprintln!("Error: --compile requires a file path");
                         std::process::exit(1);
                     });
+            }
+            "--gen-cs-exports" => {
+                let Some(dll) = args.get(i + 1) else {
+                    eprintln!("Error: --gen-cs-exports requires a managed .dll file path");
+                    std::process::exit(1);
+                };
+                let out = match args.get(i + 2).map(String::as_str) {
+                    Some("-o" | "--out") => match args.get(i + 3) {
+                        Some(o) => Some(o.clone()),
+                        None => {
+                            eprintln!("Error: -o requires an output file path");
+                            std::process::exit(1);
+                        }
+                    },
+                    _ => None,
+                };
+                return Mode::GenCsExports(dll.clone(), out);
             }
             "--compile-cs" | "-compile-cs" => {
                 return args
@@ -621,6 +641,17 @@ fn interpreter_main() {
             compile_module(&path);
         }
 
+        Mode::GenCsExports(path, out) => {
+            #[cfg(not(feature = "editor"))]
+            gen_cs_exports(&path, out.as_deref());
+            #[cfg(feature = "editor")]
+            {
+                let _ = (path, out);
+                eprintln!("Error: --gen-cs-exports is not available in the editor build");
+                std::process::exit(1);
+            }
+        }
+
         Mode::CompileCs(path) => {
             #[cfg(not(feature = "editor"))]
             compile_cs_stub(&path);
@@ -680,6 +711,33 @@ fn compile_cs_stub(path: &str) {
     }
 
     println!("Stub     : {}", ars_path.display());
+}
+
+/// `--gen-cs-exports` モード: マネージドの .NET DLL を読み、cs-dll の export（`[UnmanagedCallersOnly]` の中継関数）の
+/// C# を書き出す（ffi_value_exchange_plan.md 5-1）。出力先の既定は DLL と同じディレクトリの `ArrowExports.g.cs`。
+///
+/// 使い方: `dotnet build` → `arrow --gen-cs-exports bin/.../X.dll -o ArrowExports.g.cs` → NativeAOT で
+/// `dotnet publish`（`examples/interop/cs_interop_test/build_bridge.ps1`）。生成したクラスは `internal` なので、
+/// 2 回目のビルドの DLL から作る型スタブには出ない。
+#[cfg(not(feature = "editor"))]
+fn gen_cs_exports(path: &str, out: Option<&str>) {
+    let dll_path = std::path::Path::new(path);
+    let text = match parser::cs_assembly::generate_cs_exports_text(dll_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let out_path = match out {
+        Some(o) => std::path::PathBuf::from(o),
+        None => dll_path.with_file_name("ArrowExports.g.cs"),
+    };
+    if let Err(e) = std::fs::write(&out_path, &text) {
+        eprintln!("Error writing '{}': {e}", out_path.display());
+        std::process::exit(1);
+    }
+    println!("Exports  : {}", out_path.display());
 }
 
 /// `--compile` モード: ソースをパース・型検査して `.arc` と `.ars` を生成する。

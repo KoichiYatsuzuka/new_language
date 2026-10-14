@@ -1,0 +1,14 @@
+# cs_dll_exception_error.ar — C# で投げられた例外は Arrow のエラーになる（負例・ffi_value_exchange_plan.md 5-1）
+#
+# `Calculator.Divide(1.0, 0.0)` は C# で DivideByZeroException を投げる。生成した export がそれを捕まえて Arrow へ渡し、
+# `CsDll: System.DivideByZeroException: Cannot divide by zero` で止まる。
+# ⚠ 以前の手書きの export は例外を捕まえていなかったので、`[UnmanagedCallersOnly]` から例外が漏れてプロセスごと落ちた。
+# ⚠ C# の例外はまだ `except` で捕まえられない（⇒ 7-4）。
+# 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll が要る（build_bridge.ps1）。
+# 対になる正例: cs_dll_generated.ar
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+print(bridge.Calculator.Divide(10.0, 4.0))
+print(bridge.Calculator.Divide(1.0, 0.0))
+print("unreachable")

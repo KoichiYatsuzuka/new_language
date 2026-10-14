@@ -17,45 +17,28 @@ use super::*;
 /// The output format mirrors `stub_gen::generate_stub` but includes
 /// `"""summary"""` on the first body line of each class/method that has a doc entry.
 pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, String>) -> String {
-    let data       = &pa.data;
-    let streams    = &pa.streams;
-    let layout     = &pa.layout;
-    let typedefs   = &pa.typedefs;
-    let methods    = &pa.all_methods;
-    let params     = &pa.all_params;
-    let type_names = &pa.type_names;
-    let nullable   = &pa.nullable;
-
     let mut out   = String::new();
     let mut first = true;
 
-    for (td_i, td) in typedefs.iter().enumerate() {
-        let td_row = td_i as u32 + 1;
-        let vis = td.flags & 0x07;
-        if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC { continue; }
-        if td.name.is_empty() || td.name == "<Module>"   { continue; }
-        if td.name.starts_with('<') || td.name.starts_with('_') { continue; }
-
-        let is_interface = td.flags & TD_INTERFACE != 0;
-
-        let tparams = if td.generic_param_names.is_empty() {
+    for c in assembly_model(pa) {
+        let tparams = if c.generic_param_names.is_empty() {
             String::new()
         } else {
-            format!("[{}]", td.generic_param_names.join(", "))
+            format!("[{}]", c.generic_param_names.join(", "))
         };
-        let bases_str = if td.interface_names.is_empty() {
+        let bases_str = if c.interface_names.is_empty() {
             String::new()
         } else {
-            format!("({})", td.interface_names.join(", "))
+            format!("({})", c.interface_names.join(", "))
         };
 
         if !first { out.push('\n'); }
         first = false;
 
-        if is_interface {
-            out.push_str(&format!("trait {}{tparams}:\n", td.name));
+        if c.is_interface {
+            out.push_str(&format!("trait {}{tparams}:\n", c.name));
         } else {
-            let n = &td.name;
+            let n = &c.name;
             // ⚠ `->{n}` は付けない。旧・正規表現版拡張向けの印で Arrow の構文では
             //   なく、生成した `.ars` が読み返せなくなる
             //   （`partial_compiler::stub_gen::class_stub` の注記と同じ理由）。
@@ -63,103 +46,46 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
         }
 
         // Class-level docstring
-        if let Some(doc) = docs.get(&format!("T:{}", td.name)) {
+        if let Some(doc) = docs.get(&format!("T:{}", c.name)) {
             out.push_str(&format!("    \"\"\"{doc}\"\"\"\n"));
         }
 
-        // __init__ stub for classes
-        if !is_interface {
-            out.push_str("    fn __init__(self: Self) -> None:\n        ...\n");
+        // __init__: one per public constructor (5-1), or a bare one when there is none
+        if !c.is_interface {
+            let ctors: Vec<&CsMemberModel> = c.members.iter().filter(|m| m.role == MemberRole::Ctor).collect();
+            if ctors.is_empty() {
+                out.push_str("    fn __init__(self: Self) -> None:\n        ...\n");
+            }
+            for m in ctors {
+                let mut p_parts = vec!["self: Self".to_string()];
+                p_parts.extend(m.params.iter().map(|p| format!("{}: {}", p.name, p.ann)));
+                out.push_str(&format!("    fn __init__({}) -> None:\n        ...\n", p_parts.join(", ")));
+            }
         }
 
-        // Methods
-        let mstart = td.method_list_start as usize;
-        let mend   = td.method_list_end   as usize;
-
-        for md_1 in mstart..mend {
-            let md_idx = md_1.saturating_sub(1);
-            if md_idx >= methods.len() { continue; }
-            let m = &methods[md_idx];
-
-            if !m.is_public { continue; }
-            if let Some(PropertyRole::EventAdder) = &m.property_role { continue; }
-
-            let is_accessor = matches!(&m.property_role,
-                Some(PropertyRole::Getter(_)) | Some(PropertyRole::Setter(_)));
-            if m.flags & MD_SPECIAL_NAME != 0 && !is_accessor {
-                if m.name == ".ctor" || m.name == ".cctor" { continue; }
-                if let Some(op) = operator_name(&m.name) {
-                    let (ret, sig_params) = decode_method_sig(
-                        data, streams, layout, m, params, type_names, &td.generic_param_names,
-                        nullable, md_1 as u32, td_row);
-                    let mut p_parts = vec!["self: Self".to_string()];
-                    for (i, (ty, _)) in sig_params.iter().enumerate() {
-                        p_parts.push(format!("p{i}: {ty}"));
-                    }
-                    out.push_str(&format!("    fn {op}({}) -> {ret}:\n        ...\n",
-                        p_parts.join(", ")));
-                    continue;
-                }
-                continue;
-            }
-
-            let arrow_name = match &m.property_role {
-                Some(PropertyRole::Getter(prop)) => format!("get{prop}"),
-                Some(PropertyRole::Setter(prop)) => format!("set{prop}"),
-                _ => m.name.clone(),
+        for m in &c.members {
+            let p_self = match m.role {
+                MemberRole::Ctor => continue,
+                MemberRole::Operator(_) => true,
+                _ => !m.is_static,
             };
-
-            let (ret_type, sig_params) = decode_method_sig(
-                data, streams, layout, m, params, type_names, &td.generic_param_names,
-                nullable, md_1 as u32, td_row);
-
-            let mut p_parts: Vec<String> = if m.is_static {
-                vec![]
-            } else {
-                vec!["self: Self".to_string()]
-            };
-
-            let pstart = m.param_list_start as usize;
-            let pend   = m.param_list_end   as usize;
-            let method_params: Vec<&CsParam> = params
-                .iter()
-                .skip(pstart.saturating_sub(1))
-                .take((pend - pstart).min(params.len()))
-                .filter(|p| p.sequence > 0)
-                .collect();
-
-            if let Some(PropertyRole::Setter(_)) = &m.property_role {
-                if let Some((ty, _)) = sig_params.first() {
-                    p_parts.push(format!("value: {ty}"));
-                }
-            } else {
-                for (i, (ty, _)) in sig_params.iter().enumerate() {
-                    let pname = method_params.get(i)
-                        .map(|p| sanitize_param_name(&p.name))
-                        .unwrap_or_else(|| format!("p{i}"));
-                    p_parts.push(format!("{pname}: {ty}"));
-                }
-            }
-
-            let eff_ret = match &m.property_role {
-                Some(PropertyRole::Setter(_)) => "None".to_string(),
-                _ => ret_type,
-            };
-
+            let mut p_parts: Vec<String> = if p_self { vec!["self: Self".to_string()] } else { vec![] };
+            p_parts.extend(m.params.iter().map(|p| format!("{}: {}", p.name, p.ann)));
             let tmpl = if m.generic_param_names.is_empty() {
                 String::new()
             } else {
                 format!("[{}]", m.generic_param_names.join(", "))
             };
-
-            out.push_str(&format!("    fn {arrow_name}{tmpl}({}) -> {eff_ret}:\n",
-                p_parts.join(", ")));
+            out.push_str(&format!("    fn {}{tmpl}({}) -> {}:\n", m.arrow_name, p_parts.join(", "), m.ret_ann));
+            if matches!(m.role, MemberRole::Operator(_)) {
+                out.push_str("        ...\n");
+                continue;
+            }
 
             // Method docstring — look up by original C# name, fall back to property key
-            let mkey = format!("M:{}.{}", td.name, m.name);
-            let pkey = match &m.property_role {
-                Some(PropertyRole::Getter(prop)) | Some(PropertyRole::Setter(prop)) =>
-                    Some(format!("P:{}.{}", td.name, prop)),
+            let mkey = format!("M:{}.{}", c.name, m.cs_name);
+            let pkey = match &m.role {
+                MemberRole::Getter(prop) | MemberRole::Setter(prop) => Some(format!("P:{}.{}", c.name, prop)),
                 _ => None,
             };
             let doc = docs.get(&mkey).or_else(|| pkey.as_ref().and_then(|k| docs.get(k)));
@@ -213,186 +139,71 @@ pub(crate) fn make_fn_stub(
 }
 
 
-pub(crate) fn generate_stubs(
-    data: &[u8],
-    streams: &Streams,
-    layout: &TildeLayout,
-    typedefs: &[CsTypeDef],
-    methods: &[CsMethod],
-    params: &[CsParam],
-    type_names: &HashMap<u32, String>,
-    nullable: &NullableInfo,
-) -> Result<Vec<Stmt>, String> {
+pub(crate) fn generate_stubs(pa: &ParsedAssembly) -> Result<Vec<Stmt>, String> {
     let mut stmts: Vec<Stmt> = Vec::new();
-    let classes = stub_class_names(typedefs);
 
-    for (td_i, td) in typedefs.iter().enumerate() {
-        let td_row = td_i as u32 + 1;
-        // Skip non-public types (top-level: Public=1; nested: NestedPublic=2)
-        let vis = td.flags & 0x07;
-        if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC {
-            continue;
-        }
-        // Skip the <Module> pseudo-type
-        if td.name.is_empty() || td.name == "<Module>" {
-            continue;
-        }
-        // Skip compiler-generated types
-        if td.name.starts_with('<') || td.name.starts_with('_') {
-            continue;
-        }
-
-        let is_interface = td.flags & TD_INTERFACE != 0;
-
-        // Template params
-        let template_params: Vec<TemplateParam> = td
+    for c in assembly_model(pa) {
+        let template_params: Vec<TemplateParam> = c
             .generic_param_names
             .iter()
             .map(|n| TemplateParam { name: n.clone(), constraints: vec![] })
             .collect();
-
-        // Bases: interface names
-        let bases: Vec<String> = td.interface_names.clone();
-
-        // Methods for this type
-        let mstart = td.method_list_start as usize;
-        let mend = td.method_list_end as usize;
-
         let mut body_stmts: Vec<Stmt> = Vec::new();
 
-        // Always emit __init__ as stub if not interface
-        if !is_interface {
-            body_stmts.push(make_fn_stub(
-                "__init__",
-                vec![make_param("self", "Self", false)],
-                "None",
-                false,
-                false,
-                vec![],
-            ));
+        // `__init__`: 公開のコンストラクタごとに 1 つ（5-1・実行時は引数の個数で選んで、この型で並べる）。
+        // コンストラクタが無ければ（`static class`）引数の無いもの。
+        // ⚠ 型検査は外部言語のクラスのコンストラクタの引数を見ない（`call_check.rs` の `arrow_class_names`）。
+        // ⚠ 未対応の印はメソッドの名前ごとに集める（`registry/builder.rs`）ので、全部のコンストラクタが未対応のときだけ
+        //   付ける。1 つでも付けると、そのクラスは構築できなくなる（使えるコンストラクタがあっても）。未対応の個数で
+        //   呼べば、実行時に「その個数の export が無い」か `decl_of` のエラーになる。
+        if !c.is_interface {
+            let ctors: Vec<&CsMemberModel> = c.members.iter().filter(|m| m.role == MemberRole::Ctor).collect();
+            if ctors.is_empty() {
+                body_stmts.push(make_fn_stub("__init__", vec![make_param("self", "Self", false)], "None", false, false, vec![]));
+            }
+            let all_unsupported = ctors.iter().all(|m| m.unsupported.is_some());
+            for m in ctors {
+                let mut ps = vec![make_param("self", "Self", false)];
+                ps.extend(m.params.iter().map(|p| make_param(&p.name, &p.ann, p.byref)));
+                let mark = if all_unsupported { m.unsupported.clone() } else { None };
+                body_stmts.push(mark_unsupported(make_fn_stub("__init__", ps, "None", false, false, vec![]), mark));
+            }
         }
 
-        for md_1 in mstart..mend {
-            let md_idx = md_1.saturating_sub(1);
-            if md_idx >= methods.len() { continue; }
-            let m = &methods[md_idx];
-
-            if !m.is_public { continue; }
-
-            // Skip event add/remove
-            if let Some(PropertyRole::EventAdder) = &m.property_role {
-                continue;
-            }
-
-            // Skip compiler-generated special names that are NOT property accessors
-            let is_accessor = matches!(&m.property_role, Some(PropertyRole::Getter(_)) | Some(PropertyRole::Setter(_)));
-            if m.flags & MD_SPECIAL_NAME != 0 && !is_accessor {
-                // Could be .ctor, .cctor, op_xxx — handle .ctor → skip (we emit __init__),
-                // operator overloads → emit as __add__ etc.
-                if m.name == ".ctor" || m.name == ".cctor" {
-                    continue;
-                }
-                if let Some(op) = operator_name(&m.name) {
-                    // Operator overload
-                    let (ret, sig_params) = decode_method_sig(
-                        data, streams, layout, m, params, type_names, &td.generic_param_names,
-                        nullable, md_1 as u32, td_row,
-                    );
-                    let mut arrow_params = vec![make_param("self", "Self", false)];
-                    for (i, (ty, is_byref)) in sig_params.iter().enumerate() {
-                        let pname = format!("p{i}");
-                        arrow_params.push(make_param(&pname, ty, *is_byref));
-                    }
-                    let unsupported = cs_unsupported_reason(
-                        &ret, &arrow_params, &classes, &td.generic_param_names, &m.generic_param_names);
-                    body_stmts.push(mark_unsupported(
-                        make_fn_stub(op, arrow_params, &ret, false, is_interface, vec![]),
-                        unsupported,
-                    ));
-                    continue;
-                }
-                continue; // skip other special names
-            }
-
-            // Determine Arrow method name
-            let arrow_name = match &m.property_role {
-                Some(PropertyRole::Getter(prop)) => format!("get{prop}"),
-                Some(PropertyRole::Setter(prop)) => format!("set{prop}"),
-                _ => m.name.clone(),
+        for m in &c.members {
+            // 演算子は `self` を取る形で出す（C# では static）
+            let (p_self, is_static) = match m.role {
+                MemberRole::Ctor => continue,
+                MemberRole::Operator(_) => (true, false),
+                _ => (!m.is_static, m.is_static),
             };
-
-            // Parse signature
-            let (ret_type, sig_params) = decode_method_sig(
-                data, streams, layout, m, params, type_names, &td.generic_param_names,
-                nullable, md_1 as u32, td_row,
-            );
-
-            // Build Arrow params
-            let mut arrow_params: Vec<Param> = if m.is_static {
-                vec![]
-            } else {
-                vec![make_param("self", "Self", false)]
-            };
-
-            // For setter: single value param
-            let mut param_iter = sig_params.iter().enumerate();
-            if let Some(PropertyRole::Setter(_prop)) = &m.property_role {
-                // setter: (self, value: T) → setX(self, value: T)
-                if let Some((_, (ty, is_byref))) = param_iter.next() {
-                    arrow_params.push(make_param("value", ty, *is_byref));
-                }
-            } else {
-                // Get actual param names from Param table
-                let pstart = m.param_list_start as usize;
-                let pend = m.param_list_end as usize;
-                let method_params: Vec<&CsParam> = params
-                    .iter()
-                    .skip(pstart.saturating_sub(1))
-                    .take((pend - pstart).min(params.len()))
-                    .filter(|p| p.sequence > 0)
-                    .collect();
-
-                for (i, (ty, is_byref)) in sig_params.iter().enumerate() {
-                    let pname = method_params.get(i)
-                        .map(|p| sanitize_param_name(&p.name))
-                        .unwrap_or_else(|| format!("p{i}"));
-                    arrow_params.push(make_param(&pname, ty, *is_byref));
-                }
-            }
-
-            // Template params for generic methods
-            let tmpl: Vec<TemplateParam> = m.generic_param_names.iter()
+            let mut ps: Vec<Param> = if p_self { vec![make_param("self", "Self", false)] } else { vec![] };
+            ps.extend(m.params.iter().map(|p| make_param(&p.name, &p.ann, p.byref)));
+            let tmpl: Vec<TemplateParam> = m
+                .generic_param_names
+                .iter()
                 .map(|n| TemplateParam { name: n.clone(), constraints: vec![] })
                 .collect();
-
-            // Setter returns None
-            let eff_ret = match &m.property_role {
-                Some(PropertyRole::Setter(_)) => "None".to_string(),
-                _ => ret_type,
-            };
-
-            let unsupported = cs_unsupported_reason(
-                &eff_ret, &arrow_params, &classes, &td.generic_param_names, &m.generic_param_names);
             body_stmts.push(mark_unsupported(
-                make_fn_stub(&arrow_name, arrow_params, &eff_ret, m.is_static, is_interface, tmpl),
-                unsupported,
+                make_fn_stub(&m.arrow_name, ps, &m.ret_ann, is_static, c.is_interface, tmpl),
+                m.unsupported.clone(),
             ));
         }
 
-        if is_interface {
+        if c.is_interface {
             stmts.push(Stmt::TraitDef { src: None,
-                name: td.name.clone(),
+                name: c.name,
                 template_params,
                 body: body_stmts,
             });
         } else {
             stmts.push(Stmt::ClassDef { src: None,
-                name: td.name.clone(),
+                name: c.name,
                 template_params,
                 // ⚠ C# スタブの基底は型引数を持たせていない（タスク 9.9）。
                 //   持たせるなら `bases` と同じ並びで詰めること。
-                base_args: vec![Vec::new(); bases.len()],
-                bases,
+                base_args: vec![Vec::new(); c.interface_names.len()],
+                bases: c.interface_names,
                 decorators: vec![],
                 body: body_stmts,
             });
@@ -403,48 +214,10 @@ pub(crate) fn generate_stubs(
 }
 
 
-// Decode a method's signature blob → (return_type_arrow, [(param_type, is_byref)])
-/// null になりうる参照型（`string?` / `Person?`）は `Option[T]` にする（nullable 注釈・2-1）。
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_method_sig(
-    data: &[u8],
-    streams: &Streams,
-    _layout: &TildeLayout,
-    m: &CsMethod,
-    params: &[CsParam],
-    type_names: &HashMap<u32, String>,
-    type_params: &[String],
-    nullable: &NullableInfo,
-    method_row: u32,
-    td_row: u32,
-) -> (String, Vec<(String, bool)>) {
-    let blob = read_blob(data, streams.blob_off, m.sig_blob_idx);
-    let mut reader = SigReader {
-        data: blob,
-        pos: 0,
-        type_names,
-        type_params,
-        method_params: &m.generic_param_names,
-    };
-    let ((ret, ret_is_ref), sig_params) = reader.parse_method_sig_refs(&m.generic_param_names);
-    let flag = |seq: u16| nullable.flag(m, method_row, td_row, params, seq);
-    let ret = if ret_is_ref { apply_nullable(ret, flag(0)) } else { ret };
-    let sig_params = sig_params
-        .into_iter()
-        .enumerate()
-        .map(|(i, (ty, byref, is_ref))| {
-            let ty = if is_ref { apply_nullable(ty, flag(i as u16 + 1)) } else { ty };
-            (ty, byref)
-        })
-        .collect();
-    (ret, sig_params)
-}
-
-
 /// nullable の値が 2（null になりうる）なら `Option[T]` にする（2-1）。`object`（`Any`）は `None` も含むのでそのまま。
 /// ⚠ 0（注釈なし）は `T` のまま。実行時に null が来たら例外にする（`cs_values`）。Kotlin がプラットフォーム型の値を
 ///   null にならない型へ入れるときに検査するのと同じ扱い。
-fn apply_nullable(ty: String, flag: u8) -> String {
+pub(crate) fn apply_nullable(ty: String, flag: u8) -> String {
     if flag == 2 && ty != "Any" && !ty.starts_with("Option[") {
         format!("Option[{ty}]")
     } else {
@@ -455,18 +228,10 @@ fn apply_nullable(ty: String, flag: u8) -> String {
 
 /// 型スタブにクラスとして出す型の名前（公開・インターフェースでない・コンパイラが作ったものでない）。
 /// メソッドが受け渡す型がこの中にあれば、実行時に `CsObject` として扱える（2-1）。
-fn stub_class_names(typedefs: &[CsTypeDef]) -> HashSet<String> {
+pub(crate) fn stub_class_names(typedefs: &[CsTypeDef]) -> HashSet<String> {
     typedefs
         .iter()
-        .filter(|td| {
-            let vis = td.flags & 0x07;
-            (vis == TD_PUBLIC || vis == TD_NESTED_PUBLIC)
-                && td.flags & TD_INTERFACE == 0
-                && !td.name.is_empty()
-                && td.name != "<Module>"
-                && !td.name.starts_with('<')
-                && !td.name.starts_with('_')
-        })
+        .filter(|td| is_stub_type(td) && td.flags & TD_INTERFACE == 0)
         .map(|td| td.name.clone())
         .collect()
 }
@@ -481,7 +246,7 @@ fn stub_class_names(typedefs: &[CsTypeDef]) -> HashSet<String> {
 ///   `null` が届いていた（型スタブは `list[str]` / `Person` と宣言していた）。
 pub(crate) fn cs_unsupported_reason(
     ret: &str,
-    params: &[Param],
+    params: &[(&str, &str)],
     classes: &HashSet<String>,
     class_type_params: &[String],
     method_type_params: &[String],
@@ -506,11 +271,9 @@ pub(crate) fn cs_unsupported_reason(
     if let Some(why) = check(ret) {
         return Some(format!("it returns `{ret}`, {why}"));
     }
-    for p in params {
-        if let Some(ty) = p.type_ann.as_deref() {
-            if let Some(why) = check(ty) {
-                return Some(format!("parameter `{}` is `{ty}`, {why}", p.name));
-            }
+    for (name, ty) in params {
+        if let Some(why) = check(ty) {
+            return Some(format!("parameter `{name}` is `{ty}`, {why}"));
         }
     }
     None
