@@ -1,0 +1,44 @@
+# py_int_foreign_error.ar — py-int で Python が投げた例外は ForeignError（正例・ffi_value_exchange_plan.md 7-24）
+#
+# C# / JS と同じく、相手の言語で投げられた例外は `ForeignError`。メッセージは Python の例外の種類とメッセージ
+# （`ValueError: bad`・`KeyError: 'k'`）。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは Arrow 側の誤りなので
+# `TypeError`。
+# ⚠ 7-24 より前は呼び出しの種類で決まる例外だった（関数は `RuntimeError: Python call failed: …`・メソッドは
+#   `AttributeError: Python method call …`）。`ValueError` を投げるメソッドが `AttributeError` になり、Arrow のインスタンスを
+#   渡した誤りも `RuntimeError` だった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には Python（py_int_probe.py）が要る。
+# 対になる負例: py_int_exception_error.ar
+
+import[py-int] py_int_probe as pp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+class Point:
+    mut x: int
+
+mut message = ""
+try:
+    print(pp.fail("bad"))
+except ForeignError as e:
+    message = e.message
+check("a Python function's exception is a ForeignError (" + message + ")", message == "ValueError: bad")
+
+message = ""
+let r = pp.make_raiser()
+try:
+    print(r.boom())
+except ForeignError as e:
+    message = e.message
+check("a Python method's exception is a ForeignError (" + message + ")", message == "KeyError: 'k'")
+
+message = ""
+try:
+    print(pp.big_text(Point(1)))
+except TypeError as e:
+    message = e.message
+check("an Arrow value Python cannot take is a TypeError", "cannot pass an Arrow value of type 'Point'" in message)

@@ -95,7 +95,7 @@ raise                               # 現在の例外を再送出 (bare raise)
 | `ArithmeticError` | 算術演算エラー全般 |
 | `AccessError` | `private`/`protected` アクセス違反 |
 | `FfiTypeError` | 外部言語の関数が型スタブの宣言と食い違う値を返した（`TypeError` の派生なので `except TypeError` でも捕まえられる） |
-| `ForeignError` | 外部言語の側で投げられた例外（C# の例外・JS の `throw`）。`message` は相手の例外の種類とメッセージ（`System.InvalidOperationException: boom`） |
+| `ForeignError` | 外部言語の側で投げられた例外（C# の例外・JS の `throw`・py-int で Python が投げた例外）。`message` は相手の例外の種類とメッセージ（`System.InvalidOperationException: boom`・`ValueError: bad`） |
 
 `FfiTypeError` / `ForeignError` は `implementation_plans/ffi_value_exchange_plan.md` 7-4 で登録しました（以前は `CsDll: …` /
 `cs-proc remote: …` などの文字列のままで、`except` で捕まえられませんでした）。

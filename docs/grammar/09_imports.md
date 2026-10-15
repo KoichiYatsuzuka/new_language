@@ -362,7 +362,9 @@ let mean = np.mean(arr)
 bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryview` を Arrow の `bytes` にコピー・5-3。注釈の
 `bytearray` / `memoryview` も `bytes` と読む。int32 などの `memoryview` は Python のオブジェクトのまま）は
 双方向に変換します。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
-受け取ります（以前は黙って `float` に変換し精度を失っていました）。ただし `-> int` など `int` を宣言した場所に i64 に入らない
+受け取ります（以前は黙って `float` に変換し精度を失っていました）。Python が投げた例外は `ForeignError`（`message` は
+`ValueError: bad` のように Python の例外の種類とメッセージ）、Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは
+`TypeError` です（7-24。以前は呼び出しの種類で決まる例外で、`ValueError` を投げるメソッドが `AttributeError` になっていました）。ただし `-> int` など `int` を宣言した場所に i64 に入らない
 `int` が返れば、C / C# / Rust と同じく `OverflowError` です（7-9。以前は `FfiTypeError`）。Arrow の set に入れられない要素を含む set は、dict と
 同じく丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
 型名はクラス名）。

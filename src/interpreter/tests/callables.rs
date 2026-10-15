@@ -654,6 +654,27 @@ fn test_ar_to_py_dict() {
     }
 }
 
+/// Python が投げた例外は `ForeignError`（ffi_value_exchange_plan.md 7-24）。メッセージは Python の例外の種類とメッセージ。
+/// ⚠ 以前は呼び出しの種類で決まる例外で、添字の失敗はどれも `IndexError: Python __getitem__ failed: …` だった。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
+#[test]
+fn test_python_exception_is_foreign_error() {
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.Container([1])\n",
+        "mut msg = \"\"\n",
+        "try:\n",
+        "    let v = c[5]\n",
+        "except ForeignError as e:\n",
+        "    msg = e.message\n",
+    );
+    match run_py_get(src, "msg") {
+        Value::Str(m) => assert!(m.starts_with("IndexError: "), "{m}"),
+        other => panic!("expected the ForeignError message, got {other:?}"),
+    }
+}
+
 /// ar_to_py_tuple のテスト。
 // ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
 #[cfg(feature = "native")]

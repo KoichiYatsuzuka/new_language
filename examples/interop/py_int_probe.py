@@ -59,6 +59,19 @@ def lying_table() -> dict[str, int]:
     return {"a": "x"}
 
 
+def fail(why: str) -> int:                     # raises in Python: Arrow sees a ForeignError (plan 7-24)
+    raise ValueError(why)
+
+
+class Raiser:
+    def boom(self) -> int:
+        raise KeyError("k")
+
+
+def make_raiser() -> Raiser:
+    return Raiser()
+
+
 def big_text(x) -> str:
     return str(x + 1)
 
