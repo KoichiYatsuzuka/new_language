@@ -82,4 +82,10 @@
 - `loop_yield val` accumulates values in a `for`/`while` expression into a list (only valid inside `for`/`while` expressions)
 - `break` exits the innermost `for`/`while` loop; it propagates through nested `if`/`match`/`block:` expressions to reach the enclosing loop; in a `for`/`while` expression using `loop_yield`, `break` returns the accumulated list; differs from `block_return None` which explicitly sets the expression result to `None`
 - Access control uses section markers (`public:` / `private:` / `protected:`) rather than per-member keywords; default accessibility is `public`
-- `mng <- async->T: body` submits a concurrent task to an `AsyncManager`; variables are deep-cloned at submission time (no shared mutable state)
+- `mng <- async->T: body` submits a concurrent task to an `AsyncManager`. At submission `let` variables are deep-cloned,
+  but **`mut` variables are shared by reference**: the task mutating a `mut` list (`xs.append(..)`) changes the caller's
+  list, while rebinding (`n = 5`) does not propagate (decided in `implementation_plans/ffi_value_exchange_plan.md` 7-20).
+  - ⚠ The shared contents are **not synchronised** — mutating the same `mut` value from the caller and a task at the same
+    time is a data race. Return results with `block_return` instead.
+  - ⚠ Thread-bound values (file objects, `AsyncManager`, `Signal`) are never shared, even through `mut`: the task gets a
+    detached copy and using it is a `RuntimeError`; `EventLoop` is the task's own loop (7-19).

@@ -34,10 +34,12 @@ pub enum AsyncStatus {
 // ---------------------------------------------------------------------------
 // Thread-boundary wrappers
 //
-// Value uses Rc<RefCell<...>> internally, which is not Send.  We deep-clone
-// all captured values before crossing the thread boundary so that no Rc is
-// shared between threads.  After that, wrapping in SendableEnv / SendableBody
-// is safe: each thread owns its copy exclusively.
+// Value uses Rc<RefCell<...>> internally, which is not Send.  `let` values are deep-cloned before crossing the
+// thread boundary, so the worker owns its copy exclusively.
+// ⚠ `mut` values are shared by reference **by specification** (ffi_value_exchange_plan.md 7-20, `clone_for_task`):
+// a task mutating a `mut` list changes the caller's list. Nothing synchronises that sharing, so the caller and a task
+// mutating the same value at the same time is a data race — SendableEnv only asserts Send, it does not make the
+// sharing safe. Thread-bound values (files, AsyncManager, Signal, EventLoop) are never shared (7-19).
 // ---------------------------------------------------------------------------
 
 /// タスクへ送る環境（名前空間の分離・2026-09-26）。

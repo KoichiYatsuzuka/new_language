@@ -104,7 +104,9 @@ mng <- async ->str:
 
 **実行** (`exec_async_assign`):
 1. 現在のスコープ変数をキャプチャ:
-   - `mut` 変数 → `Rc<RefCell<Value>>` セルで共有 (スレッド境界は `SendableEnv` でラップ)
+   - `mut` 変数 → 参照で共有（中身の書き換え `xs.append(..)` は呼び出し側に伝わる。再束縛 `n = 5` は伝わらない）。
+     ⚠ 同期はしないので、呼び出し側とタスクが同じ `mut` の値を同時に書き換えるとデータ競合になる。結果は `block_return` で返す
+     （`implementation_plans/ffi_value_exchange_plan.md` 7-20 で共有を仕様とした）
    - `let` 変数 → ディープクローン
 2. `std::thread::spawn` で新しいスレッドを起動
 3. スレッド内で Arrow インタープリタの別インスタンスを生成してタスクを実行
