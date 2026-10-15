@@ -385,8 +385,19 @@ def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
             return _make_native(attr, lambda a, k: obj.startswith(a[0]))
         if attr == "endswith":
             return _make_native(attr, lambda a, k: obj.endswith(a[0]))
-        if attr == "find":
-            return _make_native(attr, lambda a, k: obj.find(a[0]))
+        # Positions are characters, negative ones count from the end - Python's own str methods
+        # (ffi_value_exchange_plan.md 7-2; Rust's string_methods::char_window does the same).
+        if attr in ("find", "rfind"):
+            return _make_native(attr, lambda a, k, _m=getattr(obj, attr): _m(*a[:3]))
+        if attr in ("index", "rindex"):
+            def index_fn(a, k, _m=getattr(obj, attr)):
+                try:
+                    return _m(*a[:3])
+                except ValueError:
+                    raise RuntimeError(f"ValueError: substring '{a[0]}' not found")
+            return _make_native(attr, index_fn)
+        if attr == "zfill":
+            return _make_native(attr, lambda a, k: obj.zfill(a[0]))
         if attr == "replace":
             return _make_native(attr, lambda a, k: obj.replace(a[0], a[1]))
         if attr == "format":
@@ -399,7 +410,7 @@ def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
                     raise RuntimeError(f"ValueError: format error: {e}")
             return _make_native(attr, fmt)
         if attr == "count":
-            return _make_native(attr, lambda a, k: obj.count(a[0]))
+            return _make_native(attr, lambda a, k: obj.count(*a[:3]))
         if attr == "contains":
             return _make_native(attr, lambda a, k: a[0] in obj)
         if attr == "isdigit":
