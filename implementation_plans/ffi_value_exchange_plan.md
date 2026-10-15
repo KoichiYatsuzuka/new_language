@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-12・7-15〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -243,7 +243,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-7** | ✅（§5）評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | ✅（§5）Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | ✅（§5）境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
-| **7-10** | 参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
+| **7-10** | ✅（§5）参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | ✅（§5）バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
@@ -1456,6 +1456,27 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（193/193）・`compare_wasm_frontend`
   564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1181 件・拡張の wasm クレートの 731 件が通る。
   VSIX を作り直した（パーサのトークン列の型を変えたため）
+
+### 7-10 実装
+
+- 参照実装（`impl_python`）に組み込み型 `bytes` を足した（Python の `bytes` をそのまま値にする）: 型名・等値・真偽・比較（辞書順）・
+  `+`・`in`（部分列か 0〜255 の `int`。範囲外は ValueError）・`len`・添字（`int`）・スライス（`bytes`）・反復（`int`）・`is bytes`・
+  コンストラクタ `bytes()` / `bytes(n)` / `bytes(list[int])` / `bytes(bytes)`（誤りの文言は Rust の `eval/calls.rs` と同じ）
+- `str.encode(encoding)` / `bytes.decode(encoding)`: `impl_python/interpreter/encoding.py`（Rust の `interpreter/encoding.rs` の写し）。
+  文字コードの名前の別名、`utf-16` を拒む（BOM を足さない・読まない）、`shift_jis` 系は CP932 の表、失敗は置き換えずに ValueError
+  （文言も Rust と同じ）
+- バイト単位で開いたファイル（7-11）の `read` / `read_line` / `write` / `write_line` が `bytes` を受け渡す（以前は `list[int]`）。
+  テキストは厳密な UTF-8（合わなければ IOError）。`write` / `write_line` はポインタの位置に挿入する（Rust と同じ。以前は `write` が
+  上書き、`write_line` が末尾へ追記していた）
+- `x is Ptr[void]` のように `is` の右辺に具体化した型を書けるようにした（Rust の 10-10 に追随。以前は `[` で ParseError）。
+  `Ptr[T]` の注釈そのものは以前から読めた（`ptr_types.ar` を止めていたのは `is` だった）。参照実装は `Ptr` の値を作らないので
+  `is Ptr` は常に偽
+- ⚠ 参照実装の型検査は `bytes` の型を持たない（`bytes` と `str` の混在を静的に止めない・既知の差分 `bytes_str_mix_error`）。
+  外部言語のブリッジも `bytes` / `Ptr` / `ArPtrProtocol` を扱わない。これらの既知の差分の理由を今の振る舞いに書き直した
+  （以前はどれも「`bytes` も `str.encode` も無い」だった）
+- `compare_python_impl`: 一致するようになった 4 本（`bytes_basics`・`file_bytes`・`ptr_types`・`cpp_unsupported_signature_error`）を
+  既知の差分から外し、`file_bytes_list_error`（Rust は静的エラー・参照実装は実行時の TypeError を stdout に出す）を足した
+- ゲート: `compare_python_impl` clean（196/196）。Rust 側は変えていない
 
 ---
 

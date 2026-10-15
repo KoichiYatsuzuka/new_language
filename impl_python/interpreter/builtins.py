@@ -50,6 +50,15 @@ def _raise_builtin(name: str, msg: str, known_classes: dict) -> None:
 # Iteration protocol helpers
 # ---------------------------------------------------------------------------
 
+def _encoding_call(f: Callable, known_classes: dict) -> Value:
+    """Run an encode / decode; a failure is the Arrow built-in ValueError (catchable, like Rust's `Err("ValueError: ...")`)."""
+    from .encoding import EncodingValueError
+    try:
+        return f()
+    except EncodingValueError as e:
+        _raise_builtin("ValueError", e.message, known_classes)
+
+
 def iterate(val: Value) -> list[Value]:
     """Collect all items from an iterable value."""
     if isinstance(val, (TlList, TlFixedList)):
@@ -58,8 +67,8 @@ def iterate(val: Value) -> list[Value]:
         return list(val.values)
     if isinstance(val, TlSet):
         return list(val.items)
-    if isinstance(val, str):
-        return list(val)
+    if isinstance(val, (str, bytes)):
+        return list(val)  # bytes yields int, like Rust (7-10)
     if isinstance(val, TlDict):
         return list(val.keys)
     if isinstance(val, TlGenerator):
@@ -105,7 +114,7 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
             return v
         raise RuntimeError(f"TypeError: slice step must be int, got '{type_name(v)}'")
 
-    if isinstance(obj, (TlList, TlFixedList, TlTuple, str)):
+    if isinstance(obj, (TlList, TlFixedList, TlTuple, str, bytes)):
         seq = obj.items if isinstance(obj, (TlList, TlFixedList)) else (obj.values if isinstance(obj, TlTuple) else list(obj))
         n = len(seq)
 
@@ -148,6 +157,8 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
             return TlList(items=result)
         if isinstance(obj, TlTuple):
             return TlTuple(values=result)
+        if isinstance(obj, bytes):
+            return bytes(result)  # a slice of bytes is bytes (7-10)
         return "".join(result)  # str
 
     raise RuntimeError(f"TypeError: '{type_name(obj)}' object is not sliceable")
@@ -169,9 +180,9 @@ def subscript_get(obj: Value, index: Value, known_classes: dict) -> Value:
         i = _to_index(index, len(obj.values), known_classes)
         return obj.values[i]
 
-    if isinstance(obj, str):
+    if isinstance(obj, (str, bytes)):
         i = _to_index(index, len(obj), known_classes)
-        return obj[i]
+        return obj[i]  # one byte of bytes is int (7-10)
 
     if isinstance(obj, TlDict):
         val = obj.get(index)
@@ -419,7 +430,17 @@ def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
             return _make_native(attr, lambda a, k: obj.isalpha())
         if attr == "isalnum":
             return _make_native(attr, lambda a, k: obj.isalnum())
+        if attr == "encode":
+            from .encoding import encode as _encode
+            return _make_native(attr, lambda a, k: _encoding_call(lambda: _encode(obj, a[0] if a else "utf-8"), known_classes))
         raise RuntimeError(f"AttributeError: 'str' object has no attribute '{attr}'")
+
+    # ---- bytes methods (ffi_value_exchange_plan.md 7-10; Rust: classes/bytes_methods.rs) ----
+    if isinstance(obj, bytes):
+        if attr == "decode":
+            from .encoding import decode as _decode
+            return _make_native(attr, lambda a, k: _encoding_call(lambda: _decode(obj, a[0] if a else "utf-8"), known_classes))
+        raise RuntimeError(f"AttributeError: 'bytes' object has no method '{attr}'")
 
     # ---- dict methods ----
     if isinstance(obj, TlDict):
@@ -566,12 +587,34 @@ def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
     if isinstance(obj, TlFileObject):
         if obj.is_closed:
             raise RuntimeError("ValueError: I/O operation on closed file")
+        # Byte mode reads and writes bytes; text mode is strict UTF-8 (Rust: classes/mod.rs bytes_to_value /
+        # value_to_bytes, ffi_value_exchange_plan.md 7-11). It used to read list[int] and replace invalid UTF-8.
+        def _from_file(data):
+            if not obj.text_mode:
+                return bytes(data)
+            try:
+                return bytes(data).decode("utf-8")
+            except UnicodeDecodeError:
+                _raise_builtin("IOError", "invalid UTF-8 in file (open it with ByteRecognizingMode.byte to read bytes)",
+                               known_classes)
+
+        def _to_file(method, s):
+            if obj.text_mode:
+                if isinstance(s, str):
+                    return s.encode("utf-8")
+                _raise_builtin("TypeError", f"{method}(): content must be str in text mode", known_classes)
+            if isinstance(s, bytes):
+                return s
+            if isinstance(s, TlList):
+                _raise_builtin("TypeError", f"{method}(): content must be bytes in byte mode (got a list; write `bytes(xs)`)",
+                               known_classes)
+            _raise_builtin("TypeError", f"{method}(): content must be bytes in byte mode", known_classes)
+
         if attr == "read":
             def file_read(args, kwargs):
-                if obj.text_mode:
-                    return obj.content[obj.pointer:].decode("utf-8", errors="replace")
-                else:
-                    return TlList(items=list(obj.content[obj.pointer:]))
+                data = obj.content[obj.pointer:]
+                obj.pointer = len(obj.content)
+                return _from_file(data)
             return _make_native(attr, file_read)
         if attr == "read_line":
             def read_line(args, kwargs):
@@ -583,35 +626,25 @@ def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
                 else:
                     line = data[:nl + 1]
                     obj.pointer += nl + 1
-                return line.decode("utf-8", errors="replace") if obj.text_mode else TlList(items=list(line))
+                return _from_file(line)
             return _make_native(attr, read_line)
-        if attr == "write":
-            def file_write(args, kwargs):
-                s = args[0]
-                if isinstance(s, str):
-                    b = s.encode("utf-8")
-                elif isinstance(s, TlList):
-                    b = bytes(int(x) for x in s.items)
+        if attr in ("write", "write_line"):
+            # Inserted at the pointer (appended at EOF), like Rust's classes/object_methods.rs. write used to
+            # overwrite and write_line always appended.
+            def file_write(args, kwargs, _m=attr):
+                if args:
+                    content = args[0]
+                elif "content" in kwargs:
+                    content = kwargs["content"]
                 else:
-                    raise RuntimeError("TypeError: write argument must be str or list[int]")
-                if obj.pointer < len(obj.content):
-                    obj.content[obj.pointer:obj.pointer + len(b)] = b
-                else:
-                    obj.content.extend(b)
+                    _raise_builtin("TypeError", "missing required argument 'content'", known_classes)
+                b = _to_file(_m, content)
+                if _m == "write_line":
+                    b += b"\n"
+                obj.content[obj.pointer:obj.pointer] = b
                 obj.pointer += len(b)
                 return None
             return _make_native(attr, file_write)
-        if attr == "write_line":
-            def write_line(args, kwargs):
-                s = args[0] if args else ""
-                if isinstance(s, str):
-                    b = (s + "\n").encode("utf-8")
-                else:
-                    raise RuntimeError("TypeError: write_line argument must be str")
-                obj.content.extend(b)
-                obj.pointer += len(b)
-                return None
-            return _make_native(attr, write_line)
         if attr == "close":
             def file_close(args, kwargs):
                 obj.close(); return None
@@ -687,7 +720,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         if isinstance(v, TlDict): return len(v.keys)
         if isinstance(v, TlTuple): return len(v.values)
         if isinstance(v, TlSet): return len(v.items)
-        if isinstance(v, str): return len(v)
+        if isinstance(v, (str, bytes)): return len(v)
         raise RuntimeError(f"TypeError: len() not supported for '{type_name(v)}'")
 
     def builtin_range(args: list, kwargs: dict) -> TlList:
@@ -714,6 +747,32 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
 
     def builtin_id_raw(args: list, kwargs: dict) -> int:
         return id(args[0]) if args else 0
+
+    def builtin_bytes(args: list, kwargs: dict) -> bytes:
+        """bytes() / bytes(n) / bytes(list[int]) / bytes(bytes), like Rust's eval/calls.rs (7-10)."""
+        if not args:
+            return b""
+        if len(args) > 1:
+            _raise_builtin("TypeError", "bytes() takes at most 1 argument", known_classes)
+        v = args[0]
+        if isinstance(v, bytes):
+            return bytes(v)
+        if isinstance(v, int) and not isinstance(v, bool):
+            if v < 0:
+                _raise_builtin("ValueError", f"bytes() length must be 0 or more, not {v}", known_classes)
+            return bytes(v)
+        if isinstance(v, TlList):
+            out = bytearray()
+            for x in v.items:
+                if not (isinstance(x, int) and not isinstance(x, bool)):
+                    _raise_builtin("TypeError", f"bytes() takes a list of int, but an element is '{type_name(x)}'", known_classes)
+                if not 0 <= x <= 255:
+                    _raise_builtin("ValueError", f"byte must be in range(0, 256), not {x}", known_classes)
+                out.append(x)
+            return bytes(out)
+        if isinstance(v, str):
+            _raise_builtin("TypeError", 'bytes() cannot take a str without an encoding; use s.encode("utf-8")', known_classes)
+        _raise_builtin("TypeError", f"cannot convert '{type_name(v)}' to bytes", known_classes)
 
     def builtin_str(args: list, kwargs: dict) -> str:
         if not args: return ""
@@ -1077,6 +1136,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         "type":      _make_native("type", builtin_type),
         "id":        _make_native("id", builtin_id),  # id() returns pointer instance
         "str":       _make_native("str", builtin_str),
+        "bytes":     _make_native("bytes", builtin_bytes),
         "repr":      _make_native("repr", builtin_repr),
         "int":       _make_native("int", builtin_int),
         "float":     _make_native("float", builtin_float),

@@ -258,6 +258,10 @@ class _ParserTypes:
 
     def _expect_guard_type_name(self) -> str:
         k = self._current_kind()
+        # `x is Ptr[void]` / `x is Stack[int]` reads a type expression (Rust: types.rs expect_guard_type_name,
+        # phase 10 10-10; ffi_value_exchange_plan.md 7-10). It used to stop at `[` with a ParseError.
+        if k == TokenKind.IDENT and self._peek1_kind() == TokenKind.LBRACKET:
+            return self._parse_type_expr()
         if k == TokenKind.IDENT:
             name = self._current().value
             assert isinstance(name, str)

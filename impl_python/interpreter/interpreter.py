@@ -770,6 +770,8 @@ class Interpreter:
                     return float(left) + float(right)
                 if isinstance(left, str) and isinstance(right, str):
                     return left + right
+                if isinstance(left, bytes) and isinstance(right, bytes):
+                    return left + right
                 if isinstance(left, TlList) and isinstance(right, TlList):
                     return TlList(items=left.items + right.items)
                 if isinstance(left, TlFixedList) and isinstance(right, TlFixedList):
@@ -901,6 +903,7 @@ class Interpreter:
         if isinstance(a, TlComplex) and isinstance(b, TlComplex): return a.real == b.real and a.imag == b.imag
         if isinstance(a, (int, float)) and isinstance(b, (int, float)): return float(a) == float(b)
         if isinstance(a, str) and isinstance(b, str): return a == b
+        if isinstance(a, bytes) and isinstance(b, bytes): return a == b
         if isinstance(a, TlList) and isinstance(b, TlList):
             return len(a.items) == len(b.items) and all(self._values_eq(x, y) for x, y in zip(a.items, b.items))
         if isinstance(a, TlTuple) and isinstance(b, TlTuple):
@@ -955,7 +958,7 @@ class Interpreter:
             if op == ">": return lf > rf
             if op == "<=": return lf <= rf
             if op == ">=": return lf >= rf
-        if isinstance(left, str) and isinstance(right, str):
+        if (isinstance(left, str) and isinstance(right, str)) or (isinstance(left, bytes) and isinstance(right, bytes)):
             if op == "<": return left < right
             if op == ">": return left > right
             if op == "<=": return left <= right
@@ -971,6 +974,13 @@ class Interpreter:
             return any(self._values_eq(k, item) for k in container.keys)
         if isinstance(container, str):
             if isinstance(item, str): return item in container
+        # bytes: a sub-sequence (bytes) or one byte (int 0..255), like Rust (7-10)
+        if isinstance(container, bytes):
+            if isinstance(item, bytes): return item in container
+            if isinstance(item, int) and not isinstance(item, bool):
+                if not 0 <= item <= 255:
+                    _raise_builtin("ValueError", f"byte must be in range(0, 256), not {item}", self._known_classes)
+                return item in container
         if isinstance(container, TlTuple):
             return any(self._values_eq(x, item) for x in container.values)
         raise RuntimeError(f"TypeError: 'in' not supported for '{type_name(container)}'")
@@ -1958,6 +1968,7 @@ class Interpreter:
         if tname == "float": return isinstance(val, float)
         if tname == "complex": return isinstance(val, TlComplex)
         if tname == "str": return isinstance(val, str)
+        if tname == "bytes": return isinstance(val, bytes)
         if tname == "bool": return isinstance(val, bool)
         if tname == "list" or tname.startswith("list["): return isinstance(val, TlList)
         if tname == "fixed_list" or tname.startswith("fixed_list["): return isinstance(val, TlFixedList)
@@ -1992,6 +2003,7 @@ class Interpreter:
         if isinstance(val, float): return "float"
         if isinstance(val, TlComplex): return "complex"
         if isinstance(val, str): return "str"
+        if isinstance(val, bytes): return "bytes"
         if val is None: return "None"
         if val is UNDEFINED: return "Undefined"
         if isinstance(val, TlList): return "list"

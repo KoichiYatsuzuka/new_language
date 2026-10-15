@@ -621,6 +621,8 @@ def _values_equal(a: "Value", b: "Value") -> bool:
         return a.real == b.real and a.imag == b.imag
     if isinstance(a, str) and isinstance(b, str):
         return a == b
+    if isinstance(a, bytes) and isinstance(b, bytes):
+        return a == b
     if isinstance(a, TlTuple) and isinstance(b, TlTuple):
         return len(a.values) == len(b.values) and all(
             _values_equal(x, y) for x, y in zip(a.values, b.values)
@@ -659,6 +661,9 @@ def type_name(v: "Value") -> str:
         return "complex"
     if isinstance(v, str):
         return "str"
+    # bytes is Python's own bytes object (ffi_value_exchange_plan.md 7-10)
+    if isinstance(v, bytes):
+        return "bytes"
     if isinstance(v, TlFixedList):
         return "fixed_list"
     if isinstance(v, TlList):
@@ -807,7 +812,7 @@ def is_truthy(v: "Value") -> bool:
         return v != 0.0
     if isinstance(v, TlComplex):
         return v.real != 0.0 or v.imag != 0.0
-    if isinstance(v, str):
+    if isinstance(v, (str, bytes)):
         return len(v) > 0
     if isinstance(v, TlFixedList):
         return len(v.items) > 0
@@ -824,7 +829,7 @@ def is_truthy(v: "Value") -> bool:
 
 def deep_clone(v: "Value") -> "Value":
     """Create a fully independent deep copy of a value."""
-    if v is None or isinstance(v, (bool, int, float, str)):
+    if v is None or isinstance(v, (bool, int, float, str, bytes)):
         return v
     if isinstance(v, TlComplex):
         return TlComplex(real=v.real, imag=v.imag)
@@ -870,7 +875,7 @@ def deep_clone_unfrozen(v: "Value") -> "Value":
     - TlInstance: immutable=False にリセットし、フィールド可変性をクラス定義から復元する
     - その他: deep_clone と同様
     """
-    if v is None or isinstance(v, (bool, int, float, str)):
+    if v is None or isinstance(v, (bool, int, float, str, bytes)):
         return v
     if isinstance(v, TlComplex):
         return TlComplex(real=v.real, imag=v.imag)
