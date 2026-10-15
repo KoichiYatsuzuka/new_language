@@ -168,7 +168,7 @@ impl Parser {
             name,
             crate::parser::AliasEntry {
                 expr: std::rc::Rc::new(expr),
-                tokens: std::rc::Rc::new(tokens),
+                tokens: std::sync::Arc::new(tokens),
             },
         );
         Ok(Stmt::Pass)

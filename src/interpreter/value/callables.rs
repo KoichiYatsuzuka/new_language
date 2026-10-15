@@ -408,10 +408,10 @@ impl ClassValue {
                             // クラスのメソッドは `owner_class` を持たない（`self` か呼び出したクラスが文脈）。
                             owner_class: None,
                             name: rc.name.clone(),
-                            params: rc.params.clone(),
+                            params: crate::template_subst::unshare_params(&rc.params),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
                             // はスレッド送出経路で使われるので、中身を複製して独立させる。
-                            body: std::rc::Rc::from(&rc.body[..]),
+                            body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
@@ -434,8 +434,8 @@ impl ClassValue {
                         globals: rc.globals,
                         owner_class: None,
                         name: rc.name.clone(),
-                        params: rc.params.clone(),
-                        body: rc.body.clone(),
+                        params: crate::template_subst::unshare_params(&rc.params),
+                        body: crate::template_subst::unshare_stmts(&rc.body),
                         captured_env: deep_clone_captured_env(&rc.captured_env),
                     }),
                 )

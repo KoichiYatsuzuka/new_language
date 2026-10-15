@@ -27,7 +27,8 @@ pub(crate) struct AliasEntry {
     /// 右辺の式 AST。式位置での置換に用いる。
     pub expr: Rc<Expr>,
     /// 右辺の生トークン列（`Eof` 終端）。型位置での置換（型文字列への再パース）に用いる。
-    pub tokens: Rc<Vec<Spanned>>,
+    /// ⚠ `Arc`（パーサのトークン列と同じ型・`SrcRange::tokens` の doc・7-21）。
+    pub tokens: std::sync::Arc<Vec<Spanned>>,
 }
 
 mod stmts;
@@ -85,12 +86,12 @@ pub struct Parser {
     /// ⚠ `Rc` で持つ（タスク 4-7）。宣言の `SrcRange` がファイル 1 本を**共有**するため。
     /// 別名展開（`expand_alias_as_type`）は一時的に差し替えるので、宣言の範囲は
     /// こちらではなく [`Parser::main_tokens`] を指す。
-    tokens: std::rc::Rc<Vec<Spanned>>,
+    tokens: std::sync::Arc<Vec<Spanned>>,
     /// このパーサが読んでいる**ファイル本体の**トークン列（タスク 4-7）。差し替えない。
     ///
     /// ⚠ 別名展開中は `tokens` が別名の右辺へ差し替わる。宣言の範囲をそちらで取ると
     /// **別のトークン列を切り出す**ので、必ずこちらを使う。
-    main_tokens: std::rc::Rc<Vec<Spanned>>,
+    main_tokens: std::sync::Arc<Vec<Spanned>>,
     pos: usize,
     /// trait 名 → その trait の宣言情報（[`TraitInfo`]）。
     known_traits: HashMap<String, TraitInfo>,
@@ -222,9 +223,9 @@ impl Parser {
         //      class Box[T]: ...                #   （宣言はこの後）
         //    さらに `trait X[T]` は**登録すらされていなかった**（class だけ登録していた）。
         let known_templates = Self::scan_template_names(&tokens);
-        let tokens_rc = std::rc::Rc::new(tokens);
+        let tokens_rc = std::sync::Arc::new(tokens);
         Self {
-            tokens: std::rc::Rc::clone(&tokens_rc),
+            tokens: std::sync::Arc::clone(&tokens_rc),
             main_tokens: tokens_rc,
             pos: 0,
             known_traits,
@@ -290,7 +291,7 @@ impl Parser {
     pub(crate) fn attach_src(&self, stmt: &mut crate::ast::Stmt, start: usize) {
         use crate::ast::{SrcRange, Stmt};
         let range = || {
-            Some(SrcRange { tokens: std::rc::Rc::clone(&self.main_tokens), start, end: self.pos })
+            Some(SrcRange { tokens: std::sync::Arc::clone(&self.main_tokens), start, end: self.pos })
         };
         match stmt {
             Stmt::FnDef { src, .. }

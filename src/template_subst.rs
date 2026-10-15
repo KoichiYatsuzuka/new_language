@@ -175,7 +175,7 @@ pub(crate) fn subst_params(params: &[Param], type_map: &HashMap<String, String>)
             name: p.name.clone(),
             mutable: p.mutable,
             type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
-            default: p.default.clone(),
+            default: p.default.as_ref().map(|e| subst_expr(e, type_map)),
             variadic: p.variadic,
         })
         .collect()
@@ -202,7 +202,10 @@ pub(crate) fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) 
 pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
-        | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => expr.clone(),
+        | Expr::Bool(_) | Expr::None | Expr::Undefined => expr.clone(),
+        // ⚠ 文字列リテラルの `Rc<str>` も作り直す（ffi_value_exchange_plan.md 7-21・[`unshare_stmts`]）。具体化の写しでは
+        //   不要だが、写しをスレッドへ送る経路（非同期タスク）では共有すると参照カウントが壊れうる
+        Expr::Str(s) => Expr::Str(std::rc::Rc::from(&**s)),
         // テンプレート関数はリゾルバの対象外なので `res` は通常 `Unresolved` だが、
         // 網羅性のためそのまま複製する。`Resolution::Global` の `SlotCache::clone` は
         // 空キャッシュを返すので、実体化ごとに解決し直される。
@@ -593,7 +596,7 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             is_abstract: *is_abstract,
             is_static: *is_static,
             is_class_method: *is_class_method,
-            decorators: decorators.clone(),
+            decorators: decorators.iter().map(|d| subst_expr(d, type_map)).collect(),
             access: access.clone(),
         },
         Stmt::ClassDef { src,
@@ -618,7 +621,7 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
                 })
                 .collect(),
             body: subst_stmts(body, type_map),
-            decorators: decorators.clone(),
+            decorators: decorators.iter().map(|d| subst_expr(d, type_map)).collect(),
         },
         Stmt::TraitDef { src,
             name,
@@ -773,4 +776,44 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             span: span.clone(),
         },
     }
+}
+
+// ── スレッドへ送る写し（ffi_value_exchange_plan.md 7-21）────────────────────────────
+
+/// 文の写し。中の文字列リテラル（`Expr::Str` の `Rc<str>`）・引数の既定値・デコレータも作り直すので、元の AST と `Rc` を
+/// 共有しない（宣言のトークン列 `SrcRange::tokens` は `Arc`）。非同期タスクへ送る本体と、関数の値の `deep_clone` が使う。
+/// ⚠ 以前は本体の `Vec<Stmt>` / `Rc<[Stmt]>` だけを作り直し、中のリテラルの `Rc<str>` を共有したまま別のスレッドへ
+///   送っていた（ワーカーが評価のたびに参照カウントを増減し、呼び出し側と同時に同じリテラルを評価すると壊れうる）。
+pub(crate) fn unshare_stmts(stmts: &[Stmt]) -> Vec<Stmt> {
+    subst_stmts(stmts, &HashMap::new())
+}
+
+/// 文 1 つの写し（[`unshare_stmts`]）。
+pub(crate) fn unshare_stmt(stmt: &Stmt) -> Stmt {
+    subst_stmt(stmt, &HashMap::new())
+}
+
+/// 仮引数の写し（既定値の式も作り直す・[`unshare_stmts`]）。
+pub(crate) fn unshare_params(params: &[Param]) -> Vec<Param> {
+    subst_params(params, &HashMap::new())
+}
+
+/// `code:` の行の写し（`<! !>` の中の式を作り直す・[`unshare_stmts`]）。地のトークンは `Rc` を持たない。
+pub(crate) fn unshare_code(lines: &[crate::ast::CodeLine]) -> Vec<crate::ast::CodeLine> {
+    let empty = HashMap::new();
+    lines
+        .iter()
+        .map(|line| crate::ast::CodeLine {
+            pieces: line
+                .pieces
+                .iter()
+                .map(|p| match p {
+                    crate::ast::CodePiece::Token(t) => crate::ast::CodePiece::Token(t.clone()),
+                    crate::ast::CodePiece::Splice(e) => crate::ast::CodePiece::Splice(subst_expr(e, &empty)),
+                })
+                .collect(),
+            indent: line.indent,
+            span: line.span.clone(),
+        })
+        .collect()
 }

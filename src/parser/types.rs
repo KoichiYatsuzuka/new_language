@@ -470,10 +470,10 @@ impl Parser {
     fn expand_alias_as_type(
         &mut self,
         name: &str,
-        toks: std::rc::Rc<Vec<crate::token::Spanned>>,
+        toks: std::sync::Arc<Vec<crate::token::Spanned>>,
     ) -> Result<String, String> {
         // ⚠ `Rc` なので複製せずに差し替えられる。宣言の範囲は `main_tokens` を指すので影響しない。
-        let saved_tokens = std::mem::replace(&mut self.tokens, std::rc::Rc::clone(&toks));
+        let saved_tokens = std::mem::replace(&mut self.tokens, std::sync::Arc::clone(&toks));
         let saved_pos = self.pos;
         self.pos = 0;
         // 展開中の位置は alias の**定義側**トークンを指すので型参照は記録しない。

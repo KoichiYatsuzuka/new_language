@@ -406,6 +406,26 @@ fn test_deep_clone_does_not_share_fn_body_rc() {
     assert!(!Rc::ptr_eq(a, b), "deep_clone returned the same FnValue");
 }
 
+/// 関数の値の `deep_clone` は、本体の中の**文字列リテラル**の `Rc<str>` も作り直す（ffi_value_exchange_plan.md 7-21）。
+/// ⚠ 以前は本体の `Rc<[Stmt]>` だけを作り直し、中のリテラルの `Rc<str>`（#15）を共有したまま非同期タスクへ送っていた。
+#[test]
+fn test_deep_clone_does_not_share_string_literal_rc() {
+    use std::rc::Rc;
+    let interp = run_interp("fn greet() -> str:\n    return \"hello\"\n");
+    let original = interp.get_val("greet").expect("greet must exist");
+    let cloned = original.deep_clone();
+    let literal = |v: &Value| -> Rc<str> {
+        let Value::Function(f) = v else { panic!("expected Value::Function") };
+        match f.body.first() {
+            Some(Stmt::Return(Some(crate::ast::Expr::Str(s)), _)) => s.clone(),
+            other => panic!("expected `return \"hello\"`, got {other:?}"),
+        }
+    };
+    let (a, b) = (literal(&original), literal(&cloned));
+    assert_eq!(&*a, &*b);
+    assert!(!Rc::ptr_eq(&a, &b), "deep_clone shared the string literal Rc");
+}
+
 /// #45 の不変条件（`OverloadedFn` 版）。`deep_clone` は**オーバーロードの全要素**で
 /// 本体 `Rc` を複製しなければならない（`Value::Function` だけ直して満足しない）。
 #[test]

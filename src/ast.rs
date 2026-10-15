@@ -266,7 +266,11 @@ impl CallArg {
 #[derive(Clone)]
 pub struct SrcRange {
     /// そのファイル全体のトークン列。
-    pub tokens: Rc<Vec<crate::token::Spanned>>,
+    ///
+    /// ⚠ `Arc`（ffi_value_exchange_plan.md 7-21）。宣言を含む AST は非同期タスクへ送られる（関数の本体・タスクの本体）。
+    ///   以前は `Rc` で、ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らしていた。中身は読むだけ
+    ///   （`Spanned` は `Rc` を持たない）なので共有してよい。
+    pub tokens: std::sync::Arc<Vec<crate::token::Spanned>>,
     /// 宣言の先頭トークンの位置（含む）。
     pub start: usize,
     /// 宣言の直後の位置（含まない）。

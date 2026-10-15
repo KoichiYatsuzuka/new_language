@@ -234,7 +234,8 @@ impl Interpreter {
         // #32: worker スレッドは `Interpreter::new()` を作るので、**親の設定を渡す責任がある**。
         // ⚠ `--vm` は #33 で無くなったが、型注釈（`annotations`）の引き継ぎは今も要る
         //    （渡し忘れるとゲートに穴が開く。実際に開いていた）。
-        mgr_rc.borrow_mut().add_task(stmts.to_vec(), env);
+        // 本体の AST は文字列リテラルの `Rc<str>` まで作り直して送る（ffi_value_exchange_plan.md 7-21）
+        mgr_rc.borrow_mut().add_task(crate::template_subst::unshare_stmts(stmts), env);
         Ok(ExecResult::Normal)
     }
 
@@ -270,7 +271,8 @@ impl Interpreter {
         let env = crate::interpreter::async_mgr::capture_env(self);
         self.scopes.truncate(saved_len);
         self.frame_floor = saved_floor;
-        mgr_rc.borrow_mut().add_task(body.to_vec(), env);
+        // 本体の AST は文字列リテラルの `Rc<str>` まで作り直して送る（7-21）
+        mgr_rc.borrow_mut().add_task(crate::template_subst::unshare_stmts(body), env);
         Ok(())
     }
 

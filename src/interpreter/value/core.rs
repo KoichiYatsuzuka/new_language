@@ -302,11 +302,11 @@ impl Value {
                 globals: rc.globals,
                 owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                 name: rc.name.clone(),
-                params: rc.params.clone(),
+                params: crate::template_subst::unshare_params(&rc.params),
                 // ⚠ **`Rc` を clone してはいけない**（#45）。`Rc<[Stmt]>` の参照カウントは
                 // 非アトミックなので、スレッドへ送る複製で共有すると親と競合する（#15）。
                 // 中身を複製して**独立した Rc** を作る。
-                body: std::rc::Rc::from(&rc.body[..]),
+                body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
                 is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             return_type: None,
@@ -320,9 +320,9 @@ impl Value {
                             globals: rc.globals,
                             owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                             name: rc.name.clone(),
-                            params: rc.params.clone(),
+                            params: crate::template_subst::unshare_params(&rc.params),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
-                            body: std::rc::Rc::from(&rc.body[..]),
+                            body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
@@ -336,8 +336,8 @@ impl Value {
                 globals: rc.globals,
                 owner_class: rc.owner_class.as_ref().map(|c| Rc::new(c.deep_clone())),
                 name: rc.name.clone(),
-                params: rc.params.clone(),
-                body: rc.body.clone(),
+                params: crate::template_subst::unshare_params(&rc.params),
+                body: crate::template_subst::unshare_stmts(&rc.body),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             })),
             Value::Generator(rc) => {
@@ -413,10 +413,10 @@ impl Value {
             Value::Protocol(s) => Value::Protocol(s.clone()),
             Value::AsyncStatusVal(s) => Value::AsyncStatusVal(s.clone()),
             Value::JsProcFn(d) => Value::JsProcFn(d.clone()),
-            // ⚠ `Code` / `Meta` の中の AST（文字列リテラルの `Rc<str>` など）はまだ共有している（関数の本体と同じ）⇒ 7-21
-            Value::Code(rc) => Value::Code(Rc::new((**rc).clone())),
+            // 中の AST（文字列リテラルの `Rc<str>` など）も作り直す（`template_subst::unshare_stmts`・7-21）
+            Value::Code(rc) => Value::Code(Rc::new(crate::template_subst::unshare_code(rc))),
             Value::Meta(rc) => Value::Meta(Rc::new(MetaValue {
-                decl: Rc::new((*rc.decl).clone()),
+                decl: Rc::new(crate::template_subst::unshare_stmt(&rc.decl)),
                 ..(**rc).clone()
             })),
             // スレッドに縛られる値（ファイル・`AsyncManager`・`Signal`・`EventLoop`）は、中身を運べないので切り離した

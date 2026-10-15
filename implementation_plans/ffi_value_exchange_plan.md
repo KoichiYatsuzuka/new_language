@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-20・7-22〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -254,7 +254,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-18** | ✅（§5）`len` の実装が 3 つあり（`eval/builtins.rs` に 2 つ・`eval/calls.rs` に 1 つ）、`calls.rs` の 1 つが `bytes` と Python のオブジェクトを知らない（3-1 で `bytes` を足したときの取りこぼし）。型注釈の無い経路（非同期タスクの本体など）で `len(bytes)` が TypeError になる。1 つにまとめる（6-1 で発見） | なし | 小 |
 | **7-19** | ✅（§5）非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
 | **7-20** | ✅（§5・共有を仕様とした）`mut` の変数を非同期タスクへ `Rc` を共有したまま送る（`async_mgr::clone_for_task`）。タスクの中の `xs.append(..)` がメインのリストを別のスレッドから書き換える（データ競合。再束縛 `n = 5` は伝わらない）。文書も食い違っている（`docs/grammar/10_special_features.md` は共有、`.claude/rules/language-differences.md` は複製と書く）。`let` と同じく複製にするか、明示的な共有の仕組み（CLAUDE.md の Async enhancements の Mutex のような型）へ移すかを決める（7-19 で発見・設計判断が要る） | なし | 中 |
-| **7-21** | 非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
+| **7-21** | ✅（§5）非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
 | **7-22** | ✅（§5）非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
 | **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
@@ -1436,6 +1436,26 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・
   `compare_python_impl` clean（193/193）・`compare_wasm_frontend` 564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
   `cargo test` 1180 件が通る（解釈側だけの変更なので VSIX は作り直していない）
+
+### 7-21 実装
+
+- 非同期タスクへ送る AST が呼び出し側と `Rc` を共有しないようにした:
+  - 文字列リテラル（`Expr::Str` の `Rc<str>`・#15）・引数の既定値・デコレータまで作り直す写し `template_subst::unshare_stmts` /
+    `unshare_stmt` / `unshare_params` / `unshare_code`（`subst_*` を空の置換表で呼ぶ。`subst_expr` はリテラルを作り直し、
+    `subst_params` は既定値の式、`FnDef` / `ClassDef` はデコレータの式も置換して降りるようにした）
+  - 使う所: タスクの本体（`exec_async_assign` / `vm_async_submit`）、関数・オーバーロード・ジェネレータ関数・クラスのメソッドの
+    `deep_clone`（本体と引数）、`Meta` の宣言、`Code` の行
+  - 宣言のトークン列（`SrcRange::tokens`）とパーサのトークン列（`tokens` / `main_tokens` / 別名の右辺）を `Arc` にした（中身は
+    読むだけで `Spanned` は `Rc` を持たない。ファイルのトークン列を写すと重いので共有のまま参照カウントを原子的にした）
+- ⚠ 以前は関数の本体の `Rc<[Stmt]>` だけを作り直していて（#45）、中のリテラルの `Rc<str>`・既定値の式・デコレータ・宣言の
+  トークン列の `Rc` を共有したまま別のスレッドへ送っていた（ワーカーが評価・破棄のたびに参照カウントを増減し、呼び出し側と同時だと
+  壊れうる）
+- 計測: `async/async_bench.ar` を基準 `3aef0e4` と交互に 5 回ずつ（中央値 6327ms → 6314ms・差なし）
+- 単体テスト `test_deep_clone_does_not_share_string_literal_rc`（リテラルの作り直しを外すと落ちることを確かめた）
+- ゲート（基準 `3aef0e4`・制限時間つき）: `compare_outputs` 473/473 一致（挙動は変えていない）・`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（193/193）・`compare_wasm_frontend`
+  564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1181 件・拡張の wasm クレートの 731 件が通る。
+  VSIX を作り直した（パーサのトークン列の型を変えたため）
 
 ---
 
