@@ -1,0 +1,24 @@
+# str_char_units.ar — 文字列の長さと位置は文字単位（正例・ffi_value_exchange_plan.md 7-2）
+#
+# `len(s)` は文字数、`find` / `rfind` / `count` の開始・終了位置と返す位置も文字単位（添字 `s[i]` と同じ単位・Python と同じ）。
+# 負の位置は末尾から数える。UTF-8 のバイト数が要るときは `len(s.encode("utf-8"))`。
+# ⚠ 7-2 より前は `len("日本語")` が 9（UTF-8 のバイト数）、`find` / `index` / `rfind` もバイト位置を返していて、
+#   `t[t.find("a")]` が別の文字を指した。開始位置が文字の途中を指すと（`"日本".find("本", 1)`）インタプリタがパニックした。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let t = "日本語abc"
+check("len counts characters", len(t) == 6)
+let i = t.find("a")
+check("find returns a character position", i == 3 and t[i] == "a")
+check("rfind", t.rfind("c") == 5)
+check("find from a character position", "日本".find("本", 1) == 1)
+check("a negative start counts from the end", t.find("a", -3) == 3)
+check("count in a window", t.count("a", 0, -1) == 1)
+check("zfill pads to a character width", "日本語".zfill(5) == "00日本語")
+check("not found", t.find("z") == -1)

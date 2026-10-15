@@ -293,6 +293,10 @@ d["key"]          # 辞書アクセス
 - `Dict` → キー検索
 - スライス → 要素のリストを返す (ステップ対応)
 
+**文字列の単位**: 文字列の添字・スライス・反復・`len(s)`・`find` / `rfind` / `index` / `rindex` / `count` の位置はどれも**文字**単位です
+（負の位置は末尾から数える・Python と同じ）。UTF-8 のバイト数が要るときは `len(s.encode("utf-8"))`
+（`implementation_plans/ffi_value_exchange_plan.md` 7-2。以前は `len` と `find` などがバイト単位で、添字と食い違っていました）。
+
 ---
 
 ## テンプレート型引数適用

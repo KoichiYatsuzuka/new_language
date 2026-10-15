@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -235,7 +235,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **6-1** | ✅（§5）非同期タスクのインタープリタにも読み込んだ DLL を見せる（`native_libs`） | なし | 小 |
 | **6-2** | ✅（§5）cs-proc / cs-dll のブリッジの登録表をスレッドを越えて使えるようにする | なし | 小 |
 | **7-1** | ✅（§5）型検査: 要素型の無いコンテナ（`x mustbe set` / `mustbe list` の結果・Python のスタブの `set`）と要素型付きの値の `==` が「決して真にならない」という偽の静的エラーになる（`let s = a mustbe set` の後の `s == {1}`）。要素型の無いものは要素型付きと比べられるとみなす（2-6 で発見） | なし | 小 |
-| **7-2** | `len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
+| **7-2** | ✅（§5）`len(str)` が UTF-8 のバイト数を返す（`len("日本語")` は 9）のに、添字・反復は文字単位で食い違う（参照実装は 3）。文字数に揃える。VM の特化命令・ネイティブ codegen・既存の例題への影響を測ってから（2-2 で発見） | 3-1（バイト数が要るときの書き方 `len(s.encode("utf-8"))` を先に用意する） | 中 |
 | **7-3** | ✅（§5）例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
 | **7-4** | ✅（§5）`FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
 | **7-5** | ✅（§5）字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
@@ -1398,6 +1398,26 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（192/192）・
   `compare_wasm_frontend` 562/562・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1178 件・拡張の wasm クレートの
   728 件が通る。VSIX を作り直した
+
+### 7-2 実装
+
+- 文字列の長さと位置を文字単位にした（添字・スライス・反復と同じ単位・Python と同じ）: `len(s)`（`len_of`）、`find` / `rfind` /
+  `index` / `rindex` / `count` の開始・終了位置と返す位置（`string_methods.rs` の `char_window`。負の位置は末尾から数え、範囲外は
+  詰める）、`zfill` の幅。UTF-8 のバイト数は `len(s.encode("utf-8"))`（3-1）
+- ⚠ 以前は `len("日本語")` が 9、`find` / `index` / `rfind` がバイト位置を返し（`t[t.find("a")]` が別の文字を指した）、開始位置が
+  文字の途中を指すと**パニックした**（`"日本".find("本", 1)`: `start byte index 1 is not a char boundary`・基準の exe で再現）。
+  負の開始・終了位置も扱っていなかった
+- 影響の計測: VM に `len` の特化命令は無く（`CallBuiltin` → `len_of`・7-18 で 1 本にした）、ネイティブ codegen にも独自の実装は
+  無い（インタプリタに委ねる）。既存の例題で出力が変わるものは 0 本だった（下のゲート）
+- 参照実装: `find` / `rfind` / `index` / `rindex` / `count` が開始・終了位置を受け取り（Python の `str` のメソッドに委ねる・文字単位）、
+  `rfind` / `index` / `rindex` / `zfill` を足した（以前は無かった）
+- 単体テスト `test_str_lengths_and_positions_count_characters`。例題: `basics/str_char_units.ar`（期待値と違えば raise。基準の exe では
+  落ちる。参照実装と出力が一致する）
+- 文書: `docs/grammar/03_expressions.md`（文字列の単位）
+- ゲート（基準 `2b19ac4`・制限時間つき）: `compare_outputs` の差は新しい例題 `str_char_units` だけ（472/473）。`compare_import_paths`
+  13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（193/193。新しい例題も一致）・
+  `compare_wasm_frontend` 563/563・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1179 件が通る（解釈側だけの変更
+  なので VSIX は作り直していない）
 
 ---
 

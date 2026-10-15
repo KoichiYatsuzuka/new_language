@@ -184,3 +184,23 @@ fn test_id_wrong_arg_count_error() {
     assert!(run("let r = id(1, 2)\n").is_err());
 }
 
+
+/// 文字列の長さと位置は文字単位（ffi_value_exchange_plan.md 7-2）。開始位置が文字の途中を指しても落ちない。
+/// ⚠ 以前は `len` が UTF-8 のバイト数、`find` がバイト位置を返し、`"日本".find("本", 1)` はパニックした。
+#[test]
+fn test_str_lengths_and_positions_count_characters() {
+    let src = concat!(
+        "let t = \"日本語abc\"\n",
+        "let n = len(t)\n",
+        "let i = t.find(\"a\")\n",
+        "let j = \"日本\".find(\"本\", 1)\n",
+        "let k = t.rfind(\"b\", -3)\n",
+        "let c = t.count(\"a\", 0, -1)\n",
+    );
+    let interp = run_interp(src);
+    let int = |name: &str| match interp.get_val(name) {
+        Some(Value::Int(n)) => n,
+        other => panic!("{name}: expected an int, got {other:?}"),
+    };
+    assert_eq!((int("n"), int("i"), int("j"), int("k"), int("c")), (6, 3, 1, 4, 1));
+}

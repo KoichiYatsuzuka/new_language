@@ -921,7 +921,9 @@ impl Interpreter {
         match &val {
             Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
             Value::FrozenList { state, .. } => Ok(Value::Int(state.borrow().len as i64)),
-            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+            // 文字数（ffi_value_exchange_plan.md 7-2。添字・反復と同じ単位。⚠ 以前は UTF-8 のバイト数で、`len("日本語")` が 9
+            // だった。バイト数は `len(s.encode("utf-8"))`）
+            Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
             Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
             Value::Dict(d) => Ok(Value::Int(d.borrow().len() as i64)),
             Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),

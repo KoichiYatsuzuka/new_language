@@ -299,51 +299,34 @@ impl Interpreter {
             }
 
             // ── 検索 ────────────────────────────────────────────────────────
-            "find" => {
+            // ⚠ 位置は文字単位（ffi_value_exchange_plan.md 7-2・`char_window`）。以前は利用者の `start` / `end` をバイト位置として
+            //   切り出していたので、文字の途中を指すとパニックし（`"日本".find("本", 1)`）、返す位置もバイト位置だった
+            //   （添字は文字単位なので `t[t.find("a")]` が別の文字を指した）。負の位置は Python と同じく末尾から数える。
+            "find" | "rfind" | "index" | "rindex" => {
                 let sub = arg_str!(0, "sub");
-                let start = arg_int!(1, 0).max(0) as usize;
-                let end = arg_int!(2, s.len() as i64).max(0) as usize;
-                let slice = &s[start.min(s.len())..end.min(s.len())];
-                Ok(Value::Int(match slice.find(sub.as_str()) {
-                    Some(i) => (i + start) as i64,
-                    None => -1,
-                }))
-            }
-            "rfind" => {
-                let sub = arg_str!(0, "sub");
-                let start = arg_int!(1, 0).max(0) as usize;
-                let end = arg_int!(2, s.len() as i64).max(0) as usize;
-                let slice = &s[start.min(s.len())..end.min(s.len())];
-                Ok(Value::Int(match slice.rfind(sub.as_str()) {
-                    Some(i) => (i + start) as i64,
-                    None => -1,
-                }))
-            }
-            "index" => {
-                let sub = arg_str!(0, "sub");
-                let start = arg_int!(1, 0).max(0) as usize;
-                let end = arg_int!(2, s.len() as i64).max(0) as usize;
-                let slice = &s[start.min(s.len())..end.min(s.len())];
-                match slice.find(sub.as_str()) {
-                    Some(i) => Ok(Value::Int((i + start) as i64)),
-                    None => Err(format!("ValueError: substring '{}' not found", sub)),
-                }
-            }
-            "rindex" => {
-                let sub = arg_str!(0, "sub");
-                let start = arg_int!(1, 0).max(0) as usize;
-                let end = arg_int!(2, s.len() as i64).max(0) as usize;
-                let slice = &s[start.min(s.len())..end.min(s.len())];
-                match slice.rfind(sub.as_str()) {
-                    Some(i) => Ok(Value::Int((i + start) as i64)),
-                    None => Err(format!("ValueError: substring '{}' not found", sub)),
+                let n = s.chars().count() as i64;
+                let Some((b0, b1, c0)) = char_window(&s, arg_int!(1, 0), arg_int!(2, n)) else {
+                    return if method_name.ends_with("index") {
+                        Err(format!("ValueError: substring '{}' not found", sub))
+                    } else {
+                        Ok(Value::Int(-1))
+                    };
+                };
+                let window = &s[b0..b1];
+                let hit = if method_name.starts_with('r') { window.rfind(sub.as_str()) } else { window.find(sub.as_str()) };
+                match (hit, method_name.ends_with("index")) {
+                    (Some(b), _) => Ok(Value::Int((c0 + window[..b].chars().count()) as i64)),
+                    (None, false) => Ok(Value::Int(-1)),
+                    (None, true) => Err(format!("ValueError: substring '{}' not found", sub)),
                 }
             }
             "count" => {
                 let sub = arg_str!(0, "sub");
-                let start = arg_int!(1, 0).max(0) as usize;
-                let end = arg_int!(2, s.len() as i64).max(0) as usize;
-                let slice = &s[start.min(s.len())..end.min(s.len())];
+                let n = s.chars().count() as i64;
+                let Some((b0, b1, _)) = char_window(&s, arg_int!(1, 0), arg_int!(2, n)) else {
+                    return Ok(Value::Int(0));
+                };
+                let slice = &s[b0..b1];
                 let n = if sub.is_empty() {
                     slice.chars().count() + 1
                 } else {
@@ -421,8 +404,8 @@ impl Interpreter {
             // ── 幅揃え・ゼロ埋め ────────────────────────────────────────────
             "zfill" => {
                 let width = arg_int!(0, 0).max(0) as usize;
-                // 幅を満たしていればレシーバの Rc を使い回す（確保なし）
-                if s.len() >= width {
+                // 幅を満たしていればレシーバの Rc を使い回す（確保なし）。幅は文字数（7-2。以前はバイト数）
+                if s.chars().count() >= width {
                     Ok(Value::Str(s.clone()))
                 } else {
                     Ok(Value::str(format!("{:0>width$}", s)))
@@ -612,4 +595,18 @@ impl Interpreter {
         }
     }
 
+}
+
+/// `s[start:end]`（文字単位）のバイト範囲と、先頭の文字位置（ffi_value_exchange_plan.md 7-2）。Python と同じく負の位置は末尾から
+/// 数え、範囲外は詰める。`start` が文字数を超えていれば `None`（`"abc".find("", 4)` は -1・Python と同じ）。
+fn char_window(s: &str, start: i64, end: i64) -> Option<(usize, usize, usize)> {
+    let n = s.chars().count() as i64;
+    let norm = |i: i64| if i < 0 { (i + n).max(0) } else { i };
+    let (cs, ce) = (norm(start), norm(end).min(n));
+    if cs > n {
+        return None;
+    }
+    let ce = ce.max(cs);
+    let byte_at = |c: i64| s.char_indices().nth(c as usize).map_or(s.len(), |(b, _)| b);
+    Some((byte_at(cs), byte_at(ce), cs as usize))
 }
