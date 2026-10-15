@@ -384,7 +384,7 @@ Inside a class, `Self` is used as a type annotation. When the type checker encou
 - Copies `OriginalType`'s method signatures to `Name`.
 - `TypeValOf(NamedInstance("Name"))` is compatible with `TypeValOf(NamedInstance("OriginalType"))` through the chain traversal in `type_val_compatible`.
 
-Built-in new types pre-registered: `path` (original `str`), `Index` (original `int`), `Size` (original `int`).
+Built-in new types pre-registered: `Path` (original `str`; renamed from `path` in ffi_value_exchange_plan.md 7-25), `Index` (original `int`), `Size` (original `int`).
 
 ---
 
@@ -425,7 +425,7 @@ Built-in **types declared in `src/built_in_stab/builtins.ars`** (`builtins::type
   (`builtins_ars_matches_the_runtime` compares enums and `FileObject` methods with the runtime).
 
 Other built-in runtime types usable as annotations / type guards without members being checked:
-`slice`, and the built-in new_types `path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
+`slice`, and the built-in new_types `Path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
 `pointer` was missing until 2026-09-30 although the runtime registers it as `new_type pointer: uint`).
 
 Exception classes registered (all with base `Error`):

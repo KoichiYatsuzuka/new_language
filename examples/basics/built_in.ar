@@ -4,7 +4,7 @@
 #   1. id()            — object identity
 #   2. enumerate()     — indexed iteration
 #   3. zip()           — parallel iteration
-#   4. File I/O        — path, open/close, FileOpenMode, StartPoint, ByteRecognizingMode
+#   4. File I/O        — Path, open/close, FileOpenMode, StartPoint, ByteRecognizingMode
 #                        （make_and_write の節だけ import[py-int] os で後始末する）
 #   5. String features — f/r/m/$-strings, %, format(), methods, regex, ord()
 
@@ -128,8 +128,8 @@ for i, pair in enumerate(zip(za, zb)):
 # 2 30 60
 
 # ── 4. File I/O ───────────────────────────────────────────────────────────────
-# path type
-let fp = path("examples/basics/built_in.ar")
+# Path type (the built-in type `Path`; it was `path` before ffi_value_exchange_plan.md 7-25)
+let fp = Path("examples/basics/built_in.ar")
 print(fp.value)              # examples/basics/built_in.ar
 
 # enum values

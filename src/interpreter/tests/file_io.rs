@@ -42,12 +42,12 @@ fn test_file_start_point_enum() {
 /// file_path_type のテスト。
 #[test]
 fn test_file_path_type() {
-    // path 型のインスタンスを生成できることを確認する
-    let src = "let p = path(\"foo.txt\")\nlet v = p.value\n";
+    // `Path` 型のインスタンスを生成できることを確認する（7-25 で `path` から改名）
+    let src = "let p = Path(\"foo.txt\")\nlet v = p.value\n";
     let val = run_get(src, "v");
     assert!(
         matches!(val, Value::Str(s) if &*s == "foo.txt"),
-        "path.value should be 'foo.txt'"
+        "Path.value should be 'foo.txt'"
     );
 }
 

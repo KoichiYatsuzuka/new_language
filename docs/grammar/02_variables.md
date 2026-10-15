@@ -115,6 +115,12 @@ fn f() -> None:
     let x = 2   # エラー: 外側スコープの x と衝突
 ```
 
+**組み込みの型名**: 組み込みの型名（`int` / `str` / `Path` / `Size` / `Index` / `pointer` / `Signal` / `EventLoop` /
+`AsyncManager` / 例外クラス / `FileOpenMode` などの列挙…）は、どのスレッドでも大域で見える名前です。同じ名前の変数は
+宣言できません（関数の中や `for` のターゲットでも）。組み込みの**関数**（`print` / `repr` …）は大域を占めないので、同じ名前の
+変数で隠せます。ファイルのパスの型は `Path` です（以前は `path` で、`let path = ..` が書けませんでした）
+（`implementation_plans/ffi_value_exchange_plan.md` 7-25。以前は `Signal` / `Size` などが型検査を通り、実行時に `NameError`）。
+
 **エラー種別**:
 - 静的型検査: `TypeErrorKind::VariableRedeclaration { name }` → `StaticTypeError`
 - ランタイム: `NameError: variable '<name>' is already declared`

@@ -304,7 +304,9 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
 
     // 組み込み new_type ラッパークラスを登録する
     // `path`: new_type path: str 相当、`Size`: new_type Size: int 相当
-    for (cls_name, prim_type) in [("path", "str"), ("Size", "int")] {
+    // ⚠ `Path` は 7-25 で `path` から改名した（利用者の決定。組み込みの型名は大域を占めるので、`path` だと
+    //   `let path = ..` が書けなかった）
+    for (cls_name, prim_type) in [("Path", "str"), ("Size", "int")] {
         global.insert(
             cls_name.to_string(),
             Var::new(

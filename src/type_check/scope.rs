@@ -60,6 +60,13 @@ impl TypeChecker {
         self.state.lookup(name)
     }
 
+    /// 変数を宣言すると再宣言（`VariableRedeclaration`）になるか: 見えている名前か、実行時の組み込みの大域が占める名前
+    /// （`names::RUNTIME_GLOBAL_NAMES`・ffi_value_exchange_plan.md 7-25）。⚠ 後者は型検査の大域に無いもの（`Signal` /
+    /// `Index` …）も含む。以前は型検査を通り、実行時に `NameError: variable '…' is already declared` になった。
+    pub(super) fn already_declared(&self, name: &str) -> bool {
+        self.lookup(name).is_some() || super::names::is_runtime_global_name(name)
+    }
+
     /// `block_return` 障壁の内側で `f` を実行する（`block`/`if`/`match` 式・関数本体用）。
     /// 進入時に深さを 0 にし、`f` の実行後に必ず元の深さへ戻す。enter/exit を1つの
     /// メソッドに閉じ込めることで復元漏れを構造的に防ぐ。

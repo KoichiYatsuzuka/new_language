@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-20・7-23・7-24 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -258,7 +258,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
 | **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
-| **7-25** | 組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
+| **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1358,6 +1358,29 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（190/190。負例は参照実装が捕まえない例外を
   stdout に出す出力形式の差で既知の差に登録）・`compare_wasm_frontend` 559/559・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
   `cargo test` 1175 件が通る（解釈側だけの変更なので VSIX は作り直していない）
+
+### 7-25 実装（利用者の決定: 組み込みの型名は大域で見える・`path` は `Path` に改名）
+
+- 組み込みの new_type `path` を `Path` に改名した（実行時 `built_in_types.rs`・`open` のパスの取り出し・型検査の `BUILTIN_NEW_TYPES` /
+  `RUNTIME_BUILTIN_NAMES`・`builtins.ars` の `open` と `Path(value)`・参照実装の実行時と型検査・VS Code の構文定義・例題 2 本・テスト）。
+  `path` は普通の変数名として使える
+- 組み込みの型名はどのスレッドでも大域で見える名前とし、型検査が「実行時の組み込みの大域が占める名前」（`names::RUNTIME_GLOBAL_NAMES`）
+  と同じ名前の変数の宣言を再宣言（`VariableRedeclaration`）にする（`already_declared`・`let` / タプル展開 / `for` のターゲット 4 か所）。
+  ⚠ 以前は型検査の大域に無い名前（`Signal` / `Size` / `Index` / `pointer` / `EventLoop` / `path` …）だけ型検査を通り、実行時に
+  `NameError: variable '…' is already declared` になった（`int` / `str` / `ValueError` は以前から静的エラー）。組み込みの**関数**は
+  大域を占めないので従来どおり隠せる
+- 網: `checker_knows_the_runtime_global_names` が `RUNTIME_GLOBAL_NAMES` と実行時の組み込みの大域（`builtin_global_scope`）が同じ集合か
+  を見る（両方向）。既存の例題で新しく静的エラーになるものは無い（enum のメンバー `Ok`・クラスの欄 `id` は変数の宣言ではない）
+- 単体テスト `builtin_type_names_cannot_be_redeclared`・`checker_knows_the_runtime_global_names`（`test_file_path_type` などを `Path` に更新）。
+  例題: `basics/builtin_type_names.ar`（期待値と違えば raise。参照実装と出力が一致）・`basics/builtin_type_name_error.ar`
+- 参照実装の型検査も同じ規則にした（`scope.py` の `RUNTIME_GLOBAL_NAMES` / `_already_declared`）。参照実装の実行時と型検査の
+  `path` も `Path` に改名した
+- 文書: `docs/grammar/02_variables.md`（変数の再宣言禁止）・skill `type-checking`
+- ゲート（基準 `608c026`・制限時間つき）: `compare_outputs` の差は 4 本（467/471）で、どれも意図した変化: 新しい例題 2 本・`built_in` と
+  `typing/builtin_args`（`Path(..)` を使うので基準の exe は `name 'Path' is not defined`）。`compare_import_paths` 13/13・`scan_examples`
+  （基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（192/192。参照実装の型検査を揃えた後に走らせ直した）・
+  `compare_wasm_frontend` 561/561・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1177 件・拡張の wasm クレートの
+  728 件が通る。VSIX を作り直した
 
 ---
 

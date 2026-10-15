@@ -122,7 +122,7 @@ fn getenv(name: str, default: str = "") -> str:
     """Value of the environment variable `name`, or `default` when it is not set."""
     pass
 
-fn open(file_path: Union[str, path], open_mode: FileOpenMode, start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Encoding = Encoding.UTF_8, exclusion: bool = True) -> FileObject:
+fn open(file_path: Union[str, Path], open_mode: FileOpenMode, start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Encoding = Encoding.UTF_8, exclusion: bool = True) -> FileObject:
     """Open a file. `open_mode` is FileOpenMode.read / write / rewrite / make_and_write."""
     pass
 
@@ -184,6 +184,6 @@ fn slice(begin: Any, end: Any, step: Any = None) -> slice:
     """A slice value from begin to end, with an optional step."""
     pass
 
-fn path(value: str) -> path:
-    """A path value from a string."""
+fn Path(value: str) -> Path:
+    """A path value from a string (the built-in type `Path`; renamed from `path`)."""
     pass

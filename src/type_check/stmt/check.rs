@@ -296,7 +296,7 @@ impl TypeChecker {
                     //    （`_` は除外・素の `lookup` なので組み込み名も対象）。
                     //    新しいエラー種別を作らないのは、これが新規の規則ではなく
                     //    **既存の再宣言規則を for ターゲットにも及ぼしただけ**だから。
-                    if t != "_" && self.lookup(t).is_some() {
+                    if t != "_" && self.already_declared(t) {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::VariableRedeclaration { name: t.clone() },
                             span: None,
@@ -1939,7 +1939,7 @@ impl TypeChecker {
                 TupleTarget::Mut(name) => (name, true),
                 TupleTarget::Wildcard => continue,
             };
-            if name != "_" && self.lookup(name).is_some() {
+            if name != "_" && self.already_declared(name) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
                     span: Some(span.clone()),
@@ -2195,7 +2195,7 @@ impl TypeChecker {
                 span: None,
             });
         }
-        if name != "_" && self.lookup(name).is_some() {
+        if name != "_" && self.already_declared(name) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VariableRedeclaration { name: name.to_string() },
                 span: None,

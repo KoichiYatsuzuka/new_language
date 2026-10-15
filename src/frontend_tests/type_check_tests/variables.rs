@@ -482,6 +482,21 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
     }
 
+    /// 組み込みの型名はどのスレッドでも大域で見える名前で、同じ名前の変数は宣言できない（7-25・利用者の決定）。
+    /// ⚠ 以前は型検査の大域に無い名前（`Signal` / `Size` / `Index` / `pointer` / `EventLoop`）だけ型検査を通り、実行時に
+    ///   `NameError` になった。ファイルのパスの型は `Path`（以前は `path`）なので `path` は普通の名前。組み込みの関数は隠せる。
+    #[test]
+    fn builtin_type_names_cannot_be_redeclared() {
+        for name in ["Signal", "Size", "Index", "pointer", "EventLoop", "Path", "AsyncManager", "int"] {
+            assert!(err(&format!("let {name} = 1\n")), "{name}");
+        }
+        assert!(err("fn f() -> None:\n    let Signal = 1\n"));
+        assert!(err("for Index in [1]:\n    pass\n"));
+        let src = "let path = \"a.txt\"\nlet p = Path(path)\n";
+        assert!(ok(src), "{:?}", check(src));
+        assert!(ok("let repr = 1\n"));
+    }
+
     /// 外部言語との境界の例外（ffi_value_exchange_plan.md 7-4）は組み込みの例外クラス。`except` に書け、
     /// `FfiTypeError` は `TypeError` の欄にも入る（実行時の `builtin_exception_parent` と同じ）。
     #[test]

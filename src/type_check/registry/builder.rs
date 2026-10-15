@@ -52,7 +52,7 @@ pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 21] = [
 ///   「`new_type pointer: uint` 相当のラッパークラス」として登録されているのに、ここに無かったので
 ///   `let p: pointer = id(x)` や `p is pointer` が「知らない型」になっていた（`id` の戻り値の型）。
 const BUILTIN_NEW_TYPES: [(&str, &str); 4] =
-    [("path", "str"), ("Index", "int"), ("Size", "int"), ("pointer", "uint")];
+    [("Path", "str"), ("Index", "int"), ("Size", "int"), ("pointer", "uint")];
 
 /// `TypeRegistry` の構築器。`collect` で AST を走査し、`build` で凍結する。
 pub(in crate::type_check) struct TypeRegistryBuilder {

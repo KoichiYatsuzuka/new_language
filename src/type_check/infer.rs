@@ -429,7 +429,7 @@ impl TypeChecker {
                     c.push_scope();
                     for (target, ty) in targets.iter().zip(target_tys) {
                         // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
-                        if target != "_" && c.lookup(target).is_some() {
+                        if target != "_" && c.already_declared(target) {
                             c.report_error(StaticTypeError {
                                 kind: TypeErrorKind::VariableRedeclaration {
                                     name: target.clone(),

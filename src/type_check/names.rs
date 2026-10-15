@@ -21,6 +21,29 @@ use crate::ast::{Expr, Stmt};
 ///   - 組み込み関数の表（`eval/builtins.rs` の `eval_builtin_evaled` / `eval_builtin_ident_call` の腕・`VM_BUILTIN_NAMES`）
 ///   ずれると「実行時は動くのに静的に未定義」という偽の誤りになるので、`interpreter/tests` の
 ///   `checker_knows_every_runtime_builtin_name` が**両方向**を突き合わせている。表を変えたら両方を直すこと。
+/// 実行時の組み込みの大域（`Interpreter::builtin_global_scope`）が占める名前（ffi_value_exchange_plan.md 7-25）。
+///
+/// 組み込みの型名（と `len` / `id` / `Ok` / `Err` / `begin` / `last` / `EventLoop`）は、どのスレッドでも大域で見える名前で、
+/// 同じ名前の変数は宣言できない（`VariableRedeclaration`・利用者の決定）。⚠ 以前は型検査の大域に無いもの（`Signal` /
+/// `Index` / `pointer` / `EventLoop` / `path` / `Size` …）だけ型検査を通り、実行時に `NameError: variable '…' is already
+/// declared` になっていた。組み込みの**関数**（`print` / `repr` …）は大域を占めないので、ここには無い（隠せる）。
+/// ⚠ 実行時の表と**両方向**で一致することを `interpreter/tests` の `checker_knows_the_runtime_global_names` が見る。
+pub(crate) const RUNTIME_GLOBAL_NAMES: &[&str] = &[
+    "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
+    "pointer", "id", "Error",
+    "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
+    "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
+    "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
+    "GeneratorExit", "FfiTypeError", "ForeignError",
+    "Path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
+    "Encoding", "AsyncManager", "Async", "Signal", "EventLoop", "Ok", "Err",
+];
+
+/// 実行時の組み込みの大域が占める名前か（[`RUNTIME_GLOBAL_NAMES`]）。
+pub(crate) fn is_runtime_global_name(name: &str) -> bool {
+    RUNTIME_GLOBAL_NAMES.contains(&name)
+}
+
 pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込みの型（`register_builtin_globals`）
     "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
@@ -31,7 +54,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
     "GeneratorExit", "FfiTypeError", "ForeignError",
     // 組み込みのクラス・列挙・名前空間
-    "path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
+    "Path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop",
     // Result の構築子（`Ok(v)` / `Err(e)`）
     "Ok", "Err",

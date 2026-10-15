@@ -270,6 +270,20 @@ mod a_axis_invariants {
         }
     }
 
+    /// 型検査が知る「実行時の組み込みの大域が占める名前」（`names::RUNTIME_GLOBAL_NAMES`・ffi_value_exchange_plan.md 7-25）が
+    /// 実行時の大域（`builtin_global_scope`）と**同じ集合**か。⚠ ずれると、型検査を通った `let Signal = 1` が実行時に
+    /// `NameError` になる（表に無い）か、実行時は書ける名前を型検査が拒む（表に余分）。
+    #[test]
+    fn checker_knows_the_runtime_global_names() {
+        use crate::type_check::names::RUNTIME_GLOBAL_NAMES;
+        let scope = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
+        let mut runtime: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
+        runtime.sort();
+        let mut table: Vec<&str> = RUNTIME_GLOBAL_NAMES.to_vec();
+        table.sort();
+        assert_eq!(table, runtime, "RUNTIME_GLOBAL_NAMES と実行時の組み込みの大域が違う");
+    }
+
     /// 組み込み関数の宣言（`src/built_in_stab/builtins.ars`）が実行時とずれていないか。**両方向**を見る。
     /// ⚠ 宣言に実行時に無い関数があると、型検査が NameError になる呼び出しに型を付け、補完が
     ///   存在しない関数を勧める（以前の拡張用 `builtins.ars` は `ord` / `abs` など 18 個を並べていた）。

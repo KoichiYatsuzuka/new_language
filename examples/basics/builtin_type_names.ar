@@ -1,0 +1,23 @@
+# builtin_type_names.ar — 組み込みの型名は大域の名前・`path` 型は `Path`（正例・ffi_value_exchange_plan.md 7-25）
+#
+# 組み込みの型名（`int` / `Path` / `Size` / `Index` / `Signal` / `EventLoop` …）は、どのスレッドでも大域で見える名前で、同じ名前の
+# 変数は宣言できない（負例 builtin_type_name_error.ar）。ファイルのパスの型は `Path`（以前は `path`）なので、`path` は普通の変数名
+# として使える。組み込みの関数（`print` / `repr` …）は大域を占めないので、同じ名前の変数で隠せる（builtin_shadow.ar）。
+# ⚠ 7-25 より前は `let path = ..` / `let Size = ..` / `let Signal = ..` などが型検査を通り、実行時に
+#   `NameError: variable 'path' is already declared` になった。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let path = "examples/basics/builtin_type_names.ar"
+check("path is an ordinary variable name", path.endswith(".ar"))
+
+let p = Path(path)
+check("Path is the built-in path type", p.value == path and p is Path)
+let f = open(p, FileOpenMode.read)
+check("open() takes a Path", f.read_line().startswith("# builtin_type_names.ar"))
+close(f)

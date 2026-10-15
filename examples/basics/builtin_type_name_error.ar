@@ -1,0 +1,11 @@
+# builtin_type_name_error.ar — 組み込みの型名と同じ名前の変数を宣言する（負例・ffi_value_exchange_plan.md 7-25）
+#
+# 組み込みの型名はどのスレッドでも大域で見える名前なので、同じ名前の変数は宣言できない。
+# 期待: StaticTypeError — variable 'Signal' is already declared in an accessible scope（`Size` も同じ）
+# ⚠ 7-25 より前は型検査を通り、実行時に `NameError: variable 'Signal' is already declared` になった
+#   （`int` / `str` / `ValueError` は以前から静的エラーで、型検査の大域に無い名前だけが漏れていた）。
+# 対になる正例: builtin_type_names.ar
+
+let Signal = 1
+let Size = 2
+print(Signal + Size)

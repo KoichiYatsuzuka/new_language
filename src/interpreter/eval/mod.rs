@@ -130,13 +130,13 @@ fn compute_slice_indices(len: i64, begin: Option<i64>, end: Option<i64>, step: i
 // open() / close() ヘルパー
 // ---------------------------------------------------------------------------
 
-/// str または path インスタンスからファイルパス文字列を取り出す。
+/// str または `Path` インスタンスからファイルパス文字列を取り出す。
 fn extract_path_str(val: &Value) -> Result<String, String> {
     match val {
         Value::Str(s) => Ok(s.to_string()),
         Value::Instance(inst_rc) => {
             let inst = inst_rc.borrow();
-            if inst.class.name == "path" {
+            if inst.class.name == "Path" {
                 if let Some(&idx) = inst.class.field_index.get("value") {
                     if let Some(Value::Str(s)) = inst.field_value(idx) {
                         return Ok(s.to_string());
@@ -144,7 +144,7 @@ fn extract_path_str(val: &Value) -> Result<String, String> {
                 }
             }
             Err(format!(
-                "TypeError: open() 'file_path' must be str or path, got instance of '{}'",
+                "TypeError: open() 'file_path' must be str or Path, got instance of '{}'",
                 inst.class.name
             ))
         }

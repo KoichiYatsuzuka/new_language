@@ -337,7 +337,7 @@ use super::*;
         assert!(crate::type_check::builtins::is_conversion("int"));
         assert!(crate::type_check::builtins::is_conversion("list"));
         assert!(!crate::type_check::builtins::is_conversion("open"));
-        assert!(!crate::type_check::builtins::is_conversion("path"));
+        assert!(!crate::type_check::builtins::is_conversion("Path"));
         assert!(err("let s: str = int(\"3\")\n"));
     }
 
@@ -394,7 +394,7 @@ use super::*;
     fn builtin_args_are_checked_from_declarations() {
         assert!(ok(concat!(
             "let f = open(\"a.txt\", FileOpenMode.read, StartPoint.top, encoding = Encoding.UTF_8)\n",
-            "let g = open(path(\"b.txt\"), open_mode = FileOpenMode.rewrite)\n",
+            "let g = open(Path(\"b.txt\"), open_mode = FileOpenMode.rewrite)\n",
             "close(f)\nclose(g)\n",
             "let e: str = getenv(\"HOME\", \"none\")\n",
             "let r: str = repr([1])\n",

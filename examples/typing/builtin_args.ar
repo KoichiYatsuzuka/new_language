@@ -15,7 +15,7 @@ let f = open("examples/typing/builtin_args.ar", FileOpenMode.read, StartPoint.to
 print(len(f.read_line()) > 0)       # True
 close(f)
 
-let g = open(path("examples/typing/builtin_args.ar"), FileOpenMode.read)   # path も渡せる
+let g = open(Path("examples/typing/builtin_args.ar"), FileOpenMode.read)   # Path も渡せる
 print(len(g.read_line()) > 0)       # True
 close(g)
 
