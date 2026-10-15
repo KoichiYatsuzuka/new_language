@@ -1021,7 +1021,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
     size_cls = _make_new_type_cls("Size")
     uint_cls = _make_new_type_cls("uint")
     pointer_cls = _make_new_type_cls("pointer")
-    path_cls = _make_new_type_cls("path", base="str")
+    path_cls = _make_new_type_cls("Path", base="str")
 
     def _make_index_instance(cls: TlClass, args, kwargs):
         val = args[0] if args else 0
@@ -1087,7 +1087,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         "getattr":   _make_native("getattr", builtin_getattr),
         "input":     _make_native("input", builtin_input),
         "open":      _make_native("open", builtin_open),
-        "path":      _make_native("path", builtin_path),
+        "Path":      _make_native("Path", builtin_path),
         "chr":       _make_native("chr", builtin_chr),
         "ord":       _make_native("ord", builtin_ord),
         "hex":       _make_native("hex", builtin_hex),

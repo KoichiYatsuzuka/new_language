@@ -44,7 +44,7 @@ class _TypeCheckerStmts:
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
-                if name != "_" and self._lookup(name) is not None:
+                if name != "_" and self._already_declared(name):
                     self._report(ErrVariableRedeclaration(name=name), None)
                 ty = self._resolve_decl_type(type_ann, rhs, name)
                 self._declare(name, ty, False)
@@ -53,7 +53,7 @@ class _TypeCheckerStmts:
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
-                if name != "_" and self._lookup(name) is not None:
+                if name != "_" and self._already_declared(name):
                     self._report(ErrVariableRedeclaration(name=name), None)
                 self._declare(name, rhs, False)
 
@@ -61,7 +61,7 @@ class _TypeCheckerStmts:
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
-                if name != "_" and self._lookup(name) is not None:
+                if name != "_" and self._already_declared(name):
                     self._report(ErrVariableRedeclaration(name=name), None)
                 ty = self._resolve_decl_type(type_ann, rhs, name)
                 self._declare(name, ty, True)

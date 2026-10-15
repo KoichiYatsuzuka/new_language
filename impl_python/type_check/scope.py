@@ -11,6 +11,20 @@ if TYPE_CHECKING:
     from .errors import TypeErrorKind, StaticTypeError
 
 
+# Names the runtime's built-in globals occupy; a variable of the same name cannot be declared
+# (mirrors Rust's type_check::names::RUNTIME_GLOBAL_NAMES, ffi_value_exchange_plan.md 7-25).
+RUNTIME_GLOBAL_NAMES = frozenset({
+    "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
+    "pointer", "id", "Error",
+    "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
+    "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
+    "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
+    "GeneratorExit", "FfiTypeError", "ForeignError",
+    "Path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
+    "Encoding", "AsyncManager", "Async", "Signal", "EventLoop", "Ok", "Err",
+})
+
+
 @dataclass
 class _VarInfo:
     ty: "InferredType"
@@ -42,6 +56,11 @@ class _TypeCheckerScope:
             if name in scope:
                 return scope[name]
         return None
+
+    def _already_declared(self, name: str) -> bool:
+        """Declaring `name` is a redeclaration: it is visible, or the runtime's built-in globals occupy it
+        (Rust: TypeChecker::already_declared / names::RUNTIME_GLOBAL_NAMES, ffi_value_exchange_plan.md 7-25)."""
+        return self._lookup(name) is not None or name in RUNTIME_GLOBAL_NAMES
 
     def _report(self, kind: "TypeErrorKind", span: Optional[Span] = None) -> None:
         from .errors import StaticTypeError

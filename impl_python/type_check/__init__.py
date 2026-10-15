@@ -73,7 +73,7 @@ class TypeChecker(
         self._class_bases: dict[str, list[str]] = {}
         self.errors: list[StaticTypeError] = []
 
-        for cls_name, prim in [("path", "str"), ("Index", "int"), ("Size", "int")]:
+        for cls_name, prim in [("Path", "str"), ("Index", "int"), ("Size", "int")]:
             self._known_class_names.add(cls_name)
             self._new_type_originals[cls_name] = prim
         self._known_class_names.add("slice")
