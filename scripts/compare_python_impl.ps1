@@ -117,6 +117,7 @@ $knownDiff = @{
     'py_int_exception_error'         = 'Rust: py-int で Python が投げた例外を捕まえないと ForeignError（7-24）。py: 捕まえない例外を stdout に Unhandled exception: … と出す（実行時エラーの出力形式の差）'
     'cs_dll_array_arg_error'         = 'Rust: cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと StaticTypeError（5-5）。py: 型スタブの型が違うので検査されず呼んで C# 側の例外'
     'cs_proc_null_contract_error'    = 'Rust: null にならないはずの C# の戻り値の null を TypeError にする（2-1）。py: 上と同じく DLL を見つけられず ParseError'
+    'cs_proc_namespaced_type'        = 'Rust: 外部言語のスタブのクラスを別名つきの型名 cp.Person で書ける（ffi_value_exchange_plan.md 7-6）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'cpp_dll_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（ffi_value_exchange_plan.md 1-6）。py: unsigned int の最大値を -1 として読み、例題の検査が ValueError で止まる（直す前の Rust と同じ）'
     'cpp_lib_int_widths'             = 'Rust: C の整数型を幅と符号どおりに受け渡す（cpp-lib・1-6）。py: long を返す関数などを関数一覧に入れず AttributeError で止まる'
     'cpp_u64_overflow_error'         = 'Rust: 2^63 以上の unsigned long long を OverflowError にする（1-6）。py: 黙って -1 にする（直す前の Rust と同じ壊れ方）'

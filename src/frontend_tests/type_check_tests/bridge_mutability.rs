@@ -125,3 +125,22 @@ fn cpp_prim_ptr_int_arg_type_mismatch() {
         "expected CallArgTypeMismatch for v3_norm, got: {errors:?}"
     );
 }
+
+/// 外部言語のスタブのクラスは、型の位置でも別名つきで書ける（`vm.V3`・ffi_value_exchange_plan.md 7-6）。
+/// ⚠ 以前は Arrow のモジュールのクラス（`tags.Tag`・10-8）だけが引けて、`vm.V3` は「知らない型」だった。
+#[test]
+fn foreign_stub_class_named_through_alias() {
+    let src = format!(
+        "{IMPORT}\
+         fn norm2(let v: vm.V3) -> float:\n\
+         \x20   return v.x * v.x + v.y * v.y + v.z * v.z\n\
+         let a: vm.V3 = V3(1.0, 2.0, 3.0)\n\
+         let n = norm2(a)\n\
+         let ok = a is vm.V3\n"
+    );
+    let errors = check_cpp(&src);
+    assert!(errors.is_empty(), "{errors:?}");
+    // スタブに無いクラスは従来どおり誤り
+    let errors = check_cpp(&format!("{IMPORT}let b: vm.Nope = V3(0.0, 0.0, 0.0)\n"));
+    assert!(!errors.is_empty());
+}

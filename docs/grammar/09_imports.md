@@ -481,7 +481,7 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 | `bool` | `bool` | |
 | `string` / `char` | `str` | `char` を渡すときは長さ 1 の `str` |
 | `string?` / `Person?` / `long?` | `Option[str]` / `Option[Person]` / `Option[int]` | C# の nullable 注釈を読みます。null は `None` |
-| このアセンブリの公開クラス | そのクラス（値は C# のオブジェクト） | `x is Person` / `mustbe Person` で絞り込めます |
+| このアセンブリの公開クラス | そのクラス（値は C# のオブジェクト） | `x is Person` / `mustbe Person` で絞り込めます。型の位置では別名つきの `cp.Person` とも書けます（7-6） |
 | `object` | `Any` | 中身が数値・文字列ならその値。クラスが分からないオブジェクトは `TypeError` |
 | `void` | `None` | |
 

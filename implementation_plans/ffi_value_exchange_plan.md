@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-5・7-7〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1・7-3〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -239,7 +239,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-3** | ✅（§5）例外の `str(e)` / `print(e)` がメッセージではなく `<ValueError object at 0x…>` になる（アドレスが毎回変わり、出力の比較もずれる）。Python と同じくメッセージにする（1-6 で発見） | なし | 小 |
 | **7-4** | ✅（§5）`FfiTypeError` と、C# 側で投げられた例外（`CsProc: …` / `CsDll: …`）・js-proc の `remote` の誤りを `except` で捕まえられない（例外クラスとして登録されていない・`make_internal_raised_error`）。登録して捕まえられるようにする（2-1・2-3 で発見） | なし | 小 |
 | **7-5** | ✅（§5）字句解析が UTF-8 の BOM（先頭の U+FEFF）を受け付けない。PowerShell 5.1 の `Set-Content -Encoding UTF8` で書いたファイルが ParseError になる（2-4 で発見） | なし | 小 |
-| **7-6** | 外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
+| **7-6** | ✅（§5）外部言語のスタブのクラスを型の位置で名前空間付きに書けない（`x is cp.Person` が静的エラー。今は `Person` と書く）。Arrow のモジュールのクラス（`tags.Tag`・10-8）と同じく引けるようにする（2-1 で発見） | なし | 中 |
 | **7-7** | ✅（§5）評価コアのビルド（`cargo check --no-default-features`）が通らない。`parser/imports` が `native` 専用の `python_converter` / `partial_compiler::rs_loader` を参照している（2-1 で発見・既存） | なし | 小 |
 | **7-8** | ✅（§5）Python のスタブの型の変換が要素型を落とす: `frozenset[T]` → `Any`、`set[tuple[int, int]]` → `set[tuple]`（2-6 で発見） | なし | 小 |
 | **7-9** | ✅（§5）境界で `int` に入らない整数の扱いを揃える: C / C# / Rust は OverflowError（1-6・2-1・2-5）だが、`-> int` と宣言した Python の関数が i64 に入らない int を返すと FfiTypeError になる（2-6 で発見） | なし | 小 |
@@ -1380,6 +1380,23 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   `typing/builtin_args`（`Path(..)` を使うので基準の exe は `name 'Path' is not defined`）。`compare_import_paths` 13/13・`scan_examples`
   （基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（192/192。参照実装の型検査を揃えた後に走らせ直した）・
   `compare_wasm_frontend` 561/561・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1177 件・拡張の wasm クレートの
+  728 件が通る。VSIX を作り直した
+
+### 7-6 実装
+
+- 型検査の名前の表（`registry::NameScope`）に、外部言語のモジュールの別名 → そのスタブのクラスの素の名前（`foreign`）を控え、
+  型の位置の `cp.Person` を素の `Person` へ引き直す（`resolve_word`）。外部言語のクラスは素の名前で登録したまま（10-8 の判断を
+  変えない）。注釈・`is` / `mustbe` の型ガード・関数の引数の型で使える。cs-proc / cs-dll / js-proc / py-int / cpp の `import ... as`
+  の束縛名（`Stmt::Import::bind`）に共通
+- 実行時の `is cp.Person` / `mustbe cp.Person` は以前から名前空間を引いて判定できていた（`value_is_type` の `dotted_class`）ので、
+  直したのは型検査だけ。⚠ 以前は `x is cp.Person` が「unknown type 'cp.Person' in type guard」、`let q: cp.Person` が
+  「not a known type」の静的エラーだった（基準の exe で 5 件）
+- 単体テスト `foreign_stub_class_named_through_alias`（C のヘッダの構造体 `vm.V3`）。例題: `interop/cs_proc_namespaced_type.ar`
+  （期待値と違えば raise）。参照実装は C# の DLL を見つけられないので既知の差（既存の C# の例題と同じ）
+- 文書: `docs/grammar/09_imports.md`（C# の値の対応）・`.claude/rules/language-differences.md`
+- ゲート（基準 `87173ba`・制限時間つき）: `compare_outputs` の差は新しい例題 `cs_proc_namespaced_type` だけ（471/472）。
+  `compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（192/192）・
+  `compare_wasm_frontend` 562/562・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1178 件・拡張の wasm クレートの
   728 件が通る。VSIX を作り直した
 
 ---

@@ -122,6 +122,10 @@ pub(super) struct NameScope {
     pub(super) names: HashMap<String, String>,
     /// モジュールの別名 → モジュールの修飾名（`import tags as t` の t → tags）。
     pub(super) modules: HashMap<String, String>,
+    /// 外部言語のモジュールの別名 → そのスタブが宣言するクラスの素の名前（`import[cs-proc] cs_probe as cp` の
+    /// cp → {Probe, Person}・ffi_value_exchange_plan.md 7-6）。外部言語のクラスは素の名前で登録したまま（10-8）なので、
+    /// 型の位置の `cp.Person` は `Person` へ引き直す。⚠ 以前は `x is cp.Person` / `let p: cp.Person` が「知らない型」だった
+    pub(super) foreign: HashMap<String, HashSet<String>>,
 }
 
 impl TypeRegistry {
@@ -147,6 +151,10 @@ impl TypeRegistry {
         if let Some((head, rest)) = name.split_once('.') {
             if let Some(m) = scope.modules.get(head) {
                 return self.chase_reexport(Cow::Owned(format!("{m}.{rest}")));
+            }
+            // 外部言語のスタブのクラス（`cp.Person` → `Person`・7-6）
+            if scope.foreign.get(head).is_some_and(|classes| classes.contains(rest)) {
+                return Cow::Owned(rest.to_string());
             }
         }
         Cow::Borrowed(name)

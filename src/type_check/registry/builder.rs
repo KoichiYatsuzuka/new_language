@@ -518,6 +518,20 @@ impl TypeRegistryBuilder {
                 | Stmt::FromImport { lang, module, body, .. } => {
                     let modpath = module.join(".");
                     let arrow = is_arrow_source_lang(lang);
+                    // 外部言語のモジュールの別名と、そのスタブのクラスを控える（`NameScope::foreign`・7-6）
+                    if !arrow {
+                        if let Stmt::Import { bind: Some(b), .. } = stmt {
+                            let classes = body.iter().filter_map(|st| match st {
+                                Stmt::ClassDef { name, .. } => Some(name.clone()),
+                                _ => None,
+                            });
+                            self.reg.name_scopes[self.cur_scope]
+                                .foreign
+                                .entry(b.name.clone())
+                                .or_default()
+                                .extend(classes);
+                        }
+                    }
                     // 今の文脈に別名・取り込んだ名前を控える（`TypeRegistry::name_scopes` の doc・10-8）。
                     if arrow {
                         let scope = &mut self.reg.name_scopes[self.cur_scope];

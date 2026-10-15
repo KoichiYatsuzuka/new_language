@@ -43,6 +43,8 @@
     (`pkg.util`; above the entry directory each level is `__parent__`, e.g. `__parent__.util`). The same file
     imported under different spellings is one module; two files never share a name (so `util.ar` and
     `pkg/util.ar` no longer collide). Rule and naming: `src/module_path.rs`.
+  - A foreign stub's class (`import[cs-proc] cs_probe as cp` → `Person`) is still registered under its bare name, but
+    type positions may also spell it through the alias (`cp.Person`, `x is cp.Person`; ffi_value_exchange_plan.md 7-6).
   - ⚠ A type can only be named through a module **this file imports** (`UnimportedModuleType`): the type
     table is program-wide, but `let t: util.Tag` is an error unless this file imports `util`.
 - **Modules behave like CPython** (2026-10-02, phase 4 of `IMPORT_RESOLUTION_PLAN.md`; rule: `src/module_path.rs`):

@@ -1,0 +1,29 @@
+# cs_proc_namespaced_type.ar — 外部言語のスタブのクラスを別名つきで型の位置に書く（正例・ffi_value_exchange_plan.md 7-6）
+#
+# `import[cs-proc] cs_probe as cp` のクラス `Person` は、型の位置でも `cp.Person` と書ける（Arrow のモジュールのクラス
+# `tags.Tag` と同じ書き方）。素の `Person` も従来どおり使える。
+# ⚠ 7-6 より前は `x is cp.Person` が「unknown type 'cp.Person' in type guard」、`let q: cp.Person` が「not a known type」の
+#   静的エラーだった（実行時の `is cp.Person` は名前空間を引いて判定できていた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/cs_probe/cs_probe.exe と cs_probe.dll が要る（build_cs_probe.ps1）。
+
+import[cs-proc] cs_probe as cp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+fn name_of(let p: cp.Person) -> str:
+    return p.get_name()
+
+let p = cp.Probe.make_person("bob")
+check("is cp.Person", p is cp.Person)
+let q: cp.Person = p
+check("annotated cp.Person", name_of(q) == "bob")
+let found = cp.Probe.find("amy")
+if found is cp.Person:
+    check("narrowed by is cp.Person", found.get_name() == "amy")
+let m = cp.Probe.find("cid") mustbe cp.Person
+check("mustbe cp.Person", m.get_name() == "cid")
