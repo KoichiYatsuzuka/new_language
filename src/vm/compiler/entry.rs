@@ -591,6 +591,26 @@ pub fn compile_async_body(
         n = n.checked_add(1)?;
     }
 
+    // **入れ子 `fn` に可変キャプチャされる本体のローカル**をセルへ移す（`compile_fn_inner` と同じ手順・
+    // ffi_value_exchange_plan.md 7-22）。⚠ 以前は非同期タスクの本体がセルを持たなかったので、`mut seen = []` と
+    // `fn add(v): seen.append(v)` を本体に書くとコンパイルできず、タスクが `VmForceError` で失敗した（関数の中なら動いた）。
+    // ⚠ slot は解放しない（`compile_fn_inner` の同じ箇所の doc）。読み書きは `cells` を先に引く。
+    let mut cells: HashMap<String, u16> = HashMap::new();
+    let mut cell_by_slot: HashMap<u16, u16> = HashMap::new();
+    let mut free_in_nested: Vec<String> = nested_fn_free_names(body).into_iter().collect();
+    free_in_nested.sort(); // 採番順を安定させる
+    for name in free_in_nested {
+        let Some(&slot) = slots.get(&name) else { continue };
+        if !slot_mut.get(slot as usize).copied().unwrap_or(false) {
+            continue; // 不変ローカルのキャプチャは値の複製で足りる（従来どおり slot）
+        }
+        let idx = u16::try_from(cells.len()).ok()?;
+        slots.remove(&name);
+        cells.insert(name.clone(), idx);
+        cell_by_slot.insert(slot, idx);
+    }
+    let n_cells = cells.len();
+
     let mut local_names = vec![String::new(); n as usize];
     for (name, &slot) in &slots {
         if let Some(entry) = local_names.get_mut(slot as usize) {
@@ -603,7 +623,9 @@ pub fn compile_async_body(
         slot_mut,
         slot_type,
         named_locals: n,
-        chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
+        chunk: Chunk { n_locals: n as usize, n_cells, ..Chunk::default() },
+        cells,
+        cell_by_slot,
         // ⚠ **空でないと `reads_by_name` が偽になり `LoadGlobal` へ落ちる**。名前の中身は
         // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる（`CompileMode` の doc）。
         // ⚠ 捕捉名の可変性はここでは判らないので**保守的に可変**とする

@@ -108,6 +108,8 @@ mng <- async ->str:
      ⚠ 同期はしないので、呼び出し側とタスクが同じ `mut` の値を同時に書き換えるとデータ競合になる。結果は `block_return` で返す
      （`implementation_plans/ffi_value_exchange_plan.md` 7-20 で共有を仕様とした）
    - `let` 変数 → ディープクローン
+   - タスクの本体の中で関数を定義すると、本体の `mut` 変数を読み書きできます（関数の本体と同じくセルに置く・
+     `implementation_plans/ffi_value_exchange_plan.md` 7-22。以前は `VmForceError` でタスクが失敗しました）
 2. `std::thread::spawn` で新しいスレッドを起動
 3. スレッド内で Arrow インタープリタの別インスタンスを生成してタスクを実行
 

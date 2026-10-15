@@ -266,7 +266,10 @@ impl Compiler {
     /// **その名前が slot に無いこと**。後者が要るのは、最上位文の内側（ループ本体・
     /// ブロック式の中）の宣言は slot だから — そちらは従来どおり `StoreLocal*` に落とす。
     pub(super) fn toplevel_decl_name(&mut self, name: &str) -> Option<u32> {
-        if !self.writes_toplevel_globals() || self.slots.contains_key(name) {
+        // ⚠ セル変数（入れ子 `fn` に可変キャプチャされるローカル）は最上位の宣言ではない（ffi_value_exchange_plan.md 7-22）。
+        //   セルへ移した名前は `slots` から外れるので、ここで除かないと非同期タスクの本体（名前で書くモード）では
+        //   `DeclareGlobal` になり、閉包が見るセルが `None` のまま残った。最上位のモードではセルは空なので変わらない
+        if !self.writes_toplevel_globals() || self.slots.contains_key(name) || self.cells.contains_key(name) {
             return None;
         }
         Some(self.add_name(name))

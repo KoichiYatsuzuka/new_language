@@ -283,3 +283,29 @@ fn test_template_instance_in_a_task_matches_its_template() {
     };
     assert!(matches!(results.as_slice(), [Value::Int(7)]), "unexpected results: {results:?}");
 }
+
+/// タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（ffi_value_exchange_plan.md 7-22）。変数はセルに置く
+/// （`compile_fn_inner` と同じ）。⚠ 以前はタスクの本体がセルを持たず、`VmForceError` でタスクが失敗した。
+#[test]
+fn test_task_body_closure_over_a_mut_local() {
+    let src = concat!(
+        "mut mng = AsyncManager(num_thread=1)\n",
+        "mng <- async->int:\n",
+        "    mut seen: list[int] = []\n",
+        "    fn add(let v: int) -> None:\n",
+        "        seen.append(v)\n",
+        "    add(1)\n",
+        "    add(2)\n",
+        "    block_return len(seen)\n",
+        "mng.wait_for_finish()\n",
+        "let errors = mng.error_list\n",
+        "let results = mng.results\n",
+    );
+    let interp = run_interp(src);
+    let list = |name: &str| match interp.get_val(name) {
+        Some(Value::List(l)) => l.borrow().clone(),
+        other => panic!("{name}: expected a list, got {other:?}"),
+    };
+    assert!(matches!(list("errors").as_slice(), [Value::None]), "{:?}", list("errors"));
+    assert!(matches!(list("results").as_slice(), [Value::Int(2)]), "{:?}", list("results"));
+}

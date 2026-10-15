@@ -108,6 +108,7 @@ $knownDiff = @{
     'async_cs_calls'                 = 'Rust: 非同期タスクの中から C# を呼ぶ（ffi_value_exchange_plan.md 6-2）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'async_thread_bound'             = 'Rust: スレッドに縛られる値はタスクへ切り離した複製を送る（ffi_value_exchange_plan.md 7-19）。py: AsyncManager が無く NameError'
     'async_thread_bound_error'       = 'Rust: メインの Signal をタスクの中で使うと RuntimeError（7-19）。py: AsyncManager が無く NameError'
+    'async_closure_mut'              = 'Rust: タスクの本体で本体の mut 変数を捕まえる入れ子の関数（ffi_value_exchange_plan.md 7-22）。py: AsyncManager が無く NameError'
     'foreign_error_catch'            = 'Rust: 外部言語の例外を ForeignError・FfiTypeError で捕まえる（ffi_value_exchange_plan.md 7-4）。py: cs_probe/cs_probe.dll を見つけられず ParseError（cs_proc_values と同じ）'
     'ffi_int_overflow'               = 'Rust: py-int / js-proc から int に入らない整数が返ると OverflowError（ffi_value_exchange_plan.md 7-9）。py: js-proc に対応しておらず ParseError'
     'py_int_overflow_error'          = 'Rust: `-> int` の Python の関数が 2**70 を返すと OverflowError（7-9）。py: 境界の検査が無く int に 64 ビットの上限も無いので値をそのまま出す'

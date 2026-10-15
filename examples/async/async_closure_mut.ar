@@ -1,0 +1,44 @@
+# async_closure_mut.ar — 非同期タスクの本体で、本体の mut 変数を捕まえる入れ子の関数（正例・ffi_value_exchange_plan.md 7-22）
+#
+# タスクの本体は関数の本体と同じく、入れ子の `fn` が本体の `mut` 変数を読み書きできる（変数はセルに置く）。
+# ⚠ 7-22 より前は、この形を書くとタスクの本体をバイトコードへコンパイルできず、タスクが
+#   `VmForceError: cannot compile async task body to bytecode` で失敗した（関数の中なら動いた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+mut mng = AsyncManager(num_thread=1)
+# 入れ子の関数が本体の mut のリストへ足す
+mng <- async->int:
+    mut seen: list[int] = []
+    fn add(let v: int) -> None:
+        seen.append(v)
+    add(1)
+    add(2)
+    block_return len(seen)
+# 入れ子の関数が本体の mut の整数を付け替える
+mng <- async->int:
+    mut total = 0
+    fn bump(let by: int) -> None:
+        total = total + by
+    bump(3)
+    bump(4)
+    block_return total
+# 不変の変数を捕まえるのは従来どおり
+mng <- async->int:
+    let base = 10
+    fn plus(let v: int) -> int:
+        return base + v
+    block_return plus(5)
+mng.wait_for_finish()
+
+let errors = mng.error_list
+check("no task failed", errors[0] is None and errors[1] is None and errors[2] is None)
+let results = mng.results
+check("nested fn appends to a mut list of the body", results[0] == 2)
+check("nested fn rebinds a mut int of the body", results[1] == 7)
+check("nested fn reads a let of the body", results[2] == 15)

@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-20・7-23〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-9・7-11・7-12・7-15〜7-20・7-22〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -255,7 +255,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-19** | ✅（§5）非同期タスクへ送る値の複製（`Value::deep_clone`）が `other => other.clone()` で終わり、`Code` / `Meta` / `FileObject` / `AsyncManager` / `Signal` / `EventLoop` の `Rc` を共有したままワーカーへ送る（参照カウントは非アトミック）。テンプレート 3 種も明示的に `Rc` を共有している。種類ごとに複製するか送れないエラーにするかを決め、`_` を外して網羅する（6-2 で `CsObject` を直したときに発見） | なし | 小 |
 | **7-20** | ✅（§5・共有を仕様とした）`mut` の変数を非同期タスクへ `Rc` を共有したまま送る（`async_mgr::clone_for_task`）。タスクの中の `xs.append(..)` がメインのリストを別のスレッドから書き換える（データ競合。再束縛 `n = 5` は伝わらない）。文書も食い違っている（`docs/grammar/10_special_features.md` は共有、`.claude/rules/language-differences.md` は複製と書く）。`let` と同じく複製にするか、明示的な共有の仕組み（CLAUDE.md の Async enhancements の Mutex のような型）へ移すかを決める（7-19 で発見・設計判断が要る） | なし | 中 |
 | **7-21** | 非同期タスクへ送る AST が `Rc` を共有している。文字列リテラル（`Expr::Str(Rc<str>)`・#15）と宣言のトークン列（`SrcRange::tokens`）は、関数の本体やタスクの本体を複製しても中身の `Rc` が同じで、ワーカーが評価のたびに参照カウントを増減する（メインと同時に同じリテラルを評価すると壊れうる）。送るときに作り直すか `Arc` にする（7-19 で発見） | なし | 中 |
-| **7-22** | 非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
+| **7-22** | ✅（§5）非同期タスクの本体で、本体の `mut` 変数を捕まえる入れ子の関数（`mut seen = [..]` と `fn add(..): seen.append(..)`）を書くと、タスクが `VmForceError: cannot compile async task body to bytecode` で失敗する（関数の中なら動く）。例題が 1 本も書いていない形（7-19 で発見・既存） | なし | 小 |
 | **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
@@ -1418,6 +1418,24 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
   13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（193/193。新しい例題も一致）・
   `compare_wasm_frontend` 563/563・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1179 件が通る（解釈側だけの変更
   なので VSIX は作り直していない）
+
+### 7-22 実装
+
+- 非同期タスクの本体のコンパイル（`compile_async_body`）が、入れ子の `fn` に可変キャプチャされる本体のローカルをセルへ移す
+  （`compile_fn_inner` と同じ手順。`nested_fn_free_names` / `cells` / `cell_by_slot` / `n_cells`）。あわせて `toplevel_decl_name` が
+  セル変数を除く（タスクの本体は名前で大域へ書くモードを使うので、セルへ移して `slots` から外れた名前が `DeclareGlobal` になり、
+  閉包の見るセルが `None` のままだった・最上位のモードではセルは空なので変わらない）
+- ⚠ 以前はタスクの本体がセルを持たず、この形を書くとコンパイルできずに `VmForceError: cannot compile async task body to bytecode`
+  でタスクが失敗した（関数の中なら動いた・基準の exe で再現）
+- 検査: `compare_bytecode`（基準 `803632f`）491/492 一致。差の `async_cs_calls` はワーカーのスレッドがチャンクを出す順序だけで、
+  基準の exe 同士でも同じように揺れる（中身は同一）。`tw_stats`: コンパイルの失敗 0 件
+- 単体テスト `test_task_body_closure_over_a_mut_local`（デバッグビルドでセル索引の検査が効く）。例題: `async/async_closure_mut.ar`
+  （期待値と違えば raise。基準の exe では落ちる）
+- 文書: `docs/grammar/10_special_features.md`（非同期タスク）
+- ゲート（基準 `803632f`・制限時間つき）: `compare_outputs` 473/473 一致（⚠ `async` は対象外。新しい例題は `scan_examples` で見て、
+  基準の exe で落ちることは手で確かめた）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl` clean（193/193）・`compare_wasm_frontend` 564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。
+  `cargo test` 1180 件が通る（解釈側だけの変更なので VSIX は作り直していない）
 
 ---
 
