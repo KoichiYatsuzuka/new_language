@@ -2548,7 +2548,10 @@ class Interpreter:
                                         return f(*[_py_to_tl(a) for a in args],
                                                  **{k: _py_to_tl(v) for k, v in kwargs.items()})
                                     except Exception as e:
-                                        raise RuntimeError(str(e))
+                                        # An exception raised by Python is a ForeignError whose message carries the
+                                        # Python exception type, like Rust's py_interop (ffi_value_exchange_plan.md 7-24).
+                                        # It used to be an uncatchable RuntimeError holding only str(e).
+                                        _raise_builtin("ForeignError", f"{type(e).__name__}: {e}", self._known_classes)
                                 return _make_native(attr, py_fn)
                             members2[attr] = make_py_fn(val)
                         else:
