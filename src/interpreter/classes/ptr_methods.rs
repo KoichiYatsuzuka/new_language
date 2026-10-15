@@ -28,27 +28,50 @@ impl Interpreter {
                 Ok(Value::None)
             }
             "to_list" => {
-                // 数値は幅で読む。構造体は C と同じレイアウトのクラスのインスタンスにする（4-6・コンストラクタは呼ばない）
+                // 数値は幅で読む。構造体は C と同じレイアウトのクラスのインスタンスにする（コンストラクタは呼ばない）:
+                // 数値だけの構造体は C のバイト列を写し（4-6）、ポインタのフィールドを持つ構造体はフィールドごとに D-7 の規則で
+                // 変換する（7-14・値返しの構造体と同じ）
                 let elem = p.elem_type().to_string();
                 let items = if crate::interpreter::value::is_num_elem(&elem) || elem == "void" {
                     p.read_list()?
                 } else {
                     let class = match self.get_val(&elem) {
-                        Some(Value::Class(c)) if c.raw_layout.is_some() => c,
+                        Some(Value::Class(c)) if c.raw_layout.is_some() || c.c_struct.is_some() => c,
                         _ => {
                             return Err(format!(
-                                "TypeError: Ptr[{elem}].to_list() needs struct '{elem}' with an exact C layout (all fields numbers)"
+                                "TypeError: Ptr[{elem}].to_list() needs '{elem}' to be a struct declared in a C header"
                             ))
                         }
                     };
-                    let size = class.raw_layout.as_ref().map(|l| l.c_size()).unwrap_or(0);
-                    p.read_struct_elements(size)?
-                        .into_iter()
-                        .map(|b| {
-                            crate::interpreter::InstanceData::from_c_bytes(class.clone(), &b)
-                                .map(|i| Value::Instance(Rc::new(RefCell::new(i))))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
+                    if let Some(layout) = class.raw_layout.as_ref() {
+                        p.read_struct_elements(layout.c_size())?
+                            .into_iter()
+                            .map(|b| {
+                                crate::interpreter::InstanceData::from_c_bytes(class.clone(), &b)
+                                    .map(|i| Value::Instance(Rc::new(RefCell::new(i))))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        let layout = match class.c_struct.as_deref() {
+                            Some(Ok(l)) => l,
+                            Some(Err(why)) => {
+                                return Err(format!("TypeError: Ptr[{elem}].to_list() cannot expand struct '{elem}': {why}"))
+                            }
+                            None => unreachable!("checked above: a class with neither layout was rejected"),
+                        };
+                        let mut items = Vec::new();
+                        for b in p.read_struct_elements(layout.size)? {
+                            // SAFETY: 要素は `PtrProtocol` が並べた C の構造体（D-15）。ポインタのフィールドは C の側の規約で NULL か
+                            // 読めるメモリ（生のヘッダの戻り値と同じ前提・D-7）
+                            let values = unsafe { crate::interpreter::value::read_c_struct_fields(&b, layout)? };
+                            let mut inst = crate::interpreter::InstanceData::new_empty(class.clone(), 0);
+                            for (i, v) in values.into_iter().enumerate() {
+                                inst.store_field(i, v, true);
+                            }
+                            items.push(Value::Instance(Rc::new(RefCell::new(inst))));
+                        }
+                        items
+                    }
                 };
                 Ok(Value::List(Rc::new(RefCell::new(items))))
             }

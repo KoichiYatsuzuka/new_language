@@ -182,4 +182,135 @@ impl CStructDef {
         }
         crate::interpreter::value::RawLayout::from_fields(&anns)
     }
+
+    /// ポインタのフィールドを持つ構造体の C のレイアウト（`Ptr[構造体].to_list()` で要素ごとに展開する・
+    /// ffi_value_exchange_plan.md 7-14）。展開できなければ理由。
+    ///
+    /// フィールドの変換は値返しの構造体と同じ D-7 の規則（`codegen::field_to_handle`）: 数値・`bool` はそのまま、
+    /// `char*` / `wchar_t*` は `bytes`、ほかのポインタは借用の `Ptr`、NULL は `None`。並びは C の規則（各フィールドを自分の
+    /// 幅の境界へ・全体をいちばん大きい境界の倍数へ）で、ポインタはプロセスのポインタの幅。
+    /// ⚠ `ArPtrProtocol` のフィールドは展開できない: 値返しでは 1 回だけ所有の `Ptr` にするが、配列の要素は `to_list()` を
+    ///   呼ぶたびに読まれるので、同じメモリに持ち主が何人もできる（解放が二重になる）。
+    pub fn c_struct_layout(&self, structs: &[CStructDef]) -> Result<crate::interpreter::value::CStructLayout, String> {
+        use crate::interpreter::value::{CField, CStructLayout};
+        if !self.complete || self.fields.is_empty() {
+            return Err("its exact C layout is not known (a field was skipped: an array, a bit-field or a nested struct)"
+                .to_string());
+        }
+        let ptr_size = std::mem::size_of::<usize>();
+        let mut fields = Vec::with_capacity(self.fields.len());
+        let (mut offset, mut align) = (0usize, 1usize);
+        for (fname, ct) in &self.fields {
+            let (size, field) = match ct {
+                CType::Int { width, signed } => {
+                    let ann = int_raw_ann(*width, *signed);
+                    let w = crate::interpreter::value::RawWidth::from_ann(ann)
+                        .map(|w| w.byte_width())
+                        .expect("int_raw_ann gives a C width name");
+                    (w, CField::Num(ann.to_string()))
+                }
+                CType::Float => (4, CField::Num("float32".to_string())),
+                CType::Double => (8, CField::Num("float64".to_string())),
+                CType::Bool => (1, CField::Bool),
+                CType::CharPtr { wide: false, .. } => (ptr_size, CField::Text { unit: 1 }),
+                // `wchar_t` の幅は環境で決まる（`int_rust_type`）
+                CType::CharPtr { wide: true, .. } => (ptr_size, CField::Text { unit: if cfg!(windows) { 2 } else { 4 } }),
+                CType::OpaqueStructPtr { type_name, .. } if !structs.iter().any(|d| &d.name == type_name) => {
+                    return Err(format!(
+                        "its field `{fname}` points to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
+                    ))
+                }
+                CType::VoidPtr | CType::Ptr { .. } | CType::OpaqueStructPtr { .. } => {
+                    (ptr_size, CField::Ptr(ct.ptr_elem_name().expect("a pointer type has an element name")))
+                }
+                CType::PtrProtocol { by_pointer: false, .. } => {
+                    return Err(format!(
+                        "its field `{fname}` is an `ArPtrProtocol`, which would get a new owner every time the array is expanded (return the structs one by one instead)"
+                    ))
+                }
+                CType::PtrProtocol { by_pointer: true, .. } | CType::ByValueStruct { .. } | CType::FnPtr | CType::Void => {
+                    return Err(format!(
+                        "its field `{fname}` cannot be read from C memory (a nested struct, a function pointer or an `ArPtrProtocol*`)"
+                    ))
+                }
+            };
+            offset = offset.div_ceil(size) * size;
+            fields.push((offset, field));
+            offset += size;
+            align = align.max(size);
+        }
+        Ok(CStructLayout { fields, size: offset.div_ceil(align) * align })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::value::CField;
+
+    fn def(name: &str, fields: Vec<(&str, CType)>) -> CStructDef {
+        CStructDef {
+            name: name.to_string(),
+            fields: fields.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
+            complete: true,
+        }
+    }
+
+    /// ポインタのフィールドを持つ構造体の並びが C（= Rust の `#[repr(C)]`）と同じになる（7-14）
+    #[test]
+    fn c_struct_layout_matches_repr_c() {
+        #[repr(C)]
+        struct Mixed {
+            kind: i16,
+            label: *const u16,
+            rec: *const u8,
+            extra: *const u8,
+            flag: u8,
+        }
+        let rec = def("Rec", vec![("id", CType::Int { width: IntWidth::W32, signed: true })]);
+        let mixed = def(
+            "Mixed",
+            vec![
+                ("kind", CType::Int { width: IntWidth::W16, signed: true }),
+                ("label", CType::CharPtr { wide: true, mutable: false }),
+                ("rec", CType::OpaqueStructPtr { type_name: "Rec".to_string(), mutable: true }),
+                ("extra", CType::VoidPtr),
+                ("flag", CType::Bool),
+            ],
+        );
+        let all = [rec, mixed.clone()];
+        let l = mixed.c_struct_layout(&all).unwrap();
+        let offsets: Vec<usize> = l.fields.iter().map(|(o, _)| *o).collect();
+        assert_eq!(
+            offsets,
+            vec![
+                std::mem::offset_of!(Mixed, kind),
+                std::mem::offset_of!(Mixed, label),
+                std::mem::offset_of!(Mixed, rec),
+                std::mem::offset_of!(Mixed, extra),
+                std::mem::offset_of!(Mixed, flag),
+            ]
+        );
+        assert_eq!(l.size, std::mem::size_of::<Mixed>(), "the element stride includes the tail padding");
+        assert_eq!(l.fields[0].1, CField::Num("int16".to_string()));
+        assert_eq!(l.fields[1].1, CField::Text { unit: if cfg!(windows) { 2 } else { 4 } });
+        assert_eq!(l.fields[2].1, CField::Ptr("Rec".to_string()));
+        assert_eq!(l.fields[3].1, CField::Ptr("void".to_string()));
+        assert_eq!(l.fields[4].1, CField::Bool);
+    }
+
+    /// 展開できない構造体は理由を返す（黙って読み違えない）
+    #[test]
+    fn c_struct_layout_reasons() {
+        let i32t = CType::Int { width: IntWidth::W32, signed: true };
+        let tagged = def("Tagged", vec![("tag", i32t.clone()), ("data", CType::PtrProtocol { by_pointer: false, mutable: false })]);
+        assert!(tagged.c_struct_layout(&[]).unwrap_err().contains("`data` is an `ArPtrProtocol`"));
+        let cb = def("Cb", vec![("f", CType::FnPtr)]);
+        assert!(cb.c_struct_layout(&[]).unwrap_err().contains("`f` cannot be read"));
+        let unknown = def("U", vec![("p", CType::OpaqueStructPtr { type_name: "TCHAR".to_string(), mutable: false })]);
+        assert!(unknown.c_struct_layout(&[]).unwrap_err().contains("does not declare as a struct"));
+        let mut partial = def("P", vec![("x", i32t)]);
+        partial.complete = false;
+        assert!(partial.c_struct_layout(&[]).unwrap_err().contains("not known"));
+    }
 }

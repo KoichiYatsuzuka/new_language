@@ -6,6 +6,8 @@
 #     フィールドを持つ構造体は値で受け渡せなかった
 #   - 値渡しの引数: ポインタのフィールドも同じ規則で C の構造体を組み立てる（bytes は呼び出しの間だけのコピー）
 #   - 構造体の配列: ArPtrProtocol で届いた Ptr[構造体] を `to_list()` で list[構造体] にする（要素ごとのコピー）
+#     ポインタのフィールドを持つ構造体の配列も、値返しと同じ D-7 の規則でフィールドごとに変換する（7-14）。並びは C の規則
+#     （各フィールドを自分の幅の境界へ・全体をいちばん大きい境界の倍数へ）。⚠ 7-14 より前は TypeError だった
 # 展開した値はコピーで、元の C のメモリとはつながらない（D-2）。
 #
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
@@ -49,3 +51,15 @@ mut total = 0
 for p in pairs:
     total += fp.fp_pair_sum(p)
 check("each element is an independent Pair", total == 9)
+
+# ── ポインタのフィールドを持つ構造体の配列（7-14）──────────────────────────────────────
+let named = (fp.fp_named_list() mustbe Ptr[Named]).to_list()
+check("char* fields in an array become bytes", len(named) == 2 and named[1].id == 2 and (named[1].name mustbe bytes) == "two".encode())
+# Mixed = { short kind; const wchar_t* label; Rec* rec; void* extra; bool flag; }（kind の後ろと末尾に詰め物がある）
+let ms = (fp.fp_mixed_list() mustbe Ptr[Mixed]).to_list()
+check("padding and the element stride follow C", len(ms) == 3 and ms[0].kind == 1 and ms[1].kind == -2 and ms[2].kind == 3)
+check("wchar_t* field becomes UTF-16LE bytes", (ms[2].label mustbe bytes).decode("utf-16-le") == "three")
+check("NULL pointer fields are None", ms[1].label is None and ms[1].rec is None and ms[0].extra is None)
+check("struct pointer field is a borrowed Ptr[Rec]", ms[0].rec is Ptr[Rec] and fp.fp_rec_score(ms[0].rec) == 2.5)
+check("void* field is a borrowed Ptr[void]", ms[1].extra is Ptr[void])
+check("bool field", ms[0].flag and not ms[1].flag and ms[2].flag)

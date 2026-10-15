@@ -197,8 +197,8 @@ impl PtrHandle {
 
     /// `p.to_list()`（3-3・D-10）。指す先の要素を Arrow の値へコピーする（展開した `list` は元のポインタとつながらない）。
     ///
-    /// ⚠ 要素の型は作られたときの型（`elem_type`）で読む。数値だけ。構造体の要素はまだ展開できない（4-6）、
-    ///   `void` は読めない、長さの分からない生のポインタ（D-7）も読めない。どれも誤り。
+    /// ⚠ 要素の型は作られたときの型（`elem_type`）で読む。数値だけ（構造体の要素は `classes/ptr_methods.rs` の `to_list` が
+    ///   `read_struct_elements` で読む・4-6・7-14）。`void` は読めない、長さの分からない生のポインタ（D-7）も読めない。どれも誤り。
     /// ⚠ 中身を信じる根拠は `PtrProtocol` の規約（D-15: Arrow が参照している間は有効）。
     pub fn read_list(&self) -> Result<Vec<super::Value>, String> {
         let Some(width) = num_width(&self.elem_type) else {
@@ -658,6 +658,82 @@ pub(crate) fn ptr_from_protocol(raw: &PtrProtocolRaw, known_structs: &[Arc<str>]
     Ok(super::Value::Ptr(Arc::new(h)))
 }
 
+/// ポインタのフィールドを持つ C の構造体の並び（`Ptr[構造体].to_list()`・ffi_value_exchange_plan.md 7-14）。
+///
+/// 数値だけの構造体は `RawLayout`（C のバイト列をインスタンスへ写す・4-6）を使う。こちらはフィールドごとに Arrow の値へ
+/// 変換する構造体のためのもので、cpp のヘッダから実行時に作る（`CStructDef::c_struct_layout`）。並びは C の規則: 各フィールドを
+/// 自分の幅の境界へ揃え、全体の大きさをいちばん大きい境界の倍数へ切り上げる（ポインタはプロセスのポインタの幅）。
+#[derive(Debug, Clone)]
+pub struct CStructLayout {
+    /// 宣言順の（構造体の先頭からのバイト位置, 種類）。
+    pub fields: Vec<(usize, CField)>,
+    /// C の `sizeof`（配列の要素の間隔）。
+    pub size: usize,
+}
+
+/// C の構造体のフィールドの種類と、Arrow の値への変換（D-7。値返しの構造体の中継コード `cpp_bridge::codegen::field_to_handle`
+/// と同じ規則にすること）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum CField {
+    /// 数値（C の幅つきの名前 `int32` / `float64` …・`read_num` で読む。`uint64` の 2^63 以上は OverflowError）。
+    Num(String),
+    /// C の `bool`（1 バイト。0 以外は真）。
+    Bool,
+    /// `char*` / `wchar_t*`: NUL 終端の文字データの `bytes`（`unit` は 1 文字のバイト数。`wchar_t` は UTF-16LE）。NULL は `None`。
+    Text { unit: usize },
+    /// ほかのポインタ（`void*`・構造体・数値へのポインタ）: 借用の `Ptr[elem]`（Arrow は解放しない）。NULL は `None`。
+    Ptr(String),
+}
+
+/// C の構造体 1 つのバイト列（`layout.size` バイト）から、宣言順のフィールドの値を作る（7-14）。
+///
+/// ⚠ 文字データのフィールドは、指す先の NUL までをコピーする（D-2: 展開した値は C のメモリとつながらない）。
+///   ポインタのフィールドは借用の `Ptr`（生のヘッダの戻り値と同じ・D-7）。
+///
+/// # Safety
+/// `bytes` は C の構造体の写しで、そのポインタのフィールドは NULL か、読める NUL 終端の文字データ・メモリを指すこと
+/// （`PtrProtocol` の規約・D-15）。
+pub unsafe fn read_c_struct_fields(bytes: &[u8], layout: &CStructLayout) -> Result<Vec<super::Value>, String> {
+    use super::Value;
+    if bytes.len() < layout.size {
+        return Err(format!(
+            "RuntimeError: a C struct needs {} bytes, but {} were given",
+            layout.size,
+            bytes.len()
+        ));
+    }
+    let addr_at = |off: usize| -> usize {
+        let mut b = [0u8; std::mem::size_of::<usize>()];
+        b.copy_from_slice(&bytes[off..off + std::mem::size_of::<usize>()]);
+        usize::from_le_bytes(b)
+    };
+    layout
+        .fields
+        .iter()
+        .map(|(off, field)| {
+            Ok(match field {
+                CField::Num(elem) => read_num(elem, bytes[*off..].as_ptr())?,
+                CField::Bool => Value::Bool(bytes[*off] != 0),
+                CField::Text { unit } => match addr_at(*off) {
+                    0 => Value::None,
+                    p => {
+                        // NUL（`unit` バイトがすべて 0）の手前まで
+                        let mut n = 0usize;
+                        while (0..*unit).any(|k| std::ptr::read_unaligned((p + n * unit + k) as *const u8) != 0) {
+                            n += 1;
+                        }
+                        Value::bytes(std::slice::from_raw_parts(p as *const u8, n * unit).to_vec())
+                    }
+                },
+                CField::Ptr(elem) => match addr_at(*off) {
+                    0 => Value::None,
+                    p => Value::Ptr(Arc::new(PtrHandle::new(p as u64, elem.clone(), 0, None, PtrOwner::Borrowed, None)?)),
+                },
+            })
+        })
+        .collect()
+}
+
 /// 数値の要素の名前か（`int8` … `float64`）。
 pub(crate) fn is_num_elem(elem: &str) -> bool {
     num_width(elem).is_some()
@@ -1008,5 +1084,49 @@ mod tests {
         assert!(weak.upgrade().is_some(), "a copy still holds the library");
         drop(copy);
         assert!(weak.upgrade().is_none(), "the last copy lets the library go");
+    }
+
+    /// ポインタのフィールドを持つ C の構造体 1 つを読む（7-14）: 数値・`wchar_t*`（UTF-16LE の bytes）・構造体ポインタ
+    /// （借用の `Ptr`）・NULL（`None`）・`bool`
+    #[test]
+    fn reads_c_struct_fields_with_pointers() {
+        use crate::interpreter::Value;
+        #[repr(C)]
+        struct Mixed {
+            kind: i16,
+            label: *const u16,
+            rec: *const i32,
+            extra: *const u8,
+            flag: u8,
+        }
+        let wide: Vec<u16> = "ab".encode_utf16().chain([0]).collect();
+        let target = 7i32;
+        let m = Mixed { kind: -2, label: wide.as_ptr(), rec: &target, extra: std::ptr::null(), flag: 1 };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(&m as *const Mixed as *const u8, std::mem::size_of::<Mixed>())
+        };
+        let layout = CStructLayout {
+            fields: vec![
+                (std::mem::offset_of!(Mixed, kind), CField::Num("int16".to_string())),
+                (std::mem::offset_of!(Mixed, label), CField::Text { unit: 2 }),
+                (std::mem::offset_of!(Mixed, rec), CField::Ptr("Rec".to_string())),
+                (std::mem::offset_of!(Mixed, extra), CField::Ptr("void".to_string())),
+                (std::mem::offset_of!(Mixed, flag), CField::Bool),
+            ],
+            size: std::mem::size_of::<Mixed>(),
+        };
+        let v = unsafe { read_c_struct_fields(bytes, &layout) }.unwrap();
+        assert!(matches!(v[0], Value::Int(-2)), "{:?}", v[0]);
+        assert!(matches!(&v[1], Value::Bytes(b) if b[..] == [b'a', 0, b'b', 0]), "{:?}", v[1]);
+        assert!(
+            matches!(&v[2], Value::Ptr(p) if p.elem_type() == "Rec" && matches!(p.owner(), PtrOwner::Borrowed)
+                && p.address().unwrap() == &target as *const i32 as u64),
+            "{:?}",
+            v[2]
+        );
+        assert!(matches!(v[3], Value::None), "NULL is None: {:?}", v[3]);
+        assert!(matches!(v[4], Value::Bool(true)), "{:?}", v[4]);
+        // 足りないバイト列は誤り（読み越さない）
+        assert!(unsafe { read_c_struct_fields(&bytes[..8], &layout) }.is_err());
     }
 }

@@ -171,3 +171,26 @@ void fp_protocol_free(ArPtrProtocol* p) {
     if (p->release) p->release(p->release_ctx, p->address);
     p->address = 0;
 }
+
+// -- arrays of structs with pointer fields (task 7-14) --
+static int g_extra = 99;
+static Mixed g_mixed_list[3] = {
+    { 1, L"one", &g_rec, NULL, true },
+    { -2, NULL, NULL, &g_extra, false },
+    { 3, L"three", &g_rec, NULL, true },
+};
+ArPtrProtocol fp_mixed_list(void) {
+    ArPtrProtocol p = { (uint64_t)(uintptr_t)g_mixed_list, "Mixed", AR_PTR_STATIC | AR_PTR_CONST, 0, 3, NULL, NULL };
+    return p;
+}
+static int32_t g_tagged_a[2] = { 1, 2 };
+static int32_t g_tagged_b[1] = { 3 };
+static Tagged g_tagged_list[2];
+ArPtrProtocol fp_tagged_list(void) {
+    ArPtrProtocol a = { (uint64_t)(uintptr_t)g_tagged_a, "int32", AR_PTR_STATIC | AR_PTR_CONST, 0, 2, NULL, NULL };
+    ArPtrProtocol b = { (uint64_t)(uintptr_t)g_tagged_b, "int32", AR_PTR_STATIC | AR_PTR_CONST, 0, 1, NULL, NULL };
+    g_tagged_list[0].tag = 10; g_tagged_list[0].data = a;
+    g_tagged_list[1].tag = 20; g_tagged_list[1].data = b;
+    ArPtrProtocol p = { (uint64_t)(uintptr_t)g_tagged_list, "Tagged", AR_PTR_STATIC | AR_PTR_CONST, 0, 2, NULL, NULL };
+    return p;
+}

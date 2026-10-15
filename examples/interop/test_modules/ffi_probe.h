@@ -111,6 +111,12 @@ double fp_sumf(const ArPtrProtocol* p);      // sum of "float64" elements (-1.0 
 int fp_pairs_total(const ArPtrProtocol* p);  // sum of x + y over "Pair" elements (-1 for another element type)
 int fp_bytes_sum(ArPtrProtocol p);           // sum of "uint8" elements, by value (-1 for another element type)
 
+// -- arrays of structs with pointer fields, expanded by Ptr[T].to_list() (task 7-14) -------------
+// Mixed: padding after `kind` and at the end; a wide string, a struct pointer, a void pointer and a bool
+typedef struct { short kind; const wchar_t* label; Rec* rec; void* extra; bool flag; } Mixed;
+ArPtrProtocol fp_mixed_list(void);           // Mixed[3] (some pointer fields NULL), STATIC
+ArPtrProtocol fp_tagged_list(void);          // Tagged[2] (ArPtrProtocol fields, STATIC data), STATIC: to_list() refuses it
+
 #ifdef __cplusplus
 }
 #endif

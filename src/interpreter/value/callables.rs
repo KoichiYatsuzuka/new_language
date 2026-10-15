@@ -306,6 +306,10 @@ pub struct ClassValue {
     /// Some のときインスタンスは `INST_HAS_RAW_LAYOUT` で生成され、フィールドは
     /// `InstanceData.raw` の C ABI レイアウト領域に格納される。
     pub raw_layout: Option<Rc<RawLayout>>,
+    /// cpp のヘッダの構造体で `raw_layout` を持たない（ポインタのフィールドがある）もののとき、C のレイアウト（`Ok`）か
+    /// 配列を展開できない理由（`Err`）。`Ptr[構造体].to_list()` が使う（ffi_value_exchange_plan.md 7-14）。ほかのクラスは `None`。
+    /// ⚠ `Arc`（非同期タスクへ送るクラスの写しと共有しても参照カウントが壊れない・中身は読むだけ）。
+    pub c_struct: Option<std::sync::Arc<Result<super::CStructLayout, String>>>,
     /// 単相化したクラスのときの**具体化の名前**（`Stack[int]`）。通常のクラスは `None`（フェーズ10 10-10）。
     ///
     /// ⚠ `name` は単相化しても**テンプレートの名前**（`Stack`・タスク 2-8。表示と `Stack` 注釈との照合を
@@ -388,6 +392,7 @@ impl ClassValue {
             new_type_base: None,
             is_exception: false,
             raw_layout: None,
+            c_struct: None,
             instance_name: None,
             module_name: None,
             enum_of: None,
@@ -480,6 +485,7 @@ impl ClassValue {
             new_type_base: self.new_type_base.clone(),
             is_exception: self.is_exception,
             raw_layout: self.raw_layout.clone(),
+            c_struct: self.c_struct.clone(),
             instance_name: self.instance_name.clone(),
             // ⚠ `Rc` をスレッドへ持ち出さない（#15）。
             module_name: self.module_name.as_deref().map(Rc::from),

@@ -65,3 +65,5 @@ EXPORTS
     fp_sumf
     fp_pairs_total
     fp_bytes_sum
+    fp_mixed_list
+    fp_tagged_list

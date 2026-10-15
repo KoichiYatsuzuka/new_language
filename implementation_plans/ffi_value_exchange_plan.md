@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-12・7-15〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-12・7-14〜7-25 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -247,7 +247,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-11** | ✅（§5）バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
 | **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
-| **7-14** | ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
+| **7-14** | ✅（§5）ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
 | **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
 | **7-16** | ✅（§5）C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
 | **7-17** | ✅（§5）dict のキーの照合が、乱数のシード次第で型厳密でなくなる。`dict_get` / `dict_set` がキーの等値に式としての比較（`3 == 3.0` は真）を使っていた。ハッシュは型で分けているが、表の内部はハッシュの下位の手がかりが一致した別のキーにも等値を問うので、`d[3]` と `d[3.0]` が同じキーになることがあった（拡張のクレートのテスト `test_dict_keys_are_type_strict` が 5-3 のゲートで落ちて発見・およそ数回に 1 回） | なし | 小 |
@@ -259,6 +259,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
+| **7-26** | 非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1477,6 +1478,30 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - `compare_python_impl`: 一致するようになった 4 本（`bytes_basics`・`file_bytes`・`ptr_types`・`cpp_unsupported_signature_error`）を
   既知の差分から外し、`file_bytes_list_error`（Rust は静的エラー・参照実装は実行時の TypeError を stdout に出す）を足した
 - ゲート: `compare_python_impl` clean（196/196）。Rust 側は変えていない
+
+### 7-14 実装
+
+- `Ptr[構造体].to_list()` が、ポインタのフィールドを持つ構造体の配列を展開する。フィールドの変換は値返しの構造体（4-6・中継コードの
+  `field_to_handle`）と同じ D-7 の規則: 数値・`bool` はそのまま、`char*` / `wchar_t*` は NUL までの `bytes`（`wchar_t` は UTF-16LE）、
+  ほかのポインタ（`void*`・構造体・数値へのポインタ）は借用の `Ptr`、NULL は `None`。コンストラクタは呼ばない
+- C のレイアウトは cpp のヘッダから実行時に作る（`CStructDef::c_struct_layout`）。各フィールドを自分の幅の境界へ揃え、全体を
+  いちばん大きい境界の倍数へ切り上げる（ポインタはプロセスのポインタの幅・`wchar_t` は環境の幅）。クラスに持たせ
+  （`ClassValue::c_struct`。数値だけの構造体は従来どおり `raw_layout` でバイト列を写す）、要素の読み取りは
+  `value::read_c_struct_fields`
+- 展開できないものは理由つきの TypeError: `ArPtrProtocol` のフィールド（値返しでは 1 回だけ所有の `Ptr` にするが、配列の要素は
+  `to_list()` のたびに読まれるので持ち主が何人もできる）・不完全なレイアウト・入れ子の構造体・関数ポインタ・ヘッダが構造体と
+  宣言していない名前へのポインタ
+- ⚠ 以前はポインタのフィールドを持つ構造体の配列はすべて TypeError だった（`Ptr[Named].to_list()`・基準の exe で再現）
+- 検査用の `ffi_probe` に `Mixed`（`short` の後ろと末尾に詰め物・`wchar_t*`・構造体ポインタ・`void*`・`bool`・NULL を含む）の
+  配列 `fp_mixed_list` と、`ArPtrProtocol` のフィールドを持つ `Tagged` の配列 `fp_tagged_list` を足した
+- 単体テスト: `c_struct_layout_matches_repr_c`（並びと大きさを Rust の `#[repr(C)]` と突き合わせる）・`c_struct_layout_reasons`・
+  `reads_c_struct_fields_with_pointers`
+- 例題: `interop/cpp_struct_expand.ar` に配列の節を足した（期待値と違えば raise。基準の exe では `Ptr[Named]` の TypeError で
+  落ちる）。`cpp_struct_list_error.ar` は `ArPtrProtocol` のフィールドを持つ `Tagged` の配列の負例に書き換えた
+- 文書: `docs/grammar/09_imports.md` の表
+- ⚠ 実装中に見つけたもの: クラスの写し（`ClassValue::deep_clone`）が `raw_layout` などの `Rc` を共有したまま非同期タスクへ送られる
+  （⇒ 7-26）。新しい `c_struct` は `Arc` にした
+- ゲート（基準 `154dbc7`・制限時間つき）: `compare_outputs` の差は書き換えた例題 2 本（`cpp_struct_expand`・`cpp_struct_list_error`）だけ（471/473。負の対照は 473/473）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）・`compare_wasm_frontend` 564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1184 件が通る（解釈側だけの変更なので VSIX は作り直していない）
 
 ---
 

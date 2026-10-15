@@ -1112,6 +1112,11 @@ impl Interpreter {
             // するため、`raw.as_ptr()+8` をそのまま構造体ポインタとして渡せる）。
             // `ClassValue.raw_layout` は `Rc`（スレッド境界を越えない）なので複製する。
             let raw_layout = raw_layouts.get(&sdef.name).map(|l| Rc::new((**l).clone()));
+            // ポインタのフィールドを持つ構造体は、配列の要素ごとにフィールドを変換するための C のレイアウト（7-14）
+            let c_struct = match raw_layout {
+                Some(_) => None,
+                None => Some(Arc::new(sdef.c_struct_layout(struct_defs))),
+            };
             let cls = Rc::new(ClassValue {
                 methods,
                 field_mutability,
@@ -1121,6 +1126,7 @@ impl Interpreter {
                 static_method_names: std::collections::HashSet::new(),
                 class_method_names: std::collections::HashSet::new(),
                 raw_layout,
+                c_struct,
                 ..ClassValue::synthetic(sdef.name.clone(), crate::interpreter::value::alloc_class_id())
             });
 
