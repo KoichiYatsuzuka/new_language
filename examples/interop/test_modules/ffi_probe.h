@@ -14,6 +14,16 @@
 #include <stdbool.h>
 #include "../../../bridge/ptr_protocol/ar_ptr_protocol.h"
 
+// Default arguments written the way DxLib writes them (task 7-13): C++ sees `= x`, C sees nothing.
+#ifndef DEFAULTPARAM
+#ifdef __cplusplus
+#define DEFAULTPARAM(x) x
+#else
+#define DEFAULTPARAM(x)
+#endif
+#endif
+#define FP_MODE_DEFAULT 3
+
 typedef struct { int id; double score; } Rec;        // 16 bytes (returned via hidden pointer on x64)
 typedef struct { int x; int y; } Pair;               // 8 bytes (returned in RAX on x64)
 typedef struct { float x, y, z; } Vec3f;             // 12 bytes
@@ -116,6 +126,11 @@ int fp_bytes_sum(ArPtrProtocol p);           // sum of "uint8" elements, by valu
 typedef struct { short kind; const wchar_t* label; Rec* rec; void* extra; bool flag; } Mixed;
 ArPtrProtocol fp_mixed_list(void);           // Mixed[3] (some pointer fields NULL), STATIC
 ArPtrProtocol fp_tagged_list(void);          // Tagged[2] (ArPtrProtocol fields, STATIC data), STATIC: to_list() refuses it
+
+// -- default arguments (task 7-13) ----------------------------------------------------------------
+// a + b + c + (s ? strlen(s) : 100): omitted arguments must be the declared defaults, not 0 / NULL
+double fp_defaults(int a, int b DEFAULTPARAM( = -1 ), double c DEFAULTPARAM( = 0.5 ), const char* s DEFAULTPARAM( = NULL ));
+int fp_mode(int a, int mode DEFAULTPARAM( = FP_MODE_DEFAULT ));  // a + mode; a macro default cannot be read, so `mode` is required
 
 #ifdef __cplusplus
 }

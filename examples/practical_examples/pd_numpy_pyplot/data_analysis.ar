@@ -1,10 +1,10 @@
 # data_analysis.tl — monthly sales analysis with pandas, numpy, and matplotlib.
 #
-# Input : examples/data/sales_data.csv
-# Output: examples/data/sales_analysis.png
+# Input : examples/practical_examples/pd_numpy_pyplot/data/sales_data.csv
+# Output: examples/practical_examples/pd_numpy_pyplot/data/sales_analysis.png
 #
 # Run:
-#   cargo run -- examples/data_analysis.tl
+#   cargo run -- examples/practical_examples/pd_numpy_pyplot/data_analysis.ar
 
 import[py-int] warnings as _w
 _w.simplefilter("ignore")
@@ -19,7 +19,7 @@ import[py-int] matplotlib.pyplot as plt
 
 # ── 1. Load ───────────────────────────────────────────────────────────────────
 
-mut df = pd.read_csv("examples/data/sales_data.csv")
+mut df = pd.read_csv("examples/practical_examples/pd_numpy_pyplot/data/sales_data.csv")
 
 print("=== Raw Data ===")
 print(df)
@@ -123,7 +123,7 @@ plt.grid(True, alpha=0.3)
 
 plt.tight_layout()
 
-let out_path = "examples/data/sales_analysis.png"
+let out_path = "examples/practical_examples/pd_numpy_pyplot/data/sales_analysis.png"
 plt.savefig(out_path, dpi=100, bbox_inches="tight")
 plt.close()
 print("Graph saved to:", out_path)

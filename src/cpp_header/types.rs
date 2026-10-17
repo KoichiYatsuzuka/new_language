@@ -186,10 +186,84 @@ pub struct CFnSig {
     pub ret: CType,
     /// この関数が属する C++ 名前空間（例: `"DxLib"`）。名前空間がない場合は `None`。
     pub namespace: Option<String>,
-    /// 最初のオプション引数のインデックス（DEFAULTPARAM / C++ デフォルト引数を持つもの）。
-    /// 呼び出し側は `n_required` 以降の末尾引数を省略できる。省略された引数は
-    /// 0（tl の None ハンドル、NULL ポインタまたは 0 にマーシャリングされる）で埋められる。
+    /// 省略できる末尾の引数の始まり（`n_required` 以降は省略できる）。既定値（`DEFAULTPARAM( = 0 )` / C++ の `= 0`）を
+    /// **読めた**引数が末尾に続く部分だけを数える（ffi_value_exchange_plan.md 7-13）。既定値が読めない引数（マクロ名・式）は
+    /// 省略できない。
     pub n_required: usize,
+    /// 引数ごとの既定値（`params` と同じ並び。`n_required` より前は `None`）。省略した引数にはこの値を入れる
+    /// （型スタブの既定値・実行時の `NativeFnRef::omitted_arg`）。空なら既定値なし（テストの手組み）。
+    /// ⚠ 以前は既定値を読まず、省略した引数を一律に `None`（0 / NULL）で埋めていた（`DEFAULTPARAM( = -1 )` も 0 になり、
+    ///   7-12 以降は数値の引数が TypeError になった）。型スタブは既定値を持たず、省略そのものが静的エラーだった。
+    pub defaults: Vec<Option<CDefault>>,
+}
+
+/// C の引数の既定値（ffi_value_exchange_plan.md 7-13）。省略した引数に入れる Arrow の値になる。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CDefault {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    /// `NULL` / `nullptr`（ポインタの引数）→ `None`（D-8）。
+    Null,
+}
+
+impl CType {
+    /// 既定値の字句（`=` の右）を、この型の引数の値として読む（7-13）。読めなければ（マクロ名・式・未対応の型）`None` で、
+    /// その引数は省略できない（黙って 0 にしない）。
+    /// 整数: 10 進・16 進（`0x`）・符号・接尾辞（`u` / `l`）、`TRUE` / `FALSE`（Windows の `BOOL`）、`NULL`（0）。
+    /// 浮動小数: `1.0f` など（整数の字句も可）。`bool`: `true` / `false` / `TRUE` / `FALSE` / `1` / `0`。
+    /// ポインタ: `NULL` / `nullptr` / `0` だけ。
+    pub fn parse_default(&self, text: &str) -> Option<CDefault> {
+        let mut t = text.trim();
+        while let Some(inner) = t.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            t = inner.trim();
+        }
+        match self {
+            CType::Int { .. } => match t {
+                "TRUE" | "true" => Some(CDefault::Int(1)),
+                "FALSE" | "false" | "NULL" => Some(CDefault::Int(0)),
+                _ => parse_c_int(t).map(CDefault::Int),
+            },
+            CType::Float | CType::Double => {
+                let num = t.strip_suffix(['f', 'F']).unwrap_or(t);
+                match parse_c_int(t) {
+                    Some(n) => Some(CDefault::Float(n as f64)),
+                    None if num.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')) => {
+                        num.parse::<f64>().ok().map(CDefault::Float)
+                    }
+                    None => None,
+                }
+            }
+            CType::Bool => match t {
+                "true" | "TRUE" | "1" => Some(CDefault::Bool(true)),
+                "false" | "FALSE" | "0" => Some(CDefault::Bool(false)),
+                _ => None,
+            },
+            CType::VoidPtr
+            | CType::Ptr { .. }
+            | CType::CharPtr { .. }
+            | CType::OpaqueStructPtr { .. }
+            | CType::PtrProtocol { by_pointer: true, .. } => {
+                matches!(t, "NULL" | "nullptr" | "0").then_some(CDefault::Null)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// C の整数の字句（10 進・`0x` の 16 進・符号・接尾辞 `u` / `l`）。それ以外は `None`。
+fn parse_c_int(t: &str) -> Option<i64> {
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, t.strip_prefix('+').unwrap_or(t).trim_start()),
+    };
+    let body = body.trim_end_matches(['u', 'U', 'l', 'L']);
+    let n = match body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+        None if !body.is_empty() && body.chars().all(|c| c.is_ascii_digit()) => body.parse::<i64>().ok()?,
+        None => return None,
+    };
+    Some(if neg { -n } else { n })
 }
 
 // ── What can cross the boundary today (ffi_value_exchange_plan.md 1-2) ──────
@@ -385,6 +459,7 @@ mod tests {
             ret,
             namespace: None,
             n_required: 0,
+            defaults: vec![],
         }
     }
     fn st_ptr(n: &str) -> CType { CType::OpaqueStructPtr { type_name: n.to_string(), mutable: false } }

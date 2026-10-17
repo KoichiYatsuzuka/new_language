@@ -89,16 +89,19 @@ impl Parser {
                 let cfg = crate::cpp_header::load_cpp_config(
                     resolved.parent().unwrap_or(std::path::Path::new(".")),
                 );
-                let typedefs = crate::cpp_header::load_system_typedefs(
+                let system = crate::cpp_header::load_system_types(
                     &cfg.system_headers,
                     &cfg.precompile_macros,
                 );
+                let typedefs = &system.typedefs;
                 use crate::cpp_header::CType;
-                let (sigs, struct_defs) = crate::cpp_header::parse_header_full(
+                let (sigs, mut struct_defs) = crate::cpp_header::parse_header_full(
                     &content,
                     &cfg.custom_type_map,
-                    &typedefs,
+                    typedefs,
                 );
+                // システムヘッダの構造体（`RECT` など）のうち参照されるもの（7-13・実行時の `load_cpp_module` と同じ）
+                crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &cfg.custom_type_map, typedefs);
                 let mut stmts: Vec<Stmt> = Vec::new();
                 // Generate Stmt::ClassDef stubs for C structs so the type checker
                 // knows about their fields.
@@ -175,7 +178,8 @@ impl Parser {
                     let params: Vec<Param> = sig
                         .params
                         .into_iter()
-                        .map(|(pname, ct)| {
+                        .enumerate()
+                        .map(|(i, (pname, ct))| {
                             // 書き込み用ポインタ引数（`T*` / `VECTOR*` 等）は `mut` 扱いにする。
                             // これにより型チェッカーの `CallMutParamWithImmutableArg` 検査が
                             // 「不変（`let`）変数を出力ポインタへ渡す」誤りを静的に捕捉する
@@ -194,7 +198,20 @@ impl Parser {
                                     CType::PtrProtocol { by_pointer: true, mutable: true } => true,
                                     _ => false,
                                 };
-                            Param::bridge(pname, Some(ctype_to_tl_str(&ct, super::CPos::Param, &struct_defs)), writable_ref)
+                            let mut param = Param::bridge(
+                                pname,
+                                Some(ctype_to_tl_str(&ct, super::CPos::Param, &struct_defs)),
+                                writable_ref,
+                            );
+                            // 省略できる末尾の引数は C の既定値を型スタブの既定値にする（型検査が省略を許す・7-13）。実行時は
+                            // 同じ値を `NativeFnRef::omitted_arg` が入れる
+                            param.default = sig.defaults.get(i).copied().flatten().map(|d| match d {
+                                crate::cpp_header::types::CDefault::Int(n) => Expr::Int(n),
+                                crate::cpp_header::types::CDefault::Float(f) => Expr::Float(f),
+                                crate::cpp_header::types::CDefault::Bool(b) => Expr::Bool(b),
+                                crate::cpp_header::types::CDefault::Null => Expr::None,
+                            });
+                            param
                         })
                         .collect();
                     stmts.push(Stmt::FnDef { src: None,

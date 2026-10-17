@@ -67,3 +67,5 @@ EXPORTS
     fp_bytes_sum
     fp_mixed_list
     fp_tagged_list
+    fp_defaults
+    fp_mode

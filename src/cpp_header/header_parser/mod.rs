@@ -21,7 +21,7 @@ const DEFAULTPARAM_MACRO: &str = "DEFAULTPARAM";
 
 /// C/C++ ヘッダから関数宣言と構造体定義を解析する。`(functions, structs)` を返す。
 /// 全フィールドがプリミティブ `CType` に解決できる構造体のみ出力する。
-/// `custom` は C 型名から tl プリミティブ型へのマッピング、`typedefs` は `load_system_typedefs` で構築済みのエイリアスマップ。
+/// `custom` は C 型名から tl プリミティブ型へのマッピング、`typedefs` は `load_system_types` で構築済みのエイリアスマップ（`SystemTypes::typedefs`）。
 pub fn parse_header_full(
     content: &str,
     custom: &HashMap<String, String>,
@@ -52,6 +52,54 @@ pub fn parse_header_full(
     // 受け渡しは型として扱う（`CType::PtrProtocol`・4-2）
     structs.retain(|d| d.name != "ArPtrProtocol");
     (sigs, structs)
+}
+
+/// ヘッダの関数・構造体が参照する構造体のうち、ヘッダに定義が無く、システムヘッダ（`ar_config.json` の
+/// `cpp.system_headers`）に定義があるもの（`RECT` など）を `structs` に足す（ffi_value_exchange_plan.md 7-13）。
+/// 足した構造体のフィールドが参照する構造体も足す。システムヘッダに定義があるが読めない構造体（入れ子の union など）は
+/// 中身の見えない構造体（`Ptr[T]` で受け渡す・4-3）として足す。
+/// ⚠ 以前はシステムヘッダの構造体を知らず、`const RECT*` の引数を持つ関数（DxLib の `ClearDrawScreen`）は「構造体と
+///   宣言されていない名前」として使えなかった。
+pub fn add_system_structs(
+    sigs: &[CFnSig],
+    structs: &mut Vec<CStructDef>,
+    system: &HashMap<String, String>,
+    custom: &HashMap<String, String>,
+    typedefs: &HashMap<String, String>,
+) {
+    fn referred(ct: &CType, out: &mut Vec<String>) {
+        if let CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } = ct {
+            out.push(type_name.clone());
+        }
+    }
+    loop {
+        let mut wanted: Vec<String> = Vec::new();
+        for s in sigs {
+            referred(&s.ret, &mut wanted);
+            for (_, p) in &s.params {
+                referred(p, &mut wanted);
+            }
+        }
+        for d in structs.iter() {
+            for (_, f) in &d.fields {
+                referred(f, &mut wanted);
+            }
+        }
+        wanted.retain(|n| system.contains_key(n) && !structs.iter().any(|d| &d.name == n));
+        wanted.sort();
+        wanted.dedup();
+        if wanted.is_empty() {
+            return;
+        }
+        for name in wanted {
+            let def = parse_header_full(&system[&name], custom, typedefs)
+                .1
+                .into_iter()
+                .find(|d| d.name == name)
+                .unwrap_or(CStructDef { name, fields: Vec::new(), complete: false });
+            structs.push(def);
+        }
+    }
 }
 
 /// 本体の無い構造体の宣言（`typedef struct Tag Alias;` → `Tag` と `Alias`、`struct Tag;` → `Tag`）の名前を集める（4-3）。
@@ -332,7 +380,9 @@ mod tests {
         // （#60 の実作業では一時的な全ダンプ差分で担保したが、恒久の網が要る）。
         // ⚠ パーサを**改良**して数が変わったら、差分を目で見てからこの値を更新すること。
         assert_eq!(sigs.len(), 2445, "declaration count drifted");
-        assert_eq!(defs.len(), 65, "struct count drifted");
+        // ⚠ 65 → 61（7-13）: 別名の並び `NEAR *NPWAVEFORMATEX` の最初の語を別名にしていたので、`NEAR` / `FAR` という
+        //   偽の構造体が `WAVEFORMAT` / `WAVEFORMATEX` から 2 つずつできていた（宣言子は最後の語・`parse_alias_list`）
+        assert_eq!(defs.len(), 61, "struct count drifted");
 
         // 代表的な struct の raw レイアウトも固定する（オフセット計算の回帰検知）。
         let vector = defs.iter().find(|d| d.name == "VECTOR").expect("VECTOR");
@@ -409,5 +459,74 @@ mod ptr_protocol_tests {
         assert_eq!(get("show").unsupported_reason(&structs), None);
         let why = get("draw").unsupported_reason(&structs).unwrap_or_default();
         assert!(why.contains("TCHAR") && why.contains("does not declare as a struct"), "{why}");
+    }
+}
+
+// ffi_value_exchange_plan.md 7-13（DxLib の実用例で見つかったもの）
+#[cfg(test)]
+mod system_types_tests {
+    use super::*;
+    use crate::cpp_header::types::{CDefault, IntWidth};
+
+    /// `const T*` は T が typedef でも `const` のまま（以前は外れて、`const TCHAR*` が書き込み用の `char*` になっていた）
+    #[test]
+    fn const_survives_typedef_resolution() {
+        let mut td = HashMap::new();
+        td.insert("TCHAR".to_string(), "char".to_string());
+        td.insert("PCSTR".to_string(), "const char*".to_string());
+        let c = |s: &str| parse_c_type_str(s, &HashMap::new(), &td).unwrap();
+        assert_eq!(c("const TCHAR *"), CType::CharPtr { wide: false, mutable: false });
+        assert_eq!(c("TCHAR *"), CType::CharPtr { wide: false, mutable: true });
+        assert_eq!(c("PCSTR"), CType::CharPtr { wide: false, mutable: false });
+        // 組み込みの型は typedef で置き換えない（Windows SDK の C 向けの `typedef unsigned short wchar_t;`）
+        td.insert("wchar_t".to_string(), "unsigned short".to_string());
+        let c = |s: &str| parse_c_type_str(s, &HashMap::new(), &td).unwrap();
+        assert_eq!(c("const wchar_t *"), CType::CharPtr { wide: true, mutable: false });
+    }
+
+    /// 既定値: `DEFAULTPARAM( = x )` と C++ の `= x` を引数の型で読む。読めない既定値の引数は省略できない
+    #[test]
+    fn default_arguments() {
+        let sig = |d: &str| parse_fn_decl_ns(d, None, &HashMap::new(), &HashMap::new()).unwrap();
+        let s = sig("int DrawString(int x, const char* s, unsigned int Edge DEFAULTPARAM( = 0 ), double z DEFAULTPARAM( = 1.5f ), void* p DEFAULTPARAM(=NULL))");
+        assert_eq!(s.n_required, 2);
+        assert_eq!(
+            s.defaults,
+            vec![None, None, Some(CDefault::Int(0)), Some(CDefault::Float(1.5)), Some(CDefault::Null)]
+        );
+        // マクロ名の既定値は読めない: その引数は省略できない（後ろの読める既定値だけ省略できる）
+        let s = sig("int f(int a, int mode DEFAULTPARAM( = MODE_X ), int b DEFAULTPARAM( = -1 ))");
+        assert_eq!(s.n_required, 2);
+        assert_eq!(s.defaults, vec![None, None, Some(CDefault::Int(-1))]);
+        // C++ の既定値（名前と型も正しく読む）
+        let s = sig("int g(int a, int b = 0x10, bool on = true)");
+        assert_eq!((s.n_required, s.params[1].0.as_str(), s.params[2].0.as_str()), (1, "b", "on"));
+        assert_eq!(s.defaults, vec![None, Some(CDefault::Int(16)), Some(CDefault::Bool(true))]);
+        // Windows の `BOOL` の TRUE / FALSE。ポインタの既定値は NULL だけ
+        let int = CType::Int { width: IntWidth::W32, signed: true };
+        assert_eq!(int.parse_default("TRUE"), Some(CDefault::Int(1)));
+        assert_eq!(int.parse_default("( -2 )"), Some(CDefault::Int(-2)));
+        assert_eq!(CType::VoidPtr.parse_default("5"), None);
+        assert_eq!(CType::Double.parse_default("SOME_MACRO"), None);
+    }
+
+    /// システムヘッダの構造体（`RECT`）を、参照されたものだけ足す
+    #[test]
+    fn system_structs_are_added_when_referred() {
+        let mut td = HashMap::new();
+        td.insert("LONG".to_string(), "long".to_string());
+        let mut system = HashMap::new();
+        system.insert("RECT".to_string(), "typedef struct { LONG left; LONG top; LONG right; LONG bottom; } RECT;".to_string());
+        system.insert("POINT".to_string(), "typedef struct { LONG x; LONG y; } POINT;".to_string());
+        let (sigs, mut structs) =
+            parse_header_full("int ClearDrawScreen(const RECT *ClearRect DEFAULTPARAM( = NULL ));", &HashMap::new(), &td);
+        assert!(sigs[0].unsupported_reason(&structs).is_some(), "RECT is unknown before");
+        add_system_structs(&sigs, &mut structs, &system, &HashMap::new(), &td);
+        let names: Vec<&str> = structs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["RECT"], "only the referred struct");
+        assert!(structs[0].has_exact_layout());
+        assert_eq!(sigs[0].unsupported_reason(&structs), None);
+        assert_eq!(sigs[0].params[0].1, CType::OpaqueStructPtr { type_name: "RECT".to_string(), mutable: false });
+        assert_eq!((sigs[0].n_required, sigs[0].defaults.clone()), (0, vec![Some(CDefault::Null)]));
     }
 }

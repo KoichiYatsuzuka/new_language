@@ -457,6 +457,13 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 - 数値・`bool` の引数に合わない値（`None`・`str`・`list` …）が届いたら `TypeError` で、C の関数は呼ばれません。静的な
   検査が止めない経路（素の `function` 型を通した呼び出しなど）でも同じです（`examples/interop/cpp_native_arg_check.ar`）。
   `float` → `int` の切り捨てと `bool` → 0 / 1 は C の暗黙の変換のままです。Rust の crate（`[rs]`）も同じです
+- **既定値**（7-13）: `int b DEFAULTPARAM( = -1 )`（DxLib の書き方）と C++ の `int b = -1` の既定値は、その引数の型で
+  読みます（整数・`TRUE` / `FALSE`・浮動小数・`bool`・ポインタの `NULL`）。既定値を読めた末尾の引数は省略でき、省略した
+  引数には宣言した既定値が入ります。既定値がマクロ名や式で読めない引数は省略できません（引数の数の静的エラー・
+  `examples/interop/cpp_default_args.ar`）。⚠ 以前は省略を静的エラーにし、実行時は 0 / NULL で埋めていました
+- **システムヘッダの型**（7-13）: `ar_config.json` の `cpp.system_headers`（Windows SDK の `Windows.h` など）から typedef
+  （`TCHAR` → `char`・`LONG` → `long`）と構造体の定義を読みます。ヘッダの関数が参照する構造体（`const RECT*` の `RECT`）は
+  そこから足します（参照されたものだけ）。`const TCHAR*` の `const` は typedef を通しても残ります
 - 配列・文字データ・所有権のあるメモリは `PtrProtocol` で受け渡します（[ptr_protocol.md](../ptr_protocol.md)。
   共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`）
 - 今の Arrow から正しく受け渡せない関数（`char*` の出力バッファ・`wchar_t*` の引数・`const int*` などの配列の引数・

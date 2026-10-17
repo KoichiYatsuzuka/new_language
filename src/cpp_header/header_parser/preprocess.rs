@@ -40,7 +40,9 @@ pub(crate) fn parse_alias_list(aliases_str: &str, base_type: &str) -> Vec<(Strin
     for part in aliases_str.split(',') {
         let part_words: Vec<&str> = part.split_whitespace().collect();
         let extra = part_words.iter().filter(|&&w| w == "*").count();
-        let alias_raw = match part_words.iter().find(|&&w| w != "*") {
+        // 宣言子（別名）は最後の語。前の語は `NEAR` / `FAR` などの修飾（7-13）。⚠ 以前は最初の語を取っていたので
+        // `NEAR *NPRECT` から `NEAR` という別名ができていた
+        let alias_raw = match part_words.iter().rev().find(|&&w| w != "*") {
             Some(w) => w,
             None => continue,
         };

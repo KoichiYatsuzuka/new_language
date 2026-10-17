@@ -1,8 +1,7 @@
 // typedef_loader.rs — Load and resolve `typedef` aliases from system/SDK headers.
 //
 // Public API:
-//   load_system_typedefs — read typedef aliases from header files,
-//                          resolve them transitively, return alias map.
+//   load_system_types — typedef aliases (resolved transitively) and struct definitions of the system headers
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,18 +13,29 @@ use super::header_parser::{
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// 指定したシステム/SDK ヘッダから `typedef` エイリアスを読み込み、C++ プリミティブ型文字列に推移的に解決する。
-/// 返すマップは plain `typedef`、複数エイリアス、struct typedef、`DECLARE_HANDLE(X)` マクロをカバーする。
-/// 各ヘッダとその角括弧サブヘッダを再帰的に追跡し、`DWORD_PTR → ULONG_PTR → unsigned __int64` のような推移的エイリアスも完全解決する。
-pub fn load_system_typedefs(header_paths: &[String], macros: &[String]) -> HashMap<String, String> {
+/// システム/SDK ヘッダから集めた型の情報（`load_system_types`）。
+#[derive(Debug, Default, Clone)]
+pub struct SystemTypes {
+    /// typedef の別名 → C++ のプリミティブ型の字句へ推移的に解決した型の式。plain `typedef`・複数の別名・struct typedef・
+    /// `DECLARE_HANDLE(X)` を扱い、`DWORD_PTR → ULONG_PTR → unsigned __int64` のような連鎖も解決する。
+    pub typedefs: HashMap<String, String>,
+    /// 本体のある構造体の typedef（`typedef struct tagRECT { … } RECT, *PRECT;`）: 正規の名前（`*` の無い最初の別名・`RECT`）→
+    /// その定義を `typedef struct { … } RECT;` に書き直した C の字句（ffi_value_exchange_plan.md 7-13）。
+    /// ヘッダの関数・構造体が参照したものだけを構造体の定義に足す（`header_parser::add_system_structs`）。
+    pub structs: HashMap<String, String>,
+}
+
+/// 指定したシステム/SDK ヘッダ（とその角括弧のサブヘッダ）から typedef の別名と構造体の定義の字句を集める（構造体は 7-13）。
+pub fn load_system_types(header_paths: &[String], macros: &[String]) -> SystemTypes {
     let mut raw: HashMap<String, String> = HashMap::new();
+    let mut structs: HashMap<String, String> = HashMap::new();
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for p in header_paths {
         // ⚠ 設定ファイルのパスは `import_fs::path_from_text`（拡張では `C:/a` を絶対パスとして扱うため）。
-        collect_typedefs_from_file(&crate::import_fs::path_from_text(p), &mut raw, &mut visited, macros);
+        collect_typedefs_from_file(&crate::import_fs::path_from_text(p), &mut raw, &mut structs, &mut visited, macros);
     }
     resolve_typedef_map(&mut raw);
-    raw
+    SystemTypes { typedefs: raw, structs }
 }
 
 // ── File-level collection ─────────────────────────────────────────────────────
@@ -34,6 +44,7 @@ pub fn load_system_typedefs(header_paths: &[String], macros: &[String]) -> HashM
 fn collect_typedefs_from_file(
     path: &Path,
     out: &mut HashMap<String, String>,
+    structs: &mut HashMap<String, String>,
     visited: &mut std::collections::HashSet<PathBuf>,
     macros: &[String],
 ) {
@@ -47,12 +58,12 @@ fn collect_typedefs_from_file(
     };
     let header_dir = path.parent().unwrap_or(Path::new("."));
     for inc in collect_typedef_includes(&content, header_dir) {
-        collect_typedefs_from_file(&inc, out, visited, macros);
+        collect_typedefs_from_file(&inc, out, structs, visited, macros);
     }
     // Use macro-aware preprocessor so #ifdef _WIN64 blocks are resolved correctly.
     let stripped = strip_and_preprocess(&content, macros);
     collect_declare_handles(&stripped, out);
-    collect_typedefs_from_text(&stripped, out);
+    collect_typedefs_from_text(&stripped, out, structs);
 }
 
 /// Collect headers to follow for typedef loading.
@@ -126,7 +137,7 @@ fn collect_declare_handles(stripped: &str, out: &mut HashMap<String, String>) {
 }
 
 /// ストリップ済みソースを走査して `typedef <type_expr> <Alias>;` 文を検出し、`out` に `Alias → type_expr` エントリを追加する（先着優先）。
-fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>) {
+fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>, structs: &mut HashMap<String, String>) {
     let mut i = 0;
     let mut seg_start = 0;
 
@@ -145,7 +156,7 @@ fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>)
                         let rest = after_kw[2 + qclose..].trim_start();
                         if rest.starts_with('{') {
                             if let Some(brace_end) = find_matching_brace(rest) {
-                                collect_typedefs_from_text(&rest[1..brace_end], out);
+                                collect_typedefs_from_text(&rest[1..brace_end], out, structs);
                                 let consumed = (stripped.len() - rest.len()) - i + brace_end + 1;
                                 i += consumed;
                                 seg_start = i;
@@ -174,7 +185,13 @@ fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>)
         if stripped[i..].starts_with(';') {
             let segment = stripped[seg_start..i].trim();
             for (alias, type_expr) in parse_typedef_segments(segment) {
-                out.entry(alias).or_insert(type_expr);
+                // 組み込みの型（C のための `typedef unsigned short wchar_t;`）は別名にしない（7-13・`is_builtin_type_name`）
+                if !super::header_parser::is_builtin_type_name(&alias) {
+                    out.entry(alias).or_insert(type_expr);
+                }
+            }
+            if let Some((name, text)) = struct_typedef_text(segment) {
+                structs.entry(name).or_insert(text);
             }
             i += 1;
             seg_start = i;
@@ -217,6 +234,25 @@ fn parse_typedef_segments(seg: &str) -> Vec<(String, String)> {
             .skip_while(|&&w| w == "struct" || w == "union" || w == "enum")
             .find(|&&w| w.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
             .copied();
+        // 構造体は `*` の無い最初の別名を正規の名前にする（`RECT`・7-13）。タグ（`tagRECT`）とポインタの別名（`PRECT` →
+        // `RECT*`）はそこへ向ける。名前の無い構造体（`typedef struct { … } POINT;`）と同じく、正規の名前は解決されずに
+        // 構造体の名前のまま残り、`struct_typedef_text` の定義と結び付く。⚠ 以前はタグへ向けていた（`RECT` → `tagRECT`）
+        let is_struct = before_brace_words.iter().any(|w| *w == "struct");
+        if is_struct {
+            let aliases = parse_alias_list(aliases_str, "");
+            if let Some(canon) = aliases.iter().find(|(_, stars)| stars.is_empty()).map(|(a, _)| a.clone()) {
+                let mut out: Vec<(String, String)> = Vec::new();
+                if let Some(t) = tag.filter(|t| *t != canon) {
+                    out.push((t.to_string(), canon.clone()));
+                }
+                for (alias, stars) in aliases {
+                    if alias != canon {
+                        out.push((alias, format!("{canon}{stars}")));
+                    }
+                }
+                return out;
+            }
+        }
         let base_type = match tag {
             Some(t) => t.to_string(),
             None => return vec![],
@@ -283,6 +319,25 @@ fn parse_typedef_segments(seg: &str) -> Vec<(String, String)> {
     results
 }
 
+/// 本体のある構造体の typedef（`typedef struct tagRECT { … } RECT, *PRECT;`）を、正規の名前（`*` の無い最初の別名）と、
+/// その名前 1 つだけを宣言する字句 `typedef struct { … } RECT;` にする（7-13・`SystemTypes::structs`）。構造体でなければ `None`。
+fn struct_typedef_text(seg: &str) -> Option<(String, String)> {
+    let seg = seg.trim();
+    if !seg.starts_with("typedef") || typedef_contains_fn_ptr(seg) {
+        return None;
+    }
+    let brace_start = seg.find('{')?;
+    if !seg[..brace_start].split_whitespace().any(|w| w == "struct") {
+        return None;
+    }
+    let brace_end = brace_start + find_matching_brace(&seg[brace_start..])?;
+    let canon = parse_alias_list(seg[brace_end + 1..].trim(), "")
+        .into_iter()
+        .find(|(_, stars)| stars.is_empty())
+        .map(|(a, _)| a)?;
+    Some((canon.clone(), format!("typedef struct {{{}}} {canon};", &seg[brace_start + 1..brace_end])))
+}
+
 // ── Alias resolution ──────────────────────────────────────────────────────────
 
 /// マップ内の全エイリアスエントリを安定するまで推移的に解決する（最大 32 パス）。
@@ -322,4 +377,38 @@ fn resolve_one_typedef(expr: &str, map: &HashMap<String, String>) -> String {
         return resolved_base.clone();
     }
     expr.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 構造体の typedef は `*` の無い最初の別名（`RECT`）を正規の名前にし、タグとポインタの別名をそこへ向ける。
+    /// `NEAR` / `FAR` は別名にしない。定義の字句はその名前 1 つだけを宣言する形にする（7-13）
+    #[test]
+    fn struct_typedefs_point_at_the_alias() {
+        let seg = "typedef struct tagRECT { LONG left; LONG top; } RECT, *PRECT, NEAR *NPRECT, FAR *LPRECT";
+        let pairs = parse_typedef_segments(seg);
+        for want in [("tagRECT", "RECT"), ("PRECT", "RECT*"), ("NPRECT", "RECT*"), ("LPRECT", "RECT*")] {
+            assert!(pairs.contains(&(want.0.to_string(), want.1.to_string())), "{want:?} in {pairs:?}");
+        }
+        assert!(!pairs.iter().any(|(a, _)| a == "NEAR" || a == "FAR" || a == "RECT"), "{pairs:?}");
+        let (name, text) = struct_typedef_text(seg).unwrap();
+        assert_eq!(name, "RECT");
+        assert_eq!(text, "typedef struct { LONG left; LONG top; } RECT;");
+        // 構造体でない typedef は定義の字句を作らない
+        assert!(struct_typedef_text("typedef enum tagE { A, B } E").is_none());
+        assert!(struct_typedef_text("typedef unsigned long DWORD").is_none());
+    }
+
+    /// 組み込みの型を置き換える typedef は集めない。`WCHAR` → `wchar_t` の連鎖はそこで止まる（7-13）
+    #[test]
+    fn builtin_types_are_not_typedef_aliases() {
+        let mut out = HashMap::new();
+        let mut structs = HashMap::new();
+        collect_typedefs_from_text("typedef unsigned short wchar_t; typedef wchar_t WCHAR; typedef const WCHAR* LPCWSTR;", &mut out, &mut structs);
+        resolve_typedef_map(&mut out);
+        assert!(!out.contains_key("wchar_t"), "{out:?}");
+        assert_eq!(out.get("WCHAR").map(String::as_str), Some("wchar_t"));
+    }
 }

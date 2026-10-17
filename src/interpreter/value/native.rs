@@ -500,6 +500,9 @@ pub struct NativeFnRef {
     pub n_params: usize,
     /// Minimum number of required arguments.
     pub min_params: usize,
+    /// 省略できる引数の既定値（C の `DEFAULTPARAM( = x )`・`CFnSig::defaults`・ffi_value_exchange_plan.md 7-13）。
+    /// `min_params` 以降の引数を省略したときに `omitted_arg` が入れる。Arrow の関数（`.arc`）は空。
+    pub param_defaults: Vec<Option<crate::cpp_header::types::CDefault>>,
     /// Per-parameter mutability flags (`true` = `mut`, `false` = `let`).
     pub param_mutabilities: Vec<bool>,
     /// Per-parameter pointer kind (cpp-bridge only).
@@ -524,6 +527,24 @@ impl NativeFnRef {
     pub fn has_writeback(&self) -> bool {
         self.ptr_params.contains(&PtrParam::MutPtr)
     }
+
+    /// 省略した引数 `i`（0 始まり）に入れる値: C の既定値（7-13）。既定値の無い引数は誤り（黙って `None` / 0 にしない。
+    /// 呼び出しの引数の数は `min_params` が先に確かめるので、ふつうは来ない）。
+    /// ⚠ 以前は一律に `None` を入れていた（`DEFAULTPARAM( = -1 )` も 0 / NULL になり、7-12 以降は数値の引数が TypeError）。
+    pub fn omitted_arg(&self, i: usize) -> Result<Value, String> {
+        use crate::cpp_header::types::CDefault;
+        match self.param_defaults.get(i).copied().flatten() {
+            Some(CDefault::Int(n)) => Ok(Value::Int(n)),
+            Some(CDefault::Float(f)) => Ok(Value::Float(f)),
+            Some(CDefault::Bool(b)) => Ok(Value::Bool(b)),
+            Some(CDefault::Null) => Ok(Value::None),
+            None => Err(format!(
+                "TypeError: native function '{}' needs argument {} (it has no default value)",
+                self.fn_name,
+                i + 1
+            )),
+        }
+    }
 }
 
 impl Clone for NativeFnRef {
@@ -533,6 +554,7 @@ impl Clone for NativeFnRef {
             fn_name: self.fn_name.clone(),
             n_params: self.n_params,
             min_params: self.min_params,
+            param_defaults: self.param_defaults.clone(),
             param_mutabilities: self.param_mutabilities.clone(),
             ptr_params: self.ptr_params.clone(),
             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(

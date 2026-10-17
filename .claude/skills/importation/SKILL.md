@@ -427,7 +427,12 @@ Not covered by `rs_loader`. Parsed by `parse_cpp_import` (imports.rs:91):
 
 1. Resolves dotted identifier to a header file path from the search base: `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`, `..DxLib.DxLib` → `{source_dir}/../DxLib/DxLib.h`
 2. Reads the header and calls `cpp_bridge::parse_header_full()` to extract C function signatures and struct definitions.
-3. Generates `Stmt::FnDef` and `Stmt::ClassDef` stubs for the type checker.
+   Typedefs (`TCHAR` → `char`) and struct definitions (`RECT`) come from `cpp.system_headers` in `ar_config.json`
+   (`cpp_header::load_system_types`); `cpp_header::add_system_structs` adds the system structs the header refers to.
+   The runtime (`load_cpp_module`) does the same, so stub and wrapper agree (ffi_value_exchange_plan.md 7-13).
+3. Generates `Stmt::FnDef` and `Stmt::ClassDef` stubs for the type checker. A parameter whose C default
+   (`DEFAULTPARAM( = x )` / `= x`) could be read gets it as the stub default (`CFnSig::defaults`); at runtime an
+   omitted argument gets the same value (`NativeFnRef::omitted_arg`). An unreadable default (a macro name) is required.
 
 At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `exec_module`).
 

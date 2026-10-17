@@ -90,6 +90,8 @@ $knownDiff = @{
     'cpp_ptr_protocol_release_error' = 'Rust: 解放関数も STATIC も無い ArPtrProtocol は ValueError（4-5・D-15）。py: その関数を中継しないので AttributeError を stdout に出す'
     'cpp_struct_expand'              = 'Rust: 値返し・値渡し・配列の構造体を展開する（ffi_value_exchange_plan.md 4-6）。py: 値返しの構造体の関数を中継せず AttributeError'
     'cpp_struct_list_error'          = 'Rust: ArPtrProtocol のフィールドを持つ構造体の配列の to_list() は TypeError（4-6・7-14）。py: その関数を中継しないので AttributeError を stdout に出す'
+    'cpp_default_args'               = 'Rust: C の既定値（DEFAULTPARAM( = x )）の引数を省略すると宣言した既定値が入る（ffi_value_exchange_plan.md 7-13）。py: C のブリッジがその関数（既定値を持つ関数）を中継せず AttributeError を stdout に出す'
+    'cpp_default_args_error'         = 'Rust: 読めない既定値（マクロ名）の引数の省略は StaticTypeError（7-13）。py: その関数を中継せず AttributeError を stdout に出す'
     'cpp_list_to_c'                  = 'Rust: list / bytes を ArPtrProtocol として渡し、出力バッファと list へ書き戻す（ffi_value_exchange_plan.md 4-7）。py: list を C の配列（ArPtrProtocol）として渡さないので、fp_sum64 の結果が合わず check が raise する'
     'cpp_typed_pointers'             = 'Rust: 型つき経路で bool・bytes・Ptr・ArPtrProtocol を受け渡す（ffi_value_exchange_plan.md 4-4）。py: C のスタブがポインタの引数を mut と宣言するので StaticTypeError'
     'cpp_ptr_protocol_arg_error'     = 'Rust: ArPtrProtocol の引数へ str / int / dict を渡すと StaticTypeError（4-4・4-7）。py: その関数を中継しないので AttributeError を stdout に出す'

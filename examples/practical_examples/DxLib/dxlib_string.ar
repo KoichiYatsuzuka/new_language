@@ -5,12 +5,14 @@
 # 4-3 / D-13): encode the str in the library's encoding — DxLib uses Shift-JIS
 # (cp932) unless SetUseCharCodeFormat says otherwise. Passing a str used to be
 # converted to UTF-8 silently, which garbles Japanese text in DxLib.
-# NOTE: `TCHAR` is not resolved by the header parser yet, so these functions are
-# reported as unusable for now (ffi_value_exchange_plan.md 7-13).
+# `TCHAR` comes from the Windows SDK headers listed in ar_config.json (`cpp.system_headers`):
+# without UNICODE it is `char`, so `const TCHAR*` takes bytes (ffi_value_exchange_plan.md 7-13).
 
-import[cpp-lib] DxLib.DxLib as dx
+# the DxLib SDK is in examples/DxLib (two levels up: `...`)
+import[cpp-lib] ...DxLib.DxLib as dx
 
 dx.ChangeWindowMode(1)
+dx.SetAlwaysRunFlag(1)          # keep running while the window is inactive (DxLib pauses it by default)
 dx.SetGraphMode(640, 480, 32, 60)
 dx.SetWaitVSyncFlag(0)
 
@@ -21,7 +23,7 @@ if dx.DxLib_Init() == -1:
 dx.SetWindowTextDX("Arrow - string test".encode("cp932"))
 
 const FPS      = 60
-const FRAME_MS = 1000 / FPS
+const FRAME_MS = 1000 // FPS
 
 let white  = dx.GetColor(255, 255, 255)
 let yellow = dx.GetColor(255, 255,   0)

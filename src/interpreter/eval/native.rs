@@ -99,9 +99,9 @@ impl Interpreter {
                 vals.len()
             ));
         }
-        // Pad missing optional args with None (handle 0 → NULL for pointer params)
+        // 省略した引数は C の既定値で埋める（7-13・`NativeFnRef::omitted_arg`）
         while vals.len() < fn_ref.n_params {
-            vals.push(Value::None);
+            vals.push(fn_ref.omitted_arg(vals.len())?);
         }
 
         // ── 統一 typed ABI 高速パス ──────────────────────────────────────────
@@ -356,7 +356,7 @@ impl Interpreter {
             ));
         }
         while vals.len() < fn_ref.n_params {
-            vals.push(Value::None);
+            vals.push(fn_ref.omitted_arg(vals.len())?);
         }
 
         // ── 統一 typed ABI 高速パス ──────────────────────────────────────────

@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-12・7-14〜7-25 完了
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-25 完了（7-26〜7-28 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -246,7 +246,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-10** | ✅（§5）参照実装（`impl_python`）に `bytes` と `str.encode` / `bytes.decode`、`Ptr[T]` の型を足す。今は `bytes` の名前も `str.encode` も無く、`Ptr[int32]` の注釈も構文解析できないので、`compare_python_impl` がどちらの意味論も守れない（3-1 の 3 本と 3-3 の `ptr_types.ar` は既知の差分）。文字コードの名前と失敗の扱い（置き換えない・`shift_jis` は CP932 の表）を Rust 側と揃える（3-1・3-3 で発見） | 3-1・3-3 | 小 |
 | **7-11** | ✅（§5）バイト単位で開いたファイル（`open(path, mode, StartPoint.top, ByteRecognizingMode.byte)`）の `read()` / `write()` が `bytes` ではなく `list[int]` を受け渡す（Python の `"rb"` / `"wb"` は `bytes`）。`bytes` に揃える。既存の例題（`built_in.ar`）と型検査の戻り値の型を移行する（3-1 で発見） | 3-1 | 小 |
 | **7-12** | ✅（§5）C のハンドル経路の数値の取り出し（`native_api/callbacks.rs` の `ar_to_int` / `ar_to_float`）が、数値でない値（`str`・`list`・`Ptr` など）を黙って `0` / `0.0` にする（`_ => 0`）。引数は静的検査と `CheckBefore` が先に止めることが多いが、`Any` と注釈した引数（構造体ポインタ・skill `c-abi-interop` の P6）など止めない経路が残るかは未確認。4-3 で `Ptr` を C へ渡す経路を作る前に、届きうる経路を洗ってエラーにする（3-2 で発見） | なし | 小 |
-| **7-13** | DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
+| **7-13** | ✅（§5）DxLib の実用例（`examples/practical_examples/DxLib`）を動く状態に戻す。⚠ ゲートの対象外で、4-3 の時点で次の理由で型検査の前・型検査で止まっている: ヘッダの置き場所が合わない（`DxLib/DxLib.h` を探すが `examples/DxLib/` にある）、`const TCHAR*` の `TCHAR`（Windows の `tchar.h` の typedef）を解決できず `DrawString` / `SetWindowTextDX` などの文字列の関数が使えない（非 Unicode ビルドの `char` として解決する手段が要る）、`DEFAULTPARAM` の既定値つきの引数が数に入る（`DrawString` が 5 個を要求）、`RECT*` などの Windows の構造体。文字列の引数は 4-3 で `.encode("cp932")` に書き換えてある（4-3 で発見） | 4-3 | 中 |
 | **7-14** | ✅（§5）ポインタのフィールドを持つ構造体の配列を `Ptr[構造体].to_list()` で展開する。4-6 では正確なレイアウト（フィールドがすべて数値）の構造体の配列だけを展開し、ポインタのフィールドを持つもの（`Named` の `const char* name` など）は TypeError にしている。C のレイアウト（ポインタの幅・境界）を実行時に知り、要素ごとに D-7 の規則で変換する（4-6 で発見） | 4-6 | 小 |
 | **7-15** | ✅（§5）型検査: Union の値をより広い Union へ渡せない。`Option[int]` → `Union[int, str, None]`、C の関数が返した `Option[Ptr[Db]]` → `void*` の引数（`Option[Ptr[void]]`）が静的エラーになる。期待の構成型 1 つで実引数の Union を丸ごと照合していた。参照実装も同じ（4-7 で発見） | なし | 小 |
 | **7-16** | ✅（§5）C# の `ref` / `out` 引数が書き戻されない（cs-dll・cs-proc）。型スタブは `mut` を求める（P6）が、どちらのブリッジも呼び出しの後で変数へ戻さないので、`out` の結果が黙って失われる。書き戻すか、未対応として静的エラーにする（5-1 で発見） | なし | 小 |
@@ -260,6 +260,8 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 | **7-26** | 非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
+| **7-27** | py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
+| **7-28** | cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、使うと型検査で「名前が無い」になる。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1502,6 +1504,48 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 - ⚠ 実装中に見つけたもの: クラスの写し（`ClassValue::deep_clone`）が `raw_layout` などの `Rc` を共有したまま非同期タスクへ送られる
   （⇒ 7-26）。新しい `c_struct` は `Arc` にした
 - ゲート（基準 `154dbc7`・制限時間つき）: `compare_outputs` の差は書き換えた例題 2 本（`cpp_struct_expand`・`cpp_struct_list_error`）だけ（471/473。負の対照は 473/473）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）・`compare_wasm_frontend` 564/564・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1184 件が通る（解釈側だけの変更なので VSIX は作り直していない）
+
+### 7-13 実装
+
+DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外）が型検査の前・型検査で止まっていた原因を順に直した。
+`matrix_progress.ar` 以外の 6 本が動く（`dxlib_window` / `dxlib_string` は自分で閉じる。`langtons_ant` / `langtons_ant_profile` /
+`life_game` は閉じるまで動く）。`matrix_progress.ar` は py-int のクラスの問題で止まる（⇒ 7-27）。
+
+- **既定値**（言語の修正）: `DEFAULTPARAM( = x )`（DxLib の書き方）と C++ の `= x` の既定値を、その引数の型で読む
+  （`CType::parse_default`: 整数・`TRUE` / `FALSE`・浮動小数・`bool`・ポインタの `NULL`）。既定値を読めた末尾の引数だけ省略でき
+  （`CFnSig::n_required` / `defaults`）、型スタブの既定値になり、実行時は省略した引数に同じ値を入れる
+  （`NativeFnRef::omitted_arg`）。読めない既定値（マクロ名・式）の引数は省略できない（引数の数の静的エラー）
+  - ⚠ 以前は既定値を読まず、型スタブは全引数を求め（`ClearDrawScreen()` が「1 個のところ 0 個」）、実行時は省略した引数を
+    一律に `None`（0 / NULL）で埋めていた（`DEFAULTPARAM( = -1 )` も 0。7-12 以降は数値の引数が TypeError）
+  - C++ の `int n = 3` は型と名前を読み違えていた（`=` の前で切るようにした）
+- **`const` が typedef で外れる**（言語の修正）: `parse_c_type_str` がシステムの typedef（`TCHAR` → `char`）を解決するときに
+  書いた `const` を落としていた。`const TCHAR*` が書き込み用の `char*`（`mut` の bytes を求める出力バッファ）になっていた
+- **組み込みの型を typedef で置き換えない**（言語の修正・SDK の版を直したら見つかった）: Windows SDK の `basetyps.h` /
+  `rpcndr.h` は C のために `typedef unsigned short wchar_t;` を持つ。これを読むと `const wchar_t*` が数値へのポインタ
+  （`Ptr[uint16]`）になり、`WCHAR` / `LPCWSTR` の連鎖も壊れる（`cpp_raw_pointers` / `cpp_struct_expand` が落ちた）。組み込みの型の
+  名前（`is_builtin_type_name`）は typedef の別名に集めず、型の解決でも typedef を引かない。⚠ 以前は SDK の版が合わず
+  システムの typedef が 1 つも読めていなかったので、この穴は見えていなかった
+- **システムヘッダの構造体**（言語の修正）: `ar_config.json` の `cpp.system_headers` から typedef に加えて構造体の定義の字句も
+  集め（`load_system_types` / `SystemTypes::structs`）、ヘッダの関数・構造体が参照する構造体（`const RECT*` の `RECT`）だけを
+  足す（`add_system_structs`。型スタブの `parse_cpp_import` と実行時の `load_cpp_module` の両方）。構造体の typedef は `*` の
+  無い最初の別名（`RECT`）を正規の名前にし、タグ（`tagRECT`）とポインタの別名をそこへ向けた（以前はタグへ向けていた）
+  - 別名の並び `NEAR *NPRECT` の宣言子を最初の語（`NEAR`）にしていたので最後の語にした（DxLib.h の `WAVEFORMAT(EX)` から
+    `NEAR` / `FAR` という偽の構造体が 4 つできていた。`test_real_dxlib_header_structs` の件数を 65 → 61 に直した）
+- **例題・環境**: ヘッダの置き場所（SDK は `examples/DxLib/`。CPython と同じ探索になってからエントリのディレクトリの `DxLib/`
+  を探していた）を相対 import `...DxLib.DxLib` にした。`ar_config.json` の Windows SDK の版を、この環境に入っている
+  `10.0.26100.0` にした（`10.0.18362.0` は無く、`TCHAR` が解決できなかった）。`1000 / FPS` は `float` なので `//` にした。
+  時間で終わる 2 本に `SetAlwaysRunFlag(1)`（DxLib はウィンドウが前面でないと止まる）。`ant_render.arc` を作り直した。
+  ついでに `pd_numpy_pyplot/data_analysis.ar` の CSV のパス（7 月の移動の取り残し）を直した。README の現状表を更新
+- 検査用の `ffi_probe` に既定値の関数 `fp_defaults`（`-1` / `0.5` / `NULL`）・`fp_mode`（マクロ名の既定値）を足した
+- 単体テスト: `const_survives_typedef_resolution`（`wchar_t` を含む）・`default_arguments`・
+  `system_structs_are_added_when_referred`・`struct_typedefs_point_at_the_alias`・`builtin_types_are_not_typedef_aliases`
+- 例題: `interop/cpp_default_args.ar`（期待値と違えば raise。基準の exe では引数の数の静的エラー）・`cpp_default_args_error.ar`
+- 文書: `docs/grammar/09_imports.md`（既定値・システムヘッダの型）・skill `importation`・`examples/practical_examples/README.md`
+- ⚠ 残るもの（既存・今回は触っていない）: ヘッダの読み込みで `CppBridge: unknown C type '( void', skipping function` が出る
+  （関数ポインタを含む宣言）。cpp-lib のシムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに
+  残るので、使うと実行時の AttributeError になる。実行時の cpp-lib は取り込んだヘッダ（`DxFunctionWin.h`）の関数も読むが
+  型スタブは読まない（後の 2 つは ⇒ 7-28）
+- ゲート（基準 `0d50cf0`・制限時間つき）: `compare_outputs` の差は 7 本（468/475・負の対照は cpp-lib の中継 DLL の作り直しの表示で 1 本差）。新しい例題 `cpp_default_args`、中継 DLL の作り直しの表示だけの 3 本（`cpp_lib_int_widths`・`cpp_lib_struct_by_value`・`cpp_native_arg_error`。表示を除くと同一）、基準の exe を直した `ar_config.json` で走らせると `wchar_t` の typedef で壊れる 3 本（`cpp_raw_pointers`・`cpp_struct_expand`・`cpp_unsupported_signature_error`。新しい exe は 7-13 より前と同じ期待どおりの出力）。`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）・`compare_wasm_frontend` 566/566・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1189 件が通る。VSIX を作り直した。DxLib の実用例は手で走らせた（上の結果）
 
 ---
 

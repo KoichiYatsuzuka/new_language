@@ -10,7 +10,8 @@
 # Compile:
 #   cargo run --release -- --compile examples/practical_examples/DxLib/ant_render.ar
 
-import[cpp-lib] DxLib.DxLib as _dx
+# the DxLib SDK is in examples/DxLib (two levels up: `...`)
+import[cpp-lib] ...DxLib.DxLib as _dx
 
 class Cell:
     mut v: int

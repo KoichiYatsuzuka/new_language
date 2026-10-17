@@ -1,4 +1,4 @@
-class Cell->Cell:
+class Cell:
     mut v: int
     fn __init__(mut self, v: int) -> None:
         ...

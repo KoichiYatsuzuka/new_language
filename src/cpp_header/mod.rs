@@ -12,6 +12,6 @@ mod typedef_loader;
 mod config;
 
 pub use types::{CType, CStructDef, CFnSig, FFI_UNSUPPORTED_MARK};
-pub use header_parser::{parse_header_full, parse_header, collect_included_headers};
-pub use typedef_loader::load_system_typedefs;
+pub use header_parser::{parse_header_full, parse_header, collect_included_headers, add_system_structs};
+pub use typedef_loader::{load_system_types, SystemTypes};
 pub use config::{CppBuildConfig, load_cpp_config};

@@ -725,7 +725,7 @@ mod tests {
 
     fn by_value(name: &str, ty: &str) -> CFnSig {
         let st = CType::ByValueStruct { type_name: ty.to_string() };
-        CFnSig { name: name.to_string(), params: vec![("v".to_string(), st.clone())], ret: st, namespace: None, n_required: 1 }
+        CFnSig { name: name.to_string(), params: vec![("v".to_string(), st.clone())], ret: st, namespace: None, n_required: 1, defaults: vec![] }
     }
 
     /// 値渡し・値返しの構造体は `_Struct_` のまま受け渡す（アドレスを渡さない・戻り値をポインタとして読まない）。
@@ -752,6 +752,7 @@ mod tests {
                 ret: cstr,
                 namespace: None,
                 n_required: 2,
+            defaults: vec![],
             },
             &HashMap::new(),
             &[],
@@ -760,7 +761,7 @@ mod tests {
         assert!(s.contains("((*CB).ptr_arg)(*argv.offset(1), b\"void\".as_ptr(), 4)"), "{s}");
         assert!(s.contains("_cstr_to_handle("), "{s}");
         let s = gen_dll_fn(
-            &CFnSig { name: "g".to_string(), params: vec![], ret: CType::VoidPtr, namespace: None, n_required: 0 },
+            &CFnSig { name: "g".to_string(), params: vec![], ret: CType::VoidPtr, namespace: None, n_required: 0, defaults: vec![] },
             &HashMap::new(),
             &[],
         );
@@ -782,6 +783,7 @@ mod tests {
             ret: CType::CharPtr { wide: false, mutable: false },
             namespace: None,
             n_required: 4,
+        defaults: vec![],
         };
         assert!(cpp_typed_eligible(&sig, &[]));
         let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
@@ -806,6 +808,7 @@ mod tests {
             ret: CType::PtrProtocol { by_pointer: false, mutable: false },
             namespace: None,
             n_required: 1,
+        defaults: vec![],
         };
         let defs = [rec()];
         assert!(cpp_typed_eligible(&sig, &defs));
@@ -824,6 +827,7 @@ mod tests {
             ret: CType::Void,
             namespace: None,
             n_required: 2,
+        defaults: vec![],
         };
         let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
         assert!(s.contains("let _buf = ((*CB).bytes_buf_arg)(*argv.offset(0), &mut _n_buf);"), "{s}");
@@ -840,6 +844,7 @@ mod tests {
             ret: CType::Int { width: IntWidth::W32, signed: true },
             namespace: None,
             n_required: 2,
+        defaults: vec![],
         };
         let s = gen_dll_fn(&sig, &HashMap::new(), &[]);
         let check = s.find("((*CB).pending_error)() != 0").expect(&s);
@@ -870,6 +875,7 @@ mod int_width_tests {
             ret,
             namespace: None,
             n_required: 0,
+        defaults: vec![],
         }
     }
     fn int(width: IntWidth, signed: bool) -> CType { CType::Int { width, signed } }

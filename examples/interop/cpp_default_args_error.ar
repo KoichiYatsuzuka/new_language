@@ -1,0 +1,10 @@
+# cpp_default_args_error.ar — 読めない既定値の引数は省略できない（負例・ffi_value_exchange_plan.md 7-13）
+#
+# `int fp_mode(int a, int mode DEFAULTPARAM( = FP_MODE_DEFAULT ))` の既定値はマクロ名で、Arrow はその値を知らない。
+# 黙って 0 を入れずに、省略を静的エラー（引数の数）にする。⚠ 7-13 より前は実行時に 0 / NULL で埋めていた。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_default_args.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("unreachable:", fp.fp_mode(1))

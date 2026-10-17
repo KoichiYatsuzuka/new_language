@@ -194,3 +194,7 @@ ArPtrProtocol fp_tagged_list(void) {
     ArPtrProtocol p = { (uint64_t)(uintptr_t)g_tagged_list, "Tagged", AR_PTR_STATIC | AR_PTR_CONST, 0, 2, NULL, NULL };
     return p;
 }
+
+// -- default arguments (task 7-13) --
+double fp_defaults(int a, int b, double c, const char* s) { return a + b + c + (s ? (double)strlen(s) : 100.0); }
+int fp_mode(int a, int mode) { return a + mode; }

@@ -762,6 +762,7 @@ impl Interpreter {
                             fn_name: name.clone(),
                             n_params: params.len(),
                             min_params: params.len(),
+                            param_defaults: Vec::new(),
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
@@ -782,6 +783,7 @@ impl Interpreter {
                             fn_name: name.clone(),
                             n_params: params.len(),
                             min_params: params.len(),
+                            param_defaults: Vec::new(),
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
@@ -868,12 +870,12 @@ impl Interpreter {
         let raw_str = String::from_utf8_lossy(&raw);
         // Load config before parsing so custom_type_map is available for all parse_header calls.
         let config = crate::interpreter::cpp_bridge::load_cpp_config(header_dir);
-        let typedefs = crate::interpreter::cpp_bridge::load_system_typedefs(
-            &config.system_headers,
-            &config.precompile_macros,
-        );
+        let system = crate::cpp_header::load_system_types(&config.system_headers, &config.precompile_macros);
+        let typedefs = &system.typedefs;
         let (mut sigs, mut struct_defs) =
-            crate::interpreter::cpp_bridge::parse_header_full(&raw_str, &config.custom_type_map, &typedefs);
+            crate::interpreter::cpp_bridge::parse_header_full(&raw_str, &config.custom_type_map, typedefs);
+        // システムヘッダの構造体（`RECT` など）のうち参照されるもの（7-13・型スタブの `parse_cpp_import` と同じ）
+        crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &config.custom_type_map, typedefs);
 
         match lang {
             "cpp-lib" => {
@@ -894,7 +896,7 @@ impl Interpreter {
                         if let Ok(inc_raw) = std::fs::read(inc_path) {
                             let inc_str = String::from_utf8_lossy(&inc_raw);
                             let (inc_sigs, inc_structs) =
-                                crate::interpreter::cpp_bridge::parse_header_full(&inc_str, &config.custom_type_map, &typedefs);
+                                crate::interpreter::cpp_bridge::parse_header_full(&inc_str, &config.custom_type_map, typedefs);
                             let new_count = inc_sigs
                                 .iter()
                                 .filter(|s| !known_names.contains(&s.name))
@@ -919,6 +921,9 @@ impl Interpreter {
                         }
                     }
                 }
+
+                // 取り込んだヘッダの関数・構造体が参照するシステムヘッダの構造体も足す（7-13）
+                crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &config.custom_type_map, typedefs);
 
                 if sigs.is_empty() {
                     eprintln!("CppImport: no supported functions found in '{header_path_str}'");
@@ -1168,6 +1173,7 @@ impl Interpreter {
                     fn_name: sig.name.clone(),
                     n_params: sig.params.len(),
                     min_params: sig.n_required,
+                    param_defaults: sig.defaults.clone(),
                     param_mutabilities: vec![false; sig.params.len()],
                     ptr_params,
                     cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),

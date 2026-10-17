@@ -22,7 +22,8 @@
 #   - numpy in the active Python environment
 #   - Visual Studio 2019 / 2022 for the DxLib cpp bridge
 
-import[cpp-lib] DxLib.DxLib as dx
+# the DxLib SDK is in examples/DxLib (two levels up: `...`)
+import[cpp-lib] ...DxLib.DxLib as dx
 import[py-int] matrix_ops as mo
 
 # ── Window (must precede DxLib_Init) ─────────────────────────────────────────

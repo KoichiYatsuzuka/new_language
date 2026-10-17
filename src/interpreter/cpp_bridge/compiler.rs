@@ -699,6 +699,7 @@ mod tests {
             ret,
             namespace: None,
             n_required: 1,
+        defaults: vec![],
         }
     }
 
@@ -777,6 +778,7 @@ mod shim_tests {
             ret: st,
             namespace: None,
             n_required: 1,
+        defaults: vec![],
         };
         let src = gen_cpp_shim_source(&[sig], "lib.h", &[], true);
         assert!(src.contains("Rec ar_shim_f(Rec r) { return f(r); }"), "{src}");

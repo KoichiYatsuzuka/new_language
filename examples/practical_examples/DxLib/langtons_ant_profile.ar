@@ -21,7 +21,8 @@
 import[py-int] time
 import[ar] ant_render as render
 from ant_render import Cell
-import[cpp-lib] DxLib.DxLib as dx
+# the DxLib SDK is in examples/DxLib (two levels up: `...`)
+import[cpp-lib] ...DxLib.DxLib as dx
 
 # ── Window setup ──────────────────────────────────────────────────────────────
 dx.ChangeWindowMode(1)

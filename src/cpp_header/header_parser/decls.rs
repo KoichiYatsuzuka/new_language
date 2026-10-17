@@ -2,7 +2,7 @@
 
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::cpp_header::types::{CStructDef, CFnSig, CType},
+    crate::cpp_header::types::{CDefault, CStructDef, CFnSig, CType},
 };
 use super::*;
 
@@ -184,6 +184,11 @@ pub(crate) fn parse_fn_decl_ns(
             if p.is_empty() || p == "..." {
                 continue;
             }
+            // C++ の既定値（`int n = 3`）は型と名前の外へ（値は `param_default_text` が読む・7-13）
+            let p = match p.find('=') {
+                Some(eq) if !typedef_contains_fn_ptr(p) => p[..eq].trim(),
+                _ => p,
+            };
             // Detect function pointer parameters before attempting type/name split
             if typedef_contains_fn_ptr(p) {
                 params.push((format!("_p{idx}"), CType::FnPtr));
@@ -200,13 +205,21 @@ pub(crate) fn parse_fn_decl_ns(
         }
     }
 
-    // n_required = index of first param that has DEFAULTPARAM in the raw declaration
-    let n_required = raw_param_list
+    // 既定値（7-13）: 引数ごとに `DEFAULTPARAM( = x )` / `= x` の字句を読み、その引数の型の値にする。省略できるのは、
+    // 既定値を**読めた**引数が末尾に続く部分だけ（読めない既定値の引数は省略できない・黙って 0 にしない）
+    // ⚠ 以前は最初の DEFAULTPARAM の位置を `n_required` にし、既定値は読まずに省略した引数を 0 / NULL で埋めていた。
+    let mut defaults: Vec<Option<CDefault>> = params
         .iter()
-        .position(|p| p.contains(DEFAULTPARAM_MACRO))
-        .unwrap_or(params.len());
-    // n_required must not exceed actual parsed params count
-    let n_required = n_required.min(params.len());
+        .enumerate()
+        .map(|(i, (_, ct))| raw_param_list.get(i).and_then(|raw| param_default_text(raw)).and_then(|t| ct.parse_default(&t)))
+        .collect();
+    let mut n_required = params.len();
+    while n_required > 0 && defaults[n_required - 1].is_some() {
+        n_required -= 1;
+    }
+    for d in defaults.iter_mut().take(n_required) {
+        *d = None;
+    }
 
     Ok(CFnSig {
         name,
@@ -214,7 +227,45 @@ pub(crate) fn parse_fn_decl_ns(
         ret,
         namespace,
         n_required,
+        defaults,
     })
+}
+
+/// 引数 1 つの宣言（マクロを外す前）から既定値の字句を取り出す（7-13）: `DEFAULTPARAM( = x )` の `x`、または C++ の
+/// `type name = x` の `x`。既定値が無ければ `None`。
+fn param_default_text(raw: &str) -> Option<String> {
+    if let Some(pos) = raw.find(DEFAULTPARAM_MACRO) {
+        let rest = &raw[pos + DEFAULTPARAM_MACRO.len()..];
+        let open = rest.find('(')?;
+        let mut depth = 0usize;
+        for (i, c) in rest[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inner = rest[open + 1..open + i].trim();
+                        return Some(inner.strip_prefix('=').unwrap_or(inner).trim().to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+    // C++ の既定値（`int n = 3`）。`==` などは引数の宣言に現れない
+    raw.find('=').map(|eq| raw[eq + 1..].trim().to_string())
+}
+
+/// C / C++ の組み込みの型の名前か（`signed` / `unsigned` を外した形）。typedef でこれを置き換えない（7-13）:
+/// Windows SDK の `basetyps.h` などは C のために `typedef unsigned short wchar_t;` を持つが、C++ では `wchar_t` は組み込みの
+/// 型（キーワード）。置き換えると `const wchar_t*` が文字列でなく数値へのポインタになり、`WCHAR` / `LPCWSTR` の連鎖も壊れる。
+pub(crate) fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "void" | "bool" | "_Bool" | "char" | "wchar_t" | "char8_t" | "char16_t" | "char32_t" | "short" | "short int"
+            | "int" | "long" | "long int" | "long long" | "long long int" | "float" | "double" | "long double"
+    )
 }
 
 /// `,` でパラメータリストを分割する。ネストした `()` は考慮して分割する。
@@ -425,17 +476,21 @@ pub(crate) fn parse_c_type_str(
     // ── 2. System typedef aliases ────────────────────────────────────────────
     // Look up the base type name in the pre-resolved typedef map.
     // The resolved value may itself carry a trailing `*` (e.g. HWND → "void*").
-    if let Some(resolved) = typedefs.get(&core_str) {
+    // ⚠ 組み込みの型（`wchar_t` など）は typedef で置き換えない（`is_builtin_type_name`・7-13）
+    if let Some(resolved) = typedefs.get(&core_str).filter(|_| !is_builtin_type_name(&core_str)) {
         let resolved_ptrs = resolved.chars().rev().take_while(|&c| c == '*').count();
         let total_ptrs = ptr_count + resolved_ptrs;
         if total_ptrs > 1 {
             return Err("multi-level pointer".to_string());
         }
         let resolved_base = resolved[..resolved.len() - resolved_ptrs].trim();
+        // ⚠ 書いた `const` を残す（7-13）。以前は外していたので、`const TCHAR*` が書き込み用の `char*`（出力バッファ・
+        //   `mut` の bytes を求める）に、`const RECT*` が書き込み用の構造体ポインタになっていた
+        let konst = if is_const && !resolved_base.split_whitespace().any(|t| t == "const") { "const " } else { "" };
         let combined = if total_ptrs == 1 {
-            format!("{} *", resolved_base)
+            format!("{konst}{resolved_base} *")
         } else {
-            resolved_base.to_string()
+            format!("{konst}{resolved_base}")
         };
         // Recurse with empty typedefs to avoid infinite loops
         return parse_c_type_str(combined.trim(), custom, &HashMap::new());
