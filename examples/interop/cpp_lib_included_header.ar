@@ -1,0 +1,20 @@
+# cpp_lib_included_header.ar — import[cpp-lib] は取り込んだヘッダの関数も型スタブに入れる（正例・ffi_value_exchange_plan.md 7-28）
+#
+# `ar_config.json` の `cpp.precompile_macros` があるとき、cpp-lib は本体のヘッダが `#include` する同じ場所のヘッダ
+# （ここでは ffi_probe.h が取り込む ffi_probe_extra.h）の関数も読む（DxLib の DxFunctionWin.h と同じ形）。
+# 型スタブと実行時は同じ関数（`cpp_header::collect_header_decls`）で集めるので、どちらにも同じ関数がある。
+# ⚠ 7-28 より前は実行時だけが取り込んだヘッダを読み、型スタブには無かった。外部言語の名前空間は開いているので
+#   使うことはできたが、型が付かず、引数も戻り値も静的に検査されなかった（負例 cpp_lib_included_header_error.ar）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe_x64.lib と MSVC（中継 DLL が古いとき）が要る（build_ffi_probe.ps1）。
+
+import[cpp-lib] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("a function declared in an included header", fp.fp_extra(4) == 12)
+check("negative argument", fp.fp_extra(-2) == -6)

@@ -54,6 +54,60 @@ pub fn parse_header_full(
     (sigs, structs)
 }
 
+/// ヘッダから集めた関数と構造体（`collect_header_decls`）。
+pub struct HeaderDecls {
+    pub sigs: Vec<CFnSig>,
+    pub structs: Vec<CStructDef>,
+    /// 取り込んだヘッダと、そこから足した関数の数（実行時の表示用）。
+    pub included: Vec<(PathBuf, usize)>,
+}
+
+/// cpp のヘッダから関数と構造体を集める。**型スタブ（`parser/imports/cpp.rs` の `parse_cpp_import`）と実行時
+/// （`exec/modules.rs` の `load_cpp_module`）が同じこれを使う**（ffi_value_exchange_plan.md 7-28）:
+///   1. 本体のヘッダ（`ar_config.json` の `cpp.system_headers` の typedef で型を解決する）
+///   2. `cpp-lib` で `precompile_macros` があるときは、本体が取り込む同じ場所のヘッダ（DxLib の `DxFunctionWin.h`）も読み、
+///      まだ無い関数・構造体を足す（マクロで有効になる宣言がそこにある）
+///   3. 参照されるシステムヘッダの構造体（`RECT` など・`add_system_structs`・7-13）
+/// ⚠ 以前は 2 を実行時だけが行い、型スタブには取り込んだヘッダの関数が無かった（使うと型検査で「名前が無い」）。
+/// 取り込んだヘッダが読めなければ誤り（黙って飛ばさない）。
+pub fn collect_header_decls(
+    raw: &str,
+    header_dir: &Path,
+    lang: &str,
+    cfg: &crate::cpp_header::CppBuildConfig,
+) -> Result<HeaderDecls, String> {
+    let system = crate::cpp_header::load_system_types(&cfg.system_headers, &cfg.precompile_macros);
+    let typedefs = &system.typedefs;
+    let (mut sigs, mut structs) = parse_header_full(raw, &cfg.custom_type_map, typedefs);
+    let mut included = Vec::new();
+    if lang == "cpp-lib" && !cfg.precompile_macros.is_empty() {
+        let mut known_names: std::collections::HashSet<String> = sigs.iter().map(|s| s.name.clone()).collect();
+        let mut known_structs: std::collections::HashSet<String> = structs.iter().map(|d| d.name.clone()).collect();
+        for inc_path in collect_included_headers(raw, header_dir) {
+            let inc_raw = crate::import_fs::read(&inc_path).map_err(|e| {
+                format!("import[{lang}]: cannot read included header '{}' ({})", inc_path.display(), e.kind())
+            })?;
+            let inc_str = String::from_utf8_lossy(&inc_raw);
+            let (inc_sigs, inc_structs) = parse_header_full(&inc_str, &cfg.custom_type_map, typedefs);
+            let mut added = 0usize;
+            for s in inc_sigs {
+                if known_names.insert(s.name.clone()) {
+                    sigs.push(s);
+                    added += 1;
+                }
+            }
+            for d in inc_structs {
+                if known_structs.insert(d.name.clone()) {
+                    structs.push(d);
+                }
+            }
+            included.push((inc_path, added));
+        }
+    }
+    add_system_structs(&sigs, &mut structs, &system.structs, &cfg.custom_type_map, typedefs);
+    Ok(HeaderDecls { sigs, structs, included })
+}
+
 /// ヘッダの関数・構造体が参照する構造体のうち、ヘッダに定義が無く、システムヘッダ（`ar_config.json` の
 /// `cpp.system_headers`）に定義があるもの（`RECT` など）を `structs` に足す（ffi_value_exchange_plan.md 7-13）。
 /// 足した構造体のフィールドが参照する構造体も足す。システムヘッダに定義があるが読めない構造体（入れ子の union など）は
@@ -508,6 +562,30 @@ mod system_types_tests {
         assert_eq!(int.parse_default("( -2 )"), Some(CDefault::Int(-2)));
         assert_eq!(CType::VoidPtr.parse_default("5"), None);
         assert_eq!(CType::Double.parse_default("SOME_MACRO"), None);
+    }
+
+    /// 型スタブと実行時が使うヘッダの集め方（7-28）: cpp-lib で `precompile_macros` があるときだけ取り込んだヘッダも読む
+    #[test]
+    fn included_headers_are_collected_for_cpp_lib() {
+        let dir = std::env::temp_dir().join(format!("ar_collect_decls_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("extra.h"), "int extra_fn(int x);
+").unwrap();
+        let main = "#include \"extra.h\"
+int main_fn(int x);
+";
+        let mut cfg = crate::cpp_header::CppBuildConfig::default();
+        cfg.precompile_macros = vec!["WINDOWS_DESKTOP_OS".to_string()];
+        let names = |lang: &str, cfg: &crate::cpp_header::CppBuildConfig| -> Vec<String> {
+            collect_header_decls(main, &dir, lang, cfg).unwrap().sigs.into_iter().map(|s| s.name).collect()
+        };
+        assert_eq!(names("cpp-lib", &cfg), vec!["main_fn", "extra_fn"]);
+        assert_eq!(names("cpp-dll", &cfg), vec!["main_fn"], "cpp-dll does not read included headers");
+        assert_eq!(names("cpp-lib", &crate::cpp_header::CppBuildConfig::default()), vec!["main_fn"], "only with precompile_macros");
+        let d = collect_header_decls(main, &dir, "cpp-lib", &cfg).unwrap();
+        assert_eq!(d.included.len(), 1);
+        assert_eq!(d.included[0].1, 1, "one function added from extra.h");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// システムヘッダの構造体（`RECT`）を、参照されたものだけ足す

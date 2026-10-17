@@ -464,6 +464,11 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 - **システムヘッダの型**（7-13）: `ar_config.json` の `cpp.system_headers`（Windows SDK の `Windows.h` など）から typedef
   （`TCHAR` → `char`・`LONG` → `long`）と構造体の定義を読みます。ヘッダの関数が参照する構造体（`const RECT*` の `RECT`）は
   そこから足します（参照されたものだけ）。`const TCHAR*` の `const` は typedef を通しても残ります
+- **取り込んだヘッダ**（7-28）: `cpp-lib` は `cpp.precompile_macros` があるとき、ヘッダが `#include` する同じ場所のヘッダ
+  （DxLib の `DxFunctionWin.h`）の関数・構造体も読みます。型スタブと実行時は同じ関数で集めるので、そうした関数にも型が
+  付きます（`examples/interop/cpp_lib_included_header.ar`）。⚠ 以前は実行時だけが読み、型スタブには無かった（型が付かず検査されなかった）
+- **中継 DLL に入らなかった関数**（7-28）: cpp-lib の C++ シムのコンパイルで外れた関数（Windows の同名のマクロと衝突する
+  `SetWindowText` など）は、呼ぶと理由つきの `RuntimeError` になります（シムを作るまで分からないので静的には検査できない）
 - 配列・文字データ・所有権のあるメモリは `PtrProtocol` で受け渡します（[ptr_protocol.md](../ptr_protocol.md)。
   共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`）
 - 今の Arrow から正しく受け渡せない関数（`char*` の出力バッファ・`wchar_t*` の引数・`const int*` などの配列の引数・

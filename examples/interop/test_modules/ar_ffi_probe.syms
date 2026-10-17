@@ -1,4 +1,4 @@
-#stamp c6a68feed3f7b7c0
+#stamp 93d156deaac64876
 fp_greet
 fp_echo
 fp_utf8
@@ -64,3 +64,4 @@ fp_mixed_list
 fp_tagged_list
 fp_defaults
 fp_mode
+fp_extra

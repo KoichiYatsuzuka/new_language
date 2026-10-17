@@ -13,6 +13,7 @@
 #pragma once
 #include <stdbool.h>
 #include "../../../bridge/ptr_protocol/ar_ptr_protocol.h"
+#include "ffi_probe_extra.h"
 
 // Default arguments written the way DxLib writes them (task 7-13): C++ sees `= x`, C sees nothing.
 #ifndef DEFAULTPARAM

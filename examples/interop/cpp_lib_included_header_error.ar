@@ -1,0 +1,10 @@
+# cpp_lib_included_header_error.ar — 取り込んだヘッダの関数も型検査される（負例・ffi_value_exchange_plan.md 7-28）
+#
+# ffi_probe.h が取り込む ffi_probe_extra.h の `int fp_extra(int x)` へ str を渡すと StaticTypeError。
+# ⚠ 7-28 より前は型スタブに無く型が付かなかったので、静的には通り、実行時に C の引数の TypeError で止まっていた。
+# 実行には examples/interop/test_modules/ffi_probe_x64.lib が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_lib_included_header.ar
+
+import[cpp-lib] test_modules.ffi_probe as fp
+
+print("unreachable:", fp.fp_extra("x"))

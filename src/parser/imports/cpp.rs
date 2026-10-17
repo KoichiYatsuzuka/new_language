@@ -82,26 +82,21 @@ impl Parser {
                 )
             })
         })?;
-        let origin = if raw.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
-        let body = raw
-            .map(|raw| String::from_utf8_lossy(&raw).into_owned())
-            .map(|content| {
-                let cfg = crate::cpp_header::load_cpp_config(
-                    resolved.parent().unwrap_or(std::path::Path::new(".")),
-                );
-                let system = crate::cpp_header::load_system_types(
-                    &cfg.system_headers,
-                    &cfg.precompile_macros,
-                );
-                let typedefs = &system.typedefs;
+        // 関数・構造体の集め方は実行時の `load_cpp_module` と同じ 1 つの関数（`collect_header_decls`・7-28）
+        let header_dir = resolved.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        let decls = match raw {
+            Some(raw) => {
+                let content = String::from_utf8_lossy(&raw).into_owned();
+                let cfg = crate::cpp_header::load_cpp_config(&header_dir);
+                self.try_import(|_| crate::cpp_header::collect_header_decls(&content, &header_dir, &lang, &cfg))?
+            }
+            None => None,
+        };
+        let origin = if decls.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
+        let body = decls
+            .map(|decls| {
+                let (sigs, struct_defs) = (decls.sigs, decls.structs);
                 use crate::cpp_header::CType;
-                let (sigs, mut struct_defs) = crate::cpp_header::parse_header_full(
-                    &content,
-                    &cfg.custom_type_map,
-                    typedefs,
-                );
-                // システムヘッダの構造体（`RECT` など）のうち参照されるもの（7-13・実行時の `load_cpp_module` と同じ）
-                crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &cfg.custom_type_map, typedefs);
                 let mut stmts: Vec<Stmt> = Vec::new();
                 // Generate Stmt::ClassDef stubs for C structs so the type checker
                 // knows about their fields.

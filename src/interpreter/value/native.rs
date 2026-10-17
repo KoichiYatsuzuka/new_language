@@ -515,6 +515,10 @@ pub struct NativeFnRef {
     pub typed_fn_ptr: std::sync::atomic::AtomicUsize,
     /// typed エントリのシグネチャ。`typed_fn_ptr != 0` のときのみ Some。
     pub typed_sig: Option<TypedSig>,
+    /// 中継 DLL に入らなかった関数の理由（cpp-lib のシムのコンパイルで外れた・未対応のシグネチャ・ffi_value_exchange_plan.md
+    /// 7-28）。`Some` のとき呼ぶと理由つきの RuntimeError（`missing_symbol_error`）。型スタブにはあるので、名前空間からは
+    /// 消さない（消すと「属性が無い」になり、理由が分からない）。
+    pub unavailable: Option<String>,
 }
 
 
@@ -531,6 +535,14 @@ impl NativeFnRef {
     /// 省略した引数 `i`（0 始まり）に入れる値: C の既定値（7-13）。既定値の無い引数は誤り（黙って `None` / 0 にしない。
     /// 呼び出しの引数の数は `min_params` が先に確かめるので、ふつうは来ない）。
     /// ⚠ 以前は一律に `None` を入れていた（`DEFAULTPARAM( = -1 )` も 0 / NULL になり、7-12 以降は数値の引数が TypeError）。
+    /// 中継 DLL に `{fn_name}_tl` が無いときの誤り。入らなかった理由が分かっていればそれを書く（7-28）。
+    pub fn missing_symbol_error(&self, e: &dyn std::fmt::Display) -> String {
+        match &self.unavailable {
+            Some(why) => format!("RuntimeError: C function '{}' is not in the bridge: {why}", self.fn_name),
+            None => format!("RuntimeError: symbol '{}' not found: {e}", self.fn_name),
+        }
+    }
+
     pub fn omitted_arg(&self, i: usize) -> Result<Value, String> {
         use crate::cpp_header::types::CDefault;
         match self.param_defaults.get(i).copied().flatten() {
@@ -564,6 +576,7 @@ impl Clone for NativeFnRef {
                 self.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed),
             ),
             typed_sig: self.typed_sig.clone(),
+            unavailable: self.unavailable.clone(),
         }
     }
 }

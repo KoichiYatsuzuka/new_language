@@ -69,3 +69,4 @@ EXPORTS
     fp_tagged_list
     fp_defaults
     fp_mode
+    fp_extra

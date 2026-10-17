@@ -768,6 +768,7 @@ impl Interpreter {
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                             typed_sig: if typed_ptr != 0 { typed_sig } else { None },
+                            unavailable: None,
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -789,6 +790,7 @@ impl Interpreter {
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                             typed_sig: None,
+                            unavailable: None,
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -870,69 +872,29 @@ impl Interpreter {
         let raw_str = String::from_utf8_lossy(&raw);
         // Load config before parsing so custom_type_map is available for all parse_header calls.
         let config = crate::interpreter::cpp_bridge::load_cpp_config(header_dir);
-        let system = crate::cpp_header::load_system_types(&config.system_headers, &config.precompile_macros);
-        let typedefs = &system.typedefs;
-        let (mut sigs, mut struct_defs) =
-            crate::interpreter::cpp_bridge::parse_header_full(&raw_str, &config.custom_type_map, typedefs);
-        // システムヘッダの構造体（`RECT` など）のうち参照されるもの（7-13・型スタブの `parse_cpp_import` と同じ）
-        crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &config.custom_type_map, typedefs);
+        // 関数・構造体の集め方は型スタブ（`parse_cpp_import`）と同じ 1 つの関数（`collect_header_decls`・7-28）
+        let decls = crate::cpp_header::collect_header_decls(&raw_str, header_dir, lang, &config)
+            .map_err(|e| format!("CppImport: {e}"))?;
+        for (inc_path, added) in &decls.included {
+            if *added > 0 {
+                eprintln!("CppImport: {added} additional function(s) from '{}'", inc_path.display());
+            }
+        }
+        let (sigs, struct_defs) = (decls.sigs, decls.structs);
 
         match lang {
             "cpp-lib" => {
                 // Build tl_{stem}.dll next to the header (permanent cache).
-
-                // When precompile_macros are set, the main header may conditionally
-                // include other headers (e.g. WINDOWS_DESKTOP_OS → DxFunctionWin.h).
-                // Scan for local #include directives and parse those headers too so
-                // their function signatures are available in the tl namespace.
-                if !config.precompile_macros.is_empty() {
-                    let included =
-                        crate::interpreter::cpp_bridge::collect_included_headers(&raw_str, header_dir);
-                    let mut known_names: std::collections::HashSet<String> =
-                        sigs.iter().map(|s| s.name.clone()).collect();
-                    let mut known_structs: std::collections::HashSet<String> =
-                        struct_defs.iter().map(|d| d.name.clone()).collect();
-                    for inc_path in &included {
-                        if let Ok(inc_raw) = std::fs::read(inc_path) {
-                            let inc_str = String::from_utf8_lossy(&inc_raw);
-                            let (inc_sigs, inc_structs) =
-                                crate::interpreter::cpp_bridge::parse_header_full(&inc_str, &config.custom_type_map, typedefs);
-                            let new_count = inc_sigs
-                                .iter()
-                                .filter(|s| !known_names.contains(&s.name))
-                                .count();
-                            if new_count > 0 {
-                                eprintln!(
-                                    "CppImport: {} additional function(s) from '{}'",
-                                    new_count,
-                                    inc_path.display()
-                                );
-                            }
-                            for s in inc_sigs {
-                                if known_names.insert(s.name.clone()) {
-                                    sigs.push(s);
-                                }
-                            }
-                            for d in inc_structs {
-                                if known_structs.insert(d.name.clone()) {
-                                    struct_defs.push(d);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 取り込んだヘッダの関数・構造体が参照するシステムヘッダの構造体も足す（7-13）
-                crate::cpp_header::add_system_structs(&sigs, &mut struct_defs, &system.structs, &config.custom_type_map, typedefs);
-
                 if sigs.is_empty() {
                     eprintln!("CppImport: no supported functions found in '{header_path_str}'");
                 }
                 eprintln!("CppImport[{lang}]: {} function(s) total", sigs.len());
 
-                let (dll_path, effective_sigs) =
+                // ⚠ 全部の関数を渡す（7-28）。シムのコンパイルで外れた関数は中継 DLL に記号が無く、`load_cpp_wrapper_dll` が
+                //   呼ぶと理由つきの誤りになる関数として登録する（以前は外れた関数を渡さず、「属性が無い」になっていた）
+                let (dll_path, _effective_sigs) =
                     crate::interpreter::cpp_bridge::compile_tl_dll(header_path, &sigs, &struct_defs, &config)?;
-                self.load_cpp_wrapper_dll(&dll_path, &effective_sigs, &struct_defs, header_path_str)
+                self.load_cpp_wrapper_dll(&dll_path, &sigs, &struct_defs, header_path_str)
             }
             "cpp-dll" => {
                 // Find the DLL by stem next to the header and wrap it dynamically.
@@ -1179,6 +1141,29 @@ impl Interpreter {
                     cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                     typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                     typed_sig: if typed_ptr != 0 { typed_sig } else { None },
+                    unavailable: None,
+                });
+                members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
+            } else {
+                // 中継 DLL に入らなかった関数（7-28）: 型スタブにはあるので、呼ぶと理由つきの誤りにする（名前空間から消すと
+                // 「属性が無い」になって理由が分からない）。未対応のシグネチャは型検査が先に止める
+                let why = sig.unsupported_reason(struct_defs).unwrap_or_else(|| {
+                    "the generated C++ shim does not compile it (often a Windows macro of the same name, such as \
+                     `SetWindowText`; see the CppBridge messages when the bridge was built)"
+                        .to_string()
+                });
+                let fn_ref = Arc::new(NativeFnRef {
+                    lib_path: lib_path_buf.clone(),
+                    fn_name: sig.name.clone(),
+                    n_params: sig.params.len(),
+                    min_params: sig.n_required,
+                    param_defaults: sig.defaults.clone(),
+                    param_mutabilities: vec![false; sig.params.len()],
+                    ptr_params: vec![crate::interpreter::PtrParam::None; sig.params.len()],
+                    cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                    typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                    typed_sig: None,
+                    unavailable: Some(why),
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

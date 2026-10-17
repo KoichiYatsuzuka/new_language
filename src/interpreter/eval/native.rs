@@ -198,7 +198,7 @@ impl Interpreter {
                     }
                     Err(e) => {
                         crate::interpreter::native_api::abort_native_call(is_outermost);
-                        return Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name));
+                        return Err(fn_ref.missing_symbol_error(&e));
                     }
                 }
             };
@@ -451,7 +451,7 @@ impl Interpreter {
                     }
                     Err(e) => {
                         crate::interpreter::native_api::abort_native_call(is_outermost);
-                        return Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name));
+                        return Err(fn_ref.missing_symbol_error(&e));
                     }
                 }
             };

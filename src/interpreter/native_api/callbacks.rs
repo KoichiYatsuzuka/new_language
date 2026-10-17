@@ -353,10 +353,7 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                                 fp
                             }
                             Err(e) => {
-                                STATE.with(|s| s.borrow_mut().error = Some(format!(
-                                    "RuntimeError: symbol '{}' not found: {e}",
-                                    fn_ref.fn_name
-                                )));
+                                STATE.with(|s| s.borrow_mut().error = Some(fn_ref.missing_symbol_error(&e)));
                                 abort_native_call(is_outermost);
                                 return TL_NONE;
                             }

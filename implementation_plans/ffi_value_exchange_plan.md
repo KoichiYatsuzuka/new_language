@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-26 完了（7-27・7-28 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-26・7-28 完了（7-27 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -261,7 +261,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 | **7-26** | ✅（§5）非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
 | **7-27** | py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
-| **7-28** | cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、使うと型検査で「名前が無い」になる。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
+| **7-28** | ✅（§5）cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、そうした関数は型が付かない（外部言語の名前空間は開いているので使えるが、引数も戻り値も検査されない）。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1557,6 +1557,25 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
 - 単体テスト `test_class_deep_clone_does_not_share_rc`（`raw_layout` の作り直しを外しても、`field_checks` の作り直しを外しても
   落ちることを確かめた）
 - ゲート（基準 `24f7919`・制限時間つき）: `compare_outputs` 475/475 一致（⚠ `async` は対象外。`scan_examples` が見る）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）。`cargo test` 1190 件が通る（解釈側だけの変更なので VSIX は作り直していない）
+
+### 7-28 実装
+
+- 型スタブ（`parse_cpp_import`）と実行時（`load_cpp_module`）が、ヘッダの関数・構造体を同じ 1 つの関数で集める
+  （`cpp_header::collect_header_decls`）: 本体のヘッダ、`cpp-lib` で `precompile_macros` があるときに本体が取り込む同じ場所の
+  ヘッダ（DxLib の `DxFunctionWin.h`）、参照されるシステムヘッダの構造体（7-13）。取り込んだヘッダが読めなければ誤り
+  （以前の実行時は黙って飛ばしていた）
+  - ⚠ 以前は取り込んだヘッダを実行時だけが読み、型スタブには無かった。外部言語の名前空間は開いているので使えはしたが、
+    型が付かず引数も戻り値も検査されなかった（例題で確かめた: 基準の exe は `fp.fp_extra("x")` を静的に通し、実行時の
+    TypeError で止まる）
+- cpp-lib の C++ シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は、型スタブにあるのに中継 DLL に
+  無かった。実行時に全部の関数を `load_cpp_wrapper_dll` へ渡し、記号の無い関数は理由を持つネイティブ関数（`NativeFnRef::unavailable`）
+  として登録する。呼ぶと `RuntimeError: C function 'SetWindowText' is not in the bridge: …`（`missing_symbol_error`。以前は
+  `module has no attribute`）。シムを作るまで分からないので静的には検査できない
+- 検査用の `ffi_probe` に取り込まれるヘッダ `ffi_probe_extra.h`（`fp_extra`）を足した
+- 例題: `interop/cpp_lib_included_header.ar`（参照実装と出力が一致する）・`cpp_lib_included_header_error.ar`（基準の exe では静的に
+  通る）。DxLib の実用例の型検査・実行は 7-13 と同じ結果（`SetWindowText` の誤りの文面は手で確かめた）
+- 文書: `docs/grammar/09_imports.md`・skill `importation`
+- ゲート（基準 `dce79e3`・制限時間つき）: `compare_outputs` の差は新しい負例 `cpp_lib_included_header_error` だけ（476/477。基準の exe は静的に通って実行時の TypeError で止まる。負の対照は 477/477）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 568/568・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1191 件が通る（単体テスト `included_headers_are_collected_for_cpp_lib` を足した）。VSIX を作り直した
 
 ---
 
