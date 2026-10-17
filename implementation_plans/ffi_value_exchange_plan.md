@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-25 完了（7-26〜7-28 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-26 完了（7-27・7-28 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -259,7 +259,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-23** | ✅（§5）参照実装（`impl_python`）の `print(list)` / `str(list)` / dict の表示が、要素の文字列を引用符なしで出す（Rust は `['a', 'b']`・`{'k': 'v'}`、参照実装は `[a, b]`・`{k: v}`。`value.py` の `display` が要素にも `display` を使う）。`compare_python_impl` の既知の差の多くがこれに当たる可能性がある。要素は repr で並べ、消えた既知の差を整理する（7-3 で発見） | なし | 小 |
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
-| **7-26** | 非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
+| **7-26** | ✅（§5）非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
 | **7-27** | py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
 | **7-28** | cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、使うと型検査で「名前が無い」になる。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 
@@ -1546,6 +1546,17 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   残るので、使うと実行時の AttributeError になる。実行時の cpp-lib は取り込んだヘッダ（`DxFunctionWin.h`）の関数も読むが
   型スタブは読まない（後の 2 つは ⇒ 7-28）
 - ゲート（基準 `0d50cf0`・制限時間つき）: `compare_outputs` の差は 7 本（468/475・負の対照は cpp-lib の中継 DLL の作り直しの表示で 1 本差）。新しい例題 `cpp_default_args`、中継 DLL の作り直しの表示だけの 3 本（`cpp_lib_int_widths`・`cpp_lib_struct_by_value`・`cpp_native_arg_error`。表示を除くと同一）、基準の exe を直した `ar_config.json` で走らせると `wchar_t` の typedef で壊れる 3 本（`cpp_raw_pointers`・`cpp_struct_expand`・`cpp_unsupported_signature_error`。新しい exe は 7-13 より前と同じ期待どおりの出力）。`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）・`compare_wasm_frontend` 566/566・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1189 件が通る。VSIX を作り直した。DxLib の実用例は手で走らせた（上の結果）
+
+### 7-26 実装
+
+- クラスの写し（`ClassValue::deep_clone`。`Value::Class` / インスタンス / メソッドの `owner_class` の写しはすべてこれを通る）が、
+  `raw_layout`（`Rc<RawLayout>`）を作り直し、`field_checks` の `Rc<str>` / `Rc<[String]>` も作り直す（`FieldCheck::unshared`）。
+  7-14 で足した `c_struct` は `Arc` なので共有のまま
+- ⚠ 以前は両方とも `Rc` を clone していた（非同期タスクへ送った写しをワーカーが捨てるときに、別のスレッドから同じ参照カウントを
+  減らす。7-21 と同じ形で、#15 の `module_name` だけが直してあった）
+- 単体テスト `test_class_deep_clone_does_not_share_rc`（`raw_layout` の作り直しを外しても、`field_checks` の作り直しを外しても
+  落ちることを確かめた）
+- ゲート（基準 `24f7919`・制限時間つき）: `compare_outputs` 475/475 一致（⚠ `async` は対象外。`scan_examples` が見る）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（196/196）。`cargo test` 1190 件が通る（解釈側だけの変更なので VSIX は作り直していない）
 
 ---
 

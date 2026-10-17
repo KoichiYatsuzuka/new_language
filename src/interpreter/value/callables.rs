@@ -223,6 +223,18 @@ pub enum FieldCheck {
     Protocol(std::rc::Rc<[String]>),
 }
 
+impl FieldCheck {
+    /// 中の `Rc` を作り直した写し（`ClassValue::deep_clone`・スレッドへ送る写しが元と参照カウントを共有しない・7-26）。
+    pub(crate) fn unshared(&self) -> FieldCheck {
+        match self {
+            FieldCheck::None => FieldCheck::None,
+            FieldCheck::Class(n) => FieldCheck::Class(std::rc::Rc::from(&**n)),
+            FieldCheck::Trait(n) => FieldCheck::Trait(std::rc::Rc::from(&**n)),
+            FieldCheck::Protocol(ms) => FieldCheck::Protocol(std::rc::Rc::from(ms.to_vec())),
+        }
+    }
+}
+
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
 ///
 /// - `name`: クラス名（`new_type` では派生名に上書きされる）
@@ -476,7 +488,8 @@ impl ClassValue {
             field_count: self.field_count,
             field_mutability_vec: self.field_mutability_vec.clone(),
             field_tags: self.field_tags.clone(),
-            field_checks: self.field_checks.clone(),
+            // ⚠ `FieldCheck` の `Rc<str>` / `Rc<[String]>` も作り直す（7-26・#15 と同じ。写しはスレッドへ送られる）
+            field_checks: self.field_checks.iter().map(FieldCheck::unshared).collect(),
             field_access: self.field_access.clone(),
             method_access: self.method_access.clone(),
             static_method_names: self.static_method_names.clone(),
@@ -484,7 +497,8 @@ impl ClassValue {
             static_vars,
             new_type_base: self.new_type_base.clone(),
             is_exception: self.is_exception,
-            raw_layout: self.raw_layout.clone(),
+            // ⚠ `Rc<RawLayout>` も作り直す（7-26）。`c_struct` は `Arc` なので共有してよい（中身は読むだけ）
+            raw_layout: self.raw_layout.as_ref().map(|l| Rc::new((**l).clone())),
             c_struct: self.c_struct.clone(),
             instance_name: self.instance_name.clone(),
             // ⚠ `Rc` をスレッドへ持ち出さない（#15）。

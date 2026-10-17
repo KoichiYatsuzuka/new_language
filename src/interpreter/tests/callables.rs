@@ -426,6 +426,37 @@ fn test_deep_clone_does_not_share_string_literal_rc() {
     assert!(!Rc::ptr_eq(&a, &b), "deep_clone shared the string literal Rc");
 }
 
+/// クラスの `deep_clone`（非同期タスクへ送るクラス・インスタンスの写し）は、`raw_layout` と `field_checks` の中の `Rc` を
+/// 共有しない（ffi_value_exchange_plan.md 7-26）。⚠ 以前は両方とも `Rc` を clone していた（ワーカーが写しを捨てるときに
+/// 別のスレッドから同じ参照カウントを減らす）。
+#[test]
+fn test_class_deep_clone_does_not_share_rc() {
+    use std::rc::Rc;
+    let interp = run_interp("class P:
+    mut x: int
+    mut y: int
+class Holder:
+    mut p: P
+");
+    let class = |name: &str| match interp.get_val(name) {
+        Some(Value::Class(c)) => c,
+        other => panic!("expected class {name}, got {other:?}"),
+    };
+    let p = class("P");
+    let pc = p.deep_clone();
+    let (a, b) = (p.raw_layout.as_ref().expect("P has a raw layout"), pc.raw_layout.as_ref().expect("copied"));
+    assert!(!Rc::ptr_eq(a, b), "deep_clone shared the raw layout Rc");
+    let h = class("Holder");
+    let hc = h.deep_clone();
+    match (&h.field_checks[..], &hc.field_checks[..]) {
+        ([crate::interpreter::value::FieldCheck::Class(a)], [crate::interpreter::value::FieldCheck::Class(b)]) => {
+            assert_eq!(a, b);
+            assert!(!Rc::ptr_eq(a, b), "deep_clone shared the field check's class name Rc");
+        }
+        other => panic!("expected one class-typed field check, got {other:?}"),
+    }
+}
+
 /// #45 の不変条件（`OverloadedFn` 版）。`deep_clone` は**オーバーロードの全要素**で
 /// 本体 `Rc` を複製しなければならない（`Value::Function` だけ直して満足しない）。
 #[test]
