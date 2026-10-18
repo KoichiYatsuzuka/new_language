@@ -6,7 +6,7 @@
 #   - 整数は C# の型の幅に入るかを確かめる（入らなければ OverflowError。⚠ 以前は黙って切っていた）。
 #     `ulong` の戻り値が int に入らなければ OverflowError
 #   - `char` は 1 文字の str（UTF-16 の 1 単位でなければ ValueError）、`Task<T>` は待ってから T を返す
-#   - 引数の個数に合うコンストラクタが無ければ TypeError
+#   - 引数の個数に合うコンストラクタが無ければ静的エラー（7-31。型が見えない経路では実行時の TypeError）
 #
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # 実行には examples/interop/cs_interop_test/ArrowBridge_native.dll が要る（build_bridge.ps1）。
@@ -23,14 +23,9 @@ fn check(let label: str, let ok: bool) -> None:
 let calc = bridge.Calculator(100.0)
 calc.Accumulate(25.0)
 check("constructor takes a double", calc.GetAccumulated() == 125.0)
-
+# ⚠ 引数の個数に合うコンストラクタが無い呼び出し（`bridge.Calculator(1.0, 2.0, 3.0)`）は、7-31 から型検査が型スタブの `__init__`
+#   で止める（負例 foreign_ctor_args_error.ar）。以前はここで実行時の TypeError を確かめていた
 mut message = ""
-try:
-    let bad = bridge.Calculator(1.0, 2.0, 3.0)
-    print("unreachable:", bad)
-except TypeError as e:
-    message = e.message
-check("no constructor with 3 arguments -> TypeError (" + message + ")", message != "")
 
 # ── 整数の幅 ─────────────────────────────────────────────────────────────────
 check("byte arguments", bridge.Calculator.AddBytes(200, 55) == 255)

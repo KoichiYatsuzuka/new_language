@@ -1,0 +1,31 @@
+# foreign_ctor_args.ar — 外部言語のクラスのコンストラクタの引数を型スタブの __init__ で検査する（正例・ffi_value_exchange_plan.md 7-31）
+#
+# 利用者の決定: 分かる範囲で検査し、静的に分からない部分は Any。
+#   - cpp の構造体: 全フィールドを宣言順に受ける（実行時と同じ）。フィールドの型で検査する
+#   - py-int のクラス: `__init__` の引数（注釈の無い引数は Any・既定値のある引数は省略できる）。`__init__` を書かない派生は
+#     同じファイルの基底のものを受け継ぐ。基底が分からないクラスは引数を問わない
+#   - C# は公開のコンストラクタごと（オーバーロード）、Rust の構造体は `new` / 構造体リテラル、js-proc は `.ars` の宣言
+# ⚠ 7-31 より前は外部言語のクラスのコンストラクタを一律に検査しなかった（実行時に初めて誤りになった）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる負例: foreign_ctor_args_error.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+import[py-int] py_int_classes as pc
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let p = Pair(1, 2)
+check("cpp struct: all fields in order", p.x == 1 and p.y == 2 and fp.fp_pair_sum(p) == 3)
+let n = Named(7, None)
+check("cpp struct: an Option[bytes] field takes None", n.id == 7 and fp.fp_named_len(n) == -1)
+let c = pc.Counter(5)
+check("py-int: a parameter with a default can be omitted", c.bump() == 6)
+let c2 = pc.Counter(5, 3)
+check("py-int: all parameters", c2.bump() == 8)
+let loud = pc.LoudCounter(1)
+check("py-int: a subclass inherits the base's __init__", loud.bump() == 2)

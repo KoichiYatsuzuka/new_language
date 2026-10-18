@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30 完了（7-29・7-31〜7-34 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30・7-31 完了（7-29・7-32〜7-34 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -264,7 +264,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-28** | ✅（§5）cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、そうした関数は型が付かない（外部言語の名前空間は開いているので使えるが、引数も戻り値も検査されない）。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 | **7-29** | cpp のヘッダ解析が型名・マクロを関数名として読み違えている疑いがある: DxLib の cpp-lib のシムのコンパイルで外れた関数の一覧に `HWND`・`HBITMAP`・`HICON`・`HMODULE`・`DxLib` という「関数」が出た（`CppBridge: pass 1: removed …`）。また読み込みのたびに`CppBridge: unknown C type '( void', skipping function` が出て、関数ポインタを含む宣言などを読み飛ばしている。どの宣言からそれらの名前ができるかを調べ、正しく読むか、読めない宣言は理由つきで未対応にする（黙って関数を作らない・7-13 で発見） | なし | 中 |
 | **7-30** | ✅（§5・利用者の決定: 型注釈・スタブファイルで型が分かるものはその型、ほかは `__init__` の戻り値を除き `Any`）py-int のトップレベルの関数の引数を静的に検査していない: `.py` の型スタブ（`extract_py_type_stubs`）が`function->戻り値` の型だけを書き、仮引数を持たないので、引数の数も型も検査されない（戻り値の型だけが付く）。7-27 でメソッドの引数を読む `py_params` を作ったので、トップレベルの関数も同じ規則（注釈の無い引数は `Any`・既定値のある引数は省略できる）で宣言にする（7-27 で発見） | なし | 小 |
-| **7-31** | 外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
+| **7-31** | ✅（§5・利用者の決定: 分かる範囲で検査し、静的に分からない部分は `Any` でよい。検査の機構を作る）外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
 | **7-32** | Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
 | **7-33** | `cargo test` が利用者の環境に依存する: `test_real_dxlib_header_structs`（`cpp_header/header_parser/mod.rs`）がgit の対象外の `examples/DxLib/DxLib.h` を読み、無ければ panic する（DxLib の SDK が無い環境ではテストが落ちる・既存）。また追跡されている `ar_config.json` がこの環境専用のパス（MSVC・Windows SDK の版・Rust のレジストリ）を持ち、7-13 では SDK の版が合わず `TCHAR` が解決できなかった。テストは SDK が無ければ飛ばしたことを出して飛ばすか小さなヘッダを同梱し、環境ごとのパスは追跡しない設定へ分ける（設定は祖先から重ねて読むので、git の対象外の上書きファイルを置ける）（7-13 で発見） | なし | 小 |
 | **7-34** | ゲートの A/B 比較が cpp-lib の中継 DLL のキャッシュを書き換え、偽の差分を出す: 基準の exe と新しい exe は中継コードが違うので、`compare_outputs` / `compare_import_paths` が交互に走らせるたびにコミット済みの `test_modules/ar_ffi_probe.dll`・`.syms`・シムを作り直し、その表示（`CppBridge: … is stale … rebuilding`）が出力の差になる（負の対照でも `cpp_lib_int_widths` が差になる）。最後に走った exe の印でキャッシュが残るので、コミットする中継 DLL が基準の exe のものになりうる。比較では作り直しの表示を除くか、exe ごとに別の場所へキャッシュを置く（7-13・7-28 で発見） | なし | 小 |
@@ -1634,6 +1634,26 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   `py_int_functions.py`）
 - 文書: `docs/grammar/09_imports.md`・skill `importation`
 - ゲート（基準 `88b22b3`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（479/481・負の対照は 481/481）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 572/572・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1195 件が通る。VSIX を作り直した
+
+### 7-31 実装（利用者の決定: 分かる範囲で検査し、静的に分からない部分は `Any` でよい。検査の機構を作る）
+
+- 型検査（`call_check.rs`）が外部言語のクラスのコンストラクタも型スタブの `__init__` で検査する（引数の数・型・オーバーロード・
+  `*args` / `**kwargs` は既存の `check_self_type_params`）。構築できないクラス（中身の見えない cpp の構造体・`new` の無い Rust の
+  構造体）は、引数の数ではなく構築できないことだけを誤りにする。`__init__` の無いスタブは検査しない（何も分からない）
+  - ⚠ 以前は外部言語のクラスをすべて除外していた（#27-a。当時の C# のスタブが `__init__` を引数 0 個で持っていたため。5-1 で
+    公開のコンストラクタごとに書くようになっていた）
+- 各ブリッジのスタブの `__init__`: C# は公開のコンストラクタごと（5-1・既存）、Rust の構造体は `new` / 構造体リテラル（既存）、
+  js-proc は利用者の `.ars`（既存）、py-int は `__init__`（7-27。基底が分からないクラスは `*args, **kwargs`）。**cpp の構造体に
+  `__init__` を足した**（全フィールドを宣言順に・フィールドの型で。実行時の `load_cpp_wrapper_dll` と同じ）。引数の型が分からない
+  ところはスタブが `Any` と書く
+- py-int: `__init__` を書かない派生クラスは同じファイルの基底の `__init__` を受け継ぐ（Python と同じ）。⚠ 7-27 では基底の
+  `__init__` を落として引数なしにしていた（この検査で見つかった・`py_int_classes.ar` の `LoudCounter(1)`）
+- `cs_dll_generated.ar` の「3 引数のコンストラクタは実行時の TypeError」の確かめは、型検査が止めるようになったので負例へ移した
+  （クラスの値は `function` ではないので、型を見えなくして実行時の経路を通す書き方が無い）
+- 例題: `interop/foreign_ctor_args.ar`（cpp の構造体・py-int のクラス）・`foreign_ctor_args_error.ar`（cpp・py-int・C# の誤り 5 件。
+  基準の exe では 0 件）
+- 文書: `docs/grammar/09_imports.md`（py-int・cpp・C# のコンストラクタ）
+- ゲート（基準 `b9482f3`・制限時間つき）: `compare_outputs` の差は新しい負例 `foreign_ctor_args_error` だけ（482/483・負の対照は 483/483）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（新しい負例は両方とも stdout が空で一致するので既知の差分に載せない）・`compare_wasm_frontend` 574/574・`type_obligations` 退行なし。全例題（`archived/` を除く）の静的エラーの数を基準と比べ、変わったのは `cs_dll_generated.ar`（上の移動）と `py_int_classes.ar`（上の基底の `__init__`）だけだった。`cargo test` 1195 件が通る。VSIX を作り直した
 
 ---
 

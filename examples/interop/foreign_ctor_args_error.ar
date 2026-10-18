@@ -1,0 +1,18 @@
+# foreign_ctor_args_error.ar — 外部言語のクラスのコンストラクタの引数の誤り（負例・ffi_value_exchange_plan.md 7-31）
+#
+#   - cpp の構造体: フィールドが足りない・フィールドの型に合わない → StaticTypeError
+#   - py-int のクラス: 必要な引数が無い・注釈の型に合わない → StaticTypeError
+#   - C# のクラス: 引数の個数に合う公開のコンストラクタが無い → StaticTypeError
+# ⚠ 7-31 より前はどれも静的に通り、実行時に初めて誤りになった。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: foreign_ctor_args.ar
+
+import[cpp-dll] test_modules.ffi_probe as fp
+import[py-int] py_int_classes as pc
+import[cs-proc] cs_probe as cp
+
+let a = Pair(1)
+let b = Rec(1, "x")
+let c = pc.Counter()
+let d = pc.Counter("x")
+let e = cp.Person("ann")

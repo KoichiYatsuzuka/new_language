@@ -471,23 +471,23 @@ impl TypeChecker {
                 // ⚠ `__init__` を持たないクラス（`new_type` ラッパ・組み込み例外）では
                 //    `check_self_type_params` が早期 `None` を返すので何も報告されない。
                 //
-                // ⚠⚠ **外部言語のクラスは対象外**（#27-a の `arrow_class_names`）。
-                //    C# スタブは `__init__` を**引数 0 個**で持つが、実行時の生成は
-                //    `__cs_bridge_path__` 経由のブリッジ側コンストラクタが行うので、
-                //    スタブの `__init__` と実引数は対応しない。除外しないと
-                //    `cs_interop_test.ar` が `'Calculator.__init__' takes 0 argument(s)
-                //    but 1 were given` で落ちる（実測）。
-                if self.registry.arrow_class_names().contains(fname.as_str()) {
-                    self.check_self_type_params(fname, "__init__", &arg_data);
-                }
-                // Arrow から構築できない外部言語のクラス（private フィールドで `new` の無い Rust の構造体・2-5）。
-                // メソッドの戻り値として受け取った値は使えるので、誤りにするのは構築だけ。
+                // 外部言語のクラスも、スタブの `__init__` で検査する（ffi_value_exchange_plan.md 7-31・利用者の決定: 分かる範囲で
+                // 検査し、静的に分からない部分は `Any`）。各ブリッジのスタブは実際のコンストラクタを書く: C# は公開の
+                // コンストラクタごと（5-1）、Rust の構造体は `new` / 構造体リテラル、py-int は `__init__`（7-27。基底が分からない
+                // クラスは引数を問わない `*args, **kwargs`）、cpp の構造体はフィールドの並び（7-31）、js-proc は利用者の `.ars`。
+                // 引数の型が分からないところはスタブが `Any` と書く。`__init__` の無いスタブは検査しない（何も分からない）。
+                // ⚠ 以前は外部言語のクラスをすべて除外していた（#27-a。当時の C# のスタブが `__init__` を引数 0 個で
+                //   持っていたため。5-1 で公開のコンストラクタごとに書くようになっていた）。
+                // Arrow から構築できない外部言語のクラス（private フィールドで `new` の無い Rust の構造体・2-5、中身の見えない
+                // cpp の構造体・4-3）は、引数の数ではなく構築できないことを誤りにする。
                 if let Some((what, reason)) = self.registry.ffi_unsupported_method(fname, "__init__") {
                     let (what, reason) = (what.replace(" method", " constructor"), reason.to_string());
                     self.report_error(StaticTypeError {
                         kind: TypeErrorKind::FfiUnsupported { what, function: format!("{fname}(...)"), reason },
                         span: None,
                     });
+                } else {
+                    self.check_self_type_params(fname, "__init__", &arg_data);
                 }
                 return InferredType::NamedInstance(fname.clone());
             }

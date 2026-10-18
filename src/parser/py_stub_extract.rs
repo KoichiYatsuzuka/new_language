@@ -229,7 +229,9 @@ fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (crate::ast::
                 for f in bm.fields {
                     py_add_field(&mut fields, f.0, f.1);
                 }
-                methods.extend(bm.methods.into_iter().filter(|m| !matches!(m, Stmt::FnDef { name, .. } if name == "__init__")));
+                // `__init__` も受け継ぐ（Python と同じく、派生が `__init__` を書かなければ基底のものが使われる。派生が書けば
+                // 下の名前の照合で派生が勝つ）
+                methods.extend(bm.methods);
             }
             _ => open = true,
         }

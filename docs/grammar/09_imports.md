@@ -363,8 +363,9 @@ let mean = np.mean(arr)
   （クラス本体の `name: T` / `name = …`、メソッドの中の `self.name: T = …` / `self.name = …`。注釈の無いものは `Any`。
   `@property` も属性）の表で静的に検査し、表に無いメンバーは静的エラー。同じファイルの基底クラスのメンバーも持つ。
   ほかのファイル・ライブラリのクラスを継承するクラスと、デコレータ（`@dataclass` など）の付いたクラスはメンバーの顔ぶれが
-  分からないので、書いたメンバーにだけ型を付け、ほかの名前は検査しない。コンストラクタの引数は検査しない（外部言語の
-  クラスと同じ）。`x is pc.Counter` / `x mustbe pc.Counter` は Python の `isinstance` と同じく基底も見る
+  分からないので、書いたメンバーにだけ型を付け、ほかの名前は検査しない。コンストラクタの引数は `__init__` で検査する
+  （7-31。`__init__` を書かない派生は同じファイルの基底のものを受け継ぎ、基底が分からないクラスは引数を問わない）。
+  `x is pc.Counter` / `x mustbe pc.Counter` は Python の `isinstance` と同じく基底も見る
   （`examples/interop/py_int_classes.ar`）。⚠ 以前はコンストラクタの値が `Any` で、属性もメソッドも使えなかった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
@@ -478,6 +479,8 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 - **システムヘッダの型**（7-13）: `ar_config.json` の `cpp.system_headers`（Windows SDK の `Windows.h` など）から typedef
   （`TCHAR` → `char`・`LONG` → `long`）と構造体の定義を読みます。ヘッダの関数が参照する構造体（`const RECT*` の `RECT`）は
   そこから足します（参照されたものだけ）。`const TCHAR*` の `const` は typedef を通しても残ります
+- **構造体のコンストラクタ**（7-31）: `Pair(1, 2)` は全フィールドを宣言順に受け、フィールドの型で静的に検査する
+  （`examples/interop/foreign_ctor_args.ar`）。中身の見えない構造体（前方宣言だけ）は作れない（静的エラー）
 - **取り込んだヘッダ**（7-28）: `cpp-lib` は `cpp.precompile_macros` があるとき、ヘッダが `#include` する同じ場所のヘッダ
   （DxLib の `DxFunctionWin.h`）の関数・構造体も読みます。型スタブと実行時は同じ関数で集めるので、そうした関数にも型が
   付きます（`examples/interop/cpp_lib_included_header.ar`）。⚠ 以前は実行時だけが読み、型スタブには無かった（型が付かず検査されなかった）
@@ -526,8 +529,8 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 - `ref` / `out` の引数を持つメソッドも静的エラーです（Arrow は書き戻さないので・7-16）。⚠ 以前は型スタブを通り、実行すると
   cs-proc はホストが引数を変換できず（`InvalidCastException`）、cs-dll は「export が無い」エラーでした。
 - C# のオブジェクトは、それを作ったブリッジ（同じ DLL / 同じホスト）へだけ渡せます。
-- 公開のコンストラクタは型スタブの `__init__`（コンストラクタごとに 1 つ）になり、引数の個数で選んでその型で渡します
-  （その個数のコンストラクタが無ければ `TypeError`）。
+- 公開のコンストラクタは型スタブの `__init__`（コンストラクタごとに 1 つ）になり、引数の個数で選んでその型で渡します。
+  その個数のコンストラクタが無い呼び出しは静的エラー（7-31。型の見えない経路では実行時の `TypeError`）。
 
 ---
 

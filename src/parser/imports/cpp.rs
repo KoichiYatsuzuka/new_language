@@ -137,7 +137,7 @@ impl Parser {
                         });
                         continue;
                     }
-                    let field_stmts = sdef
+                    let mut field_stmts: Vec<Stmt> = sdef
                         .fields
                         .iter()
                         .map(|(fname, fct)| Stmt::Field { src: None,
@@ -148,6 +148,24 @@ impl Parser {
                             access: Accessibility::Public,
                         })
                         .collect();
+                    // コンストラクタ: 実行時（`load_cpp_wrapper_dll`）と同じく、全フィールドを宣言順に受ける（7-31・型検査が
+                    // `Named(1, b"x")` の引数を検査する）。⚠ 以前は `__init__` を書かず、構築の引数は検査されなかった
+                    let mut init_params = vec![Param::bridge("self", None, false)];
+                    init_params.extend(sdef.fields.iter().map(|(fname, fct)| {
+                        Param::bridge(fname.clone(), Some(ctype_to_tl_str(fct, super::CPos::Field, &struct_defs)), false)
+                    }));
+                    field_stmts.push(Stmt::FnDef { src: None,
+                        name: "__init__".to_string(),
+                        template_params: vec![],
+                        params: init_params,
+                        return_type: Some("None".to_string()),
+                        body: vec![],
+                        is_abstract: false,
+                        is_static: false,
+                        is_class_method: false,
+                        decorators: vec![],
+                        access: Accessibility::Public,
+                    });
                     stmts.push(Stmt::ClassDef { src: None,
                         name: sdef.name.clone(),
                         template_params: vec![],
