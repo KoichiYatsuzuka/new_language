@@ -32,6 +32,11 @@ cargo run -- --compile-cs <file.dll> # Generate .ars stub from a .NET DLL (impor
 cargo run -- --gen-cs-exports <managed.dll> -o <file.cs> # Generate the cs-dll [UnmanagedCallersOnly] exports (C#)
 ```
 
+⚠ Tests that need resources outside the repository read their location from the `"test"` section of `ar_config.json`
+(e.g. `"test": { "dxlib_header": "examples/DxLib/DxLib.h" }` — relative to the config file). A test whose resource is not
+configured prints `SKIPPED: …` and passes; a configured path that does not exist fails (`ar_config::require_test_resource`,
+ffi_value_exchange_plan.md 7-33).
+
 ### VS Code 拡張のフロントエンド（wasm）
 
 ```bash

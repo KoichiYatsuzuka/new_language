@@ -1,6 +1,10 @@
 {
   "os": "windows",
 
+  "test": {
+    "dxlib_header": "examples/DxLib/DxLib.h"
+  },
+
   "python": {
     "search_paths": []
   },

@@ -141,6 +141,47 @@ pub(crate) fn read_cs_lib_paths_from_str(text: &str, base: &Path) -> Option<Vec<
     }
 }
 
+/// `ar_config.json` のテキストから `test.<key>`（テストが使う環境の資源のパス・ffi_value_exchange_plan.md 7-33）を読む。
+/// 相対パスは `base`（設定ファイルのあるディレクトリ）基準。書いていない・文字列でない・空なら `None`。
+#[cfg(test)]
+#[allow(dead_code)] // 拡張の crate（`arrow-frontend`）のテストでは `require_test_resource` ごと使わない
+pub(crate) fn read_test_resource_from_str(text: &str, base: &Path, key: &str) -> Option<PathBuf> {
+    let root: serde_json::Value = serde_json::from_str(text).ok()?;
+    let s = root.get("test")?.get(key)?.as_str()?;
+    if s.is_empty() {
+        return None;
+    }
+    resolve_path_array(&[serde_json::Value::String(s.to_string())], base).into_iter().next()
+}
+
+/// テストが使う**このリポジトリの外の資源**（DxLib の SDK など）の場所: `ar_config.json` の `"test"` の節（7-33）。
+///
+/// `cargo test` のカレント（クレートのルート）から祖先へ遡り、最初に見つかった設定の `test.<key>` を読む
+/// （`find_ancestor_config`）。
+/// - 書いていなければ `None` を返し、**そのテストを飛ばしたことと、何を書けば走るか**を出す（資源の無い環境でも
+///   `cargo test` が通る）
+/// - 書いてあるのに無ければ panic（設定の誤りを黙って飛ばさない）
+///
+/// ⚠ 以前は `test_real_dxlib_header_structs` が git の対象外の `examples/DxLib/DxLib.h` を直接読み、DxLib の SDK の無い
+///   環境では `cargo test` が落ちた。
+#[cfg(test)]
+#[allow(dead_code)] // 拡張の crate（`arrow-frontend`）のテストは使わない
+pub(crate) fn require_test_resource(key: &str, what: &str) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let found = find_ancestor_config(&cwd).and_then(|(cfg, base)| {
+        let text = std::fs::read_to_string(&cfg).ok()?;
+        read_test_resource_from_str(&text, &base, key)
+    });
+    match found {
+        None => {
+            eprintln!("SKIPPED: {what} (write `\"test\": {{ \"{key}\": \"<path>\" }}` in ar_config.json to run this test)");
+            None
+        }
+        Some(p) if !p.exists() => panic!("ar_config.json: test.{key} = '{}' does not exist ({what})", p.display()),
+        Some(p) => Some(p),
+    }
+}
+
 /// JSON の文字列配列を `base` 基準の絶対パス列にする（#73 で `python` 版と共有）。
 ///
 /// ⚠ **文字列でない要素と空文字列は捨てる。** 空文字を残すと `base.join("")` ＝ `base` 自身が
@@ -169,6 +210,17 @@ mod tests {
 
     fn v(base: &str, xs: &[&str]) -> Vec<PathBuf> {
         xs.iter().map(|x| Path::new(base).join(x)).collect()
+    }
+
+    /// `test.<key>`（7-33）: 設定ファイルの場所を基準にしたパス。書いていない・空・`test` の外のキーは `None`
+    #[test]
+    fn test_resources_are_read_from_the_test_section() {
+        use super::read_test_resource_from_str as res;
+        let text = r#"{ "test": { "dxlib_header": "examples/DxLib/DxLib.h", "empty": "" }, "dxlib_header": "x.h" }"#;
+        assert_eq!(res(text, Path::new("/r"), "dxlib_header"), Some(Path::new("/r").join("examples/DxLib/DxLib.h")));
+        assert_eq!(res(text, Path::new("/r"), "empty"), None);
+        assert_eq!(res(text, Path::new("/r"), "missing"), None);
+        assert_eq!(res(r#"{ "dxlib_header": "x.h" }"#, Path::new("/r"), "dxlib_header"), None, "only the test section");
     }
 
     /// ⚠⚠ **#72 以前の手書き走査が間違えていた形**を固定する。

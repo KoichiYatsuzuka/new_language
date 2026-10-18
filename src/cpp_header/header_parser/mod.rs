@@ -421,7 +421,12 @@ mod tests {
     /// 実 DxLib.h からの構造体抽出（回帰デバッグ用）
     #[test]
     fn test_real_dxlib_header_structs() {
-        let raw = std::fs::read("examples/DxLib/DxLib.h").expect("header");
+        // DxLib の SDK は git の対象外（利用者の環境）。場所は `ar_config.json` の `test.dxlib_header`（7-33）。書いていなければ
+        // このテストは飛ばす
+        let Some(path) = crate::ar_config::require_test_resource("dxlib_header", "the real DxLib header (DxLib.h)") else {
+            return;
+        };
+        let raw = std::fs::read(&path).expect("header");
         let content = String::from_utf8_lossy(&raw);
         let custom = HashMap::new();
         let typedefs = HashMap::new();
