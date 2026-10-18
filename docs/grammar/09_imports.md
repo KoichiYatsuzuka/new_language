@@ -354,6 +354,11 @@ let mean = np.mean(arr)
     （`implementation_plans/ffi_value_exchange_plan.md` 7-8。以前は `dict[K, V]` → `dict`・`frozenset[T]` → `Any` と要素型を落としていました）
 - **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
   （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
+- **関数の引数**（7-30）: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。引数の数も検査する。
+  `*args` / `**kwargs` を持つ関数は引数を検査しない。PEP 484 の数の塔で、`float` と注釈した引数は `int` も受け、
+  `-> float` の関数が `int` を返せば `float` にする。このファイルがクラスとして宣言していない型の名前（`numpy.typing.ArrayLike`
+  などの別名・ほかのモジュールのクラス）は `Any`（`examples/interop/py_int_functions.ar`）。⚠ 以前は仮引数を持たず、
+  引数の数も型も検査しなかった
 - **クラス**（7-27）: `pc.Counter(10)` の型は `pc.Counter`。メソッド（引数と戻り値は注釈どおり、無ければ `Any`）と属性
   （クラス本体の `name: T` / `name = …`、メソッドの中の `self.name: T = …` / `self.name = …`。注釈の無いものは `Any`。
   `@property` も属性）の表で静的に検査し、表に無いメンバーは静的エラー。同じファイルの基底クラスのメンバーも持つ。

@@ -398,11 +398,20 @@ impl Parser {
             // クラスは `.py` と同じ行単位の抽出の宣言を使う（ffi_value_exchange_plan.md 7-27）。変換器のクラスは Arrow の
             // クラスとして組むので、メソッドが `mut self`（`let` の値から呼べない）になり、値の無い注釈の属性（`n: int`）を落とす
             converted.retain(|s| !matches!(s, Stmt::ClassDef { .. }));
-            // 注釈の無い関数の戻り値は `Any`（7-27・型を付けるのは注釈・スタブのあるものだけ）
+            // 注釈の無い関数の戻り値・引数は `Any`（7-27・7-30・型を付けるのは注釈・スタブのあるものだけ）。引数は不変
+            // （変換器は Python の関数を Arrow の関数として組むので `mut` にするが、スタブでは `mut` の実引数を求めない）
             for st in &mut converted {
-                if let Stmt::FnDef { return_type, .. } = st {
+                if let Stmt::FnDef { return_type, params, .. } = st {
                     if return_type.is_none() {
                         *return_type = Some("Any".to_string());
+                    }
+                    for p in params.iter_mut() {
+                        p.mutable = false;
+                        p.type_ann = Some(match p.type_ann.as_deref() {
+                            // `float` の引数は `int` も受ける（PEP 484・`py_param_type`）
+                            Some(t) => crate::parser::py_stub_extract::py_param_type(t),
+                            None => "Any".to_string(),
+                        });
                     }
                 }
             }
@@ -413,11 +422,13 @@ impl Parser {
                 .collect();
             for stub in extract_py_type_stubs(source) {
                 match stub {
-                    Stmt::Let(ref name, _, _, _) if !known.contains(name.as_str()) => converted.push(stub),
+                    Stmt::FnDef { ref name, .. } if !known.contains(name.as_str()) => converted.push(stub),
                     Stmt::ClassDef { .. } => converted.push(stub),
                     _ => {}
                 }
             }
+            // このファイルが宣言していない型の名前は `Any`（7-30・`py_unknown_types_to_any`）
+            crate::parser::py_stub_extract::py_unknown_types_to_any(&mut converted);
             converted
         } else {
             // .py: 直接スタブ抽出（python_converter は複雑な構文に対応できないため使わない）

@@ -234,8 +234,11 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
 
-Typing rule (ffi_value_exchange_plan.md 7-27, the user's decision): only annotated members, `.pyi` stubs and the
-constructor's result get types; everything else is `Any`. `parser/py_stub_extract.rs` turns a top-level `class` into a
+Typing rule (ffi_value_exchange_plan.md 7-27 / 7-30, the user's decision): only annotated members, `.pyi` stubs and the
+constructor's result get types; everything else is `Any`. Top-level functions are `Stmt::FnDef` stubs with parsed
+parameters (`py_params`; a `float` parameter accepts `int`, `py_param_type`; `*args` / `**kwargs` → arity unchecked).
+Type names the file does not declare as a class become `Any` (`py_unknown_types_to_any`), and the Python boundary
+checker coerces an `int` result to a declared `float` (`ffi_boundary::coerce_numbers`, PEP 484). `parser/py_stub_extract.rs` turns a top-level `class` into a
 `Stmt::ClassDef` stub (`py_class_stub`): methods with parsed parameters, fields from class-level `name: T` / `name = …` and
 `self.name …` in methods, `@property` as a field; a base in the same file is merged, a foreign base or a decorator makes
 the member set open (decorator marker `py-open-members:`). `.pyi` files use the same class stubs (the converter's classes

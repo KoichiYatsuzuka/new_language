@@ -370,12 +370,17 @@ impl TypeChecker {
                     //   cpp のスタブも Arrow が Arrow の綴りで作る（`ctype_to_tl_str`）ので同じ（4-7）。⚠ 4-3 で戻り値が
                     //   `Option[bytes]` / `Option[Ptr[T]]` になってから型が「分からない」になり、`mut` を求める
                     //   `ArPtrProtocol*` の引数へ `let` の `Ptr` を渡すと偽の静的エラーになっていた。
-                    //   Python のスタブは綴りが Arrow の型と限らない（`List[int]` など）ので従来どおり。
+                    //   Python のスタブも Arrow の綴りで作る（`py_stub_extract::py_type_to_arrow`・`.pyi` の変換器も同じ）ので
+                    //   同じく読む。読めない型は `Any`（7-30・型が分かるものだけに型を付ける）。⚠ 7-30 で関数のスタブを
+                    //   `Stmt::FnDef` にしたとき、ここが基本型しか読まない `type_ann_to_inferred` のままで、`-> list[int]` が
+                    //   「分からない」になり境界の要素の照合（FfiTypeError / OverflowError）が効かなくなった（ゲートが止めた）
                     let ret = return_type
                         .as_deref()
                         .map(|t| {
                             if matches!(lang, "js-proc" | "cpp-dll" | "cpp-lib") {
                                 InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                            } else if matches!(lang, "py" | "py-int") {
+                                InferredType::from_ann(t).unwrap_or(InferredType::Any)
                             } else {
                                 Self::type_ann_to_inferred(t)
                             }

@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28 完了（7-29〜7-34 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30 完了（7-29・7-31〜7-34 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -263,7 +263,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-27** | ✅（§5・利用者の決定: 型を付けるのは `__init__` の戻り値と注釈・スタブのあるものだけ）py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
 | **7-28** | ✅（§5）cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、そうした関数は型が付かない（外部言語の名前空間は開いているので使えるが、引数も戻り値も検査されない）。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 | **7-29** | cpp のヘッダ解析が型名・マクロを関数名として読み違えている疑いがある: DxLib の cpp-lib のシムのコンパイルで外れた関数の一覧に `HWND`・`HBITMAP`・`HICON`・`HMODULE`・`DxLib` という「関数」が出た（`CppBridge: pass 1: removed …`）。また読み込みのたびに`CppBridge: unknown C type '( void', skipping function` が出て、関数ポインタを含む宣言などを読み飛ばしている。どの宣言からそれらの名前ができるかを調べ、正しく読むか、読めない宣言は理由つきで未対応にする（黙って関数を作らない・7-13 で発見） | なし | 中 |
-| **7-30** | py-int のトップレベルの関数の引数を静的に検査していない: `.py` の型スタブ（`extract_py_type_stubs`）が`function->戻り値` の型だけを書き、仮引数を持たないので、引数の数も型も検査されない（戻り値の型だけが付く）。7-27 でメソッドの引数を読む `py_params` を作ったので、トップレベルの関数も同じ規則（注釈の無い引数は `Any`・既定値のある引数は省略できる）で宣言にする（7-27 で発見） | なし | 小 |
+| **7-30** | ✅（§5・利用者の決定: 型注釈・スタブファイルで型が分かるものはその型、ほかは `__init__` の戻り値を除き `Any`）py-int のトップレベルの関数の引数を静的に検査していない: `.py` の型スタブ（`extract_py_type_stubs`）が`function->戻り値` の型だけを書き、仮引数を持たないので、引数の数も型も検査されない（戻り値の型だけが付く）。7-27 でメソッドの引数を読む `py_params` を作ったので、トップレベルの関数も同じ規則（注釈の無い引数は `Any`・既定値のある引数は省略できる）で宣言にする（7-27 で発見） | なし | 小 |
 | **7-31** | 外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
 | **7-32** | Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
 | **7-33** | `cargo test` が利用者の環境に依存する: `test_real_dxlib_header_structs`（`cpp_header/header_parser/mod.rs`）がgit の対象外の `examples/DxLib/DxLib.h` を読み、無ければ panic する（DxLib の SDK が無い環境ではテストが落ちる・既存）。また追跡されている `ar_config.json` がこの環境専用のパス（MSVC・Windows SDK の版・Rust のレジストリ）を持ち、7-13 では SDK の版が合わず `TCHAR` が解決できなかった。テストは SDK が無ければ飛ばしたことを出して飛ばすか小さなヘッダを同梱し、環境ごとのパスは追跡しない設定へ分ける（設定は祖先から重ねて読むので、git の対象外の上書きファイルを置ける）（7-13 で発見） | なし | 小 |
@@ -1611,6 +1611,29 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   （Python のモジュール `py_int_classes.py`）
 - 文書: `docs/grammar/09_imports.md`・skill `importation`
 - ゲート（基準 `7c7983e`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（477/479・負の対照は 479/479）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0。`matrix_progress.ar` は型検査を通って窓を開いたまま待つので kill の側に移った）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 570/570・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1193 件が通る。VSIX を作り直した
+
+### 7-30 実装（利用者の決定: 型注釈・スタブファイルで型が分かるものはその型、ほかは `__init__` の戻り値を除き `Any`）
+
+- `.py` の型スタブで、トップレベルの関数を関数の宣言（`Stmt::FnDef`・`py_function`）にした。引数は 7-27 のメソッドと同じ
+  `py_params`: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。`*args` / `**kwargs` を持つ関数は
+  引数を検査しない（`collect_module_types` の既存の規則）。⚠ 以前は `Stmt::Let(名前, "function->戻り値")` で仮引数を持たず、
+  引数の数も型も検査されなかった
+- `.pyi` の変換器の関数も同じ規則にそろえた: 注釈の無い引数は `Any`、引数は不変（変換器は `mut` にする）
+- PEP 484 の数の塔: `float` と注釈した引数は `int` も受ける（`py_param_type`。`math.sqrt(2)` は Python では正しい）。境界の検査
+  （`ffi_boundary`）も、`-> float` の関数が返した `int` を `float` に寄せる（JS の数の寄せと 1 つの関数 `coerce_numbers` にした。
+  Python は int → float だけ）。⚠ 以前は `FfiTypeError`
+- このファイルがクラスとして宣言していない大文字始まりの型の名前（`numpy.typing.ArrayLike` などの別名・ほかのモジュールの
+  クラス）は `Any`（`py_unknown_types_to_any`・`.py` と `.pyi` の両方）。以前は名前だけのクラスの型にしていて、引数に型を
+  付けたら `plt.pie([..])` が `expects 'ArrayLike'` の偽の静的エラーになった（実用例 `data_analysis.ar` で見つかった）
+- ⚠ 実装中に踏んだもの（ゲートが止めた）: 関数のスタブを `Stmt::FnDef` にしたら、型検査の `collect_module_types` が py / py-int の
+  戻り値を基本型しか読まない `type_ann_to_inferred` で読んでいて、`-> list[int]` が「分からない」になり、境界の要素の照合
+  （FfiTypeError・OverflowError）が効かなくなった（`ffi_int_overflow.ar`・`py_int_element_types.ar` が落ち、
+  `py_int_element_type_error.ar` が参照実装と一致してしまった）。py / py-int も `from_ann` で読む（読めない型は `Any`）
+- 単体テスト: `unknown_type_names_become_any`・`python_coerces_int_to_float_only`（`classes_become_declarations` を更新）
+- 例題: `interop/py_int_functions.ar`（期待値と違えば raise）・`py_int_functions_error.ar`（Python のモジュール
+  `py_int_functions.py`）
+- 文書: `docs/grammar/09_imports.md`・skill `importation`
+- ゲート（基準 `88b22b3`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（479/481・負の対照は 481/481）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 572/572・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1195 件が通る。VSIX を作り直した
 
 ---
 

@@ -23,9 +23,10 @@
 /// 規則（ffi_value_exchange_plan.md 7-27・利用者の決定）: **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、
 /// クラスのコンストラクタ（`__init__`）の戻り値だけ**。それ以外は `Any`（Arrow では明示のダウンキャストを求める）。
 ///
-/// - トップレベルの `def` / `async def` → `Stmt::Let(名前, "function->戻り値")`。戻り値は注釈どおり、無ければ `Any`
-///   ⚠ 以前は注釈の無い関数の `return` のリテラルから戻り値を推し量っていた（`return 1` → `int`）。注釈でも
-///     スタブでもない型なので `Any` にした
+/// - トップレベルの `def` / `async def` → 関数の宣言（`Stmt::FnDef`・`py_function`）。引数と戻り値は注釈どおり、注釈の
+///   無いものは `Any`、既定値のある引数は省略できる。`*args` / `**kwargs` を持つ関数は引数を検査しない（7-30）
+///   ⚠ 以前は `Stmt::Let(名前, "function->戻り値")` で仮引数を持たず、引数の数も型も検査されなかった。また注釈の無い
+///     関数の `return` のリテラルから戻り値を推し量っていた（`return 1` → `int`。注釈でもスタブでもないので 7-27 で `Any` に）
 /// - トップレベルの `class` → クラスの宣言（`Stmt::ClassDef`・`py_class_stub`）。コンストラクタで作った値はこのクラスの型
 ///   （`pc.Box`）で、メソッドの引数・戻り値と属性は注釈どおり、注釈の無いものは `Any`
 ///   ⚠ 以前は `function->Any`（作った値が `Any` で、属性もメソッドも使えなかった）。タスク 7.8 で「クラス名を戻り値の型に
@@ -81,21 +82,17 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         // 関数定義（トップレベルのみ対象）
         if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
             decorated = false;
-            if let Some((name, ret_ann, _params, body_line, func_indent)) =
+            if let Some((name, ret_ann, params_text, body_line, func_indent)) =
                 py_parse_func_def(&lines, i)
             {
                 if !name.starts_with('_') {
-                    // 注釈の無い関数の戻り値は `Any`（7-27・注釈かスタブファイルがあるものだけに型を付ける）
+                    // 注釈の無い戻り値・引数は `Any`（7-27・7-30・注釈かスタブファイルがあるものだけに型を付ける）
                     let arrow_ret = match ret_ann {
                         Some(ann) => py_type_to_arrow(py_unquote(&ann)),
                         None => "Any".to_string(),
                     };
-                    stmts.push(crate::ast::Stmt::Let(
-                        name,
-                        Some(format!("function->{}", arrow_ret)),
-                        crate::ast::Expr::None,
-                        crate::token::Span::unknown(),
-                    ));
+                    let params = py_params(&params_text, false).unwrap_or_else(py_open_params);
+                    stmts.push(py_function(&name, params, arrow_ret));
                 }
                 i = py_block_end(&lines, body_line, func_indent);
                 continue;
@@ -106,7 +103,76 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         i += 1;
     }
 
+    py_unknown_types_to_any(&mut stmts);
     stmts
+}
+
+/// 型スタブの型の中で、**このファイルがクラスとして宣言していない大文字始まりの名前**を `Any` にする（7-30）。
+/// Python の注釈は型の別名（`numpy.typing.ArrayLike`）やほかのモジュールのクラスを名前で書けるが、スタブはその中身を
+/// 知らないので、Arrow の型としては検査できない（利用者の決定: 型を付けるのは注釈・スタブで型が分かるものだけ）。
+/// ⚠ 以前は大文字始まりの名前をそのままクラスの型にしていたので、引数に型を付けた 7-30 で `plt.pie([..])` が
+///   `expects 'ArrayLike' but got 'list'` の偽の静的エラーになった。
+/// `.py` の抽出（`extract_py_type_stubs`）と `.pyi` の変換（`build_py_type_body`）の両方の結果に使う。
+pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
+    use crate::ast::Stmt;
+    let known: std::collections::HashSet<String> = stmts
+        .iter()
+        .filter_map(|s| if let Stmt::ClassDef { name, .. } = s { Some(name.clone()) } else { None })
+        .collect();
+    let fix = |t: &mut String| *t = py_type_names_to_any(t, &known);
+    let fix_fn = |params: &mut Vec<crate::ast::Param>, ret: &mut Option<String>| {
+        for p in params.iter_mut() {
+            if let Some(t) = p.type_ann.as_mut() {
+                fix(t);
+            }
+        }
+        if let Some(t) = ret.as_mut() {
+            fix(t);
+        }
+    };
+    for st in stmts.iter_mut() {
+        match st {
+            Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
+            Stmt::ClassDef { body, .. } => {
+                for m in body.iter_mut() {
+                    match m {
+                        Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
+                        Stmt::Field { type_ann, .. } => fix(type_ann),
+                        _ => {}
+                    }
+                }
+            }
+            Stmt::Let(_, Some(t), _, _) => fix(t),
+            _ => {}
+        }
+    }
+}
+
+/// 型の字句の中の、知らない大文字始まりの名前を `Any` にする（`py_unknown_types_to_any`）。Arrow の型の構成子
+/// （`Union` / `Option` / `Any` / `None` …）と `known` の名前は残す。
+fn py_type_names_to_any(ty: &str, known: &std::collections::HashSet<String>) -> String {
+    const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
+    let mut out = String::with_capacity(ty.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if !word.is_empty() {
+            let keep = !word.starts_with(|c: char| c.is_ascii_uppercase())
+                || ARROW_TYPE_NAMES.contains(&word.as_str())
+                || known.contains(word.as_str());
+            out.push_str(if keep { word } else { "Any" });
+            word.clear();
+        }
+    };
+    for c in ty.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
 /// `start` から読んで、インデントが `indent` 以下の（空でもコメントでもない）行の位置。ブロックの終わり。
@@ -440,7 +506,7 @@ fn py_params(text: &str, with_self: bool) -> Option<Vec<crate::ast::Param>> {
         if pname.is_empty() || !pname.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return None;
         }
-        let ty = ann.map(|a| py_type_to_arrow(py_unquote(a))).unwrap_or_else(|| "Any".to_string());
+        let ty = ann.map(|a| py_param_type(&py_type_to_arrow(py_unquote(a)))).unwrap_or_else(|| "Any".to_string());
         // 既定値の式は型スタブでは使わない（省略できることだけを表す）。型の合わない `None` を書くと型検査が既定値を
         // 疑うので、`Any` の値として `None` を置く（`Option` でない注釈なら型を `Any` に広げない）
         params.push(Param {
@@ -454,6 +520,32 @@ fn py_params(text: &str, with_self: bool) -> Option<Vec<crate::ast::Param>> {
     params.extend(kwargs);
     params.extend(varargs);
     Some(params)
+}
+
+/// 引数の注釈の型（Arrow の綴り）を、Python の型の規則で受けられる型にする（7-30）: PEP 484 の数の塔で、`float` と注釈した
+/// 引数は `int` も受ける（`math.sqrt(2)` は Python では正しい）。⚠ 戻り値には使わない（`-> float` は `float` を返す）。
+pub(crate) fn py_param_type(arrow_ty: &str) -> String {
+    match arrow_ty {
+        "float" => "Union[int, float]".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 型スタブのトップレベルの関数の宣言（本体は空・7-30）。
+fn py_function(name: &str, params: Vec<crate::ast::Param>, ret: String) -> crate::ast::Stmt {
+    crate::ast::Stmt::FnDef {
+        src: None,
+        name: name.to_string(),
+        template_params: vec![],
+        params,
+        return_type: Some(ret),
+        body: vec![],
+        is_abstract: false,
+        is_static: false,
+        is_class_method: false,
+        decorators: vec![],
+        access: crate::ast::Accessibility::Public,
+    }
 }
 
 /// 型スタブのメソッドの宣言（本体は空・`self` は不変）。
@@ -732,8 +824,9 @@ mod tests {
         assert_eq!(m("describe").2, "Any", "no annotation -> Any");
         assert_eq!(m("make"), ("make".to_string(), vec!["n:int".to_string()], "Counter".to_string()), "static: no self, quoted return");
         assert!(!open, "a class without bases or decorators has a closed member set");
-        // 注釈の無いトップレベルの関数は Any（以前は `return 1` から int と推し量っていた）
-        assert!(stmts.iter().any(|s| matches!(s, crate::ast::Stmt::Let(n, Some(t), _, _) if n == "untyped" && t == "function->Any")));
+        // 注釈の無いトップレベルの関数は Any（以前は `return 1` から int と推し量っていた）。引数も Any（7-30）
+        assert!(stmts.iter().any(|s| matches!(s, crate::ast::Stmt::FnDef { name, params, return_type: Some(t), .. }
+            if name == "untyped" && t == "Any" && params.len() == 1 && params[0].type_ann.as_deref() == Some("Any"))));
     }
 
     /// 基底: 同じファイルのクラスならメンバーを持つ。ほかのファイルのクラスを継承する・デコレータの付いたクラスは開いておく
@@ -751,6 +844,26 @@ mod tests {
         let (fields, _, open) = class_parts(&stmts, "Data");
         assert!(open, "a decorated class (dataclass adds members): open");
         assert_eq!(fields, vec![("x".to_string(), "int".to_string())]);
+    }
+
+    /// このファイルが宣言していないクラス・型の別名の名前は `Any`（7-30）
+    #[test]
+    fn unknown_type_names_become_any() {
+        let src = "class Box:
+    pass
+
+def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
+    return b
+";
+        let stmts = extract_py_type_stubs(src);
+        let Some(crate::ast::Stmt::FnDef { params, return_type, .. }) =
+            stmts.iter().find(|s| matches!(s, crate::ast::Stmt::FnDef { name, .. } if name == "f"))
+        else {
+            panic!("no f")
+        };
+        let types: Vec<&str> = params.iter().map(|p| p.type_ann.as_deref().unwrap_or("")).collect();
+        assert_eq!(types, vec!["Any", "Box", "Option[list[Any]]"]);
+        assert_eq!(return_type.as_deref(), Some("Box"));
     }
 
     /// Python のバイト列の注釈はどれも `bytes`（ffi_value_exchange_plan.md 5-3）。

@@ -257,9 +257,19 @@ impl BoundaryChecker for PythonChecker {
     }
 
     fn check(&self, value: &Value, declared: &InferredType) -> Verdict {
+        // PEP 484 の数の塔: `float` を宣言した場所の int は float へ寄せる（7-30。`def scale(x: float) -> float: return x * 2`
+        // に 2 を渡すと Python は int を返す。以前は FfiTypeError）。逆向き（float → int）は寄せない
+        let verdict = match coerce_numbers(value, declared, NumberRepr::Python) {
+            Ok(Some(v)) => match check_common(&v, declared) {
+                Verdict::Ok | Verdict::Unverifiable => Verdict::Coerce(v),
+                _ => mismatch(value),
+            },
+            Ok(None) => check_common(value, declared),
+            Err(()) => mismatch(value),
+        };
         // ⚠ i64 に入らない Python の int は Python のオブジェクトのまま届く（`py_to_tl`・2-6）。`int` を宣言した場所に
         //   来たら OverflowError（7-9。以前は型の不一致の FfiTypeError で、C / C# / Rust の OverflowError と違った）
-        refine_overflow(check_common(value, declared), value, declared, &|v| match v {
+        refine_overflow(verdict, value, declared, &|v| match v {
             Value::PyObject(h) => crate::interpreter::py_interop::py_int_text(h),
             _ => None,
         })
@@ -327,7 +337,7 @@ impl BoundaryChecker for JavaScriptChecker {
     }
 
     fn check(&self, value: &Value, declared: &InferredType) -> Verdict {
-        let verdict = match js_coerce(value, declared) {
+        let verdict = match coerce_numbers(value, declared, NumberRepr::JavaScript) {
             // ⚠ 寄せた値も照合し直す（5-2）。以前はそのまま通していたので、`list[float]` の `[1, "two"]` は `1` を寄せた
             //   時点で `"two"` が照合されずに通った
             Ok(Some(v)) => match check_common(&v, declared) {
@@ -347,12 +357,23 @@ impl BoundaryChecker for JavaScriptChecker {
     }
 }
 
-/// JS の数値の表現差を宣言型で埋めた値。`Ok(None)` は「寄せる必要が無い（共通判定に任せる）」、
-/// `Err(())` は「数値として寄せられない不一致」。
-fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()> {
+/// 数の表し方の違い（`coerce_numbers`）。
+#[derive(Clone, Copy, PartialEq)]
+enum NumberRepr {
+    /// JS の数値はすべて f64: `float` の宣言なら整数値を float へ、`int` の宣言なら整数値の float を int へ寄せる。
+    /// タプルは配列で届く
+    JavaScript,
+    /// Python は int と float を区別して届く。PEP 484 の数の塔で `float` の宣言には int も入るので、int → float だけ寄せる（7-30）
+    Python,
+}
+
+/// 数の表現差を宣言型で埋めた値。`Ok(None)` は「寄せる必要が無い（共通判定に任せる）」、
+/// `Err(())` は「数値として寄せられない不一致」。コンテナ（list / dict / set）・`Option` / `Union` の中も寄せる。
+fn coerce_numbers(value: &Value, declared: &InferredType, repr: NumberRepr) -> Result<Option<Value>, ()> {
+    let recur = |v: &Value, t: &InferredType| coerce_numbers(v, t, repr);
     match (declared, value) {
         (InferredType::Float, Value::Int(n)) => Ok(Some(Value::Float(*n as f64))),
-        (InferredType::Int, Value::Float(f)) => {
+        (InferredType::Int, Value::Float(f)) if repr == NumberRepr::JavaScript => {
             // `i64::MAX as f64` は 2^63 に丸まるので、2^63 未満を `<` で確かめる
             if f.fract() == 0.0 && f.is_finite() && *f >= i64::MIN as f64 && *f < i64::MAX as f64 {
                 Ok(Some(Value::Int(*f as i64)))
@@ -365,7 +386,7 @@ fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for v in items.iter() {
-                match js_coerce(v, elem)? {
+                match recur(v, elem)? {
                     Some(c) => {
                         changed = true;
                         out.push(c);
@@ -381,7 +402,7 @@ fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()
             let mut changed = false;
             let mut out = Vec::with_capacity(pairs.len());
             for (k, v) in pairs {
-                let (k2, v2) = (js_coerce(&k, kt)?, js_coerce(&v, vt)?);
+                let (k2, v2) = (recur(&k, kt)?, recur(&v, vt)?);
                 changed |= k2.is_some() || v2.is_some();
                 out.push((k2.unwrap_or(k), v2.unwrap_or(v)));
             }
@@ -399,19 +420,21 @@ fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for v in items.iter() {
-                let c = js_coerce(v, elem)?;
+                let c = recur(v, elem)?;
                 changed |= c.is_some();
                 out.push(c.unwrap_or_else(|| v.clone()));
             }
             Ok(changed.then(|| Value::Set(std::rc::Rc::new(std::cell::RefCell::new(out)))))
         }
         // JS にタプルは無い（配列で返る）ので、宣言がタプルなら同じ長さの配列をタプルにする（5-2）
-        (InferredType::Tuple(types), Value::List(items)) if items.borrow().len() == types.len() => {
+        (InferredType::Tuple(types), Value::List(items))
+            if repr == NumberRepr::JavaScript && items.borrow().len() == types.len() =>
+        {
             let items = items.borrow();
             let mut vals = Vec::with_capacity(items.len());
             let mut names = Vec::with_capacity(items.len());
             for (v, t) in items.iter().zip(types) {
-                let v = js_coerce(v, t)?.unwrap_or_else(|| v.clone());
+                let v = recur(v, t)?.unwrap_or_else(|| v.clone());
                 names.push(crate::interpreter::ops::typecheck::element_type_name(&v));
                 vals.push(v);
             }
@@ -423,7 +446,7 @@ fn js_coerce(value: &Value, declared: &InferredType) -> Result<Option<Value>, ()
                 return Ok(None);
             }
             for t in variants {
-                if let Ok(Some(v)) = js_coerce(value, t) {
+                if let Ok(Some(v)) = recur(value, t) {
                     return Ok(Some(v));
                 }
             }
@@ -524,6 +547,18 @@ mod tests {
     fn javascript_rejects_fractional_float_for_int() {
         let c = checker_for("js-proc").unwrap();
         assert!(is_mismatch(&c.check(&Value::Float(3.5), &InferredType::Int)));
+    }
+
+    /// Python: `float` の宣言には int も入る（PEP 484・7-30）。float → int は寄せない
+    #[test]
+    fn python_coerces_int_to_float_only() {
+        let c = checker_for("py-int").unwrap();
+        assert!(matches!(c.check(&Value::Int(4), &InferredType::Float), Verdict::Coerce(Value::Float(f)) if f == 4.0));
+        let opt = InferredType::Union(vec![InferredType::Float, InferredType::None]);
+        assert!(matches!(c.check(&Value::Int(4), &opt), Verdict::Coerce(Value::Float(_))));
+        assert!(matches!(c.check(&list(vec![Value::Int(1), Value::Float(2.5)]), &InferredType::ListOf(Box::new(InferredType::Float))), Verdict::Coerce(_)));
+        assert!(is_mismatch(&c.check(&Value::Float(2.0), &InferredType::Int)), "float -> int is not coerced");
+        assert!(is_mismatch(&c.check(&Value::Str("s".into()), &InferredType::Float)));
     }
 
     /// JS の `2.0` は整数値なので Int で届く。`float` 宣言では Float へ寄せる（2-3。以前は FfiTypeError）。

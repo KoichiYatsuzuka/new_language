@@ -1,0 +1,27 @@
+# py_int_functions.ar — import[py-int] の Python の関数の引数と戻り値を検査する（正例・ffi_value_exchange_plan.md 7-30）
+#
+# 型を付けるのは**注釈・スタブファイル（.pyi）があるもの**だけ（利用者の決定）。それ以外は Any:
+#   - 注釈のある引数・戻り値はその型。既定値のある引数は省略できる。引数の数も検査する
+#   - `float` と注釈した引数は int も受け（PEP 484 の数の塔）、`-> float` の関数が int を返せば float にする
+#   - 注釈の無い引数・戻り値、このファイルが宣言していない型の名前（型の別名など）は Any
+#   - `*args` / `**kwargs` を持つ関数は引数を検査しない
+# ⚠ 7-30 より前は型スタブが仮引数を持たず、引数の数も型も検査されなかった（戻り値の型だけが付いた）。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 対になる負例: py_int_functions_error.ar
+
+import[py-int] py_int_functions as pf
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("annotated parameters and return", pf.scale(1.5, 3) == 4.5)
+check("a parameter with a default can be omitted", pf.scale(1.5) == 3.0)
+let doubled: float = pf.scale(2)
+check("an int for a float parameter, and the int result becomes float", doubled == 4.0)
+check("Optional parameter", pf.greet("arrow") == "hello arrow" and pf.greet("arrow", "!") == "hello arrow!")
+check("*args: not checked", pf.join("a", "b", "c") == "abc")
+check("an unannotated return is Any", (pf.untyped(1) mustbe int) == 11)
+check("an unknown type name is Any", pf.takes_alias([1, 2, 3]) == 3)

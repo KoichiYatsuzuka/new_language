@@ -1,0 +1,14 @@
+# py_int_functions_error.ar — py-int の関数の引数の数と型の誤り（負例・ffi_value_exchange_plan.md 7-30）
+#
+#   - 必要な引数が無い・多すぎる → StaticTypeError
+#   - 注釈のある引数に合わない値（`x: float` へ str）→ StaticTypeError
+#   - 注釈の無い戻り値（Any）を int へ入れる → StaticTypeError（明示のダウンキャストが要る）
+# ⚠ 7-30 より前は引数を検査せず、どれも実行時に Python の TypeError（ForeignError）になっていた。
+# 対になる正例: py_int_functions.ar
+
+import[py-int] py_int_functions as pf
+
+pf.scale()
+pf.scale(1.0, 2, 3)
+pf.scale("x")
+let n: int = pf.untyped(1)
