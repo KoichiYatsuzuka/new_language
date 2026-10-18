@@ -18,26 +18,19 @@
 //    （`compare_wasm_frontend.ps1` が守る不変条件と同じ向き）。
 
 
-/// Python ソースから型スタブを直接抽出して `Stmt::Let(name, type_ann, Expr::None)` のリストを返す。
+/// Python ソースから型スタブを直接抽出する。
 ///
-/// - トップレベルの `def` / `async def`:
-///   アノテーション付き → `function->ReturnType`、なし → ボディ推論（フォールバックは `Any`）
-/// - トップレベルの `class`:
-///   **`function->Any`**（呼び出すと `Any` を返す）
+/// 規則（ffi_value_exchange_plan.md 7-27・利用者の決定）: **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、
+/// クラスのコンストラクタ（`__init__`）の戻り値だけ**。それ以外は `Any`（Arrow では明示のダウンキャストを求める）。
 ///
-/// ⚠⚠ **クラス名を戻り値型にしてはいけない**（タスク 7.8）。以前は `function->ClassName` と
-/// していたが、そのクラスは **Arrow のクラスではない**（レジストリにメンバーが無い）。
-/// 名前だけあってメンバーが空の `NamedInstance` になり、**嘘の型**が下流へ流れていた:
-///
-/// ```text
-/// let h = pmod.Holder(1)
-/// let s: str = h.n        # 旧: 黙って通る（Python の int が str 変数に入る）
-/// ```
-///
-/// ⚠ `Any` は Arrow では「何でも通る」ではなく「**明示ダウンキャストを要求する**」。
-/// だから `Any` にすることが**型検査を走らせる**ことになる。
-/// ⚠ 同じモジュールの**関数**と**モジュール変数**は既に `Any` になっており、
-/// クラス経路だけが規則から漏れていた（実測）。
+/// - トップレベルの `def` / `async def` → `Stmt::Let(名前, "function->戻り値")`。戻り値は注釈どおり、無ければ `Any`
+///   ⚠ 以前は注釈の無い関数の `return` のリテラルから戻り値を推し量っていた（`return 1` → `int`）。注釈でも
+///     スタブでもない型なので `Any` にした
+/// - トップレベルの `class` → クラスの宣言（`Stmt::ClassDef`・`py_class_stub`）。コンストラクタで作った値はこのクラスの型
+///   （`pc.Box`）で、メソッドの引数・戻り値と属性は注釈どおり、注釈の無いものは `Any`
+///   ⚠ 以前は `function->Any`（作った値が `Any` で、属性もメソッドも使えなかった）。タスク 7.8 で「クラス名を戻り値の型に
+///     すると、メンバーの表が無いので嘘の型になる」として `Any` にした経緯がある。今はメンバーの表（メソッドと属性）を
+///     スタブに書くので、名前だけの型にはならない
 ///
 /// ⚠⚠ **`Unresolved` にしてはいけない。** `type_check/stmt/check.rs` の `Stmt::Import` に
 /// 先人の実測記録がある: `editor` ビルドで未知メンバを `Any` にすると
@@ -50,60 +43,52 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
     let lines: Vec<&str> = source.lines().collect();
     let mut stmts: Vec<crate::ast::Stmt> = Vec::new();
     let mut i = 0usize;
-    // (class_name, class_indent) — None のときはトップレベル
-    let mut current_class: Option<(String, usize)> = None;
+    // 直前にトップレベルのデコレータ（`@dataclass` など）があったか
+    let mut decorated = false;
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim_start();
         let trimmed = trimmed.trim_end();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('@') {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             i += 1;
             continue;
         }
 
         let line_indent = py_line_indent(line);
-
-        // クラス内 → インデントが下がったらトップレベルに戻る
-        if let Some((_, class_indent)) = &current_class {
-            if line_indent <= *class_indent {
-                current_class = None;
-            }
+        if line_indent > 0 {
+            // トップレベルの宣言の中身（`py_class_stub` / `py_block_end` が読み飛ばす）か、トップレベルの文の続き
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with('@') {
+            decorated = true;
+            i += 1;
+            continue;
         }
 
-        // トップレベルの class 定義
-        if line_indent == 0 {
-            if let Some(class_name) = py_parse_class_name(trimmed) {
-                current_class = Some((class_name.clone(), 0));
-                // ⚠⚠ 戻り値は `Any`（doc の「クラス名を戻り値型にしてはいけない」を参照）。
-                //    ⚠ スタブ（`.ars`）を読んだ C# / JS のクラスは**通常の Arrow 宣言**として
-                //      別経路で登録されるので、ここを通らない。触ってよいのは
-                //      「メンバーが判らない Python のクラス」だけ。
-                stmts.push(crate::ast::Stmt::Let(
-                    class_name.clone(),
-                    Some("function->Any".to_string()),
-                    crate::ast::Expr::None,
-                    crate::token::Span::unknown(),
-                ));
-                i += 1;
-                continue;
-            }
+        // トップレベルの class 定義（7-27）
+        // ⚠ スタブ（`.ars`）を読んだ C# / JS のクラスは**通常の Arrow 宣言**として別経路で登録されるので、ここを通らない。
+        if py_parse_class_name(trimmed).is_some() {
+            let (stmt, next) = py_class_stub(&lines, i, decorated);
+            stmts.push(stmt);
+            decorated = false;
+            i = next;
+            continue;
         }
 
         // 関数定義（トップレベルのみ対象）
-        if current_class.is_none()
-            && line_indent == 0
-            && (trimmed.starts_with("def ") || trimmed.starts_with("async def "))
-        {
-            if let Some((name, ret_ann, body_line, func_indent)) =
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            decorated = false;
+            if let Some((name, ret_ann, _params, body_line, func_indent)) =
                 py_parse_func_def(&lines, i)
             {
                 if !name.starts_with('_') {
-                    let arrow_ret = if let Some(ann) = ret_ann {
-                        py_type_to_arrow(&ann)
-                    } else {
-                        py_infer_body_ret(&lines, body_line, func_indent)
+                    // 注釈の無い関数の戻り値は `Any`（7-27・注釈かスタブファイルがあるものだけに型を付ける）
+                    let arrow_ret = match ret_ann {
+                        Some(ann) => py_type_to_arrow(py_unquote(&ann)),
+                        None => "Any".to_string(),
                     };
                     stmts.push(crate::ast::Stmt::Let(
                         name,
@@ -112,15 +97,386 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
                         crate::token::Span::unknown(),
                     ));
                 }
-                i = body_line;
+                i = py_block_end(&lines, body_line, func_indent);
                 continue;
             }
         }
 
+        decorated = false;
         i += 1;
     }
 
     stmts
+}
+
+/// `start` から読んで、インデントが `indent` 以下の（空でもコメントでもない）行の位置。ブロックの終わり。
+fn py_block_end(lines: &[&str], start: usize, indent: usize) -> usize {
+    let mut i = start;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        if !t.is_empty() && !t.starts_with('#') && py_line_indent(lines[i]) <= indent {
+            break;
+        }
+        i += 1;
+    }
+    i
+}
+
+/// Python のクラスに付ける印（クラスの宣言のデコレータ）: メンバーの顔ぶれが分からない（`members_unresolved`）。
+/// 型検査は外部言語のクラスにデコレータがあるとメンバー存在検査を黙らせる（`TypeRegistryBuilder` の `foreign_depth`）。
+const PY_OPEN_MEMBERS_MARK: &str = "py-open-members: ";
+
+/// トップレベルの `class` を型スタブのクラスの宣言にする（ffi_value_exchange_plan.md 7-27）。`start` は `class` の行。
+/// 戻り値は（宣言, 次に見る行）。
+///
+/// - コンストラクタ: `__init__` の引数（`self` を除く）。作った値の型はこのクラス（利用者の決定: 型を付けるのは `__init__` の
+///   戻り値だけ）。`__init__` が無いクラスは引数なし（`object.__init__`）、基底が分からないクラスは引数を問わない
+/// - メソッド: 引数と戻り値は注釈どおり、注釈の無いものは `Any`。`@staticmethod` / `@classmethod` は `self` / `cls` を持たない
+/// - 属性: クラス本体の `name: T` / `name = …` と、メソッドの中の `self.name: T = …` / `self.name = …`。注釈の無いものは `Any`。
+///   `@property` も属性（戻り値の注釈の型）
+/// - 基底（`object` 以外）が同じファイルのクラスならそのメンバーも持つ。ほかのファイル・ライブラリのクラスを継承する
+///   クラスと、デコレータ（`@dataclass` など）の付いたクラスは、メンバーの顔ぶれが分からないので開いておく
+///   （書いたメンバーは型が付き、ほかの名前は検査しない）
+fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (crate::ast::Stmt, usize) {
+    use crate::ast::{Accessibility, Expr, FieldKind, Stmt};
+    let header = py_strip_comment(lines[start]).trim();
+    let name = py_parse_class_name(header).unwrap_or_default();
+    let end = py_block_end(lines, start + 1, 0);
+    let bases: Vec<String> = match (header.find('('), header.rfind(')')) {
+        (Some(o), Some(c)) if o < c => split_top_level(&header[o + 1..c], ',')
+            .into_iter()
+            .filter(|b| !b.is_empty() && *b != "object" && !b.contains('='))
+            .map(|b| b.to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let members = py_class_members(lines, start, end);
+    // 同じファイルの基底のメンバー（先に書く。派生で同じ名前があれば派生が勝つ）
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut methods: Vec<Stmt> = Vec::new();
+    let mut open = decorated;
+    for base in &bases {
+        match py_find_class(lines, base) {
+            Some(b) if b != start => {
+                let base_end = py_block_end(lines, b + 1, 0);
+                let bm = py_class_members(lines, b, base_end);
+                for f in bm.fields {
+                    py_add_field(&mut fields, f.0, f.1);
+                }
+                methods.extend(bm.methods.into_iter().filter(|m| !matches!(m, Stmt::FnDef { name, .. } if name == "__init__")));
+            }
+            _ => open = true,
+        }
+    }
+    for f in members.fields {
+        py_add_field(&mut fields, f.0, f.1);
+    }
+    for m in members.methods {
+        let mname = match &m { Stmt::FnDef { name, .. } => name.clone(), _ => String::new() };
+        methods.retain(|x| !matches!(x, Stmt::FnDef { name, .. } if *name == mname));
+        methods.push(m);
+    }
+    if !methods.iter().any(|m| matches!(m, Stmt::FnDef { name, .. } if name == "__init__")) {
+        // `__init__` が無い: 基底が分からなければ引数を問わない、そうでなければ引数なし
+        let params = if open { py_open_params() } else { Vec::new() };
+        methods.push(py_method("__init__", params, Some("None".to_string()), false));
+    }
+    let mut body: Vec<Stmt> = fields
+        .into_iter()
+        .map(|(fname, ty)| Stmt::Field {
+            src: None,
+            name: fname,
+            kind: FieldKind::Mut,
+            type_ann: ty,
+            default: None,
+            access: Accessibility::Public,
+        })
+        .collect();
+    body.extend(methods);
+    let decorators = if open {
+        vec![Expr::Str(
+            format!("{PY_OPEN_MEMBERS_MARK}the class is decorated or inherits from a class outside this file").into(),
+        )]
+    } else {
+        Vec::new()
+    };
+    (
+        Stmt::ClassDef {
+            src: None,
+            name,
+            template_params: vec![],
+            bases: vec![],
+            base_args: vec![],
+            decorators,
+            body,
+        },
+        end,
+    )
+}
+
+/// 同じファイルのトップレベルの `class name` の行。
+fn py_find_class(lines: &[&str], name: &str) -> Option<usize> {
+    lines.iter().position(|l| py_line_indent(l) == 0 && py_parse_class_name(l.trim()).as_deref() == Some(name))
+}
+
+/// クラスの本体から集めたメンバー（`py_class_members`）。
+struct PyClassMembers {
+    /// （名前, 型）。注釈の無いものは `Any`
+    fields: Vec<(String, String)>,
+    methods: Vec<crate::ast::Stmt>,
+}
+
+/// 同じ名前の属性は、注釈のあるもの（`Any` でない型）を勝たせる。
+fn py_add_field(fields: &mut Vec<(String, String)>, name: String, ty: String) {
+    match fields.iter_mut().find(|(n, _)| *n == name) {
+        Some(slot) => {
+            if slot.1 == "Any" {
+                slot.1 = ty;
+            }
+        }
+        None => fields.push((name, ty)),
+    }
+}
+
+/// `class` の行 `start` から `end` までの本体のメソッドと属性。
+fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers {
+    let mut out = PyClassMembers { fields: Vec::new(), methods: Vec::new() };
+    let body_indent = lines[start + 1..end]
+        .iter()
+        .find(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with('#')
+        })
+        .map(|l| py_line_indent(l))
+        .unwrap_or(4);
+    let mut decos: Vec<String> = Vec::new();
+    let mut i = start + 1;
+    while i < end {
+        let line = lines[i];
+        let t = py_strip_comment(line).trim();
+        if t.is_empty() || py_line_indent(line) != body_indent {
+            i += 1;
+            continue;
+        }
+        if let Some(d) = t.strip_prefix('@') {
+            decos.push(d.trim().to_string());
+            i += 1;
+            continue;
+        }
+        if t.starts_with("def ") || t.starts_with("async def ") {
+            if let Some((mname, ret, params, body_line, _)) = py_parse_func_def(lines, i) {
+                let body_end = py_block_end(lines, body_line, body_indent);
+                for bl in &lines[body_line..body_end] {
+                    for (n, ty) in py_self_attrs(py_strip_comment(bl).trim()) {
+                        py_add_field(&mut out.fields, n, ty);
+                    }
+                }
+                let ret_ty = ret.as_deref().map(|r| py_type_to_arrow(py_unquote(r)));
+                let is_static = decos.iter().any(|d| d == "staticmethod" || d == "classmethod");
+                if decos.iter().any(|d| d == "property" || d == "functools.cached_property" || d == "cached_property") {
+                    py_add_field(&mut out.fields, mname, ret_ty.unwrap_or_else(|| "Any".to_string()));
+                } else if !decos.iter().any(|d| d.ends_with(".setter") || d.ends_with(".deleter")) {
+                    let params = py_params(&params, !is_static).unwrap_or_else(py_open_params);
+                    let ret_ty = if mname == "__init__" { Some("None".to_string()) } else { Some(ret_ty.unwrap_or_else(|| "Any".to_string())) };
+                    out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == mname));
+                    out.methods.push(py_method(&mname, params, ret_ty, is_static));
+                }
+                decos.clear();
+                i = body_end;
+                continue;
+            }
+        }
+        if t.starts_with("class ") {
+            // 入れ子のクラスは読み飛ばす（Arrow から `Outer.Inner` で使う形はスタブに書かない）
+            decos.clear();
+            i = py_block_end(lines, i + 1, body_indent);
+            continue;
+        }
+        // クラス本体の属性: `name: T = …` / `name: T` / `name = …`
+        if let Some((n, ty)) = py_attr_decl(t) {
+            py_add_field(&mut out.fields, n, ty);
+        }
+        decos.clear();
+        i += 1;
+    }
+    out
+}
+
+/// クラス本体の 1 行が属性の宣言なら（名前, 型）。`name: T = …` / `name: T` は T、`name = …` は `Any`。
+fn py_attr_decl(t: &str) -> Option<(String, String)> {
+    let ident_end = t.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(t.len());
+    let name = &t[..ident_end];
+    if name.is_empty() || !name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
+        return None;
+    }
+    if matches!(name, "pass" | "return" | "if" | "for" | "while" | "with" | "try" | "import" | "from" | "del" | "assert" | "raise") {
+        return None;
+    }
+    let rest = t[ident_end..].trim_start();
+    if let Some(ann_rest) = rest.strip_prefix(':') {
+        let ann = match split_top_level(ann_rest, '=').first() {
+            Some(a) => a.trim().to_string(),
+            None => return None,
+        };
+        if ann.is_empty() {
+            return None;
+        }
+        return Some((name.to_string(), py_type_to_arrow(py_unquote(&ann))));
+    }
+    if rest.starts_with('=') && !rest.starts_with("==") {
+        return Some((name.to_string(), "Any".to_string()));
+    }
+    None
+}
+
+/// メソッドの本体の 1 行の `self.name: T = …` / `self.name = …`（`self.a, self.b = …` も）の（名前, 型）。
+fn py_self_attrs(t: &str) -> Vec<(String, String)> {
+    if !t.starts_with("self.") {
+        return Vec::new();
+    }
+    // 最初の `=`（`==` / `<=` / `>=` / `!=` / `+=` などではない）の前が代入の対象
+    let bytes = t.as_bytes();
+    let mut eq = None;
+    let mut depth = 0i32;
+    for (k, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'=' if depth == 0 => {
+                let prev = if k > 0 { bytes[k - 1] } else { b' ' };
+                let next = bytes.get(k + 1).copied().unwrap_or(b' ');
+                if next != b'=' && !b"=<>!+-*/%&|^@:".contains(&prev) {
+                    eq = Some(k);
+                    break;
+                }
+                if next == b'=' {
+                    return Vec::new();
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(eq) = eq else { return Vec::new() };
+    let target = t[..eq].trim();
+    // `self.name: T`（注釈つきは 1 つだけ）
+    if let Some((lhs, ann)) = target.split_once(':') {
+        let n = lhs.trim().strip_prefix("self.").unwrap_or("");
+        if !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return vec![(n.to_string(), py_type_to_arrow(py_unquote(ann.trim())))];
+        }
+        return Vec::new();
+    }
+    split_top_level(target, ',')
+        .into_iter()
+        .filter_map(|part| {
+            let n = part.trim().strip_prefix("self.")?;
+            (!n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| (n.to_string(), "Any".to_string()))
+        })
+        .collect()
+}
+
+/// 注釈の文字列（前方参照の `"Box"`）の引用符を外す。
+fn py_unquote(a: &str) -> &str {
+    let a = a.trim();
+    a.strip_prefix('"').and_then(|x| x.strip_suffix('"'))
+        .or_else(|| a.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+        .unwrap_or(a)
+}
+
+/// 引数を問わないシグネチャ（`*args, **kwargs`）。
+fn py_open_params() -> Vec<crate::ast::Param> {
+    vec![
+        crate::ast::Param {
+            name: crate::ast::PY_KWARGS_PARAM.to_string(),
+            mutable: false,
+            type_ann: Some("dict[str, Any]".to_string()),
+            default: None,
+            variadic: false,
+        },
+        crate::ast::Param { name: "...".to_string(), mutable: false, type_ann: Some("list[Any]".to_string()), default: None, variadic: true },
+    ]
+}
+
+/// Python の引数の並び（`(` と `)` の間）を Arrow の仮引数にする。`with_self` なら先頭（`self` / `cls`）を外す。
+/// 注釈の無い引数は `Any`、既定値のある引数は省略できる。`*args` は可変長（末尾）、`**kwargs` は `PY_KWARGS_PARAM`。
+/// 読めない形なら `None`（呼び出し側は引数を問わないシグネチャにする）。
+fn py_params(text: &str, with_self: bool) -> Option<Vec<crate::ast::Param>> {
+    use crate::ast::Param;
+    let mut params: Vec<Param> = Vec::new();
+    let mut kwargs: Option<Param> = None;
+    let mut varargs: Option<Param> = None;
+    let mut first = true;
+    for part in split_top_level(text, ',') {
+        let part = part.trim();
+        if part.is_empty() || part == "/" || part == "*" {
+            continue;
+        }
+        if first && with_self {
+            first = false;
+            continue;
+        }
+        first = false;
+        if part.starts_with("**") {
+            kwargs = Some(Param {
+                name: crate::ast::PY_KWARGS_PARAM.to_string(),
+                mutable: false,
+                type_ann: Some("dict[str, Any]".to_string()),
+                default: None,
+                variadic: false,
+            });
+            continue;
+        }
+        if part.starts_with('*') {
+            varargs = Some(Param { name: "...".to_string(), mutable: false, type_ann: Some("list[Any]".to_string()), default: None, variadic: true });
+            continue;
+        }
+        let pieces = split_top_level(part, '=');
+        let decl = pieces.first()?.trim();
+        let has_default = pieces.len() > 1;
+        let (pname, ann) = match decl.split_once(':') {
+            Some((n, a)) => (n.trim(), Some(a.trim())),
+            None => (decl, None),
+        };
+        if pname.is_empty() || !pname.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return None;
+        }
+        let ty = ann.map(|a| py_type_to_arrow(py_unquote(a))).unwrap_or_else(|| "Any".to_string());
+        // 既定値の式は型スタブでは使わない（省略できることだけを表す）。型の合わない `None` を書くと型検査が既定値を
+        // 疑うので、`Any` の値として `None` を置く（`Option` でない注釈なら型を `Any` に広げない）
+        params.push(Param {
+            name: pname.to_string(),
+            mutable: false,
+            type_ann: Some(ty),
+            default: has_default.then_some(crate::ast::Expr::None),
+            variadic: false,
+        });
+    }
+    params.extend(kwargs);
+    params.extend(varargs);
+    Some(params)
+}
+
+/// 型スタブのメソッドの宣言（本体は空・`self` は不変）。
+fn py_method(name: &str, params: Vec<crate::ast::Param>, ret: Option<String>, is_static: bool) -> crate::ast::Stmt {
+    use crate::ast::{Accessibility, Param, Stmt};
+    let mut all = Vec::new();
+    if !is_static {
+        all.push(Param { name: "self".to_string(), mutable: false, type_ann: None, default: None, variadic: false });
+    }
+    all.extend(params);
+    Stmt::FnDef {
+        src: None,
+        name: name.to_string(),
+        template_params: vec![],
+        params: all,
+        return_type: ret,
+        body: vec![],
+        is_abstract: false,
+        is_static,
+        is_class_method: false,
+        decorators: vec![],
+        access: Accessibility::Public,
+    }
 }
 
 /// 行の先頭インデント幅（スペース/タブ数）を返す。
@@ -138,12 +494,12 @@ fn py_parse_class_name(trimmed: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name.to_string()) }
 }
 
-/// `def` / `async def` をパースして `(名前, 戻り値アノテーション, body_start_idx, func_indent)` を返す。
+/// `def` / `async def` をパースして `(名前, 戻り値アノテーション, 引数の並び, body_start_idx, func_indent)` を返す。
 /// 複数行シグネチャはブラケット深さを追跡して結合する（最大 40 行）。
 fn py_parse_func_def(
     lines: &[&str],
     start: usize,
-) -> Option<(String, Option<String>, usize, usize)> {
+) -> Option<(String, Option<String>, String, usize, usize)> {
     let start_line = lines[start];
     let func_indent = py_line_indent(start_line);
     let trimmed = start_line.trim_start();
@@ -192,6 +548,7 @@ fn py_parse_func_def(
         }
     }
     let close = close?;
+    let params = combined[open + 1..close].to_string();
     let after = combined[close + 1..].trim();
 
     // `-> ReturnType:` の形式から戻り値アノテーションを取り出す。
@@ -224,7 +581,7 @@ fn py_parse_func_def(
         None
     };
 
-    Some((name, ret_ann, body_line, func_indent))
+    Some((name, ret_ann, params, body_line, func_indent))
 }
 
 /// 行中のコメント（`#` 以降）を除去する簡易実装（文字列リテラル内の `#` は無視）。
@@ -240,72 +597,6 @@ fn py_strip_comment(line: &str) -> &str {
         }
     }
     line
-}
-
-/// 関数ボディをスキャンして `return` 文から戻り値型を推論する。
-/// ネストした `def` / `class` はスキップ。`yield` があれば即 `"Any"` を返す。
-fn py_infer_body_ret(lines: &[&str], body_start: usize, func_indent: usize) -> String {
-    let mut types: Vec<&'static str> = Vec::new();
-    let mut has_return = false;
-    let mut i = body_start;
-
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { i += 1; continue; }
-
-        let indent = py_line_indent(line);
-        if indent <= func_indent { break; }
-
-        // ネストされた def/class をスキップ
-        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") || trimmed.starts_with("class ") {
-            let nested_indent = indent;
-            i += 1;
-            while i < lines.len() {
-                let t = lines[i].trim();
-                if !t.is_empty() && py_line_indent(lines[i]) <= nested_indent { break; }
-                i += 1;
-            }
-            continue;
-        }
-
-        if trimmed.starts_with("yield ") || trimmed == "yield" { return "Any".to_string(); }
-
-        if let Some(rest) = trimmed.strip_prefix("return") {
-            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-                has_return = true;
-                types.push(py_literal_type(rest.trim()));
-            }
-        }
-
-        i += 1;
-    }
-
-    if !has_return { return "None".to_string(); }
-    let non_none: Vec<_> = types.iter().filter(|&&t| t != "None").cloned().collect();
-    if non_none.is_empty() { return "None".to_string(); }
-    if types.len() == 1 { return types[0].to_string(); }
-    "Any".to_string()
-}
-
-/// Python のリテラル式から Arrow の型名を推論する。
-fn py_literal_type(expr: &str) -> &'static str {
-    let e = expr.trim();
-    if e.is_empty() || e == "None" { return "None"; }
-    if e == "True" || e == "False" { return "bool"; }
-    if e.starts_with('"') || e.starts_with('\'') || e.starts_with("b\"") || e.starts_with("b'")
-        || e.starts_with("f\"") || e.starts_with("f'")
-    {
-        return "str";
-    }
-    let numeric: String = e.chars().filter(|&c| c != '_').collect();
-    if numeric.parse::<i64>().is_ok() { return "int"; }
-    if numeric.parse::<f64>().is_ok() { return "float"; }
-    if e.starts_with('[') { return "list"; }
-    if e.starts_with('(') { return "tuple"; }
-    if e == "{}" || (e.starts_with('{') && e.contains(':')) { return "dict"; }
-    if e.starts_with('{') { return "set"; }
-    "Any"
 }
 
 /// Python 型アノテーション文字列を Arrow の `from_ann` が解釈できる文字列に変換する。
@@ -394,6 +685,73 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn class_parts(stmts: &[crate::ast::Stmt], class: &str) -> (Vec<(String, String)>, Vec<(String, Vec<String>, String)>, bool) {
+        use crate::ast::Stmt;
+        let Some(Stmt::ClassDef { body, decorators, .. }) =
+            stmts.iter().find(|s| matches!(s, Stmt::ClassDef { name, .. } if name == class))
+        else {
+            panic!("no class {class} in {stmts:?}")
+        };
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        for st in body {
+            match st {
+                Stmt::Field { name, type_ann, .. } => fields.push((name.clone(), type_ann.clone())),
+                Stmt::FnDef { name, params, return_type, .. } => methods.push((
+                    name.clone(),
+                    params.iter().map(|p| format!("{}:{}", p.name, p.type_ann.clone().unwrap_or_default())).collect(),
+                    return_type.clone().unwrap_or_default(),
+                )),
+                _ => {}
+            }
+        }
+        (fields, methods, !decorators.is_empty())
+    }
+
+    /// クラスは宣言にする: コンストラクタの引数・注釈どおりのメンバー・注釈の無いものは `Any`（7-27・利用者の決定）
+    #[test]
+    fn classes_become_declarations() {
+        let src = "class Counter:\n    label: str = 'c'\n    def __init__(self, start: int, step=1) -> None:\n        self.value: int = start\n        self.step = step\n        self.a, self.b = 1, 2\n        self.value += 1\n    def bump(self) -> int:\n        return 1\n    def describe(self):\n        return ''\n    @property\n    def count(self) -> int:\n        return 0\n    @staticmethod\n    def make(n: int) -> \"Counter\":\n        return Counter(n)\n\ndef untyped(x):\n    return 1\n";
+        let stmts = extract_py_type_stubs(src);
+        let (fields, methods, open) = class_parts(&stmts, "Counter");
+        assert_eq!(
+            fields,
+            vec![
+                ("label".to_string(), "str".to_string()),
+                ("value".to_string(), "int".to_string()),
+                ("step".to_string(), "Any".to_string()),
+                ("a".to_string(), "Any".to_string()),
+                ("b".to_string(), "Any".to_string()),
+                ("count".to_string(), "int".to_string()),
+            ]
+        );
+        let m = |n: &str| methods.iter().find(|(name, _, _)| name == n).cloned().unwrap_or_else(|| panic!("no method {n}"));
+        assert_eq!(m("__init__"), ("__init__".to_string(), vec!["self:".to_string(), "start:int".to_string(), "step:Any".to_string()], "None".to_string()));
+        assert_eq!(m("bump").2, "int");
+        assert_eq!(m("describe").2, "Any", "no annotation -> Any");
+        assert_eq!(m("make"), ("make".to_string(), vec!["n:int".to_string()], "Counter".to_string()), "static: no self, quoted return");
+        assert!(!open, "a class without bases or decorators has a closed member set");
+        // 注釈の無いトップレベルの関数は Any（以前は `return 1` から int と推し量っていた）
+        assert!(stmts.iter().any(|s| matches!(s, crate::ast::Stmt::Let(n, Some(t), _, _) if n == "untyped" && t == "function->Any")));
+    }
+
+    /// 基底: 同じファイルのクラスならメンバーを持つ。ほかのファイルのクラスを継承する・デコレータの付いたクラスは開いておく
+    #[test]
+    fn class_bases_and_decorators() {
+        let src = "class Base:\n    def hello(self) -> str:\n        return ''\n\nclass Child(Base):\n    def own(self) -> int:\n        return 0\n\nclass Foreign(somelib.Thing):\n    pass\n\n@dataclass\nclass Data:\n    x: int\n";
+        let stmts = extract_py_type_stubs(src);
+        let (_, methods, open) = class_parts(&stmts, "Child");
+        let names: Vec<&str> = methods.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(names.contains(&"hello") && names.contains(&"own"), "{names:?}");
+        assert!(!open);
+        let (_, methods, open) = class_parts(&stmts, "Foreign");
+        assert!(open, "a base outside the file: members are open");
+        assert_eq!(methods[0].1, vec!["self:".to_string(), "**kwargs:dict[str, Any]".to_string(), "...:list[Any]".to_string()], "and the constructor takes anything");
+        let (fields, _, open) = class_parts(&stmts, "Data");
+        assert!(open, "a decorated class (dataclass adds members): open");
+        assert_eq!(fields, vec![("x".to_string(), "int".to_string())]);
+    }
 
     /// Python のバイト列の注釈はどれも `bytes`（ffi_value_exchange_plan.md 5-3）。
     #[test]

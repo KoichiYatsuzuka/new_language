@@ -234,6 +234,14 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
 
+Typing rule (ffi_value_exchange_plan.md 7-27, the user's decision): only annotated members, `.pyi` stubs and the
+constructor's result get types; everything else is `Any`. `parser/py_stub_extract.rs` turns a top-level `class` into a
+`Stmt::ClassDef` stub (`py_class_stub`): methods with parsed parameters, fields from class-level `name: T` / `name = …` and
+`self.name …` in methods, `@property` as a field; a base in the same file is merged, a foreign base or a decorator makes
+the member set open (decorator marker `py-open-members:`). `.pyi` files use the same class stubs (the converter's classes
+are dropped: `mut self`, lost bare annotations). Runtime `is` / `mustbe pc.Box` on a `Value::PyObject` compares the
+class MRO names (and `__module__` when written through a module), `py_interop::py_class_mro`.
+
 Search order: the same `python_import_dirs` as `import[py]` (no dots: the entry directory, `python.search_paths`,
 `PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib/purelib; dots: the search base only).
 

@@ -83,6 +83,24 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
     }
 }
 
+/// Python のオブジェクトのクラスと基底（MRO の順）の `(__module__, __name__)`（`is` / `mustbe` の判定・ffi_value_exchange_plan.md
+/// 7-27）。読めない項目は飛ばす（`__module__` の無いクラスは空文字列）。
+pub fn py_class_mro(h: &PyObjHandle) -> Vec<(String, String)> {
+    Python::with_gil(|py| {
+        let ty = h.inner.bind(py).get_type();
+        let Ok(mro) = ty.getattr("__mro__") else { return Vec::new() };
+        let Ok(items) = mro.iter() else { return Vec::new() };
+        items
+            .filter_map(|c| c.ok())
+            .filter_map(|c| {
+                let name = c.getattr("__name__").ok()?.extract::<String>().ok()?;
+                let module = c.getattr("__module__").ok().and_then(|m| m.extract::<String>().ok()).unwrap_or_default();
+                Some((module, name))
+            })
+            .collect()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Python → tl 変換
 // ---------------------------------------------------------------------------

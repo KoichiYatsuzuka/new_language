@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-26・7-28 完了（7-27 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28 完了
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -260,7 +260,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-24** | ✅（§5・ForeignError に揃えた）py-int の呼び出しで Python が投げた例外が、Python の例外の種類ではなく呼び出しの種類で決まる Arrow の例外になる（関数は `RuntimeError`・メソッドは `AttributeError`・添字は `IndexError`。`ValueError` を投げるメソッドが `AttributeError` になる・`py_interop.rs` の `map_err`）。`ForeignError` にそろえるか、同名の組み込み例外があればそれにするかを決める（7-4 で発見） | なし | 小 |
 | **7-25** | ✅（§5・`Path` に改名し静的エラーにした）組み込みの new_type（`path` / `Size`）と同名の変数を最上位で宣言すると、型検査は通るのに実行時に `NameError: variable 'path' is already declared` になる（参照実装も同じ）。組み込みの関数（`repr` など）と同じく 隠せるようにするか、静的エラーにするかを決める（7-11 で発見・既存） | なし | 小 |
 | **7-26** | ✅（§5）非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
-| **7-27** | py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
+| **7-27** | ✅（§5・利用者の決定: 型を付けるのは `__init__` の戻り値と注釈・スタブのあるものだけ）py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
 | **7-28** | ✅（§5）cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、そうした関数は型が付かない（外部言語の名前空間は開いているので使えるが、引数も戻り値も検査されない）。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
@@ -1576,6 +1576,35 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   通る）。DxLib の実用例の型検査・実行は 7-13 と同じ結果（`SetWindowText` の誤りの文面は手で確かめた）
 - 文書: `docs/grammar/09_imports.md`・skill `importation`
 - ゲート（基準 `dce79e3`・制限時間つき）: `compare_outputs` の差は新しい負例 `cpp_lib_included_header_error` だけ（476/477。基準の exe は静的に通って実行時の TypeError で止まる。負の対照は 477/477）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 568/568・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1191 件が通る（単体テスト `included_headers_are_collected_for_cpp_lib` を足した）。VSIX を作り直した
+
+### 7-27 実装（利用者の決定: `__init__` の戻り値に限り型を付け、ほかは注釈かスタブファイルが無い限り `Any`）
+
+- py-int の型スタブ（`parser/py_stub_extract.rs`）で、トップレベルの `class` をクラスの宣言（`Stmt::ClassDef`）にした
+  （`py_class_stub`）。以前は `function->Any` で、作った値が `Any` になり属性もメソッドも静的エラー（`Any` への操作）、
+  `mustbe pc.Box` も実行時に失敗したので、Arrow から使う手段が無かった（タスク 7.8 で「メンバーの表が無いのにクラス名の型に
+  すると嘘の型になる」として `Any` にした。今はメンバーの表をスタブに書く）
+  - コンストラクタ: `__init__` の引数（`self` を除く）。作った値の型はそのクラス（`pc.Box`）。⚠ コンストラクタの引数の数は
+    検査しない（外部言語のクラスは対象外・#27-a のまま）
+  - メソッド: 引数と戻り値は注釈どおり、注釈の無いものは `Any`。`@staticmethod` / `@classmethod` は `self` を持たない
+  - 属性: クラス本体の `name: T` / `name = …`、メソッドの中の `self.name: T = …` / `self.name = …`（`self.a, self.b = …` も）。
+    注釈の無いものは `Any`。`@property` も属性。表に無いメンバーは静的エラー
+  - 基底: 同じファイルのクラスならメンバーを持つ。ほかのファイル・ライブラリのクラスを継承するクラスとデコレータ
+    （`@dataclass` など）の付いたクラスは、メンバーの顔ぶれが分からないので開いておく（型検査の `members_unresolved`。
+    書いたメンバーには型が付く）
+  - `.pyi` も同じ行単位のクラスの宣言を使う（変換器のクラスは `mut self` のメソッドになって `let` の値から呼べず、値の無い
+    注釈の属性を落とした）。変換器の関数で戻り値の注釈の無いものは `Any`
+- 注釈の無いトップレベルの関数の戻り値を `Any` にした（利用者の決定・以前は `return` のリテラルから推し量っていた。既存の
+  py-int の例題で静的な結果が変わったものは無かった）。前方参照の注釈（`-> "Counter"`）の引用符を外す
+- 実行時: Python のオブジェクトの `is` / `mustbe pc.Box` を、クラスとその基底（MRO）の名前で判定する（Python の
+  `isinstance` と同じ。モジュールで修飾して書いたときはクラスの `__module__` も一致すること・`py_interop::py_class_mro`）。
+  `mustbe` の誤りに出す型の名前もクラスの名前にした（以前は `unknown`）
+- DxLib の実用例 `matrix_progress.ar` が型検査を通る（`state.progress()` などに型が付いた。残っていた `(pct * BAR_W) / 100`
+  の `float` を `//` に直した）。README の現状表を更新
+- 単体テスト: `classes_become_declarations`・`class_bases_and_decorators`
+- 例題: `interop/py_int_classes.ar`（期待値と違えば raise。基準の exe では 13 件の静的エラー）・`py_int_classes_error.ar`
+  （Python のモジュール `py_int_classes.py`）
+- 文書: `docs/grammar/09_imports.md`・skill `importation`
+- ゲート（基準 `7c7983e`・制限時間つき）: `compare_outputs` の差は新しい例題 2 本だけ（477/479・負の対照は 479/479）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0。`matrix_progress.ar` は型検査を通って窓を開いたまま待つので kill の側に移った）・`compare_python_impl` clean（197/197）・`compare_wasm_frontend` 570/570・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1193 件が通る。VSIX を作り直した
 
 ---
 

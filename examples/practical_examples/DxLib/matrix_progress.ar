@@ -126,7 +126,7 @@ while running:
 
     # Progress bar
     dx.DrawFillBox(BAR_X, BAR_Y, BAR_X + BAR_W, BAR_Y + BAR_H, dgray)
-    let fill_w = (pct * BAR_W) / 100
+    let fill_w = (pct * BAR_W) // 100
     if fill_w > 0:
         mut bar_col = green
         if is_done:

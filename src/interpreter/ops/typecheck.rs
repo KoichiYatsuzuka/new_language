@@ -360,6 +360,23 @@ impl Interpreter {
             // C# のオブジェクト（cs-dll / cs-proc）。⚠ 以前はこのアームが無く、`x is Person` / `mustbe Person` /
             //   `case Person:` がどれも偽だった。型スタブが `Option[Person]` を返すようになり（nullable 注釈・
             //   ffi_value_exchange_plan.md 2-1）、絞り込みに要る。
+            // Python のオブジェクト（py-int のクラスのインスタンス・ffi_value_exchange_plan.md 7-27）: Python の `isinstance` と
+            // 同じく、クラスとその基底（MRO）の名前で判定する。型をモジュールで修飾して書いたとき（`pc.Box`）は、モジュールの
+            // 名前空間の名前とクラスの `__module__` も一致すること（別のモジュールの同名のクラスを取り違えない）
+            #[cfg(feature = "native")]
+            Value::PyObject(h) => {
+                let (qualifier, bare) = match type_name.rsplit_once('.') {
+                    Some((q, b)) => (Some(q), b),
+                    None => (None, type_name),
+                };
+                let module = qualifier.and_then(|q| match self.dotted_value(q) {
+                    Some(Value::Namespace(ns)) => Some(ns.name.clone()),
+                    _ => None,
+                });
+                crate::interpreter::py_interop::py_class_mro(h)
+                    .iter()
+                    .any(|(m, n)| n == bare && module.as_deref().is_none_or(|want| want == m))
+            }
             Value::CsObject(o) => {
                 if o.class.name == type_name {
                     return true;
@@ -390,6 +407,20 @@ impl Interpreter {
             Some(inst) => rest.chars().filter(|c| !c.is_whitespace()).eq(inst.chars()),
             None => false,
         }
+    }
+
+    /// `a.b`（名前空間を通した名前）が指す値。引けなければ `None`（7-27・Python のモジュールの名前空間を引く）。
+    #[cfg(feature = "native")]
+    fn dotted_value(&self, path: &str) -> Option<Value> {
+        let mut parts = path.split('.');
+        let mut cur = self.get_val(parts.next()?)?;
+        for seg in parts {
+            cur = match &cur {
+                Value::Namespace(ns) => self.namespace_member(ns, seg)?,
+                _ => return None,
+            };
+        }
+        Some(cur)
     }
 
     /// `t.Tag`（名前空間を通した型名）が指すクラス（10-8）。引けなければ `None`。
@@ -433,6 +464,12 @@ impl Interpreter {
             Value::Instance(i) => i.borrow().class.name.clone(),
             Value::CsObject(o) => o.class_name.clone(),
             Value::Slice(_) => "slice".to_string(),
+            // Python のオブジェクトはそのクラスの名前（`mustbe` の誤りに出す・7-27）
+            #[cfg(feature = "native")]
+            Value::PyObject(h) => crate::interpreter::py_interop::py_class_mro(h)
+                .first()
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "object".to_string()),
             _ => "unknown".to_string(),
         }
     }

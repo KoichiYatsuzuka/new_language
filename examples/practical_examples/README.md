@@ -31,7 +31,7 @@
 | `DxLib/ant_render.ar` | ✅ 成功（`.arc` を `--compile` で作り直した） |
 | `DxLib/dxlib_window.ar` ・ `dxlib_string.ar` | ✅ 成功（10 秒・5 秒で自分で閉じる。`SetAlwaysRunFlag(1)` でウィンドウが前面でなくても進む） |
 | `DxLib/langtons_ant.ar` ・ `langtons_ant_profile.ar` ・ `life_game.ar` | ⏱ GUI ウィンドウで待つ（閉じるまで動く。タイムアウト＝想定どおり） |
-| `DxLib/matrix_progress.ar` | ⛔ **静的エラー**: py-int のクラスのインスタンスが `Any` になり属性を使えない（⇒ 7-27） |
+| `DxLib/matrix_progress.ar` | ⏱ GUI ウィンドウで待つ（閉じるまで動く。py-int のクラスに型が付くようになった・7-27） |
 | `pd_numpy_pyplot/data_analysis.ar` | ✅ 成功（グラフを `data/sales_analysis.png` へ書く） |
 
 **DxLib の SDK の置き場所**: `examples/DxLib/`（`DxLib.h` と `.lib`・git の対象外）。例題は

@@ -1,0 +1,14 @@
+# py_int_classes_error.ar — import[py-int] のクラスのメンバーを静的に検査する（負例・ffi_value_exchange_plan.md 7-27）
+#
+#   - 注釈のあるメソッドの戻り値（`bump() -> int`）を str へ入れる → StaticTypeError
+#   - 注釈の無い属性（`self.step`）は Any なので、int として使うにはダウンキャストが要る → StaticTypeError
+#   - クラスの表に無いメンバー → StaticTypeError
+# ⚠ 7-27 より前はインスタンスが Any で、どのメンバーも「Any への操作」の静的エラーだった（型の合う使い方もできなかった）。
+# 対になる正例: py_int_classes.ar
+
+import[py-int] py_int_classes as pc
+
+let c = pc.Counter(1)
+let s: str = c.bump()
+let n: int = c.step
+print(c.missing)

@@ -352,6 +352,15 @@ let mean = np.mean(arr)
     `Optional[T]` / `T | None`（→ `Option[T]`）。戻り値の要素も境界で照合します（宣言に反すれば `FfiTypeError`）。
     Arrow が表せない型（`Sequence[T]`・`Callable[...]`・`tuple[int, ...]` の要素）は照合しません
     （`implementation_plans/ffi_value_exchange_plan.md` 7-8。以前は `dict[K, V]` → `dict`・`frozenset[T]` → `Any` と要素型を落としていました）
+- **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
+  （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
+- **クラス**（7-27）: `pc.Counter(10)` の型は `pc.Counter`。メソッド（引数と戻り値は注釈どおり、無ければ `Any`）と属性
+  （クラス本体の `name: T` / `name = …`、メソッドの中の `self.name: T = …` / `self.name = …`。注釈の無いものは `Any`。
+  `@property` も属性）の表で静的に検査し、表に無いメンバーは静的エラー。同じファイルの基底クラスのメンバーも持つ。
+  ほかのファイル・ライブラリのクラスを継承するクラスと、デコレータ（`@dataclass` など）の付いたクラスはメンバーの顔ぶれが
+  分からないので、書いたメンバーにだけ型を付け、ほかの名前は検査しない。コンストラクタの引数は検査しない（外部言語の
+  クラスと同じ）。`x is pc.Counter` / `x mustbe pc.Counter` は Python の `isinstance` と同じく基底も見る
+  （`examples/interop/py_int_classes.ar`）。⚠ 以前はコンストラクタの値が `Any` で、属性もメソッドも使えなかった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

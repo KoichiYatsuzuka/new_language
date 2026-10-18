@@ -395,16 +395,27 @@ impl Parser {
                 }
                 Err(_) => Vec::new(),
             };
-            // スタブで不足を補完（変換できなかった関数を追加）
+            // クラスは `.py` と同じ行単位の抽出の宣言を使う（ffi_value_exchange_plan.md 7-27）。変換器のクラスは Arrow の
+            // クラスとして組むので、メソッドが `mut self`（`let` の値から呼べない）になり、値の無い注釈の属性（`n: int`）を落とす
+            converted.retain(|s| !matches!(s, Stmt::ClassDef { .. }));
+            // 注釈の無い関数の戻り値は `Any`（7-27・型を付けるのは注釈・スタブのあるものだけ）
+            for st in &mut converted {
+                if let Stmt::FnDef { return_type, .. } = st {
+                    if return_type.is_none() {
+                        *return_type = Some("Any".to_string());
+                    }
+                }
+            }
+            // スタブで不足を補完（変換できなかった関数と、クラス）
             let known: std::collections::HashSet<String> = converted
                 .iter()
                 .filter_map(|s| if let Stmt::FnDef { name, .. } = s { Some(name.clone()) } else { None })
                 .collect();
             for stub in extract_py_type_stubs(source) {
-                if let Stmt::Let(ref name, _, _, _) = stub {
-                    if !known.contains(name.as_str()) {
-                        converted.push(stub);
-                    }
+                match stub {
+                    Stmt::Let(ref name, _, _, _) if !known.contains(name.as_str()) => converted.push(stub),
+                    Stmt::ClassDef { .. } => converted.push(stub),
+                    _ => {}
                 }
             }
             converted
