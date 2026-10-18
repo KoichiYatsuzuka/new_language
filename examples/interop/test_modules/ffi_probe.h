@@ -133,6 +133,12 @@ ArPtrProtocol fp_tagged_list(void);          // Tagged[2] (ArPtrProtocol fields,
 double fp_defaults(int a, int b DEFAULTPARAM( = -1 ), double c DEFAULTPARAM( = 0.5 ), const char* s DEFAULTPARAM( = NULL ));
 int fp_mode(int a, int mode DEFAULTPARAM( = FP_MODE_DEFAULT ));  // a + mode; a macro default cannot be read, so `mode` is required
 
+// -- function-pointer parameters (task 7-29) ------------------------------------------------------
+// Callbacks are not supported yet: these stay in the stubs and are refused statically with a reason.
+// (The header parser used to strip `int (* fn )` as a macro call and drop the whole function silently.)
+int fp_apply(int (* fn )( int ), int x);     // fn(x), or -1 for NULL
+int fp_apply_compact(int(*fn)(int), int x DEFAULTPARAM( = 1 ));  // the same, written without spaces
+
 #ifdef __cplusplus
 }
 #endif

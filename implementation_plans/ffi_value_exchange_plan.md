@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30〜7-34 完了（7-29 は未着手）
+- 状態: フェーズ 1〜7 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・7-1〜7-34・§5）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -262,7 +262,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-26** | ✅（§5）非同期タスクへ送るクラスの写し（`ClassValue::deep_clone`・`Value::Class` の `deep_clone` から）が、`raw_layout`（`Rc<RawLayout>`）と `field_checks` の中の `Rc<str>` / `Rc<[String]>` を呼び出し側と共有している（7-21 と同じ形・#15 の `module_name` は直してあった）。ワーカーが写しを捨てるときに別のスレッドから同じ参照カウントを減らす。作り直すか `Arc` にする（7-14 で発見） | なし | 小 |
 | **7-27** | ✅（§5・利用者の決定: 型を付けるのは `__init__` の戻り値と注釈・スタブのあるものだけ）py-int のクラスのインスタンスを Arrow から使えない: `pc.Box(3)` の型が `Any` になり、属性もメソッドも静的エラー（`Any` への操作）。`mustbe pc.Box` は型検査を通るが、実行時の型の判定（`value_is_type`）に Python のオブジェクトの場合が無く`expected pc.Box, got unknown` で失敗する。コンストラクタの戻り値をスタブのクラスの型にし、`is` / `mustbe` は Python の`isinstance` で判定する（C# の `CsObject` は 7-6 で対応済み）。DxLib の実用例 `matrix_progress.ar` がこれで止まる（7-13 で発見） | なし | 中 |
 | **7-28** | ✅（§5）cpp-lib の型スタブと実行時の関数の集合がずれる: 実行時（`load_cpp_module`）は取り込んだヘッダ（`precompile_macros` で有効になる `DxFunctionWin.h` など）の関数・構造体も読むが、型スタブ（`parse_cpp_import`）は読まないので、そうした関数は型が付かない（外部言語の名前空間は開いているので使えるが、引数も戻り値も検査されない）。逆に、シムのコンパイルで外れた関数（`SetWindowText` は Win32 のマクロと衝突する）は型スタブに残り、使うと実行時の AttributeError になる。ヘッダの集め方を 1 つの関数にまとめ、外れる関数は理由つきの静的エラーにする（7-13 で発見・既存） | なし | 中 |
-| **7-29** | cpp のヘッダ解析が型名・マクロを関数名として読み違えている疑いがある: DxLib の cpp-lib のシムのコンパイルで外れた関数の一覧に `HWND`・`HBITMAP`・`HICON`・`HMODULE`・`DxLib` という「関数」が出た（`CppBridge: pass 1: removed …`）。また読み込みのたびに`CppBridge: unknown C type '( void', skipping function` が出て、関数ポインタを含む宣言などを読み飛ばしている。どの宣言からそれらの名前ができるかを調べ、正しく読むか、読めない宣言は理由つきで未対応にする（黙って関数を作らない・7-13 で発見） | なし | 中 |
+| **7-29** | ✅（§5）cpp のヘッダ解析が関数ポインタの引数を持つ関数を黙って捨てる・シムの再試行のログが型名を「外した関数」として出す。調べた結果: ① 引数のマクロを消す処理（`strip_parameter_macros`）が `void (* cb )( void )` の `void (* cb )` をマクロの呼び出しとして消し、残りの `( void )` が型として読めずに関数ごと捨てていた（`CppBridge: unknown C type '( void', skipping function`）。callback の引数の並びに `*` があるものだけは偶然関数ポインタと判定されていた（名前は `_pN`）。DxLib では `SetRestoreGraphCallback` など 3 関数が型スタブにも実行時にも無く、名前空間が開いているので静的に通って実行時に「属性が無い」で落ちた。② `pass 1: removed …` の `HWND`・`DxLib` などは、MSVC のエラー行に引用符で出た型名・名前空間をそのまま並べていた（実際に外した関数は 20、並べた名前は 25）。関数名を読み違えていたのではない。直すこと: 関数ポインタの宣言子を残して既存の「callback は未対応」の静的エラーに届ける、外す関数とログをシムに入れた関数の名前だけにする（7-13 で発見） | なし | 中 |
 | **7-30** | ✅（§5・利用者の決定: 型注釈・スタブファイルで型が分かるものはその型、ほかは `__init__` の戻り値を除き `Any`）py-int のトップレベルの関数の引数を静的に検査していない: `.py` の型スタブ（`extract_py_type_stubs`）が`function->戻り値` の型だけを書き、仮引数を持たないので、引数の数も型も検査されない（戻り値の型だけが付く）。7-27 でメソッドの引数を読む `py_params` を作ったので、トップレベルの関数も同じ規則（注釈の無い引数は `Any`・既定値のある引数は省略できる）で宣言にする（7-27 で発見） | なし | 小 |
 | **7-31** | ✅（§5・利用者の決定: 分かる範囲で検査し、静的に分からない部分は `Any` でよい。検査の機構を作る）外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
 | **7-32** | ✅（§5・利用者の決定: `ar_config.json` に使う OS を書き、それに応じて動作を変える）Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
@@ -1709,6 +1709,44 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   変えていない（利用者の指示はテスト用の設定）
 - 単体テスト `test_resources_are_read_from_the_test_section`。文書: `CLAUDE.md`（Commands の `cargo test`）
 - ゲート: テストのコードと設定のキーだけの変更なので、`cargo test` 1201 件（`test_build_gate` も通る）と、`ar_config.json` を読む例題（`cpp_lib_int_widths`・`cpp_default_args`・`cpp_os_mismatch_error`・`py_int_functions`）が以前と同じ結果になることを確かめた
+
+### 7-29 実装
+
+- 調べたこと（7-13 で見えた 2 つの症状）:
+  - `CppBridge: unknown C type '( void', skipping function`: 引数のマクロを消す処理（`strip_parameter_macros`）が、`識別子 (…)` を
+    すべてマクロの呼び出しとみなしていて、`void (* cb )( void )` の `void (* cb )` も消していた。残った `( void )` は型として読めず、
+    関数ごと捨てられた（型スタブにも実行時の名前空間にも無い。cpp の名前空間は開いているので静的に通り、実行時に
+    `AttributeError: module … has no attribute`）。callback の引数の並びに `*` がある宣言（`void (* cb )( void *Data )`）だけは、
+    残った `( void *Data )` を関数ポインタと判定する処理が偶然拾っていた（名前は `_pN`）
+  - DxLib（`DxLib.h` と cpp-lib で取り込む `DxFunctionWin.h`）の関数ポインタの引数を持つ関数 14 個のうち、捨てられていたのは
+    `SetRestoreShredPoint`・`SetRestoreGraphCallback`・`SetWindowMenu` の 3 個（callback の引数が `( void )`・`( WORD ID )`）
+  - `CppBridge: pass 1: removed 20 incompatible fn(s) (… HWND, DxLib …)`: シムのコンパイルの再試行が、MSVC のエラー行に引用符で
+    出た名前（`msvc_errors::extract_bad_fn_names`）をそのまま「外した関数」として並べていた（実際に外した関数は 20、並べた名前は
+    25）。`HWND`・`HBITMAP`・`HICON`・`HMODULE`・`DxLib` は型名と名前空間で、ヘッダの解析が関数名を読み違えていたのではない
+    （`dx.HWND` が名前空間に無いことも確かめた）
+- `strip_parameter_macros` が関数ポインタ・参照の宣言子を残す（`is_declarator_group`）: 括弧の中が `*` / `&` で始まり
+  （呼び出し規約の語 `__cdecl` / `WINAPI` が前にあってもよい）、括弧のあとに引数の並び `(` か配列の `[` が続くもの。後者の条件で
+  SAL の注釈（`_Out_writes_to_(*pcch, …) LPWSTR p` は後ろに型が続く）を宣言子と取り違えない。関数ポインタの引数の名前は
+  宣言子の中の名前（`fn_ptr_param_name`・無ければ `_pN`）。これで既存の判定（`CFnSig::unsupported_reason`）に届き、使った箇所が
+  `parameter `cb` is a function pointer (callback)` の静的エラーになる（実行時は呼ぶと理由つきの誤り・7-28 の `unavailable`）
+- シムの再試行は、集めた名前のうちシムに入れた関数の名前だけを外し、ログにもそれだけを出す（`failed_fn_names`）。関数の名前が
+  1 つも無いエラーは、再試行しても同じ所で落ちるのですぐに誤りにする（以前は何も外さずに最大回数まで繰り返した）
+- 中継 DLL の刻印は変わらない（未対応の関数は刻印の前に除いている）: コミット済みの `ar_ffi_probe.*` も DxLib の生成物も
+  作り直されない
+- 検査用の `ffi_probe` に callback を受ける `fp_apply` / `fp_apply_compact` を足した（ライブラリを作り直した）
+- 単体テスト: `fn_ptr_params_are_kept`・`parameter_macros_are_still_stripped`・`header_keeps_callback_functions`・
+  `failed_fn_names_keeps_only_functions`。`test_real_dxlib_header_structs` の宣言の数を 2445 → 2447 にした（増えたのは
+  `SetRestoreShredPoint`・`SetRestoreGraphCallback` だけで、ほかの宣言は名前・引数・省略できる数とも同じことを全件の写しの
+  比較で確かめた。関数ポインタの引数の名前が `_pN` から宣言子の名前になった 8 個を除く。残りの 3 個は `DxFunctionWin.h`）
+- 例題: `interop/cpp_callback_param_error.ar`（基準の exe は静的に通り、実行時の `AttributeError` で止まる）。DxLib の
+  実用例 7 本の型検査は基準の exe と同じ（エラー 0）。DxLib の 14 個はどれも理由つきの静的エラーになることを手で確かめた
+- 文書: `docs/grammar/09_imports.md`・skill `importation`
+- ゲート（基準 `778262d`・制限時間つき）: `compare_outputs` の差は 32 本（新しい負例と、`ffi_probe.h` を読む 31 本。31 本は
+  基準の exe が新しい `fp_apply*` の宣言で `unknown C type … skipping function` を出す行と、cpp-lib の 4 本の
+  `70 → 72 function(s) total` だけで、ほかは exit code まで一致することを 1 本ずつ確かめた。負の対照は 485/485）・
+  `compare_import_paths` 13/13（負の対照も 13/13）・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl`（新しい負例を既知の差に足して clean）・`compare_wasm_frontend` 576/576 一致・`type_obligations`（退行なし）・
+  `stale_doc_refs`・`cargo test` 1205 件。VSIX を作り直した
 
 ---
 

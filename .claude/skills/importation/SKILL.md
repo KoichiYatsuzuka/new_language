@@ -454,6 +454,15 @@ At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `
 buffers, `wchar_t*`, structs without an exact layout …) are marked in the stub and using them is a static
 error (`TypeErrorKind::FfiUnsupported`); they are not generated in the wrapper either. One judgement,
 `CFnSig::unsupported_reason` in `src/cpp_header/types.rs` (ffi_value_exchange_plan.md 1-2; see `c-abi-interop`).
+⚠ Parameter macros (`DEFAULTPARAM( = x )`, SAL annotations) are stripped before the parameters are read
+(`strip_parameter_macros`), but a function-pointer declarator (`void (* cb )( void )`: a group starting with `*` / `&`,
+followed by `(` or `[`) is kept, so the parameter becomes `CType::FnPtr` named `cb` (7-29). It used to be stripped
+as a macro call and the whole function was dropped silently (`unknown C type '( void'`).
+
+The cpp-lib shim is compiled with retries: names quoted in the MSVC errors (`msvc_errors::extract_bad_fn_names`) that
+are functions in the shim (`failed_fn_names`) are removed and the shim is rebuilt; an error naming no shim function
+fails at once. ⚠ MSVC also quotes type names and namespaces (`HWND`, `DxLib`) — they used to be logged as removed
+functions (7-29).
 
 **Generated files** (`cpp_bridge/compiler.rs`):
 - `cpp-dll`: the Rust wrapper is rebuilt into `%TEMP%` on every run and loads `{stem}.dll` next to the header.

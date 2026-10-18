@@ -116,8 +116,8 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (261 files, 110499 lines)
-  ar_config.rs (249)
+src/  (261 files, 110684 lines)
+  ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1652)
   decl_names.rs (229)
@@ -146,8 +146,8 @@ src/  (261 files, 110499 lines)
     typedef_loader.rs (414)
     types.rs (567)
     header_parser/
-      decls.rs (553)
-      mod.rs (610)
+      decls.rs (602)
+      mod.rs (671)
       preprocess.rs (254)
       structs.rs (378)
   frontend_tests/
@@ -212,7 +212,7 @@ src/  (261 files, 110499 lines)
       string_methods.rs (612)
     cpp_bridge/
       codegen.rs (1031)
-      compiler.rs (788)
+      compiler.rs (811)
       mod.rs (30)
       types.rs (324)
     eval/
@@ -491,7 +491,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
   exceptions/ (10 .ar)
-  interop/ (177 .ar)
+  interop/ (178 .ar)
   practical_examples/ (8 .ar)
   repl/ (0 .ar)
   typing/ (120 .ar)
@@ -506,7 +506,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (147)
   compare_outputs.ps1 (153)
-  compare_python_impl.ps1 (503)
+  compare_python_impl.ps1 (504)
   compare_wasm_frontend.ps1 (301)
   cpp_cache_isolation.ps1 (135)
   debug_session.ps1 (161)
@@ -547,9 +547,9 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   VSCODE_LEXER_UNIFICATION_PLAN.md (439)
 
 (repo root)
-  ar_config.json (34)
-  CLAUDE.md (159)
+  ar_config.json (38)
+  CLAUDE.md (164)
   README.md (317)
 ```
-_Generated 2026-10-18 by generate-codebase-map.ps1_
+_Generated 2026-10-19 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

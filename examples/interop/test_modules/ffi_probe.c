@@ -201,3 +201,7 @@ int fp_mode(int a, int mode) { return a + mode; }
 
 // -- a function declared in an included header (task 7-28) --
 int fp_extra(int x) { return x * 3; }
+
+// -- function-pointer parameters (task 7-29) --
+int fp_apply(int (*fn)(int), int x) { return fn ? fn(x) : -1; }
+int fp_apply_compact(int (*fn)(int), int x) { return fn ? fn(x) : -1; }

@@ -191,7 +191,8 @@ pub(crate) fn parse_fn_decl_ns(
             };
             // Detect function pointer parameters before attempting type/name split
             if typedef_contains_fn_ptr(p) {
-                params.push((format!("_p{idx}"), CType::FnPtr));
+                let pname = fn_ptr_param_name(p).unwrap_or_else(|| format!("_p{idx}"));
+                params.push((pname, CType::FnPtr));
                 continue;
             }
             let (type_str, pname) = match split_type_and_name(p) {
@@ -296,7 +297,36 @@ pub(crate) fn split_params(s: &str) -> Vec<String> {
     result
 }
 
+/// `ident ( group )` の `group` が関数ポインタ・参照の宣言子か（`* cb` / `&ref` / `__cdecl *cb` / `WINAPI* cb`）。
+/// マクロの引数（`= NULL`）とは、先頭（呼び出し規約の語のあと）が `*` / `&` であることで見分ける（7-29）。
+fn is_declarator_group(group: &str) -> bool {
+    let g = group.trim_start();
+    if g.starts_with('*') || g.starts_with('&') {
+        return true;
+    }
+    // 呼び出し規約などの語が 1 つ前にある形（`__cdecl *cb`・`WINAPI* cb`）
+    let word_end = g.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(g.len());
+    word_end > 0 && g[word_end..].trim_start().starts_with('*')
+}
+
+/// 関数ポインタの引数（`void (* cb )( void )`）の名前（`cb`）。宣言子の括弧の中の最後の識別子。無ければ `None`（7-29）。
+fn fn_ptr_param_name(p: &str) -> Option<String> {
+    let open = p.find('(')?;
+    let close = open + p[open..].find(')')?;
+    let inner = &p[open + 1..close];
+    let name = inner
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .last()?;
+    // 呼び出し規約だけ（名前の無い `void (*)(int)`）なら名前は無い
+    if matches!(name, "__cdecl" | "__stdcall" | "__fastcall" | "WINAPI" | "CALLBACK" | "APIENTRY") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// パラメータ文字列から `IDENTIFIER(...)` 形式のマクロ呼び出しパターンを除去する。`DEFAULTPARAM(= NULL)` などのデフォルト引数マクロの除去に使用する。
+/// 関数ポインタの宣言子（`void (* cb )`）は残す（`is_declarator_group`・7-29）。
 pub(crate) fn strip_parameter_macros(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
@@ -312,9 +342,10 @@ pub(crate) fn strip_parameter_macros(s: &str) -> String {
                 spaces.push(chars.next().unwrap());
             }
             if chars.peek() == Some(&'(') {
-                // This looks like a macro call — skip the balanced `(...)`
+                // This looks like a macro call — read the balanced `(...)`
                 chars.next(); // consume `(`
                 let mut depth = 1usize;
+                let mut group = String::new();
                 for mc in chars.by_ref() {
                     match mc {
                         '(' => depth += 1,
@@ -326,8 +357,26 @@ pub(crate) fn strip_parameter_macros(s: &str) -> String {
                         }
                         _ => {}
                     }
+                    group.push(mc);
                 }
-                // The macro call is gone — don't emit anything
+                let mut trailing = String::new();
+                while matches!(chars.peek(), Some(' ') | Some('\t')) {
+                    trailing.push(chars.next().unwrap());
+                }
+                // ⚠ 関数ポインタの宣言子（`void (* cb )( void )` の `(* cb )`・`(__cdecl *cb)`）はマクロではないので残す
+                //   （ffi_value_exchange_plan.md 7-29）。以前は `void (* cb )` をマクロの呼び出しとして消し、残った `( void )`
+                //   が型として読めずに関数ごと黙って捨てていた（DxLib の callback を取る 7 関数）。残せば `typedef_contains_fn_ptr`
+                //   が関数ポインタの引数と見分け、型スタブで「callback は未対応」の理由つきの静的エラーになる。
+                //   宣言子のあとには必ず引数の並び `(` か配列の `[` が続く（SAL の `_Out_writes_to_(*pcch, ..) LPWSTR p` は続かない）
+                if is_declarator_group(&group) && matches!(chars.peek(), Some('(') | Some('[')) {
+                    result.push_str(&ident);
+                    result.push_str(&spaces);
+                    result.push('(');
+                    result.push_str(&group);
+                    result.push(')');
+                }
+                // otherwise the macro call is gone — don't emit it
+                result.push_str(&trailing);
             } else {
                 result.push_str(&ident);
                 result.push_str(&spaces);

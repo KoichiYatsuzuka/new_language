@@ -1,0 +1,18 @@
+# cpp_callback_param_error.ar — 関数ポインタ（callback）を受ける C 関数は、使うと理由つきの静的エラー（負例・ffi_value_exchange_plan.md 7-29）
+#
+# callback の受け渡しはまだ無い（CFnSig::unsupported_reason: parameter `fn` is a function pointer (callback)）。
+# ⚠ 7-29 より前は、ヘッダの解析が `int (* fn )` をマクロの呼び出しとして消し、残りが型として読めずに関数ごと
+#   黙って捨てていた（型スタブにも実行時の名前空間にも無い）。cpp の名前空間は開いている（ヘッダから読めなかった
+#   名前を静的には弾かない）ので静的には通り、実行時に「属性が無い」で落ちていた。DxLib では
+#   SetRestoreGraphCallback など 7 関数がこうして消えていた。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# ⚠ 各行がそれぞれ 1 つの静的エラーになる（型検査は最後まで走って全部報告する）。
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn twice(x: int) -> int:
+    return x * 2
+
+print("unreachable:", fp.fp_apply(twice, 3))          # parameter `fn` is a function pointer (callback)
+print("unreachable:", fp.fp_apply_compact(twice, 3))  # 空白の無い `int(*fn)(int)` も同じ

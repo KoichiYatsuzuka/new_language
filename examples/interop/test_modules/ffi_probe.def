@@ -70,3 +70,5 @@ EXPORTS
     fp_defaults
     fp_mode
     fp_extra
+    fp_apply
+    fp_apply_compact

@@ -438,7 +438,9 @@ mod tests {
         // `parse_struct_bodies` / `scan_scope` を丸ごと書き換えても素通りしていた
         // （#60 の実作業では一時的な全ダンプ差分で担保したが、恒久の網が要る）。
         // ⚠ パーサを**改良**して数が変わったら、差分を目で見てからこの値を更新すること。
-        assert_eq!(sigs.len(), 2445, "declaration count drifted");
+        // ⚠ 2445 → 2447（7-29）: `void (* cb )( void )` の宣言子をマクロとして消していたので、callback の引数が `( void )` の
+        //   `SetRestoreShredPoint` / `SetRestoreGraphCallback` を捨てていた（ほかの宣言は全件の写しの比較で同じ）
+        assert_eq!(sigs.len(), 2447, "declaration count drifted");
         // ⚠ 65 → 61（7-13）: 別名の並び `NEAR *NPWAVEFORMATEX` の最初の語を別名にしていたので、`NEAR` / `FAR` という
         //   偽の構造体が `WAVEFORMAT` / `WAVEFORMATEX` から 2 つずつできていた（宣言子は最後の語・`parse_alias_list`）
         assert_eq!(defs.len(), 61, "struct count drifted");
@@ -611,5 +613,59 @@ int main_fn(int x);
         assert_eq!(sigs[0].unsupported_reason(&structs), None);
         assert_eq!(sigs[0].params[0].1, CType::OpaqueStructPtr { type_name: "RECT".to_string(), mutable: false });
         assert_eq!((sigs[0].n_required, sigs[0].defaults.clone()), (0, vec![Some(CDefault::Null)]));
+    }
+}
+
+// ffi_value_exchange_plan.md 7-29: 関数ポインタの引数を持つ関数を黙って捨てない
+#[cfg(test)]
+mod fn_ptr_param_tests {
+    use super::*;
+    use crate::cpp_header::types::CDefault;
+
+    fn sig(d: &str) -> CFnSig {
+        parse_fn_decl_ns(d, None, &HashMap::new(), &HashMap::new()).unwrap_or_else(|e| panic!("{d}: {e}"))
+    }
+
+    /// 関数ポインタの引数は `FnPtr` になり（名前は宣言子の中の名前）、関数は残って理由つきで未対応になる。
+    /// 以前は `void (* cb )` をマクロの呼び出しとして消し、残りが型として読めずに関数ごと捨てていた
+    #[test]
+    fn fn_ptr_params_are_kept() {
+        let s = sig("int SetRestoreShredPoint( void (* ShredPoint )( void ) )");
+        assert_eq!(s.params, vec![("ShredPoint".to_string(), CType::FnPtr)]);
+        let why = s.unsupported_reason(&[]).unwrap_or_default();
+        assert!(why.contains("`ShredPoint`") && why.contains("callback"), "{why}");
+        // 空白の無い形・呼び出し規約つき・名前の無い宣言子
+        assert_eq!(sig("void f(void(*cb)(void))").params[0], ("cb".to_string(), CType::FnPtr));
+        assert_eq!(sig("void f(int (__cdecl *cmp)(const void*, const void*))").params[0].0, "cmp");
+        assert_eq!(sig("void f(void (WINAPI* cb)(int))").params[0].0, "cb");
+        assert_eq!(sig("void f(void (*)(int))").params[0], ("_p0".to_string(), CType::FnPtr));
+        // 宣言子の後ろの引数も読める（DxLib の MV1LoadModelFromMem の形）
+        let s = sig(
+            "int MV1LoadModelFromMem( const void *FileImage, int FileSize, \
+             int (* FileReadFunc )( const TCHAR *FilePath, void **FileImageAddr, int *FileSize, void *FileReadFuncData ), \
+             int (* FileReleaseFunc )( void *MemoryAddr, void *FileReadFuncData ), void *FileReadFuncData DEFAULTPARAM( = NULL ) )",
+        );
+        let names: Vec<&str> = s.params.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["FileImage", "FileSize", "FileReadFunc", "FileReleaseFunc", "FileReadFuncData"]);
+        assert_eq!((s.params[2].1.clone(), s.params[3].1.clone()), (CType::FnPtr, CType::FnPtr));
+        assert_eq!((s.n_required, s.defaults[4]), (4, Some(CDefault::Null)));
+    }
+
+    /// 既定値のマクロ（`DEFAULTPARAM( = x )`）と SAL 風の注釈（後ろに型が続く）は従来どおり消える
+    #[test]
+    fn parameter_macros_are_still_stripped() {
+        let s = sig("int f(int a DEFAULTPARAM( = 0 ))");
+        assert_eq!((s.params[0].0.as_str(), s.n_required), ("a", 0));
+        let s = sig("int g(_Out_writes_to_(*pcch, *pcch) char* buf, int* pcch)");
+        assert_eq!(s.params[0], ("buf".to_string(), CType::CharPtr { wide: false, mutable: true }));
+    }
+
+    /// ヘッダ全体から読んでも関数が残る（以前は `CppBridge: unknown C type` を出して捨てていた）
+    #[test]
+    fn header_keeps_callback_functions() {
+        let header = "int SetRestoreGraphCallback( void (* Callback )( void ) ) ;\nint Plain( int x ) ;\n";
+        let (sigs, _) = parse_header_full(header, &HashMap::new(), &HashMap::new());
+        let names: Vec<&str> = sigs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["SetRestoreGraphCallback", "Plain"]);
     }
 }

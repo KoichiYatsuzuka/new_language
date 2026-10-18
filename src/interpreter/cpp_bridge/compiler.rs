@@ -358,17 +358,18 @@ pub fn compile_tl_dll(
         match compile_msvc_shim(&shim_src, &msvc, &header_abs, &shim_path, config) {
             Ok(()) => break,
             Err(err_msg) => {
-                let bad = super::super::msvc_errors::extract_bad_fn_names(&err_msg);
-                if bad.is_empty() || pass == MAX_COMPILE_PASSES - 1 {
+                let quoted = super::super::msvc_errors::extract_bad_fn_names(&err_msg);
+                let removed = failed_fn_names(&quoted, &effective_sigs);
+                // 外せる関数が無い（エラーが型や名前空間についてのもの）なら、再試行しても同じ所で落ちる
+                if removed.is_empty() || pass == MAX_COMPILE_PASSES - 1 {
                     return Err(err_msg);
                 }
-                let before = effective_sigs.len();
-                effective_sigs.retain(|s| !bad.contains(&s.name));
+                effective_sigs.retain(|s| !removed.contains(&s.name));
                 eprintln!(
                     "CppBridge: pass {}: removed {} incompatible fn(s) ({}), retrying",
                     pass + 1,
-                    before - effective_sigs.len(),
-                    bad.iter().cloned().collect::<Vec<_>>().join(", ")
+                    removed.len(),
+                    removed.join(", ")
                 );
             }
         }
@@ -390,6 +391,16 @@ pub fn compile_tl_dll(
 
     eprintln!("CppBridge: generated '{}'", dll_path.display());
     Ok((dll_path, effective_sigs))
+}
+
+/// シムのコンパイルエラーから集めた名前（`extract_bad_fn_names`）のうち、シムに入れた関数の名前だけを返す（並びはシムの順）。
+///
+/// ⚠ MSVC のエラー行は引用符で型名（`HWND`）や名前空間（`DxLib`）も挙げるので、集めた名前は関数名とは限らない
+/// （ffi_value_exchange_plan.md 7-29）。以前は集めた名前をそのまま「外した関数」としてログに出していた（外した数と
+/// 名前の数が合わない）。関数と同じ名前の型（C の `struct stat` と `stat()`）が挙がればその関数も外れるが、
+/// 外れた関数は呼ぶと理由つきの誤りになる（`load_cpp_wrapper_dll` の `unavailable`・7-28）ので黙っては消えない。
+fn failed_fn_names(quoted: &std::collections::HashSet<String>, sigs: &[CFnSig]) -> Vec<String> {
+    sigs.iter().filter(|s| quoted.contains(&s.name)).map(|s| s.name.clone()).collect()
 }
 
 /// 恒久キャッシュの刻印（ffi_value_exchange_plan.md 1-5）。シムと中継 DLL の**生成ソース**と、
@@ -761,6 +772,18 @@ mod tests {
         assert!(read_syms_file(&dir.join(format!("ar_test_syms_missing_{pid}.syms")), &all).is_none());
         let _ = std::fs::remove_file(&with_stamp);
         let _ = std::fs::remove_file(&legacy);
+    }
+
+    /// シムのエラーから集めた名前のうち、シムに入れた関数だけを外す（型名・名前空間は外す対象にもログにも出さない・7-29）
+    #[test]
+    fn failed_fn_names_keeps_only_functions() {
+        let sigs = vec![sig("SetWindowText", I32), sig("Plain", I32), sig("GetWindowHandle", I32)];
+        let quoted: std::collections::HashSet<String> =
+            ["HWND", "DxLib", "GetWindowHandle", "SetWindowText", "HICON"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(failed_fn_names(&quoted, &sigs), vec!["SetWindowText", "GetWindowHandle"]);
+        // 関数名が 1 つも無いエラーは「外せるものが無い」（再試行せずにエラーを返す）
+        let types_only: std::collections::HashSet<String> = ["HWND", "DxLib"].iter().map(|s| s.to_string()).collect();
+        assert!(failed_fn_names(&types_only, &sigs).is_empty());
     }
 }
 
