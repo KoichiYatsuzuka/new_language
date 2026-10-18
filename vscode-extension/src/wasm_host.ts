@@ -202,6 +202,10 @@ export function hostImports(memory: () => HostMemory): Record<string, (...args: 
             if (pythonDirs === null) pythonDirs = queryPythonDirs();
             return putText(pythonDirs.map(toWasmPath).join('\n'));
         },
+        /** 動いている OS（`process.platform`・C の型の幅を決める・ffi_value_exchange_plan.md 7-32）。 */
+        host_platform(): number {
+            return putText(process.platform);
+        },
         /** 保留中の値を wasm の `dst` へ写して捨てる。 */
         host_take(dst: number): void {
             const bytes = pending;

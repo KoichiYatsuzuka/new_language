@@ -88,7 +88,12 @@ impl Parser {
             Some(raw) => {
                 let content = String::from_utf8_lossy(&raw).into_owned();
                 let cfg = crate::cpp_header::load_cpp_config(&header_dir);
-                self.try_import(|_| crate::cpp_header::collect_header_decls(&content, &header_dir, &lang, &cfg))?
+                // C の型の幅を決める OS（`ar_config.json` の `"os"`・7-32）。動いている OS と一致することも確かめる（拡張は
+                // ホストに尋ねる。CLI と同じ診断になる）
+                self.try_import(|_| {
+                    crate::cpp_header::apply_config_os(&cfg, true)?;
+                    crate::cpp_header::collect_header_decls(&content, &header_dir, &lang, &cfg)
+                })?
             }
             None => None,
         };

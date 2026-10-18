@@ -13,7 +13,8 @@ use crate::cpp_header::types::{CStructDef, CType, IntWidth};
 /// `long` = 4 バイト・`wchar_t` = 符号なし 2 バイト、それ以外（LP64）は `long` = 8 バイト・`wchar_t` = 符号付き 4 バイト。
 /// 正しい幅で宣言するので、戻り値の上位のゴミを読まず、符号付きは符号拡張・符号なしはゼロ拡張で `int` になる。
 pub(crate) fn int_rust_type(width: IntWidth, signed: bool) -> &'static str {
-    let win = cfg!(windows);
+    // OS は `ar_config.json` の `"os"`（7-32・以前は Arrow を作った OS の `cfg!(windows)`）
+    let win = crate::cpp_header::target_os().is_windows();
     match (width, signed) {
         (IntWidth::W8, true) => "i8",
         (IntWidth::W8, false) => "u8",
@@ -27,6 +28,11 @@ pub(crate) fn int_rust_type(width: IntWidth, signed: bool) -> &'static str {
         (IntWidth::CLong, false) => if win { "u32" } else { "u64" },
         (IntWidth::WChar, _) => if win { "u16" } else { "i32" },
     }
+}
+
+/// `wchar_t` の 1 単位の、中継コードでの Rust の型（Windows は `u16`・ほかは `u32`・`ar_config.json` の `"os"`・7-32）。
+pub(crate) fn wchar_rust_unit() -> &'static str {
+    if crate::cpp_header::target_os().is_windows() { "u16" } else { "u32" }
 }
 
 /// C の整数の、raw レイアウト・書き込みポインタでの幅の名前（`RawWidth::from_ann` が読む `int8` / `uint8` …）。
@@ -63,7 +69,7 @@ impl CType {
             }
             CType::CharPtr { wide: false, mutable: true } => "*mut u8".to_string(),
             CType::CharPtr { wide: false, .. } => "*const u8".to_string(),
-            CType::CharPtr { wide: true, .. } => "*const u16".to_string(),
+            CType::CharPtr { wide: true, .. } => format!("*const {}", wchar_rust_unit()),
             CType::OpaqueStructPtr { .. } => "*mut i8".to_string(),
             CType::FnPtr => "*mut i8".to_string(),
             // `_ArPtrProtocol` は中継コードの写し（4-4）。⚠ 戻り値（値返し）は 4-5 まで `unsupported_reason` が止める
@@ -135,7 +141,7 @@ impl CType {
             // `char*` / `wchar_t*` は `bytes`（NUL 終端の借用をコピーする）、ほかのポインタは借用の `Ptr[要素]`。
             // NULL は `None`（4-3・D-7・D-8・D-9）。⚠ 以前はどれも使えない関数にしていた（1-2）。
             CType::CharPtr { wide: false, .. } => format!("_cstr_to_handle({val} as *const u8)"),
-            CType::CharPtr { wide: true, .. } => format!("_wstr_to_handle({val} as *const u16)"),
+            CType::CharPtr { wide: true, .. } => format!("_wstr_to_handle({val} as *const {})", wchar_rust_unit()),
             CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
                 let elem = self.ptr_elem_name().expect("a pointer type has an element name");
                 format!("((*CB).make_ptr)({val} as usize as u64, b\"{elem}\".as_ptr(), {})", elem.len())
@@ -214,7 +220,9 @@ impl CStructDef {
                 CType::Bool => (1, CField::Bool),
                 CType::CharPtr { wide: false, .. } => (ptr_size, CField::Text { unit: 1 }),
                 // `wchar_t` の幅は環境で決まる（`int_rust_type`）
-                CType::CharPtr { wide: true, .. } => (ptr_size, CField::Text { unit: if cfg!(windows) { 2 } else { 4 } }),
+                CType::CharPtr { wide: true, .. } => {
+                    (ptr_size, CField::Text { unit: crate::cpp_header::target_os().wchar_bytes() })
+                }
                 CType::OpaqueStructPtr { type_name, .. } if !structs.iter().any(|d| &d.name == type_name) => {
                     return Err(format!(
                         "its field `{fname}` points to `{type_name}`, which the header does not declare as a struct (an unresolved typedef?)"
@@ -293,7 +301,7 @@ mod tests {
         );
         assert_eq!(l.size, std::mem::size_of::<Mixed>(), "the element stride includes the tail padding");
         assert_eq!(l.fields[0].1, CField::Num("int16".to_string()));
-        assert_eq!(l.fields[1].1, CField::Text { unit: if cfg!(windows) { 2 } else { 4 } });
+        assert_eq!(l.fields[1].1, CField::Text { unit: crate::cpp_header::target_os().wchar_bytes() });
         assert_eq!(l.fields[2].1, CField::Ptr("Rec".to_string()));
         assert_eq!(l.fields[3].1, CField::Ptr("void".to_string()));
         assert_eq!(l.fields[4].1, CField::Bool);

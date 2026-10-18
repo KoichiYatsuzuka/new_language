@@ -205,6 +205,10 @@ function hostImports(memory) {
                 pythonDirs = queryPythonDirs();
             return putText(pythonDirs.map(toWasmPath).join('\n'));
         },
+        /** 動いている OS（`process.platform`・C の型の幅を決める・ffi_value_exchange_plan.md 7-32）。 */
+        host_platform() {
+            return putText(process.platform);
+        },
         /** 保留中の値を wasm の `dst` へ写して捨てる。 */
         host_take(dst) {
             const bytes = pending;

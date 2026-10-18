@@ -83,13 +83,15 @@ impl CType {
             CType::OpaqueStructPtr { type_name, .. } => Some(type_name.clone()),
             CType::Ptr { inner, .. } => inner.c_elem_name(),
             CType::CharPtr { wide: false, .. } => Some("uint8".to_string()),
-            CType::CharPtr { wide: true, .. } => Some(if cfg!(windows) { "uint16" } else { "int32" }.to_string()),
+            CType::CharPtr { wide: true, .. } => {
+                Some(if super::target::target_os().is_windows() { "uint16" } else { "int32" }.to_string())
+            }
             _ => None,
         }
     }
 
     /// 数値の C の幅つきの名前（`int8` … `uint64`・`float32` / `float64`）。C の `bool` は 1 バイトなので `uint8`。
-    /// ⚠ `long` と `wchar_t` の幅は環境で決まる（Windows は 4 バイト・2 バイト）。
+    /// ⚠ `long` と `wchar_t` の幅は OS で決まる（Windows は 4 バイト・2 バイト。`ar_config.json` の `"os"`・`target`・7-32）。
     pub fn c_elem_name(&self) -> Option<String> {
         Some(match self {
             CType::Int { width, signed } => {
@@ -98,8 +100,8 @@ impl CType {
                     IntWidth::W16 => 16,
                     IntWidth::W32 => 32,
                     IntWidth::W64 => 64,
-                    IntWidth::CLong => if cfg!(windows) { 32 } else { 64 },
-                    IntWidth::WChar => if cfg!(windows) { 16 } else { 32 },
+                    IntWidth::CLong => super::target::target_os().long_bits(),
+                    IntWidth::WChar => 8 * super::target::target_os().wchar_bytes() as u32,
                 };
                 format!("{}int{bits}", if *signed { "" } else { "u" })
             }

@@ -443,7 +443,7 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
 
 **値の対応**:
 - C の整数型（`char` / `short` / `int` / `long` / `long long` / `intN_t` / `uintN_t` / `size_t` …）は Arrow の `int`
-  です。受け取るときは C の型の幅と符号どおりに広げ（Windows の `long` は 4 バイト）、渡すときは C の型の幅に
+  です。受け取るときは C の型の幅と符号どおりに広げ（Windows の `long` は 4 バイト・下の「OS」）、渡すときは C の型の幅に
   切り詰めます（C の暗黙の変換と同じ）
 - `unsigned long long`（`uint64_t` / `size_t`）の 2^63 以上は Arrow の `int` に入らないので `OverflowError` になります
 - `bool` は `bool`、`float` / `double` は `float` です
@@ -476,6 +476,12 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   読みます（整数・`TRUE` / `FALSE`・浮動小数・`bool`・ポインタの `NULL`）。既定値を読めた末尾の引数は省略でき、省略した
   引数には宣言した既定値が入ります。既定値がマクロ名や式で読めない引数は省略できません（引数の数の静的エラー・
   `examples/interop/cpp_default_args.ar`）。⚠ 以前は省略を静的エラーにし、実行時は 0 / NULL で埋めていました
+- **OS**（7-32）: C の `long` と `wchar_t` の幅は OS で決まる（Windows は 4 / 2 バイト、Linux / macOS は 8 / 4 バイト）。
+  `ar_config.json` の最上位の `"os"`（`"windows"` / `"linux"` / `"macos"`）で決め、書いていなければ動いている OS を使う
+  （エディタもホストの OS を使うので CLI と同じ型になる）。書いた OS が動いている OS と違えば、その OS の C のライブラリは
+  読めないので import の誤り（`examples/interop/cpp_os_mismatch_error.ar`）。設定は祖先のディレクトリから重ねて読むので、
+  ヘッダの隣の `ar_config.json` で上書きできる。`wchar_t*` はどの OS でも UTF-16LE の `bytes` で受け取る（UTF-32 の OS では
+  符号化し直す）。⚠ 以前は Arrow を作ったときの OS で決めていて、エディタ（wasm）では常に Windows 以外の幅だった
 - **システムヘッダの型**（7-13）: `ar_config.json` の `cpp.system_headers`（Windows SDK の `Windows.h` など）から typedef
   （`TCHAR` → `char`・`LONG` → `long`）と構造体の定義を読みます。ヘッダの関数が参照する構造体（`const RECT*` の `RECT`）は
   そこから足します（参照されたものだけ）。`const TCHAR*` の `const` は typedef を通しても残ります

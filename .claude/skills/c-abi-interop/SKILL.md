@@ -114,7 +114,10 @@ slot 1..    : フィールド（C ABI レイアウト: 宣言順 + C アライ�
 ### Windows LLP64 の注意（→ 解決: implementation_plans/ffi_value_exchange_plan.md 1-6）
 C `long` は Windows で 4B、Linux で 8B。以前の `CType::Long → i64` マッピングは
 LP64 前提で、Windows の `long` の負の戻り値が壊れていた（-5 → 4294967291）。
-⇒ `IntWidth::CLong` を足し、中継 DLL では `cfg!(windows)` で `i32` / `i64` を選ぶ（`int_rust_type`）。
+⇒ `IntWidth::CLong` を足し、中継 DLL では OS で `i32` / `i64` を選ぶ（`int_rust_type`）。OS は `ar_config.json` の最上位の
+`"os"`（無ければ動いている OS・拡張はホストに尋ねる）で、`cpp_header::target`（`target_os()` / `apply_config_os`）が持つ
+（ffi_value_exchange_plan.md 7-32。以前は `cfg!(windows)` で、拡張の wasm では常に LP64 だった）。`wchar_t` も同じ
+（Windows は UTF-16 の 2 バイト、ほかは UTF-32 の 4 バイト。Arrow へはどちらも UTF-16LE の `bytes`）。
 下の「C の整数型の幅と符号」。
 
 ### P3/P4 実装詳細（typed ABI へのポインタ引数統合）

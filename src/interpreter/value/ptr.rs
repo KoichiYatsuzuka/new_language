@@ -586,23 +586,20 @@ impl std::fmt::Debug for PtrProtocolArg {
 }
 
 /// 型つき経路の戻り値（`char*` / `wchar_t*`）を `bytes` へ（NUL までをコピーする・`wchar_t` は UTF-16LE）。NULL は `None`。
+/// `wchar_t` の幅は `ar_config.json` の `"os"`（7-32。Linux / macOS の UTF-32 は UTF-16LE に符号化し直す）。
 ///
 /// # Safety
 /// `address` は NUL 終端の文字列を指すか 0 であること（C の関数の戻り値）。
-pub(crate) unsafe fn c_string_ret(address: u64, wide: bool) -> super::Value {
+pub(crate) unsafe fn c_string_ret(address: u64, wide: bool) -> Result<super::Value, String> {
     if address == 0 {
-        return super::Value::None;
+        return Ok(super::Value::None);
     }
-    if wide {
-        let p = address as usize as *const u16;
-        let mut n = 0usize;
-        while *p.add(n) != 0 {
-            n += 1;
-        }
-        super::Value::bytes(std::slice::from_raw_parts(p as *const u8, n * 2).to_vec())
+    Ok(if wide {
+        let unit = crate::cpp_header::target_os().wchar_bytes();
+        super::Value::bytes(crate::cpp_header::target::wide_text_utf16le(address as usize as *const u8, unit)?)
     } else {
         super::Value::bytes(std::ffi::CStr::from_ptr(address as usize as *const std::ffi::c_char).to_bytes().to_vec())
-    }
+    })
 }
 
 /// 型つき経路の戻り値（`void*` / 構造体・数値のポインタ）を借用の `Ptr[elem]` へ（Arrow は解放しない・D-7）。NULL は `None`。
@@ -679,7 +676,8 @@ pub enum CField {
     Num(String),
     /// C の `bool`（1 バイト。0 以外は真）。
     Bool,
-    /// `char*` / `wchar_t*`: NUL 終端の文字データの `bytes`（`unit` は 1 文字のバイト数。`wchar_t` は UTF-16LE）。NULL は `None`。
+    /// `char*` / `wchar_t*`: NUL 終端の文字データの `bytes`（`unit` は 1 単位のバイト数: `char` は 1、`wchar_t` は OS で 2 か 4。
+    /// `wchar_t` はどの OS でも UTF-16LE の bytes にする）。NULL は `None`。
     Text { unit: usize },
     /// ほかのポインタ（`void*`・構造体・数値へのポインタ）: 借用の `Ptr[elem]`（Arrow は解放しない）。NULL は `None`。
     Ptr(String),
@@ -716,14 +714,10 @@ pub unsafe fn read_c_struct_fields(bytes: &[u8], layout: &CStructLayout) -> Resu
                 CField::Bool => Value::Bool(bytes[*off] != 0),
                 CField::Text { unit } => match addr_at(*off) {
                     0 => Value::None,
-                    p => {
-                        // NUL（`unit` バイトがすべて 0）の手前まで
-                        let mut n = 0usize;
-                        while (0..*unit).any(|k| std::ptr::read_unaligned((p + n * unit + k) as *const u8) != 0) {
-                            n += 1;
-                        }
-                        Value::bytes(std::slice::from_raw_parts(p as *const u8, n * unit).to_vec())
-                    }
+                    // `char*` は NUL の手前まで
+                    p if *unit == 1 => Value::bytes(std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes().to_vec()),
+                    // `wchar_t*` はどの OS でも UTF-16LE（D-9。UTF-32 の OS は符号化し直す・7-32）
+                    p => Value::bytes(crate::cpp_header::target::wide_text_utf16le(p as *const u8, *unit)?),
                 },
                 CField::Ptr(elem) => match addr_at(*off) {
                     0 => Value::None,

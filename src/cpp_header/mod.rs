@@ -7,6 +7,7 @@
 #![allow(unused_imports)] // 切り出す前の `cpp_bridge` と同じ（サブモジュールが共有の `use` を持つ）
 
 pub mod types;
+pub mod target;
 mod header_parser;
 mod typedef_loader;
 mod config;
@@ -15,3 +16,4 @@ pub use types::{CType, CStructDef, CFnSig, FFI_UNSUPPORTED_MARK};
 pub use header_parser::{parse_header_full, parse_header, collect_included_headers, add_system_structs, collect_header_decls, HeaderDecls};
 pub use typedef_loader::{load_system_types, SystemTypes};
 pub use config::{CppBuildConfig, load_cpp_config};
+pub use target::{apply_config_os, target_os, TargetOs};

@@ -227,7 +227,7 @@ pub fn decode_typed_ret(ret_ty: &AbiTy, ret: u64) -> Result<Value, String> {
         AbiTy::Void => Value::None,
         AbiTy::Bool => Value::Bool(ret != 0),
         // SAFETY: 中継コードが C の関数の戻り値（NUL 終端の文字列か NULL）をそのまま返す
-        AbiTy::CStr { wide } => unsafe { super::c_string_ret(ret, *wide) },
+        AbiTy::CStr { wide } => unsafe { super::c_string_ret(ret, *wide)? },
         AbiTy::PtrVal { elem } => super::raw_pointer_ret(ret, elem)?,
         // `ret` は `invoke_typed_abi` が用意した領域のアドレス（中継コードがそこへ構造体を書いた）
         AbiTy::ProtocolRet { structs } => {

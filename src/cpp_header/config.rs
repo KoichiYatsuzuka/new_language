@@ -53,6 +53,9 @@ pub struct CppBuildConfig {
     pub lib_patterns: Vec<String>,
     /// typedef エイリアス解決のためにロードする OS/SDK システムヘッダ。
     pub system_headers: Vec<String>,
+    /// 使う OS（最上位の `"os": "windows"` / `"linux"` / `"macos"`・ffi_value_exchange_plan.md 7-32）。C の `long` と
+    /// `wchar_t` の幅を決める（`target::apply_config_os`）。`None` は書いていない（動いている OS を使う）。
+    pub os: Option<String>,
 }
 
 impl Default for CppBuildConfig {
@@ -70,6 +73,7 @@ impl Default for CppBuildConfig {
             custom_type_map: HashMap::new(),
             lib_patterns: DEFAULT_LIB_PATTERNS.iter().map(|s| s.to_string()).collect(),
             system_headers: Vec::new(),
+            os: None,
         }
     }
 }
@@ -119,6 +123,10 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
 
 /// `ar_config.json` の内容を最小限の JSON パーサで解析し `config` に設定値を反映する。外部依存なし。
 fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
+    // 最上位の `"os"`（7-32）。`cpp` の節の外にあるので先に読む（`cpp` の節が無いファイルでも効く）
+    if let Some(v) = extract_json_string(content, "os") {
+        config.os = Some(v);
+    }
     let cpp_block = match extract_json_object(content, "cpp") {
         Some(b) => b,
         None => return,
@@ -326,5 +334,22 @@ mod tests {
         assert!(config.msvc.is_some()); // ルートの msvc は残る
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod os_tests {
+    use super::*;
+
+    /// 最上位の `"os"`（7-32）は `cpp` の節が無いファイルでも読み、近いファイルが上書きする
+    #[test]
+    fn top_level_os_is_read() {
+        let mut cfg = CppBuildConfig::default();
+        assert_eq!(cfg.os, None);
+        parse_tl_config_json("{ \"os\": \"windows\", \"cpp\": { \"precompile_macros\": [\"A\"] } }", &mut cfg);
+        assert_eq!(cfg.os.as_deref(), Some("windows"));
+        parse_tl_config_json("{ \"os\": \"linux\" }", &mut cfg);
+        assert_eq!(cfg.os.as_deref(), Some("linux"));
+        assert_eq!(cfg.precompile_macros, vec!["A".to_string()], "the other keys are kept");
     }
 }

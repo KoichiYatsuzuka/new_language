@@ -95,6 +95,20 @@ mod native {
         std::env::current_dir().ok()
     }
 
+    /// 動いている OS の名前（`windows` / `linux` / `macos`・ffi_value_exchange_plan.md 7-32 の `cpp_header::target`）。
+    /// CLI は Arrow を作った OS。ほかの OS は `None`。
+    pub fn host_os() -> Option<String> {
+        if cfg!(windows) {
+            Some("windows".to_string())
+        } else if cfg!(target_os = "linux") {
+            Some("linux".to_string())
+        } else if cfg!(target_os = "macos") {
+            Some("macos".to_string())
+        } else {
+            None
+        }
+    }
+
     /// Python の**標準ライブラリと site-packages の場所**（この順）。Python が見つからなければ空。
     ///
     /// Python プロセスを 1 回だけ起動して `sysconfig` に尋ねる（`OnceLock` で保持する）。
@@ -155,6 +169,7 @@ mod host {
         fn host_env_path(ptr: *const u8, len: usize, list: i32) -> i32;
         fn host_cwd() -> i32;
         fn host_python_lib_dirs() -> i32;
+        fn host_platform() -> i32;
         fn host_take(dst: *mut u8);
     }
 
@@ -265,6 +280,18 @@ mod host {
 
     pub fn current_dir() -> Option<PathBuf> {
         take(unsafe { host_cwd() }).ok().map(|b| PathBuf::from(text(b)))
+    }
+
+    /// 動いている OS の名前（7-32）: ホストの `process.platform`（`win32` / `linux` / `darwin`）を CLI と同じ名前にする。
+    /// 拡張は wasm なので `cfg!(windows)` では分からない。
+    pub fn host_os() -> Option<String> {
+        let p = take(unsafe { host_platform() }).ok().map(text)?;
+        match p.as_str() {
+            "win32" => Some("windows".to_string()),
+            "linux" => Some("linux".to_string()),
+            "darwin" => Some("macos".to_string()),
+            _ => None,
+        }
     }
 
     /// ⚠ ホストが**1 度だけ**調べる（`wasm_host.ts`）。ここでも保持する（CLI と同じく、解析ごとに変わらない）。

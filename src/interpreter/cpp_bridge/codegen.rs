@@ -11,7 +11,57 @@ use crate::cpp_header::types::{CStructDef, CFnSig, CType};
 
 // ── Generated Rust source header ─────────────────────────────────────────────
 
-pub(crate) const WRAPPER_HEADER: &str = r#"// Auto-generated cpp bridge — do not edit.
+/// 中継コードの先頭（`WRAPPER_HEAD` + `wchar_t` の補助 + `WRAPPER_TAIL`）。`wchar_t` の補助だけが OS で変わる（7-32）。
+/// ⚠ Windows の出力は 7-32 より前と同じ字句にしてある（コミット済みの cpp-lib の中継 DLL を作り直させない）。
+pub(crate) fn wrapper_header() -> String {
+    format!("{WRAPPER_HEAD}{}{WRAPPER_TAIL}", wchar_helper())
+}
+
+/// `wchar_t*` を `bytes` にする補助（`_wstr_to_handle`）。D-9: どの OS でも UTF-16LE で受け取る。Windows の `wchar_t` は
+/// UTF-16 なのでそのまま写し、Linux / macOS は UTF-32 なので UTF-16 に符号化し直す（文字でない値は ValueError）。
+fn wchar_helper() -> &'static str {
+    if crate::cpp_header::target_os().is_windows() {
+        WCHAR_HELPER_UTF16
+    } else {
+        WCHAR_HELPER_UTF32
+    }
+}
+
+const WCHAR_HELPER_UTF16: &str = r#"unsafe fn _wstr_to_handle(p: *const u16) -> i64 {
+    if p.is_null() { return 0; }
+    let mut n = 0usize;
+    while *p.add(n) != 0 { n += 1; }
+    ((*CB).make_bytes)(p as *const u8, (n * 2) as i64)
+}
+"#;
+
+const WCHAR_HELPER_UTF32: &str = r#"unsafe fn _wstr_to_handle(p: *const u32) -> i64 {
+    if p.is_null() { return 0; }
+    let mut out: Vec<u8> = Vec::new();
+    let mut n = 0usize;
+    while *p.add(n) != 0 {
+        let c = *p.add(n);
+        match char::from_u32(c) {
+            Some(ch) => {
+                let mut buf = [0u16; 2];
+                for u in ch.encode_utf16(&mut buf) { out.extend_from_slice(&u.to_le_bytes()); }
+            }
+            None => {
+                let t: &[u8] = b"ValueError";
+                let m = format!("a wchar_t string holds 0x{c:X}, which is not a Unicode character");
+                return ((*CB).raise_exc)(
+                    ((*CB).make_str)(t.as_ptr(), t.len() as i32),
+                    ((*CB).make_str)(m.as_ptr(), m.len() as i32),
+                );
+            }
+        }
+        n += 1;
+    }
+    ((*CB).make_bytes)(out.as_ptr(), out.len() as i64)
+}
+"#;
+
+const WRAPPER_HEAD: &str = r#"// Auto-generated cpp bridge — do not edit.
 #![allow(dead_code, unused_variables, non_snake_case, unused_unsafe, static_mut_refs)]
 
 #[repr(C)]
@@ -80,13 +130,9 @@ unsafe fn _cstr_to_handle(p: *const u8) -> i64 {
     let n = std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes().len();
     ((*CB).make_bytes)(p, n as i64)
 }
-unsafe fn _wstr_to_handle(p: *const u16) -> i64 {
-    if p.is_null() { return 0; }
-    let mut n = 0usize;
-    while *p.add(n) != 0 { n += 1; }
-    ((*CB).make_bytes)(p as *const u8, (n * 2) as i64)
-}
+"#;
 
+const WRAPPER_TAIL: &str = r#"
 static mut CB: *const ArCallbacks = std::ptr::null();
 
 #[no_mangle]
@@ -227,7 +273,9 @@ fn field_to_handle(ct: &CType, val: &str, structs: &str) -> String {
     match ct {
         CType::Int { .. } | CType::Float | CType::Double | CType::Bool => ct.to_handle(val),
         CType::CharPtr { wide: false, .. } => format!("_cstr_to_handle({val} as *const u8)"),
-        CType::CharPtr { wide: true, .. } => format!("_wstr_to_handle({val} as *const u16)"),
+        CType::CharPtr { wide: true, .. } => {
+            format!("_wstr_to_handle({val} as *const {})", super::types::wchar_rust_unit())
+        }
         CType::VoidPtr | CType::OpaqueStructPtr { .. } | CType::Ptr { .. } => {
             let elem = ct.ptr_elem_name().expect("a pointer type has an element name");
             format!("((*CB).make_ptr)({val} as usize as u64, b\"{elem}\".as_ptr(), {})", elem.len())
@@ -252,7 +300,7 @@ pub fn gen_dll_wrapper(
     struct_defs: &[CStructDef],
 ) -> String {
     let mut src = String::new();
-    src.push_str(WRAPPER_HEADER);
+    src.push_str(&wrapper_header());
 
     // Emit #[repr(C)] struct definitions for every bridgeable C struct.
     for def in struct_defs {
@@ -894,9 +942,13 @@ mod int_width_tests {
     /// Windows の `long` は 4 バイト（LLP64）
     #[test]
     fn c_long_follows_the_platform() {
+        // OS は `ar_config.json` の `"os"`（7-32）。どちらの OS の中継コードも作れる
+        crate::cpp_header::target::set_target_os(crate::cpp_header::TargetOs::Windows);
         let s = gen_dll_fn(&f(vec![], int(IntWidth::CLong, true)), &HashMap::new(), &[]);
-        let want = if cfg!(windows) { "-> i32" } else { "-> i64" };
-        assert!(s.contains(want), "{s}");
+        assert!(s.contains("-> i32"), "{s}");
+        crate::cpp_header::target::set_target_os(crate::cpp_header::TargetOs::Linux);
+        let s = gen_dll_fn(&f(vec![], int(IntWidth::CLong, true)), &HashMap::new(), &[]);
+        assert!(s.contains("-> i64"), "{s}");
     }
 
     /// 符号なし 64 ビットの 2^63 以上は `int` に収まらないので例外（ハンドル経路も typed 経路も）
@@ -953,10 +1005,27 @@ mod int_width_tests {
         assert!(s.contains("((*CB).write_handle)(*argv.offset(0), _wb_p0);"), "{s}");
     }
 
+    /// `wchar_t*` の補助と型は `ar_config.json` の `"os"` で変わる（7-32）: Windows は UTF-16 をそのまま写し、Linux / macOS は
+    /// UTF-32 を UTF-16LE に符号化し直す。どちらの OS の中継コードも作れる
+    #[test]
+    fn wchar_helper_follows_the_os() {
+        use crate::cpp_header::{target::set_target_os, TargetOs};
+        let wide_ret = || gen_dll_fn(&f(vec![], CType::CharPtr { wide: true, mutable: false }), &HashMap::new(), &[]);
+        set_target_os(TargetOs::Windows);
+        assert!(wrapper_header().contains("unsafe fn _wstr_to_handle(p: *const u16)"));
+        let s = wide_ret();
+        assert!(s.contains("*const u16") && !s.contains("*const u32"), "{s}");
+        set_target_os(TargetOs::Linux);
+        let h = wrapper_header();
+        assert!(h.contains("unsafe fn _wstr_to_handle(p: *const u32)") && h.contains("char::from_u32"), "{h}");
+        let s = wide_ret();
+        assert!(s.contains("*const u32"), "{s}");
+    }
+
     /// 中継 DLL の文言と、typed 経路の書き戻し（`decode_out_ptr`）の文言を揃える
     #[test]
     fn u64_overflow_message_matches_the_interpreter() {
         let msg = crate::interpreter::value::U64_OVERFLOW_MSG;
-        assert!(WRAPPER_HEADER.contains(&format!("b\"{msg}\"")), "{msg}");
+        assert!(wrapper_header().contains(&format!("b\"{msg}\"")), "{msg}");
     }
 }

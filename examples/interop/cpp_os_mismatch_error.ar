@@ -1,0 +1,13 @@
+# cpp_os_mismatch_error.ar — ar_config.json の "os" が動いている OS と違えば誤り（負例・ffi_value_exchange_plan.md 7-32）
+#
+# C の `long` と `wchar_t` の幅は OS で決まる（Windows は 4 / 2 バイト、Linux / macOS は 8 / 4 バイト）。Arrow は
+# `ar_config.json` の最上位の `"os"`（`"windows"` / `"linux"` / `"macos"`）でそれを決める（書いていなければ動いている OS）。
+# 設定は祖先のディレクトリから重ねて読むので、ヘッダの隣の ar_config.json で上書きできる。
+# ここでは test_modules/os_linux/ar_config.json が `"os": "linux"` と書いているので、Windows で読むと誤り（その OS の C の
+# ライブラリしか読めない）。型スタブ（エディタを含む）でも実行時でも同じ誤りになる。
+# ⚠ 7-32 より前は OS を Arrow を作ったときの OS で決めていて、エディタ（wasm）では常に Windows 以外の幅になっていた。
+# ⚠ この例題は Windows で走らせる前提（Linux で走らせると誤りにならない）。
+
+import[cpp-dll] test_modules.os_linux.linux_lib as ll
+
+print("unreachable:", ll.ll_size())

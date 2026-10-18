@@ -85,6 +85,7 @@ $knownDiff = @{
     'py_int_functions'               = 'Rust: py-int の関数の注釈のある引数・戻り値に型が付き、float の引数は int も受ける（ffi_value_exchange_plan.md 7-30）。py: Arrow の list を Python の list に変換せず内部の TlList のまま渡すので len() が TypeError'
     'py_int_functions_error'         = 'Rust: py-int の関数の引数の数・型の誤りは StaticTypeError（7-30）。py: 静的に検査せず Python の TypeError を stdout に出す'
     'foreign_ctor_args'              = 'Rust: 外部言語のクラスのコンストラクタの引数を型スタブの __init__ で検査する（ffi_value_exchange_plan.md 7-31）。py: C のブリッジが値渡しの構造体の関数（fp_pair_sum）を中継せず AttributeError'
+    'cpp_os_mismatch_error'          = 'Rust: ar_config.json の "os" が動いている OS と違えば import の誤り（ffi_value_exchange_plan.md 7-32）。py: OS の設定を読まず、隣に DLL が無いという RuntimeError を stdout に出す'
     'bytes_decode_error'             = 'どちらも ValueError で止まる（3-1）。py は捕まえていない例外を stdout に出し、Rust は stderr に出す'
     'bytes_str_mix_error'            = 'Rust: bytes と str を混ぜると StaticTypeError（3-1）。py: 静的に検査せず、実行時の TypeError を stdout に出す'
     'file_bytes_list_error'          = 'どちらも止まる。Rust はバイト単位のファイルへ list を書く行が StaticTypeError（ffi_value_exchange_plan.md 7-11）。py: 静的に検査せず、実行時の TypeError を stdout に出す'

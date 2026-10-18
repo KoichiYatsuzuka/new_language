@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30・7-31 完了（7-29・7-32〜7-34 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30〜7-32 完了（7-29・7-33・7-34 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -265,7 +265,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-29** | cpp のヘッダ解析が型名・マクロを関数名として読み違えている疑いがある: DxLib の cpp-lib のシムのコンパイルで外れた関数の一覧に `HWND`・`HBITMAP`・`HICON`・`HMODULE`・`DxLib` という「関数」が出た（`CppBridge: pass 1: removed …`）。また読み込みのたびに`CppBridge: unknown C type '( void', skipping function` が出て、関数ポインタを含む宣言などを読み飛ばしている。どの宣言からそれらの名前ができるかを調べ、正しく読むか、読めない宣言は理由つきで未対応にする（黙って関数を作らない・7-13 で発見） | なし | 中 |
 | **7-30** | ✅（§5・利用者の決定: 型注釈・スタブファイルで型が分かるものはその型、ほかは `__init__` の戻り値を除き `Any`）py-int のトップレベルの関数の引数を静的に検査していない: `.py` の型スタブ（`extract_py_type_stubs`）が`function->戻り値` の型だけを書き、仮引数を持たないので、引数の数も型も検査されない（戻り値の型だけが付く）。7-27 でメソッドの引数を読む `py_params` を作ったので、トップレベルの関数も同じ規則（注釈の無い引数は `Any`・既定値のある引数は省略できる）で宣言にする（7-27 で発見） | なし | 小 |
 | **7-31** | ✅（§5・利用者の決定: 分かる範囲で検査し、静的に分からない部分は `Any` でよい。検査の機構を作る）外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
-| **7-32** | Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
+| **7-32** | ✅（§5・利用者の決定: `ar_config.json` に使う OS を書き、それに応じて動作を変える）Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
 | **7-33** | `cargo test` が利用者の環境に依存する: `test_real_dxlib_header_structs`（`cpp_header/header_parser/mod.rs`）がgit の対象外の `examples/DxLib/DxLib.h` を読み、無ければ panic する（DxLib の SDK が無い環境ではテストが落ちる・既存）。また追跡されている `ar_config.json` がこの環境専用のパス（MSVC・Windows SDK の版・Rust のレジストリ）を持ち、7-13 では SDK の版が合わず `TCHAR` が解決できなかった。テストは SDK が無ければ飛ばしたことを出して飛ばすか小さなヘッダを同梱し、環境ごとのパスは追跡しない設定へ分ける（設定は祖先から重ねて読むので、git の対象外の上書きファイルを置ける）（7-13 で発見） | なし | 小 |
 | **7-34** | ゲートの A/B 比較が cpp-lib の中継 DLL のキャッシュを書き換え、偽の差分を出す: 基準の exe と新しい exe は中継コードが違うので、`compare_outputs` / `compare_import_paths` が交互に走らせるたびにコミット済みの `test_modules/ar_ffi_probe.dll`・`.syms`・シムを作り直し、その表示（`CppBridge: … is stale … rebuilding`）が出力の差になる（負の対照でも `cpp_lib_int_widths` が差になる）。最後に走った exe の印でキャッシュが残るので、コミットする中継 DLL が基準の exe のものになりうる。比較では作り直しの表示を除くか、exe ごとに別の場所へキャッシュを置く（7-13・7-28 で発見） | なし | 小 |
 
@@ -1654,6 +1654,30 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   基準の exe では 0 件）
 - 文書: `docs/grammar/09_imports.md`（py-int・cpp・C# のコンストラクタ）
 - ゲート（基準 `b9482f3`・制限時間つき）: `compare_outputs` の差は新しい負例 `foreign_ctor_args_error` だけ（482/483・負の対照は 483/483）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（新しい負例は両方とも stdout が空で一致するので既知の差分に載せない）・`compare_wasm_frontend` 574/574・`type_obligations` 退行なし。全例題（`archived/` を除く）の静的エラーの数を基準と比べ、変わったのは `cs_dll_generated.ar`（上の移動）と `py_int_classes.ar`（上の基底の `__init__`）だけだった。`cargo test` 1195 件が通る。VSIX を作り直した
+
+### 7-32 実装（利用者の決定: `ar_config.json` に使う OS を書き、それに応じて動作を変える）
+
+- `ar_config.json` の最上位に `"os"`（`"windows"` / `"linux"` / `"macos"`）を足した（リポジトリの設定は `"windows"`）。C の `long` と
+  `wchar_t` の幅をこれで決める（`cpp_header::target`: `TargetOs` / `target_os()` / `apply_config_os`）。書いていなければ動いている
+  OS（`import_fs::host_os`。CLI は Arrow を作った OS、拡張はホストの `process.platform` を新しいホスト関数 `host_platform` で
+  尋ねる）。読めない値は誤り。書いた OS が動いている OS と違えば、その OS の C のライブラリは読めないので import の誤り
+  （型スタブ・拡張・実行時のどれでも同じ診断）
+  - ⚠ 以前は Arrow を作ったときの OS（`cfg!(windows)`）で決めていた。拡張（wasm）では常に偽で、Windows で使っても Linux の幅
+    （`wchar_t*` の要素型 `int32` など）になりえた
+  - OS は import のたびにヘッダを読む前に置く（スレッドごとの値。置いていないスレッドは動いている OS で、上の一致の確かめに
+    より同じ値になる）
+- 幅を OS で決めるところを `target_os()` にした: `CType::ptr_elem_name` / `c_elem_name`（`long` / `wchar_t` の名前）、中継コードの
+  `int_rust_type`・`wchar_t*` の Rust の型（`u16` / `u32`・`wchar_rust_unit`）、7-14 の配列の展開の `wchar_t` の幅
+- **`wchar_t*` はどの OS でも UTF-16LE の `bytes`**（D-9）: 中継コードの `_wstr_to_handle` を OS で作り分け（Windows は UTF-16 を
+  そのまま写す・Linux / macOS は UTF-32 を UTF-16 に符号化し直し、文字でない値は ValueError）、型つき経路の `c_string_ret` と
+  配列の展開も同じ（`target::wide_text_utf16le`）。⚠ 以前の中継コードは OS によらず 2 バイト単位で読んでいた（Linux では壊れる）
+- Windows の中継コードは 7-32 より前と同じ字句にした（コミット済みの cpp-lib の中継 DLL がそのまま読まれることを確かめた）
+- 単体テスト: `parse_names_and_widths`・`config_os_is_applied_and_checked`・`wide_text_becomes_utf16le`・`top_level_os_is_read`・
+  `wchar_helper_follows_the_os`・`c_long_follows_the_platform`（両方の OS を作る形にした）
+- 例題: `interop/cpp_os_mismatch_error.ar`（`test_modules/os_linux/ar_config.json` が `"os": "linux"`）。Windows の幅は既存の
+  `cpp_dll_int_widths.ar`・`cpp_raw_pointers.ar` が見る。⚠ Linux / macOS の実際の動作は確かめていない（この環境は Windows だけ）
+- 文書: `docs/grammar/09_imports.md`・skill `c-abi-interop`
+- ゲート（基準 `5583291`・制限時間つき）: `compare_outputs` の差は新しい負例 `cpp_os_mismatch_error` だけ（483/484・負の対照は 484/484）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（198/198）・`compare_wasm_frontend` 575/575（拡張もホストの OS で一致を確かめる）・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1200 件が通る。VSIX と拡張のデバッグ用の出力（`out_debug/wasm_host.js`・新しいホスト関数）を作り直した
 
 ---
 

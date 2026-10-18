@@ -872,6 +872,8 @@ impl Interpreter {
         let raw_str = String::from_utf8_lossy(&raw);
         // Load config before parsing so custom_type_map is available for all parse_header calls.
         let config = crate::interpreter::cpp_bridge::load_cpp_config(header_dir);
+        // C の型の幅を決める OS（`ar_config.json` の `"os"`・7-32）。動いている OS と違えば誤り
+        crate::cpp_header::apply_config_os(&config, true).map_err(|e| format!("CppImport: {e}"))?;
         // 関数・構造体の集め方は型スタブ（`parse_cpp_import`）と同じ 1 つの関数（`collect_header_decls`・7-28）
         let decls = crate::cpp_header::collect_header_decls(&raw_str, header_dir, lang, &config)
             .map_err(|e| format!("CppImport: {e}"))?;
