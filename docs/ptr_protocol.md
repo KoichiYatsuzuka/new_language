@@ -34,10 +34,12 @@ Arrow 側では `Ptr[T]` の `T` になります（`docs/grammar/08_type_system.
 |---|---|---|
 | `"int8"` `"int16"` `"int32"` `"int64"` `"uint8"` `"uint16"` `"uint32"` `"uint64"` | `Ptr[int32]` など | `to_list()` → `list[int]`（`uint64` の 2^63 以上は OverflowError） |
 | `"float32"` `"float64"` | `Ptr[float64]` など | `to_list()` → `list[float]` |
-| `"uint8"`（`char` のバイト列）・`"uint16"`（`wchar_t` / `char16_t` の UTF-16） | 同上 | `to_bytes()` → `bytes`（文字列にするには `decode(encoding)`） |
-| ヘッダの構造体の名前（`"Point"`） | `Ptr[Point]` | `to_list()` → `list[Point]` |
+| `"uint8"`（`char` のバイト列）・`"uint16"`（`char16_t` と Windows の `wchar_t` の UTF-16） | 同上 | `to_bytes()` → `bytes`（文字列にするには `decode(encoding)`） |
+| ヘッダの構造体の名前（`"Point"`） | `Ptr[Point]` | `to_list()` → `list[Point]`。ポインタのフィールドは `char*` / `wchar_t*` → `bytes`（`wchar_t` は UTF-16LE）・ほかのポインタ → 借用の `Ptr`・NULL → `None`。`ArPtrProtocol` のフィールドを持つ構造体の配列は展開できない（TypeError・ffi_value_exchange_plan.md 7-14） |
 | `"void"` | `Ptr[void]` | 展開できない（`p mustbe Ptr[T]` で戻す） |
 
+- ⚠ Linux / macOS の `wchar_t` は 4 バイト（UTF-32）なので `"uint16"` ではありません（Arrow は `"int32"` と読む。C の型の幅は
+  `ar_config.json` の `"os"` で決まる・`docs/grammar/09_imports.md` の「OS」・7-32）
 - `bool` は使いません（C# の `UnmanagedCallersOnly` に載らず、Arrow の C 互換レイアウトにもありません）。真偽値の配列は `uint8` にします
 - Arrow の `int` / `float` に当たる名前はありません。C の幅で書きます
 

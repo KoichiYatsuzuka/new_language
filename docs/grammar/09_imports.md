@@ -93,6 +93,8 @@ import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経
 
 `ar_config.json` は**エントリのディレクトリから祖先へ**遡って最初に見つかったものを使います
 （`python.search_paths` / `csharp.lib_paths` / `rust.crates_path` / `javascript`）。
+cpp の設定（`cpp.*` と最上位の `"os"`）だけは、**ヘッダのディレクトリから祖先へ**（最後にカレントディレクトリ）見つかった
+ものをすべて重ね、近いものがキーごとに勝ちます（ヘッダの隣の `ar_config.json` で上書きできる・`cpp_header::load_cpp_config`）。
 
 > ⚠ 2026-10-02 午前の版では「ドット無しも書いたファイルのディレクトリから探し、エントリの
 > ディレクトリは探さない」でしたが、CPython 準拠に改めました。それ以前は「書いたファイルの
@@ -491,14 +493,19 @@ import[cpp-lib] .test_modules.vec_math as vm   # 相対（このファイルの�
   （DxLib の `DxFunctionWin.h`）の関数・構造体も読みます。型スタブと実行時は同じ関数で集めるので、そうした関数にも型が
   付きます（`examples/interop/cpp_lib_included_header.ar`）。⚠ 以前は実行時だけが読み、型スタブには無かった（型が付かず検査されなかった）
 - **中継 DLL に入らなかった関数**（7-28）: cpp-lib の C++ シムのコンパイルで外れた関数（Windows の同名のマクロと衝突する
-  `SetWindowText` など）は、呼ぶと理由つきの `RuntimeError` になります（シムを作るまで分からないので静的には検査できない）
+  `SetWindowText` など）は、呼ぶと理由つきの `RuntimeError` になります（シムを作るまで分からないので静的には検査できない）。
+  外すのは、コンパイラの誤りが名指しした名前のうちシムに入れた関数だけです（誤りの文面に出る型名・名前空間は外さない）。
+  関数を 1 つも名指ししない誤りは、外しても直らないので import の誤りになります（7-29）
 - 配列・文字データ・所有権のあるメモリは `PtrProtocol` で受け渡します（[ptr_protocol.md](../ptr_protocol.md)。
   共有ヘッダ `bridge/ptr_protocol/ar_ptr_protocol.h`）
-- 今の Arrow から正しく受け渡せない関数（`char*` の出力バッファ・`wchar_t*` の引数・`const int*` などの配列の引数・
-  関数ポインタ・レイアウトの分からない構造体を値で受け渡す・ヘッダが構造体と宣言していない名前（解決できない typedef）への
-  ポインタ・`ArPtrProtocol` を受け渡す など）は、使った箇所が理由つきの静的エラーになります
-  （`examples/interop/cpp_callback_param_error.ar`）。⚠ 関数ポインタの引数（`void (* cb )( void )`）を持つ関数は、以前は
-  ヘッダの解析が読めずに黙って捨てていた（7-29。名前空間が開いているので静的に通り、実行時に「属性が無い」で落ちた）
+- 今の Arrow から正しく受け渡せない関数は、使った箇所が理由つきの静的エラーになります（判定は `CFnSig::unsupported_reason`
+  の 1 か所・`examples/interop/cpp_unsupported_signature_error.ar`・`cpp_callback_param_error.ar`）:
+  `wchar_t*` の引数・`const int*` などの数値の `const` ポインタの引数（値 1 個か配列か分からない）・関数ポインタ（callback）を
+  受ける／返す・レイアウトの分からない構造体を値で受け渡す・ヘッダが構造体と宣言していない名前（解決できない typedef）への
+  ポインタ・`ArPtrProtocol*` を返す・正確なレイアウトの構造体ポインタと `char*` の出力バッファか構造体の値返しが混ざる など。
+  ⚠ `char*` の出力バッファ（4-7）と `ArPtrProtocol` の引数・値返し（4-4・4-5）は上の表のとおり使える。
+  ⚠ 関数ポインタの引数（`void (* cb )( void )`）を持つ関数は、以前はヘッダの解析が読めずに黙って捨てていた（7-29。
+  名前空間が開いているので静的に通り、実行時に「属性が無い」で落ちた）
 
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応
