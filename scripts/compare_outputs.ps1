@@ -21,6 +21,8 @@
 #    **孫プロセスが生き残ってパイプの書き込み端を握る**ので `ReadToEndAsync` でも返らない。
 #    `Start-Process -RedirectStandard*` でファイルへ落としてから読む（skill `vm-pitfalls` §4）。
 #
+# ⚠ cpp-lib の中継 DLL のキャッシュは exe ごとに分けて比べる（`cpp_cache_isolation.ps1`・7-34）。交互に走らせると作り直しの
+#   表示が差になり、最後に走った exe の印でキャッシュが残っていた。終わったら始める前のキャッシュに戻す。
 # ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**。
 param(
     [Parameter(Mandatory=$true)][string]$A,
@@ -70,6 +72,10 @@ $examples = $categoryDirs | ForEach-Object {
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ar_out_" + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmp
 
+. (Join-Path $PSScriptRoot 'cpp_cache_isolation.ps1')
+$cache = Initialize-CppCacheIsolation -Repo $repo -Exes @($A, $B) -Examples @($examples | ForEach-Object { $_.FullName }) `
+    -Tmp $tmp -TimeoutSec $TimeoutSec
+
 # ⚠⚠ **実行ごとに変わる値を潰す**（#63 の負の対照で判明）。潰さないと同一バイナリでも
 #    3 例題が DIFFERS になる（`<X object at 0x...>` の表示と `id()` の戻り値）。
 #    ⚠ **除外ではなく正規化にすること** — `collection.ar` は set メソッドの主要カバレッジで、
@@ -106,9 +112,12 @@ $same = 0; $diff = 0; $timeouts = 0
 $rows = @()
 $i = 0
 
+try {
 foreach ($f in $examples) {
     $i++
+    Use-CppCache $cache $A
     $oa = Get-Output $A $f.FullName "a$i"
+    Use-CppCache $cache $B
     $ob = Get-Output $B $f.FullName "b$i"
     if (($null -eq $oa) -or ($null -eq $ob)) {
         $timeouts++
@@ -126,6 +135,10 @@ foreach ($f in $examples) {
                 ForEach-Object { "    {0} {1}" -f $_.SideIndicator, $_.InputObject })
         }
     }
+}
+} finally {
+    Test-CppCacheUnchanged $cache
+    Close-CppCacheIsolation $cache
 }
 
 try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}

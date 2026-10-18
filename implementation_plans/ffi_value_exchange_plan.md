@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30〜7-32 完了（7-29・7-33・7-34 は未着手）
+- 状態: フェーズ 1〜6 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・§5）・7-1〜7-28・7-30〜7-32・7-34 完了（7-29・7-33 は未着手）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -267,7 +267,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-31** | ✅（§5・利用者の決定: 分かる範囲で検査し、静的に分からない部分は `Any` でよい。検査の機構を作る）外部言語のクラスのコンストラクタの引数を静的に検査していない（`type_check/call_check.rs`・#27-a）: C# のスタブは`__init__` を引数 0 個で持ち、実際の生成はブリッジが行うので除外したが、py-int のクラス（7-27 から `__init__` の実際の引数をスタブに書く）・cpp の構造体なども一律に除外されている。`pc.Counter()`（必要な引数が無い）が静的に通り、実行時に Python のTypeError（ForeignError）になる。スタブの `__init__` が実際の引数を表す言語は検査する（7-27 で発見） | なし | 小 |
 | **7-32** | ✅（§5・利用者の決定: `ar_config.json` に使う OS を書き、それに応じて動作を変える）Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
 | **7-33** | `cargo test` が利用者の環境に依存する: `test_real_dxlib_header_structs`（`cpp_header/header_parser/mod.rs`）がgit の対象外の `examples/DxLib/DxLib.h` を読み、無ければ panic する（DxLib の SDK が無い環境ではテストが落ちる・既存）。また追跡されている `ar_config.json` がこの環境専用のパス（MSVC・Windows SDK の版・Rust のレジストリ）を持ち、7-13 では SDK の版が合わず `TCHAR` が解決できなかった。テストは SDK が無ければ飛ばしたことを出して飛ばすか小さなヘッダを同梱し、環境ごとのパスは追跡しない設定へ分ける（設定は祖先から重ねて読むので、git の対象外の上書きファイルを置ける）（7-13 で発見） | なし | 小 |
-| **7-34** | ゲートの A/B 比較が cpp-lib の中継 DLL のキャッシュを書き換え、偽の差分を出す: 基準の exe と新しい exe は中継コードが違うので、`compare_outputs` / `compare_import_paths` が交互に走らせるたびにコミット済みの `test_modules/ar_ffi_probe.dll`・`.syms`・シムを作り直し、その表示（`CppBridge: … is stale … rebuilding`）が出力の差になる（負の対照でも `cpp_lib_int_widths` が差になる）。最後に走った exe の印でキャッシュが残るので、コミットする中継 DLL が基準の exe のものになりうる。比較では作り直しの表示を除くか、exe ごとに別の場所へキャッシュを置く（7-13・7-28 で発見） | なし | 小 |
+| **7-34** | ✅（§5）ゲートの A/B 比較が cpp-lib の中継 DLL のキャッシュを書き換え、偽の差分を出す: 基準の exe と新しい exe は中継コードが違うので、`compare_outputs` / `compare_import_paths` が交互に走らせるたびにコミット済みの `test_modules/ar_ffi_probe.dll`・`.syms`・シムを作り直し、その表示（`CppBridge: … is stale … rebuilding`）が出力の差になる（負の対照でも `cpp_lib_int_widths` が差になる）。最後に走った exe の印でキャッシュが残るので、コミットする中継 DLL が基準の exe のものになりうる。比較では作り直しの表示を除くか、exe ごとに別の場所へキャッシュを置く（7-13・7-28 で発見） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1678,6 +1678,21 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   `cpp_dll_int_widths.ar`・`cpp_raw_pointers.ar` が見る。⚠ Linux / macOS の実際の動作は確かめていない（この環境は Windows だけ）
 - 文書: `docs/grammar/09_imports.md`・skill `c-abi-interop`
 - ゲート（基準 `5583291`・制限時間つき）: `compare_outputs` の差は新しい負例 `cpp_os_mismatch_error` だけ（483/484・負の対照は 484/484）・`compare_import_paths` 13/13・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl` clean（198/198）・`compare_wasm_frontend` 575/575（拡張もホストの OS で一致を確かめる）・`type_obligations` 退行なし・`stale_doc_refs` 0 件。`cargo test` 1200 件が通る。VSIX と拡張のデバッグ用の出力（`out_debug/wasm_host.js`・新しいホスト関数）を作り直した
+
+### 7-34 実装
+
+- `compare_outputs.ps1` / `compare_import_paths.ps1` が cpp-lib の中継 DLL のキャッシュ（例題の下の `ar_{stem}.dll` /
+  `ar_{stem}_shim.*` / `ar_{stem}.syms`）を exe ごとに分けて比べる（新しい `scripts/cpp_cache_isolation.ps1` を dot-source する）:
+  始める前のキャッシュを控え、exe ごとに cpp-lib を使う例題を 1 回ずつ走らせて（出力は捨てる・作り直しはここで済ませる）その
+  exe のキャッシュを控え、比較では走らせる exe のキャッシュに入れ替えてから走らせる（2 つの exe のキャッシュが同じなら入れ替え
+  ない）。終わったら始める前のキャッシュに戻す（ゲートは作業ツリーを変えない）。比較のあいだに作り直されたら警告を出す
+  （ウォームアップに漏れた例題）
+- ⚠ 以前は 2 つの exe が交互にキャッシュを作り直し、その表示（`CppBridge: … is stale … rebuilding`・コンパイラの出力）が出力の
+  差になった（7-13 では A/B で 3 本・負の対照でも 1 本）。最後に走った exe の印でコミット済みのキャッシュが残り、基準の exe の
+  ものをコミットしかねなかった
+- ⚠ 出力から作り直しの表示を消す案は採らなかった（コンパイラの出力など、どの行が出るかを決めきれない。作り直さないのが確実）
+- 文書: `CLAUDE.md`・`implementation_logs/BYTECODE_VM_PLAN.md` の script 表
+- 確かめたこと: 7-13 の前の exe（`0d50cf0`・今の exe と中継コードが違い、キャッシュを取り合う組み合わせ）で、今の exe の印のキャッシュから始めて `compare_outputs` の負の対照が 484/484（以前はこの形で `cpp_lib_int_widths` が差になった）。`0d50cf0` と今の exe の A/B の差は 7-13〜7-32 で足した・変えた例題 12 本だけで、作り直しの表示による差（`cpp_lib_int_widths` / `cpp_lib_struct_by_value` / `cpp_native_arg_error`）は無くなった。`compare_import_paths` も 13/13。どの実行のあとも追跡しているキャッシュは元のまま（`git status` で確かめた）。⚠ 最初の版はパスの区切りの正規表現の誤りで控えが取れず、戻すときにコミット済みのキャッシュを消した（`git checkout` で戻した）。控えが揃わなければ何も触らないようにした
 
 ---
 

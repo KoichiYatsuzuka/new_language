@@ -504,10 +504,11 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   annot_unresolved.ps1 (87)
   check_ptr_protocol.ps1 (118)
   compare_bytecode.ps1 (135)
-  compare_import_paths.ps1 (135)
-  compare_outputs.ps1 (140)
+  compare_import_paths.ps1 (147)
+  compare_outputs.ps1 (153)
   compare_python_impl.ps1 (503)
   compare_wasm_frontend.ps1 (301)
+  cpp_cache_isolation.ps1 (135)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (149)
@@ -547,7 +548,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (34)
-  CLAUDE.md (156)
+  CLAUDE.md (159)
   README.md (317)
 ```
 _Generated 2026-10-18 by generate-codebase-map.ps1_

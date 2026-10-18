@@ -100,6 +100,9 @@ python -m impl_python examples/basics/control_flow.ar
 理由と現状は各ディレクトリの `README.md`。
 
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
+⚠ `compare_outputs` / `compare_import_paths` は cpp-lib の中継 DLL のキャッシュ（`examples/**/ar_*`）を **exe ごとに分けて**比べ、
+終わったら始める前に戻す（[scripts/cpp_cache_isolation.ps1](scripts/cpp_cache_isolation.ps1) を dot-source・7-34）。以前は 2 つの exe が
+交互に作り直し、その表示が偽の差分になり、最後に走った exe の印でコミット済みのキャッシュが残っていた。
 ⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。
 ⚠ ゲートは `target/release` を見る。**自分で走らせて緑**を確かめる（報告を信じない）。
 ⚠⚠ **上のゲートは全部 `target/release` を見る。** `vm/compiler/mod.rs` の

@@ -18,6 +18,7 @@
 #
 # ⚠ GUI 例題（cs_form_app / DxLib 系）は窓が出て終わらないので**対象外**。
 #    ここで見るのは「import が名前空間を作って束縛するところまで」で足りる。
+# ⚠ cpp-lib の中継 DLL のキャッシュは exe ごとに分けて比べる（`cpp_cache_isolation.ps1`・7-34）。終わったら始める前に戻す。
 # ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**。
 param(
     [Parameter(Mandatory=$true)][string]$A,
@@ -71,6 +72,10 @@ $targets = @(
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ar_imp_" + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmp
 
+. (Join-Path $PSScriptRoot 'cpp_cache_isolation.ps1')
+$cache = Initialize-CppCacheIsolation -Repo $repo -Exes @($A, $B) `
+    -Examples @($targets | ForEach-Object { Join-Path $repo $_ } | Where-Object { Test-Path $_ }) -Tmp $tmp -TimeoutSec $TimeoutSec
+
 function Get-Output([string]$exe, [string]$file, [string]$tag) {
     $o = Join-Path $tmp "$tag.out"
     $e = Join-Path $tmp "$tag.err"
@@ -95,6 +100,7 @@ $same = 0; $diff = 0; $missing = 0; $timeouts = 0
 $rows = @()
 $i = 0
 
+try {
 foreach ($rel in $targets) {
     $i++
     $full = Join-Path $repo $rel
@@ -103,7 +109,9 @@ foreach ($rel in $targets) {
         $rows += ("{0,-48} MISSING" -f $rel)
         continue
     }
+    Use-CppCache $cache $A
     $oa = Get-Output $A $full "a$i"
+    Use-CppCache $cache $B
     $ob = Get-Output $B $full "b$i"
     if (($null -eq $oa) -or ($null -eq $ob)) {
         $timeouts++
@@ -121,6 +129,10 @@ foreach ($rel in $targets) {
                 ForEach-Object { "    {0} {1}" -f $_.SideIndicator, $_.InputObject })
         }
     }
+}
+} finally {
+    Test-CppCacheUnchanged $cache
+    Close-CppCacheIsolation $cache
 }
 
 try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
