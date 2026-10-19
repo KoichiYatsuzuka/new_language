@@ -92,7 +92,7 @@ let属性の引数への代入時、可能ならキャスト演算子を呼び�
 - Pythonインタープリタを呼んで、コードを実行させる方法。インタープリタは引数をPython与えたり、結果をPythonから受け取ったりする。.pycも含め、大抵のものが利用できるが、Global interpreter lockにより並列化不可。
 
 ### .dll, .libの読み込み
-- Cコンパイラで作ったdllを読み込んで利用可能。ただし、.hファイルをスタブファイルとして読み込んで型検査を行うため、hファイルが無ければ呼び出せない。hファイルはC++でもOK。ただし、名前マングリングが必要なオーバーロード、テンプレート、名前空間は対応できていない。
+- Cコンパイラで作ったdllを読み込んで利用可能。ただし、.hファイルをスタブファイルとして読み込んで型検査を行うため、hファイルが無ければ呼び出せない。hファイルはC++でもOK。ただし、名前マングリングが必要なオーバーロード、テンプレートは対応できていない。名前空間の中の関数（DxLib の `namespace DxLib` など）は `import[cpp-lib]` なら使える（生成する C++ のシムが `DxLib::Func` を呼んで C の名前で公開する）。`import[cpp-dll]` は DLL の記号を関数名で引くので、`extern "C"` で公開した関数だけが使える。
 - 普通の値渡しとconstなポインタ・参照渡しはlet属性として、constでないポインタと参照渡しはmut属性として扱われる。
 - ポインタは内部変換している。そのため、ポインタ渡しは利用可能。ただし、ポインタを直接触る機能はこの言語には露出していない（id()を使ってメモリアドレスを知ることは可能だが、それを利用する機能がない）。
 - libファイルはdllにリコンパイルすることで利用可能。
@@ -260,9 +260,9 @@ Arrow/
   - 型シグネチャは `.pyi` または `.py` ファイルから取得して静的型検査に使用する（パーサーが処理）
   - 実行時は `Value::PyObject(Rc<PyObjHandle>)` で Python オブジェクトを opaque に保持
   - `src/interpreter/py_interop.rs` が tl↔Python の型変換・呼び出しを担当
-  - 型変換: `int`/`float`/`str`/`bool`/`None`/`list`/`tuple`/`dict` はネイティブ tl 値に自動変換。それ以外は `PyObject` のまま保持
+  - 型変換: `int`/`float`/`str`/`bool`/`None`/`list`/`tuple`/`dict`/`set`（`frozenset` も set）/`bytes`（`bytes`・`bytearray`・要素が 1 バイトの `memoryview`）はネイティブ tl 値に自動変換。それ以外（i64 に入らない `int`・`Decimal` などを含む）は `PyObject` のまま保持（詳細は `docs/grammar/09_imports.md` の「`[py-int]`」）
   - `PyObject` の属性アクセス（`obj.attr`）・メソッド呼び出し（`obj.method()`）・直接呼び出し（`obj()`）をすべて PyO3 経由でディスパッチ
-  - `Interpreter::add_python_search_dir()` で `sys.path` に追加するディレクトリを登録可能（`main.rs` がソースファイルのディレクトリを自動登録）
+  - 実行時は import 文の探索先（ドット無しはエントリのディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す（`py_interop::load_py_int_module`）。ファイルから読んでいない文（REPL・テスト）は `Interpreter::add_python_search_dir()` で登録したディレクトリを使う
 
 ### VS Code 拡張（`vscode-extension/`）
 - `.ar` ファイルのシンタックスハイライト

@@ -91,4 +91,10 @@ match p:
 C/C++（`import[cpp-dll]` / `import[cpp-lib]`）では、ヘッダの `ArPtrProtocol` を認識し（4-2）、引数へ `Ptr` / `None` を渡し（4-4）、
 値返しを `Option[Ptr[void]]` として受け取ります（4-5・`examples/interop/cpp_ptr_protocol.ar`）。Arrow の `list` / `bytes` を渡すと、
 呼び出しの間だけ有効なコピーの `ArPtrProtocol` になります（4-7・`cpp_list_to_c.ar`。要素の型は int → `"int64"`・float →
-`"float64"`・C の構造体 → 構造体名・bytes → `"uint8"`、解放関数は NULL）。⚠ C# / Rust の受け渡しはフェーズ 5 で入ります。
+`"float64"`・C の構造体 → 構造体名・bytes → `"uint8"`、解放関数は NULL）。
+
+C#（`import[cs-dll]`）の数値の配列（`int[]` / `double[]` …）もこの形で受け渡します（5-5）。ブリッジが配列をアンマネージドの
+メモリへ複製し、解放関数つきの `ArPtrProtocol` を書くので、Arrow では所有の `Ptr[int32]` などになります（引数は同じ要素型の
+`Ptr` か `list`）。C# の写しは `bridge/ptr_protocol/ArPtrProtocol.cs`（`--gen-cs-exports` の生成物が使う）。Rust（`import[rs]`）の
+数値の `Vec<T>` / `&[T]` は、生成した中継コードが内部でこの形にして受け渡します（5-4。利用者が書くものはありません）。
+cs-proc / js-proc は別のプロセスなので `Ptr` を渡せません（`TypeError`・5-2）。
