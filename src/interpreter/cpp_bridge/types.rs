@@ -13,20 +13,17 @@ use crate::cpp_header::types::{CStructDef, CType, IntWidth};
 /// `long` = 4 バイト・`wchar_t` = 符号なし 2 バイト、それ以外（LP64）は `long` = 8 バイト・`wchar_t` = 符号付き 4 バイト。
 /// 正しい幅で宣言するので、戻り値の上位のゴミを読まず、符号付きは符号拡張・符号なしはゼロ拡張で `int` になる。
 pub(crate) fn int_rust_type(width: IntWidth, signed: bool) -> &'static str {
-    // OS は `ar_config.json` の `"os"`（7-32・以前は Arrow を作った OS の `cfg!(windows)`）
-    let win = crate::cpp_header::target_os().is_windows();
-    match (width, signed) {
-        (IntWidth::W8, true) => "i8",
-        (IntWidth::W8, false) => "u8",
-        (IntWidth::W16, true) => "i16",
-        (IntWidth::W16, false) => "u16",
-        (IntWidth::W32, true) => "i32",
-        (IntWidth::W32, false) => "u32",
-        (IntWidth::W64, true) => "i64",
-        (IntWidth::W64, false) => "u64",
-        (IntWidth::CLong, true) => if win { "i32" } else { "i64" },
-        (IntWidth::CLong, false) => if win { "u32" } else { "u64" },
-        (IntWidth::WChar, _) => if win { "u16" } else { "i32" },
+    // 幅と符号は要素型の名前（`c_elem_name`）と同じ 1 か所で決める（OS は `ar_config.json` の `"os"`・7-32・7-35）
+    match width.bits_and_sign(signed) {
+        (8, true) => "i8",
+        (8, false) => "u8",
+        (16, true) => "i16",
+        (16, false) => "u16",
+        (32, true) => "i32",
+        (32, false) => "u32",
+        (64, true) => "i64",
+        (64, false) => "u64",
+        (bits, _) => unreachable!("a C integer of {bits} bits (`IntWidth::bits_and_sign` gives 8 / 16 / 32 / 64)"),
     }
 }
 
@@ -320,5 +317,23 @@ mod tests {
         let mut partial = def("P", vec![("x", i32t)]);
         partial.complete = false;
         assert!(partial.c_struct_layout(&[]).unwrap_err().contains("not known"));
+    }
+
+    /// 中継コードの Rust の型と要素型の名前（`c_elem_name`）が、どの OS・どの整数でも同じ幅と符号になる（7-35。以前は
+    /// Linux の `wchar_t` が中継コードでは `i32`、要素型の名前では `uint32` だった）
+    #[test]
+    fn rust_type_and_element_name_agree() {
+        use crate::cpp_header::{target::set_target_os, TargetOs};
+        for os in [TargetOs::Windows, TargetOs::Linux, TargetOs::MacOs] {
+            set_target_os(os);
+            for w in [IntWidth::W8, IntWidth::W16, IntWidth::W32, IntWidth::W64, IntWidth::CLong, IntWidth::WChar] {
+                for s in [true, false] {
+                    let name = CType::Int { width: w, signed: s }.c_elem_name().expect("an integer has a name");
+                    assert_eq!(int_raw_ann(w, s), name, "{os:?} {w:?} signed={s}");
+                }
+            }
+            let wstr = CType::CharPtr { wide: true, mutable: false }.ptr_elem_name().expect("wchar_t* has an element");
+            assert_eq!(int_raw_ann(IntWidth::WChar, false), wstr, "{os:?} wchar_t*");
+        }
     }
 }

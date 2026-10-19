@@ -9,9 +9,9 @@
 
 /// C の整数の幅（ffi_value_exchange_plan.md 1-6）。
 ///
-/// `CLong` と `WChar` は環境で幅が変わるので、ヘッダの段階では名前のまま持ち、実行時の中継コードの生成で
-/// 決める（`interpreter/cpp_bridge/types.rs`）: Windows（LLP64）は `long` = 4 バイト・`wchar_t` = 2 バイト（符号なし）、
-/// それ以外（LP64）は `long` = 8 バイト・`wchar_t` = 4 バイト（符号付き）。
+/// `CLong` と `WChar` は環境で幅が変わるので、ヘッダの段階では名前のまま持ち、使うときに `IntWidth::bits_and_sign` で
+/// 決める: Windows（LLP64）は `long` = 4 バイト・`wchar_t` = 2 バイト（符号なし）、それ以外（LP64）は `long` = 8 バイト・
+/// `wchar_t` = 4 バイト（符号付き）。
 /// ⚠ 以前は `char` / `short` / `int` / 符号の有無をすべて符号付き 4 バイトに、`long` / `long long` / `size_t` を
 ///   8 バイトにまとめていて、`unsigned` の 2^31 以上が負になる・Windows の `long` の戻り値を 8 バイトとして読む・
 ///   `short*` へ 4 バイト書く、といったことが起きていた。
@@ -25,6 +25,25 @@ pub enum IntWidth {
     CLong,
     /// C の `wchar_t`（ポインタでないもの）
     WChar,
+}
+
+impl IntWidth {
+    /// C の整数のビット数と符号。`signed` はヘッダに書いた符号で、OS で決まる型はここで直す: `long` は Windows で 32 ビット・
+    /// ほかで 64 ビット、`wchar_t` は Windows で符号なし 16 ビット・ほかで符号付き 32 ビット（`ar_config.json` の `"os"`・7-32）。
+    /// 中継コードの Rust の型（`int_rust_type`）と要素型の名前（`CType::c_elem_name`）はどちらもこれを使う。
+    /// ⚠ 7-35 より前は要素型の名前が `wchar_t` の符号をヘッダの段階の「符号なし」のまま使い、Linux で `uint32` になって、
+    ///   中継コードの `i32`・`wchar_t*` の要素型 `int32` と食い違っていた
+    pub fn bits_and_sign(self, signed: bool) -> (u32, bool) {
+        let os = super::target::target_os();
+        match self {
+            IntWidth::W8 => (8, signed),
+            IntWidth::W16 => (16, signed),
+            IntWidth::W32 => (32, signed),
+            IntWidth::W64 => (64, signed),
+            IntWidth::CLong => (os.long_bits(), signed),
+            IntWidth::WChar => (8 * os.wchar_bytes() as u32, os.wchar_signed()),
+        }
+    }
 }
 
 /// tl ↔ ネイティブ境界を越えることができる C の型を表す列挙型。
@@ -75,17 +94,16 @@ pub enum CType {
 
 impl CType {
     /// ポインタの指す先の要素の型名（`PtrProtocol` と同じ名前・D-12）。`Ptr[T]` の `T` に使う（4-3）。
-    /// `void*` → `void`、構造体ポインタ → 構造体名、数値のポインタ → `int32` など、`char*` → `uint8`、`wchar_t*` → `uint16`。
-    /// ポインタでなければ `None`。
+    /// `void*` → `void`、構造体ポインタ → 構造体名、数値のポインタ → `int32` など、`char*` → `uint8`、`wchar_t*` → `wchar_t` の
+    /// 要素型（Windows は `uint16`・ほかは `int32`・`IntWidth::bits_and_sign`）。ポインタでなければ `None`。
     pub fn ptr_elem_name(&self) -> Option<String> {
         match self {
             CType::VoidPtr => Some("void".to_string()),
             CType::OpaqueStructPtr { type_name, .. } => Some(type_name.clone()),
             CType::Ptr { inner, .. } => inner.c_elem_name(),
             CType::CharPtr { wide: false, .. } => Some("uint8".to_string()),
-            CType::CharPtr { wide: true, .. } => {
-                Some(if super::target::target_os().is_windows() { "uint16" } else { "int32" }.to_string())
-            }
+            // 符号はヘッダに書いたものではなく OS で決まる（`bits_and_sign` が直す）
+            CType::CharPtr { wide: true, .. } => CType::Int { width: IntWidth::WChar, signed: false }.c_elem_name(),
             _ => None,
         }
     }
@@ -95,15 +113,8 @@ impl CType {
     pub fn c_elem_name(&self) -> Option<String> {
         Some(match self {
             CType::Int { width, signed } => {
-                let bits = match width {
-                    IntWidth::W8 => 8,
-                    IntWidth::W16 => 16,
-                    IntWidth::W32 => 32,
-                    IntWidth::W64 => 64,
-                    IntWidth::CLong => super::target::target_os().long_bits(),
-                    IntWidth::WChar => 8 * super::target::target_os().wchar_bytes() as u32,
-                };
-                format!("{}int{bits}", if *signed { "" } else { "u" })
+                let (bits, signed) = width.bits_and_sign(*signed);
+                format!("{}int{bits}", if signed { "" } else { "u" })
             }
             CType::Float => "float32".to_string(),
             CType::Double => "float64".to_string(),
@@ -563,5 +574,21 @@ mod tests {
         assert!(st("Rgba", vec![U8; 4], true).has_exact_layout()); // 4 バイト未満の整数も幅が分かる（1-6）
         assert!(!st("Empty", vec![], true).has_exact_layout());
         assert!(!st("L", vec![CType::Bool], true).has_exact_layout());
+    }
+
+    /// `wchar_t` の要素型は OS で幅も符号も決まり、値・`wchar_t*`・数値のポインタのどれから引いても同じ（7-35。以前は
+    /// Linux で値の要素型が `uint32`、`wchar_t*` が `int32` だった）
+    #[test]
+    fn wchar_element_type_follows_the_os() {
+        use super::super::target::{set_target_os, TargetOs};
+        let wchar = CType::Int { width: IntWidth::WChar, signed: false };
+        let wstr = CType::CharPtr { wide: true, mutable: false };
+        let wptr = CType::Ptr { inner: Box::new(wchar.clone()), mutable: false };
+        for (os, name) in [(TargetOs::Windows, "uint16"), (TargetOs::Linux, "int32"), (TargetOs::MacOs, "int32")] {
+            set_target_os(os);
+            assert_eq!(wchar.c_elem_name().as_deref(), Some(name), "{os:?}");
+            assert_eq!(wstr.ptr_elem_name().as_deref(), Some(name), "{os:?}");
+            assert_eq!(wptr.ptr_elem_name().as_deref(), Some(name), "{os:?}");
+        }
     }
 }

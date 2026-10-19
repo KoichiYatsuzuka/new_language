@@ -56,6 +56,11 @@ impl TargetOs {
         if self.is_windows() { 2 } else { 4 }
     }
 
+    /// `wchar_t` が符号付きか（Windows は `unsigned short`・Linux / macOS は `int`）。
+    pub fn wchar_signed(self) -> bool {
+        !self.is_windows()
+    }
+
     /// 動いている OS（CLI は Arrow を作った OS、拡張はホストの `process.platform`）。分からなければ `None`。
     pub fn host() -> Option<TargetOs> {
         crate::import_fs::host_os().and_then(|s| TargetOs::parse(&s).ok())

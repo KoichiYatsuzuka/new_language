@@ -10,7 +10,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 
 - 起票: 2026-10-12（利用者の報告「cpp-dll から str が返らない」から）
 - 調査: Arrow `2aa53ed`（release ビルド）
-- 状態: フェーズ 1〜7 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・7-1〜7-34・§5）
+- 状態: フェーズ 1〜7 完了（1-1〜1-6・2-1〜2-6・3-1〜3-3・4-1〜4-7・5-1〜5-5・6-1〜6-2・7-1〜7-35・§5）
 - 改訂: 2026-10-14 C# / Rust の配列の受け取り方を利用者の判断で決定（D-16）。5-1 を export の生成器（5-1）と値の受け渡し（5-5）に分け、生成器は Arrow の CLI で作る（利用者の判断）
 - 改訂: 2026-10-13 フェーズ 1・2 の実装中に見つけた、値の受け渡しの外の問題をフェーズ 7 に起票した（利用者の指示）
 - 改訂: 2026-10-12 未決事項 U-1〜U-6 を利用者の回答で決定（D-7〜D-12）。フェーズを依存関係に合わせて組み直した
@@ -268,6 +268,7 @@ Python・JS・C#）の値の受け渡しを検査した。文字列・コレク�
 | **7-32** | ✅（§5・利用者の決定: `ar_config.json` に使う OS を書き、それに応じて動作を変える）Windows 以外で `wchar_t*` の値返し・構造体のフィールドが壊れる疑い: 中継コードの `_wstr_to_handle`（`cpp_bridge/codegen.rs`）は常に 2 バイト単位（`u16`）で NUL を探して UTF-16LE の bytes にするが、Linux の `wchar_t` は4 バイト（`CType::ptr_elem_name` も `int32` にしている）。7-14 の配列の展開（`c_struct_layout`）は環境の幅を使うので、同じフィールドが値返しと配列で違う結果になる。コードを読んで気づいたもので実測はしていない（7-14 で発見） | なし | 小 |
 | **7-33** | ✅（§5・利用者の決定: `ar_config.json` にテスト用の環境の設定を加える）`cargo test` が利用者の環境に依存する: `test_real_dxlib_header_structs`（`cpp_header/header_parser/mod.rs`）がgit の対象外の `examples/DxLib/DxLib.h` を読み、無ければ panic する（DxLib の SDK が無い環境ではテストが落ちる・既存）。また追跡されている `ar_config.json` がこの環境専用のパス（MSVC・Windows SDK の版・Rust のレジストリ）を持ち、7-13 では SDK の版が合わず `TCHAR` が解決できなかった。テストは SDK が無ければ飛ばしたことを出して飛ばすか小さなヘッダを同梱し、環境ごとのパスは追跡しない設定へ分ける（設定は祖先から重ねて読むので、git の対象外の上書きファイルを置ける）（7-13 で発見） | なし | 小 |
 | **7-34** | ✅（§5）ゲートの A/B 比較が cpp-lib の中継 DLL のキャッシュを書き換え、偽の差分を出す: 基準の exe と新しい exe は中継コードが違うので、`compare_outputs` / `compare_import_paths` が交互に走らせるたびにコミット済みの `test_modules/ar_ffi_probe.dll`・`.syms`・シムを作り直し、その表示（`CppBridge: … is stale … rebuilding`）が出力の差になる（負の対照でも `cpp_lib_int_widths` が差になる）。最後に走った exe の印でキャッシュが残るので、コミットする中継 DLL が基準の exe のものになりうる。比較では作り直しの表示を除くか、exe ごとに別の場所へキャッシュを置く（7-13・7-28 で発見） | なし | 小 |
+| **7-35** | ✅（§5）Linux / macOS の `wchar_t` の符号が場所によって食い違う: ヘッダの解析は `wchar_t` を「符号なし」として持ち、中継コードの Rust の型（`int_rust_type`）は OS で決める（Windows は `u16`・ほかは `i32`）が、要素型の名前（`c_elem_name`）はヘッダの符号のままで、Linux では `uint32` になる（`wchar_t*` の要素型は `int32`）。幅と符号を OS で決める所を 1 か所にする（docs/ の見直しで発見。今の例題では `c_elem_name` に `wchar_t` が届かない） | なし | 小 |
 
 ⚠ フェーズ 1・2 で「エラーにする」としたものは、フェーズ 4・5 で順に正しく動くようになる。先に黙って
 誤るのを止める（D-4）ために、エラーにする段を分けている。
@@ -1747,6 +1748,24 @@ DxLib の実用例（`examples/practical_examples/DxLib`・ゲートの対象外
   `compare_import_paths` 13/13（負の対照も 13/13）・`scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・
   `compare_python_impl`（新しい負例を既知の差に足して clean）・`compare_wasm_frontend` 576/576 一致・`type_obligations`（退行なし）・
   `stale_doc_refs`・`cargo test` 1205 件。VSIX を作り直した
+
+### 7-35 実装
+
+- C の整数のビット数と符号を `IntWidth::bits_and_sign` の 1 か所で決める（ヘッダに書いた符号を、OS で決まる型について直す:
+  `long` は Windows で 32 ビット・ほかで 64 ビット、`wchar_t` は Windows で符号なし 16 ビット・ほかで符号付き 32 ビット。
+  `TargetOs::wchar_signed` を足した）。中継コードの Rust の型（`int_rust_type`）と要素型の名前（`CType::c_elem_name`。
+  `wchar_t*` の要素型 `ptr_elem_name` も同じものから引く）がどちらもこれを使う
+  - ⚠ 以前はヘッダの解析が `wchar_t` を「符号なし」として持ち、`int_rust_type` は OS で決めて符号を無視していたが、
+    `c_elem_name` はヘッダの符号をそのまま使っていた。Linux / macOS で値の `wchar_t` の要素型が `uint32`、中継コードは `i32`、
+    `wchar_t*` の要素型は `int32` と 3 通りになっていた（`c_elem_name` に `wchar_t` の値が届く形（数値のポインタの要素）は
+    今のヘッダの解析では作られないので、例題では観測できない）
+- Windows の型・中継コードは変わらない（コミット済みの cpp-lib の中継 DLL も作り直されない）
+- 単体テスト: `wchar_element_type_follows_the_os`（3 つの OS の要素型を固定。以前の規則に戻すと落ちることを確かめた）・
+  `rust_type_and_element_name_agree`（すべての整数・3 つの OS で中継コードの型と要素型の名前が一致する）
+- 文書: skill `c-abi-interop`
+- ゲート（基準 `64d23b7`・制限時間つき）: `compare_outputs` 485/485 一致（負の対照も 485/485）・`compare_import_paths` 13/13・
+  `scan_examples`（基準と同じ）・`force_gate`（`VmForceError` 0）・`compare_python_impl`（clean）・`compare_wasm_frontend` 576/576 一致・
+  `type_obligations`（退行なし）・`stale_doc_refs`・`cargo test` 1207 件。VSIX を作り直した
 
 ---
 

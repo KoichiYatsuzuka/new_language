@@ -118,6 +118,9 @@ LP64 前提で、Windows の `long` の負の戻り値が壊れていた（-5 �
 `"os"`（無ければ動いている OS・拡張はホストに尋ねる）で、`cpp_header::target`（`target_os()` / `apply_config_os`）が持つ
 （ffi_value_exchange_plan.md 7-32。以前は `cfg!(windows)` で、拡張の wasm では常に LP64 だった）。`wchar_t` も同じ
 （Windows は UTF-16 の 2 バイト、ほかは UTF-32 の 4 バイト。Arrow へはどちらも UTF-16LE の `bytes`）。
+幅と符号は `IntWidth::bits_and_sign` の 1 か所で決め、中継 DLL の Rust の型（`int_rust_type`）と要素型の名前（`c_elem_name`・
+`Ptr[T]` の `T`）がどちらも使う（`wchar_t` は Windows で符号なし 16 ビット・ほかで符号付き 32 ビット。7-35 より前は要素型の
+名前がヘッダの段階の「符号なし」のままで、Linux で `uint32` になり中継 DLL の `i32` と食い違っていた）。
 下の「C の整数型の幅と符号」。
 
 ### P3/P4 実装詳細（typed ABI へのポインタ引数統合）

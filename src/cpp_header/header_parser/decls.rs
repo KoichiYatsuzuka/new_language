@@ -441,7 +441,7 @@ fn c_int_type(core: &[&str], sign_kw: bool, unsigned: bool) -> Option<CType> {
         ["uint64_t"] => (W64, false),
         ["size_t"] | ["uintptr_t"] => (W64, false),
         ["ptrdiff_t"] | ["intptr_t"] | ["ssize_t"] | ["__int3264"] => (W64, true),
-        // 幅と符号は環境で決まる（中継コードの生成で決める）
+        // 幅と符号は OS で決まる（`IntWidth::bits_and_sign`。ここの符号は使わない）
         ["wchar_t"] => (WChar, false),
         _ => return None,
     };
