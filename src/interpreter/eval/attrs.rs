@@ -832,11 +832,11 @@ impl Interpreter {
             }
     }
 
-    /// 宣言していないフィールドへの代入の誤り。`object()` は CPython と同じ文言（属性を持てない・タスク 6-10）。
+    /// 宣言していないフィールドへの代入の誤り。`object()` / `Ellipsis` は CPython と同じ文言（属性を持てない・タスク 6-10）。
     fn no_field_to_assign(class: &crate::interpreter::ClassValue, attr: &str) -> String {
         match class.builtin {
-            crate::interpreter::BuiltinClass::Object => {
-                format!("AttributeError: 'object' object has no attribute '{attr}'")
+            crate::interpreter::BuiltinClass::Object | crate::interpreter::BuiltinClass::Ellipsis => {
+                format!("AttributeError: '{}' object has no attribute '{attr}'", class.name)
             }
             crate::interpreter::BuiltinClass::Ordinary => format!(
                 "AttributeError: '{}' has no field '{attr}'; all fields must be declared in the class body",

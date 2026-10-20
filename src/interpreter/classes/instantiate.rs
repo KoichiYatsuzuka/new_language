@@ -41,6 +41,13 @@ impl Interpreter {
                             modules (import[py])"
                     .to_string())
             }
+            // 唯一の値のクラス（`type(...)()`・タスク 6-11）は CPython と同じくその値を返す。
+            kind @ crate::interpreter::BuiltinClass::Ellipsis => {
+                if !evaled.is_empty() {
+                    return Err("TypeError: EllipsisType takes no arguments".to_string());
+                }
+                return Ok(self.builtin_singleton(kind));
+            }
         }
         let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {

@@ -912,9 +912,10 @@ impl Interpreter {
 
     /// 組み込みのクラス `object` か（タスク 6-10）。
     fn is_object_class(c: &ClassValue) -> bool {
+        use crate::interpreter::BuiltinClass as B;
         match c.builtin {
-            crate::interpreter::BuiltinClass::Object => true,
-            crate::interpreter::BuiltinClass::Ordinary => false,
+            B::Object => true,
+            B::Ordinary | B::Ellipsis => false,
         }
     }
 
@@ -1370,6 +1371,28 @@ impl Interpreter {
                 })
             })
             .clone()
+    }
+
+    /// 唯一のインスタンスしか持たない組み込みのクラスの、その値（`Ellipsis`・タスク 6-11）。初めて引いたときに作る。
+    ///
+    /// フィールドもメソッドも持たないクラス（`ClassValue::synthetic` に印を付けたもの）の唯一のインスタンス。
+    /// 表示は `display`（`Ellipsis`）、比べるのは種類（`values_eq` / `values_ref_eq`）。写さない（`deep_copy_value`）。
+    /// ⚠ `kind` が唯一の値の種類でなければ内部の誤り（呼び出し側の取り違え）。
+    pub(crate) fn builtin_singleton(&mut self, kind: crate::interpreter::BuiltinClass) -> Value {
+        use crate::interpreter::BuiltinClass as B;
+        let (slot, class_name) = match kind {
+            B::Ellipsis => (&mut self.ellipsis, "ellipsis"),
+            B::Ordinary | B::Object => unreachable!("builtin_singleton: {kind:?} has no single instance"),
+        };
+        slot.get_or_insert_with(|| {
+            let class = std::rc::Rc::new(ClassValue {
+                builtin: kind,
+                ..ClassValue::synthetic(class_name, crate::interpreter::value::alloc_class_id())
+            });
+            let inst = crate::interpreter::InstanceData::new_empty(class, 0);
+            Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst)))
+        })
+        .clone()
     }
 
     /// Python の `object()`（変換器が `__py_object()` にする・タスク 6-10）。文言は CPython と同じ。

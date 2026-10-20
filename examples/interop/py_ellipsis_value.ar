@@ -1,0 +1,34 @@
+# py_ellipsis_value.ar — Python の値の `...`（Ellipsis）（python_builtins_plan.md のタスク 6-11）
+#
+# 値の `...` は組み込みの唯一の値 `Ellipsis`（クラス `ellipsis` の唯一のインスタンス）。表示は `Ellipsis`。
+# 写さずに共有し、種類で比べる（`is` / `==` / `hash`）。`type(...)()` は `Ellipsis` を返す（CPython と同じ）。
+# 文の `...`（`def f(): ...`）は従来どおり `pass`（py_ellipsis.ar）。Arrow のソースからも `Ellipsis` の名前で使える。
+#
+# pe.run() は CPython と同じ出力:
+#   True True False True
+#   True False False True
+#   True True True True 1
+#   Ellipsis Ellipsis Ellipsis [Ellipsis, 1] ellipsis True
+#   True True True True
+#   TypeError: EllipsisType takes no arguments
+#   AttributeError: 'ellipsis' object has no attribute 'x'
+#
+# ⚠ 以前は値の `...` を `None` にしていたので、`x is ...` が `None` でも真になり、`print(...)` は `None` だった。
+
+import[py] test_modules.py_ellipsis_value as pe
+
+pe.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のソースからも同じ値
+let e = Ellipsis
+check(pe.pick() === e and pe.pick() === Ellipsis, "same object as Python's ...")
+check(not (pe.pick(None) === e), "None is not Ellipsis")
+let es = [e, Ellipsis]
+check(es[0] === es[1] and es[0] == es[1], "only one Ellipsis")
+check(repr(e) == "Ellipsis" and str(e) == "Ellipsis", "display")
+check(e is object, "Ellipsis is an object")
+print("arrow side ok")

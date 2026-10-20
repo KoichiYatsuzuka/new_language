@@ -7,11 +7,11 @@
 #   - **文**としての `...`（`def f(): ...` などスタブ本体のプレースホルダ）→ `Stmt::Pass`。
 #     「何もしない」以上の意味を持たないので `pass` と同じ形に読み替える。
 #     以前は `Stmt::Expr(Expr::None)`（None を評価して捨てる式文）になっていた。
-#   - **値**としての `...`（`x = ...`）→ `Expr::None`。Arrow に `Ellipsis` 値が無いため。
-#     ⇒ ⑤ だけ CPython と表示が違う（CPython は `Ellipsis`）。副作用が無いので許容している。
+#   - **値**としての `...`（`x = ...`）→ 組み込みの唯一の値 `Ellipsis`（python_builtins_plan.md のタスク 6-11。
+#     以前は `Expr::None` で、⑤ だけ CPython と表示が違った）。値の振る舞いは py_ellipsis_value.ar。
 #
 # ⚠ AST の形は `frontend_tests/parser_tests.rs` の
-#   `test_python_statement_ellipsis_becomes_pass` / `test_python_value_ellipsis_stays_none` で固定。
+#   `test_python_statement_ellipsis_becomes_pass` / `test_python_value_ellipsis_is_the_ellipsis_name` で固定。
 # ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
 
 import[py] test_modules.py_ellipsis as m
@@ -43,6 +43,6 @@ mut xs = [1, 2]
 print(m.loop_body(xs))
 # done
 
-# ── ⑤ ★値位置の `...` は None になる（CPython は `Ellipsis`） ───────────
+# ── ⑤ ★値位置の `...` は `Ellipsis`（CPython と同じ・タスク 6-11） ───────────
 print(m.value_pos())
-# None      （CPython は Ellipsis）
+# Ellipsis

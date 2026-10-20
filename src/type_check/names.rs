@@ -68,6 +68,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 呼んで作るのは Python の `object()` だけで、変換器が `__py_object()` にする。基底が `object` のクラスの
     // `super().__init__(..)` は `__py_object_init(self, ..)`。
     "object", "__py_object", "__py_object_init",
+    // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
+    "Ellipsis",
     // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
     "property", "cached_property",
 ];

@@ -543,6 +543,8 @@ pub struct Interpreter {
     pub(self) py_builtin_classes: Option<HashMap<String, Value>>,
     /// 組み込みのクラス `object`（python_builtins_plan.md のタスク 6-10）。初めて引いたときに作る（`Interpreter::object_class`）。
     pub(self) object_class: Option<Rc<ClassValue>>,
+    /// 唯一の値 `Ellipsis`（タスク 6-11）。初めて引いたときに作る（`Interpreter::builtin_singleton`）。
+    pub(self) ellipsis: Option<Value>,
     /// **探索の起点を持たない** import 文（合成した文・テストが組んだ AST）の探索先。
     ///
     /// ⚠⚠ ファイルから読んだ import 文は**使わない**。各文が自分の起点を持つ
@@ -717,6 +719,7 @@ impl Interpreter {
             in_python_module: false,
             py_builtin_classes: None,
             object_class: None,
+            ellipsis: None,
             python_search_dirs: Vec::new(),
             submodules: HashMap::new(),
             static_cells: HashMap::new(),

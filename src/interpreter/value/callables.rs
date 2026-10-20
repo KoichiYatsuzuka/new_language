@@ -421,6 +421,9 @@ pub enum BuiltinClass {
     /// `object`。インスタンスは `object()`（Python のソースからだけ作れる・変換器が `__py_object()` にする）。
     /// 同一性はアドレス（`is` / `==` / `hash` / `id`）。⚠ スレッドへ送る複製（`deep_clone`）では別の物になる。
     Object,
+    /// `ellipsis`（タスク 6-11）。唯一のインスタンスが `Ellipsis`（Python の `...`）。表示は `Ellipsis`。
+    /// 同じ種類なら同じ物（スレッドへ送った複製も `is` / `==` で同じ）。
+    Ellipsis,
 }
 
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。

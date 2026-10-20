@@ -1067,11 +1067,11 @@
         );
     }
 
-    /// 値としての `...` は `None` のまま（Arrow に `Ellipsis` 値が無いため。承認済みの仕様）。
+    /// 値としての `...` は組み込みの `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None`）。
     ///
     /// ⚠ 文位置だけを `pass` にしたので、値位置が巻き添えで変わっていないことを固定する。
     #[test]
-    fn test_python_value_ellipsis_stays_none() {
+    fn test_python_value_ellipsis_is_the_ellipsis_name() {
         let stmts =
             crate::python_converter::convert_python_source("def f():\n    x = ...\n    return x\n", "<test>")
                 .expect("python conversion failed");
@@ -1080,8 +1080,8 @@
         };
         // #2 の巻き上げにより body は [Mut("x", None, None), Assign{..}, Return]。
         assert!(
-            body.iter().any(|s| matches!(s, Stmt::Assign { value: Expr::None, .. })),
-            "expected an assignment of Expr::None, got: {body:?}"
+            body.iter().any(|s| matches!(s, Stmt::Assign { value: Expr::Ident { name, .. }, .. } if name == "Ellipsis")),
+            "expected an assignment of the name `Ellipsis`, got: {body:?}"
         );
         assert!(
             !body.iter().any(|s| matches!(s, Stmt::Pass)),

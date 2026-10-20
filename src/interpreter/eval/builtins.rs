@@ -104,6 +104,10 @@ impl Interpreter {
         if name == "object" {
             return Some(Value::Class(self.object_class()));
         }
+        // 唯一の値 `Ellipsis`（Python の `...` は変換器がこの名前にする・タスク 6-11）。
+        if name == "Ellipsis" {
+            return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::Ellipsis));
+        }
         if super::py_builtins::PY_BUILTIN_CLASS_NAMES.contains(&name) {
             return match self.py_builtin_class(name) {
                 Ok(class) => Some(class),

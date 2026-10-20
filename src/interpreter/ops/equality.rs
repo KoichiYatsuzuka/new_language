@@ -96,11 +96,13 @@ impl Interpreter {
                 let b_borrow = b.borrow();
                 // `object()` は同一性で比べる（タスク 6-10・CPython の `object.__eq__` は同じ物だけを等しいとする）。
                 // 同じ物なら上の `ptr_eq` で済んでいるので、どちらかが `object()` なら等しくない。
-                // ⚠ `hash_into` の同じ分岐（アドレスでハッシュする）と対になっている。
-                use crate::interpreter::BuiltinClass;
+                // `Ellipsis` は唯一の値なので、同じ種類なら同じ物（スレッドへ送った複製も・タスク 6-11）。
+                // ⚠ `hash_into` の同じ分岐（アドレス・種類でハッシュする）と対になっている。
+                use crate::interpreter::BuiltinClass as B;
                 match (a_borrow.class.builtin, b_borrow.class.builtin) {
-                    (BuiltinClass::Ordinary, BuiltinClass::Ordinary) => {}
-                    (BuiltinClass::Object, _) | (_, BuiltinClass::Object) => return Ok(false),
+                    (B::Ordinary, B::Ordinary) => {}
+                    (B::Ellipsis, B::Ellipsis) => return Ok(true),
+                    (B::Object | B::Ellipsis, _) | (_, B::Object | B::Ellipsis) => return Ok(false),
                 }
                 if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
@@ -528,7 +530,13 @@ impl Interpreter {
     /// - 値型 (`Int`, `Float`, `Str` など) は参照の概念がないため `values_eq` と同じ挙動にする。
     pub(crate) fn values_ref_eq(&self, a: &Value, b: &Value) -> Result<bool, String> {
         Ok(match (a, b) {
-            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            // 唯一の値（`Ellipsis`・タスク 6-11）は種類が同じなら同じ物（スレッドへ送った複製は別の `Rc` になる）。
+            (Value::Instance(a), Value::Instance(b)) => {
+                Rc::ptr_eq(a, b) || {
+                    let (ka, kb) = (a.borrow().class.builtin, b.borrow().class.builtin);
+                    ka == kb && Self::is_singleton_kind(ka)
+                }
+            }
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
@@ -537,6 +545,15 @@ impl Interpreter {
             (Value::Set(_), Value::FrozenSet(_)) | (Value::FrozenSet(_), Value::Set(_)) => false,
             _ => self.values_eq_expr(a, b)?,
         })
+    }
+
+    /// 唯一のインスタンスしか持たない組み込みのクラスか（`Ellipsis`・タスク 6-11）。
+    pub(crate) fn is_singleton_kind(kind: crate::interpreter::BuiltinClass) -> bool {
+        use crate::interpreter::BuiltinClass as B;
+        match kind {
+            B::Ellipsis => true,
+            B::Ordinary | B::Object => false,
+        }
     }
 }
 

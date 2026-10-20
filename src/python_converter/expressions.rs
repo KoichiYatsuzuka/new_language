@@ -902,7 +902,14 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
             cache: Default::default(),
             node_id: 0,
         }),
-        py::Constant::Ellipsis => Ok(Expr::None),
+        // 値の `...` は組み込みの唯一の値 `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None` にしていたので
+        // `x is ...` が `None` でも真だった）。文の `...`（スタブの本体）は `pass`（`convert_stmt`）。
+        // ⚠ モジュールが `Ellipsis` を束縛し直していれば、その値になる（CPython の `...` は影響を受けない・対象外）。
+        py::Constant::Ellipsis => Ok(Expr::Ident {
+            name: "Ellipsis".to_string(),
+            node_id: 0,
+            res: Resolution::Unresolved,
+        }),
         // 定数タプル。要素も `Constant` なので再帰する。
         //
         // ⚠ **このアームは現在の構成では到達しない**。`Constant::Tuple` を作るのは

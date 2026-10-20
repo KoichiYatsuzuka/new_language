@@ -885,3 +885,23 @@ fn object_instances_are_shared_and_compared_by_identity() {
         assert_eq!(crate::interpreter::ops::typecheck::primitive_ann_matches("object", &v), Some(true));
     }
 }
+
+/// `Ellipsis` は唯一の値（python_builtins_plan.md のタスク 6-11）。スレッドへ送る複製（`deep_clone`・別の `Rc`）も
+/// 同じ物として扱う（`is` / `==` / `hash` が種類で決まる）。格納では写さない。
+#[test]
+fn ellipsis_is_one_value_even_across_thread_copies() {
+    use crate::interpreter::{BuiltinClass, Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let e = interp.builtin_singleton(BuiltinClass::Ellipsis);
+    let again = interp.builtin_singleton(BuiltinClass::Ellipsis);
+    let sent = e.deep_clone();
+    let same_rc = |x: &Value, y: &Value| matches!((x, y), (Value::Instance(p), Value::Instance(q)) if std::rc::Rc::ptr_eq(p, q));
+    assert!(same_rc(&e, &again));
+    assert!(same_rc(&Interpreter::deep_copy_value(e.clone()), &e));
+    assert!(!same_rc(&sent, &e));
+    assert!(interp.values_ref_eq(&e, &sent).unwrap());
+    assert!(Interpreter::values_eq_pure(&e, &sent).unwrap());
+    assert_eq!(Interpreter::default_hash(&e).unwrap(), Interpreter::default_hash(&sent).unwrap());
+    assert!(!Interpreter::values_eq_pure(&e, &Value::None).unwrap());
+    assert_eq!(interp.display(&e), "Ellipsis");
+}

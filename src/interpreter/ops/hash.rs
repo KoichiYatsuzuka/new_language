@@ -202,6 +202,12 @@ impl Interpreter {
                         ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
                         return Ok(());
                     }
+                    // 唯一の値（`Ellipsis`・タスク 6-11）は種類でハッシュする（`values_eq` が種類で比べるのと対）。
+                    crate::interpreter::BuiltinClass::Ellipsis => {
+                        h.write_u8(Tag::Instance as u8);
+                        h.write(b"\0Ellipsis");
+                        return Ok(());
+                    }
                 }
                 // ⚠⚠ `__hash__` の呼び出しはインタプリタを回すので、**借用を解いてから**渡す。
                 //    握ったままだと、ハンドラが自分自身を読んだ瞬間に `RefCell` が壊れる。

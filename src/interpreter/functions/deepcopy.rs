@@ -155,7 +155,7 @@ impl Interpreter {
     fn shares_instance(inst: &RefCell<InstanceData>) -> bool {
         match inst.borrow().class.builtin {
             crate::interpreter::BuiltinClass::Ordinary => false,
-            crate::interpreter::BuiltinClass::Object => true,
+            crate::interpreter::BuiltinClass::Object | crate::interpreter::BuiltinClass::Ellipsis => true,
         }
     }
 }

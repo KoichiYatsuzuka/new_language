@@ -2,7 +2,7 @@
 
 ⚠ **文位置と値位置で扱いが違う**:
   - 文としての `...`（スタブ本体のプレースホルダ）→ Arrow の `pass`
-  - 値としての `...`（`x = ...`）→ `None`（Arrow に `Ellipsis` 値が無いため。承認済みの仕様）
+  - 値としての `...`（`x = ...`）→ 組み込みの `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None`）
 """
 
 
@@ -40,7 +40,7 @@ def loop_body(xs):
     return "done"
 
 
-# --- 4. ★値位置の `...` は None になる（ここだけ CPython と表示が違う） ---
+# --- 4. ★値位置の `...` は Ellipsis（CPython と同じ・タスク 6-11） ---
 def value_pos():
     x = ...
     return x
