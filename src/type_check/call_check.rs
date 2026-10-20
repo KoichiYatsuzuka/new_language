@@ -244,7 +244,7 @@ impl TypeChecker {
         if let Some((recv_ty, method, span)) = builtin_recv {
             self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
             // ★ 戻り値型も分かる範囲で付ける。
-            builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method);
+            builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method, &arg_data);
         }
 
         // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
@@ -1641,6 +1641,7 @@ impl TypeChecker {
     pub(super) fn builtin_collection_method_return(
         recv_ty: &InferredType,
         method: &str,
+        args: &[(Option<String>, InferredType)],
     ) -> Option<InferredType> {
         use InferredType as T;
         // 文字コードの変換（3-1）。⚠ ほかの `str` のメソッドはまだ型が無い（結果は `Unresolved`）。
@@ -1707,10 +1708,35 @@ impl TypeChecker {
             T::Dict => (T::Any, T::Any),
             _ => return None,
         };
+        // 既定値つきの `get` / `pop` / `setdefault`（タスク 3-6）: 既定値が値の型と同じならその型、`None` なら `Option[V]`、
+        // 違えば両方の `Union`。
+        let or_default = |d: &T| -> T {
+            match d {
+                _ if *d == v || matches!(d, T::Never) || matches!(v, T::Any) => v.clone(),
+                T::None => T::Union(vec![v.clone(), T::None]),
+                other => T::Union(vec![v.clone(), other.clone()]),
+            }
+        };
+        let positional: Vec<&T> = args.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
         match method {
             "key" | "keys" => Some(T::ListOf(Box::new(k))),
             "item" | "values" => Some(T::ListOf(Box::new(v))),
             "items" => Some(T::ListOf(Box::new(T::Tuple(vec![k, v])))),
+            // 無ければ `None` を返す（`d.get(k)` は `Option[V]`）。
+            "get" | "setdefault" => match positional.as_slice() {
+                [_] => Some(or_default(&T::None)),
+                [_, d] => Some(or_default(d)),
+                _ => None,
+            },
+            // 無ければ `KeyError`（既定値が無いとき）。
+            "pop" => match positional.as_slice() {
+                [_] => Some(v),
+                [_, d] => Some(or_default(d)),
+                _ => None,
+            },
+            "popitem" => Some(T::Tuple(vec![k, v])),
+            "copy" => Some(recv_ty.clone()),
+            "update" | "clear" => Some(T::None),
             _ => None,
         }
     }

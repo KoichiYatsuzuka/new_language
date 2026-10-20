@@ -199,7 +199,14 @@ pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
         ],
     ),
     ("list", &["__iter__", "append", "pop", "sort"]),
-    ("dict", &["__iter__", "item", "items", "key", "keys", "values"]),
+    // `classes/dict_methods.rs`（`get` 以下はタスク 3-6）。
+    (
+        "dict",
+        &[
+            "__iter__", "clear", "copy", "get", "item", "items", "key", "keys", "pop", "popitem", "setdefault",
+            "update", "values",
+        ],
+    ),
     (
         "set",
         &[

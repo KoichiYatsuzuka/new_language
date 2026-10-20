@@ -513,6 +513,42 @@ impl Interpreter {
         borrowed.get_with(hash, |stored| me.values_eq_key(key, stored))
     }
 
+    /// 辞書の `key` のエントリの位置（`d.pop(k)`・python_builtins_plan.md のタスク 3-6）。`__hash__` / `__eq__` を尊重する。
+    /// ⚠ 借用は共有借用のみ（[`Self::dict_get`] と同じ理由）。位置は辞書を書き換えるまで有効。
+    pub(crate) fn dict_index(&mut self, d: &Rc<RefCell<DictData>>, key: &Value) -> Result<Option<usize>, String> {
+        if let Some(why) = DictData::reject_key(key) {
+            return Err(why);
+        }
+        let hash = self.hash_value(key)?;
+        let borrowed = d.borrow();
+        let me = &mut *self;
+        borrowed.index_of_with(hash, |stored| me.values_eq_dyn(key, stored))
+    }
+
+    /// 辞書へ入れる前に、型つきの辞書（`dict[str, int]`）のキーと値の型を確かめてから [`Self::dict_set`]。
+    /// `d[k] = v` / `d.update(..)` / `d.setdefault(k, v)` が同じ規則で入れる（タスク 3-6）。
+    pub(crate) fn dict_store_checked(&mut self, d: &Rc<RefCell<DictData>>, key: Value, value: Value) -> Result<(), String> {
+        let (key_type, item_type) = {
+            let b = d.borrow();
+            (b.key_type.clone(), b.item_type.clone())
+        };
+        if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
+            return Err(format!(
+                "TypeError: dict key type mismatch: expected '{}', got '{}'",
+                key_type,
+                self.type_name(&key)
+            ));
+        }
+        if item_type != "Any" && !Self::value_matches_type(&value, &item_type) {
+            return Err(format!(
+                "TypeError: dict item type mismatch: expected '{}', got '{}'",
+                item_type,
+                self.type_name(&value)
+            ));
+        }
+        self.dict_set(d, key, value)
+    }
+
     /// 辞書に `key -> value` を入れる（既にあれば更新）。`__hash__` / `__eq__` を尊重する。
     ///
     /// ⚠⚠ **キーは複製して持つ**。呼び出し元の変数と参照を共有したままだと、

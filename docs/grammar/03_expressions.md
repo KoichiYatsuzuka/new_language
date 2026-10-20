@@ -110,6 +110,22 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 **評価**: キー・値のペアを左から順に評価して `Value::Dict(Rc<RefCell<DictData>>)` を生成。
 
+**メソッド**（CPython と同じ・python_builtins_plan.md のタスク 3-6）:
+
+| メソッド | 働き | 静的な型 |
+|---|---|---|
+| `keys()` / `values()` / `items()` | キー・値・`(キー, 値)` の組のリスト（その時点の写し） | `list[K]` / `list[V]` / `list[tuple[K, V]]` |
+| `get(k, default=None)` | 値。無ければ `default` | `Option[V]`（既定値が `V` なら `V`） |
+| `pop(k[, default])` | 取り除いて値。無ければ `default`、それも無ければ `KeyError` | `V` |
+| `setdefault(k, default=None)` | あれば値、無ければ `default` を入れて（入れた後の）値 | `Option[V]` / `V` |
+| `update(other=(), **kw)` | 辞書か `(キー, 値)` の組の列から、続けてキーワード引数から入れる | `None` |
+| `popitem()` | 最後に入れた `(キー, 値)` を取り除いて返す（空なら `KeyError`） | `tuple[K, V]` |
+| `clear()` / `copy()` | 空にする / 別の辞書 | `None` / 同じ辞書型 |
+
+- 書き換えるメソッド（`pop` / `popitem` / `setdefault` / `update` / `clear`）は `let` の辞書には呼べません（静的な誤り）。
+- 型つきの辞書（`dict[str, int]`）へ入れる `update` / `setdefault` は `d[k] = v` と同じく型を確かめます。
+- ⚠ `copy()` は深い写しです（`mut e = d` と同じ。CPython は浅い写し）。⚠ `del d[k]` はありません（`d.pop(k)` を使う）。
+
 ### セット
 
 ```ar

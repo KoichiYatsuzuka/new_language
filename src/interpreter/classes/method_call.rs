@@ -357,56 +357,7 @@ impl Interpreter {
                 self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None)
             }
             Value::Class(cls) => self.eval_class_method(cls.clone(), method_name, evaled),
-            Value::Dict(d) => {
-                match method_name {
-                    // `d.key()` / `d.keys()` — キーのリストを返す
-                    "key" | "keys" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
-                    }
-                    // `d.item()` / `d.values()` — 値のリストを返す
-                    "item" | "values" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
-                    }
-                    // `d.items()` — `(キー, 値)` タプルのリストを返す。
-                    //
-                    // ⚠ 多ターゲット `for`（`for k, v in d.items():`）で分解して使う形が主目的。
-                    //   タプルは `zip` / `enumerate` と**同じ作り方**にする（型名リストを
-                    //   `type_name` で埋める）。ここがずれると分解の挙動が揃わない。
-                    // ⚠ CPython のビューと違い**スナップショット**。走査中に元の辞書を
-                    //   変更してもこの列は変わらない（CPython は `RuntimeError` になる形）。
-                    "items" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        let pairs = d.borrow().all_pairs();
-                        let tuples: Vec<Value> = pairs
-                            .into_iter()
-                            .map(|(k, v)| {
-                                let types = vec![
-                                    self.type_name(&k).to_string(),
-                                    self.type_name(&v).to_string(),
-                                ];
-                                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                                    vec![k, v],
-                                    types,
-                                )))
-                            })
-                            .collect();
-                        Ok(Value::List(Rc::new(RefCell::new(tuples))))
-                    }
-                    // `d.__iter__()` — キーを挿入順に返すジェネレータ（python_builtins_plan.md のタスク 1-4・
-                    // CPython の `dict_iter`）。⚠ `for k in d:` と同じく**スナップショット**（CPython は反復中に
-                    // 大きさが変わると `RuntimeError` になる。list の `__iter__` と同じ差・別に要判断）。
-                    "__iter__" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        let keys = d.borrow().all_keys();
-                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(keys)))))
-                    }
-                    _ => Err(format!(
-                        "AttributeError: 'dict' object has no method '{method_name}'"
-                    )),
-                }
-            }
+            Value::Dict(d) => self.eval_dict_method(d.clone(), method_name, evaled),
             Value::Set(s) => self.eval_set_method(s.clone(), method_name, evaled),
             Value::FrozenSet(s) => self.eval_frozenset_method(s.clone(), method_name, evaled),
             Value::Generator(state) => {

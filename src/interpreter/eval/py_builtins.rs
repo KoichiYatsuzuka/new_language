@@ -169,14 +169,27 @@ impl Interpreter {
     /// - キーワード引数（`dict(a=1)`）は文字列のキーで足す（位置引数の後に上書き）
     /// ⚠ キーの格納は `dict_set`（`__hash__` / `__eq__` を尊重する）。誤りの文言は CPython と同じ。
     pub(crate) fn py_dict_ctor(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {
-        let (named, positional): (Vec<_>, Vec<_>) = evaled.into_iter().partition(|(k, _, _)| k.is_some());
-        if positional.len() > 1 {
-            return Err(format!("TypeError: dict expected at most 1 argument, got {}", positional.len()));
-        }
         let d = std::rc::Rc::new(std::cell::RefCell::new(crate::interpreter::DictData::new(
             "Any".to_string(),
             "Any".to_string(),
         )));
+        self.dict_update_from(&d, evaled, "dict")?;
+        Ok(Value::Dict(d))
+    }
+
+    /// `dict(..)` / `d.update(..)` の引数で辞書を埋める（タスク 3-1 / 3-6）。位置引数は 0 か 1 個（辞書か、2 要素の組の列）、
+    /// キーワード引数は文字列のキーで後から入れる（CPython と同じ順・同じ文言）。入れるのは型を確かめる
+    /// `dict_store_checked`（型つきの辞書の `update` も `d[k] = v` と同じ規則）。
+    pub(crate) fn dict_update_from(
+        &mut self,
+        d: &std::rc::Rc<std::cell::RefCell<crate::interpreter::DictData>>,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        fname: &str,
+    ) -> Result<(), String> {
+        let (named, positional): (Vec<_>, Vec<_>) = evaled.into_iter().partition(|(k, _, _)| k.is_some());
+        if positional.len() > 1 {
+            return Err(format!("TypeError: {fname} expected at most 1 argument, got {}", positional.len()));
+        }
         if let Some((_, src, _)) = positional.into_iter().next() {
             let pairs: Vec<(Value, Value)> = match src {
                 Value::Dict(m) => m.borrow().all_pairs(),
@@ -204,13 +217,13 @@ impl Interpreter {
                 }
             };
             for (k, v) in pairs {
-                self.dict_set(&d, k, v)?;
+                self.dict_store_checked(d, k, v)?;
             }
         }
         for (k, v, _) in named {
-            self.dict_set(&d, Value::str(k.expect("partitioned by is_some").as_str()), v)?;
+            self.dict_store_checked(d, Value::str(k.expect("partitioned by is_some").as_str()), v)?;
         }
-        Ok(Value::Dict(d))
+        Ok(())
     }
 
     // ── 集計（タスク 3-2）──────────────────────────────────────────────────────

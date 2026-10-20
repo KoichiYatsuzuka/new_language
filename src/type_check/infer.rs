@@ -1038,7 +1038,8 @@ impl TypeChecker {
             return Some(InferredType::Function {
                 params: None,
                 return_type: Box::new(
-                    Self::builtin_collection_method_return(obj_ty, attr).unwrap_or(InferredType::Unresolved),
+                    // ⚠ 引数はまだ無い（束縛メソッドの値）。引数で型が決まるメソッド（`get` など）は分からない。
+                    Self::builtin_collection_method_return(obj_ty, attr, &[]).unwrap_or(InferredType::Unresolved),
                 ),
                 mutates_immutable: if mutates {
                     immutable_root(self).map(|root| Box::new((attr.to_string(), root)))

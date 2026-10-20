@@ -199,6 +199,7 @@ mod async_manager_methods;
 mod bytes_methods;
 mod ptr_methods;
 mod class_methods;
+mod dict_methods;
 mod frozen_list_methods;
 mod object_methods;
 mod set_methods;

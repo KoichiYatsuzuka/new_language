@@ -343,26 +343,8 @@ impl Interpreter {
                 Ok(())
             }
             Value::Dict(d) => {
-                let (key_type, item_type) = {
-                    let b = d.borrow();
-                    (b.key_type.clone(), b.item_type.clone())
-                };
-                if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
-                    return Err(format!(
-                        "TypeError: dict key type mismatch: expected '{}', got '{}'",
-                        key_type,
-                        self.type_name(&key)
-                    ));
-                }
-                if item_type != "Any" && !Self::value_matches_type(&rhs, &item_type) {
-                    return Err(format!(
-                        "TypeError: dict item type mismatch: expected '{}', got '{}'",
-                        item_type,
-                        self.type_name(&rhs)
-                    ));
-                }
                 let d = d.clone();
-                self.dict_set(&d, key, rhs)
+                self.dict_store_checked(&d, key, rhs)
             }
             Value::Instance(_) => {
                 self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key, true), (None, rhs, true)])?;
