@@ -238,7 +238,9 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). â
   `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
   `super().__init__(..)` in a class without a base (or with base `object`) becomes
   `__py_object_init(self, ..)` (CPython's `TypeError` on extra arguments); any other `super().m()` there is a
-  conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call.
+  conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call. `super(C, x).m(..)` (6-2) is
+  the same rewrite with receiver `x` when `C` is the class being converted (`current_super_class`); any other `C` is
+  a conversion error (`super_form` in `expressions.rs`; `builtins_check` skips the same shape).
 - `f = staticmethod(f)` / `g = classmethod(f)` in a class body (6-13, `wrapped_method` in
   `python_converter/classes.rs`) mark an earlier method static / class (a different name adds a copy). Wrapping
   anything other than an earlier method of the class is a conversion error; `builtins_check` skips exactly this form.

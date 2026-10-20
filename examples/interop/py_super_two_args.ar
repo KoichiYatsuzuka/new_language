@@ -1,0 +1,18 @@
+# py_super_two_args.ar — `super(C, self)` の 2 引数の形（python_builtins_plan.md のタスク 6-2）
+#
+# Python 2 からの書き方 `super(C, self).m(args)` は、`C` が定義中のクラスなら `super().m(args)` と同じ
+# （変換器が `<第 1 基底>.m(self, args)` へ書き換える）。基底が `object` のクラスの
+# `super(C, self).__init__()` は `object.__init__`（タスク 6-10）。
+#
+# st.run() は CPython と同じ出力:
+#   square 3
+#   shape square of side 3
+#   tile: shape square of side 2
+#
+# ⚠ 以前は `super` が未対応の組み込み（モジュールごと変換の誤り）だった。
+# ⚠ 定義中のクラスでないクラスを渡す形（MRO の途中から探す `super(Base, self)`）は変換の誤り
+#   （py_super_two_args_error.ar）。`@classmethod` の中の `super()` は 2 引数でも対象外（`super()` と同じ）。
+
+import[py] test_modules.py_super_two_args as st
+
+st.run()

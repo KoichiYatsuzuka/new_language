@@ -264,10 +264,29 @@ fn convert_seq_entries(
 /// ⚠ Python 2 形式の `super(Cls, self)` は**対象外**（引数ありなので false を返し、
 /// 通常の呼び出しとして扱われた結果 `super` が未定義でエラーになる）。
 fn is_zero_arg_super(e: &py::Expr) -> bool {
-    matches!(e, py::Expr::Call(c)
-        if c.args.is_empty()
-            && c.keywords.is_empty()
-            && matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super"))
+    matches!(super_form(e), Some(SuperForm::Zero))
+}
+
+/// `super(..)` の形（python_builtins_plan.md のタスク 6-2）。
+enum SuperForm<'a> {
+    /// `super()`。受け手は `self`。
+    Zero,
+    /// `super(C, x)`（`C` は名前）。受け手は `x`。
+    Two { class: &'a str, receiver: &'a py::Expr },
+}
+
+/// `e` が `super()` / `super(C, x)` の呼び出しならその形。ほかの形（引数 1 つ・キーワード・`C` が名前でない）は `None`。
+/// ⚠ `builtins_check` の `super` を「未対応の組み込み」にしない判定と同じ形。
+fn super_form(e: &py::Expr) -> Option<SuperForm<'_>> {
+    let py::Expr::Call(c) = e else { return None };
+    if !c.keywords.is_empty() || !matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super") {
+        return None;
+    }
+    match c.args.as_slice() {
+        [] => Some(SuperForm::Zero),
+        [py::Expr::Name(class), receiver] => Some(SuperForm::Two { class: class.id.as_str(), receiver }),
+        _ => None,
+    }
 }
 
 /// 単一の Python 式を tl の `Expr` に変換する。
@@ -408,13 +427,29 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             //    Arrow に `super` は無いので、変換時に `<第1基底>.m(self, args)` へ書き換える。
             //    受け側（クラス経由のアンバウンド呼び出し）は `classes/class_methods.rs` が
             //    `FnValue::is_python` 限定で許可している。
+            //    2 引数の `super(C, x).m(args)` は、`C` が変換中のクラスなら `super().m(args)` と同じで、受け手は `x`
+            //    （タスク 6-2）。⚠ ほかのクラスを渡す形（MRO の途中から探す）は変換の誤り。
             if let py::Expr::Attribute(attr) = &*c.func {
-                if is_zero_arg_super(&attr.value) {
-                    let mut args: Vec<CallArg> = vec![CallArg::Positional(Expr::Ident {
-                        name: "self".to_string(),
-                        node_id: 0,
-                        res: Resolution::Unresolved,
-                    })];
+                if let Some(form) = super_form(&attr.value) {
+                    let receiver = match form {
+                        SuperForm::Zero => Expr::Ident {
+                            name: "self".to_string(),
+                            node_id: 0,
+                            res: Resolution::Unresolved,
+                        },
+                        SuperForm::Two { class, receiver } => {
+                            let current = current_super_class();
+                            if current.as_deref() != Some(class) {
+                                return Err(format!(
+                                    "{filename}: `super({class}, ...)` is only supported when `{class}` is the class being \
+                                     defined{}",
+                                    current.map(|c| format!(" (here '{c}')")).unwrap_or_default()
+                                ));
+                            }
+                            convert_expr(receiver, filename)?
+                        }
+                    };
+                    let mut args: Vec<CallArg> = vec![CallArg::Positional(receiver)];
                     // `*xs` / `**kw` は普通の呼び出しと同じに写す（`super().__init__(*args, **kwargs)`・タスク 6-10）。
                     // ⚠ 以前は `**kw` を「未対応」の誤りにしていた（普通の呼び出しは `f(**d)` を受けるようになった後も）。
                     for arg in &c.args {
@@ -481,10 +516,15 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     });
                 }
             }
-            // `super()` を「メソッドを呼ぶ」以外の形で使うのは未対応（明示エラー）。
+            // `super()` / `super(C, x)` を「メソッドを呼ぶ」以外の形で使うのは未対応（明示エラー）。
             if is_zero_arg_super(expr) {
                 return Err(format!(
                     "{filename}: bare `super()` is only supported as `super().method(...)`"
+                ));
+            }
+            if let Some(SuperForm::Two { class, .. }) = super_form(expr) {
+                return Err(format!(
+                    "{filename}: bare `super({class}, ...)` is only supported as `super({class}, self).method(...)`"
                 ));
             }
             let func = match &*c.func {

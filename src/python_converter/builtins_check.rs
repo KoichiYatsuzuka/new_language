@@ -193,8 +193,12 @@ impl Fold<TextRange> for BuiltinRefFinder {
                     self.bound.insert(n.id.to_string());
                 }
             },
-            // `super().m(..)` の `super`（変換器が `<第 1 基底>.m(self, ..)` へ書き換える）。
-            py::Expr::Call(c) if c.args.is_empty() && c.keywords.is_empty() => {
+            // `super().m(..)` / `super(C, x).m(..)` の `super`（変換器が `<第 1 基底>.m(self, ..)` へ書き換える・
+            // 2 引数の形はタスク 6-2。`expressions.rs` の `super_form` と同じ形）。
+            py::Expr::Call(c)
+                if c.keywords.is_empty()
+                    && (c.args.is_empty() || matches!(c.args.as_slice(), [py::Expr::Name(_), _])) =>
+            {
                 if matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super") {
                     self.skip_name(&c.func);
                 }

@@ -216,6 +216,8 @@ $knownDiff = @{
     'lazy_iterators'                 ='Rust: enumerate / zip が遅延のジェネレーター・next(it, default)・EndOfIteration を except StopIteration で捕まえる（タスク 3-5 で新設・CPython と同じ出力）。py: enumerate が元を先に全部取り出す'
     'py_object'                      ='Rust: 組み込みのクラス object と番兵（タスク 6-10 で新設・po.run() は CPython と同じ出力）。py: `===` の後の f-string を読めず ParseError'
     'py_object_error'                ='Rust: Arrow のソースの object() は静的な誤り（タスク 6-10 で新設）。py: object が無く実行時の NameError'
+    'py_super_two_args'              ='Rust: super(C, self) の 2 引数の形（タスク 6-2 で新設・st.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
+    'py_super_two_args_error'        ='Rust: 定義中でないクラスを super に渡す形は変換の誤り（タスク 6-2 で新設）。py: 変換時エラーを出さず素通しする'
     'dict_methods'                   ='Rust: dict の get / pop / setdefault / update / popitem / clear / copy（タスク 3-6 で新設）。py: f-string の書式を読めず ParseError'
     'dict_methods_error'             ='Rust: let の辞書に update は静的な誤り（タスク 3-6 で新設）。py: 静的検査をせず書き換えて出力する'
     'py_dict_methods'                ='Rust: Python の dict のメソッド（タスク 3-6 で新設・dm.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
