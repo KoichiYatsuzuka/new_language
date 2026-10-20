@@ -39,3 +39,8 @@ impl Drop for SuperBaseGuard {
 pub(crate) fn current_super_base() -> Option<String> {
     SUPER_BASE.with(|s| s.borrow().last().cloned().flatten())
 }
+
+/// クラスの変換中か（基底が無いクラスも含む）。基底が無いクラスの `super()` は `object` を指す（タスク 6-10）。
+pub(crate) fn inside_class() -> bool {
+    SUPER_BASE.with(|s| !s.borrow().is_empty())
+}

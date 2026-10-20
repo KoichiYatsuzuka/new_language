@@ -297,6 +297,12 @@ pub enum TypeErrorKind {
         function: String,
         reason: String,
     },
+    /// Arrow のソースで `object()` を呼んだ（python_builtins_plan.md のタスク 6-10）。
+    ///
+    /// ⚠ `object()` は Python のソースを読み込んだとき（`import[py]`）だけ使える（決定）。変換器は Python の
+    ///   `object()` を `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出しだけ。型としての `object`
+    ///   （`x is object`・注釈）は使える。実行時もクラスの値を呼ぶと誤り（`instantiate_evaled`）。
+    ObjectCallInArrow,
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -964,6 +970,10 @@ impl StaticTypeError {
             TypeErrorKind::FfiUnsupported { what, function, reason } => format!(
                 "{what} {} cannot be used from Arrow yet: {reason}",
                 hl_q(function)
+            ),
+            TypeErrorKind::ObjectCallInArrow => format!(
+                "{} cannot be called from Arrow code — it is available only in Python modules ({}); {} can still be used as a type ({})",
+                hl_q("object()"), hl_q("import[py]"), hl_q("object"), hl_q("x is object")
             ),
             TypeErrorKind::UnexpandedMemberDecorator { type_name, decorator } => format!(
                 "decorator {} on a member of {} was not expanded (the compile-time expander does not run in the REPL or the debugger, and a module that uses metafunctions must be imported at the top level)",

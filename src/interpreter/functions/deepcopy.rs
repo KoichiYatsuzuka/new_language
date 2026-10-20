@@ -21,6 +21,7 @@ impl Interpreter {
     /// - その他: プリミティブ・不変型はそのまま返す（Rust の clone でコピー済み）
     pub(crate) fn deep_copy_value(val: Value) -> Value {
         match val {
+            Value::Instance(inst_rc) if Self::shares_instance(&inst_rc) => Value::Instance(inst_rc),
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let new_boxed = inst
@@ -84,6 +85,7 @@ impl Interpreter {
     /// - その他: `deep_copy_value` と同様にそのまま返す
     pub(crate) fn deep_copy_unfrozen(val: Value) -> Value {
         match val {
+            Value::Instance(inst_rc) if Self::shares_instance(&inst_rc) => Value::Instance(inst_rc),
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let class = inst.class.clone();
@@ -144,6 +146,16 @@ impl Interpreter {
                 )))
             }
             other => other,
+        }
+    }
+
+    /// 写さずに共有するインスタンスか（`object()`・タスク 6-10）。フィールドを持たないので、共有しても同一性のほかに
+    /// 違いは見えない。写すと別の物になり、番兵として働かない（フィールドに入れた `object()` が `is` で偽になる）。
+    /// ⚠ スレッドへ送る複製（`Value::deep_clone`）は `Rc` を共有できないので、ここを通らず作り直す。
+    fn shares_instance(inst: &RefCell<InstanceData>) -> bool {
+        match inst.borrow().class.builtin {
+            crate::interpreter::BuiltinClass::Ordinary => false,
+            crate::interpreter::BuiltinClass::Object => true,
         }
     }
 }

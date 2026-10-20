@@ -30,6 +30,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "format",
     // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
     "__py_with_exit",
+    // 変換器が Python の `object()` / 基底が `object` のクラスの `super().__init__(..)` にする（タスク 6-10）
+    "__py_object", "__py_object_init",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -98,6 +100,10 @@ impl Interpreter {
     /// ⚠ 束縛した名前が勝つ（ここへ来るのは束縛が無いときだけ）ので、`let repr = f` の利用者の値を隠さない。
     /// ⚠ `property` / `cached_property` は Arrow で書いたクラス（タスク 6-1 / 6-5）。初めて引いたときに組み立てるので `&mut self`。
     pub(crate) fn builtin_value(&mut self, name: &str) -> Option<Value> {
+        // 組み込みのクラス `object`（タスク 6-10）。⚠ 呼んでも作れない（作れるのは Python の `object()` だけ）。
+        if name == "object" {
+            return Some(Value::Class(self.object_class()));
+        }
         if super::py_builtins::PY_BUILTIN_CLASS_NAMES.contains(&name) {
             return match self.py_builtin_class(name) {
                 Ok(class) => Some(class),
@@ -218,6 +224,9 @@ impl Interpreter {
                 [_] => Ok(Value::None),
                 _ => Err(format!("TypeError: __py_with_exit() takes exactly one argument ({} given)", args.len())),
             }),
+            // Python の `object()` / 基底が `object` のクラスの `super().__init__(..)`（変換器が置く・タスク 6-10）。
+            "__py_object" => Some(self.py_object(&args)),
+            "__py_object_init" => Some(self.py_object_init(&args)),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),
@@ -681,6 +690,15 @@ impl Interpreter {
         match name {
             // `print(.., sep=.., end=..)`（タスク 5-1）。`eval_builtin_ident_call` の `print` アームも同じ関数へ回す。
             "print" => Some(self.py_print(args)),
+            // `super().__init__(*args, **kwargs)` が `object` に届いた形（タスク 6-10）。展開してから数える
+            // （空の `**kwargs` は通す・CPython と同じ）。キーワード引数も「余分な引数」。
+            "__py_object_init" => {
+                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
+                Some(self.expand_spread_args(evaled).and_then(|all| {
+                    let values: Vec<Value> = all.into_iter().map(|(_, v, _)| v).collect();
+                    self.py_object_init(&values)
+                }))
+            }
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {
                 let mut positional: Vec<Value> = Vec::new();

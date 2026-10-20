@@ -410,31 +410,57 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             //    `FnValue::is_python` 限定で許可している。
             if let py::Expr::Attribute(attr) = &*c.func {
                 if is_zero_arg_super(&attr.value) {
-                    let base = current_super_base().ok_or_else(|| {
-                        format!(
-                            "{filename}: `super()` is only supported inside a method of a class that has a base class"
-                        )
-                    })?;
                     let mut args: Vec<CallArg> = vec![CallArg::Positional(Expr::Ident {
                         name: "self".to_string(),
                         node_id: 0,
                         res: Resolution::Unresolved,
                     })];
+                    // `*xs` / `**kw` は普通の呼び出しと同じに写す（`super().__init__(*args, **kwargs)`・タスク 6-10）。
+                    // ⚠ 以前は `**kw` を「未対応」の誤りにしていた（普通の呼び出しは `f(**d)` を受けるようになった後も）。
                     for arg in &c.args {
-                        args.push(CallArg::Positional(convert_expr(arg, filename)?));
-                    }
-                    for kw in &c.keywords {
-                        let name = kw.arg.as_ref().map(|a| a.to_string()).unwrap_or_default();
-                        if name.is_empty() {
-                            return Err(format!(
-                                "{filename}: **kwargs unpacking in call is not supported"
-                            ));
-                        }
-                        args.push(CallArg::Keyword {
-                            name,
-                            value: convert_expr(&kw.value, filename)?,
+                        args.push(match arg {
+                            py::Expr::Starred(st) => CallArg::Spread(convert_expr(&st.value, filename)?),
+                            other => CallArg::Positional(convert_expr(other, filename)?),
                         });
                     }
+                    for kw in &c.keywords {
+                        let value = convert_expr(&kw.value, filename)?;
+                        args.push(match kw.arg.as_ref() {
+                            Some(name) => CallArg::Keyword { name: name.to_string(), value },
+                            None => CallArg::KwSpread(value),
+                        });
+                    }
+                    let base = match current_super_base() {
+                        Some(b) if b != "object" => b,
+                        // 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super()` は `object` を指す
+                        // （タスク 6-10）。`object.__init__` は `__py_object_init(self, ..)`（余分な引数は CPython と
+                        // 同じ `TypeError`）。ほかの `object` のメソッド（`__setattr__` など）は対象外。
+                        _ if inside_class() && attr.attr.as_str() == "__init__" => {
+                            return Ok(Expr::Call {
+                                func: Box::new(Expr::Ident {
+                                    name: "__py_object_init".to_string(),
+                                    node_id: 0,
+                                    res: Resolution::Unresolved,
+                                }),
+                                args,
+                                span: crate::token::Span::unknown(),
+                                cache: Default::default(),
+                                node_id: 0,
+                            });
+                        }
+                        _ if inside_class() => {
+                            return Err(format!(
+                                "{filename}: `super().{}(...)` is only supported for `__init__` in a class whose base is \
+                                 `object` (or that has no base class)",
+                                attr.attr
+                            ))
+                        }
+                        _ => {
+                            return Err(format!(
+                                "{filename}: `super()` is only supported inside a method of a class"
+                            ))
+                        }
+                    };
                     let base_expr = Expr::Ident {
                         name: base,
                         node_id: 0,
@@ -461,7 +487,17 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     "{filename}: bare `super()` is only supported as `super().method(...)`"
                 ));
             }
-            let func = convert_expr(&c.func, filename)?;
+            let func = match &*c.func {
+                // `object()` は Arrow のソースからは呼べない（python_builtins_plan.md のタスク 6-10 の決定）ので、
+                // Python のソースの `object()` は内部の名前 `__py_object()` にする。⚠ モジュールが `object` を
+                // 束縛し直していても書き換える（組み込みの名前を隠す書き方は対象外）。
+                py::Expr::Name(n) if n.id.as_str() == "object" => Expr::Ident {
+                    name: "__py_object".to_string(),
+                    node_id: 0,
+                    res: Resolution::Unresolved,
+                },
+                other => convert_expr(other, filename)?,
+            };
             let mut args: Vec<CallArg> = Vec::new();
             for arg in &c.args {
                 // ★ `f(*xs)` — Arrow 側にも同じ構文を入れたので 1 対 1 で写せる。

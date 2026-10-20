@@ -31,6 +31,17 @@ impl Interpreter {
         class: Rc<ClassValue>,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
+        match class.builtin {
+            crate::interpreter::BuiltinClass::Ordinary => {}
+            // `object()` は Python のソースからだけ作れる（タスク 6-10 の決定）。変換器は Python の `object()` を
+            // `__py_object()` にするので、クラスの値を呼ぶのは Arrow のコード（`let c = object; c()`）か、
+            // Python で型を値として呼ぶ形（`type(o)()`・対象外）。
+            crate::interpreter::BuiltinClass::Object => {
+                return Err("TypeError: object() cannot be called from Arrow code; it is available only in Python \
+                            modules (import[py])"
+                    .to_string())
+            }
+        }
         let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {
             if let Some(&idx) = class.field_index.get(name.as_str()) {

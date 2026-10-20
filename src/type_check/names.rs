@@ -64,6 +64,10 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "format",
     // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
     "__py_with_exit",
+    // 組み込みのクラス `object`（すべての値の基底・タスク 6-10）。⚠ Arrow のソースからは呼べない（`ObjectCallInArrow`）。
+    // 呼んで作るのは Python の `object()` だけで、変換器が `__py_object()` にする。基底が `object` のクラスの
+    // `super().__init__(..)` は `__py_object_init(self, ..)`。
+    "object", "__py_object", "__py_object_init",
     // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
     "property", "cached_property",
 ];

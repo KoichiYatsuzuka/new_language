@@ -1,0 +1,8 @@
+# py_object_error.ar — Arrow のソースで `object()` を呼ぶ（python_builtins_plan.md のタスク 6-10）
+#
+# `object()` は Python のソースを読み込んだとき（`import[py]`）だけ使える。番兵が欲しければ Python の
+# モジュールで作って読み込む（py_object.ar）。型としての `object`（`x is object`・注釈）は使える。
+# 期待: 静的型エラー（`object()` cannot be called from Arrow code）
+
+let sentinel = object()
+print(sentinel)

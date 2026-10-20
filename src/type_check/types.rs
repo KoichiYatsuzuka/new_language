@@ -684,6 +684,10 @@ impl InferredType {
             "generator" => Some(Self::NamedInstance("generator".to_string())),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
+            // `object`（すべての値の基底・タスク 6-10）は静的には `Any` と同じ: 何でも受け、使う前に型を確かめる
+            // （CPython の型検査でも `object` の値には `object` のメソッドしか呼べない）。実行時の検査は
+            // `primitive_ann_matches` の `"object"`（全部の値で真）。
+            "object" => Some(Self::Any),
             // Unknown identifier that looks like a class name → treat as instance type.
             // This allows `a: Vec2D` parameters to have method calls type-checked correctly.
             //

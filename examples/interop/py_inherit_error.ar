@@ -8,9 +8,10 @@
 #
 # 期待されるエラー（ParseError・変換時）:
 #
-#   ① 基底クラスの無いクラスでの `super()`（本ファイルが踏む形）
-#      `super()` is only supported inside a method of a class that has a base class
-#      ⇒ 脱糖先の基底名が決められない。Python でも `object` の実装しか得られない形。
+#   ① 基底クラスの無いクラスでの `super().f()`（本ファイルが踏む形）
+#      `super().f(...)` is only supported for `__init__` in a class whose base is `object` (or that has no base class)
+#      ⇒ 基底が無いクラスの `super()` は `object` を指す。`object` のメソッドのうち `super().__init__()` だけは
+#        受ける（python_builtins_plan.md のタスク 6-10・例題 py_object.ar）。ほかは対象外。
 #
 #   ② `super()` をメソッド呼び出し以外に使う（値として束縛する等）
 #      bare `super()` is only supported as `super().method(...)`

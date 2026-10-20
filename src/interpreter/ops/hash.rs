@@ -194,6 +194,15 @@ impl Interpreter {
             // ⚠ 構造ハッシュなので **`deep_clone` がハッシュを保存する**。これが
             //   「複製経路は保存済みハッシュをそのままコピーしてよい」根拠になる（B1-c）。
             Value::Instance(rc) => {
+                // `object()` はアドレスでハッシュする（タスク 6-10）。`values_eq` が同一性で比べる（写さずに共有するので
+                // 同じ物はいつも同じ `Rc`）のと対。⚠ スレッドへ送る複製は別の物になる（`dict_copy_with` が取り直す）。
+                match rc.borrow().class.builtin {
+                    crate::interpreter::BuiltinClass::Ordinary => {}
+                    crate::interpreter::BuiltinClass::Object => {
+                        ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
+                        return Ok(());
+                    }
+                }
                 // ⚠⚠ `__hash__` の呼び出しはインタプリタを回すので、**借用を解いてから**渡す。
                 //    握ったままだと、ハンドラが自分自身を読んだ瞬間に `RefCell` が壊れる。
                 let has_dunder = rc.borrow().class.methods.contains_key("__hash__");

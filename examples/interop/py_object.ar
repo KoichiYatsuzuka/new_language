@@ -1,0 +1,57 @@
+# py_object.ar — 組み込みのクラス `object` と番兵（python_builtins_plan.md のタスク 6-10）
+#
+# CPython の `object()` は同一性そのものが意味の値（番兵: `MISSING = object()`）。Arrow ではこう扱う:
+#   - `object()` のインスタンスはフィールドを持たず、**写さずに共有する**（フィールド・辞書・リストを通っても同じ物）
+#   - 同一性はアドレスで決める（`is` / `==` / `hash` / `id`）。別々の `object()` は等しくない
+#   - すべての値は `object` の派生（`isinstance(x, object)` / `x is object` は何でも真）。型の判定だけの特例
+#   - 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super().__init__()` は `object.__init__`
+#   - ⚠ `object()` は **Python のソースからだけ**呼べる（変換器が `__py_object()` にする）。Arrow で書いた
+#     `object()` は静的な誤り（py_object_error.ar）、クラスの値を呼ぶのは実行時の誤り
+#
+# po.run() は CPython と同じ出力:
+#   True True False True
+#   True True True False
+#   True False True False
+#   2 missing other False True
+#   object True True False
+#   True True
+#   True True True True
+#   True True <class 'object'> <class 'type'>
+#   True True 1
+#   TypeError: object.__init__() takes exactly one argument (the instance to initialize)
+#   AttributeError: 'object' object has no attribute 'x'
+#   TypeError: object() takes no arguments
+#
+# ⚠ 以前は `object` が未対応の組み込み（モジュールごと変換の誤り）で、番兵の代わりに書いたフィールドの無い
+#   クラスは、フィールドや辞書を通ると `is` が偽になり、別々の値が `==` で真になった。
+
+import[py] test_modules.py_object as po
+
+po.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow の値に入れても同じ物（写さない）
+let m = po.MISSING
+let ms = [m, po.OTHER]
+check(ms[0] === po.MISSING, "list keeps identity")
+check(not (ms[1] === po.MISSING), "distinct objects")
+check(ms[0] == m and ms[1] != m, "== is identity")
+check(po.Config(m).has_timeout() == False, "passed back to Python")
+
+# すべての値は object の派生
+let n = 5
+check(isinstance(n, object) and isinstance("s", object) and isinstance(m, object), "isinstance")
+check(n is object, "is object")
+
+# クラスの値は呼べない（作れるのは Python の object() だけ）
+let cls = type(m)
+mut msg = ""
+try:
+    cls()
+except TypeError as e:
+    msg = str(e)
+check(msg.startswith("object() cannot be called from Arrow code"), "calling the class")
+print("arrow side ok")

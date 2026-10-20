@@ -575,11 +575,7 @@ impl Interpreter {
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
                 let Some(&idx) = inst_class.field_index.get(attr) else {
-                    return Err(format!(
-                        "AttributeError: '{}' has no field '{attr}'; \
-                         all fields must be declared in the class body",
-                        inst_class.name
-                    ));
+                    return Err(Self::no_field_to_assign(&inst_class, attr));
                 };
                 let mut inst = inst_rc.borrow_mut();
                 if inst.field_mutable(idx) == Some(false) {
@@ -672,11 +668,7 @@ impl Interpreter {
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
                 let Some(&idx) = inst_class.field_index.get(attr) else {
-                    return Err(format!(
-                        "AttributeError: '{}' has no field '{attr}'; \
-                         all fields must be declared in the class body",
-                        inst_class.name
-                    ));
+                    return Err(Self::no_field_to_assign(&inst_class, attr));
                 };
                 let mut inst = inst_rc.borrow_mut();
                 if inst.field_mutable(idx) == Some(false) {
@@ -838,6 +830,19 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
+    }
+
+    /// 宣言していないフィールドへの代入の誤り。`object()` は CPython と同じ文言（属性を持てない・タスク 6-10）。
+    fn no_field_to_assign(class: &crate::interpreter::ClassValue, attr: &str) -> String {
+        match class.builtin {
+            crate::interpreter::BuiltinClass::Object => {
+                format!("AttributeError: 'object' object has no attribute '{attr}'")
+            }
+            crate::interpreter::BuiltinClass::Ordinary => format!(
+                "AttributeError: '{}' has no field '{attr}'; all fields must be declared in the class body",
+                class.name
+            ),
+        }
     }
 
 }

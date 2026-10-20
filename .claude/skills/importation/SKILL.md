@@ -234,6 +234,11 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   (`is_runtime_builtin_name` is false — the list shrinks automatically as builtins are added). Names
   bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
   a module with `from m import *` is not checked. Structural conversion errors are reported first.
+- `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
+  `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
+  `super().__init__(..)` in a class without a base (or with base `object`) becomes
+  `__py_object_init(self, ..)` (CPython's `TypeError` on extra arguments); any other `super().m()` there is a
+  conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call.
 - `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
   (same body); a nested tuple is a conversion error (4-3 / 4-4).
 - ⚠ Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method with a

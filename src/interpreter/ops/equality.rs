@@ -94,6 +94,14 @@ impl Interpreter {
                 }
                 let a_borrow = a.borrow();
                 let b_borrow = b.borrow();
+                // `object()` は同一性で比べる（タスク 6-10・CPython の `object.__eq__` は同じ物だけを等しいとする）。
+                // 同じ物なら上の `ptr_eq` で済んでいるので、どちらかが `object()` なら等しくない。
+                // ⚠ `hash_into` の同じ分岐（アドレスでハッシュする）と対になっている。
+                use crate::interpreter::BuiltinClass;
+                match (a_borrow.class.builtin, b_borrow.class.builtin) {
+                    (BuiltinClass::Ordinary, BuiltinClass::Ordinary) => {}
+                    (BuiltinClass::Object, _) | (_, BuiltinClass::Object) => return Ok(false),
+                }
                 if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
                         inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))

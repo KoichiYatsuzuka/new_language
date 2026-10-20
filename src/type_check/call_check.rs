@@ -340,6 +340,12 @@ impl TypeChecker {
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
             if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+                // `object()` は Python のソースからだけ呼べる（タスク 6-10 の決定）。変換器は Python の `object()` を
+                // `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出し。
+                if name == "object" {
+                    self.report_error(StaticTypeError { kind: TypeErrorKind::ObjectCallInArrow, span: None });
+                    return InferredType::Unresolved;
+                }
                 // 引数は宣言（`builtins.ars`）の仮引数で検査する（`check_builtin_call`）。
                 self.check_builtin_call(name, args, &arg_data);
                 if let Some(ret) = self.builtin_fn_return(name, &arg_data) {

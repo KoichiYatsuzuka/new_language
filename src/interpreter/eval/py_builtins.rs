@@ -22,6 +22,8 @@ impl Interpreter {
                 }
                 Ok(false)
             }
+            // すべての値は `object` の派生（タスク 6-10・`int` / `None` / 関数なども）。
+            Value::Class(c) if Self::is_object_class(c) => Ok(true),
             Value::Class(c) => Ok(match x {
                 Value::Instance(inst) => Self::class_is_subclass(&inst.borrow().class, c),
                 _ => false,
@@ -131,6 +133,8 @@ impl Interpreter {
                 }
                 Ok(false)
             }
+            // すべてのクラス・組み込みの型は `object` の派生（タスク 6-10）。
+            Value::Class(base) if Self::is_object_class(base) => Ok(true),
             Value::Class(base) => Ok(matches!(c, Value::Class(cc) if Self::class_is_subclass(cc, base))),
             Value::Type(name) if !super::is_builtin_function_name(name) => {
                 Ok(matches!(c, Value::Type(cn) if cn == name || (cn == "bool" && name == "int")))
@@ -906,6 +910,14 @@ impl Interpreter {
         }
     }
 
+    /// 組み込みのクラス `object` か（タスク 6-10）。
+    fn is_object_class(c: &ClassValue) -> bool {
+        match c.builtin {
+            crate::interpreter::BuiltinClass::Object => true,
+            crate::interpreter::BuiltinClass::Ordinary => false,
+        }
+    }
+
     pub(crate) fn class_is_subclass(c: &ClassValue, base: &ClassValue) -> bool {
         if c.class_id == base.class_id {
             return true;
@@ -1342,6 +1354,45 @@ impl Interpreter {
 }
 
 impl Interpreter {
+    /// 組み込みのクラス `object`（python_builtins_plan.md のタスク 6-10）。初めて引いたときに作る。
+    ///
+    /// - フィールドもメソッドも持たない。インスタンスは写さずに共有し、同一性で比べる（[`crate::interpreter::BuiltinClass`]）。
+    /// - すべての値が `object` の派生（`isinstance(x, object)` は真）なのは型の判定の特例（`ClassValue::is_a` /
+    ///   `primitive_ann_matches` / [`Self::py_isinstance`]）。このクラスの振る舞いは引き継がない。
+    /// - ⚠ クラスの値を呼んでも作れない（`instantiate_evaled`）。作れるのは Python のソースの `object()` だけ
+    ///   （変換器が `__py_object()` にする・[`Self::py_object`]）。
+    pub(crate) fn object_class(&mut self) -> std::rc::Rc<ClassValue> {
+        self.object_class
+            .get_or_insert_with(|| {
+                std::rc::Rc::new(ClassValue {
+                    builtin: crate::interpreter::BuiltinClass::Object,
+                    ..ClassValue::synthetic("object", crate::interpreter::value::alloc_class_id())
+                })
+            })
+            .clone()
+    }
+
+    /// Python の `object()`（変換器が `__py_object()` にする・タスク 6-10）。文言は CPython と同じ。
+    pub(crate) fn py_object(&mut self, args: &[Value]) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("TypeError: object() takes no arguments".to_string());
+        }
+        let inst = crate::interpreter::InstanceData::new_empty(self.object_class(), 0);
+        Ok(Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst))))
+    }
+
+    /// 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super().__init__(..)`（変換器が
+    /// `__py_object_init(self, ..)` にする・タスク 6-10）。CPython の `object.__init__` と同じく、`self` のほかに
+    /// 引数があれば `TypeError`、無ければ何もしない。
+    /// ⚠ CPython は `__new__` を上書きしたクラスでは余分な引数を許すが、Python のクラスの `__new__` は対象外。
+    pub(crate) fn py_object_init(&self, args: &[Value]) -> Result<Value, String> {
+        match args.len() {
+            0 => Err("TypeError: descriptor '__init__' of 'object' object needs an argument".to_string()),
+            1 => Ok(Value::None),
+            _ => Err("TypeError: object.__init__() takes exactly one argument (the instance to initialize)".to_string()),
+        }
+    }
+
     /// `bytes()` / `bytes(n)` / `bytes(iterable)` / `bytes(s, encoding[, errors])` / `bytes(b)`
     /// （python_builtins_plan.md のタスク 3-1）。文言は CPython 3.12 と同じ。
     pub(crate) fn py_bytes_ctor(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {

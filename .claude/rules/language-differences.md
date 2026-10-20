@@ -86,6 +86,11 @@
   - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
     `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
     `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
+- **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
+  static error (calling the class value is a runtime error). `object` itself is still the base of every value
+  (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no
+  fields, is never copied on store (a sentinel stays the same object through fields, dicts and lists), and compares
+  and hashes by identity.
 - **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
   Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is an
   error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's

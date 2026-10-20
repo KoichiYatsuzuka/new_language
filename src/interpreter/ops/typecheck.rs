@@ -107,6 +107,8 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
     let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
     let r = match ann {
         "Any" => true,
+        // すべての値は `object` の派生（タスク 6-10・CPython と同じ）。`x is object` / 注釈の `object` は何でも受ける。
+        "object" => true,
         "None" => matches!(val, Value::None),
         "Undefined" => matches!(val, Value::Undefined),
         // ⚠ 整数族（上の doc）。

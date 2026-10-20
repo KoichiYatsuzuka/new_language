@@ -406,6 +406,23 @@ impl FieldCheck {
     }
 }
 
+/// 組み込みのクラスのうち、インスタンスを**値ではなく物として**扱うもの（python_builtins_plan.md のタスク 6-10）。
+///
+/// 普通のクラスのインスタンスは Arrow の値の規則に従う: 格納のたびに写し（`deep_copy_value`）、`__eq__` が無ければ
+/// 中身で比べる。CPython の `object()` は**同一性そのもの**が意味（番兵）なので、この規則に乗せると働かない
+/// （フィールドに入れると `is` が偽になる・別々の `object()` が `==` で真になる・辞書のキーにすると 1 つに潰れる）。
+/// ⇒ フィールドを持たず、写さずに共有し、同一性で比べる。フィールドが無いので、共有しても同一性のほかに違いは見えない。
+///
+/// ⚠ 消費する側（写す・比べる・ハッシュ・作る）は**網羅の `match`** で受けること（種類を足したら止まるように）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinClass {
+    /// 普通のクラス（Arrow / Python で書いたクラス・組み込みの例外など）。
+    Ordinary,
+    /// `object`。インスタンスは `object()`（Python のソースからだけ作れる・変換器が `__py_object()` にする）。
+    /// 同一性はアドレス（`is` / `==` / `hash` / `id`）。⚠ スレッドへ送る複製（`deep_clone`）では別の物になる。
+    Object,
+}
+
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
 ///
 /// - `name`: クラス名（`new_type` では派生名に上書きされる）
@@ -515,6 +532,8 @@ pub struct ClassValue {
     /// ⚠ 等値（`values_eq_at`）とハッシュ（`hash_into`）は**同じ判定**を使うこと。
     ///   ずれると「入れたのに引けない辞書」になる。
     pub enum_of: Option<String>,
+    /// インスタンスを物として扱う組み込みのクラスか（[`BuiltinClass`]・タスク 6-10）。普通のクラスは `Ordinary`。
+    pub builtin: BuiltinClass,
 }
 
 
@@ -530,8 +549,10 @@ impl ClassValue {
     /// ⚠ 組み込みの例外は CPython の階層の祖先を `bases` に持つ（タスク 4-1・`names::BUILTIN_EXCEPTIONS`）。
     ///   `BaseException` を祖先に持つクラス（組み込みと、それを継承した Python のクラス）は `bases` だけで
     ///   答える。`GeneratorExit` は `BaseException` の直下なので `except Exception` では捕まらない（CPython と同じ）。
+    /// ⚠ **すべてのクラスは `object` の派生**（タスク 6-10・CPython と同じ。型の判定だけの特例で、`object` の振る舞いは
+    ///   引き継がない）。値の側の `x is object` は `primitive_ann_matches` が全部の値で真にする。
     pub(crate) fn is_a(&self, type_name: &str) -> bool {
-        if self.name == type_name || self.bases.iter().any(|b| b == type_name) {
+        if type_name == "object" || self.name == type_name || self.bases.iter().any(|b| b == type_name) {
             return true;
         }
         if self.name == "BaseException" || self.bases.iter().any(|b| b == "BaseException") {
@@ -587,6 +608,7 @@ impl ClassValue {
             instance_name: None,
             module_name: None,
             enum_of: None,
+            builtin: BuiltinClass::Ordinary,
         }
     }
 
@@ -686,6 +708,7 @@ impl ClassValue {
             // ⚠ `Rc` をスレッドへ持ち出さない（#15）。
             module_name: self.module_name.as_deref().map(Rc::from),
             enum_of: self.enum_of.clone(),
+            builtin: self.builtin,
         }
     }
 }

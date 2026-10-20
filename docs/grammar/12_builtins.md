@@ -165,6 +165,7 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 | `property(fget=None, fset=None, fdel=None, doc=None)` | クラス。`getter` / `setter` / `deleter` は写した property を返す。クラス側に置くとディスクリプタとして働く（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。Python の `@property` / `@x.setter` は変換器がこれで組み立てる（[09_imports.md](09_imports.md)）。⚠ Arrow で書いたクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）で、名前を初めて引いたときに組み立てる |
 | `cached_property(func)` | クラス（`functools.cached_property`・タスク 6-5）。Python の `@cached_property` は変換器がこれで組み立てる |
 | `format(value, format_spec='')` | 書式指定の小言語（下の節）。`str` を返す |
+| `object` | クラス（すべての値の基底・タスク 6-10）。`isinstance(x, object)` / `x is object` は何でも真（型の判定だけの特例）。注釈の `object` は静的には `Any` と同じ。⚠ **`object()` は Python のモジュール（`import[py]`）の中でだけ呼べる**（Arrow で書くと静的な誤り・クラスの値を呼ぶのは実行時の誤り）。作った値はフィールドを持たず、写さずに共有し、同一性で比べる（`is` / `==` / `hash` / `id`・表示は `<object object at 0x..>`）。番兵として使う （`examples/interop/py_object.ar`） |
 
 ### `format` と書式指定の小言語
 
@@ -207,17 +208,16 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-13 の時点で次の 37 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`EOFError` は 4-5、`frozenset` /
-`bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1 で足した）:
+CPython 3.12 の組み込み 153 名のうち、2026-10-20 の時点で次の 36 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`EOFError` は 4-5、`frozenset` /
+`bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1、`object` は 6-10 で足した）:
 
 `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
-`bytearray` `memoryview` `object` `staticmethod` `classmethod` `super`
+`bytearray` `memoryview` `staticmethod` `classmethod` `super`
 `NotImplemented` `Ellipsis` `BaseExceptionGroup` `ExceptionGroup` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。
 - **Python のモジュール**（`import[py]`）で参照すると、読み込む時点で変換の誤りになります。呼ばれない関数の中でも
   同様です（[09_imports.md](09_imports.md) の「Python モジュール」）。
-- ⚠ `staticmethod` / `classmethod` はデコレータとして、`object` はクラスの基底として、`super` は `super().m(..)` の形でなら
-  変換器が受けます。
+- ⚠ `staticmethod` / `classmethod` はデコレータとして、`super` は `super().m(..)` の形でなら変換器が受けます。

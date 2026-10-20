@@ -855,3 +855,33 @@ fn test_str_falls_back_to_repr_and_containers_use_repr() {
     assert_eq!(s("d"), "{'k': T(1)}");
     assert_eq!(s("e"), "s");
 }
+
+/// `object()` のインスタンスは写さずに共有し、同一性で比べる（python_builtins_plan.md のタスク 6-10）。
+/// ⚠ 等値（`values_eq`）とハッシュ（`default_hash`）が同じ規則であること（ずれると「入れたのに引けない辞書」）と、
+///   格納で写す関数（`deep_copy_value` / `deep_copy_unfrozen`）が同じ物を返すことを固定する。
+#[test]
+fn object_instances_are_shared_and_compared_by_identity() {
+    use crate::interpreter::{DictData, Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let a = interp.py_object(&[]).expect("object()");
+    let b = interp.py_object(&[]).expect("object()");
+    let same_rc = |x: &Value, y: &Value| matches!((x, y), (Value::Instance(p), Value::Instance(q)) if std::rc::Rc::ptr_eq(p, q));
+    // 写さない（フィールド・辞書・リストへの格納と `copy()` が通る関数）
+    assert!(same_rc(&Interpreter::deep_copy_value(a.clone()), &a));
+    assert!(same_rc(&Interpreter::deep_copy_unfrozen(a.clone()), &a));
+    // 同一性で比べる・ハッシュも同じ規則
+    assert!(Interpreter::values_eq_pure(&a, &a.clone()).unwrap());
+    assert!(!Interpreter::values_eq_pure(&a, &b).unwrap());
+    assert_eq!(Interpreter::default_hash(&a).unwrap(), Interpreter::default_hash(&a.clone()).unwrap());
+    // 別々の object() は辞書のキーとしても別
+    let mut d = DictData::new("Any".to_string(), "Any".to_string());
+    Interpreter::dict_set_pure(&mut d, a.clone(), Value::Int(1)).unwrap();
+    Interpreter::dict_set_pure(&mut d, b.clone(), Value::Int(2)).unwrap();
+    Interpreter::dict_set_pure(&mut d, a.clone(), Value::Int(3)).unwrap();
+    assert_eq!(d.len(), 2);
+    assert!(matches!(Interpreter::dict_get_pure(&d, &a), Ok(Some(Value::Int(3)))));
+    // すべての値は object の派生（型の判定だけ）
+    for v in [Value::Int(1), Value::None, Value::str("s"), a.clone()] {
+        assert_eq!(crate::interpreter::ops::typecheck::primitive_ann_matches("object", &v), Some(true));
+    }
+}

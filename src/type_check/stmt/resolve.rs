@@ -472,7 +472,8 @@ impl TypeChecker {
             "bytes" => InferredType::Bytes,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
-            "Any" => InferredType::Any,
+            // `object` は静的には `Any`（`InferredType::from_ann` と同じ・タスク 6-10）。
+            "Any" | "object" => InferredType::Any,
             _ => InferredType::Unresolved,
         }
     }
