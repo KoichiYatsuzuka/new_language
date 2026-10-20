@@ -60,6 +60,8 @@ $whitelist = @(
     '__dict__',
     # CPython の `object` のメソッド（Arrow の `object` には無い・対象外と書くために言及する・タスク 6-10）
     '__new__','__setattr__',
+    # CPython の二項演算子・比較の手順の関数（Objects/abstract.c / object.c・演算子メソッドの手順・タスク 6-12）
+    'binary_op1','do_richcompare',
     # CPython の書式指定の小言語の関数（formatter_unicode.c / string.Formatter・タスク 3-4）
     'format_float_internal','format_string_internal','parse_field','parse_internal_render_format_spec',
     # CPython の関数名（Objects/bytesobject.c）。bytes の表示の出どころ（タスク 3-1）。

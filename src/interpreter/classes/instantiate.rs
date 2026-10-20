@@ -41,10 +41,12 @@ impl Interpreter {
                             modules (import[py])"
                     .to_string())
             }
-            // 唯一の値のクラス（`type(...)()`・タスク 6-11）は CPython と同じくその値を返す。
-            kind @ crate::interpreter::BuiltinClass::Ellipsis => {
+            // 唯一の値のクラス（`type(...)()` / `type(NotImplemented)()`・タスク 6-11 / 6-12）は CPython と同じく
+            // その値を返す。
+            kind @ (crate::interpreter::BuiltinClass::Ellipsis | crate::interpreter::BuiltinClass::NotImplemented) => {
                 if !evaled.is_empty() {
-                    return Err("TypeError: EllipsisType takes no arguments".to_string());
+                    let shown = if kind == crate::interpreter::BuiltinClass::Ellipsis { "EllipsisType" } else { "NotImplementedType" };
+                    return Err(format!("TypeError: {shown} takes no arguments"));
                 }
                 return Ok(self.builtin_singleton(kind));
             }

@@ -1,0 +1,17 @@
+# reflected_operators_error.ar — 左も右も演算子メソッドで答えない比較（python_builtins_plan.md のタスク 6-12）
+#
+# `t < "hot"` は左の `__lt__` が `NotImplemented` を返し、右（str）には反対側の `__gt__` が無い。
+# 両方とも駄目な大小比較は CPython と同じく `TypeError`。
+# 期待: TypeError: '<' not supported between instances of 'Celsius' and 'str'
+
+class Celsius:
+    mut deg: float
+
+    fn __lt__(self, other: Any) -> Any:
+        if other is float:
+            return self.deg < other
+        return NotImplemented
+
+let t = Celsius(30.5)
+print(t < 40.0)
+print(t < "hot")

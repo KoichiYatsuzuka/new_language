@@ -82,9 +82,10 @@ impl Interpreter {
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
                 let inst = i.borrow();
-                // 唯一の値の名前（`Ellipsis`・タスク 6-11）。`str` も `repr` も同じ（CPython と同じ）。
+                // 唯一の値の名前（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）。`str` も `repr` も同じ（CPython と同じ）。
                 match inst.class.builtin {
                     crate::interpreter::BuiltinClass::Ellipsis => return "Ellipsis".to_string(),
+                    crate::interpreter::BuiltinClass::NotImplemented => return "NotImplemented".to_string(),
                     crate::interpreter::BuiltinClass::Ordinary | crate::interpreter::BuiltinClass::Object => {}
                 }
                 // 例外はメッセージ（Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが

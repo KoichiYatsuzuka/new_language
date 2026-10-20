@@ -545,6 +545,8 @@ pub struct Interpreter {
     pub(self) object_class: Option<Rc<ClassValue>>,
     /// 唯一の値 `Ellipsis`（タスク 6-11）。初めて引いたときに作る（`Interpreter::builtin_singleton`）。
     pub(self) ellipsis: Option<Value>,
+    /// 唯一の値 `NotImplemented`（タスク 6-12）。初めて引いたときに作る（`Interpreter::builtin_singleton`）。
+    pub(self) not_implemented: Option<Value>,
     /// **探索の起点を持たない** import 文（合成した文・テストが組んだ AST）の探索先。
     ///
     /// ⚠⚠ ファイルから読んだ import 文は**使わない**。各文が自分の起点を持つ
@@ -720,6 +722,7 @@ impl Interpreter {
             py_builtin_classes: None,
             object_class: None,
             ellipsis: None,
+            not_implemented: None,
             python_search_dirs: Vec::new(),
             submodules: HashMap::new(),
             static_cells: HashMap::new(),

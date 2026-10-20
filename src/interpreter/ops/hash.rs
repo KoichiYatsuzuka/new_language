@@ -202,10 +202,16 @@ impl Interpreter {
                         ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
                         return Ok(());
                     }
-                    // 唯一の値（`Ellipsis`・タスク 6-11）は種類でハッシュする（`values_eq` が種類で比べるのと対）。
+                    // 唯一の値（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）は種類でハッシュする
+                    // （`values_eq` が種類で比べるのと対）。
                     crate::interpreter::BuiltinClass::Ellipsis => {
                         h.write_u8(Tag::Instance as u8);
                         h.write(b"\0Ellipsis");
+                        return Ok(());
+                    }
+                    crate::interpreter::BuiltinClass::NotImplemented => {
+                        h.write_u8(Tag::Instance as u8);
+                        h.write(b"\0NotImplemented");
                         return Ok(());
                     }
                 }

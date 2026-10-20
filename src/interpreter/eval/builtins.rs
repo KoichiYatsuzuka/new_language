@@ -108,6 +108,10 @@ impl Interpreter {
         if name == "Ellipsis" {
             return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::Ellipsis));
         }
+        // 唯一の値 `NotImplemented`（演算子メソッドが「答えない」と返す・タスク 6-12）。
+        if name == "NotImplemented" {
+            return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::NotImplemented));
+        }
         if super::py_builtins::PY_BUILTIN_CLASS_NAMES.contains(&name) {
             return match self.py_builtin_class(name) {
                 Ok(class) => Some(class),

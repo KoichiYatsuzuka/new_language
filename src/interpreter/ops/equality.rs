@@ -96,13 +96,15 @@ impl Interpreter {
                 let b_borrow = b.borrow();
                 // `object()` は同一性で比べる（タスク 6-10・CPython の `object.__eq__` は同じ物だけを等しいとする）。
                 // 同じ物なら上の `ptr_eq` で済んでいるので、どちらかが `object()` なら等しくない。
-                // `Ellipsis` は唯一の値なので、同じ種類なら同じ物（スレッドへ送った複製も・タスク 6-11）。
+                // `Ellipsis` / `NotImplemented` は唯一の値なので、同じ種類なら同じ物（スレッドへ送った複製も・
+                // タスク 6-11 / 6-12）。
                 // ⚠ `hash_into` の同じ分岐（アドレス・種類でハッシュする）と対になっている。
                 use crate::interpreter::BuiltinClass as B;
                 match (a_borrow.class.builtin, b_borrow.class.builtin) {
                     (B::Ordinary, B::Ordinary) => {}
-                    (B::Ellipsis, B::Ellipsis) => return Ok(true),
-                    (B::Object | B::Ellipsis, _) | (_, B::Object | B::Ellipsis) => return Ok(false),
+                    (B::Ellipsis, B::Ellipsis) | (B::NotImplemented, B::NotImplemented) => return Ok(true),
+                    (B::Object | B::Ellipsis | B::NotImplemented, _)
+                    | (_, B::Object | B::Ellipsis | B::NotImplemented) => return Ok(false),
                 }
                 if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
@@ -459,23 +461,14 @@ impl Interpreter {
     /// `values_eq` を直接呼んでいたため、**`a == b` は真なのに `a in [b]` は偽**という
     /// 食い違いが起きていた（実測）。dict の検索は `DictKey`（ハッシュ）で引くので
     /// ここを通らず、`__eq__` は今も効かない — 解消は B1-c（辞書コンテナの差し替え）で。
+    ///
+    /// ⚠ `__eq__` は `==` 演算子と同じ手順で探す（左が `NotImplemented` を返せば右の `__eq__`、最後は同一性・
+    ///   タスク 6-12）。答えは真偽で読む（CPython の `PyObject_RichCompareBool`）。
     pub(crate) fn values_eq_dyn(&mut self, a: &Value, b: &Value) -> Result<bool, String> {
-        if let Value::Instance(inst) = a {
-            let has_eq = inst.borrow().class.methods.contains_key("__eq__");
-            if has_eq {
-                let r = self.eval_method_call_evaled(
-                    a.clone(),
-                    "__eq__",
-                    vec![(None, b.clone(), true)],
-                )?;
-                return match r {
-                    Value::Bool(x) => Ok(x),
-                    other => Err(format!(
-                        "TypeError: __eq__ should return bool, not '{}'",
-                        self.type_name(&other)
-                    )),
-                };
-            }
+        let has_eq = |v: &Value| matches!(v, Value::Instance(i) if i.borrow().class.methods.contains_key("__eq__"));
+        if has_eq(a) || has_eq(b) {
+            let r = self.apply_binop_dyn(&crate::ast::BinOp::Eq, a.clone(), b.clone())?;
+            return self.eval_truthy(&r);
         }
         self.values_eq_expr(a, b)
     }
@@ -547,13 +540,19 @@ impl Interpreter {
         })
     }
 
-    /// 唯一のインスタンスしか持たない組み込みのクラスか（`Ellipsis`・タスク 6-11）。
+    /// 唯一のインスタンスしか持たない組み込みのクラスか（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）。
     pub(crate) fn is_singleton_kind(kind: crate::interpreter::BuiltinClass) -> bool {
         use crate::interpreter::BuiltinClass as B;
         match kind {
-            B::Ellipsis => true,
+            B::Ellipsis | B::NotImplemented => true,
             B::Ordinary | B::Object => false,
         }
+    }
+
+    /// `NotImplemented`（演算子メソッドが「答えない」と返した値・タスク 6-12）か。
+    pub(crate) fn is_not_implemented(v: &Value) -> bool {
+        matches!(v, Value::Instance(i)
+            if i.borrow().class.builtin == crate::interpreter::BuiltinClass::NotImplemented)
     }
 }
 

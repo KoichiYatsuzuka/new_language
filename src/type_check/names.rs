@@ -70,6 +70,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "object", "__py_object", "__py_object_init",
     // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
     "Ellipsis",
+    // 唯一の値 `NotImplemented`（演算子メソッドが返すと反対側を試す・タスク 6-12）。
+    "NotImplemented",
     // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
     "property", "cached_property",
 ];

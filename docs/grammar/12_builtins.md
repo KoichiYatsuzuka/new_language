@@ -167,6 +167,7 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 | `format(value, format_spec='')` | 書式指定の小言語（下の節）。`str` を返す |
 | `object` | クラス（すべての値の基底・タスク 6-10）。`isinstance(x, object)` / `x is object` は何でも真（型の判定だけの特例）。注釈の `object` は静的には `Any` と同じ。⚠ **`object()` は Python のモジュール（`import[py]`）の中でだけ呼べる**（Arrow で書くと静的な誤り・クラスの値を呼ぶのは実行時の誤り）。作った値はフィールドを持たず、写さずに共有し、同一性で比べる（`is` / `==` / `hash` / `id`・表示は `<object object at 0x..>`）。番兵として使う （`examples/interop/py_object.ar`） |
 | `Ellipsis` | 唯一の値（クラス `ellipsis`・タスク 6-11）。Python の値の `...` はこれ。表示は `Ellipsis`。写さずに共有し、`is` / `==` / `hash` は種類で決まる（1 つしか無い）。`type(...)()` は `Ellipsis` を返す（CPython と同じ） |
+| `NotImplemented` | 唯一の値（クラス `NotImplementedType`・タスク 6-12）。演算子メソッドがこれを返すと、二項演算子は反対側のメソッドを試す（[06_classes_traits.md](06_classes_traits.md) の「演算子メソッドの手順」）。表示は `NotImplemented` |
 
 ### `format` と書式指定の小言語
 
@@ -209,13 +210,13 @@ print(len)                               # <built-in function len>
 
 ## 未対応の組み込み
 
-CPython 3.12 の組み込み 153 名のうち、2026-10-20 の時点で次の 35 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`EOFError` は 4-5、`frozenset` /
-`bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1、`object` は 6-10、`Ellipsis` は 6-11 で足した）:
+CPython 3.12 の組み込み 153 名のうち、2026-10-20 の時点で次の 34 名は Arrow にありません（`property` は 6-1、`format` は 3-4、`EOFError` は 4-5、`frozenset` /
+`bytes` / `UnicodeDecodeError` / `UnicodeEncodeError` は 3-1、`object` は 6-10、`Ellipsis` は 6-11、`NotImplemented` は 6-12 で足した）:
 
 `vars` `dir` `globals` `locals` `eval` `exec` `compile` `__import__` `__build_class__` `__debug__`
 `input` `exit` `quit` `help` `breakpoint` `copyright` `credits` `license` `delattr` `aiter` `anext`
 `bytearray` `memoryview` `staticmethod` `classmethod` `super`
-`NotImplemented` `BaseExceptionGroup` `ExceptionGroup` `ImportError`
+`BaseExceptionGroup` `ExceptionGroup` `ImportError`
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。

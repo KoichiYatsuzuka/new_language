@@ -725,13 +725,37 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 | `__next__(self)` | イテレータの次要素取得 |
 | `__getitem__(self, let key)` | `obj[key]` |
 | `__setitem__(mut self, let key, let val)` | `obj[key] = val` |
-| `__add__(self, let other)` | `obj + other` |
+| `__add__(self, let other)` | `obj + other`（`__sub__` / `__mul__` / `__truediv__` / `__floordiv__` / `__mod__` / `__pow__` / `__and__` / `__or__` / `__xor__` / `__lshift__` / `__rshift__` も同じ） |
+| `__radd__(self, let other)` | `other + obj` で左が答えないとき（反対側・下の「演算子メソッドの手順」。`__rsub__` など） |
+| `__eq__` / `__ne__` / `__lt__` / `__gt__` / `__le__` / `__ge__` | 比較。`!=` は `__ne__` が無ければ `__eq__` の反対 |
 | `__cast__[T](let other: T)` | 自動キャスト |
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
 | `__get__(self, mut obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節。クラスから読むと `obj` は `None`） |
 | `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
 | `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる（⚠ `del obj.x` の構文が無いので呼ばれるのは明示の呼び出しだけ） |
 | `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
+
+### 演算子メソッドの手順
+
+二項演算子は CPython と同じ手順で演算子メソッドを探します（python_builtins_plan.md のタスク 6-12）:
+
+1. 右が左の真の派生（Python のクラスの継承）で反対側のメソッドを持てば、右を先に試す
+2. 左の演算子メソッド（`a + b` なら `a.__add__(b)`）
+3. それが無いか `NotImplemented` を返したら、右の反対側のメソッド（`b.__radd__(a)`）。比較は向きを入れ替えた名前（`a < b` の右は `b.__gt__(a)`）、`==` / `!=` は同じ名前。左と同じクラスなら呼ばない。左が組み込みの値（`2 * v`）でも試す
+4. 全部駄目なら、`==` / `!=` は同一性、ほかは `TypeError`（`unsupported operand type(s) for +: 'Vec' and 'int'` / `'<' not supported between instances of ..`・CPython と同じ文言）
+
+```ar
+fn __mul__(self, k: Any) -> Any:
+    if k is int:
+        return Vec(self.x * k, self.y * k)
+    return NotImplemented          # 答えない ⇒ 反対側を試す
+fn __rmul__(self, k: Any) -> Any:  # 3 * v
+    return self.__mul__(k)
+```
+
+- `__eq__` が無いクラスどうしの `==` は従来どおり中身で比べます（どちらの側にもメソッドが無いとき）。
+- `str % x` は `str` の書式で、`x.__rmod__` は呼びません（CPython と同じ）。
+- ⚠ 静的な検査は左のメソッドの仮引数だけを見ます（右の反対側のメソッドは見ない）。例題は `examples/classes/reflected_operators.ar`。
 
 ---
 

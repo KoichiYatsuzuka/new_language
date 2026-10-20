@@ -915,7 +915,7 @@ impl Interpreter {
         use crate::interpreter::BuiltinClass as B;
         match c.builtin {
             B::Object => true,
-            B::Ordinary | B::Ellipsis => false,
+            B::Ordinary | B::Ellipsis | B::NotImplemented => false,
         }
     }
 
@@ -1373,15 +1373,18 @@ impl Interpreter {
             .clone()
     }
 
-    /// 唯一のインスタンスしか持たない組み込みのクラスの、その値（`Ellipsis`・タスク 6-11）。初めて引いたときに作る。
+    /// 唯一のインスタンスしか持たない組み込みのクラスの、その値（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）。
+    /// 初めて引いたときに作る。
     ///
     /// フィールドもメソッドも持たないクラス（`ClassValue::synthetic` に印を付けたもの）の唯一のインスタンス。
-    /// 表示は `display`（`Ellipsis`）、比べるのは種類（`values_eq` / `values_ref_eq`）。写さない（`deep_copy_value`）。
+    /// 表示は `display`（`Ellipsis` / `NotImplemented`）、比べるのは種類（`values_eq` / `values_ref_eq`）。写さない
+    /// （`deep_copy_value`）。
     /// ⚠ `kind` が唯一の値の種類でなければ内部の誤り（呼び出し側の取り違え）。
     pub(crate) fn builtin_singleton(&mut self, kind: crate::interpreter::BuiltinClass) -> Value {
         use crate::interpreter::BuiltinClass as B;
         let (slot, class_name) = match kind {
             B::Ellipsis => (&mut self.ellipsis, "ellipsis"),
+            B::NotImplemented => (&mut self.not_implemented, "NotImplementedType"),
             B::Ordinary | B::Object => unreachable!("builtin_singleton: {kind:?} has no single instance"),
         };
         slot.get_or_insert_with(|| {

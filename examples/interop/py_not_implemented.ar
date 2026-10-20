@@ -1,0 +1,41 @@
+# py_not_implemented.ar — Python の NotImplemented と演算子の手順（python_builtins_plan.md のタスク 6-12）
+#
+# 二項演算子は CPython と同じ手順で演算子メソッドを探す:
+#   1. 右が左の真の派生で反対側のメソッドを持てば右が先（`Base() + Derived()` は `Derived.__radd__`）
+#   2. 左の演算子メソッド（`a.__add__(b)`）
+#   3. それが無いか `NotImplemented` を返したら右の反対側のメソッド（`b.__radd__(a)`。比較は向きを入れ替えた
+#      `__gt__` など、`==` / `!=` は同じ名前）。左が組み込みの値（`5 + a`・`sum`）でも試す
+#   4. 全部駄目なら `==` / `!=` は同一性、ほかは CPython と同じ文言の `TypeError`
+# `!=` は `__ne__` が無ければ `__eq__` の反対。`NotImplemented` はクラス `NotImplementedType` の唯一の値。
+#
+# pn.run() は CPython と同じ出力:
+#   Money(400) Money(155) Money(155) Money(400) Meters(6) Meters(6)
+#   True False False False True True
+#   True True True
+#   a + 'x': TypeError: unsupported operand type(s) for +: 'Money' and 'str'
+#   'x' + a: TypeError: can only concatenate str (not "Money") to str
+#   a < 1: TypeError: '<' not supported between instances of 'Money' and 'int'
+#   1 >= a: TypeError: '>=' not supported between instances of 'int' and 'Money'
+#   Plain() * 2: TypeError: unsupported operand type(s) for *: 'Plain' and 'int'
+#   2 ** Plain(): TypeError: unsupported operand type(s) for ** or pow(): 'int' and 'Plain'
+#   Plain() // Plain(): TypeError: unsupported operand type(s) for //: 'Plain' and 'Plain'
+#   Derived.__radd__ Base.__add__
+#   True NotImplemented NotImplemented NotImplementedType
+#   True True True
+#
+# ⚠ 以前は `NotImplemented` が未対応の組み込み（モジュールごと変換の誤り）で、演算子は左のメソッドだけを呼んだ
+#   （`5 + a` は `__radd__` があっても `TypeError`、`a != b` は `__eq__` を見なかった）。
+
+import[py] test_modules.py_not_implemented as pn
+
+pn.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のソースからも同じ値
+let ni = NotImplemented
+check(ni === NotImplemented and repr(ni) == "NotImplemented", "the one NotImplemented")
+check(ni is object, "NotImplemented is an object")
+print("arrow side ok")

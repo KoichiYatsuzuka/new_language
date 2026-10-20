@@ -424,6 +424,9 @@ pub enum BuiltinClass {
     /// `ellipsis`（タスク 6-11）。唯一のインスタンスが `Ellipsis`（Python の `...`）。表示は `Ellipsis`。
     /// 同じ種類なら同じ物（スレッドへ送った複製も `is` / `==` で同じ）。
     Ellipsis,
+    /// `NotImplementedType`（タスク 6-12）。唯一のインスタンスが `NotImplemented`。表示は `NotImplemented`。
+    /// 演算子メソッドがこれを返すと、二項演算子は反対側のメソッドを試す（`apply_binop_dyn`）。
+    NotImplemented,
 }
 
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。

@@ -7,6 +7,35 @@ use {
     crate::interpreter::{Interpreter, Value},
 };
 
+/// 二項演算子の演算子メソッドの名前（左に呼ぶもの・右に呼ぶもの・python_builtins_plan.md のタスク 6-12）。
+///
+/// CPython の `binary_op1` / `do_richcompare` と同じ組: 算術は `__add__` / `__radd__`、比較は向きを入れ替えた名前
+/// （`a < b` の右は `b.__gt__(a)`）、`==` / `!=` は同じ名前。演算子メソッドで解かない演算子は `None`。
+/// ⚠ 左の名前は型検査の `check_dunder_operand` / `binop_result_type` と一致させること。
+fn dunder_pair(op: &BinOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        BinOp::Add => ("__add__", "__radd__"),
+        BinOp::Sub => ("__sub__", "__rsub__"),
+        BinOp::Mul => ("__mul__", "__rmul__"),
+        BinOp::Div => ("__truediv__", "__rtruediv__"),
+        BinOp::FloorDiv => ("__floordiv__", "__rfloordiv__"),
+        BinOp::Mod => ("__mod__", "__rmod__"),
+        BinOp::Pow => ("__pow__", "__rpow__"),
+        BinOp::BitAnd => ("__and__", "__rand__"),
+        BinOp::BitOr => ("__or__", "__ror__"),
+        BinOp::BitXor => ("__xor__", "__rxor__"),
+        BinOp::LShift => ("__lshift__", "__rlshift__"),
+        BinOp::RShift => ("__rshift__", "__rrshift__"),
+        BinOp::Eq => ("__eq__", "__eq__"),
+        BinOp::NotEq => ("__ne__", "__ne__"),
+        BinOp::Lt => ("__lt__", "__gt__"),
+        BinOp::Gt => ("__gt__", "__lt__"),
+        BinOp::LtEq => ("__le__", "__ge__"),
+        BinOp::GtEq => ("__ge__", "__le__"),
+        BinOp::RefEq | BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => return None,
+    })
+}
+
 /// `set` / `frozenset` の要素（どちらでもなければ `None`）。集合の演算子・比較・メソッドの引数が使う（タスク 3-1）。
 pub(crate) fn set_like_items(v: &Value) -> Option<Vec<Value>> {
     match v {
@@ -70,35 +99,11 @@ impl Interpreter {
     }
 
     /// `Value::Instance` に対してダンダーメソッドを経由して二項演算子を適用する。
-    /// 対応するダンダーメソッドが定義されていれば呼び出し、なければ `apply_binop` へフォールバック。
+    /// 演算子メソッドは CPython と同じ手順で探す（[`Self::binop_by_dunders`]・タスク 6-12）。どちらの側にも無ければ
+    /// `apply_binop` へフォールバック。
     pub(crate) fn apply_binop_dyn(&mut self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
-        if let Value::Instance(ref inst_rc) = lv {
-            let method_name = match op {
-                BinOp::Add => Some("__add__"),
-                BinOp::Sub => Some("__sub__"),
-                BinOp::Mul => Some("__mul__"),
-                BinOp::Div => Some("__truediv__"),
-                BinOp::FloorDiv => Some("__floordiv__"),
-                BinOp::Mod => Some("__mod__"),
-                BinOp::Pow => Some("__pow__"),
-                BinOp::BitAnd => Some("__and__"),
-                BinOp::BitOr => Some("__or__"),
-                BinOp::BitXor => Some("__xor__"),
-                BinOp::LShift => Some("__lshift__"),
-                BinOp::RShift => Some("__rshift__"),
-                BinOp::Eq => Some("__eq__"),
-                BinOp::NotEq => Some("__ne__"),
-                BinOp::Lt => Some("__lt__"),
-                BinOp::Gt => Some("__gt__"),
-                BinOp::LtEq => Some("__le__"),
-                BinOp::GtEq => Some("__ge__"),
-                _ => None,
-            };
-            if let Some(m) = method_name {
-                if inst_rc.borrow().class.methods.contains_key(m) {
-                    return self.eval_method_call_evaled(lv, m, vec![(None, rv, true)]);
-                }
-            }
+        if let Some(r) = self.binop_by_dunders(op, &lv, &rv)? {
+            return Ok(r);
         }
         // ⚠⚠ `in` / `not in` の**左辺**が `__eq__` を持つインスタンスなら、要素ごとに
         //    `__eq__` を呼ぶ（B2-b）。以前は `apply_binop` が `values_eq`（構造比較）を
@@ -141,6 +146,132 @@ impl Interpreter {
             }
         }
         self.apply_binop(op, lv, rv)
+    }
+
+    /// 演算子メソッドで二項演算子を解く（CPython の `binary_op1` / `do_richcompare` と同じ手順・
+    /// python_builtins_plan.md のタスク 6-12）。
+    ///
+    /// 1. 右が左の真の派生（Python のクラスの継承）で反対側のメソッドを持てば、右を先に試す
+    /// 2. 左の演算子メソッド（`a + b` なら `a.__add__(b)`）
+    /// 3. 右の反対側のメソッド（`b.__radd__(a)`。比較は向きを入れ替えた名前・[`dunder_pair`]）。左と同じクラスなら呼ばない
+    ///
+    /// どれかが `NotImplemented` 以外を返せばそれが答え。全部が `NotImplemented`（か、メソッドが無い）なら
+    /// [`Self::binop_declined`]（`==` / `!=` は同一性、ほかは CPython と同じ文言の `TypeError`）。
+    /// `!=` は `__ne__` が無ければ `__eq__` の結果の反対（CPython の `object.__ne__`・[`Self::call_op_dunder`]）。
+    ///
+    /// 戻り値 `None`: インスタンスが絡まない・演算子メソッドで解かない演算子・どちらの側にもメソッドが無い `==` / `!=`
+    /// （組み込みの演算 `apply_binop` が答える。`__eq__` の無いクラスの `==` は従来どおり中身で比べる）。
+    /// ⚠ 左が組み込みの値（`2 * v`）なら、組み込みの演算が右のインスタンスを知らない（CPython の `int.__mul__` が
+    ///   `NotImplemented` を返す）のと同じに扱って右を試す。例外は `str % x`（書式・CPython も `str.__mod__` が答える）。
+    fn binop_by_dunders(&mut self, op: &BinOp, lv: &Value, rv: &Value) -> Result<Option<Value>, String> {
+        let class_of = |v: &Value| match v {
+            Value::Instance(i) => Some(i.borrow().class.clone()),
+            _ => None,
+        };
+        let (lcls, rcls) = (class_of(lv), class_of(rv));
+        if lcls.is_none() && rcls.is_none() {
+            return Ok(None);
+        }
+        let Some((fwd, refl)) = dunder_pair(op) else {
+            return Ok(None);
+        };
+        if matches!(op, BinOp::Mod) && matches!(lv, Value::Str(_)) {
+            return Ok(None);
+        }
+        let ne = matches!(op, BinOp::NotEq);
+        // `!=` は `__eq__` だけでも答えられる（その反対）。
+        let can = |c: &Option<Rc<crate::interpreter::ClassValue>>, m: &str| {
+            c.as_ref().is_some_and(|c| c.methods.contains_key(m) || (ne && c.methods.contains_key("__eq__")))
+        };
+        let same = matches!((&lcls, &rcls), (Some(a), Some(b)) if a.class_id == b.class_id);
+        let l_has = can(&lcls, fwd);
+        let r_has = !same && can(&rcls, refl);
+        if !l_has && !r_has {
+            // 等値は Arrow の従来の規則（`__eq__` が無ければ中身で比べる）。ほかは CPython と同じ文言の誤り。
+            return match op {
+                BinOp::Eq | BinOp::NotEq => Ok(None),
+                _ => self.binop_declined(op, lv, rv).map(Some),
+            };
+        }
+        let right_first = r_has
+            && matches!((&lcls, &rcls), (Some(a), Some(b)) if crate::interpreter::Interpreter::class_is_subclass(b, a));
+        if right_first {
+            let r = self.call_op_dunder(rv, refl, lv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        if l_has {
+            let r = self.call_op_dunder(lv, fwd, rv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        if r_has && !right_first {
+            let r = self.call_op_dunder(rv, refl, lv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        self.binop_declined(op, lv, rv).map(Some)
+    }
+
+    /// `recv.m(arg)`（演算子メソッドの呼び出し・タスク 6-12）。`!=` で `__ne__` が無ければ `__eq__` の結果の反対
+    /// （`NotImplemented` ならそのまま）。メソッドが無ければ `NotImplemented`。
+    fn call_op_dunder(&mut self, recv: &Value, m: &str, arg: &Value, ne: bool) -> Result<Value, String> {
+        let (has_m, has_eq) = match recv {
+            Value::Instance(i) => {
+                let methods = &i.borrow().class.methods;
+                (methods.contains_key(m), methods.contains_key("__eq__"))
+            }
+            _ => (false, false),
+        };
+        if has_m {
+            return self.eval_method_call_evaled(recv.clone(), m, vec![(None, arg.clone(), true)]);
+        }
+        if ne && has_eq {
+            let r = self.eval_method_call_evaled(recv.clone(), "__eq__", vec![(None, arg.clone(), true)])?;
+            if Self::is_not_implemented(&r) {
+                return Ok(r);
+            }
+            return Ok(Value::Bool(!self.eval_truthy(&r)?));
+        }
+        Ok(self.builtin_singleton(crate::interpreter::BuiltinClass::NotImplemented))
+    }
+
+    /// どちらの側の演算子メソッドも答えなかった（`NotImplemented`・メソッドが無い）ときの答え（CPython と同じ・タスク 6-12）。
+    /// `==` / `!=` は同一性、大小比較は `'<' not supported between instances of ..`、算術は
+    /// `unsupported operand type(s) for +: ..`（左が str / list / tuple の `+` / `*` は列の文言）。
+    fn binop_declined(&self, op: &BinOp, lv: &Value, rv: &Value) -> Result<Value, String> {
+        let name = |v: &Value| match v {
+            Value::Instance(i) => i.borrow().class.name.clone(),
+            other => self.type_name(other).to_string(),
+        };
+        let seq = |v: &Value| match v {
+            Value::Str(_) => Some("str"),
+            Value::List(_) => Some("list"),
+            Value::Tuple(_) => Some("tuple"),
+            _ => None,
+        };
+        let msg = match op {
+            BinOp::Eq => return Ok(Value::Bool(self.values_ref_eq(lv, rv)?)),
+            BinOp::NotEq => return Ok(Value::Bool(!self.values_ref_eq(lv, rv)?)),
+            BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => format!(
+                "'{}' not supported between instances of '{}' and '{}'",
+                op.as_str(),
+                name(lv),
+                name(rv)
+            ),
+            BinOp::Add if seq(lv).is_some() => {
+                let k = seq(lv).expect("checked");
+                format!("can only concatenate {k} (not \"{}\") to {k}", name(rv))
+            }
+            BinOp::Mul if seq(lv).is_some() => format!("can't multiply sequence by non-int of type '{}'", name(rv)),
+            BinOp::Mul if seq(rv).is_some() => format!("can't multiply sequence by non-int of type '{}'", name(lv)),
+            BinOp::Pow => format!("unsupported operand type(s) for ** or pow(): '{}' and '{}'", name(lv), name(rv)),
+            _ => format!("unsupported operand type(s) for {}: '{}' and '{}'", op.as_str(), name(lv), name(rv)),
+        };
+        Err(format!("TypeError: {msg}"))
     }
 
     /// 列（list / tuple）の大小比較。CPython の `list_richcompare` / `tuplerichcompare` と同じ 2 段構え:
