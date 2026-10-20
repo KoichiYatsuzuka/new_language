@@ -239,6 +239,9 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). â
   `super().__init__(..)` in a class without a base (or with base `object`) becomes
   `__py_object_init(self, ..)` (CPython's `TypeError` on extra arguments); any other `super().m()` there is a
   conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call.
+- `f = staticmethod(f)` / `g = classmethod(f)` in a class body (6-13, `wrapped_method` in
+  `python_converter/classes.rs`) mark an earlier method static / class (a different name adds a copy). Wrapping
+  anything other than an earlier method of the class is a conversion error; `builtins_check` skips exactly this form.
 - `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
   (same body); a nested tuple is a conversion error (4-3 / 4-4).
 - âš  Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method with a

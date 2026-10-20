@@ -16,7 +16,8 @@
 // - モジュールの**どこかで束縛される名前**（代入・`def` / `class`・仮引数・`import`・`for` / `with` / `except` の
 //   束縛・`global` / `nonlocal`・`match` の捕捉）。スコープは解かない（隠していれば通す）。
 // - 変換器が形で受ける位置: デコレータ（`@staticmethod` / `@classmethod`。`@property` は組み込みの `property` で受ける・6-1）、
-//   クラスの基底（`class C(object)`）、`super().m(..)` の `super`。
+//   クラスの基底（`class C(object)`）、`super().m(..)` の `super`、クラス本体の `f = staticmethod(f)` /
+//   `g = classmethod(f)`（6-13・`classes.rs` の `wrapped_method` と同じ形）。
 // - `from m import *` があるモジュールは判定しない（何が束縛されるか分からない）。
 
 use std::collections::HashSet;
@@ -159,6 +160,19 @@ impl Fold<TextRange> for BuiltinRefFinder {
                 self.skip_decorators(&c.decorator_list);
                 for b in &c.bases {
                     self.skip_name(b);
+                }
+                // クラス本体の `f = staticmethod(f)` / `g = classmethod(f)`（変換器がデコレータと同じにする・タスク 6-13）。
+                for st in &c.body {
+                    if let py::Stmt::Assign(a) = st {
+                        if let py::Expr::Call(call) = &*a.value {
+                            if matches!(&*call.func, py::Expr::Name(n) if matches!(n.id.as_str(), "staticmethod" | "classmethod"))
+                                && matches!(call.args.as_slice(), [py::Expr::Name(_)])
+                                && call.keywords.is_empty()
+                            {
+                                self.skip_name(&call.func);
+                            }
+                        }
+                    }
                 }
             }
             py::Stmt::Global(g) => self.bound.extend(g.names.iter().map(|n| n.to_string())),

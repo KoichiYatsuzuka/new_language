@@ -160,6 +160,25 @@ fn convert_class_in(
             py::Stmt::Assign(a) if a.targets.len() == 1 => {
                 if let py::Expr::Name(n) = &a.targets[0] {
                     let fname = n.id.to_string();
+                    // `f = staticmethod(f)` / `g = classmethod(f)`（デコレータを使わない書き方・タスク 6-13）は、先に定義した
+                    // メソッドに `@staticmethod` / `@classmethod` を付けたのと同じにする。名前が違えば（`g = staticmethod(f)`）
+                    // その名前の写しを足し、元のメソッドは残す（CPython でも `f` は普通の関数の属性のまま）。
+                    if let Some((wrapper, src)) = wrapped_method(&a.value) {
+                        let Some(def) = method_defs.get(src).cloned() else {
+                            return Err(format!(
+                                "{filename}: `{fname} = {wrapper}({src})` in the body of class '{class_name}' needs \
+                                 `{src}` to be a method defined earlier in the class body"
+                            ));
+                        };
+                        let def = with_method_wrapper(rename_method(def, &fname), wrapper, &class_name, filename)?;
+                        match methods.iter_mut().find(|m| stmt_method_name(m) == Some(fname.as_str())) {
+                            Some(slot) => *slot = def.clone(),
+                            None => methods.push(def.clone()),
+                        }
+                        method_defs.insert(fname.clone(), def);
+                        body_names.insert(fname);
+                        continue;
+                    }
                     // メソッドの別名（`alias = getx` / `__repr__ = __str__`・タスク 6-3）は、同じメソッドをその名前でも定義する。
                     // CPython ではクラス属性に置いた関数がインスタンスから読むと束縛されるので、別名もメソッドとして働く。
                     // ⚠ 以前は `__` で始まる名前のクラス属性を黙って捨てていたので、`__repr__ = __str__` が効かなかった。
@@ -593,6 +612,56 @@ fn rename_method(def: Stmt, new_name: &str) -> Stmt {
             access,
         },
         other => other,
+    }
+}
+
+/// クラス本体の `staticmethod(f)` / `classmethod(f)`（引数は名前 1 つ・タスク 6-13）なら（包む関数の名前, `f`）。
+/// ⚠ ここで受けた形は `builtins_check` も「未対応の組み込み」にしない（`BuiltinRefFinder` の `ClassDef` の腕・同じ形）。
+fn wrapped_method(value: &py::Expr) -> Option<(&'static str, &str)> {
+    let py::Expr::Call(c) = value else { return None };
+    let wrapper = match &*c.func {
+        py::Expr::Name(n) if n.id.as_str() == "staticmethod" => "staticmethod",
+        py::Expr::Name(n) if n.id.as_str() == "classmethod" => "classmethod",
+        _ => return None,
+    };
+    match (c.args.as_slice(), c.keywords.is_empty()) {
+        ([py::Expr::Name(src)], true) => Some((wrapper, src.id.as_str())),
+        _ => None,
+    }
+}
+
+/// メソッドの定義に `@staticmethod` / `@classmethod` を付けたもの（タスク 6-13）。
+/// ⚠ ジェネレータのメソッド（Arrow の `gen`）には静的・クラスの形が無いので誤り（デコレータの場合と同じ）。
+fn with_method_wrapper(def: Stmt, wrapper: &str, class_name: &str, filename: &str) -> Result<Stmt, String> {
+    match def {
+        Stmt::FnDef { src, name, template_params, params, return_type, body, is_abstract, decorators, access, .. } => {
+            Ok(Stmt::FnDef {
+                src,
+                name,
+                template_params,
+                params,
+                return_type,
+                body,
+                is_abstract,
+                is_static: wrapper == "staticmethod",
+                is_class_method: wrapper == "classmethod",
+                decorators,
+                access,
+            })
+        }
+        Stmt::GenDef { name, .. } => Err(format!(
+            "{filename}: `{wrapper}` on a generator method is not supported (method '{class_name}.{name}'); \
+             Arrow's `gen` has no such form"
+        )),
+        other => Ok(other),
+    }
+}
+
+/// メソッドの定義の名前（`FnDef` / `GenDef`）。
+fn stmt_method_name(def: &Stmt) -> Option<&str> {
+    match def {
+        Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } => Some(name),
+        _ => None,
     }
 }
 

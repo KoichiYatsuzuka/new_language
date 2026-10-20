@@ -222,4 +222,4 @@ CPython 3.12 の組み込み 153 名のうち、2026-10-20 の時点で次の 34
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。
 - **Python のモジュール**（`import[py]`）で参照すると、読み込む時点で変換の誤りになります。呼ばれない関数の中でも
   同様です（[09_imports.md](09_imports.md) の「Python モジュール」）。
-- ⚠ `staticmethod` / `classmethod` はデコレータとして、`super` は `super().m(..)` の形でなら変換器が受けます。
+- ⚠ `staticmethod` / `classmethod` はデコレータとクラス本体の `f = staticmethod(f)` の形（タスク 6-13）で、`super` は `super().m(..)` の形でなら変換器が受けます。

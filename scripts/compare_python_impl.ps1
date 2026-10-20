@@ -216,6 +216,8 @@ $knownDiff = @{
     'lazy_iterators'                 ='Rust: enumerate / zip が遅延のジェネレーター・next(it, default)・EndOfIteration を except StopIteration で捕まえる（タスク 3-5 で新設・CPython と同じ出力）。py: enumerate が元を先に全部取り出す'
     'py_object'                      ='Rust: 組み込みのクラス object と番兵（タスク 6-10 で新設・po.run() は CPython と同じ出力）。py: `===` の後の f-string を読めず ParseError'
     'py_object_error'                ='Rust: Arrow のソースの object() は静的な誤り（タスク 6-10 で新設）。py: object が無く実行時の NameError'
+    'py_static_class_funcs'          ='Rust: クラス本体の f = staticmethod(f) / classmethod(f)（タスク 6-13 で新設・sc.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
+    'py_static_class_funcs_error'    ='Rust: クラス本体の外の関数を staticmethod で包む形は変換の誤り（タスク 6-13 で新設）。py: 変換時エラーを出さず素通しする'
     'py_not_implemented'             ='Rust: NotImplemented と演算子の手順（タスク 6-12 で新設・pn.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず ParseError'
     'reflected_operators'            ='Rust: 演算子メソッドの反対側（__rmul__ など）と NotImplemented（タスク 6-12 で新設）。py: 左のメソッドしか呼ばず 3 * v が TypeError'
     'reflected_operators_error'      ='Rust: 両側が答えない大小比較は CPython と同じ文言の TypeError（タスク 6-12 で新設）。py: NotImplemented が無く NameError'

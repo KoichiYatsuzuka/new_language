@@ -358,6 +358,9 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 
 **`object`**（[12_builtins.md](12_builtins.md)・python_builtins_plan.md のタスク 6-10）: `object()` は内部の `__py_object()` に変換します（Arrow のソースからは呼べない）。番兵（`MISSING = object()`）はフィールド・辞書・リストを通っても同じ物で、別々の `object()` は `==` で等しくなく、辞書のキーとしても別です（CPython と同じ）。基底を書かないクラス・`class C(object)` の `super().__init__(*args, **kwargs)` は `object.__init__` に届きます（余分な引数があれば CPython と同じ `TypeError`）。⚠ `object` のほかのメソッド（`super().__setattr__(..)` / `object.__new__(cls)` など）と、型を値として呼ぶ `type(o)()` は対象外。`super()` の `*args` / `**kwargs` は普通の呼び出しと同じに渡します。
 
+**`staticmethod` / `classmethod`**: デコレータのほか、クラス本体の `f = staticmethod(f)` / `g = classmethod(f)` も受けます（先に定義したメソッドにデコレータを付けたのと同じ。名前が違えばその名前の写しを足す・タスク 6-13）。クラス本体の外で定義した関数を包む形（`bump = staticmethod(helper)`）とクラス本体の外の `staticmethod(..)` は変換の誤りです。
+⚠ 静的メソッド・クラスメソッドをインスタンスから呼ぶ形（`self.helper(..)`）は Arrow の規則で実行時の誤りです（クラスから呼ぶ）。
+
 **`...`**: 値の `...` は組み込みの唯一の値 `Ellipsis` です（表示は `Ellipsis`・`x is ...` は `Ellipsis` のときだけ真・タスク 6-11。以前は `None` にしていました）。文の `...`（`def f(): ...` などスタブの本体）は `pass` です。
 
 **f-string**: `{x:.2f}` は組み込みの `format(x, ".2f")`、`!r` / `!s` / `!a` は `repr` / `str` / `ascii` に変換します
