@@ -297,6 +297,9 @@ set / frozenset ↔ Arrow set (a set with an element Arrow cannot hold stays a `
 instances become `float`, and a Python `int` that does not fit in i64 stays a `PyObject` — ⚠ both used to be converted
 to `float` silently (`2**70`, `Decimal("0.1")`). Values Python cannot take (Arrow instances) are `TypeError` naming the
 class (it used to say `'unknown'`).
+A `.py` file's signatures come from the line-based extractor `parser/py_stub_extract.rs` (top-level `def` / `class`
+only). An unannotated function returns `Any` — nothing is inferred from its body (ffi_value_exchange_plan.md 7-27 /
+7-30), so a body on the `def` line (`def f(): return 1`) needs no special case (python_builtins_plan.md 1-19).
 
 ---
 
