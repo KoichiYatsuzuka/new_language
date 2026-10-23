@@ -557,7 +557,7 @@ impl Interpreter {
         val: Value,
     ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let val = Self::deep_copy_value(val);
+        let val = self.copy_for_store(val);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -616,7 +616,7 @@ impl Interpreter {
         rhs: Value,
     ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let rhs = Self::deep_copy_value(rhs);
+        let rhs = self.copy_for_store(rhs);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -795,7 +795,7 @@ impl Interpreter {
         rhs: Value,
     ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let rhs = Self::deep_copy_value(rhs);
+        let rhs = self.copy_for_store(rhs);
         match obj_val {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"

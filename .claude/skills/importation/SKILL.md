@@ -234,6 +234,12 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). â
   (`is_runtime_builtin_name` is false â€” the list shrinks automatically as builtins are added). Names
   bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
   a module with `from m import *` is not checked. Structural conversion errors are reported first.
+- Reference sharing (known_bugs.md #1, decision A): every implicit copy on store goes through
+  `Interpreter::copy_for_store`, which does not copy while `running_python` is set. `vm::run` / `vm::resume_frame`
+  set it from `Chunk::is_python` (module-statement chunks of a Python module get it in `try_run_module_stmt`) and
+  `exec_module` sets it for a Python module body. `ClassValue::is_python` (set by `exec_class_def` from
+  `in_python_module`) makes `values_eq` / `hash_into` use identity for instances without `__eq__` / `__hash__`.
+  Arrow `let` (`frozen_copy`), `self` binding, native calls and `copy()` still copy.
 - `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
   `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
   `super().__init__(..)` in a class without a base (or with base `object`) becomes

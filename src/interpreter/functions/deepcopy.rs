@@ -9,6 +9,21 @@ use {
 };
 
 impl Interpreter {
+    /// 格納する値（フィールド・辞書・`append`・`xs[i] = v`・集合の `add`・`mut` の宣言・クロージャの取り込み）。
+    ///
+    /// Arrow のコードの中は写す（L4・`let` の値を共有先から書き換えさせない）。Python から変換したコードの中は
+    /// **写さずに共有する**（CPython と同じく参照を共有する・known_bugs.md の #1 の A 案）。どちらのコードかは
+    /// `running_python`（チャンクを走らせる入口が差し替える）。
+    /// ⚠ Arrow の `let` / `mut` に束縛するときは Arrow のコードの中なので写す（Python のインスタンスでも）。
+    /// ⚠ Arrow から Python の関数へ渡せるのは `mut` の値だけ（静的に検査）なので、共有しても `let` の保証は崩れない。
+    pub(crate) fn copy_for_store(&self, val: Value) -> Value {
+        if self.running_python {
+            val
+        } else {
+            Self::deep_copy_value(val)
+        }
+    }
+
     /// 参照型の値を再帰的にディープコピーして返す。
     ///
     /// `let` パラメータへのバインド時に呼ばれ、元の可変変数（`mut`）が

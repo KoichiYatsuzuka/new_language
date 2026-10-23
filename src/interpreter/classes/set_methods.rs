@@ -45,7 +45,7 @@ impl Interpreter {
                 if !self.contains_eq_dyn(&items, &item)? {
                     // ⚠ 格納する値は複製する（L4。list の `append` と同じ理由）。
                     // ⚠ 複製は借用の外で（自分自身を渡されたときのパニック回避）。
-                    let copied = Self::deep_copy_value(item);
+                    let copied = self.copy_for_store(item);
                     s.borrow_mut().push(copied);
                 }
                 Ok(Value::None)

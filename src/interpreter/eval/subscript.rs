@@ -329,7 +329,7 @@ impl Interpreter {
                 })?;
                 // ⚠ 格納する値は複製する（L4。`append` と同じ理由）。
                 // ⚠ 複製は借用の外で（`a[0] = a` のような自己参照でのパニック回避）。
-                let rhs = Self::deep_copy_value(rhs);
+                let rhs = self.copy_for_store(rhs);
                 let mut borrowed = items.borrow_mut();
                 let len = borrowed.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };

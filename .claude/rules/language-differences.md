@@ -86,6 +86,12 @@
   - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
     `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
     `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
+- **Code translated from Python (`import[py]`) shares references; Arrow code copies** (known_bugs.md #1, decision
+  A). Arrow copies a value whenever it is stored (field, dict, `append`, `xs[i] = v`, set `add`, `mut` declaration,
+  closure capture) so a `let` value can never change through another holder. Inside a Python module's code these
+  stores share the object, as in CPython (aliases, parent/child references and registries behave the same). A
+  Python class without `__eq__` / `__hash__` compares and hashes by identity; an Arrow class still compares by
+  contents. Binding a Python value to an Arrow `let` / `mut` still copies it (the boundary keeps Arrow's rule).
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

@@ -224,6 +224,12 @@ impl Interpreter {
                     h.write_u64(hv);
                     return Ok(());
                 }
+                // Python から変換したクラスのインスタンスはアドレスでハッシュする（`values_eq` が同一性で比べるのと対・
+                // known_bugs.md の #1）。
+                if rc.borrow().class.is_python {
+                    ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
+                    return Ok(());
+                }
                 let inst = rc.borrow();
                 if inst.class.enum_of.is_some() {
                     // enum のメンバーは `values_eq` が `value` フィールドだけを見る。
@@ -576,10 +582,10 @@ impl Interpreter {
         // フェーズ 2: 可変借用で書く（クロージャを走らせないので再入しない）。
         // ⚠ **キーだけでなく値も複製する**（L4）。共有したままだと
         //    `let a = [1]; d["k"] = a` のあと `d["k"].append(9)` で `a` が変わる。
-        let value = Self::deep_copy_value(value);
+        let value = self.copy_for_store(value);
         match idx {
             Some(i) => d.borrow_mut().set_at(i, value),
-            None => d.borrow_mut().push_prehashed(hash, Self::deep_copy_value(key), value),
+            None => d.borrow_mut().push_prehashed(hash, self.copy_for_store(key), value),
         }
         Ok(())
     }

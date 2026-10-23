@@ -106,6 +106,12 @@ impl Interpreter {
                     (B::Object | B::Ellipsis | B::NotImplemented, _)
                     | (_, B::Object | B::Ellipsis | B::NotImplemented) => return Ok(false),
                 }
+                // Python から変換したクラスのインスタンスは同一性で比べる（CPython の `object.__eq__`・known_bugs.md の #1）。
+                // 同じ物なら上の `ptr_eq` で済んでいる。Python のコードの中は格納で写さないので、同じ物は同じ `Rc` のまま。
+                // ⚠ `hash_into` の同じ分岐（アドレスでハッシュする）と対になっている。
+                if a_borrow.class.is_python || b_borrow.class.is_python {
+                    return Ok(false);
+                }
                 if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
                         inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))

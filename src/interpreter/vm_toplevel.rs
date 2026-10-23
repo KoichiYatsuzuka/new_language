@@ -119,9 +119,13 @@ impl Interpreter {
         let chunk = match self.vm_toplevel_chunks.get(&key) {
             Some(cached) => cached.clone(),
             None => {
-                let compiled =
-                    crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
-                        .map(Rc::new);
+                // Python のモジュールの本体の文は Python のコード（格納で写さない・known_bugs.md の #1）。
+                let in_py = self.in_python_module;
+                let compiled = crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
+                    .map(|mut c| {
+                        c.is_python = in_py;
+                        Rc::new(c)
+                    });
                 if crate::interpreter::tw_stats::enabled() {
                     crate::interpreter::tw_stats::record_compile("module", compiled.is_some());
                 }
@@ -273,7 +277,7 @@ impl Interpreter {
         let (value, mutable) = match kind {
             DeclKind::Const => (value, false),
             // `mut` は常に deep_copy（`exec` の `Stmt::Mut` アームと同一）。
-            DeclKind::Mut => (Self::deep_copy_value(value), true),
+            DeclKind::Mut => (self.copy_for_store(value), true),
             DeclKind::LetPlain => (value, false),
             // 非識別子式からの `let`: `Instance` のときだけ copy + freeze。
             // 可変コレクションから取り出した `Instance` を直接フリーズすると

@@ -247,7 +247,7 @@ impl Interpreter {
                         //    `deep_copy_value` を呼ぶと、`a.append(a)` のように自分自身を
                         //    渡された瞬間に `RefCell already mutably borrowed` でパニックする
                         //    （set の `add` で踏んだのと同型）。
-                        let copied = Self::deep_copy_value(item);
+                        let copied = self.copy_for_store(item);
                         items.borrow_mut().push(copied);
                         return Ok(Value::None);
                     }

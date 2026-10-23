@@ -948,6 +948,8 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
+            // Python から変換したクラス（既定の `==` / `hash` が同一性・known_bugs.md の #1）。
+            is_python: self.in_python_module,
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。
             module_name: self.global_module_names.get(self.cur_globals as usize).cloned().flatten(),

@@ -905,3 +905,17 @@ fn ellipsis_is_one_value_even_across_thread_copies() {
     assert!(!Interpreter::values_eq_pure(&e, &Value::None).unwrap());
     assert_eq!(interp.display(&e), "Ellipsis");
 }
+
+/// 格納の写し（`copy_for_store`）は Arrow のコードの中だけ。Python から変換したコードの中は写さずに共有する
+/// （known_bugs.md の #1・A 案）。どちらのコードかは `running_python`（チャンクを走らせる入口が差し替える）。
+#[test]
+fn copy_for_store_shares_inside_python_code() {
+    use crate::interpreter::{Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let xs = Value::List(std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Int(1)])));
+    let same = |a: &Value, b: &Value| matches!((a, b), (Value::List(p), Value::List(q)) if std::rc::Rc::ptr_eq(p, q));
+    assert!(!interp.running_python);
+    assert!(!same(&interp.copy_for_store(xs.clone()), &xs), "Arrow code copies on store");
+    interp.running_python = true;
+    assert!(same(&interp.copy_for_store(xs.clone()), &xs), "Python code shares on store");
+}

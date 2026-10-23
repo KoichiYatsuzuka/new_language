@@ -356,6 +356,8 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
   組の入れ子 `except (A, (B, C)):` は変換の誤り（CPython 3.12 も実行時の `TypeError`）。
 - 組み込みの例外を継承したクラスの `super().__init__(..)` は組み込みの例外へ届き、`args` / `str(e)` が CPython と同じになります。
 
+**値の共有**（known_bugs.md の #1・A 案）: Arrow は値を格納するたびに写します（`let` の値を共有先から書き換えさせないため）が、Python のモジュールのコードの中では CPython と同じく**写さずに共有**します。フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても同じ物で、別名から書き換えた結果が見えます（親子の参照・登録した物の書き換えも CPython と同じ）。`__eq__` / `__hash__` を書いていない Python のクラスのインスタンスは、`==` / `hash` が同一性です（別々の `P(1)` は等しくなく、辞書のキーとしても別）。⚠ Arrow のソースのコードは今のまま写し、Arrow のクラスは中身で比べます。Arrow の `let` / `mut` に Python のインスタンスを束縛するときも写します（`examples/interop/py_shared_objects.ar`）。
+
 **`object`**（[12_builtins.md](12_builtins.md)・python_builtins_plan.md のタスク 6-10）: `object()` は内部の `__py_object()` に変換します（Arrow のソースからは呼べない）。番兵（`MISSING = object()`）はフィールド・辞書・リストを通っても同じ物で、別々の `object()` は `==` で等しくなく、辞書のキーとしても別です（CPython と同じ）。基底を書かないクラス・`class C(object)` の `super().__init__(*args, **kwargs)` は `object.__init__` に届きます（余分な引数があれば CPython と同じ `TypeError`）。Python 2 からの書き方 `super(C, self).m(..)` は、`C` が定義中のクラスなら `super().m(..)` と同じです（タスク 6-2。ほかのクラスを渡す形は変換の誤り）。⚠ `object` のほかのメソッド（`super().__setattr__(..)` / `object.__new__(cls)` など）と、型を値として呼ぶ `type(o)()` は対象外。`super()` の `*args` / `**kwargs` は普通の呼び出しと同じに渡します。
 
 **`staticmethod` / `classmethod`**: デコレータのほか、クラス本体の `f = staticmethod(f)` / `g = classmethod(f)` も受けます（先に定義したメソッドにデコレータを付けたのと同じ。名前が違えばその名前の写しを足す・タスク 6-13）。クラス本体の外で定義した関数を包む形（`bump = staticmethod(helper)`）とクラス本体の外の `staticmethod(..)` は変換の誤りです。

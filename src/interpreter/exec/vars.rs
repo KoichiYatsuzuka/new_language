@@ -203,7 +203,7 @@ impl Interpreter {
                     idx += 1;
                 }
                 TupleTarget::Mut(_) => {
-                    let v = Self::deep_copy_value(tuple_rc.get(idx).unwrap().clone());
+                    let v = self.copy_for_store(tuple_rc.get(idx).unwrap().clone());
                     out.push((i, v));
                     idx += 1;
                 }

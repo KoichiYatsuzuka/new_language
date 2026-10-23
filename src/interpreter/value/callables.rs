@@ -540,6 +540,10 @@ pub struct ClassValue {
     pub enum_of: Option<String>,
     /// インスタンスを物として扱う組み込みのクラスか（[`BuiltinClass`]・タスク 6-10）。普通のクラスは `Ordinary`。
     pub builtin: BuiltinClass,
+    /// Python から変換したクラスか（`exec_class_def` が `in_python_module` のときに立てる・known_bugs.md の #1）。
+    /// 立っていれば、`__eq__` / `__hash__` を書いていないインスタンスの `==` / `hash` は同一性（CPython の
+    /// `object.__eq__` と同じ）。Arrow のクラスは中身で比べる（格納のたびに写すので、写しを元と等しくするため）。
+    pub is_python: bool,
 }
 
 
@@ -615,6 +619,7 @@ impl ClassValue {
             module_name: None,
             enum_of: None,
             builtin: BuiltinClass::Ordinary,
+            is_python: false,
         }
     }
 
@@ -715,6 +720,7 @@ impl ClassValue {
             module_name: self.module_name.as_deref().map(Rc::from),
             enum_of: self.enum_of.clone(),
             builtin: self.builtin,
+            is_python: self.is_python,
         }
     }
 }

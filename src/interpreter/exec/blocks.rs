@@ -64,7 +64,7 @@ impl Interpreter {
                     } else {
                         captured.insert(
                             name.clone(),
-                            CapturedVar::Immutable(Self::deep_copy_value(current_value)),
+                            CapturedVar::Immutable(self.copy_for_store(current_value)),
                         );
                     }
                     break;

@@ -556,8 +556,11 @@ impl Interpreter {
         }
 
         let prev_in_python = self.in_python_module;
+        // Python のモジュールの本体（定義文はツリーウォークで走る）も Python のコード（格納で写さない・known_bugs.md の #1）。
+        let prev_running_python = self.running_python;
         if lang == "py" {
             self.in_python_module = true;
+            self.running_python = true;
         }
         // ⚠⚠ **モジュールの本体は自分の大域で走らせる**（名前空間の分離・2026-09-26）。
         //   以前はスコープを 1 つ積んで走らせ、終わったらモジュールの名前を**呼び出し側の大域へ
@@ -588,6 +591,7 @@ impl Interpreter {
         let live = (!mutable_names.is_empty()).then(|| (self.cur_globals, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
         self.in_python_module = prev_in_python;
+        self.running_python = prev_running_python;
         result?;
 
         let ns = Rc::new(NamespaceData {

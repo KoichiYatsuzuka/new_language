@@ -1347,6 +1347,7 @@ impl Interpreter {
             }
             // ⚠ Python のモジュールの中から引かれても Arrow のクラスとして定義する（`is_python` を立てない）。
             let prev_py = std::mem::replace(&mut self.in_python_module, false);
+            let prev_running_py = std::mem::replace(&mut self.running_python, false);
             let prev_nested = std::mem::replace(&mut self.defining_nested_class, false);
             let frame = self.enter_module_frame(&[]);
             let result = stmts.iter().try_for_each(|st| self.exec(st).map(|_| ()));
@@ -1356,6 +1357,7 @@ impl Interpreter {
                 .collect();
             self.leave_module_frame(frame);
             self.defining_nested_class = prev_nested;
+            self.running_python = prev_running_py;
             self.in_python_module = prev_py;
             result.map_err(|e| format!("RuntimeError: internal — a builtin class failed: {e}"))?;
             self.py_builtin_classes = Some(classes);

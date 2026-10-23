@@ -147,6 +147,8 @@ pub fn run(
     //   落とすと `prof_dist.ps1` の計測が黙って壊れる。
     #[cfg(feature = "prof")]
     let _cur = crate::prof::CurGuard::new();
+    // Python から変換したコードの中は格納で写さない（known_bugs.md の #1）。抜けたら呼び出し側の値へ戻す。
+    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     // ⚠ **ここで `Frame` を作らない**。`Frame` は中断の記録であって実行中の表現では無いので、
     //   新規実行は切り出し前と同じく 3 つのローカルを作って値渡しする。
     //   中断が生まれたときにだけ `Frame` を組み立てる（段階 C）。
@@ -156,6 +158,7 @@ pub fn run(
         Vec::new(),
         build_cells(chunk, captured_env),
     );
+    interp.running_python = prev_py;
     interp.call_depth -= 1;
     match r {
         Ok(RunOutcome::Done(v)) => Ok(v),
@@ -206,7 +209,10 @@ pub(crate) fn resume_frame(
     //    **スタックが満ちてプロセスごと落ちる**。B13 の実装中に実際に再発させ、
     //    `recursion_limit.ar` §5 が捕まえた。
     enter_depth(interp)?;
+    // ジェネレータの本体も `run` と同じく、Python のコードの中は写さない（known_bugs.md の #1）。
+    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     let r = run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells);
+    interp.running_python = prev_py;
     interp.call_depth -= 1;
     r
 }
@@ -1013,7 +1019,8 @@ fn exec_op(
             buf[base + *s as usize] = v;
         }
         Op::StoreLocalDeepCopy(s) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            // Python のコードの中は写さない（known_bugs.md の #1）。
+            let v = interp.copy_for_store(buf.pop().unwrap());
             buf[base + *s as usize] = v;
         }
         // `let x = <mut 変数>` と、関数の中の `freeze x`（`LoadLocal` + これ・タスク 1-9）。
@@ -1626,8 +1633,8 @@ fn exec_op(
             let v = buf.pop().unwrap();
             if let Value::List(list) = &buf[base + *slot as usize] {
                 // ⚠ 格納する値は複製する（L4）。ツリーウォークの `append` と同じ規則で
-                //    ないと、VM 経路だけ共有が残る。
-                let copied = Interpreter::deep_copy_value(v);
+                //    ないと、VM 経路だけ共有が残る。Python のコードの中は写さない（known_bugs.md の #1）。
+                let copied = interp.copy_for_store(v);
                 list.borrow_mut().push(copied);
             }
         }
@@ -1699,7 +1706,8 @@ fn exec_op(
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::StoreCellDeepCopy(i) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            // Python のコードの中は写さない（known_bugs.md の #1）。
+            let v = interp.copy_for_store(buf.pop().unwrap());
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::UnpackTuple(src, n) => {

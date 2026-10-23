@@ -96,7 +96,8 @@ impl Interpreter {
                 if let Some(e) = self.redeclaration_error(name) {
                     return Err(e);
                 }
-                let value = Self::deep_copy_value(self.eval(expr)?);
+                let value = self.eval(expr)?;
+                let value = self.copy_for_store(value);
                 let value = crate::interpreter::exec::vars::coerce_binding(ty.as_deref(), value);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)

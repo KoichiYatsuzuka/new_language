@@ -538,6 +538,13 @@ pub struct Interpreter {
     /// Python モジュール body を実行中かどうかを示すフラグ。
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
+    /// 今走っているのが Python から変換したコードか（known_bugs.md の #1・A 案）。真の間は格納で値を写さない
+    /// （`copy_for_store`・CPython と同じく参照を共有する）。
+    ///
+    /// ⚠ チャンクを走らせる入口（`vm::run` / `vm::resume_frame`）がチャンクの `is_python` に差し替えて戻す。
+    ///   Python のモジュールの本体は `exec_module` が真にする（定義文はツリーウォークで走るので）。Python の
+    ///   コードから呼ばれた Arrow の関数の中は偽に戻る（呼び出しの入口で差し替えるので）。
+    pub(crate) running_python: bool,
     /// Arrow で書いた組み込みのクラス（`property` / `cached_property`・python_builtins_plan.md のタスク 6-1 / 6-5）。
     /// どれかの名前を初めて引いたときにまとめて組み立てる（`Interpreter::py_builtin_class`）。
     pub(self) py_builtin_classes: Option<HashMap<String, Value>>,
@@ -719,6 +726,7 @@ impl Interpreter {
             live_generators: Vec::new(),
             module_cache: HashMap::new(),
             in_python_module: false,
+            running_python: false,
             py_builtin_classes: None,
             object_class: None,
             ellipsis: None,
