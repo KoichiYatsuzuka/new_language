@@ -3,7 +3,7 @@
 
 `del x` は束縛の削除で、Arrow はスコープ退出でどのみち破棄する。
 ⇒ 無視してよい。残る差は「削除後に読むと Python は `NameError`」だけ。
-（`del d[k]` / `del o.a` は意味のある削除なので明示エラー。`py_stmt_errors_error.ar` 参照。）
+（`del d[k]` / `del o.a` は意味のある削除なので削除する。`py_del.ar` 参照。）
 """
 
 

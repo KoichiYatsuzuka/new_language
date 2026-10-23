@@ -446,7 +446,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | `globals` / `locals` / `dir` / `vars` | 5 / 2 / 1 / 1 | 実行時のリフレクション（メタ情報 `Value::Meta` は展開時だけ） |
 | `__import__` / `eval` / `exec` / `compile` / `__build_class__`・3 引数の `type(name, bases, dict)` | 1 / — / — / — / —・1 | 実行時に Python のコードを変換・実行する、import する、クラスを作る（`parse_ar` は Arrow のソースだけ） |
 | `format` | — | 書式指定の小言語。`%` の printf 形式はある（`.2f`・`5d`・`x`・`-5s` は動く）が、`,` は `unsupported format character`、`%e` は `1.234568e4`（CPython `1.234568e+04`）、`^` / `>` の詰め・`_`・`%`・`#x` は無い。f-string の `{x:spec}` も同じものが要る |
-| `delattr` | — | 属性はクラス本体で固定なので「消す」概念が無い |
+| `delattr` | — | ⚠ 「消す」は入った（Python の `del o.a` はフィールドを未代入に戻す・[known_bugs.md](known_bugs.md) の #2・本体は `del_attr_val`）。組み込みの `delattr` という名前はまだ無い |
 | `aiter` / `anext` / `StopAsyncIteration` | — | 非同期の反復の手順（Arrow の非同期は `AsyncManager`） |
 | `KeyboardInterrupt` / `MemoryError` | — | Ctrl+C を例外に変える手順／メモリ不足を捕まえる手順（Rust はメモリ不足で止まる） |
 | `ExceptionGroup` / `BaseExceptionGroup` | — | `except*` の構文と意味 |

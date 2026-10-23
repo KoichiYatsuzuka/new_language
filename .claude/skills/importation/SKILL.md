@@ -240,6 +240,12 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   `exec_module` sets it for a Python module body. `ClassValue::is_python` (set by `exec_class_def` from
   `in_python_module`) makes `values_eq` / `hash_into` use identity for instances without `__eq__` / `__hash__`.
   Arrow `let` (`frozen_copy`), `self` binding, native calls and `copy()` still copy.
+- `del` (known_bugs.md #2 / #3; `convert_del_target` in `statements.rs`): `del o.a` → `__py_delattr(o, "a")`
+  (`Interpreter::del_attr_val`: the class's `__delattr__`, then a data descriptor's `__delete__`, then
+  `InstanceData::clear_field` puts the field back to unassigned — the boxed slot becomes `None`, a raw class clears its
+  init-bitmap bit); `del d[k]` → `__py_delitem(d, k)` (`Interpreter::eval_delitem`: dict / list / slice /
+  `__delitem__`); `del x` still warns and is ignored; tuple / list targets are flattened left to right. Class and
+  module attributes cannot be deleted (runtime `TypeError`). A `del` in a class body is still a conversion error.
 - `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
   `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
   `super().__init__(..)` in a class without a base (or with base `object`) becomes

@@ -821,6 +821,47 @@ fn test_descriptor_without_set_rejects_assignment() {
     assert!(run_err_msg(src).contains("AttributeError: __set__"), "{}", run_err_msg(src));
 }
 
+/// `__py_delattr`（Python の `del o.a`）はフィールドを未代入に戻す。raw レイアウト（int / float だけのクラス・init の
+/// ビットマップ）と boxed レイアウトのどちらも、消した後は `hasattr` が偽で、また代入できる（known_bugs.md の #2）。
+#[test]
+fn test_py_delattr_resets_field_in_both_layouts() {
+    let src = concat!(
+        "class Raw:\n",
+        "    mut x: int\n",
+        "    mut y: float\n",
+        "class Boxed:\n",
+        "    mut s: str\n",
+        "    mut n: int\n",
+        "mut r = Raw(1, 2.0)\n",
+        "mut b = Boxed(\"a\", 3)\n",
+        "__py_delattr(r, \"x\")\n",
+        "__py_delattr(b, \"s\")\n",
+        "let gone = not hasattr(r, \"x\") and hasattr(r, \"y\") and not hasattr(b, \"s\") and hasattr(b, \"n\")\n",
+        "r.x = 5\n",
+        "b.s = \"z\"\n",
+        "let back = r.x * 10 + b.n\n",
+        "let s_back = b.s\n",
+    );
+    let interp = run_interp(src);
+    let layouts = ["r", "b"].map(|v| match interp.get_val(v) {
+        Some(Value::Instance(i)) => i.borrow().has_raw_layout(),
+        other => panic!("{v}: {other:?}"),
+    });
+    assert_eq!(layouts, [true, false], "the test needs one class of each layout");
+    assert!(matches!(interp.get_val("gone"), Some(Value::Bool(true))));
+    assert!(matches!(interp.get_val("back"), Some(Value::Int(53))));
+    assert!(matches!(interp.get_val("s_back"), Some(Value::Str(s)) if s.to_string() == "z"));
+    // 消した欄をもう一度消すのは CPython と同じ `AttributeError`、不変のインスタンスは `TypeError`。
+    let twice = concat!("class P:\n", "    mut x: int\n", "mut p = P(1)\n", "__py_delattr(p, \"x\")\n", "__py_delattr(p, \"x\")\n");
+    assert!(run_err_msg(twice).contains("AttributeError: 'P' object has no attribute 'x'"), "{}", run_err_msg(twice));
+    let frozen = concat!("class P:\n", "    mut x: int\n", "let p = P(1)\n", "__py_delattr(p, \"x\")\n");
+    assert!(
+        run_err_msg(frozen).contains("cannot delete field 'x' on immutable instance"),
+        "{}",
+        run_err_msg(frozen)
+    );
+}
+
 
 /// `str` / `print` は `__str__` が無ければ `__repr__`、コンテナの要素は `repr`（タスク 1-15・CPython と同じ）。
 #[test]

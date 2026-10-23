@@ -124,7 +124,8 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 - 書き換えるメソッド（`pop` / `popitem` / `setdefault` / `update` / `clear`）は `let` の辞書には呼べません（静的な誤り）。
 - 型つきの辞書（`dict[str, int]`）へ入れる `update` / `setdefault` は `d[k] = v` と同じく型を確かめます。
-- ⚠ `copy()` は深い写しです（`mut e = d` と同じ。CPython は浅い写し）。⚠ `del d[k]` はありません（`d.pop(k)` を使う）。
+- ⚠ `copy()` は深い写しです（`mut e = d` と同じ。CPython は浅い写し）。⚠ Arrow のソースに `del d[k]` はありません（`d.pop(k)` を使う。Python のモジュールの `del d[k]` は消せる・
+  [09_imports.md](09_imports.md) の「`del`」）。
 
 ### セット
 

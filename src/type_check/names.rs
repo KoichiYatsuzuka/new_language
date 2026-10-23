@@ -68,6 +68,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 呼んで作るのは Python の `object()` だけで、変換器が `__py_object()` にする。基底が `object` のクラスの
     // `super().__init__(..)` は `__py_object_init(self, ..)`。
     "object", "__py_object", "__py_object_init",
+    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
+    "__py_delattr", "__py_delitem",
     // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
     "Ellipsis",
     // 唯一の値 `NotImplemented`（演算子メソッドが返すと反対側を試す・タスク 6-12）。

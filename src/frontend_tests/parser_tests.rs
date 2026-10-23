@@ -1959,3 +1959,31 @@ fn python_with_exits_in_a_finally() {
     assert!(exited[0].starts_with("__py_with_"), "{exited:?}");
     assert_eq!(exited[1], "h");
 }
+
+/// Python の `del` は左から 1 つずつ: `del o.a` は `__py_delattr(o, "a")`、`del d[k]` は `__py_delitem(d, k)`、
+/// 組のターゲットは平らにする。名前の `del x` は（警告して）文を作らない（known_bugs.md の #2 / #3）。
+#[test]
+fn python_del_becomes_delattr_and_delitem_calls() {
+    let stmts = crate::python_converter::convert_python_source(
+        "def f(o, d, x):\n    del o.a, d[0]\n    del (d[1:2], x)\n",
+        "<test>",
+    )
+    .expect("del converts");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected fn: {stmts:?}") };
+    let calls: Vec<(&str, &Expr)> = body
+        .iter()
+        .map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => match (func.as_ref(), args.as_slice()) {
+                (Expr::Ident { name, .. }, [CallArg::Positional(_), CallArg::Positional(second)]) => {
+                    (name.as_str(), second)
+                }
+                _ => panic!("{s:?}"),
+            },
+            _ => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(calls.len(), 3, "{body:?}");
+    assert!(matches!(calls[0], ("__py_delattr", Expr::Str(a)) if &**a == "a"), "{calls:?}");
+    assert!(matches!(calls[1], ("__py_delitem", Expr::Int(0))), "{calls:?}");
+    assert!(matches!(calls[2], ("__py_delitem", Expr::Slice { .. })), "{calls:?}");
+}

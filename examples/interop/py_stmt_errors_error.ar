@@ -42,10 +42,9 @@
 #         だけになっていた（静かに違う答えが出る）。
 #      ⇒ 代替: 外側の変数を `mut` で宣言する（Arrow は入れ子 fn から書き換えられる）。
 #
-#   ⑦ del d[k] / del o.a
-#      `del <expr>[<key>]` is not supported (it would silently do nothing)
-#      ⇒ **意味のある削除**なので無視できない。`del <name>` だけは警告して無視する
-#         （`py_del_warn.ar` を参照）。
+#   ⑦ del d[k] / del o.a … ✅ 変換するようにした（known_bugs.md の #2 / #3・`py_del.ar` / `py_del_error.ar`）
+#      ⇒ 以前: `del <expr>[<key>]` is not supported（**意味のある削除**なので、黙って無視せず誤りにしていた）。
+#         `del <name>` は今も警告して無視する（`py_del_warn.ar` を参照）。
 #
 # ⚠ **通り続ける形**: 素の `try` / `except E as e:` / 裸の `except:` / `finally`、
 #   `raise E("msg")`。`py_del_warn.ar` で確認している。
@@ -62,7 +61,5 @@ import[py] test_modules.py_loop_else_error as m
 # import[py] test_modules.py_assert_error as m
 # ⑥ を試す場合:
 # import[py] test_modules.py_global_error as m
-# ⑦ を試す場合:
-# import[py] test_modules.py_del_subscript_error as m
 
 print("unreachable")

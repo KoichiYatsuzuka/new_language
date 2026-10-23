@@ -104,6 +104,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "__py_with_exit",
     // 変換器が Python の `object()` / 基底が `object` のクラスの `super().__init__(..)` にする（タスク 6-10）。
     "__py_object", "__py_object_init",
+    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）。
+    "__py_delattr", "__py_delitem",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

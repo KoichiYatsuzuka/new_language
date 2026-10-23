@@ -434,6 +434,44 @@ fn unpack_assign(
     Ok(out)
 }
 
+/// `del` の 1 つのターゲットを文にする（`py::Stmt::Delete` の腕を参照）。
+fn convert_del_target(target: &py::Expr, filename: &str, out: &mut Vec<Stmt>) -> Result<(), String> {
+    let call = |name: &str, args: Vec<Expr>| {
+        Stmt::Expr(Expr::Call {
+            func: Box::new(ident_expr(name)),
+            args: args.into_iter().map(crate::ast::CallArg::Positional).collect(),
+            span: crate::token::Span::unknown(),
+            cache: Default::default(),
+            node_id: 0,
+        })
+    };
+    match target {
+        py::Expr::Name(n) => {
+            eprintln!(
+                "Warning: {filename}: `del {}` is ignored \
+                 (Arrow drops bindings at scope exit)",
+                n.id.as_str()
+            );
+        }
+        py::Expr::Subscript(s) => {
+            let obj = convert_expr(&s.value, filename)?;
+            let key = convert_expr(&s.slice, filename)?;
+            out.push(call("__py_delitem", vec![obj, key]));
+        }
+        py::Expr::Attribute(a) => {
+            let obj = convert_expr(&a.value, filename)?;
+            out.push(call("__py_delattr", vec![obj, Expr::Str(std::rc::Rc::from(a.attr.as_str()))]));
+        }
+        py::Expr::Tuple(py::ExprTuple { elts, .. }) | py::Expr::List(py::ExprList { elts, .. }) => {
+            for elt in elts {
+                convert_del_target(elt, filename, out)?;
+            }
+        }
+        _ => return Err(format!("{filename}: unsupported `del` target")),
+    }
+    Ok(())
+}
+
 /// `for ... else:` / `while ... else:` の明示エラー文言（2 箇所で同じものを出す）。
 ///
 /// ⚠ Python のループ `else` は「**`break` せずに回り切ったときだけ**走る」節。
@@ -1150,37 +1188,18 @@ pub(crate) fn convert_stmt(
 
         // ----- del -----
         //
-        // ⚠ **ターゲットの種類で扱いを分ける**（coverage 項目 14 の決定）:
+        // ⚠ **ターゲットの種類で扱いを分ける**（coverage 項目 14 の決定・known_bugs.md の #2 / #3）:
         //   - `del x`（名前）… 束縛の削除。Arrow はスコープ退出で破棄するので
         //     **警告して無視**する。残る差は「削除後に読むと Python は `NameError`」だけ。
-        //   - `del d[k]` / `del o.a` … **意味のある削除**。無視すると結果が変わるので明示エラー。
+        //   - `del d[k]` … `__py_delitem(d, k)`（辞書・リスト・スライス・`__delitem__`）
+        //   - `del o.a` … `__py_delattr(o, "a")`（フィールドを未代入に戻す・データディスクリプタは `__delete__`）
+        //   - `del a, b[0]` / `del (a, b)` … 左から順に 1 つずつ（CPython と同じ順）
         py::Stmt::Delete(d) => {
+            let mut out = Vec::new();
             for target in &d.targets {
-                match target {
-                    py::Expr::Name(n) => {
-                        eprintln!(
-                            "Warning: {filename}: `del {}` is ignored \
-                             (Arrow drops bindings at scope exit)",
-                            n.id.as_str()
-                        );
-                    }
-                    py::Expr::Subscript(_) => {
-                        return Err(format!(
-                            "{filename}: `del <expr>[<key>]` is not supported \
-                             (it would silently do nothing); remove the entry another way"
-                        ))
-                    }
-                    py::Expr::Attribute(a) => {
-                        return Err(format!(
-                            "{filename}: `del <expr>.{}` is not supported \
-                             (Arrow cannot remove an attribute)",
-                            a.attr.as_str()
-                        ))
-                    }
-                    _ => return Err(format!("{filename}: unsupported `del` target")),
-                }
+                convert_del_target(target, filename, &mut out)?;
             }
-            Ok(vec![])
+            Ok(out)
         }
 
         // ----- pass -----

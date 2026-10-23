@@ -381,6 +381,21 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 ⚠ 以前はブロックの破棄だけに頼っていたので、同じ関数の中で `with open(p, "w")` の後に `with open(p)` で読むと、
 まだ書き戻されていなかった（VM はブロックの変数を関数の終わりまで持つ・タスク 5-4 で直した）。
 
+**`del`**（known_bugs.md の #2 / #3）: ターゲットの種類で分けます。`del a, b[0]` は左から 1 つずつ（CPython と同じ順）。
+- `del o.a` は属性を**未代入に戻します**（変換器が `__py_delattr(o, "a")` にする）。以後の読みは `AttributeError`、
+  `hasattr` は偽、`getattr(o, "a", d)` は `d` で、また代入できます（Arrow のフィールドはクラスで決まるので、欄は残して
+  「代入されていない」に戻す）。CPython と同じ順に、クラスの `__delattr__`、データディスクリプタの `__delete__`（property の
+  deleter）を先に見ます。`cached_property` は消すと次に読んだときに計算し直します。
+  ⚠ クラス・モジュールの属性（`del C.x` / `del m.x`）は消せません（実行時の `TypeError`。CPython は消せる）。
+  ⚠ 不変（`let` / `freeze`）のインスタンスの属性は消せません（実行時の `TypeError`）。Arrow の `mut` のインスタンスを
+  Python の関数に渡して消すと、Arrow から読んでも `AttributeError` になります（注釈の型の値は入っていない）。
+- `del d[k]` は辞書のエントリ・リストの要素（スライス・負のステップも）を取り除き、インスタンスは `__delitem__` を呼びます
+  （変換器が `__py_delitem(d, k)` にする）。無いキーは `KeyError`、範囲の外は `IndexError`、タプル・文字列・集合は
+  `TypeError`（文言は CPython と同じ）。
+- `del x`（名前）は警告して無視します（Arrow はスコープを抜けるときに破棄する。消した後に読んでも `NameError` にならない）。
+- ⚠ クラスの本体の `del` は変換の誤りです。
+- 例題は `examples/interop/py_del.ar`（CPython と同じ出力）・`py_del_error.ar`。
+
 **クラスの属性・property**:
 - `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。
   メソッドは別名（`__property_get_x` など）になり、`x` はクラスの属性の置き場（`static mut x: Any`）、
@@ -413,9 +428,9 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
   置き場の `static mut x` に組み込みの `cached_property` を、計算した値は同じ名前のインスタンスのフィールド `x`
   （CPython のインスタンスの `__dict__` の代わり）に入れます。`obj.x = v` もそのフィールドへ入ります。
   getter の戻り値の注釈が Arrow から読んだ値の型になります（property と同じ）。
-  ⚠ `del obj.x`（覚えた値を消す）は変換の誤り。⚠ `from functools import cached_property as cp` の別名は見分けません。
+  `del obj.x` は覚えた値を消します（次に読むと計算し直す・上の「`del`」）。⚠ `from functools import cached_property as cp` の別名は見分けません。
   ⚠ `import functools` は従来どおり読み込みの誤り（`from functools import cached_property` と書く）。
-- ⚠ `del obj.x` は変換の誤りです。
+- `del obj.x` は property の deleter を呼びます（上の「`del`」）。
 - `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
 - クラス本体で先に定義した名前を引くクラス属性（`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
   `table = {"get": getx}`）は、**クラスの定義の後で** `C.x = property(C.getx, C.setx)` のように組み立てます

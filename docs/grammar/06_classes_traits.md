@@ -671,7 +671,8 @@ print(Calc().op(21))          # 42
 - ⚠ `__get__` が `self` を返すとき（クラスから読んだら自分自身を返す形）は `mut self` にしてください。`self` のままだと
   `return self` は写しを返します（Arrow の値の規則）。組み込みの `property` はそうしています。
 - ⚠ インスタンスのフィールド（`mut f: D`）に入れた値はディスクリプタとして働きません（CPython と同じ）。
-- ⚠ `del obj.x`（`__delete__`）は Arrow に属性を消す構文が無いので使えません。
+- ⚠ Arrow のソースに `del obj.x` の構文はありません。`__delete__` を呼ぶのは Python のモジュール（`import[py]`）の
+  `del obj.x` です（[09_imports.md](09_imports.md) の「`del`」）。
 - 実装: `eval/attrs.rs` の `get_attr_val` / `attr_assign_evaled` / `set_attr_val`（3 つの入口だけ）。型検査は
   `TypeChecker::class_descriptor`。例題は `examples/classes/descriptor.ar`（CPython と同じ出力）・`descriptor_error.ar`。
 
@@ -732,7 +733,7 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
 | `__get__(self, mut obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節。クラスから読むと `obj` は `None`） |
 | `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
-| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる（⚠ `del obj.x` の構文が無いので呼ばれるのは明示の呼び出しだけ） |
+| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる。Python のモジュールの `del obj.x` が呼ぶ（⚠ Arrow のソースには `del` の構文が無い） |
 | `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
 
 ### 演算子メソッドの手順

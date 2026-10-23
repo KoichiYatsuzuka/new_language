@@ -160,6 +160,17 @@ impl Interpreter {
             .map(|_| ())
     }
 
+    /// `desc.__delete__(instance)`（`del obj.x`・known_bugs.md の #2）。データディスクリプタが `__delete__` を
+    /// 持たない（`__set__` だけ）なら CPython と同じ `AttributeError: __delete__`。
+    fn descriptor_delete(&mut self, desc: Value, instance: Value) -> Result<(), String> {
+        let has_delete =
+            matches!(&desc, Value::Instance(d) if d.borrow().class.methods.contains_key("__delete__"));
+        if !has_delete {
+            return Err("AttributeError: __delete__".to_string());
+        }
+        self.eval_method_call_full(desc, "__delete__", vec![(None, instance, false)], None).map(|_| ())
+    }
+
     /// 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
     ///
     /// - `__name__` は定義の名前。Python のモジュールの関数は変換器が付けた別名を戻す
@@ -597,6 +608,92 @@ impl Interpreter {
                 Ok(())
             }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
+        }
+    }
+
+    /// `del obj.attr`（変換器が Python の `del o.a` を `__py_delattr(o, "a")` にする・known_bugs.md の #2）。
+    /// CPython の `object.__delattr__` と同じ順:
+    /// ① クラスに `__delattr__` があればそれを呼ぶ（`type(obj).__delattr__(obj, name)`）
+    /// ② クラス側のデータディスクリプタは `__delete__(obj)`（property の deleter）
+    /// ③ フィールドは**未代入に戻す**（[`InstanceData::clear_field`]）。以後の読みは `AttributeError`・`hasattr` は偽・
+    ///    `cached_property` は計算し直す。欄は残るので、また代入できる
+    /// ④ 未代入のフィールド・フィールドでない名前（メソッド・クラスの値）は CPython と同じ `AttributeError`
+    /// ⚠ クラス・モジュールの属性は消せない（クラスの本体・モジュールの大域は定義で決まる）ので誤り。
+    ///
+    /// [`InstanceData::clear_field`]: crate::interpreter::InstanceData::clear_field
+    pub(crate) fn del_attr_val(&mut self, obj: Value, attr: &str) -> Result<(), String> {
+        match obj {
+            Value::Instance(inst_rc) => {
+                let cls = inst_rc.borrow().class.clone();
+                if cls.methods.contains_key("__delattr__") {
+                    return self
+                        .eval_method_call_full(
+                            Value::Instance(inst_rc),
+                            "__delattr__",
+                            vec![(None, Value::str(attr), false)],
+                            None,
+                        )
+                        .map(|_| ());
+                }
+                if let Some(desc) = Self::class_level_value(&cls, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        self.check_member_access(&cls, attr, attr)?;
+                        return self.descriptor_delete(desc, Value::Instance(inst_rc));
+                    }
+                }
+                let missing = || format!("AttributeError: '{}' object has no attribute '{attr}'", cls.name);
+                let Some(&idx) = cls.field_index.get(attr) else {
+                    return Err(missing());
+                };
+                self.check_member_access(&cls, attr, attr)?;
+                let mut inst = inst_rc.borrow_mut();
+                if !inst.slot_initialized(idx) {
+                    return Err(missing());
+                }
+                if inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                    return Err(format!("TypeError: cannot delete field '{attr}' on immutable instance"));
+                }
+                if inst.field_mutable(idx) == Some(false) {
+                    return Err(format!("TypeError: cannot delete immutable field '{attr}'"));
+                }
+                inst.clear_field(idx);
+                Ok(())
+            }
+            Value::Class(cls) => {
+                if cls.static_vars.contains_key(attr)
+                    || Self::lookup_class_var(&cls, attr).is_some()
+                    || cls.methods.contains_key(attr)
+                {
+                    return Err(format!(
+                        "TypeError: cannot delete class attribute '{attr}' of '{}' (a class's attributes are fixed by its definition)",
+                        cls.name
+                    ));
+                }
+                Err(format!("AttributeError: type object '{}' has no attribute '{attr}'", cls.name))
+            }
+            Value::Namespace(ns) => {
+                if self.namespace_member(&ns, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot delete '{}.{attr}' (a module's globals cannot be deleted)",
+                        ns.name
+                    ));
+                }
+                Err(format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
+            }
+            Value::PyObject(_) => Err(format!(
+                "TypeError: cannot delete attribute '{attr}' of a CPython object (import[py-int]) yet"
+            )),
+            // 組み込みの値（リスト・文字列など）の属性はメソッドだけで、消せない（CPython と同じ文言）。
+            other => {
+                let kind = self.type_name(&other).to_string();
+                match self.get_attr_val(other, attr, None) {
+                    Ok(_) => Err(format!("AttributeError: '{kind}' object attribute '{attr}' is read-only")),
+                    Err(e) if e.starts_with("AttributeError") => {
+                        Err(format!("AttributeError: '{kind}' object has no attribute '{attr}'"))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
         }
     }
 

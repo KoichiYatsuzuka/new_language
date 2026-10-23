@@ -357,4 +357,71 @@ impl Interpreter {
             )),
         }
     }
+
+    /// `del obj[key]`（変換器が Python の `del d[k]` を `__py_delitem(d, k)` にする・known_bugs.md の #3）。
+    /// 辞書はエントリを取り除く（無ければ `KeyError`）、リストは要素を詰める（スライスも・負のステップも）、
+    /// インスタンスは `__delitem__(key)`。文言は CPython と同じ。
+    /// ⚠ タプル・文字列・集合など書き換えられない値は CPython と同じ `TypeError`。
+    pub(crate) fn eval_delitem(&mut self, obj: Value, key: Value) -> Result<(), String> {
+        match obj {
+            Value::Dict(d) => match self.dict_index(&d, &key)? {
+                Some(idx) => {
+                    d.borrow_mut().remove_at(idx);
+                    Ok(())
+                }
+                None => Err(format!("KeyError: {}", self.display_repr(&key))),
+            },
+            Value::List(items) => {
+                if let Value::Slice(s) = &key {
+                    let bound = |v: &Option<Value>| -> Result<Option<i64>, String> {
+                        match v {
+                            None | Some(Value::None) => Ok(None),
+                            Some(v) => value_as_index(v).map(Some).ok_or_else(|| {
+                                "TypeError: slice indices must be integers or None or have an __index__ method"
+                                    .to_string()
+                            }),
+                        }
+                    };
+                    let step = bound(&s.step)?.unwrap_or(1);
+                    if step == 0 {
+                        return Err("ValueError: slice step cannot be zero".to_string());
+                    }
+                    let (begin, end) = (bound(&s.begin)?, bound(&s.end)?);
+                    let mut borrowed = items.borrow_mut();
+                    let mut doomed = compute_slice_indices(borrowed.len() as i64, begin, end, step);
+                    doomed.sort_unstable();
+                    let mut i = 0;
+                    borrowed.retain(|_| {
+                        let keep = doomed.binary_search(&i).is_err();
+                        i += 1;
+                        keep
+                    });
+                    return Ok(());
+                }
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!("TypeError: list indices must be integers or slices, not {}", self.type_name(&key))
+                })?;
+                let mut borrowed = items.borrow_mut();
+                let len = borrowed.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err("IndexError: list assignment index out of range".to_string());
+                }
+                borrowed.remove(actual as usize);
+                Ok(())
+            }
+            Value::Instance(ref inst) if inst.borrow().class.methods.contains_key("__delitem__") => {
+                self.eval_method_call_evaled(obj, "__delitem__", vec![(None, key, true)])?;
+                Ok(())
+            }
+            Value::PyObject(_) => {
+                Err("TypeError: cannot delete an item of a CPython object (import[py-int]) yet".to_string())
+            }
+            Value::Instance(inst) => Err(format!(
+                "TypeError: '{}' object doesn't support item deletion",
+                inst.borrow().class.name
+            )),
+            _ => Err(format!("TypeError: '{}' object doesn't support item deletion", self.type_name(&obj))),
+        }
+    }
 }

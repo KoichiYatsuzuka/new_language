@@ -431,6 +431,18 @@ impl InstanceData {
         }
     }
 
+    /// スロット `idx` を未代入に戻す（Python の `del obj.x`・known_bugs.md の #2）。以後の [`Self::field_value`] は
+    /// `None`（読みは `AttributeError`・`hasattr` は偽）。raw クラスは init ビットマップのビットを落とす（値のバイトは
+    /// 残るが読まれない）。欄そのものは残るので、また代入できる。
+    pub fn clear_field(&mut self, idx: usize) {
+        if self.has_raw_layout() {
+            let f = self.flags() & !(1u32 << idx);
+            self.set_flags(f);
+        } else {
+            self.boxed_fields[idx] = None;
+        }
+    }
+
     /// フィールドスロット総数。
     #[inline]
     pub fn field_count(&self) -> usize {
