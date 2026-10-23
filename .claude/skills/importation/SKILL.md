@@ -255,6 +255,13 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   field `x` (`bypass_setattr_name` in `classes.rs`). The checker lets an assignment target on a hooked class name
   anything (`attr_is_assign_target`). `cached_property` stores through `__py_object_setattr`. The Arrow parser rejects
   the hooks in Arrow classes (`reject_attr_hook`).
+- `__getattr__` (known_bugs.md #11): `get_attr_val` calls `get_attr_without_hook` and, when that fails with an
+  `AttributeError` (`Interpreter::is_attribute_error` — a message, or a raised exception in `current_exception`, which
+  it clears), calls a Python class's `__getattr__(name)`. A method call on an unknown name reads through it
+  (`call_instance_method_evaled`). `object.__getattribute__(o, k)` / `super().__getattribute__(k)` convert to
+  `__py_object_getattribute` (`get_attr_without_hook`). The checker lets an instance of a hooked class read or call any
+  name (`getattr_hook_type` — the hook's return annotation, else `Any`). `getattr(o, k, d)` / `hasattr` use the same
+  `is_attribute_error`, so an `AttributeError` raised by a property getter or the hook is caught.
 - `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
   `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
   `super().__init__(..)` in a class without a base (or with base `object`) becomes

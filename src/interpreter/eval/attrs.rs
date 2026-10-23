@@ -160,12 +160,14 @@ impl Interpreter {
             .map(|_| ())
     }
 
-    /// Python のクラスが属性の操作を上書きしているか（`__setattr__` / `__delattr__`・known_bugs.md の #10）。CPython と
-    /// 同じく `o.x = v` / `setattr(o, "x", v)` / `del o.x` はまずそれを呼ぶ（基底のものも・メソッドは祖先まで平坦化してある）。
+    /// Python のクラスが属性の操作を上書きしているか（`__setattr__` / `__delattr__`・known_bugs.md の #10、`__getattr__`・
+    /// #11）。CPython と同じく `o.x = v` / `setattr(o, "x", v)` / `del o.x` はまずそれを呼び、読みはふつうの読みが
+    /// `AttributeError` になったときだけ `__getattr__` を呼ぶ（基底のものも・メソッドは祖先まで平坦化してある）。
     /// ⚠ Python のクラス（`ClassValue::is_python`）だけ。Arrow のクラスはこれらを定義できない（パーサの誤り）。
     /// ⚠ 上書きを飛ばす `object.__setattr__(o, k, v)` / `super().__setattr__(k, v)` は、変換器が
-    ///   `__py_object_setattr(o, k, v)` にする（`hook: false` でふつうの代入へ直に行く）。
-    fn py_attr_hook(cls: &crate::interpreter::ClassValue, hook: &str) -> bool {
+    ///   `__py_object_setattr(o, k, v)` にする（`hook: false` でふつうの代入へ直に行く）。読みの
+    ///   `object.__getattribute__(o, k)` は `__py_object_getattribute(o, k)`（[`Self::get_attr_without_hook`]）。
+    pub(crate) fn py_attr_hook(cls: &crate::interpreter::ClassValue, hook: &str) -> bool {
         cls.is_python && cls.methods.contains_key(hook)
     }
 
@@ -240,7 +242,32 @@ impl Interpreter {
     ///
     /// `cache` が `Some` かつインスタンスの own/unqualified フィールドに解決できた場合、
     /// `(class_id, slot, アクセスレベル)` を焼き込む（R3・以後は `eval_attr` の高速経路が使う）。
+    ///
+    /// Python のクラスが `__getattr__` を上書きしていれば、ふつうの読み（[`Self::get_attr_without_hook`]）が
+    /// `AttributeError` になったときにそれを呼ぶ（CPython の `slot_tp_getattr_hook` と同じ。無い名前・`del` した
+    /// フィールド・`AttributeError` を投げた property の getter のどれも・known_bugs.md の #11）。
+    /// ⚠ 見つかった読みは今までどおり（VM の `GetAttr` のキャッシュはフィールドにしか張らないので、上書きを飛ばさない）。
     pub(crate) fn get_attr_val(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<Value, String> {
+        let hooked = matches!(&obj, Value::Instance(i) if Self::py_attr_hook(&i.borrow().class, "__getattr__"));
+        if !hooked {
+            return self.get_attr_without_hook(obj, attr, cache);
+        }
+        match self.get_attr_without_hook(obj.clone(), attr, cache) {
+            Err(e) if self.is_attribute_error(&e) => {
+                self.eval_method_call_full(obj, "__getattr__", vec![(None, Value::str(attr), false)], None)
+            }
+            other => other,
+        }
+    }
+
+    /// 上書きした `__getattr__` を呼ばない読み（CPython の `object.__getattribute__`。変換器が Python の
+    /// `object.__getattribute__(o, k)` を `__py_object_getattribute(o, k)` にする・known_bugs.md の #11）。
+    pub(crate) fn get_attr_without_hook(
         &mut self,
         obj: Value,
         attr: &str,

@@ -191,6 +191,6 @@ Set vs. dict disambiguation in `{...}`: after parsing the first expression, look
 | `new_type` name reassigned | `parse_ident_stmt` / `parse_compound` (stmts.rs) |
 | Trait inheriting from another trait | `parse_trait_def` (classes.rs) |
 | Missing type annotations in trait methods | `parse_trait_def` (classes.rs) |
-| `fn __setattr__` / `fn __delattr__` in an Arrow class or trait (Python modules only; known_bugs.md #10) | `reject_attr_hook` (classes.rs) |
+| `fn __setattr__` / `fn __delattr__` / `fn __getattr__` in an Arrow class or trait (Python modules only; known_bugs.md #10 / #11) | `reject_attr_hook` (classes.rs) |
 | Mixed `case` / `is` arms in `match` | `parse_match_arms` (stmts.rs) |
 | Circular imports | `loading` HashSet in `load_tl_module` (imports.rs) |

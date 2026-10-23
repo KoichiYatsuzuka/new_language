@@ -78,7 +78,7 @@ impl Interpreter {
         let (obj, name, default) = (it.next().expect("n >= 2"), it.next().expect("n >= 2"), it.next());
         let name = self.attr_name_arg(&name)?;
         match (self.get_attr_val(obj, &name, None), default) {
-            (Err(e), Some(d)) if e.starts_with("AttributeError") => Ok(d),
+            (Err(e), Some(d)) if self.is_attribute_error(&e) => Ok(d),
             (r, _) => r,
         }
     }
@@ -92,7 +92,7 @@ impl Interpreter {
         let name = self.attr_name_arg(&name)?;
         match self.get_attr_val(obj, &name, None) {
             Ok(_) => Ok(Value::Bool(true)),
-            Err(e) if e.starts_with("AttributeError") => Ok(Value::Bool(false)),
+            Err(e) if self.is_attribute_error(&e) => Ok(Value::Bool(false)),
             Err(e) => Err(e),
         }
     }
@@ -120,6 +120,18 @@ impl Interpreter {
         let name = self.attr_name_arg(&name)?;
         self.attr_assign_without_hook(obj, &name, value)?;
         Ok(Value::None)
+    }
+
+    /// `object.__getattribute__(o, name)`（変換器が Python の `object.__getattribute__(..)` /
+    /// `super().__getattribute__(..)` を `__py_object_getattribute(..)` にする・known_bugs.md の #11）。上書きした
+    /// `__getattr__` を呼ばない読み（無ければ `AttributeError`。`__getattr__` の中から本当の属性を読む形）。
+    pub(crate) fn py_object_getattribute(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [obj, name]: [Value; 2] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
+            0 => "TypeError: descriptor '__getattribute__' of 'object' object needs an argument".to_string(),
+            n => format!("TypeError: expected 1 argument, got {}", n - 1),
+        })?;
+        let name = self.attr_name_arg(&name)?;
+        self.get_attr_without_hook(obj, &name, None)
     }
 
     /// `object.__delattr__(o, name)`（変換器が置く・`py_object_setattr` と同じ）。上書きした `__delattr__` を飛ばす。
@@ -738,6 +750,25 @@ impl Interpreter {
             return is_stop;
         }
         e.starts_with("EndOfIteration") || e.starts_with("StopIteration")
+    }
+
+    /// 誤りが `AttributeError`（その派生を含む）か。送出した例外（Python の `raise AttributeError(..)`）なら
+    /// それを取り除く（受け止めて既定値・`__getattr__` へ進むので・[`Self::is_stop_iteration`] と同じ形）。
+    /// `getattr(o, k, d)` / `hasattr` / `__getattr__` への切り替え（known_bugs.md の #11）が使う。
+    /// ⚠ 以前は文言の頭だけを見ていたので、`__getattr__` や property の getter が `raise` した `AttributeError` を
+    ///   `getattr` の既定値・`hasattr` が受け止めなかった。
+    pub(crate) fn is_attribute_error(&mut self, e: &str) -> bool {
+        if e == crate::interpreter::RAISE_SENTINEL {
+            let is_attr = matches!(
+                self.current_exception.as_ref().map(|r| &r.exception),
+                Some(Value::Instance(i)) if i.borrow().class.is_a("AttributeError")
+            );
+            if is_attr {
+                self.current_exception = None;
+            }
+            return is_attr;
+        }
+        e.starts_with("AttributeError")
     }
 
     /// `map(f, *iterables)`。**遅延**（取り出すたびに `f` を呼ぶ・CPython と同じ）。

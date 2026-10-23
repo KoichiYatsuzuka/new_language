@@ -88,18 +88,18 @@ impl Interpreter {
                     return Ok(Value::None);
                 }
             }
-            // Python のクラスが `__setattr__` / `__delattr__` を上書きしていなければ `object` のもの（変換器は
-            // `super().__setattr__(k, v)` を `<基底>.__setattr__(self, k, v)` にするので、基底が上書きしていないとここへ
-            // 来る・known_bugs.md の #10）。⚠ キーワード引数は CPython と同じ誤り。
-            if cls.is_python && matches!(method_name, "__setattr__" | "__delattr__") {
+            // Python のクラスが `__setattr__` / `__delattr__` / `__getattribute__` を上書きしていなければ `object` のもの
+            // （変換器は `super().__setattr__(k, v)` を `<基底>.__setattr__(self, k, v)` にするので、基底が上書きしていないと
+            // ここへ来る・known_bugs.md の #10 / #11）。⚠ キーワード引数は CPython と同じ誤り。
+            if cls.is_python && matches!(method_name, "__setattr__" | "__delattr__" | "__getattribute__") {
                 if evaled.iter().any(|(k, _, _)| k.is_some()) {
                     return Err(format!("TypeError: wrapper {method_name}() takes no keyword arguments"));
                 }
                 let args = evaled.into_iter().map(|(_, v, _)| v).collect();
-                return if method_name == "__setattr__" {
-                    self.py_object_setattr(args)
-                } else {
-                    self.py_object_delattr(args)
+                return match method_name {
+                    "__setattr__" => self.py_object_setattr(args),
+                    "__delattr__" => self.py_object_delattr(args),
+                    _ => self.py_object_getattribute(args),
                 };
             }
             // クラス変数に入ったクラス（入れ子のクラス・10-18）なら、それを呼ぶ。

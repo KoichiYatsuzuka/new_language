@@ -848,15 +848,15 @@ impl Parser {
         }
     }
 
-    /// `fn __setattr__` / `fn __delattr__`（属性の操作の上書き）は Python のモジュール（`import[py]`）のクラスだけが
-    /// 持てる（known_bugs.md の #10）。Arrow のクラスのフィールドはクラスの本体で決まり、代入はそのまま入る。
-    /// 位置を `fn` に合わせるため、本体を読む前に名前を見る（今の字句は `fn`）。
+    /// `fn __setattr__` / `fn __delattr__` / `fn __getattr__`（属性の操作の上書き）は Python のモジュール（`import[py]`）の
+    /// クラスだけが持てる（known_bugs.md の #10 / #11）。Arrow のクラスのフィールドはクラスの本体で決まり、代入はそのまま
+    /// 入り、無い名前の読みは静的な誤り。位置を `fn` に合わせるため、本体を読む前に名前を見る（今の字句は `fn`）。
     /// ⚠ 変換器が作る Python のクラスはこのパーサを通らない。
     fn reject_attr_hook(&self) -> Result<(), String> {
         match self.peek1() {
-            Token::Ident(name) if matches!(name.as_str(), "__setattr__" | "__delattr__") => Err(format!(
-                "`{name}` can only be defined in a class of a Python module (import[py]); an Arrow class declares its \
-                 fields in the class body and assigns them directly"
+            Token::Ident(name) if matches!(name.as_str(), "__setattr__" | "__delattr__" | "__getattr__") => Err(format!(
+                "`{name}` can only be defined in a class of a Python module (import[py]); the members of an Arrow \
+                 class are fixed by its class body"
             )),
             _ => Ok(()),
         }

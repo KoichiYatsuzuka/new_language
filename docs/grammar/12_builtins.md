@@ -149,7 +149,7 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 | 名前 | メモ |
 |---|---|
 | `isinstance(x, C)` / `issubclass(C, B)` | 第 2 引数は名前・`m.C`・変数・組。クラスは同一性と修飾名の祖先で見る。`isinstance(True, int)` は `True` |
-| `getattr(o, name[, default])` / `hasattr` / `setattr` | 名前が変数の属性の読み書き（`o.name` と同じ経路）。メソッドは束縛メソッドが返る |
+| `getattr(o, name[, default])` / `hasattr` / `setattr` | 名前が変数の属性の読み書き（`o.name` と同じ経路）。メソッドは束縛メソッドが返る。`default` / `hasattr` は、property の getter や Python のクラスの `__getattr__` が `raise` した `AttributeError` も受け止める（CPython と同じ） |
 | `callable(x)` | 関数・クラス・束縛メソッド |
 | `all` / `any` | |
 | `min` / `max`（`key=` / `default=`） | 空で `default` が無ければ `ValueError: max() arg is an empty sequence` |

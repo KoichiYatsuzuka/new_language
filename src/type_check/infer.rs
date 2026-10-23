@@ -953,6 +953,16 @@ impl TypeChecker {
         if let Some(class_name) = &class_name_opt {
             self.check_member_access_static(class_name, attr, Some(span.clone()));
             // ⚠ メンバーの存在検査（タスク 7.5・検体 `M1` / `M2`）。
+            // `__getattr__` を上書きした Python のクラスのインスタンスから読む無い名前は、上書きが答える（#11）。
+            // ⚠ 代入の左辺は読みではない（`__setattr__` が無ければ宣言していない名前は書けない）。クラスから読む
+            //   `C.zz` も対象外（CPython でもメタクラスの領分）。
+            let from_instance =
+                matches!(obj_ty, InferredType::NamedInstance(_) | InferredType::GenericInstance { .. });
+            let hook = if is_assign_target || !from_instance { None } else { self.getattr_hook_type(class_name) };
+            if let (false, Some(ty)) = (self.member_exists(class_name, attr), hook) {
+                self.annotations.set_resolved(node_id, ty.clone());
+                return ty;
+            }
             if !self.member_exists(class_name, attr) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NoSuchMember {
@@ -1176,6 +1186,17 @@ impl TypeChecker {
     /// パーサの誤り）。基底のものも含む（変換したクラスのメソッドは祖先まで平坦化してある）。
     pub(super) fn class_has_setattr_hook(&self, class_name: &str) -> bool {
         self.collect_class_method_sigs(class_name).contains_key("__setattr__")
+    }
+
+    /// `__getattr__` を上書きしたクラスなら、その戻り値の型（注釈が無ければ `Any`）。宣言していない名前をインスタンスから
+    /// 読む・呼ぶ形はこれが答える（known_bugs.md の #11）。持てるのは Python のクラスだけ（`class_has_setattr_hook` と同じ）。
+    pub(super) fn getattr_hook_type(&self, class_name: &str) -> Option<InferredType> {
+        let sigs = self.collect_class_method_sigs(class_name);
+        let ret = sigs.get("__getattr__")?.first().and_then(|s| s.return_type.clone());
+        Some(match ret {
+            Some(t) if !matches!(t, InferredType::Unresolved) => t,
+            _ => InferredType::Any,
+        })
     }
 
     pub(super) fn member_exists(&self, class_name: &str, member: &str) -> bool {

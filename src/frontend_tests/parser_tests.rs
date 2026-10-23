@@ -1988,14 +1988,15 @@ fn python_del_becomes_delattr_and_delitem_calls() {
     assert!(matches!(calls[2], ("__py_delitem", Expr::Slice { .. })), "{calls:?}");
 }
 
-/// `__setattr__` / `__delattr__` は Python のモジュールのクラスだけが持てる。Arrow のクラスでは `fn` の位置で
-/// パースの誤り（`static fn` / `class_method fn` も・known_bugs.md の #10）。ほかの dunder はそのまま。
+/// `__setattr__` / `__delattr__` / `__getattr__` は Python のモジュールのクラスだけが持てる。Arrow のクラスでは `fn` の
+/// 位置でパースの誤り（`static fn` / `class_method fn` も・known_bugs.md の #10 / #11）。ほかの dunder はそのまま。
 #[test]
 fn arrow_class_cannot_define_attr_hooks() {
     for (src, hook) in [
         ("class C:\n    fn __setattr__(mut self, name: str, v: Any) -> None:\n        pass\n", "__setattr__"),
         ("class C:\n    static fn __delattr__(name: str) -> None:\n        pass\n", "__delattr__"),
         ("class C:\n    class_method fn __setattr__(cls: Any) -> None:\n        pass\n", "__setattr__"),
+        ("class C:\n    fn __getattr__(self, name: str) -> str:\n        return name\n", "__getattr__"),
     ] {
         let mut p = Parser::new(Lexer::new(src, "m.ar").tokenize(), None);
         let err = p.parse_program().expect_err("attribute hook in an Arrow class");
@@ -2013,7 +2014,9 @@ fn arrow_class_cannot_define_attr_hooks() {
 fn python_object_setattr_becomes_bypass_builtin() {
     let src = "class C:\n    def __init__(self):\n        object.__setattr__(self, 'a', 1)\n    \
                def __setattr__(self, name, value):\n        super().__setattr__(name, value)\n    \
-               def drop(self):\n        object.__delattr__(self, 'a')\n";
+               def drop(self):\n        object.__delattr__(self, 'a')\n    \
+               def __getattr__(self, name):\n        super().__getattribute__(name)\n    \
+               def peek(self):\n        object.__getattribute__(self, 'a')\n";
     let stmts = crate::python_converter::convert_python_source(src, "<test>").expect("converts");
     let Some(Stmt::ClassDef { body, .. }) = stmts.iter().find(|s| matches!(s, Stmt::ClassDef { .. })) else {
         panic!("{stmts:?}")
@@ -2036,4 +2039,6 @@ fn python_object_setattr_becomes_bypass_builtin() {
     assert_eq!(callee_of("__init__"), "__py_object_setattr/3");
     assert_eq!(callee_of("__setattr__"), "__py_object_setattr/3");
     assert_eq!(callee_of("drop"), "__py_object_delattr/2");
+    assert_eq!(callee_of("__getattr__"), "__py_object_getattribute/2");
+    assert_eq!(callee_of("peek"), "__py_object_getattribute/2");
 }

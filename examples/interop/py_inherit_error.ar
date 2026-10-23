@@ -9,8 +9,8 @@
 # 期待されるエラー（ParseError・変換時）:
 #
 #   ① 基底クラスの無いクラスでの `super().f()`（本ファイルが踏む形）
-#      `super().f(...)` is only supported for `__init__` / `__setattr__` / `__delattr__` in a class whose base is `object`
-#      (or that has no base class)
+#      `super().f(...)` is only supported for `__init__` / `__setattr__` / `__delattr__` / `__getattribute__` in a class
+#      whose base is `object` (or that has no base class)
 #      ⇒ 基底が無いクラスの `super()` は `object` を指す。`object` のメソッドのうち `super().__init__()` だけは
 #        受ける（python_builtins_plan.md のタスク 6-10・例題 py_object.ar）。ほかは対象外。
 #

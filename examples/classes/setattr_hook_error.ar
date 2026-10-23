@@ -4,10 +4,10 @@
 # （`examples/interop/py_setattr.ar`）。Arrow のクラスのフィールドはクラスの本体で決まり、代入はそのまま入る。
 #
 # 期待されるエラー（ParseError・パース時）:
-#   `__setattr__` can only be defined in a class of a Python module (import[py]); an Arrow class declares its fields
-#   in the class body and assigns them directly
+#   `__setattr__` can only be defined in a class of a Python module (import[py]); the members of an Arrow class are
+#   fixed by its class body
 #
-# ⚠ `fn __delattr__(..)` も同じ誤り。
+# ⚠ `fn __delattr__(..)` / `fn __getattr__(..)`（`getattr_hook_error.ar`）も同じ誤り。
 
 class Logged:
     mut x: int

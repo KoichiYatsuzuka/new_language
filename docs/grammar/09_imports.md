@@ -411,8 +411,19 @@ Arrow からの代入のどれも通り、基底で定義したものも受け�
 - `cached_property` が覚える値は上書きを通りません（CPython もインスタンスの `__dict__` へ直に入れる）。
 - ⚠ **Arrow のクラスは `__setattr__` / `__delattr__` を定義できません**（パースの誤り・`examples/classes/setattr_hook_error.ar`）。
   Arrow のフィールドはクラスの本体で決まり、代入はそのまま入ります。
-- ⚠ 読みの上書き（`__getattr__` / `__getattribute__`）はまだ呼びません（known_bugs.md の #11）。
 - 例題は `examples/interop/py_setattr.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
+
+**`__getattr__`**（known_bugs.md の #11）: Python のクラスが定義した `__getattr__(name)` は、**ふつうの読みが `AttributeError`
+になったときだけ**呼びます（CPython と同じ。無い名前・`del` した属性・`AttributeError` を投げた property の getter）。
+フィールド・メソッド・property など見つかる名前では呼びません。`getattr(o, k, d)`・`hasattr`・`o.k(..)`（読んでから呼ぶ）・
+Arrow からの読みも同じで、基底で定義したものも受け継ぎます。
+- `__getattr__` の中から本当の属性を読むのは `object.__getattribute__(self, name)` / `super().__getattribute__(name)` です
+  （変換器が内部の `__py_object_getattribute` にする。pandas の `NDFrame.__getattr__` の形）。
+- Arrow の型検査は、`__getattr__` を持つクラスのインスタンスから宣言していない名前を読む・呼ぶ形を通します（型は
+  `__getattr__` の戻り値の注釈、無ければ `Any`）。⚠ 代入は、`__setattr__` が無ければ今までどおり宣言した名前だけです。
+- ⚠ **Arrow のクラスは `__getattr__` を定義できません**（パースの誤り・`examples/classes/getattr_hook_error.ar`）。
+- ⚠ すべての読みを上書きする `__getattribute__` の定義はまだ呼びません（known_bugs.md の #12）。
+- 例題は `examples/interop/py_getattr_hook.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
 
 **クラスの属性・property**:
 - `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。

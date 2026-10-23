@@ -97,10 +97,11 @@
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no
   fields, is never copied on store (a sentinel stays the same object through fields, dicts and lists), and compares
   and hashes by identity.
-- **Attribute hooks (`__setattr__` / `__delattr__`) exist only in Python modules** (`import[py]`; known_bugs.md #10).
-  A Python class's `__setattr__` runs for every assignment (`o.x = v`, `setattr`, `self.x = ..` in `__init__`, assignments
-  from Arrow); `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)` store past it. Defining either hook in an
-  Arrow class is a `ParseError` — Arrow fields are fixed by the class body and assignment stores directly.
+- **Attribute hooks (`__setattr__` / `__delattr__` / `__getattr__`) exist only in Python modules** (`import[py]`;
+  known_bugs.md #10 / #11). A Python class's `__setattr__` runs for every assignment (`o.x = v`, `setattr`, `self.x = ..`
+  in `__init__`, assignments from Arrow); `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)` store past it.
+  `__getattr__` runs when a normal read raises `AttributeError`; `object.__getattribute__(self, k)` reads past it.
+  Defining any of these hooks in an Arrow class is a `ParseError` — Arrow members are fixed by the class body.
 - **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
   Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is an
   error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's

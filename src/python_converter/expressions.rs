@@ -269,12 +269,13 @@ fn is_zero_arg_super(e: &py::Expr) -> bool {
 
 /// `object` のメソッドのうち、内部の組み込みで表すもの（`object.m(o, ..)` と、基底が `object` のクラスの
 /// `super().m(..)` の変換先）。`__init__` は何もしない（タスク 6-10）、`__setattr__` / `__delattr__` はクラスが上書きした
-/// ものを飛ばして属性を入れる・消す（known_bugs.md の #10）。
+/// ものを飛ばして属性を入れる・消す（known_bugs.md の #10）、`__getattribute__` は `__getattr__` を呼ばずに読む（#11）。
 fn object_method_builtin(method: &str) -> Option<&'static str> {
     match method {
         "__init__" => Some("__py_object_init"),
         "__setattr__" => Some("__py_object_setattr"),
         "__delattr__" => Some("__py_object_delattr"),
+        "__getattribute__" => Some("__py_object_getattribute"),
         _ => None,
     }
 }
@@ -481,8 +482,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         Some(b) if b != "object" => b,
                         // 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super()` は `object` を指す
                         // （タスク 6-10）。`object.__init__` は `__py_object_init(self, ..)`（余分な引数は CPython と
-                        // 同じ `TypeError`）、`object.__setattr__` / `__delattr__` は上書きを飛ばす
-                        // `__py_object_setattr(self, ..)` / `__py_object_delattr(self, ..)`（known_bugs.md の #10）。
+                        // 同じ `TypeError`）、`object.__setattr__` / `__delattr__` / `__getattribute__` は上書きを飛ばす
+                        // `__py_object_setattr(self, ..)` など（known_bugs.md の #10 / #11・`object_method_builtin`）。
                         // ほかの `object` のメソッド（`__repr__` など）は対象外。
                         _ if inside_class() && object_method_builtin(attr.attr.as_str()).is_some() => {
                             let name = object_method_builtin(attr.attr.as_str()).expect("checked");
@@ -501,7 +502,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         _ if inside_class() => {
                             return Err(format!(
                                 "{filename}: `super().{}(...)` is only supported for `__init__` / `__setattr__` / \
-                                 `__delattr__` in a class whose base is `object` (or that has no base class)",
+                                 `__delattr__` / `__getattribute__` in a class whose base is `object` (or that has no \
+                                 base class)",
                                 attr.attr
                             ))
                         }

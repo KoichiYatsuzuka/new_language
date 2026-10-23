@@ -115,7 +115,9 @@ impl TypeChecker {
                     //    ⇒ 存在検査（タスク 7.5）を**ここにも**書く必要がある。
                     //    検体 `M1`（フィールドの読み）は `infer_attr` 側で閉じたが、
                     //    `M2`（メソッドの呼び出し）はこの経路なので別に閉じる。
-                    if !self.member_exists(&cls_name, attr) {
+                    // ⚠ `__getattr__` を上書きした Python のクラスのインスタンスは、無い名前も上書きが答える（読んで呼ぶ・#11）。
+                    let answered_by_hook = is_instance && self.getattr_hook_type(&cls_name).is_some();
+                    if !self.member_exists(&cls_name, attr) && !answered_by_hook {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::NoSuchMember {
                                 class_name: cls_name.clone(),

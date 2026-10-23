@@ -106,9 +106,11 @@ impl Interpreter {
             // 属性に入れた呼べる値（`self.f(x)`・Python の `self.callback(x)`・python_builtins_plan.md のタスク 1-11）。
             // CPython と同じく**属性を読んで、その値を呼ぶ**（読みはアクセス制御も含めて `get_attr_val`）。
             // ⚠ 以前は `has no method 'f'` だった（メソッドの表しか見ていなかった）。
+            // Python のクラスの `__getattr__` が答える名前も読んで呼ぶ（`d.dyn(..)`・known_bugs.md の #11）。
             if class.field_index.contains_key(method_name)
                 || class.class_vars.contains_key(method_name)
                 || class.static_vars.contains_key(method_name)
+                || Self::py_attr_hook(&class, "__getattr__")
             {
                 let callee = self.get_attr_val(obj.clone(), method_name, None)?;
                 return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
