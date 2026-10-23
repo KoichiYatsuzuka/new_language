@@ -123,6 +123,10 @@ pub struct TypeChecker {
     ///   組み込みの値は読める属性を持たないので、読みとして検査すると正しい呼び出しまで弾いてしまう。
     ///   ⇒ 呼び出しの検査がここを立て、`infer_attr` が**入口で取り去る**（内側の `a.b` は読みのまま）。
     attr_is_callee: bool,
+    /// 次に推論する属性式（`o.x`）が**代入の左辺**か（`o.x = v`・known_bugs.md の #10）。`attr_is_callee` と同じく
+    /// `check_attr_assign` が立て、`infer_attr` が入口で取り去る。`__setattr__` を上書きした Python のクラスへの代入は
+    /// 上書きが受けるので、宣言していない名前も書ける（読みは今までどおり宣言した名前だけ）。
+    attr_is_assign_target: bool,
     /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
     /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
     declared_anywhere: std::collections::HashSet<String>,
@@ -307,6 +311,7 @@ impl TypeChecker {
                 map
             },
             attr_is_callee: false,
+            attr_is_assign_target: false,
             declared_anywhere: {
                 let mut set = std::collections::HashSet::new();
                 names::collect_declared_anywhere(stmts, &mut set);

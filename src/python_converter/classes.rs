@@ -939,6 +939,16 @@ pub(crate) fn collect_self_fields(stmts: &[py::Stmt], out: &mut Vec<(String, Str
                     }
                 }
             }
+            // `object.__setattr__(self, "x", v)` / `super().__setattr__("x", v)` も `x` を入れる（`__setattr__` を
+            // 上書きしたクラスが上書きを飛ばして入れる形・known_bugs.md の #10）。名前が文字列の定数のときだけ
+            // （変数の名前は変換時に分からない。宣言の無い名前は実行時の誤り）。
+            py::Stmt::Expr(e) => {
+                if let Some(fname) = bypass_setattr_name(&e.value) {
+                    if !out.iter().any(|(n, _)| n == &fname) {
+                        out.push((fname, "Any".to_string()));
+                    }
+                }
+            }
             py::Stmt::If(i) => {
                 collect_self_fields(&i.body, out);
                 collect_self_fields(&i.orelse, out);
@@ -955,6 +965,31 @@ pub(crate) fn collect_self_fields(stmts: &[py::Stmt], out: &mut Vec<(String, Str
             }
             _ => {}
         }
+    }
+}
+
+/// `object.__setattr__(self, "x", v)` / `super().__setattr__("x", v)` の `"x"`（[`collect_self_fields`]）。
+fn bypass_setattr_name(e: &py::Expr) -> Option<String> {
+    let py::Expr::Call(c) = e else { return None };
+    let py::Expr::Attribute(a) = &*c.func else { return None };
+    if a.attr.as_str() != "__setattr__" {
+        return None;
+    }
+    let name_arg = match &*a.value {
+        py::Expr::Name(n) if n.id.as_str() == "object" && c.args.first().is_some_and(is_self) => c.args.get(1)?,
+        py::Expr::Call(sc)
+            if sc.args.is_empty() && matches!(&*sc.func, py::Expr::Name(n) if n.id.as_str() == "super") =>
+        {
+            c.args.first()?
+        }
+        _ => return None,
+    };
+    match name_arg {
+        py::Expr::Constant(k) => match &k.value {
+            py::Constant::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

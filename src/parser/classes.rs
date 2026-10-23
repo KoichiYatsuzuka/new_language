@@ -788,12 +788,18 @@ impl Parser {
                     access: Accessibility::Public,
                 })
             }
-            Token::Fn => self.parse_fn_def(),
+            Token::Fn => {
+                self.reject_attr_hook()?;
+                self.parse_fn_def()
+            }
             Token::Gen => self.parse_gen_def(),
             Token::Static => {
                 self.advance(); // consume `static`
                 match self.current().clone() {
-                    Token::Fn => self.parse_fn_def_with_flags(vec![], true, false),
+                    Token::Fn => {
+                        self.reject_attr_hook()?;
+                        self.parse_fn_def_with_flags(vec![], true, false)
+                    }
                     Token::Mut => {
                         self.advance(); // consume `mut`
                         let fname = self.expect_ident()?;
@@ -831,6 +837,7 @@ impl Parser {
                         self.current()
                     ));
                 }
+                self.reject_attr_hook()?;
                 self.parse_fn_def_with_flags(vec![], false, true)
             }
             Token::Pass => {
@@ -838,6 +845,20 @@ impl Parser {
                 Ok(Stmt::Pass)
             }
             tok => Err(format!("unexpected statement in class body: `{tok}`")),
+        }
+    }
+
+    /// `fn __setattr__` / `fn __delattr__`（属性の操作の上書き）は Python のモジュール（`import[py]`）のクラスだけが
+    /// 持てる（known_bugs.md の #10）。Arrow のクラスのフィールドはクラスの本体で決まり、代入はそのまま入る。
+    /// 位置を `fn` に合わせるため、本体を読む前に名前を見る（今の字句は `fn`）。
+    /// ⚠ 変換器が作る Python のクラスはこのパーサを通らない。
+    fn reject_attr_hook(&self) -> Result<(), String> {
+        match self.peek1() {
+            Token::Ident(name) if matches!(name.as_str(), "__setattr__" | "__delattr__") => Err(format!(
+                "`{name}` can only be defined in a class of a Python module (import[py]); an Arrow class declares its \
+                 fields in the class body and assigns them directly"
+            )),
+            _ => Ok(()),
         }
     }
 

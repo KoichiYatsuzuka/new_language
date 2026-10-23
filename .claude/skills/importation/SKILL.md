@@ -246,6 +246,15 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   init-bitmap bit); `del d[k]` → `__py_delitem(d, k)` (`Interpreter::eval_delitem`: dict / list / slice /
   `__delitem__`); `del x` still warns and is ignored; tuple / list targets are flattened left to right. Class and
   module attributes cannot be deleted (runtime `TypeError`). A `del` in a class body is still a conversion error.
+- `__setattr__` / `__delattr__` (known_bugs.md #10): `attr_assign_evaled` / `set_attr_val` / `del_attr_val` call a Python
+  class's hook first (`Interpreter::py_attr_hook` — `ClassValue::is_python` only). `object.__setattr__(o, k, v)` /
+  `object.__delattr__(o, k)` and `super().__setattr__` / `__delattr__` in an object-based class convert to
+  `__py_object_setattr` / `__py_object_delattr` (`object_method_builtin` in `expressions.rs`), which store past the hook
+  (`attr_assign_without_hook` / `del_attr_val(.., false)`); with a Python base, `Base.__setattr__(self, ..)` falls back to
+  them in `eval_class_method` when the base has no hook. A literal name in `object.__setattr__(self, "x", v)` declares
+  field `x` (`bypass_setattr_name` in `classes.rs`). The checker lets an assignment target on a hooked class name
+  anything (`attr_is_assign_target`). `cached_property` stores through `__py_object_setattr`. The Arrow parser rejects
+  the hooks in Arrow classes (`reject_attr_hook`).
 - `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
   `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
   `super().__init__(..)` in a class without a base (or with base `object`) becomes

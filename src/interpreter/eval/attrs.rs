@@ -160,6 +160,23 @@ impl Interpreter {
             .map(|_| ())
     }
 
+    /// Python のクラスが属性の操作を上書きしているか（`__setattr__` / `__delattr__`・known_bugs.md の #10）。CPython と
+    /// 同じく `o.x = v` / `setattr(o, "x", v)` / `del o.x` はまずそれを呼ぶ（基底のものも・メソッドは祖先まで平坦化してある）。
+    /// ⚠ Python のクラス（`ClassValue::is_python`）だけ。Arrow のクラスはこれらを定義できない（パーサの誤り）。
+    /// ⚠ 上書きを飛ばす `object.__setattr__(o, k, v)` / `super().__setattr__(k, v)` は、変換器が
+    ///   `__py_object_setattr(o, k, v)` にする（`hook: false` でふつうの代入へ直に行く）。
+    fn py_attr_hook(cls: &crate::interpreter::ClassValue, hook: &str) -> bool {
+        cls.is_python && cls.methods.contains_key(hook)
+    }
+
+    /// 上書きした `__setattr__(name, value)` / `__delattr__(name)` を呼ぶ（[`Self::py_attr_hook`]）。
+    /// ⚠ 引数は写さずに渡す（`descriptor_set` と同じ）。
+    fn call_attr_hook(&mut self, obj: Value, hook: &str, attr: &str, value: Option<Value>) -> Result<(), String> {
+        let mut args = vec![(None, Value::str(attr), false)];
+        args.extend(value.map(|v| (None, v, false)));
+        self.eval_method_call_full(obj, hook, args, None).map(|_| ())
+    }
+
     /// `desc.__delete__(instance)`（`del obj.x`・known_bugs.md の #2）。データディスクリプタが `__delete__` を
     /// 持たない（`__set__` だけ）なら CPython と同じ `AttributeError: __delete__`。
     fn descriptor_delete(&mut self, desc: Value, instance: Value) -> Result<(), String> {
@@ -572,6 +589,10 @@ impl Interpreter {
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
+                // Python のクラスの `__setattr__`（`setattr(o, k, v)` も通る・known_bugs.md の #10）。
+                if Self::py_attr_hook(&inst_class, "__setattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__setattr__", attr, Some(val));
+                }
                 // クラス側のデータディスクリプタは `__set__`（`attr_assign_evaled` と同じ・タスク 1-12）。
                 if let Some(desc) = Self::class_level_value(&inst_class, attr) {
                     if Self::descriptor_kind(&desc) == Some(true) {
@@ -620,20 +641,16 @@ impl Interpreter {
     /// ④ 未代入のフィールド・フィールドでない名前（メソッド・クラスの値）は CPython と同じ `AttributeError`
     /// ⚠ クラス・モジュールの属性は消せない（クラスの本体・モジュールの大域は定義で決まる）ので誤り。
     ///
+    /// `hook: false` は ① を飛ばす（`object.__delattr__(o, k)` の変換先 `__py_object_delattr`・known_bugs.md の #10）。
+    /// ⚠ ① は Python のクラスだけ（[`Self::py_attr_hook`]）。
+    ///
     /// [`InstanceData::clear_field`]: crate::interpreter::InstanceData::clear_field
-    pub(crate) fn del_attr_val(&mut self, obj: Value, attr: &str) -> Result<(), String> {
+    pub(crate) fn del_attr_val(&mut self, obj: Value, attr: &str, hook: bool) -> Result<(), String> {
         match obj {
             Value::Instance(inst_rc) => {
                 let cls = inst_rc.borrow().class.clone();
-                if cls.methods.contains_key("__delattr__") {
-                    return self
-                        .eval_method_call_full(
-                            Value::Instance(inst_rc),
-                            "__delattr__",
-                            vec![(None, Value::str(attr), false)],
-                            None,
-                        )
-                        .map(|_| ());
+                if hook && Self::py_attr_hook(&cls, "__delattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__delattr__", attr, None);
                 }
                 if let Some(desc) = Self::class_level_value(&cls, attr) {
                     if Self::descriptor_kind(&desc) == Some(true) {
@@ -706,17 +723,33 @@ impl Interpreter {
     /// 絞ることで差を隠していたが、絞れないレシーバ（型注釈の無いグローバル等）が
     /// そのまま bail になっていた。
     /// ⚠ 格納する値は**入口で**複製する（L4。`set_attr_val` の doc と同じ理由・同じ罠）。
+    /// ⚠ Python のクラスが `__setattr__` を上書きしていればそれを呼ぶ（[`Self::py_attr_hook`]）。飛ばすのは
+    ///   [`Self::attr_assign_without_hook`]（`object.__setattr__`）。
     pub(crate) fn attr_assign_evaled(
         &mut self,
         obj: Value,
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
+        self.attr_assign_inner(obj, attr, rhs, true)
+    }
+
+    /// `object.__setattr__(o, k, v)`（変換器が Python の `object.__setattr__(..)` / `super().__setattr__(..)` を
+    /// `__py_object_setattr(..)` にする・known_bugs.md の #10）。上書きした `__setattr__` を飛ばして、ふつうの代入
+    /// （データディスクリプタの `__set__`・フィールド）をする。
+    pub(crate) fn attr_assign_without_hook(&mut self, obj: Value, attr: &str, rhs: Value) -> Result<(), String> {
+        self.attr_assign_inner(obj, attr, rhs, false)
+    }
+
+    fn attr_assign_inner(&mut self, obj: Value, attr: &str, rhs: Value, hook: bool) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
         let rhs = self.copy_for_store(rhs);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
+                if hook && Self::py_attr_hook(&inst_class, "__setattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__setattr__", attr, Some(rhs));
+                }
                 // クラス側のデータディスクリプタへの代入は `__set__(obj, v)`（property の setter・タスク 1-12）。
                 // `static mut` の書き換え・フィールドより先（CPython の `object.__setattr__` と同じ）。
                 // 非データディスクリプタ（`__get__` だけ）と同じ名前のフィールドがあれば、代入はフィールドへ

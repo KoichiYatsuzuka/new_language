@@ -1987,3 +1987,53 @@ fn python_del_becomes_delattr_and_delitem_calls() {
     assert!(matches!(calls[1], ("__py_delitem", Expr::Int(0))), "{calls:?}");
     assert!(matches!(calls[2], ("__py_delitem", Expr::Slice { .. })), "{calls:?}");
 }
+
+/// `__setattr__` / `__delattr__` は Python のモジュールのクラスだけが持てる。Arrow のクラスでは `fn` の位置で
+/// パースの誤り（`static fn` / `class_method fn` も・known_bugs.md の #10）。ほかの dunder はそのまま。
+#[test]
+fn arrow_class_cannot_define_attr_hooks() {
+    for (src, hook) in [
+        ("class C:\n    fn __setattr__(mut self, name: str, v: Any) -> None:\n        pass\n", "__setattr__"),
+        ("class C:\n    static fn __delattr__(name: str) -> None:\n        pass\n", "__delattr__"),
+        ("class C:\n    class_method fn __setattr__(cls: Any) -> None:\n        pass\n", "__setattr__"),
+    ] {
+        let mut p = Parser::new(Lexer::new(src, "m.ar").tokenize(), None);
+        let err = p.parse_program().expect_err("attribute hook in an Arrow class");
+        assert!(err.contains(&format!("`{hook}` can only be defined in a class of a Python module")), "{err}");
+        assert!(p.error_location(&err).starts_with(" at m.ar:2:"), "{}", p.error_location(&err));
+    }
+    let ok = "class C:\n    mut x: int\n    fn __getitem__(self, k: int) -> int:\n        return k\n";
+    Parser::new(Lexer::new(ok, "m.ar").tokenize(), None).parse_program().expect("other dunders parse");
+}
+
+/// `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)` と、基底が `object` のクラスの
+/// `super().__setattr__(k, v)` は上書きを飛ばす内部の組み込みになる。名前が文字列の定数ならフィールドとして宣言する
+/// （known_bugs.md の #10）。
+#[test]
+fn python_object_setattr_becomes_bypass_builtin() {
+    let src = "class C:\n    def __init__(self):\n        object.__setattr__(self, 'a', 1)\n    \
+               def __setattr__(self, name, value):\n        super().__setattr__(name, value)\n    \
+               def drop(self):\n        object.__delattr__(self, 'a')\n";
+    let stmts = crate::python_converter::convert_python_source(src, "<test>").expect("converts");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.iter().find(|s| matches!(s, Stmt::ClassDef { .. })) else {
+        panic!("{stmts:?}")
+    };
+    assert!(body.iter().any(|s| matches!(s, Stmt::Field { name, .. } if name == "a")), "field a: {body:?}");
+    let callee_of = |method: &str| -> String {
+        let Some(Stmt::FnDef { body: fb, .. }) =
+            body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == method))
+        else {
+            panic!("{method}: {body:?}")
+        };
+        match fb.iter().find_map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => Some((func.as_ref(), args.len())),
+            _ => None,
+        }) {
+            Some((Expr::Ident { name, .. }, n)) => format!("{name}/{n}"),
+            other => panic!("{method}: {other:?}"),
+        }
+    };
+    assert_eq!(callee_of("__init__"), "__py_object_setattr/3");
+    assert_eq!(callee_of("__setattr__"), "__py_object_setattr/3");
+    assert_eq!(callee_of("drop"), "__py_object_delattr/2");
+}

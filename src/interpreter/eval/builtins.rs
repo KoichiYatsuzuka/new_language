@@ -34,6 +34,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "__py_object", "__py_object_init",
     // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
     "__py_delattr", "__py_delitem",
+    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` にする（known_bugs.md の #10）
+    "__py_object_setattr", "__py_object_delattr",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -239,10 +241,13 @@ impl Interpreter {
             "__py_object_init" => Some(self.py_object_init(&args)),
             // Python の `del o.a` / `del d[k]`（変換器が置く・known_bugs.md の #2 / #3）。
             "__py_delattr" => Some(match <[Value; 2]>::try_from(args) {
-                Ok([obj, Value::Str(name)]) => self.del_attr_val(obj, &name).map(|_| Value::None),
+                Ok([obj, Value::Str(name)]) => self.del_attr_val(obj, &name, true).map(|_| Value::None),
                 Ok(_) => Err("TypeError: __py_delattr() takes an object and an attribute name".to_string()),
                 Err(a) => Err(format!("TypeError: __py_delattr() takes exactly 2 arguments ({} given)", a.len())),
             }),
+            // Python の `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)`（上書きを飛ばす・変換器が置く・#10）。
+            "__py_object_setattr" => Some(self.py_object_setattr(args)),
+            "__py_object_delattr" => Some(self.py_object_delattr(args)),
             "__py_delitem" => Some(match <[Value; 2]>::try_from(args) {
                 Ok([obj, key]) => self.eval_delitem(obj, key).map(|_| Value::None),
                 Err(a) => Err(format!("TypeError: __py_delitem() takes exactly 2 arguments ({} given)", a.len())),

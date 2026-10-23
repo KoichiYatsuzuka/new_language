@@ -817,6 +817,7 @@ impl TypeChecker {
     ) -> InferredType {
         // ⚠ 入口で取り去る（受け手の `a.b` は読みとして検査する・`attr_is_callee` の doc）。
         let is_callee = std::mem::take(&mut self.attr_is_callee);
+        let is_assign_target = std::mem::take(&mut self.attr_is_assign_target);
         let obj_ty = self.infer(object);
         // `import[py] m as p` の `p.make_class`（クラスを返す Python の関数・10-16）。
         if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
@@ -942,6 +943,12 @@ impl TypeChecker {
             // Intersection 型のメンバーアクセスはダウンキャストなしで許可する
             InferredType::Intersection(_) => {}
             _ => {}
+        }
+        // `__setattr__` を上書きした Python のクラスへの代入（`o.y = v`）は上書きが受ける（宣言していない名前も・
+        // 値の型は上書きの仮引数が決める・known_bugs.md の #10）。
+        if is_assign_target && class_name_opt.as_deref().is_some_and(|c| self.class_has_setattr_hook(c)) {
+            self.annotations.set_resolved(node_id, InferredType::Any);
+            return InferredType::Any;
         }
         if let Some(class_name) = &class_name_opt {
             self.check_member_access_static(class_name, attr, Some(span.clone()));
@@ -1165,6 +1172,12 @@ impl TypeChecker {
     /// ⚠ これがタスク 7.8 で設計した `member_set_is_closed`（メンバー集合が閉じているか）の
     /// 実体。**スタブが入ったときに「スタブに載っているものだけ許す」へ寄せられる形**に
     /// してある。真偽値ではなく**クラス単位の性質**として持つこと。
+    /// `__setattr__` を上書きしたクラスか（known_bugs.md の #10）。持てるのは Python のクラスだけ（Arrow のクラスでは
+    /// パーサの誤り）。基底のものも含む（変換したクラスのメソッドは祖先まで平坦化してある）。
+    pub(super) fn class_has_setattr_hook(&self, class_name: &str) -> bool {
+        self.collect_class_method_sigs(class_name).contains_key("__setattr__")
+    }
+
     pub(super) fn member_exists(&self, class_name: &str, member: &str) -> bool {
         // 0. ⚠⚠ **全インスタンス共通のメソッド**。`method_call.rs` がクラスのメソッド表を
         //    引く**前に**特別扱いしているので、どのクラスにも生えている。

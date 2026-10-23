@@ -106,6 +106,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "__py_object", "__py_object_init",
     // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）。
     "__py_delattr", "__py_delitem",
+    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` にする（known_bugs.md の #10）。
+    "__py_object_setattr", "__py_object_delattr",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {

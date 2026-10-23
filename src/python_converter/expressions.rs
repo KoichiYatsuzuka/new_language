@@ -267,6 +267,18 @@ fn is_zero_arg_super(e: &py::Expr) -> bool {
     matches!(super_form(e), Some(SuperForm::Zero))
 }
 
+/// `object` のメソッドのうち、内部の組み込みで表すもの（`object.m(o, ..)` と、基底が `object` のクラスの
+/// `super().m(..)` の変換先）。`__init__` は何もしない（タスク 6-10）、`__setattr__` / `__delattr__` はクラスが上書きした
+/// ものを飛ばして属性を入れる・消す（known_bugs.md の #10）。
+fn object_method_builtin(method: &str) -> Option<&'static str> {
+    match method {
+        "__init__" => Some("__py_object_init"),
+        "__setattr__" => Some("__py_object_setattr"),
+        "__delattr__" => Some("__py_object_delattr"),
+        _ => None,
+    }
+}
+
 /// `super(..)` の形（python_builtins_plan.md のタスク 6-2）。
 enum SuperForm<'a> {
     /// `super()`。受け手は `self`。
@@ -469,11 +481,14 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         Some(b) if b != "object" => b,
                         // 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super()` は `object` を指す
                         // （タスク 6-10）。`object.__init__` は `__py_object_init(self, ..)`（余分な引数は CPython と
-                        // 同じ `TypeError`）。ほかの `object` のメソッド（`__setattr__` など）は対象外。
-                        _ if inside_class() && attr.attr.as_str() == "__init__" => {
+                        // 同じ `TypeError`）、`object.__setattr__` / `__delattr__` は上書きを飛ばす
+                        // `__py_object_setattr(self, ..)` / `__py_object_delattr(self, ..)`（known_bugs.md の #10）。
+                        // ほかの `object` のメソッド（`__repr__` など）は対象外。
+                        _ if inside_class() && object_method_builtin(attr.attr.as_str()).is_some() => {
+                            let name = object_method_builtin(attr.attr.as_str()).expect("checked");
                             return Ok(Expr::Call {
                                 func: Box::new(Expr::Ident {
-                                    name: "__py_object_init".to_string(),
+                                    name: name.to_string(),
                                     node_id: 0,
                                     res: Resolution::Unresolved,
                                 }),
@@ -485,8 +500,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         }
                         _ if inside_class() => {
                             return Err(format!(
-                                "{filename}: `super().{}(...)` is only supported for `__init__` in a class whose base is \
-                                 `object` (or that has no base class)",
+                                "{filename}: `super().{}(...)` is only supported for `__init__` / `__setattr__` / \
+                                 `__delattr__` in a class whose base is `object` (or that has no base class)",
                                 attr.attr
                             ))
                         }
@@ -536,6 +551,18 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     node_id: 0,
                     res: Resolution::Unresolved,
                 },
+                // `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)`（クラスが上書きした `__setattr__` /
+                // `__delattr__` を飛ばす・known_bugs.md の #10）。`object.__init__(self)` も同じ内部の組み込みへ。
+                py::Expr::Attribute(a)
+                    if matches!(&*a.value, py::Expr::Name(n) if n.id.as_str() == "object")
+                        && object_method_builtin(a.attr.as_str()).is_some() =>
+                {
+                    Expr::Ident {
+                        name: object_method_builtin(a.attr.as_str()).expect("checked").to_string(),
+                        node_id: 0,
+                        res: Resolution::Unresolved,
+                    }
+                }
                 other => convert_expr(other, filename)?,
             };
             let mut args: Vec<CallArg> = Vec::new();

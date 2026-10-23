@@ -109,6 +109,30 @@ impl Interpreter {
         Ok(Value::None)
     }
 
+    /// `object.__setattr__(o, name, value)`（変換器が Python の `object.__setattr__(..)` / `super().__setattr__(..)` を
+    /// `__py_object_setattr(..)` にする・known_bugs.md の #10）。クラスが上書きした `__setattr__` を飛ばして、ふつうの
+    /// 代入をする（`attr_assign_without_hook`）。文言は CPython と同じ。
+    pub(crate) fn py_object_setattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [obj, name, value]: [Value; 3] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
+            0 => "TypeError: descriptor '__setattr__' of 'object' object needs an argument".to_string(),
+            n => format!("TypeError: expected 2 arguments, got {}", n - 1),
+        })?;
+        let name = self.attr_name_arg(&name)?;
+        self.attr_assign_without_hook(obj, &name, value)?;
+        Ok(Value::None)
+    }
+
+    /// `object.__delattr__(o, name)`（変換器が置く・`py_object_setattr` と同じ）。上書きした `__delattr__` を飛ばす。
+    pub(crate) fn py_object_delattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [obj, name]: [Value; 2] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
+            0 => "TypeError: descriptor '__delattr__' of 'object' object needs an argument".to_string(),
+            n => format!("TypeError: expected 1 argument, got {}", n - 1),
+        })?;
+        let name = self.attr_name_arg(&name)?;
+        self.del_attr_val(obj, &name, false)?;
+        Ok(Value::None)
+    }
+
     /// 属性の名前の引数（`getattr` / `hasattr` / `setattr`）。文字列でなければ CPython と同じ `TypeError`。
     fn attr_name_arg(&self, v: &Value) -> Result<String, String> {
         match v {
@@ -1296,6 +1320,8 @@ const PY_PROPERTY_SRC: &str = r#"class property:
 ///   CPython がインスタンスの `__dict__` へ入れるのと同じ効き方。フィールドは変換器が宣言する（Arrow のインスタンスに
 ///   `__dict__` は無い）。
 /// - `obj.x = v` も同じフィールドへ入る（`attr_assign_evaled` が非データディスクリプタと同じ名前のフィールドを先にする）。
+/// - 覚える値は `__py_object_setattr` で入れる（クラスが上書きした `__setattr__` を通らない。CPython もインスタンスの
+///   `__dict__` へ直に入れる・known_bugs.md の #10）。
 /// - 入れた後で**読み直した値**を返す（代入は値を写すので、計算した値そのものを返すと 1 回目と 2 回目で別の物になる）。
 /// - 文言は CPython と同じ。`__doc__` は `func.__doc__`（タスク 1-14）。
 /// - ⚠ `__get__` は `mut self`（`property` と同じ理由）。
@@ -1320,7 +1346,7 @@ const PY_CACHED_PROPERTY_SRC: &str = r#"class cached_property:
             return self
         if self.attrname is None:
             raise TypeError("Cannot use cached_property instance without calling __set_name__ on it.")
-        setattr(obj, self.attrname, self.func(obj))
+        __py_object_setattr(obj, self.attrname, self.func(obj))
         return getattr(obj, self.attrname)
 "#;
 

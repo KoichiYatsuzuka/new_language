@@ -1360,7 +1360,11 @@ impl TypeChecker {
         //    クラス名の解決のために**オブジェクトを二度推論しないで済む**。
         //    二度推論すると `infer_attr` がオブジェクトに対して出す診断
         //    （`OperationOnAny` など）が重複する。
+        // 代入の左辺の属性は「読み」ではない（`attr_is_assign_target` の doc）。複合代入（`o.x += v`）は先に読むので
+        // 読みとして検査する（CPython も `getattr` してから `__setattr__`）。
+        self.attr_is_assign_target = compound_op.is_none() && matches!(target, Expr::Attr { .. });
         let target_ty = self.infer(target);
+        self.attr_is_assign_target = false;
         let value_ty = self.infer(value);
         // ⚠⚠ **添字代入 `xs[i] = v` / `d[k] = v`**（タスク 5.2b・検体 `L5`）。
         //    以前は完全に無検査で、`list[int]` に `str` が、`dict[str,int]` に
@@ -1428,6 +1432,10 @@ impl TypeChecker {
             },
             _ => return,
         };
+        // `__setattr__` を上書きした Python のクラスへの代入は、値を上書きの仮引数が受ける（宣言型と突き合わせない・#10）。
+        if self.class_has_setattr_hook(&class_name) {
+            return;
+        }
         // 期待型を決める。
         //
         // ⚠⚠ `infer_attr` が引く `registry.class_field_details` は**そのクラス自身が

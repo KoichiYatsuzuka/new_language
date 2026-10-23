@@ -1591,7 +1591,8 @@ impl TypeChecker {
                 [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
                 _ => None,
             },
-            "setattr" | "__py_with_exit" | "__py_delattr" | "__py_delitem" => Some(T::None),
+            "setattr" | "__py_with_exit" | "__py_delattr" | "__py_delitem" | "__py_object_setattr"
+            | "__py_object_delattr" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
             "type" => match arg_data {

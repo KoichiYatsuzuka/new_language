@@ -384,8 +384,8 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 **`del`**（known_bugs.md の #2 / #3）: ターゲットの種類で分けます。`del a, b[0]` は左から 1 つずつ（CPython と同じ順）。
 - `del o.a` は属性を**未代入に戻します**（変換器が `__py_delattr(o, "a")` にする）。以後の読みは `AttributeError`、
   `hasattr` は偽、`getattr(o, "a", d)` は `d` で、また代入できます（Arrow のフィールドはクラスで決まるので、欄は残して
-  「代入されていない」に戻す）。CPython と同じ順に、クラスの `__delattr__`、データディスクリプタの `__delete__`（property の
-  deleter）を先に見ます。`cached_property` は消すと次に読んだときに計算し直します。
+  「代入されていない」に戻す）。CPython と同じ順に、クラスの `__delattr__`（下の「`__setattr__` / `__delattr__`」）、
+  データディスクリプタの `__delete__`（property の deleter）を先に見ます。`cached_property` は消すと次に読んだときに計算し直します。
   ⚠ クラス・モジュールの属性（`del C.x` / `del m.x`）は消せません（実行時の `TypeError`。CPython は消せる）。
   ⚠ 不変（`let` / `freeze`）のインスタンスの属性は消せません（実行時の `TypeError`）。Arrow の `mut` のインスタンスを
   Python の関数に渡して消すと、Arrow から読んでも `AttributeError` になります（注釈の型の値は入っていない）。
@@ -395,6 +395,24 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 - `del x`（名前）は警告して無視します（Arrow はスコープを抜けるときに破棄する。消した後に読んでも `NameError` にならない）。
 - ⚠ クラスの本体の `del` は変換の誤りです。
 - 例題は `examples/interop/py_del.ar`（CPython と同じ出力）・`py_del_error.ar`。
+
+**`__setattr__` / `__delattr__`**（known_bugs.md の #10）: Python のクラスが定義した属性の操作の上書きは CPython と同じく
+**まずそれを呼びます**。`o.x = v`・`setattr(o, "x", v)`・`o.x += v`（読んでから上書きへ）・`__init__` の中の `self.x = v`・
+Arrow からの代入のどれも通り、基底で定義したものも受け継ぎます。`del o.x` は `__delattr__` を呼びます。
+- 上書きを飛ばして本当に入れる・消すのは `object.__setattr__(self, name, value)` / `super().__setattr__(name, value)` /
+  `object.__delattr__(self, name)` / `super().__delattr__(name)` です（変換器が内部の `__py_object_setattr` /
+  `__py_object_delattr` にする。property の setter などのデータディスクリプタはこの先で呼ばれる）。基底が上書きしていない
+  `super().__setattr__` も `object` のものに届きます。
+- `object.__setattr__(self, "x", v)` / `super().__setattr__("x", v)` の名前が文字列の定数なら、`x` もフィールドになります
+  （`self.x = v` と同じ）。⚠ 名前が変数のときは、ほかの所で `self.x = ..` と書いた名前（＝宣言されたフィールド）だけが
+  入ります（Arrow のインスタンスに `__dict__` は無い。宣言の無い名前は実行時の `AttributeError`）。
+- `__setattr__` を持つクラスのインスタンスへの代入は、Arrow の型検査でも宣言していない名前を書けます（上書きが受ける。
+  読みは今までどおり宣言した名前だけ）。
+- `cached_property` が覚える値は上書きを通りません（CPython もインスタンスの `__dict__` へ直に入れる）。
+- ⚠ **Arrow のクラスは `__setattr__` / `__delattr__` を定義できません**（パースの誤り・`examples/classes/setattr_hook_error.ar`）。
+  Arrow のフィールドはクラスの本体で決まり、代入はそのまま入ります。
+- ⚠ 読みの上書き（`__getattr__` / `__getattribute__`）はまだ呼びません（known_bugs.md の #11）。
+- 例題は `examples/interop/py_setattr.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
 
 **クラスの属性・property**:
 - `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。
