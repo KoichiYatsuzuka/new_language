@@ -262,14 +262,27 @@ fn value_type_name(v: &Value) -> &'static str {
 // str % args  (%-format operator)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// `%s` / `%r` が値を文字列にするやり方（`percent_format` の呼び出し側が決める）。
+#[derive(Clone, Copy)]
+pub enum PercentText {
+    /// `%s` — CPython の `str(x)`。
+    Str,
+    /// `%r` — CPython の `repr(x)`。
+    Repr,
+}
+
 /// `"Hello %s, you are %d years old" % ("Alice", 30)` を処理する。
 ///
 /// 対応する書式指定子: `%d %i %u %f %e %E %g %G %s %r %x %X %o %b %%`
 /// 幅・精度の数値指定（例: `%10d`, `%.2f`, `%-8s`）に対応する。
+///
+/// `text_of` は `%s` / `%r` の値を文字列にする（known_bugs.md の #4）。インタプリタを持つ呼び出し（`apply_binop_dyn`）は
+/// CPython と同じく `__str__` / `__repr__` を呼ぶ。⚠ 以前は既定の表示（`display`）しか使えず、インスタンスが
+/// `<T object at 0x..>` になり、`%r` は表示を Rust の書式で引用していた（`"%r" % "ab"` が `"ab"`・`"%r" % 5` が `"5"`）。
 pub fn percent_format(
     fmt: &str,
     args: &[Value],
-    display: &dyn Fn(&Value) -> String,
+    text_of: &mut dyn FnMut(&Value, PercentText) -> Result<String, String>,
 ) -> Result<String, String> {
     let mut result = String::new();
     let chars: Vec<char> = fmt.chars().collect();
@@ -396,16 +409,14 @@ pub fn percent_format(
                 };
                 pad_str(&format!("{sign}{body}"), width, left_align, ' ')
             }
-            's' => {
-                let mut s = display(arg);
+            's' | 'r' => {
+                let how = if spec == 's' { PercentText::Str } else { PercentText::Repr };
+                let mut s = text_of(arg, how)?;
                 // 精度は文字の数（⚠ 以前はバイトで切り、文字の途中なら Rust のパニックで落ちた・タスク 1-17）。
+                // `%r` にも効く（CPython の `'%.2r' % 'abc'` は `'a`）。
                 if let Some(p) = precision {
                     s = s.chars().take(p).collect();
                 }
-                pad_str(&s, width, left_align, ' ')
-            }
-            'r' => {
-                let s = format!("{:?}", display(arg));
                 pad_str(&s, width, left_align, ' ')
             }
             'x' => {

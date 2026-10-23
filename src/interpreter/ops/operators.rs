@@ -3,7 +3,7 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::{BinOp, UnaryOp},
-    crate::interpreter::str_methods::percent_format,
+    crate::interpreter::str_methods::{percent_format, PercentText},
     crate::interpreter::{Interpreter, Value},
 };
 
@@ -105,6 +105,17 @@ impl Interpreter {
         if let Some(r) = self.binop_by_dunders(op, &lv, &rv)? {
             return Ok(r);
         }
+        // `str % 値` の `%s` / `%r` は CPython と同じく `str()` / `repr()`（`__str__` / `__repr__` を呼ぶ・コンテナの中も・
+        // known_bugs.md の #4）。⚠ `apply_binop` の同じ腕は呼べない経路用（既定の表示）。
+        if let (BinOp::Mod, Value::Str(fmt)) = (op, &lv) {
+            let fmt = fmt.clone();
+            let args = Self::percent_args(&rv);
+            let mut text_of = |v: &Value, how: PercentText| match how {
+                PercentText::Str => self.display_str(v),
+                PercentText::Repr => self.repr_val(v),
+            };
+            return percent_format(&fmt, &args, &mut text_of).map(Value::str);
+        }
         // ⚠⚠ `in` / `not in` の**左辺**が `__eq__` を持つインスタンスなら、要素ごとに
         //    `__eq__` を呼ぶ（B2-b）。以前は `apply_binop` が `values_eq`（構造比較）を
         //    直接呼んでいたため、**`a == b` は真なのに `a in [b]` は偽**という食い違いが
@@ -146,6 +157,14 @@ impl Interpreter {
             }
         }
         self.apply_binop(op, lv, rv)
+    }
+
+    /// `str % 値` の値の並び（組なら要素、ほかは値 1 つ）。
+    fn percent_args(rv: &Value) -> Vec<Value> {
+        match rv {
+            Value::Tuple(t) => t.all_values().to_vec(),
+            other => vec![other.clone()],
+        }
     }
 
     /// 演算子メソッドで二項演算子を解く（CPython の `binary_op1` / `do_richcompare` と同じ手順・
@@ -589,13 +608,16 @@ impl Interpreter {
             }
 
             // str % args → printf-style format
+            // ⚠ インタプリタを回せない経路（ネイティブのコールバック）用。`__str__` / `__repr__` は呼ばない
+            //   （既定の表示・repr）。普通の実行は `apply_binop_dyn` が先に受ける（呼ぶ・known_bugs.md の #4）。
             (BinOp::Mod, Value::Str(fmt), rv) => {
-                let display_fn = |v: &Value| self.display(v);
-                let args: Vec<Value> = match rv {
-                    Value::Tuple(t) => t.all_values().to_vec(),
-                    other => vec![other.clone()],
+                let mut text_of = |v: &Value, how: PercentText| {
+                    Ok(match how {
+                        PercentText::Str => self.display(v),
+                        PercentText::Repr => self.display_repr(v),
+                    })
                 };
-                let result = percent_format(fmt, &args, &display_fn)?;
+                let result = percent_format(fmt, &Self::percent_args(rv), &mut text_of)?;
                 Ok(Value::str(result))
             }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),

@@ -198,6 +198,7 @@ $knownDiff = @{
     'py_property_typed'              ='Rust: getter の戻り値の注釈が property の型になる（タスク 6-8 で新設）。py: import[py] したモジュールのクラスを引けず AttributeError'
     'py_property_typed_error'        ='Rust: float の property を str の変数へ束縛する形を静的に止める（タスク 6-8 で新設）。py: import[py] したモジュールのクラスを引けず AttributeError'
     'py_cached_property'             ='Rust: functools.cached_property（タスク 6-5 で新設・CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
+    'percent_format'                 ='Rust: % の書式の %s / %r が __str__ / __repr__ を呼ぶ（known_bugs.md の #4 で新設）。py: str % インスタンスで TypeError'
     'format_spec'                    ='Rust: 書式指定の小言語（format / f-string の {x:spec} / str.format・タスク 3-4 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'format_spec_error'              ='Rust: format は str を返すので int の変数へ束縛できない（タスク 3-4 で新設）。py: 型検査をせず実行して    42 を出す'
     'file_lines'                     ='Rust: どのファイルにも readline / readlines / writelines / close() / for line in f（タスク 5-4 で新設）。py: ファイルに writelines が無く AttributeError'

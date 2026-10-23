@@ -192,7 +192,7 @@ print("{0.x} {1[k]} {2!r:>6}".format(p, {"k": 1}, "s"))                     # �
   `TypeError: unsupported format string passed to C.__format__`）。
 - `str.format` は位置・キーワード・属性（`{0.name}`）・添字（`{0[1]}` / `{d[key]}`）・変換（`!r` / `!s` / `!a`）・
   書式の中の置換フィールド（`{:{w}}`）を受ける。自動と手動の番号は混ぜられない（CPython と同じ文言）。
-- `%` 演算子の `%e` / `%g` も同じ綴り（`1.234568e+04`）。
+- `%` 演算子の `%e` / `%g` も同じ綴り（`1.234568e+04`）。`%s` は `str(x)`、`%r` は `repr(x)`（`__str__` / `__repr__` を呼ぶ・コンテナの中は `repr`・known_bugs.md の #4。以前はインスタンスが `<T object at 0x..>`、`%r` が `"ab"` / `"5"` だった）。
 - ⚠ `complex` の書式指定は未対応（`ValueError: format specifiers for complex numbers are not supported`）。
 
 ### 組み込みの名前を値として使う
