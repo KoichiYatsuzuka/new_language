@@ -153,7 +153,10 @@ print(KeyError("k"))            # 'k'（KeyError は引数 1 つのとき repr�
 - 組み込みの例外は `__init__` を持たず、作るときの位置引数を `instantiate_evaled` が `args` に入れます
   （CPython の `BaseException.__new__` と同じ位置）。`__init__` を書いた Python のクラスでも、`super().__init__` を
   呼ばなくても `args` は入り、`super().__init__(..)` を呼べば入れ直します。
-- 内部で起きた例外（辞書の引き損ないなど）の `args` は文言 1 つの組です（CPython の `KeyError` ならキーそのもの）。
+- 内部で起きた例外の `args` は文言 1 つの組です。⚠ ただし見つからないキーの `KeyError`（`d[k]` / `del d[k]` /
+  `d.pop(k)` / `s.remove(x)` / `"{k}".format()`）は CPython と同じく**キーそのもの**（`args == (k,)`・`e.args[0] is k`・
+  `repr(e)` は `KeyError('zz')`）、空の `d.popitem()` / `s.pop()` は文言の文字列が引数です（known_bugs.md の #9・
+  `examples/interop/py_key_error_args.ar`）。⚠ `OSError` の `errno` / `strerror` / `filename` はまだ持ちません（文言だけ）。
 - `Error` を実装した利用者の例外（`class MyErr(Error)`）は `args` を持たず、`str(e)` / `print(e)` は `message`、
   `repr(e)` は `MyErr('bad value')` の形です（メッセージが無ければ `str(e)` は空文字列）。
 - `__str__` / `__repr__` を定義すればそれが優先します（`implementation_plans/ffi_value_exchange_plan.md` 7-3。

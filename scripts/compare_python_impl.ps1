@@ -201,6 +201,7 @@ $knownDiff = @{
     'py_shared_objects'              ='Rust: Python のコードの中は格納で写さず参照を共有する（known_bugs.md の #1 で新設・sh.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError'
     'py_del'                         ='Rust: Python の del o.a / del d[k]（known_bugs.md の #2 / #3 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_setattr'                     ='Rust: Python のクラスの __setattr__ / __delattr__ と object.__setattr__（known_bugs.md の #10 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
+    'py_key_error_args'              ='Rust: 実行時の KeyError の args はキーそのもの（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_getattr_hook'                ='Rust: Python のクラスの __getattr__ と object.__getattribute__（known_bugs.md の #11 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'getattr_hook_error'             ='Rust: Arrow のクラスの __getattr__ はパースの誤り（known_bugs.md の #11 で新設）。py: 誤りにせず素通しして 1 / unreachable を出す'
     'setattr_hook_error'             ='Rust: Arrow のクラスの __setattr__ / __delattr__ はパースの誤り（known_bugs.md の #10 で新設）。py: 誤りにせず素通しして unreachable を出す'

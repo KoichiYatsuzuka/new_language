@@ -456,6 +456,29 @@ fn test_bridge_error_strings_become_exceptions() {
     assert!(interp.make_internal_raised_error("CsDll: cannot load bridge 'x'").is_none());
 }
 
+/// 送出の場が添えた `args`（`error_with_args`・known_bugs.md の #9）は、文言が完全に一致するときだけ使う。
+/// 一致しない誤り（Rust の中で捨てた誤りの控えが残っていた）は文言の `args` のままで、控えはどちらでも取り去る。
+#[test]
+fn test_error_args_are_used_only_for_the_same_message() {
+    let mut interp = run_interp("let x = 1\n");
+    let args_of = |interp: &mut Interpreter, msg: &str| -> String {
+        let raised = interp.make_internal_raised_error(msg).expect("an exception");
+        let Value::Instance(i) = &raised.exception else { panic!("{msg}") };
+        let idx = i.borrow().class.field_index["args"];
+        let args = i.borrow().field_value(idx).expect("args");
+        interp.display_repr(&args)
+    };
+    let msg = interp.key_error(&Value::Int(7));
+    assert_eq!(msg, "KeyError: 7");
+    assert_eq!(args_of(&mut interp, &msg), "(7,)", "the key itself");
+    // 控えは取り去られている（同じ文言でも、もう一度は使わない）
+    assert_eq!(args_of(&mut interp, &msg), "('7',)");
+    // 別の文言の誤りは控えを使わず、控えも残さない
+    let _ = interp.key_error(&Value::str("a"));
+    assert_eq!(args_of(&mut interp, "KeyError: 'b'"), "(\"'b'\",)");
+    assert!(interp.error_args.is_none());
+}
+
 /// 組み込みの例外は CPython 3.12 の階層を持つ（python_builtins_plan.md のタスク 4-1）。
 /// ⚠ 以前は階層が無く、`except ArithmeticError` が `ZeroDivisionError` を捕まえなかった。
 /// ⚠ `GeneratorExit` は `BaseException` の直下なので `except Exception` では捕まらない。

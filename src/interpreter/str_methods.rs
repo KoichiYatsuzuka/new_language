@@ -187,11 +187,11 @@ impl Interpreter {
             *numbering = FieldNumbering::Manual;
             Self::str_format_positional(pos_args, idx)?
         } else {
-            kw_args
-                .iter()
-                .find(|(k, _)| k == first)
-                .map(|(_, v)| v.clone())
-                .ok_or_else(|| format!("KeyError: '{first}'"))?
+            match kw_args.iter().find(|(k, _)| k == first) {
+                Some((_, v)) => v.clone(),
+                // `args` は名前の文字列（CPython と同じ・known_bugs.md の #9）。
+                None => return Err(self.key_error_text(first)),
+            }
         };
         while !rest.is_empty() {
             if let Some(r) = rest.strip_prefix('.') {

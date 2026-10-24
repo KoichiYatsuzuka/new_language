@@ -66,17 +66,16 @@ impl Interpreter {
                     s.borrow_mut().remove(pos);
                     Ok(Value::None)
                 } else {
-                    Err(format!("KeyError: {}", self.display_repr(&item)))
+                    Err(self.key_error(&item))
                 }
             }
             "pop" => {
                 Self::expect_no_args_evaled(&evaled, "set", "pop")?;
-                let mut s_mut = s.borrow_mut();
-                if s_mut.is_empty() {
-                    Err("KeyError: 'pop from an empty set'".to_string())
-                } else {
-                    Ok(s_mut.remove(0))
-                }
+                let popped = {
+                    let mut s_mut = s.borrow_mut();
+                    (!s_mut.is_empty()).then(|| s_mut.remove(0))
+                };
+                popped.ok_or_else(|| self.key_error_text("pop from an empty set"))
             }
             "clear" => {
                 Self::expect_no_args_evaled(&evaled, "set", "clear")?;

@@ -64,7 +64,7 @@ impl Interpreter {
                 let (key, default) = Self::dict_key_default_args(evaled, "pop")?;
                 match self.dict_index(&d, &key)? {
                     Some(idx) => Ok(d.borrow_mut().remove_at(idx).map(|(_, v)| v).unwrap_or(Value::None)),
-                    None => default.ok_or_else(|| format!("KeyError: {}", self.display_repr(&key))),
+                    None => default.ok_or_else(|| self.key_error(&key)),
                 }
             }
             // `d.setdefault(key, default=None)` — あればその値、無ければ `default` を入れて返す。
@@ -89,7 +89,7 @@ impl Interpreter {
                 let last = d.borrow_mut().pop_last();
                 match last {
                     Some((k, v)) => Ok(self.pair_tuple(k, v)),
-                    None => Err("KeyError: 'popitem(): dictionary is empty'".to_string()),
+                    None => Err(self.key_error_text("popitem(): dictionary is empty")),
                 }
             }
             "clear" => {

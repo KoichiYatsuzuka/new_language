@@ -174,7 +174,7 @@ impl Interpreter {
                 let d = d.clone();
                 match self.dict_get(&d, &key)? {
                     Some(v) => Ok(v),
-                    None => Err(format!("KeyError: {}", self.display_repr(&key))),
+                    None => Err(self.key_error(&key)),
                 }
             }
             Value::Instance(_) => {
@@ -369,7 +369,7 @@ impl Interpreter {
                     d.borrow_mut().remove_at(idx);
                     Ok(())
                 }
-                None => Err(format!("KeyError: {}", self.display_repr(&key))),
+                None => Err(self.key_error(&key)),
             },
             Value::List(items) => {
                 if let Value::Slice(s) = &key {

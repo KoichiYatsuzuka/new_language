@@ -545,6 +545,13 @@ pub struct Interpreter {
     ///   Python のモジュールの本体は `exec_module` が真にする（定義文はツリーウォークで走るので）。Python の
     ///   コードから呼ばれた Arrow の関数の中は偽に戻る（呼び出しの入口で差し替えるので）。
     pub(crate) running_python: bool,
+    /// 実行時の誤りの文言に添えた、例外の `args` にする値（`(文言, args)`・known_bugs.md の #9）。
+    ///
+    /// 実行時の誤りは文字列（`"KeyError: 'zz'"`）で運ばれ、例外のインスタンスになるのは捕まえる所・関数の境界
+    /// （`make_internal_raised_error`）なので、そこではキーの値が分からない。送出の場（`error_with_args`）がここに
+    /// 控え、例外にするときに**文言が完全に一致すれば**この `args` を使う（一致しなければ文言の `args`）。
+    /// ⚠ 変換のたびに取り去る。Rust の中で捨てた誤りの控えは残るが、拾うのは同じ文言（＝同じ `repr` のキー）だけ。
+    pub(crate) error_args: Option<(String, Vec<Value>)>,
     /// Arrow で書いた組み込みのクラス（`property` / `cached_property`・python_builtins_plan.md のタスク 6-1 / 6-5）。
     /// どれかの名前を初めて引いたときにまとめて組み立てる（`Interpreter::py_builtin_class`）。
     pub(self) py_builtin_classes: Option<HashMap<String, Value>>,
@@ -727,6 +734,7 @@ impl Interpreter {
             module_cache: HashMap::new(),
             in_python_module: false,
             running_python: false,
+            error_args: None,
             py_builtin_classes: None,
             object_class: None,
             ellipsis: None,

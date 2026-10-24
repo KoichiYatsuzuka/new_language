@@ -34,6 +34,28 @@ impl Interpreter {
         lines[start..end].join("\n")
     }
 
+    /// 実行時の誤りの文言 `msg` に、例外にしたときの `args` を添えて `msg` を返す（known_bugs.md の #9）。
+    /// 誤りは今までどおり文字列で運ぶ（位置・トレースバックは変わらない）。`make_internal_raised_error` が文言の
+    /// 一致を確かめてから使う（[`Interpreter::error_args`]）。
+    pub(crate) fn error_with_args(&mut self, msg: String, args: Vec<Value>) -> String {
+        self.error_args = Some((msg.clone(), args));
+        msg
+    }
+
+    /// 見つからないキーの `KeyError`（`d[k]` / `del d[k]` / `d.pop(k)` / `s.remove(x)` / `"{k}".format()`）。文言は
+    /// CPython と同じくキーの `repr`、`args` はキーそのもの（`e.args[0] is k`・known_bugs.md の #9）。
+    pub(crate) fn key_error(&mut self, key: &Value) -> String {
+        let msg = format!("KeyError: {}", self.display_repr(key));
+        self.error_with_args(msg, vec![key.clone()])
+    }
+
+    /// 文言を引数にする `KeyError`（`d.popitem()` / `s.pop()` が空のとき）。CPython の `args` は文言の文字列
+    /// （`KeyError('popitem(): dictionary is empty')`）で、`str(e)` はその `repr`。
+    pub(crate) fn key_error_text(&mut self, text: &str) -> String {
+        let key = Value::str(text);
+        self.key_error(&key)
+    }
+
     /// インタープリタ内部の `Err("ClassName: message")` 文字列を `RaisedError` に変換する。
     ///
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
@@ -53,9 +75,13 @@ impl Interpreter {
             _ => return None,
         };
 
-        // `args` は文言 1 つの組（空なら空の組・タスク 4-2）。⚠ CPython は `KeyError` ならキーそのもの、
-        // `OSError` なら `(errno, strerror)` だが、内部のエラーは文言しか持たない。
-        let args = self.tuple_of(if message.is_empty() { Vec::new() } else { vec![Value::str(message.clone())] });
+        // `args` は送出の場が添えた値（`error_with_args`・`KeyError` ならキーそのもの・known_bugs.md の #9）。添えて
+        // いなければ文言 1 つの組（空なら空の組・タスク 4-2）。⚠ 控えは文言が完全に一致するときだけ使い、どちらでも
+        // 取り去る（別の誤りの控えを拾わない）。⚠ `OSError` の `(errno, strerror)` はまだ添えていない（文言だけ）。
+        let args = match self.error_args.take() {
+            Some((m, args)) if m == msg => self.tuple_of(args),
+            _ => self.tuple_of(if message.is_empty() { Vec::new() } else { vec![Value::str(message.clone())] }),
+        };
 
         // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5
         // (make_error_class の field_index と対応)
