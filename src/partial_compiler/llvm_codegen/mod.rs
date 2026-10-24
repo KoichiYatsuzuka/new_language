@@ -46,6 +46,11 @@ struct FnSig {
     ret: Ty,
     /// パラメータごとの可変フラグリスト。`true` は `mut` パラメータ。
     param_mutabilities: Vec<bool>,
+    /// `_fast` 版がパラメータごとに**フィールドをスカラーへ展開するか**と、そのクラス
+    /// （`fast_flat_class`。`None` は展開しない＝ハンドルで受ける）。
+    /// ⚠ 呼ぶ側（`build_fast_call_args`）はこの表に従って引数を並べる。呼ぶ側が自分の都合
+    /// （手元に先読みがあるか）で展開を決めると、呼ばれる側の仮引数の並びと食い違う。
+    fast_flat: Vec<Option<String>>,
 }
 
 /// フラット配列の末端プリミティブフィールド情報。ネストしたクラスは再帰的に展開される。
@@ -744,6 +749,32 @@ fn expr_eligible(expr: &Expr) -> bool {
 
 // ── Purity analysis for approach-1 pre-reads ─────────────────────────────────
 
+/// クラス型の仮引数（`self` を含む）のフィールドを**入口で 1 回だけ読んでよいか**
+/// （先読み・`_fast` 版の平坦化）。⚠ 判定はここ 1 か所（`emit_fn` / `emit_fn_fast` の 2 箇所・
+/// `fast_fns` の算出が同じ条件を使う。ずれると `_fast` を呼ぶ側と作る側が食い違う）。
+///
+/// ⚠⚠ **`let` の受け手だけ**（native_object_access_plan.md 1-1・D-7）。`mut` の受け手は本体の
+/// `p.attr = ..` を見るだけでは足りない: `self.inc()` や `bump(c)` のようにメソッド・関数経由で
+/// 書き換わり、先読みした値が古くなる（以前は `after_inc` が非コンパイル 1・コンパイル済み 0 だった）。
+/// `let` の受け手なら、非コンパイルも入口で複製する（`mut` の値の場合）か、もともと書き換わらない
+/// （`let` の値の場合）ので、入口の値を使って結果が一致する。
+fn param_prereadable(p: &Param, body: &[Stmt]) -> bool {
+    !p.mutable && !body_writes_param(body, &p.name)
+}
+
+/// `_fast` 版でこの仮引数を**フィールドのスカラーへ展開するなら、そのクラス名**。クラス型
+/// （`self` は `self_class`）で、先読みしてよい（`param_prereadable`）こと。
+/// `FnSig::fast_flat` はこれで作る（`emit_fn_fast` は同じ `param_prereadable` とクラスの判定を使う）。
+fn fast_flat_class(
+    p: &Param,
+    self_class: Option<&str>,
+    body: &[Stmt],
+    class_fields_ord: &HashMap<String, Vec<(String, Ty)>>,
+) -> Option<String> {
+    let cls = p.type_ann.as_deref().or(if p.name == "self" { self_class } else { None })?;
+    (class_fields_ord.contains_key(cls) && param_prereadable(p, body)).then(|| cls.to_string())
+}
+
 /// Returns true if any statement in `stmts` directly writes a field of `param`
 /// (via AttrAssign or AttrCompoundAssign where the object is `Expr::Ident(param)`).
 fn body_writes_param(stmts: &[Stmt], param: &str) -> bool {
@@ -979,18 +1010,15 @@ pub fn generate_llvm_module(
         (f.symbol.clone(), FnSig {
             ret: if f.is_gen { Ty::Handle } else { ann_ty(f.return_type) },
             param_mutabilities: f.params.iter().map(|p| p.mutable).collect(),
+            fast_flat: f.params.iter()
+                .map(|p| fast_flat_class(p, f.class_name.as_deref(), f.body, &class_fields_ord))
+                .collect(),
         })
     }).collect();
 
-    // fast_fns: symbols that will get a _fast variant (have at least one pure class param).
-    // `self` param has type_ann = None; resolve its class from f.class_name.
+    // fast_fns: symbols that will get a _fast variant (have at least one flattened class param).
     let fast_fns: HashSet<String> = eligible.iter()
-        .filter(|f| !f.is_gen && f.params.iter().any(|p| {
-            let cls = p.type_ann.as_deref()
-                .or_else(|| if p.name == "self" { f.class_name.as_deref() } else { None });
-            cls.map(|ann| class_fields_ord.contains_key(ann)).unwrap_or(false)
-            && !body_writes_param(f.body, &p.name)
-        }))
+        .filter(|f| !f.is_gen && fn_sigs[&f.symbol].fast_flat.iter().any(Option::is_some))
         .map(|f| f.symbol.clone())
         .collect();
 

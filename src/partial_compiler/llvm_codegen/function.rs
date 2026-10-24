@@ -89,8 +89,8 @@ impl<'a> GenCtx<'a> {
                 },
                 _ => continue,
             };
-            // Only pre-read if the param is never written in this function body.
-            if body_writes_param(body, &p.name) { continue; }
+            // Only pre-read `let` receivers that the body never writes (`param_prereadable`).
+            if !param_prereadable(p, body) { continue; }
             let fields = match self.class_fields_ord.get(&class_name) {
                 Some(f) => f.clone(),
                 None => continue,
@@ -209,7 +209,7 @@ impl<'a> GenCtx<'a> {
                 _ => None,
             };
             if let Some(cls) = class_name {
-                if !body_writes_param(body, &p.name) {
+                if param_prereadable(p, body) {
                     if let Some(fields) = self.class_fields_ord.get(&cls).cloned() {
                         for (field_name, field_ty) in &fields {
                             let reg = format!("%_fp_{}__{field_name}", p.name);
@@ -273,7 +273,7 @@ impl<'a> GenCtx<'a> {
                 _ => None,
             };
             if let Some(cls) = class_name {
-                if !body_writes_param(body, &p.name) {
+                if param_prereadable(p, body) {
                     if let Some(fields) = self.class_fields_ord.get(&cls).cloned() {
                         for (field_name, field_ty) in &fields {
                             let reg = format!("%_fp_{}__{field_name}", p.name);

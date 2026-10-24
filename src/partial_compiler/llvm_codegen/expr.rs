@@ -662,69 +662,57 @@ impl<'a> GenCtx<'a> {
     }
 
     /// Build the argument string for a `@{sym}_fast(...)` call.
-    /// Returns None if any required pre-read value is missing (fallback to _impl).
+    /// Returns None if a flattened operand has no pre-read values here (fallback to _impl).
     ///
-    /// The _fast ABI for a method is:
-    ///   for each param in declaration order:
-    ///     if it's a class instance with pre-read fields → expand all typed fields as scalars
-    ///     else → pass as i64 handle
-    /// The receiver (`self` / first arg of Expr::Attr) maps to param 0.
-    pub(super) fn build_fast_call_args(&mut self, object: &Expr, args: &[CallArg]) -> Option<String> {
-        // Determine receiver param name
-        let recv_name: &str = match object {
-            e if ident_name(e) == Some("self") => "self",
-            e if ident_name(e).is_some() => ident_name(e).unwrap(),
-            _ => return None,
-        };
+    /// The _fast ABI of `sym` is given by the CALLEE (`FnSig::fast_flat`), parameter by parameter
+    /// (the receiver is param 0): a flattened class param takes all its typed fields as scalars,
+    /// any other param an i64 handle.
+    ///
+    /// ⚠ **全部確かめてから出力する。** 以前は途中の `?` で `None` を返すと、それまでに出した
+    /// 引数の評価コードが残ったまま `_impl` 経路で評価し直していた（副作用のある引数が 2 回走る）。
+    /// ⚠ 展開は呼ばれる側の表に従う。以前は「呼ぶ側に先読みがあるか」で展開を決めており、
+    /// 呼ばれる側がその仮引数をハンドルで受ける（`mut`・本体で書き換える）と並びが食い違った。
+    pub(super) fn build_fast_call_args(&mut self, sym: &str, object: &Expr, args: &[CallArg]) -> Option<String> {
+        let flat = self.fn_sigs.get(sym)?.fast_flat.clone();
+        let operands: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|a| a.expr())).collect();
+        if flat.len() != operands.len() { return None; }
 
-        let mut parts: Vec<String> = Vec::new();
-
-        // Expand receiver's fields
-        let recv_class = if recv_name == "self" {
-            self.current_class.as_deref()?.to_string()
-        } else {
-            self.param_classes.get(recv_name)?.clone()
-        };
-        let recv_fields = self.class_fields_ord.get(&recv_class)?.clone();
-        for (field_name, field_ty) in &recv_fields {
-            let key = format!("{recv_name}.{field_name}");
-            let (al, ty) = self.preread_fields.get(&key)?.clone();
-            let r = self.fresh_reg();
-            self.ec(&format!("{r} = load {}, ptr {al}", llvm_ty(ty)));
-            parts.push(format!("{} {r}", llvm_ty(*field_ty)));
+        // 1) check: every flattened operand is a pre-read receiver of the same class here
+        let mut plans: Vec<Option<Vec<(String, Ty)>>> = Vec::with_capacity(operands.len());
+        for (op, want) in operands.iter().zip(&flat) {
+            let Some(want_cls) = want else { plans.push(None); continue };
+            let name = ident_name(op)?;
+            let have_cls = if name == "self" {
+                self.current_class.clone()?
+            } else {
+                self.param_classes.get(name)?.clone()
+            };
+            if &have_cls != want_cls { return None; }
+            let mut loads = Vec::new();
+            for (field_name, _) in self.class_fields_ord.get(want_cls)? {
+                loads.push(self.preread_fields.get(&format!("{name}.{field_name}"))?.clone());
+            }
+            plans.push(Some(loads));
         }
 
-        // Expand each explicit arg if it's a class instance with pre-read fields;
-        // otherwise pass as i64 handle.
-        for call_arg in args {
-            let expr = call_arg.expr();
-            let arg_class = match expr {
-                e if ident_name(e) == Some("self") => {
-                    self.current_class.as_deref().map(|s| s.to_string())
+        // 2) emit
+        let mut parts: Vec<String> = Vec::new();
+        for (op, plan) in operands.iter().zip(plans) {
+            match plan {
+                Some(loads) => {
+                    for (al, ty) in loads {
+                        let r = self.fresh_reg();
+                        self.ec(&format!("{r} = load {}, ptr {al}", llvm_ty(ty)));
+                        parts.push(format!("{} {r}", llvm_ty(ty)));
+                    }
                 }
-                e if ident_name(e).is_some() => {
-                    self.param_classes.get(ident_name(e).unwrap()).cloned()
+                None => {
+                    let (v, vt) = self.gen_expr(op);
+                    let h = self.to_handle(&v, vt);
+                    parts.push(format!("i64 {h}"));
                 }
-                _ => None,
-            };
-            if let Some(ac) = arg_class {
-                let arg_name = match ident_name(expr) { Some(n) => n, None => return None };
-                let afields = self.class_fields_ord.get(&ac)?.clone();
-                for (field_name, field_ty) in &afields {
-                    let key = format!("{arg_name}.{field_name}");
-                    let (al, ty) = self.preread_fields.get(&key)?.clone();
-                    let r = self.fresh_reg();
-                    self.ec(&format!("{r} = load {}, ptr {al}", llvm_ty(ty)));
-                    parts.push(format!("{} {r}", llvm_ty(*field_ty)));
-                }
-            } else {
-                // Non-class arg: pass as i64 handle
-                let (v, vt) = self.gen_expr(expr);
-                let h = self.to_handle(&v, vt);
-                parts.push(format!("i64 {h}"));
             }
         }
-
         Some(parts.join(", "))
     }
 
@@ -903,7 +891,7 @@ impl<'a> GenCtx<'a> {
                         if self.fast_fns.contains(&sym)
                             && !self.discarded_fast.contains(&sym)
                         {
-                            if let Some(fast_args) = self.build_fast_call_args(object, args) {
+                            if let Some(fast_args) = self.build_fast_call_args(&sym, object, args) {
                                 let r = self.fresh_reg();
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
                                 return (r, Ty::Float);
