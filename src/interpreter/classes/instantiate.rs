@@ -9,6 +9,32 @@ use {
 };
 
 impl Interpreter {
+    /// `OSError(errno, strerror, ..)` が作るクラス（CPython の `OSError.__new__`・known_bugs.md の #9）。組み込みの
+    /// `OSError`（と別名の `IOError` …）を位置引数 2〜5 個で呼び、最初が errno の表（`os_error_subclass_of`）にある
+    /// 整数なら、その派生（`OSError(2, "..")` は `FileNotFoundError`）。ほかはそのまま。
+    /// ⚠ 派生を呼んだとき（`PermissionError(2, "..")`）・Python のクラスは呼んだクラスのまま（CPython と同じ）。
+    fn os_error_subclass_for(
+        &self,
+        class: Rc<ClassValue>,
+        evaled: &[(Option<String>, Value, bool)],
+    ) -> Rc<ClassValue> {
+        let is_builtin_os_error = !class.is_python
+            && Self::in_exception_hierarchy(&class)
+            && matches!(class.name.as_str(), "OSError" | "IOError" | "EnvironmentError" | "WindowsError");
+        if !is_builtin_os_error {
+            return class;
+        }
+        let positional: Vec<&Value> = evaled.iter().filter(|(k, _, _)| k.is_none()).map(|(_, v, _)| v).collect();
+        let sub = match positional.as_slice() {
+            [Value::Int(n), _, ..] if positional.len() <= 5 => crate::interpreter::built_in_types::os_error_subclass_of(*n),
+            _ => None,
+        };
+        match sub.and_then(|name| self.get_val(name)) {
+            Some(Value::Class(c)) => c,
+            _ => class,
+        }
+    }
+
     /// オブジェクトのメソッドを呼び出して結果を返す。
     ///
     /// 各値型に対してディスパッチを行う:
@@ -51,6 +77,7 @@ impl Interpreter {
                 return Ok(self.builtin_singleton(kind));
             }
         }
+        let class = self.os_error_subclass_for(class, &evaled);
         let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {
             if let Some(&idx) = class.field_index.get(name.as_str()) {

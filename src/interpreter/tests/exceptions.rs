@@ -456,6 +456,28 @@ fn test_bridge_error_strings_become_exceptions() {
     assert!(interp.make_internal_raised_error("CsDll: cannot load bridge 'x'").is_none());
 }
 
+/// `OSError(errno, ..)` は errno に対応する派生を作る（別名の `IOError` も・CPython の `OSError.__new__`・
+/// known_bugs.md の #9）。派生を呼んだとき・引数が 1 つ・表に無い errno は呼んだクラスのまま。
+#[test]
+fn test_os_error_errno_picks_subclass() {
+    let src = concat!(
+        "let a = OSError(2, \"x\")\n",
+        "let b = IOError(13, \"y\", \"f\")\n",
+        "let c = PermissionError(2, \"z\")\n",
+        "let d = OSError(2)\n",
+        "let e = OSError(12345, \"w\")\n",
+        "let names = type(a).__name__ + \",\" + type(b).__name__ + \",\" + type(c).__name__ + \",\" + type(d).__name__ + \",\" + type(e).__name__\n",
+        "let shown = str(b)\n",
+    );
+    let interp = run_interp(src);
+    assert!(
+        matches!(interp.get_val("names"), Some(Value::Str(s)) if &*s == "FileNotFoundError,PermissionError,PermissionError,OSError,OSError"),
+        "{:?}",
+        interp.get_val("names")
+    );
+    assert!(matches!(interp.get_val("shown"), Some(Value::Str(s)) if &*s == "[Errno 13] y: 'f'"));
+}
+
 /// 送出の場が添えた `args`（`error_with_args`・known_bugs.md の #9）は、文言が完全に一致するときだけ使う。
 /// 一致しない誤り（Rust の中で捨てた誤りの控えが残っていた）は文言の `args` のままで、控えはどちらでも取り去る。
 #[test]

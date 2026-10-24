@@ -50,20 +50,30 @@ fn next_arity_error(n: usize) -> String {
     }
 }
 
-/// `open` の失敗を例外の文字列にする。OS のエラーの種類で `OSError` の派生へ振り分ける
-/// （CPython と同じ・python_builtins_plan.md のタスク 4-1）。以前はどれも `IOError` だった。
-/// ⚠ 文言（`cannot open '..': <OS の文言>`）は変えていない。CPython は `[Errno 2] No such file or directory: '..'`。
-fn open_error(e: &std::io::Error, what: &str, file_path: &str) -> String {
+/// `open` の失敗の例外の種類・errno・文言（CPython と同じ・python_builtins_plan.md のタスク 4-1 / known_bugs.md の #9）。
+/// errno と文言は C の値（Windows の CPython も `open` は C ランタイムの errno を出す: 無いファイルは 2、ディレクトリを
+/// 開くのは `PermissionError` の 13）。
+/// ⚠ この 5 種類のほかは `IOError` で、errno は OS のエラーの番号（Windows では Win32 の番号）、文言は OS の文言
+///   （CPython は C の errno の `OSError`・例えば `[Errno 22] Invalid argument`）。
+fn open_error_kind(e: &std::io::Error) -> (&'static str, Value, String) {
     use std::io::ErrorKind as K;
-    let class = match e.kind() {
-        K::NotFound => "FileNotFoundError",
-        K::PermissionDenied => "PermissionError",
-        K::AlreadyExists => "FileExistsError",
-        K::IsADirectory => "IsADirectoryError",
-        K::NotADirectory => "NotADirectoryError",
-        _ => "IOError",
-    };
-    format!("{class}: cannot {what} '{file_path}': {e}")
+    let c = |class, errno, text: &str| (class, Value::Int(errno), text.to_string());
+    match e.kind() {
+        K::NotFound => c("FileNotFoundError", 2, "No such file or directory"),
+        K::PermissionDenied => c("PermissionError", 13, "Permission denied"),
+        K::AlreadyExists => c("FileExistsError", 17, "File exists"),
+        K::IsADirectory => c("IsADirectoryError", 21, "Is a directory"),
+        K::NotADirectory => c("NotADirectoryError", 20, "Not a directory"),
+        _ => {
+            let shown = e.to_string();
+            // Rust の文言の末尾の ` (os error 123)` は errno に入れるので外す。
+            let text = match shown.rfind(" (os error ") {
+                Some(at) => shown[..at].to_string(),
+                None => shown,
+            };
+            ("IOError", e.raw_os_error().map_or(Value::None, |n| Value::Int(i64::from(n))), text)
+        }
+    }
 }
 
 /// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
@@ -74,6 +84,14 @@ pub(crate) fn is_builtin_function_name(name: &str) -> bool {
 }
 
 impl Interpreter {
+    /// `open` の失敗を例外の文字列にする（`[Errno 2] No such file or directory: 'p'`・`args` は `(errno, strerror)`・
+    /// `filename` はパス。`open_error_kind` / `os_error`・known_bugs.md の #9）。
+    /// ⚠ 以前の文言は `cannot open '..': <OS の文言>` で、`errno` / `strerror` / `filename` は無かった。
+    fn open_error(&mut self, e: &std::io::Error, file_path: &str) -> String {
+        let (class, errno, strerror) = open_error_kind(e);
+        self.os_error(class, errno, &strerror, file_path)
+    }
+
     /// `enumerate(iterable, start=0)` の引数（3 つの入口で同じ解釈・python_builtins_plan.md のタスク 3-5）。
     /// `start` は位置でもキーワードでも渡せる（CPython と同じ）。文言も CPython と同じ。
     /// ⚠ 以前は 3 つの入口が別々に書かれ、どれも位置の `start`（`enumerate(xs, 1)`）を受けなかった。
@@ -1002,10 +1020,10 @@ impl Interpreter {
                 let mut f = OpenOptions::new()
                     .read(true)
                     .open(std_path)
-                    .map_err(|e| open_error(&e, "open", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| open_error(&e, "read", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Write => {
@@ -1013,10 +1031,10 @@ impl Interpreter {
                     .read(true)
                     .write(true)
                     .open(std_path)
-                    .map_err(|e| open_error(&e, "open", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| open_error(&e, "read", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Rewrite => {
@@ -1026,7 +1044,7 @@ impl Interpreter {
                     .create(true)
                     .truncate(true)
                     .open(std_path)
-                    .map_err(|e| open_error(&e, "open", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, Vec::new())
             }
             FileOpenModeRust::MakeAndWrite => {
@@ -1035,7 +1053,7 @@ impl Interpreter {
                     .write(true)
                     .create_new(true)
                     .open(std_path)
-                    .map_err(|e| open_error(&e, "create", &file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, Vec::new())
             }
         };

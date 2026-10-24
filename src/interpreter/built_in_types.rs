@@ -20,6 +20,64 @@ use super::{
     async_mgr, ClassValue, FnValue, InstanceData, NamespaceData, Value, Var,
 };
 
+/// `OSError` の系統だけが持つ欄（CPython の `OSError` の属性・known_bugs.md の #9）。⚠ Windows の `winerror` は持たない。
+pub(crate) const OS_ERROR_FIELDS: [&str; 4] = ["errno", "strerror", "filename", "filename2"];
+
+/// errno に対応する `OSError` の派生（CPython の `errnomap`。`OSError(2, "..")` は `FileNotFoundError` を作る・
+/// known_bugs.md の #9）。値は CPython の `errno` モジュールと同じで、OS ごとに違う番号は分けてある
+/// （Windows のネットワークの誤りは WinSock の番号。Windows の CPython 3.12 で全番号を作って確かめた）。
+pub(crate) fn os_error_subclass_of(errno: i64) -> Option<&'static str> {
+    // どの OS でも同じ番号（EPERM / ENOENT / ESRCH / EINTR / ECHILD / EACCES / EEXIST / ENOTDIR / EISDIR / EPIPE）。
+    const COMMON: &[(i64, &str)] = &[
+        (1, "PermissionError"),
+        (2, "FileNotFoundError"),
+        (3, "ProcessLookupError"),
+        (4, "InterruptedError"),
+        (10, "ChildProcessError"),
+        (13, "PermissionError"),
+        (17, "FileExistsError"),
+        (20, "NotADirectoryError"),
+        (21, "IsADirectoryError"),
+        (32, "BrokenPipeError"),
+    ];
+    // EAGAIN / EWOULDBLOCK / EINPROGRESS / EALREADY・ESHUTDOWN・ECONNABORTED・ECONNREFUSED・ECONNRESET・ETIMEDOUT
+    #[cfg(windows)]
+    const PLATFORM: &[(i64, &str)] = &[
+        (11, "BlockingIOError"),
+        (10035, "BlockingIOError"),
+        (10036, "BlockingIOError"),
+        (10037, "BlockingIOError"),
+        (10058, "BrokenPipeError"),
+        (10053, "ConnectionAbortedError"),
+        (10061, "ConnectionRefusedError"),
+        (10054, "ConnectionResetError"),
+        (10060, "TimeoutError"),
+    ];
+    #[cfg(target_os = "macos")]
+    const PLATFORM: &[(i64, &str)] = &[
+        (35, "BlockingIOError"),
+        (36, "BlockingIOError"),
+        (37, "BlockingIOError"),
+        (58, "BrokenPipeError"),
+        (53, "ConnectionAbortedError"),
+        (61, "ConnectionRefusedError"),
+        (54, "ConnectionResetError"),
+        (60, "TimeoutError"),
+    ];
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const PLATFORM: &[(i64, &str)] = &[
+        (11, "BlockingIOError"),
+        (114, "BlockingIOError"),
+        (115, "BlockingIOError"),
+        (108, "BrokenPipeError"),
+        (103, "ConnectionAbortedError"),
+        (111, "ConnectionRefusedError"),
+        (104, "ConnectionResetError"),
+        (110, "TimeoutError"),
+    ];
+    COMMON.iter().chain(PLATFORM).find(|(n, _)| *n == errno).map(|(_, c)| *c)
+}
+
 /// 標準例外クラス用の `ClassValue` を構築して返す。
 ///
 /// 生成されるクラスの構造:
@@ -30,6 +88,9 @@ use super::{
 ///   （どちらも `Interpreter::exc_set_args`）。以前は `__init__(mut self, message: str)` で、
 ///   `ValueError()` / `ValueError("a", 1)` が作れず、`super().__init__(..)` も届かなかった。
 /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
+/// - `OSError` の系統（別名・派生を含む）はさらに `errno` / `strerror` / `filename` / `filename2` を持つ
+///   （既定は `None`・CPython と同じく書き換えられる・known_bugs.md の #9）。入れるのは `exc_set_args`
+///   （`OSError(errno, strerror[, filename])`）と、実行時の誤りの控え（`open` の失敗・`make_internal_raised_error`）
 ///
 /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
 /// - `bases`: `Error` trait と祖先を平らに並べたもの（`names::builtin_exception_bases`・タスク 4-1）
@@ -38,7 +99,7 @@ use super::{
 pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<ClassValue> {
     // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）。
     // `message` / `args` は `instantiate_evaled` が入れ直す（ここは作り方を問わない既定）。
-    let field_defaults = vec![
+    let mut field_defaults = vec![
         ("message".to_string(), Value::str(String::new()), false),
         ("code_context".to_string(), Value::str("".to_string()), false),
         ("file".to_string(), Value::str("".to_string()), false),
@@ -46,16 +107,21 @@ pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<Class
         ("col".to_string(), Value::Int(0), false),
         ("args".to_string(), empty_tuple(), false),
     ];
-
-    // フィールドの可変フラグ: すべて `let`（不変）
-    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5
-    let mut field_mutability: HashMap<String, bool> = HashMap::new();
-    for name in ["message", "code_context", "file", "line", "col", "args"] {
-        field_mutability.insert(name.to_string(), false);
+    let os_group = class_name == "OSError" || bases.iter().any(|b| b == "OSError");
+    if os_group {
+        for name in OS_ERROR_FIELDS {
+            field_defaults.push((name.to_string(), Value::None, true));
+        }
     }
 
+    // フィールドの可変フラグ: `OSError` の欄のほかは `let`（不変）
+    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5（`OSError` は errno=6 …）
+    let field_mutability: HashMap<String, bool> =
+        field_defaults.iter().map(|(name, _, mutable)| (name.clone(), *mutable)).collect();
+    let field_mutability_vec: Vec<bool> = field_defaults.iter().map(|(_, _, mutable)| *mutable).collect();
+
     // field_index: own フィールド + Error:: trait エイリアス（`args` は `Error` trait に無い）
-    let field_index: HashMap<String, usize> = [
+    let mut field_index: HashMap<String, usize> = [
         ("message", 0usize),
         ("code_context", 1),
         ("file", 2),
@@ -70,15 +136,20 @@ pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<Class
     .iter()
     .map(|(k, v)| (k.to_string(), *v))
     .collect();
+    if os_group {
+        for (i, name) in OS_ERROR_FIELDS.iter().enumerate() {
+            field_index.insert(name.to_string(), 6 + i);
+        }
+    }
 
     Rc::new(ClassValue {
         bases,
         methods: HashMap::new(),
+        field_count: field_defaults.len(),
         field_defaults,
         field_mutability,
         field_index,
-        field_count: 6,
-        field_mutability_vec: vec![false; 6],
+        field_mutability_vec,
         is_exception: true,
         ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })

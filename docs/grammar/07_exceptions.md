@@ -156,7 +156,23 @@ print(KeyError("k"))            # 'k'（KeyError は引数 1 つのとき repr�
 - 内部で起きた例外の `args` は文言 1 つの組です。⚠ ただし見つからないキーの `KeyError`（`d[k]` / `del d[k]` /
   `d.pop(k)` / `s.remove(x)` / `"{k}".format()`）は CPython と同じく**キーそのもの**（`args == (k,)`・`e.args[0] is k`・
   `repr(e)` は `KeyError('zz')`）、空の `d.popitem()` / `s.pop()` は文言の文字列が引数です（known_bugs.md の #9・
-  `examples/interop/py_key_error_args.ar`）。⚠ `OSError` の `errno` / `strerror` / `filename` はまだ持ちません（文言だけ）。
+  `examples/interop/py_key_error_args.ar`）。
+- **`OSError` の系統**（`FileNotFoundError` などの派生・別名の `IOError` を含む）は CPython と同じく `errno` / `strerror` /
+  `filename` / `filename2` を持ちます（無ければ `None`・known_bugs.md の #9・`examples/interop/py_os_error_args.ar`）。
+  - `open` の失敗は `FileNotFoundError: [Errno 2] No such file or directory: 'p'`（`args == (2, 'No such file or directory')`・
+    `filename` はパス）。errno と文言は C の値です（無いファイル 2・権限 13・あるファイルの `"x"` 17。Windows でディレクトリを
+    開くと `PermissionError` の 13。CPython と同じ）。⚠ 以前の文言は `cannot open 'p': <OS の文言>` でした。
+  - `OSError(errno, strerror[, filename])` で作ると同じ属性が入り、`filename` が `None` でなければ `args` は最初の 2 つ、
+    `str(e)` は `[Errno 2] No such: 'f'` です。引数が 0 / 1 / 6 個以上ならほかの例外と同じ（属性は `None`）。
+  - `OSError(2, "..")` は errno に対応する派生（`FileNotFoundError`）になります（CPython の `OSError.__new__`。別名の
+    `IOError(..)` も。派生を呼んだときは呼んだクラスのまま）。
+  - 型検査は `errno` を `int | None`、`strerror` を `str | None`、`filename` / `filename2` を `Any` とします
+    （比べる前に `e.errno mustbe int` で確かめる）。
+  - ⚠ 4 つ目の引数（Windows の `winerror`）は持たないので、`None` 以外を渡すと `TypeError` です。⚠ 作った後で
+    `e.errno = ..` と書き換えても `str(e)` は変わりません（作るときに決める。CPython は変わる）。⚠ Windows の CPython は
+    5 つの形（`filename2`）で `[WinError None] ..` と出します（Arrow は Linux の CPython と同じ `[Errno ..] ..: 'a' -> 'b'`）。
+  - ⚠ `open` の 5 種類（無い・権限・ある・ディレクトリ・ディレクトリでない）のほかの失敗は `IOError` で、errno は OS の
+    番号（Windows では Win32 の番号）、文言は OS の文言です（CPython は C の errno の `OSError`）。
 - `Error` を実装した利用者の例外（`class MyErr(Error)`）は `args` を持たず、`str(e)` / `print(e)` は `message`、
   `repr(e)` は `MyErr('bad value')` の形です（メッセージが無ければ `str(e)` は空文字列）。
 - `__str__` / `__repr__` を定義すればそれが優先します（`implementation_plans/ffi_value_exchange_plan.md` 7-3。

@@ -750,21 +750,29 @@ impl Interpreter {
             // ⚠ 組み込みの例外クラスの並びを最初から載せる（フェーズ10 10-19）。Python のクラスが
             //   `class AppError(Exception)` / `class ConfigError(ValueError)` と継承したとき、基底の
             //   フィールド（message …）の並びがここに無く、`'AppError' has no field 'message'` で作れなかった。
-            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。
+            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。`OSError` の系統は
+            //   `errno` / `strerror` / `filename` / `filename2` が続く（書き換えられる・known_bugs.md の #9）。
             py_class_field_order: crate::type_check::names::BUILTIN_EXCEPTIONS
                 .iter()
                 .map(|(n, _)| {
-                    (
-                        n.to_string(),
-                        vec![
-                            ("message".to_string(), false, "str".to_string()),
-                            ("code_context".to_string(), false, "str".to_string()),
-                            ("file".to_string(), false, "str".to_string()),
-                            ("line".to_string(), false, "int".to_string()),
-                            ("col".to_string(), false, "int".to_string()),
-                            ("args".to_string(), false, "Any".to_string()),
-                        ],
-                    )
+                    let mut order = vec![
+                        ("message".to_string(), false, "str".to_string()),
+                        ("code_context".to_string(), false, "str".to_string()),
+                        ("file".to_string(), false, "str".to_string()),
+                        ("line".to_string(), false, "int".to_string()),
+                        ("col".to_string(), false, "int".to_string()),
+                        ("args".to_string(), false, "Any".to_string()),
+                    ];
+                    let os_group = *n == "OSError"
+                        || crate::type_check::names::builtin_exception_bases(n, true).iter().any(|b| b == "OSError");
+                    if os_group {
+                        order.extend(
+                            crate::interpreter::built_in_types::OS_ERROR_FIELDS
+                                .iter()
+                                .map(|f| (f.to_string(), true, "Any".to_string())),
+                        );
+                    }
+                    (n.to_string(), order)
                 })
                 .collect(),
             trait_field_order: {

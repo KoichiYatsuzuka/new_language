@@ -224,13 +224,25 @@ impl TypeRegistryBuilder {
         // 循環させない（`builtin_exception_bases` の doc）。
         for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
             known_class_names.insert(class_name.to_string());
-            class_bases.insert(
-                class_name.to_string(),
-                crate::type_check::names::builtin_exception_bases(class_name, false),
-            );
+            let bases = crate::type_check::names::builtin_exception_bases(class_name, false);
             // `args`（作るときの引数の組・タスク 4-2）は組み込みの例外だけが持つ（`Error` trait には無い）。
             let mut fields = exc_fields.clone();
             fields.insert("args".to_string(), (FieldKind::Let, InferredType::TupleAny));
+            // `OSError` の系統の `errno` / `strerror` / `filename` / `filename2`（実行時の `make_error_class` の
+            // `OS_ERROR_FIELDS` と揃える・known_bugs.md の #9）。無ければ `None`。`filename` はパスの文字列のほか
+            // バイト列・ファイル記述子もありうるので `Any`。
+            if *class_name == "OSError" || bases.iter().any(|b| b == "OSError") {
+                let optional = |t| InferredType::Union(vec![t, InferredType::None]);
+                for (fname, fty) in [
+                    ("errno", optional(InferredType::Int)),
+                    ("strerror", optional(InferredType::Str)),
+                    ("filename", InferredType::Any),
+                    ("filename2", InferredType::Any),
+                ] {
+                    fields.insert(fname.to_string(), (FieldKind::Let, fty));
+                }
+            }
+            class_bases.insert(class_name.to_string(), bases);
             class_field_details.insert(class_name.to_string(), fields);
         }
         // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、
