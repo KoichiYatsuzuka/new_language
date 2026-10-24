@@ -255,6 +255,11 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). â
   field `x` (`bypass_setattr_name` in `classes.rs`). The checker lets an assignment target on a hooked class name
   anything (`attr_is_assign_target`). `cached_property` stores through `__py_object_setattr`. The Arrow parser rejects
   the hooks in Arrow classes (`reject_attr_hook`).
+- Static / class methods through an instance (known_bugs.md #5): for a Python class (`ClassValue::is_python`)
+  `call_instance_method_evaled` sends `obj.f(..)` of a `static fn` / `class_method fn` to `eval_class_method` with the
+  instance's class (static: no `self`; class method: `cls = type(obj)`), and `get_attr_without_hook` returns the plain
+  function / a `BoundTarget::ClassMethod` bound to the class. The checker skips `StaticMethodOnInstance` for
+  `TypeRegistry::is_python_class` (classes collected from an `import[py]` body). Arrow classes keep the class-only rule.
 - `__getattr__` (known_bugs.md #11): `get_attr_val` calls `get_attr_without_hook` and, when that fails with an
   `AttributeError` (`Interpreter::is_attribute_error` â€” a message, or a raised exception in `current_exception`, which
   it clears), calls a Python class's `__getattr__(name)`. A method call on an unknown name reads through it

@@ -875,6 +875,13 @@ impl Interpreter {
             BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver)),
             // 組み込みの値のメソッドは名前で同じ入口へ（`xs.append(..)` と同じ・タスク 1-10）。
             BoundTarget::Builtin(name) => return self.eval_method_call_full(receiver, name, evaled.to_vec(), None),
+            // インスタンスから読んだ Python のクラスメソッド（known_bugs.md の #5）。受け手はクラスで、`C.make(..)` と同じ。
+            BoundTarget::ClassMethod(m) => {
+                let Value::Class(cls) = &receiver else {
+                    return Err(format!("RuntimeError: internal — class method '{}' bound to a non-class", m[0].name));
+                };
+                return self.eval_class_method(cls.clone(), &m[0].name, evaled.to_vec());
+            }
         };
         let method_name = methods[0].name.clone();
         if let Value::Instance(inst_rc) = &receiver {

@@ -361,6 +361,11 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 **`object`**（[12_builtins.md](12_builtins.md)・python_builtins_plan.md のタスク 6-10）: `object()` は内部の `__py_object()` に変換します（Arrow のソースからは呼べない）。番兵（`MISSING = object()`）はフィールド・辞書・リストを通っても同じ物で、別々の `object()` は `==` で等しくなく、辞書のキーとしても別です（CPython と同じ）。基底を書かないクラス・`class C(object)` の `super().__init__(*args, **kwargs)` は `object.__init__` に届きます（余分な引数があれば CPython と同じ `TypeError`）。Python 2 からの書き方 `super(C, self).m(..)` は、`C` が定義中のクラスなら `super().m(..)` と同じです（タスク 6-2。ほかのクラスを渡す形は変換の誤り）。⚠ `object` のほかのメソッド（`super().__setattr__(..)` / `object.__new__(cls)` など）と、型を値として呼ぶ `type(o)()` は対象外。`super()` の `*args` / `**kwargs` は普通の呼び出しと同じに渡します。
 
 **`staticmethod` / `classmethod`**: デコレータのほか、クラス本体の `f = staticmethod(f)` / `g = classmethod(f)` も受けます（先に定義したメソッドにデコレータを付けたのと同じ。名前が違えばその名前の写しを足す・タスク 6-13）。クラス本体の外で定義した関数を包む形（`bump = staticmethod(helper)`）とクラス本体の外の `staticmethod(..)` は変換の誤りです。
+静的メソッドは Arrow の `static fn`、クラスメソッドは `class_method fn` になります。Arrow のクラスではどちらもクラス経由
+（`C.f(..)`）でしか呼べませんが、**Python のクラスでは CPython と同じくインスタンスからも呼べます**（known_bugs.md の #5）。
+`self.helper(x)` は `self` を渡さずに呼び、`self.make()` は `cls` にインスタンスのクラス（`type(self)`・派生のインスタンスなら
+派生）を渡します。値として読む形（`f = obj.helper` は束縛しない関数・`g = obj.make` は `type(obj)` に束縛した関数）も同じで、
+Arrow のコードから Python のインスタンス経由で呼ぶ形も型検査を通ります（`examples/interop/py_methods_via_instance.ar`）。
 ⚠ 静的メソッド・クラスメソッドをインスタンスから呼ぶ形（`self.helper(..)`）は Arrow の規則で実行時の誤りです（クラスから呼ぶ）。
 
 **`...`**: 値の `...` は組み込みの唯一の値 `Ellipsis` です（表示は `Ellipsis`・`x is ...` は `Ellipsis` のときだけ真・タスク 6-11。以前は `None` にしていました）。文の `...`（`def f(): ...` などスタブの本体）は `pass` です。

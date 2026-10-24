@@ -46,6 +46,8 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     foreign_depth: u32,
     /// 今集めている外部言語のスタブの言語タグ（誤りの文で `C# method` / `Rust method` と呼び分ける・2-5）。
     foreign_lang: Option<String>,
+    /// `import[py]` のモジュールの本体を集めている間か（`python_class_names` に載せる・known_bugs.md の #5）。
+    collecting_python: bool,
     /// 今集めている文が属する文脈（`TypeRegistry::name_scopes` の添字・0 がメイン・フェーズ10 10-8）。
     /// `import` の別名・`from import` した名前をこの文脈の表に控える。
     cur_scope: usize,
@@ -271,6 +273,7 @@ impl TypeRegistryBuilder {
                 enum_members: HashMap::new(),
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
+                python_class_names: HashSet::new(),
                 known_protocols: HashMap::new(),
                 template_params: HashMap::new(),
                 name_scopes: vec![NameScope::default()],
@@ -281,6 +284,7 @@ impl TypeRegistryBuilder {
             seen_instances: HashSet::new(),
             foreign_depth: 0,
             foreign_lang: None,
+            collecting_python: false,
             cur_scope: 0,
             module_prefix: None,
         }
@@ -396,6 +400,9 @@ impl TypeRegistryBuilder {
                             .insert(name.clone());
                     }
                     self.reg.known_class_names.insert(name.clone());
+                    if self.collecting_python {
+                        self.reg.python_class_names.insert(name.clone());
+                    }
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {
                         self.reg.arrow_class_names.insert(name.clone());
@@ -579,7 +586,9 @@ impl TypeRegistryBuilder {
                             if !arrow {
                                 self.foreign_depth += 1;
                             }
+                            let prev_py = std::mem::replace(&mut self.collecting_python, lang == "py");
                             self.collect_in_module(&modpath, idx, &qbody);
+                            self.collecting_python = prev_py;
                             if !arrow {
                                 self.foreign_depth -= 1;
                             }

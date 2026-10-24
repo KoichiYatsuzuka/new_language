@@ -204,7 +204,9 @@ impl Interpreter {
         let (name, qualname, body): (&str, Option<&str>, &[crate::ast::Stmt]) = match f {
             Value::Function(fv) => match fv.bound.as_deref() {
                 Some(b) => match &b.target {
-                    BoundTarget::Methods(ms) => return self.function_attr(&Value::Function(ms[0].clone()), attr),
+                    BoundTarget::Methods(ms) | BoundTarget::ClassMethod(ms) => {
+                        return self.function_attr(&Value::Function(ms[0].clone()), attr)
+                    }
                     BoundTarget::Gen(g) => return self.function_attr(&Value::GeneratorFn(g.clone()), attr),
                     BoundTarget::Builtin(n) => {
                         return match attr {
@@ -352,6 +354,26 @@ impl Interpreter {
                     return Ok(v);
                 }
                 if cls.methods.contains_key(attr) {
+                    // Python のクラスはインスタンスからも読める（CPython と同じ・known_bugs.md の #5）。静的メソッドは
+                    // 束縛しない関数（クラスから読む `C.f` と同じ）、クラスメソッドは `cls` にインスタンスのクラス
+                    // （`type(self)`）を束縛した関数。⚠ Arrow のクラスは下の誤りのまま。
+                    if cls.is_python
+                        && (cls.static_method_names.contains(attr) || cls.class_method_names.contains(attr))
+                    {
+                        let overloads = cls.methods[attr].clone();
+                        drop(inst);
+                        self.check_member_access(&cls, attr, attr)?;
+                        if cls.class_method_names.contains(attr) {
+                            return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                                Value::Class(cls.clone()),
+                                crate::interpreter::value::BoundTarget::ClassMethod(overloads),
+                            )));
+                        }
+                        return Ok(match overloads.as_slice() {
+                            [one] => Value::Function(one.clone()),
+                            _ => Value::OverloadedFn(overloads),
+                        });
+                    }
                     if cls.static_method_names.contains(attr) {
                         drop(inst);
                         return Err(format!(

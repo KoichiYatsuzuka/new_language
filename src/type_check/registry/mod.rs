@@ -79,6 +79,9 @@ pub(super) struct TypeRegistry {
     class_member_access: HashMap<String, HashMap<String, Accessibility>>,
     /// `static fn` で定義されたスタティックメソッド名。
     class_static_methods: HashMap<String, HashSet<String>>,
+    /// `import[py]` のモジュール（Python のソースを変換したもの）で宣言したクラス（修飾名）。Python のクラスの
+    /// 静的メソッドはインスタンスからも呼べる（`StaticMethodOnInstance` を出さない・known_bugs.md の #5）。
+    python_class_names: HashSet<String>,
     /// プロトコル定義。プロトコル名 → `ProtocolInfo`。
     known_protocols: HashMap<String, ProtocolInfo>,
     /// **Arrow ソースで `class` 宣言された**クラス名（#27-a）。
@@ -428,6 +431,11 @@ impl TypeRegistry {
         self.class_static_methods
             .get(&*self.resolve(class))
             .is_some_and(|s| s.contains(method))
+    }
+
+    /// `import[py]` のモジュールで宣言したクラスか（[`Self::python_class_names`]）。
+    pub(super) fn is_python_class(&self, class: &str) -> bool {
+        self.python_class_names.contains(&*self.resolve(class))
     }
 
     // ── trait ─────────────────────────────────────────────────────────────────

@@ -1,0 +1,35 @@
+# py_methods_via_instance.ar — 静的メソッド・クラスメソッドをインスタンスから呼ぶ（known_bugs.md の #5）
+#
+# 変換器は Python の `@staticmethod` / `@classmethod` を Arrow の `static fn` / `class_method fn` にする。Arrow のクラスでは
+# どちらもクラス経由（`C.f(..)`）でしか呼べないが、Python のクラスでは CPython と同じくインスタンスからも呼べる:
+# `self.helper(x)` は静的メソッドを `self` を渡さずに呼び、`self.make()` はクラスメソッドに `cls = type(self)`
+# （派生クラスのインスタンスなら派生クラス）を渡す。値として読む形（`f = obj.helper` / `g = obj.make`）も同じ。
+# Arrow のコードから Python のインスタンス経由で呼ぶ形も通る（型検査は Python のクラスに `StaticMethodOnInstance` を出さない）。
+# ⚠ Arrow のクラスは今までどおりクラス経由だけ（`static method 'f' must be called on `C`, not an instance`）。
+#
+# m.run() は CPython 3.12 と同じ出力:
+#   1 describe: s: 6 Shape/0 | q: 6 Square/4
+#   2 outside: 10 Square/4 Square m
+#   3 class: 14 Square/4 Square
+#   4 values: 8 Square Square/4
+#   5 function form: 101
+#   6 identity: True True False
+#
+# ⚠ 以前は `self.double(3)` が `AttributeError: static method 'double' must be called on the class, not an instance`
+#   だった（pandas の `self._validate(..)` の形）。
+
+import[py] test_modules.py_methods_via_instance as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のコードからも Python のインスタンス経由で呼べる
+mut q = m.Square("arrow")
+check(str(q.double(21)) == "42", "static method through an instance from Arrow")
+check(str(q.kind()) == "Square/4", "class method through an instance gets type(obj)")
+let made = q.make("x")
+check(str(type(made).__name__) == "Square", "class method makes the subclass")
+print("arrow side ok")

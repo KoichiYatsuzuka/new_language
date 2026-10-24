@@ -295,3 +295,5 @@ class MathHelper:
   サブクラス対応のコンストラクタに使用します。
 
 インスタンス経由で `static` メソッドを呼び出すと静的型エラー `StaticMethodOnInstance`。
+⚠ Python のモジュール（`import[py]`）のクラスの静的メソッド・クラスメソッドは、CPython と同じくインスタンスからも
+呼べます（known_bugs.md の #5・[09_imports.md](09_imports.md) の「`staticmethod` / `classmethod`」）。

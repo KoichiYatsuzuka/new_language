@@ -118,6 +118,15 @@ impl Interpreter {
             return Err(format!("AttributeError: '{}' has no method '{method_name}'", class.name));
         };
         let n_overloads = overloads.len();
+        // Python のクラスの静的メソッド・クラスメソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
+        // クラス経由の呼び出し（`eval_class_method`）へ回す: 静的メソッドは `self` を渡さず、クラスメソッドは `cls` に
+        // インスタンスのクラス（`type(self)`・派生のインスタンスなら派生）を渡す。
+        // ⚠ Arrow のクラスは今までどおりクラス経由だけ（下の誤り・型検査の `StaticMethodOnInstance`）。
+        if class.is_python
+            && (class.static_method_names.contains(method_name) || class.class_method_names.contains(method_name))
+        {
+            return self.eval_class_method(class.clone(), method_name, evaled);
+        }
         if class.static_method_names.contains(method_name) {
             return Err(format!(
                 "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",

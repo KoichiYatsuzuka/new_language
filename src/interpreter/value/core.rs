@@ -323,15 +323,17 @@ impl Value {
             // 束縛メソッド（タスク 1-8）は受け手もメソッドの実体も複製する。
             bound: rc.bound.as_ref().map(|b| {
                 use super::BoundTarget as T;
+                let clone_all = |ms: &Vec<Rc<super::FnValue>>| -> Vec<Rc<super::FnValue>> {
+                    ms.iter()
+                        .map(|m| match Value::Function(m.clone()).deep_clone() {
+                            Value::Function(f) => f,
+                            _ => unreachable!("deep_clone keeps the variant"),
+                        })
+                        .collect()
+                };
                 let target = match &b.target {
-                    T::Methods(ms) => T::Methods(
-                        ms.iter()
-                            .map(|m| match Value::Function(m.clone()).deep_clone() {
-                                Value::Function(f) => f,
-                                _ => unreachable!("deep_clone keeps the variant"),
-                            })
-                            .collect(),
-                    ),
+                    T::Methods(ms) => T::Methods(clone_all(ms)),
+                    T::ClassMethod(ms) => T::ClassMethod(clone_all(ms)),
                     T::Gen(g) => match Value::GeneratorFn(g.clone()).deep_clone() {
                         Value::GeneratorFn(f) => T::Gen(f),
                         _ => unreachable!("deep_clone keeps the variant"),

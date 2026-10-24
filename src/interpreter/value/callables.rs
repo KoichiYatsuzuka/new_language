@@ -237,13 +237,16 @@ pub enum BoundTarget {
     /// 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）。名前で
     /// `eval_method_call_full` へ回す。読める名前は `type_check::names::BUILTIN_VALUE_METHODS`。
     Builtin(String),
+    /// Python のクラスのクラスメソッドをインスタンスから読んだもの（`g = obj.make`・known_bugs.md の #5）。受け手は
+    /// **クラス**（`type(obj)`）で、呼ぶとクラス経由の呼び出し（`eval_class_method`・`cls` に受け手）と同じ。
+    ClassMethod(Vec<Rc<FnValue>>),
 }
 
 impl BoundTarget {
     /// 呼び先の同一性（等値・ハッシュ）。組み込みのメソッドは名前で比べるので `None`。
     fn ptr(&self) -> Option<*const ()> {
         match self {
-            BoundTarget::Methods(m) => Some(Rc::as_ptr(&m[0]) as *const ()),
+            BoundTarget::Methods(m) | BoundTarget::ClassMethod(m) => Some(Rc::as_ptr(&m[0]) as *const ()),
             BoundTarget::Gen(g) => Some(Rc::as_ptr(g) as *const ()),
             BoundTarget::Builtin(_) => None,
         }
@@ -262,6 +265,8 @@ fn receiver_ptr(v: &Value) -> Option<*const ()> {
         Value::Generator(r) => Some(Rc::as_ptr(r) as *const ()),
         Value::FrozenList { state, .. } => Some(Rc::as_ptr(state) as *const ()),
         Value::Str(s) => Some(Rc::as_ptr(s) as *const u8 as *const ()),
+        // クラスメソッドの受け手（`BoundTarget::ClassMethod`・`obj.make == obj.make`）
+        Value::Class(c) => Some(Rc::as_ptr(c) as *const ()),
         _ => None,
     }
 }
@@ -316,6 +321,11 @@ impl FnValue {
             }
             BoundTarget::Gen(g) => (g.name.clone(), Self::params_without_self(&g.params), false, None, g.globals),
             BoundTarget::Builtin(n) => (n.clone(), Vec::new(), false, None, GLOBALS_OF_CALLER),
+            // クラスメソッドは最初の仮引数（`cls`）を受け手が埋める。
+            BoundTarget::ClassMethod(m) => {
+                let f = &m[0];
+                (f.name.clone(), f.params.iter().skip(1).cloned().collect(), f.is_python, f.return_type.clone(), f.globals)
+            }
         };
         Rc::new(FnValue {
             name,
