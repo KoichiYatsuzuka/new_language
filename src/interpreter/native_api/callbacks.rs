@@ -1114,6 +1114,21 @@ extern "C" fn ar_call_method(
 }
 
 // ── Typed field-read callbacks ─────────────────────────────────────────────
+//
+// ⚠⚠ **読み出しの失敗を 0 に置き換えない**（native_object_access_plan.md 1-2）。以前は
+//   `Ok(_) | Err(_) => 0.0` で、属性なし（`__init__` の中で初期化前のフィールドを読む等）・アクセス違反が
+//   黙って 0 になっていた。エラーは `ar_get_attr` と同じく `STATE.error` に積む（呼び出しの出口で例外になる）。
+//   数値への変換規則は `ar_to_float` / `ar_to_int` と同じ（`int` は広げる・`bool` は 0 / 1・ほかはエラー）。
+
+/// 型付き読み出しの失敗を記録する（先に積まれたエラーがあればそちらを残す）。
+fn set_field_read_error(msg: String) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_none() {
+            st.error = Some(msg);
+        }
+    });
+}
 
 extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
     let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
@@ -1130,8 +1145,17 @@ extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32)
     match interp.get_attr_val(obj, name, None) {
         Ok(Value::Float(f)) => f,
         Ok(Value::Int(n)) => n as f64,
+        Ok(Value::UInt(n)) => n as f64,
         Ok(Value::Bool(b)) => b as u8 as f64,
-        Ok(_) | Err(_) => 0.0,
+        Ok(other) => {
+            let got = interp.type_name(&other);
+            set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+            0.0
+        }
+        Err(e) => {
+            set_field_read_error(e);
+            0.0
+        }
     }
 }
 
@@ -1149,9 +1173,18 @@ extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
     let interp = unsafe { &mut *interp_ptr };
     match interp.get_attr_val(obj, name, None) {
         Ok(Value::Int(n)) => n,
+        Ok(Value::UInt(n)) => n as i64,
         Ok(Value::Float(f)) => f as i64,
         Ok(Value::Bool(b)) => b as i64,
-        Ok(_) | Err(_) => 0,
+        Ok(other) => {
+            let got = interp.type_name(&other);
+            set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+            0
+        }
+        Err(e) => {
+            set_field_read_error(e);
+            0
+        }
     }
 }
 

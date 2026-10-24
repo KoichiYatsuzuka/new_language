@@ -116,7 +116,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (261 files, 110747 lines)
+src/  (261 files, 110780 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1652)
@@ -240,7 +240,7 @@ src/  (261 files, 110747 lines)
       mod.rs (7)
       overload.rs (223)
     native_api/
-      callbacks.rs (1374)
+      callbacks.rs (1407)
       mod.rs (524)
     ops/
       display.rs (364)
@@ -491,7 +491,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
   exceptions/ (10 .ar)
-  interop/ (180 .ar)
+  interop/ (182 .ar)
   practical_examples/ (8 .ar)
   repl/ (0 .ar)
   typing/ (120 .ar)

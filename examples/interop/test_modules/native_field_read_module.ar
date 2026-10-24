@@ -1,0 +1,25 @@
+# native_field_read_module.ar — コンパイル済みコードの型付きフィールド読み出しの失敗を 0 にしないこと
+# （native_object_access_plan.md 1-2）の検証用モジュール
+#
+# `float` / `int` と分かっているフィールドの読み出しは型付きのコールバック（`get_float_field` /
+# `get_int_field`）になる。⚠ 以前はその失敗（属性なし・アクセス違反）を黙って 0.0 / 0 にしていた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_field_read_module.ar
+
+class Reading:
+    mut w: float
+    mut n: int
+
+    # `self.w` を代入する前に読む: 非コンパイルでは AttributeError（初期化されていない）
+    fn __init__(mut self, let w: float, let n: int) -> None:
+        self.n = n
+        let before = self.w + w
+        self.w = before
+
+    fn total(let self) -> float:
+        return self.w + float(self.n)
+
+fn make_total(let w: float, let n: int) -> float:
+    let r = Reading(w, n)
+    return r.total()
