@@ -367,12 +367,12 @@ pub fn try_dispatch_native_method(
     method_name: &str,
     arg_vals: Vec<Value>,
 ) -> Option<Result<Value, String>> {
-    let class_name = match &obj {
-        Value::Instance(rc) => rc.borrow().class.name.clone(),
+    let class = match &obj {
+        Value::Instance(rc) => rc.borrow().class.clone(),
         _ => return None,
     };
 
-    let (fn_ptr, globals) = lookup_native_method(&class_name, method_name)?;
+    let (fn_ptr, globals) = lookup_native_method(&class.name, method_name)?;
 
     let is_outermost = enter_native_call(interp as *mut Interpreter);
 
@@ -383,13 +383,13 @@ pub fn try_dispatch_native_method(
         all_args.push(push_handle(v.clone()));
     }
 
-    // メソッドはクラスを定義したモジュールの大域で走る（1-7）
-    let prev = interp.enter_native_globals(Some(globals));
+    // メソッドはクラスを定義したモジュールの大域で、受け手のクラスの文脈で走る（1-7・1-9）
+    let prev = interp.enter_native_method(globals, class);
     let result_h = unsafe {
         let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
         func(all_args.as_ptr(), all_args.len() as i32)
     };
-    interp.leave_native_globals(prev);
+    interp.leave_native_method(prev);
 
     if let Some(err) = take_error() {
         abort_native_call(is_outermost);
@@ -578,6 +578,12 @@ pub struct ArCallbacks {
     /// `obj.attr = v`（IC 付き・field 61・2-3）。引数は (obj, 名前, 値, 箇所ごとの書き込みの IC のセル)。
     /// VM の `SetAttr` と同じ `attr_assign_ic`。
     pub assign_attr_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
+
+    // ── Class context of direct method calls (fields 62-63・1-9) ──
+    /// 生成コードがほかのクラスのメソッドを直接呼ぶ前に、`current_class` を受け手のクラスにする。戻り値は前の文脈の印。
+    pub enter_method_ctx: extern "C" fn(i64) -> i64,
+    /// `enter_method_ctx` の印を受け取り、前の文脈に戻す。
+    pub leave_method_ctx: extern "C" fn(i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

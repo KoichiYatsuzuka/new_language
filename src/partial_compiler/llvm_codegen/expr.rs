@@ -743,6 +743,24 @@ impl<'a> GenCtx<'a> {
         self.module_fns.contains(name) && !self.locals.contains_key(name)
     }
 
+    /// モジュール内のメソッドを `_impl` で直接呼ぶ前に、呼ばれるメソッドのクラスの文脈へ入る（1-9）。
+    /// 呼ぶ側（今コンパイル中の関数のクラス・自由関数なら無し）と同じクラスなら何もしない（`self.m()` の大半）。
+    /// 違えば `CB_ENTER_METHOD_CTX` で `current_class` を受け手のクラスにし、その印を返す。
+    /// ⚠ `_fast` 変種はコールバックを呼ばない（アクセスの検査が無い）ので包まない。
+    fn enter_callee_ctx(&mut self, callee_class: &str, receiver_h: &str) -> Option<String> {
+        if self.current_class.as_deref() == Some(callee_class) {
+            return None;
+        }
+        Some(self.call_cb(CB_ENTER_METHOD_CTX, &[format!("i64 {receiver_h}")]))
+    }
+
+    /// [`Self::enter_callee_ctx`] の後始末（呼び出しの直後・エラーがあっても必ず通る）。
+    fn leave_callee_ctx(&mut self, token: Option<String>) {
+        if let Some(t) = token {
+            self.call_cb(CB_LEAVE_METHOD_CTX, &[format!("i64 {t}")]);
+        }
+    }
+
     /// メソッド呼び出しのレシーバ式から**クラス名**を引く（`obj.m()` の `obj`）。
     ///
     /// - `self` … 現在コンパイル中のクラス
@@ -924,8 +942,10 @@ impl<'a> GenCtx<'a> {
                         let explicit: Vec<String> = explicit[1..].iter().map(|h| format!("i64 {h}")).collect();
                         let all_params = std::iter::once(format!("i64 {oh}"))
                             .chain(explicit).collect::<Vec<_>>().join(", ");
+                        let ctx = self.enter_callee_ctx(cls, &oh);
                         let r = self.fresh_reg();
                         self.ec(&format!("{r} = call double @{sym}_impl({all_params})"));
+                        self.leave_callee_ctx(ctx);
                         return (r, Ty::Float);
                     }
 
@@ -966,8 +986,10 @@ impl<'a> GenCtx<'a> {
                     let save = self.call_cb(CB_ARENA_SAVE, &[]);
                     let all_params = std::iter::once(format!("i64 {oh}"))
                         .chain(explicit).collect::<Vec<_>>().join(", ");
+                    let ctx = self.enter_callee_ctx(cls, &oh);
                     let raw = self.fresh_reg();
                     self.ec(&format!("{raw} = call i64 @{sym}_impl({all_params})"));
+                    self.leave_callee_ctx(ctx);
                     let result = self.call_cb(CB_ARENA_COMPACT,
                         &[format!("i64 {raw}"), format!("i64 {save}")]);
                     // Always return i64 handle; gen_expr unwraps to native type.

@@ -57,6 +57,27 @@ impl Interpreter {
         }
     }
 
+    /// ネイティブのメソッド（DLL の `_tl`）を呼ぶ間の文脈: クラスを定義したモジュールの大域（1-7）と、
+    /// `current_class` を受け手のクラスにする（1-9・インタープリタの `run_vm_method` と同じ）。
+    /// private / protected の実行時検査（`check_access_level`）は `current_class` を見る。
+    /// ⚠ 以前は設定しなかったので、コンパイル済みのメソッドが自分のクラスの private のフィールドを読み書きすると
+    ///   `AccessError` になった（自動生成の `__init__` が private のフィールドを設定するだけでも）。
+    /// 戻り値は [`Self::leave_native_method`] に渡す。
+    pub(crate) fn enter_native_method(
+        &mut self,
+        globals: u32,
+        receiver_class: std::rc::Rc<crate::interpreter::ClassValue>,
+    ) -> (Option<u32>, Option<std::rc::Rc<crate::interpreter::ClassValue>>) {
+        let g = self.enter_native_globals(Some(globals));
+        (g, self.current_class.replace(receiver_class))
+    }
+
+    /// [`Self::enter_native_method`] の後始末。
+    pub(crate) fn leave_native_method(&mut self, prev: (Option<u32>, Option<std::rc::Rc<crate::interpreter::ClassValue>>)) {
+        self.current_class = prev.1;
+        self.leave_native_globals(prev.0);
+    }
+
     #[inline(never)]
     fn switch_globals_slow(&mut self, to: u32) {
         // ⚠ 知らない添字（非同期のワーカーへ大域を渡しそこねた等）は差し替えない。

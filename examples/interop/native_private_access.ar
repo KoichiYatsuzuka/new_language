@@ -1,0 +1,24 @@
+# native_private_access.ar — コンパイル済みのメソッドが自分のクラスの private を読み書きする
+# （native_object_access_plan.md 1-9）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_private_access_module.ar
+#   2. cargo run --release -- examples/interop/native_private_access.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_private_access_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+# 自動生成の __init__ が private のフィールドを設定する（secret 5・level 0・opened 0）
+mut v = m.Vault(5, 0, 0)
+# secret: 5 -> 10 -> 20 -> 40
+check("direct call from a free function", m.rotate_vault(v), 40)
+check("private field written through a private method", v.level_of(), 3)
+check("method called from the interpreter", v.rotate(), 320)
+mut vs = [m.Vault(1, 0, 0), m.Vault(2, 0, 0)]
+check("call by name", m.rotate_all(vs), 8 + 16)

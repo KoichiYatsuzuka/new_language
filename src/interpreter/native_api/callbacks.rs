@@ -1400,17 +1400,19 @@ fn call_method_common(
                     }
                 }
             }
-            // メソッドはクラスを定義したモジュールの大域で走る（1-7）
+            // メソッドはクラスを定義したモジュールの大域で、受け手のクラスの文脈で走る（1-7・1-9）
             if interp_ptr.is_null() {
                 STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
                 return TL_NONE;
             }
-            let prev = unsafe { &mut *interp_ptr }.enter_native_globals(native.map(|(_, g)| g));
+            let Some((_, globals)) = native else { unreachable!("`ptr` comes from `native`") };
+            let class = inst_rc.borrow().class.clone();
+            let prev = unsafe { &mut *interp_ptr }.enter_native_method(globals, class);
             let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
                 func(all_args.as_ptr(), all_args.len() as i32)
             };
-            unsafe { &mut *interp_ptr }.leave_native_globals(prev);
+            unsafe { &mut *interp_ptr }.leave_native_method(prev);
             return r;
         }
     }
@@ -1639,6 +1641,54 @@ extern "C" fn ar_get_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32
     }
 }
 
+// ── 生成コードの直接呼び出しの文脈（fields 62-63・native_object_access_plan.md 1-9） ──────────────
+//
+// 生成コードがモジュール内のメソッドを `_impl` で直接呼ぶとき、呼ばれるメソッドのクラスが呼ぶ側の文脈と違えば
+// その前後で `current_class` を受け手のクラスにする（インタープリタのメソッド呼び出しと同じ）。
+// 印は前の文脈そのもの（`Rc::into_raw`）で、`ar_leave_method_ctx` が受け取って戻す。生成コードは呼び出しと
+// 呼び出しの間で抜けない（`raise` は呼ばれた側の関数から戻るだけ）ので、`ar_enter_method_ctx` と
+// `ar_leave_method_ctx` は必ず対になる。
+// ⚠ 先に積まれたエラーがあっても文脈は切り替える（対を崩さない）。
+
+/// 印: 文脈を変えなかった（受け手がインスタンスでない。直接呼び出しは型検査の結果なので来ないが、
+/// 来たら呼ばれた側の属性の読み書きがエラーにする）。
+const CTX_UNCHANGED: i64 = -1;
+/// 印: 前の文脈は無かった（`current_class` が `None`）。
+const CTX_NONE: i64 = 0;
+
+extern "C" fn ar_enter_method_ctx(obj_h: i64) -> i64 {
+    let (obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.clone_value(obj_h), st.interp_ptr)
+    });
+    let Value::Instance(rc) = obj else { return CTX_UNCHANGED };
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for enter_method_ctx".to_string()));
+        return CTX_UNCHANGED;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let class = rc.borrow().class.clone();
+    match interp.current_class.replace(class) {
+        None => CTX_NONE,
+        Some(prev) => std::rc::Rc::into_raw(prev) as i64,
+    }
+}
+
+extern "C" fn ar_leave_method_ctx(token: i64) {
+    if token == CTX_UNCHANGED {
+        return;
+    }
+    let interp_ptr = STATE.with(|s| s.borrow().interp_ptr);
+    // SAFETY: `token` は `ar_enter_method_ctx` が `Rc::into_raw` で返したもの（0 は `None`）で、ここで 1 回だけ戻す。
+    let prev = (token != CTX_NONE)
+        .then(|| unsafe { std::rc::Rc::from_raw(token as *const crate::interpreter::ClassValue) });
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for leave_method_ctx".to_string()));
+        return;
+    }
+    unsafe { &mut *interp_ptr }.current_class = prev;
+}
+
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
@@ -1752,6 +1802,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     get_float_field_ic: ar_get_float_field_ic,
     get_int_field_ic: ar_get_int_field_ic,
     assign_attr_ic: ar_assign_attr_ic,
+    enter_method_ctx: ar_enter_method_ctx,
+    leave_method_ctx: ar_leave_method_ctx,
 };
 
 #[cfg(test)]
