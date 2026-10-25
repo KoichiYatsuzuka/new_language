@@ -1,0 +1,25 @@
+# native_let_param_copy.ar — コンパイル済みの関数の let 仮引数の複製（native_object_access_plan.md 6-2・D-8）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_let_param_copy_module.ar
+#   2. cargo run --release -- examples/interop/native_let_param_copy.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_let_param_copy_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+# モジュール内の呼び出し（`__copy__` は tag に 100 を足す）
+check("inside the module: mut name is copied with __copy__", m.from_mut(), 101)
+check("inside the module: let name is shared", m.from_let(), 2)
+check("inside the module: a temporary is copied (conservatively mut)", m.from_temporary(), 103)
+# インタープリタからの呼び出し
+mut a = m.Tagged(5, 0)
+let b = m.Tagged(7, 0)
+check("from the interpreter: mut name is copied with __copy__", m.read_tag(a), 105)
+check("from the interpreter: let name is shared", m.read_tag(b), 7)
+check("from the interpreter: a temporary is copied", m.read_tag(m.Tagged(9, 0)), 109)

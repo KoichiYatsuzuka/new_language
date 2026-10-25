@@ -369,12 +369,30 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                     }
                 }
             };
+            // `let` 仮引数は `copy_value` で複製してから渡す（6-2・D-8）。ここには引数の可変性が無いので保守的に
+            // `mut` とみなす。⚠ 以前はハンドルを素通しし、`let` で受けた値が呼び出し元の後の変更で変わりえた（1-5 と同じ形）。
+            let mut owned: Vec<i64> = (0..n_args as usize).map(|i| unsafe { *args_ptr.add(i) }).collect();
+            for (i, h) in owned.iter_mut().enumerate() {
+                if !fn_ref.param_mutabilities.get(i).copied().unwrap_or(true)
+                    && fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None)
+                        == crate::interpreter::PtrParam::None
+                {
+                    match unsafe { &mut *interp_ptr }.copy_value(clone_value_at(*h)) {
+                        Ok(v) => *h = push_handle(v),
+                        Err(e) => {
+                            STATE.with(|s| s.borrow_mut().error = Some(e));
+                            abort_native_call(is_outermost);
+                            return TL_NONE;
+                        }
+                    }
+                }
+            }
             // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）
             let prev = unsafe { &mut *interp_ptr }.enter_native_globals(fn_ref.globals);
             let result_h = unsafe {
                 let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
                     std::mem::transmute(fn_ptr);
-                f(args_ptr, n_args)
+                f(owned.as_ptr(), n_args)
             };
             unsafe { &mut *interp_ptr }.leave_native_globals(prev);
 

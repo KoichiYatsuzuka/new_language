@@ -53,10 +53,19 @@ impl Interpreter {
         Err(unavailable(&fn_ref.fn_name))
     }
 
+    pub(crate) fn dispatch_native_evaled_flags(
+        &mut self,
+        fn_ref: &Arc<NativeFnRef>,
+        _evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
+        Err(unavailable(&fn_ref.fn_name))
+    }
+
     pub(crate) fn dispatch_native_evaled_wb(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
         _vals: Vec<Value>,
+        _arg_mut: &[bool],
         _wb_mask: u32,
         _wb_out: &mut Vec<(u8, Value)>,
     ) -> Result<Value, String> {

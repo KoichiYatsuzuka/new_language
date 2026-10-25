@@ -564,17 +564,18 @@ fn native_call_with_wb(
     evaled: Vec<(Option<String>, Value, bool)>,
     node_id: &u32,
 ) -> Result<Value, String> {
-    let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
     let wb = if fn_ref.has_writeback() {
         chunk.wb_targets.get(node_id)
     } else {
         None
     };
     let Some(wb) = wb else {
-        return interp.dispatch_native_evaled(fn_ref, vals);
+        return interp.dispatch_native_evaled_flags(fn_ref, evaled);
     };
+    let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
+    let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
     let mut out = Vec::new();
-    let r = interp.dispatch_native_evaled_wb(fn_ref, vals, wb.mask, &mut out)?;
+    let r = interp.dispatch_native_evaled_wb(fn_ref, vals, &flags, wb.mask, &mut out)?;
     apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
     Ok(r)
 }
@@ -1450,8 +1451,9 @@ fn exec_op(
             {
                 // native の `mut` ポインタ書き戻し（#48）
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
                 let mut out = Vec::new();
-                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
                 r
             } else {
@@ -1484,7 +1486,8 @@ fn exec_op(
                 // native の `mut` ポインタ書き戻し（#48）。`mod.func(mut x)` の形はここに来る。
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 let mut out = Vec::new();
-                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
                 r
             } else {

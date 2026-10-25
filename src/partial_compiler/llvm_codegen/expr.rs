@@ -856,24 +856,17 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    /// モジュール内の関数を `_impl` で直接呼ぶ（内部 ABI・4-1）。`let` 仮引数のハンドルは今までどおり複製する
-    /// （引数が `let` でも複製するのは 6-2 で直す）。結果はその型のまま返す。
-    fn emit_module_fn_call(&mut self, name: &str, arg_exprs: &[(String, Ty)]) -> (String, Ty) {
+    /// モジュール内の関数を `_impl` で直接呼ぶ（内部 ABI・4-1）。結果はその型のまま返す。
+    /// `let` 仮引数は、渡す値が `mut` のときだけ `copy_value`（`__copy__` があればそれ）で複製する（D-8・6-2・
+    /// メソッドの 1-5 と同じ `abi_operand`）。⚠ 以前は `let` 仮引数を引数が `let` でも毎回 `deep_copy_value` で
+    /// 複製しており、余計に遅いうえ、`__copy__` を持つクラスで VM（`copy_value`）と違う写しを作っていた。
+    fn emit_module_fn_call(&mut self, name: &str, args: &[CallArg], arg_exprs: &[(String, Ty)]) -> (String, Ty) {
         let sig = &self.fn_sigs[name];
         let (muts, tys, ret) = (sig.param_mutabilities.clone(), sig.param_tys.clone(), sig.ret);
-        let ops: Vec<String> = arg_exprs.iter().enumerate()
-            .map(|(i, (v, vt))| match tys.get(i).copied().unwrap_or(Ty::Handle) {
-                Ty::Int => format!("i64 {}", self.to_i64(v, *vt)),
-                Ty::Float => format!("double {}", self.to_f64(v, *vt)),
-                _ => {
-                    let h = self.to_handle(v, *vt);
-                    if muts.get(i).copied().unwrap_or(true) {
-                        format!("i64 {h}")
-                    } else {
-                        let dc = self.call_cb(CB_DEEP_COPY, &[format!("i64 {h}")]);
-                        format!("i64 {dc}")
-                    }
-                }
+        let ops: Vec<String> = arg_exprs.iter().zip(args).enumerate()
+            .map(|(i, ((v, vt), a))| {
+                let pty = tys.get(i).copied().unwrap_or(Ty::Handle);
+                self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false)
             })
             .collect();
         self.call_impl(name, &ops.join(", "), ret)
@@ -1108,7 +1101,7 @@ impl<'a> GenCtx<'a> {
                 let name = name.to_string();
                 let arg_exprs: Vec<(String, Ty)> = args.iter()
                     .map(|a| self.gen_expr(a.expr())).collect();
-                return self.emit_module_fn_call(&name, &arg_exprs);
+                return self.emit_module_fn_call(&name, args, &arg_exprs);
             }
         }
         // ── Typed intra-module method calls on known class instances ──
@@ -1302,7 +1295,7 @@ impl<'a> GenCtx<'a> {
         if let Some(name) = ident_name(func) {
             if self.is_module_fn(name) {
                 let name = name.to_string();
-                let (v, t) = self.emit_module_fn_call(&name, &arg_exprs);
+                let (v, t) = self.emit_module_fn_call(&name, args, &arg_exprs);
                 return self.to_handle(&v, t); // always return a handle; gen_expr unwraps for typed callees
             }
         }

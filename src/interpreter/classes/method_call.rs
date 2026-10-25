@@ -412,7 +412,8 @@ impl Interpreter {
                 // FFI 境界検査の `node_id` に 0 を渡すのは意図的。`mod.func()` の戻り値検査は
                 // 呼び出し元の `eval_call`（`Expr::Attr` 分岐）が行うので、ここで検査すると二重になる。
                 match member {
-                    Value::NativeFunction(fn_ref) => self.dispatch_native_evaled(&fn_ref, evaled.into_iter().map(|(_, v, _)| v).collect()),
+                    // 引数の可変性も渡す（`let` 仮引数は `mut` の値のときだけ複製・6-2）
+                    Value::NativeFunction(fn_ref) => self.dispatch_native_evaled_flags(&fn_ref, evaled),
                     other => {
                         let evaled = evaled;
                         self.call_value_evaled(other, evaled, method_name, None, 0)
