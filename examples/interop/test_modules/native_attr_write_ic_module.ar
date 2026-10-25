@@ -1,0 +1,43 @@
+# native_attr_write_ic_module.ar — 属性への代入の IC（native_object_access_plan.md 2-3）の検証用モジュール
+#
+# 書き込みの IC は VM の `SetAttr` とコンパイル済みコードが同じ関数（`attr_assign_ic`）で持つ。命中したときは
+# 名前による表引きを省き、インスタンスごとの検査と格納時の型検査だけを行う。IC が**黙って違う所へ書かない**
+# ことを確かめる:
+#   - 1 つの代入箇所に 2 つのクラスが来る（class_id が変わるたびに外れて埋め直す）
+#   - インスタンス経由の `static mut`（IC に入れない。共有セルを毎回書く）
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_attr_write_ic_module.ar
+
+trait HasX:
+    mut x: int
+
+class A(HasX):
+    mut pad: str
+
+class B(HasX):
+    mut a: int
+    mut b: int
+
+class Tally:
+    static mut total: int = 0
+    mut n: int
+
+    fn add(mut self, let k: int) -> None:
+        self.n = self.n + k
+        self.total = self.total + k
+
+# 同じ代入箇所（o.x = ..）に A と B が交互に来る
+fn bump_all(mut items: list[HasX]) -> int:
+    mut t = 0
+    for o in items:
+        o.x = o.x + 1
+        t += o.x
+    return t
+
+fn tally_three(let k: int) -> int:
+    mut t = Tally(0)
+    t.add(k)
+    t.add(k)
+    t.add(k)
+    return t.n * 1000 + t.total

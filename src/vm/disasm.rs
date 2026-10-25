@@ -85,7 +85,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::FloatBinSS(o) => format!("FBIN_SS {o:?}"),
         Op::Un(o) => format!("UN {o:?}"),
         Op::GetAttr(n, _) => format!("GET_ATTR {:?}", chunk.names.get(*n as usize)),
-        Op::SetAttr(n) => format!("SET_ATTR {:?}", chunk.names.get(*n as usize)),
+        Op::SetAttr(n, c) => format!("SET_ATTR {:?} cache={c}", chunk.names.get(*n as usize)),
         Op::Swap => "SWAP".to_string(),
         Op::IsType(n) => format!("IS_TYPE {:?}", chunk.names.get(*n as usize)),
         Op::CallBuiltin(n, argc) => {

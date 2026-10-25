@@ -575,6 +575,9 @@ pub struct ArCallbacks {
     pub get_float_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> f64,
     /// `int` と分かっているフィールドの読み出し（IC 付き）。変換規則は `get_int_field` と同じ。
     pub get_int_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> i64,
+    /// `obj.attr = v`（IC 付き・field 61・2-3）。引数は (obj, 名前, 値, 箇所ごとの書き込みの IC のセル)。
+    /// VM の `SetAttr` と同じ `attr_assign_ic`。
+    pub assign_attr_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

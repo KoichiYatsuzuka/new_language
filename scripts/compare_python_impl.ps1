@@ -307,6 +307,7 @@ $knownDiff = @{
     'native_binding'                 = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 1-6）'
     'native_module_globals'          = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 1-7）'
     'native_attr_ic'                 = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 2-2）'
+    'native_attr_write_ic'           = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 2-3）'
     # (c) 値の表示形式（repr）の違い
     'other_typing'                   = 'py: リスト repr と一部の型推論が違う'
     'result'                         = 'py: Result の repr が違う（Ok(5.0) と 5.0）'

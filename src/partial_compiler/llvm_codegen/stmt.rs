@@ -439,13 +439,11 @@ impl<'a> GenCtx<'a> {
 
     /// 属性へ書く（VM の `SetAttr` / `SetTraitAttr` と同じ入口・1-4）。
     fn emit_attr_store(&mut self, oh: &str, trait_name: Option<&str>, attr: &str, vh: &str) {
-        let ptr = self.str_const(attr.as_bytes());
-        let len = attr.len() as i32;
         match trait_name {
-            None => {
-                self.call_cb(CB_ASSIGN_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {vh}")]);
-            }
+            None => self.emit_attr_assign(oh, attr, vh),
             Some(t) => {
+                let ptr = self.str_const(attr.as_bytes());
+                let len = attr.len() as i32;
                 let tptr = self.str_const(t.as_bytes());
                 let tlen = t.len() as i32;
                 self.call_cb(CB_ASSIGN_TRAIT_ATTR, &[

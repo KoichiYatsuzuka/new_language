@@ -1252,10 +1252,12 @@ fn exec_op(
             };
             buf.push(v);
         }
-        Op::SetAttr(name_idx) => {
+        // 書き込みの IC（2-3）。命中経路・ミス経路とも `attr_assign_ic`（ネイティブと共有）。
+        Op::SetAttr(name_idx, cache_idx) => {
             let value = buf.pop().unwrap();
             let obj = buf.pop().unwrap();
-            interp.attr_assign_evaled(obj, &chunk.names[*name_idx as usize], value)?;
+            let cache = &chunk.attr_caches[*cache_idx as usize];
+            interp.attr_assign_ic(obj, &chunk.names[*name_idx as usize], value, Some(cache))?;
         }
         Op::Swap => {
             let n = buf.len();

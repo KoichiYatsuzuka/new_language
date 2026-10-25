@@ -443,8 +443,37 @@ impl Interpreter {
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
+        self.attr_assign_ic(obj, attr, rhs, None)
+    }
+
+    /// `obj.attr = v` の IC 付きの入口（native_object_access_plan.md 2-3・D-6）。VM の `SetAttr` とネイティブの
+    /// `ar_assign_attr_ic` が呼ぶ（`cache` が `None` なら `attr_assign_evaled` と同じ）。
+    ///
+    /// 命中（`cache` にこのクラスの public なふつうのフィールドが入っている）なら、名前による表引き（定数のクラス変数・
+    /// `import[rs]` の setter・`static mut`・アクセスの検査・`field_index`・`field_mutability`）を省く。省けないのは
+    /// インスタンスごとの検査（不変のフィールド・不変インスタンスの未初期化 slot）と格納時の型検査で、
+    /// 命中・ミスとも [`Self::store_field_checked`] が行う。外れたら下の道を通り、ふつうのフィールドに格納できたとき
+    /// だけ埋める（`static mut`・setter・クラス変数・public でないフィールドは埋めない＝毎回この道を通る）。
+    /// ⚠ 読み出しの IC とセルを共有しない。読みは `import[rs]` の構造体のフィールドでも埋まるが、書きはそこで
+    ///   setter を通さなければならない（共有すると命中経路が setter を飛ばす）。
+    pub(crate) fn attr_assign_ic(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
         let rhs = Self::deep_copy_value(rhs);
+        if let (Some(c), Value::Instance(inst_rc)) = (cache, &obj) {
+            let hit = inst_rc.borrow().ic_slot(c.0.get(), true, || attr).map(|(idx, _)| idx);
+            if let Some(idx) = hit {
+                let mut inst = inst_rc.borrow_mut();
+                // 埋めるときに名前の表と一致することを確かめてある（下の `fill`）
+                let is_mutable = inst.class.field_mutability_vec.get(idx).copied().unwrap_or(true);
+                return Self::store_field_checked(&mut inst, idx, attr, rhs, is_mutable);
+            }
+        }
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -487,23 +516,21 @@ impl Interpreter {
                     ));
                 };
                 let mut inst = inst_rc.borrow_mut();
-                if inst.field_mutable(idx) == Some(false) {
-                    return Err(format!(
-                        "TypeError: cannot assign to immutable field '{attr}'"
-                    ));
-                }
-                if !inst.slot_initialized(idx)
-                    && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
-                {
-                    return Err(format!(
-                        "TypeError: cannot assign field '{attr}' on immutable instance"
-                    ));
-                }
                 let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
-                if !inst.store_field(idx, rhs, is_mutable) {
-                    return Err(format!(
-                        "TypeError: value does not match declared type of field '{attr}'"
-                    ));
+                Self::store_field_checked(&mut inst, idx, attr, rhs, is_mutable)?;
+                // IC を埋めるのは public のふつうのフィールドで、slot の可変性（命中経路が引く）が名前の表と
+                // 一致するときだけ（組み込みの例外クラスは slot の表だけが `false`）。
+                if let Some(c) = cache {
+                    let public = inst_class
+                        .field_access
+                        .get(attr)
+                        .or_else(|| inst_class.method_access.get(attr))
+                        .map_or(true, |a| matches!(a, Accessibility::Public));
+                    let same_mutability =
+                        inst_class.field_mutability_vec.get(idx).copied().unwrap_or(true) == is_mutable;
+                    if public && same_mutability {
+                        c.fill(inst_class.class_id, idx, crate::ast::AttrCache::PUBLIC);
+                    }
                 }
                 Ok(())
             }
@@ -555,6 +582,27 @@ impl Interpreter {
             }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
         }
+    }
+
+    /// インスタンスごとの検査（不変のフィールド・不変インスタンスの未初期化 slot）と格納時の型検査をしてから格納する。
+    /// [`Self::attr_assign_ic`] の命中経路とミス経路が共有する（IC で省けない検査はここに集める・2-3）。
+    fn store_field_checked(
+        inst: &mut crate::interpreter::value::InstanceData,
+        idx: usize,
+        attr: &str,
+        rhs: Value,
+        is_mutable: bool,
+    ) -> Result<(), String> {
+        if inst.field_mutable(idx) == Some(false) {
+            return Err(format!("TypeError: cannot assign to immutable field '{attr}'"));
+        }
+        if !inst.slot_initialized(idx) && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
+            return Err(format!("TypeError: cannot assign field '{attr}' on immutable instance"));
+        }
+        if !inst.store_field(idx, rhs, is_mutable) {
+            return Err(format!("TypeError: value does not match declared type of field '{attr}'"));
+        }
+        Ok(())
     }
 
     // --- 属性代入ヘルパー ---

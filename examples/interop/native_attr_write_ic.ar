@@ -1,0 +1,21 @@
+# native_attr_write_ic.ar — 属性への代入の IC（native_object_access_plan.md 2-3）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar、VM の `SetAttr`）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_attr_write_ic_module.ar
+#   2. cargo run --release -- examples/interop/native_attr_write_ic.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_attr_write_ic_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+mut items: list[m.HasX] = [m.A(1, "a"), m.B(10, 0, 0), m.A(100, "b"), m.B(1000, 5, 6)]
+check("one write site, two classes", m.bump_all(items), 1115)
+check("same site again (IC filled)", m.bump_all(items), 1119)
+# static mut は全インスタンスで共有（tally_three を 2 回呼ぶと total は 3k + 3k）
+check("static mut through an instance", m.tally_three(2), 6006)
+check("static mut keeps accumulating", m.tally_three(2), 6012)

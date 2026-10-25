@@ -412,16 +412,30 @@ impl<'a> GenCtx<'a> {
     /// IC のセルは DLL 内の `i64` の大域（初期値 0）で、命中・ミスの判定は VM の `GetAttr` と同じ関数が行う。
     /// ⚠ 以前は IC を持たず、毎回 `get_attr_val` の名前引き（`format!` と全フィールドの走査を含む）を通っていた。
     pub(super) fn emit_attr_read(&mut self, h: &str, attr: &str, ty: Option<Ty>) -> (String, Ty) {
-        let cell = format!("_ic{}", self.ic_ctr);
-        self.ic_ctr += 1;
-        self.str_globals.push_str(&format!("@{cell} = internal global i64 0, align 8\n"));
+        let cell = self.ic_cell();
         let ptr = self.str_const(attr.as_bytes());
-        let args = [format!("i64 {h}"), ptr, format!("i32 {}", attr.len()), format!("ptr @{cell}")];
+        let args = [format!("i64 {h}"), ptr, format!("i32 {}", attr.len()), cell];
         match ty {
             Some(Ty::Float) => (self.call_cb(CB_GET_FLOAT_FIELD_IC, &args), Ty::Float),
             Some(Ty::Int) => (self.call_cb(CB_GET_INT_FIELD_IC, &args), Ty::Int),
             _ => (self.call_cb(CB_GET_ATTR_IC, &args), Ty::Handle),
         }
+    }
+
+    /// `obj.attr = v` を**箇所ごとの書き込みの IC 付きで**行う（2-3・VM の `SetAttr` と同じ `attr_assign_ic`）。
+    /// セルは読み出しとは別（`attr_assign_ic` の doc）。
+    pub(super) fn emit_attr_assign(&mut self, oh: &str, attr: &str, vh: &str) {
+        let cell = self.ic_cell();
+        let ptr = self.str_const(attr.as_bytes());
+        self.call_cb(CB_ASSIGN_ATTR_IC, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), format!("i64 {vh}"), cell]);
+    }
+
+    /// 箇所ごとの IC のセル（DLL 内の `i64` の大域・初期値 0）を 1 つ作り、`ptr @_icN` を返す（2-2 / 2-3）。
+    fn ic_cell(&mut self) -> String {
+        let cell = format!("_ic{}", self.ic_ctr);
+        self.ic_ctr += 1;
+        self.str_globals.push_str(&format!("@{cell} = internal global i64 0, align 8\n"));
+        format!("ptr @{cell}")
     }
 
     // ── Callback dispatch ─────────────────────────────────────────────────────

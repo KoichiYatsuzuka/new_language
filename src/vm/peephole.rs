@@ -109,7 +109,7 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::FloatBinSS(_)
         | Op::Un(_)
         | Op::GetAttr(_, _)
-        | Op::SetAttr(_)
+        | Op::SetAttr(_, _)
         | Op::Swap
         | Op::CallMethodLocal(_, _, _, _, _)
         | Op::GetAttrLocal(_, _, _)

@@ -216,7 +216,7 @@ pub enum Op {
     /// 属性（フィールド）書き: スタックは `[obj, value]`。value・obj を pop し、
     /// `attr_assign_evaled(obj, names[name_idx], value)` で代入する（値は push しない）。
     /// obj が Instance であることはコンパイル時に保証済み（`self` または instance 型注釈）。
-    SetAttr(u32),
+    SetAttr(u32, u32),
     /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。

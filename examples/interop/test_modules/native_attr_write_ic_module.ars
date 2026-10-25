@@ -1,0 +1,31 @@
+trait HasX:
+    mut x: int
+
+
+class A(HasX):
+    mut pad: str
+    fn __init__(mut self, x: int, pad: str) -> None:
+        ...
+
+
+class B(HasX):
+    mut a: int
+    mut b: int
+    fn __init__(mut self, x: int, a: int, b: int) -> None:
+        ...
+
+
+class Tally:
+    static mut total: int = ...
+    mut n: int
+    fn add(mut self, k: int) -> None:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+fn bump_all(mut items: list[HasX]) -> int:
+    ...
+
+fn tally_three(k: int) -> int:
+    ...

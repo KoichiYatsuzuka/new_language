@@ -471,6 +471,36 @@ extern "C" fn ar_assign_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val
     }
 }
 
+/// `obj.attr = v`（IC 付き・field 61・native_object_access_plan.md 2-3）。VM の `SetAttr` と同じ `attr_assign_ic`。
+/// `cell` は生成コードの箇所ごとの書き込みの IC（読み出しとは別のセル）。`AtomicU64`（Relaxed）として読み書きし、
+/// 一時の `AttrCache` に写して渡し、埋まった値を書き戻す（`read_attr_ic` と同じ）。
+extern "C" fn ar_assign_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64, cell: *mut u64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    if cell.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: no inline cache cell for attribute '{name}'")));
+        return;
+    }
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let cache = crate::ast::AttrCache(std::cell::Cell::new(cell.load(Ordering::Relaxed)));
+    let r = interp.attr_assign_ic(obj, name, val, Some(&cache));
+    cell.store(cache.0.get(), Ordering::Relaxed);
+    if let Err(e) = r {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
 /// `obj::Trait.attr`（field 52・1-4）。VM の `GetTraitAttr` と同じ `trait_access_evaled`。
 extern "C" fn ar_get_trait_attr(
     obj_h: i64,
@@ -1721,6 +1751,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     get_attr_ic: ar_get_attr_ic,
     get_float_field_ic: ar_get_float_field_ic,
     get_int_field_ic: ar_get_int_field_ic,
+    assign_attr_ic: ar_assign_attr_ic,
 };
 
 #[cfg(test)]

@@ -477,7 +477,7 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             | Op::FloatBinSS(_)
             | Op::Un(_)
             | Op::GetAttr(_, _)
-            | Op::SetAttr(_)
+            | Op::SetAttr(_, _)
             | Op::Swap
             | Op::IsType(_)
             | Op::MustBe(_, _)

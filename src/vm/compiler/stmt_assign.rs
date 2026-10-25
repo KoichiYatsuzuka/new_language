@@ -149,7 +149,7 @@ impl Compiler {
                 self.pending = self.stmt_base.map(|d| d + 1);
                 self.compile_expr(value)?;
                 let ni = self.add_name(attr);
-                self.emit(Op::SetAttr(ni));
+                self.emit(Op::SetAttr(ni, ni));
             }
             // `obj[i] = value` — tree-walk は value(rhs) を先に評価するので temp に退避して順序を合わせる。
             Expr::Subscript { object, index, .. } => {
@@ -264,7 +264,9 @@ impl Compiler {
                             self.emit(Op::Swap);
                         }
                         self.emit_bin_specialized(kind, op);
-                        self.emit(Op::SetAttr(ni));
+                        // 書き込みは読み出しと別の IC（`attr_assign_ic` の doc）
+                        let wi = self.add_name(attr);
+                        self.emit(Op::SetAttr(wi, wi));
                     }
                     // 一般レシーバ（グローバル変数・クラス名・属性・呼び出し結果／`CompileMode::DebugRepl`）。
                     //
@@ -284,7 +286,8 @@ impl Compiler {
                         self.emit(Op::StoreLocal(res_tmp));
                         self.compile_expr(object)?; // 4. 代入（`attr_assign` と同じく再評価）
                         self.emit(Op::LoadLocal(res_tmp));
-                        self.emit(Op::SetAttr(ni));
+                        let wi = self.add_name(attr);
+                        self.emit(Op::SetAttr(wi, wi));
                         self.free_temp();
                         self.free_temp();
                     }
