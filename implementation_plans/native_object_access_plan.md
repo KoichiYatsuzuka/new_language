@@ -7,17 +7,19 @@
 
 本書は、ネイティブコードのフィールド読み書きを **VM（バイトコード）と同じ論理（同じ関数・同じインライン
 キャッシュ）** で行うように変え、あわせてメソッド呼び出し・値の受け渡し・生成と組み込み関数の名前引きを
-なくす計画書である。調査中に見つかった**正しさの不具合 5 件**（§0.3）を前提タスクとして先に直し、
+なくす計画書である。調査中・実装中に見つかった**正しさの不具合 6 件**（§0.3）を前提タスクとして先に直し、
 値渡しの**過剰な複製**（仕様では不要なもの）を両モードでやめる。
 
 - 起票: 2026-10-25（速度調査の結果から）
 - 調査: Arrow `326e112`（release ビルド、Ryzen 5 5600X / Windows 11）
-- 状態: 未決事項なし。フェーズ 1 着手（1-1・1-2 完了）
+- 状態: 未決事項なし。フェーズ 1 着手（1-1〜1-3 完了）
 - 方針: 利用者の指示（2026-10-25）— フィールド読み書きは VM と同じ論理で行う。
   ほかは調査報告の方針 2（型検査の結果でレシーバを決めて直接呼ぶ）・3（`int`/`float` を箱詰めしない）・
   4（コンストラクタと組み込み関数を名前引きなしで呼ぶ）に従う
 - 改訂: 2026-10-25 U-1〜U-3 を利用者の回答で決定（D-6〜D-8）。値渡しの不具合（§0.3 ⑤）を 1-5 に、
   過剰な複製をやめる作業をフェーズ 6 に起票した
+- 改訂: 2026-10-25 実装中に見つけた束縛の不具合（§0.3 ⑥）を 1-6 に起票した。1-3 に反復の統一を、
+  1-4 に `set_attr_val` を中継コード用に残す判断を追記した
 
 ## 0. 何が起きているか
 
@@ -63,8 +65,9 @@
 | ① | **先読みしたフィールドが古くなる**: `fn after_inc(mut self) -> int: self.inc(); return self.n` が非コンパイル 1・コンパイル済み **0**。`bump(c)` の後の `c.n` も 10 → **0** | 先読みの条件 `body_writes_param`（`llvm_codegen/mod.rs:749`）が本体中の `p.attr = ..` しか見ない。`mut` の受け手はメソッド・関数経由で書き換わる |
 | ② | コンパイル済みコードで **`range`・`print`・`repr`・`enumerate`・`zip`・`getenv` が実行時に `NameError`**（コンパイルは通る）。`len`・`str`・`int`・`float`・`bool` は動く | 組み込み関数を `CB_GET_GLOBAL` で「値」として引くが、これらはグローバルの値ではない（`callbacks.rs:467-487`） |
 | ③ | 型付き読み出し `ar_get_float_field` / `ar_get_int_field` が**エラーを 0.0 / 0 に黙って置き換える**（アクセス違反・属性なしが消える） | `callbacks.rs:1134` / `:1154`（規約「掬いきれなかった選択肢はエラーにする」違反） |
-| ④ | 書き込みが 2 実装（VM の `attr_assign_evaled` とネイティブの `set_attr_val`）。ネイティブ側は `static mut` への代入・`import[rs]` 構造体の setter を扱わず、不変インスタンスの判定条件も違う | `eval/attrs.rs:381` / `:437` |
+| ④ | 書き込みが 2 実装（VM の `attr_assign_evaled` とネイティブの `set_attr_val`）。ネイティブ側は `static mut` への代入（インスタンス経由）が「has no field」で落ち、不変インスタンスの判定条件も違う。`import[rs]` 構造体の setter を扱わないのは意図的（中継コードが写しを更新する経路で、setter へ再入させない） | `eval/attrs.rs:381` / `:437` |
 | ⑤ | **コンパイル済みのメソッド呼び出しが `mut` の値を複製しない**（`let` 仮引数・`let self` とも）。呼ばれた側が受け取った値を返し、呼び出し元が後で元を書き換えると、非コンパイルでは変わらず、コンパイル済みでは**一緒に変わる**。関数呼び出しは複製する | メソッドの 2 経路（`ar_call_method` のネイティブ表からの直接呼び出し・モジュール内の直接呼び出し）が引数束縛を通らない（2026-07 に速度のため追加された際の取りこぼし） |
+| ⑥ | **コンパイル済みコードの `let` / `mut` の宣言が複製しない**（2026-10-25 実装中に発見）。`mut q = o.inner; q.v = 7` が `o.inner` を書き換える。`let p = o.inner` の後で `o.inner` を書き換えると `p` も変わる。`mut ys = o.xs`・`let a = zs`（`zs` は `mut`）も同様 | VM は宣言の形で `StoreLocalDeepCopy`（`mut`）・`StoreLocalCopyFreeze`（`mut` の名前からの `let`）・`StoreLocalFreezeInstance`（式からの `let`）を出す（`vm/compiler/stmt.rs:151-166, 579-632`）が、ネイティブはどれも単なる格納 |
 
 **値渡しの規則**（`docs/spec.md:27-28`・`docs/grammar/02_variables.md:351-354`）: 複製するのは
 **`mut` の値を `let` で受けるとき**だけで、`let` の値は共有する。今の実装との差は ⑤ のほかに
@@ -117,9 +120,10 @@
 |---|---|---|---|
 | 1-1 | §0.3 ① 先読みを D-7 のとおり `let` の受け手だけにする。`_fast` 版の生成条件も同じ規則に揃える | − | 再現例（`self.inc()` / `bump(c)` の後の読み）が両モード一致、`dump_native_ir`（差分は対象関数だけ） |
 | 1-2 | §0.3 ③ 型付き読み出しのエラーを `STATE.error` に積み、ネイティブの例外経路へ流す | − | アクセス違反・属性なしの `_error` 例題、`scan_examples` |
-| 1-3 | §0.3 ② 組み込み関数を、VM の `CallBuiltin` と同じ入口を呼ぶ新しいコールバックで呼ぶ（名前は文字列定数、グローバル引きなし） | − | `range`/`print`/`repr`/`enumerate`/`zip`/`getenv` の例題、`compare_python_impl` |
-| 1-4 | §0.3 ④ ネイティブの書き込みを `attr_assign_evaled` へ寄せ、`set_attr_val` を消す。片方だけが見ていた 3 点（`static mut`・rs setter・不変判定）を分類してから畳む | − | `compare_outputs -A`・`compare_import_paths -A`、`static mut` の例題 |
-| 1-5 | §0.3 ⑤ コンパイル済みのメソッド呼び出し（2 経路）でも D-8 のとおり複製する（`mut` の値 → `let` 仮引数・`let self`） | − | 値渡しの例題（関数・メソッド・`let self`、`mut` / `let` / 一時値の 3 通り）が両モード一致 |
+| 1-3 | §0.3 ② 組み込み関数を、VM の `CallBuiltin` と同じ入口を呼ぶ新しいコールバックで呼ぶ（名前は文字列定数、グローバル引きなし）。あわせてネイティブの `for` の反復を、`list`/`tuple`/`str`/`dict` 以外は VM と同じ `make_for_iterator` → `gen_next` にする（`set`・`enumerate`/`zip` の結果・ジェネレータが「not iterable in native context」だった） | − | `range`/`print`/`repr`/`enumerate`/`zip`/`getenv`・`set` の反復の例題、`compare_python_impl` |
+| 1-4 | §0.3 ④ コンパイル済み Arrow コードの書き込みを `attr_assign_evaled`（VM の `SetAttr` と同じ）へ寄せる。片方だけが見ていた 3 点を分類する: `static mut`・不変判定は取りこぼし（広げる）、rs setter は意図的な差（`set_attr_val` は `import[rs]` の中継コードが写しを更新する経路として残す。`attr_assign_evaled` だと setter に再入する） | − | `compare_outputs -A`・`compare_import_paths -A`、`static mut` の例題 |
+| 1-5 | §0.3 ⑤ コンパイル済みのメソッド呼び出し（2 経路）でも D-8 のとおり複製する（`mut` の値 → `let` 仮引数・`let self`）。引数・受け手が `mut` か（`let` の名前か）は VM の `arg_is_mutable` と同じ規則で、名前ごとの可変性は VM と同じ宣言の収集（`vm/compiler/decls.rs`）から取る | − | 値渡しの例題（関数・メソッド・`let self`、`mut` / `let` / 一時値の 3 通り）が両モード一致 |
+| 1-6 | §0.3 ⑥ コンパイル済みコードの `let` / `mut` の宣言を VM と同じ規則で複製する。判断の本体は VM の 3 命令と共有する関数にまとめる | 1-5 | 束縛の例題（`mut` / `mut` の名前からの `let` / 式からの `let`・インスタンスと `list`）が両モード一致、`compare_bytecode`（VM の命令は不変） |
 
 ### フェーズ 2: 方針 1 — フィールド読み書きを VM と同じ論理に
 

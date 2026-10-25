@@ -489,65 +489,108 @@ extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
 /// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する。
 /// イテレータハンドルは `-(idx+2)` の負値でエンコードされる。
 extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
-    STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if st.error.is_some() { return TL_NONE; }
-        let obj = st.clone_value(obj_h);
-        let items: Vec<Value> = match obj {
-            Value::List(l) => l.borrow().clone(),
-            Value::FrozenList { ref state, ref layout } => {
-                let fst = state.borrow();
-                (0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect()
-            }
-            Value::Tuple(t) => t.all_values().to_vec(),
-            Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
-            Value::Dict(d) => d.borrow().all_keys(),
-            other => {
-                st.error = Some(format!(
-                    "TypeError: value of type '{}' is not iterable in native context",
-                    match &other {
-                        Value::Int(_) => "int",
-                        Value::Float(_) => "float",
-                        Value::Bool(_) => "bool",
-                        Value::None => "NoneType",
-                        _ => "object",
-                    }
-                ));
+    // ① 実体化してよい型（VM の `make_for_iterator` も実体化する型）は今までどおり要素を写す。
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    let items: Option<Vec<Value>> = match &obj {
+        Value::List(l) => Some(l.borrow().clone()),
+        Value::FrozenList { state, layout } => {
+            let fst = state.borrow();
+            Some((0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect())
+        }
+        Value::Tuple(t) => Some(t.all_values().to_vec()),
+        Value::Str(s) => Some(s.chars().map(|c| Value::str(c.to_string())).collect()),
+        Value::Dict(d) => Some(d.borrow().all_keys()),
+        _ => None,
+    };
+    let entry = match items {
+        Some(items) => NativeIter::Items(items, 0),
+        // ② それ以外は VM と同じ反復プロトコル（`make_for_iterator` → `gen_next`・1-3）。
+        //    ⚠ インタープリタへ呼び戻すので、`STATE` の借用を握ったまま呼ばない（`__iter__` がネイティブを呼ぶ）。
+        None => {
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for iter_from".to_string()));
                 return TL_NONE;
             }
-        };
+            let interp = unsafe { &mut *interp_ptr };
+            match interp.make_for_iterator(obj) {
+                Ok(Value::Generator(g)) => NativeIter::Gen(g),
+                Ok(other) => {
+                    let got = interp.type_name(&other);
+                    STATE.with(|s| s.borrow_mut().error = Some(format!(
+                        "TypeError: iterator protocol returned '{got}', not a generator"
+                    )));
+                    return TL_NONE;
+                }
+                Err(e) => {
+                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                    return TL_NONE;
+                }
+            }
+        }
+    };
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
         let idx = st.iter_table.len();
-        st.iter_table.push((items, 0));
+        st.iter_table.push(entry);
         -((idx as i64) + 2)
     })
 }
 
 /// イテレータハンドルから次の要素ハンドルを取得する。
 extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
-    STATE.with(|s| {
+    enum Step { Value(Value), Stop, Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>) }
+    let (step, interp_ptr) = STATE.with(|s| {
         let mut st = s.borrow_mut();
-        if st.error.is_some() { return TL_STOP_ITER; }
+        if st.error.is_some() { return (Step::Stop, st.interp_ptr); }
+        let ip = st.interp_ptr;
         if iter_h > -2 {
             st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
-            return TL_STOP_ITER;
+            return (Step::Stop, ip);
         }
         let idx = (-(iter_h + 2)) as usize;
-        // Extract the next value from iter_table, then push to arena separately
-        // to avoid simultaneous mutable access to two fields via a method call.
-        let maybe_v: Option<Value> = st.iter_table.get_mut(idx).and_then(|(items, pos)| {
-            if *pos < items.len() {
-                let v = items[*pos].clone();
-                *pos += 1;
-                Some(v)
-            } else {
-                None
+        let step = match st.iter_table.get_mut(idx) {
+            Some(NativeIter::Items(items, pos)) => {
+                if *pos < items.len() {
+                    let v = items[*pos].clone();
+                    *pos += 1;
+                    Step::Value(v)
+                } else {
+                    Step::Stop
+                }
             }
-        });
-        match maybe_v {
-            Some(v) => st.push_value(v),
-            None => TL_STOP_ITER,
+            Some(NativeIter::Gen(g)) => Step::Gen(g.clone()),
+            // ⚠ 表に無いハンドル（最外の呼び出しを抜けて捨てた後など）を黙って「終わり」にしない
+            None => {
+                st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
+                Step::Stop
+            }
+        };
+        (step, ip)
+    });
+    match step {
+        Step::Value(v) => push_handle(v),
+        Step::Stop => TL_STOP_ITER,
+        // ⚠ `gen_next` は本体（ジェネレータ・`__next__`）を走らせうるので、`STATE` の借用を落としてから呼ぶ。
+        Step::Gen(g) => {
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for iter_next".to_string()));
+                return TL_STOP_ITER;
+            }
+            let interp = unsafe { &mut *interp_ptr };
+            match interp.gen_next(&g) {
+                Ok(Some(v)) => push_handle(v),
+                Ok(None) => TL_STOP_ITER,
+                Err(e) => {
+                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                    TL_STOP_ITER
+                }
+            }
         }
-    })
+    }
 }
 
 extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
@@ -1208,6 +1251,34 @@ extern "C" fn ar_fn_trampoline(_fn_h: i64) -> *const () {
     ar_call_fn as *const ()
 }
 
+/// 組み込み関数を名前で呼ぶ（field 50・native_object_access_plan.md 1-3）。本体は VM の `CallBuiltin` と同じ
+/// `Interpreter::call_builtin_by_name_evaled`（同名のグローバル束縛があればそちらを呼ぶ）。
+/// ⚠ 以前は `get_global` で組み込み関数を値として引いており、値として登録されていない
+///   `range` / `print` / `repr` / `enumerate` / `zip` / `getenv` がコンパイル済みコードで `NameError` になっていた。
+extern "C" fn ar_call_builtin(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "builtin name") else { return TL_NONE };
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (calling '{name}')")));
+        return TL_NONE;
+    }
+    let args: Vec<Value> = (0..n_args.max(0) as usize)
+        .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
+        .collect();
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.call_builtin_by_name_evaled(name, args) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
@@ -1261,6 +1332,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     make_raw_instance: ar_make_raw_instance,
     make_instance: ar_make_instance,
     bytes_buf_arg: ar_bytes_buf_arg,
+    call_builtin: ar_call_builtin,
 };
 
 #[cfg(test)]

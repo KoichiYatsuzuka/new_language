@@ -132,14 +132,23 @@ fn int_cache_handle(n: i64) -> i64 {
 //   2. Call interpreter (which is not STATE-aware).
 //   3. Store result in a new, non-overlapping borrow.
 
+/// ネイティブコードの `for` の反復状態（`ar_iter_from` / `ar_iter_next`）。
+pub(crate) enum NativeIter {
+    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。
+    Items(Vec<Value>, usize),
+    /// インタープリタの反復プロトコル: `make_for_iterator` が作ったジェネレータを `gen_next` で進める
+    /// （VM の `GetIter` / `ForIter` と同じ。`set`・`bytes`・`enumerate` / `zip`・ジェネレータ・`__iter__` を持つ
+    /// インスタンスなど・native_object_access_plan.md 1-3）。⚠ 以前はこれらが「not iterable in native context」だった。
+    Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>),
+}
+
 struct NativeCallState {
     /// Raw pointer to the currently executing Interpreter.
     interp_ptr: *mut Interpreter,
     /// Value arena (see handle encoding above).
     arena: Vec<Value>,
-    /// Iterator table: (collected_items, current_position).
-    /// Iter handles are encoded as -(idx+2) so they are all ≤ -2.
-    iter_table: Vec<(Vec<Value>, usize)>,
+    /// Iterator table. Iter handles are encoded as -(idx+2) so they are all ≤ -2.
+    iter_table: Vec<NativeIter>,
     /// Nesting depth of native calls (0 = not inside any native call).
     call_depth: usize,
     /// Arena size saved at the outermost native call entry.
@@ -516,6 +525,11 @@ pub struct ArCallbacks {
     /// `char*`（書き込み用）の引数: `bytes` のコピー（NUL を含んでよい・末尾に NUL を 1 つ足す）を作り、そのアドレスを返して
     /// 長さを `len` に書く。`None` は NULL。呼び出しの後で中継コードが `make_bytes` で読み直して `write_handle` で書き戻す。
     pub bytes_buf_arg: extern "C" fn(i64, *mut i64) -> *mut u8,
+
+    // ── Builtins by name (field 50・native_object_access_plan.md 1-3) ──
+    /// 組み込み関数（`vm::compiler::VM_BUILTIN_NAMES`）を VM の `CallBuiltin` と同じ入口
+    /// （`Interpreter::call_builtin_by_name_evaled`）で呼ぶ。グローバルから値として引かない。
+    pub call_builtin: extern "C" fn(*const u8, i32, *const i64, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

@@ -1035,6 +1035,29 @@ impl<'a> GenCtx<'a> {
             }
         }
 
+        // 組み込み関数（VM が `CallBuiltin` を出す名前）: グローバルから値として引かず、VM と同じ入口
+        // （`ar_call_builtin` → `call_builtin_by_name_evaled`）で呼ぶ（native_object_access_plan.md 1-3）。
+        // 判定は VM のコンパイラと同じ: 未解決の識別子で、ローカルに同名が無いこと（グローバルの同名は
+        // 呼び出し時に `builtin_is_shadowed_global` が見る）。
+        if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
+            if crate::vm::compiler::VM_BUILTIN_NAMES.contains(&name.as_str())
+                && !self.locals.contains_key(name.as_str())
+            {
+                let ptr = self.str_const(name.as_bytes());
+                let len = name.len() as i32;
+                let handles: Vec<String> = arg_exprs.iter()
+                    .map(|(v, vt)| self.to_handle(v, *vt))
+                    .collect();
+                return if handles.is_empty() {
+                    self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string()])
+                } else {
+                    let n   = handles.len();
+                    let arr = self.spill_handle_array(&handles, "bargs");
+                    self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}")])
+                };
+            }
+        }
+
         // Generic call through cb_call_fn
         let (fn_h_val, fn_h_ty) = self.gen_expr(func);
         let fn_h = self.to_handle(&fn_h_val, fn_h_ty);

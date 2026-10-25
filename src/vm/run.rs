@@ -1311,20 +1311,8 @@ fn exec_op(
             // ローカルのシャドウはコンパイル時に `slots.contains_key` で除外済みなので、
             // 実行時に見るのはグローバルだけでよい。ツリーウォーク側の
             // `builtin_is_shadowed` と同じ規則（`Value::Type` の自己名は組み込み登録なので除外）。
-            if interp.builtin_is_shadowed_global(name) {
-                let callee = interp
-                    .vm_load_name(name)
-                    .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
-                let evaled = args.into_iter().map(|v| (None, v, false)).collect();
-                let name = name.clone(); // interp の可変借用のため名前を退避する
-                buf.push(interp.call_value_evaled(callee, evaled, &name, None, 0)?);
-            } else {
-                match interp.eval_builtin_evaled(name, args) {
-                    Some(r) => buf.push(r?),
-                    // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
-                    None => return Err(format!("NameError: '{name}' is not defined")),
-                }
-            }
+            // 振り分けの本体はネイティブコードの組み込み呼び出しと共有する（native_object_access_plan.md 1-3）。
+            buf.push(interp.call_builtin_by_name_evaled(name, args)?);
         }
         // キーワード引数つきの組み込み呼び出し（#27-c）。`CallBuiltin` と同じ経路だが、
         // 引数名を一緒に渡して `eval_builtin_evaled_named` に解釈させる。

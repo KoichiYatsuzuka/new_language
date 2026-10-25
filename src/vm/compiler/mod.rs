@@ -50,10 +50,10 @@ mod stmt;
 mod stmt_assign;
 
 pub use diag::expr_kind;
-/// `vm_builtin_names_are_all_handled`（#22-d）専用の再エクスポート。
-/// ⚠ 通常ビルドでは誰も使わないので `cfg(test)` を外すと未使用警告になる
-/// （#53 で `cargo fix` に一度消され、テストがコンパイルできなくなった）。
-#[cfg(test)]
+/// VM が `CallBuiltin` を出す組み込み名。消費者は `vm_builtin_names_are_all_handled`（#22-d）と、
+/// 同じ名前を同じ入口（`Interpreter::call_builtin_by_name_evaled`）で呼ぶネイティブ codegen
+/// （`llvm_codegen` の `gen_call`・native_object_access_plan.md 1-3）。
+/// ⚠ 以前はテストだけが使っていたので `cfg(test)` だった（#53 で `cargo fix` に一度消された）。
 pub(crate) use diag::VM_BUILTIN_NAMES;
 pub use entry::{
     compile_async_body, compile_debug, compile_definition_expr, compile_fn, compile_module_stmt,

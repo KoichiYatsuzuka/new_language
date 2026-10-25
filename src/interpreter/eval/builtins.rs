@@ -31,6 +31,32 @@ impl Interpreter {
         }
     }
 
+    /// 組み込み関数を名前で呼ぶ: VM の `CallBuiltin` とネイティブの `ar_call_builtin` の**唯一の実装**
+    /// （native_object_access_plan.md 1-3）。名前は `vm::compiler::VM_BUILTIN_NAMES` のもの。
+    ///
+    /// グローバルに同名のユーザー束縛があれば、組み込みではなくそちらを呼ぶ（#15d。ローカルのシャドウは
+    /// 呼ぶ側がコンパイル時に除外している）。
+    /// ⚠ 以前のネイティブコードは組み込み関数をグローバルの「値」として引いていたので、値として登録されて
+    ///   いない `range` / `print` / `repr` / `enumerate` / `zip` / `getenv` が実行時に `NameError` になっていた。
+    pub(crate) fn call_builtin_by_name_evaled(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
+        if self.builtin_is_shadowed_global(name) {
+            let callee = self
+                .vm_load_name(name)
+                .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
+            let evaled = args.into_iter().map(|v| (None, v, false)).collect();
+            return self.call_value_evaled(callee, evaled, name, None, 0);
+        }
+        match self.eval_builtin_evaled(name, args) {
+            Some(r) => r,
+            // 呼ぶ側は `VM_BUILTIN_NAMES`（`eval_builtin_evaled` が扱う名前の部分集合・#22-d）だけを渡す。
+            None => Err(format!("NameError: '{name}' is not defined")),
+        }
+    }
+
     pub(crate) fn eval_builtin_evaled(
         &mut self,
         name: &str,
