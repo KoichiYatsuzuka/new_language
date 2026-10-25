@@ -85,7 +85,17 @@ impl<'a> GenCtx<'a> {
                 Some(f) => f.clone(),
                 None => continue,
             };
+            // ⚠ `_fast` 変種を出すかは「型付きのフィールドを持つ先読み可能な受け手があるか」で決める（呼ぶ側の
+            //   `fast_fns` と同じ条件）。下で読むフィールドを絞っても変えない（変えると呼ぶ側が無い `@X_fast` を呼ぶ）。
+            if fields.iter().any(|(_, t)| matches!(t, Ty::Float | Ty::Int)) {
+                has_preread = true;
+            }
+            // 4-4: 本体が `p.f` の読みでしか `p` を使わないなら、参照するフィールドだけを読む。
+            let uses = param_field_uses(body, &p.name);
             for (field_name, field_ty) in &fields {
+                if uses.as_ref().is_some_and(|u| !u.contains(field_name)) {
+                    continue;
+                }
                 let r = match field_ty {
                     Ty::Float | Ty::Int => self.emit_attr_read(&format!("%_h{i}"), field_name, Some(*field_ty)).0,
                     _ => continue,
@@ -95,7 +105,6 @@ impl<'a> GenCtx<'a> {
                 self.alloca_buf.push_str(&format!("  {al} = alloca {tstr}, align 8\n"));
                 self.ec(&format!("store {tstr} {r}, ptr {al}"));
                 self.preread_fields.insert(format!("{}.{field_name}", p.name), (al, *field_ty));
-                has_preread = true;
             }
         }
 

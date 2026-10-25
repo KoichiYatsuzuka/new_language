@@ -833,6 +833,63 @@ fn fast_flat_class(
 
 /// Returns true if any statement in `stmts` directly writes a field of `param`
 /// (via AttrAssign or AttrCompoundAssign where the object is `Expr::Ident(param)`).
+/// 仮引数 `p` を本体がどう使うか（native_object_access_plan.md 4-4: 先読みするフィールドを絞るため）。
+///
+/// `p.f` の読み（と書き）だけなら参照するフィールドの名前の集合、`p` をほかに使うなら `None`（全部を先読みする）。
+/// 「ほか」は: `p` を値として使う（渡す・束縛する）・`p` のメソッドを呼ぶ（呼んだ先の `_fast` は全フィールドを
+/// 要る・`build_fast_call_args`）・`p` へ代入する・`for` / `except` で同名を束縛する・入れ子の `fn` / `gen` / クラス
+/// （捕捉しうる）。⚠ 判定を誤っても「読んでいないフィールドの先読みが無い」だけで、`p.f` の読みは先読みが
+/// 無ければ IC で読む（2-2）ので結果は変わらない。走査は `stmt_walk` / `expr_walk`（exhaustive）に任せる。
+fn param_field_uses(body: &[Stmt], p: &str) -> Option<HashSet<String>> {
+    struct Uses<'p> {
+        p: &'p str,
+        fields: HashSet<String>,
+        other: bool,
+    }
+    fn walk_expr(u: &mut Uses<'_>, e: &Expr) {
+        use crate::expr_walk::SubPart;
+        if u.other {
+            return;
+        }
+        match e {
+            Expr::Call { func, .. }
+                if matches!(func.as_ref(), Expr::Attr { object, .. } if ident_name(object) == Some(u.p)) =>
+            {
+                u.other = true;
+            }
+            Expr::Attr { object, attr, .. } if ident_name(object) == Some(u.p) => {
+                u.fields.insert(attr.clone());
+            }
+            Expr::Ident { name, .. } if name == u.p => u.other = true,
+            _ => crate::expr_walk::each_subpart(e, &mut |part| match part {
+                SubPart::Plain(x) | SubPart::Control(x) | SubPart::MatchPattern(x) => walk_expr(u, x),
+                SubPart::Body(b) => walk_body(u, b),
+                SubPart::ForTarget(n) => u.other |= n == u.p,
+            }),
+        }
+    }
+    fn walk_body(u: &mut Uses<'_>, stmts: &[Stmt]) {
+        use crate::stmt_walk::StmtPart;
+        for s in stmts {
+            crate::stmt_walk::each_subpart(s, &mut |part| match part {
+                StmtPart::Expr(x) | StmtPart::MatchPattern(x) => walk_expr(u, x),
+                StmtPart::Control(b) => walk_body(u, b),
+                StmtPart::ForTarget(n) | StmtPart::ExceptAlias(n) | StmtPart::TargetName(n) => u.other |= n == u.p,
+                // 別フレーム（入れ子の関数・クラス・モジュール・async の本体）は捕捉しうるので「ほか」とみなす
+                StmtPart::FnBody { .. }
+                | StmtPart::GenBody(_)
+                | StmtPart::TypeBody(_)
+                | StmtPart::ProtocolBody(_)
+                | StmtPart::ModuleBody(_)
+                | StmtPart::AsyncBody(_) => u.other = true,
+            });
+        }
+    }
+    let mut u = Uses { p, fields: HashSet::new(), other: false };
+    walk_body(&mut u, body);
+    (!u.other).then_some(u.fields)
+}
+
 fn body_writes_param(stmts: &[Stmt], param: &str) -> bool {
     stmts.iter().any(|s| stmt_writes_param(s, param))
 }
