@@ -1215,23 +1215,15 @@ fn exec_op(
             let cache = &chunk.attr_caches[*cache_idx as usize];
             // R3 インラインキャッシュのヒット（public フィールド）を VM ループ内で直接処理し、
             // get_attr_val の関数呼び出しを避ける。ミス・非 public・非インスタンスはフルパスへ。
+            // 命中判定は `InstanceData::ic_slot`（ツリーウォーク・ネイティブと共有・2-1）。
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &obj {
-                    let class_id = inst_rc.borrow().class.class_id;
-                    let probe = cache.get(class_id);
+                    let inst = inst_rc.borrow();
                     #[cfg(feature = "prof")]
-                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
-                    if let Some((idx, access)) = probe {
-                        if access == crate::ast::AttrCache::PUBLIC {
-                            let inst = inst_rc.borrow();
-                            debug_assert_eq!(
-                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
-                                Some(idx),
-                                "VM GetAttr cache slot mismatch"
-                            );
-                            if let Some(fv) = inst.field_value(idx) {
-                                break 'get fv;
-                            }
+                    crate::prof::note_ic(cache.get(inst.class.class_id).is_some(), cache.is_empty());
+                    if let Some((idx, _)) = inst.ic_slot(cache.0.get(), true, || &chunk.names[*name_idx as usize]) {
+                        if let Some(fv) = inst.field_value(idx) {
+                            break 'get fv;
                         }
                     }
                 }
@@ -1247,19 +1239,11 @@ fn exec_op(
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &buf[base + *slot as usize] {
                     let inst = inst_rc.borrow();
-                    let probe = cache.get(inst.class.class_id);
                     #[cfg(feature = "prof")]
-                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
-                    if let Some((idx, access)) = probe {
-                        if access == crate::ast::AttrCache::PUBLIC {
-                            debug_assert_eq!(
-                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
-                                Some(idx),
-                                "VM GetAttrLocal cache slot mismatch"
-                            );
-                            if let Some(fv) = inst.field_value(idx) {
-                                break 'get fv;
-                            }
+                    crate::prof::note_ic(cache.get(inst.class.class_id).is_some(), cache.is_empty());
+                    if let Some((idx, _)) = inst.ic_slot(cache.0.get(), true, || &chunk.names[*name_idx as usize]) {
+                        if let Some(fv) = inst.field_value(idx) {
+                            break 'get fv;
                         }
                     }
                 }

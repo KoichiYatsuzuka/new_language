@@ -476,24 +476,19 @@ impl Interpreter {
     ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
         if let Value::Instance(inst_rc) = &obj_val {
-            let class_id = inst_rc.borrow().class.class_id;
-            if let Some((idx, access)) = cache.get(class_id) {
-                let inst = inst_rc.borrow();
-                debug_assert_eq!(
-                    inst.class.field_index.get(attr).copied(),
-                    Some(idx),
-                    "AttrCache slot mismatch for '{attr}' on class_id {class_id}"
-                );
-                if let Some(v) = inst.field_value(idx) {
-                    if access == crate::ast::AttrCache::PUBLIC {
-                        return Ok(v);
-                    }
-                    let cls = inst.class.clone();
-                    drop(inst);
-                    self.check_access_level(&cls, access, attr)?;
+            // 命中判定は `InstanceData::ic_slot`（VM・ネイティブと共有・2-1）。未初期化 slot 等は通常経路へ。
+            let inst = inst_rc.borrow();
+            if let Some((v, access)) = inst
+                .ic_slot(cache.0.get(), false, || attr)
+                .and_then(|(idx, access)| Some((inst.field_value(idx)?, access)))
+            {
+                if access == crate::ast::AttrCache::PUBLIC {
                     return Ok(v);
                 }
-                // 未初期化 slot 等の想定外ケースは通常経路へ委譲する。
+                let cls = inst.class.clone();
+                drop(inst);
+                self.check_access_level(&cls, access, attr)?;
+                return Ok(v);
             }
         }
         self.get_attr_val(obj_val, attr, Some(cache))
