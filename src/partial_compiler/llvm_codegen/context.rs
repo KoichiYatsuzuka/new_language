@@ -80,6 +80,17 @@ impl<'a> GenCtx<'a> {
         mask
     }
 
+    /// 受け手の無い呼び出し（生成・5-1）の `mut_mask`: bit i+1 = 引数 i が `mut` の値か（bit 0 は使わない）。
+    pub(super) fn method_mut_mask_args(&self, args: &[CallArg]) -> u32 {
+        let mut mask = 0u32;
+        for (i, a) in args.iter().enumerate().take(31) {
+            if self.operand_is_mutable(a.expr()) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        mask
+    }
+
     /// 呼ばれた側が `let` で受ける値を、渡す値が `mut` のときだけ複製する（D-8・1-5）。
     /// `is_self`: `let self` は `deep_copy_value`（VM も `self` には `__copy__` を呼ばない）、仮引数は `copy_value`
     /// （`__copy__` があればそれ）。`int` / `float` の生値・`mut` で受ける側・`let` の値はそのまま渡す。

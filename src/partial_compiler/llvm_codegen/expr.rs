@@ -1296,6 +1296,29 @@ impl<'a> GenCtx<'a> {
             }
         }
 
+        // モジュール内のクラスの生成（5-1・D-4）: 値として引かず、VM の `Call` と同じ `instantiate_evaled` を直接呼ぶ。
+        // ローカルに同名があればそちら（`is_module_fn` と同じ理由）。キーワード引数は今までどおり汎用の道。
+        if let Some(name) = ident_name(func) {
+            if self.all_class_fields.contains_key(name)
+                && !self.locals.contains_key(name)
+                && args.iter().all(|a| matches!(a, CallArg::Positional(_)))
+            {
+                let ptr = self.str_const(name.as_bytes());
+                let len = name.len() as i32;
+                let mask = self.method_mut_mask_args(args);
+                let handles: Vec<String> = arg_exprs.iter()
+                    .map(|(v, vt)| self.to_handle(v, *vt))
+                    .collect();
+                return if handles.is_empty() {
+                    self.call_cb(CB_CONSTRUCT, &[ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")])
+                } else {
+                    let n   = handles.len();
+                    let arr = self.spill_handle_array(&handles, "kargs");
+                    self.call_cb(CB_CONSTRUCT, &[ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")])
+                };
+            }
+        }
+
         // Generic call through cb_call_fn
         let (fn_h_val, fn_h_ty) = self.gen_expr(func);
         let fn_h = self.to_handle(&fn_h_val, fn_h_ty);

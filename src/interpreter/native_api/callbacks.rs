@@ -1748,6 +1748,42 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
     i32::from(class_id as u64 == want && !(need_mutable != 0 && immutable))
 }
 
+/// モジュール内のクラスの生成（field 67・native_object_access_plan.md 5-1・D-4）。VM の `Call`（呼び先がクラス）と
+/// 同じ `instantiate_evaled` を直接呼ぶ。引数の可変性（`let` 仮引数の複製）は `mut_mask` から VM と同じ規則で渡す。
+/// ⚠ 以前の生成コードはクラスを `CB_GET_GLOBAL` で値として引き、`CB_CALL_FN` の遅い道（`call_value_with_args`）で
+///   呼んでいた（呼び出しのたびにコールバック 2 回と値の振り分け）。
+/// クラスは名前で引く（`CB_GET_GLOBAL` と同じ `get_var`。1-7 でモジュールの大域にいる）。クラスでない値に
+/// 束縛されていたら（型検査が通さないはずだが）値として呼ぶ（`call_value_with_args`）。
+extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32, mut_mask: u32) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (constructing '{name}')")));
+        return TL_NONE;
+    }
+    let args: Vec<Value> = (0..n_args as usize).map(|i| clone_value_at(unsafe { *args_ptr.add(i) })).collect();
+    let interp = unsafe { &mut *interp_ptr };
+    let r = match interp.get_var(name).map(|v| v.get_value()) {
+        Some(Value::Class(cls)) => {
+            let evaled = args.into_iter().enumerate().map(|(i, v)| (None, v, mask_arg_is_mut(mut_mask, i))).collect();
+            interp.instantiate_evaled(cls, evaled)
+        }
+        Some(other) => interp.call_value_with_args(other, args),
+        None => Err(format!("NameError: '{name}' is not defined")),
+    };
+    match r {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
@@ -1866,6 +1902,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     method_guard: ar_method_guard,
     assign_int_field_ic: ar_assign_int_field_ic,
     assign_float_field_ic: ar_assign_float_field_ic,
+    construct: ar_construct,
 };
 
 #[cfg(test)]

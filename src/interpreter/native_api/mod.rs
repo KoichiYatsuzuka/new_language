@@ -595,6 +595,11 @@ pub struct ArCallbacks {
     pub assign_int_field_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
     /// `obj.attr = <float>`（IC 付き）。
     pub assign_float_field_ic: extern "C" fn(i64, *const u8, i32, f64, *mut u64),
+
+    // ── Construction of module classes (field 67・5-1・D-4) ──
+    /// `Class(args)`: VM の `Call` と同じ `instantiate_evaled` を直接呼ぶ。引数は (クラス名, 引数, 個数, `mut_mask`)。
+    /// `mut_mask` の bit i+1 = 引数 i が `mut` の値か（`call_method_m` と同じ並び・bit 0 は使わない）。
+    pub construct: extern "C" fn(*const u8, i32, *const i64, i32, u32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
