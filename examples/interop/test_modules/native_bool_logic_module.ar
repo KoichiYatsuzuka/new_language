@@ -1,0 +1,39 @@
+# native_bool_logic_module.ar — コンパイル済みコードの and / or / not を i1 のまま扱う（native_object_access_plan.md 4-3）
+#
+# 左辺がネイティブの真偽値（比較など）の `and` / `or` は、真偽値の往復（箱に入れて `CB_IS_TRUTHY` で開ける）を
+# せずに分岐する。`not` は必ず bool を返すので i1 のまま。**短絡の順は変えない**ことを、呼ばれた回数を数える
+# メソッドで確かめる（`and` は左辺が偽なら右辺を呼ばない・`or` は真なら呼ばない）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_bool_logic_module.ar
+
+class Probe:
+    mut calls: int
+
+    fn hit(mut self, let v: bool) -> bool:
+        self.calls = self.calls + 1
+        return v
+
+fn both(mut p: Probe, let a: int, let b: int) -> int:
+    mut n = 0
+    for i in range(10):
+        if i < a and p.hit(i < b):
+            n += 1
+    return n * 100 + p.calls
+
+fn either(mut p: Probe, let a: int) -> int:
+    mut n = 0
+    for i in range(10):
+        if i > a or p.hit(i == 0):
+            n += 1
+    return n * 100 + p.calls
+
+fn stored(let a: int) -> bool:
+    let r = a > 1 and a < 10
+    return r
+
+fn chained(let a: int, let b: int) -> bool:
+    return a > 0 and b > 0 or a < 0 and b < 0
+
+fn negs(let xs: list[int], let s: str, let k: int, let f: float, let b: bool) -> str:
+    return str(not xs) + str(not s) + str(not k) + str(not f) + str(not b) + str(not (k > 3))

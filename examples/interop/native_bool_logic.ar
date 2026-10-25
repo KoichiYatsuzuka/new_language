@@ -1,0 +1,23 @@
+# native_bool_logic.ar — コンパイル済みコードの and / or / not を i1 のまま扱う（native_object_access_plan.md 4-3）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_bool_logic_module.ar
+#   2. cargo run --release -- examples/interop/native_bool_logic.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_bool_logic_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# i < 6 のときだけ hit を呼ぶ（6 回）、そのうち i < 3 の 3 回が真
+check("and short-circuits (right side calls)", m.both(m.Probe(0), 6, 3) == 306)
+# i > 6 の 3 回は hit を呼ばない（7 回呼ぶ）、i == 0 の 1 回を足して 4 回が真
+check("or short-circuits (right side calls)", m.either(m.Probe(0), 6) == 407)
+check("bool result stored and returned", m.stored(5) == True and m.stored(12) == False)
+check("chained and / or", m.chained(2, 3) and m.chained(-1, -2) and not m.chained(1, -1))
+check("not on list / str / int / float / bool / comparison", m.negs([], "a", 0, 1.5, True) == "TrueFalseTrueFalseFalseTrue")
+check("not on the other values", m.negs([1], "", 7, 0.0, False) == "FalseTrueFalseTrueTrueFalse")

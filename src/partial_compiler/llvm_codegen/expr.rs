@@ -135,6 +135,17 @@ impl<'a> GenCtx<'a> {
 
             Expr::BinOp { op, left, right, .. } => self.gen_binop(op, left, right),
 
+            // `not` は必ず bool を返す（インタープリタも `!is_truthy`）ので、結果は `i1` のまま（4-3）。
+            // `bool` / `int` / `float` は命令だけで、ほかは `CB_IS_TRUTHY`（`CB_UNOP` と同じ真偽の規則）で判定する。
+            // ⚠ 以前は `CB_UNOP` を呼んで結果をハンドルで返し、`if not x:` はそれをまた `CB_IS_TRUTHY` で開けていた。
+            Expr::UnaryOp { op: UnaryOp::Not, operand } => {
+                let (v, vt) = self.gen_expr(operand);
+                let c = self.to_cond(&v, vt);
+                let r = self.fresh_reg();
+                self.ec(&format!("{r} = xor i1 {c}, true"));
+                (r, Ty::Bool)
+            }
+
             Expr::UnaryOp { op, operand } => {
                 let op_code = match op { UnaryOp::Neg => 0i32, UnaryOp::Not => 1, UnaryOp::BitNot => 2 };
                 let (v, vt) = self.gen_expr(operand);
@@ -515,9 +526,68 @@ impl<'a> GenCtx<'a> {
     pub(super) fn gen_binop(&mut self, op: &BinOp, left: &Expr, right: &Expr) -> (String, Ty) {
         // Short-circuit and/or
         match op {
-            BinOp::And => {
+            BinOp::And | BinOp::Or => {
                 let (l, lt) = self.gen_expr(left);
-                let lh   = self.to_handle(&l, lt);
+                // 左辺がネイティブの真偽値（`i1`）なら、そのまま分岐に使う（4-3）
+                if lt == Ty::Bool {
+                    return self.gen_bool_logic(matches!(op, BinOp::And), &l, right);
+                }
+                return self.gen_logic_handle(matches!(op, BinOp::And), &l, lt, right);
+            }
+            _ => {}
+        }
+
+        let (l, lt) = self.gen_expr(left);
+        let (r, rt) = self.gen_expr(right);
+        self.specialize_binop(op, &l, lt, &r, rt)
+    }
+
+    /// 左辺が `i1` の `and` / `or`（4-3）。短絡の順は変えない（`and` は左辺が偽なら右辺を評価しない・`or` は真なら）。
+    /// 結果は Python と同じく「決めた側の値」で、右辺も `i1` なら `i1`（`CB_IS_TRUTHY` の往復なし）、
+    /// 右辺がほかの型ならハンドル（左辺の `i1` は `select` でハンドルにする）。
+    /// ⚠ 以前は左辺を箱に入れて `CB_IS_TRUTHY` で開け、結果もハンドルで返していた（`if a < b and c < d:` で往復 3 回）。
+    fn gen_bool_logic(&mut self, is_and: bool, l: &str, right: &Expr) -> (String, Ty) {
+        let rblk = self.fresh_blk();
+        let mblk = self.fresh_blk();
+        let tag = if is_and { "and" } else { "or" };
+        let slot_b = format!("%_{tag}_b{}", self.blk);
+        let slot_h = format!("%_{tag}_h{}", self.blk);
+        self.blk += 1;
+        self.ea(&format!("{slot_b} = alloca i1, align 1"));
+        self.ea(&format!("{slot_h} = alloca i64, align 8"));
+        self.ec(&format!("store i1 {l}, ptr {slot_b}"));
+        let lh = self.to_handle(l, Ty::Bool);
+        self.ec(&format!("store i64 {lh}, ptr {slot_h}"));
+        if is_and {
+            self.br_cond(l, &rblk, &mblk);
+        } else {
+            self.br_cond(l, &mblk, &rblk);
+        }
+        self.start_block(&rblk);
+        let (r, rt) = self.gen_expr(right);
+        if rt == Ty::Bool {
+            self.ec(&format!("store i1 {r}, ptr {slot_b}"));
+        } else {
+            let rh = self.to_handle(&r, rt);
+            self.ec(&format!("store i64 {rh}, ptr {slot_h}"));
+        }
+        self.br(&mblk);
+        self.start_block(&mblk);
+        let res = self.fresh_reg();
+        if rt == Ty::Bool {
+            self.ec(&format!("{res} = load i1, ptr {slot_b}"));
+            (res, Ty::Bool)
+        } else {
+            self.ec(&format!("{res} = load i64, ptr {slot_h}"));
+            (res, Ty::Handle)
+        }
+    }
+
+    /// 左辺が `i1` でない `and` / `or`: 左辺をハンドルにして `CB_IS_TRUTHY` で判定し、結果はハンドル（今までどおり）。
+    fn gen_logic_handle(&mut self, is_and: bool, l: &str, lt: Ty, right: &Expr) -> (String, Ty) {
+        match is_and {
+            true => {
+                let lh   = self.to_handle(l, lt);
                 let lc   = self.to_cond(&lh, Ty::Handle);
                 let rblk = self.fresh_blk();
                 let mblk = self.fresh_blk();
@@ -535,11 +605,10 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&mblk);
                 let result = self.fresh_reg();
                 self.ec(&format!("{result} = load i64, ptr {res_al}"));
-                return (result, Ty::Handle);
+                (result, Ty::Handle)
             }
-            BinOp::Or => {
-                let (l, lt) = self.gen_expr(left);
-                let lh   = self.to_handle(&l, lt);
+            false => {
+                let lh   = self.to_handle(l, lt);
                 let lc   = self.to_cond(&lh, Ty::Handle);
                 let rblk = self.fresh_blk();
                 let mblk = self.fresh_blk();
@@ -556,14 +625,9 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&mblk);
                 let result = self.fresh_reg();
                 self.ec(&format!("{result} = load i64, ptr {res_al}"));
-                return (result, Ty::Handle);
+                (result, Ty::Handle)
             }
-            _ => {}
         }
-
-        let (l, lt) = self.gen_expr(left);
-        let (r, rt) = self.gen_expr(right);
-        self.specialize_binop(op, &l, lt, &r, rt)
     }
 
     pub(super) fn specialize_binop(&mut self, op: &BinOp, l: &str, lt: Ty, r: &str, rt: Ty) -> (String, Ty) {
