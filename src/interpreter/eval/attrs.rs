@@ -129,12 +129,19 @@ impl Interpreter {
                 let cls = inst.class.clone();
                 if let Some(&idx) = cls.field_index.get(attr) {
                     if let Some(v) = inst.field_value(idx) {
-                        // アクセスキーの決定: trait 由来フィールドは修飾名で検索する
-                        let suffix = format!("::{attr}");
-                        let access_key = cls.field_index.iter()
-                            .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
-                            .map(|(k, _)| k.as_str())
-                            .unwrap_or(attr);
+                        // アクセスキーの決定: trait 由来フィールドは修飾名で検索する。
+                        // ⚠ 修飾名のキー（`Trait::f`）を付けるのは `build_field_index` が基底の分だけなので、
+                        //   基底（trait）の無いクラスでは `format!` と全フィールドの走査を省く（2-4・調査では
+                        //   IC が外れた読み出し 1 回の 35〜42% がここだった）。
+                        let access_key = if cls.bases.is_empty() {
+                            attr
+                        } else {
+                            let suffix = format!("::{attr}");
+                            cls.field_index.iter()
+                                .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
+                                .map(|(k, _)| k.as_str())
+                                .unwrap_or(attr)
+                        };
                         // アクセスレベルを確定して IC に焼く（R3）。
                         let level = {
                             let acc = cls.field_access.get(access_key)
@@ -151,8 +158,9 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                let suffix = format!("::{attr}");
-                {
+                // 無修飾の名前で trait 由来のフィールドを探す（基底の無いクラスには無い・上と同じ理由）
+                if !cls.bases.is_empty() {
+                    let suffix = format!("::{attr}");
                     let mut trait_matches = cls.field_index.iter()
                         .filter(|(k, _)| k.ends_with(suffix.as_str()));
                     if let Some((full_key, &idx)) = trait_matches.next() {

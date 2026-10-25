@@ -12,7 +12,7 @@
 
 - 起票: 2026-10-25（速度調査の結果から）
 - 調査: Arrow `326e112`（release ビルド、Ryzen 5 5600X / Windows 11）
-- 状態: 未決事項なし。フェーズ 1 完了（1-1〜1-9）・フェーズ 2 着手（2-1〜2-3 完了）
+- 状態: 未決事項なし。フェーズ 1・2 完了（1-1〜1-9・2-1〜2-4）
 - 方針: 利用者の指示（2026-10-25）— フィールド読み書きは VM と同じ論理で行う。
   ほかは調査報告の方針 2（型検査の結果でレシーバを決めて直接呼ぶ）・3（`int`/`float` を箱詰めしない）・
   4（コンストラクタと組み込み関数を名前引きなしで呼ぶ）に従う
@@ -147,7 +147,7 @@
 | 2-1 | VM の `GetAttr` / `GetAttrLocal` の命中経路（`vm/run.rs:1222-1243, 1251-1269`）を共有関数に切り出す。命中経路は `#[inline(always)]`、ミス経路は `#[inline(never)]`。✅ `AttrCache::probe`（詰めた値の照合）と `InstanceData::ic_slot`（命中判定）にし、VM の 2 命令とツリーウォークの `eval_attr` が呼ぶ。⚠ 値の読み出し（`field_value`）まで共有関数に入れると `exec_op` に展開されて `bench_field_access` が 6% 遅くなった（実測。読み出しは呼ぶ側に残して差 0） | − | **挙動不変**: `compare_bytecode`・`compare_outputs -A`、A/B（同規模の対照と同時に） |
 | 2-2 | ネイティブに属性アクセスの箇所ごとの IC セルを持たせ、新しいコールバック（ハンドル版・`float` 版・`int` 版）が 2-1 の共有関数を呼ぶ。外れたら VM と同じ `get_attr_val(.., Some(cell))`。✅ fields 58-60・`@_icN`（DLL 内の `i64`・`AtomicU64` として読み書き）。命中経路はアリーナ上のインスタンスを借りたまま読む。本調査のベンチ（コンパイル済み・2-1 比の中央値）: k1 2.32x・k6 2.13x・k3 1.65x・k2 1.36x・k5 1.20x・k4 1.01x（同じ exe 同士の対照は ±3〜7%） | 1-2・2-1 | `dump_native_ir`、`ab_bench_modes -A`、本調査のベンチ（k1/k2/k6） |
 | 2-3 | D-6 書き込み用 IC を共有関数として作り、VM の `SetAttr` とネイティブの両方が使う。✅ `attr_assign_ic`（命中なら名前による表引きを省き、インスタンスごとの検査と型検査だけ。埋めるのは public のふつうのフィールドで slot の可変性が名前の表と一致するときだけ）。`SetAttr` に IC の番号を足し、ネイティブは field 61。読み出しとセルを分ける（`import[rs]` の setter を飛ばさないため）。2-2 比: VM `bench_method_body` 1.19x・調査の bench.ar 1.11x、コンパイル済み k1 1.11x・k6 1.12x・k5 1.08x | 1-4 | `compare_bytecode`・`compare_outputs -A`、不変インスタンス・`static mut`・`freeze` の例題 |
-| 2-4 | `get_attr_val` のミス経路で、trait を持たないクラスでは `format!` と走査を省く（§0.2 の実験と同じ） | 2-2 | `compare_outputs -A`、trait 修飾フィールドの例題 |
+| 2-4 | `get_attr_val` のミス経路で、trait を持たないクラスでは `format!` と走査を省く（§0.2 の実験と同じ）。✅ 修飾名のキーは `build_field_index` が基底の分だけ付けるので `bases.is_empty()` で判定。ミス経路のマイクロベンチ（VM の private フィールドの読み・多相な箇所）1.37x、ほかのベンチは差なし | 2-2 | `compare_outputs -A`、trait 修飾フィールドの例題 |
 
 ### フェーズ 3: 方針 2 — 型検査の結果でレシーバを決めて直接呼ぶ
 
