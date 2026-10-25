@@ -475,15 +475,31 @@ extern "C" fn ar_assign_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val
 /// `cell` は生成コードの箇所ごとの書き込みの IC（読み出しとは別のセル）。`AtomicU64`（Relaxed）として読み書きし、
 /// 一時の `AttrCache` に写して渡し、埋まった値を書き戻す（`read_attr_ic` と同じ）。
 extern "C" fn ar_assign_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64, cell: *mut u64) {
+    let val = clone_value_at(val_h);
+    assign_attr_ic_value(obj_h, name_ptr, name_len, val, cell);
+}
+
+/// `obj.attr = <int>`（IC 付き・field 65・4-2）。値はハンドルにせず `Value::Int` で渡す（中身は field 61 と同じ）。
+extern "C" fn ar_assign_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: i64, cell: *mut u64) {
+    assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Int(v), cell);
+}
+
+/// `obj.attr = <float>`（IC 付き・field 66・4-2）。
+extern "C" fn ar_assign_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: f64, cell: *mut u64) {
+    assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Float(v), cell);
+}
+
+/// fields 61 / 65 / 66 の本体（値の受け取り方だけが違う）。
+fn assign_attr_ic_value(obj_h: i64, name_ptr: *const u8, name_len: i32, val: Value, cell: *mut u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
     let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
     if cell.is_null() {
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: no inline cache cell for attribute '{name}'")));
         return;
     }
-    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
-        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
     });
     if has_err { return; }
     if interp_ptr.is_null() {
@@ -1848,6 +1864,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     enter_method_ctx: ar_enter_method_ctx,
     leave_method_ctx: ar_leave_method_ctx,
     method_guard: ar_method_guard,
+    assign_int_field_ic: ar_assign_int_field_ic,
+    assign_float_field_ic: ar_assign_float_field_ic,
 };
 
 #[cfg(test)]

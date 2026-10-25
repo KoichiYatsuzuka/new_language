@@ -589,6 +589,12 @@ pub struct ArCallbacks {
     /// 受け手が名前のクラスのインスタンス（class_id が一致）で、`mut self` のメソッドなら不変インスタンスでないときだけ 1。
     /// 引数は (受け手, クラス名, 箇所ごとのセル（class_id を 1 回だけ引いて覚える）, `mut self` か)。
     pub method_guard: extern "C" fn(i64, *const u8, i32, *mut u64, i32) -> i32,
+
+    // ── Typed attribute writes (fields 65-66・4-2) ──
+    /// `obj.attr = <int>`（IC 付き）。値を箱に入れずに渡す。中身は `assign_attr_ic`（field 61）と同じ。
+    pub assign_int_field_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
+    /// `obj.attr = <float>`（IC 付き）。
+    pub assign_float_field_ic: extern "C" fn(i64, *const u8, i32, f64, *mut u64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

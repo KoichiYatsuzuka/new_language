@@ -1,0 +1,67 @@
+# native_field_compound_module.ar — コンパイル済みコードのフィールドの複合代入・型付きの書き込み
+# （native_object_access_plan.md 4-2・§0.3 ⑪）
+#
+# 型の分かっている `int` / `float` のフィールドの複合代入（`self.hits += n`）は、型付きで読み → ネイティブの演算 →
+# 型付きで書く（値を箱に入れない）。ふつうの代入も `int` / `float` の値は箱に入れずに書く。
+# ⚠ 以前のコンパイル済みコードは複合代入の受け手を先に読み、右辺を後に評価していたので、右辺が同じフィールドを
+#   書き換えると（`self.n += self.bump()`）その書き換えが消えた（非コンパイル 11・コンパイル済み 1）。
+#   今はツリーウォーク・VM と同じく 右辺 → 受け手（読み）→ 演算 → 受け手（書き・もう 1 度評価）の順。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_field_compound_module.ar
+
+class Inner:
+    mut n: int
+
+class Meter:
+    mut n: int
+    mut f: float
+    mut inner: Inner
+    mut picks: int
+
+    fn bump(mut self) -> int:
+        self.n = self.n + 10
+        return 1
+
+    # 右辺が同じフィールドを書き換える
+    fn order(mut self) -> int:
+        self.n += self.bump()
+        return self.n
+
+    fn pick(mut self) -> Inner:
+        self.picks = self.picks + 1
+        return self.inner
+
+    # 受け手が名前でない（呼び出し）: 読みと書きで 1 回ずつ評価する（ツリーウォーク・VM と同じ）
+    fn via_call(mut self) -> int:
+        self.pick().n += 5
+        return self.picks * 100 + self.inner.n
+
+    fn typed(mut self, let k: int, let x: float) -> float:
+        for i in range(4):
+            self.n += k
+            self.f *= x
+            self.f += 1
+        self.n -= 1
+        return self.f + self.n
+
+    fn plain(mut self, let k: int, let x: float) -> str:
+        self.n = k * 3
+        self.f = x / 4.0
+        return str(self.n) + "/" + str(self.f)
+
+fn run_order() -> int:
+    mut m = Meter(0, 0.0, Inner(0), 0)
+    return m.order()
+
+fn run_via_call() -> int:
+    mut m = Meter(0, 0.0, Inner(1), 0)
+    return m.via_call()
+
+fn run_typed() -> float:
+    mut m = Meter(1, 1.0, Inner(0), 0)
+    return m.typed(3, 2.0)
+
+fn run_plain() -> str:
+    mut m = Meter(0, 0.0, Inner(0), 0)
+    return m.plain(7, 2.0)

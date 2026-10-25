@@ -64,18 +64,47 @@ impl<'a> GenCtx<'a> {
                 let (obj, ot) = self.gen_expr(object);
                 let (val, vt) = self.gen_expr(value);
                 let oh  = self.to_handle(&obj, ot);
-                let vh  = self.to_handle(&val, vt);
-                self.emit_attr_store(&oh, trait_name, attr, &vh);
+                match trait_name {
+                    // `int` / `float` の値は箱に入れずに書く（4-2）
+                    None => self.emit_attr_assign_typed(&oh, attr, &val, vt),
+                    Some(_) => {
+                        let vh = self.to_handle(&val, vt);
+                        self.emit_attr_store(&oh, trait_name, attr, &vh);
+                    }
+                }
             }
             Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
-                let (obj, ot) = self.gen_expr(object);
-                let oh   = self.to_handle(&obj, ot);
-                let old  = self.emit_attr_load(&oh, trait_name, attr);
+                // ⚠⚠ ツリーウォーク（`attr_assign`）・VM と同じ順で評価する: 右辺 → 受け手（読み）→ 二項演算 →
+                //   受け手（書き・もう 1 度評価）。以前は受け手を先に読んで右辺を後に評価しており、右辺が同じ
+                //   フィールドを書き換えると（`self.n += self.bump()`）その書き換えが消えた（§0.3 ⑪・4-2 で発見・
+                //   非コンパイル 11・コンパイル済み 1）。受け手が名前（`self`・ローカル）なら 2 度目の評価は省く。
                 let (rv, rt) = self.gen_expr(value);
-                let (res, rest) = self.specialize_binop(op, &old, Ty::Handle, &rv, rt);
-                let rh = self.to_handle(&res, rest);
-                self.emit_attr_store(&oh, trait_name, attr, &rh);
+                let (obj, ot) = self.gen_expr(object);
+                let oh = self.to_handle(&obj, ot);
+                // 型の分かっている `int` / `float` のフィールドは、型付きで読み → ネイティブの演算 → 型付きで書く（4-2）
+                let known = match (trait_name, target) {
+                    (None, Expr::Attr { node_id, .. }) => self.field_ty_resolved(object, attr, *node_id),
+                    _ => None,
+                };
+                let (old, old_t) = match (trait_name, known) {
+                    (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_attr_read(&oh, attr, Some(t)),
+                    _ => (self.emit_attr_load(&oh, trait_name, attr), Ty::Handle),
+                };
+                let (res, rest) = self.specialize_binop(op, &old, old_t, &rv, rt);
+                let oh = if ident_name(object).is_some() {
+                    oh
+                } else {
+                    let (obj2, ot2) = self.gen_expr(object);
+                    self.to_handle(&obj2, ot2)
+                };
+                match trait_name {
+                    None => self.emit_attr_assign_typed(&oh, attr, &res, rest),
+                    Some(_) => {
+                        let rh = self.to_handle(&res, rest);
+                        self.emit_attr_store(&oh, trait_name, attr, &rh);
+                    }
+                }
             }
             Stmt::Return(Some(expr), _) => {
                 let (v, vt) = self.gen_expr(expr);

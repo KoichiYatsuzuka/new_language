@@ -430,6 +430,22 @@ impl<'a> GenCtx<'a> {
         self.call_cb(CB_ASSIGN_ATTR_IC, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), format!("i64 {vh}"), cell]);
     }
 
+    /// `obj.attr = v` を値の型のまま書く（4-2）: `int` / `float` の生値は箱に入れずに渡す（fields 65 / 66）、
+    /// ほかはハンドル（`emit_attr_assign`）。中身はどれも VM の `SetAttr` と同じ `attr_assign_ic`。
+    pub(super) fn emit_attr_assign_typed(&mut self, oh: &str, attr: &str, v: &str, vt: Ty) {
+        let (cb, val) = match vt {
+            Ty::Int => (CB_ASSIGN_INT_FIELD_IC, format!("i64 {v}")),
+            Ty::Float => (CB_ASSIGN_FLOAT_FIELD_IC, format!("double {v}")),
+            _ => {
+                let vh = self.to_handle(v, vt);
+                return self.emit_attr_assign(oh, attr, &vh);
+            }
+        };
+        let cell = self.ic_cell();
+        let ptr = self.str_const(attr.as_bytes());
+        self.call_cb(cb, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), val, cell]);
+    }
+
     /// 箇所ごとの IC のセル（DLL 内の `i64` の大域・初期値 0）を 1 つ作り、`ptr @_icN` を返す（2-2 / 2-3 / 3-2）。
     pub(super) fn ic_cell(&mut self) -> String {
         let cell = format!("_ic{}", self.ic_ctr);
