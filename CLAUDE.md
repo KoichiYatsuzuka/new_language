@@ -83,6 +83,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `compare_outputs.ps1 -A <base.exe>` | 全例題の stdout/stderr/exit が同一か | **解釈側**を触ったとき（bytecode は自明に一致してしまう） |
 | `compare_import_paths.ps1 -A <base.exe>` | import 系 13 例題の出力が同一か | **import / FFI** を触ったとき（他ゲートの対象外を埋める） |
 | `dump_native_ir.ps1 -OutDir <dir>` | 生成 LLVM IR が byte-identical か | **ネイティブ codegen** を触ったとき（最強の検査） |
+| `check_native_ir_abi.ps1` | 例題の .arc の元を全部コンパイルし直し、生成 IR の**直接呼び出し（`@X_impl` / `@X_fast`）が定義と同じ型か**・**DLL が埋め込まれたか** | **ネイティブ codegen の呼び出し規約・適格判定**を触ったとき（型の違う直接呼び出しは clang が通し、実行時にごみを読む） |
 | `repl_session.ps1` | 対話 REPL の golden | **REPL / 最上位実行**を触ったとき |
 | `debug_session.ps1` | デバッガのステッピングの golden | **デバッガ / 行テーブル**を触ったとき |
 | `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳 | **VM の適格範囲**を触ったとき |

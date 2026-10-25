@@ -46,6 +46,10 @@ struct FnSig {
     ret: Ty,
     /// パラメータごとの可変フラグリスト。`true` は `mut` パラメータ。
     param_mutabilities: Vec<bool>,
+    /// 仮引数ごとの `_impl` / `_fast` の内部 ABI（native_object_access_plan.md 4-1・D-3）: `int` / `float` 注釈は
+    /// 生値（`i64` / `double`）、ほか（`self`・クラス・`str` …）はハンドル。ジェネレータは全部ハンドル。
+    /// 箱詰めはインタープリタとの境界（`_tl`）だけで行う。
+    param_tys: Vec<Ty>,
     /// `_fast` 版がパラメータごとに**フィールドをスカラーへ展開するか**と、そのクラス
     /// （`fast_flat_class`。`None` は展開しない＝ハンドルで受ける）。
     /// ⚠ 呼ぶ側（`build_fast_call_args`）はこの表に従って引数を並べる。呼ぶ側が自分の都合
@@ -1080,6 +1084,9 @@ pub fn generate_llvm_module(
         (f.symbol.clone(), FnSig {
             ret: if f.is_gen { Ty::Handle } else { ann_ty(f.return_type) },
             param_mutabilities: f.params.iter().map(|p| p.mutable).collect(),
+            param_tys: f.params.iter()
+                .map(|p| if f.is_gen { Ty::Handle } else { ann_ty(p.type_ann.as_deref()) })
+                .collect(),
             fast_flat: f.params.iter()
                 .map(|p| fast_flat_class(p, f.class_name.as_deref(), f.body, &class_fields_ord))
                 .collect(),

@@ -89,6 +89,10 @@ impl<'a> GenCtx<'a> {
                         self.ec(&format!("ret double {f}"));
                         self.terminated = true;
                     }
+                } else if self.current_fn_ret == Ty::Int {
+                    // `int` を返す _impl は生の i64 を返す（4-1・箱に入れるのは `_tl` の境界）
+                    let n = self.to_i64(&v, vt);
+                    self.ret_handle(&n);
                 } else {
                     let h = self.to_handle(&v, vt);
                     self.ret_handle(&h);
