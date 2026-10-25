@@ -973,25 +973,47 @@ fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleF
     }
 }
 
+/// 同じ名前の `fn` / `gen` が 2 つ以上ある（オーバーロード）名前（native_object_access_plan.md 1-8・§0.3 ⑨）。
+///
+/// DLL のシンボル（[`method_symbol`]）とネイティブのメソッドの表（`(クラス, 名前)` → 1 つ）は名前だけで決まるので、
+/// オーバーロードは表せない。**どれもコンパイルせず**、全部をインタープリタの振り分けに任せる。
+/// ⚠ 以前は全部をコンパイルしようとして同じシンボルが 2 つでき、clang が `invalid redefinition` で落ちて
+///   **モジュール全体が**ネイティブにならなかった（`--compile` は「skipped」と出して DLL の無い `.arc` を書く）。
+///   明示の `__init__` の引数がフィールドと違うと、パーサが自動生成する `__init__` と並ぶのでこれに当たる。
+fn overloaded_names(body: &[Stmt]) -> HashSet<&str> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut dup: HashSet<&str> = HashSet::new();
+    for s in body {
+        if let Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } = s {
+            if !seen.insert(name.as_str()) {
+                dup.insert(name.as_str());
+            }
+        }
+    }
+    dup
+}
+
 pub fn generate_llvm_module(
     stmts: &[Stmt],
     annotations: &AstAnnotations,
 ) -> Option<(String, Vec<FnExport>)> {
     let mut eligible: Vec<EligibleFn> = Vec::new();
+    let top_overloads = overloaded_names(stmts);
 
     // ⚠ 収集の**順序**が emit 順（＝生成 IR）を決める。最上位は `stmts` 順、
     //    メソッドはクラス本体順 — #82 で畳んだときもこの順序は変えていない。
     for s in stmts {
         match s {
             Stmt::FnDef { .. } | Stmt::GenDef { .. } => {
-                if let Some(e) = eligible_fn(s, None) {
+                if let Some(e) = eligible_fn(s, None).filter(|e| !top_overloads.contains(e.orig_name)) {
                     eligible.push(e);
                 }
             }
             Stmt::ClassDef { name: class_name, body: class_body, template_params, .. } => {
                 if !template_params.is_empty() { continue; }
+                let overloads = overloaded_names(class_body);
                 for method_stmt in class_body {
-                    if let Some(e) = eligible_fn(method_stmt, Some(class_name)) {
+                    if let Some(e) = eligible_fn(method_stmt, Some(class_name)).filter(|e| !overloads.contains(e.orig_name)) {
                         eligible.push(e);
                     }
                 }
@@ -1188,3 +1210,62 @@ mod context;
 mod expr;
 mod stmt;
 mod function;
+
+#[cfg(test)]
+mod tests {
+    use super::generate_llvm_module;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::type_check::AstAnnotations;
+
+    /// オーバーロード（明示の `__init__` と自動生成の `__init__`・同名のメソッド・同名の最上位関数）はコンパイルせず、
+    /// ほかの関数は今までどおりコンパイルする（native_object_access_plan.md 1-8・§0.3 ⑨）。
+    /// ⚠ 以前は同じ `define` が 2 つでき、clang が落ちてモジュール全体がネイティブにならなかった。
+    #[test]
+    fn overloads_are_left_to_the_interpreter() {
+        let src = "\
+class Box:
+    mut w: int
+    mut h: int
+
+    fn __init__(mut self, let side: int) -> None:
+        self.w = side
+        self.h = side
+
+    fn area(let self) -> int:
+        return self.w * self.h
+
+    fn scale(mut self, let k: int) -> None:
+        self.w = self.w * k
+
+    fn scale(mut self, let kw: int, let kh: int) -> None:
+        self.w = self.w * kw
+        self.h = self.h * kh
+
+fn twice(let x: int) -> int:
+    return x * 2
+
+fn twice(let x: float) -> float:
+    return x * 2.0
+
+fn plain(let x: int) -> int:
+    return x + 1
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, exports) = generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+
+        let mut defined = std::collections::HashSet::new();
+        for line in ir.lines().filter(|l| l.starts_with("define ")) {
+            let sym = line.split('@').nth(1).and_then(|s| s.split('(').next()).expect("symbol");
+            assert!(defined.insert(sym.to_string()), "duplicate definition of {sym}");
+        }
+        assert!(defined.contains("plain_impl") && defined.contains("Box__area_impl"), "{defined:?}");
+        for overloaded in ["twice_impl", "Box____init___impl", "Box__scale_impl"] {
+            assert!(!defined.contains(overloaded), "{overloaded} must not be compiled: {defined:?}");
+        }
+        let names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"plain") && names.contains(&"area"), "{names:?}");
+        assert!(!names.contains(&"twice") && !names.contains(&"__init__") && !names.contains(&"scale"), "{names:?}");
+    }
+}

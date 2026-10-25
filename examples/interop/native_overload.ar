@@ -1,0 +1,22 @@
+# native_overload.ar — オーバーロードを含むモジュールのコンパイル（native_object_access_plan.md 1-8）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_overload_module.ar
+#   2. cargo run --release -- examples/interop/native_overload.ar
+#
+# ⚠ 「モジュールがネイティブになったか」は出力に出ない（どちらでも同じ値）。その検査は
+#   `llvm_codegen` の単体テスト `overloads_are_left_to_the_interpreter`（重複した define が無く、オーバーロードで
+#   ない関数がコンパイルされる）が持つ。ここは「オーバーロードした名前がインタープリタで正しく動く」ことを見る。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_overload_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("explicit __init__ next to the generated one", m.Box(3).area() == 9)
+check("generated __init__", m.Box(2, 5).area() == 10)
+check("overloaded method", m.grow(2) == 24)
+check("plain function", m.plain(41) == 42)
