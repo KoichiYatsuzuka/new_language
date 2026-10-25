@@ -1689,6 +1689,49 @@ extern "C" fn ar_leave_method_ctx(token: i64) {
     unsafe { &mut *interp_ptr }.current_class = prev;
 }
 
+/// 型検査の注釈で受け手のクラスを決めた直接呼び出しの前のガード（field 64・native_object_access_plan.md 3-2・D-2）。
+///
+/// 注釈はヒントであって意味論の根拠ではない（`list[T]` の要素・`new_type` など、実行時に保証されない型がある）
+/// ので、受け手が本当にそのクラスのインスタンスか（class_id）と、`mut self` のメソッドなら不変インスタンスでないかを
+/// 確かめる。外れたら 0 を返し、生成コードは名前による呼び出し（`ar_call_method_m`）へ回る（そちらが正しく
+/// 振り分け、必要ならエラーを出す）。クラスの class_id は箇所ごとのセルに 1 回だけ名前で引いて覚える（0 = まだ）。
+/// 名前で引けなければ（シャドウなど）0 のまま返す＝毎回名前による呼び出し（遅いが正しい）。
+extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, cell: *mut u64, need_mutable: i32) -> i32 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(class_name) = native_str(class_ptr, class_len, "class name") else { return 0 };
+    if cell.is_null() || obj_h < 3 {
+        return 0;
+    }
+    let probe = STATE.with(|s| {
+        let st = s.borrow();
+        match st.arena.get(obj_h as usize) {
+            Some(Value::Instance(rc)) => {
+                let inst = rc.borrow();
+                Some((inst.class.class_id, inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0, st.interp_ptr))
+            }
+            _ => None,
+        }
+    });
+    let Some((class_id, immutable, interp_ptr)) = probe else { return 0 };
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let mut want = cell.load(Ordering::Relaxed);
+    if want == 0 {
+        if interp_ptr.is_null() {
+            return 0;
+        }
+        let interp = unsafe { &*interp_ptr };
+        match interp.get_var(class_name).map(|v| v.get_value()) {
+            Some(Value::Class(cls)) => {
+                want = cls.class_id as u64;
+                cell.store(want, Ordering::Relaxed);
+            }
+            _ => return 0,
+        }
+    }
+    i32::from(class_id as u64 == want && !(need_mutable != 0 && immutable))
+}
+
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
@@ -1804,6 +1847,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     assign_attr_ic: ar_assign_attr_ic,
     enter_method_ctx: ar_enter_method_ctx,
     leave_method_ctx: ar_leave_method_ctx,
+    method_guard: ar_method_guard,
 };
 
 #[cfg(test)]

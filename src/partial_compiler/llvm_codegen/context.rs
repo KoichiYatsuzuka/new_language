@@ -430,8 +430,8 @@ impl<'a> GenCtx<'a> {
         self.call_cb(CB_ASSIGN_ATTR_IC, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), format!("i64 {vh}"), cell]);
     }
 
-    /// 箇所ごとの IC のセル（DLL 内の `i64` の大域・初期値 0）を 1 つ作り、`ptr @_icN` を返す（2-2 / 2-3）。
-    fn ic_cell(&mut self) -> String {
+    /// 箇所ごとの IC のセル（DLL 内の `i64` の大域・初期値 0）を 1 つ作り、`ptr @_icN` を返す（2-2 / 2-3 / 3-2）。
+    pub(super) fn ic_cell(&mut self) -> String {
         let cell = format!("_ic{}", self.ic_ctr);
         self.ic_ctr += 1;
         self.str_globals.push_str(&format!("@{cell} = internal global i64 0, align 8\n"));

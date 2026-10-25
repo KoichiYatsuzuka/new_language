@@ -584,6 +584,11 @@ pub struct ArCallbacks {
     pub enter_method_ctx: extern "C" fn(i64) -> i64,
     /// `enter_method_ctx` の印を受け取り、前の文脈に戻す。
     pub leave_method_ctx: extern "C" fn(i64),
+
+    // ── Guard of annotation-based direct calls (field 64・3-2・D-2) ──
+    /// 受け手が名前のクラスのインスタンス（class_id が一致）で、`mut self` のメソッドなら不変インスタンスでないときだけ 1。
+    /// 引数は (受け手, クラス名, 箇所ごとのセル（class_id を 1 回だけ引いて覚える）, `mut self` か)。
+    pub method_guard: extern "C" fn(i64, *const u8, i32, *mut u64, i32) -> i32,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

@@ -3,6 +3,25 @@
 use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Resolution, UnaryOp};
 use super::*;
 
+/// メソッド呼び出しの受け手のクラス（[`GenCtx::receiver_class`] の答え・3-1）。
+struct Receiver {
+    class: String,
+    /// 型検査の注釈で決めた（実行時に class_id を確かめてから直接呼ぶ・3-2・D-2）
+    guarded: bool,
+}
+
+/// 型検査が型を記録する式の node-id（受け手の注釈を引くため・3-1）。0 は未採番（合成 AST）。
+fn expr_node_id(e: &Expr) -> Option<u32> {
+    match e {
+        Expr::Ident { node_id, .. }
+        | Expr::Attr { node_id, .. }
+        | Expr::Call { node_id, .. }
+        | Expr::Subscript { node_id, .. }
+        | Expr::Cast { node_id, .. } => Some(*node_id),
+        _ => None,
+    }
+}
+
 impl<'a> GenCtx<'a> {
     /// 式の IR を生成し `(値, 型区分)` を返す。
     ///
@@ -761,18 +780,35 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    /// メソッド呼び出しのレシーバ式から**クラス名**を引く（`obj.m()` の `obj`）。
+    /// メソッド呼び出しのレシーバ式から**クラス**を引く（`obj.m()` の `obj`）。
     ///
-    /// - `self` … 現在コンパイル中のクラス
-    /// - 識別子 … パラメータの型注釈から引く（`param_classes`）
-    /// - それ以外 … 不明（＝直接ディスパッチしない）
+    /// - `self` … 現在コンパイル中のクラス（ガード不要）
+    /// - 型注釈付きの仮引数（`param_classes`）… その型（ガード不要: 引数は型検査が呼び出しで確かめる。`Any` は渡せない）
+    /// - それ以外（フィールド `self.pos`・ループ変数・注釈付きのローカル・`int` / `float` のフィールドを持たないクラスの
+    ///   仮引数など）… 型検査の注釈（`resolved_type` が Arrow のクラスの `NamedInstance`）。**実行時のガード付き**
+    ///   （3-1・3-2・D-2: 注釈はヒントなので、外れたら名前による呼び出しへ回る）。注釈が無い／`node_id` 0 は不明
     ///
     /// ⚠ #64 以前は `gen_call_expr` と `gen_call` に**逐語で同じ `match`** が置かれていた。
-    fn receiver_class(&self, object: &Expr) -> Option<String> {
+    /// ⚠ 3-1 以前は `self` と `int` / `float` のフィールドを持つクラスの仮引数しか引けず、ほかは全部名前で呼んでいた。
+    fn receiver_class(&self, object: &Expr) -> Option<Receiver> {
         match object {
-            e if ident_name(e) == Some("self") => self.current_class.clone(),
-            e if ident_name(e).is_some() => self.param_classes.get(ident_name(e).unwrap()).cloned(),
-            _ => None,
+            e if ident_name(e) == Some("self") => {
+                self.current_class.clone().map(|class| Receiver { class, guarded: false })
+            }
+            e if ident_name(e).is_some_and(|n| self.param_classes.contains_key(n)) => {
+                let class = self.param_classes[ident_name(e).unwrap()].clone();
+                Some(Receiver { class, guarded: false })
+            }
+            _ => {
+                use crate::type_check::InferredType;
+                let nid = expr_node_id(object).filter(|&n| n != 0)?;
+                match self.annotations.resolved_type(nid)? {
+                    InferredType::NamedInstance(n) if self.annotations.is_arrow_class(n) => {
+                        Some(Receiver { class: n.clone(), guarded: true })
+                    }
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -913,13 +949,15 @@ impl<'a> GenCtx<'a> {
         }
         // ── Typed intra-module method calls on known class instances ──
         if let Expr::Attr { object, attr, .. } = func {
-            let class_name = self.receiver_class(object);
-            if let Some(cls) = &class_name {
+            let receiver = self.receiver_class(object);
+            if let Some(Receiver { class: cls, guarded }) = &receiver {
                 let sym = method_symbol(cls, attr);
                 if self.is_module_fn(&sym) {
                     let ret_ty = self.fn_sigs.get(&sym).map(|s| s.ret).unwrap_or(Ty::Handle);
 
-                    if ret_ty == Ty::Float {
+                    // ガード付き（注釈で決めた受け手）は `double` を返す高速経路を使わず、ハンドル ABI の
+                    // ガード付き呼び出し（`gen_call`）で呼ぶ（外れたときの名前による呼び出しはハンドルを返す）。
+                    if ret_ty == Ty::Float && !*guarded {
                         // Preferred: _fast variant — passes pre-read field values as
                         // scalars; zero callbacks and LLVM-inlineable pure arithmetic.
                         // 破棄された `_fast` 変種は選ばない（生成側と条件を揃える）。
@@ -956,6 +994,120 @@ impl<'a> GenCtx<'a> {
         }
         (self.gen_call(func, args), Ty::Handle)
     }
+    /// モジュール内のメソッドを `_impl`（ハンドル ABI）で直接呼ぶ（値渡しの複製・1-5、呼ばれる側の文脈・1-9 込み）。
+    #[allow(clippy::too_many_arguments)]
+    fn emit_direct_method_call(
+        &mut self,
+        sym: &str,
+        cls: &str,
+        object: &Expr,
+        oh: &str,
+        ot: Ty,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+    ) -> String {
+        // Collect explicit args as handles; self_h is prepended.
+        let explicit = self.method_call_operands(sym, object, oh, ot, args, arg_exprs);
+        let oh = explicit[0].clone();
+        let explicit: Vec<String> = explicit[1..].iter().map(|h| format!("i64 {h}")).collect();
+        let all_params = std::iter::once(format!("i64 {oh}"))
+            .chain(explicit).collect::<Vec<_>>().join(", ");
+        // ⚠⚠ `float` を返すメソッドの `_impl` は `double` を返す（`gen_call_expr` の高速経路と同じ ABI）。
+        //   `call i64` で呼ぶと LLVM は通すが、整数レジスタのごみを返り値のハンドルとして読む（3-2 で
+        //   ガード付きの呼び出しが float を返すメソッドに当たり `float * None` になった。以前も文として
+        //   呼んだときは同じ食い違いがあり、結果を捨てるので表に出ていなかった）。アリーナは触らず箱に入れる。
+        if self.fn_sigs[sym].ret == Ty::Float {
+            let ctx = self.enter_callee_ctx(cls, &oh);
+            let r = self.fresh_reg();
+            self.ec(&format!("{r} = call double @{sym}_impl({all_params})"));
+            self.leave_callee_ctx(ctx);
+            return self.to_handle(&r, Ty::Float);
+        }
+        let save = self.call_cb(CB_ARENA_SAVE, &[]);
+        let ctx = self.enter_callee_ctx(cls, &oh);
+        let raw = self.fresh_reg();
+        self.ec(&format!("{raw} = call i64 @{sym}_impl({all_params})"));
+        self.leave_callee_ctx(ctx);
+        // Always return i64 handle; gen_expr unwraps to native type.
+        self.call_cb(CB_ARENA_COMPACT, &[format!("i64 {raw}"), format!("i64 {save}")])
+    }
+
+    /// 注釈で決めた受け手のメソッド呼び出し（3-2・D-2）: ガード（`CB_METHOD_GUARD`）を通ったときだけ直接呼び、
+    /// 外れたら名前で呼ぶ。両方の道の結果は entry の alloca に置いて合流する（道の中でブロックが増えても正しい・
+    /// mem2reg が phi にする）。引数と受け手は分岐の前に 1 回だけ評価してある。
+    #[allow(clippy::too_many_arguments)]
+    fn emit_guarded_method_call(
+        &mut self,
+        sym: &str,
+        cls: &str,
+        key: &str,
+        object: &Expr,
+        oh: &str,
+        ot: Ty,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+    ) -> String {
+        // `mut self` のメソッドは不変インスタンスでガードを外す（名前による呼び出しがエラーにする）
+        let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
+        let cell = self.ic_cell();
+        let cptr = self.str_const(cls.as_bytes());
+        let ok = self.call_cb(CB_METHOD_GUARD, &[
+            format!("i64 {oh}"), cptr, format!("i32 {}", cls.len()), cell, format!("i32 {}", i32::from(need_mut)),
+        ]);
+        let slot = format!("%_mres{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca i64, align 8"));
+        let cond = self.fresh_reg();
+        self.ec(&format!("{cond} = icmp ne i32 {ok}, 0"));
+        let (b_direct, b_name, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        self.ec(&format!("br i1 {cond}, label %{b_direct}, label %{b_name}"));
+        self.terminated = true;
+        self.start_block(&b_direct);
+        let rd = self.emit_direct_method_call(sym, cls, object, oh, ot, args, arg_exprs);
+        self.ec(&format!("store i64 {rd}, ptr {slot}"));
+        self.br(&b_join);
+        self.start_block(&b_name);
+        let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs);
+        self.ec(&format!("store i64 {rn}, ptr {slot}"));
+        self.br(&b_join);
+        self.start_block(&b_join);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = load i64, ptr {slot}"));
+        r
+    }
+
+    /// 名前によるメソッド呼び出し（`CB_CALL_METHOD_M`・外のメソッド・コンパイルしていないメソッド・ガードが外れたとき）。
+    /// 呼ばれる側の仮引数の `let` / `mut` はここでは分からないので、渡す値が `mut` かを `mut_mask` で渡し、
+    /// 複製は `ar_call_method_m` が呼ばれる側の宣言を見て行う（D-8・1-5）。
+    fn emit_method_call_by_name(
+        &mut self,
+        key: &str,
+        object: &Expr,
+        oh: &str,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+    ) -> String {
+        let method_ptr = self.str_const(key.as_bytes());
+        let method_len = key.len() as i32;
+        let mask = self.method_mut_mask(object, args);
+        let handles: Vec<String> = arg_exprs.iter()
+            .map(|(v, vt)| self.to_handle(v, *vt))
+            .collect();
+        if handles.is_empty() {
+            self.call_cb(CB_CALL_METHOD_M, &[
+                format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
+                "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")
+            ])
+        } else {
+            let n = handles.len();
+            let arr = self.spill_handle_array(&handles, "margs");
+            self.call_cb(CB_CALL_METHOD_M, &[
+                format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
+                format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")
+            ])
+        }
+    }
+
     pub(super) fn gen_call(&mut self, func: &Expr, args: &[CallArg]) -> String {
         let arg_exprs: Vec<(String, Ty)> = args.iter()
             .map(|a| self.gen_expr(a.expr()))
@@ -974,52 +1126,16 @@ impl<'a> GenCtx<'a> {
             // ── Direct intra-module method dispatch ───────────────────────────
             // If the method was compiled in this module, call its _impl directly —
             // no CB_CALL_METHOD overhead, no NATIVE_METHODS table lookup.
-            let class_name = self.receiver_class(object);
-            if let Some(cls) = &class_name {
-                let sym = crate::partial_compiler::llvm_codegen::method_symbol(cls, &key);
+            if let Some(Receiver { class: cls, guarded }) = self.receiver_class(object) {
+                let sym = crate::partial_compiler::llvm_codegen::method_symbol(&cls, &key);
                 if self.is_module_fn(&sym) {
-                    let ret_ty = self.fn_sigs.get(&sym).map(|s| s.ret).unwrap_or(Ty::Handle);
-                    // Collect explicit args as handles; self_h is prepended.
-                    let explicit = self.method_call_operands(&sym, object, &oh, ot, args, &arg_exprs);
-                    let oh = explicit[0].clone();
-                    let explicit: Vec<String> = explicit[1..].iter().map(|h| format!("i64 {h}")).collect();
-                    let save = self.call_cb(CB_ARENA_SAVE, &[]);
-                    let all_params = std::iter::once(format!("i64 {oh}"))
-                        .chain(explicit).collect::<Vec<_>>().join(", ");
-                    let ctx = self.enter_callee_ctx(cls, &oh);
-                    let raw = self.fresh_reg();
-                    self.ec(&format!("{raw} = call i64 @{sym}_impl({all_params})"));
-                    self.leave_callee_ctx(ctx);
-                    let result = self.call_cb(CB_ARENA_COMPACT,
-                        &[format!("i64 {raw}"), format!("i64 {save}")]);
-                    // Always return i64 handle; gen_expr unwraps to native type.
-                    let _ = ret_ty;
-                    return result;
+                    if !guarded {
+                        return self.emit_direct_method_call(&sym, &cls, object, &oh, ot, args, &arg_exprs);
+                    }
+                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs);
                 }
             }
-
-            // ── Fall back to CB_CALL_METHOD_M (external / non-compiled method) ──
-            // 呼ばれる側の仮引数の `let` / `mut` はここでは分からないので、渡す値が `mut` かを
-            // `mut_mask` で渡し、複製は `ar_call_method_m` が呼ばれる側の宣言を見て行う（D-8・1-5）。
-            let method_ptr = self.str_const(key.as_bytes());
-            let method_len = key.len() as i32;
-            let mask = self.method_mut_mask(object, args);
-            let handles: Vec<String> = arg_exprs.iter()
-                .map(|(v, vt)| self.to_handle(v, *vt))
-                .collect();
-            return if handles.is_empty() {
-                self.call_cb(CB_CALL_METHOD_M, &[
-                    format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                    "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")
-                ])
-            } else {
-                let n = handles.len();
-                let arr = self.spill_handle_array(&handles, "margs");
-                self.call_cb(CB_CALL_METHOD_M, &[
-                    format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                    format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")
-                ])
-            };
+            return self.emit_method_call_by_name(&key, object, &oh, args, &arg_exprs);
         }
 
         // Intra-module direct call
@@ -1041,8 +1157,15 @@ impl<'a> GenCtx<'a> {
                     })
                     .collect();
 
-                let save = self.call_cb(CB_ARENA_SAVE, &[]);
                 let param_str = call_args.join(", ");
+                // `float` を返す関数の `_impl` は `double` を返す（メソッドの `emit_direct_method_call` と同じ理由）。
+                // ここへ来るのは文として呼んだときなど（式なら `gen_call_expr` が `double` で受ける）。
+                if self.fn_sigs.get(name).map(|s| s.ret) == Some(Ty::Float) {
+                    let r = self.fresh_reg();
+                    self.ec(&format!("{r} = call double @{name}_impl({param_str})"));
+                    return self.to_handle(&r, Ty::Float);
+                }
+                let save = self.call_cb(CB_ARENA_SAVE, &[]);
                 let raw = self.fresh_reg();
                 self.ec(&format!("{raw} = call i64 @{name}_impl({param_str})"));
                 let result = self.call_cb(CB_ARENA_COMPACT, &[format!("i64 {raw}"), format!("i64 {save}")]);
