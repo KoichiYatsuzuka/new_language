@@ -10,25 +10,24 @@ impl<'a> GenCtx<'a> {
 
     pub(super) fn gen_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let(name, _, expr, _) | Stmt::Const(name, _, expr, _) => {
+            // 宣言の複製は VM と同じ（`let` / `mut` は `bind_decl`・`const` はそのまま・1-6）。
+            // ⚠ 以前は 3 つとも単なる格納で、`mut q = o.inner` が `o.inner` と共有されていた。
+            Stmt::Let(name, _, expr, _) | Stmt::Mut(name, _, expr, _) | Stmt::Const(name, _, expr, _) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
                 let coerced = match st {
                     Ty::Int   => self.to_i64(&v, vt),
                     Ty::Float => self.to_f64(&v, vt),
-                    _         => self.to_handle(&v, vt),
-                };
-                self.store_val(st, &coerced, &ptr.clone());
-            }
-            Stmt::Mut(name, _, expr, _) => {
-                let (v, vt) = self.gen_expr(expr);
-                let st  = store_ty(vt);
-                let ptr = self.alloca_var(name, st);
-                let coerced = match st {
-                    Ty::Int   => self.to_i64(&v, vt),
-                    Ty::Float => self.to_f64(&v, vt),
-                    _         => self.to_handle(&v, vt),
+                    _         => {
+                        let h = self.to_handle(&v, vt);
+                        match stmt {
+                            Stmt::Let(..) => self.bind_decl(&h, vt, false, expr),
+                            Stmt::Mut(..) => self.bind_decl(&h, vt, true, expr),
+                            Stmt::Const(..) => h,
+                            _ => unreachable!("outer arm matches only let / mut / const"),
+                        }
+                    }
                 };
                 self.store_val(st, &coerced, &ptr.clone());
             }

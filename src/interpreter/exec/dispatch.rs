@@ -96,7 +96,8 @@ impl Interpreter {
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
-                let value = Self::deep_copy_value(self.eval(expr)?);
+                let value = self.eval(expr)?;
+                let value = self.bind_copy(crate::interpreter::BindCopy::DeepCopy, value)?;
                 let value = crate::interpreter::exec::vars::coerce_binding(ty.as_deref(), value);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)

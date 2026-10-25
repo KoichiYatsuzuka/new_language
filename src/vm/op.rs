@@ -110,14 +110,15 @@ pub enum Op {
     StoreLocalDeepCopy(u16),
     /// pop して deep_copy + freeze してから locals[slot] へ（`let` = mut ソースからの束縛）。
     StoreLocalCopyFreeze(u16),
-    /// pop し、Instance のときのみ deep_copy + freeze してから locals[slot] へ
-    /// （`let` = 非識別子式からの束縛。exec_let の非 ident 分岐に一致）。
+    /// pop して deep_copy + freeze してから locals[slot] へ（`let` = 非識別子式からの束縛・L2）。
+    /// ⚠ 名前は歴史的（以前は `Instance` のときだけ複製し、関数の中の `let it = ys[0]` が `ys[0]` と
+    ///   共有された・native_object_access_plan.md 1-6）。実行時は `StoreLocalCopyFreeze` と同じ。
     StoreLocalFreezeInstance(u16),
     /// pop して `let x = <識別子>` のコピー意味論を**実行時に**決めてから locals[slot] へ。
     /// フィールド (slot, ソース名 name_idx)。
     ///
     /// `exec_let` はソース変数の可変性で 3 分岐する（mut→deep_copy+freeze / let→そのまま /
-    /// 変数でない→Instance だけ copy+freeze）。ソースが**グローバル**のときその可変性は
+    /// 変数でない→copy+freeze）。ソースが**グローバル**のときその可変性は
     /// コンパイル時に分からないので、`DeclKind::LetFromIdent` と同じ判断を実行時に行う（#27-c）。
     ///
     /// ⚠ **ソースの可変性は `scopes[0]` だけを見る**。この op が出るのは
@@ -496,7 +497,7 @@ pub enum Op {
 /// - `Const`            … `exec` の `Stmt::Const` アーム（コピーもフリーズもしない）
 /// - `Mut`              … `exec` の `Stmt::Mut` アーム（**常に** `deep_copy_value`）
 /// - `LetPlain`         … `exec_let` の「不変ソース／リテラル」分岐（そのまま束縛）
-/// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（`Instance` のときだけ copy+freeze）
+/// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（常に copy+freeze・L2。名前は歴史的）
 ///
 /// - `LetFromIdent`     … `exec_let` の「識別子ソース」分岐（#27-c）
 ///
@@ -512,7 +513,7 @@ pub enum DeclKind {
     Mut,
     /// `let x = e`（ソースが不変と分かっている／リテラル）
     LetPlain,
-    /// `let x = e`（非識別子式。`Instance` のときだけ deep_copy + freeze）
+    /// `let x = e`（非識別子式。常に deep_copy + freeze・L2）
     LetFreezeInstance,
     /// `let x = <識別子>`（#27-c）。フィールドは**ソース名**の index。
     /// 実行時に `get_var(src)` を引き、可変なら copy+freeze・不変ならそのまま・

@@ -550,6 +550,13 @@ pub struct ArCallbacks {
     /// 名前によるメソッド呼び出し（`call_method` と同じ）＋ `mut_mask`（bit 0 = 受け手・bit i+1 = 引数 i が
     /// `mut` の値か）で、呼ばれた側の `let self` / `let` 仮引数の分を複製してから呼ぶ。
     pub call_method_m: extern "C" fn(i64, *const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Declarations of compiled Arrow code (fields 56-57・1-6) ──
+    /// `mut x = e`（mode 0）/ `let x = <mut の名前・式>`（mode 1）の複製。VM の store 命令と同じ `bind_copy`。
+    pub bind_value: extern "C" fn(i32, i64) -> i64,
+    /// `let x = <グローバル等の名前>`: ソースの可変性を実行時に引いて決める（VM の `StoreLocalFromIdent` と同じ
+    /// `vm_let_value_from_ident`）。引数は (名前, 値)。
+    pub let_from_name: extern "C" fn(*const u8, i32, i64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

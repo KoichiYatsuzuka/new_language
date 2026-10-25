@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::interpreter::{ExecResult, Interpreter, Value, Var};
+use crate::interpreter::BindCopy;
 
 impl Interpreter {
     /// 最上位ループの VM 実行を**試す価値があるか**の即断（#10-b）。
@@ -273,12 +274,10 @@ impl Interpreter {
         let (value, mutable) = match kind {
             DeclKind::Const => (value, false),
             // `mut` は常に deep_copy（`exec` の `Stmt::Mut` アームと同一）。
-            DeclKind::Mut => (Self::deep_copy_value(value), true),
+            DeclKind::Mut => (self.bind_copy(BindCopy::DeepCopy, value)?, true),
             DeclKind::LetPlain => (value, false),
-            // 非識別子式からの `let`: `Instance` のときだけ copy + freeze。
-            // 可変コレクションから取り出した `Instance` を直接フリーズすると
-            // 共有 `Rc` 経由で元まで不変化されるため（`exec_let` のコメント参照）。
-            DeclKind::LetFreezeInstance => (self.let_freeze_instance(value)?, false),
+            // 非識別子式からの `let`: 常に copy + freeze（L2・`exec_let` と同じ）。
+            DeclKind::LetFreezeInstance => (self.bind_copy(BindCopy::CopyFreeze, value)?, false),
             // #27-c: ソースの可変性は**実行時**に見る（`exec_let` と同じ判断）。
             // 最上位チャンクは `scopes.len() == 1` が保証されているので `get_var` で足りる。
             DeclKind::LetFromIdent(si) => {
@@ -290,12 +289,12 @@ impl Interpreter {
         Ok(())
     }
 
-    /// `let x = <識別子>` のコピー意味論（#27-c）— **`exec_let` の識別子分岐の唯一の実装**。
+    /// `let x = <識別子>` のコピー意味論（#27-c）— **`exec_let` の唯一の実装**。
     ///
-    /// `src_mutable` は**ソース変数の可変性**（`None` = そもそも変数として存在しない）。
-    /// 消費者は `DeclKind::LetFromIdent`（最上位の `DeclareGlobal`）と
-    /// `Op::StoreLocalFromIdent`（slot への宣言）の 2 つで、**違うのは可変性の引き方だけ**
-    /// （前者は `get_var`／後者は `scopes[0]`。理由は `Op::StoreLocalFromIdent` の doc）。
+    /// `src_mutable` は**ソース変数の可変性**（`None` = 変数として存在しない、または識別子以外の式）。
+    /// 消費者はツリーウォークの `exec_let`、`DeclKind::LetFromIdent`（最上位の `DeclareGlobal`）、
+    /// `Op::StoreLocalFromIdent`（slot への宣言）、ネイティブの `ar_let_from_name` で、
+    /// **違うのは可変性の引き方だけ**（`get_var`／`scopes[0]`。理由は `Op::StoreLocalFromIdent` の doc）。
     pub(crate) fn vm_let_value_from_ident(
         &mut self,
         src_mutable: Option<bool>,
@@ -303,14 +302,10 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match src_mutable {
             // mut ソース: 深いコピーを作ってフリーズする。
-            Some(true) => {
-                let copied = Self::deep_copy_value(value);
-                self.apply_freeze_to_value(&copied, true)?;
-                Ok(copied)
-            }
+            Some(true) => self.bind_copy(BindCopy::CopyFreeze, value),
             Some(false) => Ok(value),
-            // 変数として存在しない名前は非識別子式と同じ扱いに落ちる。
-            None => self.let_freeze_instance(value),
+            // 変数として存在しない名前は非識別子式と同じ扱いに落ちる（常に複製・L2）。
+            None => self.bind_copy(BindCopy::CopyFreeze, value),
         }
     }
 
@@ -337,20 +332,6 @@ impl Interpreter {
     /// ⚠ **呼び出し元スコープを跨がない**のが要点（`vm_global_slot_of` と同じ規則）。
     pub(crate) fn vm_global_is_mutable(&self, name: &str) -> Option<bool> {
         self.scopes[0].slot_of(name).and_then(|idx| self.scopes[0].slot(idx)).map(|v| v.is_mutable())
-    }
-
-    /// `let` の「非識別子式」分岐（#27-c）: `Instance` のときだけ deep_copy + freeze。
-    ///
-    /// 可変コレクションから取り出した `Instance` を直接フリーズすると共有 `Rc` 経由で
-    /// 元まで不変化されるため、コピーが要る（`exec_let` のコメント参照）。
-    fn let_freeze_instance(&mut self, value: Value) -> Result<Value, String> {
-        // ⚠⚠ **常に複製する**（L2）。ツリーウォークの `exec_let` の `None` 分岐と
-        //    **同じ判断**でなければならない（片方だけ直すと経路で意味が変わる）。
-        //    以前は `Instance` のときだけ複製しており、`let item = xs[0]` が
-        //    `xs[0]` と共有されて `let` の不変性が破れていた（実測）。
-        let copied = Self::deep_copy_value(value);
-        self.apply_freeze_to_value(&copied, true)?;
-        Ok(copied)
     }
 
     /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。

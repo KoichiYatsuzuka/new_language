@@ -91,6 +91,8 @@ mod exceptions;
 #[path = "interpreter/exec/mod.rs"]
 mod exec;
 pub(crate) use exec::{collect_referenced_names, fn_own_names};
+// 束縛の複製の札（VM の store 命令・ネイティブの `ar_bind_value` が使う・native_object_access_plan.md 1-6）。
+pub(crate) use exec::vars::BindCopy;
 #[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]

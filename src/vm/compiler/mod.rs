@@ -55,8 +55,9 @@ pub use diag::expr_kind;
 /// （`llvm_codegen` の `gen_call`・native_object_access_plan.md 1-3）。
 /// ⚠ 以前はテストだけが使っていたので `cfg(test)` だった（#53 で `cargo fix` に一度消された）。
 pub(crate) use diag::VM_BUILTIN_NAMES;
-/// 名前ごとの可変性（`arg_is_mutable` と同じ表）。消費者はネイティブ codegen の値渡し（1-5）。
-pub(crate) use decls::binding_mutability;
+/// 名前ごとの可変性（`arg_is_mutable` と同じ表）と `let` の束縛の判断。消費者はネイティブ codegen の
+/// 値渡し（1-5）と宣言（1-6）。
+pub(crate) use decls::{binding_mutability, let_bind, LetBind};
 pub use entry::{
     compile_async_body, compile_debug, compile_definition_expr, compile_fn, compile_module_stmt,
     compile_toplevel_stmt, is_toplevel_compile_target,

@@ -222,15 +222,10 @@ impl Interpreter {
     }
 
     /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
-    /// 非識別子ソースの `let` 意味論に合わせ、Instance は deep_copy + freeze する。
+    /// 非識別子ソースの `let` 意味論に合わせ、常に deep_copy + freeze する（L2・`bind_copy`）。
+    /// ⚠ 以前は `Instance` のときだけ複製していた（L2 の直し漏れ・native_object_access_plan.md 1-6）。
     pub(crate) fn vm_declare_debug(&mut self, name: &str, value: Value) -> Result<(), String> {
-        let v = if matches!(value, Value::Instance(_)) {
-            let copied = Self::deep_copy_value(value);
-            self.apply_freeze_to_value(&copied, true)?;
-            copied
-        } else {
-            value
-        };
+        let v = self.bind_copy(super::BindCopy::CopyFreeze, value)?;
         self.declare_var(name.to_string(), Var::new(v, false));
         Ok(())
     }

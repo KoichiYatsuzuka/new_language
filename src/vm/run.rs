@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use crate::ast::BinOp;
 use crate::interpreter::{Interpreter, Value};
+use crate::interpreter::BindCopy;
 
 use super::chunk::Chunk;
 use super::op::Op;
@@ -995,13 +996,13 @@ fn exec_op(
             let v = buf.pop().unwrap();
             buf[base + *s as usize] = v;
         }
+        // 束縛の複製は `Interpreter::bind_copy` が唯一の実装（ツリーウォーク・ネイティブと共有・1-6）。
         Op::StoreLocalDeepCopy(s) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         Op::StoreLocalCopyFreeze(s) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
-            interp.apply_freeze_to_value(&v, true)?;
+            let v = interp.bind_copy(BindCopy::CopyFreeze, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         // `let x = <グローバル識別子>`（#27-c）。ソースの可変性は実行時にしか分からないので
@@ -1012,15 +1013,10 @@ fn exec_op(
             let v = interp.vm_let_value_from_ident(src_mutable, v)?;
             buf[base + *s as usize] = v;
         }
+        // ⚠ 名前に反して `Instance` 以外も複製する（L2）。以前は `Instance` だけで、関数の中の
+        //   `let it = ys[0]` が `ys[0]` と共有された（ツリーウォーク・最上位とずれていた・1-6）。
         Op::StoreLocalFreezeInstance(s) => {
-            let v = buf.pop().unwrap();
-            let v = if matches!(v, Value::Instance(_)) {
-                let copied = Interpreter::deep_copy_value(v);
-                interp.apply_freeze_to_value(&copied, true)?;
-                copied
-            } else {
-                v
-            };
+            let v = interp.bind_copy(BindCopy::CopyFreeze, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         Op::Pop => {
@@ -1674,7 +1670,7 @@ fn exec_op(
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::StoreCellDeepCopy(i) => {
-            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::UnpackTuple(src, n) => {

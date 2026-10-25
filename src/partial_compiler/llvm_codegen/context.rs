@@ -97,6 +97,31 @@ impl<'a> GenCtx<'a> {
         self.call_cb(cb, &[format!("i64 {h}")])
     }
 
+    /// 宣言（`let` / `mut`）で束縛する値を VM と同じ規則で複製する（§0.3 ⑥・1-6）。
+    /// `mut` は常に深いコピー、`let` は `let_bind`（VM の `compile_let` と共有）の答えに従う。
+    /// `int` / `float` / `bool` の生値は複製しても同じなのでそのまま。`const` はここを通らない（VM も複製しない）。
+    pub(super) fn bind_decl(&mut self, h: &str, vt: Ty, is_mut: bool, expr: &Expr) -> String {
+        use crate::interpreter::BindCopy;
+        use crate::vm::compiler::LetBind;
+        if vt != Ty::Handle {
+            return h.to_string();
+        }
+        let mode = if is_mut {
+            BindCopy::DeepCopy
+        } else {
+            let local_mut = |e: &Expr| ident_name(e).and_then(|n| self.binding_mut.get(n).copied());
+            match crate::vm::compiler::let_bind(expr, local_mut) {
+                LetBind::Share => return h.to_string(),
+                LetBind::CopyFreezeName | LetBind::CopyFreezeExpr => BindCopy::CopyFreeze,
+                LetBind::FromName(n) => {
+                    let p = self.str_const(n.as_bytes());
+                    return self.call_cb(CB_LET_FROM_NAME, &[p, format!("i32 {}", n.len()), format!("i64 {h}")]);
+                }
+            }
+        };
+        self.call_cb(CB_BIND_VALUE, &[format!("i32 {}", mode as i32), format!("i64 {h}")])
+    }
+
     /// Look up the native type of a field access on a known class instance.
     /// Returns Some(Ty) only if the field is typed int/float in the class definition.
     ///

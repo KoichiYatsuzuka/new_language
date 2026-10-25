@@ -97,6 +97,43 @@ pub(super) fn add_decl(
     Some(())
 }
 
+/// `let x = e` で値をどう束縛するか（[`let_bind`] の答え・native_object_access_plan.md 1-6）。
+///
+/// 実行時の複製は `Interpreter::bind_copy`（`CopyFreeze*` は `BindCopy::CopyFreeze`）。
+pub(crate) enum LetBind<'e> {
+    /// そのまま（`let` の名前・リテラル）。VM は `StoreLocal` / `LetPlain`
+    Share,
+    /// `mut` の名前から: 複製してフリーズ。VM は `StoreLocalCopyFreeze`
+    CopyFreezeName,
+    /// 識別子以外の式から: 複製してフリーズ（L2）。VM は `StoreLocalFreezeInstance` / `LetFreezeInstance`
+    /// （実行時は `CopyFreezeName` と同じ。命令を分けたままなのはバイトコードを変えないため）
+    CopyFreezeExpr,
+    /// 可変性がコンパイル時に分からない名前（グローバル等）: 実行時にソースの可変性を引いて決める
+    /// （`vm_let_value_from_ident`）。VM は `StoreLocalFromIdent` / `LetFromIdent`
+    FromName(&'e str),
+}
+
+/// `let x = e` の束縛の**唯一の判断**。消費者は VM の `compile_let`・最上位の `let`（`DeclKind`）と
+/// ネイティブ codegen（どのコールバックを挟むか）。ツリーウォークの `exec_let` は同じことを実行時の
+/// `get_var` で行う（`vm_let_value_from_ident`）。
+///
+/// `local_mut` は識別子のソースがコンパイル時に分かるローカルならその可変性、分からなければ `None`。
+/// ⚠ 以前は VM の 2 箇所とツリーウォークが各自で分岐しており、ネイティブは複製しなかった（§0.3 ⑥）。
+pub(crate) fn let_bind<'e>(e: &'e Expr, local_mut: impl FnOnce(&'e Expr) -> Option<bool>) -> LetBind<'e> {
+    match e {
+        Expr::Ident { name, .. } => match local_mut(e) {
+            Some(true) => LetBind::CopyFreezeName,
+            Some(false) => LetBind::Share,
+            None => LetBind::FromName(name),
+        },
+        // リテラル（プリミティブ）は複製しても同じなので共有する。
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::None => LetBind::Share,
+        // 識別子・リテラル以外の式は全部「式」（`xs[0]` / `o.f` / `f()` / `[p]` …）。
+        // 引き継ぐべき属性が無いので常に複製する（L2）。新しい式の種類もこちらに入るのが正しい。
+        _ => LetBind::CopyFreezeExpr,
+    }
+}
+
 /// 関数の仮引数と本体の宣言から、**名前ごとの可変性**（`let` = false / `mut`・`for` の対象 = true）を返す。
 ///
 /// VM の `arg_is_mutable`（引数・受け手が `mut` の値か）が slot の可変性として引くのと同じ表で、宣言の

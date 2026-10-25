@@ -774,6 +774,60 @@ extern "C" fn ar_copy_arg(h: i64) -> i64 {
     }
 }
 
+/// 宣言の複製（field 56・native_object_access_plan.md 1-6）。`mode` は `BindCopy` の符号（0 = `mut` の
+/// 深いコピー・1 = `let` の複製＋フリーズ）で、VM の `StoreLocalDeepCopy` / `StoreLocalCopyFreeze` /
+/// `StoreLocalFreezeInstance` と同じ `bind_copy` を呼ぶ。表に無い符号はエラー。
+/// ⚠ 以前の生成コードは宣言で何も複製せず、`mut q = o.inner; q.v = 7` が `o.inner` を書き換えていた。
+extern "C" fn ar_bind_value(mode: i32, h: i64) -> i64 {
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    let Some(mode) = crate::interpreter::BindCopy::from_code(mode) else {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: unknown binding mode {mode}")));
+        return TL_NONE;
+    };
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for bind_value".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.bind_copy(mode, val) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// `let x = <名前>` で名前がこの関数のローカルでないとき（field 57・1-6）。ソースの可変性は値を引いた
+/// `ar_get_global` と同じ探し方（`get_var`）で引き、VM の `StoreLocalFromIdent` と同じ `vm_let_value_from_ident`
+/// で決める（`mut` → 複製＋フリーズ・`let` → そのまま・変数でない → 複製＋フリーズ）。
+extern "C" fn ar_let_from_name(name_ptr: *const u8, name_len: i32, h: i64) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "variable name") else { return TL_NONE };
+    let name = name.to_owned();
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (binding from '{name}')")));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let src_mutable = interp.get_var(&name).map(|v| v.is_mutable());
+    match interp.vm_let_value_from_ident(src_mutable, val) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
     let copied = crate::interpreter::Interpreter::deep_copy_value(val);
@@ -1532,6 +1586,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     assign_trait_attr: ar_assign_trait_attr,
     copy_arg: ar_copy_arg,
     call_method_m: ar_call_method_m,
+    bind_value: ar_bind_value,
+    let_from_name: ar_let_from_name,
 };
 
 #[cfg(test)]

@@ -168,12 +168,12 @@ impl Compiler {
                 // 最上位の `let`（#10-c）。ソースが識別子のときの可変性は**コンパイル時に
                 // 分からない**（`toplevel_globals` は名前の集合だけ）ので、予測せず
                 // `LetFromIdent` でソース名を渡し、`exec_let` と同じ判断を実行時に行う（#27-c）。
-                let kind = match e {
-                    Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::None => {
-                        DeclKind::LetPlain
-                    }
-                    Expr::Ident { name: src, .. } => DeclKind::LetFromIdent(self.add_name(src)),
-                    _ => DeclKind::LetFreezeInstance,
+                let kind = match super::decls::let_bind(e, |_| None) {
+                    LetBind::Share => DeclKind::LetPlain,
+                    LetBind::FromName(src) => DeclKind::LetFromIdent(self.add_name(src)),
+                    LetBind::CopyFreezeExpr => DeclKind::LetFreezeInstance,
+                    // 可変性を渡していない（`|_| None`）ので名前は全部 `FromName` になる。
+                    LetBind::CopyFreezeName => unreachable!("top-level let: source mutability is not known here"),
                 };
                 let ni = self.toplevel_decl_name(name)?;
                 self.compile_expr(e)?;
@@ -588,9 +588,10 @@ impl Compiler {
             // `get_var(src)` の可変性で分岐する。よってここも**識別子は全て識別子として
             // 扱う**こと（`Resolution::Global` を非識別子式の枝へ落とすと、可変グローバルを
             // ソースにした `let` でコピー＆フリーズが漏れる）。
-            let store = match e {
-                // ident ソースのうち**可変性がコンパイル時に分かる**もの（＝slot にある）。
-                // 可変なら copy+freeze、不変ならそのまま。
+            // ident ソースのうち**可変性がコンパイル時に分かる**もの（＝slot にある）。
+            // 可変なら copy+freeze、不変ならそのまま。slot に無い ident（グローバル・未定義）は
+            // **実行時に**ソースの可変性を見る（`FromName`）。判断そのものは `let_bind`（ネイティブと共有）。
+            let local_mut = |e: &Expr| match e {
                 // ⚠⚠ 採番のずれをデバッグビルドで捕まえる（#86）。**この直下のアームが
                 // 同じ判断を `self.slots` 経由でやっている**ので、2 つがずれたら
                 // `let` のコピー＆フリーズが**ソースによって変わる**（黙って違う挙動になる）。
@@ -599,30 +600,22 @@ impl Compiler {
                 // ここは検査のためだけに呼ぶ。
                 Expr::Ident { name: nm, res: Resolution::Local(s), .. } => {
                     let _ = self.local_slot(nm, *s);
-                    if self.slot_mut.get(*s as usize).copied().unwrap_or(false) {
-                        Op::StoreLocalCopyFreeze(slot)
-                    } else {
-                        Op::StoreLocal(slot)
-                    }
+                    Some(self.slot_mut.get(*s as usize).copied().unwrap_or(false))
                 }
-                Expr::Ident { name: nm, .. } if self.slots.contains_key(nm) => {
-                    let s = self.slots[nm];
-                    if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
-                        Op::StoreLocalCopyFreeze(slot)
-                    } else {
-                        Op::StoreLocal(slot)
-                    }
-                }
-                // slot に無い ident（グローバル・未定義）は**実行時に**ソースの可変性を見る。
-                Expr::Ident { name: nm, .. } => {
+                Expr::Ident { name: nm, .. } => self
+                    .slots
+                    .get(nm)
+                    .map(|&s| self.slot_mut.get(s as usize).copied().unwrap_or(false)),
+                _ => None,
+            };
+            let store = match super::decls::let_bind(e, local_mut) {
+                LetBind::Share => Op::StoreLocal(slot),
+                LetBind::CopyFreezeName => Op::StoreLocalCopyFreeze(slot),
+                LetBind::CopyFreezeExpr => Op::StoreLocalFreezeInstance(slot),
+                LetBind::FromName(nm) => {
                     let ni = self.add_name(nm);
                     Op::StoreLocalFromIdent(slot, ni)
                 }
-                // リテラル（プリミティブ）は freeze 不要。
-                Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_)
-                | Expr::None => Op::StoreLocal(slot),
-                // 非識別子式: Instance のときのみ copy+freeze（exec_let 非 ident 分岐）。
-                _ => Op::StoreLocalFreezeInstance(slot),
             };
             self.compile_expr(e)?;
             self.emit_coerce_binding(type_ann, e);
