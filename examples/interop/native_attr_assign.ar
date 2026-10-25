@@ -1,0 +1,23 @@
+# native_attr_assign.ar — コンパイル済みコードの属性への代入（native_object_access_plan.md 1-4）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_attr_assign_module.ar
+#   2. cargo run --release -- examples/interop/native_attr_assign.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_attr_assign_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# static mut へのインスタンス経由の代入（3 + 3 = 6 が n と total の両方に入る）
+check("static mut through an instance", m.tally_twice(3) == 606)
+
+# trait を実装したクラス: 自動生成の __init__ が trait のフィールドを設定する
+check("trait field set by __init__", m.make_name("kuro") == "kuro")
+
+# trait 修飾の代入と複合代入
+check("trait field assignment", m.rename_twice("a", "shiro") == "shiro/2")

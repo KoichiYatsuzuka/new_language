@@ -1,0 +1,30 @@
+class Tally:
+    static mut total: int = ...
+    mut n: int
+    fn add(mut self, k: int) -> None:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+fn tally_twice(k: int) -> int:
+    ...
+
+trait Named:
+    mut name: str
+    mut visits: int
+
+
+class Pet(Named):
+    mut age: int
+    fn rename(mut self, n: str) -> None:
+        ...
+    fn __init__(mut self, name: str, visits: int, age: int) -> None:
+        ...
+
+
+fn make_name(n: str) -> str:
+    ...
+
+fn rename_twice(a: str, b: str) -> str:
+    ...

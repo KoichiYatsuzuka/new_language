@@ -426,6 +426,10 @@ extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
     }
 }
 
+/// field 13。⚠ **`import[rs]` の中継コードが Arrow 側の写しを更新する経路**（`set_attr_val`）。
+/// 生成された `set_{field}` は Rust の値を書き換えた後でこれを呼ぶので、`attr_assign_evaled`
+/// （rs の setter へ振り分ける）にすると setter へ再入する。コンパイル済み Arrow コードの代入は
+/// `ar_assign_attr`（field 51・native_object_access_plan.md 1-4）。
 extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
     let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
     let name = name.to_owned();
@@ -440,6 +444,81 @@ extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h:
     }
     let interp = unsafe { &mut *interp_ptr };
     if let Err(e) = interp.set_attr_val(obj, &name, val) {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// コンパイル済み Arrow コードの `obj.attr = v`（field 51・native_object_access_plan.md 1-4）。
+/// VM の `SetAttr` と同じ `attr_assign_evaled`。⚠ 以前は `set_attr_val` を通っていたので、
+/// `static mut` へのインスタンス経由の代入（`self.total = ..`）が「has no field」で落ちていた。
+extern "C" fn ar_assign_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if let Err(e) = interp.attr_assign_evaled(obj, name, val) {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// `obj::Trait.attr`（field 52・1-4）。VM の `GetTraitAttr` と同じ `trait_access_evaled`。
+extern "C" fn ar_get_trait_attr(
+    obj_h: i64,
+    trait_ptr: *const u8,
+    trait_len: i32,
+    name_ptr: *const u8,
+    name_len: i32,
+) -> i64 {
+    let Some(trait_name) = native_str(trait_ptr, trait_len, "trait name") else { return TL_NONE };
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return TL_NONE };
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for get_trait_attr".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.trait_access_evaled(obj, trait_name, name) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// `obj::Trait.attr = v`（field 53・1-4）。VM の `SetTraitAttr` と同じ `trait_assign_evaled`。
+extern "C" fn ar_assign_trait_attr(
+    obj_h: i64,
+    trait_ptr: *const u8,
+    trait_len: i32,
+    name_ptr: *const u8,
+    name_len: i32,
+    val_h: i64,
+) {
+    let Some(trait_name) = native_str(trait_ptr, trait_len, "trait name") else { return };
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_trait_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if let Err(e) = interp.trait_assign_evaled(obj, trait_name, name, val) {
         STATE.with(|s| s.borrow_mut().error = Some(e));
     }
 }
@@ -1333,6 +1412,9 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     make_instance: ar_make_instance,
     bytes_buf_arg: ar_bytes_buf_arg,
     call_builtin: ar_call_builtin,
+    assign_attr: ar_assign_attr,
+    get_trait_attr: ar_get_trait_attr,
+    assign_trait_attr: ar_assign_trait_attr,
 };
 
 #[cfg(test)]

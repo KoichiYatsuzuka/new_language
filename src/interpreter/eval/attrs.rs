@@ -369,7 +369,10 @@ impl Interpreter {
     }
 
     /// インスタンスの属性に値をセットする。
-    /// ネイティブコールバック `ar_set_attr` から呼ばれる。
+    /// ネイティブコールバック `ar_set_attr` から呼ばれる。⚠ 使うのは `import[rs]` の中継コードが
+    /// Arrow 側の写しを更新するときだけ（`attr_assign_evaled` だと rs の setter へ再入する）。
+    /// コンパイル済み Arrow コードの代入は `attr_assign_evaled`（`ar_assign_attr`・native_object_access_plan.md 1-4）。
+    /// ⚠ `static mut` への代入・不変インスタンスの判定は `attr_assign_evaled` と違う（写しの更新には要らない）。
     /// ⚠⚠ **格納する値は関数の入口で複製する**（L4）。「共有するのは `let → let` の
     /// ときだけ」という規則をフィールドへの格納にも通す。共有したままだと
     /// `mut o = N([]); o.f = src` のあと `src.append(9)` で `o.f` が変わり、

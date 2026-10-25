@@ -530,6 +530,19 @@ pub struct ArCallbacks {
     /// 組み込み関数（`vm::compiler::VM_BUILTIN_NAMES`）を VM の `CallBuiltin` と同じ入口
     /// （`Interpreter::call_builtin_by_name_evaled`）で呼ぶ。グローバルから値として引かない。
     pub call_builtin: extern "C" fn(*const u8, i32, *const i64, i32) -> i64,
+
+    // ── Attribute assignment of compiled Arrow code (field 51・native_object_access_plan.md 1-4) ──
+    /// `obj.attr = v`: VM の `SetAttr` と同じ `Interpreter::attr_assign_evaled`（`static mut`・不変インスタンスの
+    /// 判定を含む）。⚠ `set_attr`（field 13）は `import[rs]` の中継コードが Arrow 側の写しを更新する経路
+    /// （`set_attr_val`・setter へ再入させない）なので、意味を変えずに残してある。
+    pub assign_attr: extern "C" fn(i64, *const u8, i32, i64),
+
+    // ── Trait-qualified fields of compiled Arrow code (fields 52-53・1-4) ──
+    /// `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`。引数は (obj, trait 名, 属性名)。
+    pub get_trait_attr: extern "C" fn(i64, *const u8, i32, *const u8, i32) -> i64,
+    /// `obj::Trait.attr = v`: VM の `SetTraitAttr` と同じ `trait_assign_evaled`。⚠ 以前の生成コードはこの代入を
+    /// 黙って出さず、trait を実装したクラスの `__init__` が trait のフィールドを設定しなかった。
+    pub assign_trait_attr: extern "C" fn(i64, *const u8, i32, *const u8, i32, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

@@ -178,13 +178,18 @@ impl<'a> GenCtx<'a> {
                 }
             }
 
+            // `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`（1-4）。
+            // 以前は `CB_GET_ATTR` に `"Trait::attr"` という名前を渡していた。
             Expr::TraitAccess { object, trait_name, attr } => {
-                let key  = format!("{trait_name}::{attr}");
                 let (obj, ot) = self.gen_expr(object);
                 let h    = self.to_handle(&obj, ot);
-                let ptr  = self.str_const(key.as_bytes());
-                let len  = key.len() as i32;
-                let r    = self.call_cb(CB_GET_ATTR, &[format!("i64 {h}"), ptr, format!("i32 {len}")]);
+                let tptr = self.str_const(trait_name.as_bytes());
+                let tlen = trait_name.len() as i32;
+                let ptr  = self.str_const(attr.as_bytes());
+                let len  = attr.len() as i32;
+                let r    = self.call_cb(CB_GET_TRAIT_ATTR, &[
+                    format!("i64 {h}"), tptr, format!("i32 {tlen}"), ptr, format!("i32 {len}"),
+                ]);
                 (r, Ty::Handle)
             }
 

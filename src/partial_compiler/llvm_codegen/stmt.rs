@@ -58,29 +58,25 @@ impl<'a> GenCtx<'a> {
                 };
                 self.store_val(lt, &coerced, &ptr);
             }
+            // 代入は VM の `SetAttr` / `SetTraitAttr` と同じ入口（`attr_assign_evaled` / `trait_assign_evaled`・1-4）。
+            // 代入先の形は `stmt_eligible` が `obj.attr` / `obj::T.attr` に絞っている。
             Stmt::AttrAssign { target, value, span: _ } => {
-                if let Expr::Attr { object, attr, .. } = target {
-                    let (obj, ot) = self.gen_expr(object);
-                    let (val, vt) = self.gen_expr(value);
-                    let oh  = self.to_handle(&obj, ot);
-                    let vh  = self.to_handle(&val, vt);
-                    let ptr = self.str_const(attr.as_bytes());
-                    let len = attr.len() as i32;
-                    self.call_cb(CB_SET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {vh}")]);
-                }
+                let (object, trait_name, attr) = attr_target(target);
+                let (obj, ot) = self.gen_expr(object);
+                let (val, vt) = self.gen_expr(value);
+                let oh  = self.to_handle(&obj, ot);
+                let vh  = self.to_handle(&val, vt);
+                self.emit_attr_store(&oh, trait_name, attr, &vh);
             }
             Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
-                if let Expr::Attr { object, attr, .. } = target {
-                    let (obj, ot) = self.gen_expr(object);
-                    let oh   = self.to_handle(&obj, ot);
-                    let ptr  = self.str_const(attr.as_bytes());
-                    let len  = attr.len() as i32;
-                    let old  = self.call_cb(CB_GET_ATTR, &[format!("i64 {oh}"), ptr.clone(), format!("i32 {len}")]);
-                    let (rv, rt) = self.gen_expr(value);
-                    let (res, rest) = self.specialize_binop(op, &old, Ty::Handle, &rv, rt);
-                    let rh = self.to_handle(&res, rest);
-                    self.call_cb(CB_SET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {rh}")]);
-                }
+                let (object, trait_name, attr) = attr_target(target);
+                let (obj, ot) = self.gen_expr(object);
+                let oh   = self.to_handle(&obj, ot);
+                let old  = self.emit_attr_load(&oh, trait_name, attr);
+                let (rv, rt) = self.gen_expr(value);
+                let (res, rest) = self.specialize_binop(op, &old, Ty::Handle, &rv, rt);
+                let rh = self.to_handle(&res, rest);
+                self.emit_attr_store(&oh, trait_name, attr, &rh);
             }
             Stmt::Return(Some(expr), _) => {
                 let (v, vt) = self.gen_expr(expr);
@@ -428,6 +424,48 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// 属性の値を読む（複合代入の左辺）。`trait_name` があれば `obj::Trait.attr`（VM の `GetTraitAttr`）。
+    fn emit_attr_load(&mut self, oh: &str, trait_name: Option<&str>, attr: &str) -> String {
+        let ptr = self.str_const(attr.as_bytes());
+        let len = attr.len() as i32;
+        match trait_name {
+            None => self.call_cb(CB_GET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}")]),
+            Some(t) => {
+                let tptr = self.str_const(t.as_bytes());
+                let tlen = t.len() as i32;
+                self.call_cb(CB_GET_TRAIT_ATTR, &[format!("i64 {oh}"), tptr, format!("i32 {tlen}"), ptr, format!("i32 {len}")])
+            }
+        }
+    }
+
+    /// 属性へ書く（VM の `SetAttr` / `SetTraitAttr` と同じ入口・1-4）。
+    fn emit_attr_store(&mut self, oh: &str, trait_name: Option<&str>, attr: &str, vh: &str) {
+        let ptr = self.str_const(attr.as_bytes());
+        let len = attr.len() as i32;
+        match trait_name {
+            None => {
+                self.call_cb(CB_ASSIGN_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}"), format!("i64 {vh}")]);
+            }
+            Some(t) => {
+                let tptr = self.str_const(t.as_bytes());
+                let tlen = t.len() as i32;
+                self.call_cb(CB_ASSIGN_TRAIT_ATTR, &[
+                    format!("i64 {oh}"), tptr, format!("i32 {tlen}"), ptr, format!("i32 {len}"), format!("i64 {vh}"),
+                ]);
+            }
+        }
+    }
+
     // ── Emit a complete function into fn_defs ─────────────────────────────────
 
+}
+
+/// 属性の代入先を `(オブジェクト, trait 名, 属性名)` に分ける。
+/// ⚠ ほかの形は `stmt_eligible` が弾いているので来ない（来たら生成を誤るより止める）。
+fn attr_target(target: &Expr) -> (&Expr, Option<&str>, &str) {
+    match target {
+        Expr::Attr { object, attr, .. } => (object, None, attr),
+        Expr::TraitAccess { object, trait_name, attr } => (object, Some(trait_name), attr),
+        other => unreachable!("attribute assignment target must be checked by stmt_eligible: {other:?}"),
+    }
 }
