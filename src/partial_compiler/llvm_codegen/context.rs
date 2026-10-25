@@ -359,9 +359,25 @@ impl<'a> GenCtx<'a> {
     // ── Alloca helpers ────────────────────────────────────────────────────────
 
     pub(super) fn alloca_var(&mut self, name: &str, ty: Ty) -> String {
-        let reg = format!("%_al_{name}");
-        let t = llvm_ty(ty);
-        self.ea(&format!("{reg} = alloca {t}, align 8"));
+        // ⚠⚠ 同じ名前をもう一度宣言する（2 つ目の `for i in ..`・兄弟のブロックの `let x`）: 型が同じなら同じ場所を
+        //   使う（VM も関数ごとに名前 1 つの slot・`collect_nested_decls`）。型が違えば別の名前で取る。
+        //   以前は毎回 `%_al_{name}` を出していたので、LLVM が同じ名前の定義を 2 つ持てず clang が落ち、
+        //   **モジュール全体が**ネイティブにならなかった（`--compile` は「skipped」と出すだけ・§0.3 ⑫・1-10）。
+        let reg = match self.locals.get(name) {
+            Some((r, t)) if *t == ty && self.alloca_buf.contains(&format!("  {r} = alloca")) => r.clone(),
+            _ => {
+                let base = format!("%_al_{name}");
+                let mut reg = base.clone();
+                let mut k = 1;
+                while self.alloca_buf.contains(&format!("  {reg} = alloca")) {
+                    reg = format!("{base}.{k}");
+                    k += 1;
+                }
+                let t = llvm_ty(ty);
+                self.ea(&format!("{reg} = alloca {t}, align 8"));
+                reg
+            }
+        };
         self.locals.insert(name.to_string(), (reg.clone(), ty));
         // リゾルバが slot を割り当てている名前なら slot 索引側にも載せる（#11 R2-a′）。
         // 合成ローカル（preread の一時変数など）は slot を持たないので名前引きのみ。

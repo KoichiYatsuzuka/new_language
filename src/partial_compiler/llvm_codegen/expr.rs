@@ -396,9 +396,8 @@ impl<'a> GenCtx<'a> {
                 self.reg += 1;
                 self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
-                let tgt_al = format!("%_al_{target}");
-                self.alloca_buf.push_str(&format!("  {tgt_al} = alloca i64, align 8\n"));
-                self.locals.insert(target.clone(), (tgt_al.clone(), Ty::Handle));
+                // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
+                let tgt_al = self.alloca_var(target, Ty::Handle);
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
                 let ir = self.fresh_reg();
