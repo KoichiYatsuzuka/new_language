@@ -678,7 +678,8 @@ impl<'a> GenCtx<'a> {
     /// ⚠ 展開は呼ばれる側の表に従う。以前は「呼ぶ側に先読みがあるか」で展開を決めており、
     /// 呼ばれる側がその仮引数をハンドルで受ける（`mut`・本体で書き換える）と並びが食い違った。
     pub(super) fn build_fast_call_args(&mut self, sym: &str, object: &Expr, args: &[CallArg]) -> Option<String> {
-        let flat = self.fn_sigs.get(sym)?.fast_flat.clone();
+        let sig = self.fn_sigs.get(sym)?;
+        let (flat, muts) = (sig.fast_flat.clone(), sig.param_mutabilities.clone());
         let operands: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|a| a.expr())).collect();
         if flat.len() != operands.len() { return None; }
 
@@ -702,7 +703,7 @@ impl<'a> GenCtx<'a> {
 
         // 2) emit
         let mut parts: Vec<String> = Vec::new();
-        for (op, plan) in operands.iter().zip(plans) {
+        for (i, (op, plan)) in operands.iter().zip(plans).enumerate() {
             match plan {
                 Some(loads) => {
                     for (al, ty) in loads {
@@ -714,11 +715,37 @@ impl<'a> GenCtx<'a> {
                 None => {
                     let (v, vt) = self.gen_expr(op);
                     let h = self.to_handle(&v, vt);
+                    let h = self.copy_for_let(&h, vt, op, muts[i], i == 0);
                     parts.push(format!("i64 {h}"));
                 }
             }
         }
         Some(parts.join(", "))
+    }
+
+    /// モジュール内のメソッド `@{sym}_impl` へ直接渡すハンドル列（[0] = 受け手）。
+    /// 呼ばれる側が `let` で受ける仮引数・`let self` には、`mut` の値を複製して渡す（D-8・1-5）。
+    /// ⚠ 以前はどちらの直接呼び出しも複製せず、`mut` の値を `let` で受けたメソッドが返した値が
+    /// 呼び出し元のその後の書き換えで一緒に変わった（§0.3 ⑤）。
+    fn method_call_operands(
+        &mut self,
+        sym: &str,
+        object: &Expr,
+        oh: &str,
+        ot: Ty,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+    ) -> Vec<String> {
+        // `sym` はモジュール内の関数（`is_module_fn`）なので `fn_sigs` に必ずある。
+        let muts = self.fn_sigs[sym].param_mutabilities.clone();
+        // 仮引数より多い引数は `_impl` の型が合わず clang が落とす（ここの選択は結果に効かない）。
+        let callee_mut = |i: usize| muts.get(i).copied().unwrap_or(true);
+        let mut out = vec![self.copy_for_let(oh, ot, object, callee_mut(0), true)];
+        for (i, ((v, vt), a)) in arg_exprs.iter().zip(args).enumerate() {
+            let h = self.to_handle(v, *vt);
+            out.push(self.copy_for_let(&h, *vt, a.expr(), callee_mut(i + 1), false));
+        }
+        out
     }
 
 
@@ -907,9 +934,9 @@ impl<'a> GenCtx<'a> {
                             .map(|a| self.gen_expr(a.expr())).collect();
                         let (ov, ot) = self.gen_expr(object);
                         let oh = self.to_handle(&ov, ot);
-                        let explicit: Vec<String> = arg_exprs.iter()
-                            .map(|(v, vt)| format!("i64 {}", self.to_handle(v, *vt)))
-                            .collect();
+                        let explicit = self.method_call_operands(&sym, object, &oh, ot, args, &arg_exprs);
+                        let oh = explicit[0].clone();
+                        let explicit: Vec<String> = explicit[1..].iter().map(|h| format!("i64 {h}")).collect();
                         let all_params = std::iter::once(format!("i64 {oh}"))
                             .chain(explicit).collect::<Vec<_>>().join(", ");
                         let r = self.fresh_reg();
@@ -948,9 +975,9 @@ impl<'a> GenCtx<'a> {
                 if self.is_module_fn(&sym) {
                     let ret_ty = self.fn_sigs.get(&sym).map(|s| s.ret).unwrap_or(Ty::Handle);
                     // Collect explicit args as handles; self_h is prepended.
-                    let explicit: Vec<String> = arg_exprs.iter()
-                        .map(|(v, vt)| format!("i64 {}", self.to_handle(v, *vt)))
-                        .collect();
+                    let explicit = self.method_call_operands(&sym, object, &oh, ot, args, &arg_exprs);
+                    let oh = explicit[0].clone();
+                    let explicit: Vec<String> = explicit[1..].iter().map(|h| format!("i64 {h}")).collect();
                     let save = self.call_cb(CB_ARENA_SAVE, &[]);
                     let all_params = std::iter::once(format!("i64 {oh}"))
                         .chain(explicit).collect::<Vec<_>>().join(", ");
@@ -964,23 +991,26 @@ impl<'a> GenCtx<'a> {
                 }
             }
 
-            // ── Fall back to CB_CALL_METHOD (external / non-compiled method) ──
+            // ── Fall back to CB_CALL_METHOD_M (external / non-compiled method) ──
+            // 呼ばれる側の仮引数の `let` / `mut` はここでは分からないので、渡す値が `mut` かを
+            // `mut_mask` で渡し、複製は `ar_call_method_m` が呼ばれる側の宣言を見て行う（D-8・1-5）。
             let method_ptr = self.str_const(key.as_bytes());
             let method_len = key.len() as i32;
+            let mask = self.method_mut_mask(object, args);
             let handles: Vec<String> = arg_exprs.iter()
                 .map(|(v, vt)| self.to_handle(v, *vt))
                 .collect();
             return if handles.is_empty() {
-                self.call_cb(CB_CALL_METHOD, &[
+                self.call_cb(CB_CALL_METHOD_M, &[
                     format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                    "ptr null".to_string(), "i32 0".to_string()
+                    "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")
                 ])
             } else {
                 let n = handles.len();
                 let arr = self.spill_handle_array(&handles, "margs");
-                self.call_cb(CB_CALL_METHOD, &[
+                self.call_cb(CB_CALL_METHOD_M, &[
                     format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                    format!("ptr {arr}"), format!("i32 {n}")
+                    format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")
                 ])
             };
         }

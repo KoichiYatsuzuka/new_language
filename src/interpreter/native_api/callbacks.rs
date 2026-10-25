@@ -751,6 +751,29 @@ extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles
 
 // ── Typed value extraction ───────────────────────────────────────────────────
 
+/// `let` 仮引数へ `mut` の値を渡すときの複製（field 54・native_object_access_plan.md 1-5）。
+/// VM の `try_fast_bind` と同じ `copy_value`（`__copy__` があればそれ・無ければ凍結を解いた deep copy）。
+/// ⚠ `ar_deep_copy`（`deep_copy_value`）は `let self` 用（VM も `self` には `__copy__` を呼ばない）。
+extern "C" fn ar_copy_arg(h: i64) -> i64 {
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for copy_arg".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.copy_value(val) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
     let copied = crate::interpreter::Interpreter::deep_copy_value(val);
@@ -1180,12 +1203,47 @@ extern "C" fn ar_set_cell(cell_h: i64, val_h: i64) {
     }
 }
 
+/// field 32（以前に生成された `.arc` と中継コードが使う）。値渡しの複製はしない（引数の可変性が分からない）。
+/// 今の生成コードは `ar_call_method_m`（field 55）を使う。
 extern "C" fn ar_call_method(
     obj_h: i64,
     name_ptr: *const u8,
     name_len: i32,
     args_ptr: *const i64,
     n_args: i32,
+) -> i64 {
+    call_method_common(obj_h, name_ptr, name_len, args_ptr, n_args, None)
+}
+
+/// 名前によるメソッド呼び出し＋値渡しの複製（field 55・native_object_access_plan.md 1-5・D-8）。
+/// `mut_mask` は bit 0 = 受け手が `mut` の値か、bit i+1 = 引数 i が `mut` の値か（VM の `arg_is_mutable` と同じ規則で
+/// 生成コードが決める）。`mut` の値を `let self` で受けるなら受け手を `deep_copy_value`、`let` 仮引数で受けるなら
+/// 引数を `copy_value`（`__copy__` があればそれ）で複製してから呼ぶ（VM の `try_fast_bind` と同じ）。
+/// ⚠ 以前はネイティブのメソッドへハンドルを素通しし、呼ばれた側の `let` が呼び出し元の後の変更で変わっていた。
+extern "C" fn ar_call_method_m(
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    call_method_common(obj_h, name_ptr, name_len, args_ptr, n_args, Some(mut_mask))
+}
+
+/// `mut_mask` の引数 `i`（bit i+1）が `mut` の値か。31 個目より後の引数はビットが無いので保守的に `mut`
+/// （生成コードの `method_mut_mask` と同じ解釈）。
+fn mask_arg_is_mut(mask: u32, i: usize) -> bool {
+    i + 1 >= 32 || mask & (1 << (i + 1)) != 0
+}
+
+fn call_method_common(
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: Option<u32>,
 ) -> i64 {
     let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
     let name = name.to_owned();
@@ -1202,11 +1260,57 @@ extern "C" fn ar_call_method(
         let fn_ptr = STATE.with(|s| {
             s.borrow().native_methods.get(&(class_name.clone(), name.clone())).copied()
         });
-        if let Some(ptr) = fn_ptr {
+        // 値渡しの複製（mask があるとき）に要る呼ばれた側の仮引数の可変性。オーバーロードがあれば
+        // どれが呼ばれるか分からないので、ネイティブへ直行せずインタープリタの振り分けへ回す。
+        let callee_params: Option<Vec<bool>> = match (mut_mask, fn_ptr) {
+            (Some(_), Some(_)) => {
+                let cls = inst_rc.borrow().class.clone();
+                match cls.methods.get(&name) {
+                    Some(ov) if ov.len() == 1 => Some(ov[0].params.iter().map(|p| p.mutable).collect()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let direct = fn_ptr.filter(|_| mut_mask.is_none() || callee_params.is_some());
+        if let Some(ptr) = direct {
             let mut all_args = Vec::with_capacity(1 + n_args as usize);
-            all_args.push(obj_h);
-            for i in 0..n_args as usize {
-                all_args.push(unsafe { *args_ptr.add(i) });
+            match (mut_mask, &callee_params) {
+                (Some(mask), Some(pm)) => {
+                    if interp_ptr.is_null() {
+                        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
+                        return TL_NONE;
+                    }
+                    let interp = unsafe { &mut *interp_ptr };
+                    // 受け手（param 0 = self）
+                    let self_let = pm.first().is_some_and(|m| !m);
+                    if self_let && mask & 1 != 0 {
+                        all_args.push(push_handle(crate::interpreter::Interpreter::deep_copy_value(obj.clone())));
+                    } else {
+                        all_args.push(obj_h);
+                    }
+                    for i in 0..n_args as usize {
+                        let h = unsafe { *args_ptr.add(i) };
+                        let param_let = pm.get(i + 1).is_some_and(|m| !m);
+                        if param_let && mask_arg_is_mut(mask, i) {
+                            match interp.copy_value(clone_value_at(h)) {
+                                Ok(v) => all_args.push(push_handle(v)),
+                                Err(e) => {
+                                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                                    return TL_NONE;
+                                }
+                            }
+                        } else {
+                            all_args.push(h);
+                        }
+                    }
+                }
+                _ => {
+                    all_args.push(obj_h);
+                    for i in 0..n_args as usize {
+                        all_args.push(unsafe { *args_ptr.add(i) });
+                    }
+                }
             }
             unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
@@ -1224,8 +1328,19 @@ extern "C" fn ar_call_method(
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
-    let evaled: Vec<(Option<String>, Value, bool)> =
-        args.into_iter().map(|v| (None, v, true)).collect();
+    // 引数の可変性: mask があればそれ（bit i+1）、無ければ（古い生成コード）保守的に `mut` とみなす。
+    // インタープリタの束縛が `let` 仮引数 ← `mut` の値を複製する。
+    let evaled: Vec<(Option<String>, Value, bool)> = args
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let is_mut = match mut_mask {
+                Some(mask) => mask_arg_is_mut(mask, i),
+                None => true,
+            };
+            (None, v, is_mut)
+        })
+        .collect();
     match interp.eval_method_call_evaled(obj, &name, evaled) {
         Ok(v) => push_handle(v),
         Err(e) => {
@@ -1415,6 +1530,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     assign_attr: ar_assign_attr,
     get_trait_attr: ar_get_trait_attr,
     assign_trait_attr: ar_assign_trait_attr,
+    copy_arg: ar_copy_arg,
+    call_method_m: ar_call_method_m,
 };
 
 #[cfg(test)]

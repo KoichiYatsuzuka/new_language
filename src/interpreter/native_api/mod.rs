@@ -543,6 +543,13 @@ pub struct ArCallbacks {
     /// `obj::Trait.attr = v`: VM の `SetTraitAttr` と同じ `trait_assign_evaled`。⚠ 以前の生成コードはこの代入を
     /// 黙って出さず、trait を実装したクラスの `__init__` が trait のフィールドを設定しなかった。
     pub assign_trait_attr: extern "C" fn(i64, *const u8, i32, *const u8, i32, i64),
+
+    // ── Value passing of compiled Arrow code (fields 54-55・1-5・D-8) ──
+    /// `let` 仮引数へ `mut` の値を渡すときの複製（VM の束縛と同じ `copy_value`）。
+    pub copy_arg: extern "C" fn(i64) -> i64,
+    /// 名前によるメソッド呼び出し（`call_method` と同じ）＋ `mut_mask`（bit 0 = 受け手・bit i+1 = 引数 i が
+    /// `mut` の値か）で、呼ばれた側の `let self` / `let` 仮引数の分を複製してから呼ぶ。
+    pub call_method_m: extern "C" fn(i64, *const u8, i32, *const i64, i32, u32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

@@ -97,6 +97,33 @@ pub(super) fn add_decl(
     Some(())
 }
 
+/// 関数の仮引数と本体の宣言から、**名前ごとの可変性**（`let` = false / `mut`・`for` の対象 = true）を返す。
+///
+/// VM の `arg_is_mutable`（引数・受け手が `mut` の値か）が slot の可変性として引くのと同じ表で、宣言の
+/// 収集も同じ `collect_nested_decls`（同名は最初の宣言が勝つ）。ネイティブ codegen が値渡しの複製の要否を
+/// VM と同じ規則で決めるために使う（native_object_access_plan.md 1-5・D-8）。
+/// ⚠ 表に無い名前（グローバル・`static mut`・slot の溢れで打ち切った後の名前）は呼ぶ側が `mut` とみなす
+///   （VM の `unwrap_or(true)` と同じ。複製が多すぎるだけで結果は変わらない）。
+pub(crate) fn binding_mutability(params: &[crate::ast::Param], body: &[Stmt]) -> HashMap<String, bool> {
+    let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut slot_mut: Vec<bool> = Vec::new();
+    let mut slot_type: Vec<Option<String>> = Vec::new();
+    let mut n: u16 = 0;
+    for p in params {
+        // 可変長は VM と同じく `local::args` の名前で 1 つ（`compile_fn_inner`）
+        let name = if p.variadic { "local::args" } else { p.name.as_str() };
+        if add_decl(name, p.type_ann.as_ref(), p.mutable, &mut slots, &mut slot_mut, &mut slot_type, &mut n).is_none() {
+            break;
+        }
+    }
+    // 溢れたら（`None`）そこまでの表を返す（残りの名前は呼ぶ側が `mut` とみなす）
+    let _ = collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n);
+    slots
+        .into_iter()
+        .filter_map(|(name, s)| slot_mut.get(s as usize).map(|&m| (name, m)))
+        .collect()
+}
+
 /// `stmt` が**直接束縛する名前**のうち、VM がフレーム slot を持たせるものだけ採番する（#59）。
 ///
 /// 束縛の一覧は [`crate::decl_names::each_declared_name`] が持つ唯一の定義から取り、

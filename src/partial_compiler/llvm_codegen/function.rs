@@ -17,6 +17,7 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
@@ -245,6 +246,7 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
@@ -359,6 +361,7 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
@@ -417,6 +420,7 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();

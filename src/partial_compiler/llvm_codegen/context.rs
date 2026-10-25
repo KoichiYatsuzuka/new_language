@@ -35,6 +35,7 @@ impl<'a> GenCtx<'a> {
             current_fn_ret:  Ty::Handle,
             fast_fns,
             preread_fields:        HashMap::new(),
+            binding_mut:           HashMap::new(),
             flat_list_params:      HashMap::new(),
             fn_param_trampolines:  HashMap::new(),
             typed_mode:            false,
@@ -53,6 +54,47 @@ impl<'a> GenCtx<'a> {
             expr_stats:            HandleFallbackStats::default(),
             ident_stats:           IdentHandleStats::default(),
         }
+    }
+
+    /// 引数・受け手の式が `mut` の値か（VM の `arg_is_mutable` と同じ規則・D-8・native_object_access_plan.md 1-5）。
+    /// `let` で束縛された名前だけが `false`（共有）。表に無い名前（グローバル等）・属性・一時値は保守的に
+    /// `true`（複製する。結果は変わらず、複製が多いだけ）。
+    /// ⚠ VM はモジュール最上位の `let` も共有する（`toplevel_mut`）が、ここは最上位の表を持たないので複製する。
+    pub(super) fn operand_is_mutable(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident { name, .. } => self.binding_mut.get(name.as_str()).copied().unwrap_or(true),
+            _ => true,
+        }
+    }
+
+    /// 名前によるメソッド呼び出しの `mut_mask`（`CB_CALL_METHOD_M`）: bit 0 = 受け手、bit i+1 = 引数 i が `mut` の値か。
+    /// ⚠ 31 個目より後の引数は保守的に `mut`（呼ばれる側の `ar_call_method_m` も同じ解釈）。
+    pub(super) fn method_mut_mask(&self, object: &Expr, args: &[CallArg]) -> u32 {
+        let mut mask = u32::from(self.operand_is_mutable(object));
+        for (i, a) in args.iter().enumerate().take(31) {
+            if self.operand_is_mutable(a.expr()) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        mask
+    }
+
+    /// 呼ばれた側が `let` で受ける値を、渡す値が `mut` のときだけ複製する（D-8・1-5）。
+    /// `is_self`: `let self` は `deep_copy_value`（VM も `self` には `__copy__` を呼ばない）、仮引数は `copy_value`
+    /// （`__copy__` があればそれ）。`int` / `float` の生値・`mut` で受ける側・`let` の値はそのまま渡す。
+    pub(super) fn copy_for_let(
+        &mut self,
+        h: &str,
+        vt: Ty,
+        operand: &Expr,
+        callee_mutable: bool,
+        is_self: bool,
+    ) -> String {
+        if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
+            return h.to_string();
+        }
+        let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
+        self.call_cb(cb, &[format!("i64 {h}")])
     }
 
     /// Look up the native type of a field access on a known class instance.

@@ -1,0 +1,19 @@
+# native_value_passing.ar — コンパイル済みコードのメソッド呼び出しの値渡し（native_object_access_plan.md 1-5）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_value_passing_module.ar
+#   2. cargo run --release -- examples/interop/native_value_passing.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_value_passing_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("let parameter <- mut argument (direct call)", m.method_let_param(m.Box([0], 0)) == 3)
+check("let self <- mut receiver (direct call)", m.let_self_on_mut(m.Box([1, 2, 3], 0)) == 3)
+check("let parameter <- mut argument (call by name)", m.dynamic_let_param([m.Box([0], 0)]) == 3)
+check("let self <- mut receiver (call by name)", m.dynamic_let_self([m.Box([1, 2, 3], 0)]) == 3)
