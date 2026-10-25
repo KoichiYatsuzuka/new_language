@@ -880,6 +880,40 @@ impl<'a> GenCtx<'a> {
     }
 
 
+    /// `func` が組み込み関数 `name` そのものか（5-2）: 同名のローカルもモジュールの最上位の名前も無い識別子。
+    /// 1-7 以降、生成コードはモジュール自身の大域で走るので、組み込みを隠しうるのはこの 2 つだけ。
+    pub(super) fn plain_builtin(&self, func: &Expr, name: &str) -> bool {
+        ident_name(func) == Some(name) && !self.locals.contains_key(name) && !self.top_names.contains(name)
+    }
+
+    /// 組み込みの型・関数を**値として引いて**呼ぶ（`CB_GET_GLOBAL` ＋ `CB_CALL_FN`・評価済みの引数で）。
+    /// 5-2 の速い道に載らない型の引数のときの、今までの道。
+    pub(super) fn emit_value_call_by_name(&mut self, name: &str, arg_exprs: &[(String, Ty)]) -> String {
+        let ptr = self.str_const(name.as_bytes());
+        let fn_h = self.call_cb(CB_GET_GLOBAL, &[ptr, format!("i32 {}", name.len())]);
+        let handles: Vec<String> = arg_exprs.iter().map(|(v, vt)| self.to_handle(v, *vt)).collect();
+        if handles.is_empty() {
+            self.call_cb(CB_CALL_FN, &[format!("i64 {fn_h}"), "ptr null".to_string(), "i32 0".to_string()])
+        } else {
+            let n = handles.len();
+            let arr = self.spill_handle_array(&handles, "vargs");
+            self.call_cb(CB_CALL_FN, &[format!("i64 {fn_h}"), format!("ptr {arr}"), format!("i32 {n}")])
+        }
+    }
+
+    /// VM の `CallBuiltin` と同じ入口（`CB_CALL_BUILTIN`）で、評価済みのハンドルを渡して組み込み関数を呼ぶ（1-3）。
+    pub(super) fn emit_builtin_call(&mut self, name: &str, handles: &[String]) -> String {
+        let ptr = self.str_const(name.as_bytes());
+        let len = name.len() as i32;
+        if handles.is_empty() {
+            self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string()])
+        } else {
+            let n   = handles.len();
+            let arr = self.spill_handle_array(handles, "bargs");
+            self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}")])
+        }
+    }
+
     /// `name` が**このモジュールでコンパイルされた関数**か（＝`@{name}_impl` を直接呼べるか）。
     ///
     /// ⚠ `locals` を必ず除く。同名のローカル変数があるとそちらが優先されるので、
@@ -1039,6 +1073,33 @@ impl<'a> GenCtx<'a> {
             // typed 変種のない呼び出し先 → ハンドル経路が必要 → typed 破棄
             self.typed_failed = true;
             return ("0".to_string(), Ty::Handle);
+        }
+        // ── 引数の型が分かる組み込み関数（5-2・D-4） ──────────────────
+        if let [CallArg::Positional(a)] = args {
+            if self.plain_builtin(func, "float") {
+                let (v, vt) = self.gen_expr(a);
+                return match vt {
+                    Ty::Int => {
+                        let r = self.fresh_reg();
+                        self.ec(&format!("{r} = sitofp i64 {v} to double"));
+                        (r, Ty::Float)
+                    }
+                    Ty::Float => (v, Ty::Float),
+                    _ => (self.emit_value_call_by_name("float", &[(v, vt)]), Ty::Handle),
+                };
+            }
+            if self.plain_builtin(func, "len") {
+                let (v, vt) = self.gen_expr(a);
+                let h = self.to_handle(&v, vt);
+                return (self.call_cb(CB_LEN, &[format!("i64 {h}")]), Ty::Int);
+            }
+            if self.plain_builtin(func, "str") {
+                let (v, vt) = self.gen_expr(a);
+                if vt == Ty::Int {
+                    return (self.call_cb(CB_STR_OF_INT, &[format!("i64 {v}")]), Ty::Handle);
+                }
+                return (self.emit_value_call_by_name("str", &[(v, vt)]), Ty::Handle);
+            }
         }
         // ── Typed intra-module direct function calls ──────────────────
         if let Some(name) = ident_name(func) {
@@ -1280,18 +1341,11 @@ impl<'a> GenCtx<'a> {
             if crate::vm::compiler::VM_BUILTIN_NAMES.contains(&name.as_str())
                 && !self.locals.contains_key(name.as_str())
             {
-                let ptr = self.str_const(name.as_bytes());
-                let len = name.len() as i32;
                 let handles: Vec<String> = arg_exprs.iter()
                     .map(|(v, vt)| self.to_handle(v, *vt))
                     .collect();
-                return if handles.is_empty() {
-                    self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string()])
-                } else {
-                    let n   = handles.len();
-                    let arr = self.spill_handle_array(&handles, "bargs");
-                    self.call_cb(CB_CALL_BUILTIN, &[ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}")])
-                };
+                let name = name.clone();
+                return self.emit_builtin_call(&name, &handles);
             }
         }
 

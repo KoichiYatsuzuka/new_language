@@ -367,9 +367,25 @@ impl<'a> GenCtx<'a> {
                     self.start_block(&exit_blk);
 
                 } else {
+                // 5-2: `for i in range(..)`（組み込みの range・引数が全部 int・刻みが無いか 0 でないリテラル）は
+                // カウンタのループにする（`CB_ITER_FROM` / `CB_ITER_NEXT` もループ変数の箱詰めもしない）。
+                // 載らなければ、評価済みの引数で range を作って今までの道へ（引数は 1 回だけ評価する）。
+                let ih = match range_call_args(iter).filter(|_| self.plain_builtin(range_callee(iter), "range")) {
+                    Some(rargs) => {
+                        let evaled: Vec<(String, Ty)> = rargs.iter().map(|a| self.gen_expr(a)).collect();
+                        if let Some(step) = range_counter_step(&evaled, rargs) {
+                            self.emit_range_loop(target, &evaled, step, body, &loop_blk, &exit_blk);
+                            return;
+                        }
+                        let handles: Vec<String> = evaled.iter().map(|(v, vt)| self.to_handle(v, *vt)).collect();
+                        self.emit_builtin_call("range", &handles)
+                    }
+                    None => {
+                        let (iv, it) = self.gen_expr(iter);
+                        self.to_handle(&iv, it)
+                    }
+                };
                 // ── Original CB_ITER_FROM / CB_ITER_NEXT path ────────────────
-                let (iv, it) = self.gen_expr(iter);
-                let ih       = self.to_handle(&iv, it);
                 let iter_h   = self.call_cb(CB_ITER_FROM, &[format!("i64 {ih}")]);
                 let iter_al  = format!("%_iter{}", self.reg);
                 self.reg += 1;
@@ -453,6 +469,48 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// `for target in range(start, stop[, step])` のカウンタのループ（5-2）。`step` はコンパイル時に分かる 0 でない値。
+    /// 刻みは本体の前に進めるので、`continue`（見出しへ飛ぶ）でも次の値になる。ループ変数は `int` の場所。
+    fn emit_range_loop(
+        &mut self,
+        target: &str,
+        evaled: &[(String, Ty)],
+        step: i64,
+        body: &[Stmt],
+        header: &str,
+        exit: &str,
+    ) {
+        let (start, stop) = match evaled {
+            [stop] => ("0".to_string(), stop.0.clone()),
+            [start, stop, ..] => (start.0.clone(), stop.0.clone()),
+            [] => unreachable!("range_call_args gives 1 to 3 arguments"),
+        };
+        let cnt = format!("%_rng{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{cnt} = alloca i64, align 8"));
+        self.ec(&format!("store i64 {start}, ptr {cnt}"));
+        let tgt = self.alloca_var(target, Ty::Int);
+        self.br(header);
+        self.start_block(header);
+        let c = self.fresh_reg();
+        self.ec(&format!("{c} = load i64, ptr {cnt}"));
+        let cond = self.fresh_reg();
+        let pred = if step > 0 { "slt" } else { "sgt" };
+        self.ec(&format!("{cond} = icmp {pred} i64 {c}, {stop}"));
+        let body_blk = self.fresh_blk();
+        self.br_cond(&cond, &body_blk, exit);
+        self.start_block(&body_blk);
+        self.ec(&format!("store i64 {c}, ptr {tgt}"));
+        let next = self.fresh_reg();
+        self.ec(&format!("{next} = add i64 {c}, {step}"));
+        self.ec(&format!("store i64 {next}, ptr {cnt}"));
+        self.loop_stack.push((header.to_string(), exit.to_string()));
+        self.gen_stmts(body);
+        self.loop_stack.pop();
+        self.br(header);
+        self.start_block(exit);
+    }
+
     /// 属性の値を読む（複合代入の左辺）。`trait_name` があれば `obj::Trait.attr`（VM の `GetTraitAttr`）。
     fn emit_attr_load(&mut self, oh: &str, trait_name: Option<&str>, attr: &str) -> String {
         match trait_name {
@@ -489,6 +547,48 @@ impl<'a> GenCtx<'a> {
 
 /// 属性の代入先を `(オブジェクト, trait 名, 属性名)` に分ける。
 /// ⚠ ほかの形は `stmt_eligible` が弾いているので来ない（来たら生成を誤るより止める）。
+/// `range(..)` の呼び出しなら、その位置引数（1〜3 個）。呼び先が組み込みの range かは呼ぶ側が `plain_builtin` で見る。
+fn range_call_args(iter: &Expr) -> Option<Vec<&Expr>> {
+    let Expr::Call { func, args, .. } = iter else { return None };
+    if ident_name(func) != Some("range") || args.is_empty() || args.len() > 3 {
+        return None;
+    }
+    args.iter()
+        .map(|a| match a {
+            crate::ast::CallArg::Positional(e) => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `range_call_args` が `Some` のときの呼び先（`range` の識別子）。
+fn range_callee(iter: &Expr) -> &Expr {
+    match iter {
+        Expr::Call { func, .. } => func,
+        other => other,
+    }
+}
+
+/// カウンタのループにできるなら刻み: 引数が全部 `int` で、刻みが無い（1）か 0 でない int のリテラル（`-1` を含む）。
+/// 刻みが変数のときは符号と 0 の検査が実行時に要るので載せない（今までの道で range が確かめる）。
+fn range_counter_step(evaled: &[(String, Ty)], rargs: Vec<&Expr>) -> Option<i64> {
+    if evaled.iter().any(|(_, t)| *t != Ty::Int) {
+        return None;
+    }
+    if rargs.len() < 3 {
+        return Some(1);
+    }
+    let step = match rargs[2] {
+        Expr::Int(n) => *n,
+        Expr::UnaryOp { op: crate::ast::UnaryOp::Neg, operand } => match operand.as_ref() {
+            Expr::Int(n) => -*n,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (step != 0).then_some(step)
+}
+
 fn attr_target(target: &Expr) -> (&Expr, Option<&str>, &str) {
     match target {
         Expr::Attr { object, attr, .. } => (object, None, attr),

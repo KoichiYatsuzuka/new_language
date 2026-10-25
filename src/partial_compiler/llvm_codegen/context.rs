@@ -27,6 +27,7 @@ impl<'a> GenCtx<'a> {
             str_consts:      HashMap::new(),
             str_ctr:         0,
             ic_ctr:          0,
+            top_names:       HashSet::new(),
             block_stack:     Vec::new(),
             class_fields,
             class_fields_ord,

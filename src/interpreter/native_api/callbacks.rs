@@ -1784,6 +1784,52 @@ extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const 
     }
 }
 
+/// `len(x)`（field 68・native_object_access_plan.md 5-2）。組み込みの `len` と同じ `len_of`（唯一の実装）を呼び、
+/// 結果を生の int で返す。⚠ 以前の生成コードは `len` を `CB_GET_GLOBAL` で値として引き、`CB_CALL_FN` で呼んで
+/// ハンドルを受け、`CB_TO_INT` で開けていた。
+extern "C" fn ar_len(h: i64) -> i64 {
+    let (has_err, v, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return 0; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for len".to_string()));
+        return 0;
+    }
+    match unsafe { &mut *interp_ptr }.len_of(v) {
+        Ok(Value::Int(n)) => n,
+        Ok(other) => {
+            STATE.with(|s| s.borrow_mut().error = Some(format!("TypeError: len() returned a non-int value: {other:?}")));
+            0
+        }
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            0
+        }
+    }
+}
+
+/// `str(<int>)`（field 69・5-2）。組み込みの `str` と同じ `call_type_by_name_evaled("str", ..)` を、値を箱に入れずに呼ぶ。
+extern "C" fn ar_str_of_int(n: i64) -> i64 {
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for str".to_string()));
+        return TL_NONE;
+    }
+    match unsafe { &mut *interp_ptr }.call_type_by_name_evaled("str", vec![Value::Int(n)]) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
@@ -1903,6 +1949,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     assign_int_field_ic: ar_assign_int_field_ic,
     assign_float_field_ic: ar_assign_float_field_ic,
     construct: ar_construct,
+    len: ar_len,
+    str_of_int: ar_str_of_int,
 };
 
 #[cfg(test)]

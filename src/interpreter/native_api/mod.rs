@@ -600,6 +600,12 @@ pub struct ArCallbacks {
     /// `Class(args)`: VM の `Call` と同じ `instantiate_evaled` を直接呼ぶ。引数は (クラス名, 引数, 個数, `mut_mask`)。
     /// `mut_mask` の bit i+1 = 引数 i が `mut` の値か（`call_method_m` と同じ並び・bit 0 は使わない）。
     pub construct: extern "C" fn(*const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Built-ins with known argument types (fields 68-69・5-2) ──
+    /// `len(x)`: 組み込みの `len` と同じ `len_of` を呼び、生の int で返す。
+    pub len: extern "C" fn(i64) -> i64,
+    /// `str(<int>)`: 組み込みの `str` と同じ `call_type_by_name_evaled("str", ..)`（値を箱に入れずに渡す）。
+    pub str_of_int: extern "C" fn(i64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
