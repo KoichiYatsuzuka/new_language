@@ -544,7 +544,8 @@ impl Interpreter {
                 let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
                 match std::fs::write(&tmp_path, &dll_bytes) {
                     Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
-                        Ok(ns) => {
+                        Ok((ns, globals)) => {
+                            self.module_globals_ids.insert(cache_key.clone(), globals);
                             self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
                             return Ok(ns);
                         }
@@ -708,7 +709,14 @@ impl Interpreter {
         Some(TypedSig { params: ptys, ret })
     }
 
-    /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
+    /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` と大域の番号を返す。
+    ///
+    /// ⚠⚠ 生成コードの関数・メソッドは**このモジュールの大域で走る**（`NativeFnRef::globals`・
+    /// `register_native_method` の番号・native_object_access_plan.md 1-7）。以前は大域を差し替えずに呼び、
+    /// 生成コードが名前（`CB_GET_GLOBAL`）でモジュールの `G` を引けるよう、**取り込み側の大域へモジュールの
+    /// 名前を `let` で写していた**。その結果、取り込み側が同じ名前を宣言すると `already declared`、
+    /// 同名があれば生成コードはそちらを読み、`mut` も失われていた（`exec_module` が 2026-09-26 に直した
+    /// 名前空間の侵食と同じもの）。
     // ⚠ FFI 専用。`native` 限定（評価コア切り出し #2）。
     #[cfg(feature = "native")]
     pub(crate) fn try_load_native_module(
@@ -716,7 +724,7 @@ impl Interpreter {
         module: &[String],
         body: &[Stmt],
         lib_path: &std::path::Path,
-    ) -> Result<Rc<NamespaceData>, String> {
+    ) -> Result<(Rc<NamespaceData>, u32), String> {
         let lib = unsafe { libloading::Library::new(lib_path) }
             .map_err(|e| format!("libloading: {e}"))?;
 
@@ -725,9 +733,17 @@ impl Interpreter {
         // #42: ネイティブモジュールのスタブ本体も同じ経路で実行する。
         // ⚠ 自分の大域で走らせる（`exec_module` と同じ・名前空間の分離）。
         let frame = self.enter_module_frame(module);
+        let globals_id = self.cur_globals;
         let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         let result = self.run_module_body(body, &module_globals, "native module init", module);
         let mut members = self.module_members(&module_globals);
+        // `mut` の名前は今の値をモジュールの大域から読む（`exec_module` と同じ・10-11）。
+        let mutable_names: std::collections::HashSet<String> = members
+            .keys()
+            .filter(|n| self.scopes[0].get(n.as_str()).is_some_and(|v| v.is_mutable()))
+            .cloned()
+            .collect();
+        let live = (!mutable_names.is_empty()).then(|| (globals_id, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
         result?;
 
@@ -769,6 +785,7 @@ impl Interpreter {
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                             typed_sig: if typed_ptr != 0 { typed_sig } else { None },
                             unavailable: None,
+                            globals: Some(globals_id),
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -791,6 +808,7 @@ impl Interpreter {
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                             typed_sig: None,
                             unavailable: None,
+                            globals: Some(globals_id),
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -808,18 +826,12 @@ impl Interpreter {
                             lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                         } {
                             let fn_ptr = *func as usize;
-                            crate::interpreter::native_api::register_native_method(class_name, mname, fn_ptr);
+                            crate::interpreter::native_api::register_native_method(class_name, mname, fn_ptr, globals_id);
                             eprintln!("NativeMethod: {class_name}.{mname} ({} param(s)) → native", params.len());
                         }
                     }
                 }
                 _ => {}
-            }
-        }
-
-        for (name, value) in &members {
-            if !self.scopes[0].contains_key(name) {
-                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
             }
         }
 
@@ -841,9 +853,9 @@ impl Interpreter {
         let ns = Rc::new(NamespaceData {
             name: module.join("."),
             members,
-            live: None,
+            live,
         });
-        Ok(ns)
+        Ok((ns, globals_id))
     }
 
     // ---------------------------------------------------------------------------
@@ -1144,6 +1156,9 @@ impl Interpreter {
                     typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                     typed_sig: if typed_ptr != 0 { typed_sig } else { None },
                     unavailable: None,
+                    // C++ の関数は Arrow の名前を引かない（中継コードの `get_global` は下で取り込み側へ写した
+                    // 名前を引く・1-7 の対象外）
+                    globals: None,
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             } else {
@@ -1166,6 +1181,7 @@ impl Interpreter {
                     typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                     typed_sig: None,
                     unavailable: Some(why),
+                    globals: None,
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

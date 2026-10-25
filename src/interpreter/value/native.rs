@@ -519,6 +519,11 @@ pub struct NativeFnRef {
     /// 7-28）。`Some` のとき呼ぶと理由つきの RuntimeError（`missing_symbol_error`）。型スタブにはあるので、名前空間からは
     /// 消さない（消すと「属性が無い」になり、理由が分からない）。
     pub unavailable: Option<String>,
+    /// コンパイル済み Arrow モジュール（`.arc`）の関数なら、そのモジュールの大域の番号（`FnValue::globals` と同じ・
+    /// native_object_access_plan.md 1-7）。呼び出しの間だけ大域を差し替える（生成コードが名前で引く `G` が
+    /// モジュールのものになる・`Interpreter::enter_native_globals`）。C / C++ の関数は Arrow の名前を引かないので `None`。
+    /// ⚠ 以前は大域を差し替えずに呼び、名前を引けるよう取り込み側の大域へモジュールの名前を `let` で写していた。
+    pub globals: Option<u32>,
 }
 
 
@@ -577,6 +582,7 @@ impl Clone for NativeFnRef {
             ),
             typed_sig: self.typed_sig.clone(),
             unavailable: self.unavailable.clone(),
+            globals: self.globals,
         }
     }
 }

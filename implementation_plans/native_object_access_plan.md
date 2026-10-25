@@ -12,7 +12,7 @@
 
 - 起票: 2026-10-25（速度調査の結果から）
 - 調査: Arrow `326e112`（release ビルド、Ryzen 5 5600X / Windows 11）
-- 状態: 未決事項なし。フェーズ 1 着手（1-1〜1-6 完了）
+- 状態: 未決事項なし。フェーズ 1 完了（1-1〜1-7）
 - 方針: 利用者の指示（2026-10-25）— フィールド読み書きは VM と同じ論理で行う。
   ほかは調査報告の方針 2（型検査の結果でレシーバを決めて直接呼ぶ）・3（`int`/`float` を箱詰めしない）・
   4（コンストラクタと組み込み関数を名前引きなしで呼ぶ）に従う
@@ -130,7 +130,7 @@
 | 1-4 | §0.3 ④ コンパイル済み Arrow コードの書き込みを `attr_assign_evaled`（VM の `SetAttr` と同じ）へ寄せる。片方だけが見ていた 3 点を分類する: `static mut`・不変判定は取りこぼし（広げる）、rs setter は意図的な差（`set_attr_val` は `import[rs]` の中継コードが写しを更新する経路として残す。`attr_assign_evaled` だと setter に再入する）。trait 修飾の読み書きも VM の `GetTraitAttr` / `SetTraitAttr` と同じ入口にし、代入先がほかの形の文は適格判定で弾く | − | `compare_outputs -A`・`compare_import_paths -A`、`static mut`・trait のフィールドの例題 |
 | 1-5 | §0.3 ⑤ コンパイル済みのメソッド呼び出し（2 経路）でも D-8 のとおり複製する（`mut` の値 → `let` 仮引数・`let self`）。引数・受け手が `mut` か（`let` の名前か）は VM の `arg_is_mutable` と同じ規則で、名前ごとの可変性は VM と同じ宣言の収集（`vm/compiler/decls.rs`）から取る | − | 値渡しの例題（関数・メソッド・`let self`、`mut` / `let` / 一時値の 3 通り）が両モード一致 |
 | 1-6 | §0.3 ⑥ ⑦ コンパイル済みコードの `let` / `mut` の宣言を VM と同じ規則で複製する。複製の本体は `Interpreter::bind_copy` 1 つにまとめ（ツリーウォーク・VM の store 命令・最上位・デバッガ・ネイティブが呼ぶ）、`let` の判断は `let_bind` 1 つにまとめる（VM の `compile_let`・最上位の `let`・ネイティブ codegen が呼ぶ）。これで ⑦ も直る | 1-5 | 束縛の例題（`mut` / `mut` の名前からの `let` / 式からの `let`・インスタンスと `list`）が両モード一致、`let_immutability` の関数内の L2、`compare_bytecode`（VM の命令は不変） |
-| 1-7 | §0.3 ⑧ コンパイル済みモジュールの関数・メソッドをモジュール自身の大域で走らせ（`FnValue::globals` と同じく呼び出しの前後で `switch_globals`）、取り込み側の大域へ名前を写すのをやめる | 1-6 | 取り込み側が同名を宣言する例題・`let a = <mut のグローバル>` の複製が両モード一致、`compare_import_paths -A` |
+| 1-7 | §0.3 ⑧ コンパイル済みモジュールの関数・メソッドをモジュール自身の大域で走らせ（`FnValue::globals` と同じく呼び出しの前後で `switch_globals`）、取り込み側の大域へ名前を写すのをやめる。あわせて `mut` の名前を `exec_module` と同じく live で読む。⚠ C++ の中継 DLL（`load_cpp_wrapper_dll`）も取り込み側へ名前を写している（中継コードの `get_global("VECTOR")` 用）が、Arrow の生成コードではないので対象外 | 1-6 | 取り込み側が同名を宣言する例題・`let a = <mut のグローバル>` の複製が両モード一致、`compare_import_paths -A` |
 
 ### フェーズ 2: 方針 1 — フィールド読み書きを VM と同じ論理に
 

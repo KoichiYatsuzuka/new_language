@@ -202,10 +202,15 @@ impl Interpreter {
                     }
                 }
             };
-            unsafe {
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）。typed ABI の経路は
+            // インタープリタへ呼び戻さない（名前を引かない）ので差し替えない。
+            let globals = self.enter_native_globals(fn_ref.globals);
+            let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
+                func(handles.as_ptr(), handles.len() as i32)
+            };
+            self.leave_native_globals(globals);
+            Ok(r)
         };
 
         match call_result {
@@ -455,10 +460,15 @@ impl Interpreter {
                     }
                 }
             };
-            unsafe {
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）。typed ABI の経路は
+            // インタープリタへ呼び戻さない（名前を引かない）ので差し替えない。
+            let globals = self.enter_native_globals(fn_ref.globals);
+            let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
+                func(handles.as_ptr(), handles.len() as i32)
+            };
+            self.leave_native_globals(globals);
+            Ok(r)
         };
 
         match call_result {

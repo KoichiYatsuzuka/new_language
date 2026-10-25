@@ -1,0 +1,34 @@
+# native_module_globals_module.ar — コンパイル済みモジュールの関数・メソッドは自分の大域で走る
+# （native_object_access_plan.md 1-7）
+#
+# ⚠ 以前はコンパイル済みの関数がモジュールの大域へ切り替えずに走り、名前を引けるよう取り込み側の大域へ
+#   モジュールの名前を `let` で写していた。取り込み側が同じ名前を宣言すると NameError になり、
+#   コンパイル済みの関数が読む `G` は取り込み側のもの（同名があればそちら）で、`mut` も失われていた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_module_globals_module.ar
+
+mut G = [1, 2, 3]
+let LIMIT = 10
+
+class Counter:
+    mut n: int
+
+    fn bump(mut self) -> int:
+        self.n += len(G)
+        return self.n
+
+fn read_g() -> int:
+    return len(G)
+
+fn push_g() -> None:
+    G.append(9)
+
+# let a = <mut のグローバル名>: 可変性は実行時にモジュールの大域から引く（1-6 の FromName）
+fn let_from_mut_global() -> int:
+    let a = G
+    G.append(9)
+    return len(a)
+
+fn limit() -> int:
+    return LIMIT

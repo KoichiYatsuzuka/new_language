@@ -163,8 +163,9 @@ struct NativeCallState {
     cstr_bufs: Vec<Vec<u8>>,
     /// `ArPtrProtocol` arguments built by `ar_protocol_arg` (their element-type strings); cleared at outermost exit (4-4).
     protocol_args: Vec<(i64, crate::interpreter::PtrProtocolArg)>,
-    /// Native method dispatch table: (class_name, method_name) → fn_ptr.
-    native_methods: HashMap<(String, String), usize>,
+    /// Native method dispatch table: (class_name, method_name) → (fn_ptr, クラスを定義したモジュールの大域の番号)。
+    /// 大域の番号は呼ぶ間だけ差し替える先（`NativeFnRef::globals` と同じ・1-7）。
+    native_methods: HashMap<(String, String), (usize, u32)>,
 }
 
 impl NativeCallState {
@@ -335,16 +336,22 @@ pub fn take_pending_raise() -> Option<(String, String)> {
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
-pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize) {
+/// `globals` はクラスを定義したモジュールの大域の番号（呼ぶ間だけそこへ差し替える・1-7）。
+pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize, globals: u32) {
     STATE.with(|s| {
         s.borrow_mut()
             .native_methods
-            .insert((class_name.to_string(), method_name.to_string()), fn_ptr);
+            .insert((class_name.to_string(), method_name.to_string()), (fn_ptr, globals));
     });
 }
 
 /// Look up the raw function pointer for a native class method.
 pub fn lookup_native_method_ptr(class_name: &str, method_name: &str) -> Option<usize> {
+    lookup_native_method(class_name, method_name).map(|(ptr, _)| ptr)
+}
+
+/// ネイティブのメソッドの関数ポインタと、走らせる大域の番号（1-7）。
+pub(crate) fn lookup_native_method(class_name: &str, method_name: &str) -> Option<(usize, u32)> {
     STATE.with(|s| {
         s.borrow()
             .native_methods
@@ -365,7 +372,7 @@ pub fn try_dispatch_native_method(
         _ => return None,
     };
 
-    let fn_ptr = lookup_native_method_ptr(&class_name, method_name)?;
+    let (fn_ptr, globals) = lookup_native_method(&class_name, method_name)?;
 
     let is_outermost = enter_native_call(interp as *mut Interpreter);
 
@@ -376,10 +383,13 @@ pub fn try_dispatch_native_method(
         all_args.push(push_handle(v.clone()));
     }
 
+    // メソッドはクラスを定義したモジュールの大域で走る（1-7）
+    let prev = interp.enter_native_globals(Some(globals));
     let result_h = unsafe {
         let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
         func(all_args.as_ptr(), all_args.len() as i32)
     };
+    interp.leave_native_globals(prev);
 
     if let Some(err) = take_error() {
         abort_native_call(is_outermost);

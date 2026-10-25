@@ -42,6 +42,21 @@ impl Interpreter {
         prev
     }
 
+    /// コンパイル済みモジュールのコード（DLL の `_tl` / ネイティブのメソッド）を呼ぶ間だけ、そのモジュールの大域に
+    /// 差し替える（native_object_access_plan.md 1-7）。`None`（C / C++ の関数）は差し替えない。
+    /// 戻り値は [`Self::leave_native_globals`] に渡す。
+    /// ⚠ 差し替えるのは DLL を呼ぶ間だけ。引数の評価と書き戻しは呼び出し側の大域で行う。
+    pub(crate) fn enter_native_globals(&mut self, globals: Option<u32>) -> Option<u32> {
+        globals.map(|g| self.switch_globals(g))
+    }
+
+    /// [`Self::enter_native_globals`] の後始末（差し替えた大域を戻す）。
+    pub(crate) fn leave_native_globals(&mut self, prev: Option<u32>) {
+        if let Some(p) = prev {
+            self.switch_globals(p);
+        }
+    }
+
     #[inline(never)]
     fn switch_globals_slow(&mut self, to: u32) {
         // ⚠ 知らない添字（非同期のワーカーへ大域を渡しそこねた等）は差し替えない。

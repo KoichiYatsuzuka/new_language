@@ -369,11 +369,14 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                     }
                 }
             };
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）
+            let prev = unsafe { &mut *interp_ptr }.enter_native_globals(fn_ref.globals);
             let result_h = unsafe {
                 let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
                     std::mem::transmute(fn_ptr);
                 f(args_ptr, n_args)
             };
+            unsafe { &mut *interp_ptr }.leave_native_globals(prev);
 
             if STATE.with(|s| s.borrow().error.is_some()) {
                 abort_native_call(is_outermost);
@@ -1311,9 +1314,10 @@ fn call_method_common(
     // Native dispatch: check NATIVE_METHODS table first.
     if let Value::Instance(ref inst_rc) = obj {
         let class_name = inst_rc.borrow().class.name.clone();
-        let fn_ptr = STATE.with(|s| {
+        let native = STATE.with(|s| {
             s.borrow().native_methods.get(&(class_name.clone(), name.clone())).copied()
         });
+        let fn_ptr = native.map(|(ptr, _)| ptr);
         // 値渡しの複製（mask があるとき）に要る呼ばれた側の仮引数の可変性。オーバーロードがあれば
         // どれが呼ばれるか分からないので、ネイティブへ直行せずインタープリタの振り分けへ回す。
         let callee_params: Option<Vec<bool>> = match (mut_mask, fn_ptr) {
@@ -1366,10 +1370,18 @@ fn call_method_common(
                     }
                 }
             }
-            unsafe {
-                let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
-                return func(all_args.as_ptr(), all_args.len() as i32);
+            // メソッドはクラスを定義したモジュールの大域で走る（1-7）
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
+                return TL_NONE;
             }
+            let prev = unsafe { &mut *interp_ptr }.enter_native_globals(native.map(|(_, g)| g));
+            let r = unsafe {
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
+                func(all_args.as_ptr(), all_args.len() as i32)
+            };
+            unsafe { &mut *interp_ptr }.leave_native_globals(prev);
+            return r;
         }
     }
 
