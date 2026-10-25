@@ -1188,11 +1188,13 @@ impl TypeChecker {
         self.collect_class_method_sigs(class_name).contains_key("__setattr__")
     }
 
-    /// `__getattr__` を上書きしたクラスなら、その戻り値の型（注釈が無ければ `Any`）。宣言していない名前をインスタンスから
-    /// 読む・呼ぶ形はこれが答える（known_bugs.md の #11）。持てるのは Python のクラスだけ（`class_has_setattr_hook` と同じ）。
+    /// 読みを上書きしたクラス（`__getattribute__`・#12 / `__getattr__`・#11）なら、その戻り値の型（注釈が無ければ `Any`・
+    /// 両方あれば `__getattribute__`）。宣言していない名前をインスタンスから読む・呼ぶ形はこれが答える（known_bugs.md）。
+    /// 持てるのは Python のクラスだけ（`class_has_setattr_hook` と同じ）。
     pub(super) fn getattr_hook_type(&self, class_name: &str) -> Option<InferredType> {
         let sigs = self.collect_class_method_sigs(class_name);
-        let ret = sigs.get("__getattr__")?.first().and_then(|s| s.return_type.clone());
+        let hook = sigs.get("__getattribute__").or_else(|| sigs.get("__getattr__"))?;
+        let ret = hook.first().and_then(|s| s.return_type.clone());
         Some(match ret {
             Some(t) if !matches!(t, InferredType::Unresolved) => t,
             _ => InferredType::Any,

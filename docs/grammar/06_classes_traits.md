@@ -735,7 +735,7 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 | `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
 | `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる。Python のモジュールの `del obj.x` が呼ぶ（⚠ Arrow のソースには `del` の構文が無い） |
 | `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
-| ⚠ `__setattr__` / `__delattr__` / `__getattr__` | **Arrow のクラスでは定義できない**（パースの誤り）。属性の操作の上書きは Python のモジュール（`import[py]`）のクラスだけ（[09_imports.md](09_imports.md) の「`__setattr__` / `__delattr__`」「`__getattr__`」） |
+| ⚠ `__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__` | **Arrow のクラスでは定義できない**（パースの誤り）。属性の操作の上書きは Python のモジュール（`import[py]`）のクラスだけ（[09_imports.md](09_imports.md) の「`__setattr__` / `__delattr__`」「`__getattr__`」「`__getattribute__`」） |
 
 ### 演算子メソッドの手順
 

@@ -1,0 +1,35 @@
+# py_getattribute_hook.ar — Python のクラスの `__getattribute__`（known_bugs.md の #12）
+#
+# 属性の操作の上書きは Python の読み込み（`import[py]`）でだけ使える（`py_setattr.ar` / `py_getattr_hook.ar` と同じ）。
+# Python のクラスが定義した `__getattribute__(name)` は、**すべての明示の読み**で呼ばれる: フィールド・メソッド・
+# property・`getattr` / `hasattr`・メソッドの呼び出し `o.m(..)`（読んでから呼ぶ）・特殊メソッドを明示して呼ぶ
+# `o.__len__()`。`AttributeError` を投げれば `__getattr__` へ回る。`str(o)` / `len(o)` / `o + 1` / `for x in o` が
+# 内部で引く特殊メソッドは通らない（CPython も型から直接引く）。本当の属性を読むのは `object.__getattribute__(self, k)` /
+# `super().__getattribute__(k)`。
+# ⚠ Arrow のクラスは `__getattribute__` を定義できない（`classes/getattr_hook_error.ar` と同じパースの誤り）。
+#
+# m.run() は CPython 3.12 と同じ出力:
+#   1 explicit: (1, 'm', 'p', 1, True) ['x', 'method', 'prop', 'x', 'x']
+#   2 implicit: ('Logged!', 3, 101, [7, 8]) []
+#   2 explicit dunder: (3, 'Logged!') ['__len__', '__str__']
+#   3 redirect: v:color real v:size True
+#   4 fallback: 1 fallback:hidden fallback:hidden fallback:missing
+#   5 child: 11 ['extra', 'x']
+#
+# ⚠ 以前は `__getattribute__` が黙って呼ばれず、`r.virtual_color` は AttributeError、記録（`seen`）は空だった。
+
+import[py] test_modules.py_getattribute_hook as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から読む・呼ぶのも上書きを通る（型検査は宣言していない名前を通す。型は `__getattribute__` の戻り値・注釈が無ければ Any）
+mut r = m.Redirect()
+check(str(r.virtual_shape) == "v:shape", "read from Arrow goes through __getattribute__")
+mut lg = m.Logged()
+check(str(lg.method()) == "m" and str(m.seen(lg)) == "['method']", "a method call from Arrow goes through it")
+check(len(lg) == 3 and str(m.seen(lg)) == "['method']", "len() from Arrow does not")
+print("arrow side ok")

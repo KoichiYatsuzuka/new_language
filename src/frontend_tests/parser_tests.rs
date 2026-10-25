@@ -2035,6 +2035,7 @@ fn arrow_class_cannot_define_attr_hooks() {
         ("class C:\n    static fn __delattr__(name: str) -> None:\n        pass\n", "__delattr__"),
         ("class C:\n    class_method fn __setattr__(cls: Any) -> None:\n        pass\n", "__setattr__"),
         ("class C:\n    fn __getattr__(self, name: str) -> str:\n        return name\n", "__getattr__"),
+        ("class C:\n    fn __getattribute__(self, name: str) -> str:\n        return name\n", "__getattribute__"),
     ] {
         let mut p = Parser::new(Lexer::new(src, "m.ar").tokenize(), None);
         let err = p.parse_program().expect_err("attribute hook in an Arrow class");

@@ -437,8 +437,20 @@ Arrow からの読みも同じで、基底で定義したものも受け継ぎ�
 - Arrow の型検査は、`__getattr__` を持つクラスのインスタンスから宣言していない名前を読む・呼ぶ形を通します（型は
   `__getattr__` の戻り値の注釈、無ければ `Any`）。⚠ 代入は、`__setattr__` が無ければ今までどおり宣言した名前だけです。
 - ⚠ **Arrow のクラスは `__getattr__` を定義できません**（パースの誤り・`examples/classes/getattr_hook_error.ar`）。
-- ⚠ すべての読みを上書きする `__getattribute__` の定義はまだ呼びません（known_bugs.md の #12）。
 - 例題は `examples/interop/py_getattr_hook.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
+
+**`__getattribute__`**（known_bugs.md の #12）: Python のクラスが定義した `__getattribute__(name)` は、**すべての明示の読み**で
+呼びます（フィールド・メソッド・property・`getattr` / `hasattr`・Arrow からの読み）。メソッドの呼び出し `o.m(..)` も
+`__getattribute__` で読んでから呼び、特殊メソッドを明示して呼ぶ `o.__len__()` も通ります（CPython と同じ）。
+`AttributeError` を投げれば `__getattr__` へ回ります（両方あるときの順も CPython と同じ）。
+- `str(o)` / `len(o)` / `o + 1` / `for x in o` などがインタープリタの中で呼ぶ特殊メソッドは通りません（CPython も型から
+  直接引く）。
+- 本当の属性を読むのは `object.__getattribute__(self, name)` / `super().__getattribute__(name)` です（`__getattr__` と同じ）。
+  `__getattribute__` の中で `self.x` と書くと、また `__getattribute__` が呼ばれて止まりません（CPython と同じ）。
+- 型検査は、`__getattribute__` を持つクラスのインスタンスから宣言していない名前を読む・呼ぶ形を通します（型は
+  `__getattribute__` の戻り値の注釈、無ければ `Any`）。
+- ⚠ **Arrow のクラスは `__getattribute__` を定義できません**（パースの誤り・`examples/classes/getattribute_hook_error.ar`）。
+- 例題は `examples/interop/py_getattribute_hook.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
 
 **クラスの属性・property**:
 - `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。

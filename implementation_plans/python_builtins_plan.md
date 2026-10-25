@@ -438,7 +438,7 @@ C 拡張 42 モジュール（`pandas._libs.*`）と numpy に依存しており
 | `property` | 586（576 が `@property`） | 属性を読んだときに getter を呼ぶ仕組み。`o.x` → `o.x()` の書き換えは、変換時に `o` の型が分からないので変換器ではできない（タスク 6-1） |
 | `isinstance` の第 2 引数が pandas の ABC（`ABCSeries` など） | 298 | メタクラスの `__instancecheck__`。pandas の ABC は `create_pandas_abc_type` が作るクラスで、名前は静的だが `is` では判定できない |
 | `NotImplemented` | 50（28 が `return NotImplemented`） | 値は番兵で済むが、意味は「二項演算子が `NotImplemented` を受けたら反対側（`__radd__` など）を試す」手順にある |
-| `object.__setattr__` / `__getattribute__` / `__new__` / `__repr__` | 約 51 | 上書きした dunder を飛ばして素の属性操作・生成を呼ぶ手段（名前が変数の `setattr` と同根）。⚠ `object.__setattr__` / `object.__delattr__`（[known_bugs.md](known_bugs.md) の #10）・`object.__getattribute__` と `__getattr__`（#11）は入った。`__getattribute__` の上書きは #12 |
+| `object.__setattr__` / `__getattribute__` / `__new__` / `__repr__` | 約 51 | 上書きした dunder を飛ばして素の属性操作・生成を呼ぶ手段（名前が変数の `setattr` と同根）。⚠ `object.__setattr__` / `object.__delattr__`（[known_bugs.md](known_bugs.md) の #10）・`object.__getattribute__` と `__getattr__`（#11）・`__getattribute__` の上書き（#12）は入った |
 | `bytes` / `bytearray` / `memoryview` | 46 / 2 / 3 | バイト列の値の種類（今の `"é".encode()` は `list[int]` を返す） |
 | `frozenset` | 45 | 不変でハッシュできる集合の値の種類 |
 | `ImportError` / `ModuleNotFoundError` | 35 / 2 | pandas の使い方は `try: import x` / `except ImportError:`（任意の依存）。Python の `import` をブロックの中に書くこと自体が今は変換の誤り |

@@ -33,6 +33,17 @@ impl Interpreter {
                 ))
             }
         };
+        // 明示の呼び出し `o.m(..)` は、Python のクラスが `__getattribute__` を上書きしていれば、それで読んでから呼ぶ
+        // （CPython と同じ・特殊メソッドを明示して呼ぶ `o.__len__()` も・known_bugs.md の #12）。
+        // ⚠ 明示の呼び出しかどうかは `cache` で見分ける: ソースの `o.m(..)`（VM の `CallMethod*`・ツリーウォークの
+        //   `eval_method_call`）は必ずメソッドのキャッシュを渡し、インタープリタが内部で呼ぶ特殊メソッド（`str(o)` の
+        //   `__str__`・演算子・`for` の `__iter__` / `__next__`）は `None` を渡す（`eval_method_call` の doc）。内部の
+        //   呼び出しは CPython も型から直接引き、`__getattribute__` を通らない。
+        // ⚠ このクラスにはメソッドのキャッシュを張らない（下の充填より前に返る）ので、毎回ここを通る。
+        if cache.is_some() && Self::py_attr_hook(&inst_rc.borrow().class, "__getattribute__") {
+            let callee = self.get_attr_val(obj, method_name, None)?;
+            return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
+        }
         if method_name == "copy" {
             if !evaled.is_empty() {
                 return Err(format!(
