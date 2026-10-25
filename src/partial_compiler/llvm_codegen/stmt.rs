@@ -425,11 +425,11 @@ impl<'a> GenCtx<'a> {
 
     /// 属性の値を読む（複合代入の左辺）。`trait_name` があれば `obj::Trait.attr`（VM の `GetTraitAttr`）。
     fn emit_attr_load(&mut self, oh: &str, trait_name: Option<&str>, attr: &str) -> String {
-        let ptr = self.str_const(attr.as_bytes());
-        let len = attr.len() as i32;
         match trait_name {
-            None => self.call_cb(CB_GET_ATTR, &[format!("i64 {oh}"), ptr, format!("i32 {len}")]),
+            None => self.emit_attr_read(oh, attr, None).0,
             Some(t) => {
+                let ptr = self.str_const(attr.as_bytes());
+                let len = attr.len() as i32;
                 let tptr = self.str_const(t.as_bytes());
                 let tlen = t.len() as i32;
                 self.call_cb(CB_GET_TRAIT_ATTR, &[format!("i64 {oh}"), tptr, format!("i32 {tlen}"), ptr, format!("i32 {len}")])

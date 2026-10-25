@@ -26,6 +26,7 @@ impl<'a> GenCtx<'a> {
             fn_sigs,
             str_consts:      HashMap::new(),
             str_ctr:         0,
+            ic_ctr:          0,
             block_stack:     Vec::new(),
             class_fields,
             class_fields_ord,
@@ -404,6 +405,23 @@ impl<'a> GenCtx<'a> {
             "@{name} = private unnamed_addr constant [{len} x i8] c\"{esc}\\00\", align 1\n"
         ));
         format!("ptr @{name}")
+    }
+
+    /// `obj.attr` を**箇所ごとの IC 付きで**読む（native_object_access_plan.md 2-2・D-1）。`ty` が `Float` / `Int` なら
+    /// その型で（変換規則は `get_float_field` / `get_int_field` と同じ）、ほかはハンドルで返す。
+    /// IC のセルは DLL 内の `i64` の大域（初期値 0）で、命中・ミスの判定は VM の `GetAttr` と同じ関数が行う。
+    /// ⚠ 以前は IC を持たず、毎回 `get_attr_val` の名前引き（`format!` と全フィールドの走査を含む）を通っていた。
+    pub(super) fn emit_attr_read(&mut self, h: &str, attr: &str, ty: Option<Ty>) -> (String, Ty) {
+        let cell = format!("_ic{}", self.ic_ctr);
+        self.ic_ctr += 1;
+        self.str_globals.push_str(&format!("@{cell} = internal global i64 0, align 8\n"));
+        let ptr = self.str_const(attr.as_bytes());
+        let args = [format!("i64 {h}"), ptr, format!("i32 {}", attr.len()), format!("ptr @{cell}")];
+        match ty {
+            Some(Ty::Float) => (self.call_cb(CB_GET_FLOAT_FIELD_IC, &args), Ty::Float),
+            Some(Ty::Int) => (self.call_cb(CB_GET_INT_FIELD_IC, &args), Ty::Int),
+            _ => (self.call_cb(CB_GET_ATTR_IC, &args), Ty::Handle),
+        }
     }
 
     // ── Callback dispatch ─────────────────────────────────────────────────────

@@ -1491,6 +1491,124 @@ extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
     }
 }
 
+// ── IC 付きの属性読み出し（fields 58-60・native_object_access_plan.md 2-2・D-1） ──────────────────
+//
+// 生成コードは属性を読む箇所ごとに IC のセル（DLL 内の `u64`、初期値 0）を持ち、そのポインタを渡す。
+// 命中判定は VM の `GetAttr` / `GetAttrLocal` と同じ `InstanceData::ic_slot`（アリーナ上のインスタンスを
+// 借りたまま読み、`Value` を複製しない）、外れたら VM と同じミス経路 `get_attr_val(.., Some(cache))` が
+// セルを埋める。⚠ 以前のネイティブの読み出し（fields 12 / 33 / 34）は IC を持たず、毎回 `get_attr_val` の
+// 名前引き（`format!` と全フィールドの走査を含む）を通っていた。古い `.arc` のためにそちらも残す。
+
+/// IC 付きの読み出しの結果。`Pending` は先に積まれたエラーがある（何もしない）。
+enum IcRead {
+    Value(Value, *mut crate::interpreter::Interpreter),
+    Error(String),
+    Pending,
+}
+
+/// IC 付きの読み出しの共通部。`cell` は非同期タスクのスレッドと共有されうるので `AtomicU64`（Relaxed）として
+/// 読み書きする（class_id はプロセス全体で一意で、スレッドへの複製も同じ `field_index` を保つので命中した slot は正しい）。
+fn read_attr_ic(obj_h: i64, name: &str, cell: *mut u64) -> IcRead {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() {
+        return IcRead::Error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+    }
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let packed = cell.load(Ordering::Relaxed);
+    let probe = STATE.with(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return Err(None);
+        }
+        if obj_h >= 3 {
+            if let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) {
+                let inst = rc.borrow();
+                if let Some((idx, _)) = inst.ic_slot(packed, true, || name) {
+                    if let Some(v) = inst.field_value(idx) {
+                        return Ok((v, st.interp_ptr));
+                    }
+                }
+            }
+        }
+        Err(Some((st.clone_value(obj_h), st.interp_ptr)))
+    });
+    match probe {
+        Ok((v, interp_ptr)) => IcRead::Value(v, interp_ptr),
+        Err(None) => IcRead::Pending,
+        Err(Some((obj, interp_ptr))) => {
+            if interp_ptr.is_null() {
+                return IcRead::Error(format!("NativeError: interpreter not set (get_attr '{name}')"));
+            }
+            let interp = unsafe { &mut *interp_ptr };
+            let cache = crate::ast::AttrCache(std::cell::Cell::new(packed));
+            let r = interp.get_attr_val(obj, name, Some(&cache));
+            cell.store(cache.0.get(), Ordering::Relaxed);
+            match r {
+                Ok(v) => IcRead::Value(v, interp_ptr),
+                Err(e) => IcRead::Error(e),
+            }
+        }
+    }
+}
+
+/// `float` / `int` のフィールドで数値でない値が入っていたときの誤り（`get_float_field` / `get_int_field` と同じ文面）。
+fn field_not_number(name: &str, got: &Value, interp_ptr: *mut crate::interpreter::Interpreter) {
+    // `interp_ptr` は `read_attr_ic` が値と一緒に返したもの（命中経路でも空ではない: ネイティブ呼び出しの中でしか来ない）
+    let got = if interp_ptr.is_null() { "unknown" } else { unsafe { &*interp_ptr }.type_name(got) };
+    set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+}
+
+extern "C" fn ar_get_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return TL_NONE };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(v, _) => push_handle(v),
+        IcRead::Error(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+        IcRead::Pending => TL_NONE,
+    }
+}
+
+extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> f64 {
+    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(Value::Float(f), _) => f,
+        IcRead::Value(Value::Int(n), _) => n as f64,
+        IcRead::Value(Value::UInt(n), _) => n as f64,
+        IcRead::Value(Value::Bool(b), _) => b as u8 as f64,
+        IcRead::Value(other, interp_ptr) => {
+            field_not_number(name, &other, interp_ptr);
+            0.0
+        }
+        IcRead::Error(e) => {
+            set_field_read_error(e);
+            0.0
+        }
+        IcRead::Pending => 0.0,
+    }
+}
+
+extern "C" fn ar_get_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0 };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(Value::Int(n), _) => n,
+        IcRead::Value(Value::UInt(n), _) => n as i64,
+        IcRead::Value(Value::Float(f), _) => f as i64,
+        IcRead::Value(Value::Bool(b), _) => b as i64,
+        IcRead::Value(other, interp_ptr) => {
+            field_not_number(name, &other, interp_ptr);
+            0
+        }
+        IcRead::Error(e) => {
+            set_field_read_error(e);
+            0
+        }
+        IcRead::Pending => 0,
+    }
+}
+
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
@@ -1600,6 +1718,9 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     call_method_m: ar_call_method_m,
     bind_value: ar_bind_value,
     let_from_name: ar_let_from_name,
+    get_attr_ic: ar_get_attr_ic,
+    get_float_field_ic: ar_get_float_field_ic,
+    get_int_field_ic: ar_get_int_field_ic,
 };
 
 #[cfg(test)]

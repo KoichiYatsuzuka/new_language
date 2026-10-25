@@ -97,15 +97,8 @@ impl<'a> GenCtx<'a> {
                 None => continue,
             };
             for (field_name, field_ty) in &fields {
-                let ptr = self.str_const(field_name.as_bytes());
-                let len = field_name.len() as i32;
                 let r = match field_ty {
-                    Ty::Float => self.call_cb(CB_GET_FLOAT_FIELD, &[
-                        format!("i64 %_h{i}"), ptr, format!("i32 {len}"),
-                    ]),
-                    Ty::Int => self.call_cb(CB_GET_INT_FIELD, &[
-                        format!("i64 %_h{i}"), ptr, format!("i32 {len}"),
-                    ]),
+                    Ty::Float | Ty::Int => self.emit_attr_read(&format!("%_h{i}"), field_name, Some(*field_ty)).0,
                     _ => continue,
                 };
                 let al = format!("%_prf_{}_{}", p.name, field_name);

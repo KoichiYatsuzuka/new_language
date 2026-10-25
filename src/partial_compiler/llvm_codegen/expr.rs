@@ -155,27 +155,12 @@ impl<'a> GenCtx<'a> {
                     }
                 }
 
-                // Callback path: typed single-callback read (CB_GET_FLOAT_FIELD /
-                // CB_GET_INT_FIELD) for known typed fields, plain CB_GET_ATTR otherwise.
+                // Callback path: typed single-callback read for known typed fields, a handle otherwise —
+                // both with a per-site inline cache shared with the VM's `GetAttr` (2-2).
                 let known_ty = self.field_ty_resolved(object, attr, *node_id);
                 let (obj, ot) = self.gen_expr(object);
-                let h   = self.to_handle(&obj, ot);
-                let ptr = self.str_const(attr.as_bytes());
-                let len = attr.len() as i32;
-                match known_ty {
-                    Some(Ty::Float) => {
-                        let r = self.call_cb(CB_GET_FLOAT_FIELD, &[format!("i64 {h}"), ptr, format!("i32 {len}")]);
-                        (r, Ty::Float)
-                    }
-                    Some(Ty::Int) => {
-                        let r = self.call_cb(CB_GET_INT_FIELD, &[format!("i64 {h}"), ptr, format!("i32 {len}")]);
-                        (r, Ty::Int)
-                    }
-                    _ => {
-                        let raw = self.call_cb(CB_GET_ATTR, &[format!("i64 {h}"), ptr, format!("i32 {len}")]);
-                        (raw, Ty::Handle)
-                    }
-                }
+                let h = self.to_handle(&obj, ot);
+                self.emit_attr_read(&h, attr, known_ty)
             }
 
             // `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`（1-4）。

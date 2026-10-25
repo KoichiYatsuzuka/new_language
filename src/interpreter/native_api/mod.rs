@@ -567,6 +567,14 @@ pub struct ArCallbacks {
     /// `let x = <グローバル等の名前>`: ソースの可変性を実行時に引いて決める（VM の `StoreLocalFromIdent` と同じ
     /// `vm_let_value_from_ident`）。引数は (名前, 値)。
     pub let_from_name: extern "C" fn(*const u8, i32, i64) -> i64,
+
+    // ── Attribute reads with per-site inline caches (fields 58-60・2-2・D-1) ──
+    /// `obj.attr`（IC 付き）。引数は (obj, 名前, 箇所ごとの IC のセル)。命中経路・ミス経路とも VM の `GetAttr` と同じ。
+    pub get_attr_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> i64,
+    /// `float` と分かっているフィールドの読み出し（IC 付き）。変換規則は `get_float_field` と同じ。
+    pub get_float_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> f64,
+    /// `int` と分かっているフィールドの読み出し（IC 付き）。変換規則は `get_int_field` と同じ。
+    pub get_int_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
