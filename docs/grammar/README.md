@@ -11,11 +11,11 @@
 | [00_overview.md](00_overview.md) | パイプライン全体図・ファイル読み込み・CLI オプション |
 | [01_lexer.md](01_lexer.md) | 字句解析・トークン種別・インデント処理・文字列/数値リテラル |
 | [02_variables.md](02_variables.md) | 変数宣言 (let/mut/const/static)・スコープ・クロージャ |
-| [03_expressions.md](03_expressions.md) | 演算子優先順位・各種式・型ガード・キャスト・ブロック式 |
+| [03_expressions.md](03_expressions.md) | 演算子優先順位・各種式・f-string・文字列の `%` 書式・型ガード・キャスト・ブロック式 |
 | [04_control_flow.md](04_control_flow.md) | if/match/for/while/break/continue・制御構文の式としての使い方 |
 | [05_functions.md](05_functions.md) | fn/gen・パラメータ・テンプレート・オーバーロード・デコレータ |
 | [06_classes_traits.md](06_classes_traits.md) | クラス・trait・new_type・enum・アクセス制御・束縛メソッド・属性に入れた関数の呼び出し・ディスクリプタ（`__get__` / `__set__`）・組み込みの `property` |
-| [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス（CPython の階層・`args`）・`except m.Err` |
+| [07_exceptions.md](07_exceptions.md) | try/except/finally/raise・組み込み例外クラス（CPython の階層・`args`・`OSError` の `errno` / `strerror` / `filename`）・`except m.Err` |
 | [08_type_system.md](08_type_system.md) | 型アノテーション・静的型検査・型推論・型ガードナロイング |
 | [09_imports.md](09_imports.md) | import・from import・相対 import・探索規則・パッケージ・名前空間（CPython 準拠）・言語タグ |
 | [10_special_features.md](10_special_features.md) | block_return/loop_yield/yield・async・break_point・数学文字列 |

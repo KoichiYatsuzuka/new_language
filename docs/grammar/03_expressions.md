@@ -81,6 +81,37 @@ f"{name!r:>10}|{x=}|{x:{width}.{prec}f}"
 
 ---
 
+## 文字列の `%` 書式
+
+```ar
+"%s is %d years old" % (name, age)     # 値が 2 つ以上なら組で渡す
+"%.2f" % 3.14159                       # 値が 1 つなら組にしなくてよい → '3.14'
+"%s | %r" % (t, t)                     # str(t) / repr(t)（__str__ / __repr__ を呼ぶ）
+"[%6s] [%-6s] [%04d] [%+d]" % ("ab", "ab", 42, 3)
+```
+
+左が文字列の `%` は Python の printf 形式の書式です（数どうしの `%` は剰余）。
+
+| 書式 | 意味 |
+|---|---|
+| `%s` / `%r` | `str(x)` / `repr(x)`。クラスの `__str__` / `__repr__` を呼び、コンテナの中は `repr`（CPython と同じ・known_bugs.md の #4） |
+| `%d` / `%i` / `%u` | 整数（`float` は切り捨て・`bool` は 0 / 1） |
+| `%f` / `%F` | 小数（既定の精度 6） |
+| `%e` / `%E` / `%g` / `%G` | 指数・一般の形（`format()` と同じ綴り・`1.234568e+04`） |
+| `%x` / `%X` / `%o` | 16 進・8 進 |
+| `%c` | 整数の文字（`"%c" % 65` は `A`） |
+| `%%` | `%` そのもの |
+
+- 指定子の前に、旗（`-` 左寄せ・`0` 0 埋め・`+` 符号・空白・`#`）、幅（`%6s`）、精度（`%.2f`・`%s` / `%r` では文字の数）を置けます。
+- 値が足りなければ `TypeError: not enough arguments for format string`。
+- ⚠ CPython と違う所: 値が余っても誤りになりません（`"%d" % (1, 2)` は `1`。CPython は `TypeError: not all arguments
+  converted during string formatting`）。辞書で名前を指す `%(name)s` はありません（`unsupported format character '('`）。
+  `%b`（2 進）が使えます（CPython の `str` の `%` には無く `ValueError`）。
+- 例題は `examples/basics/percent_format.ar`。書式指定の小言語（`format()` / f-string の `{x:spec}`）は
+  [12_builtins.md](12_builtins.md) の「`format`」。
+
+---
+
 ## コレクションリテラル
 
 ### リスト

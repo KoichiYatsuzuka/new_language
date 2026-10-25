@@ -67,7 +67,9 @@ let b = open("out.txt", mode="rb")   # バイト列
 - `encoding=` は UTF-8 / UTF-8-SIG / ASCII、`errors="strict"`、`newline=None / "" / "\n"`、`buffering` は受けて無視
 - ⚠ `"r+"` は明示の `NotImplementedError`（Arrow の `write` は位置へ**挿入**する。CPython は上書き）
 - ⚠ 改行は変換しない（CPython は Windows の既定で、書くときに改行を CR LF にする）
-- 失敗は OS のエラーの種類で `FileNotFoundError` / `PermissionError` / … に振り分ける（[07_exceptions.md](07_exceptions.md)）
+- 失敗は OS のエラーの種類で `FileNotFoundError` / `PermissionError` / … に振り分ける。文言は CPython と同じ
+  `[Errno 2] No such file or directory: 'p'` で、例外は `errno` / `strerror` / `filename` を持つ（`e.errno` は `int | None`・
+  [07_exceptions.md](07_exceptions.md) の「`OSError` の系統」・known_bugs.md の #9。以前は `cannot open 'p': <OS の文言>`）
 
 ### ファイルのメソッド
 
@@ -192,7 +194,7 @@ print("{0.x} {1[k]} {2!r:>6}".format(p, {"k": 1}, "s"))                     # �
   `TypeError: unsupported format string passed to C.__format__`）。
 - `str.format` は位置・キーワード・属性（`{0.name}`）・添字（`{0[1]}` / `{d[key]}`）・変換（`!r` / `!s` / `!a`）・
   書式の中の置換フィールド（`{:{w}}`）を受ける。自動と手動の番号は混ぜられない（CPython と同じ文言）。
-- `%` 演算子の `%e` / `%g` も同じ綴り（`1.234568e+04`）。`%s` は `str(x)`、`%r` は `repr(x)`（`__str__` / `__repr__` を呼ぶ・コンテナの中は `repr`・known_bugs.md の #4。以前はインスタンスが `<T object at 0x..>`、`%r` が `"ab"` / `"5"` だった）。
+- `%` 演算子（[03_expressions.md](03_expressions.md) の「文字列の `%` 書式」）の `%e` / `%g` も同じ綴り（`1.234568e+04`）。`%s` は `str(x)`、`%r` は `repr(x)`（`__str__` / `__repr__` を呼ぶ・コンテナの中は `repr`・known_bugs.md の #4。以前はインスタンスが `<T object at 0x..>`、`%r` が `"ab"` / `"5"` だった）。
 - ⚠ `complex` の書式指定は未対応（`ValueError: format specifiers for complex numbers are not supported`）。
 
 ### 組み込みの名前を値として使う
