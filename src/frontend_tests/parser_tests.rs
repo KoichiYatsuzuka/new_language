@@ -1988,6 +1988,44 @@ fn python_del_becomes_delattr_and_delitem_calls() {
     assert!(matches!(calls[2], ("__py_delitem", Expr::Slice { .. })), "{calls:?}");
 }
 
+/// `super().m(..)` は Python 専用の内部の組み込み `__py_super(<第 1 基底>, 受け手, "m", ..)` になり、受け手は今の関数の
+/// 最初の仮引数（クラスメソッドは `cls`・known_bugs.md の #6）。静的メソッドの中の `super()` は変換の誤り。
+#[test]
+fn python_super_becomes_py_super_with_the_first_param() {
+    let src = "class B:\n    pass\n\nclass C(B):\n    @classmethod\n    def k(klass, x):\n        return super().k(x, y=1)\n    \
+               def m(this):\n        return super().m()\n";
+    let stmts = crate::python_converter::convert_python_source(src, "<test>").expect("converts");
+    let Some(Stmt::ClassDef { body, .. }) =
+        stmts.iter().find(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "C"))
+    else {
+        panic!("{stmts:?}")
+    };
+    let call_of = |method: &str| -> (String, Vec<String>) {
+        let Some(Stmt::FnDef { body: fb, .. }) =
+            body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == method))
+        else {
+            panic!("{method}: {body:?}")
+        };
+        let Some(Stmt::Return(Some(Expr::Call { func, args, .. }), _)) = fb.first() else { panic!("{fb:?}") };
+        let Expr::Ident { name, .. } = func.as_ref() else { panic!("{func:?}") };
+        let shown = args
+            .iter()
+            .map(|a| match a {
+                CallArg::Positional(Expr::Ident { name, .. }) => name.clone(),
+                CallArg::Positional(Expr::Str(s)) => format!("'{s}'"),
+                CallArg::Keyword { name, .. } => format!("{name}="),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        (name.clone(), shown)
+    };
+    assert_eq!(call_of("k"), ("__py_super".to_string(), vec!["B".into(), "klass".into(), "'k'".into(), "x".into(), "y=".into()]));
+    assert_eq!(call_of("m"), ("__py_super".to_string(), vec!["B".into(), "this".into(), "'m'".into()]));
+    let static_src = "class B:\n    pass\n\nclass C(B):\n    @staticmethod\n    def s(x):\n        return super().s(x)\n";
+    let err = crate::python_converter::convert_python_source(static_src, "<test>").expect_err("no receiver");
+    assert!(err.contains("needs the first argument of a method"), "{err}");
+}
+
 /// `__setattr__` / `__delattr__` / `__getattr__` は Python のモジュールのクラスだけが持てる。Arrow のクラスでは `fn` の
 /// 位置でパースの誤り（`static fn` / `class_method fn` も・known_bugs.md の #10 / #11）。ほかの dunder はそのまま。
 #[test]

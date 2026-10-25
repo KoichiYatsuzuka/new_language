@@ -37,6 +37,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
     // （known_bugs.md の #10 / #11）
     "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
+    "__py_super",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -269,6 +271,8 @@ impl Interpreter {
             "__py_object_setattr" => Some(self.py_object_setattr(args)),
             "__py_object_delattr" => Some(self.py_object_delattr(args)),
             "__py_object_getattribute" => Some(self.py_object_getattribute(args)),
+            // Python の `super().m(..)`（変換器が置く・known_bugs.md の #6）。キーワード引数つきは `eval_builtin_evaled_named`。
+            "__py_super" => Some(self.py_super_call(args.into_iter().map(|v| (None, v, true)).collect())),
             "__py_delitem" => Some(match <[Value; 2]>::try_from(args) {
                 Ok([obj, key]) => self.eval_delitem(obj, key).map(|_| Value::None),
                 Err(a) => Err(format!("TypeError: __py_delitem() takes exactly 2 arguments ({} given)", a.len())),
@@ -744,6 +748,11 @@ impl Interpreter {
                     let values: Vec<Value> = all.into_iter().map(|(_, v, _)| v).collect();
                     self.py_object_init(&values)
                 }))
+            }
+            // `super().m(*args, **kwargs)`（known_bugs.md の #6）。展開してから基底のメソッドへ名前ごと渡す。
+            "__py_super" => {
+                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
+                Some(self.expand_spread_args(evaled).and_then(|all| self.py_super_call(all)))
             }
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {

@@ -732,6 +732,8 @@ pub(crate) fn convert_stmt(
                 // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
                 let _rename_guard = ParamRenameGuard::push(renames, &param_names);
                 let _body_guard = FnBodyGuard::enter();
+                // 入れ子の関数の `super()` の受け手はその関数の最初の仮引数（CPython と同じ・known_bugs.md の #6）。
+                let _receiver_guard = crate::python_converter::supers::SuperReceiverGuard::push(&f.args, false);
                 convert_scope(&f.body, filename, &param_names)?
             };
             // ★ 本体に文としての `yield` があればジェネレータ（項目 9）。

@@ -73,6 +73,8 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
     // （known_bugs.md の #10 / #11）
     "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
+    "__py_super",
     // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
     "Ellipsis",
     // 唯一の値 `NotImplemented`（演算子メソッドが返すと反対側を試す・タスク 6-12）。

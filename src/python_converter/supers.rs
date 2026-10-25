@@ -16,6 +16,35 @@ use std::cell::RefCell;
 thread_local! {
     /// 変換中クラスの（素の名前, 第 1 基底名）。基底なしのクラスでは基底に `None` を積む。
     static SUPER_BASE: RefCell<Vec<(String, Option<String>)>> = const { RefCell::new(Vec::new()) };
+    /// 変換中の関数の `super()` の受け手（最初の仮引数の名前・known_bugs.md の #6）。CPython の引数なしの `super()` は
+    /// **今の関数の最初の引数**を受け手にする（インスタンスメソッドは `self`、クラスメソッドは `cls`）。静的メソッドと
+    /// 仮引数の無い関数は `None`（受け手が無い）。
+    static SUPER_RECEIVER: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 関数の本体を変換する間だけ `super()` の受け手を積む RAII ガード（[`current_super_receiver`]）。
+pub(crate) struct SuperReceiverGuard;
+
+impl SuperReceiverGuard {
+    /// `args` の最初の位置引数（`*args` / キーワード専用は受け手にならない）。`is_static` なら受け手は無い。
+    pub(crate) fn push(args: &rustpython_parser::ast::Arguments, is_static: bool) -> Self {
+        let first = args.posonlyargs.iter().chain(args.args.iter()).next().map(|a| a.def.arg.to_string());
+        SUPER_RECEIVER.with(|s| s.borrow_mut().push(if is_static { None } else { first }));
+        SuperReceiverGuard
+    }
+}
+
+impl Drop for SuperReceiverGuard {
+    fn drop(&mut self) {
+        SUPER_RECEIVER.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// 引数なしの `super()` の受け手（今の関数の最初の仮引数）。関数の外・静的メソッド・仮引数の無い関数なら `None`。
+pub(crate) fn current_super_receiver() -> Option<String> {
+    SUPER_RECEIVER.with(|s| s.borrow().last().cloned().flatten())
 }
 
 /// `convert_class` の間だけクラスの名前と第 1 基底を積む RAII ガード。

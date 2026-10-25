@@ -159,6 +159,65 @@ impl Interpreter {
         ))
     }
 
+    /// Python の `super().m(..)` / `super(C, x).m(..)`（変換器が Python 専用の内部の組み込み
+    /// `__py_super(<第 1 基底>, 受け手, "m", ..)` にする・known_bugs.md の #6）。CPython の `super` と同じく、基底
+    /// （メソッドは祖先まで平坦化してある）の `m` を、種類に合わせて受け手で呼ぶ:
+    /// - クラスメソッド: `cls` に受け手（受け手がインスタンスならそのクラス）。名前で引き直さずに**基底の関数そのもの**を
+    ///   呼ぶ（`Sub.kind` へ戻って回り続けない）
+    /// - 静的メソッド: 受け手を渡さない
+    /// - 受け手がクラス（クラスメソッドの中の `super()`）で、`m` がインスタンスメソッド: 束縛しない関数として呼ぶ
+    ///   （`self` を渡さない・CPython と同じく引数が足りなければ誤り）
+    /// - ほか（インスタンスメソッド・組み込みの例外の `__init__`・基底が上書きしていない `__setattr__` など）: 以前の
+    ///   書き換え先 `Base.m(受け手, ..)` と同じ（[`Self::eval_class_method`]）
+    pub(crate) fn py_super_call(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {
+        let mut it = evaled.into_iter();
+        let (Some((None, Value::Class(base), _)), Some((None, receiver, _)), Some((None, Value::Str(name), _))) =
+            (it.next(), it.next(), it.next())
+        else {
+            return Err("TypeError: __py_super() takes the base class, the receiver and the method name".to_string());
+        };
+        let rest: Vec<(Option<String>, Value, bool)> = it.collect();
+        let name: &str = &name;
+        if let Some(overloads) = base.methods.get(name).cloned() {
+            if base.class_method_names.contains(name) {
+                let cls = match &receiver {
+                    Value::Class(c) => c.clone(),
+                    Value::Instance(i) => i.borrow().class.clone(),
+                    other => {
+                        return Err(format!(
+                            "TypeError: super(type, obj): obj ({}) must be an instance or subtype of type",
+                            self.type_name(other)
+                        ))
+                    }
+                };
+                let mut all = vec![(None, Value::Class(cls), true)];
+                all.extend(rest);
+                return self.run_in_class_ctx(&base, overloads, all, name);
+            }
+            if base.static_method_names.contains(name) || matches!(receiver, Value::Class(_)) {
+                return self.run_in_class_ctx(&base, overloads, rest, name);
+            }
+        }
+        let mut all = vec![(None, receiver, true)];
+        all.extend(rest);
+        self.eval_class_method(base, name, all)
+    }
+
+    /// `overloads`（1 つなら直接・複数なら多重定義の振り分け）を `cls` の文脈で呼ぶ（`self` は渡さない）。
+    fn run_in_class_ctx(
+        &mut self,
+        cls: &Rc<ClassValue>,
+        overloads: Vec<Rc<crate::interpreter::FnValue>>,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        method_name: &str,
+    ) -> Result<Value, String> {
+        if overloads.len() == 1 {
+            self.in_class_ctx(cls, |me| me.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None))
+        } else {
+            self.in_class_ctx(cls, |me| me.dispatch_overload_evaled(overloads, evaled, None, method_name, None))
+        }
+    }
+
     /// 静的メソッド・クラスメソッドを**そのクラスの文脈で**呼ぶ（フェーズ10 10-6）。
     ///
     /// 呼ばれた関数が `exec_fn_evaled` の入口で `class_call_ctx` を取り去って自分の文脈にする。

@@ -380,6 +380,8 @@ fn convert_class_in(
                     // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
                     let _rename_guard = ParamRenameGuard::push(renames, &param_names);
                     let _body_guard = crate::python_converter::statements::FnBodyGuard::enter();
+                    // `super()` の受け手は最初の仮引数（クラスメソッドは `cls`・静的メソッドは無し・known_bugs.md の #6）。
+                    let _receiver_guard = crate::python_converter::supers::SuperReceiverGuard::push(&f.args, dec.is_static);
                     convert_scope(&f.body, filename, &param_names)?
                 };
                 // ★ 本体に文としての `yield` があれば `gen` メソッド（項目 9）。

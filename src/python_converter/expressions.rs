@@ -437,18 +437,34 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         py::Expr::Call(c) => {
             // ★ `super().m(args)` の脱糖（`import[py]` 限定のクラス継承サポートの一部）。
-            //    Arrow に `super` は無いので、変換時に `<第1基底>.m(self, args)` へ書き換える。
-            //    受け側（クラス経由のアンバウンド呼び出し）は `classes/class_methods.rs` が
-            //    `FnValue::is_python` 限定で許可している。
+            //    Arrow に `super` は無いので、変換時に Python 専用の内部の組み込み
+            //    `__py_super(<第1基底>, 受け手, "m", args)` へ書き換える（known_bugs.md の #6）。基底の `m` の種類
+            //    （クラスメソッド・静的メソッド・インスタンスメソッド）で受け手の渡し方を変えるのは実行時
+            //    （`Interpreter::py_super_call`）。⚠ 以前は `<第1基底>.m(self, args)` で、クラスメソッドの中（`self` が無い）と
+            //    基底のクラスメソッドを呼ぶ形（受け手が余分な引数になる）が動かなかった。
+            //    受け手は今の関数の最初の仮引数（クラスメソッドなら `cls`・`current_super_receiver`）。
             //    2 引数の `super(C, x).m(args)` は、`C` が変換中のクラスなら `super().m(args)` と同じで、受け手は `x`
             //    （タスク 6-2）。⚠ ほかのクラスを渡す形（MRO の途中から探す）は変換の誤り。
             if let py::Expr::Attribute(attr) = &*c.func {
                 if let Some(form) = super_form(&attr.value) {
                     let receiver = match form {
-                        SuperForm::Zero => Expr::Ident {
-                            name: "self".to_string(),
-                            node_id: 0,
-                            res: Resolution::Unresolved,
+                        SuperForm::Zero => match current_super_receiver() {
+                            Some(name) => Expr::Ident { name, node_id: 0, res: Resolution::Unresolved },
+                            None if !inside_class() => {
+                                return Err(format!(
+                                    "{filename}: `super()` is only supported inside a method of a class"
+                                ))
+                            }
+                            // CPython も実行時の誤り（仮引数が無ければ `RuntimeError: super(): no arguments`、静的メソッドは
+                            // 最初の引数を受け手にして `TypeError: super(type, obj): ..`）。
+                            None => {
+                                return Err(format!(
+                                    "{filename}: `super()` needs the first argument of a method as its receiver; a \
+                                     static method or a function without parameters has none (CPython fails at run \
+                                     time: `RuntimeError: super(): no arguments`, or `TypeError: super(type, obj): obj \
+                                     must be an instance or subtype of type` in a static method)"
+                                ))
+                            }
                         },
                         SuperForm::Two { class, receiver } => {
                             let current = current_super_class();
@@ -518,15 +534,19 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         node_id: 0,
                         res: Resolution::Unresolved,
                     };
+                    // `__py_super(基底, 受け手, "m", args..)`（`args` の先頭は受け手）。
+                    let mut call_args = vec![CallArg::Positional(base_expr)];
+                    let mut rest = args.into_iter();
+                    call_args.extend(rest.next());
+                    call_args.push(CallArg::Positional(Expr::Str(Rc::from(attr.attr.as_str()))));
+                    call_args.extend(rest);
                     return Ok(Expr::Call {
-                        func: Box::new(Expr::Attr {
-                            object: Box::new(base_expr),
-                            attr: attr.attr.to_string(),
-                            span: make_span(filename),
-                            cache: Default::default(),
+                        func: Box::new(Expr::Ident {
+                            name: "__py_super".to_string(),
                             node_id: 0,
+                            res: Resolution::Unresolved,
                         }),
-                        args,
+                        args: call_args,
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0,

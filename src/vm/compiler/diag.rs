@@ -109,6 +109,8 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
     // （known_bugs.md の #10 / #11）。
     "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（known_bugs.md の #6）。
+    "__py_super",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {
@@ -122,7 +124,7 @@ pub(super) fn is_vm_builtin(name: &str) -> bool {
 /// **ツリーウォークと一致することを確認した名前だけ**を挙げる。ここに無い名前は従来どおり
 /// bail してツリーウォークへ落とす（＝安全側）。
 pub(super) const VM_BUILTIN_KW_NAMES: &[&str] =
-    &["enumerate", "open", "min", "max", "sum", "sorted", "round", "pow", "print", "__py_object_init"];
+    &["enumerate", "open", "min", "max", "sum", "sorted", "round", "pow", "print", "__py_object_init", "__py_super"];
 
 /// 引数に**名前付き**（キーワード／可変長）が含まれるか（#27-c）。
 /// `compile_call_args` は同じ判定を戻り値で返すが、それでは遅すぎる場面がある:

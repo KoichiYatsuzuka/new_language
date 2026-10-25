@@ -201,6 +201,7 @@ $knownDiff = @{
     'py_shared_objects'              ='Rust: Python のコードの中は格納で写さず参照を共有する（known_bugs.md の #1 で新設・sh.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError'
     'py_del'                         ='Rust: Python の del o.a / del d[k]（known_bugs.md の #2 / #3 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_setattr'                     ='Rust: Python のクラスの __setattr__ / __delattr__ と object.__setattr__（known_bugs.md の #10 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
+    'py_super_static_error'          ='Rust: 静的メソッドの中の super() は変換の誤り（known_bugs.md の #6 で新設）。py: 変換時エラーを出さず、実行時に AttributeError'
     'py_methods_via_instance'        ='Rust: Python のクラスの静的メソッド・クラスメソッドをインスタンスから呼ぶ（known_bugs.md の #5 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_os_error_args'               ='Rust: OSError の errno / strerror / filename と args・open の失敗の文言（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_os_error_args_error'         ='Rust: OSError の 4 つ目の引数（winerror）は TypeError（known_bugs.md の #9 で新設）。py: CPython と同じく winerror から errno を決めて PermissionError(13, ..) を返す'

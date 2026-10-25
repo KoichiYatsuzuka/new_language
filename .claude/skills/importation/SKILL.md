@@ -274,6 +274,13 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call. `super(C, x).m(..)` (6-2) is
   the same rewrite with receiver `x` when `C` is the class being converted (`current_super_class`); any other `C` is
   a conversion error (`super_form` in `expressions.rs`; `builtins_check` skips the same shape).
+- `super()` with a Python base (known_bugs.md #6): `super().m(..)` becomes the Python-only internal builtin
+  `__py_super(<first base>, receiver, "m", ..)`. The zero-argument receiver is the current function's first parameter
+  (`SuperReceiverGuard` / `current_super_receiver` in `supers.rs` — `cls` in a class method; none in a static method or
+  a parameterless function, which is a conversion error). `Interpreter::py_super_call` (`class_methods.rs`) runs the
+  base's own function: a class method gets `cls` = the receiver (or its class), a static method gets no receiver, a
+  class receiver calling an instance method passes no `self`; anything else falls back to the old
+  `Base.m(receiver, ..)` (`eval_class_method` — exceptions' `__init__`, `object` hooks).
 - `f = staticmethod(f)` / `g = classmethod(f)` in a class body (6-13, `wrapped_method` in
   `python_converter/classes.rs`) mark an earlier method static / class (a different name adds a copy). Wrapping
   anything other than an earlier method of the class is a conversion error; `builtins_check` skips exactly this form.
