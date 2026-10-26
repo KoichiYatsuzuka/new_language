@@ -536,7 +536,7 @@ extern "C" fn ar_assign_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len
 /// fields 61 / 65 / 66 の本体（値の受け取り方だけが違う）。
 fn assign_attr_ic_value(obj_h: i64, name_ptr: *const u8, name_len: i32, val: Value, cell: *mut u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let Some(name) = site_name(name_ptr, name_len, cell, "attribute name") else { return };
     if cell.is_null() {
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: no inline cache cell for attribute '{name}'")));
         return;
@@ -1677,7 +1677,11 @@ fn field_not_number(name: &str, got: &Value, interp_ptr: *mut crate::interpreter
 }
 
 extern "C" fn ar_get_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
-    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return TL_NONE };
+    // 命中したら同じ借用のままアリーナへ積む（8-2）
+    if let Some(h) = read_ic_hit(obj_h, cell, name_ptr, name_len, |st, v| Some(st.push_value(v))) {
+        return h;
+    }
+    let Some(name) = site_name(name_ptr, name_len, cell, "attribute name") else { return TL_NONE };
     match read_attr_ic(obj_h, name, cell) {
         IcRead::Value(v, _) => push_handle(v),
         IcRead::Error(e) => {
@@ -1689,7 +1693,7 @@ extern "C" fn ar_get_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cel
 }
 
 /// 数値のフィールドを `float` として読むときの変換（`int` は広げる・`bool` は 0 / 1・ほかは `None` = エラー）。
-/// 命中経路（`read_number_ic_hit`）と外れた道の両方で使う唯一の規則（native_object_access_plan.md 8-1）。
+/// 命中経路（`read_ic_hit`）と外れた道の両方で使う唯一の規則（native_object_access_plan.md 8-1）。
 fn float_of(v: &Value) -> Option<f64> {
     match v {
         Value::Float(f) => Some(*f),
@@ -1720,20 +1724,20 @@ fn debug_field_name<'a>(ptr: *const u8, len: i32) -> &'a str {
     std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }).unwrap_or("<invalid utf-8>")
 }
 
-/// IC 付きの数値の読み出しの命中経路（native_object_access_plan.md 8-1・D-9）。IC が当たり、フィールドが数値なら、
-/// アリーナとインスタンスを借りたまま `conv` で変換して返す。それ以外（先に積まれたエラーがある・外れた・未初期化・
-/// 数値でない）は `None` で、呼ぶ側は今までの道（`read_attr_ic`）へ回る（結果もエラーの文面も変わらない）。
-/// ⚠ 属性名はここでは検査しない。命中は IC のセルが埋まった後にしか起きず、セルを埋めるのは名前を `native_str` で
-///   検査する外れた道だけなので、その箇所の名前は一度検査を通っている。
-/// ⚠ 以前は毎回名前を検査し、値を `Value` → `Result` → `IcRead` に包んで返していた（1 回 28.8 ns のうち 17.8 ns・
-///   実験で切り分けた。IC の判定と取り出しは VM の `GetAttrLocal` と同じ関数）。
+/// IC 付きの読み出しの命中経路（native_object_access_plan.md 8-1・8-2・D-9）。IC が当たれば、アリーナとインスタンスを
+/// 1 回借りたまま取り出したフィールドの値を `take` に渡し（数値へ変換する・アリーナへ積む）、その結果を返す。
+/// それ以外（先に積まれたエラーがある・外れた・未初期化・`take` が受け取らない）は `None` で、呼ぶ側は今までの道
+/// （`read_attr_ic`）へ回る（結果もエラーの文面も変わらない）。
+/// ⚠ 属性名はここでは使わない（`ic_slot` のデバッグビルドの検査だけ）。
+/// ⚠ 以前は毎回名前を検査し、値を `Value` → `Result` → `IcRead` に包んで返していた（数値の読み出し 1 回 28.8 ns のうち
+///   17.8 ns・ハンドルを返す読み出しは約 20 ns。実験で切り分けた。IC の判定と取り出しは VM の `GetAttrLocal` と同じ関数）。
 #[inline(always)]
-fn read_number_ic_hit<T>(
+fn read_ic_hit<T>(
     obj_h: i64,
     cell: *mut u64,
     name_ptr: *const u8,
     name_len: i32,
-    conv: fn(&Value) -> Option<T>,
+    take: impl FnOnce(&mut super::NativeCallState, Value) -> Option<T>,
 ) -> Option<T> {
     use std::sync::atomic::{AtomicU64, Ordering};
     if cell.is_null() || obj_h < 3 {
@@ -1742,22 +1746,40 @@ fn read_number_ic_hit<T>(
     // SAFETY: `read_attr_ic` と同じ（生成コードが渡すのは DLL 内の `i64` の大域で、`AtomicU64` と同じ並び）
     let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
     STATE.with(|s| {
-        let st = s.borrow();
+        let mut st = s.borrow_mut();
         if st.error.is_some() {
             return None;
         }
-        let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return None };
-        let inst = rc.borrow();
-        let (idx, _) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len))?;
-        conv(&inst.field_value(idx)?)
+        let v = {
+            let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return None };
+            let inst = rc.borrow();
+            let (idx, _) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len))?;
+            inst.field_value(idx)?
+        };
+        take(&mut st, v)
     })
 }
 
+/// IC を持つ箇所の属性名（native_object_access_plan.md 8-2・D-9）。IC のセルが埋まっていれば、その箇所の名前は検査済みと
+/// して検査を省く。セルは 0 から始まり、埋めるのは名前を `native_str` で検査した後の道（`read_attr_ic` の外れ・
+/// `attr_assign_ic`）だけで、1 つのセルは 1 つの箇所・1 つの名前の定数にしか使わないため。空なら `native_str` で検査する。
+/// ⚠ 以前は書き込み・ハンドルを返す読み出しのたびに UTF-8 として検査していた（1 回 4〜6 ns）。
+fn site_name<'a>(name_ptr: *const u8, name_len: i32, cell: *mut u64, what: &str) -> Option<&'a str> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // SAFETY: `read_attr_ic` と同じ
+    let filled = !cell.is_null() && unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed) != 0;
+    if filled && name_len > 0 && !name_ptr.is_null() {
+        // SAFETY: 長さとポインタは上で確かめた。中身はセルを埋める前に `native_str` が UTF-8 として検査した
+        return Some(unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) });
+    }
+    native_str(name_ptr, name_len, what)
+}
+
 extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> f64 {
-    if let Some(f) = read_number_ic_hit(obj_h, cell, name_ptr, name_len, float_of) {
+    if let Some(f) = read_ic_hit(obj_h, cell, name_ptr, name_len, |_, v| float_of(&v)) {
         return f;
     }
-    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
+    let Some(name) = site_name(name_ptr, name_len, cell, "field name") else { return 0.0 };
     match read_attr_ic(obj_h, name, cell) {
         IcRead::Value(v, interp_ptr) => match float_of(&v) {
             Some(f) => f,
@@ -1775,10 +1797,10 @@ extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i
 }
 
 extern "C" fn ar_get_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
-    if let Some(n) = read_number_ic_hit(obj_h, cell, name_ptr, name_len, int_of) {
+    if let Some(n) = read_ic_hit(obj_h, cell, name_ptr, name_len, |_, v| int_of(&v)) {
         return n;
     }
-    let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0 };
+    let Some(name) = site_name(name_ptr, name_len, cell, "field name") else { return 0 };
     match read_attr_ic(obj_h, name, cell) {
         IcRead::Value(v, interp_ptr) => match int_of(&v) {
             Some(n) => n,
