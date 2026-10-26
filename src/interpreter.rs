@@ -634,6 +634,11 @@ pub struct Interpreter {
     /// 読み込んだ DLL。⚠ `Arc` なのは、DLL の中のメモリを指す `Ptr`（3-2）が DLL を生かしておくため
     /// （`PtrHandle` の `lib`。インタプリタより長く残った `Ptr` が解放関数を呼ぶ）。
     pub(self) native_libs: HashMap<PathBuf, std::sync::Arc<NativeLibWrapper>>,
+    /// コンパイル済みコードが生成したクラス（`class_id` → クラス）。生成の呼び出し箇所ごとのセル（DLL の中・プロセスに
+    /// 1 つ）には `class_id` だけを入れ、クラスはインタープリタごとのこの表から引く（native_object_access_plan.md 10-2）。
+    /// ⚠ セルに表の添字を入れないのは、非同期タスクのワーカーが別のインタープリタで同じ DLL を使うため（`class_id` は
+    ///   プロセス全体で一意で、ワーカーへの複製も同じ番号を保つ）。ワーカーの表は空から始まり、最初は名前で引いて埋める。
+    pub(self) native_classes: HashMap<u32, Rc<ClassValue>>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
     /// イベントループの状態 4 本（#67 で `event_loop::EventState` へ束ねた）。
@@ -760,6 +765,7 @@ impl Interpreter {
             meta_decls: std::collections::HashMap::new(),
             meta_prefix: Rc::new(RefCell::new(Vec::new())),
             native_libs: HashMap::new(),
+            native_classes: HashMap::new(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
         }

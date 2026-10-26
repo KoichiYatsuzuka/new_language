@@ -667,6 +667,11 @@ pub struct ArCallbacks {
     pub len: extern "C" fn(i64) -> i64,
     /// `str(<int>)`: 組み込みの `str` と同じ `call_type_by_name_evaled("str", ..)`（値を箱に入れずに渡す）。
     pub str_of_int: extern "C" fn(i64) -> i64,
+
+    // ── Construction with a per-site class cache (field 70・10-2・D-11) ──
+    /// `Class(args)` の呼び出し箇所ごとのセルつき版。引数は (セル, クラス名, 引数, 個数, `mut_mask`)。セルには前回
+    /// 名前で引いたクラスの `class_id + 1` が入り（0 = まだ）、当たれば名前で引かずにインタープリタの表から引く。
+    pub construct_ic: extern "C" fn(*mut u64, *const u8, i32, *const i64, i32, u32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

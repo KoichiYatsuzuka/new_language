@@ -1913,6 +1913,56 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
 /// クラスは名前で引く（`CB_GET_GLOBAL` と同じ `get_var`。1-7 でモジュールの大域にいる）。クラスでない値に
 /// 束縛されていたら（型検査が通さないはずだが）値として呼ぶ（`call_value_with_args`）。
 extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32, mut_mask: u32) -> i64 {
+    construct_by_name(std::ptr::null_mut(), name_ptr, name_len, args_ptr, n_args, mut_mask)
+}
+
+/// `Class(args)` の呼び出し箇所ごとのセルつき版（field 70・native_object_access_plan.md 10-2・D-11）。セルに前回の
+/// クラスの `class_id + 1` が入っていて、インタープリタの表（`native_classes`）にあれば、名前の検査も名前で引くことも
+/// しない。無ければ（最初の 1 回・ワーカーの最初の 1 回）`ar_construct` と同じく名前で引き、表とセルを埋める。
+/// ⚠ 以前（field 67）は生成のたびに名前を UTF-8 として検査し、`get_var` で引いていた（1 回 約 80 ns）。
+/// 同じ箇所の名前はいつも同じクラスを指す（モジュールの最上位のクラスは束縛し直せない・ローカルに同名があれば
+/// 生成コードはこの道を使わない）。
+extern "C" fn ar_construct_ic(
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if !cell.is_null() {
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+        let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+        if packed != 0 {
+            let (has_err, interp_ptr) = STATE.with(|s| {
+                let st = s.borrow();
+                (st.error.is_some(), st.interp_ptr)
+            });
+            if has_err {
+                return TL_NONE;
+            }
+            if !interp_ptr.is_null() {
+                let interp = unsafe { &mut *interp_ptr };
+                if let Some(cls) = interp.native_classes.get(&((packed - 1) as u32)).cloned() {
+                    return construct_class(interp, cls, args_ptr, n_args, mut_mask);
+                }
+            }
+        }
+    }
+    construct_by_name(cell, name_ptr, name_len, args_ptr, n_args, mut_mask)
+}
+
+/// クラスを名前で引いて生成する（field 67 と field 70 の外れた道）。`cell` があればクラスを表とセルに入れる。
+fn construct_by_name(
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
     let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
     let (has_err, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
@@ -1923,16 +1973,39 @@ extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const 
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (constructing '{name}')")));
         return TL_NONE;
     }
-    let args: Vec<Value> = (0..n_args as usize).map(|i| clone_value_at(unsafe { *args_ptr.add(i) })).collect();
     let interp = unsafe { &mut *interp_ptr };
-    let r = match interp.get_var(name).map(|v| v.get_value()) {
+    match interp.get_var(name).map(|v| v.get_value()) {
         Some(Value::Class(cls)) => {
-            let evaled = args.into_iter().enumerate().map(|(i, v)| (None, v, mask_arg_is_mut(mut_mask, i))).collect();
-            interp.instantiate_evaled(cls, evaled)
+            if !cell.is_null() {
+                interp.native_classes.insert(cls.class_id, cls.clone());
+                // SAFETY: 上と同じ
+                unsafe { &*(cell as *const AtomicU64) }.store(u64::from(cls.class_id) + 1, Ordering::Relaxed);
+            }
+            construct_class(interp, cls, args_ptr, n_args, mut_mask)
         }
-        Some(other) => interp.call_value_with_args(other, args),
-        None => Err(format!("NameError: '{name}' is not defined")),
-    };
+        Some(other) => {
+            let args: Vec<Value> = (0..n_args as usize).map(|i| clone_value_at(unsafe { *args_ptr.add(i) })).collect();
+            finish_construct(interp.call_value_with_args(other, args))
+        }
+        None => finish_construct(Err(format!("NameError: '{name}' is not defined"))),
+    }
+}
+
+/// クラスを VM の `Call` と同じ `instantiate_evaled` で生成する。引数の可変性は `mut_mask` から VM と同じ規則で渡す。
+fn construct_class(
+    interp: &mut crate::interpreter::Interpreter,
+    cls: std::rc::Rc<crate::interpreter::ClassValue>,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    let evaled = (0..n_args as usize)
+        .map(|i| (None, clone_value_at(unsafe { *args_ptr.add(i) }), mask_arg_is_mut(mut_mask, i)))
+        .collect();
+    finish_construct(interp.instantiate_evaled(cls, evaled))
+}
+
+fn finish_construct(r: Result<Value, String>) -> i64 {
     match r {
         Ok(v) => push_handle(v),
         Err(e) => {
@@ -2109,6 +2182,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     construct: ar_construct,
     len: ar_len,
     str_of_int: ar_str_of_int,
+    construct_ic: ar_construct_ic,
 };
 
 #[cfg(test)]

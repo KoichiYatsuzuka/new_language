@@ -1,0 +1,32 @@
+# native_construct_ic.ar — コンパイル済みコードの生成は、呼び出し箇所ごとにクラスを覚えて名前で引かない
+# （native_object_access_plan.md 10-2・D-11）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_construct_ic_module.ar
+#   2. cargo run --release -- examples/interop/native_construct_ic.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_construct_ic_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# build(5): sum(3i) + len("p0".."p4") = 30 + 10
+check("constructing two classes at their own sites", m.build(5) == 40)
+check("the same sites again (classes remembered)", m.build(5) == 40)
+
+# 非同期タスクのワーカー（別のインタープリタ）: セルは埋まっているが、ワーカーの表は空
+mut mng = AsyncManager(num_thread=2)
+mng <- async->int:
+    block_return m.build(5)
+mng <- async->int:
+    block_return m.build(3)
+mng.wait_for_finish()
+let errors = mng.error_list
+check("no task failed", errors[0] is None and errors[1] is None)
+let results = mng.results
+check("constructing in a task", results[0] == 40 and results[1] == 15)
+check("the main interpreter still constructs", m.build(5) == 40)

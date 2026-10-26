@@ -1,0 +1,26 @@
+# native_construct_ic_module.ar — コンパイル済みコードの生成は、呼び出し箇所ごとにクラスを覚えて名前で引かない
+# （native_object_access_plan.md 10-2・D-11）
+#
+# 呼び出し箇所ごとのセル（DLL の中・プロセスに 1 つ）にはクラスの番号だけを入れ、クラスはインタープリタごとの表から
+# 引く。非同期タスクのワーカーは別のインタープリタで同じ DLL を使うので、セルが埋まっていても表が空なら名前で引く。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_construct_ic_module.ar
+
+class Point:
+    mut x: int
+    mut y: int
+
+class Label:
+    mut text: str
+
+# 2 つのクラスを別々の箇所で生成する（箇所ごとに別のセル）
+fn build(let n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        let p = Point(i, i * 2)
+        let l = Label("p" + str(i))
+        total += p.x + p.y + len(l.text)
+        i += 1
+    return total

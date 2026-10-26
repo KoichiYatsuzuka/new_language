@@ -1393,12 +1393,14 @@ impl<'a> GenCtx<'a> {
                 let handles: Vec<String> = arg_exprs.iter()
                     .map(|(v, vt)| self.to_handle(v, *vt))
                     .collect();
+                // 呼び出し箇所ごとのセルにクラスの番号を覚えさせ、2 回目からは名前で引かない（10-2・`ar_construct_ic`）
+                let cell = self.ic_cell();
                 return if handles.is_empty() {
-                    self.call_cb(CB_CONSTRUCT, &[ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")])
+                    self.call_cb(CB_CONSTRUCT_IC, &[cell, ptr, format!("i32 {len}"), "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")])
                 } else {
                     let n   = handles.len();
                     let arr = self.spill_handle_array(&handles, "kargs");
-                    self.call_cb(CB_CONSTRUCT, &[ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")])
+                    self.call_cb(CB_CONSTRUCT_IC, &[cell, ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")])
                 };
             }
         }
