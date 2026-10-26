@@ -390,11 +390,14 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
             // `let` 仮引数は `copy_value` で複製してから渡す（6-2・D-8）。ここには引数の可変性が無いので保守的に
             // `mut` とみなす。⚠ 以前はハンドルを素通しし、`let` で受けた値が呼び出し元の後の変更で変わりえた（1-5 と同じ形）。
             let mut owned: Vec<i64> = (0..n_args as usize).map(|i| unsafe { *args_ptr.add(i) }).collect();
+            // 複製を作る前のアリーナの長さ（1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+            let mut copied_from: Option<u64> = None;
             for (i, h) in owned.iter_mut().enumerate() {
                 if !fn_ref.param_mutabilities.get(i).copied().unwrap_or(true)
                     && fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None)
                         == crate::interpreter::PtrParam::None
                 {
+                    copied_from.get_or_insert_with(|| STATE.with(|s| s.borrow().arena.len() as u64));
                     match unsafe { &mut *interp_ptr }.copy_value(clone_value_at(*h)) {
                         Ok(v) => *h = push_handle(v),
                         Err(e) => {
@@ -418,6 +421,11 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                 abort_native_call(is_outermost);
                 return TL_NONE;
             }
+            // 複製を呼び出しごとに捨てる（1-15）。いちばん外の呼び出しなら下の `exit_native_call` が全部片づける
+            let result_h = match copied_from {
+                Some(saved) if !is_outermost => ar_arena_compact(result_h, saved),
+                _ => result_h,
+            };
             let result_val = exit_native_call(result_h, is_outermost);
             return push_handle(result_val);
         }
@@ -1424,6 +1432,9 @@ fn call_method_common(
         let direct = fn_ptr.filter(|_| arity_ok && (mut_mask.is_none() || callee_params.is_some()));
         if let Some(ptr) = direct {
             let mut all_args = Vec::with_capacity(1 + n_args as usize);
+            // 複製を作る前のアリーナの長さ（1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+            let mut copied_from: Option<u64> = None;
+            let arena_len = || STATE.with(|s| s.borrow().arena.len() as u64);
             match (mut_mask, &callee_params) {
                 (Some(mask), Some(pm)) => {
                     if interp_ptr.is_null() {
@@ -1434,6 +1445,7 @@ fn call_method_common(
                     // 受け手（param 0 = self）
                     let self_let = pm.first().is_some_and(|m| !m);
                     if self_let && mask & 1 != 0 {
+                        copied_from.get_or_insert_with(arena_len);
                         all_args.push(push_handle(crate::interpreter::Interpreter::deep_copy_value(obj.clone())));
                     } else {
                         all_args.push(obj_h);
@@ -1442,6 +1454,7 @@ fn call_method_common(
                         let h = unsafe { *args_ptr.add(i) };
                         let param_let = pm.get(i + 1).is_some_and(|m| !m);
                         if param_let && mask_arg_is_mut(mask, i) {
+                            copied_from.get_or_insert_with(arena_len);
                             match interp.copy_value(clone_value_at(h)) {
                                 Ok(v) => all_args.push(push_handle(v)),
                                 Err(e) => {
@@ -1474,7 +1487,10 @@ fn call_method_common(
                 func(all_args.as_ptr(), all_args.len() as i32)
             };
             unsafe { &mut *interp_ptr }.leave_native_method(prev);
-            return r;
+            return match copied_from {
+                Some(saved) => ar_arena_compact(r, saved),
+                None => r,
+            };
         }
     }
 

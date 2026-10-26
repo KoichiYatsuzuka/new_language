@@ -548,6 +548,10 @@ struct GenCtx<'a> {
     str_ctr:    usize,
     /// 属性を読む箇所ごとの IC のセル（`@_icN`）の採番（2-2）。
     ic_ctr:     usize,
+    /// 組み立て中の直接呼び出しで、`let` で受ける値の複製（`copy_for_let`）の前に取ったアリーナの保存点
+    /// （native_object_access_plan.md 1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+    /// 入れ子の呼び出しは [`Self::take_call_save`] / [`Self::finish_call_save`] で積む。
+    pending_save: Option<String>,
     /// モジュールの最上位で束縛される名前（関数・クラス・変数・import・5-2）。組み込み関数を隠しうるのは
     /// これとローカルだけ（1-7 以降、生成コードはモジュール自身の大域で走る）。
     top_names: HashSet<String>,

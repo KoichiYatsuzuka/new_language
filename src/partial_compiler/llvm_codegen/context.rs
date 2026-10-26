@@ -27,6 +27,7 @@ impl<'a> GenCtx<'a> {
             str_consts:      HashMap::new(),
             str_ctr:         0,
             ic_ctr:          0,
+            pending_save:    None,
             top_names:       HashSet::new(),
             block_stack:     Vec::new(),
             class_fields,
@@ -106,8 +107,24 @@ impl<'a> GenCtx<'a> {
         if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
             return h.to_string();
         }
+        // 複製の前に保存点を取り、呼び出しの後で巻き戻す（1-15）。⚠ 取らないと複製がいちばん外の呼び出しが
+        // 終わるまでアリーナに残り、ループの中の呼び出しでは周の数だけ溜まった（`let self` の深いコピーで 1 GB 超）。
+        if self.pending_save.is_none() {
+            self.pending_save = Some(self.call_cb(CB_ARENA_SAVE, &[]));
+        }
         let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
         self.call_cb(cb, &[format!("i64 {h}")])
+    }
+
+    /// 直接呼び出しの被演算子を組み立てる前に呼ぶ: 外側の呼び出しの保存点を退避する（1-15）。
+    pub(super) fn take_call_save(&mut self) -> Option<String> {
+        self.pending_save.take()
+    }
+
+    /// 被演算子を組み立てた後に呼ぶ: この呼び出しの複製の前に取った保存点（無ければ `None`）を返し、外側の
+    /// 呼び出しの保存点を戻す（1-15）。
+    pub(super) fn finish_call_save(&mut self, outer: Option<String>) -> Option<String> {
+        std::mem::replace(&mut self.pending_save, outer)
     }
 
     /// 宣言（`let` / `mut`）で束縛する値を VM と同じ規則で複製する（§0.3 ⑥・1-6）。

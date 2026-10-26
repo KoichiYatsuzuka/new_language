@@ -116,7 +116,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (261 files, 113052 lines)
+src/  (261 files, 113107 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1658)
@@ -240,7 +240,7 @@ src/  (261 files, 113052 lines)
       mod.rs (7)
       overload.rs (223)
     native_api/
-      callbacks.rs (2150)
+      callbacks.rs (2166)
       mod.rs (706)
     ops/
       display.rs (364)
@@ -341,10 +341,10 @@ src/  (261 files, 113052 lines)
     module_compiler.rs (252)
     stub_gen.rs (353)
     llvm_codegen/
-      context.rs (570)
-      expr.rs (1394)
+      context.rs (587)
+      expr.rs (1412)
       function.rs (488)
-      mod.rs (1363)
+      mod.rs (1367)
       stmt.rs (598)
     rs_loader/
       codegen.rs (758)
@@ -520,7 +520,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   repl_session.ps1 (58)
   run_extension_debug.ps1 (92)
   scan_examples.ps1 (83)
-  speed_modes.ps1 (254)
+  speed_modes.ps1 (262)
   stale_doc_refs.ps1 (134)
   syntax_cov.ps1 (215)
   test_build_gate.ps1 (72)

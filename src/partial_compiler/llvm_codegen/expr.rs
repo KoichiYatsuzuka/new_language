@@ -829,17 +829,22 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    /// `@{sym}_impl` を内部 ABI（4-1）で呼び、結果をその型のまま返す: `float` → `double`（アリーナは触らない）、
-    /// `int` → 生の i64、ほか → ハンドル（`int` とハンドルはアリーナを保存点まで巻き戻す）。
-    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty) -> (String, Ty) {
+    /// `@{sym}_impl` を内部 ABI（4-1）で呼び、結果をその型のまま返す: `float` → `double`、`int` → 生の i64、
+    /// ほか → ハンドル。`int` とハンドルはアリーナを保存点まで巻き戻す。`float` は複製をしたとき（`save` がある）
+    /// だけ巻き戻す（1-15・複製の無い `float` の呼び出しはアリーナを触らない）。
+    /// `save`: 被演算子の複製の前に取った保存点（`finish_call_save`）。あればそこまで巻き戻して複製も捨てる。
+    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<String>) -> (String, Ty) {
         match ret {
             Ty::Float => {
                 let r = self.fresh_reg();
                 self.ec(&format!("{r} = call double @{sym}_impl({params})"));
+                if let Some(s) = save {
+                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
+                }
                 (r, Ty::Float)
             }
             Ty::Int => {
-                let save = self.call_cb(CB_ARENA_SAVE, &[]);
+                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
                 let r = self.fresh_reg();
                 self.ec(&format!("{r} = call i64 @{sym}_impl({params})"));
                 // 生値なので残すハンドルは無い（TL_NONE を渡して巻き戻すだけ）
@@ -847,7 +852,7 @@ impl<'a> GenCtx<'a> {
                 (r, Ty::Int)
             }
             _ => {
-                let save = self.call_cb(CB_ARENA_SAVE, &[]);
+                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
                 let raw = self.fresh_reg();
                 self.ec(&format!("{raw} = call i64 @{sym}_impl({params})"));
                 let h = self.call_cb(CB_ARENA_COMPACT, &[format!("i64 {raw}"), format!("i64 {save}")]);
@@ -863,13 +868,15 @@ impl<'a> GenCtx<'a> {
     fn emit_module_fn_call(&mut self, name: &str, args: &[CallArg], arg_exprs: &[(String, Ty)]) -> (String, Ty) {
         let sig = &self.fn_sigs[name];
         let (muts, tys, ret) = (sig.param_mutabilities.clone(), sig.param_tys.clone(), sig.ret);
+        let outer = self.take_call_save();
         let ops: Vec<String> = arg_exprs.iter().zip(args).enumerate()
             .map(|(i, ((v, vt), a))| {
                 let pty = tys.get(i).copied().unwrap_or(Ty::Handle);
                 self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false)
             })
             .collect();
-        self.call_impl(name, &ops.join(", "), ret)
+        let save = self.finish_call_save(outer);
+        self.call_impl(name, &ops.join(", "), ret, save)
     }
 
 
@@ -1131,11 +1138,20 @@ impl<'a> GenCtx<'a> {
                             && self.fast_fns.contains(&sym)
                             && !self.discarded_fast.contains(&sym)
                         {
-                            if let Some(fast_args) = self.build_fast_call_args(&sym, object, args) {
+                            let outer = self.take_call_save();
+                            let fast_args = self.build_fast_call_args(&sym, object, args);
+                            let save = self.finish_call_save(outer);
+                            if let Some(fast_args) = fast_args {
                                 let r = self.fresh_reg();
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
+                                // 被演算子を複製したときだけ巻き戻す（1-15）
+                                if let Some(s) = save {
+                                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
+                                }
                                 return (r, Ty::Float);
                             }
+                            // `build_fast_call_args` は被演算子を作る前にしか `None` を返さない（作った複製は無い）
+                            debug_assert!(save.is_none());
                         }
                         // _impl を内部 ABI で呼び、`double` / 生の i64 をそのまま受ける（4-1）
                         let arg_exprs: Vec<(String, Ty)> = args.iter()
@@ -1184,12 +1200,14 @@ impl<'a> GenCtx<'a> {
         arg_exprs: &[(String, Ty)],
     ) -> (String, Ty) {
         // self_h is prepended to the explicit operands (already in the callee's internal ABI).
+        let outer = self.take_call_save();
         let (oh, explicit) = self.method_call_operands(sym, object, oh, ot, args, arg_exprs);
+        let save = self.finish_call_save(outer);
         let all_params = std::iter::once(format!("i64 {oh}"))
             .chain(explicit).collect::<Vec<_>>().join(", ");
         let ret = self.fn_sigs[sym].ret;
         let ctx = self.enter_callee_ctx(cls, &oh);
-        let out = self.call_impl(sym, &all_params, ret);
+        let out = self.call_impl(sym, &all_params, ret, save);
         self.leave_callee_ctx(ctx);
         out
     }

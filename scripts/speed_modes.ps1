@@ -8,7 +8,8 @@
 #
 # 区間（bench.ar の METRIC）: k1_step（数値のメソッド）・k2_energy（list[Body] の反復＋ let self のメソッドの連鎖）・
 #   k3_record（list[float] への追加と集計）・k4_labels（文字列の連結・int → str）・k5_spawn（生成）・
-#   k6_boundary（インタープリタからコンパイル済みのメソッドを呼ぶ境界）・process_wall（起動を含むプロセス全体）
+#   k6_boundary（インタープリタからコンパイル済みのメソッドを呼ぶ境界）・process_wall（起動を含むプロセス全体）・
+#   peak_mb（プロセスの最大のワーキングセット・MB）
 #
 # 仕組み:
 #   * 例題を %TEMP% の作業場所へ exe ごと・モードごとに写して走らせる（リポジトリを汚さない）。コンパイル済みのモードは
@@ -122,10 +123,16 @@ function Invoke-Run([string]$exe, [string]$dir, [string]$script) {
     $p = [Diagnostics.Process]::Start($psi)
     $o = $p.StandardOutput.ReadToEndAsync()
     $e = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
-        & taskkill /T /F /PID $p.Id | Out-Null
-        Write-Host "ABNORMAL TERMINATION: $dir\$script exceeded $TimeoutSec s (killed)" -ForegroundColor Red
-        return $null
+    # 最大のメモリ（ワーキングセット）も見る（1-15: 一時値が呼び出しごとに捨てられず 1 GB を超えたのを、時間の表だけでは
+    # 見落とした）。終わった後は読めないので、走っている間に読む
+    $peak = 0
+    while (-not $p.WaitForExit(100)) {
+        try { $p.Refresh(); if ($p.PeakWorkingSet64 -gt $peak) { $peak = $p.PeakWorkingSet64 } } catch {}
+        if ($sw.Elapsed.TotalSeconds -gt $TimeoutSec) {
+            & taskkill /T /F /PID $p.Id | Out-Null
+            Write-Host "ABNORMAL TERMINATION: $dir\$script exceeded $TimeoutSec s (killed)" -ForegroundColor Red
+            return $null
+        }
     }
     $p.WaitForExit()
     $sw.Stop()
@@ -140,6 +147,7 @@ function Invoke-Run([string]$exe, [string]$dir, [string]$script) {
         elseif ($line -match '^CHECK\s+(\S+)\s+(\S+)$') { $c[$Matches[1]] = $Matches[2] }
     }
     if (-not $Micro) { $m['process_wall'] = $sw.Elapsed.TotalSeconds }
+    $m['peak_mb'] = $peak / 1MB
     return [pscustomobject]@{ Metrics = $m; Checks = $c }
 }
 
