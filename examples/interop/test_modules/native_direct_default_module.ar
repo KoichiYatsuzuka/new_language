@@ -1,0 +1,32 @@
+# native_direct_default_module.ar — コンパイル済みコードの中で既定値のある引数を省いて直接呼ぶ
+# （native_object_access_plan.md 1-13・§0.3 ⑰）
+#
+# 規則（インタープリタと同じ）: 省いた引数は既定値で束縛する。
+# ⚠ 以前はモジュール内の直接呼び出しが書かれた引数の数のまま `_impl` を呼び、足りない引数がごみになっていた
+#   （`sub_default(10)` が 7 でなく 10）。今は数が合わなければ名前による呼び出しへ回し、宣言どおりに束縛する（1-11）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_direct_default_module.ar
+
+fn sub_default(let a: int, let b: int = 3) -> int:
+    return a - b
+
+class Acc:
+    mut base: int
+
+    fn add(let self, let a: int, let b: int = 5) -> int:
+        return self.base + a + b
+
+# 関数の直接呼び出し（値として使う・整数の式の中で使う）
+fn direct() -> int:
+    return sub_default(10)
+
+fn direct_in_expr() -> int:
+    return sub_default(10) * 2 + sub_default(10, 1)
+
+# 受け手のクラスが分かるメソッド呼び出し（注釈・リストの要素）
+fn method_direct(let acc: Acc) -> int:
+    return acc.add(1)
+
+fn method_element(let xs: list[Acc]) -> int:
+    return xs[0].add(1) + xs[0].add(1, 2)

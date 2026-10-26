@@ -916,6 +916,15 @@ impl<'a> GenCtx<'a> {
         self.module_fns.contains(name) && !self.locals.contains_key(name)
     }
 
+    /// `sym` をモジュール内の直接呼び出し（`_impl` / `_fast`）で呼べるか（1-13・§0.3 ⑰）: モジュールの関数で、
+    /// 書かれた引数の数が仮引数の数（メソッドは受け手を含む・`with_self`）とちょうど同じこと。
+    /// 既定値を省いた呼び出しは直接呼ばず、名前による呼び出しへ回す（宣言どおりの束縛が既定値を埋める・1-11）。
+    /// ⚠ 以前は書かれた数のまま `_impl` を呼び、足りない引数がごみになっていた（`fdef(10)` が 7 でなく 10）。
+    fn direct_callee(&self, sym: &str, n_args: usize, with_self: bool) -> bool {
+        self.is_module_fn(sym)
+            && self.fn_sigs.get(sym).is_some_and(|s| s.param_tys.len() == n_args + usize::from(with_self))
+    }
+
     /// モジュール内のメソッドを `_impl` で直接呼ぶ前に、呼ばれるメソッドのクラスの文脈へ入る（1-9）。
     /// 呼ぶ側（今コンパイル中の関数のクラス・自由関数なら無し）と同じクラスなら何もしない（`self.m()` の大半）。
     /// 違えば `CB_ENTER_METHOD_CTX` で `current_class` を受け手のクラスにし、その印を返す。
@@ -1096,7 +1105,7 @@ impl<'a> GenCtx<'a> {
         }
         // ── Typed intra-module direct function calls ──────────────────
         if let Some(name) = ident_name(func) {
-            if self.is_module_fn(name) {
+            if self.direct_callee(name, args.len(), false) {
                 // 内部 ABI（4-1）: `int` / `float` は生値で渡し、生値で受ける（箱詰めしない）。
                 let name = name.to_string();
                 let arg_exprs: Vec<(String, Ty)> = args.iter()
@@ -1109,7 +1118,7 @@ impl<'a> GenCtx<'a> {
             let receiver = self.receiver_class(object);
             if let Some(Receiver { class: cls, guarded }) = &receiver {
                 let sym = method_symbol(cls, attr);
-                if self.is_module_fn(&sym) {
+                if self.direct_callee(&sym, args.len(), true) {
                     let ret_ty = self.fn_sigs.get(&sym).map(|s| s.ret).unwrap_or(Ty::Handle);
 
                     // ガード付き（注釈で決めた受け手）は生値を返す道を使わず、ハンドル ABI の
@@ -1281,7 +1290,7 @@ impl<'a> GenCtx<'a> {
             // no CB_CALL_METHOD overhead, no NATIVE_METHODS table lookup.
             if let Some(Receiver { class: cls, guarded }) = self.receiver_class(object) {
                 let sym = crate::partial_compiler::llvm_codegen::method_symbol(&cls, &key);
-                if self.is_module_fn(&sym) {
+                if self.direct_callee(&sym, args.len(), true) {
                     if !guarded {
                         return self.emit_direct_method_call(&sym, &cls, object, &oh, ot, args, &arg_exprs);
                     }
@@ -1293,7 +1302,7 @@ impl<'a> GenCtx<'a> {
 
         // Intra-module direct call（内部 ABI・4-1。ここは文として呼んだときなどハンドルが要る所）
         if let Some(name) = ident_name(func) {
-            if self.is_module_fn(name) {
+            if self.direct_callee(name, args.len(), false) {
                 let name = name.to_string();
                 let (v, t) = self.emit_module_fn_call(&name, args, &arg_exprs);
                 return self.to_handle(&v, t); // always return a handle; gen_expr unwraps for typed callees
