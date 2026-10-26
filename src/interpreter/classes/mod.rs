@@ -84,6 +84,7 @@ fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, Stri
 
 mod freeze;
 mod instantiate;
+pub(crate) use instantiate::AutoInitSlot;
 mod lookup;
 mod method_call;
 // レシーバ種別ごとのメソッドディスパッチ（#63 で `method_call.rs` から切り出し）。

@@ -526,12 +526,8 @@ impl Interpreter {
         }
         // キャストの可能性（let パラメータ + 型注釈 + クラス名不一致の Instance 引数）があれば一般経路へ。
         for (p, (_, val, _)) in bind_params.iter().zip(evaled.iter()) {
-            if !p.mutable {
-                if let (Some(ta), Value::Instance(rc)) = (&p.type_ann, val) {
-                    if &rc.borrow().class.name != ta {
-                        return Ok(None);
-                    }
-                }
+            if Self::may_cast_on_bind(p, val) {
+                return Ok(None);
             }
         }
 
@@ -550,15 +546,7 @@ impl Interpreter {
             slot += 1;
         }
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
-            // let パラメータ + mut 引数 → copy_value（copy ループと同一）。それ以外は共有。
-            let v = if !p.mutable && *arg_mut {
-                self.copy_value(val.clone())?
-            } else {
-                val.clone()
-            };
-            // 案 B（0-B2）: `float` 注釈の仮引数へ Int が来たら昇格する。
-            // ⚠ 一般経路（`bind_args` の後のループ）と**同じ規則・同じ位置**にすること。
-            let v = crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v);
+            let v = self.bind_param_value(p, val.clone(), *arg_mut)?;
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
             }
@@ -566,6 +554,21 @@ impl Interpreter {
         }
         Self::bind_captures(fn_val, chunk, &mut buf, base);
         Ok(Some((buf, base)))
+    }
+
+    /// 位置引数 1 つを仮引数 `p` に束縛する値（`try_fast_bind` と、合成した `__init__` の直接格納・10-3 が共有する規則）。
+    /// `let` 仮引数 ＋ `mut` の値は `copy_value`（一般経路の複製ループと同一）、それ以外は共有。そのあと `float` 注釈の
+    /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
+    pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
+        let v = if !p.mutable && arg_mut { self.copy_value(v)? } else { v };
+        Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v))
+    }
+
+    /// 束縛で `__cast__` が起きうるか（`let` 仮引数の型注釈とクラス名の違うインスタンス）。起きうるなら一般経路
+    /// （`bind_args` の後の自動キャスト）へ回す（`try_fast_bind` と 10-3 が共有する判定）。
+    pub(crate) fn may_cast_on_bind(p: &crate::ast::Param, v: &Value) -> bool {
+        !p.mutable
+            && matches!((&p.type_ann, v), (Some(ta), Value::Instance(rc)) if &rc.borrow().class.name != ta)
     }
 
     /// クロージャの不変キャプチャをフレームの slot へ書き込む（#27-d）。

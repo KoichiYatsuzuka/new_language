@@ -594,7 +594,7 @@ impl Interpreter {
 
     /// インスタンスごとの検査（不変のフィールド・不変インスタンスの未初期化 slot）と格納時の型検査をしてから格納する。
     /// [`Self::attr_assign_ic`] の命中経路とミス経路が共有する（IC で省けない検査はここに集める・2-3）。
-    fn store_field_checked(
+    pub(crate) fn store_field_checked(
         inst: &mut crate::interpreter::value::InstanceData,
         idx: usize,
         attr: &str,
