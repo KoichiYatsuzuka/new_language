@@ -6,6 +6,19 @@
 
 use crate::ast::{BinOp, UnaryOp};
 
+/// メソッド呼び出し（`CallMethod` / `CallMethodLocal` / `CallMethodKw`）の `mut_mask` の bit 31:
+/// 受け手が `let` の名前であること（`arg_is_mutable` が偽・native_object_access_plan.md 6-1・D-8）。
+/// 立っていれば `let self` は受け手を共有し、立っていなければ（`mut` の名前・名前でない式）複製する。
+/// ⚠ 「立っていない＝複製」の向きにしてある（ビットを知らない作り手は保守的に複製になる）。
+/// ⚠ 引数が 32 個の呼び出しでは bit 31 は引数 31 のものなので立てず、読む側も見ない（[`recv_is_mut`]）。
+pub(crate) const MASK_RECV_LET: u32 = 1 << 31;
+
+/// メソッド呼び出しの受け手が `mut` の値か（`let self` で複製が要るか）。[`MASK_RECV_LET`] を参照。
+#[inline(always)]
+pub(crate) fn recv_is_mut(mut_mask: u32, argc: usize) -> bool {
+    argc >= 32 || mut_mask & MASK_RECV_LET == 0
+}
+
 /// 実行時型検査の高速判定用の種別（#43）。**アノテーション文字列から**コンパイル時に決める。
 ///
 /// ⚠ 型推論の結果を使ってはいけない（注釈は最適化ヒントであって意味論の根拠ではない・#15e）。
@@ -230,6 +243,7 @@ pub enum Op {
     /// （再束縛は文＝`StoreLocal` でしか起きず、クロージャによる捕捉は VM 非対応で bail する）ため、
     /// 観測されるレシーバは同一。
     /// (slot, name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
+    /// `mut_mask` の bit 31 は受け手の可変性（[`MASK_RECV_LET`]・6-1）。
     CallMethodLocal(u16, u32, u16, u32, u32),
     /// 超命令（#16 段階(b)(i)）: `local[slot].attr` を融合。`LoadLocal(slot); GetAttr(..)` と同一意味論。
     /// **レシーバをスタックへ clone せず frame から参照で読む**ので `Rc` の refcount 増減が消える。
@@ -276,6 +290,7 @@ pub enum Op {
     /// VM も call_span=None で一致させる（byte-identical）。
     /// (name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
     /// これが無いと `mod.func()` 等の戻り値検査が **VM 経路だけ素通り**する（#22-a と同型の穴）。
+    /// `mut_mask` の bit 31 は受け手の可変性（[`MASK_RECV_LET`]・6-1）。
     CallMethod(u32, u16, u32, u32),
     /// スタックトップを関数戻り値として返す。
     Return,

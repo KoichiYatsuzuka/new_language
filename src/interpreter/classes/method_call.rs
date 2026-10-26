@@ -16,6 +16,10 @@ impl Interpreter {
     /// （copy / gen / native / static・class 判定 / 不変性フィルタ / オーバーロード）を、
     /// 評価済み引数（`is_mutable` フラグ込み）で行う。呼び出し側は obj が Instance であることを
     /// 型注釈で保証してから使う（型検査が健全性を担保）。
+    ///
+    /// `recv_mut` は受け手が `mut` の値か（VM の `mut_mask` の bit 31・`arg_is_mutable` と同じ規則・6-1）。
+    /// `let self` は `mut` の値を受けるときだけ複製する（D-8）。分からない呼び出し側は `true`（保守的に複製）。
+    /// ⚠ オーバーロードの振り分けは今も保守的に複製する（結果は同じで遅いだけ）。
     pub(crate) fn call_instance_method_evaled(
         &mut self,
         obj: Value,
@@ -23,6 +27,7 @@ impl Interpreter {
         evaled: Vec<(Option<String>, Value, bool)>,
         cache: Option<&crate::ast::AttrCache>,
         call_span: Option<crate::token::Span>,
+        recv_mut: bool,
     ) -> Result<Value, String> {
         let inst_rc = match &obj {
             Value::Instance(rc) => rc.clone(),
@@ -55,7 +60,7 @@ impl Interpreter {
                 if let Some(overloads) = class.methods.get(method_name) {
                     if overloads.len() == 1 {
                         let f = overloads[0].clone();
-                        return self.exec_fn_evaled(f, &evaled, Some(obj), method_name, call_span);
+                        return self.exec_fn_evaled_recv(f, &evaled, Some(obj), recv_mut, method_name, call_span);
                     }
                 }
             }
@@ -83,7 +88,7 @@ impl Interpreter {
         }
 
         if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
-            return self.exec_generator_evaled(gen_fn, evaled, Some(obj));
+            return self.exec_generator_evaled(gen_fn, evaled, Some(obj), recv_mut);
         }
         if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, method_name)
             .is_some()
@@ -157,7 +162,7 @@ impl Interpreter {
                     c.fill(class.class_id, 0, level);
                 }
             }
-            self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj), method_name, call_span)
+            self.exec_fn_evaled_recv(callable[0].clone(), &evaled, Some(obj), recv_mut, method_name, call_span)
         } else {
             self.dispatch_overload_evaled(callable, evaled, Some(obj), method_name, call_span)
         }
@@ -320,8 +325,9 @@ impl Interpreter {
             // #27-b: Instance のディスパッチは `call_instance_method_evaled` に 1 本化した。
             // 以前はこのアームが同じ判断（copy／method IC／gen／native／static・class 判定／
             // 不変性フィルタ／オーバーロード）を**二重に実装**しており、VM 経路と食い違う余地があった。
+            // 受け手の式が無いので `let self` は保守的に複製する（6-1）。
             Value::Instance(_) => {
-                self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None)
+                self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None, true)
             }
             Value::Class(cls) => self.eval_class_method(cls.clone(), method_name, evaled),
             Value::Dict(d) => {

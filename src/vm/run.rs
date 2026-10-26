@@ -1444,6 +1444,7 @@ fn exec_op(
                 interp.call_instance_method_evaled(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
+                    crate::vm::op::recv_is_mut(*mut_mask, n),
                 )?
             } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
                 .then(|| wb_native_method(chunk, &obj, name, node_id))
@@ -1478,6 +1479,7 @@ fn exec_op(
                 interp.call_instance_method_evaled(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
+                    crate::vm::op::recv_is_mut(*mut_mask, n),
                 )?
             } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
                 .then(|| wb_native_method(chunk, &obj, name, node_id))
@@ -1504,6 +1506,8 @@ fn exec_op(
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split);
             let obj = buf.pop().unwrap();
+            // 受け手の可変性は展開前の引数の個数で読む（6-1）
+            let recv_mut = crate::vm::op::recv_is_mut(kw.mut_mask, n);
             let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
                 .into_iter()
                 .enumerate()
@@ -1519,6 +1523,7 @@ fn exec_op(
                     evaled,
                     Some(&chunk.attr_caches[kw.name_idx as usize]),
                     None,
+                    recv_mut,
                 )?
             } else {
                 interp.vm_method_call_other(obj, name, evaled, kw.node_id, chunk)?

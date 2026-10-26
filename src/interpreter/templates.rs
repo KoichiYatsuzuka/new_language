@@ -174,7 +174,7 @@ impl Interpreter {
                     return Err(Self::not_instantiated(&tmpl.name, type_args));
                 };
                 let evaled = call_args.into_evaled(self)?;
-                self.exec_generator_evaled(gen_fn, evaled, None)
+                self.exec_generator_evaled(gen_fn, evaled, None, true)
             }
             // Signal[T]() — 型付きシグナルを生成する（型引数は型チェックの注釈としてのみ使用）
             Value::Type(ref t) if t == "Signal" => {

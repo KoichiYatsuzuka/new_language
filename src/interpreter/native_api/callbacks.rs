@@ -1473,7 +1473,15 @@ fn call_method_common(
             (None, v, is_mut)
         })
         .collect();
-    match interp.eval_method_call_evaled(obj, &name, evaled) {
+    // インスタンスは VM の `CallMethod` と同じ入口へ、受け手の可変性（bit 0）を添えて渡す（6-1）。
+    // `let self` は `mut` の受け手だけ複製する。mask の無い古い生成コードは保守的に `mut`。
+    let r = if matches!(obj, Value::Instance(_)) {
+        let recv_mut = mut_mask.is_none_or(|m| m & 1 != 0);
+        interp.call_instance_method_evaled(obj, &name, evaled, None, None, recv_mut)
+    } else {
+        interp.eval_method_call_evaled(obj, &name, evaled)
+    };
+    match r {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));

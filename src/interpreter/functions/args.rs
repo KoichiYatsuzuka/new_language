@@ -156,10 +156,12 @@ impl Interpreter {
     /// - キーワード引数: パラメータ名で検索してスロットに割り当てる
     /// - 未割り当てスロットでデフォルト値がある場合はデフォルト値を使用する
     /// - 引数数が範囲外の場合や重複キーワードは `TypeError` を返す
+    /// - `recv_mut`: 受け手が `mut` の値か（`let self` を複製するか・6-1）。分からなければ `true`
     pub(crate) fn bind_args(
         params: &[Param],
         evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
+        recv_mut: bool,
         defaults: &[Option<Value>],
     ) -> Result<Vec<(String, Value, bool, bool)>, String> {
         let mut result = Vec::new();
@@ -168,8 +170,9 @@ impl Interpreter {
         let (params_to_bind, defaults_to_bind) =
             if let (Some(sv), Some(p)) = (&self_val, params.first()) {
                 if p.name == "self" {
-                    // let self（不変レシーバ）はディープコピーして元オブジェクトの変更を防ぐ
-                    let self_to_bind = if p.mutable {
+                    // let self（不変レシーバ）は `mut` の受け手だけディープコピーして元オブジェクトの変更を防ぐ
+                    // （`let` の受け手は共有・6-1・D-8）
+                    let self_to_bind = if p.mutable || !recv_mut {
                         sv.clone()
                     } else {
                         Self::deep_copy_value(sv.clone())

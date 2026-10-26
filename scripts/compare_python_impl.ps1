@@ -347,6 +347,7 @@ $knownDiff = @{
     'set_tuple_copy_semantics'       = 'py 古い: set が代入で共有される（実測 let の s が {1, 9} になる）。Rust は複製する'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
+    'let_self_mut_receiver'          = 'py: let self を複製しない（self を常に共有する）。Rust は mut の受け手だけ複製する（D-8・native_object_access_plan.md 6-1）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'
     'variable'                       = 'py 古い: static mut の扱い'
     'block_return_typecheck_error'   = 'py 古い: block_return の実行時型検査が無い（#35 で Rust に追加）'

@@ -500,6 +500,7 @@ impl Interpreter {
         chunk: &crate::vm::Chunk,
         evaled: &[(Option<String>, Value, bool)],
         self_val: &Option<Value>,
+        recv_mut: bool,
     ) -> Result<Option<(Vec<Value>, usize)>, String> {
         let params = &fn_val.params;
         let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
@@ -541,8 +542,9 @@ impl Interpreter {
         let mut slot = 0usize;
         if has_self {
             let sv = self_val.as_ref().unwrap();
-            // 非 mut self は deep_copy（bind_args と同一。エイリアス／変異から呼び出し元を保護）。
-            let self_bound = if params[0].mutable {
+            // `let self` は `mut` の受け手だけ deep_copy（bind_args と同一。エイリアス／変異から呼び出し元を保護）。
+            // `let` の受け手は共有する（6-1・D-8）。
+            let self_bound = if params[0].mutable || !recv_mut {
                 sv.clone()
             } else {
                 Self::deep_copy_value(sv.clone())
@@ -626,6 +628,21 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
+        // 受け手の可変性が分からない呼び出し: `let self` は保守的に複製する（6-1）。
+        self.exec_fn_evaled_recv(fn_val, evaled, self_val, true, fn_name, call_span)
+    }
+
+    /// [`Self::exec_fn_evaled`] の、受け手が `mut` の値か（`recv_mut`）が分かる版（6-1・D-8）。
+    /// `let self` は `recv_mut` のときだけ複製する。`self_val` が `None` なら `recv_mut` は使わない。
+    pub(crate) fn exec_fn_evaled_recv(
+        &mut self,
+        fn_val: Rc<FnValue>,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: Option<Value>,
+        recv_mut: bool,
+        fn_name: &str,
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
         let declared_ret = fn_val.return_type.clone();
         // クラスの文脈（10-6）。インスタンスメソッドは `self` のクラス（`run_vm_method` が張る）。
         // それ以外は定義したときのクラス（入れ子の関数）か、クラス経由の呼び出しのクラス。
@@ -640,7 +657,7 @@ impl Interpreter {
         // ⚠⚠ 本体は**定義したモジュールの大域で**走らせる（`FnValue::globals`・名前空間の分離）。
         //   失敗で抜けるときも戻す。
         let prev_globals = self.switch_globals(fn_val.globals);
-        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span, owner);
+        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, recv_mut, fn_name, call_span, owner);
         self.switch_globals(prev_globals);
         let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
@@ -654,6 +671,7 @@ impl Interpreter {
         fn_val: Rc<FnValue>,
         evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
+        recv_mut: bool,
         fn_name: &str,
         call_span: Option<Span>,
         owner: Option<Rc<crate::interpreter::ClassValue>>,
@@ -701,7 +719,7 @@ impl Interpreter {
         }
         // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
         if let Some(chunk) = &chunk_opt {
-            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
+            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val, recv_mut)? {
                 return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env), owner);
             }
         }
@@ -737,6 +755,7 @@ impl Interpreter {
                     &fn_val.params,
                     evaled,
                     self_val.clone(),
+                    recv_mut,
                     &evaluated_defaults,
                 )?,
                 vec![],
@@ -862,6 +881,7 @@ impl Interpreter {
         gen_fn: Rc<GeneratorFnValue>,
         evaled: Vec<(Option<String>, Value, bool)>,
         self_val: Option<Value>,
+        recv_mut: bool,
     ) -> Result<Value, String> {
         let evaluated_defaults: Vec<Option<Value>> = if gen_fn.params.iter().any(|p| p.default.is_some()) {
             let mut v = Vec::with_capacity(gen_fn.params.len());
@@ -879,6 +899,7 @@ impl Interpreter {
             &gen_fn.params,
             &evaled,
             self_val.clone(),
+            recv_mut,
             &evaluated_defaults,
         )?;
 

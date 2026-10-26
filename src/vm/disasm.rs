@@ -12,6 +12,16 @@ pub fn disassemble(chunk: &Chunk, name: &str) -> String {
     out
 }
 
+/// メソッド呼び出しの `mut_mask` を (引数の分, 受け手の注記) に分ける（6-1）。
+/// 受け手が `let` の名前（bit 31）なら ` recv=let` を添え、引数の分からはそのビットを除く。
+fn split_recv(mask: u32, argc: u16) -> (u32, &'static str) {
+    if super::op::recv_is_mut(mask, argc as usize) {
+        (mask, "")
+    } else {
+        (mask & !super::op::MASK_RECV_LET, " recv=let")
+    }
+}
+
 fn fmt_op(op: &Op, chunk: &Chunk) -> String {
     match op {
         Op::Const(i) => format!("CONST {i} = {:?}", chunk.consts.get(*i as usize)),
@@ -23,7 +33,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
             format!("CALL {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
         }
         Op::CallMethod(n, argc, mask, _) => {
-            format!("CALL_METHOD {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
+            let (mask, recv) = split_recv(*mask, *argc);
+            format!("CALL_METHOD {:?} argc={argc} mut_mask={mask:#x}{recv}", chunk.names.get(*n as usize))
         }
         Op::StoreLocal(s) => format!("STORE_LOCAL {s}"),
         Op::StoreLocalDeepCopy(s) => format!("STORE_LOCAL_DEEPCOPY {s}"),
@@ -50,10 +61,11 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::StoreStatic(s) => format!("STORE_STATIC {:?}", chunk.spans.get(*s as usize)),
         Op::CallMethodKw(i) => match chunk.kw_calls.get(*i as usize) {
             Some(kw) => format!(
-                "CALL_METHOD_KW {:?} argc={} names={:?}",
+                "CALL_METHOD_KW {:?} argc={} names={:?}{}",
                 chunk.names.get(kw.name_idx as usize),
                 kw.argc,
-                kw.arg_names
+                kw.arg_names,
+                split_recv(kw.mut_mask, kw.argc).1
             ),
             None => format!("CALL_METHOD_KW <bad idx {i}>"),
         },
@@ -78,7 +90,10 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
         Op::GetAttrLocal(s, n, c) => format!("GET_ATTR_L {s} name[{n}] cache[{c}]"),
-        Op::CallMethodLocal(s, n, a, m, _) => format!("CALL_METHOD_L {s} name[{n}] argc={a} mut={m:b}"),
+        Op::CallMethodLocal(s, n, a, m, _) => {
+            let (m, recv) = split_recv(*m, *a);
+            format!("CALL_METHOD_L {s} name[{n}] argc={a} mut={m:b}{recv}")
+        }
         Op::MustBe(t, s) => format!("MUSTBE name[{t}] span[{s}]"),
         Op::Cast(t) => format!("CAST name[{t}]"),
         Op::IntBinSS(o) => format!("IBIN_SS {o:?}"),

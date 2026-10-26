@@ -734,7 +734,7 @@ impl Interpreter {
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             // ジェネレータ関数呼び出し（VM の Call op 用）。ツリーウォークの `eval_call` の
             // `GeneratorFn => exec_generator` に対応。本体は eager 実行し `Value::Generator` を返す。
-            Value::GeneratorFn(gen_fn) => self.exec_generator_evaled(gen_fn, evaled, None),
+            Value::GeneratorFn(gen_fn) => self.exec_generator_evaled(gen_fn, evaled, None, true),
             Value::NativeFunction(fn_ref) => self.dispatch_native_evaled_flags(&fn_ref, evaled),
             // #22-c: キーワード引数を保持したまま渡すので `AsyncManager`/`Signal` も扱える。
             Value::Type(type_name) => self.call_type_constructor_evaled(&type_name, evaled),
