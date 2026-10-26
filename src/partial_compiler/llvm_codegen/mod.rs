@@ -922,7 +922,8 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn binop_code(op: &BinOp) -> i32 {
+/// 生成コードがコールバックへ渡す演算の番号（`native_api` の `OP_*` と同じ並び・読み戻しの検査は `native_api` のテスト）。
+pub(crate) fn binop_code(op: &BinOp) -> i32 {
     match op {
         BinOp::Add => 0, BinOp::Sub => 1, BinOp::Mul => 2, BinOp::Div => 3,
         BinOp::FloorDiv => 4, BinOp::Mod => 5, BinOp::Pow => 6,

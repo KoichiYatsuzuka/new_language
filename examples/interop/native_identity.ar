@@ -1,0 +1,23 @@
+# native_identity.ar — コンパイル済みコードの `===`（同一性）（native_object_access_plan.md 1-12・§0.3 ⑯）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_identity_module.ar
+#   2. cargo run --release -- examples/interop/native_identity.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_identity_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let c = m.Box(1)
+mut d = m.Box(2)
+# let の名前を 2 つの let 仮引数へ: 共有されるので同じオブジェクト
+check("=== in a compiled function: let arguments are the same object", m.same(c, c))
+# mut の名前は let 仮引数へ渡すとき複製されるので別のオブジェクト
+check("=== in a compiled function: mut arguments are copied", m.same(d, d) == False)
+check("=== in a compiled method", c.is_same(c))
+check("=== between names in a compiled function", m.local_names() == "shared,copied")

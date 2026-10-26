@@ -97,6 +97,9 @@ pub const OP_LSHIFT: i32 = 16;
 pub const OP_RSHIFT: i32 = 17;
 pub const OP_IN: i32 = 18;
 pub const OP_NOTIN: i32 = 19;
+/// `===`（同一性・`BinOp::RefEq`）。生成コードの `binop_code` と同じ番号（1-12）。
+/// ⚠ 以前は読み取りに無く、コンパイル済みコードの `===` が必ず `NativeError: invalid binop code 20` になっていた。
+pub const OP_REF_EQ: i32 = 20;
 
 // ── UnaryOp codes ────────────────────────────────────────────────────────────
 
@@ -486,6 +489,7 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
         OP_RSHIFT => Some(BinOp::RShift),
         OP_IN => Some(BinOp::In),
         OP_NOTIN => Some(BinOp::NotIn),
+        OP_REF_EQ => Some(BinOp::RefEq),
         _ => None,
     }
 }
@@ -664,3 +668,39 @@ pub struct ArCallbacks {
 
 
 mod callbacks;
+
+#[cfg(test)]
+mod tests {
+    /// 生成コードが渡す演算の番号（`binop_code`）を、コールバックがすべて同じ演算に読み戻す（1-12・§0.3 ⑯）。
+    /// ⚠ 以前は `===`（20）が読み取りに無く、コンパイル済みコードの `===` が必ずエラーになっていた。
+    #[test]
+    fn every_binop_code_is_decoded_by_the_callbacks() {
+        use crate::ast::BinOp;
+        // ⚠ `BinOp` に種類を足すとこの `match` が通らなくなる。足した種類を下の `all` にも入れること。
+        fn listed(op: &BinOp) {
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod
+                | BinOp::Pow | BinOp::Eq | BinOp::RefEq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq
+                | BinOp::Gt | BinOp::GtEq | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                | BinOp::LShift | BinOp::RShift | BinOp::In | BinOp::NotIn => {}
+                // 短絡評価なのでコールバックへは渡さない（`gen_bool_logic`）
+                BinOp::And | BinOp::Or => {}
+            }
+        }
+        let all = [
+            BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::FloorDiv, BinOp::Mod, BinOp::Pow,
+            BinOp::Eq, BinOp::RefEq, BinOp::NotEq, BinOp::Lt, BinOp::LtEq, BinOp::Gt, BinOp::GtEq,
+            BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::LShift, BinOp::RShift, BinOp::In,
+            BinOp::NotIn,
+        ];
+        for op in &all {
+            listed(op);
+            let code = crate::partial_compiler::llvm_codegen::binop_code(op);
+            assert_eq!(
+                super::i32_to_binop(code).as_ref(),
+                Some(op),
+                "binop code {code} of {op:?} is not decoded back by the callbacks"
+            );
+        }
+    }
+}
