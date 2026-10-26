@@ -166,9 +166,11 @@ struct NativeCallState {
     cstr_bufs: Vec<Vec<u8>>,
     /// `ArPtrProtocol` arguments built by `ar_protocol_arg` (their element-type strings); cleared at outermost exit (4-4).
     protocol_args: Vec<(i64, crate::interpreter::PtrProtocolArg)>,
-    /// Native method dispatch table: (class_name, method_name) → (fn_ptr, クラスを定義したモジュールの大域の番号)。
+    /// Native method dispatch table: class_name → method_name → (fn_ptr, クラスを定義したモジュールの大域の番号)。
     /// 大域の番号は呼ぶ間だけ差し替える先（`NativeFnRef::globals` と同じ・1-7）。
-    native_methods: HashMap<(String, String), (usize, u32)>,
+    /// ⚠ 2 段にしてあるのは `&str` のまま引くため（10-1）。以前は `(String, String)` をキーにしていて、引くたびに
+    ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
+    native_methods: HashMap<String, HashMap<String, (usize, u32)>>,
 }
 
 impl NativeCallState {
@@ -344,7 +346,9 @@ pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize
     STATE.with(|s| {
         s.borrow_mut()
             .native_methods
-            .insert((class_name.to_string(), method_name.to_string()), (fn_ptr, globals));
+            .entry(class_name.to_string())
+            .or_default()
+            .insert(method_name.to_string(), (fn_ptr, globals));
     });
 }
 
@@ -358,7 +362,8 @@ pub(crate) fn lookup_native_method(class_name: &str, method_name: &str) -> Optio
     STATE.with(|s| {
         s.borrow()
             .native_methods
-            .get(&(class_name.to_string(), method_name.to_string()))
+            .get(class_name)
+            .and_then(|m| m.get(method_name))
             .copied()
     })
 }

@@ -1404,10 +1404,7 @@ fn call_method_common(
 
     // Native dispatch: check NATIVE_METHODS table first.
     if let Value::Instance(ref inst_rc) = obj {
-        let class_name = inst_rc.borrow().class.name.clone();
-        let native = STATE.with(|s| {
-            s.borrow().native_methods.get(&(class_name.clone(), name.clone())).copied()
-        });
+        let native = super::lookup_native_method(&inst_rc.borrow().class.name, &name);
         let fn_ptr = native.map(|(ptr, _)| ptr);
         // 値渡しの複製（mask があるとき）に要る呼ばれた側の仮引数の可変性。オーバーロードがあれば
         // どれが呼ばれるか分からないので、ネイティブへ直行せずインタープリタの振り分けへ回す。

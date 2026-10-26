@@ -39,7 +39,6 @@ impl Interpreter {
         }
         let inst_rc = Rc::new(RefCell::new(inst));
         let inst_val = Value::Instance(inst_rc);
-        let class_name = class.name.clone();
 
         // ── cs-dll / cs-proc ブリッジ経由のコンストラクタ（#22-c で移植）──
         // 以前は `instantiate`（CallArg 版）にしか無く、`instantiate_evaled` は
@@ -47,7 +46,10 @@ impl Interpreter {
         // 22-c で `Namespace` アームを C 軸へ委譲した際に `cs_interop_test.ar` が
         // `TypeError: function takes 0 argument(s), got 1` で落ちて発覚した
         // （ブリッジ分岐が無く、引数無しの Arrow 側 stub `__init__` へ流れていた）。
-        if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
+        // C# のブリッジのクラスはクラス変数に経路を持つ。クラス変数の無いクラス（大半）は引かない（10-1）
+        let bridge_var = |key: &str| (!class.class_vars.is_empty()).then(|| class.class_vars.get(key)).flatten();
+        if let Some(Value::Str(bp)) = bridge_var("__cs_bridge_path__") {
+            let class_name = class.name.clone();
             let bp_path = std::path::PathBuf::from(&**bp);
             let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
             // ⚠ ブリッジが無ければエラー（6-2。以前は Arrow のスタブの `__init__` へ落ちて、C# のオブジェクトでない
@@ -71,7 +73,8 @@ impl Interpreter {
                 })));
             }
         }
-        if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
+        if let Some(Value::Str(pp)) = bridge_var("__cs_proc_path__") {
+            let class_name = class.name.clone();
             let pp_path = std::path::PathBuf::from(&**pp);
             let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
             let handle =
