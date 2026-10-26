@@ -1,0 +1,73 @@
+# bench.ar — speed study driver (native_object_access_plan.md 7-1). The SAME file is used in every mode;
+# only the sim_core module next to it differs (interpreted source / --compile'd .arc / C++ kernels).
+#
+# Output:  METRIC <name> <seconds>   (wall time of one region, measured with perf_counter)
+#          CHECK <name> <value>      (result of the region; must agree across the 3 modes)
+# AR_BENCH_SCALE=<k>  multiplies every repetition count (profiling runs use a larger k).
+# AR_BENCH_ONLY=<kN>  runs only that region (setup always runs). Later regions use the world
+#                     left by earlier ones, so CHECK values agree only between runs of the same set.
+
+import[py-int] time
+from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
+
+let SCALE = int(getenv("AR_BENCH_SCALE", "1"))
+let ONLY = getenv("AR_BENCH_ONLY", "")
+let NB = 256
+let T_STEP = 200 * SCALE
+let R_ENERGY = 200 * SCALE
+let R_RECORD = 100 * SCALE
+let R_LABEL = 100 * SCALE
+let N_SPAWN = 20000 * SCALE
+let T_DRIVE = 200 * SCALE
+
+# The loop is interpreted in every mode; only b.step() is native in mode 2 (boundary crossing).
+fn drive_steps(mut w: World, let ticks: int, let dt: float, let lim: float) -> int:
+    mut t = 0
+    while t < ticks:
+        for b in w.bodies:
+            b.step(dt, lim)
+        t += 1
+    return w.total_hits()
+
+fn wanted(let name: str) -> bool:
+    return ONLY == "" or ONLY == name
+
+let t0 = time.perf_counter()
+mut w = make_world(NB)
+print("METRIC setup " + str(time.perf_counter() - t0))
+
+if wanted("k1"):
+    let t1 = time.perf_counter()
+    let hits = run_step(w, T_STEP, 0.01, 10.0)
+    print("METRIC k1_step " + str(time.perf_counter() - t1))
+    print("CHECK k1_step " + str(hits))
+
+if wanted("k2"):
+    let t2 = time.perf_counter()
+    let energy = run_energy(w, R_ENERGY)
+    print("METRIC k2_energy " + str(time.perf_counter() - t2))
+    print("CHECK k2_energy " + str(energy))
+
+if wanted("k3"):
+    let t3 = time.perf_counter()
+    let trail = run_record(w, R_RECORD)
+    print("METRIC k3_record " + str(time.perf_counter() - t3))
+    print("CHECK k3_record " + str(trail))
+
+if wanted("k4"):
+    let t4 = time.perf_counter()
+    let lab = run_labels(w, R_LABEL)
+    print("METRIC k4_labels " + str(time.perf_counter() - t4))
+    print("CHECK k4_labels " + str(lab))
+
+if wanted("k5"):
+    let t5 = time.perf_counter()
+    let sp = run_spawn(N_SPAWN)
+    print("METRIC k5_spawn " + str(time.perf_counter() - t5))
+    print("CHECK k5_spawn " + str(sp))
+
+if wanted("k6"):
+    let t6 = time.perf_counter()
+    let dh = drive_steps(w, T_DRIVE, 0.01, 10.0)
+    print("METRIC k6_boundary " + str(time.perf_counter() - t6))
+    print("CHECK k6_boundary " + str(dh))

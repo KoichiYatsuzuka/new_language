@@ -1,0 +1,87 @@
+# micro.ar — prices each operation of micro_core.ar: (t(op loop) - t(empty loop)) / n, in ns.
+# Same file in the interp and native modes. Output: MICRO <name> <ns per op>  (and RAW <name> <s>)
+
+import[py-int] time
+from micro_core import Body, Vec3, make_body, m_empty, m_field_read, m_nested_read, m_field_write, m_nested_write, m_fn_call, m_call_let_small, m_call_mut_small, m_call_let_body, m_call_mut_body, m_new_vec, m_new_body, m_str_concat, m_int_to_str, m_list_append
+
+let N = 200000 * int(getenv("AR_BENCH_SCALE", "1"))
+
+mut b0 = make_body(0)
+mut b16 = make_body(16)
+mut b256 = make_body(256)
+mut v = Vec3(1.0, 2.0, 3.0)
+
+let t0 = time.perf_counter()
+let e = m_empty(N)
+let base = time.perf_counter() - t0
+print("RAW empty " + str(base))
+
+fn report(let name: str, let secs: float, let base: float, let n: int) -> None:
+    print("RAW " + name + " " + str(secs))
+    print("MICRO " + name + " " + str((secs - base) * 1000000000.0 / float(n)))
+
+mut t = time.perf_counter()
+let r1 = m_field_read(b16, N)
+report("field_read", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r2 = m_nested_read(b16, N)
+report("nested_read", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r3 = m_field_write(b16, N)
+report("field_write", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r4 = m_nested_write(b16, N)
+report("nested_write", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r5 = m_fn_call(N)
+report("fn_call", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r6 = m_call_let_small(v, N)
+report("call_let_self_vec3", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r7 = m_call_mut_small(v, N)
+report("call_mut_self_vec3", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r8 = m_call_let_body(b0, N)
+report("call_let_self_body_trail0", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r9 = m_call_let_body(b16, N)
+report("call_let_self_body_trail16", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r10 = m_call_let_body(b256, N)
+report("call_let_self_body_trail256", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r11 = m_call_mut_body(b256, N)
+report("call_mut_self_body_trail256", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r12 = m_new_vec(N)
+report("new_vec3", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r13 = m_new_body(N)
+report("new_body", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r14 = m_str_concat(N)
+report("str_concat", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r15 = m_int_to_str(N)
+report("int_to_str", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r16 = m_list_append(N)
+report("list_append", time.perf_counter() - t, base, N)
+
+print("CHECK micro " + str(e + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 + r16))
