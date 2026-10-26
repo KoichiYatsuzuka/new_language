@@ -90,18 +90,16 @@ impl Interpreter {
         if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
             return self.exec_generator_evaled(gen_fn, evaled, Some(obj), recv_mut);
         }
-        if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, method_name)
-            .is_some()
-        {
-            let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
-            if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
-                self,
-                obj.clone(),
-                method_name,
-                arg_vals,
-            ) {
-                return result;
-            }
+        // ネイティブのメソッド: 引数は宣言どおりに束縛し、`let self` / `let` 仮引数は VM と同じ規則で複製する（6-3）。
+        // 表に無ければ `None`（表を引くのは 1 回だけ）。
+        if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
+            self,
+            obj.clone(),
+            method_name,
+            &evaled,
+            recv_mut,
+        ) {
+            return result;
         }
         let Some(overloads) = self.lookup_method_in_class(&class, method_name) else {
             // クラス変数に入ったクラス（`self.Inner()`・入れ子のクラス・10-18）なら、それを呼ぶ。

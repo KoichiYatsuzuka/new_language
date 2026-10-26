@@ -144,6 +144,16 @@ impl Interpreter {
         Ok(result)
     }
 
+    /// `self` の束縛: `let self` は `mut` の受け手だけ deep copy して元のオブジェクトの変更を防ぎ、`let` の受け手は
+    /// 共有する（6-1・D-8）。`mut self` は共有。`bind_args`・`try_fast_bind`・`bind_native_args` の唯一の規則。
+    pub(crate) fn bind_self_value(self_param_mutable: bool, sv: Value, recv_mut: bool) -> Value {
+        if self_param_mutable || !recv_mut {
+            sv
+        } else {
+            Self::deep_copy_value(sv)
+        }
+    }
+
     /// 評価済み引数リストを仮引数リストにバインドして `(name, value, param_mutable, arg_is_mutable)` の
     /// 4要素タプルのリストを返す。
     ///
@@ -170,13 +180,7 @@ impl Interpreter {
         let (params_to_bind, defaults_to_bind) =
             if let (Some(sv), Some(p)) = (&self_val, params.first()) {
                 if p.name == "self" {
-                    // let self（不変レシーバ）は `mut` の受け手だけディープコピーして元オブジェクトの変更を防ぐ
-                    // （`let` の受け手は共有・6-1・D-8）
-                    let self_to_bind = if p.mutable || !recv_mut {
-                        sv.clone()
-                    } else {
-                        Self::deep_copy_value(sv.clone())
-                    };
+                    let self_to_bind = Self::bind_self_value(p.mutable, sv.clone(), recv_mut);
                     // self の arg_is_mutable は特別扱い（常にコピー済みなので false でよい）
                     result.push(("self".to_string(), self_to_bind, p.mutable, false));
                     (&params[1..], defaults.get(1..).unwrap_or(&[]))

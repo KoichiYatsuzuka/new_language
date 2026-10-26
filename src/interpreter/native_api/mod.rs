@@ -371,15 +371,25 @@ pub fn try_dispatch_native_method(
         Value::Instance(rc) => rc.borrow().class.clone(),
         _ => return None,
     };
-
     let (fn_ptr, globals) = lookup_native_method(&class.name, method_name)?;
+    Some(call_native_method_at(interp, fn_ptr, globals, class, obj, &arg_vals))
+}
 
+/// 引いてあるネイティブのメソッド（`fn_ptr` / `globals`）を、受け手 `obj` と宣言の順の引数で呼ぶ（6-3）。
+fn call_native_method_at(
+    interp: &mut Interpreter,
+    fn_ptr: usize,
+    globals: u32,
+    class: std::rc::Rc<crate::interpreter::ClassValue>,
+    obj: Value,
+    arg_vals: &[Value],
+) -> Result<Value, String> {
     let is_outermost = enter_native_call(interp as *mut Interpreter);
 
     let obj_h = push_handle(obj);
     let mut all_args: Vec<i64> = Vec::with_capacity(1 + arg_vals.len());
     all_args.push(obj_h);
-    for v in &arg_vals {
+    for v in arg_vals {
         all_args.push(push_handle(v.clone()));
     }
 
@@ -393,15 +403,57 @@ pub fn try_dispatch_native_method(
 
     if let Some(err) = take_error() {
         abort_native_call(is_outermost);
-        return Some(Err(err));
+        return Err(err);
     }
 
     if let Some((exc_type, exc_msg)) = take_pending_raise() {
         abort_native_call(is_outermost);
-        return Some(Err(format!("{exc_type}: {exc_msg}")));
+        return Err(format!("{exc_type}: {exc_msg}"));
     }
 
-    Some(Ok(exit_native_call(result_h, is_outermost)))
+    Ok(exit_native_call(result_h, is_outermost))
+}
+
+/// インタープリタからコンパイル済みのメソッドを呼ぶ入口（native_object_access_plan.md 6-3）。引数はメソッドの宣言
+/// どおりに束縛してから（[`Interpreter::bind_native_args`]: 名前つき引数・既定値・`let self` / `let` 仮引数の複製を
+/// インタープリタの呼び出しと同じ規則で行う）、宣言の順に渡す（表は 1 回だけ引く）。
+/// `recv_mut` は受け手が `mut` の値か（6-1）。ネイティブの表に無ければ `None`（呼ぶ側は先に表を引かなくてよい）。
+/// ⚠ 以前は評価済みの引数をそのまま渡し、`mut` の受け手・引数を `let` で受けても複製せず（§0.3 ⑬）、名前つき引数を
+///   呼び出しの順に並べ（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
+pub fn try_dispatch_native_method_evaled(
+    interp: &mut Interpreter,
+    obj: Value,
+    method_name: &str,
+    evaled: &[(Option<String>, Value, bool)],
+    recv_mut: bool,
+) -> Option<Result<Value, String>> {
+    let class = match &obj {
+        Value::Instance(rc) => rc.borrow().class.clone(),
+        _ => return None,
+    };
+    let (fn_ptr, globals) = lookup_native_method(&class.name, method_name)?;
+    // 呼ばれた側の宣言（`call_method_common` と同じ引き方）。ネイティブの表に載るのはモジュールのクラスの本体に
+    // 書かれた（自動生成の `__init__` を含む）メソッドだけで、オーバーロードはコンパイルしない（1-8）ので、1 つに
+    // 決まらなければ表と宣言がずれている。黙って素通しせずエラーにする。
+    let decl = match class.methods.get(method_name) {
+        Some(ov) if ov.len() == 1 => ov[0].clone(),
+        _ => {
+            return Some(Err(format!(
+                "NativeError: compiled method '{}.{method_name}' has no single declaration to bind its arguments",
+                class.name
+            )))
+        }
+    };
+    // `self` を取らない宣言（静的メソッド）はインスタンスからは呼べない。振り分けの続き（静的メソッドのエラー）へ戻す。
+    if decl.params.first().is_none_or(|p| p.name != "self") {
+        return None;
+    }
+    let mut vals = match interp.bind_native_args(&decl, evaled, Some(obj), recv_mut) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    let receiver = vals.remove(0);
+    Some(call_native_method_at(interp, fn_ptr, globals, class, receiver, &vals))
 }
 
 /// 静的コールバックインスタンスへの `*const ArCallbacks` ポインタを返す。

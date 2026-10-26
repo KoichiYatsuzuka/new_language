@@ -58,3 +58,14 @@ pub fn try_dispatch_native_method(
 ) -> Option<Result<Value, String>> {
     None
 }
+
+/// 同上（引数を宣言どおりに束縛する入口・6-3）。
+pub fn try_dispatch_native_method_evaled(
+    _interp: &mut Interpreter,
+    _obj: Value,
+    _method_name: &str,
+    _evaled: &[(Option<String>, Value, bool)],
+    _recv_mut: bool,
+) -> Option<Result<Value, String>> {
+    None
+}

@@ -88,13 +88,12 @@ impl Interpreter {
         }
 
         // Native __init__ dispatch
-        if crate::interpreter::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-            if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
-                self, inst_val.clone(), "__init__", arg_vals,
-            ) {
-                result?;
-            }
+        // 引数は宣言どおりに束縛し、`let` 仮引数は VM と同じ規則で複製する（6-3）。受け手は作ったばかりの値。
+        // 表に無ければ `None`（表を引くのは 1 回だけ）。
+        if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
+            self, inst_val.clone(), "__init__", &evaled, true,
+        ) {
+            result?;
             return Ok(inst_val);
         }
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
