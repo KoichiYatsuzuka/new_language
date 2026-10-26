@@ -627,15 +627,16 @@ impl Interpreter {
         self.exec_fn_evaled_recv(fn_val, evaled, self_val, true, fn_name, call_span)
     }
 
-    /// インタープリタからコンパイル済みの関数・メソッドへ渡す引数を、宣言（`fn_val`）どおりに束縛する
-    /// （native_object_access_plan.md 6-3）。インタープリタの呼び出しと同じ `bind_args`（位置・名前つき引数・既定値・
+    /// インタープリタからコンパイル済みの関数・メソッドへ渡す引数を、宣言（仮引数 `params`）どおりに束縛する
+    /// （native_object_access_plan.md 6-3・1-11）。インタープリタの呼び出しと同じ `bind_args`（位置・名前つき引数・既定値・
     /// 個数の検査・`let self` の複製）と、同じ複製（`let` 仮引数 ← `mut` の値は `copy_value`）を通し、宣言の順の値
-    /// （`self` を含む）を返す。既定値は定義したモジュールの大域で評価する（`exec_fn_evaled` と同じ）。
+    /// （`self` を含む）を返す。既定値は定義したモジュールの大域 `globals` で評価する（`exec_fn_evaled` と同じ）。
     /// ⚠ 以前は評価済みの引数を呼び出しの順にそのまま渡しており、`let` で受けても複製せず（§0.3 ⑬）、名前つき引数が
     ///   位置で束縛され（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
     pub(crate) fn bind_native_args(
         &mut self,
-        fn_val: &FnValue,
+        params: &[crate::ast::Param],
+        globals: u32,
         evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
         recv_mut: bool,
@@ -643,26 +644,26 @@ impl Interpreter {
         // 位置引数だけで個数が合い、既定値も可変長も無い（大半の呼び出し）: `try_fast_bind` と同じ条件・同じ束縛を、
         // `bind_args` の名前の複製なしで作る（6-3 の A/B で、一般の束縛が呼び出しの費用を 1.7 倍にしたため）。
         // ⚠ 既定値があれば一般の経路へ回す（インタープリタは引数が揃っていても既定値を評価する）。
-        let has_self = self_val.is_some() && fn_val.params.first().is_some_and(|p| p.name == "self");
-        let rest = if has_self { &fn_val.params[1..] } else { &fn_val.params[..] };
+        let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
+        let rest = if has_self { &params[1..] } else { params };
         if evaled.len() == rest.len()
             && evaled.iter().all(|(k, _, _)| k.is_none())
-            && !fn_val.params.iter().any(|p| p.variadic || p.default.is_some())
+            && !params.iter().any(|p| p.variadic || p.default.is_some())
         {
-            let mut out = Vec::with_capacity(fn_val.params.len());
+            let mut out = Vec::with_capacity(params.len());
             if let (true, Some(sv)) = (has_self, self_val) {
-                out.push(Self::bind_self_value(fn_val.params[0].mutable, sv, recv_mut));
+                out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
             }
             for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
                 out.push(if !p.mutable && *arg_mut { self.copy_value(v.clone())? } else { v.clone() });
             }
             return Ok(out);
         }
-        let defaults: Vec<Option<Value>> = if fn_val.params.iter().any(|p| p.default.is_some()) {
-            let prev = self.switch_globals(fn_val.globals);
-            let mut v = Vec::with_capacity(fn_val.params.len());
+        let defaults: Vec<Option<Value>> = if params.iter().any(|p| p.default.is_some()) {
+            let prev = self.switch_globals(globals);
+            let mut v = Vec::with_capacity(params.len());
             let mut failed = None;
-            for p in &fn_val.params {
+            for p in params {
                 match &p.default {
                     Some(expr) => match self.eval(expr) {
                         Ok(x) => v.push(Some(x)),
@@ -682,7 +683,7 @@ impl Interpreter {
         } else {
             Vec::new()
         };
-        let bindings = Self::bind_args(&fn_val.params, evaled, self_val, recv_mut, &defaults)?;
+        let bindings = Self::bind_args(params, evaled, self_val, recv_mut, &defaults)?;
         let mut out = Vec::with_capacity(bindings.len());
         for (name, val, param_mutable, arg_is_mutable) in bindings {
             // `exec_fn_evaled` の一般経路の複製ループと同じ規則

@@ -448,7 +448,7 @@ pub fn try_dispatch_native_method_evaled(
     if decl.params.first().is_none_or(|p| p.name != "self") {
         return None;
     }
-    let mut vals = match interp.bind_native_args(&decl, evaled, Some(obj), recv_mut) {
+    let mut vals = match interp.bind_native_args(&decl.params, decl.globals, evaled, Some(obj), recv_mut) {
         Ok(v) => v,
         Err(e) => return Some(Err(e)),
     };

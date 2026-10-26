@@ -84,7 +84,8 @@ impl Interpreter {
         }
 
         let evaled = self.eval_call_args(args)?;
-        let mut vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+        // 名前つき引数は受けない（書き戻しを持つのは C / C++ の関数だけ・1-11）
+        let (mut vals, _) = self.native_positional(fn_ref, evaled)?;
 
         if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
             let expected = if fn_ref.min_params == fn_ref.n_params {
@@ -340,7 +341,56 @@ impl Interpreter {
         // 書き戻し先を持たない呼び出し（＝従来の全経路）。**唯一の実装は `_wb` 版**に置き、
         // ここは「書き戻し先ゼロ」で委譲するだけにする（`*_evaled` 版とずれた実装を作らない）。
         // 引数の可変性が分からないので、`let` 仮引数は保守的に複製する（6-2）。
+        // `.arc` の関数で個数が合わなければ（既定値を省いた）宣言どおりに束縛する（1-11）。
+        if fn_ref.globals.is_some() && vals.len() != fn_ref.n_params {
+            let evaled = vals.into_iter().map(|v| (None, v, true)).collect();
+            return self.dispatch_native_evaled_flags(fn_ref, evaled);
+        }
         self.dispatch_native_evaled_wb(fn_ref, vals, &[], 0, &mut Vec::new())
+    }
+
+    /// 評価済みの引数を、呼ぶネイティブ関数の仮引数の順の値と可変性に並べる（native_object_access_plan.md 1-11）。
+    ///
+    /// - `.arc` の関数（`globals` がある）で名前つき引数か省いた引数があれば、モジュールの大域に残る宣言（本体を
+    ///   走らせたときの `FnValue`）どおりに [`Self::bind_native_args`] が束縛する（名前・既定値・個数の検査・
+    ///   `let` 仮引数の複製はインタープリタと同じ）。複製は済んでいるので、返す可変性はすべて偽（二度複製しない）。
+    /// - それ以外は呼び出しの順のまま（`let` 仮引数の複製は `dispatch_native_evaled_wb` が可変性を見て行う）。
+    ///   C / C++ などの関数は仮引数の名前を持たないので、名前つき引数はエラーにする。
+    /// ⚠ 以前はどの関数でも名前を捨てて呼び出しの順に並べており、`f(b=1, a=10)` が `f(1, 10)` になっていた（§0.3 ⑭）。
+    pub(crate) fn native_positional(
+        &mut self,
+        fn_ref: &NativeFnRef,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<(Vec<Value>, Vec<bool>), String> {
+        let named = evaled.iter().any(|(k, _, _)| k.is_some());
+        if let Some(g) = fn_ref.globals {
+            if named || evaled.len() != fn_ref.n_params {
+                let vals = match self.global_value_in(g, &fn_ref.fn_name) {
+                    Some(Value::Function(f)) => {
+                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                    }
+                    Some(Value::GeneratorFn(f)) => {
+                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                    }
+                    _ => {
+                        return Err(format!(
+                            "NativeError: compiled function '{}' has no declaration to bind its arguments",
+                            fn_ref.fn_name
+                        ))
+                    }
+                };
+                let flags = vec![false; vals.len()];
+                return Ok((vals, flags));
+            }
+        } else if named {
+            return Err(format!(
+                "TypeError: native function '{}' does not take keyword arguments",
+                fn_ref.fn_name
+            ));
+        }
+        let flags = evaled.iter().map(|(_, _, m)| *m).collect();
+        let vals = evaled.into_iter().map(|(_, v, _)| v).collect();
+        Ok((vals, flags))
     }
 
     /// [`Self::dispatch_native_evaled`] の、引数の可変性（`eval_call_args` / VM の `mut_mask` が決めた `is_mut`）が
@@ -350,8 +400,7 @@ impl Interpreter {
         fn_ref: &Arc<NativeFnRef>,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
-        let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
-        let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+        let (vals, flags) = self.native_positional(fn_ref, evaled)?;
         self.dispatch_native_evaled_wb(fn_ref, vals, &flags, 0, &mut Vec::new())
     }
 

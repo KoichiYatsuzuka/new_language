@@ -572,8 +572,7 @@ fn native_call_with_wb(
     let Some(wb) = wb else {
         return interp.dispatch_native_evaled_flags(fn_ref, evaled);
     };
-    let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
-    let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+    let (vals, flags) = interp.native_positional(fn_ref, evaled)?;
     let mut out = Vec::new();
     let r = interp.dispatch_native_evaled_wb(fn_ref, vals, &flags, wb.mask, &mut out)?;
     apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
@@ -1451,8 +1450,7 @@ fn exec_op(
                 .flatten()
             {
                 // native の `mut` ポインタ書き戻し（#48）
-                let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let (vals, flags) = interp.native_positional(&fn_ref, evaled)?;
                 let mut out = Vec::new();
                 let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
@@ -1486,8 +1484,7 @@ fn exec_op(
                 .flatten()
             {
                 // native の `mut` ポインタ書き戻し（#48）。`mod.func(mut x)` の形はここに来る。
-                let flags: Vec<bool> = evaled.iter().map(|(_, _, m)| *m).collect();
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let (vals, flags) = interp.native_positional(&fn_ref, evaled)?;
                 let mut out = Vec::new();
                 let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;

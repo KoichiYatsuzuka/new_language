@@ -98,6 +98,7 @@ $knownDiff = @{
     'cpp_struct_list_error'          = 'Rust: ArPtrProtocol のフィールドを持つ構造体の配列の to_list() は TypeError（4-6・7-14）。py: その関数を中継しないので AttributeError を stdout に出す'
     'cpp_default_args'               = 'Rust: C の既定値（DEFAULTPARAM( = x )）の引数を省略すると宣言した既定値が入る（ffi_value_exchange_plan.md 7-13）。py: C のブリッジがその関数（既定値を持つ関数）を中継せず AttributeError を stdout に出す'
     'cpp_default_args_error'         = 'Rust: 読めない既定値（マクロ名）の引数の省略は StaticTypeError（7-13）。py: その関数を中継せず AttributeError を stdout に出す'
+    'cpp_keyword_arg_error'          = 'Rust: C の関数を名前つき引数で呼ぶと TypeError（native_object_access_plan.md 1-11）。py: その関数を中継せず AttributeError を stdout に出す（cpp_default_args_error と同じ）'
     'cpp_lib_included_header_error'  = 'Rust: 取り込んだヘッダの関数も型スタブに入り、str の引数は StaticTypeError（ffi_value_exchange_plan.md 7-28）。py: 静的に検査せず、実行時の TypeError を stdout に出す'
     'cpp_callback_param_error'       = 'Rust: 関数ポインタ（callback）の引数を持つ C 関数は型スタブに入り、使うと理由つきの StaticTypeError（ffi_value_exchange_plan.md 7-29）。py: その関数を中継せず AttributeError を stdout に出す'
     'cpp_list_to_c'                  = 'Rust: list / bytes を ArPtrProtocol として渡し、出力バッファと list へ書き戻す（ffi_value_exchange_plan.md 4-7）。py: list を C の配列（ArPtrProtocol）として渡さないので、fp_sum64 の結果が合わず check が raise する'
@@ -319,6 +320,7 @@ $knownDiff = @{
     'native_builtin_fast'            = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 5-2）'
     'native_let_param_copy'          = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 6-2）'
     'native_method_entry_copy'       = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 6-3）'
+    'native_call_binding'            = 'py: .arc（DLL を埋め込んだ v1）を UTF-8 として読んで UnicodeDecodeError（typed_abi と同じ・native_object_access_plan.md 1-11）'
     # (c) 値の表示形式（repr）の違い
     'other_typing'                   = 'py: リスト repr と一部の型推論が違う'
     'result'                         = 'py: Result の repr が違う（Ok(5.0) と 5.0）'

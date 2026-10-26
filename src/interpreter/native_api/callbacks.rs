@@ -329,8 +329,10 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
 
     // Fast path: NativeFunction (native DLL).
     // Arg handles are already live in the arena — pass them straight through.
+    // ⚠ `.arc` の関数で個数が合わない（既定値を省いた）呼び出しは下の遅い道で宣言どおりに束縛する（1-11）。
+    //   生成した `_tl` は渡された個数を見ずに仮引数の数だけ読むので、ここで素通しすると引数の配列の外を読む。
     if let Value::NativeFunction(ref fn_ref) = fn_val {
-        if !interp_ptr.is_null() {
+        if !interp_ptr.is_null() && (fn_ref.globals.is_none() || n_args as usize == fn_ref.n_params) {
             let is_outermost = enter_native_call(interp_ptr);
 
             // DLL: use cached_fn_ptr; resolve on first call.
@@ -1394,7 +1396,16 @@ fn call_method_common(
             }
             _ => None,
         };
-        let direct = fn_ptr.filter(|_| mut_mask.is_none() || callee_params.is_some());
+        // ⚠ 個数が宣言と合わない（既定値を省いた・1-11）呼び出しはインタープリタの振り分けへ回す（宣言どおりに束縛
+        //   する）。生成した `_tl` は渡された個数を見ずに仮引数の数だけ読むので、直行すると引数の配列の外を読む。
+        let arity_ok = {
+            let cls = inst_rc.borrow().class.clone();
+            match cls.methods.get(&name) {
+                Some(ov) if ov.len() == 1 => ov[0].params.len() == n_args as usize + 1,
+                _ => false,
+            }
+        };
+        let direct = fn_ptr.filter(|_| arity_ok && (mut_mask.is_none() || callee_params.is_some()));
         if let Some(ptr) = direct {
             let mut all_args = Vec::with_capacity(1 + n_args as usize);
             match (mut_mask, &callee_params) {

@@ -91,6 +91,17 @@ impl Interpreter {
         self.cur_globals = to;
     }
 
+    /// 大域 `globals` にある `name` の値（今の大域なら `scopes[0]`、ほかは置き場から読む）。無ければ `None`。
+    /// 大域を差し替えずに読む（コンパイル済みの関数の宣言を、そのモジュールの大域から引く・1-11）。
+    pub(crate) fn global_value_in(&self, globals: u32, name: &str) -> Option<Value> {
+        let scope = if globals == self.cur_globals {
+            self.scopes.first()?
+        } else {
+            self.global_scopes.get(globals as usize)?
+        };
+        scope.get(name).map(|v| v.get_value())
+    }
+
     /// モジュールの本体を走らせる枠に入る（名前空間の分離・2026-09-26）。
     ///
     /// 新しい大域（組み込みだけ）を作って `scopes[0]` に据え、**呼び出し側のローカルを隠す**
