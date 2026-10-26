@@ -344,6 +344,7 @@ const CB_ITER_NEXT:     usize = 17;
 const CB_IS_TYPE:       usize = 18;
 const CB_ARENA_SAVE:    usize = 19;
 const CB_ARENA_COMPACT: usize = 20;
+const CB_COMPACT_MANY:  usize = 21;
 const CB_TO_INT:        usize = 22;
 const CB_TO_FLOAT:      usize = 23;
 const CB_DEEP_COPY:     usize = 24;
@@ -414,6 +415,7 @@ fn cb_sig(field: usize) -> (&'static str, &'static str) {
         CB_IS_TYPE       => ("i64",    "i64, ptr, i32"),
         CB_ARENA_SAVE    => ("i64",    ""),
         CB_ARENA_COMPACT => ("i64",    "i64, i64"),
+        CB_COMPACT_MANY  => ("void",   "ptr, i32, i64, ptr"),
         CB_TO_INT        => ("i64",    "i64"),
         CB_TO_FLOAT      => ("double", "i64"),
         CB_DEEP_COPY     => ("i64",    "i64"),
@@ -552,6 +554,12 @@ struct GenCtx<'a> {
     /// （native_object_access_plan.md 1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
     /// 入れ子の呼び出しは [`Self::take_call_save`] / [`Self::finish_call_save`] で積む。
     pending_save: Option<String>,
+    /// 今の関数で、アリーナへ値を積みうる箇所（ハンドルを返すコールバック・`float` を返す直接呼び出し）を出した数
+    /// （native_object_access_plan.md 9-1）。ループの本体の前後で比べ、増えたループだけを周ごとに巻き戻す。
+    push_sites: usize,
+    /// 今の関数でハンドルを書き込んだローカル変数の場所（`%_al_*`・`loop_yield` の溜め先）を書いた順に記録する（9-1）。
+    /// ループの本体の間に増えた分が、周の終わりに巻き戻すときに残す値（ほかのハンドルは周の中でしか使わない）。
+    handle_store_log: Vec<String>,
     /// モジュールの最上位で束縛される名前（関数・クラス・変数・import・5-2）。組み込み関数を隠しうるのは
     /// これとローカルだけ（1-7 以降、生成コードはモジュール自身の大域で走る）。
     top_names: HashSet<String>,

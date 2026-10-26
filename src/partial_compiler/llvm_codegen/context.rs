@@ -28,6 +28,8 @@ impl<'a> GenCtx<'a> {
             str_ctr:         0,
             ic_ctr:          0,
             pending_save:    None,
+            push_sites:      0,
+            handle_store_log: Vec::new(),
             top_names:       HashSet::new(),
             block_stack:     Vec::new(),
             class_fields,
@@ -424,6 +426,16 @@ impl<'a> GenCtx<'a> {
     pub(super) fn store_val(&mut self, ty: Ty, val: &str, ptr: &str) {
         let t = llvm_ty(ty);
         self.ec(&format!("store {t} {val}, ptr {ptr}"));
+        if ty == Ty::Handle {
+            self.note_handle_store(ptr);
+        }
+    }
+
+    /// ローカル変数の場所へハンドルを書き込んだことを記録する（9-1・ループの周の終わりに残す値）。
+    pub(super) fn note_handle_store(&mut self, ptr: &str) {
+        if !self.terminated {
+            self.handle_store_log.push(ptr.to_string());
+        }
     }
 
     pub(super) fn load_var(&mut self, name: &str) -> (String, Ty) {
@@ -509,6 +521,13 @@ impl<'a> GenCtx<'a> {
             self.typed_failed = true;
         }
         let (ret_ty, param_tys) = cb_sig(field);
+        // アリーナへ積みうるか（9-1）: ハンドルを返すもの。生の整数・保存点・トークンを返すものは積まない
+        if ret_ty == "i64"
+            && !matches!(field, CB_TO_INT | CB_ARENA_SAVE | CB_GET_INT_FIELD_IC | CB_LEN | CB_ENTER_METHOD_CTX
+                | CB_FLAT_DATA_PTR | CB_FLAT_LEN)
+        {
+            self.push_sites += 1;
+        }
         let cb  = self.fresh_reg();
         let fp  = self.fresh_reg();
         let fn_ = self.fresh_reg();

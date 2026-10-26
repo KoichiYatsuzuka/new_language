@@ -398,12 +398,14 @@ impl<'a> GenCtx<'a> {
                 self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
+                let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
                 let ir = self.fresh_reg();
                 self.ec(&format!("{ir} = load i64, ptr {iter_al}"));
                 let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {ir}")]);
                 self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
+                self.note_handle_store(&tgt_al);
                 let done = self.fresh_reg();
                 self.ec(&format!("{done} = icmp eq i64 {next}, -1"));
                 let body_blk = self.fresh_blk();
@@ -412,11 +414,8 @@ impl<'a> GenCtx<'a> {
                 self.block_stack.push(BlockCtx {
                     result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone()
                 });
-                self.loop_stack.push((loop_blk.clone(), exit_blk.clone()));
-                self.gen_stmts(body);
-                self.loop_stack.pop();
+                self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
-                self.br(&loop_blk);
                 self.start_block(&exit_blk);
                 // Return list if loop_yield was used, else result slot
                 let r = self.fresh_reg();
@@ -445,6 +444,7 @@ impl<'a> GenCtx<'a> {
                 let cond_blk = self.fresh_blk();
                 let body_blk = self.fresh_blk();
                 let exit_blk = self.fresh_blk();
+                let pre_pos = self.loop_pre_pos();
                 self.br(&cond_blk);
                 self.start_block(&cond_blk);
                 let (cv, ct) = self.gen_expr(cond);
@@ -454,11 +454,8 @@ impl<'a> GenCtx<'a> {
                 self.block_stack.push(BlockCtx {
                     result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone()
                 });
-                self.loop_stack.push((cond_blk.clone(), exit_blk.clone()));
-                self.gen_stmts(body);
-                self.loop_stack.pop();
+                self.gen_loop_body(body, &cond_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
-                self.br(&cond_blk);
                 self.start_block(&exit_blk);
                 let r = self.fresh_reg();
                 if let Some(la) = &list_al {
@@ -838,6 +835,7 @@ impl<'a> GenCtx<'a> {
             Ty::Float => {
                 let r = self.fresh_reg();
                 self.ec(&format!("{r} = call double @{sym}_impl({params})"));
+                self.push_sites += 1; // 呼ばれた側が積んだ値は残る（9-1 のループの巻き戻しの対象）
                 if let Some(s) = save {
                     self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
                 }
@@ -1144,6 +1142,7 @@ impl<'a> GenCtx<'a> {
                             if let Some(fast_args) = fast_args {
                                 let r = self.fresh_reg();
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
+                                self.push_sites += 1; // 9-1（`_fast` は巻き戻さない）
                                 // 被演算子を複製したときだけ巻き戻す（1-15）
                                 if let Some(s) = save {
                                     self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);

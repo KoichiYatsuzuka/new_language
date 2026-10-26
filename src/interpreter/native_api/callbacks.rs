@@ -825,15 +825,16 @@ extern "C" fn ar_arena_compact(h: i64, saved: u64) -> i64 {
 /// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す。
 /// 全クローン・truncate・再プッシュを1回の STATE borrow 内で完了する。
 extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
+    // 残す値が無いとき生成コードは null を渡す（9-1）。null から slice は作れないので先に片づける
+    if n <= 0 || handles_in.is_null() || handles_out.is_null() {
+        STATE.with(|s| s.borrow_mut().arena.truncate(save as usize));
+        return;
+    }
     let n = n as usize;
     let ins = unsafe { std::slice::from_raw_parts(handles_in, n) };
     let outs = unsafe { std::slice::from_raw_parts_mut(handles_out, n) };
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        if n == 0 {
-            st.arena.truncate(save as usize);
-            return;
-        }
         let vals: Vec<Value> = ins.iter().map(|&h| st.clone_value(h)).collect();
         st.arena.truncate(save as usize);
         for (i, val) in vals.into_iter().enumerate() {

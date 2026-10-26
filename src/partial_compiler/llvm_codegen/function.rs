@@ -21,6 +21,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -253,6 +254,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.current_fn_ret = ret_ty;
@@ -364,6 +366,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -423,6 +426,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
 
         let param_sigs: Vec<String> = params.iter().enumerate()

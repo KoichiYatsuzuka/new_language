@@ -175,6 +175,7 @@ impl<'a> GenCtx<'a> {
                         let h = self.to_handle(&v, vt);
                         let updated = self.call_cb(CB_LIST_APPEND, &[format!("i64 {list_cur}"), format!("i64 {h}")]);
                         self.ec(&format!("store i64 {updated}, ptr {la}"));
+                        self.note_handle_store(&la);
                     }
                 }
             }
@@ -190,6 +191,7 @@ impl<'a> GenCtx<'a> {
                         let h = self.to_handle(&v, vt);
                         let updated = self.call_cb(CB_LIST_APPEND, &[format!("i64 {list_cur}"), format!("i64 {h}")]);
                         self.ec(&format!("store i64 {updated}, ptr {la}"));
+                        self.note_handle_store(&la);
                     }
                 }
             }
@@ -262,16 +264,14 @@ impl<'a> GenCtx<'a> {
                 let cond_blk = self.fresh_blk();
                 let body_blk = self.fresh_blk();
                 let exit_blk = self.fresh_blk();
+                let pre_pos = self.loop_pre_pos();
                 self.br(&cond_blk);
                 self.start_block(&cond_blk);
                 let (cv, ct) = self.gen_expr(cond);
                 let cc = self.to_cond(&cv, ct);
                 self.br_cond(&cc, &body_blk, &exit_blk);
                 self.start_block(&body_blk);
-                self.loop_stack.push((cond_blk.clone(), exit_blk.clone()));
-                self.gen_stmts(body);
-                self.loop_stack.pop();
-                self.br(&cond_blk);
+                self.gen_loop_body(body, &cond_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
             }
 
@@ -316,6 +316,7 @@ impl<'a> GenCtx<'a> {
                     let tgt_al = self.alloca_var(target, Ty::Handle);
                     self.ec(&format!("store i64 0, ptr {tgt_al}"));
 
+                    let pre_pos = self.loop_pre_pos();
                     self.br(&loop_blk);
                     self.start_block(&loop_blk);
                     let idx_r   = self.fresh_reg();
@@ -355,15 +356,14 @@ impl<'a> GenCtx<'a> {
                         self.ec(&format!("store {tstr} {fval}, ptr {prf_al}"));
                     }
 
-                    self.loop_stack.push((loop_blk.clone(), exit_blk.clone()));
-                    self.gen_stmts(body);
-                    self.loop_stack.pop();
-
-                    // Increment index and branch back.
-                    let idx_next = self.fresh_reg();
-                    self.ec(&format!("{idx_next} = add i64 {idx_r}, 1"));
-                    self.ec(&format!("store i64 {idx_next}, ptr {idx_al}"));
-                    self.br(&loop_blk);
+                    // 添字は戻り口で進める（`continue` も戻り口へ行く）。⚠ 以前は `continue` が見出しへ直接飛び、
+                    //   添字を進めずに同じ要素を繰り返していた（終わらないループ・9-1 で発見）。
+                    let (idx_r2, idx_al2) = (idx_r.clone(), idx_al.clone());
+                    self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, move |s| {
+                        let idx_next = s.fresh_reg();
+                        s.ec(&format!("{idx_next} = add i64 {idx_r2}, 1"));
+                        s.ec(&format!("store i64 {idx_next}, ptr {idx_al2}"));
+                    });
                     self.start_block(&exit_blk);
 
                 } else {
@@ -395,21 +395,20 @@ impl<'a> GenCtx<'a> {
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の `for`・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
 
+                let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
                 let iter_reload = self.fresh_reg();
                 self.ec(&format!("{iter_reload} = load i64, ptr {iter_al}"));
                 let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {iter_reload}")]);
                 self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
+                self.note_handle_store(&tgt_al);
                 let is_done = self.fresh_reg();
                 self.ec(&format!("{is_done} = icmp eq i64 {next}, -1"));
                 let body_blk2 = self.fresh_blk();
                 self.br_cond(&is_done, &exit_blk, &body_blk2);
                 self.start_block(&body_blk2);
-                self.loop_stack.push((loop_blk.clone(), exit_blk.clone()));
-                self.gen_stmts(body);
-                self.loop_stack.pop();
-                self.br(&loop_blk);
+                self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
                 } // end else (original path)
             }
@@ -490,6 +489,7 @@ impl<'a> GenCtx<'a> {
         self.ea(&format!("{cnt} = alloca i64, align 8"));
         self.ec(&format!("store i64 {start}, ptr {cnt}"));
         let tgt = self.alloca_var(target, Ty::Int);
+        let pre_pos = self.loop_pre_pos();
         self.br(header);
         self.start_block(header);
         let c = self.fresh_reg();
@@ -504,11 +504,83 @@ impl<'a> GenCtx<'a> {
         let next = self.fresh_reg();
         self.ec(&format!("{next} = add i64 {c}, {step}"));
         self.ec(&format!("store i64 {next}, ptr {cnt}"));
-        self.loop_stack.push((header.to_string(), exit.to_string()));
+        self.gen_loop_body(body, header, exit, pre_pos, |_| {});
+        self.start_block(exit);
+    }
+
+    /// ループに入る直前（見出しへの `br` を出す前）の `code_buf` の位置。ループの前が到達しないなら `None`（9-1）。
+    pub(super) fn loop_pre_pos(&self) -> Option<usize> {
+        (!self.terminated).then_some(self.code_buf.len())
+    }
+
+    /// ループの本体を生成し、周の終わりの戻り口を作る（native_object_access_plan.md 9-1・D-10）。本体の終わりと
+    /// `continue` は戻り口へ行き、戻り口で `latch_extra`（添字を進めるなど）の後、`header` へ戻る。
+    /// 本体がアリーナへ値を積みうる（`push_sites` が増えた）ときだけ、戻り口で、ループに入る前の保存点（`pre_pos` に
+    /// 後から差し込む・積まないループのコードは変わらない）まで `CB_COMPACT_MANY` で巻き戻す。残すのは本体でハンドルを
+    /// 書き込んだローカル変数（`handle_store_log`）で、詰め直した新しいハンドルを書き戻す。ほかのハンドル（式の途中の値・
+    /// 呼び出しの結果）は周の中でしか使わず、オブジェクト・大域・コンテナへの格納は `Value` の複製なので、捨てても読まれない。
+    /// ループの前に作った値は保存点より下なので触らない。`break` は戻り口を通らない（最後の周の値はループの後も使う）。
+    /// ⚠ 以前は周ごとに巻き戻さず、ループの中で作った値がいちばん外の呼び出しが終わるまで残った（`Vec3(..)` を 100 万回
+    /// 作るループが最大 419 MB・1 回 1,083 ns。ファイル・外部言語のポインタも閉じるのが遅れた・§0.5）。
+    pub(super) fn gen_loop_body(
+        &mut self,
+        body: &[Stmt],
+        header: &str,
+        exit: &str,
+        pre_pos: Option<usize>,
+        latch_extra: impl FnOnce(&mut Self),
+    ) {
+        let latch = self.fresh_blk();
+        let pushes_before = self.push_sites;
+        let log_before = self.handle_store_log.len();
+        self.loop_stack.push((latch.clone(), exit.to_string()));
         self.gen_stmts(body);
         self.loop_stack.pop();
+        self.br(&latch);
+        self.start_block(&latch);
+        latch_extra(self);
+        // typed 変種はコールバックを使えない（積む箇所も無いので巻き戻しは要らない）
+        if let (true, Some(pos), false) = (self.push_sites > pushes_before, pre_pos, self.typed_mode) {
+            let mut live: Vec<String> = Vec::new();
+            for p in &self.handle_store_log[log_before..] {
+                if !live.contains(p) {
+                    live.push(p.clone());
+                }
+            }
+            // 保存点はループに入る直前（見出しへの `br` の前）に差し込む
+            let tail = self.code_buf.split_off(pos);
+            let save = self.call_cb(CB_ARENA_SAVE, &[]);
+            self.code_buf.push_str(&tail);
+            let n = live.len();
+            let (ins, outs) = if n == 0 {
+                ("null".to_string(), "null".to_string())
+            } else {
+                let ins = format!("%_lin{}", self.reg);
+                let outs = format!("%_lout{}", self.reg);
+                self.reg += 1;
+                self.ea(&format!("{ins} = alloca [{n} x i64], align 8"));
+                self.ea(&format!("{outs} = alloca [{n} x i64], align 8"));
+                for (i, p) in live.iter().enumerate() {
+                    let v = self.fresh_reg();
+                    let slot = self.fresh_reg();
+                    self.ec(&format!("{v} = load i64, ptr {p}"));
+                    self.ec(&format!("{slot} = getelementptr inbounds [{n} x i64], ptr {ins}, i32 0, i32 {i}"));
+                    self.ec(&format!("store i64 {v}, ptr {slot}"));
+                }
+                (ins, outs)
+            };
+            self.call_cb(CB_COMPACT_MANY, &[
+                format!("ptr {ins}"), format!("i32 {n}"), format!("i64 {save}"), format!("ptr {outs}"),
+            ]);
+            for (i, p) in live.iter().enumerate() {
+                let slot = self.fresh_reg();
+                let v = self.fresh_reg();
+                self.ec(&format!("{slot} = getelementptr inbounds [{n} x i64], ptr {outs}, i32 0, i32 {i}"));
+                self.ec(&format!("{v} = load i64, ptr {slot}"));
+                self.ec(&format!("store i64 {v}, ptr {p}"));
+            }
+        }
         self.br(header);
-        self.start_block(exit);
     }
 
     /// 属性の値を読む（複合代入の左辺）。`trait_name` があれば `obj::Trait.attr`（VM の `GetTraitAttr`）。
