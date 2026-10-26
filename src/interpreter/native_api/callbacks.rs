@@ -118,8 +118,21 @@ extern "C" fn ar_is_truthy(h: i64) -> i32 {
             _ => 1,
         };
     }
+    // VM の条件と同じ `eval_truthy`（`__bool__` を呼ぶ・native_object_access_plan.md 1-14）。⚠ 以前は `is_truthy` で
+    // `__bool__` を見ていなかった。失敗は呼び出しの出口で例外になる（ほかのコールバックと同じ）。
     let interp = unsafe { &mut *interp_ptr };
-    i32::from(interp.is_truthy(&v))
+    match interp.eval_truthy(&v) {
+        Ok(b) => i32::from(b),
+        Err(e) => {
+            STATE.with(|s| {
+                let mut st = s.borrow_mut();
+                if st.error.is_none() {
+                    st.error = Some(e);
+                }
+            });
+            0
+        }
+    }
 }
 
 extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
@@ -139,8 +152,10 @@ extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
         STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for binop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*interp_ptr };
-    match interp.apply_binop(&ast_op, lhs, rhs) {
+    // VM の `BinOp` と同じ `apply_binop_dyn`（`__add__` / `__eq__` などを呼ぶ・`in` の `__eq__`・1-14）。
+    // ⚠ 以前は `apply_binop` で演算子のメソッドを見ず、`a + b` が TypeError、`a == b` が `__eq__` でなく構造の比較になっていた。
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.apply_binop_dyn(&ast_op, lhs, rhs) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
@@ -169,8 +184,9 @@ extern "C" fn ar_unop(op: i32, a: i64) -> i64 {
         STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for unop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*interp_ptr };
-    match interp.apply_unary(&ast_op, operand) {
+    // VM の単項演算と同じ `apply_unary_dyn`（`__neg__` などを呼ぶ・1-14）。⚠ 以前は `apply_unary` で見ていなかった。
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.apply_unary_dyn(&ast_op, operand) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
