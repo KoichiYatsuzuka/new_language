@@ -560,6 +560,12 @@ struct GenCtx<'a> {
     /// 今の関数でハンドルを書き込んだローカル変数の場所（`%_al_*`・`loop_yield` の溜め先）を書いた順に記録する（9-1）。
     /// ループの本体の間に増えた分が、周の終わりに巻き戻すときに残す値（ほかのハンドルは周の中でしか使わない）。
     handle_store_log: Vec<String>,
+    /// ハンドルを作りうる（アリーナへ値を積みうる）モジュールの関数（native_object_access_plan.md 9-2）。`float` を返す
+    /// 直接呼び出し・`_fast` は、呼ばれる側がここにあれば前後で巻き戻す（無ければ数値だけの関数で、何もしない）。
+    /// `generate_llvm_module` が不動点で決めて渡す。
+    pushing_fns: HashSet<String>,
+    /// 生成した関数のうち、`_impl` の本体（入口の先読みを含む）でアリーナへ積む箇所を出したもの（9-2・不動点の出力）。
+    fn_pushes: HashSet<String>,
     /// モジュールの最上位で束縛される名前（関数・クラス・変数・import・5-2）。組み込み関数を隠しうるのは
     /// これとローカルだけ（1-7 以降、生成コードはモジュール自身の大域で走る）。
     top_names: HashSet<String>,
@@ -1182,26 +1188,34 @@ pub fn generate_llvm_module(
         .map(|f| f.symbol.clone())
         .collect();
 
-    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
+    // ハンドルを作りうる関数の集合を不動点で決める（9-2）。呼ぶ側を呼ばれる側より先に生成することもあるので、楽観的に
+    // 空から始め、作りうると分かった関数を足して作り直す（集合は増える一方なので関数の数 + 1 回で止まる）。前の周回の
+    // 生成は捨てる（文字列の定数・IC のセルの番号がずれない）。
+    let mut pushing: HashSet<String> = HashSet::new();
+    let mut ctx = loop {
+        let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
+        ctx.pushing_fns = pushing.clone();
 
-    // 組み込み関数を隠しうる最上位の名前（5-2）
-
-    for s in stmts {
-
-        crate::decl_names::each_declared_name(s, &mut |n, _, _| { ctx.top_names.insert(n.to_string()); });
-
-    }
-
-    for f in &eligible {
-        // Set current_class so field reads on 'self' are type-specialised.
-        ctx.current_class = f.class_name.clone();
-        if f.is_gen {
-            ctx.emit_gen_fn(&f.symbol, f.params, f.body);
-        } else {
-            ctx.emit_fn(&f.symbol, f.params, f.return_type, f.body);
+        // 組み込み関数を隠しうる最上位の名前（5-2）
+        for s in stmts {
+            crate::decl_names::each_declared_name(s, &mut |n, _, _| { ctx.top_names.insert(n.to_string()); });
         }
-        ctx.current_class = None;
-    }
+
+        for f in &eligible {
+            // Set current_class so field reads on 'self' are type-specialised.
+            ctx.current_class = f.class_name.clone();
+            if f.is_gen {
+                ctx.emit_gen_fn(&f.symbol, f.params, f.body);
+            } else {
+                ctx.emit_fn(&f.symbol, f.params, f.return_type, f.body);
+            }
+            ctx.current_class = None;
+        }
+        if ctx.fn_pushes == pushing {
+            break ctx;
+        }
+        pushing = ctx.fn_pushes.clone();
+    };
 
     // ── 統一 typed ABI 変種（{name}_typed）の生成 ──────────────────────────────
     // 候補: トップレベル関数で、全パラメータが `let` かつ int/float 注釈、

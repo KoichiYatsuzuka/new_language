@@ -26,6 +26,8 @@ impl<'a> GenCtx<'a> {
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
         self.current_fn_ret = ret_ty;
+        // この関数の `_impl` がアリーナへ積むかを数え始める（入口の先読みを含む・9-2）
+        let pushes_at_start = self.push_sites;
 
         // Populate param_classes for type-specialised field reads.
         self.param_classes.clear();
@@ -128,6 +130,9 @@ impl<'a> GenCtx<'a> {
             if !self.terminated { self.ec("ret double 0.0"); self.terminated = true; }
         } else {
             self.ret_handle("0");
+        }
+        if self.push_sites > pushes_at_start {
+            self.fn_pushes.insert(name.to_string());
         }
 
         let attr = export_attr();

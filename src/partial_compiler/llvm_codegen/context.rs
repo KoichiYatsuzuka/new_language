@@ -29,6 +29,8 @@ impl<'a> GenCtx<'a> {
             ic_ctr:          0,
             pending_save:    None,
             push_sites:      0,
+            pushing_fns:     HashSet::new(),
+            fn_pushes:       HashSet::new(),
             handle_store_log: Vec::new(),
             top_names:       HashSet::new(),
             block_stack:     Vec::new(),
@@ -522,7 +524,10 @@ impl<'a> GenCtx<'a> {
         }
         let (ret_ty, param_tys) = cb_sig(field);
         // アリーナへ積みうるか（9-1）: ハンドルを返すもの。生の整数・保存点・トークンを返すものは積まない
+        // 結果を残さない巻き戻し（`int` / `float` を返す呼び出しの後・残す値 0）も積まない（9-2）
+        let compact_none = field == CB_ARENA_COMPACT && args.first().is_some_and(|a| a == "i64 0");
         if ret_ty == "i64"
+            && !compact_none
             && !matches!(field, CB_TO_INT | CB_ARENA_SAVE | CB_GET_INT_FIELD_IC | CB_LEN | CB_ENTER_METHOD_CTX
                 | CB_FLAT_DATA_PTR | CB_FLAT_LEN)
         {

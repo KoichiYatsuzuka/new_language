@@ -1,0 +1,21 @@
+# native_float_call_lifetime.ar — `float` を返す呼び出しの後で、呼ばれた側が作った値を捨てる
+# （native_object_access_plan.md 9-2・D-10）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_float_call_lifetime_module.ar
+#   2. cargo run --release -- examples/interop/native_float_call_lifetime.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_float_call_lifetime_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("a float function that makes a value", m.x_of_new(2.5) == 2.5)
+check("recursion of such a function", m.sum_rec(200) == 200.0)
+check("calling it in a loop", m.loop_calls(1000) == 1000.0)
+check("a file written by the callee is read after it returns", m.write_then_read("examples/interop/_tmp_float_call.txt") == "abc")
+check("a numeric function in a loop", m.numeric_loop(10) == 40.0)

@@ -833,9 +833,16 @@ impl<'a> GenCtx<'a> {
     fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<String>) -> (String, Ty) {
         match ret {
             Ty::Float => {
+                // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`int` / ハンドルを返す呼び出しと同じ）。
+                // 数値だけの関数（`pushing_fns` に無い）は何もしない。⚠ 以前は巻き戻さず、呼ばれた側が積んだ値が
+                // いちばん外の呼び出しが終わるまで残った（ループ・再帰の中の呼び出しで溜まる）
+                let save = if self.pushing_fns.contains(sym) {
+                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
+                } else {
+                    save
+                };
                 let r = self.fresh_reg();
                 self.ec(&format!("{r} = call double @{sym}_impl({params})"));
-                self.push_sites += 1; // 呼ばれた側が積んだ値は残る（9-1 のループの巻き戻しの対象）
                 if let Some(s) = save {
                     self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
                 }
@@ -1141,9 +1148,14 @@ impl<'a> GenCtx<'a> {
                             let save = self.finish_call_save(outer);
                             if let Some(fast_args) = fast_args {
                                 let r = self.fresh_reg();
+                                // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`call_impl` と同じ）
+                                let save = if self.pushing_fns.contains(&sym) {
+                                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
+                                } else {
+                                    save
+                                };
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
-                                self.push_sites += 1; // 9-1（`_fast` は巻き戻さない）
-                                // 被演算子を複製したときだけ巻き戻す（1-15）
+                                // 被演算子を複製したとき（1-15）・呼ばれた側が積むとき（9-2）に巻き戻す
                                 if let Some(s) = save {
                                     self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
                                 }
