@@ -1688,17 +1688,84 @@ extern "C" fn ar_get_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cel
     }
 }
 
+/// 数値のフィールドを `float` として読むときの変換（`int` は広げる・`bool` は 0 / 1・ほかは `None` = エラー）。
+/// 命中経路（`read_number_ic_hit`）と外れた道の両方で使う唯一の規則（native_object_access_plan.md 8-1）。
+fn float_of(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Int(n) => Some(*n as f64),
+        Value::UInt(n) => Some(*n as f64),
+        Value::Bool(b) => Some(f64::from(u8::from(*b))),
+        _ => None,
+    }
+}
+
+/// [`float_of`] の `int` 版（`float` は切り捨て・`bool` は 0 / 1）。
+fn int_of(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(n) => Some(*n),
+        Value::UInt(n) => Some(*n as i64),
+        Value::Float(f) => Some(*f as i64),
+        Value::Bool(b) => Some(i64::from(*b)),
+        _ => None,
+    }
+}
+
+/// 属性名をデバッグビルドの検査（`ic_slot` の slot と名前の突き合わせ）のためだけに読む。命中経路は名前を使わない。
+fn debug_field_name<'a>(ptr: *const u8, len: i32) -> &'a str {
+    if len <= 0 || ptr.is_null() {
+        return "";
+    }
+    // SAFETY: `native_str` と同じ契約（ネイティブ側が `len` バイトの有効な領域を渡す）
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }).unwrap_or("<invalid utf-8>")
+}
+
+/// IC 付きの数値の読み出しの命中経路（native_object_access_plan.md 8-1・D-9）。IC が当たり、フィールドが数値なら、
+/// アリーナとインスタンスを借りたまま `conv` で変換して返す。それ以外（先に積まれたエラーがある・外れた・未初期化・
+/// 数値でない）は `None` で、呼ぶ側は今までの道（`read_attr_ic`）へ回る（結果もエラーの文面も変わらない）。
+/// ⚠ 属性名はここでは検査しない。命中は IC のセルが埋まった後にしか起きず、セルを埋めるのは名前を `native_str` で
+///   検査する外れた道だけなので、その箇所の名前は一度検査を通っている。
+/// ⚠ 以前は毎回名前を検査し、値を `Value` → `Result` → `IcRead` に包んで返していた（1 回 28.8 ns のうち 17.8 ns・
+///   実験で切り分けた。IC の判定と取り出しは VM の `GetAttrLocal` と同じ関数）。
+#[inline(always)]
+fn read_number_ic_hit<T>(
+    obj_h: i64,
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    conv: fn(&Value) -> Option<T>,
+) -> Option<T> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() || obj_h < 3 {
+        return None;
+    }
+    // SAFETY: `read_attr_ic` と同じ（生成コードが渡すのは DLL 内の `i64` の大域で、`AtomicU64` と同じ並び）
+    let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    STATE.with(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return None;
+        }
+        let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return None };
+        let inst = rc.borrow();
+        let (idx, _) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len))?;
+        conv(&inst.field_value(idx)?)
+    })
+}
+
 extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> f64 {
+    if let Some(f) = read_number_ic_hit(obj_h, cell, name_ptr, name_len, float_of) {
+        return f;
+    }
     let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
     match read_attr_ic(obj_h, name, cell) {
-        IcRead::Value(Value::Float(f), _) => f,
-        IcRead::Value(Value::Int(n), _) => n as f64,
-        IcRead::Value(Value::UInt(n), _) => n as f64,
-        IcRead::Value(Value::Bool(b), _) => b as u8 as f64,
-        IcRead::Value(other, interp_ptr) => {
-            field_not_number(name, &other, interp_ptr);
-            0.0
-        }
+        IcRead::Value(v, interp_ptr) => match float_of(&v) {
+            Some(f) => f,
+            None => {
+                field_not_number(name, &v, interp_ptr);
+                0.0
+            }
+        },
         IcRead::Error(e) => {
             set_field_read_error(e);
             0.0
@@ -1708,16 +1775,18 @@ extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i
 }
 
 extern "C" fn ar_get_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    if let Some(n) = read_number_ic_hit(obj_h, cell, name_ptr, name_len, int_of) {
+        return n;
+    }
     let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0 };
     match read_attr_ic(obj_h, name, cell) {
-        IcRead::Value(Value::Int(n), _) => n,
-        IcRead::Value(Value::UInt(n), _) => n as i64,
-        IcRead::Value(Value::Float(f), _) => f as i64,
-        IcRead::Value(Value::Bool(b), _) => b as i64,
-        IcRead::Value(other, interp_ptr) => {
-            field_not_number(name, &other, interp_ptr);
-            0
-        }
+        IcRead::Value(v, interp_ptr) => match int_of(&v) {
+            Some(n) => n,
+            None => {
+                field_not_number(name, &v, interp_ptr);
+                0
+            }
+        },
         IcRead::Error(e) => {
             set_field_read_error(e);
             0
