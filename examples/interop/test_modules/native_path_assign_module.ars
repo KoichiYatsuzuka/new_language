@@ -1,0 +1,31 @@
+class Tag:
+    mut k: int
+    fn __init__(mut self, k: int) -> None:
+        ...
+
+
+class Inner:
+    mut x: float
+    mut n: int
+    mut s: str
+    mut tag: Tag
+    fn __init__(mut self, x: float, n: int, s: str, tag: Tag) -> None:
+        ...
+
+
+class Outer:
+    mut inner: Inner
+    fn swap(mut self) -> float:
+        ...
+    fn __init__(mut self, inner: Inner) -> None:
+        ...
+
+
+class Deep:
+    mut o: Outer
+    fn __init__(mut self, o: Outer) -> None:
+        ...
+
+
+fn run_checks() -> str:
+    ...

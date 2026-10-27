@@ -701,6 +701,14 @@ pub struct ArCallbacks {
     /// ものなら VM の `vm_method_call_other` と同じ境界の検査（`check_ffi_return`）をする。
     /// ⚠ 以前の生成コードの道（field 55）は検査をせず、Python が宣言と違う型を返しても黙って通していた（§0.6 要因 7）。
     pub call_method_ic: extern "C" fn(*mut u64, i64, *const u8, i32, *const i64, i32, u32, *const u8, i32) -> i64,
+
+    // ── Assignment through an attribute path in one call (field 74・12-3・D-13) ──
+    /// `a.b.c = v` を 1 回で行う。引数は (根のハンドル, 段の表, 段の数, 値の種類, 値)。段の表は段ごとに
+    /// (名前のポインタ, 長さ, IC のセル) の 3 つの `i64` で、最後の段が書き込む属性。途中の段は VM の `GetAttr` と同じ
+    /// IC で読み（アリーナに積まない）、最後は `attr_assign_ic` で書く。値の種類は 0 = ハンドル・1 = `int`・
+    /// 2 = `float`（ビット列）。⚠ 生成コードは値を先に評価するので、値の評価が何も起こさない形（リテラル・変数・
+    /// 数の演算）のときだけ使う（途中の読み出しの順が VM と入れ替わっても見分けられない）。
+    pub assign_path_ic: extern "C" fn(i64, *const i64, i32, i32, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

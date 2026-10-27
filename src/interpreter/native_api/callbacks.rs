@@ -577,6 +577,89 @@ extern "C" fn ar_assign_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len
     assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Float(v), cell);
 }
 
+/// `a.b.c = v` を 1 回で行う（field 74・12-3・D-13）。途中の段は VM の `GetAttr` と同じ IC で読み（命中なら
+/// `ic_slot`、外れたら `get_attr_val(.., Some(cache))` がセルを埋める）、最後の段は fields 61 / 65 / 66 と同じ
+/// `attr_assign_ic` で書く。途中の値はアリーナに積まない（積んで周ごとに巻き戻していた分を省く）。
+/// 属性名はセルが空のときだけ検査する（`site_name`）。
+extern "C" fn ar_assign_path_ic(root_h: i64, steps: *const i64, n_steps: i32, kind: i32, value: i64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if n_steps < 2 || steps.is_null() {
+        set_native_error(format!("NativeError: invalid attribute path from native code ({n_steps} step(s))"));
+        return;
+    }
+    // SAFETY: 生成コードは段ごとに 3 つの `i64`（名前のポインタ・長さ・セルのポインタ）を並べて渡す
+    let table = unsafe { std::slice::from_raw_parts(steps, 3 * n_steps as usize) };
+    let (has_err, root, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(root_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        set_native_error("NativeError: interpreter not set for assign_path".to_string());
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let val = match kind {
+        0 => clone_value_at(value),
+        1 => Value::Int(value),
+        2 => Value::Float(f64::from_bits(value as u64)),
+        _ => {
+            set_native_error(format!("NativeError: unknown value kind {kind} (assign_path)"));
+            return;
+        }
+    };
+    let step = |k: usize| (table[3 * k] as *const u8, table[3 * k + 1] as i32, table[3 * k + 2] as *mut u64);
+    let mut obj = root;
+    let last = n_steps as usize - 1;
+    for k in 0..last {
+        let (np, nl, cell) = step(k);
+        let Some(name) = site_name(np, nl, cell, "attribute name") else { return };
+        if cell.is_null() {
+            set_native_error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+            return;
+        }
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+        let cell = unsafe { &*(cell as *const AtomicU64) };
+        let packed = cell.load(Ordering::Relaxed);
+        let hit = match &obj {
+            Value::Instance(rc) => {
+                let inst = rc.borrow();
+                inst.ic_slot(packed, true, || name).and_then(|(idx, _)| inst.field_value(idx))
+            }
+            _ => None,
+        };
+        obj = match hit {
+            Some(v) => v,
+            None => {
+                let cache = crate::ast::AttrCache(std::cell::Cell::new(packed));
+                let r = interp.get_attr_val(obj, name, Some(&cache));
+                cell.store(cache.0.get(), Ordering::Relaxed);
+                match r {
+                    Ok(v) => v,
+                    Err(e) => {
+                        STATE.with(|s| s.borrow_mut().error = Some(e));
+                        return;
+                    }
+                }
+            }
+        };
+    }
+    let (np, nl, cell) = step(last);
+    let Some(name) = site_name(np, nl, cell, "attribute name") else { return };
+    if cell.is_null() {
+        set_native_error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+        return;
+    }
+    // SAFETY: 上と同じ
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let cache = crate::ast::AttrCache(std::cell::Cell::new(cell.load(Ordering::Relaxed)));
+    let r = interp.attr_assign_ic(obj, name, val, Some(&cache));
+    cell.store(cache.0.get(), Ordering::Relaxed);
+    if let Err(e) = r {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
 /// fields 61 / 65 / 66 の本体（値の受け取り方だけが違う）。
 fn assign_attr_ic_value(obj_h: i64, name_ptr: *const u8, name_len: i32, val: Value, cell: *mut u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2310,6 +2393,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     iter_drop: ar_iter_drop,
     make_str_ic: ar_make_str_ic,
     call_method_ic: ar_call_method_ic,
+    assign_path_ic: ar_assign_path_ic,
 };
 
 #[cfg(test)]

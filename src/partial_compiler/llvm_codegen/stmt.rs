@@ -61,6 +61,10 @@ impl<'a> GenCtx<'a> {
             // 代入先の形は `stmt_eligible` が `obj.attr` / `obj::T.attr` に絞っている。
             Stmt::AttrAssign { target, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
+                // `a.b.c = v`（途中に属性が 1 段以上）で値の評価が何も起こさなければ、途中を積まない 1 回の呼び出し（12-3）
+                if trait_name.is_none() && self.emit_attr_path_assign(target, value) {
+                    return;
+                }
                 let (obj, ot) = self.gen_expr(object);
                 let (val, vt) = self.gen_expr(value);
                 let oh  = self.to_handle(&obj, ot);
@@ -529,6 +533,97 @@ impl<'a> GenCtx<'a> {
     /// ループの前に作った値は保存点より下なので触らない。`break` は戻り口を通らない（最後の周の値はループの後も使う）。
     /// ⚠ 以前は周ごとに巻き戻さず、ループの中で作った値がいちばん外の呼び出しが終わるまで残った（`Vec3(..)` を 100 万回
     /// 作るループが最大 419 MB・1 回 1,083 ns。ファイル・外部言語のポインタも閉じるのが遅れた・§0.5）。
+    /// `a.b.c = v` を `CB_ASSIGN_PATH_IC` の 1 回で書く（12-3・D-13）。載らなければ何も出さずに `false`。
+    ///
+    /// 載る形: 代入先が `Expr::Attr` の 2 段以上の連なり（`Trait::attr` を含まない）で、値の評価が何も起こさないもの
+    /// （[`Self::effect_free_value`]）。根は今までどおり先に評価し、値を評価してから途中の段を読む。VM は途中の段を
+    /// 値より先に読むが、値の評価が何も起こさないので順の違いは見分けられない（途中の読み出しはどちらの順でも同じ値）。
+    fn emit_attr_path_assign(&mut self, target: &Expr, value: &Expr) -> bool {
+        let mut names: Vec<&str> = Vec::new();
+        let mut cur = target;
+        while let Expr::Attr { object, attr, .. } = cur {
+            names.push(attr.as_str());
+            cur = object.as_ref();
+        }
+        if names.len() < 2 || !self.effect_free_value(value) {
+            return false;
+        }
+        names.reverse();
+        let (rv, rt) = self.gen_expr(cur);
+        let root = self.to_handle(&rv, rt);
+        let (val, vt) = self.gen_expr(value);
+        let (kind, bits) = match vt {
+            Ty::Int => (1, val),
+            Ty::Float => {
+                let b = self.fresh_reg();
+                self.ec(&format!("{b} = bitcast double {val} to i64"));
+                (2, b)
+            }
+            _ => (0, self.to_handle(&val, vt)),
+        };
+        let n = names.len();
+        let arr = format!("%_path{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{arr} = alloca [{} x i64], align 8", 3 * n));
+        for (k, name) in names.iter().enumerate() {
+            let sp = self.str_const(name.as_bytes());
+            let cell = self.ic_cell();
+            let entries = [
+                sp.trim_start_matches("ptr ").to_string(),
+                name.len().to_string(),
+                cell.trim_start_matches("ptr ").to_string(),
+            ];
+            for (j, e) in entries.iter().enumerate() {
+                let slot = self.fresh_reg();
+                self.ec(&format!("{slot} = getelementptr inbounds [{} x i64], ptr {arr}, i32 0, i32 {}", 3 * n, 3 * k + j));
+                if j == 1 {
+                    self.ec(&format!("store i64 {e}, ptr {slot}"));
+                } else {
+                    let p = self.fresh_reg();
+                    self.ec(&format!("{p} = ptrtoint ptr {e} to i64"));
+                    self.ec(&format!("store i64 {p}, ptr {slot}"));
+                }
+            }
+        }
+        self.call_cb(CB_ASSIGN_PATH_IC, &[
+            format!("i64 {root}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {kind}"), format!("i64 {bits}"),
+        ]);
+        true
+    }
+
+    /// 値の評価が何も起こさないか（利用者のコード・外部言語のコードを走らせず、何も書き換えない）。12-3 で途中の段の
+    /// 読み出しを値の後へ回してよいかの判定。リテラル・名前（読むだけ）と、`int` / `float` と分かっている項の演算だけ。
+    /// ⚠ 属性の読み出しは入れない（C# のプロパティ・Python の属性は読むだけでコードを走らせる）。演算も項がインスタンスなら
+    ///   `__add__` などを呼ぶので、数と分かっている項だけ。
+    fn effect_free_value(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::None | Expr::Str(_) => true,
+            Expr::Ident { .. } => true,
+            Expr::UnaryOp { op: crate::ast::UnaryOp::Neg, operand, .. } => self.numeric_leaf(operand),
+            Expr::BinOp { op, left, right, .. } => {
+                matches!(op, crate::ast::BinOp::Add | crate::ast::BinOp::Sub | crate::ast::BinOp::Mul)
+                    && self.numeric_leaf(left)
+                    && self.numeric_leaf(right)
+            }
+            _ => false,
+        }
+    }
+
+    /// `int` / `float` と分かっている項（数のリテラル・`int` / `float` のローカル変数・その演算）。
+    fn numeric_leaf(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Float(_) => true,
+            Expr::Ident { name, .. } => self.locals.get(name).is_some_and(|(_, t)| matches!(t, Ty::Int | Ty::Float)),
+            Expr::UnaryOp { op: crate::ast::UnaryOp::Neg, operand, .. } => self.numeric_leaf(operand),
+            Expr::BinOp { op, left, right, .. } => {
+                matches!(op, crate::ast::BinOp::Add | crate::ast::BinOp::Sub | crate::ast::BinOp::Mul)
+                    && self.numeric_leaf(left)
+                    && self.numeric_leaf(right)
+            }
+            _ => false,
+        }
+    }
+
     /// `for` のループの出口（終わり・`break` の飛び先）: このループのイテレータを捨てる（`CB_ITER_DROP`・11-1・D-12）。
     /// VM はイテレータを関数のローカルの欄に置くので、ループを抜けた後は使われずに関数の終わりで消える。
     pub(super) fn drop_iter_scope(&mut self, iter_al: &str) {
