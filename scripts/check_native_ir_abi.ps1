@@ -36,11 +36,25 @@ $sources = Get-ChildItem -Recurse (Join-Path $repo 'examples') -Filter *.arc |
 
 $failed = 0
 $n = 0
+$copiedDirs = @{}
 foreach ($src in $sources) {
     $n++
     $rel = $src.Substring($repo.Length + 1)
     $dst = Join-Path $work $rel
     New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+    # モジュールが同じディレクトリの下の資源を import する（`import[py-int] ffi_probe.x`・11-3）ので、ディレクトリごとに
+    # 1 回だけ中身を写す（作ったもの・バイナリは除く）
+    $srcDir = Split-Path $src
+    if (-not $copiedDirs.ContainsKey($srcDir)) {
+        $copiedDirs[$srcDir] = $true
+        Get-ChildItem $srcDir -Recurse -File |
+            Where-Object { $_.Extension -notin '.arc', '.dll', '.lib', '.pdb', '.obj', '.exp', '.so' } |
+            ForEach-Object {
+                $to = Join-Path $work $_.FullName.Substring($repo.Length + 1)
+                New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+                Copy-Item $_.FullName $to
+            }
+    }
     Copy-Item $src $dst
     $ll = Join-Path $llDir (($rel -replace '[\\/:]', '_') -replace '\.ar$', '.ll')
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -64,6 +78,8 @@ foreach ($src in $sources) {
         Write-Host "NO-DLL   $rel  $why"
         $failed++
     }
+    # コンパイルしなかった関数（FFI の検査の宣言型を埋め込めない・native_object_access_plan.md 11-3）は失敗にせず出すだけ
+    $out -split "`n" | Where-Object { $_ -match 'stays interpreted' } | ForEach-Object { Write-Host "INTERP   $rel  $($_.Trim())" }
 }
 
 $lls = @(Get-ChildItem $llDir -Filter *.ll | ForEach-Object { $_.FullName })

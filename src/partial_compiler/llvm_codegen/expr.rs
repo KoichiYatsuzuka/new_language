@@ -156,7 +156,7 @@ impl<'a> GenCtx<'a> {
                 (r, Ty::Handle)
             }
 
-            Expr::Call { func, args, .. } => self.gen_call_expr(func, args),
+            Expr::Call { func, args, node_id, span, .. } => self.gen_call_expr(func, args, (*node_id, span)),
 
             Expr::Attr { object, attr, node_id, .. } => {
                 // Fast path: check preread_fields using the full dotted path.
@@ -997,8 +997,8 @@ impl<'a> GenCtx<'a> {
     ///
     /// `Ty::Float` はここへ来ない（呼び出し側が `double` 直返しの高速経路を選ぶ）。
     /// ⚠ #64 以前は関数版とメソッド版に逐語で同じものが書かれていた。
-    fn gen_call_unwrapped(&mut self, func: &Expr, args: &[CallArg], ret_ty: Ty) -> (String, Ty) {
-        let h = self.gen_call(func, args);
+    fn gen_call_unwrapped(&mut self, func: &Expr, args: &[CallArg], ret_ty: Ty, site: CallSite<'_>) -> (String, Ty) {
+        let h = self.gen_call(func, args, site);
         match ret_ty {
             Ty::Int => {
                 let r = self.call_cb(CB_TO_INT, &[format!("i64 {h}")]);
@@ -1045,7 +1045,7 @@ impl<'a> GenCtx<'a> {
     /// ⚠ **重複していたのは判断のほうだった** — 「この名前はモジュール内関数か」
     /// （[`Self::is_module_fn`]）と「レシーバのクラスは何か」（[`Self::receiver_class`]）を
     /// 両方が各自で書いていた。#64 でそこだけ 1 箇所に畳んである。
-    fn gen_call_expr(&mut self, func: &Expr, args: &[CallArg]) -> (String, Ty) {
+    fn gen_call_expr(&mut self, func: &Expr, args: &[CallArg], site: CallSite<'_>) -> (String, Ty) {
         // Cell built-ins: __make_cell / __get_cell / __set_cell
         if let Some(n) = ident_name(func) {
             if n == "__make_cell" || n == "__get_cell" || n == "__set_cell" {
@@ -1180,11 +1180,11 @@ impl<'a> GenCtx<'a> {
                     }
 
                     // ハンドルを返すメソッド・ガード付きの受け手: ハンドル ABI（int は CB_TO_INT で開ける）。
-                    return self.gen_call_unwrapped(func, args, ret_ty);
+                    return self.gen_call_unwrapped(func, args, ret_ty, site);
                 }
             }
         }
-        (self.gen_call(func, args), Ty::Handle)
+        (self.gen_call(func, args, site), Ty::Handle)
     }
     /// モジュール内のメソッドを `_impl`（ハンドル ABI）で直接呼ぶ（値渡しの複製・1-5、呼ばれる側の文脈・1-9 込み）。
     #[allow(clippy::too_many_arguments)]
@@ -1243,6 +1243,7 @@ impl<'a> GenCtx<'a> {
         ot: Ty,
         args: &[CallArg],
         arg_exprs: &[(String, Ty)],
+        site: CallSite<'_>,
     ) -> String {
         // `mut self` のメソッドは不変インスタンスでガードを外す（名前による呼び出しがエラーにする）
         let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
@@ -1264,7 +1265,7 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store i64 {rd}, ptr {slot}"));
         self.br(&b_join);
         self.start_block(&b_name);
-        let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs);
+        let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
         self.ec(&format!("store i64 {rn}, ptr {slot}"));
         self.br(&b_join);
         self.start_block(&b_join);
@@ -1273,9 +1274,11 @@ impl<'a> GenCtx<'a> {
         r
     }
 
-    /// 名前によるメソッド呼び出し（`CB_CALL_METHOD_M`・外のメソッド・コンパイルしていないメソッド・ガードが外れたとき）。
+    /// 名前によるメソッド呼び出し（`CB_CALL_METHOD_IC`・外のメソッド・コンパイルしていないメソッド・ガードが外れたとき）。
     /// 呼ばれる側の仮引数の `let` / `mut` はここでは分からないので、渡す値が `mut` かを `mut_mask` で渡し、
-    /// 複製は `ar_call_method_m` が呼ばれる側の宣言を見て行う（D-8・1-5）。
+    /// 複製は `ar_call_method_ic` が呼ばれる側の宣言を見て行う（D-8・1-5）。箇所ごとのセル（名前の検査を 1 回にする）と、
+    /// 受け手が外部言語だったときの戻り値の検査の情報（`ffi_call_info`）も渡す（11-3・D-12）。
+    #[allow(clippy::too_many_arguments)]
     fn emit_method_call_by_name(
         &mut self,
         key: &str,
@@ -1283,6 +1286,7 @@ impl<'a> GenCtx<'a> {
         oh: &str,
         args: &[CallArg],
         arg_exprs: &[(String, Ty)],
+        site: CallSite<'_>,
     ) -> String {
         let method_ptr = self.str_const(key.as_bytes());
         let method_len = key.len() as i32;
@@ -1290,22 +1294,28 @@ impl<'a> GenCtx<'a> {
         let handles: Vec<String> = arg_exprs.iter()
             .map(|(v, vt)| self.to_handle(v, *vt))
             .collect();
-        if handles.is_empty() {
-            self.call_cb(CB_CALL_METHOD_M, &[
-                format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                "ptr null".to_string(), "i32 0".to_string(), format!("i32 {mask}")
-            ])
+        let (args_arr, n) = if handles.is_empty() {
+            ("ptr null".to_string(), 0)
         } else {
             let n = handles.len();
-            let arr = self.spill_handle_array(&handles, "margs");
-            self.call_cb(CB_CALL_METHOD_M, &[
-                format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
-                format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")
-            ])
-        }
+            (format!("ptr {}", self.spill_handle_array(&handles, "margs")), n)
+        };
+        // `Trait::attr` の形（`TraitAccess`）は VM も表示情報を記録しない（外部言語の受け手にならない）
+        let info = (!key.contains("::"))
+            .then(|| super::ffi_call_info(self.annotations, site.0, site.1, object, key))
+            .flatten();
+        let (info_ptr, info_len) = match info {
+            Some(i) => (self.str_const(i.as_bytes()), i.len()),
+            None => ("ptr null".to_string(), 0),
+        };
+        let cell = self.ic_cell();
+        self.call_cb(CB_CALL_METHOD_IC, &[
+            cell, format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
+            args_arr, format!("i32 {n}"), format!("i32 {mask}"), info_ptr, format!("i32 {info_len}"),
+        ])
     }
 
-    pub(super) fn gen_call(&mut self, func: &Expr, args: &[CallArg]) -> String {
+    pub(super) fn gen_call(&mut self, func: &Expr, args: &[CallArg], site: CallSite<'_>) -> String {
         let arg_exprs: Vec<(String, Ty)> = args.iter()
             .map(|a| self.gen_expr(a.expr()))
             .collect();
@@ -1329,10 +1339,10 @@ impl<'a> GenCtx<'a> {
                     if !guarded {
                         return self.emit_direct_method_call(&sym, &cls, object, &oh, ot, args, &arg_exprs);
                     }
-                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs);
+                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs, site);
                 }
             }
-            return self.emit_method_call_by_name(&key, object, &oh, args, &arg_exprs);
+            return self.emit_method_call_by_name(&key, object, &oh, args, &arg_exprs, site);
         }
 
         // Intra-module direct call（内部 ABI・4-1。ここは文として呼んだときなどハンドルが要る所）
@@ -1429,3 +1439,6 @@ impl<'a> GenCtx<'a> {
     // ── Statement generation ──────────────────────────────────────────────────
 
 }
+
+/// 呼び出し式の node-id と位置（FFI の検査の情報・`ffi_call_info`・11-3）。
+pub(super) type CallSite<'s> = (u32, &'s crate::token::Span);

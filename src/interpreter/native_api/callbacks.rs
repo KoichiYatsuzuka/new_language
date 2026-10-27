@@ -1421,7 +1421,8 @@ extern "C" fn ar_call_method(
     args_ptr: *const i64,
     n_args: i32,
 ) -> i64 {
-    call_method_common(obj_h, name_ptr, name_len, args_ptr, n_args, None)
+    let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
+    call_method_common(obj_h, name, args_ptr, n_args, None, None)
 }
 
 /// 名前によるメソッド呼び出し＋値渡しの複製（field 55・native_object_access_plan.md 1-5・D-8）。
@@ -1437,7 +1438,58 @@ extern "C" fn ar_call_method_m(
     n_args: i32,
     mut_mask: u32,
 ) -> i64 {
-    call_method_common(obj_h, name_ptr, name_len, args_ptr, n_args, Some(mut_mask))
+    let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), None)
+}
+
+/// 名前によるメソッド呼び出しの、箇所ごとのセルと FFI の検査の情報つきの版（field 73・11-3・D-12）。
+///
+/// VM の `CallMethodLocal` と同じく、名前は `&str` のまま振り分けへ渡し（検査はセルが空のときだけ・8-2 の `site_name`）、
+/// 組み込み型の受け手は `vm_method_call_other` と同じ手順（外部言語なら戻り値を宣言型と照合）で呼ぶ。
+/// セルの値は「名前を検査した」印（1）だけ。
+extern "C" fn ar_call_method_ic(
+    cell: *mut u64,
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+    info_ptr: *const u8,
+    info_len: i32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(name) = site_name(name_ptr, name_len, cell, "method name") else { return TL_NONE };
+    if !cell.is_null() {
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+        unsafe { &*(cell as *const AtomicU64) }.store(1, Ordering::Relaxed);
+    }
+    let info = if info_ptr.is_null() {
+        None
+    } else {
+        let Some(info) = native_str(info_ptr, info_len, "call info") else { return TL_NONE };
+        Some(info)
+    };
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), info)
+}
+
+/// 生成コードが埋め込んだ FFI の検査の情報（`表示名 \x1f 宣言型 \x1f 位置`）で戻り値を照合する（VM の
+/// `check_ffi_return` と同じ検査・同じ文言）。宣言型はコンパイルのときに `InferredType::from_ann` で読み戻せることを
+/// 確かめてある（読み戻せない型の呼び出しを含む関数はコンパイルしない）ので、読めなければ壊れた `.arc` としてエラーにする。
+fn check_native_ffi_return(
+    interp: &mut crate::interpreter::Interpreter,
+    lang: &str,
+    value: Value,
+    info: &str,
+) -> Result<Value, String> {
+    let mut parts = info.splitn(3, '\x1f');
+    let (Some(name), Some(decl), Some(where_)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(format!("NativeError: malformed call info from native code: {info:?}"));
+    };
+    let Some(declared) = crate::type_check::InferredType::from_ann(decl) else {
+        return Err(format!("NativeError: the declared type `{decl}` of `{name}` from native code cannot be read"));
+    };
+    interp.check_ffi_return_declared(lang, value, &declared, name, where_)
 }
 
 /// `mut_mask` の引数 `i`（bit i+1）が `mut` の値か。31 個目より後の引数はビットが無いので保守的に `mut`
@@ -1446,16 +1498,16 @@ fn mask_arg_is_mut(mask: u32, i: usize) -> bool {
     i + 1 >= 32 || mask & (1 << (i + 1)) != 0
 }
 
+/// 名前によるメソッド呼び出しの共通部。`name` は生成コードの定数（呼び出しの間は有効）なので複製しない（11-3）。
+/// `ffi` は FFI の検査の情報（field 73 だけが渡す・`check_native_ffi_return`）。
 fn call_method_common(
     obj_h: i64,
-    name_ptr: *const u8,
-    name_len: i32,
+    name: &str,
     args_ptr: *const i64,
     n_args: i32,
     mut_mask: Option<u32>,
+    ffi: Option<&str>,
 ) -> i64 {
-    let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
-    let name = name.to_owned();
 
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
@@ -1465,14 +1517,14 @@ fn call_method_common(
 
     // Native dispatch: check NATIVE_METHODS table first.
     if let Value::Instance(ref inst_rc) = obj {
-        let native = super::lookup_native_method(&inst_rc.borrow().class.name, &name);
+        let native = super::lookup_native_method(&inst_rc.borrow().class.name, name);
         let fn_ptr = native.map(|(ptr, _)| ptr);
         // 値渡しの複製（mask があるとき）に要る呼ばれた側の仮引数の可変性。オーバーロードがあれば
         // どれが呼ばれるか分からないので、ネイティブへ直行せずインタープリタの振り分けへ回す。
         let callee_params: Option<Vec<bool>> = match (mut_mask, fn_ptr) {
             (Some(_), Some(_)) => {
                 let cls = inst_rc.borrow().class.clone();
-                match cls.methods.get(&name) {
+                match cls.methods.get(name) {
                     Some(ov) if ov.len() == 1 => Some(ov[0].params.iter().map(|p| p.mutable).collect()),
                     _ => None,
                 }
@@ -1483,7 +1535,7 @@ fn call_method_common(
         //   する）。生成した `_tl` は渡された個数を見ずに仮引数の数だけ読むので、直行すると引数の配列の外を読む。
         let arity_ok = {
             let cls = inst_rc.borrow().class.clone();
-            match cls.methods.get(&name) {
+            match cls.methods.get(name) {
                 Some(ov) if ov.len() == 1 => ov[0].params.len() == n_args as usize + 1,
                 _ => false,
             }
@@ -1554,9 +1606,6 @@ fn call_method_common(
     }
 
     // Interpreter fallback.
-    let args: Vec<Value> = (0..n_args as usize)
-        .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
-        .collect();
     if interp_ptr.is_null() {
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
         return TL_NONE;
@@ -1564,24 +1613,30 @@ fn call_method_common(
     let interp = unsafe { &mut *interp_ptr };
     // 引数の可変性: mask があればそれ（bit i+1）、無ければ（古い生成コード）保守的に `mut` とみなす。
     // インタープリタの束縛が `let` 仮引数 ← `mut` の値を複製する。
-    let evaled: Vec<(Option<String>, Value, bool)> = args
-        .into_iter()
-        .enumerate()
-        .map(|(i, v)| {
+    // 引数は 1 つの `Vec` に直接（11-3・以前は値の `Vec` を作ってから詰め直していた）
+    let evaled: Vec<(Option<String>, Value, bool)> = (0..n_args as usize)
+        .map(|i| {
             let is_mut = match mut_mask {
                 Some(mask) => mask_arg_is_mut(mask, i),
                 None => true,
             };
-            (None, v, is_mut)
+            (None, clone_value_at(unsafe { *args_ptr.add(i) }), is_mut)
         })
         .collect();
     // インスタンスは VM の `CallMethod` と同じ入口へ、受け手の可変性（bit 0）を添えて渡す（6-1）。
     // `let self` は `mut` の受け手だけ複製する。mask の無い古い生成コードは保守的に `mut`。
     let r = if matches!(obj, Value::Instance(_)) {
         let recv_mut = mut_mask.is_none_or(|m| m & 1 != 0);
-        interp.call_instance_method_evaled(obj, &name, evaled, None, None, recv_mut)
+        interp.call_instance_method_evaled(obj, name, evaled, None, None, recv_mut)
     } else {
-        interp.eval_method_call_evaled(obj, &name, evaled)
+        // VM の `vm_method_call_other` と同じ手順: 呼ぶ前に外部言語かを見て、戻り値を宣言型と照合する（11-3）。
+        // 情報が無い（型検査が戻り値の型を付けていない・古い `.arc` の field 55）ときは VM の未採番と同じく照合しない
+        let lang = crate::interpreter::Interpreter::foreign_call_lang(&obj, name);
+        let r = interp.eval_method_call_evaled(obj, name, evaled);
+        match (r, lang, ffi) {
+            (Ok(v), Some(l), Some(info)) => check_native_ffi_return(interp, l, v, info),
+            (r, _, _) => r,
+        }
     };
     match r {
         Ok(v) => push_handle(v),
@@ -2246,6 +2301,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     construct_ic: ar_construct_ic,
     iter_drop: ar_iter_drop,
     make_str_ic: ar_make_str_ic,
+    call_method_ic: ar_call_method_ic,
 };
 
 #[cfg(test)]

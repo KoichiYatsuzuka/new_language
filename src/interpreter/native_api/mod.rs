@@ -690,6 +690,14 @@ pub struct ArCallbacks {
     /// 番号が入り（0 = まだ）、文字列はスレッドの状態の表から引いてアリーナへ積む（VM の `Const` と同じく作り直さない）。
     /// ⚠ 以前は評価のたびに `make_str`（UTF-8 の検査・確保）を呼び、ループの中のリテラル 1 個に約 90 ns かかっていた（§0.6 要因 6）。
     pub make_str_ic: extern "C" fn(*mut u64, *const u8, i32) -> i64,
+
+    // ── Method call by name with a per-site cell and the FFI call info (field 73・11-3・D-12) ──
+    /// 名前によるメソッド呼び出し（`call_method_m` と同じ引数）に、箇所ごとのセルと FFI の検査の情報を足したもの。引数は
+    /// (セル, 受け手, 名前, 長さ, 引数, 個数, `mut_mask`, 情報, 長さ)。セルが空のときだけ名前を検査する。情報は
+    /// `表示名 \x1f 宣言型 \x1f 位置`（型検査がこの呼び出しに付けた戻り値の型が無ければ null）で、受け手が外部言語の
+    /// ものなら VM の `vm_method_call_other` と同じ境界の検査（`check_ffi_return`）をする。
+    /// ⚠ 以前の生成コードの道（field 55）は検査をせず、Python が宣言と違う型を返しても黙って通していた（§0.6 要因 7）。
+    pub call_method_ic: extern "C" fn(*mut u64, i64, *const u8, i32, *const i64, i32, u32, *const u8, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
