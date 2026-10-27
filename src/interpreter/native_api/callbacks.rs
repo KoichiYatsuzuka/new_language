@@ -55,6 +55,50 @@ extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
     STATE.with(|s| s.borrow_mut().push_value(Value::str(text)))
 }
 
+/// 文字列のリテラルを呼び出し箇所ごとに 1 回だけ作る（field 72・11-2・D-12）。
+///
+/// `cell`（DLL の中の箇所ごとの `u64`・プロセスに 1 つ）には、初めて評価したときにプロセスで一意の番号を入れる。
+/// 文字列はスレッドの状態の表 `str_consts` のその番号の位置に置き、以後は参照数の加算で積む（VM の定数表と同じ）。
+/// 別のスレッド（非同期タスクのワーカー）は同じ番号で自分の表に作る（`Rc<str>` はスレッドをまたげない）。
+/// ⚠ 中身の検査（UTF-8）はスレッドごとに初めて作るときだけ（中身は箇所ごとに変わらない）。
+extern "C" fn ar_make_str_ic(cell: *mut u64, ptr: *const u8, len: i32) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    if cell.is_null() {
+        return ar_make_str(ptr, len);
+    }
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let mut id = cell.load(Ordering::Relaxed);
+    if id == 0 {
+        let fresh = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        // 別のスレッドが先に入れたらその番号を使う（どちらの番号でも同じ文字列になる）
+        id = match cell.compare_exchange(0, fresh, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => fresh,
+            Err(cur) => cur,
+        };
+    }
+    let idx = (id - 1) as usize;
+    let hit = STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let v = st.str_consts.get(idx).and_then(|v| v.clone())?;
+        Some(st.push_value(v))
+    });
+    if let Some(h) = hit {
+        return h;
+    }
+    let Some(text) = native_str(ptr, len, "string") else { return TL_NONE };
+    let v = Value::str(text);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.str_consts.len() <= idx {
+            st.str_consts.resize(idx + 1, None);
+        }
+        st.str_consts[idx] = Some(v.clone());
+        st.push_value(v)
+    })
+}
+
 // Build list/tuple/dict in one borrow: clone all items then push the container.
 extern "C" fn ar_make_list(items_ptr: *const i64, n: i32) -> i64 {
     STATE.with(|s| {
@@ -2201,6 +2245,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     str_of_int: ar_str_of_int,
     construct_ic: ar_construct_ic,
     iter_drop: ar_iter_drop,
+    make_str_ic: ar_make_str_ic,
 };
 
 #[cfg(test)]

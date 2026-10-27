@@ -1,0 +1,36 @@
+# native_str_literal.ar — コンパイル済みコードの文字列のリテラルは、箇所ごとに 1 回だけ作って使い回す
+# （native_object_access_plan.md 11-2・D-12）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_str_literal_module.ar
+#   2. cargo run --release -- examples/interop/native_str_literal.ar
+#
+# 期待値 "9:ab→ab→ab→:43":
+#   9:ab→ab→ab→ … ループの中のリテラルの連結（空文字列・非 ASCII を含む）
+#   43          … リテラルをリストに入れて比べる（4 個）・リテラルのメソッド（"a,b,c".split → 3）
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_str_literal_module as m
+
+fn check(let label: str, let got: str) -> None:
+    if got != "9:ab→ab→ab→:43":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("literals of a compiled module", m.run_checks())
+check("the same sites again (built once)", m.run_checks())
+
+# 非同期タスクのワーカー: セルは埋まっているが、ワーカーのスレッドの表は空
+mut mng = AsyncManager(num_thread=2)
+mng <- async->str:
+    block_return m.run_checks()
+mng <- async->str:
+    block_return m.run_checks()
+mng.wait_for_finish()
+let errors = mng.error_list
+if errors[0] is not None or errors[1] is not None:
+    raise ValueError("a task failed")
+check("in task 1", mng.results[0])
+check("in task 2", mng.results[1])
+check("the main thread after the tasks", m.run_checks())

@@ -91,10 +91,12 @@ impl<'a> GenCtx<'a> {
             Expr::None      => ("0".to_string(), Ty::Handle),
             Expr::Undefined => ("0".to_string(), Ty::Handle),
             Expr::Str(s) => {
+                // VM の定数表と同じく、箇所ごとに 1 回だけ作って使い回す（11-2・D-12）
                 let bytes = s.as_bytes();
                 let ptr   = self.str_const(bytes);
                 let len   = bytes.len() as i32;
-                let r = self.call_cb(CB_MAKE_STR, &[ptr, format!("i32 {len}")]);
+                let cell  = self.ic_cell();
+                let r = self.call_cb(CB_MAKE_STR_IC, &[cell, ptr, format!("i32 {len}")]);
                 (r, Ty::Handle)
             }
 

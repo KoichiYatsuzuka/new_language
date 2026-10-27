@@ -171,6 +171,10 @@ struct NativeCallState {
     /// ⚠ 2 段にしてあるのは `&str` のまま引くため（10-1）。以前は `(String, String)` をキーにしていて、引くたびに
     ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
     native_methods: HashMap<String, HashMap<String, (usize, u32)>>,
+    /// 文字列のリテラルの表（11-2・D-12）: 呼び出し箇所のセルに入れた番号 − 1 → 1 度だけ作った文字列。VM の定数表と同じく、
+    /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
+    /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
+    str_consts: Vec<Option<Value>>,
 }
 
 impl NativeCallState {
@@ -226,6 +230,7 @@ thread_local! {
             cstr_bufs: Vec::new(),
             protocol_args: Vec::new(),
             native_methods: HashMap::new(),
+            str_consts: Vec::new(),
         }
     });
 }
@@ -679,6 +684,12 @@ pub struct ArCallbacks {
     /// 関数を抜ければ消える。⚠ 以前は、いちばん外のネイティブ呼び出しが終わるまで表に残り、リストのイテレータが
     /// 持つ要素の写しも解放されなかった（§0.6 要因 5）。
     pub iter_drop: extern "C" fn(i64),
+
+    // ── String literals built once per site (field 72・11-2・D-12) ──
+    /// 文字列のリテラル `"..."` の呼び出し箇所ごとのセルつき版。引数は (セル, バイト列, 長さ)。セルにはプロセスで一意の
+    /// 番号が入り（0 = まだ）、文字列はスレッドの状態の表から引いてアリーナへ積む（VM の `Const` と同じく作り直さない）。
+    /// ⚠ 以前は評価のたびに `make_str`（UTF-8 の検査・確保）を呼び、ループの中のリテラル 1 個に約 90 ns かかっていた（§0.6 要因 6）。
+    pub make_str_ic: extern "C" fn(*mut u64, *const u8, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
