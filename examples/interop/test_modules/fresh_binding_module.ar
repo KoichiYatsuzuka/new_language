@@ -1,0 +1,57 @@
+# fresh_binding_module.ar — 誰とも共有していない作りたての値は、`let` / `mut` の束縛で複製しない
+# （native_object_access_plan.md 12-1・D-13）
+#
+# 複製を省くのは、入れ子の値も含めて誰とも共有していないときだけ。共有していれば今までどおり複製する
+# （省くと、`let` のフリーズが共有している相手まで凍らせる・相手の書き換えが見える）。
+# 本体（fresh_binding.ar）にも同じクラスと関数があり、VM とコンパイル済みの両方で同じ値になること。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/fresh_binding_module.ar
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+class Reg:
+    mut v: int
+
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+        REG.append(self)
+
+class Watched:
+    mut n: int
+
+    fn __freeze__(mut self) -> None:
+        FREEZES.append(self.n)
+
+mut REG: list[Reg] = []
+mut FREEZES: list[int] = []
+
+fn run_checks() -> str:
+    # 作りたての値（複製しない）
+    let v = Vec3(1.0, 2.0, 3.0)
+    mut m = Vec3(4.0, 5.0, 6.0)
+    m.x = 40.0
+    mut out = str(v.x + m.x)
+    # 入れ子の値を共有している（複製する: a は凍らない・リストの中は元のまま）
+    mut a = Vec3(7.0, 8.0, 9.0)
+    let xs = [a]
+    a.x = 70.0
+    out = out + ":" + str(xs[0].x) + "/" + str(a.x)
+    # 生成した値を __init__ がほかへ入れた（複製する: REG の中は凍らない・r とは別のもの）
+    let r = Reg(1)
+    REG[len(REG) - 1].v = 9
+    out = out + ":" + str(r.v) + "/" + str(REG[len(REG) - 1].v)
+    # 変数の値をそのまま返す式（複製する: x は凍らない）
+    mut x = Vec3(10.0, 0.0, 0.0)
+    let y = block ->Vec3:
+        block_return x
+    x.x = 11.0
+    out = out + ":" + str(y.x) + "/" + str(x.x)
+    # __freeze__ は 1 回だけ
+    let f0 = len(FREEZES)
+    let w = Watched(5)
+    out = out + ":" + str(len(FREEZES) - f0)
+    return out

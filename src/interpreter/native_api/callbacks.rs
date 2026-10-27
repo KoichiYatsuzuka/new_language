@@ -933,12 +933,20 @@ extern "C" fn ar_copy_arg(h: i64) -> i64 {
 /// 深いコピー・1 = `let` の複製＋フリーズ）で、VM の `StoreLocalDeepCopy` / `StoreLocalCopyFreeze` /
 /// `StoreLocalFreezeInstance` と同じ `bind_copy` を呼ぶ。表に無い符号はエラー。
 /// ⚠ 以前の生成コードは宣言で何も複製せず、`mut q = o.inner; q.v = 7` が `o.inner` を書き換えていた。
+///
+/// `mode` の [`crate::interpreter::BindCopy::FRESH_BIT`] の bit は「`h` はコールバックが作りたての値を積んだばかりの欄」（生成コードが付ける・12-1）。
+/// そのときだけ、誰とも共有していなければ複製しない（`bind_copy_held`。数えない参照はその欄の 1 つ）。
+/// ⚠ 付いていないときは必ず複製する: ローカル変数のハンドルは番号で同じ欄を指し、参照を数えないので、
+///   `if` 式などが変数の欄をそのまま返すと共有を見抜けない。
 extern "C" fn ar_bind_value(mode: i32, h: i64) -> i64 {
     let (has_err, val, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(h), st.interp_ptr)
     });
     if has_err { return TL_NONE; }
+    let fresh_bit = crate::interpreter::BindCopy::FRESH_BIT;
+    let held = (mode & fresh_bit != 0).then_some(1);
+    let mode = mode & !fresh_bit;
     let Some(mode) = crate::interpreter::BindCopy::from_code(mode) else {
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: unknown binding mode {mode}")));
         return TL_NONE;
@@ -948,7 +956,7 @@ extern "C" fn ar_bind_value(mode: i32, h: i64) -> i64 {
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
-    match interp.bind_copy(mode, val) {
+    match interp.bind_copy_held(mode, val, held) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));

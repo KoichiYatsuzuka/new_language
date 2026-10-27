@@ -606,6 +606,10 @@ struct GenCtx<'a> {
     // 名前ごとの可変性（VM の `arg_is_mutable` と同じ表・`vm::compiler::binding_mutability`）。
     // 値渡しの複製の要否（D-8・1-5）を決める。関数を出力するたびに作り直す。
     binding_mut: HashMap<String, bool>,
+    /// 作りたての値を新しい欄に積んで返すコールバック（生成・演算・リスト / タプル / 辞書の生成）の結果のレジスタ。
+    /// `let` / `mut` の束縛がこれなら `ar_bind_value` に `BindCopy::FRESH_BIT` を付ける（共有していなければ複製しない・12-1）。
+    /// ⚠ メソッド・関数の呼び出しの結果は入れない（ネイティブの呼ばれた側が引数のハンドルをそのまま返しうる）
+    fresh_regs: HashSet<String>,
     // `let fixed_list[ClassName]` params that can use the flat GEP iteration path.
     flat_list_params: HashMap<String, FlatListInfo>,
     // `function[...]->R` typed params: param_name → alloca ptr holding the trampoline fn ptr.

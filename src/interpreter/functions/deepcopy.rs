@@ -71,6 +71,32 @@ impl Interpreter {
         }
     }
 
+    /// `val` を（入れ子の値も含めて）誰とも共有していないか（12-1・D-13）。いちばん外の参照は `outer` 個まで、
+    /// 入れ子の値は 1 個（容れ物の中の 1 つ）まで。[`Self::deep_copy_value`] が新しく作り直すもの（インスタンス・
+    /// リスト・集合・タプル）だけを数え、作り直さずに共有するもの（数値・文字列・関数など）は見ない。
+    /// ⚠ 辞書は数えずに「共有している」とみなす（中身を並べるのに確保が要る。複製する側に倒す）。
+    /// ⚠ 借りられない値（`RefCell` が書き込み中）も「共有している」とみなす。
+    pub(crate) fn is_unshared(val: &Value, outer: usize) -> bool {
+        fn alone<T>(rc: &Rc<T>, n: usize) -> bool {
+            Rc::strong_count(rc) <= n && Rc::weak_count(rc) == 0
+        }
+        match val {
+            Value::Instance(rc) => {
+                alone(rc, outer)
+                    && rc.try_borrow().is_ok_and(|inst| {
+                        inst.boxed_fields.iter().flatten().all(|(v, _)| Self::is_unshared(v, 1))
+                    })
+            }
+            Value::List(rc) | Value::Set(rc) => {
+                alone(rc, outer) && rc.try_borrow().is_ok_and(|xs| xs.iter().all(|v| Self::is_unshared(v, 1)))
+            }
+            Value::Tuple(t) => alone(t, outer) && t.all_values().iter().all(|v| Self::is_unshared(v, 1)),
+            Value::Dict(_) => false,
+            // `deep_copy_value` が作り直さないもの（そのまま共有する）
+            _ => true,
+        }
+    }
+
     /// `copy()` メソッド用のディープコピー。フリーズ状態をリセットして新鮮な可変インスタンスを返す。
     ///
     /// `deep_copy_value` との違い:

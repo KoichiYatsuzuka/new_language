@@ -22,6 +22,7 @@ impl<'a> GenCtx<'a> {
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.iter_scopes.clear();
+        self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -261,6 +262,7 @@ impl<'a> GenCtx<'a> {
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.iter_scopes.clear();
+        self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -374,6 +376,7 @@ impl<'a> GenCtx<'a> {
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.iter_scopes.clear();
+        self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -435,6 +438,7 @@ impl<'a> GenCtx<'a> {
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.iter_scopes.clear();
+        self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
 

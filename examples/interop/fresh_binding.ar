@@ -1,0 +1,73 @@
+# fresh_binding.ar — 誰とも共有していない作りたての値は、`let` / `mut` の束縛で複製しない
+# （native_object_access_plan.md 12-1・D-13）
+#
+# 本体のクラスと関数（VM）と、同じものを書いたモジュール（.arc・コンパイル済み）の両方で同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/fresh_binding_module.ar
+#   2. cargo run --release -- examples/interop/fresh_binding.ar
+#
+# 期待値 "41.0:7.0/70.0:1/9:10.0/11.0:1":
+#   41.0      … 作りたての値の `let` / `mut`（複製しない。`mut` の値は書き換えられる）
+#   7.0/70.0  … `let xs = [a]` は a を共有しているので複製する（a は凍らず、リストの中は元のまま）
+#   1/9       … `__init__` が self をほかへ入れた値は複製する（入れた先は凍らず、r とは別のもの）
+#   10.0/11.0 … 変数の値をそのまま返す式は複製する（x は凍らない）
+#   1         … `__freeze__` は 1 回だけ
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.fresh_binding_module as m
+# ⚠ 本体のクラスの名前をモジュールと変えてある（MVec3 など）: 同じ名前だと、コンパイル済みのモジュールのメソッドが
+#   本体のクラスの生成でも呼ばれる既知の不具合がある（native_object_access_plan.md 11-4）。
+
+
+class MVec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+class MReg:
+    mut v: int
+
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+        REG.append(self)
+
+class MWatched:
+    mut n: int
+
+    fn __freeze__(mut self) -> None:
+        FREEZES.append(self.n)
+
+mut REG: list[MReg] = []
+mut FREEZES: list[int] = []
+
+fn run_checks() -> str:
+    let v = MVec3(1.0, 2.0, 3.0)
+    mut mm = MVec3(4.0, 5.0, 6.0)
+    mm.x = 40.0
+    mut out = str(v.x + mm.x)
+    mut a = MVec3(7.0, 8.0, 9.0)
+    let xs = [a]
+    a.x = 70.0
+    out = out + ":" + str(xs[0].x) + "/" + str(a.x)
+    let r = MReg(1)
+    REG[len(REG) - 1].v = 9
+    out = out + ":" + str(r.v) + "/" + str(REG[len(REG) - 1].v)
+    mut x = MVec3(10.0, 0.0, 0.0)
+    let y = block ->MVec3:
+        block_return x
+    x.x = 11.0
+    out = out + ":" + str(y.x) + "/" + str(x.x)
+    let f0 = len(FREEZES)
+    let w = MWatched(5)
+    out = out + ":" + str(len(FREEZES) - f0)
+    return out
+
+fn check(let label: str, let got: str) -> None:
+    if got != "41.0:7.0/70.0:1/9:10.0/11.0:1":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("the main program (VM)", run_checks())
+check("the main program again", run_checks())
+check("a compiled module", m.run_checks())
+check("a compiled module again", m.run_checks())

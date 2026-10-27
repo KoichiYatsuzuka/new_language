@@ -61,6 +61,10 @@ pub(crate) enum BindCopy {
 }
 
 impl BindCopy {
+    /// 生成コードが符号に足す bit: 束縛する値は、コールバックが作りたての値を積んだばかりの欄
+    /// （`ar_bind_value`・生成コードの `fresh_regs`・12-1）。[`Self::from_code`] には外してから渡す。
+    pub(crate) const FRESH_BIT: i32 = 2;
+
     /// 生成コードが渡す符号（`as i32` の逆）。表に無い符号は `None`（呼ぶ側がエラーにする）。
     pub(crate) fn from_code(code: i32) -> Option<Self> {
         match code {
@@ -73,8 +77,19 @@ impl BindCopy {
 
 impl Interpreter {
     /// 束縛の複製（[`BindCopy`]）。`CopyFreeze` のフリーズは `__freeze__` を呼びうるので失敗する。
+    /// 誰とも共有していない値（[`Interpreter::is_unshared`]・作りたての `Vec3(...)` など）は複製しない（12-1・D-13）。
+    /// 写しを作っても、元を指す者がいないので違いは観測できない（`deep_copy_value` はフリーズの印も写す）。
+    /// ⚠ 数えるのは `Rc` の参照なので、値を持つ者が全員参照を数える場所（VM のスタック・欄・ツリーウォーク）だけで使う。
+    ///   ネイティブのアリーナはローカル変数が番号で同じ欄を指すので数えられない（`bind_copy_held`）。
     pub(crate) fn bind_copy(&mut self, mode: BindCopy, value: Value) -> Result<Value, String> {
-        let copied = Self::deep_copy_value(value);
+        self.bind_copy_held(mode, value, Some(0))
+    }
+
+    /// [`Self::bind_copy`] の本体。`held` は、呼ぶ側が `value` のほかに持っていて数えない参照の数（ネイティブの
+    /// アリーナの、作りたての値を積んだ欄 1 つなど）。`None` なら共有かどうかを見ずに必ず複製する。
+    pub(crate) fn bind_copy_held(&mut self, mode: BindCopy, value: Value, held: Option<usize>) -> Result<Value, String> {
+        let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
+        let copied = if unshared { value } else { Self::deep_copy_value(value) };
         if mode == BindCopy::CopyFreeze {
             self.apply_freeze_to_value(&copied, true)?;
         }

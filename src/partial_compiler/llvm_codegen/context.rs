@@ -44,6 +44,7 @@ impl<'a> GenCtx<'a> {
             fast_fns,
             preread_fields:        HashMap::new(),
             binding_mut:           HashMap::new(),
+            fresh_regs:            HashSet::new(),
             flat_list_params:      HashMap::new(),
             fn_param_trampolines:  HashMap::new(),
             typed_mode:            false,
@@ -154,7 +155,9 @@ impl<'a> GenCtx<'a> {
                 }
             }
         };
-        self.call_cb(CB_BIND_VALUE, &[format!("i32 {}", mode as i32), format!("i64 {h}")])
+        // 作りたての値を積んだばかりの欄なら、共有していないときに複製を省いてよい（12-1・`ar_bind_value`）
+        let fresh = if self.fresh_regs.contains(h) { crate::interpreter::BindCopy::FRESH_BIT } else { 0 };
+        self.call_cb(CB_BIND_VALUE, &[format!("i32 {}", mode as i32 | fresh), format!("i64 {h}")])
     }
 
     /// Look up the native type of a field access on a known class instance.
@@ -552,6 +555,10 @@ impl<'a> GenCtx<'a> {
         } else {
             let r = self.fresh_reg();
             self.ec(&format!("{r} = call {fn_ty} {fn_}({args_str})"));
+            // 結果を必ず新しい欄に積むコールバック（`push_handle` で返す・12-1）
+            if matches!(field, CB_CONSTRUCT_IC | CB_CONSTRUCT | CB_BINOP | CB_MAKE_LIST | CB_MAKE_TUPLE | CB_MAKE_DICT) {
+                self.fresh_regs.insert(r.clone());
+            }
             r
         }
     }
