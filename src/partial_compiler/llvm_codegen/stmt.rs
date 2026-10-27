@@ -108,6 +108,8 @@ impl<'a> GenCtx<'a> {
             }
             Stmt::Return(Some(expr), _) => {
                 let (v, vt) = self.gen_expr(expr);
+                // ループの中の `return`: 囲む `for` のイテレータを全部捨てる（11-1）。返す値はアリーナにあるので影響しない
+                self.drop_iters_from(0);
                 if self.typed_mode {
                     // typed ABI: 生値を %_ret スロットへ格納して status 0 を返す。
                     self.emit_typed_return(&v, vt);
@@ -128,6 +130,7 @@ impl<'a> GenCtx<'a> {
                 }
             }
             Stmt::Return(None, _) => {
+                self.drop_iters_from(0);
                 if self.typed_mode {
                     if !self.terminated {
                         let t = llvm_ty(self.current_fn_ret);
@@ -162,6 +165,8 @@ impl<'a> GenCtx<'a> {
                     let (v, vt) = self.gen_expr(expr);
                     let h = self.to_handle(&v, vt);
                     self.ec(&format!("store i64 {h}, ptr {}", ctx.result_al));
+                    // 式の中の `for` から飛び出すなら、そのイテレータを捨てる（式の出口は捨てない・11-1）
+                    self.drop_iters_from(ctx.iter_depth);
                     self.br(&ctx.exit_label);
                 }
             }
@@ -391,6 +396,7 @@ impl<'a> GenCtx<'a> {
                 self.reg += 1;
                 self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
+                self.iter_scopes.push(iter_al.clone());
 
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の `for`・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
@@ -410,6 +416,7 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&body_blk2);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
+                self.drop_iter_scope(&iter_al);
                 } // end else (original path)
             }
 
@@ -522,6 +529,32 @@ impl<'a> GenCtx<'a> {
     /// ループの前に作った値は保存点より下なので触らない。`break` は戻り口を通らない（最後の周の値はループの後も使う）。
     /// ⚠ 以前は周ごとに巻き戻さず、ループの中で作った値がいちばん外の呼び出しが終わるまで残った（`Vec3(..)` を 100 万回
     /// 作るループが最大 419 MB・1 回 1,083 ns。ファイル・外部言語のポインタも閉じるのが遅れた・§0.5）。
+    /// `for` のループの出口（終わり・`break` の飛び先）: このループのイテレータを捨てる（`CB_ITER_DROP`・11-1・D-12）。
+    /// VM はイテレータを関数のローカルの欄に置くので、ループを抜けた後は使われずに関数の終わりで消える。
+    pub(super) fn drop_iter_scope(&mut self, iter_al: &str) {
+        debug_assert_eq!(self.iter_scopes.last().map(String::as_str), Some(iter_al));
+        self.iter_scopes.pop();
+        self.emit_iter_drop(iter_al);
+    }
+
+    /// ループを飛び出す `return` / `block_return`: `iter_scopes[depth..]` のイテレータを捨てる。表はその位置まで縮むので、
+    /// いちばん外のもの（`depth` 番目）を渡せば内側のものも捨てる。⚠ 生成の続きのために `iter_scopes` は変えない。
+    pub(super) fn drop_iters_from(&mut self, depth: usize) {
+        if let Some(al) = self.iter_scopes.get(depth).cloned() {
+            self.emit_iter_drop(&al);
+        }
+    }
+
+    fn emit_iter_drop(&mut self, iter_al: &str) {
+        // typed 変種はコールバックを使えない（イテレータも作らない）。到達しない位置にも出さない
+        if self.terminated || self.typed_mode {
+            return;
+        }
+        let h = self.fresh_reg();
+        self.ec(&format!("{h} = load i64, ptr {iter_al}"));
+        self.call_cb(CB_ITER_DROP, &[format!("i64 {h}")]);
+    }
+
     pub(super) fn gen_loop_body(
         &mut self,
         body: &[Stmt],

@@ -22,6 +22,7 @@ impl<'a> GenCtx<'a> {
             reg: 0, blk: 0, terminated: false,
             locals:          HashMap::new(),
             loop_stack:      Vec::new(),
+            iter_scopes:     Vec::new(),
             module_fns,
             fn_sigs,
             str_consts:      HashMap::new(),

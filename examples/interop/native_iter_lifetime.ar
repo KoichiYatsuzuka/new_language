@@ -1,0 +1,37 @@
+# native_iter_lifetime.ar — コンパイル済みコードの `for` のイテレータは、ループを抜けたら捨てる
+# （native_object_access_plan.md 11-1・D-12）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_iter_lifetime_module.ar
+#   2. cargo run --release -- examples/interop/native_iter_lifetime.ar
+#
+# 期待値 "34,150,1002,3:0,2:4,54,300":
+#   34    … ループの中の `return`（2 重の `for` から返す）
+#   150   … 呼んだ側の `for` の中で、呼ばれた側が `return` で自分のイテレータを捨てても、呼んだ側の反復は続く
+#   1002  … 内側の `break` の後も外側の `for` は続く・ループの後で `for` の変数の値を使う
+#   3:0   … `block_return` で `for` から飛び出す／最後まで回る
+#   2:4   … `for` 式の `loop_yield` と `break`
+#   54    … ジェネレータの道（`set`）の入れ子の反復
+#   300   … 周ごとに複製したインスタンスのリストの反復
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_iter_lifetime_module as m
+
+fn check(let label: str, let got: str) -> None:
+    if got != "34,150,1002,3:0,2:4,54,300":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("iterators of a compiled module", m.run_checks())
+check("the same calls again", m.run_checks())
+
+# 非同期タスクのワーカー（別のスレッドの表）でも同じ
+mut mng = AsyncManager(num_thread=2)
+mng <- async->str:
+    block_return m.run_checks()
+mng.wait_for_finish()
+let errors = mng.error_list
+if errors[0] is not None:
+    raise ValueError("task failed")
+check("in a task", mng.results[0])

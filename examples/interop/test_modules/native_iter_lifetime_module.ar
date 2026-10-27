@@ -1,0 +1,94 @@
+# native_iter_lifetime_module.ar — コンパイル済みコードの `for` のイテレータは、ループを抜けたら捨てる
+# （native_object_access_plan.md 11-1・D-12）
+#
+# ループの終わり・`break`・ループの中の `return`・`block_return` で捨てる。捨てるのはそのループ（と内側）の
+# イテレータだけで、外側のループ・呼んだ側のループのイテレータはそのまま使える（捨て過ぎると次の要素で
+# `invalid iter handle` になる）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_iter_lifetime_module.ar
+
+class Item:
+    mut tag: str
+    mut vals: list[int]
+
+# ループの中の `return`（囲む 2 つのイテレータを捨てる）
+fn find_pair(let xs: list[int], let target: int) -> int:
+    for a in xs:
+        for b in xs:
+            if a + b == target:
+                return a * 10 + b
+    return -1
+
+# 呼んだ側のループの中で、呼ばれた側が自分のイテレータを捨てる
+fn sum_found(let xs: list[int], let n: int) -> int:
+    mut total = 0
+    mut k = 0
+    while k < n:
+        for t in xs:
+            total += find_pair(xs, t + 1)
+        k += 1
+    return total
+
+# 内側の `break` の後も外側は続く・ループの後で `for` の変数を使う
+fn nested_break(let rows: list[list[int]]) -> int:
+    mut acc = 0
+    mut seen = 0
+    for row in rows:
+        for v in row:
+            if v < 0:
+                break
+            acc += v
+        seen = len(row)
+    return acc * 100 + seen
+
+# `block_return` で `for` から飛び出す
+fn first_big(let xs: list[int], let lim: int) -> int:
+    let r = block ->int:
+        for x in xs:
+            if x > lim:
+                block_return x
+        block_return 0
+    return r
+
+# `for` 式（`loop_yield`）と、その中の `break`
+fn doubled_until(let xs: list[int], let stop: int) -> list[int]:
+    let ys = for x in xs ->list[int]:
+        if x == stop:
+            break
+        loop_yield x * 2
+    return ys
+
+# ジェネレータの道（`set`）の反復を入れ子にする（結果は反復の順に依らない）
+fn gen_paths(let xs: list[int]) -> int:
+    mut s = 0
+    for v in set(xs):
+        s += v
+        for w in set(xs):
+            if w <= v:
+                s += w * 10
+    return s
+
+# インスタンスのリストを周ごとに複製して反復する（複製はループを抜けたら解放できる）
+fn tags_total(let items: list[Item], let reps: int) -> int:
+    mut n = 0
+    mut r = 0
+    while r < reps:
+        let copy = items
+        for it in copy:
+            n += len(it.tag) + len(it.vals)
+        r += 1
+    return n
+
+fn run_checks() -> str:
+    let xs = [1, 2, 3, 4]
+    mut out = str(find_pair(xs, 7)) + ","
+    out = out + str(sum_found(xs, 3)) + ","
+    out = out + str(nested_break([[1, 2, -1, 9], [3, 4], [-5, 6]])) + ","
+    out = out + str(first_big(xs, 2)) + ":" + str(first_big(xs, 9)) + ","
+    let ys = doubled_until(xs, 3)
+    out = out + str(len(ys)) + ":" + str(ys[1]) + ","
+    out = out + str(gen_paths([3, 1, 3])) + ","
+    let items = [Item("ab", [1, 2]), Item("c", [3])]
+    out = out + str(tags_total(items, 50))
+    return out

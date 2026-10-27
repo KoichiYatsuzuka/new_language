@@ -1,0 +1,30 @@
+class Item:
+    mut tag: str
+    mut vals: list[int]
+    fn __init__(mut self, tag: str, vals: list[int]) -> None:
+        ...
+
+
+fn find_pair(xs: list[int], target: int) -> int:
+    ...
+
+fn sum_found(xs: list[int], n: int) -> int:
+    ...
+
+fn nested_break(rows: list[list[int]]) -> int:
+    ...
+
+fn first_big(xs: list[int], lim: int) -> int:
+    ...
+
+fn doubled_until(xs: list[int], stop: int) -> list[int]:
+    ...
+
+fn gen_paths(xs: list[int]) -> int:
+    ...
+
+fn tags_total(items: list[Item], reps: int) -> int:
+    ...
+
+fn run_checks() -> str:
+    ...

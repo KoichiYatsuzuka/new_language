@@ -712,6 +712,23 @@ extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
     })
 }
 
+/// `for` のループを抜けたときにイテレータを捨てる（field 71・11-1・D-12）。表を `iter_h` の位置まで縮めるので、
+/// このループの中で作り、`return` などで捨て損ねたイテレータも一緒に捨てる（ループは入れ子なので、後ろにあるのは
+/// 内側のものだけ）。
+/// ⚠ 表に無いハンドルは黙って無視しない。`ar_iter_from` が失敗した（`TL_NONE` を返した）ときは、エラーが既に
+///   入っているのでそのまま返す。
+extern "C" fn ar_iter_drop(iter_h: i64) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let idx = (-(iter_h + 2)) as usize;
+        if iter_h <= -2 && idx < st.iter_table.len() {
+            st.iter_table.truncate(idx);
+        } else if st.error.is_none() {
+            st.error = Some(format!("NativeError: invalid iter handle {iter_h} (iter_drop)"));
+        }
+    })
+}
+
 /// イテレータハンドルから次の要素ハンドルを取得する。
 extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
     enum Step { Value(Value), Stop, Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>) }
@@ -2183,6 +2200,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     len: ar_len,
     str_of_int: ar_str_of_int,
     construct_ic: ar_construct_ic,
+    iter_drop: ar_iter_drop,
 };
 
 #[cfg(test)]

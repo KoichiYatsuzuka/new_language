@@ -672,6 +672,13 @@ pub struct ArCallbacks {
     /// `Class(args)` の呼び出し箇所ごとのセルつき版。引数は (セル, クラス名, 引数, 個数, `mut_mask`)。セルには前回
     /// 名前で引いたクラスの `class_id + 1` が入り（0 = まだ）、当たれば名前で引かずにインタープリタの表から引く。
     pub construct_ic: extern "C" fn(*mut u64, *const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Releasing a `for` iterator when its loop exits (field 71・11-1・D-12) ──
+    /// `for` のループを抜けた（終わり・`break`・ループの中の `return` / `block_return`）ときに、そのループの
+    /// イテレータと、それより後に作ったイテレータを表から捨てる。VM はイテレータを関数のローカルの欄に置くので、
+    /// 関数を抜ければ消える。⚠ 以前は、いちばん外のネイティブ呼び出しが終わるまで表に残り、リストのイテレータが
+    /// 持つ要素の写しも解放されなかった（§0.6 要因 5）。
+    pub iter_drop: extern "C" fn(i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

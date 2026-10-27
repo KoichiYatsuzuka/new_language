@@ -329,7 +329,7 @@ impl<'a> GenCtx<'a> {
                 self.alloca_buf.push_str(&format!("  {result_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 0, ptr {result_al}"));
                 let exit_lbl = self.fresh_blk();
-                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: exit_lbl.clone(), list_al: None });
+                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: exit_lbl.clone(), list_al: None, iter_depth: self.iter_scopes.len() });
                 self.gen_stmts(stmts);
                 self.block_stack.pop();
                 self.br(&exit_lbl);
@@ -345,7 +345,7 @@ impl<'a> GenCtx<'a> {
                 self.alloca_buf.push_str(&format!("  {result_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 0, ptr {result_al}"));
                 let merge = self.fresh_blk();
-                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: merge.clone(), list_al: None });
+                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: merge.clone(), list_al: None, iter_depth: self.iter_scopes.len() });
                 for (cond, body) in branches {
                     let then_blk = self.fresh_blk();
                     let next_blk = self.fresh_blk();
@@ -396,6 +396,7 @@ impl<'a> GenCtx<'a> {
                 self.reg += 1;
                 self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
+                self.iter_scopes.push(iter_al.clone());
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
                 let pre_pos = self.loop_pre_pos();
@@ -412,11 +413,13 @@ impl<'a> GenCtx<'a> {
                 self.br_cond(&done, &exit_blk, &body_blk);
                 self.start_block(&body_blk);
                 self.block_stack.push(BlockCtx {
-                    result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone()
+                    result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone(),
+                    iter_depth: self.iter_scopes.len(),
                 });
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
                 self.start_block(&exit_blk);
+                self.drop_iter_scope(&iter_al);
                 // Return list if loop_yield was used, else result slot
                 let r = self.fresh_reg();
                 if let Some(la) = &list_al {
@@ -452,7 +455,8 @@ impl<'a> GenCtx<'a> {
                 self.br_cond(&cc, &body_blk, &exit_blk);
                 self.start_block(&body_blk);
                 self.block_stack.push(BlockCtx {
-                    result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone()
+                    result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone(),
+                    iter_depth: self.iter_scopes.len(),
                 });
                 self.gen_loop_body(body, &cond_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
@@ -478,7 +482,7 @@ impl<'a> GenCtx<'a> {
                 self.reg += 1;
                 self.alloca_buf.push_str(&format!("  {subj_al} = alloca i64, align 8\n"));
                 self.ec(&format!("store i64 {subj_h}, ptr {subj_al}"));
-                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: merge.clone(), list_al: None });
+                self.block_stack.push(BlockCtx { result_al: result_al.clone(), exit_label: merge.clone(), list_al: None, iter_depth: self.iter_scopes.len() });
                 for (i, arm) in arms.iter().enumerate() {
                     let is_last = i == arms.len() - 1;
                     let body_blk = self.fresh_blk();

@@ -21,6 +21,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -259,6 +260,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -371,6 +373,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -431,6 +434,7 @@ impl<'a> GenCtx<'a> {
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
         self.handle_store_log.clear();
         self.block_stack.clear();
 
@@ -461,6 +465,7 @@ impl<'a> GenCtx<'a> {
             result_al: list_al.clone(),
             exit_label: exit_lbl.clone(),
             list_al: Some(list_al.clone()),
+            iter_depth: self.iter_scopes.len(),
         });
 
         self.gen_stmts(body);
