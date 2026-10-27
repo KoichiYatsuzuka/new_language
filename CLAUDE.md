@@ -127,6 +127,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `ab_bench.ps1 -A <a.exe> -B <b.exe>` | 2 バイナリを**交互実行**して経過時間を比較 |
 | `ab_bench_modes.ps1 -A <a> -B <b>` | 実行モード別（非コンパイル / native / C DLL）の A/B |
 | `speed_modes.ps1 [-B <b>] [-Micro]` | 速度の調査のベンチ（`examples/bench/speed_modes/`）を 3 モードで: 区間ごとの時間・1 操作の単価（ns）・`-B` で A/B（各 exe が自分で `.arc` を作る）。モード間の `CHECK` の一致も見る |
+| `speed_milestones.ps1` | 計画書のマイルストーン（初期・途中経過・現在）の commit を worktree で作り、`speed_modes.ps1 -Exes` で**同じセッションで並べて**測る（区間・1 操作の単価・CSV） |
 | `annot_unresolved.ps1` | 型注釈が `Unresolved` になる**発生源の内訳**（#19 の着手前に取る） |
 | `annot_diff.ps1` | ネイティブ codegen の自前型導出と AST 注釈の一致状況 |
 

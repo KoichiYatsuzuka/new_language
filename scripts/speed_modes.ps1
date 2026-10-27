@@ -5,6 +5,9 @@
 #   ./scripts/speed_modes.ps1 -Exe <a.exe> -B <b.exe>          # 2 つの exe をモードごとに A/B
 #   ./scripts/speed_modes.ps1 -Modes native -Only k2_energy    # モード・区間を絞る
 #   ./scripts/speed_modes.ps1 -Micro                           # 1 操作の単価（ns）を測る（micro.ar / micro_ffi_bench.ar）
+#   ./scripts/speed_modes.ps1 -Exes p0=<a.exe>,p1=<b.exe>,...  # 3 つ以上の exe を交互に測り、中央値を横に並べる
+#                                                              # （マイルストーンの比較・最後の列は最初の exe との比）
+#   ./scripts/speed_milestones.ps1                             # 計画書のマイルストーンの commit を作って上を走らせる
 #
 # 区間（bench.ar の METRIC）: k1_step（数値のメソッド）・k2_energy（list[Body] の反復＋ let self のメソッドの連鎖）・
 #   k3_record（list[float] への追加と集計）・k4_labels（文字列の連結・int → str）・k5_spawn（生成）・
@@ -28,6 +31,7 @@
 param(
     [string]$Exe = '',
     [string]$B = '',
+    [string[]]$Exes = @(),
     [string[]]$Modes = @('interp', 'native', 'cpp'),
     [int]$Reps = 7,
     [int]$Scale = 5,
@@ -46,8 +50,24 @@ if ($WorkDir -eq '') { $WorkDir = Join-Path $env:TEMP 'arrow_speed_modes' }
 foreach ($e in @($Exe, $B)) {
     if ($e -ne '' -and -not (Test-Path $e)) { throw "not found: $e" }
 }
-$exes = [ordered]@{ A = $Exe }
-if ($B -ne '') { $exes['B'] = $B }
+# ⚠ PowerShell の変数名は大文字と小文字を区別しない: 表を `$exes` と書くと型つきの引数 `[string[]]$Exes` に変換される
+$exeList = @($Exes)
+$runExes = [ordered]@{ A = $Exe }
+if ($B -ne '') { $runExes['B'] = $B }
+# 3 つ以上（`ラベル=パス`）。ラベルは作業場所のディレクトリ名にもなるので英数字・`_`・`-` だけにする
+if ($exeList.Count -gt 0) {
+    if ($B -ne '') { throw '-Exes and -B cannot be used together' }
+    $runExes = [ordered]@{}
+    foreach ($item in $exeList) {
+        $i = $item.IndexOf('=')
+        if ($i -le 0) { throw "-Exes takes label=path: $item" }
+        $label = $item.Substring(0, $i); $path = $item.Substring($i + 1)
+        if ($label -notmatch '^[A-Za-z0-9_-]+$') { throw "label must be [A-Za-z0-9_-]: $label" }
+        if (-not (Test-Path $path)) { throw "not found: $path" }
+        if ($runExes.Contains($label)) { throw "duplicate label: $label" }
+        $runExes[$label] = $path
+    }
+}
 
 # ── C++ のカーネル（1 回だけ作り、各作業場所へ写す） ───────────────────────────────
 function Build-Kernels {
@@ -172,7 +192,7 @@ foreach ($mode in $Modes) {
         $why = Build-Kernels
         if ($why -ne '') { Write-Host "SKIPPED cpp: $why" -ForegroundColor Yellow; continue }
     }
-    foreach ($tag in $exes.Keys) { Prepare $tag $exes[$tag] $mode }
+    foreach ($tag in $runExes.Keys) { Prepare $tag $runExes[$tag] $mode }
     $runModes += $mode
 }
 if ($runModes.Count -eq 0) { throw 'no mode to run' }
@@ -182,8 +202,8 @@ $acc = @{}
 $checks = @{}
 for ($r = 0; $r -le $Reps; $r++) {
     foreach ($mode in $runModes) {
-        foreach ($tag in $exes.Keys) {
-            $res = Invoke-Run $exes[$tag] (Join-Path $WorkDir "$tag\$mode") (Script-For $mode)
+        foreach ($tag in $runExes.Keys) {
+            $res = Invoke-Run $runExes[$tag] (Join-Path $WorkDir "$tag\$mode") (Script-For $mode)
             if ($null -eq $res) { continue }
             if ($r -eq 0) { continue }
             $key = "$tag/$mode"
@@ -202,15 +222,48 @@ for ($r = 0; $r -le $Reps; $r++) {
 $rows = @()
 $unit = 's'
 if ($Micro) { $unit = 'ns' }
+$labels = @($runExes.Keys)
 foreach ($mode in $runModes) {
+    if ($labels.Count -gt 2) {
+        # 3 つ以上: 中央値を exe ごとに横に並べ、最後に「最初の exe ÷ 最後の exe」（1 より大きいほど速くなった）
+        Write-Host ''
+        Write-Host ("== {0} ({1}, median)" -f $mode, $unit)
+        foreach ($t in $labels) { Write-Host ("   {0} = {1}" -f $t, $runExes[$t]) }
+        $head = '{0,-30}' -f 'metric'
+        foreach ($t in $labels) { $head += '{0,12}' -f $t }
+        Write-Host ($head + ('{0,18}' -f "$($labels[0])/$($labels[-1])"))
+        $first = "$($labels[0])/$mode"
+        if (-not $acc.ContainsKey($first)) { Write-Host "no result: $mode" -ForegroundColor Red; continue }
+        foreach ($k in $acc[$first].Keys) {
+            $line = '{0,-30}' -f $k
+            $meds = @()
+            foreach ($t in $labels) {
+                $key = "$t/$mode"
+                if ($acc.ContainsKey($key) -and $acc[$key].Contains($k)) {
+                    $xs = $acc[$key][$k]
+                    $med = Median $xs
+                    $meds += $med
+                    $rows += [pscustomobject]@{ exe = $t; mode = $mode; metric = $k; min = ($xs | Measure-Object -Minimum).Minimum; median = $med; max = ($xs | Measure-Object -Maximum).Maximum; n = $xs.Count }
+                    $line += '{0,12:N4}' -f $med
+                } else {
+                    $meds += $null
+                    $line += '{0,12}' -f '-'
+                }
+            }
+            $ratio = '-'
+            if ($null -ne $meds[0] -and $null -ne $meds[-1] -and $meds[-1] -gt 0) { $ratio = '{0:N3}x' -f ($meds[0] / $meds[-1]) }
+            Write-Host ($line + ('{0,18}' -f $ratio))
+        }
+        continue
+    }
     $keyA = "A/$mode"
     if (-not $acc.ContainsKey($keyA)) { Write-Host "no result: $mode" -ForegroundColor Red; continue }
     Write-Host ''
-    if ($exes.Contains('B')) {
-        Write-Host ("== {0} ({1}): A = {2}  B = {3}" -f $mode, $unit, $exes['A'], $exes['B'])
+    if ($runExes.Contains('B')) {
+        Write-Host ("== {0} ({1}): A = {2}  B = {3}" -f $mode, $unit, $runExes['A'], $runExes['B'])
         Write-Host ("{0,-30}{1,12}{2,12}{3,12}{4,12}{5,10}" -f 'metric', 'A.min', 'B.min', 'A.med', 'B.med', 'A/B')
     } else {
-        Write-Host ("== {0} ({1}): {2}" -f $mode, $unit, $exes['A'])
+        Write-Host ("== {0} ({1}): {2}" -f $mode, $unit, $runExes['A'])
         Write-Host ("{0,-30}{1,12}{2,12}{3,12}" -f 'metric', 'min', 'median', 'max')
     }
     foreach ($k in $acc[$keyA].Keys) {
@@ -219,7 +272,7 @@ foreach ($mode in $runModes) {
         $medA = Median $xa
         $maxA = ($xa | Measure-Object -Maximum).Maximum
         $rows += [pscustomobject]@{ exe = 'A'; mode = $mode; metric = $k; min = $minA; median = $medA; max = $maxA; n = $xa.Count }
-        if ($exes.Contains('B') -and $acc.ContainsKey("B/$mode") -and $acc["B/$mode"].Contains($k)) {
+        if ($runExes.Contains('B') -and $acc.ContainsKey("B/$mode") -and $acc["B/$mode"].Contains($k)) {
             $xb = $acc["B/$mode"][$k]
             $minB = ($xb | Measure-Object -Minimum).Minimum
             $medB = Median $xb
