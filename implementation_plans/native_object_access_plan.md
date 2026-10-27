@@ -350,6 +350,8 @@ VM はスタックに置くだけ。差は約 25 ns。
 
 ### 0.8 現状でコンパイル済みが VM より遅い操作（2026-10-28・`830f9a7`）
 
+測定方法・結果・要因のまとめは [native_slowdown_analysis.md](native_slowdown_analysis.md)（再現は `scripts/native_slowdown.ps1`）。
+
 **区間（`bench.ar`）はすべてコンパイル済みが同じか速い**（§0.7 の現在の列・VM ÷ コンパイル済み）: k1 2.70x・k2 1.26x・
 k3 1.20x・k4 1.03x・k5 1.09x・k6 2.09x、最大のメモリは同じ（94 MB）。遅いのは 1 操作の単価のうち次のもの（§0.7・ns）:
 

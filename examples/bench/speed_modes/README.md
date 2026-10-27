@@ -29,6 +29,7 @@
 | `bench.ar` | 区間を測る本体（全モード共通）。`AR_BENCH_SCALE` で回数を倍にし、`AR_BENCH_ONLY=k2_energy` などで区間を絞る |
 | `sim_core.ar` | `interp` / `native` の計算（`Vec3` / `Body` / `World` と `run_*`） |
 | `micro.ar` / `micro_core.ar` | 1 操作の単価（`(t(操作のループ) - t(空のループ)) / n`）。`interp` / `native` |
+| `slowdown.ar` / `slowdown_core.ar` | コンパイルすると VM より遅くなる操作の分解（束縛する形としない形を並べる）。`scripts/native_slowdown.ps1` で走らせる（`implementation_plans/native_slowdown_analysis.md`） |
 | `cpp/sim_core.ar` | `cpp` の計算（同じクラス。数値の計算だけ C++） |
 | `cpp/sim_kernels.cpp` / `.h` / `.def` | C++ のカーネル（演算の順は `sim_core.ar` と同じなので結果がビット単位で一致する） |
 | `cpp/micro_ffi.ar` / `cpp/micro_ffi_bench.ar` | C++ の呼び出しの単価 |
