@@ -496,7 +496,7 @@ impl Interpreter {
                 // ⚠ ネイティブ側からの `set_attr`（写しの更新）は `set_attr_val` を通るので、ここへは来ない（再入しない）。
                 if inst_class.field_index.contains_key("__rs_handle__") && attr != "__rs_handle__" {
                     let setter = format!("set_{attr}");
-                    if crate::interpreter::native_api::lookup_native_method_ptr(&inst_class.name, &setter).is_some() {
+                    if crate::interpreter::native_api::lookup_native_method_ptr(inst_class.class_id, &setter).is_some() {
                         self.check_member_access(&inst_class, attr, attr)?;
                         return match crate::interpreter::native_api::try_dispatch_native_method(
                             self,

@@ -1,0 +1,38 @@
+# native_class_same_name.ar — 本体とコンパイル済みモジュールに同じ名前のクラスがあっても混ざらない
+# （native_object_access_plan.md 11-4）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_class_same_name_module.ar
+#   2. cargo run --release -- examples/interop/native_class_same_name.ar
+#
+# 期待値 "main:1,module:2,module:2,main:3,1/1":
+#   main:1     … 本体の Reg の生成とメソッド（本体の __init__・本体の who）
+#   module:2   … モジュールの関数が作ったモジュールの Reg（モジュールの __init__・モジュールの who）
+#   module:2   … モジュールの関数に渡したモジュールの Reg
+#   main:3     … モジュールを使った後でも、本体の Reg は本体のもの
+#   1/1        … 本体の LOG とモジュールの LOG に 1 つずつ（以前は本体の生成がモジュールの __init__ を走らせ、モジュールの LOG に入った）
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_class_same_name_module as m
+
+class Reg:
+    mut v: int
+
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+        LOG.append("main")
+
+    fn who(let self) -> str:
+        return "main:" + str(self.v)
+
+mut LOG: list[str] = []
+
+let a = Reg(1)
+let b = m.make(2)
+mut out = a.who() + "," + b.who() + "," + m.who_of(b)
+let c = Reg(3)
+out = out + "," + c.who() + "," + str(len(LOG) - 1) + "/" + str(m.log_len())
+if out != "main:1,module:2,module:2,main:3,1/1":
+    raise ValueError("got " + out)
+print("same-named classes OK")

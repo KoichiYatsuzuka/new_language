@@ -814,6 +814,13 @@ impl Interpreter {
                     }
                 }
                 Stmt::ClassDef { name: class_name, body: class_body, .. } => {
+                    // 表はクラスの番号で引く（同じ名前の別のクラスと混ざらない・11-4）。スタブの本体を走らせた後なので
+                    // モジュールの名前空間にクラスがある。無ければ登録しない（メソッドはインタープリタで走る・値は同じ）
+                    let Some(Value::Class(cls)) = members.get(class_name.as_str()) else {
+                        eprintln!("NativeMethod: class `{class_name}` is not in the module's namespace; its methods stay interpreted");
+                        continue;
+                    };
+                    let class_id = cls.class_id;
                     for method_stmt in class_body {
                         let (mname, params) = match method_stmt {
                             Stmt::FnDef { name, params, .. } => (name, params),
@@ -826,7 +833,7 @@ impl Interpreter {
                             lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                         } {
                             let fn_ptr = *func as usize;
-                            crate::interpreter::native_api::register_native_method(class_name, mname, fn_ptr, globals_id);
+                            crate::interpreter::native_api::register_native_method(class_id, mname, fn_ptr, globals_id);
                             eprintln!("NativeMethod: {class_name}.{mname} ({} param(s)) → native", params.len());
                         }
                     }

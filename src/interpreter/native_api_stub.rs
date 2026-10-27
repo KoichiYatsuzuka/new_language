@@ -44,7 +44,7 @@ impl ErrSlot {
 }
 
 /// 評価コアにはネイティブメソッドが 1 つも登録されないので、常に `None`。
-pub fn lookup_native_method_ptr(_class_name: &str, _method_name: &str) -> Option<usize> {
+pub fn lookup_native_method_ptr(_class_id: u32, _method_name: &str) -> Option<usize> {
     None
 }
 

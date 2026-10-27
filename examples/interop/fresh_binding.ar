@@ -15,50 +15,49 @@
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 
 import test_modules.fresh_binding_module as m
-# ⚠ 本体のクラスの名前をモジュールと変えてある（MVec3 など）: 同じ名前だと、コンパイル済みのモジュールのメソッドが
-#   本体のクラスの生成でも呼ばれる既知の不具合がある（native_object_access_plan.md 11-4）。
+# 本体のクラスはモジュールと同じ名前（別のクラス・11-4 で混ざらなくなった）
 
 
-class MVec3:
+class Vec3:
     mut x: float
     mut y: float
     mut z: float
 
-class MReg:
+class Reg:
     mut v: int
 
     fn __init__(mut self, let v: int) -> None:
         self.v = v
         REG.append(self)
 
-class MWatched:
+class Watched:
     mut n: int
 
     fn __freeze__(mut self) -> None:
         FREEZES.append(self.n)
 
-mut REG: list[MReg] = []
+mut REG: list[Reg] = []
 mut FREEZES: list[int] = []
 
 fn run_checks() -> str:
-    let v = MVec3(1.0, 2.0, 3.0)
-    mut mm = MVec3(4.0, 5.0, 6.0)
+    let v = Vec3(1.0, 2.0, 3.0)
+    mut mm = Vec3(4.0, 5.0, 6.0)
     mm.x = 40.0
     mut out = str(v.x + mm.x)
-    mut a = MVec3(7.0, 8.0, 9.0)
+    mut a = Vec3(7.0, 8.0, 9.0)
     let xs = [a]
     a.x = 70.0
     out = out + ":" + str(xs[0].x) + "/" + str(a.x)
-    let r = MReg(1)
+    let r = Reg(1)
     REG[len(REG) - 1].v = 9
     out = out + ":" + str(r.v) + "/" + str(REG[len(REG) - 1].v)
-    mut x = MVec3(10.0, 0.0, 0.0)
-    let y = block ->MVec3:
+    mut x = Vec3(10.0, 0.0, 0.0)
+    let y = block ->Vec3:
         block_return x
     x.x = 11.0
     out = out + ":" + str(y.x) + "/" + str(x.x)
     let f0 = len(FREEZES)
-    let w = MWatched(5)
+    let w = Watched(5)
     out = out + ":" + str(len(FREEZES) - f0)
     return out
 

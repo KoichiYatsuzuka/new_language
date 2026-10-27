@@ -152,7 +152,7 @@ impl Interpreter {
                 if n_overloads == 1
                     && !self_is_mut
                     && crate::interpreter::native_api::lookup_native_method_ptr(
-                        &class.name,
+                        class.class_id,
                         method_name,
                     )
                     .is_none()

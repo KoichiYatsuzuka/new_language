@@ -170,7 +170,9 @@ struct NativeCallState {
     /// 大域の番号は呼ぶ間だけ差し替える先（`NativeFnRef::globals` と同じ・1-7）。
     /// ⚠ 2 段にしてあるのは `&str` のまま引くため（10-1）。以前は `(String, String)` をキーにしていて、引くたびに
     ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
-    native_methods: HashMap<String, HashMap<String, (usize, u32)>>,
+    /// ⚠ キーは**クラスの番号**（`class_id`・11-4）。以前は素のクラス名で、本体（や別のモジュール）の同じ名前のクラスの
+    ///   生成・メソッド呼び出しでも、コンパイル済みのモジュールのメソッドが呼ばれていた（型はモジュールごとに別・10-8）。
+    native_methods: HashMap<u32, HashMap<String, (usize, u32)>>,
     /// 文字列のリテラルの表（11-2・D-12）: 呼び出し箇所のセルに入れた番号 − 1 → 1 度だけ作った文字列。VM の定数表と同じく、
     /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
     /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
@@ -346,28 +348,29 @@ pub fn take_pending_raise() -> Option<(String, String)> {
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
+/// `class_id` はモジュールが定義したクラスの番号（同じ名前の別のクラスと混ざらない・11-4）。
 /// `globals` はクラスを定義したモジュールの大域の番号（呼ぶ間だけそこへ差し替える・1-7）。
-pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize, globals: u32) {
+pub fn register_native_method(class_id: u32, method_name: &str, fn_ptr: usize, globals: u32) {
     STATE.with(|s| {
         s.borrow_mut()
             .native_methods
-            .entry(class_name.to_string())
+            .entry(class_id)
             .or_default()
             .insert(method_name.to_string(), (fn_ptr, globals));
     });
 }
 
 /// Look up the raw function pointer for a native class method.
-pub fn lookup_native_method_ptr(class_name: &str, method_name: &str) -> Option<usize> {
-    lookup_native_method(class_name, method_name).map(|(ptr, _)| ptr)
+pub fn lookup_native_method_ptr(class_id: u32, method_name: &str) -> Option<usize> {
+    lookup_native_method(class_id, method_name).map(|(ptr, _)| ptr)
 }
 
 /// ネイティブのメソッドの関数ポインタと、走らせる大域の番号（1-7）。
-pub(crate) fn lookup_native_method(class_name: &str, method_name: &str) -> Option<(usize, u32)> {
+pub(crate) fn lookup_native_method(class_id: u32, method_name: &str) -> Option<(usize, u32)> {
     STATE.with(|s| {
         s.borrow()
             .native_methods
-            .get(class_name)
+            .get(&class_id)
             .and_then(|m| m.get(method_name))
             .copied()
     })
@@ -384,7 +387,7 @@ pub fn try_dispatch_native_method(
         Value::Instance(rc) => rc.borrow().class.clone(),
         _ => return None,
     };
-    let (fn_ptr, globals) = lookup_native_method(&class.name, method_name)?;
+    let (fn_ptr, globals) = lookup_native_method(class.class_id, method_name)?;
     Some(call_native_method_at(interp, fn_ptr, globals, class, obj, &arg_vals))
 }
 
@@ -444,7 +447,7 @@ pub fn try_dispatch_native_method_evaled(
         Value::Instance(rc) => rc.borrow().class.clone(),
         _ => return None,
     };
-    let (fn_ptr, globals) = lookup_native_method(&class.name, method_name)?;
+    let (fn_ptr, globals) = lookup_native_method(class.class_id, method_name)?;
     // 呼ばれた側の宣言（`call_method_common` と同じ引き方）。ネイティブの表に載るのはモジュールのクラスの本体に
     // 書かれた（自動生成の `__init__` を含む）メソッドだけで、オーバーロードはコンパイルしない（1-8）ので、1 つに
     // 決まらなければ表と宣言がずれている。黙って素通しせずエラーにする。
