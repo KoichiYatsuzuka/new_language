@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop'
 
 $root   = Split-Path $MyInvocation.MyCommand.Path
-$vsix   = Join-Path $root "arrow-0.3.0.vsix"
+$vsix   = Join-Path $root "arrow-0.4.0.vsix"
 $tmp    = Join-Path $root "__vsix_build"
 
 # --- clean up any previous run ---
@@ -39,7 +39,7 @@ $manifest = @'
   xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
   xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="arrow" Version="0.3.0" Publisher="arrow-publisher"/>
+    <Identity Language="en-US" Id="arrow" Version="0.4.0" Publisher="arrow-publisher"/>
     <DisplayName>Arrow</DisplayName>
     <Description xml:space="preserve">Coding intelligence for Arrow (.ar files)</Description>
     <Tags>Arrow,ar</Tags>
