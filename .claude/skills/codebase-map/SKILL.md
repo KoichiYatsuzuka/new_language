@@ -508,6 +508,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_import_paths.ps1 (147)
   compare_outputs.ps1 (153)
   compare_python_impl.ps1 (540)
+  compare_tm_grammar.ps1 (120)
   compare_wasm_frontend.ps1 (301)
   cpp_cache_isolation.ps1 (135)
   debug_session.ps1 (161)
@@ -539,10 +540,12 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   editor_import_resolution_plan.md (293)
   enum_member_type_plan.md (224)
   eval_core_extraction_plan.md (186)
+  ffi_value_exchange_plan.md (1850)
   FUTURE_FEATURE.md (554)
   IMPLEMENTATION_LOG.md (9882)
   IMPORT_RESOLUTION_PLAN.md (103)
   known_problems.md (68)
+  native_object_access_plan.md (634)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
   python_converter_coverage.md (1087)
@@ -558,5 +561,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (168)
   README.md (317)
 ```
-_Generated 2026-10-28 by generate-codebase-map.ps1_
+_Generated 2026-10-31 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
