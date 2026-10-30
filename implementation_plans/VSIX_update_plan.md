@@ -102,3 +102,115 @@ exe はこのコードを正しく解釈する。
 - **3-2** 1-1 の網を `CLAUDE.md` のゲート表と `vscode-extension-dev` skill に載せる
   （**文法を触ったとき**と **lexer の文字列・コメントの規則を触ったとき**に走らせる）。
   `scripts/` にファイルを足すので、`generate-codebase-map.ps1` も走らせる。
+---
+
+# import 文まわりで exe とずれる不具合（2026-10-31 調査）
+
+上の 2 つ目（定義へのジャンプが import 文に飛んで終わる）と 3 つ目（`from XX import YY` の YY がモジュール名になる）の原因。
+
+## 結論
+
+import 文そのものの字句解析と構文解析は、wasm が exe と同じコード（`src/lexer`・`src/parser/imports/`）を使うので一致している。
+**ずれているのは、exe の解析を通らない次の 4 層。**
+
+| 層 | 場所 | 関係する不具合 |
+|---|---|---|
+| A. TextMate 文法 | `arrow.tmLanguage.json` の `import-decl` | 3 つ目（色） |
+| B. エディタ用の宣言表 | パーサの `#[cfg(feature = "editor")]` 部分（`src/parser/imports/cpp.rs` の `parse_from_import_stmt`） | 3 つ目（主因） |
+| C. `.` 補完のモジュールのメンバ表 | `crates/arrow-frontend/src/analyze.rs` の `collect_module_members` | 補完 |
+| D. 定義へのジャンプ | `vscode-extension/src/wasm_providers.ts` の `provideDefinition` | 2 つ目 |
+
+検証方法:
+- A は前節と同じ方法で、VS Code の TextMate エンジンに文法を当てた。
+- B・C は `out/frontend.js` の `analyze()` を `ELECTRON_RUN_AS_NODE=1 Code.exe` で呼び、解析結果の JSON を見た。
+  例題は `main.ar` と `pkg/__init__.ar`・`pkg/util.ar`（`fn helper`・`class Other`）。
+- D はコードを読んで判断した。実際に飛ばしては確かめていない。
+
+## A. TextMate 文法の `import-decl`
+
+この規則は `import … [with …] [as …]` の形しか知らない。`from` 文は、途中の `import` から先だけがこの規則に当たる。
+
+| 入力 | 文法の判定 | exe での意味 |
+|---|---|---|
+| `from pkg.util import helper, Other as O` | `pkg` `util` は変数、`helper` は**モジュール名**（`entity.name.namespace`）、`Other` と `O` は変数 | `pkg.util` がモジュール、`helper` `Other` `O` は取り込んだ名前 |
+| `from mod import[py] Name, Two` | `Name` だけモジュール名、`Two` は変数 | どちらも取り込んだ名前 |
+| `import a.b as m`、`import[cpp-dll] … as sakura` | 別名がクラス色（`entity.name.type.class`） | モジュール |
+| `import[rs] libm[0.2] as lm` | `[0.2]` で規則が切れ、`lm` は変数 | バージョン指定と別名 |
+
+⚠ 識別子の色は、semantic tokens が付くと TextMate の色を上書きする。**A だけ直しても、B が残る限り `helper` はモジュールの色のまま。**
+
+## B. エディタ用の宣言表
+
+`parse_from_import_stmt` が、取り込んだ名前を種類にかかわらず `EditorKind::Module` で登録している（`note_def`）。
+登録は import 先を読み込む（`load_module`）**前**に行われるので、この時点では名前の種類が分からない。
+
+wasm で実測すると、型検査は正しい型を知っているのに、宣言表だけがモジュール扱いだった。
+
+```
+sym helper  module  from pkg.util import[ar-auto] helper   ← 型検査の型は function{let x:int}->int
+sym O       module  from pkg.util import[ar-auto] Other    ← 型検査の型は type[pkg.util.Other]
+```
+
+この宣言表が semantic tokens（着色）・ホバー・補完・シグネチャヘルプに使われる。
+ホバーには関数のシグネチャではなく `from pkg.util import[ar-auto] helper` が出る（書いていない `[ar-auto]` も表示される）。
+
+## C. `.` 補完のモジュールのメンバ表
+
+メンバ表の鍵（`.` の前に書く名前）を「別名か、モジュール名の最後の部分（`module.last()`）」で決めている。
+exe が束縛する名前（`Stmt::Import::bind`・CPython と同じ規則）を見ていない。
+
+- `import pkg.util` で、exe が束縛するのは `pkg` なのに、鍵は `util` になる（実測: `member keys [ 'Other', 'u', 'util' ]`）。
+  そのため、使えるはずの `pkg.` では補完が出ず、束縛されていない `util.` で補完が出る。
+- 別名なしの `import[cpp-dll]` では、`module` が解決済みのヘッダのパスなので、鍵がパスになって引けない（コードを読んでの判断）。
+
+## D. 定義へのジャンプ
+
+- 飛び先は常に今のファイル（`document.uri`）。解析結果に、import 先の宣言のファイルと位置が入っていない。
+- そのため、取り込んだ名前（`from X import Y` の `Y`、`import m` の `m`）は宣言表の位置、つまり import 文に飛ぶ。
+- `mod.f` のメンバが引けないときは、名前だけで今のファイルを探し直す（`lookup`）。その結果、**同じ名前の無関係な宣言に飛ぶ**。
+  - 例: `math_hover.ar` 48 行目の `mhn.warmup()` の `warmup` から、39 行目の自分の `fn warmup` に飛ぶ（コードを読んでの判断）。
+  - シグネチャヘルプ（`callContext` → `lookup`）も同じ引き方なので、`mod.f(` で同じ名前の別の関数のシグネチャが出うる。
+- 飛び先を出すための材料は AST にある。import 先の宣言が持つ `SrcRange` のトークン（`Spanned`）に、ファイル名と行・列が入っている。
+  足りないのは、解析結果（JSON）に出すことと、拡張がそれを使って別のファイルを開くこと。
+
+## 方針
+
+- 判断は exe の解析（パーサ・型検査）に任せ、拡張と `analyze.rs` は転記だけにする。前節と同じく、拡張の側で推し量らない。
+- B を A より先に直す（着色は semantic tokens が勝つため）。
+
+## フェーズ 4: 解析結果を exe に合わせる（frontend 側）
+
+- **4-1** 確認用の例題を作る。`import a.b` / `import a.b as m` / `from a.b import f, C as D` / `from . import x` /
+  `import[cpp-dll] … as s` / 別名なしの `import[cpp-dll]` を含め、取り込んだ名前を使う行も置く。置き場所は 1-1 の母集団に合わせる。
+- **4-2**（B）`from X import Y` の `Y` の種類を、import 先の本体（`loaded.body`）から決める。
+  - 関数 / ジェネレータ / クラス / トレイト / 列挙 / 定数・変数 / サブモジュール を区別し、関数ならシグネチャも付ける。
+  - 宣言表への登録を、import 先の読み込みの後に回す（位置は名前を読んだ時点のものを控えておく）。
+  - 読めなかった import（`try_import` が `None`）では種類が分からない。その場合の扱いを決める
+    （例: 種類「不明」にして着色しない）。黙ってモジュールにしない。
+  - 同じ問題が `from . import x`（`from_dots_import`）の側にもないか確かめる。
+- **4-3**（C）`collect_module_members` の鍵を `Stmt::Import::bind.name` にする。
+  `import a.b.c` では `a` → `b` → `c` と入れ子でたどれるようにする（`a` のメンバにサブモジュール `b` を載せる）。
+- **4-4**（D の材料）解析結果の宣言とメンバに、定義のファイルと位置を加える。
+  - import 先の宣言は `SrcRange` のトークンの `span` から取る。
+  - 取り込んだ名前（`from X import Y`）には、import 先での `Y` の定義の位置を付ける。
+  - 元のソースが無い import 先（`.ars` スタブ・C++ ヘッダ・py / cs / js のスタブ）で、何を指すか決める
+    （スタブのファイルがあればそこ、無ければ位置なし）。
+- **4-5** `compare_wasm_frontend.ps1` を走らせ、診断が変わっていないことを確かめる（4-2 はパーサの editor 部分を触るため）。
+
+## フェーズ 5: 拡張側
+
+- **5-1**（D）`provideDefinition` を 4-4 の位置で引く。別のファイルなら、その URI の Location を返す。
+  - `mod.f` は受け手の型（モジュール）のメンバとして引き、**名前だけで今のファイルを探し直す処理（`lookup` への落ち込み）を受け手付きの場合はやめる**。
+  - 位置の無い宣言では飛ばない（import 文へ飛ばさない）。
+- **5-2** シグネチャヘルプの `callContext` も、`mod.f(` のときは受け手のメンバから引く（5-1 と同じ引き方）。
+- **5-3**（A）文法の import 規則を分ける。
+  - `from <モジュール> import[tag] <名前>, …` を別の規則にする。モジュールの部分（相対の `.` を含む）を namespace にする。
+    取り込んだ名前には namespace を付けない（種類は semantic tokens に任せる）。
+  - `as` の後の別名をクラス色にしない。
+  - `import[rs] name[ver]` のバージョン指定を扱う。
+
+## フェーズ 6: 仕上げ
+
+- **6-1** VSIX を作り、4-1 の例題と `math_hover.ar` で、着色・ホバー・補完・定義へのジャンプを目視で確かめる。
+- **6-2** 4-1 の例題を `vscode-extension/stress.js`（または debug runner）の確認に足し、
+  取り込んだ名前の種類と定義の位置を退行検査できるようにする。
