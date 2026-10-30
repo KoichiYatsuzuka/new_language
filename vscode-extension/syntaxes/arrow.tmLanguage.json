@@ -441,14 +441,14 @@
       }
     },
     "class-def": {
-      "match": "\\b(class|trait|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(class|trait|protocol|template|enum)\\s+([A-Za-z_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.class.ar" },
         "2": { "name": "entity.name.type.class.ar" }
       }
     },
     "new-type-def": {
-      "match": "\\b(new_type)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(new_type|alias)\\s+([A-Za-z_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.newtype.ar" },
         "2": { "name": "entity.name.type.ar" }
@@ -472,7 +472,7 @@
           }
         },
         {
-          "match": "\\b(let|mut|freeze|frozen)\\b",
+          "match": "\\b(let|mut|freeze)\\b",
           "name": "storage.modifier.ar"
         },
         {
@@ -485,7 +485,7 @@
           "name": "keyword.other.metafn.ar"
         },
         {
-          "match": "\\b(if|elif|else|match|for|while|block)\\b",
+          "match": "\\b(if|elif|else|match|case|for|while|block)\\b",
           "name": "keyword.control.ar"
         },
         {
@@ -505,7 +505,7 @@
           "name": "keyword.other.access.ar"
         },
         {
-          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static|class_method)\\b",
+          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|alias|static|class_method|on|once|off)\\b",
           "name": "keyword.other.ar"
         },
         {
@@ -535,11 +535,11 @@
       ]
     },
     "constant": {
-      "match": "\\b(True|False|None)\\b",
+      "match": "\\b(True|False|None|Undefined)\\b",
       "name": "constant.language.ar"
     },
     "builtin-type": {
-      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|Ptr|Path|slice|Code|meta_instance|meta_function|meta_class|meta_member)\\b",
+      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Intersection|Option|Optional|pointer|Ptr|Path|slice|Code|meta_instance|meta_function|meta_class|meta_member)\\b",
       "name": "support.type.builtin.ar"
     },
     "builtin-func": {
