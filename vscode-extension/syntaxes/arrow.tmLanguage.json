@@ -74,13 +74,27 @@
       "name": "comment.line.number-sign.ar"
     },
     "string-interpolation": {
+      "comment": "`{expr}` of an f-string. lex_fstring reads up to the matching `}` counting nested braces and NOTHING else: a quote or `#` inside does not end it, so strings / comments are not included here.",
       "name": "meta.template.expression.ar",
       "begin": "\\{",
       "end": "\\}",
       "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.ar" } },
       "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.ar" } },
+      "patterns": [{ "include": "#fstring-expr" }]
+    },
+    "fstring-expr": {
       "patterns": [
-        { "match": "[!:][^}]*", "name": "constant.other.format-spec.ar" },
+        {
+          "comment": "nested braces (`{ {1: 2}[1] }`) — counted like lex_fstring's depth",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [{ "include": "#fstring-expr" }]
+        },
+        {
+          "comment": "`!r` / `:spec` right before the closing `}`. Only when the spec has no brackets, so `a[1:2]` is not taken for one.",
+          "match": "(?:![rsa](?::[^{}\\[\\]()'\"]*)?|:[^{}\\[\\]()'\"]*)(?=\\})",
+          "name": "constant.other.format-spec.ar"
+        },
         { "include": "#keyword" },
         { "include": "#constant" },
         { "include": "#number" },
@@ -96,45 +110,316 @@
       "patterns": [
         {
           "name": "string.quoted.triple.double.ar",
-          "begin": "\"\"\"",
-          "end": "\"\"\"",
+          "begin": "(?<![\\w])(fr|rf)(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
           "patterns": [
-            { "include": "#string-interpolation" },
-            { "include": "#string-escape" }
+            { "include": "#string-raw-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
           ]
         },
         {
           "name": "string.quoted.triple.single.ar",
-          "begin": "'''",
-          "end": "'''",
+          "begin": "(?<![\\w])(fr|rf)(''')",
+          "end": "(''')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
           "patterns": [
-            { "include": "#string-interpolation" },
-            { "include": "#string-escape" }
+            { "include": "#string-raw-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
           ]
         },
         {
           "name": "string.quoted.double.ar",
-          "begin": "\"(?!\"\")",
-          "end": "\"",
+          "begin": "(?<![\\w])(fr|rf)(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
           "patterns": [
-            { "include": "#string-interpolation" },
-            { "include": "#string-escape" }
+            { "include": "#string-raw-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
           ]
         },
         {
           "name": "string.quoted.single.ar",
-          "begin": "'(?!'')",
-          "end": "'",
+          "begin": "(?<![\\w])(fr|rf)('(?!''))",
+          "end": "(')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
           "patterns": [
-            { "include": "#string-interpolation" },
-            { "include": "#string-escape" }
+            { "include": "#string-raw-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
           ]
+        },
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "(?<![\\w])(f)(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [
+            { "include": "#string-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "(?<![\\w])(f)(''')",
+          "end": "(''')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [
+            { "include": "#string-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "(?<![\\w])(f)(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [
+            { "include": "#string-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "(?<![\\w])(f)('(?!''))",
+          "end": "(')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [
+            { "include": "#string-escape" },
+            { "include": "#fstring-brace-escape" },
+            { "include": "#string-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "(?<![\\w])(m)(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#math-command" }, { "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "(?<![\\w])(m)(''')",
+          "end": "(''')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#math-command" }, { "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "(?<![\\w])(m)(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#math-command" }, { "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "(?<![\\w])(m)('(?!''))",
+          "end": "(')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#math-command" }, { "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "(?<![\\w])(r)(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "(?<![\\w])(r)(''')",
+          "end": "(''')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "(?<![\\w])(r)(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "(?<![\\w])(r)('(?!''))",
+          "end": "(')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-raw-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "(?<![\\w])(b)(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "(?<![\\w])(b)(''')",
+          "end": "(''')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "(?<![\\w])(b)(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "(?<![\\w])(b)('(?!''))",
+          "end": "(')",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.ar" },
+            "2": { "name": "punctuation.definition.string.begin.ar" }
+          },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "(\"\"\")",
+          "end": "(\"\"\")",
+          "beginCaptures": { "1": { "name": "punctuation.definition.string.begin.ar" } },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "(''')",
+          "end": "(''')",
+          "beginCaptures": { "1": { "name": "punctuation.definition.string.begin.ar" } },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "(\"(?!\"\"))",
+          "end": "(\")",
+          "beginCaptures": { "1": { "name": "punctuation.definition.string.begin.ar" } },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "('(?!''))",
+          "end": "(')",
+          "beginCaptures": { "1": { "name": "punctuation.definition.string.begin.ar" } },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "comment": "`$…$` math string (scan.rs `Some('$')`): everything up to the next `$`, across lines, no escapes",
+          "name": "string.other.math.ar",
+          "begin": "(\\$)",
+          "end": "(\\$)",
+          "beginCaptures": { "1": { "name": "punctuation.definition.string.begin.ar" } },
+          "endCaptures": { "1": { "name": "punctuation.definition.string.end.ar" } },
+          "patterns": [{ "include": "#math-command" }]
         }
       ]
     },
     "string-escape": {
-      "name": "constant.character.escape.ar",
-      "match": "\\\\(\\\\|[nrtbfv'\"0]|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\\{[^}]+\\}|[0-7]{1,3})"
+      "comment": "Non-raw strings. lex_string_inner translates only these; any other `\\x` is kept as is, but still consumes the next character (so `\\\"` never ends the string).",
+      "patterns": [{ "match": "\\\\[ntr\\\\'\"0]", "name": "constant.character.escape.ar" }, { "match": "\\\\." }]
+    },
+    "string-raw-escape": {
+      "comment": "Raw strings: `\\` keeps the next character (lex_string_inner(raw=true)), so `r\"\\\"\"` does not end at the second quote. Nothing is coloured as an escape.",
+      "match": "\\\\."
+    },
+    "fstring-brace-escape": {
+      "comment": "`{{` / `}}` are a literal brace in an f-string (lex_fstring)",
+      "match": "\\{\\{|\\}\\}",
+      "name": "constant.character.escape.ar"
+    },
+    "math-command": {
+      "comment": "LaTeX-like command in a math string (`\\alpha`, render_math_str)",
+      "match": "\\\\[A-Za-z]+",
+      "name": "constant.character.math.ar"
     },
     "number": {
       "patterns": [
