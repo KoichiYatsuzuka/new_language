@@ -27,7 +27,7 @@
       "patterns": [
         {
           "comment": "`!decorator` at the start of a line — compile-time decorator (design 1.6). `@` stays the runtime one.",
-          "match": "^\\s*(!)([A-Za-z_]\\w*)",
+          "match": "^\\s*(!)([\\p{L}_]\\w*)",
           "captures": {
             "1": { "name": "keyword.operator.metafn.decorator.ar" },
             "2": { "name": "entity.name.function.decorator.ar" }
@@ -39,7 +39,7 @@
       "patterns": [
         {
           "comment": "static fn/gen or class_method fn/gen — method definition with a modifier",
-          "match": "\\b(static|class_method)\\s+(fn|gen)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(static|class_method)\\s+(fn|gen)\\s+([\\p{L}_]\\w*)",
           "captures": {
             "1": { "name": "keyword.other.ar" },
             "2": { "name": "storage.type.function.ar" },
@@ -48,7 +48,7 @@
         },
         {
           "comment": "static mut/let/const — static field declaration",
-          "match": "\\b(static)\\s+(mut|let|const)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(static)\\s+(mut|let|const)\\s+([\\p{L}_]\\w*)",
           "captures": {
             "1": { "name": "keyword.other.ar" },
             "2": { "name": "storage.modifier.ar" },
@@ -59,7 +59,7 @@
     },
     "import-decl": {
       "comment": "Handles all import variants: bare import plus any bracketed tag (import[py], import[py-int], import[ar], import[arc], import[rs], import[hv], import[hvc], import[cpp-lib], import[cpp-dll], import[cs-dll], import[cs-proc], import[js-proc], ...). The whole `import[tag]` — brackets and tag included — is scoped as the import keyword so it renders in the keyword color.",
-      "match": "\\b(import(?:\\[[\\w-]+\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
+      "match": "\\b(import(?:\\[[\\w-]+\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([\\p{L}_]\\w*))?",
       "captures": {
         "1": { "name": "keyword.control.import.ar" },
         "2": { "name": "entity.name.namespace.ar" },
@@ -427,28 +427,29 @@
         { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.ar" },
         { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.ar" },
         {
-          "match": "\\b[0-9][0-9_]*\\.([0-9_]+([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)\\b",
+          "match": "\\b[0-9][0-9_]*\\.([0-9_]+([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)j?\\b",
           "name": "constant.numeric.float.ar"
         },
-        { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.ar" }
+        { "match": "\\b[0-9][0-9_]*[eE][+-]?[0-9]+j?\\b", "name": "constant.numeric.float.ar" },
+        { "match": "\\b[0-9][0-9_]*j?\\b", "name": "constant.numeric.integer.ar" }
       ]
     },
     "function-def": {
-      "match": "\\b(fn|gen)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(fn|gen)\\s+([\\p{L}_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.function.ar" },
         "2": { "name": "entity.name.function.ar" }
       }
     },
     "class-def": {
-      "match": "\\b(class|trait|protocol|template|enum)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(class|trait|protocol|template|enum)\\s+([\\p{L}_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.class.ar" },
         "2": { "name": "entity.name.type.class.ar" }
       }
     },
     "new-type-def": {
-      "match": "\\b(new_type|alias)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(new_type|alias)\\s+([\\p{L}_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.newtype.ar" },
         "2": { "name": "entity.name.type.ar" }
@@ -456,7 +457,7 @@
     },
     "mustbe-assertion": {
       "comment": "mustbe type assertion — expr mustbe TypeExpr. The type is names joined by `[` `]` `,` `|` `->` only, so it always stops at `#`, a quote or `)` (where the type ends is the parser's business). ⚠ The old class `[\\w\\[\\], ->]` read ` ->` as the RANGE space..`>`, which swallowed `#`, quotes and parentheses.",
-      "match": "\\b(mustbe)\\s+([A-Za-z_][\\w.]*(?:(?:\\[|\\]|\\s*,\\s*|\\s*\\|\\s*|\\s*->\\s*)[\\w.]*)*)",
+      "match": "\\b(mustbe)\\s+([\\p{L}_][\\w.]*(?:(?:\\[|\\]|\\s*,\\s*|\\s*\\|\\s*|\\s*->\\s*)[\\w.]*)*)",
       "captures": {
         "1": { "name": "storage.modifier.ar" },
         "2": { "name": "entity.name.type.ar" }
@@ -465,7 +466,7 @@
     "keyword": {
       "patterns": [
         {
-          "match": "\\b(const)\\s+([A-Za-z_]\\w*)",
+          "match": "\\b(const)\\s+([\\p{L}_]\\w*)",
           "captures": {
             "1": { "name": "storage.modifier.ar" },
             "2": { "name": "variable.other.constant.ar" }
@@ -561,13 +562,13 @@
       }
     },
     "function-call": {
-      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "match": "\\b([\\p{L}_]\\w*)\\s*(?=\\()",
       "captures": {
         "1": { "name": "entity.name.function.ar" }
       }
     },
     "variable": {
-      "match": "\\b([A-Za-z_]\\w*)\\b",
+      "match": "\\b([\\p{L}_]\\w*)\\b",
       "name": "variable.other.readwrite.ar"
     },
     "operator": {
