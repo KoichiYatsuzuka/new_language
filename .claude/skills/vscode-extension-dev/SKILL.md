@@ -103,8 +103,21 @@ renders as `let`, a writable one as `mut`, and `mut self` keeps its `mut`. This 
 ## Non-TypeScript pieces
 
 - `syntaxes/arrow.tmLanguage.json` — TextMate grammar. **Still manual**: colouring runs before any
-  analysis, so it is a genuinely separate system. Update it when adding/renaming keywords.
-- `language-configuration.json` — bracket matching, comment tokens, auto-closing pairs.
+  analysis, so it is a genuinely separate system — a second, regex-based lexer. Update it when
+  adding/renaming keywords or changing how strings / comments are lexed.
+  - ⚠⚠ **It alone decides what is a string or a comment, and VS Code's bracket matching only looks
+    at that** (semantic tokens cannot change it). When it disagrees with `src/lexer`, everything after
+    the disagreement can turn into a "string": brackets stop matching and comments go white. Until
+    VSIX_update_plan.md phase 2 every string got f-string `{expr}`, so `r"…{…"` swallowed the rest
+    of the file. That is why it cannot simply be deleted in favour of the wasm.
+  - The string rules mirror the lexer one-to-one (`scan.rs` `next_token` → `literal.rs`): one rule
+    per prefix (`fr`/`rf`, `f`, `m`, `r`, `b`, none) × quote (`"""` `'''` `"` `'`), `{expr}` only for
+    `f`/`fr`/`rf`, raw kinds consume `\` + next char without colouring it, and `$…$` is a string.
+    Do not make it smarter than the lexer (e.g. strings inside `{expr}`): it only moves the disagreement.
+  - Gate: `./scripts/compare_tm_grammar.ps1` (below). Its keyword check fails when a word is added
+    to `src/lexer/keyword.rs` but not to the grammar, or the grammar colours a non-keyword.
+- `language-configuration.json` — bracket matching, comment tokens, auto-closing pairs
+  (quotes do not auto-close inside strings / comments: `notIn`, judged by the grammar's token types).
 - **Built-in function declarations live in `src/built_in_stab/builtins.ars`, not in the extension.**
   It is the single source for both the type checker (return types and argument checks of `open` /
   `repr` / … — `src/type_check/builtins.rs` embeds it with `include_str!`) and the
@@ -139,6 +152,7 @@ cd ../crates/arrow-frontend && cargo build --release --target wasm32-unknown-unk
 | Check | Command | Must show |
 |---|---|---|
 | Editor agrees with `arrow.exe` | `./scripts/compare_wasm_frontend.ps1` | `MISSED: 0`, `INVENTED: 0`, `parse mismatch: 0` — every example, imports included (the editor must report **the same** errors in the file; `arrow.exe` runs with `AR_CHECK_ONLY=1`, so nothing is executed) |
+| TextMate grammar agrees with the lexer | `./scripts/compare_tm_grammar.ps1` (`-VerboseDiff` shows each line; `-Files <f.ar>` for one file) | `SPILL: 0` (no string/comment carried from one line into code) and `keyword lists: match`. "other diffs" are in-line differences, reported only (0 as of 2026-10-31). Population: every example + `vscode-extension/test_fixtures/*.ar`. Uses VS Code's own TextMate engine (taken from its `node_modules.asar` into `target/tm_engine/`) |
 | No provider throws / no regressions | `ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" stress.js` | `threw: 0`, `hover misses: 0`, `def misses: 0` |
 | One file in detail | `node run_debug.js <file.ar>` | see `vscode-debug-runner` |
 

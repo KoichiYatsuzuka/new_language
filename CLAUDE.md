@@ -90,6 +90,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `syntax_cov.ps1` | **例題が一度も書いていない構文**（`NESTED-GAP`） | **新しい構文・文脈**を扱うとき |
 | `type_obligations.ps1` | **型義務 94 件のどれで型検査が走っているか**（`STATIC`/`RUNTIME`/`NONE`）。退行すると exit 1 | **型検査を触ったとき**（`syntax_cov` が構文、こちらが型義務の網の目） |
 | `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と**同じ診断**を出すか（全例題・import 先を含む。exe は `AR_CHECK_ONLY=1` で実行しない） | **lexer / parser / type_check / import の処理を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
+| `compare_tm_grammar.ps1` | VS Code 拡張の **TextMate 文法**が lexer と**同じ範囲を文字列・コメント**とするか（全例題＋`vscode-extension/test_fixtures/`。前の行から文字列を持ち越す `SPILL` 0 件）と、文法のキーワード一覧が `src/lexer/keyword.rs` と一致するか。括弧の対応付けは文法の判定だけで決まる | **`arrow.tmLanguage.json` を触ったとき**と、**lexer の文字列・コメント・キーワードを触ったとき** |
 | `check_ptr_protocol.ps1` | `PtrProtocol` の C ヘッダ・C# の写しを実際にコンパイルし、Arrow（Rust）の写しと**同じ並び**か（大きさ・欄の位置・flags） | **`bridge/ptr_protocol/` か `value/ptr.rs` の `PtrProtocolRaw` を触ったとき**（MSVC と dotnet が要る） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
