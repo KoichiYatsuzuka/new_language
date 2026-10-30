@@ -455,8 +455,8 @@
       }
     },
     "mustbe-assertion": {
-      "comment": "mustbe type assertion — expr mustbe TypeExpr",
-      "match": "\\b(mustbe)\\s+([A-Za-z_][\\w\\[\\], ->]*)",
+      "comment": "mustbe type assertion — expr mustbe TypeExpr. The type is names joined by `[` `]` `,` `|` `->` only, so it always stops at `#`, a quote or `)` (where the type ends is the parser's business). ⚠ The old class `[\\w\\[\\], ->]` read ` ->` as the RANGE space..`>`, which swallowed `#`, quotes and parentheses.",
+      "match": "\\b(mustbe)\\s+([A-Za-z_][\\w.]*(?:(?:\\[|\\]|\\s*,\\s*|\\s*\\|\\s*|\\s*->\\s*)[\\w.]*)*)",
       "captures": {
         "1": { "name": "storage.modifier.ar" },
         "2": { "name": "entity.name.type.ar" }
