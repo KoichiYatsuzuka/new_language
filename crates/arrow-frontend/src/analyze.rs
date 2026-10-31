@@ -542,6 +542,8 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
                 "bodyScope": d.body_scope,
                 // 定義が `at` 以外（import 先のファイル）にある宣言だけ（VSIX_update_plan.md 4-4）。
                 "def": def_json(d.def.as_ref()),
+                // import で束縛した名前（`at` は import 文）。拡張は `def` が無くても `at` へ飛ばない。
+                "imported": d.imported,
             })
         })
         .collect();
@@ -714,13 +716,17 @@ fn collect_module_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
             Stmt::Import { module, body, .. } => {
                 // import 先で定義された型（`wpf.HostWindow` の `HostWindow` 等）を型名の表へ。
                 merge_vacant(body, out);
+                merge_qualified(module, body, out);
                 if !modules.iter().any(|(m, _)| *m == module.as_slice()) {
                     modules.push((module, body));
                 }
             }
             // `from X import a, b` は名前を直接束縛するので、名前空間の受け手にはならない。
             // ただし body に載っている型定義は `collect_members` で拾わせたい。
-            Stmt::FromImport { body, .. } => merge_vacant(body, out),
+            Stmt::FromImport { module, body, .. } => {
+                merge_vacant(body, out);
+                merge_qualified(module, body, out);
+            }
             _ => {}
         }
     }
@@ -818,6 +824,23 @@ fn namespace_members(body: &[Stmt]) -> Vec<Value> {
 /// **同名の利用者のクラスを上書きする**（`class Config` を自分で書いていて、
 /// import 先にも `Config` がある、はふつうに起こる）。上書きすると `.` 補完が
 /// 別の型のメンバを出すので、静かに間違う。⇒ 自分のファイルの型が常に勝つ。
+/// import 先の型定義を、**モジュールで修飾した名前**（`pkg.util.Other`）でも引けるようにする。
+///
+/// 型検査器は import 先で宣言された型を、そのモジュールの名前で修飾して呼ぶ（フェーズ 10 10-8・
+/// `tags.ar` の `Tag` は `tags.Tag`）。式の推論型（`exprTypes`）もこの名前で来るので、`.` の受け手の型を
+/// 推論型から引くとき（`f().` / `x[0].`・VSIX_update_plan.md 5-5）にこの鍵が要る。
+fn merge_qualified(module: &[String], body: &[Stmt], out: &mut Map<String, Value>) {
+    if module.is_empty() {
+        return;
+    }
+    let prefix = module.join(".");
+    let mut sub = Map::new();
+    collect_members(body, &mut sub);
+    for (k, v) in sub {
+        out.entry(format!("{prefix}.{k}")).or_insert(v);
+    }
+}
+
 fn merge_vacant(body: &[Stmt], out: &mut Map<String, Value>) {
     let mut sub = Map::new();
     collect_members(body, &mut sub);

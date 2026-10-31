@@ -53,7 +53,7 @@ impl Parser {
 
         // エディタ索引: 束縛される名前（別名か最後の部分）。位置はその名前を書いた識別子。
         #[cfg(feature = "editor")]
-        {
+        let editor_handle = {
             let (bind, pos) = match &alias {
                 Some(a) => (a.clone(), self.prev_pos()),
                 None => (parts.last().cloned().unwrap_or_default(), module_pos),
@@ -61,10 +61,8 @@ impl Parser {
             let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
             let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &parts));
             self.note_signature(h, &sig);
-            // 定義の場所はヘッダ（スタブは合成した文で位置を持たない）。無いファイルなら拡張が飛ばない。
-            let def = crate::parser::editor_index::DefLoc { file: file_path.clone(), line: 1, col: 1 };
-            self.editor.with_decl(h, |d| d.def = Some(def));
-        }
+            h
+        };
 
         // ヘッダファイルを読み込んで静的型スタブを生成する。
         // ファイルが存在しない場合は空の body になる（実行時に解決される）。
@@ -85,6 +83,13 @@ impl Parser {
                 )
             })
         })?;
+        // エディタ索引: 定義の場所はヘッダ（スタブは合成した文で位置を持たない）。読めたときだけ
+        // （読めなければ誤りが出ていて、飛び先も無い）。
+        #[cfg(feature = "editor")]
+        if raw.is_some() {
+            let def = crate::parser::editor_index::DefLoc { file: file_path.clone(), line: 1, col: 1 };
+            self.editor.with_decl(editor_handle, |d| d.def = Some(def));
+        }
         // 関数・構造体の集め方は実行時の `load_cpp_module` と同じ 1 つの関数（`collect_header_decls`・7-28）
         let header_dir = resolved.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
         let decls = match raw {

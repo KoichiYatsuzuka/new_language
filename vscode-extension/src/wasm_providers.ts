@@ -11,14 +11,21 @@
  * いた（`protocol` は宣言として認識すらされていなかった）。その構造的な原因を消すのが目的。
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { analyze, builtinsSource, isFrontendReady, type AnalysisResult, type WasmDiagnostic } from './frontend';
-import { displayPaths, setHostCwd } from './wasm_host';
+import { displayPaths, setHostCwd, toHostPath } from './wasm_host';
 
 // ===== 解析結果の型（frontend が返す JSON の形） =====
 
 interface Pos { line: number; col: number }
+
+/**
+ * 定義の場所（別のファイルでもよい・`analyze.rs` の `def_json`）。行は 0 始まり、列は **0 始まりの文字単位**
+ * （UTF-16 ではない）で、パスは wasm の形（`/D:/a/b.ar`）。[`defLocation`] で VS Code の位置に直す。
+ */
+interface DefLoc { file: string; line: number; charCol: number }
 
 /** 宣言 1 件。`at` は名前トークンの位置（0 始まり）。 */
 export interface Symbol {
@@ -36,6 +43,10 @@ export interface Symbol {
     bases: string[];
     scope: number;
     bodyScope: number | null;
+    /** 定義が `at` 以外（import 先）にあるときの場所。 */
+    def?: DefLoc | null;
+    /** import で束縛した名前（`at` は import 文）。`def` が無くても `at` へは飛ばない。 */
+    imported?: boolean;
 }
 
 interface Scope { parent: number; startLine: number; endLine: number }
@@ -61,7 +72,11 @@ interface TypeRef { at: Pos; name: string }
  *   失敗しないため。だから構文エラー中でも色と語の特定だけは正確に保てる。
  */
 interface Token {
-    kind: 'ident' | 'keyword' | 'str' | 'num' | 'comment' | 'op';
+    /**
+     * `newline` は括弧の外の論理的な行末（`Token::Newline`・行末から次の行の先頭まで）。括弧の中の改行は
+     * lexer が読み飛ばすので来ない。「直前のトークンが前の文のものか」はこれで分かる（`inTypePosition`）。
+     */
+    kind: 'ident' | 'keyword' | 'str' | 'num' | 'comment' | 'op' | 'newline';
     line: number;
     col: number;
     endLine: number;
@@ -75,6 +90,8 @@ interface Member {
     access: string;
     params?: { name: string; label: string; type: string | null; optional: boolean; variadic: boolean }[];
     doc?: string | null;
+    /** 定義の場所（`mod.f` の `f` から飛ぶ先）。 */
+    def?: DefLoc | null;
 }
 interface MemberTable { members: Member[]; bases: string[] }
 
@@ -479,7 +496,8 @@ export function provideHover(
     const w = wordAt(document, analysis, position);
     if (!w) return undefined;
 
-    const sym = declarationAt(analysis, position, w.word) ?? lookup(analysis, w.word, position.line);
+    const declared = declarationAt(analysis, position, w.word);
+    let sym = declared ?? lookup(analysis, w.word, position.line);
 
     // 型位置に書かれた名前で、引けた宣言が型でない（＝`int` のような型名/関数の兼用名）なら、
     // 関数のシグネチャを見せてはいけない。ユーザー定義のクラス・トレイト等はこの分岐を
@@ -506,6 +524,9 @@ export function provideHover(
             return new vscode.Hover(md, w.range);
         }
     }
+    // ⚠ `.` の後ろの名前を、名前だけで引いた**別のもの**の宣言として見せない（`mhn.warmup` の `warmup` に
+    //   同じファイルの `fn warmup` を出していた・VSIX_update_plan.md D）。受け手の型のメンバだけが正しい。
+    if (receiver && !declared && sym?.container !== receiver.type) sym = undefined;
 
     // 宣言に紐づく推論型を優先し、無ければカーソル位置の式の型で補う。
     const inferred = sym?.inferred ?? exprTypeAt(analysis, position);
@@ -684,25 +705,69 @@ function receiverTypeAt(
     const dot = analysis.tokens[dotIdx];
     if (dot.kind !== 'op' || document.getText(tokenRange(dot)) !== '.') return undefined;
 
-    const recv = analysis.tokens[dotIdx - 1];
-    if (!recv || recv.kind !== 'ident') return { type: null };
-    const name = document.getText(tokenRange(recv));
+    return { type: typeOfExprEndingAt(analysis, document, dotIdx - 1, 0) };
+}
 
-    const known = (t: string | null | undefined) =>
-        !!t && (analysis.members[t] !== undefined || preludeMembers[t] !== undefined);
+/** 型名（メンバ表の鍵）として引けるか。 */
+function knownType(analysis: Analysis, t: string | null | undefined): t is string {
+    return !!t && (analysis.members[t] !== undefined || preludeMembers[t] !== undefined);
+}
 
-    // 受け手そのものが型名（`MyEnum.` / `MyClass.`）ならその型。
-    if (known(name)) return { type: name };
+/**
+ * 型検査器が**トークン `t` で終わる式**に付けた型（`exprTypes`）。
+ *
+ * 式の node の位置は末尾のトークンの先頭（`f()` なら `)`・`a.b` なら `b`）。⚠ `exprTypeAt` のように近くの別の式の
+ * 型を拾わないよう、位置が一致するものだけを見る。同じ位置に複数あれば型名として引けるものを選ぶ。
+ */
+function exprTypeOfToken(analysis: Analysis, t: Token): string | undefined {
+    let found: string | undefined;
+    for (const e of analysis.exprTypes) {
+        if (e.at.line !== t.line || e.at.col !== t.col) continue;
+        if (knownType(analysis, e.type)) return e.type;
+        found ??= e.type;
+    }
+    return found;
+}
 
-    const sym = lookup(analysis, name, recv.line);
-    if (known(sym?.typeAnn)) return { type: sym!.typeAnn };
-    if (known(sym?.inferred)) return { type: sym!.inferred };
-
-    // 注釈が無ければ型検査器の推論型を使う（node の位置は式の末尾＝名前の終端）。
-    const inferred = exprTypeAt(analysis, new vscode.Position(recv.line, recv.endCol));
-    if (known(inferred)) return { type: inferred! };
-
-    return { type: null };
+/**
+ * トークン `idx` で終わる受け手の式の型（メンバ表の鍵）。分からなければ null。
+ *
+ * - 識別子 1 つ（`x.`）: 型名そのもの → 宣言の注釈 → 束縛した型 → 推論型（従来どおり）
+ * - `a.b.`: `a` の型のメンバ `b` の型（モジュールのサブモジュールは `pkg.util`・フィールドは注釈）。
+ *   引けなければ型検査器が `a.b` に付けた型
+ * - `f().` / `x[0].`: 型検査器が式に付けた型
+ *
+ * ⚠ 以前は `.` の直前の識別子 1 つだけを名前で引いていたので、`a.b.` は `b` という名前の**別のもの**の型を
+ *   拾いえた（VSIX_update_plan.md 5-5）。
+ */
+function typeOfExprEndingAt(analysis: Analysis, document: vscode.TextDocument, idx: number, depth: number): string | null {
+    const t = analysis.tokens[idx];
+    if (!t) return null;
+    const text = document.getText(tokenRange(t));
+    const inferred = () => {
+        const ty = exprTypeOfToken(analysis, t);
+        return knownType(analysis, ty) ? ty : null;
+    };
+    if (t.kind === 'ident') {
+        const before = analysis.tokens[idx - 1];
+        if (before && before.kind === 'op' && document.getText(tokenRange(before)) === '.') {
+            // 入れ子の上限は壊れた入力（`a.....`）で回り続けない保険。
+            const owner = depth < 32 ? typeOfExprEndingAt(analysis, document, idx - 2, depth + 1) : null;
+            if (owner) {
+                const mem = membersOf(analysis, owner).find(m => m.name === text);
+                if (knownType(analysis, mem?.type)) return mem!.type;
+            }
+            return inferred();
+        }
+        // 受け手そのものが型名（`MyEnum.` / `MyClass.`）かモジュールの束縛名ならその表。
+        if (knownType(analysis, text)) return text;
+        const sym = lookup(analysis, text, t.line);
+        if (knownType(analysis, sym?.typeAnn)) return sym!.typeAnn;
+        if (knownType(analysis, sym?.inferred)) return sym!.inferred;
+        return inferred();
+    }
+    if (t.kind === 'op' && (text === ')' || text === ']')) return inferred();
+    return null;
 }
 
 /** 継承元トレイトのメンバも含めて集める。 */
@@ -779,6 +844,10 @@ export function provideCompletionItems(
  * 判定は「直前の意味のあるトークンが `:` か `->`」。`:` は辞書リテラルや
  * スライスでも使うが、そこで型候補が出ても実害が小さく、逆に
  * `let x: ` を取りこぼすほうが痛い。
+ *
+ * ⚠ トークン列には括弧の外の行末（`newline`）が入る。`if x:` / `fn f():` の**次の行の先頭**では直前が
+ *   `newline` なので型の位置にならない（以前は改行が入らず、ブロックの 1 行目で型しか補完に出なかった・
+ *   VSIX_update_plan.md 5-4）。括弧の中の改行（`fn f(a:` の次の行）は lexer が出さないので型の位置のまま。
  */
 function inTypePosition(
     analysis: Analysis,
@@ -808,12 +877,14 @@ function callContext(
     analysis: Analysis,
     document: vscode.TextDocument,
     position: vscode.Position,
-): { name: string; argIndex: number } | undefined {
+): { name: string; argIndex: number; head: Token } | undefined {
     let i = tokenIndexBefore(analysis, position);
     let depth = 0;
     let argIndex = 0;
     for (; i >= 0; i--) {
         const t = analysis.tokens[i];
+        // 括弧の外の行末（前の文）まで戻ったら、カーソルは呼び出しの中にいない。
+        if (t.kind === 'newline') return undefined;
         if (t.kind !== 'op') continue;
         const text = document.getText(tokenRange(t));
         if (text === ')' || text === ']' || text === '}') depth++;
@@ -824,7 +895,7 @@ function callContext(
             if (depth === 0) {
                 const head = analysis.tokens[i - 1];
                 if (!head || head.kind !== 'ident') return undefined;
-                return { name: document.getText(tokenRange(head)), argIndex };
+                return { name: document.getText(tokenRange(head)), argIndex, head };
             }
             depth--;
         } else if (text === ',' && depth === 0) argIndex++;
@@ -840,6 +911,25 @@ export function provideSignatureHelp(
     if (!analysis) return undefined;
     const ctx = callContext(analysis, document, position);
     if (!ctx) return undefined;
+
+    // `mod.f(` / `obj.m(`: 受け手の型のメンバのシグネチャ。⚠ 名前だけで引き直さない（同じ名前の別の関数の
+    // シグネチャが出ていた・VSIX_update_plan.md 5-2）。
+    const receiver = receiverTypeAt(analysis, document, new vscode.Position(ctx.head.line, ctx.head.col));
+    if (receiver) {
+        if (!receiver.type) return undefined;
+        const owner = receiver.type;
+        const mem = membersOf(analysis, owner).find(m => m.name === ctx.name);
+        if (!mem?.params) return undefined;
+        const ps = mem.params.filter(p => p.name !== 'self');
+        const info = new vscode.SignatureInformation(renderMember(owner, mem));
+        info.parameters = ps.map(p => new vscode.ParameterInformation(p.label));
+        if (mem.doc) info.documentation = new vscode.MarkdownString(mem.doc);
+        const help = new vscode.SignatureHelp();
+        help.signatures = [info];
+        help.activeSignature = 0;
+        help.activeParameter = Math.min(ctx.argIndex, Math.max(ps.length - 1, 0));
+        return help;
+    }
 
     // 関数・ジェネレータ、またはクラス名（＝自動生成コンストラクタ）。
     const sym = lookup(analysis, ctx.name, position.line);
@@ -868,6 +958,25 @@ export function provideSignatureHelp(
     return help;
 }
 
+// ===== REPL のセル =====
+
+/**
+ * REPL へ送るセルの区切り（行頭の `#%%` で始まる**コメント**）がある行（0 始まり）。解析できないときは null。
+ *
+ * ⚠ 以前は行に `/^#%%/` を当てていたので、`"""…"""` の中の行頭にある `#%%`（lexer では文字列の中身）も
+ *   区切りにしていた（VSIX_update_plan.md 5-6）。lexer がコメントとした範囲だけを見る。
+ */
+export function cellMarkerLines(document: vscode.TextDocument): Set<number> | null {
+    const analysis = getAnalysis(document);
+    if (!analysis) return null;
+    const lines = new Set<number>();
+    for (const t of analysis.tokens) {
+        if (t.kind !== 'comment' || t.col !== 0) continue;
+        if (document.getText(new vscode.Range(t.line, 0, t.line, 3)) === '#%%') lines.add(t.line);
+    }
+    return lines;
+}
+
 // ===== 6. Go to definition =====
 
 export function provideDefinition(
@@ -879,6 +988,11 @@ export function provideDefinition(
     const w = wordAt(document, analysis, position);
     if (!w) return undefined;
 
+    // 宣言そのものの上（`import ..base` の `base` など）なら、その宣言の行き先。⚠ 直前が `.` でも
+    // メンバ参照ではないので、下の受け手の経路より先に見る。
+    const declared = declarationAt(analysis, position, w.word);
+    if (declared) return symbolLocation(document, declared);
+
     // `obj.member` の member なら、受け手の型のメンバ宣言へ飛ばす。
     // 直前のトークンが `.` かをトークン列で見る（行頭が `.` の継続行でも効く）。
     const prev = analysis.tokens[tokenIndexAt(analysis, position) - 1];
@@ -886,19 +1000,56 @@ export function provideDefinition(
         const recv = receiverTypeAt(analysis, document,
             new vscode.Position(prev.endLine, prev.endCol));
         if (recv?.type) {
+            // import 先のメンバ（`mod.f`・import したクラスのメソッド）は定義の場所を持つ。
+            const mem = membersOf(analysis, recv.type).find(m => m.name === w.word);
+            if (mem?.def) return defLocation(mem.def);
             const member = analysis.symbols.find(s => s.container === recv.type && s.name === w.word);
             if (member) {
                 return new vscode.Location(document.uri,
                     new vscode.Position(member.at.line, member.at.col));
             }
         }
+        // ⚠ 受け手の付いた名前は、**名前だけで探し直さない**。以前はここから下の `lookup` に落ち、
+        //   `mhn.warmup()` の `warmup` から同じファイルの無関係な `fn warmup` に飛んでいた（VSIX_update_plan.md D）。
+        return undefined;
     }
 
     const sym = lookup(analysis, w.word, position.line);
     if (!sym) return undefined;
     // 組み込み（builtins.ars 由来）はこのファイルの中に定義が無いので飛ばない。
     if (prelude.includes(sym)) return undefined;
+    return symbolLocation(document, sym);
+}
+
+/**
+ * 宣言の行き先。import で束縛した名前は import 先の定義（`def`）。⚠ その `at` は import 文なので、`def` が
+ * 無ければ飛ばない（以前は import 文に飛んで終わっていた・VSIX_update_plan.md D）。
+ */
+function symbolLocation(document: vscode.TextDocument, sym: Symbol): vscode.Location | undefined {
+    if (sym.def) return defLocation(sym.def);
+    if (sym.imported) return undefined;
     return new vscode.Location(document.uri, new vscode.Position(sym.at.line, sym.at.col));
+}
+
+/**
+ * 解析結果の定義の場所（[`DefLoc`]）を VS Code の位置にする。ファイルが無ければ undefined。
+ *
+ * 列は文字単位で来る（wasm にはそのファイルの本文が無い・`analyze.rs` の `def_json`）ので、その行を読んで
+ * UTF-16 に直す。⚠ 読めなかったら飛ばない（列のずれた位置へ黙って飛ばさない）。
+ */
+function defLocation(def: DefLoc): vscode.Location | undefined {
+    const host = toHostPath(def.file);
+    if (!host) return undefined;
+    let text: string;
+    try {
+        text = fs.readFileSync(host, 'utf8');
+    } catch {
+        return undefined;
+    }
+    // ⚠ lexer は先頭の BOM を読み飛ばしてから数える（`Lexer::new`）。VS Code も BOM を行に含めない。
+    const line = text.replace(/^﻿/, '').split(/\r?\n/)[def.line] ?? '';
+    const col = Array.from(line).slice(0, def.charCol).join('').length;
+    return new vscode.Location(vscode.Uri.file(host), new vscode.Position(def.line, col));
 }
 
 // ===== 7. Document symbols（アウトライン） =====

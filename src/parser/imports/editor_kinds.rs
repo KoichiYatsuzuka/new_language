@@ -59,6 +59,7 @@ impl Imported {
             d.mutability = self.mutability;
         }
         d.def = self.def;
+        d.imported = true;
     }
 }
 

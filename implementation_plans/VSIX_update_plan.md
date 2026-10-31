@@ -300,6 +300,33 @@ exe が束縛する名前（`Stmt::Import::bind`・CPython と同じ規則）を
   `analysis.tokens` の `comment` のうち、行頭から始まり `#%%` で始まるものだけを区切りにする。
   今は `"""…"""` の中の行頭にある `#%%` も区切りになる。
 
+### フェーズ 5 の結果（2026-10-31）
+
+- 5-1: `provideDefinition` は宣言の `def`（import 先）へ飛ぶ。`imported` の宣言（`at` が import 文）は `def` が無ければ飛ばない。
+  `.` の後ろの名前は受け手の型のメンバ（`members[..].def`）で引き、名前だけでの引き直しをやめた（ホバーも同じ）。
+  宣言そのものの上（`import ..base` の `base`。直前が `.`）は受け手の経路より先に宣言で引く。
+  - 列は文字単位で来るので、拡張が飛び先のファイルの行を読んで UTF-16 に直す（`defLocation`）。
+  - Rust 側に `Decl::imported`（`symbols[].imported`）を足した。
+- 5-2: シグネチャヘルプの `mod.f(` / `obj.m(` は受け手の型のメンバのシグネチャ。`callContext` は括弧の外の行末で止まる。
+- 5-3: 文法に `from-import-decl` を足し、`import-decl` の別名をモジュール色に、`import[rs] name[ver]` のバージョンを扱った。
+  取り込んだ名前は文法では着色しない（semantic tokens が種類で塗る）。
+- 5-4: `editor_tokens.rs` が括弧の外の行末を `newline` トークンとして出す。`inTypePosition` は直前が `newline` なので
+  ブロックの 1 行目を型の位置にしない（拡張側の判定は変えていない）。
+- 5-5: `.` の受け手の型を式全体で引く（`typeOfExprEndingAt`）。`a.b.` はメンバの型をたどり、`f().` / `x[0].` は
+  その位置に**ちょうど**ある推論型。推論型は修飾名（`pkg.util.Other`）で来るので、`analyze.rs` が import 先の型の
+  表を修飾名でも登録する（`merge_qualified`）。
+- 5-6: `cellMarkerLines`（lexer の `comment` トークンのうち行頭の `#%%`）。wasm が読めないときだけ行の正規表現に戻る。
+- `stress.js`: 文書を `file` の URI として解析する（以前はパスを渡さず、import が 1 つも読めていなかった）。
+  import 先にソースが無い名前（`def` が null）は `def none` に数え、そこで飛んだら miss。`bind` の期待値を CPython の
+  束縛（`import a.b` は `a`）に合わせ、字下げした import を除いた。
+  - 結果: threw 0・hover misses 0・**def misses 0**・def none 228・bind misses 0（以前 2）・typed vars 2624（変化なし）。
+- `compare_wasm_frontend.ps1` 657 件一致・`compare_tm_grammar.ps1` 緑・`test_build_gate.ps1` 緑。
+
+**残り（飛び先が無い 228 件の内訳）**: py-int 66・cs/rs/js 25（ソースが無い・正しい）、名前空間パッケージ
+（`import pkg.mod` が束縛する `__init__` の無い `pkg`）、`.arc` の埋め込みスタブ（位置を持たない）、`import[py]` の
+モジュール 62（`.py` のファイルへは飛べるはずだが、`LoadedModule` がパスを持たない）、メタ関数（`MetaFnDef` が位置を持たない）。
+直すなら `LoadedModule` に読み込んだファイルのパスを持たせるのが筋。
+
 ## フェーズ 6: 仕上げ
 
 - **6-1** VSIX を作り、4-1 の例題と `math_hover.ar` で、着色・ホバー・補完・定義へのジャンプを目視で確かめる。

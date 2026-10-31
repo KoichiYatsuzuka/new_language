@@ -5,7 +5,11 @@
 // 目的は「落ちないこと」と「取りこぼしが増えていないこと」の 2 点。
 //   threw        : 例外を投げた例題（0 でなければならない）
 //   hover misses : 宣言の上で hover が出なかった件数（0 が正常）
-//   def   misses : 宣言の上で go-to-definition が解決しなかった件数（0 が正常）
+//   def   misses : 宣言の上で go-to-definition が解決しなかった件数（0 が正常）。飛び先のファイルが無いのも miss。
+//                  ⚠ import で束縛した名前は import 先の定義へ飛ぶ。import 先にソースが無い名前
+//                  （`import[py-int] time` など・解析結果の `def` が null）は**飛ばないのが正しい**ので
+//                  miss に数えず `def none` に数える（以前は import 文そのものに飛んで「解決」していた・
+//                  VSIX_update_plan.md D）。そこで飛んでしまったら miss。
 //   tag   misses : `import[lang]` タグごとの最小フィクスチャで別名が索引に載らなかった件数。
 //                  例題が 1 本も無いタグ（実測: cpp-dll）はこれでしか守れない。
 //   bind  misses : import が束縛する名前が索引に載っていない件数（0 が正常）。
@@ -49,7 +53,9 @@ class Doc{
     const raw=src.replace(/\r\n/g,'\n'); this._l=raw.split('\n');
     if(this._l[this._l.length-1]==='') this._l.pop();
     this.lineCount=this._l.length;
-    this.uri={fsPath:fp,toString(){return 'file://'+fp}};}
+    // ⚠ `scheme: 'file'` が要る。無いと拡張はパスを渡さずに解析し（`analyzeDocument`）、import が
+    //   1 つも読めない（実際の VS Code と違う世界を調べることになる）。
+    this.uri={scheme:'file',fsPath:fp,toString(){return 'file://'+fp}};}
   lineAt(n){return {text:this._l[n]??'',range:null};}
   getText(r){ if(!r) return this._l.join('\n');
     if(r.start.line===r.end.line) return (this._l[r.start.line]??'').slice(r.start.character,r.end.character);
@@ -85,8 +91,14 @@ function importBindings(lines){
     const t=lines[i].trim();
     if(t.startsWith('#')) continue;
     let m;
-    if((m=/^import(?:\[[\w-]+\])?\s+([A-Za-z_][\w.]*)(?:\s*\[[^\]]*\])?(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(t))){
-      out.push({name:m[2]??m[1].split('.').pop(), line:i});
+    // import は最上位にしか書けない（字下げした import は ParseError の例題）。
+    if(lines[i]!==lines[i].trimStart()) continue;
+    if((m=/^import(?:\[([\w-]+)\])?\s+([A-Za-z_][\w.]*)(?:\s*\[[^\]]*\])?(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(t))){
+      // CPython と同じく、Arrow / Python の `import a.b` は先頭の `a` を束縛する。cpp / cs / js / rs の
+      // ドット区切りはファイルの場所なので末尾（`src/module_path.rs` の `has_packages`）。
+      const tag=m[1]??'';
+      const packages=['', 'ar', 'tl', 'ar-auto', 'tl-auto', 'arc', 'tlc', 'py', 'py-int'].includes(tag);
+      out.push({name:m[3]??(packages?m[2].split('.')[0]:m[2].split('.').pop()), line:i});
     }else if((m=/^from\s+[A-Za-z_][\w.]*\s+import(?:\[[\w-]+\])?\s+(.+)$/.exec(t))){
       for(const part of m[1].split(',')){
         const a=/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/.exec(part.trim());
@@ -138,7 +150,7 @@ function checkTagFixtures(){
 }
 
 const files=walk(path.join(__dirname,'..','examples'));
-let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0;
+let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0, defNone=0;
 let totalBind=0, bindMiss=0;
 let totalVars=0, typedVars=0;
 const problems=[];
@@ -153,9 +165,19 @@ for(const f of files){
 
     // 全宣言で hover / definition / completion / signature を叩く
     const probe=[]; (function w(ns){for(const n of ns){probe.push(n.selectionRange.start); w(n.children);}})(outline);
+    // import で束縛した名前のうち、飛び先が無いもの（`def` が null）。その位置では飛ばないのが正しい。
+    const noTarget=new Set((analyze(doc.getText(), f)?.symbols ?? [])
+      .filter(s=>s.imported && !s.def).map(s=>`${s.at.line}:${s.at.col}`));
     for(const p of probe){
       totalHover++; if(!P.provideHover(doc,p)) { hoverMiss++; problems.push(`  HOVER MISS  ${path.relative(process.cwd(),f)}  L${p.line+1}:${p.character+1}`);}
-      totalDef++;   if(!P.provideDefinition(doc,p)) { defMiss++; problems.push(`  DEF   MISS  ${path.relative(process.cwd(),f)}  L${p.line+1}:${p.character+1}`);}
+      totalDef++;
+      const loc=P.provideDefinition(doc,p);
+      const where=`${path.relative(process.cwd(),f)}  L${p.line+1}:${p.character+1}`;
+      if(noTarget.has(`${p.line}:${p.character}`)){
+        defNone++;
+        if(loc) { defMiss++; problems.push(`  DEF   MISS  ${where}  (import without a source jumped somewhere)`); }
+      } else if(!loc) { defMiss++; problems.push(`  DEF   MISS  ${where}`); }
+      else if(loc.uri.fsPath && !fs.existsSync(loc.uri.fsPath)) { defMiss++; problems.push(`  DEF   MISS  ${where}  (target ${loc.uri.fsPath} does not exist)`); }
     }
     for(let i=0;i<doc.lineCount;i+=7){
       P.provideCompletionItems(doc,{line:i,character:doc.lineAt(i).text.length});
@@ -193,6 +215,7 @@ console.log(`no symbols     : ${noSym}`);
 console.log(`symbols probed : ${totalSym}`);
 console.log(`hover misses   : ${hoverMiss} / ${totalHover}`);
 console.log(`def   misses   : ${defMiss} / ${totalDef}`);
+console.log(`def   none     : ${defNone}   (import で束縛した名前で、import 先にソースが無いもの。飛ばないのが正しい)`);
 console.log(`bind  misses   : ${bindMiss} / ${totalBind}   <- must be 0 (import が束縛する名前が索引に無い)`);
 console.log(`typed vars     : ${typedVars} / ${totalVars}   <- 減ったら退行 (注釈の無い変数宣言に型が出た数)`);
 const tagMisses = checkTagFixtures();

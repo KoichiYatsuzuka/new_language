@@ -155,6 +155,9 @@ pub struct Decl {
     pub binding: Option<usize>,
     /// 定義の場所が**このファイルの `pos` ではない**とき、その場所（import で束縛した名前）。
     pub def: Option<DefLoc>,
+    /// import で束縛した名前か（`import m` の `m`・`from X import Y` の `Y`）。`pos` は import 文を指すので、
+    /// 拡張は `def` が無くても `pos` へは飛ばない（import 文に飛んで終わる・VSIX_update_plan.md D）。
+    pub imported: bool,
 }
 
 /// 字句的スコープ。`end_line` は閉じるまで `usize::MAX`。
@@ -360,6 +363,7 @@ impl EditorIndex {
             body_scope: None,
             binding: None,
             def: None,
+            imported: false,
         }
     }
 }

@@ -43,6 +43,11 @@ pub enum EditorTokenKind {
     Num,
     Comment,
     Op,
+    /// 括弧の外の論理的な行末（`Token::Newline`）。括弧の中の改行は lexer が読み飛ばすので出ない。
+    ///
+    /// 拡張が「直前のトークンが前の文のものか」を知るのに使う（`if x:` の次の行の先頭は型の位置ではない・
+    /// VSIX_update_plan.md 5-4）。⚠ 括弧の深さは lexer が数えているので、拡張で数え直さないこと。
+    Newline,
 }
 
 impl EditorTokenKind {
@@ -55,6 +60,7 @@ impl EditorTokenKind {
             Self::Num => "num",
             Self::Comment => "comment",
             Self::Op => "op",
+            Self::Newline => "newline",
         }
     }
 }
@@ -78,9 +84,11 @@ pub struct EditorTokenSpan {
 /// 消したはずの失敗そのもの。
 fn classify(token: &Token) -> Option<EditorTokenKind> {
     match token {
-        // レイアウトトークンは視覚的な幅を持たない。位置も当てにならない
+        // INDENT/DEDENT は視覚的な幅を持たず、位置も当てにならない
         // （`pending` から返る INDENT/DEDENT は `pos` を動かさない）ので出さない。
-        Token::Newline | Token::Indent | Token::Dedent | Token::Eof => None,
+        Token::Indent | Token::Dedent | Token::Eof => None,
+        // 改行は改行文字（CRLF なら 2 文字）を読んで作るので位置は正しい（行末から次の行の先頭まで）。
+        Token::Newline => Some(EditorTokenKind::Newline),
         Token::Ident(_) => Some(EditorTokenKind::Ident),
         Token::Str(_) | Token::FStr(_) => Some(EditorTokenKind::Str),
         Token::Int(_) | Token::Float(_) => Some(EditorTokenKind::Num),

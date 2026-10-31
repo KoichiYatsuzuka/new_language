@@ -183,4 +183,22 @@ fn member_tables_are_keyed_by_the_bound_name() {
     // メンバーにも定義の場所が付く（`u.helper` から飛べる）。
     let helper = v["members"]["u"]["members"].as_array().unwrap().iter().find(|m| m["name"] == "helper").unwrap();
     assert_eq!(def_of(helper), Some(("util.ar".to_string(), 0, 3)), "{helper}");
+
+    // 型検査器が呼ぶ修飾名（`pkg.util.Other`）でもクラスの表が引ける（`f().` の受け手の型・5-5）。
+    assert_eq!(member_names(&v, "pkg.util.Other"), vec!["v".to_string()]);
+}
+
+/// import で束縛した名前には `imported` が立つ（`at` は import 文なので、拡張は `def` が無ければ飛ばない）。
+#[test]
+fn import_bindings_are_marked_imported() {
+    let dir = project("imported", &[
+        ("util.ar", UTIL),
+        ("main.ar", "import util\nfrom util import helper, no_such_name\n\nfn local() -> int:\n    return 1\n"),
+    ]);
+    let v = analyze_at(&dir, "main.ar");
+    for name in ["util", "helper", "no_such_name"] {
+        assert_eq!(symbol(&v, name)["imported"], true, "{name}");
+    }
+    assert_eq!(symbol(&v, "local")["imported"], false);
+    assert_eq!(symbol(&v, "local")["def"], Value::Null);
 }

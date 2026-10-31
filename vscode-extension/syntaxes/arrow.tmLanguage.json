@@ -10,6 +10,7 @@
     { "include": "#function-def" },
     { "include": "#class-def" },
     { "include": "#new-type-def" },
+    { "include": "#from-import-decl" },
     { "include": "#import-decl" },
     { "include": "#mustbe-assertion" },
     { "include": "#meta-decorator" },
@@ -59,14 +60,24 @@
     },
     "import-decl": {
       "comment": "Handles all import variants: bare import plus any bracketed tag (import[py], import[py-int], import[ar], import[arc], import[rs], import[hv], import[hvc], import[cpp-lib], import[cpp-dll], import[cs-dll], import[cs-proc], import[js-proc], ...). The whole `import[tag]` — brackets and tag included — is scoped as the import keyword so it renders in the keyword color.",
-      "match": "\\b(import(?:\\[[\\w-]+\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([\\p{L}_]\\w*))?",
+      "match": "\\b(import(?:\\[[\\w-]+\\])?)\\s+([\\w.]+)(\\[[^\\]\\s]*\\])?(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([\\p{L}_]\\w*))?",
       "captures": {
         "1": { "name": "keyword.control.import.ar" },
         "2": { "name": "entity.name.namespace.ar" },
-        "3": { "name": "keyword.control.import.ar" },
-        "4": { "name": "entity.name.namespace.ar" },
-        "5": { "name": "keyword.control.import.ar" },
-        "6": { "name": "entity.name.type.class.ar" }
+        "3": { "name": "constant.other.version.ar" },
+        "4": { "name": "keyword.control.import.ar" },
+        "5": { "name": "entity.name.namespace.ar" },
+        "6": { "name": "keyword.control.import.ar" },
+        "7": { "name": "entity.name.namespace.ar" }
+      }
+    },
+    "from-import-decl": {
+      "comment": "`from <module> import[tag]` — the module part (relative dots included) is the namespace. The imported names after it are NOT scoped here: what they are (function / class / submodule) is known only after the module is read, and semantic tokens colour them from the wasm (VSIX_update_plan.md 4-2). ⚠ Before this rule `import-decl` matched from the `import` in the middle and coloured the first imported name as a module.",
+      "match": "\\b(from)\\s+([\\w.]+)\\s+(import(?:\\[[\\w-]+\\])?)(?=\\s|$)",
+      "captures": {
+        "1": { "name": "keyword.control.import.ar" },
+        "2": { "name": "entity.name.namespace.ar" },
+        "3": { "name": "keyword.control.import.ar" }
       }
     },
     "comment": {
