@@ -159,6 +159,7 @@ Detailed, situational reference material lives in `.claude/skills/` and is loade
 - `language-dev-principles` — durable design principles + working method for evolving the language (annotations are hints not semantics, the 4 storage kinds, stopping walker drift with exhaustive 2-stage forcing, which gate to run for which change, how to decide a task is worth doing); read when **designing or reviewing** a language change, before claiming "behaviour-preserving", and when filing tasks in a plan document
 - `vm-pitfalls` — pitfalls hit while building the resolver + bytecode VM (benchmarking/A-B, opcode + peephole changes, why a green gate may be lying, PowerShell child-process and encoding traps); read before measuring or trusting a gate
 - `vscode-debug-runner` — standalone CLI for exercising the VS Code extension's analysis code without launching VS Code
+- `release` — raise the version, rebuild the release exe/VSIX, tag, and deploy to `../Arrow` (old files to `../Arrow/old/<version>/`) with `./scripts/release.ps1`
 
 ## Next Features to Implement (Priority Order)
 
