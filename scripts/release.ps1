@@ -1,6 +1,6 @@
 # release.ps1 -- raise the version, rebuild, tag, and deploy arrow.exe / the VSIX / ar_config.json.
 #
-#   ./scripts/release.ps1 -Version 0.4.1 [-Tag v_0_4_1] [-DeployDir ..\Arrow] [-CommitTrailer '...']
+#   ./scripts/release.ps1 -Version 0.4.1 [-Tag v0_4_1] [-DeployDir ..\Arrow] [-CommitTrailer '...']
 #
 # Steps (the `release` skill has the reasons and the traps):
 #   1. bump     the version in Cargo.toml, crates/arrow-frontend/Cargo.toml, vscode-extension/package.json,
@@ -8,10 +8,10 @@
 #   2. build    cargo build --release (arrow.exe) and make-vsix.ps1 (arrow-<Version>.vsix, wasm included)
 #   3. commit   the bump and the new VSIX (the old VSIX is removed from git), on the current branch; no push
 #   4. tag      an annotated tag on that commit
-#   5. deploy   move <DeployDir>\{arrow.exe, arrow-<prev>.vsix, ar_config.json} to <DeployDir>\old\<prev>\,
+#   5. deploy   move <DeployDir>\{arrow.exe, arrow-<prev>.vsix, ar_config.json} to <DeployDir>\old\v<prev>\,
 #               then copy the new exe / VSIX and a deploy config (scripts/release_files.py config: the repo's
 #               ar_config.json, keeping the deployed machine-specific values, without the "test" section).
-#               bridge\js_bridge.cjs is replaced too when it changed (the old one goes to old\<prev>\bridge\).
+#               bridge\js_bridge.cjs is replaced too when it changed (the old one goes to old\v<prev>\bridge\).
 #   6. smoke    run the deployed exe once from <DeployDir>
 #
 # Re-running after a failure is safe: a step already done is skipped (version already raised and its VSIX
@@ -32,7 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $Tag)       { $Tag = 'v_' + ($Version -replace '\.', '_') }
+if (-not $Tag)       { $Tag = 'v' + ($Version -replace '\.', '_') }
 if (-not $DeployDir) { $DeployDir = Join-Path (Split-Path -Parent $repo) 'Arrow' }
 $DeployDir = [System.IO.Path]::GetFullPath($DeployDir)
 $helper = Join-Path $PSScriptRoot 'release_files.py'
@@ -111,7 +111,7 @@ try {
         $PrevVersion = $old[0].BaseName.Substring('arrow-'.Length)
     }
     if ($PrevVersion -eq $Version) { throw "$DeployDir already holds arrow-$Version.vsix" }
-    $backup = Join-Path $DeployDir "old\$PrevVersion"
+    $backup = Join-Path $DeployDir "old\v$PrevVersion"
     if ((Test-Path $backup) -and @(Get-ChildItem $backup -Force).Count -gt 0) {
         throw "backup folder already has files: $backup (never overwritten; move it away first)"
     }

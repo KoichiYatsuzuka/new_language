@@ -1,6 +1,6 @@
 ---
 name: release
-description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 にあげて"), tag a release, rebuild the release arrow.exe / VSIX and copy them (with ar_config.json) to the deploy folder (../Arrow), or move the previous version's files to ../Arrow/old/<version>/. Gives the one-command procedure (scripts/release.ps1), what each step touches, the naming rules, and the traps (deploy-specific ar_config.json values, the VSIX that never builds byte-identically, re-running after a failure).
+description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 にあげて"), tag a release, rebuild the release arrow.exe / VSIX and copy them (with ar_config.json) to the deploy folder (../Arrow), or move the previous version's files to ../Arrow/old/v<version>/. Gives the one-command procedure (scripts/release.ps1), what each step touches, the naming rules, and the traps (deploy-specific ar_config.json values, the VSIX that never builds byte-identically, re-running after a failure).
 ---
 
 # Release — 版を上げ、タグを付け、配布先へ置く
@@ -9,7 +9,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 
 ```powershell
 ./scripts/release.ps1 -Version 0.4.1 -CommitTrailer 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
-# -Tag v_0_4_1（既定は v_<x>_<y>_<z>）  -DeployDir ..\Arrow（既定）  -PrevVersion 0.4.0（既定は配布先の arrow-*.vsix から）
+# -Tag v0_4_1（既定は v<x>_<y>_<z>）  -DeployDir ..\Arrow（既定）  -PrevVersion 0.4.0（既定は配布先の arrow-*.vsix から）
 ```
 
 ⚠ `-CommitTrailer` には、その会話で指示された署名行（system-reminder の attribution）を渡す。
@@ -18,19 +18,21 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 
 | # | 段階 | 内容 |
 |---|---|---|
-| 0 | 前提の確認 | 作業ツリーがきれい（未コミットの変更があれば止まる）・配布先に `arrow.exe` / `arrow-<前の版>.vsix` / `ar_config.json` がある・`old/<前の版>/` が空・タグが無いか HEAD にある |
+| 0 | 前提の確認 | 作業ツリーがきれい（未コミットの変更があれば止まる）・配布先に `arrow.exe` / `arrow-<前の版>.vsix` / `ar_config.json` がある・`old/v<前の版>/` が空・タグが無いか HEAD にある |
 | 1 | 版を上げる | `scripts/release_files.py bump`: `Cargo.toml`・`crates/arrow-frontend/Cargo.toml`・`vscode-extension/package.json`・`package-lock.json`・`make-vsix.ps1`（VSIX のファイル名と manifest の `Version`）。**どこか 1 か所でも一致の数が違えば、何も書かずに止まる** |
 | 2 | リリースビルド | `cargo build --release`（`target/release/arrow.exe`）と `make-vsix.ps1`（tsc・wasm の再ビルド込み・`arrow-<版>.vsix`）。どちらも時間制限つき（`-TimeoutSec`・既定 1 時間・超えたらプロセスの木ごと kill） |
 | 3 | コミット | 版上げ・新しい VSIX・`out/` の追跡済み JS を今のブランチにコミット（古い VSIX は `git rm`）。**push しない** |
 | 4 | タグ | そのコミットに注釈つきタグ（`git tag -a <Tag> -m "Arrow <版>"`） |
-| 5 | 退避と配置 | 配布先の `arrow.exe`・`arrow-<前の版>.vsix`・`ar_config.json` を `old/<前の版>/` へ**移動**し、新しい exe・VSIX・配布用の `ar_config.json` を置く。`bridge/js_bridge.cjs` が変わっていればそれも差し替える（古いものは `old/<前の版>/bridge/`） |
+| 5 | 退避と配置 | 配布先の `arrow.exe`・`arrow-<前の版>.vsix`・`ar_config.json` を `old/v<前の版>/` へ**移動**し、新しい exe・VSIX・配布用の `ar_config.json` を置く。`bridge/js_bridge.cjs` が変わっていればそれも差し替える（古いものは `old/v<前の版>/bridge/`） |
 | 6 | 動作確認 | 配布先の exe で 1 行のスクリプトを実行（`3` が出るか） |
 
 ## 名前の決まり
 
-- **タグ**: `v_<x>_<y>_<z>`（0.4.1 から。2026-10-31 にユーザーの指定）。それより前のタグは `v0_1_0`〜`v0_4_0`
-  （区切りの `_` が無い）。違う名前を指示されたら `-Tag` で渡す。
-- **退避先**: `<DeployDir>/old/<x>.<y>.<z>/`（0.4.0 から。それより前は `old/v0.2.0`・`old/v0.3.0`）。
+- **タグ**: `v<x>_<y>_<z>`（例 `v0_5_0`。2026-11-01 にユーザーの指定。`v0_1_0` と同じ形）。
+  ⚠ 2026-10-31〜11-01 の間は `v_<x>_<y>_<z>` だったが、0.5.0 のタグはこの決まりに合わせて付け直した。
+  違う名前を指示されたら `-Tag` で渡す。
+- **退避先**: `<DeployDir>/old/v<x>.<y>.<z>/`（例 `old/v0.4.1`。2026-11-01 にユーザーの指定。`old/v0.2.0`・
+  `old/v0.3.0` と同じ形）。⚠ 一時期 `v` の無い `old/0.4.0`・`old/0.4.1` を作っていたが、付け直した。
 - **VSIX**: `arrow-<x>.<y>.<z>.vsix`（`make-vsix.ps1` が作る。リポジトリには最新の 1 つだけを追跡する）。
 
 ## 落とし穴
@@ -49,8 +51,8 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 - ⚠ **失敗した後の再実行**: 版がもう上がっていて、その VSIX がコミット済みなら、1・3 段を飛ばす。
   タグがもう HEAD にあれば、4 段を飛ばす。どちらでもない中途半端な状態（版は上がったが未コミットなど）なら、
   作業ツリーがきれいでないので 0 段で止まる。直してからコミットし、再実行する。
-- ⚠ **退避先は上書きしない**。`old/<前の版>/` にファイルがあれば止まる（以前の退避を消さないため）。
-  配置の途中（移動の後）で失敗したら、`old/<前の版>/` から手で戻すか、足りないものを手で写す。
+- ⚠ **退避先は上書きしない**。`old/v<前の版>/` にファイルがあれば止まる（以前の退避を消さないため）。
+  配置の途中（移動の後）で失敗したら、`old/v<前の版>/` から手で戻すか、足りないものを手で写す。
 - ⚠ PowerShell 5.1 で日本語のファイルを読み書きすると壊れる。版の書き換え・設定・コミットメッセージは、
   すべて `release_files.py`（UTF-8・BOM と改行を保つ）でやる。`release.ps1` は ASCII だけで書く。
 - ⚠ 配布先の exe が実行中だと、移動に失敗して止まる（VS Code の REPL 端末などを閉じる）。

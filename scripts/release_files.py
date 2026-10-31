@@ -84,7 +84,7 @@ def message(out: str, prev: str, new: str, deploy_dir: str, trailer: str = ""):
     text = (
         f"バージョンを {new} にする（arrow・arrow-frontend・VS Code 拡張）\n"
         f"\n"
-        f"配布先（{deploy_dir}）の {prev} の exe・ar_config.json・VSIX を old\\{prev} へ退避し、この版を {new} として\n"
+        f"配布先（{deploy_dir}）の {prev} の exe・ar_config.json・VSIX を old\\v{prev} へ退避し、この版を {new} として\n"
         f"配置するため。VSIX の名前も arrow-{new}.vsix に変わる（make-vsix.ps1）。\n"
     )
     if trailer:
