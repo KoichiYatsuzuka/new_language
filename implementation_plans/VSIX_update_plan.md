@@ -334,6 +334,12 @@ exe が束縛する名前（`Stmt::Import::bind`・CPython と同じ規則）を
 - **6-2** 4-1 の例題を `vscode-extension/stress.js`（または debug runner）の確認に足し、
   取り込んだ名前の種類と定義の位置を退行検査できるようにする。
 
+### フェーズ 6 の結果（2026-10-31）
+
+- 6-1: VSIX を作り直した（`vscode-extension/arrow-0.4.0.vsix`）。**目視の確認はまだ**。
+- 6-2: 種類と定義の位置は `crates/arrow-frontend/tests/import_kinds.rs`（7 件・`compare_wasm_frontend.ps1` が前段で走らせる）で、
+  拡張の定義へのジャンプは `stress.js` の `def misses`（import 先へ飛べるか・飛び先のファイルがあるか）で退行検査する。
+
 ---
 
 # その他、拡張が独自に解析している箇所（2026-10-31 調査）
