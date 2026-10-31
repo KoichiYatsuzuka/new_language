@@ -256,6 +256,25 @@ exe が束縛する名前（`Stmt::Import::bind`・CPython と同じ規則）を
     （スタブのファイルがあればそこ、無ければ位置なし）。
 - **4-5** `compare_wasm_frontend.ps1` を走らせ、診断が変わっていないことを確かめる（4-2 はパーサの editor 部分を触るため）。
 
+### フェーズ 4 の結果（2026-10-31）
+
+- 4-1: 例は `crates/arrow-frontend/tests/import_kinds.rs` のテスト（6 件）として置いた。拡張が読む JSON の水準で、
+  種類・シグネチャ・定義の場所・メンバ表の鍵を検査する（`tests/imports.rs` と同じ作り）。
+- 4-2: [src/parser/imports/editor_kinds.rs](../src/parser/imports/editor_kinds.rs)（`editor` 専用）。
+  - `parse_from_import_stmt` は今までどおり名前を読んだ場所で仮に `Module` で控え、import 先を読み込んだ**後**に正体で書き直す。
+  - 束縛の判定は `decl_names::each_declared_name`（唯一の定義）に任せる。再エクスポート（`from b import x` の `x` が `b` の
+    `from a import x`）は元の定義までたどる。サブモジュールはパーサが足した読み込みの文（`from_import_submodules` /
+    `from_dots_import`）から判る。
+  - 引けない名前は新しい種類 `DeclKind::Unresolved`（`"unresolved"`）。拡張はこの種類を着色しない。
+- 4-3: `collect_module_members` の鍵を `Stmt::Import::bind.name` にした。モジュールの名前（`pkg.util`）でも引け、
+  パッケージの表には読み込まれたサブモジュールが `kind: "module"`・`type: "pkg.util"` で載る。
+- 4-4: `Decl::def`（`editor_index::DefLoc`）。解析結果の `symbols[].def` / `members[..].members[].def` に
+  `{ file, line, charCol }`（行は 0 始まり・列は**文字単位**・パスは wasm の形）で出す。
+  - `import m` はモジュールのファイルの先頭。`import a.b` は束縛したパッケージ `a` のファイル。cpp 系はヘッダ。
+  - ⚠ 位置を持つ文が無いモジュール（空の `__init__.ar`・名前空間パッケージ）は `def` が無い（飛べない）。
+- 4-5: `compare_wasm_frontend.ps1` 657 件すべて一致（MISSED / INVENTED / parse mismatch 0）。frontend の単体テスト 758 件が通る。
+  `test_build_gate.ps1` も通る。
+
 ## フェーズ 5: 拡張側
 
 - **5-1**（D）`provideDefinition` を 4-4 の位置で引く。別のファイルなら、その URI の Location を返す。

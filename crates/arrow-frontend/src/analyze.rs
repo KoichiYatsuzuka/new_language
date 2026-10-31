@@ -31,6 +31,7 @@ use serde_json::{json, Map, Value};
 
 use crate::ast::{Expr, Param, Stmt};
 use crate::lexer::editor_tokens::tokenize_with_spans;
+use crate::parser::editor_index::DefLoc;
 use crate::parser::Parser;
 use crate::token::Span;
 use crate::type_check::TypeChecker;
@@ -305,6 +306,23 @@ fn collect_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
     }
 }
 
+/// 定義の場所（[`DefLoc`]）の JSON。行は 0 始まり、列は **0 始まりの文字単位**（`charCol`）。
+///
+/// ⚠ 列を UTF-16 に直すにはそのファイルの本文が要るが、ここにはこのドキュメントの本文しか無い。
+///   別のファイルの行は拡張がそのファイルを読んで直す（`wasm_providers.ts` の `defLocation`）。
+///   パスは wasm の形（`/D:/a/b.ar`）で、拡張が `toHostPath` で直す。
+fn def_json(def: Option<&DefLoc>) -> Value {
+    match def {
+        Some(l) => json!({ "file": l.file, "line": l.line - 1, "charCol": l.col - 1 }),
+        None => Value::Null,
+    }
+}
+
+/// 宣言文 `s` の定義の場所の JSON（[`def_json`]）。
+fn decl_def_json(s: &Stmt, name: &str) -> Value {
+    def_json(DefLoc::of_decl(s, name).as_ref())
+}
+
 fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
     let mut items: Vec<Value> = Vec::new();
     for s in body {
@@ -315,6 +333,7 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
                 "type": type_ann,
                 "mutability": format!("{kind:?}").to_lowercase(),
                 "access": format!("{access:?}").to_lowercase(),
+                "def": decl_def_json(s, name),
             })),
             Stmt::FnDef { name, params, return_type, access, is_static, body, .. } => {
                 items.push(json!({
@@ -324,6 +343,7 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
                     "params": params_json(params),
                     "access": format!("{access:?}").to_lowercase(),
                     "doc": docstring(body),
+                    "def": decl_def_json(s, name),
                 }))
             }
             Stmt::GenDef { name, params, yield_type, access, body, .. } => {
@@ -334,6 +354,7 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
                     "params": params_json(params),
                     "access": format!("{access:?}").to_lowercase(),
                     "doc": docstring(body),
+                    "def": decl_def_json(s, name),
                 }))
             }
             _ => {}
@@ -519,6 +540,8 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
                 "bases": d.bases,
                 "scope": d.scope,
                 "bodyScope": d.body_scope,
+                // 定義が `at` 以外（import 先のファイル）にある宣言だけ（VSIX_update_plan.md 4-4）。
+                "def": def_json(d.def.as_ref()),
             })
         })
         .collect();
@@ -672,32 +695,72 @@ pub(crate) fn docstring(body: &[Stmt]) -> Option<&str> {
 ///
 /// ⚠ import 先の body に入れ子で定義された**型**も登録する。`wpf.HostWindow.` の
 /// 受け手は `HostWindow`（import 先のクラス）なので、これが無いと 2 段目が引けない。
+///
+/// # 鍵（VSIX_update_plan.md 4-3）
+///
+/// - **束縛名**（`Stmt::Import::bind`・CLI と同じ規則）。`import pkg.util` が束縛するのは `pkg` なので鍵も `pkg`。
+///   ⚠ 以前は「別名か、モジュール名の末尾」で、`import pkg.util` の鍵が `util`（束縛されていない名前）になり、
+///   `pkg.` では補完が出なかった。
+/// - **モジュールの名前**（`pkg.util` のようにドットでつないだもの）。パッケージのメンバーに載せるサブモジュールの
+///   `type` がこれを指すので、`pkg.util.` の 2 段目もこの表で引ける。
+///
+/// パッケージ `pkg` のメンバーは `pkg/__init__` の名前に、読み込まれたサブモジュール（`pkg.util`）を足したもの
+/// （CPython と同じく、読み込まれたサブモジュールは親の属性になる）。
 fn collect_module_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
+    // 読み込んだモジュール（パッケージの連鎖を読み込む束縛の無い文も含む）。同じモジュールは先の 1 つ。
+    let mut modules: Vec<(&[String], &[Stmt])> = Vec::new();
     for stmt in stmts {
-        let (module, alias, body) = match stmt {
-            Stmt::Import { module, alias, body, .. } => (module, alias.as_ref(), body),
+        match stmt {
+            Stmt::Import { module, body, .. } => {
+                // import 先で定義された型（`wpf.HostWindow` の `HostWindow` 等）を型名の表へ。
+                merge_vacant(body, out);
+                if !modules.iter().any(|(m, _)| *m == module.as_slice()) {
+                    modules.push((module, body));
+                }
+            }
             // `from X import a, b` は名前を直接束縛するので、名前空間の受け手にはならない。
             // ただし body に載っている型定義は `collect_members` で拾わせたい。
-            Stmt::FromImport { body, .. } => {
-                merge_vacant(body, out);
-                continue;
+            Stmt::FromImport { body, .. } => merge_vacant(body, out),
+            _ => {}
+        }
+    }
+
+    let table_of = |name: &[String]| -> Option<Value> {
+        let (_, body) = modules.iter().find(|(m, _)| *m == name)?;
+        let mut items = namespace_members(body);
+        for (sub, sub_body) in &modules {
+            if sub.len() == name.len() + 1 && sub.starts_with(name) {
+                let last = &sub[sub.len() - 1];
+                // ⚠ 本体で同じ名前を束縛していればそちらが勝つ（CPython の属性と同じ）。
+                if items.iter().any(|v| v["name"] == json!(last)) {
+                    continue;
+                }
+                items.push(json!({
+                    "name": last, "kind": "module", "type": sub.join("."), "access": "public",
+                    "def": def_json(DefLoc::of_module(sub_body).as_ref()),
+                }));
             }
-            _ => continue,
-        };
-        if body.is_empty() {
+        }
+        Some(json!({ "members": items, "bases": [] }))
+    };
+
+    // ⚠ 型名が既に取っている鍵は奪わない（上の doc）。
+    for (module, _) in &modules {
+        let key = module.join(".");
+        if !key.is_empty() && !out.contains_key(&key) {
+            if let Some(t) = table_of(module) {
+                out.insert(key, t);
+            }
+        }
+    }
+    for stmt in stmts {
+        let Stmt::Import { bind: Some(b), .. } = stmt else { continue };
+        if b.name.is_empty() || out.contains_key(&b.name) {
             continue;
         }
-        // import 先で定義された型（`wpf.HostWindow` の `HostWindow` 等）を型名の表へ。
-        merge_vacant(body, out);
-
-        let bind = alias
-            .cloned()
-            .or_else(|| module.last().cloned())
-            .unwrap_or_default();
-        if bind.is_empty() || out.contains_key(&bind) {
-            continue; // 型名が既に取っている鍵は奪わない
+        if let Some(t) = table_of(&b.module) {
+            out.insert(b.name.clone(), t);
         }
-        out.insert(bind, json!({ "members": namespace_members(body), "bases": [] }));
     }
 }
 
@@ -710,7 +773,7 @@ fn collect_module_members(stmts: &[Stmt], out: &mut Map<String, Value>) {
 fn namespace_members(body: &[Stmt]) -> Vec<Value> {
     let mut items = Vec::new();
     for s in body {
-        let v = match s {
+        let mut v = match s {
             Stmt::FnDef { name, params, return_type, body, .. } => json!({
                 "name": name, "kind": "function", "type": return_type,
                 "params": params_json(params), "access": "public", "doc": docstring(body),
@@ -741,6 +804,9 @@ fn namespace_members(body: &[Stmt]) -> Vec<Value> {
             }),
             _ => continue,
         };
+        // 定義へのジャンプ（`mod.f` の `f`・VSIX_update_plan.md 4-4）。
+        let name = v["name"].as_str().unwrap_or_default().to_string();
+        v["def"] = decl_def_json(s, &name);
         items.push(v);
     }
     items

@@ -116,7 +116,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (261 files, 114122 lines)
+src/  (262 files, 114470 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1658)
@@ -305,7 +305,7 @@ src/  (261 files, 114122 lines)
   parser/
     classes.rs (982)
     editor_hooks.rs (524)
-    editor_index.rs (301)
+    editor_index.rs (365)
     exprs.rs (1228)
     import_syntax.rs (87)
     mod.rs (434)
@@ -322,10 +322,11 @@ src/  (261 files, 114122 lines)
       xml_docs.rs (115)
     imports/
       ar_modules.rs (341)
-      cpp.rs (373)
+      cpp.rs (397)
       cs_js_modules.rs (258)
-      dispatch.rs (382)
-      mod.rs (98)
+      dispatch.rs (400)
+      editor_kinds.rs (239)
+      mod.rs (101)
       packages.rs (318)
       py_modules.rs (443)
     stmts/
@@ -468,7 +469,7 @@ impl_python/  (50 files, 16992 lines)
     type_utils.py (82)
     types.py (335)
 
-vscode-extension/  (8 files, 2647 lines; src/ + syntaxes/ only)
+vscode-extension/  (8 files, 2933 lines; src/ + syntaxes/ only)
   src/
     debug_runner.ts (352)
     extension.ts (258)
@@ -477,7 +478,7 @@ vscode-extension/  (8 files, 2647 lines; src/ + syntaxes/ only)
     wasm_host.ts (217)
     wasm_providers.ts (1005)
   syntaxes/
-    arrow.tmLanguage.json (322)
+    arrow.tmLanguage.json (608)
     arrow-stub.tmLanguage.json (8)
 
 examples/  (recursive .ar counts per category)
@@ -558,7 +559,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (38)
-  CLAUDE.md (168)
+  CLAUDE.md (169)
   README.md (317)
 ```
 _Generated 2026-10-31 by generate-codebase-map.ps1_

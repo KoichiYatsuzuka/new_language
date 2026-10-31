@@ -96,3 +96,6 @@ mod py_modules;
 // CPython と同じパッケージの扱い（`import a.b` の連鎖・束縛・サブモジュール・`from . import x`）。
 mod packages;
 mod cs_js_modules;
+// エディタ専用: import で束縛した名前の種類・定義の場所を宣言表へ書き足す（VSIX_update_plan.md 4-2 / 4-4）。
+#[cfg(feature = "editor")]
+mod editor_kinds;

@@ -40,6 +40,11 @@ pub enum DeclKind {
     NewType,
     Alias,
     Module,
+    /// `from X import Y` の `Y` で、正体が分からないもの（import が読めなかった・`X` に `Y` が無い）。
+    ///
+    /// ⚠ 以前は `from X import Y` の `Y` を一律に `Module` にしていた（関数もクラスもモジュール色・
+    ///   VSIX_update_plan.md B）。分からないものを別の種類に見せない。誤りは診断が別に出している。
+    Unresolved,
 }
 
 impl DeclKind {
@@ -59,7 +64,63 @@ impl DeclKind {
             Self::NewType => "new_type",
             Self::Alias => "alias",
             Self::Module => "module",
+            Self::Unresolved => "unresolved",
         }
+    }
+}
+
+/// 宣言の**定義がある場所**（別のファイルでもよい）。行・列は 1 始まりで、列は**文字単位**
+/// （`Span` と同じ）。ファイルは wasm ではホストの形ではなく wasm の形（`/D:/a/b.ar`・`src/import_fs.rs`）。
+///
+/// `Decl::pos` が「このファイルで名前を書いた位置」なのに対し、こちらは定義へのジャンプの行き先。
+/// import で束縛した名前は `pos` が import 文を指すので、ジャンプには `def` を使う（VSIX_update_plan.md D）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefLoc {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+impl DefLoc {
+    /// `span` の位置。パーサが合成した文（`<stub>` など、実在しないファイル名）は `None`。
+    pub fn of_span(span: &crate::token::Span) -> Option<Self> {
+        let file: &str = &span.file;
+        if span.line == 0 || file.is_empty() || file.starts_with('<') {
+            return None;
+        }
+        Some(DefLoc { file: file.to_string(), line: span.line, col: span.col })
+    }
+
+    /// 宣言文 `stmt` の中で `name` を書いた位置（無ければ文の先頭）。
+    ///
+    /// 宣言の範囲（`SrcRange`）を持つ文は、その中で最初に現れる識別子 `name`（`fn f` の `f`）を指す。
+    pub fn of_decl(stmt: &crate::ast::Stmt, name: &str) -> Option<Self> {
+        use crate::ast::Stmt;
+        let src = match stmt {
+            Stmt::FnDef { src, .. }
+            | Stmt::GenDef { src, .. }
+            | Stmt::ClassDef { src, .. }
+            | Stmt::TraitDef { src, .. }
+            | Stmt::EnumDef { src, .. } => src.as_ref(),
+            // 範囲を持たない文（`protocol` / `let` / 合成した文など）は文の位置だけ。
+            _ => None,
+        };
+        if let Some(src) = src {
+            let hit = src.tokens.get(src.start..src.end.min(src.tokens.len())).and_then(|toks| {
+                toks.iter().find(|t| matches!(&t.token, crate::token::Token::Ident(n) if n == name))
+            });
+            if let Some(t) = hit {
+                return Self::of_span(&t.span);
+            }
+        }
+        stmt.position().and_then(Self::of_span)
+    }
+
+    /// モジュールの本体 `body` が書かれたファイルの先頭。位置を持つ文が 1 つも無ければ `None`。
+    pub fn of_module(body: &[crate::ast::Stmt]) -> Option<Self> {
+        body.iter()
+            .find_map(|s| s.position().and_then(Self::of_span))
+            .map(|l| DefLoc { line: 1, col: 1, ..l })
     }
 }
 
@@ -92,6 +153,8 @@ pub struct Decl {
     /// 型注釈が無いときの型は、型検査器が束縛した瞬間に記録した型（`type_check::BindingRecord`）から
     /// 引く。鍵は「束縛を含む文の位置＋名前」で、同じ鍵の中はこの番号の順に突き合わせる。
     pub binding: Option<usize>,
+    /// 定義の場所が**このファイルの `pos` ではない**とき、その場所（import で束縛した名前）。
+    pub def: Option<DefLoc>,
 }
 
 /// 字句的スコープ。`end_line` は閉じるまで `usize::MAX`。
@@ -296,6 +359,7 @@ impl EditorIndex {
             scope,
             body_scope: None,
             binding: None,
+            def: None,
         }
     }
 }
