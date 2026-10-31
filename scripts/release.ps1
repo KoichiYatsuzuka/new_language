@@ -61,7 +61,8 @@ function Invoke-Limited([string]$file, [string]$argLine, [string]$workDir = $rep
     if ($p.ExitCode -ne 0) { throw "'$file $argLine' failed (exit $($p.ExitCode))" }
 }
 
-function Git([string]$argLine) { Invoke-Limited 'git' $argLine }
+# (Not named `Git`: PowerShell names are case-insensitive, so it would hijack every `& git ...` below.)
+function Invoke-Git([string]$argLine) { Invoke-Limited 'git' $argLine }
 
 # Same, but capture stdout+stderr (returned with the exit code) instead of showing them.
 function Invoke-Captured([string]$file, [string]$argLine, [string]$workDir = $repo) {
@@ -155,13 +156,13 @@ try {
         # ------------------------------------------------------------ 3. commit
         Step 'commit'
         $oldVsix = "vscode-extension/arrow-$current.vsix"
-        if (In-Head $oldVsix) { Git "rm -q `"$oldVsix`"" }
-        Git 'add -u'
-        Git "add `"$vsixRel`""
+        if (In-Head $oldVsix) { Invoke-Git "rm -q `"$oldVsix`"" }
+        Invoke-Git 'add -u'
+        Invoke-Git "add `"$vsixRel`""
         $msg = Join-Path ([System.IO.Path]::GetTempPath()) "arrow_release_msg_$Version.txt"
         $trailerArg = if ($CommitTrailer) { '"' + ($CommitTrailer -replace '"', '\"') + '"' } else { '' }
         Invoke-Limited 'python' ('-X utf8 "{0}" message "{1}" {2} {3} "{4}" {5}' -f $helper, $msg, $PrevVersion, $Version, $DeployDir, $trailerArg)
-        Git "commit -q -F `"$msg`""
+        Invoke-Git "commit -q -F `"$msg`""
         Remove-Item $msg
         & git log --oneline -1
     }
@@ -170,7 +171,7 @@ try {
     $head = (& git rev-parse HEAD).Trim()
     if (-not $tagExists) {
         Step "tag $Tag"
-        Git "tag -a $Tag -m `"Arrow $Version`""
+        Invoke-Git "tag -a $Tag -m `"Arrow $Version`""
     } else {
         Step "tag $Tag already on HEAD (skipped)"
     }
