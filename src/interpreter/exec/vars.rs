@@ -76,6 +76,25 @@ impl BindCopy {
 }
 
 impl Interpreter {
+    /// 今のスコープで `name` を宣言すると誤りになるなら、その文言（`already declared` の**唯一の判定**）。
+    ///
+    /// 呼び出し元は宣言の 4 か所（`exec_let` / `Const` / `Mut` / 最上位の VM の `vm_declare_global`）と
+    /// タプル分解の宣言（`exec_let_tuple_evaled`）。
+    /// ⚠ Python から変換したモジュール（`import[py]`）の本体では、組み込みの名前（`id` / `str` / `dict` / `len` …）を
+    ///   束縛し直してよい（python_builtins_plan.md のタスク 1-6）。CPython は組み込みを名前の探索の最後の段に置くので、
+    ///   モジュールの大域が組み込みを隠す。以前は `id = 3` が `variable 'id' is already declared` だった（実測）。
+    ///   変換器は最上位の名前を 1 度だけ `mut x = None` で宣言する（巻き上げ）ので、同じ名前を 2 度宣言することはない。
+    /// ⚠ Arrow のソースの最上位では従来どおり誤り（`let len = 3`・規則として残すかは別に要判断）。
+    pub(crate) fn redeclaration_error(&self, name: &str) -> Option<String> {
+        if name == "_" || self.get_var(name).is_none() {
+            return None;
+        }
+        if self.in_python_module && crate::type_check::names::is_runtime_builtin_name(name) {
+            return None;
+        }
+        Some(format!("NameError: variable '{name}' is already declared"))
+    }
+
     /// 束縛の複製（[`BindCopy`]）。`CopyFreeze` のフリーズは `__freeze__` を呼びうるので失敗する。
     /// 誰とも共有していない値（[`Interpreter::is_unshared`]・作りたての `Vec3(...)` など）は複製しない（12-1・D-13）。
     /// 写しを作っても、元を指す者がいないので違いは観測できない（`deep_copy_value` はフリーズの印も写す）。
@@ -87,11 +106,25 @@ impl Interpreter {
 
     /// [`Self::bind_copy`] の本体。`held` は、呼ぶ側が `value` のほかに持っていて数えない参照の数（ネイティブの
     /// アリーナの、作りたての値を積んだ欄 1 つなど）。`None` なら共有かどうかを見ずに必ず複製する。
+    ///
+    /// `CopyFreeze` は `let x = <mut 変数>` / `let x = <式>`（ツリーウォーク・最上位・関数の中の slot・ネイティブ）と
+    /// `freeze x` の**唯一の実装**で、`freeze x` は `let x = x` と同じ結果になる（同じ値・同じ実行時の印・
+    /// python_builtins_plan.md のタスク 1-9）。フリーズは [`Self::freeze_value_in_place`]（コレクションの中の
+    /// インスタンスも 1 段不変にする）。
+    /// ⚠ 以前は 4 通りあった: `freeze` は**コピーせずその場で**不変にし（同じオブジェクトを持つ相手まで
+    ///   不変になる）、`let` はコピーしたがコレクションの中のインスタンスは不変にせず、関数の中の
+    ///   `let x = <式>` はインスタンスのときしかコピーしなかった（`let item = xs[0]` が `xs[0]` と共有）。
+    /// ⚠ `DeepCopy`（`mut x = e`）は Python から変換したコードの中では写さない（`running_python`・known_bugs.md の #1。
+    ///   格納の [`Self::copy_for_store`] と同じ規則）。`CopyFreeze` は写す（変換器は `let` を出さないが、出したとしても
+    ///   不変の束縛が他の持ち主の変更で変わってはいけない）。
     pub(crate) fn bind_copy_held(&mut self, mode: BindCopy, value: Value, held: Option<usize>) -> Result<Value, String> {
+        if mode == BindCopy::DeepCopy && self.running_python {
+            return Ok(value);
+        }
         let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
         let copied = if unshared { value } else { Self::deep_copy_value(value) };
         if mode == BindCopy::CopyFreeze {
-            self.apply_freeze_to_value(&copied, true)?;
+            self.freeze_value_in_place(&copied)?;
         }
         Ok(copied)
     }
@@ -103,8 +136,8 @@ impl Interpreter {
         type_ann: Option<&str>,
         expr: &Expr,
     ) -> Result<ExecResult, String> {
-        if name != "_" && self.get_var(name).is_some() {
-            return Err(format!("NameError: variable '{name}' is already declared"));
+        if let Some(e) = self.redeclaration_error(name) {
+            return Err(e);
         }
         // mut → let: deep copy してからフリーズする。
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
@@ -157,8 +190,8 @@ impl Interpreter {
         for target in targets.iter() {
             match target {
                 TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
-                    if n != "_" && self.get_var(n).is_some() {
-                        return Err(format!("NameError: variable '{n}' is already declared"));
+                    if let Some(e) = self.redeclaration_error(n) {
+                        return Err(e);
                     }
                 }
                 TupleTarget::Wildcard => {}
@@ -226,7 +259,7 @@ impl Interpreter {
                     idx += 1;
                 }
                 TupleTarget::Mut(_) => {
-                    let v = Self::deep_copy_value(tuple_rc.get(idx).unwrap().clone());
+                    let v = self.copy_for_store(tuple_rc.get(idx).unwrap().clone());
                     out.push((i, v));
                     idx += 1;
                 }

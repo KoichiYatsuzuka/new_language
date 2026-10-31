@@ -130,6 +130,13 @@ impl Interpreter {
         .map(|mut c| {
             // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
             c.is_python = fn_val.is_python;
+            // 入れ子の関数の `__qualname__`（`outer.<locals>.inner`・タスク 1-14）。
+            let outer = match &fn_val.qualname {
+                Some(q) => q.to_string(),
+                None if fn_val.is_python => crate::interpreter::python_fn_name(&fn_val.name).to_string(),
+                None => fn_val.name.clone(),
+            };
+            c.set_nested_qualnames(&outer);
             Rc::new(c)
         });
         if crate::interpreter::tw_stats::enabled() {
@@ -160,7 +167,11 @@ impl Interpreter {
                     &captures,
                     &mut_captures,
                 )
-                .map(Rc::new);
+                .map(|mut c| {
+                    // 入れ子の関数の `__qualname__`（`compile_fn_value` と同じ・タスク 1-14）。
+                    c.set_nested_qualnames(gen_fn.qualname.as_deref().unwrap_or(&gen_fn.name));
+                    Rc::new(c)
+                });
                 if crate::interpreter::tw_stats::enabled() {
                     crate::interpreter::tw_stats::record_compile("gen", compiled.is_some());
                 }
@@ -710,6 +721,11 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
+        // 束縛メソッド（`obj.method` を読んだ値・タスク 1-8）は実体へ回す。関数の値を呼ぶ経路は
+        // ツリーウォークも VM も組み込み（`sorted(key=)` / `map` …）もここを通る。
+        if let Some(bound) = fn_val.bound.clone() {
+            return self.call_bound_method(&bound, evaled, call_span);
+        }
         let declared_ret = fn_val.return_type.clone();
         // クラスの文脈（10-6）。インスタンスメソッドは `self` のクラス（`run_vm_method` が張る）。
         // それ以外は定義したときのクラス（入れ子の関数）か、クラス経由の呼び出しのクラス。
@@ -920,6 +936,85 @@ impl Interpreter {
         // #33: ツリーウォークのフォールバックは無い。ここへ来るのは `chunk_opt` が None の
         // ときだけだが、それは上の `VmForceError` で既に return 済み（到達不能）。
         unreachable!("chunk_opt is None was already rejected as VmForceError")
+    }
+    /// 束縛メソッド（`obj.method` を読んだ値）を呼ぶ（python_builtins_plan.md のタスク 1-8）。
+    ///
+    /// `obj.method(..)` と同じ判定で同じ実体を走らせる:
+    /// - 受け手が不変（`let` の束縛・`freeze` の後）なら `mut self` のメソッドは呼べない
+    ///   （`eval_method_call` と同じ文言）。⚠ 束縛すること自体は誤りにしない（関数の値が不変であることと、
+    ///   その関数が受け手を書き換えることは両立する。書き換えが起きるのは呼んだときだけ）
+    /// - オーバーロードは `dispatch_overload_evaled`
+    /// - ネイティブのメソッド（`--compile` したクラス）はそちらへ
+    /// ⚠ アクセス制御は**読んだ時点で**見ている（`get_attr_val`）。呼ぶ時点では見ない — クラスの中で
+    ///   `self._key` を渡したコールバックが、外（`sorted` の中など）で呼ばれても止めない（字句の規則）。
+    pub(crate) fn call_bound_method(
+        &mut self,
+        bound: &crate::interpreter::value::BoundMethod,
+        evaled: &[(Option<String>, Value, bool)],
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
+        use crate::interpreter::value::BoundTarget;
+        let receiver = bound.receiver.clone();
+        let methods = match &bound.target {
+            BoundTarget::Methods(m) => m,
+            // `gen` メソッドは `obj.gen_m(..)` と同じく不変性で振り分けない（直接呼びも振り分けない）。
+            // 受け手が `mut` の値かは分からないので `let self` は保守的に複製する（`exec_fn_evaled` と同じ `true`・6-1）。
+            BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver), true),
+            // 組み込みの値のメソッドは名前で同じ入口へ（`xs.append(..)` と同じ・タスク 1-10）。
+            BoundTarget::Builtin(name) => return self.eval_method_call_full(receiver, name, evaled.to_vec(), None),
+            // インスタンスから読んだ Python のクラスメソッド（known_bugs.md の #5）。受け手はクラスで、`C.make(..)` と同じ。
+            BoundTarget::ClassMethod(m) => {
+                let Value::Class(cls) = &receiver else {
+                    return Err(format!("RuntimeError: internal — class method '{}' bound to a non-class", m[0].name));
+                };
+                return self.eval_class_method(cls.clone(), &m[0].name, evaled.to_vec());
+            }
+        };
+        let method_name = methods[0].name.clone();
+        // ネイティブのメソッド: `obj.m(..)`（`call_instance_method_evaled`）と同じ入口・同じ順序（不変性で振り分ける前）。
+        // `recv_mut` は上の `Gen` と同じく保守的に `true`。
+        if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
+            self,
+            receiver.clone(),
+            &method_name,
+            evaled,
+            true,
+        ) {
+            return result;
+        }
+        if let Value::Instance(inst_rc) = &receiver {
+            let class = inst_rc.borrow().class.clone();
+            if inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                let callable: Vec<Rc<FnValue>> = methods
+                    .iter()
+                    .filter(|f| f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true))
+                    .cloned()
+                    .collect();
+                if callable.is_empty() {
+                    return Err(format!(
+                        "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
+                        class.name
+                    ));
+                }
+                return self.run_bound_candidates(callable, evaled, receiver, &method_name, call_span);
+            }
+        }
+        self.run_bound_candidates(methods.clone(), evaled, receiver, &method_name, call_span)
+    }
+
+    fn run_bound_candidates(
+        &mut self,
+        candidates: Vec<Rc<FnValue>>,
+        evaled: &[(Option<String>, Value, bool)],
+        receiver: Value,
+        method_name: &str,
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
+        if candidates.len() == 1 {
+            self.exec_fn_evaled(candidates[0].clone(), evaled, Some(receiver), method_name, call_span)
+        } else {
+            self.dispatch_overload_evaled(candidates, evaled.to_vec(), Some(receiver), method_name, call_span)
+        }
     }
 
     /// 呼び出し引数式リストを評価してから関数を実行する。`exec_fn_evaled` の呼び出しラッパー。

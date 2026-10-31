@@ -1,0 +1,25 @@
+# py_introspect.ar — issubclass / callable と、フェーズ 2 の組み込みをまとめて使う Python のコード
+# （python_builtins_plan.md のタスク 2-4。2-1 isinstance・2-2 type・2-3 getattr / hasattr / setattr も通す）
+#
+# 対になる誤りの例: py_introspect_error.ar
+#
+# - issubclass(C, spec): クラス同士は isinstance と同じ判定（同じクラスか派生）、組み込みの型は bool ⊂ int、組は要素ごと
+# - callable(x): 関数・クラス・組み込みの関数と型・`__call__` を持つインスタンスは真（`x is function` と違い、
+#   `__call__` の無いクラスも呼べる＝作れるので真）
+# ⚠ 以前はどれも NameError（pandas で issubclass 69・callable 59 箇所）。
+# ⚠ 下の出力はすべて CPython 3.12 と同じ。
+
+import[py] test_modules.py_introspect as m
+
+print(m.kinds())          # ['bool', 'int', 'sequence of 2', 'sequence of 1', 'dict', 'Puppy (an Animal)', 'other: str']
+mut p = m.Puppy("x")
+mut three = 3
+print(m.by_variable(p), m.by_variable(three))      # True False
+print(m.subclasses())     # [True, False, True, True]
+print(m.callables())      # [True, True, False, True, True]
+print(m.attributes())     # ['rex', 'brown', [True, False], 'max', 'max says woof']
+print(m.types())          # [True, True, False, 'copy says woof', 'bool']
+
+print("=== from Arrow ===")
+print(issubclass(m.Puppy, m.Animal), issubclass(bool, int), issubclass(int, bool))   # True True False
+print(callable(len), callable(m.Dog), callable(3), callable(print))                  # True True False True

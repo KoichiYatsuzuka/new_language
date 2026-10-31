@@ -1,0 +1,55 @@
+# py_os_error_args.ar — OSError の errno / strerror / filename と args（known_bugs.md の #9）
+#
+# `open` の失敗は CPython と同じく `[Errno 2] No such file or directory: 'p'`（以前は `cannot open 'p': <OS の文言>`）で、
+# `args == (errno, strerror)`・`errno` / `strerror` / `filename` を持つ（errno と文言は C の値。Windows の CPython も
+# `open` は C ランタイムの errno を出す）。`OSError(errno, strerror[, filename])` で作っても同じで、`filename` が
+# `None` でなければ `args` は最初の 2 つ。`OSError(2, "..")` は errno に対応する派生（`FileNotFoundError`）になる。
+# Python の派生クラスも `super().__init__(13, "denied", path)` で同じ属性を持つ。
+#
+# m.run() は CPython 3.12 と同じ出力（パスは相対で、リポジトリの根から実行する）:
+#   1 missing: FileNotFoundError | [Errno 2] No such file or directory: 'examples/interop/no_such_dir_kb9/nope.txt' | FileNotFoundError(2, 'No such file or directory') | (2, 'No such file or directory') 2 No such file or directory examples/interop/no_such_dir_kb9/nope.txt None
+#   1 missing dir: FileNotFoundError | [Errno 2] No such file or directory: 'examples/interop/no_such_dir_kb9/new.txt' | FileNotFoundError(2, 'No such file or directory') | (2, 'No such file or directory') 2 No such file or directory examples/interop/no_such_dir_kb9/new.txt None
+#   1 exists: FileExistsError | [Errno 17] File exists: 'examples/interop/_tmp_py_os_error.txt' | FileExistsError(17, 'File exists') | (17, 'File exists') 17 File exists examples/interop/_tmp_py_os_error.txt None
+#   2 (): OSError |  | OSError() | () None None None None
+#   2 ('m',): OSError | m | OSError('m') | ('m',) None None None None
+#   2 (2, 'No such'): FileNotFoundError | [Errno 2] No such | FileNotFoundError(2, 'No such') | (2, 'No such') 2 No such None None
+#   2 (2, 'No such', 'f'): FileNotFoundError | [Errno 2] No such: 'f' | FileNotFoundError(2, 'No such') | (2, 'No such') 2 No such f None
+#   2 (2, 'x', None): FileNotFoundError | [Errno 2] x | FileNotFoundError(2, 'x', None) | (2, 'x', None) 2 x None None
+#   2 (13, 'denied', 'p'): PermissionError | [Errno 13] denied: 'p' | PermissionError(13, 'denied') | (13, 'denied') 13 denied p None
+#   2 (999, 'odd'): OSError | [Errno 999] odd | OSError(999, 'odd') | (999, 'odd') 999 odd None None
+#   2 (1, 2, 3, 4, 5, 6): OSError | (1, 2, 3, 4, 5, 6) | OSError(1, 2, 3, 4, 5, 6) | (1, 2, 3, 4, 5, 6) None None None None
+#   2 (None, None): OSError | [Errno None] None | OSError(None, None) | (None, None) None None None None
+#   2 ('a', 'b'): OSError | [Errno a] b | OSError('a', 'b') | ('a', 'b') a b None None
+#   2 subclass: FileNotFoundError | [Errno 2] No such file or directory: 'p' | FileNotFoundError(2, 'No such file or directory') | (2, 'No such file or directory') 2 No such file or directory p None
+#   2 one arg: PermissionError | plain | PermissionError('plain') | ('plain',) None None None None
+#   3 derived: PathError | [Errno 13] denied: 'p' | PathError(13, 'denied') | (13, 'denied') 13 denied p None
+#   4 raised: 2 q [Errno 2] No such file or directory: 'q'
+#
+# ⚠ CPython と違う所: 作った後で `e.errno = ..` と書き換えても `str(e)` は変わらない（作るときに決める）。Windows の
+#   CPython は 5 つの形（filename2）で `[WinError None] ..` と出す（Arrow は `[Errno ..] ..: 'a' -> 'b'`・Linux の CPython と同じ）。
+#   4 つ目の `winerror` は持たないので、`None` 以外を渡すと TypeError（`py_os_error_args_error.ar`）。
+
+import[py] test_modules.py_os_error_args as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow の `open` の失敗も同じ（型検査は errno を `int | None`・strerror を `str | None`・filename を Any とする）
+try:
+    let f = open("examples/interop/no_such_dir_kb9/arrow.txt")
+    close(f)
+    check(False, "open succeeded")
+except FileNotFoundError as e:
+    check(str(e) == "[Errno 2] No such file or directory: 'examples/interop/no_such_dir_kb9/arrow.txt'", "str(e)")
+    check(repr(e) == "FileNotFoundError(2, 'No such file or directory')", "repr(e)")
+    # `int | None` / `str | None` なので確かめてから比べる（Arrow の規則）
+    check((e.errno mustbe int) == 2 and (e.strerror mustbe str) == "No such file or directory", "errno / strerror")
+    check(str(e.filename) == "examples/interop/no_such_dir_kb9/arrow.txt", "filename")
+
+# 作るとき: errno に対応する派生になる
+let made = OSError(17, "File exists", "x.txt")
+check(made is FileExistsError and str(made) == "[Errno 17] File exists: 'x.txt'", "OSError(17, ..) is FileExistsError")
+print("arrow side ok")

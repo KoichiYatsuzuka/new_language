@@ -76,6 +76,7 @@ impl Interpreter {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Complex(r1, i1), Value::Complex(r2, i2)) => r1 == r2 && i1 == i2,
             (Value::Str(a), Value::Str(b)) => a == b,
+            // bytes（タスク 3-1）。`b"a" == "a"` は偽（CPython と同じ・型が違えば等値にならない）。
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
@@ -93,6 +94,24 @@ impl Interpreter {
                 }
                 let a_borrow = a.borrow();
                 let b_borrow = b.borrow();
+                // `object()` は同一性で比べる（タスク 6-10・CPython の `object.__eq__` は同じ物だけを等しいとする）。
+                // 同じ物なら上の `ptr_eq` で済んでいるので、どちらかが `object()` なら等しくない。
+                // `Ellipsis` / `NotImplemented` は唯一の値なので、同じ種類なら同じ物（スレッドへ送った複製も・
+                // タスク 6-11 / 6-12）。
+                // ⚠ `hash_into` の同じ分岐（アドレス・種類でハッシュする）と対になっている。
+                use crate::interpreter::BuiltinClass as B;
+                match (a_borrow.class.builtin, b_borrow.class.builtin) {
+                    (B::Ordinary, B::Ordinary) => {}
+                    (B::Ellipsis, B::Ellipsis) | (B::NotImplemented, B::NotImplemented) => return Ok(true),
+                    (B::Object | B::Ellipsis | B::NotImplemented, _)
+                    | (_, B::Object | B::Ellipsis | B::NotImplemented) => return Ok(false),
+                }
+                // Python から変換したクラスのインスタンスは同一性で比べる（CPython の `object.__eq__`・known_bugs.md の #1）。
+                // 同じ物なら上の `ptr_eq` で済んでいる。Python のコードの中は格納で写さないので、同じ物は同じ `Rc` のまま。
+                // ⚠ `hash_into` の同じ分岐（アドレスでハッシュする）と対になっている。
+                if a_borrow.class.is_python || b_borrow.class.is_python {
+                    return Ok(false);
+                }
                 if a_borrow.class.enum_of.is_some() && a_borrow.class.enum_of == b_borrow.class.enum_of {
                     let get_value = |inst: &crate::interpreter::InstanceData| {
                         inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))
@@ -198,26 +217,14 @@ impl Interpreter {
                 if Rc::ptr_eq(a, b) {
                     return Ok(true);
                 }
-                let ar = a.borrow();
-                let br = b.borrow();
-                if ar.len() != br.len() {
-                    return Ok(false);
+                Self::unordered_eq(&a.borrow(), &b.borrow(), d)?
+            }
+            // frozenset どうし（タスク 3-1）。`Set` と `FrozenSet` は型厳密に別物（`values_eq_expr` の doc）。
+            (Value::FrozenSet(a), Value::FrozenSet(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return Ok(true);
                 }
-                let mut all = true;
-                for v in ar.iter() {
-                    let mut found = false;
-                    for w in br.iter() {
-                        if Self::values_eq_at(v, w, d)? {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        all = false;
-                        break;
-                    }
-                }
-                all
+                Self::unordered_eq(a, b, d)?
             }
             // 辞書は要素数と、各キーに対応する値を再帰比較（順序無関係・B2）。
             // ⚠ キーは `DictKey` として既に一意なので、`a` の各キーが `b` にも在って
@@ -279,7 +286,8 @@ impl Interpreter {
             // ── 参照の同一性で比べる値 ────────────────────────────────────────
             // ⚠ これらの腕が**丸ごと無かった**ため、`_ => false` に落ちて
             //   **`f == f` すら False** だった（実測）。「あらゆる型を dict のキーに」の前提。
-            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
+            // 束縛メソッド（タスク 1-8）は読むたびに作り直すので「同じ受け手の同じメソッド」で比べる。
+            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b) || crate::interpreter::FnValue::same_binding(a, b),
             (Value::OverloadedFn(a), Value::OverloadedFn(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| Rc::ptr_eq(x, y))
             }
@@ -306,6 +314,26 @@ impl Interpreter {
             _ => false,
         };
         Ok(eq)
+    }
+
+    /// 集合（`set` / `frozenset`）の要素どうしの等値: 要素数が同じで、`a` のどの要素も `b` にある（順序無関係）。
+    fn unordered_eq(a: &[Value], b: &[Value], depth: u32) -> Result<bool, String> {
+        if a.len() != b.len() {
+            return Ok(false);
+        }
+        for v in a {
+            let mut found = false;
+            for w in b {
+                if Self::values_eq_at(v, w, depth)? {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// `Option<Value>` どうしの等値（`Slice` の begin/end/step 用）。
@@ -369,7 +397,17 @@ impl Interpreter {
     /// ⚠ 昇格は**比較のオペランドにだけ**掛かり、コンテナの中までは再帰しない
     ///   （「比較の場所でキャストする」規則の素直な帰結）。実測される差:
     ///   `1 == 1.0` は True だが `[1] == [1.0]` は False。
+    ///
+    /// ⚠ `set` と `frozenset` も**ここでだけ**比べる（`frozenset({1}) == {1}` は真・CPython と同じ・タスク 3-1）。
+    ///   値の同一性（`values_eq`）は型厳密のまま。数値の昇格と同じく、オペランドの直下だけの規則
+    ///   （`[{1}] == [frozenset({1})]` は偽。`[1] == [1.0]` が偽なのと同じ）。
     pub(crate) fn values_eq_expr(&self, a: &Value, b: &Value) -> Result<bool, String> {
+        match (a, b) {
+            (Value::Set(s), Value::FrozenSet(f)) | (Value::FrozenSet(f), Value::Set(s)) => {
+                return Self::unordered_eq(&s.borrow(), f, 0);
+            }
+            _ => {}
+        }
         match Self::numeric_eq_promoted(a, b) {
             Some(x) => Ok(x),
             None => self.values_eq(a, b),
@@ -429,23 +467,14 @@ impl Interpreter {
     /// `values_eq` を直接呼んでいたため、**`a == b` は真なのに `a in [b]` は偽**という
     /// 食い違いが起きていた（実測）。dict の検索は `DictKey`（ハッシュ）で引くので
     /// ここを通らず、`__eq__` は今も効かない — 解消は B1-c（辞書コンテナの差し替え）で。
+    ///
+    /// ⚠ `__eq__` は `==` 演算子と同じ手順で探す（左が `NotImplemented` を返せば右の `__eq__`、最後は同一性・
+    ///   タスク 6-12）。答えは真偽で読む（CPython の `PyObject_RichCompareBool`）。
     pub(crate) fn values_eq_dyn(&mut self, a: &Value, b: &Value) -> Result<bool, String> {
-        if let Value::Instance(inst) = a {
-            let has_eq = inst.borrow().class.methods.contains_key("__eq__");
-            if has_eq {
-                let r = self.eval_method_call_evaled(
-                    a.clone(),
-                    "__eq__",
-                    vec![(None, b.clone(), true)],
-                )?;
-                return match r {
-                    Value::Bool(x) => Ok(x),
-                    other => Err(format!(
-                        "TypeError: __eq__ should return bool, not '{}'",
-                        self.type_name(&other)
-                    )),
-                };
-            }
+        let has_eq = |v: &Value| matches!(v, Value::Instance(i) if i.borrow().class.methods.contains_key("__eq__"));
+        if has_eq(a) || has_eq(b) {
+            let r = self.apply_binop_dyn(&crate::ast::BinOp::Eq, a.clone(), b.clone())?;
+            return self.eval_truthy(&r);
         }
         self.values_eq_expr(a, b)
     }
@@ -500,13 +529,36 @@ impl Interpreter {
     /// - 値型 (`Int`, `Float`, `Str` など) は参照の概念がないため `values_eq` と同じ挙動にする。
     pub(crate) fn values_ref_eq(&self, a: &Value, b: &Value) -> Result<bool, String> {
         Ok(match (a, b) {
-            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            // 唯一の値（`Ellipsis`・タスク 6-11）は種類が同じなら同じ物（スレッドへ送った複製は別の `Rc` になる）。
+            (Value::Instance(a), Value::Instance(b)) => {
+                Rc::ptr_eq(a, b) || {
+                    let (ka, kb) = (a.borrow().class.builtin, b.borrow().class.builtin);
+                    ka == kb && Self::is_singleton_kind(ka)
+                }
+            }
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            // 別の種類の値は同じ物ではない（`values_eq_expr` は set と frozenset を等しいとする・タスク 3-1）。
+            (Value::Set(_), Value::FrozenSet(_)) | (Value::FrozenSet(_), Value::Set(_)) => false,
             _ => self.values_eq_expr(a, b)?,
         })
+    }
+
+    /// 唯一のインスタンスしか持たない組み込みのクラスか（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）。
+    pub(crate) fn is_singleton_kind(kind: crate::interpreter::BuiltinClass) -> bool {
+        use crate::interpreter::BuiltinClass as B;
+        match kind {
+            B::Ellipsis | B::NotImplemented => true,
+            B::Ordinary | B::Object => false,
+        }
+    }
+
+    /// `NotImplemented`（演算子メソッドが「答えない」と返した値・タスク 6-12）か。
+    pub(crate) fn is_not_implemented(v: &Value) -> bool {
+        matches!(v, Value::Instance(i)
+            if i.borrow().class.builtin == crate::interpreter::BuiltinClass::NotImplemented)
     }
 }
 

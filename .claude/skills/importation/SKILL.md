@@ -228,6 +228,87 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   `self.Inner()` reach it through the method-call fallback `Interpreter::class_var_class`. Any class-body
   statement other than methods, single-name class attributes, nested classes, docstrings, `...` and
   `pass` is a conversion error (it used to be dropped silently).
+- ⚠ Unsupported builtins (python_builtins_plan.md 1-1): after a successful conversion,
+  `check_unsupported_builtins` (`python_converter/builtins_check.rs`) folds the Python AST once and
+  rejects the module if it **reads** a CPython 3.12 builtin that the Arrow runtime does not resolve
+  (`is_runtime_builtin_name` is false — the list shrinks automatically as builtins are added). Names
+  bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
+  a module with `from m import *` is not checked. Structural conversion errors are reported first.
+- Reference sharing (known_bugs.md #1, decision A): every implicit copy on store goes through
+  `Interpreter::copy_for_store` (fields, `append`, `xs[i] = v`, dict / set stores, closure capture) or, for a
+  `mut` declaration, `Interpreter::bind_copy(BindCopy::DeepCopy, ..)`; neither copies while `running_python` is set. `vm::run` / `vm::resume_frame`
+  set it from `Chunk::is_python` (module-statement chunks of a Python module get it in `try_run_module_stmt`) and
+  `exec_module` sets it for a Python module body. `ClassValue::is_python` (set by `exec_class_def` from
+  `in_python_module`) makes `values_eq` / `hash_into` use identity for instances without `__eq__` / `__hash__`.
+  Arrow `let` (`bind_copy(CopyFreeze)`), `self` binding, native calls and `copy()` still copy.
+- `del` (known_bugs.md #2 / #3; `convert_del_target` in `statements.rs`): `del o.a` → `__py_delattr(o, "a")`
+  (`Interpreter::del_attr_val`: the class's `__delattr__`, then a data descriptor's `__delete__`, then
+  `InstanceData::clear_field` puts the field back to unassigned — the boxed slot becomes `None`, a raw class clears its
+  init-bitmap bit); `del d[k]` → `__py_delitem(d, k)` (`Interpreter::eval_delitem`: dict / list / slice /
+  `__delitem__`); `del x` still warns and is ignored; tuple / list targets are flattened left to right. Class and
+  module attributes cannot be deleted (runtime `TypeError`). A `del` in a class body is still a conversion error.
+- `__setattr__` / `__delattr__` (known_bugs.md #10): `attr_assign_evaled` / `set_attr_val` / `del_attr_val` call a Python
+  class's hook first (`Interpreter::py_attr_hook` — `ClassValue::is_python` only). `object.__setattr__(o, k, v)` /
+  `object.__delattr__(o, k)` and `super().__setattr__` / `__delattr__` in an object-based class convert to
+  `__py_object_setattr` / `__py_object_delattr` (`object_method_builtin` in `expressions.rs`), which store past the hook
+  (`attr_assign_without_hook` / `del_attr_val(.., false)`); with a Python base, `Base.__setattr__(self, ..)` falls back to
+  them in `eval_class_method` when the base has no hook. A literal name in `object.__setattr__(self, "x", v)` declares
+  field `x` (`bypass_setattr_name` in `classes.rs`). The checker lets an assignment target on a hooked class name
+  anything (`attr_is_assign_target`). `cached_property` stores through `__py_object_setattr`. The Arrow parser rejects
+  the hooks in Arrow classes (`reject_attr_hook`).
+- Static / class methods through an instance (known_bugs.md #5): for a Python class (`ClassValue::is_python`)
+  `call_instance_method_evaled` sends `obj.f(..)` of a `static fn` / `class_method fn` to `eval_class_method` with the
+  instance's class (static: no `self`; class method: `cls = type(obj)`), and `get_attr_without_hook` returns the plain
+  function / a `BoundTarget::ClassMethod` bound to the class. The checker skips `StaticMethodOnInstance` for
+  `TypeRegistry::is_python_class` (classes collected from an `import[py]` body). Arrow classes keep the class-only rule.
+- `__getattr__` (known_bugs.md #11): `get_attr_val` calls `get_attr_without_hook` and, when that fails with an
+  `AttributeError` (`Interpreter::is_attribute_error` — a message, or a raised exception in `current_exception`, which
+  it clears), calls a Python class's `__getattr__(name)`. A method call on an unknown name reads through it
+  (`call_instance_method_evaled`). `object.__getattribute__(o, k)` / `super().__getattribute__(k)` convert to
+  `__py_object_getattribute` (`get_attr_without_hook`). The checker lets an instance of a hooked class read or call any
+  name (`getattr_hook_type` — the hook's return annotation, else `Any`). `getattr(o, k, d)` / `hasattr` use the same
+  `is_attribute_error`, so an `AttributeError` raised by a property getter or the hook is caught.
+- `__getattribute__` (known_bugs.md #12): `get_attr_val` calls a Python class's `__getattribute__(name)` instead of
+  `get_attr_without_hook` (then `__getattr__` on `AttributeError`). An explicit method call `o.m(..)` — recognised by the
+  method cache that only source call sites pass (`call_instance_method_evaled`; internal special-method calls pass
+  `None`) — reads `m` through the hook and calls the result, so `o.__len__()` goes through it but `len(o)` does not.
+  No field / method cache is filled for such a class (both are filled only past the hook). The checker treats it like
+  `__getattr__` (`getattr_hook_type`), and the Arrow parser rejects it in Arrow classes (`reject_attr_hook`).
+- `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
+  `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
+  `super().__init__(..)` in a class without a base (or with base `object`) becomes
+  `__py_object_init(self, ..)` (CPython's `TypeError` on extra arguments); any other `super().m()` there is a
+  conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call. `super(C, x).m(..)` (6-2) is
+  the same rewrite with receiver `x` when `C` is the class being converted (`current_super_class`); any other `C` is
+  a conversion error (`super_form` in `expressions.rs`; `builtins_check` skips the same shape).
+- `super()` with a Python base (known_bugs.md #6): `super().m(..)` becomes the Python-only internal builtin
+  `__py_super(<first base>, receiver, "m", ..)`. The zero-argument receiver is the current function's first parameter
+  (`SuperReceiverGuard` / `current_super_receiver` in `supers.rs` — `cls` in a class method; none in a static method or
+  a parameterless function, which is a conversion error). `Interpreter::py_super_call` (`class_methods.rs`) runs the
+  base's own function: a class method gets `cls` = the receiver (or its class), a static method gets no receiver, a
+  class receiver calling an instance method passes no `self`; anything else falls back to the old
+  `Base.m(receiver, ..)` (`eval_class_method` — exceptions' `__init__`, `object` hooks).
+- `f = staticmethod(f)` / `g = classmethod(f)` in a class body (6-13, `wrapped_method` in
+  `python_converter/classes.rs`) mark an earlier method static / class (a different name adds a copy). Wrapping
+  anything other than an earlier method of the class is a conversion error; `builtins_check` skips exactly this form.
+- `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
+  (same body); a nested tuple is a conversion error (4-3 / 4-4).
+- ⚠ Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method with a
+  decorator `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` is
+  renamed (`__property_get_x` / `__property_set_x` / `__property_del_x`), `x` becomes a placeholder
+  `static mut x: Any = None`, and statements **after the class** build the built-in `property`
+  (`C.x = property(C.__property_get_x)`, `C.x.__set_name__(C, "x")`, `C.x = C.x.setter(..)`). Reads and
+  writes then go through the descriptor protocol (1-12). `self.x = v` does not make `x` a field; fields
+  are also collected from `self.attr = ..` in methods other than `__init__` (not for class-attribute or
+  method names). Decorators inside the property decorator apply to the method; decorators outside it
+  wrap the built property (`C.x = logged(C.x)`, 6-6). Conversion errors: two property decorators,
+  `@staticmethod` / `@classmethod` / `@abstractmethod` outside one, `@x.setter` on a method with another
+  name or before `@property def x`, a static/class-method property, `@cached_property`.
+- Class-body names (6-3, `classes.rs` + `class_scope.rs`): a class attribute whose initializer reads a name
+  bound earlier in the class body (method / class attribute / nested class) gets a `None` placeholder and
+  `C.x = <expr with those names rewritten to C.name>` after the class (`ClassNameRewriter`; lambda bodies and
+  comprehension elements are not rewritten, as in Python). `alias = method` / `__repr__ = __str__` define the
+  same method again under the new name; `name = lambda self: ..` becomes a method.
 - Cache key: `("py", key)`
 
 ### Python Interface (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)
@@ -263,6 +344,9 @@ set / frozenset ↔ Arrow set (a set with an element Arrow cannot hold stays a `
 instances become `float`, and a Python `int` that does not fit in i64 stays a `PyObject` — ⚠ both used to be converted
 to `float` silently (`2**70`, `Decimal("0.1")`). Values Python cannot take (Arrow instances) are `TypeError` naming the
 class (it used to say `'unknown'`).
+A `.py` file's signatures come from the line-based extractor `parser/py_stub_extract.rs` (top-level `def` / `class`
+only). An unannotated function returns `Any` — nothing is inferred from its body (ffi_value_exchange_plan.md 7-27 /
+7-30), so a body on the `def` line (`def f(): return 1`) needs no special case (python_builtins_plan.md 1-19).
 
 ---
 

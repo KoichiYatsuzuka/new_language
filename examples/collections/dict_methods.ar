@@ -1,0 +1,61 @@
+# dict_methods.ar — dict のメソッド（python_builtins_plan.md のタスク 3-6）
+#
+# CPython と同じ dict のメソッド:
+#   get(k, default=None) / pop(k[, default]) / setdefault(k, default=None) / update(other, **kw) /
+#   popitem() / clear() / copy()（keys / values / items / __iter__ は従来どおり）
+# キーを引くのは `d[k]` と同じ（`__hash__` / `__eq__` を尊重）。型つきの辞書（`dict[str, int]`）へ入れる
+# `update` / `setdefault` は `d[k] = v` と同じく型を確かめる。
+# 静的な型: `d.get(k)` は `Option[V]`、`d.get(k, 0)`（既定値が値と同じ型）は `V`、`d.pop(k)` は `V`、
+# `d.popitem()` は `tuple[K, V]`。書き換えるメソッドは `let` の辞書には呼べない（dict_methods_error.ar）。
+#
+# ⚠ `copy()` は Arrow では深い写し（`mut e = d` と同じ・CPython は浅い写し）。
+# ⚠ `del d[k]` は無い（別の判断待ち）。取り除くのは `d.pop(k)`。
+# ⚠ 以前は get / pop などが静的には通り、実行時に `AttributeError: 'dict' object has no method 'get'` だった。
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+mut stock: dict[str, int] = {"apple": 3, "pear": 1}
+
+# get: 無ければ None か既定値
+let n: int = stock.get("apple", 0)
+let missing = stock.get("kiwi")
+check(n == 3 and missing is None and stock.get("kiwi", 0) == 0, "get")
+
+# pop: 取り除いてその値。無ければ既定値か KeyError
+let pears: int = stock.pop("pear")
+check(pears == 1 and len(stock) == 1 and stock.pop("pear", -1) == -1, "pop")
+mut msg = ""
+try:
+    let gone = stock.pop("pear")
+except KeyError as e:
+    msg = str(e)
+check(msg == "'pear'", "pop KeyError")
+
+# setdefault: あればその値・無ければ入れて返す
+check(stock.setdefault("plum", 7) == 7 and stock.setdefault("plum", 99) == 7, "setdefault")
+
+# update: 辞書・(キー, 値) の組の列・キーワード引数から
+stock.update({"apple": 10})
+stock.update([("fig", 2)], kiwi=4)
+print(stock)
+# {'apple': 10, 'plum': 7, 'fig': 2, 'kiwi': 4}
+
+# popitem は最後に入れたものから
+let newest: tuple[str, int] = stock.popitem()
+print(newest, len(stock))
+# ('kiwi', 4) 3
+
+# copy は別の辞書・clear は空にする
+mut backup = stock.copy()
+stock.clear()
+print(len(stock), len(backup))
+# 0 3
+
+# 数えてから表にする形
+mut counts: dict[str, int] = {}
+for w in ["a", "b", "a", "c", "a"]:
+    counts[w] = counts.get(w, 0) + 1
+print(counts)
+# {'a': 3, 'b': 1, 'c': 1}

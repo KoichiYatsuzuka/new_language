@@ -28,7 +28,7 @@ Arrow のクラスは**クラス継承をサポートしません**。
 pub struct ClassValue {
     pub name:       String,
     pub class_id:   u32,          // 宣言時に alloc_class_id() で発行した一意 ID
-    pub is_exception: bool,       // 例外クラス（make_error_class 経由）なら true
+    pub is_exception: bool,       // 組み込みの例外クラス（make_error_class 経由）なら true
     pub field_index: HashMap<String, usize>,  // フィールド名 → Vec インデックス
     pub field_count: usize,       // フィールドスロット総数
     // ... methods, field_defaults, class_vars, static_vars 等
@@ -497,11 +497,219 @@ match c:
 1. `class_val.field_defaults` の初期値を評価してフィールドマップを構築
 2. 初期 `flags` を計算（`is_exception` → `INST_IS_EXCEPTION`、`new_type_base.is_some()` → `INST_IS_NEW_TYPE`）
 3. `InstanceData { class_id, flags, class, fields }` を `Rc<RefCell<...>>` で生成
-4. `__init__` メソッドを検索してバインド
-5. `exec_fn_evaled` で `__init__` を実行
-6. `Value::Instance(...)` を返す
+4. 組み込みの例外の階層のクラスなら、作るときの位置引数を `args` に、CPython の `str(e)` を `message` に入れる
+   （[07_exceptions.md](07_exceptions.md) の「組み込みの例外を作る・表示する」）
+5. `__init__` メソッドを検索してバインド
+6. `exec_fn_evaled` で `__init__` を実行
+7. `Value::Instance(...)` を返す
 
 `class_id` は `ClassValue.class_id` から引き継がれます（`alloc_class_id()` で宣言時に発行済み）。
+
+---
+
+## メソッドを値として読む（束縛メソッド）
+
+`obj.method` を呼ばずに値として読むと、**受け手（`self`）を束縛した関数**になります（CPython の束縛メソッドと同じ）。
+
+```ar
+mut c = Counter(1)
+let add = c.add                      # 受け手 c を束縛した関数
+print(add(10))                       # c.add(10) と同じ
+print(list(map(c.add, [1, 2])))      # コールバックにも渡せる（sorted(key=obj.m) / シグナルの on も）
+print(c.get == c.get)                # True（同じ受け手の同じメソッドは等しい）
+```
+
+- 呼ぶと `obj.method(..)` と**同じ実体が同じ判定で**走ります（オーバーロードの選択・ネイティブのメソッドも）。
+- **受け手の不変は呼ぶ時点で**見ます: `let c` / `freeze` した受け手の `mut self` のメソッドは、束縛はできますが
+  呼ぶと `TypeError: cannot call mutable method '..' on immutable instance of '..'`（直接呼ぶのと同じ）。
+  束縛した関数の値が不変（`let add = ..`）であることと、それが受け手を書き換えることは別の話です。
+- アクセス制御は**読んだ時点で**見ます（クラスの中で `self._key` を取り出してコールバックに渡せば、外で呼ばれても通る）。
+- 表示は `<bound method Counter.add of <Counter object at 0x..>>`。シグナルの `off` も同じ照合で外れます。
+- クラスから読む `C.method` は従来どおり束縛しない関数です（`C.method(obj, ..)` で呼ぶ）。
+- `gen` メソッドも読めます（呼ぶとジェネレータ）。組み込みの値のメソッドも読めます（`push = out.append` /
+  `"s".upper` / `d.items` / `seen.add`。同じ値を書き換えます）。読める名前は `type_check/names.rs` の
+  `BUILTIN_VALUE_METHODS`（`complex` の `real` などは読めません）。表示は `<built-in method append of list object at 0x..>`。
+- **型**: `c.add` は `self` を除いたシグネチャの関数型（`function{let k: int}->int`）で、引数・戻り値を静的に検査します
+  （多重定義・可変長のメソッドは型引数なしの `function`）。⚠ 異なる関数型どうしの `==` は静的な誤りです。
+- **不変の受け手**: 型検査は「不変の受け手を書き換える」印を関数型に付け、**呼んだ行**を
+  `cannot call 'add' on 'c' — it is immutable`（`c.add(1)` と同じ誤り）にします。束縛した行は誤りにしません。
+  型検査が追えない渡し方（関数の引数に渡して中で呼ぶ）でも、インスタンスは実行時に止まります。⚠ list / dict / set は
+  実行時の不変の印を持たないので、そこは止まりません。
+- 実装: `FnValue::bound`（`BoundMethod { receiver, target }`・`target` は `Methods` / `Gen` / `Builtin`）。呼ぶと
+  `exec_fn_evaled` の入口で `call_bound_method` へ回ります（`Value` に種類は足していません）。
+
+---
+
+## 属性に入れた関数を呼ぶ
+
+メソッドの無い名前の `obj.f(x)` は、**属性を読んでその値を呼びます**（CPython と同じ）。フィールド・`const`・
+`static mut` に入れた関数（コールバック）をそのまま呼べます。
+
+```ar
+fn double(let x: int) -> int:
+    return x * 2
+
+class Holder:
+    let f: function[let int]->int
+    fn run(self, let x: int) -> int:
+        return self.f(x)              # フィールドの関数を呼ぶ
+
+let h = Holder(double)
+print(h.run(21))                      # 42
+print(h.f(4))                         # 8
+```
+
+- 同じ名前のメソッドがあればメソッドが先です（下の「メソッドの検索順序」）。
+- 読みは `obj.f` と同じ経路なので、アクセス制御・ディスクリプタ（次節）も同じに働きます。
+- **型**: フィールドの関数型で引数・戻り値を検査します。呼べない値（`let n: int` の `b.n(1)`）は
+  `'int' is not callable`（値を呼ぶのと同じ誤り）。
+
+---
+
+## ディスクリプタ（`__get__` / `__set__`）
+
+クラス側の値（`static mut` / `const`）が `__get__` を持つインスタンスなら、その属性は**ディスクリプタ**として働きます
+（CPython のディスクリプタのプロトコル。Python の `property` もこの仕組み）。
+
+```ar
+class Fahrenheit:
+    fn __get__(self, mut obj: Thermo, owner: Any = None) -> float:
+        return obj.celsius * 9.0 / 5.0 + 32.0
+    fn __set__(self, mut obj: Thermo, value: float) -> None:
+        obj.celsius = (value - 32.0) * 5.0 / 9.0
+
+class Thermo:
+    mut celsius: float
+    static mut fahrenheit: Fahrenheit = Fahrenheit()
+    fn __init__(mut self, c: float) -> None:
+        self.celsius = c
+
+mut t = Thermo(100.0)
+print(t.fahrenheit)       # 212.0（__get__(t, Thermo)）
+t.fahrenheit = 32.0       # __set__(t, 32.0)
+print(t.celsius)          # 0.0
+```
+
+| 書き方 | 働き |
+|---|---|
+| `obj.x`（読み） | ① **データディスクリプタ**（`__set__` か `__delete__` も持つ）なら `__get__(obj, C)` ② フィールド ③ 非データディスクリプタ（`__get__` だけ）なら `__get__(obj, C)` ④ クラス側の値そのもの ⑤ メソッド（束縛メソッド） |
+| `obj.x = v` | データディスクリプタなら `__set__(obj, v)`（`__set__` が無ければ `AttributeError: __set__`）。それ以外は従来どおり |
+| `C.x`（クラスから読む） | ディスクリプタなら `__get__(None, C)` |
+| `C.x = d`（クラスへ代入） | メンバーそのものを置き換える（`__set__` は呼ばない） |
+| `obj.x(..)` | 上の読みで得た値を呼ぶ（前節） |
+
+### データディスクリプタと非データディスクリプタ
+
+| 種類 | 持つメソッド | インスタンスから読む | インスタンス経由で代入する |
+|---|---|---|---|
+| データディスクリプタ | `__get__` と、`__set__` か `__delete__` | **フィールドより先に** `__get__(obj, C)` | `__set__(obj, v)`。`__set__` が無ければ `AttributeError: __set__` |
+| 非データディスクリプタ | `__get__` だけ | 同じ名前のフィールドが無ければ `__get__(obj, C)` | ディスクリプタを通らない（`static mut` なら共有セルを書き換える） |
+
+非データディスクリプタは「読むたびに計算する値」に使えます。`const` に置いてもかまいません:
+
+```ar
+class Greeting:
+    fn __get__(self, mut obj: Person, owner: Any = None) -> str:
+        return f"Hello, {obj.name}"
+
+class Person:
+    let name: str
+    const greeting: Greeting = Greeting()
+    fn __init__(mut self, name: str) -> None:
+        self.name = name
+
+let p = Person("Ada")
+print(p.greeting)             # Hello, Ada
+print(p.greeting.upper())     # HELLO, ADA（読んだ値は str）
+```
+
+- ⚠ Arrow のクラスではフィールドとクラス側の値に同じ名前を付けられないので、「フィールドより先か後か」の違いが
+  出るのは Python から変換したクラス（`__init__` が `self.x = ..` と書くクラス）だけです。
+
+### クラスから読む・関数を返す
+
+クラスから読むと `__get__` の `obj` は `None` です（CPython と同じ）。`__get__` が関数を返せば、その場で呼べます
+（「属性に入れた関数を呼ぶ」と同じ経路）:
+
+```ar
+class Where:
+    fn __get__(self, obj: Any, owner: Any = None) -> str:
+        if obj is None:
+            return "through the class"
+        return "through an instance"
+
+class Spot:
+    static mut where: Where = Where()
+
+print(Spot.where)             # through the class
+print(Spot().where)           # through an instance
+
+fn double(x: int) -> int:
+    return x * 2
+
+class Op:
+    fn __get__(self, obj: Any, owner: Any = None) -> function[let int]->int:
+        return double
+
+class Calc:
+    static mut op: Op = Op()
+
+print(Calc().op(21))          # 42
+```
+
+### 型と注意
+
+- **型**: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は `__set__` の `value` の型、クラス経由の代入は
+  メンバーの宣言型（ディスクリプタのクラス）と照合します（[08_type_system.md](08_type_system.md) の「属性の型」）。
+  `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにはなりません。
+  ```ar
+  t.fahrenheit = "hot"      # StaticTypeError: field 'fahrenheit' of class 'Thermo' is declared 'float' but got 'str'
+  ```
+- 複合代入 `t.fahrenheit += 18.0` は `__get__` で読んで `__set__` で書きます。
+- ⚠ `obj` を書き換える `__set__` / `__get__` は仮引数を `mut obj` にしてください（`let` の仮引数は `mut` の実引数を写すので、
+  書き換えが元に届かない呼び方があります）。
+- ⚠ `__get__` が `self` を返すとき（クラスから読んだら自分自身を返す形）は `mut self` にしてください。`self` のままだと
+  `return self` は写しを返します（Arrow の値の規則）。組み込みの `property` はそうしています。
+- ⚠ インスタンスのフィールド（`mut f: D`）に入れた値はディスクリプタとして働きません（CPython と同じ）。
+- ⚠ Arrow のソースに `del obj.x` の構文はありません。`__delete__` を呼ぶのは Python のモジュール（`import[py]`）の
+  `del obj.x` です（[09_imports.md](09_imports.md) の「`del`」）。
+- 実装: `eval/attrs.rs` の `get_attr_val` / `attr_assign_evaled` / `set_attr_val`（3 つの入口だけ）。型検査は
+  `TypeChecker::class_descriptor`。例題は `examples/classes/descriptor.ar`（CPython と同じ出力）・`descriptor_error.ar`。
+
+---
+
+## 組み込みの `property`
+
+CPython 3.12 の `property` と同じ振る舞いのクラスです（データディスクリプタ）。Python の `@property` / `@x.setter` は
+変換器がこれで組み立てます（[09_imports.md](09_imports.md) の「クラスの属性・property」）。
+
+| 書き方 | 働き |
+|---|---|
+| `property(fget=None, fset=None, fdel=None, doc=None)` | 作る。欄 `fget` / `fset` / `fdel` / `__doc__` で読める |
+| `p.getter(f)` / `p.setter(f)` / `p.deleter(f)` | その関数だけを差し替えた**新しい** property を返す（名前も写す） |
+| `p.__set_name__(owner, name)` | 誤りの文言に使う名前を入れる（CPython ではクラスを作るときに呼ばれる） |
+| `obj.x` / `obj.x = v` | `fget(obj)` / `fset(obj, v)`。無ければ CPython と同じ `AttributeError` |
+| `C.x` | property そのもの（`C.x is C.x` は真・`type(C.x).__name__` は `property`） |
+
+誤りの文言は CPython と同じです:
+
+```text
+AttributeError: property 'value' of 'ReadOnly' object has no setter
+AttributeError: property of 'ReadOnly' object has no getter      # 名前を入れていない property
+```
+
+- `fget` などには束縛しない関数（`C.get_x`。呼ぶと `self` に `obj` が入る）も普通の関数も渡せます。
+- ⚠ `property(..)` の値そのものの型は `Any` です（`property[T]` のような型は付けていません）。Arrow のクラスで型を付けたいときは、
+  型を付けたディスクリプタのクラス（上の節）を書いてください。Python のクラスの `@property` は、getter の戻り値の注釈
+  （`def x(self) -> float`）が Arrow から読んだ値の型になります（[09_imports.md](09_imports.md)・タスク 6-8）。
+- ⚠ Arrow で書いたクラスで（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）、名前 `property` を初めて引いたときに組み立てます。
+  CPython 3.12 の property は `__name__` を持たないので、名前は外から読めない欄に置いています。
+- 組み込みの `cached_property`（`functools.cached_property`・タスク 6-5）も同じく Arrow で書いた非データディスクリプタです
+  （`PY_CACHED_PROPERTY_SRC`）。初めて読んだときに計算した値をインスタンスの**同じ名前のフィールド**へ入れ、以後は
+  フィールドが勝ちます。Arrow のクラスは同じ名前を 2 度宣言できないので、使うのは Python のクラスの `@cached_property`
+  （変換器が置き場とフィールドを並べて宣言する・[09_imports.md](09_imports.md)）です。
+  ⚠ 非データディスクリプタと同じ名前のフィールドがあると、インスタンスへの代入はフィールドへ入ります（CPython の
+  インスタンスの `__dict__` と同じ）。
 
 ---
 
@@ -510,26 +718,55 @@ match c:
 | メソッド名 | 呼ばれる場面 |
 |---|---|
 | `__init__(mut self, ...)` | インスタンス化時 |
-| `__repr__(self)` | `repr(obj)` / デバッグ表示 |
-| `__str__(self)` | `str(obj)` / `print(obj)` |
+| `__repr__(self)` | `repr(obj)` / `"%r" % obj` / コンテナの中の表示（`print([obj])` / `str((obj, 1))`）/ `__str__` が無いときの `str(obj)` / `print(obj)` |
+| `__str__(self)` | `str(obj)` / `print(obj)` / `"%s" % obj`（コンテナの中では使われない。CPython と同じ・[03_expressions.md](03_expressions.md) の「文字列の `%` 書式」） |
+| `__format__(self, spec: str) -> str` | `format(obj, spec)` / `f"{obj:spec}"` / `f"{obj}"`（空の指定）/ `"{:spec}".format(obj)`。無ければ空の指定のときだけ `str(obj)`（[12_builtins.md](12_builtins.md) の「`format`」） |
 | `__len__(self)` | `len(obj)` |
 | `__iter__(self)` | `for x in obj` (gen メソッド) |
 | `__next__(self)` | イテレータの次要素取得 |
 | `__getitem__(self, let key)` | `obj[key]` |
 | `__setitem__(mut self, let key, let val)` | `obj[key] = val` |
-| `__add__(self, let other)` | `obj + other` |
+| `__add__(self, let other)` | `obj + other`（`__sub__` / `__mul__` / `__truediv__` / `__floordiv__` / `__mod__` / `__pow__` / `__and__` / `__or__` / `__xor__` / `__lshift__` / `__rshift__` も同じ） |
+| `__radd__(self, let other)` | `other + obj` で左が答えないとき（反対側・下の「演算子メソッドの手順」。`__rsub__` など） |
+| `__eq__` / `__ne__` / `__lt__` / `__gt__` / `__le__` / `__ge__` | 比較。`!=` は `__ne__` が無ければ `__eq__` の反対 |
 | `__cast__[T](let other: T)` | 自動キャスト |
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
+| `__get__(self, mut obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節。クラスから読むと `obj` は `None`） |
+| `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
+| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる。Python のモジュールの `del obj.x` が呼ぶ（⚠ Arrow のソースには `del` の構文が無い） |
+| `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
+| ⚠ `__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__` | **Arrow のクラスでは定義できない**（パースの誤り）。属性の操作の上書きは Python のモジュール（`import[py]`）のクラスだけ（[09_imports.md](09_imports.md) の「`__setattr__` / `__delattr__`」「`__getattr__`」「`__getattribute__`」） |
+
+### 演算子メソッドの手順
+
+二項演算子は CPython と同じ手順で演算子メソッドを探します（python_builtins_plan.md のタスク 6-12）:
+
+1. 右が左の真の派生（Python のクラスの継承）で反対側のメソッドを持てば、右を先に試す
+2. 左の演算子メソッド（`a + b` なら `a.__add__(b)`）
+3. それが無いか `NotImplemented` を返したら、右の反対側のメソッド（`b.__radd__(a)`）。比較は向きを入れ替えた名前（`a < b` の右は `b.__gt__(a)`）、`==` / `!=` は同じ名前。左と同じクラスなら呼ばない。左が組み込みの値（`2 * v`）でも試す
+4. 全部駄目なら、`==` / `!=` は同一性、ほかは `TypeError`（`unsupported operand type(s) for +: 'Vec' and 'int'` / `'<' not supported between instances of ..`・CPython と同じ文言）
+
+```ar
+fn __mul__(self, k: Any) -> Any:
+    if k is int:
+        return Vec(self.x * k, self.y * k)
+    return NotImplemented          # 答えない ⇒ 反対側を試す
+fn __rmul__(self, k: Any) -> Any:  # 3 * v
+    return self.__mul__(k)
+```
+
+- `__eq__` が無いクラスどうしの `==` は従来どおり中身で比べます（どちらの側にもメソッドが無いとき）。
+- `str % x` は `str` の書式で、`x.__rmod__` は呼びません（CPython と同じ）。
+- ⚠ 静的な検査は左のメソッドの仮引数だけを見ます（右の反対側のメソッドは見ない）。例題は `examples/classes/reflected_operators.ar`。
 
 ---
 
-## クラスメソッドの検索順序
+## メソッドの検索順序
 
-メソッドを呼び出すとき:
+`obj.m(..)` を呼び出すとき:
 
-1. `instance.fields` を検索 (フィールド値に関数が格納されている場合)
-2. `instance.class.methods` を検索
-3. `instance.class.bases` (継承した trait) を再帰的に検索
-4. 見つからなければ `AttributeError`
-
-trait のデフォルト実装も `bases` 経由で検索されます。
+1. クラスのメソッド表（`methods`。trait のデフォルト実装は定義時に平坦化済み）を検索する
+2. 無ければ、クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()`）
+3. それも無く、フィールド・`const`・`static mut` にその名前があれば、**属性として読んで（ディスクリプタを含む）
+   その値を呼ぶ**（「属性に入れた関数を呼ぶ」）
+4. 見つからなければ `AttributeError: '..' object has no method '..'`

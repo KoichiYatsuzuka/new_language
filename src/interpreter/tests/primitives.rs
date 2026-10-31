@@ -1,4 +1,4 @@
-// tests/primitives.rs — uint プリミティブ型と id() 組み込み関数のテスト。
+// tests/primitives.rs — uint プリミティブ型・id() 組み込み関数・int の `//` / `%` のテスト。
 
 use super::*;
 
@@ -203,4 +203,142 @@ fn test_str_lengths_and_positions_count_characters() {
         other => panic!("{name}: expected an int, got {other:?}"),
     };
     assert_eq!((int("n"), int("i"), int("j"), int("k"), int("c")), (6, 3, 1, 4, 1));
+}
+
+// ---------------------------------------------------------------------------
+// int `//` / `%`（CPython と同じ丸め）
+// ---------------------------------------------------------------------------
+
+/// 整数の `//` / `%` が CPython と同じく、商を負の無限大の方向へ丸め、余りを割る数と同じ符号にするか。
+///
+/// ⚠ 以前は `div_euclid` / `rem_euclid` で、割る数が負のときだけ違った（`-7 // -2` が 4・`7 % -2` が 1）。
+#[test]
+fn test_int_floor_div_mod_follow_cpython() {
+    use crate::interpreter::ops::{py_floor_div, py_mod};
+    // (a, b, a // b, a % b) — 値は CPython 3.12 で取った。
+    let cases = [
+        (7, 2, 3, 1),
+        (-7, 2, -4, 1),
+        (7, -2, -4, -1),
+        (-7, -2, 3, -1),
+        (1, -5, -1, -4),
+        (-6, 2, -3, 0),
+        (6, -2, -3, 0),
+        (0, -3, 0, 0),
+    ];
+    for (a, b, q, r) in cases {
+        assert_eq!(py_floor_div(a, b), q, "{a} // {b}");
+        assert_eq!(py_mod(a, b), r, "{a} % {b}");
+        assert_eq!(py_floor_div(a, b) * b + py_mod(a, b), a, "{a}, {b}");
+    }
+    // あふれる組はパニックしない（`%` は正しく 0、`//` は `+` などと同じく折り返す）。
+    assert_eq!(py_mod(i64::MIN, -1), 0);
+    assert_eq!(py_floor_div(i64::MIN, -1), i64::MIN);
+}
+
+/// ツリーウォーク（最上位）と VM の int 特化（関数の中・複合代入）が同じ結果になるか。
+#[test]
+fn test_int_floor_div_mod_negative_divisor_in_vm_and_toplevel() {
+    let src = concat!(
+        "fn f(a: int, b: int) -> int:\n",
+        "    mut x = a\n",
+        "    x //= b\n",
+        "    return x * 100 + a % b\n",
+        "let top = -7 // -2 * 100 + 7 % -2\n",
+        "let in_fn = f(-7, -2)\n",
+    );
+    // -7 // -2 = 3、7 % -2 = -1、-7 % -2 = -1
+    assert!(matches!(run_get(src, "top"), Value::Int(299)));
+    assert!(matches!(run_get(src, "in_fn"), Value::Int(299)));
+}
+
+/// float の `//` / `%` が CPython 3.12 の `_float_div_mod` と同じ値になるか（タスク 1-2）。
+///
+/// ⚠ `a - floor(a/b)*b` では端の値（`0.1 % 0.01`・`-1.0 % inf`）がずれる。符号つきの 0 も見る。
+#[test]
+fn test_float_floor_div_mod_follow_cpython() {
+    use crate::interpreter::ops::py_float_div_mod;
+    let inf = f64::INFINITY;
+    // (a, b, a // b, a % b) — 値は CPython 3.12.2 で取った。
+    let cases = [
+        (7.5, 2.0, 3.0, 1.5),
+        (-7.5, 2.0, -4.0, 0.5),
+        (7.5, -2.0, -4.0, -0.5),
+        (-7.5, -2.0, 3.0, -1.5),
+        (0.1, 0.01, 10.0, 3.469446951953614e-18),
+        (1.0, inf, 0.0, 1.0),
+        (-1.0, inf, -1.0, inf),
+    ];
+    for (a, b, q, r) in cases {
+        let (gq, gr) = py_float_div_mod(a, b);
+        assert_eq!((gq, gr), (q, r), "{a} // {b}, {a} % {b}");
+    }
+    // 余りが 0 なら割る数の符号、商が 0 なら真の商の符号（符号つきの 0）。
+    let (q, r) = py_float_div_mod(6.0, -3.0);
+    assert_eq!((q, r.to_bits()), (-2.0, (-0.0f64).to_bits()));
+    let (q, _) = py_float_div_mod(-0.0, 1.0);
+    assert_eq!(q.to_bits(), (-0.0f64).to_bits());
+    // 実行の経路（int との混在・ゼロ除算の文言）。
+    let src = "let a = -7 // 2.0\nlet b = 7.5 % -2\n";
+    assert!(matches!(run_get(src, "a"), Value::Float(f) if f == -4.0));
+    assert!(matches!(run_get(src, "b"), Value::Float(f) if f == -0.5));
+    assert!(run_err_msg("let z = 1.0 // 0.0\n").contains("float floor division by zero"));
+    assert!(run_err_msg("let z = 1.0 % 0.0\n").contains("float modulo"));
+}
+
+// ---------------------------------------------------------------------------
+// float / complex の表示（python_builtins_plan.md のタスク 1-5）
+// ---------------------------------------------------------------------------
+
+/// float の表示（`str` / `repr` / `print`）が CPython 3.12 の `repr` と同じか。
+///
+/// ⚠ 期待値は CPython 3.12.2 の `repr(x)` をそのまま写した。10 進の指数が -4 以下か 16 より大きければ指数表記、
+///   それ以外は小数表記に `.0` を足す（`PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)`）。
+#[test]
+fn test_float_display_follows_cpython_repr() {
+    use crate::interpreter::ops::py_float_repr;
+    let cases: [(f64, &str); 25] = [
+        (0.0, "0.0"),
+        (-0.0, "-0.0"),
+        (1.0, "1.0"),
+        (-2.5, "-2.5"),
+        (0.1, "0.1"),
+        (100.0, "100.0"),
+        (123.456, "123.456"),
+        (1e15, "1000000000000000.0"),
+        (1e16, "1e+16"),
+        (1.5e16, "1.5e+16"),
+        (1.2345678901234568e16, "1.2345678901234568e+16"),
+        (1e-4, "0.0001"),
+        (1e-5, "1e-05"),
+        (1.5e-7, "1.5e-07"),
+        (3.469446951953614e-18, "3.469446951953614e-18"),
+        (2.5e300, "2.5e+300"),
+        (-1e100, "-1e+100"),
+        (f64::INFINITY, "inf"),
+        (f64::NEG_INFINITY, "-inf"),
+        (f64::NAN, "nan"),
+        (0.30000000000000004, "0.30000000000000004"),
+        (1.0 / 3.0, "0.3333333333333333"),
+        (9007199254740992.0, "9007199254740992.0"),
+        (5e-324, "5e-324"),
+        (f64::MAX, "1.7976931348623157e+308"),
+    ];
+    for (f, want) in cases {
+        assert_eq!(py_float_repr(f), want, "{f:e}");
+    }
+    // complex は成分に `.0` を付けず、実部が +0 なら虚部だけ（括弧なし）。CPython の `complex_repr`。
+    let interp = Interpreter::new();
+    for ((re, im), want) in [
+        ((0.0, 2.0), "2j"),
+        ((-0.0, 2.0), "(-0+2j)"),
+        ((1.0, -2.0), "(1-2j)"),
+        ((1.5, 0.0), "(1.5+0j)"),
+        ((0.0, 0.0), "0j"),
+        ((1e20, 1e-5), "(1e+20+1e-05j)"),
+        ((1.0, -0.0), "(1-0j)"),
+        ((1.0, f64::INFINITY), "(1+infj)"),
+    ] {
+        assert_eq!(interp.display(&Value::Complex(re, im)), want, "{re} {im}");
+    }
 }

@@ -8,6 +8,9 @@
     where `make_var_immutable` rewrites the variable itself, so `x` stays immutable for
     the rest of its lifetime.
   - ⚠ A class may define `fn __freeze__(mut self)`, which runs once at the `freeze`.
+  - ⚠ `freeze x` gives **the same result as `let x = x`** (task 1-9, one implementation
+    `bind_copy(BindCopy::CopyFreeze, ..)`): `x` is rebound to a frozen **deep copy**, so other holders of the object
+    (e.g. a caller that passed it to a `mut` parameter) stay mutable. Works inside functions.
 - **`const` is immutable as a whole** (top-level, local, class, trait, enum member — implicitly — and an
   imported module's `const`). Assigning to it (`C.K = ..`, `c.K = ..`, `self.K = ..` even in `__init__`,
   `m.K = ..`) and writing into it (`C.L[0] = ..`, `c.L.append(..)`, `c.O.x = ..`, `m.L[0] = ..`) are static
@@ -39,6 +42,9 @@
   `tags.ar` is the type `tags.Tag` (a nested path gives `a.b.Tag`), distinct from a `Tag` in the main program or in
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
   `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too.
+  - ⚠ The same holds for classes of an `import[py]` module (`import[py] zoo as z` → `z.Dog`). A Python
+    class also matches the names of its base classes (`p is z.Animal` for `class Dog(Animal)`), as CPython's
+    `isinstance` does. `import[py-int]` classes (CPython objects) follow the foreign-stub rule below instead.
   - ⚠ A module's name is **per file** (2026-10-02): its path relative to the entry file's directory
     (`pkg.util`; above the entry directory each level is `__parent__`, e.g. `__parent__.util`). The same file
     imported under different spellings is one module; two files never share a name (so `util.ar` and
@@ -77,6 +83,32 @@
   only inherit traits). `Exception` is the base of **every** exception, built-in or user-defined
   (task 10-19), so `except Exception` catches them all, as in Python. `except Error` is a static
   error pointing to `except Exception`.
+  - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
+    `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
+    `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
+- **Code translated from Python (`import[py]`) shares references; Arrow code copies** (known_bugs.md #1, decision
+  A). Arrow copies a value whenever it is stored (field, dict, `append`, `xs[i] = v`, set `add`, `mut` declaration,
+  closure capture) so a `let` value can never change through another holder. Inside a Python module's code these
+  stores share the object, as in CPython (aliases, parent/child references and registries behave the same). A
+  Python class without `__eq__` / `__hash__` compares and hashes by identity; an Arrow class still compares by
+  contents. Binding a Python value to an Arrow `let` / `mut` still copies it (the boundary keeps Arrow's rule).
+- **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
+  static error (calling the class value is a runtime error). `object` itself is still the base of every value
+  (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no
+  fields, is never copied on store (a sentinel stays the same object through fields, dicts and lists), and compares
+  and hashes by identity.
+- **Attribute hooks (`__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__`) exist only in Python modules**
+  (`import[py]`; known_bugs.md #10 / #11 / #12). A Python class's `__setattr__` runs for every assignment (`o.x = v`,
+  `setattr`, `self.x = ..` in `__init__`, assignments from Arrow); `object.__setattr__(self, k, v)` /
+  `super().__setattr__(k, v)` store past it. `__getattribute__` runs for every explicit read and method call (`o.x`,
+  `o.m(..)`, `o.__len__()`), but not for the special methods the interpreter looks up itself (`str(o)`, `len(o)`,
+  operators, `for`); `__getattr__` runs when the read raises `AttributeError`; `object.__getattribute__(self, k)` reads
+  past both. Defining any of these hooks in an Arrow class is a `ParseError` — Arrow members are fixed by the class body.
+- **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
+  Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is an
+  error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's
+  `mutates_immutable` mark; instances are also stopped at run time). `gen` methods and methods of built-in
+  values (`push = xs.append`) bind too (task 1-10; readable names: `names::BUILTIN_VALUE_METHODS`).
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

@@ -56,6 +56,7 @@ pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
         Value::Dict(_) => "dict",
         Value::Tuple(_) => "tuple",
         Value::Set(_) => "set",
+        Value::FrozenSet(_) => "frozenset",
         Value::Namespace(_) => "module",
         Value::PyObject(_) => "object",
         Value::FileObject(_) => "FileObject",
@@ -106,6 +107,8 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
     let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
     let r = match ann {
         "Any" => true,
+        // すべての値は `object` の派生（タスク 6-10・CPython と同じ）。`x is object` / 注釈の `object` は何でも受ける。
+        "object" => true,
         "None" => matches!(val, Value::None),
         "Undefined" => matches!(val, Value::Undefined),
         // ⚠ 整数族（上の doc）。
@@ -120,6 +123,7 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         "list_like" => matches!(val, Value::List(_) | Value::FrozenList { .. }),
         "dict" => matches!(val, Value::Dict(_)),
         "set" => matches!(val, Value::Set(_)),
+        "frozenset" => matches!(val, Value::FrozenSet(_)),
         "tuple" => matches!(val, Value::Tuple(_)),
         "slice" => matches!(val, Value::Slice(_)),
         // ⚠ `__call__` を持つインスタンス・クラスも「呼べる」ので `function`。
@@ -147,6 +151,7 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         }
         _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
         _ if ann.starts_with("set[") => matches!(val, Value::Set(_)),
+        _ if ann.starts_with("frozenset[") => matches!(val, Value::FrozenSet(_)),
         _ if ann.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
         // ジェネレータも外側だけ見る（フェーズ10 10-7 で `generator[T]` を注釈に書けるようにした）。
         "generator" => matches!(val, Value::Generator(_)),
@@ -193,6 +198,7 @@ impl Interpreter {
             Value::Dict(d) => !d.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
+            Value::FrozenSet(s) => !s.is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
             Value::Function(_)
             | Value::OverloadedFn(_)
@@ -342,18 +348,30 @@ impl Interpreter {
                 if Self::qualified_class_matches(&inst.class, type_name) {
                     return true;
                 }
-                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて同じクラスか見る。
+                // 書いたとおりの別名（`t.Tag`）は名前空間を引いて、同じクラスか・その派生か見る。
                 // ⚠ enum のメンバーのクラスは、引いた `Name` クラス（メンバーを持つ方）とは別のクラス
                 //   （`build_enum_classes`）。`class_id` は一致しないので、同じモジュールの同じ名前の
                 //   enum かで見る。
                 let class_id = inst.class.class_id;
                 let enum_key = inst.class.enum_of.clone().map(|e| (e, inst.class.module_name.clone()));
                 drop(inst);
-                let Some(cls) = self.dotted_class(type_name) else {
+                let Some(target) = self.dotted_class(type_name) else {
                     return false;
                 };
-                cls.class_id == class_id
-                    || enum_key.is_some_and(|(e, m)| cls.enum_of.is_none() && cls.name == e && cls.module_name == m)
+                if target.class_id == class_id
+                    || enum_key.is_some_and(|(e, m)| {
+                        target.enum_of.is_none() && target.name == e && target.module_name == m
+                    })
+                {
+                    return true;
+                }
+                // ⚠ 基底（Python のクラスの継承・`d is z.Animal`）。祖先は修飾名で `bases` に載っている
+                //   （`exec_class_def`・python_builtins_plan.md の 6 節）。以前は同じクラスしか見ず、派生は偽だった。
+                let qualified = match target.module_name.as_deref() {
+                    Some(m) => format!("{m}.{}", target.name),
+                    None => target.name.clone(),
+                };
+                inst_rc.borrow().class.is_a(&qualified)
             }
             Value::Class(cls) => cls.name == type_name,
             Value::FileObject(_) => type_name == "FileObject",
@@ -454,6 +472,8 @@ impl Interpreter {
             Value::FrozenList { .. } => "fixed_list".to_string(),
             Value::Dict(_) => "dict".to_string(),
             Value::Set(_) => "set".to_string(),
+            Value::FrozenSet(_) => "frozenset".to_string(),
+            Value::Bytes(_) => "bytes".to_string(),
             Value::Tuple(_) => "tuple".to_string(),
             Value::Function(f) => format!("function({})", f.name),
             Value::OverloadedFn(_) => "function(overloaded)".to_string(),

@@ -34,12 +34,14 @@ impl Interpreter {
             "list_like" => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             "dict" => matches!(val, Value::Dict(_)),
             "set" => matches!(val, Value::Set(_)),
+            "frozenset" => matches!(val, Value::FrozenSet(_)),
             "tuple" => matches!(val, Value::Tuple(_)),
             _ if type_name.starts_with("list[") => matches!(val, Value::List(_)),
             _ if type_name.starts_with("fixed_list[") => matches!(val, Value::FrozenList { .. }),
             _ if type_name.starts_with("list_like[") => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             _ if type_name.starts_with("dict[") => matches!(val, Value::Dict(_)),
             _ if type_name.starts_with("set[") => matches!(val, Value::Set(_)),
+            _ if type_name.starts_with("frozenset[") => matches!(val, Value::FrozenSet(_)),
             _ if type_name.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
             // ⚠ `primitive_ann_matches` と同じ規則（3-3）
             _ if type_name == "Ptr" || type_name.starts_with("Ptr[") => {
@@ -135,18 +137,18 @@ impl Interpreter {
                 }
                 Ok(Value::str(chars[actual as usize].to_string()))
             }
-            // バイト列の添字は 0〜255 の整数（Python と同じ・3-1）
+            // bytes の添字は 1 バイトの int（タスク 3-1）。文言は CPython と同じ（`index out of range`）。
             Value::Bytes(b) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
                     format!(
-                        "TypeError: bytes indices must be integers or Index, not '{}'",
+                        "TypeError: byte indices must be integers or slices, not {}",
                         self.type_name(&key)
                     )
                 })?;
                 let len = b.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
-                    return Err(format!("IndexError: bytes index {} out of range", idx));
+                    return Err("IndexError: index out of range".to_string());
                 }
                 Ok(Value::Int(b[actual as usize] as i64))
             }
@@ -172,7 +174,7 @@ impl Interpreter {
                 let d = d.clone();
                 match self.dict_get(&d, &key)? {
                     Some(v) => Ok(v),
-                    None => Err(format!("KeyError: {}", self.display(&key))),
+                    None => Err(self.key_error(&key)),
                 }
             }
             Value::Instance(_) => {
@@ -264,7 +266,7 @@ impl Interpreter {
 
         match obj {
             Value::List(items) => {
-                let new_vals = self.collect_iterable(rhs)?;
+                let new_vals = self.drain_iterable(rhs)?;
                 let mut borrowed = items.borrow_mut();
                 let len = borrowed.len() as i64;
 
@@ -306,34 +308,6 @@ impl Interpreter {
         }
     }
 
-    /// 任意の反復可能値を `Vec<Value>` に収集する（スライス代入、enumerate、zip で使用）。
-    pub(crate) fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
-        match val {
-            Value::List(lst) => Ok(lst.borrow().clone()),
-            Value::FrozenList { ref state, ref layout } => {
-                let st = state.borrow();
-                Ok((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
-            }
-            Value::Tuple(td) => Ok(td.all_values().to_vec()),
-            Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
-            // バイト列は 0〜255 の整数（`make_for_iterator` と同じ規則・3-1）
-            Value::Bytes(b) => Ok(b.iter().map(|&c| Value::Int(c as i64)).collect()),
-            Value::Set(items) => Ok(items.borrow().clone()),
-            // ★ 辞書は**キー**を返す（`make_for_iterator` と同じ規則にすること）。
-            Value::Dict(ref d) => Ok(d.borrow().all_keys()),
-            Value::Generator(gen) => {
-                let g = gen.borrow();
-                Ok(g.values[g.index..].to_vec())
-            }
-            // `Code` は 1 行ずつ（タスク 2-10）。⚠ `make_for_iterator` と同じ規則。
-            Value::Code(lines) => Ok(crate::meta_expand::code_lines_as_values(&lines)),
-            other => Err(format!(
-                "TypeError: '{}' object is not iterable",
-                self.type_name(&other)
-            )),
-        }
-    }
-
     /// `obj[key] = rhs` の実行。リスト・辞書・PyObject・インスタンスに対応する。
     /// `key` が `Value::Slice` の場合はスライス代入 `eval_setitem_slice` に委譲する。
     pub(crate) fn eval_setitem(
@@ -355,7 +329,7 @@ impl Interpreter {
                 })?;
                 // ⚠ 格納する値は複製する（L4。`append` と同じ理由）。
                 // ⚠ 複製は借用の外で（`a[0] = a` のような自己参照でのパニック回避）。
-                let rhs = Self::deep_copy_value(rhs);
+                let rhs = self.copy_for_store(rhs);
                 let mut borrowed = items.borrow_mut();
                 let len = borrowed.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -369,26 +343,8 @@ impl Interpreter {
                 Ok(())
             }
             Value::Dict(d) => {
-                let (key_type, item_type) = {
-                    let b = d.borrow();
-                    (b.key_type.clone(), b.item_type.clone())
-                };
-                if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
-                    return Err(format!(
-                        "TypeError: dict key type mismatch: expected '{}', got '{}'",
-                        key_type,
-                        self.type_name(&key)
-                    ));
-                }
-                if item_type != "Any" && !Self::value_matches_type(&rhs, &item_type) {
-                    return Err(format!(
-                        "TypeError: dict item type mismatch: expected '{}', got '{}'",
-                        item_type,
-                        self.type_name(&rhs)
-                    ));
-                }
                 let d = d.clone();
-                self.dict_set(&d, key, rhs)
+                self.dict_store_checked(&d, key, rhs)
             }
             Value::Instance(_) => {
                 self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key, true), (None, rhs, true)])?;
@@ -399,6 +355,73 @@ impl Interpreter {
                 "TypeError: '{}' object does not support item assignment",
                 self.type_name(&obj)
             )),
+        }
+    }
+
+    /// `del obj[key]`（変換器が Python の `del d[k]` を `__py_delitem(d, k)` にする・known_bugs.md の #3）。
+    /// 辞書はエントリを取り除く（無ければ `KeyError`）、リストは要素を詰める（スライスも・負のステップも）、
+    /// インスタンスは `__delitem__(key)`。文言は CPython と同じ。
+    /// ⚠ タプル・文字列・集合など書き換えられない値は CPython と同じ `TypeError`。
+    pub(crate) fn eval_delitem(&mut self, obj: Value, key: Value) -> Result<(), String> {
+        match obj {
+            Value::Dict(d) => match self.dict_index(&d, &key)? {
+                Some(idx) => {
+                    d.borrow_mut().remove_at(idx);
+                    Ok(())
+                }
+                None => Err(self.key_error(&key)),
+            },
+            Value::List(items) => {
+                if let Value::Slice(s) = &key {
+                    let bound = |v: &Option<Value>| -> Result<Option<i64>, String> {
+                        match v {
+                            None | Some(Value::None) => Ok(None),
+                            Some(v) => value_as_index(v).map(Some).ok_or_else(|| {
+                                "TypeError: slice indices must be integers or None or have an __index__ method"
+                                    .to_string()
+                            }),
+                        }
+                    };
+                    let step = bound(&s.step)?.unwrap_or(1);
+                    if step == 0 {
+                        return Err("ValueError: slice step cannot be zero".to_string());
+                    }
+                    let (begin, end) = (bound(&s.begin)?, bound(&s.end)?);
+                    let mut borrowed = items.borrow_mut();
+                    let mut doomed = compute_slice_indices(borrowed.len() as i64, begin, end, step);
+                    doomed.sort_unstable();
+                    let mut i = 0;
+                    borrowed.retain(|_| {
+                        let keep = doomed.binary_search(&i).is_err();
+                        i += 1;
+                        keep
+                    });
+                    return Ok(());
+                }
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!("TypeError: list indices must be integers or slices, not {}", self.type_name(&key))
+                })?;
+                let mut borrowed = items.borrow_mut();
+                let len = borrowed.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err("IndexError: list assignment index out of range".to_string());
+                }
+                borrowed.remove(actual as usize);
+                Ok(())
+            }
+            Value::Instance(ref inst) if inst.borrow().class.methods.contains_key("__delitem__") => {
+                self.eval_method_call_evaled(obj, "__delitem__", vec![(None, key, true)])?;
+                Ok(())
+            }
+            Value::PyObject(_) => {
+                Err("TypeError: cannot delete an item of a CPython object (import[py-int]) yet".to_string())
+            }
+            Value::Instance(inst) => Err(format!(
+                "TypeError: '{}' object doesn't support item deletion",
+                inst.borrow().class.name
+            )),
+            _ => Err(format!("TypeError: '{}' object doesn't support item deletion", self.type_name(&obj))),
         }
     }
 }

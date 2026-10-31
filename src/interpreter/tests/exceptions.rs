@@ -455,3 +455,151 @@ fn test_bridge_error_strings_become_exceptions() {
     // ブリッジの基盤のエラー（接頭辞が組み込みの例外でない）はそのまま
     assert!(interp.make_internal_raised_error("CsDll: cannot load bridge 'x'").is_none());
 }
+
+/// `OSError(errno, ..)` は errno に対応する派生を作る（別名の `IOError` も・CPython の `OSError.__new__`・
+/// known_bugs.md の #9）。派生を呼んだとき・引数が 1 つ・表に無い errno は呼んだクラスのまま。
+#[test]
+fn test_os_error_errno_picks_subclass() {
+    let src = concat!(
+        "let a = OSError(2, \"x\")\n",
+        "let b = IOError(13, \"y\", \"f\")\n",
+        "let c = PermissionError(2, \"z\")\n",
+        "let d = OSError(2)\n",
+        "let e = OSError(12345, \"w\")\n",
+        "let names = type(a).__name__ + \",\" + type(b).__name__ + \",\" + type(c).__name__ + \",\" + type(d).__name__ + \",\" + type(e).__name__\n",
+        "let shown = str(b)\n",
+    );
+    let interp = run_interp(src);
+    assert!(
+        matches!(interp.get_val("names"), Some(Value::Str(s)) if &*s == "FileNotFoundError,PermissionError,PermissionError,OSError,OSError"),
+        "{:?}",
+        interp.get_val("names")
+    );
+    assert!(matches!(interp.get_val("shown"), Some(Value::Str(s)) if &*s == "[Errno 13] y: 'f'"));
+}
+
+/// 送出の場が添えた `args`（`error_with_args`・known_bugs.md の #9）は、文言が完全に一致するときだけ使う。
+/// 一致しない誤り（Rust の中で捨てた誤りの控えが残っていた）は文言の `args` のままで、控えはどちらでも取り去る。
+#[test]
+fn test_error_args_are_used_only_for_the_same_message() {
+    let mut interp = run_interp("let x = 1\n");
+    let args_of = |interp: &mut Interpreter, msg: &str| -> String {
+        let raised = interp.make_internal_raised_error(msg).expect("an exception");
+        let Value::Instance(i) = &raised.exception else { panic!("{msg}") };
+        let idx = i.borrow().class.field_index["args"];
+        let args = i.borrow().field_value(idx).expect("args");
+        interp.display_repr(&args)
+    };
+    let msg = interp.key_error(&Value::Int(7));
+    assert_eq!(msg, "KeyError: 7");
+    assert_eq!(args_of(&mut interp, &msg), "(7,)", "the key itself");
+    // 控えは取り去られている（同じ文言でも、もう一度は使わない）
+    assert_eq!(args_of(&mut interp, &msg), "('7',)");
+    // 別の文言の誤りは控えを使わず、控えも残さない
+    let _ = interp.key_error(&Value::str("a"));
+    assert_eq!(args_of(&mut interp, "KeyError: 'b'"), "(\"'b'\",)");
+    assert!(interp.error_args.is_none());
+}
+
+/// 組み込みの例外は CPython 3.12 の階層を持つ（python_builtins_plan.md のタスク 4-1）。
+/// ⚠ 以前は階層が無く、`except ArithmeticError` が `ZeroDivisionError` を捕まえなかった。
+/// ⚠ `GeneratorExit` は `BaseException` の直下なので `except Exception` では捕まらない。
+#[test]
+fn test_builtin_exception_hierarchy() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let z = 1 // 0\n",
+        "except ArithmeticError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    let d: dict[str, int] = {}\n",
+        "    let v = d[\"k\"]\n",
+        "except LookupError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise OSError(\"o\")\n",
+        "except IOError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    raise ConnectionResetError(\"c\")\n",
+        "except OSError:\n",
+        "    caught = caught + 1\n",
+        "try:\n",
+        "    try:\n",
+        "        raise GeneratorExit(\"g\")\n",
+        "    except Exception:\n",
+        "        caught = caught + 100\n",
+        "except BaseException:\n",
+        "    caught = caught + 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(5)), "{v:?}");
+}
+
+/// `open` の失敗は OS のエラーの種類で `OSError` の派生に振り分ける（タスク 4-1・以前はどれも `IOError`）。
+#[test]
+fn test_open_failure_is_file_not_found_error() {
+    let msg = run_err_msg("let f = open(\"__surely_missing_dir__/x.txt\", FileOpenMode.read)\n");
+    assert!(msg.starts_with("FileNotFoundError"), "{msg}");
+}
+
+/// 組み込みの例外は位置引数をいくつでも受け、`args` と CPython の `str(e)` / `repr(e)` を持つ（タスク 4-2）。
+/// ⚠ 以前は `ValueError()` / `ValueError("a", 1)` が作れず、`str(e)` は `<ValueError object at 0x..>` だった。
+#[test]
+fn test_exception_args_str_repr() {
+    let src = concat!(
+        "let a = ValueError()\n",
+        "let c = ValueError(\"bad\", 42)\n",
+        "let k = KeyError(\"m\")\n",
+        "let s = \"[\" + str(a) + \"]\" + str(c) + str(k) + str(ValueError(5))\n",
+        "let r = repr(a) + repr(c) + repr(k)\n",
+        "let n = len(c.args)\n",
+    );
+    assert_str(run_get(src, "s"), "[]('bad', 42)'m'5");
+    assert_str(run_get(src, "r"), "ValueError()ValueError('bad', 42)KeyError('m')");
+    assert!(matches!(run_get(src, "n"), Value::Int(2)));
+    assert!(run_err_msg("let e = ValueError(message=\"x\")\n")
+        .contains("ValueError() takes no keyword arguments"));
+}
+
+
+/// Arrow のファイルの `EOFError` / `BOFError` を捕まえられる（python_builtins_plan.md のタスク 4-5）。以前は例外の表に無い
+/// 名前だったので、`except Exception` も素の `except:` も素通りしてプログラムが止まった。
+#[test]
+fn test_file_eof_and_bof_are_catchable() {
+    let path = "target/test_tmp_eof_bof.txt";
+    let src = format!(
+        concat!(
+            "let w = open(\"{p}\", FileOpenMode.rewrite)\n",
+            "w.write(\"x\")\n",
+            "w.close()\n",
+            "let r = open(\"{p}\", FileOpenMode.read)\n",
+            "let s = r.read()\n",
+            "mut eof = \"\"\n",
+            "try:\n",
+            "    r.read()\n",
+            "except EOFError as e:\n",
+            "    eof = type(e).__name__ + \":\" + str(e)\n",
+            "let back = r.read(backward=True)\n",
+            "mut bof = \"\"\n",
+            "try:\n",
+            "    r.read(backward=True)\n",
+            "except BOFError as e:\n",
+            "    bof = type(e).__name__\n",
+            "mut generic = false\n",
+            "try:\n",
+            "    let t = r.read()\n",
+            "    r.read()\n",
+            "except:\n",
+            "    generic = true\n",
+        ),
+        p = path
+    );
+    let src = src.replace("false", "False").replace("true", "True");
+    let interp = run_interp(&src);
+    assert!(matches!(interp.get_val("eof"), Some(Value::Str(s)) if &*s == "EOFError:EOF"));
+    assert!(matches!(interp.get_val("bof"), Some(Value::Str(s)) if &*s == "BOFError"));
+    assert!(matches!(interp.get_val("generic"), Some(Value::Bool(true))));
+    let _ = std::fs::remove_file(path);
+}

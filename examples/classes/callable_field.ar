@@ -1,0 +1,32 @@
+# callable_field.ar — 属性に入れた関数を obj.f(x) で呼ぶ（python_builtins_plan.md のタスク 1-11）
+#
+# 対になる誤りの例: callable_field_error.ar
+#
+# メソッドの無い名前の obj.f(x) は、CPython と同じく「属性を読んで、その値を呼ぶ」。関数・束縛メソッド・
+# 組み込み関数・クラスなど、呼べる値ならよい。型検査はフィールドの関数型で引数・戻り値を検査する。
+# ⚠ 以前は `AttributeError: 'Holder' has no method 'f'` だった（メソッドの表しか見ていなかった）。
+#   Python の self.callback(x) も同じ理由で動かなかった。
+
+fn double(let x: int) -> int:
+    return x * 2
+
+class Holder:
+    let f: function[let int]->int
+
+    fn run(self, let x: int) -> int:
+        return self.f(x)
+
+class Counter:
+    mut n: int
+
+    fn add(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+let h = Holder(double)
+print(h.run(21))                        # 42
+print(h.f(4))                           # 8
+
+mut c = Counter(0)
+let via = Holder(c.add)                 # 束縛メソッドを入れる（受け手 c を書き換える）
+print(via.f(5), via.f(5), c.n)          # 5 10 10

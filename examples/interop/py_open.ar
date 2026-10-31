@@ -1,0 +1,9 @@
+# py_open.ar — Python のコードの with open(path, "w", encoding="utf-8") as f:（python_builtins_plan.md のタスク 5-2）
+#
+# Python の形の open が Arrow の open に届く。with の終わりでファイルが閉じる（Arrow のブロックの破棄）。
+# ⚠ 以前は open(path, "w") が `expected enum_item_FileOpenMode instance` で止まっていた。
+
+import[py] test_modules.py_open as po
+
+po.save("examples/interop/_tmp_py_open.txt", ["alpha", "beta"])
+print(po.load("examples/interop/_tmp_py_open.txt"), end="")      # alpha / beta

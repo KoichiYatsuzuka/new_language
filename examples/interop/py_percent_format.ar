@@ -1,0 +1,25 @@
+# py_percent_format.ar — Python の `%` の書式の `%s` / `%r`（known_bugs.md の #4）
+#
+# `%s` は `str(x)`（`__str__`、無ければ `__repr__`）、`%r` は `repr(x)`。コンテナ・組の中の値は `repr` で並べる。
+#
+# pf.run() は CPython と同じ出力:
+#   t|T()
+#   R()|R()
+#   ab|'ab'
+#   5|5
+#   1.5|1.5
+#   None|None
+#   True|True
+#   [1, 'a']|[1, 'a']
+#   {'k': T()}|{'k': T()}
+#   (1, T())|(1, T())
+#   "it's"
+#       t|R()  |t
+#   t
+#   [T()]
+#
+# ⚠ 以前はインスタンスが `<T object at 0x..>`、`%r` が表示を Rust の書式で引用した形（`"ab"` / `"5"`）だった。
+
+import[py] test_modules.py_percent_format as pf
+
+pf.run()

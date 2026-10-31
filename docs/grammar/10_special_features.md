@@ -214,6 +214,11 @@ print(f"Pi ≈ {3.14159:.4f}")   # 書式指定
 | `<N` | `{s:<10}` | 幅 N の左揃え |
 | `>N` | `{s:>10}` | 幅 N の右揃え |
 | `0N` | `{n:05}` | 0 パディング |
+| `,` / `_` | `{n:,}` | 桁区切り |
+| `!r` / `=` | `{s!r}` / `{x=}` | `repr` / 自己記述の式 |
+
+書式指定は Python の小言語そのもの（`format()` / `str.format` と同じ・[12_builtins.md](12_builtins.md) の「`format`」）。
+変換・自己記述・入れ子の書式は [03_expressions.md](03_expressions.md) の「f-string」。
 
 ---
 

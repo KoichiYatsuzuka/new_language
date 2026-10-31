@@ -607,3 +607,361 @@ fn test_template_instance_as_value() {
     assert_int(run_get(src, "ns"), 1);
     assert_int(run_get(src, "tsize"), 1);
 }
+
+// ---------------------------------------------------------------------------
+// 束縛メソッド（python_builtins_plan.md のタスク 1-8）
+// ---------------------------------------------------------------------------
+
+/// `obj.method` を値として読むと受け手を束縛した関数になり、`obj.method(..)` と同じ実体が走る。
+/// コールバック（`map` / `sorted(key=)`）に渡せ、同じ受け手の同じメソッドは等しい。
+/// 不変の受け手の `mut self` のメソッドは、束縛はできるが呼ぶと誤り（直接呼ぶのと同じ判定）。
+#[test]
+fn test_bound_methods() {
+    let src = concat!(
+        "class Counter:\n",
+        "    mut n: int\n",
+        "    fn add(mut self, let k: int) -> int:\n",
+        "        self.n = self.n + k\n",
+        "        return self.n\n",
+        "    fn get(self) -> int:\n",
+        "        return self.n\n",
+        "mut c = Counter(1)\n",
+        "let add = c.add\n",
+        "let r1 = add(10)\n",
+        "let r2 = c.get()\n",
+        "let mapped = str(list(map(c.add, [1, 2])))\n",
+        "let same = c.get == c.get\n",
+        "let differ = c.get == c.add\n",
+        "let shown = str(c.get)\n",
+    );
+    assert!(matches!(run_get(src, "r1"), Value::Int(11)));
+    assert!(matches!(run_get(src, "r2"), Value::Int(11)));
+    assert_str(run_get(src, "mapped"), "[12, 14]");
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "differ"), Value::Bool(false)));
+    let shown = run_get(src, "shown");
+    let Value::Str(s) = shown else { panic!("not a str") };
+    assert!(s.starts_with("<bound method Counter.get of <Counter object at 0x"), "{s}");
+    let immutable = concat!(
+        "class Counter:\n",
+        "    mut n: int\n",
+        "    fn add(mut self, let k: int) -> int:\n",
+        "        self.n = self.n + k\n",
+        "        return self.n\n",
+        "let c = Counter(1)\n",
+        "let add = c.add\n",
+        "let r = add(1)\n",
+    );
+    assert!(run_err_msg(immutable).contains("cannot call mutable method 'add' on immutable instance of 'Counter'"));
+}
+
+/// `gen` メソッドと組み込みの値のメソッドも束縛できる（タスク 1-10）。組み込みの値のメソッドは同じ値を書き換え、
+/// 同じ受け手の同じ名前は等しい。
+#[test]
+fn test_bound_gen_and_builtin_methods() {
+    let src = concat!(
+        "class Bag:\n",
+        "    let xs: list[int]\n",
+        "    gen each(self) -> int:\n",
+        "        for x in self.xs:\n",
+        "            yield x * 10\n",
+        "let bag = Bag([1, 2])\n",
+        "let each = bag.each\n",
+        "let gens = str(list(each()))\n",
+        "mut out: list[int] = []\n",
+        "let push = out.append\n",
+        "push(7)\n",
+        "let pushed = str(out)\n",
+        "let up = \"ab\".upper\n",
+        "let upper = up()\n",
+        "let same = out.append == out.append\n",
+        "let shown = str(out.append)\n",
+    );
+    assert_str(run_get(src, "gens"), "[10, 20]");
+    assert_str(run_get(src, "pushed"), "[7]");
+    assert_str(run_get(src, "upper"), "AB");
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    let Value::Str(s) = run_get(src, "shown") else { panic!("not a str") };
+    assert!(s.starts_with("<built-in method append of list object at 0x"), "{s}");
+}
+
+/// 組み込みの値のメソッドの表（`names::BUILTIN_VALUE_METHODS`）の名前は、実行時のメソッドの入口が
+/// **知っている**（「無いメソッド」の誤りにならない）。表だけに足して実行時に無い名前を作らないための検査。
+/// ⚠ 逆向き（実行時にあるのに表に無い）は見ない。足し忘れは値として読めないだけで、黙って壊れはしない。
+#[test]
+fn builtin_value_methods_are_dispatched() {
+    let src = concat!(
+        "class V:\n",
+        "    mut x: float\n",
+        "mut st = \"a b\"\n",
+        "mut li = [1, 2]\n",
+        "mut di = {\"a\": 1}\n",
+        "mut se = {1, 2}\n",
+        "mut fl: fixed_list[V] = [V(1.0)] => fixed_list[V]\n",
+        "mut ge = [1, 2].__iter__()\n",
+        "mut fz = frozenset([1, 2])\n",
+        "mut by = bytes([97, 98])\n",
+        "mut fo = open(\"target/test_tmp_value_methods.txt\", \"w\")\n",
+    );
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
+    for (kind, names) in crate::type_check::names::BUILTIN_VALUE_METHODS {
+        let var = match *kind {
+            "str" => "st",
+            "list" => "li",
+            "dict" => "di",
+            "set" => "se",
+            "fixed_list" => "fl",
+            "generator" => "ge",
+            "frozenset" => "fz",
+            "bytes" => "by",
+            "FileObject" => "fo",
+            other => panic!("no sample receiver for '{other}'"),
+        };
+        let recv = interp.get_val(var).unwrap();
+        let unknown = interp
+            .eval_method_call_full(recv.clone(), "__no_such_method__", Vec::new(), None)
+            .expect_err("an unknown method must fail");
+        for name in names.iter() {
+            if let Err(e) = interp.eval_method_call_full(recv.clone(), name, Vec::new(), None) {
+                assert_ne!(
+                    e,
+                    unknown.replace("__no_such_method__", name),
+                    "'{kind}.{name}' is in BUILTIN_VALUE_METHODS but the runtime does not know it"
+                );
+            }
+        }
+    }
+}
+
+/// メソッドの無い名前の `obj.f(x)` は属性を読んでその値を呼ぶ（python_builtins_plan.md のタスク 1-11）。
+/// 以前は `has no method 'f'` だった。
+#[test]
+fn test_call_a_callable_stored_in_a_field() {
+    let src = concat!(
+        "fn double(let x: int) -> int:\n",
+        "    return x * 2\n",
+        "class Holder:\n",
+        "    let f: function[let int]->int\n",
+        "    fn run(self, let x: int) -> int:\n",
+        "        return self.f(x)\n",
+        "let h = Holder(double)\n",
+        "let a = h.run(21)\n",
+        "let b = h.f(4)\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(42)));
+    assert!(matches!(run_get(src, "b"), Value::Int(8)));
+}
+
+/// ディスクリプタのプロトコル（python_builtins_plan.md のタスク 1-12）の共通部分。
+/// `Twice` はデータディスクリプタ（`static mut`）、`Label` は非データディスクリプタ（`const`）。
+const DESCRIPTOR_CLASSES: &str = concat!(
+    "class Twice:\n",
+    "    fn __get__(self, mut obj: Any, owner: Any = None) -> Any:\n",
+    "        if obj is None:\n",
+    "            return \"class\"\n",
+    "        return obj.n * 2\n",
+    "    fn __set__(self, mut obj: Any, value: Any) -> None:\n",
+    "        obj.n = value // 2\n",
+    "class Label:\n",
+    "    fn __get__(self, mut obj: Any, owner: Any = None) -> Any:\n",
+    "        return \"n=\" + str(obj.n)\n",
+    "class Box:\n",
+    "    mut n: int\n",
+    "    static mut twice: Twice = Twice()\n",
+    "    const label: Label = Label()\n",
+    "    fn __init__(mut self, n: int) -> None:\n",
+    "        self.n = n\n",
+);
+
+/// クラス側のディスクリプタは、インスタンスから読むと `__get__(obj, C)`、代入すると `__set__(obj, v)`、
+/// クラスから読むと `__get__(None, C)`（タスク 1-12）。以前は値そのもの（`<Twice object>`）が返り、
+/// 代入は `static mut` を書き換えていた。
+#[test]
+fn test_descriptor_get_set_and_class_access() {
+    let src = format!(
+        "{DESCRIPTOR_CLASSES}{}",
+        concat!(
+            "mut b = Box(5)\n",
+            "let r1 = b.twice\n",
+            "b.twice = 40\n",
+            "let n = b.n\n",
+            "let r2 = b.twice\n",
+            "let lab = b.label\n",
+            "let via_class = Box.twice\n",
+            "let other = Box(1).twice\n",
+        )
+    );
+    let interp = run_interp(&src);
+    assert!(matches!(interp.get_val("r1"), Some(Value::Int(10))));
+    assert!(matches!(interp.get_val("n"), Some(Value::Int(20))));
+    assert!(matches!(interp.get_val("r2"), Some(Value::Int(40))));
+    assert!(matches!(interp.get_val("lab"), Some(Value::Str(s)) if s.to_string() == "n=20"));
+    assert!(matches!(interp.get_val("via_class"), Some(Value::Str(s)) if s.to_string() == "class"));
+    // `static mut` のディスクリプタは書き換わっていない（代入は `__set__` へ行った）。
+    assert!(matches!(interp.get_val("other"), Some(Value::Int(2))));
+}
+
+/// `__delete__` だけを持つデータディスクリプタへの代入は CPython と同じ `AttributeError: __set__`。
+#[test]
+fn test_descriptor_without_set_rejects_assignment() {
+    let src = concat!(
+        "class NoSet:\n",
+        "    fn __get__(self, obj: Any, owner: Any = None) -> Any:\n",
+        "        return 1\n",
+        "    fn __delete__(self, obj: Any) -> None:\n",
+        "        pass\n",
+        "class C:\n",
+        "    static mut d: NoSet = NoSet()\n",
+        "mut c = C()\n",
+        "c.d = 3\n",
+    );
+    assert!(run_err_msg(src).contains("AttributeError: __set__"), "{}", run_err_msg(src));
+}
+
+/// `__py_delattr`（Python の `del o.a`）はフィールドを未代入に戻す。raw レイアウト（int / float だけのクラス・init の
+/// ビットマップ）と boxed レイアウトのどちらも、消した後は `hasattr` が偽で、また代入できる（known_bugs.md の #2）。
+#[test]
+fn test_py_delattr_resets_field_in_both_layouts() {
+    let src = concat!(
+        "class Raw:\n",
+        "    mut x: int\n",
+        "    mut y: float\n",
+        "class Boxed:\n",
+        "    mut s: str\n",
+        "    mut n: int\n",
+        "mut r = Raw(1, 2.0)\n",
+        "mut b = Boxed(\"a\", 3)\n",
+        "__py_delattr(r, \"x\")\n",
+        "__py_delattr(b, \"s\")\n",
+        "let gone = not hasattr(r, \"x\") and hasattr(r, \"y\") and not hasattr(b, \"s\") and hasattr(b, \"n\")\n",
+        "r.x = 5\n",
+        "b.s = \"z\"\n",
+        "let back = r.x * 10 + b.n\n",
+        "let s_back = b.s\n",
+    );
+    let interp = run_interp(src);
+    let layouts = ["r", "b"].map(|v| match interp.get_val(v) {
+        Some(Value::Instance(i)) => i.borrow().has_raw_layout(),
+        other => panic!("{v}: {other:?}"),
+    });
+    assert_eq!(layouts, [true, false], "the test needs one class of each layout");
+    assert!(matches!(interp.get_val("gone"), Some(Value::Bool(true))));
+    assert!(matches!(interp.get_val("back"), Some(Value::Int(53))));
+    assert!(matches!(interp.get_val("s_back"), Some(Value::Str(s)) if s.to_string() == "z"));
+    // 消した欄をもう一度消すのは CPython と同じ `AttributeError`、不変のインスタンスは `TypeError`。
+    let twice = concat!("class P:\n", "    mut x: int\n", "mut p = P(1)\n", "__py_delattr(p, \"x\")\n", "__py_delattr(p, \"x\")\n");
+    assert!(run_err_msg(twice).contains("AttributeError: 'P' object has no attribute 'x'"), "{}", run_err_msg(twice));
+    let frozen = concat!("class P:\n", "    mut x: int\n", "let p = P(1)\n", "__py_delattr(p, \"x\")\n");
+    assert!(
+        run_err_msg(frozen).contains("cannot delete field 'x' on immutable instance"),
+        "{}",
+        run_err_msg(frozen)
+    );
+}
+
+
+/// `str` / `print` は `__str__` が無ければ `__repr__`、コンテナの要素は `repr`（タスク 1-15・CPython と同じ）。
+#[test]
+fn test_str_falls_back_to_repr_and_containers_use_repr() {
+    let src = concat!(
+        "class T:\n",
+        "    mut v: int\n",
+        "    fn __init__(mut self, let v: int) -> None:\n",
+        "        self.v = v\n",
+        "    fn __repr__(self) -> str:\n",
+        "        return \"T(\" + str(self.v) + \")\"\n",
+        "class S:\n",
+        "    fn __str__(self) -> str:\n",
+        "        return \"s\"\n",
+        "    fn __repr__(self) -> str:\n",
+        "        return \"S()\"\n",
+        "let t = T(1)\n",
+        "let a = str(t)\n",
+        "let b = str([t, S()])\n",
+        "let c = f\"{(t,)}\"\n",
+        "let d = str({\"k\": t})\n",
+        "let e = str(S())\n",
+    );
+    let interp = run_interp(src);
+    let s = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(s("a"), "T(1)");
+    assert_eq!(s("b"), "[T(1), S()]");
+    assert_eq!(s("c"), "(T(1),)");
+    assert_eq!(s("d"), "{'k': T(1)}");
+    assert_eq!(s("e"), "s");
+}
+
+/// `object()` のインスタンスは写さずに共有し、同一性で比べる（python_builtins_plan.md のタスク 6-10）。
+/// ⚠ 等値（`values_eq`）とハッシュ（`default_hash`）が同じ規則であること（ずれると「入れたのに引けない辞書」）と、
+///   格納で写す関数（`deep_copy_value` / `deep_copy_unfrozen`）が同じ物を返すことを固定する。
+#[test]
+fn object_instances_are_shared_and_compared_by_identity() {
+    use crate::interpreter::{DictData, Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let a = interp.py_object(&[]).expect("object()");
+    let b = interp.py_object(&[]).expect("object()");
+    let same_rc = |x: &Value, y: &Value| matches!((x, y), (Value::Instance(p), Value::Instance(q)) if std::rc::Rc::ptr_eq(p, q));
+    // 写さない（フィールド・辞書・リストへの格納と `copy()` が通る関数）
+    assert!(same_rc(&Interpreter::deep_copy_value(a.clone()), &a));
+    assert!(same_rc(&Interpreter::deep_copy_unfrozen(a.clone()), &a));
+    // 同一性で比べる・ハッシュも同じ規則
+    assert!(Interpreter::values_eq_pure(&a, &a.clone()).unwrap());
+    assert!(!Interpreter::values_eq_pure(&a, &b).unwrap());
+    assert_eq!(Interpreter::default_hash(&a).unwrap(), Interpreter::default_hash(&a.clone()).unwrap());
+    // 別々の object() は辞書のキーとしても別
+    let mut d = DictData::new("Any".to_string(), "Any".to_string());
+    Interpreter::dict_set_pure(&mut d, a.clone(), Value::Int(1)).unwrap();
+    Interpreter::dict_set_pure(&mut d, b.clone(), Value::Int(2)).unwrap();
+    Interpreter::dict_set_pure(&mut d, a.clone(), Value::Int(3)).unwrap();
+    assert_eq!(d.len(), 2);
+    assert!(matches!(Interpreter::dict_get_pure(&d, &a), Ok(Some(Value::Int(3)))));
+    // すべての値は object の派生（型の判定だけ）
+    for v in [Value::Int(1), Value::None, Value::str("s"), a.clone()] {
+        assert_eq!(crate::interpreter::ops::typecheck::primitive_ann_matches("object", &v), Some(true));
+    }
+}
+
+/// `Ellipsis` は唯一の値（python_builtins_plan.md のタスク 6-11）。スレッドへ送る複製（`deep_clone`・別の `Rc`）も
+/// 同じ物として扱う（`is` / `==` / `hash` が種類で決まる）。格納では写さない。
+#[test]
+fn ellipsis_is_one_value_even_across_thread_copies() {
+    use crate::interpreter::{BuiltinClass, Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let e = interp.builtin_singleton(BuiltinClass::Ellipsis);
+    let again = interp.builtin_singleton(BuiltinClass::Ellipsis);
+    let sent = e.deep_clone();
+    let same_rc = |x: &Value, y: &Value| matches!((x, y), (Value::Instance(p), Value::Instance(q)) if std::rc::Rc::ptr_eq(p, q));
+    assert!(same_rc(&e, &again));
+    assert!(same_rc(&Interpreter::deep_copy_value(e.clone()), &e));
+    assert!(!same_rc(&sent, &e));
+    assert!(interp.values_ref_eq(&e, &sent).unwrap());
+    assert!(Interpreter::values_eq_pure(&e, &sent).unwrap());
+    assert_eq!(Interpreter::default_hash(&e).unwrap(), Interpreter::default_hash(&sent).unwrap());
+    assert!(!Interpreter::values_eq_pure(&e, &Value::None).unwrap());
+    assert_eq!(interp.display(&e), "Ellipsis");
+}
+
+/// 格納の写し（`copy_for_store`・`mut` の宣言の `bind_copy`）は Arrow のコードの中だけ。Python から変換したコードの中は写さずに共有する
+/// （known_bugs.md の #1・A 案）。どちらのコードかは `running_python`（チャンクを走らせる入口が差し替える）。
+#[test]
+fn copy_for_store_shares_inside_python_code() {
+    use crate::interpreter::{Interpreter, Value};
+    let mut interp = Interpreter::new();
+    let xs = Value::List(std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Int(1)])));
+    let same = |a: &Value, b: &Value| matches!((a, b), (Value::List(p), Value::List(q)) if std::rc::Rc::ptr_eq(p, q));
+    // `mut x = e` の束縛（`bind_copy` の `DeepCopy`・master の取り込みで `copy_for_store` から移った）も同じ規則。
+    // ⚠ `xs` を持ったまま渡すので「誰とも共有していない値は写さない」（12-1）には当たらない。
+    let bind_mut = |interp: &mut Interpreter, v: Value| interp.bind_copy(crate::interpreter::BindCopy::DeepCopy, v).unwrap();
+    assert!(!interp.running_python);
+    assert!(!same(&interp.copy_for_store(xs.clone()), &xs), "Arrow code copies on store");
+    assert!(!same(&bind_mut(&mut interp, xs.clone()), &xs), "Arrow code copies on a mut declaration");
+    interp.running_python = true;
+    assert!(same(&interp.copy_for_store(xs.clone()), &xs), "Python code shares on store");
+    assert!(same(&bind_mut(&mut interp, xs.clone()), &xs), "Python code shares on a mut declaration");
+}

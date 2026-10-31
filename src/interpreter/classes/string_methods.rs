@@ -3,7 +3,7 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
+        regex_findall, regex_match, regex_search, regex_split, regex_sub,
     },
     crate::interpreter::{
         GeneratorState,
@@ -40,9 +40,28 @@ impl Interpreter {
                     None => pos_args.push(v),
                 }
             }
-            let display_fn = |v: &Value| self.display(v);
-            let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
+            // 書式は `format()` / f-string と同じ `format_value`（タスク 3-4）。
+            let result = self.py_str_format(&s, &pos_args, &kw_args)?;
             return Ok(Value::str(result));
+        }
+        // `encode(encoding="utf-8", errors="strict")` は bytes を返す（python_builtins_plan.md のタスク 3-1・`ops::codecs`）。
+        // ⚠ 以前は UTF-8 のバイトを int の list で返していた（`"Hi".encode()` が `[72, 105]`。CPython は `b'Hi'`）。
+        if method_name == "encode" {
+            let (mut encoding, mut errors) = (None, None);
+            for (i, (kw, v, _)) in evaled.into_iter().enumerate() {
+                match (kw.as_deref(), i) {
+                    (Some("encoding"), _) | (None, 0) => encoding = Some(v),
+                    (Some("errors"), _) | (None, 1) => errors = Some(v),
+                    (Some(other), _) => {
+                        return Err(format!("TypeError: encode() got an unexpected keyword argument '{other}'"))
+                    }
+                    (None, n) => return Err(format!("TypeError: encode() takes at most 2 arguments ({} given)", n + 1)),
+                }
+            }
+            let encoding = self.str_arg(encoding.as_ref(), "utf-8", "encode", "encoding")?;
+            let errors = self.str_arg(errors.as_ref(), "strict", "encode", "errors")?;
+            let codec = crate::interpreter::ops::codecs::Codec::lookup(&encoding)?;
+            return Ok(Value::Bytes(crate::interpreter::ops::codecs::encode(&s, codec, &errors)?.into()));
         }
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
 
@@ -132,14 +151,6 @@ impl Interpreter {
             // ── 大文字・小文字変換 ──────────────────────────────────────────
             // ── 文字コード（3-1）────────────────────────────────────────────
             // `s.encode(encoding="utf-8")` → bytes。変換できない文字は ValueError（黙って置き換えない）。
-            "encode" => {
-                if vals.len() > 1 {
-                    return Err(format!("TypeError: str.encode() takes at most 1 argument ({} given)", vals.len()));
-                }
-                let enc = if vals.is_empty() { "utf-8".to_string() } else { arg_str!(0, "encode") };
-                Ok(Value::bytes(crate::interpreter::encoding::encode(&s, &enc)?))
-            }
-
             "upper" => Ok(Value::str(s.to_uppercase())),
             "lower" => Ok(Value::str(s.to_lowercase())),
             "swapcase" => Ok(Value::str(
@@ -299,38 +310,33 @@ impl Interpreter {
             }
 
             // ── 検索 ────────────────────────────────────────────────────────
-            // ⚠ 位置は文字単位（ffi_value_exchange_plan.md 7-2・`char_window`）。以前は利用者の `start` / `end` をバイト位置として
-            //   切り出していたので、文字の途中を指すとパニックし（`"日本".find("本", 1)`）、返す位置もバイト位置だった
-            //   （添字は文字単位なので `t[t.find("a")]` が別の文字を指した）。負の位置は Python と同じく末尾から数える。
+            // 位置と範囲（`start` / `end`）は**文字の番号**（添字・切り出し・`len` と同じ単位・CPython と同じ。
+            // 負は後ろから・範囲外は詰める・`None` は省略と同じ・python_builtins_plan.md のタスク 1-17・ffi_value_exchange_plan.md 7-2）。
+            // ⚠ 以前はバイトの番号で、`"γάμμα".find("μ")` が 4（CPython は 2）、文字の途中の `start` を渡すと
+            //   Rust のパニックで**プロセスごと落ちていた**。負の `start` / `end` も 0 に詰めていた。
             "find" | "rfind" | "index" | "rindex" => {
                 let sub = arg_str!(0, "sub");
-                let n = s.chars().count() as i64;
-                let Some((b0, b1, c0)) = char_window(&s, arg_int!(1, 0), arg_int!(2, n)) else {
-                    return if method_name.ends_with("index") {
-                        Err(format!("ValueError: substring '{}' not found", sub))
-                    } else {
-                        Ok(Value::Int(-1))
-                    };
-                };
-                let window = &s[b0..b1];
-                let hit = if method_name.starts_with('r') { window.rfind(sub.as_str()) } else { window.find(sub.as_str()) };
-                match (hit, method_name.ends_with("index")) {
-                    (Some(b), _) => Ok(Value::Int((c0 + window[..b].chars().count()) as i64)),
-                    (None, false) => Ok(Value::Int(-1)),
-                    (None, true) => Err(format!("ValueError: substring '{}' not found", sub)),
+                let start = str_index_arg(vals.get(1))?;
+                let end = str_index_arg(vals.get(2))?;
+                let found = str_char_range(&s, start, end).and_then(|(bs, be, first)| {
+                    let slice = &s[bs..be];
+                    let hit = if method_name.starts_with('r') { slice.rfind(sub.as_str()) } else { slice.find(sub.as_str()) };
+                    hit.map(|i| first + slice[..i].chars().count())
+                });
+                match (found, method_name) {
+                    (Some(i), _) => Ok(Value::Int(i as i64)),
+                    (None, "find" | "rfind") => Ok(Value::Int(-1)),
+                    (None, _) => Err("ValueError: substring not found".to_string()),
                 }
             }
             "count" => {
                 let sub = arg_str!(0, "sub");
-                let n = s.chars().count() as i64;
-                let Some((b0, b1, _)) = char_window(&s, arg_int!(1, 0), arg_int!(2, n)) else {
-                    return Ok(Value::Int(0));
-                };
-                let slice = &s[b0..b1];
-                let n = if sub.is_empty() {
-                    slice.chars().count() + 1
-                } else {
-                    slice.matches(sub.as_str()).count()
+                let start = str_index_arg(vals.get(1))?;
+                let end = str_index_arg(vals.get(2))?;
+                let n = match str_char_range(&s, start, end) {
+                    None => 0,
+                    Some((bs, be, _)) if sub.is_empty() => s[bs..be].chars().count() + 1,
+                    Some((bs, be, _)) => s[bs..be].matches(sub.as_str()).count(),
                 };
                 Ok(Value::Int(n as i64))
             }
@@ -338,13 +344,41 @@ impl Interpreter {
                 let sub = arg_str!(0, "sub");
                 Ok(Value::Bool(s.contains(sub.as_str())))
             }
-            "startswith" => {
-                let prefix = arg_str!(0, "prefix");
-                Ok(Value::Bool(s.starts_with(prefix.as_str())))
-            }
-            "endswith" => {
-                let suffix = arg_str!(0, "suffix");
-                Ok(Value::Bool(s.ends_with(suffix.as_str())))
+            // `startswith(prefix, start, end)` / `endswith(..)`。`prefix` は文字列か文字列の組（どれかに当たれば真）。
+            // ⚠ 以前は `start` / `end` を黙って捨て、組を受けなかった（タスク 1-17）。
+            "startswith" | "endswith" => {
+                let candidates: Vec<String> = match vals.first() {
+                    Some(Value::Str(p)) => vec![p.to_string()],
+                    Some(Value::Tuple(t)) => t
+                        .all_values()
+                        .iter()
+                        .map(|v| match v {
+                            Value::Str(p) => Ok(p.to_string()),
+                            other => Err(format!(
+                                "TypeError: tuple for {method_name} must only contain str, not {}",
+                                self.type_name(other)
+                            )),
+                        })
+                        .collect::<Result<_, _>>()?,
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: {method_name} first arg must be str or a tuple of str, not {}",
+                            self.type_name(other)
+                        ))
+                    }
+                    None => return Err(format!("TypeError: {method_name}() takes at least 1 argument (0 given)")),
+                };
+                let start = str_index_arg(vals.get(1))?;
+                let end = str_index_arg(vals.get(2))?;
+                Ok(Value::Bool(match str_char_range(&s, start, end) {
+                    None => false,
+                    Some((bs, be, _)) => {
+                        let slice = &s[bs..be];
+                        candidates.iter().any(|c| {
+                            if method_name == "startswith" { slice.starts_with(c.as_str()) } else { slice.ends_with(c.as_str()) }
+                        })
+                    }
+                }))
             }
 
             // ── 置換 ────────────────────────────────────────────────────────
@@ -399,17 +433,27 @@ impl Interpreter {
                     && s.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()),
             )),
             "isascii" => Ok(Value::Bool(s.is_ascii())),
-            "isprintable" => Ok(Value::Bool(s.chars().all(|c| !c.is_control()))),
+            // CPython と同じ表（`repr` が `\x..` に変えるかと同じ判定・タスク 1-13）。以前は `!is_control()` で、
+            // 書式文字（U+200B）・区切り（U+00A0 / U+2028）・未割り当ての符号位置を「表示できる」としていた。
+            "isprintable" => Ok(Value::Bool(
+                s.chars().all(crate::interpreter::ops::unicode_printable::is_printable),
+            )),
 
             // ── 幅揃え・ゼロ埋め ────────────────────────────────────────────
+            // 幅は文字の数。符号（`+` / `-`）は先頭に残して後ろへ 0 を詰める（CPython と同じ・`"-42".zfill(5)` は `-0042`）。
+            // ⚠ 以前はバイトの数で比べ（非 ASCII は詰めなかった）、符号の前に 0 を置いていた（タスク 1-17）。
             "zfill" => {
                 let width = arg_int!(0, 0).max(0) as usize;
-                // 幅を満たしていればレシーバの Rc を使い回す（確保なし）。幅は文字数（7-2。以前はバイト数）
-                if s.chars().count() >= width {
-                    Ok(Value::Str(s.clone()))
-                } else {
-                    Ok(Value::str(format!("{:0>width$}", s)))
+                let n = s.chars().count();
+                // 幅を満たしていればレシーバの Rc を使い回す（確保なし）
+                if n >= width {
+                    return Ok(Value::Str(s.clone()));
                 }
+                let zeros = "0".repeat(width - n);
+                Ok(Value::str(match s.strip_prefix(['+', '-']) {
+                    Some(rest) => format!("{}{zeros}{rest}", &s[..1]),
+                    None => format!("{zeros}{s}"),
+                }))
             }
             // ⚠⚠ #65 で**実バグを修正**した。以前は「空白で幅詰めしてから空白を埋め文字へ
             // `replace`」していたので、**元の文字列に含まれる空白まで置換**していた
@@ -481,9 +525,32 @@ impl Interpreter {
             }
 
             // ── その他変換 ───────────────────────────────────────────────────
+            // タブを次のタブ位置まで空白で埋める（桁は文字の数・改行で 0 に戻る・`tabsize` が 0 以下ならタブを消す・CPython と同じ）。
+            // ⚠ 以前はタブを `tabsize` 個の空白に置き換えるだけだった（`"ab\tc".expandtabs(4)` が `ab    c`。CPython は `ab  c`・タスク 1-17）。
             "expandtabs" => {
                 let tabsize = arg_int!(0, 8).max(0) as usize;
-                Ok(Value::str(s.replace('\t', &" ".repeat(tabsize))))
+                let mut out = String::with_capacity(s.len());
+                let mut col = 0usize;
+                for c in s.chars() {
+                    match c {
+                        '\t' => {
+                            if tabsize > 0 {
+                                let n = tabsize - col % tabsize;
+                                out.extend(std::iter::repeat(' ').take(n));
+                                col += n;
+                            }
+                        }
+                        '\n' | '\r' => {
+                            out.push(c);
+                            col = 0;
+                        }
+                        _ => {
+                            out.push(c);
+                            col += 1;
+                        }
+                    }
+                }
+                Ok(Value::str(out))
             }
             "chars" => {
                 // 文字リストを返す
@@ -597,16 +664,31 @@ impl Interpreter {
 
 }
 
-/// `s[start:end]`（文字単位）のバイト範囲と、先頭の文字位置（ffi_value_exchange_plan.md 7-2）。Python と同じく負の位置は末尾から
-/// 数え、範囲外は詰める。`start` が文字数を超えていれば `None`（`"abc".find("", 4)` は -1・Python と同じ）。
-fn char_window(s: &str, start: i64, end: i64) -> Option<(usize, usize, usize)> {
+
+/// `find` / `count` / `startswith` などの `start` / `end`（整数か `None`・省略は `None`）。
+fn str_index_arg(v: Option<&Value>) -> Result<Option<i64>, String> {
+    match v {
+        None | Some(Value::None) => Ok(None),
+        Some(Value::Int(n)) => Ok(Some(*n)),
+        Some(Value::Bool(b)) => Ok(Some(i64::from(*b))),
+        Some(other) => Err(format!(
+            "TypeError: slice indices must be integers or None or have an __index__ method, not '{}'",
+            crate::interpreter::ops::typecheck::runtime_type_name(other)
+        )),
+    }
+}
+
+/// `s[start:end]` の範囲を、**文字の番号**で解釈してバイトの範囲にする（CPython の `ADJUST_INDICES`・タスク 1-17）。
+/// 負は後ろから数え、長さを超えた `end` は長さに詰める。返すのは（開始のバイト, 終わりのバイト, 開始の文字の番号）。
+/// 開始が長さを超える・終わりが開始より前なら `None`（`find` は -1、`count` は 0、`startswith` は偽・CPython と同じ）。
+fn str_char_range(s: &str, start: Option<i64>, end: Option<i64>) -> Option<(usize, usize, usize)> {
     let n = s.chars().count() as i64;
-    let norm = |i: i64| if i < 0 { (i + n).max(0) } else { i };
-    let (cs, ce) = (norm(start), norm(end).min(n));
-    if cs > n {
+    let adjust = |v: i64| if v < 0 { (v + n).max(0) } else { v };
+    let st = start.map_or(0, adjust);
+    let en = end.map_or(n, |e| adjust(e).min(n));
+    if st > n || en < st {
         return None;
     }
-    let ce = ce.max(cs);
-    let byte_at = |c: i64| s.char_indices().nth(c as usize).map_or(s.len(), |(b, _)| b);
-    Some((byte_at(cs), byte_at(ce), cs as usize))
+    let byte_of = |ci: i64| s.char_indices().nth(ci as usize).map_or(s.len(), |(b, _)| b);
+    Some((byte_of(st), byte_of(en), st as usize))
 }

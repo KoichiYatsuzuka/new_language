@@ -9,6 +9,32 @@ use {
 };
 
 impl Interpreter {
+    /// `OSError(errno, strerror, ..)` が作るクラス（CPython の `OSError.__new__`・known_bugs.md の #9）。組み込みの
+    /// `OSError`（と別名の `IOError` …）を位置引数 2〜5 個で呼び、最初が errno の表（`os_error_subclass_of`）にある
+    /// 整数なら、その派生（`OSError(2, "..")` は `FileNotFoundError`）。ほかはそのまま。
+    /// ⚠ 派生を呼んだとき（`PermissionError(2, "..")`）・Python のクラスは呼んだクラスのまま（CPython と同じ）。
+    fn os_error_subclass_for(
+        &self,
+        class: Rc<ClassValue>,
+        evaled: &[(Option<String>, Value, bool)],
+    ) -> Rc<ClassValue> {
+        let is_builtin_os_error = !class.is_python
+            && Self::in_exception_hierarchy(&class)
+            && matches!(class.name.as_str(), "OSError" | "IOError" | "EnvironmentError" | "WindowsError");
+        if !is_builtin_os_error {
+            return class;
+        }
+        let positional: Vec<&Value> = evaled.iter().filter(|(k, _, _)| k.is_none()).map(|(_, v, _)| v).collect();
+        let sub = match positional.as_slice() {
+            [Value::Int(n), _, ..] if positional.len() <= 5 => crate::interpreter::built_in_types::os_error_subclass_of(*n),
+            _ => None,
+        };
+        match sub.and_then(|name| self.get_val(name)) {
+            Some(Value::Class(c)) => c,
+            _ => class,
+        }
+    }
+
     /// オブジェクトのメソッドを呼び出して結果を返す。
     ///
     /// 各値型に対してディスパッチを行う:
@@ -31,6 +57,27 @@ impl Interpreter {
         class: Rc<ClassValue>,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
+        match class.builtin {
+            crate::interpreter::BuiltinClass::Ordinary => {}
+            // `object()` は Python のソースからだけ作れる（タスク 6-10 の決定）。変換器は Python の `object()` を
+            // `__py_object()` にするので、クラスの値を呼ぶのは Arrow のコード（`let c = object; c()`）か、
+            // Python で型を値として呼ぶ形（`type(o)()`・対象外）。
+            crate::interpreter::BuiltinClass::Object => {
+                return Err("TypeError: object() cannot be called from Arrow code; it is available only in Python \
+                            modules (import[py])"
+                    .to_string())
+            }
+            // 唯一の値のクラス（`type(...)()` / `type(NotImplemented)()`・タスク 6-11 / 6-12）は CPython と同じく
+            // その値を返す。
+            kind @ (crate::interpreter::BuiltinClass::Ellipsis | crate::interpreter::BuiltinClass::NotImplemented) => {
+                if !evaled.is_empty() {
+                    let shown = if kind == crate::interpreter::BuiltinClass::Ellipsis { "EllipsisType" } else { "NotImplementedType" };
+                    return Err(format!("TypeError: {shown} takes no arguments"));
+                }
+                return Ok(self.builtin_singleton(kind));
+            }
+        }
+        let class = self.os_error_subclass_for(class, &evaled);
         let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {
             if let Some(&idx) = class.field_index.get(name.as_str()) {
@@ -38,6 +85,18 @@ impl Interpreter {
             }
         }
         let inst_rc = Rc::new(RefCell::new(inst));
+        // 組み込みの例外の階層は `__init__` より先に `args` と `str(e)` を入れる（CPython の
+        // `BaseException.__new__` と同じ・python_builtins_plan.md のタスク 4-2）。`__init__` を書かない
+        // Python のクラスも、`super().__init__` を呼ばない `__init__` も、`args` は作るときの位置引数になる。
+        // ⚠ キーワード引数を拒むのは `__init__` を持たない（組み込みのまま）ときだけ（CPython と同じ）。
+        if Self::in_exception_hierarchy(&class) {
+            let args = if self.lookup_method_in_class(&class, "__init__").is_some() {
+                evaled.iter().filter(|(k, _, _)| k.is_none()).map(|(_, v, _)| v.clone()).collect()
+            } else {
+                Self::exc_positional_args(&class, &evaled)?
+            };
+            self.exc_set_args(&inst_rc, args)?;
+        }
         let inst_val = Value::Instance(inst_rc);
 
         // ── cs-dll / cs-proc ブリッジ経由のコンストラクタ（#22-c で移植）──

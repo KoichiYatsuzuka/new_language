@@ -1,0 +1,9 @@
+# py_property_error.ar — setter の無い property への代入（python_builtins_plan.md のタスク 6-1）
+#
+# CPython と同じく実行時の AttributeError になる。期待される出力:
+#   42
+#   AttributeError: property 'value' of 'ReadOnly' object has no setter
+
+import[py] test_modules.py_property_error as pe
+
+pe.run()

@@ -265,7 +265,10 @@ mod a_axis_invariants {
         }
         // ④ 逆向き: 表の名前は実行時に解決できる
         for name in RUNTIME_BUILTIN_NAMES {
-            let known = scope.contains_key(*name) || interp.eval_builtin_evaled(name, Vec::new()).is_some();
+            // ⚠ 名前の探索の最後の段（`builtin_value`）で引ける値も実行時が知っている名前（`property`・タスク 6-1）。
+            let known = scope.contains_key(*name)
+                || interp.eval_builtin_evaled(name, Vec::new()).is_some()
+                || interp.builtin_value(name).is_some();
             assert!(known, "型検査の表の '{name}' を実行時が知らない（古い名前が残っている）");
         }
     }
@@ -275,11 +278,13 @@ mod a_axis_invariants {
     /// `NameError` になる（表に無い）か、実行時は書ける名前を型検査が拒む（表に余分）。
     #[test]
     fn checker_knows_the_runtime_global_names() {
-        use crate::type_check::names::RUNTIME_GLOBAL_NAMES;
+        use crate::type_check::names::{BUILTIN_EXCEPTIONS, RUNTIME_GLOBAL_NAMES};
         let scope = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
         let mut runtime: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
         runtime.sort();
-        let mut table: Vec<&str> = RUNTIME_GLOBAL_NAMES.to_vec();
+        // 組み込みの例外クラスは例外の表から（`is_runtime_global_name` と同じ・python_builtins_plan.md のタスク 4-1）。
+        let mut table: Vec<&str> =
+            RUNTIME_GLOBAL_NAMES.iter().copied().chain(BUILTIN_EXCEPTIONS.iter().map(|(n, _)| *n)).collect();
         table.sort();
         assert_eq!(table, runtime, "RUNTIME_GLOBAL_NAMES と実行時の組み込みの大域が違う");
     }
@@ -295,8 +300,10 @@ mod a_axis_invariants {
         let declared = crate::type_check::builtins::declared_names();
         assert!(!declared.is_empty(), "builtins.ars が読めていない（構文エラー？）");
         // ① 宣言した名前は実行時に解決できる（組み込み関数・型の変換・組み込みのクラス）
+        //    名前の探索の最後の段（`builtin_value`）で引ける値も含む（`property`・python_builtins_plan.md のタスク 6-1）。
         for name in &declared {
             let known = scope.contains_key(name.as_str())
+                || interp.builtin_value(name).is_some()
                 || interp.eval_builtin_evaled(name, Vec::new()).is_some()
                 || match interp.call_type_by_name_evaled(name, Vec::new()) {
                     Ok(_) => true,
@@ -315,6 +322,11 @@ mod a_axis_invariants {
             }
             for alt in head.split('|') {
                 let n = alt.trim().trim_matches('"');
+                // ⚠ `__` で始まる名前は変換器が置く内部の組み込み（`__py_with_exit` など・python_builtins_plan.md）。
+                //   利用者が書く名前ではないので宣言しない（補完に出さない・⑤ の `__` のメソッドと同じ扱い）。
+                if n.starts_with("__") {
+                    continue;
+                }
                 if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     assert!(declared.iter().any(|d| d == n), "組み込み関数 '{n}' が builtins.ars に無い");
                 }
@@ -369,6 +381,7 @@ mod a_axis_invariants {
             is_closed: true,
             file_handle: None,
             detached: false,
+            py_mode: None,
         }));
         for m in &methods {
             let res = interp.exec_file_method(fd.clone(), m, &[]);

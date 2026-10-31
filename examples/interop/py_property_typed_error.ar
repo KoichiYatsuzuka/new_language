@@ -1,0 +1,10 @@
+# py_property_typed_error.ar — getter の注釈が `float` の property を `str` の変数へ束縛する（タスク 6-8）
+#
+# 置き場の型は getter の戻り値の注釈なので、Arrow から読んだ値は `float`。
+# 期待: 静的型エラー（`str` と宣言した変数を `float` で初期化している）
+
+import[py] test_modules.py_property_typed as pt
+
+let s = pt.Sensor(21.5, [3])
+let name: str = s.celsius
+print(name)

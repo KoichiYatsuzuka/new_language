@@ -498,7 +498,7 @@ fn meta_kinds_are_distinct_types() {
     }
 
     /// 外部言語との境界の例外（ffi_value_exchange_plan.md 7-4）は組み込みの例外クラス。`except` に書け、
-    /// `FfiTypeError` は `TypeError` の欄にも入る（実行時の `builtin_exception_parent` と同じ）。
+    /// `FfiTypeError` は `TypeError` の欄にも入る（親は例外の表 `names::BUILTIN_EXCEPTIONS`・実行時も同じ表）。
     #[test]
     fn ffi_exceptions_are_builtin_exception_classes() {
         let src = concat!(
@@ -544,4 +544,159 @@ fn meta_kinds_are_distinct_types() {
             errs.iter().any(|e| matches!(e.kind, TypeErrorKind::ExceptOnErrorTrait)),
             "{errs:?}"
         );
+    }
+
+    /// 組み込みの例外は CPython の階層を持つ（python_builtins_plan.md のタスク 4-1）。子は親の欄に入り、
+    /// 親は子の欄に入らない。足した例外・警告のクラスも `except` に書ける。
+    #[test]
+    fn builtin_exceptions_follow_the_cpython_hierarchy() {
+        let src = concat!(
+            "let a: LookupError = KeyError(\"k\")\n",
+            "let b: OSError = FileNotFoundError(\"f\")\n",
+            "let c: IOError = PermissionError(\"p\")\n",
+            "let d: BaseException = ValueError(\"v\")\n",
+            "let w: Warning = FutureWarning(\"w\")\n",
+            "try:\n    pass\nexcept UserWarning as e:\n    pass\n",
+        );
+        assert!(ok(src), "{:?}", check(src));
+        assert!(err("let e: KeyError = LookupError(\"x\")\n"));
+        assert!(err("let e: Exception = GeneratorExit(\"g\")\n"));
+    }
+
+    /// 束縛メソッドには型が付く（タスク 1-11）: `self` を除いたシグネチャの関数型で、引数・戻り値を検査する。
+    /// 不変の受け手を書き換えるメソッドは、束縛はできるが呼ぶと `MutatingMethodOnImmutable`（直接呼ぶのと同じ）。
+    /// 組み込みの値のメソッドは表にある名前だけ読める。
+    #[test]
+    fn bound_methods_are_typed() {
+        let class = concat!(
+            "class Counter:\n",
+            "    mut n: int\n",
+            "    fn add(mut self, let k: int) -> int:\n",
+            "        self.n = self.n + k\n",
+            "        return self.n\n",
+            "    fn get(self) -> int:\n",
+            "        return self.n\n",
+        );
+        let ok_src = format!(
+            "{class}mut c = Counter(1)\nlet g = c.get\nlet x: int = g()\nlet a = c.add\nlet y = a(2)\nlet fixed = Counter(2)\nlet fa = fixed.add\nmut xs: list[int] = []\nlet push = xs.append\npush(1)\nlet up = \"s\".upper\n"
+        );
+        assert!(ok(&ok_src), "{:?}", check(&ok_src));
+        assert!(err(&format!("{class}mut c = Counter(1)\nlet g = c.get\nlet s: str = g()\n")));
+        assert!(err(&format!("{class}mut c = Counter(1)\nlet a = c.add\nlet y = a(\"x\")\n")));
+        let errs = check(&format!("{class}let fixed = Counter(2)\nlet fa = fixed.add\nlet r = fa(1)\n"));
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::MutatingMethodOnImmutable { .. })),
+            "{errs:?}"
+        );
+        let errs = check("let ys: list[int] = [1]\nlet p = ys.append\np(2)\n");
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::MutatingMethodOnImmutable { .. })),
+            "{errs:?}"
+        );
+        let errs = check("mut zs: list[int] = [1]\nlet f = zs.no_such\n");
+        assert!(errs.iter().any(|e| matches!(e.kind, TypeErrorKind::NoSuchMember { .. })), "{errs:?}");
+    }
+
+    /// 関数を入れたフィールドを `obj.f(x)` で呼ぶ形（タスク 1-11）はフィールドの関数型で検査する。
+    /// 呼べない値を入れたフィールドは値を呼ぶのと同じ誤り。
+    #[test]
+    fn calling_a_function_field_is_typed() {
+        let class = concat!(
+            "fn double(let x: int) -> int:\n",
+            "    return x * 2\n",
+            "class Holder:\n",
+            "    let f: function[let int]->int\n",
+            "let h = Holder(double)\n",
+        );
+        assert!(ok(&format!("{class}let n: int = h.f(4)\n")));
+        assert!(err(&format!("{class}let s: str = h.f(4)\n")));
+        assert!(err(&format!("{class}let n = h.f(\"x\")\n")));
+        assert!(err("class Box:\n    let n: int\nlet b = Box(3)\nlet v = b.n(1)\n"));
+    }
+
+    /// frozenset の型（タスク 3-1）: `frozenset(xs)` は `frozenset[要素]`、演算子の結果は左の種類、
+    /// `set[T]` とは互いに代入できない。set との `==`・包含の比較（`<=`）は通る。素の `frozenset` は注釈に書けない。
+    #[test]
+    fn frozenset_is_its_own_type() {
+        assert!(ok("let a: frozenset[int] = frozenset([1, 2])\n"));
+        assert!(ok("let e: frozenset[int] = frozenset()\n"));
+        assert!(err("let a: frozenset[str] = frozenset([1, 2])\n"));
+        assert!(err("let s: set[int] = frozenset([1])\n"));
+        assert!(err("let f: frozenset[int] = {1}\n"));
+        let fs = "let a = frozenset([1, 2])\nlet s: set[int] = {2}\n";
+        assert!(ok(&format!("{fs}let u: frozenset[int] = a | s\nlet v: set[int] = s | a\n")));
+        assert!(ok(&format!("{fs}let b: bool = a == s\nlet c: bool = a <= s\nlet d: bool = 1 in a\n")));
+        assert!(ok(&format!("{fs}let i: frozenset[int] = a.intersection(s)\nlet k: bool = a.isdisjoint(s)\n")));
+        assert!(err(&format!("{fs}let x = a[0]\n")));
+        assert!(err("let a: frozenset = frozenset([1])\n"));
+    }
+
+    /// bytes の型（タスク 3-1）: `bytes(..)` / `s.encode()` は bytes、添字は int・スライスは bytes、
+    /// `+` は bytes どうしだけ、`in` は int か bytes、メソッドの戻り値（`decode` は str・`split` は list[bytes]）。
+    #[test]
+    fn bytes_is_its_own_type() {
+        assert!(ok("let b: bytes = \"a\".encode()\nlet c: bytes = bytes([1, 2])\n"));
+        assert!(ok("let b = bytes(3)\nlet i: int = b[0]\nlet s: bytes = b[0:2]\nlet t: bytes = b + b * 2\n"));
+        assert!(ok("let b = bytes(3)\nlet s: str = b.decode()\nlet p: list[bytes] = b.split(bytes([0]))\nlet h: bool = 0 in b\n"));
+        assert!(ok("let b = bytes(3)\nmut n = 0\nfor x in b:\n    n += x\n"));
+        assert!(err("let b: bytes = \"a\"\n"));
+        assert!(err("let s: str = \"a\".encode()\n"));
+        assert!(err("let b = bytes(3)\nlet c = b + \"x\"\n"));
+        assert!(err("let b = bytes(3)\nlet s: str = b[0]\n"));
+        assert!(err("let b = bytes(3)\nlet h = \"x\" in b\n"));
+    }
+
+    /// クラス側のディスクリプタ（タスク 1-12）: 読んだ値は `__get__` の戻り値の型、インスタンス経由の代入は
+    /// `__set__` の値の型、クラス経由の代入（`C.x = d`）はメンバーの宣言型（ディスクリプタのクラス）と照合する。
+    /// `const` に置いたデータディスクリプタへの代入は `__set__` を呼ぶので不変の誤りにしない。
+    #[test]
+    fn class_level_descriptors_are_typed_by_get_and_set() {
+        let classes = concat!(
+            "class F:\n",
+            "    fn __get__(self, obj: Any, owner: Any = None) -> float:\n",
+            "        return 1.5\n",
+            "    fn __set__(self, mut obj: Any, value: float) -> None:\n",
+            "        pass\n",
+            "class G:\n",
+            "    fn __get__(self, obj: Any, owner: Any = None) -> str:\n",
+            "        return \"g\"\n",
+            "class T:\n",
+            "    mut c: float\n",
+            "    static mut f: F = F()\n",
+            "    const k: F = F()\n",
+            "    const g: G = G()\n",
+            "mut t = T(0.0)\n",
+        );
+        assert!(ok(&format!("{classes}let x: float = t.f\nlet y: str = t.g\nlet z: float = T.f\n")));
+        assert!(err(&format!("{classes}let x: int = t.f\n")));
+        assert!(ok(&format!("{classes}t.f = 2.5\nt.k = 3.0\n")));
+        assert!(err(&format!("{classes}t.f = \"hot\"\n")));
+        assert!(ok(&format!("{classes}T.f = F()\n")));
+        assert!(err(&format!("{classes}T.f = 2.5\n")));
+        assert!(ok(&format!("{classes}let n: int = t.g.upper().find(\"G\")\n")));
+    }
+
+    /// `except m.Err:`（タスク 4-3）も知らない名前なら「腕が永久に死ぬ」誤り。
+    #[test]
+    fn dotted_except_type_must_be_known() {
+        let errs = check("try:\n    pass\nexcept nosuch.Err as e:\n    pass\n");
+        assert!(
+            errs.iter().any(|e| matches!(e.kind, TypeErrorKind::ExceptNotError { .. })),
+            "{errs:?}"
+        );
+    }
+
+    /// 組み込みの例外は `args`（組）を持つ（タスク 4-2）。`Error` を実装しただけの利用者の例外は持たない。
+    #[test]
+    fn builtin_exceptions_have_args() {
+        assert!(ok("let e = ValueError(\"a\", 1)\nlet n = len(e.args)\n"));
+        assert!(err("let e = ValueError(\"a\")\nlet n: int = e.args\n"));
+        let src = concat!(
+            "class MyErr(Error):\n",
+            "    fn __init__(mut self, message: str) -> None:\n",
+            "        self.message = message\n",
+            "let m = MyErr(\"m\")\n",
+            "let x = m.args\n",
+        );
+        assert!(err(src), "{:?}", check(src));
     }

@@ -24,7 +24,7 @@ fn add(let a: int, let b: int) -> int: ...
 | `int` | `Value::Int(i64)` | 64 ビット符号付き整数 |
 | `float` | `Value::Float(f64)` | 64 ビット浮動小数点 |
 | `str` | `Value::Str(String)` | Unicode 文字列 |
-| `bytes` | `Value::Bytes(Rc<[u8]>)` | 不変のバイト列（下の「`bytes`」） |
+| `bytes` | `Value::Bytes(Rc<[u8]>)` | 不変のバイト列（`bytes(..)` / `s.encode()`）。添字は `int`、スライス・`+`（bytes どうし）・`*` は `bytes`、反復は `int`、`x in b` は `int` か `bytes`。`str` とは混ぜられない（タスク 3-1・下の「`bytes`」） |
 | `bool` | `Value::Bool(bool)` | 真偽値 (`True` / `False`) |
 | `None` | `Value::None` | 値なし |
 
@@ -46,7 +46,8 @@ for x in raw:                                  # 各要素は 0〜255 の int
 - `len` / 添字（`int`）/ スライス（`bytes`）/ 反復（`int`）/ `==` と順序比較 / `+`（連結）/ `in`（部分列、または 0〜255 の
   `int`）。`dict` のキー・`set` の要素にもなる
 - 文字コード: `utf-8`（既定）・`utf-16-le` / `utf-16-be`・`ascii`・`latin-1`・`shift_jis`（`cp932`）・その他の WHATWG の名前
-  （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `ValueError`（置き換え文字にしない）
+  （`euc-jp` / `gbk` / `big5` …）。変換できないバイト列・文字は `UnicodeDecodeError` / `UnicodeEncodeError`
+  （`ValueError` の派生）。置き換え文字（U+FFFD・`?`）にするのは `errors="replace"` と書いたときだけ
 - `bytes(n)` は n バイトのゼロ（C の出力バッファを用意するのに使う）。`bytes(str)` は `TypeError`（`s.encode(..)` を使う）。
   リテラルの構文（`b"..."`）はまだありません
 - ⚠ 以前の `str.encode()` は文字コードを無視して `list[int]` を返していました
@@ -67,6 +68,7 @@ for x in raw:                                  # 各要素は 0〜255 の int
 | `dict[K, V]` | `Value::Dict(...)` | 型付き辞書 |
 | `set` | `Value::Set(...)` | 要素型未知のセット |
 | `set[T]` | `Value::Set(...)` | 型付きセット |
+| `frozenset[T]` | `Value::FrozenSet(...)` | 不変でハッシュできる集合（`frozenset(xs)` で作る）。`set[T]` とは互いに代入できない。演算子の結果は左の種類、`==` と包含の比較（`<=`）は set とも書ける |
 | `tuple[T1, T2, ...]` | `Value::Tuple(...)` | 固定長異種タプル |
 
 ---
@@ -401,6 +403,60 @@ if y is not None:
 
 `is not` は `Union` / `Optional` 型にのみ適用できます。  
 非 Union 型に適用すると静的型エラー `IsNotOnNonUnion`。
+
+---
+
+## 属性の型
+
+`obj.x` の型はメンバーの宣言型です。次の 2 つは宣言型そのものではなく、実行時に起きることに合わせた型で検査します。
+
+### 属性に入れた関数を呼ぶ（`obj.f(x)`）
+
+メソッドの無い名前の呼び出しは、メンバーの型で検査します（[06_classes_traits.md](06_classes_traits.md) の「属性に入れた関数を呼ぶ」）:
+
+| メンバーの型 | 検査 |
+|---|---|
+| `function[let int]->int` など引数の分かる関数型 | 引数の数・型を検査し、戻り値の型が呼び出しの型 |
+| `type[C]`（クラス変数に入ったクラス） | `C` のインスタンス |
+| 呼べない型（`int` など） | `'int' is not callable`（値を呼ぶのと同じ誤り） |
+
+### ディスクリプタ
+
+クラス側（`static mut` / `const`）のメンバーの宣言型が `__get__` を持つクラスなら、そのメンバーはディスクリプタです
+（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。
+
+| 書き方 | 照合する型 |
+|---|---|
+| `obj.x` / `C.x`（読み） | `__get__` の戻り値の型 |
+| `obj.x(..)`（呼び出し） | `__get__` の戻り値の型を呼ぶ |
+| `obj.x = v`（データディスクリプタ） | `__set__` の `value` の型（型が書いていなければ検査しない） |
+| `obj.x = v`（非データディスクリプタ） | メンバーの宣言型 |
+| `C.x = v`（クラスへ代入） | メンバーの宣言型（ディスクリプタのクラス） |
+
+```ar
+class F:
+    fn __get__(self, obj: Any, owner: Any = None) -> float:
+        return 1.5
+    fn __set__(self, mut obj: Any, value: float) -> None:
+        pass
+
+class T:
+    static mut f: F = F()
+    const k: F = F()
+
+mut t = T()
+let x: float = t.f        # OK（__get__ の戻り値）
+t.f = 2.5                 # OK（__set__ の value）
+t.k = 3.0                 # OK（const でもデータディスクリプタへの代入は __set__ なので不変の誤りにしない）
+t.f = "hot"               # StaticTypeError: field 'f' of class 'T' is declared 'float' but got 'str'
+T.f = 2.5                 # StaticTypeError: field 'f' of class 'T' is declared 'F' but got 'float'
+                          #（クラスへの代入はメンバーそのものを置き換える）
+```
+
+- ⚠ インスタンスのフィールド（`mut f: D`）はディスクリプタとして扱いません（実行時も働かない）。
+- ⚠ 組み込みの `property` を置いたメンバーは `Any` です（Python から変換したクラスは `static mut x: Any`）。
+- 実装: `TypeChecker::class_descriptor`（`type_check/infer.rs`）。読みは `infer_attr`、呼び出しは `call_check.rs`、
+  代入は `stmt/check.rs` の `check_assign` が使う。
 
 ---
 

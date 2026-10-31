@@ -4,14 +4,12 @@
 #
 # Arrow のパーサが自前の f-string を脱糖する `desugar_fstring`（`src/parser/exprs.rs`）と
 # **同形**に変換する:
-#   リテラル片はそのまま `Expr::Str`、埋め込み式は `str(...)` 呼び出しで包み、
-#   左結合の `BinOp::Add` で連結する。`f""` は空文字列。
+#   リテラル片はそのまま `Expr::Str`、埋め込み式は `format(...)` 呼び出しで包み（`__format__` の無い値は
+#   `str(...)` と同じ）、左結合の `BinOp::Add` で連結する。`f""` は空文字列。
 #
-# ⚠ **変換フラグは対応済み**: `!s` → `str()`、`!r` → `repr()`（どちらも Arrow に組込がある）。
-#   `!a`（ascii）は相当する組込が無いので明示エラー。
-# ⚠ **書式指定 `{x:.2f}` は明示エラー**（Arrow に書式指定の構文・組込が無い）。
-#   `py_fstring_error.ar` で固定し、将来の実装方針は
-#   `implementation_logs/FUTURE_FEATURE.md` の §4 (3) に残してある。
+# ⚠ **変換フラグは対応済み**: `!s` → `str()`、`!r` → `repr()`、`!a` → `ascii()`。
+# ⚠ **書式指定 `{x:.2f}` も対応済み**（組み込みの `format(x, spec)`・python_builtins_plan.md のタスク 3-4）。
+#   通る形は `py_format.ar`。以前の `py_fstring_error.ar`（書式指定・`!a` の明示エラー）は削除した。
 # ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
 
 import[py] test_modules.py_fstring as m

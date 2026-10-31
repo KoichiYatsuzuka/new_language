@@ -44,6 +44,32 @@ $whitelist = @(
     'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire',
     # 外部クレートの API 名（indexmap の raw_entry_v1）。src に同名の識別子は無くて当然。
     'raw_entry',
+    # Rust 標準の整数のメソッド名。`ops::py_floor_div` / `ops::py_mod` の doc が「これを使ってはいけない
+    # （割る数が負のとき CPython と食い違う）」と書くために言及する。src から呼ばないのが正しい状態。
+    'div_euclid','rem_euclid',
+    # C の標準ライブラリの関数名。CPython の `_float_div_mod` が使う `fmod` を説明するために言及する（タスク 1-2）。
+    'fmod',
+    # CPython の関数名（Objects/listobject.c 等）。CPython と同じ手順で書いた箇所の出どころを示す（タスク 1-3 / 1-4）。
+    'list_richcompare','tuplerichcompare','dict_iter','PyObject_SelfIter','PyObject_GetIter','float_repr','complex_repr','object_recursive_isinstance','__module__','double_round','__doc__','__package__','__loader__','__spec__','__self__','__func__',
+    # CPython の関数名（Objects/descrobject.c）。組み込みの `property` の `setter` などが写す手順の出どころ（タスク 6-1）。
+    'property_copy',
+    # CPython の関数名（Objects/unicodeobject.c）と、使わなかった Rust 標準のメソッド名（`char::is_control`）。
+    # 文字列の `repr` と `isprintable` の出どころと、以前の判定を説明するために言及する（タスク 1-13）。
+    'unicode_repr','is_control',
+    # CPython のインスタンスの属性の辞書（cached_property が値を入れる先・タスク 6-5）
+    '__dict__',
+    # CPython の `object` のメソッド（Arrow の `object` には無い・対象外と書くために言及する・タスク 6-10）
+    '__new__','__setattr__',
+    # CPython の二項演算子・比較の手順の関数（Objects/abstract.c / object.c・演算子メソッドの手順・タスク 6-12）
+    'binary_op1','do_richcompare',
+    # CPython の `__getattr__` を呼ぶ手順の関数（Objects/typeobject.c・known_bugs.md の #11）
+    'slot_tp_getattr_hook',
+    # CPython の `OSError` の引数の読み方と errno → 派生の表（Objects/exceptions.c・known_bugs.md の #9）
+    'oserror_init','oserror_parse_args','errnomap',
+    # CPython の書式指定の小言語の関数（formatter_unicode.c / string.Formatter・タスク 3-4）
+    'format_float_internal','format_string_internal','parse_field','parse_internal_render_format_spec',
+    # CPython の関数名（Objects/bytesobject.c）。bytes の表示の出どころ（タスク 3-1）。
+    'bytes_repr',
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ **Arrow 側の型名**。メタ情報演算子が返す組み込み型（設計書 §1.5 / タスク 1-5）で

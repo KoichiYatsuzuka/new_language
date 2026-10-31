@@ -1,0 +1,25 @@
+# py_function_attrs.ar — Python の関数の値の __name__ / __qualname__ / __doc__（python_builtins_plan.md のタスク 1-14）
+#
+# デコレータがよく使う `func.__name__`、関数の中の関数の `outer.<locals>.inner`、メソッドの `C.m`、
+# property の getter（`p.fget.__name__` は元の名前 `celsius`）、ラムダの `<lambda>` が CPython と同じになる。
+# 関数の中の関数は Python の関数として呼ばれる（既定値・キーワード引数の束縛）。
+#
+# 出力は CPython と同じ:
+#   3 ['add']
+#   wrapper logged.<locals>.wrapper
+#   logged Record each call under the function's name.
+#   step make_counter.<locals>.step None
+#   3 6 13 make_adder.<locals>.adder
+#   <lambda> run.<locals>.<lambda>
+#   Temperature.describe describe 20Temperature.describe.<locals>.unit
+#   celsius Temperature.celsius Degrees Celsius.
+#   celsius Temperature.celsius
+#   run run None
+#
+# ⚠ 以前は関数の値が属性を持たず `'function' object has no attribute '__name__'` だった。
+# ⚠ 以前は Python の関数を呼んだときに作る入れ子の関数が Arrow の関数になり、`adder(1)`（既定値）や
+#   `adder(1, b=5)` が `TypeError: function takes ..` だった。
+
+import[py] test_modules.py_function_attrs as fa
+
+fa.run()

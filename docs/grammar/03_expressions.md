@@ -39,6 +39,10 @@ None        # Expr::None
 
 **評価**: リテラルは対応する `Value` を直接返します。
 
+**float の表示**（`print` / `str` / `repr`）は CPython の `repr` と同じ最短の往復表現です。10 進の指数が
+`-4` 未満か `16` 以上なら指数表記（`1e+20` / `1e-05`）、それ以外は小数表記に `.0` を足します（`3.0`）。
+complex も CPython と同じ（`(1+2j)` / `3j`）。
+
 ---
 
 ## 識別子 (変数参照)
@@ -57,14 +61,54 @@ name
 
 ```ar
 f"x = {x}, y = {x + y:.2f}"
+f"{name!r:>10}|{x=}|{x:{width}.{prec}f}"
 ```
 
-- `Expr::FStr` ではなく、パーサーがコンパイル時に `str.format()` 相当の式に展開
-- `{expr}` 部分は式として再解析される
-- `{{` / `}}` → エスケープされた `{` / `}`
+置換フィールドは Python と同じ `{式[=][!変換][:書式指定]}` です（python_builtins_plan.md のタスク 3-4）。
 
-**評価**: 各 `FStrPart::Lit(s)` は文字列そのまま、`FStrPart::Expr(src)` は  
-ソーステキストを再パースして評価し `display()` で文字列化して連結。
+| 形 | 意味 |
+|---|---|
+| `{x}` | `format(x)`（`__format__` の無い値は `str(x)` と同じ） |
+| `{x:spec}` | `format(x, "spec")`（書式指定の小言語・[12_builtins.md](12_builtins.md) の「`format`」） |
+| `{x!r}` / `{x!s}` / `{x!a}` | `repr(x)` / `str(x)` / `ascii(x)`。書式指定があればその後で `format` |
+| `{x=}` / `{x = :.2f}` | 式の文字（と `=` 前後の空白）を前に付ける。書式指定・変換が無ければ `repr`（CPython の自己記述の式） |
+| `{x:{w}.{p}f}` | 書式指定の中の置換フィールド（f-string と同じに文字列にして連結する） |
+| `{{` / `}}` | `{` / `}` |
+
+- パーサーが文字列の連結（`"x = " + format(x) + ..`）に展開する（`Expr::FStr` は無い）。
+- 括弧と文字列の中の `!` / `:` / `=` は式の一部（`{d["a:b"]}` / `{xs[1:2]}` / `{a != b}`）。
+- ⚠ 式の後ろに読めない字句が残ると構文の誤り（`f-string: invalid expression`）。以前は `:` / `!` から後ろを黙って捨てていた。
+
+---
+
+## 文字列の `%` 書式
+
+```ar
+"%s is %d years old" % (name, age)     # 値が 2 つ以上なら組で渡す
+"%.2f" % 3.14159                       # 値が 1 つなら組にしなくてよい → '3.14'
+"%s | %r" % (t, t)                     # str(t) / repr(t)（__str__ / __repr__ を呼ぶ）
+"[%6s] [%-6s] [%04d] [%+d]" % ("ab", "ab", 42, 3)
+```
+
+左が文字列の `%` は Python の printf 形式の書式です（数どうしの `%` は剰余）。
+
+| 書式 | 意味 |
+|---|---|
+| `%s` / `%r` | `str(x)` / `repr(x)`。クラスの `__str__` / `__repr__` を呼び、コンテナの中は `repr`（CPython と同じ・known_bugs.md の #4） |
+| `%d` / `%i` / `%u` | 整数（`float` は切り捨て・`bool` は 0 / 1） |
+| `%f` / `%F` | 小数（既定の精度 6） |
+| `%e` / `%E` / `%g` / `%G` | 指数・一般の形（`format()` と同じ綴り・`1.234568e+04`） |
+| `%x` / `%X` / `%o` | 16 進・8 進 |
+| `%c` | 整数の文字（`"%c" % 65` は `A`） |
+| `%%` | `%` そのもの |
+
+- 指定子の前に、旗（`-` 左寄せ・`0` 0 埋め・`+` 符号・空白・`#`）、幅（`%6s`）、精度（`%.2f`・`%s` / `%r` では文字の数）を置けます。
+- 値が足りなければ `TypeError: not enough arguments for format string`。
+- ⚠ CPython と違う所: 値が余っても誤りになりません（`"%d" % (1, 2)` は `1`。CPython は `TypeError: not all arguments
+  converted during string formatting`）。辞書で名前を指す `%(name)s` はありません（`unsupported format character '('`）。
+  `%b`（2 進）が使えます（CPython の `str` の `%` には無く `ValueError`）。
+- 例題は `examples/basics/percent_format.ar`。書式指定の小言語（`format()` / f-string の `{x:spec}`）は
+  [12_builtins.md](12_builtins.md) の「`format`」。
 
 ---
 
@@ -96,6 +140,23 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 ```
 
 **評価**: キー・値のペアを左から順に評価して `Value::Dict(Rc<RefCell<DictData>>)` を生成。
+
+**メソッド**（CPython と同じ・python_builtins_plan.md のタスク 3-6）:
+
+| メソッド | 働き | 静的な型 |
+|---|---|---|
+| `keys()` / `values()` / `items()` | キー・値・`(キー, 値)` の組のリスト（その時点の写し） | `list[K]` / `list[V]` / `list[tuple[K, V]]` |
+| `get(k, default=None)` | 値。無ければ `default` | `Option[V]`（既定値が `V` なら `V`） |
+| `pop(k[, default])` | 取り除いて値。無ければ `default`、それも無ければ `KeyError` | `V` |
+| `setdefault(k, default=None)` | あれば値、無ければ `default` を入れて（入れた後の）値 | `Option[V]` / `V` |
+| `update(other=(), **kw)` | 辞書か `(キー, 値)` の組の列から、続けてキーワード引数から入れる | `None` |
+| `popitem()` | 最後に入れた `(キー, 値)` を取り除いて返す（空なら `KeyError`） | `tuple[K, V]` |
+| `clear()` / `copy()` | 空にする / 別の辞書 | `None` / 同じ辞書型 |
+
+- 書き換えるメソッド（`pop` / `popitem` / `setdefault` / `update` / `clear`）は `let` の辞書には呼べません（静的な誤り）。
+- 型つきの辞書（`dict[str, int]`）へ入れる `update` / `setdefault` は `d[k] = v` と同じく型を確かめます。
+- ⚠ `copy()` は深い写しです（`mut e = d` と同じ。CPython は浅い写し）。⚠ Arrow のソースに `del d[k]` はありません（`d.pop(k)` を使う。Python のモジュールの `del d[k]` は消せる・
+  [09_imports.md](09_imports.md) の「`del`」）。
 
 ### セット
 
@@ -136,6 +197,10 @@ a ** b   # べき乗 (右結合)
 
 - `/` は常に `float` を返します
 - `//` は `int // int` → `int`、それ以外 → `float`
+- `//` と `%` は **CPython と同じ**: 商は負の無限大の方向へ切り捨て、`%` の結果は割る数と同じ符号
+  （`-7 // 2 == -4`・`7 % -2 == -1`・`-7 // -2 == 3`）。float も CPython の `_float_div_mod` と同じ式
+  （`0.1 % 0.01` は `3.469446951953614e-18`、`6.0 % -3.0` は `-0.0`）。0 で割ると `ZeroDivisionError`
+  （`float floor division by zero` / `float modulo`）
 
 ---
 
@@ -154,6 +219,14 @@ a not in b
 
 **評価**: `Bool` を返します。  
 `values_eq` は型を考慮して比較 (`Int(1) == Float(1.0)` は `true`)。
+
+list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）は CPython と同じ辞書順です（最初に違う要素だけを
+比べ、違いが無ければ長さで決める）。list と tuple は比べられません（`TypeError`）。比べられない要素に届いた
+ときだけ `TypeError`（`(1, 'a') < (2, 3)` は `True`）。
+
+set / frozenset の大小比較は**包含関係**です（CPython と同じ）: `a <= b` は部分集合、`a < b` は真部分集合、
+`>=` / `>` はその逆。set と frozenset は組んで比べられ、`frozenset({1}) == {1}` も `True` です
+（python_builtins_plan.md のタスク 3-1）。
 
 ---
 
@@ -254,14 +327,33 @@ module.function
 
 `Expr::Attr { object, attr, span }` として記録されます。
 
-**評価**: オブジェクトを評価し、値の種類に応じてフィールドまたはメソッドを返します:
-- `Instance` → `fields` マップを検索、なければ `class.methods` を検索
-- `Class` → `class_vars` (const) を検索
+**評価**: オブジェクトを評価し、値の種類に応じて次の順に探します（`eval/attrs.rs` の `get_attr_val`）:
+- `Instance`（CPython の `object.__getattribute__` と同じ順）:
+  1. クラス側（`static mut` / `const`）の**データディスクリプタ**（`__get__` と `__set__` / `__delete__` を持つ値）→ `__get__(obj, C)`
+  2. フィールド
+  3. クラス側の**非データディスクリプタ**（`__get__` だけ）→ `__get__(obj, C)`
+  4. クラス側の値（`const` / `static mut`）そのもの
+  5. メソッド（**受け手を束縛した関数**・[06_classes_traits.md](06_classes_traits.md) の「メソッドを値として読む」）・`gen` メソッド
+- `Class`:
+  1. `__name__` / `__qualname__`（クラスの名前）
+  2. `const` / `static mut`（ディスクリプタなら `__get__(None, C)`。`property` は自分自身を返す）
+  3. メソッド（束縛しない関数）
+  4. `name`（クラスの名前。⚠ 同じ名前のメンバーがあればメンバーが先）
 - `Namespace` → `members` マップを検索
 - `Str`/`List`/`Dict`/`Set`/... → 組み込みメソッドのバインド済み関数を返す
 
+ディスクリプタは [06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」、組み込みの `property` は同じファイルの
+「組み込みの `property`」を参照。
+
+**代入** `obj.attr = v`（`attr_assign_evaled`）: クラス側のデータディスクリプタなら `__set__(obj, v)`、`static mut` なら
+共有セルを書き換え、それ以外はフィールドへ格納します（`const` への代入は `TypeError`）。`C.attr = v` は `static mut` の
+値を置き換えます（ディスクリプタの `__set__` は呼びません）。
+
+**呼び出し** `obj.m(args)`: メソッドを探し、無ければ属性として読んでその値を呼びます（フィールドに入れた関数・
+`__get__` が返す関数。[06_classes_traits.md](06_classes_traits.md) の「メソッドの検索順序」）。
+
 **アクセス制御**: `current_class` と `field_access`/`method_access` を照合して  
-`private`/`protected` 違反があれば `AccessError` を送出します。
+`private`/`protected` 違反があれば `AccessError` を送出します。ディスクリプタを通る読み書きも同じです。
 
 ---
 
@@ -324,6 +416,11 @@ let result = block ->int:
 `Expr::Block { stmts, return_type }` として記録されます。  
 `block_return val` でブロック式を即座に終了して値を返します。  
 `block_return` なしの場合は `None` を返します。
+
+`block:` を**文**として書いた場合（値を受けない）、中の `return` は普通の文と同じく関数から抜けます
+（囲む `try` の `finally` も走る）。⚠ ブロック**式**の中の `return`（式の途中から関数を抜ける形）は作れません。
+⚠ 2026-10-05 までは、関数の中の `block:` 文に `return` があるだけで関数ごと `VmForceError` でした
+（Python の `with ...: return ..` の変換先も `block:` なので同じ理由で読めなかった）。
 
 ---
 

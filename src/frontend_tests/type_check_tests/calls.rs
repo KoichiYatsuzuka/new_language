@@ -372,7 +372,15 @@ use super::*;
         assert!(err(&format!("{open}f.nope()\n")));
         assert!(err(&format!("{open}f.write(1)\n")));
         assert!(err(&format!("{open}f.read(True, False)\n")));
-        assert!(err(&format!("{open}let n: int = f.write(\"a\")\n")));
+        assert!(err(&format!("{open}let n: int = f.write_line(\"a\")\n")));
+        // Python のファイルのメソッド（python_builtins_plan.md のタスク 5-4）。`write` の戻り値は形で決まる
+        // （Arrow の形は `None`・Python の形は書いた数）ので型を付けない。`read(n)` の `n` も受ける。
+        assert!(ok(&format!(
+            "{open}let line = f.readline()\nlet n = f.write(\"a\")\nlet head = f.read(3)\nlet at: int = f.tell()\nf.flush()\nf.close()\n"
+        )));
+        assert!(err(&format!("{open}let at: str = f.tell()\n")));
+        assert!(ok(&format!("{open}let part = f.readline(2)\n")));
+        assert!(err(&format!("{open}let part = f.readline(\"2\")\n")));
     }
 
     /// 組み込みの `class` は Arrow のクラスではない（VM が `Value::Instance` と見なしてはいけない）。
@@ -399,36 +407,132 @@ use super::*;
             "let e: str = getenv(\"HOME\", \"none\")\n",
             "let r: str = repr([1])\n",
         )));
+        // Python の形（python_builtins_plan.md のタスク 5-2）: 2 番目が文字列か省略・Python のキーワード引数。
+        assert!(ok(concat!(
+            "let p = open(\"a.txt\")\n",
+            "let q = open(\"a.txt\", \"w\", encoding = \"utf-8\", newline = \"\")\n",
+            "let b = open(\"a.txt\", mode = \"rb\")\n",
+        )));
         assert!(err("let f = open(\"a.txt\", 1)\n"));
-        assert!(err("let f = open(\"a.txt\")\n"));
+        assert!(err("let f = open()\n"));
         assert!(err("let f = open(\"a.txt\", FileOpenMode.read, mode = 1)\n"));
+        assert!(err("let f = open(\"a.txt\", \"r\", nope = 1)\n"));
         assert!(err("close(\"x\")\n"));
         assert!(err("let e = getenv(1)\n"));
         assert!(err("let r = repr(1, 2)\n"));
         assert!(err("for i, x in enumerate([1], start = \"a\"):\n    print(i)\n"));
     }
 
-    /// 個数自由の位置引数（`let ...: T`）は何個でも通し、キーワード引数・`... =` を弾く。
+    /// 個数自由の位置引数（`let ...: T`）は何個でも通し、宣言に無いキーワード引数・`... =` を弾く。
+    /// `print` の `sep=` / `end=` / `flush=` は宣言したキーワード専用の仮引数（python_builtins_plan.md のタスク 5-1）。
     #[test]
     fn variadic_builtins_take_positional_args_only() {
         assert!(ok("print()\nprint(1, \"a\", [2])\nfor t in zip([1], [\"a\"], [True]):\n    print(t)\n"));
-        assert!(err("print(1, sep = \" \")\n"));
+        assert!(ok("print(1, 2, sep = \", \", end = \"\")\nprint(flush = True)\n"));
+        assert!(err("print(1, nope = \" \")\n"));
+        assert!(err("print(1, end = 2)\n"));
         assert!(err("print(... = 1, 2)\n"));
     }
 
-    /// `let ...: T` を持つ組み込みは固定の仮引数を前に持たない（`check_builtin_call` が前提にしている）。
+    /// `let ...: T` を持つ組み込みの固定の仮引数はキーワード専用なので、どれも既定値を持つ
+    /// （位置引数は全部 `let ...` へ入る・`check_builtin_call` が前提にしている）。
     #[test]
-    fn variadic_builtins_have_no_fixed_params() {
+    fn variadic_builtins_fixed_params_are_keyword_only() {
         for name in crate::type_check::builtins::declared_names() {
             let Some(decl) = crate::type_check::builtins::call_decl(&name) else { continue };
             if decl.variadic.is_some() {
-                assert!(decl.params.is_empty(), "'{name}' は `let ...: T` と固定の仮引数を両方持っている");
+                for p in &decl.params {
+                    assert!(p.has_default, "'{name}' の `{}` は `let ...: T` と並ぶのに既定値が無い", p.name);
+                }
             }
         }
+    }
+
+    /// `let ...: T` と並べた固定の仮引数はキーワードで渡せ、名前と型を検査する（`min(xs, key = f)`）。
+    #[test]
+    fn variadic_builtins_take_declared_keyword_only_args() {
+        assert!(ok("let a = min([3, 1], key = abs)\nlet b = max(1, 2, 3, default = 0)\n"));
+        assert!(err("let a = min([3, 1], nope = 1)\n"));
     }
 
     /// 同じ名前の利用者の関数があれば、そちらのシグネチャで検査する（組み込みの宣言は使わない）。
     #[test]
     fn user_function_shadows_builtin_args() {
         assert!(ok("fn close(let s: str) -> None:\n    print(s)\nclose(\"x\")\n"));
+    }
+
+    // --- `list(it)` / `tuple(it)` と組み込みの名前を値として使う（python_builtins_plan.md のタスク 1-7）---
+
+    /// `list(xs)` は要素の list、`list()` は `[]` と同じ。組み込みの名前は値として書ける。
+    #[test]
+    fn list_constructor_types_ok() {
+        assert!(ok(concat!(
+            "let xs: list[int] = [1]\n",
+            "let a: list[int] = list(xs)\n",
+            "let d: dict[str, int] = {\"k\": 1}\n",
+            "let ks: list[str] = list(d)\n",
+            "let e: list[int] = list()\n",
+            "let t = tuple(xs)\n",
+            "let f = repr\n",
+        )));
+    }
+
+    /// 要素の型が違えば誤り（`list(xs)` の結果に型が付く）。
+    #[test]
+    fn list_constructor_types_err() {
+        assert!(err("let xs: list[int] = [1]\nlet a: list[str] = list(xs)\n"));
+    }
+
+    // --- `type(x)` の型（python_builtins_plan.md のタスク 2-2）---
+
+    /// `type(x)` は x の型の型値。`__name__` は `str`。
+    /// ⚠ 型値を（識別子でなく）式のまま呼ぶ形（`type(b)(5)`）の結果は従来どおり型を付けない
+    ///   （クラス・enum・protocol で呼び出しの意味が違うので、`TypeValOf(NamedInstance)` の呼び出しは触らない方針）。
+    #[test]
+    fn type_of_types_ok() {
+        assert!(ok(concat!(
+            "class Box:\n",
+            "    mut v: int\n",
+            "let b = Box(1)\n",
+            "let again: Box = type(b)(5)\n",
+            "let n: str = type(b).__name__\n",
+            "let k: str = type(3).__name__\n",
+        )));
+    }
+
+    /// 型の取り違えは誤り（`__name__` は `str`）。
+    #[test]
+    fn type_of_types_err() {
+        assert!(err("class Box:\n    mut v: int\nlet b = Box(1)\nlet n: int = type(b).__name__\n"));
+    }
+
+    // --- 集計の組み込みの結果の型（python_builtins_plan.md のタスク 3-2）---
+
+    /// 要素の型が分かれば結果に型が付く。
+    #[test]
+    fn aggregate_types_ok() {
+        assert!(ok(concat!(
+            "let xs: list[int] = [3, 1]\n",
+            "let a: list[int] = sorted(xs)\n",
+            "let b: int = max(xs)\n",
+            "let c: int = sum(xs)\n",
+            "let d: bool = any(xs)\n",
+            "let e: int = round(2.5)\n",
+            "let f: float = round(2.5, 1)\n",
+            "let g: tuple[int, int] = divmod(7, 2)\n",
+        )));
+    }
+
+    /// 型の取り違えは誤り。
+    #[test]
+    fn aggregate_types_err() {
+        assert!(err("let xs: list[int] = [3, 1]\nlet a: list[str] = sorted(xs)\n"));
+        assert!(err("let xs: list[int] = [3, 1]\nlet b: str = max(xs)\n"));
+    }
+
+    /// `sort` は書き換えるメソッドなので、`let` の list には呼べない。
+    #[test]
+    fn list_sort_needs_mut() {
+        assert!(err("let xs: list[int] = [3, 1]\nxs.sort()\n"));
+        assert!(ok("mut xs: list[int] = [3, 1]\nxs.sort()\n"));
     }

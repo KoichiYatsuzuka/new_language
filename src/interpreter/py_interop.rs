@@ -156,6 +156,11 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     if obj.is_none() {
         return Value::None;
     }
+    // bytes → Value::Bytes（タスク 3-1）。⚠ bytearray / memoryview は PyObject のまま。
+    if let Ok(b) = obj.downcast::<pyo3::types::PyBytes>() {
+        use pyo3::types::PyBytesMethods;
+        return Value::Bytes(b.as_bytes().into());
+    }
     // list → Value::List
     if let Ok(list) = obj.downcast::<PyList>() {
         let items: Vec<Value> = list.iter().map(|item| py_to_tl(py, &item)).collect();
@@ -371,6 +376,11 @@ pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
         let n = obj.len().map_err(python_raised)?;
         Ok(Value::Int(n as i64))
     })
+}
+
+/// `callable(obj)`: Python の `callable()` と同じ判定（python_builtins_plan.md のタスク 2-4）。
+pub fn py_is_callable(handle: &PyObjHandle) -> bool {
+    Python::with_gil(|py| handle.inner.bind(py).is_callable())
 }
 
 /// Python iterable を走査して要素を `Vec<Value>` に収集する。for ループ用。

@@ -248,3 +248,54 @@ fn test_file_text_read_of_invalid_utf8_is_an_error() {
     }
 }
 
+
+
+/// Python のファイルのメソッド（python_builtins_plan.md のタスク 5-4）: どのファイルにも readline / readlines /
+/// close() / for line in f があり、Python の形で開いたファイルだけ read() / write() が CPython の意味。
+#[test]
+fn test_python_file_methods() {
+    let path = temp_path("py_file_methods");
+    let src = format!(
+        concat!(
+            "let w = open(\"{p}\", \"w\")\n",
+            "let n = w.write(\"a\\nbb\\nccc\\n\")\n",
+            "w.close()\n",
+            "let r = open(\"{p}\")\n",
+            "let first = r.readline()\n",
+            "mut seen: list[str] = []\n",
+            "for line in r:\n",
+            "    seen.append(line)\n",
+            "    break\n",
+            "let rest = r.readline()\n",
+            "let tail = r.read()\n",
+            "let closed_before = r.closed\n",
+            "r.close()\n",
+            "let a = open(\"{p}\", FileOpenMode.read)\n",
+            "let lines = a.readlines()\n",
+            "let at_end = a.readline()\n",
+            "a.close()\n",
+        ),
+        p = path
+    );
+    let interp = run_interp(&src);
+    let s = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert!(matches!(interp.get_val("n"), Some(Value::Int(9))));
+    assert_eq!(s("first"), "a\n");
+    assert_eq!(s("rest"), "ccc\n", "for は 1 行ずつ進む（抜けた後も続きを読める）");
+    assert_eq!(s("tail"), "", "Python の形の read() は終わりで \"\"");
+    assert!(matches!(interp.get_val("closed_before"), Some(Value::Bool(false))));
+    assert!(matches!(interp.get_val("lines"), Some(Value::List(l)) if l.borrow().len() == 3));
+    assert_eq!(s("at_end"), "");
+    // Arrow の形の read() は従来どおり終わりで EOFError。
+    let err = run_err_msg(&format!("let f = open(\"{path}\", FileOpenMode.read)\nlet x = f.read()\nlet y = f.read()\n"));
+    assert!(err.contains("EOFError"), "{err}");
+    // Python の形の閉じたファイルは CPython の文言、書けないモードは OSError。
+    let err = run_err_msg(&format!("let f = open(\"{path}\")\nf.close()\nlet x = f.readline()\n"));
+    assert!(err.contains("ValueError: I/O operation on closed file."), "{err}");
+    let err = run_err_msg(&format!("let f = open(\"{path}\")\nlet x = f.write(\"z\")\n"));
+    assert!(err.contains("OSError: not writable"), "{err}");
+    cleanup(&path);
+}

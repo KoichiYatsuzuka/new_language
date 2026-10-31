@@ -26,6 +26,8 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `ListOf(T)` | Homogeneous list — all elements are `T` |
 | `Set` | Untyped set |
 | `SetOf(T)` | Homogeneous set |
+| `FrozenSet` / `FrozenSetOf(T)` | `frozenset` / `frozenset[T]` (python_builtins_plan.md 3-1). Mirrors `Set` / `SetOf` at every site; not assignable to/from `set[T]`. Set operators keep the left operand's kind; `==` and `<=` between set and frozenset are allowed (`binop.rs`) |
+| `Bytes` | `bytes` (3-1): index → `Int`, slice / `+` / `*` → `Bytes`, iteration → `Int`, `x in b` needs `Int` or `Bytes` (`binop.rs`); method results in `builtin_collection_method_return` (`s.encode()` → `Bytes`) |
 | `Dict` | Untyped dict |
 | `DictOf(K, V)` | Dict with key type `K` and value type `V` |
 | `Tuple(Vec<T>)` | Fixed-length tuple with per-element types |
@@ -72,6 +74,7 @@ int   float   str   bool   None   Any   Self
 list                      # untyped
 list[int]                 # ListOf(Int)
 set[str]                  # SetOf(Str)
+frozenset[str]            # FrozenSetOf(Str)
 dict[str, int]            # DictOf(Str, Int)
 tuple[int, str, float]    # Tuple([Int, Str, Float])
 ```
@@ -391,8 +394,8 @@ Built-in new types pre-registered: `Path` (original `str`; renamed from `path` i
 ## Built-in Types and Values
 
 Registered at `TypeChecker::new()` in the global scope (the matching class-name side is
-seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives there as
-`EXCEPTION_CLASS_NAMES`):
+seeded by `TypeRegistryBuilder::with_builtins`; the exception classes come from
+`names::BUILTIN_EXCEPTIONS`, the single table the runtime also reads):
 
 | Name | Scope type |
 |------|-----------|
@@ -428,18 +431,46 @@ Other built-in runtime types usable as annotations / type guards without members
 `slice`, and the built-in new_types `Path`, `Index`, `Size`, `pointer` (`BUILTIN_NEW_TYPES`;
 `pointer` was missing until 2026-09-30 although the runtime registers it as `new_type pointer: uint`).
 
-Exception classes registered (all with base `Error`):
-`Exception`, `ValueError`, `TypeError`, `NameError`, `AttributeError`, `IndexError`, `KeyError`,
-`ZeroDivisionError`, `RuntimeError`, `StopIteration`, `NotImplementedError`, `OverflowError`,
-`IOError`, `OSError`, `AssertionError`, `ArithmeticError`, `AccessError`.
+Exception classes registered: the 67 classes of `names::BUILTIN_EXCEPTIONS` (CPython 3.12's hierarchy
+plus Arrow's `AccessError` / `BOFError` / `EndOfIteration` and the FFI boundary's `FfiTypeError` (a `TypeError`) / `ForeignError`;
+python_builtins_plan.md 4-1, ffi_value_exchange_plan.md 7-4). `class_bases` holds `Error` followed by **all ancestors
+flattened** (`names::builtin_exception_bases(name, false)`), so `let e: LookupError = KeyError(..)`
+type-checks. ⚠ The `OSError` aliases (`IOError` / `EnvironmentError` / `WindowsError`) are children of
+`OSError` here, not mutual bases: base walkers such as `collect_class_field_details` do not guard
+against cycles (the runtime makes them mutual). Built-in exceptions also have the field `args: tuple`
+(4-2; not on the `Error` trait).
 
 ⚠ **`Exception` is the base of every exception** (task 10-19): `class_implements_trait(c, "Exception")`
 is true for any class that implements `Error` (built-in exceptions and user `class MyErr(Error)`), so
 `let e: Exception = ValueError(..)` and passing `MyErr(..)` to an `Exception` parameter type-check.
 This is answered in `class_implements_trait` rather than by adding `Error → Exception` to the base
-table (that would make a cycle other base walkers don't guard against). The runtime counterpart is
-`ClassValue::is_a` (`except` matching, `x is T`, field checks). `except Error` is rejected with
-`ExceptOnErrorTrait` ("write `except Exception`").
+table (that would make a cycle other base walkers don't guard against). ⚠ A class whose bases reach
+`BaseException` (the built-in hierarchy) is answered from the table alone, so `GeneratorExit` is not an
+`Exception`. `except m.Err as e` binds `e` with the name resolved to the module's qualified name; an
+unknown `except` type is not reported while imports are unloaded (`registry_incomplete`, the editor).
+The runtime counterpart is `ClassValue::is_a` (`except` matching, `x is T`, field checks).
+`except Error` is rejected with `ExceptOnErrorTrait` ("write `except Exception`").
+
+Bound methods (python_builtins_plan.md 1-10): reading `obj.m` as a value (not the callee) is typed by
+`bound_method_type` — the single signature without `self` (`fn_type_of_sig(sig, 1)`, type parameters
+substituted), `function` for overloads; methods of built-in values are allowed only if listed in
+`names::BUILTIN_VALUE_METHODS` (otherwise `NoSuchMember`). When the receiver's path root is immutable and the
+method mutates it (`all_sigs_mutate_self` / `MUTATING_COLLECTION_METHODS`), the function type carries
+`mutates_immutable: Some((method, root))`; calling such a value reports `MutatingMethodOnImmutable`
+(binding it does not).
+
+Calling a field (1-11): `obj.f(x)` with no method `f` but a field / `const` / `static mut` `f` is typed in
+`call_check.rs` (`method_call_info` branch) by the member's type — a `Function` type checks arguments and
+returns its return type (`check_fn_type_call`), `TypeValOf(NamedInstance)` constructs, anything else goes
+through `check_callable` (`'int' is not callable`).
+
+Descriptors (1-12): `TypeChecker::class_descriptor(class, attr)` (`infer.rs`) recognizes a class-level member
+(`const` / `static mut`) whose declared type is a class with `__get__`. Reads (`infer_attr`, also `C.x`) and
+calls (1-11 path) use `__get__`'s return type; an assignment through an instance (`check_assign` in
+`stmt/check.rs`) is checked against `__set__`'s `value` type when the descriptor is a data descriptor
+(`__set__` or `__delete__`), and an untyped `value` skips the check; an assignment through the class
+(`C.x = d`) is checked against the declared type. `check_immutable_field_assign` lets a `const` data
+descriptor be assigned (it calls `__set__`).
 
 ---
 

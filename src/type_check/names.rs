@@ -31,28 +31,21 @@ use crate::ast::{Expr, Stmt};
 pub(crate) const RUNTIME_GLOBAL_NAMES: &[&str] = &[
     "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
     "pointer", "id", "Error",
-    "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
-    "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
-    "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
-    "GeneratorExit", "FfiTypeError", "ForeignError",
+    // 組み込みの例外クラスも大域を占める（表は [`BUILTIN_EXCEPTIONS`]・[`is_runtime_global_name`] が足す）。
     "Path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop", "Ok", "Err",
 ];
 
 /// 実行時の組み込みの大域が占める名前か（[`RUNTIME_GLOBAL_NAMES`]）。
 pub(crate) fn is_runtime_global_name(name: &str) -> bool {
-    RUNTIME_GLOBAL_NAMES.contains(&name)
+    RUNTIME_GLOBAL_NAMES.contains(&name) || is_builtin_exception(name)
 }
 
 pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込みの型（`register_builtin_globals`）
     "int", "uint", "str", "bytes", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
     "pointer", "id", "Error",
-    // 組み込みの例外クラス
-    "Exception", "ValueError", "TypeError", "NameError", "AttributeError", "IndexError", "KeyError",
-    "ZeroDivisionError", "RuntimeError", "StopIteration", "NotImplementedError", "OverflowError",
-    "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError", "RecursionError",
-    "GeneratorExit", "FfiTypeError", "ForeignError",
+    // 組み込みの例外クラスは [`BUILTIN_EXCEPTIONS`]（実行時も同じ表から登録する）。
     // 組み込みのクラス・列挙・名前空間
     "Path", "Size", "Index", "begin", "last", "FileOpenMode", "StartPoint", "ByteRecognizingMode",
     "Encoding", "AsyncManager", "Async", "Signal", "EventLoop",
@@ -61,11 +54,240 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     // 組み込み関数（`eval/builtins.rs`）
     "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close",
     "create_flat_int_list", "flat_get_int", "flat_set_int", "parse_ar",
+    // 値として・呼んで作る型（`list(it)` / `tuple(it)`・python_builtins_plan.md のタスク 1-7 / `frozenset(it)`・3-1）。
+    "list", "tuple", "frozenset", "bytes",
+    // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
+    "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4・f-string の `{x:spec}` の脱糖先）
+    "format",
+    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
+    "__py_with_exit",
+    // 組み込みのクラス `object`（すべての値の基底・タスク 6-10）。⚠ Arrow のソースからは呼べない（`ObjectCallInArrow`）。
+    // 呼んで作るのは Python の `object()` だけで、変換器が `__py_object()` にする。基底が `object` のクラスの
+    // `super().__init__(..)` は `__py_object_init(self, ..)`。
+    "object", "__py_object", "__py_object_init",
+    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
+    "__py_delattr", "__py_delitem",
+    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
+    // （known_bugs.md の #10 / #11）
+    "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
+    "__py_super",
+    // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
+    "Ellipsis",
+    // 唯一の値 `NotImplemented`（演算子メソッドが返すと反対側を試す・タスク 6-12）。
+    "NotImplemented",
+    // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
+    "property", "cached_property",
 ];
 
 /// 実行時が宣言なしで解決する名前か。
 pub(crate) fn is_runtime_builtin_name(name: &str) -> bool {
-    RUNTIME_BUILTIN_NAMES.contains(&name)
+    RUNTIME_BUILTIN_NAMES.contains(&name) || is_builtin_exception(name)
+}
+
+/// 組み込みの例外・警告クラスと、その親（CPython 3.12 の階層・python_builtins_plan.md のタスク 4-1）。
+///
+/// **唯一の表**。実行時のクラスの登録（`built_in_types.rs` の `register_builtin_globals`）・
+/// 内部のエラーの文字列を例外へ変える照合（`exceptions.rs` の `make_internal_raised_error`）・
+/// Python のクラスが継承したときのフィールドの並び（`py_class_field_order`）・型検査のレジストリ
+/// （`registry/builder.rs`）と大域の束縛（`TypeChecker::new`）が、みなここを読む
+/// （以前は 3 つの表を手で揃えていた）。
+///
+/// - 親が `""` なのは根（`BaseException`）だけ。
+/// - `AccessError` は Arrow 独自（アクセス制御の違反）。`BOFError` も Arrow 独自（ファイルを逆向きに読んで先頭に着いた）。
+///   `FfiTypeError` / `ForeignError` も Arrow 独自（外部言語との境界・ffi_value_exchange_plan.md 7-4）。
+/// - `IOError` / `EnvironmentError` / `WindowsError` は CPython では `OSError` **そのもの**（別名）。
+///   ここでは `OSError` の子として載せ、互いに捕まえ合うのは [`builtin_exception_bases`] で作る。
+///   ⚠ クラスは別のまま（`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
+/// - ⚠ 意味が要るもの（`SystemExit` / `KeyboardInterrupt` / `ImportError` / `UnicodeDecodeError` /
+///   `ExceptionGroup` …）は載せていない（python_builtins_plan.md の 4.3）。
+pub(crate) const BUILTIN_EXCEPTIONS: &[(&str, &str)] = &[
+    ("BaseException", ""),
+    ("GeneratorExit", "BaseException"),
+    ("Exception", "BaseException"),
+    ("ArithmeticError", "Exception"),
+    ("FloatingPointError", "ArithmeticError"),
+    ("OverflowError", "ArithmeticError"),
+    ("ZeroDivisionError", "ArithmeticError"),
+    ("AssertionError", "Exception"),
+    ("AttributeError", "Exception"),
+    ("BufferError", "Exception"),
+    // Arrow のファイルの `read()` / `read_line()` / `read_letter()` が終わりで出す（`EOFError: EOF`・タスク 4-5）。
+    // ⚠ 以前は表に無かったので、`except EOFError` は静的な誤り、`except Exception` も素の `except:` も捕まえなかった。
+    ("EOFError", "Exception"),
+    ("LookupError", "Exception"),
+    ("IndexError", "LookupError"),
+    ("KeyError", "LookupError"),
+    ("NameError", "Exception"),
+    ("UnboundLocalError", "NameError"),
+    ("OSError", "Exception"),
+    ("IOError", "OSError"),
+    ("EnvironmentError", "OSError"),
+    ("WindowsError", "OSError"),
+    ("BlockingIOError", "OSError"),
+    ("ChildProcessError", "OSError"),
+    ("ConnectionError", "OSError"),
+    ("BrokenPipeError", "ConnectionError"),
+    ("ConnectionAbortedError", "ConnectionError"),
+    ("ConnectionRefusedError", "ConnectionError"),
+    ("ConnectionResetError", "ConnectionError"),
+    ("FileExistsError", "OSError"),
+    ("FileNotFoundError", "OSError"),
+    ("InterruptedError", "OSError"),
+    ("IsADirectoryError", "OSError"),
+    ("NotADirectoryError", "OSError"),
+    ("PermissionError", "OSError"),
+    ("ProcessLookupError", "OSError"),
+    ("TimeoutError", "OSError"),
+    ("ReferenceError", "Exception"),
+    ("RuntimeError", "Exception"),
+    ("NotImplementedError", "RuntimeError"),
+    ("RecursionError", "RuntimeError"),
+    ("StopIteration", "Exception"),
+    // Arrow 独自: 尽きたイテレータの `next()`（`EndOfIteration: generator is exhausted`・`for` が内部で受ける印）。
+    // `StopIteration` の子なので `except StopIteration`（Python の書き方）でも `except EndOfIteration` でも捕まる
+    // （python_builtins_plan.md のタスク 3-5。以前は表に無い名前で、どの `except` も素通りしてプログラムが止まった）。
+    ("EndOfIteration", "StopIteration"),
+    ("SyntaxError", "Exception"),
+    ("IndentationError", "SyntaxError"),
+    ("TabError", "IndentationError"),
+    ("SystemError", "Exception"),
+    ("TypeError", "Exception"),
+    ("ValueError", "Exception"),
+    ("UnicodeError", "ValueError"),
+    ("UnicodeTranslateError", "UnicodeError"),
+    // bytes の符号化・復号の失敗（`ops::codecs`・タスク 3-1）。⚠ CPython の 5 引数の構築子と `encoding` / `start` /
+    //   `end` / `reason` の属性は無い（内部で起きたものは文言だけを持つ・4-2 の既知の差と同じ）。
+    ("UnicodeDecodeError", "UnicodeError"),
+    ("UnicodeEncodeError", "UnicodeError"),
+    ("AccessError", "Exception"),
+    // 外部言語との境界（ffi_value_exchange_plan.md 7-4・Arrow 独自）: 宣言と食い違う値（`TypeError` の派生なので
+    // `except TypeError` でも捕まる）と、相手の言語で投げられた例外。
+    ("FfiTypeError", "TypeError"),
+    ("ForeignError", "Exception"),
+    // Arrow 独自: ファイルを逆向きに読んで（`read(backward=True)` など）先頭に着いたとき（`BOFError: BOF`・タスク 4-5）。
+    // `EOFError` の向きを逆にしたものだが、子にはしない（`except EOFError` が逆向きの終わりまで捕まえると読み違える）。
+    ("BOFError", "Exception"),
+    ("Warning", "Exception"),
+    ("BytesWarning", "Warning"),
+    ("DeprecationWarning", "Warning"),
+    ("EncodingWarning", "Warning"),
+    ("FutureWarning", "Warning"),
+    ("ImportWarning", "Warning"),
+    ("PendingDeprecationWarning", "Warning"),
+    ("ResourceWarning", "Warning"),
+    ("RuntimeWarning", "Warning"),
+    ("SyntaxWarning", "Warning"),
+    ("UnicodeWarning", "Warning"),
+    ("UserWarning", "Warning"),
+];
+
+/// 組み込みの値の**メソッドの名前**（実行時の `eval_method_call_full` の腕・python_builtins_plan.md のタスク 1-10）。
+///
+/// 値として読める名前の表（`xs.append` / `s.upper` は受け手を束縛した関数になる）。実行時（束縛メソッドを
+/// 作るか・`eval/attrs.rs`）と型検査（読みの存在検査・`infer_attr`）が同じ表を読む。種類の名前は実行時の
+/// `runtime_type_name`（`list` / `fixed_list` / …）。
+/// ⚠ 実行時のメソッドの腕を足したら**ここにも足す**。テスト `builtin_value_methods_are_dispatched` が
+///   表の名前を実際に呼んで「無いメソッド」の誤りにならないことを確かめる（逆向きは見ない）。
+/// ⚠ `complex` の `real` / `imag` / `angle` は載せない（CPython では値の属性。読むと値が返ると期待される）。
+pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
+    (
+        "str",
+        &[
+            "__iter__", "capitalize", "center", "chars", "contains", "count", "encode", "endswith",
+            "expandtabs", "find", "findall", "format", "index", "isalnum", "isalpha", "isascii", "isdigit",
+            "islower", "isnumeric", "isprintable", "isspace", "isupper", "join", "ljust", "lower", "lstrip",
+            "match", "ord", "partition", "regex_split", "removeprefix", "removesuffix", "replace", "rfind",
+            "rindex", "rjust", "rpartition", "rsplit", "rstrip", "search", "split", "splitlines", "startswith",
+            "strip", "sub", "swapcase", "title", "upper", "zfill",
+        ],
+    ),
+    ("list", &["__iter__", "append", "pop", "sort"]),
+    // `classes/dict_methods.rs`（`get` 以下はタスク 3-6）。
+    (
+        "dict",
+        &[
+            "__iter__", "clear", "copy", "get", "item", "items", "key", "keys", "pop", "popitem", "setdefault",
+            "update", "values",
+        ],
+    ),
+    (
+        "set",
+        &[
+            "__iter__", "add", "clear", "copy", "difference", "discard", "intersection", "isdisjoint",
+            "issubset", "issuperset", "pop", "remove", "symmetric_difference", "union",
+        ],
+    ),
+    // 書き換えないメソッドだけ（`classes/set_methods.rs` の `SET_QUERY_METHODS`・タスク 3-1）。
+    (
+        "frozenset",
+        &[
+            "__iter__", "copy", "difference", "intersection", "isdisjoint", "issubset", "issuperset",
+            "symmetric_difference", "union",
+        ],
+    ),
+    // `classes/bytes_methods.rs`（タスク 3-1）。
+    (
+        "bytes",
+        &[
+            "__iter__", "count", "decode", "endswith", "find", "hex", "index", "isalnum", "isalpha", "isascii",
+            "isdigit", "islower", "isspace", "isupper", "join", "lower", "lstrip", "replace", "rfind", "rindex",
+            "rstrip", "split", "startswith", "strip", "upper",
+        ],
+    ),
+    ("fixed_list", &["__contains__", "__iter__", "allocated_size", "append"]),
+    ("generator", &["__iter__", "close", "next"]),
+    // `classes/object_methods.rs` の `exec_file_method`（Arrow の名前と、Python の名前・タスク 5-4）。
+    (
+        "FileObject",
+        &[
+            "close", "flush", "read", "read_letter", "read_line", "readline", "readlines", "tell", "write",
+            "write_line", "writelines",
+        ],
+    ),
+];
+
+/// `kind`（実行時の型の名前）の値が `name` というメソッドを持つか（[`BUILTIN_VALUE_METHODS`]）。
+pub(crate) fn is_builtin_value_method(kind: &str, name: &str) -> bool {
+    BUILTIN_VALUE_METHODS.iter().any(|(k, ms)| *k == kind && ms.contains(&name))
+}
+
+/// CPython で `OSError` と同じクラスを指す名前（[`BUILTIN_EXCEPTIONS`] の doc）。
+const OSERROR_ALIASES: [&str; 3] = ["IOError", "EnvironmentError", "WindowsError"];
+
+/// 組み込みの例外クラスの名前か。
+pub(crate) fn is_builtin_exception(name: &str) -> bool {
+    BUILTIN_EXCEPTIONS.iter().any(|(n, _)| *n == name)
+}
+
+/// 組み込みの例外クラスの基底の名前（`Error` trait と、親から根までの祖先を**平らに**並べたもの）。
+///
+/// 実行時の照合（`ClassValue::is_a`）は `bases` の**直接の名前だけ**を見て推移をたどらないので、
+/// 祖先をすべて載せる（`except LookupError` が `KeyError` を捕まえる）。
+///
+/// `OSError` の別名（`IOError` …）の扱いは `mutual` で変わる:
+/// - `true`（実行時）: `OSError` と別名は**互いを**基底に持ち、`OSError` の子孫は別名をすべて持つ
+///   （`except IOError` が `OSError` も `FileNotFoundError` も捕まえる・CPython と同じ）。
+/// - `false`（型検査）: 別名は `OSError` の子にとどめる（`OSError` の子孫は別名を持つ）。
+///   ⚠⚠ 型検査の基底をたどる関数（`collect_class_field_details` など）は**循環を見ない**ので、
+///   互いを基底にすると止まらない。代わりに `let e: IOError = OSError(..)` が静的に通らない。
+pub(crate) fn builtin_exception_bases(name: &str, mutual: bool) -> Vec<String> {
+    let mut out = vec!["Error".to_string()];
+    let parent_of = |n: &str| BUILTIN_EXCEPTIONS.iter().find(|(c, _)| *c == n).map(|(_, p)| *p);
+    let mut cur = parent_of(name).unwrap_or("");
+    while !cur.is_empty() {
+        out.push(cur.to_string());
+        cur = parent_of(cur).unwrap_or("");
+    }
+    let is_alias = OSERROR_ALIASES.contains(&name);
+    let in_os_group = name == "OSError" || out.iter().any(|b| b == "OSError");
+    if in_os_group && (mutual || !is_alias && name != "OSError") {
+        out.extend(OSERROR_ALIASES.iter().filter(|a| **a != name).map(|a| a.to_string()));
+    }
+    out
 }
 
 /// プログラムの**どこかで束縛される名前**をすべて集める（保守的・10-12）。

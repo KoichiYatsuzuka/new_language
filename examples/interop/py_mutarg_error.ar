@@ -11,4 +11,5 @@ import[py] test_modules.py_mutarg as m
 
 let ys = [1, 2]
 print(m.take(ys[0]))
-# StaticTypeError: parameter 'v' of 'take' expects a mutable argument, but got an immutable value
+# StaticTypeError: parameter 'v' of 'test_modules.py_mutarg.take' expects a mutable argument, but got an immutable value
+# （関数の名前はモジュールの名前で修飾して出す。Arrow のモジュールと同じ・python_builtins_plan.md の 6 節）

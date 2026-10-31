@@ -84,6 +84,7 @@ enum Tag {
     List,
     FrozenList,
     Set,
+    FrozenSet,
     Dict,
     AsyncStatus,
     Result,
@@ -174,7 +175,7 @@ impl Interpreter {
                 h.write_u8(Tag::Str as u8);
                 h.write(s.as_bytes());
             }
-            // 中身で決まる値（`str` と同じ。等値側の `values_eq` も中身で比べる・3-1）
+            // bytes（タスク 3-1）。`values_eq` は中身のバイトで比べる（`str` とは等値にならない）。
             Value::Bytes(b) => {
                 h.write_u8(Tag::Bytes as u8);
                 h.write(b);
@@ -193,6 +194,27 @@ impl Interpreter {
             // ⚠ 構造ハッシュなので **`deep_clone` がハッシュを保存する**。これが
             //   「複製経路は保存済みハッシュをそのままコピーしてよい」根拠になる（B1-c）。
             Value::Instance(rc) => {
+                // `object()` はアドレスでハッシュする（タスク 6-10）。`values_eq` が同一性で比べる（写さずに共有するので
+                // 同じ物はいつも同じ `Rc`）のと対。⚠ スレッドへ送る複製は別の物になる（`dict_copy_with` が取り直す）。
+                match rc.borrow().class.builtin {
+                    crate::interpreter::BuiltinClass::Ordinary => {}
+                    crate::interpreter::BuiltinClass::Object => {
+                        ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
+                        return Ok(());
+                    }
+                    // 唯一の値（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）は種類でハッシュする
+                    // （`values_eq` が種類で比べるのと対）。
+                    crate::interpreter::BuiltinClass::Ellipsis => {
+                        h.write_u8(Tag::Instance as u8);
+                        h.write(b"\0Ellipsis");
+                        return Ok(());
+                    }
+                    crate::interpreter::BuiltinClass::NotImplemented => {
+                        h.write_u8(Tag::Instance as u8);
+                        h.write(b"\0NotImplemented");
+                        return Ok(());
+                    }
+                }
                 // ⚠⚠ `__hash__` の呼び出しはインタプリタを回すので、**借用を解いてから**渡す。
                 //    握ったままだと、ハンドラが自分自身を読んだ瞬間に `RefCell` が壊れる。
                 let has_dunder = rc.borrow().class.methods.contains_key("__hash__");
@@ -200,6 +222,12 @@ impl Interpreter {
                     let hv = disp(v)?;
                     h.write_u8(Tag::DunderHash as u8);
                     h.write_u64(hv);
+                    return Ok(());
+                }
+                // Python から変換したクラスのインスタンスはアドレスでハッシュする（`values_eq` が同一性で比べるのと対・
+                // known_bugs.md の #1）。
+                if rc.borrow().class.is_python {
+                    ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
                     return Ok(());
                 }
                 let inst = rc.borrow();
@@ -289,6 +317,17 @@ impl Interpreter {
                 h.write_usize(items.len());
                 h.write_u64(acc);
             }
+            // frozenset（タスク 3-1）。`set` と同じく可換に畳む。判別子が違うのは `values_eq` が
+            // `Set` と `FrozenSet` を等値にしない（型厳密）ため。`set` はそもそも辞書のキーにできない。
+            Value::FrozenSet(items) => {
+                h.write_u8(Tag::FrozenSet as u8);
+                let mut acc: u64 = 0;
+                for x in items.iter() {
+                    acc ^= scramble(sub_hash(x, d, disp)?);
+                }
+                h.write_usize(items.len());
+                h.write_u64(acc);
+            }
             Value::Dict(rc) => {
                 h.write_u8(Tag::Dict as u8);
                 let dict = rc.borrow();
@@ -351,7 +390,8 @@ impl Interpreter {
             Value::Code(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             // ⚠ メタ情報も参照の同一性（`values_eq` 側と対。`hash_eq_identity` が見る）。
             Value::Meta(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
-            Value::Function(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
+            // 束縛メソッドはメソッドの実体のポインタ（`values_eq` の `same_binding` と揃える・タスク 1-8）。
+            Value::Function(rc) => ptr_hash(h, crate::interpreter::FnValue::identity_ptr(rc)),
             Value::OverloadedFn(v) => {
                 h.write_u8(Tag::Pointer as u8);
                 h.write_usize(v.len());
@@ -479,6 +519,42 @@ impl Interpreter {
         borrowed.get_with(hash, |stored| me.values_eq_key(key, stored))
     }
 
+    /// 辞書の `key` のエントリの位置（`d.pop(k)`・python_builtins_plan.md のタスク 3-6）。`__hash__` / `__eq__` を尊重する。
+    /// ⚠ 借用は共有借用のみ（[`Self::dict_get`] と同じ理由）。位置は辞書を書き換えるまで有効。
+    pub(crate) fn dict_index(&mut self, d: &Rc<RefCell<DictData>>, key: &Value) -> Result<Option<usize>, String> {
+        if let Some(why) = DictData::reject_key(key) {
+            return Err(why);
+        }
+        let hash = self.hash_value(key)?;
+        let borrowed = d.borrow();
+        let me = &mut *self;
+        borrowed.index_of_with(hash, |stored| me.values_eq_dyn(key, stored))
+    }
+
+    /// 辞書へ入れる前に、型つきの辞書（`dict[str, int]`）のキーと値の型を確かめてから [`Self::dict_set`]。
+    /// `d[k] = v` / `d.update(..)` / `d.setdefault(k, v)` が同じ規則で入れる（タスク 3-6）。
+    pub(crate) fn dict_store_checked(&mut self, d: &Rc<RefCell<DictData>>, key: Value, value: Value) -> Result<(), String> {
+        let (key_type, item_type) = {
+            let b = d.borrow();
+            (b.key_type.clone(), b.item_type.clone())
+        };
+        if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
+            return Err(format!(
+                "TypeError: dict key type mismatch: expected '{}', got '{}'",
+                key_type,
+                self.type_name(&key)
+            ));
+        }
+        if item_type != "Any" && !Self::value_matches_type(&value, &item_type) {
+            return Err(format!(
+                "TypeError: dict item type mismatch: expected '{}', got '{}'",
+                item_type,
+                self.type_name(&value)
+            ));
+        }
+        self.dict_set(d, key, value)
+    }
+
     /// 辞書に `key -> value` を入れる（既にあれば更新）。`__hash__` / `__eq__` を尊重する。
     ///
     /// ⚠⚠ **キーは複製して持つ**。呼び出し元の変数と参照を共有したままだと、
@@ -506,10 +582,10 @@ impl Interpreter {
         // フェーズ 2: 可変借用で書く（クロージャを走らせないので再入しない）。
         // ⚠ **キーだけでなく値も複製する**（L4）。共有したままだと
         //    `let a = [1]; d["k"] = a` のあと `d["k"].append(9)` で `a` が変わる。
-        let value = Self::deep_copy_value(value);
+        let value = self.copy_for_store(value);
         match idx {
             Some(i) => d.borrow_mut().set_at(i, value),
-            None => d.borrow_mut().push_prehashed(hash, Self::deep_copy_value(key), value),
+            None => d.borrow_mut().push_prehashed(hash, self.copy_for_store(key), value),
         }
         Ok(())
     }

@@ -1,0 +1,23 @@
+# py_static_class_funcs.ar — `staticmethod` / `classmethod` を関数として使う形（python_builtins_plan.md のタスク 6-13）
+#
+# クラス本体の `f = staticmethod(f)` / `g = classmethod(f)`（デコレータを使わない書き方）は、先に定義したメソッドに
+# `@staticmethod` / `@classmethod` を付けたのと同じになる（変換器が書き換える）。名前が違えば
+# （`twice = staticmethod(double)`）その名前の静的メソッドを足し、元のメソッドは残す（CPython と同じ）。
+# クラスメソッドは派生クラスから呼ぶと `cls` が派生クラス（`Hot.parse` は `Hot` を作る）。
+#
+# sc.run() は CPython と同じ出力:
+#   212.0 98.6
+#   Temp 25.0 25.0C = 77.0F
+#   Hot 40.0
+#   42 abab 8
+#
+# ⚠ 以前は `staticmethod` / `classmethod` が未対応の組み込み（モジュールごと変換の誤り）だった。
+# ⚠ 包めるのはクラス本体で先に定義したメソッドだけ（py_static_class_funcs_error.ar）。
+
+import[py] test_modules.py_static_class_funcs as sc
+
+sc.run()
+
+# Arrow からも静的メソッド・クラスメソッドとして呼べる
+print(sc.Temp.to_f(0), sc.Temp.parse("10C").deg)
+# 32.0 10.0

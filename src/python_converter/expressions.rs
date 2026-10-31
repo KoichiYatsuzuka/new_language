@@ -264,10 +264,42 @@ fn convert_seq_entries(
 /// ⚠ Python 2 形式の `super(Cls, self)` は**対象外**（引数ありなので false を返し、
 /// 通常の呼び出しとして扱われた結果 `super` が未定義でエラーになる）。
 fn is_zero_arg_super(e: &py::Expr) -> bool {
-    matches!(e, py::Expr::Call(c)
-        if c.args.is_empty()
-            && c.keywords.is_empty()
-            && matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super"))
+    matches!(super_form(e), Some(SuperForm::Zero))
+}
+
+/// `object` のメソッドのうち、内部の組み込みで表すもの（`object.m(o, ..)` と、基底が `object` のクラスの
+/// `super().m(..)` の変換先）。`__init__` は何もしない（タスク 6-10）、`__setattr__` / `__delattr__` はクラスが上書きした
+/// ものを飛ばして属性を入れる・消す（known_bugs.md の #10）、`__getattribute__` は `__getattr__` を呼ばずに読む（#11）。
+fn object_method_builtin(method: &str) -> Option<&'static str> {
+    match method {
+        "__init__" => Some("__py_object_init"),
+        "__setattr__" => Some("__py_object_setattr"),
+        "__delattr__" => Some("__py_object_delattr"),
+        "__getattribute__" => Some("__py_object_getattribute"),
+        _ => None,
+    }
+}
+
+/// `super(..)` の形（python_builtins_plan.md のタスク 6-2）。
+enum SuperForm<'a> {
+    /// `super()`。受け手は `self`。
+    Zero,
+    /// `super(C, x)`（`C` は名前）。受け手は `x`。
+    Two { class: &'a str, receiver: &'a py::Expr },
+}
+
+/// `e` が `super()` / `super(C, x)` の呼び出しならその形。ほかの形（引数 1 つ・キーワード・`C` が名前でない）は `None`。
+/// ⚠ `builtins_check` の `super` を「未対応の組み込み」にしない判定と同じ形。
+fn super_form(e: &py::Expr) -> Option<SuperForm<'_>> {
+    let py::Expr::Call(c) = e else { return None };
+    if !c.keywords.is_empty() || !matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super") {
+        return None;
+    }
+    match c.args.as_slice() {
+        [] => Some(SuperForm::Zero),
+        [py::Expr::Name(class), receiver] => Some(SuperForm::Two { class: class.id.as_str(), receiver }),
+        _ => None,
+    }
 }
 
 /// 単一の Python 式を tl の `Expr` に変換する。
@@ -405,63 +437,156 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         py::Expr::Call(c) => {
             // ★ `super().m(args)` の脱糖（`import[py]` 限定のクラス継承サポートの一部）。
-            //    Arrow に `super` は無いので、変換時に `<第1基底>.m(self, args)` へ書き換える。
-            //    受け側（クラス経由のアンバウンド呼び出し）は `classes/class_methods.rs` が
-            //    `FnValue::is_python` 限定で許可している。
+            //    Arrow に `super` は無いので、変換時に Python 専用の内部の組み込み
+            //    `__py_super(<第1基底>, 受け手, "m", args)` へ書き換える（known_bugs.md の #6）。基底の `m` の種類
+            //    （クラスメソッド・静的メソッド・インスタンスメソッド）で受け手の渡し方を変えるのは実行時
+            //    （`Interpreter::py_super_call`）。⚠ 以前は `<第1基底>.m(self, args)` で、クラスメソッドの中（`self` が無い）と
+            //    基底のクラスメソッドを呼ぶ形（受け手が余分な引数になる）が動かなかった。
+            //    受け手は今の関数の最初の仮引数（クラスメソッドなら `cls`・`current_super_receiver`）。
+            //    2 引数の `super(C, x).m(args)` は、`C` が変換中のクラスなら `super().m(args)` と同じで、受け手は `x`
+            //    （タスク 6-2）。⚠ ほかのクラスを渡す形（MRO の途中から探す）は変換の誤り。
             if let py::Expr::Attribute(attr) = &*c.func {
-                if is_zero_arg_super(&attr.value) {
-                    let base = current_super_base().ok_or_else(|| {
-                        format!(
-                            "{filename}: `super()` is only supported inside a method of a class that has a base class"
-                        )
-                    })?;
-                    let mut args: Vec<CallArg> = vec![CallArg::Positional(Expr::Ident {
-                        name: "self".to_string(),
-                        node_id: 0,
-                        res: Resolution::Unresolved,
-                    })];
-                    for arg in &c.args {
-                        args.push(CallArg::Positional(convert_expr(arg, filename)?));
-                    }
-                    for kw in &c.keywords {
-                        let name = kw.arg.as_ref().map(|a| a.to_string()).unwrap_or_default();
-                        if name.is_empty() {
-                            return Err(format!(
-                                "{filename}: **kwargs unpacking in call is not supported"
-                            ));
+                if let Some(form) = super_form(&attr.value) {
+                    let receiver = match form {
+                        SuperForm::Zero => match current_super_receiver() {
+                            Some(name) => Expr::Ident { name, node_id: 0, res: Resolution::Unresolved },
+                            None if !inside_class() => {
+                                return Err(format!(
+                                    "{filename}: `super()` is only supported inside a method of a class"
+                                ))
+                            }
+                            // CPython も実行時の誤り（仮引数が無ければ `RuntimeError: super(): no arguments`、静的メソッドは
+                            // 最初の引数を受け手にして `TypeError: super(type, obj): ..`）。
+                            None => {
+                                return Err(format!(
+                                    "{filename}: `super()` needs the first argument of a method as its receiver; a \
+                                     static method or a function without parameters has none (CPython fails at run \
+                                     time: `RuntimeError: super(): no arguments`, or `TypeError: super(type, obj): obj \
+                                     must be an instance or subtype of type` in a static method)"
+                                ))
+                            }
+                        },
+                        SuperForm::Two { class, receiver } => {
+                            let current = current_super_class();
+                            if current.as_deref() != Some(class) {
+                                return Err(format!(
+                                    "{filename}: `super({class}, ...)` is only supported when `{class}` is the class being \
+                                     defined{}",
+                                    current.map(|c| format!(" (here '{c}')")).unwrap_or_default()
+                                ));
+                            }
+                            convert_expr(receiver, filename)?
                         }
-                        args.push(CallArg::Keyword {
-                            name,
-                            value: convert_expr(&kw.value, filename)?,
+                    };
+                    let mut args: Vec<CallArg> = vec![CallArg::Positional(receiver)];
+                    // `*xs` / `**kw` は普通の呼び出しと同じに写す（`super().__init__(*args, **kwargs)`・タスク 6-10）。
+                    // ⚠ 以前は `**kw` を「未対応」の誤りにしていた（普通の呼び出しは `f(**d)` を受けるようになった後も）。
+                    for arg in &c.args {
+                        args.push(match arg {
+                            py::Expr::Starred(st) => CallArg::Spread(convert_expr(&st.value, filename)?),
+                            other => CallArg::Positional(convert_expr(other, filename)?),
                         });
                     }
+                    for kw in &c.keywords {
+                        let value = convert_expr(&kw.value, filename)?;
+                        args.push(match kw.arg.as_ref() {
+                            Some(name) => CallArg::Keyword { name: name.to_string(), value },
+                            None => CallArg::KwSpread(value),
+                        });
+                    }
+                    let base = match current_super_base() {
+                        Some(b) if b != "object" => b,
+                        // 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super()` は `object` を指す
+                        // （タスク 6-10）。`object.__init__` は `__py_object_init(self, ..)`（余分な引数は CPython と
+                        // 同じ `TypeError`）、`object.__setattr__` / `__delattr__` / `__getattribute__` は上書きを飛ばす
+                        // `__py_object_setattr(self, ..)` など（known_bugs.md の #10 / #11・`object_method_builtin`）。
+                        // ほかの `object` のメソッド（`__repr__` など）は対象外。
+                        _ if inside_class() && object_method_builtin(attr.attr.as_str()).is_some() => {
+                            let name = object_method_builtin(attr.attr.as_str()).expect("checked");
+                            return Ok(Expr::Call {
+                                func: Box::new(Expr::Ident {
+                                    name: name.to_string(),
+                                    node_id: 0,
+                                    res: Resolution::Unresolved,
+                                }),
+                                args,
+                                span: crate::token::Span::unknown(),
+                                cache: Default::default(),
+                                node_id: 0,
+                            });
+                        }
+                        _ if inside_class() => {
+                            return Err(format!(
+                                "{filename}: `super().{}(...)` is only supported for `__init__` / `__setattr__` / \
+                                 `__delattr__` / `__getattribute__` in a class whose base is `object` (or that has no \
+                                 base class)",
+                                attr.attr
+                            ))
+                        }
+                        _ => {
+                            return Err(format!(
+                                "{filename}: `super()` is only supported inside a method of a class"
+                            ))
+                        }
+                    };
                     let base_expr = Expr::Ident {
                         name: base,
                         node_id: 0,
                         res: Resolution::Unresolved,
                     };
+                    // `__py_super(基底, 受け手, "m", args..)`（`args` の先頭は受け手）。
+                    let mut call_args = vec![CallArg::Positional(base_expr)];
+                    let mut rest = args.into_iter();
+                    call_args.extend(rest.next());
+                    call_args.push(CallArg::Positional(Expr::Str(Rc::from(attr.attr.as_str()))));
+                    call_args.extend(rest);
                     return Ok(Expr::Call {
-                        func: Box::new(Expr::Attr {
-                            object: Box::new(base_expr),
-                            attr: attr.attr.to_string(),
-                            span: make_span(filename),
-                            cache: Default::default(),
+                        func: Box::new(Expr::Ident {
+                            name: "__py_super".to_string(),
                             node_id: 0,
+                            res: Resolution::Unresolved,
                         }),
-                        args,
+                        args: call_args,
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0,
                     });
                 }
             }
-            // `super()` を「メソッドを呼ぶ」以外の形で使うのは未対応（明示エラー）。
+            // `super()` / `super(C, x)` を「メソッドを呼ぶ」以外の形で使うのは未対応（明示エラー）。
             if is_zero_arg_super(expr) {
                 return Err(format!(
                     "{filename}: bare `super()` is only supported as `super().method(...)`"
                 ));
             }
-            let func = convert_expr(&c.func, filename)?;
+            if let Some(SuperForm::Two { class, .. }) = super_form(expr) {
+                return Err(format!(
+                    "{filename}: bare `super({class}, ...)` is only supported as `super({class}, self).method(...)`"
+                ));
+            }
+            let func = match &*c.func {
+                // `object()` は Arrow のソースからは呼べない（python_builtins_plan.md のタスク 6-10 の決定）ので、
+                // Python のソースの `object()` は内部の名前 `__py_object()` にする。⚠ モジュールが `object` を
+                // 束縛し直していても書き換える（組み込みの名前を隠す書き方は対象外）。
+                py::Expr::Name(n) if n.id.as_str() == "object" => Expr::Ident {
+                    name: "__py_object".to_string(),
+                    node_id: 0,
+                    res: Resolution::Unresolved,
+                },
+                // `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)`（クラスが上書きした `__setattr__` /
+                // `__delattr__` を飛ばす・known_bugs.md の #10）。`object.__init__(self)` も同じ内部の組み込みへ。
+                py::Expr::Attribute(a)
+                    if matches!(&*a.value, py::Expr::Name(n) if n.id.as_str() == "object")
+                        && object_method_builtin(a.attr.as_str()).is_some() =>
+                {
+                    Expr::Ident {
+                        name: object_method_builtin(a.attr.as_str()).expect("checked").to_string(),
+                        node_id: 0,
+                        res: Resolution::Unresolved,
+                    }
+                }
+                other => convert_expr(other, filename)?,
+            };
             let mut args: Vec<CallArg> = Vec::new();
             for arg in &c.args {
                 // ★ `f(*xs)` — Arrow 側にも同じ構文を入れたので 1 対 1 で写せる。
@@ -565,11 +690,32 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             })
         }
 
-        // ⚠ 辞書内包は未対応。Arrow に「ペアのリストから dict を作る」手段が無い
-        //   （`dict(pairs)` は `'dict' object is not callable`）。
-        py::Expr::DictComp(_) => Err(format!(
-            "{filename}: dict comprehension is not supported (list and set comprehensions are)"
-        )),
+        // 辞書内包 → `(キー, 値)` の組のリスト内包を `dict(...)` に通す（python_builtins_plan.md のタスク 3-1）。
+        // ⚠ 以前は未対応だった（`dict(pairs)` が `'dict' object is not callable` で、組の列から dict を作る手段が無かった）。
+        // ⚠ キーと値は要素ごとに評価する（リスト内包と同じ理由で持ち上げ禁止）。評価順はキー → 値（CPython 3.8+ と同じ）。
+        py::Expr::DictComp(dc) => {
+            let pair = {
+                let _unsafe_guard = UnsafeHoistGuard::enter();
+                Expr::Tuple(vec![
+                    crate::ast::SeqEntry::Item(convert_expr(&dc.key, filename)?),
+                    crate::ast::SeqEntry::Item(convert_expr(&dc.value, filename)?),
+                ])
+            };
+            let clauses = convert_comprehension_clauses(&dc.generators, filename, "dict")?;
+            let list_expr = crate::ast::build_list_comprehension(pair, clauses)
+                .ok_or_else(|| format!("{filename}: dict comprehension needs at least one `for` clause"))?;
+            Ok(Expr::Call {
+                func: Box::new(Expr::Ident {
+                    name: "dict".to_string(),
+                    node_id: 0,
+                    res: Resolution::Unresolved,
+                }),
+                args: vec![CallArg::Positional(list_expr)],
+                span: make_span(filename),
+                cache: Default::default(),
+                node_id: 0, // #16: py-converter は未採番
+            })
+        }
 
         // ⚠ ジェネレータ式は**遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
         //   無限ジェネレータや副作用の回数が変わる。黙って変えないため明示エラーにする。
@@ -632,10 +778,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         // f-string。`desugar_fstring`（`src/parser/exprs.rs`）と**同形**に脱糖する:
         // リテラル片はそのまま、埋め込み式は `str(...)` で包み、左結合の `+` で連結する。
         //
-        // ⚠ Arrow に「書式指定」に相当する構文が無いので、`{x:.2f}` のような
-        //   **format_spec 付きは明示エラー**（FUTURE_FEATURE.md に残してある）。
-        // ⚠ 変換フラグは `!s` → `str()`、`!r` → `repr()` に写せる（どちらも Arrow に組込がある）。
-        //   `!a`（ascii）は相当する組込が無いので明示エラー。
+        // 書式指定（`{x:.2f}`）は組み込みの `format(x, spec)`、変換フラグ（`!s` / `!r` / `!a`）は
+        // `str()` / `repr()` / `ascii()` に写す（python_builtins_plan.md のタスク 3-4。以前は書式指定と `!a` が変換の誤り）。
         py::Expr::JoinedStr(j) => {
             let span = make_span(filename);
             let mut parts: Vec<Expr> = Vec::new();
@@ -643,32 +787,39 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 match v {
                     // リテラル片（`f"hi {n}"` の `"hi "` の部分）。
                     py::Expr::Constant(c) => parts.push(convert_constant(c, filename)?),
+                    // `{x!r:>10}` → `format(repr(x), ">10")`（変換の後で書式・python_builtins_plan.md のタスク 3-4）。
+                    // 書式指定は入れ子の f-string（`{x:{w}}`）なので同じ変換で文字列の連結にする。
                     py::Expr::FormattedValue(fv) => {
-                        if fv.format_spec.is_some() {
-                            return Err(format!(
-                                "{filename}: f-string format specifier (e.g. `{{x:.2f}}`) is not supported"
-                            ));
-                        }
-                        let func_name = match fv.conversion.to_char() {
-                            None | Some('s') => "str",
-                            Some('r') => "repr",
-                            Some(other) => {
-                                return Err(format!(
-                                    "{filename}: f-string conversion `!{other}` is not supported (only `!s` and `!r`)"
-                                ))
-                            }
-                        };
-                        let inner = convert_expr(&fv.value, filename)?;
-                        parts.push(Expr::Call {
+                        let call = |name: &str, args: Vec<Expr>| Expr::Call {
                             func: Box::new(Expr::Ident {
-                                name: func_name.to_string(),
+                                name: name.to_string(),
                                 node_id: 0,
                                 res: Resolution::Unresolved,
                             }),
-                            args: vec![CallArg::Positional(inner)],
+                            args: args.into_iter().map(CallArg::Positional).collect(),
                             span: span.clone(),
                             cache: Default::default(),
                             node_id: 0, // #16: py-converter は未採番
+                        };
+                        let conversion = match fv.conversion.to_char() {
+                            None => None,
+                            Some('s') => Some("str"),
+                            Some('r') => Some("repr"),
+                            Some('a') => Some("ascii"),
+                            Some(other) => {
+                                return Err(format!("{filename}: f-string conversion `!{other}` is not supported"))
+                            }
+                        };
+                        let inner = convert_expr(&fv.value, filename)?;
+                        let value = match conversion {
+                            Some(f) => call(f, vec![inner]),
+                            None => inner,
+                        };
+                        parts.push(match fv.format_spec.as_deref() {
+                            Some(spec) => call("format", vec![value, convert_expr(spec, filename)?]),
+                            None if conversion.is_some() => value,
+                            // `{x}` も CPython と同じ `format(x, '')`（`__format__` を持つクラスはそれが効く）。
+                            None => call("format", vec![value]),
                         });
                     }
                     // 仕様上ここには来ないが、来たら文字列化して連結する（黙って落とさない）。
@@ -824,8 +975,30 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
         py::Constant::Str(s) => Ok(Expr::Str(Rc::from(s.as_str()))),
         py::Constant::Bool(b) => Ok(Expr::Bool(*b)),
         py::Constant::None => Ok(Expr::None),
-        py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),
-        py::Constant::Ellipsis => Ok(Expr::None),
+        // `b"xy"` は `bytes([120, 121])`（組み込みの `bytes`・python_builtins_plan.md のタスク 3-1）。
+        // ⚠ Arrow のソースに bytes のリテラルの構文は無いので、組み込みの呼び出しへ写す
+        //   （モジュールが `bytes` を束縛し直していれば、その値が呼ばれる。CPython のリテラルは影響を受けない）。
+        py::Constant::Bytes(b) => Ok(Expr::Call {
+            func: Box::new(Expr::Ident {
+                name: "bytes".to_string(),
+                node_id: 0,
+                res: Resolution::Unresolved,
+            }),
+            args: vec![CallArg::Positional(Expr::List(
+                b.iter().map(|&x| crate::ast::SeqEntry::Item(Expr::Int(x as i64))).collect(),
+            ))],
+            span: make_span(filename),
+            cache: Default::default(),
+            node_id: 0,
+        }),
+        // 値の `...` は組み込みの唯一の値 `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None` にしていたので
+        // `x is ...` が `None` でも真だった）。文の `...`（スタブの本体）は `pass`（`convert_stmt`）。
+        // ⚠ モジュールが `Ellipsis` を束縛し直していれば、その値になる（CPython の `...` は影響を受けない・対象外）。
+        py::Constant::Ellipsis => Ok(Expr::Ident {
+            name: "Ellipsis".to_string(),
+            node_id: 0,
+            res: Resolution::Unresolved,
+        }),
         // 定数タプル。要素も `Constant` なので再帰する。
         //
         // ⚠ **このアームは現在の構成では到達しない**。`Constant::Tuple` を作るのは

@@ -1,0 +1,34 @@
+# py_isinstance.ar — isinstance（python_builtins_plan.md のタスク 2-1）
+#
+# 対になる誤りの例: py_isinstance_error.ar
+#
+# CPython の isinstance と同じ考え方で判定する:
+#   - 組は要素ごと（`isinstance(x, (list, tuple))`）
+#   - クラスは同じクラスかその派生（基底は修飾名でも当たる・別のモジュールの同名クラスとは取り違えない）
+#   - 組み込みの型は値の種類。`bool` は `int` の派生（`isinstance(True, int)` は真）
+#   - 第 2 引数は値なので、変数に入れたクラスでも書ける
+# ⚠ 以前は `NameError: 'isinstance' is not defined`（pandas で 2,766 箇所）。
+# ⚠ Arrow のコードでは `x is C` が同じ判定で、型の絞り込みも効く。isinstance は主に Python のコード向け。
+
+import[py] test_modules.py_isinstance as m
+
+print("=== 1. inside Python code ===")
+print(m.kinds())        # ['bool', 'int', 'sequence', 'sequence', 'dict', 'a Dog', 'an Animal', 'other']
+
+print("=== 2. a class held in a variable ===")
+# ⚠ Python の関数の仮引数は `mut` 扱いなので、クラスも `mut` の変数で渡す（既存の規則）。
+mut animal_cls = m.Animal
+mut dog_cls = m.Dog
+print(m.by_variable(m.Puppy(), animal_cls), m.by_variable(m.Animal(), dog_cls))    # True False
+
+print("=== 3. from Arrow ===")
+print(isinstance(True, int), isinstance(1, float), isinstance(1.5, float))     # True False True
+print(isinstance([1], (dict, list)), isinstance("s", (int, bool)))             # True False
+print(isinstance(m.Puppy(), m.Dog), isinstance(None, int))                     # True False
+
+print("=== 4. exceptions ===")
+try:
+    let xs: list[int] = [1]
+    print(xs[5])
+except Exception as e:
+    print(isinstance(e, IndexError), isinstance(e, Exception), isinstance(e, KeyError))   # True True False

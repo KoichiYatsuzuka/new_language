@@ -1,0 +1,27 @@
+# py_cached_property.ar — Python の functools.cached_property（python_builtins_plan.md のタスク 6-5）
+#
+# `@cached_property def area(self)` は初めて読んだときだけ計算し、以後はインスタンスごとに覚えた値を返す。
+# 変換器はメソッドを別名（`__property_cached_area`）にして、クラスの定義の後で組み込みの `cached_property` を
+# 置き場（`static mut area`）に入れる。計算した値は同じ名前のインスタンスのフィールド（CPython のインスタンスの
+# `__dict__` の代わり）に入り、以後はフィールドが勝つ。`obj.area = v` もそのフィールドへ入る。
+# `from functools import cached_property` は読み込まない（変換器が組み込みへ写す）。
+#
+# cp.run() は CPython と同じ出力:
+#   12.0 12.0 27.0 [2, 3]
+#   ['round', 'small'] ['round']
+#   1.5 [2, 3]
+#   cached_property area Area, computed once per instance. area
+#   True
+#
+# ⚠ 以前は `@cached_property` が変換の誤り（'@cached_property' is not supported）だった。
+
+import[py] test_modules.py_cached_property as cp
+
+cp.run()
+
+# Arrow からも読める。getter の戻り値の注釈（`-> float`）が型になる（タスク 6-8 と同じ）。
+mut c = cp.Circle(10)
+print(c.area * 2.0)
+print(c.area, cp.CALLS)
+c.area = 0.5
+print(c.area)

@@ -25,7 +25,7 @@ src/interpreter/
 ├── ops.rs         — is_truthy, type_name, display/repr, apply_unary, apply_binop, values_eq
 ├── str_methods.rs — str method dispatch (split, join, format, regex, ...)
 ├── scope.rs       — push/pop scope, get_var, declare_var, assign_var, freeze_var
-├── exceptions.rs  — make_error_class, get_context_lines, exc_matches
+├── exceptions.rs  — get_context_lines, exc_matches, exc_set_args (built-in exception args / str(e))
 ├── async_mgr.rs   — AsyncManagerData, AsyncStatus, thread spawning via std::thread
 ├── native_api.rs  — i64 handle arena, ArCallbacks struct, C callback implementations
 ├── py_interop.rs  — PyO3 runtime bridge (import[py-int] execution)
@@ -52,7 +52,7 @@ pub struct Interpreter {
 }
 ```
 
-`Value` enum covers: `Int(i64)`, `UInt(u64)`, `Float(f64)`, `Bool(bool)`, `Str(String)`, `Bytes(Rc<[u8]>)` (immutable byte string — `src/interpreter/encoding.rs`, `classes/bytes_methods.rs`), `None`, `List(Rc<RefCell<Vec<Value>>>)`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Set(Rc<RefCell<Vec<Value>>>)`, `Slice(SliceValue)`, `Function(Rc<FnValue>)`, `OverloadedFn(...)`, `GeneratorFn(...)`, `Generator(Rc<RefCell<GeneratorState>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `Namespace(Rc<NamespaceData>)`, `NativeFn(Rc<NativeFnRef>)`, `Ptr(Arc<PtrHandle>)` (external memory — `value/ptr.rs`; copies share, released once by `Drop` or `release()`, eq/hash by identity, the address is never exposed), `PyObject(...)`, `...`
+`Value` enum covers: `Int(i64)`, `UInt(u64)`, `Float(f64)`, `Bool(bool)`, `Str(String)`, `Bytes(Rc<[u8]>)` (immutable byte string — codecs in `ops/codecs.rs`, methods in `classes/bytes_methods.rs`), `None`, `List(Rc<RefCell<Vec<Value>>>)`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Set(Rc<RefCell<Vec<Value>>>)`, `Slice(SliceValue)`, `Function(Rc<FnValue>)`, `OverloadedFn(...)`, `GeneratorFn(...)`, `Generator(Rc<RefCell<GeneratorState>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `Namespace(Rc<NamespaceData>)`, `NativeFn(Rc<NativeFnRef>)`, `Ptr(Arc<PtrHandle>)` (external memory — `value/ptr.rs`; copies share, released once by `Drop` or `release()`, eq/hash by identity, the address is never exposed), `PyObject(...)`, `...`
 
 `Var` wraps a `Value` plus a mutability flag; mutable variables may store a shared `Rc<RefCell<Value>>` cell for closure capture.
 
@@ -80,6 +80,12 @@ SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost loca
 | `declare_var` | Inserts into `scopes.last_mut()` |
 | `assign_var` | Searches tail → head; error if not found or immutable |
 | `freeze_var` | Sets mutability flag to false; error if captured by closure |
+
+`freeze x` gives the same result as `let x = x` (python_builtins_plan.md 1-9): both call
+`Interpreter::bind_copy(BindCopy::CopyFreeze, ..)` (deep copy — skipped for an unshared fresh value — then
+`freeze_value_in_place`: `__freeze__` + field freezing for instances, one level into collections, trim for
+fixed_list). `exec_freeze` writes the frozen copy back and demotes the variable;
+a function local (VM slot) compiles to `LoadLocal` + `StoreLocalCopyFreeze`.
 
 ---
 
@@ -241,9 +247,19 @@ Violation raises `AccessError`.
 
 ## Exceptions (`exceptions.rs`)
 
-Built-in exception classes (`ValueError`, `TypeError`, `IndexError`, `KeyError`, `RuntimeError`, `OSError`, `StopIteration`, `AccessError`, …) are constructed by `make_error_class` as `ClassValue` objects pre-registered in global scope.
+Built-in exception classes (60: CPython 3.12's hierarchy plus `AccessError`) are constructed by `make_error_class` (`built_in_types.rs`) from the single table `type_check::names::BUILTIN_EXCEPTIONS`, with all ancestors flattened into `bases` (`ClassValue::is_a` does not walk). They have no `__init__`: `instantiate_evaled` stores the positional arguments in `args` and CPython's `str(e)` in `message` (`exc_set_args`), and `super().__init__(..)` reaches `eval_class_method`. Internal error strings (`"KeyError: 'k'"`) become instances in `make_internal_raised_error`; `except m.Err` uses `value_is_type`.
 
-Exception propagation uses the error string `RAISE_SENTINEL = "\x00__raise__:..."` threading through Rust's `Result<_, String>`. `exec_try` catches any error containing the sentinel, matches the class name against `except` handlers via `exc_matches`, runs the matching handler, and always runs `finally`.
+Bound methods (python_builtins_plan.md 1-8 / 1-10): reading `obj.method` returns `FnValue::bind(receiver, target)` — a body-less `FnValue` whose `bound` field holds the receiver and a `BoundTarget` (`Methods` overloads / `Gen` generator method / `Builtin(name)` for methods of built-in values listed in `type_check::names::BUILTIN_VALUE_METHODS`). `exec_fn_evaled` redirects it to `call_bound_method` (same dispatch as `obj.method(..)`, including the immutable-receiver check; access control was checked at the read). Equality / hash use `FnValue::same_binding` / `identity_ptr`.
+
+Calling a field (python_builtins_plan.md 1-11): `obj.f(x)` with no method `f` (after the `class_var_class` check in `classes/method_call.rs`) reads the attribute with `get_attr_val` (field / `const` / `static mut`, access control, descriptors) and calls the value (`call_value_evaled`).
+
+Descriptors (1-12): `eval/attrs.rs` is the only place — `get_attr_val` (instance: a class-level **data** descriptor (`__get__` plus `__set__`/`__delete__`, `descriptor_kind`) before fields, a non-data one after fields; class: `__get__(None, C)`), `attr_assign_evaled` and the native `set_attr_val` (a data descriptor gets `__set__(obj, v)`; no `__set__` → `AttributeError: __set__`). "Class-level" means `static_vars` (Python class attributes, shared with Python subclasses) and `class_vars` (`const`). The VM `GetAttr` inline cache is only filled on field hits, so descriptor reads always reach `get_attr_val`. `C.name` (the class's name) is answered only when no member is called `name` (6-1).
+
+`frozenset` / `bytes` (3-1): `Value::FrozenSet(Rc<Vec<Value>>)` shares the read-only set methods with `set` (`classes/set_methods.rs` `eval_set_query`; operators keep the left operand's kind; `set == frozenset` only in `values_eq_expr`). `Value::Bytes(Rc<[u8]>)` has its methods in `classes/bytes_methods.rs`, the codecs in `ops/codecs.rs` (the only implementation: utf-8 / ascii / latin-1 with CPython's messages, utf-16-le / -be, Shift_JIS and the WHATWG names via encoding_rs; strict / ignore / replace for all), and `b'..'` display in `ops/display.rs` `bytes_repr`; `str.encode` returns bytes. `str` repr is `ops::py_str_repr` with the printable table `ops/unicode_printable.rs` (1-13).
+
+Built-in `property` (6-1): an Arrow class (`eval/py_builtins.rs` `PY_PROPERTY_SRC`) built on the first lookup of the name `property` (`builtin_value`, now `&mut self`, which `vm_load_name` also calls) by `py_property_class` in its own module frame (`enter_module_frame(&[])`, so the class is unqualified and its methods see only builtins) and cached in `Interpreter::py_property`. `__get__` takes `mut self` so `C.x` returns the stored property itself (a non-`mut` `self` would be returned as a copy).
+
+Exception propagation uses the error string `RAISE_SENTINEL = "\x00__raise__:..."` threading through Rust's `Result<_, String>`. The VM's `SetupTry` / `ExcMatch` (the tree-walk `exec_try` was removed in #33) catch any error containing the sentinel, match it against the `except` handlers via `vm_exc_matches`, run the matching handler, and always run `finally`.
 
 `get_context_lines` extracts source lines around the raise site from the `code_context` stored on the exception instance.
 

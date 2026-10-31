@@ -723,7 +723,14 @@ impl Parser {
 
     /// f-string パーツ列を文字列連結式（`BinOp::Add`）にデシュガーする。
     ///
-    /// `f"Hello {name}!"` → `"Hello " + str(name) + "!"`
+    /// `f"Hello {name}!"` → `"Hello " + format(name) + "!"`（`format(x)` は `__format__` の無い値なら `str(x)` と同じ）。置換フィールドは Python と同じ
+    /// `{式[=][!変換][:書式指定]}`（python_builtins_plan.md のタスク 3-4）:
+    /// - `{x:.2f}` → `format(x, ".2f")`（書式指定の中の `{w}` は文字列の連結にする: `{x:>{w}}` → `format(x, ">" + str(w))`）
+    /// - `{x!r}` / `{x!s}` / `{x!a}` → `repr(x)` / `str(x)` / `ascii(x)`（書式指定があればその後で `format`）
+    /// - `{x=}` → `"x=" + repr(x)`（書式指定があれば `format`・式の文字と空白はそのまま出す）
+    ///
+    /// ⚠ 以前は `:` / `!` から後ろを**黙って捨てていた**（`f"{x:.2f}"` が `3.14159`）。式の後ろに
+    ///   読めない字句が残れば誤りにする。
     fn desugar_fstring(&mut self, parts: Vec<FStrPart>) -> Result<Expr, String> {
         if parts.is_empty() {
             return Ok(Expr::Str(Rc::from("")));
@@ -734,18 +741,44 @@ impl Parser {
             match part {
                 FStrPart::Lit(s) => exprs.push(Expr::Str(Rc::from(s.as_str()))),
                 FStrPart::Expr(src) => {
-                    // Re-lex and re-parse the expression source
-                    let tokens = lexer::Lexer::new(&src, "<fstring>").tokenize();
-                    let mut sub_parser = Parser::new(tokens, None);
-                    let expr = sub_parser.parse_expr()?;
-                    // Wrap in str() call to convert to string
-                    exprs.push(Expr::Call {
-                        func: Box::new(Expr::Ident { name: "str".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
-                        args: vec![crate::ast::CallArg::Positional(expr)],
-                        span: span.clone(),
-                        cache: Default::default(),
-                        node_id: self.next_node_id(),
-                    });
+                    let field = split_fstring_field(&src)?;
+                    let expr = self.parse_fstring_expr(field.expr)?;
+                    if let Some(text) = field.debug_text {
+                        exprs.push(Expr::Str(Rc::from(text)));
+                    }
+                    // `{x=}` は書式指定も変換も無ければ `repr`（CPython と同じ）。
+                    let conversion = match (field.conversion, field.debug_text.is_some() && field.spec.is_none()) {
+                        (Some(c), _) => Some(c),
+                        (None, true) => Some('r'),
+                        (None, false) => None,
+                    };
+                    let value = match conversion {
+                        None => expr,
+                        Some(c) => {
+                            let func = match c {
+                                'r' => "repr",
+                                's' => "str",
+                                'a' => "ascii",
+                                other => {
+                                    return Err(format!(
+                                        "f-string: invalid conversion character '{other}': expected 's', 'r', or 'a'"
+                                    ))
+                                }
+                            };
+                            self.fstring_call(func, vec![expr], &span)
+                        }
+                    };
+                    let piece = match field.spec {
+                        Some(spec) => {
+                            let spec_expr = self.desugar_fstring_spec(spec)?;
+                            self.fstring_call("format", vec![value, spec_expr], &span)
+                        }
+                        None if conversion.is_some() => value,
+                        // 書式指定の無い `{x}` も CPython と同じ `format(x, '')`（`__format__` を持つクラスはそれが効く。
+                        // ほかの値は `str(x)` と同じ）。
+                        None => self.fstring_call("format", vec![value], &span),
+                    };
+                    exprs.push(piece);
                 }
             }
         }
@@ -761,6 +794,73 @@ impl Parser {
             node_id: 0,
         });
         Ok(result)
+    }
+
+    /// f-string の置換フィールドの式を読む。式の後ろに字句が残れば誤り（以前は黙って捨てていた）。
+    fn parse_fstring_expr(&mut self, src: &str) -> Result<Expr, String> {
+        let tokens = lexer::Lexer::new(src, "<fstring>").tokenize();
+        let mut sub_parser = Parser::new(tokens, None);
+        let expr = sub_parser.parse_expr()?;
+        while *sub_parser.current() == Token::Newline {
+            sub_parser.advance();
+        }
+        if *sub_parser.current() != Token::Eof {
+            return Err(format!("f-string: invalid expression '{}'", src.trim()));
+        }
+        Ok(expr)
+    }
+
+    /// f-string の脱糖が作る組み込みの呼び出し（`str(x)` / `format(x, spec)` / `repr(x)` …）。
+    fn fstring_call(&mut self, func: &str, args: Vec<Expr>, span: &Span) -> Expr {
+        Expr::Call {
+            func: Box::new(Expr::Ident { name: func.to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
+            args: args.into_iter().map(crate::ast::CallArg::Positional).collect(),
+            span: span.clone(),
+            cache: Default::default(),
+            node_id: self.next_node_id(),
+        }
+    }
+
+    /// 書式指定（`:` の後ろ）を式にする。中の置換フィールド（`{w}`）は f-string と同じに脱糖して連結する。
+    fn desugar_fstring_spec(&mut self, spec: &str) -> Result<Expr, String> {
+        if !spec.contains('{') {
+            return Ok(Expr::Str(Rc::from(spec)));
+        }
+        let mut parts = Vec::new();
+        let mut lit = String::new();
+        let mut chars = spec.chars();
+        while let Some(c) = chars.next() {
+            if c != '{' {
+                lit.push(c);
+                continue;
+            }
+            if !lit.is_empty() {
+                parts.push(FStrPart::Lit(std::mem::take(&mut lit)));
+            }
+            let mut depth = 1;
+            let mut inner = String::new();
+            for d in chars.by_ref() {
+                match d {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                inner.push(d);
+            }
+            if depth != 0 {
+                return Err("f-string: expecting '}'".to_string());
+            }
+            parts.push(FStrPart::Expr(inner));
+        }
+        if !lit.is_empty() {
+            parts.push(FStrPart::Lit(lit));
+        }
+        self.desugar_fstring(parts)
     }
 
     /// 基本式（リテラル・識別子・括弧式・リスト・辞書）をパースする。
@@ -1225,4 +1325,101 @@ impl Parser {
             Ok(Expr::Set(items))
         }
     }
+}
+
+
+/// f-string の置換フィールドの中身（`{` と `}` の間）を分けたもの（python_builtins_plan.md のタスク 3-4）。
+struct FStringField<'a> {
+    /// 式の文字（`=` / `!` / `:` の手前）。
+    expr: &'a str,
+    /// `{x = }` のとき出す文字（式・`=`・その後の空白。CPython の自己記述の式）。
+    debug_text: Option<&'a str>,
+    /// `!r` / `!s` / `!a` の文字。
+    conversion: Option<char>,
+    /// `:` の後ろ（書式指定。空もありうる）。
+    spec: Option<&'a str>,
+}
+
+/// 置換フィールドを `式[=][!変換][:書式指定]` に分ける。括弧の中と文字列の中の `!` / `:` / `=` は式の一部
+/// （`d["a:b"]` / `x[1:2]` / `f(a=1)`）。`!=` / `==` / `<=` / `>=` は演算子。
+fn split_fstring_field(src: &str) -> Result<FStringField<'_>, String> {
+    let b: Vec<(usize, char)> = src.char_indices().collect();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut k = 0;
+    // 式の終わり（`!` / `:` / `=` の位置か末尾）と、後ろの部分の始まり。
+    let mut expr_end = src.len();
+    let mut debug_end = None;
+    let mut tail = b.len();
+    while k < b.len() {
+        let (pos, c) = b[k];
+        if let Some(q) = quote {
+            if c == '\\' {
+                k += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            k += 1;
+            continue;
+        }
+        let next = b.get(k + 1).map(|x| x.1);
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '=' if depth == 0 && next == Some('=') => {
+                k += 2;
+                continue;
+            }
+            '=' if depth == 0 && !matches!(k.checked_sub(1).map(|p| b[p].1), Some('=' | '!' | '<' | '>')) => {
+                // 自己記述の `=`: 後ろが空白だけで終わるか `!` / `:` が続くときだけ。
+                let mut m = k + 1;
+                while m < b.len() && b[m].1.is_whitespace() {
+                    m += 1;
+                }
+                if m == b.len() || matches!(b[m].1, '!' | ':') {
+                    expr_end = pos;
+                    debug_end = Some(if m == b.len() { src.len() } else { b[m].0 });
+                    tail = m;
+                    break;
+                }
+            }
+            '!' if depth == 0 && next != Some('=') => {
+                expr_end = pos;
+                tail = k;
+                break;
+            }
+            ':' if depth == 0 => {
+                expr_end = pos;
+                tail = k;
+                break;
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    let mut conversion = None;
+    let mut spec = None;
+    let mut t = tail;
+    if t < b.len() && b[t].1 == '!' {
+        let Some(&(_, c)) = b.get(t + 1) else {
+            return Err("f-string: missing conversion character".to_string());
+        };
+        conversion = Some(c);
+        t += 2;
+        if t < b.len() && b[t].1 != ':' {
+            return Err("f-string: expecting '}'".to_string());
+        }
+    }
+    if t < b.len() && b[t].1 == ':' {
+        spec = Some(&src[b[t].0 + 1..]);
+    }
+    Ok(FStringField {
+        expr: &src[..expr_end],
+        debug_text: debug_end.map(|e| &src[..e]),
+        conversion,
+        spec,
+    })
 }

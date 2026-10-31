@@ -10,21 +10,19 @@
 #   ため `_error` 例として成立しなくなった（`compare_python_impl.ps1` が stale として検出）。
 #   ⇒ lambda がデフォルト値として**通る**ことは `py_lambda.ar` の ⑦ が持つ。
 #
-# ⚠ いずれも**変換時（パース時）**のエラー。1 ファイルにつき 1 つしか踏めない。
+# ⚠ **変換時（パース時）**のエラー。
 #
-#   ① 書式指定つき f-string（本ファイルが踏む形）
-#      f-string format specifier (e.g. `{x:.2f}`) is not supported
-#      ⇒ Arrow に書式指定の構文・組込が無い（FUTURE_FEATURE §4 (3)）。
+#   ① ジェネレータ式（本ファイルが踏む形）
+#      generator expression is not supported (it is lazy; use a list comprehension `[...]` instead)
+#      ⇒ 遅延評価の式が Arrow に無い。
+#   ⚠ 2026-10-12 にもう一度入れ替えた: 書式指定つき f-string（`{n:.2f}`）は python_builtins_plan.md のタスク 3-4 で
+#     組み込みの `format` へ変換されるようになり**通る**（`py_format.ar` が通る形を持つ）。
 #
-#   ② bytes リテラル
-#      bytes literals are not supported
-#      ⇒ Arrow に bytes 型が無い。
+# ⚠ 以前は ② として bytes リテラル（`def g(b=b"xy")`）も踏ませていたが、python_builtins_plan.md のタスク 3-1 で
+#   `b".."` が組み込みの `bytes` へ変換されるようになり**通る**ので外した（`py_bytes.ar` が通る形を持つ）。
 #
 # ⚠ **通る形**は `py_defaults.ar`（リテラル / None / タプル / 名前参照 / 可変デフォルト）。
 
-import[py] test_modules.py_default_fmtspec_error as m
-
-# ② を試す場合:
-# import[py] test_modules.py_default_bytes_error as m
+import[py] test_modules.py_default_genexp_error as m
 
 print("unreachable")

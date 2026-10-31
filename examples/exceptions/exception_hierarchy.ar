@@ -1,0 +1,85 @@
+# exception_hierarchy.ar — 組み込みの例外の階層（python_builtins_plan.md のタスク 4-1）
+#
+# 対になる誤りの例: exception_hierarchy_error.ar
+#
+# 組み込みの例外は CPython 3.12 と同じ階層を持つ。親で捕まえると子も捕まる:
+#   - LookupError → KeyError / IndexError、ArithmeticError → ZeroDivisionError / OverflowError
+#   - RuntimeError → NotImplementedError / RecursionError
+#   - OSError → FileNotFoundError / PermissionError / TimeoutError / ConnectionError …
+#   - Warning → UserWarning / DeprecationWarning / FutureWarning …（クラスとして足しただけ。warnings.warn は無い）
+#   - BaseException → Exception と GeneratorExit
+# ⚠ open の失敗は OS のエラーの種類で FileNotFoundError / PermissionError などへ振り分ける（以前はどれも IOError）。
+# ⚠ IOError / EnvironmentError / WindowsError は OSError と互いに捕まえ合う（CPython では同じクラス）。
+#   ただしクラスは別のままで、raise IOError("x") の表示は IOError: x（CPython は OSError: x）。
+# ⚠ 以前は階層が無く、except ArithmeticError が ZeroDivisionError を捕まえなかった。
+
+print("=== LookupError / ArithmeticError ===")
+let d: dict[str, int] = {"a": 1}
+try:
+    print(d["zz"])
+except LookupError:
+    print("LookupError caught a KeyError")
+let xs: list[int] = [1]
+try:
+    print(xs[5])
+except LookupError:
+    print("LookupError caught an IndexError")
+try:
+    let z = 1 // 0
+except ArithmeticError:
+    print("ArithmeticError caught a ZeroDivisionError")
+
+print("=== RuntimeError ===")
+try:
+    raise NotImplementedError("todo")
+except RuntimeError as e:
+    print("RuntimeError caught", e.message)
+
+print("=== OSError ===")
+let missing = "examples/exceptions/_no_such_file_for_hierarchy.txt"
+try:
+    let f = open(missing, FileOpenMode.read)
+except FileNotFoundError:
+    print("FileNotFoundError")
+try:
+    let f = open(missing, FileOpenMode.read)
+except OSError:
+    print("OSError caught a FileNotFoundError")
+try:
+    let f = open(missing, FileOpenMode.read)
+except IOError:
+    print("IOError caught a FileNotFoundError")
+try:
+    raise OSError("os")
+except IOError as e:
+    print("IOError caught an OSError:", e.message)
+try:
+    raise TimeoutError("slow")
+except OSError as e:
+    print("OSError caught a TimeoutError:", e.message)
+
+print("=== Warning ===")
+try:
+    raise FutureWarning("will change")
+except Warning as w:
+    print("Warning caught a FutureWarning:", w.message)
+
+print("=== BaseException ===")
+try:
+    raise ValueError("v")
+except BaseException:
+    print("BaseException catches every exception")
+try:
+    try:
+        raise GeneratorExit("stop")
+    except Exception:
+        print("not reached: GeneratorExit is not an Exception")
+except BaseException as e:
+    print("GeneratorExit passed through except Exception")
+
+print("=== is / isinstance / issubclass ===")
+let k: LookupError = KeyError("k")
+print(k is KeyError, k is LookupError, k is ValueError)          # True True False
+print(isinstance(ZeroDivisionError("z"), ArithmeticError))      # True
+print(issubclass(FileNotFoundError, OSError), issubclass(UserWarning, Exception))   # True True
+print(issubclass(GeneratorExit, Exception), issubclass(GeneratorExit, BaseException))   # False True

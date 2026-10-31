@@ -63,6 +63,8 @@ pub enum Value {
     /// 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。C の `char*` などを、文字列に変換する前のまま受け取る型。
     /// 文字列との変換は `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う（黙って UTF-8 とみなさない）。
     /// 等値・ハッシュは中身で決まる（`str` と同じ値の型）。⚠ `deep_clone` は `Str` と同じく独立バッファを作ること。
+    /// `bytes(..)` / `"s".encode()` / Python の `b".."` で作る。添字は `int`（0〜255）、スライスは `bytes`、
+    /// 表示は CPython と同じ `b'..'`（python_builtins_plan.md のタスク 3-1）。
     Bytes(Rc<[u8]>),
     /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),
@@ -123,6 +125,11 @@ pub enum Value {
     Tuple(Rc<TupleData>),
     /// 重複なしの可変コレクション。要素の順序は保証しない。
     Set(Rc<RefCell<Vec<Value>>>),
+    /// 不変でハッシュできる集合（`frozenset(..)`・python_builtins_plan.md のタスク 3-1）。
+    /// ⚠ `Set` と同じく線形の `Vec`（重複は `values_eq_expr` で除く）。不変なので `RefCell` を持たない。
+    /// ⚠ `values_eq` は型厳密なので `Set` とは等値にならない。`frozenset({1}) == {1}` が真になるのは
+    ///   式としての `==`（`values_eq_expr`）の規則（数値の昇格と同じ層）。
+    FrozenSet(Rc<Vec<Value>>),
     /// import されたモジュールまたは名前空間。`.` でメンバにアクセスする。
     Namespace(Rc<NamespaceData>),
     /// PyO3 経由で保持する Python オブジェクトへの参照。
@@ -266,6 +273,7 @@ impl Value {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::Set(Rc::new(RefCell::new(v)))
             }
+            Value::FrozenSet(items) => Value::FrozenSet(Rc::new(items.iter().map(|x| x.deep_clone()).collect())),
             Value::Dict(rc) => {
                 // ⚠ `deep_clone` は関数等の `Rc` を作り直すので**ハッシュを取り直す**必要が
                 //    ある（`dict_copy_with` の doc を参照）。
@@ -312,6 +320,30 @@ impl Value {
             return_type: None,
             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
             vm_chunk: None,
+            // 束縛メソッド（タスク 1-8）は受け手もメソッドの実体も複製する。
+            bound: rc.bound.as_ref().map(|b| {
+                use super::BoundTarget as T;
+                let clone_all = |ms: &Vec<Rc<super::FnValue>>| -> Vec<Rc<super::FnValue>> {
+                    ms.iter()
+                        .map(|m| match Value::Function(m.clone()).deep_clone() {
+                            Value::Function(f) => f,
+                            _ => unreachable!("deep_clone keeps the variant"),
+                        })
+                        .collect()
+                };
+                let target = match &b.target {
+                    T::Methods(ms) => T::Methods(clone_all(ms)),
+                    T::ClassMethod(ms) => T::ClassMethod(clone_all(ms)),
+                    T::Gen(g) => match Value::GeneratorFn(g.clone()).deep_clone() {
+                        Value::GeneratorFn(f) => T::Gen(f),
+                        _ => unreachable!("deep_clone keeps the variant"),
+                    },
+                    T::Builtin(n) => T::Builtin(n.clone()),
+                };
+                Rc::new(super::BoundMethod { receiver: b.receiver.deep_clone(), target })
+            }),
+            // ⚠ `Rc<str>` も共有しない（作り直す）。
+            qualname: rc.qualname.as_deref().map(Rc::from),
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -328,6 +360,8 @@ impl Value {
                             return_type: rc.return_type.clone(),
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
                             vm_chunk: None,
+                            bound: None,
+                            qualname: rc.qualname.as_deref().map(Rc::from),
                         })
                     })
                     .collect(),
@@ -339,6 +373,7 @@ impl Value {
                 params: crate::template_subst::unshare_params(&rc.params),
                 body: crate::template_subst::unshare_stmts(&rc.body),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
+                qualname: rc.qualname.as_deref().map(Rc::from),
             })),
             Value::Generator(rc) => {
                 let b = rc.borrow();

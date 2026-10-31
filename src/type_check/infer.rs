@@ -15,6 +15,18 @@ use super::TypeChecker;
 /// 正しいコードが「存在しないメンバー」で落ちる。
 const UNIVERSAL_INSTANCE_METHODS: &[&str] = &["copy"];
 
+/// クラス側に置いたディスクリプタの型（[`TypeChecker::class_descriptor`]・タスク 1-12）。
+pub(crate) struct ClassDescriptor {
+    /// 読んだ値の型（`__get__` の戻り値）。
+    pub(crate) read: InferredType,
+    /// データディスクリプタ（`__set__` か `__delete__` を持つ）か。インスタンス経由の代入が `__set__` へ行く。
+    pub(crate) is_data: bool,
+    /// 代入する値の型（`__set__` の `value`）。`__set__` が無ければ `None`。
+    pub(crate) write: Option<InferredType>,
+    /// メンバーの宣言型（ディスクリプタのクラス）。クラス経由の代入（`C.x = d`）はこれを置き換える。
+    pub(crate) declared: InferredType,
+}
+
 impl TypeChecker {
     /// 部分木を歩いて診断を出すだけ。**この地点に型義務は無い**（タスク 3.1）。
     ///
@@ -304,7 +316,10 @@ impl TypeChecker {
                     //    subscriptable`）。以前はここで要素型を返していたので、
                     //    **必ず実行時エラーになるコードに嘘の型**を与えていた。
                     //    診断は `check_subscript_index` が出す。
-                    InferredType::Set | InferredType::SetOf(_) => InferredType::Unresolved,
+                    InferredType::Set
+                    | InferredType::SetOf(_)
+                    | InferredType::FrozenSet
+                    | InferredType::FrozenSetOf(_) => InferredType::Unresolved,
                     InferredType::DictOf(_, val) => *val,
                     InferredType::Tuple(types) => {
                         // リテラル整数インデックスなら対応する要素型を返す
@@ -547,7 +562,11 @@ impl TypeChecker {
         if sigs.len() != 1 {
             return None; // オーバーロード
         }
-        let sig = &sigs[0];
+        Self::fn_type_of_sig(&sigs[0], 0)
+    }
+
+    /// シグネチャの**関数値としての型**（先頭の `skip` 個の仮引数を除く・束縛メソッドは `self` の 1 個）。
+    pub(super) fn fn_type_of_sig(sig: &super::types::FnSig, skip: usize) -> Option<InferredType> {
         // ⚠⚠ **可変長パラメータを持つ関数は型を作らない。** `FnTypeParam` は
         //    「個数が固定の引数列」しか表せないので、`f(... = 1, 2, 3)` を正しく検査できず
         //    `takes 0 argument(s) but 1 were given` という**嘘のエラー**になる（実測）。
@@ -560,6 +579,7 @@ impl TypeChecker {
             .iter()
             .zip(sig.param_mutable.iter())
             .enumerate()
+            .skip(skip)
             .map(|(i, ((pname, pty), pmut))| super::types::FnTypeParam {
                 name: pname.clone(),
                 mutable: *pmut,
@@ -571,6 +591,7 @@ impl TypeChecker {
         Some(InferredType::Function {
             params: Some(params),
             return_type: Box::new(sig.return_type.clone().unwrap_or(InferredType::Any)),
+            mutates_immutable: None,
         })
     }
 
@@ -608,15 +629,17 @@ impl TypeChecker {
                 crate::ast::SeqEntry::Spread(x) => {
                     let ty = self.infer(x);
                     out.push(match &ty {
-                        IT::ListOf(t) | IT::FixedListOf(t) | IT::ListLikeOf(t) | IT::SetOf(t) => {
+                        IT::ListOf(t) | IT::FixedListOf(t) | IT::ListLikeOf(t) | IT::SetOf(t) | IT::FrozenSetOf(t) => {
                             (**t).clone()
                         }
                         // 要素型を持たない容器。反復はできるので `Any`。
-                        IT::List | IT::FixedList | IT::ListLike | IT::Set | IT::TupleAny => IT::Any,
+                        IT::List | IT::FixedList | IT::ListLike | IT::Set | IT::FrozenSet | IT::TupleAny => IT::Any,
                         // タプルは位置ごとの型を持つ。展開すると位置が崩れるので合成する。
                         IT::Tuple(ts) => Self::join_elem_types(ts.clone()),
                         // `str` を展開すると 1 文字ずつの `str`。
                         IT::Str => IT::Str,
+                        // `bytes` を展開すると 1 バイトずつの `int`（タスク 3-1）。
+                        IT::Bytes => IT::Int,
                         IT::Any | IT::Unresolved => IT::Any,
                         // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
                         IT::NamedInstance(_) => IT::Any,
@@ -682,7 +705,7 @@ impl TypeChecker {
         }
         match obj_ty {
             T::List | T::ListOf(_) | T::FixedList | T::FixedListOf(_) | T::ListLike
-            | T::ListLikeOf(_) | T::Str | T::Tuple(_) => {
+            | T::ListLikeOf(_) | T::Str | T::Bytes | T::Tuple(_) => {
                 self.check_int_position(idx_ty, &format!("index of `{obj_ty}`"));
             }
             T::DictOf(key, _) => {
@@ -703,7 +726,7 @@ impl TypeChecker {
                     span: None,
                 });
             }
-            T::Set | T::SetOf(_) => {
+            T::Set | T::SetOf(_) | T::FrozenSet | T::FrozenSetOf(_) => {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NotSubscriptable { container: obj_ty.clone() },
                     span: None,
@@ -794,6 +817,7 @@ impl TypeChecker {
     ) -> InferredType {
         // ⚠ 入口で取り去る（受け手の `a.b` は読みとして検査する・`attr_is_callee` の doc）。
         let is_callee = std::mem::take(&mut self.attr_is_callee);
+        let is_assign_target = std::mem::take(&mut self.attr_is_assign_target);
         let obj_ty = self.infer(object);
         // `import[py] m as p` の `p.make_class`（クラスを返す Python の関数・10-16）。
         if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
@@ -802,6 +826,25 @@ impl TypeChecker {
         // `import[cpp-dll] h as fp` の `fp.f`（今の Arrow から呼べない C の関数・1-2）。
         if let Expr::Ident { name, .. } = object {
             self.check_ffi_unsupported_use(&format!("{name}.{attr}"), name, Some(span.clone()));
+        }
+        // クラス・型の値の名前（`type(x).__name__` / `C.__name__`・python_builtins_plan.md のタスク 2-2）。
+        // ⚠ dunder の名前だけ。`name` はクラス変数の名前とぶつかりうるので従来の経路に任せる。
+        if matches!(obj_ty, InferredType::TypeValOf(_)) && matches!(attr, "__name__" | "__qualname__") {
+            self.annotations.set_resolved(node_id, InferredType::Str);
+            return InferredType::Str;
+        }
+        // 関数の値の名前と docstring（`f.__name__` / `f.__doc__`・python_builtins_plan.md のタスク 1-14）。
+        // 実行時は `Interpreter::function_attr`。docstring が無ければ `None`。
+        if matches!(obj_ty, InferredType::Function { .. }) {
+            let ty = match attr {
+                "__name__" | "__qualname__" => Some(InferredType::Str),
+                "__doc__" => Some(InferredType::Union(vec![InferredType::Str, InferredType::None])),
+                _ => None,
+            };
+            if let Some(ty) = ty {
+                self.annotations.set_resolved(node_id, ty.clone());
+                return ty;
+            }
         }
         // ⚠⚠ **組み込みの値の属性**（フェーズ10 10-14）。以前は何も見ておらず、`x.name`（`x: int`）が
         //    実行時の `AttributeError` まで通っていた（テンプレートの具体化の本体も同じ）。
@@ -812,7 +855,15 @@ impl TypeChecker {
         //      メソッド呼び出しに腕が無い）。`complex` は `real` / `imag` / `angle` だけ。
         //      `str` / `list` などのメソッドの有無はここでは決めない（表を二重に持つとずれる）。
         if let Some(type_name) = Self::builtin_value_type(&obj_ty) {
-            let known_method = is_callee && Self::builtin_may_have_method(&obj_ty, attr);
+            // 呼び出しの形は実行時に任せる（従来どおり）。**値として読む**形は、組み込みの値のメソッドの表
+            // （`names::BUILTIN_VALUE_METHODS`・実行時が束縛メソッドを作る表と同じ）にある名前だけ（タスク 1-11）。
+            let known_method = if is_callee {
+                Self::builtin_may_have_method(&obj_ty, attr)
+            } else {
+                Self::builtin_method_kinds(&obj_ty)
+                    .iter()
+                    .any(|k| super::names::is_builtin_value_method(k, attr))
+            };
             if !known_method {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NoSuchMember {
@@ -893,9 +944,25 @@ impl TypeChecker {
             InferredType::Intersection(_) => {}
             _ => {}
         }
+        // `__setattr__` を上書きした Python のクラスへの代入（`o.y = v`）は上書きが受ける（宣言していない名前も・
+        // 値の型は上書きの仮引数が決める・known_bugs.md の #10）。
+        if is_assign_target && class_name_opt.as_deref().is_some_and(|c| self.class_has_setattr_hook(c)) {
+            self.annotations.set_resolved(node_id, InferredType::Any);
+            return InferredType::Any;
+        }
         if let Some(class_name) = &class_name_opt {
             self.check_member_access_static(class_name, attr, Some(span.clone()));
             // ⚠ メンバーの存在検査（タスク 7.5・検体 `M1` / `M2`）。
+            // `__getattr__` を上書きした Python のクラスのインスタンスから読む無い名前は、上書きが答える（#11）。
+            // ⚠ 代入の左辺は読みではない（`__setattr__` が無ければ宣言していない名前は書けない）。クラスから読む
+            //   `C.zz` も対象外（CPython でもメタクラスの領分）。
+            let from_instance =
+                matches!(obj_ty, InferredType::NamedInstance(_) | InferredType::GenericInstance { .. });
+            let hook = if is_assign_target || !from_instance { None } else { self.getattr_hook_type(class_name) };
+            if let (false, Some(ty)) = (self.member_exists(class_name, attr), hook) {
+                self.annotations.set_resolved(node_id, ty.clone());
+                return ty;
+            }
             if !self.member_exists(class_name, attr) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NoSuchMember {
@@ -936,17 +1003,149 @@ impl TypeChecker {
         // ⚠⚠ **型引数で置換する**（A-2）。レジストリのフィールド型は置換前（`T`）なので、
         //    `Box[int]` から引いたまま返すと `T` が使用箇所へ漏れ、0-2/0-3 の照合が
         //    `declared 'T'` という偽陽性を出す（実測）。
-        let resolved = match &class_subst {
-            Some((class, map)) => self
-                .registry
+        let field = class_subst.as_ref().and_then(|(class, map)| {
+            // クラス側のディスクリプタは `__get__` の戻り値（インスタンスから読んでもクラスから読んでも・タスク 1-12）。
+            if let Some(d) = self.class_descriptor(class, attr) {
+                return Some(Self::subst_type_params(&d.read, map));
+            }
+            self.registry
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
                 .map(|(_, ty)| Self::subst_type_params(ty, map))
-                .unwrap_or(fallback),
-            None => fallback,
+        });
+        // メソッドを**値として**読む形（束縛メソッド・タスク 1-11）。フィールドが先（同名なら実行時もフィールド）。
+        let bound = if field.is_none() && !is_callee {
+            self.bound_method_type(object, &obj_ty, attr, class_subst.as_ref())
+        } else {
+            None
         };
+        let resolved = field.or(bound).unwrap_or(fallback);
         self.annotations.set_resolved(node_id, resolved.clone());
         resolved
+    }
+
+    /// `obj.method` を**値として**読んだときの型（束縛メソッド・python_builtins_plan.md のタスク 1-11）。
+    ///
+    /// - クラスのメソッド: 多重定義が 1 つなら `self` を除いたシグネチャの関数型（型引数は置換する）、
+    ///   多重定義・可変長ならシグネチャ未確定の関数型（`function`）
+    /// - 組み込みの値のメソッド（`xs.append`）: シグネチャ未確定の関数型。戻り値は分かるものだけ
+    /// - **受け手が不変**（パスの根が `let` / `freeze`）で、メソッドが受け手を書き換える（`mut self` /
+    ///   `MUTATING_COLLECTION_METHODS`）なら `mutates_immutable` を付ける。呼ぶと `MutatingMethodOnImmutable`
+    ///   （`c.add(1)` と同じ誤り）。束縛すること自体は誤りにしない
+    /// - クラスの値から読む `C.m` は束縛しない関数なので対象外（`None`）
+    fn bound_method_type(
+        &mut self,
+        object: &Expr,
+        obj_ty: &InferredType,
+        attr: &str,
+        class_subst: Option<&(String, std::collections::HashMap<String, InferredType>)>,
+    ) -> Option<InferredType> {
+        // ⚠ 要るときだけ引く（`path_is_mutable` は経路の `const` を見るので `&mut self`）。
+        let immutable_root = |this: &mut Self| {
+            (this.path_is_mutable(object) == Some(false))
+                .then(|| Self::path_root_ident(object).unwrap_or("").to_string())
+        };
+        let kinds = Self::builtin_method_kinds(obj_ty);
+        if !kinds.is_empty() {
+            if !kinds.iter().any(|k| super::names::is_builtin_value_method(k, attr)) {
+                return None;
+            }
+            let mutates = Self::MUTATING_COLLECTION_METHODS.contains(&attr)
+                && !matches!(obj_ty, InferredType::Str | InferredType::IteratorOf(_));
+            return Some(InferredType::Function {
+                params: None,
+                return_type: Box::new(
+                    // ⚠ 引数はまだ無い（束縛メソッドの値）。引数で型が決まるメソッド（`get` など）は分からない。
+                    Self::builtin_collection_method_return(obj_ty, attr, &[]).unwrap_or(InferredType::Unresolved),
+                ),
+                mutates_immutable: if mutates {
+                    immutable_root(self).map(|root| Box::new((attr.to_string(), root)))
+                } else {
+                    None
+                },
+            });
+        }
+        if matches!(obj_ty, InferredType::TypeValOf(_)) {
+            return None;
+        }
+        let (class, map) = class_subst?;
+        let sigs = self.collect_class_method_sigs(class).remove(attr)?;
+        if self.registry.is_static_method(class, attr) {
+            return None;
+        }
+        let skip = usize::from(sigs[0].params.first().is_some_and(|(n, _)| n == "self"));
+        let ty = match sigs.as_slice() {
+            [sig] => Self::fn_type_of_sig(sig, skip),
+            _ => None,
+        }
+        .map(|t| Self::subst_type_params(&t, map))
+        .unwrap_or(InferredType::Function {
+            params: None,
+            return_type: Box::new(InferredType::Unresolved),
+            mutates_immutable: None,
+        });
+        let mutates = Self::all_sigs_mutate_self(&sigs);
+        Some(match ty {
+            InferredType::Function { params, return_type, .. } => InferredType::Function {
+                params,
+                return_type,
+                mutates_immutable: if mutates {
+                    immutable_root(self).map(|root| Box::new((attr.to_string(), root)))
+                } else {
+                    None
+                },
+            },
+            other => other,
+        })
+    }
+
+    /// クラス側（`static mut` / `const`）に置いた**ディスクリプタ**（python_builtins_plan.md のタスク 1-12）。
+    ///
+    /// 宣言型が `__get__` を持つクラスのインスタンスなら、実行時は読むと `__get__(obj, C)` の戻り値、
+    /// インスタンス経由で代入すると `__set__(obj, v)`（`eval/attrs.rs` のディスクリプタのプロトコル）。
+    /// ⚠ インスタンスのフィールド（`mut f: D`）はディスクリプタとして働かない（CPython と同じ・実行時もクラス側だけを見る）。
+    pub(crate) fn class_descriptor(&self, class_name: &str, attr: &str) -> Option<ClassDescriptor> {
+        // 自クラスの表を先に引く（基底まで集めるのは見つからないときだけ・属性を読むたびに通るので）。
+        let (kind, ty) = match self.registry.class_field_details(class_name).and_then(|m| m.get(attr)) {
+            Some(entry) => entry.clone(),
+            None => self.collect_class_field_details(class_name).remove(attr)?,
+        };
+        if !matches!(kind, crate::ast::FieldKind::Const | crate::ast::FieldKind::StaticMut) {
+            return None;
+        }
+        let desc_class = match &ty {
+            InferredType::NamedInstance(c) => c.clone(),
+            InferredType::GenericInstance { .. } => self.registry.instance_class(&ty.to_string())?.clone(),
+            _ => return None,
+        };
+        let sigs = self.collect_class_method_sigs(&desc_class);
+        let get = sigs.get("__get__")?.first()?;
+        let set = sigs.get("__set__").and_then(|s| s.first());
+        Some(ClassDescriptor {
+            read: get.return_type.clone().unwrap_or(InferredType::Unresolved),
+            is_data: set.is_some() || sigs.contains_key("__delete__"),
+            // `__set__(self, obj, value)` の `value`。
+            write: set.map(|s| s.params.get(2).and_then(|(_, t)| t.clone()).unwrap_or(InferredType::Unresolved)),
+            declared: ty,
+        })
+    }
+
+    /// 組み込みの値のメソッドの表（`names::BUILTIN_VALUE_METHODS`）を引く種類の名前。`list_like` は
+    /// 実行時に list か fixed_list なので両方。メソッドを読めない型は空。
+    fn builtin_method_kinds(ty: &InferredType) -> &'static [&'static str] {
+        use InferredType as T;
+        match ty {
+            T::Str => &["str"],
+            T::Bytes => &["bytes"],
+            T::List | T::ListOf(_) => &["list"],
+            T::FixedList | T::FixedListOf(_) => &["fixed_list"],
+            T::ListLike | T::ListLikeOf(_) => &["list", "fixed_list"],
+            T::Dict | T::DictOf(_, _) => &["dict"],
+            T::Set | T::SetOf(_) => &["set"],
+            T::FrozenSet | T::FrozenSetOf(_) => &["frozenset"],
+            T::IteratorOf(_) => &["generator"],
+            _ => &[],
+        }
     }
 
     /// `class_name` が `member` を持つか（タスク 7.5・検体 `M1` / `M2`）。
@@ -983,6 +1182,25 @@ impl TypeChecker {
     /// ⚠ これがタスク 7.8 で設計した `member_set_is_closed`（メンバー集合が閉じているか）の
     /// 実体。**スタブが入ったときに「スタブに載っているものだけ許す」へ寄せられる形**に
     /// してある。真偽値ではなく**クラス単位の性質**として持つこと。
+    /// `__setattr__` を上書きしたクラスか（known_bugs.md の #10）。持てるのは Python のクラスだけ（Arrow のクラスでは
+    /// パーサの誤り）。基底のものも含む（変換したクラスのメソッドは祖先まで平坦化してある）。
+    pub(super) fn class_has_setattr_hook(&self, class_name: &str) -> bool {
+        self.collect_class_method_sigs(class_name).contains_key("__setattr__")
+    }
+
+    /// 読みを上書きしたクラス（`__getattribute__`・#12 / `__getattr__`・#11）なら、その戻り値の型（注釈が無ければ `Any`・
+    /// 両方あれば `__getattribute__`）。宣言していない名前をインスタンスから読む・呼ぶ形はこれが答える（known_bugs.md）。
+    /// 持てるのは Python のクラスだけ（`class_has_setattr_hook` と同じ）。
+    pub(super) fn getattr_hook_type(&self, class_name: &str) -> Option<InferredType> {
+        let sigs = self.collect_class_method_sigs(class_name);
+        let hook = sigs.get("__getattribute__").or_else(|| sigs.get("__getattr__"))?;
+        let ret = hook.first().and_then(|s| s.return_type.clone());
+        Some(match ret {
+            Some(t) if !matches!(t, InferredType::Unresolved) => t,
+            _ => InferredType::Any,
+        })
+    }
+
     pub(super) fn member_exists(&self, class_name: &str, member: &str) -> bool {
         // 0. ⚠⚠ **全インスタンス共通のメソッド**。`method_call.rs` がクラスのメソッド表を
         //    引く**前に**特別扱いしているので、どのクラスにも生えている。
@@ -1111,6 +1329,8 @@ impl TypeChecker {
             | T::DictOf(_, _)
             | T::Set
             | T::SetOf(_)
+            | T::FrozenSet
+            | T::FrozenSetOf(_)
             | T::Tuple(_)
             | T::TupleAny
             | T::IteratorOf(_) => Some(ty.to_string()),
@@ -1295,6 +1515,7 @@ impl TypeChecker {
             T::FixedList | T::FixedListOf(_) => "fixed_list",
             T::Dict | T::DictOf(_, _) => "dict",
             T::Set | T::SetOf(_) => "set",
+            T::FrozenSet | T::FrozenSetOf(_) => "frozenset",
             T::Tuple(_) => "tuple",
             _ => return None,
         })
@@ -1484,6 +1705,10 @@ impl TypeChecker {
                 guard_type: guard_type.to_string(),
                 outer_type: "set".to_string(),
             }),
+            InferredType::FrozenSetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "frozenset".to_string(),
+            }),
             InferredType::DictOf(_, _) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
                 guard_type: guard_type.to_string(),
                 outer_type: "dict".to_string(),
@@ -1492,7 +1717,7 @@ impl TypeChecker {
                 guard_type: guard_type.to_string(),
                 outer_type: "tuple".to_string(),
             }),
-            InferredType::Function { params, return_type } => {
+            InferredType::Function { params, return_type, .. } => {
                 let has_params = params.as_ref().is_some_and(|p| !p.is_empty());
                 let has_ret = **return_type != InferredType::Any;
                 if has_params || has_ret {

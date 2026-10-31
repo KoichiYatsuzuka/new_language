@@ -1,0 +1,23 @@
+# print_keywords.ar — print の sep= / end= / flush=（python_builtins_plan.md のタスク 5-1）
+#
+# 対になる誤りの例: print_keywords_error.ar
+#
+# CPython と同じ: sep は値の間（既定は空白 1 つ）、end は最後（既定は改行）。どちらも None なら既定。
+# flush=True は標準出力をその場で流す。
+# ⚠ 以前はキーワード引数を受ける口が無く、print(x, end="") を含む関数・文が
+#   VmForceError（バイトコードにできない）で止まっていた。
+# ⚠ file= は None だけ（標準出力の外へ書く手段が無い）。
+
+print("a", "b", "c", sep=", ")                  # a, b, c
+print("no newline", end="")
+print(" <- same line")                          # no newline <- same line
+print(1, 2, sep="", end="!\n")                  # 12!
+print("x", sep=None, end=None)                  # x
+
+fn row(let xs: list[int]) -> None:
+    for x in xs:
+        print(x, end=" ")
+    print()
+
+row([1, 2, 3])                                  # 1 2 3（末尾に空白）
+print("flushed", flush=True)                    # flushed

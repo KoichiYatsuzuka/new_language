@@ -1,0 +1,47 @@
+# py_key_error_args.ar — 実行時の KeyError の `args` はキーそのもの（known_bugs.md の #9）
+#
+# `d[k]` / `del d[k]` / `d.pop(k)` / `s.remove(x)` / `"{k}".format()` が投げる KeyError は、CPython と同じく
+# `args == (k,)`（`e.args[0] is k`）、`repr(e)` は `KeyError('zz')`。空の `d.popitem()` / `s.pop()` は文言の文字列が引数。
+# `str(e)` はどれもキーの `repr`（以前と同じ）。Arrow のコードの誤りも同じ。
+#
+# m.run() は CPython 3.12 と同じ出力:
+#   1 read: KeyError('zz') ('zz',) 'zz'
+#   1 int key: KeyError(7) (7,) 7
+#   1 tuple key: KeyError((3, 4)) ((3, 4),) (3, 4)
+#   2 del: KeyError('gone') ('gone',) 'gone'
+#   3 pop: KeyError('nope') ('nope',) 'nope'
+#   4 remove: KeyError(9) (9,) 9
+#   5 format: KeyError('name') ('name',) 'name'
+#   6 popitem: KeyError('popitem(): dictionary is empty') ('popitem(): dictionary is empty',) 'popitem(): dictionary is empty'
+#   6 set pop: KeyError('pop from an empty set') ('pop from an empty set',) 'pop from an empty set'
+#   7 identity: True KeyError(K())
+#   8 reraise: ('again',)
+#   9 nested: ('deep',)
+#   10 quote: KeyError("it's") ("it's",) "it's"
+#
+# ⚠ 以前は `args` が文言（キーの `repr`）だった: `KeyError("'zz'")` / `("'zz'",)`・`KeyError('7')`。
+#   誤りは文字列で運ばれ、例外にする所ではキーの値が分からなかった。今は送出の場が値を控える（`error_with_args`）。
+
+import[py] test_modules.py_key_error_args as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のコードの KeyError も同じ（その場で捕まえる・関数の境界を越える）
+let d: dict[str, int] = {"a": 1}
+try:
+    print(d["zz"])
+except KeyError as e:
+    check(repr(e) == "KeyError('zz')" and str(e) == "'zz'", "KeyError from Arrow code carries the key")
+
+fn lookup(let t: dict[str, int], let k: str) -> int:
+    return t[k]
+
+try:
+    print(lookup(d, "missing"))
+except KeyError as e:
+    check(repr(e) == "KeyError('missing')", "KeyError across a function boundary")
+print("arrow side ok")

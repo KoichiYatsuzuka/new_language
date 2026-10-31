@@ -302,3 +302,132 @@ fn test_tuple_multiline() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// list 同士・tuple 同士の大小比較（python_builtins_plan.md のタスク 1-3）
+// ---------------------------------------------------------------------------
+
+/// CPython の `list_richcompare` / `tuplerichcompare` と同じ結果か（最初に違う要素で決まり、無ければ長さ）。
+#[test]
+fn test_seq_ordering_follows_cpython() {
+    let src = concat!(
+        "let a = [1, 2] < [1, 3]\n",
+        "let b = (1, 2) < (1, 2, 0)\n",
+        "let c = (2, 1) > (1, 9)\n",
+        "let d = [[1, 2], [3]] < [[1, 2], [4]]\n",
+        "let e = (1, 2) <= (1, 2)\n",
+        "let f = [1.5, 2] >= [1.5]\n",
+        "fn lt(x: tuple[int, str], y: tuple[int, str]) -> bool:\n",
+        "    return x < y\n",
+        "let g = lt((1, \"b\"), (1, \"a\"))\n",
+    );
+    for (var, want) in [("a", true), ("b", true), ("c", true), ("d", true), ("e", true), ("f", true), ("g", false)] {
+        assert!(matches!(run_get(src, var), Value::Bool(b) if b == want), "{var}");
+    }
+}
+
+/// 比べられない要素に届いたときだけ `TypeError`（届かなければ決まる）。list と tuple は比べない。
+/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
+#[cfg(feature = "native")]
+#[test]
+fn test_seq_ordering_type_errors() {
+    use crate::ast::Stmt;
+    // 静的検査を通らない形なので、Python から変換した関数（引数の型が無い）で確かめる。
+    let py = "def lt(a, b):\n    return a < b\n";
+    let body = crate::python_converter::convert_python_source(py, "cmp.py").expect("convert");
+    let run = |main: &str| -> Result<Interpreter, String> {
+        let mut stmts = vec![Stmt::Import {
+            lang: "py".to_string(),
+            module: vec!["cmp".to_string()],
+            source_module: None,
+            alias: Some("c".to_string()),
+            body: body.clone(),
+            origin: crate::ast::ImportOrigin::default(),
+            bind: Some(crate::ast::ImportBind { name: "c".to_string(), module: vec!["cmp".to_string()] }),
+        }];
+        stmts.extend(Parser::new(Lexer::new(main, "").tokenize(), None).parse_program()?);
+        let (_e, _w, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        let mut interp = Interpreter::new();
+        interp.wire_resolution(
+            annotations,
+            crate::interpreter::resolver::toplevel_declared_globals(&stmts),
+            crate::interpreter::GlobalsMode::Replace,
+        );
+        for st in &stmts {
+            if let Err(e) = interp.exec(st) {
+                return Err(match interp.take_current_exception() {
+                    Some(r) if e == crate::interpreter::RAISE_SENTINEL => Interpreter::format_error_report(&r),
+                    _ => e,
+                });
+            }
+        }
+        Ok(interp)
+    };
+    let i = run("let ok = c.lt((1, \"a\"), (2, 3))\n").expect("decided at the first element");
+    assert!(matches!(i.get_val("ok"), Some(Value::Bool(true))));
+    let e = run("let bad = c.lt((1, \"a\"), (1, 3))\n").err().expect("str vs int");
+    assert!(e.contains("TypeError"), "{e}");
+    let e = run("let bad = c.lt([1], (1,))\n").err().expect("list vs tuple");
+    assert!(e.contains("TypeError"), "{e}");
+}
+
+// ---------------------------------------------------------------------------
+// 辞書・ジェネレータの `__iter__`（python_builtins_plan.md のタスク 1-4）
+// ---------------------------------------------------------------------------
+
+/// `d.__iter__()` はキーを挿入順に返し、`g.__iter__()` は同じジェネレータを返す（CPython の `iter(g) is g`）。
+#[test]
+fn test_dict_and_generator_dunder_iter() {
+    let src = concat!(
+        "let d: dict[str, int] = {\"b\": 1, \"a\": 2}\n",
+        "mut it = d.__iter__()\n",
+        "let k1 = it.next()\n",
+        "let k2 = it.next()\n",
+        "gen nums() -> int:\n",
+        "    yield 1\n",
+        "    yield 2\n",
+        "mut g = nums()\n",
+        "mut same = g.__iter__()\n",
+        "let first = same.next()\n",
+        "let second = g.next()\n",
+    );
+    assert_str(run_get(src, "k1"), "b");
+    assert_str(run_get(src, "k2"), "a");
+    assert!(matches!(run_get(src, "first"), Value::Int(1)));
+    // 写しではないので、`same` で 1 つ進めると `g` の次は 2。
+    assert!(matches!(run_get(src, "second"), Value::Int(2)));
+}
+
+// ---------------------------------------------------------------------------
+// dict(...)（python_builtins_plan.md のタスク 3-1）
+// ---------------------------------------------------------------------------
+
+/// CPython の dict の作り方（空・写し・組の列・キーワード引数）。
+#[test]
+fn test_dict_constructor_follows_cpython() {
+    let src = concat!(
+        "let pairs: list[tuple[str, int]] = [(\"a\", 1), (\"b\", 2), (\"a\", 3)]\n",
+        "let a = str(dict())\n",
+        "let b = str(dict(pairs))\n",
+        "let c = str(dict(pairs, b=20, c=30))\n",
+        "mut src: dict[str, int] = {\"k\": 1}\n",
+        "let cp = dict(src)\n",
+        "src[\"k\"] = 99\n",
+        "let d = str(cp)\n",
+    );
+    assert_str(run_get(src, "a"), "{}");
+    assert_str(run_get(src, "b"), "{'a': 3, 'b': 2}");
+    assert_str(run_get(src, "c"), "{'a': 3, 'b': 20, 'c': 30}");
+    assert_str(run_get(src, "d"), "{'k': 1}");
+    assert!(run_err_msg("let r: list[list[int]] = [[1, 2], [3]]\nlet z = dict(r)\n")
+        .contains("dictionary update sequence element #1 has length 1; 2 is required"));
+}
+
+/// Python の辞書内包は `dict([(k, v) for ...])` に変換される（以前は変換の誤り）。
+/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
+#[cfg(feature = "native")]
+#[test]
+fn test_python_dict_comprehension_converts() {
+    let body = crate::python_converter::convert_python_source("def f(ks):\n    return {k: k * 2 for k in ks}\n", "dc.py")
+        .expect("dict comprehension converts");
+    assert!(!body.is_empty());
+}

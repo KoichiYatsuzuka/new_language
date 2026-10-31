@@ -1,0 +1,51 @@
+# py_setattr.ar — Python のクラスの `__setattr__` / `__delattr__`（known_bugs.md の #10）
+#
+# 属性の操作の上書きは Python の読み込み（`import[py]`）でだけ使える。Python のクラスが定義した `__setattr__` は
+# `o.x = v`・`setattr(o, "x", v)`・`o.x += v`・`__init__` の中の `self.x = ..`・Arrow からの代入のどれでもまず呼ばれ、
+# 基底のものも受け継ぐ。上書きを飛ばして本当に入れるのは `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)`
+# （変換器が内部の `__py_object_setattr` にする）。`__delattr__` / `object.__delattr__` も同じ。
+# ⚠ Arrow のクラスは `__setattr__` / `__delattr__` を定義できない（`classes/setattr_hook_error.ar`）。
+#
+# m.run() / m.errors() は CPython 3.12 と同じ出力:
+#   1 log: ['x=1', 'x=2', 'x=3', 'x=7'] 7
+#   2 frozen: 5
+#   2 bypass: 6
+#   3 swallow: False
+#   4 derived: ['n', 'n', 'n'] 2
+#   4 upper: ['n', 'n'] HI
+#   4 child: 10
+#   5 property: ['_c', 'celsius', '_c'] 30
+#   6 cached: 8 8 True
+#   7 delattr: ['x', 'y'] False False
+#   E frozen_set: AttributeError Frozen is read-only: v
+#   E frozen_setattr: AttributeError Frozen is read-only: v
+#   E frozen_del: AttributeError Frozen cannot delete: v
+#   E bad_name: TypeError attribute name must be string, not 'int'
+#
+# ⚠ 以前は上書きが黙って呼ばれず（`self.x = 1` がそのままフィールドへ入った）、`object.__setattr__` は実行時の誤りだった。
+
+import[py] test_modules.py_setattr as m
+
+m.run()
+m.errors()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から代入しても Python のクラスの `__setattr__` を通る
+mut lg = m.Logged()
+lg.x = 10
+check(repr(lg.log) == "['x=1', 'x=10']", "assignment from Arrow goes through __setattr__")
+# 宣言していない名前も書ける（上書きが受ける。ここでは何も入れない）
+mut sw = m.Swallow()
+sw.anything = 5
+check(not hasattr(sw, "anything"), "__setattr__ receives undeclared names")
+# 上書きが拒めば Arrow の側でも誤り
+mut fz = m.Frozen(1)
+try:
+    fz.v = 2
+    check(False, "Frozen accepted an assignment")
+except AttributeError as e:
+    check(str(e) == "Frozen is read-only: v", "Frozen rejects")
+print("arrow side ok")

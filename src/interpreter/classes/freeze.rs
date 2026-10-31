@@ -138,6 +138,40 @@ impl Interpreter {
         }
     }
 
+    /// 値を**その場で**不変にする（`let` / `freeze` の束縛 [`Self::bind_copy`] の `CopyFreeze` が複製のあとで呼ぶ）。
+    ///
+    /// - インスタンス: `__freeze__` を呼び、フィールドをすべて不変にする
+    /// - list / set / dict の値 / tuple: 中のインスタンスに同じことをする（1 段）
+    /// - fixed_list: 使っていない確保分を切り詰める（`allocated_size()` が `len` になる）
+    pub(crate) fn freeze_value_in_place(&mut self, val: &Value) -> Result<(), String> {
+        match val {
+            Value::Instance(_) => self.apply_freeze_to_value(val, true),
+            Value::List(rc) => {
+                let items = rc.borrow().clone();
+                items.iter().try_for_each(|item| self.apply_freeze_to_value(item, true))
+            }
+            Value::Set(rc) => {
+                let items = rc.borrow().clone();
+                items.iter().try_for_each(|item| self.apply_freeze_to_value(item, true))
+            }
+            Value::Dict(rc) => {
+                let vals = rc.borrow().all_items();
+                vals.iter().try_for_each(|v| self.apply_freeze_to_value(v, true))
+            }
+            Value::Tuple(td) => td.all_values().iter().try_for_each(|item| self.apply_freeze_to_value(item, true)),
+            Value::FrozenSet(items) => items.iter().try_for_each(|item| self.apply_freeze_to_value(item, true)),
+            Value::FrozenList { state, layout } => {
+                let mut st = state.borrow_mut();
+                let exact = st.len * layout.stride;
+                st.data.truncate(exact);
+                st.data.shrink_to_fit();
+                st.allocated_size = st.len;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// フリーズプロトコル。
     ///
     /// `freeze_fields=true` のとき: `__freeze__` フックを呼び出し、インスタンスのフィールドを不変化する。

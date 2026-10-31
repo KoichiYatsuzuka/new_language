@@ -1,0 +1,67 @@
+# str_falls_back_to_repr.ar — `print` / `str` はコンテナの要素とインスタンスで `__repr__` を呼ぶ（タスク 1-15）
+#
+# CPython と同じ規則:
+#   - `str(x)` は `__str__` を呼び、無ければ `repr(x)`（`__repr__`）
+#   - コンテナ（list / tuple / dict / set / frozenset）の `str` は要素を `repr` で並べる
+#     （要素が `__str__` だけを持っていても使わない）
+#   - f-string（`f"{x}"`）と例外の文言（`str(ValueError(x))`）も同じ
+# ⚠ 以前は `print([t])` / `str([t])` が `[<T object at 0x..>]` と出ていた（`repr([t])` だけが `__repr__` を呼んだ）。
+
+class Temp:
+    mut deg: int
+    fn __init__(mut self, let deg: int) -> None:
+        self.deg = deg
+    fn __repr__(self) -> str:
+        return f"Temp({self.deg})"
+
+class Label:
+    mut text: str
+    fn __init__(mut self, let text: str) -> None:
+        self.text = text
+    fn __str__(self) -> str:
+        return f"<{self.text}>"
+    fn __repr__(self) -> str:
+        return "Label(" + repr(self.text) + ")"
+
+new_type Meters: int
+
+fn check(let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError(f"got {got}, want {want}")
+    print(got)
+
+let t = Temp(15)
+let lb = Label("hi")
+
+# インスタンス: `__str__` が無ければ `__repr__`
+check(str(t), "Temp(15)")
+check(f"{t}", "Temp(15)")
+# `__str__` があればそちら（`repr` は `__repr__`）
+check(str(lb), "<hi>")
+check(repr(lb), "Label('hi')")
+
+# コンテナの要素は `repr`（`__str__` があっても使わない）
+check(str([t, lb]), "[Temp(15), Label('hi')]")
+check(f"{[t]}", "[Temp(15)]")
+check(str((t, 1)), "(Temp(15), 1)")
+check(str((t,)), "(Temp(15),)")
+check(str({"k": t}), "{'k': Temp(15)}")
+check(str({t}), "{Temp(15)}")
+check(str(frozenset([t])), "frozenset({Temp(15)})")
+check(str([[t], ("a", t)]), "[[Temp(15)], ('a', Temp(15))]")
+
+# new_type の値も `repr` と同じ形
+let m = Meters(5)
+check(str(m), repr(m))
+check(str([m]), "[Meters(5)]")
+
+# 例外の文言（1 引数なら `str`）
+try:
+    raise ValueError([t])
+except ValueError as e:
+    check(str(e), "[Temp(15)]")
+
+# print も同じ
+print(t)
+print([t, lb])
+print({"k": (t, lb)})

@@ -744,3 +744,52 @@ fn test_ar_to_py_tuple() {
     }
 }
 
+
+
+/// 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
+#[test]
+fn test_function_name_qualname_and_doc() {
+    let src = concat!(
+        "fn area(let w: int) -> int:\n",
+        "    \"Area.\"\n",
+        "    return w\n",
+        "fn outer() -> str:\n",
+        "    fn inner() -> int:\n",
+        "        return 1\n",
+        "    return inner.__qualname__\n",
+        "class Box:\n",
+        "    fn get(self) -> int:\n",
+        "        return 1\n",
+        "let n = area.__name__\n",
+        "let d = area.__doc__\n",
+        "let q = outer()\n",
+        "let m = Box.get.__qualname__\n",
+        "let bm = Box().get.__qualname__\n",
+        "let nd = outer.__doc__\n",
+    );
+    let interp = run_interp(src);
+    let s = |name: &str| match interp.get_val(name) {
+        Some(Value::Str(s)) => s.to_string(),
+        other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(s("n"), "area");
+    assert_eq!(s("d"), "Area.");
+    assert_eq!(s("q"), "outer.<locals>.inner");
+    assert_eq!(s("m"), "Box.get");
+    assert_eq!(s("bm"), "Box.get");
+    assert!(matches!(interp.get_val("nd"), Some(Value::None)));
+}
+
+/// 変換器が付ける property のメソッドの別名と、それを元の名前へ戻す規則（タスク 1-14）。
+#[test]
+fn test_python_fn_name_undoes_converter_names() {
+    use crate::interpreter::{property_method_name, python_fn_name};
+    assert_eq!(property_method_name("get", "x", 1), "__property_get_x");
+    assert_eq!(property_method_name("set", "x", 2), "__property_set2_x");
+    for (tag, name, n) in [("get", "x", 1), ("set", "x_2", 1), ("del", "value", 3), ("set", "a_b", 12)] {
+        assert_eq!(python_fn_name(&property_method_name(tag, name, n)), name);
+    }
+    assert_eq!(python_fn_name("__py_lambda_7"), "<lambda>");
+    assert_eq!(python_fn_name("__py_lambda_"), "__py_lambda_");
+    assert_eq!(python_fn_name("area"), "area");
+}

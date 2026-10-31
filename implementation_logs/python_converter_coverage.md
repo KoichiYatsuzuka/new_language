@@ -698,9 +698,12 @@ Arrow に「値を書式付きで文字列化する」構文・組込が無い�
 f-string を多用する実在モジュールを読むうえで、これが現状いちばん効く制約。
 
 **例題**: [`examples/interop/py_fstring.ar`](../examples/interop/py_fstring.ar) +
-[`test_modules/py_fstring.py`](../examples/interop/test_modules/py_fstring.py) /
-[`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
-（書式指定・`!a` の 2 種）。
+[`test_modules/py_fstring.py`](../examples/interop/test_modules/py_fstring.py)。
+
+**✅ 追記（2026-10-12・python_builtins_plan.md のタスク 3-4）**: 書式指定と `!a` も対応した。`{x:spec}` は組み込みの
+`format(x, spec)`（書式指定の小言語を CPython と同じに実装）、`!a` は `ascii()`、書式のない `{x}` は `format(x)`
+（`__format__` を持つクラスはそれが呼ばれる）へ写す。上の「未対応」は解消。変換の誤りにする形が無くなったので
+`py_fstring_error.ar` は削除した。通る形は [`examples/interop/py_format.ar`](../examples/interop/py_format.ar)。
 
 ### [x] 20. デコレータ `@decorator`【実装済 2026-08-27】
 

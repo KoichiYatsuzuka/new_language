@@ -1,0 +1,9 @@
+# py_super_two_args_error.ar — 定義中でないクラスを `super` に渡す（python_builtins_plan.md のタスク 6-2）
+#
+# 変換器が受けるのは `super(C, self).m(..)` の `C` が定義中のクラスのときだけ（`super().m(..)` と同じ）。
+# MRO の途中から探す形（`Leaf` の中の `super(Middle, self)`）は変換の誤りにする（黙って違う基底を呼ばない）。
+# 期待: ParseError（`super(Middle, ...)` is only supported when `Middle` is the class being defined (here 'Leaf')）
+
+import[py] test_modules.py_super_two_args_error as m
+
+print(m.Leaf().name())

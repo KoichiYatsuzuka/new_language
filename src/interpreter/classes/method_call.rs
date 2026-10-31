@@ -38,6 +38,17 @@ impl Interpreter {
                 ))
             }
         };
+        // 明示の呼び出し `o.m(..)` は、Python のクラスが `__getattribute__` を上書きしていれば、それで読んでから呼ぶ
+        // （CPython と同じ・特殊メソッドを明示して呼ぶ `o.__len__()` も・known_bugs.md の #12）。
+        // ⚠ 明示の呼び出しかどうかは `cache` で見分ける: ソースの `o.m(..)`（VM の `CallMethod*`・ツリーウォークの
+        //   `eval_method_call`）は必ずメソッドのキャッシュを渡し、インタープリタが内部で呼ぶ特殊メソッド（`str(o)` の
+        //   `__str__`・演算子・`for` の `__iter__` / `__next__`）は `None` を渡す（`eval_method_call` の doc）。内部の
+        //   呼び出しは CPython も型から直接引き、`__getattribute__` を通らない。
+        // ⚠ このクラスにはメソッドのキャッシュを張らない（下の充填より前に返る）ので、毎回ここを通る。
+        if cache.is_some() && Self::py_attr_hook(&inst_rc.borrow().class, "__getattribute__") {
+            let callee = self.get_attr_val(obj, method_name, None)?;
+            return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
+        }
         if method_name == "copy" {
             if !evaled.is_empty() {
                 return Err(format!(
@@ -106,9 +117,30 @@ impl Interpreter {
             if let Some(v) = Self::class_var_class(&class, method_name) {
                 return self.call_value_evaled(v, evaled, method_name, None, 0);
             }
+            // 属性に入れた呼べる値（`self.f(x)`・Python の `self.callback(x)`・python_builtins_plan.md のタスク 1-11）。
+            // CPython と同じく**属性を読んで、その値を呼ぶ**（読みはアクセス制御も含めて `get_attr_val`）。
+            // ⚠ 以前は `has no method 'f'` だった（メソッドの表しか見ていなかった）。
+            // Python のクラスの `__getattr__` が答える名前も読んで呼ぶ（`d.dyn(..)`・known_bugs.md の #11）。
+            if class.field_index.contains_key(method_name)
+                || class.class_vars.contains_key(method_name)
+                || class.static_vars.contains_key(method_name)
+                || Self::py_attr_hook(&class, "__getattr__")
+            {
+                let callee = self.get_attr_val(obj.clone(), method_name, None)?;
+                return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
+            }
             return Err(format!("AttributeError: '{}' has no method '{method_name}'", class.name));
         };
         let n_overloads = overloads.len();
+        // Python のクラスの静的メソッド・クラスメソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
+        // クラス経由の呼び出し（`eval_class_method`）へ回す: 静的メソッドは `self` を渡さず、クラスメソッドは `cls` に
+        // インスタンスのクラス（`type(self)`・派生のインスタンスなら派生）を渡す。
+        // ⚠ Arrow のクラスは今までどおりクラス経由だけ（下の誤り・型検査の `StaticMethodOnInstance`）。
+        if class.is_python
+            && (class.static_method_names.contains(method_name) || class.class_method_names.contains(method_name))
+        {
+            return self.eval_class_method(class.clone(), method_name, evaled);
+        }
         if class.static_method_names.contains(method_name) {
             return Err(format!(
                 "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
@@ -240,8 +272,31 @@ impl Interpreter {
                         //    `deep_copy_value` を呼ぶと、`a.append(a)` のように自分自身を
                         //    渡された瞬間に `RefCell already mutably borrowed` でパニックする
                         //    （set の `add` で踏んだのと同型）。
-                        let copied = Self::deep_copy_value(item);
+                        let copied = self.copy_for_store(item);
                         items.borrow_mut().push(copied);
+                        return Ok(Value::None);
+                    }
+                    // `xs.sort(key=None, reverse=False)`（python_builtins_plan.md のタスク 3-2）。
+                    // 並べ方は `sorted` と同じ実装（`py_sort_values`・安定）。キーワード引数だけを受ける（CPython と同じ）。
+                    // ⚠ 並べ替えの途中で比較が失敗したら、リストは元のまま（並べ終えてから書き戻す）。
+                    "sort" => {
+                        let mut key = None;
+                        let mut reverse = false;
+                        for (k, v, _) in evaled {
+                            match k.as_deref() {
+                                Some("key") => key = Some(v).filter(|f| !matches!(f, Value::None)),
+                                Some("reverse") => reverse = self.eval_truthy(&v)?,
+                                Some(other) => {
+                                    return Err(format!(
+                                        "TypeError: '{other}' is an invalid keyword argument for sort()"
+                                    ))
+                                }
+                                None => return Err("TypeError: sort() takes no positional arguments".to_string()),
+                            }
+                        }
+                        let current = items.borrow().clone();
+                        let sorted = self.py_sort_values(current, key, reverse)?;
+                        *items.borrow_mut() = sorted;
                         return Ok(Value::None);
                     }
                     "pop" => {
@@ -328,49 +383,9 @@ impl Interpreter {
                 self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None, true)
             }
             Value::Class(cls) => self.eval_class_method(cls.clone(), method_name, evaled),
-            Value::Dict(d) => {
-                match method_name {
-                    // `d.key()` / `d.keys()` — キーのリストを返す
-                    "key" | "keys" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
-                    }
-                    // `d.item()` / `d.values()` — 値のリストを返す
-                    "item" | "values" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
-                    }
-                    // `d.items()` — `(キー, 値)` タプルのリストを返す。
-                    //
-                    // ⚠ 多ターゲット `for`（`for k, v in d.items():`）で分解して使う形が主目的。
-                    //   タプルは `zip` / `enumerate` と**同じ作り方**にする（型名リストを
-                    //   `type_name` で埋める）。ここがずれると分解の挙動が揃わない。
-                    // ⚠ CPython のビューと違い**スナップショット**。走査中に元の辞書を
-                    //   変更してもこの列は変わらない（CPython は `RuntimeError` になる形）。
-                    "items" => {
-                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
-                        let pairs = d.borrow().all_pairs();
-                        let tuples: Vec<Value> = pairs
-                            .into_iter()
-                            .map(|(k, v)| {
-                                let types = vec![
-                                    self.type_name(&k).to_string(),
-                                    self.type_name(&v).to_string(),
-                                ];
-                                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                                    vec![k, v],
-                                    types,
-                                )))
-                            })
-                            .collect();
-                        Ok(Value::List(Rc::new(RefCell::new(tuples))))
-                    }
-                    _ => Err(format!(
-                        "AttributeError: 'dict' object has no method '{method_name}'"
-                    )),
-                }
-            }
+            Value::Dict(d) => self.eval_dict_method(d.clone(), method_name, evaled),
             Value::Set(s) => self.eval_set_method(s.clone(), method_name, evaled),
+            Value::FrozenSet(s) => self.eval_frozenset_method(s.clone(), method_name, evaled),
             Value::Generator(state) => {
                 // `close()`: 中断点へ `GeneratorExit` を投げ込み `finally` を走らせる（B13 段階 D）。
                 if method_name == "close" {
@@ -378,6 +393,12 @@ impl Interpreter {
                     let st = state.clone();
                     self.gen_close(&st)?;
                     return Ok(Value::None);
+                }
+                // `g.__iter__()` — ジェネレータは自分自身を返す（タスク 1-4・CPython の `PyObject_SelfIter`）。
+                // ⚠ 写しを作らない。返した値で進めると元のジェネレータも進む（`iter(g) is g`）。
+                if method_name == "__iter__" {
+                    Self::expect_no_args_evaled(&evaled, "Generator", "__iter__")?;
+                    return Ok(obj.clone());
                 }
                 if method_name != "next" {
                     return Err(format!(

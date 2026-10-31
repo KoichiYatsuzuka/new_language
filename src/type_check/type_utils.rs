@@ -182,6 +182,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             // `generator[Pr]` の要素も構造的に比べる（10-7 で注釈に書けるようにした）。
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
@@ -210,6 +211,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
@@ -217,7 +219,8 @@ impl TypeChecker {
             T::Union(ts) => T::Union(ts.iter().map(|t| self.canon_type(t)).collect()),
             T::Intersection(ts) => T::Intersection(ts.iter().map(|t| self.canon_type(t)).collect()),
             T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.canon_type(t)).collect()),
-            T::Function { params, return_type } => T::Function {
+            T::Function { params, return_type, mutates_immutable } => T::Function {
+                mutates_immutable: mutates_immutable.clone(),
                 params: params.as_ref().map(|ps| {
                     ps.iter()
                         .map(|p| super::types::FnTypeParam { ty: self.canon_type(&p.ty), ..p.clone() })
@@ -471,8 +474,8 @@ impl TypeChecker {
         // ⚠ **引数は反変・戻り値は共変**（D-13）。引数を共変にすると
         //    `let f: function[Any]->int = narrow`（narrow は int を受ける）が通り、
         //    `f("s")` で int 宣言の引数へ str が渡る（不健全）。
-        if let InferredType::Function { params: e_params, return_type: e_ret } = expected {
-            if let InferredType::Function { params: a_params, return_type: a_ret } = arg_ty {
+        if let InferredType::Function { params: e_params, return_type: e_ret, .. } = expected {
+            if let InferredType::Function { params: a_params, return_type: a_ret, .. } = arg_ty {
                 // 戻り値は共変（`Any` が期待なら何でも通る）
                 if !self.type_matches_exact(a_ret, e_ret) {
                     return false;
@@ -537,6 +540,9 @@ impl TypeChecker {
             (InferredType::Tuple(_), InferredType::TupleAny) => return true,
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches_exact(a, e),
+            // frozenset も同じ規則（タスク 3-1）。set と frozenset は互いに代入できない（別の型）。
+            (InferredType::FrozenSetOf(_), InferredType::FrozenSet) => return true,
+            (InferredType::FrozenSetOf(a), InferredType::FrozenSetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
                 return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
@@ -588,6 +594,14 @@ impl TypeChecker {
             // Check class/trait inheritance: Duck(Flyable, Swimmable) satisfies Flyable
             if let InferredType::NamedInstance(_) = expected {
                 if self.class_implements_trait(class_name, &expected_name) {
+                    return true;
+                }
+                // ⚠ import 先を読めていない環境（エディタ・`registry_incomplete`）では、レジストリに無いクラスの
+                //   基底が分からないので「合わない」と言えない（`import[py]` の `z.Dog` を `z.Animal` の仮引数へ
+                //   渡す形で、エディタだけが偽の誤りを出した・`compare_wasm_frontend` で実測）。誤りを作らない側へ倒す。
+                if self.registry_incomplete
+                    && (!self.type_name_exists(class_name) || !self.type_name_exists(&expected_name))
+                {
                     return true;
                 }
             }
@@ -687,13 +701,21 @@ impl TypeChecker {
     ///   （`let e: Exception = ValueError("x")` / `fn f(let e: Exception)` に `MyErr(..)` を渡す）。
     ///   ⚠ レジストリの基底の表には足さない（`Error` → `Exception` → `Error` の循環になり、基底を
     ///   たどる他の walker が止まらなくなる）。
+    /// ⚠ 組み込みの例外は CPython の階層を基底に持つ（タスク 4-1）。`BaseException` を祖先に持つクラスは
+    ///   基底の表だけで答える（`GeneratorExit` は `Exception` の派生でない・実行時の `ClassValue::is_a` と同じ）。
     pub(super) fn class_implements_trait(&self, class_name: &str, trait_name: &str) -> bool {
-        if trait_name == "Exception"
-            && class_name != "Exception"
-            && self.class_implements_trait(class_name, "Error")
-        {
+        if self.bases_reach(class_name, trait_name) {
             return true;
         }
+        matches!(trait_name, "Exception" | "BaseException")
+            && class_name != "BaseException"
+            && !self.bases_reach(class_name, "BaseException")
+            && self.bases_reach(class_name, "Error")
+    }
+
+    /// 基底の表を推移的にたどって `target` に届くか。
+    fn bases_reach(&self, class_name: &str, target: &str) -> bool {
+        let trait_name = target;
         let mut stack = vec![class_name.to_string()];
         let mut seen = HashSet::new();
         while let Some(cur) = stack.pop() {

@@ -144,3 +144,25 @@ use super::*;
             "    print(v)\n",
         )));
     }
+
+    // --- `__iter__` の結果の型（python_builtins_plan.md のタスク 1-4）---
+
+    /// 辞書はキー、list は要素、ジェネレータは自分自身の `generator[T]`。
+    #[test]
+    fn dunder_iter_types_ok() {
+        assert!(ok(concat!(
+            "let d: dict[str, int] = {\"a\": 1}\n",
+            "let k: generator[str] = d.__iter__()\n",
+            "let xs: list[int] = [1]\n",
+            "let e: generator[int] = xs.__iter__()\n",
+            "gen nums() -> int:\n",
+            "    yield 1\n",
+            "let g: generator[int] = nums().__iter__()\n",
+        )));
+    }
+
+    /// 要素の型が違えば誤り（以前は `__iter__` の結果に型が無く素通りしていた）。
+    #[test]
+    fn dunder_iter_types_err() {
+        assert!(err("let d: dict[str, int] = {\"a\": 1}\nlet k: generator[int] = d.__iter__()\n"));
+    }

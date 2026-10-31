@@ -434,6 +434,44 @@ fn unpack_assign(
     Ok(out)
 }
 
+/// `del` の 1 つのターゲットを文にする（`py::Stmt::Delete` の腕を参照）。
+fn convert_del_target(target: &py::Expr, filename: &str, out: &mut Vec<Stmt>) -> Result<(), String> {
+    let call = |name: &str, args: Vec<Expr>| {
+        Stmt::Expr(Expr::Call {
+            func: Box::new(ident_expr(name)),
+            args: args.into_iter().map(crate::ast::CallArg::Positional).collect(),
+            span: crate::token::Span::unknown(),
+            cache: Default::default(),
+            node_id: 0,
+        })
+    };
+    match target {
+        py::Expr::Name(n) => {
+            eprintln!(
+                "Warning: {filename}: `del {}` is ignored \
+                 (Arrow drops bindings at scope exit)",
+                n.id.as_str()
+            );
+        }
+        py::Expr::Subscript(s) => {
+            let obj = convert_expr(&s.value, filename)?;
+            let key = convert_expr(&s.slice, filename)?;
+            out.push(call("__py_delitem", vec![obj, key]));
+        }
+        py::Expr::Attribute(a) => {
+            let obj = convert_expr(&a.value, filename)?;
+            out.push(call("__py_delattr", vec![obj, Expr::Str(std::rc::Rc::from(a.attr.as_str()))]));
+        }
+        py::Expr::Tuple(py::ExprTuple { elts, .. }) | py::Expr::List(py::ExprList { elts, .. }) => {
+            for elt in elts {
+                convert_del_target(elt, filename, out)?;
+            }
+        }
+        _ => return Err(format!("{filename}: unsupported `del` target")),
+    }
+    Ok(())
+}
+
 /// `for ... else:` / `while ... else:` の明示エラー文言（2 箇所で同じものを出す）。
 ///
 /// ⚠ Python のループ `else` は「**`break` せずに回り切ったときだけ**走る」節。
@@ -694,6 +732,8 @@ pub(crate) fn convert_stmt(
                 // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
                 let _rename_guard = ParamRenameGuard::push(renames, &param_names);
                 let _body_guard = FnBodyGuard::enter();
+                // 入れ子の関数の `super()` の受け手はその関数の最初の仮引数（CPython と同じ・known_bugs.md の #6）。
+                let _receiver_guard = crate::python_converter::supers::SuperReceiverGuard::push(&f.args, false);
                 convert_scope(&f.body, filename, &param_names)?
             };
             // ★ 本体に文としての `yield` があればジェネレータ（項目 9）。
@@ -977,6 +1017,8 @@ pub(crate) fn convert_stmt(
         // ----- with（`__exit__` を持たない場合のみ block 脱糖・項目 25） -----
         py::Stmt::With(w) => {
             let mut inner: Vec<Stmt> = Vec::new();
+            // 束縛した名前（`as x` / 一時変数）。抜けるときに逆の順で `__py_with_exit` へ渡す。
+            let mut bound: Vec<String> = Vec::new();
             for item in &w.items {
                 // ⚠ 同じモジュールで `__enter__` / `__exit__` を定義しているクラスの
                 //   生成なら脱糖できない（上の doc を参照）。
@@ -1000,12 +1042,15 @@ pub(crate) fn convert_stmt(
                                 "{filename}: the name '{name}' bound by `with ... as` is also assigned elsewhere in this scope; Arrow cannot shadow it inside the block (the resource would not be released) — use a different name"
                             ));
                         }
-                        inner.push(Stmt::Mut(name, None, value, crate::token::Span::unknown()));
+                        inner.push(Stmt::Mut(name.clone(), None, value, crate::token::Span::unknown()));
+                        bound.push(name);
                     }
                     // `with EXPR:` — 名前は要らないが、ブロック退出で破棄させるため
                     // 一時変数へ束縛する（式文にすると即座に捨てられてしまう）。
                     None => {
-                        inner.push(Stmt::Mut(next_temp_name("with"), None, value, crate::token::Span::unknown()));
+                        let name = next_temp_name("with");
+                        inner.push(Stmt::Mut(name.clone(), None, value, crate::token::Span::unknown()));
+                        bound.push(name);
                     }
                     Some(_) => {
                         return Err(format!(
@@ -1014,7 +1059,38 @@ pub(crate) fn convert_stmt(
                     }
                 }
             }
-            inner.extend(convert_stmts(&w.body, filename, declared)?);
+            // 抜けるとき（`return` / 例外も）に `__py_with_exit(x)` を呼ぶ: ファイルなら閉じる（CPython の
+            // `__exit__`・python_builtins_plan.md のタスク 5-4）。ほかの値は何もしない（従来どおりブロックの破棄に任せる）。
+            // ⚠ 以前はブロックの破棄だけに頼っていたが、VM はブロックの変数を関数の終わりまで持つので、同じ関数の中で
+            //   `with open(p, "w")` の後に `with open(p)` で読むと**まだ書き戻されていない**（空・`EOFError`）だった。
+            let body = convert_stmts(&w.body, filename, declared)?;
+            let exits = bound
+                .iter()
+                .rev()
+                .map(|name| {
+                    Stmt::Expr(Expr::Call {
+                        func: Box::new(Expr::Ident {
+                            name: "__py_with_exit".to_string(),
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        }),
+                        args: vec![crate::ast::CallArg::Positional(Expr::Ident {
+                            name: name.clone(),
+                            node_id: 0,
+                            res: crate::ast::Resolution::Unresolved,
+                        })],
+                        span: crate::token::Span::unknown(),
+                        cache: Default::default(),
+                        node_id: 0,
+                    })
+                })
+                .collect();
+            inner.push(Stmt::Try {
+                body,
+                handlers: Vec::new(),
+                finally_body: Some(exits),
+                span: crate::token::Span::unknown(),
+            });
             Ok(vec![Stmt::Block(inner)])
         }
         py::Stmt::AsyncWith(_) => Err(format!(
@@ -1044,29 +1120,33 @@ pub(crate) fn convert_stmt(
                 //   `except (A, B):` は Tuple、`except mod.Err:` は Attribute で来るので、
                 //   どちらも「何でも捕まえるハンドラ」に化けていた（＝捕まえすぎる誤変換）。
                 //   型を捨てる変換は危険なので明示エラーにする。
-                let exc_type = match eh.type_.as_deref() {
-                    None => None,
-                    Some(py::Expr::Name(n)) => Some(n.id.to_string()),
-                    Some(py::Expr::Tuple(_)) => {
-                        return Err(format!(
-                            "{filename}: `except (A, B):` (multiple exception types) is not supported; \
-                             write one `except` clause per type"
-                        ))
-                    }
-                    Some(_) => {
-                        return Err(format!(
-                            "{filename}: only a simple exception name is supported in `except` \
-                             (e.g. `except ValueError:`); qualified or computed types are not"
-                        ))
-                    }
+                // 型の名前（`except (A, B):` は複数・python_builtins_plan.md のタスク 4-4）。`None` は bare `except:`。
+                let exc_types: Vec<Option<String>> = match eh.type_.as_deref() {
+                    None => vec![None],
+                    Some(t) => except_type_names(t)
+                        .ok_or_else(|| {
+                            format!(
+                                "{filename}: only a name, a dotted name or a tuple of them is supported in \
+                                 `except` (e.g. `except ValueError:` / `except m.Err:` / `except (A, B):`); \
+                                 computed types are not"
+                            )
+                        })?
+                        .into_iter()
+                        .map(Some)
+                        .collect(),
                 };
                 let name = eh.name.as_ref().map(|n| n.to_string());
                 let hbody = convert_stmts(&eh.body, filename, declared)?;
-                handlers.push(ExceptHandler {
-                    exc_type,
-                    name,
-                    body: hbody,
-                });
+                // ⚠ `except (A, B) as e: body` は**型ごとに同じ本体の節を並べる**（`except A as e: body` /
+                //   `except B as e: body`）。CPython は前から順に当てて最初の節だけを走らせるので、
+                //   並べた節でも走るのは高々 1 つで意味は変わらない。
+                for exc_type in exc_types {
+                    handlers.push(ExceptHandler {
+                        exc_type,
+                        name: name.clone(),
+                        body: hbody.clone(),
+                    });
+                }
             }
             let finally_body = if t.finalbody.is_empty() {
                 None
@@ -1110,37 +1190,18 @@ pub(crate) fn convert_stmt(
 
         // ----- del -----
         //
-        // ⚠ **ターゲットの種類で扱いを分ける**（coverage 項目 14 の決定）:
+        // ⚠ **ターゲットの種類で扱いを分ける**（coverage 項目 14 の決定・known_bugs.md の #2 / #3）:
         //   - `del x`（名前）… 束縛の削除。Arrow はスコープ退出で破棄するので
         //     **警告して無視**する。残る差は「削除後に読むと Python は `NameError`」だけ。
-        //   - `del d[k]` / `del o.a` … **意味のある削除**。無視すると結果が変わるので明示エラー。
+        //   - `del d[k]` … `__py_delitem(d, k)`（辞書・リスト・スライス・`__delitem__`）
+        //   - `del o.a` … `__py_delattr(o, "a")`（フィールドを未代入に戻す・データディスクリプタは `__delete__`）
+        //   - `del a, b[0]` / `del (a, b)` … 左から順に 1 つずつ（CPython と同じ順）
         py::Stmt::Delete(d) => {
+            let mut out = Vec::new();
             for target in &d.targets {
-                match target {
-                    py::Expr::Name(n) => {
-                        eprintln!(
-                            "Warning: {filename}: `del {}` is ignored \
-                             (Arrow drops bindings at scope exit)",
-                            n.id.as_str()
-                        );
-                    }
-                    py::Expr::Subscript(_) => {
-                        return Err(format!(
-                            "{filename}: `del <expr>[<key>]` is not supported \
-                             (it would silently do nothing); remove the entry another way"
-                        ))
-                    }
-                    py::Expr::Attribute(a) => {
-                        return Err(format!(
-                            "{filename}: `del <expr>.{}` is not supported \
-                             (Arrow cannot remove an attribute)",
-                            a.attr.as_str()
-                        ))
-                    }
-                    _ => return Err(format!("{filename}: unsupported `del` target")),
-                }
+                convert_del_target(target, filename, &mut out)?;
             }
-            Ok(vec![])
+            Ok(out)
         }
 
         // ----- pass -----
@@ -1156,9 +1217,7 @@ pub(crate) fn convert_stmt(
             // 「何もしない」以上の意味を持たないので `pass` に読み替える。
             //
             // ⚠ **値位置の `...`（`x = ...` / `a[...]`）は対象外**。そちらは
-            //   `convert_constant` が `Expr::None` にする（承認済みの仕様）。
-            //   ⇒ CPython は `Ellipsis` オブジェクトを返すので**そこだけ表示が違う**が、
-            //     Arrow に `Ellipsis` 値が無く、副作用も無いため許容している。
+            //   `convert_constant` が組み込みの `Ellipsis` にする（タスク 6-11）。
             if matches!(&*e.value, py::Expr::Constant(c) if matches!(c.value, py::Constant::Ellipsis))
             {
                 return Ok(vec![Stmt::Pass]);
@@ -1296,8 +1355,15 @@ pub(crate) fn convert_stmt(
             let names: Vec<(String, Option<String>)> = f
                 .names
                 .iter()
+                // `functools.cached_property` は変換器が組み込みの `cached_property` へ写す（`@cached_property` を
+                // property と同じ形で組み立てる・タスク 6-5）ので、その名前は読み込まない。ほかの名前（`reduce` …）は
+                // 残して従来どおり読み込みの誤りにする。⚠ 別名（`as cp`）は `@cp` を見分けられないので残す。
+                .filter(|a| !(module == ["functools"] && a.name.as_str() == "cached_property" && a.asname.is_none()))
                 .map(|a| (a.name.to_string(), a.asname.as_ref().map(|x| x.to_string())))
                 .collect();
+            if names.is_empty() {
+                return Ok(vec![]);
+            }
             Ok(vec![Stmt::FromImport {
                 lang: "py".to_string(),
                 module,
@@ -1420,3 +1486,23 @@ pub(crate) fn convert_stmt(
     }
 }
 
+/// `except` の型の式を名前の列にする: 名前・修飾名（4-3）は 1 つ、組は要素を並べる（4-4）。
+/// それ以外の式なら `None`。
+/// ⚠ 組の入れ子（`except (A, (B, C)):`）は受けない。CPython 3.12 も実行時に
+///   `TypeError: catching classes that do not inherit from BaseException is not allowed` で止める（実測）。
+fn except_type_names(e: &py::Expr) -> Option<Vec<String>> {
+    match e {
+        py::Expr::Tuple(t) => t.elts.iter().map(dotted_name).collect(),
+        _ => Some(vec![dotted_name(e)?]),
+    }
+}
+
+/// `a.b.C` の形の式を綴りへ戻す（`except m.Err:`・python_builtins_plan.md のタスク 4-3）。名前と属性の
+/// 連なりでなければ `None`。
+fn dotted_name(e: &py::Expr) -> Option<String> {
+    match e {
+        py::Expr::Name(n) => Some(n.id.to_string()),
+        py::Expr::Attribute(a) => Some(format!("{}.{}", dotted_name(&a.value)?, a.attr)),
+        _ => None,
+    }
+}

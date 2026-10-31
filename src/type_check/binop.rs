@@ -128,12 +128,25 @@ impl TypeChecker {
         // `in` は右辺が容器。左辺と**要素型**を比べる。
         let (a, b) = if matches!(op, BinOp::In | BinOp::NotIn) {
             let elem = match rt {
-                T::ListOf(e) | T::SetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => (**e).clone(),
+                T::ListOf(e) | T::SetOf(e) | T::FrozenSetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => {
+                    (**e).clone()
+                }
                 T::DictOf(k, _) => (**k).clone(),
                 T::Str => T::Str,
-                // バイト列は部分列（`bytes`）か 1 バイト（`int`）を探せる（3-1）
-                T::Bytes if matches!(lt, T::Int) => return,
-                T::Bytes => T::Bytes,
+                // `x in b"..."` は int（1 バイト）でも bytes（部分列）でもよい（タスク 3-1）。
+                T::Bytes => {
+                    if !matches!(lt, T::Int | T::Bytes) && !Self::opaque_for_equality(lt) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::CrossTypeEquality {
+                                op: op.as_str().to_string(),
+                                left: lt.clone(),
+                                right: T::Bytes,
+                            },
+                            span: Some(span),
+                        });
+                    }
+                    return;
+                }
                 // 要素型の判らない容器・tuple は判定しない。
                 _ => return,
             };
@@ -155,6 +168,18 @@ impl TypeChecker {
         // 比べられる（ffi_value_exchange_plan.md 7-1）。⚠ 以前は `s == {1}`（`s` は `set`）が「決して真にならない」になった
         if Self::bare_container_matches(&a, &b) || Self::bare_container_matches(&b, &a) {
             return;
+        }
+        // `frozenset == set` は要素で比べる（CPython と同じ・実行時は `values_eq_expr`・タスク 3-1）。
+        // 要素型が同じ（か片方が素の容器）なら通す。
+        let set_elem = |t: &T| match t {
+            T::Set | T::FrozenSet => Some(None),
+            T::SetOf(e) | T::FrozenSetOf(e) => Some(Some((**e).clone())),
+            _ => None,
+        };
+        if let (Some(x), Some(y)) = (set_elem(&a), set_elem(&b)) {
+            if x.is_none() || y.is_none() || x == y {
+                return;
+            }
         }
         if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
             return;
@@ -320,8 +345,10 @@ impl TypeChecker {
     /// ⚠ 以前はクラスが片側にあると素通しだった（`check_arith` の doc）ので、
     ///   `Money(100) + 5`（`fn __add__(self, let other: Money)`）が静的に通り、
     ///   `__add__` の中の `other.cents` で実行時の `AttributeError` になっていた（実測）。
-    /// ⚠ 実行時は**左辺の**演算子メソッドだけを呼ぶ（`apply_binop_dyn`・右辺側の `__radd__` は無い）
-    ///   ので、左辺だけ見ればよい。
+    /// ⚠ 実行時は**左辺の**演算子メソッドを先に呼ぶ（`apply_binop_dyn`・仮引数の型が合わなければそこで誤り）ので、
+    ///   左辺のメソッドの仮引数で検査する。右辺の反対側のメソッド（`__radd__` など）は、左辺に無いか左辺が
+    ///   `NotImplemented` を返したときに実行時に試す（python_builtins_plan.md のタスク 6-12）。左辺に無い形はここでは
+    ///   検査しない（クラスは素通し・`check_arith`）。
     /// ⚠ 多重定義は**どれか 1 つ**が受ければ通す。型の無い仮引数・仮引数の数が合わない形は
     ///   判定材料が無いので通す（誤検出をしない側）。
     /// ⚠ `==` / `!=`（`__eq__` / `__ne__`）は見ない。等値は異型でも「偽」を返すのが仕様。
@@ -401,17 +428,36 @@ impl TypeChecker {
         if matches!(lt, NamedInstance(_)) || matches!(rt, NamedInstance(_)) {
             return true;
         }
-        matches!(
-            (lt, rt),
-            (Unresolved, _)
-                | (_, Unresolved)
-                | (Int, Int)
-                | (Float, Float)
-                | (Int, Float)
-                | (Float, Int)
-                | (Str, Str)
-                | (Bytes, Bytes)
-        )
+        match (lt, rt) {
+            // list 同士・tuple 同士は要素ごと（python_builtins_plan.md のタスク 1-3・実行時は `seq_ordered_cmp`）。
+            // ⚠ tuple は**短い方の長さまでのすべての位置**が比べられることを求める。実行時は最初に違う位置しか
+            //   比べない（`(1, "a") < (2, 3)` は CPython でも真）が、どの位置で決まるかは値次第なので、
+            //   比べられない位置がある組は静的に弾く（Arrow の `<` の厳しさに合わせる）。
+            // ⚠ `[]`（要素型 `Never`）はどの list とも比べられる。素の `list` / `tuple`（Python 由来）は要素が分からないので通す。
+            (ListOf(a), ListOf(b)) => {
+                matches!(**a, Never) || matches!(**b, Never) || Self::ordered_comparable(a, b)
+            }
+            (List, List | ListOf(_)) | (ListOf(_), List) => true,
+            (Tuple(a), Tuple(b)) => a.iter().zip(b).all(|(x, y)| Self::ordered_comparable(x, y)),
+            (TupleAny, TupleAny | Tuple(_)) | (Tuple(_), TupleAny) => true,
+            // set / frozenset どうしは包含関係（実行時は `apply_binop` の集合の比較・タスク 3-1）。
+            (Set | SetOf(_) | FrozenSet | FrozenSetOf(_), Set | SetOf(_) | FrozenSet | FrozenSetOf(_)) => true,
+            // 要素の `Union`（`[1, 2.5]` は `list[Union[int, float]]`）は、どの構成型も相手と比べられれば通す。
+            // ⚠ 最上位の `Union` はここへ届かない（`check_binop` の冒頭が `OperationOnUnion` で弾く）。
+            (Union(ts), _) => ts.iter().all(|t| Self::ordered_comparable(t, rt)),
+            (_, Union(ts)) => ts.iter().all(|t| Self::ordered_comparable(lt, t)),
+            _ => matches!(
+                (lt, rt),
+                (Unresolved, _)
+                    | (_, Unresolved)
+                    | (Int, Int)
+                    | (Float, Float)
+                    | (Int, Float)
+                    | (Float, Int)
+                    | (Str, Str)
+                    | (Bytes, Bytes)
+            ),
+        }
     }
 
     /// 2 つの型の join（同じならその型・違えば `Union`）。連結演算と `and` / `or`（D-10）の
@@ -582,24 +628,29 @@ impl TypeChecker {
         // ⚠⚠ **`use InferredType::*` が効いているので `None` は `InferredType::None` に
         //    解決される。** `Option` の `None` は `Option::None` と明示すること
         //    （ここで 1 度コンパイルエラーにして気づいた）。
+        // ⚠ frozenset も同じ（タスク 3-1）。結果は**左の種類**（`frozenset | set` は frozenset・実行時と同じ）。
+        //   大小比較は包含関係（`a <= b`）で bool。
         let set_elem = |t: &InferredType| -> Option<Option<InferredType>> {
             match t {
-                Set => Some(Option::None),
-                SetOf(e) => Some(Some((**e).clone())),
+                Set | FrozenSet => Some(Option::None),
+                SetOf(e) | FrozenSetOf(e) => Some(Some((**e).clone())),
                 _ => Option::None,
             }
         };
         if let (Some(a), Some(b)) = (set_elem(lt), set_elem(rt)) {
+            let frozen = matches!(lt, FrozenSet | FrozenSetOf(_));
+            let of = |e: InferredType| if frozen { FrozenSetOf(Box::new(e)) } else { SetOf(Box::new(e)) };
+            let bare = if frozen { FrozenSet } else { Set };
             return match op {
                 BinOp::BitOr | BinOp::BitXor => match (a, b) {
-                    (Some(x), Some(y)) => SetOf(Box::new(Self::join2(&x, &y))),
-                    _ => Set,
+                    (Some(x), Some(y)) => of(Self::join2(&x, &y)),
+                    _ => bare,
                 },
                 BinOp::BitAnd | BinOp::Sub => match a {
-                    Some(x) => SetOf(Box::new(x)),
-                    Option::None => Set,
+                    Some(x) => of(x),
+                    Option::None => bare,
                 },
-                BinOp::Eq | BinOp::NotEq => Bool,
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => Bool,
                 _ => Unresolved,
             };
         }
@@ -659,7 +710,7 @@ impl TypeChecker {
                 | (Complex, Float) | (Float, Complex)
                 | (Complex, Int)   | (Int, Complex) => Complex,
                 (Str, Str) => Str,
-                // バイト列の連結（3-1）
+                // bytes の連結（タスク 3-1）。`b"a" + "b"` は TypeError（CPython と同じ）。
                 (Bytes, Bytes) => Bytes,
                 // 実測: `[1] + [2]` → `[1, 2]` ／ `(1,) + (2,)` → `(1, 2)`
                 // ⚠ 要素型は合成する（連結なのでどちらの要素も現れる）。
@@ -690,6 +741,7 @@ impl TypeChecker {
                 | (Complex, Int)   | (Int, Complex) => Complex,
                 // 実測: `"ab" * 2` / `2 * "ab"` → "abab" という文字列（`"a" * 1.5` は TypeError）
                 (Str, Int) | (Int, Str) => Str,
+                (Bytes, Int) | (Int, Bytes) => Bytes,
                 // 実測: `[1] * 2` → `[1, 1]` ／ `(1,) * 2` → `(1, 1)`
                 (ListOf(a), Int) => ListOf(a.clone()),
                 (Int, ListOf(a)) => ListOf(a.clone()),
@@ -711,15 +763,18 @@ impl TypeChecker {
                 (Int, Int) | (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 _ => Unresolved,
             },
-            // 実測: `1 // 2` → 0 ／ **`1.5 // 2` は TypeError**（int 同士のみ）
+            // 実測: `1 // 2` → 0 ／ `1.5 // 2` → 1.0（float が混ざれば float・python_builtins_plan.md のタスク 1-2。
+            //       以前は TypeError だった）
             BinOp::FloorDiv => match (lt, rt) {
                 (Int, Int) => Int,
+                (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 _ => Unresolved,
             },
-            // 実測: `1 % 2` → 1 ／ **`"a" % 2` → `a`・`"a" % 2.5` → `a`**（書式化）
-            //       `1.5 % 2` / `2 % "a"` は TypeError
+            // 実測: `1 % 2` → 1 ／ `1.5 % 2` → 1.5（float・タスク 1-2）／ **`"a" % 2` → `a`・`"a" % 2.5` → `a`**（書式化）
+            //       `2 % "a"` は TypeError
             BinOp::Mod => match (lt, rt) {
                 (Int, Int) => Int,
+                (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 (Str, _) => Str,
                 _ => Unresolved,
             },

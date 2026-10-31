@@ -148,6 +148,8 @@ pub fn run(
     //   落とすと `prof_dist.ps1` の計測が黙って壊れる。
     #[cfg(feature = "prof")]
     let _cur = crate::prof::CurGuard::new();
+    // Python から変換したコードの中は格納で写さない（known_bugs.md の #1）。抜けたら呼び出し側の値へ戻す。
+    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     // ⚠ **ここで `Frame` を作らない**。`Frame` は中断の記録であって実行中の表現では無いので、
     //   新規実行は切り出し前と同じく 3 つのローカルを作って値渡しする。
     //   中断が生まれたときにだけ `Frame` を組み立てる（段階 C）。
@@ -157,6 +159,7 @@ pub fn run(
         Vec::new(),
         build_cells(chunk, captured_env),
     );
+    interp.running_python = prev_py;
     interp.call_depth -= 1;
     match r {
         Ok(RunOutcome::Done(v)) => Ok(v),
@@ -207,7 +210,10 @@ pub(crate) fn resume_frame(
     //    **スタックが満ちてプロセスごと落ちる**。B13 の実装中に実際に再発させ、
     //    `recursion_limit.ar` §5 が捕まえた。
     enter_depth(interp)?;
+    // ジェネレータの本体も `run` と同じく、Python のコードの中は写さない（known_bugs.md の #1）。
+    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     let r = run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells);
+    interp.running_python = prev_py;
     interp.call_depth -= 1;
     r
 }
@@ -748,8 +754,14 @@ fn make_fn(
     let existing = std::mem::replace(&mut buf[slot], Value::None);
     // 入れ子 `gen`（B13 段階 E）。捕捉の集め方はここまで完全に同じで、作る値だけが違う。
     if d.is_generator {
-        buf[slot] =
-            interp.make_nested_gen_value(&d.name, &d.params, &d.body, captured, cell_captured);
+        buf[slot] = interp.make_nested_gen_value(
+            &d.name,
+            &d.params,
+            &d.body,
+            captured,
+            cell_captured,
+            d.qualname.clone(),
+        );
         return;
     }
     buf[slot] = interp.make_nested_fn_value(
@@ -763,6 +775,9 @@ fn make_fn(
         existing,
         // #30: 実体ごとに再コンパイルせず、定義サイトの器を全実体で共有する。
         Some(d.compiled.clone()),
+        d.qualname.clone(),
+        // Python の関数の中の関数は Python の関数（引数の束縛の規則・タスク 1-14）。
+        chunk.is_python,
     );
 }
 
@@ -929,7 +944,10 @@ fn load_global_ref(
                 .vm_global_by_slot(idx)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined"))
         }
-        None => Err(format!("NameError: '{name}' is not defined")),
+        // 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7・`Op::LoadGlobal` と同じ）。
+        None => interp
+            .builtin_value(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined")),
     }
 }
 
@@ -972,7 +990,12 @@ fn exec_op(
                         None => return Err(format!("NameError: '{name}' is not defined")),
                     }
                 }
-                None => return Err(format!("NameError: '{name}' is not defined")),
+                // 束縛が無ければ組み込みの値（名前の探索の最後の段・タスク 1-7）。
+                // ⚠ `load_global_ref` も同じ手順にすること（上の doc の「完全に同じ手順」）。
+                None => match interp.builtin_value(name) {
+                    Some(v) => buf.push(v),
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                },
             }
         }
         Op::StoreGlobal(ni, ci) => {
@@ -997,10 +1020,12 @@ fn exec_op(
             buf[base + *s as usize] = v;
         }
         // 束縛の複製は `Interpreter::bind_copy` が唯一の実装（ツリーウォーク・ネイティブと共有・1-6）。
+        // Python から変換したコードの中の `mut` を写さない（known_bugs.md の #1）のもそちら。
         Op::StoreLocalDeepCopy(s) => {
             let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
+        // `let x = <mut 変数>` と、関数の中の `freeze x`（`LoadLocal` + これ・タスク 1-9）。
         Op::StoreLocalCopyFreeze(s) => {
             let v = interp.bind_copy(BindCopy::CopyFreeze, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
@@ -1588,8 +1613,8 @@ fn exec_op(
             let v = buf.pop().unwrap();
             if let Value::List(list) = &buf[base + *slot as usize] {
                 // ⚠ 格納する値は複製する（L4）。ツリーウォークの `append` と同じ規則で
-                //    ないと、VM 経路だけ共有が残る。
-                let copied = Interpreter::deep_copy_value(v);
+                //    ないと、VM 経路だけ共有が残る。Python のコードの中は写さない（known_bugs.md の #1）。
+                let copied = interp.copy_for_store(v);
                 list.borrow_mut().push(copied);
             }
         }
@@ -1888,13 +1913,13 @@ fn int_binop_specialized(x: i64, y: i64, op: &BinOp) -> Option<Value> {
             if y == 0 {
                 return None;
             }
-            Value::Int(x.div_euclid(y))
+            Value::Int(crate::interpreter::ops::py_floor_div(x, y))
         }
         BinOp::Mod => {
             if y == 0 {
                 return None;
             }
-            Value::Int(x.rem_euclid(y))
+            Value::Int(crate::interpreter::ops::py_mod(x, y))
         }
         // 指数が非負なら整数冪、負なら float（`apply_binop` の Int/Int アームと同一）。
         BinOp::Pow => {
@@ -1927,7 +1952,7 @@ fn float_binop_specialized(x: f64, y: f64, op: &BinOp) -> Option<Value> {
         BinOp::Sub => Value::Float(x - y),
         BinOp::Mul => Value::Float(x * y),
         // float の除算はゼロ検査なし（inf/NaN を返す）＝ `apply_binop` の Float/Float アームと同一。
-        // `//` と `%` は Float/Float のアームが存在しない（＝エラー）ため特化しない。
+        // `//` と `%` は特化しない（`gate_bin_kind` が許さない・汎用の `apply_binop` が CPython の手順で計算する）。
         BinOp::Div => Value::Float(x / y),
         BinOp::Pow => Value::Float(x.powf(y)),
         BinOp::Lt => Value::Bool(x < y),

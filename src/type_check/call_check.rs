@@ -94,7 +94,8 @@ impl TypeChecker {
                 if let Some(cls_name) = cls_name_opt {
                     let is_static = self.registry.is_static_method(&cls_name, attr.as_str());
                     // StaticMethodOnInstance: only report when called on an instance
-                    if is_static && is_instance {
+                    // ⚠ Python のクラスの静的メソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
+                    if is_static && is_instance && !self.registry.is_python_class(&cls_name) {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::StaticMethodOnInstance {
                                 method_name: attr.clone(),
@@ -115,7 +116,9 @@ impl TypeChecker {
                     //    ⇒ 存在検査（タスク 7.5）を**ここにも**書く必要がある。
                     //    検体 `M1`（フィールドの読み）は `infer_attr` 側で閉じたが、
                     //    `M2`（メソッドの呼び出し）はこの経路なので別に閉じる。
-                    if !self.member_exists(&cls_name, attr) {
+                    // ⚠ `__getattr__` を上書きした Python のクラスのインスタンスは、無い名前も上書きが答える（読んで呼ぶ・#11）。
+                    let answered_by_hook = is_instance && self.getattr_hook_type(&cls_name).is_some();
+                    if !self.member_exists(&cls_name, attr) && !answered_by_hook {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::NoSuchMember {
                                 class_name: cls_name.clone(),
@@ -143,8 +146,10 @@ impl TypeChecker {
             }
             Expr::Attr { object, attr, .. } => match object.as_ref() {
                 Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
-                    Some(InferredType::Namespace(..)) => {
-                        // ⚠ 外部言語のモジュール（cpp / cs …）は素の名前で登録したまま。
+                    // ⚠ `import[py]` のモジュール（`PyNamespace`）も修飾名で引く（`zoo.Dog`）。以前は素の `Dog` で
+                    //   引いていたので、`z.Dog()` がメインの同名クラスの `__init__` で検査されていた（実測）。
+                    Some(InferredType::Namespace(..) | InferredType::PyNamespace(_)) => {
+                        // ⚠ 外部言語のモジュール（cpp / cs / py-int …）は素の名前で登録したまま。
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
                     // ⚠ 型の分からない受け手（エディタで読めていない `import` の別名など）の `x.f(..)` を、
@@ -242,7 +247,7 @@ impl TypeChecker {
         if let Some((recv_ty, method, span)) = builtin_recv {
             self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
             // ★ 戻り値型も分かる範囲で付ける。
-            builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method);
+            builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method, &arg_data);
         }
 
         // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
@@ -338,6 +343,12 @@ impl TypeChecker {
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
             if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+                // `object()` は Python のソースからだけ呼べる（タスク 6-10 の決定）。変換器は Python の `object()` を
+                // `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出し。
+                if name == "object" {
+                    self.report_error(StaticTypeError { kind: TypeErrorKind::ObjectCallInArrow, span: None });
+                    return InferredType::Unresolved;
+                }
                 // 引数は宣言（`builtins.ars`）の仮引数で検査する（`check_builtin_call`）。
                 self.check_builtin_call(name, args, &arg_data);
                 if let Some(ret) = self.builtin_fn_return(name, &arg_data) {
@@ -350,17 +361,27 @@ impl TypeChecker {
                 .as_deref()
                 .is_some_and(|n| self.registry.fn_sigs(n).is_some());
         if !direct_fn_call {
+        // 束縛メソッドが不変の受け手を書き換える（`let c` の `let add = c.add` の後の `add(1)`・タスク 1-11）。
+        // `c.add(1)` を直接書いたのと同じ誤り。束縛すること自体は誤りにしない。
+        if let InferredType::Function { mutates_immutable: Some(m), .. } = &func_type {
+            let (method, root_name) = (**m).clone();
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::MutatingMethodOnImmutable { method, root_name },
+                span: None,
+            });
+        }
         match func_type {
             InferredType::Function {
                 params: Some(fn_params),
                 return_type,
+                ..
             } => {
                 let fname = func_name.as_deref().unwrap_or("<function>").to_string();
                 let ret = *return_type;
                 self.check_fn_type_call(&fname, args, &arg_data, &fn_params);
                 return ret;
             }
-            InferredType::Function { params: None, return_type } => {
+            InferredType::Function { params: None, return_type, .. } => {
                 return *return_type;
             }
             // ── 型値の呼び出し＝変換（タスク 2.4 / 決定 D-6）────────────────────
@@ -403,12 +424,28 @@ impl TypeChecker {
             // クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()` / `self.Inner()`・フェーズ10 10-18）。
             // 実行時もメソッドが無いときだけクラス変数のクラスを呼ぶ（`Interpreter::class_var_class`）。
             if !self.collect_class_method_sigs(cls_name).contains_key(method_name.as_str()) {
-                if let Some(InferredType::TypeValOf(inner)) =
-                    self.declared_field_type_pub(cls_name, method_name)
-                {
-                    if let InferredType::NamedInstance(c) = *inner {
-                        return InferredType::NamedInstance(c);
+                // クラス側のディスクリプタは `__get__` の戻り値を呼ぶ（タスク 1-12）。
+                let member_ty = match self.class_descriptor(cls_name, method_name) {
+                    Some(d) => Some(d.read),
+                    None => self.declared_field_type_pub(cls_name, method_name),
+                };
+                match member_ty {
+                    Some(InferredType::TypeValOf(inner)) => {
+                        if let InferredType::NamedInstance(c) = *inner {
+                            return InferredType::NamedInstance(c);
+                        }
                     }
+                    // 関数を入れたフィールドを呼ぶ形（`self.f(x)`・python_builtins_plan.md のタスク 1-11）。
+                    // 実行時は「属性を読んで、その値を呼ぶ」。関数型で引数・戻り値を検査する。
+                    Some(InferredType::Function { params, return_type, .. }) => {
+                        if let Some(fn_params) = params {
+                            self.check_fn_type_call(&format!("{cls_name}.{method_name}"), args, &arg_data, &fn_params);
+                        }
+                        return *return_type;
+                    }
+                    // 呼べない値を入れたフィールド（`self.n(1)` の `n: int`）は値を呼ぶのと同じ誤り。
+                    Some(ty) => self.check_callable(&ty),
+                    None => {}
                 }
             }
             // 今の Arrow から正しく呼べない C# のメソッド（コレクションを受け渡す など・2-1）
@@ -745,9 +782,12 @@ impl TypeChecker {
                     | IT::ListLikeOf(_)
                     | IT::Set
                     | IT::SetOf(_)
+                    | IT::FrozenSet
+                    | IT::FrozenSetOf(_)
                     | IT::Tuple(_)
                     | IT::TupleAny
                     | IT::Str
+                    | IT::Bytes
                     | IT::NamedInstance(_)
             )
         };
@@ -938,6 +978,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
             T::Result(a, b) => T::Result(rec(a), rec(b)),
@@ -950,7 +991,8 @@ impl TypeChecker {
             //   `fn adder[T](..) -> function[T]->T` の `adder[int](1)` が `function[T]->T` のまま
             //   外へ出て、`f(2)` が「`T` を期待したのに `int`」という偽のエラーになっていた（実測）。
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
-            T::Function { params, return_type } => T::Function {
+            T::Function { params, return_type, mutates_immutable } => T::Function {
+                mutates_immutable: mutates_immutable.clone(),
                 params: params.as_ref().map(|ps| {
                     ps.iter()
                         .map(|p| FnTypeParam {
@@ -1348,6 +1390,9 @@ impl TypeChecker {
                 | T::DictOf(_, _)
                 | T::Set
                 | T::SetOf(_)
+                | T::FrozenSet
+                | T::FrozenSetOf(_)
+                | T::Bytes
                 | T::Tuple(_)
         );
         if !not_callable {
@@ -1488,6 +1533,98 @@ impl TypeChecker {
                 let ts: Vec<T> = arg_data.iter().map(|(_, t)| elem(t)).collect();
                 Some(T::IteratorOf(Box::new(T::Tuple(ts))))
             }
+            // 真偽を返す Python の組み込み（python_builtins_plan.md のフェーズ 2）。
+            "isinstance" | "hasattr" | "issubclass" | "callable" | "all" | "any" => Some(T::Bool),
+            // 集計（タスク 3-2）。⚠ 要素の型が分からないときは `None`（`Any` にすると下流が静的な誤りになる）。
+            "sorted" | "reversed" | "min" | "max" | "sum" => {
+                let positional: Vec<&T> =
+                    arg_data.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
+                let has_kw = |n: &str| arg_data.iter().any(|(k, _)| k.as_deref() == Some(n));
+                let known_elem = |t: &T| match Self::for_element_type(t) {
+                    T::Unresolved | T::Any => None,
+                    e => Some(e),
+                };
+                match (name, positional.as_slice()) {
+                    ("sorted", [t]) => known_elem(t).map(|e| T::ListOf(Box::new(e))),
+                    ("reversed", [t]) => known_elem(t).map(|e| T::IteratorOf(Box::new(e))),
+                    // `default=` は別の型を返しうるので付けない。
+                    ("min" | "max", [t]) if !has_kw("default") => known_elem(t),
+                    ("min" | "max", [first, rest @ ..])
+                        if !rest.is_empty() && rest.iter().all(|t| t == first) && !matches!(first, T::Unresolved | T::Any) =>
+                    {
+                        Some((*first).clone())
+                    }
+                    ("sum", [t]) if !has_kw("start") => match known_elem(t) {
+                        Some(T::Int) => Some(T::Int),
+                        Some(T::Float) => Some(T::Float),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            // 変換・遅延の組み込み（タスク 3-3）。`map` は `f` の戻り値が分からないので付けない。
+            "hash" | "ord" => Some(T::Int),
+            "chr" | "hex" | "oct" | "bin" | "ascii" | "format" => Some(T::Str),
+            "filter" | "iter" => {
+                let src = match (name, arg_data) {
+                    ("filter", [_, (None, t)]) | ("iter", [(None, t)]) => Some(t),
+                    _ => None,
+                };
+                src.and_then(|t| match Self::for_element_type(t) {
+                    T::Unresolved | T::Any => None,
+                    e => Some(T::IteratorOf(Box::new(e))),
+                })
+            }
+            "abs" => match arg_data {
+                [(None, T::Int)] => Some(T::Int),
+                [(None, T::Float | T::Complex)] => Some(T::Float),
+                _ => None,
+            },
+            "round" => match arg_data {
+                [(None, T::Int | T::Float)] => Some(T::Int),
+                [(None, t @ (T::Int | T::Float)), (_, T::Int)] => Some(t.clone()),
+                _ => None,
+            },
+            "divmod" => match arg_data {
+                [(None, T::Int), (None, T::Int)] => Some(T::Tuple(vec![T::Int, T::Int])),
+                [(None, T::Int | T::Float), (None, T::Int | T::Float)] => Some(T::Tuple(vec![T::Float, T::Float])),
+                _ => None,
+            },
+            "pow" => match arg_data {
+                [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
+                _ => None,
+            },
+            "setattr" | "__py_with_exit" | "__py_delattr" | "__py_delitem" | "__py_object_setattr"
+            | "__py_object_delattr" => Some(T::None),
+            // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
+            // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
+            "type" => match arg_data {
+                [(None, t @ (T::NamedInstance(_) | T::Int | T::Float | T::Str | T::Bool | T::Complex))] => {
+                    Some(T::TypeValOf(Box::new(t.clone())))
+                }
+                _ => None,
+            },
+            // `list()` は `[]` と同じ（要素型 `Never`）、`list(xs)` は要素の list（タスク 1-7）。
+            // ⚠ 要素型が分からない（Python 由来の値など）ときは `None`（`list[Any]` にすると要素の操作が静的な誤りになる）。
+            "list" => match arg_data {
+                [] => Some(T::ListOf(Box::new(T::Never))),
+                [(None, t)] => match Self::for_element_type(t) {
+                    T::Unresolved => None,
+                    e => Some(T::ListOf(Box::new(e))),
+                },
+                _ => None,
+            },
+            // `bytes(..)`（タスク 3-1）。どの形でも bytes（失敗は実行時の誤り）。
+            "bytes" => Some(T::Bytes),
+            // `frozenset()` / `frozenset(xs)`（タスク 3-1）。`list(..)` と同じ考え方。
+            "frozenset" => match arg_data {
+                [] => Some(T::FrozenSetOf(Box::new(T::Never))),
+                [(None, t)] => match Self::for_element_type(t) {
+                    T::Unresolved => None,
+                    e => Some(T::FrozenSetOf(Box::new(e))),
+                },
+                _ => None,
+            },
             // 他の組み込み関数は宣言（`src/built_in_stab/builtins.ars`）の戻り値の型
             // （`open` → `FileObject`・`repr` → `str` …）。宣言に型が無いものは `None`（従来どおり）。
             _ => super::builtins::return_type(name),
@@ -1505,9 +1642,10 @@ impl TypeChecker {
     /// `Any` 止まりになり、`k + str(v)` のような普通の式が明示ダウンキャストを要求される。
     ///
     /// ⚠ 判らないものは `None`（従来どおり）。ここで嘘の型を返さないこと。
-    fn builtin_collection_method_return(
+    pub(super) fn builtin_collection_method_return(
         recv_ty: &InferredType,
         method: &str,
+        args: &[(Option<String>, InferredType)],
     ) -> Option<InferredType> {
         use InferredType as T;
         // 文字コードの変換（3-1）。⚠ ほかの `str` のメソッドはまだ型が無い（結果は `Unresolved`）。
@@ -1519,6 +1657,45 @@ impl TypeChecker {
             (T::Ptr(e), "to_list") => return e.list_elem().map(|t| T::ListOf(Box::new(t))),
             (T::Ptr(e), "to_bytes") if e.is_char() => return Some(T::Bytes),
             _ => {}
+        }
+        // `x.__iter__()` は要素の列（python_builtins_plan.md のタスク 1-4）。辞書はキー、ジェネレータは自分自身。
+        if method == "__iter__" {
+            return match recv_ty {
+                T::IteratorOf(_) => Some(recv_ty.clone()),
+                T::DictOf(k, _) => Some(T::IteratorOf(k.clone())),
+                T::ListOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) | T::SetOf(e) | T::FrozenSetOf(e) => {
+                    Some(T::IteratorOf(e.clone()))
+                }
+                T::Str => Some(T::IteratorOf(Box::new(T::Str))),
+                _ => None,
+            };
+        }
+        // `s.encode()` は bytes、bytes のメソッド（タスク 3-1・`classes/bytes_methods.rs`）。
+        if matches!(recv_ty, T::Str) && method == "encode" {
+            return Some(T::Bytes);
+        }
+        if matches!(recv_ty, T::Bytes) {
+            return match method {
+                "decode" | "hex" => Some(T::Str),
+                "count" | "find" | "rfind" | "index" | "rindex" => Some(T::Int),
+                "startswith" | "endswith" | "isalnum" | "isalpha" | "isascii" | "isdigit" | "islower" | "isspace"
+                | "isupper" => Some(T::Bool),
+                "replace" | "join" | "strip" | "lstrip" | "rstrip" | "upper" | "lower" => Some(T::Bytes),
+                "split" => Some(T::ListOf(Box::new(T::Bytes))),
+                "__iter__" => Some(T::IteratorOf(Box::new(T::Int))),
+                _ => None,
+            };
+        }
+        // set / frozenset の書き換えないメソッド（タスク 3-1）。結果が受け手の部分集合になるもの（`copy` /
+        // `intersection` / `difference`）は受け手と同じ型。
+        // ⚠ `union` / `symmetric_difference` は引数の要素が混ざる（引数は任意のイテラブル・個数も可変）ので
+        //   返さない（嘘の型を返さない）。
+        if let T::SetOf(_) | T::FrozenSetOf(_) | T::Set | T::FrozenSet = recv_ty {
+            return match method {
+                "copy" | "intersection" | "difference" => Some(recv_ty.clone()),
+                "issubset" | "issuperset" | "isdisjoint" => Some(T::Bool),
+                _ => None,
+            };
         }
         // ジェネレータ（`generator[T]`・フェーズ10 10-7）。`next()` は要素 1 つ、`close()` は `None`。
         // ⚠ 以前は結果に型が無く、`let v: str = g.next()` が通っていた（`for` と同じ穴）。
@@ -1535,10 +1712,35 @@ impl TypeChecker {
             T::Dict => (T::Any, T::Any),
             _ => return None,
         };
+        // 既定値つきの `get` / `pop` / `setdefault`（タスク 3-6）: 既定値が値の型と同じならその型、`None` なら `Option[V]`、
+        // 違えば両方の `Union`。
+        let or_default = |d: &T| -> T {
+            match d {
+                _ if *d == v || matches!(d, T::Never) || matches!(v, T::Any) => v.clone(),
+                T::None => T::Union(vec![v.clone(), T::None]),
+                other => T::Union(vec![v.clone(), other.clone()]),
+            }
+        };
+        let positional: Vec<&T> = args.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
         match method {
             "key" | "keys" => Some(T::ListOf(Box::new(k))),
             "item" | "values" => Some(T::ListOf(Box::new(v))),
             "items" => Some(T::ListOf(Box::new(T::Tuple(vec![k, v])))),
+            // 無ければ `None` を返す（`d.get(k)` は `Option[V]`）。
+            "get" | "setdefault" => match positional.as_slice() {
+                [_] => Some(or_default(&T::None)),
+                [_, d] => Some(or_default(d)),
+                _ => None,
+            },
+            // 無ければ `KeyError`（既定値が無いとき）。
+            "pop" => match positional.as_slice() {
+                [_] => Some(v),
+                [_, d] => Some(or_default(d)),
+                _ => None,
+            },
+            "popitem" => Some(T::Tuple(vec![k, v])),
+            "copy" => Some(recv_ty.clone()),
+            "update" | "clear" => Some(T::None),
             _ => None,
         }
     }
@@ -1590,9 +1792,12 @@ impl TypeChecker {
     ///   検査していなかった。`open("a.txt", 1)` / `close("x")` / `getenv(1)` は実行時まで通っていた。
     /// - 仮引数が固定の関数は、関数値の呼び出しと同じ検査（[`Self::check_fn_type_call`]・個数・
     ///   キーワード引数の名前・型）。
-    /// - `let ...: T`（`print` / `zip`）は位置引数をそれぞれ `T` と突き合わせ、キーワード引数と
-    ///   `... =` を弾く（実行時もそれらは通らない）。固定の仮引数は前に持たない（`builtins.ars` の規則・
-    ///   単体テスト `variadic_builtins_have_no_fixed_params` が守る）。
+    /// - `let ...: T`（`print` / `zip` / `min`）は位置引数をそれぞれ `T` と突き合わせ、`... =` を弾く
+    ///   （実行時も通らない）。キーワード引数は、宣言で `let ...` と並べた**固定の仮引数**（既定値つき・
+    ///   キーワード専用・`min(xs, key = f)` / `print(x, end = "")`）の名前と型で検査し、ほかは弾く。
+    ///   ⚠ 固定の仮引数を `let ...` の**前**に書くのは、Arrow の構文が `...` を最後の仮引数に限るため
+    ///   （CPython の `min(*args, key=None)` の並びは書けない）。位置引数は固定の仮引数へ入らない
+    ///   （`builtins.ars` の規則・単体テスト `variadic_builtins_fixed_params_are_keyword_only` が守る）。
     /// ⚠ 型の変換（`int(x)` …）は検査しない（`builtins::call_decl`）。
     /// ⚠ 呼ぶのは同じ名前の利用者の関数・変数が無いときだけ（呼ぶ側 `infer_call_inner`）。
     fn check_builtin_call(
@@ -1612,13 +1817,29 @@ impl TypeChecker {
         }
         for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
             if let Some(arg_name) = key {
-                self.report_error(StaticTypeError {
-                    kind: TypeErrorKind::UnknownKeywordArg {
-                        func_name: name.to_string(),
-                        arg_name: arg_name.clone(),
-                    },
-                    span: None,
-                });
+                match decl.params.iter().position(|p| &p.name == arg_name) {
+                    Some(param_pos) => {
+                        let param = &decl.params[param_pos];
+                        if param.ty != InferredType::Any && !self.types_compatible(arg_ty, &param.ty, Site::LetParam) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallArgTypeMismatch {
+                                    func_name: name.to_string(),
+                                    param_index: param_pos,
+                                    expected: param.ty.clone(),
+                                    got: arg_ty.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                    None => self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::UnknownKeywordArg {
+                            func_name: name.to_string(),
+                            arg_name: arg_name.clone(),
+                        },
+                        span: None,
+                    }),
+                }
                 continue;
             }
             if elem != InferredType::Any && !self.types_compatible(arg_ty, &elem, Site::LetParam) {

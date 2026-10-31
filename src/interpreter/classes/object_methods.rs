@@ -148,13 +148,25 @@ impl Interpreter {
     // FileObject メソッド
     // ---------------------------------------------------------------------------
 
-    /// `FileObject` のメソッド（`read` / `write` / `close` / `seek` 等）を実行する。
+    /// `FileObject` のメソッド（Arrow の `read` / `read_line` / `read_letter` / `write` / `write_line` と、
+    /// Python の `readline` / `readlines` / `writelines` / `close` / `flush` / `tell`）を実行する。
+    ///
+    /// Python の名前はどのファイルにも足した（Arrow の名前とぶつからない）。同じ名前で意味の違う `read` / `write` は、
+    /// Python の形で開いたファイル（`FileData::py_mode`）だけ CPython の意味にする（python_builtins_plan.md のタスク 5-4）。
     pub(crate) fn exec_file_method(
         &mut self,
         fd_rc: Rc<RefCell<crate::interpreter::FileData>>,
         method_name: &str,
         evaled: &[(Option<String>, Value, bool)],
     ) -> Result<Value, String> {
+        let py_form = fd_rc.borrow().py_mode.is_some();
+        match method_name {
+            "readline" | "readlines" | "writelines" | "close" | "flush" | "tell" => {
+                return self.exec_file_py_method(fd_rc, method_name, evaled)
+            }
+            "read" | "write" if py_form => return self.exec_file_py_method(fd_rc, method_name, evaled),
+            _ => {}
+        }
         match method_name {
             "read" => {
                 let backward = file_bool_arg(evaled, "backward", false)?;
@@ -288,6 +300,123 @@ impl Interpreter {
             _ => Err(format!(
                 "AttributeError: FileObject has no method '{method_name}'"
             )),
+        }
+    }
+
+    /// Python のファイルのメソッド（python_builtins_plan.md のタスク 5-4）。文言は CPython 3.12 と同じ。
+    ///
+    /// - `read(size=-1)` / `readline(size=-1)` / `readlines(hint=-1)`: 終わりでは `""`（誤りにしない）。`size` は
+    ///   テキストなら文字の数、バイト列ならバイトの数。行は `\n` まで（`\n` を含む）
+    /// - `write(s)`: 位置へ書いて、書いた数（文字・バイト）を返す。`writelines(it)`: 順に書く（改行は足さない）
+    /// - `close()`（何度呼んでもよい）/ `flush()`（閉じずにディスクへ書き戻す）/ `tell()`（位置・バイト）
+    /// - 返す値: テキストは `str`。バイト列は Python の形なら `bytes`、Arrow の形なら従来どおり `list[int]`
+    ///
+    /// ⚠ 閉じたファイルは CPython と同じ `ValueError: I/O operation on closed file.`（Arrow の形は従来の文言）。
+    /// ⚠ 読めない／書けないモード（`"w"` で読む・`"r"` で書く）は `OSError: not readable` / `not writable`
+    ///   （CPython は `io.UnsupportedOperation`。`OSError` と `ValueError` の両方を継承するが、Arrow の例外の
+    ///   表は単一継承なので `OSError` にした。`except OSError` で捕まえられるのは同じ）。
+    /// ⚠ `seek` は無い（`"r+"` も受けない。Arrow の `write` は位置へ挿入するので、位置を動かせると上書きと違う）。
+    fn exec_file_py_method(
+        &mut self,
+        fd_rc: Rc<RefCell<crate::interpreter::FileData>>,
+        method_name: &str,
+        evaled: &[(Option<String>, Value, bool)],
+    ) -> Result<Value, String> {
+        let py_form = fd_rc.borrow().py_mode.is_some();
+        let closed_err = || {
+            if py_form {
+                "ValueError: I/O operation on closed file.".to_string()
+            } else {
+                "IOError: I/O operation on closed file".to_string()
+            }
+        };
+        let check_open = |fd: &crate::interpreter::FileData| if fd.is_closed { Err(closed_err()) } else { Ok(()) };
+        match method_name {
+            "close" => {
+                file_no_args(evaled, "close")?;
+                fd_rc.borrow_mut().close();
+                Ok(Value::None)
+            }
+            "flush" => {
+                file_no_args(evaled, "flush")?;
+                let mut fd = fd_rc.borrow_mut();
+                check_open(&fd)?;
+                fd.flush_to_disk();
+                Ok(Value::None)
+            }
+            "tell" => {
+                file_no_args(evaled, "tell")?;
+                let fd = fd_rc.borrow();
+                check_open(&fd)?;
+                Ok(Value::Int(fd.pointer as i64))
+            }
+            "read" | "readline" => {
+                let size = file_size_arg(evaled, method_name, "size")?;
+                let mut fd = fd_rc.borrow_mut();
+                check_open(&fd)?;
+                if !fd.readable() {
+                    return Err("OSError: not readable".to_string());
+                }
+                let end = file_read_end(&fd, size, method_name == "readline");
+                let start = fd.pointer;
+                fd.pointer = end;
+                file_bytes_value(&fd.content[start..end], &fd)
+            }
+            "readlines" => {
+                let hint = file_size_arg(evaled, "readlines", "hint")?;
+                let mut fd = fd_rc.borrow_mut();
+                check_open(&fd)?;
+                if !fd.readable() {
+                    return Err("OSError: not readable".to_string());
+                }
+                let mut lines = Vec::new();
+                let mut total = 0usize;
+                while fd.pointer < fd.content.len() {
+                    let start = fd.pointer;
+                    let end = file_read_end(&fd, None, true);
+                    fd.pointer = end;
+                    let line = file_bytes_value(&fd.content[start..end], &fd)?;
+                    total += match &line {
+                        Value::Str(s) => s.chars().count(),
+                        _ => end - start,
+                    };
+                    lines.push(line);
+                    // CPython と同じく、合計が `hint` に達したらその行で止める（`hint` が 0 以下なら全部）。
+                    if hint.is_some_and(|h| h > 0 && total >= h) {
+                        break;
+                    }
+                }
+                Ok(Value::List(Rc::new(RefCell::new(lines))))
+            }
+            "write" => {
+                let content = file_content_arg(evaled, "s")?.clone();
+                let mut fd = fd_rc.borrow_mut();
+                check_open(&fd)?;
+                if !fd.writable() {
+                    return Err("OSError: not writable".to_string());
+                }
+                let (bytes, count) = file_encode(&content, &fd)?;
+                file_insert(&mut fd, &bytes);
+                Ok(Value::Int(count as i64))
+            }
+            "writelines" => {
+                let lines = file_content_arg(evaled, "lines")?.clone();
+                {
+                    let fd = fd_rc.borrow();
+                    check_open(&fd)?;
+                    if !fd.writable() {
+                        return Err("OSError: not writable".to_string());
+                    }
+                }
+                // ⚠ 借用を落としてから回す（要素を取り出す途中で利用者のコードが走りうる）。
+                for line in self.drain_iterable(lines)? {
+                    let mut fd = fd_rc.borrow_mut();
+                    let (bytes, _) = file_encode(&line, &fd)?;
+                    file_insert(&mut fd, &bytes);
+                }
+                Ok(Value::None)
+            }
+            other => Err(format!("AttributeError: FileObject has no method '{other}'")),
         }
     }
 

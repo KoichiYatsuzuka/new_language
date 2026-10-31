@@ -1,0 +1,33 @@
+# py_dict_methods.ar — Python の dict のメソッド（python_builtins_plan.md のタスク 3-6）
+#
+# get / pop / setdefault / update / popitem / clear / copy を CPython と同じに受ける（文言も同じ）。
+# `__hash__` / `__eq__` を持つキー（`Key("Name")` と `Key("NAME")` が同じ）もそのまま引ける。
+# `counts[w] = counts.get(w, 0) + 1` / `groups.setdefault(k, []).append(w)` のよくある形も動く
+# （`setdefault` は辞書に入れた後の値を返す）。
+#
+# dm.run() は CPython と同じ出力:
+#   1 None 0 1
+#   1 {'b': 2} -1
+#   pop missing: KeyError: 'z'
+#   3 3 None {'b': 2, 'c': 3, 'n': None}
+#   {'b': 20, 'c': 3, 'n': None, 'x': 1, 'y': 2, 'z': 3, 'w': 4, 'v': 5}
+#   ('v', 5) ('w', 4) {'b': 20, 'c': 3, 'n': None, 'x': 1, 'y': 2, 'z': 3}
+#   6 7 False
+#   {} 0
+#   popitem empty: KeyError: 'popitem(): dictionary is empty'
+#   get no args: TypeError: get expected at least 1 argument, got 0
+#   get 3 args: TypeError: get expected at most 2 arguments, got 3
+#   get kw: TypeError: dict.get() takes no keyword arguments
+#   update 2: TypeError: update expected at most 1 argument, got 2
+#   update bad: TypeError: cannot convert dictionary update sequence element #0 to a sequence
+#   update len: ValueError: dictionary update sequence element #0 has length 3; 2 is required
+#   clear arg: TypeError: dict.clear() takes no arguments (1 given)
+#   v v 0
+#   {'a': 3, 'b': 2, 'c': 1}
+#   {'a': ['apple', 'avocado'], 'b': ['banana']}
+#
+# ⚠ 以前は get / pop などが `AttributeError: 'dict' object has no method 'get'` だった。
+
+import[py] test_modules.py_dict_methods as dm
+
+dm.run()

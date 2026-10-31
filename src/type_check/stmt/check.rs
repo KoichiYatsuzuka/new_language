@@ -591,6 +591,7 @@ impl TypeChecker {
                                 .and_then(InferredType::from_ann)
                                 .unwrap_or(InferredType::Unresolved),
                         ),
+                        mutates_immutable: None,
                     }
                 };
                 self.declare(name.clone(), ty, false);
@@ -684,10 +685,12 @@ impl TypeChecker {
                         //    型は `exc_type` に書いてある（`None` は bare `except:`）。
                         // ⚠ bare `except:` は捕捉する型が判らないので `Unresolved` のまま
                         //    （取りこぼす方へ倒す）。
+                        // ⚠ 修飾名（`except m.Err as e:`・タスク 4-3）はモジュールの修飾名へ引き直す
+                        //   （`t.Tag` の注釈と同じ・10-8）。
                         let exc_ty = handler
                             .exc_type
                             .as_deref()
-                            .map(|t| InferredType::NamedInstance(t.to_string()))
+                            .map(|t| InferredType::NamedInstance(self.registry.resolve(t).into_owned()))
                             .unwrap_or(InferredType::Unresolved);
                         self.note_binding(name, &exc_ty);
                         self.declare(name.clone(), exc_ty, true);
@@ -953,6 +956,7 @@ impl TypeChecker {
                     InferredType::FixedListOf(_) => Some("fixed_list"),
                     InferredType::ListLikeOf(_) => Some("list_like"),
                     InferredType::SetOf(_) => Some("set"),
+                    InferredType::FrozenSetOf(_) => Some("frozenset"),
                     InferredType::DictOf(_, _) => Some("dict"),
                     InferredType::Tuple(_) => Some("tuple"),
                     InferredType::IteratorOf(_) => Some("generator"),
@@ -1039,6 +1043,12 @@ impl TypeChecker {
         if !self.registry.is_known_class(type_name) {
             // ⚠ trait / protocol 名は `is_known_class` に載らないので、そちらも見てから判断する。
             if self.registry.is_known_trait(type_name) || self.registry.is_protocol(type_name) {
+                return;
+            }
+            // ⚠ import 先を読めていない環境（エディタ）では、名前が無いことを誤りと言えない
+            //   （`check_guard_type_exists` と同じ判断）。`except m.Err:`（タスク 4-3）の `m` のクラスが
+            //   見えず、正しいプログラムに偽の誤りを出していた（`compare_wasm_frontend` の INVENTED）。
+            if self.registry_incomplete {
                 return;
             }
             self.report_error(StaticTypeError {
@@ -1350,7 +1360,11 @@ impl TypeChecker {
         //    クラス名の解決のために**オブジェクトを二度推論しないで済む**。
         //    二度推論すると `infer_attr` がオブジェクトに対して出す診断
         //    （`OperationOnAny` など）が重複する。
+        // 代入の左辺の属性は「読み」ではない（`attr_is_assign_target` の doc）。複合代入（`o.x += v`）は先に読むので
+        // 読みとして検査する（CPython も `getattr` してから `__setattr__`）。
+        self.attr_is_assign_target = compound_op.is_none() && matches!(target, Expr::Attr { .. });
         let target_ty = self.infer(target);
+        self.attr_is_assign_target = false;
         let value_ty = self.infer(value);
         // ⚠⚠ **添字代入 `xs[i] = v` / `d[k] = v`**（タスク 5.2b・検体 `L5`）。
         //    以前は完全に無検査で、`list[int]` に `str` が、`dict[str,int]` に
@@ -1418,6 +1432,10 @@ impl TypeChecker {
             },
             _ => return,
         };
+        // `__setattr__` を上書きした Python のクラスへの代入は、値を上書きの仮引数が受ける（宣言型と突き合わせない・#10）。
+        if self.class_has_setattr_hook(&class_name) {
+            return;
+        }
         // 期待型を決める。
         //
         // ⚠⚠ `infer_attr` が引く `registry.class_field_details` は**そのクラス自身が
@@ -1426,7 +1444,28 @@ impl TypeChecker {
         //    検査が素通りしていた（起票されたバグ報告が trait を挙げていたのはこの形）。
         //    ⚠ `collect_class_field_details` も `class_field_details` しか見ないので
         //      これだけでは足りない。基底 trait のテーブルを明示的に引く。
-        let expected = match target_ty {
+        // クラス側のディスクリプタ（タスク 1-12）。インスタンス経由の代入はデータディスクリプタなら
+        // `__set__(obj, v)` の `v`、クラス経由（`C.x = d`）と非データディスクリプタはメンバーそのものを置き換える。
+        // ⚠ `target_ty`（`infer_attr` の戻り値）は読んだ値の型（`__get__` の戻り値）なので、そのままでは使えない。
+        let descriptor_expected = self.class_descriptor(&class_name, attr).map(|d| {
+            let via_class = match object.as_ref() {
+                Expr::Ident { name, .. } => match self.lookup(name) {
+                    Some(info) => matches!(info.ty, InferredType::TypeValOf(_)),
+                    None => true, // 変数として引けないクラス名（`receiver_class` の doc）
+                },
+                _ => false,
+            };
+            if d.is_data && !via_class {
+                d.write.unwrap_or(InferredType::Unresolved)
+            } else {
+                d.declared
+            }
+        });
+        // `__set__` の `value` に型が無い（`Any`）なら検査しない（下の宣言型へ落とすとディスクリプタのクラスと比べてしまう）。
+        if matches!(descriptor_expected, Some(InferredType::Unresolved | InferredType::Any)) {
+            return;
+        }
+        let expected = match descriptor_expected.unwrap_or(target_ty) {
             InferredType::Unresolved | InferredType::Any => {
                 // ⚠ ここも**置換表を通す**（A-2）。`declared_field_type` はレジストリから
                 //   置換前の型を返すので、通さないと型変数（`T`）がそのまま比較されて
@@ -1671,6 +1710,7 @@ impl TypeChecker {
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)
             | InferredType::SetOf(t)
+            | InferredType::FrozenSetOf(t)
             | InferredType::TypeValOf(t) => self.mentions_type_param(t),
             InferredType::DictOf(k, v) => {
                 self.mentions_type_param(k) || self.mentions_type_param(v)
@@ -1683,7 +1723,7 @@ impl TypeChecker {
             }
             // ⚠ 関数型・イテレータ型の内側も見る（タスク 2-15。`function[T]->T` を取りこぼしていた）。
             InferredType::IteratorOf(t) => self.mentions_type_param(t),
-            InferredType::Function { params, return_type } => {
+            InferredType::Function { params, return_type, .. } => {
                 params.iter().flatten().any(|p| self.mentions_type_param(&p.ty))
                     || self.mentions_type_param(return_type)
             }
@@ -1717,6 +1757,7 @@ impl TypeChecker {
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)
             | InferredType::SetOf(t)
+            | InferredType::FrozenSetOf(t)
             | InferredType::IteratorOf(t)
             | InferredType::TypeValOf(t) => Self::mentions_any_name(t, names),
             InferredType::DictOf(k, v) => {

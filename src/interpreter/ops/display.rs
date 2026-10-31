@@ -24,28 +24,18 @@ impl Interpreter {
             Value::Bytes(b) => bytes_repr(b),
             Value::Int(n) => n.to_string(),
             Value::UInt(n) => n.to_string(),
-            Value::Float(f) => {
-                if f.fract() == 0.0 && f.abs() < 1e15 {
-                    format!("{f:.1}")
-                } else {
-                    f.to_string()
-                }
-            }
+            // CPython の `repr` と同じ（`ops::py_float_repr`・タスク 1-5）。
+            Value::Float(f) => super::py_float_repr(*f),
+            // CPython の `complex_repr`: 成分は `repr` の書式で `.0` を付けない（`(1+2j)`）。実部が +0 なら
+            // 虚部だけで括弧も付けない（`2j`）。虚部は符号を必ず付ける（`(1-0j)`）。
+            // ⚠ 以前は成分に `.0` を付け（`(1.0+2.0j)`）、`-0.0` を `0.0` に寄せていた（2.2 の部分的な対応）。
             Value::Complex(re, im) => {
-                let fmt_f = |f: f64| -> String {
-                    let f = if f == 0.0 { 0.0 } else { f }; // normalize -0.0
-                    if f.fract() == 0.0 && f.abs() < 1e15 {
-                        format!("{f:.1}")
-                    } else {
-                        f.to_string()
-                    }
-                };
-                let re_n = if *re == 0.0 { 0.0 } else { *re };
-                let im_n = if *im == 0.0 { 0.0 } else { *im };
-                if im_n >= 0.0 {
-                    format!("({}+{}j)", fmt_f(re_n), fmt_f(im_n))
+                let im_s = super::py_float_fmt(*im, false);
+                if *re == 0.0 && re.is_sign_positive() {
+                    format!("{im_s}j")
                 } else {
-                    format!("({}-{}j)", fmt_f(re_n), fmt_f(im_n.abs()))
+                    let sign = if im_s.starts_with('-') { "" } else { "+" };
+                    format!("({}{sign}{im_s}j)", super::py_float_fmt(*re, false))
                 }
             }
             Value::Str(s) => s.to_string(),
@@ -59,6 +49,20 @@ impl Interpreter {
                     .map(|v| self.display_repr(v))
                     .collect();
                 format!("[{}]", parts.join(", "))
+            }
+            // 束縛メソッド（タスク 1-8）は CPython と同じ形（`<bound method C.m of <C object at 0x..>>`）。
+            // 組み込みの値のメソッド（タスク 1-10）も CPython と同じ形（`<built-in method append of list object at 0x..>`）。
+            Value::Function(fn_rc) if fn_rc.bound.is_some() => {
+                let b = fn_rc.bound.as_ref().expect("guarded");
+                if let crate::interpreter::value::BoundTarget::Builtin(name) = &b.target {
+                    let addr = fn_rc.identity_ptr() as usize;
+                    return format!("<built-in method {name} of {} object at 0x{addr:x}>", self.type_name(&b.receiver));
+                }
+                let owner = match &b.receiver {
+                    Value::Instance(i) => i.borrow().class.name.clone(),
+                    other => self.type_name(other).to_string(),
+                };
+                format!("<bound method {owner}.{} of {}>", fn_rc.name, self.display_repr(&b.receiver))
             }
             Value::Function(fn_rc) => {
                 let addr = Rc::as_ptr(fn_rc) as usize;
@@ -78,14 +82,25 @@ impl Interpreter {
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
                 let inst = i.borrow();
-                // 例外はメッセージ（7-3・Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが
-                //   実行のたびに変わった。メッセージが無い（`ValueError()`）ときは空文字列（Python と同じ）
-                if inst.class.is_a("Exception") {
+                // 唯一の値の名前（`Ellipsis` / `NotImplemented`・タスク 6-11 / 6-12）。`str` も `repr` も同じ（CPython と同じ）。
+                match inst.class.builtin {
+                    crate::interpreter::BuiltinClass::Ellipsis => return "Ellipsis".to_string(),
+                    crate::interpreter::BuiltinClass::NotImplemented => return "NotImplemented".to_string(),
+                    crate::interpreter::BuiltinClass::Ordinary | crate::interpreter::BuiltinClass::Object => {}
+                }
+                // 例外はメッセージ（Python の `str(e)` と同じ）。⚠ 以前は `<ValueError object at 0x…>` で、アドレスが
+                //   実行のたびに変わった（ffi_value_exchange_plan.md 7-3）。メッセージが無い（`ValueError()`）ときは空文字列。
+                // 組み込みの例外の階層（`GeneratorExit` も）は `message` に CPython の `str(e)` が入れてある（タスク 4-2）。
+                if Self::in_exception_hierarchy(&inst.class) || inst.class.is_a("Exception") {
                     return exception_message(&inst).map(|m| self.display(&m)).unwrap_or_default();
                 }
                 let class_name = inst.class.name.clone();
                 let addr = Rc::as_ptr(i) as usize;
                 format!("<{} object at 0x{:x}>", class_name, addr)
+            }
+            // 組み込み関数を値として取り出したもの（`repr` / `len` …・タスク 1-7）は CPython と同じ表示。
+            Value::Type(name) if crate::interpreter::eval::is_builtin_function_name(name) => {
+                format!("<built-in function {name}>")
             }
             Value::Type(name) => format!("<class '{name}'>"),
             Value::Trait(name) => format!("<trait '{name}'>"),
@@ -135,6 +150,15 @@ impl Interpreter {
                 } else {
                     let parts: Vec<String> = s.iter().map(|v| self.display_repr(v)).collect();
                     format!("{{{}}}", parts.join(", "))
+                }
+            }
+            // CPython の `frozenset({1, 2})` / `frozenset()`（タスク 3-1）。
+            Value::FrozenSet(s) => {
+                if s.is_empty() {
+                    "frozenset()".to_string()
+                } else {
+                    let parts: Vec<String> = s.iter().map(|v| self.display_repr(v)).collect();
+                    format!("frozenset({{{}}})", parts.join(", "))
                 }
             }
             Value::Namespace(ns) => format!("<module '{}'>", ns.name),
@@ -217,15 +241,16 @@ impl Interpreter {
     }
 
     /// 値をコレクション内要素の表示用文字列に変換する。
-    /// 文字列値はシングルクォートで囲み、リストは各要素を再帰的に repr 表示する。
-    /// `display` との違い: 文字列値が `'...'` 形式で出力される点。
+    /// 文字列値は CPython の `repr` の形（`'a'` / `"it's"` / `'a\nb'`・`py_str_repr`・タスク 1-13）、
+    /// リストは各要素を再帰的に repr 表示する。
+    /// `display` との違い: 文字列値が引用符つきで出力される点。
     ///
     /// - `val`: 表示する値
     ///
     /// 戻り値: repr 形式の表示文字列
     pub(crate) fn display_repr(&self, val: &Value) -> String {
         match val {
-            Value::Str(s) => format!("'{s}'"),
+            Value::Str(s) => super::py_str_repr(s),
             Value::List(items) => {
                 let parts: Vec<String> = items
                     .borrow()
@@ -235,7 +260,16 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
-            // 例外は `ValueError('bad value')`（7-3・Python の `repr(e)` と同じ）。メッセージが無ければ `ValueError()`
+            // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+            Value::Instance(i) if Self::in_exception_hierarchy(&i.borrow().class) => {
+                let inst = i.borrow();
+                let parts: Vec<String> = match Self::exc_args_of(&inst) {
+                    Some(Value::Tuple(t)) => t.values.iter().map(|v| self.display_repr(v)).collect(),
+                    _ => Vec::new(),
+                };
+                format!("{}({})", inst.class.name, parts.join(", "))
+            }
+            // 利用者の例外は `MyError('bad value')`（7-3）。メッセージが無ければ `MyError()`
             Value::Instance(i) if i.borrow().class.is_a("Exception") => {
                 let inst = i.borrow();
                 let message = exception_message(&inst).map(|m| self.display_repr(&m)).unwrap_or_default();
@@ -295,6 +329,14 @@ impl Interpreter {
                     items_clone.iter().map(|v| self.repr_val(v)).collect();
                 Ok(format!("{{{}}}", parts?.join(", ")))
             }
+            Value::FrozenSet(s) => {
+                if s.is_empty() {
+                    return Ok("frozenset()".to_string());
+                }
+                let items = s.clone();
+                let parts: Result<Vec<String>, _> = items.iter().map(|v| self.repr_val(v)).collect();
+                Ok(format!("frozenset({{{}}})", parts?.join(", ")))
+            }
             // インスタンス: new_type_base または __repr__ を優先して使用
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
@@ -322,7 +364,19 @@ impl Interpreter {
                     };
                 }
 
-                // 例外は `ValueError('bad value')`（7-3）、ほかは <ClassName object at 0xADDR>
+                // 組み込みの例外の階層は CPython の `repr(e)`（`ValueError('a', 1)`・タスク 4-2）。
+                if Self::in_exception_hierarchy(&class) {
+                    let args = Self::exc_args_of(&inst_rc.borrow());
+                    let parts: Vec<String> = match args {
+                        Some(Value::Tuple(t)) => {
+                            t.values.iter().map(|v| self.repr_val(v)).collect::<Result<_, _>>()?
+                        }
+                        _ => Vec::new(),
+                    };
+                    return Ok(format!("{}({})", class.name, parts.join(", ")));
+                }
+
+                // 利用者の例外は `MyError('bad value')`（7-3）、ほかは <ClassName object at 0xADDR>
                 Ok(self.display_repr(val))
             }
             // その他の型はデフォルト表示

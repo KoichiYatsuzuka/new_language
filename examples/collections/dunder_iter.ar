@@ -1,0 +1,33 @@
+# dunder_iter.ar — 辞書とジェネレータの `__iter__`（python_builtins_plan.md のタスク 1-4）
+#
+# - `d.__iter__()` はキーを挿入順に返すジェネレータ（CPython の dict_iter）
+# - `g.__iter__()` はそのジェネレータ自身（CPython の PyObject_SelfIter・`iter(g) is g`）
+# - list / set / str の `__iter__` は以前からある。結果の型は `generator[要素の型]`
+# ⚠ 以前は辞書とジェネレータで `AttributeError: ... has no method '__iter__'` だった。
+#   `for k in d:` / `for x in g:` は以前から動く。Python の `iter(x)`（3-3）がこれを使う。
+# ⚠ 辞書の `__iter__` は `for` と同じく呼んだ時点のキーの写しを回す（CPython は反復中に大きさが変わると
+#   RuntimeError）。
+
+print("=== 1. dict ===")
+let d: dict[str, int] = {"b": 1, "a": 2}
+mut keys = d.__iter__()
+print(keys.next(), keys.next())          # b a
+
+print("=== 2. generator returns itself ===")
+gen nums() -> int:
+    yield 1
+    yield 2
+    yield 3
+
+mut g = nums()
+mut same = g.__iter__()
+print(same.next())                       # 1
+print(g.next())                          # 2（同じジェネレータなので続きから）
+print(same === g)                        # True
+
+print("=== 3. list and str ===")
+let xs: list[int] = [10, 20]
+mut e = xs.__iter__()
+print(e.next(), e.next())                # 10 20
+mut cs = "hi".__iter__()
+print(cs.next(), cs.next())              # h i

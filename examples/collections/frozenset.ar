@@ -1,0 +1,35 @@
+# frozenset — 不変でハッシュできる集合（python_builtins_plan.md のタスク 3-1）
+#
+# `frozenset(iterable)` で作る。set と同じ演算子・書き換えないメソッドを持ち、辞書のキーや集合の要素にできる。
+# 型は `frozenset[T]`（`set[T]` とは別の型で、互いに代入できない）。出力は CPython と同じ。
+
+let a: frozenset[int] = frozenset([1, 2, 3, 2])
+let b = frozenset({3, 4})
+let s: set[int] = {2, 3}
+print(a, len(a), 2 in a, 9 not in a)
+print(frozenset(), bool(frozenset()), bool(a))
+
+# 演算子（結果は左の種類）
+print(a | b, a & b, a - b, a ^ b)
+print(a | s, type(s | a).__name__, sorted(s | a))
+
+# 比べる（set とも要素で比べる・大小は包含関係）
+print(a == frozenset([3, 2, 1]), a == {1, 2, 3}, a != b)
+print(frozenset([1, 2]) <= a, frozenset([1, 2]) < a, a < a, a >= frozenset([1]))
+
+# 書き換えないメソッド
+let small: frozenset[int] = a.intersection(s)
+print(small, a.difference([1]), a.union([7], (8,)), a.symmetric_difference(b))
+print(a.issubset([1, 2, 3, 4]), a.issuperset(s), a.isdisjoint(frozenset([9])))
+
+# 辞書のキー・集合の要素にできる
+let names: dict[frozenset[str], str] = {frozenset(["x", "y"]): "pair"}
+print(names[frozenset(["y", "x"])])
+print(frozenset([frozenset([1])]))
+
+# 反復・変換・型の判定
+mut total = 0
+for v in a:
+    total += v
+print(total, sorted(a), set(a) == a)
+print(isinstance(a, frozenset), type(a).__name__, a is frozenset)

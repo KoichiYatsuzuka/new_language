@@ -1,0 +1,46 @@
+# py_getattr_hook.ar — Python のクラスの `__getattr__`（known_bugs.md の #11）
+#
+# 属性の操作の上書きは Python の読み込み（`import[py]`）でだけ使える（`__setattr__` / `__delattr__` と同じ・
+# `py_setattr.ar`）。Python のクラスが定義した `__getattr__(name)` は、ふつうの読みが AttributeError になったとき
+# だけ呼ばれる（無い名前・`del` した属性・AttributeError を投げた property の getter）。見つかる名前（フィールド・
+# メソッド・property）では呼ばれない。`getattr(o, k, d)` / `hasattr(o, k)` / `o.k(..)`（読んでから呼ぶ）も同じ。
+# `__getattr__` の中から本当の属性を読むのは `object.__getattribute__(self, name)` / `super().__getattribute__(name)`
+# （変換器が内部の `__py_object_getattribute` にする）。
+# ⚠ Arrow のクラスは `__getattr__` を定義できない（`classes/getattr_hook_error.ar`）。
+#
+# m.run() / m.errors() は CPython 3.12 と同じ出力:
+#   1 read: 1 method dyn:zz ['zz']
+#   2 getattr: dyn:yy default True False
+#   3 deleted: dyn:real
+#   4 frame: [1, 2] [3] False True
+#   5 call: greet['x', 2] other[]
+#   5 child: dyn:whatever 1 ['whatever']
+#   6 property: fallback:value 1
+#   7 super: 1 1 False
+#   E refused: AttributeError Dyn refuses no_x
+#   E frame_missing: AttributeError 'Frame' object has no attribute 'volume'
+#   E bypass_missing: AttributeError 'Dyn' object has no attribute 'zz'
+#   E bad_name: TypeError attribute name must be string, not 'int'
+#
+# ⚠ 以前は `__getattr__` が黙って呼ばれず、`d.zz` が AttributeError・`getattr(d, "yy", "default")` が `default`・
+#   `hasattr(d, "a")` が偽だった。あわせて、`__getattr__` や property の getter が `raise` した AttributeError を
+#   `getattr` の既定値・`hasattr` が受け止めるようにした（以前は文言の誤りしか見ていなかった）。
+
+import[py] test_modules.py_getattr_hook as m
+
+m.run()
+m.errors()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から読んでも `__getattr__` が答える（型検査も宣言していない名前を通す。型は `__getattr__` の戻り値・注釈が無ければ Any）
+mut d = m.Dyn()
+check(str(d.anything) == "dyn:anything", "read from Arrow goes through __getattr__")
+check(hasattr(d, "other") and not hasattr(d, "no_way"), "hasattr asks __getattr__")
+mut c = m.Calls()
+check(str(c.greet(1)) == "greet[1]", "a method call reads through __getattr__")
+# 見つかる名前は今までどおり（`__getattr__` を呼ばない）
+check(d.method() == "method" and str(d.asked) == "['anything', 'other', 'no_way']", "found names skip __getattr__")
+print("arrow side ok")

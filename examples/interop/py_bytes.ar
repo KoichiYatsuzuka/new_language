@@ -1,0 +1,16 @@
+# py_bytes.ar — Python の b".." リテラルと bytes / frozenset（python_builtins_plan.md のタスク 3-1）
+#
+# 変換器は b".." を組み込みの `bytes([..])` に写す。メソッド・演算子・符号化の誤りは CPython と同じ。
+# pb.run() の出力も CPython と同じ:
+#   b'\x89PNG\r\n' 6 True False
+#   [b'name=caf\xc3\xa9', b'tags=a,b'] ['name', 'tags']
+#   café café
+#   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 3: unexpected end of data
+#   [b'a', b'b'] True tags
+#
+# ⚠ 以前は b".." が変換の誤り（bytes literals are not supported）だった。
+
+import[py] test_modules.py_bytes as pb
+
+let tail: bytes = pb.run()
+print(tail, tail.hex())

@@ -1,0 +1,5 @@
+# py_super_classmethod.ar — クラスメソッド・静的メソッドと super()（known_bugs.md の #6）
+
+import[py] test_modules.py_super_classmethod as m
+
+m.run()

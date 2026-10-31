@@ -1,0 +1,23 @@
+# ディスクリプタのプロトコルの誤り（python_builtins_plan.md のタスク 1-12）
+#
+# インスタンス経由の代入はデータディスクリプタの `__set__(obj, 値)` になるので、値は `__set__` の
+# 仮引数の型と照合される（ここでは `float`）。期待される出力:
+#   StaticTypeError: field 'fahrenheit' of class 'Thermo' is declared 'float' but got 'str'
+
+class Fahrenheit:
+    fn __get__(self, mut obj: Thermo, owner: Any = None) -> float:
+        return obj.celsius * 9.0 / 5.0 + 32.0
+
+    fn __set__(self, mut obj: Thermo, value: float) -> None:
+        obj.celsius = (value - 32.0) * 5.0 / 9.0
+
+class Thermo:
+    mut celsius: float
+    static mut fahrenheit: Fahrenheit = Fahrenheit()
+
+    fn __init__(mut self, c: float) -> None:
+        self.celsius = c
+
+mut t = Thermo(100.0)
+t.fahrenheit = "hot"
+print(t.celsius)

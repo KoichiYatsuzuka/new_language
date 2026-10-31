@@ -11,6 +11,7 @@
 #     **実在するものだけ**を書く。無いものを書くと補完が存在しない関数を勧め、型検査も
 #     実行時に NameError になる呼び出しに型を付けてしまう
 #     （`interpreter/tests` の `builtins_ars_matches_the_runtime` が両方向を検査する）。
+#     ⚠ `__` で始まる実行時の組み込み（Python の変換器が置く `__py_with_exit` など）は書かない（利用者が書く名前ではない）。
 #   - 戻り値の型が**静的に決まらない**ものは `->` を書かない（型検査器は型を付けない）。
 #     `-> Any` と書かないこと: `Any` は「使う前に `mustbe` が要る型」なので、結果を使う式が
 #     すべて静的エラーになる。
@@ -22,8 +23,11 @@
 #     名前と順番は実行時のキーワード引数名に合わせる（`get_arg(.., "file_path")` など）。
 #   - **個数自由の位置引数**（`print(a, b, c)` / `zip(xs, ys)`）は `let ...: T` で書く。
 #     ⚠ Arrow の可変長引数（呼ぶ側が `f(... = a, b)`）とは呼び方が違う。組み込みでは素の位置引数を
-#       何個でも受け取り、キーワード引数・`... =` は受け取らない（実行時もそれらは通らない）。
+#       何個でも受け取り、`... =` は受け取らない（実行時も通らない）。
 #       型検査器は位置引数をそれぞれ `T` と突き合わせる。
+#     ⚠ `let ...` と並べた固定の仮引数は**キーワード専用**（CPython の `min(*args, key=None)`）。
+#       既定値を必ず付け、`let ...` の**前**に書く（Arrow の構文は `...` を最後の仮引数に限る）。
+#       位置引数は入らない: `fn min(key: Any = None, let ...: Any)` の `min(3, 1)` は 2 つとも `let ...` へ。
 #   - 本体は `pass`（`...` は docstring と併用できない）。仮引数名に予約語（`code` など）を使わない
 #     （2026-09-22 に `code` が予約語になり、このファイルが丸ごと読めなくなっていた）。
 #   - **組み込みの型**（`enum` / `class`）もここで宣言する。型検査器はレジストリに登録して
@@ -63,9 +67,19 @@ enum Encoding:
     shift_JIS = 3
 
 # `open` が返すファイル。読み書きは現在位置から行う（`close` で書き戻す）。
+# ⚠ Python の形で開いたファイル（`open(path, "w")` など・python_builtins_plan.md のタスク 5-2 / 5-4）は、同じ名前の
+#   `read` / `write` が CPython の意味になる（`read(n)` は n 文字（バイト）まで・終わりは `""`、`write` は書いた数を返す）。
+#   型はどちらの形でも `FileObject` なので、`read` の引数は `backward`（Arrow）と `size`（Python）の両方を受け、
+#   `write` の戻り値は書かない（形で決まる）。
 class FileObject:
-    fn read(self, backward: bool = False):
-        """Read from the current position to the end (backward=True: from the start up to the current position). str in text mode (IOError if it is not UTF-8), bytes in byte mode."""
+    # 読むだけの属性（Python と同じ名前・python_builtins_plan.md のタスク 5-4）。⚠ `mode` は Python の形で開いた
+    #   ファイルだけにある（Arrow の形は実行時の AttributeError）。
+    let closed: bool
+    let name: str
+    let mode: str
+
+    fn read(self, backward: Union[bool, int, None] = False):
+        """Arrow form: read from the current position to the end (backward=True: from the start up to the current position). Python form: read(size=-1) reads at most size characters (bytes in binary mode); "" at the end. str in text mode (IOError / UnicodeDecodeError if it is not UTF-8), bytes in byte mode."""
         pass
 
     fn read_line(self, backward: bool = False):
@@ -76,18 +90,42 @@ class FileObject:
         """Read one character (str) in text mode, or one byte (int) in byte mode."""
         pass
 
-    fn write(self, content: Union[str, bytes]) -> None:
-        """Insert content at the current position (str in text mode, bytes in byte mode)."""
+    fn readline(self, size: Option[int] = -1):
+        """Read one line including its newline (Python); "" at the end. size limits the characters (bytes) read."""
+        pass
+
+    fn readlines(self, hint: Option[int] = -1):
+        """The remaining lines as a list, each with its newline (Python)."""
+        pass
+
+    fn write(self, content: Union[str, bytes]):
+        """Insert content at the current position (str in text mode, bytes in byte mode). Python form: returns the number of characters (bytes) written."""
         pass
 
     fn write_line(self, content: Union[str, bytes]) -> None:
         """Insert content followed by a newline at the current position."""
         pass
 
+    fn writelines(self, lines: Any) -> None:
+        """Write every string (bytes) of an iterable, without adding newlines (Python)."""
+        pass
+
+    fn close(self) -> None:
+        """Write the buffer back and close the file (same as the function close(f))."""
+        pass
+
+    fn flush(self) -> None:
+        """Write the buffer back without closing the file."""
+        pass
+
+    fn tell(self) -> int:
+        """The current position."""
+        pass
+
 # ── 組み込み関数 ────────────────────────────────────────────────────────────
 
-fn print(let ...: Any) -> None:
-    """Print any number of values (positional only) separated by a space, followed by a newline."""
+fn print(sep: Option[str] = None, end: Option[str] = None, file: Any = None, flush: bool = False, let ...: Any) -> None:
+    """Print any number of values separated by sep (default a space), followed by end (default a newline). sep= / end= / flush= are keyword-only; file= takes only None (standard output)."""
     pass
 
 fn len(obj: Any) -> int:
@@ -106,8 +144,8 @@ fn zip(let ...: Any):
     """Generator of tuples pairing the elements of any number of iterables (positional only); stops at the shortest."""
     pass
 
-fn next(iterator: Any):
-    """Advance a generator (or an object with `__next__`) and return the next value."""
+fn next(iterator: Any, default: Any = None):
+    """Advance a generator (or an object with `__next__`) and return the next value. When it is exhausted, return default if given (next(it, default)), else raise StopIteration."""
     pass
 
 fn repr(value: Any) -> str:
@@ -122,8 +160,13 @@ fn getenv(name: str, default: str = "") -> str:
     """Value of the environment variable `name`, or `default` when it is not set."""
     pass
 
-fn open(file_path: Union[str, Path], open_mode: FileOpenMode, start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Encoding = Encoding.UTF_8, exclusion: bool = True) -> FileObject:
-    """Open a file. `open_mode` is FileOpenMode.read / write / rewrite / make_and_write."""
+# `open` は 2 つの形を受ける（python_builtins_plan.md のタスク 5-2・実行時は `py_open_form` が見分ける）:
+#   - Arrow の形 `open(path, FileOpenMode.read, StartPoint.top, ByteRecognizingMode.text, Encoding.UTF_8, exclusion)`
+#   - Python の形 `open(path)` / `open(path, "w", encoding="utf-8")` / `open(path, mode="rb")`（2 番目が文字列か省略）
+#   ⚠ 宣言は 1 本なので、3 番目以降の**位置**は Arrow の形で検査する（Python の形はキーワードで渡す）。
+#     `file` 〜 `newline` は Python の形のキーワード引数（`encoding` は両方の形が使う）。
+fn open(file_path: Union[str, Path], open_mode: Union[FileOpenMode, str] = "r", start_point: StartPoint = StartPoint.top, byte_recognizing: ByteRecognizingMode = ByteRecognizingMode.text, encoding: Union[Encoding, str, None] = Encoding.UTF_8, exclusion: bool = True, file: Union[str, Path] = "", mode: str = "r", buffering: int = -1, errors: Option[str] = None, newline: Option[str] = None) -> FileObject:
+    """Open a file. Arrow form: `open_mode` is FileOpenMode.read / write / rewrite / make_and_write. Python form: open(path, "r" / "w" / "x" / "a" with "b" / "t" / "+", encoding=..., errors=..., newline=...)."""
     pass
 
 fn close(file: FileObject) -> None:
@@ -144,6 +187,129 @@ fn flat_get_int(grid: fixed_list[Any], index: int) -> int:
 
 fn flat_set_int(grid: fixed_list[Any], index: int, value: int) -> None:
     """Write the int at `index` of a list made by `create_flat_int_list`."""
+    pass
+
+# ── Python の組み込み（`implementation_plans/python_builtins_plan.md`・本体は `eval/py_builtins.rs`） ──
+#   名前と意味は CPython 3.12 と同じ。⚠ CPython で位置専用の引数は、実行時も位置でしか受け取らない。
+
+fn isinstance(obj: Any, class_or_tuple: Any) -> bool:
+    """True if obj is an instance of the class (or of a subclass), or of any class in a tuple of them."""
+    pass
+
+fn type(obj: Any):
+    """The class of obj (a class value, or the built-in type of a primitive); its `__name__` is the class name."""
+    pass
+
+fn getattr(obj: Any, name: str, default: Any = None):
+    """The attribute `name` of obj (same as `obj.name`); `default` when it is missing, else AttributeError."""
+    pass
+
+fn hasattr(obj: Any, name: str) -> bool:
+    """True if obj has the attribute `name`."""
+    pass
+
+fn setattr(obj: Any, name: str, value: Any) -> None:
+    """Assign `value` to the attribute `name` of obj (same as `obj.name = value`)."""
+    pass
+
+fn issubclass(cls: Any, class_or_tuple: Any) -> bool:
+    """True if the class cls is the class (or a subclass of it), or of any class in a tuple of them."""
+    pass
+
+fn callable(obj: Any) -> bool:
+    """True if obj can be called (a function, a class, a bound method, or an instance with `__call__`)."""
+    pass
+
+fn all(iterable: Any) -> bool:
+    """True if every element of the iterable is truthy (True for an empty one)."""
+    pass
+
+fn any(iterable: Any) -> bool:
+    """True if some element of the iterable is truthy (False for an empty one)."""
+    pass
+
+fn min(key: Any = None, default: Any = None, let ...: Any):
+    """The smallest of one iterable's elements, or of two or more arguments. key= orders by key(x); default= is returned for an empty iterable."""
+    pass
+
+fn max(key: Any = None, default: Any = None, let ...: Any):
+    """The largest of one iterable's elements, or of two or more arguments. key= orders by key(x); default= is returned for an empty iterable."""
+    pass
+
+fn sum(iterable: Any, start: Any = 0):
+    """start plus the sum of the iterable's elements."""
+    pass
+
+fn sorted(iterable: Any, key: Any = None, reverse: bool = False):
+    """A new sorted list of the iterable's elements (stable). key= sorts by key(x); reverse=True sorts in descending order."""
+    pass
+
+fn reversed(seq: Any):
+    """A generator of the sequence's elements in reverse order."""
+    pass
+
+fn abs(x: Any):
+    """The absolute value of a number (the magnitude of a complex)."""
+    pass
+
+fn round(number: Any, ndigits: Any = None):
+    """number rounded to ndigits decimals, half to even (an int when ndigits is omitted)."""
+    pass
+
+fn divmod(a: Any, b: Any):
+    """The tuple (a // b, a % b)."""
+    pass
+
+fn pow(base: Any, exp: Any, mod: Any = None):
+    """base ** exp, or (base ** exp) % mod computed efficiently for ints."""
+    pass
+
+fn map(let ...: Any):
+    """map(function, iterable, ...): a generator of function applied to the elements (several iterables are zipped; stops at the shortest)."""
+    pass
+
+fn filter(function: Any, iterable: Any):
+    """A generator of the elements for which function(x) is truthy (function None keeps the truthy elements)."""
+    pass
+
+fn iter(obj: Any, sentinel: Any = None):
+    """An iterator over obj, or iter(callable, sentinel): call it until it returns sentinel."""
+    pass
+
+fn hash(obj: Any) -> int:
+    """The hash of a hashable value (equal values hash equal)."""
+    pass
+
+fn ord(c: Any) -> int:
+    """The code point of a one-character string (or the value of a one-byte bytes)."""
+    pass
+
+fn chr(i: int) -> str:
+    """The one-character string of the code point i."""
+    pass
+
+fn hex(x: Any) -> str:
+    """The integer x as a hexadecimal string ('0xff')."""
+    pass
+
+fn oct(x: Any) -> str:
+    """The integer x as an octal string ('0o17')."""
+    pass
+
+fn bin(x: Any) -> str:
+    """The integer x as a binary string ('0b101')."""
+    pass
+
+fn ascii(obj: Any) -> str:
+    """repr(obj) with the non-ASCII characters escaped."""
+    pass
+
+fn format(value: Any, format_spec: str = "") -> str:
+    """value formatted by the format spec mini-language (same as f"{value:spec}"; calls __format__ on an instance)."""
+    pass
+
+fn property(fget: Any = None, fset: Any = None, fdel: Any = None, doc: Any = None):
+    """A property: a class attribute whose reads call fget(obj) and writes call fset(obj, value) (a built-in class)."""
     pass
 
 # ── 型の変換（名前が型の名前） ──────────────────────────────────────────────
@@ -178,6 +344,18 @@ fn list(iterable: Any = None) -> list[Any]:
 
 fn set(iterable: Any = None) -> set[Any]:
     """A set of the elements of an iterable, or an empty set."""
+    pass
+
+fn tuple(iterable: Any = None):
+    """A tuple of the elements of an iterable, or an empty tuple."""
+    pass
+
+fn bytes(source: Any = None, encoding: Option[str] = None, errors: Option[str] = None) -> bytes:
+    """An immutable byte string: bytes() empty, bytes(n) n zero bytes, bytes(ints), bytes(b) a copy, or bytes(s, encoding[, errors]) (same as s.encode(encoding, errors))."""
+    pass
+
+fn frozenset(iterable: Any = None) -> frozenset[Any]:
+    """An immutable, hashable set of the elements of an iterable (usable as a dict key), or an empty one."""
     pass
 
 fn slice(begin: Any, end: Any, step: Any = None) -> slice:

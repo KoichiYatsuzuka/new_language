@@ -58,6 +58,8 @@ impl Interpreter {
         body: &[Stmt],
         captured: Vec<(String, Value)>,
         cell_captured: Vec<(String, std::rc::Rc<std::cell::RefCell<Value>>)>,
+        // `outer.<locals>.inner`（`ChunkFnDef::qualname`・タスク 1-14）。
+        qualname: Option<Rc<str>>,
     ) -> Value {
         let mut env: HashMap<String, CapturedVar> = HashMap::new();
         // 不変は生成時点の値（複製済み）、可変はセルを共有する。
@@ -74,6 +76,7 @@ impl Interpreter {
             params: params.to_vec(),
             body: body.to_vec(),
             captured_env: env,
+            qualname,
         }))
     }
 
@@ -93,6 +96,14 @@ impl Interpreter {
         // 定義サイト共有の Chunk（#30）。`Op::MakeFn` は `ChunkFnDef::compiled` を渡す。
         // ツリーウォークの `exec_fn_def` 経由は定義サイトの器を持たないので `None`。
         vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
+        // `outer.<locals>.inner`（`ChunkFnDef::qualname`・タスク 1-14）。
+        qualname: Option<Rc<str>>,
+        // 定義した本体が Python の関数か（`Chunk::is_python`）。
+        // ⚠ 以前は `in_python_module`（モジュールを読み込んでいる間だけ真）だけを見ていたので、
+        //   Python の関数を**呼んだときに**作る入れ子の関数が Arrow の関数になり、Arrow の束縛の規則
+        //   （既定値・`*args` / `**kw` の受け方・`let` の仮引数の写し）で呼ばれていた（タスク 1-14 で発見・
+        //   `def inner(a, b=2, *rest, **kw)` を `inner(1)` で呼ぶと `TypeError`）。
+        is_python: bool,
     ) -> Value {
         use crate::interpreter::CapturedVar;
         let mut captured_env: HashMap<String, CapturedVar> = captured
@@ -108,10 +119,12 @@ impl Interpreter {
             name: name.to_string(),
             params: params.to_vec(),
             body,
-            is_python: self.in_python_module,
+            is_python: self.in_python_module || is_python,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk,
+            bound: None,
+            qualname,
         });
         let existing = match existing {
             Value::None => None,
@@ -158,6 +171,9 @@ impl Interpreter {
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk: None,
+            bound: None,
+            // 最上位（とツリーウォークで走る本体の中）の関数は名前と同じ。
+            qualname: None,
         });
 
         // 単相化した関数は、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
@@ -221,6 +237,7 @@ impl Interpreter {
                 params: params.to_vec(),
                 body: body.to_vec(),
                 captured_env,
+                qualname: None,
             });
             if name.ends_with(']') {
                 self.register_mono_instance(name, &Value::GeneratorFn(Rc::clone(&gen_fn)));
@@ -386,6 +403,8 @@ impl Interpreter {
                     captured_env: HashMap::new(),
                 return_type: None,
                 vm_chunk: None,
+                bound: None,
+                qualname: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -493,6 +512,8 @@ impl Interpreter {
             captured_env: HashMap::new(),
         return_type: None,
         vm_chunk: None,
+        bound: None,
+        qualname: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -583,6 +604,15 @@ impl Interpreter {
             .ok_or_else(|| format!("RuntimeError: internal: class '{name}' was not defined"))?;
         *self_cell.borrow_mut() = class.clone();
         Ok(class)
+    }
+
+    /// クラスのメソッドの `__qualname__`（`C.m`・python_builtins_plan.md のタスク 1-14）。
+    ///
+    /// 具体化したクラス（`Box[int]`）はテンプレートの名前（`Box.get`）。Python のモジュールのメソッドは
+    /// 変換器が付けた別名を元の名前へ戻す（property の getter は `C.x`・`python_fn_name`）。
+    fn method_qualname(&self, class_name: &str, method: &str) -> Rc<str> {
+        let method = if self.in_python_module { crate::interpreter::python_fn_name(method) } else { method };
+        Rc::from(format!("{}.{method}", crate::template_subst::display_name(class_name)))
     }
 
     pub(crate) fn exec_class_def(
@@ -686,6 +716,8 @@ impl Interpreter {
                         },
                         return_type: mret.clone(),
                         vm_chunk: None,
+                        bound: None,
+                        qualname: Some(self.method_qualname(name, mname)),
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。
@@ -746,6 +778,7 @@ impl Interpreter {
                             } else {
                                 HashMap::new()
                             },
+                            qualname: Some(self.method_qualname(name, mname)),
                         }),
                     );
                 }
@@ -915,6 +948,8 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
+            // Python から変換したクラス（既定の `==` / `hash` が同一性・known_bugs.md の #1）。
+            is_python: self.in_python_module,
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。
             module_name: self.global_module_names.get(self.cur_globals as usize).cloned().flatten(),
@@ -927,11 +962,17 @@ impl Interpreter {
             // ⚠ Python のクラスは**祖先まで平坦化**して載せる（フェーズ10 10-19）。`class B(A)`・`class A(ValueError)`
             //   の `B` も `except ValueError` / `except Exception` で捕まる（照合は `ClassValue::is_a` が `bases`
             //   だけを見る・推移をたどらない）。フィールドの並びは上で直接の基底から組んだまま。
+            // ⚠ モジュールで定義した基底は**修飾名も**載せる（`zoo.Animal`・python_builtins_plan.md の 6 節）。
+            //   `d is z.Animal` / 型検査が付ける実行時の検査の `zoo.Animal` を `is_a` がそのまま当てるため。
+            //   祖先の修飾名は基底の `bases` に入っている（同じ手順で作ったので）。
             bases: {
                 let mut all = bases.to_vec();
-                for b in py_base_classes.iter().flat_map(|c| c.bases.iter()) {
-                    if !all.contains(b) {
-                        all.push(b.clone());
+                for c in &py_base_classes {
+                    let qualified = c.module_name.as_deref().map(|m| format!("{m}.{}", c.name));
+                    for b in qualified.into_iter().chain(c.bases.iter().cloned()) {
+                        if !all.contains(&b) {
+                            all.push(b);
+                        }
                     }
                 }
                 all

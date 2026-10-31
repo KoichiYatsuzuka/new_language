@@ -56,11 +56,12 @@ fn builtins_source_is_analyzable_for_the_prelude() {
         .filter(|s| s["scope"] == 0 && s["kind"] == "function")
         .filter_map(|s| s["name"].as_str())
         .collect();
-    for n in ["print", "len", "range", "open", "close", "repr", "getenv"] {
+    for n in ["print", "len", "range", "open", "close", "repr", "getenv", "isinstance"] {
         assert!(names.contains(&n), "prelude に '{n}' が無い: {names:?}");
     }
     // 実行時に無い関数を並べていないこと（全体の突き合わせは本体側の `builtins_ars_matches_the_runtime`）。
-    for n in ["ord", "abs", "isinstance", "exec"] {
+    // ⚠ `ord` / `abs` / `isinstance` は python_builtins_plan.md のフェーズ 2〜3 で実行時に入った（宣言もある）。
+    for n in ["exec", "vars", "exit"] {
         assert!(!names.contains(&n), "実行時に無い '{n}' が prelude に残っている");
     }
 }
@@ -88,14 +89,17 @@ fn builtin_types_reach_the_member_table() {
     }
 }
 
-/// 組み込みの型のメソッドの結果の型も束縛の型として届く（`write` → `None`）。
+/// 組み込みの型のメソッドの結果の型も束縛の型として届く（`write_line` → `None`・`tell` → `int`）。
+/// ⚠ `write` の結果は形で決まる（Arrow の形は `None`・Python の形は書いた数・python_builtins_plan.md のタスク 5-4）ので型が無い。
 #[test]
 fn builtin_method_results_have_declared_types() {
     let v = analyze(concat!(
         "let f = open(\"a.txt\", FileOpenMode.rewrite)\n",
-        "let n = f.write(\"x\")\n",
+        "let n = f.write_line(\"x\")\n",
+        "let t = f.tell()\n",
         "let m: FileOpenMode = FileOpenMode.read\n",
         "close(f)\n",
     ));
     assert_eq!(inferred_of(&v, "n").as_deref(), Some("None"));
+    assert_eq!(inferred_of(&v, "t").as_deref(), Some("int"));
 }

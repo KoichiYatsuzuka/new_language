@@ -1,0 +1,37 @@
+# 文字列の repr（python_builtins_plan.md のタスク 1-13）
+#
+# `repr(s)`・コンテナの中の文字列の表示・`KeyError` の文言・`ascii(s)` は CPython 3.12 の `repr` と同じ形:
+#   - 引用符は ' 。ただし ' を含み " を含まなければ "
+#   - \ と使った引用符には \ を付ける。タブ・改行・復帰は \t / \n / \r
+#   - 表示できない文字（制御文字・書式文字・区切り・未割り当て）は \xhh / \uhhhh / \Uhhhhhhhh
+# 以前は ' で囲むだけで、"it's" が 'it's' と出ていた。
+
+print(repr("plain"))
+print(repr("it's"))
+print(repr("say \"hi\""))
+print(repr("both ' and \""))
+print(repr("tab\tnewline\nreturn\r"))
+print(repr("back\\slash"))
+print(repr("nul\0 del" + chr(0x7f)))
+print(repr("é 日本 😀"))
+print(repr("nbsp" + chr(0xa0) + "zwsp" + chr(0x200b) + "ls" + chr(0x2028)))
+print(repr(chr(0xe0000)))
+
+# コンテナの中の文字列
+print(["it's", "x", "a\nb"])
+print({"k'": "v\"", "t": "\t"})
+print(("it's",))
+
+# KeyError の文言（str(e)）もキーの repr
+let d: dict[str, int] = {"a": 1}
+try:
+    let v = d["it's"]
+except KeyError as e:
+    print(e)
+
+# ascii は repr の非 ASCII をさらに変える
+print(ascii("é'"))
+print(ascii("😀"))
+
+# isprintable も同じ判定
+print("abc".isprintable(), "".isprintable(), ("a" + chr(0xa0)).isprintable(), "a\n".isprintable(), "日本".isprintable())

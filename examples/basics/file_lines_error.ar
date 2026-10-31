@@ -1,0 +1,14 @@
+# file_lines_error.ar — 閉じたファイルを読む（python_builtins_plan.md のタスク 5-4）
+#
+# Python の形（`open(p)`）で開いたファイルは CPython と同じ文言で止まる。
+# 期待: ValueError: I/O operation on closed file.
+
+let fname = "examples/basics/_tmp_file_lines_error.txt"
+let w = open(fname, "w")
+w.write("x\n")
+w.close()
+
+let f = open(fname)
+f.close()
+for line in f:
+    print(line)

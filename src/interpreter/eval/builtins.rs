@@ -5,13 +5,150 @@ use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::CallArg,
     crate::interpreter::{
-        ByteModeRust, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, TupleData, Value,
+        ByteModeRust, FileData, FileOpenModeRust,
+        Interpreter, Value,
     },
 };
 use super::*;
 
+/// **値として使える**組み込みの名前（python_builtins_plan.md のタスク 1-7）。
+///
+/// 束縛されていない名前がここにあれば、名前の探索の**最後の段**で `Value::Type(名前)` になる
+/// （[`Interpreter::builtin_value`]・CPython の `builtins` と同じ位置）。呼ぶと `call_type_constructor_evaled` が
+/// 組み込み関数の表（`eval_builtin_evaled` / キーワードつきは `eval_builtin_evaled_named`）へ回す。
+/// ⚠⚠ **大域へ束縛しないこと。** `int` / `str` / `len` は大域に束縛してあるので、同名の最上位の宣言が
+///   `already declared` になる（`let dict = 3` が実行時の `NameError`・実測）。ここに足す名前はそうならない。
+/// ⚠ `list` / `tuple` は型の名前（呼ぶと作る）。ほかは関数（表示は `<built-in function 名前>`）。
+pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
+    "print", "range", "next", "repr", "enumerate", "zip", "getenv", "open", "close", "parse_ar",
+    "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
+    // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
+    "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4）
+    "format",
+    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
+    "__py_with_exit",
+    // 変換器が Python の `object()` / 基底が `object` のクラスの `super().__init__(..)` にする（タスク 6-10）
+    "__py_object", "__py_object_init",
+    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
+    "__py_delattr", "__py_delitem",
+    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
+    // （known_bugs.md の #10 / #11）
+    "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
+    "__py_super",
+    // 型（呼ぶと作る・タスク 3-1）
+    "frozenset", "bytes",
+];
+
+/// `next` の引数の数の誤り（CPython と同じ文言）。
+fn next_arity_error(n: usize) -> String {
+    if n == 0 {
+        "TypeError: next expected at least 1 argument, got 0".to_string()
+    } else {
+        format!("TypeError: next expected at most 2 arguments, got {n}")
+    }
+}
+
+/// `open` の失敗の例外の種類・errno・文言（CPython と同じ・python_builtins_plan.md のタスク 4-1 / known_bugs.md の #9）。
+/// errno と文言は C の値（Windows の CPython も `open` は C ランタイムの errno を出す: 無いファイルは 2、ディレクトリを
+/// 開くのは `PermissionError` の 13）。
+/// ⚠ この 5 種類のほかは `IOError` で、errno は OS のエラーの番号（Windows では Win32 の番号）、文言は OS の文言
+///   （CPython は C の errno の `OSError`・例えば `[Errno 22] Invalid argument`）。
+fn open_error_kind(e: &std::io::Error) -> (&'static str, Value, String) {
+    use std::io::ErrorKind as K;
+    let c = |class, errno, text: &str| (class, Value::Int(errno), text.to_string());
+    match e.kind() {
+        K::NotFound => c("FileNotFoundError", 2, "No such file or directory"),
+        K::PermissionDenied => c("PermissionError", 13, "Permission denied"),
+        K::AlreadyExists => c("FileExistsError", 17, "File exists"),
+        K::IsADirectory => c("IsADirectoryError", 21, "Is a directory"),
+        K::NotADirectory => c("NotADirectoryError", 20, "Not a directory"),
+        _ => {
+            let shown = e.to_string();
+            // Rust の文言の末尾の ` (os error 123)` は errno に入れるので外す。
+            let text = match shown.rfind(" (os error ") {
+                Some(at) => shown[..at].to_string(),
+                None => shown,
+            };
+            ("IOError", e.raw_os_error().map_or(Value::None, |n| Value::Int(i64::from(n))), text)
+        }
+    }
+}
+
+/// 値として取り出したとき**関数**として表示する組み込みの名前か（`<built-in function len>`）。
+/// `list` / `tuple` / `type` / `frozenset` / `bytes` と大域の型（`int` …）は型（`<class 'int'>`）。`len` / `id` は大域に束縛された関数。
+pub(crate) fn is_builtin_function_name(name: &str) -> bool {
+    matches!(name, "len" | "id")
+        || (BUILTIN_VALUE_NAMES.contains(&name) && !matches!(name, "list" | "tuple" | "type" | "frozenset" | "bytes"))
+}
+
 impl Interpreter {
+    /// `open` の失敗を例外の文字列にする（`[Errno 2] No such file or directory: 'p'`・`args` は `(errno, strerror)`・
+    /// `filename` はパス。`open_error_kind` / `os_error`・known_bugs.md の #9）。
+    /// ⚠ 以前の文言は `cannot open '..': <OS の文言>` で、`errno` / `strerror` / `filename` は無かった。
+    fn open_error(&mut self, e: &std::io::Error, file_path: &str) -> String {
+        let (class, errno, strerror) = open_error_kind(e);
+        self.os_error(class, errno, &strerror, file_path)
+    }
+
+    /// `enumerate(iterable, start=0)` の引数（3 つの入口で同じ解釈・python_builtins_plan.md のタスク 3-5）。
+    /// `start` は位置でもキーワードでも渡せる（CPython と同じ）。文言も CPython と同じ。
+    /// ⚠ 以前は 3 つの入口が別々に書かれ、どれも位置の `start`（`enumerate(xs, 1)`）を受けなかった。
+    fn enumerate_args(&self, mut positional: Vec<Value>, start_kw: Option<Value>) -> Result<(Value, i64), String> {
+        let given = positional.len() + usize::from(start_kw.is_some());
+        if positional.is_empty() {
+            return Err("TypeError: enumerate() missing required argument 'iterable' (pos 1)".to_string());
+        }
+        if given > 2 {
+            return Err(format!("TypeError: enumerate() takes at most 2 arguments ({given} given)"));
+        }
+        let start = match start_kw.or_else(|| (positional.len() == 2).then(|| positional.pop().expect("len 2"))) {
+            None => 0,
+            Some(Value::Int(n)) => n,
+            Some(Value::Bool(b)) => i64::from(b),
+            Some(other) => {
+                return Err(format!(
+                    "TypeError: '{}' object cannot be interpreted as an integer",
+                    self.type_name(&other)
+                ))
+            }
+        };
+        Ok((positional.into_iter().next().expect("len >= 1"), start))
+    }
+
+    /// 束縛されていない名前 `name` の**組み込みの値**（名前の探索の最後の段・タスク 1-7）。組み込みでなければ `None`。
+    ///
+    /// 呼び出し元は名前の読みが失敗した所すべて（ツリーウォークの `eval` の識別子 3 か所・VM の `LoadGlobal` 2 か所）。
+    /// ⚠ 束縛した名前が勝つ（ここへ来るのは束縛が無いときだけ）ので、`let repr = f` の利用者の値を隠さない。
+    /// ⚠ `property` / `cached_property` は Arrow で書いたクラス（タスク 6-1 / 6-5）。初めて引いたときに組み立てるので `&mut self`。
+    pub(crate) fn builtin_value(&mut self, name: &str) -> Option<Value> {
+        // 組み込みのクラス `object`（タスク 6-10）。⚠ 呼んでも作れない（作れるのは Python の `object()` だけ）。
+        if name == "object" {
+            return Some(Value::Class(self.object_class()));
+        }
+        // 唯一の値 `Ellipsis`（Python の `...` は変換器がこの名前にする・タスク 6-11）。
+        if name == "Ellipsis" {
+            return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::Ellipsis));
+        }
+        // 唯一の値 `NotImplemented`（演算子メソッドが「答えない」と返す・タスク 6-12）。
+        if name == "NotImplemented" {
+            return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::NotImplemented));
+        }
+        if super::py_builtins::PY_BUILTIN_CLASS_NAMES.contains(&name) {
+            return match self.py_builtin_class(name) {
+                Ok(class) => Some(class),
+                Err(e) => {
+                    eprintln!("{e}");
+                    None
+                }
+            };
+        }
+        BUILTIN_VALUE_NAMES.contains(&name).then(|| Value::Type(name.to_string()))
+    }
+
     /// 組み込み関数名を受け取り、該当する組み込みを実行して結果を返す。
     /// 未知の名前には `None` を返してユーザー定義関数の探索にフォールスルーする。
     /// 評価済み引数で「純粋・共通」な組み込みを呼ぶ（VM の `CallBuiltin` op 用）。
@@ -28,6 +165,19 @@ impl Interpreter {
             eprintln!("{line}");
         } else {
             println!("{line}");
+        }
+    }
+
+    /// 改行を足さずに書く（`print(.., end=..)`・タスク 5-1）。行き先は `emit_print` と同じ。
+    pub(crate) fn emit_text(&self, text: &str, flush: bool) {
+        use std::io::Write;
+        if self.meta_expanding {
+            eprint!("{text}");
+        } else {
+            print!("{text}");
+            if flush {
+                let _ = std::io::stdout().flush();
+            }
         }
     }
 
@@ -83,6 +233,79 @@ impl Interpreter {
             // ⚠ #33 でフォールバックが消えた後も、#56 で削除した `is_builtin_callee` が bail し続け、
             //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
             "parse_ar" => Some(self.parse_ar_evaled(args)),
+            // `list(it)` / `tuple(it)`（タスク 1-7）/ `frozenset(it)`（3-1）。本体は型の呼び出し（`call_type_by_name_evaled`）に 1 本化。
+            "list" | "tuple" | "type" | "frozenset" | "bytes" => Some(self.call_type_by_name_evaled(name, args)),
+            // ── Python の組み込み（python_builtins_plan.md のフェーズ 2・本体は `eval/py_builtins.rs`）──
+            "isinstance" => Some(match args.as_slice() {
+                [x, spec] => self.py_isinstance(x, spec).map(Value::Bool),
+                _ => Err(format!("TypeError: isinstance expected 2 arguments, got {}", args.len())),
+            }),
+            "issubclass" => Some(match args.as_slice() {
+                [c, spec] => self.py_issubclass(c, spec).map(Value::Bool),
+                _ => Err(format!("TypeError: issubclass expected 2 arguments, got {}", args.len())),
+            }),
+            "callable" => Some(match args.as_slice() {
+                [x] => Ok(Value::Bool(self.py_callable(x))),
+                _ => Err(format!("TypeError: callable() takes exactly one argument ({} given)", args.len())),
+            }),
+            // 集計（タスク 3-2）。キーワード引数つきは `eval_builtin_evaled_named`。
+            "all" => Some(self.py_all_any(args, true)),
+            "any" => Some(self.py_all_any(args, false)),
+            "min" => Some(self.py_min_max(args, Vec::new(), false)),
+            "max" => Some(self.py_min_max(args, Vec::new(), true)),
+            "sum" => Some(self.py_sum(args, Vec::new())),
+            "sorted" => Some(self.py_sorted(args, Vec::new())),
+            "reversed" => Some(self.py_reversed(args)),
+            "abs" => Some(self.py_abs(args)),
+            "round" => Some(self.py_round(args, Vec::new())),
+            "divmod" => Some(self.py_divmod(args)),
+            "pow" => Some(self.py_pow(args, Vec::new())),
+            // 変換・遅延の組み込み（タスク 3-3）。
+            "map" => Some(self.py_map(args)),
+            "filter" => Some(self.py_filter(args)),
+            "iter" => Some(self.py_iter(args)),
+            "hash" => Some(self.py_hash(args)),
+            "ord" => Some(self.py_ord_chr(args, true)),
+            "chr" => Some(self.py_ord_chr(args, false)),
+            "hex" => Some(self.py_int_to_base(args, 16)),
+            "oct" => Some(self.py_int_to_base(args, 8)),
+            "bin" => Some(self.py_int_to_base(args, 2)),
+            "ascii" => Some(self.py_ascii(args)),
+            // 書式指定の小言語（タスク 3-4）。`str.format` / f-string の `{x:spec}` と同じ本体（`format_value`）。
+            "format" => Some(self.py_format(args)),
+            // Python の `with` の終わり（変換器が `finally` に置く・タスク 5-4）。ファイルなら閉じる（CPython の `__exit__`）、
+            // ほかの値は何もしない（従来どおりブロックの破棄に任せる）。
+            "__py_with_exit" => Some(match args.as_slice() {
+                [Value::FileObject(fd)] => {
+                    fd.borrow_mut().close();
+                    Ok(Value::None)
+                }
+                [_] => Ok(Value::None),
+                _ => Err(format!("TypeError: __py_with_exit() takes exactly one argument ({} given)", args.len())),
+            }),
+            // Python の `object()` / 基底が `object` のクラスの `super().__init__(..)`（変換器が置く・タスク 6-10）。
+            "__py_object" => Some(self.py_object(&args)),
+            "__py_object_init" => Some(self.py_object_init(&args)),
+            // Python の `del o.a` / `del d[k]`（変換器が置く・known_bugs.md の #2 / #3）。
+            "__py_delattr" => Some(match <[Value; 2]>::try_from(args) {
+                Ok([obj, Value::Str(name)]) => self.del_attr_val(obj, &name, true).map(|_| Value::None),
+                Ok(_) => Err("TypeError: __py_delattr() takes an object and an attribute name".to_string()),
+                Err(a) => Err(format!("TypeError: __py_delattr() takes exactly 2 arguments ({} given)", a.len())),
+            }),
+            // Python の `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)` / `object.__getattribute__(o, k)`
+            // （上書きを飛ばす・変換器が置く・#10 / #11）。
+            "__py_object_setattr" => Some(self.py_object_setattr(args)),
+            "__py_object_delattr" => Some(self.py_object_delattr(args)),
+            "__py_object_getattribute" => Some(self.py_object_getattribute(args)),
+            // Python の `super().m(..)`（変換器が置く・known_bugs.md の #6）。キーワード引数つきは `eval_builtin_evaled_named`。
+            "__py_super" => Some(self.py_super_call(args.into_iter().map(|v| (None, v, true)).collect())),
+            "__py_delitem" => Some(match <[Value; 2]>::try_from(args) {
+                Ok([obj, key]) => self.eval_delitem(obj, key).map(|_| Value::None),
+                Err(a) => Err(format!("TypeError: __py_delitem() takes exactly 2 arguments ({} given)", a.len())),
+            }),
+            "getattr" => Some(self.py_getattr(args)),
+            "hasattr" => Some(self.py_hasattr(args)),
+            "setattr" => Some(self.py_setattr(args)),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
             "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
                 Some(self.eval_builtin_flat_evaled(name, args))
@@ -146,19 +369,14 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap();
                 Some(self.len_of(val))
             }
+            // `next(it)` / `next(it, default)`（本体は `py_next`・タスク 3-5）。
             "next" => {
-                if args.len() != 1 {
-                    return Some(Err("TypeError: next() takes exactly one argument".to_string()));
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(next_arity_error(args.len())));
                 }
-                let val = args.into_iter().next().unwrap();
-                Some(match val {
-                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
-                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
-                    other => Err(format!(
-                        "TypeError: '{}' object is not an iterator",
-                        self.type_name(&other)
-                    )),
-                })
+                let mut it = args.into_iter();
+                let v = it.next().expect("len >= 1");
+                Some(self.py_next(v, it.next()))
             }
             "repr" => {
                 if args.len() != 1 {
@@ -174,19 +392,11 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap();
                 Some(self.call_type_by_name_evaled("id", vec![val]))
             }
-            "enumerate" => {
-                // VM は位置引数のみ渡す（`start=` キーワードは compile_call_args が bail）。
-                // ツリーウォークの位置引数 1 個・start=0 の経路と一致。
-                if args.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        args.len()
-                    )));
-                }
-                let iterable = args.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, 0))
-            }
-            "zip" => Some(self.zip_core(args)),
+            // VM は位置引数のみ渡す（`start=` キーワードは `eval_builtin_evaled_named`）。`enumerate(it, 10)` も受ける。
+            "enumerate" => Some(
+                self.enumerate_args(args, None).and_then(|(it, start)| self.py_enumerate(it, start)),
+            ),
+            "zip" => Some(self.py_zip(args)),
             "getenv" => {
                 if args.is_empty() || args.len() > 2 {
                     return Some(Err(
@@ -221,48 +431,6 @@ impl Interpreter {
         }
     }
 
-    /// enumerate のコア: 評価済みの反復対象と開始値からタプル列（`(index, value)`）の
-    /// Generator を作る。CallArg 版（`eval_builtin_ident_call`）と評価済み版（VM の
-    /// `eval_builtin_evaled`）で共有し、意味論の分岐を防ぐ。
-    pub(crate) fn enumerate_core(&mut self, iterable: Value, start: i64) -> Result<Value, String> {
-        let items = self.collect_iterable(iterable)?;
-        let tuples: Vec<Value> = items
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let idx = start + i as i64;
-                let type_str = self.type_name(&v).to_string();
-                Value::Tuple(Rc::new(TupleData::new(
-                    vec![Value::Int(idx), v],
-                    vec!["int".to_string(), type_str],
-                )))
-            })
-            .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
-    }
-
-    /// zip のコア: 評価済みの反復対象群から、最短長ぶんのタプル列の Generator を作る。
-    /// CallArg 版と評価済み版で共有する。
-    pub(crate) fn zip_core(&mut self, iters_vals: Vec<Value>) -> Result<Value, String> {
-        let mut iters: Vec<Vec<Value>> = Vec::new();
-        for v in iters_vals {
-            iters.push(self.collect_iterable(v)?);
-        }
-        if iters.is_empty() {
-            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(vec![])))));
-        }
-        let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
-        let tuples: Vec<Value> = (0..min_len)
-            .map(|i| {
-                let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
-                let types: Vec<String> =
-                    vals.iter().map(|v| self.type_name(v).to_string()).collect();
-                Value::Tuple(Rc::new(TupleData::new(vals, types)))
-            })
-            .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
-    }
-
     pub(crate) fn eval_builtin_ident_call(
         &mut self,
         name: &str,
@@ -276,6 +444,23 @@ impl Interpreter {
         }
         match name {
             "print" => {
+                // キーワード引数（`sep=` / `end=`・タスク 5-1）があれば評価済みの入口へ回す。
+                // ⚠ 腕のガード（`"print" if ..`）にしないこと。`checker_knows_every_runtime_builtin_name` が
+                //   `"名前" =>` の行を名前の表として読む。
+                if args.iter().any(|a| matches!(a, CallArg::Keyword { .. })) {
+                    let mut named: Vec<(Option<String>, Value)> = Vec::with_capacity(args.len());
+                    for a in args {
+                        let (key, e) = match a {
+                            CallArg::Keyword { name, value } => (Some(name.clone()), value),
+                            other => (None, other.expr()),
+                        };
+                        match self.eval(e) {
+                            Ok(v) => named.push((key, v)),
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                    return Some(self.py_print(named));
+                }
                 let mut parts: Vec<String> = Vec::new();
                 for a in args {
                     let v = match self.eval(a.expr()) {
@@ -291,24 +476,21 @@ impl Interpreter {
                 self.emit_print(&parts.join(" "));
                 Some(Ok(Value::None))
             }
+            // `next(it)` / `next(it, default)`（評価済みの入口と同じ本体 `py_next`・タスク 3-5）。
             "next" => {
-                if args.len() != 1 {
-                    return Some(Err(
-                        "TypeError: next() takes exactly one argument".to_string()
-                    ));
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(next_arity_error(args.len())));
                 }
-                let val = match self.eval(args[0].expr()) {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
-                };
-                Some(match val {
-                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
-                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
-                    other => Err(format!(
-                        "TypeError: '{}' object is not an iterator",
-                        self.type_name(&other)
-                    )),
-                })
+                let mut vals = Vec::with_capacity(args.len());
+                for a in args {
+                    match self.eval(a.expr()) {
+                        Ok(v) => vals.push(v),
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                let mut it = vals.into_iter();
+                let v = it.next().expect("len >= 1");
+                Some(self.py_next(v, it.next()))
             }
             "repr" => {
                 if args.len() != 1 {
@@ -451,24 +633,7 @@ impl Interpreter {
                         }
                     }
                 }
-                if positional.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        positional.len()
-                    )));
-                }
-                let start = match start_val {
-                    Some(Value::Int(n)) => n,
-                    Some(other) => {
-                        return Some(Err(format!(
-                            "TypeError: enumerate() 'start' must be int, not '{}'",
-                            self.type_name(&other)
-                        )))
-                    }
-                    None => 0i64,
-                };
-                let iterable = positional.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, start))
+                Some(self.enumerate_args(positional, start_val).and_then(|(it, start)| self.py_enumerate(it, start)))
             }
             "zip" => {
                 for arg in args.iter() {
@@ -485,7 +650,7 @@ impl Interpreter {
                         Err(e) => return Some(Err(e)),
                     }
                 }
-                Some(self.zip_core(iters_vals))
+                Some(self.py_zip(iters_vals))
             }
             "getenv" => {
                 if args.is_empty() || args.len() > 2 {
@@ -599,6 +764,22 @@ impl Interpreter {
             return Some(Err(e));
         }
         match name {
+            // `print(.., sep=.., end=..)`（タスク 5-1）。`eval_builtin_ident_call` の `print` アームも同じ関数へ回す。
+            "print" => Some(self.py_print(args)),
+            // `super().__init__(*args, **kwargs)` が `object` に届いた形（タスク 6-10）。展開してから数える
+            // （空の `**kwargs` は通す・CPython と同じ）。キーワード引数も「余分な引数」。
+            "__py_object_init" => {
+                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
+                Some(self.expand_spread_args(evaled).and_then(|all| {
+                    let values: Vec<Value> = all.into_iter().map(|(_, v, _)| v).collect();
+                    self.py_object_init(&values)
+                }))
+            }
+            // `super().m(*args, **kwargs)`（known_bugs.md の #6）。展開してから基底のメソッドへ名前ごと渡す。
+            "__py_super" => {
+                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
+                Some(self.expand_spread_args(evaled).and_then(|all| self.py_super_call(all)))
+            }
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {
                 let mut positional: Vec<Value> = Vec::new();
@@ -614,24 +795,7 @@ impl Interpreter {
                         }
                     }
                 }
-                if positional.len() != 1 {
-                    return Some(Err(format!(
-                        "TypeError: enumerate() expected 1 positional argument, got {}",
-                        positional.len()
-                    )));
-                }
-                let start = match start_val {
-                    Some(Value::Int(n)) => n,
-                    Some(other) => {
-                        return Some(Err(format!(
-                            "TypeError: enumerate() 'start' must be int, not '{}'",
-                            self.type_name(&other)
-                        )))
-                    }
-                    None => 0i64,
-                };
-                let iterable = positional.into_iter().next().unwrap();
-                Some(self.enumerate_core(iterable, start))
+                Some(self.enumerate_args(positional, start_val).and_then(|(it, start)| self.py_enumerate(it, start)))
             }
             // `open` の評価済み版は元から名前つきの 3 つ組を受け取る（そのまま渡せる）。
             "open" => Some(
@@ -639,6 +803,18 @@ impl Interpreter {
                     args.into_iter().map(|(k, v)| (k, v, true)).collect(),
                 ),
             ),
+            // キーワード引数を取る Python の組み込み（タスク 3-2・本体は `eval/py_builtins.rs`）。
+            "min" | "max" | "sum" | "sorted" | "round" | "pow" => {
+                let (pos, kw) = super::py_builtins::split_named(args);
+                Some(match name {
+                    "min" => self.py_min_max(pos, kw, false),
+                    "max" => self.py_min_max(pos, kw, true),
+                    "sum" => self.py_sum(pos, kw),
+                    "sorted" => self.py_sorted(pos, kw),
+                    "round" => self.py_round(pos, kw),
+                    _ => self.py_pow(pos, kw),
+                })
+            }
             // ここに無い名前はコンパイラが `CallBuiltinKw` を発行しない（到達しない）。
             _ => None,
         }
@@ -803,31 +979,48 @@ impl Interpreter {
                 None => pos.push(v),
             }
         }
+        // Python の形（`open(path, "w", encoding="utf-8")`・タスク 5-2）は Arrow の列挙の値へ写して同じ道を通す。
+        let py_form = super::py_builtins::py_open_form(&pos, &kw)?;
         let file_path = extract_path_str(
             get_arg(&pos, &kw, 0, "file_path")
+                .or_else(|| py_form.as_ref().and_then(|_| kw.get("file")))
                 .ok_or("TypeError: open() missing required argument 'file_path'")?,
         )?;
-        let open_mode_int = extract_enum_int(
-            get_arg(&pos, &kw, 1, "open_mode")
-                .ok_or("TypeError: open() missing required argument 'open_mode'")?,
-            "FileOpenMode",
-        )?;
-        let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
-            .map(|v| extract_enum_int(v, "StartPoint"))
-            .transpose()?
-            .unwrap_or(0);
-        let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
-            .map(|v| extract_enum_int(v, "ByteRecognizingMode"))
-            .transpose()?
-            .unwrap_or(1);
-        let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
-            .map(|v| extract_enum_int(v, "Encoding"))
-            .transpose()?
-            .unwrap_or(1);
+        let open_mode_int = match &py_form {
+            Some(f) => f.open_mode_for(&file_path),
+            None => extract_enum_int(
+                get_arg(&pos, &kw, 1, "open_mode")
+                    .ok_or("TypeError: open() missing required argument 'open_mode'")?,
+                "FileOpenMode",
+            )?,
+        };
+        let start_point_int: i64 = match &py_form {
+            Some(f) => f.start_point_for(&file_path),
+            None => get_arg(&pos, &kw, 2, "start_point")
+                .map(|v| extract_enum_int(v, "StartPoint"))
+                .transpose()?
+                .unwrap_or(0),
+        };
+        let byte_mode_int: i64 = match &py_form {
+            Some(f) => i64::from(!f.binary),
+            None => get_arg(&pos, &kw, 3, "byte_recognizing")
+                .map(|v| extract_enum_int(v, "ByteRecognizingMode"))
+                .transpose()?
+                .unwrap_or(1),
+        };
+        let enc_int: i64 = match &py_form {
+            Some(f) => f.enc_int,
+            None => get_arg(&pos, &kw, 4, "encoding")
+                .map(|v| extract_enum_int(v, "Encoding"))
+                .transpose()?
+                .unwrap_or(1),
+        };
         if enc_int == 3 {
             return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
         }
+        // ⚠ Python の形の 6 番目は `newline`（`py_open_form` が見た）。
         let _exclusion: bool = get_arg(&pos, &kw, 5, "exclusion")
+            .filter(|_| py_form.is_none())
             .map(|v| match v {
                 Value::Bool(b) => Ok(*b),
                 _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
@@ -849,7 +1042,8 @@ impl Interpreter {
         };
 
         let std_path = std::path::Path::new(&file_path);
-        if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
+        // ⚠ Python の形の `"x"` は CPython と同じ `FileExistsError`（`create_new` の失敗・`open_error`）にする。
+        if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() && py_form.is_none() {
             return Err(format!(
                 "RuntimeError: open() make_and_write: file '{}' already exists",
                 file_path
@@ -861,10 +1055,10 @@ impl Interpreter {
                 let mut f = OpenOptions::new()
                     .read(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Write => {
@@ -872,10 +1066,10 @@ impl Interpreter {
                     .read(true)
                     .write(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
-                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, c)
             }
             FileOpenModeRust::Rewrite => {
@@ -885,7 +1079,7 @@ impl Interpreter {
                     .create(true)
                     .truncate(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, Vec::new())
             }
             FileOpenModeRust::MakeAndWrite => {
@@ -894,7 +1088,7 @@ impl Interpreter {
                     .write(true)
                     .create_new(true)
                     .open(std_path)
-                    .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
+                    .map_err(|e| self.open_error(&e, &file_path))?;
                 (f, Vec::new())
             }
         };
@@ -920,6 +1114,8 @@ impl Interpreter {
             is_closed: false,
             file_handle: Some(file),
             detached: false,
+            // Python の形で開いたファイルは read / write を CPython の意味にする（タスク 5-4）。
+            py_mode: py_form.map(|f| f.mode),
         };
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }
@@ -953,6 +1149,7 @@ impl Interpreter {
             Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
             Value::Dict(d) => Ok(Value::Int(d.borrow().len() as i64)),
             Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
+            Value::FrozenSet(s) => Ok(Value::Int(s.len() as i64)),
             Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
             Value::PyObject(handle) => crate::interpreter::py_interop::py_len(handle),
             _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),

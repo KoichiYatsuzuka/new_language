@@ -1,0 +1,24 @@
+# py_int_one_line.ar — 本体を 1 行に書いた Python の関数を import[py-int] で呼ぶ（python_builtins_plan.md のタスク 1-19）
+#
+# `import[py-int]` は本物の CPython で動かし、型は `.py` の `def` の行から読む（`parser/py_stub_extract.rs`）。
+# 戻り値の注釈が無い関数の戻り値は `Any`（ffi_value_exchange_plan.md 7-27 / 7-30 の決定・本体の `return` からは
+# 推し量らない）。本体を `def` と同じ行に書いた形（`def f(): return 1`・`;` で並べた文）も同じで、型の要る所では
+# 使う前に `mustbe` で確かめる。
+#
+# ⚠ 以前は本体の `return` から戻り値の型を推し量っていて、本体を `def` の次の行からしか探さなかったので、
+#   1 行の関数の戻り値の型が `None` になり、呼ぶと `FfiTypeError`（declared to return None but returned int）で止まった。
+
+import[py-int] test_modules.py_int_one_line as m
+
+print(m.label(), m.ratio(), m.done(), m.multi())
+# a;b 1.5 None 10
+
+mut w = 3
+mut h = 4
+print(m.area(w, h), m.total(w, h))
+# 12 7
+
+let s = m.label() mustbe str
+let r = m.ratio() mustbe float
+print(s.upper(), r * 2)
+# A;B 3.0

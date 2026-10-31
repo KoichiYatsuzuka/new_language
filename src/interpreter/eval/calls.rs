@@ -415,6 +415,28 @@ impl Interpreter {
                 crate::interpreter::event_loop::SignalData::new(),
             ))));
         }
+        // `dict(...)`（python_builtins_plan.md のタスク 3-1）。キーワード引数（`dict(a=1)`）を使うので名前を落とす前に。
+        if type_name == "dict" {
+            return self.py_dict_ctor(evaled);
+        }
+        // `bytes(source, encoding, errors)`（タスク 3-1）。`encoding=` をキーワードで書けるのでここで。
+        if type_name == "bytes" {
+            return self.py_bytes_ctor(evaled);
+        }
+        // 値として取り出した組み込み関数（`let f = repr` / `key=len`・タスク 1-7）は組み込み関数の表へ回す。
+        // ⚠ キーワード引数つきは `eval_builtin_evaled_named`（扱う名前だけ）。扱わない名前はキーワードを受けない。
+        if super::builtins::is_builtin_function_name(type_name) && !matches!(type_name, "len" | "id") {
+            if evaled.iter().any(|(k, _, _)| k.is_some()) {
+                let named: Vec<(Option<String>, Value)> = evaled.into_iter().map(|(k, v, _)| (k, v)).collect();
+                return self.eval_builtin_evaled_named(type_name, named).unwrap_or_else(|| {
+                    Err(format!("TypeError: {type_name}() takes no keyword arguments"))
+                });
+            }
+            let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+            return self
+                .eval_builtin_evaled(type_name, vals)
+                .unwrap_or_else(|| Err(format!("NameError: '{type_name}' is not defined")));
+        }
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
         self.call_type_by_name_evaled(type_name, vals)
     }
@@ -428,54 +450,15 @@ impl Interpreter {
         vals: Vec<Value>,
     ) -> Result<Value, String> {
         match type_name {
-            "str" => {
-                let has_instance_str = if let [Value::Instance(inst_rc)] = vals.as_slice() {
-                    inst_rc.borrow().class.methods.contains_key("__str__")
-                } else {
-                    false
-                };
-                if has_instance_str {
-                    let v = vals.into_iter().next().unwrap();
-                    return self.eval_method_call_evaled(v, "__str__", vec![])
-                        .map(|r| match r {
-                            Value::Str(s) => Value::Str(s),
-                            other => Value::str(self.display(&other)),
-                        });
+            // `print` と同じ `display_str`（`__str__` → `__repr__`・コンテナの要素は `repr`・タスク 1-15）。
+            "str" => match vals.as_slice() {
+                [] => Ok(Value::str("")),
+                [Value::Str(s)] => Ok(Value::Str(s.clone())),
+                [v] => {
+                    let v = v.clone();
+                    self.display_str(&v).map(Value::str)
                 }
-                match vals.as_slice() {
-                    [] => Ok(Value::str("")),
-                    [v] => Ok(Value::str(self.display(v))),
-                    _ => Err("TypeError: str() takes at most 1 argument".to_string()),
-                }
-            },
-            // `bytes()` / `bytes(b)` / `bytes(list[int])`（3-1）。文字列からは `s.encode(encoding)` で作る
-            // （Python と同じく、文字コードを書かずに文字列をバイト列にはしない）。
-            "bytes" => match vals.as_slice() {
-                [] => Ok(Value::bytes(Vec::new())),
-                [Value::Bytes(b)] => Ok(Value::bytes(b.to_vec())),
-                // `bytes(n)` は n バイトのゼロ（Python と同じ・C の出力バッファを用意する・4-7）
-                [Value::Int(n)] if *n >= 0 => Ok(Value::bytes(vec![0u8; *n as usize])),
-                [Value::Int(n)] => Err(format!("ValueError: bytes() length must be 0 or more, not {n}")),
-                [Value::List(items)] => {
-                    let mut out = Vec::with_capacity(items.borrow().len());
-                    for v in items.borrow().iter() {
-                        match v {
-                            Value::Int(n) => out.push(crate::interpreter::ops::byte_of(*n)?),
-                            other => {
-                                return Err(format!(
-                                    "TypeError: bytes() takes a list of int, but an element is '{}'",
-                                    self.type_name(other)
-                                ))
-                            }
-                        }
-                    }
-                    Ok(Value::bytes(out))
-                }
-                [Value::Str(_)] => Err(
-                    "TypeError: bytes() cannot take a str without an encoding; use s.encode(\"utf-8\")".to_string(),
-                ),
-                [other] => Err(format!("TypeError: cannot convert '{}' to bytes", self.type_name(other))),
-                _ => Err("TypeError: bytes() takes at most 1 argument".to_string()),
+                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
             },
             "int" => match vals.as_slice() {
                 [] => Ok(Value::Int(0)),
@@ -525,54 +508,54 @@ impl Interpreter {
                 )),
                 _ => Err("TypeError: complex() takes at most 2 arguments".to_string()),
             },
+            // `bool(x)` は `if x:` と同じ規則（`eval_truthy`・`__bool__` も見る）。
+            // ⚠ 以前は型ごとの腕を手で並べていて、空の tuple / dict / frozenset が真になっていた（タスク 3-1 で直した）。
             "bool" => match vals.as_slice() {
                 [] => Ok(Value::Bool(false)),
-                [Value::Bool(b)] => Ok(Value::Bool(*b)),
-                [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
-                [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
-                [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
-                [Value::None] => Ok(Value::Bool(false)),
-                [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
-                [Value::Set(s)] => Ok(Value::Bool(!s.borrow().is_empty())),
-                [_] => Ok(Value::Bool(true)),
+                [x] => {
+                    let x = x.clone();
+                    Ok(Value::Bool(self.eval_truthy(&x)?))
+                }
                 _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
             },
-            "list" => match vals {
-                ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
-                _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
-                    Value::List(lst) => Ok(Value::List(lst)),
-                    Value::FrozenList { state, layout } => {
-                        let st = state.borrow();
-                        let items = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
-                        Ok(Value::List(Rc::new(RefCell::new(items))))
-                    }
-                    Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
-                    Value::Str(s) => {
-                        let chars = s.chars().map(|c| Value::str(c.to_string())).collect();
-                        Ok(Value::List(Rc::new(RefCell::new(chars))))
-                    }
-                    other => Err(format!(
-                        "TypeError: '{}' object is not iterable",
-                        self.type_name(&other)
-                    )),
-                },
-                _ => Err("TypeError: list() takes at most 1 argument".to_string()),
+            // `type(x)`（python_builtins_plan.md のタスク 2-2・本体は `py_type_of`）。
+            // ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
+            "type" => match vals.as_slice() {
+                [x] => Ok(self.py_type_of(x)),
+                [_, _, _] => Err(
+                    "TypeError: type() with 3 arguments (creating a class at run time) is not supported".to_string(),
+                ),
+                _ => Err("TypeError: type() takes 1 or 3 arguments".to_string()),
             },
+            // `list(it)` / `tuple(it)`（タスク 1-7）。どのイテラブルも `for` と同じ規則で最後まで回す
+            // （辞書はキー・遅延のジェネレータ・`__iter__` を持つインスタンス・`range` …）。
+            // ⚠ `list(xs)` は**新しい list**（CPython の浅いコピー）。以前は同じ `Rc` を返していたので、
+            //   結果へ `append` すると元の list も伸びた（ただし `list` が名前として引けず届かない経路だった）。
+            "list" | "tuple" => {
+                let items = match vals.len() {
+                    0 => Vec::new(),
+                    1 => {
+                        let v = vals.into_iter().next().expect("checked length");
+                        self.drain_iterable(v)?
+                    }
+                    n => return Err(format!("TypeError: {type_name} expected at most 1 argument, got {n}")),
+                };
+                if type_name == "list" {
+                    Ok(Value::List(Rc::new(RefCell::new(items))))
+                } else {
+                    Ok(self.vm_build_tuple(items))
+                }
+            }
             "set" => match vals {
                 ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => {
                     let arg = vals.into_iter().next().unwrap();
+                    // ⚠ どのイテラブルも `for` と同じ規則で回す（辞書はキー・遅延のジェネレータ・タスク 3-3）。
+                    //   以前は list / str / tuple / set だけで、`set(g())` が `'generator' object is not iterable` だった。
                     let items: Vec<Value> = match arg {
                         Value::Set(s) => s.borrow().clone(),
-                        Value::List(lst) => lst.borrow().clone(),
-                        Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
-                        Value::Tuple(t) => t.all_values().to_vec(),
-                        other => {
-                            return Err(format!(
-                                "TypeError: '{}' object is not iterable",
-                                self.type_name(&other)
-                            ))
-                        }
+                        Value::FrozenSet(s) => s.to_vec(),
+                        other => self.drain_iterable(other)?,
                     };
                     let mut result: Vec<Value> = Vec::new();
                     for v in items {
@@ -581,6 +564,29 @@ impl Interpreter {
                     Ok(Value::Set(Rc::new(RefCell::new(result))))
                 }
                 _ => Err("TypeError: set() takes at most 1 argument".to_string()),
+            },
+            // 位置引数だけの経路（ネイティブのコールバック・組み込み関数の表）。本体は `py_bytes_ctor`（タスク 3-1）。
+            "bytes" => self.py_bytes_ctor(vals.into_iter().map(|v| (None, v, false)).collect()),
+            // `frozenset()` / `frozenset(iterable)`（python_builtins_plan.md のタスク 3-1）。`set(..)` と同じく
+            // 重複を除き、作った順に並べる。frozenset を渡せばそのまま返す（CPython も同じものを返す）。
+            "frozenset" => match vals.len() {
+                0 => Ok(Value::FrozenSet(Rc::new(Vec::new()))),
+                1 => {
+                    let arg = vals.into_iter().next().expect("checked length");
+                    if let Value::FrozenSet(_) = arg {
+                        return Ok(arg);
+                    }
+                    let items: Vec<Value> = match arg {
+                        Value::Set(s) => s.borrow().clone(),
+                        other => self.drain_iterable(other)?,
+                    };
+                    let mut result: Vec<Value> = Vec::new();
+                    for v in items {
+                        set_insert(&mut result, v, self)?;
+                    }
+                    Ok(Value::FrozenSet(Rc::new(result)))
+                }
+                n => Err(format!("TypeError: frozenset expected at most 1 argument, got {n}")),
             },
             "slice" => {
                 let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {

@@ -121,6 +121,12 @@ pub struct FileData {
     pub file_handle: Option<std::fs::File>,
     /// 非同期タスクへ送った複製（7-19）。使うとエラー（`async_mgr::ensure_attached`）。
     pub detached: bool,
+    /// Python の形（`open(path, "w")`）で開いたときのモードの文字列（python_builtins_plan.md のタスク 5-4）。
+    ///
+    /// `Some` のファイルだけ `read()` / `write()` を CPython の意味にする（終わりの `read()` は `""`・`read(n)`・
+    /// `write` は書いた数を返す・バイト列は `bytes`・読めない／書けないモードは誤り）。Arrow の形
+    /// （`open(path, FileOpenMode.read, ..)`）で開いたファイルは `None` で、従来どおり。
+    pub py_mode: Option<String>,
 }
 
 
@@ -137,17 +143,13 @@ impl FileData {
             is_closed: true,
             file_handle: None,
             detached: true,
+            py_mode: self.py_mode.clone(),
         }
     }
 
-    /// バッファをディスクに書き戻してファイルハンドルを閉じる。
+    /// バッファをディスクに書き戻す（閉じない・`flush()`・タスク 5-4）。
     /// 書き込みモード (`write` / `rewrite` / `make_and_write`) のみ実際に書き戻す。
-    /// 既に close 済みの場合は何もしない。
-    pub fn close(&mut self) {
-        if self.is_closed {
-            return;
-        }
-        self.is_closed = true;
+    pub fn flush_to_disk(&mut self) {
         if matches!(
             self.mode,
             FileOpenModeRust::Write | FileOpenModeRust::Rewrite | FileOpenModeRust::MakeAndWrite
@@ -161,7 +163,34 @@ impl FileData {
                 let _ = f.flush();
             }
         }
+    }
+
+    /// バッファをディスクに書き戻してファイルハンドルを閉じる。
+    /// 書き込みモード (`write` / `rewrite` / `make_and_write`) のみ実際に書き戻す。
+    /// 既に close 済みの場合は何もしない。
+    pub fn close(&mut self) {
+        if self.is_closed {
+            return;
+        }
+        self.is_closed = true;
+        self.flush_to_disk();
         self.file_handle = None;
+    }
+
+    /// 読めるか。Python の形は CPython と同じく `r` か `+`、Arrow の形はどのモードでも読める（従来どおり）。
+    pub fn readable(&self) -> bool {
+        match &self.py_mode {
+            Some(m) => m.contains('r') || m.contains('+'),
+            None => true,
+        }
+    }
+
+    /// 書けるか。Python の形は `w` / `a` / `x` か `+`、Arrow の形は `read` 以外（従来どおり）。
+    pub fn writable(&self) -> bool {
+        match &self.py_mode {
+            Some(m) => m.contains(['w', 'a', 'x', '+']),
+            None => self.mode != FileOpenModeRust::Read,
+        }
     }
 }
 

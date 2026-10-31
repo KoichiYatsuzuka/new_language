@@ -1,0 +1,34 @@
+# builtin_values.ar — 組み込みの名前を値として使う・list(it) / tuple(it)（python_builtins_plan.md のタスク 1-7）
+#
+# 対になる誤りの例: builtin_values_error.ar
+#
+# 束縛されていない名前が組み込みの名前なら、名前の探索の最後の段で組み込みの値になる（CPython の builtins と同じ位置）。
+# 値は呼べ、関数へ渡せる。束縛した名前が勝つ。`list(it)` / `tuple(it)` はどのイテラブルも最後まで回す。
+# ⚠ 以前は `let f = repr` が `NameError: 'repr' is not defined`、`list(xs)` が静的に `name 'list' is not defined` だった。
+
+print("=== 1. builtins as values ===")
+let f = repr
+print(f(3), f("a"))                     # 3 'a'
+print(repr, len, list, int)             # <built-in function repr> <built-in function len> <class 'list'> <class 'int'>
+
+fn apply(g: function->str, x: int) -> str:
+    return g(x)
+
+print(apply(repr, 5))                   # 5
+
+print("=== 2. list(it) / tuple(it) ===")
+let xs: list[int] = [3, 1]
+let d: dict[str, int] = {"k": 1, "j": 2}
+print(list(xs), list("ab"), list(d))    # [3, 1] ['a', 'b'] ['k', 'j']
+print(tuple(xs), tuple(range(3)), list())   # (3, 1) (0, 1, 2) []
+
+gen nums() -> int:
+    yield 1
+    yield 2
+
+print(list(nums()))                     # [1, 2]（遅延のジェネレータも最後まで回す）
+
+print("=== 3. list(xs) is a copy ===")
+mut ys = list(xs)
+ys.append(9)
+print(xs, ys)                           # [3, 1] [3, 1, 9]

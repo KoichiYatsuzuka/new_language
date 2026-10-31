@@ -1,0 +1,13 @@
+# py_os_error_args_error.ar — OSError の 4 つ目の引数（Windows の winerror）は受けない（known_bugs.md の #9）
+#
+# `OSError(errno, strerror, filename, winerror, filename2)` の 4 つ目は Windows の CPython だけが持つ `winerror`。
+# Arrow の OSError は `winerror` の欄を持たないので、`None` 以外を渡すと黙って捨てずに誤りにする
+# （`None` ならほかと同じ・`py_os_error_args.ar`）。
+#
+# 期待されるエラー（実行時）:
+#   TypeError: OSError(): the `winerror` argument (the 4th) is not supported; pass None
+
+import[py] test_modules.py_os_error_args as m
+
+print(m.winerror())
+print("unreachable")

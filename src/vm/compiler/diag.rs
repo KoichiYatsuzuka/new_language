@@ -92,6 +92,25 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     // `parse_ar`（#56）。入力は文字列だけなので評価済み引数で表現できる。
     // ⚠ #33〜#55 の間、`is_builtin_callee` が bail していたせいで **`VmForceError` で死んでいた**。
     "parse_ar",
+    // `list(it)` / `tuple(it)`（python_builtins_plan.md のタスク 1-7）。
+    "list", "tuple",
+    // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）。
+    "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
+    // 書式指定の小言語（タスク 3-4）。f-string の `{x:spec}` はこの呼び出しに脱糖される。
+    "format",
+    // 変換器が Python の `with` の終わりに置く（タスク 5-4）。
+    "__py_with_exit",
+    // 変換器が Python の `object()` / 基底が `object` のクラスの `super().__init__(..)` にする（タスク 6-10）。
+    "__py_object", "__py_object_init",
+    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）。
+    "__py_delattr", "__py_delitem",
+    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
+    // （known_bugs.md の #10 / #11）。
+    "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
+    // 変換器が Python の `super().m(..)` にする（known_bugs.md の #6）。
+    "__py_super",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {
@@ -104,7 +123,8 @@ pub(super) fn is_vm_builtin(name: &str) -> bool {
 /// `len` は名前を無視して位置引数扱い…）ので、`eval_builtin_evaled_named` で
 /// **ツリーウォークと一致することを確認した名前だけ**を挙げる。ここに無い名前は従来どおり
 /// bail してツリーウォークへ落とす（＝安全側）。
-pub(super) const VM_BUILTIN_KW_NAMES: &[&str] = &["enumerate", "open"];
+pub(super) const VM_BUILTIN_KW_NAMES: &[&str] =
+    &["enumerate", "open", "min", "max", "sum", "sorted", "round", "pow", "print", "__py_object_init", "__py_super"];
 
 /// 引数に**名前付き**（キーワード／可変長）が含まれるか（#27-c）。
 /// `compile_call_args` は同じ判定を戻り値で返すが、それでは遅すぎる場面がある:

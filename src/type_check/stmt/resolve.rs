@@ -127,7 +127,10 @@ impl TypeChecker {
             | InferredType::FixedListOf(elem)
             | InferredType::ListLikeOf(elem)
             | InferredType::IteratorOf(elem)
-            | InferredType::SetOf(elem) => (**elem).clone(),
+            | InferredType::SetOf(elem)
+            | InferredType::FrozenSetOf(elem) => (**elem).clone(),
+            // bytes の反復は 1 バイトずつの int（タスク 3-1）。
+            InferredType::Bytes => InferredType::Int,
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
             InferredType::DictOf(k, _) => (**k).clone(),
             // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
@@ -137,8 +140,6 @@ impl TypeChecker {
             }
             // 文字列の反復は 1 文字ずつの `str` を返す。
             InferredType::Str => InferredType::Str,
-            // バイト列の反復は 0〜255 の `int`（3-1）
-            InferredType::Bytes => InferredType::Int,
             _ => InferredType::Unresolved,
         }
     }
@@ -403,6 +404,7 @@ impl TypeChecker {
                             InferredType::Function {
                                 params: None,
                                 return_type: Box::new(ret),
+                                mutates_immutable: None,
                             },
                         );
                         continue;
@@ -427,6 +429,7 @@ impl TypeChecker {
                         InferredType::Function {
                             params: Some(fn_params),
                             return_type: Box::new(ret),
+                            mutates_immutable: None,
                         },
                     );
                 }
@@ -469,7 +472,8 @@ impl TypeChecker {
             "bytes" => InferredType::Bytes,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
-            "Any" => InferredType::Any,
+            // `object` は静的には `Any`（`InferredType::from_ann` と同じ・タスク 6-10）。
+            "Any" | "object" => InferredType::Any,
             _ => InferredType::Unresolved,
         }
     }
@@ -494,6 +498,7 @@ impl TypeChecker {
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
             T::SetOf(t) => T::SetOf(rec(t)),
+            T::FrozenSetOf(t) => T::FrozenSetOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
             T::Tuple(ts) => T::Tuple(
                 ts.iter().map(|t| Self::open_never_to_any(t.clone())).collect(),

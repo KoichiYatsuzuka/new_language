@@ -1,0 +1,21 @@
+# py_del_error.ar — `del o.a` で消した属性を読むと AttributeError（known_bugs.md の #2・CPython と同じ）
+#
+# 変換器は Python の `del o.a` を `__py_delattr(o, "a")` にし、フィールドを**未代入に戻す**。欄は残るが、
+# 読みは CPython と同じ `AttributeError`（`hasattr` は偽・また代入できる）。
+#
+# 期待されるエラー（実行時・CPython 3.12 と同じ文言）:
+#   AttributeError: 'Series' object has no attribute '_cacher'
+#
+# ほかの誤り（`py_del.ar` の `errors()` で捕まえて表示している）:
+#   - もう消した属性をもう一度消す / 無い属性・メソッドを消す … AttributeError: 'C' object has no attribute 'x'
+#   - deleter の無い property … AttributeError: property 'v' of 'ReadOnly' object has no deleter
+#   - `__set__` だけのデータディスクリプタ … AttributeError: __delete__
+#   - `del d[k]` の無いキー … KeyError / リストの範囲の外 … IndexError: list assignment index out of range
+#   - タプル・文字列・集合・`__delitem__` の無いインスタンス … TypeError: 'tuple' object doesn't support item deletion
+#   ⚠ CPython と違う誤り: クラス・モジュールの属性（`del C.x` / `del m.x`）は消せない（TypeError）。
+#     不変（`let` / `freeze`）のインスタンスの属性も消せない（TypeError: cannot delete field 'x' on immutable instance）。
+
+import[py] test_modules.py_del as m
+
+print(m.read_deleted())
+print("unreachable")

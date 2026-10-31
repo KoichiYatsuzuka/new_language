@@ -1,0 +1,19 @@
+# getattr_hook_error.ar — Arrow のクラスは `__getattr__` を定義できない（known_bugs.md の #11）
+#
+# 読みの上書き（`__getattr__`）は Python のモジュール（`import[py]`）のクラスだけが持てる
+# （`examples/interop/py_getattr_hook.ar`・`__setattr__` / `__delattr__` と同じ規則・`setattr_hook_error.ar`）。
+# Arrow のクラスのメンバーはクラスの本体で決まり、無い名前の読みは静的な誤り。
+#
+# 期待されるエラー（ParseError・パース時）:
+#   `__getattr__` can only be defined in a class of a Python module (import[py]); the members of an Arrow class are
+#   fixed by its class body
+
+class Dyn:
+    mut real: int
+
+    fn __getattr__(self, name: str) -> str:
+        return "dyn:" + name
+
+let d = Dyn(1)
+print(d.real)
+print("unreachable")

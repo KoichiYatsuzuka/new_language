@@ -1,0 +1,14 @@
+# callable_field_error.ar — 呼べない値を入れたフィールドは呼べない（python_builtins_plan.md のタスク 1-11）
+#
+# 対になる正常系: callable_field.ar
+#
+# 期待されるエラー（静的）:
+#   StaticTypeError: 'int' is not callable
+#
+# ⚠ obj.f(x) は「属性を読んで、その値を呼ぶ」ので、値が呼べなければ値を呼ぶのと同じ誤り。
+
+class Box:
+    let n: int
+
+let b = Box(3)
+print(b.n(1))                           # ⛔ n は int

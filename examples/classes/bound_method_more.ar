@@ -1,0 +1,53 @@
+# bound_method_more.ar — gen メソッド・組み込みの値のメソッドの束縛と、束縛メソッドの型
+# （python_builtins_plan.md のタスク 1-10）
+#
+# 対になる誤りの例: bound_method_more_error.ar
+#
+# - gen メソッドも値として読める（呼ぶとジェネレータ）
+# - 組み込みの値のメソッドも読める（xs.append / s.upper / d.items / st.add）。同じ値を書き換える
+#   （push = out.append の後の push(1) は out を変える）。読める名前は型検査と実行時が同じ表で決める
+# - 束縛メソッドには型が付く（self を除いたシグネチャの関数型）。引数・戻り値は静的に検査される
+# ⚠ 以前は gen メソッド・組み込みの値のメソッドを値として読むと AttributeError / 静的な誤りだった。
+#   束縛メソッドの型は無く、g() の引数・戻り値は検査されなかった。
+
+class Bag:
+    let xs: list[int]
+
+    gen each(self) -> int:
+        for x in self.xs:
+            yield x * 10
+
+    fn total(self, let k: int) -> int:
+        mut acc = 0
+        for x in self.xs:
+            acc += x * k
+        return acc
+
+print("=== gen method ===")
+let bag = Bag([1, 2, 3])
+let each = bag.each
+print(list(each()))                         # [10, 20, 30]
+
+print("=== methods of built-in values ===")
+mut out: list[int] = []
+let push = out.append
+push(1)
+push(2)
+print(out)                                  # [1, 2]（同じ list を書き換える）
+let up = "arrow".upper
+print(up())                                 # ARROW
+let d: dict[str, int] = {"a": 1, "b": 2}
+let items = d.items
+print(items())                              # [('a', 1), ('b', 2)]
+mut seen: set[int] = set()
+let mark = seen.add
+for v in [3, 1, 3]:
+    mark(v)
+print(len(seen))                            # 2
+print(out.append == out.append)             # True
+
+print("=== the type of a bound method ===")
+fn apply_twice(let f: function[let int]->int, let x: int) -> int:
+    return f(x) + f(x + 1)
+
+print(apply_twice(bag.total, 2))            # 30（bag.total の型は function{let k: int}->int）

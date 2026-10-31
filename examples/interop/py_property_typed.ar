@@ -1,0 +1,25 @@
+# py_property_typed.ar — Python の property を Arrow から読んだ値の型（python_builtins_plan.md のタスク 6-8）
+#
+# 変換器は property の置き場（`static mut celsius`）の型を getter の戻り値の注釈にする。Arrow から `s.celsius` を
+# 読むと `float`、`s.readings` は `list[int]` になり、そのまま演算・反復できる。
+# 注釈の無い getter（`raw`）は今までどおり `Any`（演算する前に `mustbe` などで型を確かめる）。
+# 対になる誤りの例: py_property_typed_error.ar（`float` の property を `str` の変数へ束縛する）
+#
+# ⚠ 以前は置き場が `static mut x: Any` で、`s.celsius * 2.0` が静的な `OperationOnAny` だった。
+
+import[py] test_modules.py_property_typed as pt
+
+mut s = pt.Sensor(21.5, [3, 4, 5])
+let c: float = s.celsius
+print(c * 2.0)
+s.celsius = 30.0
+print(s.celsius + 0.5)
+
+mut total = 0
+for v in s.readings:
+    total = total + v
+print(total)
+print(s.label.upper())
+
+let r = s.raw mustbe float
+print(r)

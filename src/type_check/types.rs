@@ -228,7 +228,8 @@ pub enum InferredType {
     /// `str` プリミティブ型。
     Str,
     /// `bytes` — 不変のバイト列（ffi_value_exchange_plan.md 3-1・D-9）。`str` とは別の型で、変換は
-    /// `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う。
+    /// `bytes.decode(encoding)` / `str.encode(encoding)` で明示的に行う。添字は `int`、スライス・`+` / `*` は `bytes`、
+    /// 反復は `int`（python_builtins_plan.md のタスク 3-1）。
     Bytes,
     /// `bool` プリミティブ型。
     Bool,
@@ -317,6 +318,11 @@ pub enum InferredType {
     Set,
     /// 要素型既知の集合型 `set[T]`。
     SetOf(Box<InferredType>),
+    /// 要素型未知の不変集合型 `frozenset`（python_builtins_plan.md のタスク 3-1）。`Set` と同じく注釈には書けない
+    /// （素の容器・タスク 8.1）。型テスト位置（`x is frozenset`）と Python 由来の値のためにある。
+    FrozenSet,
+    /// 要素型既知の不変集合型 `frozenset[T]`（タスク 3-1）。`set[T]` とは互いに代入できない（別の型）。
+    FrozenSetOf(Box<InferredType>),
     /// タプル型 `tuple[T1, T2, ...]`。各要素に独立した型を持つ。
     Tuple(Vec<InferredType>),
     /// **要素型も要素数も未知**のタプル型 `tuple`（タスク 8.3）。
@@ -366,6 +372,13 @@ pub enum InferredType {
         params: Option<Vec<FnTypeParam>>,
         /// 戻り値の型。
         return_type: Box<InferredType>,
+        /// 束縛メソッド（`c.add` を値として読んだもの）が**不変の受け手を書き換える**とき
+        /// `(メソッドの名前, 受け手の根の名前)`（python_builtins_plan.md のタスク 1-11）。
+        ///
+        /// 呼ぶと `MutatingMethodOnImmutable`（`c.add(1)` を直接書いたのと同じ誤り）。束縛すること
+        /// 自体は誤りにしない（関数の値が不変であることと、その関数が受け手を書き換えることは別の話）。
+        /// それ以外の関数型は `None`。
+        mutates_immutable: Option<Box<(String, String)>>,
     },
 }
 
@@ -385,6 +398,7 @@ impl InferredType {
             | Self::FixedListOf(t)
             | Self::ListLikeOf(t)
             | Self::SetOf(t)
+            | Self::FrozenSetOf(t)
             | Self::IteratorOf(t)
             | Self::TypeValOf(t) => t.for_each_type(f),
             // 構造体の要素（`Ptr[Db]`）も訪ねる（名前の存在検査の対象）
@@ -402,7 +416,7 @@ impl InferredType {
                     t.for_each_type(f);
                 }
             }
-            Self::Function { params, return_type } => {
+            Self::Function { params, return_type, .. } => {
                 for p in params.iter().flatten() {
                     p.ty.for_each_type(f);
                 }
@@ -449,6 +463,7 @@ impl InferredType {
                 | Self::ListLike
                 | Self::Dict
                 | Self::Set
+                | Self::FrozenSet
                 | Self::TupleAny
         ) || matches!(self, Self::Ptr(e) if **e == PtrElem::Unknown)
     }
@@ -551,6 +566,12 @@ impl InferredType {
                 None => Self::Set,
             });
         }
+        if let Some(inner) = ann.strip_prefix("frozenset[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::FrozenSetOf(Box::new(t)),
+                None => Self::FrozenSet,
+            });
+        }
         if let Some(inner) = ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             if parts.len() >= 2 {
@@ -641,6 +662,7 @@ impl InferredType {
             "list_like" => Some(Self::ListLike),
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
+            "frozenset" => Some(Self::FrozenSet),
             // ⚠⚠ **`tuple` は静的側の表に無かった**（タスク 8.3）。`from_ann` が `None` を
             //    返すため注釈が `Unresolved`（＝万能受容体）に化け、
             //      let t: tuple = 1          # 通っていた
@@ -662,6 +684,10 @@ impl InferredType {
             "generator" => Some(Self::NamedInstance("generator".to_string())),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
+            // `object`（すべての値の基底・タスク 6-10）は静的には `Any` と同じ: 何でも受け、使う前に型を確かめる
+            // （CPython の型検査でも `object` の値には `object` のメソッドしか呼べない）。実行時の検査は
+            // `primitive_ann_matches` の `"object"`（全部の値で真）。
+            "object" => Some(Self::Any),
             // Unknown identifier that looks like a class name → treat as instance type.
             // This allows `a: Vec2D` parameters to have method calls type-checked correctly.
             //
@@ -803,6 +829,7 @@ impl InferredType {
         Some(Self::Function {
             params,
             return_type: Box::new(return_type),
+            mutates_immutable: None,
         })
     }
 
@@ -859,6 +886,8 @@ impl std::fmt::Display for InferredType {
             Self::DictOf(k, v) => write!(f, "dict[{k},{v}]"),
             Self::Set => write!(f, "set"),
             Self::SetOf(t) => write!(f, "set[{t}]"),
+            Self::FrozenSet => write!(f, "frozenset"),
+            Self::FrozenSetOf(t) => write!(f, "frozenset[{t}]"),
             Self::TypeVal => write!(f, "type"),
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
@@ -892,6 +921,7 @@ impl std::fmt::Display for InferredType {
             Self::Function {
                 params,
                 return_type,
+                ..
             } => {
                 match params {
                     None => write!(f, "function")?,

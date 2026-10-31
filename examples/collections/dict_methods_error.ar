@@ -1,0 +1,9 @@
+# dict_methods_error.ar — `let` の辞書を書き換えるメソッドで変える（python_builtins_plan.md のタスク 3-6）
+#
+# `pop` / `popitem` / `setdefault` / `update` / `clear` は受け手を書き換える。`let` の辞書には呼べない
+# （`d[k] = v` と同じ・`list.append` と同じ規則）。書き換えるなら `mut` で宣言する。
+# 期待: 静的型エラー（MutatingMethodOnImmutable: `update` を `let` の `prices` に呼んでいる）
+
+let prices: dict[str, int] = {"tea": 3}
+prices.update({"coffee": 4})
+print(prices)

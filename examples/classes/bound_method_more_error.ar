@@ -1,0 +1,16 @@
+# bound_method_more_error.ar — 不変の list の書き換えるメソッドは、束縛しても呼べない
+# （python_builtins_plan.md のタスク 1-10）
+#
+# 対になる正常系: bound_method_more.ar
+#
+# 期待されるエラー（静的・呼んだ行）:
+#   StaticTypeError: cannot call 'append' on 'ys' — it is immutable
+#
+# ⚠ 束縛すること（let p = ys.append）は誤りにしない。呼べば ys.append(3) を直接書いたのと同じ誤り。
+# ⚠ list には実行時の不変の印が無いので、ここは型検査だけが守る（インスタンスの mut self のメソッドは
+#   実行時にも止まる・bound_method_error.ar）。
+
+let ys: list[int] = [1, 2]
+let p = ys.append
+p(3)                                        # ⛔ ys は不変
+print(ys)

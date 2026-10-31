@@ -24,13 +24,13 @@ finally:
 
 ```rust
 struct ExceptHandler {
-    exc_type: Option<String>,   // 例外クラス名。None は bare except (全捕捉)
+    exc_type: Option<String>,   // 例外クラス名（`m.Err` の修飾名も）。None は bare except (全捕捉)
     name:     Option<String>,   // as で束縛する変数名
     body:     Vec<Stmt>,
 }
 ```
 
-**実行** (`exec_try`):
+**実行**（VM の `SetupTry` / `ExcMatch`）:
 1. `try` ボディを実行
 2. 例外が発生した場合 (`RAISE_SENTINEL` または `ExecResult::Raise`):
    - 各 `except` ハンドラを上から順に評価
@@ -40,18 +40,24 @@ struct ExceptHandler {
    - マッチするハンドラがなければ例外を再送出
 3. `finally` ボディを例外有無に関わらず実行
 
-### 例外マッチング (`exc_matches`)
+### 例外マッチング (`exc_matches` / `vm_exc_matches`)
 
 ```ar
 try: ...
-except Exception:   # Exception, ValueError, TypeError, ... のすべて
+except Exception:    # GeneratorExit 以外のすべての例外（組み込みも、Error を実装した利用者の例外も）
     ...
-except ValueError:  # ValueError のみ
+except LookupError:  # KeyError / IndexError も（組み込みの例外の階層・下の表）
+    ...
+except m.Err:        # モジュールを通した名前（import m）・Python の except requests.HTTPError: も同じ
     ...
 ```
 
-`exc_matches` はインスタンスのクラス名が `exc_type` またはその継承先 (`Error` トレイト含む)  
-と一致するかを確認します。
+- 照合は `ClassValue::is_a`: 例外のクラスの名前が `exc_type` か、`bases` に `exc_type` があれば当たる。
+  組み込みの例外は**祖先を `bases` に平らに並べて**持つので、親で捕まえると子も捕まる。
+- `Error` を実装しただけの利用者の例外（`class MyErr(Error)`）は `Exception` / `BaseException` の派生として扱う。
+- 修飾名（`except m.Err:`）は `x is m.Err` と同じ経路（`value_is_type`）: モジュールの別名を引いて同じクラスか、
+  修飾名の基底に載っているか（`import[py]` のクラスの派生も当たる）。
+- `except Error` は静的な誤り（`except Exception` を書く）。知らない名前の `except` も静的な誤り（腕が永久に死ぬ）。
 
 ---
 
@@ -74,37 +80,54 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 ## 組み込み例外クラス
 
-すべての組み込み例外クラスは `Error` trait を実装しています。
+すべての組み込み例外クラスは `Error` trait を実装し、**CPython 3.12 と同じ階層**を持ちます（Arrow 独自の 5 つを含めて 67 クラス）。
+表は `src/type_check/names.rs` の `BUILTIN_EXCEPTIONS`（名前と親）1 つで、実行時の登録・内部エラーの変換・
+型検査がみなここを読みます。
 
-| クラス名 | 説明 |
-|---|---|
-| `Exception` | 汎用例外の基底 |
-| `ValueError` | 不正な値 |
-| `TypeError` | 型の不一致 |
-| `NameError` | 未定義変数の参照 |
-| `AttributeError` | 存在しない属性へのアクセス |
-| `IndexError` | インデックスが範囲外 |
-| `KeyError` | 辞書に存在しないキー |
-| `ZeroDivisionError` | ゼロ除算 |
-| `RuntimeError` | 実行時エラー全般 |
-| `StopIteration` | イテレータの終端 |
-| `NotImplementedError` | 未実装メソッドの呼び出し |
-| `OverflowError` | 数値オーバーフロー |
-| `IOError` / `OSError` | I/O エラー |
-| `AssertionError` | `assert` 失敗 |
-| `ArithmeticError` | 算術演算エラー全般 |
-| `AccessError` | `private`/`protected` アクセス違反 |
-| `FfiTypeError` | 外部言語の関数が型スタブの宣言と食い違う値を返した（`TypeError` の派生なので `except TypeError` でも捕まえられる） |
-| `ForeignError` | 外部言語の側で投げられた例外（C# の例外・JS の `throw`・py-int で Python が投げた例外）。`message` は相手の例外の種類とメッセージ（`System.InvalidOperationException: boom`・`ValueError: bad`） |
+```
+BaseException
+ ├── GeneratorExit                ← Exception の派生ではない（except Exception で捕まらない）
+ └── Exception
+      ├── ArithmeticError ── FloatingPointError / OverflowError / ZeroDivisionError
+      ├── LookupError ── IndexError / KeyError
+      ├── NameError ── UnboundLocalError
+      ├── OSError ── FileNotFoundError / FileExistsError / PermissionError / IsADirectoryError /
+      │              NotADirectoryError / TimeoutError / ConnectionError (── BrokenPipeError …) / …
+      │              （IOError / EnvironmentError / WindowsError は OSError と互いに捕まえ合う）
+      ├── RuntimeError ── NotImplementedError / RecursionError
+      ├── SyntaxError ── IndentationError ── TabError
+      ├── ValueError ── UnicodeError ── UnicodeTranslateError / UnicodeDecodeError / UnicodeEncodeError
+      ├── Warning ── UserWarning / DeprecationWarning / FutureWarning / RuntimeWarning / …（12）
+      ├── AssertionError / AttributeError / BufferError / EOFError / ReferenceError /
+      │   SystemError
+      ├── StopIteration ── EndOfIteration  ← Arrow 独自（尽きたイテレータの `next()`・`for` が内部で受ける）
+      ├── TypeError ── FfiTypeError  ← Arrow 独自（外部言語の関数が型スタブの宣言と食い違う値を返した）
+      ├── ForeignError               ← Arrow 独自（外部言語の側で投げられた例外）
+      ├── AccessError                ← Arrow 独自（private / protected の違反）
+      └── BOFError                   ← Arrow 独自（ファイルを逆向きに読んで先頭に着いた）
+```
 
-`FfiTypeError` / `ForeignError` は `implementation_plans/ffi_value_exchange_plan.md` 7-4 で登録しました（以前は `CsDll: …` /
-`cs-proc remote: …` などの文字列のままで、`except` で捕まえられませんでした）。
+- `open` の失敗は OS のエラーの種類で `FileNotFoundError` / `PermissionError` / `FileExistsError` /
+  `IsADirectoryError` / `NotADirectoryError` に振り分けます（それ以外は `IOError`）。
+- ⚠ `IOError` などの別名は CPython では `OSError` そのものですが、Arrow ではクラスが別です
+  （`raise IOError("x")` の表示は `IOError: x`。CPython は `OSError: x`）。
+- Arrow のファイルの `read()` / `read_line()` / `read_letter()` は終わりで `EOFError: EOF`、逆向き（`backward=True`）で
+  先頭に着くと `BOFError: BOF` を出します（タスク 4-5 で捕まえられるようにした。以前は表に無い名前で、`except` を
+  素通りしてプログラムが止まった）。Python の形で開いたファイルの `read()` / `readline()` は終わりで `"`。
+- `UnicodeDecodeError` / `UnicodeEncodeError` は bytes の復号・符号化の失敗（python_builtins_plan.md のタスク 3-1・
+  文言は CPython と同じ）。⚠ CPython の 5 引数の構築子と `encoding` / `start` / `end` / `reason` の属性は無い。
+- ⚠ `SystemExit` / `KeyboardInterrupt` / `ImportError` / `ExceptionGroup` などはまだありません（意味が要るもの）。
+- `FfiTypeError` は `TypeError` の派生なので `except TypeError` でも捕まえられます。`ForeignError` は C# の例外・
+  JS の `throw`・py-int で Python が投げた例外で、`message` は相手の例外の種類とメッセージ
+  （`System.InvalidOperationException: boom`・`ValueError: bad`）。どちらも `implementation_plans/ffi_value_exchange_plan.md`
+  7-4 で登録しました（以前は `CsDll: …` / `cs-proc remote: …` などの文字列のままで、`except` で捕まえられませんでした）。
 
 ### 例外インスタンスのフィールド
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `message` | `str` | エラーメッセージ |
+| `message` | `str` | エラーメッセージ（CPython の `str(e)`） |
+| `args` | `tuple` | 作るときの位置引数（組み込みの例外とその派生だけ） |
 | `code_context` | `str` | 発生箇所のソースコンテキスト |
 | `file` | `str` | ファイル名 |
 | `line` | `int` | 行番号 |
@@ -112,20 +135,48 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 `code_context`/`file`/`line`/`col` は `raise` 実行時にインタープリタが自動設定します。
 
-### 例外の表示
+### 組み込みの例外を作る・表示する
 
-Python と同じく、`str(e)` と `print(e)` は例外のメッセージ（`message`）、`repr(e)` は `ValueError('bad value')` の形です
-（組み込みの例外も、`Error` を実装した利用者の例外も同じ。メッセージが無ければ `str(e)` は空文字列）。
-`__str__` / `__repr__` を定義すればそれが優先します（`implementation_plans/ffi_value_exchange_plan.md` 7-3。
-以前は `<ValueError object at 0x…>` で、アドレスが実行のたびに変わりました）。
+組み込みの例外は CPython と同じく**位置引数をいくつでも**受け、`args` に持ちます。
 
 ```ar
-try:
-    raise ValueError("bad value")
-except ValueError as e:
-    print(e)         # bad value
-    print(repr(e))   # ValueError('bad value')
+let a = ValueError()            # args = ()        str(a) = ''
+let b = ValueError("bad")       # args = ('bad',)  str(b) = 'bad'
+let c = ValueError("bad", 42)   # args = ('bad', 42)  str(c) = "('bad', 42)"
+print(repr(c))                  # ValueError('bad', 42)
+print(KeyError("k"))            # 'k'（KeyError は引数 1 つのとき repr）
 ```
+
+- `message` は CPython の `str(e)`（引数なし `''`・1 つはその `str`・2 つ以上は `args` の `repr`）。
+  `print(e)` / `str(e)` はこれを、`repr(e)` は `ValueError('bad', 42)` の形を出します。
+- キーワード引数は受けません（`TypeError: ValueError() takes no keyword arguments`）。
+- 組み込みの例外は `__init__` を持たず、作るときの位置引数を `instantiate_evaled` が `args` に入れます
+  （CPython の `BaseException.__new__` と同じ位置）。`__init__` を書いた Python のクラスでも、`super().__init__` を
+  呼ばなくても `args` は入り、`super().__init__(..)` を呼べば入れ直します。
+- 内部で起きた例外の `args` は文言 1 つの組です。⚠ ただし見つからないキーの `KeyError`（`d[k]` / `del d[k]` /
+  `d.pop(k)` / `s.remove(x)` / `"{k}".format()`）は CPython と同じく**キーそのもの**（`args == (k,)`・`e.args[0] is k`・
+  `repr(e)` は `KeyError('zz')`）、空の `d.popitem()` / `s.pop()` は文言の文字列が引数です（known_bugs.md の #9・
+  `examples/interop/py_key_error_args.ar`）。
+- **`OSError` の系統**（`FileNotFoundError` などの派生・別名の `IOError` を含む）は CPython と同じく `errno` / `strerror` /
+  `filename` / `filename2` を持ちます（無ければ `None`・known_bugs.md の #9・`examples/interop/py_os_error_args.ar`）。
+  - `open` の失敗は `FileNotFoundError: [Errno 2] No such file or directory: 'p'`（`args == (2, 'No such file or directory')`・
+    `filename` はパス）。errno と文言は C の値です（無いファイル 2・権限 13・あるファイルの `"x"` 17。Windows でディレクトリを
+    開くと `PermissionError` の 13。CPython と同じ）。⚠ 以前の文言は `cannot open 'p': <OS の文言>` でした。
+  - `OSError(errno, strerror[, filename])` で作ると同じ属性が入り、`filename` が `None` でなければ `args` は最初の 2 つ、
+    `str(e)` は `[Errno 2] No such: 'f'` です。引数が 0 / 1 / 6 個以上ならほかの例外と同じ（属性は `None`）。
+  - `OSError(2, "..")` は errno に対応する派生（`FileNotFoundError`）になります（CPython の `OSError.__new__`。別名の
+    `IOError(..)` も。派生を呼んだときは呼んだクラスのまま）。
+  - 型検査は `errno` を `int | None`、`strerror` を `str | None`、`filename` / `filename2` を `Any` とします
+    （比べる前に `e.errno mustbe int` で確かめる）。
+  - ⚠ 4 つ目の引数（Windows の `winerror`）は持たないので、`None` 以外を渡すと `TypeError` です。⚠ 作った後で
+    `e.errno = ..` と書き換えても `str(e)` は変わりません（作るときに決める。CPython は変わる）。⚠ Windows の CPython は
+    5 つの形（`filename2`）で `[WinError None] ..` と出します（Arrow は Linux の CPython と同じ `[Errno ..] ..: 'a' -> 'b'`）。
+  - ⚠ `open` の 5 種類（無い・権限・ある・ディレクトリ・ディレクトリでない）のほかの失敗は `IOError` で、errno は OS の
+    番号（Windows では Win32 の番号）、文言は OS の文言です（CPython は C の errno の `OSError`）。
+- `Error` を実装した利用者の例外（`class MyErr(Error)`）は `args` を持たず、`str(e)` / `print(e)` は `message`、
+  `repr(e)` は `MyErr('bad value')` の形です（メッセージが無ければ `str(e)` は空文字列）。
+- `__str__` / `__repr__` を定義すればそれが優先します（`implementation_plans/ffi_value_exchange_plan.md` 7-3。
+  以前は `<ValueError object at 0x…>` で、アドレスが実行のたびに変わりました）。
 
 ---
 
@@ -190,5 +241,7 @@ Traceback (most recent call last):
     return process(x)
 ValueError: invalid input
 ```
+
+`str(e)` が空の例外は名前だけを出します（`raise ValueError()` は `ValueError`。CPython と同じ）。
 
 各フレームには `file`・`line`・`col`・`fn_name`・`context` (前後5行) が記録されます。

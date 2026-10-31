@@ -140,3 +140,39 @@ fn test_generator_annotation_accepts_generator_at_runtime() {
     assert_int(run_get(src, "r"), 9);
     assert!(matches!(run_get(src, "is_gen"), Value::Bool(true)));
 }
+
+
+/// `enumerate` / `zip` は遅延のジェネレーター（python_builtins_plan.md のタスク 3-5）。元と位置を共有し、
+/// 無限のジェネレーターも使える。`next(it, default)` と、尽きた `next` の `except StopIteration`。
+#[test]
+fn test_enumerate_zip_are_lazy_generators() {
+    let src = concat!(
+        "gen naturals() -> int:\n",
+        "    mut i = 0\n",
+        "    while True:\n",
+        "        yield i\n",
+        "        i = i + 1\n",
+        "let src = naturals()\n",
+        "let en = enumerate(src, 10)\n",
+        "let first = next(en)\n",
+        "let shared = next(src)\n",
+        "let second = next(en)\n",
+        "let pairs = list(zip(naturals(), \"ab\"))\n",
+        "let empty: list[int] = []\n",
+        "let it = iter(empty)\n",
+        "let d = next(it, -1)\n",
+        "mut caught = False\n",
+        "try:\n",
+        "    next(it)\n",
+        "except StopIteration:\n",
+        "    caught = True\n",
+    );
+    let interp = run_interp(src);
+    let show = |name: &str| interp.display(&interp.get_val(name).unwrap());
+    assert_eq!(show("first"), "(10, 0)");
+    assert_eq!(show("shared"), "1");
+    assert_eq!(show("second"), "(11, 2)");
+    assert_eq!(show("pairs"), "[(0, 'a'), (1, 'b')]");
+    assert_eq!(show("d"), "-1");
+    assert_eq!(show("caught"), "True");
+}

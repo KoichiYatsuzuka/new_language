@@ -9,6 +9,21 @@ use {
 };
 
 impl Interpreter {
+    /// 格納する値（フィールド・辞書・`append`・`xs[i] = v`・集合の `add`・`mut` の宣言・クロージャの取り込み）。
+    ///
+    /// Arrow のコードの中は写す（L4・`let` の値を共有先から書き換えさせない）。Python から変換したコードの中は
+    /// **写さずに共有する**（CPython と同じく参照を共有する・known_bugs.md の #1 の A 案）。どちらのコードかは
+    /// `running_python`（チャンクを走らせる入口が差し替える）。
+    /// ⚠ Arrow の `let` / `mut` に束縛するときは Arrow のコードの中なので写す（Python のインスタンスでも）。
+    /// ⚠ Arrow から Python の関数へ渡せるのは `mut` の値だけ（静的に検査）なので、共有しても `let` の保証は崩れない。
+    pub(crate) fn copy_for_store(&self, val: Value) -> Value {
+        if self.running_python {
+            val
+        } else {
+            Self::deep_copy_value(val)
+        }
+    }
+
     /// 参照型の値を再帰的にディープコピーして返す。
     ///
     /// `let` パラメータへのバインド時に呼ばれ、元の可変変数（`mut`）が
@@ -21,6 +36,7 @@ impl Interpreter {
     /// - その他: プリミティブ・不変型はそのまま返す（Rust の clone でコピー済み）
     pub(crate) fn deep_copy_value(val: Value) -> Value {
         match val {
+            Value::Instance(inst_rc) if Self::shares_instance(&inst_rc) => Value::Instance(inst_rc),
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let new_boxed = inst
@@ -58,6 +74,10 @@ impl Interpreter {
             Value::Set(items) => Value::Set(Rc::new(RefCell::new(
                 items.borrow().iter().cloned().map(Self::deep_copy_value).collect(),
             ))),
+            // frozenset も `Tuple` と同じ（容れ物は不変でも要素のインスタンスは可変・タスク 3-1）。
+            Value::FrozenSet(items) => {
+                Value::FrozenSet(Rc::new(items.iter().cloned().map(Self::deep_copy_value).collect()))
+            }
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_value).collect();
@@ -106,6 +126,7 @@ impl Interpreter {
     /// - その他: `deep_copy_value` と同様にそのまま返す
     pub(crate) fn deep_copy_unfrozen(val: Value) -> Value {
         match val {
+            Value::Instance(inst_rc) if Self::shares_instance(&inst_rc) => Value::Instance(inst_rc),
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let class = inst.class.clone();
@@ -154,6 +175,9 @@ impl Interpreter {
             Value::Set(items) => Value::Set(Rc::new(RefCell::new(
                 items.borrow().iter().cloned().map(Self::deep_copy_unfrozen).collect(),
             ))),
+            Value::FrozenSet(items) => {
+                Value::FrozenSet(Rc::new(items.iter().cloned().map(Self::deep_copy_unfrozen).collect()))
+            }
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_unfrozen).collect();
@@ -163,6 +187,18 @@ impl Interpreter {
                 )))
             }
             other => other,
+        }
+    }
+
+    /// 写さずに共有するインスタンスか（`object()`・タスク 6-10）。フィールドを持たないので、共有しても同一性のほかに
+    /// 違いは見えない。写すと別の物になり、番兵として働かない（フィールドに入れた `object()` が `is` で偽になる）。
+    /// ⚠ スレッドへ送る複製（`Value::deep_clone`）は `Rc` を共有できないので、ここを通らず作り直す。
+    fn shares_instance(inst: &RefCell<InstanceData>) -> bool {
+        match inst.borrow().class.builtin {
+            crate::interpreter::BuiltinClass::Ordinary => false,
+            crate::interpreter::BuiltinClass::Object
+            | crate::interpreter::BuiltinClass::Ellipsis
+            | crate::interpreter::BuiltinClass::NotImplemented => true,
         }
     }
 }

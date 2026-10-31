@@ -9,10 +9,11 @@
 #
 # 期待されるエラー（ParseError・変換時）:
 #
-#   ① @property（本ファイルが踏む形）
-#      '@property' is not supported (method 'C.value'):
-#      Arrow has no property syntax; use a plain method instead
-#      ⇒ 代替: 素のメソッドにする（`c.value()` と呼ぶ）。`@x.setter` / `@x.deleter` も同じ。
+#   ① property と違う名前の setter（本ファイルが踏む形・`@value.setter def set_value`）
+#      '@value.setter' on method 'C.set_value' is not supported: the method must have the property's name 'value'
+#      ⇒ 代替: setter も同じ名前にする（`@value.setter def value(self, v)`）。
+#      ⚠ `@property` / `@x.setter` は変換できる（タスク 6-1）。property を包むデコレータ（`@logged @property`）も
+#        通る（タスク 6-6・`py_property.ar`）。
 #
 #   ② モジュール直下の @staticmethod
 #      '@staticmethod' is only meaningful on a method (function 'f')

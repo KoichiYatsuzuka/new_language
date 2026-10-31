@@ -110,12 +110,183 @@ impl Interpreter {
         }
     }
 
+    // ── ディスクリプタのプロトコル（python_builtins_plan.md のタスク 1-12）────────────────────────
+    //
+    // CPython の `object.__getattribute__` / `object.__setattr__` と同じ順:
+    //   読み: ① クラス側の**データディスクリプタ**（`__get__` と `__set__` / `__delete__` を持つ）→ `__get__`
+    //         ② インスタンスのフィールド ③ クラス側の非データディスクリプタ（`__get__` だけ）→ `__get__`
+    //         ④ クラス側の値そのもの ⑤ メソッド（束縛メソッド）
+    //   代入: クラス側のデータディスクリプタ → `__set__`。それ以外は従来どおり（フィールド・`static mut`）
+    //   クラスから読む（`C.x`）: ディスクリプタなら `__get__(None, C)`（property は自分自身を返す）
+    // 「クラス側の値」は `static mut`（Python のクラス属性）とクラス定数。`static mut` は Python のサブクラスへ
+    // 共有セルごと引き継がれるので、基底クラスの property もサブクラスのインスタンスから当たる。
+    // ⚠ メソッド呼び出し（`obj.x(..)`）はメソッドの無い名前を属性として読んで呼ぶ（タスク 1-11）ので、ここを通る。
+    // ⚠ VM の `GetAttr` のキャッシュはフィールドにしか張られないので、ディスクリプタの読みは毎回ここへ来る。
+
+    /// クラス側の値（`static mut` / クラス定数）。
+    fn class_level_value(cls: &crate::interpreter::ClassValue, attr: &str) -> Option<Value> {
+        if let Some(cell) = cls.static_vars.get(attr) {
+            return Some(cell.borrow().clone());
+        }
+        cls.class_vars.get(attr).cloned()
+    }
+
+    /// 値がディスクリプタなら `Some(データディスクリプタか)`。`__get__` を持つインスタンスがディスクリプタ、
+    /// さらに `__set__` か `__delete__` を持てばデータディスクリプタ（CPython の `PyDescr_IsData`）。
+    pub(crate) fn descriptor_kind(v: &Value) -> Option<bool> {
+        let Value::Instance(i) = v else { return None };
+        let inst = i.borrow();
+        let methods = &inst.class.methods;
+        methods
+            .contains_key("__get__")
+            .then(|| methods.contains_key("__set__") || methods.contains_key("__delete__"))
+    }
+
+    /// `desc.__get__(instance, owner)`（クラスから読んだときの `instance` は `None`）。
+    /// ⚠ 引数は写さずに渡す（`let` の仮引数でも受け手の書き換えが元へ届くように。`obj.m()` の `self` と同じ）。
+    fn descriptor_get(&mut self, desc: Value, instance: Value, owner: Value) -> Result<Value, String> {
+        self.eval_method_call_full(desc, "__get__", vec![(None, instance, false), (None, owner, false)], None)
+    }
+
+    /// `desc.__set__(instance, value)`。データディスクリプタが `__set__` を持たない（`__delete__` だけ）なら
+    /// CPython と同じ `AttributeError: __set__`。
+    fn descriptor_set(&mut self, desc: Value, instance: Value, value: Value) -> Result<(), String> {
+        let has_set =
+            matches!(&desc, Value::Instance(d) if d.borrow().class.methods.contains_key("__set__"));
+        if !has_set {
+            return Err("AttributeError: __set__".to_string());
+        }
+        self.eval_method_call_full(desc, "__set__", vec![(None, instance, false), (None, value, false)], None)
+            .map(|_| ())
+    }
+
+    /// Python のクラスが属性の操作を上書きしているか（`__setattr__` / `__delattr__`・known_bugs.md の #10、`__getattr__`・
+    /// #11、`__getattribute__`・#12）。CPython と同じく `o.x = v` / `setattr(o, "x", v)` / `del o.x` はまずそれを呼び、
+    /// 読みは `__getattribute__` を呼ぶ（無ければふつうの読み）。それが `AttributeError` になったときだけ `__getattr__`
+    /// を呼ぶ（基底のものも・メソッドは祖先まで平坦化してある）。
+    /// ⚠ Python のクラス（`ClassValue::is_python`）だけ。Arrow のクラスはこれらを定義できない（パーサの誤り）。
+    /// ⚠ 上書きを飛ばす `object.__setattr__(o, k, v)` / `super().__setattr__(k, v)` は、変換器が
+    ///   `__py_object_setattr(o, k, v)` にする（`hook: false` でふつうの代入へ直に行く）。読みの
+    ///   `object.__getattribute__(o, k)` は `__py_object_getattribute(o, k)`（[`Self::get_attr_without_hook`]）。
+    pub(crate) fn py_attr_hook(cls: &crate::interpreter::ClassValue, hook: &str) -> bool {
+        cls.is_python && cls.methods.contains_key(hook)
+    }
+
+    /// 上書きした `__setattr__(name, value)` / `__delattr__(name)` を呼ぶ（[`Self::py_attr_hook`]）。
+    /// ⚠ 引数は写さずに渡す（`descriptor_set` と同じ）。
+    fn call_attr_hook(&mut self, obj: Value, hook: &str, attr: &str, value: Option<Value>) -> Result<(), String> {
+        let mut args = vec![(None, Value::str(attr), false)];
+        args.extend(value.map(|v| (None, v, false)));
+        self.eval_method_call_full(obj, hook, args, None).map(|_| ())
+    }
+
+    /// `desc.__delete__(instance)`（`del obj.x`・known_bugs.md の #2）。データディスクリプタが `__delete__` を
+    /// 持たない（`__set__` だけ）なら CPython と同じ `AttributeError: __delete__`。
+    fn descriptor_delete(&mut self, desc: Value, instance: Value) -> Result<(), String> {
+        let has_delete =
+            matches!(&desc, Value::Instance(d) if d.borrow().class.methods.contains_key("__delete__"));
+        if !has_delete {
+            return Err("AttributeError: __delete__".to_string());
+        }
+        self.eval_method_call_full(desc, "__delete__", vec![(None, instance, false)], None).map(|_| ())
+    }
+
+    /// 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
+    ///
+    /// - `__name__` は定義の名前。Python のモジュールの関数は変換器が付けた別名を戻す
+    ///   （property の getter は `x`・持ち上げたラムダは `<lambda>`・`python_fn_name`）
+    /// - `__qualname__` は `FnValue::qualname`（メソッドは `C.m`、関数の中の関数は `outer.<locals>.inner`）。
+    ///   無ければ `__name__`（最上位の関数）
+    /// - `__doc__` は本体の先頭の文字列の文（docstring）。無ければ `None`
+    /// - 束縛メソッドは呼び先のもの。組み込みの値のメソッド（`xs.append`）は `append` / `list.append` / `None`
+    ///   （CPython と同じ）。多重定義は最初の定義のもの
+    fn function_attr(&self, f: &Value, attr: &str) -> Value {
+        use crate::interpreter::value::BoundTarget;
+        let (name, qualname, body): (&str, Option<&str>, &[crate::ast::Stmt]) = match f {
+            Value::Function(fv) => match fv.bound.as_deref() {
+                Some(b) => match &b.target {
+                    BoundTarget::Methods(ms) | BoundTarget::ClassMethod(ms) => {
+                        return self.function_attr(&Value::Function(ms[0].clone()), attr)
+                    }
+                    BoundTarget::Gen(g) => return self.function_attr(&Value::GeneratorFn(g.clone()), attr),
+                    BoundTarget::Builtin(n) => {
+                        return match attr {
+                            "__name__" => Value::str(n.as_str()),
+                            "__qualname__" => Value::str(format!("{}.{n}", self.type_name(&b.receiver))),
+                            _ => Value::None,
+                        };
+                    }
+                },
+                None => {
+                    let name = if fv.is_python { crate::interpreter::python_fn_name(&fv.name) } else { fv.name.as_str() };
+                    (name, fv.qualname.as_deref(), &fv.body)
+                }
+            },
+            Value::OverloadedFn(fns) => return self.function_attr(&Value::Function(fns[0].clone()), attr),
+            Value::GeneratorFn(g) => (g.name.as_str(), g.qualname.as_deref(), &g.body),
+            Value::NativeFunction(r) => (r.fn_name.as_str(), None, &[]),
+            Value::TemplateFn(t) => (t.name.as_str(), None, &[]),
+            Value::TemplateGenFn(t) => (t.name.as_str(), None, &[]),
+            _ => return Value::None,
+        };
+        match attr {
+            "__name__" => Value::str(name),
+            "__qualname__" => Value::str(qualname.unwrap_or(name)),
+            // パーサの docstring の取り出し（エディタの hover 用）と同じ形。
+            _ => match body.first() {
+                Some(crate::ast::Stmt::Expr(crate::ast::Expr::Str(s))) => Value::Str(s.clone()),
+                _ => Value::None,
+            },
+        }
+    }
+
     /// Resolve an attribute on any `Value`.
     /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
     ///
     /// `cache` が `Some` かつインスタンスの own/unqualified フィールドに解決できた場合、
     /// `(class_id, slot, アクセスレベル)` を焼き込む（R3・以後は `eval_attr` の高速経路が使う）。
+    ///
+    /// Python のクラスが読みを上書きしていれば、CPython の `slot_tp_getattr_hook` と同じ順に呼ぶ:
+    /// ① `__getattribute__(name)` があればそれ（**すべての**読み・known_bugs.md の #12）。無ければふつうの読み
+    ///    （[`Self::get_attr_without_hook`]・CPython の `object.__getattribute__`）
+    /// ② ①が `AttributeError` になり、`__getattr__` があればそれ（無い名前・`del` したフィールド・`AttributeError` を
+    ///    投げた property の getter のどれも・#11）
+    /// ⚠ 見つかった読みは今までどおり（VM の `GetAttr` のキャッシュはフィールドにしか張らず、張るのはふつうの読みの
+    ///   中だけなので、`__getattribute__` を持つクラスには張られない＝上書きを飛ばさない）。
     pub(crate) fn get_attr_val(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<Value, String> {
+        let (getattribute, getattr) = match &obj {
+            Value::Instance(i) => {
+                let class = &i.borrow().class;
+                (Self::py_attr_hook(class, "__getattribute__"), Self::py_attr_hook(class, "__getattr__"))
+            }
+            _ => (false, false),
+        };
+        if !getattribute && !getattr {
+            return self.get_attr_without_hook(obj, attr, cache);
+        }
+        // ⚠ 上書きは内部の呼び出し（`cache` なし）で呼ぶ。明示の呼び出しの形にすると、`__getattribute__` を読むのに
+        //   `__getattribute__` を呼んで回り続ける（`call_instance_method_evaled` の doc）。
+        let first = if getattribute {
+            self.eval_method_call_full(obj.clone(), "__getattribute__", vec![(None, Value::str(attr), false)], None)
+        } else {
+            self.get_attr_without_hook(obj.clone(), attr, cache)
+        };
+        match first {
+            Err(e) if getattr && self.is_attribute_error(&e) => {
+                self.eval_method_call_full(obj, "__getattr__", vec![(None, Value::str(attr), false)], None)
+            }
+            other => other,
+        }
+    }
+
+    /// 上書きした `__getattr__` を呼ばない読み（CPython の `object.__getattribute__`。変換器が Python の
+    /// `object.__getattribute__(o, k)` を `__py_object_getattribute(o, k)` にする・known_bugs.md の #11）。
+    pub(crate) fn get_attr_without_hook(
         &mut self,
         obj: Value,
         attr: &str,
@@ -127,6 +298,14 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let cls = inst.class.clone();
+                // ① クラス側のデータディスクリプタ（property など）はフィールドより先（タスク 1-12）。
+                if let Some(desc) = Self::class_level_value(&cls, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        drop(inst);
+                        self.check_member_access(&cls, attr, attr)?;
+                        return self.descriptor_get(desc, obj.clone(), Value::Class(cls));
+                    }
+                }
                 if let Some(&idx) = cls.field_index.get(attr) {
                     if let Some(v) = inst.field_value(idx) {
                         // アクセスキーの決定: trait 由来フィールドは修飾名で検索する。
@@ -184,14 +363,42 @@ impl Interpreter {
                 if let Some(v) = Self::lookup_class_var(&cls, attr) {
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
+                    // ③ 非データディスクリプタ（`__get__` だけ）はフィールドの後（タスク 1-12）。
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, obj.clone(), Value::Class(cls));
+                    }
                     return Ok(v);
                 }
                 if let Some(cell) = cls.static_vars.get(attr).cloned() {
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
-                    return Ok(cell.borrow().clone());
+                    let v = cell.borrow().clone();
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, obj.clone(), Value::Class(cls));
+                    }
+                    return Ok(v);
                 }
                 if cls.methods.contains_key(attr) {
+                    // Python のクラスはインスタンスからも読める（CPython と同じ・known_bugs.md の #5）。静的メソッドは
+                    // 束縛しない関数（クラスから読む `C.f` と同じ）、クラスメソッドは `cls` にインスタンスのクラス
+                    // （`type(self)`）を束縛した関数。⚠ Arrow のクラスは下の誤りのまま。
+                    if cls.is_python
+                        && (cls.static_method_names.contains(attr) || cls.class_method_names.contains(attr))
+                    {
+                        let overloads = cls.methods[attr].clone();
+                        drop(inst);
+                        self.check_member_access(&cls, attr, attr)?;
+                        if cls.class_method_names.contains(attr) {
+                            return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                                Value::Class(cls.clone()),
+                                crate::interpreter::value::BoundTarget::ClassMethod(overloads),
+                            )));
+                        }
+                        return Ok(match overloads.as_slice() {
+                            [one] => Value::Function(one.clone()),
+                            _ => Value::OverloadedFn(overloads),
+                        });
+                    }
                     if cls.static_method_names.contains(attr) {
                         drop(inst);
                         return Err(format!(
@@ -206,15 +413,25 @@ impl Interpreter {
                             attr, cls.name, cls.name, attr
                         ));
                     }
-                    let overloads = cls.methods.get(attr).unwrap();
-                    let result = if overloads.len() == 1 {
-                        Value::Function(overloads[0].clone())
-                    } else {
-                        Value::OverloadedFn(overloads.clone())
-                    };
+                    // 束縛メソッド（タスク 1-8）。以前は束縛しない関数を返し、呼ぶと
+                    // `missing argument 'self'` / `function takes 1 argument(s), got 0` だった。
+                    // ⚠ アクセス制御は**ここで**見る（呼ぶ時点では見ない・`call_bound_method` の doc）。
+                    let overloads = cls.methods.get(attr).unwrap().clone();
                     drop(inst);
                     self.check_member_access(&cls, attr, attr)?;
-                    return Ok(result);
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Methods(overloads),
+                    )));
+                }
+                // `gen` メソッド（タスク 1-10）。呼ぶとジェネレータ（`obj.gen_m(..)` と同じ）。
+                if let Some(gen_fn) = cls.gen_methods.get(attr).cloned() {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Gen(gen_fn),
+                    )));
                 }
                 Err(format!(
                     "AttributeError: '{}' object has no attribute '{attr}'",
@@ -222,14 +439,24 @@ impl Interpreter {
                 ))
             }
             Value::Class(cls) => {
-                if attr == "name" {
+                // `__name__` / `__qualname__` は Python の名前（`type(x).__name__`・python_builtins_plan.md のタスク 2-2）。
+                // ⚠ 表示名（素の名前）を返す。モジュールの修飾名（`zoo.Dog`）は `__module__` 側の情報で、ここでは付けない。
+                if matches!(attr, "__name__" | "__qualname__") {
                     return Ok(Value::str(cls.name.as_str()));
                 }
+                // クラスから読むディスクリプタは `__get__(None, C)`（property は自分自身を返す・タスク 1-12）。
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, Value::None, obj.clone());
+                    }
                     return Ok(v);
                 }
                 if let Some(cell) = cls.static_vars.get(attr) {
-                    return Ok(cell.borrow().clone());
+                    let v = cell.borrow().clone();
+                    if Self::descriptor_kind(&v).is_some() {
+                        return self.descriptor_get(v, Value::None, obj.clone());
+                    }
+                    return Ok(v);
                 }
                 if let Some(overloads) = cls.methods.get(attr) {
                     return Ok(if overloads.len() == 1 {
@@ -237,6 +464,12 @@ impl Interpreter {
                     } else {
                         Value::OverloadedFn(overloads.clone())
                     });
+                }
+                // Arrow の `C.name`（クラスの名前）は、同じ名前のメンバーが無いときだけ（タスク 6-1）。
+                // ⚠ 以前はメンバーより先に見ていたので、Python のクラス属性 `name`（`@property def name`・
+                //   `name = "x"`）がクラスから読めなかった（型検査はメンバーの型を付けていた）。
+                if attr == "name" {
+                    return Ok(Value::str(cls.name.as_str()));
                 }
                 Err(format!(
                     "AttributeError: class '{}' has no attribute '{attr}'",
@@ -267,7 +500,10 @@ impl Interpreter {
             // 型の値の名前（`int` / `list[int]`・D23・タスク 4-2）。型の値から識別子を組み立てるのに使う
             // （`^` の `.type` は型の値を返すので、文字列としては `.name` で取り出す）。
             Value::Type(t) => match attr {
-                "name" => Ok(Value::str(t.as_str())),
+                // `__name__` / `__qualname__` は Python の名前（`type(3).__name__` は `int`・タスク 2-2）。
+                "name" | "__name__" | "__qualname__" => Ok(Value::str(t.as_str())),
+                // 組み込み関数の docstring は持たない（型検査が関数の `__doc__` を `Option[str]` とするのに合わせる・タスク 1-14）。
+                "__doc__" if crate::interpreter::eval::is_builtin_function_name(t) => Ok(Value::None),
                 _ => Err(format!("AttributeError: type '{t}' has no attribute '{attr}'")),
             },
             Value::Slice(s) => match attr {
@@ -369,10 +605,40 @@ impl Interpreter {
                     }
                 }
             }
-            _ => Err(format!(
-                "AttributeError: '{}' object has no attribute '{attr}'",
-                self.type_name(&obj)
-            )),
+            // ファイルの属性（python_builtins_plan.md のタスク 5-4）。`mode` は Python の形で開いたときのモードの文字列
+            // （Arrow の形には無い）。メソッドを値として読む形（`f.readline`）は下の腕が束縛メソッドにする。
+            Value::FileObject(fd) if matches!(attr, "closed" | "name" | "mode") => {
+                let fd = fd.borrow();
+                match (attr, &fd.py_mode) {
+                    ("closed", _) => Ok(Value::Bool(fd.is_closed)),
+                    ("name", _) => Ok(Value::str(fd.path.as_str())),
+                    (_, Some(m)) => Ok(Value::str(m.as_str())),
+                    (_, None) => Err(format!("AttributeError: 'FileObject' object has no attribute '{attr}'")),
+                }
+            }
+            // 関数の値の `__name__` / `__qualname__` / `__doc__`（python_builtins_plan.md のタスク 1-14）。
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::GeneratorFn(_)
+            | Value::NativeFunction(_)
+            | Value::TemplateFn(_)
+            | Value::TemplateGenFn(_)
+                if matches!(attr, "__name__" | "__qualname__" | "__doc__") =>
+            {
+                Ok(self.function_attr(&obj, attr))
+            }
+            _ => {
+                // 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）は受け手を束縛した関数。
+                // 読める名前は型検査と同じ表（`names::BUILTIN_VALUE_METHODS`）。呼ぶと `eval_method_call_full`。
+                let kind = self.type_name(&obj);
+                if crate::type_check::names::is_builtin_value_method(kind, attr) {
+                    return Ok(Value::Function(crate::interpreter::FnValue::bind(
+                        obj.clone(),
+                        crate::interpreter::value::BoundTarget::Builtin(attr.to_string()),
+                    )));
+                }
+                Err(format!("AttributeError: '{kind}' object has no attribute '{attr}'"))
+            }
         }
     }
 
@@ -396,10 +662,21 @@ impl Interpreter {
         val: Value,
     ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let val = Self::deep_copy_value(val);
+        let val = self.copy_for_store(val);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
+                // Python のクラスの `__setattr__`（`setattr(o, k, v)` も通る・known_bugs.md の #10）。
+                if Self::py_attr_hook(&inst_class, "__setattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__setattr__", attr, Some(val));
+                }
+                // クラス側のデータディスクリプタは `__set__`（`attr_assign_evaled` と同じ・タスク 1-12）。
+                if let Some(desc) = Self::class_level_value(&inst_class, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        self.check_member_access(&inst_class, attr, attr)?;
+                        return self.descriptor_set(desc, Value::Instance(inst_rc), val);
+                    }
+                }
                 if Self::lookup_class_var(&inst_class, attr).is_some() {
                     return Err(format!(
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"
@@ -407,11 +684,7 @@ impl Interpreter {
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
                 let Some(&idx) = inst_class.field_index.get(attr) else {
-                    return Err(format!(
-                        "AttributeError: '{}' has no field '{attr}'; \
-                         all fields must be declared in the class body",
-                        inst_class.name
-                    ));
+                    return Err(Self::no_field_to_assign(&inst_class, attr));
                 };
                 let mut inst = inst_rc.borrow_mut();
                 if inst.field_mutable(idx) == Some(false) {
@@ -436,6 +709,88 @@ impl Interpreter {
         }
     }
 
+    /// `del obj.attr`（変換器が Python の `del o.a` を `__py_delattr(o, "a")` にする・known_bugs.md の #2）。
+    /// CPython の `object.__delattr__` と同じ順:
+    /// ① クラスに `__delattr__` があればそれを呼ぶ（`type(obj).__delattr__(obj, name)`）
+    /// ② クラス側のデータディスクリプタは `__delete__(obj)`（property の deleter）
+    /// ③ フィールドは**未代入に戻す**（[`InstanceData::clear_field`]）。以後の読みは `AttributeError`・`hasattr` は偽・
+    ///    `cached_property` は計算し直す。欄は残るので、また代入できる
+    /// ④ 未代入のフィールド・フィールドでない名前（メソッド・クラスの値）は CPython と同じ `AttributeError`
+    /// ⚠ クラス・モジュールの属性は消せない（クラスの本体・モジュールの大域は定義で決まる）ので誤り。
+    ///
+    /// `hook: false` は ① を飛ばす（`object.__delattr__(o, k)` の変換先 `__py_object_delattr`・known_bugs.md の #10）。
+    /// ⚠ ① は Python のクラスだけ（[`Self::py_attr_hook`]）。
+    ///
+    /// [`InstanceData::clear_field`]: crate::interpreter::InstanceData::clear_field
+    pub(crate) fn del_attr_val(&mut self, obj: Value, attr: &str, hook: bool) -> Result<(), String> {
+        match obj {
+            Value::Instance(inst_rc) => {
+                let cls = inst_rc.borrow().class.clone();
+                if hook && Self::py_attr_hook(&cls, "__delattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__delattr__", attr, None);
+                }
+                if let Some(desc) = Self::class_level_value(&cls, attr) {
+                    if Self::descriptor_kind(&desc) == Some(true) {
+                        self.check_member_access(&cls, attr, attr)?;
+                        return self.descriptor_delete(desc, Value::Instance(inst_rc));
+                    }
+                }
+                let missing = || format!("AttributeError: '{}' object has no attribute '{attr}'", cls.name);
+                let Some(&idx) = cls.field_index.get(attr) else {
+                    return Err(missing());
+                };
+                self.check_member_access(&cls, attr, attr)?;
+                let mut inst = inst_rc.borrow_mut();
+                if !inst.slot_initialized(idx) {
+                    return Err(missing());
+                }
+                if inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                    return Err(format!("TypeError: cannot delete field '{attr}' on immutable instance"));
+                }
+                if inst.field_mutable(idx) == Some(false) {
+                    return Err(format!("TypeError: cannot delete immutable field '{attr}'"));
+                }
+                inst.clear_field(idx);
+                Ok(())
+            }
+            Value::Class(cls) => {
+                if cls.static_vars.contains_key(attr)
+                    || Self::lookup_class_var(&cls, attr).is_some()
+                    || cls.methods.contains_key(attr)
+                {
+                    return Err(format!(
+                        "TypeError: cannot delete class attribute '{attr}' of '{}' (a class's attributes are fixed by its definition)",
+                        cls.name
+                    ));
+                }
+                Err(format!("AttributeError: type object '{}' has no attribute '{attr}'", cls.name))
+            }
+            Value::Namespace(ns) => {
+                if self.namespace_member(&ns, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot delete '{}.{attr}' (a module's globals cannot be deleted)",
+                        ns.name
+                    ));
+                }
+                Err(format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
+            }
+            Value::PyObject(_) => Err(format!(
+                "TypeError: cannot delete attribute '{attr}' of a CPython object (import[py-int]) yet"
+            )),
+            // 組み込みの値（リスト・文字列など）の属性はメソッドだけで、消せない（CPython と同じ文言）。
+            other => {
+                let kind = self.type_name(&other).to_string();
+                match self.get_attr_val(other, attr, None) {
+                    Ok(_) => Err(format!("AttributeError: '{kind}' object attribute '{attr}' is read-only")),
+                    Err(e) if e.starts_with("AttributeError") => {
+                        Err(format!("AttributeError: '{kind}' object has no attribute '{attr}'"))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
     /// 評価済みのオブジェクトと値で属性に代入する。
     ///
     /// `obj.attr = v` の**唯一の実装**（#27-c）。ツリーウォークの `attr_assign` も
@@ -445,13 +800,22 @@ impl Interpreter {
     /// 絞ることで差を隠していたが、絞れないレシーバ（型注釈の無いグローバル等）が
     /// そのまま bail になっていた。
     /// ⚠ 格納する値は**入口で**複製する（L4。`set_attr_val` の doc と同じ理由・同じ罠）。
+    /// ⚠ Python のクラスが `__setattr__` を上書きしていればそれを呼ぶ（[`Self::py_attr_hook`]）。飛ばすのは
+    ///   [`Self::attr_assign_without_hook`]（`object.__setattr__`）。
     pub(crate) fn attr_assign_evaled(
         &mut self,
         obj: Value,
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
-        self.attr_assign_ic(obj, attr, rhs, None)
+        self.attr_assign_inner(obj, attr, rhs, None, true)
+    }
+
+    /// `object.__setattr__(o, k, v)`（変換器が Python の `object.__setattr__(..)` / `super().__setattr__(..)` を
+    /// `__py_object_setattr(..)` にする・known_bugs.md の #10）。上書きした `__setattr__` を飛ばして、ふつうの代入
+    /// （データディスクリプタの `__set__`・フィールド）をする。
+    pub(crate) fn attr_assign_without_hook(&mut self, obj: Value, attr: &str, rhs: Value) -> Result<(), String> {
+        self.attr_assign_inner(obj, attr, rhs, None, false)
     }
 
     /// `obj.attr = v` の IC 付きの入口（native_object_access_plan.md 2-3・D-6）。VM の `SetAttr` とネイティブの
@@ -471,10 +835,32 @@ impl Interpreter {
         rhs: Value,
         cache: Option<&crate::ast::AttrCache>,
     ) -> Result<(), String> {
+        self.attr_assign_inner(obj, attr, rhs, cache, true)
+    }
+
+    /// `obj.attr = v` の本体。`hook` が偽なら Python のクラスの `__setattr__` を飛ばす（`object.__setattr__`）。
+    fn attr_assign_inner(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+        cache: Option<&crate::ast::AttrCache>,
+        hook: bool,
+    ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let rhs = Self::deep_copy_value(rhs);
+        let rhs = self.copy_for_store(rhs);
         if let (Some(c), Value::Instance(inst_rc)) = (cache, &obj) {
-            let hit = inst_rc.borrow().ic_slot(c.0.get(), true, || attr).map(|(idx, _)| idx);
+            let hit = {
+                let inst = inst_rc.borrow();
+                // ⚠ `__setattr__` を上書きした Python のクラスは命中経路に乗せない（乗せるとフックを飛ばす）。
+                //   下の道はフックを呼んで返るので IC を埋めないが、IC は「あれば速い」だけのヒントなので
+                //   埋まらないことには頼らない（Arrow のクラスは `is_python` を読むだけで済む）。
+                if hook && Self::py_attr_hook(&inst.class, "__setattr__") {
+                    None
+                } else {
+                    inst.ic_slot(c.0.get(), true, || attr).map(|(idx, _)| idx)
+                }
+            };
             if let Some(idx) = hit {
                 let mut inst = inst_rc.borrow_mut();
                 // 埋めるときに名前の表と一致することを確かめてある（下の `fill`）
@@ -485,7 +871,26 @@ impl Interpreter {
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
-                if Self::lookup_class_var(&inst_class, attr).is_some() {
+                if hook && Self::py_attr_hook(&inst_class, "__setattr__") {
+                    return self.call_attr_hook(Value::Instance(inst_rc), "__setattr__", attr, Some(rhs));
+                }
+                // クラス側のデータディスクリプタへの代入は `__set__(obj, v)`（property の setter・タスク 1-12）。
+                // `static mut` の書き換え・フィールドより先（CPython の `object.__setattr__` と同じ）。
+                // 非データディスクリプタ（`__get__` だけ）と同じ名前のフィールドがあれば、代入はフィールドへ
+                // （CPython ではインスタンスの `__dict__` へ入り、以後は読みでも勝つ。`functools.cached_property` が
+                // 値を入れる先・タスク 6-5）。そうした組は変換器だけが作る（Arrow のクラスは同じ名前を 2 度宣言できない）。
+                let mut shadowed_static = false;
+                if let Some(desc) = Self::class_level_value(&inst_class, attr) {
+                    match Self::descriptor_kind(&desc) {
+                        Some(true) => {
+                            self.check_member_access(&inst_class, attr, attr)?;
+                            return self.descriptor_set(desc, Value::Instance(inst_rc), rhs);
+                        }
+                        Some(false) => shadowed_static = inst_class.field_index.contains_key(attr),
+                        None => {}
+                    }
+                }
+                if !shadowed_static && Self::lookup_class_var(&inst_class, attr).is_some() {
                     return Err(format!(
                         "TypeError: cannot assign to class variable '{attr}' (declared const)"
                     ));
@@ -510,18 +915,14 @@ impl Interpreter {
                     }
                 }
                 // static mut 変数への代入: 共有セルを更新する
-                if let Some(cell) = inst_class.static_vars.get(attr).cloned() {
+                if let Some(cell) = inst_class.static_vars.get(attr).filter(|_| !shadowed_static).cloned() {
                     self.check_member_access(&inst_class, attr, attr)?;
                     *cell.borrow_mut() = rhs;
                     return Ok(());
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
                 let Some(&idx) = inst_class.field_index.get(attr) else {
-                    return Err(format!(
-                        "AttributeError: '{}' has no field '{attr}'; \
-                         all fields must be declared in the class body",
-                        inst_class.name
-                    ));
+                    return Err(Self::no_field_to_assign(&inst_class, attr));
                 };
                 let mut inst = inst_rc.borrow_mut();
                 let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
@@ -667,7 +1068,7 @@ impl Interpreter {
         rhs: Value,
     ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
-        let rhs = Self::deep_copy_value(rhs);
+        let rhs = self.copy_for_store(rhs);
         match obj_val {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"
@@ -702,6 +1103,21 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
+    }
+
+    /// 宣言していないフィールドへの代入の誤り。`object()` / `Ellipsis` は CPython と同じ文言（属性を持てない・タスク 6-10）。
+    fn no_field_to_assign(class: &crate::interpreter::ClassValue, attr: &str) -> String {
+        match class.builtin {
+            crate::interpreter::BuiltinClass::Object
+            | crate::interpreter::BuiltinClass::Ellipsis
+            | crate::interpreter::BuiltinClass::NotImplemented => {
+                format!("AttributeError: '{}' object has no attribute '{attr}'", class.name)
+            }
+            crate::interpreter::BuiltinClass::Ordinary => format!(
+                "AttributeError: '{}' has no field '{attr}'; all fields must be declared in the class body",
+                class.name
+            ),
+        }
     }
 
 }

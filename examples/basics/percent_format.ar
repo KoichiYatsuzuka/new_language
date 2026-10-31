@@ -1,0 +1,26 @@
+# percent_format.ar — `%` の書式の `%s` / `%r`（known_bugs.md の #4）
+#
+# `"..." % 値` の `%s` は `str(値)`、`%r` は `repr(値)`（CPython と同じ）。クラスの `__str__` / `__repr__` を呼び、
+# コンテナの中の値は `repr` で並べる（`str([t])` と同じ）。幅・精度（`%5s` / `%-5s` / `%.2r`）も効く。
+#
+# ⚠ 以前は既定の表示しか使えず、インスタンスが `<Temp object at 0x..>` になり、`%r` は表示を Rust の書式で
+#   引用していた（`"%r" % "ab"` が `"ab"`、`"%r" % 5` が `"5"`。CPython は `'ab'` / `5`）。
+
+class Temp:
+    mut deg: int
+
+    fn __str__(self) -> str:
+        return f"{self.deg}C"
+
+    fn __repr__(self) -> str:
+        return f"Temp({self.deg})"
+
+let t = Temp(21)
+print("%s | %r" % (t, t))
+# 21C | Temp(21)
+print("%r %r %r" % ("it's", 5, [1, "a"]))
+# "it's" 5 [1, 'a']
+print("%s" % [t, Temp(3)])
+# [Temp(21), Temp(3)]
+print("[%6s] [%-6s] [%.4r]" % (t, t, t))
+# [   21C] [21C   ] [Temp]

@@ -56,9 +56,6 @@ pub(crate) mod cs_proc_runtime;
 pub(crate) mod cs_proc_runtime;
 // C#（cs-proc / cs-dll）と Arrow の値の受け渡しの規則（ffi_value_exchange_plan.md 2-1）。値の判定だけなので両ビルド共通。
 // ⚠ 評価コア・拡張の wasm ではブリッジがスタブなので、呼び出し側の 2 つ（`method_types` / `tag_error`）以外は使われない。
-// `str.encode` / `bytes.decode` の文字コード（ffi_value_exchange_plan.md 3-1）。
-#[path = "interpreter/encoding.rs"]
-pub(crate) mod encoding;
 #[path = "interpreter/cs_values.rs"]
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) mod cs_values;
@@ -543,6 +540,29 @@ pub struct Interpreter {
     /// Python モジュール body を実行中かどうかを示すフラグ。
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
+    /// 今走っているのが Python から変換したコードか（known_bugs.md の #1・A 案）。真の間は格納で値を写さない
+    /// （`copy_for_store`・CPython と同じく参照を共有する）。
+    ///
+    /// ⚠ チャンクを走らせる入口（`vm::run` / `vm::resume_frame`）がチャンクの `is_python` に差し替えて戻す。
+    ///   Python のモジュールの本体は `exec_module` が真にする（定義文はツリーウォークで走るので）。Python の
+    ///   コードから呼ばれた Arrow の関数の中は偽に戻る（呼び出しの入口で差し替えるので）。
+    pub(crate) running_python: bool,
+    /// 実行時の誤りの文言に添えた、例外の `args` にする値（`(文言, args)`・known_bugs.md の #9）。
+    ///
+    /// 実行時の誤りは文字列（`"KeyError: 'zz'"`）で運ばれ、例外のインスタンスになるのは捕まえる所・関数の境界
+    /// （`make_internal_raised_error`）なので、そこではキーの値が分からない。送出の場（`error_with_args`）がここに
+    /// 控え、例外にするときに**文言が完全に一致すれば**この `args` を使う（一致しなければ文言の `args`）。
+    /// ⚠ 変換のたびに取り去る。Rust の中で捨てた誤りの控えは残るが、拾うのは同じ文言（＝同じ `repr` のキー）だけ。
+    pub(crate) error_args: Option<(String, Vec<Value>)>,
+    /// Arrow で書いた組み込みのクラス（`property` / `cached_property`・python_builtins_plan.md のタスク 6-1 / 6-5）。
+    /// どれかの名前を初めて引いたときにまとめて組み立てる（`Interpreter::py_builtin_class`）。
+    pub(self) py_builtin_classes: Option<HashMap<String, Value>>,
+    /// 組み込みのクラス `object`（python_builtins_plan.md のタスク 6-10）。初めて引いたときに作る（`Interpreter::object_class`）。
+    pub(self) object_class: Option<Rc<ClassValue>>,
+    /// 唯一の値 `Ellipsis`（タスク 6-11）。初めて引いたときに作る（`Interpreter::builtin_singleton`）。
+    pub(self) ellipsis: Option<Value>,
+    /// 唯一の値 `NotImplemented`（タスク 6-12）。初めて引いたときに作る（`Interpreter::builtin_singleton`）。
+    pub(self) not_implemented: Option<Value>,
     /// **探索の起点を持たない** import 文（合成した文・テストが組んだ AST）の探索先。
     ///
     /// ⚠⚠ ファイルから読んだ import 文は**使わない**。各文が自分の起点を持つ
@@ -723,6 +743,12 @@ impl Interpreter {
             live_generators: Vec::new(),
             module_cache: HashMap::new(),
             in_python_module: false,
+            running_python: false,
+            error_args: None,
+            py_builtin_classes: None,
+            object_class: None,
+            ellipsis: None,
+            not_implemented: None,
             python_search_dirs: Vec::new(),
             submodules: HashMap::new(),
             static_cells: HashMap::new(),
@@ -734,20 +760,29 @@ impl Interpreter {
             // ⚠ 組み込みの例外クラスの並びを最初から載せる（フェーズ10 10-19）。Python のクラスが
             //   `class AppError(Exception)` / `class ConfigError(ValueError)` と継承したとき、基底の
             //   フィールド（message …）の並びがここに無く、`'AppError' has no field 'message'` で作れなかった。
-            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。
-            py_class_field_order: built_in_types::BUILTIN_EXCEPTION_NAMES
+            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。`OSError` の系統は
+            //   `errno` / `strerror` / `filename` / `filename2` が続く（書き換えられる・known_bugs.md の #9）。
+            py_class_field_order: crate::type_check::names::BUILTIN_EXCEPTIONS
                 .iter()
-                .map(|n| {
-                    (
-                        n.to_string(),
-                        vec![
-                            ("message".to_string(), false, "str".to_string()),
-                            ("code_context".to_string(), false, "str".to_string()),
-                            ("file".to_string(), false, "str".to_string()),
-                            ("line".to_string(), false, "int".to_string()),
-                            ("col".to_string(), false, "int".to_string()),
-                        ],
-                    )
+                .map(|(n, _)| {
+                    let mut order = vec![
+                        ("message".to_string(), false, "str".to_string()),
+                        ("code_context".to_string(), false, "str".to_string()),
+                        ("file".to_string(), false, "str".to_string()),
+                        ("line".to_string(), false, "int".to_string()),
+                        ("col".to_string(), false, "int".to_string()),
+                        ("args".to_string(), false, "Any".to_string()),
+                    ];
+                    let os_group = *n == "OSError"
+                        || crate::type_check::names::builtin_exception_bases(n, true).iter().any(|b| b == "OSError");
+                    if os_group {
+                        order.extend(
+                            crate::interpreter::built_in_types::OS_ERROR_FIELDS
+                                .iter()
+                                .map(|f| (f.to_string(), true, "Any".to_string())),
+                        );
+                    }
+                    (n.to_string(), order)
                 })
                 .collect(),
             trait_field_order: {
@@ -1291,7 +1326,12 @@ impl Interpreter {
                         _ => "<value>".to_string(),
                     })
                 }).unwrap_or_default();
-                out.push_str(&format!("{}: {}", class_name, message));
+                // `str(e)` が空なら名前だけ（CPython と同じ・`raise ValueError()` は `ValueError`）。
+                if message.is_empty() {
+                    out.push_str(&class_name);
+                } else {
+                    out.push_str(&format!("{}: {}", class_name, message));
+                }
             }
             Value::Str(s) => out.push_str(s),
             other => out.push_str(&format!("<exception: {:?}>", other)),

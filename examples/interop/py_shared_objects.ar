@@ -1,0 +1,55 @@
+# py_shared_objects.ar — Python のコードの中は格納で値を写さず、参照を共有する（known_bugs.md の #1・A 案）
+#
+# Arrow は値を格納するたびに写す（`let` の値を共有先から書き換えさせないため）。Python から変換したコードの中では
+# CPython と同じく**写さずに共有する**: フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても
+# 同じ物で、別名から書き換えた結果が見える（親子の参照も作れる）。Python のクラスの `__eq__` / `__hash__` を
+# 書いていないインスタンスの `==` / `hash` は同一性（別々の `P(1)` は等しくなく、辞書のキーとしても別）。
+#
+# ⚠ Arrow のソースのコードは今のまま写す（Arrow のクラスは中身で比べる）。Arrow の `let` / `mut` に Python の
+#   インスタンスを束縛するときも写す（下の Arrow 側の確かめ）。
+#
+# sh.run() / sh.run2() は CPython と同じ出力:
+#   1 list alias: 2
+#   1 dict alias: 3
+#   2 registry: 11
+#   3 field is: True list is: True
+#   4 eq: False False True
+#   5 dict keys: 2 2 in: False
+#   6 parent: True root 1
+#   6 renamed: renamed
+#   7 local alias: 5 True
+#   8 comprehension: 9 True
+#   8 dict list: [1, 2]
+#   9 key lookup: v True False
+#
+# ⚠ 以前は格納のたびに写したので、1〜3・6〜8 の別名からの書き換えが見えず（`2 registry: 10` など）、
+#   `P(1) == P(1)` が真・辞書のキーが 1 つに潰れていた。
+
+import[py] test_modules.py_shared_objects as sh
+
+sh.run()
+sh.run2()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のクラスは今のまま（写す・中身で比べる）
+class Pt:
+    mut x: int
+
+let a = Pt(1)
+mut pts: list[Pt] = []
+pts.append(a)
+check(pts[0] == a and Pt(1) == Pt(1) and not (pts[0] === a), "Arrow classes copy and compare by contents")
+
+# Arrow 側で Python のインスタンスを mut に束縛すると写す
+mut reg = sh.Registry()
+mut item = reg.register(sh.P(10))
+item.x = 11
+check(reg.items[0].x == 10, "binding in Arrow copies")
+
+# Python のクラスの既定の == は同一性
+let p = sh.P(1)
+check(p == p and not (sh.P(1) == sh.P(1)), "Python classes compare by identity")
+print("arrow side ok")

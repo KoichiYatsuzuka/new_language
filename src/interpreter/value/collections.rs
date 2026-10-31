@@ -203,6 +203,7 @@ impl DictData {
             Value::Tuple(t) => t.all_values().iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::List(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::Set(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
+            Value::FrozenSet(items) => items.iter().find_map(|v| Self::reject_key_at(v, d)),
             Value::Dict(rc) => {
                 let b = rc.borrow();
                 b.all_keys()
@@ -331,5 +332,21 @@ impl DictData {
         if let Some((_, v)) = self.map.get_index_mut(idx) {
             *v = value;
         }
+    }
+
+    /// 索引のエントリを取り除いて `(キー, 値)` を返す（`d.pop(k)`・python_builtins_plan.md のタスク 3-6）。
+    /// ⚠ 残りの挿入順を保つ（CPython の dict と同じ）ので `shift_remove_index`（O(n)）。
+    pub(crate) fn remove_at(&mut self, idx: usize) -> Option<(Value, Value)> {
+        self.map.shift_remove_index(idx).map(|(k, v)| (k.key, v))
+    }
+
+    /// 最後に入れたエントリを取り除いて返す（`d.popitem()`・CPython と同じ LIFO・タスク 3-6）。
+    pub(crate) fn pop_last(&mut self) -> Option<(Value, Value)> {
+        self.map.pop().map(|(k, v)| (k.key, v))
+    }
+
+    /// すべてのエントリを取り除く（`d.clear()`・タスク 3-6）。
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
     }
 }

@@ -187,7 +187,7 @@ impl TypeChecker {
     /// `src/interpreter/classes/` の `method_call.rs` / `set_methods.rs` /
     /// `frozen_list_methods.rs` に変更メソッドを足したら**必ずここにも足すこと**。
     pub(super) const MUTATING_COLLECTION_METHODS: &'static [&'static str] =
-        &["append", "pop", "add", "clear", "discard", "remove"];
+        &["append", "pop", "add", "clear", "discard", "remove", "sort", "popitem", "setdefault", "update"];
 
     /// アクセスパスの**可変性**（中身を書き換えられるか）。根が識別子でない（一時値）／未宣言なら `None`。
     ///
@@ -386,17 +386,7 @@ impl TypeChecker {
         let Some(sigs) = self.registry.class_methods(class_name).and_then(|m| m.get(method)) else {
             return;
         };
-        let all_mut_self = !sigs.is_empty()
-            && sigs.iter().all(|sig| {
-                let takes_mut_self = sig.params.first().is_some_and(|(n, _)| n == "self")
-                    && sig.param_mutable.first() == Some(&true);
-                let is_gen = matches!(
-                    &sig.return_type,
-                    Some(InferredType::IteratorOf(_))
-                ) || matches!(&sig.return_type, Some(InferredType::NamedInstance(n)) if n == "generator");
-                takes_mut_self && !is_gen
-            });
-        if !all_mut_self {
+        if !Self::all_sigs_mutate_self(sigs) {
             return;
         }
         if self.path_is_mutable(object) != Some(false) {
@@ -410,6 +400,20 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// メソッドの多重定義が**すべて `mut self`**（受け手を書き換える）か。`gen` メソッドは数えない
+    /// （実行時の `gen` メソッドの呼び出しは不変性で振り分けない）。
+    /// [`Self::check_mut_self_method_receiver`] と束縛メソッドの型（タスク 1-11）が使う。
+    pub(super) fn all_sigs_mutate_self(sigs: &[super::types::FnSig]) -> bool {
+        !sigs.is_empty()
+            && sigs.iter().all(|sig| {
+                let takes_mut_self = sig.params.first().is_some_and(|(n, _)| n == "self")
+                    && sig.param_mutable.first() == Some(&true);
+                let is_gen = matches!(&sig.return_type, Some(InferredType::IteratorOf(_)))
+                    || matches!(&sig.return_type, Some(InferredType::NamedInstance(n)) if n == "generator");
+                takes_mut_self && !is_gen
+            })
     }
 
     /// `class_name` のメンバー（フィールド・メソッド）`member_name` へのアクセスが現在のコンテキストで
@@ -489,9 +493,16 @@ impl TypeChecker {
             Some(_) => self.member_owner(object),
             None => None,
         };
+        // インスタンス経由のデータディスクリプタへの代入は `__set__` を呼ぶだけでメンバーを書き換えない
+        // （python_builtins_plan.md のタスク 1-12）。`const` に置いたディスクリプタでも誤りにしない。
+        // ⚠ 経路の途中の `const`（`readonly_on_path`）と、クラス経由の `C.x = ..`（メンバーの代入）は従来どおり。
+        let data_descriptor = match (&owner, attr) {
+            (Some((MemberOwner::Class(c), false)), Some(a)) => self.class_descriptor(c, a).is_some_and(|d| d.is_data),
+            _ => false,
+        };
         if let (Some((o, _)), Some(attr)) = (&owner, attr) {
             let kind = match o {
-                MemberOwner::Class(c) if self.is_const_member(c, attr) => {
+                MemberOwner::Class(c) if self.is_const_member(c, attr) && !data_descriptor => {
                     Some(TypeErrorKind::AssignToConst { owner: c.clone(), member: attr.to_string() })
                 }
                 MemberOwner::Class(_) => None,
@@ -532,7 +543,7 @@ impl TypeChecker {
         // ⚠ 型の値経由で書けるのは `static mut` だけ。`let` / `mut` フィールドを型の値経由で
         //   書く形（`Counter.own = 1`）はここでは判定しない（以前と同じ）。
         let is_self = matches!(object, Expr::Ident { name: n, .. } if n == "self");
-        if via_type_value || (is_self && self.state.current_fn() == Some("__init__")) {
+        if via_type_value || data_descriptor || (is_self && self.state.current_fn() == Some("__init__")) {
             return;
         }
         if self.registry.field_is_mutable(&class_name, attr) == Some(false) {

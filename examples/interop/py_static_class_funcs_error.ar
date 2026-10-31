@@ -1,0 +1,10 @@
+# py_static_class_funcs_error.ar — クラス本体の外の関数を `staticmethod` で包む（python_builtins_plan.md のタスク 6-13）
+#
+# 変換器が受けるのは、クラス本体で先に定義したメソッドを包む `f = staticmethod(f)` / `g = classmethod(f)` だけ。
+# モジュールの関数（`bump = staticmethod(helper)`）を包む形は変換の誤りにする（黙って捨てない）。
+# 期待: ParseError（`bump = staticmethod(helper)` in the body of class 'Box' needs `helper` to be a method defined
+#       earlier in the class body）
+
+import[py] test_modules.py_static_class_funcs_error as m
+
+print(m.Box.bump(1))

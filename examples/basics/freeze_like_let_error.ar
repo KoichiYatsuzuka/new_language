@@ -1,0 +1,19 @@
+# freeze_like_let_error.ar — クロージャが捕まえた変数は freeze できない（python_builtins_plan.md のタスク 1-9）
+#
+# 対になる正常系: freeze_like_let.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: cannot freeze 'count' because it is captured by a closure
+#
+# ⚠ 関数の中の freeze がそもそも動かなかったので、以前は `NameError: 'count' is not defined` だった。
+
+fn make() -> int:
+    mut count = 0
+    fn inc() -> int:
+        count += 1
+        return count
+    inc()
+    freeze count                                # ⛔ inc が count を捕まえている
+    return count
+
+print(make())

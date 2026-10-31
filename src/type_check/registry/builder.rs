@@ -14,38 +14,6 @@ use crate::ast::{Accessibility, FieldKind, Param, Stmt};
 use super::super::types::{FnSig, InferredType, ProtocolField, ProtocolInfo, ProtocolMethod};
 use super::{NameScope, TypeRegistry};
 
-/// 組み込みで登録される例外クラス名。`TypeChecker::new` がグローバルスコープの
-/// 束縛を作る際にも使うため公開している。
-pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 21] = [
-    "Exception",
-    "ValueError",
-    "TypeError",
-    "NameError",
-    "AttributeError",
-    "IndexError",
-    "KeyError",
-    "ZeroDivisionError",
-    "RuntimeError",
-    "StopIteration",
-    "NotImplementedError",
-    "OverflowError",
-    "IOError",
-    "OSError",
-    "AssertionError",
-    "ArithmeticError",
-    "AccessError",
-    // ⚠ `RecursionError` は実行時にだけ発生するが、`except RecursionError:` を
-    //   型検査に通すためにここへも登録する。
-    //   ⚠⚠ `built_in_types.rs` の一覧と `exceptions.rs` の `CATCHABLE` と**3 つ揃える**こと。
-    "RecursionError",
-    // `close()` が中断点へ投げ込む（bug_fix.md B13 段階 D）。
-    "GeneratorExit",
-    // 外部言語との境界（ffi_value_exchange_plan.md 7-4）。⚠ 実行時の `builtin_exception_parent` と同じく、
-    //   `FfiTypeError` の基底には `TypeError` も入れる（下の `class_bases`）
-    "FfiTypeError",
-    "ForeignError",
-];
-
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。
 ///
 /// ⚠ 実行時の登録（`interpreter/built_in_types.rs`）と揃えること。`pointer` は実行時に
@@ -78,6 +46,8 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     foreign_depth: u32,
     /// 今集めている外部言語のスタブの言語タグ（誤りの文で `C# method` / `Rust method` と呼び分ける・2-5）。
     foreign_lang: Option<String>,
+    /// `import[py]` のモジュールの本体を集めている間か（`python_class_names` に載せる・known_bugs.md の #5）。
+    collecting_python: bool,
     /// 今集めている文が属する文脈（`TypeRegistry::name_scopes` の添字・0 がメイン・フェーズ10 10-8）。
     /// `import` の別名・`from import` した名前をこの文脈の表に控える。
     cur_scope: usize,
@@ -115,7 +85,7 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
             Stmt::EnumDef { name, .. } => {
                 scope.names.insert(name.clone(), format!("{prefix}.{name}"));
             }
-            Stmt::FromImport { lang, module, names, .. } if is_arrow_source_lang(lang) => {
+            Stmt::FromImport { lang, module, names, .. } if names_types_by_module(lang) => {
                 let m = module.join(".");
                 for (orig, alias) in names {
                     scope
@@ -124,7 +94,7 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
                 }
             }
             // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（`import a.b` は `a` → パッケージ `a`）。
-            Stmt::Import { lang, bind: Some(b), .. } if is_arrow_source_lang(lang) => {
+            Stmt::Import { lang, bind: Some(b), .. } if names_types_by_module(lang) => {
                 scope.modules.insert(b.name.clone(), b.module.join("."));
             }
             _ => {}
@@ -176,6 +146,22 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
 /// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
 fn is_arrow_source_lang(lang: &str) -> bool {
     crate::module_path::is_arrow_source_lang(lang)
+}
+
+/// `import[lang]` のモジュールで宣言した型を**モジュールの名前で修飾する**か（`zoo.Dog`・10-8）。
+///
+/// Arrow のソースに加えて `py`（Python のソースを Arrow の文へ変換したもの）も修飾する。
+/// ⚠⚠ 以前は Arrow のソースだけだったので、`import[py] zoo as z` の `z.Dog` / `zoo.Dog` が
+///   型の名前として通らなかった（`d is z.Dog` が `unknown type`・`let x: z.Dog` が `not a known type`）。
+///   CPython の `isinstance(d, z.Dog)` は通る形で、変換したコードからも Arrow からも書けないと困る。
+///   ついでに、別々のモジュールの同名クラス（素の名前で登録すると混ざる）も分かれる。
+/// ⚠ [`is_arrow_source_lang`]（`Value::Instance` 前提の最適化に載せてよいか）とは**別の問い**。
+///   `py` のクラスは修飾するが、外部言語のまま扱う（`foreign_depth`・`arrow_class_names` に載せない・
+///   デコレータつきのクラスのメンバー検査を黙らせる）ので、VM の最適化とデコレータの扱いは変わらない。
+/// ⚠ `py-int`（CPython 経由・本体は `.pyi` の型の写し）は対象外。実行時の値が `Value::PyObject` で、
+///   `is` が修飾名を突き合わせる相手（`ClassValue::module_name`）を持たない。
+fn names_types_by_module(lang: &str) -> bool {
+    is_arrow_source_lang(lang) || lang == "py"
 }
 
 /// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
@@ -235,14 +221,31 @@ impl TypeRegistryBuilder {
         }
         let mut class_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>> =
             HashMap::new();
-        for class_name in EXCEPTION_CLASS_NAMES {
+        // 組み込みの例外クラスは実行時と同じ表から登録する（`names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
+        // 基底は祖先を平らに並べる（`let e: LookupError = KeyError(..)`）。⚠ `OSError` の別名は
+        // 循環させない（`builtin_exception_bases` の doc）。
+        for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
             known_class_names.insert(class_name.to_string());
-            let mut bases = vec!["Error".to_string()];
-            if class_name == "FfiTypeError" {
-                bases.push("TypeError".to_string());
+            let bases = crate::type_check::names::builtin_exception_bases(class_name, false);
+            // `args`（作るときの引数の組・タスク 4-2）は組み込みの例外だけが持つ（`Error` trait には無い）。
+            let mut fields = exc_fields.clone();
+            fields.insert("args".to_string(), (FieldKind::Let, InferredType::TupleAny));
+            // `OSError` の系統の `errno` / `strerror` / `filename` / `filename2`（実行時の `make_error_class` の
+            // `OS_ERROR_FIELDS` と揃える・known_bugs.md の #9）。無ければ `None`。`filename` はパスの文字列のほか
+            // バイト列・ファイル記述子もありうるので `Any`。
+            if *class_name == "OSError" || bases.iter().any(|b| b == "OSError") {
+                let optional = |t| InferredType::Union(vec![t, InferredType::None]);
+                for (fname, fty) in [
+                    ("errno", optional(InferredType::Int)),
+                    ("strerror", optional(InferredType::Str)),
+                    ("filename", InferredType::Any),
+                    ("filename2", InferredType::Any),
+                ] {
+                    fields.insert(fname.to_string(), (FieldKind::Let, fty));
+                }
             }
             class_bases.insert(class_name.to_string(), bases);
-            class_field_details.insert(class_name.to_string(), exc_fields.clone());
+            class_field_details.insert(class_name.to_string(), fields);
         }
         // ⚠⚠ **基底の `Error` 自身にも登録する**（タスク 7.5）。組み込み例外だけに入れていたので、
         //    利用者が `class MyErr(Error)` と書いたときに `e.message` が引けなかった
@@ -270,6 +273,7 @@ impl TypeRegistryBuilder {
                 enum_members: HashMap::new(),
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
+                python_class_names: HashSet::new(),
                 known_protocols: HashMap::new(),
                 template_params: HashMap::new(),
                 name_scopes: vec![NameScope::default()],
@@ -280,6 +284,7 @@ impl TypeRegistryBuilder {
             seen_instances: HashSet::new(),
             foreign_depth: 0,
             foreign_lang: None,
+            collecting_python: false,
             cur_scope: 0,
             module_prefix: None,
         }
@@ -395,6 +400,9 @@ impl TypeRegistryBuilder {
                             .insert(name.clone());
                     }
                     self.reg.known_class_names.insert(name.clone());
+                    if self.collecting_python {
+                        self.reg.python_class_names.insert(name.clone());
+                    }
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {
                         self.reg.arrow_class_names.insert(name.clone());
@@ -518,8 +526,11 @@ impl TypeRegistryBuilder {
                 | Stmt::FromImport { lang, module, body, .. } => {
                     let modpath = module.join(".");
                     let arrow = is_arrow_source_lang(lang);
-                    // 外部言語のモジュールの別名と、そのスタブのクラスを控える（`NameScope::foreign`・7-6）
-                    if !arrow {
+                    // 型をモジュールの名前で修飾するか（Arrow のソースと `py`・`names_types_by_module`）。
+                    let qualified = names_types_by_module(lang);
+                    // 外部言語のモジュールの別名と、そのスタブのクラスを控える（`NameScope::foreign`・7-6）。
+                    // ⚠ `py` は修飾名（`zoo.Dog`）で登録するので控えない（控えると `z.Dog` が素の `Dog` を指す）。
+                    if !qualified {
                         if let Stmt::Import { bind: Some(b), .. } = stmt {
                             let classes = body.iter().filter_map(|st| match st {
                                 Stmt::ClassDef { name, .. } => Some(name.clone()),
@@ -533,7 +544,7 @@ impl TypeRegistryBuilder {
                         }
                     }
                     // 今の文脈に別名・取り込んだ名前を控える（`TypeRegistry::name_scopes` の doc・10-8）。
-                    if arrow {
+                    if qualified {
                         let scope = &mut self.reg.name_scopes[self.cur_scope];
                         match stmt {
                             // ⚠ 束縛名と、そこへ入るモジュールは AST の `bind`（CPython 準拠）。
@@ -565,13 +576,22 @@ impl TypeRegistryBuilder {
                         .cloned()
                         .collect();
                     if self.seen_modules.insert((lang.clone(), module.clone())) {
-                        if arrow {
+                        if qualified {
                             // モジュールの宣言は `tags.X` の名前で登録する（`qualify_module_body`・10-8）。
                             let (qbody, scope) = qualify_module_body(&modpath, body);
                             let idx = self.reg.name_scopes.len();
                             self.reg.name_scopes.push(scope);
                             self.reg.module_scope_index.insert(modpath.clone(), idx);
+                            // `py` は修飾するが外部言語のまま集める（`names_types_by_module` の doc・#27-a）。
+                            if !arrow {
+                                self.foreign_depth += 1;
+                            }
+                            let prev_py = std::mem::replace(&mut self.collecting_python, lang == "py");
                             self.collect_in_module(&modpath, idx, &qbody);
+                            self.collecting_python = prev_py;
+                            if !arrow {
+                                self.foreign_depth -= 1;
+                            }
                         } else {
                             // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
                             self.foreign_depth += 1;
@@ -583,7 +603,7 @@ impl TypeRegistryBuilder {
                     } else if !instances.is_empty() {
                         // ⚠ 2 回目以降の `import`: この本体にだけある具体化を集める（タスク 2-16）。
                         match self.reg.module_scope_index.get(&modpath).copied() {
-                            Some(idx) if arrow => {
+                            Some(idx) if qualified => {
                                 let map = self.reg.name_scopes[idx].names.clone();
                                 let q = |s: &str| crate::template_subst::subst_type(s, &map);
                                 let qinst: Vec<Stmt> = crate::template_subst::subst_stmts(&instances, &map)

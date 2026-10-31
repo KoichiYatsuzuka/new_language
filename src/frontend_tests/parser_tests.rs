@@ -1067,11 +1067,11 @@
         );
     }
 
-    /// 値としての `...` は `None` のまま（Arrow に `Ellipsis` 値が無いため。承認済みの仕様）。
+    /// 値としての `...` は組み込みの `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None`）。
     ///
     /// ⚠ 文位置だけを `pass` にしたので、値位置が巻き添えで変わっていないことを固定する。
     #[test]
-    fn test_python_value_ellipsis_stays_none() {
+    fn test_python_value_ellipsis_is_the_ellipsis_name() {
         let stmts =
             crate::python_converter::convert_python_source("def f():\n    x = ...\n    return x\n", "<test>")
                 .expect("python conversion failed");
@@ -1080,8 +1080,8 @@
         };
         // #2 の巻き上げにより body は [Mut("x", None, None), Assign{..}, Return]。
         assert!(
-            body.iter().any(|s| matches!(s, Stmt::Assign { value: Expr::None, .. })),
-            "expected an assignment of Expr::None, got: {body:?}"
+            body.iter().any(|s| matches!(s, Stmt::Assign { value: Expr::Ident { name, .. }, .. } if name == "Ellipsis")),
+            "expected an assignment of the name `Ellipsis`, got: {body:?}"
         );
         assert!(
             !body.iter().any(|s| matches!(s, Stmt::Pass)),
@@ -1603,6 +1603,64 @@ fn python_nested_class_and_import_rules() {
     assert!(err.contains("inside a function"), "{err}");
 }
 
+/// `except` の型にモジュールを通した名前を書ける（`except m.Err:`・python_builtins_plan.md のタスク 4-3）。
+/// Arrow の構文も Python の変換も同じ綴り（`"a.b.Err"`）にする。式（`except f().Err:`）は変換の誤り。
+#[test]
+fn except_accepts_a_dotted_name() {
+    let handler_types = |stmts: &[Stmt]| -> Vec<Option<String>> {
+        let Some(Stmt::Try { handlers, .. }) = stmts.first() else { panic!("expected try: {stmts:?}") };
+        handlers.iter().map(|h| h.exc_type.clone()).collect()
+    };
+    let stmts = parse("try:\n    pass\nexcept m.Err as e:\n    pass\nexcept a.b.C:\n    pass\n");
+    assert_eq!(handler_types(&stmts), vec![Some("m.Err".to_string()), Some("a.b.C".to_string())]);
+
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv("try:\n    pass\nexcept requests.exceptions.HTTPError as e:\n    pass\n").expect("dotted except");
+    assert_eq!(handler_types(&stmts), vec![Some("requests.exceptions.HTTPError".to_string())]);
+    let err = conv("try:\n    pass\nexcept f().Err:\n    pass\n").expect_err("computed except type");
+    assert!(err.contains("computed types are not"), "{err}");
+}
+
+/// Python の `except (A, B) as e:` は型ごとに同じ本体の節を並べる（python_builtins_plan.md のタスク 4-4）。
+/// 組の入れ子は CPython 3.12 も実行時の `TypeError` なので変換の誤り。
+#[test]
+fn python_except_tuple_becomes_one_handler_per_type() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv("try:\n    pass\nexcept (ValueError, m.Err) as e:\n    x = 1\n").expect("except tuple");
+    // ⚠ 変換器は `x` の宣言（`mut x`）を `try` の前へ出すので、`try` を探す。
+    let Some(Stmt::Try { handlers, .. }) = stmts.iter().find(|s| matches!(s, Stmt::Try { .. })) else {
+        panic!("expected try: {stmts:?}")
+    };
+    let types: Vec<Option<&str>> = handlers.iter().map(|h| h.exc_type.as_deref()).collect();
+    assert_eq!(types, vec![Some("ValueError"), Some("m.Err")]);
+    assert!(handlers.iter().all(|h| h.name.as_deref() == Some("e") && h.body.len() == 1), "{handlers:?}");
+    let err = conv("try:\n    pass\nexcept (A, (B, C)):\n    pass\n").expect_err("nested tuple");
+    assert!(err.contains("a tuple of them"), "{err}");
+}
+
+/// Arrow に無い組み込みを参照するモジュールは変換時の誤り（python_builtins_plan.md のタスク 1-1）。
+/// 呼ばれない関数の中でも誤りにし、名前ごとに最初の行を並べる。束縛した名前・デコレータ・クラスの基底・
+/// `super().m()` の `super`・Arrow にある組み込みは通す。
+#[test]
+fn python_unsupported_builtins_are_rejected() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "m.py");
+    let err = conv("def f(x):\n    return globals()\n\ndef g():\n    exit(1)\n    return vars()\n")
+        .expect_err("unsupported builtins");
+    assert!(err.contains("'globals' (line 2), 'exit' (line 5), 'vars' (line 6)"), "{err}");
+    // 束縛した名前（def / 代入 / 仮引数 / import の別名）は組み込みを隠す。
+    conv("def vars(x):\n    return x\n\ndef g():\n    return vars(1)\n").expect("def shadows");
+    conv("vars = 3\n\ndef g(input):\n    return vars + input\n").expect("assignment and parameter shadow");
+    conv("from os import path as exit\n\ndef g():\n    return exit\n").expect("import alias shadows");
+    // 変換器が形で受ける位置。
+    let ok = "class A(object):\n    @staticmethod\n    def make():\n        return 1\n\nclass B(A):\n    def m(self):\n        return super().make()\n";
+    conv(ok).expect("decorator / base / super()");
+    // Arrow にある組み込み（足した組み込みは自動で外れる）。
+    conv("def g(xs):\n    return sorted(map(abs, xs)), isinstance(xs, list), hex(3)\n").expect("supported builtins");
+    // 値として使う `super` は誤り。
+    let err = conv("def g():\n    return super\n").expect_err("bare super value");
+    assert!(err.contains("'super' (line 2)"), "{err}");
+}
+
 /// 文が**文の位置**（先頭のトークン）を持つ（フェーズ10 10-17）。以前は `let` / `return` / `if` などが
 /// 位置を持たず、型検査の誤りが `<unknown>`・デバッガが直前の行を出し続けていた。
 #[test]
@@ -1673,4 +1731,353 @@ fn python_nested_class_is_hoisted_with_its_qualname() {
     )
     .expect_err("a `for` in a class body");
     assert!(err.contains("a `for` statement in the body of class 'K' is not supported"), "{err}");
+}
+
+/// Python の `@property` / `@x.setter`（python_builtins_plan.md のタスク 6-1）。メソッドは別名
+/// （`__property_get_x` / `__property_set_x`）になり、`x` はクラスの属性の置き場（`static mut x: Any`）。
+/// クラスの定義の後に property を組み立てる文が並ぶ。`self.x = v` はフィールドにせず、setter だけが代入する
+/// フィールド（`self._x`）はフィールドにする。
+#[test]
+fn python_property_is_built_after_the_class() {
+    let conv = |src: &str| crate::python_converter::convert_python_source(src, "<test>");
+    let stmts = conv(concat!(
+        "class C:\n",
+        "    def __init__(self, v):\n",
+        "        self.x = v\n",
+        "    @property\n",
+        "    def x(self):\n",
+        "        return self._x\n",
+        "    @x.setter\n",
+        "    def x(self, v):\n",
+        "        self._x = v\n",
+    ))
+    .expect("@property converts");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("expected class: {stmts:?}") };
+    let names: Vec<(&str, Option<&FieldKind>)> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Field { name, kind, .. } => Some((name.as_str(), Some(kind))),
+            Stmt::FnDef { name, .. } => Some((name.as_str(), None)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("_x", Some(&FieldKind::Mut)),
+            ("x", Some(&FieldKind::StaticMut)),
+            ("__init__", None),
+            ("__property_get_x", None),
+            ("__property_set_x", None),
+        ]
+    );
+    // クラスの後: `C.x = property(..)` / `C.x.__set_name__(C, "x")` / `C.x = C.x.setter(..)`
+    assert_eq!(stmts.len(), 4, "{stmts:?}");
+    assert!(matches!(&stmts[1], Stmt::AttrAssign { target: Expr::Attr { attr, .. }, .. } if attr == "x"));
+    assert!(matches!(&stmts[2], Stmt::Expr(Expr::Call { func, .. })
+        if matches!(func.as_ref(), Expr::Attr { attr, .. } if attr == "__set_name__")));
+    assert!(matches!(&stmts[3], Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+        if matches!(func.as_ref(), Expr::Attr { attr, .. } if attr == "setter")));
+
+    // 基底の property を写す形も通る。
+    conv("class B:\n    @property\n    def n(self):\n        return 1\nclass D(B):\n    @B.n.getter\n    def n(self):\n        return 2\n")
+        .expect("@Base.x.getter");
+    // 表せない形は誤り。
+    let err = conv("class C:\n    @x.setter\n    def x(self, v):\n        pass\n").expect_err("setter before property");
+    assert!(err.contains("must follow '@property def x'"), "{err}");
+    let err = conv("class C:\n    @property\n    def x(self):\n        return 1\n    @x.setter\n    def set_x(self, v):\n        pass\n")
+        .expect_err("setter with another name");
+    assert!(err.contains("the method must have the property's name 'x'"), "{err}");
+    // getter の docstring は property の `__doc__`（タスク 6-7）: `property(f, None, None, "doc")`。
+    let doc = conv("class C:\n    @property\n    def x(self):\n        \"\"\"the x\"\"\"\n        return 1\n").expect("docstring");
+    let Some(Stmt::AttrAssign { value: Expr::Call { args, .. }, .. }) = doc.get(1) else { panic!("{doc:?}") };
+    assert!(
+        matches!(args.as_slice(), [_, _, _, CallArg::Positional(Expr::Str(s))] if &**s == "the x"),
+        "{args:?}"
+    );
+    // property を包むデコレータ（タスク 6-6）: 組み立てた後に `C.x = logged(C.x)` を足す。
+    let wrapped = conv("def logged(f):\n    return f\nclass C:\n    @logged\n    @property\n    def x(self):\n        return 1\n")
+        .expect("property inside another decorator");
+    let last = wrapped.last().expect("statements");
+    assert!(
+        matches!(last, Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "logged")),
+        "{last:?}"
+    );
+    let err = conv("class C:\n    @property\n    @property\n    def x(self):\n        return 1\n").expect_err("two property decorators");
+    assert!(err.contains("more than one property decorator"), "{err}");
+    let err = conv("class C:\n    @staticmethod\n    @property\n    def x(self):\n        return 1\n").expect_err("static around property");
+    assert!(err.contains("outside a property decorator is not supported"), "{err}");
+    let err = conv("class C:\n    @property\n    @staticmethod\n    def x():\n        return 1\n").expect_err("static property");
+    assert!(err.contains("cannot be a static or class method"), "{err}");
+    // `@cached_property`（タスク 6-5）: 計算した値を入れるインスタンスのフィールド `x`（`Any`）と置き場の `static mut x`、
+    // 別名のメソッド。クラスの後で `C.x = cached_property(C.__property_cached_x)` と名前付け。
+    let cached = conv("from functools import cached_property\nclass C:\n    @cached_property\n    def x(self) -> int:\n        return 1\n")
+        .expect("cached_property");
+    let Some(Stmt::ClassDef { body, .. }) = cached.first() else { panic!("expected class first: {cached:?}") };
+    let members: Vec<(&str, Option<&FieldKind>, Option<&str>)> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Field { name, kind, type_ann, .. } => Some((name.as_str(), Some(kind), Some(type_ann.as_str()))),
+            Stmt::FnDef { name, .. } => Some((name.as_str(), None, None)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("x", Some(&FieldKind::Mut), Some("Any")),
+            ("x", Some(&FieldKind::StaticMut), Some("int")),
+            ("__property_cached_x", None, None),
+        ]
+    );
+    assert!(
+        matches!(&cached[1], Stmt::AttrAssign { value: Expr::Call { func, .. }, .. }
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "cached_property")),
+        "{cached:?}"
+    );
+    // `from functools import cached_property` は読み込まない（ほかの名前は残す）。
+    let imports = conv("from functools import cached_property, reduce\n").expect("functools import");
+    assert!(
+        matches!(imports.as_slice(), [Stmt::FromImport { names, .. }] if names.len() == 1 && names[0].0 == "reduce"),
+        "{imports:?}"
+    );
+    // 置き場の型は getter の戻り値の注釈（タスク 6-8）。注釈が無ければ `Any`、後から `@x.getter` で置いた注釈も効く。
+    let placeholder = |src: &str| -> String {
+        let stmts = conv(src).expect("typed property");
+        let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("expected class: {stmts:?}") };
+        body.iter()
+            .find_map(|s| match s {
+                Stmt::Field { name, kind: FieldKind::StaticMut, type_ann, .. } if name == "x" => Some(type_ann.clone()),
+                _ => None,
+            })
+            .expect("placeholder")
+    };
+    assert_eq!(placeholder("class C:\n    @property\n    def x(self) -> float:\n        return 1.0\n"), "float");
+    assert_eq!(placeholder("class C:\n    @property\n    def x(self):\n        return 1\n"), "Any");
+    assert_eq!(
+        placeholder(concat!(
+            "class C:\n    @property\n    def x(self):\n        return 1\n",
+            "    @x.getter\n    def x(self) -> list[int]:\n        return [1]\n",
+        )),
+        "list[int]"
+    );
+}
+
+/// Python の `b".."` は組み込みの `bytes([..])` の呼び出しへ写す（python_builtins_plan.md のタスク 3-1）。
+/// 以前は `bytes literals are not supported` の変換の誤りだった。
+#[test]
+fn python_bytes_literal_becomes_a_bytes_call() {
+    let stmts = crate::python_converter::convert_python_source("def f():\n    return b\"A\\x00\"\n", "<test>")
+        .expect("bytes literal");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected a fn: {stmts:?}") };
+    let Some(Stmt::Return(Some(value), _)) = body.first() else { panic!("expected a return: {body:?}") };
+    let Expr::Call { func, args, .. } = value else { panic!("expected a call: {value:?}") };
+    assert!(matches!(func.as_ref(), Expr::Ident { name, .. } if name == "bytes"), "{func:?}");
+    let [CallArg::Positional(Expr::List(items))] = args.as_slice() else { panic!("{args:?}") };
+    let ints: Vec<i64> = items
+        .iter()
+        .map(|e| match e {
+            crate::ast::SeqEntry::Item(Expr::Int(n)) => *n,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(ints, vec![65, 0]);
+}
+
+/// クラス本体の名前を参照するクラス属性（python_builtins_plan.md のタスク 6-3）。初期化式がクラス本体で先に
+/// 束縛した名前を引いていればクラスの定義の後で `C.x = <C.名前に書き換えた式>`、メソッドの別名（`alias = m`）と
+/// `name = lambda ..` はメソッドとして定義する。ラムダの本体の名前は書き換えない（Python の規則）。
+#[test]
+fn python_class_body_names_are_resolved_after_the_class() {
+    let stmts = crate::python_converter::convert_python_source(
+        concat!(
+            "class C:\n",
+            "    LIMIT = 10\n",
+            "    DOUBLE = LIMIT * 2\n",
+            "    def m(self):\n",
+            "        return 1\n",
+            "    alias = m\n",
+            "    f = lambda self: LIMIT\n",
+        ),
+        "<test>",
+    )
+    .expect("class body names");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.first() else { panic!("{stmts:?}") };
+    let method_names: Vec<&str> = body
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::FnDef { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(method_names, vec!["m", "alias", "f"]);
+    // `DOUBLE` は初期値 None の置き場と、クラスの後の `C.DOUBLE = C.LIMIT * 2`。
+    assert!(body.iter().any(|s| matches!(s, Stmt::Field { name, default: Some(Expr::None), .. } if name == "DOUBLE")));
+    let Some(Stmt::AttrAssign { target: Expr::Attr { attr, .. }, value, .. }) = stmts.get(1) else { panic!("{stmts:?}") };
+    assert_eq!(attr, "DOUBLE");
+    assert!(
+        matches!(value, Expr::BinOp { left, .. }
+            if matches!(left.as_ref(), Expr::Attr { object, attr, .. }
+                if attr == "LIMIT" && matches!(object.as_ref(), Expr::Ident { name, .. } if name == "C"))),
+        "{value:?}"
+    );
+    // ラムダの本体の `LIMIT` は大域のまま（書き換えない）。
+    let Some(Stmt::FnDef { body: fbody, .. }) = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "f")) else {
+        panic!()
+    };
+    assert!(matches!(fbody.last(), Some(Stmt::Return(Some(Expr::Ident { name, .. }), _)) if name == "LIMIT"), "{fbody:?}");
+}
+
+
+/// Python の `with EXPR as x:` は `{ mut x = EXPR; try: 本体 finally: __py_with_exit(x) }`（python_builtins_plan.md の
+/// タスク 5-4）。抜けるとき（`return` / 例外も）にファイルを閉じる。複数の項目は逆の順に閉じる（CPython と同じ）。
+#[test]
+fn python_with_exits_in_a_finally() {
+    let stmts = crate::python_converter::convert_python_source(
+        "def load(p):\n    with open(p) as h, open(p):\n        return h.read()\n",
+        "<test>",
+    )
+    .expect("with converts");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected fn: {stmts:?}") };
+    let Some(Stmt::Block(inner)) = body.iter().find(|s| matches!(s, Stmt::Block(_))) else { panic!("{body:?}") };
+    let Some(Stmt::Try { finally_body: Some(fin), handlers, .. }) = inner.last() else { panic!("{inner:?}") };
+    assert!(handlers.is_empty());
+    let exited: Vec<&str> = fin
+        .iter()
+        .map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => match (func.as_ref(), args.as_slice()) {
+                (Expr::Ident { name, .. }, [CallArg::Positional(Expr::Ident { name: arg, .. })]) if name == "__py_with_exit" => {
+                    arg.as_str()
+                }
+                _ => panic!("{s:?}"),
+            },
+            _ => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(exited.len(), 2);
+    assert!(exited[0].starts_with("__py_with_"), "{exited:?}");
+    assert_eq!(exited[1], "h");
+}
+
+/// Python の `del` は左から 1 つずつ: `del o.a` は `__py_delattr(o, "a")`、`del d[k]` は `__py_delitem(d, k)`、
+/// 組のターゲットは平らにする。名前の `del x` は（警告して）文を作らない（known_bugs.md の #2 / #3）。
+#[test]
+fn python_del_becomes_delattr_and_delitem_calls() {
+    let stmts = crate::python_converter::convert_python_source(
+        "def f(o, d, x):\n    del o.a, d[0]\n    del (d[1:2], x)\n",
+        "<test>",
+    )
+    .expect("del converts");
+    let Some(Stmt::FnDef { body, .. }) = stmts.first() else { panic!("expected fn: {stmts:?}") };
+    let calls: Vec<(&str, &Expr)> = body
+        .iter()
+        .map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => match (func.as_ref(), args.as_slice()) {
+                (Expr::Ident { name, .. }, [CallArg::Positional(_), CallArg::Positional(second)]) => {
+                    (name.as_str(), second)
+                }
+                _ => panic!("{s:?}"),
+            },
+            _ => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(calls.len(), 3, "{body:?}");
+    assert!(matches!(calls[0], ("__py_delattr", Expr::Str(a)) if &**a == "a"), "{calls:?}");
+    assert!(matches!(calls[1], ("__py_delitem", Expr::Int(0))), "{calls:?}");
+    assert!(matches!(calls[2], ("__py_delitem", Expr::Slice { .. })), "{calls:?}");
+}
+
+/// `super().m(..)` は Python 専用の内部の組み込み `__py_super(<第 1 基底>, 受け手, "m", ..)` になり、受け手は今の関数の
+/// 最初の仮引数（クラスメソッドは `cls`・known_bugs.md の #6）。静的メソッドの中の `super()` は変換の誤り。
+#[test]
+fn python_super_becomes_py_super_with_the_first_param() {
+    let src = "class B:\n    pass\n\nclass C(B):\n    @classmethod\n    def k(klass, x):\n        return super().k(x, y=1)\n    \
+               def m(this):\n        return super().m()\n";
+    let stmts = crate::python_converter::convert_python_source(src, "<test>").expect("converts");
+    let Some(Stmt::ClassDef { body, .. }) =
+        stmts.iter().find(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "C"))
+    else {
+        panic!("{stmts:?}")
+    };
+    let call_of = |method: &str| -> (String, Vec<String>) {
+        let Some(Stmt::FnDef { body: fb, .. }) =
+            body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == method))
+        else {
+            panic!("{method}: {body:?}")
+        };
+        let Some(Stmt::Return(Some(Expr::Call { func, args, .. }), _)) = fb.first() else { panic!("{fb:?}") };
+        let Expr::Ident { name, .. } = func.as_ref() else { panic!("{func:?}") };
+        let shown = args
+            .iter()
+            .map(|a| match a {
+                CallArg::Positional(Expr::Ident { name, .. }) => name.clone(),
+                CallArg::Positional(Expr::Str(s)) => format!("'{s}'"),
+                CallArg::Keyword { name, .. } => format!("{name}="),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        (name.clone(), shown)
+    };
+    assert_eq!(call_of("k"), ("__py_super".to_string(), vec!["B".into(), "klass".into(), "'k'".into(), "x".into(), "y=".into()]));
+    assert_eq!(call_of("m"), ("__py_super".to_string(), vec!["B".into(), "this".into(), "'m'".into()]));
+    let static_src = "class B:\n    pass\n\nclass C(B):\n    @staticmethod\n    def s(x):\n        return super().s(x)\n";
+    let err = crate::python_converter::convert_python_source(static_src, "<test>").expect_err("no receiver");
+    assert!(err.contains("needs the first argument of a method"), "{err}");
+}
+
+/// `__setattr__` / `__delattr__` / `__getattr__` は Python のモジュールのクラスだけが持てる。Arrow のクラスでは `fn` の
+/// 位置でパースの誤り（`static fn` / `class_method fn` も・known_bugs.md の #10 / #11）。ほかの dunder はそのまま。
+#[test]
+fn arrow_class_cannot_define_attr_hooks() {
+    for (src, hook) in [
+        ("class C:\n    fn __setattr__(mut self, name: str, v: Any) -> None:\n        pass\n", "__setattr__"),
+        ("class C:\n    static fn __delattr__(name: str) -> None:\n        pass\n", "__delattr__"),
+        ("class C:\n    class_method fn __setattr__(cls: Any) -> None:\n        pass\n", "__setattr__"),
+        ("class C:\n    fn __getattr__(self, name: str) -> str:\n        return name\n", "__getattr__"),
+        ("class C:\n    fn __getattribute__(self, name: str) -> str:\n        return name\n", "__getattribute__"),
+    ] {
+        let mut p = Parser::new(Lexer::new(src, "m.ar").tokenize(), None);
+        let err = p.parse_program().expect_err("attribute hook in an Arrow class");
+        assert!(err.contains(&format!("`{hook}` can only be defined in a class of a Python module")), "{err}");
+        assert!(p.error_location(&err).starts_with(" at m.ar:2:"), "{}", p.error_location(&err));
+    }
+    let ok = "class C:\n    mut x: int\n    fn __getitem__(self, k: int) -> int:\n        return k\n";
+    Parser::new(Lexer::new(ok, "m.ar").tokenize(), None).parse_program().expect("other dunders parse");
+}
+
+/// `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)` と、基底が `object` のクラスの
+/// `super().__setattr__(k, v)` は上書きを飛ばす内部の組み込みになる。名前が文字列の定数ならフィールドとして宣言する
+/// （known_bugs.md の #10）。
+#[test]
+fn python_object_setattr_becomes_bypass_builtin() {
+    let src = "class C:\n    def __init__(self):\n        object.__setattr__(self, 'a', 1)\n    \
+               def __setattr__(self, name, value):\n        super().__setattr__(name, value)\n    \
+               def drop(self):\n        object.__delattr__(self, 'a')\n    \
+               def __getattr__(self, name):\n        super().__getattribute__(name)\n    \
+               def peek(self):\n        object.__getattribute__(self, 'a')\n";
+    let stmts = crate::python_converter::convert_python_source(src, "<test>").expect("converts");
+    let Some(Stmt::ClassDef { body, .. }) = stmts.iter().find(|s| matches!(s, Stmt::ClassDef { .. })) else {
+        panic!("{stmts:?}")
+    };
+    assert!(body.iter().any(|s| matches!(s, Stmt::Field { name, .. } if name == "a")), "field a: {body:?}");
+    let callee_of = |method: &str| -> String {
+        let Some(Stmt::FnDef { body: fb, .. }) =
+            body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == method))
+        else {
+            panic!("{method}: {body:?}")
+        };
+        match fb.iter().find_map(|s| match s {
+            Stmt::Expr(Expr::Call { func, args, .. }) => Some((func.as_ref(), args.len())),
+            _ => None,
+        }) {
+            Some((Expr::Ident { name, .. }, n)) => format!("{name}/{n}"),
+            other => panic!("{method}: {other:?}"),
+        }
+    };
+    assert_eq!(callee_of("__init__"), "__py_object_setattr/3");
+    assert_eq!(callee_of("__setattr__"), "__py_object_setattr/3");
+    assert_eq!(callee_of("drop"), "__py_object_delattr/2");
+    assert_eq!(callee_of("__getattr__"), "__py_object_getattribute/2");
+    assert_eq!(callee_of("peek"), "__py_object_getattribute/2");
 }

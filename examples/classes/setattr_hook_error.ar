@@ -1,0 +1,20 @@
+# setattr_hook_error.ar — Arrow のクラスは `__setattr__` / `__delattr__` を定義できない（known_bugs.md の #10）
+#
+# 属性の操作の上書き（`__setattr__` / `__delattr__`）は Python のモジュール（`import[py]`）のクラスだけが持てる
+# （`examples/interop/py_setattr.ar`）。Arrow のクラスのフィールドはクラスの本体で決まり、代入はそのまま入る。
+#
+# 期待されるエラー（ParseError・パース時）:
+#   `__setattr__` can only be defined in a class of a Python module (import[py]); the members of an Arrow class are
+#   fixed by its class body
+#
+# ⚠ `fn __delattr__(..)` / `fn __getattr__(..)`（`getattr_hook_error.ar`）も同じ誤り。
+
+class Logged:
+    mut x: int
+
+    fn __setattr__(mut self, name: str, value: Any) -> None:
+        print(name)
+
+mut o = Logged(1)
+o.x = 2
+print("unreachable")

@@ -3,9 +3,47 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::{BinOp, UnaryOp},
-    crate::interpreter::str_methods::percent_format,
+    crate::interpreter::str_methods::{percent_format, PercentText},
     crate::interpreter::{Interpreter, Value},
 };
+
+/// 二項演算子の演算子メソッドの名前（左に呼ぶもの・右に呼ぶもの・python_builtins_plan.md のタスク 6-12）。
+///
+/// CPython の `binary_op1` / `do_richcompare` と同じ組: 算術は `__add__` / `__radd__`、比較は向きを入れ替えた名前
+/// （`a < b` の右は `b.__gt__(a)`）、`==` / `!=` は同じ名前。演算子メソッドで解かない演算子は `None`。
+/// ⚠ 左の名前は型検査の `check_dunder_operand` / `binop_result_type` と一致させること。
+fn dunder_pair(op: &BinOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        BinOp::Add => ("__add__", "__radd__"),
+        BinOp::Sub => ("__sub__", "__rsub__"),
+        BinOp::Mul => ("__mul__", "__rmul__"),
+        BinOp::Div => ("__truediv__", "__rtruediv__"),
+        BinOp::FloorDiv => ("__floordiv__", "__rfloordiv__"),
+        BinOp::Mod => ("__mod__", "__rmod__"),
+        BinOp::Pow => ("__pow__", "__rpow__"),
+        BinOp::BitAnd => ("__and__", "__rand__"),
+        BinOp::BitOr => ("__or__", "__ror__"),
+        BinOp::BitXor => ("__xor__", "__rxor__"),
+        BinOp::LShift => ("__lshift__", "__rlshift__"),
+        BinOp::RShift => ("__rshift__", "__rrshift__"),
+        BinOp::Eq => ("__eq__", "__eq__"),
+        BinOp::NotEq => ("__ne__", "__ne__"),
+        BinOp::Lt => ("__lt__", "__gt__"),
+        BinOp::Gt => ("__gt__", "__lt__"),
+        BinOp::LtEq => ("__le__", "__ge__"),
+        BinOp::GtEq => ("__ge__", "__le__"),
+        BinOp::RefEq | BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => return None,
+    })
+}
+
+/// `set` / `frozenset` の要素（どちらでもなければ `None`）。集合の演算子・比較・メソッドの引数が使う（タスク 3-1）。
+pub(crate) fn set_like_items(v: &Value) -> Option<Vec<Value>> {
+    match v {
+        Value::Set(s) => Some(s.borrow().clone()),
+        Value::FrozenSet(s) => Some(s.to_vec()),
+        _ => None,
+    }
+}
 
 impl Interpreter {
     /// 単項演算子を適用した結果の値を返す。
@@ -61,35 +99,22 @@ impl Interpreter {
     }
 
     /// `Value::Instance` に対してダンダーメソッドを経由して二項演算子を適用する。
-    /// 対応するダンダーメソッドが定義されていれば呼び出し、なければ `apply_binop` へフォールバック。
+    /// 演算子メソッドは CPython と同じ手順で探す（[`Self::binop_by_dunders`]・タスク 6-12）。どちらの側にも無ければ
+    /// `apply_binop` へフォールバック。
     pub(crate) fn apply_binop_dyn(&mut self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
-        if let Value::Instance(ref inst_rc) = lv {
-            let method_name = match op {
-                BinOp::Add => Some("__add__"),
-                BinOp::Sub => Some("__sub__"),
-                BinOp::Mul => Some("__mul__"),
-                BinOp::Div => Some("__truediv__"),
-                BinOp::FloorDiv => Some("__floordiv__"),
-                BinOp::Mod => Some("__mod__"),
-                BinOp::Pow => Some("__pow__"),
-                BinOp::BitAnd => Some("__and__"),
-                BinOp::BitOr => Some("__or__"),
-                BinOp::BitXor => Some("__xor__"),
-                BinOp::LShift => Some("__lshift__"),
-                BinOp::RShift => Some("__rshift__"),
-                BinOp::Eq => Some("__eq__"),
-                BinOp::NotEq => Some("__ne__"),
-                BinOp::Lt => Some("__lt__"),
-                BinOp::Gt => Some("__gt__"),
-                BinOp::LtEq => Some("__le__"),
-                BinOp::GtEq => Some("__ge__"),
-                _ => None,
+        if let Some(r) = self.binop_by_dunders(op, &lv, &rv)? {
+            return Ok(r);
+        }
+        // `str % 値` の `%s` / `%r` は CPython と同じく `str()` / `repr()`（`__str__` / `__repr__` を呼ぶ・コンテナの中も・
+        // known_bugs.md の #4）。⚠ `apply_binop` の同じ腕は呼べない経路用（既定の表示）。
+        if let (BinOp::Mod, Value::Str(fmt)) = (op, &lv) {
+            let fmt = fmt.clone();
+            let args = Self::percent_args(&rv);
+            let mut text_of = |v: &Value, how: PercentText| match how {
+                PercentText::Str => self.display_str(v),
+                PercentText::Repr => self.repr_val(v),
             };
-            if let Some(m) = method_name {
-                if inst_rc.borrow().class.methods.contains_key(m) {
-                    return self.eval_method_call_evaled(lv, m, vec![(None, rv, true)]);
-                }
-            }
+            return percent_format(&fmt, &args, &mut text_of).map(Value::str);
         }
         // ⚠⚠ `in` / `not in` の**左辺**が `__eq__` を持つインスタンスなら、要素ごとに
         //    `__eq__` を呼ぶ（B2-b）。以前は `apply_binop` が `values_eq`（構造比較）を
@@ -119,7 +144,175 @@ impl Interpreter {
                 }
             }
         }
+        // list 同士・tuple 同士の大小比較（python_builtins_plan.md のタスク 1-3）。
+        // ⚠ 要素の比較に演算子メソッド（`__eq__` / `__lt__`）が要るので `&mut self` のここに置く。
+        if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+            let seqs = match (&lv, &rv) {
+                (Value::List(a), Value::List(b)) => Some((a.borrow().clone(), b.borrow().clone())),
+                (Value::Tuple(a), Value::Tuple(b)) => Some((a.all_values().to_vec(), b.all_values().to_vec())),
+                _ => None,
+            };
+            if let Some((a, b)) = seqs {
+                return self.seq_ordered_cmp(op, &a, &b);
+            }
+        }
         self.apply_binop(op, lv, rv)
+    }
+
+    /// `str % 値` の値の並び（組なら要素、ほかは値 1 つ）。
+    fn percent_args(rv: &Value) -> Vec<Value> {
+        match rv {
+            Value::Tuple(t) => t.all_values().to_vec(),
+            other => vec![other.clone()],
+        }
+    }
+
+    /// 演算子メソッドで二項演算子を解く（CPython の `binary_op1` / `do_richcompare` と同じ手順・
+    /// python_builtins_plan.md のタスク 6-12）。
+    ///
+    /// 1. 右が左の真の派生（Python のクラスの継承）で反対側のメソッドを持てば、右を先に試す
+    /// 2. 左の演算子メソッド（`a + b` なら `a.__add__(b)`）
+    /// 3. 右の反対側のメソッド（`b.__radd__(a)`。比較は向きを入れ替えた名前・[`dunder_pair`]）。左と同じクラスなら呼ばない
+    ///
+    /// どれかが `NotImplemented` 以外を返せばそれが答え。全部が `NotImplemented`（か、メソッドが無い）なら
+    /// [`Self::binop_declined`]（`==` / `!=` は同一性、ほかは CPython と同じ文言の `TypeError`）。
+    /// `!=` は `__ne__` が無ければ `__eq__` の結果の反対（CPython の `object.__ne__`・[`Self::call_op_dunder`]）。
+    ///
+    /// 戻り値 `None`: インスタンスが絡まない・演算子メソッドで解かない演算子・どちらの側にもメソッドが無い `==` / `!=`
+    /// （組み込みの演算 `apply_binop` が答える。`__eq__` の無いクラスの `==` は従来どおり中身で比べる）。
+    /// ⚠ 左が組み込みの値（`2 * v`）なら、組み込みの演算が右のインスタンスを知らない（CPython の `int.__mul__` が
+    ///   `NotImplemented` を返す）のと同じに扱って右を試す。例外は `str % x`（書式・CPython も `str.__mod__` が答える）。
+    fn binop_by_dunders(&mut self, op: &BinOp, lv: &Value, rv: &Value) -> Result<Option<Value>, String> {
+        let class_of = |v: &Value| match v {
+            Value::Instance(i) => Some(i.borrow().class.clone()),
+            _ => None,
+        };
+        let (lcls, rcls) = (class_of(lv), class_of(rv));
+        if lcls.is_none() && rcls.is_none() {
+            return Ok(None);
+        }
+        let Some((fwd, refl)) = dunder_pair(op) else {
+            return Ok(None);
+        };
+        if matches!(op, BinOp::Mod) && matches!(lv, Value::Str(_)) {
+            return Ok(None);
+        }
+        let ne = matches!(op, BinOp::NotEq);
+        // `!=` は `__eq__` だけでも答えられる（その反対）。
+        let can = |c: &Option<Rc<crate::interpreter::ClassValue>>, m: &str| {
+            c.as_ref().is_some_and(|c| c.methods.contains_key(m) || (ne && c.methods.contains_key("__eq__")))
+        };
+        let same = matches!((&lcls, &rcls), (Some(a), Some(b)) if a.class_id == b.class_id);
+        let l_has = can(&lcls, fwd);
+        let r_has = !same && can(&rcls, refl);
+        if !l_has && !r_has {
+            // 等値は Arrow の従来の規則（`__eq__` が無ければ中身で比べる）。ほかは CPython と同じ文言の誤り。
+            return match op {
+                BinOp::Eq | BinOp::NotEq => Ok(None),
+                _ => self.binop_declined(op, lv, rv).map(Some),
+            };
+        }
+        let right_first = r_has
+            && matches!((&lcls, &rcls), (Some(a), Some(b)) if crate::interpreter::Interpreter::class_is_subclass(b, a));
+        if right_first {
+            let r = self.call_op_dunder(rv, refl, lv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        if l_has {
+            let r = self.call_op_dunder(lv, fwd, rv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        if r_has && !right_first {
+            let r = self.call_op_dunder(rv, refl, lv, ne)?;
+            if !Self::is_not_implemented(&r) {
+                return Ok(Some(r));
+            }
+        }
+        self.binop_declined(op, lv, rv).map(Some)
+    }
+
+    /// `recv.m(arg)`（演算子メソッドの呼び出し・タスク 6-12）。`!=` で `__ne__` が無ければ `__eq__` の結果の反対
+    /// （`NotImplemented` ならそのまま）。メソッドが無ければ `NotImplemented`。
+    fn call_op_dunder(&mut self, recv: &Value, m: &str, arg: &Value, ne: bool) -> Result<Value, String> {
+        let (has_m, has_eq) = match recv {
+            Value::Instance(i) => {
+                let methods = &i.borrow().class.methods;
+                (methods.contains_key(m), methods.contains_key("__eq__"))
+            }
+            _ => (false, false),
+        };
+        if has_m {
+            return self.eval_method_call_evaled(recv.clone(), m, vec![(None, arg.clone(), true)]);
+        }
+        if ne && has_eq {
+            let r = self.eval_method_call_evaled(recv.clone(), "__eq__", vec![(None, arg.clone(), true)])?;
+            if Self::is_not_implemented(&r) {
+                return Ok(r);
+            }
+            return Ok(Value::Bool(!self.eval_truthy(&r)?));
+        }
+        Ok(self.builtin_singleton(crate::interpreter::BuiltinClass::NotImplemented))
+    }
+
+    /// どちらの側の演算子メソッドも答えなかった（`NotImplemented`・メソッドが無い）ときの答え（CPython と同じ・タスク 6-12）。
+    /// `==` / `!=` は同一性、大小比較は `'<' not supported between instances of ..`、算術は
+    /// `unsupported operand type(s) for +: ..`（左が str / list / tuple の `+` / `*` は列の文言）。
+    fn binop_declined(&self, op: &BinOp, lv: &Value, rv: &Value) -> Result<Value, String> {
+        let name = |v: &Value| match v {
+            Value::Instance(i) => i.borrow().class.name.clone(),
+            other => self.type_name(other).to_string(),
+        };
+        let seq = |v: &Value| match v {
+            Value::Str(_) => Some("str"),
+            Value::List(_) => Some("list"),
+            Value::Tuple(_) => Some("tuple"),
+            _ => None,
+        };
+        let msg = match op {
+            BinOp::Eq => return Ok(Value::Bool(self.values_ref_eq(lv, rv)?)),
+            BinOp::NotEq => return Ok(Value::Bool(!self.values_ref_eq(lv, rv)?)),
+            BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => format!(
+                "'{}' not supported between instances of '{}' and '{}'",
+                op.as_str(),
+                name(lv),
+                name(rv)
+            ),
+            BinOp::Add if seq(lv).is_some() => {
+                let k = seq(lv).expect("checked");
+                format!("can only concatenate {k} (not \"{}\") to {k}", name(rv))
+            }
+            BinOp::Mul if seq(lv).is_some() => format!("can't multiply sequence by non-int of type '{}'", name(rv)),
+            BinOp::Mul if seq(rv).is_some() => format!("can't multiply sequence by non-int of type '{}'", name(lv)),
+            BinOp::Pow => format!("unsupported operand type(s) for ** or pow(): '{}' and '{}'", name(lv), name(rv)),
+            _ => format!("unsupported operand type(s) for {}: '{}' and '{}'", op.as_str(), name(lv), name(rv)),
+        };
+        Err(format!("TypeError: {msg}"))
+    }
+
+    /// 列（list / tuple）の大小比較。CPython の `list_richcompare` / `tuplerichcompare` と同じ 2 段構え:
+    ///   1. `==` で**最初に違う要素**を探す
+    ///   2. あればその要素だけを求められた演算子で比べ直す（比べられない要素ならそこで `TypeError`）
+    ///   3. 無ければ（短い方が尽きたら）長さで決める（`(1, 2) < (1, 2, 0)` は真）
+    /// ⚠ 違う要素より後ろは見ない（`(1, 'a') < (2, 3)` は 1 つ目で決まって真・CPython も同じ）。
+    /// ⚠ list と tuple は比べない（呼び出し側が同じ種類の組だけを渡す・違えば `apply_binop` の `TypeError`）。
+    fn seq_ordered_cmp(&mut self, op: &BinOp, a: &[Value], b: &[Value]) -> Result<Value, String> {
+        for (x, y) in a.iter().zip(b) {
+            let eq = self.apply_binop_dyn(&BinOp::Eq, x.clone(), y.clone())?;
+            if !self.eval_truthy(&eq)? {
+                return self.apply_binop_dyn(op, x.clone(), y.clone());
+            }
+        }
+        let (la, lb) = (a.len(), b.len());
+        Ok(Value::Bool(match op {
+            BinOp::Lt => la < lb,
+            BinOp::Gt => la > lb,
+            BinOp::LtEq => la <= lb,
+            _ => la >= lb,
+        }))
     }
 
     /// `in` / `not in` の右辺から**要素の並び**を取り出す。
@@ -127,6 +320,7 @@ impl Interpreter {
     fn membership_items(&self, container: &Value) -> Option<Vec<Value>> {
         match container {
             Value::List(rc) | Value::Set(rc) => Some(rc.borrow().clone()),
+            Value::FrozenSet(s) => Some(s.to_vec()),
             Value::Tuple(t) => Some(t.all_values().to_vec()),
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
@@ -154,19 +348,42 @@ impl Interpreter {
         Ok(self.is_truthy(val))
     }
 
-    /// `__str__` を持つ `Value::Instance` に対してそのメソッドを呼び出し文字列表現を返す。
-    /// 定義されていなければ `display` へフォールバック。
+    /// 例外のインスタンスの `args`（組み込みの例外の階層だけが持つ・タスク 4-2）。
+    pub(crate) fn exc_args_of(inst: &crate::interpreter::InstanceData) -> Option<Value> {
+        inst.class.field_index.get("args").and_then(|&idx| inst.field_value(idx))
+    }
+
+    /// `str(x)` / `print(x)` の文字列（CPython の `str`）。
+    ///
+    /// インスタンスは `__str__` を呼び、無ければ `repr`（`__repr__`・CPython の `object.__str__`）。
+    /// コンテナは要素を `repr` で出す（`print([t])` が要素の `__repr__` を呼ぶ・タスク 1-15）。
+    /// ⚠ 例外（組み込みの例外の階層と、`Error` を実装した利用者の例外）は `__str__` が無くても `display`
+    ///   （`message`・CPython の `BaseException.__str__`・ffi_value_exchange_plan.md 7-3）。
     pub(crate) fn display_str(&mut self, val: &Value) -> Result<String, String> {
-        if let Value::Instance(inst_rc) = val {
-            if inst_rc.borrow().class.methods.contains_key("__str__") {
-                let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
-                return match result {
-                    Value::Str(s) => Ok(s.to_string()),
-                    other => Ok(self.display(&other)),
+        match val {
+            Value::Instance(inst_rc) => {
+                let (has_str, is_exc) = {
+                    let inst = inst_rc.borrow();
+                    let is_exc = Self::in_exception_hierarchy(&inst.class) || inst.class.is_a("Exception");
+                    (inst.class.methods.contains_key("__str__"), is_exc)
                 };
+                if has_str {
+                    let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
+                    return match result {
+                        Value::Str(s) => Ok(s.to_string()),
+                        other => Ok(self.display(&other)),
+                    };
+                }
+                if is_exc {
+                    return Ok(self.display(val));
+                }
+                self.repr_val(val)
             }
+            Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::FrozenSet(_) => {
+                self.repr_val(val)
+            }
+            _ => Ok(self.display(val)),
         }
-        Ok(self.display(val))
     }
 
     /// 二項演算子を適用した結果の値を返す。
@@ -191,34 +408,53 @@ impl Interpreter {
             return crate::interpreter::py_interop::py_rbinop(h, op, &lv);
         }
         match (op, &lv, &rv) {
-            // セット演算（算術演算より先にチェック）
-            (BinOp::BitOr, Value::Set(a), Value::Set(b)) => {
-                let mut result = a.borrow().clone();
-                for v in b.borrow().iter() {
-                    if !self.contains_eq(&result, v)? {
-                        result.push(v.clone());
+            // セット演算（算術演算より先にチェック）。`set` と `frozenset` はどう組んでもよく、結果は**左の種類**
+            // （`frozenset | set` は frozenset・CPython と同じ・タスク 3-1）。
+            (BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor, l, r)
+                if set_like_items(l).is_some() && set_like_items(r).is_some() =>
+            {
+                let a = set_like_items(l).expect("guarded");
+                let b = set_like_items(r).expect("guarded");
+                let result = match op {
+                    BinOp::BitOr => {
+                        let mut out = a;
+                        for v in b {
+                            if !self.contains_eq(&out, &v)? {
+                                out.push(v);
+                            }
+                        }
+                        out
                     }
-                }
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => {
-                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), true)?;
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::Sub, Value::Set(a), Value::Set(b)) => {
-                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), false)?;
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
-            }
-            (BinOp::BitXor, Value::Set(a), Value::Set(b)) => {
-                let a_ref = a.borrow();
-                let b_ref = b.borrow();
-                let mut result = self.filter_by_membership(&a_ref, &b_ref, false)?;
-                for v in b_ref.iter() {
-                    if !self.contains_eq(&a_ref, v)? {
-                        result.push(v.clone());
+                    BinOp::BitAnd => self.filter_by_membership(&a, &b, true)?,
+                    BinOp::Sub => self.filter_by_membership(&a, &b, false)?,
+                    _ => {
+                        let mut out = self.filter_by_membership(&a, &b, false)?;
+                        for v in &b {
+                            if !self.contains_eq(&a, v)? {
+                                out.push(v.clone());
+                            }
+                        }
+                        out
                     }
-                }
-                Ok(Value::Set(Rc::new(RefCell::new(result))))
+                };
+                Ok(if matches!(l, Value::FrozenSet(_)) {
+                    Value::FrozenSet(Rc::new(result))
+                } else {
+                    Value::Set(Rc::new(RefCell::new(result)))
+                })
+            }
+            // 集合の大小比較は包含関係（`a <= b` は部分集合・`a < b` は真部分集合・CPython と同じ・タスク 3-1）。
+            (BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq, l, r)
+                if set_like_items(l).is_some() && set_like_items(r).is_some() =>
+            {
+                let a = set_like_items(l).expect("guarded");
+                let b = set_like_items(r).expect("guarded");
+                Ok(Value::Bool(match op {
+                    BinOp::LtEq => self.all_contained(&a, &b)?,
+                    BinOp::Lt => a.len() < b.len() && self.all_contained(&a, &b)?,
+                    BinOp::GtEq => self.all_contained(&b, &a)?,
+                    _ => a.len() > b.len() && self.all_contained(&b, &a)?,
+                }))
             }
             // 包含検査 `in` / `not in`
             (BinOp::In, item, Value::List(lst)) => {
@@ -233,6 +469,7 @@ impl Interpreter {
             (BinOp::In, item, Value::Set(s)) => {
                 Ok(Value::Bool(self.contains_eq(&s.borrow(), item)?))
             }
+            (BinOp::In, item, Value::FrozenSet(s)) => Ok(Value::Bool(self.contains_eq(s, item)?)),
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(s.contains(&**sub)))
             }
@@ -260,6 +497,7 @@ impl Interpreter {
             (BinOp::NotIn, item, Value::Set(s)) => {
                 Ok(Value::Bool(!self.contains_eq(&s.borrow(), item)?))
             }
+            (BinOp::NotIn, item, Value::FrozenSet(s)) => Ok(Value::Bool(!self.contains_eq(s, item)?)),
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(&**sub)))
             }
@@ -270,6 +508,27 @@ impl Interpreter {
             }
             (BinOp::NotIn, item, Value::Tuple(t)) => {
                 Ok(Value::Bool(!self.contains_eq(t.all_values(), item)?))
+            }
+            // bytes の包含（タスク 3-1）: 0〜255 の int か、部分列の bytes。文言は CPython と同じ。
+            (BinOp::In | BinOp::NotIn, item, Value::Bytes(hay)) => {
+                let found = match item {
+                    Value::Int(n) => {
+                        if !(0..=255).contains(n) {
+                            return Err("ValueError: byte must be in range(0, 256)".to_string());
+                        }
+                        hay.contains(&(*n as u8))
+                    }
+                    Value::Bytes(needle) => {
+                        needle.is_empty() || hay.windows(needle.len()).any(|w| w == &needle[..])
+                    }
+                    other => {
+                        return Err(format!(
+                            "TypeError: a bytes-like object is required, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
+                };
+                Ok(Value::Bool(found == matches!(op, BinOp::In)))
             }
             (BinOp::In, _, rv) => Err(format!(
                 "TypeError: argument of type '{}' is not iterable",
@@ -285,8 +544,18 @@ impl Interpreter {
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
-            // バイト列の連結（新しい値を作る・3-1）
-            (BinOp::Add, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::bytes([&a[..], &b[..]].concat())),
+            // ── bytes（タスク 3-1）: 連結・繰り返し・包含・大小（辞書順）。文言は CPython と同じ ──
+            (BinOp::Add, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bytes([&a[..], &b[..]].concat().into())),
+            (BinOp::Add, Value::Bytes(_), other) => {
+                Err(format!("TypeError: can't concat {} to bytes", self.type_name(other)))
+            }
+            (BinOp::Mul, Value::Bytes(b), Value::Int(n)) | (BinOp::Mul, Value::Int(n), Value::Bytes(b)) => {
+                Ok(Value::Bytes(b.repeat((*n).max(0) as usize).into()))
+            }
+            (BinOp::Lt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::LtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::GtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a >= b)),
             // `Code + Code` — 行の連結（設計書 §1.2 / タスク 2-10）。
             // ⚠ 新しい `Code` を作る（左辺を壊さない）。`str` / `list` の連結と同じ。
             (BinOp::Add, Value::Code(a), Value::Code(b)) => {
@@ -339,13 +608,16 @@ impl Interpreter {
             }
 
             // str % args → printf-style format
+            // ⚠ インタプリタを回せない経路（ネイティブのコールバック）用。`__str__` / `__repr__` は呼ばない
+            //   （既定の表示・repr）。普通の実行は `apply_binop_dyn` が先に受ける（呼ぶ・known_bugs.md の #4）。
             (BinOp::Mod, Value::Str(fmt), rv) => {
-                let display_fn = |v: &Value| self.display(v);
-                let args: Vec<Value> = match rv {
-                    Value::Tuple(t) => t.all_values().to_vec(),
-                    other => vec![other.clone()],
+                let mut text_of = |v: &Value, how: PercentText| {
+                    Ok(match how {
+                        PercentText::Str => self.display(v),
+                        PercentText::Repr => self.display_repr(v),
+                    })
                 };
-                let result = percent_format(fmt, &args, &display_fn)?;
+                let result = percent_format(fmt, &Self::percent_args(rv), &mut text_of)?;
                 Ok(Value::str(result))
             }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),
@@ -369,13 +641,34 @@ impl Interpreter {
                 if *b == 0 {
                     return Err("ZeroDivisionError: integer division by zero".to_string());
                 }
-                Ok(Value::Int(a.div_euclid(*b)))
+                Ok(Value::Int(super::py_floor_div(*a, *b)))
             }
             (BinOp::Mod, Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
                     return Err("ZeroDivisionError: modulo by zero".to_string());
                 }
-                Ok(Value::Int(a.rem_euclid(*b)))
+                Ok(Value::Int(super::py_mod(*a, *b)))
+            }
+            // float の `//` / `%`（int との混在は float へ寄せる・CPython の `CONVERT_TO_DOUBLE`）。
+            // 計算は `ops::py_float_div_mod`（CPython の `_float_div_mod`）。文言も CPython 3.12 に合わせる。
+            (BinOp::FloorDiv | BinOp::Mod, Value::Float(_) | Value::Int(_), Value::Float(_) | Value::Int(_))
+                if matches!(lv, Value::Float(_)) || matches!(rv, Value::Float(_)) =>
+            {
+                let as_f = |v: &Value| match v {
+                    Value::Float(f) => *f,
+                    Value::Int(i) => *i as f64,
+                    _ => unreachable!("guarded by the pattern"),
+                };
+                let (a, b) = (as_f(&lv), as_f(&rv));
+                if b == 0.0 {
+                    return Err(match op {
+                        BinOp::FloorDiv => "ZeroDivisionError: float floor division by zero",
+                        _ => "ZeroDivisionError: float modulo",
+                    }
+                    .to_string());
+                }
+                let (q, m) = super::py_float_div_mod(a, b);
+                Ok(Value::Float(if matches!(op, BinOp::FloorDiv) { q } else { m }))
             }
             (BinOp::Pow, Value::Int(a), Value::Int(b)) => {
                 if *b >= 0 {
@@ -422,11 +715,6 @@ impl Interpreter {
             (BinOp::Gt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a > b)),
             (BinOp::LtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a <= b)),
             (BinOp::GtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a >= b)),
-            // バイト列同士の順序比較（バイトの辞書順・3-1）
-            (BinOp::Lt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a < b)),
-            (BinOp::Gt, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a > b)),
-            (BinOp::LtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a <= b)),
-            (BinOp::GtEq, Value::Bytes(a), Value::Bytes(b)) => Ok(Value::Bool(a >= b)),
             // uint 算術・比較
             (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
             (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
@@ -500,14 +788,16 @@ impl Interpreter {
             (BinOp::Sub, Value::Complex(re, im), Value::Float(s)) => {
                 Ok(Value::Complex(re - s, *im))
             }
+            // ⚠ 虚部は `0.0 - im`（`-im` ではない）。CPython は実数を `complex(s, 0.0)` にして成分ごとに引くので、
+            //   `1.5 - 0j` の虚部は `0.0 - 0.0` = `+0.0`（`-im` だと `-0.0` になり `(1.5-0j)` と出る・タスク 1-5 で実測）。
             (BinOp::Sub, Value::Float(s), Value::Complex(re, im)) => {
-                Ok(Value::Complex(s - re, -im))
+                Ok(Value::Complex(s - re, 0.0 - im))
             }
             (BinOp::Sub, Value::Complex(re, im), Value::Int(n)) => {
                 Ok(Value::Complex(re - *n as f64, *im))
             }
             (BinOp::Sub, Value::Int(n), Value::Complex(re, im)) => {
-                Ok(Value::Complex(*n as f64 - re, -im))
+                Ok(Value::Complex(*n as f64 - re, 0.0 - im))
             }
             (BinOp::Mul, Value::Complex(re, im), Value::Float(s)) => {
                 Ok(Value::Complex(re * s, im * s))

@@ -1,0 +1,18 @@
+# py_varargs_tuple.ar — Python の関数の `*args` はタプル（python_builtins_plan.md のタスク 1-16）
+#
+# 余った位置引数は CPython と同じくタプルで受ける（1 個も来なくても空タプル）。`rest + ("end",)` /
+# `fmt % values` / `isinstance(args, tuple)` / 表示 `(2, 3)` が CPython と同じになる。
+# ⚠ Arrow の関数の可変長（`let ...: T`）は従来どおりリスト（`list[T]`）。変えたのは Python の関数だけ。
+#
+# vt.run() は CPython と同じ出力:
+#   (2, 3) ()
+#   () tuple 0 [] (1, 'a') tuple 2 ['k']
+#   (1, 2, 'end') True
+#   (7, 'x') ['7-x']
+#   (3, 2, 1)
+#
+# ⚠ 以前はリストで受けていたので `[2, 3]` と表示され、`rest + ("end",)` が誤りだった。
+
+import[py] test_modules.py_varargs_tuple as vt
+
+vt.run()

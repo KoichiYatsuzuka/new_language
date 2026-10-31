@@ -1,0 +1,49 @@
+# freeze_like_let.ar — freeze x は let x = x と同じ結果になる（python_builtins_plan.md のタスク 1-9）
+#
+# 対になる誤りの例: freeze_like_let_error.ar
+#
+# freeze x は「値の深いコピーを不変にして、x をそのコピーへ束縛し直す」。let x = <mut 変数> と同じ 1 実装
+# （Interpreter::frozen_copy）なので、値も実行時の印（不変のインスタンス・__freeze__ の呼び出し・
+# fixed_list の切り詰め）も同じになる。
+# ⚠ 以前は 3 つの穴があった:
+#   - 関数の中の freeze がすべて NameError（VM が関数の中の変数を名前で探して見つけられなかった）
+#   - freeze はコピーせずその場で不変にしたので、同じオブジェクトを持つ相手（mut の仮引数を渡した
+#     呼び出し側）まで不変になった。let ではそうならない
+#   - 関数の中の let item = xs[0] が xs[0] と共有されていた（最上位は複製していた）
+
+class Counter:
+    mut n: int
+
+    fn add(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+    fn __freeze__(mut self) -> None:
+        print("frozen at", self.n)
+
+print("=== freeze inside a function ===")
+fn build() -> int:
+    mut c = Counter(1)
+    c.add(2)
+    freeze c                                    # frozen at 3
+    return c.n
+
+print(build())                                  # 3
+
+print("=== freezing a parameter does not freeze the caller's object ===")
+fn seal(mut c: Counter) -> int:
+    freeze c                                    # frozen at 1
+    return c.n
+
+mut mine = Counter(1)
+print(seal(mine))                               # 1
+print(mine.add(10))                             # 11（let と同じく、呼び出し側のオブジェクトは可変のまま）
+
+print("=== let inside a function copies (same as top level) ===")
+fn snapshot() -> list[int]:
+    mut rows: list[list[int]] = [[1]]
+    let first = rows[0]
+    rows[0].append(9)
+    return first
+
+print(snapshot())                               # [1]（以前は [1, 9]）

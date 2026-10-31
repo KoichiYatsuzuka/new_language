@@ -20,84 +20,114 @@ use super::{
     async_mgr, ClassValue, FnValue, InstanceData, NamespaceData, Value, Var,
 };
 
+/// `OSError` の系統だけが持つ欄（CPython の `OSError` の属性・known_bugs.md の #9）。⚠ Windows の `winerror` は持たない。
+pub(crate) const OS_ERROR_FIELDS: [&str; 4] = ["errno", "strerror", "filename", "filename2"];
+
+/// errno に対応する `OSError` の派生（CPython の `errnomap`。`OSError(2, "..")` は `FileNotFoundError` を作る・
+/// known_bugs.md の #9）。値は CPython の `errno` モジュールと同じで、OS ごとに違う番号は分けてある
+/// （Windows のネットワークの誤りは WinSock の番号。Windows の CPython 3.12 で全番号を作って確かめた）。
+pub(crate) fn os_error_subclass_of(errno: i64) -> Option<&'static str> {
+    // どの OS でも同じ番号（EPERM / ENOENT / ESRCH / EINTR / ECHILD / EACCES / EEXIST / ENOTDIR / EISDIR / EPIPE）。
+    const COMMON: &[(i64, &str)] = &[
+        (1, "PermissionError"),
+        (2, "FileNotFoundError"),
+        (3, "ProcessLookupError"),
+        (4, "InterruptedError"),
+        (10, "ChildProcessError"),
+        (13, "PermissionError"),
+        (17, "FileExistsError"),
+        (20, "NotADirectoryError"),
+        (21, "IsADirectoryError"),
+        (32, "BrokenPipeError"),
+    ];
+    // EAGAIN / EWOULDBLOCK / EINPROGRESS / EALREADY・ESHUTDOWN・ECONNABORTED・ECONNREFUSED・ECONNRESET・ETIMEDOUT
+    #[cfg(windows)]
+    const PLATFORM: &[(i64, &str)] = &[
+        (11, "BlockingIOError"),
+        (10035, "BlockingIOError"),
+        (10036, "BlockingIOError"),
+        (10037, "BlockingIOError"),
+        (10058, "BrokenPipeError"),
+        (10053, "ConnectionAbortedError"),
+        (10061, "ConnectionRefusedError"),
+        (10054, "ConnectionResetError"),
+        (10060, "TimeoutError"),
+    ];
+    #[cfg(target_os = "macos")]
+    const PLATFORM: &[(i64, &str)] = &[
+        (35, "BlockingIOError"),
+        (36, "BlockingIOError"),
+        (37, "BlockingIOError"),
+        (58, "BrokenPipeError"),
+        (53, "ConnectionAbortedError"),
+        (61, "ConnectionRefusedError"),
+        (54, "ConnectionResetError"),
+        (60, "TimeoutError"),
+    ];
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const PLATFORM: &[(i64, &str)] = &[
+        (11, "BlockingIOError"),
+        (114, "BlockingIOError"),
+        (115, "BlockingIOError"),
+        (108, "BrokenPipeError"),
+        (103, "ConnectionAbortedError"),
+        (111, "ConnectionRefusedError"),
+        (104, "ConnectionResetError"),
+        (110, "TimeoutError"),
+    ];
+    COMMON.iter().chain(PLATFORM).find(|(n, _)| *n == errno).map(|(_, c)| *c)
+}
+
 /// 標準例外クラス用の `ClassValue` を構築して返す。
 ///
 /// 生成されるクラスの構造:
-/// - フィールド: `message`, `code_context`, `file`, `line`, `col`（すべて let・不変）
-/// - `__init__(mut self, message: str)` メソッドで `self.message = message` を実行
+/// - フィールド: `message`, `code_context`, `file`, `line`, `col`, `args`（すべて let・不変）
+/// - **`__init__` は持たない**（タスク 4-2）。作るときの位置引数を `args` に、CPython の `str(e)` を
+///   `message` に入れるのは `instantiate_evaled`（CPython の `BaseException.__new__` と同じ位置）、
+///   `super().__init__(..)` / `ValueError.__init__(self, ..)` は `eval_class_method` が受ける
+///   （どちらも `Interpreter::exc_set_args`）。以前は `__init__(mut self, message: str)` で、
+///   `ValueError()` / `ValueError("a", 1)` が作れず、`super().__init__(..)` も届かなかった。
 /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
+/// - `OSError` の系統（別名・派生を含む）はさらに `errno` / `strerror` / `filename` / `filename2` を持つ
+///   （既定は `None`・CPython と同じく書き換えられる・known_bugs.md の #9）。入れるのは `exc_set_args`
+///   （`OSError(errno, strerror[, filename])`）と、実行時の誤りの控え（`open` の失敗・`make_internal_raised_error`）
 ///
 /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
+/// - `bases`: `Error` trait と祖先を平らに並べたもの（`names::builtin_exception_bases`・タスク 4-1）
 ///
 /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
-pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
-    use crate::ast::Expr as E;
-
-    // __init__ 本体: `self.message = message` を表す AST ノード
-    let init_body = vec![Stmt::AttrAssign {
-        target: E::Attr {
-            object: Box::new(E::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
-            attr: "message".to_string(),
-            span: Span::unknown(),
-            cache: Default::default(),
-            node_id: 0, // #16: 合成コード（注釈対象外）
-        },
-        value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
-        span: crate::token::Span::unknown(),
-    }];
-    let init_fn = Rc::new(FnValue {
-        globals: crate::interpreter::value::GLOBALS_OF_CALLER,
-        owner_class: None,
-        name: "__init__".to_string(),
-        params: vec![
-            Param {
-                name: "self".to_string(),
-                mutable: true,
-                type_ann: None,
-                default: None,
-                variadic: false,
-            },
-            Param {
-                name: "message".to_string(),
-                mutable: false,
-                type_ann: Some("str".to_string()),
-                default: None,
-                variadic: false,
-            },
-        ],
-        body: std::rc::Rc::from(init_body),
-        is_python: false,
-        captured_env: HashMap::new(),
-    return_type: None,
-    vm_chunk: None,
-    });
-    let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
-    methods.insert("__init__".to_string(), vec![init_fn]);
-
-    // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
-    let field_defaults = vec![
+pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<ClassValue> {
+    // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）。
+    // `message` / `args` は `instantiate_evaled` が入れ直す（ここは作り方を問わない既定）。
+    let mut field_defaults = vec![
+        ("message".to_string(), Value::str(String::new()), false),
         ("code_context".to_string(), Value::str("".to_string()), false),
         ("file".to_string(), Value::str("".to_string()), false),
         ("line".to_string(), Value::Int(0), false),
         ("col".to_string(), Value::Int(0), false),
+        ("args".to_string(), empty_tuple(), false),
     ];
+    let os_group = class_name == "OSError" || bases.iter().any(|b| b == "OSError");
+    if os_group {
+        for name in OS_ERROR_FIELDS {
+            field_defaults.push((name.to_string(), Value::None, true));
+        }
+    }
 
-    // フィールドの可変フラグ: すべて `let`（不変）
-    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
-    let mut field_mutability: HashMap<String, bool> = HashMap::new();
-    field_mutability.insert("message".to_string(), false);
-    field_mutability.insert("code_context".to_string(), false);
-    field_mutability.insert("file".to_string(), false);
-    field_mutability.insert("line".to_string(), false);
-    field_mutability.insert("col".to_string(), false);
+    // フィールドの可変フラグ: `OSError` の欄のほかは `let`（不変）
+    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4, args=5（`OSError` は errno=6 …）
+    let field_mutability: HashMap<String, bool> =
+        field_defaults.iter().map(|(name, _, mutable)| (name.clone(), *mutable)).collect();
+    let field_mutability_vec: Vec<bool> = field_defaults.iter().map(|(_, _, mutable)| *mutable).collect();
 
-    // field_index: own フィールド + Error:: trait エイリアス
-    let field_index: HashMap<String, usize> = [
+    // field_index: own フィールド + Error:: trait エイリアス（`args` は `Error` trait に無い）
+    let mut field_index: HashMap<String, usize> = [
         ("message", 0usize),
         ("code_context", 1),
         ("file", 2),
         ("line", 3),
         ("col", 4),
+        ("args", 5),
         ("Error::code_context", 1),
         ("Error::file", 2),
         ("Error::line", 3),
@@ -106,71 +136,47 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .iter()
     .map(|(k, v)| (k.to_string(), *v))
     .collect();
+    if os_group {
+        for (i, name) in OS_ERROR_FIELDS.iter().enumerate() {
+            field_index.insert(name.to_string(), 6 + i);
+        }
+    }
 
     Rc::new(ClassValue {
-        bases: std::iter::once("Error")
-            .chain(builtin_exception_parent(class_name))
-            .map(str::to_string)
-            .collect(),
-        methods,
+        bases,
+        methods: HashMap::new(),
+        field_count: field_defaults.len(),
         field_defaults,
         field_mutability,
         field_index,
-        field_count: 5,
-        field_mutability_vec: vec![false, false, false, false, false],
+        field_mutability_vec,
         is_exception: true,
         ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
 
-/// 組み込みの例外クラスの名前（実行時の一覧）。
-///
-/// ⚠ 型検査の 2 つの一覧（`type_check::registry::builder` の `EXCEPTION_CLASS_NAMES` と `type_check::names` の
-///   `RUNTIME_BUILTIN_NAMES`）と揃えること（型検査は wasm にも入るので、ここを直接は引けない）。内部エラーの文字列を
-///   例外へ変える表（`make_internal_raised_error`）は ffi_value_exchange_plan.md 7-4 からこの一覧そのもの
-///   （[`builtin_exception_of`]）で、以前は 3 つ目の写し `CATCHABLE` だった。
-/// ⚠ Python のクラスがこれらを継承したときのフィールドの並びにも使う（`Interpreter::new` が
-///   `py_class_field_order` へ載せる・フェーズ10 10-19）。
-pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 21] = [
-    "Exception",
-    "ValueError",
-    "TypeError",
-    "NameError",
-    "AttributeError",
-    "IndexError",
-    "KeyError",
-    "ZeroDivisionError",
-    "RuntimeError",
-    "StopIteration",
-    "NotImplementedError",
-    "OverflowError",
-    "IOError",
-    "OSError",
-    "AssertionError",
-    "ArithmeticError",
-    "AccessError",
-    "RecursionError",
-    "GeneratorExit",
-    // 外部言語との境界（7-4）: 宣言と食い違う値（`TypeError` の派生）と、相手の言語で投げられた例外
-    "FfiTypeError",
-    "ForeignError",
-];
-
-/// 組み込みの例外クラスの、`Error` のほかの基底（7-4）。`FfiTypeError` は `except TypeError` でも捕まえられる。
-/// ⚠ ほかの例外は `Error` だけ（`None` が正しい）。
-pub(crate) fn builtin_exception_parent(name: &str) -> Option<&'static str> {
-    match name {
-        "FfiTypeError" => Some("TypeError"),
-        _ => None,
-    }
-}
-
 /// `"ValueError: …"` の形の内部エラーなら、その組み込みの例外クラスの名前（7-4）。
 /// `make_internal_raised_error` がこれで例外に変え、外部言語のブリッジはこれで「もう種類が付いたエラー」を見分ける。
+///
+/// 表は組み込みの例外クラスの表 1 つ（`type_check::names::BUILTIN_EXCEPTIONS`・python_builtins_plan.md のタスク 4-1）。
+/// ⚠ 以前は手で揃えた別の一覧（`CATCHABLE`・のちに `BUILTIN_EXCEPTION_NAMES`）で、`RecursionError` が抜けて
+///   `except RecursionError:` で捕まえられなかった（実測）・`FfiTypeError` も一度抜けていた。
+/// ⚠ `SyntaxError` の系統は変換しない。内部で `SyntaxError: 'break' outside for/while loop` などを
+///   返すが、CPython ではコンパイル時の誤りで `try` では捕まらない（`except Exception` に黙って
+///   飲まれないようにする）。
 pub(crate) fn builtin_exception_of(msg: &str) -> Option<&'static str> {
-    BUILTIN_EXCEPTION_NAMES.iter().copied().find(|name| {
-        msg.starts_with(name) && matches!(msg.as_bytes().get(name.len()), None | Some(b':') | Some(b' '))
-    })
+    crate::type_check::names::BUILTIN_EXCEPTIONS
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| !matches!(*n, "SyntaxError" | "IndentationError" | "TabError"))
+        .find(|name| {
+            msg.starts_with(name) && matches!(msg.as_bytes().get(name.len()), None | Some(b':') | Some(b' '))
+        })
+}
+
+/// 空のタプル（例外の `args` の既定）。
+pub(super) fn empty_tuple() -> Value {
+    Value::Tuple(Rc::new(super::TupleData::new(Vec::new(), Vec::new())))
 }
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
@@ -212,6 +218,8 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         captured_env: HashMap::new(),
     return_type: None,
     vm_chunk: None,
+    bound: None,
+    qualname: None,
     });
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
@@ -294,11 +302,12 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
         Var::new(Value::Trait("Error".to_string()), false),
     );
 
-    // 標準例外クラスをすべて登録する。
+    // 標準例外クラスをすべて登録する（表は `type_check::names::BUILTIN_EXCEPTIONS`・タスク 4-1）。
     // 各クラスは `__init__(mut self, message: str)` を持ち、
     // code_context / file / line / col フィールドは raise 時にインタープリタが設定する。
-    for class_name in BUILTIN_EXCEPTION_NAMES {
-        let cls = make_error_class(class_name);
+    for (class_name, _) in crate::type_check::names::BUILTIN_EXCEPTIONS {
+        let bases = crate::type_check::names::builtin_exception_bases(class_name, true);
+        let cls = make_error_class(class_name, bases);
         global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
     }
 

@@ -396,12 +396,19 @@ impl Compiler {
             // ⚠ 文なので入口はオペランドスタックが平衡＝深さは `stmt_base` そのもの（#34）。
             // 内部の `break`/`continue` は外側ループへ貫通する（以前は本体ごと bail していた）。
             Stmt::Block(body) => {
-                let depth = self.stmt_base;
                 // ⚠ `block:` **文**はツリーウォークで `BLOCK_RETURN_EXPECTED_TYPE` へ push しない
                 // ので、中の `block_return` は**外側の式**のアノテーションで検査される（#35）。
                 let ann = self.block_ctxs.last().and_then(|c| c.return_type);
                 // ⚠ `block:` **文**は loop_yield に対して**透過**（#35）。
-                self.compile_block_expr(body, depth, ann, false)?;
+                // ⚠⚠ **中の `return` を通す**（python_builtins_plan.md のタスク 5-3）。`compile_block_expr` は
+                //   `block_body_bails` で `return` を断るが、それはブロック**式**（演算子のスタックが積まれた途中）の
+                //   ため。文は入口でスタックが平衡（`stmt_base` のまま）なので、中の `return` は普通の文と同じく
+                //   `emit_unwind_tries` → `Return` で抜けられる。以前は関数の中の `block:` に `return` があるだけで
+                //   関数ごと `VmForceError` になり、Python の `with open(p) as f: return f.read()`（変換先が `block:`）
+                //   も読めなかった。
+                // ⚠ この文を**囲むブロック式**があれば、そちらの `block_body_bails` が中の `return` を見つけて断る
+                //   （`P::Control` を降りる）ので、式の途中から抜ける形は従来どおり作らない。
+                self.compile_block_expr_inner(body, ann, false)?;
                 self.emit(Op::Pop);
             }
             // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。
@@ -416,11 +423,30 @@ impl Compiler {
             Stmt::LetTuple { targets, value, .. } => {
                 self.compile_let_tuple(stmt, targets, value)?;
             }
-            // `freeze x`（#27-c）。値をスタックに載せずに `exec_freeze` を呼ぶだけ。
+            // `freeze x`（#27-c）。`let x = x` と同じ結果にする（python_builtins_plan.md のタスク 1-9）。
+            // 名前の引き方は `store_target` と同じ順（セル → `static` → slot → それ以外）。
             Stmt::Freeze(name, span) => {
-                let ni = self.add_name(name);
-                let si = self.add_span(span);
-                self.emit(Op::FreezeVar(ni, si));
+                if self.cells.contains_key(name) {
+                    // クロージャが捕まえた変数（`exec_freeze` と同じ文言）。
+                    let n = self.add_name(&format!(
+                        "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
+                    ));
+                    self.emit(Op::Fail(n));
+                } else if self.statics.contains_key(name) {
+                    let n = self.add_name(&format!("{span}: TypeError: cannot freeze static variable '{name}'"));
+                    self.emit(Op::Fail(n));
+                } else if let Some(&slot) = self.slots.get(name) {
+                    // ⚠⚠ 関数の中の変数（slot）。以前は `FreezeVar` が名前でスコープを探し、slot に居る
+                    //   変数を見つけられず `NameError: 'c' is not defined` だった（関数の中の `freeze` が
+                    //   すべて動かなかった・例題が最上位でしか書いていなかった）。
+                    //   `let x = <mut 変数>` と同じ命令（深いコピーを不変にして書き戻す）。
+                    self.emit(Op::LoadLocal(slot));
+                    self.emit(Op::StoreLocalCopyFreeze(slot));
+                } else {
+                    let ni = self.add_name(name);
+                    let si = self.add_span(span);
+                    self.emit(Op::FreezeVar(ni, si));
+                }
             }
             // `src on/once handler` / `src off handler`（#27-c）。
             // 評価順（source → handler）はツリーウォークと同じ。
@@ -669,6 +695,8 @@ impl Compiler {
             // #30: 実体ごとではなく**定義サイトごと**に本体をコンパイルする。
             // 最初の呼び出しで埋まり、以降の実体は同じ `Rc<Chunk>` を共有する。
             compiled: Default::default(),
+            // 外側の名前はコンパイラが知らない（呼び出し側が `Chunk::set_nested_qualnames` で埋める）。
+            qualname: None,
         });
         self.emit(Op::MakeFn(idx));
         Some(())

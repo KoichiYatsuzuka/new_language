@@ -1,0 +1,9 @@
+# bytes の誤り（python_builtins_plan.md のタスク 3-1）
+#
+# bytes と str は別の型で、`+` で混ぜられない（CPython も実行時の `TypeError: can't concat str to bytes`）。
+# Arrow は静的に止める。文字列が要るなら `b.decode()`、bytes が要るなら `s.encode()` で揃える。期待される出力:
+#   StaticTypeError: unsupported operand types for '+': 'bytes' and 'str'
+
+let b: bytes = "data".encode()
+let joined = b + "!"
+print(joined)

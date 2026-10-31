@@ -120,9 +120,13 @@ impl Interpreter {
         let chunk = match self.vm_toplevel_chunks.get(&key) {
             Some(cached) => cached.clone(),
             None => {
-                let compiled =
-                    crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
-                        .map(Rc::new);
+                // Python のモジュールの本体の文は Python のコード（格納で写さない・known_bugs.md の #1）。
+                let in_py = self.in_python_module;
+                let compiled = crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
+                    .map(|mut c| {
+                        c.is_python = in_py;
+                        Rc::new(c)
+                    });
                 if crate::interpreter::tw_stats::enabled() {
                     crate::interpreter::tw_stats::record_compile("module", compiled.is_some());
                 }
@@ -268,8 +272,8 @@ impl Interpreter {
         if name == "_" {
             return Ok(());
         }
-        if self.get_var(name).is_some() {
-            return Err(format!("NameError: variable '{name}' is already declared"));
+        if let Some(e) = self.redeclaration_error(name) {
+            return Err(e);
         }
         let (value, mutable) = match kind {
             DeclKind::Const => (value, false),
