@@ -6,6 +6,19 @@
 
 use crate::ast::{BinOp, UnaryOp};
 
+/// メソッド呼び出し（`CallMethod` / `CallMethodLocal` / `CallMethodKw`）の `mut_mask` の bit 31:
+/// 受け手が `let` の名前であること（`arg_is_mutable` が偽・native_object_access_plan.md 6-1・D-8）。
+/// 立っていれば `let self` は受け手を共有し、立っていなければ（`mut` の名前・名前でない式）複製する。
+/// ⚠ 「立っていない＝複製」の向きにしてある（ビットを知らない作り手は保守的に複製になる）。
+/// ⚠ 引数が 32 個の呼び出しでは bit 31 は引数 31 のものなので立てず、読む側も見ない（[`recv_is_mut`]）。
+pub(crate) const MASK_RECV_LET: u32 = 1 << 31;
+
+/// メソッド呼び出しの受け手が `mut` の値か（`let self` で複製が要るか）。[`MASK_RECV_LET`] を参照。
+#[inline(always)]
+pub(crate) fn recv_is_mut(mut_mask: u32, argc: usize) -> bool {
+    argc >= 32 || mut_mask & MASK_RECV_LET == 0
+}
+
 /// 実行時型検査の高速判定用の種別（#43）。**アノテーション文字列から**コンパイル時に決める。
 ///
 /// ⚠ 型推論の結果を使ってはいけない（注釈は最適化ヒントであって意味論の根拠ではない・#15e）。
@@ -110,15 +123,15 @@ pub enum Op {
     StoreLocalDeepCopy(u16),
     /// pop して deep_copy + freeze してから locals[slot] へ（`let` = mut ソースからの束縛）。
     StoreLocalCopyFreeze(u16),
-    /// pop して deep_copy + freeze してから locals[slot] へ（`let` = 非識別子式からの束縛）。
-    /// ⚠ 意味は `StoreLocalCopyFreeze` と同じ（`Interpreter::frozen_copy`・タスク 1-9）。以前はインスタンスの
-    ///   ときしかコピーしていなかった（名前はその名残。発行元を区別するため op は分けたまま）。
+    /// pop して deep_copy + freeze してから locals[slot] へ（`let` = 非識別子式からの束縛・L2）。
+    /// ⚠ 名前は歴史的（以前は `Instance` のときだけ複製し、関数の中の `let it = ys[0]` が `ys[0]` と
+    ///   共有された・native_object_access_plan.md 1-6）。実行時は `StoreLocalCopyFreeze` と同じ。
     StoreLocalFreezeInstance(u16),
     /// pop して `let x = <識別子>` のコピー意味論を**実行時に**決めてから locals[slot] へ。
     /// フィールド (slot, ソース名 name_idx)。
     ///
     /// `exec_let` はソース変数の可変性で 3 分岐する（mut→deep_copy+freeze / let→そのまま /
-    /// 変数でない→Instance だけ copy+freeze）。ソースが**グローバル**のときその可変性は
+    /// 変数でない→copy+freeze）。ソースが**グローバル**のときその可変性は
     /// コンパイル時に分からないので、`DeclKind::LetFromIdent` と同じ判断を実行時に行う（#27-c）。
     ///
     /// ⚠ **ソースの可変性は `scopes[0]` だけを見る**。この op が出るのは
@@ -216,7 +229,7 @@ pub enum Op {
     /// 属性（フィールド）書き: スタックは `[obj, value]`。value・obj を pop し、
     /// `attr_assign_evaled(obj, names[name_idx], value)` で代入する（値は push しない）。
     /// obj が Instance であることはコンパイル時に保証済み（`self` または instance 型注釈）。
-    SetAttr(u32),
+    SetAttr(u32, u32),
     /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
@@ -230,6 +243,7 @@ pub enum Op {
     /// （再束縛は文＝`StoreLocal` でしか起きず、クロージャによる捕捉は VM 非対応で bail する）ため、
     /// 観測されるレシーバは同一。
     /// (slot, name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
+    /// `mut_mask` の bit 31 は受け手の可変性（[`MASK_RECV_LET`]・6-1）。
     CallMethodLocal(u16, u32, u16, u32, u32),
     /// 超命令（#16 段階(b)(i)）: `local[slot].attr` を融合。`LoadLocal(slot); GetAttr(..)` と同一意味論。
     /// **レシーバをスタックへ clone せず frame から参照で読む**ので `Rc` の refcount 増減が消える。
@@ -276,6 +290,7 @@ pub enum Op {
     /// VM も call_span=None で一致させる（byte-identical）。
     /// (name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
     /// これが無いと `mod.func()` 等の戻り値検査が **VM 経路だけ素通り**する（#22-a と同型の穴）。
+    /// `mut_mask` の bit 31 は受け手の可変性（[`MASK_RECV_LET`]・6-1）。
     CallMethod(u32, u16, u32, u32),
     /// スタックトップを関数戻り値として返す。
     Return,
@@ -497,7 +512,7 @@ pub enum Op {
 /// - `Const`            … `exec` の `Stmt::Const` アーム（コピーもフリーズもしない）
 /// - `Mut`              … `exec` の `Stmt::Mut` アーム（**常に** `deep_copy_value`）
 /// - `LetPlain`         … `exec_let` の「不変ソース／リテラル」分岐（そのまま束縛）
-/// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（`Instance` のときだけ copy+freeze）
+/// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（常に copy+freeze・L2。名前は歴史的）
 ///
 /// - `LetFromIdent`     … `exec_let` の「識別子ソース」分岐（#27-c）
 ///
@@ -513,7 +528,7 @@ pub enum DeclKind {
     Mut,
     /// `let x = e`（ソースが不変と分かっている／リテラル）
     LetPlain,
-    /// `let x = e`（非識別子式。`Instance` のときだけ deep_copy + freeze）
+    /// `let x = e`（非識別子式。常に deep_copy + freeze・L2）
     LetFreezeInstance,
     /// `let x = <識別子>`（#27-c）。フィールドは**ソース名**の index。
     /// 実行時に `get_var(src)` を引き、可変なら copy+freeze・不変ならそのまま・

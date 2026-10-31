@@ -1,0 +1,45 @@
+# native_attr_assign_module.ar — コンパイル済みコードの属性への代入を VM と同じ入口で行う
+# （native_object_access_plan.md 1-4）の検証用モジュール
+#
+# ⚠ 以前のコンパイル済みコードは:
+#   - インスタンス経由の `static mut` への代入（`self.total = ..`）が「has no field 'total'」で落ちていた
+#   - `obj::Trait.attr = v` の代入を黙って出さなかったので、trait を実装したクラスの（自動生成の）
+#     `__init__` が trait のフィールドを設定せず、読むと AttributeError になっていた
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_attr_assign_module.ar
+
+class Tally:
+    static mut total: int = 0
+    mut n: int
+
+    fn add(mut self, let k: int) -> None:
+        self.n = self.n + k
+        self.total = self.total + k
+
+fn tally_twice(let k: int) -> int:
+    mut t = Tally(0)
+    t.add(k)
+    t.add(k)
+    return t.n * 100 + t.total
+
+trait Named:
+    mut name: str
+    mut visits: int
+
+class Pet(Named):
+    mut age: int
+
+    fn rename(mut self, let n: str) -> None:
+        self::Named.name = n
+        self::Named.visits += 1
+
+fn make_name(let n: str) -> str:
+    let p = Pet(n, 0, 3)
+    return p::Named.name
+
+fn rename_twice(let a: str, let b: str) -> str:
+    mut p = Pet("x", 0, 1)
+    p.rename(a)
+    p.rename(b)
+    return p::Named.name + "/" + str(p::Named.visits)

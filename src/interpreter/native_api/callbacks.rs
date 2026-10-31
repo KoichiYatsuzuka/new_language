@@ -55,6 +55,50 @@ extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
     STATE.with(|s| s.borrow_mut().push_value(Value::str(text)))
 }
 
+/// 文字列のリテラルを呼び出し箇所ごとに 1 回だけ作る（field 72・11-2・D-12）。
+///
+/// `cell`（DLL の中の箇所ごとの `u64`・プロセスに 1 つ）には、初めて評価したときにプロセスで一意の番号を入れる。
+/// 文字列はスレッドの状態の表 `str_consts` のその番号の位置に置き、以後は参照数の加算で積む（VM の定数表と同じ）。
+/// 別のスレッド（非同期タスクのワーカー）は同じ番号で自分の表に作る（`Rc<str>` はスレッドをまたげない）。
+/// ⚠ 中身の検査（UTF-8）はスレッドごとに初めて作るときだけ（中身は箇所ごとに変わらない）。
+extern "C" fn ar_make_str_ic(cell: *mut u64, ptr: *const u8, len: i32) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    if cell.is_null() {
+        return ar_make_str(ptr, len);
+    }
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let mut id = cell.load(Ordering::Relaxed);
+    if id == 0 {
+        let fresh = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        // 別のスレッドが先に入れたらその番号を使う（どちらの番号でも同じ文字列になる）
+        id = match cell.compare_exchange(0, fresh, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => fresh,
+            Err(cur) => cur,
+        };
+    }
+    let idx = (id - 1) as usize;
+    let hit = STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let v = st.str_consts.get(idx).and_then(|v| v.clone())?;
+        Some(st.push_value(v))
+    });
+    if let Some(h) = hit {
+        return h;
+    }
+    let Some(text) = native_str(ptr, len, "string") else { return TL_NONE };
+    let v = Value::str(text);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.str_consts.len() <= idx {
+            st.str_consts.resize(idx + 1, None);
+        }
+        st.str_consts[idx] = Some(v.clone());
+        st.push_value(v)
+    })
+}
+
 // Build list/tuple/dict in one borrow: clone all items then push the container.
 extern "C" fn ar_make_list(items_ptr: *const i64, n: i32) -> i64 {
     STATE.with(|s| {
@@ -118,8 +162,21 @@ extern "C" fn ar_is_truthy(h: i64) -> i32 {
             _ => 1,
         };
     }
+    // VM の条件と同じ `eval_truthy`（`__bool__` を呼ぶ・native_object_access_plan.md 1-14）。⚠ 以前は `is_truthy` で
+    // `__bool__` を見ていなかった。失敗は呼び出しの出口で例外になる（ほかのコールバックと同じ）。
     let interp = unsafe { &mut *interp_ptr };
-    i32::from(interp.is_truthy(&v))
+    match interp.eval_truthy(&v) {
+        Ok(b) => i32::from(b),
+        Err(e) => {
+            STATE.with(|s| {
+                let mut st = s.borrow_mut();
+                if st.error.is_none() {
+                    st.error = Some(e);
+                }
+            });
+            0
+        }
+    }
 }
 
 extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
@@ -139,8 +196,10 @@ extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
         STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for binop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*interp_ptr };
-    match interp.apply_binop(&ast_op, lhs, rhs) {
+    // VM の `BinOp` と同じ `apply_binop_dyn`（`__add__` / `__eq__` などを呼ぶ・`in` の `__eq__`・1-14）。
+    // ⚠ 以前は `apply_binop` で演算子のメソッドを見ず、`a + b` が TypeError、`a == b` が `__eq__` でなく構造の比較になっていた。
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.apply_binop_dyn(&ast_op, lhs, rhs) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
@@ -169,8 +228,9 @@ extern "C" fn ar_unop(op: i32, a: i64) -> i64 {
         STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for unop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*interp_ptr };
-    match interp.apply_unary(&ast_op, operand) {
+    // VM の単項演算と同じ `apply_unary_dyn`（`__neg__` などを呼ぶ・1-14）。⚠ 以前は `apply_unary` で見ていなかった。
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.apply_unary_dyn(&ast_op, operand) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
@@ -329,8 +389,10 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
 
     // Fast path: NativeFunction (native DLL).
     // Arg handles are already live in the arena — pass them straight through.
+    // ⚠ `.arc` の関数で個数が合わない（既定値を省いた）呼び出しは下の遅い道で宣言どおりに束縛する（1-11）。
+    //   生成した `_tl` は渡された個数を見ずに仮引数の数だけ読むので、ここで素通しすると引数の配列の外を読む。
     if let Value::NativeFunction(ref fn_ref) = fn_val {
-        if !interp_ptr.is_null() {
+        if !interp_ptr.is_null() && (fn_ref.globals.is_none() || n_args as usize == fn_ref.n_params) {
             let is_outermost = enter_native_call(interp_ptr);
 
             // DLL: use cached_fn_ptr; resolve on first call.
@@ -369,16 +431,45 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                     }
                 }
             };
+            // `let` 仮引数は `copy_value` で複製してから渡す（6-2・D-8）。ここには引数の可変性が無いので保守的に
+            // `mut` とみなす。⚠ 以前はハンドルを素通しし、`let` で受けた値が呼び出し元の後の変更で変わりえた（1-5 と同じ形）。
+            let mut owned: Vec<i64> = (0..n_args as usize).map(|i| unsafe { *args_ptr.add(i) }).collect();
+            // 複製を作る前のアリーナの長さ（1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+            let mut copied_from: Option<u64> = None;
+            for (i, h) in owned.iter_mut().enumerate() {
+                if !fn_ref.param_mutabilities.get(i).copied().unwrap_or(true)
+                    && fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None)
+                        == crate::interpreter::PtrParam::None
+                {
+                    copied_from.get_or_insert_with(|| STATE.with(|s| s.borrow().arena.len() as u64));
+                    match unsafe { &mut *interp_ptr }.copy_value(clone_value_at(*h)) {
+                        Ok(v) => *h = push_handle(v),
+                        Err(e) => {
+                            STATE.with(|s| s.borrow_mut().error = Some(e));
+                            abort_native_call(is_outermost);
+                            return TL_NONE;
+                        }
+                    }
+                }
+            }
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）
+            let prev = unsafe { &mut *interp_ptr }.enter_native_globals(fn_ref.globals);
             let result_h = unsafe {
                 let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
                     std::mem::transmute(fn_ptr);
-                f(args_ptr, n_args)
+                f(owned.as_ptr(), n_args)
             };
+            unsafe { &mut *interp_ptr }.leave_native_globals(prev);
 
             if STATE.with(|s| s.borrow().error.is_some()) {
                 abort_native_call(is_outermost);
                 return TL_NONE;
             }
+            // 複製を呼び出しごとに捨てる（1-15）。いちばん外の呼び出しなら下の `exit_native_call` が全部片づける
+            let result_h = match copied_from {
+                Some(saved) if !is_outermost => ar_arena_compact(result_h, saved),
+                _ => result_h,
+            };
             let result_val = exit_native_call(result_h, is_outermost);
             return push_handle(result_val);
         }
@@ -426,6 +517,10 @@ extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
     }
 }
 
+/// field 13。⚠ **`import[rs]` の中継コードが Arrow 側の写しを更新する経路**（`set_attr_val`）。
+/// 生成された `set_{field}` は Rust の値を書き換えた後でこれを呼ぶので、`attr_assign_evaled`
+/// （rs の setter へ振り分ける）にすると setter へ再入する。コンパイル済み Arrow コードの代入は
+/// `ar_assign_attr`（field 51・native_object_access_plan.md 1-4）。
 extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
     let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
     let name = name.to_owned();
@@ -440,6 +535,210 @@ extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h:
     }
     let interp = unsafe { &mut *interp_ptr };
     if let Err(e) = interp.set_attr_val(obj, &name, val) {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// コンパイル済み Arrow コードの `obj.attr = v`（field 51・native_object_access_plan.md 1-4）。
+/// VM の `SetAttr` と同じ `attr_assign_evaled`。⚠ 以前は `set_attr_val` を通っていたので、
+/// `static mut` へのインスタンス経由の代入（`self.total = ..`）が「has no field」で落ちていた。
+extern "C" fn ar_assign_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if let Err(e) = interp.attr_assign_evaled(obj, name, val) {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// `obj.attr = v`（IC 付き・field 61・native_object_access_plan.md 2-3）。VM の `SetAttr` と同じ `attr_assign_ic`。
+/// `cell` は生成コードの箇所ごとの書き込みの IC（読み出しとは別のセル）。`AtomicU64`（Relaxed）として読み書きし、
+/// 一時の `AttrCache` に写して渡し、埋まった値を書き戻す（`read_attr_ic` と同じ）。
+extern "C" fn ar_assign_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64, cell: *mut u64) {
+    let val = clone_value_at(val_h);
+    assign_attr_ic_value(obj_h, name_ptr, name_len, val, cell);
+}
+
+/// `obj.attr = <int>`（IC 付き・field 65・4-2）。値はハンドルにせず `Value::Int` で渡す（中身は field 61 と同じ）。
+extern "C" fn ar_assign_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: i64, cell: *mut u64) {
+    assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Int(v), cell);
+}
+
+/// `obj.attr = <float>`（IC 付き・field 66・4-2）。
+extern "C" fn ar_assign_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: f64, cell: *mut u64) {
+    assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Float(v), cell);
+}
+
+/// `a.b.c = v` を 1 回で行う（field 74・12-3・D-13）。途中の段は VM の `GetAttr` と同じ IC で読み（命中なら
+/// `ic_slot`、外れたら `get_attr_val(.., Some(cache))` がセルを埋める）、最後の段は fields 61 / 65 / 66 と同じ
+/// `attr_assign_ic` で書く。途中の値はアリーナに積まない（積んで周ごとに巻き戻していた分を省く）。
+/// 属性名はセルが空のときだけ検査する（`site_name`）。
+extern "C" fn ar_assign_path_ic(root_h: i64, steps: *const i64, n_steps: i32, kind: i32, value: i64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if n_steps < 2 || steps.is_null() {
+        set_native_error(format!("NativeError: invalid attribute path from native code ({n_steps} step(s))"));
+        return;
+    }
+    // SAFETY: 生成コードは段ごとに 3 つの `i64`（名前のポインタ・長さ・セルのポインタ）を並べて渡す
+    let table = unsafe { std::slice::from_raw_parts(steps, 3 * n_steps as usize) };
+    let (has_err, root, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(root_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        set_native_error("NativeError: interpreter not set for assign_path".to_string());
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let val = match kind {
+        0 => clone_value_at(value),
+        1 => Value::Int(value),
+        2 => Value::Float(f64::from_bits(value as u64)),
+        _ => {
+            set_native_error(format!("NativeError: unknown value kind {kind} (assign_path)"));
+            return;
+        }
+    };
+    let step = |k: usize| (table[3 * k] as *const u8, table[3 * k + 1] as i32, table[3 * k + 2] as *mut u64);
+    let mut obj = root;
+    let last = n_steps as usize - 1;
+    for k in 0..last {
+        let (np, nl, cell) = step(k);
+        let Some(name) = site_name(np, nl, cell, "attribute name") else { return };
+        if cell.is_null() {
+            set_native_error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+            return;
+        }
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+        let cell = unsafe { &*(cell as *const AtomicU64) };
+        let packed = cell.load(Ordering::Relaxed);
+        let hit = match &obj {
+            Value::Instance(rc) => {
+                let inst = rc.borrow();
+                inst.ic_slot(packed, true, || name).and_then(|(idx, _)| inst.field_value(idx))
+            }
+            _ => None,
+        };
+        obj = match hit {
+            Some(v) => v,
+            None => {
+                let cache = crate::ast::AttrCache(std::cell::Cell::new(packed));
+                let r = interp.get_attr_val(obj, name, Some(&cache));
+                cell.store(cache.0.get(), Ordering::Relaxed);
+                match r {
+                    Ok(v) => v,
+                    Err(e) => {
+                        STATE.with(|s| s.borrow_mut().error = Some(e));
+                        return;
+                    }
+                }
+            }
+        };
+    }
+    let (np, nl, cell) = step(last);
+    let Some(name) = site_name(np, nl, cell, "attribute name") else { return };
+    if cell.is_null() {
+        set_native_error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+        return;
+    }
+    // SAFETY: 上と同じ
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let cache = crate::ast::AttrCache(std::cell::Cell::new(cell.load(Ordering::Relaxed)));
+    let r = interp.attr_assign_ic(obj, name, val, Some(&cache));
+    cell.store(cache.0.get(), Ordering::Relaxed);
+    if let Err(e) = r {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// fields 61 / 65 / 66 の本体（値の受け取り方だけが違う）。
+fn assign_attr_ic_value(obj_h: i64, name_ptr: *const u8, name_len: i32, val: Value, cell: *mut u64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(name) = site_name(name_ptr, name_len, cell, "attribute name") else { return };
+    if cell.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: no inline cache cell for attribute '{name}'")));
+        return;
+    }
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let cache = crate::ast::AttrCache(std::cell::Cell::new(cell.load(Ordering::Relaxed)));
+    let r = interp.attr_assign_ic(obj, name, val, Some(&cache));
+    cell.store(cache.0.get(), Ordering::Relaxed);
+    if let Err(e) = r {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+/// `obj::Trait.attr`（field 52・1-4）。VM の `GetTraitAttr` と同じ `trait_access_evaled`。
+extern "C" fn ar_get_trait_attr(
+    obj_h: i64,
+    trait_ptr: *const u8,
+    trait_len: i32,
+    name_ptr: *const u8,
+    name_len: i32,
+) -> i64 {
+    let Some(trait_name) = native_str(trait_ptr, trait_len, "trait name") else { return TL_NONE };
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return TL_NONE };
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for get_trait_attr".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.trait_access_evaled(obj, trait_name, name) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// `obj::Trait.attr = v`（field 53・1-4）。VM の `SetTraitAttr` と同じ `trait_assign_evaled`。
+extern "C" fn ar_assign_trait_attr(
+    obj_h: i64,
+    trait_ptr: *const u8,
+    trait_len: i32,
+    name_ptr: *const u8,
+    name_len: i32,
+    val_h: i64,
+) {
+    let Some(trait_name) = native_str(trait_ptr, trait_len, "trait name") else { return };
+    let Some(name) = native_str(name_ptr, name_len, "attribute name") else { return };
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for assign_trait_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if let Err(e) = interp.trait_assign_evaled(obj, trait_name, name, val) {
         STATE.with(|s| s.borrow_mut().error = Some(e));
     }
 }
@@ -489,65 +788,125 @@ extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
 /// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する。
 /// イテレータハンドルは `-(idx+2)` の負値でエンコードされる。
 extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
-    STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if st.error.is_some() { return TL_NONE; }
-        let obj = st.clone_value(obj_h);
-        let items: Vec<Value> = match obj {
-            Value::List(l) => l.borrow().clone(),
-            Value::FrozenList { ref state, ref layout } => {
-                let fst = state.borrow();
-                (0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect()
-            }
-            Value::Tuple(t) => t.all_values().to_vec(),
-            Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
-            Value::Dict(d) => d.borrow().all_keys(),
-            other => {
-                st.error = Some(format!(
-                    "TypeError: value of type '{}' is not iterable in native context",
-                    match &other {
-                        Value::Int(_) => "int",
-                        Value::Float(_) => "float",
-                        Value::Bool(_) => "bool",
-                        Value::None => "NoneType",
-                        _ => "object",
-                    }
-                ));
+    // ① 実体化してよい型（VM の `make_for_iterator` も実体化する型）は今までどおり要素を写す。
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    let items: Option<Vec<Value>> = match &obj {
+        Value::List(l) => Some(l.borrow().clone()),
+        Value::FrozenList { state, layout } => {
+            let fst = state.borrow();
+            Some((0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect())
+        }
+        Value::Tuple(t) => Some(t.all_values().to_vec()),
+        Value::Str(s) => Some(s.chars().map(|c| Value::str(c.to_string())).collect()),
+        Value::Dict(d) => Some(d.borrow().all_keys()),
+        _ => None,
+    };
+    let entry = match items {
+        Some(items) => NativeIter::Items(items, 0),
+        // ② それ以外は VM と同じ反復プロトコル（`make_for_iterator` → `gen_next`・1-3）。
+        //    ⚠ インタープリタへ呼び戻すので、`STATE` の借用を握ったまま呼ばない（`__iter__` がネイティブを呼ぶ）。
+        None => {
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for iter_from".to_string()));
                 return TL_NONE;
             }
-        };
+            let interp = unsafe { &mut *interp_ptr };
+            match interp.make_for_iterator(obj) {
+                Ok(Value::Generator(g)) => NativeIter::Gen(g),
+                Ok(other) => {
+                    let got = interp.type_name(&other);
+                    STATE.with(|s| s.borrow_mut().error = Some(format!(
+                        "TypeError: iterator protocol returned '{got}', not a generator"
+                    )));
+                    return TL_NONE;
+                }
+                Err(e) => {
+                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                    return TL_NONE;
+                }
+            }
+        }
+    };
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
         let idx = st.iter_table.len();
-        st.iter_table.push((items, 0));
+        st.iter_table.push(entry);
         -((idx as i64) + 2)
+    })
+}
+
+/// `for` のループを抜けたときにイテレータを捨てる（field 71・11-1・D-12）。表を `iter_h` の位置まで縮めるので、
+/// このループの中で作り、`return` などで捨て損ねたイテレータも一緒に捨てる（ループは入れ子なので、後ろにあるのは
+/// 内側のものだけ）。
+/// ⚠ 表に無いハンドルは黙って無視しない。`ar_iter_from` が失敗した（`TL_NONE` を返した）ときは、エラーが既に
+///   入っているのでそのまま返す。
+extern "C" fn ar_iter_drop(iter_h: i64) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let idx = (-(iter_h + 2)) as usize;
+        if iter_h <= -2 && idx < st.iter_table.len() {
+            st.iter_table.truncate(idx);
+        } else if st.error.is_none() {
+            st.error = Some(format!("NativeError: invalid iter handle {iter_h} (iter_drop)"));
+        }
     })
 }
 
 /// イテレータハンドルから次の要素ハンドルを取得する。
 extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
-    STATE.with(|s| {
+    enum Step { Value(Value), Stop, Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>) }
+    let (step, interp_ptr) = STATE.with(|s| {
         let mut st = s.borrow_mut();
-        if st.error.is_some() { return TL_STOP_ITER; }
+        if st.error.is_some() { return (Step::Stop, st.interp_ptr); }
+        let ip = st.interp_ptr;
         if iter_h > -2 {
             st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
-            return TL_STOP_ITER;
+            return (Step::Stop, ip);
         }
         let idx = (-(iter_h + 2)) as usize;
-        // Extract the next value from iter_table, then push to arena separately
-        // to avoid simultaneous mutable access to two fields via a method call.
-        let maybe_v: Option<Value> = st.iter_table.get_mut(idx).and_then(|(items, pos)| {
-            if *pos < items.len() {
-                let v = items[*pos].clone();
-                *pos += 1;
-                Some(v)
-            } else {
-                None
+        let step = match st.iter_table.get_mut(idx) {
+            Some(NativeIter::Items(items, pos)) => {
+                if *pos < items.len() {
+                    let v = items[*pos].clone();
+                    *pos += 1;
+                    Step::Value(v)
+                } else {
+                    Step::Stop
+                }
             }
-        });
-        match maybe_v {
-            Some(v) => st.push_value(v),
-            None => TL_STOP_ITER,
+            Some(NativeIter::Gen(g)) => Step::Gen(g.clone()),
+            // ⚠ 表に無いハンドル（最外の呼び出しを抜けて捨てた後など）を黙って「終わり」にしない
+            None => {
+                st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
+                Step::Stop
+            }
+        };
+        (step, ip)
+    });
+    match step {
+        Step::Value(v) => push_handle(v),
+        Step::Stop => TL_STOP_ITER,
+        // ⚠ `gen_next` は本体（ジェネレータ・`__next__`）を走らせうるので、`STATE` の借用を落としてから呼ぶ。
+        Step::Gen(g) => {
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for iter_next".to_string()));
+                return TL_STOP_ITER;
+            }
+            let interp = unsafe { &mut *interp_ptr };
+            match interp.gen_next(&g) {
+                Ok(Some(v)) => push_handle(v),
+                Ok(None) => TL_STOP_ITER,
+                Err(e) => {
+                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                    TL_STOP_ITER
+                }
+            }
         }
-    })
+    }
 }
 
 extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
@@ -610,15 +969,16 @@ extern "C" fn ar_arena_compact(h: i64, saved: u64) -> i64 {
 /// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す。
 /// 全クローン・truncate・再プッシュを1回の STATE borrow 内で完了する。
 extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
+    // 残す値が無いとき生成コードは null を渡す（9-1）。null から slice は作れないので先に片づける
+    if n <= 0 || handles_in.is_null() || handles_out.is_null() {
+        STATE.with(|s| s.borrow_mut().arena.truncate(save as usize));
+        return;
+    }
     let n = n as usize;
     let ins = unsafe { std::slice::from_raw_parts(handles_in, n) };
     let outs = unsafe { std::slice::from_raw_parts_mut(handles_out, n) };
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        if n == 0 {
-            st.arena.truncate(save as usize);
-            return;
-        }
         let vals: Vec<Value> = ins.iter().map(|&h| st.clone_value(h)).collect();
         st.arena.truncate(save as usize);
         for (i, val) in vals.into_iter().enumerate() {
@@ -628,6 +988,91 @@ extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles
 }
 
 // ── Typed value extraction ───────────────────────────────────────────────────
+
+/// `let` 仮引数へ `mut` の値を渡すときの複製（field 54・native_object_access_plan.md 1-5）。
+/// VM の `try_fast_bind` と同じ `copy_value`（`__copy__` があればそれ・無ければ凍結を解いた deep copy）。
+/// ⚠ `ar_deep_copy`（`deep_copy_value`）は `let self` 用（VM も `self` には `__copy__` を呼ばない）。
+extern "C" fn ar_copy_arg(h: i64) -> i64 {
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for copy_arg".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.copy_value(val) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// 宣言の複製（field 56・native_object_access_plan.md 1-6）。`mode` は `BindCopy` の符号（0 = `mut` の
+/// 深いコピー・1 = `let` の複製＋フリーズ）で、VM の `StoreLocalDeepCopy` / `StoreLocalCopyFreeze` /
+/// `StoreLocalFreezeInstance` と同じ `bind_copy` を呼ぶ。表に無い符号はエラー。
+/// ⚠ 以前の生成コードは宣言で何も複製せず、`mut q = o.inner; q.v = 7` が `o.inner` を書き換えていた。
+///
+/// `mode` の [`crate::interpreter::BindCopy::FRESH_BIT`] の bit は「`h` はコールバックが作りたての値を積んだばかりの欄」（生成コードが付ける・12-1）。
+/// そのときだけ、誰とも共有していなければ複製しない（`bind_copy_held`。数えない参照はその欄の 1 つ）。
+/// ⚠ 付いていないときは必ず複製する: ローカル変数のハンドルは番号で同じ欄を指し、参照を数えないので、
+///   `if` 式などが変数の欄をそのまま返すと共有を見抜けない。
+extern "C" fn ar_bind_value(mode: i32, h: i64) -> i64 {
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    let fresh_bit = crate::interpreter::BindCopy::FRESH_BIT;
+    let held = (mode & fresh_bit != 0).then_some(1);
+    let mode = mode & !fresh_bit;
+    let Some(mode) = crate::interpreter::BindCopy::from_code(mode) else {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: unknown binding mode {mode}")));
+        return TL_NONE;
+    };
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for bind_value".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.bind_copy_held(mode, val, held) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// `let x = <名前>` で名前がこの関数のローカルでないとき（field 57・1-6）。ソースの可変性は値を引いた
+/// `ar_get_global` と同じ探し方（`get_var`）で引き、VM の `StoreLocalFromIdent` と同じ `vm_let_value_from_ident`
+/// で決める（`mut` → 複製＋フリーズ・`let` → そのまま・変数でない → 複製＋フリーズ）。
+extern "C" fn ar_let_from_name(name_ptr: *const u8, name_len: i32, h: i64) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "variable name") else { return TL_NONE };
+    let name = name.to_owned();
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (binding from '{name}')")));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let src_mutable = interp.get_var(&name).map(|v| v.is_mutable());
+    match interp.vm_let_value_from_ident(src_mutable, val) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
 
 extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
@@ -1058,6 +1503,8 @@ extern "C" fn ar_set_cell(cell_h: i64, val_h: i64) {
     }
 }
 
+/// field 32（以前に生成された `.arc` と中継コードが使う）。値渡しの複製はしない（引数の可変性が分からない）。
+/// 今の生成コードは `ar_call_method_m`（field 55）を使う。
 extern "C" fn ar_call_method(
     obj_h: i64,
     name_ptr: *const u8,
@@ -1066,7 +1513,92 @@ extern "C" fn ar_call_method(
     n_args: i32,
 ) -> i64 {
     let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
-    let name = name.to_owned();
+    call_method_common(obj_h, name, args_ptr, n_args, None, None)
+}
+
+/// 名前によるメソッド呼び出し＋値渡しの複製（field 55・native_object_access_plan.md 1-5・D-8）。
+/// `mut_mask` は bit 0 = 受け手が `mut` の値か、bit i+1 = 引数 i が `mut` の値か（VM の `arg_is_mutable` と同じ規則で
+/// 生成コードが決める）。`mut` の値を `let self` で受けるなら受け手を `deep_copy_value`、`let` 仮引数で受けるなら
+/// 引数を `copy_value`（`__copy__` があればそれ）で複製してから呼ぶ（VM の `try_fast_bind` と同じ）。
+/// ⚠ 以前はネイティブのメソッドへハンドルを素通しし、呼ばれた側の `let` が呼び出し元の後の変更で変わっていた。
+extern "C" fn ar_call_method_m(
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), None)
+}
+
+/// 名前によるメソッド呼び出しの、箇所ごとのセルと FFI の検査の情報つきの版（field 73・11-3・D-12）。
+///
+/// VM の `CallMethodLocal` と同じく、名前は `&str` のまま振り分けへ渡し（検査はセルが空のときだけ・8-2 の `site_name`）、
+/// 組み込み型の受け手は `vm_method_call_other` と同じ手順（外部言語なら戻り値を宣言型と照合）で呼ぶ。
+/// セルの値は「名前を検査した」印（1）だけ。
+extern "C" fn ar_call_method_ic(
+    cell: *mut u64,
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+    info_ptr: *const u8,
+    info_len: i32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(name) = site_name(name_ptr, name_len, cell, "method name") else { return TL_NONE };
+    if !cell.is_null() {
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+        unsafe { &*(cell as *const AtomicU64) }.store(1, Ordering::Relaxed);
+    }
+    let info = if info_ptr.is_null() {
+        None
+    } else {
+        let Some(info) = native_str(info_ptr, info_len, "call info") else { return TL_NONE };
+        Some(info)
+    };
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), info)
+}
+
+/// 生成コードが埋め込んだ FFI の検査の情報（`表示名 \x1f 宣言型 \x1f 位置`）で戻り値を照合する（VM の
+/// `check_ffi_return` と同じ検査・同じ文言）。宣言型はコンパイルのときに `InferredType::from_ann` で読み戻せることを
+/// 確かめてある（読み戻せない型の呼び出しを含む関数はコンパイルしない）ので、読めなければ壊れた `.arc` としてエラーにする。
+fn check_native_ffi_return(
+    interp: &mut crate::interpreter::Interpreter,
+    lang: &str,
+    value: Value,
+    info: &str,
+) -> Result<Value, String> {
+    let mut parts = info.splitn(3, '\x1f');
+    let (Some(name), Some(decl), Some(where_)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(format!("NativeError: malformed call info from native code: {info:?}"));
+    };
+    let Some(declared) = crate::type_check::InferredType::from_ann(decl) else {
+        return Err(format!("NativeError: the declared type `{decl}` of `{name}` from native code cannot be read"));
+    };
+    interp.check_ffi_return_declared(lang, value, &declared, name, where_)
+}
+
+/// `mut_mask` の引数 `i`（bit i+1）が `mut` の値か。31 個目より後の引数はビットが無いので保守的に `mut`
+/// （生成コードの `method_mut_mask` と同じ解釈）。
+fn mask_arg_is_mut(mask: u32, i: usize) -> bool {
+    i + 1 >= 32 || mask & (1 << (i + 1)) != 0
+}
+
+/// 名前によるメソッド呼び出しの共通部。`name` は生成コードの定数（呼び出しの間は有効）なので複製しない（11-3）。
+/// `ffi` は FFI の検査の情報（field 73 だけが渡す・`check_native_ffi_return`）。
+fn call_method_common(
+    obj_h: i64,
+    name: &str,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: Option<u32>,
+    ffi: Option<&str>,
+) -> i64 {
 
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
@@ -1076,35 +1608,128 @@ extern "C" fn ar_call_method(
 
     // Native dispatch: check NATIVE_METHODS table first.
     if let Value::Instance(ref inst_rc) = obj {
-        let class_name = inst_rc.borrow().class.name.clone();
-        let fn_ptr = STATE.with(|s| {
-            s.borrow().native_methods.get(&(class_name.clone(), name.clone())).copied()
-        });
-        if let Some(ptr) = fn_ptr {
+        let native = super::lookup_native_method(inst_rc.borrow().class.class_id, name);
+        let fn_ptr = native.map(|(ptr, _)| ptr);
+        // 値渡しの複製（mask があるとき）に要る呼ばれた側の仮引数の可変性。オーバーロードがあれば
+        // どれが呼ばれるか分からないので、ネイティブへ直行せずインタープリタの振り分けへ回す。
+        let callee_params: Option<Vec<bool>> = match (mut_mask, fn_ptr) {
+            (Some(_), Some(_)) => {
+                let cls = inst_rc.borrow().class.clone();
+                match cls.methods.get(name) {
+                    Some(ov) if ov.len() == 1 => Some(ov[0].params.iter().map(|p| p.mutable).collect()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        // ⚠ 個数が宣言と合わない（既定値を省いた・1-11）呼び出しはインタープリタの振り分けへ回す（宣言どおりに束縛
+        //   する）。生成した `_tl` は渡された個数を見ずに仮引数の数だけ読むので、直行すると引数の配列の外を読む。
+        let arity_ok = {
+            let cls = inst_rc.borrow().class.clone();
+            match cls.methods.get(name) {
+                Some(ov) if ov.len() == 1 => ov[0].params.len() == n_args as usize + 1,
+                _ => false,
+            }
+        };
+        let direct = fn_ptr.filter(|_| arity_ok && (mut_mask.is_none() || callee_params.is_some()));
+        if let Some(ptr) = direct {
             let mut all_args = Vec::with_capacity(1 + n_args as usize);
-            all_args.push(obj_h);
-            for i in 0..n_args as usize {
-                all_args.push(unsafe { *args_ptr.add(i) });
+            // 複製を作る前のアリーナの長さ（1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+            let mut copied_from: Option<u64> = None;
+            let arena_len = || STATE.with(|s| s.borrow().arena.len() as u64);
+            match (mut_mask, &callee_params) {
+                (Some(mask), Some(pm)) => {
+                    if interp_ptr.is_null() {
+                        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
+                        return TL_NONE;
+                    }
+                    let interp = unsafe { &mut *interp_ptr };
+                    // 受け手（param 0 = self）
+                    let self_let = pm.first().is_some_and(|m| !m);
+                    if self_let && mask & 1 != 0 {
+                        copied_from.get_or_insert_with(arena_len);
+                        all_args.push(push_handle(crate::interpreter::Interpreter::deep_copy_value(obj.clone())));
+                    } else {
+                        all_args.push(obj_h);
+                    }
+                    for i in 0..n_args as usize {
+                        let h = unsafe { *args_ptr.add(i) };
+                        let param_let = pm.get(i + 1).is_some_and(|m| !m);
+                        if param_let && mask_arg_is_mut(mask, i) {
+                            copied_from.get_or_insert_with(arena_len);
+                            match interp.copy_value(clone_value_at(h)) {
+                                Ok(v) => all_args.push(push_handle(v)),
+                                Err(e) => {
+                                    STATE.with(|s| s.borrow_mut().error = Some(e));
+                                    return TL_NONE;
+                                }
+                            }
+                        } else {
+                            all_args.push(h);
+                        }
+                    }
+                }
+                _ => {
+                    all_args.push(obj_h);
+                    for i in 0..n_args as usize {
+                        all_args.push(unsafe { *args_ptr.add(i) });
+                    }
+                }
             }
-            unsafe {
+            // メソッドはクラスを定義したモジュールの大域で、受け手のクラスの文脈で走る（1-7・1-9）
+            if interp_ptr.is_null() {
+                STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
+                return TL_NONE;
+            }
+            let Some((_, globals)) = native else { unreachable!("`ptr` comes from `native`") };
+            let class = inst_rc.borrow().class.clone();
+            let prev = unsafe { &mut *interp_ptr }.enter_native_method(globals, class);
+            let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
-                return func(all_args.as_ptr(), all_args.len() as i32);
-            }
+                func(all_args.as_ptr(), all_args.len() as i32)
+            };
+            unsafe { &mut *interp_ptr }.leave_native_method(prev);
+            return match copied_from {
+                Some(saved) => ar_arena_compact(r, saved),
+                None => r,
+            };
         }
     }
 
     // Interpreter fallback.
-    let args: Vec<Value> = (0..n_args as usize)
-        .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
-        .collect();
     if interp_ptr.is_null() {
         STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
-    let evaled: Vec<(Option<String>, Value, bool)> =
-        args.into_iter().map(|v| (None, v, true)).collect();
-    match interp.eval_method_call_evaled(obj, &name, evaled) {
+    // 引数の可変性: mask があればそれ（bit i+1）、無ければ（古い生成コード）保守的に `mut` とみなす。
+    // インタープリタの束縛が `let` 仮引数 ← `mut` の値を複製する。
+    // 引数は 1 つの `Vec` に直接（11-3・以前は値の `Vec` を作ってから詰め直していた）
+    let evaled: Vec<(Option<String>, Value, bool)> = (0..n_args as usize)
+        .map(|i| {
+            let is_mut = match mut_mask {
+                Some(mask) => mask_arg_is_mut(mask, i),
+                None => true,
+            };
+            (None, clone_value_at(unsafe { *args_ptr.add(i) }), is_mut)
+        })
+        .collect();
+    // インスタンスは VM の `CallMethod` と同じ入口へ、受け手の可変性（bit 0）を添えて渡す（6-1）。
+    // `let self` は `mut` の受け手だけ複製する。mask の無い古い生成コードは保守的に `mut`。
+    let r = if matches!(obj, Value::Instance(_)) {
+        let recv_mut = mut_mask.is_none_or(|m| m & 1 != 0);
+        interp.call_instance_method_evaled(obj, name, evaled, None, None, recv_mut)
+    } else {
+        // VM の `vm_method_call_other` と同じ手順: 呼ぶ前に外部言語かを見て、戻り値を宣言型と照合する（11-3）。
+        // 情報が無い（型検査が戻り値の型を付けていない・古い `.arc` の field 55）ときは VM の未採番と同じく照合しない
+        let lang = crate::interpreter::Interpreter::foreign_call_lang(&obj, name);
+        let r = interp.eval_method_call_evaled(obj, name, evaled);
+        match (r, lang, ffi) {
+            (Ok(v), Some(l), Some(info)) => check_native_ffi_return(interp, l, v, info),
+            (r, _, _) => r,
+        }
+    };
+    match r {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
@@ -1114,6 +1739,21 @@ extern "C" fn ar_call_method(
 }
 
 // ── Typed field-read callbacks ─────────────────────────────────────────────
+//
+// ⚠⚠ **読み出しの失敗を 0 に置き換えない**（native_object_access_plan.md 1-2）。以前は
+//   `Ok(_) | Err(_) => 0.0` で、属性なし（`__init__` の中で初期化前のフィールドを読む等）・アクセス違反が
+//   黙って 0 になっていた。エラーは `ar_get_attr` と同じく `STATE.error` に積む（呼び出しの出口で例外になる）。
+//   数値への変換規則は `ar_to_float` / `ar_to_int` と同じ（`int` は広げる・`bool` は 0 / 1・ほかはエラー）。
+
+/// 型付き読み出しの失敗を記録する（先に積まれたエラーがあればそちらを残す）。
+fn set_field_read_error(msg: String) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_none() {
+            st.error = Some(msg);
+        }
+    });
+}
 
 extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
     let Some(name) = native_str(name_ptr, name_len, "field name") else { return 0.0 };
@@ -1130,8 +1770,17 @@ extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32)
     match interp.get_attr_val(obj, name, None) {
         Ok(Value::Float(f)) => f,
         Ok(Value::Int(n)) => n as f64,
+        Ok(Value::UInt(n)) => n as f64,
         Ok(Value::Bool(b)) => b as u8 as f64,
-        Ok(_) | Err(_) => 0.0,
+        Ok(other) => {
+            let got = interp.type_name(&other);
+            set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+            0.0
+        }
+        Err(e) => {
+            set_field_read_error(e);
+            0.0
+        }
     }
 }
 
@@ -1149,9 +1798,473 @@ extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
     let interp = unsafe { &mut *interp_ptr };
     match interp.get_attr_val(obj, name, None) {
         Ok(Value::Int(n)) => n,
+        Ok(Value::UInt(n)) => n as i64,
         Ok(Value::Float(f)) => f as i64,
         Ok(Value::Bool(b)) => b as i64,
-        Ok(_) | Err(_) => 0,
+        Ok(other) => {
+            let got = interp.type_name(&other);
+            set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+            0
+        }
+        Err(e) => {
+            set_field_read_error(e);
+            0
+        }
+    }
+}
+
+// ── IC 付きの属性読み出し（fields 58-60・native_object_access_plan.md 2-2・D-1） ──────────────────
+//
+// 生成コードは属性を読む箇所ごとに IC のセル（DLL 内の `u64`、初期値 0）を持ち、そのポインタを渡す。
+// 命中判定は VM の `GetAttr` / `GetAttrLocal` と同じ `InstanceData::ic_slot`（アリーナ上のインスタンスを
+// 借りたまま読み、`Value` を複製しない）、外れたら VM と同じミス経路 `get_attr_val(.., Some(cache))` が
+// セルを埋める。⚠ 以前のネイティブの読み出し（fields 12 / 33 / 34）は IC を持たず、毎回 `get_attr_val` の
+// 名前引き（`format!` と全フィールドの走査を含む）を通っていた。古い `.arc` のためにそちらも残す。
+
+/// IC 付きの読み出しの結果。`Pending` は先に積まれたエラーがある（何もしない）。
+enum IcRead {
+    Value(Value, *mut crate::interpreter::Interpreter),
+    Error(String),
+    Pending,
+}
+
+/// IC 付きの読み出しの共通部。`cell` は非同期タスクのスレッドと共有されうるので `AtomicU64`（Relaxed）として
+/// 読み書きする（class_id はプロセス全体で一意で、スレッドへの複製も同じ `field_index` を保つので命中した slot は正しい）。
+fn read_attr_ic(obj_h: i64, name: &str, cell: *mut u64) -> IcRead {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() {
+        return IcRead::Error(format!("NativeError: no inline cache cell for attribute '{name}'"));
+    }
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let packed = cell.load(Ordering::Relaxed);
+    let probe = STATE.with(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return Err(None);
+        }
+        if obj_h >= 3 {
+            if let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) {
+                let inst = rc.borrow();
+                if let Some((idx, _)) = inst.ic_slot(packed, true, || name) {
+                    if let Some(v) = inst.field_value(idx) {
+                        return Ok((v, st.interp_ptr));
+                    }
+                }
+            }
+        }
+        Err(Some((st.clone_value(obj_h), st.interp_ptr)))
+    });
+    match probe {
+        Ok((v, interp_ptr)) => IcRead::Value(v, interp_ptr),
+        Err(None) => IcRead::Pending,
+        Err(Some((obj, interp_ptr))) => {
+            if interp_ptr.is_null() {
+                return IcRead::Error(format!("NativeError: interpreter not set (get_attr '{name}')"));
+            }
+            let interp = unsafe { &mut *interp_ptr };
+            let cache = crate::ast::AttrCache(std::cell::Cell::new(packed));
+            let r = interp.get_attr_val(obj, name, Some(&cache));
+            cell.store(cache.0.get(), Ordering::Relaxed);
+            match r {
+                Ok(v) => IcRead::Value(v, interp_ptr),
+                Err(e) => IcRead::Error(e),
+            }
+        }
+    }
+}
+
+/// `float` / `int` のフィールドで数値でない値が入っていたときの誤り（`get_float_field` / `get_int_field` と同じ文面）。
+fn field_not_number(name: &str, got: &Value, interp_ptr: *mut crate::interpreter::Interpreter) {
+    // `interp_ptr` は `read_attr_ic` が値と一緒に返したもの（命中経路でも空ではない: ネイティブ呼び出しの中でしか来ない）
+    let got = if interp_ptr.is_null() { "unknown" } else { unsafe { &*interp_ptr }.type_name(got) };
+    set_field_read_error(format!("TypeError: field '{name}' must be a number, not '{got}'"));
+}
+
+extern "C" fn ar_get_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    // 命中したら同じ借用のままアリーナへ積む（8-2）
+    if let Some(h) = read_ic_hit(obj_h, cell, name_ptr, name_len, |st, v| Some(st.push_value(v))) {
+        return h;
+    }
+    let Some(name) = site_name(name_ptr, name_len, cell, "attribute name") else { return TL_NONE };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(v, _) => push_handle(v),
+        IcRead::Error(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+        IcRead::Pending => TL_NONE,
+    }
+}
+
+/// 数値のフィールドを `float` として読むときの変換（`int` は広げる・`bool` は 0 / 1・ほかは `None` = エラー）。
+/// 命中経路（`read_ic_hit`）と外れた道の両方で使う唯一の規則（native_object_access_plan.md 8-1）。
+fn float_of(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Int(n) => Some(*n as f64),
+        Value::UInt(n) => Some(*n as f64),
+        Value::Bool(b) => Some(f64::from(u8::from(*b))),
+        _ => None,
+    }
+}
+
+/// [`float_of`] の `int` 版（`float` は切り捨て・`bool` は 0 / 1）。
+fn int_of(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(n) => Some(*n),
+        Value::UInt(n) => Some(*n as i64),
+        Value::Float(f) => Some(*f as i64),
+        Value::Bool(b) => Some(i64::from(*b)),
+        _ => None,
+    }
+}
+
+/// 属性名をデバッグビルドの検査（`ic_slot` の slot と名前の突き合わせ）のためだけに読む。命中経路は名前を使わない。
+fn debug_field_name<'a>(ptr: *const u8, len: i32) -> &'a str {
+    if len <= 0 || ptr.is_null() {
+        return "";
+    }
+    // SAFETY: `native_str` と同じ契約（ネイティブ側が `len` バイトの有効な領域を渡す）
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }).unwrap_or("<invalid utf-8>")
+}
+
+/// IC 付きの読み出しの命中経路（native_object_access_plan.md 8-1・8-2・D-9）。IC が当たれば、アリーナとインスタンスを
+/// 1 回借りたまま取り出したフィールドの値を `take` に渡し（数値へ変換する・アリーナへ積む）、その結果を返す。
+/// それ以外（先に積まれたエラーがある・外れた・未初期化・`take` が受け取らない）は `None` で、呼ぶ側は今までの道
+/// （`read_attr_ic`）へ回る（結果もエラーの文面も変わらない）。
+/// ⚠ 属性名はここでは使わない（`ic_slot` のデバッグビルドの検査だけ）。
+/// ⚠ 以前は毎回名前を検査し、値を `Value` → `Result` → `IcRead` に包んで返していた（数値の読み出し 1 回 28.8 ns のうち
+///   17.8 ns・ハンドルを返す読み出しは約 20 ns。実験で切り分けた。IC の判定と取り出しは VM の `GetAttrLocal` と同じ関数）。
+#[inline(always)]
+fn read_ic_hit<T>(
+    obj_h: i64,
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    take: impl FnOnce(&mut super::NativeCallState, Value) -> Option<T>,
+) -> Option<T> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() || obj_h < 3 {
+        return None;
+    }
+    // SAFETY: `read_attr_ic` と同じ（生成コードが渡すのは DLL 内の `i64` の大域で、`AtomicU64` と同じ並び）
+    let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_some() {
+            return None;
+        }
+        let v = {
+            let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return None };
+            let inst = rc.borrow();
+            let (idx, _) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len))?;
+            inst.field_value(idx)?
+        };
+        take(&mut st, v)
+    })
+}
+
+/// IC を持つ箇所の属性名（native_object_access_plan.md 8-2・D-9）。IC のセルが埋まっていれば、その箇所の名前は検査済みと
+/// して検査を省く。セルは 0 から始まり、埋めるのは名前を `native_str` で検査した後の道（`read_attr_ic` の外れ・
+/// `attr_assign_ic`）だけで、1 つのセルは 1 つの箇所・1 つの名前の定数にしか使わないため。空なら `native_str` で検査する。
+/// ⚠ 以前は書き込み・ハンドルを返す読み出しのたびに UTF-8 として検査していた（1 回 4〜6 ns）。
+fn site_name<'a>(name_ptr: *const u8, name_len: i32, cell: *mut u64, what: &str) -> Option<&'a str> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // SAFETY: `read_attr_ic` と同じ
+    let filled = !cell.is_null() && unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed) != 0;
+    if filled && name_len > 0 && !name_ptr.is_null() {
+        // SAFETY: 長さとポインタは上で確かめた。中身はセルを埋める前に `native_str` が UTF-8 として検査した
+        return Some(unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) });
+    }
+    native_str(name_ptr, name_len, what)
+}
+
+extern "C" fn ar_get_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> f64 {
+    if let Some(f) = read_ic_hit(obj_h, cell, name_ptr, name_len, |_, v| float_of(&v)) {
+        return f;
+    }
+    let Some(name) = site_name(name_ptr, name_len, cell, "field name") else { return 0.0 };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(v, interp_ptr) => match float_of(&v) {
+            Some(f) => f,
+            None => {
+                field_not_number(name, &v, interp_ptr);
+                0.0
+            }
+        },
+        IcRead::Error(e) => {
+            set_field_read_error(e);
+            0.0
+        }
+        IcRead::Pending => 0.0,
+    }
+}
+
+extern "C" fn ar_get_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    if let Some(n) = read_ic_hit(obj_h, cell, name_ptr, name_len, |_, v| int_of(&v)) {
+        return n;
+    }
+    let Some(name) = site_name(name_ptr, name_len, cell, "field name") else { return 0 };
+    match read_attr_ic(obj_h, name, cell) {
+        IcRead::Value(v, interp_ptr) => match int_of(&v) {
+            Some(n) => n,
+            None => {
+                field_not_number(name, &v, interp_ptr);
+                0
+            }
+        },
+        IcRead::Error(e) => {
+            set_field_read_error(e);
+            0
+        }
+        IcRead::Pending => 0,
+    }
+}
+
+// ── 生成コードの直接呼び出しの文脈（fields 62-63・native_object_access_plan.md 1-9） ──────────────
+//
+// 生成コードがモジュール内のメソッドを `_impl` で直接呼ぶとき、呼ばれるメソッドのクラスが呼ぶ側の文脈と違えば
+// その前後で `current_class` を受け手のクラスにする（インタープリタのメソッド呼び出しと同じ）。
+// 印は前の文脈そのもの（`Rc::into_raw`）で、`ar_leave_method_ctx` が受け取って戻す。生成コードは呼び出しと
+// 呼び出しの間で抜けない（`raise` は呼ばれた側の関数から戻るだけ）ので、`ar_enter_method_ctx` と
+// `ar_leave_method_ctx` は必ず対になる。
+// ⚠ 先に積まれたエラーがあっても文脈は切り替える（対を崩さない）。
+
+/// 印: 文脈を変えなかった（受け手がインスタンスでない。直接呼び出しは型検査の結果なので来ないが、
+/// 来たら呼ばれた側の属性の読み書きがエラーにする）。
+const CTX_UNCHANGED: i64 = -1;
+/// 印: 前の文脈は無かった（`current_class` が `None`）。
+const CTX_NONE: i64 = 0;
+
+extern "C" fn ar_enter_method_ctx(obj_h: i64) -> i64 {
+    let (obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.clone_value(obj_h), st.interp_ptr)
+    });
+    let Value::Instance(rc) = obj else { return CTX_UNCHANGED };
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for enter_method_ctx".to_string()));
+        return CTX_UNCHANGED;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let class = rc.borrow().class.clone();
+    match interp.current_class.replace(class) {
+        None => CTX_NONE,
+        Some(prev) => std::rc::Rc::into_raw(prev) as i64,
+    }
+}
+
+extern "C" fn ar_leave_method_ctx(token: i64) {
+    if token == CTX_UNCHANGED {
+        return;
+    }
+    let interp_ptr = STATE.with(|s| s.borrow().interp_ptr);
+    // SAFETY: `token` は `ar_enter_method_ctx` が `Rc::into_raw` で返したもの（0 は `None`）で、ここで 1 回だけ戻す。
+    let prev = (token != CTX_NONE)
+        .then(|| unsafe { std::rc::Rc::from_raw(token as *const crate::interpreter::ClassValue) });
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for leave_method_ctx".to_string()));
+        return;
+    }
+    unsafe { &mut *interp_ptr }.current_class = prev;
+}
+
+/// 型検査の注釈で受け手のクラスを決めた直接呼び出しの前のガード（field 64・native_object_access_plan.md 3-2・D-2）。
+///
+/// 注釈はヒントであって意味論の根拠ではない（`list[T]` の要素・`new_type` など、実行時に保証されない型がある）
+/// ので、受け手が本当にそのクラスのインスタンスか（class_id）と、`mut self` のメソッドなら不変インスタンスでないかを
+/// 確かめる。外れたら 0 を返し、生成コードは名前による呼び出し（`ar_call_method_m`）へ回る（そちらが正しく
+/// 振り分け、必要ならエラーを出す）。クラスの class_id は箇所ごとのセルに 1 回だけ名前で引いて覚える（0 = まだ）。
+/// 名前で引けなければ（シャドウなど）0 のまま返す＝毎回名前による呼び出し（遅いが正しい）。
+extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, cell: *mut u64, need_mutable: i32) -> i32 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(class_name) = native_str(class_ptr, class_len, "class name") else { return 0 };
+    if cell.is_null() || obj_h < 3 {
+        return 0;
+    }
+    let probe = STATE.with(|s| {
+        let st = s.borrow();
+        match st.arena.get(obj_h as usize) {
+            Some(Value::Instance(rc)) => {
+                let inst = rc.borrow();
+                Some((inst.class.class_id, inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0, st.interp_ptr))
+            }
+            _ => None,
+        }
+    });
+    let Some((class_id, immutable, interp_ptr)) = probe else { return 0 };
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    let mut want = cell.load(Ordering::Relaxed);
+    if want == 0 {
+        if interp_ptr.is_null() {
+            return 0;
+        }
+        let interp = unsafe { &*interp_ptr };
+        match interp.get_var(class_name).map(|v| v.get_value()) {
+            Some(Value::Class(cls)) => {
+                want = cls.class_id as u64;
+                cell.store(want, Ordering::Relaxed);
+            }
+            _ => return 0,
+        }
+    }
+    i32::from(class_id as u64 == want && !(need_mutable != 0 && immutable))
+}
+
+/// モジュール内のクラスの生成（field 67・native_object_access_plan.md 5-1・D-4）。VM の `Call`（呼び先がクラス）と
+/// 同じ `instantiate_evaled` を直接呼ぶ。引数の可変性（`let` 仮引数の複製）は `mut_mask` から VM と同じ規則で渡す。
+/// ⚠ 以前の生成コードはクラスを `CB_GET_GLOBAL` で値として引き、`CB_CALL_FN` の遅い道（`call_value_with_args`）で
+///   呼んでいた（呼び出しのたびにコールバック 2 回と値の振り分け）。
+/// クラスは名前で引く（`CB_GET_GLOBAL` と同じ `get_var`。1-7 でモジュールの大域にいる）。クラスでない値に
+/// 束縛されていたら（型検査が通さないはずだが）値として呼ぶ（`call_value_with_args`）。
+extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32, mut_mask: u32) -> i64 {
+    construct_by_name(std::ptr::null_mut(), name_ptr, name_len, args_ptr, n_args, mut_mask)
+}
+
+/// `Class(args)` の呼び出し箇所ごとのセルつき版（field 70・native_object_access_plan.md 10-2・D-11）。セルに前回の
+/// クラスの `class_id + 1` が入っていて、インタープリタの表（`native_classes`）にあれば、名前の検査も名前で引くことも
+/// しない。無ければ（最初の 1 回・ワーカーの最初の 1 回）`ar_construct` と同じく名前で引き、表とセルを埋める。
+/// ⚠ 以前（field 67）は生成のたびに名前を UTF-8 として検査し、`get_var` で引いていた（1 回 約 80 ns）。
+/// 同じ箇所の名前はいつも同じクラスを指す（モジュールの最上位のクラスは束縛し直せない・ローカルに同名があれば
+/// 生成コードはこの道を使わない）。
+extern "C" fn ar_construct_ic(
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if !cell.is_null() {
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+        let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+        if packed != 0 {
+            let (has_err, interp_ptr) = STATE.with(|s| {
+                let st = s.borrow();
+                (st.error.is_some(), st.interp_ptr)
+            });
+            if has_err {
+                return TL_NONE;
+            }
+            if !interp_ptr.is_null() {
+                let interp = unsafe { &mut *interp_ptr };
+                if let Some(cls) = interp.native_classes.get(&((packed - 1) as u32)).cloned() {
+                    return construct_class(interp, cls, args_ptr, n_args, mut_mask);
+                }
+            }
+        }
+    }
+    construct_by_name(cell, name_ptr, name_len, args_ptr, n_args, mut_mask)
+}
+
+/// クラスを名前で引いて生成する（field 67 と field 70 の外れた道）。`cell` があればクラスを表とセルに入れる。
+fn construct_by_name(
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (constructing '{name}')")));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.get_var(name).map(|v| v.get_value()) {
+        Some(Value::Class(cls)) => {
+            if !cell.is_null() {
+                interp.native_classes.insert(cls.class_id, cls.clone());
+                // SAFETY: 上と同じ
+                unsafe { &*(cell as *const AtomicU64) }.store(u64::from(cls.class_id) + 1, Ordering::Relaxed);
+            }
+            construct_class(interp, cls, args_ptr, n_args, mut_mask)
+        }
+        Some(other) => {
+            let args: Vec<Value> = (0..n_args as usize).map(|i| clone_value_at(unsafe { *args_ptr.add(i) })).collect();
+            finish_construct(interp.call_value_with_args(other, args))
+        }
+        None => finish_construct(Err(format!("NameError: '{name}' is not defined"))),
+    }
+}
+
+/// クラスを VM の `Call` と同じ `instantiate_evaled` で生成する。引数の可変性は `mut_mask` から VM と同じ規則で渡す。
+fn construct_class(
+    interp: &mut crate::interpreter::Interpreter,
+    cls: std::rc::Rc<crate::interpreter::ClassValue>,
+    args_ptr: *const i64,
+    n_args: i32,
+    mut_mask: u32,
+) -> i64 {
+    let evaled = (0..n_args as usize)
+        .map(|i| (None, clone_value_at(unsafe { *args_ptr.add(i) }), mask_arg_is_mut(mut_mask, i)))
+        .collect();
+    finish_construct(interp.instantiate_evaled(cls, evaled))
+}
+
+fn finish_construct(r: Result<Value, String>) -> i64 {
+    match r {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
+/// `len(x)`（field 68・native_object_access_plan.md 5-2）。組み込みの `len` と同じ `len_of`（唯一の実装）を呼び、
+/// 結果を生の int で返す。⚠ 以前の生成コードは `len` を `CB_GET_GLOBAL` で値として引き、`CB_CALL_FN` で呼んで
+/// ハンドルを受け、`CB_TO_INT` で開けていた。
+extern "C" fn ar_len(h: i64) -> i64 {
+    let (has_err, v, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return 0; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for len".to_string()));
+        return 0;
+    }
+    match unsafe { &mut *interp_ptr }.len_of(v) {
+        Ok(Value::Int(n)) => n,
+        Ok(other) => {
+            STATE.with(|s| s.borrow_mut().error = Some(format!("TypeError: len() returned a non-int value: {other:?}")));
+            0
+        }
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            0
+        }
+    }
+}
+
+/// `str(<int>)`（field 69・5-2）。組み込みの `str` と同じ `call_type_by_name_evaled("str", ..)` を、値を箱に入れずに呼ぶ。
+extern "C" fn ar_str_of_int(n: i64) -> i64 {
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for str".to_string()));
+        return TL_NONE;
+    }
+    match unsafe { &mut *interp_ptr }.call_type_by_name_evaled("str", vec![Value::Int(n)]) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
     }
 }
 
@@ -1173,6 +2286,34 @@ extern "C" fn ar_flat_len(h: i64) -> i64 {
 
 extern "C" fn ar_fn_trampoline(_fn_h: i64) -> *const () {
     ar_call_fn as *const ()
+}
+
+/// 組み込み関数を名前で呼ぶ（field 50・native_object_access_plan.md 1-3）。本体は VM の `CallBuiltin` と同じ
+/// `Interpreter::call_builtin_by_name_evaled`（同名のグローバル束縛があればそちらを呼ぶ）。
+/// ⚠ 以前は `get_global` で組み込み関数を値として引いており、値として登録されていない
+///   `range` / `print` / `repr` / `enumerate` / `zip` / `getenv` がコンパイル済みコードで `NameError` になっていた。
+extern "C" fn ar_call_builtin(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
+    let Some(name) = native_str(name_ptr, name_len, "builtin name") else { return TL_NONE };
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (calling '{name}')")));
+        return TL_NONE;
+    }
+    let args: Vec<Value> = (0..n_args.max(0) as usize)
+        .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
+        .collect();
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.call_builtin_by_name_evaled(name, args) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
 }
 
 // ── Static callbacks instance ─────────────────────────────────────────────────
@@ -1228,6 +2369,31 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     make_raw_instance: ar_make_raw_instance,
     make_instance: ar_make_instance,
     bytes_buf_arg: ar_bytes_buf_arg,
+    call_builtin: ar_call_builtin,
+    assign_attr: ar_assign_attr,
+    get_trait_attr: ar_get_trait_attr,
+    assign_trait_attr: ar_assign_trait_attr,
+    copy_arg: ar_copy_arg,
+    call_method_m: ar_call_method_m,
+    bind_value: ar_bind_value,
+    let_from_name: ar_let_from_name,
+    get_attr_ic: ar_get_attr_ic,
+    get_float_field_ic: ar_get_float_field_ic,
+    get_int_field_ic: ar_get_int_field_ic,
+    assign_attr_ic: ar_assign_attr_ic,
+    enter_method_ctx: ar_enter_method_ctx,
+    leave_method_ctx: ar_leave_method_ctx,
+    method_guard: ar_method_guard,
+    assign_int_field_ic: ar_assign_int_field_ic,
+    assign_float_field_ic: ar_assign_float_field_ic,
+    construct: ar_construct,
+    len: ar_len,
+    str_of_int: ar_str_of_int,
+    construct_ic: ar_construct_ic,
+    iter_drop: ar_iter_drop,
+    make_str_ic: ar_make_str_ic,
+    call_method_ic: ar_call_method_ic,
+    assign_path_ic: ar_assign_path_ic,
 };
 
 #[cfg(test)]

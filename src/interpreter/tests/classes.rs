@@ -947,7 +947,7 @@ fn ellipsis_is_one_value_even_across_thread_copies() {
     assert_eq!(interp.display(&e), "Ellipsis");
 }
 
-/// 格納の写し（`copy_for_store`）は Arrow のコードの中だけ。Python から変換したコードの中は写さずに共有する
+/// 格納の写し（`copy_for_store`・`mut` の宣言の `bind_copy`）は Arrow のコードの中だけ。Python から変換したコードの中は写さずに共有する
 /// （known_bugs.md の #1・A 案）。どちらのコードかは `running_python`（チャンクを走らせる入口が差し替える）。
 #[test]
 fn copy_for_store_shares_inside_python_code() {
@@ -955,8 +955,13 @@ fn copy_for_store_shares_inside_python_code() {
     let mut interp = Interpreter::new();
     let xs = Value::List(std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Int(1)])));
     let same = |a: &Value, b: &Value| matches!((a, b), (Value::List(p), Value::List(q)) if std::rc::Rc::ptr_eq(p, q));
+    // `mut x = e` の束縛（`bind_copy` の `DeepCopy`・master の取り込みで `copy_for_store` から移った）も同じ規則。
+    // ⚠ `xs` を持ったまま渡すので「誰とも共有していない値は写さない」（12-1）には当たらない。
+    let bind_mut = |interp: &mut Interpreter, v: Value| interp.bind_copy(crate::interpreter::BindCopy::DeepCopy, v).unwrap();
     assert!(!interp.running_python);
     assert!(!same(&interp.copy_for_store(xs.clone()), &xs), "Arrow code copies on store");
+    assert!(!same(&bind_mut(&mut interp, xs.clone()), &xs), "Arrow code copies on a mut declaration");
     interp.running_python = true;
     assert!(same(&interp.copy_for_store(xs.clone()), &xs), "Python code shares on store");
+    assert!(same(&bind_mut(&mut interp, xs.clone()), &xs), "Python code shares on a mut declaration");
 }

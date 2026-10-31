@@ -131,7 +131,10 @@ Python のクラスはこのパーサを通らない。⚠ `__getattribute__` �
   `eval/subscript.rs`・`exec/vars.rs`・`exec/blocks.rs`・`ops/hash.rs` の `dict_set`（キーと値）・`exec/dispatch.rs`）を
   `Interpreter::copy_for_store` に通し、`running_python` の間は写さない。`ClassValue::is_python` のクラスで
   `__eq__` / `__hash__` が無ければ `values_eq` / `hash_into` が同一性
-- **残した差**: Arrow の `let`（`frozen_copy`）・`self` の束縛・ネイティブ呼び出し・`copy()` は写す。Arrow の `let` /
+  - ⚠ 2026-11-01 の master の取り込みで、`mut` の宣言の 4 か所（`StoreLocalDeepCopy` / `StoreCellDeepCopy` /
+    `vm_toplevel.rs` / `exec/dispatch.rs`）は master の束縛の唯一の実装 `Interpreter::bind_copy(BindCopy::DeepCopy, ..)`
+    へ移った。写さない判断は `bind_copy_held` の先頭にある（`copy_for_store` と同じ `running_python`）
+- **残した差**: Arrow の `let`（`bind_copy` の `CopyFreeze`）・`self` の束縛・ネイティブ呼び出し・`copy()` は写す。Arrow の `let` /
   `mut` に Python のインスタンスを束縛するときも写す（境界は Arrow の規則）
 - **確かめ**: 12 項目が CPython と同じ。全例題の出力は変わらなかった。単体テスト `copy_for_store_shares_inside_python_code`
 

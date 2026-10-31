@@ -46,6 +46,15 @@ struct FnSig {
     ret: Ty,
     /// パラメータごとの可変フラグリスト。`true` は `mut` パラメータ。
     param_mutabilities: Vec<bool>,
+    /// 仮引数ごとの `_impl` / `_fast` の内部 ABI（native_object_access_plan.md 4-1・D-3）: `int` / `float` 注釈は
+    /// 生値（`i64` / `double`）、ほか（`self`・クラス・`str` …）はハンドル。ジェネレータは全部ハンドル。
+    /// 箱詰めはインタープリタとの境界（`_tl`）だけで行う。
+    param_tys: Vec<Ty>,
+    /// `_fast` 版がパラメータごとに**フィールドをスカラーへ展開するか**と、そのクラス
+    /// （`fast_flat_class`。`None` は展開しない＝ハンドルで受ける）。
+    /// ⚠ 呼ぶ側（`build_fast_call_args`）はこの表に従って引数を並べる。呼ぶ側が自分の都合
+    /// （手元に先読みがあるか）で展開を決めると、呼ばれる側の仮引数の並びと食い違う。
+    fast_flat: Vec<Option<String>>,
 }
 
 /// フラット配列の末端プリミティブフィールド情報。ネストしたクラスは再帰的に展開される。
@@ -325,6 +334,7 @@ const CB_IS_TRUTHY:     usize = 8;
 const CB_BINOP:         usize = 9;
 const CB_UNOP:          usize = 10;
 const CB_CALL_FN:       usize = 11;
+// 12 / 33 / 34 は IC の無い読み出し（以前の生成コード・中継コードが使う）。今の生成コードは 58-60（2-2）。
 const CB_GET_ATTR:      usize = 12;
 const CB_SET_ATTR:      usize = 13;
 const CB_SUBSCRIPT:     usize = 14;
@@ -334,6 +344,7 @@ const CB_ITER_NEXT:     usize = 17;
 const CB_IS_TYPE:       usize = 18;
 const CB_ARENA_SAVE:    usize = 19;
 const CB_ARENA_COMPACT: usize = 20;
+const CB_COMPACT_MANY:  usize = 21;
 const CB_TO_INT:        usize = 22;
 const CB_TO_FLOAT:      usize = 23;
 const CB_DEEP_COPY:     usize = 24;
@@ -348,6 +359,39 @@ const CB_GET_INT_FIELD:   usize = 34;
 const CB_FLAT_DATA_PTR:   usize = 35;
 const CB_FLAT_LEN:        usize = 36;
 const CB_FN_TRAMPOLINE:   usize = 37;
+/// 組み込み関数を名前で呼ぶ（native_api `ArCallbacks::call_builtin`・native_object_access_plan.md 1-3）。
+/// ⚠ 38〜49 は中継コード（cpp / rs）用。LLVM の生成コードが引く添字は `module_header` の型の長さ（56）未満であること。
+const CB_CALL_BUILTIN:    usize = 50;
+/// コンパイル済み Arrow コードの `obj.attr = v`（VM の `SetAttr` と同じ `attr_assign_evaled`・1-4）。
+/// ⚠ `CB_SET_ATTR`（13）は `import[rs]` の中継コードが写しを更新する経路なので、生成コードは使わない。
+const CB_ASSIGN_ATTR:     usize = 51;
+/// `obj::Trait.attr` の読み書き（VM の `GetTraitAttr` / `SetTraitAttr` と同じ `trait_access_evaled` /
+/// `trait_assign_evaled`・1-4）。
+const CB_GET_TRAIT_ATTR:    usize = 52;
+const CB_ASSIGN_TRAIT_ATTR: usize = 53;
+/// 値渡し（D-8・1-5）: `let` 仮引数 ← `mut` の値の複製（`copy_value`）と、受け手・引数の可変性つきの名前による
+/// メソッド呼び出し（呼ばれた側の `let self` / `let` 仮引数の分を複製する）。
+const CB_COPY_ARG:          usize = 54;
+const CB_CALL_METHOD_M:     usize = 55;
+const CB_BIND_VALUE:        usize = 56;
+const CB_LET_FROM_NAME:     usize = 57;
+const CB_GET_ATTR_IC:       usize = 58;
+const CB_GET_FLOAT_FIELD_IC: usize = 59;
+const CB_GET_INT_FIELD_IC:  usize = 60;
+const CB_ASSIGN_ATTR_IC:    usize = 61;
+const CB_ENTER_METHOD_CTX:  usize = 62;
+const CB_LEAVE_METHOD_CTX:  usize = 63;
+const CB_METHOD_GUARD:      usize = 64;
+const CB_ASSIGN_INT_FIELD_IC:   usize = 65;
+const CB_ASSIGN_FLOAT_FIELD_IC: usize = 66;
+const CB_CONSTRUCT:         usize = 67;
+const CB_LEN:               usize = 68;
+const CB_STR_OF_INT:        usize = 69;
+const CB_CONSTRUCT_IC:      usize = 70;
+const CB_ITER_DROP:         usize = 71;
+const CB_MAKE_STR_IC:       usize = 72;
+const CB_CALL_METHOD_IC:    usize = 73;
+const CB_ASSIGN_PATH_IC:    usize = 74;
 
 /// Symbol name for a class method export: `{ClassName}__{method_name}`.
 pub fn method_symbol(class_name: &str, method_name: &str) -> String {
@@ -376,6 +420,7 @@ fn cb_sig(field: usize) -> (&'static str, &'static str) {
         CB_IS_TYPE       => ("i64",    "i64, ptr, i32"),
         CB_ARENA_SAVE    => ("i64",    ""),
         CB_ARENA_COMPACT => ("i64",    "i64, i64"),
+        CB_COMPACT_MANY  => ("void",   "ptr, i32, i64, ptr"),
         CB_TO_INT        => ("i64",    "i64"),
         CB_TO_FLOAT      => ("double", "i64"),
         CB_DEEP_COPY     => ("i64",    "i64"),
@@ -390,6 +435,31 @@ fn cb_sig(field: usize) -> (&'static str, &'static str) {
         CB_FLAT_DATA_PTR    => ("i64",    "i64"),
         CB_FLAT_LEN         => ("i64",    "i64"),
         CB_FN_TRAMPOLINE    => ("ptr",    "i64"),
+        CB_CALL_BUILTIN     => ("i64",    "ptr, i32, ptr, i32"),
+        CB_ASSIGN_ATTR      => ("void",   "i64, ptr, i32, i64"),
+        CB_GET_TRAIT_ATTR   => ("i64",    "i64, ptr, i32, ptr, i32"),
+        CB_ASSIGN_TRAIT_ATTR => ("void",  "i64, ptr, i32, ptr, i32, i64"),
+        CB_COPY_ARG         => ("i64",    "i64"),
+        CB_CALL_METHOD_M    => ("i64",    "i64, ptr, i32, ptr, i32, i32"),
+        CB_BIND_VALUE       => ("i64",    "i32, i64"),
+        CB_LET_FROM_NAME    => ("i64",    "ptr, i32, i64"),
+        CB_GET_ATTR_IC      => ("i64",    "i64, ptr, i32, ptr"),
+        CB_GET_FLOAT_FIELD_IC => ("double", "i64, ptr, i32, ptr"),
+        CB_GET_INT_FIELD_IC => ("i64",    "i64, ptr, i32, ptr"),
+        CB_ASSIGN_ATTR_IC   => ("void",   "i64, ptr, i32, i64, ptr"),
+        CB_ENTER_METHOD_CTX => ("i64",    "i64"),
+        CB_LEAVE_METHOD_CTX => ("void",   "i64"),
+        CB_METHOD_GUARD     => ("i32",    "i64, ptr, i32, ptr, i32"),
+        CB_ASSIGN_INT_FIELD_IC   => ("void", "i64, ptr, i32, i64, ptr"),
+        CB_ASSIGN_FLOAT_FIELD_IC => ("void", "i64, ptr, i32, double, ptr"),
+        CB_CONSTRUCT        => ("i64",    "ptr, i32, ptr, i32, i32"),
+        CB_LEN              => ("i64",    "i64"),
+        CB_STR_OF_INT       => ("i64",    "i64"),
+        CB_CONSTRUCT_IC     => ("i64",    "ptr, ptr, i32, ptr, i32, i32"),
+        CB_ITER_DROP        => ("void",   "i64"),
+        CB_MAKE_STR_IC      => ("i64",    "ptr, ptr, i32"),
+        CB_CALL_METHOD_IC   => ("i64",    "ptr, i64, ptr, i32, ptr, i32, i32, ptr, i32"),
+        CB_ASSIGN_PATH_IC   => ("void",   "i64, ptr, i32, i32, i64"),
         _                   => ("i64",    "i64"),
     }
 }
@@ -399,8 +469,8 @@ fn cb_sig(field: usize) -> (&'static str, &'static str) {
 fn module_header() -> &'static str {
     r#"; Auto-generated by Arrow compiler — do not edit.
 
-; ArCallbacks: 38 function-pointer fields (opaque ptr, LLVM 15+)
-%ArCallbacks = type { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }
+; ArCallbacks: 75 function-pointer fields (opaque ptr, LLVM 15+)
+%ArCallbacks = type { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }
 
 @CB = internal global ptr null
 
@@ -498,6 +568,8 @@ struct BlockCtx {
     result_al: String,
     /// label to branch to when block_return is executed.
     exit_label: String,
+    /// `iter_scopes` の長さ（この式を開いたとき）。`block_return` はこれより内側の `for` のイテレータを捨てる（11-1）。
+    iter_depth: usize,
     /// alloca holding the accumulated list for loop_yield (only for for/while expressions).
     list_al: Option<String>,
 }
@@ -506,7 +578,7 @@ struct BlockCtx {
 
 struct GenCtx<'a> {
     // Module-level accumulators
-    str_globals: String,     // @_sN string constant definitions
+    str_globals: String,     // @_sN string constant definitions and @_icN inline-cache cells
     fn_defs:     String,     // all generated function bodies
 
     // Per-function buffers
@@ -523,6 +595,9 @@ struct GenCtx<'a> {
     loop_stack: Vec<(String, String)>,
     // Block context stack for block_return / loop_yield
     block_stack: Vec<BlockCtx>,
+    /// 囲んでいる `for` のイテレータの alloca（外側から順）。ループを飛び出す `return` / `block_return` が、出ていく
+    /// いちばん外のイテレータから先を捨てる（`CB_ITER_DROP`・11-1・D-12）
+    iter_scopes: Vec<String>,
 
     // Module function metadata
     module_fns: &'a HashSet<String>,
@@ -531,6 +606,27 @@ struct GenCtx<'a> {
     // String constant deduplication
     str_consts: HashMap<Vec<u8>, String>,
     str_ctr:    usize,
+    /// 属性を読む箇所ごとの IC のセル（`@_icN`）の採番（2-2）。
+    ic_ctr:     usize,
+    /// 組み立て中の直接呼び出しで、`let` で受ける値の複製（`copy_for_let`）の前に取ったアリーナの保存点
+    /// （native_object_access_plan.md 1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+    /// 入れ子の呼び出しは [`Self::take_call_save`] / [`Self::finish_call_save`] で積む。
+    pending_save: Option<String>,
+    /// 今の関数で、アリーナへ値を積みうる箇所（ハンドルを返すコールバック・`float` を返す直接呼び出し）を出した数
+    /// （native_object_access_plan.md 9-1）。ループの本体の前後で比べ、増えたループだけを周ごとに巻き戻す。
+    push_sites: usize,
+    /// 今の関数でハンドルを書き込んだローカル変数の場所（`%_al_*`・`loop_yield` の溜め先）を書いた順に記録する（9-1）。
+    /// ループの本体の間に増えた分が、周の終わりに巻き戻すときに残す値（ほかのハンドルは周の中でしか使わない）。
+    handle_store_log: Vec<String>,
+    /// ハンドルを作りうる（アリーナへ値を積みうる）モジュールの関数（native_object_access_plan.md 9-2）。`float` を返す
+    /// 直接呼び出し・`_fast` は、呼ばれる側がここにあれば前後で巻き戻す（無ければ数値だけの関数で、何もしない）。
+    /// `generate_llvm_module` が不動点で決めて渡す。
+    pushing_fns: HashSet<String>,
+    /// 生成した関数のうち、`_impl` の本体（入口の先読みを含む）でアリーナへ積む箇所を出したもの（9-2・不動点の出力）。
+    fn_pushes: HashSet<String>,
+    /// モジュールの最上位で束縛される名前（関数・クラス・変数・import・5-2）。組み込み関数を隠しうるのは
+    /// これとローカルだけ（1-7 以降、生成コードはモジュール自身の大域で走る）。
+    top_names: HashSet<String>,
 
     // Class field type information for type-specialised field reads.
     // class_name → field_name → Ty (Int | Float only; Handle fields are excluded)
@@ -552,6 +648,13 @@ struct GenCtx<'a> {
     // Pre-read field locals: dotted path (e.g. "item.v", "item.start.x") → (alloca_ptr, Ty).
     // Populated at flat-list loop body entry; gen_expr uses this for zero-callback field reads.
     preread_fields: HashMap<String, (String, Ty)>,
+    // 名前ごとの可変性（VM の `arg_is_mutable` と同じ表・`vm::compiler::binding_mutability`）。
+    // 値渡しの複製の要否（D-8・1-5）を決める。関数を出力するたびに作り直す。
+    binding_mut: HashMap<String, bool>,
+    /// 作りたての値を新しい欄に積んで返すコールバック（生成・演算・リスト / タプル / 辞書の生成）の結果のレジスタ。
+    /// `let` / `mut` の束縛がこれなら `ar_bind_value` に `BindCopy::FRESH_BIT` を付ける（共有していなければ複製しない・12-1）。
+    /// ⚠ メソッド・関数の呼び出しの結果は入れない（ネイティブの呼ばれた側が引数のハンドルをそのまま返しうる）
+    fresh_regs: HashSet<String>,
     // `let fixed_list[ClassName]` params that can use the flat GEP iteration path.
     flat_list_params: HashMap<String, FlatListInfo>,
     // `function[...]->R` typed params: param_name → alloca ptr holding the trampoline fn ptr.
@@ -632,7 +735,7 @@ pub(super) struct AttrResolutionStats {
     pub legacy_only: usize,
     /// 注釈のみ解決できた（＝注釈へ移行すると**新たに型特化できる**箇所）。
     pub annot_only: usize,
-    /// どちらも解決できなかった（汎用 `CB_GET_ATTR` 経路）。
+    /// どちらも解決できなかった（ハンドルで読む `CB_GET_ATTR_IC` 経路）。
     pub neither: usize,
 }
 
@@ -709,8 +812,12 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Let(_, _, e, _) | Stmt::Mut(_, _, e, _) | Stmt::Const(_, _, e, _) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
-        Stmt::AttrAssign { target, value, span: _ } => expr_eligible(target) && expr_eligible(value),
-        Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
+        // ⚠ 代入先は `obj.attr` か `obj::T.attr` だけ（生成側 `stmt.rs` はこの 2 形しか書けない。
+        //   以前はほかの形でも適格で、生成コードが代入を黙って出さなかった・native_object_access_plan.md 1-4）。
+        Stmt::AttrAssign { target, value, span: _ } =>
+            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target) && expr_eligible(value),
+        Stmt::AttrCompoundAssign { target, value, .. } =>
+            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target) && expr_eligible(value),
         Stmt::Return(Some(e), _) => expr_eligible(e),
         Stmt::Return(None, _) | Stmt::Pass | Stmt::Break | Stmt::Continue => true,
         Stmt::Expr(e)    => expr_eligible(e),
@@ -787,8 +894,91 @@ fn expr_eligible(expr: &Expr) -> bool {
 
 // ── Purity analysis for approach-1 pre-reads ─────────────────────────────────
 
+/// クラス型の仮引数（`self` を含む）のフィールドを**入口で 1 回だけ読んでよいか**
+/// （先読み・`_fast` 版の平坦化）。⚠ 判定はここ 1 か所（`emit_fn` / `emit_fn_fast` の 2 箇所・
+/// `fast_fns` の算出が同じ条件を使う。ずれると `_fast` を呼ぶ側と作る側が食い違う）。
+///
+/// ⚠⚠ **`let` の受け手だけ**（native_object_access_plan.md 1-1・D-7）。`mut` の受け手は本体の
+/// `p.attr = ..` を見るだけでは足りない: `self.inc()` や `bump(c)` のようにメソッド・関数経由で
+/// 書き換わり、先読みした値が古くなる（以前は `after_inc` が非コンパイル 1・コンパイル済み 0 だった）。
+/// `let` の受け手なら、非コンパイルも入口で複製する（`mut` の値の場合）か、もともと書き換わらない
+/// （`let` の値の場合）ので、入口の値を使って結果が一致する。
+fn param_prereadable(p: &Param, body: &[Stmt]) -> bool {
+    !p.mutable && !body_writes_param(body, &p.name)
+}
+
+/// `_fast` 版でこの仮引数を**フィールドのスカラーへ展開するなら、そのクラス名**。クラス型
+/// （`self` は `self_class`）で、先読みしてよい（`param_prereadable`）こと。
+/// `FnSig::fast_flat` はこれで作る（`emit_fn_fast` は同じ `param_prereadable` とクラスの判定を使う）。
+fn fast_flat_class(
+    p: &Param,
+    self_class: Option<&str>,
+    body: &[Stmt],
+    class_fields_ord: &HashMap<String, Vec<(String, Ty)>>,
+) -> Option<String> {
+    let cls = p.type_ann.as_deref().or(if p.name == "self" { self_class } else { None })?;
+    (class_fields_ord.contains_key(cls) && param_prereadable(p, body)).then(|| cls.to_string())
+}
+
 /// Returns true if any statement in `stmts` directly writes a field of `param`
 /// (via AttrAssign or AttrCompoundAssign where the object is `Expr::Ident(param)`).
+/// 仮引数 `p` を本体がどう使うか（native_object_access_plan.md 4-4: 先読みするフィールドを絞るため）。
+///
+/// `p.f` の読み（と書き）だけなら参照するフィールドの名前の集合、`p` をほかに使うなら `None`（全部を先読みする）。
+/// 「ほか」は: `p` を値として使う（渡す・束縛する）・`p` のメソッドを呼ぶ（呼んだ先の `_fast` は全フィールドを
+/// 要る・`build_fast_call_args`）・`p` へ代入する・`for` / `except` で同名を束縛する・入れ子の `fn` / `gen` / クラス
+/// （捕捉しうる）。⚠ 判定を誤っても「読んでいないフィールドの先読みが無い」だけで、`p.f` の読みは先読みが
+/// 無ければ IC で読む（2-2）ので結果は変わらない。走査は `stmt_walk` / `expr_walk`（exhaustive）に任せる。
+fn param_field_uses(body: &[Stmt], p: &str) -> Option<HashSet<String>> {
+    struct Uses<'p> {
+        p: &'p str,
+        fields: HashSet<String>,
+        other: bool,
+    }
+    fn walk_expr(u: &mut Uses<'_>, e: &Expr) {
+        use crate::expr_walk::SubPart;
+        if u.other {
+            return;
+        }
+        match e {
+            Expr::Call { func, .. }
+                if matches!(func.as_ref(), Expr::Attr { object, .. } if ident_name(object) == Some(u.p)) =>
+            {
+                u.other = true;
+            }
+            Expr::Attr { object, attr, .. } if ident_name(object) == Some(u.p) => {
+                u.fields.insert(attr.clone());
+            }
+            Expr::Ident { name, .. } if name == u.p => u.other = true,
+            _ => crate::expr_walk::each_subpart(e, &mut |part| match part {
+                SubPart::Plain(x) | SubPart::Control(x) | SubPart::MatchPattern(x) => walk_expr(u, x),
+                SubPart::Body(b) => walk_body(u, b),
+                SubPart::ForTarget(n) => u.other |= n == u.p,
+            }),
+        }
+    }
+    fn walk_body(u: &mut Uses<'_>, stmts: &[Stmt]) {
+        use crate::stmt_walk::StmtPart;
+        for s in stmts {
+            crate::stmt_walk::each_subpart(s, &mut |part| match part {
+                StmtPart::Expr(x) | StmtPart::MatchPattern(x) => walk_expr(u, x),
+                StmtPart::Control(b) => walk_body(u, b),
+                StmtPart::ForTarget(n) | StmtPart::ExceptAlias(n) | StmtPart::TargetName(n) => u.other |= n == u.p,
+                // 別フレーム（入れ子の関数・クラス・モジュール・async の本体）は捕捉しうるので「ほか」とみなす
+                StmtPart::FnBody { .. }
+                | StmtPart::GenBody(_)
+                | StmtPart::TypeBody(_)
+                | StmtPart::ProtocolBody(_)
+                | StmtPart::ModuleBody(_)
+                | StmtPart::AsyncBody(_) => u.other = true,
+            });
+        }
+    }
+    let mut u = Uses { p, fields: HashSet::new(), other: false };
+    walk_body(&mut u, body);
+    (!u.other).then_some(u.fields)
+}
+
 fn body_writes_param(stmts: &[Stmt], param: &str) -> bool {
     stmts.iter().any(|s| stmt_writes_param(s, param))
 }
@@ -812,7 +1002,8 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn binop_code(op: &BinOp) -> i32 {
+/// 生成コードがコールバックへ渡す演算の番号（`native_api` の `OP_*` と同じ並び・読み戻しの検査は `native_api` のテスト）。
+pub(crate) fn binop_code(op: &BinOp) -> i32 {
     match op {
         BinOp::Add => 0, BinOp::Sub => 1, BinOp::Mul => 2, BinOp::Div => 3,
         BinOp::FloorDiv => 4, BinOp::Mod => 5, BinOp::Pow => 6,
@@ -943,25 +1134,142 @@ fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleF
     }
 }
 
+/// 同じ名前の `fn` / `gen` が 2 つ以上ある（オーバーロード）名前（native_object_access_plan.md 1-8・§0.3 ⑨）。
+///
+/// DLL のシンボル（[`method_symbol`]）とネイティブのメソッドの表（`(クラス, 名前)` → 1 つ）は名前だけで決まるので、
+/// オーバーロードは表せない。**どれもコンパイルせず**、全部をインタープリタの振り分けに任せる。
+/// ⚠ 以前は全部をコンパイルしようとして同じシンボルが 2 つでき、clang が `invalid redefinition` で落ちて
+///   **モジュール全体が**ネイティブにならなかった（`--compile` は「skipped」と出して DLL の無い `.arc` を書く）。
+///   明示の `__init__` の引数がフィールドと違うと、パーサが自動生成する `__init__` と並ぶのでこれに当たる。
+fn overloaded_names(body: &[Stmt]) -> HashSet<&str> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut dup: HashSet<&str> = HashSet::new();
+    for s in body {
+        if let Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } = s {
+            if !seen.insert(name.as_str()) {
+                dup.insert(name.as_str());
+            }
+        }
+    }
+    dup
+}
+
+/// 名前によるメソッド呼び出しの FFI の検査の情報（`表示名 \x1f 宣言型 \x1f 位置`・`ar_call_method_ic`・11-3）。
+/// 型検査がこの呼び出しに戻り値の型を付けていなければ `None`（VM の `check_ffi_return` も照合しない）。宣言型が
+/// `Any` / `Unresolved` のときも `None`（VM の照合は `check_common` で必ず通す・[`ffi_type_needs_check`]）。
+/// 表示名は VM の `record_ffi_call_info` と同じ規則（`obj.attr` の `obj` が名前なら `obj.attr`、ほかは `attr`）。
+pub(super) fn ffi_call_info(
+    annotations: &AstAnnotations,
+    node_id: u32,
+    span: &crate::token::Span,
+    object: &Expr,
+    attr: &str,
+) -> Option<String> {
+    if node_id == 0 {
+        return None;
+    }
+    let declared = annotations.resolved_type(node_id).filter(|d| ffi_type_needs_check(d))?;
+    let display = match object {
+        Expr::Ident { name, .. } => format!("{name}.{attr}"),
+        _ => attr.to_string(),
+    };
+    Some(format!("{display}\x1f{declared}\x1f{span}"))
+}
+
+/// 外部言語の戻り値の照合で、照合が起きうる宣言型か。`Any` / `Unresolved` は `check_common` が必ず通し（言語ごとの
+/// 検査器はその上に緩和を足すだけ）、VM でも照合しないので、生成コードに情報を埋め込まない（11-3）。
+fn ffi_type_needs_check(declared: &crate::type_check::InferredType) -> bool {
+    !matches!(declared, crate::type_check::InferredType::Any | crate::type_check::InferredType::Unresolved)
+}
+
+/// 名前によるメソッド呼び出しの宣言型を、実行時に `InferredType::from_ann` で読み戻せない呼び出しを探す（11-3）。
+/// そういう呼び出しを含む関数はコンパイルしない（FFI の検査の宣言型を生成コードに埋め込めないので、黙って検査を
+/// 省く代わりにインタープリタで動かす）。見つけたら、その型の表示を返す。
+fn unembeddable_ffi_type(body: &[Stmt], annotations: &AstAnnotations) -> Option<String> {
+    fn walk_expr(e: &Expr, a: &AstAnnotations, out: &mut Option<String>) {
+        use crate::expr_walk::SubPart;
+        if out.is_some() {
+            return;
+        }
+        if let Expr::Call { func, node_id, .. } = e {
+            if matches!(func.as_ref(), Expr::Attr { .. }) && *node_id != 0 {
+                if let Some(d) = a.resolved_type(*node_id).filter(|d| ffi_type_needs_check(d)) {
+                    let shown = d.to_string();
+                    if crate::type_check::InferredType::from_ann(&shown).as_ref() != Some(d) {
+                        *out = Some(shown);
+                        return;
+                    }
+                }
+            }
+        }
+        crate::expr_walk::each_subpart(e, &mut |part| match part {
+            SubPart::Plain(x) | SubPart::Control(x) | SubPart::MatchPattern(x) => walk_expr(x, a, out),
+            SubPart::Body(b) => walk_body(b, a, out),
+            SubPart::ForTarget(_) => {}
+        });
+    }
+    fn walk_body(stmts: &[Stmt], a: &AstAnnotations, out: &mut Option<String>) {
+        use crate::stmt_walk::StmtPart;
+        for s in stmts {
+            crate::stmt_walk::each_subpart(s, &mut |part| match part {
+                StmtPart::Expr(x) | StmtPart::MatchPattern(x) => walk_expr(x, a, out),
+                StmtPart::Control(b) => walk_body(b, a, out),
+                StmtPart::ForTarget(_) | StmtPart::ExceptAlias(_) | StmtPart::TargetName(_) => {}
+                // 別の関数・クラス・モジュール・async の本体はこの関数の生成コードではない（コンパイルの対象外）
+                StmtPart::FnBody { .. }
+                | StmtPart::GenBody(_)
+                | StmtPart::TypeBody(_)
+                | StmtPart::ProtocolBody(_)
+                | StmtPart::ModuleBody(_)
+                | StmtPart::AsyncBody(_) => {}
+            });
+        }
+    }
+    let mut out = None;
+    walk_body(body, annotations, &mut out);
+    out
+}
+
+/// [`unembeddable_ffi_type`] が見つけた関数を外し、外したことを出す（黙って外さない）。
+fn ffi_embeddable(e: &EligibleFn<'_>, annotations: &AstAnnotations) -> bool {
+    match unembeddable_ffi_type(e.body, annotations) {
+        None => true,
+        Some(t) => {
+            eprintln!(
+                "NativeLib: `{}` stays interpreted: the declared type `{t}` of a method call cannot be passed to compiled code \
+                 (FFI boundary check)",
+                e.symbol
+            );
+            false
+        }
+    }
+}
+
 pub fn generate_llvm_module(
     stmts: &[Stmt],
     annotations: &AstAnnotations,
 ) -> Option<(String, Vec<FnExport>)> {
     let mut eligible: Vec<EligibleFn> = Vec::new();
+    let top_overloads = overloaded_names(stmts);
 
     // ⚠ 収集の**順序**が emit 順（＝生成 IR）を決める。最上位は `stmts` 順、
     //    メソッドはクラス本体順 — #82 で畳んだときもこの順序は変えていない。
     for s in stmts {
         match s {
             Stmt::FnDef { .. } | Stmt::GenDef { .. } => {
-                if let Some(e) = eligible_fn(s, None) {
+                if let Some(e) = eligible_fn(s, None)
+                    .filter(|e| !top_overloads.contains(e.orig_name) && ffi_embeddable(e, annotations))
+                {
                     eligible.push(e);
                 }
             }
             Stmt::ClassDef { name: class_name, body: class_body, template_params, .. } => {
                 if !template_params.is_empty() { continue; }
+                let overloads = overloaded_names(class_body);
                 for method_stmt in class_body {
-                    if let Some(e) = eligible_fn(method_stmt, Some(class_name)) {
+                    if let Some(e) = eligible_fn(method_stmt, Some(class_name))
+                        .filter(|e| !overloads.contains(e.orig_name) && ffi_embeddable(e, annotations))
+                    {
                         eligible.push(e);
                     }
                 }
@@ -1022,33 +1330,49 @@ pub fn generate_llvm_module(
         (f.symbol.clone(), FnSig {
             ret: if f.is_gen { Ty::Handle } else { ann_ty(f.return_type) },
             param_mutabilities: f.params.iter().map(|p| p.mutable).collect(),
+            param_tys: f.params.iter()
+                .map(|p| if f.is_gen { Ty::Handle } else { ann_ty(p.type_ann.as_deref()) })
+                .collect(),
+            fast_flat: f.params.iter()
+                .map(|p| fast_flat_class(p, f.class_name.as_deref(), f.body, &class_fields_ord))
+                .collect(),
         })
     }).collect();
 
-    // fast_fns: symbols that will get a _fast variant (have at least one pure class param).
-    // `self` param has type_ann = None; resolve its class from f.class_name.
+    // fast_fns: symbols that will get a _fast variant (have at least one flattened class param).
     let fast_fns: HashSet<String> = eligible.iter()
-        .filter(|f| !f.is_gen && f.params.iter().any(|p| {
-            let cls = p.type_ann.as_deref()
-                .or_else(|| if p.name == "self" { f.class_name.as_deref() } else { None });
-            cls.map(|ann| class_fields_ord.contains_key(ann)).unwrap_or(false)
-            && !body_writes_param(f.body, &p.name)
-        }))
+        .filter(|f| !f.is_gen && fn_sigs[&f.symbol].fast_flat.iter().any(Option::is_some))
         .map(|f| f.symbol.clone())
         .collect();
 
-    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
+    // ハンドルを作りうる関数の集合を不動点で決める（9-2）。呼ぶ側を呼ばれる側より先に生成することもあるので、楽観的に
+    // 空から始め、作りうると分かった関数を足して作り直す（集合は増える一方なので関数の数 + 1 回で止まる）。前の周回の
+    // 生成は捨てる（文字列の定数・IC のセルの番号がずれない）。
+    let mut pushing: HashSet<String> = HashSet::new();
+    let mut ctx = loop {
+        let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
+        ctx.pushing_fns = pushing.clone();
 
-    for f in &eligible {
-        // Set current_class so field reads on 'self' are type-specialised.
-        ctx.current_class = f.class_name.clone();
-        if f.is_gen {
-            ctx.emit_gen_fn(&f.symbol, f.params, f.body);
-        } else {
-            ctx.emit_fn(&f.symbol, f.params, f.return_type, f.body);
+        // 組み込み関数を隠しうる最上位の名前（5-2）
+        for s in stmts {
+            crate::decl_names::each_declared_name(s, &mut |n, _, _| { ctx.top_names.insert(n.to_string()); });
         }
-        ctx.current_class = None;
-    }
+
+        for f in &eligible {
+            // Set current_class so field reads on 'self' are type-specialised.
+            ctx.current_class = f.class_name.clone();
+            if f.is_gen {
+                ctx.emit_gen_fn(&f.symbol, f.params, f.body);
+            } else {
+                ctx.emit_fn(&f.symbol, f.params, f.return_type, f.body);
+            }
+            ctx.current_class = None;
+        }
+        if ctx.fn_pushes == pushing {
+            break ctx;
+        }
+        pushing = ctx.fn_pushes.clone();
+    };
 
     // ── 統一 typed ABI 変種（{name}_typed）の生成 ──────────────────────────────
     // 候補: トップレベル関数で、全パラメータが `let` かつ int/float 注釈、
@@ -1161,3 +1485,62 @@ mod context;
 mod expr;
 mod stmt;
 mod function;
+
+#[cfg(test)]
+mod tests {
+    use super::generate_llvm_module;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::type_check::AstAnnotations;
+
+    /// オーバーロード（明示の `__init__` と自動生成の `__init__`・同名のメソッド・同名の最上位関数）はコンパイルせず、
+    /// ほかの関数は今までどおりコンパイルする（native_object_access_plan.md 1-8・§0.3 ⑨）。
+    /// ⚠ 以前は同じ `define` が 2 つでき、clang が落ちてモジュール全体がネイティブにならなかった。
+    #[test]
+    fn overloads_are_left_to_the_interpreter() {
+        let src = "\
+class Box:
+    mut w: int
+    mut h: int
+
+    fn __init__(mut self, let side: int) -> None:
+        self.w = side
+        self.h = side
+
+    fn area(let self) -> int:
+        return self.w * self.h
+
+    fn scale(mut self, let k: int) -> None:
+        self.w = self.w * k
+
+    fn scale(mut self, let kw: int, let kh: int) -> None:
+        self.w = self.w * kw
+        self.h = self.h * kh
+
+fn twice(let x: int) -> int:
+    return x * 2
+
+fn twice(let x: float) -> float:
+    return x * 2.0
+
+fn plain(let x: int) -> int:
+    return x + 1
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, exports) = generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+
+        let mut defined = std::collections::HashSet::new();
+        for line in ir.lines().filter(|l| l.starts_with("define ")) {
+            let sym = line.split('@').nth(1).and_then(|s| s.split('(').next()).expect("symbol");
+            assert!(defined.insert(sym.to_string()), "duplicate definition of {sym}");
+        }
+        assert!(defined.contains("plain_impl") && defined.contains("Box__area_impl"), "{defined:?}");
+        for overloaded in ["twice_impl", "Box____init___impl", "Box__scale_impl"] {
+            assert!(!defined.contains(overloaded), "{overloaded} must not be compiled: {defined:?}");
+        }
+        let names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"plain") && names.contains(&"area"), "{names:?}");
+        assert!(!names.contains(&"twice") && !names.contains(&"__init__") && !names.contains(&"scale"), "{names:?}");
+    }
+}

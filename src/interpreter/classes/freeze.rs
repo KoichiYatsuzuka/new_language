@@ -138,34 +138,12 @@ impl Interpreter {
         }
     }
 
-    /// フリーズプロトコル。
-    ///
-    /// `freeze_fields=true` のとき: `__freeze__` フックを呼び出し、インスタンスのフィールドを不変化する。
-    ///   `freeze` 文でコレクションを再帰的にフリーズする際に使用する。
-    ///
-    /// `freeze_fields=false` のとき: `__freeze__` フックのみ呼び出し、フィールドは不変化しない。
-    ///   `let` バインドではインスタンスの Rc 参照は共有されるため、フィールドを凍結すると
-    ///   他のすべての参照にも影響してしまう。`let` バインドは変数の再バインドを禁止するのみで、
-    ///   オブジェクトのフィールドの可変性には影響しない。
-    /// `let` に束縛する値を作る: **深いコピーを不変にしたもの**（python_builtins_plan.md のタスク 1-9）。
-    ///
-    /// `let x = <mut 変数>` / `let x = <式>`（ツリーウォーク・最上位・関数の中の slot）と `freeze x` の
-    /// **唯一の実装**。`freeze x` は `let x = x` と同じ結果になる（同じ値・同じ実行時の印）。
-    /// ⚠ 以前は 4 通りあった: `freeze` は**コピーせずその場で**不変にし（同じオブジェクトを持つ相手まで
-    ///   不変になる）、`let` はコピーしたがコレクションの中のインスタンスは不変にせず、関数の中の
-    ///   `let x = <式>` はインスタンスのときしかコピーしなかった（`let item = xs[0]` が `xs[0]` と共有）。
-    pub(crate) fn frozen_copy(&mut self, value: Value) -> Result<Value, String> {
-        let copied = Self::deep_copy_value(value);
-        self.freeze_value_in_place(&copied)?;
-        Ok(copied)
-    }
-
-    /// 値を**その場で**不変にする（[`Self::frozen_copy`] の中身）。
+    /// 値を**その場で**不変にする（`let` / `freeze` の束縛 [`Self::bind_copy`] の `CopyFreeze` が複製のあとで呼ぶ）。
     ///
     /// - インスタンス: `__freeze__` を呼び、フィールドをすべて不変にする
     /// - list / set / dict の値 / tuple: 中のインスタンスに同じことをする（1 段）
     /// - fixed_list: 使っていない確保分を切り詰める（`allocated_size()` が `len` になる）
-    fn freeze_value_in_place(&mut self, val: &Value) -> Result<(), String> {
+    pub(crate) fn freeze_value_in_place(&mut self, val: &Value) -> Result<(), String> {
         match val {
             Value::Instance(_) => self.apply_freeze_to_value(val, true),
             Value::List(rc) => {
@@ -194,6 +172,15 @@ impl Interpreter {
         }
     }
 
+    /// フリーズプロトコル。
+    ///
+    /// `freeze_fields=true` のとき: `__freeze__` フックを呼び出し、インスタンスのフィールドを不変化する。
+    ///   `freeze` 文でコレクションを再帰的にフリーズする際に使用する。
+    ///
+    /// `freeze_fields=false` のとき: `__freeze__` フックのみ呼び出し、フィールドは不変化しない。
+    ///   `let` バインドではインスタンスの Rc 参照は共有されるため、フィールドを凍結すると
+    ///   他のすべての参照にも影響してしまう。`let` バインドは変数の再バインドを禁止するのみで、
+    ///   オブジェクトのフィールドの可変性には影響しない。
     pub(crate) fn apply_freeze_to_value(&mut self, val: &Value, freeze_fields: bool) -> Result<(), String> {
         if let Value::Instance(ref inst_rc) = val {
             let class = inst_rc.borrow().class.clone();

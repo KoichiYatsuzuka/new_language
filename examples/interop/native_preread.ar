@@ -1,0 +1,29 @@
+# native_preread.ar — コンパイル済みコードの先読みが古くならないこと（native_object_access_plan.md 1-1）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_preread_module.ar
+#   2. cargo run --release -- examples/interop/native_preread.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_preread_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# mut self: メソッド経由で書き換わった後の値を読む
+mut a = m.Counter(0, 0.0)
+check("after self.inc() (int)", a.after_inc() == 1)
+mut b = m.Counter(0, 0.0)
+check("after self.inc() (float)", b.after_inc_f() == 0.5)
+
+# mut 仮引数: 関数経由で書き換わった後の値を読む
+mut c = m.Counter(0, 0.0)
+check("after bump(c)", m.via_param(c) == 10)
+check("the caller sees the write", c.n == 10)
+
+# let の受け手は今までどおり先読みする（値は同じ）
+let d = m.Counter(3, 1.25)
+check("let receiver / let self", m.let_sum(d) == 5.5)

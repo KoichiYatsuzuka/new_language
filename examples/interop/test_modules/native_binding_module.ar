@@ -1,0 +1,54 @@
+# native_binding_module.ar — コンパイル済みコードの let / mut の宣言の複製（native_object_access_plan.md 1-6）
+#
+# 規則（docs/spec.md の let/mut）: 共有するのは `let` の名前 → `let` のときだけ。
+#   mut x = e            … 常に深いコピー
+#   let x = <mut の名前>  … 複製してフリーズ
+#   let x = <式>          … 複製してフリーズ（`o.f` / `xs[0]` など・L2）
+# ⚠ 以前のコンパイル済みコードは宣言でどれも複製せず、元の値と一緒に変わっていた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_binding_module.ar
+
+class Inner:
+    mut v: int
+
+class Outer:
+    mut inner: Inner
+    mut xs: list[int]
+
+# let p = <インスタンスを返す式>: p は o.inner の写し
+fn let_from_attr(mut o: Outer) -> int:
+    let p = o.inner
+    o.inner.v = 5
+    return p.v
+
+# let snap = <list を返す式>: snap は o.xs の写し
+fn let_list_from_attr(mut o: Outer) -> int:
+    let snap = o.xs
+    o.xs.append(9)
+    return len(snap)
+
+# let it = ys[0]（要素）: it は ys[0] の写し（L2）
+fn let_from_element() -> int:
+    mut ys = [[1]]
+    let it = ys[0]
+    ys[0].append(9)
+    return len(it)
+
+# mut q = <式>: q を書き換えても o.inner は変わらない
+fn mut_from_attr(mut o: Outer) -> int:
+    mut q = o.inner
+    q.v = 7
+    return o.inner.v
+
+fn mut_list_from_attr(mut o: Outer) -> int:
+    mut ys = o.xs
+    ys.append(9)
+    return len(o.xs)
+
+# let a = <mut のローカル名>
+fn let_from_mut_name() -> int:
+    mut zs = [1, 2, 3]
+    let a = zs
+    zs.append(9)
+    return len(a)

@@ -1,0 +1,386 @@
+- 関数内のコメント、文字列がコメントとして認識されず、白い字で表示される。多分[]の認識に失敗している。
+- 定義へのジャンプがまともに動作していない。import文に飛んで終わりなことがほとんど
+- from XX import YYとしたとき、YYがモジュール名として認識されている
+
+    - 明らかにArrow根幹の字句解析機と異なる動作であるため、Arrow根幹を使わない箇所をすべて削除し、足りなくなった部分を補う方向が良いか
+
+---
+
+# 文字列・コメント・括弧の認識が exe とずれる不具合（2026-10-31 調査）
+
+## 症状
+
+`TeX_editor/math_hover.ar` の 101 行目 `r"組版エラー（閉じ括弧なし）: $\frac{1}{2$",` 以降で、
+102 行目の `]` が 91 行目の `[` と対応しない。それより後のコメント・文字列も白字になる（上の 1 つ目の不具合と同じ現象）。
+exe はこのコードを正しく解釈する。
+
+## 原因
+
+**TextMate 文法 [arrow.tmLanguage.json](../vscode-extension/syntaxes/arrow.tmLanguage.json) が、exe とは別の正規表現の字句解析器になっている。**
+
+- 拡張が wasm（本物の lexer）のトークンを使うのは、識別子の着色（semantic tokens、`wasm_providers.ts` の
+  `provideDocumentSemanticTokens`）とホバー・補完だけ。**文字列・コメントの範囲と括弧の対応は、すべてこの文法が決めている。**
+- 文法の `string-interpolation` が f 文字列以外の `"…"` / `'…'` / `"""…"""` / `r"…"` にも付いている。
+  101 行目の `{2` が埋め込み式の開始になり、その終わりは「次の `}`」だけ（`"` では閉じない）。
+  そのため、ファイルの残り全体が `string > meta.template.expression` になる。
+- 埋め込み式の中では `#comment` / `#string` を include していないので、コメントや文字列が白字になる。
+- exe（`src/lexer/scan.rs` の `next_token` → `literal.rs` の `lex_string_inner` / `lex_fstring`）では、
+  `{` に意味があるのは `f` / `fr` / `rf` だけ。
+
+検証方法: VS Code 本体の `node_modules.asar` から `vscode-textmate` と `vscode-oniguruma` を取り出し、
+`ELECTRON_RUN_AS_NODE=1 Code.exe` で文法を当てて、行ごとのスコープを出した（システムの Node は古く、このエンジンを読み込めない）。
+
+## exe と文法の食い違い（実測）
+
+各ケースは 1 行ずつ単独で確かめた。「暴走」は、以降のファイル全体が文字列扱いになることを指す。
+
+| # | 入力 | exe | 文法 | 影響 |
+|---|---|---|---|---|
+| 1 | `"x{y"`, `r"[{]"`, `b"…{"`, `m"…{"` | `{` は普通の文字 | 埋め込み式の開始になる | **暴走**（今回の原因） |
+| 2 | `"{{"`（f 文字列以外） | 普通の文字 | 埋め込み式が開く | **暴走** |
+| 3 | `f"\{x"` | `\{` は `{` そのもの（`lex_fstring`） | `\{` をエスケープ扱いしないので、`{` で埋め込み式が開く | **暴走** |
+| 4 | `$a"b$` | `$…$` 全体が 1 つの文字列（`scan.rs` の `Some('$')`。複数行にまたがってよい） | `$…$` のルールが無いので、中の `"` で文字列が始まる | **暴走** |
+| 5 | `$a#b$)` | 文字列 | `#` 以降がコメントになる | その行の `)` が消える |
+| 6 | 埋め込み式の中の `#`・`"`・`'` | — | コメント・文字列にならない | 白字 |
+| 7 | `r"\frac"`, `m"\alpha"` | raw なので `\` はエスケープではない | `\f` などをエスケープとして着色する | 見た目だけ |
+| 8 | 接頭辞 `r` `f` `m` `b` `fr` `rf` | 文字列の一部 | 変数として着色される | 見た目だけ |
+| 9 | `f"{ {1:2}[1] }"` | `{}` の入れ子を数えて扱う | 最初の `}` で閉じる | 見た目だけ |
+| 10 | 埋め込み式の中の `:`（`f"{a[1:2]}"` など） | 式の一部 | `[!:][^}]*` で、`}` までが書式指定として着色される | 見た目だけ |
+| 11 | `(x mustbe int)  # 注釈`、`(w mustbe str) != "World"` | コメント・文字列 | `mustbe-assertion` の型の範囲 `[\w\[\], ->]*` の ` ->` が**空白〜`>` の文字範囲**になっていて、`#` `"` `(` `)` まで型として食う | その行のコメント・文字列が消える（1-1 で発見） |
+
+※ `r"C:\dir\"` は exe でも閉じない（raw でも `\"` で文字列が終わらない）ので、食い違いではない。
+
+## 方針
+
+**文法は削除せず、exe の lexer に合わせて書き直す。**
+
+- 削除できない理由: VS Code の括弧の対応付け（ブラケットペアの着色・対応する括弧への移動）は、
+  **TextMate のトークン種別（文字列・コメントかどうか）しか見ない。** semantic tokens では変えられない。
+  文法を消すと、文字列やコメントの中の括弧まで対応付けされるようになる。
+- 文法は 1 行ずつ状態を持ち越す正規表現なので、exe と完全に同じにはできない。
+  そのため **暴走（以降が全部文字列になる）を 0 にすること**を必達とし、見た目だけの差は網で数えて減らす。
+- `arrow-stub.tmLanguage.json` は `source.ar` を include するだけなので、`arrow.tmLanguage.json` を直せば追随する。
+
+## フェーズ 1: 食い違いを測る網
+
+前提づくり。直す前に、食い違いの件数を数えられるようにする。
+
+- **1-1** `scripts/compare_tm_grammar.ps1`（仮称）を作る。
+  - 全例題（`compare_wasm_frontend.ps1` と同じ母集団）に文法を当てる。
+  - 文字ごとに「文字列か」「コメントか」を、wasm の `analysis.tokens`（`editor_tokens.rs` の `str` / `comment`）と突き合わせ、
+    一致しない範囲を出す。暴走（ファイル末尾まで文字列）は別枠で数える。
+  - TextMate エンジンは VS Code 同梱のものを使うか、`vscode-textmate` / `vscode-oniguruma` を devDependencies に入れる。
+    システムの Node は古いので、実行方法も決める（`ELECTRON_RUN_AS_NODE` か、Node の更新）。
+- **1-2** 上の表の 10 ケースを並べた確認用の例題を作る（`examples/` のどこに置くかは 1-1 の母集団に合わせる）。
+  1 ケースが暴走すると後ろが全部巻き込まれるので、各ケースの直後に `let z = (1)` のような括弧つきの行を置き、
+  網が「どのケースで暴走が始まったか」を特定できるようにする。
+- **1-3** 修正前の件数を記録する（ベースライン）。
+
+### フェーズ 1 の結果（2026-10-31）
+
+- 1-1: [scripts/compare_tm_grammar.ps1](../scripts/compare_tm_grammar.ps1)（本体は `compare_tm_grammar.js`）。
+  - VS Code 同梱の TextMate エンジンを `node_modules.asar` から `target/tm_engine/<版>/` に取り出して使う（npm もネットワークも要らない）。
+    実行は `ELECTRON_RUN_AS_NODE=1 Code.exe`。
+  - 文字ごとに S（文字列）/ C（コメント）/ O（それ以外）を両側で出して比べる。文法側は**最も外側の** `string.*` / `comment.*` スコープで決める
+    （lexer は f 文字列全体を 1 つの `Str` にするので、埋め込み式の中も S）。
+  - **SPILL**: 行の最初の非空白文字を、lexer はコード、文法は文字列/コメントとする行。前の行から文字列/コメントを持ち越した印で、0 が必達。
+  - キーワード: `keyword.rs` の語と文法の語を突き合わせる（2-6 の網。`Any` `Self` などの型キーワードは `support.type` の色でもよい）。
+  - 母集団: `examples/**/*.ar`（`archived` を除く・`compare_wasm_frontend.ps1` と同じ）＋ `vscode-extension/test_fixtures/*.ar`。
+- 1-2: [vscode-extension/test_fixtures/tm_grammar_cases.ar](../vscode-extension/test_fixtures/tm_grammar_cases.ar)（表のケース 1〜5, 7, 9〜11）。
+- 1-3 ベースライン（修正前の文法）:
+
+| 項目 | 件数 |
+|---|---|
+| 確かめたファイル | 657 |
+| SPILL（例題） | 3 行・1 ファイル（`examples/basics/math_string.ar` 42〜44 行。41 行の `m"unterminated ^{ab"` の `{` が、コメントの中の `}` まで閉じない） |
+| SPILL（1-2 の例） | 31 行（最初のケースの直後、13 行目から最後まで） |
+| その他の差 | 532 文字・18 ファイル（接頭辞 `r` / `f` / `m`、`$…$`、`mustbe` の後ろ） |
+| キーワード: 文法に無い | `Intersection` `Undefined` `alias` `case` `off` `on` `once` `protocol` |
+| キーワード: 文法だけ | `dataclass` `frozen` |
+
+## フェーズ 2: 文法の修正
+
+1-1 の網で 1 つずつ確かめながら直す。ケース番号は上の表。
+
+- **2-1** 文字列ルールを接頭辞ごとに分ける（ケース 1, 7, 8）。
+  - 接頭辞なし / `b`: エスケープあり・埋め込み式なし
+  - `r` / `m`: エスケープなし・埋め込み式なし（`\` の次の 1 文字は消費するが、着色はしない。`lex_string_inner(raw=true)` と同じ）
+  - `f`: エスケープあり・埋め込み式あり
+  - `fr` / `rf`: エスケープなし・埋め込み式あり
+  - 接頭辞の文字も文字列のスコープに含める。exe が認める組み合わせだけを扱う（小文字のみ、`rb` / `br` / `F` / `R` は無い）。
+- **2-2** `$…$` のルールを足す（ケース 4, 5）。`begin: \$`、`end: \$`、複数行にまたがってよい。
+  中身は文字列として扱い、エスケープは無し（`scan.rs` は `$` 以外を全部そのまま取り込む）。
+- **2-3** f 文字列の `{{` / `}}` / `\{` / `\}` を、埋め込み式より先に消費する（ケース 2, 3）。
+  `\{` / `\}` は raw でない f 文字列だけ（`lex_fstring` の `raw=false` 側）。
+- **2-4** 埋め込み式の中身を exe に合わせる（ケース 6, 9, 10）。
+  - `{` の入れ子を数える（自分自身を再帰的に include する `{ … }` ルール）。
+  - 書式指定 `[!:][^}]*` は、入れ子の外の最後の `!` / `:` にだけ当てる。正規表現で無理なら、書式指定の着色をやめる。
+  - ⚠ exe の `lex_fstring` は、埋め込み式の中の文字列リテラルを特別扱いしていない（`f"{d["}"]}"` の `}` で閉じる）。
+    文法を exe より賢くしないこと（ずれ方が変わるだけ）。
+- **2-5** `mustbe-assertion` の型の範囲を直す（ケース 11）。
+  - 文字クラス `[\w\[\], ->]` の ` ->` が空白〜`>` の範囲になっている。`-` を末尾に置くか `\-` にエスケープし、
+    型に現れる文字（英数字・`_`・`.`・`[` `]`・`,`・空白・`|`・`->`）だけにする。
+  - 型の終わりは exe のパーサが決めるので、文法は「`#` / `"` / `'` / `)` で必ず止まる」ことだけを守る。
+- **2-6** キーワード一覧を exe の `src/lexer/keyword.rs` に合わせる（末尾の節「その他」の 1）。
+  - 足す: `case` `protocol`（`class-def` にも）`alias` `on` `off` `once` `Undefined` `Intersection`。
+  - 外す: `frozen` `dataclass`（exe ではキーワードではない）。
+  - 手で追随し続けるとまたずれるので、1-1 の網が「`keyword.rs` の一覧と文法の語の突き合わせ」を見る（1-1 で実装済み）。
+    `keyword.rs` に無い語をキーワード扱いしていたら、または `keyword.rs` の語が文法に無ければ失敗にする。
+- **2-7** 識別子と数値の規則を exe に合わせる（「その他」の 1）。
+  - 識別子: exe は `is_alphabetic()` で始まり `is_alphanumeric()` / `_` が続く（Unicode）。文法の `[A-Za-z_]\w*` を
+    Unicode の英字・数字にする（Oniguruma の `\p{L}` / `\p{N}` など）。
+  - 数値: 虚数の `j` 接尾辞（`lex_decimal_number`）を足す。
+- **2-8** `language-configuration.json` の `autoClosingPairs` に `notIn` を付ける（「その他」の 2）。
+  - `'` / `"` は `["string", "comment"]` の中では閉じない。括弧は文字列の中でも閉じてよい（好みで決める）。
+  - ⚠ `notIn` は TextMate のトークン種別で判定されるので、2-1〜2-5 の後でないと正しく効かない。
+- **2-9** 暴走が 0 件になったことと、見た目だけの差の残りを 1-1 で記録する。
+
+### フェーズ 2 の結果（2026-10-31・2-9）
+
+| 項目 | 修正前（1-3） | 修正後 |
+|---|---|---|
+| SPILL（例題） | 3 行・1 ファイル | **0** |
+| SPILL（1-2 の例） | 31 行 | **0** |
+| その他の差 | 532 文字・18 ファイル | **0** |
+| キーワード一覧 | 文法に無い 8 語・文法だけ 2 語 | **一致** |
+| `TeX_editor/math_hover.ar` | 101 行目以降が文字列 | 差 0 |
+
+- 文字列の規則（2-1〜2-4）は 1 度に書き直した（生成に使ったのは使い捨てのスクリプトで、リポジトリには置いていない）。
+  以後は `arrow.tmLanguage.json` を直接直し、`compare_tm_grammar.ps1` で確かめる。
+- 2-4 の書式指定は「閉じ `}` の直前で、括弧・引用符を含まないもの」だけにした（`f"{a[1:2]}"` の `:2]` を書式指定にしない）。
+
+## フェーズ 3: 仕上げ
+
+- **3-1** `make-vsix.ps1` で VSIX を作り、`math_hover.ar` で 101 行目以降の括弧の対応と、コメント・文字列の色を目視で確かめる。
+- **3-2** 1-1 の網を `CLAUDE.md` のゲート表と `vscode-extension-dev` skill に載せる
+  （**文法を触ったとき**と **lexer の文字列・コメントの規則を触ったとき**に走らせる）。
+  `scripts/` にファイルを足すので、`generate-codebase-map.ps1` も走らせる。
+
+### フェーズ 3 の結果（2026-10-31）
+
+- 3-1: VSIX を作った（`vscode-extension/arrow-0.4.0.vsix`）。**目視の確認はまだ**（VS Code で `math_hover.ar` を開いて確かめる）。
+- 3-2: `CLAUDE.md` のゲート表と `vscode-extension-dev` skill に `compare_tm_grammar.ps1` を載せた。codebase-map は 1-1 で再生成済み。
+
+---
+
+# import 文まわりで exe とずれる不具合（2026-10-31 調査）
+
+上の 2 つ目（定義へのジャンプが import 文に飛んで終わる）と 3 つ目（`from XX import YY` の YY がモジュール名になる）の原因。
+
+## 結論
+
+import 文そのものの字句解析と構文解析は、wasm が exe と同じコード（`src/lexer`・`src/parser/imports/`）を使うので一致している。
+**ずれているのは、exe の解析を通らない次の 4 層。**
+
+| 層 | 場所 | 関係する不具合 |
+|---|---|---|
+| A. TextMate 文法 | `arrow.tmLanguage.json` の `import-decl` | 3 つ目（色） |
+| B. エディタ用の宣言表 | パーサの `#[cfg(feature = "editor")]` 部分（`src/parser/imports/cpp.rs` の `parse_from_import_stmt`） | 3 つ目（主因） |
+| C. `.` 補完のモジュールのメンバ表 | `crates/arrow-frontend/src/analyze.rs` の `collect_module_members` | 補完 |
+| D. 定義へのジャンプ | `vscode-extension/src/wasm_providers.ts` の `provideDefinition` | 2 つ目 |
+
+検証方法:
+- A は前節と同じ方法で、VS Code の TextMate エンジンに文法を当てた。
+- B・C は `out/frontend.js` の `analyze()` を `ELECTRON_RUN_AS_NODE=1 Code.exe` で呼び、解析結果の JSON を見た。
+  例題は `main.ar` と `pkg/__init__.ar`・`pkg/util.ar`（`fn helper`・`class Other`）。
+- D はコードを読んで判断した。実際に飛ばしては確かめていない。
+
+## A. TextMate 文法の `import-decl`
+
+この規則は `import … [with …] [as …]` の形しか知らない。`from` 文は、途中の `import` から先だけがこの規則に当たる。
+
+| 入力 | 文法の判定 | exe での意味 |
+|---|---|---|
+| `from pkg.util import helper, Other as O` | `pkg` `util` は変数、`helper` は**モジュール名**（`entity.name.namespace`）、`Other` と `O` は変数 | `pkg.util` がモジュール、`helper` `Other` `O` は取り込んだ名前 |
+| `from mod import[py] Name, Two` | `Name` だけモジュール名、`Two` は変数 | どちらも取り込んだ名前 |
+| `import a.b as m`、`import[cpp-dll] … as sakura` | 別名がクラス色（`entity.name.type.class`） | モジュール |
+| `import[rs] libm[0.2] as lm` | `[0.2]` で規則が切れ、`lm` は変数 | バージョン指定と別名 |
+
+⚠ 識別子の色は、semantic tokens が付くと TextMate の色を上書きする。**A だけ直しても、B が残る限り `helper` はモジュールの色のまま。**
+
+## B. エディタ用の宣言表
+
+`parse_from_import_stmt` が、取り込んだ名前を種類にかかわらず `EditorKind::Module` で登録している（`note_def`）。
+登録は import 先を読み込む（`load_module`）**前**に行われるので、この時点では名前の種類が分からない。
+
+wasm で実測すると、型検査は正しい型を知っているのに、宣言表だけがモジュール扱いだった。
+
+```
+sym helper  module  from pkg.util import[ar-auto] helper   ← 型検査の型は function{let x:int}->int
+sym O       module  from pkg.util import[ar-auto] Other    ← 型検査の型は type[pkg.util.Other]
+```
+
+この宣言表が semantic tokens（着色）・ホバー・補完・シグネチャヘルプに使われる。
+ホバーには関数のシグネチャではなく `from pkg.util import[ar-auto] helper` が出る（書いていない `[ar-auto]` も表示される）。
+
+## C. `.` 補完のモジュールのメンバ表
+
+メンバ表の鍵（`.` の前に書く名前）を「別名か、モジュール名の最後の部分（`module.last()`）」で決めている。
+exe が束縛する名前（`Stmt::Import::bind`・CPython と同じ規則）を見ていない。
+
+- `import pkg.util` で、exe が束縛するのは `pkg` なのに、鍵は `util` になる（実測: `member keys [ 'Other', 'u', 'util' ]`）。
+  そのため、使えるはずの `pkg.` では補完が出ず、束縛されていない `util.` で補完が出る。
+- 別名なしの `import[cpp-dll]` では、`module` が解決済みのヘッダのパスなので、鍵がパスになって引けない（コードを読んでの判断）。
+
+## D. 定義へのジャンプ
+
+- 飛び先は常に今のファイル（`document.uri`）。解析結果に、import 先の宣言のファイルと位置が入っていない。
+- そのため、取り込んだ名前（`from X import Y` の `Y`、`import m` の `m`）は宣言表の位置、つまり import 文に飛ぶ。
+- `mod.f` のメンバが引けないときは、名前だけで今のファイルを探し直す（`lookup`）。その結果、**同じ名前の無関係な宣言に飛ぶ**。
+  - 例: `math_hover.ar` 48 行目の `mhn.warmup()` の `warmup` から、39 行目の自分の `fn warmup` に飛ぶ（コードを読んでの判断）。
+  - シグネチャヘルプ（`callContext` → `lookup`）も同じ引き方なので、`mod.f(` で同じ名前の別の関数のシグネチャが出うる。
+- 飛び先を出すための材料は AST にある。import 先の宣言が持つ `SrcRange` のトークン（`Spanned`）に、ファイル名と行・列が入っている。
+  足りないのは、解析結果（JSON）に出すことと、拡張がそれを使って別のファイルを開くこと。
+
+## 方針
+
+- 判断は exe の解析（パーサ・型検査）に任せ、拡張と `analyze.rs` は転記だけにする。前節と同じく、拡張の側で推し量らない。
+- B を A より先に直す（着色は semantic tokens が勝つため）。
+
+## フェーズ 4: 解析結果を exe に合わせる（frontend 側）
+
+- **4-1** 確認用の例題を作る。`import a.b` / `import a.b as m` / `from a.b import f, C as D` / `from . import x` /
+  `import[cpp-dll] … as s` / 別名なしの `import[cpp-dll]` を含め、取り込んだ名前を使う行も置く。置き場所は 1-1 の母集団に合わせる。
+- **4-2**（B）`from X import Y` の `Y` の種類を、import 先の本体（`loaded.body`）から決める。
+  - 関数 / ジェネレータ / クラス / トレイト / 列挙 / 定数・変数 / サブモジュール を区別し、関数ならシグネチャも付ける。
+  - 宣言表への登録を、import 先の読み込みの後に回す（位置は名前を読んだ時点のものを控えておく）。
+  - 読めなかった import（`try_import` が `None`）では種類が分からない。その場合の扱いを決める
+    （例: 種類「不明」にして着色しない）。黙ってモジュールにしない。
+  - 同じ問題が `from . import x`（`from_dots_import`）の側にもないか確かめる。
+- **4-3**（C）`collect_module_members` の鍵を `Stmt::Import::bind.name` にする。
+  `import a.b.c` では `a` → `b` → `c` と入れ子でたどれるようにする（`a` のメンバにサブモジュール `b` を載せる）。
+- **4-4**（D の材料）解析結果の宣言とメンバに、定義のファイルと位置を加える。
+  - import 先の宣言は `SrcRange` のトークンの `span` から取る。
+  - 取り込んだ名前（`from X import Y`）には、import 先での `Y` の定義の位置を付ける。
+  - 元のソースが無い import 先（`.ars` スタブ・C++ ヘッダ・py / cs / js のスタブ）で、何を指すか決める
+    （スタブのファイルがあればそこ、無ければ位置なし）。
+- **4-5** `compare_wasm_frontend.ps1` を走らせ、診断が変わっていないことを確かめる（4-2 はパーサの editor 部分を触るため）。
+
+### フェーズ 4 の結果（2026-10-31）
+
+- 4-1: 例は `crates/arrow-frontend/tests/import_kinds.rs` のテスト（6 件）として置いた。拡張が読む JSON の水準で、
+  種類・シグネチャ・定義の場所・メンバ表の鍵を検査する（`tests/imports.rs` と同じ作り）。
+- 4-2: [src/parser/imports/editor_kinds.rs](../src/parser/imports/editor_kinds.rs)（`editor` 専用）。
+  - `parse_from_import_stmt` は今までどおり名前を読んだ場所で仮に `Module` で控え、import 先を読み込んだ**後**に正体で書き直す。
+  - 束縛の判定は `decl_names::each_declared_name`（唯一の定義）に任せる。再エクスポート（`from b import x` の `x` が `b` の
+    `from a import x`）は元の定義までたどる。サブモジュールはパーサが足した読み込みの文（`from_import_submodules` /
+    `from_dots_import`）から判る。
+  - 引けない名前は新しい種類 `DeclKind::Unresolved`（`"unresolved"`）。拡張はこの種類を着色しない。
+- 4-3: `collect_module_members` の鍵を `Stmt::Import::bind.name` にした。モジュールの名前（`pkg.util`）でも引け、
+  パッケージの表には読み込まれたサブモジュールが `kind: "module"`・`type: "pkg.util"` で載る。
+- 4-4: `Decl::def`（`editor_index::DefLoc`）。解析結果の `symbols[].def` / `members[..].members[].def` に
+  `{ file, line, charCol }`（行は 0 始まり・列は**文字単位**・パスは wasm の形）で出す。
+  - `import m` はモジュールのファイルの先頭。`import a.b` は束縛したパッケージ `a` のファイル。cpp 系はヘッダ。
+  - ⚠ 位置を持つ文が無いモジュール（空の `__init__.ar`・名前空間パッケージ）は `def` が無い（飛べない）。
+- 4-5: `compare_wasm_frontend.ps1` 657 件すべて一致（MISSED / INVENTED / parse mismatch 0）。frontend の単体テスト 758 件が通る。
+  `test_build_gate.ps1` も通る。
+
+## フェーズ 5: 拡張側
+
+- **5-1**（D）`provideDefinition` を 4-4 の位置で引く。別のファイルなら、その URI の Location を返す。
+  - `mod.f` は受け手の型（モジュール）のメンバとして引き、**名前だけで今のファイルを探し直す処理（`lookup` への落ち込み）を受け手付きの場合はやめる**。
+  - 位置の無い宣言では飛ばない（import 文へ飛ばさない）。
+- **5-2** シグネチャヘルプの `callContext` も、`mod.f(` のときは受け手のメンバから引く（5-1 と同じ引き方）。
+- **5-3**（A）文法の import 規則を分ける。
+  - `from <モジュール> import[tag] <名前>, …` を別の規則にする。モジュールの部分（相対の `.` を含む）を namespace にする。
+    取り込んだ名前には namespace を付けない（種類は semantic tokens に任せる）。
+  - `as` の後の別名をクラス色にしない。
+  - `import[rs] name[ver]` のバージョン指定を扱う。
+- **5-4** 型の位置の判定 `inTypePosition` を直す（末尾の節「その他」の 4）。
+  - 直前の `:` / `->` が**カーソルと別の行**にあれば、型の位置としない。トークン列に改行が入らないため、
+    今は `if x:` / `fn f():` の次の行の先頭でも型の位置と判定する。
+  - ⚠ 括弧の中の改行（`fn f(a:` の次の行に型を書く）は型の位置のままにしたい。
+    行で判定して足りなければ、`editor_tokens.rs` が `Newline` トークン（括弧の外の論理的な行末）も出すようにし、
+    その有無で判定する。lexer が括弧の深さを数えているので、拡張側で括弧を数え直さずに済む。
+- **5-5** `.` の受け手の型 `receiverTypeAt` を、受け手の式全体の型で引く（「その他」の 4）。
+  - `a.b.` / `f().` / `x[0].` では、受け手の式の末尾トークン（`b` / `)` / `]`）の位置にある推論型（`exprTypes`）を使う。
+    名前だけでの引き直し（`lookup`）は、受け手が単独の識別子のときだけにする。
+  - 構文エラー中は `exprTypes` が前回成功時（`lastGood`）のものになり、位置がずれうる。ずれたら出さない（誤った候補を出すより良い）。
+- **5-6** REPL へ送るセル区切り `#%%`（`extension.ts` の `CELL_MARKER`）を、lexer のコメントの範囲で判定する（「その他」の 3）。
+  `analysis.tokens` の `comment` のうち、行頭から始まり `#%%` で始まるものだけを区切りにする。
+  今は `"""…"""` の中の行頭にある `#%%` も区切りになる。
+
+### フェーズ 5 の結果（2026-10-31）
+
+- 5-1: `provideDefinition` は宣言の `def`（import 先）へ飛ぶ。`imported` の宣言（`at` が import 文）は `def` が無ければ飛ばない。
+  `.` の後ろの名前は受け手の型のメンバ（`members[..].def`）で引き、名前だけでの引き直しをやめた（ホバーも同じ）。
+  宣言そのものの上（`import ..base` の `base`。直前が `.`）は受け手の経路より先に宣言で引く。
+  - 列は文字単位で来るので、拡張が飛び先のファイルの行を読んで UTF-16 に直す（`defLocation`）。
+  - Rust 側に `Decl::imported`（`symbols[].imported`）を足した。
+- 5-2: シグネチャヘルプの `mod.f(` / `obj.m(` は受け手の型のメンバのシグネチャ。`callContext` は括弧の外の行末で止まる。
+- 5-3: 文法に `from-import-decl` を足し、`import-decl` の別名をモジュール色に、`import[rs] name[ver]` のバージョンを扱った。
+  取り込んだ名前は文法では着色しない（semantic tokens が種類で塗る）。
+- 5-4: `editor_tokens.rs` が括弧の外の行末を `newline` トークンとして出す。`inTypePosition` は直前が `newline` なので
+  ブロックの 1 行目を型の位置にしない（拡張側の判定は変えていない）。
+- 5-5: `.` の受け手の型を式全体で引く（`typeOfExprEndingAt`）。`a.b.` はメンバの型をたどり、`f().` / `x[0].` は
+  その位置に**ちょうど**ある推論型。推論型は修飾名（`pkg.util.Other`）で来るので、`analyze.rs` が import 先の型の
+  表を修飾名でも登録する（`merge_qualified`）。
+- 5-6: `cellMarkerLines`（lexer の `comment` トークンのうち行頭の `#%%`）。wasm が読めないときだけ行の正規表現に戻る。
+- `stress.js`: 文書を `file` の URI として解析する（以前はパスを渡さず、import が 1 つも読めていなかった）。
+  import 先にソースが無い名前（`def` が null）は `def none` に数え、そこで飛んだら miss。`bind` の期待値を CPython の
+  束縛（`import a.b` は `a`）に合わせ、字下げした import を除いた。
+  - 結果: threw 0・hover misses 0・**def misses 0**・def none 228・bind misses 0（以前 2）・typed vars 2624（変化なし）。
+- `compare_wasm_frontend.ps1` 657 件一致・`compare_tm_grammar.ps1` 緑・`test_build_gate.ps1` 緑。
+
+**残り（飛び先が無い 228 件の内訳）**: py-int 66・cs/rs/js 25（ソースが無い・正しい）、名前空間パッケージ
+（`import pkg.mod` が束縛する `__init__` の無い `pkg`）、`.arc` の埋め込みスタブ（位置を持たない）、`import[py]` の
+モジュール 62（`.py` のファイルへは飛べるはずだが、`LoadedModule` がパスを持たない）、メタ関数（`MetaFnDef` が位置を持たない）。
+直すなら `LoadedModule` に読み込んだファイルのパスを持たせるのが筋。
+
+## フェーズ 6: 仕上げ
+
+- **6-1** VSIX を作り、4-1 の例題と `math_hover.ar` で、着色・ホバー・補完・定義へのジャンプを目視で確かめる。
+  5-4〜5-6 は、ブロックの 1 行目での補完・`a.b.` の補完・docstring の中の `#%%` で確かめる。
+- **6-2** 4-1 の例題を `vscode-extension/stress.js`（または debug runner）の確認に足し、
+  取り込んだ名前の種類と定義の位置を退行検査できるようにする。
+
+### フェーズ 6 の結果（2026-10-31）
+
+- 6-1: VSIX を作り直した（`vscode-extension/arrow-0.4.0.vsix`）。**目視の確認はまだ**。
+- 6-2: 種類と定義の位置は `crates/arrow-frontend/tests/import_kinds.rs`（7 件・`compare_wasm_frontend.ps1` が前段で走らせる）で、
+  拡張の定義へのジャンプは `stress.js` の `def misses`（import 先へ飛べるか・飛び先のファイルがあるか）で退行検査する。
+
+---
+
+# その他、拡張が独自に解析している箇所（2026-10-31 調査）
+
+拡張の中で文字単位の字句解析をしているのは、実質 **TextMate 文法だけ**。TypeScript 側は wasm のトークン列を使うように置き換わっている。
+ただし、トークン列の上で構文を推し量っている箇所が残っている。タスクは上のフェーズ 2（2-6〜2-8）とフェーズ 5（5-4〜5-6）に入れた。
+
+## 1. TextMate 文法のキーワード・識別子・数値（→ 2-6, 2-7）
+
+キーワードの色は文法だけが決める（semantic tokens は識別子にしか付かない）。そのため、文法の一覧と exe のキーワード表がずれると、そのまま色に出る。
+比較は `src/lexer/keyword.rs` の一覧と、文法の `match` に出てくる語をスクリプトで突き合わせた。
+
+| 内容 | 例 |
+|---|---|
+| exe ではキーワードなのに、文法に無い | `case` `protocol` `alias` `on` `off` `once` `Undefined` `Intersection`（例えば `case` は無色になる） |
+| exe ではキーワードではないのに、文法がキーワード扱いする | `frozen` `dataclass`。この名前の識別子がキーワード色になる |
+| 識別子に使える文字 | exe は Unicode の英字（日本語の識別子も可）、文法は `[A-Za-z_]` だけ |
+| 数値 | 虚数 `1j` の規則が無い |
+
+## 2. `language-configuration.json`（→ 2-8）
+
+- 自動で閉じる括弧・引用符の設定（`autoClosingPairs`）に `notIn` が無い。コメントや文字列の中で `'` を打っても `''` になる。
+- 括弧の対応付けは、このファイルの `brackets` と TextMate のトークン種別で決まる。文法を直せば追随する。
+
+## 3. セル区切り `#%%` の検出（→ 5-6）
+
+`extension.ts` の `CELL_MARKER = /^#%%/` で、REPL へ送る範囲を行ごとに決めている。
+`"""…"""` の中の行頭にある `#%%` も区切りと見なす（exe では文字列の中身）。影響は小さい。
+
+## 4. トークン列の上で構文を推し量っている箇所（`wasm_providers.ts`・→ 5-2, 5-4, 5-5）
+
+字句解析ではないが、パーサが知っていることを拡張が推測しているので、同じ種類のずれが起きる。いずれもコードを読んでの判断で、動かしては確かめていない。
+
+| 関数 | 推測の仕方 | 起きうること |
+|---|---|---|
+| `inTypePosition` | 直前のトークンが `:` か `->` なら型の位置 | トークン列に改行が入らないので、`if x:` / `fn f():` の次の行の先頭でも型の位置になる。ブロックの 1 行目では型しか補完に出ない |
+| `receiverTypeAt` | `.` の直前の識別子 1 つだけを受け手として、名前で引く | `a.b.` は `b` を名前だけで引くので別のものの型を拾いうる。`f().` / `x[0].` は補完が出ない |
+| `callContext` | 括弧を数えて関数名を見つけ、名前で引く | `mod.f(` で、同じ名前の別の関数のシグネチャが出うる（import の節の D と同じ） |
+
+## 対象外としたもの
+
+- `wasm_host.ts` の正規表現: 診断メッセージの中のパスの表記を書き換えるだけで、ソースは読まない。
+- `stress.js` / `debug_runner.ts`: 開発用の道具。VSIX の動作には関係しない。
+- `make-vsix.ps1`: 字句解析をしていない。

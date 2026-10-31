@@ -1,0 +1,27 @@
+# native_call_binding.ar — コンパイル済みの関数を名前つき引数・既定値で呼ぶ
+# （native_object_access_plan.md 1-11・§0.3 ⑭ ⑮）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_call_binding_module.ar
+#   2. cargo run --release -- examples/interop/native_call_binding.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_call_binding_module as m
+
+let PREFIX = "main-"
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("keyword arguments are bound by name", m.sub(b=1, a=10) == 9)
+check("an omitted argument takes its default", m.sub_default(10) == 7)
+check("a defaulted argument given by keyword", m.sub_default(b=4, a=10) == 6)
+check("a default is evaluated in the defining module", m.label(7) == "id-x7")
+check("an explicit argument replaces the default", m.label(7, "t") == "t7")
+# 関数値を通しても同じ
+let f = m.sub_default
+check("a function value with an omitted argument", f(20) == 17)
+check("compiled code calling through a function value", m.through_value() == 7)

@@ -9,7 +9,7 @@
     the rest of its lifetime.
   - ⚠ A class may define `fn __freeze__(mut self)`, which runs once at the `freeze`.
   - ⚠ `freeze x` gives **the same result as `let x = x`** (task 1-9, one implementation
-    `frozen_copy`): `x` is rebound to a frozen **deep copy**, so other holders of the object
+    `bind_copy(BindCopy::CopyFreeze, ..)`): `x` is rebound to a frozen **deep copy**, so other holders of the object
     (e.g. a caller that passed it to a `mut` parameter) stay mutable. Works inside functions.
 - **`const` is immutable as a whole** (top-level, local, class, trait, enum member — implicitly — and an
   imported module's `const`). Assigning to it (`C.K = ..`, `c.K = ..`, `self.K = ..` even in `__init__`,

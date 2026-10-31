@@ -1,0 +1,49 @@
+# native_builtin_fast_module.ar — 引数の型が分かる組み込み関数をネイティブで行う（native_object_access_plan.md 5-2）
+#
+# - `for i in range(..)`（引数が int・刻みが無いか 0 でないリテラル）はカウンタのループ（反復子もループ変数の
+#   箱詰めもしない）。刻みが変数のときは今までどおり range を作って反復する
+# - `float(<int>)` は命令 1 つ、`len(x)` は組み込みと同じ `len_of`、`str(<int>)` は組み込みと同じ `str` を直接呼ぶ
+# ⚠ 以前は range を作って `CB_ITER_NEXT` で回し、`float` / `len` / `str` は値として引いて `CB_CALL_FN` で呼んでいた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_builtin_fast_module.ar
+
+fn loops() -> str:
+    mut a = 0
+    for i in range(5):
+        a += i
+    mut b = 0
+    for i in range(2, 7):
+        b += i
+    mut c = 0
+    for i in range(10, 0, -3):
+        c = c * 10 + i
+    mut d = 0
+    for i in range(3, 3):
+        d += 1
+    return str(a) + "," + str(b) + "," + str(c) + "," + str(d)
+
+fn control(let n: int) -> int:
+    mut t = 0
+    for i in range(n):
+        if i % 2 == 0:
+            continue
+        if i > 7:
+            break
+        for j in range(i):
+            t += j
+    return t
+
+fn variable_step(let s: int) -> int:
+    mut t = 0
+    for i in range(0, 20, s):
+        t += i
+    return t
+
+fn scalars(let k: int, let x: float) -> str:
+    let f = float(k) / 4.0
+    let g = float(x)
+    return str(f) + "|" + str(g) + "|" + str(k * -3) + "|" + str(k * 1000000000000)
+
+fn lengths(let xs: list[int], let s: str, let d: dict[str, int]) -> int:
+    return len(xs) * 100 + len(s) * 10 + len(d)

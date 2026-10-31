@@ -25,6 +25,7 @@ import {
     forgetDocument,
     loadPrelude,
     clearAnalysisCache,
+    cellMarkerLines,
 } from './wasm_providers';
 import { loadFrontend, frontendLoadError, invalidateModules } from './frontend';
 
@@ -65,15 +66,22 @@ const CELL_MARKER = /^#%%/;
 /**
  * Return the text of the `#%%`-delimited cell that contains the cursor line.
  * If no `#%%` marker surrounds the cursor, the entire document is treated as one cell.
+ *
+ * A marker is a `#%%` comment as the lexer sees it (`cellMarkerLines`), so a `#%%` line inside a
+ * `"""…"""` string is not one (VSIX_update_plan.md 5-6).
  */
 function getCellAtCursor(editor: vscode.TextEditor): string {
     const doc = editor.document;
     const cursorLine = editor.selection.active.line;
     const lineCount = doc.lineCount;
+    // ⚠ Falls back to the line regex only when the frontend (wasm) failed to load: then no analysis
+    //   exists at all, and sending cells must still work. The only difference is the string case above.
+    const markers = cellMarkerLines(doc);
+    const isMarker = (i: number) => (markers ? markers.has(i) : CELL_MARKER.test(doc.lineAt(i).text));
 
     let startLine = 0;
     for (let i = cursorLine; i >= 0; i--) {
-        if (CELL_MARKER.test(doc.lineAt(i).text)) {
+        if (isMarker(i)) {
             startLine = i + 1; // skip the #%% marker line itself
             break;
         }
@@ -81,7 +89,7 @@ function getCellAtCursor(editor: vscode.TextEditor): string {
 
     let endLine = lineCount - 1;
     for (let i = cursorLine + 1; i < lineCount; i++) {
-        if (CELL_MARKER.test(doc.lineAt(i).text)) {
+        if (isMarker(i)) {
             endLine = i - 1;
             break;
         }

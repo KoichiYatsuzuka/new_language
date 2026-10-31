@@ -1,0 +1,23 @@
+# native_path_assign.ar — コンパイル済みコードの `a.b.c = v` を、途中の値を積まない 1 回の呼び出しで書く
+# （native_object_access_plan.md 12-3・D-13）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_path_assign_module.ar
+#   2. cargo run --release -- examples/interop/native_path_assign.ar
+#
+# 期待値 "1.5:100:hi:7:1.0:-99:-1.0":
+#   1.5:100:hi:7 … 2 段の書き込み（float のリテラル・int の演算・文字列・インスタンスの変数）をループの中で
+#   1.0:-99      … 3 段の書き込み（float の演算・int の符号反転）
+#   -1.0         … 値がメソッド呼び出し（途中の inner を差し替える）なら、書くのは差し替える前の inner（VM と同じ順）
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_path_assign_module as m
+
+fn check(let label: str, let got: str) -> None:
+    if got != "1.5:100:hi:7:1.0:-99:-1.0":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("path assignments of a compiled module", m.run_checks())
+check("the same sites again", m.run_checks())

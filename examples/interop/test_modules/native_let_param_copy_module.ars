@@ -1,0 +1,20 @@
+class Tagged:
+    mut tag: int
+    mut n: int
+    fn __copy__(self) -> Tagged:
+        ...
+    fn __init__(mut self, tag: int, n: int) -> None:
+        ...
+
+
+fn read_tag(t: Tagged) -> int:
+    ...
+
+fn from_mut() -> int:
+    ...
+
+fn from_let() -> int:
+    ...
+
+fn from_temporary() -> int:
+    ...

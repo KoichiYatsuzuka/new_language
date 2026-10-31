@@ -1,0 +1,68 @@
+# slowdown.ar — slowdown_core.ar の各操作の単価: MICRO <名前> <1 回あたりの ns>（空のループとの差）
+# 非コンパイル・コンパイル済みの両方で同じファイルを走らせる（scripts/native_slowdown.ps1・native_slowdown_analysis.md）。
+# 回数は 200000 × AR_BENCH_SCALE（既定 1）
+
+import[py-int] time
+import slowdown_core as d
+
+let N = 200000 * int(getenv("AR_BENCH_SCALE", "1"))
+
+fn report(let name: str, let secs: float, let base: float, let n: int) -> None:
+    print("MICRO " + name + " " + str((secs - base) * 1000000000.0 / float(n)))
+
+mut t = time.perf_counter()
+let e0 = d.e_empty(N)
+let base = time.perf_counter() - t
+
+let fl: list[float] = [1.0, 2.0]
+mut b = d.Body("b", d.Vec3(1.0, 2.0, 3.0), 2.0)
+
+t = time.perf_counter()
+let r1 = d.e_len(fl, N)
+report("len_callback", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r2 = d.e_str_lit(N)
+report("str_lit", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r3 = d.e_str_add("body-", "1", N)
+report("str_add_vars", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r3b = d.e_str_add_discard("body-", "1", N)
+report("str_add_discard", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r4 = d.e_str_concat(N)
+report("str_concat", time.perf_counter() - t, base, N)
+
+mut xs: list[float] = []
+t = time.perf_counter()
+let r5 = d.e_append_float(xs, N)
+report("append_float", time.perf_counter() - t, base, N)
+
+mut ss: list[str] = []
+t = time.perf_counter()
+let r6 = d.e_append_str(ss, "a", N)
+report("append_str", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r7 = d.e_new_vec(N)
+report("new_vec", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r7b = d.e_new_vec_discard(N)
+report("new_vec_discard", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r8 = d.e_field_write(b, N)
+report("field_write", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r9 = d.e_nested_write(b, N)
+report("nested_write", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r10 = d.e_nested_read(b, N)
+report("nested_read", time.perf_counter() - t, base, N)

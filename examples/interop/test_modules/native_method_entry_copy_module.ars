@@ -1,0 +1,29 @@
+class Inner:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+class Box:
+    mut inner: Inner
+    fn peek(self, mut o: Box) -> int:
+        ...
+    fn peek_arg(self, b: Box, mut o: Box) -> int:
+        ...
+    fn me(self) -> Box:
+        ...
+    fn pass_arg(self, other: Box) -> Box:
+        ...
+    fn sub(self, a: int, b: int = ...) -> int:
+        ...
+    fn __init__(mut self, inner: Inner) -> None:
+        ...
+
+
+class Probe:
+    mut seen: int
+    fn __init__(mut self, i: Inner, mut j: Inner) -> None:
+        ...
+    fn __init__(mut self, seen: int) -> None:
+        ...
+

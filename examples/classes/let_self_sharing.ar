@@ -1,0 +1,57 @@
+# let_self_sharing.ar — `let` の受け手に `let self` のメソッドを呼ぶと受け手を共有する
+# （native_object_access_plan.md 6-1・D-8）。
+#
+# 値渡しの規則（`docs/spec.md`）: 複製するのは `mut` の値を `let` で受けるときだけ。`let self` も
+# 引数と同じ規則で、受け手が `let` の名前なら共有し、`mut` の名前・名前でない式なら複製する。
+# 共有しても、どちらの側からも書き換えられない（両方 `let`）ので結果は変わらない — `===` で同一性を見る
+# この形が唯一の網（`let_arg_sharing.ar` と同じ）。
+# ⚠ 以前の VM はメソッド呼び出しの命令が受け手の可変性を運ばず、`let self` を毎回 deep copy していた
+#   （以下の True がすべて False になる。結果は同じで遅いだけ）。
+# `mut` の受け手が今までどおり複製されることは `let_self_mut_receiver.ar`。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+class Box:
+    mut v: int
+
+    # 受け手と引数が同じオブジェクトか（`let` の引数は `let` の名前なら共有される）
+    fn same(let self, let other: Box) -> bool:
+        return self === other
+
+    # `let self` の中の `self.m(..)`: `self` は `let` の名前なので共有する
+    fn same_inside(let self) -> bool:
+        return self.same(self)
+
+    gen same_gen(let self, let other: Box) -> bool:
+        yield self === other
+
+fn check(let label: str, let got: bool, let want: bool) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+# 1. プログラム最上位の let（`CallMethod` / `CallMethodLocal` の両方の形がある）
+let top = Box(1)
+check("top-level let receiver is shared", top.same(top), True)
+check("top-level let receiver with a keyword argument is shared", top.same(other=top), True)
+
+# 2. 関数ローカルの let・let 仮引数（let の値を受けたもの）
+fn local_cases(let p: Box) -> None:
+    let b = Box(2)
+    check("local let receiver is shared", b.same(b), True)
+    check("let parameter receiver is shared", p.same(p), True)
+
+local_cases(top)
+
+# 3. let self の中の self
+check("self inside a let-self method is shared", top.same_inside(), True)
+
+# 4. ジェネレータのメソッド
+mut results: list[bool] = []
+for r in top.same_gen(top):
+    results.append(r)
+check("let receiver of a generator method is shared", results[0], True)
+
+# 5. mut の受け手: let の引数（mut の名前から）が複製されるので、どちらにしても別のオブジェクト
+mut m = Box(3)
+check("mut receiver and mut argument are different objects", m.same(m), False)

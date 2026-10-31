@@ -1,0 +1,20 @@
+# native_redeclare.ar — 同じ名前を 1 つの関数で 2 度宣言するコードのコンパイル（native_object_access_plan.md 1-10）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_redeclare_module.ar
+#   2. cargo run --release -- examples/interop/native_redeclare.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_redeclare_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# sum(i) + sum(2i) for i < 10 = 45 + 90
+check("two loops with the same variable", m.two_loops(10) == 135)
+check("same variable over lists of different element types", m.loops_over_different_lists([1, 2], ["a", "b"]) == "12ab")
+check("sibling blocks declare the same name", m.sibling_blocks(True) == 10 and m.sibling_blocks(False) == 20)
+check("sibling blocks declare the same name with other types", m.sibling_blocks_other_types(True) == "6" and m.sibling_blocks_other_types(False) == "five!")

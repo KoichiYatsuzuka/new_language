@@ -44,7 +44,7 @@ impl ErrSlot {
 }
 
 /// 評価コアにはネイティブメソッドが 1 つも登録されないので、常に `None`。
-pub fn lookup_native_method_ptr(_class_name: &str, _method_name: &str) -> Option<usize> {
+pub fn lookup_native_method_ptr(_class_id: u32, _method_name: &str) -> Option<usize> {
     None
 }
 
@@ -55,6 +55,17 @@ pub fn try_dispatch_native_method(
     _obj: Value,
     _method_name: &str,
     _arg_vals: Vec<Value>,
+) -> Option<Result<Value, String>> {
+    None
+}
+
+/// 同上（引数を宣言どおりに束縛する入口・6-3）。
+pub fn try_dispatch_native_method_evaled(
+    _interp: &mut Interpreter,
+    _obj: Value,
+    _method_name: &str,
+    _evaled: &[(Option<String>, Value, bool)],
+    _recv_mut: bool,
 ) -> Option<Result<Value, String>> {
     None
 }

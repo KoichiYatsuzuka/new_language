@@ -82,8 +82,9 @@ SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost loca
 | `freeze_var` | Sets mutability flag to false; error if captured by closure |
 
 `freeze x` gives the same result as `let x = x` (python_builtins_plan.md 1-9): both call
-`Interpreter::frozen_copy` (deep copy → `__freeze__` + field freezing for instances, one level into
-collections, trim for fixed_list). `exec_freeze` writes the frozen copy back and demotes the variable;
+`Interpreter::bind_copy(BindCopy::CopyFreeze, ..)` (deep copy — skipped for an unshared fresh value — then
+`freeze_value_in_place`: `__freeze__` + field freezing for instances, one level into collections, trim for
+fixed_list). `exec_freeze` writes the frozen copy back and demotes the variable;
 a function local (VM slot) compiles to `LoadLocal` + `StoreLocalCopyFreeze`.
 
 ---

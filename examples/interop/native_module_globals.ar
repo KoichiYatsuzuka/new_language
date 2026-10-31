@@ -1,0 +1,31 @@
+# native_module_globals.ar — コンパイル済みモジュールの関数・メソッドは自分の大域で走る
+# （native_object_access_plan.md 1-7）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_module_globals_module.ar
+#   2. cargo run --release -- examples/interop/native_module_globals.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_module_globals_module as m
+
+# モジュールと同じ名前を宣言できる（以前のコンパイル済みでは NameError: variable 'G' is already declared）
+let G = [7]
+fn limit() -> int:
+    return 99
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+check("module function reads the module's G", m.read_g(), 3)
+check("module function reads the module's let", m.limit(), 10)
+check("the importer's own limit()", limit(), 99)
+m.push_g()
+check("module G after push", m.read_g(), 4)
+check("importer's G untouched", len(G), 1)
+check("m.G is live", len(m.G), 4)
+mut c = m.Counter(0)
+check("native method reads the module's G", c.bump(), 4)
+check("let a = <mut global> copies", m.let_from_mut_global(), 4)

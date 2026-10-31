@@ -194,7 +194,7 @@ impl Parser {
 
         // エディタ索引: 束縛される名前。位置はその名前を書いた識別子（別名・先頭・末尾）。
         #[cfg(feature = "editor")]
-        {
+        let editor_handle = {
             let (bind_name, pos) = match &alias {
                 Some(a) => (a.clone(), self.prev_pos()),
                 None if Self::has_packages(&lang) => (module[0].clone(), first_pos),
@@ -203,7 +203,8 @@ impl Parser {
             let h = self.note_def_at(&bind_name, crate::parser::editor_hooks::EditorKind::Module, pos);
             let sig = format!("import[{lang}] {}", module_path::written_spelling(level, &module));
             self.note_signature(h, &sig);
-        }
+            h
+        };
 
         // モジュールの tl AST を取得（キャッシュ込み）し、パッケージの連鎖（`a` → `a.b`）を先に読み込む文を
         // 溜め、束縛を決める（CPython 準拠）。
@@ -215,6 +216,23 @@ impl Parser {
         let origin = if resolved.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
         let (loaded, bind) =
             resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, alias.as_deref()));
+
+        // エディタ索引: 定義の場所は**束縛したモジュール**のファイル（VSIX_update_plan.md 4-4）。
+        // `import a.b.c` が束縛するのはパッケージ `a` で、その本体は連鎖を読み込む文（`pending_stmts`）にある。
+        #[cfg(feature = "editor")]
+        {
+            let body = if bind.module == loaded.name {
+                Some(&loaded.body)
+            } else {
+                self.pending_stmts.iter().find_map(|s| match s {
+                    Stmt::Import { module: m, body, .. } if *m == bind.module => Some(body),
+                    _ => None,
+                })
+            };
+            if let Some(body) = body {
+                super::editor_kinds::note_module_def(&mut self.editor, editor_handle, body);
+            }
+        }
 
         Ok(Stmt::Import {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),

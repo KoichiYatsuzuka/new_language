@@ -1,0 +1,57 @@
+# auto_init_direct.ar — パーサが合成した `__init__` は呼ばずに格納する（native_object_access_plan.md 10-3・D-11・U-4 案 1）
+#
+# 本体のクラス（VM）とモジュールのクラス（.arc・コンパイル済み）の両方で、`__init__` を呼んだときと同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/auto_init_direct_module.ar
+#   2. cargo run --release -- examples/interop/auto_init_direct.ar
+#
+# 期待値 "1,5,7,101:102":
+#   1     … `mut` の名前を `let` で受けて複製する（後で元に足しても変わらない）
+#   5     … 名前つき引数（今までどおり `__init__` を呼ぶ）
+#   7     … `private:` のフィールドも格納できる
+#   101:102 … `__copy__` を持つクラスの `mut` の値と一時値は `__copy__` で複製する（後で元を書き換えても変わらない）
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.auto_init_direct_module as m
+
+class Box:
+    mut xs: list[int]
+
+class Secret:
+    private:
+    mut pin: int
+    public:
+    fn get(let self) -> int:
+        return self.pin
+
+class Tagged:
+    mut tag: int
+
+    fn __copy__(let self) -> Tagged:
+        return Tagged(self.tag + 100)
+
+class Pair:
+    mut a: Tagged
+    mut b: Tagged
+
+fn run_checks() -> str:
+    mut out = ""
+    mut src = [1]
+    let b = Box(src)
+    src.append(2)
+    out = out + str(len(b.xs)) + ","
+    out = out + str(Box(xs=[4, 5]).xs[1]) + ","
+    out = out + str(Secret(7).get()) + ","
+    mut t = Tagged(1)
+    let p = Pair(t, Tagged(2))
+    t.tag = 50
+    out = out + str(p.a.tag) + ":" + str(p.b.tag)
+    return out
+
+fn check(let label: str, let got: str) -> None:
+    if got != "1,5,7,101:102":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("classes of the main program (VM)", run_checks())
+check("classes of a compiled module", m.run_checks())

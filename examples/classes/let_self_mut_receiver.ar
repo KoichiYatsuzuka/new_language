@@ -1,0 +1,44 @@
+# let_self_mut_receiver.ar — `mut` の受け手に `let self` のメソッドを呼ぶと受け手を複製する
+# （native_object_access_plan.md 6-1・D-8）。
+#
+# `let self` は呼び出しの間に受け手が書き換わっても変わらない。同じオブジェクトを `mut` の引数としても渡し、
+# メソッドがその引数を通して書き換えてから `self` を読む。複製していれば書き換え前の値が見える。
+# `let` の受け手が共有されることは `let_self_sharing.ar`。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+class Inner:
+    mut v: int
+
+class Box:
+    mut inner: Inner
+
+    # `o` を通して書き換えてから `self` を読む
+    fn peek(let self, mut o: Box) -> int:
+        o.inner.v = 5
+        return self.inner.v
+
+    # `mut self` の中の `self.m(..)`: `self` は `mut` の名前なので複製する
+    fn peek_inside(mut self) -> int:
+        return self.peek(self)
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+mut a = Box(Inner(1))
+check("mut receiver is copied for let self", a.peek(a), 1)
+check("the mut argument was written", a.inner.v, 5)
+
+fn local_case() -> None:
+    mut b = Box(Inner(2))
+    check("local mut receiver is copied", b.peek(b), 2)
+
+local_case()
+
+mut c = Box(Inner(3))
+check("self inside a mut-self method is copied", c.peek_inside(), 3)
+# 名前でない受け手（一時値・属性）は保守的に複製する
+mut boxes: list[Box] = [Box(Inner(4))]
+check("non-name receiver is copied", boxes[0].peek(boxes[0]), 4)

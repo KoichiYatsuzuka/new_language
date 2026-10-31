@@ -22,10 +22,18 @@ impl<'a> GenCtx<'a> {
             reg: 0, blk: 0, terminated: false,
             locals:          HashMap::new(),
             loop_stack:      Vec::new(),
+            iter_scopes:     Vec::new(),
             module_fns,
             fn_sigs,
             str_consts:      HashMap::new(),
             str_ctr:         0,
+            ic_ctr:          0,
+            pending_save:    None,
+            push_sites:      0,
+            pushing_fns:     HashSet::new(),
+            fn_pushes:       HashSet::new(),
+            handle_store_log: Vec::new(),
+            top_names:       HashSet::new(),
             block_stack:     Vec::new(),
             class_fields,
             class_fields_ord,
@@ -35,6 +43,8 @@ impl<'a> GenCtx<'a> {
             current_fn_ret:  Ty::Handle,
             fast_fns,
             preread_fields:        HashMap::new(),
+            binding_mut:           HashMap::new(),
+            fresh_regs:            HashSet::new(),
             flat_list_params:      HashMap::new(),
             fn_param_trampolines:  HashMap::new(),
             typed_mode:            false,
@@ -53,6 +63,101 @@ impl<'a> GenCtx<'a> {
             expr_stats:            HandleFallbackStats::default(),
             ident_stats:           IdentHandleStats::default(),
         }
+    }
+
+    /// 引数・受け手の式が `mut` の値か（VM の `arg_is_mutable` と同じ規則・D-8・native_object_access_plan.md 1-5）。
+    /// `let` で束縛された名前だけが `false`（共有）。表に無い名前（グローバル等）・属性・一時値は保守的に
+    /// `true`（複製する。結果は変わらず、複製が多いだけ）。
+    /// ⚠ VM はモジュール最上位の `let` も共有する（`toplevel_mut`）が、ここは最上位の表を持たないので複製する。
+    pub(super) fn operand_is_mutable(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident { name, .. } => self.binding_mut.get(name.as_str()).copied().unwrap_or(true),
+            _ => true,
+        }
+    }
+
+    /// 名前によるメソッド呼び出しの `mut_mask`（`CB_CALL_METHOD_M`）: bit 0 = 受け手、bit i+1 = 引数 i が `mut` の値か。
+    /// ⚠ 31 個目より後の引数は保守的に `mut`（呼ばれる側の `ar_call_method_m` も同じ解釈）。
+    pub(super) fn method_mut_mask(&self, object: &Expr, args: &[CallArg]) -> u32 {
+        let mut mask = u32::from(self.operand_is_mutable(object));
+        for (i, a) in args.iter().enumerate().take(31) {
+            if self.operand_is_mutable(a.expr()) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        mask
+    }
+
+    /// 受け手の無い呼び出し（生成・5-1）の `mut_mask`: bit i+1 = 引数 i が `mut` の値か（bit 0 は使わない）。
+    pub(super) fn method_mut_mask_args(&self, args: &[CallArg]) -> u32 {
+        let mut mask = 0u32;
+        for (i, a) in args.iter().enumerate().take(31) {
+            if self.operand_is_mutable(a.expr()) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        mask
+    }
+
+    /// 呼ばれた側が `let` で受ける値を、渡す値が `mut` のときだけ複製する（D-8・1-5）。
+    /// `is_self`: `let self` は `deep_copy_value`（VM も `self` には `__copy__` を呼ばない）、仮引数は `copy_value`
+    /// （`__copy__` があればそれ）。`int` / `float` の生値・`mut` で受ける側・`let` の値はそのまま渡す。
+    pub(super) fn copy_for_let(
+        &mut self,
+        h: &str,
+        vt: Ty,
+        operand: &Expr,
+        callee_mutable: bool,
+        is_self: bool,
+    ) -> String {
+        if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
+            return h.to_string();
+        }
+        // 複製の前に保存点を取り、呼び出しの後で巻き戻す（1-15）。⚠ 取らないと複製がいちばん外の呼び出しが
+        // 終わるまでアリーナに残り、ループの中の呼び出しでは周の数だけ溜まった（`let self` の深いコピーで 1 GB 超）。
+        if self.pending_save.is_none() {
+            self.pending_save = Some(self.call_cb(CB_ARENA_SAVE, &[]));
+        }
+        let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
+        self.call_cb(cb, &[format!("i64 {h}")])
+    }
+
+    /// 直接呼び出しの被演算子を組み立てる前に呼ぶ: 外側の呼び出しの保存点を退避する（1-15）。
+    pub(super) fn take_call_save(&mut self) -> Option<String> {
+        self.pending_save.take()
+    }
+
+    /// 被演算子を組み立てた後に呼ぶ: この呼び出しの複製の前に取った保存点（無ければ `None`）を返し、外側の
+    /// 呼び出しの保存点を戻す（1-15）。
+    pub(super) fn finish_call_save(&mut self, outer: Option<String>) -> Option<String> {
+        std::mem::replace(&mut self.pending_save, outer)
+    }
+
+    /// 宣言（`let` / `mut`）で束縛する値を VM と同じ規則で複製する（§0.3 ⑥・1-6）。
+    /// `mut` は常に深いコピー、`let` は `let_bind`（VM の `compile_let` と共有）の答えに従う。
+    /// `int` / `float` / `bool` の生値は複製しても同じなのでそのまま。`const` はここを通らない（VM も複製しない）。
+    pub(super) fn bind_decl(&mut self, h: &str, vt: Ty, is_mut: bool, expr: &Expr) -> String {
+        use crate::interpreter::BindCopy;
+        use crate::vm::compiler::LetBind;
+        if vt != Ty::Handle {
+            return h.to_string();
+        }
+        let mode = if is_mut {
+            BindCopy::DeepCopy
+        } else {
+            let local_mut = |e: &Expr| ident_name(e).and_then(|n| self.binding_mut.get(n).copied());
+            match crate::vm::compiler::let_bind(expr, local_mut) {
+                LetBind::Share => return h.to_string(),
+                LetBind::CopyFreezeName | LetBind::CopyFreezeExpr => BindCopy::CopyFreeze,
+                LetBind::FromName(n) => {
+                    let p = self.str_const(n.as_bytes());
+                    return self.call_cb(CB_LET_FROM_NAME, &[p, format!("i32 {}", n.len()), format!("i64 {h}")]);
+                }
+            }
+        };
+        // 作りたての値を積んだばかりの欄なら、共有していないときに複製を省いてよい（12-1・`ar_bind_value`）
+        let fresh = if self.fresh_regs.contains(h) { crate::interpreter::BindCopy::FRESH_BIT } else { 0 };
+        self.call_cb(CB_BIND_VALUE, &[format!("i32 {}", mode as i32 | fresh), format!("i64 {h}")])
     }
 
     /// Look up the native type of a field access on a known class instance.
@@ -280,9 +385,25 @@ impl<'a> GenCtx<'a> {
     // ── Alloca helpers ────────────────────────────────────────────────────────
 
     pub(super) fn alloca_var(&mut self, name: &str, ty: Ty) -> String {
-        let reg = format!("%_al_{name}");
-        let t = llvm_ty(ty);
-        self.ea(&format!("{reg} = alloca {t}, align 8"));
+        // ⚠⚠ 同じ名前をもう一度宣言する（2 つ目の `for i in ..`・兄弟のブロックの `let x`）: 型が同じなら同じ場所を
+        //   使う（VM も関数ごとに名前 1 つの slot・`collect_nested_decls`）。型が違えば別の名前で取る。
+        //   以前は毎回 `%_al_{name}` を出していたので、LLVM が同じ名前の定義を 2 つ持てず clang が落ち、
+        //   **モジュール全体が**ネイティブにならなかった（`--compile` は「skipped」と出すだけ・§0.3 ⑫・1-10）。
+        let reg = match self.locals.get(name) {
+            Some((r, t)) if *t == ty && self.alloca_buf.contains(&format!("  {r} = alloca")) => r.clone(),
+            _ => {
+                let base = format!("%_al_{name}");
+                let mut reg = base.clone();
+                let mut k = 1;
+                while self.alloca_buf.contains(&format!("  {reg} = alloca")) {
+                    reg = format!("{base}.{k}");
+                    k += 1;
+                }
+                let t = llvm_ty(ty);
+                self.ea(&format!("{reg} = alloca {t}, align 8"));
+                reg
+            }
+        };
         self.locals.insert(name.to_string(), (reg.clone(), ty));
         // リゾルバが slot を割り当てている名前なら slot 索引側にも載せる（#11 R2-a′）。
         // 合成ローカル（preread の一時変数など）は slot を持たないので名前引きのみ。
@@ -311,6 +432,16 @@ impl<'a> GenCtx<'a> {
     pub(super) fn store_val(&mut self, ty: Ty, val: &str, ptr: &str) {
         let t = llvm_ty(ty);
         self.ec(&format!("store {t} {val}, ptr {ptr}"));
+        if ty == Ty::Handle {
+            self.note_handle_store(ptr);
+        }
+    }
+
+    /// ローカル変数の場所へハンドルを書き込んだことを記録する（9-1・ループの周の終わりに残す値）。
+    pub(super) fn note_handle_store(&mut self, ptr: &str) {
+        if !self.terminated {
+            self.handle_store_log.push(ptr.to_string());
+        }
     }
 
     pub(super) fn load_var(&mut self, name: &str) -> (String, Ty) {
@@ -339,6 +470,53 @@ impl<'a> GenCtx<'a> {
         format!("ptr @{name}")
     }
 
+    /// `obj.attr` を**箇所ごとの IC 付きで**読む（native_object_access_plan.md 2-2・D-1）。`ty` が `Float` / `Int` なら
+    /// その型で（変換規則は `get_float_field` / `get_int_field` と同じ）、ほかはハンドルで返す。
+    /// IC のセルは DLL 内の `i64` の大域（初期値 0）で、命中・ミスの判定は VM の `GetAttr` と同じ関数が行う。
+    /// ⚠ 以前は IC を持たず、毎回 `get_attr_val` の名前引き（`format!` と全フィールドの走査を含む）を通っていた。
+    pub(super) fn emit_attr_read(&mut self, h: &str, attr: &str, ty: Option<Ty>) -> (String, Ty) {
+        let cell = self.ic_cell();
+        let ptr = self.str_const(attr.as_bytes());
+        let args = [format!("i64 {h}"), ptr, format!("i32 {}", attr.len()), cell];
+        match ty {
+            Some(Ty::Float) => (self.call_cb(CB_GET_FLOAT_FIELD_IC, &args), Ty::Float),
+            Some(Ty::Int) => (self.call_cb(CB_GET_INT_FIELD_IC, &args), Ty::Int),
+            _ => (self.call_cb(CB_GET_ATTR_IC, &args), Ty::Handle),
+        }
+    }
+
+    /// `obj.attr = v` を**箇所ごとの書き込みの IC 付きで**行う（2-3・VM の `SetAttr` と同じ `attr_assign_ic`）。
+    /// セルは読み出しとは別（`attr_assign_ic` の doc）。
+    pub(super) fn emit_attr_assign(&mut self, oh: &str, attr: &str, vh: &str) {
+        let cell = self.ic_cell();
+        let ptr = self.str_const(attr.as_bytes());
+        self.call_cb(CB_ASSIGN_ATTR_IC, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), format!("i64 {vh}"), cell]);
+    }
+
+    /// `obj.attr = v` を値の型のまま書く（4-2）: `int` / `float` の生値は箱に入れずに渡す（fields 65 / 66）、
+    /// ほかはハンドル（`emit_attr_assign`）。中身はどれも VM の `SetAttr` と同じ `attr_assign_ic`。
+    pub(super) fn emit_attr_assign_typed(&mut self, oh: &str, attr: &str, v: &str, vt: Ty) {
+        let (cb, val) = match vt {
+            Ty::Int => (CB_ASSIGN_INT_FIELD_IC, format!("i64 {v}")),
+            Ty::Float => (CB_ASSIGN_FLOAT_FIELD_IC, format!("double {v}")),
+            _ => {
+                let vh = self.to_handle(v, vt);
+                return self.emit_attr_assign(oh, attr, &vh);
+            }
+        };
+        let cell = self.ic_cell();
+        let ptr = self.str_const(attr.as_bytes());
+        self.call_cb(cb, &[format!("i64 {oh}"), ptr, format!("i32 {}", attr.len()), val, cell]);
+    }
+
+    /// 箇所ごとの IC のセル（DLL 内の `i64` の大域・初期値 0）を 1 つ作り、`ptr @_icN` を返す（2-2 / 2-3 / 3-2）。
+    pub(super) fn ic_cell(&mut self) -> String {
+        let cell = format!("_ic{}", self.ic_ctr);
+        self.ic_ctr += 1;
+        self.str_globals.push_str(&format!("@{cell} = internal global i64 0, align 8\n"));
+        format!("ptr @{cell}")
+    }
+
     // ── Callback dispatch ─────────────────────────────────────────────────────
 
     /// Load @CB, GEP to field, load fn ptr, call it. Returns result register (or "void").
@@ -349,6 +527,16 @@ impl<'a> GenCtx<'a> {
             self.typed_failed = true;
         }
         let (ret_ty, param_tys) = cb_sig(field);
+        // アリーナへ積みうるか（9-1）: ハンドルを返すもの。生の整数・保存点・トークンを返すものは積まない
+        // 結果を残さない巻き戻し（`int` / `float` を返す呼び出しの後・残す値 0）も積まない（9-2）
+        let compact_none = field == CB_ARENA_COMPACT && args.first().is_some_and(|a| a == "i64 0");
+        if ret_ty == "i64"
+            && !compact_none
+            && !matches!(field, CB_TO_INT | CB_ARENA_SAVE | CB_GET_INT_FIELD_IC | CB_LEN | CB_ENTER_METHOD_CTX
+                | CB_FLAT_DATA_PTR | CB_FLAT_LEN)
+        {
+            self.push_sites += 1;
+        }
         let cb  = self.fresh_reg();
         let fp  = self.fresh_reg();
         let fn_ = self.fresh_reg();
@@ -367,6 +555,10 @@ impl<'a> GenCtx<'a> {
         } else {
             let r = self.fresh_reg();
             self.ec(&format!("{r} = call {fn_ty} {fn_}({args_str})"));
+            // 結果を必ず新しい欄に積むコールバック（`push_handle` で返す・12-1）
+            if matches!(field, CB_CONSTRUCT_IC | CB_CONSTRUCT | CB_BINOP | CB_MAKE_LIST | CB_MAKE_TUPLE | CB_MAKE_DICT) {
+                self.fresh_regs.insert(r.clone());
+            }
             r
         }
     }

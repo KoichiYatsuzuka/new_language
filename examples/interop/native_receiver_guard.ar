@@ -1,0 +1,30 @@
+# native_receiver_guard.ar — 型検査の注釈で受け手のクラスを決めて直接呼ぶ（native_object_access_plan.md 3-1・3-2）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_receiver_guard_module.ar
+#   2. cargo run --release -- examples/interop/native_receiver_guard.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_receiver_guard_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+fn body(let x: int, let vx: int) -> m.Body:
+    return m.Body(m.Vec2(x, 0), m.Vec2(vx, 1), "b")
+
+mut bodies = [body(0, 1), body(10, 2), body(100, 3)]
+# vel: (1,1) (2,1) (3,1) -> energy 2 + 5 + 10
+check("loop variable receiver", m.total_energy(bodies) == 17)
+check("float-returning method through a guarded call", m.total_speed2(bodies) == 17.0)
+m.step_all(bodies, 4)
+# x: 0+4 / 10+8 / 100+12
+check("field receiver (self.pos.add)", m.sum_x(bodies) == 134)
+check("caller sees the writes", bodies[1].pos.x == 18 and bodies[2].pos.y == 4)
+# pos: (4,4) (18,4) (112,4)
+check("generator method through a guarded call", m.coord_sum(bodies) == 146)
+let pets: list[m.Named] = [m.Cat("tama", 9), m.Dog("pochi", 3)]
+check("trait-typed receiver (guard does not match)", m.greet_all(pets) == "hi tama;hi pochi;")

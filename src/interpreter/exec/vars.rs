@@ -44,6 +44,37 @@ pub(crate) fn coerce_binding(type_ann: Option<&str>, value: Value) -> Value {
     }
 }
 
+/// 宣言の束縛で値をどう複製するか（native_object_access_plan.md 1-6）。
+///
+/// 束縛の複製の**唯一の実装** [`Interpreter::bind_copy`] を選ぶ札。消費者はツリーウォークの
+/// `exec_let` / `Stmt::Mut`、VM の `StoreLocal*` / `StoreCellDeepCopy` / `DeclareGlobal`、
+/// ネイティブの `ar_bind_value`（生成コードが `i32` の符号で渡す・[`BindCopy::from_code`]）。
+/// ⚠ 以前は同じ複製が 6 箇所に書かれており、L2（式からの `let` は常に複製）を直したとき
+///   VM の `StoreLocalFreezeInstance` だけが `Instance` しか複製しないまま残った（関数の中の
+///   `let it = ys[0]` が `ys[0]` と共有された・§0.3 ⑦）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindCopy {
+    /// `mut x = e`: 常に深いコピー
+    DeepCopy = 0,
+    /// `let x = <mut の名前>` / `let x = <識別子以外の式>`: 深いコピーしてフリーズ（L2）
+    CopyFreeze = 1,
+}
+
+impl BindCopy {
+    /// 生成コードが符号に足す bit: 束縛する値は、コールバックが作りたての値を積んだばかりの欄
+    /// （`ar_bind_value`・生成コードの `fresh_regs`・12-1）。[`Self::from_code`] には外してから渡す。
+    pub(crate) const FRESH_BIT: i32 = 2;
+
+    /// 生成コードが渡す符号（`as i32` の逆）。表に無い符号は `None`（呼ぶ側がエラーにする）。
+    pub(crate) fn from_code(code: i32) -> Option<Self> {
+        match code {
+            0 => Some(Self::DeepCopy),
+            1 => Some(Self::CopyFreeze),
+            _ => None,
+        }
+    }
+}
+
 impl Interpreter {
     /// 今のスコープで `name` を宣言すると誤りになるなら、その文言（`already declared` の**唯一の判定**）。
     ///
@@ -64,6 +95,40 @@ impl Interpreter {
         Some(format!("NameError: variable '{name}' is already declared"))
     }
 
+    /// 束縛の複製（[`BindCopy`]）。`CopyFreeze` のフリーズは `__freeze__` を呼びうるので失敗する。
+    /// 誰とも共有していない値（[`Interpreter::is_unshared`]・作りたての `Vec3(...)` など）は複製しない（12-1・D-13）。
+    /// 写しを作っても、元を指す者がいないので違いは観測できない（`deep_copy_value` はフリーズの印も写す）。
+    /// ⚠ 数えるのは `Rc` の参照なので、値を持つ者が全員参照を数える場所（VM のスタック・欄・ツリーウォーク）だけで使う。
+    ///   ネイティブのアリーナはローカル変数が番号で同じ欄を指すので数えられない（`bind_copy_held`）。
+    pub(crate) fn bind_copy(&mut self, mode: BindCopy, value: Value) -> Result<Value, String> {
+        self.bind_copy_held(mode, value, Some(0))
+    }
+
+    /// [`Self::bind_copy`] の本体。`held` は、呼ぶ側が `value` のほかに持っていて数えない参照の数（ネイティブの
+    /// アリーナの、作りたての値を積んだ欄 1 つなど）。`None` なら共有かどうかを見ずに必ず複製する。
+    ///
+    /// `CopyFreeze` は `let x = <mut 変数>` / `let x = <式>`（ツリーウォーク・最上位・関数の中の slot・ネイティブ）と
+    /// `freeze x` の**唯一の実装**で、`freeze x` は `let x = x` と同じ結果になる（同じ値・同じ実行時の印・
+    /// python_builtins_plan.md のタスク 1-9）。フリーズは [`Self::freeze_value_in_place`]（コレクションの中の
+    /// インスタンスも 1 段不変にする）。
+    /// ⚠ 以前は 4 通りあった: `freeze` は**コピーせずその場で**不変にし（同じオブジェクトを持つ相手まで
+    ///   不変になる）、`let` はコピーしたがコレクションの中のインスタンスは不変にせず、関数の中の
+    ///   `let x = <式>` はインスタンスのときしかコピーしなかった（`let item = xs[0]` が `xs[0]` と共有）。
+    /// ⚠ `DeepCopy`（`mut x = e`）は Python から変換したコードの中では写さない（`running_python`・known_bugs.md の #1。
+    ///   格納の [`Self::copy_for_store`] と同じ規則）。`CopyFreeze` は写す（変換器は `let` を出さないが、出したとしても
+    ///   不変の束縛が他の持ち主の変更で変わってはいけない）。
+    pub(crate) fn bind_copy_held(&mut self, mode: BindCopy, value: Value, held: Option<usize>) -> Result<Value, String> {
+        if mode == BindCopy::DeepCopy && self.running_python {
+            return Ok(value);
+        }
+        let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
+        let copied = if unshared { value } else { Self::deep_copy_value(value) };
+        if mode == BindCopy::CopyFreeze {
+            self.freeze_value_in_place(&copied)?;
+        }
+        Ok(copied)
+    }
+
     /// `let` 宣言を実行する。
     pub(crate) fn exec_let(
         &mut self,
@@ -79,32 +144,23 @@ impl Interpreter {
         // 式 → let: Instance の場合は deep copy してからフリーズする。
         //   可変コレクション (list[i] など) から取り出した Instance を直接フリーズすると
         //   共有 Rc を通じて元のオブジェクトまで不変化されてしまうため、コピーが必要。
-        let source_var = if let Expr::Ident { name: src, .. } = expr {
-            self.get_var(src)
-                .map(|v| (v.is_mutable(), v.cell().is_some()))
+        let source_mutable = if let Expr::Ident { name: src, .. } = expr {
+            self.get_var(src).map(|v| v.is_mutable())
         } else {
             None
         };
         let value = self.eval(expr)?;
-        let value = match source_var {
-            Some((true, _)) => {
-                // mut 変数から let へ: 深いコピーを作成してフリーズする（`frozen_copy`・タスク 1-9）。
-                self.frozen_copy(value)?
-            }
-            Some((false, _)) => value,
-            None => {
-                // 識別子以外の式（`xs[0]` / `o.f` / `f()` / リテラル）から let へ。
-                //
-                // ⚠⚠ **常に複製する**（L2）。以前は `Instance` のときだけ複製しており、
-                //    コレクションは共有されていた。実測での実害:
-                //      mut xs = [[1]]; let item = xs[0]; xs[0].append(9)
-                //      → **`let` の `item` が `[1, 9]` に変わる**
-                //    リテラルも同じで、`let L = [p]` は `p` を共有していた。
-                // ⚠ 式には引き継ぐべき属性が無いので `let → let` の共有には当たらない。
-                //    ⇒ 「共有するのは `let → let` のときだけ」の規則どおり複製する。
-                self.frozen_copy(value)?
-            }
-        };
+        // mut の名前 → 複製してフリーズ・let の名前 → そのまま・識別子以外の式（`xs[0]` / `o.f` / `f()` /
+        // リテラル）→ 複製してフリーズ。VM の `StoreLocalFromIdent` / `DeclareGlobal` と同じ実装を呼ぶ。
+        //
+        // ⚠⚠ 識別子以外の式は**常に複製する**（L2）。以前は `Instance` のときだけ複製しており、
+        //    コレクションは共有されていた。実測での実害:
+        //      mut xs = [[1]]; let item = xs[0]; xs[0].append(9)
+        //      → **`let` の `item` が `[1, 9]` に変わる**
+        //    リテラルも同じで、`let L = [p]` は `p` を共有していた。
+        // ⚠ 式には引き継ぐべき属性が無いので `let → let` の共有には当たらない。
+        //    ⇒ 「共有するのは `let → let` のときだけ」の規則どおり複製する。
+        let value = self.vm_let_value_from_ident(source_mutable, value)?;
         // 案 B: `float` 注釈なら昇格する（VM の `Op::CoerceFloat` と同じ位置・同じ判断）。
         // ⚠ 複製・フリーズの**後**に置く。昇格後の `Float` はプリミティブなので順序に
         //    意味は無いが、`coerce_binding` を「ストア直前」に固定しておくと VM 側と

@@ -1,0 +1,120 @@
+# micro_ffi.ar — one C++ call (or its pure-Arrow equivalent) per loop, priced by difference with an
+# empty loop (micro_ffi_bench.ar). Uses the same sim_kernels.dll as the speed study (import[cpp-dll]).
+
+import[cpp-dll] sim_kernels as sk
+
+class Body:
+    mut name: str
+    mut pos: V3
+    mut vel: V3
+    mut mass: float
+    mut trail: list[float]
+    mut hits: int
+
+fn make_body(let trail_len: int) -> Body:
+    mut tr: list[float] = []
+    mut i = 0
+    while i < trail_len:
+        tr.append(float(i))
+        i += 1
+    return Body("body-1", V3(1.0, 2.0, 3.0), V3(0.5, 0.25, 0.125), 2.0, tr, 0)
+
+fn f_empty(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += 1.0
+        i += 1
+    return acc
+
+# C++: double + const V3*  (zero-copy struct pointer)
+fn f_kinetic(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += sk.sk_kinetic(b.mass, b.vel)
+        i += 1
+    return acc
+
+# the same computation in Arrow (reads 4 fields)
+fn a_kinetic(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += 0.5 * b.mass * (b.vel.x * b.vel.x + b.vel.y * b.vel.y + b.vel.z * b.vel.z)
+        i += 1
+    return acc
+
+# C++: V3* (written) + const V3* + double
+fn f_add_scaled(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        sk.sk_add_scaled(b.pos, b.vel, 0.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+# C++: list[float] -> const ArPtrProtocol* (a copy of the list for the call)
+fn f_sum(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += sk.sk_sum_f64(b.trail)
+        i += 1
+    return acc
+
+fn a_sum(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        for e in b.trail:
+            acc += e
+        i += 1
+    return acc
+
+# str -> bytes (encode) -> const char* -> C++ std::string -> char* -> bytes -> str (decode)
+fn f_label(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let raw = sk.sk_label(b.name.encode(), 1)
+        acc += float(len((raw mustbe bytes).decode("utf-8")))
+        i += 1
+    return acc
+
+fn f_encode_only(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let e = b.name.encode()
+        acc += 1.0
+        i += 1
+    return acc
+
+fn a_label(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += float(len(b.name + "#" + str(1)))
+        i += 1
+    return acc
+
+# V3 returned by value -> a new instance
+fn f_make(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let p = sk.sk_make(1.0, 2.0, 3.0) mustbe V3
+        acc += 1.0
+        i += 1
+    return acc
+
+fn a_make(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let p = V3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc

@@ -191,6 +191,7 @@ fn file_insert(fd: &mut super::FileData, bytes: &[u8]) {
 
 mod freeze;
 mod instantiate;
+pub(crate) use instantiate::AutoInitSlot;
 mod lookup;
 mod method_call;
 // レシーバ種別ごとのメソッドディスパッチ（#63 で `method_call.rs` から切り出し）。

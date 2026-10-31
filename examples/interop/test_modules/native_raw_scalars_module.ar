@@ -1,0 +1,48 @@
+# native_raw_scalars_module.ar — コンパイル済みコードの内部 ABI で int / float を生値で受け渡す
+# （native_object_access_plan.md 4-1・D-3）
+#
+# モジュール内の呼び出し（`_impl`）は `int` / `float` 注釈の仮引数と戻り値を生値（i64 / double）で渡す。
+# 箱詰めはインタープリタとの境界（`_tl`）だけで行う。⚠ 以前は全部ハンドルに箱詰めし、呼ばれた側が入口で開けていた。
+# 値が**黙って違わない**ことを確かめる: 32 ビットを超える整数・負の数・float の精度、式・文・メソッドからの呼び出し。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_raw_scalars_module.ar
+
+class Acc:
+    mut total: int
+    mut scale: float
+
+    fn add(mut self, let k: int) -> int:
+        self.total = self.total + k
+        return self.total
+
+    fn scaled(let self, let x: float) -> float:
+        return x * self.scale
+
+    fn mix(let self, let k: int, let x: float, let tag: str) -> str:
+        return tag + ":" + str(k) + ":" + str(x * self.scale)
+
+fn mul_add(let a: int, let b: int, let c: int) -> int:
+    return a * b + c
+
+fn hypot2(let x: float, let y: float) -> float:
+    return x * x + y * y
+
+# int / float の関数・メソッドを式・文の両方から呼ぶ（文の呼び出しは結果を捨てる）
+fn drive(let n: int) -> int:
+    mut acc = Acc(0, 0.5)
+    mut big = 0
+    for i in range(n):
+        big = mul_add(big, 3, i) % 1000000007
+        acc.add(i)
+        mul_add(1, 2, 3)
+        hypot2(1.5, 2.0)
+    return big + acc.add(0)
+
+fn floats(let x: float) -> float:
+    let acc = Acc(0, 0.25)
+    return hypot2(x, 0.1) + acc.scaled(x)
+
+fn mixed(let k: int) -> str:
+    let acc = Acc(0, 2.0)
+    return acc.mix(k, 1.25, "m")

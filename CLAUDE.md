@@ -83,12 +83,14 @@ python -m impl_python examples/basics/control_flow.ar
 | `compare_outputs.ps1 -A <base.exe>` | 全例題の stdout/stderr/exit が同一か | **解釈側**を触ったとき（bytecode は自明に一致してしまう） |
 | `compare_import_paths.ps1 -A <base.exe>` | import 系 13 例題の出力が同一か | **import / FFI** を触ったとき（他ゲートの対象外を埋める） |
 | `dump_native_ir.ps1 -OutDir <dir>` | 生成 LLVM IR が byte-identical か | **ネイティブ codegen** を触ったとき（最強の検査） |
+| `check_native_ir_abi.ps1` | 例題の .arc の元を全部コンパイルし直し、生成 IR の**直接呼び出し（`@X_impl` / `@X_fast`）が定義と同じ型か**・**DLL が埋め込まれたか** | **ネイティブ codegen の呼び出し規約・適格判定**を触ったとき（型の違う直接呼び出しは clang が通し、実行時にごみを読む） |
 | `repl_session.ps1` | 対話 REPL の golden | **REPL / 最上位実行**を触ったとき |
 | `debug_session.ps1` | デバッガのステッピングの golden | **デバッガ / 行テーブル**を触ったとき |
 | `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳 | **VM の適格範囲**を触ったとき |
 | `syntax_cov.ps1` | **例題が一度も書いていない構文**（`NESTED-GAP`） | **新しい構文・文脈**を扱うとき |
 | `type_obligations.ps1` | **型義務 94 件のどれで型検査が走っているか**（`STATIC`/`RUNTIME`/`NONE`）。退行すると exit 1 | **型検査を触ったとき**（`syntax_cov` が構文、こちらが型義務の網の目） |
 | `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と**同じ診断**を出すか（全例題・import 先を含む。exe は `AR_CHECK_ONLY=1` で実行しない） | **lexer / parser / type_check / import の処理を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
+| `compare_tm_grammar.ps1` | VS Code 拡張の **TextMate 文法**が lexer と**同じ範囲を文字列・コメント**とするか（全例題＋`vscode-extension/test_fixtures/`。前の行から文字列を持ち越す `SPILL` 0 件）と、文法のキーワード一覧が `src/lexer/keyword.rs` と一致するか。括弧の対応付けは文法の判定だけで決まる | **`arrow.tmLanguage.json` を触ったとき**と、**lexer の文字列・コメント・キーワードを触ったとき** |
 | `check_ptr_protocol.ps1` | `PtrProtocol` の C ヘッダ・C# の写しを実際にコンパイルし、Arrow（Rust）の写しと**同じ並び**か（大きさ・欄の位置・flags） | **`bridge/ptr_protocol/` か `value/ptr.rs` の `PtrProtocolRaw` を触ったとき**（MSVC と dotnet が要る） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
@@ -125,6 +127,9 @@ python -m impl_python examples/basics/control_flow.ar
 | `prof_dist.ps1` | 段別（parse/type_check/resolve/exec…）・op 別の実行時間分布（要 `--features prof`） |
 | `ab_bench.ps1 -A <a.exe> -B <b.exe>` | 2 バイナリを**交互実行**して経過時間を比較 |
 | `ab_bench_modes.ps1 -A <a> -B <b>` | 実行モード別（非コンパイル / native / C DLL）の A/B |
+| `speed_modes.ps1 [-B <b>] [-Micro]` | 速度の調査のベンチ（`examples/bench/speed_modes/`）を 3 モードで: 区間ごとの時間・1 操作の単価（ns）・`-B` で A/B（各 exe が自分で `.arc` を作る）。モード間の `CHECK` の一致も見る |
+| `speed_milestones.ps1` | 計画書のマイルストーン（初期・途中経過・現在）の commit を worktree で作り、`speed_modes.ps1 -Exes` で**同じセッションで並べて**測る（区間・1 操作の単価・CSV） |
+| `native_slowdown.ps1 [-B <b>]` | コンパイルすると VM より遅くなる操作を分解して測る（`examples/bench/speed_modes/slowdown*.ar`・VM / コンパイル済み / 差）。`-B` で実験用の exe の列を足す（`implementation_plans/native_slowdown_analysis.md`） |
 | `annot_unresolved.ps1` | 型注釈が `Unresolved` になる**発生源の内訳**（#19 の着手前に取る） |
 | `annot_diff.ps1` | ネイティブ codegen の自前型導出と AST 注釈の一致状況 |
 
@@ -154,6 +159,7 @@ Detailed, situational reference material lives in `.claude/skills/` and is loade
 - `language-dev-principles` — durable design principles + working method for evolving the language (annotations are hints not semantics, the 4 storage kinds, stopping walker drift with exhaustive 2-stage forcing, which gate to run for which change, how to decide a task is worth doing); read when **designing or reviewing** a language change, before claiming "behaviour-preserving", and when filing tasks in a plan document
 - `vm-pitfalls` — pitfalls hit while building the resolver + bytecode VM (benchmarking/A-B, opcode + peephole changes, why a green gate may be lying, PowerShell child-process and encoding traps); read before measuring or trusting a gate
 - `vscode-debug-runner` — standalone CLI for exercising the VS Code extension's analysis code without launching VS Code
+- `release` — raise the version, rebuild the release exe/VSIX, tag, and deploy to `../Arrow` (old files to `../Arrow/old/<version>/`) with `./scripts/release.ps1`
 
 ## Next Features to Implement (Priority Order)
 

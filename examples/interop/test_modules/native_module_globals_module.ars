@@ -1,0 +1,19 @@
+class Counter:
+    mut n: int
+    fn bump(mut self) -> int:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+fn read_g() -> int:
+    ...
+
+fn push_g() -> None:
+    ...
+
+fn let_from_mut_global() -> int:
+    ...
+
+fn limit() -> int:
+    ...

@@ -1,0 +1,8 @@
+LIBRARY sim_kernels
+EXPORTS
+    sk_add_scaled
+    sk_bounce
+    sk_kinetic
+    sk_sum_f64
+    sk_label
+    sk_make

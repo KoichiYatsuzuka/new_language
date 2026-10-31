@@ -53,7 +53,7 @@ impl Parser {
 
         // エディタ索引: 束縛される名前（別名か最後の部分）。位置はその名前を書いた識別子。
         #[cfg(feature = "editor")]
-        {
+        let editor_handle = {
             let (bind, pos) = match &alias {
                 Some(a) => (a.clone(), self.prev_pos()),
                 None => (parts.last().cloned().unwrap_or_default(), module_pos),
@@ -61,7 +61,8 @@ impl Parser {
             let h = self.note_def_at(&bind, crate::parser::editor_hooks::EditorKind::Module, pos);
             let sig = format!("import[{lang}] {}", crate::module_path::written_spelling(level, &parts));
             self.note_signature(h, &sig);
-        }
+            h
+        };
 
         // ヘッダファイルを読み込んで静的型スタブを生成する。
         // ファイルが存在しない場合は空の body になる（実行時に解決される）。
@@ -82,6 +83,13 @@ impl Parser {
                 )
             })
         })?;
+        // エディタ索引: 定義の場所はヘッダ（スタブは合成した文で位置を持たない）。読めたときだけ
+        // （読めなければ誤りが出ていて、飛び先も無い）。
+        #[cfg(feature = "editor")]
+        if raw.is_some() {
+            let def = crate::parser::editor_index::DefLoc { file: file_path.clone(), line: 1, col: 1 };
+            self.editor.with_decl(editor_handle, |d| d.def = Some(def));
+        }
         // 関数・構造体の集め方は実行時の `load_cpp_module` と同じ 1 つの関数（`collect_header_decls`・7-28）
         let header_dir = resolved.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
         let decls = match raw {
@@ -289,6 +297,9 @@ impl Parser {
 
         // 名前リスト: `Name1, Name2 as N2, ...`
         let mut names: Vec<(String, Option<String>)> = Vec::new();
+        // エディタ索引: (宣言表のハンドル, 元の名前, 束縛名)。種類は import 先を読み込んだ後に決める（下）。
+        #[cfg(feature = "editor")]
+        let mut editor_handles: Vec<(usize, String, String)> = Vec::new();
         loop {
             let name = self.expect_ident()?;
             let alias = if *self.current() == Token::As {
@@ -297,7 +308,9 @@ impl Parser {
             } else {
                 None
             };
-            // エディタ索引: 束縛される名前。位置は最後に読んだ識別子。
+            // エディタ索引: 束縛される名前。位置は最後に読んだ識別子（ここでしか取れない）。
+            // ⚠ 種類はまだ分からないので仮に `Module` で控え、読み込んだ後に `editor_kinds` が正体で書き直す
+            //   （関数・クラス・定数・サブモジュール・読めなければ `Unresolved`）。
             #[cfg(feature = "editor")]
             {
                 let bind = alias.clone().unwrap_or_else(|| name.clone());
@@ -307,6 +320,7 @@ impl Parser {
                     crate::module_path::written_spelling(level, &module)
                 );
                 self.note_signature(h, &sig);
+                editor_handles.push((h, name.clone(), bind));
             }
             names.push((name, alias));
             if *self.current() == Token::Comma {
@@ -331,6 +345,8 @@ impl Parser {
             let resolved = self.try_import(|p| p.from_dots_import(&lang, &file_dir, level, names.clone()))?;
             let Some(mut stmts) = resolved else {
                 // 読み込めなかった（拡張だけ・`try_import`）: 名前は取り込んだことにして続ける。
+                #[cfg(feature = "editor")]
+                super::editor_kinds::note_from_import_kinds(&mut self.editor, &editor_handles, &[]);
                 return Ok(Stmt::FromImport {
                     lang,
                     module: Vec::new(),
@@ -340,6 +356,11 @@ impl Parser {
                     origin: self.unresolved_origin(level),
                 });
             };
+            #[cfg(feature = "editor")]
+            {
+                let refs: Vec<&Stmt> = stmts.iter().collect();
+                super::editor_kinds::note_from_import_kinds(&mut self.editor, &editor_handles, &refs);
+            }
             let last = stmts.pop().expect("from_dots_import は 1 つ以上の文を返す");
             self.pending_stmts.extend(stmts);
             return Ok(last);
@@ -360,14 +381,22 @@ impl Parser {
         let origin = if resolved.is_some() { self.import_origin(level) } else { self.unresolved_origin(level) };
         let loaded = resolved.unwrap_or_else(|| Self::unresolved_import(&lang, &module, None).0);
 
-        Ok(Stmt::FromImport {
+        let stmt = Stmt::FromImport {
             source_module: Self::written_if_renamed(level, &module, &loaded.name),
             lang,
             module: loaded.name,
             names,
             body: loaded.body,
             origin,
-        })
+        };
+        // サブモジュールを読み込む文は `pending_stmts` に積んである（`from_import_submodules`）。
+        // 読めなかった import では body が空なので、どの名前も `Unresolved` になる。
+        #[cfg(feature = "editor")]
+        {
+            let refs: Vec<&Stmt> = std::iter::once(&stmt).chain(self.pending_stmts.iter()).collect();
+            super::editor_kinds::note_from_import_kinds(&mut self.editor, &editor_handles, &refs);
+        }
+        Ok(stmt)
     }
 
 }

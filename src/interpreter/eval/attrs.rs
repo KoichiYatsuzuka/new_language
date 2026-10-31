@@ -308,12 +308,19 @@ impl Interpreter {
                 }
                 if let Some(&idx) = cls.field_index.get(attr) {
                     if let Some(v) = inst.field_value(idx) {
-                        // アクセスキーの決定: trait 由来フィールドは修飾名で検索する
-                        let suffix = format!("::{attr}");
-                        let access_key = cls.field_index.iter()
-                            .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
-                            .map(|(k, _)| k.as_str())
-                            .unwrap_or(attr);
+                        // アクセスキーの決定: trait 由来フィールドは修飾名で検索する。
+                        // ⚠ 修飾名のキー（`Trait::f`）を付けるのは `build_field_index` が基底の分だけなので、
+                        //   基底（trait）の無いクラスでは `format!` と全フィールドの走査を省く（2-4・調査では
+                        //   IC が外れた読み出し 1 回の 35〜42% がここだった）。
+                        let access_key = if cls.bases.is_empty() {
+                            attr
+                        } else {
+                            let suffix = format!("::{attr}");
+                            cls.field_index.iter()
+                                .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
+                                .map(|(k, _)| k.as_str())
+                                .unwrap_or(attr)
+                        };
                         // アクセスレベルを確定して IC に焼く（R3）。
                         let level = {
                             let acc = cls.field_access.get(access_key)
@@ -330,8 +337,9 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                let suffix = format!("::{attr}");
-                {
+                // 無修飾の名前で trait 由来のフィールドを探す（基底の無いクラスには無い・上と同じ理由）
+                if !cls.bases.is_empty() {
+                    let suffix = format!("::{attr}");
                     let mut trait_matches = cls.field_index.iter()
                         .filter(|(k, _)| k.ends_with(suffix.as_str()));
                     if let Some((full_key, &idx)) = trait_matches.next() {
@@ -635,7 +643,10 @@ impl Interpreter {
     }
 
     /// インスタンスの属性に値をセットする。
-    /// ネイティブコールバック `ar_set_attr` から呼ばれる。
+    /// ネイティブコールバック `ar_set_attr` から呼ばれる。⚠ 使うのは `import[rs]` の中継コードが
+    /// Arrow 側の写しを更新するときだけ（`attr_assign_evaled` だと rs の setter へ再入する）。
+    /// コンパイル済み Arrow コードの代入は `attr_assign_evaled`（`ar_assign_attr`・native_object_access_plan.md 1-4）。
+    /// ⚠ `static mut` への代入・不変インスタンスの判定は `attr_assign_evaled` と違う（写しの更新には要らない）。
     /// ⚠⚠ **格納する値は関数の入口で複製する**（L4）。「共有するのは `let → let` の
     /// ときだけ」という規則をフィールドへの格納にも通す。共有したままだと
     /// `mut o = N([]); o.f = src` のあと `src.append(9)` で `o.f` が変わり、
@@ -797,19 +808,66 @@ impl Interpreter {
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
-        self.attr_assign_inner(obj, attr, rhs, true)
+        self.attr_assign_inner(obj, attr, rhs, None, true)
     }
 
     /// `object.__setattr__(o, k, v)`（変換器が Python の `object.__setattr__(..)` / `super().__setattr__(..)` を
     /// `__py_object_setattr(..)` にする・known_bugs.md の #10）。上書きした `__setattr__` を飛ばして、ふつうの代入
     /// （データディスクリプタの `__set__`・フィールド）をする。
     pub(crate) fn attr_assign_without_hook(&mut self, obj: Value, attr: &str, rhs: Value) -> Result<(), String> {
-        self.attr_assign_inner(obj, attr, rhs, false)
+        self.attr_assign_inner(obj, attr, rhs, None, false)
     }
 
-    fn attr_assign_inner(&mut self, obj: Value, attr: &str, rhs: Value, hook: bool) -> Result<(), String> {
+    /// `obj.attr = v` の IC 付きの入口（native_object_access_plan.md 2-3・D-6）。VM の `SetAttr` とネイティブの
+    /// `ar_assign_attr_ic` が呼ぶ（`cache` が `None` なら `attr_assign_evaled` と同じ）。
+    ///
+    /// 命中（`cache` にこのクラスの public なふつうのフィールドが入っている）なら、名前による表引き（定数のクラス変数・
+    /// `import[rs]` の setter・`static mut`・アクセスの検査・`field_index`・`field_mutability`）を省く。省けないのは
+    /// インスタンスごとの検査（不変のフィールド・不変インスタンスの未初期化 slot）と格納時の型検査で、
+    /// 命中・ミスとも [`Self::store_field_checked`] が行う。外れたら下の道を通り、ふつうのフィールドに格納できたとき
+    /// だけ埋める（`static mut`・setter・クラス変数・public でないフィールドは埋めない＝毎回この道を通る）。
+    /// ⚠ 読み出しの IC とセルを共有しない。読みは `import[rs]` の構造体のフィールドでも埋まるが、書きはそこで
+    ///   setter を通さなければならない（共有すると命中経路が setter を飛ばす）。
+    pub(crate) fn attr_assign_ic(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<(), String> {
+        self.attr_assign_inner(obj, attr, rhs, cache, true)
+    }
+
+    /// `obj.attr = v` の本体。`hook` が偽なら Python のクラスの `__setattr__` を飛ばす（`object.__setattr__`）。
+    fn attr_assign_inner(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+        cache: Option<&crate::ast::AttrCache>,
+        hook: bool,
+    ) -> Result<(), String> {
         // ⚠ 借用を取る前に複製する（doc の警告を参照）。
         let rhs = self.copy_for_store(rhs);
+        if let (Some(c), Value::Instance(inst_rc)) = (cache, &obj) {
+            let hit = {
+                let inst = inst_rc.borrow();
+                // ⚠ `__setattr__` を上書きした Python のクラスは命中経路に乗せない（乗せるとフックを飛ばす）。
+                //   下の道はフックを呼んで返るので IC を埋めないが、IC は「あれば速い」だけのヒントなので
+                //   埋まらないことには頼らない（Arrow のクラスは `is_python` を読むだけで済む）。
+                if hook && Self::py_attr_hook(&inst.class, "__setattr__") {
+                    None
+                } else {
+                    inst.ic_slot(c.0.get(), true, || attr).map(|(idx, _)| idx)
+                }
+            };
+            if let Some(idx) = hit {
+                let mut inst = inst_rc.borrow_mut();
+                // 埋めるときに名前の表と一致することを確かめてある（下の `fill`）
+                let is_mutable = inst.class.field_mutability_vec.get(idx).copied().unwrap_or(true);
+                return Self::store_field_checked(&mut inst, idx, attr, rhs, is_mutable);
+            }
+        }
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -843,7 +901,7 @@ impl Interpreter {
                 // ⚠ ネイティブ側からの `set_attr`（写しの更新）は `set_attr_val` を通るので、ここへは来ない（再入しない）。
                 if inst_class.field_index.contains_key("__rs_handle__") && attr != "__rs_handle__" {
                     let setter = format!("set_{attr}");
-                    if crate::interpreter::native_api::lookup_native_method_ptr(&inst_class.name, &setter).is_some() {
+                    if crate::interpreter::native_api::lookup_native_method_ptr(inst_class.class_id, &setter).is_some() {
                         self.check_member_access(&inst_class, attr, attr)?;
                         return match crate::interpreter::native_api::try_dispatch_native_method(
                             self,
@@ -867,23 +925,21 @@ impl Interpreter {
                     return Err(Self::no_field_to_assign(&inst_class, attr));
                 };
                 let mut inst = inst_rc.borrow_mut();
-                if inst.field_mutable(idx) == Some(false) {
-                    return Err(format!(
-                        "TypeError: cannot assign to immutable field '{attr}'"
-                    ));
-                }
-                if !inst.slot_initialized(idx)
-                    && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
-                {
-                    return Err(format!(
-                        "TypeError: cannot assign field '{attr}' on immutable instance"
-                    ));
-                }
                 let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
-                if !inst.store_field(idx, rhs, is_mutable) {
-                    return Err(format!(
-                        "TypeError: value does not match declared type of field '{attr}'"
-                    ));
+                Self::store_field_checked(&mut inst, idx, attr, rhs, is_mutable)?;
+                // IC を埋めるのは public のふつうのフィールドで、slot の可変性（命中経路が引く）が名前の表と
+                // 一致するときだけ（組み込みの例外クラスは slot の表だけが `false`）。
+                if let Some(c) = cache {
+                    let public = inst_class
+                        .field_access
+                        .get(attr)
+                        .or_else(|| inst_class.method_access.get(attr))
+                        .map_or(true, |a| matches!(a, Accessibility::Public));
+                    let same_mutability =
+                        inst_class.field_mutability_vec.get(idx).copied().unwrap_or(true) == is_mutable;
+                    if public && same_mutability {
+                        c.fill(inst_class.class_id, idx, crate::ast::AttrCache::PUBLIC);
+                    }
                 }
                 Ok(())
             }
@@ -935,6 +991,27 @@ impl Interpreter {
             }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
         }
+    }
+
+    /// インスタンスごとの検査（不変のフィールド・不変インスタンスの未初期化 slot）と格納時の型検査をしてから格納する。
+    /// [`Self::attr_assign_ic`] の命中経路とミス経路が共有する（IC で省けない検査はここに集める・2-3）。
+    pub(crate) fn store_field_checked(
+        inst: &mut crate::interpreter::value::InstanceData,
+        idx: usize,
+        attr: &str,
+        rhs: Value,
+        is_mutable: bool,
+    ) -> Result<(), String> {
+        if inst.field_mutable(idx) == Some(false) {
+            return Err(format!("TypeError: cannot assign to immutable field '{attr}'"));
+        }
+        if !inst.slot_initialized(idx) && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
+            return Err(format!("TypeError: cannot assign field '{attr}' on immutable instance"));
+        }
+        if !inst.store_field(idx, rhs, is_mutable) {
+            return Err(format!("TypeError: value does not match declared type of field '{attr}'"));
+        }
+        Ok(())
     }
 
     // --- 属性代入ヘルパー ---

@@ -47,16 +47,31 @@ impl Interpreter {
         callee_name: &str,
         call_span: Option<&Span>,
     ) -> Result<Value, String> {
+        let Some(declared) = self.annotations.resolved_type(node_id).cloned() else {
+            return Ok(value);
+        };
+        let where_ = call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
+        self.check_ffi_return_declared(lang, value, &declared, callee_name, &where_)
+    }
+
+    /// [`Self::check_ffi_return`] の本体: 宣言型を注釈から引かずに受け取る。コンパイル済みコードは実行時に AST の注釈を
+    /// 持たないので、生成コードが呼び出し箇所ごとに埋め込んだ宣言型・表示名・位置で同じ検査をする
+    /// （`ar_call_method_ic`・native_object_access_plan.md 11-3）。`where_` は位置の表示（`Span` の `Display`）。
+    pub(crate) fn check_ffi_return_declared(
+        &mut self,
+        lang: &str,
+        value: Value,
+        declared: &crate::type_check::InferredType,
+        callee_name: &str,
+        where_: &str,
+    ) -> Result<Value, String> {
         use crate::interpreter::ffi_boundary::{checker_for, Verdict};
 
         let Some(checker) = checker_for(lang) else {
             return Ok(value);
         };
-        let Some(declared) = self.annotations.resolved_type(node_id).cloned() else {
-            return Ok(value);
-        };
 
-        let what = match checker.check(&value, &declared) {
+        let what = match checker.check(&value, declared) {
             Verdict::Ok | Verdict::Unverifiable => return Ok(value),
             Verdict::Coerce(v) => return Ok(v),
             Verdict::Mismatch { actual } => format!(
@@ -75,7 +90,6 @@ impl Interpreter {
                 declared
             ),
         };
-        let where_ = call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
         let msg = format!("{what} at {where_}");
         match self.make_internal_raised_error(&msg) {
             Some(raised) => {
@@ -740,11 +754,8 @@ impl Interpreter {
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             // ジェネレータ関数呼び出し（VM の Call op 用）。ツリーウォークの `eval_call` の
             // `GeneratorFn => exec_generator` に対応。本体は eager 実行し `Value::Generator` を返す。
-            Value::GeneratorFn(gen_fn) => self.exec_generator_evaled(gen_fn, evaled, None),
-            Value::NativeFunction(fn_ref) => {
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-                self.dispatch_native_evaled(&fn_ref, vals)
-            }
+            Value::GeneratorFn(gen_fn) => self.exec_generator_evaled(gen_fn, evaled, None, true),
+            Value::NativeFunction(fn_ref) => self.dispatch_native_evaled_flags(&fn_ref, evaled),
             // #22-c: キーワード引数を保持したまま渡すので `AsyncManager`/`Signal` も扱える。
             Value::Type(type_name) => self.call_type_constructor_evaled(&type_name, evaled),
             Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),

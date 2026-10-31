@@ -1,0 +1,23 @@
+# native_field_compound.ar — コンパイル済みコードのフィールドの複合代入・型付きの書き込み
+# （native_object_access_plan.md 4-2・§0.3 ⑪）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_field_compound_module.ar
+#   2. cargo run --release -- examples/interop/native_field_compound.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_field_compound_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# 右辺 bump() が n を 10 にしてから 1 を返す: 10 + 1
+check("right-hand side is evaluated before the read", m.run_order() == 11)
+# pick() は読みと書きで 2 回呼ばれる（picks 2）、inner.n は 1 + 5
+check("non-name receiver is evaluated for the read and the write", m.run_via_call() == 206)
+# n: 1 → 4 → 7 → 10 → 13 → 12、f: 1 → 3 → 7 → 15 → 31（float への int の加算を含む）
+check("typed int / float compound assignment", m.run_typed() == 43.0)
+check("typed plain assignment", m.run_plain() == "21/0.5")

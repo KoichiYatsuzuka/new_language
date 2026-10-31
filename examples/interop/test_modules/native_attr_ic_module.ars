@@ -1,0 +1,32 @@
+trait HasX:
+    mut x: int
+
+
+class A(HasX):
+    mut pad: str
+    fn __init__(mut self, x: int, pad: str) -> None:
+        ...
+
+
+class B(HasX):
+    mut a: int
+    mut b: int
+    fn __init__(mut self, x: int, a: int, b: int) -> None:
+        ...
+
+
+class Meter:
+    mut n: int
+    mut f: float
+    fn __init__(mut self, n: int, f: float) -> None:
+        ...
+
+
+fn total_x(items: list[HasX]) -> int:
+    ...
+
+fn bump_and_sum(mut m: Meter) -> int:
+    ...
+
+fn scaled(mut m: Meter) -> float:
+    ...

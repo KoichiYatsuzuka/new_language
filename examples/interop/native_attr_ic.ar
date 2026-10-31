@@ -1,0 +1,25 @@
+# native_attr_ic.ar — コンパイル済みコードの属性の読み出しを箇所ごとの IC で行う（native_object_access_plan.md 2-2）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_attr_ic_module.ar
+#   2. cargo run --release -- examples/interop/native_attr_ic.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_attr_ic_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+let items: list[m.HasX] = [m.A(1, "a"), m.B(10, 0, 0), m.A(100, "b"), m.B(1000, 5, 6)]
+check("one site, two classes", m.total_x(items) == 1111)
+check("same site again (IC filled)", m.total_x(items) == 1111)
+
+mut meter = m.Meter(1, 1.5)
+# n: 1 -> 1, 2, 4, 7 ; sum 14
+check("mut receiver read after each write", m.bump_and_sum(meter) == 14)
+check("caller sees the writes", meter.n == 7)
+# f: 1.5 -> 3, 6, 12 ; sum 21
+check("typed float field", m.scaled(meter) == 21.0)

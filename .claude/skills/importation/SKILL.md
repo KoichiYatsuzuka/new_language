@@ -235,11 +235,12 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
   bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
   a module with `from m import *` is not checked. Structural conversion errors are reported first.
 - Reference sharing (known_bugs.md #1, decision A): every implicit copy on store goes through
-  `Interpreter::copy_for_store`, which does not copy while `running_python` is set. `vm::run` / `vm::resume_frame`
+  `Interpreter::copy_for_store` (fields, `append`, `xs[i] = v`, dict / set stores, closure capture) or, for a
+  `mut` declaration, `Interpreter::bind_copy(BindCopy::DeepCopy, ..)`; neither copies while `running_python` is set. `vm::run` / `vm::resume_frame`
   set it from `Chunk::is_python` (module-statement chunks of a Python module get it in `try_run_module_stmt`) and
   `exec_module` sets it for a Python module body. `ClassValue::is_python` (set by `exec_class_def` from
   `in_python_module`) makes `values_eq` / `hash_into` use identity for instances without `__eq__` / `__hash__`.
-  Arrow `let` (`frozen_copy`), `self` binding, native calls and `copy()` still copy.
+  Arrow `let` (`bind_copy(CopyFreeze)`), `self` binding, native calls and `copy()` still copy.
 - `del` (known_bugs.md #2 / #3; `convert_del_target` in `statements.rs`): `del o.a` → `__py_delattr(o, "a")`
   (`Interpreter::del_attr_val`: the class's `__delattr__`, then a data descriptor's `__delete__`, then
   `InstanceData::clear_field` puts the field back to unassigned — the boxed slot becomes `None`, a raw class clears its

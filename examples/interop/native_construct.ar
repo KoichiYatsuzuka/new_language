@@ -1,0 +1,21 @@
+# native_construct.ar — コンパイル済みコードからモジュール内のクラスを生成する（native_object_access_plan.md 5-1）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_construct_module.ar
+#   2. cargo run --release -- examples/interop/native_construct.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_construct_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# sum_{i<10} (i + 2i) = 3 * 45
+check("generated __init__ in a loop", m.many_points(10) == 135)
+check("let parameter copies a mut argument", m.bag_copies() == 23)
+check("explicit __init__", m.bag_label() == "x!")
+# Box(3) は明示の __init__（9）、Box(2, 5) は自動生成の __init__（10）
+check("overloaded __init__", m.boxes() == 910)

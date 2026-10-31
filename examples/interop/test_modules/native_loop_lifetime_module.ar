@@ -1,0 +1,97 @@
+# native_loop_lifetime_module.ar — コンパイル済みコードのループの周ごとの値の寿命（native_object_access_plan.md 9-1・D-10）
+#
+# 規則（VM と同じ）: ループの中で作った値は使い終われば捨てられる。生成コードは周の終わりにまとめて捨て、
+# 本体で書き込んだ変数の値だけを残す（ループの後・次の周でも読める）。
+# ⚠ 以前はループの中で作った値がいちばん外の呼び出しが終わるまで残り、メモリが周の数だけ増え、ファイルを閉じる
+#   （書いた内容を書き出す）のも遅れた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_loop_lifetime_module.ar
+
+class Item:
+    mut v: int
+
+# 周をまたいで書き換える変数（残す値）
+fn accumulate(let n: int) -> str:
+    mut s = ""
+    mut i = 0
+    while i < n:
+        s = s + str(i)
+        i += 1
+    return s
+
+# 入れ子のループ（内側の変数・外側の変数）
+fn nested(let n: int) -> str:
+    mut out = ""
+    for i in range(n):
+        mut row = ""
+        for j in range(i + 1):
+            row = row + "x"
+        out = out + row + "|"
+    return out
+
+# `break` で抜けた周に書いた値をループの後で使う
+fn last_after_break(let xs: list[str]) -> str:
+    mut found = ""
+    for x in xs:
+        found = x + "!"
+        if x == "b":
+            break
+    return found
+
+# `continue` の前に作った値・飛ばした周の値
+fn continue_strings(let n: int) -> str:
+    mut s = ""
+    mut i = 0
+    while i < n:
+        i += 1
+        let t = "k" + str(i)
+        if i % 2 == 0:
+            continue
+        s = s + t
+    return s
+
+# `loop_yield` の溜め先（for 式・while 式）
+fn yielded(let n: int) -> list[str]:
+    let ys = for i in range(n) ->list[str]:
+        loop_yield "v" + str(i)
+    return ys
+
+fn while_yielded(let n: int) -> list[str]:
+    mut i = 0
+    let ys = while i < n ->list[str]:
+        i += 1
+        loop_yield "w" + str(i)
+    return ys
+
+# 一時値のファイルは周の終わりまでに閉じる（書いた内容が次の周で読める）
+fn file_temporaries(let path: str) -> str:
+    mut seen = ""
+    mut i = 0
+    while i < 3:
+        if i > 0:
+            let r = open(path, FileOpenMode.read)
+            seen = seen + r.read()
+            close(r)
+        open(path, FileOpenMode.rewrite).write(str(i))
+        i += 1
+    return seen
+
+# `fixed_list` の `for`（平らな道）の `continue`。⚠ 以前は添字を進めずに見出しへ戻り、終わらなかった
+fn fixed_continue(let xs: fixed_list[Item]) -> int:
+    mut total = 0
+    for it in xs:
+        if it.v < 0:
+            continue
+        total += it.v
+    return total
+
+# 生成を繰り返すループ（周ごとに捨てられれば、回数を増やしてもメモリは増えない）
+fn construct_many(let n: int) -> int:
+    mut latest = Item(0)
+    mut i = 0
+    while i < n:
+        Item(i)
+        latest = Item(i)
+        i += 1
+    return latest.v

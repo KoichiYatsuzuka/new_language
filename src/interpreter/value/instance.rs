@@ -255,6 +255,37 @@ impl InstanceData {
         }
     }
 
+    /// 属性読み出しの IC の命中判定（**唯一の実装**・native_object_access_plan.md 2-1）。
+    ///
+    /// `packed` は `AttrCache` の中身（VM・ツリーウォークは `Cell`、ネイティブは DLL 内の `AtomicU64`）。
+    /// class_id が当たれば `(slot, アクセスレベル)`、ほかは `None`（呼ぶ側が `get_attr_val` のミス経路へ回す）。
+    /// `public_only` なら public 以外も `None`（VM・ネイティブはアクセスの検査をミス経路に任せる。
+    /// ツリーウォークは命中経路で `check_access_level` する）。値は呼ぶ側が [`Self::field_value`] で読む
+    /// （未初期化の slot は `None` でミス経路へ）。
+    /// `name` はデバッグビルドの照合にだけ使う（release では呼ばれないので名前の表を引かない）。
+    /// ⚠ 以前は VM の `GetAttr` / `GetAttrLocal` とツリーウォークの `eval_attr` が同じ判定を各自で書いていた。
+    /// ⚠⚠ **値の読み出しまでここに入れない**。`#[inline(always)]` で `field_value`（raw レイアウトの幅ごとの
+    ///   変換を含む）まで `exec_op` に展開され、`bench_field_access` が 6% 遅くなった（実測・2-1）。
+    #[inline(always)]
+    pub(crate) fn ic_slot<'n>(
+        &self,
+        packed: u64,
+        public_only: bool,
+        name: impl FnOnce() -> &'n str,
+    ) -> Option<(usize, u8)> {
+        let (idx, access) = crate::ast::AttrCache::probe(packed, self.class.class_id)?;
+        if public_only && access != crate::ast::AttrCache::PUBLIC {
+            return None;
+        }
+        debug_assert_eq!(
+            self.class.field_index.get(name()).copied(),
+            Some(idx),
+            "attr IC slot mismatch on class_id {}",
+            self.class.class_id
+        );
+        Some((idx, access))
+    }
+
     /// スロット `idx` の値を読み出す（未初期化なら `None`）。raw クラスは幅変換込み。
     pub fn field_value(&self, idx: usize) -> Option<Value> {
         if self.has_raw_layout() {

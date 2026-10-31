@@ -231,11 +231,11 @@ Arrow/
 - 組み込み関数: `print()`、`range(stop)` / `range(start, stop)` / `range(start, stop, step)`、`len()`
 - **関数の実行**: `fn` 定義・呼び出し（位置引数・キーワード引数）・`return`・再帰
 - **引数の渡し方（値渡し vs 参照渡し）**:
-  - `let` パラメータ（不変）: 参照型（`Instance` / `Dict` / `List`）は **ディープコピー** して渡す。元の `mut` 変数は関数内の操作で一切変更されない
+  - `let` パラメータ（不変）: **`mut` の値**（参照型 `Instance` / `Dict` / `List` / `Set` / `Tuple`）を渡したときだけ **コピー** して渡す（`copy()` の規則・`__copy__` があればそれ）。元の `mut` 変数は関数内の操作で一切変更されない。**`let` の値はコピーしない**（変更されないことが保証されているので共有する・上の「let/mut/const」）。一時値（`f()` の戻り値など）は共有してよいが、実装（VM・コンパイル済みとも）は `let` の名前以外の式を保守的に `mut` の値とみなしてコピーする（`o.xs` のように `mut` の値の一部を指す式と区別しないため。違いが見えるのは `__copy__` の副作用だけ）
   - `mut` パラメータ（可変）: 参照型はそのまま共有参照として渡す。関数内の変更は呼び出し元に反映される
   - プリミティブ型（`int` / `float` / `str` / `bool` / `None`）: 常に値渡し（Rust の clone）
-  - `self`（不変レシーバ）も同様に、`let self` ならディープコピーを受け取る
-  - 実装: `bind_args` 内の `deep_copy_value` が `Instance` / `Dict` / `List` のフィールド・要素を再帰コピー
+  - `self`（不変レシーバ）も同じ規則: `let self` のメソッドを **`mut` の受け手**で呼ぶと **ディープコピー**（`__copy__` は呼ばない）を受け取り、`let` の受け手ならコピーしない（一時値の扱いは `let` パラメータと同じ）
+  - コンパイル済みコード（`--compile`）も同じ規則に従う（implementation_plans/native_object_access_plan.md D-8）
 - **クラスの実行**: インスタンス化・フィールド・メソッド呼び出し・`self`・継承（`lookup_method_in_class`）
 - `self.x = v` / `self.x += v`（`AttrAssign` / `AttrCompoundAssign`）
 - **クラスメンバの種別**:

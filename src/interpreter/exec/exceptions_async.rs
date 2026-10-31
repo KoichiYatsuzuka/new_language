@@ -17,7 +17,7 @@ use {
 impl Interpreter {
     /// `freeze name` 文を実行する: `let name = name` と**同じ結果**にする（python_builtins_plan.md のタスク 1-9）。
     ///
-    /// 値の深いコピーを不変にし（`frozen_copy`・`let` と同じ 1 実装）、変数をそのコピーへ束縛し直して
+    /// 値の深いコピーを不変にし（`bind_copy` の `CopyFreeze`・`let` と同じ 1 実装）、変数をそのコピーへ束縛し直して
     /// 不変の変数に降格する。⚠ 以前はコピーせず**その場で**不変にしていたので、同じオブジェクトを
     /// 持つ相手（呼び出し側の `mut` の変数など）まで不変になり、`let` と結果が違っていた。
     /// ⚠ 関数の中の変数（VM の slot）はここを通らない。VM は `LoadLocal` + `StoreLocalCopyFreeze`
@@ -36,7 +36,8 @@ impl Interpreter {
                 "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
             ));
         }
-        let frozen = self.frozen_copy(var.get_value())?;
+        // ⚠ 変数がまだ値を持っているので `bind_copy` の「誰とも共有していなければ写さない」には当たらない（必ず写す）。
+        let frozen = self.bind_copy(crate::interpreter::BindCopy::CopyFreeze, var.get_value())?;
         self.assign_var(name, frozen)
             .map_err(|e| format!("{span}: {e}"))?;
         self.make_var_immutable(name);

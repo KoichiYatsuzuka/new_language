@@ -1,0 +1,170 @@
+# sim_core.ar — speed study core (mode 1: interpreted / mode 2: the same file after --compile)
+#
+# Every class mixes composite types: str, list[float], nested class instances, list[Body].
+# All names are statically resolvable (no getattr-by-string, no dynamic dispatch on unknown types).
+# The arithmetic is written in the same operation order as the C++ kernels (mode 3) so that the
+# checksums of the three modes agree bit-for-bit.
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+    fn dot(let self, let o: Vec3) -> float:
+        return self.x * o.x + self.y * o.y + self.z * o.z
+
+    fn add_scaled(mut self, let o: Vec3, let s: float) -> None:
+        self.x = self.x + o.x * s
+        self.y = self.y + o.y * s
+        self.z = self.z + o.z * s
+
+class Body:
+    mut name: str
+    mut pos: Vec3
+    mut vel: Vec3
+    mut mass: float
+    mut trail: list[float]
+    mut hits: int
+
+    fn kinetic(let self) -> float:
+        return 0.5 * self.mass * self.vel.dot(self.vel)
+
+    fn bounce(mut self, let lim: float) -> int:
+        mut n = 0
+        if self.pos.x > lim or self.pos.x < 0.0 - lim:
+            self.vel.x = 0.0 - self.vel.x
+            n += 1
+        if self.pos.y > lim or self.pos.y < 0.0 - lim:
+            self.vel.y = 0.0 - self.vel.y
+            n += 1
+        if self.pos.z > lim or self.pos.z < 0.0 - lim:
+            self.vel.z = 0.0 - self.vel.z
+            n += 1
+        return n
+
+    fn step(mut self, let dt: float, let lim: float) -> None:
+        self.pos.add_scaled(self.vel, dt)
+        self.hits += self.bounce(lim)
+
+    fn record(mut self) -> None:
+        self.trail.append(self.kinetic())
+
+    fn trail_sum(let self) -> float:
+        mut s = 0.0
+        for e in self.trail:
+            s += e
+        return s
+
+    fn label(let self) -> str:
+        return self.name + "#" + str(self.hits)
+
+class World:
+    mut bodies: list[Body]
+    mut tick: int
+
+    fn step_all(mut self, let dt: float, let lim: float) -> None:
+        for b in self.bodies:
+            b.step(dt, lim)
+        self.tick += 1
+
+    fn total_energy(let self) -> float:
+        mut e = 0.0
+        for b in self.bodies:
+            e += b.kinetic()
+        return e
+
+    fn record_all(mut self) -> None:
+        for b in self.bodies:
+            b.record()
+
+    fn trail_total(let self) -> float:
+        mut s = 0.0
+        for b in self.bodies:
+            s += b.trail_sum()
+        return s
+
+    fn total_hits(let self) -> int:
+        mut h = 0
+        for b in self.bodies:
+            h += b.hits
+        return h
+
+# ── setup (deterministic LCG; identical in every mode) ─────────────────────────
+
+fn lcg(let s: int) -> int:
+    return (s * 1103515245 + 12345) % 2147483648
+
+fn unit(let s: int) -> float:
+    return float(s % 2000) / 100.0 - 10.0
+
+fn make_world(let n: int) -> World:
+    mut bodies: list[Body] = []
+    mut seed = 12345
+    mut i = 0
+    while i < n:
+        seed = lcg(seed)
+        let px = unit(seed)
+        seed = lcg(seed)
+        let py = unit(seed)
+        seed = lcg(seed)
+        let pz = unit(seed)
+        seed = lcg(seed)
+        let vx = unit(seed)
+        seed = lcg(seed)
+        let vy = unit(seed)
+        seed = lcg(seed)
+        let vz = unit(seed)
+        mut tr: list[float] = []
+        bodies.append(Body("body-" + str(i), Vec3(px, py, pz), Vec3(vx, vy, vz), 1.0 + float(i % 7), tr, 0))
+        i += 1
+    return World(bodies, 0)
+
+# ── kernels (each METRIC calls exactly one of these once) ──────────────────────
+
+# K1: method calls + nested attribute read/write + float arithmetic
+fn run_step(mut w: World, let ticks: int, let dt: float, let lim: float) -> int:
+    mut t = 0
+    while t < ticks:
+        w.step_all(dt, lim)
+        t += 1
+    return w.total_hits()
+
+# K2: iteration over list[Body] + method call chain (kinetic -> dot)
+fn run_energy(mut w: World, let reps: int) -> float:
+    mut e = 0.0
+    mut r = 0
+    while r < reps:
+        e += w.total_energy()
+        r += 1
+    return e
+
+# K3: list[float] append + reduction
+fn run_record(mut w: World, let reps: int) -> float:
+    mut r = 0
+    while r < reps:
+        w.record_all()
+        r += 1
+    return w.trail_total()
+
+# K4: str concatenation + int -> str conversion
+fn run_labels(mut w: World, let reps: int) -> int:
+    mut total = 0
+    mut r = 0
+    while r < reps:
+        for b in w.bodies:
+            total += len(b.label())
+        r += 1
+    return total
+
+# K5: object construction (Body + 2 Vec3 + list) and a pass over the new objects
+fn run_spawn(let n: int) -> float:
+    mut xs: list[Body] = []
+    mut i = 0
+    while i < n:
+        mut tr: list[float] = []
+        xs.append(Body("s" + str(i), Vec3(float(i % 100), 1.0, 2.0), Vec3(0.5, 0.25, 0.125), 2.0, tr, 0))
+        i += 1
+    mut s = 0.0
+    for b in xs:
+        s += b.kinetic() + b.pos.x
+    return s

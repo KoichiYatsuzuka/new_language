@@ -511,6 +511,7 @@ impl Interpreter {
         chunk: &crate::vm::Chunk,
         evaled: &[(Option<String>, Value, bool)],
         self_val: &Option<Value>,
+        recv_mut: bool,
     ) -> Result<Option<(Vec<Value>, usize)>, String> {
         let params = &fn_val.params;
         let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
@@ -536,12 +537,8 @@ impl Interpreter {
         }
         // キャストの可能性（let パラメータ + 型注釈 + クラス名不一致の Instance 引数）があれば一般経路へ。
         for (p, (_, val, _)) in bind_params.iter().zip(evaled.iter()) {
-            if !p.mutable {
-                if let (Some(ta), Value::Instance(rc)) = (&p.type_ann, val) {
-                    if &rc.borrow().class.name != ta {
-                        return Ok(None);
-                    }
-                }
+            if Self::may_cast_on_bind(p, val) {
+                return Ok(None);
             }
         }
 
@@ -552,27 +549,15 @@ impl Interpreter {
         let mut slot = 0usize;
         if has_self {
             let sv = self_val.as_ref().unwrap();
-            // 非 mut self は deep_copy（bind_args と同一。エイリアス／変異から呼び出し元を保護）。
-            let self_bound = if params[0].mutable {
-                sv.clone()
-            } else {
-                Self::deep_copy_value(sv.clone())
-            };
+            // `let self` は `mut` の受け手だけ deep_copy（bind_args と同一の規則・6-1・D-8）
+            let self_bound = Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut);
             if slot < chunk.n_locals {
                 buf[base + slot] = self_bound;
             }
             slot += 1;
         }
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
-            // let パラメータ + mut 引数 → copy_value（copy ループと同一）。それ以外は共有。
-            let v = if !p.mutable && *arg_mut {
-                self.copy_value(val.clone())?
-            } else {
-                val.clone()
-            };
-            // 案 B（0-B2）: `float` 注釈の仮引数へ Int が来たら昇格する。
-            // ⚠ 一般経路（`bind_args` の後のループ）と**同じ規則・同じ位置**にすること。
-            let v = crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v);
+            let v = self.bind_param_value(p, val.clone(), *arg_mut)?;
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
             }
@@ -580,6 +565,21 @@ impl Interpreter {
         }
         Self::bind_captures(fn_val, chunk, &mut buf, base);
         Ok(Some((buf, base)))
+    }
+
+    /// 位置引数 1 つを仮引数 `p` に束縛する値（`try_fast_bind` と、合成した `__init__` の直接格納・10-3 が共有する規則）。
+    /// `let` 仮引数 ＋ `mut` の値は `copy_value`（一般経路の複製ループと同一）、それ以外は共有。そのあと `float` 注釈の
+    /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
+    pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
+        let v = if !p.mutable && arg_mut { self.copy_value(v)? } else { v };
+        Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v))
+    }
+
+    /// 束縛で `__cast__` が起きうるか（`let` 仮引数の型注釈とクラス名の違うインスタンス）。起きうるなら一般経路
+    /// （`bind_args` の後の自動キャスト）へ回す（`try_fast_bind` と 10-3 が共有する判定）。
+    pub(crate) fn may_cast_on_bind(p: &crate::ast::Param, v: &Value) -> bool {
+        !p.mutable
+            && matches!((&p.type_ann, v), (Some(ta), Value::Instance(rc)) if &rc.borrow().class.name != ta)
     }
 
     /// クロージャの不変キャプチャをフレームの slot へ書き込む（#27-d）。
@@ -637,6 +637,90 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
+        // 受け手の可変性が分からない呼び出し: `let self` は保守的に複製する（6-1）。
+        self.exec_fn_evaled_recv(fn_val, evaled, self_val, true, fn_name, call_span)
+    }
+
+    /// インタープリタからコンパイル済みの関数・メソッドへ渡す引数を、宣言（仮引数 `params`）どおりに束縛する
+    /// （native_object_access_plan.md 6-3・1-11）。インタープリタの呼び出しと同じ `bind_args`（位置・名前つき引数・既定値・
+    /// 個数の検査・`let self` の複製）と、同じ複製（`let` 仮引数 ← `mut` の値は `copy_value`）を通し、宣言の順の値
+    /// （`self` を含む）を返す。既定値は定義したモジュールの大域 `globals` で評価する（`exec_fn_evaled` と同じ）。
+    /// ⚠ 以前は評価済みの引数を呼び出しの順にそのまま渡しており、`let` で受けても複製せず（§0.3 ⑬）、名前つき引数が
+    ///   位置で束縛され（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
+    pub(crate) fn bind_native_args(
+        &mut self,
+        params: &[crate::ast::Param],
+        globals: u32,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: Option<Value>,
+        recv_mut: bool,
+    ) -> Result<Vec<Value>, String> {
+        // 位置引数だけで個数が合い、既定値も可変長も無い（大半の呼び出し）: `try_fast_bind` と同じ条件・同じ束縛を、
+        // `bind_args` の名前の複製なしで作る（6-3 の A/B で、一般の束縛が呼び出しの費用を 1.7 倍にしたため）。
+        // ⚠ 既定値があれば一般の経路へ回す（インタープリタは引数が揃っていても既定値を評価する）。
+        let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
+        let rest = if has_self { &params[1..] } else { params };
+        if evaled.len() == rest.len()
+            && evaled.iter().all(|(k, _, _)| k.is_none())
+            && !params.iter().any(|p| p.variadic || p.default.is_some())
+        {
+            let mut out = Vec::with_capacity(params.len());
+            if let (true, Some(sv)) = (has_self, self_val) {
+                out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
+            }
+            for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
+                out.push(if !p.mutable && *arg_mut { self.copy_value(v.clone())? } else { v.clone() });
+            }
+            return Ok(out);
+        }
+        let defaults: Vec<Option<Value>> = if params.iter().any(|p| p.default.is_some()) {
+            let prev = self.switch_globals(globals);
+            let mut v = Vec::with_capacity(params.len());
+            let mut failed = None;
+            for p in params {
+                match &p.default {
+                    Some(expr) => match self.eval(expr) {
+                        Ok(x) => v.push(Some(x)),
+                        Err(e) => {
+                            failed = Some(e);
+                            break;
+                        }
+                    },
+                    None => v.push(None),
+                }
+            }
+            self.switch_globals(prev);
+            if let Some(e) = failed {
+                return Err(e);
+            }
+            v
+        } else {
+            Vec::new()
+        };
+        let bindings = Self::bind_args(params, evaled, self_val, recv_mut, &defaults)?;
+        let mut out = Vec::with_capacity(bindings.len());
+        for (name, val, param_mutable, arg_is_mutable) in bindings {
+            // `exec_fn_evaled` の一般経路の複製ループと同じ規則
+            out.push(if !param_mutable && name != "self" && arg_is_mutable {
+                self.copy_value(val)?
+            } else {
+                val
+            });
+        }
+        Ok(out)
+    }
+
+    /// [`Self::exec_fn_evaled`] の、受け手が `mut` の値か（`recv_mut`）が分かる版（6-1・D-8）。
+    /// `let self` は `recv_mut` のときだけ複製する。`self_val` が `None` なら `recv_mut` は使わない。
+    pub(crate) fn exec_fn_evaled_recv(
+        &mut self,
+        fn_val: Rc<FnValue>,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: Option<Value>,
+        recv_mut: bool,
+        fn_name: &str,
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
         // 束縛メソッド（`obj.method` を読んだ値・タスク 1-8）は実体へ回す。関数の値を呼ぶ経路は
         // ツリーウォークも VM も組み込み（`sorted(key=)` / `map` …）もここを通る。
         if let Some(bound) = fn_val.bound.clone() {
@@ -656,7 +740,7 @@ impl Interpreter {
         // ⚠⚠ 本体は**定義したモジュールの大域で**走らせる（`FnValue::globals`・名前空間の分離）。
         //   失敗で抜けるときも戻す。
         let prev_globals = self.switch_globals(fn_val.globals);
-        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span, owner);
+        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, recv_mut, fn_name, call_span, owner);
         self.switch_globals(prev_globals);
         let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
@@ -670,6 +754,7 @@ impl Interpreter {
         fn_val: Rc<FnValue>,
         evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
+        recv_mut: bool,
         fn_name: &str,
         call_span: Option<Span>,
         owner: Option<Rc<crate::interpreter::ClassValue>>,
@@ -717,7 +802,7 @@ impl Interpreter {
         }
         // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
         if let Some(chunk) = &chunk_opt {
-            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
+            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val, recv_mut)? {
                 return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env), owner);
             }
         }
@@ -753,6 +838,7 @@ impl Interpreter {
                     &fn_val.params,
                     evaled,
                     self_val.clone(),
+                    recv_mut,
                     &evaluated_defaults,
                 )?,
                 vec![],
@@ -872,7 +958,8 @@ impl Interpreter {
         let methods = match &bound.target {
             BoundTarget::Methods(m) => m,
             // `gen` メソッドは `obj.gen_m(..)` と同じく不変性で振り分けない（直接呼びも振り分けない）。
-            BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver)),
+            // 受け手が `mut` の値かは分からないので `let self` は保守的に複製する（`exec_fn_evaled` と同じ `true`・6-1）。
+            BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver), true),
             // 組み込みの値のメソッドは名前で同じ入口へ（`xs.append(..)` と同じ・タスク 1-10）。
             BoundTarget::Builtin(name) => return self.eval_method_call_full(receiver, name, evaled.to_vec(), None),
             // インスタンスから読んだ Python のクラスメソッド（known_bugs.md の #5）。受け手はクラスで、`C.make(..)` と同じ。
@@ -884,19 +971,19 @@ impl Interpreter {
             }
         };
         let method_name = methods[0].name.clone();
+        // ネイティブのメソッド: `obj.m(..)`（`call_instance_method_evaled`）と同じ入口・同じ順序（不変性で振り分ける前）。
+        // `recv_mut` は上の `Gen` と同じく保守的に `true`。
+        if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
+            self,
+            receiver.clone(),
+            &method_name,
+            evaled,
+            true,
+        ) {
+            return result;
+        }
         if let Value::Instance(inst_rc) = &receiver {
             let class = inst_rc.borrow().class.clone();
-            if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, &method_name).is_some() {
-                let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
-                if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
-                    self,
-                    receiver.clone(),
-                    &method_name,
-                    arg_vals,
-                ) {
-                    return result;
-                }
-            }
             if inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
                 let callable: Vec<Rc<FnValue>> = methods
                     .iter()
@@ -956,6 +1043,7 @@ impl Interpreter {
         gen_fn: Rc<GeneratorFnValue>,
         evaled: Vec<(Option<String>, Value, bool)>,
         self_val: Option<Value>,
+        recv_mut: bool,
     ) -> Result<Value, String> {
         let evaluated_defaults: Vec<Option<Value>> = if gen_fn.params.iter().any(|p| p.default.is_some()) {
             let mut v = Vec::with_capacity(gen_fn.params.len());
@@ -973,6 +1061,7 @@ impl Interpreter {
             &gen_fn.params,
             &evaled,
             self_val.clone(),
+            recv_mut,
             &evaluated_defaults,
         )?;
 

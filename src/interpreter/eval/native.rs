@@ -61,9 +61,9 @@ impl Interpreter {
 
         // Fast path: no write-back parameters（判定は VM 側と同一実装・#48）
         if !fn_ref.has_writeback() {
+            // 引数の可変性（`eval_call_args` の `is_mut`）も渡す（`let` 仮引数の複製・6-2）
             let evaled = self.eval_call_args(args)?;
-            let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-            return self.dispatch_native_evaled(fn_ref, vals);
+            return self.dispatch_native_evaled_flags(fn_ref, evaled);
         }
 
         // Write-back path — verify MutPtr args that are named variables are mutable.
@@ -84,7 +84,8 @@ impl Interpreter {
         }
 
         let evaled = self.eval_call_args(args)?;
-        let mut vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+        // 名前つき引数は受けない（書き戻しを持つのは C / C++ の関数だけ・1-11）
+        let (mut vals, _) = self.native_positional(fn_ref, evaled)?;
 
         if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
             let expected = if fn_ref.min_params == fn_ref.n_params {
@@ -140,6 +141,23 @@ impl Interpreter {
             }
         }
 
+        // `let` 仮引数は、渡す値が `mut` のときだけ `copy_value`（`__copy__` があればそれ）で複製する（VM の束縛と
+        // 同じ・native_object_access_plan.md 6-2・D-8）。引数の式が名前なら変数の可変性、ほかは保守的に `mut`。
+        // ⚠ 以前は引数が `let` でも毎回 `deep_copy_value` で複製しており、`__copy__` を持つクラスで写しが VM と違った。
+        for i in 0..vals.len() {
+            if fn_ref.ptr_params.get(i).copied().unwrap_or(PtrParam::None) == PtrParam::MutPtr {
+                continue;
+            }
+            let param_let = !fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
+            let arg_mut = arg_ident_name(args, i)
+                .map(|n| self.get_var(n).is_none_or(|v| v.is_mutable()))
+                .unwrap_or(true);
+            if param_let && arg_mut {
+                let v = vals[i].clone();
+                vals[i] = self.copy_value(v)?;
+            }
+        }
+
         let is_outermost = crate::interpreter::native_api::enter_native_call(self as *mut Interpreter);
 
         // Push handles; MutPtr params get writable arena slots
@@ -160,13 +178,8 @@ impl Interpreter {
                         crate::interpreter::native_api::push_handle(v.clone())
                     }
                 } else {
-                    let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
-                    let owned = if is_mut {
-                        v.clone()
-                    } else {
-                        Self::deep_copy_value(v.clone())
-                    };
-                    crate::interpreter::native_api::push_handle(owned)
+                    // `let` 仮引数の複製は上で済ませてある（6-2）
+                    crate::interpreter::native_api::push_handle(v.clone())
                 }
             })
             .collect();
@@ -202,10 +215,15 @@ impl Interpreter {
                     }
                 }
             };
-            unsafe {
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）。typed ABI の経路は
+            // インタープリタへ呼び戻さない（名前を引かない）ので差し替えない。
+            let globals = self.enter_native_globals(fn_ref.globals);
+            let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
+                func(handles.as_ptr(), handles.len() as i32)
+            };
+            self.leave_native_globals(globals);
+            Ok(r)
         };
 
         match call_result {
@@ -322,7 +340,68 @@ impl Interpreter {
     ) -> Result<Value, String> {
         // 書き戻し先を持たない呼び出し（＝従来の全経路）。**唯一の実装は `_wb` 版**に置き、
         // ここは「書き戻し先ゼロ」で委譲するだけにする（`*_evaled` 版とずれた実装を作らない）。
-        self.dispatch_native_evaled_wb(fn_ref, vals, 0, &mut Vec::new())
+        // 引数の可変性が分からないので、`let` 仮引数は保守的に複製する（6-2）。
+        // `.arc` の関数で個数が合わなければ（既定値を省いた）宣言どおりに束縛する（1-11）。
+        if fn_ref.globals.is_some() && vals.len() != fn_ref.n_params {
+            let evaled = vals.into_iter().map(|v| (None, v, true)).collect();
+            return self.dispatch_native_evaled_flags(fn_ref, evaled);
+        }
+        self.dispatch_native_evaled_wb(fn_ref, vals, &[], 0, &mut Vec::new())
+    }
+
+    /// 評価済みの引数を、呼ぶネイティブ関数の仮引数の順の値と可変性に並べる（native_object_access_plan.md 1-11）。
+    ///
+    /// - `.arc` の関数（`globals` がある）で名前つき引数か省いた引数があれば、モジュールの大域に残る宣言（本体を
+    ///   走らせたときの `FnValue`）どおりに [`Self::bind_native_args`] が束縛する（名前・既定値・個数の検査・
+    ///   `let` 仮引数の複製はインタープリタと同じ）。複製は済んでいるので、返す可変性はすべて偽（二度複製しない）。
+    /// - それ以外は呼び出しの順のまま（`let` 仮引数の複製は `dispatch_native_evaled_wb` が可変性を見て行う）。
+    ///   C / C++ などの関数は仮引数の名前を持たないので、名前つき引数はエラーにする。
+    /// ⚠ 以前はどの関数でも名前を捨てて呼び出しの順に並べており、`f(b=1, a=10)` が `f(1, 10)` になっていた（§0.3 ⑭）。
+    pub(crate) fn native_positional(
+        &mut self,
+        fn_ref: &NativeFnRef,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<(Vec<Value>, Vec<bool>), String> {
+        let named = evaled.iter().any(|(k, _, _)| k.is_some());
+        if let Some(g) = fn_ref.globals {
+            if named || evaled.len() != fn_ref.n_params {
+                let vals = match self.global_value_in(g, &fn_ref.fn_name) {
+                    Some(Value::Function(f)) => {
+                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                    }
+                    Some(Value::GeneratorFn(f)) => {
+                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                    }
+                    _ => {
+                        return Err(format!(
+                            "NativeError: compiled function '{}' has no declaration to bind its arguments",
+                            fn_ref.fn_name
+                        ))
+                    }
+                };
+                let flags = vec![false; vals.len()];
+                return Ok((vals, flags));
+            }
+        } else if named {
+            return Err(format!(
+                "TypeError: native function '{}' does not take keyword arguments",
+                fn_ref.fn_name
+            ));
+        }
+        let flags = evaled.iter().map(|(_, _, m)| *m).collect();
+        let vals = evaled.into_iter().map(|(_, v, _)| v).collect();
+        Ok((vals, flags))
+    }
+
+    /// [`Self::dispatch_native_evaled`] の、引数の可変性（`eval_call_args` / VM の `mut_mask` が決めた `is_mut`）が
+    /// 分かる版（6-2）。`let` 仮引数は `mut` の値のときだけ複製する（VM の束縛と同じ）。
+    pub(crate) fn dispatch_native_evaled_flags(
+        &mut self,
+        fn_ref: &Arc<NativeFnRef>,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
+        let (vals, flags) = self.native_positional(fn_ref, evaled)?;
+        self.dispatch_native_evaled_wb(fn_ref, vals, &flags, 0, &mut Vec::new())
     }
 
     /// `dispatch_native_evaled` の書き戻し対応版（#48）。
@@ -335,10 +414,12 @@ impl Interpreter {
     ///
     /// ⚠ `wb_mask` を 0 にすると従来どおり**書き戻しをしない**。判定不能な呼び出し元
     /// （`call_value_evaled` 経由など）はそのまま 0 を渡せばよい。
+    /// `arg_mut[i]` は引数 i が `mut` の値か（空 = 分からない ⇒ 保守的に `mut`・6-2）。
     pub(crate) fn dispatch_native_evaled_wb(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
         mut vals: Vec<Value>,
+        arg_mut: &[bool],
         wb_mask: u32,
         wb_out: &mut Vec<(u8, Value)>,
     ) -> Result<Value, String> {
@@ -398,6 +479,20 @@ impl Interpreter {
             }
         }
 
+        // `let` 仮引数は、渡す値が `mut` のときだけ `copy_value`（`__copy__` があればそれ）で複製する（6-2）。
+        // 引数の可変性は呼ぶ側が渡す（`arg_mut`・VM は `mut_mask`）。分からなければ保守的に `mut`。
+        for i in 0..vals.len() {
+            let pp = fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None);
+            if pp == crate::interpreter::PtrParam::MutPtr && (wb_mask >> i) & 1 == 1 {
+                continue;
+            }
+            let arg_is_mut = arg_mut.get(i).copied().unwrap_or(true);
+            if arg_is_mut && !fn_ref.param_mutabilities.get(i).copied().unwrap_or(true) {
+                let v = vals[i].clone();
+                vals[i] = self.copy_value(v)?;
+            }
+        }
+
         let is_outermost = crate::interpreter::native_api::enter_native_call(self as *mut Interpreter);
 
         // ハンドル経路の書き戻し（#48）: `MutPtr` パラメータかつ `wb_mask` が立っている
@@ -414,13 +509,8 @@ impl Interpreter {
                     handle_wb.push((i as u8, h));
                     return h;
                 }
-                let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
-                let owned = if is_mut {
-                    v.clone()
-                } else {
-                    Self::deep_copy_value(v.clone())
-                };
-                crate::interpreter::native_api::push_handle(owned)
+                // `let` 仮引数の複製は上で済ませてある（6-2）
+                crate::interpreter::native_api::push_handle(v.clone())
             })
             .collect();
 
@@ -455,10 +545,15 @@ impl Interpreter {
                     }
                 }
             };
-            unsafe {
+            // コンパイル済みモジュールの関数はそのモジュールの大域で走る（1-7）。typed ABI の経路は
+            // インタープリタへ呼び戻さない（名前を引かない）ので差し替えない。
+            let globals = self.enter_native_globals(fn_ref.globals);
+            let r = unsafe {
                 let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
+                func(handles.as_ptr(), handles.len() as i32)
+            };
+            self.leave_native_globals(globals);
+            Ok(r)
         };
 
         match call_result {

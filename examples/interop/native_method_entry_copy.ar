@@ -1,0 +1,36 @@
+# native_method_entry_copy.ar — インタープリタからコンパイル済みのメソッドを呼ぶときの値渡し
+# （native_object_access_plan.md 6-3・§0.3 ⑬）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_method_entry_copy_module.ar
+#   2. cargo run --release -- examples/interop/native_method_entry_copy.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_method_entry_copy_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# mut の受け手 → let self は複製（書き換えの前の 1 が見える）
+mut a = m.Box(m.Inner(1))
+check("mut receiver is copied for let self", a.peek(a) == 1)
+check("the mut argument was written", a.inner.v == 5)
+# mut の値 → let 仮引数は複製
+mut b = m.Box(m.Inner(2))
+let c = m.Box(m.Inner(0))
+check("mut argument is copied for a let parameter", c.peek_arg(b, b) == 2)
+# let の名前は受け手も引数も共有（同一性は呼び出し元で見る）
+check("let receiver is shared", c.me() === c)
+check("let argument is shared", c.pass_arg(c) === c)
+check("mut receiver is copied", (a.me() === a) == False)
+check("mut argument is copied", (c.pass_arg(a) === a) == False)
+# 名前つき引数は名前で、省いた引数は既定値で束縛する（以前は呼び出しの順に並べ、省くと配列の外を読んでいた）
+check("keyword arguments are bound by name", c.sub(b=1, a=10) == 9)
+check("an omitted argument takes its default", c.sub(10) == 7)
+check("a defaulted argument given by keyword", c.sub(b=4, a=10) == 6)
+# 生成（__init__）も同じ入口
+mut i = m.Inner(3)
+check("mut argument is copied for a let parameter of __init__", m.Probe(i, i).seen == 3)

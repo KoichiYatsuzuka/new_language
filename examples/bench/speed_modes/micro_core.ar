@@ -1,0 +1,167 @@
+# micro_core.ar — one operation per loop, to price each operation by difference with an empty loop.
+# Same file in the interp mode (interpreted) and the native mode (--compile'd).
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+    fn get_x(let self) -> float:
+        return self.x
+
+    fn mget_x(mut self) -> float:
+        return self.x
+
+class Body:
+    mut name: str
+    mut pos: Vec3
+    mut vel: Vec3
+    mut mass: float
+    mut trail: list[float]
+    mut hits: int
+
+    fn get_mass(let self) -> float:
+        return self.mass
+
+    fn mget_mass(mut self) -> float:
+        return self.mass
+
+fn make_body(let trail_len: int) -> Body:
+    mut tr: list[float] = []
+    mut i = 0
+    while i < trail_len:
+        tr.append(float(i))
+        i += 1
+    return Body("body-1", Vec3(1.0, 2.0, 3.0), Vec3(0.5, 0.25, 0.125), 2.0, tr, 0)
+
+fn leaf(let x: float) -> float:
+    return x
+
+fn m_empty(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_field_read(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.mass
+        i += 1
+    return acc
+
+fn m_nested_read(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.pos.x
+        i += 1
+    return acc
+
+fn m_field_write(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        b.mass = 2.0
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_nested_write(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        b.pos.x = 1.0
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_fn_call(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += leaf(1.0)
+        i += 1
+    return acc
+
+fn m_call_let_small(mut v: Vec3, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += v.get_x()
+        i += 1
+    return acc
+
+fn m_call_mut_small(mut v: Vec3, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += v.mget_x()
+        i += 1
+    return acc
+
+fn m_call_let_body(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.get_mass()
+        i += 1
+    return acc
+
+fn m_call_mut_body(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.mget_mass()
+        i += 1
+    return acc
+
+fn m_new_vec(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let v = Vec3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_new_body(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        mut tr: list[float] = []
+        let b = Body("b", Vec3(1.0, 2.0, 3.0), Vec3(0.5, 0.25, 0.125), 2.0, tr, 0)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_str_concat(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let s = "body-" + "1"
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_int_to_str(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let s = str(i)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn m_list_append(let n: int) -> float:
+    mut xs: list[float] = []
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        xs.append(1.0)
+        acc += 1.0
+        i += 1
+    return acc

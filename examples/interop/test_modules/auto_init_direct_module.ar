@@ -1,0 +1,43 @@
+# auto_init_direct_module.ar — パーサが合成した `__init__` は呼ばずに格納する（native_object_access_plan.md 10-3・D-11）
+#
+# 規則（`__init__` を呼んだときと同じ）: 束縛は `let` で受ける `mut` の値を複製し、格納は深いコピーと型・可変性の検査。
+# 名前つき引数は今までどおり `__init__` を呼ぶ（`float` への昇格・`__cast__` は、生成の引数では型検査が通さない）。
+# このモジュールは .arc（コンパイル済み）で読む。同じ検査を本体（auto_init_direct.ar・VM）でも行う。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/auto_init_direct_module.ar
+
+class Box:
+    mut xs: list[int]
+
+class Secret:
+    private:
+    mut pin: int
+    public:
+    fn get(let self) -> int:
+        return self.pin
+
+class Tagged:
+    mut tag: int
+
+    fn __copy__(let self) -> Tagged:
+        return Tagged(self.tag + 100)
+
+class Pair:
+    mut a: Tagged
+    mut b: Tagged
+
+# 返り値を 1 つの文字列にまとめる（本体の検査と同じ並び）
+fn run_checks() -> str:
+    mut out = ""
+    mut src = [1]
+    let b = Box(src)
+    src.append(2)
+    out = out + str(len(b.xs)) + ","
+    out = out + str(Box(xs=[4, 5]).xs[1]) + ","
+    out = out + str(Secret(7).get()) + ","
+    mut t = Tagged(1)
+    let p = Pair(t, Tagged(2))
+    t.tag = 50
+    out = out + str(p.a.tag) + ":" + str(p.b.tag)
+    return out

@@ -1,0 +1,66 @@
+class Vec2:
+    mut x: int
+    mut y: int
+    fn add(mut self, o: Vec2) -> None:
+        ...
+    fn dot(self, o: Vec2) -> int:
+        ...
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Body:
+    mut pos: Vec2
+    mut vel: Vec2
+    mut tag: str
+    fn step(mut self) -> None:
+        ...
+    fn energy(self) -> int:
+        ...
+    fn speed2(self) -> float:
+        ...
+    gen coords(self) -> int:
+        ...
+    fn __init__(mut self, pos: Vec2, vel: Vec2, tag: str) -> None:
+        ...
+
+
+fn step_all(mut bodies: list[Body], n: int) -> None:
+    ...
+
+fn total_energy(bodies: list[Body]) -> int:
+    ...
+
+fn total_speed2(bodies: list[Body]) -> float:
+    ...
+
+fn coord_sum(bodies: list[Body]) -> int:
+    ...
+
+fn sum_x(bodies: list[Body]) -> int:
+    ...
+
+trait Named:
+    mut name: str
+    fn greet(self) -> str:
+        ...
+
+
+class Cat(Named):
+    mut lives: int
+    fn greet(self) -> str:
+        ...
+    fn __init__(mut self, name: str, lives: int) -> None:
+        ...
+
+
+class Dog(Named):
+    mut barks: int
+    fn greet(self) -> str:
+        ...
+    fn __init__(mut self, name: str, barks: int) -> None:
+        ...
+
+
+fn greet_all(xs: list[Named]) -> str:
+    ...

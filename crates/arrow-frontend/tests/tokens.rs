@@ -209,3 +209,14 @@ fn no_zero_width_layout_tokens() {
         );
     }
 }
+
+/// 括弧の外の行末は `newline` として出る（行末から次の行の先頭まで）。括弧の中の改行は出ない。
+/// 拡張はこれで「直前のトークンが前の文のものか」を知る（`inTypePosition`・VSIX_update_plan.md 5-4）。
+#[test]
+fn logical_newlines_are_reported_outside_brackets_only() {
+    let toks = tokens("if x:\n    f(a,\n      b)\n");
+    let newlines: Vec<&Tok> = toks.iter().filter(|t| t.kind == "newline").collect();
+    assert_eq!(newlines.len(), 2, "{toks:?}");
+    assert_eq!((newlines[0].line, newlines[0].col, newlines[0].end_line, newlines[0].end_col), (0, 5, 1, 0), "{toks:?}");
+    assert_eq!((newlines[1].line, newlines[1].col), (2, 8), "括弧の中の改行（1 行目の末尾）を出している — {toks:?}");
+}

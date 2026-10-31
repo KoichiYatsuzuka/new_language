@@ -1,0 +1,20 @@
+# native_direct_default.ar — コンパイル済みコードの中で既定値のある引数を省いて直接呼ぶ
+# （native_object_access_plan.md 1-13・§0.3 ⑰）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_direct_default_module.ar
+#   2. cargo run --release -- examples/interop/native_direct_default.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_direct_default_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("a direct call omitting a defaulted argument", m.direct() == 7)
+check("the same inside an integer expression", m.direct_in_expr() == 23)
+check("a method call on an annotated receiver omitting a defaulted argument", m.method_direct(m.Acc(100)) == 106)
+check("a method call on a list element", m.method_element([m.Acc(100)]) == 209)

@@ -1,0 +1,23 @@
+class Vault:
+private:
+    mut secret: int
+    mut level: int
+public:
+    mut opened: int
+    fn rotate(mut self) -> int:
+        ...
+    fn level_of(self) -> int:
+        ...
+private:
+    fn bump_level(mut self) -> None:
+        ...
+public:
+    fn __init__(mut self, secret: int, level: int, opened: int) -> None:
+        ...
+
+
+fn rotate_vault(mut v: Vault) -> int:
+    ...
+
+fn rotate_all(mut vs: list[Vault]) -> int:
+    ...

@@ -1,0 +1,24 @@
+# native_binding.ar — コンパイル済みコードの let / mut の宣言の複製（native_object_access_plan.md 1-6）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_binding_module.ar
+#   2. cargo run --release -- examples/interop/native_binding.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_binding_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK")
+
+fn outer() -> m.Outer:
+    return m.Outer(m.Inner(1), [1, 2, 3])
+
+check("let p = o.inner", m.let_from_attr(outer()), 1)
+check("let snap = o.xs", m.let_list_from_attr(outer()), 3)
+check("let it = ys[0]", m.let_from_element(), 1)
+check("mut q = o.inner", m.mut_from_attr(outer()), 1)
+check("mut ys = o.xs", m.mut_list_from_attr(outer()), 3)
+check("let a = <mut local>", m.let_from_mut_name(), 3)

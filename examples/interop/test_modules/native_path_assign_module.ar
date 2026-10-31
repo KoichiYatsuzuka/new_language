@@ -1,0 +1,50 @@
+# native_path_assign_module.ar — コンパイル済みコードの `a.b.c = v` を、途中の値を積まない 1 回の呼び出しで書く
+# （native_object_access_plan.md 12-3・D-13）
+#
+# 値の評価が何も起こさない形（リテラル・変数・数の演算）だけが 1 回の呼び出しになる。値がメソッド呼び出しなどなら
+# 今までどおり、VM と同じく途中の値を先に読んでから値を評価する（値が途中のオブジェクトを差し替えても、書くのは
+# 差し替える前のオブジェクト）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_path_assign_module.ar
+
+class Tag:
+    mut k: int
+
+class Inner:
+    mut x: float
+    mut n: int
+    mut s: str
+    mut tag: Tag
+
+class Outer:
+    mut inner: Inner
+
+    # 途中のオブジェクトを差し替えて、値を返す（値の評価が何かを起こす形）
+    fn swap(mut self) -> float:
+        self.inner = Inner(-1.0, -1, "new", Tag(-1))
+        return 9.5
+
+class Deep:
+    mut o: Outer
+
+fn run_checks() -> str:
+    mut o = Outer(Inner(0.0, 0, "", Tag(0)))
+    mut d = Deep(Outer(Inner(0.0, 0, "", Tag(0))))
+    let t = Tag(7)
+    mut k = 0
+    mut f = 0.5
+    while k < 100:
+        o.inner.x = 1.5
+        o.inner.n = k + 1
+        o.inner.s = "hi"
+        o.inner.tag = t
+        d.o.inner.x = f * 2.0
+        d.o.inner.n = -k
+        k += 1
+    mut out = str(o.inner.x) + ":" + str(o.inner.n) + ":" + o.inner.s + ":" + str(o.inner.tag.k)
+    out = out + ":" + str(d.o.inner.x) + ":" + str(d.o.inner.n)
+    # 値がメソッド呼び出し: 書くのは差し替える前の inner（差し替えた後の inner は -1.0 のまま）
+    o.inner.x = o.swap()
+    out = out + ":" + str(o.inner.x)
+    return out

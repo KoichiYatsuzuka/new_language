@@ -1,0 +1,93 @@
+# native_receiver_guard_module.ar — 型検査の注釈で受け手のクラスを決めて直接呼ぶ（native_object_access_plan.md 3-1・3-2）
+#
+# 以前のコンパイル済みコードは `self` と（int / float のフィールドを持つクラスの）型注釈付きの仮引数の
+# メソッドしか直接呼べず、フィールド（`self.pos.add(..)`）・ループ変数（`for b in bodies: b.energy()`）は
+# 全部名前で呼んでいた。今は注釈で受け手のクラスを決め、**実行時のガード**（class_id が一致し、`mut self` なら
+# 不変インスタンスでない）を通ったときだけ直接呼ぶ。注釈はヒントなので、外れたら名前で呼ぶ（D-2）:
+#   - 受け手の型が trait（`list[Named]` の要素）… 注釈のクラス（trait）と実際のクラスが違うのでガードが外れる
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_receiver_guard_module.ar
+
+class Vec2:
+    mut x: int
+    mut y: int
+
+    fn add(mut self, let o: Vec2) -> None:
+        self.x = self.x + o.x
+        self.y = self.y + o.y
+
+    fn dot(let self, let o: Vec2) -> int:
+        return self.x * o.x + self.y * o.y
+
+class Body:
+    mut pos: Vec2
+    mut vel: Vec2
+    mut tag: str
+
+    # 受け手はフィールド（self.pos）: 注釈で Vec2 と分かる
+    fn step(mut self) -> None:
+        self.pos.add(self.vel)
+
+    fn energy(let self) -> int:
+        return self.vel.dot(self.vel)
+
+    # float を返すメソッド（`_impl` は double を返す ABI）。ガード付きの直接呼び出しでも double で受けること
+    # ⚠ 以前の版はガード付きの道で `call i64` と呼び、`float * None` の TypeError になった（3-2 の実装中に発見）
+    fn speed2(let self) -> float:
+        return float(self.vel.x * self.vel.x + self.vel.y * self.vel.y) * 0.5
+
+    # ジェネレータのメソッドも直接呼べる（3-3: 直接呼んでよい条件の確認）
+    gen coords(let self) -> int:
+        yield self.pos.x
+        yield self.pos.y
+
+# 受け手はループ変数（list[Body] の要素）
+fn step_all(mut bodies: list[Body], let n: int) -> None:
+    for i in range(n):
+        for b in bodies:
+            b.step()
+
+fn total_energy(let bodies: list[Body]) -> int:
+    mut t = 0
+    for b in bodies:
+        t += b.energy()
+    return t
+
+fn total_speed2(let bodies: list[Body]) -> float:
+    mut t = 0.0
+    for b in bodies:
+        t = t + b.speed2() * 2.0
+    return t
+
+fn coord_sum(let bodies: list[Body]) -> int:
+    mut t = 0
+    for b in bodies:
+        for c in b.coords():
+            t += c
+    return t
+
+fn sum_x(let bodies: list[Body]) -> int:
+    mut t = 0
+    for b in bodies:
+        t += b.pos.x
+    return t
+
+trait Named:
+    mut name: str
+
+    fn greet(let self) -> str:
+        return "hi " + self::Named.name
+
+class Cat(Named):
+    mut lives: int
+
+class Dog(Named):
+    mut barks: int
+
+# 受け手の注釈は trait（Named）。実際のクラス（Cat / Dog）と違うので、直接呼ぶならガードが外れて名前で呼ぶ
+fn greet_all(let xs: list[Named]) -> str:
+    mut s = ""
+    for x in xs:
+        s = s + x.greet() + ";"
+    return s

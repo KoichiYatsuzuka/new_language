@@ -1,0 +1,23 @@
+# native_operator_dunder.ar — コンパイル済みコードの演算子もクラスの演算子のメソッドを呼ぶ
+# （native_object_access_plan.md 1-14・§0.3 ⑱）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_operator_dunder_module.ar
+#   2. cargo run --release -- examples/interop/native_operator_dunder.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_operator_dunder_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("+ calls __add__", m.plus(m.V(1, 0), m.V(2, 0)) == 3)
+# 構造の比較なら tag が違うので偽
+check("== calls __eq__ (not the structural comparison)", m.equal(m.V(3, 1), m.V(3, 2)))
+check("< calls __lt__", m.less(m.V(1, 0), m.V(2, 0)))
+check("unary - calls __neg__", m.negate(m.V(4, 0)) == -4)
+check("in uses __eq__ for the elements", m.contains(m.V(5, 9), [m.V(5, 1)]))
+check("+= calls __add__", m.accumulate(5) == 10)

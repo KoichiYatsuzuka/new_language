@@ -1,0 +1,25 @@
+# native_raw_scalars.ar — コンパイル済みコードの内部 ABI で int / float を生値で受け渡す（native_object_access_plan.md 4-1）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_raw_scalars_module.ar
+#   2. cargo run --release -- examples/interop/native_raw_scalars.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_raw_scalars_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# インタープリタから（`_tl` の境界で箱を開け・箱に入れる）: 32 ビットを超える値と負の数
+check("int through the boundary", m.mul_add(3000000000, 7, -5) == 20999999995)
+check("float through the boundary", m.hypot2(1.5, -2.0) == 6.25)
+mut acc = m.Acc(10, 0.5)
+check("int method from the interpreter", acc.add(5) == 15)
+check("float method from the interpreter", acc.scaled(3.0) == 1.5)
+# モジュール内（`_impl` を生値で呼ぶ・式と文）
+check("module-internal int / float calls", m.drive(50) == 677527275)
+check("float args and results inside the module", m.floats(2.0) == 4.51)
+check("mixed int / float / str parameters", m.mixed(7) == "m:7:2.5")

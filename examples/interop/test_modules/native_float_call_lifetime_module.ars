@@ -1,0 +1,28 @@
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        ...
+
+
+fn x_of_new(x: float) -> float:
+    ...
+
+fn sum_rec(n: int) -> float:
+    ...
+
+fn loop_calls(n: int) -> float:
+    ...
+
+fn write_tmp(path: str, text: str) -> float:
+    ...
+
+fn write_then_read(path: str) -> str:
+    ...
+
+fn square(x: float) -> float:
+    ...
+
+fn numeric_loop(n: int) -> float:
+    ...

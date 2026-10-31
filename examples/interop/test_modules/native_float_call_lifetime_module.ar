@@ -1,0 +1,56 @@
+# native_float_call_lifetime_module.ar — `float` を返す呼び出しの後で、呼ばれた側が作った値を捨てる
+# （native_object_access_plan.md 9-2・D-10）
+#
+# 規則（VM と同じ）: 呼ばれた関数の中で作った値は、呼び出しが返れば捨てられる（ファイルなら閉じる）。
+# ⚠ 以前はモジュール内の `float` を返す直接呼び出しが巻き戻さず、呼ばれた側が作った値がいちばん外の呼び出しが
+#   終わるまで残った（ループ・再帰の中の呼び出しでは回数だけ溜まる）。メモリの差は例題の値には出ないので、
+#   ここでは両モードで同じ値になることを確かめる（メモリは scripts/speed_modes.ps1 の peak_mb）。
+#   ファイルへの書き込みはその場で書き出されるので、下の write_then_read は以前の exe でも同じ値になる。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_float_call_lifetime_module.ar
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+# 中で値（ハンドル）を作って `float` を返す
+fn x_of_new(let x: float) -> float:
+    let v = Vec3(x, 0.0, 0.0)
+    return v.x
+
+# 同じ形の再帰
+fn sum_rec(let n: int) -> float:
+    if n == 0:
+        return 0.0
+    let v = Vec3(1.0, 0.0, 0.0)
+    return v.x + sum_rec(n - 1)
+
+fn loop_calls(let n: int) -> float:
+    mut acc = 0.0
+    for i in range(n):
+        acc += x_of_new(1.0)
+    return acc
+
+# 一時値のファイルに書いて `float` を返す
+fn write_tmp(let path: str, let text: str) -> float:
+    open(path, FileOpenMode.rewrite).write(text)
+    return 1.0
+
+fn write_then_read(let path: str) -> str:
+    let ok = write_tmp(path, "abc")
+    let r = open(path, FileOpenMode.read)
+    let got = r.read()
+    close(r)
+    return got
+
+# 数値だけの関数（呼び出しの前後で何もしない）
+fn square(let x: float) -> float:
+    return x * x
+
+fn numeric_loop(let n: int) -> float:
+    mut acc = 0.0
+    for i in range(n):
+        acc += square(2.0)
+    return acc

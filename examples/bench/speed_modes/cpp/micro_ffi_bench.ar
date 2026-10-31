@@ -1,0 +1,71 @@
+# micro_ffi_bench.ar — prices each loop of micro_ffi.ar: (t(loop) - t(empty loop)) / n, in ns.
+# Output: MICRO <name> <ns per op>  (and RAW <name> <s>)
+
+import[py-int] time
+from micro_ffi import Body, make_body, f_empty, f_kinetic, a_kinetic, f_add_scaled, f_sum, a_sum, f_label, f_encode_only, a_label, f_make, a_make
+
+let N = 200000 * int(getenv("AR_BENCH_SCALE", "1"))
+let NS = N // 10
+
+mut b16 = make_body(16)
+mut b256 = make_body(256)
+
+let t0 = time.perf_counter()
+let e = f_empty(N)
+let base = time.perf_counter() - t0
+print("RAW empty " + str(base))
+
+fn report(let name: str, let secs: float, let base: float, let n: int) -> None:
+    print("RAW " + name + " " + str(secs))
+    print("MICRO " + name + " " + str((secs - base) * 1000000000.0 / float(n)))
+
+mut t = time.perf_counter()
+let r1 = f_kinetic(b16, N)
+report("cpp_kinetic", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r2 = a_kinetic(b16, N)
+report("arrow_kinetic", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r3 = f_add_scaled(b16, N)
+report("cpp_add_scaled", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r4 = f_sum(b16, N)
+report("cpp_sum_list16", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r5 = a_sum(b16, N)
+report("arrow_sum_list16", time.perf_counter() - t, base, N)
+
+# the 256-element loops run N/10 times; the empty-loop base is scaled accordingly
+t = time.perf_counter()
+let r6 = f_sum(b256, NS)
+report("cpp_sum_list256", time.perf_counter() - t, base / 10.0, NS)
+
+t = time.perf_counter()
+let r7 = a_sum(b256, NS)
+report("arrow_sum_list256", time.perf_counter() - t, base / 10.0, NS)
+
+t = time.perf_counter()
+let r8 = f_label(b16, N)
+report("cpp_label_roundtrip", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r9 = f_encode_only(b16, N)
+report("str_encode_only", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r10 = a_label(b16, N)
+report("arrow_label", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r11 = f_make(N)
+report("cpp_make_v3_by_value", time.perf_counter() - t, base, N)
+
+t = time.perf_counter()
+let r12 = a_make(N)
+report("arrow_new_v3", time.perf_counter() - t, base, N)
+
+print("CHECK micro_ffi " + str(e + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12))

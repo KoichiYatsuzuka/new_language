@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use crate::ast::BinOp;
 use crate::interpreter::{Interpreter, Value};
+use crate::interpreter::BindCopy;
 
 use super::chunk::Chunk;
 use super::op::Op;
@@ -569,17 +570,17 @@ fn native_call_with_wb(
     evaled: Vec<(Option<String>, Value, bool)>,
     node_id: &u32,
 ) -> Result<Value, String> {
-    let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
     let wb = if fn_ref.has_writeback() {
         chunk.wb_targets.get(node_id)
     } else {
         None
     };
     let Some(wb) = wb else {
-        return interp.dispatch_native_evaled(fn_ref, vals);
+        return interp.dispatch_native_evaled_flags(fn_ref, evaled);
     };
+    let (vals, flags) = interp.native_positional(fn_ref, evaled)?;
     let mut out = Vec::new();
-    let r = interp.dispatch_native_evaled_wb(fn_ref, vals, wb.mask, &mut out)?;
+    let r = interp.dispatch_native_evaled_wb(fn_ref, vals, &flags, wb.mask, &mut out)?;
     apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
     Ok(r)
 }
@@ -1018,14 +1019,15 @@ fn exec_op(
             let v = buf.pop().unwrap();
             buf[base + *s as usize] = v;
         }
+        // 束縛の複製は `Interpreter::bind_copy` が唯一の実装（ツリーウォーク・ネイティブと共有・1-6）。
+        // Python から変換したコードの中の `mut` を写さない（known_bugs.md の #1）のもそちら。
         Op::StoreLocalDeepCopy(s) => {
-            // Python のコードの中は写さない（known_bugs.md の #1）。
-            let v = interp.copy_for_store(buf.pop().unwrap());
+            let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         // `let x = <mut 変数>` と、関数の中の `freeze x`（`LoadLocal` + これ・タスク 1-9）。
         Op::StoreLocalCopyFreeze(s) => {
-            let v = interp.frozen_copy(buf.pop().unwrap())?;
+            let v = interp.bind_copy(BindCopy::CopyFreeze, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         // `let x = <グローバル識別子>`（#27-c）。ソースの可変性は実行時にしか分からないので
@@ -1036,11 +1038,10 @@ fn exec_op(
             let v = interp.vm_let_value_from_ident(src_mutable, v)?;
             buf[base + *s as usize] = v;
         }
-        // ⚠ `StoreLocalCopyFreeze` と同じ意味（`let x = <式>`・L2 の「常に複製する」）。以前はインスタンスの
-        //   ときしかコピーせず、関数の中の `let item = xs[0]` が `xs[0]` と共有されていた（最上位は複製していた・
-        //   タスク 1-9 で実測）。発行元を区別できるよう op は分けたまま（`prof_dist` の集計）。
+        // ⚠ 名前に反して `Instance` 以外も複製する（L2）。以前は `Instance` だけで、関数の中の
+        //   `let it = ys[0]` が `ys[0]` と共有された（ツリーウォーク・最上位とずれていた・1-6）。
         Op::StoreLocalFreezeInstance(s) => {
-            let v = interp.frozen_copy(buf.pop().unwrap())?;
+            let v = interp.bind_copy(BindCopy::CopyFreeze, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
         }
         Op::Pop => {
@@ -1239,23 +1240,15 @@ fn exec_op(
             let cache = &chunk.attr_caches[*cache_idx as usize];
             // R3 インラインキャッシュのヒット（public フィールド）を VM ループ内で直接処理し、
             // get_attr_val の関数呼び出しを避ける。ミス・非 public・非インスタンスはフルパスへ。
+            // 命中判定は `InstanceData::ic_slot`（ツリーウォーク・ネイティブと共有・2-1）。
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &obj {
-                    let class_id = inst_rc.borrow().class.class_id;
-                    let probe = cache.get(class_id);
+                    let inst = inst_rc.borrow();
                     #[cfg(feature = "prof")]
-                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
-                    if let Some((idx, access)) = probe {
-                        if access == crate::ast::AttrCache::PUBLIC {
-                            let inst = inst_rc.borrow();
-                            debug_assert_eq!(
-                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
-                                Some(idx),
-                                "VM GetAttr cache slot mismatch"
-                            );
-                            if let Some(fv) = inst.field_value(idx) {
-                                break 'get fv;
-                            }
+                    crate::prof::note_ic(cache.get(inst.class.class_id).is_some(), cache.is_empty());
+                    if let Some((idx, _)) = inst.ic_slot(cache.0.get(), true, || &chunk.names[*name_idx as usize]) {
+                        if let Some(fv) = inst.field_value(idx) {
+                            break 'get fv;
                         }
                     }
                 }
@@ -1271,19 +1264,11 @@ fn exec_op(
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &buf[base + *slot as usize] {
                     let inst = inst_rc.borrow();
-                    let probe = cache.get(inst.class.class_id);
                     #[cfg(feature = "prof")]
-                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
-                    if let Some((idx, access)) = probe {
-                        if access == crate::ast::AttrCache::PUBLIC {
-                            debug_assert_eq!(
-                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
-                                Some(idx),
-                                "VM GetAttrLocal cache slot mismatch"
-                            );
-                            if let Some(fv) = inst.field_value(idx) {
-                                break 'get fv;
-                            }
+                    crate::prof::note_ic(cache.get(inst.class.class_id).is_some(), cache.is_empty());
+                    if let Some((idx, _)) = inst.ic_slot(cache.0.get(), true, || &chunk.names[*name_idx as usize]) {
+                        if let Some(fv) = inst.field_value(idx) {
+                            break 'get fv;
                         }
                     }
                 }
@@ -1292,10 +1277,12 @@ fn exec_op(
             };
             buf.push(v);
         }
-        Op::SetAttr(name_idx) => {
+        // 書き込みの IC（2-3）。命中経路・ミス経路とも `attr_assign_ic`（ネイティブと共有）。
+        Op::SetAttr(name_idx, cache_idx) => {
             let value = buf.pop().unwrap();
             let obj = buf.pop().unwrap();
-            interp.attr_assign_evaled(obj, &chunk.names[*name_idx as usize], value)?;
+            let cache = &chunk.attr_caches[*cache_idx as usize];
+            interp.attr_assign_ic(obj, &chunk.names[*name_idx as usize], value, Some(cache))?;
         }
         Op::Swap => {
             let n = buf.len();
@@ -1331,20 +1318,8 @@ fn exec_op(
             // ローカルのシャドウはコンパイル時に `slots.contains_key` で除外済みなので、
             // 実行時に見るのはグローバルだけでよい。ツリーウォーク側の
             // `builtin_is_shadowed` と同じ規則（`Value::Type` の自己名は組み込み登録なので除外）。
-            if interp.builtin_is_shadowed_global(name) {
-                let callee = interp
-                    .vm_load_name(name)
-                    .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
-                let evaled = args.into_iter().map(|v| (None, v, false)).collect();
-                let name = name.clone(); // interp の可変借用のため名前を退避する
-                buf.push(interp.call_value_evaled(callee, evaled, &name, None, 0)?);
-            } else {
-                match interp.eval_builtin_evaled(name, args) {
-                    Some(r) => buf.push(r?),
-                    // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
-                    None => return Err(format!("NameError: '{name}' is not defined")),
-                }
-            }
+            // 振り分けの本体はネイティブコードの組み込み呼び出しと共有する（native_object_access_plan.md 1-3）。
+            buf.push(interp.call_builtin_by_name_evaled(name, args)?);
         }
         // キーワード引数つきの組み込み呼び出し（#27-c）。`CallBuiltin` と同じ経路だが、
         // 引数名を一緒に渡して `eval_builtin_evaled_named` に解釈させる。
@@ -1493,15 +1468,16 @@ fn exec_op(
                 interp.call_instance_method_evaled(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
+                    crate::vm::op::recv_is_mut(*mut_mask, n),
                 )?
             } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
                 .then(|| wb_native_method(chunk, &obj, name, node_id))
                 .flatten()
             {
                 // native の `mut` ポインタ書き戻し（#48）
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let (vals, flags) = interp.native_positional(&fn_ref, evaled)?;
                 let mut out = Vec::new();
-                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
                 r
             } else {
@@ -1526,15 +1502,16 @@ fn exec_op(
                 interp.call_instance_method_evaled(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
+                    crate::vm::op::recv_is_mut(*mut_mask, n),
                 )?
             } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
                 .then(|| wb_native_method(chunk, &obj, name, node_id))
                 .flatten()
             {
                 // native の `mut` ポインタ書き戻し（#48）。`mod.func(mut x)` の形はここに来る。
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let (vals, flags) = interp.native_positional(&fn_ref, evaled)?;
                 let mut out = Vec::new();
-                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, &flags, wb.mask, &mut out)?;
                 apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
                 r
             } else {
@@ -1551,6 +1528,8 @@ fn exec_op(
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split);
             let obj = buf.pop().unwrap();
+            // 受け手の可変性は展開前の引数の個数で読む（6-1）
+            let recv_mut = crate::vm::op::recv_is_mut(kw.mut_mask, n);
             let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
                 .into_iter()
                 .enumerate()
@@ -1566,6 +1545,7 @@ fn exec_op(
                     evaled,
                     Some(&chunk.attr_caches[kw.name_idx as usize]),
                     None,
+                    recv_mut,
                 )?
             } else {
                 interp.vm_method_call_other(obj, name, evaled, kw.node_id, chunk)?
@@ -1706,8 +1686,7 @@ fn exec_op(
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::StoreCellDeepCopy(i) => {
-            // Python のコードの中は写さない（known_bugs.md の #1）。
-            let v = interp.copy_for_store(buf.pop().unwrap());
+            let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             *cells[*i as usize].borrow_mut() = v;
         }
         Op::UnpackTuple(src, n) => {

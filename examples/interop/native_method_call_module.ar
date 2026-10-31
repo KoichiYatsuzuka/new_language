@@ -1,0 +1,36 @@
+# native_method_call_module.ar — コンパイル済みコードの名前によるメソッド呼び出しを VM と同じ道で行う
+# （native_object_access_plan.md 11-3・D-12）
+#
+# 組み込み型（list / str）のメソッドと、外部言語（Python）のモジュールの関数を、コンパイル済みコードから
+# 名前で呼ぶ。外部言語の戻り値は、VM と同じくスタブの宣言型と照合する（宣言と違えば FfiTypeError）。
+# ⚠ `import[py-int] ffi_probe...` は入口のファイルのディレクトリから探すので、このモジュールは examples/interop に置く。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/native_method_call_module.ar
+
+import[py-int] ffi_probe.honest_py as H
+import[py-int] ffi_probe.lying_py as L
+
+# 組み込み型（list / str）のメソッド（ループの中で同じ箇所を何度も呼ぶ）
+fn builtin_methods(let n: int) -> str:
+    mut xs: list[int] = []
+    mut i = 0
+    while i < n:
+        xs.append(i)
+        i += 1
+    let top = xs.pop()
+    let words = "a-b-c".split("-")
+    return str(top) + ":" + str(len(xs)) + ":" + "/".join(words) + ":" + "Ab".upper() + str("abcb".count("b"))
+
+# 外部言語の関数（宣言どおりの型を返す）
+fn honest_calls() -> str:
+    let n = H.good_int()
+    let xs = [H.good_int(), H.good_int()]
+    return str(n * 2) + ":" + str(len(xs)) + ":" + H.good_str()
+
+# 外部言語の関数が宣言（int）と違う型（str）を返す。値をリストに入れても通さない
+fn lying_call() -> list[int]:
+    return [L.get_int()]
+
+fn run_checks() -> str:
+    return builtin_methods(10) + "," + honest_calls()

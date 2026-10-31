@@ -1,0 +1,15 @@
+# native_field_read_error.ar — コンパイル済みコードで、初期化前のフィールドを読むと AttributeError（負例）
+# （native_object_access_plan.md 1-2）
+#
+# `Reading.__init__` は `self.w` を代入する前に `self.w + w` を読む。非コンパイルでは
+# AttributeError になる。⚠ 以前のコンパイル済みコードは型付き読み出しの失敗を黙って 0.0 にしており、
+# 例外にならずに `make_total(1.5, 2)` が 3.5 を返していた。
+#
+# モジュールは .arc（コンパイル済み）を読む:
+#   cargo run --release -- --compile examples/interop/test_modules/native_field_read_module.ar
+#
+# 期待されるエラー: AttributeError: 'Reading' object has no attribute 'w'（両モードで同じ）
+
+import test_modules.native_field_read_module as m
+
+print("unreachable:", m.make_total(1.5, 2))

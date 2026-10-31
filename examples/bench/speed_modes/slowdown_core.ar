@@ -1,0 +1,135 @@
+# slowdown_core.ar — コンパイルすると VM より遅くなる操作を、部分に分けて測るカーネル（native_slowdown_analysis.md）
+#
+# 1 つの関数が 1 つの操作をループで n 回行う。slowdown.ar が非コンパイル（VM）とコンパイル済み（.arc）で同じ関数を呼び、
+# 空のループとの差を 1 回あたりの ns で出す。束縛する形としない形（`*_discard`）を並べ、差から束縛の費用を読む。
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+class Body:
+    mut name: str
+    mut pos: Vec3
+    mut mass: float
+
+fn e_empty(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += 1.0
+        i += 1
+    return acc
+
+# 何も積まないコールバック（len は生の i64 を返す）
+fn e_len(let xs: list[float], let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    mut k = 0
+    while i < n:
+        k = len(xs)
+        acc += 1.0
+        i += 1
+    return acc
+
+# 文字列のリテラルだけ（`let` の名前に共有で束縛する）
+fn e_str_lit(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let s = "body-"
+        acc += 1.0
+        i += 1
+    return acc
+
+# `let` の文字列 2 つの連結を `let` に束縛する（演算＋束縛）
+fn e_str_add(let a: str, let b: str, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let s = a + b
+        acc += 1.0
+        i += 1
+    return acc
+
+# speed_modes の 1 操作の単価（micro_core.ar の m_str_concat）と同じ形
+fn e_str_concat(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let s = "body-" + "1"
+        acc += 1.0
+        i += 1
+    return acc
+
+# 連結の結果を捨てる（束縛しない）
+fn e_str_add_discard(let a: str, let b: str, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        a + b
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_append_float(mut xs: list[float], let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        xs.append(1.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_append_str(mut xs: list[str], let s: str, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        xs.append(s)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_new_vec(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let v = Vec3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_new_vec_discard(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        Vec3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_field_write(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        b.mass = 1.0
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_nested_write(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        b.pos.x = 1.0
+        acc += 1.0
+        i += 1
+    return acc
+
+fn e_nested_read(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.pos.x
+        i += 1
+    return acc

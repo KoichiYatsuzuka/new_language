@@ -191,7 +191,13 @@ impl AttrCache {
     /// `class_id` が一致すれば `(slot, access)` を返す。
     #[inline]
     pub fn get(&self, class_id: u32) -> Option<(usize, u8)> {
-        let packed = self.0.get();
+        Self::probe(self.0.get(), class_id)
+    }
+
+    /// 詰めた値（[`Self::fill`] の形）の照合。**唯一の実装**で、`get` と、`Cell` ではなく DLL 内の
+    /// `AtomicU64` に IC を持つネイティブの生成コード（native_object_access_plan.md 2-1 / 2-2）が使う。
+    #[inline(always)]
+    pub fn probe(packed: u64, class_id: u32) -> Option<(usize, u8)> {
         if packed != 0 && (packed >> 32) as u32 == class_id {
             let access = ((packed >> 30) & 0x3) as u8;
             let idx = (packed & 0x3FFF_FFFF) as usize;

@@ -16,7 +16,7 @@ let pi = 3.14159
 **実行**: 右辺の式を評価して `Var::Immutable(value)` としてスコープに登録。  
 再代入は実行時 `TypeError`。型検査は `StaticTypeError::AssignToImmutable` を報告。
 
-**束縛する値**（`Interpreter::frozen_copy`。`freeze` と同じ 1 つの実装）:
+**束縛する値**（`Interpreter::bind_copy` の `CopyFreeze`。`freeze` と同じ 1 つの実装）:
 
 | 右辺 | 束縛する値 |
 |---|---|
@@ -100,7 +100,7 @@ freeze data   # data を let (不変) に降格する
 ```
 
 **意味**: `freeze x` は **`let x = x` と同じ結果**になります。値の深いコピーを不変にし（上の `let` の
-「束縛する値」と同じ `frozen_copy`）、`x` をそのコピーへ束縛し直して、以後 `x` を `let` の変数として扱います
+「束縛する値」と同じ `bind_copy` の `CopyFreeze`）、`x` をそのコピーへ束縛し直して、以後 `x` を `let` の変数として扱います
 （書き込みはすべて静的な誤り。ブロックを抜けても `mut` には戻りません）。
 
 - 関数の中の変数・仮引数にも使えます。仮引数を `freeze` しても、**呼び出し側が渡したオブジェクトは可変のまま**です
@@ -111,7 +111,7 @@ freeze data   # data を let (不変) に降格する
 
 **パース**: `Token::Freeze ident`  
 **実行**:
-- 最上位・モジュール本体の変数: `Op::FreezeVar` → `exec_freeze`（`frozen_copy` の値を書き戻し、変数を
+- 最上位・モジュール本体の変数: `Op::FreezeVar` → `exec_freeze`（`bind_copy` の `CopyFreeze` の値を書き戻し、変数を
   `Var::Mutable` → `Var::Immutable` に降格）
 - 関数の中の変数（VM の slot）: `LoadLocal` + `StoreLocalCopyFreeze`（`let x = <mut 変数>` と同じ命令）
 

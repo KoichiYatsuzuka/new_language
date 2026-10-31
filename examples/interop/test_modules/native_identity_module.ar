@@ -1,0 +1,28 @@
+# native_identity_module.ar — コンパイル済みコードの `===`（同一性）（native_object_access_plan.md 1-12・§0.3 ⑯）
+#
+# ⚠ 以前は生成コードが渡す演算の番号（20）をコールバックが読めず、コンパイル済みコードの `===` が必ず
+#   `NativeError: invalid binop code 20` になっていた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_identity_module.ar
+
+class Box:
+    mut v: int
+
+    fn is_same(let self, let other: Box) -> bool:
+        return self === other
+
+fn same(let a: Box, let b: Box) -> bool:
+    return a === b
+
+# 同じ関数の中で作った 2 つの名前（`let b = a` は共有・`mut c = a` は複製）
+fn local_names() -> str:
+    let a = Box(1)
+    let b = a
+    mut c = a
+    mut out = ""
+    if a === b:
+        out = out + "shared"
+    if not (a === c):
+        out = out + ",copied"
+    return out

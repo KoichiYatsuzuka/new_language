@@ -1,0 +1,46 @@
+# native_method_entry_copy_module.ar — インタープリタからコンパイル済みのメソッドを呼ぶときの値渡し
+# （native_object_access_plan.md 6-3・§0.3 ⑬・D-8）
+#
+# 規則（VM と同じ）: `mut` の受け手を `let self` で、`mut` の値を `let` 仮引数で受けるときだけ複製する
+# （`let self` は deep copy、`let` 仮引数は `copy_value`）。`let` の名前は共有する。
+# ⚠ 以前はインタープリタ側の入口（`try_dispatch_native_method`）が受け手と引数をそのまま渡し、
+#   呼び出しの間に `mut` の別名を通して書き換えると `let` で受けた側まで変わった。
+# 書き換えの後に入れ子のオブジェクトを読むのは、`int` のフィールドを入口で先読みする（D-7）と差が隠れるため。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_method_entry_copy_module.ar
+
+class Inner:
+    mut v: int
+
+class Box:
+    mut inner: Inner
+
+    # `o` を通して書き換えてから `self` を読む
+    fn peek(let self, mut o: Box) -> int:
+        o.inner.v = 5
+        return self.inner.v
+
+    # `o` を通して書き換えてから `let` 仮引数 `b` を読む
+    fn peek_arg(let self, let b: Box, mut o: Box) -> int:
+        o.inner.v = 6
+        return b.inner.v
+
+    # 受け手・引数をそのまま返す（共有されていれば、呼び出し元の値と同じオブジェクトが返る）
+    fn me(let self) -> Box:
+        return self
+
+    fn pass_arg(let self, let other: Box) -> Box:
+        return other
+
+    # 名前つき引数・既定値も宣言どおりに束縛する（§0.3 ⑭ ⑮）
+    fn sub(let self, let a: int, let b: int = 3) -> int:
+        return a - b
+
+class Probe:
+    mut seen: int
+
+    # 生成も同じ入口を通る: `j` を通して書き換えてから `let` 仮引数 `i` を読む
+    fn __init__(mut self, let i: Inner, mut j: Inner) -> None:
+        j.v = 7
+        self.seen = i.v

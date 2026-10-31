@@ -17,6 +17,17 @@ xs[0].append(9)
 print(item)              # [1]        let の item は変わらない
 print(xs)                # [[1, 9]]
 
+# 関数の中でも同じ。⚠ 以前は VM の関数本体の命令（StoreLocalFreezeInstance）だけが
+#   `Instance` しか複製せず、ここが [1, 9] になった（native_object_access_plan.md 1-6）。
+fn l2_in_fn() -> None:
+    mut ys = [[1]]
+    let it = ys[0]
+    ys[0].append(9)
+    if len(it) != 1:
+        raise ValueError("let it = ys[0] shared ys[0] inside a function")
+    print(it)            # [1]
+l2_in_fn()
+
 class K:
     mut f: list[int]
     fn __init__(mut self, let f: list[int]) -> None:

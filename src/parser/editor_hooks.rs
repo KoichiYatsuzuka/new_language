@@ -87,7 +87,9 @@ impl Parser {
         #[cfg(feature = "editor")]
         {
             let scope = self.editor.current_scope();
-            let d = EditorIndex::decl(name.to_string(), kind.into(), pos, scope);
+            let mut d = EditorIndex::decl(name.to_string(), kind.into(), pos, scope);
+            // 呼び出し元は import の束縛だけ（上の注意）。
+            d.imported = true;
             return self.editor.push(d);
         }
         #[cfg(not(feature = "editor"))]

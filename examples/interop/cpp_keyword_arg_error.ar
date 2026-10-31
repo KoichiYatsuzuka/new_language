@@ -1,0 +1,11 @@
+# cpp_keyword_arg_error.ar — C / C++ の関数は名前つき引数で呼べない（負例・native_object_access_plan.md 1-11・§0.3 ⑭）
+#
+# C / C++ の関数の値は仮引数の名前を持たないので、名前つき引数は実行時エラー
+# `TypeError: native function 'fp_mode' does not take keyword arguments` にする。
+# ⚠ 以前は名前を捨てて呼び出しの順に位置で渡していた（`fp_mode(mode=2, a=1)` が `fp_mode(2, 1)` になる）。
+# コンパイル済みの Arrow モジュール（.arc）の関数は宣言どおりに名前で束縛する（正例: native_call_binding.ar）。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("unreachable:", fp.fp_mode(mode=2, a=1))

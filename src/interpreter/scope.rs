@@ -42,6 +42,42 @@ impl Interpreter {
         prev
     }
 
+    /// コンパイル済みモジュールのコード（DLL の `_tl` / ネイティブのメソッド）を呼ぶ間だけ、そのモジュールの大域に
+    /// 差し替える（native_object_access_plan.md 1-7）。`None`（C / C++ の関数）は差し替えない。
+    /// 戻り値は [`Self::leave_native_globals`] に渡す。
+    /// ⚠ 差し替えるのは DLL を呼ぶ間だけ。引数の評価と書き戻しは呼び出し側の大域で行う。
+    pub(crate) fn enter_native_globals(&mut self, globals: Option<u32>) -> Option<u32> {
+        globals.map(|g| self.switch_globals(g))
+    }
+
+    /// [`Self::enter_native_globals`] の後始末（差し替えた大域を戻す）。
+    pub(crate) fn leave_native_globals(&mut self, prev: Option<u32>) {
+        if let Some(p) = prev {
+            self.switch_globals(p);
+        }
+    }
+
+    /// ネイティブのメソッド（DLL の `_tl`）を呼ぶ間の文脈: クラスを定義したモジュールの大域（1-7）と、
+    /// `current_class` を受け手のクラスにする（1-9・インタープリタの `run_vm_method` と同じ）。
+    /// private / protected の実行時検査（`check_access_level`）は `current_class` を見る。
+    /// ⚠ 以前は設定しなかったので、コンパイル済みのメソッドが自分のクラスの private のフィールドを読み書きすると
+    ///   `AccessError` になった（自動生成の `__init__` が private のフィールドを設定するだけでも）。
+    /// 戻り値は [`Self::leave_native_method`] に渡す。
+    pub(crate) fn enter_native_method(
+        &mut self,
+        globals: u32,
+        receiver_class: std::rc::Rc<crate::interpreter::ClassValue>,
+    ) -> (Option<u32>, Option<std::rc::Rc<crate::interpreter::ClassValue>>) {
+        let g = self.enter_native_globals(Some(globals));
+        (g, self.current_class.replace(receiver_class))
+    }
+
+    /// [`Self::enter_native_method`] の後始末。
+    pub(crate) fn leave_native_method(&mut self, prev: (Option<u32>, Option<std::rc::Rc<crate::interpreter::ClassValue>>)) {
+        self.current_class = prev.1;
+        self.leave_native_globals(prev.0);
+    }
+
     #[inline(never)]
     fn switch_globals_slow(&mut self, to: u32) {
         // ⚠ 知らない添字（非同期のワーカーへ大域を渡しそこねた等）は差し替えない。
@@ -53,6 +89,17 @@ impl Interpreter {
         std::mem::swap(&mut self.scopes[0], &mut self.global_scopes[cur]);
         std::mem::swap(&mut self.scopes[0], &mut self.global_scopes[to as usize]);
         self.cur_globals = to;
+    }
+
+    /// 大域 `globals` にある `name` の値（今の大域なら `scopes[0]`、ほかは置き場から読む）。無ければ `None`。
+    /// 大域を差し替えずに読む（コンパイル済みの関数の宣言を、そのモジュールの大域から引く・1-11）。
+    pub(crate) fn global_value_in(&self, globals: u32, name: &str) -> Option<Value> {
+        let scope = if globals == self.cur_globals {
+            self.scopes.first()?
+        } else {
+            self.global_scopes.get(globals as usize)?
+        };
+        scope.get(name).map(|v| v.get_value())
     }
 
     /// モジュールの本体を走らせる枠に入る（名前空間の分離・2026-09-26）。
@@ -223,9 +270,10 @@ impl Interpreter {
     }
 
     /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
-    /// 非識別子ソースの `let` 意味論に合わせ、深いコピーを不変にする（`frozen_copy`・タスク 1-9）。
+    /// 非識別子ソースの `let` 意味論に合わせ、常に deep_copy + freeze する（L2・`bind_copy`）。
+    /// ⚠ 以前は `Instance` のときだけ複製していた（L2 の直し漏れ・native_object_access_plan.md 1-6）。
     pub(crate) fn vm_declare_debug(&mut self, name: &str, value: Value) -> Result<(), String> {
-        let v = self.frozen_copy(value)?;
+        let v = self.bind_copy(super::BindCopy::CopyFreeze, value)?;
         self.declare_var(name.to_string(), Var::new(v, false));
         Ok(())
     }

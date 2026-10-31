@@ -1,0 +1,13 @@
+class Box:
+    mut v: int
+    fn is_same(self, other: Box) -> bool:
+        ...
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+fn same(a: Box, b: Box) -> bool:
+    ...
+
+fn local_names() -> str:
+    ...

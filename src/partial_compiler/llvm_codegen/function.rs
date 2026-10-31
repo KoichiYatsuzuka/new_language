@@ -17,13 +17,19 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
         self.current_fn_ret = ret_ty;
+        // この関数の `_impl` がアリーナへ積むかを数え始める（入口の先読みを含む・9-2）
+        let pushes_at_start = self.push_sites;
 
         // Populate param_classes for type-specialised field reads.
         self.param_classes.clear();
@@ -50,28 +56,17 @@ impl<'a> GenCtx<'a> {
             self.flat_list_params.insert(p.name.clone(), FlatListInfo { leaves, stride });
         }
 
+        // 内部 ABI（4-1）: `int` / `float` 注釈の仮引数は生値で受ける（箱を開けるのは `_tl` の境界だけ）。
+        // ⚠ 以前は全部ハンドルで受けて入口で `CB_TO_INT` / `CB_TO_FLOAT` を呼び、呼ぶ側も箱詰めしていた。
+        let ptys = self.fn_sigs[name].param_tys.clone();
         let param_sigs: Vec<String> = params.iter().enumerate()
-            .map(|(i, _)| format!("i64 %_h{i}"))
+            .map(|(i, _)| format!("{} %_h{i}", llvm_ty(ptys[i])))
             .collect();
-
-        // Unwrap typed (int/float) params; store class-instance params as handles.
         for (i, p) in params.iter().enumerate() {
-            let pt  = ann_ty(p.type_ann.as_deref());
+            let pt  = ptys[i];
             let st  = store_ty(pt);
             let ptr = self.alloca_var(&p.name, st);
-            match pt {
-                Ty::Int => {
-                    let r = self.call_cb(CB_TO_INT, &[format!("i64 %_h{i}")]);
-                    self.store_val(Ty::Int, &r, &ptr.clone());
-                }
-                Ty::Float => {
-                    let r = self.call_cb(CB_TO_FLOAT, &[format!("i64 %_h{i}")]);
-                    self.store_val(Ty::Float, &r, &ptr.clone());
-                }
-                _ => {
-                    self.store_val(Ty::Handle, &format!("%_h{i}"), &ptr.clone());
-                }
-            }
+            self.store_val(pt, &format!("%_h{i}"), &ptr.clone());
         }
 
         // ── Approach-1 pre-reads: for class-instance params that are never written
@@ -89,22 +84,25 @@ impl<'a> GenCtx<'a> {
                 },
                 _ => continue,
             };
-            // Only pre-read if the param is never written in this function body.
-            if body_writes_param(body, &p.name) { continue; }
+            // Only pre-read `let` receivers that the body never writes (`param_prereadable`).
+            if !param_prereadable(p, body) { continue; }
             let fields = match self.class_fields_ord.get(&class_name) {
                 Some(f) => f.clone(),
                 None => continue,
             };
+            // ⚠ `_fast` 変種を出すかは「型付きのフィールドを持つ先読み可能な受け手があるか」で決める（呼ぶ側の
+            //   `fast_fns` と同じ条件）。下で読むフィールドを絞っても変えない（変えると呼ぶ側が無い `@X_fast` を呼ぶ）。
+            if fields.iter().any(|(_, t)| matches!(t, Ty::Float | Ty::Int)) {
+                has_preread = true;
+            }
+            // 4-4: 本体が `p.f` の読みでしか `p` を使わないなら、参照するフィールドだけを読む。
+            let uses = param_field_uses(body, &p.name);
             for (field_name, field_ty) in &fields {
-                let ptr = self.str_const(field_name.as_bytes());
-                let len = field_name.len() as i32;
+                if uses.as_ref().is_some_and(|u| !u.contains(field_name)) {
+                    continue;
+                }
                 let r = match field_ty {
-                    Ty::Float => self.call_cb(CB_GET_FLOAT_FIELD, &[
-                        format!("i64 %_h{i}"), ptr, format!("i32 {len}"),
-                    ]),
-                    Ty::Int => self.call_cb(CB_GET_INT_FIELD, &[
-                        format!("i64 %_h{i}"), ptr, format!("i32 {len}"),
-                    ]),
+                    Ty::Float | Ty::Int => self.emit_attr_read(&format!("%_h{i}"), field_name, Some(*field_ty)).0,
                     _ => continue,
                 };
                 let al = format!("%_prf_{}_{}", p.name, field_name);
@@ -112,7 +110,6 @@ impl<'a> GenCtx<'a> {
                 self.alloca_buf.push_str(&format!("  {al} = alloca {tstr}, align 8\n"));
                 self.ec(&format!("store {tstr} {r}, ptr {al}"));
                 self.preread_fields.insert(format!("{}.{field_name}", p.name), (al, *field_ty));
-                has_preread = true;
             }
         }
 
@@ -136,6 +133,9 @@ impl<'a> GenCtx<'a> {
         } else {
             self.ret_handle("0");
         }
+        if self.push_sites > pushes_at_start {
+            self.fn_pushes.insert(name.to_string());
+        }
 
         let attr = export_attr();
         let vis  = if attr.is_empty() { "" } else { attr };
@@ -150,28 +150,40 @@ impl<'a> GenCtx<'a> {
         ));
 
         // Public wrapper: {name}_tl(ptr %args, i32 %n) -> i64 (handle for interpreter)
+        // インタープリタとの境界（4-1）: `int` / `float` の仮引数はここで箱を開け、戻り値はここで箱に入れる。
         let n = params.len();
         let mut wrapper = format!("\ndefine {vis}i64 @{name}_tl(ptr %args, i32 %_n) {{\n");
+        wrapper.push_str("  %_cb_tl = load ptr, ptr @CB\n");
+        // 境界のコールバック 1 つ分（`%_cb_tl` から関数ポインタを引いて呼ぶ）
+        let cb_call = |w: &mut String, tag: &str, cb: usize, ret: &str, arg_ty: &str, arg: &str| {
+            w.push_str(&format!("  %_{tag}_p = getelementptr inbounds %ArCallbacks, ptr %_cb_tl, i32 0, i32 {cb}\n"));
+            w.push_str(&format!("  %_{tag}_f = load ptr, ptr %_{tag}_p\n"));
+            w.push_str(&format!("  %_{tag} = call {ret} ({arg_ty}) %_{tag}_f({arg_ty} {arg})\n"));
+        };
         let mut load_args: Vec<String> = Vec::new();
         for i in 0..n {
             wrapper.push_str(&format!("  %_a{i} = getelementptr inbounds i64, ptr %args, i32 {i}\n"));
             wrapper.push_str(&format!("  %_v{i} = load i64, ptr %_a{i}\n"));
-            load_args.push(format!("i64 %_v{i}"));
+            match ptys[i] {
+                Ty::Int => {
+                    cb_call(&mut wrapper, &format!("u{i}"), CB_TO_INT, "i64", "i64", &format!("%_v{i}"));
+                    load_args.push(format!("i64 %_u{i}"));
+                }
+                Ty::Float => {
+                    cb_call(&mut wrapper, &format!("u{i}"), CB_TO_FLOAT, "double", "i64", &format!("%_v{i}"));
+                    load_args.push(format!("double %_u{i}"));
+                }
+                _ => load_args.push(format!("i64 %_v{i}")),
+            }
         }
         let call_args_str = load_args.join(", ");
-        if ret_ty == Ty::Float {
-            wrapper.push_str(&format!("  %_raw = call double @{name}_impl({call_args_str})\n"));
-            wrapper.push_str("  %_cb_tl = load ptr, ptr @CB\n");
-            wrapper.push_str(&format!(
-                "  %_mf_p = getelementptr inbounds %ArCallbacks, ptr %_cb_tl, i32 0, i32 {CB_MAKE_FLOAT}\n"
-            ));
-            wrapper.push_str("  %_mf = load ptr, ptr %_mf_p\n");
-            wrapper.push_str("  %_res = call i64 (double) %_mf(double %_raw)\n");
-            wrapper.push_str("  ret i64 %_res\n}\n");
-        } else {
-            wrapper.push_str(&format!("  %_res = call {impl_ret_str} @{name}_impl({call_args_str})\n"));
-            wrapper.push_str("  ret i64 %_res\n}\n");
+        wrapper.push_str(&format!("  %_raw = call {impl_ret_str} @{name}_impl({call_args_str})\n"));
+        match ret_ty {
+            Ty::Float => cb_call(&mut wrapper, "res", CB_MAKE_FLOAT, "i64", "double", "%_raw"),
+            Ty::Int => cb_call(&mut wrapper, "res", CB_MAKE_INT, "i64", "i64", "%_raw"),
+            _ => wrapper.push_str("  %_res = add i64 %_raw, 0\n"),
         }
+        wrapper.push_str("  ret i64 %_res\n}\n");
         self.fn_defs.push_str(&wrapper);
 
         // Emit _fast variant if there were pre-reads (class params with typed fields).
@@ -209,7 +221,7 @@ impl<'a> GenCtx<'a> {
                 _ => None,
             };
             if let Some(cls) = class_name {
-                if !body_writes_param(body, &p.name) {
+                if param_prereadable(p, body) {
                     if let Some(fields) = self.class_fields_ord.get(&cls).cloned() {
                         for (field_name, field_ty) in &fields {
                             let reg = format!("%_fp_{}__{field_name}", p.name);
@@ -227,10 +239,10 @@ impl<'a> GenCtx<'a> {
                     }
                 }
             }
-            // Non-class or written param: pass as i64 handle
+            // Non-class or written param: the internal ABI of `_impl`（int / float は生値・4-1）
             let reg = format!("%_fph{handle_idx}");
             handle_idx += 1;
-            fast_sig.push(format!("i64 {reg}"));
+            fast_sig.push(format!("{} {reg}", llvm_ty(ann_ty(p.type_ann.as_deref()))));
         }
 
         if fast_sig.is_empty() { return; }
@@ -245,9 +257,13 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.current_fn_ret = ret_ty;
@@ -273,7 +289,7 @@ impl<'a> GenCtx<'a> {
                 _ => None,
             };
             if let Some(cls) = class_name {
-                if !body_writes_param(body, &p.name) {
+                if param_prereadable(p, body) {
                     if let Some(fields) = self.class_fields_ord.get(&cls).cloned() {
                         for (field_name, field_ty) in &fields {
                             let reg = format!("%_fp_{}__{field_name}", p.name);
@@ -297,11 +313,7 @@ impl<'a> GenCtx<'a> {
             let pt  = ann_ty(p.type_ann.as_deref());
             let st  = store_ty(pt);
             let al_ptr = self.alloca_var(&p.name, st);
-            match pt {
-                Ty::Int   => { let r = self.call_cb(CB_TO_INT,   &[format!("i64 {reg}")]); self.store_val(Ty::Int,   &r, &al_ptr.clone()); }
-                Ty::Float => { let r = self.call_cb(CB_TO_FLOAT, &[format!("i64 {reg}")]); self.store_val(Ty::Float, &r, &al_ptr.clone()); }
-                _         => { self.store_val(Ty::Handle, &reg, &al_ptr.clone()); }
-            }
+            self.store_val(pt, &reg, &al_ptr.clone());
         }
         let _ = fast_field_setup; // already handled above
 
@@ -359,9 +371,13 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -417,9 +433,13 @@ impl<'a> GenCtx<'a> {
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
         // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
         self.block_stack.clear();
 
         let param_sigs: Vec<String> = params.iter().enumerate()
@@ -449,6 +469,7 @@ impl<'a> GenCtx<'a> {
             result_al: list_al.clone(),
             exit_label: exit_lbl.clone(),
             list_al: Some(list_al.clone()),
+            iter_depth: self.iter_scopes.len(),
         });
 
         self.gen_stmts(body);

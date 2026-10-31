@@ -1,0 +1,23 @@
+# native_method_call.ar — コンパイル済みコードの名前によるメソッド呼び出しを VM と同じ道で行う
+# （native_object_access_plan.md 11-3・D-12）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/native_method_call_module.ar
+#   2. cargo run --release -- examples/interop/native_method_call.ar
+# 外部言語の戻り値が宣言と違うときのエラーは native_method_call_error.ar。
+#
+# 期待値 "9:9:a/b/c:AB2,42:2:fine":
+#   9:9:a/b/c:AB2 … list の append / pop・str の split / join / upper / count
+#   42:2:fine    … Python の関数（宣言どおりの型を返す）の戻り値
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import native_method_call_module as m
+
+fn check(let label: str, let got: str) -> None:
+    if got != "9:9:a/b/c:AB2,42:2:fine":
+        raise ValueError(label + ": got " + got)
+    print(label + " OK")
+
+check("method calls of a compiled module", m.run_checks())
+check("the same sites again", m.run_checks())

@@ -1,0 +1,33 @@
+# native_let_param_copy_module.ar — コンパイル済みの関数の let 仮引数の複製（native_object_access_plan.md 6-2・D-8）
+#
+# 規則（VM と同じ）: `let` 仮引数は、渡す値が `mut` のとき（名前でない式は保守的に `mut`）だけ `copy_value`
+# （`__copy__` があればそれ）で複製し、`let` の名前は共有する。
+# ⚠ 以前のコンパイル済みコードは、モジュール内の呼び出しでもインタープリタからの呼び出しでも、引数が `let` でも
+#   毎回 `deep_copy_value` で複製していた（`__copy__` を呼ばないので写しの値が VM と違い、余計に遅い）。
+# `__copy__` は tag に 100 を足すので、どの道で複製したか（しなかったか）が値に出る。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_let_param_copy_module.ar
+
+class Tagged:
+    mut tag: int
+    mut n: int
+
+    fn __copy__(let self) -> Tagged:
+        mut c = Tagged(self.tag + 100, self.n)
+        return c
+
+fn read_tag(let t: Tagged) -> int:
+    return t.tag
+
+# モジュール内の呼び出し: mut の名前 → __copy__・let の名前 → 共有・一時値 → __copy__
+fn from_mut() -> int:
+    mut t = Tagged(1, 0)
+    return read_tag(t)
+
+fn from_let() -> int:
+    let t = Tagged(2, 0)
+    return read_tag(t)
+
+fn from_temporary() -> int:
+    return read_tag(Tagged(3, 0))

@@ -1,0 +1,42 @@
+# native_preread_module.ar — コンパイル済みコードの「先読み」が古くならないことの検証用モジュール
+# （native_object_access_plan.md 1-1・D-7）
+#
+# ネイティブコードは、本体で書き換えないクラス型の仮引数のフィールドを入口で 1 回だけ読む
+# （先読み）。⚠ 以前は `mut` の受け手も先読みしていたので、メソッド・関数経由で書き換わると
+# 古い値を読んでいた（`after_inc` が非コンパイル 1・コンパイル済み 0）。今は `let` の受け手だけ。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_preread_module.ar
+
+class Counter:
+    mut n: int
+    mut w: float
+
+    fn inc(mut self) -> None:
+        self.n = self.n + 1
+        self.w = self.w + 0.5
+
+    # `mut self` を本体で直接書き換えないが、`self.inc()` が書き換える
+    fn after_inc(mut self) -> int:
+        self.inc()
+        return self.n
+
+    fn after_inc_f(mut self) -> float:
+        self.inc()
+        return self.w
+
+    # `let self` は先読みしてよい（入口の値を読む）
+    fn doubled(let self) -> float:
+        return self.w + self.w
+
+fn bump(mut c: Counter) -> None:
+    c.n = c.n + 10
+
+# `mut` 仮引数を本体で直接書き換えないが、`bump(c)` が書き換える
+fn via_param(mut c: Counter) -> int:
+    bump(c)
+    return c.n
+
+# `let` 仮引数の先読みと `let self` の `_fast` 版（Counter.doubled）の組み合わせ
+fn let_sum(let c: Counter) -> float:
+    return c.doubled() + float(c.n)

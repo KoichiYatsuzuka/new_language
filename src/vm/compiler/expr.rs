@@ -365,14 +365,23 @@ impl Compiler {
                     // 名前付き引数があると `CallMethodLocal`（frame 直読み融合）は使えないので、
                     // 引数の形を先に見て融合の可否を確定させる。
                     let fuse_slot = if has_named_args(args) { None } else { self.as_local(object) };
+                    // 受け手が `let` の名前なら `let self` は共有する（6-1・D-8）。規則は引数と同じ
+                    // `arg_is_mutable`（名前でない式は保守的に `mut`）。引数が 32 個なら bit 31 は引数のもの。
+                    let recv_bit = if args.len() < 32 && !self.arg_is_mutable(object) {
+                        crate::vm::op::MASK_RECV_LET
+                    } else {
+                        0
+                    };
                     if let Some(slot) = fuse_slot {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
                         let (mask, _) = self.compile_call_args(args, Some(*node_id))?;
+                        let mask = mask | recv_bit;
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
                         self.compile_expr(object)?; // receiver を push
                         let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
+                        let mask = mask | recv_bit;
                         let ni = self.add_name(attr);
                         match kw {
                             None => {

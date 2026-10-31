@@ -97,6 +97,9 @@ pub const OP_LSHIFT: i32 = 16;
 pub const OP_RSHIFT: i32 = 17;
 pub const OP_IN: i32 = 18;
 pub const OP_NOTIN: i32 = 19;
+/// `===`（同一性・`BinOp::RefEq`）。生成コードの `binop_code` と同じ番号（1-12）。
+/// ⚠ 以前は読み取りに無く、コンパイル済みコードの `===` が必ず `NativeError: invalid binop code 20` になっていた。
+pub const OP_REF_EQ: i32 = 20;
 
 // ── UnaryOp codes ────────────────────────────────────────────────────────────
 
@@ -132,14 +135,23 @@ fn int_cache_handle(n: i64) -> i64 {
 //   2. Call interpreter (which is not STATE-aware).
 //   3. Store result in a new, non-overlapping borrow.
 
+/// ネイティブコードの `for` の反復状態（`ar_iter_from` / `ar_iter_next`）。
+pub(crate) enum NativeIter {
+    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。
+    Items(Vec<Value>, usize),
+    /// インタープリタの反復プロトコル: `make_for_iterator` が作ったジェネレータを `gen_next` で進める
+    /// （VM の `GetIter` / `ForIter` と同じ。`set`・`bytes`・`enumerate` / `zip`・ジェネレータ・`__iter__` を持つ
+    /// インスタンスなど・native_object_access_plan.md 1-3）。⚠ 以前はこれらが「not iterable in native context」だった。
+    Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>),
+}
+
 struct NativeCallState {
     /// Raw pointer to the currently executing Interpreter.
     interp_ptr: *mut Interpreter,
     /// Value arena (see handle encoding above).
     arena: Vec<Value>,
-    /// Iterator table: (collected_items, current_position).
-    /// Iter handles are encoded as -(idx+2) so they are all ≤ -2.
-    iter_table: Vec<(Vec<Value>, usize)>,
+    /// Iterator table. Iter handles are encoded as -(idx+2) so they are all ≤ -2.
+    iter_table: Vec<NativeIter>,
     /// Nesting depth of native calls (0 = not inside any native call).
     call_depth: usize,
     /// Arena size saved at the outermost native call entry.
@@ -154,8 +166,17 @@ struct NativeCallState {
     cstr_bufs: Vec<Vec<u8>>,
     /// `ArPtrProtocol` arguments built by `ar_protocol_arg` (their element-type strings); cleared at outermost exit (4-4).
     protocol_args: Vec<(i64, crate::interpreter::PtrProtocolArg)>,
-    /// Native method dispatch table: (class_name, method_name) → fn_ptr.
-    native_methods: HashMap<(String, String), usize>,
+    /// Native method dispatch table: class_name → method_name → (fn_ptr, クラスを定義したモジュールの大域の番号)。
+    /// 大域の番号は呼ぶ間だけ差し替える先（`NativeFnRef::globals` と同じ・1-7）。
+    /// ⚠ 2 段にしてあるのは `&str` のまま引くため（10-1）。以前は `(String, String)` をキーにしていて、引くたびに
+    ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
+    /// ⚠ キーは**クラスの番号**（`class_id`・11-4）。以前は素のクラス名で、本体（や別のモジュール）の同じ名前のクラスの
+    ///   生成・メソッド呼び出しでも、コンパイル済みのモジュールのメソッドが呼ばれていた（型はモジュールごとに別・10-8）。
+    native_methods: HashMap<u32, HashMap<String, (usize, u32)>>,
+    /// 文字列のリテラルの表（11-2・D-12）: 呼び出し箇所のセルに入れた番号 − 1 → 1 度だけ作った文字列。VM の定数表と同じく、
+    /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
+    /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
+    str_consts: Vec<Option<Value>>,
 }
 
 impl NativeCallState {
@@ -211,6 +232,7 @@ thread_local! {
             cstr_bufs: Vec::new(),
             protocol_args: Vec::new(),
             native_methods: HashMap::new(),
+            str_consts: Vec::new(),
         }
     });
 }
@@ -326,20 +348,30 @@ pub fn take_pending_raise() -> Option<(String, String)> {
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
-pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize) {
+/// `class_id` はモジュールが定義したクラスの番号（同じ名前の別のクラスと混ざらない・11-4）。
+/// `globals` はクラスを定義したモジュールの大域の番号（呼ぶ間だけそこへ差し替える・1-7）。
+pub fn register_native_method(class_id: u32, method_name: &str, fn_ptr: usize, globals: u32) {
     STATE.with(|s| {
         s.borrow_mut()
             .native_methods
-            .insert((class_name.to_string(), method_name.to_string()), fn_ptr);
+            .entry(class_id)
+            .or_default()
+            .insert(method_name.to_string(), (fn_ptr, globals));
     });
 }
 
 /// Look up the raw function pointer for a native class method.
-pub fn lookup_native_method_ptr(class_name: &str, method_name: &str) -> Option<usize> {
+pub fn lookup_native_method_ptr(class_id: u32, method_name: &str) -> Option<usize> {
+    lookup_native_method(class_id, method_name).map(|(ptr, _)| ptr)
+}
+
+/// ネイティブのメソッドの関数ポインタと、走らせる大域の番号（1-7）。
+pub(crate) fn lookup_native_method(class_id: u32, method_name: &str) -> Option<(usize, u32)> {
     STATE.with(|s| {
         s.borrow()
             .native_methods
-            .get(&(class_name.to_string(), method_name.to_string()))
+            .get(&class_id)
+            .and_then(|m| m.get(method_name))
             .copied()
     })
 }
@@ -351,38 +383,93 @@ pub fn try_dispatch_native_method(
     method_name: &str,
     arg_vals: Vec<Value>,
 ) -> Option<Result<Value, String>> {
-    let class_name = match &obj {
-        Value::Instance(rc) => rc.borrow().class.name.clone(),
+    let class = match &obj {
+        Value::Instance(rc) => rc.borrow().class.clone(),
         _ => return None,
     };
+    let (fn_ptr, globals) = lookup_native_method(class.class_id, method_name)?;
+    Some(call_native_method_at(interp, fn_ptr, globals, class, obj, &arg_vals))
+}
 
-    let fn_ptr = lookup_native_method_ptr(&class_name, method_name)?;
-
+/// 引いてあるネイティブのメソッド（`fn_ptr` / `globals`）を、受け手 `obj` と宣言の順の引数で呼ぶ（6-3）。
+fn call_native_method_at(
+    interp: &mut Interpreter,
+    fn_ptr: usize,
+    globals: u32,
+    class: std::rc::Rc<crate::interpreter::ClassValue>,
+    obj: Value,
+    arg_vals: &[Value],
+) -> Result<Value, String> {
     let is_outermost = enter_native_call(interp as *mut Interpreter);
 
     let obj_h = push_handle(obj);
     let mut all_args: Vec<i64> = Vec::with_capacity(1 + arg_vals.len());
     all_args.push(obj_h);
-    for v in &arg_vals {
+    for v in arg_vals {
         all_args.push(push_handle(v.clone()));
     }
 
+    // メソッドはクラスを定義したモジュールの大域で、受け手のクラスの文脈で走る（1-7・1-9）
+    let prev = interp.enter_native_method(globals, class);
     let result_h = unsafe {
         let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
         func(all_args.as_ptr(), all_args.len() as i32)
     };
+    interp.leave_native_method(prev);
 
     if let Some(err) = take_error() {
         abort_native_call(is_outermost);
-        return Some(Err(err));
+        return Err(err);
     }
 
     if let Some((exc_type, exc_msg)) = take_pending_raise() {
         abort_native_call(is_outermost);
-        return Some(Err(format!("{exc_type}: {exc_msg}")));
+        return Err(format!("{exc_type}: {exc_msg}"));
     }
 
-    Some(Ok(exit_native_call(result_h, is_outermost)))
+    Ok(exit_native_call(result_h, is_outermost))
+}
+
+/// インタープリタからコンパイル済みのメソッドを呼ぶ入口（native_object_access_plan.md 6-3）。引数はメソッドの宣言
+/// どおりに束縛してから（[`Interpreter::bind_native_args`]: 名前つき引数・既定値・`let self` / `let` 仮引数の複製を
+/// インタープリタの呼び出しと同じ規則で行う）、宣言の順に渡す（表は 1 回だけ引く）。
+/// `recv_mut` は受け手が `mut` の値か（6-1）。ネイティブの表に無ければ `None`（呼ぶ側は先に表を引かなくてよい）。
+/// ⚠ 以前は評価済みの引数をそのまま渡し、`mut` の受け手・引数を `let` で受けても複製せず（§0.3 ⑬）、名前つき引数を
+///   呼び出しの順に並べ（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
+pub fn try_dispatch_native_method_evaled(
+    interp: &mut Interpreter,
+    obj: Value,
+    method_name: &str,
+    evaled: &[(Option<String>, Value, bool)],
+    recv_mut: bool,
+) -> Option<Result<Value, String>> {
+    let class = match &obj {
+        Value::Instance(rc) => rc.borrow().class.clone(),
+        _ => return None,
+    };
+    let (fn_ptr, globals) = lookup_native_method(class.class_id, method_name)?;
+    // 呼ばれた側の宣言（`call_method_common` と同じ引き方）。ネイティブの表に載るのはモジュールのクラスの本体に
+    // 書かれた（自動生成の `__init__` を含む）メソッドだけで、オーバーロードはコンパイルしない（1-8）ので、1 つに
+    // 決まらなければ表と宣言がずれている。黙って素通しせずエラーにする。
+    let decl = match class.methods.get(method_name) {
+        Some(ov) if ov.len() == 1 => ov[0].clone(),
+        _ => {
+            return Some(Err(format!(
+                "NativeError: compiled method '{}.{method_name}' has no single declaration to bind its arguments",
+                class.name
+            )))
+        }
+    };
+    // `self` を取らない宣言（静的メソッド）はインスタンスからは呼べない。振り分けの続き（静的メソッドのエラー）へ戻す。
+    if decl.params.first().is_none_or(|p| p.name != "self") {
+        return None;
+    }
+    let mut vals = match interp.bind_native_args(&decl.params, decl.globals, evaled, Some(obj), recv_mut) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    let receiver = vals.remove(0);
+    Some(call_native_method_at(interp, fn_ptr, globals, class, receiver, &vals))
 }
 
 /// 静的コールバックインスタンスへの `*const ArCallbacks` ポインタを返す。
@@ -415,6 +502,7 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
         OP_RSHIFT => Some(BinOp::RShift),
         OP_IN => Some(BinOp::In),
         OP_NOTIN => Some(BinOp::NotIn),
+        OP_REF_EQ => Some(BinOp::RefEq),
         _ => None,
     }
 }
@@ -516,9 +604,150 @@ pub struct ArCallbacks {
     /// `char*`（書き込み用）の引数: `bytes` のコピー（NUL を含んでよい・末尾に NUL を 1 つ足す）を作り、そのアドレスを返して
     /// 長さを `len` に書く。`None` は NULL。呼び出しの後で中継コードが `make_bytes` で読み直して `write_handle` で書き戻す。
     pub bytes_buf_arg: extern "C" fn(i64, *mut i64) -> *mut u8,
+
+    // ── Builtins by name (field 50・native_object_access_plan.md 1-3) ──
+    /// 組み込み関数（`vm::compiler::VM_BUILTIN_NAMES`）を VM の `CallBuiltin` と同じ入口
+    /// （`Interpreter::call_builtin_by_name_evaled`）で呼ぶ。グローバルから値として引かない。
+    pub call_builtin: extern "C" fn(*const u8, i32, *const i64, i32) -> i64,
+
+    // ── Attribute assignment of compiled Arrow code (field 51・native_object_access_plan.md 1-4) ──
+    /// `obj.attr = v`: VM の `SetAttr` と同じ `Interpreter::attr_assign_evaled`（`static mut`・不変インスタンスの
+    /// 判定を含む）。⚠ `set_attr`（field 13）は `import[rs]` の中継コードが Arrow 側の写しを更新する経路
+    /// （`set_attr_val`・setter へ再入させない）なので、意味を変えずに残してある。
+    pub assign_attr: extern "C" fn(i64, *const u8, i32, i64),
+
+    // ── Trait-qualified fields of compiled Arrow code (fields 52-53・1-4) ──
+    /// `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`。引数は (obj, trait 名, 属性名)。
+    pub get_trait_attr: extern "C" fn(i64, *const u8, i32, *const u8, i32) -> i64,
+    /// `obj::Trait.attr = v`: VM の `SetTraitAttr` と同じ `trait_assign_evaled`。⚠ 以前の生成コードはこの代入を
+    /// 黙って出さず、trait を実装したクラスの `__init__` が trait のフィールドを設定しなかった。
+    pub assign_trait_attr: extern "C" fn(i64, *const u8, i32, *const u8, i32, i64),
+
+    // ── Value passing of compiled Arrow code (fields 54-55・1-5・D-8) ──
+    /// `let` 仮引数へ `mut` の値を渡すときの複製（VM の束縛と同じ `copy_value`）。
+    pub copy_arg: extern "C" fn(i64) -> i64,
+    /// 名前によるメソッド呼び出し（`call_method` と同じ）＋ `mut_mask`（bit 0 = 受け手・bit i+1 = 引数 i が
+    /// `mut` の値か）で、呼ばれた側の `let self` / `let` 仮引数の分を複製してから呼ぶ。
+    pub call_method_m: extern "C" fn(i64, *const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Declarations of compiled Arrow code (fields 56-57・1-6) ──
+    /// `mut x = e`（mode 0）/ `let x = <mut の名前・式>`（mode 1）の複製。VM の store 命令と同じ `bind_copy`。
+    pub bind_value: extern "C" fn(i32, i64) -> i64,
+    /// `let x = <グローバル等の名前>`: ソースの可変性を実行時に引いて決める（VM の `StoreLocalFromIdent` と同じ
+    /// `vm_let_value_from_ident`）。引数は (名前, 値)。
+    pub let_from_name: extern "C" fn(*const u8, i32, i64) -> i64,
+
+    // ── Attribute reads with per-site inline caches (fields 58-60・2-2・D-1) ──
+    /// `obj.attr`（IC 付き）。引数は (obj, 名前, 箇所ごとの IC のセル)。命中経路・ミス経路とも VM の `GetAttr` と同じ。
+    pub get_attr_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> i64,
+    /// `float` と分かっているフィールドの読み出し（IC 付き）。変換規則は `get_float_field` と同じ。
+    pub get_float_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> f64,
+    /// `int` と分かっているフィールドの読み出し（IC 付き）。変換規則は `get_int_field` と同じ。
+    pub get_int_field_ic: extern "C" fn(i64, *const u8, i32, *mut u64) -> i64,
+    /// `obj.attr = v`（IC 付き・field 61・2-3）。引数は (obj, 名前, 値, 箇所ごとの書き込みの IC のセル)。
+    /// VM の `SetAttr` と同じ `attr_assign_ic`。
+    pub assign_attr_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
+
+    // ── Class context of direct method calls (fields 62-63・1-9) ──
+    /// 生成コードがほかのクラスのメソッドを直接呼ぶ前に、`current_class` を受け手のクラスにする。戻り値は前の文脈の印。
+    pub enter_method_ctx: extern "C" fn(i64) -> i64,
+    /// `enter_method_ctx` の印を受け取り、前の文脈に戻す。
+    pub leave_method_ctx: extern "C" fn(i64),
+
+    // ── Guard of annotation-based direct calls (field 64・3-2・D-2) ──
+    /// 受け手が名前のクラスのインスタンス（class_id が一致）で、`mut self` のメソッドなら不変インスタンスでないときだけ 1。
+    /// 引数は (受け手, クラス名, 箇所ごとのセル（class_id を 1 回だけ引いて覚える）, `mut self` か)。
+    pub method_guard: extern "C" fn(i64, *const u8, i32, *mut u64, i32) -> i32,
+
+    // ── Typed attribute writes (fields 65-66・4-2) ──
+    /// `obj.attr = <int>`（IC 付き）。値を箱に入れずに渡す。中身は `assign_attr_ic`（field 61）と同じ。
+    pub assign_int_field_ic: extern "C" fn(i64, *const u8, i32, i64, *mut u64),
+    /// `obj.attr = <float>`（IC 付き）。
+    pub assign_float_field_ic: extern "C" fn(i64, *const u8, i32, f64, *mut u64),
+
+    // ── Construction of module classes (field 67・5-1・D-4) ──
+    /// `Class(args)`: VM の `Call` と同じ `instantiate_evaled` を直接呼ぶ。引数は (クラス名, 引数, 個数, `mut_mask`)。
+    /// `mut_mask` の bit i+1 = 引数 i が `mut` の値か（`call_method_m` と同じ並び・bit 0 は使わない）。
+    pub construct: extern "C" fn(*const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Built-ins with known argument types (fields 68-69・5-2) ──
+    /// `len(x)`: 組み込みの `len` と同じ `len_of` を呼び、生の int で返す。
+    pub len: extern "C" fn(i64) -> i64,
+    /// `str(<int>)`: 組み込みの `str` と同じ `call_type_by_name_evaled("str", ..)`（値を箱に入れずに渡す）。
+    pub str_of_int: extern "C" fn(i64) -> i64,
+
+    // ── Construction with a per-site class cache (field 70・10-2・D-11) ──
+    /// `Class(args)` の呼び出し箇所ごとのセルつき版。引数は (セル, クラス名, 引数, 個数, `mut_mask`)。セルには前回
+    /// 名前で引いたクラスの `class_id + 1` が入り（0 = まだ）、当たれば名前で引かずにインタープリタの表から引く。
+    pub construct_ic: extern "C" fn(*mut u64, *const u8, i32, *const i64, i32, u32) -> i64,
+
+    // ── Releasing a `for` iterator when its loop exits (field 71・11-1・D-12) ──
+    /// `for` のループを抜けた（終わり・`break`・ループの中の `return` / `block_return`）ときに、そのループの
+    /// イテレータと、それより後に作ったイテレータを表から捨てる。VM はイテレータを関数のローカルの欄に置くので、
+    /// 関数を抜ければ消える。⚠ 以前は、いちばん外のネイティブ呼び出しが終わるまで表に残り、リストのイテレータが
+    /// 持つ要素の写しも解放されなかった（§0.6 要因 5）。
+    pub iter_drop: extern "C" fn(i64),
+
+    // ── String literals built once per site (field 72・11-2・D-12) ──
+    /// 文字列のリテラル `"..."` の呼び出し箇所ごとのセルつき版。引数は (セル, バイト列, 長さ)。セルにはプロセスで一意の
+    /// 番号が入り（0 = まだ）、文字列はスレッドの状態の表から引いてアリーナへ積む（VM の `Const` と同じく作り直さない）。
+    /// ⚠ 以前は評価のたびに `make_str`（UTF-8 の検査・確保）を呼び、ループの中のリテラル 1 個に約 90 ns かかっていた（§0.6 要因 6）。
+    pub make_str_ic: extern "C" fn(*mut u64, *const u8, i32) -> i64,
+
+    // ── Method call by name with a per-site cell and the FFI call info (field 73・11-3・D-12) ──
+    /// 名前によるメソッド呼び出し（`call_method_m` と同じ引数）に、箇所ごとのセルと FFI の検査の情報を足したもの。引数は
+    /// (セル, 受け手, 名前, 長さ, 引数, 個数, `mut_mask`, 情報, 長さ)。セルが空のときだけ名前を検査する。情報は
+    /// `表示名 \x1f 宣言型 \x1f 位置`（型検査がこの呼び出しに付けた戻り値の型が無ければ null）で、受け手が外部言語の
+    /// ものなら VM の `vm_method_call_other` と同じ境界の検査（`check_ffi_return`）をする。
+    /// ⚠ 以前の生成コードの道（field 55）は検査をせず、Python が宣言と違う型を返しても黙って通していた（§0.6 要因 7）。
+    pub call_method_ic: extern "C" fn(*mut u64, i64, *const u8, i32, *const i64, i32, u32, *const u8, i32) -> i64,
+
+    // ── Assignment through an attribute path in one call (field 74・12-3・D-13) ──
+    /// `a.b.c = v` を 1 回で行う。引数は (根のハンドル, 段の表, 段の数, 値の種類, 値)。段の表は段ごとに
+    /// (名前のポインタ, 長さ, IC のセル) の 3 つの `i64` で、最後の段が書き込む属性。途中の段は VM の `GetAttr` と同じ
+    /// IC で読み（アリーナに積まない）、最後は `attr_assign_ic` で書く。値の種類は 0 = ハンドル・1 = `int`・
+    /// 2 = `float`（ビット列）。⚠ 生成コードは値を先に評価するので、値の評価が何も起こさない形（リテラル・変数・
+    /// 数の演算）のときだけ使う（途中の読み出しの順が VM と入れ替わっても見分けられない）。
+    pub assign_path_ic: extern "C" fn(i64, *const i64, i32, i32, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
 
 
 mod callbacks;
+
+#[cfg(test)]
+mod tests {
+    /// 生成コードが渡す演算の番号（`binop_code`）を、コールバックがすべて同じ演算に読み戻す（1-12・§0.3 ⑯）。
+    /// ⚠ 以前は `===`（20）が読み取りに無く、コンパイル済みコードの `===` が必ずエラーになっていた。
+    #[test]
+    fn every_binop_code_is_decoded_by_the_callbacks() {
+        use crate::ast::BinOp;
+        // ⚠ `BinOp` に種類を足すとこの `match` が通らなくなる。足した種類を下の `all` にも入れること。
+        fn listed(op: &BinOp) {
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod
+                | BinOp::Pow | BinOp::Eq | BinOp::RefEq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq
+                | BinOp::Gt | BinOp::GtEq | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                | BinOp::LShift | BinOp::RShift | BinOp::In | BinOp::NotIn => {}
+                // 短絡評価なのでコールバックへは渡さない（`gen_bool_logic`）
+                BinOp::And | BinOp::Or => {}
+            }
+        }
+        let all = [
+            BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::FloorDiv, BinOp::Mod, BinOp::Pow,
+            BinOp::Eq, BinOp::RefEq, BinOp::NotEq, BinOp::Lt, BinOp::LtEq, BinOp::Gt, BinOp::GtEq,
+            BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::LShift, BinOp::RShift, BinOp::In,
+            BinOp::NotIn,
+        ];
+        for op in &all {
+            listed(op);
+            let code = crate::partial_compiler::llvm_codegen::binop_code(op);
+            assert_eq!(
+                super::i32_to_binop(code).as_ref(),
+                Some(op),
+                "binop code {code} of {op:?} is not decoded back by the callbacks"
+            );
+        }
+    }
+}

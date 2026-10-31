@@ -1,0 +1,27 @@
+# native_loop_lifetime.ar — コンパイル済みコードのループの周ごとの値の寿命（native_object_access_plan.md 9-1・D-10）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/native_loop_lifetime_module.ar
+#   2. cargo run --release -- examples/interop/native_loop_lifetime.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.native_loop_lifetime_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+check("a variable rewritten across iterations", m.accumulate(5) == "01234")
+check("nested loops", m.nested(3) == "x|xx|xxx|")
+check("a value written in the iteration left by break", m.last_after_break(["a", "b", "c"]) == "b!")
+check("values made before continue", m.continue_strings(5) == "k1k3k5")
+check("loop_yield in a for expression", m.yielded(3) == ["v0", "v1", "v2"])
+check("loop_yield in a while expression", m.while_yielded(3) == ["w1", "w2", "w3"])
+check("a temporary file is closed by the end of the iteration", m.file_temporaries("examples/interop/_tmp_loop_lifetime.txt") == "01")
+mut raw = for j in range(5) ->list[m.Item]:
+    loop_yield m.Item(j - 1)
+let xs = raw => fixed_list[m.Item]
+check("continue in a for over a fixed_list", m.fixed_continue(xs) == 6)
+check("constructing in a loop", m.construct_many(100000) == 99999)
