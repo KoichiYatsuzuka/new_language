@@ -35,9 +35,13 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   - 旧計画（変換して読む方式。シグネチャだけの AST・遅延 import）は `4bad8c8e` までの本書にある。
 - **D-2** 型を**推論できるときはその型で受ける**（`.pyi`・注釈・コンストラクタ。再エクスポートも定義元までたどる）。
   推論できないときは `Any`（今の規則・ffi_value_exchange_plan.md 7-27）。
-- **D-3** Python のオブジェクトは **`let` で受けられない**（`mut` で受ける）。CPython の物は参照を共有するので、Arrow の
-  `let` の「変わらない」を保証できない（0 節の 12）。
+- **D-3** Python から受け取ったオブジェクトは**すべて `mut` で受ける**（`let` / `const` / `freeze` では受けられない。関数の
+  引数も `mut d: pd.DataFrame` と書く・2026-11-02 に確定）。CPython の物は参照を共有するので、Arrow の `let` の
+  「変わらない」を保証できない（0 節の 12）。
 - **D-4** `is` の修正は後で行う（フェーズ 5）。
+- **D-6** `import[py]` は従来の `import[py-int]` と同じ意味にする（CPython で実行する）。**`import[py-int]` は廃止する**
+  （2026-11-02 に決定）。
+- **D-7** Python の翻訳に固有のコードは**すべて消す**（変換器と、変換したコードのための仕組み・2026-11-02 に決定）。
 - **D-5** 参照の数は **Arrow の値の写し 1 つ ＝ CPython の参照 1 つ**にする（2.1）。決まった形の参照の数が CPython と同じで
   あることを試験で守る。
   - 採らなかった案:
@@ -87,12 +91,15 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   （ゲート対象外・pandas と numpy の警告と `resize` を CPython と比べる）。どちらも直す前の exe では誤りになる。
 - 速さ（6.6）: pandas・numpy の操作はノイズの幅。1 要素を読む `arr[k]` だけ +0.08 µs（待ち行列に積む分）。
 
-### 2.2 `let` で受けない（D-3）
+### 2.2 `mut` で受ける（D-3）
 
-- 静的: 束縛する式の型が Python の型（`import[py-int]` のモジュールのクラス、`PyObject`）なら、`let` / `const` は誤り。
-- 実行時: `Value::PyObject` を `let` / `const` に束縛したら誤り（型が `Any` のときもここで止まる）。`freeze` も同じ。
-- 境界で Arrow の値に変わる物（`int` / `str` / list など）は Arrow の値なので `let` で受けられる。
-- ⚠ 関数の引数は既定で不変（`let`）なので、Python の物を受ける引数は `mut d: pd.DataFrame` と書くことになる（4 節の 5）。
+- 静的: 束縛する式の型が Python の型（Python のモジュールのクラス）なら、`let` / `const` / `freeze` と、`mut` でない関数の
+  引数は誤り。
+- 実行時: `Value::PyObject` を不変の束縛（`let` / `const` / `mut` でない引数）にしたら誤り（型が `Any` のときもここで止まる）。
+- 境界で Arrow の値に変わる物（`int` / `str` / list など）は、今は Arrow の値なので `let` で受けられる
+  （⚠ 4 節の 3 で包みのまま持つと決めたら、list などは対象に入る）。
+- ⚠ 暗黙の束縛（`for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛）は 4 節の 6 で決める。1-2 では
+  明示の束縛と関数の引数だけを対象にする。
 
 ### 2.3 型（D-2）
 
@@ -113,17 +120,55 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 切り出し・`...` | `TypeError` | Python の `slice` / タプルで渡す（`a[1:, 0]`・`df.loc[:, "a"]`）。`Ellipsis` / `NotImplemented` を対応させる |
 | `for` | 先に全部取り出す | 1 つずつ取り出す |
 | Arrow の関数を渡す | `TypeError` | Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる |
-| Arrow のインスタンスを渡す | `TypeError` | 4 節の 4 で決める |
-| list / dict / set | 境界で写す（書き換えが戻らない） | 4 節の 3 で決める |
+| Arrow のインスタンスを渡す | `TypeError` | ⏸ 保留（4 節の 4） |
+| list / dict / set | 境界で写す（書き換えが戻らない） | ⏸ 保留（4 節の 3・2.6） |
 
-### 2.5 `.py` を CPython で実行する（D-1）
+### 2.5 `.py` を CPython で実行する（D-1・D-6・D-7）
 
-- `.py` は CPython が import して実行する（`import[py-int]` と同じ実行の道）。型は `import[py-int]` と同じ抽出器（2.3）。
-- 変換器（`python_converter`）と、変換したコードのための Python 専用の仕組みは使われなくなる。
+- `import[py]` は CPython が import して実行する（従来の `import[py-int]` の実行の道）。型は従来の `import[py-int]` と同じ
+  抽出器（2.3）。
+- `import[py-int]` は廃止: 書くと構文解析の誤りにし、`import[py]` に書き換えるよう促す。`import[py-int]` を使う例題 61 本
+  （`interop` 31・`bench` 16・`bench/speed_modes` 4・`apps` 2・`async` 1・`basics` 1・`interop/py_subdir` 1・
+  `practical_examples` 5）を `import[py]` に書き換える。
+- 変換器（`python_converter`）と、変換したコードのための Python 専用の仕組みは**すべて消す**（D-7）。
   - 仕組みの例: `running_python` / `in_python_module`、格納で写さない規則、属性の操作の上書き、`object()`、クラスを返す関数、
     prelude の `__py_*`。
-  - 消す範囲は 4 節の 2 で決める。⚠ `.pyi` の型の抽出は今 `python_converter` の結果を使う（`py_stub_extract.rs` の冒頭）ので、
-    そこは抽出器（2.3）へ移してから消す。
+  - ⚠ `.pyi` の型の抽出は今 `python_converter` の結果を使う（`py_stub_extract.rs` の冒頭）ので、そこは抽出器（2.3）へ
+    移してから消す。
+
+### 2.6 写さずに使う（4 節の 3・4 の検討・2026-11-02）
+
+**Python → Arrow（4 節の 3）**
+
+| 種類 | 今 | 写さずに使う案 | 検討 |
+|---|---|---|---|
+| `int`（i64 に入る）・`float`・`bool`・`None` | Arrow の値に写す | — | 両側とも不変なので、写しても共有と区別がつかない（意味は同じ）。写すのは数バイト。⇒ **今のままでよい** |
+| `str`・`bytes` | Arrow の文字列に写す（UTF-8） | CPython が持つ UTF-8 の写し（`PyUnicode_AsUTF8AndSize`）を借りる | 両側とも不変なので意味は同じで、違いは速さだけ（10 万文字で 6.9 µs）。Arrow の文字列に「CPython から借りた」形を足すことになる。⇒ 必要なら速さのタスクとして後で |
+| list / dict / set / bytearray | Arrow の値に写す（書き換えが互いに届かない） | **包みのまま持ち**、Arrow の list などの操作（添字・`len`・反復・メソッド・`in`・`+`・切り出し・表示）を CPython の API で行う | 共有されるので CPython と同じになる。⚠ 判断が要る（下の ①〜③） |
+| numpy の配列 | 包みのまま（今も写さない） | `tolist()` などで Arrow のリストにするときにバッファを直接読む | 速さのタスク（4-3） |
+
+判断が要ること（4 節の 3）:
+- ① Python の list を `list[int]` の型で受けたとき、要素の型をどこで確かめるか（読むたび／受け取るときに全要素を 1 度／確かめずに
+  要素を `Any` にする）。Python の list には何でも入るので、静的な型は保証にならない。
+- ② Arrow の list の操作と Python の list の操作が違うもの（`+` の型の規則・`==` の比べ方・`sort` の引数・Arrow にしか無い
+  メソッド）を、どちらの意味にするか。
+- ③ 速さ: 包みのままだと要素の操作が 1 回ごとに越境する（6.3 の目安で +0.5〜1.7 µs）。VM の list 向けの特化も効かない。
+
+**Arrow → Python（4 節の 4）**
+
+| 種類 | 今 | 写さずに使う案 | 検討 |
+|---|---|---|---|
+| `int`・`float`・`str` など | Python の値に写す | — | 不変なので今のままでよい |
+| list / dict / set | Python の値に深く写す | Arrow の list を包む Python の型（PyO3 の `#[pyclass]`）を渡し、Python から読み書きすると Arrow の list を直接触る | ⚠ 判断が要る（下の ④〜⑥） |
+| Arrow のインスタンス | `TypeError`（渡せない） | Arrow のインスタンスを包む Python の型を渡し、属性・メソッドを Arrow へ中継する（2-5 の呼び戻しの上に作る） | ⚠ 判断が要る（下の ④〜⑥） |
+
+判断が要ること（4 節の 4）:
+- ④ 包んだ物は Python から見て `list` / `dict` ではない（`isinstance(x, list)` が偽。C 拡張の速い道（`PyList_Check`）にも乗らない）。
+  `type(x) is list` で分けるコードや、`list` しか受けない C 拡張では振る舞いが変わる。それでよいか、受け取る側によって写すか。
+- ⑤ Arrow の `let` の値を包んで渡すと、Python から書き換えられる（`let` の保証が崩れる）。`mut` の値だけを包む／`let` は読むだけの
+  包みにする／`let` は今どおり写す、のどれにするか。
+- ⑥ Python が包みを持ち続けたまま別の Python のスレッドで使うと、Arrow の値（`Rc`・スレッドをまたげない）に別のスレッドから
+  触ることになる。そのときは誤りにするか（包みがスレッドを確かめる）。
 
 ---
 
@@ -140,7 +185,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | ~~1-1~~ | ✅ **済**（2026-11-02・2.1）参照の数（D-5）。`Value::PyObject` の写し 1 つが CPython の参照 1 つ（GIL が無ければ待ち行列で `with_py` が反映）。呼び出しは肩代わりの関数、添字は C の API で借りるだけ。等しさ・ハッシュはオブジェクトの番地。試験は `py_int_refcount.ar`（ゲート）・`refcount_pandas.ar` | なし | 中 |
-| 1-2 | Python の物を `let` / `const` / `freeze` で受けたら誤り（D-3・2.2）。静的と実行時の両方 | なし | 中 |
+| 1-2 | Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3・2.2）。静的と実行時の両方。暗黙の束縛は 4 節の 6 | なし | 中 |
 | 1-3 | 再エクスポートを定義元までたどって型を付ける。`@overload` を引数で選ぶ（D-2・2.3） | なし | 大 |
 | 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
 | 1-5 | ユーザーの site-packages を型の探索先に足す（拡張の `wasm_host.ts` の `queryPythonDirs` も同じ問い合わせにする） | なし | 小 |
@@ -154,25 +199,25 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | 2-3 | 切り出し・多次元の添字・`Ellipsis` / `NotImplemented` を Python へ渡す | なし | 小〜中 |
 | 2-4 | `for` で CPython の反復子から 1 つずつ取り出す | なし | 小 |
 | 2-5 | Arrow の関数（クロージャ・束縛メソッド）を Python から呼べる物として渡す。中の Arrow の例外は Python の例外に、Python の例外は 2-1 で受ける。⚠ Python からの呼び戻し中に Arrow の VM へ入り直す（再入）ので、GIL と借用の扱いを先に設計する | 2-1 | 大 |
-| 2-6 | Arrow のインスタンスを Python へ渡す（4 節の 4） | 2-5 | 中〜大 |
-| 2-7 | list / dict / set の受け渡し（4 節の 3） | なし | 中 |
+| 2-6 | ⏸ **保留**（4 節の 4・2.6）Arrow のインスタンス（と list などを写さずに）を Python へ渡す | 2-5・4 節の 4 | 中〜大 |
+| 2-7 | ⏸ **保留**（4 節の 3・2.6）list / dict / set の受け渡し（写さずに使うか） | 4 節の 3 | 中〜大 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
 
 ### フェーズ 3: `.py` を CPython で実行する（2.5）
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 3-1 | `.py` の import を CPython の実行に切り替える（4 節の 1）。型は `import[py-int]` と同じ抽出器 | 1-3・2-1〜2-5 | 中 |
-| 3-2 | 例題の移行: `import[py]` を使う 114 本（`interop` 106・`classes` 4・`collections` 3・`interop/py_subdir` 1）を CPython の出力と突き合わせて直す。変換器の誤りを確かめる `_error` の例題は消すか書き換える | 3-1 | 大 |
-| 3-3 | 変換器と Python 専用の仕組みを消す（2.5・4 節の 2）。文書（`language-differences.md` の Python の節・`docs/grammar/09_imports.md`・skills）も直す | 3-2 | 大 |
+| 3-1 | `import[py]` を CPython の実行に切り替え、`import[py-int]` を廃止する（書くと誤り・D-6・2.5）。型は従来の `import[py-int]` と同じ抽出器 | 1-3・2-1〜2-5 | 中 |
+| 3-2 | 例題の移行: `import[py]` を使う 114 本（`interop` 106・`classes` 4・`collections` 3・`interop/py_subdir` 1）を CPython の出力と突き合わせて直す。`import[py-int]` を使う 61 本を `import[py]` に書き換える。変換器の誤りを確かめる `_error` の例題は消す | 3-1 | 大 |
+| 3-3 | Python の翻訳に固有のコードをすべて消す（D-7・2.5）。文書（`language-differences.md` の Python の節・`docs/grammar/09_imports.md`・skills）も直す | 3-2 | 大 |
 
 ### フェーズ 4: 速さ（計測してから）
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 4-1 | Python → Arrow の変換（約 110 ns/要素）を測って直す。原因の候補は `py_to_tl` が要素ごとに型の名前の文字列を作ること | なし | 小〜中 |
+| 4-1 | ⏸ **保留**（4 節の 3 で list などを写さないと決めたら、変換の多くが無くなるため）Python → Arrow の変換（約 110 ns/要素）を測って直す。原因の候補は `py_to_tl` が要素ごとに型の名前の文字列を作ること | 4 節の 3 | 小〜中 |
 | 4-2 | 越境 1 回ごとの GIL の取得（+0.5〜1.7 µs）をまとめられるか測る | 1-1 | 中 |
-| 4-3 | numpy の数値の配列を Arrow のリストにするとき、バッファを直接読む | 4-1 | 中 |
+| 4-3 | ⏸ **保留**（4-1 と同じ）numpy の数値の配列を Arrow のリストにするとき、バッファを直接読む | 4-1 | 中 |
 
 ### フェーズ 5: `is`（D-4）
 
@@ -182,16 +227,21 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 ---
 
-## 4. 未決（要判断）
+## 4. 決定と未決
 
-1. **`import[py]` の扱い**（3-1）: ① `import[py]` を CPython の実行に変え、`import[py-int]` と同じ意味にする（例題の書き換えが
-   要らない） ② `import[py]` を廃止して `import[py-int]` に一本化する（114 本を書き換える） ③ 変換器を残し、利用者が選べるようにする。
-2. **消す範囲**（3-3）: 変換器と Python 専用の仕組みを全部消すか、一部を残すか（③を選ぶなら残す）。
-3. **Python から来たコンテナ**（2-7）: 今どおり境界で写すか（Arrow の値になる。Python 側の書き換えは届かない）、包みのまま持つか
-   （CPython と同じく共有する。Arrow の list のメソッドの代わりに Python のメソッドが走る）。
-4. **Arrow のインスタンスを Python へ渡すとき**（2-6）: 代理のオブジェクト（属性・メソッドを Arrow へ中継する）にするか、今どおり
-   誤りにするか。
-5. **関数の引数**（1-2）: 既定で不変の引数も D-3 の対象になるので、Python の物を受ける引数は `mut` と書くことになる。これでよいか。
+決定（2026-11-02）:
+1. ~~`import[py]` の扱い~~ ⇒ `import[py]` を従来の `import[py-int]` と同じ意味にし、`import[py-int]` は廃止する（D-6）。
+2. ~~消す範囲~~ ⇒ Python の翻訳に固有のコードはすべて消す（D-7）。
+5. ~~関数の引数~~ ⇒ Python から受け取ったオブジェクトはすべて `mut` で受ける。関数の引数も同じ（D-3）。
+
+未決（⏸ 保留中のタスク: 2-6・2-7・4-1・4-3）:
+3. **Python から来たコンテナを写さずに使うか**（2-7）: 検討は 2.6。包みのまま持つなら ①要素の型の確かめ方 ②Arrow と Python で
+   操作の意味が違うもの ③速さ を決める。
+4. **Arrow の値を写さずに Python へ渡すか**（2-6）: 検討は 2.6。包んで渡すなら ④`isinstance(x, list)` が偽になること
+   ⑤`let` の値を渡したときの書き換え ⑥Python のスレッドから触られたとき を決める。
+6. **暗黙の束縛**（1-2・D-3）: `for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛は、今どれも不変で、
+   `mut` にする書き方が無い（`for mut x in ..` は無い）。Python の物を受けたとき ①誤りにして新しい書き方（`for mut x in ..`
+   など）を足す ②暗黙の束縛だけは Python の物でも不変のまま許す ③暗黙の束縛は Python の物なら自動で `mut` にする、のどれにするか。
 
 ---
 
