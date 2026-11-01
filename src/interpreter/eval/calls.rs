@@ -759,8 +759,9 @@ impl Interpreter {
             // #22-c: キーワード引数を保持したまま渡すので `AsyncManager`/`Signal` も扱える。
             Value::Type(type_name) => self.call_type_constructor_evaled(&type_name, evaled),
             Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),
-            Value::PyObject(ref handle) => {
-                let r = crate::interpreter::py_interop::call_py_object(handle, &evaled)?;
+            // ⚠ 呼ぶ物と引数を手放して渡す（写すと CPython から見える参照が 1 つ多くなる・pandas_import_plan.md の D-5）
+            Value::PyObject(handle) => {
+                let r = crate::interpreter::py_interop::call_py_object(handle, evaled)?;
                 self.check_ffi_return("py", r, node_id, fn_name, call_span.as_ref())
             }
             // #22-a で欠落が判明したアーム。`eval_call` には有ったが**ここには無く**、

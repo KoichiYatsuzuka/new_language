@@ -84,6 +84,8 @@ foreach ($l in $hashBody) {
 }
 
 # ── ② 等値側: `(Value::X(a), Value::X(b)) => Rc/Arc::ptr_eq(` の腕 ───────────
+# ⚠ `Value::PyObject` は `a.identity() == b.identity()`（CPython のオブジェクトの番地・pandas_import_plan.md の 1-1）。
+#   写しごとに包みが別物になったので、包みの番地（`Arc::ptr_eq`）ではなく中身の番地で比べる。これも同一性として数える。
 $eqBody = Get-FnBody -Path $eqPath -FnName 'values_eq_at'
 if ($null -eq $eqBody) {
     Write-Host "equality.rs に fn values_eq_at が見つからない（改名した？）" -ForegroundColor Red
@@ -92,7 +94,7 @@ if ($null -eq $eqBody) {
 $eqSet = New-Object 'System.Collections.Generic.HashSet[string]'
 foreach ($l in $eqBody) {
     $m = [regex]::Match($l,
-        '^\s*\(Value::([A-Za-z0-9_]+)\(\w+\),\s*Value::([A-Za-z0-9_]+)\(\w+\)\)\s*=>\s*(?:std::sync::)?(?:Rc|Arc)::ptr_eq\(')
+        '^\s*\(Value::([A-Za-z0-9_]+)\(\w+\),\s*Value::([A-Za-z0-9_]+)\(\w+\)\)\s*=>\s*(?:(?:std::sync::)?(?:Rc|Arc)::ptr_eq\(|\w+\.identity\(\)\s*==\s*\w+\.identity\(\))')
     if ($m.Success -and $m.Groups[1].Value -eq $m.Groups[2].Value) {
         $null = $eqSet.Add($m.Groups[1].Value)
     }

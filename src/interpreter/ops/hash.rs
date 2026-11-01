@@ -409,7 +409,7 @@ impl Interpreter {
             Value::AsyncManager(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::Signal(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::EventLoop(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
-            Value::PyObject(a) => ptr_hash(h, std::sync::Arc::as_ptr(a) as *const ()),
+            Value::PyObject(a) => ptr_hash(h, a.identity()),
             Value::NativeFunction(a) => ptr_hash(h, std::sync::Arc::as_ptr(a) as *const ()),
             // ⚠ 同一性（同じ `PtrHandle` か・3-2）。`values_eq` 側も `Arc::ptr_eq`（`hash_eq_identity` が見る）
             Value::Ptr(a) => ptr_hash(h, std::sync::Arc::as_ptr(a) as *const ()),

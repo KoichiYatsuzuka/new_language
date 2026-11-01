@@ -1,0 +1,38 @@
+# pandas / numpy が参照の数で決める振る舞いが、CPython で書いたときと同じになる（pandas_import_plan.md の D-5・タスク 1-1）
+#
+# ⚠ ゲート対象外（pandas と numpy が要る）。参照の数そのものの試験は examples/interop/py_int_refcount.ar（ゲート対象）。
+# pandas は `sys.getrefcount(self)` で、一時的な物への代入（連鎖代入）を見分けて警告する。numpy の `resize` は参照が多いと誤り。
+# 期待する結果は、同じ形を CPython で書いて得る（refcount_helper.py の `expected`）。
+# ⚠ 以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` まで連鎖代入の警告が出ていた。
+
+import[py-int] pandas as pd
+import[py-int] numpy as np
+import[py-int] refcount_helper as w
+
+let want: dict[str, list[str]] = w.expected()
+
+fn check(shape: str, got: list[str], want: dict[str, list[str]]) -> None:
+    if got != want[shape]:
+        raise RuntimeError(shape + ": Arrow " + str(got) + ", CPython " + str(want[shape]))
+    print(shape + ": " + str(got) + " (same as CPython)")
+
+w.start()
+mut df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+df["c"] = df["a"] * 2
+check("variable setitem", w.take(), want)
+df["a"][0] = 99
+check("chained setitem", w.take(), want)
+mut s = df["b"]
+s.fillna(0, inplace=True)
+check("variable inplace", w.take(), want)
+df["b"].fillna(0, inplace=True)
+check("chained inplace", w.take(), want)
+
+mut a = np.arange(3)
+mut resized: list[str] = []
+try:
+    a.resize(5)
+    resized = ["ok"]
+except Exception as e:
+    resized = ["ValueError"]
+check("variable resize", resized, want)

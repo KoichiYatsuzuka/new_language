@@ -34,16 +34,16 @@ pub fn load_py_int_module(
 }
 
 pub fn call_py_object(
-    _handle: &PyObjHandle,
-    _evaled: &[(Option<String>, Value, bool)],
+    _handle: PyObjHandle,
+    _evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
     Err(unavailable("calling a Python object"))
 }
 
 pub fn call_py_method(
-    _handle: &PyObjHandle,
+    _handle: PyObjHandle,
     method_name: &str,
-    _evaled: &[(Option<String>, Value, bool)],
+    _evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
     Err(unavailable(&format!("Python method '{method_name}'")))
 }

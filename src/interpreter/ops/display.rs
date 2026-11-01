@@ -173,10 +173,9 @@ impl Interpreter {
             // ⚠ 評価コアビルドでは `PyObjHandle` が構築不能なのでこのアームへは到達しないが、
             //   **アーム自体は残す**（消すと網羅 match の 2 段強制が崩れる・評価コア切り出し #2）。
             #[cfg(feature = "native")]
-            Value::PyObject(h) => pyo3::Python::with_gil(|py| {
+            Value::PyObject(h) => crate::interpreter::py_interop::with_py(|py| {
                 use pyo3::types::PyAnyMethods;
-                h.inner
-                    .bind(py)
+                h.bind(py)
                     .repr()
                     .and_then(|r| r.extract::<String>())
                     .unwrap_or_else(|_| "<PyObject>".to_string())

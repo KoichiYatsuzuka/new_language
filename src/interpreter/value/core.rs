@@ -134,7 +134,8 @@ pub enum Value {
     Namespace(Rc<NamespaceData>),
     /// PyO3 経由で保持する Python オブジェクトへの参照。
     /// tl 側では不透明（opaque）な値として扱われる。
-    PyObject(Arc<PyObjHandle>),
+    /// ⚠ 写し 1 つが CPython の参照 1 つ（`PyObjHandle` の doc・pandas_import_plan.md の D-5）。`Arc` で共有しない。
+    PyObject(PyObjHandle),
     /// ファイルオブジェクト。`open()` 組み込み関数が返す。
     /// メソッド（read / read_line / read_letter / write / write_line）で読み書きを行う。
     FileObject(Rc<RefCell<FileData>>),
@@ -424,7 +425,8 @@ impl Value {
                 template_params: rc.template_params.clone(),
             })),
             // Arc-wrapped types: atomic refcount, safe to share across threads
-            Value::PyObject(arc) => Value::PyObject(Arc::clone(arc)),
+            // CPython の参照を 1 つ増やす（D-5。GIL が無ければ待ち行列へ・`py_interop`）
+            Value::PyObject(h) => Value::PyObject(h.clone()),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
             // ⚠ 共有する（コピーは同じメモリを指し、解放は最後の参照で 1 回・3-2）
             Value::Ptr(arc) => Value::Ptr(Arc::clone(arc)),

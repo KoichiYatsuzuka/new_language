@@ -251,14 +251,15 @@ Arrow/
 - **イテレータプロトコル**: `for XX in YY:` は `YY.__iter__()` を呼んでジェネレータを取得し、`.next()` を繰り返す。終端で `EndOfIteration` エラーが発生するとループを終了する。`List` / `Str` は組み込みの `__iter__()` を持つ。クラスに `gen __iter__(self) -> T:` を定義することで任意のイテラブルを実装できる。`ClassValue` は `gen_methods: HashMap<String, Rc<GeneratorFnValue>>` フィールドを持ち、`eval_method_call` でジェネレータメソッドを優先的にディスパッチする
 - **辞書型**: `Value::Dict(Rc<RefCell<DictData>>)`。内部は並列 `Vec`（`keys` / `items`）で管理。`dict[K, V]()` で空の型付き辞書を生成、`dict[K, V]({...})` でリテラルから型付き辞書を生成。`d[key]` でルックアップ、`d[key] = val` で追加・更新。書き込み時に型制約を検証（アップキャスト許可）。`d.key()` / `d.item()` でキー・値の `List` を返す。`is_truthy` は空なら偽、非空なら真
 - **タプル型**: `Value::Tuple(Rc<TupleData>)`。`TupleData` は `values: Vec<Value>`（実値）と `types: Vec<String>`（各要素のランタイム型名）の並列 Vec で実装。公開 API（`get` / `len` / `is_empty` / `element_type` / `all_values` / `all_types`）を介してアクセスし、内部表現は将来変更可能。`is_truthy` は空なら偽、非空なら真。`==` は要素数と各要素を比較
-- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`, `Namespace(Rc<NamespaceData>)`, `PyObject(Rc<PyObjHandle>)`
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`, `Namespace(Rc<NamespaceData>)`, `PyObject(PyObjHandle)`
 - **トレイトの実行時表現**: `Stmt::TraitDef` 実行時に `Value::Trait(name)` をスコープに束縛。`Error` トレイトは起動時に自動登録されるため常にスコープに存在する
 - **`import[py]`**: `.py` ファイルを `python_converter.rs` で tl の AST に変換して実行する。Python モジュールの関数・クラスが tl の通常の値として利用可能
   - Python 関数は `is_python: true` フラグを持ち、引数リストにないキーワード引数を `kwargs` dict としてスコープに注入する（`**kwargs` 相当）
   - `dict.keys()` / `dict.values()` を `key()` / `item()` の別名として提供
 - **`import[py-int]`**: PyO3 経由で Python ランタイムに接続し、実際の Python モジュールを実行時にロードする。Cython コンパイル済みモジュール（`.pyd`/`.so`）や標準ライブラリも扱える
   - 型シグネチャは `.pyi` または `.py` ファイルから取得して静的型検査に使用する（パーサーが処理）
-  - 実行時は `Value::PyObject(Rc<PyObjHandle>)` で Python オブジェクトを opaque に保持
+  - 実行時は `Value::PyObject(PyObjHandle)` で Python オブジェクトを opaque に保持（写し 1 つが CPython の参照 1 つ・
+    `implementation_plans/pandas_import_plan.md` の D-5）
   - `src/interpreter/py_interop.rs` が tl↔Python の型変換・呼び出しを担当
   - 型変換: `int`/`float`/`str`/`bool`/`None`/`list`/`tuple`/`dict`/`set`（`frozenset` も set）/`bytes`（`bytes`・`bytearray`・要素が 1 バイトの `memoryview`）はネイティブ tl 値に自動変換。それ以外（i64 に入らない `int`・`Decimal` などを含む）は `PyObject` のまま保持（詳細は `docs/grammar/09_imports.md` の「`[py-int]`」）
   - `PyObject` の属性アクセス（`obj.attr`）・メソッド呼び出し（`obj.method()`）・直接呼び出し（`obj()`）をすべて PyO3 経由でディスパッチ

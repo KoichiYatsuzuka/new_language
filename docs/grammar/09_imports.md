@@ -532,6 +532,11 @@ let mean = np.mean(arr)
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
 - GIL (Global Interpreter Lock) により並列化は不可
+- **CPython から見える参照の数は、CPython で同じ形を書いたときと同じ**です（`implementation_plans/pandas_import_plan.md` の
+  D-5・1-1）。Arrow の束縛・欄・要素・評価中の値がそれぞれ参照を 1 つ持ち、メソッド・関数の呼び出しは評価中の参照を
+  呼ばれた側へ引き渡します。pandas の連鎖代入の警告（変数への `df["c"] = ..` は出ず、`df["a"][0] = ..` は出る）や
+  numpy の `a.resize(n)` は CPython と同じに振る舞います（`examples/interop/py_int_refcount.ar`）。⚠ 以前は Arrow の束縛が
+  いくつあっても CPython からは参照 1 つに見え、変数への代入まで連鎖代入の警告が出ていました
 - `Value::PyObject` として扱われる
 
 **値の対応**: `int` / `float` / `str` / `bool` / `None` / list / tuple / dict / set（`frozenset` も Arrow の set）・

@@ -10,8 +10,15 @@ use super::*;
 // Module / Python interop types
 // ---------------------------------------------------------------------------
 
-/// PyO3 を通じて Python オブジェクトへの参照を保持するハンドル。
-/// GIL を保持せずにオブジェクトを所有でき、ドロップ時に Python 側の参照カウントを自動減少させる。
+/// CPython のオブジェクトへの参照 **1 つ**（pandas_import_plan.md の D-5・タスク 1-1）。
+///
+/// ⚠⚠ **写し 1 つが CPython の参照 1 つを持つ。** `Clone` で参照を増やし、`Drop` で減らす（実装は `py_interop`）。
+///   CPython のコードは参照の数で振る舞いを変える（pandas の連鎖代入の警告・numpy の `resize` / 一時配列の再利用）ので、
+///   Arrow の束縛・欄・要素・VM のスタックの値がそれぞれ 1 つずつ持ち、CPython で同じ形を書いたときと同じ数にする。
+///   以前は `Arc<PyObjHandle>` で 1 つの参照を共有していたため、束縛がいくつあっても CPython からは 1 つに見え、
+///   変数への `df["c"] = ..` が連鎖代入と誤判定されていた。
+/// ⚠ GIL を持たずに写す・捨てるときは、増減を `py_interop` の待ち行列に積み、CPython へ入る入口で反映する
+///   （CPython が数を見られるのは入口の中だけなので、見える数は正確になる）。
 ///
 /// ⚠ **`Value::PyObject` の variant 自体は評価コアビルドにも残す**（評価コア切り出し #2）。
 /// 消すと `Value` を網羅 `match` している 100 箇所超に `#[cfg]` を配る必要があり、
@@ -20,13 +27,36 @@ use super::*;
 /// `Value::PyObject` を作る経路（`py_interop`）が `native` 限定であることと整合する。
 #[cfg(feature = "native")]
 pub struct PyObjHandle {
-    pub inner: pyo3::Py<pyo3::PyAny>,
+    /// 持っている参照（所有権つき）。読むときは `py_interop` の `bind` で借りる（数を変えない）。
+    pub(crate) ptr: std::ptr::NonNull<pyo3::ffi::PyObject>,
 }
+
+// ⚠ CPython のオブジェクトはスレッドをまたいで持てる（`Py<T>` も `Send + Sync`）。増減は GIL の下か待ち行列で行う。
+#[cfg(feature = "native")]
+unsafe impl Send for PyObjHandle {}
+#[cfg(feature = "native")]
+unsafe impl Sync for PyObjHandle {}
 
 /// 評価コアビルド（`native` 無効）の `PyObjHandle`。構築不能。
 #[cfg(not(feature = "native"))]
+#[derive(Clone)]
 pub struct PyObjHandle {
     pub inner: std::convert::Infallible,
+}
+
+impl PyObjHandle {
+    /// 指している CPython のオブジェクトの番地。等しさ（`values_eq`）とハッシュはこれで決める（同一性）。
+    ///
+    /// ⚠ 写しごとに包みが別物になった（D-5）ので、包みの番地ではなくオブジェクトの番地を見る。これで同じ物を 2 回
+    ///   受け取っても同じ値になる（以前は `Arc` の番地で、受け取るたびに別のキーだった）。
+    pub(crate) fn identity(&self) -> *const () {
+        #[cfg(feature = "native")]
+        {
+            self.ptr.as_ptr() as *const ()
+        }
+        #[cfg(not(feature = "native"))]
+        match self.inner {}
+    }
 }
 
 

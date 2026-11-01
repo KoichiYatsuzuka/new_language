@@ -11,24 +11,154 @@
 // - `py_len`: Python の __len__
 // - `py_collect_iter`: Python iterable を Vec<Value> に一括収集する
 // - `py_binop` / `py_rbinop`: Python の二項演算子（lhs=PyObject / rhs=PyObject）
+// - `with_py`: CPython へ入る唯一の入口（GIL を取り、参照の増減の待ち行列を反映する・D-5）
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use std::path::PathBuf;
 
 use pyo3::class::basic::CompareOp;
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{
     PyAnyMethods, PyByteArray, PyBytes, PyDict, PyDictMethods, PyFloat, PyFrozenSet, PyInt, PyList, PyListMethods,
     PyMemoryView, PyModule, PySet, PyTuple, PyTupleMethods,
 };
+use pyo3::Borrowed;
 
 use crate::ast::BinOp;
 
 use super::{DictData, NamespaceData, PyObjHandle, TupleData, Value};
+
+// ---------------------------------------------------------------------------
+// CPython の参照の数（pandas_import_plan.md の D-5・タスク 1-1）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠ `PyObjHandle` の写し 1 つが CPython の参照 1 つを持つ。CPython のコードは参照の数で振る舞いを変える
+//   （pandas は `sys.getrefcount(self)` で連鎖代入を見分け、numpy の `resize` は参照が多いと誤りにする）ので、
+//   Arrow の束縛・欄・要素・VM のスタックの値が、CPython で同じ形を書いたときの変数・評価のスタックと同じ数を持つ。
+// ⚠ 写す・捨てるのに GIL は要らない。持っていなければ増減を待ち行列（`PENDING`）に積み、CPython へ入る入口
+//   （`with_py`）で反映する。CPython が数を見られるのは入口の中だけなので、CPython から見える数は正確になる。
+//   （PyO3 0.22 の `Py::clone` は GIL が無いと panic する。Arrow は格納のたびに値を写すので、そのたびに GIL を取ると高い。）
+
+thread_local! {
+    /// このスレッドが `with_py` の中（GIL を持っている）か（入れ子の深さ）。
+    static IN_PY: Cell<u32> = const { Cell::new(0) };
+}
+
+/// GIL を持たずに写した・捨てた `PyObjHandle` の参照の増減（オブジェクトの番地, 増やすなら真）。
+/// ⚠ `async` のタスク（別のスレッド）も写すので、プロセスで 1 つ。
+static PENDING: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
+
+/// 待ち行列がこれを超えたら GIL を取って反映する（CPython を呼ばないループで写し続けても膨らみ続けないように）。
+const PENDING_LIMIT: usize = 1 << 14;
+
+fn gil_held_here() -> bool {
+    IN_PY.with(|d| d.get() > 0)
+}
+
+fn defer_refcount(ptr: NonNull<ffi::PyObject>, incref: bool) {
+    let full = {
+        let mut q = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        q.push((ptr.as_ptr() as usize, incref));
+        q.len() > PENDING_LIMIT
+    };
+    if full {
+        with_py(|_| ());
+    }
+}
+
+/// 待ち行列を反映する（GIL の下で）。
+///
+/// ⚠ **増やす分を先に、減らす分を後に。** 写した値を積んだ後に元を捨てると、同じ物の +1 と -1 が並ぶ。減らす分を先に
+///   反映すると、写しが残っているのに 0 になって解放されうる（写しは必ず元より先に積まれるので、先に増やせば安全）。
+fn apply_pending(_py: Python<'_>) {
+    let q = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+    for &(p, incref) in &q {
+        if incref {
+            unsafe { ffi::Py_IncRef(p as *mut ffi::PyObject) }
+        }
+    }
+    for &(p, incref) in &q {
+        if !incref {
+            unsafe { ffi::Py_DecRef(p as *mut ffi::PyObject) }
+        }
+    }
+}
+
+/// CPython へ入る**唯一の入口**: GIL を取り、待ち行列を反映してから `f` を走らせる。
+///
+/// ⚠ CPython を呼ぶ処理は `Python::with_gil` を直接使わずにこれを通すこと。通さないと、待ち行列に残った増減を
+///   反映しないまま CPython が参照の数を見る。
+pub(crate) fn with_py<R>(f: impl FnOnce(Python<'_>) -> R) -> R {
+    Python::with_gil(|py| {
+        struct Depth;
+        impl Drop for Depth {
+            fn drop(&mut self) {
+                IN_PY.with(|d| d.set(d.get() - 1));
+            }
+        }
+        IN_PY.with(|d| d.set(d.get() + 1));
+        let _depth = Depth;
+        apply_pending(py);
+        f(py)
+    })
+}
+
+impl PyObjHandle {
+    /// 所有している参照をそのまま受け取る。
+    pub(crate) fn from_owned(obj: Py<PyAny>) -> Self {
+        PyObjHandle { ptr: NonNull::new(obj.into_ptr()).expect("Py<PyAny> is never null") }
+    }
+
+    /// 新しい参照を 1 つ作って持つ（GIL の下で）。
+    pub(crate) fn from_bound(obj: &Bound<'_, PyAny>) -> Self {
+        Self::from_owned(obj.clone().unbind())
+    }
+
+    /// 借りる（参照の数を変えない）。CPython で同じ式を書いたときの「評価のスタックの参照」は、この値（Arrow の写し）自身。
+    pub(crate) fn bind<'a, 'py>(&'a self, py: Python<'py>) -> Borrowed<'a, 'py, PyAny> {
+        unsafe { Borrowed::from_ptr(py, self.ptr.as_ptr()) }
+    }
+
+    /// CPython 側に持たせる新しい参照（CPython のコンテナの要素にするときなど）。
+    pub(crate) fn to_py(&self, py: Python<'_>) -> PyObject {
+        self.bind(py).to_owned().unbind()
+    }
+
+    /// 自分の参照を写さずに CPython へ渡す（呼び出しの肩代わり・`call_shaped`）。
+    /// ⚠ `with_py` の中で呼ぶこと（入口で待ち行列を反映済みなので、この参照は本物）。
+    pub(crate) fn into_py(self, py: Python<'_>) -> PyObject {
+        let p = self.ptr.as_ptr();
+        std::mem::forget(self);
+        unsafe { Py::from_owned_ptr(py, p) }
+    }
+}
+
+impl Clone for PyObjHandle {
+    fn clone(&self) -> Self {
+        if gil_held_here() {
+            unsafe { ffi::Py_IncRef(self.ptr.as_ptr()) }
+        } else {
+            defer_refcount(self.ptr, true);
+        }
+        PyObjHandle { ptr: self.ptr }
+    }
+}
+
+impl Drop for PyObjHandle {
+    fn drop(&mut self) {
+        if gil_held_here() {
+            unsafe { ffi::Py_DecRef(self.ptr.as_ptr()) }
+        } else {
+            defer_refcount(self.ptr, false);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // tl → Python 変換
@@ -75,7 +205,7 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         Value::UInt(n) => Ok(n.to_object(py)),
         // bytes → Python の bytes（コピー・ffi_value_exchange_plan.md 5-3）。⚠ 以前は TypeError
         Value::Bytes(b) => Ok(PyBytes::new_bound(py, b).into()),
-        Value::PyObject(h) => Ok(h.inner.clone_ref(py)),
+        Value::PyObject(h) => Ok(h.to_py(py)),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)
@@ -86,8 +216,8 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
 /// Python のオブジェクトのクラスと基底（MRO の順）の `(__module__, __name__)`（`is` / `mustbe` の判定・ffi_value_exchange_plan.md
 /// 7-27）。読めない項目は飛ばす（`__module__` の無いクラスは空文字列）。
 pub fn py_class_mro(h: &PyObjHandle) -> Vec<(String, String)> {
-    Python::with_gil(|py| {
-        let ty = h.inner.bind(py).get_type();
+    with_py(|py| {
+        let ty = h.bind(py).get_type();
         let Ok(mro) = ty.getattr("__mro__") else { return Vec::new() };
         let Ok(items) = mro.iter() else { return Vec::new() };
         items
@@ -124,7 +254,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     // ⚠ 2-6: Python の int で i64 に入らないものは、下の f64 への変換に落ちて**黙って float**（精度を失う）になっていた。
     //   Python のオブジェクトのまま渡す（値を失わず、演算は Python 側で行える）。
     if obj.is_instance_of::<PyInt>() {
-        return Value::PyObject(Arc::new(PyObjHandle { inner: obj.clone().unbind() }));
+        return Value::PyObject(PyObjHandle::from_bound(obj));
     }
     // ⚠ 2-6: float だけを float にする。以前は `__float__` を持つもの（`Decimal` / `Fraction` など）も黙って float に
     //   変換していた（`Decimal("0.1")` の精度が失われる）。それらは Python のオブジェクトのまま渡す。
@@ -223,9 +353,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         }
     }
     // その他 → PyObject（opaque ラップ）
-    Value::PyObject(Arc::new(PyObjHandle {
-        inner: obj.clone().unbind(),
-    }))
+    Value::PyObject(PyObjHandle::from_bound(obj))
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +369,7 @@ pub fn load_py_int_module(
     extra_search_dirs: &[PathBuf],
 ) -> Result<Rc<NamespaceData>, String> {
     let module_name = module_path.join(".");
-    Python::with_gil(|py| -> PyResult<Rc<NamespaceData>> {
+    with_py(|py| -> PyResult<Rc<NamespaceData>> {
         // extra_search_dirs を sys.path の先頭に追加する
         let sys = py.import_bound("sys")?;
         let sys_path = sys.getattr("path")?;
@@ -264,9 +392,7 @@ pub fn load_py_int_module(
             }
 
             if let Ok(attr) = module.getattr(name.as_str()) {
-                let val = Value::PyObject(Arc::new(PyObjHandle {
-                    inner: attr.unbind(),
-                }));
+                let val = Value::PyObject(PyObjHandle::from_owned(attr.unbind()));
                 members.insert(name, val);
             }
         }
@@ -300,67 +426,223 @@ fn python_raised(e: PyErr) -> String {
 }
 
 /// Python callable を引数付きで呼び出す。
+///
+/// ⚠ 呼ぶ物と引数は**受け取って手放す**（写さない）。CPython のバイトコードと同じく、評価のスタックの参照（Arrow の値の写し）を
+///   呼ばれた側へ引き渡すため（[`call_shaped`]・D-5）。
 pub fn call_py_object(
-    handle: &PyObjHandle,
-    evaled: &[(Option<String>, Value, bool)],
+    handle: PyObjHandle,
+    evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let callable = handle.inner.bind(py);
-        let (pos_args, kwargs_dict) = build_py_args(py, evaled).map_err(arrow_side)?;
-        let result = callable.call(pos_args, Some(&kwargs_dict)).map_err(python_raised)?;
+    call_shaped(handle, None, evaled)
+}
+
+/// Python オブジェクトのメソッドを呼び出す（受け手と引数の扱いは [`call_py_object`] と同じ）。
+pub fn call_py_method(
+    handle: PyObjHandle,
+    method_name: &str,
+    evaled: Vec<(Option<String>, Value, bool)>,
+) -> Result<Value, String> {
+    call_shaped(handle, Some(method_name), evaled)
+}
+
+// ---------------------------------------------------------------------------
+// 呼び出しの肩代わり（D-5・タスク 1-1）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠ C の API（`PyObject_Call` / `PyObject_Vectorcall`）から Python の関数を呼ぶと、呼ばれた側のフレームが引数の参照を
+//   1 つ増やす。CPython のバイトコードは評価のスタックの参照をフレームへ**引き渡す**（増やさない）ので、C から呼ぶ限り
+//   受け手・引数の参照の数は CPython で書いたときより 1 つ多い（実測: 変数のメソッド 3 → 4・一時的な物 2 → 3）。
+//   pandas の inplace=True のメソッドは `self` の参照の数で連鎖代入を見分けるので、1 つ多いと本物の連鎖代入を見逃す。
+// ⇒ 呼び出しだけを小さな Python の関数（肩代わり）に行わせる:
+//       lambda __arrow_box__: __arrow_box__.pop().NAME(__arrow_box__.pop(), K=__arrow_box__.pop())
+//   Arrow は自分の参照（受け手・呼ぶ物・引数）をリストに入れて手放し、肩代わりは `pop` した値を変数に入れずに呼ぶ。
+//   `pop` が返した参照は評価のスタックにあり、`CALL` がそれを引き渡すので、CPython で書いたときと同じ数になる。
+//   形（メソッド名・位置引数の数・キーワードの名前）ごとに 1 度だけ作って使い回す。
+
+/// 肩代わりの関数の引数の名前（利用者の名前と重ならないように）。
+const BOX: &str = "__arrow_box__";
+
+/// 肩代わりの関数の形: (メソッド名（呼ぶ物そのものなら `None`）, 位置引数の数, キーワードの名前)。
+type ShapeKey = (Option<String>, usize, Vec<String>);
+
+static TRAMPOLINES: OnceLock<Mutex<HashMap<ShapeKey, Py<PyAny>>>> = OnceLock::new();
+
+/// 肩代わりの関数のソースに名前として書けるか（Python の識別子で、予約語でない）。
+fn is_py_identifier(s: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+        "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+        "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    ];
+    let mut cs = s.chars();
+    matches!(cs.next(), Some(c) if c == '_' || c.is_alphabetic())
+        && cs.all(|c| c == '_' || c.is_alphanumeric())
+        && !KEYWORDS.contains(&s)
+        && s != BOX
+}
+
+fn trampoline<'py>(py: Python<'py>, key: &ShapeKey) -> PyResult<Bound<'py, PyAny>> {
+    let cache = TRAMPOLINES.get_or_init(Default::default);
+    if let Some(f) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+        return Ok(f.bind(py).clone());
+    }
+    let (method, n_pos, kw_names) = key;
+    let pop = format!("{BOX}.pop()");
+    let mut args: Vec<String> = (0..*n_pos).map(|_| pop.clone()).collect();
+    args.extend(kw_names.iter().map(|k| format!("{k}={pop}")));
+    let callee = match method {
+        Some(m) => format!("{pop}.{m}"),
+        None => pop.clone(),
+    };
+    let src = format!("lambda {BOX}: {callee}({})", args.join(", "));
+    let f = py.eval_bound(&src, Some(&PyDict::new_bound(py)), None)?;
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), f.clone().unbind());
+    Ok(f)
+}
+
+/// Arrow の値を、写さずに（CPython の物なら自分の参照を手放して）CPython の物にする。
+fn ar_to_py_owned(py: Python<'_>, val: Value) -> PyResult<PyObject> {
+    match val {
+        Value::PyObject(h) => Ok(h.into_py(py)),
+        other => ar_to_py(py, &other),
+    }
+}
+
+/// `head`（呼ぶ物、または `method` の受け手）を呼ぶ。引数の参照も受け取って手放す。
+fn call_shaped(
+    head: PyObjHandle,
+    method: Option<&str>,
+    evaled: Vec<(Option<String>, Value, bool)>,
+) -> Result<Value, String> {
+    with_py(|py| -> Result<Value, String> {
+        let mut pos: Vec<Value> = Vec::new();
+        let mut kw: Vec<(String, Value)> = Vec::new();
+        for (name, val, _) in evaled {
+            match name {
+                None => pos.push(val),
+                Some(k) => kw.push((k, val)),
+            }
+        }
+        let kw_names: Vec<String> = kw.iter().map(|(k, _)| k.clone()).collect();
+        let unique = kw_names.iter().enumerate().all(|(i, k)| !kw_names[..i].contains(k));
+        let shapeable = method.map_or(true, is_py_identifier) && kw_names.iter().all(|k| is_py_identifier(k)) && unique;
+        if !shapeable {
+            // ⚠ ソースに書けない名前（`getattr` でしか引けないメソッド名・予約語のキーワード）だけは、肩代わりを使わずに呼ぶ。
+            //   このときだけ、受け手・引数の参照は CPython で書いたときより 1 つ多い。
+            return call_unshaped(py, head, method, pos, kw);
+        }
+        let f = trampoline(py, &(method.map(str::to_string), pos.len(), kw_names)).map_err(arrow_side)?;
+        let mut owned: Vec<PyObject> = Vec::with_capacity(1 + pos.len() + kw.len());
+        owned.push(head.into_py(py));
+        for v in pos {
+            owned.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+        }
+        for (_, v) in kw {
+            owned.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+        }
+        // 肩代わりは後ろから `pop` するので、[頭, 位置引数.., キーワード..] の逆順に並べる。
+        // ⚠ 要素は `PyList_SET_ITEM` で**引き渡す**（`PyList::new_bound` は写すので、作る間だけ参照が 1 つ多くなる）。
+        owned.reverse();
+        let list = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(owned.len() as ffi::Py_ssize_t)) }
+            .map_err(arrow_side)?;
+        for (i, o) in owned.into_iter().enumerate() {
+            unsafe { ffi::PyList_SET_ITEM(list.as_ptr(), i as ffi::Py_ssize_t, o.into_ptr()) };
+        }
+        let result = f.call1((list,)).map_err(python_raised)?;
         Ok(py_to_tl(py, &result))
     })
 }
 
-/// Python オブジェクトのメソッドを呼び出す。
-pub fn call_py_method(
-    handle: &PyObjHandle,
-    method_name: &str,
-    evaled: &[(Option<String>, Value, bool)],
+/// 肩代わりを使わない呼び出し（[`call_shaped`] のソースに名前を書けないときだけ）。
+fn call_unshaped(
+    py: Python<'_>,
+    head: PyObjHandle,
+    method: Option<&str>,
+    pos: Vec<Value>,
+    kw: Vec<(String, Value)>,
 ) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
-        let method = obj.getattr(method_name).map_err(python_raised)?;
-        let (pos_args, kwargs_dict) = build_py_args(py, evaled).map_err(arrow_side)?;
-        let result = method.call(pos_args, Some(&kwargs_dict)).map_err(python_raised)?;
-        Ok(py_to_tl(py, &result))
-    })
+    let callable = match method {
+        Some(m) => head.bind(py).getattr(m).map_err(python_raised)?,
+        None => head.bind(py).to_owned(),
+    };
+    let mut positional: Vec<PyObject> = Vec::with_capacity(pos.len());
+    for v in pos {
+        positional.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+    }
+    let kwargs = PyDict::new_bound(py);
+    for (k, v) in kw {
+        kwargs.set_item(k, ar_to_py_owned(py, v).map_err(arrow_side)?).map_err(arrow_side)?;
+    }
+    let result = callable.call(PyTuple::new_bound(py, positional), Some(&kwargs)).map_err(python_raised)?;
+    Ok(py_to_tl(py, &result))
+}
+
+/// 添字の鍵・代入する値（Arrow の値）を CPython の物にする。CPython の物は**借りるだけ**（CPython の `x[k] = v` も、
+/// 評価のスタックの参照のほかに参照を増やさない・D-5）。
+enum PyOperand<'a, 'py> {
+    Borrowed(Borrowed<'a, 'py, PyAny>),
+    Owned(Bound<'py, PyAny>),
+}
+
+impl PyOperand<'_, '_> {
+    fn as_ptr(&self) -> *mut ffi::PyObject {
+        match self {
+            PyOperand::Borrowed(b) => b.as_ptr(),
+            PyOperand::Owned(o) => o.as_ptr(),
+        }
+    }
+}
+
+fn py_operand<'a, 'py>(py: Python<'py>, val: &'a Value) -> PyResult<PyOperand<'a, 'py>> {
+    match val {
+        Value::PyObject(h) => Ok(PyOperand::Borrowed(h.bind(py))),
+        other => Ok(PyOperand::Owned(ar_to_py(py, other)?.into_bound(py))),
+    }
 }
 
 /// Python オブジェクトの属性を取得して tl の Value として返す。
 pub fn py_getattr(handle: &PyObjHandle, attr: &str) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
         let attr_val = obj.getattr(attr).map_err(python_raised)?;
         Ok(py_to_tl(py, &attr_val))
     })
 }
 
 /// `obj[key]`: Python の `__getitem__` を呼び出す。
+///
+/// ⚠ 受け手と鍵は借りるだけ（`PyObject_GetItem` を直接呼ぶ・[`py_operand`]）。PyO3 の get_item（`PyAnyMethods`）は鍵を写す。
 pub fn py_getitem(handle: &PyObjHandle, key: &Value) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
-        let py_key = ar_to_py(py, key).map_err(arrow_side)?;
-        let result = obj.get_item(py_key).map_err(python_raised)?;
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
+        let py_key = py_operand(py, key).map_err(arrow_side)?;
+        let result = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyObject_GetItem(obj.as_ptr(), py_key.as_ptr())) }
+            .map_err(python_raised)?;
         Ok(py_to_tl(py, &result))
     })
 }
 
 /// `obj[key] = val`: Python の `__setitem__` を呼び出す。
+///
+/// ⚠ 受け手・鍵・値は借りるだけ（`PyObject_SetItem` を直接呼ぶ）。CPython の `obj[key] = val` と同じ参照の数で
+///   `__setitem__` が走る（pandas はここで `self` の参照の数から連鎖代入を見分ける・D-5）。
 pub fn py_setitem(handle: &PyObjHandle, key: &Value, val: &Value) -> Result<(), String> {
-    Python::with_gil(|py| -> Result<(), String> {
-        let obj = handle.inner.bind(py);
-        let py_key = ar_to_py(py, key).map_err(arrow_side)?;
-        let py_val = ar_to_py(py, val).map_err(arrow_side)?;
-        obj.set_item(py_key, py_val).map_err(python_raised)
+    with_py(|py| -> Result<(), String> {
+        let obj = handle.bind(py);
+        let py_key = py_operand(py, key).map_err(arrow_side)?;
+        let py_val = py_operand(py, val).map_err(arrow_side)?;
+        if unsafe { ffi::PyObject_SetItem(obj.as_ptr(), py_key.as_ptr(), py_val.as_ptr()) } == -1 {
+            return Err(python_raised(PyErr::fetch(py)));
+        }
+        Ok(())
     })
 }
 
 /// Python の int（`bool` を除く）なら、その表記（`str(obj)`）。i64 に入らない int は Python のオブジェクトのまま届くので、
 /// 境界検査が OverflowError の文面に使う（`ffi_boundary`・7-9）。
 pub fn py_int_text(handle: &PyObjHandle) -> Option<String> {
-    Python::with_gil(|py| {
-        let obj = handle.inner.bind(py);
+    with_py(|py| {
+        let obj = handle.bind(py);
         if obj.is_instance_of::<PyInt>() && !obj.is_instance_of::<pyo3::types::PyBool>() {
             obj.str().ok().map(|s| s.to_string())
         } else {
@@ -371,8 +653,8 @@ pub fn py_int_text(handle: &PyObjHandle) -> Option<String> {
 
 /// `len(obj)`: Python の `__len__` を呼び出す。
 pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
         let n = obj.len().map_err(python_raised)?;
         Ok(Value::Int(n as i64))
     })
@@ -380,13 +662,13 @@ pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
 
 /// `callable(obj)`: Python の `callable()` と同じ判定（python_builtins_plan.md のタスク 2-4）。
 pub fn py_is_callable(handle: &PyObjHandle) -> bool {
-    Python::with_gil(|py| handle.inner.bind(py).is_callable())
+    with_py(|py| handle.bind(py).is_callable())
 }
 
 /// Python iterable を走査して要素を `Vec<Value>` に収集する。for ループ用。
 pub fn py_collect_iter(handle: &PyObjHandle) -> Result<Vec<Value>, String> {
-    Python::with_gil(|py| -> Result<Vec<Value>, String> {
-        let obj = handle.inner.bind(py);
+    with_py(|py| -> Result<Vec<Value>, String> {
+        let obj = handle.bind(py);
         let iter = obj.iter().map_err(python_raised)?;
         let mut items = Vec::new();
         for item in iter {
@@ -401,8 +683,8 @@ const NO_LOGICAL_BINOP: &str = "TypeError: cannot apply 'and'/'or' to Python obj
 
 /// lhs が `PyObject` のときの二項演算。`op` を Python の演算子メソッドにマップする。
 pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
         let py_rhs = ar_to_py(py, rhs).map_err(arrow_side)?;
         let result = match op {
             BinOp::Add => obj.add(py_rhs),
@@ -428,7 +710,7 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
                 // obj (LHS item) in py_rhs (RHS container)
                 let container = py_rhs.bind(py);
                 let b: bool = container
-                    .call_method1("__contains__", (obj.clone().unbind(),))
+                    .call_method1("__contains__", (obj.to_owned().unbind(),))
                     .and_then(|c| c.extract())
                     .map_err(python_raised)?;
                 return Ok(Value::Bool(if matches!(op, BinOp::In) { b } else { !b }));
@@ -441,8 +723,8 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
 
 /// rhs が `PyObject` のときの二項演算。比較は左右を入れ替え、算術は反射メソッドを呼ぶ。
 pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let obj = handle.inner.bind(py);
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
         let py_lhs = ar_to_py(py, lhs).map_err(arrow_side)?;
         let result = match op {
             // 算術: 反射メソッドを直接呼び出す
@@ -483,26 +765,6 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
 // ---------------------------------------------------------------------------
 // 内部ヘルパー
 // ---------------------------------------------------------------------------
-
-/// 評価済み引数リストから PyTuple（位置引数）と PyDict（キーワード引数）を構築する。
-fn build_py_args<'py>(
-    py: Python<'py>,
-    evaled: &[(Option<String>, Value, bool)],
-) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
-    let mut positional: Vec<PyObject> = Vec::new();
-    let kwargs = PyDict::new_bound(py);
-    for (name, val, _) in evaled {
-        let py_val = ar_to_py(py, val)?;
-        match name {
-            None => positional.push(py_val),
-            Some(k) => {
-                kwargs.set_item(k, py_val)?;
-            }
-        }
-    }
-    let args_tuple = PyTuple::new_bound(py, positional);
-    Ok((args_tuple, kwargs))
-}
 
 /// Value のランタイム型名を返す（エラーメッセージ・タプルの要素型名用・[`element_type_name`]）。
 fn type_name_of(val: &Value) -> String {

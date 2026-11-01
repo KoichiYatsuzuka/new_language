@@ -255,6 +255,14 @@ impl Interpreter {
                 )),
             };
         }
+        // Python のオブジェクトのメソッドは PyO3 経由で呼ぶ。⚠ 受け手と引数を手放して渡す（写すと CPython から見える参照が
+        //   1 つ多くなり、pandas の inplace=True のメソッドが連鎖代入を見誤る・pandas_import_plan.md の D-5）
+        let obj = match obj {
+            Value::PyObject(handle) => {
+                return crate::interpreter::py_interop::call_py_method(handle, method_name, evaled)
+            }
+            other => other,
+        };
         match &obj {
             Value::List(items) => {
                 match method_name {
@@ -444,11 +452,6 @@ impl Interpreter {
                         self.call_value_evaled(other, evaled, method_name, None, 0)
                     }
                 }
-            }
-            Value::PyObject(handle) => {
-                // Python オブジェクトのメソッドを PyO3 経由で呼び出す
-                let evaled = evaled;
-                crate::interpreter::py_interop::call_py_method(handle, method_name, &evaled)
             }
             Value::FileObject(fd_rc) => {
                 let fd_rc = fd_rc.clone();

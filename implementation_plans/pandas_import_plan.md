@@ -11,7 +11,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 2 | pandas の名前がすべて `Any`（`pandas/__init__.py` の再エクスポートを定義元までたどらない）。`pd.read_csv(..)` の型が分からず、存在しない名前も通る | [1-3] |
 | 3 | `.py` の無い built-in のモジュール（`builtins`・`sys`・`itertools` など 67 本）は型の出所が無く `import[py-int]` できない（同梱のスタブは `math`・`time` だけ） | [1-4] |
 | 4 | ユーザーの site-packages（`AppData\Roaming\Python\..`）を型の探索先にしない。`import[py-int] dateutil.parser` が `cannot find its types` | [1-5] |
-| 5 | 参照の数: Arrow の束縛がいくつあっても CPython の参照は 1 つ（`Arc` で共有）。変数への `df["c"] = ..` を pandas が連鎖代入と誤判定して警告する | D-5・[1-1] |
+| ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
 | 6 | Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらない | [2-1] |
 | 7 | 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る | [2-2] |
 | 8 | 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない | [2-3] |
@@ -44,6 +44,8 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
     - ① 持ち主ごとに 1 つ ＋ 呼び出しの間に 1 つ: 変数と一時的な物がどちらも 4 になり、連鎖代入を見分けられない（6.4）。
     - ② 連鎖を CPython の補助関数の中で評価する: 補助関数の仮引数の分だけ参照が増え、`a.resize(5)` が誤りになる
       （CPython でも補助関数を通すと誤り・6.4）。
+  - **メソッド・関数の呼び出しは CPython の肩代わりの関数で行う**（2026-11-02 に決定・2.1）。C の API から呼ぶと
+    呼ばれた側のフレームが参照を 1 つ増やすので、写し方を直すだけでは呼び出しの数が CPython より常に 1 つ多い。
 
 ---
 
@@ -51,9 +53,22 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 
 ### 2.1 参照の数（D-5）
 
-- `Value::PyObject` を写すとき（今は `Arc::clone`・[core.rs](../src/interpreter/value/core.rs)）に CPython の参照を 1 つ増やし、
-  捨てるときに 1 つ減らす。束縛・欄・コレクションの要素・VM のスタックに積んだ写しが、それぞれ 1 つの参照を持つ。
+- ✅ **済**（1-1）。`Value::PyObject` を写すと CPython の参照を 1 つ増やし、捨てると 1 つ減らす
+  （`PyObjHandle` の `Clone` / `Drop`・[py_interop.rs](../src/interpreter/py_interop.rs)）。束縛・欄・コレクションの要素・
+  VM のスタックに積んだ写しが、それぞれ 1 つの参照を持つ。以前は `Arc<PyObjHandle>` で 1 つの参照を共有していた。
 - これで CPython の数え方とそろう: 変数の形は「束縛 1 ＋ スタックの写し 1」、一時的な物は「スタックの値 1」だけ。
+- **GIL**: PyO3 0.22 の `Py::clone` は GIL が無いと panic する。Arrow は格納のたびに値を写すので、そのたびに GIL を
+  取らず、増減を待ち行列に積んで、CPython へ入る唯一の入口 `with_py` で反映する（増やす分を先に）。CPython が数を
+  見られるのは入口の中だけなので、見える数は正確になる。
+- **呼び出しの肩代わり**: C の API（`PyObject_Call` など）から Python の関数を呼ぶと、呼ばれた側のフレームが参照を 1 つ
+  増やす（CPython のバイトコードは評価のスタックの参照を引き渡す）。⇒ 呼び出しは
+  `lambda __arrow_box__: __arrow_box__.pop().NAME(__arrow_box__.pop(), K=__arrow_box__.pop())` の形の小さな関数に
+  行わせ、Arrow は自分の参照をリストに入れて手放す。形（メソッド名・位置引数の数・キーワードの名前）ごとに 1 度だけ作る。
+  ソースに書けない名前（予約語のキーワードなど）のときだけ肩代わりを使わない（そのときは 1 つ多い）。
+- **添字の読み書き**は C の API（`PyObject_GetItem` / `PyObject_SetItem`）を直接呼び、受け手・鍵・値を借りるだけにする
+  （CPython の `x[k] = v` も C の入口を通るので、これで同じ数になる）。
+- 等しさとハッシュは CPython のオブジェクトの番地で決める（写しごとに包みが別物になったため）。同じ物を 2 回受け取っても
+  同じ値になる。
 - ⚠⚠ インタプリタの内部（Rust のコード）で余分に写すと、その数だけ増える。本物の連鎖代入が変数に見えて警告が消え、
   `resize` が誤りになる。⇒ 次の形の参照の数・振る舞いが CPython と同じことを**試験で守る**（ゲート）:
 
@@ -66,7 +81,11 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   | pandas: 変数への `df["c"] = ..` ／ `df["a"][0] = ..` | 警告なし ／ `ChainedAssignmentError` |
   | numpy: Arrow が持つ大きな配列 `t` の `u = t + 1` | `t` は変わらない |
 
-- 参照を増やすには GIL が要る。Arrow は格納のたびに値を写すので、速さを測ってから入れる（A/B）。
+- 試験: [examples/interop/py_int_refcount.ar](../examples/interop/py_int_refcount.ar)（ゲート対象。上の表の
+  `__setitem__`・束縛を足す形に加え、変数・一時的な物のメソッドと関数の引数を、CPython で同じ形を走らせた数と比べる）と
+  [examples/practical_examples/pd_numpy_pyplot/refcount_pandas.ar](../examples/practical_examples/pd_numpy_pyplot/refcount_pandas.ar)
+  （ゲート対象外・pandas と numpy の警告と `resize` を CPython と比べる）。どちらも直す前の exe では誤りになる。
+- 速さ（6.6）: pandas・numpy の操作はノイズの幅。1 要素を読む `arr[k]` だけ +0.08 µs（待ち行列に積む分）。
 
 ### 2.2 `let` で受けない（D-3）
 
@@ -120,7 +139,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 1-1 | 参照の数（D-5・2.1）。`Value::PyObject` の写しで CPython の参照を増減する。2.1 の表を試験にしてゲートに入れ、速さを A/B で測る | なし | 中 |
+| ~~1-1~~ | ✅ **済**（2026-11-02・2.1）参照の数（D-5）。`Value::PyObject` の写し 1 つが CPython の参照 1 つ（GIL が無ければ待ち行列で `with_py` が反映）。呼び出しは肩代わりの関数、添字は C の API で借りるだけ。等しさ・ハッシュはオブジェクトの番地。試験は `py_int_refcount.ar`（ゲート）・`refcount_pandas.ar` | なし | 中 |
 | 1-2 | Python の物を `let` / `const` / `freeze` で受けたら誤り（D-3・2.2）。静的と実行時の両方 | なし | 中 |
 | 1-3 | 再エクスポートを定義元までたどって型を付ける。`@overload` を引数で選ぶ（D-2・2.3） | なし | 大 |
 | 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
@@ -249,3 +268,17 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
   `c` にも見える）。
 - 型: `pd.read_csv` を含む `pd` のメンバーは、存在しない名前まで `Any`。`Any` の引数・変数の属性を読むと「明示のダウンキャストが要る」
   静的な誤りになる。`pd.DataFrame` の注釈なら通る。
+
+### 6.6 1-1 の前後（参照の数と速さ）
+
+| 形（呼ばれた側で見た `sys.getrefcount`） | CPython | 直す前 | 直した後 |
+|---|---|---|---|
+| 変数のメソッド ／ 一時的な物のメソッド | 3 ／ 2 | 4 ／ 4 | 3 ／ 2 |
+| 変数への `p[k] = v` ／ 一時的な物への `make()[k] = v` | 4 ／ 3 | 3 ／ 3 | 4 ／ 3 |
+| 束縛 1 つ ／ 束縛 3 つ ＋ リストの要素 2 つで関数の引数 | 3 ／ 7 | 4 ／ 4 | 3 ／ 7 |
+
+- pandas（`refcount_pandas.ar` と同じ形・`read_csv` の DataFrame でも確かめた）: 変数への代入の誤った警告が消え、連鎖代入・
+  連鎖の `inplace` の警告は CPython と同じに出る。`a.resize(5)` は通る。Windows で numpy の一時配列の再利用は起きない。
+- 速さ（6.3 の操作・直す前 ／ 後・2 回ずつ）: `df.describe()` 1,766・1,730 ／ 1,729・1,734 µs、`df["a"].sum()` 11.5・11.5 ／
+  12.3・11.7 µs、`arr * 2 + 1` 4.3・4.2 ／ 4.1・4.3 µs、`arr[k]` 0.50・0.50 ／ 0.58・0.59 µs、`df["a"].tolist()` 1,000
+  122・122 ／ 125・121 µs。`arr[k]` の +0.08 µs のほかはノイズの幅。
