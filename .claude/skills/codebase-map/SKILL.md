@@ -555,8 +555,10 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   KNOWN_BUGS_LOG.md (285)
   known_problems.md (68)
   native_object_access_plan.md (634)
+  native_slowdown_analysis.md (230)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
+  python_builtins_plan.md (596)
   python_converter_coverage.md (1090)
   PYTHON_CONVERTER_LOG.md (1204)
   PYTHON_IMPL_SYNC_PLAN.md (207)
@@ -564,11 +566,12 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   type_binding_enforcement_plan.md (1826)
   type_check_redesign.md (5118)
   VSCODE_LEXER_UNIFICATION_PLAN.md (439)
+  VSIX_update_plan.md (386)
 
 (repo root)
   ar_config.json (38)
   CLAUDE.md (170)
   README.md (317)
 ```
-_Generated 2026-11-01 by generate-codebase-map.ps1_
+_Generated 2026-11-02 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
