@@ -337,7 +337,8 @@ impl Parser {
     /// Python ソースファイルから型検査用の body を生成する。
     ///
     /// - `.pyi` ファイル: `python_converter` でベストエフォート変換 + スタブで補完
-    /// - `.py` ファイル: `extract_py_type_stubs` でシグネチャを直接抽出（`python_converter` は使わない）
+    /// - `.py` ファイル: `extract_py_type_stubs_raw` でシグネチャを直接抽出（`python_converter` は使わない）
+    /// - どちらも、再エクスポート・注釈のよそのクラス・ほかのファイルの基底をたどって宣言を足す（`link_py_types`・1-3）
     pub(crate) fn load_py_type_body(
         &mut self,
         module: &[String],
@@ -420,19 +421,24 @@ impl Parser {
                 .iter()
                 .filter_map(|s| if let Stmt::FnDef { name, .. } = s { Some(name.clone()) } else { None })
                 .collect();
-            for stub in extract_py_type_stubs(source) {
+            for stub in crate::parser::py_stub_extract::extract_py_type_stubs_raw(source) {
                 match stub {
                     Stmt::FnDef { ref name, .. } if !known.contains(name.as_str()) => converted.push(stub),
                     Stmt::ClassDef { .. } => converted.push(stub),
                     _ => {}
                 }
             }
-            // このファイルが宣言していない型の名前は `Any`（7-30・`py_unknown_types_to_any`）
+            // 再エクスポート・注釈のよそのクラス・ほかのファイルの基底をたどって宣言を足す（1-3）
+            self.link_py_types(module, abs_path, source, &mut converted);
+            // このファイル（とたどって足した宣言）に無い型の名前は `Any`（7-30・`py_unknown_types_to_any`）
             crate::parser::py_stub_extract::py_unknown_types_to_any(&mut converted);
             converted
         } else {
             // .py: 直接スタブ抽出（python_converter は複雑な構文に対応できないため使わない）
-            extract_py_type_stubs(source)
+            let mut stubs = crate::parser::py_stub_extract::extract_py_type_stubs_raw(source);
+            self.link_py_types(module, abs_path, source, &mut stubs);
+            crate::parser::py_stub_extract::py_unknown_types_to_any(&mut stubs);
+            stubs
         };
 
         self.loading.remove(abs_path);
@@ -440,4 +446,240 @@ impl Parser {
         Ok(body)
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// 型のつながり（再エクスポート・注釈のよそのクラス・ほかのファイルの基底・pandas_import_plan.md の 1-3）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠ `import[py-int]` の型スタブは 1 つのファイルの宣言しか持たなかったので、`pandas/__init__.py` の
+//   `from pandas.core.api import DataFrame`（再エクスポート）が型にならず、`pd` のメンバーがすべて `Any` だった。
+//   注釈に書いたよそのクラス（`if TYPE_CHECKING:` の中で import した `DataFrame`）も `Any` になり、ほかのファイルの基底
+//   （`DataFrame(NDFrame, ..)`）のメンバー（`head` / `describe`）には型が付かなかった。
+// ⇒ モジュールの import の表（`py_import_links`）をたどり、宣言（関数・クラス）を定義元から写す。写したクラスの注釈と基底は、
+//   **そのクラスを書いたモジュールの** import の表で引く（名前はモジュールごとに意味が違う）。
+// ⚠ よそのクラスは素の名前で登録される（外部言語のスタブの規則）ので、違うモジュールの同じ名前のクラスは区別できない。
+//   1 つの型スタブには同じ名前のクラスを 1 つだけ（先に見つけたもの）入れる。
+// ⚠ たどれない名前（型の出所の無い C 拡張・未導入の任意の依存・`from x import *`）は今どおり `Any`（D-2: 推論できない
+//   ときは `Any`）。誤りにはしない（その名前を使わないなら困らず、使えば `Any` の規則で静的に止まる）。
+
+/// 再エクスポート・基底の連鎖をたどる深さの上限（循環の保険）。
+const PY_LINK_DEPTH: u32 = 24;
+
+/// 宣言の名前（関数・クラス）。
+fn py_decl_name(st: &Stmt) -> Option<&str> {
+    match st {
+        Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// 宣言の注釈に出てくる、よそのモジュールのクラスかもしれない名前（大文字で始まる名前・`a.B` の形）。
+fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
+    const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
+    fn scan(t: &str, out: &mut Vec<String>) {
+        for w in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
+            let last = w.rsplit('.').next().unwrap_or(w);
+            if last.starts_with(|c: char| c.is_ascii_uppercase()) && !ARROW_TYPE_NAMES.contains(&w) {
+                out.push(w.to_string());
+            }
+        }
+    }
+    fn fn_sig(params: &[crate::ast::Param], ret: &Option<String>, out: &mut Vec<String>) {
+        for p in params {
+            if let Some(t) = &p.type_ann {
+                scan(t, out);
+            }
+        }
+        if let Some(t) = ret {
+            scan(t, out);
+        }
+    }
+    match st {
+        Stmt::FnDef { params, return_type, .. } => fn_sig(params, return_type, out),
+        Stmt::ClassDef { body, .. } => {
+            for m in body {
+                match m {
+                    Stmt::FnDef { params, return_type, .. } => fn_sig(params, return_type, out),
+                    Stmt::Field { type_ann, .. } => scan(type_ann, out),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+type PyStubRc = std::rc::Rc<crate::parser::py_import_links::PyRawStub>;
+
+impl Parser {
+    /// 絶対のモジュール名 `module` の型スタブの元（`.pyi` を先に）。見つからない・読めないなら `None`。
+    fn py_raw_stub(&mut self, module: &[String]) -> Option<PyStubRc> {
+        if module.is_empty() {
+            return None;
+        }
+        let key = module.join(".");
+        if let Some(s) = self.py_raw_stubs.borrow().get(&key) {
+            return s.clone();
+        }
+        let stub = self.py_raw_stub_load(module);
+        self.py_raw_stubs.borrow_mut().insert(key, stub.clone());
+        stub
+    }
+
+    /// [`Self::py_raw_stub`] の、探して読む本体（置き場に無かったときだけ呼ぶ）。
+    fn py_raw_stub_load(&mut self, module: &[String]) -> Option<PyStubRc> {
+        use crate::parser::py_import_links::{py_import_links, PyRawStub};
+        let base: PathBuf = module.iter().collect();
+        let from_dir = self.source_dir.clone();
+        let dirs = self.python_import_dirs(&from_dir, 0);
+        let mut found = None;
+        'search: for ext in ["pyi", "py"] {
+            for dir in &dirs {
+                for (p, pkg) in [(dir.join(base.with_extension(ext)), false), (dir.join(base.join(format!("__init__.{ext}"))), true)] {
+                    if crate::import_fs::exists(&p) {
+                        found = Some((p, pkg));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let (path, is_package) = found?;
+        let path = module_path::normalize(&path);
+        let source = crate::import_fs::read_to_string(&path).ok()?;
+        let filename = path.to_string_lossy().to_string();
+        let stub = std::rc::Rc::new(PyRawStub {
+            module: module.to_vec(),
+            is_package,
+            decls: crate::parser::py_stub_extract::extract_py_type_stubs_raw(&source),
+            links: py_import_links(&source, &filename),
+            outside_bases: crate::parser::py_stub_extract::py_class_outside_bases(&source),
+        });
+        Some(stub)
+    }
+
+    /// `ctx` のモジュールで名前 `name`（`a.B` の形も）が指す宣言を、再エクスポートをたどって探す。見つかれば（宣言, 宣言したモジュールの元）。
+    fn py_chase_decl(&mut self, ctx: &PyStubRc, name: &str, depth: u32) -> Option<(Stmt, PyStubRc)> {
+        use crate::parser::py_import_links::absolute_module;
+        if depth > PY_LINK_DEPTH {
+            return None;
+        }
+        // `a.B`: `a` が指すモジュールの `B`
+        if let Some((head, rest)) = name.split_once('.') {
+            let link = ctx.links.iter().find(|l| l.local == head)?.clone();
+            let mut target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+            if let Some(sub) = &link.name {
+                // `from a import b` の `b` はサブモジュール
+                target.push(sub.clone());
+            }
+            let next = self.py_raw_stub(&target)?;
+            return self.py_chase_decl(&next, rest, depth + 1);
+        }
+        if let Some(d) = ctx.decls.iter().find(|d| py_decl_name(d) == Some(name)) {
+            return Some((d.clone(), std::rc::Rc::clone(ctx)));
+        }
+        let link = ctx.links.iter().find(|l| l.local == name)?.clone();
+        // `import x as y` はモジュールそのもの（宣言ではない）
+        let orig = link.name.as_deref()?;
+        let target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+        let next = self.py_raw_stub(&target)?;
+        self.py_chase_decl(&next, orig, depth + 1)
+    }
+
+    /// クラスの宣言 `class`（`home` のモジュールで書かれたもの）に、ほかのファイルの基底のメンバーを写す。基底の注釈の名前は
+    /// 基底を書いたモジュールで引くので、`queue` に（名前, 文脈）を積む。
+    fn py_merge_outside_bases(&mut self, class: &mut Stmt, home: &PyStubRc, queue: &mut Vec<(String, PyStubRc)>, depth: u32) {
+        let Stmt::ClassDef { name, .. } = &*class else { return };
+        let Some(bases) = home.outside_bases.get(name).cloned() else { return };
+        if depth > PY_LINK_DEPTH {
+            return;
+        }
+        for b in bases {
+            // `Generic[T]` などの型引数は外して名前で引く
+            let bare = b.split('[').next().unwrap_or(&b).trim().to_string();
+            let Some((mut base_decl, base_home)) = self.py_chase_decl(home, &bare, 0) else { continue };
+            if !matches!(base_decl, Stmt::ClassDef { .. }) {
+                continue;
+            }
+            self.py_merge_outside_bases(&mut base_decl, &base_home, queue, depth + 1);
+            let mut refs = Vec::new();
+            py_type_refs(&base_decl, &mut refs);
+            queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&base_home))));
+            crate::parser::py_stub_extract::py_merge_base_members(class, &base_decl);
+        }
+    }
+
+    /// `import[py-int]` の型スタブ `body`（`module` の、まだよその型の名前を `Any` にしていない宣言）に、① 再エクスポートの宣言
+    /// ② 宣言の注釈に出てくるよそのクラス ③ クラスのほかのファイルの基底のメンバー を足す（上の節の説明・1-3）。
+    pub(crate) fn link_py_types(&mut self, module: &[String], abs_path: &Path, source: &str, body: &mut Vec<Stmt>) {
+        use crate::parser::py_import_links::{py_import_links, PyRawStub};
+        let is_package = abs_path.file_stem().is_some_and(|s| s == "__init__");
+        let me = std::rc::Rc::new(PyRawStub {
+            module: module.to_vec(),
+            is_package,
+            decls: body.clone(),
+            links: py_import_links(source, &abs_path.to_string_lossy()),
+            outside_bases: crate::parser::py_stub_extract::py_class_outside_bases(source),
+        });
+        let mut queue: Vec<(String, PyStubRc)> = Vec::new();
+        // ③ このファイルのクラスの、ほかのファイルの基底
+        for st in body.iter_mut() {
+            self.py_merge_outside_bases(st, &me, &mut queue, 0);
+        }
+        // ① 再エクスポート（このファイルが宣言せず、import で束縛した名前）
+        let mut classes: std::collections::HashSet<String> = body
+            .iter()
+            .filter_map(|s| if let Stmt::ClassDef { name, .. } = s { Some(name.clone()) } else { None })
+            .collect();
+        let declared: std::collections::HashSet<String> =
+            body.iter().filter_map(|s| py_decl_name(s).map(str::to_string)).collect();
+        for link in me.links.clone() {
+            if declared.contains(&link.local) || link.name.is_none() {
+                continue;
+            }
+            let Some((mut decl, home)) = self.py_chase_decl(&me, &link.local, 0) else { continue };
+            match &mut decl {
+                Stmt::FnDef { name, .. } => *name = link.local.clone(),
+                // ⚠ 別名で取り込んだクラスは写さない（クラスの名前が型の名前なので、別名にすると別の型になる・その名前は `Any`）
+                Stmt::ClassDef { name, .. } if *name == link.local => {
+                    if !classes.insert(name.clone()) {
+                        continue;
+                    }
+                }
+                _ => continue,
+            }
+            self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
+            let mut refs = Vec::new();
+            py_type_refs(&decl, &mut refs);
+            queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&home))));
+            body.push(decl);
+        }
+        // ② このファイルの宣言の注釈に出てくる名前
+        for st in me.decls.iter() {
+            let mut refs = Vec::new();
+            py_type_refs(st, &mut refs);
+            queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&me))));
+        }
+        // 注釈のよそのクラスを、たどれる限り足す（足したクラスの注釈も、それを書いたモジュールで引く）
+        let mut tried: std::collections::HashSet<(String, Vec<String>)> = std::collections::HashSet::new();
+        while let Some((name, ctx)) = queue.pop() {
+            let short = name.rsplit('.').next().unwrap_or(&name).to_string();
+            if classes.contains(&short) || !tried.insert((name.clone(), ctx.module.clone())) {
+                continue;
+            }
+            let Some((mut decl, home)) = self.py_chase_decl(&ctx, &name, 0) else { continue };
+            let cname = match &decl {
+                Stmt::ClassDef { name, .. } => name.clone(),
+                _ => continue,
+            };
+            if !classes.insert(cname) {
+                continue;
+            }
+            self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
+            let mut refs = Vec::new();
+            py_type_refs(&decl, &mut refs);
+            queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&home))));
+            body.push(decl);
+        }
+    }
 }

@@ -778,6 +778,10 @@ impl TypeChecker {
                             self.ffi_unsupported.insert(spelled.clone(), (depth, spelled, reason, what));
                         }
                     }
+                    // `pd.read_csv(..)` で `@overload` の形を選ぶために、別名とモジュールを控える（1-3）
+                    if matches!(lang.as_str(), "py" | "py-int") {
+                        self.py_aliases.insert(b.name.clone(), b.module.join("."));
+                    }
                     self.declare(b.name.clone(), ns_ty, false);
                 }
             }

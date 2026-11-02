@@ -102,6 +102,11 @@ pub struct TypeChecker {
     /// `Stmt::Import` / `Stmt::FromImport` を検査するたびに入れる（CPython 準拠・2026-10-02）。
     /// パッケージの名前空間の型（`namespace_type`）を組み立てるのに使う。
     module_member_cache: HashMap<String, HashMap<String, InferredType>>,
+    /// Python のモジュールの関数の `@overload` の形（`モジュール.関数` → 書いた順の形・pandas_import_plan.md の 1-3）。
+    /// `m.f(..)` の呼び出しで、CPython の型の検査器と同じく最初に当てはまる形を選ぶ（`select_py_overload`）。
+    py_overloads: HashMap<String, Vec<PyOverload>>,
+    /// `import[py-int] m as alias` の別名 → モジュールの名前（`py_overloads` を引くため）。
+    py_aliases: HashMap<String, String>,
     /// import したモジュールの**グローバル変数の型と属性**（モジュールの名前 `a.b` → 名前 → (型, 属性)）。
     /// モジュールの本体を検査したときのスコープから取る（`annotate_module_body`）ので、注釈の無い変数も
     /// 推論した型が付く。`module_member_types` が名前空間の型と属性に使う。
@@ -303,6 +308,8 @@ impl TypeChecker {
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
             module_member_cache: HashMap::new(),
+            py_overloads: HashMap::new(),
+            py_aliases: HashMap::new(),
             module_globals: HashMap::new(),
             module_attr_cache: HashMap::new(),
             module_children: {
@@ -354,7 +361,7 @@ impl TypeChecker {
         })
     }
 
-    /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。
+        /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。
     // バイナリの実行経路は `check_program` を使うため（#88 で入口を 1 本化した）、
     // 現在この最小版はテストからのみ呼ばれる。
     #[allow(dead_code)]
@@ -514,3 +521,21 @@ impl TypeChecker {
     }
 }
 
+/// Python の関数の `@overload` の形 1 つ（`TypeChecker::py_overloads`・1-3）。
+#[derive(Debug, Clone)]
+pub(crate) struct PyOverload {
+    /// 仮引数（`**kwargs` / `*args` を除く・書いた順）: (名前, 既定値があるか)。
+    pub(crate) params: Vec<(String, bool)>,
+    /// `**kwargs` を持つ（知らない名前のキーワード引数を受ける）。
+    pub(crate) kwargs: bool,
+    /// `*args` を持つ（余った位置引数を受ける）。
+    pub(crate) varargs: bool,
+    /// `Literal[X]` の引数（名前, 値の綴り）。渡すなら同じ値のリテラルでなければ当てはまらない。
+    pub(crate) literals: Vec<(String, String)>,
+    /// `None` と注釈した引数。渡すなら `None` でなければ当てはまらない。
+    pub(crate) none_params: Vec<String>,
+    /// 引数の型の検査に使う関数型の仮引数（可変長を持つ形は `None`・`collect_module_types` と同じ規則）。
+    pub(crate) fn_params: Option<Vec<types::FnTypeParam>>,
+    /// 戻り値の型。
+    pub(crate) ret: InferredType,
+}

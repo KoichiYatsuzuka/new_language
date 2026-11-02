@@ -40,12 +40,34 @@
 /// **解決を試みたが外部言語なので判らない**は `Any`。ここは後者。
 /// - 複数行シグネチャ（ブラケット深さを追跡）に対応
 /// - `_` で始まるプライベート関数は除外
+///
+/// ⚠ テストだけが使う（1 つのファイルだけの型）。`import[py-int]` の型スタブは、たどって宣言を足してから `Any` にする
+///   （[`extract_py_type_stubs_raw`]・`py_modules.rs` の `link_py_types`・pandas_import_plan.md の 1-3）。
+#[cfg(test)]
 pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
+    let mut stmts = extract_py_type_stubs_raw(source);
+    py_unknown_types_to_any(&mut stmts);
+    stmts
+}
+
+/// [`extract_py_type_stubs`] の、このファイルが宣言していない型の名前を `Any` にする**前**の宣言（pandas_import_plan.md の 1-3）。
+///
+/// `import[py-int]` の型スタブは、再エクスポートと注釈のよそのクラスをたどって宣言を足してから `Any` にする
+/// （`py_modules.rs` の `link_py_types`）。先に `Any` にすると、よそのモジュールのクラスの名前が消える。
+pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
     let lines: Vec<&str> = source.lines().collect();
     let mut stmts: Vec<crate::ast::Stmt> = Vec::new();
     let mut i = 0usize;
     // 直前にトップレベルのデコレータ（`@dataclass` など）があったか
     let mut decorated = false;
+    // 直前のデコレータに `@overload` があったか（pandas_import_plan.md の 1-3）。
+    // ⚠ `@overload` の宣言は型の検査器向けの別の形で、実行時に呼ばれるのは本体（`@overload` の無い同じ名前の `def`）だけ。
+    //   各形は、その名前の本体の宣言の**本体の中**に入れ子で持たせる（[`PY_OVERLOAD_MARK`]）。型検査は `m.f(..)` の
+    //   呼び出しで、CPython の型の検査器と同じく最初に当てはまる形を選ぶ（`read_csv(path)` は `DataFrame`）。
+    //   モジュールの宣言として並べないのは、同じ名前の関数を増やすと Arrow の多重定義の解決（直接の呼び出し）に乗るため。
+    let mut overloaded = false;
+    // 本体を待っている `@overload` の各形（名前ごと・書いた順）
+    let mut variants: Vec<(String, Vec<crate::ast::Stmt>)> = Vec::new();
 
     while i < lines.len() {
         let line = lines[i];
@@ -65,6 +87,10 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         }
         if trimmed.starts_with('@') {
             decorated = true;
+            let deco = trimmed[1..].split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or("");
+            if deco == "overload" || deco.ends_with(".overload") {
+                overloaded = true;
+            }
             i += 1;
             continue;
         }
@@ -75,6 +101,7 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
             let (stmt, next) = py_class_stub(&lines, i, decorated);
             stmts.push(stmt);
             decorated = false;
+            overloaded = false;
             i = next;
             continue;
         }
@@ -82,6 +109,7 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         // 関数定義（トップレベルのみ対象）
         if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
             decorated = false;
+            let is_variant = std::mem::replace(&mut overloaded, false);
             if let Some((name, ret_ann, params_text, body_line, func_indent)) =
                 py_parse_func_def(&lines, i)
             {
@@ -92,7 +120,29 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
                         None => "Any".to_string(),
                     };
                     let params = py_params(&params_text, false).unwrap_or_else(py_open_params);
-                    stmts.push(py_function(&name, params, arrow_ret));
+                    let mut f = py_function(&name, params, arrow_ret);
+                    if is_variant {
+                        // `@overload` の形: 印と、`Literal[..]` の引数の値を付けて、本体を待つ
+                        if let crate::ast::Stmt::FnDef { decorators, .. } = &mut f {
+                            decorators.push(crate::ast::Expr::Str(PY_OVERLOAD_MARK.into()));
+                            for (pname, value) in py_literal_params(&params_text) {
+                                decorators.push(crate::ast::Expr::Str(format!("{PY_LITERAL_MARK}{pname}={value}").into()));
+                            }
+                        }
+                        match variants.iter_mut().find(|(n, _)| *n == name) {
+                            Some((_, vs)) => vs.push(f),
+                            None => variants.push((name.clone(), vec![f])),
+                        }
+                    } else {
+                        // 本体: 待っていた形を本体の中に入れる
+                        if let Some(k) = variants.iter().position(|(n, _)| *n == name) {
+                            let (_, vs) = variants.remove(k);
+                            if let crate::ast::Stmt::FnDef { body, .. } = &mut f {
+                                *body = vs;
+                            }
+                        }
+                        stmts.push(f);
+                    }
                 }
                 i = py_block_end(&lines, body_line, func_indent);
                 continue;
@@ -100,11 +150,99 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
         }
 
         decorated = false;
+        overloaded = false;
         i += 1;
     }
 
-    py_unknown_types_to_any(&mut stmts);
+    // 本体の無い `@overload`（`.pyi` は形だけを書く）: 最後の形を本体の代わりにし、戻り値はすべての形の戻り値を合わせたもの
+    for (_, vs) in variants {
+        let Some(crate::ast::Stmt::FnDef { name, params, .. }) = vs.last().cloned() else { continue };
+        let rets: Vec<String> = vs
+            .iter()
+            .filter_map(|v| if let crate::ast::Stmt::FnDef { return_type, .. } = v { return_type.clone() } else { None })
+            .collect();
+        let mut f = py_function(&name, params, union_of(rets));
+        if let crate::ast::Stmt::FnDef { body, .. } = &mut f {
+            *body = vs;
+        }
+        stmts.push(f);
+    }
+
     stmts
+}
+
+/// `@overload` の形に付ける印（本体の宣言の本体の中の入れ子の宣言のデコレータ）。型検査が呼び出しで形を選ぶ（1-3）。
+pub(crate) const PY_OVERLOAD_MARK: &str = "py-overload";
+
+/// `@overload` の形の `Literal[..]` の引数の印（`py-literal:iterator=True`）。値の 1 つだけの `Literal` だけを書く。
+pub(crate) const PY_LITERAL_MARK: &str = "py-literal:";
+
+/// 引数の並び（`def f(` と `)` の間）から、`Literal[X]`（値が 1 つ）と注釈した引数の（名前, 値の綴り）。
+fn py_literal_params(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in split_top_level(text, ',') {
+        let decl = split_top_level(part.trim(), '=').first().map(|d| d.trim().to_string()).unwrap_or_default();
+        let Some((name, ann)) = decl.split_once(':') else { continue };
+        let ann = ann.trim();
+        let inner = ann
+            .strip_prefix("Literal[")
+            .or_else(|| ann.strip_prefix("typing.Literal["))
+            .and_then(|r| r.strip_suffix(']'));
+        if let Some(inner) = inner {
+            let values = split_top_level(inner, ',');
+            if values.len() == 1 {
+                out.push((name.trim().to_string(), values[0].trim().to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// トップレベルのクラスのうち、**このファイルに無い基底**を持つものの、その基底の名前（書いた綴り・`indexing.IndexingMixin` など）。
+/// `py_class_stub` はこの基底のメンバーを知らないので、クラスを開いておく（メンバーを検査しない）。`import[py-int]` の型スタブは
+/// これをたどって基底のメンバーを写す（`py_modules.rs` の `link_py_types`・pandas_import_plan.md の 1-3）。
+pub(crate) fn py_class_outside_bases(source: &str) -> std::collections::HashMap<String, Vec<String>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = std::collections::HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        if py_line_indent(line) != 0 {
+            continue;
+        }
+        let header = py_strip_comment(line).trim();
+        let Some(name) = py_parse_class_name(header) else { continue };
+        let bases: Vec<String> = match (header.find('('), header.rfind(')')) {
+            (Some(o), Some(c)) if o < c => split_top_level(&header[o + 1..c], ',')
+                .into_iter()
+                .filter(|b| !b.is_empty() && *b != "object" && !b.contains('='))
+                .filter(|b| !matches!(py_find_class(&lines, b), Some(j) if j != i))
+                .map(|b| b.to_string())
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !bases.is_empty() {
+            out.insert(name, bases);
+        }
+    }
+    out
+}
+
+/// クラスの宣言 `class` に、ほかのファイルの基底 `base` のメンバーを写す（派生に同じ名前があれば派生が勝つ・`py_class_stub` が
+/// 同じファイルの基底にしているのと同じ規則）。⚠ `__init__` は写さない（派生は必ず `__init__` を持つ。書いていなければ
+/// `py_class_stub` が引数を問わないものを置いている）。
+pub(crate) fn py_merge_base_members(class: &mut crate::ast::Stmt, base: &crate::ast::Stmt) {
+    use crate::ast::Stmt;
+    let (Stmt::ClassDef { body, .. }, Stmt::ClassDef { body: base_body, .. }) = (class, base) else { return };
+    let member = |s: &Stmt| match s {
+        Stmt::FnDef { name, .. } | Stmt::Field { name, .. } => Some(name.clone()),
+        _ => None,
+    };
+    let have: std::collections::HashSet<String> = body.iter().filter_map(member).collect();
+    let inherited: Vec<Stmt> = base_body
+        .iter()
+        .filter(|s| member(s).is_some_and(|n| n != "__init__" && !have.contains(&n)))
+        .cloned()
+        .collect();
+    body.splice(0..0, inherited);
 }
 
 /// 型スタブの型の中で、**このファイルがクラスとして宣言していない大文字始まりの名前**を `Any` にする（7-30）。
@@ -133,11 +271,28 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
     for st in stmts.iter_mut() {
         match st {
             Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
-            Stmt::ClassDef { body, .. } => {
+            Stmt::ClassDef { name, body, .. } => {
+                // `typing.Self` はこのクラス（基底から写したメンバーなら写した先・PEP 673）。⚠ 以前は `Self` のまま残り、
+                //   `df.head()` の型が中身の無い `Self` になっていた（pandas_import_plan.md の 1-3）。
+                let this = name.clone();
+                let self_to_class = |t: &mut String| *t = py_replace_type_word(t, "Self", &this);
                 for m in body.iter_mut() {
                     match m {
-                        Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
-                        Stmt::Field { type_ann, .. } => fix(type_ann),
+                        Stmt::FnDef { params, return_type, .. } => {
+                            for p in params.iter_mut() {
+                                if let Some(t) = p.type_ann.as_mut() {
+                                    self_to_class(t);
+                                }
+                            }
+                            if let Some(t) = return_type.as_mut() {
+                                self_to_class(t);
+                            }
+                            fix_fn(params, return_type)
+                        }
+                        Stmt::Field { type_ann, .. } => {
+                            self_to_class(type_ann);
+                            fix(type_ann)
+                        }
                         _ => {}
                     }
                 }
@@ -146,6 +301,26 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
             _ => {}
         }
     }
+}
+
+/// 型の字句 `ty` の中の名前 `from`（語として一致するものだけ）を `to` にする。
+fn py_replace_type_word(ty: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        out.push_str(if word == from { to } else { word.as_str() });
+        word.clear();
+    };
+    for c in ty.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
 /// 型の字句の中の、知らない大文字始まりの名前を `Any` にする（`py_unknown_types_to_any`）。Arrow の型の構成子
@@ -607,10 +782,12 @@ fn py_parse_func_def(
     if name.is_empty() { return None; }
 
     // 複数行シグネチャを1行に結合（括弧が閉じるまで）
+    // ⚠ 以前は 40 行で打ち切っていたので、引数の多い関数（pandas の `read_csv` は約 60 行）が閉じ括弧に届かず、宣言ごと
+    //   落ちていた（`pd.read_csv` が `Any`・pandas_import_plan.md の 1-3）。上限は壊れたソースで最後まで読み続けないための保険。
     let mut depth = 0i32;
     let mut combined = String::new();
     let mut body_line = start + 1;
-    for (j, &line) in lines[start..].iter().enumerate().take(40) {
+    for (j, &line) in lines[start..].iter().enumerate().take(1000) {
         let raw = py_strip_comment(line);
         if j > 0 { combined.push(' '); }
         combined.push_str(raw.trim());
@@ -899,3 +1076,4 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
         assert_eq!(py_type_to_arrow("Person"), "Person");
     }
 }
+

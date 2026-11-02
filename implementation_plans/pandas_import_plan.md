@@ -8,7 +8,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | # | 要因 | 対処 |
 |---|---|---|
 | 1 | Python のソースを変換して動かす `import[py]` では pandas を読めない（C 拡張 42 本・numpy・標準ライブラリ・変換器が拒む構文）。直しても Arrow 側に Python 専用の特例が増え続ける | D-1・[3] |
-| 2 | pandas の名前がすべて `Any`（`pandas/__init__.py` の再エクスポートを定義元までたどらない）。`pd.read_csv(..)` の型が分からず、存在しない名前も通る | [1-3] |
+| ~~2~~ | ✅ pandas の名前がすべて `Any` だった件（直した: 1-3。`pd.DataFrame` はクラス・`pd.read_csv(path)` は `DataFrame`・`df.head()` は `DataFrame`）。⚠ 存在しない名前は今も `Any`（Python のモジュールは実行時に名前が増えうる） | [1-3] |
 | 3 | `.py` の無い built-in のモジュール（`builtins`・`sys`・`itertools` など 67 本）は型の出所が無く `import[py-int]` できない（同梱のスタブは `math`・`time` だけ） | [1-4] |
 | ~~4~~ | ✅ ユーザーの site-packages を型の探索先にしなかった件（直した: 1-5） | [1-5] |
 | ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
@@ -108,6 +108,9 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   - ⚠ 今はたどらないので、`pd` のメンバーは存在しない名前まで全部 `Any` になる（6.5）。
 - `@overload` のある関数（`read_csv` は `iterator` / `chunksize` で戻り値が `DataFrame` か `TextFileReader` に変わる）は、
   引数の型・リテラルで選ぶ。選べなければ Union。
+  - ✅ 1-3 で実装: 形は本体の宣言の本体の中に入れ子で持たせ（モジュールの関数を増やさない）、型検査は `m.f(..)` の呼び出しで
+    最初に当てはまる形を選ぶ（位置引数の数・キーワードの名前・省略できない引数・`Literal[X]` の値・`None`）。⚠ `from m import f`
+    して `f(..)` と直接呼ぶ形はまだ選ばない（本体の宣言の型）。
 - built-in のモジュールのスタブは Arrow に同梱する（`src/py_stubs.rs` に足す。CPython の `inspect.signature` /
   `__text_signature__` から作れる部分は生成する）。
 
@@ -186,7 +189,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 |---|---|---|---|
 | ~~1-1~~ | ✅ **済**（2026-11-02・2.1）参照の数（D-5）。`Value::PyObject` の写し 1 つが CPython の参照 1 つ（GIL が無ければ待ち行列で `with_py` が反映）。呼び出しは肩代わりの関数、添字は C の API で借りるだけ。等しさ・ハッシュはオブジェクトの番地。試験は `py_int_refcount.ar`（ゲート）・`refcount_pandas.ar` | なし | 中 |
 | ~~1-2~~ | ✅ **済**（2026-11-02・2.2）Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3）。静的: CPython のクラスのインスタンス（とそれを持つ list など）なら `ImmutablePythonObject`（`TypeRegistry::cpython_class_names`）。実行時: `bind_copy_held` の `CopyFreeze`（コレクションの中も見る）と引数の束縛（値そのものだけ・前置きの生成器を除く）で `TypeError`。例題は `py_int_mut_binding.ar`・`_error`・`_runtime_error`。既存の例題 8 本を `mut` に直した。暗黙の束縛は 4 節の 6 | なし | 中 |
-| 1-3 | 再エクスポートを定義元までたどって型を付ける。`@overload` を引数で選ぶ（D-2・2.3） | なし | 大 |
+| ~~1-3~~ | ✅ **済**（2026-11-03・2.3）import をたどって型を付ける: ① 再エクスポート ② 注釈のよそのクラス（`TYPE_CHECKING` の中も） ③ ほかのファイルの基底のメンバー（`Self` は派生）④ `@overload` は呼び出しで最初に当てはまる形を選ぶ。import の表は行単位で読む（`py_import_links`）。`x is m.C` は CPython の `isinstance`。ついでに: 引数の多い関数（約 40 行を超えるシグネチャ）が型スタブから落ちていた件を直した。例題は `py_int_links.ar`・`_error`。速さは 6.7 | なし | 大 |
 | 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
 | ~~1-5~~ | ✅ **済**（2026-11-03）ユーザーの site-packages を型の探索先に足した（`import_fs::python_lib_dirs` と拡張の `queryPythonDirs` を同じ問い合わせに・CPython の `sys.path` と同じく、使えるときだけ標準ライブラリの後・site-packages の前）。`import[py-int] dateutil.parser` が読める。試験は `import_fs` の単体テスト | なし | 小 |
 
@@ -332,3 +335,15 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 - 速さ（6.3 の操作・直す前 ／ 後・2 回ずつ）: `df.describe()` 1,766・1,730 ／ 1,729・1,734 µs、`df["a"].sum()` 11.5・11.5 ／
   12.3・11.7 µs、`arr * 2 + 1` 4.3・4.2 ／ 4.1・4.3 µs、`arr[k]` 0.50・0.50 ／ 0.58・0.59 µs、`df["a"].tolist()` 1,000
   122・122 ／ 125・121 µs。`arr[k]` の +0.08 µs のほかはノイズの幅。
+
+### 6.7 1-3 の速さ（`AR_CHECK_ONLY=1` で型検査まで・3 回）
+
+| | 直す前（1-5 の exe） | 直した後 |
+|---|---|---|
+| `import[py-int] pandas as pd` だけ | 80〜102 ms | 311〜572 ms |
+| `import[py-int] numpy as np` だけ | 106〜152 ms | 176〜185 ms |
+
+- たどる処理（`link_py_types`）の内訳（pandas・直す途中で測った）: 型スタブの抽出 47 ms・import の表 11 ms・たどって写す残り
+  約 130 ms（142 ファイル）。
+  - ⚠ 最初は import の表を Python の構文木で作り（357 ms）、名前をたどるたびにファイルを探し直していた（約 720 ms・合計
+    1,128 ms）。表を行単位で読み、モジュールの名前で引く置き場（`Parser::py_raw_stubs`）を作って今の値になった。

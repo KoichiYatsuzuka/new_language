@@ -387,10 +387,19 @@ impl Interpreter {
                     Some((q, b)) => (Some(q), b),
                     None => (None, type_name),
                 };
-                let module = qualifier.and_then(|q| match self.dotted_value(q) {
-                    Some(Value::Namespace(ns)) => Some(ns.name.clone()),
+                let ns = qualifier.and_then(|q| match self.dotted_value(q) {
+                    Some(Value::Namespace(ns)) => Some(ns),
                     _ => None,
                 });
+                // 名前空間の名前が CPython のクラスを指すなら、CPython の `isinstance` で判定する（pandas_import_plan.md の
+                // 1-3）。⚠ 名前と `__module__` の照合だと、再エクスポートしたクラス（`pk.Frame` の `__module__` は定義元の
+                // `pk.frames`）が偽になっていた
+                if let Some(Value::PyObject(cls)) = ns.as_ref().and_then(|ns| self.namespace_member(ns, bare)) {
+                    if let Some(r) = crate::interpreter::py_interop::py_isinstance(h, &cls) {
+                        return r;
+                    }
+                }
+                let module = ns.map(|ns| ns.name.clone());
                 crate::interpreter::py_interop::py_class_mro(h)
                     .iter()
                     .any(|(m, n)| n == bare && module.as_deref().is_none_or(|want| want == m))

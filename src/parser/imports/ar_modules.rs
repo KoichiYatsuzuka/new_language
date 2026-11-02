@@ -88,6 +88,7 @@ impl Parser {
         sub.loading = self.loading.clone();
         sub.root_dir = self.root_dir.clone();
         sub.module_names = std::rc::Rc::clone(&self.module_names);
+        sub.py_raw_stubs = std::rc::Rc::clone(&self.py_raw_stubs);
         // node-id はプログラム全体で一意にする（#16・C1）。共有しないとモジュール間で
         // 衝突し、消費側が別モジュールの注釈を読む（FFI 境界検査が誤検知する）。
         sub.node_counter = self.node_counter.clone();

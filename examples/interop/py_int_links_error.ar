@@ -1,0 +1,13 @@
+# import[py-int] の、import をたどって付けた型で静的に誤りを見つける（pandas_import_plan.md の D-2・タスク 1-3）
+#
+# 正しい形は py_int_links.ar。以前はどれも型が `Any` で、実行するまで分からなかった:
+#   - 再エクスポートしたクラスのメソッドの戻り値（`width` は `int`）
+#   - ほかのファイルの基底のメソッドの引数（`count` は引数を取らない）
+#   - `@overload` で選んだ形の戻り値（`lazy` を渡さない `read` は `Frame` で、`Reader` ではない）
+
+import[py-int] py_int_links_pkg as pk
+
+mut f: pk.Frame = pk.Frame(3)
+let s: str = f.width()                  # int を str で受ける
+let n: int = f.count(1)                 # 引数を取らないメソッドに 1 つ渡す
+mut r: pk.Reader = pk.read("a.csv")     # lazy を渡さないと Frame

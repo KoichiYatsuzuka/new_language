@@ -213,6 +213,17 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
     }
 }
 
+/// `isinstance(obj, cls)`。`cls` がクラスでなければ（`isinstance` が `TypeError`）`None`。
+pub fn py_isinstance(obj: &PyObjHandle, cls: &PyObjHandle) -> Option<bool> {
+    with_py(|py| {
+        let cls = cls.bind(py);
+        if !cls.is_instance_of::<pyo3::types::PyType>() {
+            return None;
+        }
+        obj.bind(py).is_instance(&cls).ok()
+    })
+}
+
 /// Python のオブジェクトのクラスと基底（MRO の順）の `(__module__, __name__)`（`is` / `mustbe` の判定・ffi_value_exchange_plan.md
 /// 7-27）。読めない項目は飛ばす（`__module__` の無いクラスは空文字列）。
 pub fn py_class_mro(h: &PyObjHandle) -> Vec<(String, String)> {

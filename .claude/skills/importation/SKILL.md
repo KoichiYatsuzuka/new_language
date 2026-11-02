@@ -315,6 +315,16 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
 
+**Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
+① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
+import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of
+the module that wrote the annotation, `if TYPE_CHECKING:` imports included) and ③ the members of base classes in other files
+(`py_class_outside_bases` / `py_merge_base_members`). Only then do unknown type names become `Any`. `-> Self` becomes the class.
+`@overload` variants are nested in the implementation's `FnDef` body (marked `py_stub_extract::PY_OVERLOAD_MARK`); the type
+checker (`select_py_overload`) picks the first variant the call matches for `m.f(..)`. Module lookups are cached by module
+name (`Parser::py_raw_stubs`, shared with sub-parsers). ⚠ Foreign classes are registered by their bare name, so one stub holds
+one class per name.
+
 Typing rule (ffi_value_exchange_plan.md 7-27 / 7-30, the user's decision): only annotated members, `.pyi` stubs and the
 constructor's result get types; everything else is `Any`. Top-level functions are `Stmt::FnDef` stubs with parsed
 parameters (`py_params`; a `float` parameter accepts `int`, `py_param_type`; `*args` / `**kwargs` → arity unchecked).

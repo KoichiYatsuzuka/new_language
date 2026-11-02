@@ -528,6 +528,15 @@ let mean = np.mean(arr)
   （7-31。`__init__` を書かない派生は同じファイルの基底のものを受け継ぎ、基底が分からないクラスは引数を問わない）。
   `x is pc.Counter` / `x mustbe pc.Counter` は Python の `isinstance` と同じく基底も見る
   （`examples/interop/py_int_classes.ar`）。⚠ 以前はコンストラクタの値が `Any` で、属性もメソッドも使えなかった
+- **import をたどって型を付ける**（`implementation_plans/pandas_import_plan.md` の 1-3）: モジュールが import した名前
+  （`from pandas.core.api import DataFrame` のような**再エクスポート**）は定義元の宣言の型、注釈に書いたよそのモジュールの
+  クラス（`if TYPE_CHECKING:` の中で import した名前も）はそのクラスの型、ほかのファイルの基底のメンバーは派生のメンバー
+  として型が付く。`-> Self` はメソッドを持つクラス（基底から受け継いだものは派生）。`@overload` は、`m.f(..)` の呼び出しで
+  CPython の型の検査器と同じく最初に当てはまる形を選ぶ（位置引数の数・キーワードの名前・省略できない引数・`Literal[X]` の値・
+  `None`。`pd.read_csv(path)` は `DataFrame`、`chunksize=..` を渡すと `TextFileReader`）。たどれない名前（型の出所の無い
+  C 拡張・`from x import *`）は `Any`。`x is m.C` は、`m.C` が CPython のクラスなら CPython の `isinstance` で判定する
+  （再エクスポートしたクラスも真）（`examples/interop/py_int_links.ar`・`py_int_links_error.ar`）。⚠ 以前は 1 つのファイルの
+  宣言しか読まず、pandas の名前がすべて `Any` だった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

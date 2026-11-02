@@ -356,6 +356,10 @@ impl TypeChecker {
                 }
             }
         }
+        // Python の関数の `@overload`（`pd.read_csv(path)` は `DataFrame`・1-3）
+        if let Some(ret) = self.select_py_overload(func, args, &arg_data) {
+            return ret;
+        }
         let direct_fn_call = matches!(func, Expr::Ident { .. })
             && func_name
                 .as_deref()
@@ -1262,6 +1266,90 @@ impl TypeChecker {
     /// - 実引数に判定材料の無い型（`Unresolved` / `Any`）がある
     ///
     /// `implicit_self` はメソッドのとき `true`（`params[0]` が `self` なので 1 つずらす）。
+    /// `m.f(..)`（`m` は Python のモジュールの別名）の `f` が `@overload` の形を持つなら、CPython の型の検査器と同じく
+    /// **最初に当てはまる形**を選び、その形で引数を検査して戻り値の型を返す（pandas_import_plan.md の 1-3）。
+    /// どの形にも当てはまらなければ `None`（本体の宣言の型で従来どおり検査する）。
+    ///
+    /// 当てはまるか: 位置引数の数・キーワードの名前・省略できない引数が揃っているか・`Literal[X]` の引数に同じ値のリテラル・
+    /// `None` の引数に `None` を渡したか。⚠ 型の照合は選んだ後に行う（形を選ぶのは、渡した引数の形と値だけ）。
+    /// ⚠ `*xs` / `**d` を渡すと形を決められないので選ばない（本体の宣言の型で検査する）。
+    fn select_py_overload(
+        &mut self,
+        func: &Expr,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
+        let Expr::Attr { object, attr, .. } = func else { return None };
+        let Expr::Ident { name, .. } = object.as_ref() else { return None };
+        if !matches!(self.lookup(name).map(|v| &v.ty), Some(InferredType::PyNamespace(_) | InferredType::Namespace(..))) {
+            return None;
+        }
+        let module = self.py_aliases.get(name)?;
+        let variants = self.py_overloads.get(&format!("{module}.{attr}"))?.clone();
+        let chosen = variants.into_iter().find(|v| Self::py_overload_matches(v, args))?;
+        if let Some(fn_params) = &chosen.fn_params {
+            self.check_fn_type_call(&format!("{name}.{attr}"), args, arg_data, fn_params);
+        }
+        Some(chosen.ret)
+    }
+
+    /// 呼び出し `args` が `@overload` の形 `v` に当てはまるか（[`Self::select_py_overload`]）。
+    fn py_overload_matches(v: &crate::type_check::PyOverload, args: &[CallArg]) -> bool {
+        let mut supplied: std::collections::HashMap<&str, &Expr> = std::collections::HashMap::new();
+        let mut positional = 0usize;
+        for a in args {
+            match a {
+                CallArg::Positional(e) => {
+                    match v.params.get(positional) {
+                        Some((p, _)) => {
+                            supplied.insert(p.as_str(), e);
+                        }
+                        None if v.varargs => {}
+                        None => return false,
+                    }
+                    positional += 1;
+                }
+                CallArg::Keyword { name, value } => {
+                    if !v.kwargs && !v.params.iter().any(|(p, _)| p == name) {
+                        return false;
+                    }
+                    supplied.insert(name.as_str(), value);
+                }
+                // `*xs` / `**d` / 可変長の塊は形を決められない
+                _ => return false,
+            }
+        }
+        if v.params.iter().any(|(p, has_default)| !has_default && !supplied.contains_key(p.as_str())) {
+            return false;
+        }
+        for (p, lit) in &v.literals {
+            if let Some(e) = supplied.get(p.as_str()) {
+                let same = match e {
+                    Expr::Bool(b) => lit == if *b { "True" } else { "False" },
+                    Expr::None => lit == "None",
+                    Expr::Int(n) => *lit == n.to_string(),
+                    Expr::Str(s) => {
+                        let t = lit.trim_matches(|c| c == '"' || c == '\'');
+                        t == &**s && lit.len() >= 2
+                    }
+                    // リテラルでない値は `Literal[X]` に当てはまらない（CPython の型の検査器と同じ）
+                    _ => false,
+                };
+                if !same {
+                    return false;
+                }
+            }
+        }
+        for p in &v.none_params {
+            if let Some(e) = supplied.get(p.as_str()) {
+                if !matches!(e, Expr::None) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     fn narrow_overloads_by_arg_types(
         &mut self,
         func_name: &str,

@@ -126,6 +126,7 @@ $knownDiff = @{
     'py_int_refcount'                = 'Rust: CPython から見える参照の数が CPython で同じ形を書いたときと同じ（Arrow の写し 1 つ = 参照 1 つ・呼び出しは肩代わりの関数・pandas_import_plan.md の D-5 / 1-1）。py: py-int のクラスのインスタンスのメソッドを呼べず AttributeError'
     'py_int_mut_binding'             = 'Rust: Python のオブジェクトを mut で受ける（pandas_import_plan.md の D-3 / 1-2）。py: 引数の型を Python のモジュールで修飾した形（`mut p: rc.Probe`）を構文解析できず ParseError'
     'py_int_mut_binding_runtime_error' = 'Rust: 型が Any の mut でない引数に Python のオブジェクトを渡すと実行時の TypeError（D-3 / 1-2）。py: この規則が無く関数の本体まで走る'
+    'py_int_links'                   = 'Rust: py-int の型を Python のモジュールの import をたどって付ける（再エクスポート・注釈のよそのクラス・ほかのファイルの基底・@overload・pandas_import_plan.md の 1-3）。py: 型の注釈をモジュールで修飾した形（`mut f: pk.Frame`）を構文解析できず ParseError'
     'py_int_foreign_error'           = 'Rust: py-int で Python が投げた例外は ForeignError（ffi_value_exchange_plan.md 7-24）。py: 関数の例外は揃えたが、Python のオブジェクトのメソッド呼び出しに対応していない'
     'py_int_exception_error'         = 'Rust: py-int で Python が投げた例外を捕まえないと ForeignError（7-24）。py: 捕まえない例外を stdout に Unhandled exception: … と出す（実行時エラーの出力形式の差）'
     'cs_dll_array_arg_error'         = 'Rust: cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと StaticTypeError（5-5）。py: 型スタブの型が違うので検査されず呼んで C# 側の例外'

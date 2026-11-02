@@ -155,6 +155,9 @@ impl TypeChecker {
     ) -> std::collections::HashMap<String, InferredType> {
         let prev = self.registry.enter_module_scope(&module.join("."));
         let mut raw = self.collect_module_types(lang, body);
+        if matches!(lang, "py" | "py-int") {
+            self.collect_py_overloads(lang, module, body);
+        }
         // Arrow のモジュールは、関数の型をレジストリのシグネチャ（修飾名の型で集めてある）から取る。
         // ⚠ `collect_module_types` は戻り値の型をプリミティブしか読まない（外部言語のスタブ向け）ので、
         //   `fn make() -> Tag` の結果の型が「分からない」になっていた。`enum` もクラスと同じく出す。
@@ -348,6 +351,54 @@ impl TypeChecker {
     }
 
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
+    /// Python のモジュールの関数の `@overload` の形を `py_overloads` に集める（1-3）。形は本体の宣言の本体の中に、印
+    /// （`py_stub_extract::PY_OVERLOAD_MARK`）の付いた入れ子の宣言として入っている（`extract_py_type_stubs_raw`）。
+    fn collect_py_overloads(&mut self, lang: &str, module: &[String], body: &[Stmt]) {
+        use crate::parser::py_stub_extract::{PY_LITERAL_MARK, PY_OVERLOAD_MARK};
+        for st in body {
+            let Stmt::FnDef { name, body: variants, .. } = st else { continue };
+            let mut list = Vec::new();
+            for v in variants {
+                let Stmt::FnDef { params, decorators, .. } = v else { continue };
+                let marks: Vec<String> = decorators
+                    .iter()
+                    .filter_map(|d| if let Expr::Str(s) = d { Some(s.to_string()) } else { None })
+                    .collect();
+                if !marks.iter().any(|m| m == PY_OVERLOAD_MARK) {
+                    continue;
+                }
+                let literals = marks
+                    .iter()
+                    .filter_map(|m| m.strip_prefix(PY_LITERAL_MARK))
+                    .filter_map(|m| m.split_once('=').map(|(n, v)| (n.to_string(), v.to_string())))
+                    .collect();
+                // 戻り値と引数の型は、本体の宣言と同じ規則で作る（`collect_module_types`）
+                let one = self.collect_module_types(lang, std::slice::from_ref(v));
+                let (fn_params, ret) = match one.into_values().next() {
+                    Some(InferredType::Function { params, return_type, .. }) => (params, *return_type),
+                    _ => (None, InferredType::Any),
+                };
+                let plain = |p: &&crate::ast::Param| !p.variadic && p.name != crate::ast::PY_KWARGS_PARAM;
+                list.push(crate::type_check::PyOverload {
+                    params: params.iter().filter(plain).map(|p| (p.name.clone(), p.default.is_some())).collect(),
+                    kwargs: params.iter().any(|p| p.name == crate::ast::PY_KWARGS_PARAM),
+                    varargs: params.iter().any(|p| p.variadic),
+                    literals,
+                    none_params: params
+                        .iter()
+                        .filter(|p| p.type_ann.as_deref() == Some("None"))
+                        .map(|p| p.name.clone())
+                        .collect(),
+                    fn_params,
+                    ret,
+                });
+            }
+            if !list.is_empty() {
+                self.py_overloads.insert(format!("{}.{name}", module.join(".")), list);
+            }
+        }
+    }
+
     pub(crate) fn collect_module_types(
         &self,
         lang: &str,

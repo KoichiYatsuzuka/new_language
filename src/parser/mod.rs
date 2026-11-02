@@ -46,6 +46,7 @@ pub(crate) use types::canonical_type_text;
 mod exprs;
 // Python ソースからの行ベース型スタブ抽出（`imports/` の py の読み込みが使う）。
 pub(crate) mod py_stub_extract;
+pub(crate) mod py_import_links;
 // エディタ用の位置情報テーブル（`editor` feature 専用）。AST は変更せず、
 // パースの途中で「どの名前がどこにあるか」を控えるだけの副次構造。
 #[cfg(feature = "editor")]
@@ -141,6 +142,12 @@ pub struct Parser {
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
     /// パース時に同じモジュールを複数回読み込まないために使用する。
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
+    /// `import[py-int]` の型スタブの元（絶対のモジュール名 `a.b` → 宣言と import の表・見つからなければ `None`）。再エクスポートを
+    /// たどるときに、同じモジュールを探し直したり読み直したりしないための置き場（pandas_import_plan.md の 1-3）。
+    /// ⚠ モジュールの名前で引く: ファイルの場所で引くと、引く前に毎回探索先を探す（pandas で 1 秒近くかかった）。ドット無しの
+    ///   名前の探索先はエントリのディレクトリと外部の探索先で、どのサブパーサからでも同じ。
+    /// **サブパーサと共有する**（`module_names` と同じ扱い）。
+    py_raw_stubs: std::rc::Rc<std::cell::RefCell<HashMap<String, Option<std::rc::Rc<crate::parser::py_import_links::PyRawStub>>>>>,
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
     loading: HashSet<PathBuf>,
     /// ファイル ↔ モジュール名の対応表（[`crate::module_path::ModuleNames`]）。
@@ -241,6 +248,7 @@ impl Parser {
             has_source_dir,
             root_dir: resolved,
             module_cache: HashMap::new(),
+            py_raw_stubs: std::rc::Rc::default(),
             loading: HashSet::new(),
             module_names: std::rc::Rc::default(),
             pending_stmts: Vec::new(),
