@@ -16,7 +16,7 @@
 import[py-int] ffi_probe.lying_py as L
 
 fn call_via_value() -> int:
-    let f = L.get_int       # 関数値に束縛
+    mut f = L.get_int       # 関数値に束縛
     return f()              # 宣言は int だが実際は str を返す
 
 print("before")

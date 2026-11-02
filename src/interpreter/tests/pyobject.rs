@@ -12,7 +12,7 @@ fn test_pyobject_for_loop() {
     // Container は Python iterable; for ループで各要素を取得できる
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "let c = calc.make_container([10, 20, 30])\n",
+        "mut c = calc.make_container([10, 20, 30])\n",
         "mut total = 0\n",
         "for x in c:\n",
         "    total += x\n",
@@ -30,8 +30,8 @@ fn test_pyobject_binop_mul_lhs() {
     // lhs = PyObject: c * 3 → Container.__mul__(3) → 要素数 6 の Container
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "let c = calc.make_container([1, 2])\n",
-        "let c2 = c * 3\n",
+        "mut c = calc.make_container([1, 2])\n",
+        "mut c2 = c * 3\n",
         "let r = len(c2)\n",
     );
     assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
@@ -43,8 +43,8 @@ fn test_pyobject_binop_mul_rhs() {
     // rhs = PyObject: 3 * c → Container.__rmul__(3) → 要素数 6 の Container
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "let c = calc.make_container([1, 2])\n",
-        "let c2 = 3 * c\n",
+        "mut c = calc.make_container([1, 2])\n",
+        "mut c2 = 3 * c\n",
         "let r = len(c2)\n",
     );
     assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
@@ -56,9 +56,9 @@ fn test_pyobject_binop_add() {
     // c1 + c2 → Container.__add__ → 要素が結合された Container
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "let a = calc.make_container([1, 2])\n",
-        "let b = calc.make_container([3, 4, 5])\n",
-        "let c = a + b\n",
+        "mut a = calc.make_container([1, 2])\n",
+        "mut b = calc.make_container([3, 4, 5])\n",
+        "mut c = a + b\n",
         "let r = len(c)\n",
     );
     assert!(matches!(run_py_get(src, "r"), Value::Int(5)));

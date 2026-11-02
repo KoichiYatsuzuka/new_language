@@ -550,6 +550,14 @@ bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryv
 同じく丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
 型名はクラス名）。
 
+**Python のオブジェクトは `mut` で受けます**（`implementation_plans/pandas_import_plan.md` の D-3・1-2）。Python のオブジェクトの
+まま届く物（インスタンス・関数・配列・大きな整数など）は写さずに参照を共有するので、ほかの参照から中身が変わりえます。
+`let` / `const` / `freeze` と、`mut` でない関数の引数では受けられません（`fn f(mut d: pd.DataFrame)` と書く）。型から
+Python のクラスのインスタンス（とそれを持つ list など）と分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ
+束縛するときに実行時の `TypeError` です。境界で Arrow の値に変わる物（`int`・`str`・`dict` など）は `let` で受けられます
+（`examples/interop/py_int_mut_binding.ar`・`py_int_mut_binding_error.ar`・`py_int_mut_binding_runtime_error.ar`）。
+⚠ `for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛は、まだ対象にしていません。
+
 ---
 ## Rust crate (`[rs]`)
 

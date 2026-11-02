@@ -92,6 +92,14 @@
   stores share the object, as in CPython (aliases, parent/child references and registries behave the same). A
   Python class without `__eq__` / `__hash__` compares and hashes by identity; an Arrow class still compares by
   contents. Binding a Python value to an Arrow `let` / `mut` still copies it (the boundary keeps Arrow's rule).
+- **Python objects must be bound with `mut`** (`implementation_plans/pandas_import_plan.md` D-3, task 1-2). A CPython
+  object (an `import[py-int]` value that stays a Python object: instances, functions, arrays, big ints …) is shared, not
+  copied, so other references can change it; `let` / `const` / `freeze` and a parameter that is not `mut` cannot hold one
+  (`fn f(mut d: pd.DataFrame)`). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
+  container of them), otherwise a runtime `TypeError` at the binding. Values converted to Arrow values at the boundary
+  (`int`, `str`, `dict` …) are Arrow values and can be bound with `let`.
+  - ⚠ Implicit bindings (`for` targets, comprehension variables, `except E as e`, `with .. as x`, `match`) are not
+    covered yet (the plan's §4 item 6).
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

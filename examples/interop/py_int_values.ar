@@ -27,10 +27,10 @@ check("Arrow set arrives as a Python set", pp.kind({1, 2}) == "set" and pp.size(
 check("membership on the Python side", pp.contains({"x", "y"}, "y"))
 
 # ── i64 に入らない int・Decimal は Python のオブジェクトのまま ────────────────────
-let b = pp.big()
+mut b = pp.big()
 check("2**70 is not turned into a float", not (b is float) and not (b is int))
 check("2**70 + 1 computed in Python", pp.big_text(b) == "1180591620717411303425")
-let d = pp.dec()
+mut d = pp.dec()
 check("Decimal is not turned into a float", not (d is float))
 check("Decimal arithmetic stays exact", pp.dec_text(d) == "0.3")
 

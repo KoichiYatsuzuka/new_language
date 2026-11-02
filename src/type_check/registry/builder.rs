@@ -274,6 +274,7 @@ impl TypeRegistryBuilder {
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
                 python_class_names: HashSet::new(),
+                cpython_class_names: HashSet::new(),
                 known_protocols: HashMap::new(),
                 template_params: HashMap::new(),
                 name_scopes: vec![NameScope::default()],
@@ -402,6 +403,10 @@ impl TypeRegistryBuilder {
                     self.reg.known_class_names.insert(name.clone());
                     if self.collecting_python {
                         self.reg.python_class_names.insert(name.clone());
+                    }
+                    // CPython で実行するモジュールのクラス（インスタンスは `Value::PyObject`・D-3）
+                    if self.foreign_lang.as_deref() == Some("py-int") {
+                        self.reg.cpython_class_names.insert(name.clone());
                     }
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {

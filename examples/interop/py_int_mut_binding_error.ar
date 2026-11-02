@@ -1,0 +1,18 @@
+# Python のオブジェクトを不変の束縛で受けると静的な誤り（pandas_import_plan.md の D-3・タスク 1-2）
+#
+# 型から Python のクラスのインスタンスと分かるものは、型検査が止める（`ImmutablePythonObject`）:
+#   'p' holds a Python object, which cannot be bound with `let` — Python code can change it through other references;
+#   bind it with `mut`
+# 正しい形は py_int_mut_binding.ar。型が `Any` などで静的に分からないものは py_int_mut_binding_runtime_error.ar。
+
+import[py-int] py_int_refcount as rc
+
+let p = rc.make()                       # let
+const P = rc.make()                     # const
+let probes = [rc.make()]                # Python の物を持つ list
+
+fn count_self(d: rc.Probe) -> int:      # mut でない引数
+    return 1
+
+mut m = rc.make()
+freeze m                                # freeze

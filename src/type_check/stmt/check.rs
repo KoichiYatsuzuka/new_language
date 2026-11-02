@@ -661,7 +661,13 @@ impl TypeChecker {
             // ⚠⚠ `freeze x` は **`mut` を `let` へ降格**する（タスク 9.2・利用者の決定）。
             //    再束縛だけでなく `x.append(..)` / `x[0] = ..` / `x.f = ..` も
             //    `let` と同じ規則で弾かれるようになる。
-            Stmt::Freeze(name, _) => self.state.freeze_var(name),
+            Stmt::Freeze(name, _) => {
+                // Python のオブジェクトは `let` へ降格できない（D-3・1-2）
+                if let Some(ty) = self.lookup(name).map(|i| i.ty.clone()) {
+                    self.require_mut_for_python_object(name, "freeze", &ty);
+                }
+                self.state.freeze_var(name)
+            }
 
             // --- 例外処理 ---
             Stmt::Try {
@@ -1986,6 +1992,9 @@ impl TypeChecker {
                     span: Some(span.clone()),
                 });
             }
+            if !mutable {
+                self.require_mut_for_python_object(name, "let", &ty);
+            }
             self.note_binding(name, &ty);
             self.declare(name.clone(), ty, mutable);
         }
@@ -2206,6 +2215,10 @@ impl TypeChecker {
                 .and_then(InferredType::from_ann)
                 .unwrap_or(InferredType::Unresolved)
         };
+        // Python のオブジェクトを受ける引数は `mut` で書く（D-3・1-2）。⚠ `self` は対象外（受け手の可変性は別の規則）。
+        if !param.mutable && param.name != "self" {
+            self.require_mut_for_python_object(&param.name, "parameter", &ty);
+        }
         self.declare(param.name.clone(), ty, param.mutable);
     }
 
@@ -2243,7 +2256,45 @@ impl TypeChecker {
             });
         }
         let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt);
+        if !mutable {
+            let binding = if matches!(stmt, Stmt::Const(..)) { "const" } else { "let" };
+            self.require_mut_for_python_object(name, binding, &ty);
+        }
         self.note_binding(name, &ty);
         self.declare(name.to_string(), ty, mutable);
+    }
+
+    /// Python のオブジェクトを持ちうる型か（pandas_import_plan.md の D-3・1-2）。コンテナの要素も見る（`list[pd.DataFrame]`）。
+    ///
+    /// ⚠ 静的に分かるのは、CPython で実行するモジュールのクラスのインスタンスだけ。Python の関数を値として読んだもの
+    ///   （型は関数）や `Any` の値は、実行時の検査（`Interpreter::bind_copy_held` / 引数の束縛）が止める。
+    pub(crate) fn holds_cpython_object(&self, ty: &InferredType) -> bool {
+        match ty {
+            InferredType::NamedInstance(n) => self.registry.is_cpython_class(n),
+            InferredType::GenericInstance { name, args } => {
+                self.registry.is_cpython_class(name) || args.iter().any(|a| self.holds_cpython_object(a))
+            }
+            InferredType::ListOf(e)
+            | InferredType::FixedListOf(e)
+            | InferredType::ListLikeOf(e)
+            | InferredType::SetOf(e)
+            | InferredType::FrozenSetOf(e)
+            | InferredType::IteratorOf(e) => self.holds_cpython_object(e),
+            InferredType::DictOf(k, v) => self.holds_cpython_object(k) || self.holds_cpython_object(v),
+            InferredType::Tuple(items) | InferredType::Union(items) => {
+                items.iter().any(|t| self.holds_cpython_object(t))
+            }
+            _ => false,
+        }
+    }
+
+    /// 不変の束縛（`binding`）が Python のオブジェクトを受けるなら誤り（D-3・1-2）。
+    fn require_mut_for_python_object(&mut self, name: &str, binding: &'static str, ty: &InferredType) {
+        if self.holds_cpython_object(ty) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ImmutablePythonObject { name: name.to_string(), binding },
+                span: None,
+            });
+        }
     }
 }

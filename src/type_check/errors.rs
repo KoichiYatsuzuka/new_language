@@ -28,6 +28,15 @@ pub enum TypeErrorKind {
     AssignToImmutable {
         name: String,
     },
+    /// Python のオブジェクト（CPython の物）を不変の束縛（`let` / `const` / `freeze` / `mut` でない引数）で受けた
+    /// （pandas_import_plan.md の D-3・1-2）。CPython の物はほかの参照から書き換えられるので、`let` の「変わらない」が
+    /// 成り立たない。⇒ `mut` で受ける。
+    ImmutablePythonObject {
+        /// 束縛の名前。
+        name: String,
+        /// 束縛の種類（`let` / `const` / `freeze` / `parameter`）。
+        binding: &'static str,
+    },
     /// 関数呼び出しの引数数が宣言と一致しない（少なすぎる / 多すぎる）。
     CallArgCountMismatch {
         func_name: String,
@@ -778,6 +787,16 @@ impl StaticTypeError {
             ),
             TypeErrorKind::AssignToImmutable { name } => format!(
                 "cannot assign to immutable variable {}", hl_q(name)
+            ),
+            TypeErrorKind::ImmutablePythonObject { name, binding } if *binding == "parameter" => format!(
+                "parameter {} receives a Python object, so it must be declared {} — Python code can change it \
+                 through other references",
+                hl_q(name), hl_bt("mut")
+            ),
+            TypeErrorKind::ImmutablePythonObject { name, binding } => format!(
+                "{} holds a Python object, which cannot be bound with {} — Python code can change it through other \
+                 references; bind it with {}",
+                hl_q(name), hl_bt(binding), hl_bt("mut")
             ),
             TypeErrorKind::CallArgCountMismatch { func_name, expected_min, expected_max, got } => {
                 if expected_min == expected_max {

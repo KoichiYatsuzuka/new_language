@@ -713,10 +713,10 @@ fn test_ar_to_py_dict() {
 fn test_python_exception_is_foreign_error() {
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "let c = calc.Container([1])\n",
+        "mut c = calc.Container([1])\n",
         "mut msg = \"\"\n",
         "try:\n",
-        "    let v = c[5]\n",
+        "    mut v = c[5]\n",
         "except ForeignError as e:\n",
         "    msg = e.message\n",
     );

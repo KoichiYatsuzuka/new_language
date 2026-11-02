@@ -17,7 +17,7 @@ fn check(let label: str, let ok: bool) -> None:
         raise ValueError(label + ": unexpected value")
     print(label + " OK")
 
-let c = pc.Counter(10)
+mut c = pc.Counter(10)
 check("an annotated method returns its type", c.bump() == 11)
 check("an annotated attribute", c.value == 11)
 check("a class attribute", c.label == "counter")
@@ -26,11 +26,11 @@ check("an annotated list attribute", c.history == [11])
 # 注釈の無いものは Any: 明示のダウンキャストで使う
 check("an unannotated method is Any", (c.describe() mustbe str) == "counter=11")
 check("an unannotated attribute is Any", (c.step mustbe int) == 1)
-let loud = pc.LoudCounter(1)
+mut loud = pc.LoudCounter(1)
 check("a base class in the same file", loud.bump() == 2 and loud.shout() == "COUNTER=2")
 check("is: the class and its base (isinstance)", loud is pc.LoudCounter and loud is pc.Counter and not (c is pc.LoudCounter))
-let made = pc.make_counter(5)
+mut made = pc.make_counter(5)
 check("a function annotated with the class", made.bump() == 6)
-let anything: Any = loud
-let back = anything mustbe pc.Counter
+mut anything: Any = loud
+mut back = anything mustbe pc.Counter
 check("mustbe a Python class", back.value == 2)

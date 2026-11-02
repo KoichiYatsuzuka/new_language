@@ -1,0 +1,28 @@
+# Python から受け取ったオブジェクトは `mut` で受ける（pandas_import_plan.md の D-3・タスク 1-2）
+#
+# CPython の物は写さずに参照を共有するので、ほかの参照（Python のコード・別の Arrow の変数）から中身が変わりうる。
+# Arrow の `let` の「変わらない」を保証できないので、`let` / `const` / `freeze` と `mut` でない関数の引数では受けられない
+# （誤りの形は py_int_mut_binding_error.ar・py_int_mut_binding_runtime_error.ar）。
+# 境界で Arrow の値に変わる物（int・str・dict など）は Arrow の値なので `let` で受けられる。
+
+import[py-int] py_int_refcount as rc
+
+fn count_self(mut p: rc.Probe) -> int:
+    return p.count_self()
+
+fn describe(mut x: Any) -> str:
+    return "got a Python object"
+
+mut p = rc.make()
+mut q = p
+print("mut binding:", count_self(p) > 0)
+print("Any parameter declared mut:", describe(q))
+mut probes: list[rc.Probe] = [p, q]
+print("a list of Python objects bound with mut:", len(probes))
+mut make = rc.make
+print("a Python function bound with mut:", count_self(make()) > 0)
+
+# Arrow の値に変わる物は `let` で受けられる
+let n = rc.count_arg(p)
+let table: dict[str, int] = rc.expected()
+print("converted values with let:", n > 0, len(table) > 0)

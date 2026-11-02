@@ -82,6 +82,10 @@ pub(super) struct TypeRegistry {
     /// `import[py]` のモジュール（Python のソースを変換したもの）で宣言したクラス（修飾名）。Python のクラスの
     /// 静的メソッドはインスタンスからも呼べる（`StaticMethodOnInstance` を出さない・known_bugs.md の #5）。
     python_class_names: HashSet<String>,
+    /// インスタンスが **CPython のオブジェクト**（実行時の `Value::PyObject`）になるクラス。`import[py-int]` のモジュール
+    /// （CPython で実行する）で宣言したもの。Python の物は `mut` で受ける（pandas_import_plan.md の D-3・1-2）。
+    /// ⚠ `python_class_names`（Python のソースを Arrow へ変換したもの・実行時は Arrow のインスタンス）とは別。
+    cpython_class_names: HashSet<String>,
     /// プロトコル定義。プロトコル名 → `ProtocolInfo`。
     known_protocols: HashMap<String, ProtocolInfo>,
     /// **Arrow ソースで `class` 宣言された**クラス名（#27-a）。
@@ -436,6 +440,11 @@ impl TypeRegistry {
     /// `import[py]` のモジュールで宣言したクラスか（[`Self::python_class_names`]）。
     pub(super) fn is_python_class(&self, class: &str) -> bool {
         self.python_class_names.contains(&*self.resolve(class))
+    }
+
+    /// インスタンスが CPython のオブジェクトになるクラスか（[`Self::cpython_class_names`]）。
+    pub(super) fn is_cpython_class(&self, class: &str) -> bool {
+        self.cpython_class_names.contains(&*self.resolve(class))
     }
 
     // ── trait ─────────────────────────────────────────────────────────────────

@@ -571,6 +571,7 @@ impl Interpreter {
     /// `let` 仮引数 ＋ `mut` の値は `copy_value`（一般経路の複製ループと同一）、それ以外は共有。そのあと `float` 注釈の
     /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
     pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
+        Self::check_param_binding(p.mutable, &p.name, &v)?;
         let v = if !p.mutable && arg_mut { self.copy_value(v)? } else { v };
         Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v))
     }
@@ -669,6 +670,7 @@ impl Interpreter {
                 out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
             }
             for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
+                Self::check_param_binding(p.mutable, &p.name, v)?;
                 out.push(if !p.mutable && *arg_mut { self.copy_value(v.clone())? } else { v.clone() });
             }
             return Ok(out);
@@ -700,6 +702,7 @@ impl Interpreter {
         let bindings = Self::bind_args(params, evaled, self_val, recv_mut, &defaults)?;
         let mut out = Vec::with_capacity(bindings.len());
         for (name, val, param_mutable, arg_is_mutable) in bindings {
+            Self::check_param_binding(param_mutable, &name, &val)?;
             // `exec_fn_evaled` の一般経路の複製ループと同じ規則
             out.push(if !param_mutable && name != "self" && arg_is_mutable {
                 self.copy_value(val)?
@@ -852,6 +855,7 @@ impl Interpreter {
         if !fn_val.is_python {
             for binding in &mut bindings {
                 let (name, val, param_mutable, arg_is_mutable) = binding;
+                Self::check_param_binding(*param_mutable, name, val)?;
                 if !*param_mutable && name != "self" && *arg_is_mutable {
                     *val = self.copy_value(val.clone())?;
                 }
@@ -1067,8 +1071,13 @@ impl Interpreter {
 
         // `let` パラメータ（self 除く）に copy() を適用する
         // let param + mutable arg → deepcopy、let param + let arg → スキップ
+        // ⚠ 前置きの生成器（`GLOBALS_OF_CALLER`・`py_lazy_prelude`）は組み込みの実装なので、Python の物の検査をしない（D-3）
+        let user_gen = gen_fn.globals != crate::interpreter::value::GLOBALS_OF_CALLER;
         for binding in &mut bindings {
             let (name, val, param_mutable, arg_is_mutable) = binding;
+            if user_gen {
+                Self::check_param_binding(*param_mutable, name, val)?;
+            }
             if !*param_mutable && name != "self" && *arg_is_mutable {
                 *val = self.copy_value(val.clone())?;
             }

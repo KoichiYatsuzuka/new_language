@@ -18,7 +18,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 9 | `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない） | [2-4] |
 | 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`） | [2-5]・[2-6] |
 | 11 | list / dict / set は境界で写す。Python 側の書き換えが戻らない（`heapq.heappush(h, 0)` の後も `h` は元のまま） | [2-7] |
-| 12 | Python の物を `let` で受けても、別名から中身が変わる（`let c = a` の後の `a["z"] = 1` が `c` にも見える） | D-3・[1-2] |
+| ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | 13 | `is` が `==` を呼ぶ／同じ物どうしが `False` | D-4・[5-1] |
 | 14 | コスト: 越境 1 回ごとに +0.5〜1.7 µs。リストは Arrow → Python が 20〜50 ns/要素、Python → Arrow が約 110 ns/要素 | [4] |
 
@@ -185,7 +185,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | ~~1-1~~ | ✅ **済**（2026-11-02・2.1）参照の数（D-5）。`Value::PyObject` の写し 1 つが CPython の参照 1 つ（GIL が無ければ待ち行列で `with_py` が反映）。呼び出しは肩代わりの関数、添字は C の API で借りるだけ。等しさ・ハッシュはオブジェクトの番地。試験は `py_int_refcount.ar`（ゲート）・`refcount_pandas.ar` | なし | 中 |
-| 1-2 | Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3・2.2）。静的と実行時の両方。暗黙の束縛は 4 節の 6 | なし | 中 |
+| ~~1-2~~ | ✅ **済**（2026-11-02・2.2）Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3）。静的: CPython のクラスのインスタンス（とそれを持つ list など）なら `ImmutablePythonObject`（`TypeRegistry::cpython_class_names`）。実行時: `bind_copy_held` の `CopyFreeze`（コレクションの中も見る）と引数の束縛（値そのものだけ・前置きの生成器を除く）で `TypeError`。例題は `py_int_mut_binding.ar`・`_error`・`_runtime_error`。既存の例題 8 本を `mut` に直した。暗黙の束縛は 4 節の 6 | なし | 中 |
 | 1-3 | 再エクスポートを定義元までたどって型を付ける。`@overload` を引数で選ぶ（D-2・2.3） | なし | 大 |
 | 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
 | 1-5 | ユーザーの site-packages を型の探索先に足す（拡張の `wasm_host.ts` の `queryPythonDirs` も同じ問い合わせにする） | なし | 小 |

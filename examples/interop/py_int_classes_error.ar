@@ -8,7 +8,7 @@
 
 import[py-int] py_int_classes as pc
 
-let c = pc.Counter(1)
+mut c = pc.Counter(1)
 let s: str = c.bump()
 let n: int = c.step
 print(c.missing)

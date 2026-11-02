@@ -1,0 +1,17 @@
+# 型から分からない Python のオブジェクトを不変の束縛で受けると、実行時の誤り（pandas_import_plan.md の D-3・タスク 1-2）
+#
+# Python の関数を値として読んだもの（型は関数）や、`Any` で受けた物は、静的には Python の物と分からない。
+# 束縛するときに実行時に止める:
+#   TypeError: parameter 'x' receives a Python object, so it must be declared `mut` (Python code can change it
+#   through other references)
+# 静的に分かる形は py_int_mut_binding_error.ar、正しい形は py_int_mut_binding.ar。
+
+import[py-int] py_int_refcount as rc
+
+fn describe(x: Any) -> str:             # mut でない引数
+    return "never reached"
+
+mut p = rc.make()
+print("before")
+print(describe(p))
+print("not reached")

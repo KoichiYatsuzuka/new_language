@@ -21,5 +21,5 @@ check("Python bytes -> bytes", b is bytes and len(b) == 4 and b[0:2] == "hi".enc
 check("bytearray -> bytes", pp.make_bytearray() == "ab".encode())
 check("memoryview of bytes -> bytes", pp.make_view() == "xyz".encode())
 check("bytes -> Python bytes", pp.kind("abc".encode()) == "bytes" and pp.decode_utf8("日本".encode()) == "日本")
-let iv = pp.int_view()
+mut iv = pp.int_view()
 check("memoryview of int32 stays a Python object", pp.kind(iv) == "memoryview" and pp.size(iv) == 2)

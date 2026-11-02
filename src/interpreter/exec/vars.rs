@@ -75,7 +75,43 @@ impl BindCopy {
     }
 }
 
+/// Python のオブジェクトを不変の束縛にしたときの誤り（pandas_import_plan.md の D-3・1-2・静的な `ImmutablePythonObject` と対）。
+pub(crate) const IMMUTABLE_PYTHON_OBJECT: &str = "TypeError: a Python object cannot be bound with `let` / `const` / `freeze` \
+     or to a parameter that is not `mut` — Python code can change it through other references; bind it with `mut`";
+
 impl Interpreter {
+    /// `mut` でない仮引数 `name` が Python のオブジェクトを受けたら誤り（D-3・1-2・静的な `ImmutablePythonObject` と対）。
+    ///
+    /// ⚠ 値そのものだけを見る（コレクションの中は見ない）。呼び出しのたびに要素の数だけ走ると遅くなるため。中に
+    ///   Python の物を持つ Arrow の list などは、型が分かれば型検査が止める。
+    /// ⚠ 呼ぶ側は、前置き（`py_lazy_prelude` の生成器・`GLOBALS_OF_CALLER`）を除く。組み込みの実装で、何でも受ける。
+    pub(crate) fn check_param_binding(param_mutable: bool, name: &str, value: &Value) -> Result<(), String> {
+        if !param_mutable && name != "self" && matches!(value, Value::PyObject(_)) {
+            return Err(format!(
+                "TypeError: parameter '{name}' receives a Python object, so it must be declared `mut` \
+                 (Python code can change it through other references)"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Python のオブジェクトを含むか（D-3）。Arrow のコレクション（list / tuple / dict / set / frozenset）の中も見る。
+    ///
+    /// ⚠ Arrow のインスタンスの欄の中は見ない（欄は宣言の型で決まり、Python の型の欄は型検査が止める）。
+    pub(crate) fn contains_python_object(value: &Value) -> bool {
+        match value {
+            Value::PyObject(_) => true,
+            Value::List(items) | Value::Set(items) => items.borrow().iter().any(Self::contains_python_object),
+            Value::FrozenSet(items) => items.iter().any(Self::contains_python_object),
+            Value::Tuple(t) => t.all_values().iter().any(Self::contains_python_object),
+            Value::Dict(d) => {
+                let d = d.borrow();
+                d.all_keys().iter().chain(d.all_items().iter()).any(Self::contains_python_object)
+            }
+            _ => false,
+        }
+    }
+
     /// 今のスコープで `name` を宣言すると誤りになるなら、その文言（`already declared` の**唯一の判定**）。
     ///
     /// 呼び出し元は宣言の 4 か所（`exec_let` / `Const` / `Mut` / 最上位の VM の `vm_declare_global`）と
@@ -120,6 +156,12 @@ impl Interpreter {
     pub(crate) fn bind_copy_held(&mut self, mode: BindCopy, value: Value, held: Option<usize>) -> Result<Value, String> {
         if mode == BindCopy::DeepCopy && self.running_python {
             return Ok(value);
+        }
+        // Python のオブジェクトは不変の束縛にできない（pandas_import_plan.md の D-3・1-2）。CPython の物は写せず、ほかの
+        // 参照から書き換えられるので、`let` / `const` / `freeze` の「変わらない」が成り立たない。静的に分かるもの
+        // （CPython のクラスのインスタンス）は型検査が止めるので、ここに来るのは型が `Any` / 関数などの値。
+        if mode == BindCopy::CopyFreeze && Self::contains_python_object(&value) {
+            return Err(IMMUTABLE_PYTHON_OBJECT.to_string());
         }
         let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
         let copied = if unshared { value } else { Self::deep_copy_value(value) };

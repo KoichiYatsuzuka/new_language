@@ -29,7 +29,7 @@ except ForeignError as e:
 check("a Python function's exception is a ForeignError (" + message + ")", message == "ValueError: bad")
 
 message = ""
-let r = pp.make_raiser()
+mut r = pp.make_raiser()
 try:
     print(r.boom())
 except ForeignError as e:

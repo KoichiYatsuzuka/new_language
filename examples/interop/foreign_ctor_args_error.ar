@@ -13,6 +13,6 @@ import[cs-proc] cs_probe as cp
 
 let a = Pair(1)
 let b = Rec(1, "x")
-let c = pc.Counter()
-let d = pc.Counter("x")
+mut c = pc.Counter()
+mut d = pc.Counter("x")
 let e = cp.Person("ann")
