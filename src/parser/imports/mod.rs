@@ -8,9 +8,8 @@
 
 /// 解決先が **CPython の標準ライブラリ**の下にあるか（項目 27）。
 ///
-/// `python_lib_dirs()` の**先頭が stdlib・2 番目が purelib（site-packages）**
-/// （`python_lib_dirs` のスクリプトがこの順で出す）。stdlib だけを見たいので
-/// 先頭のみと突き合わせる。
+/// `python_lib_dirs()` の**先頭が stdlib**（その後にユーザーの site-packages・purelib（site-packages）が続く・
+/// `python_lib_dirs` のスクリプトがこの順で出す）。stdlib だけを見たいので先頭のみと突き合わせる。
 ///
 /// ⚠ Python が見つからない環境では `python_lib_dirs()` が空 ⇒ 常に `false`。
 ///   そのときは stdlib が検索パスにも入らないので、そもそもここに来ない。

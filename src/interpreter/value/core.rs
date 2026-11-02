@@ -426,6 +426,8 @@ impl Value {
             })),
             // Arc-wrapped types: atomic refcount, safe to share across threads
             // CPython の参照を 1 つ増やす（D-5。GIL が無ければ待ち行列へ・`py_interop`）
+            // ⚠ 評価コアと拡張（`native` 無効）では `PyObjHandle` が構築できない型なので、この腕は届かない（警告を黙らせる）
+            #[allow(unreachable_code)]
             Value::PyObject(h) => Value::PyObject(h.clone()),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
             // ⚠ 共有する（コピーは同じメモリを指し、解放は最後の参照で 1 回・3-2）

@@ -10,7 +10,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 1 | Python のソースを変換して動かす `import[py]` では pandas を読めない（C 拡張 42 本・numpy・標準ライブラリ・変換器が拒む構文）。直しても Arrow 側に Python 専用の特例が増え続ける | D-1・[3] |
 | 2 | pandas の名前がすべて `Any`（`pandas/__init__.py` の再エクスポートを定義元までたどらない）。`pd.read_csv(..)` の型が分からず、存在しない名前も通る | [1-3] |
 | 3 | `.py` の無い built-in のモジュール（`builtins`・`sys`・`itertools` など 67 本）は型の出所が無く `import[py-int]` できない（同梱のスタブは `math`・`time` だけ） | [1-4] |
-| 4 | ユーザーの site-packages（`AppData\Roaming\Python\..`）を型の探索先にしない。`import[py-int] dateutil.parser` が `cannot find its types` | [1-5] |
+| ~~4~~ | ✅ ユーザーの site-packages を型の探索先にしなかった件（直した: 1-5） | [1-5] |
 | ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
 | 6 | Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらない | [2-1] |
 | 7 | 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る | [2-2] |
@@ -188,7 +188,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~1-2~~ | ✅ **済**（2026-11-02・2.2）Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3）。静的: CPython のクラスのインスタンス（とそれを持つ list など）なら `ImmutablePythonObject`（`TypeRegistry::cpython_class_names`）。実行時: `bind_copy_held` の `CopyFreeze`（コレクションの中も見る）と引数の束縛（値そのものだけ・前置きの生成器を除く）で `TypeError`。例題は `py_int_mut_binding.ar`・`_error`・`_runtime_error`。既存の例題 8 本を `mut` に直した。暗黙の束縛は 4 節の 6 | なし | 中 |
 | 1-3 | 再エクスポートを定義元までたどって型を付ける。`@overload` を引数で選ぶ（D-2・2.3） | なし | 大 |
 | 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
-| 1-5 | ユーザーの site-packages を型の探索先に足す（拡張の `wasm_host.ts` の `queryPythonDirs` も同じ問い合わせにする） | なし | 小 |
+| ~~1-5~~ | ✅ **済**（2026-11-03）ユーザーの site-packages を型の探索先に足した（`import_fs::python_lib_dirs` と拡張の `queryPythonDirs` を同じ問い合わせに・CPython の `sys.path` と同じく、使えるときだけ標準ライブラリの後・site-packages の前）。`import[py-int] dateutil.parser` が読める。試験は `import_fs` の単体テスト | なし | 小 |
 
 ### フェーズ 2: 境界の振る舞いを CPython に合わせる（2.4）
 

@@ -327,7 +327,7 @@ are dropped: `mut self`, lost bare annotations). Runtime `is` / `mustbe pc.Box` 
 class MRO names (and `__module__` when written through a module), `py_interop::py_class_mro`.
 
 Search order: the same `python_import_dirs` as `import[py]` (no dots: the entry directory, `python.search_paths`,
-`PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib/purelib; dots: the search base only).
+`PYTHONPATH`, `$PYTHONHOME/Lib/site-packages`, stdlib / the user site-packages (when CPython uses it) / purelib; dots: the search base only).
 
 For each directory, tries `.pyi` first, then `.py`. If nothing is found: a directory without `__init__` is a
 namespace package (empty body, resolved); otherwise the bundled stub (`py_stubs`, only for non-relative imports);

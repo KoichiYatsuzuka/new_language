@@ -86,7 +86,7 @@ import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経
 
 | 言語 | 外部の探索先 |
 |---|---|
-| `py` / `py-int` | `ar_config.json` の `python.search_paths` → `PYTHONPATH` → `$PYTHONHOME/Lib/site-packages` → Python の標準ライブラリ・site-packages |
+| `py` / `py-int` | `ar_config.json` の `python.search_paths` → `PYTHONPATH` → `$PYTHONHOME/Lib/site-packages` → Python の標準ライブラリ・ユーザーの site-packages（CPython が使うときだけ）・site-packages |
 | `cs-dll` / `cs-proc` | `ar_config.json` の `csharp.lib_paths` |
 | `js-proc` | ブリッジ側の解決（`bridge_root`・npm パッケージ・Node.js 組み込み） |
 | `.ar` / `.arc` / `cpp-*` | なし |

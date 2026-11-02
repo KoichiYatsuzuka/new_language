@@ -109,18 +109,25 @@ mod native {
         }
     }
 
-    /// Python の**標準ライブラリと site-packages の場所**（この順）。Python が見つからなければ空。
+    /// Python の**標準ライブラリ・ユーザーの site-packages・site-packages の場所**（この順）。Python が見つからなければ空。
     ///
-    /// Python プロセスを 1 回だけ起動して `sysconfig` に尋ねる（`OnceLock` で保持する）。
+    /// Python プロセスを 1 回だけ起動して `sysconfig` / `site` に尋ねる（`OnceLock` で保持する）。
     /// ⚠ import の処理で外部プロセスを起動するのはここだけ。拡張ではホストが一度だけ調べて渡す
     ///   （`wasm_host.ts` の `queryPythonDirs`・**同じ問い合わせ**を保つこと）。
+    /// ⚠ ユーザーの site-packages（`site.getusersitepackages()`・Windows では `AppData\Roaming\Python\..`）は、CPython の
+    ///   `sys.path` と同じく、使えるとき（`site.ENABLE_USER_SITE` が真でディレクトリがある）だけ、site-packages の**前**に置く
+    ///   （同じ名前なら CPython はこちらを使う・pandas_import_plan.md の 1-5）。以前は探さず、pandas が要る `dateutil` /
+    ///   `six` の型が見つからなかった（`import[py-int] dateutil.parser` が `cannot find its types`）。
+    /// ⚠ 先頭は標準ライブラリ（`is_python_stdlib_path` が先頭だけを見る）。
     pub fn python_lib_dirs() -> &'static [PathBuf] {
         use std::sync::OnceLock;
         static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
         DIRS.get_or_init(|| {
             let script = concat!(
-                "import sysconfig; ",
-                "paths = [sysconfig.get_path('stdlib'), sysconfig.get_path('purelib')]; ",
+                "import os, site, sysconfig; ",
+                "u = site.getusersitepackages(); ",
+                "user = [u] if site.ENABLE_USER_SITE and os.path.isdir(u) else []; ",
+                "paths = [sysconfig.get_path('stdlib')] + user + [sysconfig.get_path('purelib')]; ",
                 "print('\\n'.join(p for p in paths if p))"
             );
             #[cfg(windows)]
@@ -303,5 +310,35 @@ mod host {
                 .map(|b| lines(b).into_iter().map(PathBuf::from).collect())
                 .unwrap_or_default()
         })
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod python_lib_dirs_tests {
+    /// ユーザーの site-packages を、CPython の `sys.path` と同じく標準ライブラリの後・site-packages の前に探す
+    /// （pandas_import_plan.md の 1-5）。⚠ Python の無い環境では何もしない。
+    #[test]
+    fn user_site_comes_after_stdlib_and_before_site_packages() {
+        let script = "import os, site, sysconfig; u = site.getusersitepackages(); \
+                      print(site.ENABLE_USER_SITE and os.path.isdir(u)); print(u); print(sysconfig.get_path('purelib'))";
+        let candidates: &[&str] = if cfg!(windows) { &["py", "python", "python3"] } else { &["python3", "python"] };
+        let Some(out) = candidates.iter().find_map(|exe| {
+            std::process::Command::new(exe).args(["-c", script]).output().ok().filter(|o| o.status.success())
+        }) else {
+            println!("SKIPPED: no Python");
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let dirs = super::python_lib_dirs();
+        assert!(!dirs.is_empty(), "python_lib_dirs is empty although Python runs");
+        let pos = |p: &str| dirs.iter().position(|d| d == std::path::Path::new(p));
+        let purelib = pos(lines[2]).expect("site-packages must be searched");
+        if lines[0] == "True" {
+            let user = pos(lines[1]).expect("the user site-packages must be searched when Python uses it");
+            assert!(user > 0 && user < purelib, "order: {dirs:?}");
+        } else {
+            assert!(pos(lines[1]).is_none(), "the user site-packages is searched although Python does not use it: {dirs:?}");
+        }
     }
 }

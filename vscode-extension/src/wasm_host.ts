@@ -107,9 +107,12 @@ let pythonDirs: string[] | null = null;
  *   スクリプト）。片方だけ変えると、拡張と CLI で `import[py]` の探索先がずれる。
  */
 function queryPythonDirs(): string[] {
+    // ⚠ CLI の `import_fs::python_lib_dirs` と**同じ問い合わせ**（標準ライブラリ・ユーザーの site-packages・site-packages の順）。
     const script =
-        "import sysconfig; " +
-        "paths = [sysconfig.get_path('stdlib'), sysconfig.get_path('purelib')]; " +
+        "import os, site, sysconfig; " +
+        "u = site.getusersitepackages(); " +
+        "user = [u] if site.ENABLE_USER_SITE and os.path.isdir(u) else []; " +
+        "paths = [sysconfig.get_path('stdlib')] + user + [sysconfig.get_path('purelib')]; " +
         "print('\\n'.join(p for p in paths if p))";
     const candidates = isWindows ? ['py', 'python', 'python3'] : ['python3', 'python'];
     for (const exe of candidates) {
