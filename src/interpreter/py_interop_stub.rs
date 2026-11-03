@@ -56,6 +56,10 @@ pub fn py_getitem(_handle: &PyObjHandle, _key: &Value) -> Result<Value, String> 
     Err(unavailable("Python subscript"))
 }
 
+pub fn py_setattr(_handle: &PyObjHandle, attr: &str, _val: &Value) -> Result<(), String> {
+    Err(unavailable(&format!("Python attribute assignment '{attr}'")))
+}
+
 pub fn py_setitem(_handle: &PyObjHandle, _key: &Value, _val: &Value) -> Result<(), String> {
     Err(unavailable("Python subscript assignment"))
 }

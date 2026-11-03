@@ -1,0 +1,37 @@
+# import[py-int] の物とモジュールの属性へ代入する（pandas_import_plan.md の 2-9）
+#
+# `o.x = v` は CPython の `setattr` を呼ぶ（`__setattr__`・`@property` の setter・pandas の `df.columns = [..]` も）。
+# モジュールの大域（`m.count = 5`）も Python では外から書き換えられるので代入できる。型スタブに型のある属性・大域変数は
+# その型で静的に検査する（誤りの形は py_int_attr_assign_error.ar）。
+# ⚠ 以前は CPython の物への代入に腕が無く `cannot set attribute on non-instance`、モジュールの大域は
+#   「`mut` のモジュールの変数だけ代入できる」の TypeError だった。
+
+import[py-int] py_int_attr_assign as aa
+
+fn check(name: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + name)
+    print(name + " OK")
+
+# モジュールの大域: 書き換えると Python の関数からも見える
+aa.count = 5
+check("module global assignment", aa.count == 5 and aa.read_count() == 5)
+aa.label = "moved"
+let text: str = aa.label
+check("str module global", text == "moved")
+
+# インスタンスの属性（`__init__` の `self.value: int`）。`@property` は書き換えた値から計算する
+mut b = aa.Box()
+b.value = 10
+check("instance attribute", b.value == 10 and b.doubled == 20)
+
+# `__setattr__` の中から見える参照の数が CPython と同じ（受け手, 値）
+let want = aa.expected()
+mut p = aa.make()
+mut v = aa.Payload()
+p.x = v
+let variable = aa.last_seen()
+aa.make().x = aa.Payload()
+let temporary = aa.last_seen()
+check("refcounts in __setattr__ (variable)", variable == want["variable"])
+check("refcounts in __setattr__ (temporary)", temporary == want["temporary"])

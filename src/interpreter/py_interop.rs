@@ -650,6 +650,23 @@ pub fn py_setitem(handle: &PyObjHandle, key: &Value, val: &Value) -> Result<(), 
     })
 }
 
+/// `obj.attr = val`: CPython の `setattr`（`PyObject_SetAttr`・pandas_import_plan.md の 2-9）。モジュールの大域への代入
+/// （`gm.count = 5`）もここ（Python ではモジュールの大域は外から書き換えられる）。
+///
+/// ⚠ 受け手と値は借りるだけ（[`py_setitem`] と同じ。PyO3 の `setattr` は値を写す）。CPython の `o.x = v` と同じ参照の数で
+///   `__setattr__` / データディスクリプタの `__set__`（pandas の `df.columns = ..`）が走る（D-5）。
+pub fn py_setattr(handle: &PyObjHandle, attr: &str, val: &Value) -> Result<(), String> {
+    with_py(|py| -> Result<(), String> {
+        let obj = handle.bind(py);
+        let name = pyo3::types::PyString::new_bound(py, attr);
+        let py_val = py_operand(py, val).map_err(arrow_side)?;
+        if unsafe { ffi::PyObject_SetAttr(obj.as_ptr(), name.as_ptr(), py_val.as_ptr()) } == -1 {
+            return Err(python_raised(PyErr::fetch(py)));
+        }
+        Ok(())
+    })
+}
+
 /// Python の int（`bool` を除く）なら、その表記（`str(obj)`）。i64 に入らない int は Python のオブジェクトのまま届くので、
 /// 境界検査が OverflowError の文面に使う（`ffi_boundary`・7-9）。
 pub fn py_int_text(handle: &PyObjHandle) -> Option<String> {

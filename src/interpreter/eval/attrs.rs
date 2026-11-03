@@ -972,6 +972,10 @@ impl Interpreter {
             //    `cannot set attribute on non-instance` になっていた。
             //    `let` / `const`・関数などは型検査が弾く（6-1）。ここは型検査を通らない経路の砦。
             Value::Namespace(ns) => {
+                // `import[py-int]` のモジュール: CPython の `setattr`（Python のモジュールの大域は外から書き換えられる・2-9）
+                if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
+                    return crate::interpreter::py_interop::py_setattr(module, attr, &rhs);
+                }
                 if let Some(crate::interpreter::value::NsLive::Globals(globals, names)) = &ns.live {
                     if names.contains(attr) {
                         // ⚠ 今の大域は `scopes[0]` にある（`namespace_member` と同じ）。
@@ -996,6 +1000,8 @@ impl Interpreter {
                 }
                 Err(format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
             }
+            // CPython の物（`df.columns = [..]`・2-9）。⚠ 以前は腕が無く `cannot set attribute on non-instance` だった
+            Value::PyObject(handle) => crate::interpreter::py_interop::py_setattr(&handle, attr, &rhs),
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
         }
     }

@@ -1,0 +1,9 @@
+# import[py-int] の物とモジュールの属性への代入を、型スタブの型で静的に検査する（pandas_import_plan.md の 2-9）
+#
+# 正しい形は py_int_attr_assign.ar。
+
+import[py-int] py_int_attr_assign as aa
+
+aa.count = "five"                       # 大域変数 `count: int` に str
+mut b = aa.Box()
+b.value = "ten"                         # 属性 `self.value: int` に str

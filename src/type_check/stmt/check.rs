@@ -1430,6 +1430,34 @@ impl TypeChecker {
             }
             return;
         }
+        // `import[py-int]` のモジュールの大域への代入（`gm.count = 5`・pandas_import_plan.md の 2-9）: Python ではどの大域も
+        // 外から書き換えられる。型スタブに型のある大域変数（`count: int`）はその型で検査する（上の `mut` と同じ）。
+        // ⚠ 関数・クラスの付け替え（モンキーパッチ）と型の分からない名前は検査しない（型スタブに値の型が無い）
+        if let InferredType::PyNamespace(_) = self.infer_quietly(object) {
+            if compound_op.is_none()
+                && !matches!(
+                    target_ty,
+                    InferredType::Unresolved | InferredType::Any | InferredType::Function { .. } | InferredType::TypeValOf(_)
+                )
+            {
+                let module = match object.as_ref() {
+                    Expr::Ident { name, .. } => name.clone(),
+                    _ => "module".to_string(),
+                };
+                let ctx = format!("variable `{module}.{attr}`");
+                if !self.check_expected(&value_ty, &target_ty, false, &ctx) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::VarTypeMismatch {
+                            name: format!("{module}.{attr}"),
+                            expected: target_ty,
+                            got: value_ty,
+                        },
+                        span: Some(span.clone()),
+                    });
+                }
+            }
+            return;
+        }
         // レシーバのクラス名。**推論を伴わない**スコープ引きで求める（`self` も
         // `NamedInstance(現在のクラス)` として束縛されているので同じ経路で引ける）。
         // 識別子以外のレシーバ（`f().x = v` など）は保守的に検査しない。

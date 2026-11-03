@@ -21,7 +21,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | 13 | `is` が `==` を呼ぶ／同じ物どうしが `False` | D-4・[5-1] |
 | 14 | コスト: 越境 1 回ごとに +0.5〜1.7 µs。リストは Arrow → Python が 20〜50 ns/要素、Python → Arrow が約 110 ns/要素 | [4] |
-| 15 | CPython の物・モジュールの属性へ代入・削除できない（`df.columns = [..]`・`gm.count = 5` が `TypeError`） | [2-9] |
+| ~~15~~ | ✅ CPython の物・モジュールの属性へ代入できなかった件（直した: 2-9。`df.columns = [..]`・`gm.count = 5`） | [2-9] |
 
 測定の手順と生データは 6 節。
 
@@ -208,7 +208,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | 2-6 | ⏸ **保留**（4 節の 4・2.6）Arrow のインスタンス（と list などを写さずに）を Python へ渡す | 2-5・4 節の 4 | 中〜大 |
 | 2-7 | ⏸ **保留**（4 節の 3・2.6）list / dict / set の受け渡し（写さずに使うか） | 4 節の 3 | 中〜大 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
-| 2-9 | CPython の物とモジュールの属性への代入・削除（`df.columns = [..]`・`gm.count = 5`・`del o.x`）。CPython の `setattr` / `delattr` を呼ぶ（モジュールの大域は Python では書き換えられる） | なし | 小 |
+| ~~2-9~~ | ✅ **済**（2026-11-03）CPython の物とモジュールの属性への代入（`df.columns = [..]`・`gm.count = 5`）は CPython の `setattr`（`py_setattr`・受け手と値は借りるだけで、`__setattr__` の中の参照の数は CPython と同じ）。型スタブに型のある大域変数への代入は静的に検査する（属性は従来どおり）。例題は `py_int_attr_assign.ar`・`_error`。⚠ 削除（`del o.x`）は Arrow に構文が無いので対象外 | なし | 小 |
 
 ### フェーズ 3: `.py` を CPython で実行する（2.5）
 

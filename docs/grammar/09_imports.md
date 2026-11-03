@@ -547,8 +547,12 @@ let mean = np.mean(arr)
 - **大域変数**: 注釈のある大域変数（`count: int = 0`）はその型、注釈の無いものは `Any`。読むたびにモジュールの今の値を読み、
   値は境界で Arrow の値になる（`str` は Arrow の `str`）。`from m import x` は import した時点の値を束縛する（CPython と同じ）
   （`examples/interop/py_int_module_globals.ar`・`_error`）。⚠ 以前は import の時点の写しを Python のオブジェクトのまま返し、
-  モジュールの関数が書き換えた値が見えず、`let s: str = m.label` は実行時の `TypeError` だった。⚠ 代入（`m.x = v`）はまだ
-  できない（pandas_import_plan.md の 2-9）
+  モジュールの関数が書き換えた値が見えず、`let s: str = m.label` は実行時の `TypeError` だった
+- **属性への代入**（pandas_import_plan.md の 2-9）: `o.x = v` は CPython の `setattr`（`__setattr__`・`@property` の setter・
+  pandas の `df.columns = [..]`）。モジュールの大域（`m.count = 5`）も、Python と同じくどれも外から代入できる（Arrow の
+  モジュールの「`mut` だけ」の規則は Python のモジュールには無い）。型スタブに型のある属性・大域変数はその型で静的に検査する。
+  `__setattr__` の中から見える参照の数は CPython と同じ（`examples/interop/py_int_attr_assign.ar`・`_error`）。⚠ 以前は
+  CPython の物への代入が `cannot set attribute on non-instance`、モジュールの大域への代入が `TypeError` だった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

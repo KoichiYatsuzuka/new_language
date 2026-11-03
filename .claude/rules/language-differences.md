@@ -20,6 +20,9 @@
   `g.X = ..` is allowed only for `mut X` (it rewrites the module's global itself, like CPython);
   `let` / `const` / functions are static errors, and so is writing into a `let` / `const` (`g.L.append(..)`).
   `from g import X` binds a name that cannot be rebound, but its contents follow the original attribute.
+  - ⚠ A Python module (`import[py-int]`) has no `let` / `mut`: as in CPython, every global can be assigned from Arrow
+    (`m.count = 5` calls `setattr`; checked against the stub's type when it has one), and reads are live (pandas_import_plan.md
+    1-4 / 2-9).
 - Functions use `fn` instead of `def`
 - Static type checking occurs after parsing and before execution
 - Supports templates
