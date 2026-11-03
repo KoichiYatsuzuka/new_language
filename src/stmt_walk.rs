@@ -201,6 +201,7 @@ pub fn each_subpart(stmt: &Stmt, f: &mut impl FnMut(StmtPart<'_>)) {
         // ⚠⚠ 順序は「ターゲット → iter → 本体」（`collect_nested_decls` の採番順）。
         Stmt::For {
             targets,
+            mut_targets: _,
             iter,
             body,
             span: _,

@@ -1008,6 +1008,7 @@ pub(crate) fn convert_stmt(
             let body = convert_stmts(&f.body, filename, declared)?;
             Ok(vec![Stmt::For {
                 targets,
+                mut_targets: false,
                 iter,
                 body,
                 span: crate::token::Span::unknown(),
@@ -1144,6 +1145,7 @@ pub(crate) fn convert_stmt(
                     handlers.push(ExceptHandler {
                         exc_type,
                         name: name.clone(),
+                        name_mut: false,
                         body: hbody.clone(),
                     });
                 }

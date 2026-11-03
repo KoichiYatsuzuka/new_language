@@ -138,6 +138,13 @@ pub enum Op {
     /// 「コンパイラが `slots` を引いて外れた＝ローカルではないと確定した」名前に限るので、
     /// グローバルを見るのが正しい（`get_var` だと VM フレームで呼び出し元のローカルが見える）。
     StoreLocalFromIdent(u16, u32),
+    /// pop して、Python の物でなければ locals[slot] へそのまま書き込む（暗黙の束縛・pandas_import_plan.md の D-11・2-10）。
+    /// フィールド (slot, 束縛の説明 name_idx: `for:x` / `except:e`)。
+    ///
+    /// `mut` と書かない暗黙の束縛（分解する `for k, v in ..` の各変数・`except E as e`）が Python の物を受けたら `TypeError`
+    /// （`let` の [`Op::StoreLocalCopyFreeze`] と対。こちらは写さない: ループ変数は要素をそのまま指す）。
+    /// ⚠ 1 つの変数の `for x in ..` はこの op を出さず、[`Op::ForIter`] が同じ検査をする（普通のループに op を足さない）。
+    StoreLocalImplicit(u16, u32),
     /// キーワード引数つきの組み込み呼び出し（#27-c）。フィールドは `chunk.kw_calls` の index。
     ///
     /// `CallBuiltin` は評価済みの値だけを渡すので `enumerate(xs, start=1)` のような形を表現できず、

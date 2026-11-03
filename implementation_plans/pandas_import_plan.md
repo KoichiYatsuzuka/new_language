@@ -46,6 +46,8 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 - **D-8** Python から来た list / dict / set は**写さずにそのまま使う**（2026-11-04 に決定・4 節の 3・2.6）。
 - **D-9** Arrow の list / dict / set・インスタンスは、**Python からそのまま使えるように渡す**（包む・2026-11-04 に決定・4 節の 4・2.6）。
 - **D-10** 型を書いたスタブ（typeshed）は **`.py` の無いモジュールの分だけ同梱**し、ほかは同梱しない（2026-11-04 に決定・4 節の 7）。
+- **D-11** 暗黙の束縛（`for` の変数・内包の変数・`except E as e`・`match` の捕捉）も D-3 に従う: 不変の束縛で Python の物を受けたら
+  誤りにし、`mut` で受ける書き方（`for mut f in ..` など）を足す（2026-11-04 に決定・4 節の 6 の ①）。
 - **D-5** 参照の数は **Arrow の値の写し 1 つ ＝ CPython の参照 1 つ**にする（2.1）。決まった形の参照の数が CPython と同じで
   あることを試験で守る。
   - 採らなかった案:
@@ -225,6 +227,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | 2-6 | Arrow の list / dict / set・インスタンスを包んで Python へ渡す（D-9・2.6 の ④〜⑥） | 2-5 | 中〜大 |
 | 2-7 | Python の list / dict / set を写さずに包みのまま使う（D-8・2.6 の ①〜③） | なし | 中〜大 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
+| ~~2-10~~ | ✅ **済**（2026-11-04）`for mut x in ..`・`[.. for mut x in ..]`・`except E as mut e` を足した（AST の `mut_targets` / `name_mut`）。型で Python の物と分かれば静的な `ImmutablePythonObject`、分からなければ実行時の `TypeError`（VM: 1 つの変数は `ForIter` が要素が Python の物のときだけ副表 `implicit_for_targets` を引く・分解と `except` は新しい命令 `StoreLocalImplicit`・`for mut` は `StoreLocalDeepCopy` で写す）。呼んだ側の大域で走る組み込みの実装（`enumerate` など）の中は検査しない（`Chunk::builtin_prelude`）。ネイティブの関数は `for mut` を載せない。例題 `basics/for_mut.ar`・`py_int_implicit_bindings.ar`・`_error`・`_runtime_error`、`py_int_exceptions.ar` を `as mut` に直した。以下は起票時の内容: 暗黙の束縛で Python の物を受ける規則（D-11）。`for mut f in ..`（`for mut k, v in ..` はすべて `mut`）・内包の `for mut f in ..`・`except E as mut e`・`match` の捕捉に `mut` を書けるようにする。不変の束縛で Python の物を受けたら、型で分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ束縛するときに実行時の `TypeError`。⚠ 外の束縛が `mut` でも Python の物を受けるなら `mut` と書く（受け継ぎは実行時に判定できない。VM の slot は可変かどうかを持たない）。Arrow の値を `mut` で受けたら `mut` の宣言と同じく写す。`match` は新しい名前を束縛しない（`case <式>` / `is <型>`）ので対象外 | 1-2 | 中 |
 | ~~2-9~~ | ✅ **済**（2026-11-03）CPython の物とモジュールの属性への代入（`df.columns = [..]`・`gm.count = 5`）は CPython の `setattr`（`py_setattr`・受け手と値は借りるだけで、`__setattr__` の中の参照の数は CPython と同じ）。型スタブに型のある大域変数への代入は静的に検査する（属性は従来どおり）。例題は `py_int_attr_assign.ar`・`_error`。⚠ 削除（`del o.x`）は Arrow に構文が無いので対象外 | なし | 小 |
 
 ### フェーズ 3: `.py` を CPython で実行する（2.5）
@@ -263,7 +266,12 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 4. ~~Arrow の値を写さずに Python へ渡すか~~ ⇒ そのまま使えるように渡す（D-9）。④〜⑥の進め方は 2.6。
 7. ~~型を書いたスタブ（typeshed）を同梱するか~~ ⇒ `.py` の無いモジュールの分だけ同梱する（D-10・1-6）。
 
-未決:
+6. ~~暗黙の束縛~~ ⇒ ①誤りにして `mut` で受ける書き方を足す（D-11・2-10）。⚠ 例（2026-11-04 に実測）: 関数の戻り値を
+   `for f in m.chunks():` で回すと `f` は不変で `f["x"] = 1` が静的な誤り、`mut` の変数を回すと通る、型の分からない
+   `for chunk in pd.read_csv(.., chunksize=2):` は検査されずに通る、`except m.Err as e: e.retries = 3` も通る、と束縛と型によって割れていた。
+   不変のはずの `f` もメソッド（`f.add(1)`）では中身が変わる。
+
+（以下は決定前の記録）
 6. **暗黙の束縛**（1-2・D-3）: `for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛は、今どれも不変で、
    `mut` にする書き方が無い（`for mut x in ..` は無い）。Python の物を受けたとき ①誤りにして新しい書き方（`for mut x in ..`
    など）を足す ②暗黙の束縛だけは Python の物でも不変のまま許す ③暗黙の束縛は Python の物なら自動で `mut` にする、のどれにするか。

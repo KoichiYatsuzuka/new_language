@@ -1,0 +1,21 @@
+# import[py-int] の物を、`mut` と書かない暗黙の束縛で受ける（静的な誤り・pandas_import_plan.md の D-11・2-10）
+#
+# 正しい形は py_int_implicit_bindings.ar（`for mut f in ..` / `[.. for mut f in ..]` / `except E as mut e`）。
+# 型で Python の物と分かるので、どれも実行する前に止まる。型が分からないときは実行時の誤り
+# （py_int_implicit_bindings_runtime_error.ar）。
+
+import[py-int] py_int_implicit_bindings as pb
+
+for f in pb.chunks():                    # ループ変数が Python の物（Frame）を受ける
+    f.add(1)
+
+let widths = [h.width() for h in pb.chunks()]   # 内包の変数も同じ
+
+mut frames = pb.chunks()
+for g in frames:                         # 外の束縛が `mut` でも、Python の物を受けるなら `for mut`
+    g.add(1)
+
+try:
+    pb.boom()
+except pb.Failed as e:                   # Python で定義した例外（CPython の物）
+    print(e)

@@ -284,7 +284,7 @@ impl<'a> GenCtx<'a> {
                 self.start_block(&exit_blk);
             }
 
-            Stmt::For { targets, iter, body, span: _ } => {
+            Stmt::For { targets, iter, body, mut_targets: _, span: _ } => {
                 let target   = &targets[0];
                 let exit_blk = self.fresh_blk();
                 let loop_blk = self.fresh_blk();

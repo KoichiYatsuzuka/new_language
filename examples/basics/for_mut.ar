@@ -1,0 +1,55 @@
+# `for mut x in ..` — ループ変数を可変の束縛にする（pandas_import_plan.md の D-11・タスク 2-10）
+#
+# - `for mut x in xs` の `x` は `mut x = 要素` と同じ: 要素の**写し**を可変で持つ。書き換えても `xs` は変わらない
+#   （`let` のリストを回しても、`let` の中身は変わらない）
+# - `mut` を書かない `for x in xs` は今までどおり（要素そのものを指し、`xs` が `mut` なら書き換えが `xs` に届く）
+# - `for mut k, v in ..` はすべての変数が `mut`。内包でも書ける（`[.. for mut x in ..]`）
+# - Python の物を受けるループ変数は `for mut` が要る（py_int_implicit_bindings.ar）
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + label)
+    print(label + " OK")
+
+let rows = [[1], [2]]
+mut sums: list[int] = []
+for mut row in rows:
+    row.append(10)                      # 写しを書き換える
+    sums.append(row[0] + row[1])
+check("for mut copies the element", sums == [11, 12] and rows == [[1], [2]])
+
+mut counter = 0
+for mut n in [1, 2, 3]:
+    n = n * 2                           # ループ変数そのものも付け替えられる
+    counter = counter + n
+check("for mut variable can be rebound", counter == 12)
+
+mut grid = [[0], [0]]
+for cell in grid:
+    cell.append(1)                      # `mut` を書かない形は要素そのものを指す（従来どおり）
+check("plain for still aliases a mut list", grid == [[0, 1], [0, 1]])
+
+let doubled = [x * 2 for mut x in [1, 2, 3]]
+check("comprehension with for mut", str(doubled) == "[2, 4, 6]")
+
+mut keys: list[str] = []
+for mut k, v in {"a": 1, "b": 2}.items():
+    k = k + "!"
+    keys.append(k)
+check("for mut k, v", keys == ["a!", "b!"])
+
+# 関数の中・入れ子の関数の中でも同じ（VM の slot の束縛の道を通る）
+fn collect(src: list[list[int]]) -> int:
+    mut acc = 0
+    for mut row in src:
+        row.append(1)
+        acc = acc + len(row)
+    fn inner(xs: list[list[int]]) -> int:
+        mut n = 0
+        for mut a, b in [(xs[0], 1), (xs[1], 2)]:
+            a.append(b)
+            n = n + len(a)
+        return n
+    return acc + inner(src)
+let src = [[0], [0, 0]]
+check("for mut in a function and a nested function", collect(src) == 5 + 5 and src == [[0], [0, 0]])

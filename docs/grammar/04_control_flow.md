@@ -126,7 +126,16 @@ for i, val in enumerate(items):   # タプルアンパック
     print(i, val)
 ```
 
-`Stmt::For { targets: Vec<String>, iter: Expr, body: Vec<Stmt> }`
+`Stmt::For { targets: Vec<String>, mut_targets: bool, iter: Expr, body: Vec<Stmt> }`
+
+**`for mut x in ..`**（`mut_targets`・pandas_import_plan.md の D-11・タスク 2-10）: ループ変数を可変の束縛にします
+（`for mut k, v in ..` はすべての変数。内包でも `[.. for mut x in ..]`）。`x` は `mut x = 要素` と同じく要素の**写し**を
+持つので、書き換えても反復の元は変わりません（`let` のリストを回しても中身は変わらない）。`mut` を書かない
+`for x in ..` は要素そのものを指し、反復の元の属性（`mut` / `let`）を受け継ぎます（従来どおり）。
+⚠ Python の物（`import[py-int]` の CPython の物）を受けるループ変数は `for mut` と書きます（Python の物は `mut` で受ける・
+D-3）。外の束縛が `mut` でも要ります。書かなければ、型で分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ
+束縛するときに実行時の `TypeError`（`examples/basics/for_mut.ar`・`examples/interop/py_int_implicit_bindings.ar`・`_error`・
+`_runtime_error`）。
 
 **タプルアンパック**: `targets` が複数要素の場合、イテレータの各要素が  
 タプルであることを期待して各名前にバインドします。

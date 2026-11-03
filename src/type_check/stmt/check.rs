@@ -256,6 +256,7 @@ impl TypeChecker {
             }
             Stmt::For {
                 targets,
+                mut_targets,
                 iter,
                 body,
                 span: _,
@@ -283,8 +284,14 @@ impl TypeChecker {
                 //      for i in range(3):
                 //          i = i * 10      # 通ってしまう（B4 のケース h）
                 //    とループ変数そのものを潰せた。
-                let target_mut = self.path_is_mutable(iter).unwrap_or(false);
+                // `for mut x in ..`（D-11・2-10）は可変の束縛（要素を写す）
+                let target_mut = *mut_targets || self.path_is_mutable(iter).unwrap_or(false);
                 for (t, ty) in targets.iter().zip(target_tys) {
+                    // ⚠ Python の物を受けるループ変数は `for mut` と書く（D-11）。外の束縛が `mut` でも要る（実行時も
+                    //   `mut` と書いたかだけで判定する）
+                    if !*mut_targets && t != "_" {
+                        self.require_mut_for_python_object(t, "for", &ty);
+                    }
                     // ⚠⚠ ループ変数は**ブロック内の新しい束縛**（規則 1・B4）。
                     //    外側に同名があれば**再束縛**であり、`let` / `mut` の再宣言と
                     //    同じくエラーにする。以前は黙って覆うだけだったので
@@ -698,6 +705,10 @@ impl TypeChecker {
                             .as_deref()
                             .map(|t| InferredType::NamedInstance(self.registry.resolve(t).into_owned()))
                             .unwrap_or(InferredType::Unresolved);
+                        // Python で定義した例外（CPython の物）を受けるなら `except E as mut e` と書く（D-11・2-10）
+                        if !handler.name_mut {
+                            self.require_mut_for_python_object(name, "except", &exc_ty);
+                        }
                         self.note_binding(name, &exc_ty);
                         self.declare(name.clone(), exc_ty, true);
                     }
@@ -2321,7 +2332,7 @@ impl TypeChecker {
     }
 
     /// 不変の束縛（`binding`）が Python のオブジェクトを受けるなら誤り（D-3・1-2）。
-    fn require_mut_for_python_object(&mut self, name: &str, binding: &'static str, ty: &InferredType) {
+    pub(crate) fn require_mut_for_python_object(&mut self, name: &str, binding: &'static str, ty: &InferredType) {
         if self.holds_cpython_object(ty) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::ImmutablePythonObject { name: name.to_string(), binding },

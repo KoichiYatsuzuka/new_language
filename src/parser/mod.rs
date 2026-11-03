@@ -429,6 +429,17 @@ impl Parser {
         }
     }
 
+    /// 暗黙の束縛の前の `mut`（`for mut x in ..`・`except E as mut e`・pandas_import_plan.md の D-11・2-10）があれば消費して
+    /// `true` を返す。
+    fn eat_mut_marker(&mut self) -> bool {
+        if *self.current() == Token::Mut {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
     /// 改行・インデント・デデント・セミコロンをまとめてスキップする。
     /// ブロック境界をまたぐ前後のクリーンアップに使用する。
     fn skip_newlines(&mut self) {

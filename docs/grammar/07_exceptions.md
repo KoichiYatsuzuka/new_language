@@ -26,9 +26,16 @@ finally:
 struct ExceptHandler {
     exc_type: Option<String>,   // 例外クラス名（`m.Err` の修飾名も）。None は bare except (全捕捉)
     name:     Option<String>,   // as で束縛する変数名
+    name_mut: bool,             // `except E as mut e`（D-11・2-10）
     body:     Vec<Stmt>,
 }
 ```
+
+**`except E as mut e`**: Python で定義した例外（`import[py-int]` の CPython の物）を受けるときは `as mut e` と書きます
+（Python の物は `mut` で受ける・pandas_import_plan.md の D-3 / D-11・タスク 2-10）。書かなければ、型で分かれば静的な誤り
+（`except m.Err as e`）、分からなければ束縛するときに実行時の `TypeError`（`except ValueError as e` が Python で定義した
+`ValueError` の派生を捕まえたとき。文言に元の例外を含める）。Arrow の例外・Python の組み込みの例外（同じ名前の Arrow の
+例外になる・2-1）は今までどおり `as e` で受けられます。
 
 **実行**（VM の `SetupTry` / `ExcMatch`）:
 1. `try` ボディを実行

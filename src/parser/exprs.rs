@@ -985,6 +985,7 @@ impl Parser {
                 self.advance();
                 // ⚠ `for k, v in d.items() -> list[T]:` のように**多ターゲット**を許す
                 //   （`Stmt::For` は元から対応していた。式側だけが単一名だった）。
+                let mut_targets = self.eat_mut_marker();
                 let first_tok = self.pos;
                 let mut targets = vec![self.expect_ident()?];
                 while *self.current() == Token::Comma {
@@ -999,6 +1000,7 @@ impl Parser {
                 self.note_loop_targets(first_tok, &targets);
                 Ok(Expr::ForExpr {
                     targets,
+                    mut_targets,
                     iter: Box::new(iter),
                     body: self.parse_block()?,
                     return_type,
@@ -1182,6 +1184,7 @@ impl Parser {
             // ★ `[k for k, v in d.items()]` — 内包表記のターゲットも多ターゲット可。
             //   ⚠ 以前は**先頭の節だけ**が単一名に縛られていた（2 つ目以降は
             //     `Stmt::For` になるので通っていた）という非対称があった。
+            let mut_targets = self.eat_mut_marker();
             let mut targets = vec![self.expect_ident()?];
             while *self.current() == Token::Comma {
                 self.advance();
@@ -1194,7 +1197,7 @@ impl Parser {
                 self.advance(); // consume `if`
                 ifs.push(self.parse_expr()?);
             }
-            clauses.push(crate::ast::ComprehensionClause { targets, iter, ifs });
+            clauses.push(crate::ast::ComprehensionClause { targets, mut_targets, iter, ifs });
         }
         self.eat(close)?;
         let list_expr = crate::ast::build_list_comprehension(elt, clauses).ok_or_else(|| {

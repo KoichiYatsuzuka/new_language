@@ -107,8 +107,8 @@ impl Compiler {
             Stmt::Match { subject, arms, .. } => {
                 self.compile_match(subject, arms)?;
             }
-            Stmt::For { targets, iter, body, span: _ } => {
-                self.compile_for(targets, iter, body)?;
+            Stmt::For { targets, mut_targets, iter, body, span: _ } => {
+                self.compile_for(targets, *mut_targets, iter, body)?;
             }
             Stmt::Break => {
                 // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
@@ -477,7 +477,7 @@ impl Compiler {
     /// **本体の間だけ** `slots` の対応を temp slot へ差し替え、ループ後に元へ戻す。
     ///
     /// ⚠ temp は LIFO。`alloc_temp` と `free_temp` の順序を崩さないこと。
-    fn compile_for(&mut self, targets: &[String], iter: &Expr, body: &[Stmt]) -> Option<()> {
+    fn compile_for(&mut self, targets: &[String], mut_targets: bool, iter: &Expr, body: &[Stmt]) -> Option<()> {
         if targets.is_empty() {
             bail("for-no-target", None);
             return None;
@@ -547,15 +547,8 @@ impl Compiler {
         let loop_start = self.here();
         let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit は後でパッチ
         // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（pop は末尾から）。
-        if unpack {
-            self.emit(Op::UnpackTuple(target_slot, targets.len() as u16));
-            for ts in target_slots.iter().rev() {
-                match ts {
-                    Some(slot) => self.emit(Op::StoreLocal(*slot)),
-                    None => self.emit(Op::Pop), // `for k, _ in ...` の捨て要素
-                };
-            }
-        }
+        // ループ変数の束縛の規則（D-11・2-10）は `emit_for_target_binds`（`for` 式と共有）
+        self.emit_for_target_binds(fi, targets, mut_targets, unpack, target_slot, &target_slots);
         self.loops.push(LoopCtx {
             continue_target: loop_start, // continue は次の ForIter へ戻る
             break_jumps: Vec::new(),
@@ -596,6 +589,48 @@ impl Compiler {
             self.free_temp();
         }
         Some(())
+    }
+
+    /// `ForIter` の直後の、ループ変数の束縛（`compile_for` と `for` 式の `compile_for_expr_inner` が共有・D-11・2-10）。
+    ///
+    /// - `for mut x in ..`: 要素を `mut` の宣言と同じく写して束縛する（`StoreLocalDeepCopy`・Arrow の値は `let` の
+    ///   リストの要素を書き換えない。Python の物は写しても同じ物を指す）
+    /// - `mut` と書かない 1 つの変数: `ForIter` がそのまま束縛し、要素が Python の物のときだけ誤りにする（位置を
+    ///   `implicit_for_targets` に控える・普通のループに命令を足さない）
+    /// - `mut` と書かない分解（`for k, v in ..`）: 各変数を `StoreLocalImplicit` で受ける（Python の物なら誤り）
+    pub(super) fn emit_for_target_binds(
+        &mut self,
+        for_iter_ip: usize,
+        targets: &[String],
+        mut_targets: bool,
+        unpack: bool,
+        target_slot: u16,
+        target_slots: &[Option<u16>],
+    ) {
+        if !unpack {
+            if targets[0] == "_" {
+                return;
+            }
+            if mut_targets {
+                self.emit(Op::LoadLocal(target_slot));
+                self.emit(Op::StoreLocalDeepCopy(target_slot));
+            } else {
+                let n = self.add_name(&format!("for:{}", targets[0]));
+                self.chunk.implicit_for_targets.push((for_iter_ip as u32, n));
+            }
+            return;
+        }
+        self.emit(Op::UnpackTuple(target_slot, targets.len() as u16));
+        for (t, ts) in targets.iter().zip(target_slots.iter()).rev() {
+            match ts {
+                Some(slot) if mut_targets => self.emit(Op::StoreLocalDeepCopy(*slot)),
+                Some(slot) => {
+                    let n = self.add_name(&format!("for:{t}"));
+                    self.emit(Op::StoreLocalImplicit(*slot, n))
+                }
+                None => self.emit(Op::Pop), // `for k, _ in ...` の捨て要素
+            };
+        }
     }
 
     /// `let x = e`（関数本体・入れ子ブロック側。#62 で `compile_stmt` から切り出し）。

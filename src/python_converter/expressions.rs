@@ -229,6 +229,7 @@ fn convert_comprehension_clauses(
         };
         clauses.push(crate::ast::ComprehensionClause {
             targets,
+            mut_targets: false,
             iter,
             ifs: ifs?,
         });

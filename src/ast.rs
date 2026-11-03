@@ -701,6 +701,8 @@ pub enum Expr {
         /// `for k, v in d.items()` を書けなかった（2 つ目以降は `Stmt::For` に
         /// なるので通っていた）という非対称があった。
         targets: Vec<String>,
+        /// `for mut x in ..`（[`Stmt::For`] の `mut_targets` と同じ・D-11）。
+        mut_targets: bool,
         iter: Box<Expr>,
         body: Vec<Stmt>,
         return_type: Option<String>,
@@ -1002,6 +1004,10 @@ pub enum Stmt {
     For {
         /// ループ変数名のリスト。単一変数なら `vec!["x"]`、タプルアンパックなら `vec!["x", "y"]`。
         targets: Vec<String>,
+        /// `for mut x in ..`（`for mut k, v in ..` はすべての変数）: ループ変数を可変の束縛にする
+        /// （pandas_import_plan.md の D-11・2-10）。要素は `mut` の宣言と同じく写す（Arrow の値）。Python の物を受けるループ変数は
+        /// これが要る（無ければ型で分かれば静的な誤り、分からなければ実行時の `TypeError`）。
+        mut_targets: bool,
         /// イテラブルを返す式（リスト・ジェネレータなど）。
         iter: Expr,
         /// ループ本体の文リスト。
@@ -1499,6 +1505,8 @@ pub struct ExceptHandler {
     pub exc_type: Option<String>,
     /// 捕捉した例外を束縛する変数名（`as e` の `e`）。省略した場合は `None`。
     pub name: Option<String>,
+    /// `except E as mut e`: 可変の束縛にする（D-11・2-10）。Python で定義した例外（CPython の物）を受けるならこれが要る。
+    pub name_mut: bool,
     /// このハンドラの本体文リスト。
     pub body: Vec<Stmt>,
 }
@@ -1593,6 +1601,8 @@ pub const KW_SPREAD_ARG_KEY: &str = "**";
 pub struct ComprehensionClause {
     /// ループ変数名のリスト（`for k, v in d.items()` は 2 要素）。
     pub targets: Vec<String>,
+    /// `for mut x in ..`（[`Stmt::For`] の `mut_targets` と同じ・D-11）。
+    pub mut_targets: bool,
     /// 反復対象の式。
     pub iter: Expr,
     /// この節に付くフィルタ条件（`if` は複数書ける。すべて満たすときだけ産出する）。
@@ -1642,6 +1652,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
             // 先頭の節だけが値を返す `for` 式になる。
             return Some(Expr::ForExpr {
                 targets: clause.targets,
+                mut_targets: clause.mut_targets,
                 iter: Box::new(clause.iter),
                 body,
                 return_type: Some("list[Any]".to_string()),
@@ -1649,6 +1660,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
         }
         body = vec![Stmt::For {
             targets: clause.targets,
+            mut_targets: clause.mut_targets,
             iter: clause.iter,
             body,
             span: crate::token::Span::unknown(),

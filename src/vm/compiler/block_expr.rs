@@ -260,6 +260,7 @@ impl Compiler {
     pub(super) fn compile_for_expr(
         &mut self,
         targets: &[String],
+        mut_targets: bool,
         iter: &Expr,
         body: &[Stmt],
         ann: Option<u32>,
@@ -271,7 +272,7 @@ impl Compiler {
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
         // 本体内の `break` はこの式の NORMAL_END（= 蓄積リストを push する位置）へ跳ぶ。
         let saved_base = self.stmt_base.replace(0);
-        let r = self.compile_for_expr_inner(targets, iter, body, ann);
+        let r = self.compile_for_expr_inner(targets, mut_targets, iter, body, ann);
         self.stmt_base = saved_base;
         r
     }
@@ -279,6 +280,7 @@ impl Compiler {
     pub(super) fn compile_for_expr_inner(
         &mut self,
         targets: &[String],
+        mut_targets: bool,
         iter: &Expr,
         body: &[Stmt],
         ann: Option<u32>,
@@ -335,16 +337,8 @@ impl Compiler {
         self.emit(Op::StoreLocal(iter_temp));
         let loop_start = self.here();
         let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit → NORMAL_END
-        // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（`compile_for` と同一）。
-        if unpack {
-            self.emit(Op::UnpackTuple(target_slot, targets.len() as u16));
-            for ts in target_slots.iter().rev() {
-                match ts {
-                    Some(slot) => self.emit(Op::StoreLocal(*slot)),
-                    None => self.emit(Op::Pop),
-                };
-            }
-        }
+        // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（`compile_for` と同一・D-11 の束縛の規則も）。
+        self.emit_for_target_binds(fi, targets, mut_targets, unpack, target_slot, &target_slots);
         self.loops.push(LoopCtx {
             continue_target: loop_start,
             break_jumps: Vec::new(),

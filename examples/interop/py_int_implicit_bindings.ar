@@ -1,0 +1,50 @@
+# import[py-int] の物を暗黙の束縛（`for` の変数・内包の変数・`except .. as`）で受ける（pandas_import_plan.md の D-11・2-10）
+#
+# Python の物は `mut` で受ける（D-3）。暗黙の束縛にも `mut` を書く:
+#   for mut f in ..:        /  [.. for mut f in ..]  /  except E as mut e:
+# 書かなければ、型で分かれば静的な誤り（py_int_implicit_bindings_error.ar）、分からなければ束縛するときに実行時の
+# `TypeError`（py_int_implicit_bindings_runtime_error.ar）。
+# ⚠ 以前は束縛と型によって割れていた: 関数の戻り値を回す `for f in ..` は `f["x"] = 1` が静的な誤りなのにメソッドでは
+#   中身が変わり、型の分からない `for` と `except .. as e` は何も検査されなかった。
+
+import[py-int] py_int_implicit_bindings as pb
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + label)
+    print(label + " OK")
+
+# `for mut`: 属性・添字への代入とメソッドで書き換えられる（Python の物は同じ物を指す）
+mut total = 0
+for mut f in pb.chunks():
+    f["x"] = 1
+    f.add(10)
+    total = total + f.n + f.width()
+check("for mut over a typed list", total == 11 + 1 + 12 + 1)
+
+# 要素の型が分からない反復（Python の生成器）も `for mut` で受ける
+mut seen: list[int] = []
+for mut g in pb.stream():
+    g.n = g.n + 1
+    seen.append(g.n)
+check("for mut over a Python generator", seen == [11, 21])
+
+# 内包の変数
+let widths = [h.width() for mut h in pb.chunks()]
+check("comprehension with for mut", str(widths) == "[0, 0]")
+
+# 分解する `for mut k, v in ..`（すべての変数が `mut`）
+mut pairs: list[int] = []
+for mut i, fr in enumerate(pb.chunks()):
+    fr.add(i)
+    pairs.append(fr.n)
+check("for mut k, v unpacks into mut bindings", pairs == [1, 3])
+
+# `except .. as mut e`（Python で定義した例外は CPython の物）
+mut retries = 0
+try:
+    pb.boom()
+except pb.Failed as mut e:
+    e.retries = 3
+    retries = e.retries
+check("except as mut", retries == 3)

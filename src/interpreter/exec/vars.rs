@@ -80,6 +80,30 @@ pub(crate) const IMMUTABLE_PYTHON_OBJECT: &str = "TypeError: a Python object can
      or to a parameter that is not `mut` — Python code can change it through other references; bind it with `mut`";
 
 impl Interpreter {
+    /// `mut` と書かない暗黙の束縛（`binding` は `for:x` / `except:e`）が Python の物 `value` を受けたときの誤りの文言
+    /// （pandas_import_plan.md の D-11・2-10・静的な `ImmutablePythonObject` と対。型が分からない値のときに実行時に止める）。
+    /// 誤りでなければ `None`。⚠ Python から変換したコードの中は対象外（`running_python`・Arrow の束縛の規則は Arrow のコードのもの）。
+    /// ⚠ `except` の文言には元の例外を含める（この誤りが捕まえた例外に取って代わるので、元の誤りが分かるように）。
+    pub(crate) fn implicit_py_binding_error(&self, binding: &str, value: &Value) -> Option<String> {
+        let Value::PyObject(h) = value else { return None };
+        if self.running_python {
+            return None;
+        }
+        let (kind, name) = binding.split_once(':').unwrap_or(("for", binding));
+        Some(match kind {
+            "except" => format!(
+                "TypeError: '{name}' receives a Python exception ({}), so it must be bound with `as mut {name}` \
+                 — Python code can change it through other references",
+                super::super::py_interop::py_exception_line(h)
+            ),
+            _ => format!(
+                "TypeError: loop variable '{name}' receives a Python object ({}), so it must be declared \
+                 `for mut {name} in ...` — Python code can change it through other references",
+                super::super::py_interop::py_type_name(h)
+            ),
+        })
+    }
+
     /// `mut` でない仮引数 `name` が Python のオブジェクトを受けたら誤り（D-3・1-2・静的な `ImmutablePythonObject` と対）。
     ///
     /// ⚠ 値そのものだけを見る（コレクションの中は見ない）。呼び出しのたびに要素の数だけ走ると遅くなるため。中に

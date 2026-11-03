@@ -407,6 +407,7 @@ impl TypeChecker {
             }
             Expr::ForExpr {
                 targets,
+                mut_targets,
                 iter,
                 body,
                 return_type,
@@ -421,7 +422,9 @@ impl TypeChecker {
                 // ⚠⚠ `for` **式**も `for` 文と同じ束縛を作るので、B4 の規則を**同じく適用**する。
                 //    以前は `mutable: true` 決め打ちで、内包表記の脱糖先もここを通るため
                 //    文側だけ直しても穴が残っていた（実測）。
-                let target_mut = self.path_is_mutable(iter).unwrap_or(false);
+                // `for mut x in ..`（D-11・2-10）は可変の束縛（要素を写す）
+                let target_mut = *mut_targets || self.path_is_mutable(iter).unwrap_or(false);
+                let mut_targets = *mut_targets;
                 // ⚠ 積むのは `->list[T]` **そのもの**。要素を取り出すのは `loop_yield`
                 //    側で、内側の注釈が `list[T]` でなければ照合しない（タスク 5.2）。
                 let ann = self.ann_or_none(return_type);
@@ -451,6 +454,10 @@ impl TypeChecker {
                                 },
                                 span: None,
                             });
+                        }
+                        // Python の物を受けるループ変数は `for mut` と書く（D-11・`Stmt::For` と同じ）
+                        if !mut_targets && target != "_" {
+                            c.require_mut_for_python_object(target, "for", &ty);
                         }
                         // 規則 3: 反復対象の属性を継ぐ（一時値は `let`）。
                         c.note_binding(target, &ty);

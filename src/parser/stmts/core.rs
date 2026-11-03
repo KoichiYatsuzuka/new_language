@@ -368,6 +368,8 @@ impl Parser {
             }
             Token::For => {
                 self.advance();
+                // `for mut x in ..`（D-11・2-10）: ループ変数を可変の束縛にする（`for mut k, v` はすべて）
+                let mut_targets = self.eat_mut_marker();
                 let first_tok = self.pos;
                 let first = self.expect_ident()?;
                 let mut targets = vec![first];
@@ -383,6 +385,7 @@ impl Parser {
                 self.note_loop_targets(first_tok, &targets);
                 Ok(Stmt::For {
                     targets,
+                    mut_targets,
                     iter,
                     body: self.parse_block()?,
                     span: crate::token::Span::unknown(),

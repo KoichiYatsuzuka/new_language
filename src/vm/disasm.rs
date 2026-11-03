@@ -43,6 +43,9 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::StoreLocalFromIdent(s, n) => {
             format!("STORE_LOCAL_FROM_IDENT {s} src={:?}", chunk.names.get(*n as usize))
         }
+        Op::StoreLocalImplicit(s, n) => {
+            format!("STORE_LOCAL_IMPLICIT {s} binding={:?}", chunk.names.get(*n as usize))
+        }
         Op::CallBuiltinKw(i) => match chunk.kw_calls.get(*i as usize) {
             Some(kw) => format!(
                 "CALL_BUILTIN_KW {:?} argc={} names={:?}",

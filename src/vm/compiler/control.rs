@@ -222,7 +222,13 @@ impl Compiler {
     pub(super) fn bind_or_pop_exc(&mut self, h: &ExceptHandler) -> Option<()> {
         if let Some(alias) = &h.name {
             let slot = *self.slots.get(alias)?;
-            self.emit(Op::StoreLocal(slot)); // exc を束縛（消費）
+            if h.name_mut {
+                self.emit(Op::StoreLocal(slot)); // exc を束縛（消費）
+            } else {
+                // `as mut` と書かなければ、Python で定義した例外（CPython の物）は受けられない（D-11・2-10）
+                let n = self.add_name(&format!("except:{alias}"));
+                self.emit(Op::StoreLocalImplicit(slot, n));
+            }
         } else {
             self.emit(Op::Pop); // exc を破棄
         }

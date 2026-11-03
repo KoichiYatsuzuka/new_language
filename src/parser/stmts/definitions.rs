@@ -33,6 +33,7 @@ impl Parser {
         // Parse zero or more `except` clauses
         while *self.current() == Token::Except {
             self.advance(); // consume `except`
+            let mut name_mut = false;
             // Determine exception type and optional name binding
             let (exc_type, name, name_tok) = if matches!(self.current(), Token::Colon) {
                 // bare `except:`
@@ -45,9 +46,14 @@ impl Parser {
                     type_name.push('.');
                     type_name.push_str(&self.expect_ident()?);
                 }
-                let name_tok = self.pos + 1; // `as` の次のトークン
+                let mut name_tok = self.pos + 1; // `as` の次のトークン
                 let alias = if *self.current() == Token::As {
                     self.advance();
+                    // `except E as mut e`（D-11・2-10）
+                    if self.eat_mut_marker() {
+                        name_mut = true;
+                        name_tok += 1;
+                    }
                     Some(self.expect_ident()?)
                 } else {
                     None
@@ -63,6 +69,7 @@ impl Parser {
             handlers.push(ExceptHandler {
                 exc_type,
                 name,
+                name_mut,
                 body: handler_body,
             });
         }

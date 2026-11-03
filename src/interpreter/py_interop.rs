@@ -514,6 +514,16 @@ pub fn py_exception_is(h: &PyObjHandle, type_name: &str) -> bool {
     })
 }
 
+/// CPython の物の型の名前（`frames.Frame`・組み込みの型はモジュールを付けない・誤りの文言用・D-11）。
+pub fn py_type_name(h: &PyObjHandle) -> String {
+    with_py(|py| {
+        let ty = h.bind(py).get_type();
+        let name = ty.qualname().map(|s| s.to_string()).unwrap_or_else(|_| "object".to_string());
+        let module = ty.getattr("__module__").ok().and_then(|m| m.extract::<String>().ok()).unwrap_or_default();
+        if module == "builtins" || module.is_empty() { name } else { format!("{module}.{name}") }
+    })
+}
+
 /// CPython の例外のオブジェクトの、トレースバックの最後の行（`pkg.MyErr: bad`・[`python_raised`] と同じ形）。
 pub fn py_exception_line(h: &PyObjHandle) -> String {
     with_py(|py| exception_line(&h.bind(py).to_owned()))

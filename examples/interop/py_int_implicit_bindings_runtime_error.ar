@@ -1,0 +1,11 @@
+# import[py-int] の物を、`mut` と書かないループ変数で受ける（実行時の誤り・pandas_import_plan.md の D-11・2-10）
+#
+# `pb.stream()` は戻り値の注釈の無い Python の生成器なので、要素の型が分からない。静的には止められないので、
+# 束縛するときに `TypeError: loop variable 'f' receives a Python object (..Frame), so it must be declared `for mut f in ...``
+# 正しい形は py_int_implicit_bindings.ar（`for mut g in pb.stream():`）。
+
+import[py-int] py_int_implicit_bindings as pb
+
+print("before")
+for f in pb.stream():
+    print("unreachable")

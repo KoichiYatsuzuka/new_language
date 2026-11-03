@@ -343,7 +343,11 @@ impl Compiler {
     /// 足したときに `peephole::code_target_mut` への登録漏れ（#27-d で `StaticInit` の飛び先を
     /// 忘れ、**テストも例題も通ってしまった**）を探す場所を 1 つに保つため。
     pub(super) fn finish(mut self, meta: ChunkMeta) -> Chunk {
-        super::peephole::optimize(&mut self.chunk.code, &mut self.chunk.stmt_spans);
+        super::peephole::optimize_with(
+            &mut self.chunk.code,
+            &mut self.chunk.stmt_spans,
+            &mut self.chunk.implicit_for_targets,
+        );
         self.into_chunk(meta)
     }
 
@@ -437,6 +441,7 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             Op::StoreLocalCopyFreeze(a0) => ([Some(*a0), None], [None, None]),
             Op::StoreLocalFreezeInstance(a0) => ([Some(*a0), None], [None, None]),
             Op::StoreLocalFromIdent(a0, _) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocalImplicit(a0, _) => ([Some(*a0), None], [None, None]),
             Op::BinLocalLocal(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),
             Op::BinLocalConst(a0, _, _) => ([Some(*a0), None], [None, None]),
             Op::IntBinLL(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),

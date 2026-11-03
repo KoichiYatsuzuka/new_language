@@ -516,6 +516,7 @@ fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
             | Op::StoreLocalCopyFreeze(s)
             | Op::StoreLocalFreezeInstance(s)
             | Op::StoreLocalFromIdent(s, _)
+            | Op::StoreLocalImplicit(s, _)
             | Op::ListAppendLocal(s) => *s as usize,
             Op::ForIter(_, target, _) => *target as usize,
             _ => continue,
@@ -525,6 +526,29 @@ fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
         }
     }
     declared
+}
+
+/// `Op::ForIter` の要素が Python の物のとき: このループが `mut` でない 1 つの変数の `for` なら誤り（D-11・2-10）。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]`・遅い道を本体に入れない）。
+#[inline(never)]
+fn for_target_check(interp: &Interpreter, chunk: &Chunk, ip: usize, value: &Value) -> Result<(), String> {
+    if chunk.builtin_prelude {
+        return Ok(());
+    }
+    match chunk.implicit_for_targets.binary_search_by_key(&(ip as u32), |(at, _)| *at) {
+        Ok(k) => implicit_binding_check(interp, &chunk.names[chunk.implicit_for_targets[k].1 as usize], value),
+        Err(_) => Ok(()),
+    }
+}
+
+/// `mut` と書かない暗黙の束縛（`binding` は `for:x` / `except:e`）が Python の物 `value` を受けた誤り（D-11・2-10・
+/// 本体は `Interpreter::implicit_py_binding_error`）。
+#[inline(never)]
+fn implicit_binding_check(interp: &Interpreter, binding: &str, value: &Value) -> Result<(), String> {
+    match interp.implicit_py_binding_error(binding, value) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// `Op::StoreGlobal` の**ミス経路**（#10-b）。初回・キャッシュ失効時だけ通る。
@@ -1032,6 +1056,13 @@ fn exec_op(
         }
         // `let x = <グローバル識別子>`（#27-c）。ソースの可変性は実行時にしか分からないので
         // `vm_let_value_from_ident`（`DeclKind::LetFromIdent` と**同一の実装**）へ委譲する。
+        Op::StoreLocalImplicit(s, ni) => {
+            let v = buf.pop().unwrap();
+            if matches!(v, Value::PyObject(_)) && !chunk.builtin_prelude {
+                implicit_binding_check(interp, &chunk.names[*ni as usize], &v)?;
+            }
+            buf[base + *s as usize] = v;
+        }
         Op::StoreLocalFromIdent(s, ni) => {
             let v = buf.pop().unwrap();
             let src_mutable = interp.vm_global_is_mutable(&chunk.names[*ni as usize]);
@@ -1373,13 +1404,24 @@ fn exec_op(
                 None => None,
             };
             match next {
-                Some(Some(val)) => buf[base + *target_slot as usize] = val,
+                Some(Some(val)) => {
+                    // Python の物を `mut` でないループ変数で受けたら誤り（D-11・普通の値は判別子を見るだけ）
+                    if matches!(val, Value::PyObject(_)) {
+                        for_target_check(interp, chunk, ip, &val)?;
+                    }
+                    buf[base + *target_slot as usize] = val
+                }
                 Some(None) => return Ok(Flow::Jump(*exit_ip as usize)),
                 None => {
                     // フォールバック: カスタムイテレータ等は .next() を呼ぶ。
                     let iter = buf[iter_idx].clone();
                     match interp.eval_method_call(iter, "next", &[], None) {
-                        Ok(item) => buf[base + *target_slot as usize] = item,
+                        Ok(item) => {
+                            if matches!(item, Value::PyObject(_)) {
+                                for_target_check(interp, chunk, ip, &item)?;
+                            }
+                            buf[base + *target_slot as usize] = item
+                        }
                         Err(ref e) if e.starts_with("EndOfIteration") => {
                             return Ok(Flow::Jump(*exit_ip as usize))
                         }

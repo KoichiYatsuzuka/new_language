@@ -645,9 +645,9 @@ impl Compiler {
                 let ann = self.add_return_type(return_type);
                 self.compile_match_expr(subject, arms, pending, ann)?
             }
-            Expr::ForExpr { targets, iter, body, return_type } => {
+            Expr::ForExpr { targets, mut_targets, iter, body, return_type } => {
                 let ann = self.add_return_type(return_type);
-                self.compile_for_expr(targets, iter, body, ann)?
+                self.compile_for_expr(targets, *mut_targets, iter, body, ann)?
             }
             Expr::WhileExpr { cond, body, return_type } => {
                 let ann = self.add_return_type(return_type);

@@ -4,6 +4,7 @@
 #   （`KeyError` の `args` はキー、`OSError` の系統は `errno` も持つ）
 # - Python で定義した例外は CPython のオブジェクトのまま届く。`except m.Err:` で捕まり、組み込みの例外を継承していれば
 #   `except ValueError:` でも捕まる（CPython の `isinstance`）。属性（`e.code`）は CPython から読む
+#   ⚠ CPython の物なので `except .. as mut e` で受ける（Python の物は `mut` で受ける・D-3 / D-11・2-10）
 # - Arrow から Python の例外を投げることもできる（`raise m.Err(..)`）
 # ⚠ 以前は Python の例外がどれも `ForeignError`（`message` は `ValueError: bad`）で、`except ValueError:` で捕まらなかった。
 # 捕まえない形は py_int_exception_error.ar。
@@ -48,14 +49,14 @@ check("FileNotFoundError has errno", err_no == 2)
 mut app_code = 0
 try:
     px.fail_app(7)
-except px.AppError as e:
+except px.AppError as mut e:
     app_code = e.code
 check("except m.Err catches a Python-defined exception", app_code == 7)
 
 mut as_value = ""
 try:
     px.fail_parse()
-except ValueError as e:
+except ValueError as mut e:
     as_value = str(e)
 check("a Python subclass of ValueError is caught by except ValueError", as_value == "bad row 3")
 
@@ -77,6 +78,6 @@ check("except Exception catches a Python-defined exception", caught_all)
 mut raised_code = 0
 try:
     raise px.AppError("from Arrow", 42)
-except px.AppError as e:
+except px.AppError as mut e:
     raised_code = e.code
 check("raise a Python exception from Arrow", raised_code == 42)

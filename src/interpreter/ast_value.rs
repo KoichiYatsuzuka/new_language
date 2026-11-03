@@ -354,10 +354,11 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("body", stmts_list(body)),
             ],
         ),
-        Stmt::For { targets, iter, body, span: _ } => ns(
+        Stmt::For { targets, mut_targets, iter, body, span: _ } => ns(
             "StmtFor",
             vec![
                 ("targets", str_list(targets)),
+                ("mut_targets", Value::Bool(*mut_targets)),
                 ("iter", expr_to_value(iter)),
                 ("body", stmts_list(body)),
             ],

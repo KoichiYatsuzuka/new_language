@@ -307,6 +307,16 @@ pub struct Chunk {
     pub enum_defs: Vec<ChunkEnumDef>,
     /// 関数本体の `class` 定義（フェーズ10 10-16）。`Op::ClassDef(idx)` が index で参照する。
     pub class_defs: Vec<ChunkClassDef>,
+    /// `mut` と書かない 1 つの変数の `for x in ..` の `Op::ForIter` の位置と、変数の説明（`names` の索引・`for:x`）
+    /// （pandas_import_plan.md の D-11・2-10）。`ForIter` は要素が Python の物のときだけこれを引き、載っていれば
+    /// `TypeError`（[`Op::StoreLocalImplicit`] と同じ規則）。位置の順に並ぶ（コンパイルした順）。
+    /// ⚠ 普通の値のループでは引かない（副表にしたのは、全命令を太らせず普通のループに命令を足さないため）。
+    pub implicit_for_targets: Vec<(u32, u32)>,
+    /// 呼んだ側の大域で走る組み込みの実装（`GLOBALS_OF_CALLER`・`py_lazy_prelude` の `enumerate` / `zip` など）の本体か。
+    /// 暗黙の束縛の検査（D-11）をしない: 渡された要素をそのまま流す実装で、利用者の束縛ではない（仮引数の検査を飛ばす
+    /// `check_param_binding` の呼び出し側と同じ判断）。⚠ 以前は `for mut i, fr in enumerate(..)` が実装の中の `for x in it`
+    /// で誤りになった（実測）。
+    pub builtin_prelude: bool,
     /// Python から翻訳した関数の本体か（10-16）。`Op::ClassDef` がクラスを Python の規則
     /// （クラス継承・引数の束縛）で組み立てるのに使う。`compile_fn_value` が埋める。
     pub is_python: bool,

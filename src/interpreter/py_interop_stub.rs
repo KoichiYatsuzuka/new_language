@@ -63,6 +63,10 @@ pub fn py_exception_is(_h: &PyObjHandle, _type_name: &str) -> bool {
     false
 }
 
+pub fn py_type_name(_h: &PyObjHandle) -> String {
+    "<Python object>".to_string()
+}
+
 pub fn py_exception_line(_h: &PyObjHandle) -> String {
     "<Python exception>".to_string()
 }

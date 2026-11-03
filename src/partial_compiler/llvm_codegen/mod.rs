@@ -833,8 +833,9 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
             branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
             && else_body.as_ref().is_none_or(|b| body_eligible(b)),
         Stmt::While { cond, body, span: _ } => expr_eligible(cond) && body_eligible(body),
-        Stmt::For { targets, iter, body, span: _ } =>
-            targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
+        // `for mut x in ..`（D-11）は要素を写す束縛なので、ネイティブには載せない（VM が写す）
+        Stmt::For { targets, mut_targets, iter, body, span: _ } =>
+            !*mut_targets && targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
         Stmt::Match { subject, arms, .. } =>
             expr_eligible(subject) && arms.iter().all(|a| {
                 (match &a.pattern {

@@ -20,6 +20,20 @@
             .expect_err("expected parse error")
     }
 
+    /// `for mut` / 内包の `for mut` / `except E as mut e`（pandas_import_plan.md の D-11・2-10）。書かなければ偽。
+    #[test]
+    fn test_mut_implicit_bindings() {
+        let stmts = parse("for mut a, b in xs:\n    pass\nfor c in xs:\n    pass\n");
+        assert!(matches!(&stmts[0], Stmt::For { targets, mut_targets: true, .. } if targets.len() == 2));
+        assert!(matches!(&stmts[1], Stmt::For { mut_targets: false, .. }));
+        let stmts = parse("let ys = [x for mut x in xs]\n");
+        assert!(matches!(&stmts[0], Stmt::Let(_, _, Expr::ForExpr { mut_targets: true, .. }, _)), "{stmts:?}");
+        let stmts = parse("try:\n    pass\nexcept E as mut e:\n    pass\nexcept F as f:\n    pass\n");
+        let Stmt::Try { handlers, .. } = &stmts[0] else { panic!("{stmts:?}") };
+        assert!(handlers[0].name_mut && handlers[0].name.as_deref() == Some("e"));
+        assert!(!handlers[1].name_mut && handlers[1].name.as_deref() == Some("f"));
+    }
+
     /// literal_expr のテスト。
     #[test]
     fn test_literal_expr() {

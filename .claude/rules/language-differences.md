@@ -104,8 +104,11 @@
   (`fn f(mut d: pd.DataFrame)`). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
   container of them), otherwise a runtime `TypeError` at the binding. Values converted to Arrow values at the boundary
   (`int`, `str`, `dict` …) are Arrow values and can be bound with `let`.
-  - ⚠ Implicit bindings (`for` targets, comprehension variables, `except E as e`, `with .. as x`, `match`) are not
-    covered yet (the plan's §4 item 6).
+  - Implicit bindings follow the same rule (D-11, task 2-10): write `for mut f in ..` (all targets of `for mut k, v`),
+    `[.. for mut f in ..]` and `except E as mut e`. Without `mut`, receiving a Python object is a static
+    `ImmutablePythonObject` when the type says so, otherwise a runtime `TypeError` at the binding — even when the iterated
+    binding is itself `mut`. `for mut x in xs` binds a **copy** of an Arrow element (like `mut x = elem`); plain
+    `for x in xs` still aliases the element. (`match` binds no new names; Arrow has no `with`.)
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

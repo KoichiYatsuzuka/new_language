@@ -130,6 +130,7 @@ impl Interpreter {
         .map(|mut c| {
             // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
             c.is_python = fn_val.is_python;
+            c.builtin_prelude = fn_val.globals == crate::interpreter::value::GLOBALS_OF_CALLER;
             // 入れ子の関数の `__qualname__`（`outer.<locals>.inner`・タスク 1-14）。
             let outer = match &fn_val.qualname {
                 Some(q) => q.to_string(),
@@ -168,6 +169,7 @@ impl Interpreter {
                     &mut_captures,
                 )
                 .map(|mut c| {
+                    c.builtin_prelude = gen_fn.globals == crate::interpreter::value::GLOBALS_OF_CALLER;
                     // 入れ子の関数の `__qualname__`（`compile_fn_value` と同じ・タスク 1-14）。
                     c.set_nested_qualnames(gen_fn.qualname.as_deref().unwrap_or(&gen_fn.name));
                     Rc::new(c)

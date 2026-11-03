@@ -12,7 +12,7 @@
 use super::op::Op;
 
 /// 宣言順の op 名（`op_index` の戻り値でそのまま索引できる）。
-pub const OP_NAMES: [&str; 96] = [
+pub const OP_NAMES: [&str; 97] = [
     "Const",
     "Nil",
     "LoadLocal",
@@ -109,6 +109,7 @@ pub const OP_NAMES: [&str; 96] = [
     "ClassDef",
     "MetaInfo",
     "MakeCode",
+    "StoreLocalImplicit",
 ];
 
 /// `Op` を宣言順のインデックスへ落とす。
@@ -215,5 +216,6 @@ pub fn op_index(op: &Op) -> u8 {
         //   ビルドできなかった・フェーズ10 10-16 で発見）。番号は末尾に足す（名前の表と合っていればよい）。
         Op::MetaInfo { .. } => 94,
         Op::MakeCode { .. } => 95,
+        Op::StoreLocalImplicit { .. } => 96,
     }
 }

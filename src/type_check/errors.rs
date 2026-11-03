@@ -793,6 +793,17 @@ impl StaticTypeError {
                  through other references",
                 hl_q(name), hl_bt("mut")
             ),
+            // 暗黙の束縛（D-11・2-10）
+            TypeErrorKind::ImmutablePythonObject { name, binding } if *binding == "for" => format!(
+                "loop variable {} receives a Python object, so it must be declared {} — Python code can change it \
+                 through other references",
+                hl_q(name), hl_bt(&format!("for mut {name} in ..."))
+            ),
+            TypeErrorKind::ImmutablePythonObject { name, binding } if *binding == "except" => format!(
+                "{} receives a Python exception (a Python object), so it must be bound with {} — Python code can \
+                 change it through other references",
+                hl_q(name), hl_bt(&format!("as mut {name}"))
+            ),
             TypeErrorKind::ImmutablePythonObject { name, binding } => format!(
                 "{} holds a Python object, which cannot be bound with {} — Python code can change it through other \
                  references; bind it with {}",

@@ -86,6 +86,7 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::StoreLocalCopyFreeze(_)
         | Op::StoreLocalFreezeInstance(_)
         | Op::StoreLocalFromIdent(_, _)
+        | Op::StoreLocalImplicit(_, _)
         | Op::CallBuiltinKw(_)
         | Op::CallMethodKw(_)
         | Op::StaticStore(_)
@@ -170,14 +171,21 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
 ///
 /// `stmt_spans` は `code` と 1:1 の**文境界行テーブル**（#1）。命令を消すとずれるので
 /// **同じ写像で一緒に詰め直す**。呼び出し側が行テーブルを持たない場合は空スライスでよい。
+#[cfg(test)]
 pub fn optimize(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>) {
+    optimize_with(code, stmt_spans, &mut Vec::new());
+}
+
+/// [`optimize`] に、命令の位置を鍵に持つ副表（`Chunk::implicit_for_targets`・(位置, 値)）を足したもの。命令を消すと
+/// 位置がずれるので、`stmt_spans` と同じ写像で位置を書き換える（鍵の命令は `ForIter` で、消されない）。
+pub fn optimize_with(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>, ip_keyed: &mut Vec<(u32, u32)>) {
     debug_assert!(
         stmt_spans.is_empty() || stmt_spans.len() == code.len(),
         "stmt_spans は code と 1:1 か空のいずれかであること"
     );
     for _ in 0..MAX_PASSES {
         let collapsed = collapse_jump_chains(code);
-        let removed = remove_jumps_to_next(code, stmt_spans);
+        let removed = remove_jumps_to_next(code, stmt_spans, ip_keyed);
         if !collapsed && !removed {
             break;
         }
@@ -222,7 +230,7 @@ fn collapse_jump_chains(code: &mut [Op]) -> bool {
 }
 
 /// `i: JUMP i+1`（次命令へ跳ぶだけ）を除去し、全てのコード索引と行テーブルを詰め直す。
-fn remove_jumps_to_next(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>) -> bool {
+fn remove_jumps_to_next(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>, ip_keyed: &mut [(u32, u32)]) -> bool {
     let n = code.len();
     let remove: Vec<bool> = code
         .iter()
@@ -278,6 +286,12 @@ fn remove_jumps_to_next(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>) -> bool {
             if let Some(&mapped) = new_idx.get(*t as usize) {
                 *t = mapped;
             }
+        }
+    }
+    // 位置を鍵に持つ副表も同じ写像で（順序は保たれる: 写像は単調）
+    for (at, _) in ip_keyed.iter_mut() {
+        if let Some(&mapped) = new_idx.get(*at as usize) {
+            *at = mapped;
         }
     }
     *code = out;

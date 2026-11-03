@@ -362,11 +362,13 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
         },
         Expr::ForExpr {
             targets,
+            mut_targets,
             iter,
             body,
             return_type,
         } => Expr::ForExpr {
             targets: targets.clone(),
+            mut_targets: *mut_targets,
             iter: Box::new(subst_expr(iter, type_map)),
             body: subst_stmts(body, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
@@ -526,11 +528,13 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
         },
         Stmt::For {
             targets,
+            mut_targets,
             iter,
             body,
             span,
         } => Stmt::For {
             targets: targets.clone(),
+            mut_targets: *mut_targets,
             iter: subst_expr(iter, type_map),
             body: subst_stmts(body, type_map),
             span: span.clone(),
@@ -682,6 +686,7 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
                 .map(|h| ExceptHandler {
                     exc_type: h.exc_type.clone(),
                     name: h.name.clone(),
+                    name_mut: h.name_mut,
                     body: subst_stmts(&h.body, type_map),
                 })
                 .collect(),
