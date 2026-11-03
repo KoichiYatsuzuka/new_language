@@ -59,7 +59,7 @@ def lying_table() -> dict[str, int]:
     return {"a": "x"}
 
 
-def fail(why: str) -> int:                     # raises in Python: Arrow sees a ForeignError (plan 7-24)
+def fail(why: str) -> int:                     # raises in Python: Arrow sees a ValueError (pandas_import_plan.md 2-1)
     raise ValueError(why)
 
 

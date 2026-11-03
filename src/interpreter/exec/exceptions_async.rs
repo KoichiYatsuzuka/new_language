@@ -159,6 +159,14 @@ impl Interpreter {
     /// 修飾名（`except m.Err:`・python_builtins_plan.md のタスク 4-3）は `x is m.Err` と同じ経路
     /// （`value_is_type`: モジュールの別名を引いて同じクラスか、修飾名の基底に載っているか）で見る。
     pub(crate) fn vm_exc_matches(&self, exc: &Value, type_name: &str) -> bool {
+        // Python で定義した例外（CPython のオブジェクトのまま・pandas_import_plan.md の 2-1）: `except m.Err:` は `x is m.Err`
+        // と同じ（CPython の `isinstance`）、`except ValueError:` / `except Exception:` は CPython の組み込みのクラスとの `isinstance`
+        if let Value::PyObject(h) = exc {
+            if type_name.contains('.') {
+                return self.value_is_type(exc, type_name);
+            }
+            return crate::interpreter::py_interop::py_exception_is(h, type_name);
+        }
         if let Value::Instance(inst_rc) = exc {
             if type_name.contains('.') {
                 return self.value_is_type(exc, type_name);

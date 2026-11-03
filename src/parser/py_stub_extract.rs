@@ -454,13 +454,45 @@ fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (crate::ast::
             src: None,
             name,
             template_params: vec![],
-            bases: vec![],
+            // 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持たせる（`except m.Err:` の型検査・
+            // pandas_import_plan.md の 2-1）。ほかの基底は書かない（メンバーは上で写した）
+            bases: py_exception_base(lines, &bases, 0).into_iter().collect(),
             base_args: vec![],
             decorators,
             body,
         },
         end,
     )
+}
+
+/// 基底 `bases`（同じファイルのクラスはその基底もたどる）が行き着く組み込みの例外（`ValueError` など・Arrow の
+/// `BUILTIN_EXCEPTIONS` にあるもの）。例外のクラスでなければ `None`。ほかのファイルの基底は `link_py_types` がたどる。
+fn py_exception_base(lines: &[&str], bases: &[String], depth: u32) -> Option<String> {
+    if depth > 20 {
+        return None;
+    }
+    for b in bases {
+        let bare = b.split('[').next().unwrap_or(b).trim();
+        let last = bare.rsplit('.').next().unwrap_or(bare);
+        if crate::type_check::names::BUILTIN_EXCEPTIONS.iter().any(|(n, _)| *n == last) && (bare == last || bare == format!("builtins.{last}")) {
+            return Some(last.to_string());
+        }
+        if let Some(j) = py_find_class(lines, bare) {
+            let header = py_strip_comment(lines[j]).trim();
+            let inner: Vec<String> = match (header.find('('), header.rfind(')')) {
+                (Some(o), Some(c)) if o < c => split_top_level(&header[o + 1..c], ',')
+                    .into_iter()
+                    .filter(|x| !x.is_empty() && !x.contains('='))
+                    .map(|x| x.to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if let Some(found) = py_exception_base(lines, &inner, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// 同じファイルのトップレベルの `class name` の行。
@@ -1099,6 +1131,24 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
         assert_eq!(py_type_to_arrow("Optional[Any]"), "Any");
         assert_eq!(py_type_to_arrow("Person"), "Person");
         assert_eq!(py_type_to_arrow("Final[int]"), "int");
+    }
+
+    /// 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持つ（`except m.Err:` の型検査・pandas_import_plan.md の 2-1）。
+    /// 例外でないクラスは基底を持たない。
+    #[test]
+    fn exception_classes_keep_their_builtin_base() {
+        use crate::ast::Stmt;
+        let src = "class A(ValueError):\n    pass\nclass B(A):\n    pass\nclass C(builtins.KeyError):\n    pass\nclass D:\n    pass\n\
+                   class E(D):\n    pass\nclass F(other.Base):\n    pass\n";
+        let bases: Vec<(String, Vec<String>)> = extract_py_type_stubs(src)
+            .into_iter()
+            .filter_map(|s| if let Stmt::ClassDef { name, bases, .. } = s { Some((name, bases)) } else { None })
+            .collect();
+        let of = |n: &str| bases.iter().find(|(c, _)| c == n).map(|(_, b)| b.clone()).unwrap();
+        assert_eq!(of("A"), vec!["ValueError".to_string()]);
+        assert_eq!(of("B"), vec!["ValueError".to_string()]);
+        assert_eq!(of("C"), vec!["KeyError".to_string()]);
+        assert!(of("D").is_empty() && of("E").is_empty() && of("F").is_empty());
     }
 
     /// 注釈のあるモジュールの大域変数は型つきの `let` の宣言になる（pandas_import_plan.md の 1-4）。注釈の無いもの・`_` で

@@ -12,7 +12,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~3~~ | ✅ `.py` の無いモジュール（`sys`・`itertools`・`_collections`・`select` など）を `import[py-int]` できなかった件（直した: 1-4。CPython の内省で作ったスタブを同梱）。⚠ 戻り値の型は `Any`（`__text_signature__` に型が無い） | [1-4] |
 | ~~4~~ | ✅ ユーザーの site-packages を型の探索先にしなかった件（直した: 1-5） | [1-5] |
 | ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
-| 6 | Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらない | [2-1] |
+| ~~6~~ | ✅ Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらなかった件（直した: 2-1） | [2-1] |
 | 7 | 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る | [2-2] |
 | 8 | 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない | [2-3] |
 | 9 | `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない） | [2-4] |
@@ -200,7 +200,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 2-1 | Python の例外を同じ名前の Arrow の例外として受ける。Python で定義した例外は `except m.Err:` で捕まる | なし | 中 |
+| ~~2-1~~ | ✅ **済**（2026-11-04）Python が投げた組み込みの例外は同じ名前の Arrow の例外（`args` は Python の `args`）。Python で定義した例外は CPython のオブジェクトのまま `except m.Err:` と継承した組み込みの例外で捕まる（CPython の `isinstance`）・`raise m.Err(..)` で Arrow から投げられる・捕まえなければ CPython と同じ最後の行。型スタブのクラスは継承をたどって組み込みの例外を基底に持つ（`except m.Err:` の型検査）。ついでに: `print(x)` / `str(x)` を CPython の `str`（以前は `repr`）にした。例題は `py_int_exceptions.ar`・`_error`、`py_int_foreign_error.ar` を直した。⚠ `except ValueError as e` で Python で定義した例外を受けると、`e` の型は `ValueError` だが値は CPython の物（`e.message` は無い・`str(e)` / `e.args` を使う） | なし | 中 |
 | 2-2 | 真偽の判定で `__bool__` / `__len__` を呼ぶ（誤りは 2-1 の例外） | 2-1 | 小 |
 | 2-3 | 切り出し・多次元の添字・`Ellipsis` / `NotImplemented` を Python へ渡す | なし | 小〜中 |
 | 2-4 | `for` で CPython の反復子から 1 つずつ取り出す | なし | 小 |

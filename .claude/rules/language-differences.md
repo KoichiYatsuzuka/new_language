@@ -89,6 +89,9 @@
   - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
     `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
     `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
+  - Exceptions raised by CPython (`import[py-int]`; pandas_import_plan.md 2-1): a built-in one arrives as the Arrow exception
+    of the same name (`except ValueError:`); one defined in Python stays a CPython object, caught by `except m.Err:` and by
+    the built-in exceptions it inherits (CPython's `isinstance`). They used to all be `ForeignError`.
 - **Code translated from Python (`import[py]`) shares references; Arrow code copies** (known_bugs.md #1, decision
   A). Arrow copies a value whenever it is stored (field, dict, `append`, `xs[i] = v`, set `add`, `mut` declaration,
   closure capture) so a `let` value can never change through another holder. Inside a Python module's code these

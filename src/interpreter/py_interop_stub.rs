@@ -48,6 +48,25 @@ pub fn call_py_method(
     Err(unavailable(&format!("Python method '{method_name}'")))
 }
 
+/// Python が投げた例外の控え（`py_interop` と同じ形・評価コアでは作らない）。
+#[allow(dead_code)]
+pub enum PyRaised {
+    Builtin(Vec<Value>),
+    Object(PyObjHandle),
+}
+
+pub fn take_python_exception(_msg: &str) -> Option<PyRaised> {
+    None
+}
+
+pub fn py_exception_is(_h: &PyObjHandle, _type_name: &str) -> bool {
+    false
+}
+
+pub fn py_exception_line(_h: &PyObjHandle) -> String {
+    "<Python exception>".to_string()
+}
+
 pub fn py_getattr(_handle: &PyObjHandle, attr: &str) -> Result<Value, String> {
     Err(unavailable(&format!("Python attribute '{attr}'")))
 }

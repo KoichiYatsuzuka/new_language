@@ -172,11 +172,14 @@ impl Interpreter {
             }
             // ⚠ 評価コアビルドでは `PyObjHandle` が構築不能なのでこのアームへは到達しないが、
             //   **アーム自体は残す**（消すと網羅 match の 2 段強制が崩れる・評価コア切り出し #2）。
+            // `print(x)` / `str(x)` は CPython と同じく `str(x)`（`__str__`・例外は文言・numpy の配列は `[1 2]`）。`repr` は
+            // `display_repr`（リストの要素など）。⚠ 以前は常に `repr` で、`print(e)` が `ParseFailed('bad')` になっていた
+            // （pandas_import_plan.md の 2-1）
             #[cfg(feature = "native")]
             Value::PyObject(h) => crate::interpreter::py_interop::with_py(|py| {
                 use pyo3::types::PyAnyMethods;
                 h.bind(py)
-                    .repr()
+                    .str()
                     .and_then(|r| r.extract::<String>())
                     .unwrap_or_else(|_| "<PyObject>".to_string())
             }),
@@ -274,6 +277,15 @@ impl Interpreter {
                 let message = exception_message(&inst).map(|m| self.display_repr(&m)).unwrap_or_default();
                 format!("{}({message})", inst.class.name)
             }
+            // CPython の物は CPython の `repr`（`print` / `str` の `display` は `str`）
+            #[cfg(feature = "native")]
+            Value::PyObject(h) => crate::interpreter::py_interop::with_py(|py| {
+                use pyo3::types::PyAnyMethods;
+                h.bind(py)
+                    .repr()
+                    .and_then(|r| r.extract::<String>())
+                    .unwrap_or_else(|_| "<PyObject>".to_string())
+            }),
             _ => self.display(val),
         }
     }

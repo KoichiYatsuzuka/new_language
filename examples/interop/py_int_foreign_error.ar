@@ -1,11 +1,11 @@
-# py_int_foreign_error.ar — py-int で Python が投げた例外は ForeignError（正例・ffi_value_exchange_plan.md 7-24）
+# py_int_foreign_error.ar — py-int で Python が投げた例外の種類（正例・ffi_value_exchange_plan.md 7-24・pandas_import_plan.md の 2-1）
 #
-# C# / JS と同じく、相手の言語で投げられた例外は `ForeignError`。メッセージは Python の例外の種類とメッセージ
-# （`ValueError: bad`・`KeyError: 'k'`）。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは Arrow 側の誤りなので
-# `TypeError`。
-# ⚠ 7-24 より前は呼び出しの種類で決まる例外だった（関数は `RuntimeError: Python call failed: …`・メソッドは
-#   `AttributeError: Python method call …`）。`ValueError` を投げるメソッドが `AttributeError` になり、Arrow のインスタンスを
-#   渡した誤りも `RuntimeError` だった。
+# Python が投げた組み込みの例外は、同じ名前の Arrow の例外（`ValueError`・`KeyError`）。メッセージ（`e.message`・`str(e)`）は
+# CPython の `str(e)`。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは Arrow 側の誤りなので `TypeError`。
+# ⚠ ファイルの名前は 7-24 のときのもの。7-24 から 2-1 までは C# / JS と同じく `ForeignError`（`message` は `ValueError: bad`）で、
+#   `except ValueError:` で捕まらなかった。7-24 より前は呼び出しの種類で決まる例外（関数は `RuntimeError: Python call failed: …`・
+#   メソッドは `AttributeError: Python method call …`）だった。
+# Python で定義した例外は py_int_exceptions.ar。
 #
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # 実行には Python（py_int_probe.py）が要る。
@@ -24,17 +24,17 @@ class Point:
 mut message = ""
 try:
     print(pp.fail("bad"))
-except ForeignError as e:
+except ValueError as e:
     message = e.message
-check("a Python function's exception is a ForeignError (" + message + ")", message == "ValueError: bad")
+check("a Python function's exception is a ValueError (" + message + ")", message == "bad")
 
 message = ""
 mut r = pp.make_raiser()
 try:
     print(r.boom())
-except ForeignError as e:
+except KeyError as e:
     message = e.message
-check("a Python method's exception is a ForeignError (" + message + ")", message == "KeyError: 'k'")
+check("a Python method's exception is a KeyError (" + message + ")", message == "'k'")
 
 message = ""
 try:

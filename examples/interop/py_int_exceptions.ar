@@ -1,0 +1,82 @@
+# import[py-int] で Python が投げた例外を、同じ名前の Arrow の例外として受ける（pandas_import_plan.md の 2-1）
+#
+# - 組み込みの例外（`ValueError` / `KeyError` / `FileNotFoundError` …）は同じ名前の Arrow の例外。`args`・`str(e)` も CPython と同じ
+#   （`KeyError` の `args` はキー、`OSError` の系統は `errno` も持つ）
+# - Python で定義した例外は CPython のオブジェクトのまま届く。`except m.Err:` で捕まり、組み込みの例外を継承していれば
+#   `except ValueError:` でも捕まる（CPython の `isinstance`）。属性（`e.code`）は CPython から読む
+# - Arrow から Python の例外を投げることもできる（`raise m.Err(..)`）
+# ⚠ 以前は Python の例外がどれも `ForeignError`（`message` は `ValueError: bad`）で、`except ValueError:` で捕まらなかった。
+# 捕まえない形は py_int_exception_error.ar。
+
+import[py-int] py_int_exceptions as px
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + label)
+    print(label + " OK")
+
+# ── 組み込みの例外: 同じ名前の Arrow の例外 ───────────────────────────
+mut caught = ""
+try:
+    px.fail_value("bad")
+except ValueError as e:
+    caught = str(e)
+check("ValueError from Python", caught == "bad")
+
+mut key = ""
+try:
+    px.fail_key()
+except KeyError as e:
+    key = e.args[0] mustbe str
+check("KeyError keeps the key in args", key == "missing")
+
+mut lookup = False
+try:
+    px.fail_key()
+except LookupError:
+    lookup = True
+check("the built-in hierarchy (KeyError is a LookupError)", lookup)
+
+mut err_no = 0
+try:
+    px.fail_os()
+except FileNotFoundError as e:
+    err_no = e.errno mustbe int
+check("FileNotFoundError has errno", err_no == 2)
+
+# ── Python で定義した例外: CPython のオブジェクトのまま ─────────────────
+mut app_code = 0
+try:
+    px.fail_app(7)
+except px.AppError as e:
+    app_code = e.code
+check("except m.Err catches a Python-defined exception", app_code == 7)
+
+mut as_value = ""
+try:
+    px.fail_parse()
+except ValueError as e:
+    as_value = str(e)
+check("a Python subclass of ValueError is caught by except ValueError", as_value == "bad row 3")
+
+mut deep = False
+try:
+    px.fail_deep()
+except px.ParseFailed:
+    deep = True
+check("a subclass of a Python exception is caught by its base", deep)
+
+mut caught_all = False
+try:
+    px.fail_app(1)
+except Exception:
+    caught_all = True
+check("except Exception catches a Python-defined exception", caught_all)
+
+# ── Arrow から Python の例外を投げる ──────────────────────────────────
+mut raised_code = 0
+try:
+    raise px.AppError("from Arrow", 42)
+except px.AppError as e:
+    raised_code = e.code
+check("raise a Python exception from Arrow", raised_code == 42)

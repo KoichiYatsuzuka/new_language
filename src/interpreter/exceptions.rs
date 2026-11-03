@@ -74,6 +74,15 @@ impl Interpreter {
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
     /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
     pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
+        // Python が投げた例外（pandas_import_plan.md の 2-1・`py_interop::python_raised`）: 組み込みのものは同じ名前の Arrow の
+        // 例外（`args` は Python の `args`）、Python で定義したものは CPython のオブジェクトのまま
+        match super::py_interop::take_python_exception(msg) {
+            Some(super::py_interop::PyRaised::Builtin(args)) => self.error_args = Some((msg.to_string(), args)),
+            Some(super::py_interop::PyRaised::Object(h)) => {
+                return Some(RaisedError { exception: Value::PyObject(h), frames: vec![] });
+            }
+            None => {}
+        }
         // ⚠⚠ 組み込みの例外の表そのもので引く（`builtin_exception_of`・表は `type_check::names::BUILTIN_EXCEPTIONS`・
         //    python_builtins_plan.md のタスク 4-1 / ffi_value_exchange_plan.md 7-4）。`SyntaxError` の系統は変換しない。
         let class_name = super::built_in_types::builtin_exception_of(msg)?;

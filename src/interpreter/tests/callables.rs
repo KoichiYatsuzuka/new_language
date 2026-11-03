@@ -705,24 +705,25 @@ fn test_ar_to_py_dict() {
     }
 }
 
-/// Python が投げた例外は `ForeignError`（ffi_value_exchange_plan.md 7-24）。メッセージは Python の例外の種類とメッセージ。
-/// ⚠ 以前は呼び出しの種類で決まる例外で、添字の失敗はどれも `IndexError: Python __getitem__ failed: …` だった。
+/// Python が投げた組み込みの例外は同じ名前の Arrow の例外（pandas_import_plan.md の 2-1）。メッセージは CPython の `str(e)`。
+/// ⚠ 2-1 より前は `ForeignError`（メッセージは `IndexError: …`・ffi_value_exchange_plan.md 7-24）、その前は呼び出しの種類で
+///   決まる例外で、添字の失敗はどれも `IndexError: Python __getitem__ failed: …` だった。
 // ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
 #[cfg(feature = "native")]
 #[test]
-fn test_python_exception_is_foreign_error() {
+fn test_python_exception_is_the_same_arrow_exception() {
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
         "mut c = calc.Container([1])\n",
         "mut msg = \"\"\n",
         "try:\n",
         "    mut v = c[5]\n",
-        "except ForeignError as e:\n",
-        "    msg = e.message\n",
+        "except IndexError as e:\n",
+        "    msg = \"caught: \" + e.message\n",
     );
     match run_py_get(src, "msg") {
-        Value::Str(m) => assert!(m.starts_with("IndexError: "), "{m}"),
-        other => panic!("expected the ForeignError message, got {other:?}"),
+        Value::Str(m) => assert!(m.starts_with("caught: ") && !m.contains("IndexError"), "{m}"),
+        other => panic!("expected the IndexError message, got {other:?}"),
     }
 }
 

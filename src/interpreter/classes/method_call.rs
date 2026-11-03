@@ -427,7 +427,7 @@ impl Interpreter {
                 // `import[py-int]` のモジュール: CPython の `m.f(..)` と同じく、属性を読んでそのまま呼ぶ（1 回の GIL の中・
                 // 受け手のモジュールの参照も呼び出しの間だけ持つ）。⚠ `namespace_member`（`py_getattr`）で読んでから呼ぶと
                 // GIL を 2 回取り、1 回の呼び出しが 0.6〜0.9 µs 遅くなった（pandas_import_plan.md の 1-4・実測）。
-                // 無い名前は Python の `AttributeError`（`ForeignError`・2-1 で同じ名前の例外になる）
+                // 無い名前は Python の `AttributeError`（同じ名前の Arrow の例外・2-1）
                 if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
                     // ⚠ 評価コア・wasm では `PyObjHandle` を作れない（中身が `Infallible`）ので、ここへは来ない
                     #[allow(unreachable_code, unused_variables)]

@@ -617,6 +617,12 @@ impl Parser {
             py_type_refs(&base_decl, &mut refs);
             queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&base_home))));
             crate::parser::py_stub_extract::py_merge_base_members(class, &base_decl);
+            // ほかのファイルの基底が例外なら、派生も同じ組み込みの例外を基底に持つ（`py_exception_base`・2-1）
+            if let (Stmt::ClassDef { bases, .. }, Stmt::ClassDef { bases: base_bases, .. }) = (&mut *class, &base_decl) {
+                if bases.is_empty() && !base_bases.is_empty() {
+                    *bases = base_bases.clone();
+                }
+            }
         }
     }
 

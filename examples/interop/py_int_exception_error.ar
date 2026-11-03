@@ -1,7 +1,8 @@
 # py_int_exception_error.ar — py-int で Python が投げた例外を捕まえない（負例・ffi_value_exchange_plan.md 7-24）
 #
-# 期待: ForeignError: ValueError: bad
-# ⚠ 7-24 より前は `RuntimeError: Python call failed: ValueError: bad`（呼び出しの種類で決まる例外）だった。
+# 期待: ValueError: bad（Python の組み込みの例外は同じ名前の Arrow の例外・pandas_import_plan.md の 2-1）
+# ⚠ 2-1 より前は `ForeignError: ValueError: bad`、7-24 より前は `RuntimeError: Python call failed: ValueError: bad`
+#   （呼び出しの種類で決まる例外）だった。
 # 実行には Python（py_int_probe.py）が要る。
 # 対になる正例: py_int_foreign_error.ar
 

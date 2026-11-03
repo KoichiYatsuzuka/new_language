@@ -1334,6 +1334,8 @@ impl Interpreter {
                 }
             }
             Value::Str(s) => out.push_str(s),
+            // Python で定義した例外（CPython のオブジェクトのまま・pandas_import_plan.md の 2-1）: `pkg.MyErr: bad`
+            Value::PyObject(h) => out.push_str(&crate::interpreter::py_interop::py_exception_line(h)),
             other => out.push_str(&format!("<exception: {:?}>", other)),
         }
 
