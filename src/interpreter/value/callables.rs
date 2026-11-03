@@ -119,15 +119,24 @@ pub struct GeneratorState {
     /// **印を付けておいて最初の取り出しで落とす**。印が無いと「黙って枯渇したジェネレータ」に
     /// なり、🔴 サイレントに空の結果を返す。
     pub(crate) poisoned: bool,
+    /// CPython の反復子（`for x in <CPython の物>`・pandas_import_plan.md 2-4）。取り出すたびに `PyIter_Next` で
+    /// 1 つ取る（CPython の `for` と同じ）。**尽きたら `None`**（参照を離す）。
+    /// ⚠ 以前は回す前に全部を取り出していた（無限の生成器が終わらない・副作用の順が CPython と違う）。
+    pub(crate) py_iter: Option<PyObjHandle>,
 }
 
 impl GeneratorState {
+    /// CPython の反復子から 1 つずつ取り出すイテレータ（2-4）。
+    pub(crate) fn python(iterator: PyObjHandle) -> Self {
+        GeneratorState { py_iter: Some(iterator), ..Self::materialized(Vec::new()) }
+    }
+
     /// **実体化済み**のイテレータを作る（`range` / `zip` / list・set・str の走査等）。
     ///
     /// ⚠ フィールドを直接並べる形は 14 箇所あり、B13 だけで 3 回（`producer` /
     /// `running` / `poisoned`）全箇所を触った。**新しいフィールドはここだけ**で済ませる。
     pub(crate) fn materialized(values: Vec<Value>) -> Self {
-        GeneratorState { values, index: 0, producer: None, running: false, poisoned: false }
+        GeneratorState { values, index: 0, producer: None, running: false, poisoned: false, py_iter: None }
     }
 }
 

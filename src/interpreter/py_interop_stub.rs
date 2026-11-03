@@ -109,7 +109,11 @@ pub fn py_is_callable(_handle: &PyObjHandle) -> bool {
     false
 }
 
-pub fn py_collect_iter(_handle: &PyObjHandle) -> Result<Vec<Value>, String> {
+pub fn py_get_iter(_handle: &PyObjHandle) -> Result<PyObjHandle, String> {
+    Err(unavailable("iterating a Python object"))
+}
+
+pub fn py_iter_next(_handle: &PyObjHandle) -> Result<Option<Value>, String> {
     Err(unavailable("iterating a Python object"))
 }
 

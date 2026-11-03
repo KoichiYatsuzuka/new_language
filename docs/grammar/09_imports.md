@@ -562,6 +562,11 @@ let mean = np.mean(arr)
   `__neg__` / `__invert__`。⚠ `if` / `while` の条件は bool でなければならないのは同じで、型が CPython のクラスと分かる値を
   `if df:` と書くのは静的な誤り（`ConditionNotBool`）。`if bool(df):` と書く（`examples/interop/py_int_truthiness.ar`・`_error`・
   `_runtime_error`）。⚠ 以前は CPython の物が常に真で、`-x` / `~x` は `bad operand type`（`TypeError`）だった
+- **`for` で回す**（pandas_import_plan.md の 2-4）: CPython の物を `for` で回すと、CPython の `for` と同じく `iter(obj)` の
+  反復子から**取り出すたびに 1 つ**取る。生成器の処理とループの本体が交互に進み、`break` すればそれより先は取り出さない
+  （無限の生成器も回せる）。途中で投げられた例外は、そこまでの本体を走らせたあとで届く。内包・`list()`・`any()` / `all()`・
+  分解も同じ（`examples/interop/py_int_lazy_for.ar`）。⚠ 以前は回す前に全部を取り出していた。⚠ 1 つ取り出すたびに CPython へ
+  入るので、1 要素あたり約 0.12 µs かかる（30 万要素の `range` と生成器で実測）
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

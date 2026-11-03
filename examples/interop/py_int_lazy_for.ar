@@ -1,0 +1,67 @@
+# import[py-int] の物を for で回す（1 つずつ取り出す・pandas_import_plan.md の 2-4）
+#
+# `for` は CPython の反復子から**取り出すたびに 1 つ**取る（CPython の `for` と同じ）。生成器の処理と
+# ループの本体が交互に進み、途中で `break` すればそれより先は取り出さない。途中で投げられた例外は、そこまでの
+# 本体を走らせたあとで届く。内包・`list()`・`any()` / `all()` も同じ。
+# ⚠ 以前は回す前に全部を取り出していた（無限の生成器が終わらない・副作用の順が CPython と違う）。
+
+import[py-int] py_int_lazy_for as pl
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("failed: " + label)
+    print(label, "OK")
+
+# ① 本体と生成器が交互に進む（i 番目の本体では、まだ i + 1 個しか取り出していない）
+mut seen = 0
+for i in pl.counting(3):
+    let k = i mustbe int
+    check("taken " + str(k + 1) + " before body " + str(k), len(pl.log) == k + 1)
+    seen += 1
+check("three bodies", seen == 3)
+
+# ② break したらそれより先は取り出さない（全部を先に取り出すと guarded が投げる）
+mut last_seen = -1
+for n in pl.guarded(5):
+    if (n mustbe int) == 3:
+        break
+    last_seen = n mustbe int
+check("break stops taking", last_seen == 2)
+
+# ③ 途中で投げられた例外は、そこまでの本体のあとで届く
+mut bodies = 0
+mut msg = ""
+try:
+    for x in pl.failing():
+        bodies += 1
+except ValueError as e:
+    msg = str(e)
+check("body ran before the exception", bodies == 1)
+check("ValueError arrives", msg == "broken in the middle")
+
+# ④ __iter__ / __next__ を持つ反復子・__iter__ が生成器を返す物
+mut down: list[int] = []
+for c in pl.Countdown(3):
+    down.append(c mustbe int)
+check("Countdown", down == [2, 1, 0])
+mut names: list[str] = []
+for s in pl.Shelf(["ab", "cd"]):
+    names.append(s mustbe str)
+check("Shelf", names == ["AB", "CD"])
+
+# ⑤ 分解・内包・list()・any()
+mut keys = ""
+for key, val in pl.pairs():
+    keys = keys + str(key) + str(val)
+check("unpack", keys == "a1b2")
+let doubled = [(x mustbe int) * 2 for x in pl.counting(3)]
+check("comprehension", str(doubled) == "[0, 2, 4]")
+let listed = list(pl.Countdown(2))
+check("list()", str(listed) == "[1, 0]")
+check("any() stops early", any(pl.guarded(3)))
+
+# ⑥ CPython の物を受けるループ変数は for mut（D-11・2-10）
+mut total = 0
+for mut it in pl.items(4):
+    total += (it mustbe pl.Item).n
+check("for mut over CPython objects", total == 6)

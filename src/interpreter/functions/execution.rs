@@ -261,6 +261,13 @@ impl Interpreter {
                 // CPython の `ValueError: generator already executing` 相当。
                 return Err("ValueError: generator is already executing".to_string());
             }
+            // CPython の反復子（2-4）: 取り出しのたびに 1 つ。⚠ 借用を落としてから CPython を呼ぶ（`__next__` の中から
+            //   Arrow へ戻りうる・2-5）。
+            if let Some(it) = s.py_iter.take() {
+                s.running = true;
+                drop(s);
+                return Self::py_iter_step(state, it);
+            }
             match s.producer.take() {
                 Some(p) => {
                     s.running = true;
@@ -296,6 +303,24 @@ impl Interpreter {
         }
     }
 
+    /// CPython の反復子を 1 つ進める（[`GeneratorState::py_iter`]・2-4）。尽きたら反復子を離す。`__next__` が投げたら
+    /// 反復子は残す（CPython と同じく、もう一度取り出せば反復子が答える）。
+    fn py_iter_step(
+        state: &Rc<RefCell<GeneratorState>>,
+        it: crate::interpreter::PyObjHandle,
+    ) -> Result<Option<Value>, String> {
+        let r = crate::interpreter::py_interop::py_iter_next(&it);
+        let mut s = state.borrow_mut();
+        s.running = false;
+        match r {
+            Ok(None) => Ok(None),
+            other => {
+                s.py_iter = Some(it);
+                other
+            }
+        }
+    }
+
     /// 中断中のジェネレータを閉じる（bug_fix.md B13 段階 D）。
     ///
     /// 中断点へ `GeneratorExit` を投げ込むので、囲む `try` があれば **`finally` が走る**。
@@ -311,9 +336,11 @@ impl Interpreter {
             if s.running {
                 return Err("ValueError: generator is already executing".to_string());
             }
-            // 実体化済みの残りも捨てる（閉じたら枯渇）。
+            // 実体化済みの残りも捨てる（閉じたら枯渇）。CPython の反復子は参照を離す（最後の参照なら CPython が
+            // 生成器を閉じる・2-4）。
             s.values.clear();
             s.index = 0;
+            s.py_iter = None;
             match s.producer.take() {
                 Some(p) => {
                     s.running = true;
@@ -413,6 +440,7 @@ impl Interpreter {
             })),
             running: false,
             poisoned: false,
+            py_iter: None,
         }));
         // ⚠ プログラム終了時に `finally` を走らせるため登録する（B13 段階 D）。
         //   `Weak` なので寿命は延びない。⚠ 伸長する前に死んだ参照を掃いて、

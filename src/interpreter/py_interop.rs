@@ -9,7 +9,8 @@
 // - `py_getattr`: Python オブジェクトの属性を取得する
 // - `py_getitem` / `py_setitem`: Python の __getitem__ / __setitem__
 // - `py_len`: Python の __len__
-// - `py_collect_iter`: Python iterable を Vec<Value> に一括収集する
+// - `py_get_iter` / `py_iter_next`: `for` の反復子と、そこから 1 つ取り出す（2-4）
+// - `py_truthy` / `py_unary`: 真偽と単項演算子（2-2）
 // - `py_binop` / `py_rbinop`: Python の二項演算子（lhs=PyObject / rhs=PyObject）
 // - `with_py`: CPython へ入る唯一の入口（GIL を取り、参照の増減の待ち行列を反映する・D-5）
 
@@ -811,16 +812,29 @@ pub fn py_is_callable(handle: &PyObjHandle) -> bool {
     with_py(|py| handle.bind(py).is_callable())
 }
 
-/// Python iterable を走査して要素を `Vec<Value>` に収集する。for ループ用。
-pub fn py_collect_iter(handle: &PyObjHandle) -> Result<Vec<Value>, String> {
-    with_py(|py| -> Result<Vec<Value>, String> {
-        let obj = handle.bind(py);
-        let iter = obj.iter().map_err(python_raised)?;
-        let mut items = Vec::new();
-        for item in iter {
-            items.push(py_to_tl(py, &item.map_err(python_raised)?));
+/// `for x in obj` の反復子: CPython の `iter(obj)`（`PyObject_GetIter`・pandas_import_plan.md 2-4）。回せない物は
+/// CPython の `TypeError`（`'X' object is not iterable`）。
+pub fn py_get_iter(handle: &PyObjHandle) -> Result<PyObjHandle, String> {
+    with_py(|py| -> Result<PyObjHandle, String> {
+        let it = handle.bind(py).iter().map_err(python_raised)?;
+        Ok(PyObjHandle::from_owned(it.into_any().unbind()))
+    })
+}
+
+/// 反復子から 1 つ取り出す（`PyIter_Next`・2-4）。尽きたら `None`。`__next__` が投げた例外は Python の例外（2-1）。
+/// ⚠ 1 つごとに CPython へ入る（GIL を取る）。まとめないのは、取り出しの間に Arrow の本体が走るから（CPython の `for` と
+///   同じ順で副作用が起きる）。
+pub fn py_iter_next(handle: &PyObjHandle) -> Result<Option<Value>, String> {
+    with_py(|py| -> Result<Option<Value>, String> {
+        let raw = unsafe { ffi::PyIter_Next(handle.bind(py).as_ptr()) };
+        if raw.is_null() {
+            return match PyErr::take(py) {
+                Some(e) => Err(python_raised(e)),
+                None => Ok(None),
+            };
         }
-        Ok(items)
+        let item = unsafe { Bound::from_owned_ptr(py, raw) };
+        Ok(Some(py_to_tl(py, &item)))
     })
 }
 

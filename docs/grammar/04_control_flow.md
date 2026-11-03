@@ -150,6 +150,7 @@ D-3）。外の束縛が `mut` でも要ります。書かなければ、型で�
    - `Tuple` → 各要素
    - `Generator` → `next()` を繰り返す
    - `Range` インスタンス → `__iter__` / `__next__` を呼ぶ
+   - CPython の物（`import[py-int]`）→ `iter(obj)` の反復子から取り出すたびに 1 つ（`PyIter_Next`・pandas_import_plan.md 2-4）
 3. 各イテレーションで新しいスコープを積んで `targets` にバインド
 4. ボディを実行; `ExecResult::Break` で脱出、`ExecResult::Continue` で次へ
 

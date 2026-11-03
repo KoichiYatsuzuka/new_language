@@ -47,9 +47,11 @@ impl Interpreter {
             // ファイルは行（`readline()` を取り出すたびに呼ぶ遅延のイテレータ・python_builtins_plan.md のタスク 5-4）。
             Value::FileObject(_) => self.py_file_lines(iter_val)?,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
+            // CPython の物は CPython の反復子から取り出すたびに 1 つ取る（`iter(obj)` と `PyIter_Next`・
+            // pandas_import_plan.md 2-4）。⚠ 以前は先に全部を取り出していた。
             Value::PyObject(ref handle) => {
-                let items = crate::interpreter::py_interop::py_collect_iter(handle)?;
-                Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items))))
+                let it = crate::interpreter::py_interop::py_get_iter(handle)?;
+                Value::Generator(Rc::new(RefCell::new(GeneratorState::python(it))))
             }
             _ => return Err("TypeError: object is not iterable".to_string()),
         };
