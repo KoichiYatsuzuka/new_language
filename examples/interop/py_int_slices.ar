@@ -1,0 +1,64 @@
+# import[py-int] の物へ切り出し・多次元の添字・Ellipsis / NotImplemented を渡す（pandas_import_plan.md の 2-3）
+#
+# CPython の物の添字は Python と同じに書ける:
+# - スライスは Python の `slice` として渡る（`a[1:]`・`a[::2]`・代入の `a[1:] = v` も）
+# - 項をカンマで並べればタプル（`a[1:, 0]` は Python の `(slice(1, None, None), 0)`）。項ごとにスライス・式・`...` を書ける
+# - `...` は Python の `Ellipsis`（numpy の `a[..., 0]`）。⚠ `...` を値として書けるのは添字の項だけ（ほかでは `Ellipsis`）
+# - スライスの境界は int でなくてよい（pandas の `df.loc["b":"d"]`。決めるのは受け手）
+# - `Ellipsis` / `NotImplemented` は CPython の同じ値として渡る
+# ⚠ Arrow の list・str などを切り出すときの境界は今までどおり int（静的な誤り・py_int_slices_error.ar、型の分からない値は
+#   実行時の誤り・py_int_slices_runtime_error.ar）。
+
+import[py-int] py_int_slices as ps
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("failed: " + label)
+    print(label, "OK")
+
+# ① スライスは Python の slice として渡る
+mut g = ps.Grid()
+check("g[1:]", g[1:] == "slice(1, None, None)")
+check("g[::2]", g[::2] == "slice(None, None, 2)")
+check("g[5:1:-1]", g[5:1:-1] == "slice(5, 1, -1)")
+
+# ② 多次元の添字: 項ごとにスライス・式・... を書ける
+check("g[1:, 0]", g[1:, 0] == "(slice(1, None, None), 0)")
+check("g[..., 0]", g[..., 0] == "(Ellipsis, 0)")
+check("g[...]", g[...] == "Ellipsis")
+check("g[:, ::-1, ...]", g[:, ::-1, ...] == "(slice(None, None, None), slice(None, None, -1), Ellipsis)")
+
+# ③ 境界は int でなくてよい（pandas の loc と同じく受け手が決める）
+mut t = ps.Table(["a", "b", "c", "d", "e"])
+check("t[\"b\":\"d\"]", str(t["b":"d"]) == "['b', 'c', 'd']")
+check("t[:\"b\"]", str(t[:"b"]) == "['a', 'b']")
+check("t[\"c\":]", str(t["c":]) == "['c', 'd', 'e']")
+
+# ④ スライスを含む添字への代入
+g[1:] = 5
+g[:, "x"] = [1, 2]
+check("g[1:] = 5", g.stored[0] == "slice(1, None, None) = 5")
+check("g[:, \"x\"] = [1, 2]", g.stored[1] == "(slice(None, None, None), 'x') = [1, 2]")
+
+# ⑤ 2 次元の物（numpy の配列と同じ形の添字）
+mut m = ps.Matrix([[1, 2, 3], [4, 5, 6]])
+check("m[1, 2]", (m[1, 2] mustbe int) == 6)
+check("m[:, 1]", str(m[:, 1]) == "[2, 5]")
+check("m[0, :]", str(m[0, :]) == "[1, 2, 3]")
+check("m[..., 0]", str(m[..., 0]) == "[1, 4]")
+m[:, 0] = 0
+check("m[:, 0] = 0", str(m.tolist()) == "[[0, 2, 3], [0, 5, 6]]")
+
+# ⑥ Ellipsis / NotImplemented は CPython の同じ値
+check("Ellipsis is Python's Ellipsis", ps.is_ellipsis(Ellipsis))
+check("NotImplemented is Python's NotImplemented", ps.is_not_implemented(NotImplemented))
+
+# ⑦ Python から来た slice はそのまま Python へ渡し直せる
+mut s = ps.make_slice()
+check("a slice from Python", g[s] == "slice(1, None, 2)")
+
+# ⑧ Arrow の list・str の切り出しは今までどおり
+let xs = [1, 2, 3, 4, 5]
+check("xs[1::2]", xs[1::2] == [2, 4])
+check("\"hello\"[::-1]", "hello"[::-1] == "olleh")
+check("repr of a slice with str bounds", repr(slice("b", "d")) == "slice('b', 'd', None)")

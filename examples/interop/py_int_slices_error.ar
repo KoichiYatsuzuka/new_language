@@ -1,0 +1,9 @@
+# Arrow の list を、CPython の物と同じ形の添字で切り出す（静的な誤り・pandas_import_plan.md の 2-3）
+#
+# 境界が int でないスライス・スライスを含むタプルの添字は、CPython の物（受け手が添字の形を決める）にだけ書ける
+# （py_int_slices.ar）。Arrow の list・str・tuple の境界は int（`Index`・省略も可）で、添字は 1 つ。
+
+let xs = [1, 2, 3, 4]
+print(xs["a":])
+print(xs[1:, 0])
+print("hello"[:"l"])

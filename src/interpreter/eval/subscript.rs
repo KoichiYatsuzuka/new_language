@@ -193,16 +193,24 @@ impl Interpreter {
     /// スライス添字 `obj[begin:end:step]` を評価する。
     /// リスト → 新しいリスト、文字列 → 新しい文字列、タプル → 新しいタプルを返す。
     pub(crate) fn eval_subscript_slice(&mut self, obj: Value, s: Rc<SliceValue>) -> Result<Value, String> {
-        let step = match &s.step {
-            None => 1i64,
-            Some(Value::Int(n)) => *n,
-            _ => return Err("TypeError: slice step must be int".to_string()),
-        };
+        match obj {
+            // スライスをそのまま渡す（境界を決めるのは相手・CPython と同じ・2-3）。
+            // カスタムクラス: __getitem__ にスライスオブジェクトを渡して委譲する
+            Value::Instance(_) => {
+                return self.eval_method_call_evaled(obj, "__getitem__", vec![(None, Value::Slice(s), true)])
+            }
+            // CPython の物: Python の `slice` にして `__getitem__`（`a[1:]`・`df.loc["a":"c"]`）
+            Value::PyObject(ref handle) => {
+                return crate::interpreter::py_interop::py_getitem(handle, &Value::Slice(s))
+            }
+            _ => {}
+        }
+        let step = slice_bound(&s.step)?.unwrap_or(1);
         if step == 0 {
             return Err("ValueError: slice step cannot be zero".to_string());
         }
-        let begin = index_val_to_i64(&s.begin);
-        let end = index_val_to_i64(&s.end);
+        let begin = slice_bound(&s.begin)?;
+        let end = slice_bound(&s.end)?;
 
         match obj {
             Value::List(items) => {
@@ -233,10 +241,6 @@ impl Interpreter {
                 let new_types: Vec<String> = indices.iter().map(|&i| types[i].clone()).collect();
                 Ok(Value::Tuple(Rc::new(TupleData::new(new_vals, new_types))))
             }
-            // カスタムクラス: __getitem__ にスライスオブジェクトを渡して委譲する
-            Value::Instance(_) => {
-                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, Value::Slice(s), true)])
-            }
             _ => Err(format!(
                 "TypeError: '{}' object does not support slicing",
                 self.type_name(&obj)
@@ -253,16 +257,29 @@ impl Interpreter {
         s: Rc<SliceValue>,
         rhs: Value,
     ) -> Result<(), String> {
-        let step = match &s.step {
-            None => 1i64,
-            Some(Value::Int(n)) => *n,
-            _ => return Err("TypeError: slice step must be int".to_string()),
-        };
+        match obj {
+            // スライスをそのまま渡す（境界を決めるのは相手・2-3）。
+            // カスタムクラス: __setitem__ にスライスオブジェクトと値を渡して委譲する
+            Value::Instance(_) => {
+                self.eval_method_call_evaled(
+                    obj,
+                    "__setitem__",
+                    vec![(None, Value::Slice(s), true), (None, rhs, true)],
+                )?;
+                return Ok(());
+            }
+            // CPython の物: Python の `slice` にして `__setitem__`（`a[1:] = 0`・`df.loc[:, "a"] = ..`）
+            Value::PyObject(ref handle) => {
+                return crate::interpreter::py_interop::py_setitem(handle, &Value::Slice(s), &rhs)
+            }
+            _ => {}
+        }
+        let step = slice_bound(&s.step)?.unwrap_or(1);
         if step == 0 {
             return Err("ValueError: slice step cannot be zero".to_string());
         }
-        let begin = index_val_to_i64(&s.begin);
-        let end = index_val_to_i64(&s.end);
+        let begin = slice_bound(&s.begin)?;
+        let end = slice_bound(&s.end)?;
 
         match obj {
             Value::List(items) => {
@@ -290,15 +307,6 @@ impl Interpreter {
                         borrowed[idx] = new_val;
                     }
                 }
-                Ok(())
-            }
-            // カスタムクラス: __setitem__ にスライスオブジェクトと値を渡して委譲する
-            Value::Instance(_) => {
-                self.eval_method_call_evaled(
-                    obj,
-                    "__setitem__",
-                    vec![(None, Value::Slice(s), true), (None, rhs, true)],
-                )?;
                 Ok(())
             }
             _ => Err(format!(
@@ -373,20 +381,11 @@ impl Interpreter {
             },
             Value::List(items) => {
                 if let Value::Slice(s) = &key {
-                    let bound = |v: &Option<Value>| -> Result<Option<i64>, String> {
-                        match v {
-                            None | Some(Value::None) => Ok(None),
-                            Some(v) => value_as_index(v).map(Some).ok_or_else(|| {
-                                "TypeError: slice indices must be integers or None or have an __index__ method"
-                                    .to_string()
-                            }),
-                        }
-                    };
-                    let step = bound(&s.step)?.unwrap_or(1);
+                    let step = slice_bound(&s.step)?.unwrap_or(1);
                     if step == 0 {
                         return Err("ValueError: slice step cannot be zero".to_string());
                     }
-                    let (begin, end) = (bound(&s.begin)?, bound(&s.end)?);
+                    let (begin, end) = (slice_bound(&s.begin)?, slice_bound(&s.end)?);
                     let mut borrowed = items.borrow_mut();
                     let mut doomed = compute_slice_indices(borrowed.len() as i64, begin, end, step);
                     doomed.sort_unstable();

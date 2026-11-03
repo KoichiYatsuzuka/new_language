@@ -1,0 +1,24 @@
+# begin と step だけのスライス `xs[1::2]`（end を省略した形）
+#
+# `::` は字句解析で 1 つの字句になる。式の後ろの `::` をトレイトの指定（`obj::Trait.attr`）と読んでいたので、
+# `xs[1::2]` / `xs[i::2]` が `expected identifier` の構文の誤りだった（pandas_import_plan.md の 2-3 で見つけた）。
+# 今は `::` の後ろに名前と `.` が続くときだけトレイトの指定（`p::Scored.score`）と読む。
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("failed: " + label)
+    print(label, "OK")
+
+let xs = [10, 20, 30, 40, 50, 60]
+check("xs[1::2]", xs[1::2] == [20, 40, 60])
+let i = 2
+check("xs[i::2]", xs[i::2] == [30, 50])
+check("xs[4::-1]", xs[4::-1] == [50, 40, 30, 20, 10])
+check("xs[i + 1::i]", xs[i + 1::i] == [40, 60])
+let word = "abcdef"
+check("word[1::2]", word[1::2] == "bdf")
+let t = (1, 2, 3, 4)
+check("t[1::2]", t[1::2] == (2, 4))
+mut ys = [0, 0, 0, 0]
+ys[1::2] = [7, 8]
+check("ys[1::2] = [7, 8]", ys == [0, 7, 0, 8])

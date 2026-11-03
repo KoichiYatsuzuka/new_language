@@ -23,6 +23,10 @@
   - ⚠ A Python module (`import[py-int]`) has no `let` / `mut`: as in CPython, every global can be assigned from Arrow
     (`m.count = 5` calls `setattr`; checked against the stub's type when it has one), and reads are live (pandas_import_plan.md
     1-4 / 2-9).
+- `...` is a value (`Ellipsis`) only as a subscript item (`a[..., 0]`, pandas_import_plan.md 2-3); elsewhere write
+  `Ellipsis`. Subscript items may be slices (`a[1:, 0]`), and a slice may hold any bounds (`df.loc["b":"d"]`), but
+  slicing an Arrow list / str / bytes / tuple still requires int bounds (static error when the type says so, otherwise
+  CPython's runtime `TypeError`).
 - Functions use `fn` instead of `def`
 - Static type checking occurs after parsing and before execution
 - Supports templates

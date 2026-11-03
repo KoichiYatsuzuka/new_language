@@ -289,7 +289,11 @@ impl TypeChecker {
             }
             Expr::Subscript { object, index, node_id } => {
                 let obj_ty = self.infer(object);
-                let idx_ty = self.infer(index);
+                let idx_ty = if self.takes_foreign_slices(&obj_ty) {
+                    self.infer_foreign_index(index)
+                } else {
+                    self.infer(index)
+                };
                 // ⚠ 添字の型を検査する（タスク 5.2b・検体 L6 / L7）。
                 self.check_subscript_index(&obj_ty, &idx_ty);
                 // ⚠⚠ **スライス添字は要素ではなく「同じ種類の容器」を返す**（タスク 5.2b）。
@@ -1372,6 +1376,42 @@ impl TypeChecker {
                 .registry
                 .class_bases(class_name)
                 .is_some_and(|b| !b.is_empty())
+    }
+
+    /// 添字の相手がスライスの境界を自分で決める CPython の物か（`Any` も・pandas_import_plan.md 2-3）。
+    /// pandas の `df.loc["a":"c"]` のように、境界は int とは限らない（CPython と同じ）。
+    fn takes_foreign_slices(&self, obj_ty: &InferredType) -> bool {
+        match obj_ty {
+            InferredType::Any => true,
+            InferredType::NamedInstance(n) | InferredType::GenericInstance { name: n, .. } => {
+                self.registry.is_cpython_class(n)
+            }
+            _ => false,
+        }
+    }
+
+    /// CPython の物の添字（[`Self::takes_foreign_slices`]）: スライスの境界は型を問わない（式は推論して中を検査する）。
+    /// `a[1:, 0]` のようにタプルの項がスライスでも同じ。
+    fn infer_foreign_index(&mut self, index: &Expr) -> InferredType {
+        use crate::ast::SeqEntry;
+        match index {
+            Expr::Slice { begin, end, step } => {
+                for e in [begin, end, step].into_iter().flatten() {
+                    self.walk(e);
+                }
+                InferredType::NamedInstance("slice".to_string())
+            }
+            // 項がどれも式で（`*xs` が無い）、スライスを含むタプル（構文解析が作るのはこの形だけ）
+            Expr::Tuple(items)
+                if items.iter().all(|i| matches!(i, SeqEntry::Item(_)))
+                    && items.iter().any(|i| matches!(i, SeqEntry::Item(Expr::Slice { .. }))) =>
+            {
+                let parts: Vec<&Expr> =
+                    items.iter().filter_map(|i| if let SeqEntry::Item(e) = i { Some(e) } else { None }).collect();
+                InferredType::Tuple(parts.into_iter().map(|e| self.infer_foreign_index(e)).collect())
+            }
+            _ => self.infer(index),
+        }
     }
 
     /// 単項演算子の結果型を推論する。`Any`/`Union` オペランドは診断する。

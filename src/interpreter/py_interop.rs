@@ -207,6 +207,27 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         // bytes → Python の bytes（コピー・ffi_value_exchange_plan.md 5-3）。⚠ 以前は TypeError
         Value::Bytes(b) => Ok(PyBytes::new_bound(py, b).into()),
         Value::PyObject(h) => Ok(h.to_py(py)),
+        // スライス → Python の `slice`（境界は何でも・省略は None・pandas_import_plan.md 2-3）。`a[1:, 0]` の添字は
+        // スライスを持つタプルなので、上のタプルの腕からここへ来る。
+        Value::Slice(s) => {
+            let part = |v: &Option<Value>| v.as_ref().map_or_else(|| Ok(py.None()), |v| ar_to_py(py, v));
+            let (begin, end, step) = (part(&s.begin)?, part(&s.end)?, part(&s.step)?);
+            let raw = unsafe { ffi::PySlice_New(begin.as_ptr(), end.as_ptr(), step.as_ptr()) };
+            Ok(unsafe { Bound::from_owned_ptr_or_err(py, raw) }?.unbind())
+        }
+        // 唯一の値（`...` / `Ellipsis`・`NotImplemented`）は CPython の同じ値（`a[..., 0]`・2-3）
+        Value::Instance(inst)
+            if matches!(
+                inst.borrow().class.builtin,
+                crate::interpreter::BuiltinClass::Ellipsis | crate::interpreter::BuiltinClass::NotImplemented
+            ) =>
+        {
+            Ok(if inst.borrow().class.builtin == crate::interpreter::BuiltinClass::Ellipsis {
+                py.Ellipsis()
+            } else {
+                py.NotImplemented()
+            })
+        }
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)

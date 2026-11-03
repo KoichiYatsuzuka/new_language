@@ -376,7 +376,10 @@ items[-1]         # 負インデックス (末尾から)
 items[1:3]        # Expr::Slice (begin=1, end=3, step=None)
 items[::2]        # Expr::Slice (step=2)
 items[1:10:2]     # Expr::Slice (begin=1, end=10, step=2)
+items[1::2]       # Expr::Slice (begin=1, step=2)
 d["key"]          # 辞書アクセス
+grid[1:, 0]       # Expr::Tuple([Slice, 0])（項ごとにスライス・式・`...` を書ける）
+grid[..., 0]      # `...` は唯一の値 `Ellipsis`（添字の項だけ）
 ```
 
 **評価**:
@@ -384,6 +387,17 @@ d["key"]          # 辞書アクセス
 - `Str` → 1 文字の `Str` を返す
 - `Dict` → キー検索
 - スライス → 要素のリストを返す (ステップ対応)
+
+**項を並べた添字・`...`**（pandas_import_plan.md 2-3）: `a[x, y]` は `a[(x, y)]` で、各項はスライスでも `...` でもよい
+（Python と同じ）。受け取るのは `__getitem__` / `__setitem__` を持つ物（Python の物では numpy の `a[1:, 0]`・pandas の
+`df.loc[:, "a"]`）。⚠ `...` を値として書けるのは添字の項だけで、ほかの場所では `Ellipsis` と書く。
+**スライスの境界**: スライスの値は境界に何でも持てる（CPython の `slice` と同じ）。Arrow の list・str・bytes・tuple を
+切り出すときは int・`Index`・省略でなければならず、型で分かれば静的な誤り、分からなければ CPython と同じ
+`TypeError: slice indices must be integers or None or have an __index__ method`。CPython の物の添字（型が CPython の
+クラスか `Any`）は境界の型を問わない（pandas の `df.loc["b":"d"]`）（`examples/interop/py_int_slices.ar`・`_error`・
+`_runtime_error`）。⚠ 以前はスライスを作るときに境界を int・`Index`・`None` に限っていた。
+⚠ `xs[1::2]`（end を省略して step を書く）は以前 `::` をトレイトの指定（`obj::Trait.attr`）と読んで構文の誤りだった。
+今は `::` の後ろに名前と `.` が続くときだけトレイトの指定（`examples/collections/slice_begin_step.ar`）。
 
 **文字列の単位**: 文字列の添字・スライス・反復・`len(s)`・`find` / `rfind` / `index` / `rindex` / `count` の位置はどれも**文字**単位です
 （負の位置は末尾から数える・Python と同じ）。UTF-8 のバイト数が要るときは `len(s.encode("utf-8"))`

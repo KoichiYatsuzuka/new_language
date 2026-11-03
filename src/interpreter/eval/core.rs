@@ -522,43 +522,20 @@ impl Interpreter {
 
     /// 評価済みの 3 要素から `Value::Slice` を作る（#27-c）。
     ///
-    /// ツリーウォーク（`eval_slice_expr`）と VM（`Op::BuildSlice`）の**唯一の実装**。
-    /// 検査もエラー文言もここ 1 箇所にある。
+    /// ツリーウォーク（`eval_slice_expr`）・VM（`Op::BuildSlice`）・組み込みの `slice(..)` の**唯一の実装**。
     ///
-    /// ⚠ 評価順が 1 点だけツリーウォークの旧実装と違う: 以前は begin を検査してから end を
-    /// **評価**していたので、begin が不正なら end/step は評価されなかった。今は 3 つとも
-    /// 評価してから検査する。差が出るのは「不正な境界＋副作用つき境界式」＝どのみち
-    /// TypeError になるコードだけ。
+    /// 境界は**何でも持てる**（CPython の `slice` と同じ・pandas_import_plan.md 2-3）。pandas の `df.loc["a":"c"]` の
+    /// ように、添字の相手が決める。Arrow の list・str・bytes・tuple を切り出すときに、境界が int・`Index`・`None` かを
+    /// CPython と同じ文言で確かめる（`eval/mod.rs` の `slice_bound`）。
+    /// ⚠ 以前はここで int・`Index`・`None` だけにしていたので、Python へ文字列の境界を渡せなかった。
     pub(crate) fn slice_from_values(
         &mut self,
         begin: Value,
         end: Value,
         step: Value,
     ) -> Result<Value, String> {
-        let bound = |it: &Self, v: Value, which: &str| -> Result<Option<Value>, String> {
-            match &v {
-                Value::None => Ok(None),
-                Value::Int(_) => Ok(Some(v)),
-                Value::Instance(inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
-                _ => Err(format!(
-                    "TypeError: slice {which} must be int, Index, or None, got '{}'",
-                    it.type_name(&v)
-                )),
-            }
-        };
-        let begin = bound(self, begin, "begin")?;
-        let end = bound(self, end, "end")?;
-        let step = match &step {
-            Value::None => None,
-            Value::Int(_) => Some(step),
-            _ => {
-                return Err(format!(
-                    "TypeError: slice step must be int or None, got '{}'",
-                    self.type_name(&step)
-                ))
-            }
-        };
-        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
+        let part = |v: Value| if matches!(v, Value::None) { None } else { Some(v) };
+        Ok(Value::Slice(Rc::new(SliceValue { begin: part(begin), end: part(end), step: part(step) })))
     }
 
     /// 二項演算式を評価する。`And` / `Or` は短絡評価、それ以外は両辺を評価して `apply_binop` に渡す。

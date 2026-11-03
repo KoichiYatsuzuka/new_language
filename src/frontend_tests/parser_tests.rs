@@ -34,6 +34,26 @@
         assert!(!handlers[1].name_mut && handlers[1].name.as_deref() == Some("f"));
     }
 
+    /// 添字の項にスライス・`...` を書ける（`a[1:, 0]`・`a[..., 0]`・pandas_import_plan.md の 2-3）。`xs[1::2]` の `::` は
+    /// スライスの区切りで、名前と `.` が続くときだけトレイトの指定。
+    #[test]
+    fn test_subscript_items_slices_and_ellipsis() {
+        use crate::ast::SeqEntry;
+        let index_of = |src: &str| match parse(src).remove(0) {
+            Stmt::Expr(Expr::Subscript { index, .. }) => *index,
+            other => panic!("{other:?}"),
+        };
+        let Expr::Tuple(items) = index_of("a[1:, 0]\n") else { panic!() };
+        assert!(matches!(&items[..], [SeqEntry::Item(Expr::Slice { begin: Some(_), end: None, step: None }), SeqEntry::Item(Expr::Int(0))]));
+        let Expr::Tuple(items) = index_of("a[..., ::2]\n") else { panic!() };
+        assert!(matches!(&items[0], SeqEntry::Item(Expr::Ident { name, .. }) if name == "Ellipsis"));
+        assert!(matches!(&items[1], SeqEntry::Item(Expr::Slice { begin: None, end: None, step: Some(_) })));
+        assert!(matches!(index_of("a[...]\n"), Expr::Ident { name, .. } if name == "Ellipsis"));
+        assert!(matches!(index_of("xs[1::2]\n"), Expr::Slice { begin: Some(_), end: None, step: Some(_) }));
+        assert!(matches!(index_of("xs[i::k]\n"), Expr::Slice { begin: Some(_), end: None, step: Some(_) }));
+        assert!(matches!(&parse("p::Scored.score\n")[0], Stmt::Expr(Expr::TraitAccess { trait_name, .. }) if trait_name == "Scored"));
+    }
+
     /// literal_expr のテスト。
     #[test]
     fn test_literal_expr() {

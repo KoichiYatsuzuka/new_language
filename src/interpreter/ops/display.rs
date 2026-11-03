@@ -188,23 +188,10 @@ impl Interpreter {
             Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
             // ⚠ アドレスは出さない（D-3）
             Value::Ptr(p) => p.display(),
+            // 境界は `repr`（CPython の `slice('a', 'c', None)`・境界は何でも持てる・pandas_import_plan.md 2-3）
             Value::Slice(s) => {
-                let b = s
-                    .begin
-                    .as_ref()
-                    .map(|v| self.display(v))
-                    .unwrap_or_else(|| "None".to_string());
-                let e = s
-                    .end
-                    .as_ref()
-                    .map(|v| self.display(v))
-                    .unwrap_or_else(|| "None".to_string());
-                let st = s
-                    .step
-                    .as_ref()
-                    .map(|v| self.display(v))
-                    .unwrap_or_else(|| "None".to_string());
-                format!("slice({b}, {e}, {st})")
+                let part = |v: &Option<Value>| v.as_ref().map_or_else(|| "None".to_string(), |v| self.display_repr(v));
+                format!("slice({}, {}, {})", part(&s.begin), part(&s.end), part(&s.step))
             }
             Value::AsyncManager(rc) => {
                 let mgr = rc.borrow();

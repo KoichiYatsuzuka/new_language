@@ -486,8 +486,12 @@ impl Parser {
                         node_id: self.next_node_id(),
                     };
                 }
-                Token::ColonColon => {
-                    // `obj::TraitName.attr` 形式のトレイトアクセス
+                // `obj::TraitName.attr` 形式のトレイトアクセス。⚠ 名前と `.` が続くときだけ（`xs[1::2]` / `xs[i::2]` の
+                //   `::` はスライスの区切り・pandas_import_plan.md 2-3 で見つけた。以前は `expected identifier` だった）
+                Token::ColonColon
+                    if matches!(self.peek1(), Token::Ident(_))
+                        && matches!(self.tokens.get(self.pos + 2).map(|s| &s.token), Some(Token::Dot)) =>
+                {
                     self.advance(); // `::` を消費
                     let trait_name = self.expect_ident()?;
                     self.eat(&Token::Dot)?;
@@ -625,64 +629,23 @@ impl Parser {
         } else {
             self.advance(); // `[` を消費
 
-            // スライス構文の検出: `[:]`, `[:end]`, `[begin:]`, `[begin:end]`, `[::step]` 等
-            // 注意: `::` は lexer が Token::ColonColon として 1 トークンにまとめる。
-            let index = if *self.current() == Token::ColonColon {
-                // `[::step]` または `[::]`
-                self.advance(); // `::` を消費
-                let step = self.parse_slice_part()?;
-                Expr::Slice {
-                    begin: None,
-                    end: None,
-                    step,
+            // `a[x, y]` は `a[(x, y)]`（Python と同じ・D23・タスク 4-2）。各項はスライスでも `...` でもよい
+            // （`a[1:, 0]`・`a[..., 0]`・`df.loc[:, "a"]`・Python と同じ・pandas_import_plan.md 2-3）。
+            // ⚠ 型の合成（`dict[k, v]` / `tuple[a, b]`）を展開時に書くために足した。
+            //   以前は `,` で `expected ']'` の構文エラーで、スライスを含む項は 2-3 まで書けなかった。
+            let first = self.parse_subscript_item()?;
+            let index = if *self.current() == Token::Comma {
+                let mut items = vec![crate::ast::SeqEntry::Item(first)];
+                while *self.current() == Token::Comma {
+                    self.advance();
+                    if *self.current() == Token::RBracket {
+                        break;
+                    }
+                    items.push(crate::ast::SeqEntry::Item(self.parse_subscript_item()?));
                 }
-            } else if *self.current() == Token::Colon {
-                // `[:...]` — begin なし
-                self.advance(); // `:` を消費
-                let end = self.parse_slice_part()?;
-                let step = self.parse_slice_step()?;
-                Expr::Slice {
-                    begin: None,
-                    end,
-                    step,
-                }
+                Expr::Tuple(items)
             } else {
-                // 先に式を1つ読む。その後 `:` / `::` が来ればスライス、なければ通常添字。
-                let first = self.parse_expr()?;
-                if *self.current() == Token::ColonColon {
-                    // `[begin::step]` または `[begin::]`
-                    self.advance(); // `::` を消費
-                    let step = self.parse_slice_part()?;
-                    Expr::Slice {
-                        begin: Some(Box::new(first)),
-                        end: None,
-                        step,
-                    }
-                } else if *self.current() == Token::Colon {
-                    self.advance(); // `:` を消費
-                    let end = self.parse_slice_part()?;
-                    let step = self.parse_slice_step()?;
-                    Expr::Slice {
-                        begin: Some(Box::new(first)),
-                        end,
-                        step,
-                    }
-                } else if *self.current() == Token::Comma {
-                    // `a[x, y]` は `a[(x, y)]`（Python と同じ・D23・タスク 4-2）。
-                    // ⚠ 型の合成（`dict[k, v]` / `tuple[a, b]`）を展開時に書くために足した。
-                    //   以前は `,` で `expected ']'` の構文エラーだった。
-                    let mut items = vec![crate::ast::SeqEntry::Item(first)];
-                    while *self.current() == Token::Comma {
-                        self.advance();
-                        if *self.current() == Token::RBracket {
-                            break;
-                        }
-                        items.push(crate::ast::SeqEntry::Item(self.parse_expr()?));
-                    }
-                    Expr::Tuple(items)
-                } else {
-                    first // 通常添字（スライスなし）
-                }
+                first
             };
 
             self.eat(&Token::RBracket)?;
@@ -694,12 +657,56 @@ impl Parser {
         }
     }
 
+    /// 添字の 1 項: スライス（`[:]`, `[:end]`, `[begin:]`, `[begin:end]`, `[::step]` 等）・`...`・式。
+    /// 注意: `::` は lexer が Token::ColonColon として 1 トークンにまとめる。
+    ///
+    /// `...` は唯一の値 `Ellipsis`（CPython と同じ。変換器も `...` をこの名前にする・タスク 6-11）。
+    /// ⚠ `...` を値として書けるのは添字の項だけ（numpy の `a[..., 0]`）。ほかの場所では `Ellipsis` と書く。
+    fn parse_subscript_item(&mut self) -> Result<Expr, String> {
+        if *self.current() == Token::ColonColon {
+            // `[::step]` または `[::]`
+            self.advance(); // `::` を消費
+            let step = self.parse_slice_part()?;
+            return Ok(Expr::Slice { begin: None, end: None, step });
+        }
+        if *self.current() == Token::Colon {
+            // `[:...]` — begin なし
+            self.advance(); // `:` を消費
+            let end = self.parse_slice_part()?;
+            let step = self.parse_slice_step()?;
+            return Ok(Expr::Slice { begin: None, end, step });
+        }
+        if *self.current() == Token::Ellipsis && matches!(*self.peek1(), Token::Comma | Token::RBracket) {
+            self.advance(); // `...` を消費
+            return Ok(Expr::Ident {
+                name: "Ellipsis".to_string(),
+                node_id: self.next_node_id(),
+                res: Resolution::Unresolved,
+            });
+        }
+        // 先に式を1つ読む。その後 `:` / `::` が来ればスライス、なければ通常添字。
+        let first = self.parse_expr()?;
+        if *self.current() == Token::ColonColon {
+            // `[begin::step]` または `[begin::]`
+            self.advance(); // `::` を消費
+            let step = self.parse_slice_part()?;
+            return Ok(Expr::Slice { begin: Some(Box::new(first)), end: None, step });
+        }
+        if *self.current() == Token::Colon {
+            self.advance(); // `:` を消費
+            let end = self.parse_slice_part()?;
+            let step = self.parse_slice_step()?;
+            return Ok(Expr::Slice { begin: Some(Box::new(first)), end, step });
+        }
+        Ok(first) // 通常添字（スライスなし）
+    }
+
     /// スライスの begin/end/step 部分（省略可能な式）をパースする。
-    /// `]`, `:`, `::` または EOF が来た場合は `None` を返す。
+    /// `]`, `,`, `:`, `::` または EOF が来た場合は `None` を返す（`,` は `a[1:, 0]` の項の区切り）。
     fn parse_slice_part(&mut self) -> Result<Option<Box<Expr>>, String> {
         if matches!(
             *self.current(),
-            Token::RBracket | Token::Colon | Token::ColonColon | Token::Eof
+            Token::RBracket | Token::Comma | Token::Colon | Token::ColonColon | Token::Eof
         ) {
             Ok(None)
         } else {

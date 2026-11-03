@@ -1,0 +1,11 @@
+# 型の分からない境界で Arrow の list を切り出す（実行時の誤り・pandas_import_plan.md の 2-3）
+#
+# スライスは境界に何でも持てる（CPython の `slice` と同じ。Python の物へ `"a":"c"` を渡せる・py_int_slices.ar）。
+# Arrow の list・str・bytes・tuple を切り出すときに境界を確かめ、int・`Index`・`None` でなければ CPython と同じ
+# `TypeError: slice indices must be integers or None or have an __index__ method`。
+# ⚠ 以前はスライスを作るときに `slice begin must be int, Index, or None, got 'str'` だった。
+
+let xs = [1, 2, 3, 4]
+let bound: Any = "b"
+print("before")
+print(xs[bound:])

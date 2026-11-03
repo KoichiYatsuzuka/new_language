@@ -7,7 +7,7 @@ use {
     crate::ast::{CallArg, Expr},
     crate::token::Span,
     crate::interpreter::{
-        Interpreter, NativeFnRef, SliceValue, Value, Var,
+        Interpreter, NativeFnRef, Value, Var,
     },
 };
 use super::*;
@@ -588,51 +588,14 @@ impl Interpreter {
                 }
                 n => Err(format!("TypeError: frozenset expected at most 1 argument, got {n}")),
             },
-            "slice" => {
-                let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {
-                    match v {
-                        Value::None => Ok(None),
-                        Value::Int(_) => Ok(Some(v)),
-                        Value::Instance(ref inst) if inst.borrow().class.name == "Index" => {
-                            Ok(Some(v))
-                        }
-                        other => Err(format!(
-                            "TypeError: slice {label} must be int, Index, or None, got '{}'",
-                            self.type_name(&other)
-                        )),
-                    }
-                };
-                let check_step = |v: Value| -> Result<Option<Value>, String> {
-                    match v {
-                        Value::None => Ok(None),
-                        Value::Int(_) => Ok(Some(v)),
-                        other => Err(format!(
-                            "TypeError: slice step must be int or None, got '{}'",
-                            self.type_name(&other)
-                        )),
-                    }
-                };
-                match vals.len() {
-                    2 => {
-                        let mut it = vals.into_iter();
-                        let begin = check_index(it.next().unwrap(), "begin")?;
-                        let end = check_index(it.next().unwrap(), "end")?;
-                        Ok(Value::Slice(Rc::new(SliceValue {
-                            begin,
-                            end,
-                            step: None,
-                        })))
-                    }
-                    3 => {
-                        let mut it = vals.into_iter();
-                        let begin = check_index(it.next().unwrap(), "begin")?;
-                        let end = check_index(it.next().unwrap(), "end")?;
-                        let step = check_step(it.next().unwrap())?;
-                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
-                    }
-                    _ => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
-                }
-            }
+            // 境界は何でも持てる（CPython と同じ・使うときに確かめる・2-3）。作るのは `slice_from_values` だけ。
+            "slice" => match <[Value; 2]>::try_from(vals) {
+                Ok([begin, end]) => self.slice_from_values(begin, end, Value::None),
+                Err(vals) => match <[Value; 3]>::try_from(vals) {
+                    Ok([begin, end, step]) => self.slice_from_values(begin, end, step),
+                    Err(_) => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
+                },
+            },
             "uint" => match vals.as_slice() {
                 [] => Ok(Value::UInt(0)),
                 [Value::UInt(n)] => Ok(Value::UInt(*n)),

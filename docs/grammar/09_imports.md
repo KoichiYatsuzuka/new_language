@@ -562,6 +562,11 @@ let mean = np.mean(arr)
   `__neg__` / `__invert__`。⚠ `if` / `while` の条件は bool でなければならないのは同じで、型が CPython のクラスと分かる値を
   `if df:` と書くのは静的な誤り（`ConditionNotBool`）。`if bool(df):` と書く（`examples/interop/py_int_truthiness.ar`・`_error`・
   `_runtime_error`）。⚠ 以前は CPython の物が常に真で、`-x` / `~x` は `bad operand type`（`TypeError`）だった
+- **切り出し・多次元の添字**（pandas_import_plan.md の 2-3）: スライスは Python の `slice`、項を並べた添字は Python の
+  タプル（`a[1:, 0]` は `(slice(1, None, None), 0)`）、`...` は Python の `Ellipsis` として渡る（`a[..., 0]`・代入の
+  `a[:, 0] = 0` も）。境界は int でなくてよい（`df.loc["b":"d"]`）。`Ellipsis` / `NotImplemented` は CPython の同じ値になる
+  （`examples/interop/py_int_slices.ar`・`_error`・`_runtime_error`）。⚠ 以前は CPython の物の切り出しが `does not support
+  slicing`、スライスを含む添字・`...` は構文の誤りだった
 - **`for` で回す**（pandas_import_plan.md の 2-4）: CPython の物を `for` で回すと、CPython の `for` と同じく `iter(obj)` の
   反復子から**取り出すたびに 1 つ**取る。生成器の処理とループの本体が交互に進み、`break` すればそれより先は取り出さない
   （無限の生成器も回せる）。途中で投げられた例外は、そこまでの本体を走らせたあとで届く。内包・`list()`・`any()` / `all()`・

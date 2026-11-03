@@ -50,11 +50,16 @@ fn normalize_slice_bound_stop(end: Option<i64>, len: i64) -> usize {
     }
 }
 
-/// `Optional[Index]` 値から i64 インデックスを取り出す。None または Value::None → None。
-fn index_val_to_i64(val: &Option<Value>) -> Option<i64> {
+/// Arrow の list・str・bytes・tuple を切り出すときのスライスの境界（省略は `None`）。int・`Index` でなければ CPython と
+/// 同じ `TypeError`（pandas_import_plan.md 2-3）。
+/// ⚠ スライスは境界に何でも持てる（`slice_from_values`・Python へ `"a":"c"` を渡すため）ので、ここで確かめる。以前は
+///   作るときに確かめていた。
+fn slice_bound(val: &Option<Value>) -> Result<Option<i64>, String> {
     match val {
-        None => None,
-        Some(v) => value_as_index(v),
+        None | Some(Value::None) => Ok(None),
+        Some(v) => value_as_index(v).map(Some).ok_or_else(|| {
+            "TypeError: slice indices must be integers or None or have an __index__ method".to_string()
+        }),
     }
 }
 

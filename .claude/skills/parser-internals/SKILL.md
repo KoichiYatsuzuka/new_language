@@ -152,6 +152,11 @@ parse_expr
 
 Set vs. dict disambiguation in `{...}`: after parsing the first expression, lookahead at the next token — `:` means dict entry, `,` or `}` means set.
 
+Subscripts (`parse_bracket_suffix`): each comma-separated item goes through `parse_subscript_item` — a slice
+(`a:b:c`, any part omitted), `...` (only here; becomes `Expr::Ident("Ellipsis")`), or an expression — and two or more
+items make an `Expr::Tuple` (`a[1:, 0]`; pandas_import_plan.md 2-3). ⚠ A postfix `::` is a trait access
+(`obj::Trait.attr`) only when an identifier and `.` follow; otherwise it ends the postfix chain so `xs[1::2]` is a slice.
+
 `is` / `is not` are parsed in `parse_comparison` as `Expr::IsType { negated }`.
 `in` / `not in` are parsed as `BinOp::In / BinOp::NotIn`.
 
