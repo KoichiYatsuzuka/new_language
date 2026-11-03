@@ -13,10 +13,10 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~4~~ | ✅ ユーザーの site-packages を型の探索先にしなかった件（直した: 1-5） | [1-5] |
 | ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
 | ~~6~~ | ✅ Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらなかった件（直した: 2-1） | [2-1] |
-| 7 | 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る | [2-2] |
-| 8 | 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない | [2-3] |
-| 9 | `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない） | [2-4] |
-| 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`） | [2-5]・[2-6] |
+| ~~7~~ | ✅ 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る件（直した: 2-2・`__bool__` / `__len__`） | [2-2] |
+| ~~8~~ | ✅ 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない件（直した: 2-3・`a[1:, 0]`・`a[..., 0]`・`df.loc["b":"d"]`） | [2-3] |
+| ~~9~~ | ✅ `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない）件（直した: 2-4） | [2-4] |
+| 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`）。⚠ 関数は直した（2-5）。インスタンスは 2-6 | [2-5]・[2-6] |
 | 11 | list / dict / set は境界で写す。Python 側の書き換えが戻らない（`heapq.heappush(h, 0)` の後も `h` は元のまま） | [2-7] |
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | ~~13~~ | ✅ `is` が `==` を呼ぶ／同じ物どうしが `False`（直した: 5-1・`===` は同一性） | D-4・[5-1] |
@@ -130,7 +130,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 真偽（`if` / `while` / `not` / `and` / `or` / `bool()`） | 常に真 | ✅ `__bool__` / `__len__` を呼ぶ（2-2） |
 | 切り出し・`...` | `TypeError` | ✅ Python の `slice` / タプルで渡す（`a[1:, 0]`・`df.loc[:, "a"]`）。`Ellipsis` / `NotImplemented` を対応させる（2-3） |
 | `for` | 先に全部取り出す | ✅ 1 つずつ取り出す（2-4） |
-| Arrow の関数を渡す | `TypeError` | Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる |
+| Arrow の関数を渡す | `TypeError` | ✅ Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる（2-5） |
 | Arrow のインスタンスを渡す | `TypeError` | ⏸ 保留（4 節の 4） |
 | list / dict / set | 境界で写す（書き換えが戻らない） | ⏸ 保留（4 節の 3・2.6） |
 
@@ -194,6 +194,24 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 - ⑤ `let` の値は**読むだけの包み**（Python からの書き換えは `TypeError`）、`mut` の値は書ける包み（書き換えが Arrow へ届く）。
 - ⑥ 包みは作ったスレッドを覚え、別のスレッドから触られたら Python の `RuntimeError`。
 
+### 2.7 Arrow の関数を Python から呼ぶ（2-5 の設計・2026-11-04。違えば直す）
+
+- **包み**: Arrow の関数（`fn`・クロージャ・束縛メソッド・多重定義・ネイティブの関数）を Python へ渡すと、Python の呼べる物
+  `ArrowFunction`（PyO3 の `#[pyclass]`）になる。中身の `Value` はスレッドごとの表に置き、包みは番号と作ったスレッドだけを持つ
+  （`Rc` を Python のスレッドへ持ち出さない）。Python が包みを捨てると表から消す（別のスレッドで捨てられたら、作ったスレッドで次に
+  表を使うときに消す）。⚠ ジェネレータ関数・クラス・インスタンスは渡せない（戻り値を Python へ渡せない・2-6）。
+- **呼び戻し（再入）**: Python が包みを呼ぶと、そのスレッドのインタプリタで関数を呼ぶ（`call_value_evaled`）。インタプリタは
+  py-int の import とワーカーの起動のときにスレッドごとに覚え、Python を呼ぶ入口（呼び出し・メソッド呼び出し）でも覚え直す
+  （ネイティブの ABI の `interp_ptr` と同じ方式）。GIL は Python が呼んだときに持っているので、そのまま Arrow の本体を走らせる
+  （本体が Python を呼べば入れ子の `with_py`）。引数は Python → Arrow の変換（`py_to_tl`）、キーワード引数は名前つき、戻り値は
+  Arrow → Python の変換（`ar_to_py`・関数を返せばまた包む）。
+- **スレッド**: 作ったスレッド以外から呼ばれたら Python の `RuntimeError`（Arrow の値はスレッドをまたげない・2.6 の ⑥ と同じ）。
+- **例外**: 本体で起きた Arrow の例外は Python の例外になる。組み込みの例外は同じ名前の Python の例外（`except ValueError:` で
+  捕まる・`args` も渡す）、Arrow で定義した例外は `arrow.ArrowError`（`Exception` の子）。Python の例外が Arrow を通って戻るとき
+  （Python の物の例外）は同じ物を投げ直す。⚠ Python の中を通って Arrow へ戻った例外は、**元の Arrow の例外の値**に戻す
+  （`except MyErr as e` で捕まり、欄も同じ）。
+- 型検査: Python の関数の引数（スタブで `Callable[..]` は `Any`）へ Arrow の関数を渡すのは今までどおり通る。
+
 ---
 
 ## 3. タスク
@@ -223,7 +241,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~2-2~~ | ✅ **済**（2026-11-04）CPython の物の真偽（`bool()`・`not`・`and` / `or`・型の分からない値の `if` / `while`）は CPython の `PyObject_IsTrue`（`__bool__`、無ければ `__len__`・`eval_truthy` → `py_truthy`）。`__bool__` が投げた例外は Python の例外（2-1）。ついでに: 単項の `-` / `~` も CPython（`py_unary`・以前は `bad operand type`）、`print(.., flush=x)` も同じ真偽。条件が bool でなければならないのは同じ（型が CPython のクラスと分かる `if df:` は `ConditionNotBool`）。例題は `py_int_truthiness.ar`・`_error`・`_runtime_error` | 2-1 | 小 |
 | ~~2-3~~ | ✅ **済**（2026-11-04）CPython の物の切り出しは Python の `slice`（`py_getitem` / `py_setitem`・`ar_to_py` の `Value::Slice`）。添字の項にスライス・`...` を書ける（`a[1:, 0]`・`a[..., 0]`・`parse_subscript_item`・`...` は添字の項だけ）。`Ellipsis` / `NotImplemented` は CPython の同じ値。スライスは境界に何でも持てる（CPython と同じ・`slice_from_values` が唯一の作り手）で、Arrow の list などを切り出すときに `slice_bound` が確かめる（文言は CPython）。型検査は添字の相手が CPython のクラスか `Any` のときだけ境界の型を問わない（`df.loc["b":"d"]`）。ついでに: `xs[1::2]` が `::` をトレイトの指定と読んで構文の誤りだったのを直した（名前と `.` が続くときだけトレイトの指定）、スライスの表示の境界を `repr` にした。例題は `py_int_slices.ar`・`_error`・`_runtime_error`・`collections/slice_begin_step.ar`。⚠ Python から来た `slice` は Python の物のまま | なし | 小〜中 |
 | ~~2-4~~ | ✅ **済**（2026-11-04）`for x in <CPython の物>` は `iter(obj)` の反復子から取り出すたびに 1 つ取る（`GeneratorState::py_iter`・`gen_next` が `PyIter_Next`）。`break` すれば先は取り出さず、途中の例外はそこまでの本体のあとで届く。`Generator` の形のままなので、内包・`list()`・`any()` / `all()`・分解・ネイティブの関数の `for` も同じ道。取り出し途中の反復子は写せない（`deep_clone` は中断中の生成器と同じく印を付ける）。1 要素あたり +0.12 µs（30 万要素の `range` と生成器・負の対照は ±1 ms）。例題は `py_int_lazy_for.ar` | なし | 小 |
-| 2-5 | Arrow の関数（クロージャ・束縛メソッド）を Python から呼べる物として渡す。中の Arrow の例外は Python の例外に、Python の例外は 2-1 で受ける。⚠ Python からの呼び戻し中に Arrow の VM へ入り直す（再入）ので、GIL と借用の扱いを先に設計する | 2-1 | 大 |
+| ~~2-5~~ | ✅ **済**（2026-11-04・設計は 2.7）Arrow の関数（`fn`・束縛メソッド・多重定義・ネイティブの関数）は Python の呼べる物 `arrow.ArrowFunction`（`#[pyclass]`・中身はスレッドごとの表 `ARROW_FUNCTIONS`、包みは番号と作ったスレッドだけ）。Python が呼ぶと覚えておいたインタプリタ（`register_interpreter`・py-int の import と Python を呼ぶ入口）で `call_value_evaled`（GIL を持ったまま再入・入れ子も可）。別のスレッドからは Python の `RuntimeError`。本体の Arrow の例外は Python の例外（組み込みは同じ名前・`args` も、Arrow で定義した例外は `arrow.ArrowError`）、Python の中を通って Arrow へ戻ったら元の Arrow の例外（`ARROW_RAISED` → `PyRaised::Arrow`・欄もトレースバックの枠も。呼んだ Python の枠もファイル・行・関数名で入る）。例題は `py_int_callbacks.ar`・`_runtime_error` | 2-1 | 大 |
 | 2-6 | Arrow の list / dict / set・インスタンスを包んで Python へ渡す（D-9・2.6 の ④〜⑥） | 2-5 | 中〜大 |
 | 2-7 | Python の list / dict / set を写さずに包みのまま使う（D-8・2.6 の ①〜③） | なし | 中〜大 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |

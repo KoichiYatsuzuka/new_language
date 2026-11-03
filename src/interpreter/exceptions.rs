@@ -69,6 +69,17 @@ impl Interpreter {
         self.key_error(&key)
     }
 
+    /// 最上位まで捕まえられなかった誤り `e` の報告: Arrow の関数（pandas_import_plan.md 2-5）が投げて Python の中を通って
+    /// 戻ってきた Arrow の例外なら、元の例外の報告（トレースバックの枠つき）。ほかの誤りは文言のまま。
+    /// ⚠ 関数の中で起きたときは `exec_fn_evaled` が `make_internal_raised_error` で元の例外に戻し、失敗した文の枠も足す。
+    ///   ここは最上位の文が Python を呼んだときだけ。
+    pub fn uncaught_error_report(&mut self, e: String) -> String {
+        match super::py_interop::take_arrow_exception(&e) {
+            Some(raised) => Self::format_error_report(&raised),
+            None => e,
+        }
+    }
+
     /// インタープリタ内部の `Err("ClassName: message")` 文字列を `RaisedError` に変換する。
     ///
     /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
@@ -81,6 +92,8 @@ impl Interpreter {
             Some(super::py_interop::PyRaised::Object(h)) => {
                 return Some(RaisedError { exception: Value::PyObject(h), frames: vec![] });
             }
+            // Arrow の関数が投げ、Python の中を通って戻ってきた例外（2-5）: 元の値（欄・トレースバックの枠も）
+            Some(super::py_interop::PyRaised::Arrow(raised)) => return Some(raised),
             None => {}
         }
         // ⚠⚠ 組み込みの例外の表そのもので引く（`builtin_exception_of`・表は `type_check::names::BUILTIN_EXCEPTIONS`・

@@ -687,6 +687,14 @@ pub struct Interpreter {
     pub(self) toplevel_globals: std::collections::HashMap<String, bool>,
 }
 
+/// Python から Arrow の関数を呼び戻す先として覚えていたら忘れる（pandas_import_plan.md 2-5・
+/// `py_interop::register_interpreter`）。⚠ 覚えたまま捨てると、Python が持ち続けた関数の呼び出しが捨てた記憶を指す。
+impl Drop for Interpreter {
+    fn drop(&mut self) {
+        py_interop::forget_interpreter(self);
+    }
+}
+
 /// [`Interpreter::wire_resolution`] のグローバル集合の入れ方（#88）。
 ///
 /// ⚠ **消費側は exhaustive に match する。** 入れ方を足したら全入口が止まる。

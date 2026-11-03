@@ -547,8 +547,8 @@ fn run_program(
                     .unwrap_or_else(|| "UnhandledException: (no details available)".to_string());
                 return Err(explain(msg));
             }
-            // その他の実行時エラー文字列をそのまま返す
-            Err(e) => return Err(explain(e)),
+            // その他の実行時エラー文字列をそのまま返す（Python の中を通って戻ってきた Arrow の例外は元の例外の報告・2-5）
+            Err(e) => return Err(explain(interp.uncaught_error_report(e))),
         }
     }
     // ⚠⚠ 残った**中断中のジェネレータを閉じて `finally` を走らせる**（bug_fix.md B13 段階 D）。

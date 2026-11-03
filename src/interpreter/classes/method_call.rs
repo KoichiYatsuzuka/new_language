@@ -259,6 +259,8 @@ impl Interpreter {
         //   1 つ多くなり、pandas の inplace=True のメソッドが連鎖代入を見誤る・pandas_import_plan.md の D-5）
         let obj = match obj {
             Value::PyObject(handle) => {
+                // 引数の Arrow の関数を Python が呼び戻す先（2-5）
+                crate::interpreter::py_interop::register_interpreter(self);
                 return crate::interpreter::py_interop::call_py_method(handle, method_name, evaled)
             }
             other => other,
@@ -429,6 +431,8 @@ impl Interpreter {
                 // GIL を 2 回取り、1 回の呼び出しが 0.6〜0.9 µs 遅くなった（pandas_import_plan.md の 1-4・実測）。
                 // 無い名前は Python の `AttributeError`（同じ名前の Arrow の例外・2-1）
                 if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
+                    // 引数の Arrow の関数を Python が呼び戻す先（2-5）
+                    crate::interpreter::py_interop::register_interpreter(self);
                     // ⚠ 評価コア・wasm では `PyObjHandle` を作れない（中身が `Infallible`）ので、ここへは来ない
                     #[allow(unreachable_code, unused_variables)]
                     let result = crate::interpreter::py_interop::call_py_method(module.clone(), method_name, evaled);

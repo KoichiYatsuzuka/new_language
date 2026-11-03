@@ -724,6 +724,8 @@ impl Interpreter {
             Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),
             // ⚠ 呼ぶ物と引数を手放して渡す（写すと CPython から見える参照が 1 つ多くなる・pandas_import_plan.md の D-5）
             Value::PyObject(handle) => {
+                // 引数の Arrow の関数を Python が呼び戻す先（2-5）
+                crate::interpreter::py_interop::register_interpreter(self);
                 let r = crate::interpreter::py_interop::call_py_object(handle, evaled)?;
                 self.check_ffi_return("py", r, node_id, fn_name, call_span.as_ref())
             }

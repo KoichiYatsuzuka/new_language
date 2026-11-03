@@ -228,11 +228,257 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
                 py.NotImplemented()
             })
         }
+        // Arrow の関数（`fn`・クロージャ・束縛メソッド・多重定義・ネイティブの関数）は Python から呼べる包み（2-5・2.7）
+        Value::Function(f) => wrap_arrow_function(py, val, f.name.clone()),
+        Value::OverloadedFn(c) => wrap_arrow_function(py, val, c.first().map(|f| f.name.clone()).unwrap_or_default()),
+        Value::NativeFunction(r) => wrap_arrow_function(py, val, r.fn_name.clone()),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Arrow の関数を Python から呼ぶ（pandas_import_plan.md の 2-5・設計は 2.7）
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// このスレッドで Python を呼んでいるインタプリタ（[`ArrowFunction`] が呼び戻す先）。
+    static PY_INTERP: Cell<*mut crate::interpreter::Interpreter> = const { Cell::new(std::ptr::null_mut()) };
+    /// Python へ渡した Arrow の関数（番号 → 値）。包みは番号だけを持つ（`Rc` を Python のスレッドへ持ち出さない）。
+    static ARROW_FUNCTIONS: RefCell<HashMap<u64, Value>> = RefCell::new(HashMap::new());
+    /// Python の中を通っている Arrow の例外（Python の例外のオブジェクト, Arrow の文言, 元の Arrow の例外）。Arrow へ戻ったら
+    /// [`python_raised`] が元の例外に戻す。
+    static ARROW_RAISED: RefCell<Vec<(PyObject, String, Option<crate::interpreter::RaisedError>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// 包みの番号（プロセスで一意）。
+static NEXT_FUNCTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// 作ったスレッドとは別のスレッドで捨てられた包み（作ったスレッド, 番号）。作ったスレッドで次に表を使うときに消す。
+static DROPPED_ELSEWHERE: Mutex<Vec<(std::thread::ThreadId, u64)>> = Mutex::new(Vec::new());
+
+/// Arrow で定義した例外と、例外にならない Arrow の誤りが Python の中を通るときの型（`arrow.ArrowError`・`Exception` の子）。
+/// ⚠ PyO3 0.22 の `create_exception!` は自分の crate に無い `cfg(feature = "gil-refs")` を書くので、その警告だけ止める。
+#[allow(unexpected_cfgs)]
+mod arrow_error {
+    pyo3::create_exception!(arrow, ArrowError, pyo3::exceptions::PyException, "An exception raised by Arrow code.");
+}
+use arrow_error::ArrowError;
+use pyo3::PyTypeInfo;
+
+/// このスレッドで Python を呼ぶインタプリタを覚える（2-5）。py-int の import と Python を呼ぶ入口で呼ぶ。
+pub fn register_interpreter(interp: *mut crate::interpreter::Interpreter) {
+    PY_INTERP.with(|p| p.set(interp));
+}
+
+/// インタプリタが無くなるときに忘れる（`Interpreter` の `Drop`）。
+pub fn forget_interpreter(interp: *mut crate::interpreter::Interpreter) {
+    let _ = PY_INTERP.try_with(|p| {
+        if p.get() == interp {
+            p.set(std::ptr::null_mut())
+        }
+    });
+}
+
+/// Python から呼べる Arrow の関数（2-5）。中身は [`ARROW_FUNCTIONS`] にあり、作ったスレッドからだけ呼べる。
+#[pyclass(name = "ArrowFunction", module = "arrow")]
+pub struct ArrowFunction {
+    id: u64,
+    thread: std::thread::ThreadId,
+    name: String,
+}
+
+#[pymethods]
+impl ArrowFunction {
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__(
+        &self,
+        py: Python<'_>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        call_arrow_function(py, self, args, kwargs)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<Arrow function {}>", self.name)
+    }
+
+    #[getter]
+    fn __name__(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    fn __qualname__(&self) -> String {
+        self.name.clone()
+    }
+}
+
+impl Drop for ArrowFunction {
+    fn drop(&mut self) {
+        if std::thread::current().id() == self.thread {
+            // ⚠ 値は表の借用を落としてから捨てる（中の値が別の包みを捨てると、その `Drop` がまた表を借りる）
+            let removed = ARROW_FUNCTIONS.try_with(|t| t.borrow_mut().remove(&self.id));
+            drop(removed);
+        } else {
+            DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner()).push((self.thread, self.id));
+        }
+    }
+}
+
+/// Arrow の関数を包む（[`ArrowFunction`]）。別のスレッドで捨てられた包みの中身をここで消す。
+fn wrap_arrow_function(py: Python<'_>, val: &Value, name: String) -> PyResult<PyObject> {
+    let me = std::thread::current().id();
+    let stale: Vec<u64> = {
+        let mut q = DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner());
+        let (mine, others): (Vec<_>, Vec<_>) = q.drain(..).partition(|(t, _)| *t == me);
+        *q = others;
+        mine.into_iter().map(|(_, id)| id).collect()
+    };
+    let removed: Vec<Option<Value>> =
+        ARROW_FUNCTIONS.with(|t| stale.iter().map(|id| t.borrow_mut().remove(id)).collect());
+    drop(removed);
+    let id = NEXT_FUNCTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ARROW_FUNCTIONS.with(|t| t.borrow_mut().insert(id, val.clone()));
+    Ok(Py::new(py, ArrowFunction { id, thread: me, name })?.into_any())
+}
+
+/// Python が [`ArrowFunction`] を呼んだ: このスレッドのインタプリタで関数を呼ぶ（再入・GIL は持ったまま）。引数は
+/// Python → Arrow（`py_to_tl`）、戻り値は Arrow → Python（`ar_to_py`）。本体の Arrow の例外は Python の例外（[`arrow_error_to_py`]）。
+fn call_arrow_function(
+    py: Python<'_>,
+    f: &ArrowFunction,
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<PyObject> {
+    if std::thread::current().id() != f.thread {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "the Arrow function '{}' can only be called from the thread that passed it to Python \
+             (Arrow values cannot cross threads)",
+            f.name
+        )));
+    }
+    let interp = PY_INTERP.with(|p| p.get());
+    if interp.is_null() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "the Arrow function '{}' was called while no Arrow interpreter is running on this thread",
+            f.name
+        )));
+    }
+    let callee = ARROW_FUNCTIONS
+        .with(|t| t.borrow().get(&f.id).cloned())
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(format!("the Arrow function '{}' was released", f.name)))?;
+    let mut evaled: Vec<(Option<String>, Value, bool)> = args.iter().map(|a| (None, py_to_tl(py, &a), false)).collect();
+    if let Some(kw) = kwargs {
+        for (k, v) in kw.iter() {
+            evaled.push((Some(k.extract::<String>()?), py_to_tl(py, &v), false));
+        }
+    }
+    // ⚠ Python を呼んだ Arrow の側も `&mut Interpreter` を持ったまま待っている（ネイティブの ABI の `interp_ptr` と同じ形の
+    //   再入）。呼び戻しの間、外側の Arrow はこのインタプリタに触らない。
+    let interp = unsafe { &mut *interp };
+    match interp.call_value_evaled(callee, evaled, &f.name, None, 0) {
+        Ok(v) => ar_to_py(py, &v),
+        Err(e) => {
+            // 呼んだ側の枠は Arrow の呼び出しの位置が無い（Python が呼んだ）ので、呼んだ Python の枠（ファイル・行・関数）にする
+            if e == crate::interpreter::RAISE_SENTINEL {
+                if let Some(frame) = interp.current_exception.as_mut().and_then(|r| r.frames.last_mut()) {
+                    if frame.file.is_empty() {
+                        if let Some((file, line, name)) = python_caller_frame(py) {
+                            *frame = crate::interpreter::value::StackFrame { file, line, col: 0, fn_name: name, context: String::new() };
+                        }
+                    }
+                }
+            }
+            Err(arrow_error_to_py(py, interp, e))
+        }
+    }
+}
+
+/// いま走っている Python の枠（Arrow の関数を呼んだ Python の関数）の (ファイル, 行, 関数名)。トレースバック用。
+fn python_caller_frame(py: Python<'_>) -> Option<(String, usize, String)> {
+    let frame = py.import_bound("sys").ok()?.call_method1("_getframe", (0,)).ok()?;
+    let code = frame.getattr("f_code").ok()?;
+    Some((
+        code.getattr("co_filename").ok()?.extract().ok()?,
+        frame.getattr("f_lineno").ok()?.extract().ok()?,
+        code.getattr("co_name").ok()?.extract().ok()?,
+    ))
+}
+
+/// Arrow の例外（誤りの文言）を Python の例外にする（2-5）。
+/// - Python の物の例外（Python から Arrow を通って戻ってきた）は同じ物を投げ直す
+/// - Arrow の組み込みの例外は同じ名前の Python の例外（`args` も渡す）、Arrow で定義した例外と例外にならない誤りは
+///   `arrow.ArrowError`（文言は Arrow のトレースバックの最後の行）
+/// どちらも [`ARROW_RAISED`] に控え、Arrow へ戻ったら元の例外に戻す。
+fn arrow_error_to_py(py: Python<'_>, interp: &mut crate::interpreter::Interpreter, err: String) -> PyErr {
+    let raised = if err == crate::interpreter::RAISE_SENTINEL {
+        interp.take_current_exception()
+    } else {
+        interp.make_internal_raised_error(&err)
+    };
+    let Some(raised) = raised else {
+        return stash_arrow_raised(py, ArrowError::type_object_bound(py).as_any(), vec![Value::str(err.as_str())], err, None);
+    };
+    let (class_name, builtin, args) = match &raised.exception {
+        Value::PyObject(h) => return PyErr::from_value_bound(h.bind(py).to_owned()),
+        Value::Instance(inst) => {
+            let inst = inst.borrow();
+            let name = inst.class.name.clone();
+            let builtin = crate::interpreter::Interpreter::in_exception_hierarchy(&inst.class)
+                && crate::interpreter::built_in_types::builtin_exception_of(&name) == Some(name.as_str());
+            let args = crate::interpreter::Interpreter::exc_args_of(&inst);
+            (name, builtin, args)
+        }
+        other => (type_name_of(other).to_string(), false, None),
+    };
+    let message = interp.display_str(&raised.exception).unwrap_or_default();
+    let text = if message.is_empty() { class_name.clone() } else { format!("{class_name}: {message}") };
+    let py_builtin = if builtin {
+        py.import_bound("builtins").ok().and_then(|b| b.getattr(class_name.as_str()).ok())
+    } else {
+        None
+    };
+    match py_builtin {
+        Some(ty) => {
+            let args = match args {
+                Some(Value::Tuple(t)) => t.all_values().to_vec(),
+                _ if message.is_empty() => Vec::new(),
+                _ => vec![Value::str(message.as_str())],
+            };
+            stash_arrow_raised(py, &ty, args, text, Some(raised))
+        }
+        None => stash_arrow_raised(py, ArrowError::type_object_bound(py).as_any(), vec![Value::str(text.as_str())], text, Some(raised)),
+    }
+}
+
+/// 例外の型 `ty` を `args` で作り、Arrow へ戻ったときのために控える（[`ARROW_RAISED`]）。Python がもう持っていない控え
+/// （参照が控えの 1 つだけ）はここで捨てる。
+fn stash_arrow_raised(
+    py: Python<'_>,
+    ty: &Bound<'_, PyAny>,
+    args: Vec<Value>,
+    text: String,
+    raised: Option<crate::interpreter::RaisedError>,
+) -> PyErr {
+    let py_args: Vec<PyObject> = args.iter().map(|a| ar_to_py(py, a).unwrap_or_else(|_| py.None())).collect();
+    let exc = match ty.call1(PyTuple::new_bound(py, &py_args)) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let dropped: Vec<_> = ARROW_RAISED.with(|r| {
+        let mut r = r.borrow_mut();
+        let (keep, gone): (Vec<_>, Vec<_>) =
+            r.drain(..).partition(|(o, _, _)| unsafe { ffi::Py_REFCNT(o.as_ptr()) } > 1);
+        *r = keep;
+        r.push((exc.clone().unbind(), text, raised));
+        gone
+    });
+    drop(dropped);
+    PyErr::from_value_bound(exc)
 }
 
 /// `isinstance(obj, cls)`。`cls` がクラスでなければ（`isinstance` が `TypeError`）`None`。
@@ -466,6 +712,18 @@ fn arrow_side(e: PyErr) -> String {
 fn python_raised(e: PyErr) -> String {
     with_py(|py| {
         let value = e.value_bound(py).clone();
+        // Arrow の関数（2-5）が投げた例外が Python の中を通って戻ってきた: 元の Arrow の例外（文言も元のまま）
+        let back = ARROW_RAISED.with(|r| {
+            let mut r = r.borrow_mut();
+            let pos = r.iter().position(|(o, _, _)| o.as_ptr() == value.as_ptr());
+            pos.map(|i| r.remove(i))
+        });
+        if let Some((_, text, raised)) = back {
+            if let Some(raised) = raised {
+                RAISED.with(|r| *r.borrow_mut() = Some((text.clone(), PyRaised::Arrow(raised))));
+            }
+            return text;
+        }
         let text = exception_line(&value);
         let ty = value.get_type();
         let name = ty.qualname().map(|s| s.to_string()).unwrap_or_default();
@@ -503,12 +761,29 @@ pub enum PyRaised {
     Builtin(Vec<Value>),
     /// Python で定義した例外: CPython のオブジェクトのまま
     Object(PyObjHandle),
+    /// Arrow の関数（2-5）が投げ、Python の中を通って戻ってきた Arrow の例外: 元の値のまま
+    Arrow(crate::interpreter::RaisedError),
 }
 
 thread_local! {
     /// 最後に Python が投げた例外（文言, 控え）。⚠ 文言が一致するときだけ取り出す（別の誤りの控えを拾わない・
     /// `Interpreter::error_args` と同じ）。
     static RAISED: RefCell<Option<(String, PyRaised)>> = const { RefCell::new(None) };
+}
+
+/// 文言 `msg` の誤りが、Arrow の関数（2-5）が投げて Python の中を通って戻ってきた Arrow の例外なら、元の例外を取り出す。
+/// 最上位の文で捕まえられなかったときの報告に使う（`Interpreter::uncaught_error_report`）。
+pub fn take_arrow_exception(msg: &str) -> Option<crate::interpreter::RaisedError> {
+    RAISED.with(|r| {
+        let mut r = r.borrow_mut();
+        match r.as_ref() {
+            Some((text, PyRaised::Arrow(_))) if text == msg => match r.take() {
+                Some((_, PyRaised::Arrow(raised))) => Some(raised),
+                _ => None,
+            },
+            _ => None,
+        }
+    })
 }
 
 /// 文言 `msg` の誤りが Python の投げた例外なら、その控え（[`python_raised`]）を取り出す。

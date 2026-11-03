@@ -508,6 +508,8 @@ impl Interpreter {
         if lang == "py-int" {
             // ⚠ `sys.path` へ足すのは**この import 文の**探索先（[`Self::import_search_dirs`]）。
             let search_dirs: Vec<PathBuf> = self.import_search_dirs(origin);
+            // Python から Arrow の関数を呼び戻す先（pandas_import_plan.md 2-5）。import の実行中にも呼ばれうる
+            crate::interpreter::py_interop::register_interpreter(self);
             let ns = crate::interpreter::py_interop::load_py_int_module(module, &search_dirs)?;
             self.module_cache
                 .insert(cache_key, ModuleState::Loaded(ns.clone()));

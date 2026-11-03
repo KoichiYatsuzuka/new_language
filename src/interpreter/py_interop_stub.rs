@@ -53,9 +53,19 @@ pub fn call_py_method(
 pub enum PyRaised {
     Builtin(Vec<Value>),
     Object(PyObjHandle),
+    Arrow(crate::interpreter::RaisedError),
 }
 
+/// 評価コアには Python が無いので、覚えるインタプリタも無い（`py_interop` と同じ形・2-5）。
+pub fn register_interpreter(_interp: *mut crate::interpreter::Interpreter) {}
+
+pub fn forget_interpreter(_interp: *mut crate::interpreter::Interpreter) {}
+
 pub fn take_python_exception(_msg: &str) -> Option<PyRaised> {
+    None
+}
+
+pub fn take_arrow_exception(_msg: &str) -> Option<crate::interpreter::RaisedError> {
     None
 }
 

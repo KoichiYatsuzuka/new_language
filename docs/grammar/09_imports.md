@@ -562,6 +562,14 @@ let mean = np.mean(arr)
   `__neg__` / `__invert__`。⚠ `if` / `while` の条件は bool でなければならないのは同じで、型が CPython のクラスと分かる値を
   `if df:` と書くのは静的な誤り（`ConditionNotBool`）。`if bool(df):` と書く（`examples/interop/py_int_truthiness.ar`・`_error`・
   `_runtime_error`）。⚠ 以前は CPython の物が常に真で、`-x` / `~x` は `bad operand type`（`TypeError`）だった
+- **Arrow の関数を渡す**（pandas_import_plan.md の 2-5・設計は 2.7）: Arrow の関数（`fn`・束縛メソッド・多重定義・
+  ネイティブの関数）を Python へ渡すと、Python の呼べる物（`arrow.ArrowFunction`・`__name__` は関数名）になる。Python が呼ぶと
+  Arrow の本体が走る（`sorted(xs, key=f)`・`map(f, xs)`・`df.apply(f)`・持ち続けて後で呼ぶのも・Python → Arrow → Python の
+  入れ子も）。引数・戻り値は境界の変換、キーワード引数も渡る。本体で起きた Arrow の例外は Python の例外（組み込みの例外は
+  同じ名前で `args` も、Arrow で定義した例外は `arrow.ArrowError`）。Python が捕まえずに Arrow へ戻った例外は**元の Arrow の
+  例外**（`except Boom as e` で捕まり、欄もトレースバックも元のまま。呼んだ Python の関数もトレースバックに出る）。作った
+  スレッド以外（Python の `threading`）から呼ばれたら Python の `RuntimeError`（`examples/interop/py_int_callbacks.ar`・
+  `_runtime_error`）。⚠ ジェネレータ関数・クラス・インスタンスはまだ渡せない（`TypeError`・2-6）。⚠ 以前は関数も `TypeError`
 - **同一性**（pandas_import_plan.md の D-4・5-1）: CPython の物どうしの `===`（Python の `is`）は同じオブジェクトなら真で、
   `__eq__` は呼ばない（`==` は `__eq__`）。片方だけ CPython の物なら偽。Arrow の束縛・リストの要素・`mut` の引数を通しても
   同じオブジェクトを指す（`examples/interop/py_int_identity.ar`）。⚠ 以前は `===` が `__eq__` を呼んでいた

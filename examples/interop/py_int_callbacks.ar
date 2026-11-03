@@ -1,0 +1,95 @@
+# Arrow の関数を import[py-int] の Python へ渡して呼んでもらう（pandas_import_plan.md の 2-5・設計は 2.7）
+#
+# - Arrow の関数（`fn`・束縛メソッド・ほかの関数を呼ぶ関数）は Python の呼べる物（`arrow.ArrowFunction`）になる。Python が
+#   呼ぶと Arrow の本体が走る（Python → Arrow → Python … の入れ子も）。引数・戻り値は境界の変換、キーワード引数も渡る
+# - Python が持ち続けて後で呼んでもよい（`handlers.append(f)`）
+# - 本体で起きた Arrow の例外は Python の例外になる（組み込みの例外は同じ名前・Arrow で定義した例外は `arrow.ArrowError`）。
+#   Python が捕まえずに Arrow へ戻ってきた例外は**元の Arrow の例外**（`except Boom as e` で捕まり、欄も同じ）
+# - 作ったスレッド以外から呼ばれたら Python の `RuntimeError`（Arrow の値はスレッドをまたげない）
+# ⚠ 以前は Arrow の関数を Python へ渡すと `TypeError: cannot pass an Arrow value of type 'function' to Python` だった。
+
+import[py-int] py_int_callbacks as pc
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("failed: " + label)
+    print(label, "OK")
+
+# ① 渡した関数を Python が呼ぶ（キーワード引数・組み込みの sorted / map の中からも）
+fn double(x: int) -> int:
+    return x * 2
+check("apply(double, 21)", (pc.apply(double, 21) mustbe int) == 42)
+
+fn scaled(x: int, scale: int = 1) -> int:
+    return x * scale
+check("keyword argument", (pc.apply_kw(scaled) mustbe int) == 10)
+
+fn neg(x: int) -> int:
+    return -x
+check("sorted(key=neg)", str(pc.sort_by([3, 1, 2], neg)) == "[3, 2, 1]")
+
+mut total = 0
+fn add(x: int) -> int:
+    total += x
+    return total
+check("map(add, ..)", str(pc.map_all(add, [1, 2, 3])) == "[1, 3, 6]")
+check("the body updated a mut global", total == 6)
+
+# ② 束縛メソッド: 受け手は束縛したもの（Python から呼んでも同じ物を書き換える）
+class Tally:
+    mut seen: list[int]
+    fn __init__(mut self) -> None:
+        self.seen = []
+    fn record(mut self, x: int) -> int:
+        self.seen.append(x)
+        return len(self.seen)
+
+mut t = Tally()
+pc.subscribe(t.record)
+pc.subscribe(double)
+check("fire calls the stored functions", str(pc.fire(5)) == "[1, 10]")
+check("fire again", str(pc.fire(7)) == "[2, 14]")
+
+# ③ 名前と表示
+check("__name__ and repr", (pc.describe(double) mustbe str) == "double <Arrow function double>")
+
+# ④ Arrow の例外は Python の例外になる
+fn bad_value() -> None:
+    raise ValueError("bad value")
+check("ValueError caught in Python", (pc.call_and_catch(bad_value) mustbe str) == "ValueError: bad value")
+fn missing_key() -> int:
+    let d = {"a": 1}
+    return d["zz"]
+check("KeyError keeps its args", (pc.call_and_catch(missing_key) mustbe str) == "KeyError: 'zz'")
+
+class Boom(Error):
+    mut status: int
+    fn __init__(mut self, status: int) -> None:
+        self.message = "boom " + str(status)
+        self.status = status
+
+fn boom() -> None:
+    raise Boom(7)
+check("an Arrow exception is arrow.ArrowError in Python", (pc.call_and_catch(boom) mustbe str) == "ArrowError: Boom: boom 7")
+
+# ⑤ Python が捕まえなければ、元の Arrow の例外として戻る
+mut status = 0
+try:
+    pc.call_through(boom)
+except Boom as e:
+    status = e.status
+check("the same Arrow exception comes back", status == 7)
+mut msg = ""
+try:
+    pc.call_through(bad_value)
+except ValueError as e:
+    msg = str(e)
+check("a built-in exception comes back", msg == "bad value")
+
+# ⑥ Python → Arrow → Python … の入れ子
+fn down(n: int) -> int:
+    return pc.call_nested(down, n - 1) mustbe int
+check("nested calls", (pc.call_nested(down, 4) mustbe int) == 4)
+
+# ⑦ 別のスレッドから呼ぶと RuntimeError
+check("called from another thread", (pc.call_from_thread(double) mustbe str).startswith("RuntimeError: the Arrow function 'double'"))
