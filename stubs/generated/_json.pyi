@@ -1,27 +1,73 @@
-# _json.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-4）。
+# _json.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-6）。
 # ⚠ 生成したファイル。手で書き換えない（scripts/gen_builtin_py_stubs.ps1・CPython 3.12.2 / win32）。
-from typing import Any
+# typeshed（https://github.com/python/typeshed・commit 289e5d3568961c8bcd33d01eef5b7ec5e1ad33ad）の stdlib/_json.pyi を、
+# この CPython の版と OS の分岐だけ残して畳んだもの。typeshed は Apache License 2.0（LICENSE-typeshed.txt）。
+import sys
+from collections.abc import Callable
+from typing import Any, final
+from typing_extensions import Self
 
-def encode_basestring(*args: Any, **kwargs: Any) -> Any: ...
-def encode_basestring_ascii(*args: Any, **kwargs: Any) -> Any: ...
+@final
 class make_encoder:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
-    default: Any
-    encoder: Any
-    indent: Any
-    item_separator: Any
-    key_separator: Any
-    markers: Any
-    skipkeys: Any
-    sort_keys: Any
+
+    @property
+    def sort_keys(self) -> bool:
+        ...
+
+    @property
+    def skipkeys(self) -> bool:
+        ...
+
+    @property
+    def key_separator(self) -> str:
+        ...
+
+    @property
+    def indent(self) -> str | None:
+        ...
+
+    @property
+    def markers(self) -> dict[int, Any] | None:
+        ...
+
+    @property
+    def default(self) -> Callable[[Any], Any]:
+        ...
+
+    @property
+    def encoder(self) -> Callable[[str], str]:
+        ...
+
+    @property
+    def item_separator(self) -> str:
+        ...
+
+    def __init__(self, markers: dict[int, Any] | None, default: Callable[[Any], Any], encoder: Callable[[str], str], indent: str | None, key_separator: str, item_separator: str, sort_keys: bool, skipkeys: bool, allow_nan: bool) -> None:
+        ...
+
+    def __call__(self, obj: object, _current_indent_level: int) -> Any:
+        ...
+
+@final
 class make_scanner:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
     object_hook: Any
     object_pairs_hook: Any
+    parse_int: Any
     parse_constant: Any
     parse_float: Any
-    parse_int: Any
-    strict: Any
-def scanstring(*args: Any, **kwargs: Any) -> Any: ...
+    strict: bool
+
+    def __init__(self, context: make_scanner) -> None:
+        ...
+
+    def __call__(self, string: str, index: int) -> tuple[Any, int]:
+        ...
+
+def encode_basestring(s: str, /) -> str:
+    ...
+
+def encode_basestring_ascii(s: str, /) -> str:
+    ...
+
+def scanstring(string: str, end: int, strict: bool=True) -> tuple[str, int]:
+    ...

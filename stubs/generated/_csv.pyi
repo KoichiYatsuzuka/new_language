@@ -1,49 +1,82 @@
-# _csv.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-4）。
+# _csv.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-6）。
 # ⚠ 生成したファイル。手で書き換えない（scripts/gen_builtin_py_stubs.ps1・CPython 3.12.2 / win32）。
-from typing import Any
+# typeshed（https://github.com/python/typeshed・commit 289e5d3568961c8bcd33d01eef5b7ec5e1ad33ad）の stdlib/_csv.pyi を、
+# この CPython の版と OS の分岐だけ残して畳んだもの。typeshed は Apache License 2.0（LICENSE-typeshed.txt）。
+import csv
+import sys
+from _typeshed import SupportsWrite
+from collections.abc import Iterable
+from typing import Any, Final, Literal, TypeAlias
+from typing_extensions import Self, disjoint_base
+__version__: Final[str]
+QUOTE_ALL: int = 1
+QUOTE_MINIMAL: int = 0
+QUOTE_NONE: int = 3
+QUOTE_NONNUMERIC: int = 2
+QUOTE_STRINGS: int = 4
+QUOTE_NOTNULL: int = 5
 
+class Error(Exception):
+    ...
+
+@disjoint_base
 class Dialect:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    delimiter: Any
-    doublequote: Any
-    escapechar: Any
-    lineterminator: Any
-    quotechar: Any
-    quoting: Any
-    skipinitialspace: Any
-    strict: Any
-class Error:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-QUOTE_ALL: int
-QUOTE_MINIMAL: int
-QUOTE_NONE: int
-QUOTE_NONNUMERIC: int
-QUOTE_NOTNULL: int
-QUOTE_STRINGS: int
+    delimiter: str
+    quotechar: str | None
+    escapechar: str | None
+    doublequote: bool
+    skipinitialspace: bool
+    lineterminator: str
+    quoting: Literal[0, 1, 2, 3, 4, 5]
+    strict: bool
+
+    def __init__(self, dialect: str | Dialect | csv.Dialect | type[Dialect | csv.Dialect] | None=None, delimiter: str=',', doublequote: bool=True, escapechar: str | None=None, lineterminator: str='\r\n', quotechar: str | None='"', quoting: Literal[0, 1, 2, 3, 4, 5]=0, skipinitialspace: bool=False, strict: bool=False) -> None:
+        ...
+
+@disjoint_base
 class Reader:
-    def __init__(self) -> None: ...
-    def __iter__(self) -> Any: ...
-    def __next__(self) -> Any: ...
-    dialect: Any
-    line_num: Any
+
+    @property
+    def dialect(self) -> Dialect:
+        ...
+    line_num: int
+
+    def __iter__(self) -> Self:
+        ...
+
+    def __next__(self) -> list[str]:
+        ...
+
+@disjoint_base
 class Writer:
-    def __init__(self) -> None: ...
-    dialect: Any
-    def writerow(self, *args: Any, **kwargs: Any) -> Any: ...
-    def writerows(self, *args: Any, **kwargs: Any) -> Any: ...
-def field_size_limit(*args: Any, **kwargs: Any) -> Any: ...
-def get_dialect(name: Any) -> Any: ...
-def list_dialects() -> Any: ...
-def reader(*args: Any, **kwargs: Any) -> Any: ...
-def register_dialect(*args: Any, **kwargs: Any) -> Any: ...
-def unregister_dialect(name: Any) -> Any: ...
-def writer(*args: Any, **kwargs: Any) -> Any: ...
+
+    @property
+    def dialect(self) -> Dialect:
+        ...
+
+    def writerow(self, row: Iterable[Any]) -> Any:
+        ...
+
+    def writerows(self, rows: Iterable[Iterable[Any]]) -> None:
+        ...
+
+def writer(fileobj: SupportsWrite[str], /, dialect: str | Dialect | csv.Dialect | type[Dialect | csv.Dialect]='excel', *, delimiter: str=',', quotechar: str | None='"', escapechar: str | None=None, doublequote: bool=True, skipinitialspace: bool=False, lineterminator: str='\r\n', quoting: Literal[0, 1, 2, 3, 4, 5]=0, strict: bool=False) -> Writer:
+    ...
+
+def reader(iterable: Iterable[str], /, dialect: str | Dialect | csv.Dialect | type[Dialect | csv.Dialect]='excel', *, delimiter: str=',', quotechar: str | None='"', escapechar: str | None=None, doublequote: bool=True, skipinitialspace: bool=False, lineterminator: str='\r\n', quoting: Literal[0, 1, 2, 3, 4, 5]=0, strict: bool=False) -> Reader:
+    ...
+
+def register_dialect(name: str, /, dialect: type[Dialect | csv.Dialect] | str='excel', *, delimiter: str=',', quotechar: str | None='"', escapechar: str | None=None, doublequote: bool=True, skipinitialspace: bool=False, lineterminator: str='\r\n', quoting: Literal[0, 1, 2, 3, 4, 5]=0, strict: bool=False) -> None:
+    ...
+
+def unregister_dialect(name: str) -> None:
+    ...
+
+def get_dialect(name: str) -> Dialect:
+    ...
+
+def list_dialects() -> list[str]:
+    ...
+
+def field_size_limit(new_limit: int=...) -> int:
+    ...

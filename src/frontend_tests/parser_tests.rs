@@ -1093,42 +1093,65 @@
 // 同梱 `.pyi` スタブ（BYTECODE_VM_PLAN #19 / 群6 S4）
 // ---------------------------------------------------------------------------
 
-/// 同梱スタブは**すべて `convert_python_source` をエラー無しで通る**こと。
+/// 同梱スタブの宣言（インデント 0 の `def` / `class` と注釈のある大域変数）が、**行単位の抽出器で 1 つも落ちない**こと
+/// （pandas_import_plan.md の 1-6）。
 ///
-/// ⚠⚠ `load_py_type_body` は変換エラーを握り潰して行ベース抽出へ落ちる。
-/// つまりスタブに未対応構文を書いても**黙って精度が落ちるだけ**で気付けない。
-/// ⇒ スタブを足したり書き換えたりしたときに、ここで落ちるようにしておく。
+/// ⚠⚠ 同梱スタブは変換器を通さず抽出器だけで読む（`build_py_type_body`）。抽出器は読めない形を黙って飛ばすので、スタブを
+///   作り直したときに宣言が消えても気付けない（以前は「変換器を誤り無しで通る」を見ていた）。⇒ ここで名前を突き合わせる。
 #[test]
-fn bundled_stubs_convert_without_error() {
+fn bundled_stubs_lose_no_declarations() {
+    use crate::ast::Stmt;
     for name in crate::py_stubs::builtin_stub_names() {
         let src = crate::py_stubs::builtin_stub(&[name.to_string()])
             .unwrap_or_else(|| panic!("同梱スタブ '{name}' が引けない"));
-        let converted = crate::python_converter::convert_python_source(src, name);
-        assert!(
-            converted.is_ok(),
-            "同梱スタブ '{name}' が変換できない: {:?}",
-            converted.err()
-        );
+        let got: std::collections::HashSet<String> = crate::parser::py_stub_extract::extract_py_type_stubs_raw(src)
+            .into_iter()
+            .filter_map(|s| match s {
+                Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::Let(name, ..) => Some(name),
+                _ => None,
+            })
+            .collect();
+        for line in src.lines() {
+            let head = line.trim_end();
+            let decl = head
+                .strip_prefix("def ")
+                .or_else(|| head.strip_prefix("async def "))
+                .or_else(|| head.strip_prefix("class "))
+                .map(|r| r.split(|c: char| c == '(' || c == ':' || c == '[').next().unwrap_or("").trim())
+                .or_else(|| match head.split_once(':') {
+                    // 注釈のある大域変数（`version: str`）
+                    Some((n, _)) if !head.starts_with(char::is_whitespace)
+                        && !n.is_empty()
+                        && n.chars().all(|c| c.is_alphanumeric() || c == '_') => Some(n),
+                    _ => None,
+                });
+            let Some(decl) = decl else { continue };
+            if decl.is_empty() || decl.starts_with('_') {
+                continue;
+            }
+            assert!(got.contains(decl), "同梱スタブ '{name}' の宣言 '{decl}' が抽出器で落ちた（{head}）");
+        }
     }
 }
 
-/// 同梱スタブの関数が**戻り値型つきで**取り込まれること。
+/// 同梱スタブの関数が**戻り値型つきで**取り込まれること（手で書いた `math`・typeshed から作った `sys`）。
 ///
-/// ⚠ 変換が通っても `-> float` が落ちていれば型予測は効かない（`Any` になる）。
-/// 「変換できた」だけでは足りないので、戻り値型まで見る。
+/// ⚠ 宣言が取り込まれても `-> float` が落ちていれば型予測は効かない（`Any` になる）。戻り値型まで見る。
 #[test]
 fn bundled_stubs_carry_return_types() {
     use crate::ast::Stmt;
-    let src = crate::py_stubs::builtin_stub(&["math".to_string()]).expect("math スタブ");
-    let body = crate::python_converter::convert_python_source(src, "math").expect("変換できる");
-    let sqrt = body
-        .iter()
-        .find_map(|s| match s {
-            Stmt::FnDef { name, return_type, .. } if name == "sqrt" => Some(return_type.clone()),
-            _ => None,
-        })
-        .expect("math スタブに sqrt がある");
-    assert_eq!(sqrt.as_deref(), Some("float"), "sqrt の戻り値型が落ちている");
+    for (module, func, want) in [("math", "sqrt", "float"), ("sys", "getrecursionlimit", "int")] {
+        let src = crate::py_stubs::builtin_stub(&[module.to_string()]).expect("同梱スタブ");
+        let body = crate::parser::py_stub_extract::extract_py_type_stubs_raw(src);
+        let ret = body
+            .iter()
+            .find_map(|s| match s {
+                Stmt::FnDef { name, return_type, .. } if name == func => Some(return_type.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{module} スタブに {func} がある"));
+        assert_eq!(ret.as_deref(), Some(want), "{module}.{func} の戻り値型が落ちている");
+    }
 }
 
 // ── メタ関数（コンパイル時展開）の構文 ─────────────────────────────────

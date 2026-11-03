@@ -538,12 +538,15 @@ let mean = np.mean(arr)
   （再エクスポートしたクラスも真）（`examples/interop/py_int_links.ar`・`py_int_links_error.ar`）。⚠ 以前は 1 つのファイルの
   宣言しか読まず、pandas の名前がすべて `Any` だった
 - **`.py` の無いモジュール**（`sys`・`itertools`・`zlib` など C で書かれたもの・pandas_import_plan.md の 1-4）は、Arrow が同梱する
-  スタブで型を付ける。手で書いた `math` / `time`（戻り値の型つき）と、CPython の内省で作った 84 本（built-in と標準ライブラリの
-  拡張モジュール。`stubs/generated/`・`scripts/gen_builtin_py_stubs.ps1`）。内省で作ったものは引数の名前と数
-  （`__text_signature__`）と大域変数の型（`sys.version` は `str`・`sys.argv` は `list[str]`）だけで、戻り値は `Any`
-  （`mustbe` で確かめる）。import をたどる先にもなる（`collections.deque` は `_collections` の物）。利用者の `.pyi` が先に
-  読まれる。⚠ 作った CPython（3.12・Windows）のもの。Linux だけのモジュール（`posix` など）は `.pyi` を置く
-  （`examples/interop/py_int_builtin_modules.ar`・`_error`）。以前は `math` / `time` 以外は `cannot find its types` だった
+  スタブで型を付ける。手で書いた `math` / `time`（戻り値の型つき）と、生成した 84 本（built-in と標準ライブラリの拡張モジュール。
+  `stubs/generated/`・`scripts/gen_builtin_py_stubs.ps1`）。生成したもののうち typeshed にある 56 本（`sys`・`zlib`・`itertools` …）は
+  typeshed の型で、戻り値も型つき（`sys.getrecursionlimit()` は `int`・1-6。typeshed は Apache License 2.0 で、ライセンスは
+  `stubs/generated/LICENSE-typeshed.txt`・VSIX と配布先の `third_party/` にも入る）。typeshed に無い 28 本（`_collections` など）は
+  CPython の内省で、引数の名前と数（`__text_signature__`）と大域変数の型だけ・戻り値は `Any`（`mustbe` で確かめる）。import を
+  たどる先にもなる（`collections.deque` は `_collections` の物）。利用者の `.pyi` が先に読まれる。⚠ 作った CPython（3.12・
+  Windows）のもの。Linux だけのモジュール（`posix` など）は `.pyi` を置く（`examples/interop/py_int_builtin_modules.ar`・`_error`）。
+  以前は `math` / `time` 以外は `cannot find its types` だった。⚠ typeshed のスタブを同梱するのは `.py` の無いモジュールだけ
+  （D-10）。`.py` のあるモジュール（標準ライブラリ・site-packages）は、その `.py` から型を読む
 - **大域変数**: 注釈のある大域変数（`count: int = 0`）はその型、注釈の無いものは `Any`。読むたびにモジュールの今の値を読み、
   値は境界で Arrow の値になる（`str` は Arrow の `str`）。`from m import x` は import した時点の値を束縛する（CPython と同じ）
   （`examples/interop/py_int_module_globals.ar`・`_error`）。⚠ 以前は import の時点の写しを Python のオブジェクトのまま返し、

@@ -379,23 +379,14 @@ impl Parser {
         }
         self.loading.insert(abs_path.clone());
 
-        let body = if is_pyi {
+        // ⚠ 同梱のスタブ（`py_stubs`）は変換器を通さず、`.py` と同じ行単位の抽出器だけで読む（pandas_import_plan.md の 1-6）。
+        //   typeshed から作ったスタブは変換器の読めない構文（`@final`・`Protocol`・`*args` の後の名前つき引数など）を含み、
+        //   変換器は D-7 で消す。宣言を落としていないかは単体テスト `bundled_stubs_lose_no_declarations` が見る。
+        let body = if is_pyi && !bundled {
             // .pyi: python_converter でベストエフォート変換
             let filename = abs_path.to_string_lossy().to_string();
-            // ⚠⚠ **変換エラーを握り潰して**行ベース抽出へ落ちる経路（群6 S4）。
-            //   利用者の `.pyi` は今までどおり黙って精度を落とすだけにするが、
-            //   **同梱スタブは自分で書いたもの**なので、失敗したら警告を出す
-            //   （黙って精度が落ちると「スタブを整備したのに検査が効かない」に気付けない）。
-            let mut converted = match convert_python(source, &filename) {
-                Ok(stmts) => stmts,
-                // ⚠ **同梱スタブは自分で書いたもの**なので、変換できないのは誤り（以前は警告を出して
-                //   行単位の抽出へ落ちていた・`editor_import_resolution_plan.md` 1-2）。
-                Err(e) if bundled => {
-                    self.loading.remove(abs_path);
-                    return Err(format!("bundled stub for '{}' failed to convert: {e}", module.join(".")));
-                }
-                Err(_) => Vec::new(),
-            };
+            // ⚠⚠ **変換エラーを握り潰して**行ベース抽出へ落ちる経路（群6 S4）。利用者の `.pyi` は黙って精度を落とすだけ。
+            let mut converted = convert_python(source, &filename).unwrap_or_default();
             // クラスは `.py` と同じ行単位の抽出の宣言を使う（ffi_value_exchange_plan.md 7-27）。変換器のクラスは Arrow の
             // クラスとして組むので、メソッドが `mut self`（`let` の値から呼べない）になり、値の無い注釈の属性（`n: int`）を落とす
             converted.retain(|s| !matches!(s, Stmt::ClassDef { .. }));

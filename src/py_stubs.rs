@@ -22,14 +22,18 @@
 //   変換器側に置くと拡張のビルドだけが壊れる（項目 7 で `PY_KWARGS_PARAM` が
 //   同じ理由で `src/ast.rs` へ行ったのと同じ判断）。
 //
-// ★ スタブは 2 種類ある（pandas_import_plan.md の 1-4）:
+// ★ スタブは 2 つの表にある（pandas_import_plan.md の 1-4・1-6）:
 //   - 手で書いたもの（`stubs/*.pyi`・`BUILTIN_STUBS`）: 戻り値の型まで書いてある。`time` / `math` だけ。
-//   - CPython の内省で作ったもの（`stubs/generated/*.pyi`・`py_stubs_generated.rs` の `GENERATED_STUBS`）: `sys` / `itertools` /
-//     `_collections` など、`.py` の無い built-in と標準ライブラリの拡張モジュール（`select` など）。引数の名前と数は
-//     CPython の __text_signature__ から、大域変数の型は作ったときの値の型から付け、それ以外は `Any`。
+//   - 生成したもの（`stubs/generated/*.pyi`・`py_stubs_generated.rs` の `GENERATED_STUBS`）: `sys` / `itertools` /
+//     `_collections` など、`.py` の無い built-in と標準ライブラリの拡張モジュール（`select` など）。
+//     typeshed にあるもの（56 本）は typeshed の型（版と OS の分岐を畳んだもの・ライセンスは
+//     `stubs/generated/LICENSE-typeshed.txt`・D-10）、無いもの（28 本）は CPython の内省（引数の名前と数は
+//     CPython の __text_signature__ から、大域変数の型は作ったときの値の型から付け、それ以外は `Any`）。
 //     `scripts/gen_builtin_py_stubs.ps1` で作り直す（手で書き換えない）。
 //   どちらにも無いモジュールは、型の出所が無いので `import[py-int]` が構文解析の誤りになる（`.pyi` を置くよう促す）。
-//   ⚠ 内省で作ったものは作った CPython（版と OS）のもの。Linux だけのモジュール（posix / fcntl など）は無い。
+//   ⚠ 作った CPython（版と OS）のもの。Linux だけのモジュール（posix / fcntl など）は無い。
+//   ⚠ 同梱のスタブは変換器を通さず、行単位の抽出器だけで読む（`build_py_type_body`）。宣言を落とさないかは
+//     単体テスト `bundled_stubs_lose_no_declarations` が見る。
 
 include!("py_stubs_generated.rs");
 

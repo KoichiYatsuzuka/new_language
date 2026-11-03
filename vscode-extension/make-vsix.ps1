@@ -25,6 +25,7 @@ $contentTypes = @'
   <Default Extension="png"          ContentType="image/png"/>
   <Default Extension="svg"          ContentType="image/svg+xml"/>
   <Default Extension="wasm"         ContentType="application/wasm"/>
+  <Default Extension="txt"          ContentType="text/plain"/>
 </Types>
 '@
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -131,6 +132,9 @@ if (-not (Test-Path $wasmSrc)) {
 }
 Copy-Item $wasmSrc "$tmp\extension\out\arrow_frontend.wasm"
 Write-Host ("Bundled arrow_frontend.wasm ({0} KB)" -f [Math]::Round((Get-Item $wasmSrc).Length/1KB, 1))
+# ⚠ wasm は typeshed から作った型スタブ（stubs/generated/）を埋め込むので、typeshed のライセンス（Apache-2.0）も同梱する
+#   （pandas_import_plan.md の 1-6）
+Copy-Item "$root\..\stubs\generated\LICENSE-typeshed.txt" "$tmp\extension\LICENSE-typeshed.txt"
 
 # ⚠ builtins.ars はもう同梱しない。組み込み関数の宣言は wasm が埋め込んでいる
 #   （src/built_in_stab/builtins.ars・型検査器と同じ本文を `ar_builtins` で渡す）。

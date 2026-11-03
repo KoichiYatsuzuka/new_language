@@ -1,390 +1,218 @@
-# _sqlite3.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-4）。
+# _sqlite3.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-6）。
 # ⚠ 生成したファイル。手で書き換えない（scripts/gen_builtin_py_stubs.ps1・CPython 3.12.2 / win32）。
-from typing import Any
-
-class Blob:
-    def __init__(self) -> None: ...
-    def __delitem__(self, key: Any, /) -> Any: ...
-    def __enter__(self) -> Any: ...
-    def __exit__(self, type: Any, val: Any, tb: Any, /) -> Any: ...
-    def __getitem__(self, key: Any, /) -> Any: ...
-    def __len__(self) -> Any: ...
-    def __setitem__(self, key: Any, value: Any, /) -> Any: ...
-    def close(self) -> Any: ...
-    def read(self, length: Any = ..., /) -> Any: ...
-    def seek(self, offset: Any, origin: Any = ..., /) -> Any: ...
-    def tell(self) -> Any: ...
-    def write(self, data: Any, /) -> Any: ...
-class Connection:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    DataError: Any
-    DatabaseError: Any
-    Error: Any
-    IntegrityError: Any
-    InterfaceError: Any
-    InternalError: Any
-    NotSupportedError: Any
-    OperationalError: Any
-    ProgrammingError: Any
-    Warning: Any
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
-    def __del__(self, *args: Any, **kwargs: Any) -> Any: ...
-    def __enter__(self) -> Any: ...
-    def __exit__(self, type: Any, value: Any, traceback: Any, /) -> Any: ...
-    autocommit: Any
-    def backup(self, target: Any, *, pages: Any = ..., progress: Any = ..., name: Any = ..., sleep: Any = ...) -> Any: ...
-    def blobopen(self, table: Any, column: Any, row: Any, /, *, readonly: Any = ..., name: Any = ...) -> Any: ...
-    def close(self) -> Any: ...
-    def commit(self) -> Any: ...
-    def create_aggregate(self, name: Any, n_arg: Any, aggregate_class: Any) -> Any: ...
-    def create_collation(self, name: Any, callback: Any, /) -> Any: ...
-    def create_function(self, name: Any, narg: Any, func: Any, *, deterministic: Any = ...) -> Any: ...
-    def create_window_function(self, name: Any, num_params: Any, aggregate_class: Any, /) -> Any: ...
-    def cursor(self, *args: Any, **kwargs: Any) -> Any: ...
-    def deserialize(self, data: Any, /, *, name: Any = ...) -> Any: ...
-    def enable_load_extension(self, enable: Any, /) -> Any: ...
-    def execute(self, *args: Any, **kwargs: Any) -> Any: ...
-    def executemany(self, sql: Any, parameters: Any, /) -> Any: ...
-    def executescript(self, sql_script: Any, /) -> Any: ...
-    def getconfig(self, op: Any, /) -> Any: ...
-    def getlimit(self, category: Any, /) -> Any: ...
-    in_transaction: Any
-    def interrupt(self) -> Any: ...
-    isolation_level: Any
-    def iterdump(self) -> Any: ...
-    def load_extension(self, name: Any, /, *, entrypoint: Any = ...) -> Any: ...
-    def rollback(self) -> Any: ...
-    row_factory: Any
-    def serialize(self, *, name: Any = ...) -> Any: ...
-    def set_authorizer(self, authorizer_callback: Any) -> Any: ...
-    def set_progress_handler(self, progress_handler: Any, n: Any) -> Any: ...
-    def set_trace_callback(self, trace_callback: Any) -> Any: ...
-    def setconfig(self, op: Any, enable: Any = ..., /) -> Any: ...
-    def setlimit(self, category: Any, limit: Any, /) -> Any: ...
-    text_factory: Any
-    total_changes: Any
-class Cursor:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def __iter__(self) -> Any: ...
-    def __next__(self) -> Any: ...
-    arraysize: Any
-    def close(self) -> Any: ...
-    connection: Any
-    description: Any
-    def execute(self, sql: Any, parameters: Any = ..., /) -> Any: ...
-    def executemany(self, sql: Any, seq_of_parameters: Any, /) -> Any: ...
-    def executescript(self, sql_script: Any, /) -> Any: ...
-    def fetchall(self) -> Any: ...
-    def fetchmany(self, size: Any = ...) -> Any: ...
-    def fetchone(self) -> Any: ...
-    lastrowid: Any
-    row_factory: Any
-    rowcount: Any
-    def setinputsizes(self, sizes: Any, /) -> Any: ...
-    def setoutputsize(self, size: Any, column: Any = ..., /) -> Any: ...
-class DataError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class DatabaseError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class Error:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class IntegrityError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class InterfaceError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class InternalError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-LEGACY_TRANSACTION_CONTROL: int
-class NotSupportedError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class OperationalError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-PARSE_COLNAMES: int
-PARSE_DECLTYPES: int
-class PrepareProtocol:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-class ProgrammingError:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-class Row:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def __eq__(self, value: Any, /) -> Any: ...
-    def __ge__(self, value: Any, /) -> Any: ...
-    def __getitem__(self, key: Any, /) -> Any: ...
-    def __gt__(self, value: Any, /) -> Any: ...
-    def __hash__(self) -> Any: ...
-    def __iter__(self) -> Any: ...
-    def __le__(self, value: Any, /) -> Any: ...
-    def __len__(self) -> Any: ...
-    def __lt__(self, value: Any, /) -> Any: ...
-    def __ne__(self, value: Any, /) -> Any: ...
-    def keys(self) -> Any: ...
-SQLITE_ABORT: int
-SQLITE_ABORT_ROLLBACK: int
-SQLITE_ALTER_TABLE: int
-SQLITE_ANALYZE: int
-SQLITE_ATTACH: int
-SQLITE_AUTH: int
-SQLITE_AUTH_USER: int
-SQLITE_BUSY: int
-SQLITE_BUSY_RECOVERY: int
-SQLITE_BUSY_SNAPSHOT: int
-SQLITE_BUSY_TIMEOUT: int
-SQLITE_CANTOPEN: int
-SQLITE_CANTOPEN_CONVPATH: int
-SQLITE_CANTOPEN_DIRTYWAL: int
-SQLITE_CANTOPEN_FULLPATH: int
-SQLITE_CANTOPEN_ISDIR: int
-SQLITE_CANTOPEN_NOTEMPDIR: int
-SQLITE_CANTOPEN_SYMLINK: int
-SQLITE_CONSTRAINT: int
-SQLITE_CONSTRAINT_CHECK: int
-SQLITE_CONSTRAINT_COMMITHOOK: int
-SQLITE_CONSTRAINT_FOREIGNKEY: int
-SQLITE_CONSTRAINT_FUNCTION: int
-SQLITE_CONSTRAINT_NOTNULL: int
-SQLITE_CONSTRAINT_PINNED: int
-SQLITE_CONSTRAINT_PRIMARYKEY: int
-SQLITE_CONSTRAINT_ROWID: int
-SQLITE_CONSTRAINT_TRIGGER: int
-SQLITE_CONSTRAINT_UNIQUE: int
-SQLITE_CONSTRAINT_VTAB: int
-SQLITE_CORRUPT: int
-SQLITE_CORRUPT_INDEX: int
-SQLITE_CORRUPT_SEQUENCE: int
-SQLITE_CORRUPT_VTAB: int
-SQLITE_CREATE_INDEX: int
-SQLITE_CREATE_TABLE: int
-SQLITE_CREATE_TEMP_INDEX: int
-SQLITE_CREATE_TEMP_TABLE: int
-SQLITE_CREATE_TEMP_TRIGGER: int
-SQLITE_CREATE_TEMP_VIEW: int
-SQLITE_CREATE_TRIGGER: int
-SQLITE_CREATE_VIEW: int
-SQLITE_CREATE_VTABLE: int
-SQLITE_DBCONFIG_DEFENSIVE: int
-SQLITE_DBCONFIG_DQS_DDL: int
-SQLITE_DBCONFIG_DQS_DML: int
-SQLITE_DBCONFIG_ENABLE_FKEY: int
-SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER: int
-SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION: int
-SQLITE_DBCONFIG_ENABLE_QPSG: int
-SQLITE_DBCONFIG_ENABLE_TRIGGER: int
-SQLITE_DBCONFIG_ENABLE_VIEW: int
-SQLITE_DBCONFIG_LEGACY_ALTER_TABLE: int
-SQLITE_DBCONFIG_LEGACY_FILE_FORMAT: int
-SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE: int
-SQLITE_DBCONFIG_RESET_DATABASE: int
-SQLITE_DBCONFIG_TRIGGER_EQP: int
-SQLITE_DBCONFIG_TRUSTED_SCHEMA: int
-SQLITE_DBCONFIG_WRITABLE_SCHEMA: int
-SQLITE_DELETE: int
-SQLITE_DENY: int
-SQLITE_DETACH: int
-SQLITE_DONE: int
-SQLITE_DROP_INDEX: int
-SQLITE_DROP_TABLE: int
-SQLITE_DROP_TEMP_INDEX: int
-SQLITE_DROP_TEMP_TABLE: int
-SQLITE_DROP_TEMP_TRIGGER: int
-SQLITE_DROP_TEMP_VIEW: int
-SQLITE_DROP_TRIGGER: int
-SQLITE_DROP_VIEW: int
-SQLITE_DROP_VTABLE: int
-SQLITE_EMPTY: int
-SQLITE_ERROR: int
-SQLITE_ERROR_MISSING_COLLSEQ: int
-SQLITE_ERROR_RETRY: int
-SQLITE_ERROR_SNAPSHOT: int
-SQLITE_FORMAT: int
-SQLITE_FULL: int
-SQLITE_FUNCTION: int
-SQLITE_IGNORE: int
-SQLITE_INSERT: int
-SQLITE_INTERNAL: int
-SQLITE_INTERRUPT: int
-SQLITE_IOERR: int
-SQLITE_IOERR_ACCESS: int
-SQLITE_IOERR_AUTH: int
-SQLITE_IOERR_BEGIN_ATOMIC: int
-SQLITE_IOERR_BLOCKED: int
-SQLITE_IOERR_CHECKRESERVEDLOCK: int
-SQLITE_IOERR_CLOSE: int
-SQLITE_IOERR_COMMIT_ATOMIC: int
-SQLITE_IOERR_CONVPATH: int
-SQLITE_IOERR_CORRUPTFS: int
-SQLITE_IOERR_DATA: int
-SQLITE_IOERR_DELETE: int
-SQLITE_IOERR_DELETE_NOENT: int
-SQLITE_IOERR_DIR_CLOSE: int
-SQLITE_IOERR_DIR_FSYNC: int
-SQLITE_IOERR_FSTAT: int
-SQLITE_IOERR_FSYNC: int
-SQLITE_IOERR_GETTEMPPATH: int
-SQLITE_IOERR_LOCK: int
-SQLITE_IOERR_MMAP: int
-SQLITE_IOERR_NOMEM: int
-SQLITE_IOERR_RDLOCK: int
-SQLITE_IOERR_READ: int
-SQLITE_IOERR_ROLLBACK_ATOMIC: int
-SQLITE_IOERR_SEEK: int
-SQLITE_IOERR_SHMLOCK: int
-SQLITE_IOERR_SHMMAP: int
-SQLITE_IOERR_SHMOPEN: int
-SQLITE_IOERR_SHMSIZE: int
-SQLITE_IOERR_SHORT_READ: int
-SQLITE_IOERR_TRUNCATE: int
-SQLITE_IOERR_UNLOCK: int
-SQLITE_IOERR_VNODE: int
-SQLITE_IOERR_WRITE: int
-SQLITE_LIMIT_ATTACHED: int
-SQLITE_LIMIT_COLUMN: int
-SQLITE_LIMIT_COMPOUND_SELECT: int
-SQLITE_LIMIT_EXPR_DEPTH: int
-SQLITE_LIMIT_FUNCTION_ARG: int
-SQLITE_LIMIT_LENGTH: int
-SQLITE_LIMIT_LIKE_PATTERN_LENGTH: int
-SQLITE_LIMIT_SQL_LENGTH: int
-SQLITE_LIMIT_TRIGGER_DEPTH: int
-SQLITE_LIMIT_VARIABLE_NUMBER: int
-SQLITE_LIMIT_VDBE_OP: int
-SQLITE_LIMIT_WORKER_THREADS: int
-SQLITE_LOCKED: int
-SQLITE_LOCKED_SHAREDCACHE: int
-SQLITE_LOCKED_VTAB: int
-SQLITE_MISMATCH: int
-SQLITE_MISUSE: int
-SQLITE_NOLFS: int
-SQLITE_NOMEM: int
-SQLITE_NOTADB: int
-SQLITE_NOTFOUND: int
-SQLITE_NOTICE: int
-SQLITE_NOTICE_RECOVER_ROLLBACK: int
-SQLITE_NOTICE_RECOVER_WAL: int
-SQLITE_OK: int
-SQLITE_OK_LOAD_PERMANENTLY: int
-SQLITE_OK_SYMLINK: int
-SQLITE_PERM: int
-SQLITE_PRAGMA: int
-SQLITE_PROTOCOL: int
-SQLITE_RANGE: int
-SQLITE_READ: int
-SQLITE_READONLY: int
-SQLITE_READONLY_CANTINIT: int
-SQLITE_READONLY_CANTLOCK: int
-SQLITE_READONLY_DBMOVED: int
-SQLITE_READONLY_DIRECTORY: int
-SQLITE_READONLY_RECOVERY: int
-SQLITE_READONLY_ROLLBACK: int
-SQLITE_RECURSIVE: int
-SQLITE_REINDEX: int
-SQLITE_ROW: int
-SQLITE_SAVEPOINT: int
-SQLITE_SCHEMA: int
-SQLITE_SELECT: int
-SQLITE_TOOBIG: int
-SQLITE_TRANSACTION: int
-SQLITE_UPDATE: int
-SQLITE_WARNING: int
-SQLITE_WARNING_AUTOINDEX: int
-class Warning:
-    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    __cause__: Any
-    __context__: Any
-    def __repr__(self) -> Any: ...
-    def __str__(self) -> Any: ...
-    __suppress_context__: Any
-    __traceback__: Any
-    def add_note(self, *args: Any, **kwargs: Any) -> Any: ...
-    args: Any
-    def with_traceback(self, *args: Any, **kwargs: Any) -> Any: ...
-def adapt(*args: Any, **kwargs: Any) -> Any: ...
-adapters: Any
-def complete_statement(statement: Any) -> Any: ...
-def connect(*args: Any, **kwargs: Any) -> Any: ...
-converters: Any
-def enable_callback_tracebacks(enable: Any, /) -> Any: ...
-def register_adapter(type: Any, adapter: Any, /) -> Any: ...
-def register_converter(typename: Any, converter: Any, /) -> Any: ...
+# typeshed（https://github.com/python/typeshed・commit 289e5d3568961c8bcd33d01eef5b7ec5e1ad33ad）の stdlib/_sqlite3.pyi を、
+# この CPython の版と OS の分岐だけ残して畳んだもの。typeshed は Apache License 2.0（LICENSE-typeshed.txt）。
+import sys
+from _typeshed import ReadableBuffer, StrOrBytesPath
+from collections.abc import Callable
+from sqlite3 import Connection as Connection, Cursor as Cursor, DatabaseError as DatabaseError, DataError as DataError, Error as Error, IntegrityError as IntegrityError, InterfaceError as InterfaceError, InternalError as InternalError, NotSupportedError as NotSupportedError, OperationalError as OperationalError, PrepareProtocol as PrepareProtocol, ProgrammingError as ProgrammingError, Row as Row, Warning as Warning, _IsolationLevel
+from typing import Any, Final, Literal, TypeAlias, TypeVar, overload
+from typing_extensions import deprecated
+from sqlite3 import Blob as Blob
+PARSE_COLNAMES: int = 2
+PARSE_DECLTYPES: int = 1
+SQLITE_ALTER_TABLE: int = 26
+SQLITE_ANALYZE: int = 28
+SQLITE_ATTACH: int = 24
+SQLITE_CREATE_INDEX: int = 1
+SQLITE_CREATE_TABLE: int = 2
+SQLITE_CREATE_TEMP_INDEX: int = 3
+SQLITE_CREATE_TEMP_TABLE: int = 4
+SQLITE_CREATE_TEMP_TRIGGER: int = 5
+SQLITE_CREATE_TEMP_VIEW: int = 6
+SQLITE_CREATE_TRIGGER: int = 7
+SQLITE_CREATE_VIEW: int = 8
+SQLITE_CREATE_VTABLE: int = 29
+SQLITE_DELETE: int = 9
+SQLITE_DENY: int = 1
+SQLITE_DETACH: int = 25
+SQLITE_DONE: int = 101
+SQLITE_DROP_INDEX: int = 10
+SQLITE_DROP_TABLE: int = 11
+SQLITE_DROP_TEMP_INDEX: int = 12
+SQLITE_DROP_TEMP_TABLE: int = 13
+SQLITE_DROP_TEMP_TRIGGER: int = 14
+SQLITE_DROP_TEMP_VIEW: int = 15
+SQLITE_DROP_TRIGGER: int = 16
+SQLITE_DROP_VIEW: int = 17
+SQLITE_DROP_VTABLE: int = 30
+SQLITE_FUNCTION: int = 31
+SQLITE_IGNORE: int = 2
+SQLITE_INSERT: int = 18
+SQLITE_OK: int = 0
+SQLITE_PRAGMA: int = 19
+SQLITE_READ: int = 20
+SQLITE_RECURSIVE: int = 33
+SQLITE_REINDEX: int = 27
+SQLITE_SAVEPOINT: int = 32
+SQLITE_SELECT: int = 21
+SQLITE_TRANSACTION: int = 22
+SQLITE_UPDATE: int = 23
+adapters: dict[tuple[type[Any], type[Any]], Callable[[Any], str | ReadableBuffer | int | float | None][Any]]
+converters: dict[str, Callable[[bytes], Any]]
 sqlite_version: str
-threadsafety: int
+LEGACY_TRANSACTION_CONTROL: int = -1
+SQLITE_DBCONFIG_DEFENSIVE: int = 1010
+SQLITE_DBCONFIG_DQS_DDL: int = 1014
+SQLITE_DBCONFIG_DQS_DML: int = 1013
+SQLITE_DBCONFIG_ENABLE_FKEY: int = 1002
+SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER: int = 1004
+SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION: int = 1005
+SQLITE_DBCONFIG_ENABLE_QPSG: int = 1007
+SQLITE_DBCONFIG_ENABLE_TRIGGER: int = 1003
+SQLITE_DBCONFIG_ENABLE_VIEW: int = 1015
+SQLITE_DBCONFIG_LEGACY_ALTER_TABLE: int = 1012
+SQLITE_DBCONFIG_LEGACY_FILE_FORMAT: int = 1016
+SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE: int = 1006
+SQLITE_DBCONFIG_RESET_DATABASE: int = 1009
+SQLITE_DBCONFIG_TRIGGER_EQP: int = 1008
+SQLITE_DBCONFIG_TRUSTED_SCHEMA: int = 1017
+SQLITE_DBCONFIG_WRITABLE_SCHEMA: int = 1011
+SQLITE_ABORT: int = 4
+SQLITE_ABORT_ROLLBACK: int = 516
+SQLITE_AUTH: int = 23
+SQLITE_AUTH_USER: int = 279
+SQLITE_BUSY: int = 5
+SQLITE_BUSY_RECOVERY: int = 261
+SQLITE_BUSY_SNAPSHOT: int = 517
+SQLITE_BUSY_TIMEOUT: int = 773
+SQLITE_CANTOPEN: int = 14
+SQLITE_CANTOPEN_CONVPATH: int = 1038
+SQLITE_CANTOPEN_DIRTYWAL: int = 1294
+SQLITE_CANTOPEN_FULLPATH: int = 782
+SQLITE_CANTOPEN_ISDIR: int = 526
+SQLITE_CANTOPEN_NOTEMPDIR: int = 270
+SQLITE_CANTOPEN_SYMLINK: int = 1550
+SQLITE_CONSTRAINT: int = 19
+SQLITE_CONSTRAINT_CHECK: int = 275
+SQLITE_CONSTRAINT_COMMITHOOK: int = 531
+SQLITE_CONSTRAINT_FOREIGNKEY: int = 787
+SQLITE_CONSTRAINT_FUNCTION: int = 1043
+SQLITE_CONSTRAINT_NOTNULL: int = 1299
+SQLITE_CONSTRAINT_PINNED: int = 2835
+SQLITE_CONSTRAINT_PRIMARYKEY: int = 1555
+SQLITE_CONSTRAINT_ROWID: int = 2579
+SQLITE_CONSTRAINT_TRIGGER: int = 1811
+SQLITE_CONSTRAINT_UNIQUE: int = 2067
+SQLITE_CONSTRAINT_VTAB: int = 2323
+SQLITE_CORRUPT: int = 11
+SQLITE_CORRUPT_INDEX: int = 779
+SQLITE_CORRUPT_SEQUENCE: int = 523
+SQLITE_CORRUPT_VTAB: int = 267
+SQLITE_EMPTY: int = 16
+SQLITE_ERROR: int = 1
+SQLITE_ERROR_MISSING_COLLSEQ: int = 257
+SQLITE_ERROR_RETRY: int = 513
+SQLITE_ERROR_SNAPSHOT: int = 769
+SQLITE_FORMAT: int = 24
+SQLITE_FULL: int = 13
+SQLITE_INTERNAL: int = 2
+SQLITE_INTERRUPT: int = 9
+SQLITE_IOERR: int = 10
+SQLITE_IOERR_ACCESS: int = 3338
+SQLITE_IOERR_AUTH: int = 7178
+SQLITE_IOERR_BEGIN_ATOMIC: int = 7434
+SQLITE_IOERR_BLOCKED: int = 2826
+SQLITE_IOERR_CHECKRESERVEDLOCK: int = 3594
+SQLITE_IOERR_CLOSE: int = 4106
+SQLITE_IOERR_COMMIT_ATOMIC: int = 7690
+SQLITE_IOERR_CONVPATH: int = 6666
+SQLITE_IOERR_CORRUPTFS: int = 8458
+SQLITE_IOERR_DATA: int = 8202
+SQLITE_IOERR_DELETE: int = 2570
+SQLITE_IOERR_DELETE_NOENT: int = 5898
+SQLITE_IOERR_DIR_CLOSE: int = 4362
+SQLITE_IOERR_DIR_FSYNC: int = 1290
+SQLITE_IOERR_FSTAT: int = 1802
+SQLITE_IOERR_FSYNC: int = 1034
+SQLITE_IOERR_GETTEMPPATH: int = 6410
+SQLITE_IOERR_LOCK: int = 3850
+SQLITE_IOERR_MMAP: int = 6154
+SQLITE_IOERR_NOMEM: int = 3082
+SQLITE_IOERR_RDLOCK: int = 2314
+SQLITE_IOERR_READ: int = 266
+SQLITE_IOERR_ROLLBACK_ATOMIC: int = 7946
+SQLITE_IOERR_SEEK: int = 5642
+SQLITE_IOERR_SHMLOCK: int = 5130
+SQLITE_IOERR_SHMMAP: int = 5386
+SQLITE_IOERR_SHMOPEN: int = 4618
+SQLITE_IOERR_SHMSIZE: int = 4874
+SQLITE_IOERR_SHORT_READ: int = 522
+SQLITE_IOERR_TRUNCATE: int = 1546
+SQLITE_IOERR_UNLOCK: int = 2058
+SQLITE_IOERR_VNODE: int = 6922
+SQLITE_IOERR_WRITE: int = 778
+SQLITE_LIMIT_ATTACHED: int = 7
+SQLITE_LIMIT_COLUMN: int = 2
+SQLITE_LIMIT_COMPOUND_SELECT: int = 4
+SQLITE_LIMIT_EXPR_DEPTH: int = 3
+SQLITE_LIMIT_FUNCTION_ARG: int = 6
+SQLITE_LIMIT_LENGTH: int = 0
+SQLITE_LIMIT_LIKE_PATTERN_LENGTH: int = 8
+SQLITE_LIMIT_SQL_LENGTH: int = 1
+SQLITE_LIMIT_TRIGGER_DEPTH: int = 10
+SQLITE_LIMIT_VARIABLE_NUMBER: int = 9
+SQLITE_LIMIT_VDBE_OP: int = 5
+SQLITE_LIMIT_WORKER_THREADS: int = 11
+SQLITE_LOCKED: int = 6
+SQLITE_LOCKED_SHAREDCACHE: int = 262
+SQLITE_LOCKED_VTAB: int = 518
+SQLITE_MISMATCH: int = 20
+SQLITE_MISUSE: int = 21
+SQLITE_NOLFS: int = 22
+SQLITE_NOMEM: int = 7
+SQLITE_NOTADB: int = 26
+SQLITE_NOTFOUND: int = 12
+SQLITE_NOTICE: int = 27
+SQLITE_NOTICE_RECOVER_ROLLBACK: int = 539
+SQLITE_NOTICE_RECOVER_WAL: int = 283
+SQLITE_OK_LOAD_PERMANENTLY: int = 256
+SQLITE_OK_SYMLINK: int = 512
+SQLITE_PERM: int = 3
+SQLITE_PROTOCOL: int = 15
+SQLITE_RANGE: int = 25
+SQLITE_READONLY: int = 8
+SQLITE_READONLY_CANTINIT: int = 1288
+SQLITE_READONLY_CANTLOCK: int = 520
+SQLITE_READONLY_DBMOVED: int = 1032
+SQLITE_READONLY_DIRECTORY: int = 1544
+SQLITE_READONLY_RECOVERY: int = 264
+SQLITE_READONLY_ROLLBACK: int = 776
+SQLITE_ROW: int = 100
+SQLITE_SCHEMA: int = 17
+SQLITE_TOOBIG: int = 18
+SQLITE_WARNING: int = 28
+SQLITE_WARNING_AUTOINDEX: int = 284
+threadsafety: Literal[0, 1, 3]
+
+@overload
+def adapt(obj: Any, proto: Any, /) -> Any:
+    ...
+
+@overload
+def adapt(obj: Any, proto: Any, alt: Any, /) -> Any | Any:
+    ...
+
+def complete_statement(statement: str) -> bool:
+    ...
+
+@overload
+def connect(database: StrOrBytesPath, timeout: float=5.0, detect_types: int=0, isolation_level: _IsolationLevel='DEFERRED', check_same_thread: bool=True, cached_statements: int=128, uri: bool=False, *, autocommit: bool=...) -> Connection:
+    ...
+
+@overload
+def connect(database: StrOrBytesPath, timeout: float, detect_types: int, isolation_level: _IsolationLevel, check_same_thread: bool, factory: type[Any], cached_statements: int=128, uri: bool=False, *, autocommit: bool=...) -> Any:
+    ...
+
+@overload
+def connect(database: StrOrBytesPath, timeout: float=5.0, detect_types: int=0, isolation_level: _IsolationLevel='DEFERRED', check_same_thread: bool=True, *, factory: type[Any], cached_statements: int=128, uri: bool=False, autocommit: bool=...) -> Any:
+    ...
+
+def enable_callback_tracebacks(enable: bool, /) -> None:
+    ...
+
+def register_adapter(type: type[Any], adapter: Callable[[Any], str | ReadableBuffer | int | float | None][Any], /) -> None:
+    ...
+
+def register_converter(typename: str, converter: Callable[[bytes], Any], /) -> None:
+    ...

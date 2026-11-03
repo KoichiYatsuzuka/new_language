@@ -1,11 +1,15 @@
-"""`.py` の無い Python のモジュールの型スタブを、CPython の内省で作る（pandas_import_plan.md の 1-4）。
+"""`.py` の無い Python のモジュールの型スタブを、typeshed と CPython の内省で作る（pandas_import_plan.md の 1-4・1-6）。
 
 `import[py-int] sys` の型は、そのモジュールの `.pyi` / `.py` から抽出する。C で書かれたモジュール（`sys`・`itertools`・
 `_collections` などの built-in と、標準ライブラリの拡張モジュール `select.pyd` など）には読むファイルが無いので、
 Arrow に同梱する（`src/py_stubs.rs`）。ここはその同梱のスタブ `stubs/generated/<モジュール>.pyi` と、表
 `src/py_stubs_generated.rs` を作り直す。
 
-型の出所:
+型の出所（D-10）:
+- typeshed に `.pyi` のあるモジュールは **typeshed**（型が書いてある）。`typeshed_flatten.py` で、生成した CPython の版と OS に
+  当てはまる分岐だけを残し、抽出器で読める形に畳む。`--typeshed <stdlib の置き場>` で渡す（既定は Pylance が同梱する
+  typeshed-fallback）。ライセンス（Apache-2.0）は `stubs/generated/LICENSE-typeshed.txt` に写す
+- typeshed に無いモジュール（`_collections` など）は CPython の内省:
 - 関数・メソッド: `__text_signature__`（`inspect.signature`）で引数の名前・数・既定値の有無。型は書かれていないので `Any`。
   読めないもの（`__text_signature__` の無いもの）は `(*args, **kwargs)`（引数を問わない）。
 - 大域変数・クラスの属性: 作ったときの値の型（`int` / `float` / `str` / `bool` / `bytes`、要素が揃った list / dict）。
@@ -16,14 +20,19 @@ Arrow に同梱する（`src/py_stubs.rs`）。ここはその同梱のスタブ
 ⚠ CPython の版と OS で中身が変わる（`nt` / `winreg` は Windows だけ）。Linux だけのモジュール（`posix` / `fcntl` など）は
   ここでは作れない。使うときは `.pyi` を置く（利用者のファイルは同梱のスタブより先に読む）。
 
-使い方: リポジトリのルートで `./scripts/gen_builtin_py_stubs.ps1`（中でこのファイルを走らせる）。
+使い方: リポジトリのルートで `./scripts/gen_builtin_py_stubs.ps1 [-Typeshed <dir>]`（中でこのファイルを走らせる）。
 """
+import argparse
+import glob
 import inspect
 import importlib
 import keyword
 import os
+import shutil
 import sys
 import types
+
+import typeshed_flatten
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "stubs", "generated")
@@ -209,15 +218,54 @@ def module_stub(modname):
     return head + body
 
 
+def default_typeshed():
+    """Pylance が同梱する typeshed（`typeshed-fallback`）の置き場。いちばん新しい版のもの。"""
+    found = sorted(glob.glob(os.path.expanduser("~/.vscode/extensions/ms-python.vscode-pylance-*/dist/typeshed-fallback")))
+    return found[-1] if found else None
+
+
+def typeshed_stub(root, commit, modname):
+    """typeshed の `stdlib` にあるモジュールのスタブ（行の並び）。無ければ `None`。"""
+    stdlib = os.path.join(root, "stdlib")
+    for path in (os.path.join(stdlib, f"{modname}.pyi"), os.path.join(stdlib, modname, "__init__.pyi")):
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            # ⚠ `builtins` のクラス（`int` / `str` / 例外）は Arrow の型と同じ名前なので書かない（内省と同じ）
+            body = typeshed_flatten.flatten(src, skip_classes=(modname == "builtins"))
+            head = [
+                f"# {modname}.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-6）。",
+                f"# ⚠ 生成したファイル。手で書き換えない（scripts/gen_builtin_py_stubs.ps1・CPython {sys.version.split()[0]} / {sys.platform}）。",
+                f"# typeshed（https://github.com/python/typeshed・commit {commit}）の stdlib/{os.path.relpath(path, stdlib).replace(os.sep, '/')} を、",
+                "# この CPython の版と OS の分岐だけ残して畳んだもの。typeshed は Apache License 2.0（LICENSE-typeshed.txt）。",
+            ]
+            return head + [body]
+    return None
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--typeshed", default=None, help="typeshed の置き場（stdlib と LICENSE のあるディレクトリ）")
+    opts = ap.parse_args()
+    ts_root = opts.typeshed or default_typeshed()
+    if ts_root is None or not os.path.isdir(os.path.join(ts_root, "stdlib")):
+        sys.exit("typeshed が見つからない（--typeshed で stdlib のあるディレクトリを渡す）")
+    commit_file = os.path.join(ts_root, "commit.txt")
+    commit = open(commit_file, encoding="utf-8").read().strip() if os.path.exists(commit_file) else "unknown"
     os.makedirs(OUT_DIR, exist_ok=True)
     for f in os.listdir(OUT_DIR):
         if f.endswith(".pyi"):
             os.remove(os.path.join(OUT_DIR, f))
+    shutil.copyfile(os.path.join(ts_root, "LICENSE"), os.path.join(OUT_DIR, "LICENSE-typeshed.txt"))
     written = []
     skipped = []
+    from_typeshed = []
     for modname in module_names():
-        lines = module_stub(modname)
+        lines = typeshed_stub(ts_root, commit, modname)
+        if lines is not None:
+            from_typeshed.append(modname)
+        else:
+            lines = module_stub(modname)
         if lines is None:
             skipped.append(modname)
             continue
@@ -228,7 +276,7 @@ def main():
         "// py_stubs_generated.rs — 生成した同梱スタブの表（scripts/gen_builtin_py_stubs.ps1 が作る。手で書き換えない）。",
         "// 中身と使い方は `py_stubs.rs` の冒頭。",
         "",
-        "/// `.py` の無い Python のモジュールの、CPython の内省で作ったスタブ（モジュール名 → `.pyi` の中身・名前の順）。",
+        "/// `.py` の無い Python のモジュールの、typeshed と CPython の内省で作ったスタブ（モジュール名 → `.pyi` の中身・名前の順）。",
         "pub(crate) const GENERATED_STUBS: &[(&str, &str)] = &[",
     ]
     for m in written:
@@ -236,7 +284,7 @@ def main():
     table.append("];")
     with open(TABLE, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(table) + "\n")
-    print(f"wrote {len(written)} stubs to {OUT_DIR}")
+    print(f"wrote {len(written)} stubs to {OUT_DIR} ({len(from_typeshed)} from typeshed {commit[:8]}, the rest by introspection)")
     if skipped:
         print("could not import (skipped):", ", ".join(skipped))
 

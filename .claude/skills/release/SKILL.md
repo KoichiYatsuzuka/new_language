@@ -23,7 +23,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 | 2 | リリースビルド | `cargo build --release`（`target/release/arrow.exe`）と `make-vsix.ps1`（tsc・wasm の再ビルド込み・`arrow-<版>.vsix`）。どちらも時間制限つき（`-TimeoutSec`・既定 1 時間・超えたらプロセスの木ごと kill） |
 | 3 | コミット | 版上げ・新しい VSIX・`out/` の追跡済み JS を今のブランチにコミット（古い VSIX は `git rm`）。**push しない** |
 | 4 | タグ | そのコミットに注釈つきタグ（`git tag -a <Tag> -m "Arrow <版>"`） |
-| 5 | 退避と配置 | 配布先の `arrow.exe`・`arrow-<前の版>.vsix`・`ar_config.json` を `old/v<前の版>/` へ**移動**し、新しい exe・VSIX・配布用の `ar_config.json` を置く。`bridge/js_bridge.cjs` が変わっていればそれも差し替える（古いものは `old/v<前の版>/bridge/`） |
+| 5 | 退避と配置 | 配布先の `arrow.exe`・`arrow-<前の版>.vsix`・`ar_config.json` を `old/v<前の版>/` へ**移動**し、新しい exe・VSIX・配布用の `ar_config.json` を置く。`bridge/js_bridge.cjs` が変わっていればそれも差し替える（古いものは `old/v<前の版>/bridge/`）。`third_party/LICENSE-typeshed.txt` を書く（exe が typeshed から作った型スタブを埋め込むため・Apache-2.0） |
 | 6 | 動作確認 | 配布先の exe で 1 行のスクリプトを実行（`3` が出るか） |
 
 ## 名前の決まり

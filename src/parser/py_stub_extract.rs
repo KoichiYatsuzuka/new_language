@@ -963,6 +963,8 @@ fn py_type_to_arrow(ann: &str) -> String {
         "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes"
         | "list" | "dict" | "tuple" | "set" => a.to_string(),
         "frozenset" => "set".to_string(),
+        // `typing.LiteralString`（PEP 675）は文字列（typeshed の `sys.platform: LiteralString`・pandas_import_plan.md の 1-6）
+        "LiteralString" | "typing.LiteralString" | "typing_extensions.LiteralString" => "str".to_string(),
         // Python のバイト列はどれも Arrow の bytes として受け取る（ffi_value_exchange_plan.md 5-3）。要素が 1 バイトでない
         // memoryview は Python のオブジェクトのまま届き、境界の照合で FfiTypeError になる
         "bytearray" | "memoryview" => "bytes".to_string(),

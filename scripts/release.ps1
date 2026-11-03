@@ -12,6 +12,7 @@
 #               then copy the new exe / VSIX and a deploy config (scripts/release_files.py config: the repo's
 #               ar_config.json, keeping the deployed machine-specific values, without the "test" section).
 #               bridge\js_bridge.cjs is replaced too when it changed (the old one goes to old\v<prev>\bridge\).
+#               third_party\LICENSE-typeshed.txt is (re)written: arrow.exe embeds stubs made from typeshed (Apache-2.0).
 #   6. smoke    run the deployed exe once from <DeployDir>
 #
 # Re-running after a failure is safe: a step already done is skipped (version already raised and its VSIX
@@ -205,6 +206,13 @@ if ((Test-Path $bridgeDst) -and ((Get-FileHash $bridgeSrc).Hash -ne (Get-FileHas
 } else {
     Write-Host '  bridge\js_bridge.cjs unchanged'
 }
+
+# arrow.exe embeds Python type stubs generated from typeshed (stubs/generated/, pandas_import_plan.md 1-6), so its
+# license (Apache-2.0) ships next to the exe.
+$thirdParty = Join-Path $DeployDir 'third_party'
+New-Item -ItemType Directory -Force $thirdParty | Out-Null
+Copy-Item (Join-Path $repo 'stubs\generated\LICENSE-typeshed.txt') (Join-Path $thirdParty 'LICENSE-typeshed.txt') -Force
+Write-Host '  third_party\LICENSE-typeshed.txt written'
 
 # ---------------------------------------------------------------- 6. smoke
 Step 'smoke run of the deployed exe'

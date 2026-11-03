@@ -2,7 +2,8 @@
 #
 # 正しい形は py_int_builtin_modules.ar。以前は `import[py-int] sys` そのものが「型が見つからない」構文解析の誤りだった。
 #   - 大域変数の型（`sys.maxsize` は `int`・`sys.platform` は `str`）
-#   - 引数の数（`sys.intern` は 1 つ・`zlib.crc32` は 1〜2 つ。`__text_signature__` から）
+#   - 引数の数（`sys.intern` は 1 つ・`zlib.crc32` は 1〜2 つ）
+#   - 戻り値の型（typeshed の `zlib.compress` は `bytes`・1-6）
 
 import[py-int] sys
 import[py-int] zlib
@@ -11,3 +12,4 @@ let size: str = sys.maxsize             # int を str で受ける
 let name: int = sys.platform            # str を int で受ける
 mut s = sys.intern("a", "b")            # 1 つしか取らない
 mut c = zlib.crc32()                    # 少なくとも 1 つ要る
+let z: str = zlib.compress("a".encode()) # bytes を str で受ける

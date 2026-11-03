@@ -1,7 +1,7 @@
 // py_stubs_generated.rs — 生成した同梱スタブの表（scripts/gen_builtin_py_stubs.ps1 が作る。手で書き換えない）。
 // 中身と使い方は `py_stubs.rs` の冒頭。
 
-/// `.py` の無い Python のモジュールの、CPython の内省で作ったスタブ（モジュール名 → `.pyi` の中身・名前の順）。
+/// `.py` の無い Python のモジュールの、typeshed と CPython の内省で作ったスタブ（モジュール名 → `.pyi` の中身・名前の順）。
 pub(crate) const GENERATED_STUBS: &[(&str, &str)] = &[
     ("_abc", include_str!("../stubs/generated/_abc.pyi")),
     ("_ast", include_str!("../stubs/generated/_ast.pyi")),
