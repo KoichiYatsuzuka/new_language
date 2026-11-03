@@ -411,7 +411,8 @@ pub fn load_py_int_module(
         Ok(Rc::new(NamespaceData {
             name: module_name,
             members,
-            live: None,
+            // メンバーは読むたびにモジュールから引く（`NsLive::Python`）。`members` は `dir()` と呼び先の言語の判定用の写し
+            live: Some(crate::interpreter::value::NsLive::Python(PyObjHandle::from_bound(module.as_any()))),
         }))
     })
     .map_err(|e| format!("ImportError: {e}"))

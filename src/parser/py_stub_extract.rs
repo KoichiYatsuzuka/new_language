@@ -149,6 +149,12 @@ pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
             }
         }
 
+        // 注釈のあるモジュールの大域変数（`version: str` / `maxsize: int = ...`・pandas_import_plan.md の 1-4）。
+        // ⚠ 注釈の無い `x = ..` は拾わない（型が分からない。名前の無いメンバーと同じく `Any`）
+        if let Some((name, ty)) = py_module_global(py_strip_comment(trimmed).trim()) {
+            stmts.push(crate::ast::Stmt::Let(name, Some(ty), crate::ast::Expr::None, crate::token::Span::unknown()));
+        }
+
         decorated = false;
         overloaded = false;
         i += 1;
@@ -572,6 +578,22 @@ fn py_attr_decl(t: &str) -> Option<(String, String)> {
     None
 }
 
+/// トップレベルの 1 行が注釈のある大域変数（`name: T` / `name: T = …`）なら（名前, 型）。`_` で始まる名前は拾わない
+/// （関数と同じ）。⚠ `else: x = 1` のような 1 行の複合文を大域変数と読まないよう、Python の予約語で始まる行は除く。
+fn py_module_global(t: &str) -> Option<(String, String)> {
+    const KEYWORDS: &[&str] = &[
+        "else", "elif", "except", "finally", "try", "if", "for", "while", "with", "match", "case", "class", "def",
+        "async", "lambda", "global", "nonlocal", "return", "yield", "await", "not", "pass", "del", "assert", "raise",
+        "import", "from",
+    ];
+    let ident_end = t.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(t.len());
+    let name = &t[..ident_end];
+    if name.starts_with('_') || KEYWORDS.contains(&name) || !t[ident_end..].trim_start().starts_with(':') {
+        return None;
+    }
+    py_attr_decl(t)
+}
+
 /// メソッドの本体の 1 行の `self.name: T = …` / `self.name = …`（`self.a, self.b = …` も）の（名前, 型）。
 fn py_self_attrs(t: &str) -> Vec<(String, String)> {
     if !t.starts_with("self.") {
@@ -891,6 +913,8 @@ fn py_type_to_arrow(ann: &str) -> String {
         let args: Vec<String> = raw_args.iter().map(|t| py_type_to_arrow(t)).collect();
         return match (base, args.as_slice()) {
             ("Optional", [t]) => union_of(vec![t.clone(), "None".to_string()]),
+            // 大域変数・クラスの属性の印（PEP 591 / PEP 526）: 型は中身
+            ("Final" | "ClassVar", [t]) => t.clone(),
             ("Union", ts) if !ts.is_empty() => union_of(ts.to_vec()),
             ("List" | "list", [t]) => format!("list[{t}]"),
             // frozenset も実行時は Arrow の set で届く（`py_to_tl`・2-6）
@@ -1074,6 +1098,28 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
         assert_eq!(py_type_to_arrow("Callable[[int], str]"), "Any");
         assert_eq!(py_type_to_arrow("Optional[Any]"), "Any");
         assert_eq!(py_type_to_arrow("Person"), "Person");
+        assert_eq!(py_type_to_arrow("Final[int]"), "int");
+    }
+
+    /// 注釈のあるモジュールの大域変数は型つきの `let` の宣言になる（pandas_import_plan.md の 1-4）。注釈の無いもの・`_` で
+    /// 始まるもの・1 行の複合文（`else: x = 1`）は拾わない。
+    #[test]
+    fn annotated_module_globals_are_declared() {
+        use crate::ast::Stmt;
+        let src = "version: str\nmaxsize: int = 9\nlimit: Final[float] = 1.0\nplain = 3\n_hidden: int = 1\n\
+                   if x:\n    pass\nelse: y = 1\nclass C:\n    n: int\n";
+        let globals: Vec<(String, Option<String>)> = extract_py_type_stubs(src)
+            .into_iter()
+            .filter_map(|s| if let Stmt::Let(n, t, _, _) = s { Some((n, t)) } else { None })
+            .collect();
+        assert_eq!(
+            globals,
+            vec![
+                ("version".to_string(), Some("str".to_string())),
+                ("maxsize".to_string(), Some("int".to_string())),
+                ("limit".to_string(), Some("float".to_string())),
+            ]
+        );
     }
 }
 

@@ -404,10 +404,12 @@ impl Value {
                     members,
                     // ⚠ 名前の集合は複製する（`Rc` をスレッドへ持ち出さない・#15）。大域の添字は
                     //   ワーカーでも同じ（`install_task_globals`）。
-                    live: rc
-                        .live
-                        .as_ref()
-                        .map(|(g, names)| (*g, Rc::new((**names).clone()))),
+                    live: rc.live.as_ref().map(|l| match l {
+                        NsLive::Globals(g, names) => NsLive::Globals(*g, Rc::new((**names).clone())),
+                        // CPython のモジュールは写さない（同じモジュールを指す参照をもう 1 つ持つ・D-5）
+                        #[allow(unreachable_code)]
+                        NsLive::Python(h) => NsLive::Python(h.clone()),
+                    }),
                 }))
             }
             // TemplateFn / TemplateClass / TemplateGenFn contain only Clone data (no RefCell)

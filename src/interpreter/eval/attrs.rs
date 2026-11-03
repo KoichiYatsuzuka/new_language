@@ -49,7 +49,14 @@ impl Interpreter {
         ns: &crate::interpreter::value::NamespaceData,
         name: &str,
     ) -> Option<Value> {
-        if let Some((globals, names)) = &ns.live {
+        if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
+            // `import[py-int]` のモジュール: 今の属性を読んで Arrow の値にする（`NsLive::Python`）。⚠ 読めない名前は
+            // `None`（呼び出し側が `AttributeError` にする）。Python が投げた例外（`__getattr__` の中など）も同じ
+            return crate::interpreter::py_interop::py_getattr(module, name)
+                .ok()
+                .or_else(|| self.submodules.get(&ns.name).and_then(|m| m.get(name)).cloned());
+        }
+        if let Some(crate::interpreter::value::NsLive::Globals(globals, names)) = &ns.live {
             if names.contains(name) {
                 // ⚠ 今の大域は `scopes[0]` にある（置き場のその添字は空の置き物・`switch_globals`）。
                 let scope = if *globals == self.cur_globals {
@@ -965,7 +972,7 @@ impl Interpreter {
             //    `cannot set attribute on non-instance` になっていた。
             //    `let` / `const`・関数などは型検査が弾く（6-1）。ここは型検査を通らない経路の砦。
             Value::Namespace(ns) => {
-                if let Some((globals, names)) = &ns.live {
+                if let Some(crate::interpreter::value::NsLive::Globals(globals, names)) = &ns.live {
                     if names.contains(attr) {
                         // ⚠ 今の大域は `scopes[0]` にある（`namespace_member` と同じ）。
                         let scope = if *globals == self.cur_globals {

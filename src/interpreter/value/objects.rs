@@ -83,8 +83,22 @@ pub struct NamespaceData {
     ///   （名前空間の分離・2026-09-26）ので、`mut count` を `bump()` で増やしても `c.count` は 0 のまま
     ///   だった（実測）。`mut` で宣言された名前だけここに載せ、読むときはモジュールの大域を引く
     ///   （`Interpreter::namespace_member`）。変わらない名前（関数・`let` / `const`）は写しのまま読む。
-    /// ⚠ Arrow のモジュール以外（py・ネイティブ・組み込み・メタ）は `None`。
-    pub live: Option<(u32, Rc<std::collections::HashSet<String>>)>,
+    /// ⚠ Arrow のモジュールと `import[py-int]` のモジュール（[`NsLive`]）以外（ネイティブ・組み込み・メタ）は `None`。
+    pub live: Option<NsLive>,
+}
+
+/// 名前空間のメンバーのうち、**読むたびに元から引く**もの（[`NamespaceData::live`]）。
+#[derive(Debug, Clone)]
+pub enum NsLive {
+    /// Arrow のモジュールの `mut` の名前（フェーズ10 10-11）: `(大域の添字, 名前の集合)`。
+    Globals(u32, Rc<std::collections::HashSet<String>>),
+    /// `import[py-int]` のモジュール（pandas_import_plan.md の 1-4）: CPython のモジュールそのもの。どのメンバーも読むたびに
+    /// `getattr` して Arrow の値にする（`py_getattr`・インスタンスの属性と同じ）。
+    /// ⚠ 以前は import の時点の写し（`members`）を Python のオブジェクトのまま返していた。`sys.version` が Arrow の `str`
+    ///   にならず（`let v: str = sys.version` が実行時の `TypeError`）、モジュールの関数が書き換えた大域も古いままだった。
+    // 評価コアでは作らない（`py_interop` が `native` 限定・`Value::PyObject` と同じ）
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    Python(PyObjHandle),
 }
 
 

@@ -5,9 +5,13 @@
 # `import[py-int] time` の戻り値型は**恒久的に検査されない**状態だった。
 #
 # ⚠ ここに書けるのは `py_type_to_arrow` が解釈できる型だけ（int / float / str /
-#   bool / None / bytes / list[T] / set[T] / Optional[T] / `X | None`）。
-#   dict[K,V] と tuple[A,B] は要素型が落ちる。
-# ⚠ **モジュール定数は現状どちらの経路も拾わない**ので関数だけを書く（群6 S3）。
+#   bool / None / bytes / list[T] / set[T] / dict[K, V] / tuple[A, B] / Optional[T] / `X | None`）。
+# 定数は注釈だけを書く。注釈のある大域変数は型スタブに入る（pandas_import_plan.md の 1-4。以前はどちらの経路も拾わなかった）。
+
+timezone: int
+altzone: int
+daylight: int
+tzname: tuple[str, str]
 
 def time() -> float: ...
 def time_ns() -> int: ...

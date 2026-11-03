@@ -21,17 +21,28 @@
 //   `crates/arrow-frontend`（VS Code 拡張の wasm）が `src/parser` を取り込むため。
 //   変換器側に置くと拡張のビルドだけが壊れる（項目 7 で `PY_KWARGS_PARAM` が
 //   同じ理由で `src/ast.rs` へ行ったのと同じ判断）。
+//
+// ★ スタブは 2 種類ある（pandas_import_plan.md の 1-4）:
+//   - 手で書いたもの（`stubs/*.pyi`・`BUILTIN_STUBS`）: 戻り値の型まで書いてある。`time` / `math` だけ。
+//   - CPython の内省で作ったもの（`stubs/generated/*.pyi`・`py_stubs_generated.rs` の `GENERATED_STUBS`）: `sys` / `itertools` /
+//     `_collections` など、`.py` の無い built-in と標準ライブラリの拡張モジュール（`select` など）。引数の名前と数は
+//     CPython の __text_signature__ から、大域変数の型は作ったときの値の型から付け、それ以外は `Any`。
+//     `scripts/gen_builtin_py_stubs.ps1` で作り直す（手で書き換えない）。
+//   どちらにも無いモジュールは、型の出所が無いので `import[py-int]` が構文解析の誤りになる（`.pyi` を置くよう促す）。
+//   ⚠ 内省で作ったものは作った CPython（版と OS）のもの。Linux だけのモジュール（posix / fcntl など）は無い。
 
-/// 同梱スタブの表（モジュール名 → `.pyi` の中身）。
+include!("py_stubs_generated.rs");
+
+/// 手で書いた同梱スタブの表（モジュール名 → `.pyi` の中身）。内省で作った表より先に引く。
 const BUILTIN_STUBS: &[(&str, &str)] = &[
     ("time", include_str!("../stubs/time.pyi")),
     ("math", include_str!("../stubs/math.pyi")),
 ];
 
-/// モジュールパスに対応する同梱スタブを返す。
+/// モジュールパスに対応する同梱スタブを返す（手で書いたもの、なければ内省で作ったもの）。
 ///
-/// ⚠ トップレベルの 1 要素モジュール（`time` / `math`）だけを対象にする。
-/// `os.path` のようなサブモジュールは持っていない。
+/// ⚠ トップレベルの 1 要素モジュールだけを対象にする。`os.path` のようなサブモジュールは持っていない
+/// （C で書かれたモジュールはどれも 1 要素）。
 pub fn builtin_stub(module: &[String]) -> Option<&'static str> {
     if module.len() != 1 {
         return None;
@@ -39,6 +50,7 @@ pub fn builtin_stub(module: &[String]) -> Option<&'static str> {
     let name = module[0].as_str();
     BUILTIN_STUBS
         .iter()
+        .chain(GENERATED_STUBS.iter())
         .find(|(m, _)| *m == name)
         .map(|(_, src)| *src)
 }
@@ -46,5 +58,5 @@ pub fn builtin_stub(module: &[String]) -> Option<&'static str> {
 /// 同梱スタブを持つモジュール名の一覧（テスト・診断用）。
 #[cfg(test)]
 pub fn builtin_stub_names() -> Vec<&'static str> {
-    BUILTIN_STUBS.iter().map(|(m, _)| *m).collect()
+    BUILTIN_STUBS.iter().chain(GENERATED_STUBS.iter()).map(|(m, _)| *m).collect()
 }

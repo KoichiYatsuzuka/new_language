@@ -1,0 +1,8 @@
+# import[py-int] のモジュールの、注釈のある大域変数の型で静的に誤りを見つける（pandas_import_plan.md の 1-4）
+#
+# 正しい形は py_int_module_globals.ar。以前は大域変数がどれも `Any` で、型の合わない受け方も実行するまで分からなかった。
+
+import[py-int] py_int_module_globals as gm
+
+let n: str = gm.count                   # int を str で受ける
+let t: int = gm.label                   # str を int で受ける

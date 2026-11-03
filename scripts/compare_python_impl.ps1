@@ -127,6 +127,9 @@ $knownDiff = @{
     'py_int_mut_binding'             = 'Rust: Python のオブジェクトを mut で受ける（pandas_import_plan.md の D-3 / 1-2）。py: 引数の型を Python のモジュールで修飾した形（`mut p: rc.Probe`）を構文解析できず ParseError'
     'py_int_mut_binding_runtime_error' = 'Rust: 型が Any の mut でない引数に Python のオブジェクトを渡すと実行時の TypeError（D-3 / 1-2）。py: この規則が無く関数の本体まで走る'
     'py_int_links'                   = 'Rust: py-int の型を Python のモジュールの import をたどって付ける（再エクスポート・注釈のよそのクラス・ほかのファイルの基底・@overload・pandas_import_plan.md の 1-3）。py: 型の注釈をモジュールで修飾した形（`mut f: pk.Frame`）を構文解析できず ParseError'
+    'py_int_builtin_modules'         = 'Rust: .py の無い Python のモジュール（sys・itertools・_collections・zlib）を同梱のスタブで型を付けて使う（pandas_import_plan.md の 1-4）。py: itertools の物を反復できず TypeError'
+    'py_int_builtin_modules_error'   = 'Rust: 同梱のスタブの大域変数の型・引数の数で静的エラー（1-4）。py: 静的検査が無く、実行して sys.intern の TypeError'
+    'py_int_module_globals'          = 'Rust: py-int のモジュールの大域を読むたびに今の値を読む（1-4・NsLive::Python）。py: import の時点の値のままで失敗を raise'
     'py_int_foreign_error'           = 'Rust: py-int で Python が投げた例外は ForeignError（ffi_value_exchange_plan.md 7-24）。py: 関数の例外は揃えたが、Python のオブジェクトのメソッド呼び出しに対応していない'
     'py_int_exception_error'         = 'Rust: py-int で Python が投げた例外を捕まえないと ForeignError（7-24）。py: 捕まえない例外を stdout に Unhandled exception: … と出す（実行時エラーの出力形式の差）'
     'cs_dll_array_arg_error'         = 'Rust: cs-dll の配列・list・IntPtr の引数へ合わない値を渡すと StaticTypeError（5-5）。py: 型スタブの型が違うので検査されず呼んで C# 側の例外'
@@ -334,7 +337,6 @@ $knownDiff = @{
     # ⚠ impl_python は `import[py]` / `import[py-int]` の束縛自体が未対応
     #    （`cannot assign to immutable variable` になる。`import_py_json` と同じ原因）。
     'import_py_search_path'          = 'py: import[py] の束縛が未対応（#61/#69 で新設）'
-    'import_py_int_search_path'      = 'py: import[py-int] の束縛が未対応（#61/#69 で新設）'
     # ⚠ python_converter（`.py` → Arrow AST のソース翻訳）は **Rust 専用機能**で、
     #    impl_python には相当実装が無い（`parser/imports.py` の `lang in ("py","py-int")` は
     #    body を `return []` にし、`interpreter.py` が `importlib.import_module` で

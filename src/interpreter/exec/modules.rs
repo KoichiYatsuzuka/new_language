@@ -589,7 +589,8 @@ impl Interpreter {
             .filter(|n| self.scopes[0].get(n.as_str()).is_some_and(|v| v.is_mutable()))
             .cloned()
             .collect();
-        let live = (!mutable_names.is_empty()).then(|| (self.cur_globals, Rc::new(mutable_names)));
+        let live = (!mutable_names.is_empty())
+            .then(|| crate::interpreter::value::NsLive::Globals(self.cur_globals, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
         self.in_python_module = prev_in_python;
         self.running_python = prev_running_python;
@@ -747,7 +748,8 @@ impl Interpreter {
             .filter(|n| self.scopes[0].get(n.as_str()).is_some_and(|v| v.is_mutable()))
             .cloned()
             .collect();
-        let live = (!mutable_names.is_empty()).then(|| (globals_id, Rc::new(mutable_names)));
+        let live = (!mutable_names.is_empty())
+            .then(|| crate::interpreter::value::NsLive::Globals(globals_id, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
         result?;
 

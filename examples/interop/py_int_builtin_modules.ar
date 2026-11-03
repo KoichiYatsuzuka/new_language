@@ -1,0 +1,50 @@
+# import[py-int] で、`.py` の無い Python のモジュール（C で書かれたもの）を使う（pandas_import_plan.md の 1-4）
+#
+# `sys` / `itertools` / `zlib` などは CPython に組み込まれているか、拡張モジュール（`.pyd`）で、型を読むファイルが無い。
+# Arrow は CPython の内省で作ったスタブ（`stubs/generated/`）を同梱していて、それで型を付ける:
+#   - 関数・メソッドの引数の名前と数（`__text_signature__`）。戻り値の型は書かれていないので `Any`
+#   - 大域変数の型（作ったときの値の型: `sys.version` は `str`、`sys.argv` は `list[str]`）
+# ⚠ 以前は同梱のスタブが `math` と `time` だけで、ほかは `import[py-int] sys` が「型が見つからない」構文解析の誤りだった。
+# 静的な誤りの形は py_int_builtin_modules_error.ar。
+
+import[py-int] sys
+import[py-int] itertools
+import[py-int] collections
+import[py-int] zlib
+import[py-int] binascii
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + label)
+    print(label + " OK")
+
+# 大域変数は型つきで受けられる（`let` で受けても、値は境界で Arrow の値になる）
+let version: str = sys.version
+check("sys.version is str", version.startswith("3."))
+let maxsize: int = sys.maxsize
+check("sys.maxsize is int", maxsize > 0)
+let argv: list[str] = sys.argv
+check("sys.argv is list[str]", len(argv) >= 1)
+
+# 戻り値は `Any`（スタブに型が無い）。型が要るところでは `mustbe` で確かめる
+mut limit = sys.getrecursionlimit()
+check("sys.getrecursionlimit()", limit is int)
+
+# クラス（`itertools.count` は C のクラス）。コンストラクタの引数の名前も内省から
+mut counter = itertools.count(10, step=5)
+mut taken = itertools.islice(counter, 3)
+mut seen: list[int] = []
+for x in taken:
+    seen.append(x)
+check("itertools.count / islice", seen == [10, 15, 20])
+
+# `collections` は `.py` だが、`deque` は C のモジュール `_collections` の物。import をたどって同梱のスタブに行き着く
+mut d = collections.deque([1, 2, 3])
+d.append(4)
+check("collections.deque (from _collections)", (d.popleft() mustbe int) == 1 and len(d) == 3)
+
+# 拡張モジュール（Windows では DLLs の `.pyd`）
+let raw: bytes = "hello hello hello".encode()
+let packed = zlib.compress(raw)
+check("zlib round trip", (zlib.decompress(packed) mustbe bytes) == raw)
+check("binascii.hexlify", (binascii.hexlify("ab".encode()) mustbe bytes) == "6162".encode())

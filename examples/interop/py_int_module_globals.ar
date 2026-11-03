@@ -1,0 +1,33 @@
+# import[py-int] のモジュールの大域変数を読む（pandas_import_plan.md の 1-4）
+#
+# - 注釈のある大域変数（`count: int = 0`）は、その型で受けられる（`Any` ではない）。注釈の無いもの（`untyped = 3`）は `Any`
+# - 読むたびにモジュールの今の値を読む（CPython と同じ）。モジュールの関数が書き換えた値も見える
+# - 値は境界で Arrow の値になる（`str` は Arrow の `str`）
+# ⚠ 以前は import の時点の写しを Python のオブジェクトのまま返していた: `gm.count` は `bump()` の後も 0 のままで、
+#   `let s: str = gm.label` は「Python のオブジェクトは let で受けられない」実行時の TypeError になった。
+# 静的な誤りの形は py_int_module_globals_error.ar。
+
+import[py-int] py_int_module_globals as gm
+from py_int_module_globals import[py-int] label
+
+fn check(name: str, ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("failed: " + name)
+    print(name + " OK")
+
+let start: int = gm.count
+check("annotated global has its type", start == 0)
+gm.bump()
+gm.bump()
+let now: int = gm.count
+check("reads the current value", now == 2)
+
+gm.relabel("moved")
+let text: str = gm.label
+check("a str global arrives as an Arrow str", text == "moved" and text is str)
+# `from .. import` は import した時点の値を束縛する（CPython と同じ）
+check("from-import keeps the value at import", label == "start")
+
+# 注釈の無い大域は `Any`
+mut raw = gm.untyped
+check("unannotated global", (raw mustbe int) == 3)

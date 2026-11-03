@@ -419,11 +419,16 @@ impl Parser {
             // スタブで不足を補完（変換できなかった関数と、クラス）
             let known: std::collections::HashSet<String> = converted
                 .iter()
-                .filter_map(|s| if let Stmt::FnDef { name, .. } = s { Some(name.clone()) } else { None })
+                .filter_map(|s| match s {
+                    Stmt::FnDef { name, .. } | Stmt::Let(name, ..) => Some(name.clone()),
+                    _ => None,
+                })
                 .collect();
             for stub in crate::parser::py_stub_extract::extract_py_type_stubs_raw(source) {
                 match stub {
-                    Stmt::FnDef { ref name, .. } if !known.contains(name.as_str()) => converted.push(stub),
+                    Stmt::FnDef { ref name, .. } | Stmt::Let(ref name, ..) if !known.contains(name.as_str()) => {
+                        converted.push(stub)
+                    }
                     Stmt::ClassDef { .. } => converted.push(stub),
                     _ => {}
                 }
@@ -469,7 +474,7 @@ const PY_LINK_DEPTH: u32 = 24;
 /// 宣言の名前（関数・クラス）。
 fn py_decl_name(st: &Stmt) -> Option<&str> {
     match st {
-        Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } => Some(name),
+        Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::Let(name, ..) => Some(name),
         _ => None,
     }
 }
@@ -497,6 +502,7 @@ fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
     }
     match st {
         Stmt::FnDef { params, return_type, .. } => fn_sig(params, return_type, out),
+        Stmt::Let(_, Some(t), _, _) => scan(t, out),
         Stmt::ClassDef { body, .. } => {
             for m in body {
                 match m {
@@ -544,10 +550,15 @@ impl Parser {
                 }
             }
         }
-        let (path, is_package) = found?;
-        let path = module_path::normalize(&path);
-        let source = crate::import_fs::read_to_string(&path).ok()?;
-        let filename = path.to_string_lossy().to_string();
+        // `.py` の無い built-in のモジュール（`_collections` など）は同梱のスタブ（1-4・collections.deque をたどる）
+        let (source, filename, is_package) = match found {
+            Some((path, is_package)) => {
+                let path = module_path::normalize(&path);
+                let source = crate::import_fs::read_to_string(&path).ok()?;
+                (std::borrow::Cow::Owned(source), path.to_string_lossy().to_string(), is_package)
+            }
+            None => (std::borrow::Cow::Borrowed(crate::py_stubs::builtin_stub(module)?), module.join("."), false),
+        };
         let stub = std::rc::Rc::new(PyRawStub {
             module: module.to_vec(),
             is_package,

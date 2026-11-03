@@ -2,9 +2,14 @@
 #
 # `math` も C 組み込みで `.py` が無い（`time.pyi` の注記と同じ事情）。
 #
-# ⚠ 関数だけを書く。`math.pi` / `math.e` のようなモジュール定数は
-#   `extract_py_type_stubs` が `def` / `class` しか見ず、`convert_python_source` も
-#   値なしの `x: float` を捨てるため拾えない（群6 S3 の積み残し）。
+# 定数は注釈だけを書く（`pi: float`）。注釈のある大域変数は型スタブに入る（pandas_import_plan.md の 1-4。以前は
+# `extract_py_type_stubs` が `def` / `class` しか見ず、`math.pi` が `Any` だった）。
+
+pi: float
+e: float
+tau: float
+inf: float
+nan: float
 
 def sqrt(x: float) -> float: ...
 def pow(x: float, y: float) -> float: ...

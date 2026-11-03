@@ -9,7 +9,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 |---|---|---|
 | 1 | Python のソースを変換して動かす `import[py]` では pandas を読めない（C 拡張 42 本・numpy・標準ライブラリ・変換器が拒む構文）。直しても Arrow 側に Python 専用の特例が増え続ける | D-1・[3] |
 | ~~2~~ | ✅ pandas の名前がすべて `Any` だった件（直した: 1-3。`pd.DataFrame` はクラス・`pd.read_csv(path)` は `DataFrame`・`df.head()` は `DataFrame`）。⚠ 存在しない名前は今も `Any`（Python のモジュールは実行時に名前が増えうる） | [1-3] |
-| 3 | `.py` の無い built-in のモジュール（`builtins`・`sys`・`itertools` など 67 本）は型の出所が無く `import[py-int]` できない（同梱のスタブは `math`・`time` だけ） | [1-4] |
+| ~~3~~ | ✅ `.py` の無いモジュール（`sys`・`itertools`・`_collections`・`select` など）を `import[py-int]` できなかった件（直した: 1-4。CPython の内省で作ったスタブを同梱）。⚠ 戻り値の型は `Any`（`__text_signature__` に型が無い） | [1-4] |
 | ~~4~~ | ✅ ユーザーの site-packages を型の探索先にしなかった件（直した: 1-5） | [1-5] |
 | ~~5~~ | ✅ 参照の数（直した: 1-1）。以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` を pandas が連鎖代入と誤判定した | D-5・[1-1] |
 | 6 | Python の例外が `ForeignError` になり、`except IndexError:` などで捕まらない | [2-1] |
@@ -21,6 +21,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | 13 | `is` が `==` を呼ぶ／同じ物どうしが `False` | D-4・[5-1] |
 | 14 | コスト: 越境 1 回ごとに +0.5〜1.7 µs。リストは Arrow → Python が 20〜50 ns/要素、Python → Arrow が約 110 ns/要素 | [4] |
+| 15 | CPython の物・モジュールの属性へ代入・削除できない（`df.columns = [..]`・`gm.count = 5` が `TypeError`） | [2-9] |
 
 測定の手順と生データは 6 節。
 
@@ -113,6 +114,8 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
     して `f(..)` と直接呼ぶ形はまだ選ばない（本体の宣言の型）。
 - built-in のモジュールのスタブは Arrow に同梱する（`src/py_stubs.rs` に足す。CPython の `inspect.signature` /
   `__text_signature__` から作れる部分は生成する）。
+  - ✅ 1-4 で実装: built-in と標準ライブラリの拡張モジュール 84 本を内省で生成（戻り値は `Any`）。import をたどる先にもなる
+    （`collections.deque` は `_collections` のスタブ）。注釈のある大域変数も型を持つ（`.py` / `.pyi` とも）。
 
 ### 2.4 境界の振る舞いを CPython に合わせる
 
@@ -190,7 +193,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~1-1~~ | ✅ **済**（2026-11-02・2.1）参照の数（D-5）。`Value::PyObject` の写し 1 つが CPython の参照 1 つ（GIL が無ければ待ち行列で `with_py` が反映）。呼び出しは肩代わりの関数、添字は C の API で借りるだけ。等しさ・ハッシュはオブジェクトの番地。試験は `py_int_refcount.ar`（ゲート）・`refcount_pandas.ar` | なし | 中 |
 | ~~1-2~~ | ✅ **済**（2026-11-02・2.2）Python の物を `let` / `const` / `freeze` / `mut` でない関数の引数で受けたら誤り（D-3）。静的: CPython のクラスのインスタンス（とそれを持つ list など）なら `ImmutablePythonObject`（`TypeRegistry::cpython_class_names`）。実行時: `bind_copy_held` の `CopyFreeze`（コレクションの中も見る）と引数の束縛（値そのものだけ・前置きの生成器を除く）で `TypeError`。例題は `py_int_mut_binding.ar`・`_error`・`_runtime_error`。既存の例題 8 本を `mut` に直した。暗黙の束縛は 4 節の 6 | なし | 中 |
 | ~~1-3~~ | ✅ **済**（2026-11-03・2.3）import をたどって型を付ける: ① 再エクスポート ② 注釈のよそのクラス（`TYPE_CHECKING` の中も） ③ ほかのファイルの基底のメンバー（`Self` は派生）④ `@overload` は呼び出しで最初に当てはまる形を選ぶ。import の表は行単位で読む（`py_import_links`）。`x is m.C` は CPython の `isinstance`。ついでに: 引数の多い関数（約 40 行を超えるシグネチャ）が型スタブから落ちていた件を直した。例題は `py_int_links.ar`・`_error`。速さは 6.7 | なし | 大 |
-| 1-4 | built-in のモジュールの型スタブを同梱する（2.3） | なし | 中 |
+| ~~1-4~~ | ✅ **済**（2026-11-03・2.3）`.py` の無いモジュール（built-in 67 本と標準ライブラリの拡張モジュール。手で書いた `math` / `time` を除く 84 本）のスタブを CPython の内省で作って同梱した（`scripts/gen_builtin_py_stubs.ps1` → `stubs/generated/`・`src/py_stubs_generated.rs`）。引数は `__text_signature__`、大域変数は値の型、ほかは `Any`。import をたどる先（`_collections` の `deque`）にもなる。ついでに: 注釈のある大域変数（`count: int`）を型スタブに入れた（以前はどれも `Any`）。モジュールの大域を import の時点の写し（Python のオブジェクトのまま）で返していたのを、読むたびに `getattr` して Arrow の値にするよう直した（`NsLive::Python`）。例題は `py_int_builtin_modules.ar`・`py_int_module_globals.ar`・各 `_error`。⚠ 型を書いたスタブ（typeshed）を使うかは 4 節の 7 | なし | 中 |
 | ~~1-5~~ | ✅ **済**（2026-11-03）ユーザーの site-packages を型の探索先に足した（`import_fs::python_lib_dirs` と拡張の `queryPythonDirs` を同じ問い合わせに・CPython の `sys.path` と同じく、使えるときだけ標準ライブラリの後・site-packages の前）。`import[py-int] dateutil.parser` が読める。試験は `import_fs` の単体テスト | なし | 小 |
 
 ### フェーズ 2: 境界の振る舞いを CPython に合わせる（2.4）
@@ -205,6 +208,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | 2-6 | ⏸ **保留**（4 節の 4・2.6）Arrow のインスタンス（と list などを写さずに）を Python へ渡す | 2-5・4 節の 4 | 中〜大 |
 | 2-7 | ⏸ **保留**（4 節の 3・2.6）list / dict / set の受け渡し（写さずに使うか） | 4 節の 3 | 中〜大 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
+| 2-9 | CPython の物とモジュールの属性への代入・削除（`df.columns = [..]`・`gm.count = 5`・`del o.x`）。CPython の `setattr` / `delattr` を呼ぶ（モジュールの大域は Python では書き換えられる） | なし | 小 |
 
 ### フェーズ 3: `.py` を CPython で実行する（2.5）
 
@@ -245,6 +249,9 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 6. **暗黙の束縛**（1-2・D-3）: `for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛は、今どれも不変で、
    `mut` にする書き方が無い（`for mut x in ..` は無い）。Python の物を受けたとき ①誤りにして新しい書き方（`for mut x in ..`
    など）を足す ②暗黙の束縛だけは Python の物でも不変のまま許す ③暗黙の束縛は Python の物なら自動で `mut` にする、のどれにするか。
+7. **型を書いたスタブ（typeshed）を同梱するか**（1-4 の続き）: 内省で作ったスタブは戻り値がどれも `Any` で、
+   `let n: int = sys.getrecursionlimit()` は `mustbe` が要る。typeshed（Apache-2.0 / MIT）の標準ライブラリの `.pyi` を
+   同梱すれば型が付くが、他所のファイルを配布物に入れる（ライセンスの表示）・CPython の版との対応を保つ手間がある。
 
 ---
 

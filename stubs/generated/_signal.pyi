@@ -1,0 +1,23 @@
+# _signal.pyi — Arrow 同梱の型スタブ（pandas_import_plan.md の 1-4）。
+# ⚠ 生成したファイル。手で書き換えない（scripts/gen_builtin_py_stubs.ps1・CPython 3.12.2 / win32）。
+from typing import Any
+
+CTRL_BREAK_EVENT: int
+CTRL_C_EVENT: int
+NSIG: int
+SIGABRT: int
+SIGBREAK: int
+SIGFPE: int
+SIGILL: int
+SIGINT: int
+SIGSEGV: int
+SIGTERM: int
+SIG_DFL: int
+SIG_IGN: int
+def default_int_handler(signalnum: Any, frame: Any, /) -> Any: ...
+def getsignal(signalnum: Any, /) -> Any: ...
+def raise_signal(signalnum: Any, /) -> Any: ...
+def set_wakeup_fd(*args: Any, **kwargs: Any) -> Any: ...
+def signal(signalnum: Any, handler: Any, /) -> Any: ...
+def strsignal(signalnum: Any, /) -> Any: ...
+def valid_signals() -> Any: ...
