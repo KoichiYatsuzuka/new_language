@@ -562,6 +562,9 @@ let mean = np.mean(arr)
   `__neg__` / `__invert__`。⚠ `if` / `while` の条件は bool でなければならないのは同じで、型が CPython のクラスと分かる値を
   `if df:` と書くのは静的な誤り（`ConditionNotBool`）。`if bool(df):` と書く（`examples/interop/py_int_truthiness.ar`・`_error`・
   `_runtime_error`）。⚠ 以前は CPython の物が常に真で、`-x` / `~x` は `bad operand type`（`TypeError`）だった
+- **同一性**（pandas_import_plan.md の D-4・5-1）: CPython の物どうしの `===`（Python の `is`）は同じオブジェクトなら真で、
+  `__eq__` は呼ばない（`==` は `__eq__`）。片方だけ CPython の物なら偽。Arrow の束縛・リストの要素・`mut` の引数を通しても
+  同じオブジェクトを指す（`examples/interop/py_int_identity.ar`）。⚠ 以前は `===` が `__eq__` を呼んでいた
 - **切り出し・多次元の添字**（pandas_import_plan.md の 2-3）: スライスは Python の `slice`、項を並べた添字は Python の
   タプル（`a[1:, 0]` は `(slice(1, None, None), 0)`）、`...` は Python の `Ellipsis` として渡る（`a[..., 0]`・代入の
   `a[:, 0] = 0` も）。境界は int でなくてよい（`df.loc["b":"d"]`）。`Ellipsis` / `NotImplemented` は CPython の同じ値になる

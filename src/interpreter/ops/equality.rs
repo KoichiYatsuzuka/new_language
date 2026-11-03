@@ -543,6 +543,10 @@ impl Interpreter {
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
             // 別の種類の値は同じ物ではない（`values_eq_expr` は set と frozenset を等しいとする・タスク 3-1）。
             (Value::Set(_), Value::FrozenSet(_)) | (Value::FrozenSet(_), Value::Set(_)) => false,
+            // CPython の物は同じオブジェクトか（Python の `is`・`__eq__` は呼ばない・pandas_import_plan.md の D-4・5-1）。
+            // 片方だけ CPython の物なら別の物（境界で Arrow の値に変わる `int` / `str` などは Arrow の値どうしで比べる）。
+            (Value::PyObject(a), Value::PyObject(b)) => a.identity() == b.identity(),
+            (Value::PyObject(_), _) | (_, Value::PyObject(_)) => false,
             _ => self.values_eq_expr(a, b)?,
         })
     }

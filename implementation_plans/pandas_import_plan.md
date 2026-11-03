@@ -19,7 +19,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`） | [2-5]・[2-6] |
 | 11 | list / dict / set は境界で写す。Python 側の書き換えが戻らない（`heapq.heappush(h, 0)` の後も `h` は元のまま） | [2-7] |
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
-| 13 | `is` が `==` を呼ぶ／同じ物どうしが `False` | D-4・[5-1] |
+| ~~13~~ | ✅ `is` が `==` を呼ぶ／同じ物どうしが `False`（直した: 5-1・`===` は同一性） | D-4・[5-1] |
 | 14 | コスト: 越境 1 回ごとに +0.5〜1.7 µs。リストは Arrow → Python が 20〜50 ns/要素、Python → Arrow が約 110 ns/要素 | [4] |
 | ~~15~~ | ✅ CPython の物・モジュールの属性へ代入できなかった件（直した: 2-9。`df.columns = [..]`・`gm.count = 5`） | [2-9] |
 
@@ -250,7 +250,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 5-1 | CPython の物どうしの `is` を同一性にする（同じ物なら真。片方だけ CPython の物なら偽） | 1-1 | 小 |
+| ~~5-1~~ | ✅ **済**（2026-11-04）CPython の物どうしの `===`（Python の `is`）は同じオブジェクトか（`PyObjHandle::identity`・`__eq__` を呼ばない）。片方だけ CPython の物なら偽。`apply_binop` が Python へ写す前に `values_ref_eq` で決める（写せない Arrow のインスタンスとでも偽）。例題は `py_int_identity.ar`。以下は起票時の内容: CPython の物どうしの `is` を同一性にする（同じ物なら真。片方だけ CPython の物なら偽） | 1-1 | 小 |
 
 ---
 

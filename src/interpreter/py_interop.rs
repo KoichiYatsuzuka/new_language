@@ -880,7 +880,12 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
             BinOp::BitAnd => obj.bitand(py_rhs),
             BinOp::BitOr => obj.bitor(py_rhs),
             BinOp::BitXor => obj.bitxor(py_rhs),
-            BinOp::Eq | BinOp::RefEq => obj.rich_compare(py_rhs, CompareOp::Eq),
+            BinOp::Eq => obj.rich_compare(py_rhs, CompareOp::Eq),
+            // `===`（Python の `is`）は同一性で、`__eq__` を呼ばない（D-4・5-1）。⚠ `apply_binop` が先に
+            // `values_ref_eq` で受ける（Arrow の値を Python へ写す前に）ので、ここは直接の呼び手のため。
+            BinOp::RefEq => {
+                return Ok(Value::Bool(matches!(rhs, Value::PyObject(r) if r.identity() == handle.identity())))
+            }
             BinOp::NotEq => obj.rich_compare(py_rhs, CompareOp::Ne),
             BinOp::Lt => obj.rich_compare(py_rhs, CompareOp::Lt),
             BinOp::Gt => obj.rich_compare(py_rhs, CompareOp::Gt),
@@ -922,7 +927,11 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
             BinOp::BitOr => obj.call_method1("__ror__", (py_lhs,)),
             BinOp::BitXor => obj.call_method1("__rxor__", (py_lhs,)),
             // 比較: 左右を入れ替えて対応する演算子を使う
-            BinOp::Eq | BinOp::RefEq => obj.rich_compare(py_lhs, CompareOp::Eq),
+            BinOp::Eq => obj.rich_compare(py_lhs, CompareOp::Eq),
+            // `===` は同一性（`py_binop` と同じ・D-4・5-1）
+            BinOp::RefEq => {
+                return Ok(Value::Bool(matches!(lhs, Value::PyObject(l) if l.identity() == handle.identity())))
+            }
             BinOp::NotEq => obj.rich_compare(py_lhs, CompareOp::Ne),
             BinOp::Lt => obj.rich_compare(py_lhs, CompareOp::Gt), // lhs < rhs → rhs > lhs
             BinOp::Gt => obj.rich_compare(py_lhs, CompareOp::Lt), // lhs > rhs → rhs < lhs

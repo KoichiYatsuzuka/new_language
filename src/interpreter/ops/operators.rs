@@ -408,6 +408,11 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(Value)` — 演算結果。`Err(message)` — 型エラーまたはゼロ除算エラー
     pub(crate) fn apply_binop(&self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
+        // `===`（Python の `is`）は CPython の物でも同一性で、`__eq__` を呼ばない（D-4・5-1）。⚠ Python へ写す前に
+        // 決める（片方が写せない Arrow のインスタンスでも偽）。
+        if matches!(op, BinOp::RefEq) && (matches!(lv, Value::PyObject(_)) || matches!(rv, Value::PyObject(_))) {
+            return Ok(Value::Bool(self.values_ref_eq(&lv, &rv)?));
+        }
         // いずれかのオペランドが PyObject の場合は Python に委譲する
         if let Value::PyObject(h) = &lv {
             return crate::interpreter::py_interop::py_binop(h, op, &rv);

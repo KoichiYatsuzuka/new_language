@@ -1,0 +1,53 @@
+# import[py-int] の物どうしの `===`（Python の `is`）は同一性（pandas_import_plan.md の D-4・5-1）
+#
+# - 同じ CPython のオブジェクトなら真、別のオブジェクトなら偽。`__eq__` は呼ばない（`==` は `__eq__`）
+# - 片方だけ CPython の物なら偽（Arrow の値と CPython の物は同じ物ではない）
+# - Arrow の束縛・リストの要素にしても同じオブジェクトを指す（写し 1 つが CPython の参照 1 つ・D-5）
+# ⚠ 以前は `===` が `__eq__` を呼んでいた（`__eq__` が投げれば `===` も投げ、何にでも True を返す物は別の物とも真）。
+
+import[py-int] py_int_identity as pi
+
+fn check(label: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("failed: " + label)
+    print(label, "OK")
+
+# ① 同じ物なら真・別の物なら偽
+mut a = pi.same()
+mut b = pi.same()
+mut c = pi.fresh()
+check("same() === same()", a === b)
+check("same() === fresh() is false", not (a === c))
+check("Python agrees (a is b)", pi.is_same(a, b))
+check("Python agrees (a is not c)", not pi.is_same(a, c))
+
+# ② __eq__ を呼ばない
+mut s = pi.Strict()
+check("=== does not call __eq__", s === s)
+mut other = pi.Strict()
+check("another Strict is not the same", not (s === other))
+mut caught = ""
+try:
+    let _ = s == other
+except RuntimeError as e:
+    caught = str(e)
+check("== calls __eq__", caught == "__eq__ must not be called by ===")
+
+# ③ == と === の違い（__eq__ が何にでも True を返す物）
+mut x = pi.Always()
+mut y = pi.Always()
+check("x == y (by __eq__)", x == y)
+check("x === y is false (different objects)", not (x === y))
+
+# ④ 束縛・リストの要素・関数の引数を通しても同じ物
+mut again = a
+check("a copy of the binding is the same object", again === a)
+mut nodes = [a, c]
+check("a list element is the same object", nodes[0] === a and not (nodes[1] === a))
+fn same_object(mut p: pi.Node, mut q: pi.Node) -> bool:
+    return p === q
+check("through mut parameters", same_object(a, b))
+
+# ⑤ 片方だけ CPython の物なら偽
+check("a CPython object is not None", not (a === None))
+check("a CPython object is not an Arrow list", not (a === [1, 2]))
