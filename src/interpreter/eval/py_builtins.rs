@@ -959,7 +959,10 @@ impl Interpreter {
                 return Err("TypeError: print() file= is not supported (only the standard output)".to_string())
             }
         }
-        let flush = take_kw(&mut kw, "flush").is_some_and(|v| self.is_truthy(&v));
+        let flush = match take_kw(&mut kw, "flush") {
+            Some(v) => self.eval_truthy(&v)?,
+            None => false,
+        };
         reject_extra_kw("print", &kw)?;
         let parts = pos.iter().map(|v| self.display_str(v)).collect::<Result<Vec<_>, _>>()?;
         self.emit_text(&format!("{}{end}", parts.join(&sep)), flush);

@@ -1,0 +1,12 @@
+# import[py-int] の物の `__bool__` が bool 以外を返す（実行時の誤り・pandas_import_plan.md の 2-2）
+#
+# 真偽は CPython が決めるので、`__bool__` が `1` を返すと CPython と同じ
+# `TypeError: __bool__ should return bool, returned int` になる（Python の例外は同じ名前の Arrow の例外・2-1）。
+# 捕まえなければ CPython と同じく最後の行にその文言が出る。
+
+import[py-int] py_int_truthiness as pt
+
+mut w = pt.WrongBool()
+print("before")
+if bool(w):
+    print("unreachable")

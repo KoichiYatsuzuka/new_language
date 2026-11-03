@@ -127,7 +127,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 項目 | 今 | 直した後 |
 |---|---|---|
 | 例外 | `ForeignError`（`message` に `ValueError: ..`） | 同じ名前の Arrow の例外（組み込みは CPython 3.12 の階層を Arrow が持っている）。Python で定義した例外は `except m.Err:` で捕まる |
-| 真偽（`if` / `while` / `not` / `and` / `or` / `bool()`） | 常に真 | `__bool__` / `__len__` を呼ぶ |
+| 真偽（`if` / `while` / `not` / `and` / `or` / `bool()`） | 常に真 | ✅ `__bool__` / `__len__` を呼ぶ（2-2） |
 | 切り出し・`...` | `TypeError` | Python の `slice` / タプルで渡す（`a[1:, 0]`・`df.loc[:, "a"]`）。`Ellipsis` / `NotImplemented` を対応させる |
 | `for` | 先に全部取り出す | 1 つずつ取り出す |
 | Arrow の関数を渡す | `TypeError` | Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる |
@@ -220,7 +220,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | ~~2-1~~ | ✅ **済**（2026-11-04）Python が投げた組み込みの例外は同じ名前の Arrow の例外（`args` は Python の `args`）。Python で定義した例外は CPython のオブジェクトのまま `except m.Err:` と継承した組み込みの例外で捕まる（CPython の `isinstance`）・`raise m.Err(..)` で Arrow から投げられる・捕まえなければ CPython と同じ最後の行。型スタブのクラスは継承をたどって組み込みの例外を基底に持つ（`except m.Err:` の型検査）。ついでに: `print(x)` / `str(x)` を CPython の `str`（以前は `repr`）にした。例題は `py_int_exceptions.ar`・`_error`、`py_int_foreign_error.ar` を直した。⚠ `except ValueError as e` で Python で定義した例外を受けると、`e` の型は `ValueError` だが値は CPython の物（`e.message` は無い・`str(e)` / `e.args` を使う） | なし | 中 |
-| 2-2 | 真偽の判定で `__bool__` / `__len__` を呼ぶ（誤りは 2-1 の例外） | 2-1 | 小 |
+| ~~2-2~~ | ✅ **済**（2026-11-04）CPython の物の真偽（`bool()`・`not`・`and` / `or`・型の分からない値の `if` / `while`）は CPython の `PyObject_IsTrue`（`__bool__`、無ければ `__len__`・`eval_truthy` → `py_truthy`）。`__bool__` が投げた例外は Python の例外（2-1）。ついでに: 単項の `-` / `~` も CPython（`py_unary`・以前は `bad operand type`）、`print(.., flush=x)` も同じ真偽。条件が bool でなければならないのは同じ（型が CPython のクラスと分かる `if df:` は `ConditionNotBool`）。例題は `py_int_truthiness.ar`・`_error`・`_runtime_error` | 2-1 | 小 |
 | 2-3 | 切り出し・多次元の添字・`Ellipsis` / `NotImplemented` を Python へ渡す | なし | 小〜中 |
 | 2-4 | `for` で CPython の反復子から 1 つずつ取り出す | なし | 小 |
 | 2-5 | Arrow の関数（クロージャ・束縛メソッド）を Python から呼べる物として渡す。中の Arrow の例外は Python の例外に、Python の例外は 2-1 で受ける。⚠ Python からの呼び戻し中に Arrow の VM へ入り直す（再入）ので、GIL と借用の扱いを先に設計する | 2-1 | 大 |

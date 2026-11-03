@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ast::BinOp;
+use crate::ast::{BinOp, UnaryOp};
 
 use super::value::{NamespaceData, PyObjHandle, Value};
 
@@ -94,6 +94,14 @@ pub fn py_int_text(_handle: &PyObjHandle) -> Option<String> {
 
 pub fn py_len(_handle: &PyObjHandle) -> Result<Value, String> {
     Err(unavailable("`len()` on a Python object"))
+}
+
+pub fn py_truthy(_handle: &PyObjHandle) -> Result<bool, String> {
+    Err(unavailable("the truth value of a Python object"))
+}
+
+pub fn py_unary(_handle: &PyObjHandle, _op: &UnaryOp) -> Result<Value, String> {
+    Err(unavailable("a unary operator on a Python object"))
 }
 
 /// 評価コアビルドでは Python のオブジェクトはできないので呼ばれない（呼ばれたら「呼べない」と答える）。

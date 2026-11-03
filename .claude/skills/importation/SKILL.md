@@ -528,7 +528,7 @@ States:
 (`RAISED`); `make_internal_raised_error` takes it (`take_python_exception`) — a built-in one becomes the Arrow exception of
 the same name with Python's `args`, one defined in Python stays a `Value::PyObject` that `vm_exc_matches` checks with CPython's
 `isinstance` (`py_exception_is` for built-in names, `value_is_type` for `m.Err`). Stub classes that inherit a built-in
-exception keep it as their base (`py_exception_base`; across files `py_merge_outside_bases`), so `except m.Err:` type-checks. Assignment `o.x = v` / `m.x = v` on a CPython object or a Python module calls `py_interop::py_setattr` (`attrs.rs` `attr_assign_inner`; borrows receiver and value like `py_setitem`, so `__setattr__` sees CPython's reference counts); the type checker checks `m.x = v` against the stub type of the global (`check_attr_assign`, pandas_import_plan.md 2-9).
+exception keep it as their base (`py_exception_base`; across files `py_merge_outside_bases`), so `except m.Err:` type-checks. Assignment `o.x = v` / `m.x = v` on a CPython object or a Python module calls `py_interop::py_setattr` (`attrs.rs` `attr_assign_inner`; borrows receiver and value like `py_setitem`, so `__setattr__` sees CPython's reference counts); the type checker checks `m.x = v` against the stub type of the global (`check_attr_assign`, pandas_import_plan.md 2-9). Truthiness of a CPython object (`eval_truthy`: `if` / `while` / `and` / `or` / `bool()`; `apply_unary_dyn`: `not` / `-` / `~`) asks CPython (`py_truthy` = `PyObject_IsTrue`, `py_unary` = `PyNumber_Negative` / `PyNumber_Invert`; 2-2) — errors raised by `__bool__` arrive as Python exceptions. ⚠ `is_truthy` cannot fail, so it still answers true for a `PyObject`; every caller that can see one goes through `eval_truthy`.
 
 ---
 

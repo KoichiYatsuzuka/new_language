@@ -1,0 +1,81 @@
+# import[py-int] の物の真偽（pandas_import_plan.md の 2-2）
+#
+# `if` / `while` の条件・`not` / `and` / `or` / `bool()` で、CPython の物の真偽は CPython の規則で決まる:
+# `__bool__`、無ければ `__len__`（0 なら偽）、どちらも無ければ真。`__bool__` が投げた例外は Python の例外として
+# 届く（2-1）。単項の `-` / `~` も CPython の `__neg__` / `__invert__`。
+#
+# ⚠ `if` / `while` の条件は Arrow では bool でなければならない（型が CPython のクラスと分かれば `if b:` は静的な誤り・
+#   py_int_truthiness_error.ar）。真偽で分けたいときは `bool(b)` と書く。型の分からない値はそのまま条件に書ける（⑤）。
+
+import[py-int] py_int_truthiness as pt
+
+fn check(label: str, got: bool, want: bool) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label, got)
+
+# ① __len__ だけ: 要素の数で決まる
+mut empty = pt.Box(0)
+mut full = pt.Box(3)
+check("bool(Box(0))", bool(empty), False)
+check("bool(Box(3))", bool(full), True)
+check("not Box(0)", not empty, True)
+check("not Box(3)", not full, False)
+
+# ② __bool__ は __len__ より先
+mut flag_off = pt.Flag(False, 5)
+mut flag_on = pt.Flag(True, 0)
+check("bool(Flag(False, len 5))", bool(flag_off), False)
+check("bool(Flag(True, len 0))", bool(flag_on), True)
+
+# ③ どちらも無ければ真
+mut plain = pt.Plain()
+check("bool(Plain())", bool(plain), True)
+
+# ④ and / or は Python と同じく被演算子そのものを返す
+mut picked = empty or full
+check("Box(0) or Box(3) gives the second", len(picked) == 3, True)
+mut first = empty and full
+check("Box(0) and Box(3) gives the first", len(first) == 0, True)
+
+# ⑤ 型の分からない値は if / while の条件にそのまま書ける
+mut u = pt.untyped("empty")
+mut taken = "no"
+if u:
+    taken = "yes"
+check("if untyped Box(0) is skipped", taken == "no", True)
+mut n = 0
+mut w = pt.untyped("full")
+while w:
+    n += 1
+    w = pt.untyped("empty")
+check("while untyped Box ran once", n == 1, True)
+
+# ⑥ __bool__ が投げた例外は Python の例外（ValueError）として捕まる
+mut amb = pt.Ambiguous()
+mut caught = ""
+try:
+    if bool(amb):
+        print("unreachable")
+except ValueError as e:
+    caught = str(e)
+check("ValueError from __bool__", caught == "the truth value is ambiguous", True)
+mut caught_not = ""
+try:
+    let _ = not amb
+except ValueError as e:
+    caught_not = str(e)
+check("ValueError from not", caught_not == "the truth value is ambiguous", True)
+
+# ⑦ 単項の - / ~ は CPython の __neg__ / __invert__
+mut v = pt.Vec([1, -2, 3])
+mut neg = -v
+check("-Vec", str(neg.values()) == "[-1, 2, -3]", True)
+mut inv = ~v
+check("~Vec", str(inv.values()) == "[-2, 1, -4]", True)
+
+# ⑧ 短絡: `x and ..` の x が偽なら右は評価しない（__bool__ は 1 回だけ呼ばれる）
+mut c = pt.Counted()
+mut r = c and pt.Box(1)
+check("__bool__ called once", len(pt.calls) == 1, True)
+check("c and .. gives c", bool(r), False)

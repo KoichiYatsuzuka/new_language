@@ -79,6 +79,10 @@ impl Interpreter {
     /// `__neg__`（`-`）/ `__invert__`（`~`）が定義されていれば呼び出し、なければ `apply_unary` へフォールバック。
     /// `not` 演算子は `__bool__` を持つインスタンスに対応するため `eval_truthy` 経由で処理する。
     pub(crate) fn apply_unary_dyn(&mut self, op: &UnaryOp, val: Value) -> Result<Value, String> {
+        // CPython の物は 3 つとも CPython の演算（`-df` / `~mask` / `not arr`・2-2）。
+        if let Value::PyObject(ref h) = val {
+            return crate::interpreter::py_interop::py_unary(h, op);
+        }
         if let Value::Instance(ref inst_rc) = val {
             let method_name = match op {
                 UnaryOp::Neg => Some("__neg__"),
@@ -332,7 +336,11 @@ impl Interpreter {
 
     /// `__bool__` を持つ `Value::Instance` に対してそのメソッドを呼び出し真偽値を返す。
     /// 定義されていなければ `is_truthy` へフォールバック。
+    /// CPython の物は CPython に尋ねる（`__bool__` / `__len__`・投げた例外は Python の例外・pandas_import_plan.md 2-2）。
     pub(crate) fn eval_truthy(&mut self, val: &Value) -> Result<bool, String> {
+        if let Value::PyObject(h) = val {
+            return crate::interpreter::py_interop::py_truthy(h);
+        }
         if let Value::Instance(inst_rc) = val {
             if inst_rc.borrow().class.methods.contains_key("__bool__") {
                 let result = self.eval_method_call_evaled(val.clone(), "__bool__", vec![])?;

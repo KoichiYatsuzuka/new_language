@@ -727,6 +727,27 @@ fn test_python_exception_is_the_same_arrow_exception() {
     }
 }
 
+/// CPython の物の真偽は CPython の `__len__`（`__bool__` が無いとき）で決まる（pandas_import_plan.md 2-2）。
+/// ⚠ 以前は常に真だった（`is_truthy` が Python の物を見ていなかった）。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
+#[test]
+fn test_python_object_truthiness_uses_len() {
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "mut empty = calc.Container([])\n",
+        "mut full = calc.Container([1])\n",
+        "let r = [bool(empty), not empty, bool(full), not full]\n",
+    );
+    match run_py_get(src, "r") {
+        Value::List(items) => {
+            let got: Vec<bool> = items.borrow().iter().map(|v| matches!(v, Value::Bool(true))).collect();
+            assert_eq!(got, vec![false, true, true, false]);
+        }
+        other => panic!("expected a list of bools, got {other:?}"),
+    }
+}
+
 /// ar_to_py_tuple のテスト。
 // ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
 #[cfg(feature = "native")]

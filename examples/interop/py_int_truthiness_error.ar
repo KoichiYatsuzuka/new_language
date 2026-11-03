@@ -1,0 +1,13 @@
+# import[py-int] の物を、そのまま `if` / `while` の条件に書く（静的な誤り・pandas_import_plan.md の 2-2）
+#
+# Arrow の条件は bool でなければならない（D-12）。型が CPython のクラスと分かる値も同じで、`if b:` は
+# `ConditionNotBool`。真偽で分けたいときは `bool(b)` と書く（py_int_truthiness.ar）。`bool(b)` は CPython の規則
+# （`__bool__` / `__len__`）で決まる。
+
+import[py-int] py_int_truthiness as pt
+
+mut b = pt.Box(0)
+if b:
+    print("unreachable")
+while pt.Flag(False, 1):
+    print("unreachable")

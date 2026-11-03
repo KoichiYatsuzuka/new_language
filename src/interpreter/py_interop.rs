@@ -30,7 +30,7 @@ use pyo3::types::{
 };
 use pyo3::Borrowed;
 
-use crate::ast::BinOp;
+use crate::ast::{BinOp, UnaryOp};
 
 use super::{DictData, NamespaceData, PyObjHandle, TupleData, Value};
 
@@ -778,6 +778,31 @@ pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
         let obj = handle.bind(py);
         let n = obj.len().map_err(python_raised)?;
         Ok(Value::Int(n as i64))
+    })
+}
+
+/// `if x:` / `while` / `not x` / `and` / `or` / `bool(x)` の真偽: CPython の `PyObject_IsTrue`（`__bool__`、無ければ
+/// `__len__`、どちらも無ければ真・pandas_import_plan.md 2-2）。`__bool__` が投げた例外（numpy の配列の「真偽が曖昧」・
+/// `__bool__` が bool 以外を返したときの `TypeError` など）は Python の例外として届く（2-1）。
+pub fn py_truthy(handle: &PyObjHandle) -> Result<bool, String> {
+    with_py(|py| match unsafe { ffi::PyObject_IsTrue(handle.bind(py).as_ptr()) } {
+        -1 => Err(python_raised(PyErr::fetch(py))),
+        r => Ok(r != 0),
+    })
+}
+
+/// 単項演算子: `-x` は `PyNumber_Negative`、`~x` は `PyNumber_Invert`（`__neg__` / `__invert__`・numpy の配列や pandas の
+/// 列にも効く）、`not x` は [`py_truthy`] の否定（2-2）。
+pub fn py_unary(handle: &PyObjHandle, op: &UnaryOp) -> Result<Value, String> {
+    with_py(|py| -> Result<Value, String> {
+        let obj = handle.bind(py);
+        let raw = match op {
+            UnaryOp::Neg => unsafe { ffi::PyNumber_Negative(obj.as_ptr()) },
+            UnaryOp::BitNot => unsafe { ffi::PyNumber_Invert(obj.as_ptr()) },
+            UnaryOp::Not => return Ok(Value::Bool(!py_truthy(handle)?)),
+        };
+        let result = unsafe { Bound::from_owned_ptr_or_err(py, raw) }.map_err(python_raised)?;
+        Ok(py_to_tl(py, &result))
     })
 }
 

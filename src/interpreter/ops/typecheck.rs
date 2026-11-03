@@ -199,7 +199,11 @@ impl Interpreter {
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
             Value::FrozenSet(s) => !s.is_empty(),
-            // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
+            // ⚠ CPython の物の真偽は CPython に尋ねる（`__bool__` / `__len__`・投げうる）ので `eval_truthy` が先に
+            //   受け持つ（2-2）。ここは誤りを返せないので、届いたら真（`__bool__` の無い物と同じ）。届く呼び手は無い
+            //   （`apply_unary` は `apply_unary_dyn` からだけ呼ばれ、そちらが CPython の物を先に受ける）。
+            Value::PyObject(_) => true,
+            // 関数・クラス・インスタンス・ジェネレータ・名前空間等は常に真
             Value::Function(_)
             | Value::OverloadedFn(_)
             | Value::Class(_)
@@ -213,7 +217,6 @@ impl Interpreter {
             | Value::TemplateGenFn(_)
             | Value::Generator(_)
             | Value::Namespace(_)
-            | Value::PyObject(_)
             | Value::FileObject(_)
             | Value::NativeFunction(_)
             // ⚠ NULL の `Ptr` は無い（NULL は `None`・D-8）ので常に真。解放済みでも真（使えば誤り）

@@ -556,6 +556,12 @@ let mean = np.mean(arr)
   モジュールの「`mut` だけ」の規則は Python のモジュールには無い）。型スタブに型のある属性・大域変数はその型で静的に検査する。
   `__setattr__` の中から見える参照の数は CPython と同じ（`examples/interop/py_int_attr_assign.ar`・`_error`）。⚠ 以前は
   CPython の物への代入が `cannot set attribute on non-instance`、モジュールの大域への代入が `TypeError` だった
+- **真偽と単項演算子**（pandas_import_plan.md の 2-2）: `bool(x)`・`not x`・`and` / `or`・型の分からない値を書いた `if` /
+  `while` の条件は CPython の真偽（`__bool__`、無ければ `__len__`、どちらも無ければ真）。`__bool__` が投げた例外（numpy の
+  配列の「真偽が曖昧」・bool 以外を返したときの `TypeError`）は Python の例外として届く（2-1）。`-x` / `~x` は CPython の
+  `__neg__` / `__invert__`。⚠ `if` / `while` の条件は bool でなければならないのは同じで、型が CPython のクラスと分かる値を
+  `if df:` と書くのは静的な誤り（`ConditionNotBool`）。`if bool(df):` と書く（`examples/interop/py_int_truthiness.ar`・`_error`・
+  `_runtime_error`）。⚠ 以前は CPython の物が常に真で、`-x` / `~x` は `bad operand type`（`TypeError`）だった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
@@ -590,7 +596,8 @@ bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryv
 Python のクラスのインスタンス（とそれを持つ list など）と分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ
 束縛するときに実行時の `TypeError` です。境界で Arrow の値に変わる物（`int`・`str`・`dict` など）は `let` で受けられます
 （`examples/interop/py_int_mut_binding.ar`・`py_int_mut_binding_error.ar`・`py_int_mut_binding_runtime_error.ar`）。
-⚠ `for` の変数・内包の変数・`except E as e`・`with .. as x`・`match` の束縛は、まだ対象にしていません。
+暗黙の束縛も同じで、`for mut f in ..`・`[.. for mut f in ..]`・`except E as mut e` と書きます（D-11・2-10。外の束縛が `mut`
+でも要る。`examples/interop/py_int_implicit_bindings.ar`・`_error`・`_runtime_error`）。`match` は新しい名前を束縛しません。
 
 ---
 ## Rust crate (`[rs]`)
