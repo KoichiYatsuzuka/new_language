@@ -25,8 +25,8 @@ let version: str = sys.version
 check("sys.version is str", version.startswith("3."))
 let maxsize: int = sys.maxsize
 check("sys.maxsize is int", maxsize > 0)
-let argv: list[str] = sys.argv
-check("sys.argv is list[str]", len(argv) >= 1)
+mut argv: py_list[str] = sys.argv
+check("sys.argv is py_list[str]", len(argv) >= 1)
 
 # 戻り値の型も付く（typeshed の `def getrecursionlimit() -> int`）
 let limit: int = sys.getrecursionlimit()

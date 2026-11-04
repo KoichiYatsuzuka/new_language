@@ -303,9 +303,12 @@ impl TypeChecker {
                 //    クラスは `__getitem__` へ委譲 ／ それ以外は実行時 TypeError。
                 if Self::is_slice_type(&idx_ty) {
                     let result = match &obj_ty {
-                        InferredType::List | InferredType::ListOf(_) | InferredType::Str | InferredType::Bytes => {
-                            obj_ty.clone()
-                        }
+                        // `py_list` の切り出しは CPython の新しい list（D-12・2-7）
+                        InferredType::List
+                        | InferredType::ListOf(_)
+                        | InferredType::PyList(_)
+                        | InferredType::Str
+                        | InferredType::Bytes => obj_ty.clone(),
                         // ⚠ tuple は**要素数が変わる**ので静的には決められない。
                         // ⚠ fixed_list / list_like / set / dict はスライスできない
                         //    （実行時 TypeError）。診断は出さず判定不能に倒す。
@@ -315,7 +318,12 @@ impl TypeChecker {
                     return result;
                 }
                 let result = match obj_ty {
-                    InferredType::ListOf(elem) | InferredType::FixedListOf(elem) | InferredType::ListLikeOf(elem) => *elem,
+                    InferredType::ListOf(elem)
+                    | InferredType::FixedListOf(elem)
+                    | InferredType::ListLikeOf(elem)
+                    | InferredType::PyList(elem) => *elem,
+                    InferredType::PyDict(_, val) => *val,
+                    InferredType::PySet(_) => InferredType::Unresolved,
                     // ⚠⚠ `set` は**添字アクセスできない**（実測: `'set' object is not
                     //    subscriptable`）。以前はここで要素型を返していたので、
                     //    **必ず実行時エラーになるコードに嘘の型**を与えていた。
@@ -716,10 +724,10 @@ impl TypeChecker {
         }
         match obj_ty {
             T::List | T::ListOf(_) | T::FixedList | T::FixedListOf(_) | T::ListLike
-            | T::ListLikeOf(_) | T::Str | T::Bytes | T::Tuple(_) => {
+            | T::ListLikeOf(_) | T::PyList(_) | T::Str | T::Bytes | T::Tuple(_) => {
                 self.check_int_position(idx_ty, &format!("index of `{obj_ty}`"));
             }
-            T::DictOf(key, _) => {
+            T::DictOf(key, _) | T::PyDict(key, _) => {
                 // ⚠ キー型が不透明な辞書（`dict[Any, V]`）は判定しない。
                 if Self::opaque_for_subscript(key) {
                     return;
@@ -737,7 +745,7 @@ impl TypeChecker {
                     span: None,
                 });
             }
-            T::Set | T::SetOf(_) | T::FrozenSet | T::FrozenSetOf(_) => {
+            T::Set | T::SetOf(_) | T::FrozenSet | T::FrozenSetOf(_) | T::PySet(_) => {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::NotSubscriptable { container: obj_ty.clone() },
                     span: None,
@@ -868,7 +876,10 @@ impl TypeChecker {
         if let Some(type_name) = Self::builtin_value_type(&obj_ty) {
             // 呼び出しの形は実行時に任せる（従来どおり）。**値として読む**形は、組み込みの値のメソッドの表
             // （`names::BUILTIN_VALUE_METHODS`・実行時が束縛メソッドを作る表と同じ）にある名前だけ（タスク 1-11）。
-            let known_method = if is_callee {
+            let known_method = if let Some(kind) = Self::py_collection_kind(&obj_ty) {
+                // `py_list` などは呼ぶ形も値として読む形も同じ表（中身は CPython の物・D-12・2-7）
+                super::names::is_py_collection_method(kind, attr)
+            } else if is_callee {
                 Self::builtin_may_have_method(&obj_ty, attr)
             } else {
                 Self::builtin_method_kinds(&obj_ty)
@@ -1141,6 +1152,16 @@ impl TypeChecker {
         })
     }
 
+    /// `py_list` / `py_dict` / `py_set` なら、メソッドの表（`names::PY_COLLECTION_METHODS`）を引く種類の名前（D-12・2-7）。
+    pub(super) fn py_collection_kind(ty: &InferredType) -> Option<&'static str> {
+        match ty {
+            InferredType::PyList(_) => Some("py_list"),
+            InferredType::PyDict(..) => Some("py_dict"),
+            InferredType::PySet(_) => Some("py_set"),
+            _ => None,
+        }
+    }
+
     /// 組み込みの値のメソッドの表（`names::BUILTIN_VALUE_METHODS`）を引く種類の名前。`list_like` は
     /// 実行時に list か fixed_list なので両方。メソッドを読めない型は空。
     fn builtin_method_kinds(ty: &InferredType) -> &'static [&'static str] {
@@ -1344,7 +1365,10 @@ impl TypeChecker {
             | T::FrozenSetOf(_)
             | T::Tuple(_)
             | T::TupleAny
-            | T::IteratorOf(_) => Some(ty.to_string()),
+            | T::IteratorOf(_)
+            | T::PyList(_)
+            | T::PyDict(..)
+            | T::PySet(_) => Some(ty.to_string()),
             _ => None,
         }
     }
@@ -1601,6 +1625,23 @@ impl TypeChecker {
         if self.registry.new_type_original(target_name).is_some() {
             return;
         }
+        // Arrow の list / dict / set と `py_list` / `py_dict` / `py_set` の間（D-12・2-7）
+        if let Some(verdict) = self.py_collection_cast(src_ty, target_ty) {
+            if let Some(elem) = target_ty.arrow_collection_in_python() {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ArrowCollectionInPython { elem, what: "cast".to_string() },
+                    span: Some(span.clone()),
+                });
+                return;
+            }
+            if let Err(reason) = verdict {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CastCanNeverSucceed { from: src_ty.clone(), to: target_name.to_string(), reason },
+                    span: Some(span.clone()),
+                });
+            }
+            return;
+        }
         // 解決できない先（trait / protocol / 未知の名前）は判定しない。
         if matches!(target_ty, T::Unresolved | T::Any | T::Protocol(_)) {
             return;
@@ -1655,6 +1696,54 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// `=>` の片側が `py_list` / `py_dict` / `py_set` のとき、写せるか（pandas_import_plan.md の D-12・2-7）。どちらでもなければ `None`。
+    ///
+    /// 写せるのは同じ種類どうし: Arrow の list / dict / set → `py_*`、`py_*` → Arrow の list / dict / set、`py_*` → `py_*`（写さずに
+    /// 要素を照合する）。要素はキャスト先の型の深さまで写す（`[[1]] => py_list[py_list[int]]`・[`Self::py_element_convertible`]）。
+    fn py_collection_cast(&self, src: &InferredType, dst: &InferredType) -> Option<Result<(), String>> {
+        use InferredType as T;
+        let is_py = |t: &T| matches!(t, T::PyList(_) | T::PyDict(..) | T::PySet(_));
+        (is_py(src) || is_py(dst)).then(|| self.py_collection_convertible(src, dst))
+    }
+
+    fn py_collection_convertible(&self, src: &InferredType, dst: &InferredType) -> Result<(), String> {
+        use InferredType as T;
+        match (src, dst) {
+            (T::ListOf(s) | T::FixedListOf(s) | T::ListLikeOf(s) | T::PyList(s), T::PyList(d))
+            | (T::PyList(s), T::ListOf(d))
+            | (T::SetOf(s) | T::PySet(s), T::PySet(d))
+            | (T::PySet(s), T::SetOf(d)) => self.py_element_convertible(s, d),
+            (T::DictOf(sk, sv) | T::PyDict(sk, sv), T::PyDict(dk, dv)) | (T::PyDict(sk, sv), T::DictOf(dk, dv)) => {
+                self.py_element_convertible(sk, dk)?;
+                self.py_element_convertible(sv, dv)
+            }
+            _ => Err("`=>` converts a py_list / py_dict / py_set from or to the same kind of collection".to_string()),
+        }
+    }
+
+    /// 要素 `s` を、キャスト先の要素 `d` にできるか。コレクションどうしならさらに写す（[`Self::py_collection_convertible`]）、
+    /// タプルは要素ごと、ほかは今の型のまま受かること。判定材料の無い要素（`Any`・空のリテラル `[]` の要素）は実行時に照合する。
+    fn py_element_convertible(&self, s: &InferredType, d: &InferredType) -> Result<(), String> {
+        use InferredType as T;
+        if matches!(s, T::Any | T::Unresolved | T::Never) || self.type_matches_exact(s, d) {
+            return Ok(());
+        }
+        let collection = |t: &T| {
+            matches!(
+                t,
+                T::ListOf(_) | T::FixedListOf(_) | T::ListLikeOf(_) | T::SetOf(_) | T::DictOf(..) | T::PyList(_)
+                    | T::PyDict(..) | T::PySet(_)
+            )
+        };
+        match (s, d) {
+            _ if collection(s) && collection(d) => self.py_collection_convertible(s, d),
+            (T::Tuple(ss), T::Tuple(ds)) if ss.len() == ds.len() => {
+                ss.iter().zip(ds).try_for_each(|(s, d)| self.py_element_convertible(s, d))
+            }
+            _ => Err(format!("an element of type `{s}` cannot become `{d}`")),
+        }
     }
 
     /// 単項演算子の検査で「判定材料が無い」とみなす型（タスク 7.1）。

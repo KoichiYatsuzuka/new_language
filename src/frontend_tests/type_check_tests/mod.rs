@@ -48,3 +48,4 @@ mod guards_fntype;
 mod decorators_generics;
 mod generators;
 mod modules;
+mod py_collections;

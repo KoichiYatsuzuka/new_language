@@ -309,6 +309,64 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
     }
 }
 
+/// 宣言の注釈の Arrow の list / dict / set を `py_list` / `py_dict` / `py_set` にする（`.pyi` を変換器で読んだ宣言・D-12・2-7）。
+/// 行単位の抽出器は [`py_type_to_arrow`] が初めからそう読む。⚠ 2 度掛けてもよい（`py_list` は語として `list` ではない）。
+pub(crate) fn py_collections_as_python(stmts: &mut [crate::ast::Stmt]) {
+    use crate::ast::Stmt;
+    let fix = |t: &mut String| *t = py_collection_words(t);
+    let fix_fn = |params: &mut Vec<crate::ast::Param>, ret: &mut Option<String>| {
+        params.iter_mut().filter_map(|p| p.type_ann.as_mut()).for_each(fix);
+        ret.iter_mut().for_each(fix);
+    };
+    for st in stmts.iter_mut() {
+        match st {
+            Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
+            Stmt::ClassDef { body, .. } => {
+                for m in body.iter_mut() {
+                    match m {
+                        Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
+                        Stmt::Field { type_ann, .. } => fix(type_ann),
+                        _ => {}
+                    }
+                }
+            }
+            Stmt::Let(_, Some(t), _, _) => fix(t),
+            _ => {}
+        }
+    }
+}
+
+/// 型の字句の `list[` / `dict[` / `set[` を `py_list[` などに、要素型の無い `list` などを `py_list[Any]` などにする。
+fn py_collection_words(ty: &str) -> String {
+    let mut out = String::with_capacity(ty.len() + 8);
+    let chars: Vec<char> = ty.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_alphanumeric() || chars[i] == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let bracket = chars.get(i) == Some(&'[');
+            match (word.as_str(), bracket) {
+                ("list" | "dict" | "set", true) => {
+                    out.push_str("py_");
+                    out.push_str(&word);
+                }
+                ("list", false) => out.push_str("py_list[Any]"),
+                ("dict", false) => out.push_str("py_dict[Any, Any]"),
+                ("set", false) => out.push_str("py_set[Any]"),
+                _ => out.push_str(&word),
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// 型の字句 `ty` の中の名前 `from`（語として一致するものだけ）を `to` にする。
 fn py_replace_type_word(ty: &str, from: &str, to: &str) -> String {
     let mut out = String::with_capacity(ty.len());
@@ -948,10 +1006,12 @@ fn py_type_to_arrow(ann: &str) -> String {
             // 大域変数・クラスの属性の印（PEP 591 / PEP 526）: 型は中身
             ("Final" | "ClassVar", [t]) => t.clone(),
             ("Union", ts) if !ts.is_empty() => union_of(ts.to_vec()),
-            ("List" | "list", [t]) => format!("list[{t}]"),
-            // frozenset も実行時は Arrow の set で届く（`py_to_tl`・2-6）
-            ("Set" | "set" | "FrozenSet" | "frozenset", [t]) => format!("set[{t}]"),
-            ("Dict" | "dict", [k, v]) => format!("dict[{k}, {v}]"),
+            // list / dict / set は写さずに CPython の物のまま届く（`py_to_tl`・pandas_import_plan.md の D-8・D-12・2-7）
+            ("List" | "list", [t]) => format!("py_list[{t}]"),
+            ("Set" | "set", [t]) => format!("py_set[{t}]"),
+            ("Dict" | "dict", [k, v]) => format!("py_dict[{k}, {v}]"),
+            // frozenset は不変なので、実行時は Arrow の set に写して届く（`py_to_tl`・2-6）
+            ("FrozenSet" | "frozenset", [t]) => format!("set[{t}]"),
             // 可変長（`tuple[int, ...]`）と空（`tuple[()]`）は要素の並びを Arrow で書けないので素の `tuple`（形だけ照合）
             ("Tuple" | "tuple", _) if raw_args.iter().any(|t| matches!(t.trim(), "..." | "()")) => "tuple".to_string(),
             ("Tuple" | "tuple", ts) if !ts.is_empty() => format!("tuple[{}]", ts.join(", ")),
@@ -960,8 +1020,11 @@ fn py_type_to_arrow(ann: &str) -> String {
         };
     }
     match a {
-        "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes"
-        | "list" | "dict" | "tuple" | "set" => a.to_string(),
+        "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes" | "tuple" => a.to_string(),
+        // 要素の型を書かない list / dict / set（D-12・2-7）
+        "list" | "List" => "py_list[Any]".to_string(),
+        "dict" | "Dict" => "py_dict[Any, Any]".to_string(),
+        "set" | "Set" => "py_set[Any]".to_string(),
         "frozenset" => "set".to_string(),
         // `typing.LiteralString`（PEP 675）は文字列（typeshed の `sys.platform: LiteralString`・pandas_import_plan.md の 1-6）
         "LiteralString" | "typing.LiteralString" | "typing_extensions.LiteralString" => "str".to_string(),
@@ -1099,33 +1162,35 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
             panic!("no f")
         };
         let types: Vec<&str> = params.iter().map(|p| p.type_ann.as_deref().unwrap_or("")).collect();
-        assert_eq!(types, vec!["Any", "Box", "Option[list[Any]]"]);
+        assert_eq!(types, vec!["Any", "Box", "Option[py_list[Any]]"]);
         assert_eq!(return_type.as_deref(), Some("Box"));
     }
 
     /// Python のバイト列の注釈はどれも `bytes`（ffi_value_exchange_plan.md 5-3）。
     #[test]
     fn byte_sequences_are_bytes() {
+        assert_eq!(py_collection_words("Option[dict[str, list[int]]]"), "Option[py_dict[str, py_list[int]]]");
+        assert_eq!(py_collection_words("Union[list, set, fixed_list[int], py_list[int]]"), "Union[py_list[Any], py_set[Any], fixed_list[int], py_list[int]]");
         assert_eq!(py_type_to_arrow("bytes"), "bytes");
         assert_eq!(py_type_to_arrow("bytearray"), "bytes");
         assert_eq!(py_type_to_arrow("Optional[memoryview]"), "Option[bytes]");
-        assert_eq!(py_type_to_arrow("list[bytearray]"), "list[bytes]");
+        assert_eq!(py_type_to_arrow("list[bytearray]"), "py_list[bytes]");
     }
 
     /// 要素型を落とさない（7-8）。以前は `dict[K, V]` → `dict`・`set[tuple[int, int]]` → `set[tuple]`・`frozenset[T]` → `Any`・
     /// `Union[List[int], None]` は中を変換しないまま・`list[int] | None` → `Any` だった。
     #[test]
     fn element_types_are_kept() {
-        assert_eq!(py_type_to_arrow("set[tuple[int, int]]"), "set[tuple[int, int]]");
+        assert_eq!(py_type_to_arrow("set[tuple[int, int]]"), "py_set[tuple[int, int]]");
         assert_eq!(py_type_to_arrow("frozenset[str]"), "set[str]");
         assert_eq!(py_type_to_arrow("FrozenSet[int]"), "set[int]");
-        assert_eq!(py_type_to_arrow("dict[str, list[int]]"), "dict[str, list[int]]");
-        assert_eq!(py_type_to_arrow("Dict[str, Tuple[int, float]]"), "dict[str, tuple[int, float]]");
-        assert_eq!(py_type_to_arrow("Union[List[int], None]"), "Option[list[int]]");
+        assert_eq!(py_type_to_arrow("dict[str, list[int]]"), "py_dict[str, py_list[int]]");
+        assert_eq!(py_type_to_arrow("Dict[str, Tuple[int, float]]"), "py_dict[str, tuple[int, float]]");
+        assert_eq!(py_type_to_arrow("Union[List[int], None]"), "Option[py_list[int]]");
         assert_eq!(py_type_to_arrow("Union[int, str, None]"), "Union[int, str, None]");
-        assert_eq!(py_type_to_arrow("list[int] | None"), "Option[list[int]]");
+        assert_eq!(py_type_to_arrow("list[int] | None"), "Option[py_list[int]]");
         assert_eq!(py_type_to_arrow("int | str"), "Union[int, str]");
-        assert_eq!(py_type_to_arrow("typing.Optional[typing.List[str]]"), "Option[list[str]]");
+        assert_eq!(py_type_to_arrow("typing.Optional[typing.List[str]]"), "Option[py_list[str]]");
         // Arrow が表せないものは検査しない側
         assert_eq!(py_type_to_arrow("tuple[int, ...]"), "tuple");
         assert_eq!(py_type_to_arrow("Sequence[int]"), "Any");

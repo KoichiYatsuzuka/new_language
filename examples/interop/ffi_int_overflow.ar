@@ -28,7 +28,7 @@ check("python: 2**70 for `-> int` is an OverflowError", "1180591620717411303424"
 
 message = ""
 try:
-    let xs: list[int] = pp.big_in_list()
+    mut xs: py_list[int] = pp.big_in_list()
     print("unreachable:", xs)
 except OverflowError as e:
     message = e.message

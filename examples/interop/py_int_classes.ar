@@ -22,7 +22,7 @@ check("an annotated method returns its type", c.bump() == 11)
 check("an annotated attribute", c.value == 11)
 check("a class attribute", c.label == "counter")
 check("a property", c.count == 1)
-check("an annotated list attribute", c.history == [11])
+check("an annotated list attribute", (c.history => list[int]) == [11])
 # 注釈の無いものは Any: 明示のダウンキャストで使う
 check("an unannotated method is Any", (c.describe() mustbe str) == "counter=11")
 check("an unannotated attribute is Any", (c.step mustbe int) == 1)

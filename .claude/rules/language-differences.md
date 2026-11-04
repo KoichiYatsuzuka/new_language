@@ -106,13 +106,24 @@
   object (an `import[py-int]` value that stays a Python object: instances, functions, arrays, big ints …) is shared, not
   copied, so other references can change it; `let` / `const` / `freeze` and a parameter that is not `mut` cannot hold one
   (`fn f(mut d: pd.DataFrame)`). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
-  container of them), otherwise a runtime `TypeError` at the binding. Values converted to Arrow values at the boundary
-  (`int`, `str`, `dict` …) are Arrow values and can be bound with `let`.
+  container of them, or a `py_list` / `py_dict` / `py_set`), otherwise a runtime `TypeError` at the binding. Values
+  converted to Arrow values at the boundary (`int`, `str`, `tuple`, the result of `=> list[int]` …) are Arrow values and
+  can be bound with `let`.
   - Implicit bindings follow the same rule (D-11, task 2-10): write `for mut f in ..` (all targets of `for mut k, v`),
     `[.. for mut f in ..]` and `except E as mut e`. Without `mut`, receiving a Python object is a static
     `ImmutablePythonObject` when the type says so, otherwise a runtime `TypeError` at the binding — even when the iterated
     binding is itself `mut`. `for mut x in xs` binds a **copy** of an Arrow element (like `mut x = elem`); plain
     `for x in xs` still aliases the element. (`match` binds no new names; Arrow has no `with`.)
+- **Collections are exchanged with Python through `py_list[T]` / `py_dict[K, V]` / `py_set[T]`** (pandas_import_plan.md
+  D-12, task 2-7). These built-in types hold a CPython list / dict / set; their operations have Python's meaning
+  (methods are exactly CPython's, display is `['a']`) and they never mix with Arrow's `list` / `dict` / `set`
+  (`pl + [1]` and `let xs: list[int] = pl` are static errors). Convert with the cast `=>`: `xs => py_list[int]`,
+  `pl => list[int]`; the cast copies to the depth the target type names (`[[1]] => py_list[py_list[int]]`) and checks the
+  elements (`TypeError` on a mismatch). A list / dict / set returned by Python arrives **uncopied** as `py_list` etc.
+  (Python's later changes are visible), and a stub's `list[T]` reads as `py_list[T]`. An Arrow collection cannot be an
+  element (`py_list[list[int]]` is an error). Like every Python object they are bound with `mut`.
+  - ⚠ Passing an Arrow list / dict / set to Python without a cast still copies it (Python's changes do not come back);
+    task 2-11 makes it an error.
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

@@ -153,12 +153,25 @@ pub(crate) fn primitive_ann_matches(ann: &str, val: &Value) -> Option<bool> {
         _ if ann.starts_with("set[") => matches!(val, Value::Set(_)),
         _ if ann.starts_with("frozenset[") => matches!(val, Value::FrozenSet(_)),
         _ if ann.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
+        // 中身が CPython の list / dict / set（pandas_import_plan.md の D-12・2-7）。ほかの容器と同じく外側だけ見る（要素は
+        // 静的検査と、写して受け取るときの照合の担当）。
+        _ if ann == "py_list" || ann.starts_with("py_list[") => py_collection_is(val, "list"),
+        _ if ann == "py_dict" || ann.starts_with("py_dict[") => py_collection_is(val, "dict"),
+        _ if ann == "py_set" || ann.starts_with("py_set[") => py_collection_is(val, "set"),
         // ジェネレータも外側だけ見る（フェーズ10 10-7 で `generator[T]` を注釈に書けるようにした）。
         "generator" => matches!(val, Value::Generator(_)),
         _ if ann.starts_with("generator[") => matches!(val, Value::Generator(_)),
         _ => return None,
     };
     Some(r)
+}
+
+/// `val` が CPython の `kind`（`list` / `dict` / `set`）か（`py_list` などの型の照合・D-12）。
+fn py_collection_is(val: &Value, kind: &str) -> bool {
+    match val {
+        Value::PyObject(h) => crate::interpreter::py_interop::py_collection_kind(h) == Some(kind),
+        _ => false,
+    }
 }
 
 impl Interpreter {

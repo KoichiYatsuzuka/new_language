@@ -570,12 +570,13 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         use pyo3::types::PyBytesMethods;
         return Value::Bytes(b.as_bytes().into());
     }
-    // list → Value::List
-    if let Ok(list) = obj.downcast::<PyList>() {
-        let items: Vec<Value> = list.iter().map(|item| py_to_tl(py, &item)).collect();
-        return Value::List(Rc::new(RefCell::new(items)));
+    // ⚠⚠ list / dict / set は**写さずに CPython の物のまま**（`py_list` / `py_dict` / `py_set`・pandas_import_plan.md の D-8・D-12・
+    //   2-7）。Python の書き換えが Arrow から見え、Arrow の書き換えも Python から見える（CPython と同じ）。Arrow の list などにするには
+    //   `=> list[T]`。以前はここで Arrow の list / dict / set に写していた（Python の書き換えが戻らない・同じ物でなくなる）。
+    if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyDict>() || obj.is_instance_of::<PySet>() {
+        return Value::PyObject(PyObjHandle::from_bound(obj));
     }
-    // tuple → Value::Tuple
+    // tuple → Value::Tuple（不変なので写しても区別がつかない）
     if let Ok(tup) = obj.downcast::<PyTuple>() {
         let mut values = Vec::new();
         let mut types = Vec::new();
@@ -586,28 +587,10 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         }
         return Value::Tuple(Rc::new(TupleData::new(values, types)));
     }
-    // dict → Value::Dict（Any 型）
-    if let Ok(d) = obj.downcast::<PyDict>() {
-        let mut dict = DictData::new("Any".to_string(), "Any".to_string());
-        let mut all_keys_ok = true;
-        for (k, v) in d.iter() {
-            // ⚠ Arrow がキーにできない型（tuple / 非整数 float / None など）を含む dict は
-            // **要素を黙って捨てない**（B1-a。以前はここで無言の欠落が起きていた）。
-            // 1 つでも弾かれたら dict への変換自体をやめ、下の `PyObject` フォールバックへ
-            // 落として**丸ごと**渡す（情報を落とさず、Python 側の索引で扱える）。
-            if crate::interpreter::Interpreter::dict_set_pure(&mut dict, py_to_tl(py, &k), py_to_tl(py, &v)).is_err() {
-                all_keys_ok = false;
-                break;
-            }
-        }
-        if all_keys_ok {
-            return Value::Dict(Rc::new(RefCell::new(dict)));
-        }
-    }
-    // set / frozenset → Value::Set（2-6。以前は Python のオブジェクトのままだった）。
-    // ⚠ Arrow の set に入れられない要素（list / dict / PyObject など）を含むなら、dict と同じく要素を捨てずに
-    //   丸ごと Python のオブジェクトのまま渡す。
-    if obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>() {
+    // frozenset → Value::Set（不変なので写す・2-6）。
+    // ⚠ Arrow の set に入れられない要素（list / dict / PyObject など）を含むなら、要素を捨てずに丸ごと Python のオブジェクトの
+    //   まま渡す。
+    if obj.is_instance_of::<PyFrozenSet>() {
         if let Ok(iter) = obj.iter() {
             let mut items: Vec<Value> = Vec::new();
             let mut ok = true;
@@ -633,6 +616,231 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     }
     // その他 → PyObject（opaque ラップ）
     Value::PyObject(PyObjHandle::from_bound(obj))
+}
+
+// ---------------------------------------------------------------------------
+// `py_list` / `py_dict` / `py_set`（pandas_import_plan.md の D-12・2-7）
+// ---------------------------------------------------------------------------
+//
+// 中身が CPython の list / dict / set の組み込みの型。Arrow の list / dict / set とはキャスト `=>` で写す。写すのは
+// **キャスト先の型の深さまで**（`[[1]] => py_list[py_list[int]]` は中も CPython の list・`pl => list[py_list[int]]` は外側だけ）で、
+// 写しながら要素を宣言の型と照合する（違えば `TypeError`）。`py_*` から `py_*` へは写さずに照合だけする（同じ物を返す）。
+
+/// CPython の list / dict / set（派生も・`isinstance`）なら `"list"` / `"dict"` / `"set"`。
+pub fn py_collection_kind(h: &PyObjHandle) -> Option<&'static str> {
+    with_py(|py| collection_kind(&h.bind(py)))
+}
+
+fn collection_kind(o: &Bound<'_, PyAny>) -> Option<&'static str> {
+    if o.is_instance_of::<PyList>() {
+        Some("list")
+    } else if o.is_instance_of::<PyDict>() {
+        Some("dict")
+    } else if o.is_instance_of::<PySet>() {
+        Some("set")
+    } else {
+        None
+    }
+}
+
+/// CPython の list / set の要素（Arrow の値に変換したもの）。list / set でなければ `None`（境界の照合・`ffi_boundary`）。
+pub fn py_collection_items(h: &PyObjHandle) -> Option<Vec<Value>> {
+    with_py(|py| {
+        let o = h.bind(py);
+        if !matches!(collection_kind(&o), Some("list" | "set")) {
+            return None;
+        }
+        Some(o.iter().ok()?.filter_map(|x| x.ok()).map(|x| py_to_tl(py, &x)).collect())
+    })
+}
+
+/// CPython の dict の鍵と値（Arrow の値に変換したもの）。dict でなければ `None`。
+pub fn py_dict_pairs(h: &PyObjHandle) -> Option<Vec<(Value, Value)>> {
+    with_py(|py| {
+        let o = h.bind(py);
+        let d = o.downcast::<PyDict>().ok()?;
+        Some(d.iter().map(|(k, v)| (py_to_tl(py, &k), py_to_tl(py, &v))).collect())
+    })
+}
+
+/// `val => target`（`target` は `py_list[T]` / `py_dict[K, V]` / `py_set[T]`）。Arrow のコレクションは写し、CPython の物は
+/// 照合して同じ物を返す。
+pub fn cast_to_python(val: &Value, target: &crate::type_check::InferredType) -> Result<Value, String> {
+    with_py(|py| {
+        let obj = to_python_as(py, val, target).map_err(|e| format!("TypeError: cannot cast to '{target}': {e}"))?;
+        Ok(Value::PyObject(PyObjHandle::from_owned(obj)))
+    })
+}
+
+/// `pl => target`（`pl` は CPython の list / dict / set・`target` は Arrow の `list[T]` / `dict[K, V]` / `set[T]`）。
+pub fn cast_from_python(h: &PyObjHandle, target: &crate::type_check::InferredType) -> Result<Value, String> {
+    with_py(|py| from_python_as(py, &h.bind(py), target).map_err(|e| format!("TypeError: cannot cast to '{target}': {e}")))
+}
+
+/// 照合に通らなかった値の説明（`element of type 'str' where 'int' was expected`）。
+fn element_mismatch(got: &str, want: &crate::type_check::InferredType) -> String {
+    format!("found an element of type '{got}' where '{want}' was expected")
+}
+
+/// Arrow の値 `val` を、型 `ty` の CPython の物にする（`=> py_list[..]` の要素ごとの処理）。
+fn to_python_as(py: Python<'_>, val: &Value, ty: &crate::type_check::InferredType) -> Result<PyObject, String> {
+    use crate::type_check::InferredType as T;
+    let items_of = |v: &Value| -> Option<Vec<Value>> {
+        match v {
+            Value::List(items) => Some(items.borrow().clone()),
+            Value::FrozenList { state, layout } => {
+                let st = state.borrow();
+                Some((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
+            }
+            _ => None,
+        }
+    };
+    match (ty, val) {
+        // CPython の物は照合だけして同じ物（`py_list[Any]` → `py_list[int]`）
+        (T::PyList(_) | T::PyDict(..) | T::PySet(_), Value::PyObject(h)) => {
+            let obj = h.bind(py);
+            check_python_as(py, &obj, ty)?;
+            Ok(obj.to_owned().unbind())
+        }
+        (T::PyList(e), v) => match items_of(v) {
+            Some(items) => {
+                let elems: Vec<PyObject> = items.iter().map(|x| to_python_as(py, x, e)).collect::<Result<_, _>>()?;
+                Ok(PyList::new_bound(py, &elems).into_any().unbind())
+            }
+            None => Err(element_mismatch(&type_name_of(v), ty)),
+        },
+        (T::PySet(e), Value::Set(items)) => {
+            let elems: Vec<PyObject> =
+                items.borrow().iter().map(|x| to_python_as(py, x, e)).collect::<Result<_, _>>()?;
+            Ok(PySet::new_bound(py, &elems).map_err(|e| e.to_string())?.into_any().unbind())
+        }
+        (T::PyDict(kt, vt), Value::Dict(d)) => {
+            let dict = PyDict::new_bound(py);
+            for (k, v) in d.borrow().all_pairs() {
+                dict.set_item(to_python_as(py, &k, kt)?, to_python_as(py, &v, vt)?).map_err(|e| e.to_string())?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+        (T::Tuple(ts), Value::Tuple(td)) if td.all_values().len() == ts.len() => {
+            let elems: Vec<PyObject> =
+                td.all_values().iter().zip(ts).map(|(x, t)| to_python_as(py, x, t)).collect::<Result<_, _>>()?;
+            Ok(PyTuple::new_bound(py, &elems).into_any().unbind())
+        }
+        (T::Union(ts), v) => ts
+            .iter()
+            .find_map(|t| to_python_as(py, v, t).ok())
+            .ok_or_else(|| element_mismatch(&type_name_of(v), ty)),
+        // ⚠ Arrow のコレクションは、キャスト先の型が CPython のコレクションを指すときだけ写す（D-12）。`py_list[Any]` の要素の
+        //   Arrow の list を黙って写さない（どの深さまで CPython の物にするかが型に書かれていない）
+        (_, Value::List(_) | Value::FrozenList { .. } | Value::Dict(_) | Value::Set(_)) => Err(format!(
+            "{} (an Arrow {} can only become a py_list / py_dict / py_set; write it in the element type)",
+            element_mismatch(&type_name_of(val), ty),
+            type_name_of(val)
+        )),
+        (_, v) => {
+            match crate::interpreter::ffi_boundary::check_common(v, ty) {
+                crate::interpreter::ffi_boundary::Verdict::Mismatch { actual } => return Err(element_mismatch(&actual, ty)),
+                _ => {}
+            }
+            ar_to_py(py, v).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// CPython の物 `obj` を型 `ty` の Arrow の値にする（`=> list[..]` の要素ごとの処理）。`ty` が `py_*` なら照合だけして同じ物。
+fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check::InferredType) -> Result<Value, String> {
+    use crate::type_check::InferredType as T;
+    let kind_err = || element_mismatch(&py_type_name_of(obj), ty);
+    match ty {
+        T::PyList(_) | T::PyDict(..) | T::PySet(_) => {
+            check_python_as(py, obj, ty)?;
+            Ok(Value::PyObject(PyObjHandle::from_bound(obj)))
+        }
+        T::ListOf(e) => {
+            let list = obj.downcast::<PyList>().map_err(|_| kind_err())?;
+            let items: Vec<Value> = list.iter().map(|x| from_python_as(py, &x, e)).collect::<Result<_, _>>()?;
+            Ok(Value::List(Rc::new(RefCell::new(items))))
+        }
+        T::SetOf(e) => {
+            if !obj.is_instance_of::<PySet>() {
+                return Err(kind_err());
+            }
+            let mut items: Vec<Value> = Vec::new();
+            for x in obj.iter().map_err(|e| e.to_string())? {
+                let v = from_python_as(py, &x.map_err(|e| e.to_string())?, e)?;
+                if DictData::reject_key(&v).is_some() {
+                    return Err(format!("an element of type '{}' cannot be in an Arrow set", type_name_of(&v)));
+                }
+                items.push(v);
+            }
+            Ok(Value::Set(Rc::new(RefCell::new(items))))
+        }
+        T::DictOf(kt, vt) => {
+            let d = obj.downcast::<PyDict>().map_err(|_| kind_err())?;
+            let mut dict = DictData::new(kt.to_string(), vt.to_string());
+            for (k, v) in d.iter() {
+                let (k, v) = (from_python_as(py, &k, kt)?, from_python_as(py, &v, vt)?);
+                crate::interpreter::Interpreter::dict_set_pure(&mut dict, k, v)?;
+            }
+            Ok(Value::Dict(Rc::new(RefCell::new(dict))))
+        }
+        T::Tuple(ts) => {
+            let tup = obj.downcast::<PyTuple>().map_err(|_| kind_err())?;
+            if tup.len() != ts.len() {
+                return Err(kind_err());
+            }
+            let values: Vec<Value> = tup.iter().zip(ts).map(|(x, t)| from_python_as(py, &x, t)).collect::<Result<_, _>>()?;
+            let types = values.iter().map(type_name_of).collect();
+            Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
+        }
+        T::Union(ts) => ts.iter().find_map(|t| from_python_as(py, obj, t).ok()).ok_or_else(kind_err),
+        _ => {
+            let v = py_to_tl(py, obj);
+            match crate::interpreter::ffi_boundary::python_verdict(&v, ty) {
+                crate::interpreter::ffi_boundary::Verdict::Mismatch { actual } => Err(element_mismatch(&actual, ty)),
+                crate::interpreter::ffi_boundary::Verdict::Coerce(c) => Ok(c),
+                _ => Ok(v),
+            }
+        }
+    }
+}
+
+/// CPython の物 `obj` が型 `ty`（`py_list[T]` など）に合うか、要素まで照合する（写さない）。
+fn check_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check::InferredType) -> Result<(), String> {
+    use crate::type_check::InferredType as T;
+    let want = match ty {
+        T::PyList(_) => "list",
+        T::PyDict(..) => "dict",
+        T::PySet(_) => "set",
+        _ => return from_python_as(py, obj, ty).map(|_| ()),
+    };
+    if collection_kind(obj) != Some(want) {
+        return Err(element_mismatch(&py_type_name_of(obj), ty));
+    }
+    match ty {
+        T::PyList(e) | T::PySet(e) if **e != T::Unresolved => {
+            for x in obj.iter().map_err(|e| e.to_string())? {
+                check_python_as(py, &x.map_err(|e| e.to_string())?, e)?;
+            }
+            Ok(())
+        }
+        T::PyDict(kt, vt) if **kt != T::Unresolved => {
+            for (k, v) in obj.downcast::<PyDict>().map_err(|e| e.to_string())?.iter() {
+                check_python_as(py, &k, kt)?;
+                check_python_as(py, &v, vt)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// CPython の物の型の名前（組み込みの型はモジュールを付けない）。
+fn py_type_name_of(obj: &Bound<'_, PyAny>) -> String {
+    let ty = obj.get_type();
+    let name = ty.qualname().map(|s| s.to_string()).unwrap_or_else(|_| "object".to_string());
+    let module = ty.getattr("__module__").ok().and_then(|m| m.extract::<String>().ok()).unwrap_or_default();
+    if module == "builtins" || module.is_empty() { name } else { format!("{module}.{name}") }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,12 +1021,7 @@ pub fn py_exception_is(h: &PyObjHandle, type_name: &str) -> bool {
 
 /// CPython の物の型の名前（`frames.Frame`・組み込みの型はモジュールを付けない・誤りの文言用・D-11）。
 pub fn py_type_name(h: &PyObjHandle) -> String {
-    with_py(|py| {
-        let ty = h.bind(py).get_type();
-        let name = ty.qualname().map(|s| s.to_string()).unwrap_or_else(|_| "object".to_string());
-        let module = ty.getattr("__module__").ok().and_then(|m| m.extract::<String>().ok()).unwrap_or_default();
-        if module == "builtins" || module.is_empty() { name } else { format!("{module}.{name}") }
-    })
+    with_py(|py| py_type_name_of(&h.bind(py)))
 }
 
 /// CPython の例外のオブジェクトの、トレースバックの最後の行（`pkg.MyErr: bad`・[`python_raised`] と同じ形）。

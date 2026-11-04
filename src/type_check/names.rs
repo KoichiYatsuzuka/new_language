@@ -250,6 +250,27 @@ pub(crate) const BUILTIN_VALUE_METHODS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// `py_list` / `py_dict` / `py_set`（中身は CPython の物・pandas_import_plan.md の D-12・2-7）の**メソッドの名前**。CPython 3.12 の
+/// `list` / `dict` / `set` の公開のメソッドと同じ（dict の fromkeys はクラスのメソッドなので除く）。実行時は CPython が呼ぶので、
+/// 型検査（存在・戻り値の型・引数）だけが読む。⚠ 表に無い名前は静的な誤り（メンバーは閉じている）。
+pub(crate) const PY_COLLECTION_METHODS: &[(&str, &[&str])] = &[
+    ("py_list", &["__iter__", "append", "clear", "copy", "count", "extend", "index", "insert", "pop", "remove", "reverse", "sort"]),
+    ("py_dict", &["__iter__", "clear", "copy", "get", "items", "keys", "pop", "popitem", "setdefault", "update", "values"]),
+    (
+        "py_set",
+        &[
+            "__iter__", "add", "clear", "copy", "difference", "difference_update", "discard", "intersection",
+            "intersection_update", "isdisjoint", "issubset", "issuperset", "pop", "remove", "symmetric_difference",
+            "symmetric_difference_update", "union", "update",
+        ],
+    ),
+];
+
+/// `py_list` などの値が `name` というメソッドを持つか（[`PY_COLLECTION_METHODS`]）。`kind` は `py_list` / `py_dict` / `py_set`。
+pub(crate) fn is_py_collection_method(kind: &str, name: &str) -> bool {
+    PY_COLLECTION_METHODS.iter().any(|(k, ms)| *k == kind && ms.contains(&name))
+}
+
 /// `kind`（実行時の型の名前）の値が `name` というメソッドを持つか（[`BUILTIN_VALUE_METHODS`]）。
 pub(crate) fn is_builtin_value_method(kind: &str, name: &str) -> bool {
     BUILTIN_VALUE_METHODS.iter().any(|(k, ms)| *k == kind && ms.contains(&name))

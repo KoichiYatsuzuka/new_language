@@ -128,10 +128,14 @@ impl TypeChecker {
         // `in` は右辺が容器。左辺と**要素型**を比べる。
         let (a, b) = if matches!(op, BinOp::In | BinOp::NotIn) {
             let elem = match rt {
-                T::ListOf(e) | T::SetOf(e) | T::FrozenSetOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => {
-                    (**e).clone()
-                }
-                T::DictOf(k, _) => (**k).clone(),
+                T::ListOf(e)
+                | T::SetOf(e)
+                | T::FrozenSetOf(e)
+                | T::FixedListOf(e)
+                | T::ListLikeOf(e)
+                | T::PyList(e)
+                | T::PySet(e) => (**e).clone(),
+                T::DictOf(k, _) | T::PyDict(k, _) => (**k).clone(),
                 T::Str => T::Str,
                 // `x in b"..."` は int（1 バイト）でも bytes（部分列）でもよい（タスク 3-1）。
                 T::Bytes => {
@@ -434,9 +438,10 @@ impl TypeChecker {
             //   比べない（`(1, "a") < (2, 3)` は CPython でも真）が、どの位置で決まるかは値次第なので、
             //   比べられない位置がある組は静的に弾く（Arrow の `<` の厳しさに合わせる）。
             // ⚠ `[]`（要素型 `Never`）はどの list とも比べられる。素の `list` / `tuple`（Python 由来）は要素が分からないので通す。
-            (ListOf(a), ListOf(b)) => {
+            (ListOf(a), ListOf(b)) | (PyList(a), PyList(b)) => {
                 matches!(**a, Never) || matches!(**b, Never) || Self::ordered_comparable(a, b)
             }
+            (PySet(_), PySet(_)) => true,
             (List, List | ListOf(_)) | (ListOf(_), List) => true,
             (Tuple(a), Tuple(b)) => a.iter().zip(b).all(|(x, y)| Self::ordered_comparable(x, y)),
             (TupleAny, TupleAny | Tuple(_)) | (Tuple(_), TupleAny) => true,
@@ -599,6 +604,38 @@ impl TypeChecker {
         }
     }
 
+    /// `py_list` / `py_dict` / `py_set`（中身は CPython の物・pandas_import_plan.md の D-12・2-7）の演算の結果の型。どちらの辺も
+    /// それらでなければ `None`。演算は Python の意味で、**同じ種類どうし**だけ（`py_list + list` は `Unresolved`＝誤り。Arrow の
+    /// list は `=>` で写す）。
+    /// - `py_list`: `+`（連結）・`*` int・比較（要素ごと）
+    /// - `py_set`: `|` `^`（要素は join）・`&` `-`（左の要素）・比較（包含関係）
+    /// - `py_dict`: `|`（併合）・`==` / `!=`
+    /// - `in` / `not in` / `===` / `and` / `or` は一般の規則（`None` を返す）
+    fn py_collection_binop(op: &BinOp, lt: &InferredType, rt: &InferredType) -> Option<InferredType> {
+        use InferredType::*;
+        let is_py = |t: &InferredType| matches!(t, PyList(_) | PyDict(..) | PySet(_));
+        if !is_py(lt) && !is_py(rt) {
+            return Option::None;
+        }
+        if matches!(op, BinOp::In | BinOp::NotIn | BinOp::RefEq | BinOp::And | BinOp::Or) {
+            return Option::None;
+        }
+        let compare = matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq);
+        let r = match (op, lt, rt) {
+            (BinOp::Add, PyList(a), PyList(b)) => PyList(Box::new(Self::join2(a, b))),
+            (BinOp::Mul, PyList(a), Int) | (BinOp::Mul, Int, PyList(a)) => PyList(a.clone()),
+            (_, PyList(_), PyList(_)) | (_, PySet(_), PySet(_)) if compare => Bool,
+            (BinOp::Eq | BinOp::NotEq, PyDict(..), PyDict(..)) => Bool,
+            (BinOp::BitOr | BinOp::BitXor, PySet(a), PySet(b)) => PySet(Box::new(Self::join2(a, b))),
+            (BinOp::BitAnd | BinOp::Sub, PySet(a), PySet(_)) => PySet(a.clone()),
+            (BinOp::BitOr, PyDict(ak, av), PyDict(bk, bv)) => {
+                PyDict(Box::new(Self::join2(ak, bk)), Box::new(Self::join2(av, bv)))
+            }
+            _ => Unresolved,
+        };
+        Some(r)
+    }
+
     /// 二項演算子と両辺の型から演算結果の型を推論して返す。
     ///
     /// ⚠⚠ **「結果型」と「可否」を同時に決める**（決定 D-9）。`Unresolved` は
@@ -637,6 +674,9 @@ impl TypeChecker {
                 _ => Option::None,
             }
         };
+        if let Some(r) = Self::py_collection_binop(op, lt, rt) {
+            return r;
+        }
         if let (Some(a), Some(b)) = (set_elem(lt), set_elem(rt)) {
             let frozen = matches!(lt, FrozenSet | FrozenSetOf(_));
             let of = |e: InferredType| if frozen { FrozenSetOf(Box::new(e)) } else { SetOf(Box::new(e)) };

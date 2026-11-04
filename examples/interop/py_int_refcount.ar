@@ -8,7 +8,7 @@
 
 import[py-int] py_int_refcount as rc
 
-let want: dict[str, int] = rc.expected()
+let want = rc.expected() => dict[str, int]
 mut got: dict[str, int] = {}
 
 mut p = rc.make()

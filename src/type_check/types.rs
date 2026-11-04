@@ -323,6 +323,16 @@ pub enum InferredType {
     FrozenSet,
     /// 要素型既知の不変集合型 `frozenset[T]`（タスク 3-1）。`set[T]` とは互いに代入できない（別の型）。
     FrozenSetOf(Box<InferredType>),
+    /// `py_list[T]` — **中身が CPython の list** の組み込みの型（pandas_import_plan.md の D-12・2-7）。実行時の値は
+    /// `Value::PyObject` で、操作は Python の意味（CPython を呼ぶ）。Arrow の `list[T]` とは互いに代入できず、キャスト `=>` で写す。
+    ///
+    /// ⚠ 要素型が `Unresolved` のものは型引数を書かない `py_list`（型テストの `x is py_list` だけ。注釈では素の容器と同じく弾く・
+    ///   [`Self::is_bare_container`]）。
+    PyList(Box<InferredType>),
+    /// `py_dict[K, V]` — 中身が CPython の dict（D-12・2-7）。`PyList` と同じ規則（要素型が `Unresolved` なら素の `py_dict`）。
+    PyDict(Box<InferredType>, Box<InferredType>),
+    /// `py_set[T]` — 中身が CPython の set（D-12・2-7）。`PyList` と同じ規則。
+    PySet(Box<InferredType>),
     /// タプル型 `tuple[T1, T2, ...]`。各要素に独立した型を持つ。
     Tuple(Vec<InferredType>),
     /// **要素型も要素数も未知**のタプル型 `tuple`（タスク 8.3）。
@@ -400,7 +410,13 @@ impl InferredType {
             | Self::SetOf(t)
             | Self::FrozenSetOf(t)
             | Self::IteratorOf(t)
+            | Self::PyList(t)
+            | Self::PySet(t)
             | Self::TypeValOf(t) => t.for_each_type(f),
+            Self::PyDict(k, v) => {
+                k.for_each_type(f);
+                v.for_each_type(f);
+            }
             // 構造体の要素（`Ptr[Db]`）も訪ねる（名前の存在検査の対象）
             Self::Ptr(e) => {
                 if let PtrElem::Type(t) = &**e {
@@ -466,6 +482,34 @@ impl InferredType {
                 | Self::FrozenSet
                 | Self::TupleAny
         ) || matches!(self, Self::Ptr(e) if **e == PtrElem::Unknown)
+            || matches!(self, Self::PyList(e) | Self::PySet(e) | Self::PyDict(e, _) if **e == Self::Unresolved)
+    }
+
+    /// 型の中に、CPython の list / dict / set（`py_list` など）の要素に**置けない** Arrow のコレクション
+    /// （`list` / `dict` / `set` / `fixed_list`）があれば、その型（D-12・2-7）。`py_list[list[int]]` は `py_list[py_list[int]]` と書く。
+    /// ⚠ 置けるかは Python の物の要素の位置だけで見る（`list[py_list[int]]` の外側は Arrow の list なのでよい）。
+    pub fn arrow_collection_in_python(&self) -> Option<InferredType> {
+        fn arrow_collection(t: &InferredType) -> Option<InferredType> {
+            use InferredType as T;
+            match t {
+                T::List | T::ListOf(_) | T::FixedList | T::FixedListOf(_) | T::ListLike | T::ListLikeOf(_) | T::Dict
+                | T::DictOf(..) | T::Set | T::SetOf(_) => Some(t.clone()),
+                T::Tuple(ts) | T::Union(ts) => ts.iter().find_map(arrow_collection),
+                _ => None,
+            }
+        }
+        let mut found = None;
+        self.for_each_type(&mut |t| {
+            if found.is_some() {
+                return;
+            }
+            found = match t {
+                Self::PyList(e) | Self::PySet(e) => arrow_collection(e),
+                Self::PyDict(k, v) => arrow_collection(k).or_else(|| arrow_collection(v)),
+                _ => None,
+            };
+        });
+        found
     }
 
     /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
@@ -572,6 +616,22 @@ impl InferredType {
                 None => Self::FrozenSet,
             });
         }
+        // 中身が CPython の物のコレクション（D-12・2-7）。内側が読めなければ素の `py_list` など（`list[..]` と同じ）。
+        if let Some(inner) = ann.strip_prefix("py_list[").and_then(|s| s.strip_suffix(']')) {
+            return Some(Self::PyList(Box::new(InferredType::from_ann(inner.trim()).unwrap_or(Self::Unresolved))));
+        }
+        if let Some(inner) = ann.strip_prefix("py_set[").and_then(|s| s.strip_suffix(']')) {
+            return Some(Self::PySet(Box::new(InferredType::from_ann(inner.trim()).unwrap_or(Self::Unresolved))));
+        }
+        if let Some(inner) = ann.strip_prefix("py_dict[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            if let [k, v] = parts.as_slice() {
+                if let (Some(k), Some(v)) = (InferredType::from_ann(k.trim()), InferredType::from_ann(v.trim())) {
+                    return Some(Self::PyDict(Box::new(k), Box::new(v)));
+                }
+            }
+            return Some(Self::PyDict(Box::new(Self::Unresolved), Box::new(Self::Unresolved)));
+        }
         if let Some(inner) = ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             if parts.len() >= 2 {
@@ -663,6 +723,10 @@ impl InferredType {
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
             "frozenset" => Some(Self::FrozenSet),
+            // 型引数を書かない `py_list` など（型テストの `x is py_list` だけ・D-12）
+            "py_list" => Some(Self::PyList(Box::new(Self::Unresolved))),
+            "py_set" => Some(Self::PySet(Box::new(Self::Unresolved))),
+            "py_dict" => Some(Self::PyDict(Box::new(Self::Unresolved), Box::new(Self::Unresolved))),
             // ⚠⚠ **`tuple` は静的側の表に無かった**（タスク 8.3）。`from_ann` が `None` を
             //    返すため注釈が `Unresolved`（＝万能受容体）に化け、
             //      let t: tuple = 1          # 通っていた
@@ -888,6 +952,12 @@ impl std::fmt::Display for InferredType {
             Self::SetOf(t) => write!(f, "set[{t}]"),
             Self::FrozenSet => write!(f, "frozenset"),
             Self::FrozenSetOf(t) => write!(f, "frozenset[{t}]"),
+            Self::PyList(t) if **t == Self::Unresolved => write!(f, "py_list"),
+            Self::PyList(t) => write!(f, "py_list[{t}]"),
+            Self::PySet(t) if **t == Self::Unresolved => write!(f, "py_set"),
+            Self::PySet(t) => write!(f, "py_set[{t}]"),
+            Self::PyDict(k, _) if **k == Self::Unresolved => write!(f, "py_dict"),
+            Self::PyDict(k, v) => write!(f, "py_dict[{k}, {v}]"),
             Self::TypeVal => write!(f, "type"),
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),

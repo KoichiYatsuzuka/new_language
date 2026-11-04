@@ -186,6 +186,9 @@ impl TypeChecker {
             // `generator[Pr]` の要素も構造的に比べる（10-7 で注釈に書けるようにした）。
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::PyList(t) => T::PyList(rec(t)),
+            T::PySet(t) => T::PySet(rec(t)),
+            T::PyDict(k, v) => T::PyDict(rec(k), rec(v)),
             T::Result(a, b) => T::Result(rec(a), rec(b)),
             T::Union(ts) => T::Union(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
             T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
@@ -215,6 +218,9 @@ impl TypeChecker {
             T::IteratorOf(t) => T::IteratorOf(rec(t)),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
             T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::PyList(t) => T::PyList(rec(t)),
+            T::PySet(t) => T::PySet(rec(t)),
+            T::PyDict(k, v) => T::PyDict(rec(k), rec(v)),
             T::Result(a, b) => T::Result(rec(a), rec(b)),
             T::Union(ts) => T::Union(ts.iter().map(|t| self.canon_type(t)).collect()),
             T::Intersection(ts) => T::Intersection(ts.iter().map(|t| self.canon_type(t)).collect()),
@@ -545,6 +551,20 @@ impl TypeChecker {
             (InferredType::FrozenSetOf(a), InferredType::FrozenSetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
+                return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
+            }
+            // 中身が CPython の物のコレクション（D-12・2-7）。Arrow の list などと同じく要素で比べ、型引数を書かない側
+            // （`x is py_list` で絞った値）へは何でも入る。⚠ Arrow の list / dict / set とは互いに入らない（`=>` で写す）
+            (InferredType::PyList(_), InferredType::PyList(e)) | (InferredType::PySet(_), InferredType::PySet(e))
+                if **e == InferredType::Unresolved =>
+            {
+                return true
+            }
+            (InferredType::PyDict(..), InferredType::PyDict(ek, _)) if **ek == InferredType::Unresolved => return true,
+            (InferredType::PyList(a), InferredType::PyList(e)) | (InferredType::PySet(a), InferredType::PySet(e)) => {
+                return self.type_matches_exact(a, e)
+            }
+            (InferredType::PyDict(ak, av), InferredType::PyDict(ek, ev)) => {
                 return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
             }
             // `Ptr[T]`（3-3）: 同じ要素型どうしと、どの `Ptr` から `Ptr[void]` へ（`void*` の引数）。

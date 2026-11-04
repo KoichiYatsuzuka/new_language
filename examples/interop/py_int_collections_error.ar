@@ -1,0 +1,26 @@
+# py_int_collections_error.ar — `py_list` / `py_dict` / `py_set` の静的な誤り（pandas_import_plan.md の D-12・2-7）
+import[py-int] py_int_collections as pc
+
+# Python の物なので `let` では受けられない（D-3）
+let fixed = [1, 2] => py_list[int]
+
+# Arrow の list とは別の型（`=>` で写す）
+mut xs: py_list[int] = [1, 2]
+let ys: list[int] = [1] => py_list[int]
+
+# 中身は CPython の物なので、Arrow の list は要素に置けない（`py_list[py_list[int]]` と書く）
+mut grid: py_list[list[int]] = [] => py_list[py_list[int]]
+
+# 写せない・要素が合わないキャスト
+mut bad_kind = {"a": 1} => py_list[int]
+mut bad_elem = [1, 2] => py_list[str]
+
+# 要素の型・メソッドは閉じている（CPython の list と同じメソッドだけ）
+mut pl = [1] => py_list[int]
+pl.append("s")
+pl.push(2)
+pl[0] = "x"
+
+# Python が返した list は `py_list`（Arrow の list の型の変数には入らない）
+mut scores = pc.make_scores()
+let a: list[int] = scores["a"]

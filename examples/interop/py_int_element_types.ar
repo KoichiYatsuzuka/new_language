@@ -16,21 +16,21 @@ fn check(let label: str, let ok: bool) -> None:
         raise ValueError(label + ": unexpected value")
     print(label + " OK")
 
-let ps: set[tuple[int, int]] = pp.pairs()
+let ps = pp.pairs() => set[tuple[int, int]]
 check("set[tuple[int, int]]", (1, 2) in ps and len(ps) == 2)
 let fs: set[str] = pp.frozen()
 check("frozenset[str] is set[str]", "a" in fs)
-let t: dict[str, list[int]] = pp.table()
+let t = pp.table() => dict[str, list[int]]
 check("dict[str, list[int]]", t["a"] == [1, 2])
 
 mut caught = 0
 try:
-    let bad = pp.lying_pairs()
+    mut bad = pp.lying_pairs()
     print("unreachable:", bad)
 except FfiTypeError:
     caught += 1
 try:
-    let bad2 = pp.lying_table()
+    mut bad2 = pp.lying_table()
     print("unreachable:", bad2)
 except FfiTypeError:
     caught += 1

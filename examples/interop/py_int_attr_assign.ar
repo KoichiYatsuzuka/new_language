@@ -26,12 +26,12 @@ b.value = 10
 check("instance attribute", b.value == 10 and b.doubled == 20)
 
 # `__setattr__` の中から見える参照の数が CPython と同じ（受け手, 値）
-let want = aa.expected()
+let want = aa.expected() => dict[str, list[int]]
 mut p = aa.make()
 mut v = aa.Payload()
 p.x = v
-let variable = aa.last_seen()
+let variable = aa.last_seen() => list[int]
 aa.make().x = aa.Payload()
-let temporary = aa.last_seen()
+let temporary = aa.last_seen() => list[int]
 check("refcounts in __setattr__ (variable)", variable == want["variable"])
 check("refcounts in __setattr__ (temporary)", temporary == want["temporary"])

@@ -2324,6 +2324,8 @@ impl TypeChecker {
             | InferredType::FrozenSetOf(e)
             | InferredType::IteratorOf(e) => self.holds_cpython_object(e),
             InferredType::DictOf(k, v) => self.holds_cpython_object(k) || self.holds_cpython_object(v),
+            // 中身が CPython の物（D-12・2-7）
+            InferredType::PyList(_) | InferredType::PyDict(..) | InferredType::PySet(_) => true,
             InferredType::Tuple(items) | InferredType::Union(items) => {
                 items.iter().any(|t| self.holds_cpython_object(t))
             }

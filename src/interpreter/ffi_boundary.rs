@@ -64,6 +64,12 @@ pub(crate) trait BoundaryChecker {
 /// 静的型付け言語（C/C++・C#・Rust）は向こう側が型を守るため対象外。
 /// また C/C++ の `void*` は Arrow の `int` に落ちるので、型タグでの動的検査では何も言えない
 /// （出所・生存期間の追跡が要る別軸の課題）。
+/// Python の境界検査の判定（`=> list[int]` で CPython の物の要素を照合する・pandas_import_plan.md の 2-7）。
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+pub(crate) fn python_verdict(value: &Value, declared: &InferredType) -> Verdict {
+    PythonChecker.check(value, declared)
+}
+
 pub(crate) fn checker_for(lang: &str) -> Option<&'static dyn BoundaryChecker> {
     match lang {
         "py" | "py-int" => Some(&PythonChecker),
@@ -195,10 +201,60 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         // ⚠ 素の `tuple` は**要素数も要素型も判らない**ので外側の形だけ見る
         //    （`Dict` / `Set` と同じ扱い・タスク 8.3）。
         InferredType::TupleAny => prim(matches!(value, Value::Tuple(_)), value),
+        // 中身が CPython の物のコレクション（pandas_import_plan.md の D-12・2-7）: 外側の形（CPython の list / dict / set か）と要素。
+        // ⚠ 照合するのは受け取るときだけ。共有されるので、後で Python が別の型の要素を入れうる（読むたびの照合は 2-12）。
+        // ⚠ 要素の `float` には int も入る（PEP 484 の数の塔）。CPython の物なので、Arrow の list のように float へ寄せられない。
+        InferredType::PyList(elem) | InferredType::PySet(elem) => {
+            let want = if matches!(declared, InferredType::PyList(_)) { "list" } else { "set" };
+            if py_kind(value) != Some(want) {
+                return mismatch(value);
+            }
+            match value {
+                Value::PyObject(h) if **elem != InferredType::Unresolved => {
+                    let items = crate::interpreter::py_interop::py_collection_items(h).unwrap_or_default();
+                    match items.iter().all(|v| py_elem_ok(v, elem)) {
+                        true => Verdict::Ok,
+                        false => mismatch(value),
+                    }
+                }
+                _ => Verdict::Ok,
+            }
+        }
+        InferredType::PyDict(kt, vt) => {
+            if py_kind(value) != Some("dict") {
+                return mismatch(value);
+            }
+            match value {
+                Value::PyObject(h) if **kt != InferredType::Unresolved => {
+                    let pairs = crate::interpreter::py_interop::py_dict_pairs(h).unwrap_or_default();
+                    match pairs.iter().all(|(k, v)| py_elem_ok(k, kt) && py_elem_ok(v, vt)) {
+                        true => Verdict::Ok,
+                        false => mismatch(value),
+                    }
+                }
+                _ => Verdict::Ok,
+            }
+        }
 
         // ユーザー定義クラス: 外部から生の Instance が返ることは（現状の変換では）ない。
         // 誤検知を避けるため検査しない。
         InferredType::NamedInstance(_) => Verdict::Unverifiable,
+    }
+}
+
+/// CPython の物のコレクションの要素 `v` が宣言 `elem` に合うか（`float` には int も入る・PEP 484）。
+fn py_elem_ok(v: &Value, elem: &InferredType) -> bool {
+    if matches!(elem, InferredType::Float) && matches!(v, Value::Int(_)) {
+        return true;
+    }
+    matches!(check_common(v, elem), Verdict::Ok | Verdict::Unverifiable)
+}
+
+/// CPython の list / dict / set なら `"list"` / `"dict"` / `"set"`（`py_list` などの中身・D-12）。
+fn py_kind(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::PyObject(h) => crate::interpreter::py_interop::py_collection_kind(h),
+        _ => None,
     }
 }
 
@@ -211,9 +267,13 @@ fn prim(ok: bool, value: &Value) -> Verdict {
 }
 
 fn mismatch(value: &Value) -> Verdict {
-    Verdict::Mismatch {
-        actual: runtime_type_name(value).to_string(),
-    }
+    // CPython の物は Python の型の名前（`dict`・`pandas.core.frame.DataFrame`）。⚠ `py_list` などの中身も CPython の物なので
+    //   「python object」では何が届いたか分からない（pandas_import_plan.md の 2-7）
+    let actual = match value {
+        Value::PyObject(h) => crate::interpreter::py_interop::py_type_name(h),
+        _ => runtime_type_name(value).to_string(),
+    };
+    Verdict::Mismatch { actual }
 }
 
 /// エラーメッセージ用の実行時型名。`Interpreter::type_name_of` は `&self` を要するが、
@@ -318,6 +378,19 @@ fn oversized_int(value: &Value, declared: &InferredType, oversized: &dyn Fn(&Val
         },
         InferredType::Tuple(types) => match value {
             Value::Tuple(td) => td.all_values().iter().zip(types).find_map(|(v, t)| oversized_int(v, t, oversized)),
+            _ => None,
+        },
+        // CPython の物のコレクション（D-12・2-7）
+        InferredType::PyList(elem) | InferredType::PySet(elem) => match value {
+            Value::PyObject(h) => crate::interpreter::py_interop::py_collection_items(h)?
+                .iter()
+                .find_map(|v| oversized_int(v, elem, oversized)),
+            _ => None,
+        },
+        InferredType::PyDict(kt, vt) => match value {
+            Value::PyObject(h) => crate::interpreter::py_interop::py_dict_pairs(h)?.iter().find_map(|(k, v)| {
+                oversized_int(k, kt, oversized).or_else(|| oversized_int(v, vt, oversized))
+            }),
             _ => None,
         },
         // ほかの宣言型の中に `int` は無い（ここで見つからなければ、不一致は型の違い）

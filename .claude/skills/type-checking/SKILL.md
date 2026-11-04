@@ -27,6 +27,7 @@ The type checker works with the `InferredType` enum defined in `src/type_check/t
 | `Set` | Untyped set |
 | `SetOf(T)` | Homogeneous set |
 | `FrozenSet` / `FrozenSetOf(T)` | `frozenset` / `frozenset[T]` (python_builtins_plan.md 3-1). Mirrors `Set` / `SetOf` at every site; not assignable to/from `set[T]`. Set operators keep the left operand's kind; `==` and `<=` between set and frozenset are allowed (`binop.rs`) |
+| `PyList(T)` / `PyDict(K, V)` / `PySet(T)` | `py_list[T]` / `py_dict[K, V]` / `py_set[T]` — the value is a CPython list / dict / set (`Value::PyObject`; pandas_import_plan.md D-12 / 2-7). Not assignable to/from Arrow collections (the cast `=>` converts: `py_collection_cast` in `infer.rs`); an Arrow collection as an element is `ArrowCollectionInPython`. Element `Unresolved` = the bare name, only valid in type tests. Python-semantics operators (`py_collection_binop`), closed method table `names::PY_COLLECTION_METHODS` with return types in `py_collection_method_return`. Bound with `mut` (`holds_cpython_object`) |
 | `Bytes` | `bytes` (3-1): index → `Int`, slice / `+` / `*` → `Bytes`, iteration → `Int`, `x in b` needs `Int` or `Bytes` (`binop.rs`); method results in `builtin_collection_method_return` (`s.encode()` → `Bytes`) |
 | `Dict` | Untyped dict |
 | `DictOf(K, V)` | Dict with key type `K` and value type `V` |
@@ -75,6 +76,7 @@ list                      # untyped
 list[int]                 # ListOf(Int)
 set[str]                  # SetOf(Str)
 frozenset[str]            # FrozenSetOf(Str)
+py_list[int]              # PyList(Int) — a CPython list (D-12)
 dict[str, int]            # DictOf(Str, Int)
 tuple[int, str, float]    # Tuple([Int, Str, Float])
 ```

@@ -134,3 +134,24 @@ pub fn py_binop(_handle: &PyObjHandle, _op: &BinOp, _rhs: &Value) -> Result<Valu
 pub fn py_rbinop(_handle: &PyObjHandle, _op: &BinOp, _lhs: &Value) -> Result<Value, String> {
     Err(unavailable("a reflected binary operator on a Python object"))
 }
+
+/// 評価コアでは CPython の物を作れないので、どれも CPython の list / dict / set ではない。
+pub fn py_collection_kind(_h: &PyObjHandle) -> Option<&'static str> {
+    None
+}
+
+pub fn cast_to_python(_val: &Value, _target: &crate::type_check::InferredType) -> Result<Value, String> {
+    Err(unavailable("`=> py_list` / `py_dict` / `py_set`"))
+}
+
+pub fn cast_from_python(_h: &PyObjHandle, _target: &crate::type_check::InferredType) -> Result<Value, String> {
+    Err(unavailable("casting a Python collection"))
+}
+
+pub fn py_collection_items(_h: &PyObjHandle) -> Option<Vec<Value>> {
+    None
+}
+
+pub fn py_dict_pairs(_h: &PyObjHandle) -> Option<Vec<(Value, Value)>> {
+    None
+}

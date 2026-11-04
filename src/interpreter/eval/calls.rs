@@ -316,6 +316,31 @@ impl Interpreter {
             }
         }
 
+        // --- `py_list` / `py_dict` / `py_set` と Arrow の list / dict / set の間（pandas_import_plan.md の D-12・2-7）---
+        // キャスト先の型の深さまで写し、要素を照合する（`py_interop` の `cast_to_python` / `cast_from_python`）。
+        {
+            use crate::type_check::InferredType as T;
+            let target = T::from_ann(type_name);
+            match (&target, &obj) {
+                (Some(t @ (T::PyList(_) | T::PyDict(..) | T::PySet(_))), _) => {
+                    return crate::interpreter::py_interop::cast_to_python(&obj, t);
+                }
+                (Some(t @ (T::ListOf(_) | T::DictOf(..) | T::SetOf(_))), Value::PyObject(h)) => {
+                    return crate::interpreter::py_interop::cast_from_python(h, t);
+                }
+                (Some(T::List | T::Dict | T::Set), Value::PyObject(h)) => {
+                    let any = Box::new(T::Any);
+                    let t = match target {
+                        Some(T::List) => T::ListOf(any),
+                        Some(T::Set) => T::SetOf(any),
+                        _ => T::DictOf(any.clone(), any),
+                    };
+                    return crate::interpreter::py_interop::cast_from_python(h, &t);
+                }
+                _ => {}
+            }
+        }
+
         // --- list ⇒ fixed_list: flat conversion ---
         let target_is_fixed = type_name == "fixed_list"
             || type_name.starts_with("fixed_list[");

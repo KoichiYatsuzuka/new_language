@@ -1,0 +1,84 @@
+# py_int_collections.ar — Python とのコレクションのやり取り（`py_list` / `py_dict` / `py_set`・pandas_import_plan.md の D-12・2-7）
+#
+# - `py_list[T]` / `py_dict[K, V]` / `py_set[T]` は中身が CPython の list / dict / set の組み込みの型。操作は Python の意味。
+# - Arrow の list / dict / set とはキャスト `=>` で写す（キャスト先の型の深さまで・要素を照合する）。
+# - Python が返した list / dict / set は写さずに `py_list` などのまま届く（書き換えが互いに見える）。
+# - Python の物なので `mut` で受ける。
+import[py-int] heapq
+import[py-int] py_int_collections as pc
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ── Arrow → Python: `=> py_list[T]` で写すと、Python の書き換えが同じ物に起きる ─────────
+mut h = [5, 1, 4] => py_list[int]
+heapq.heapify(h)
+heapq.heappush(h, 0)
+check("heapq works on a py_list", (h => list[int]) == [0, 1, 4, 5])
+pc.append_twice(h, 7)
+check("a Python function appends to the same list", len(h) == 6 and h[5] == 7)
+check("the same object reaches Python", pc.same(h, h))
+
+# ── Python → Arrow: 返ってきた list / dict は写さない ─────────────────────────────────
+mut scores = pc.make_scores()
+check("a returned dict is a py_dict", scores is py_dict)
+mut a_list = scores["a"]
+a_list.append(9)
+check("an element list is shared, not copied", (scores["a"] => list[int]) == [3, 1, 9])
+
+# Python が持ち続けた物の書き換えも届く
+mut reg = pc.Registry()
+mut kept = [1] => py_list[int]
+reg.add(kept)
+reg.push_all(2)
+check("Python keeps the list and changes it later", (kept => list[int]) == [1, 2])
+
+# ── 操作は Python の意味 ──────────────────────────────────────────────────────────
+mut names = ["b", "a"] => py_list[str]
+names.sort()
+check("sort", (names => list[str]) == ["a", "b"])
+check("display is Python's", str(names) == "['a', 'b']")
+mut twice = names * 2
+check("* int", len(twice) == 4 and twice[3] == "b")
+mut joined = names + twice
+check("+ py_list", len(joined) == 6)
+mut tail = joined[4:]
+check("a slice is a py_list", tail is py_list and len(tail) == 2)
+check("in", "a" in names and not ("z" in names))
+check("index / count / pop", names.index("b") == 1 and joined.count("a") == 3 and joined.pop() == "b")
+
+mut d = {"x": 1} => py_dict[str, int]
+d["y"] = 2
+mut keys: list[str] = []
+for k, v in d.items():
+    keys.append(k + "=" + str(v))
+check("py_dict items", keys == ["x=1", "y=2"])
+check("py_dict get", d.get("z") is None and (d.get("x") mustbe int) == 1)
+
+mut s = {1, 2} => py_set[int]
+mut t = {2, 3} => py_set[int]
+check("py_set operators", ((s | t) => set[int]) == {1, 2, 3} and ((s & t) => set[int]) == {2})
+s.add(5)
+check("py_set add", 5 in s and len(s) == 3)
+
+# ── キャストはキャスト先の型の深さまで写す ────────────────────────────────────────
+mut grid = [[1, 2], [3]] => py_list[py_list[int]]
+mut row = grid[0]
+row.append(9)
+check("inner lists are Python lists too", (grid => list[list[int]]) == [[1, 2, 9], [3]])
+mut outer = grid => list[py_list[int]]
+check("only the outer list becomes Arrow's", len(outer) == 2 and outer[1] is py_list)
+
+# ── 関数の引数・`Any` からの取り出し ──────────────────────────────────────────────
+fn total(mut xs: py_list[int]) -> int:
+    mut acc = 0
+    for x in xs:
+        acc += x
+    return acc
+
+check("a py_list parameter", total(h) == 24)
+mut loose: Any = pc.untyped_list()
+mut checked = loose mustbe py_list[Any]
+check("mustbe py_list", len(checked) == 3)

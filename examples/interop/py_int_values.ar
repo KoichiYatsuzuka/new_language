@@ -17,12 +17,12 @@ fn check(let label: str, let ok: bool) -> None:
     print(label + " OK")
 
 # ── set ───────────────────────────────────────────────────────────────────────
-let s = pp.make_set()
-check("Python set arrives as an Arrow set", s is set and s == {1, 2, 3})
+mut s = pp.make_set()
+check("Python set arrives as a py_set (not copied)", s is py_set and (s => set[int]) == {1, 2, 3})
 let fs = pp.make_frozenset()
 check("frozenset arrives as an Arrow set", fs is set and pp.size(fs) == 2 and pp.contains(fs, "a"))
-let st = pp.set_of_tuples()
-check("set of tuples", st is set and pp.size(st) == 2 and pp.contains(st, (1, 2)))
+mut st = pp.set_of_tuples()
+check("set of tuples", st is py_set and pp.size(st) == 2 and pp.contains(st, (1, 2)))
 check("Arrow set arrives as a Python set", pp.kind({1, 2}) == "set" and pp.size({1, 2, 2}) == 2)
 check("membership on the Python side", pp.contains({"x", "y"}, "y"))
 

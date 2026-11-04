@@ -407,6 +407,8 @@ impl Parser {
                     }
                 }
             }
+            // 変換器は Python の list / dict / set を Arrow の list などと読むが、実行時は CPython の物のまま届く（D-12・2-7）
+            crate::parser::py_stub_extract::py_collections_as_python(&mut converted);
             // スタブで不足を補完（変換できなかった関数と、クラス）
             let known: std::collections::HashSet<String> = converted
                 .iter()

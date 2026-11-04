@@ -583,6 +583,19 @@ let mean = np.mean(arr)
   （無限の生成器も回せる）。途中で投げられた例外は、そこまでの本体を走らせたあとで届く。内包・`list()`・`any()` / `all()`・
   分解も同じ（`examples/interop/py_int_lazy_for.ar`）。⚠ 以前は回す前に全部を取り出していた。⚠ 1 つ取り出すたびに CPython へ
   入るので、1 要素あたり約 0.12 µs かかる（30 万要素の `range` と生成器で実測）
+- **list / dict / set**（pandas_import_plan.md の D-12・2-7）: Python とのコレクションのやり取りは組み込みの型 `py_list[T]` /
+  `py_dict[K, V]` / `py_set[T]`（中身は CPython の list / dict / set）で行う。Python が返した list / dict / set は**写さずに**
+  `py_list` などのまま届き、Python の書き換え（`heapq.heappush(h, 0)`・Python が持ち続けて後で足した要素）が Arrow から見える。
+  型スタブの `list[T]` / `dict[K, V]` / `set[T]` は `py_list[T]` などと読む。Arrow の list / dict / set とは**キャスト `=>`** で写す
+  （`xs => py_list[int]`・`pl => list[int]`）。キャスト先の型の深さまで写し（`[[1]] => py_list[py_list[int]]` は中も CPython の
+  list・`g => list[py_list[int]]` は外側だけ）、写しながら要素を照合する（違えば `TypeError`）。`py_*` から `py_*` へは写さずに
+  照合だけする。操作は Python の意味（添字・切り出し・`len`・`for`・`in`・`+` / `*`・比較・`|` / `&`・表示は `['a']`・メソッドは
+  CPython の list / dict / set のものだけ）で、Arrow の list などとは混ぜられない（`pl + [1]` は誤り）。要素に Arrow の list は
+  置けない（`py_list[list[int]]` は誤り・`py_list[py_list[int]]` と書く）。Python の物なので `mut` で受ける（D-3）。戻り値の
+  境界検査は要素まで照合する（`float` には int も入る・PEP 484）（`examples/interop/py_int_collections.ar`・`_error`・
+  `_runtime_error`）。⚠ 照合するのは受け取るときだけ（後で Python が別の型の要素を入れうる・2-12）。⚠ Arrow の list / dict / set を
+  キャストせずに Python へ渡すと、今は写して渡す（Python の書き換えは届かない・2-11 で誤りにする）。⚠ 以前は Python の
+  list / dict / set を Arrow の list などに写していた（Python の書き換えが戻らず、同じ物でなくなった）
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
@@ -594,10 +607,10 @@ let mean = np.mean(arr)
   いくつあっても CPython からは参照 1 つに見え、変数への代入まで連鎖代入の警告が出ていました
 - `Value::PyObject` として扱われる
 
-**値の対応**: `int` / `float` / `str` / `bool` / `None` / list / tuple / dict / set（`frozenset` も Arrow の set）・
+**値の対応**: `int` / `float` / `str` / `bool` / `None` / tuple / `frozenset`（Arrow の set）・
 bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryview` を Arrow の `bytes` にコピー・5-3。注釈の
 `bytearray` / `memoryview` も `bytes` と読む。int32 などの `memoryview` は Python のオブジェクトのまま）は
-双方向に変換します。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
+双方向に変換します。list / dict / set は Python から写さずに `py_list` などのまま受け取ります（上の「list / dict / set」）。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
 受け取ります（以前は黙って `float` に変換し精度を失っていました）。Python が投げた**組み込みの例外は同じ名前の Arrow の例外**
 （`except ValueError:` / `except LookupError:` で捕まる。`str(e)`・`args`・`OSError` の `errno` も CPython と同じ）、**Python で
 定義した例外は CPython のオブジェクトのまま**届き、`except m.Err:` と、継承している組み込みの例外（`except ValueError:`・
@@ -607,15 +620,16 @@ bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryv
 `ValueError: bad`）で、`except ValueError:` で捕まりませんでした）。`print(x)` / `str(x)` は CPython の `str(x)`、
 `repr(x)` とリストの要素などは `repr(x)` です（以前は常に `repr` でした）。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは
 `TypeError` です（7-24。以前は呼び出しの種類で決まる例外で、`ValueError` を投げるメソッドが `AttributeError` になっていました）。ただし `-> int` など `int` を宣言した場所に i64 に入らない
-`int` が返れば、C / C# / Rust と同じく `OverflowError` です（7-9。以前は `FfiTypeError`）。Arrow の set に入れられない要素を含む set は、dict と
-同じく丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
+`int` が返れば、C / C# / Rust と同じく `OverflowError` です（7-9。以前は `FfiTypeError`）。Arrow の set に入れられない要素を含む
+`frozenset` は丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
 型名はクラス名）。
 
 **Python のオブジェクトは `mut` で受けます**（`implementation_plans/pandas_import_plan.md` の D-3・1-2）。Python のオブジェクトの
 まま届く物（インスタンス・関数・配列・大きな整数など）は写さずに参照を共有するので、ほかの参照から中身が変わりえます。
 `let` / `const` / `freeze` と、`mut` でない関数の引数では受けられません（`fn f(mut d: pd.DataFrame)` と書く）。型から
 Python のクラスのインスタンス（とそれを持つ list など）と分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ
-束縛するときに実行時の `TypeError` です。境界で Arrow の値に変わる物（`int`・`str`・`dict` など）は `let` で受けられます
+束縛するときに実行時の `TypeError` です。`py_list` / `py_dict` / `py_set` も Python の物です。境界で Arrow の値に変わる物（`int`・`str`・
+`tuple`・`=> list[int]` で写した物など）は `let` で受けられます
 （`examples/interop/py_int_mut_binding.ar`・`py_int_mut_binding_error.ar`・`py_int_mut_binding_runtime_error.ar`）。
 暗黙の束縛も同じで、`for mut f in ..`・`[.. for mut f in ..]`・`except E as mut e` と書きます（D-11・2-10。外の束縛が `mut`
 でも要る。`examples/interop/py_int_implicit_bindings.ar`・`_error`・`_runtime_error`）。`match` は新しい名前を束縛しません。

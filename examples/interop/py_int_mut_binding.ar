@@ -22,7 +22,7 @@ print("a list of Python objects bound with mut:", len(probes))
 mut make = rc.make
 print("a Python function bound with mut:", count_self(make()) > 0)
 
-# Arrow の値に変わる物は `let` で受けられる
+# Arrow の値に変わる物（int など・`=>` で写した物）は `let` で受けられる
 let n = rc.count_arg(p)
-let table: dict[str, int] = rc.expected()
+let table = rc.expected() => dict[str, int]
 print("converted values with let:", n > 0, len(table) > 0)

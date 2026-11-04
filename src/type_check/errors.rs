@@ -609,6 +609,14 @@ pub enum TypeErrorKind {
         /// どこの注釈か。
         what: String,
     },
+    /// `py_list` / `py_dict` / `py_set` の要素に Arrow の list / dict / set を書いた（`py_list[list[int]]`・pandas_import_plan.md の
+    /// D-12・2-7）。中身は CPython の物なので、Arrow のコレクションを置けない。`py_list[py_list[int]]` と書く。
+    ArrowCollectionInPython {
+        /// 書かれていた要素の型（`list[int]`）。
+        elem: InferredType,
+        /// どこの注釈か。
+        what: String,
+    },
     /// `Ptr` に無いメソッド、またはその要素型ではできない操作（`Ptr[void].to_list()` / `Ptr[int32].to_bytes()`・3-3）。
     /// ⚠ アドレスを取り出す手段は無い（D-3）。
     PtrMethodUnavailable {
@@ -1187,6 +1195,11 @@ impl StaticTypeError {
             }
             TypeErrorKind::PtrElemNotCType { elem, what } => format!(
                 "{what}: {} cannot be the element of a Ptr; write a C type with its width                  (int8 … int64, uint8 … uint64, float32, float64), a struct, or void",
+                hl_q(&elem.to_string()),
+            ),
+            TypeErrorKind::ArrowCollectionInPython { elem, what } => format!(
+                "{what}: an Arrow {} cannot be an element of py_list / py_dict / py_set (their contents are Python objects); \
+                 write the Python collection type instead (e.g. py_list[py_list[int]])",
                 hl_q(&elem.to_string()),
             ),
             TypeErrorKind::PtrMethodUnavailable { ptr_ty, method, reason } => format!(

@@ -70,6 +70,7 @@ for x in raw:                                  # 各要素は 0〜255 の int
 | `set[T]` | `Value::Set(...)` | 型付きセット |
 | `frozenset[T]` | `Value::FrozenSet(...)` | 不変でハッシュできる集合（`frozenset(xs)` で作る）。`set[T]` とは互いに代入できない。演算子の結果は左の種類、`==` と包含の比較（`<=`）は set とも書ける |
 | `tuple[T1, T2, ...]` | `Value::Tuple(...)` | 固定長異種タプル |
+| `py_list[T]` / `py_dict[K, V]` / `py_set[T]` | `Value::PyObject`（CPython の list / dict / set） | Python とのやり取り用（pandas_import_plan.md の D-12）。操作は Python の意味で、Arrow の `list` などとは互いに代入できない。`=>` で相互に写す（`xs => py_list[int]`・`pl => list[int]`・キャスト先の型の深さまで写して要素を照合する）。要素に Arrow の list などは置けない。Python の物なので `mut` で受ける。詳しくは [09_imports.md](09_imports.md) の Python の節 |
 
 ---
 

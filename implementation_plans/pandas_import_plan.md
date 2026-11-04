@@ -17,7 +17,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~8~~ | ✅ 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない件（直した: 2-3・`a[1:, 0]`・`a[..., 0]`・`df.loc["b":"d"]`） | [2-3] |
 | ~~9~~ | ✅ `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない）件（直した: 2-4） | [2-4] |
 | 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`）。⚠ 関数は直した（2-5）。インスタンスは 2-6 | [2-5]・[2-6] |
-| 11 | list / dict / set は境界で写す。Python 側の書き換えが戻らない（`heapq.heappush(h, 0)` の後も `h` は元のまま） | [2-7] |
+| 11 | list / dict / set は境界で写す。Python 側の書き換えが戻らない（`heapq.heappush(h, 0)` の後も `h` は元のまま）。⇒ Python とのやり取りは `py_list` などの専用の型にする（D-12・2.6）。⚠ 型と Python → Arrow は直した（2-7）。キャストを書かずに渡すのを誤りにするのは 2-11 | [2-7]・[2-11] |
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | ~~13~~ | ✅ `is` が `==` を呼ぶ／同じ物どうしが `False`（直した: 5-1・`===` は同一性） | D-4・[5-1] |
 | 14 | コスト: 越境 1 回ごとに +0.5〜1.7 µs。リストは Arrow → Python が 20〜50 ns/要素、Python → Arrow が約 110 ns/要素 | [4] |
@@ -43,8 +43,14 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 - **D-6** `import[py]` は従来の `import[py-int]` と同じ意味にする（CPython で実行する）。**`import[py-int]` は廃止する**
   （2026-11-02 に決定）。
 - **D-7** Python の翻訳に固有のコードは**すべて消す**（変換器と、変換したコードのための仕組み・2026-11-02 に決定）。
-- **D-8** Python から来た list / dict / set は**写さずにそのまま使う**（2026-11-04 に決定・4 節の 3・2.6）。
-- **D-9** Arrow の list / dict / set・インスタンスは、**Python からそのまま使えるように渡す**（包む・2026-11-04 に決定・4 節の 4・2.6）。
+- **D-8** Python から来た list / dict / set は**写さずにそのまま使う**（2026-11-04 に決定・4 節の 3・2.6）。型は `py_list[T]` / `py_dict[K, V]` /
+  `py_set[T]`（D-12）。
+- **D-9** Arrow のインスタンス・クラス・ジェネレータは、**Python からそのまま使えるように渡す**（包む・2026-11-04 に決定・4 節の 4・2.6）。
+  ⚠ Arrow の list / dict / set は包まない（包むと pandas などが壊れる・6.8）。Python へ渡すには `=> py_list[T]` などで写す（D-12）。
+- **D-12** Python とのコレクションのやり取りは、組み込みの型 **`py_list[T]` / `py_dict[K, V]` / `py_set[T]`** で行う（2026-11-04 に決定・
+  4 節の 8・2.6）。中身は CPython の list / dict / set で、Arrow の list / dict / set とは**キャスト `=>` で相互に写す**。
+  - Arrow の list / dict / set をキャストせずに Python へ渡すのは誤り（**リテラルも**: `np.array([1, 2, 3] => py_list[int])`）。
+  - Python が返した list / dict / set は写さずに `py_list` などのまま受ける（Arrow の list にするなら `=> list[int]`）。
 - **D-10** 型を書いたスタブ（typeshed）は **`.py` の無いモジュールの分だけ同梱**し、ほかは同梱しない（2026-11-04 に決定・4 節の 7）。
 - **D-11** 暗黙の束縛（`for` の変数・内包の変数・`except E as e`・`match` の捕捉）も D-3 に従う: 不変の束縛で Python の物を受けたら
   誤りにし、`mut` で受ける書き方（`for mut f in ..` など）を足す（2026-11-04 に決定・4 節の 6 の ①）。
@@ -131,8 +137,8 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 切り出し・`...` | `TypeError` | ✅ Python の `slice` / タプルで渡す（`a[1:, 0]`・`df.loc[:, "a"]`）。`Ellipsis` / `NotImplemented` を対応させる（2-3） |
 | `for` | 先に全部取り出す | ✅ 1 つずつ取り出す（2-4） |
 | Arrow の関数を渡す | `TypeError` | ✅ Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる（2-5） |
-| Arrow のインスタンスを渡す | `TypeError` | ⏸ 保留（4 節の 4） |
-| list / dict / set | 境界で写す（書き換えが戻らない） | ⏸ 保留（4 節の 3・2.6） |
+| Arrow のインスタンスを渡す | `TypeError` | 包んで渡す（2-6・D-9） |
+| list / dict / set | 境界で写す（書き換えが戻らない） | `py_list` などの専用の型で受け渡す（2-7・2-11・D-12・2.6） |
 
 ### 2.5 `.py` を CPython で実行する（D-1・D-6・D-7）
 
@@ -147,52 +153,45 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   - ⚠ `.pyi` の型の抽出は今 `python_converter` の結果を使う（`py_stub_extract.rs` の冒頭）ので、そこは抽出器（2.3）へ
     移してから消す。
 
-### 2.6 写さずに使う（4 節の 3・4 の検討・2026-11-02）
+### 2.6 Python とのコレクションのやり取り（D-8・D-9・D-12・2026-11-04）
 
-**Python → Arrow（4 節の 3）**
+**経緯**: 4 節の 4（Arrow の値を写さずに渡すか）で「包んで渡す」（PyO3 の型を `collections.abc` に登録する）としたが、同じ形の
+Python のクラスで測ると、Python のコードが `isinstance(x, dict)` / C の `PyList_Check` で本物の list / dict かを確かめて道を分ける
+ところで壊れた（6.8）。`pd.DataFrame(包んだ dict)` は誤りにならず、鍵の一覧を値とする 1 列の表を返す。
+- 包みを本物の list / dict の派生にしても共有できない。C のコードは `ob_item`（`PyObject*` の配列）を直接読むので、Python から
+  見える中身は CPython の配列になる。Arrow の list（32 バイトの `Value` の並び・要素は値そのもの）とは作りが違い、同じメモリを
+  両方の形で見せられない。
+- 写さない利点（呼び出しの中の書き換えが戻る・持ち続けた物の書き換えが届く・同じ物のまま・写す時間が無い）を全部得られるのは、
+  中身が初めから CPython の list であるときだけ。
+- ⇒ **専用の型 `py_list[T]` / `py_dict[K, V]` / `py_set[T]` を足し、Arrow のコレクションとはキャストで写す**（D-12）。
 
-| 種類 | 今 | 写さずに使う案 | 検討 |
-|---|---|---|---|
-| `int`（i64 に入る）・`float`・`bool`・`None` | Arrow の値に写す | — | 両側とも不変なので、写しても共有と区別がつかない（意味は同じ）。写すのは数バイト。⇒ **今のままでよい** |
-| `str`・`bytes` | Arrow の文字列に写す（UTF-8） | CPython が持つ UTF-8 の写し（`PyUnicode_AsUTF8AndSize`）を借りる | 両側とも不変なので意味は同じで、違いは速さだけ（10 万文字で 6.9 µs）。Arrow の文字列に「CPython から借りた」形を足すことになる。⇒ 必要なら速さのタスクとして後で |
-| list / dict / set / bytearray | Arrow の値に写す（書き換えが互いに届かない） | **包みのまま持ち**、Arrow の list などの操作（添字・`len`・反復・メソッド・`in`・`+`・切り出し・表示）を CPython の API で行う | 共有されるので CPython と同じになる。⚠ 判断が要る（下の ①〜③） |
-| numpy の配列 | 包みのまま（今も写さない） | `tolist()` などで Arrow のリストにするときにバッファを直接読む | 速さのタスク（4-3） |
+**型**（組み込み・中身は CPython の物 `Value::PyObject`）
 
-判断が要ること（4 節の 3）:
-- ① Python の list を `list[int]` の型で受けたとき、要素の型をどこで確かめるか（読むたび／受け取るときに全要素を 1 度／確かめずに
-  要素を `Any` にする）。Python の list には何でも入るので、静的な型は保証にならない。
-- ② Arrow の list の操作と Python の list の操作が違うもの（`+` の型の規則・`==` の比べ方・`sort` の引数・Arrow にしか無い
-  メソッド）を、どちらの意味にするか。
-- ③ 速さ: 包みのままだと要素の操作が 1 回ごとに越境する（6.3 の目安で +0.5〜1.7 µs）。VM の list 向けの特化も効かない。
+| 型 | 中身 | 得る方法 |
+|---|---|---|
+| `py_list[T]` | CPython の list | `xs => py_list[T]`・Python が返した list |
+| `py_dict[K, V]` | CPython の dict | `d => py_dict[K, V]`・Python が返した dict |
+| `py_set[T]` | CPython の set | `s => py_set[T]`・Python が返した set |
 
-⇒ D-8（そのまま使う）での進め方（2026-11-04・2-7 で実装するときの案。違えば直す）:
-- ① 要素は**読むたびに**宣言の型と照合する（`FfiTypeError`）。共有されるので、受け取るときに 1 度確かめても後で Python が別の型を
-  入れうる。注釈の無い受け取りは要素が `Any`。
-- ② 操作は**Python の意味**（中身は Python の list なので CPython の API を呼ぶ・D-1）。Arrow にしか無い操作は誤り（黙って Arrow の
-  意味にしない）。
-- ③ 速さは測ってから直す（フェーズ 4）。
+- 要素の型は Python に置ける物だけ: `int` / `float` / `bool` / `str` / `bytes` / `None`・それらのタプル・`py_list` など・CPython の
+  クラス・関数・`Any`・それらの `Union`。Arrow の list / dict / set は置けない（`py_list[list[int]]` は誤り・`py_list[py_list[int]]`
+  と書く）。Arrow のインスタンスは 2-6 の包み。
+- キャスト `=>` はキャスト先の型の深さまで写す: `[[1, 2], [3]] => py_list[py_list[int]]`、`pl => list[list[int]]`（中も Arrow の
+  list）、`pl => list[py_list[int]]`（外側だけ）。写すときに要素を宣言の型と照合する（違えば `TypeError`）。
+- 操作は **Python の意味**（中身は Python の物なので CPython を呼ぶ・D-1）: 添字・切り出し・`len`・反復・`in`・`+`・`==`・表示
+  （`['a']`）・メソッドは Python の list / dict / set のもの。型は閉じた表で付ける（無いメソッドは静的な誤り）。
+- Python の物なので **`mut` で受ける**（D-3）。`tuple` / `frozenset` / `str` / `bytes` は不変なので、今までどおり境界で写す。
 
-**Arrow → Python（4 節の 4）**
+**境界**
+- Arrow → Python（2-11）: Arrow の list / dict / set を**キャストせずに**渡すのは誤り（リテラルも・呼び出しの引数・添字・属性への代入・
+  演算子・呼び戻しの戻り値）。型で分かれば静的、分からなければ実行時の `TypeError`。
+- Python → Arrow（2-7）: Python が返した list / dict / set は写さずに `py_list` などのまま。型スタブの `list[T]` / `dict[K, V]` /
+  `set[T]` は `py_list[T]` などと読む。
+- 要素の型（4 節の 3 の ①）: 写して受け取るとき（キャスト・戻り値の境界検査）に照合する。共有されるので後で Python が別の型を入れうる
+  ⇒ 読むたびの照合は 2-12。
 
-| 種類 | 今 | 写さずに使う案 | 検討 |
-|---|---|---|---|
-| `int`・`float`・`str` など | Python の値に写す | — | 不変なので今のままでよい |
-| list / dict / set | Python の値に深く写す | Arrow の list を包む Python の型（PyO3 の `#[pyclass]`）を渡し、Python から読み書きすると Arrow の list を直接触る | ⚠ 判断が要る（下の ④〜⑥） |
-| Arrow のインスタンス | `TypeError`（渡せない） | Arrow のインスタンスを包む Python の型を渡し、属性・メソッドを Arrow へ中継する（2-5 の呼び戻しの上に作る） | ⚠ 判断が要る（下の ④〜⑥） |
-
-判断が要ること（4 節の 4）:
-- ④ 包んだ物は Python から見て `list` / `dict` ではない（`isinstance(x, list)` が偽。C 拡張の速い道（`PyList_Check`）にも乗らない）。
-  `type(x) is list` で分けるコードや、`list` しか受けない C 拡張では振る舞いが変わる。それでよいか、受け取る側によって写すか。
-- ⑤ Arrow の `let` の値を包んで渡すと、Python から書き換えられる（`let` の保証が崩れる）。`mut` の値だけを包む／`let` は読むだけの
-  包みにする／`let` は今どおり写す、のどれにするか。
-- ⑥ Python が包みを持ち続けたまま別の Python のスレッドで使うと、Arrow の値（`Rc`・スレッドをまたげない）に別のスレッドから
-  触ることになる。そのときは誤りにするか（包みがスレッドを確かめる）。
-
-⇒ D-9（そのまま使えるように渡す）での進め方（2026-11-04・2-6 で実装するときの案。違えば直す）:
-- ④ 包みは `list` / `dict` ではないが、`collections.abc` の `MutableSequence` / `MutableMapping` / `MutableSet` に登録して
-  反復・添字・`len` に答える（numpy・pandas が受ける「list のような物」になる）。`list` しか受けない C 拡張へは写して渡す。
-- ⑤ `let` の値は**読むだけの包み**（Python からの書き換えは `TypeError`）、`mut` の値は書ける包み（書き換えが Arrow へ届く）。
-- ⑥ 包みは作ったスレッドを覚え、別のスレッドから触られたら Python の `RuntimeError`。
+**Python → Arrow の不変の値**（4 節の 3 の検討・変わらない）: `int` / `float` / `bool` / `None` / `str` / `bytes` は両側とも不変なので、
+写しても共有と区別がつかない（`str` を借りるのは速さのタスク）。numpy の配列は今も写さない（4-3）。
 
 ### 2.7 Arrow の関数を Python から呼ぶ（2-5 の設計・2026-11-04。違えば直す）
 
@@ -242,8 +241,10 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~2-3~~ | ✅ **済**（2026-11-04）CPython の物の切り出しは Python の `slice`（`py_getitem` / `py_setitem`・`ar_to_py` の `Value::Slice`）。添字の項にスライス・`...` を書ける（`a[1:, 0]`・`a[..., 0]`・`parse_subscript_item`・`...` は添字の項だけ）。`Ellipsis` / `NotImplemented` は CPython の同じ値。スライスは境界に何でも持てる（CPython と同じ・`slice_from_values` が唯一の作り手）で、Arrow の list などを切り出すときに `slice_bound` が確かめる（文言は CPython）。型検査は添字の相手が CPython のクラスか `Any` のときだけ境界の型を問わない（`df.loc["b":"d"]`）。ついでに: `xs[1::2]` が `::` をトレイトの指定と読んで構文の誤りだったのを直した（名前と `.` が続くときだけトレイトの指定）、スライスの表示の境界を `repr` にした。例題は `py_int_slices.ar`・`_error`・`_runtime_error`・`collections/slice_begin_step.ar`。⚠ Python から来た `slice` は Python の物のまま | なし | 小〜中 |
 | ~~2-4~~ | ✅ **済**（2026-11-04）`for x in <CPython の物>` は `iter(obj)` の反復子から取り出すたびに 1 つ取る（`GeneratorState::py_iter`・`gen_next` が `PyIter_Next`）。`break` すれば先は取り出さず、途中の例外はそこまでの本体のあとで届く。`Generator` の形のままなので、内包・`list()`・`any()` / `all()`・分解・ネイティブの関数の `for` も同じ道。取り出し途中の反復子は写せない（`deep_clone` は中断中の生成器と同じく印を付ける）。1 要素あたり +0.12 µs（30 万要素の `range` と生成器・負の対照は ±1 ms）。例題は `py_int_lazy_for.ar` | なし | 小 |
 | ~~2-5~~ | ✅ **済**（2026-11-04・設計は 2.7）Arrow の関数（`fn`・束縛メソッド・多重定義・ネイティブの関数）は Python の呼べる物 `arrow.ArrowFunction`（`#[pyclass]`・中身はスレッドごとの表 `ARROW_FUNCTIONS`、包みは番号と作ったスレッドだけ）。Python が呼ぶと覚えておいたインタプリタ（`register_interpreter`・py-int の import と Python を呼ぶ入口）で `call_value_evaled`（GIL を持ったまま再入・入れ子も可）。別のスレッドからは Python の `RuntimeError`。本体の Arrow の例外は Python の例外（組み込みは同じ名前・`args` も、Arrow で定義した例外は `arrow.ArrowError`）、Python の中を通って Arrow へ戻ったら元の Arrow の例外（`ARROW_RAISED` → `PyRaised::Arrow`・欄もトレースバックの枠も。呼んだ Python の枠もファイル・行・関数名で入る）。例題は `py_int_callbacks.ar`・`_runtime_error` | 2-1 | 大 |
-| 2-6 | Arrow の list / dict / set・インスタンスを包んで Python へ渡す（D-9・2.6 の ④〜⑥） | 2-5 | 中〜大 |
-| 2-7 | Python の list / dict / set を写さずに包みのまま使う（D-8・2.6 の ①〜③） | なし | 中〜大 |
+| 2-6 | Arrow のインスタンス・クラス・ジェネレータを包んで Python へ渡す（D-9）。`let` の値は読むだけの包み・`mut` の値は書ける包み。包みは作ったスレッドを覚え、別のスレッドから触られたら Python の `RuntimeError`。⚠ list / dict / set は包まない（2.6） | 2-5 | 中〜大 |
+| ~~2-7~~ | ✅ **済**（2026-11-04・D-8・D-12・2.6）`py_list[T]` / `py_dict[K, V]` / `py_set[T]` を組み込みの型にした（`InferredType::PyList` / `PyDict` / `PySet`・実行時は `Value::PyObject`）。`=>` で Arrow の list / dict / set と相互に写す（キャスト先の型の深さまで・写しながら要素を照合・`py_*` から `py_*` は照合だけ・`cast_to_python` / `cast_from_python`）。操作は Python の意味で、型は `py_collection_binop`・閉じたメソッドの表 `names::PY_COLLECTION_METHODS`・`py_collection_method_return`。要素に Arrow の list などは置けない（`ArrowCollectionInPython`）。`mut` で受ける。Python が返した list / dict / set は写さずに `py_list` などのまま（`py_to_tl`）、型スタブの `list[T]` などは `py_list[T]`（`py_type_to_arrow`・変換器で読んだ `.pyi` は `py_collections_as_python`）。戻り値の境界検査は要素まで（`float` には int も入る・PEP 484）。frozenset は今までどおり Arrow の set に写す。例題 `py_int_collections.ar`・`_error`・`_runtime_error`、既存の例題 9 本を `=> list[T]` / `mut` に直した。⚠ 照合は受け取るときだけ（2-12）。⚠ Arrow のコレクションをキャストせずに渡すと今は写す（2-11） | なし | 中〜大 |
+| 2-11 | Arrow の list / dict / set をキャストせずに Python へ渡したら誤り（D-12・リテラルも）。型で分かれば静的、分からなければ実行時の `TypeError`。例題の移行 | 2-7 | 中 |
+| 2-12 | `py_list` などの要素を読むたびに宣言の型と照合する（4 節の 3 の ①。今は写して受け取るとき・戻り値の境界検査のときだけ照合する） | 2-7 | 中 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
 | ~~2-10~~ | ✅ **済**（2026-11-04）`for mut x in ..`・`[.. for mut x in ..]`・`except E as mut e` を足した（AST の `mut_targets` / `name_mut`）。型で Python の物と分かれば静的な `ImmutablePythonObject`、分からなければ実行時の `TypeError`（VM: 1 つの変数は `ForIter` が要素が Python の物のときだけ副表 `implicit_for_targets` を引く・分解と `except` は新しい命令 `StoreLocalImplicit`・`for mut` は `StoreLocalDeepCopy` で写す）。呼んだ側の大域で走る組み込みの実装（`enumerate` など）の中は検査しない（`Chunk::builtin_prelude`）。ネイティブの関数は `for mut` を載せない。例題 `basics/for_mut.ar`・`py_int_implicit_bindings.ar`・`_error`・`_runtime_error`、`py_int_exceptions.ar` を `as mut` に直した。以下は起票時の内容: 暗黙の束縛で Python の物を受ける規則（D-11）。`for mut f in ..`（`for mut k, v in ..` はすべて `mut`）・内包の `for mut f in ..`・`except E as mut e`・`match` の捕捉に `mut` を書けるようにする。不変の束縛で Python の物を受けたら、型で分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ束縛するときに実行時の `TypeError`。⚠ 外の束縛が `mut` でも Python の物を受けるなら `mut` と書く（受け継ぎは実行時に判定できない。VM の slot は可変かどうかを持たない）。Arrow の値を `mut` で受けたら `mut` の宣言と同じく写す。`match` は新しい名前を束縛しない（`case <式>` / `is <型>`）ので対象外 | 1-2 | 中 |
 | ~~2-9~~ | ✅ **済**（2026-11-03）CPython の物とモジュールの属性への代入（`df.columns = [..]`・`gm.count = 5`）は CPython の `setattr`（`py_setattr`・受け手と値は借りるだけで、`__setattr__` の中の参照の数は CPython と同じ）。型スタブに型のある大域変数への代入は静的に検査する（属性は従来どおり）。例題は `py_int_attr_assign.ar`・`_error`。⚠ 削除（`del o.x`）は Arrow に構文が無いので対象外 | なし | 小 |
@@ -260,7 +261,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 4-1 | Python → Arrow の変換（約 110 ns/要素）を測って直す。原因の候補は `py_to_tl` が要素ごとに型の名前の文字列を作ること。⚠ D-8 で list などは写さなくなるので、2-7 の後に残る変換（`tolist()` など明示の写し・要素を読むときの変換）を測る | 2-7 | 小〜中 |
+| 4-1 | Python → Arrow の変換（約 110 ns/要素）を測って直す。原因の候補は `py_to_tl` が要素ごとに型の名前の文字列を作ること。⚠ D-8 で list などは写さなくなるので、2-7 の後に残る変換（`=> list[T]` の明示の写し・要素を読むときの変換）を測る | 2-7 | 小〜中 |
 | 4-2 | 越境 1 回ごとの GIL の取得（+0.5〜1.7 µs）をまとめられるか測る | 1-1 | 中 |
 | 4-3 | numpy の数値の配列を Arrow のリストにするとき、バッファを直接読む | 4-1 | 中 |
 
@@ -283,6 +284,9 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 3. ~~Python から来たコンテナを写さずに使うか~~ ⇒ そのまま使う（D-8）。①〜③の進め方は 2.6。
 4. ~~Arrow の値を写さずに Python へ渡すか~~ ⇒ そのまま使えるように渡す（D-9）。④〜⑥の進め方は 2.6。
 7. ~~型を書いたスタブ（typeshed）を同梱するか~~ ⇒ `.py` の無いモジュールの分だけ同梱する（D-10・1-6）。
+8. ~~Arrow の list / dict / set を Python へどう渡すか~~（4 の包みを測ったら pandas などが壊れた・6.8）⇒ 専用の型 `py_list` / `py_dict` /
+   `py_set` を組み込みで足し、Arrow のコレクションとはキャストで写す。キャストを書かずに渡すのは誤り（リテラルも）。Python が返した物は
+   `py_list` などのまま（D-12・2.6）。
 
 6. ~~暗黙の束縛~~ ⇒ ①誤りにして `mut` で受ける書き方を足す（D-11・2-10）。⚠ 例（2026-11-04 に実測）: 関数の戻り値を
    `for f in m.chunks():` で回すと `f` は不変で `f["x"] = 1` が静的な誤り、`mut` の変数を回すと通る、型の分からない
@@ -396,3 +400,17 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
   約 130 ms（142 ファイル）。
   - ⚠ 最初は import の表を Python の構文木で作り（357 ms）、名前をたどるたびにファイルを探し直していた（約 720 ms・合計
     1,128 ms）。表を行単位で読み、モジュールの名前で引く置き場（`Parser::py_raw_stubs`）を作って今の値になった。
+
+### 6.8 Arrow の list / dict / set を包んで渡す案（2026-11-04・CPython 3.12.2・pandas 2.2.0・numpy 1.26.4）
+
+方法: 包み（list / dict / set を継承せず、`collections.abc` の `MutableSequence` / `MutableMapping` / `MutableSet` に登録した型）と
+同じ形の Python のクラスを書き、よく使う受け手約 60 個に渡した（`wrapper_probe.py`・作業用で保存していない）。
+
+- 黙って違う結果: `pd.DataFrame(包んだ dict)` が `{0: ['a', 'b']}`（鍵の一覧の 1 列）。`DataFrame.__init__` は `isinstance(data, dict)`
+  で dict の道に入り（frame.py 765 行）、外れると「list のような物」として `list(data)` にする（826 行）。
+- 誤り: `heapq.heappush` / `heapify`（C で本物の list か確かめる）・`json.dumps`（`isinstance` で分ける）・`[0] + 包み`・`{0} | 包み`・
+  `{"z": 0} | 包み`・`df.sort_values(by=包み)`（`KeyError`・list でなければ列名 1 つ・frame.py 7142 行）・`df.groupby(包み)`
+  （`TypeError: not callable`・grouper.py 939 行）・`eval(.., 包み)`。
+- 動いた: `np.array` / `np.sum` / `pd.Series` / `df[包み]` / `df.loc[包み]` / `isin` / `df.rename(columns=)` / `astype` / `agg` / `replace` /
+  `map` / `random.shuffle` / `bisect.insort` / `sorted` / `sum` / `str.join` / `f(**包み)` / `copy.deepcopy` / `pickle` / `csv`。
+- ⇒ 包みは採らない（D-12・2.6）。

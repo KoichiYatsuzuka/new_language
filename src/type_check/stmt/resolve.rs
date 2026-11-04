@@ -128,7 +128,11 @@ impl TypeChecker {
             | InferredType::ListLikeOf(elem)
             | InferredType::IteratorOf(elem)
             | InferredType::SetOf(elem)
-            | InferredType::FrozenSetOf(elem) => (**elem).clone(),
+            | InferredType::FrozenSetOf(elem)
+            | InferredType::PyList(elem)
+            | InferredType::PySet(elem) => (**elem).clone(),
+            // `py_dict` の反復も CPython と同じくキー（D-12・2-7）
+            InferredType::PyDict(k, _) => (**k).clone(),
             // bytes の反復は 1 バイトずつの int（タスク 3-1）。
             InferredType::Bytes => InferredType::Int,
             // ★ 辞書の反復は**キー**を返す（Python と同じ既定）。
@@ -688,6 +692,13 @@ impl TypeChecker {
         for elem in bad {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::PtrElemNotCType { elem, what: what.to_string() },
+                span: None,
+            });
+        }
+        // `py_list[list[int]]`（D-12・2-7）
+        if let Some(elem) = ty.arrow_collection_in_python() {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ArrowCollectionInPython { elem, what: what.to_string() },
                 span: None,
             });
         }

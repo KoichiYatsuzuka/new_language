@@ -1746,6 +1746,9 @@ impl TypeChecker {
             (T::Ptr(e), "to_bytes") if e.is_char() => return Some(T::Bytes),
             _ => {}
         }
+        if let Some(r) = Self::py_collection_method_return(recv_ty, method, args) {
+            return r;
+        }
         // `x.__iter__()` は要素の列（python_builtins_plan.md のタスク 1-4）。辞書はキー、ジェネレータは自分自身。
         if method == "__iter__" {
             return match recv_ty {
@@ -1833,6 +1836,73 @@ impl TypeChecker {
         }
     }
 
+    /// `py_list` / `py_dict` / `py_set`（中身は CPython の物・pandas_import_plan.md の D-12・2-7）のメソッドの戻り値の型。受け手が
+    /// それらでなければ `None`、それらで型が決まらなければ `Some(None)`。CPython 3.12 の `list` / `dict` / `set` と同じ。
+    /// ⚠ `keys()` / `values()` / `items()` は CPython のビュー（Python の dict_keys など）なので、反復の要素の型だけを付ける（`generator[K]`）。
+    fn py_collection_method_return(
+        recv_ty: &InferredType,
+        method: &str,
+        args: &[(Option<String>, InferredType)],
+    ) -> Option<Option<InferredType>> {
+        use InferredType as T;
+        let positional: Vec<&T> = args.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
+        let iter_of = |t: &T| Some(T::IteratorOf(Box::new(t.clone())));
+        let r = match recv_ty {
+            T::PyList(e) => match method {
+                "append" | "extend" | "insert" | "remove" | "reverse" | "sort" | "clear" => Some(T::None),
+                "pop" => Some((**e).clone()),
+                "index" | "count" => Some(T::Int),
+                "copy" => Some(recv_ty.clone()),
+                "__iter__" => iter_of(e),
+                _ => None,
+            },
+            T::PySet(e) => match method {
+                "add" | "discard" | "remove" | "clear" | "update" | "difference_update" | "intersection_update"
+                | "symmetric_difference_update" => Some(T::None),
+                "pop" => Some((**e).clone()),
+                "isdisjoint" | "issubset" | "issuperset" => Some(T::Bool),
+                // 結果が受け手の部分集合になるもの。⚠ `union` / `symmetric_difference` は引数の要素が混ざる（引数は任意の
+                //   イテラブル）ので、引数がすべて同じ型の `py_set` のときだけ型を付ける
+                "copy" | "intersection" | "difference" => Some(recv_ty.clone()),
+                "union" | "symmetric_difference" if args.iter().all(|(k, t)| k.is_none() && t == recv_ty) => {
+                    Some(recv_ty.clone())
+                }
+                "__iter__" => iter_of(e),
+                _ => None,
+            },
+            T::PyDict(k, v) => {
+                let or_default = |d: &T| -> T {
+                    match d {
+                        _ if *d == **v || matches!(d, T::Never) || matches!(**v, T::Any) => (**v).clone(),
+                        T::None => T::Union(vec![(**v).clone(), T::None]),
+                        other => T::Union(vec![(**v).clone(), other.clone()]),
+                    }
+                };
+                match method {
+                    "keys" | "__iter__" => iter_of(k),
+                    "values" => iter_of(v),
+                    "items" => iter_of(&T::Tuple(vec![(**k).clone(), (**v).clone()])),
+                    "get" | "setdefault" => match positional.as_slice() {
+                        [_] => Some(or_default(&T::None)),
+                        [_, d] => Some(or_default(d)),
+                        _ => None,
+                    },
+                    "pop" => match positional.as_slice() {
+                        [_] => Some((**v).clone()),
+                        [_, d] => Some(or_default(d)),
+                        _ => None,
+                    },
+                    "popitem" => Some(T::Tuple(vec![(**k).clone(), (**v).clone()])),
+                    "copy" => Some(recv_ty.clone()),
+                    "update" | "clear" => Some(T::None),
+                    _ => None,
+                }
+            }
+            _ => return None,
+        };
+        Some(r)
+    }
+
     fn check_builtin_collection_method_args(
         &mut self,
         recv_ty: &InferredType,
@@ -1850,6 +1920,8 @@ impl TypeChecker {
             | (T::FixedListOf(e), "append")
             | (T::ListLikeOf(e), "append") => e,
             (T::SetOf(e), "add") | (T::SetOf(e), "discard") | (T::SetOf(e), "remove") => e,
+            // `py_list` / `py_set`（D-12・2-7）。⚠ `insert(i, x)` は引数が 2 つなので下の 1 引数の照合に乗らない
+            (T::PyList(e), "append" | "remove" | "index" | "count") | (T::PySet(e), "add" | "discard" | "remove") => e,
             // 要素型の判らない素の `list` / `set`、クラス、その他のメソッドは対象外。
             _ => return,
         };

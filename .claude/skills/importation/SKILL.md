@@ -359,7 +359,16 @@ plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 Parsing errors in `.pyi` / `.py` files are silently ignored (best-effort via `unwrap_or_default()`).
 
 **Value conversion** (`src/interpreter/py_interop.rs` — `ar_to_py` / `py_to_tl`, ffi_value_exchange_plan.md 2-6):
-set / frozenset ↔ Arrow set (a set with an element Arrow cannot hold stays a `PyObject`, like dict). Only `float`
+a Python list / dict / set is **not copied** — `py_to_tl` returns it as a `PyObject`, typed `py_list[T]` / `py_dict[K, V]` /
+`py_set[T]` (`InferredType::PyList` / `PyDict` / `PySet`; the stub extractor's `py_type_to_arrow` and, for converted `.pyi`
+declarations, `py_collections_as_python` read `list[T]` as `py_list[T]`; pandas_import_plan.md D-12 / 2-7). The cast `=>`
+converts between them and Arrow's collections (`eval_cast_evaled` → `py_interop::cast_to_python` / `cast_from_python`,
+to the depth the target type names, checking elements; static rules in `check_cast_possible` → `py_collection_cast`).
+Their operations are typed by `py_collection_binop` (`binop.rs`), `py_collection_method_return` (`call_check.rs`) and
+the closed method table `names::PY_COLLECTION_METHODS`; at run time they are ordinary `PyObject` operations. The return
+boundary check (`ffi_boundary`) checks their elements (`py_collection_items` / `py_dict_pairs`). frozenset → Arrow set
+(a frozenset with an element Arrow cannot hold stays a `PyObject`). ⚠ An Arrow list / dict / set passed to Python is still
+deep-copied by `ar_to_py` (task 2-11 turns it into an error). Only `float`
 instances become `float`, and a Python `int` that does not fit in i64 stays a `PyObject` — ⚠ both used to be converted
 to `float` silently (`2**70`, `Decimal("0.1")`). Values Python cannot take (Arrow instances) are `TypeError` naming the
 class (it used to say `'unknown'`).
