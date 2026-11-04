@@ -68,7 +68,7 @@ except ValueError as e:
 check("ValueError from not", caught_not == "the truth value is ambiguous", True)
 
 # ⑦ 単項の - / ~ は CPython の __neg__ / __invert__
-mut v = pt.Vec([1, -2, 3])
+mut v = pt.Vec([1, -2, 3] => py_list[int])
 mut neg = -v
 check("-Vec", str(neg.values()) == "[-1, 2, -3]", True)
 mut inv = ~v

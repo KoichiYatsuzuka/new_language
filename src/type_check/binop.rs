@@ -14,6 +14,18 @@ impl TypeChecker {
         rt: &InferredType,
         span: Span,
     ) {
+        // CPython の物との演算に Arrow の list / dict / set をキャストせずに使わない（`arr + [1, 2]`・D-12・2-11）。`===` は
+        // Python へ渡さない（同一性・5-1）。⚠ `py_list + list` などは下の規則（同じ種類どうしだけ）が別に止める
+        if !matches!(op, BinOp::RefEq | BinOp::And | BinOp::Or) {
+            for (python, other) in [(lt, rt), (rt, lt)] {
+                // `pyobj in xs` は Arrow の側で比べる（xs を Python へ渡さない・`apply_binop`）
+                let arrow_container = matches!(op, BinOp::In | BinOp::NotIn) && std::ptr::eq(other, rt);
+                if self.is_python_value(python) && !arrow_container && Self::arrow_collection_as_python(other).is_some() {
+                    self.check_no_arrow_collection_to_python(other, format!("operand of `{}` with `{python}`", op.as_str()));
+                    return;
+                }
+            }
+        }
         if *lt == InferredType::Any || *rt == InferredType::Any {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::OperationOnAny {
@@ -236,7 +248,7 @@ impl TypeChecker {
                 | T::Intersection(_)
                 | T::Result(_, _)
                 | T::Namespace(..)
-                | T::PyNamespace(_)
+                | T::PyNamespace(..)
                 | T::TypeVal
                 | T::TypeValOf(_)
         )
@@ -295,7 +307,7 @@ impl TypeChecker {
                     | T::Protocol(_)
                     | T::Intersection(_)
                     | T::Namespace(..)
-                    | T::PyNamespace(_)
+                    | T::PyNamespace(..)
             )
         };
         if opaque(lt) || opaque(rt) {

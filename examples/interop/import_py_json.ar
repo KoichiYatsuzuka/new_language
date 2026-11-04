@@ -1,6 +1,6 @@
 import[py-int] json
 
-let data = json.dumps({"key": "value", "num": 42})
+let data = json.dumps({"key": "value", "num": 42} => py_dict[str, Any])
 print(data)
 
 mut parsed = json.loads(data)

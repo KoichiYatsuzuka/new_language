@@ -9,7 +9,7 @@ import[py-int] pandas as pd
 import[py-int] numpy as np
 import[py-int] refcount_helper as w
 
-let want: dict[str, list[str]] = w.expected()
+let want = w.expected() => dict[str, list[str]]
 
 fn check(shape: str, got: list[str], want: dict[str, list[str]]) -> None:
     if got != want[shape]:
@@ -17,16 +17,16 @@ fn check(shape: str, got: list[str], want: dict[str, list[str]]) -> None:
     print(shape + ": " + str(got) + " (same as CPython)")
 
 w.start()
-mut df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+mut df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]} => py_dict[str, py_list[int]])
 df["c"] = df["a"] * 2
-check("variable setitem", w.take(), want)
+check("variable setitem", w.take() => list[str], want)
 df["a"][0] = 99
-check("chained setitem", w.take(), want)
+check("chained setitem", w.take() => list[str], want)
 mut s = df["b"]
 s.fillna(0, inplace=True)
-check("variable inplace", w.take(), want)
+check("variable inplace", w.take() => list[str], want)
 df["b"].fillna(0, inplace=True)
-check("chained inplace", w.take(), want)
+check("chained inplace", w.take() => list[str], want)
 
 mut a = np.arange(3)
 mut resized: list[str] = []

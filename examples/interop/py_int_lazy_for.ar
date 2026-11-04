@@ -45,7 +45,7 @@ for c in pl.Countdown(3):
     down.append(c mustbe int)
 check("Countdown", down == [2, 1, 0])
 mut names: list[str] = []
-for s in pl.Shelf(["ab", "cd"]):
+for s in pl.Shelf(["ab", "cd"] => py_list[str]):
     names.append(s mustbe str)
 check("Shelf", names == ["AB", "CD"])
 

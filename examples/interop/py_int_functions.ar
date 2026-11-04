@@ -24,4 +24,4 @@ check("an int for a float parameter, and the int result becomes float", doubled 
 check("Optional parameter", pf.greet("arrow") == "hello arrow" and pf.greet("arrow", "!") == "hello arrow!")
 check("*args: not checked", pf.join("a", "b", "c") == "abc")
 check("an unannotated return is Any", (pf.untyped(1) mustbe int) == 11)
-check("an unknown type name is Any", pf.takes_alias([1, 2, 3]) == 3)
+check("an unknown type name is Any", pf.takes_alias([1, 2, 3] => py_list[int]) == 3)

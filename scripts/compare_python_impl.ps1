@@ -143,6 +143,7 @@ $knownDiff = @{
     'py_int_collections'             = 'Rust: py_list / py_dict / py_set（中身は CPython の物・=> で Arrow のコレクションと相互に写す・pandas_import_plan.md の D-12・2-7）。py: py_list が無く NameError'
     'py_int_collections_error'       = 'Rust: py_list などの静的な誤り（let で受ける・Arrow の list との取り違え・要素に Arrow の list・写せないキャスト・閉じたメソッド・2-7）。py: py_list が無く NameError'
     'py_int_collections_runtime_error' = 'Rust: 型の分からない Python の list を => list[int] で写すと要素の照合で TypeError（2-7）。py: py_list が無く mustbe が失敗'
+    'py_int_cast_required_runtime_error' = 'Rust: Arrow の関数が Python へ Arrow の list を返すと実行時の TypeError（2-11）。py: Arrow の関数を Python へ渡せず TlFunction object is not callable'
     'py_int_slices'                  ='Rust: CPython の物へスライス・項を並べた添字（a[1:, 0]）・...・Ellipsis / NotImplemented を渡す（pandas_import_plan.md の 2-3）。py: スライスを含む添字を構文解析できず ParseError'
     'py_int_slices_runtime_error'    = 'Rust: 型の分からない str の境界で Arrow の list を切り出すと CPython と同じ slice indices must be integers ..（2-3・境界は切り出すときに確かめる）。py: 以前の文言 slice bounds must be int or Index'
     'slice_begin_step'               = 'Rust: xs[1::2] の :: をスライスの区切りと読む（2-3 で直した。以前はトレイトの指定と読み構文の誤り）。py: 同じ構文の誤りが残る（expected identifier, got INT）'

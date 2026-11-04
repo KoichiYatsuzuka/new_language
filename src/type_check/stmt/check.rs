@@ -1166,7 +1166,7 @@ impl TypeChecker {
                     | T::Intersection(_)
                     | T::Result(_, _)
                     | T::Namespace(..)
-                    | T::PyNamespace(_)
+                    | T::PyNamespace(..)
                     | T::TypeVal
                     | T::TypeValOf(_)
             )
@@ -1360,7 +1360,7 @@ impl TypeChecker {
                         info.ty,
                         InferredType::TypeValOf(_)
                             | InferredType::Namespace(..)
-                            | InferredType::PyNamespace(_)
+                            | InferredType::PyNamespace(..)
                             | InferredType::Unresolved
                             | InferredType::Any
                     );
@@ -1387,6 +1387,13 @@ impl TypeChecker {
         let target_ty = self.infer(target);
         self.attr_is_assign_target = false;
         let value_ty = self.infer(value);
+        // CPython の物の要素・属性へ Arrow の list などをキャストせずに入れない（`df["c"] = [1, 2]`・`df.columns = [..]`・D-12・2-11）
+        if let Expr::Subscript { object, .. } | Expr::Attr { object, .. } = target {
+            let recv = self.infer_quietly(object);
+            if self.is_python_value(&recv) {
+                self.check_no_arrow_collection_to_python(&value_ty, "assignment into a Python object".to_string());
+            }
+        }
         // ⚠⚠ **添字代入 `xs[i] = v` / `d[k] = v`**（タスク 5.2b・検体 `L5`）。
         //    以前は完全に無検査で、`list[int]` に `str` が、`dict[str,int]` に
         //    `int` キーや `str` 値が**黙って入っていた**（実測: `['s', 2]` /
@@ -1444,7 +1451,7 @@ impl TypeChecker {
         // `import[py-int]` のモジュールの大域への代入（`gm.count = 5`・pandas_import_plan.md の 2-9）: Python ではどの大域も
         // 外から書き換えられる。型スタブに型のある大域変数（`count: int`）はその型で検査する（上の `mut` と同じ）。
         // ⚠ 関数・クラスの付け替え（モンキーパッチ）と型の分からない名前は検査しない（型スタブに値の型が無い）
-        if let InferredType::PyNamespace(_) = self.infer_quietly(object) {
+        if let InferredType::PyNamespace(..) = self.infer_quietly(object) {
             if compound_op.is_none()
                 && !matches!(
                     target_ty,

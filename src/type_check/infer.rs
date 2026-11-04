@@ -296,6 +296,10 @@ impl TypeChecker {
                 };
                 // ⚠ 添字の型を検査する（タスク 5.2b・検体 L6 / L7）。
                 self.check_subscript_index(&obj_ty, &idx_ty);
+                // CPython の物の添字に Arrow の list などをキャストせずに使わない（`df[["a", "b"]]`・D-12・2-11）
+                if self.is_python_value(&obj_ty) {
+                    self.check_no_arrow_collection_to_python(&idx_ty, format!("subscript of `{obj_ty}`"));
+                }
                 // ⚠⚠ **スライス添字は要素ではなく「同じ種類の容器」を返す**（タスク 5.2b）。
                 //    以前は添字がスライスでも要素型を返していたので
                 //    `let y: int = xs[0:2]` が**黙って通り**、実行時は `[1, 2]` が入っていた。
@@ -796,7 +800,7 @@ impl TypeChecker {
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Namespace(..)
-                | T::PyNamespace(_)
+                | T::PyNamespace(..)
         )
     }
 
@@ -839,7 +843,7 @@ impl TypeChecker {
         let is_assign_target = std::mem::take(&mut self.attr_is_assign_target);
         let obj_ty = self.infer(object);
         // `import[py] m as p` の `p.make_class`（クラスを返す Python の関数・10-16）。
-        if let (Expr::Ident { name, .. }, InferredType::PyNamespace(_)) = (object, &obj_ty) {
+        if let (Expr::Ident { name, .. }, InferredType::PyNamespace(..)) = (object, &obj_ty) {
             self.check_py_class_factory_use(&format!("{name}.{attr}"), name, Some(span.clone()));
         }
         // `import[cpp-dll] h as fp` の `fp.f`（今の Arrow から呼べない C の関数・1-2）。
@@ -1012,7 +1016,7 @@ impl TypeChecker {
         // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
         let fallback = if let InferredType::Namespace(ref members, _, _) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
-        } else if let InferredType::PyNamespace(ref members) = obj_ty {
+        } else if let InferredType::PyNamespace(ref members, _) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Any)
         } else {
             InferredType::Unresolved
@@ -1764,7 +1768,7 @@ impl TypeChecker {
                 | T::Intersection(_)
                 | T::Result(_, _)
                 | T::Namespace(..)
-                | T::PyNamespace(_)
+                | T::PyNamespace(..)
                 | T::TypeVal
                 | T::TypeValOf(_)
         )

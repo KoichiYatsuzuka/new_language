@@ -20,11 +20,11 @@ fn check(let label: str, let ok: bool) -> None:
 mut s = pp.make_set()
 check("Python set arrives as a py_set (not copied)", s is py_set and (s => set[int]) == {1, 2, 3})
 let fs = pp.make_frozenset()
-check("frozenset arrives as an Arrow set", fs is set and pp.size(fs) == 2 and pp.contains(fs, "a"))
+check("frozenset arrives as an Arrow set", fs is set and pp.size(fs => py_set[str]) == 2 and pp.contains(fs => py_set[str], "a"))
 mut st = pp.set_of_tuples()
 check("set of tuples", st is py_set and pp.size(st) == 2 and pp.contains(st, (1, 2)))
-check("Arrow set arrives as a Python set", pp.kind({1, 2}) == "set" and pp.size({1, 2, 2}) == 2)
-check("membership on the Python side", pp.contains({"x", "y"}, "y"))
+check("=> py_set makes a Python set", pp.kind({1, 2} => py_set[int]) == "set" and pp.size({1, 2, 2} => py_set[int]) == 2)
+check("membership on the Python side", pp.contains({"x", "y"} => py_set[str], "y"))
 
 # ── i64 に入らない int・Decimal は Python のオブジェクトのまま ────────────────────
 mut b = pp.big()

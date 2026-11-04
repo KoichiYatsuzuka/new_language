@@ -343,7 +343,7 @@ impl TypeChecker {
             }
         }
         if lang == "py" || lang == "py-int" {
-            InferredType::PyNamespace(members)
+            InferredType::PyNamespace(members, lang == "py-int")
         } else {
             let closed = if known.is_some() { super::check::closed_module(lang, path) } else { None };
             let vars = crate::type_check::types::ModuleVars {

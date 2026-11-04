@@ -11,5 +11,5 @@ class Point:
     let x: int
     let y: int
 
-print("set:", pp.kind({1}))
+print("set:", pp.kind({1} => py_set[int]))
 print("unreachable:", pp.kind(Point(1, 2)))

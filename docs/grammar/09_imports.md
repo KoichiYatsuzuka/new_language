@@ -593,9 +593,17 @@ let mean = np.mean(arr)
   CPython の list / dict / set のものだけ）で、Arrow の list などとは混ぜられない（`pl + [1]` は誤り）。要素に Arrow の list は
   置けない（`py_list[list[int]]` は誤り・`py_list[py_list[int]]` と書く）。Python の物なので `mut` で受ける（D-3）。戻り値の
   境界検査は要素まで照合する（`float` には int も入る・PEP 484）（`examples/interop/py_int_collections.ar`・`_error`・
-  `_runtime_error`）。⚠ 照合するのは受け取るときだけ（後で Python が別の型の要素を入れうる・2-12）。⚠ Arrow の list / dict / set を
-  キャストせずに Python へ渡すと、今は写して渡す（Python の書き換えは届かない・2-11 で誤りにする）。⚠ 以前は Python の
+  `_runtime_error`）。⚠ 照合するのは受け取るときだけ（後で Python が別の型の要素を入れうる・2-12）。⚠ 以前は Python の
   list / dict / set を Arrow の list などに写していた（Python の書き換えが戻らず、同じ物でなくなった）
+- **Arrow のコレクションを渡すにはキャストが要る**（D-12・2-11）: Arrow の list / dict / set（とそれを持つ tuple）を**キャスト
+  せずに** Python へ渡すのは誤り。**リテラルも同じ**で、`np.array([1, 2, 3] => py_list[int])`・
+  `pd.DataFrame({"a": [1, 2]} => py_dict[str, py_list[int]])`・`df[["a", "b"] => py_list[str]]` と書く。対象は関数・メソッド・
+  クラスの引数（キーワード引数・`*xs` / `**d` で並べた物も）・添字・要素や属性への代入・演算子の相手。型で分かれば静的な誤り
+  （`ArrowCollectionToPython`・写す先の型を示す）、分からなければ（`from m import f` した `f(xs)`・Arrow の関数が Python へ返す値）
+  実行時の `TypeError`。写して渡すと Python の書き換えが戻らず（`heapq.heappush(h, 0)` の後も `h` は元のまま）、包んで渡すと
+  pandas などが壊れる（計画書 6.8）ので、どちらも黙って行わない。`pyobj in xs`（右が Arrow のコレクション）は渡さずに Arrow の
+  側で比べる（`examples/interop/py_int_cast_required_error.ar`・`_runtime_error`）。⚠ 例外の `args` は写して渡す（投げたときの値の
+  記録・Arrow へ戻れば元の Arrow の例外）。⚠ 以前は深く写して渡していた
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
@@ -610,7 +618,8 @@ let mean = np.mean(arr)
 **値の対応**: `int` / `float` / `str` / `bool` / `None` / tuple / `frozenset`（Arrow の set）・
 bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryview` を Arrow の `bytes` にコピー・5-3。注釈の
 `bytearray` / `memoryview` も `bytes` と読む。int32 などの `memoryview` は Python のオブジェクトのまま）は
-双方向に変換します。list / dict / set は Python から写さずに `py_list` などのまま受け取ります（上の「list / dict / set」）。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
+双方向に変換します。list / dict / set は Python から写さずに `py_list` などのまま受け取り、Arrow の list などを渡すには
+`=> py_list[T]` などのキャストが要ります（上の「list / dict / set」）。i64 に入らない Python の `int` と、`Decimal` など `float` 以外の数値は Python のオブジェクトのまま
 受け取ります（以前は黙って `float` に変換し精度を失っていました）。Python が投げた**組み込みの例外は同じ名前の Arrow の例外**
 （`except ValueError:` / `except LookupError:` で捕まる。`str(e)`・`args`・`OSError` の `errno` も CPython と同じ）、**Python で
 定義した例外は CPython のオブジェクトのまま**届き、`except m.Err:` と、継承している組み込みの例外（`except ValueError:`・

@@ -101,7 +101,7 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         | InferredType::TypeVal
         | InferredType::TypeValOf(_)
         | InferredType::Namespace(..)
-        | InferredType::PyNamespace(_)
+        | InferredType::PyNamespace(..)
         // ⚠ 具体化済みジェネリクスは Arrow のインスタンス。外部言語から届く値では
         //   ないので境界検査の対象にならない（`NamedInstance` と同じ扱い）。
         | InferredType::GenericInstance { .. }

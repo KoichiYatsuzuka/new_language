@@ -357,7 +357,10 @@ pub enum InferredType {
     Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>, Box<ModuleVars>),
     /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
-    PyNamespace(HashMap<String, InferredType>),
+    ///
+    /// 2 つ目は **CPython で実行する**モジュール（`import[py-int]`）か（pandas_import_plan.md の D-12・2-11: Arrow の list などを
+    /// キャストせずに渡すのは誤り）。`import[py]`（Arrow へ変換して実行する）は偽。
+    PyNamespace(HashMap<String, InferredType>, bool),
     /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,
     /// **下端型（⊥ / Never）**。決定 D-11・タスク 4.1。
@@ -983,7 +986,7 @@ impl std::fmt::Display for InferredType {
             }
             Self::TupleAny => write!(f, "tuple"),
             Self::Namespace(members, _, _) => write!(f, "<module({} members)>", members.len()),
-            Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
+            Self::PyNamespace(members, _) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
             // ⚠ 利用者が書ける綴りではない（推論の内部表現）。表示は空コレクション由来だと
             //    判るものにする。

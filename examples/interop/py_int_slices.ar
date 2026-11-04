@@ -29,19 +29,19 @@ check("g[...]", g[...] == "Ellipsis")
 check("g[:, ::-1, ...]", g[:, ::-1, ...] == "(slice(None, None, None), slice(None, None, -1), Ellipsis)")
 
 # ③ 境界は int でなくてよい（pandas の loc と同じく受け手が決める）
-mut t = ps.Table(["a", "b", "c", "d", "e"])
+mut t = ps.Table(["a", "b", "c", "d", "e"] => py_list[str])
 check("t[\"b\":\"d\"]", str(t["b":"d"]) == "['b', 'c', 'd']")
 check("t[:\"b\"]", str(t[:"b"]) == "['a', 'b']")
 check("t[\"c\":]", str(t["c":]) == "['c', 'd', 'e']")
 
 # ④ スライスを含む添字への代入
 g[1:] = 5
-g[:, "x"] = [1, 2]
+g[:, "x"] = [1, 2] => py_list[int]
 check("g[1:] = 5", g.stored[0] == "slice(1, None, None) = 5")
 check("g[:, \"x\"] = [1, 2]", g.stored[1] == "(slice(None, None, None), 'x') = [1, 2]")
 
 # ⑤ 2 次元の物（numpy の配列と同じ形の添字）
-mut m = ps.Matrix([[1, 2, 3], [4, 5, 6]])
+mut m = ps.Matrix([[1, 2, 3], [4, 5, 6]] => py_list[py_list[int]])
 check("m[1, 2]", (m[1, 2] mustbe int) == 6)
 check("m[:, 1]", str(m[:, 1]) == "[2, 5]")
 check("m[0, :]", str(m[0, :]) == "[1, 2, 3]")

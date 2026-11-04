@@ -692,11 +692,11 @@ fn test_decorator_instance_callable() {
 #[cfg(feature = "native")]
 #[test]
 fn test_ar_to_py_dict() {
-    // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
+    // Arrow の dict は `=> py_dict[..]` で写して Python に渡す（sum_dict はすべての int 値を合計する・pandas_import_plan.md の D-12）
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
         "let d = {\"x\": 10, \"y\": 20, \"z\": 12}\n",
-        "let r = calc.sum_dict(d)\n",
+        "let r = calc.sum_dict(d => py_dict[str, int])\n",
     );
     if let Value::Int(n) = run_py_get(src, "r") {
         assert_eq!(n, 42);
@@ -714,7 +714,7 @@ fn test_ar_to_py_dict() {
 fn test_python_exception_is_the_same_arrow_exception() {
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "mut c = calc.Container([1])\n",
+        "mut c = calc.Container([1] => py_list[int])\n",
         "mut msg = \"\"\n",
         "try:\n",
         "    mut v = c[5]\n",
@@ -735,8 +735,8 @@ fn test_python_exception_is_the_same_arrow_exception() {
 fn test_python_object_truthiness_uses_len() {
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
-        "mut empty = calc.Container([])\n",
-        "mut full = calc.Container([1])\n",
+        "mut empty = calc.Container([] => py_list[int])\n",
+        "mut full = calc.Container([1] => py_list[int])\n",
         "let r = [bool(empty), not empty, bool(full), not full]\n",
     );
     match run_py_get(src, "r") {

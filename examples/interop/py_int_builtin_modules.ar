@@ -42,7 +42,7 @@ check("itertools.count / islice", seen == [10, 15, 20])
 
 # `collections` は `.py` だが、`deque` は C のモジュール `_collections` の物。import をたどって同梱のスタブに行き着く。
 # `_collections` は typeshed に無いので内省のスタブで、戻り値は `Any`（`mustbe` で確かめる）
-mut d = collections.deque([1, 2, 3])
+mut d = collections.deque([1, 2, 3] => py_list[int])
 d.append(4)
 check("collections.deque (from _collections)", (d.popleft() mustbe int) == 1 and len(d) == 3)
 

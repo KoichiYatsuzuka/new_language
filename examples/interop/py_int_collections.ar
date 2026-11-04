@@ -82,3 +82,8 @@ check("a py_list parameter", total(h) == 24)
 mut loose: Any = pc.untyped_list()
 mut checked = loose mustbe py_list[Any]
 check("mustbe py_list", len(checked) == 3)
+
+# ── Arrow → Python はキャストが要る（2-11）。`pyobj in xs` は Arrow の側で比べる（xs を Python へ渡さない）─────
+mut other = pc.Registry()
+mut regs = [reg, other]
+check("a Python object in an Arrow list", reg in regs and not (pc.Registry() in regs))

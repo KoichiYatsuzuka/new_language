@@ -414,8 +414,16 @@ impl Interpreter {
             return Ok(Value::Bool(self.values_ref_eq(&lv, &rv)?));
         }
         // いずれかのオペランドが PyObject の場合は Python に委譲する
+        // ⚠ `pyobj in xs`（右が Arrow のコレクション）は Arrow の側で要素と比べる（比べ方は要素の `==`＝CPython の `__eq__`）。
+        //   Arrow のコレクションを Python へ渡さない（キャストが要る・pandas_import_plan.md の D-12・2-11）
+        let arrow_container = matches!(
+            rv,
+            Value::List(_) | Value::FrozenList { .. } | Value::Set(_) | Value::FrozenSet(_) | Value::Dict(_) | Value::Tuple(_)
+        );
         if let Value::PyObject(h) = &lv {
-            return crate::interpreter::py_interop::py_binop(h, op, &rv);
+            if !(matches!(op, BinOp::In | BinOp::NotIn) && arrow_container) {
+                return crate::interpreter::py_interop::py_binop(h, op, &rv);
+            }
         }
         if let Value::PyObject(h) = &rv {
             return crate::interpreter::py_interop::py_rbinop(h, op, &lv);

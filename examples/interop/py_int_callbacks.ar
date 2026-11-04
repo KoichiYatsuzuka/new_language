@@ -26,13 +26,13 @@ check("keyword argument", (pc.apply_kw(scaled) mustbe int) == 10)
 
 fn neg(x: int) -> int:
     return -x
-check("sorted(key=neg)", str(pc.sort_by([3, 1, 2], neg)) == "[3, 2, 1]")
+check("sorted(key=neg)", str(pc.sort_by([3, 1, 2] => py_list[int], neg)) == "[3, 2, 1]")
 
 mut total = 0
 fn add(x: int) -> int:
     total += x
     return total
-check("map(add, ..)", str(pc.map_all(add, [1, 2, 3])) == "[1, 3, 6]")
+check("map(add, ..)", str(pc.map_all(add, [1, 2, 3] => py_list[int])) == "[1, 3, 6]")
 check("the body updated a mut global", total == 6)
 
 # ② 束縛メソッド: 受け手は束縛したもの（Python から呼んでも同じ物を書き換える）

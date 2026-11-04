@@ -80,3 +80,29 @@ fn bare_python_collections_only_in_type_tests() {
     assert!(err("mut h: py_list = [1] => py_list[int]\n"));
     assert!(ok("mut h = [1] => py_list[int]\nlet b: bool = h is py_list\n"));
 }
+
+#[test]
+fn arrow_collections_need_a_cast_to_reach_python() {
+    // `py_list` のメソッド・CPython の物の演算は、Arrow の list をキャストせずに受けない（2-11）
+    let to_python = |src: &str| {
+        kinds(src).iter().any(|k| matches!(k, TypeErrorKind::ArrowCollectionToPython { .. }))
+    };
+    assert!(to_python("mut h = [1] => py_list[Any]\nh.append([1])\n"));
+    assert!(to_python("mut h = [1] => py_list[Any]\nh.extend([2])\n"));
+    assert!(to_python("mut d = {\"a\": 1} => py_dict[str, Any]\nd[\"b\"] = {\"c\": 1}\n"));
+    assert!(to_python("mut h = [1] => py_list[Any]\nh[0] = (1, [2])\n"));
+    // 写せば渡せる。Arrow の list の中の Python の物を `in` で探すのは Arrow の側で比べる
+    assert!(ok("mut h = [1] => py_list[Any]\nh.append([1] => py_list[int])\n"));
+    assert!(ok("mut h = [1] => py_list[int]\nmut hs = [h]\nlet b: bool = h in hs\n"));
+}
+
+#[test]
+fn the_suggested_conversion_names_python_collections() {
+    use crate::type_check::TypeChecker;
+    let t = InferredType::from_ann("tuple[list[int], dict[str, set[str]], int]").unwrap();
+    assert_eq!(
+        TypeChecker::arrow_collection_as_python(&t).map(|t| t.to_string()).as_deref(),
+        Some("tuple[py_list[int], py_dict[str, py_set[str]], int]")
+    );
+    assert!(TypeChecker::arrow_collection_as_python(&InferredType::from_ann("tuple[int, str]").unwrap()).is_none());
+}

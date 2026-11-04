@@ -36,7 +36,7 @@ df["roi"]      = df["profit"] / df["marketing_spend"] * 100
 df["total_ma3"] = df["total"].rolling(window=3).mean()
 
 print("=== Processed Data ===")
-print(df[["month", "product_a", "product_b", "product_c", "total", "profit", "roi", "total_ma3"]])
+print(df[["month", "product_a", "product_b", "product_c", "total", "profit", "roi", "total_ma3"] => py_list[str]])
 print()
 
 # ── 3. numpy statistics ───────────────────────────────────────────────────────
@@ -67,8 +67,8 @@ print()
 
 # ── 4. Visualization ──────────────────────────────────────────────────────────
 
-let months = df["month"].tolist()
-let x      = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+mut months = df["month"].tolist()
+mut x      = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] => py_list[int]
 
 plt.figure(figsize=(14, 10))
 plt.suptitle("Monthly Sales Analysis 2024", fontsize=16, fontweight="bold")
@@ -102,11 +102,11 @@ let avg_a = np.mean(a_arr)
 let avg_b = np.mean(b_arr)
 let avg_c = np.mean(c_arr)
 plt.pie(
-    [avg_a, avg_b, avg_c],
-    labels=["Product A", "Product B", "Product C"],
+    [avg_a, avg_b, avg_c] => py_list[Any],
+    labels=["Product A", "Product B", "Product C"] => py_list[str],
     autopct="%1.1f%%",
     startangle=90,
-    colors=["royalblue", "darkorange", "seagreen"]
+    colors=["royalblue", "darkorange", "seagreen"] => py_list[str]
 )
 plt.title("Average Sales Share by Product")
 

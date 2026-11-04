@@ -122,8 +122,11 @@
   elements (`TypeError` on a mismatch). A list / dict / set returned by Python arrives **uncopied** as `py_list` etc.
   (Python's later changes are visible), and a stub's `list[T]` reads as `py_list[T]`. An Arrow collection cannot be an
   element (`py_list[list[int]]` is an error). Like every Python object they are bound with `mut`.
-  - ⚠ Passing an Arrow list / dict / set to Python without a cast still copies it (Python's changes do not come back);
-    task 2-11 makes it an error.
+  - Passing an Arrow list / dict / set (or a tuple holding one) to Python **without a cast is an error, literals
+    included** (task 2-11): write `np.array([1, 2] => py_list[int])`. It covers call arguments (keywords and `*` / `**`
+    spreads too), subscripts, element / attribute assignment and operator operands — static `ArrowCollectionToPython`
+    when the types say so, otherwise a runtime `TypeError`. `pyobj in xs` with an Arrow container on the right is
+    compared on the Arrow side (nothing is passed).
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

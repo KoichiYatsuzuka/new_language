@@ -617,6 +617,16 @@ pub enum TypeErrorKind {
         /// どこの注釈か。
         what: String,
     },
+    /// Arrow の list / dict / set（とそれを持つ tuple）をキャストせずに Python へ渡した（pandas_import_plan.md の D-12・2-11）。
+    /// 写しになるので Python の書き換えが戻らない。`=> py_list[int]` などで写す（リテラルも同じ）。
+    ArrowCollectionToPython {
+        /// 渡した値の型（`list[int]`）。
+        got: InferredType,
+        /// 写す先の型（`py_list[int]`）。
+        convert_to: InferredType,
+        /// どこへ渡したか（`argument 1 of np.array` など）。
+        context: String,
+    },
     /// `Ptr` に無いメソッド、またはその要素型ではできない操作（`Ptr[void].to_list()` / `Ptr[int32].to_bytes()`・3-3）。
     /// ⚠ アドレスを取り出す手段は無い（D-3）。
     PtrMethodUnavailable {
@@ -1201,6 +1211,10 @@ impl StaticTypeError {
                 "{what}: an Arrow {} cannot be an element of py_list / py_dict / py_set (their contents are Python objects); \
                  write the Python collection type instead (e.g. py_list[py_list[int]])",
                 hl_q(&elem.to_string()),
+            ),
+            TypeErrorKind::ArrowCollectionToPython { got, convert_to, context } => format!(
+                "{context}: an Arrow {} cannot be passed to Python as is; convert it with `=> {convert_to}` (Python works on a Python collection; changes to a copy would not come back)",
+                hl_q(&got.to_string()),
             ),
             TypeErrorKind::PtrMethodUnavailable { ptr_ty, method, reason } => format!(
                 "{} has no usable method {}: {reason}",

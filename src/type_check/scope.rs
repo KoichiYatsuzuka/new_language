@@ -205,7 +205,7 @@ impl TypeChecker {
         let info = self.lookup(name)?;
         if matches!(
             info.ty,
-            InferredType::TypeValOf(_) | InferredType::Namespace(..) | InferredType::PyNamespace(_)
+            InferredType::TypeValOf(_) | InferredType::Namespace(..) | InferredType::PyNamespace(..)
         ) {
             return None;
         }

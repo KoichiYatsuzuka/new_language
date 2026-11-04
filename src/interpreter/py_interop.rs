@@ -173,14 +173,12 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         Value::Str(s) => Ok(s.to_object(py)),
         Value::Bool(b) => Ok(b.to_object(py)),
         Value::None => Ok(py.None()),
-        Value::List(items) => {
-            let py_items: Vec<PyObject> = items
-                .borrow()
-                .iter()
-                .map(|v| ar_to_py(py, v))
-                .collect::<PyResult<_>>()?;
-            Ok(PyList::new_bound(py, &py_items).into())
-        }
+        // ⚠⚠ Arrow の list / dict / set は**キャストせずには渡さない**（pandas_import_plan.md の D-12・2-11）。写して渡すと Python の
+        //   書き換えが戻らず、包んで渡すと pandas などが壊れる（6.8）。`=> py_list[T]` で CPython の物にする（`cast_to_python`）。
+        //   以前はここで深く写していた
+        Value::List(_) | Value::FrozenList { .. } => Err(arrow_collection_to_python("list")),
+        Value::Dict(_) => Err(arrow_collection_to_python("dict")),
+        Value::Set(_) => Err(arrow_collection_to_python("set")),
         Value::Tuple(td) => {
             let py_items: Vec<PyObject> = td
                 .values
@@ -188,20 +186,6 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
                 .map(|v| ar_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyTuple::new_bound(py, &py_items).into())
-        }
-        Value::Dict(d) => {
-            let dict = PyDict::new_bound(py);
-            let borrowed = d.borrow();
-            for (k, v) in borrowed.all_keys().iter().zip(borrowed.all_items().iter()) {
-                dict.set_item(ar_to_py(py, k)?, ar_to_py(py, v)?)?;
-            }
-            Ok(dict.into())
-        }
-        // ⚠ 以前は set を受け付けず、型名が 'unknown' の TypeError になっていた（ffi_value_exchange_plan.md 2-6）
-        Value::Set(items) => {
-            let py_items: Vec<PyObject> =
-                items.borrow().iter().map(|v| ar_to_py(py, v)).collect::<PyResult<_>>()?;
-            Ok(PySet::new_bound(py, &py_items)?.into())
         }
         Value::UInt(n) => Ok(n.to_object(py)),
         // bytes → Python の bytes（コピー・ffi_value_exchange_plan.md 5-3）。⚠ 以前は TypeError
@@ -236,6 +220,33 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)
         ))),
+    }
+}
+
+/// Arrow のコレクションをキャストせずに Python へ渡そうとした（[`ar_to_py`]・D-12・2-11）。
+fn arrow_collection_to_python(kind: &str) -> PyErr {
+    pyo3::exceptions::PyTypeError::new_err(format!(
+        "cannot pass an Arrow {kind} to Python as is; convert it with `=> py_{kind}[..]` (Python works on a Python collection; changes to a copy would not come back)"
+    ))
+}
+
+/// 例外の `args` を CPython の物にする（[`stash_arrow_raised`]）。Arrow の list などは**写す**。
+/// ⚠ ここだけ写すのは、例外の `args` が投げたときの値の記録で、Python が書き換えて Arrow へ戻す物ではないから（Arrow へ戻った
+///   例外は元の Arrow の例外に戻る・2-5）。ほかの場所で写すのはキャスト（`=> py_list[T]`）だけ（D-12）。
+fn exception_arg_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
+    let items = |vs: &[Value]| vs.iter().map(|v| exception_arg_to_py(py, v)).collect::<PyResult<Vec<_>>>();
+    match val {
+        Value::List(xs) => Ok(PyList::new_bound(py, items(&xs.borrow())?).into_any().unbind()),
+        Value::Set(xs) => Ok(PySet::new_bound(py, &items(&xs.borrow())?)?.into_any().unbind()),
+        Value::Tuple(td) => Ok(PyTuple::new_bound(py, items(td.all_values())?).into_any().unbind()),
+        Value::Dict(d) => {
+            let dict = PyDict::new_bound(py);
+            for (k, v) in d.borrow().all_pairs() {
+                dict.set_item(exception_arg_to_py(py, &k)?, exception_arg_to_py(py, &v)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+        other => ar_to_py(py, other),
     }
 }
 
@@ -464,7 +475,8 @@ fn stash_arrow_raised(
     text: String,
     raised: Option<crate::interpreter::RaisedError>,
 ) -> PyErr {
-    let py_args: Vec<PyObject> = args.iter().map(|a| ar_to_py(py, a).unwrap_or_else(|_| py.None())).collect();
+    let py_args: Vec<PyObject> =
+        args.iter().map(|a| exception_arg_to_py(py, a).unwrap_or_else(|_| py.None())).collect();
     let exc = match ty.call1(PyTuple::new_bound(py, &py_args)) {
         Ok(e) => e,
         Err(e) => return e,

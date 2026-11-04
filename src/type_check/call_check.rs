@@ -148,7 +148,7 @@ impl TypeChecker {
                 Expr::Ident { name, .. } => match self.lookup(name).map(|v| &v.ty) {
                     // ⚠ `import[py]` のモジュール（`PyNamespace`）も修飾名で引く（`zoo.Dog`）。以前は素の `Dog` で
                     //   引いていたので、`z.Dog()` がメインの同名クラスの `__init__` で検査されていた（実測）。
-                    Some(InferredType::Namespace(..) | InferredType::PyNamespace(_)) => {
+                    Some(InferredType::Namespace(..) | InferredType::PyNamespace(..)) => {
                         // ⚠ 外部言語のモジュール（cpp / cs / py-int …）は素の名前で登録したまま。
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
@@ -179,6 +179,8 @@ impl TypeChecker {
         self.check_callable(&func_type);
 
         let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
+        // `f(*xs)` / `f(**d)` で並ぶ引数の型（展開した要素・値）。Python へ渡す値の検査（2-11）に使う
+        let mut spread_elems: Vec<InferredType> = Vec::new();
         for arg in args.iter() {
             match arg {
                 CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
@@ -192,10 +194,14 @@ impl TypeChecker {
                 CallArg::Spread(e) => {
                     let ty = self.infer(e);
                     self.check_spread_arg(&ty, false);
+                    spread_elems.push(Self::for_element_type(&ty));
                 }
                 CallArg::KwSpread(e) => {
                     let ty = self.infer(e);
                     self.check_spread_arg(&ty, true);
+                    if let InferredType::DictOf(_, v) | InferredType::PyDict(_, v) = &ty {
+                        spread_elems.push((**v).clone());
+                    }
                 }
                 // 可変長引数: 各要素の型を推論し、リスト型として "..." キーで登録
                 //
@@ -225,6 +231,24 @@ impl TypeChecker {
                     };
                     arg_data.push((Some("...".to_string()), list_ty));
                 }
+            }
+        }
+
+        // Python の関数・メソッド・クラスへ Arrow の list / dict / set をキャストせずに渡さない（D-12・2-11）。⚠ 呼ぶ先が
+        //   Python と型で分かるときだけ（`from m import f` した `f(xs)` などは実行時の `TypeError`）
+        let python_callee = builtin_recv.as_ref().is_some_and(|(recv, _, _)| self.is_python_value(recv))
+            || matches!(&func_type, InferredType::TypeValOf(inner) if self.is_python_value(inner));
+        if python_callee {
+            let callee = func_name.clone().unwrap_or_else(|| "the Python call".to_string());
+            for (i, (key, ty)) in arg_data.iter().enumerate() {
+                let context = match key {
+                    Some(k) => format!("keyword argument `{k}` of `{callee}`"),
+                    None => format!("argument {i} of `{callee}`"),
+                };
+                self.check_no_arrow_collection_to_python(ty, context);
+            }
+            for ty in &spread_elems {
+                self.check_no_arrow_collection_to_python(ty, format!("an unpacked argument of `{callee}`"));
             }
         }
 
@@ -1281,7 +1305,7 @@ impl TypeChecker {
     ) -> Option<InferredType> {
         let Expr::Attr { object, attr, .. } = func else { return None };
         let Expr::Ident { name, .. } = object.as_ref() else { return None };
-        if !matches!(self.lookup(name).map(|v| &v.ty), Some(InferredType::PyNamespace(_) | InferredType::Namespace(..))) {
+        if !matches!(self.lookup(name).map(|v| &v.ty), Some(InferredType::PyNamespace(..) | InferredType::Namespace(..))) {
             return None;
         }
         let module = self.py_aliases.get(name)?;
@@ -1833,6 +1857,59 @@ impl TypeChecker {
             "copy" => Some(recv_ty.clone()),
             "update" | "clear" => Some(T::None),
             _ => None,
+        }
+    }
+
+    /// CPython の物と型で分かるか（CPython で実行するモジュール・そのクラスとインスタンス・`py_list` など・D-12・2-11）。
+    /// ⚠ `import[py]`（Arrow へ変換して実行する）のモジュールは偽（中身は Arrow の値）。
+    pub(super) fn is_python_value(&self, ty: &InferredType) -> bool {
+        match ty {
+            InferredType::PyNamespace(_, cpython) => *cpython,
+            InferredType::PyList(_) | InferredType::PyDict(..) | InferredType::PySet(_) => true,
+            InferredType::NamedInstance(n) | InferredType::GenericInstance { name: n, .. } => self.registry.is_cpython_class(n),
+            InferredType::TypeValOf(inner) => self.is_python_value(inner),
+            _ => false,
+        }
+    }
+
+    /// 型 `ty` が Arrow の list / dict / set を含むなら、写す先の Python の型（`list[int]` → `py_list[int]`・`tuple[list[int], int]`
+    /// → `tuple[py_list[int], int]`）。含まなければ `None`。
+    pub(crate) fn arrow_collection_as_python(ty: &InferredType) -> Option<InferredType> {
+        use InferredType as T;
+        fn conv(t: &T, changed: &mut bool) -> T {
+            let mut rec = |t: &T| Box::new(conv(t, changed));
+            let r = match t {
+                T::ListOf(e) | T::FixedListOf(e) | T::ListLikeOf(e) => T::PyList(rec(e)),
+                T::SetOf(e) => T::PySet(rec(e)),
+                T::DictOf(k, v) => {
+                    let k = rec(k);
+                    T::PyDict(k, Box::new(conv(v, changed)))
+                }
+                T::List | T::FixedList | T::ListLike => T::PyList(Box::new(T::Any)),
+                T::Set => T::PySet(Box::new(T::Any)),
+                T::Dict => T::PyDict(Box::new(T::Any), Box::new(T::Any)),
+                T::Tuple(ts) => return T::Tuple(ts.iter().map(|t| conv(t, changed)).collect()),
+                T::Union(ts) => return T::Union(ts.iter().map(|t| conv(t, changed)).collect()),
+                // 空のリテラル（`[]`）の要素は書いた人が決める
+                T::Never => return T::Any,
+                other => return other.clone(),
+            };
+            *changed = true;
+            r
+        }
+        let mut changed = false;
+        let out = conv(ty, &mut changed);
+        changed.then_some(out)
+    }
+
+    /// Python へ渡す値の型 `ty` が Arrow の list / dict / set を含めば `ArrowCollectionToPython`（D-12・2-11）。リテラルも同じ
+    /// （`np.array([1, 2] => py_list[int])` と書く）。
+    pub(super) fn check_no_arrow_collection_to_python(&mut self, ty: &InferredType, context: String) {
+        if let Some(convert_to) = Self::arrow_collection_as_python(ty) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ArrowCollectionToPython { got: ty.clone(), convert_to, context },
+                span: None,
+            });
         }
     }
 
