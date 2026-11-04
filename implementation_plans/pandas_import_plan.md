@@ -16,7 +16,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | ~~7~~ | ✅ 真偽: numpy の配列の `if a > 2:` が `ValueError` にならず真として通る件（直した: 2-2・`__bool__` / `__len__`） | [2-2] |
 | ~~8~~ | ✅ 切り出し `a[1:3]` が `TypeError`。`...`（`Ellipsis`）を渡せない件（直した: 2-3・`a[1:, 0]`・`a[..., 0]`・`df.loc["b":"d"]`） | [2-3] |
 | ~~9~~ | ✅ `for` が CPython の反復子から先に全部取り出す（無限の列で止まらない）件（直した: 2-4） | [2-4] |
-| 10 | Arrow の関数・インスタンスを Python へ渡せない（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`）。⚠ 関数は直した（2-5）。インスタンスは 2-6 | [2-5]・[2-6] |
+| ~~10~~ | ✅ Arrow の関数・インスタンスを Python へ渡せなかった（`df.apply(f)`・`lib.map_infer(arr, f)` が `TypeError`）件（直した: 関数は 2-5、インスタンス・クラス・ジェネレータは 2-6） | [2-5]・[2-6] |
 | ~~11~~ | ✅ list / dict / set を境界で写していた（Python 側の書き換えが戻らない・`heapq.heappush(h, 0)` の後も `h` は元のまま）件（直した: 2-7・2-11。Python とのやり取りは `py_list` などの専用の型・Arrow のコレクションはキャストして渡す・D-12・2.6） | [2-7]・[2-11] |
 | ~~12~~ | ✅ Python の物を `let` で受けても別名から中身が変わる件（直した: 1-2。`mut` で受ける規則にした） | D-3・[1-2] |
 | ~~13~~ | ✅ `is` が `==` を呼ぶ／同じ物どうしが `False`（直した: 5-1・`===` は同一性） | D-4・[5-1] |
@@ -137,7 +137,7 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 | 切り出し・`...` | `TypeError` | ✅ Python の `slice` / タプルで渡す（`a[1:, 0]`・`df.loc[:, "a"]`）。`Ellipsis` / `NotImplemented` を対応させる（2-3） |
 | `for` | 先に全部取り出す | ✅ 1 つずつ取り出す（2-4） |
 | Arrow の関数を渡す | `TypeError` | ✅ Python から呼べる物として渡す。中で起きた Arrow の例外は Python の例外になる（2-5） |
-| Arrow のインスタンスを渡す | `TypeError` | 包んで渡す（2-6・D-9） |
+| Arrow のインスタンスを渡す | `TypeError` | ✅ 写さずに包んで渡す（`let` の値は読むだけ・2-6・D-9） |
 | list / dict / set | 境界で写す（書き換えが戻らない） | `py_list` などの専用の型で受け渡す（2-7・2-11・D-12・2.6） |
 
 ### 2.5 `.py` を CPython で実行する（D-1・D-6・D-7）
@@ -198,7 +198,7 @@ Python のクラスで測ると、Python のコードが `isinstance(x, dict)` /
 - **包み**: Arrow の関数（`fn`・クロージャ・束縛メソッド・多重定義・ネイティブの関数）を Python へ渡すと、Python の呼べる物
   `ArrowFunction`（PyO3 の `#[pyclass]`）になる。中身の `Value` はスレッドごとの表に置き、包みは番号と作ったスレッドだけを持つ
   （`Rc` を Python のスレッドへ持ち出さない）。Python が包みを捨てると表から消す（別のスレッドで捨てられたら、作ったスレッドで次に
-  表を使うときに消す）。⚠ ジェネレータ関数・クラス・インスタンスは渡せない（戻り値を Python へ渡せない・2-6）。
+  表を使うときに消す）。クラス・ジェネレータ関数も同じ包み、インスタンスとジェネレータは別の包み（2-6）。
 - **呼び戻し（再入）**: Python が包みを呼ぶと、そのスレッドのインタプリタで関数を呼ぶ（`call_value_evaled`）。インタプリタは
   py-int の import とワーカーの起動のときにスレッドごとに覚え、Python を呼ぶ入口（呼び出し・メソッド呼び出し）でも覚え直す
   （ネイティブの ABI の `interp_ptr` と同じ方式）。GIL は Python が呼んだときに持っているので、そのまま Arrow の本体を走らせる
@@ -241,9 +241,10 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~2-3~~ | ✅ **済**（2026-11-04）CPython の物の切り出しは Python の `slice`（`py_getitem` / `py_setitem`・`ar_to_py` の `Value::Slice`）。添字の項にスライス・`...` を書ける（`a[1:, 0]`・`a[..., 0]`・`parse_subscript_item`・`...` は添字の項だけ）。`Ellipsis` / `NotImplemented` は CPython の同じ値。スライスは境界に何でも持てる（CPython と同じ・`slice_from_values` が唯一の作り手）で、Arrow の list などを切り出すときに `slice_bound` が確かめる（文言は CPython）。型検査は添字の相手が CPython のクラスか `Any` のときだけ境界の型を問わない（`df.loc["b":"d"]`）。ついでに: `xs[1::2]` が `::` をトレイトの指定と読んで構文の誤りだったのを直した（名前と `.` が続くときだけトレイトの指定）、スライスの表示の境界を `repr` にした。例題は `py_int_slices.ar`・`_error`・`_runtime_error`・`collections/slice_begin_step.ar`。⚠ Python から来た `slice` は Python の物のまま | なし | 小〜中 |
 | ~~2-4~~ | ✅ **済**（2026-11-04）`for x in <CPython の物>` は `iter(obj)` の反復子から取り出すたびに 1 つ取る（`GeneratorState::py_iter`・`gen_next` が `PyIter_Next`）。`break` すれば先は取り出さず、途中の例外はそこまでの本体のあとで届く。`Generator` の形のままなので、内包・`list()`・`any()` / `all()`・分解・ネイティブの関数の `for` も同じ道。取り出し途中の反復子は写せない（`deep_clone` は中断中の生成器と同じく印を付ける）。1 要素あたり +0.12 µs（30 万要素の `range` と生成器・負の対照は ±1 ms）。例題は `py_int_lazy_for.ar` | なし | 小 |
 | ~~2-5~~ | ✅ **済**（2026-11-04・設計は 2.7）Arrow の関数（`fn`・束縛メソッド・多重定義・ネイティブの関数）は Python の呼べる物 `arrow.ArrowFunction`（`#[pyclass]`・中身はスレッドごとの表 `ARROW_FUNCTIONS`、包みは番号と作ったスレッドだけ）。Python が呼ぶと覚えておいたインタプリタ（`register_interpreter`・py-int の import と Python を呼ぶ入口）で `call_value_evaled`（GIL を持ったまま再入・入れ子も可）。別のスレッドからは Python の `RuntimeError`。本体の Arrow の例外は Python の例外（組み込みは同じ名前・`args` も、Arrow で定義した例外は `arrow.ArrowError`）、Python の中を通って Arrow へ戻ったら元の Arrow の例外（`ARROW_RAISED` → `PyRaised::Arrow`・欄もトレースバックの枠も。呼んだ Python の枠もファイル・行・関数名で入る）。例題は `py_int_callbacks.ar`・`_runtime_error` | 2-1 | 大 |
-| 2-6 | Arrow のインスタンス・クラス・ジェネレータを包んで Python へ渡す（D-9）。`let` の値は読むだけの包み・`mut` の値は書ける包み。包みは作ったスレッドを覚え、別のスレッドから触られたら Python の `RuntimeError`。⚠ list / dict / set は包まない（2.6） | 2-5 | 中〜大 |
+| ~~2-6~~ | ✅ **済**（2026-11-05・D-9）Arrow のインスタンスは写さずに `arrow.ArrowObject` の派生で渡す（Arrow のクラスごとに 1 つ・Arrow のクラスが持つ特殊メソッドだけを持つ・`proxy_type`。属性・メソッドは Arrow のインスタンスを読み、`str` / `repr` / 比較 / `hash` は Arrow の意味）。同じインスタンスは同じ包み（弱参照の表 `PROXIES`）、Python から戻れば元のインスタンス（`unwrap_arrow_value`）。書けるのは引数の `mut` の変数・式、書ける包みから読んだ物、Arrow の関数が返した物だけで、ほかは読むだけ（属性への代入・`mut self` のメソッドは `TypeError`）。クラス・ジェネレータ関数は `ArrowFunction`、ジェネレータは `ArrowIterator`。作ったスレッド以外からは `RuntimeError`（表は関数と共有・`ARROW_VALUES`）。例題 `py_int_arrow_objects.ar`、`py_int_instance_arg_error.ar` を読むだけの包みの負例に直した。⚠ インスタンスの list などの欄は Python から読むと `TypeError`（D-12）。⚠ 見つけたこと: ジェネレータ関数の引数は `mut` にできないので Python の物を取れない（2-13） | 2-5 | 中〜大 |
 | ~~2-7~~ | ✅ **済**（2026-11-04・D-8・D-12・2.6）`py_list[T]` / `py_dict[K, V]` / `py_set[T]` を組み込みの型にした（`InferredType::PyList` / `PyDict` / `PySet`・実行時は `Value::PyObject`）。`=>` で Arrow の list / dict / set と相互に写す（キャスト先の型の深さまで・写しながら要素を照合・`py_*` から `py_*` は照合だけ・`cast_to_python` / `cast_from_python`）。操作は Python の意味で、型は `py_collection_binop`・閉じたメソッドの表 `names::PY_COLLECTION_METHODS`・`py_collection_method_return`。要素に Arrow の list などは置けない（`ArrowCollectionInPython`）。`mut` で受ける。Python が返した list / dict / set は写さずに `py_list` などのまま（`py_to_tl`）、型スタブの `list[T]` などは `py_list[T]`（`py_type_to_arrow`・変換器で読んだ `.pyi` は `py_collections_as_python`）。戻り値の境界検査は要素まで（`float` には int も入る・PEP 484）。frozenset は今までどおり Arrow の set に写す。例題 `py_int_collections.ar`・`_error`・`_runtime_error`、既存の例題 9 本を `=> list[T]` / `mut` に直した。⚠ 照合は受け取るときだけ（2-12）。⚠ Arrow のコレクションをキャストせずに渡すと今は写す（2-11） | なし | 中〜大 |
 | ~~2-11~~ | ✅ **済**（2026-11-05・D-12）Arrow の list / dict / set（とそれを持つ tuple）をキャストせずに Python へ渡すのは誤り（リテラルも）。関数・メソッド・クラスの引数（キーワード・`*` / `**` も）・添字・要素や属性への代入・演算子の相手。受け手が Python と型で分かれば静的な `ArrowCollectionToPython`（写す先の型を示す・`is_python_value`・`PyNamespace` に CPython のモジュールかの印を足した）、分からなければ実行時の `TypeError`（`ar_to_py`）。`pyobj in xs`（右が Arrow のコレクション）は Arrow の側で比べる。例外の `args` だけは写す（記録）。例題 `py_int_cast_required_error.ar`・`_runtime_error`、既存の例題 8 本（と `practical_examples/pd_numpy_pyplot` の 2 本）にキャストを足した | 2-7 | 中 |
+| 2-13 | ジェネレータ関数の引数は `mut` にできない（`let` / `const` だけ・構文の誤り）ので、Python の物（`mut` で受ける・D-3）を引数に取れない（`gen each(mut xs: py_list[int])` が書けない・2-6 で見つけた）。どちらの規則を緩めるかを決める | なし | 小〜中 |
 | 2-12 | `py_list` などの要素を読むたびに宣言の型と照合する（4 節の 3 の ①。今は写して受け取るとき・戻り値の境界検査のときだけ照合する） | 2-7 | 中 |
 | 2-8 | Python の物を `async` のタスクへ渡したときの規則を決めて実装する（未測定。スレッドと GIL） | 1-1 | 中 |
 | ~~2-10~~ | ✅ **済**（2026-11-04）`for mut x in ..`・`[.. for mut x in ..]`・`except E as mut e` を足した（AST の `mut_targets` / `name_mut`）。型で Python の物と分かれば静的な `ImmutablePythonObject`、分からなければ実行時の `TypeError`（VM: 1 つの変数は `ForIter` が要素が Python の物のときだけ副表 `implicit_for_targets` を引く・分解と `except` は新しい命令 `StoreLocalImplicit`・`for mut` は `StoreLocalDeepCopy` で写す）。呼んだ側の大域で走る組み込みの実装（`enumerate` など）の中は検査しない（`Chunk::builtin_prelude`）。ネイティブの関数は `for mut` を載せない。例題 `basics/for_mut.ar`・`py_int_implicit_bindings.ar`・`_error`・`_runtime_error`、`py_int_exceptions.ar` を `as mut` に直した。以下は起票時の内容: 暗黙の束縛で Python の物を受ける規則（D-11）。`for mut f in ..`（`for mut k, v in ..` はすべて `mut`）・内包の `for mut f in ..`・`except E as mut e`・`match` の捕捉に `mut` を書けるようにする。不変の束縛で Python の物を受けたら、型で分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ束縛するときに実行時の `TypeError`。⚠ 外の束縛が `mut` でも Python の物を受けるなら `mut` と書く（受け継ぎは実行時に判定できない。VM の slot は可変かどうかを持たない）。Arrow の値を `mut` で受けたら `mut` の宣言と同じく写す。`match` は新しい名前を束縛しない（`case <式>` / `is <型>`）ので対象外 | 1-2 | 中 |

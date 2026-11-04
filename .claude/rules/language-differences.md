@@ -127,6 +127,13 @@
     spreads too), subscripts, element / attribute assignment and operator operands — static `ArrowCollectionToPython`
     when the types say so, otherwise a runtime `TypeError`. `pyobj in xs` with an Arrow container on the right is
     compared on the Arrow side (nothing is passed).
+- **Arrow instances, classes and generators reach Python uncopied** (pandas_import_plan.md 2-6, D-9). An instance is
+  shared (passing it twice gives the same Python object; it comes back as the same instance) and appears as a subclass of
+  `arrow.ArrowObject` named after the Arrow class, exposing only the special methods the class defines. It is
+  **writable only when passed as a `mut` variable (or an expression) argument**, read from a writable one, or returned by
+  an Arrow function; otherwise (a `let` variable, stored into a Python object, an operand, a cast element) Python gets a
+  read-only view — attribute assignment and `mut self` methods raise `TypeError`. Classes and generator functions are
+  callables, generators are Python iterators. Touching them from another Python thread raises `RuntimeError`.
 - **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
   static error (calling the class value is a runtime error). `object` itself is still the base of every value
   (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no

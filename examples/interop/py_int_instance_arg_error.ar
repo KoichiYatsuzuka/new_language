@@ -1,15 +1,21 @@
-# py_int_instance_arg_error.ar — Arrow のインスタンスは Python へ渡せない（負例・2-6）
+# py_int_instance_arg_error.ar — `let` の Arrow のインスタンスは Python から書き換えられない（負例・pandas_import_plan.md の 2-6）
 #
-# Arrow のクラスのインスタンスを Python の関数に渡すと TypeError。以前は型名が 'unknown' と出て、何を渡したのか
-# 分からなかった。今はクラス名（'Point'）を出す。
+# Arrow のインスタンスは写さずに Python へ渡る（2-6）。`let` の変数から渡した物は読むだけの包みで、属性への代入と
+# `mut self` のメソッドは Python の TypeError になる（`let` の値は変わらない）。書き換えさせるなら `mut` の変数を渡す。
+# ⚠ 2-6 より前は、Arrow のインスタンスは Python へ渡せなかった（`cannot pass an Arrow value of type 'Point' to Python`）。
 #
-# 対になる正例: py_int_values.ar
+# 対になる正例: py_int_arrow_objects.ar
 
-import[py-int] py_int_probe as pp
+import[py-int] py_int_arrow_objects as po
 
 class Point:
-    let x: int
-    let y: int
+    mut x: int
+    mut y: int
 
-print("set:", pp.kind({1} => py_set[int]))
-print("unreachable:", pp.kind(Point(1, 2)))
+    fn shift(mut self, let dx: int) -> None:
+        self.x = self.x + dx
+
+let p = Point(1, 2)
+print("read:", po.as_key(p))
+po.shift_it(p)
+print("unreachable:", p.x)

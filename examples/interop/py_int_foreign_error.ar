@@ -1,7 +1,8 @@
 # py_int_foreign_error.ar — py-int で Python が投げた例外の種類（正例・ffi_value_exchange_plan.md 7-24・pandas_import_plan.md の 2-1）
 #
 # Python が投げた組み込みの例外は、同じ名前の Arrow の例外（`ValueError`・`KeyError`）。メッセージ（`e.message`・`str(e)`）は
-# CPython の `str(e)`。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは Arrow 側の誤りなので `TypeError`。
+# CPython の `str(e)`。Arrow の値を Python へ渡せない（キャストしていない Arrow の list など・pandas_import_plan.md の 2-11）のは
+# Arrow 側の誤りなので `TypeError`。Arrow のインスタンスは Python へ渡り（2-6）、Python の演算の誤りは Python の `TypeError`。
 # ⚠ ファイルの名前は 7-24 のときのもの。7-24 から 2-1 までは C# / JS と同じく `ForeignError`（`message` は `ValueError: bad`）で、
 #   `except ValueError:` で捕まらなかった。7-24 より前は呼び出しの種類で決まる例外（関数は `RuntimeError: Python call failed: …`・
 #   メソッドは `AttributeError: Python method call …`）だった。
@@ -37,8 +38,16 @@ except KeyError as e:
 check("a Python method's exception is a KeyError (" + message + ")", message == "'k'")
 
 message = ""
+mut loose: Any = [1, 2]
+try:
+    print(pp.big_text(loose))
+except TypeError as e:
+    message = e.message
+check("an Arrow value Python cannot take is a TypeError", "cannot pass an Arrow list to Python" in message)
+
+message = ""
 try:
     print(pp.big_text(Point(1)))
 except TypeError as e:
     message = e.message
-check("an Arrow value Python cannot take is a TypeError", "cannot pass an Arrow value of type 'Point'" in message)
+check("Python's TypeError about an Arrow instance names its class", "unsupported operand type(s) for +: 'Point' and 'int'" in message)

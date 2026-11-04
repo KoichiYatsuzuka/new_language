@@ -815,3 +815,34 @@ fn test_python_fn_name_undoes_converter_names() {
     assert_eq!(python_fn_name("__py_lambda_"), "__py_lambda_");
     assert_eq!(python_fn_name("area"), "area");
 }
+
+/// Arrow のインスタンスは写さずに Python へ渡り（pandas_import_plan.md の 2-6）、`mut` の変数から渡せば Python の `setattr` が
+/// Arrow のインスタンスに届く。`let` の変数から渡した物は読むだけ（`setattr` は TypeError）。
+// ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。
+#[cfg(feature = "native")]
+#[test]
+fn test_arrow_instance_is_shared_with_python() {
+    let src = concat!(
+        "import[py-int] builtins as b\n",
+        "class P:\n",
+        "    mut x: int\n",
+        "mut p = P(1)\n",
+        "b.setattr(p, \"x\", 5)\n",
+        "let seen = b.getattr(p, \"x\")\n",
+        "let q = P(2)\n",
+        "mut refused = False\n",
+        "try:\n",
+        "    b.setattr(q, \"x\", 9)\n",
+        "except TypeError:\n",
+        "    refused = True\n",
+        "let r = [p.x, seen mustbe int, q.x]\n",
+    );
+    match run_py_get(src, "r") {
+        Value::List(items) => {
+            let got: Vec<i64> = items.borrow().iter().map(|v| if let Value::Int(n) = v { *n } else { -1 }).collect();
+            assert_eq!(got, vec![5, 5, 2]);
+        }
+        other => panic!("expected a list of ints, got {other:?}"),
+    }
+    assert!(matches!(run_py_get(src, "refused"), Value::Bool(true)));
+}

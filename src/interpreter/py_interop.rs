@@ -216,6 +216,12 @@ pub fn ar_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         Value::Function(f) => wrap_arrow_function(py, val, f.name.clone()),
         Value::OverloadedFn(c) => wrap_arrow_function(py, val, c.first().map(|f| f.name.clone()).unwrap_or_default()),
         Value::NativeFunction(r) => wrap_arrow_function(py, val, r.fn_name.clone()),
+        // インスタンスは写さずに包む（読むだけ・書けるのは引数の `mut` の変数などから渡したとき・2-6）。クラス・ジェネレータ関数は
+        // 呼べる包み、ジェネレータは Python の反復子の包み
+        Value::Instance(_) => wrap_arrow_object(py, val, false),
+        Value::Class(c) => wrap_arrow_function(py, val, c.name.clone()),
+        Value::GeneratorFn(g) => wrap_arrow_function(py, val, g.name.clone()),
+        Value::Generator(_) => wrap_arrow_iterator(py, val),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "cannot pass an Arrow value of type '{}' to Python",
             type_name_of(other)
@@ -251,22 +257,38 @@ fn exception_arg_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
 }
 
 // ---------------------------------------------------------------------------
-// Arrow の関数を Python から呼ぶ（pandas_import_plan.md の 2-5・設計は 2.7）
+// Arrow の値を Python から使う（関数: pandas_import_plan.md の 2-5・設計は 2.7／インスタンス・クラス・ジェネレータ: 2-6・D-9）
 // ---------------------------------------------------------------------------
+//
+// Python へ渡した Arrow の値は**写さずに共有する**（CPython と同じ。同じインスタンスを 2 回渡せば同じ包み）。中身の `Value` は
+// スレッドごとの表（[`ARROW_VALUES`]）に置き、包みは番号と作ったスレッドだけを持つ（`Rc` を Python のスレッドへ持ち出さない）。
+// - 関数・クラス・ジェネレータ関数 → [`ArrowFunction`]（呼べる物。クラスを呼ぶとインスタンスの包みが返る）
+// - インスタンス → [`ArrowObject`] の派生（Arrow のクラスごとに 1 つ。Arrow のクラスが持つ特殊メソッドだけを持つ・[`proxy_type`]）
+// - ジェネレータ → [`ArrowIterator`]
+// Python から Arrow へ戻ってきた包みは元の値に戻る（[`unwrap_arrow_value`]・同じインスタンス）。
+// ⚠ インスタンスの包みは**書けるか**を持つ（2.6 の ⑤）。書けるのは Arrow の側で書ける経路から渡したときだけ: 呼び出しの引数の
+//   `mut` の変数・式（[`ar_to_py_arg`]）、書ける包みから読んだ物、Arrow の関数・ジェネレータが Python へ返した物。それ以外
+//   （`let` の変数・Python の物への格納・演算子の相手・キャストの要素）は読むだけで、属性への代入と `mut self` のメソッドは `TypeError`。
+// ⚠ 作ったスレッド以外から触られたら Python の `RuntimeError`（Arrow の値はスレッドをまたげない・2.6 の ⑥）。
 
 thread_local! {
-    /// このスレッドで Python を呼んでいるインタプリタ（[`ArrowFunction`] が呼び戻す先）。
+    /// このスレッドで Python を呼んでいるインタプリタ（包みが呼び戻す先）。
     static PY_INTERP: Cell<*mut crate::interpreter::Interpreter> = const { Cell::new(std::ptr::null_mut()) };
-    /// Python へ渡した Arrow の関数（番号 → 値）。包みは番号だけを持つ（`Rc` を Python のスレッドへ持ち出さない）。
-    static ARROW_FUNCTIONS: RefCell<HashMap<u64, Value>> = RefCell::new(HashMap::new());
+    /// Python へ渡した Arrow の値（番号 → 値）。
+    static ARROW_VALUES: RefCell<HashMap<u64, Value>> = RefCell::new(HashMap::new());
     /// Python の中を通っている Arrow の例外（Python の例外のオブジェクト, Arrow の文言, 元の Arrow の例外）。Arrow へ戻ったら
     /// [`python_raised`] が元の例外に戻す。
     static ARROW_RAISED: RefCell<Vec<(PyObject, String, Option<crate::interpreter::RaisedError>)>> =
         const { RefCell::new(Vec::new()) };
+    /// Arrow のクラスごとの包みの型（鍵は `ClassValue::class_id`）。
+    static PROXY_TYPES: RefCell<HashMap<u32, Py<PyAny>>> = RefCell::new(HashMap::new());
+    /// 包みの同一性: (インスタンスの番地, 書けるか) → 包みの弱参照。⚠ 包みが生きている間は表がインスタンスを持つので、番地は
+    /// 使い回されない（死んだ弱参照の項は [`wrap_arrow_object`] が掃除する）。
+    static PROXIES: RefCell<HashMap<(usize, bool), Py<PyAny>>> = RefCell::new(HashMap::new());
 }
 
 /// 包みの番号（プロセスで一意）。
-static NEXT_FUNCTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_VALUE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// 作ったスレッドとは別のスレッドで捨てられた包み（作ったスレッド, 番号）。作ったスレッドで次に表を使うときに消す。
 static DROPPED_ELSEWHERE: Mutex<Vec<(std::thread::ThreadId, u64)>> = Mutex::new(Vec::new());
 
@@ -293,12 +315,117 @@ pub fn forget_interpreter(interp: *mut crate::interpreter::Interpreter) {
     });
 }
 
-/// Python から呼べる Arrow の関数（2-5）。中身は [`ARROW_FUNCTIONS`] にあり、作ったスレッドからだけ呼べる。
+/// Arrow の値を表に置き、番号を返す。別のスレッドで捨てられた包みの中身をここで消す。
+fn store_arrow_value(val: &Value) -> u64 {
+    let me = std::thread::current().id();
+    let stale: Vec<u64> = {
+        let mut q = DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner());
+        let (mine, others): (Vec<_>, Vec<_>) = q.drain(..).partition(|(t, _)| *t == me);
+        *q = others;
+        mine.into_iter().map(|(_, id)| id).collect()
+    };
+    // ⚠ 値は表の借用を落としてから捨てる（中の値が別の包みを捨てると、その `Drop` がまた表を借りる）
+    let removed: Vec<Option<Value>> = ARROW_VALUES.with(|t| stale.iter().map(|id| t.borrow_mut().remove(id)).collect());
+    drop(removed);
+    let id = NEXT_VALUE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ARROW_VALUES.with(|t| t.borrow_mut().insert(id, val.clone()));
+    id
+}
+
+/// 包みが捨てられた（`Drop`）: 表から消す（別のスレッドなら、作ったスレッドで次に表を使うときに消す）。
+fn release_arrow_value(id: u64, thread: std::thread::ThreadId) {
+    if std::thread::current().id() == thread {
+        let removed = ARROW_VALUES.try_with(|t| t.borrow_mut().remove(&id));
+        drop(removed);
+    } else {
+        DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner()).push((thread, id));
+    }
+}
+
+/// 包みの中身（`what` は誤りの文言に出す名前）。作ったスレッド以外からは Python の `RuntimeError`。
+fn arrow_value(id: u64, thread: std::thread::ThreadId, what: &str) -> PyResult<Value> {
+    if std::thread::current().id() != thread {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "{what} can only be used from the thread that passed it to Python (Arrow values cannot cross threads)"
+        )));
+    }
+    ARROW_VALUES
+        .with(|t| t.borrow().get(&id).cloned())
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(format!("{what} was released")))
+}
+
+/// このスレッドで走っているインタプリタ（包みが Arrow を呼び戻す先）。
+///
+/// ⚠ Python を呼んだ Arrow の側も `&mut Interpreter` を持ったまま待っている（ネイティブの ABI の `interp_ptr` と同じ形の
+///   再入）。呼び戻しの間、外側の Arrow はこのインタプリタに触らない。
+fn running_interpreter<'a>(what: &str) -> PyResult<&'a mut crate::interpreter::Interpreter> {
+    let interp = PY_INTERP.with(|p| p.get());
+    if interp.is_null() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "{what} was used while no Arrow interpreter is running on this thread"
+        )));
+    }
+    Ok(unsafe { &mut *interp })
+}
+
+/// Arrow が Python へ渡した包みなら、元の Arrow の値（同じスレッドのときだけ）。インスタンスは同じ物（同一性を保つ・2-6）。
+/// ⚠ 読むだけの包みから読んだ `mut self` のメソッド（`blocked`）は戻さない（Arrow から呼べば書き換えられてしまう）。
+fn unwrap_arrow_value(obj: &Bound<'_, PyAny>) -> Option<Value> {
+    let (id, thread) = if let Ok(o) = obj.downcast::<ArrowObject>() {
+        let o = o.borrow();
+        (o.id, o.thread)
+    } else if let Ok(f) = obj.downcast::<ArrowFunction>() {
+        let f = f.borrow();
+        if f.blocked.is_some() {
+            return None;
+        }
+        (f.id, f.thread)
+    } else if let Ok(g) = obj.downcast::<ArrowIterator>() {
+        let g = g.borrow();
+        (g.id, g.thread)
+    } else {
+        return None;
+    };
+    if std::thread::current().id() != thread {
+        return None;
+    }
+    ARROW_VALUES.with(|t| t.borrow().get(&id).cloned())
+}
+
+/// 呼び出しの引数を CPython の物にする（[`call_shaped`]）。CPython の物は自分の参照を手放して渡し（写さない・D-5）、Arrow の
+/// インスタンスは `writable`（引数が `mut` の変数・式か）の包み（2-6）。
+fn ar_to_py_arg(py: Python<'_>, val: Value, writable: bool) -> PyResult<PyObject> {
+    match val {
+        Value::PyObject(h) => Ok(h.into_py(py)),
+        ref v @ Value::Instance(_) if !is_singleton(v) => wrap_arrow_object(py, v, writable),
+        other => ar_to_py(py, &other),
+    }
+}
+
+/// インスタンスを写さずに `writable` の包みにする（ほかは [`ar_to_py`]）。包みから読んだ物・Arrow が Python へ返した物（2-6）。
+fn to_py_shared(py: Python<'_>, val: &Value, writable: bool) -> PyResult<PyObject> {
+    match val {
+        Value::Instance(_) if !is_singleton(val) => wrap_arrow_object(py, val, writable),
+        other => ar_to_py(py, other),
+    }
+}
+
+/// CPython の同じ値に写す唯一の値（`...` / `NotImplemented`・2-3）か。包まない。
+fn is_singleton(val: &Value) -> bool {
+    matches!(val, Value::Instance(inst) if matches!(
+        inst.borrow().class.builtin,
+        crate::interpreter::BuiltinClass::Ellipsis | crate::interpreter::BuiltinClass::NotImplemented
+    ))
+}
+
+/// Python から呼べる Arrow の関数・クラス・ジェネレータ関数（2-5・2-6）。中身は [`ARROW_VALUES`] にあり、作ったスレッドからだけ呼べる。
 #[pyclass(name = "ArrowFunction", module = "arrow")]
 pub struct ArrowFunction {
     id: u64,
     thread: std::thread::ThreadId,
     name: String,
+    /// 呼べない理由（読むだけの包みから読んだ `mut self` のメソッド・2-6）。呼ぶと `TypeError`。
+    blocked: Option<String>,
 }
 
 #[pymethods]
@@ -330,69 +457,44 @@ impl ArrowFunction {
 
 impl Drop for ArrowFunction {
     fn drop(&mut self) {
-        if std::thread::current().id() == self.thread {
-            // ⚠ 値は表の借用を落としてから捨てる（中の値が別の包みを捨てると、その `Drop` がまた表を借りる）
-            let removed = ARROW_FUNCTIONS.try_with(|t| t.borrow_mut().remove(&self.id));
-            drop(removed);
-        } else {
-            DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner()).push((self.thread, self.id));
-        }
+        release_arrow_value(self.id, self.thread);
     }
 }
 
-/// Arrow の関数を包む（[`ArrowFunction`]）。別のスレッドで捨てられた包みの中身をここで消す。
+/// Arrow の関数・クラス・ジェネレータ関数を包む（[`ArrowFunction`]）。
 fn wrap_arrow_function(py: Python<'_>, val: &Value, name: String) -> PyResult<PyObject> {
-    let me = std::thread::current().id();
-    let stale: Vec<u64> = {
-        let mut q = DROPPED_ELSEWHERE.lock().unwrap_or_else(|e| e.into_inner());
-        let (mine, others): (Vec<_>, Vec<_>) = q.drain(..).partition(|(t, _)| *t == me);
-        *q = others;
-        mine.into_iter().map(|(_, id)| id).collect()
-    };
-    let removed: Vec<Option<Value>> =
-        ARROW_FUNCTIONS.with(|t| stale.iter().map(|id| t.borrow_mut().remove(id)).collect());
-    drop(removed);
-    let id = NEXT_FUNCTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    ARROW_FUNCTIONS.with(|t| t.borrow_mut().insert(id, val.clone()));
-    Ok(Py::new(py, ArrowFunction { id, thread: me, name })?.into_any())
+    wrap_arrow_function_with(py, val, name, None)
+}
+
+fn wrap_arrow_function_with(py: Python<'_>, val: &Value, name: String, blocked: Option<String>) -> PyResult<PyObject> {
+    let id = store_arrow_value(val);
+    let thread = std::thread::current().id();
+    Ok(Py::new(py, ArrowFunction { id, thread, name, blocked })?.into_any())
 }
 
 /// Python が [`ArrowFunction`] を呼んだ: このスレッドのインタプリタで関数を呼ぶ（再入・GIL は持ったまま）。引数は
-/// Python → Arrow（`py_to_tl`）、戻り値は Arrow → Python（`ar_to_py`）。本体の Arrow の例外は Python の例外（[`arrow_error_to_py`]）。
+/// Python → Arrow（`py_to_tl`）、戻り値は Arrow → Python（インスタンスは書ける包み・[`to_py_shared`]）。本体の Arrow の例外は
+/// Python の例外（[`arrow_error_to_py`]）。
 fn call_arrow_function(
     py: Python<'_>,
     f: &ArrowFunction,
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<PyObject> {
-    if std::thread::current().id() != f.thread {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "the Arrow function '{}' can only be called from the thread that passed it to Python \
-             (Arrow values cannot cross threads)",
-            f.name
-        )));
+    if let Some(reason) = &f.blocked {
+        return Err(pyo3::exceptions::PyTypeError::new_err(reason.clone()));
     }
-    let interp = PY_INTERP.with(|p| p.get());
-    if interp.is_null() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "the Arrow function '{}' was called while no Arrow interpreter is running on this thread",
-            f.name
-        )));
-    }
-    let callee = ARROW_FUNCTIONS
-        .with(|t| t.borrow().get(&f.id).cloned())
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(format!("the Arrow function '{}' was released", f.name)))?;
+    let what = format!("the Arrow function '{}'", f.name);
+    let callee = arrow_value(f.id, f.thread, &what)?;
+    let interp = running_interpreter(&what)?;
     let mut evaled: Vec<(Option<String>, Value, bool)> = args.iter().map(|a| (None, py_to_tl(py, &a), false)).collect();
     if let Some(kw) = kwargs {
         for (k, v) in kw.iter() {
             evaled.push((Some(k.extract::<String>()?), py_to_tl(py, &v), false));
         }
     }
-    // ⚠ Python を呼んだ Arrow の側も `&mut Interpreter` を持ったまま待っている（ネイティブの ABI の `interp_ptr` と同じ形の
-    //   再入）。呼び戻しの間、外側の Arrow はこのインタプリタに触らない。
-    let interp = unsafe { &mut *interp };
     match interp.call_value_evaled(callee, evaled, &f.name, None, 0) {
-        Ok(v) => ar_to_py(py, &v),
+        Ok(v) => to_py_shared(py, &v, true),
         Err(e) => {
             // 呼んだ側の枠は Arrow の呼び出しの位置が無い（Python が呼んだ）ので、呼んだ Python の枠（ファイル・行・関数）にする
             if e == crate::interpreter::RAISE_SENTINEL {
@@ -407,6 +509,281 @@ fn call_arrow_function(
             Err(arrow_error_to_py(py, interp, e))
         }
     }
+}
+
+/// Arrow のクラスのメソッドのうち、包みの型（[`proxy_type`]）に写す特殊メソッド。Python は特殊メソッドを型から引くので、
+/// Arrow のクラスが持つものだけを持つ派生を作る（持たない `__iter__` を持つと pandas などが「list のような物」と見なす）。
+/// ⚠ 比較（`__eq__` / `__lt__` …）・`__hash__`・`__str__` / `__repr__` は [`ArrowObject`] 自身が持ち、Arrow の意味で答える。
+const SPECIAL_METHODS: &[&str] = &[
+    "__len__", "__iter__", "__next__", "__getitem__", "__setitem__", "__delitem__", "__contains__", "__call__", "__bool__",
+    "__neg__", "__pos__", "__abs__", "__invert__", "__index__", "__int__", "__float__", "__add__", "__radd__", "__sub__",
+    "__rsub__", "__mul__", "__rmul__", "__truediv__", "__rtruediv__", "__floordiv__", "__rfloordiv__", "__mod__", "__rmod__",
+    "__pow__", "__rpow__", "__and__", "__rand__", "__or__", "__ror__", "__xor__", "__rxor__", "__lshift__", "__rlshift__",
+    "__rshift__", "__rrshift__", "__enter__", "__exit__",
+];
+
+/// 包みの型を作る Python の関数（Arrow のクラスごとに 1 度だけ呼ぶ）。特殊メソッドは [`ArrowObject::_arrow_special`] へ回す。
+/// ⚠ `__slots__ = ()` で `__dict__` を持たせない（属性の読み書きはすべて [`ArrowObject`] の `__getattr__` / `__setattr__`）。
+const PROXY_FACTORY: &str = r#"
+def make(base, name, specials):
+    def forward(m):
+        def method(self, *args, **kwargs):
+            return self._arrow_special(m, args, kwargs)
+        method.__name__ = m
+        method.__qualname__ = name + "." + m
+        return method
+    ns = {"__slots__": (), "__module__": "arrow", "__qualname__": name}
+    for m in specials:
+        ns[m] = forward(m)
+    return type(name, (base,), ns)
+"#;
+
+static PROXY_FACTORY_FN: OnceLock<Py<PyAny>> = OnceLock::new();
+
+/// Arrow のクラス（`class_id`）の包みの型。初めてなら [`PROXY_FACTORY`] で作って覚える。
+fn proxy_type<'py>(py: Python<'py>, class_id: u32, name: &str, specials: &[&str]) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(t) = PROXY_TYPES.with(|m| m.borrow().get(&class_id).map(|t| t.clone_ref(py))) {
+        return Ok(t.into_bound(py));
+    }
+    let make = match PROXY_FACTORY_FN.get() {
+        Some(f) => f.bind(py).clone(),
+        None => {
+            let module = PyModule::from_code_bound(py, PROXY_FACTORY, "arrow_proxy.py", "arrow_proxy")?;
+            let f = module.getattr("make")?;
+            let _ = PROXY_FACTORY_FN.set(f.clone().unbind());
+            f
+        }
+    };
+    let ty = make.call1((ArrowObject::type_object_bound(py), name, PyTuple::new_bound(py, specials)))?;
+    PROXY_TYPES.with(|m| m.borrow_mut().insert(class_id, ty.clone().unbind()));
+    Ok(ty)
+}
+
+/// Arrow のインスタンスを包む（[`ArrowObject`] の派生）。同じインスタンスを同じ書けるかで渡したら同じ包み（CPython の `is`）。
+fn wrap_arrow_object(py: Python<'_>, val: &Value, writable: bool) -> PyResult<PyObject> {
+    use pyo3::pyclass_init::PyObjectInit;
+    use pyo3::types::{PyWeakrefMethods, PyWeakrefReference};
+    let Value::Instance(inst) = val else {
+        return ar_to_py(py, val);
+    };
+    let key = (Rc::as_ptr(inst) as usize, writable);
+    let known = PROXIES.with(|m| m.borrow().get(&key).map(|w| w.clone_ref(py)));
+    if let Some(weak) = known {
+        if let Ok(weak) = weak.bind(py).downcast::<PyWeakrefReference>() {
+            let obj = weak.get_object();
+            if !obj.is_none() {
+                return Ok(obj.unbind());
+            }
+        }
+    }
+    let (class_id, class_name, specials) = {
+        let i = inst.borrow();
+        let specials: Vec<&str> = SPECIAL_METHODS.iter().copied().filter(|m| i.class.methods.contains_key(*m)).collect();
+        (i.class.class_id, i.class.name.clone(), specials)
+    };
+    let ty = proxy_type(py, class_id, &class_name, &specials)?;
+    let id = store_arrow_value(val);
+    let init = ArrowObject { id, thread: std::thread::current().id(), class_name, writable };
+    let raw = unsafe { PyClassInitializer::from(init).into_new_object(py, ty.as_ptr() as *mut ffi::PyTypeObject) }?;
+    let obj: PyObject = unsafe { Py::from_owned_ptr(py, raw) };
+    let weak = PyWeakrefReference::new_bound(obj.bind(py))?;
+    PROXIES.with(|m| {
+        let mut m = m.borrow_mut();
+        // 死んだ包みの項を掃除する（表が大きくなったときだけ）
+        if m.len() >= 64 {
+            m.retain(|_, w| {
+                w.bind(py).downcast::<PyWeakrefReference>().is_ok_and(|w| !w.get_object().is_none())
+            });
+        }
+        m.insert(key, weak.into_any().unbind());
+    });
+    Ok(obj)
+}
+
+/// `obj` のクラスのメソッド `name` が `mut self` か（読むだけの包みからは呼べない）。
+fn method_mutates_self(obj: &Value, name: &str) -> bool {
+    let Value::Instance(inst) = obj else { return false };
+    inst.borrow()
+        .class
+        .methods
+        .get(name)
+        .and_then(|fs| fs.first())
+        .is_some_and(|f| f.params.first().is_some_and(|p| p.name == "self" && p.mutable))
+}
+
+/// Python から使う Arrow のインスタンス（2-6・D-9）。Arrow のクラスごとの派生（[`proxy_type`]）のインスタンスとして作る。
+/// 属性・メソッドは Arrow のインスタンスを読み、`str` / `repr` / 比較 / `hash` は Arrow の意味（`__str__` / `__eq__` … を持てばそれ）。
+#[pyclass(name = "ArrowObject", module = "arrow", subclass, weakref)]
+pub struct ArrowObject {
+    id: u64,
+    thread: std::thread::ThreadId,
+    class_name: String,
+    /// 書けるか（属性への代入・`mut self` のメソッド）。上の節の doc。
+    writable: bool,
+}
+
+impl ArrowObject {
+    /// 中身のインスタンスと、呼び戻すインタプリタ。
+    fn target<'a>(&self) -> PyResult<(Value, &'a mut crate::interpreter::Interpreter)> {
+        let what = format!("the Arrow object '{}'", self.class_name);
+        let v = arrow_value(self.id, self.thread, &what)?;
+        Ok((v, running_interpreter(&what)?))
+    }
+
+    /// 読むだけの包みから `mut self` のメソッド `method` を呼ぼうとしたときの誤りの文言（呼べるなら `None`）。
+    fn blocked(&self, obj: &Value, method: &str) -> Option<String> {
+        (!self.writable && method_mutates_self(obj, method)).then(|| {
+            format!(
+                "cannot call the `mut self` method '{method}' of the Arrow object '{}' from Python: it was passed \
+                 read-only (pass a `mut` variable to let Python change it)",
+                self.class_name
+            )
+        })
+    }
+}
+
+#[pymethods]
+impl ArrowObject {
+    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+        let (obj, interp) = self.target()?;
+        let blocked = self.blocked(&obj, name);
+        let v = interp.get_attr_val(obj, name, None).map_err(|e| arrow_error_to_py(py, interp, e))?;
+        match (&v, blocked) {
+            (Value::Function(f), Some(reason)) => wrap_arrow_function_with(py, &v, f.name.clone(), Some(reason)),
+            _ => to_py_shared(py, &v, self.writable),
+        }
+    }
+
+    fn __setattr__(&self, py: Python<'_>, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !self.writable {
+            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "cannot set '{name}' of the Arrow object '{}' from Python: it was passed read-only \
+                 (pass a `mut` variable to let Python change it)",
+                self.class_name
+            )));
+        }
+        let (obj, interp) = self.target()?;
+        let v = py_to_tl(py, value);
+        interp.attr_assign_ic(obj, name, v, None).map_err(|e| arrow_error_to_py(py, interp, e))
+    }
+
+    fn __delattr__(&self, name: &str) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "cannot delete '{name}' of the Arrow object '{}': the members of an Arrow class are fixed by its body",
+            self.class_name
+        )))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let (obj, interp) = self.target()?;
+        interp.repr_val(&obj).map_err(|e| arrow_error_to_py(py, interp, e))
+    }
+
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let (obj, interp) = self.target()?;
+        interp.display_str(&obj).map_err(|e| arrow_error_to_py(py, interp, e))
+    }
+
+    fn __richcmp__(&self, py: Python<'_>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<PyObject> {
+        let (obj, interp) = self.target()?;
+        let rhs = py_to_tl(py, other);
+        let op = match op {
+            CompareOp::Lt => BinOp::Lt,
+            CompareOp::Le => BinOp::LtEq,
+            CompareOp::Eq => BinOp::Eq,
+            CompareOp::Ne => BinOp::NotEq,
+            CompareOp::Gt => BinOp::Gt,
+            CompareOp::Ge => BinOp::GtEq,
+        };
+        let r = interp.apply_binop_dyn(&op, obj, rhs).map_err(|e| arrow_error_to_py(py, interp, e))?;
+        ar_to_py(py, &r)
+    }
+
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        let (obj, interp) = self.target()?;
+        interp.hash_value(&obj).map(|h| h as isize).map_err(|e| arrow_error_to_py(py, interp, e))
+    }
+
+    fn __dir__(&self) -> PyResult<Vec<String>> {
+        let (obj, _) = self.target()?;
+        let Value::Instance(inst) = obj else { return Ok(Vec::new()) };
+        let inst = inst.borrow();
+        let mut names: Vec<String> = inst.class.field_index.keys().chain(inst.class.methods.keys()).cloned().collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    /// Arrow のクラスが持つ特殊メソッド `name`（`__len__` / `__getitem__` / `__add__` …）を呼ぶ。包みの型の派生が回してくる
+    /// （[`PROXY_FACTORY`]）。戻り値のインスタンスは、この包みと同じく書ける・読むだけ。
+    #[pyo3(signature = (name, args, kwargs = None))]
+    fn _arrow_special(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let (obj, interp) = self.target()?;
+        if let Some(reason) = self.blocked(&obj, name) {
+            return Err(pyo3::exceptions::PyTypeError::new_err(reason));
+        }
+        let mut evaled: Vec<(Option<String>, Value, bool)> = args.iter().map(|a| (None, py_to_tl(py, &a), true)).collect();
+        if let Some(kw) = kwargs {
+            for (k, v) in kw.iter() {
+                evaled.push((Some(k.extract::<String>()?), py_to_tl(py, &v), true));
+            }
+        }
+        match interp.call_instance_method_evaled(obj, name, evaled, None, None, self.writable) {
+            Ok(v) => to_py_shared(py, &v, self.writable),
+            Err(e) => Err(arrow_error_to_py(py, interp, e)),
+        }
+    }
+}
+
+impl Drop for ArrowObject {
+    fn drop(&mut self) {
+        release_arrow_value(self.id, self.thread);
+    }
+}
+
+/// Python から回す Arrow のジェネレータ（2-6）。`for x in gen`・`next(gen)`・`list(gen)` で 1 つずつ取り出す。
+#[pyclass(name = "ArrowIterator", module = "arrow")]
+pub struct ArrowIterator {
+    id: u64,
+    thread: std::thread::ThreadId,
+}
+
+#[pymethods]
+impl ArrowIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        let what = "the Arrow generator";
+        let Value::Generator(state) = arrow_value(self.id, self.thread, what)? else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!("{what} is not a generator")));
+        };
+        let interp = running_interpreter(what)?;
+        match interp.gen_next(&state) {
+            Ok(Some(v)) => Ok(Some(to_py_shared(py, &v, true)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(arrow_error_to_py(py, interp, e)),
+        }
+    }
+}
+
+impl Drop for ArrowIterator {
+    fn drop(&mut self) {
+        release_arrow_value(self.id, self.thread);
+    }
+}
+
+/// Arrow のジェネレータを包む（[`ArrowIterator`]）。
+fn wrap_arrow_iterator(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
+    let id = store_arrow_value(val);
+    Ok(Py::new(py, ArrowIterator { id, thread: std::thread::current().id() })?.into_any())
 }
 
 /// いま走っている Python の枠（Arrow の関数を呼んだ Python の関数）の (ファイル, 行, 関数名)。トレースバック用。
@@ -528,6 +905,11 @@ pub fn py_class_mro(h: &PyObjHandle) -> Vec<(String, String)> {
 
 /// PyO3 の `Bound<'_, PyAny>` を tl の `Value` に変換する。
 pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
+    // Arrow が渡した包みは元の Arrow の値（同じインスタンス・2-5 / 2-6）。⚠ 先に見る（`__index__` を持つ Arrow のクラスの包みを
+    //   下の int の取り出しが int にしてしまう）
+    if let Some(v) = unwrap_arrow_value(obj) {
+        return v;
+    }
     // bool は int のサブクラスなので先にチェックする
     let type_name = obj
         .get_type()
@@ -1116,14 +1498,6 @@ fn trampoline<'py>(py: Python<'py>, key: &ShapeKey) -> PyResult<Bound<'py, PyAny
     Ok(f)
 }
 
-/// Arrow の値を、写さずに（CPython の物なら自分の参照を手放して）CPython の物にする。
-fn ar_to_py_owned(py: Python<'_>, val: Value) -> PyResult<PyObject> {
-    match val {
-        Value::PyObject(h) => Ok(h.into_py(py)),
-        other => ar_to_py(py, &other),
-    }
-}
-
 /// `head`（呼ぶ物、または `method` の受け手）を呼ぶ。引数の参照も受け取って手放す。
 fn call_shaped(
     head: PyObjHandle,
@@ -1131,15 +1505,16 @@ fn call_shaped(
     evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
     with_py(|py| -> Result<Value, String> {
-        let mut pos: Vec<Value> = Vec::new();
-        let mut kw: Vec<(String, Value)> = Vec::new();
-        for (name, val, _) in evaled {
+        // 3 つ目は引数が `mut` の変数・式か（Arrow のインスタンスを書ける包みにするか・2-6）
+        let mut pos: Vec<(Value, bool)> = Vec::new();
+        let mut kw: Vec<(String, Value, bool)> = Vec::new();
+        for (name, val, writable) in evaled {
             match name {
-                None => pos.push(val),
-                Some(k) => kw.push((k, val)),
+                None => pos.push((val, writable)),
+                Some(k) => kw.push((k, val, writable)),
             }
         }
-        let kw_names: Vec<String> = kw.iter().map(|(k, _)| k.clone()).collect();
+        let kw_names: Vec<String> = kw.iter().map(|(k, _, _)| k.clone()).collect();
         let unique = kw_names.iter().enumerate().all(|(i, k)| !kw_names[..i].contains(k));
         let shapeable = method.map_or(true, is_py_identifier) && kw_names.iter().all(|k| is_py_identifier(k)) && unique;
         if !shapeable {
@@ -1150,11 +1525,11 @@ fn call_shaped(
         let f = trampoline(py, &(method.map(str::to_string), pos.len(), kw_names)).map_err(arrow_side)?;
         let mut owned: Vec<PyObject> = Vec::with_capacity(1 + pos.len() + kw.len());
         owned.push(head.into_py(py));
-        for v in pos {
-            owned.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+        for (v, writable) in pos {
+            owned.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
         }
-        for (_, v) in kw {
-            owned.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+        for (_, v, writable) in kw {
+            owned.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
         }
         // 肩代わりは後ろから `pop` するので、[頭, 位置引数.., キーワード..] の逆順に並べる。
         // ⚠ 要素は `PyList_SET_ITEM` で**引き渡す**（`PyList::new_bound` は写すので、作る間だけ参照が 1 つ多くなる）。
@@ -1174,20 +1549,20 @@ fn call_unshaped(
     py: Python<'_>,
     head: PyObjHandle,
     method: Option<&str>,
-    pos: Vec<Value>,
-    kw: Vec<(String, Value)>,
+    pos: Vec<(Value, bool)>,
+    kw: Vec<(String, Value, bool)>,
 ) -> Result<Value, String> {
     let callable = match method {
         Some(m) => head.bind(py).getattr(m).map_err(python_raised)?,
         None => head.bind(py).to_owned(),
     };
     let mut positional: Vec<PyObject> = Vec::with_capacity(pos.len());
-    for v in pos {
-        positional.push(ar_to_py_owned(py, v).map_err(arrow_side)?);
+    for (v, writable) in pos {
+        positional.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
     }
     let kwargs = PyDict::new_bound(py);
-    for (k, v) in kw {
-        kwargs.set_item(k, ar_to_py_owned(py, v).map_err(arrow_side)?).map_err(arrow_side)?;
+    for (k, v, writable) in kw {
+        kwargs.set_item(k, ar_to_py_arg(py, v, writable).map_err(arrow_side)?).map_err(arrow_side)?;
     }
     let result = callable.call(PyTuple::new_bound(py, positional), Some(&kwargs)).map_err(python_raised)?;
     Ok(py_to_tl(py, &result))

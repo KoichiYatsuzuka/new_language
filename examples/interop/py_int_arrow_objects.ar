@@ -1,0 +1,98 @@
+# py_int_arrow_objects.ar — Arrow のインスタンス・クラス・ジェネレータを Python へ渡す（pandas_import_plan.md の 2-6・D-9）
+#
+# - インスタンスは写さずに共有する（CPython と同じ。同じインスタンスを 2 回渡せば同じ物・Python から戻せば同じインスタンス）。
+#   属性・メソッドは Arrow のインスタンスを読み、`str` / `repr` / `==` / `hash` は Arrow の意味（`__str__` などを持てばそれ）。
+#   Python から見える特殊メソッドは Arrow のクラスが持つものだけ（`__len__` / `__getitem__` / `__add__` …）。
+# - 書けるのは `mut` の変数（と式）を引数に渡したときだけ。`let` の変数は読むだけ（属性への代入・`mut self` のメソッドは TypeError）。
+# - クラス・ジェネレータ関数は呼べる物、ジェネレータは Python の反復子になる。
+import[py-int] py_int_arrow_objects as po
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+class Point:
+    mut x: int
+    mut y: int
+
+    fn __str__(self) -> str:
+        return "(" + str(self.x) + ", " + str(self.y) + ")"
+
+    fn shift(mut self, let dx: int) -> None:
+        self.x = self.x + dx
+
+class Bag:
+    let items: list[int]
+
+    fn __len__(self) -> int:
+        return len(self.items)
+
+    fn __getitem__(self, let i: int) -> int:
+        return self.items[i]
+
+    fn __contains__(self, let v: int) -> bool:
+        return v in self.items
+
+    fn __iter__(self) -> generator[int]:
+        return each(self.items)
+
+gen each(let xs: list[int]) -> int:
+    for x in xs:
+        yield x
+
+class Money:
+    let amount: int
+
+    fn __add__(self, let other: Money) -> Money:
+        return Money(self.amount + other.amount)
+
+# ── 読む: 属性・str / repr・Python の sorted の key ────────────────────────────────
+let p = Point(1, 2)
+check("attributes, str and repr", (po.describe(p) mustbe str).startswith("Point(1, 2) str=(1, 2) repr=<Point object at "))
+mut ps = [Point(3, 0), Point(1, 0), Point(2, 0)] => py_list[Point]
+check("sorted with a key", ((po.by_x(ps) mustbe py_list[str]) => list[str]) == ["(1, 0)", "(2, 0)", "(3, 0)"])
+
+# ── 書く: `mut` の変数を渡すと Python の書き換えが Arrow のインスタンスに届く ──────────────
+mut q = Point(1, 2)
+check("the same instance comes back", (po.move(q, 5) mustbe Point) === q)
+check("Python changed a mut instance", q.x == 6)
+check("a mut self method from Python", (po.call_method(q, 1) mustbe int) == 7 and q.x == 7)
+# `let` の変数は読むだけ
+check("a let instance is read-only", (po.try_set(p) mustbe str) == "TypeError" and p.x == 1)
+
+# ── 同一性・辞書の鍵・hasattr / dir ─────────────────────────────────────────────────
+check("passing the same instance twice gives the same object", (po.same(q, q) mustbe bool))
+check("an Arrow instance as a dict key", (po.as_key(q) mustbe str) == "found")
+mut info = po.hasattrs(q) mustbe tuple[bool, bool, bool]
+check("hasattr / dir", info == (True, False, True))
+
+# Python が持ち続けた物も同じインスタンス
+mut holder = [] => py_list[Point]
+po.keep(holder, q)
+q.x = 100
+check("Python keeps the same instance", holder[0].x == 100)
+
+# ── 特殊メソッド: Arrow のクラスが持つものだけ ───────────────────────────────────────
+let bag = Bag([5, 6, 7])
+mut got = po.length_and_items(bag)
+check("__len__ / __getitem__ / __contains__ / __iter__", str(got) == "(3, 5, False, [5, 6, 7])")
+check("no __iter__ unless the class has one", not (po.is_iterable(p) mustbe bool) and (po.is_iterable(bag) mustbe bool))
+let sum_m = po.add(Money(2), Money(3)) mustbe Money
+check("__add__", sum_m.amount == 5)
+
+# ── クラス・ジェネレータ ────────────────────────────────────────────────────────────
+mut made = po.make(Point, 4, 5) mustbe Point
+check("an Arrow class called from Python", made.x == 4 and str(made) == "(4, 5)")
+check("an Arrow generator iterated by Python", ((po.collect(each([1, 2, 3])) mustbe py_list[int]) => list[int]) == [10, 20, 30])
+
+gen upto(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        yield i
+        i += 1
+
+check("an Arrow generator function called from Python", (po.total_of(upto, 4) mustbe int) == 6)
+
+# ── 作ったスレッド以外から触ると Python の RuntimeError ─────────────────────────────────
+check("another Python thread gets RuntimeError", (po.from_thread(q) mustbe str) == "RuntimeError")

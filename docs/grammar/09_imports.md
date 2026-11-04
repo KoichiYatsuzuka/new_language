@@ -569,7 +569,19 @@ let mean = np.mean(arr)
   同じ名前で `args` も、Arrow で定義した例外は `arrow.ArrowError`）。Python が捕まえずに Arrow へ戻った例外は**元の Arrow の
   例外**（`except Boom as e` で捕まり、欄もトレースバックも元のまま。呼んだ Python の関数もトレースバックに出る）。作った
   スレッド以外（Python の `threading`）から呼ばれたら Python の `RuntimeError`（`examples/interop/py_int_callbacks.ar`・
-  `_runtime_error`）。⚠ ジェネレータ関数・クラス・インスタンスはまだ渡せない（`TypeError`・2-6）。⚠ 以前は関数も `TypeError`
+  `_runtime_error`）。⚠ 以前は関数も `TypeError`
+- **Arrow のインスタンス・クラス・ジェネレータを渡す**（pandas_import_plan.md の 2-6・D-9）: インスタンスは**写さずに共有**する
+  （CPython と同じ。同じインスタンスを 2 回渡せば同じ物・Python から戻せば同じインスタンス・Python が持ち続けても同じ物）。Python
+  からは Arrow のクラスと同じ名前の型（`arrow.ArrowObject` の派生）に見え、属性・メソッドは Arrow のインスタンスを読み、
+  `str` / `repr` / `==` / `<` / `hash` は Arrow の意味（`__str__` / `__eq__` … を持てばそれ）。Python が型から引く特殊メソッドは
+  **Arrow のクラスが持つものだけ**（`__len__` / `__getitem__` / `__iter__` / `__add__` …。持たない `__iter__` を見せると pandas など
+  が「list のような物」と見なすため）。書けるのは呼び出しの引数に `mut` の変数（と式）を渡したときと、書ける物から読んだ物・Arrow
+  の関数が Python へ返した物だけで、`let` の変数・Python の物への格納・演算子の相手・キャストの要素は**読むだけ**（属性への代入と
+  `mut self` のメソッドは Python の `TypeError`）。クラス・ジェネレータ関数は呼べる物（クラスを呼ぶとインスタンス）、ジェネレータは
+  Python の反復子。作ったスレッド以外（Python の `threading`）から触ると Python の `RuntimeError`
+  （`examples/interop/py_int_arrow_objects.ar`・`py_int_instance_arg_error.ar`）。⚠ インスタンスの list / dict / set の欄を Python から
+  読むと、ほかの Arrow のコレクションと同じく `TypeError`（欄を `py_list` などにする・2-11）。⚠ 以前はインスタンス・クラス・
+  ジェネレータは `TypeError` で渡せなかった
 - **同一性**（pandas_import_plan.md の D-4・5-1）: CPython の物どうしの `===`（Python の `is`）は同じオブジェクトなら真で、
   `__eq__` は呼ばない（`==` は `__eq__`）。片方だけ CPython の物なら偽。Arrow の束縛・リストの要素・`mut` の引数を通しても
   同じオブジェクトを指す（`examples/interop/py_int_identity.ar`）。⚠ 以前は `===` が `__eq__` を呼んでいた
@@ -630,8 +642,8 @@ bytes（Python の `bytes` / `bytearray` と、要素が 1 バイトの `memoryv
 `repr(x)` とリストの要素などは `repr(x)` です（以前は常に `repr` でした）。Arrow の値を Python へ渡せない（Arrow のインスタンスなど）のは
 `TypeError` です（7-24。以前は呼び出しの種類で決まる例外で、`ValueError` を投げるメソッドが `AttributeError` になっていました）。ただし `-> int` など `int` を宣言した場所に i64 に入らない
 `int` が返れば、C / C# / Rust と同じく `OverflowError` です（7-9。以前は `FfiTypeError`）。Arrow の set に入れられない要素を含む
-`frozenset` は丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは Python へ渡せません（`TypeError`。
-型名はクラス名）。
+`frozenset` は丸ごと Python のオブジェクトのまま受け取ります。Arrow のクラスのインスタンスは写さずに包んで渡します（上の
+「Arrow のインスタンス・クラス・ジェネレータを渡す」）。
 
 **Python のオブジェクトは `mut` で受けます**（`implementation_plans/pandas_import_plan.md` の D-3・1-2）。Python のオブジェクトの
 まま届く物（インスタンス・関数・配列・大きな整数など）は写さずに参照を共有するので、ほかの参照から中身が変わりえます。
