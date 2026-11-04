@@ -155,3 +155,8 @@ pub fn py_collection_items(_h: &PyObjHandle) -> Option<Vec<Value>> {
 pub fn py_dict_pairs(_h: &PyObjHandle) -> Option<Vec<(Value, Value)>> {
     None
 }
+
+/// 評価コアでは GIL が無いので、そのまま走らせる。
+pub(crate) fn without_gil<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}

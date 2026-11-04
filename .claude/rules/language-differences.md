@@ -165,3 +165,7 @@
     time is a data race. Return results with `block_return` instead.
   - ⚠ Thread-bound values (file objects, `AsyncManager`, `Signal`) are never shared, even through `mut`: the task gets a
     detached copy and using it is a `RuntimeError`; `EventLoop` is the task's own loop (7-19).
+  - Python objects (`import[py-int]`) are shared with a task like `mut` values; their operations run one at a time under
+    the GIL. Waiting for tasks (`wait_for_finish`, `EventLoop.run`) releases the GIL, so a task that uses Python never
+    deadlocks a waiter that Python called (pandas_import_plan.md 2-8). Wrappers Arrow handed to Python are bound to the
+    thread that made them (`RuntimeError` from a task).

@@ -125,7 +125,8 @@ impl Interpreter {
                         break;
                     }
 
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    // GIL を持っていれば手放して待つ（タスクが Python の物を使えるように・2-8）
+                    Self::wait_without_gil(1);
                 }
                 Ok(Value::None)
             }

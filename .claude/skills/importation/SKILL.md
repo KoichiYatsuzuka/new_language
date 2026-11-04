@@ -380,7 +380,8 @@ instances a per-class subclass of `ArrowObject` (`wrap_arrow_object` → `proxy_
 `ArrowIterator` — all hold an id into the thread-local `ARROW_VALUES` (2-5 / 2-6). Instances are shared, one wrapper per
 (instance, writable) (`PROXIES`, weak references); `writable` comes from the call-argument flag (`ar_to_py_arg`), is inherited
 by values read through a wrapper (`to_py_shared`) and is true for values Arrow returns to Python; read-only wrappers refuse
-`__setattr__` and `mut self` methods (`ArrowFunction::blocked`). `py_to_tl` unwraps all three first (`unwrap_arrow_value`).
+`__setattr__` and `mut self` methods (`ArrowFunction::blocked`). `py_to_tl` unwraps all three first (`unwrap_arrow_value`). Waiting for `async` tasks (`wait_for_finish` / `EventLoop.run` → `Interpreter::wait_without_gil`) releases the GIL
+(`py_interop::without_gil`, `IN_PY` set to 0 meanwhile) so a task that uses Python cannot deadlock a waiter Python called (2-8).
 A `.py` file's signatures come from the line-based extractor `parser/py_stub_extract.rs` (top-level `def` / `class`
 only). An unannotated function returns `Any` — nothing is inferred from its body (ffi_value_exchange_plan.md 7-27 /
 7-30), so a body on the `def` line (`def f(): return 1`) needs no special case (python_builtins_plan.md 1-19).

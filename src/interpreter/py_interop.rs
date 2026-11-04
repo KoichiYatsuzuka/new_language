@@ -110,6 +110,28 @@ pub(crate) fn with_py<R>(f: impl FnOnce(Python<'_>) -> R) -> R {
     })
 }
 
+/// このスレッドが GIL を持っていれば、手放して `f` を走らせる（`async` のタスクを待つ間・pandas_import_plan.md の 2-8）。
+///
+/// ⚠⚠ 待つ側が GIL を持ったままだと、Python の物を使うタスクが GIL を取れずに止まる（Python が呼んだ Arrow の関数の中で
+///   `mng.wait_for_finish()` すると、タスクの `c.bump()` を待ち続けた・実測）。待つ間だけ CPython の `PyEval_SaveThread` で手放す。
+/// ⚠ 手放している間はこのスレッドも GIL を持たないので、写し・捨てた参照の増減は待ち行列へ回す（`IN_PY` を 0 にする）。
+pub(crate) fn without_gil<R>(f: impl FnOnce() -> R) -> R {
+    let depth = IN_PY.with(|d| d.get());
+    if depth == 0 {
+        return f();
+    }
+    struct Restore(*mut ffi::PyThreadState, u32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe { ffi::PyEval_RestoreThread(self.0) };
+            IN_PY.with(|d| d.set(self.1));
+        }
+    }
+    IN_PY.with(|d| d.set(0));
+    let _restore = Restore(unsafe { ffi::PyEval_SaveThread() }, depth);
+    f()
+}
+
 impl PyObjHandle {
     /// 所有している参照をそのまま受け取る。
     pub(crate) fn from_owned(obj: Py<PyAny>) -> Self {

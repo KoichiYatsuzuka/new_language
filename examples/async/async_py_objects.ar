@@ -1,0 +1,52 @@
+# async_py_objects.ar — Python の物を `async` のタスクで使う（pandas_import_plan.md の 2-8）
+#
+# - Python の物は `mut` の値と同じく**タスクと共有する**（写さない）。タスクの中の Python の操作は GIL で 1 つずつ走る
+#   （並列には速くならない・提出のときに警告が出る）。
+# - タスクを待つ間（`wait_for_finish`・`EventLoop.run`）は GIL を手放す。Python が呼んだ Arrow の関数の中でタスクを待っても
+#   止まらない（⚠ 以前は、待つ側が GIL を持ったままで、タスクの Python の操作が GIL を待ち続けた）。
+# - Arrow が Python へ渡した包み（Arrow のインスタンス・関数）は作ったスレッドでだけ使える。タスクから触ると Python の
+#   `RuntimeError`（Arrow の値はスレッドをまたげない・2-6）。
+import[py-int] async_py_objects as ap
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+# ⚠ タスクの本体は `mustbe` を使わず `async->Any` で返す（`mustbe` を含む本体は今 VM に載らない・既存の不具合）
+# ── タスクと共有する ────────────────────────────────────────────────────────────────
+mut c = ap.Counter()
+mut mng = AsyncManager(num_thread=2)
+mng <- async->Any:
+    block_return c.bump()
+mng <- async->Any:
+    block_return c.bump()
+mng.wait_for_finish()
+check("no task failed", mng.error_list == [None, None])
+check("the tasks changed the same Python object", (c.n mustbe int) == 2)
+mut seen = c.threads mustbe py_set[Any]
+let main_tid = ap.main_thread_id() mustbe int
+check("the tasks ran on other threads", not (main_tid in seen))
+
+# ── Python が呼んだ Arrow の関数の中でタスクを待つ ─────────────────────────────────────
+fn work() -> int:
+    mut inner = AsyncManager(num_thread=1)
+    inner <- async->Any:
+        block_return c.bump()
+    inner.wait_for_finish()
+    return inner.results[0] mustbe int
+
+check("waiting inside a call from Python does not deadlock", (ap.call(work) mustbe int) == 3)
+
+# ── 包みは作ったスレッドでだけ使える ──────────────────────────────────────────────────
+class Point:
+    mut x: int
+
+mut box = ap.Box(Point(7))
+check("the wrapper works on its own thread", (box.read() mustbe int) == 7)
+mut late = AsyncManager(num_thread=1)
+late <- async->Any:
+    block_return box.read()
+late.wait_for_finish()
+let err = str(late.error_list[0])
+check("another thread gets RuntimeError", err.startswith("RuntimeError") and "cannot cross threads" in err)

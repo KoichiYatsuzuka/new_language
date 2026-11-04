@@ -616,6 +616,12 @@ let mean = np.mean(arr)
   pandas などが壊れる（計画書 6.8）ので、どちらも黙って行わない。`pyobj in xs`（右が Arrow のコレクション）は渡さずに Arrow の
   側で比べる（`examples/interop/py_int_cast_required_error.ar`・`_runtime_error`）。⚠ 例外の `args` は写して渡す（投げたときの値の
   記録・Arrow へ戻れば元の Arrow の例外）。⚠ 以前は深く写して渡していた
+- **`async` のタスク**（pandas_import_plan.md の 2-8）: Python の物は `mut` の値と同じくタスクと共有する（写さない）。タスクの中の
+  Python の操作は GIL で 1 つずつ走る（並列には速くならない・提出のときに警告が出る）。タスクを待つ間（`wait_for_finish`・
+  `EventLoop.run`）は GIL を手放すので、Python が呼んだ Arrow の関数の中でタスクを待っても止まらない。Arrow が Python へ渡した包み
+  （インスタンス・関数）は作ったスレッドでだけ使え、タスクから触ると Python の `RuntimeError`
+  （`examples/async/async_py_objects.ar`）。⚠ 以前は、Python から呼ばれた Arrow の関数の中で Python の物を使うタスクを待つと、
+  待つ側が GIL を持ったまま止まった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する

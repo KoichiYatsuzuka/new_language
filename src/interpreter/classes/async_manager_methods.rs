@@ -15,6 +15,11 @@ use {
 };
 
 impl Interpreter {
+    /// タスクを待つ間の眠り。GIL を持っていれば手放す（Python の物を使うタスクが止まらないように・pandas_import_plan.md の 2-8）。
+    pub(crate) fn wait_without_gil(ms: u64) {
+        crate::interpreter::py_interop::without_gil(|| std::thread::sleep(std::time::Duration::from_millis(ms)));
+    }
+
     /// `AsyncManager` のメソッドを評価済み引数で呼ぶ（#63 で切り出し）。
     /// 呼び出し元は `eval_method_call_full` のみ。
     pub(crate) fn eval_async_manager_method(
@@ -67,12 +72,12 @@ impl Interpreter {
                                     break;
                                 }
                             }
-                            std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+                            Self::wait_without_gil(interval_ms);
                         }
                         break;
                     }
 
-                    std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+                    Self::wait_without_gil(interval_ms);
                 }
 
                 // Propagate first error if raise_immediately, as a catchable raise
