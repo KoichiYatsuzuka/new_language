@@ -9,8 +9,8 @@
 # ⚠ Python のクラスはモジュールの名前で登録するので、kennel の `Dog`・zoo の `Dog`・メインの `Dog` は 3 つの別の型。
 # ⚠ Python のモジュールにない名前（`z.Cat`）は誤りにしない（CPython のモジュールは実行時に名前が増えうるので `Any`）。
 
-import[py-int] test_modules.py_module_types_zoo as z
-import[py-int] test_modules.py_module_types_kennel as k
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
 
 class Dog:
     mut v: int

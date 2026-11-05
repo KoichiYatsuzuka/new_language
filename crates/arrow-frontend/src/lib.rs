@@ -40,7 +40,7 @@ pub mod stmt_walk;
 // テンプレートの AST 置換（タスク 2-7）。単相化（2-8）を展開器・型検査から呼ぶため。
 #[path = "../../../src/template_subst.rs"]
 pub mod template_subst;
-// `import[py-int] time` / `math` の同梱型スタブ。`include_str!` なので fs も syscall も
+// `import[py] time` / `math` の同梱型スタブ。`include_str!` なので fs も syscall も
 // 使わず、そのまま wasm に載る。`src/py_stubs.rs` 冒頭 doc が「置き場所が `src/` 直下
 // なのはこの crate が取り込むため」と書いている、その取り込み。
 #[path = "../../../src/py_stubs.rs"]
@@ -64,7 +64,7 @@ pub mod cpp_header;
 // Rust crate のソースから型の情報を読む部分（`import[rs]` の型の出所・2-2）。
 #[path = "../../../src/rs_crate/mod.rs"]
 pub mod rs_crate;
-// Python のソース（`.py` / `.pyi`）を Arrow へ写す変換器（`import[py]` / `import[py-int]` の型の出所・2-2）。
+// Python のソース（`.py` / `.pyi`）を Arrow へ写す変換器（`.pyi` の型の出所・2-2。変換器は pandas_import_plan.md の 3-3 で消す）。
 #[path = "../../../src/python_converter/mod.rs"]
 pub mod python_converter;
 #[path = "../../../src/lexer/mod.rs"]

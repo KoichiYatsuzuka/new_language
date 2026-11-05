@@ -17,7 +17,7 @@
 #
 # Run: target/release/arrow.exe examples/bench/bench_toplevel_loop.ar
 
-import[py-int] time
+import[py] time
 
 let N = 2_000_000
 

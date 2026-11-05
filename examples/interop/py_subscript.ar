@@ -2,7 +2,7 @@
 #
 # 代入は CPython が実行する。Arrow から CPython の物の添字へ書くのは `py_int_values.ar`。
 
-import[py-int] test_modules.py_subscript as m
+import[py] test_modules.py_subscript as m
 
 # ── ① dict のキー代入 / 読んで書き戻し ──────────────────────────────────
 print(m.dict_set())

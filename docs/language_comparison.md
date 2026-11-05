@@ -223,7 +223,7 @@
 | Import item | `use foo::bar;` | `from foo import bar` | `from foo import bar` |
 | Force source | — | — | `import[ar] module` |
 | Force compiled | — | — | `import[arc] module` |
-| Python interop | — | native | `import[py] module` / `import[py-int]` |
+| Python interop | — | native | `import[py] module`（CPython で実行） |
 | Auto (prefer compiled) | — | — | `import module` (prefers `.arc` if present) |
 
 ---

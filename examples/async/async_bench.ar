@@ -4,7 +4,7 @@
 # We run TASKS tasks sequentially, then the same TASKS tasks in parallel
 # using AsyncManager with NUM_THREADS threads, and compare elapsed times.
 
-import[py-int] time
+import[py] time
 
 const LIMIT: int = 50_000
 const TASKS: int = 8

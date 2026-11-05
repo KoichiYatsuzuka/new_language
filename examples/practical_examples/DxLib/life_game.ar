@@ -23,7 +23,7 @@
 
 # the DxLib SDK is in examples/DxLib (two levels up: `...`)
 import[cpp-lib] ...DxLib.DxLib as dx
-import[py-int] life_game_ops as ops
+import[py] life_game_ops as ops
 
 const COLS:     int = 680
 const ROWS:     int = 480

@@ -4,7 +4,7 @@
 # Arrow の list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_fstring as m
+import[py] test_modules.py_fstring as m
 
 # ── ① 基本形 ────────────────────────────────────────────────────────────
 mut name = "bob"

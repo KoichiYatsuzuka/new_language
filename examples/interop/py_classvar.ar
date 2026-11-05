@@ -5,7 +5,7 @@
 # `Counter.count` は 102 のまま）。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_classvar as m
+import[py] test_modules.py_classvar as m
 
 # ── ① クラス経由の読み取り ──────────────────────────────────────────────
 print(m.Counter.count)

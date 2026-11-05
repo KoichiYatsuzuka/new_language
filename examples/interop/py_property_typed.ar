@@ -5,7 +5,7 @@
 # 注釈の無い getter（`raw`）は今までどおり `Any`（演算する前に `mustbe` などで型を確かめる）。
 # 対になる誤りの例: py_property_typed_error.ar（`float` の property を `str` の変数へ束縛する）
 
-import[py-int] test_modules.py_property_typed as pt
+import[py] test_modules.py_property_typed as pt
 
 mut s = pt.Sensor(21.5, [3, 4, 5] => py_list[int])
 let c: float = s.celsius

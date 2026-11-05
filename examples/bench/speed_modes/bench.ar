@@ -7,7 +7,7 @@
 # AR_BENCH_ONLY=<kN>  runs only that region (setup always runs). Later regions use the world
 #                     left by earlier ones, so CHECK values agree only between runs of the same set.
 
-import[py-int] time
+import[py] time
 from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
 
 let SCALE = int(getenv("AR_BENCH_SCALE", "1"))

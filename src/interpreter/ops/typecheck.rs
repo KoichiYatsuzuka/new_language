@@ -9,8 +9,8 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
 }
 
 /// 外部言語から受け取った値の型名（タプルの要素型名・エラーメッセージ用）。インスタンスはクラス名、`None` は
-/// `NoneType`、それ以外は [`runtime_type_name`]。py-int（2-6）と cs-proc / js-proc（5-2）が使う。
-/// ⚠ 2-6 より前の py-int は表に無い型を 'unknown' と出していた。
+/// `NoneType`、それ以外は [`runtime_type_name`]。Python（2-6）と cs-proc / js-proc（5-2）が使う。
+/// ⚠ 2-6 より前の Python の境界は表に無い型を 'unknown' と出していた。
 pub(crate) fn element_type_name(val: &Value) -> String {
     match val {
         Value::None => "NoneType".to_string(),
@@ -394,7 +394,7 @@ impl Interpreter {
             // C# のオブジェクト（cs-dll / cs-proc）。⚠ 以前はこのアームが無く、`x is Person` / `mustbe Person` /
             //   `case Person:` がどれも偽だった。型スタブが `Option[Person]` を返すようになり（nullable 注釈・
             //   ffi_value_exchange_plan.md 2-1）、絞り込みに要る。
-            // Python のオブジェクト（py-int のクラスのインスタンス・ffi_value_exchange_plan.md 7-27）: Python の `isinstance` と
+            // Python のオブジェクト（Python のクラスのインスタンス・ffi_value_exchange_plan.md 7-27）: Python の `isinstance` と
             // 同じく、クラスとその基底（MRO）の名前で判定する。型をモジュールで修飾して書いたとき（`pc.Box`）は、モジュールの
             // 名前空間の名前とクラスの `__module__` も一致すること（別のモジュールの同名のクラスを取り違えない）
             #[cfg(feature = "native")]

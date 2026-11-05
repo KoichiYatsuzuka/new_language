@@ -11,7 +11,7 @@
 # ⚠ **通る形**は `py_int_stub.ar`（float / int / bool の戻り値・リテラル実引数・
 #   スタブに無いメンバ・`time` の戻り値）。
 
-import[py-int] math
+import[py] math
 
 let s: str = math.sqrt(2.0)
 print(s)

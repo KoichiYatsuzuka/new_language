@@ -82,7 +82,7 @@ pub(super) struct TypeRegistry {
     /// `import[py]` のモジュール（Python のソースを変換したもの）で宣言したクラス（修飾名）。Python のクラスの
     /// 静的メソッドはインスタンスからも呼べる（`StaticMethodOnInstance` を出さない・known_bugs.md の #5）。
     python_class_names: HashSet<String>,
-    /// インスタンスが **CPython のオブジェクト**（実行時の `Value::PyObject`）になるクラス。`import[py-int]` のモジュール
+    /// インスタンスが **CPython のオブジェクト**（実行時の `Value::PyObject`）になるクラス。`import[py]` のモジュール
     /// （CPython で実行する）で宣言したもの。Python の物は `mut` で受ける（pandas_import_plan.md の D-3・1-2）。
     /// ⚠ `python_class_names`（Python のソースを Arrow へ変換したもの・実行時は Arrow のインスタンス）とは別。
     cpython_class_names: HashSet<String>,

@@ -1,7 +1,7 @@
 # bytes — 不変のバイト列（python_builtins_plan.md のタスク 3-1）
 #
-# `bytes(..)` / `"s".encode()` で作る（Arrow のソースに `b".."` のリテラルは無い。Python のモジュールの `b".."` は
-# 変換器が `bytes([..])` に写す）。添字は 1 バイトの int、スライス・`+` / `*` は bytes、表示は CPython と同じ `b'..'`。
+# `bytes(..)` / `"s".encode()` で作る（Arrow のソースに `b".."` のリテラルは無い。Python の bytes は境界で Arrow の
+# bytes に写す）。添字は 1 バイトの int、スライス・`+` / `*` は bytes、表示は CPython と同じ `b'..'`。
 # 出力は CPython と同じ。
 
 let data: bytes = "héllo".encode()

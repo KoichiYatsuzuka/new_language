@@ -5,9 +5,9 @@
 # 期待する結果は、同じ形を CPython で書いて得る（refcount_helper.py の `expected`）。
 # ⚠ 以前は Arrow の束縛がいくつあっても CPython の参照は 1 つで、変数への `df["c"] = ..` まで連鎖代入の警告が出ていた。
 
-import[py-int] pandas as pd
-import[py-int] numpy as np
-import[py-int] refcount_helper as w
+import[py] pandas as pd
+import[py] numpy as np
+import[py] refcount_helper as w
 
 let want = w.expected() => dict[str, list[str]]
 

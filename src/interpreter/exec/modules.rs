@@ -110,11 +110,11 @@ impl Interpreter {
     ///
     /// 起点（import 文を書いたファイルのディレクトリ。ドット付きなら段数を適用済み）を先頭に、
     /// ドット無しの書き方なら `python.search_paths`（起点から祖先へ遡って最初の設定）を続ける。
-    /// 消費者は `import[py-int]` の `sys.path`・C# のブリッジ／ホスト探索。
+    /// 消費者は `import[py]` の `sys.path`・C# のブリッジ／ホスト探索。
     ///
     /// ⚠⚠ 以前はここが**エントリのディレクトリ**（`Self::python_search_dirs`）だった。
     ///   構文解析時はファイルの近くで見つけたのに、実行時は別の場所を探すことになり、
-    ///   サブディレクトリのファイルが書いた `import[py-int]` だけが実行時に失敗した。
+    ///   サブディレクトリのファイルが書いた `import[py]` だけが実行時に失敗した。
     /// ⚠ 起点を持たない import 文（合成した文・テストが組んだ AST）だけは、
     ///   登録済みの探索先（`Self::python_search_dirs`）を使う。
     fn import_search_dirs(&self, origin: &ImportOrigin) -> Vec<PathBuf> {
@@ -505,7 +505,8 @@ impl Interpreter {
         self.module_cache
             .insert(cache_key.clone(), ModuleState::Loading);
 
-        if lang == "py-int" {
+        if lang == "py" {
+            // Python のモジュールは CPython が import して実行する（pandas_import_plan.md の D-1 / D-6）。
             // ⚠ `sys.path` へ足すのは**この import 文の**探索先（[`Self::import_search_dirs`]）。
             let search_dirs: Vec<PathBuf> = self.import_search_dirs(origin);
             // Python から Arrow の関数を呼び戻す先（pandas_import_plan.md 2-5）。import の実行中にも呼ばれうる
@@ -558,13 +559,6 @@ impl Interpreter {
             }
         }
 
-        let prev_in_python = self.in_python_module;
-        // Python のモジュールの本体（定義文はツリーウォークで走る）も Python のコード（格納で写さない・known_bugs.md の #1）。
-        let prev_running_python = self.running_python;
-        if lang == "py" {
-            self.in_python_module = true;
-            self.running_python = true;
-        }
         // ⚠⚠ **モジュールの本体は自分の大域で走らせる**（名前空間の分離・2026-09-26）。
         //   以前はスコープを 1 つ積んで走らせ、終わったらモジュールの名前を**呼び出し側の大域へ
         //   流し込んでいた**（モジュールの関数が同じモジュールの名前を引くため）。その結果、
@@ -594,8 +588,6 @@ impl Interpreter {
         let live = (!mutable_names.is_empty())
             .then(|| crate::interpreter::value::NsLive::Globals(self.cur_globals, Rc::new(mutable_names)));
         self.leave_module_frame(frame);
-        self.in_python_module = prev_in_python;
-        self.running_python = prev_running_python;
         result?;
 
         let ns = Rc::new(NamespaceData {

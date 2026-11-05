@@ -3,8 +3,8 @@
 #
 # 写して渡すと Python の書き換えが戻らず（`heapq.heappush(h, 0)` の後も `h` は元のまま）、包んで渡すと pandas などが
 # 壊れる（計画書 6.8）。どちらも黙って違う結果になるので、書いた所で誤りにする。
-import[py-int] heapq
-import[py-int] py_int_collections as pc
+import[py] heapq
+import[py] py_int_collections as pc
 
 mut h = [3, 1, 2]
 heapq.heappush(h, 0)                          # 関数の引数

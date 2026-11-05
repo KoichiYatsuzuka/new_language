@@ -1,4 +1,4 @@
-# import[py-int] の物の真偽（pandas_import_plan.md の 2-2）
+# import[py] の物の真偽（pandas_import_plan.md の 2-2）
 #
 # `if` / `while` の条件・`not` / `and` / `or` / `bool()` で、CPython の物の真偽は CPython の規則で決まる:
 # `__bool__`、無ければ `__len__`（0 なら偽）、どちらも無ければ真。`__bool__` が投げた例外は Python の例外として
@@ -7,7 +7,7 @@
 # ⚠ `if` / `while` の条件は Arrow では bool でなければならない（型が CPython のクラスと分かれば `if b:` は静的な誤り・
 #   py_int_truthiness_error.ar）。真偽で分けたいときは `bool(b)` と書く。型の分からない値はそのまま条件に書ける（⑤）。
 
-import[py-int] py_int_truthiness as pt
+import[py] py_int_truthiness as pt
 
 fn check(label: str, got: bool, want: bool) -> None:
     if got != want:

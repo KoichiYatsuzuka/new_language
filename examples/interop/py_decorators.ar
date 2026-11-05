@@ -4,7 +4,7 @@
 # の `cls` は呼び出しで渡さない）、Python と同じくインスタンスからも呼べる。
 # ⚠ `@classmethod` の戻り値の型は注釈（`-> "Box"`）から取る（注釈が無ければ `Any`）。
 
-import[py-int] test_modules.py_decorators as d
+import[py] test_modules.py_decorators as d
 
 # ── 定義時に走るデコレータの副作用 ───────────────────────────────────────
 # import の時点で以下が出力済み:

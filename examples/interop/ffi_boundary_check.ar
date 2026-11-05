@@ -10,7 +10,7 @@
 # 検査対象は言語ごとに実装されている（Python / JavaScript）。
 # 静的型付け言語（C/C++・C#・Rust）は向こう側が型を守るため対象外。
 
-import[py-int] ffi_probe.honest_py as H
+import[py] ffi_probe.honest_py as H
 
 fn double_it(let x: int) -> str:
     return "doubled=" + str(x * 2)

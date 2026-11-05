@@ -1,4 +1,4 @@
-# import[py-int] のモジュールの大域変数を読む（pandas_import_plan.md の 1-4）
+# import[py] のモジュールの大域変数を読む（pandas_import_plan.md の 1-4）
 #
 # - 注釈のある大域変数（`count: int = 0`）は、その型で受けられる（`Any` ではない）。注釈の無いもの（`untyped = 3`）は `Any`
 # - 読むたびにモジュールの今の値を読む（CPython と同じ）。モジュールの関数が書き換えた値も見える
@@ -7,8 +7,8 @@
 #   `let s: str = gm.label` は「Python のオブジェクトは let で受けられない」実行時の TypeError になった。
 # 静的な誤りの形は py_int_module_globals_error.ar。
 
-import[py-int] py_int_module_globals as gm
-from py_int_module_globals import[py-int] label
+import[py] py_int_module_globals as gm
+from py_int_module_globals import[py] label
 
 fn check(name: str, ok: bool) -> None:
     if not ok:

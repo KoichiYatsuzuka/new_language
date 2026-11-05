@@ -21,7 +21,7 @@
 #
 # ⚠ Arrow のコードの KeyError も同じ（送出の場が値を控える・`error_with_args`）。
 
-import[py-int] test_modules.py_key_error_args as m
+import[py] test_modules.py_key_error_args as m
 
 m.run()
 

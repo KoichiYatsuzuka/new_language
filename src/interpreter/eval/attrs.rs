@@ -50,7 +50,7 @@ impl Interpreter {
         name: &str,
     ) -> Option<Value> {
         if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
-            // `import[py-int]` のモジュール: 今の属性を読んで Arrow の値にする（`NsLive::Python`）。⚠ 読めない名前は
+            // `import[py]` のモジュール: 今の属性を読んで Arrow の値にする（`NsLive::Python`）。⚠ 読めない名前は
             // `None`（呼び出し側が `AttributeError` にする）。Python が投げた例外（`__getattr__` の中など）も同じ
             return crate::interpreter::py_interop::py_getattr(module, name)
                 .ok()
@@ -782,7 +782,7 @@ impl Interpreter {
                 Err(format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
             }
             Value::PyObject(_) => Err(format!(
-                "TypeError: cannot delete attribute '{attr}' of a CPython object (import[py-int]) yet"
+                "TypeError: cannot delete attribute '{attr}' of a CPython object (import[py]) yet"
             )),
             // 組み込みの値（リスト・文字列など）の属性はメソッドだけで、消せない（CPython と同じ文言）。
             other => {
@@ -972,7 +972,7 @@ impl Interpreter {
             //    `cannot set attribute on non-instance` になっていた。
             //    `let` / `const`・関数などは型検査が弾く（6-1）。ここは型検査を通らない経路の砦。
             Value::Namespace(ns) => {
-                // `import[py-int]` のモジュール: CPython の `setattr`（Python のモジュールの大域は外から書き換えられる・2-9）
+                // `import[py]` のモジュール: CPython の `setattr`（Python のモジュールの大域は外から書き換えられる・2-9）
                 if let Some(crate::interpreter::value::NsLive::Python(module)) = &ns.live {
                     return crate::interpreter::py_interop::py_setattr(module, attr, &rhs);
                 }

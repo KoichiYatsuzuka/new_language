@@ -180,7 +180,7 @@ impl Parser {
         // ⚠⚠ #74: **探索方針を祖先ウォークへ揃えた**（以前は `source_dir` と `root_dir` の
         // 2 箇所だけ）。揃える前は、`examples/interop/py_subdir/` のように**自分の設定を
         // 持たないサブディレクトリ**から実行すると、同じ `ar_config.json` が
-        // `import[py-int]` からは見えて `import[py]` からは見えず **ParseError** になっていた。
+        // 実行時（CPython の `sys.path`）からは見えて型の側（ここ）からは見えず **ParseError** になっていた。
         // ⚠ ドット無しの import では `from_dir` はエントリのディレクトリ（CPython の `sys.path[0]`
         //   相当・[`crate::module_path`]・2026-10-02）。
         let cfg = crate::ar_config::find_ancestor_config(from_dir);

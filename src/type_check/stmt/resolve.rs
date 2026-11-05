@@ -170,7 +170,7 @@ impl TypeChecker {
     ) -> std::collections::HashMap<String, InferredType> {
         let prev = self.registry.enter_module_scope(&module.join("."));
         let mut raw = self.collect_module_types(lang, body);
-        if matches!(lang, "py" | "py-int") {
+        if lang == "py" {
             self.collect_py_overloads(lang, module, body);
         }
         // Arrow のモジュールは、関数の型をレジストリのシグネチャ（修飾名の型で集めてある）から取る。
@@ -353,8 +353,9 @@ impl TypeChecker {
                 }
             }
         }
-        if lang == "py" || lang == "py-int" {
-            InferredType::PyNamespace(members, lang == "py-int")
+        if lang == "py" {
+            // Python のモジュールは CPython のモジュール（3-2・`PyNamespace` の 2 つ目）
+            InferredType::PyNamespace(members, true)
         } else {
             let closed = if known.is_some() { super::check::closed_module(lang, path) } else { None };
             let vars = crate::type_check::types::ModuleVars {
@@ -452,7 +453,7 @@ impl TypeChecker {
                         .map(|t| {
                             if matches!(lang, "js-proc" | "cpp-dll" | "cpp-lib") {
                                 InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                            } else if matches!(lang, "py" | "py-int") {
+                            } else if lang == "py" {
                                 InferredType::from_ann(t).unwrap_or(InferredType::Any)
                             } else {
                                 Self::type_ann_to_inferred(t)

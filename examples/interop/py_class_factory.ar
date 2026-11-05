@@ -6,7 +6,7 @@
 # ⚠ Arrow の関数の中の class は構文の誤り（classes/class_in_function_error.ar）。
 # ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
 
-import[py-int] test_modules.py_class_factory as f
+import[py] test_modules.py_class_factory as f
 
 # ── ① ファクトリを Python の中で使い切る ────────────────────────────────
 #     Counter は関数の引数 step（3）を閉包として捕まえ、最上位の Base を継承する。

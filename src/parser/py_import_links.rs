@@ -1,6 +1,6 @@
 // parser/py_import_links.rs — Python のモジュールの import の表（型の再エクスポートをたどるため・pandas_import_plan.md の 1-3）。
 //
-// `import[py-int]` の型スタブ（`py_stub_extract`）は 1 つのファイルの宣言しか読まないので、`pandas/__init__.py` の
+// `import[py]` の型スタブ（`py_stub_extract`）は 1 つのファイルの宣言しか読まないので、`pandas/__init__.py` の
 // `from pandas.core.api import DataFrame` のような**再エクスポート**と、注釈に書いた**よそのモジュールのクラス**
 // （`if TYPE_CHECKING:` の中の `from pandas.core.frame import DataFrame`）が型にならず、すべて `Any` になっていた。
 // ここは「このモジュールの名前がどのモジュールの何を指すか」だけを集める。たどって宣言を写すのは `py_modules.rs`。

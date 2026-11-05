@@ -694,7 +694,7 @@ fn test_decorator_instance_callable() {
 fn test_ar_to_py_dict() {
     // Arrow の dict は `=> py_dict[..]` で写して Python に渡す（sum_dict はすべての int 値を合計する・pandas_import_plan.md の D-12）
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "let d = {\"x\": 10, \"y\": 20, \"z\": 12}\n",
         "let r = calc.sum_dict(d => py_dict[str, int])\n",
     );
@@ -713,7 +713,7 @@ fn test_ar_to_py_dict() {
 #[test]
 fn test_python_exception_is_the_same_arrow_exception() {
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "mut c = calc.Container([1] => py_list[int])\n",
         "mut msg = \"\"\n",
         "try:\n",
@@ -734,7 +734,7 @@ fn test_python_exception_is_the_same_arrow_exception() {
 #[test]
 fn test_python_object_truthiness_uses_len() {
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "mut empty = calc.Container([] => py_list[int])\n",
         "mut full = calc.Container([1] => py_list[int])\n",
         "let r = [bool(empty), not empty, bool(full), not full]\n",
@@ -755,7 +755,7 @@ fn test_python_object_truthiness_uses_len() {
 fn test_ar_to_py_tuple() {
     // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "let t = (99, 1, 2)\n",
         "let r = calc.first_of_tuple(t)\n",
     );
@@ -823,7 +823,7 @@ fn test_python_fn_name_undoes_converter_names() {
 #[test]
 fn test_arrow_instance_is_shared_with_python() {
     let src = concat!(
-        "import[py-int] builtins as b\n",
+        "import[py] builtins as b\n",
         "class P:\n",
         "    mut x: int\n",
         "mut p = P(1)\n",

@@ -2,7 +2,7 @@
 #
 # 組で複数の型を捕まえる形。要素には修飾名（h.ConfigError）も書ける。CPython が実行する。
 
-import[py-int] test_modules.py_except_tuple as t
+import[py] test_modules.py_except_tuple as t
 
 print(t.parse("12"), t.parse("x"))      # 12 -1
 print(t.classify(1))                    # KeyError in the tuple

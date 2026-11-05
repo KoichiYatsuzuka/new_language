@@ -4,7 +4,7 @@
 # Arrow から渡す list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す（D-12）。
 # Arrow 側の `f(*xs)` / `f(**d)` は `examples/basics/call_spread.ar`。
 
-import[py-int] test_modules.py_call_spread as m
+import[py] test_modules.py_call_spread as m
 
 # ── ① リストを丸ごと展開 ────────────────────────────────────────────────
 mut xs = [1, 2, 3]

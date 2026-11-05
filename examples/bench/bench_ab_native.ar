@@ -6,7 +6,7 @@
 # 出力は 1 行 1 指標の `METRIC <name> <seconds>` 形式（ab_bench_modes.ps1 が解析する）。
 # ⚠ .arc の形式はブランチ間で異なるので、**測る側のバイナリで --compile し直してから**走らせること。
 
-import[py-int] time
+import[py] time
 
 from bench_ab_native_module import noop0
 from bench_ab_native_module import id1

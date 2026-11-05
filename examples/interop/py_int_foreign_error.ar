@@ -1,4 +1,4 @@
-# py_int_foreign_error.ar — py-int で Python が投げた例外の種類（正例・ffi_value_exchange_plan.md 7-24・pandas_import_plan.md の 2-1）
+# py_int_foreign_error.ar — Python が投げた例外の種類（正例・ffi_value_exchange_plan.md 7-24・pandas_import_plan.md の 2-1）
 #
 # Python が投げた組み込みの例外は、同じ名前の Arrow の例外（`ValueError`・`KeyError`）。メッセージ（`e.message`・`str(e)`）は
 # CPython の `str(e)`。Arrow の値を Python へ渡せない（キャストしていない Arrow の list など・pandas_import_plan.md の 2-11）のは
@@ -12,7 +12,7 @@
 # 実行には Python（py_int_probe.py）が要る。
 # 対になる負例: py_int_exception_error.ar
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

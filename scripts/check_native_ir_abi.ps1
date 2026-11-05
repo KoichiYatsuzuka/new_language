@@ -42,7 +42,7 @@ foreach ($src in $sources) {
     $rel = $src.Substring($repo.Length + 1)
     $dst = Join-Path $work $rel
     New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
-    # モジュールが同じディレクトリの下の資源を import する（`import[py-int] ffi_probe.x`・11-3）ので、ディレクトリごとに
+    # モジュールが同じディレクトリの下の資源を import する（`import[py] ffi_probe.x`・11-3）ので、ディレクトリごとに
     # 1 回だけ中身を写す（作ったもの・バイナリは除く）
     $srcDir = Split-Path $src
     if (-not $copiedDirs.ContainsKey($srcDir)) {

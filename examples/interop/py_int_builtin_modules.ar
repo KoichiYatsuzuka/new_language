@@ -1,19 +1,19 @@
-# import[py-int] で、`.py` の無い Python のモジュール（C で書かれたもの）を使う（pandas_import_plan.md の 1-4・1-6）
+# import[py] で、`.py` の無い Python のモジュール（C で書かれたもの）を使う（pandas_import_plan.md の 1-4・1-6）
 #
 # `sys` / `itertools` / `zlib` などは CPython に組み込まれているか、拡張モジュール（`.pyd`）で、型を読むファイルが無い。
 # Arrow はそれらのスタブ（`stubs/generated/`）を同梱していて、それで型を付ける:
 #   - typeshed にあるモジュール（`sys`・`zlib`・`binascii`・`itertools` …）は typeshed の型（戻り値も型つき・1-6）
 #   - typeshed に無いモジュール（`_collections` など）は CPython の内省: 引数の名前と数（`__text_signature__`）と大域変数の
 #     型だけで、戻り値は `Any`（`mustbe` で確かめる）
-# ⚠ 1-4 より前は同梱のスタブが `math` と `time` だけで、ほかは `import[py-int] sys` が「型が見つからない」構文解析の誤りだった。
+# ⚠ 1-4 より前は同梱のスタブが `math` と `time` だけで、ほかは `import[py] sys` が「型が見つからない」構文解析の誤りだった。
 #   1-6 より前は、どのモジュールの戻り値も `Any` だった。
 # 静的な誤りの形は py_int_builtin_modules_error.ar。
 
-import[py-int] sys
-import[py-int] itertools
-import[py-int] collections
-import[py-int] zlib
-import[py-int] binascii
+import[py] sys
+import[py] itertools
+import[py] collections
+import[py] zlib
+import[py] binascii
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

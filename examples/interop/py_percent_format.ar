@@ -18,6 +18,6 @@
 #   t
 #   [T()]
 
-import[py-int] test_modules.py_percent_format as pf
+import[py] test_modules.py_percent_format as pf
 
 pf.run()

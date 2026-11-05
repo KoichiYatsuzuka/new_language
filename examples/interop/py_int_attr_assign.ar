@@ -1,4 +1,4 @@
-# import[py-int] の物とモジュールの属性へ代入する（pandas_import_plan.md の 2-9）
+# import[py] の物とモジュールの属性へ代入する（pandas_import_plan.md の 2-9）
 #
 # `o.x = v` は CPython の `setattr` を呼ぶ（`__setattr__`・`@property` の setter・pandas の `df.columns = [..]` も）。
 # モジュールの大域（`m.count = 5`）も Python では外から書き換えられるので代入できる。型スタブに型のある属性・大域変数は
@@ -6,7 +6,7 @@
 # ⚠ 以前は CPython の物への代入に腕が無く `cannot set attribute on non-instance`、モジュールの大域は
 #   「`mut` のモジュールの変数だけ代入できる」の TypeError だった。
 
-import[py-int] py_int_attr_assign as aa
+import[py] py_int_attr_assign as aa
 
 fn check(name: str, ok: bool) -> None:
     if not ok:

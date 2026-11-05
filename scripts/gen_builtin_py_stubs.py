@@ -1,6 +1,6 @@
 """`.py` の無い Python のモジュールの型スタブを、typeshed と CPython の内省で作る（pandas_import_plan.md の 1-4・1-6）。
 
-`import[py-int] sys` の型は、そのモジュールの `.pyi` / `.py` から抽出する。C で書かれたモジュール（`sys`・`itertools`・
+`import[py] sys` の型は、そのモジュールの `.pyi` / `.py` から抽出する。C で書かれたモジュール（`sys`・`itertools`・
 `_collections` などの built-in と、標準ライブラリの拡張モジュール `select.pyd` など）には読むファイルが無いので、
 Arrow に同梱する（`src/py_stubs.rs`）。ここはその同梱のスタブ `stubs/generated/<モジュール>.pyi` と、表
 `src/py_stubs_generated.rs` を作り直す。

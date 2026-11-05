@@ -2,7 +2,7 @@
 # 非コンパイル・コンパイル済みの両方で同じファイルを走らせる（scripts/native_slowdown.ps1・native_slowdown_analysis.md）。
 # 回数は 200000 × AR_BENCH_SCALE（既定 1）
 
-import[py-int] time
+import[py] time
 import slowdown_core as d
 
 let N = 200000 * int(getenv("AR_BENCH_SCALE", "1"))

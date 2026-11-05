@@ -1,9 +1,9 @@
 ## pandas_example.tl — pandas の基本的な使い方
 
-import[py-int] warnings as w
+import[py] warnings as w
 w.simplefilter("ignore")   # pandas CoW FutureWarning を抑制する
 
-import[py-int] pandas as pd
+import[py] pandas as pd
 
 # ── 1. DataFrame 作成 ──────────────────────────────────────────────
 let df = pd.DataFrame({

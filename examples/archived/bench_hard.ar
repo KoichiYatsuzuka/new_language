@@ -20,7 +20,7 @@
 # tree-walk interpreter still executes it).  The gap will appear once LLVM IR
 # code-generation replaces the embedded source with native machine code.
 
-import[py-int] time
+import[py] time
 import prime_counter
 
 let LIMIT = 500000

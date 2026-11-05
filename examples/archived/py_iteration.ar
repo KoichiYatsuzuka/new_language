@@ -1,6 +1,6 @@
 ## py_iteration.tl — PyObject の for ループ反復例
 
-import[py-int] py_calculator as calc
+import[py] py_calculator as calc
 
 # Container は Python iterable; for ループで各要素を走査できる
 let c = calc.make_container([10, 20, 30, 40])

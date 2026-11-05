@@ -5,7 +5,7 @@
 # Python で送出した派生の例外を捕まえる（CPython の `isinstance`・pandas_import_plan.md 2-1）。
 # ⚠ 捕まえた値は CPython の物（`as mut e` で受ける）。Arrow の例外の欄 `e.message` は無いので `str(e)` で読む。
 
-import[py-int] test_modules.py_exception_hierarchy as p
+import[py] test_modules.py_exception_hierarchy as p
 
 print(p.run())
 # ValueError branch, ValueError branch, Exception branch, Exception branch

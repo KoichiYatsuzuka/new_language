@@ -45,7 +45,7 @@ Plan and decisions: `implementation_logs/IMPORT_RESOLUTION_PLAN.md`. The search 
 - Static errors: `ModuleHasNoMember` / `CannotImportName` (name is no declaration / re-export / submodule —
   members come from `module_member_cache` + `module_children`, built by `TypeChecker::namespace_type`),
   `UnimportedModuleType` (a type spelled through a module this file did not bind).
-- Each statement carries `origin: ImportOrigin { level, base_dir, span }`; runtime lookups (py-int
+- Each statement carries `origin: ImportOrigin { level, base_dir, span }`; runtime lookups (py
   `sys.path`, C# bridge/host, js-proc config) use `base_dir` (entry dir for absolute imports). Statements not
   parsed from a file (REPL, tests) carry `base_dir: None` and use `Interpreter::add_python_search_dir`.
 
@@ -65,8 +65,7 @@ Plan and decisions: `implementation_logs/IMPORT_RESOLUTION_PLAN.md`. The search 
 |-----|-------|
 | *(none)* | `.arc` preferred, falls back to `.ar` or `__init__.ar` |
 | `ar` / `arc` | Force `.ar` source only / force `.arc` compiled only |
-| `py` | Python `.py` via converter |
-| `py-int` | `.pyi`→`.py` for type checking only; runtime via PyO3 |
+| `py` | `.pyi`→`.py` for type checking only; runtime: CPython via PyO3 (`import[py-int]` was removed: a parse error) |
 | `rs` | Rust crate — auto-compiles a wrapper DLL (requires `ar_config.json` with `rust.crates_path`) |
 | `cpp-dll` / `cpp-lib` | C header (`Dir.Name` → `Dir/Name.h`) for type stubs; runtime via `cpp_bridge` |
 | `js-proc` | Node.js subprocess via named-pipe NDJSON-RPC (see below) |
@@ -99,8 +98,7 @@ Type checking (`src/type_check/stmt/check.rs` / `resolve.rs`) reads the `body` A
 import module.path                    # ar-auto (default)
 import[ar]  module.path              # force .ar source
 import[arc] module.path              # force .arc compiled
-import[py]  module.path              # Python source
-import[py-int] module.path           # Python type stubs (runtime via PyO3)
+import[py]  module.path              # Python module: type stubs, runs on CPython (PyO3)
 import[rs]  crate_name               # Rust crate
 import[rs]  crate_name[0.2]          # Rust crate, specific version
 import ..module.path                 # relative: one level up from this file
@@ -110,7 +108,7 @@ from module import[lang] Name1, Name2 as N2
 from ..module import Name
 ```
 
-`parse_lang_bracket()` (imports.rs:267) reads the `[lang]` bracket and assembles hyphenated identifiers (e.g. `py-int`). If absent, the default is `"ar-auto"`.
+`parse_lang_bracket()` (imports.rs:267) reads the `[lang]` bracket and assembles hyphenated identifiers (e.g. `cpp-dll`). If absent, the default is `"ar-auto"`.
 
 `parse_version_bracket()` (imports.rs:359) reads `[X.Y.Z]` — only valid for `import[rs]`.
 
@@ -120,7 +118,7 @@ from ..module import Name
 
 ```
 Stmt::Import {
-    lang:          String,          // "ar-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
+    lang:          String,          // "ar-auto" | "ar" | "arc" | "py" | "rs" | "cpp-dll" | ...
     module:        Vec<String>,     // Arrow/py: per-file module name (`pkg.util`); others: written path;
                                     // cpp: [resolved header path]
     source_module: Option<String>,  // written spelling when it differs (`..util`, cpp `A.B`)
@@ -154,8 +152,8 @@ lang         → loader
 "ar"         → load_tl_source_module (alias)
 "tlc"        → load_tlc_module       force .arc, error if absent
 "arc"        → load_tlc_module       (alias)
-"py"         → load_python_module    Python source → converter → AST
-"py-int"     → load_python_interface_module  .pyi → .py → empty on miss
+"py"         → load_python_interface_module  .pyi → .py → bundled stub; runtime = CPython
+"py-int"     → error                 removed (write `import[py]`)
 "rs"         → load_rs_module        compile Rust crate → stub AST
 "cpp-dll"    → parse_cpp_import      parse C header → stub AST
 "cpp-lib"    → parse_cpp_import      (alias)
@@ -204,116 +202,15 @@ as the child's `source_dir`) and a key (absolute + normalized, `found_paths`). �
 
 ---
 
-## Python Modules (`load_python_module`, `src/parser/imports/py_modules.rs`)
+## Python Modules (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)
 
-- Search (`python_import_dirs(from_dir, level)`): no dots → the **entry directory** then
-  `python_search_dirs_from(entry)`'s external dirs (`python.search_paths` from the nearest ancestor
-  `ar_config.json`, `PYTHONPATH`, site-packages, stdlib) — CPython's `sys.path`; dots → counted from
-  `from_dir` only. Candidates `{module_path}.py` / `{module_path}/__init__.py`; a directory without
-  `__init__.py` is a namespace package.
-- `from_dir` (relative imports only) is the `.ar` file's directory for `import[py]`, and **the `.py` file's
-  directory** for imports inside a Python module (`fill_python_imports`, which also inserts package chains /
-  submodule imports in front of each statement). A module found in the entry directory or a relative base is
-  named relative to the entry directory; one found in an external dir keeps the written name.
-- Converts Python source via `python_converter::convert_python_source()`
-- ⚠ Placement rules (task 10-16): an `import` inside a function or a module-level block
-  (`if` / `try` …) and a `class` inside a module-level block are **conversion errors**
-  (`reject_nested_import` / `reject_class_in_module_block`). A `class` inside a function is
-  converted and runs on the VM (`Op::ClassDef` → `Interpreter::vm_class_def`). Arrow code may not
-  use a Python function that returns a class it defines (`TypeErrorKind::PyClassFactoryFromArrow`);
-  a decorated Python class has an open member set (`members_unresolved`).
-- ⚠ Nested classes (task 10-18): `convert_class` returns a statement list — a class defined in a
-  class body is hoisted in front of its outer class under its `__qualname__` (`Outer.Inner`), and the
-  outer class gets a class variable `Inner` (`static mut`, typed `type[Outer.Inner]`). `Outer.Inner()` /
-  `self.Inner()` reach it through the method-call fallback `Interpreter::class_var_class`. Any class-body
-  statement other than methods, single-name class attributes, nested classes, docstrings, `...` and
-  `pass` is a conversion error (it used to be dropped silently).
-- ⚠ Unsupported builtins (python_builtins_plan.md 1-1): after a successful conversion,
-  `check_unsupported_builtins` (`python_converter/builtins_check.rs`) folds the Python AST once and
-  rejects the module if it **reads** a CPython 3.12 builtin that the Arrow runtime does not resolve
-  (`is_runtime_builtin_name` is false — the list shrinks automatically as builtins are added). Names
-  bound anywhere in the module, decorators, class bases and the `super` of `super().m()` are skipped;
-  a module with `from m import *` is not checked. Structural conversion errors are reported first.
-- Reference sharing (known_bugs.md #1, decision A): every implicit copy on store goes through
-  `Interpreter::copy_for_store` (fields, `append`, `xs[i] = v`, dict / set stores, closure capture) or, for a
-  `mut` declaration, `Interpreter::bind_copy(BindCopy::DeepCopy, ..)`; neither copies while `running_python` is set. `vm::run` / `vm::resume_frame`
-  set it from `Chunk::is_python` (module-statement chunks of a Python module get it in `try_run_module_stmt`) and
-  `exec_module` sets it for a Python module body. `ClassValue::is_python` (set by `exec_class_def` from
-  `in_python_module`) makes `values_eq` / `hash_into` use identity for instances without `__eq__` / `__hash__`.
-  Arrow `let` (`bind_copy(CopyFreeze)`), `self` binding, native calls and `copy()` still copy.
-- `del` (known_bugs.md #2 / #3; `convert_del_target` in `statements.rs`): `del o.a` → `__py_delattr(o, "a")`
-  (`Interpreter::del_attr_val`: the class's `__delattr__`, then a data descriptor's `__delete__`, then
-  `InstanceData::clear_field` puts the field back to unassigned — the boxed slot becomes `None`, a raw class clears its
-  init-bitmap bit); `del d[k]` → `__py_delitem(d, k)` (`Interpreter::eval_delitem`: dict / list / slice /
-  `__delitem__`); `del x` still warns and is ignored; tuple / list targets are flattened left to right. Class and
-  module attributes cannot be deleted (runtime `TypeError`). A `del` in a class body is still a conversion error.
-- `__setattr__` / `__delattr__` (known_bugs.md #10): `attr_assign_evaled` / `set_attr_val` / `del_attr_val` call a Python
-  class's hook first (`Interpreter::py_attr_hook` — `ClassValue::is_python` only). `object.__setattr__(o, k, v)` /
-  `object.__delattr__(o, k)` and `super().__setattr__` / `__delattr__` in an object-based class convert to
-  `__py_object_setattr` / `__py_object_delattr` (`object_method_builtin` in `expressions.rs`), which store past the hook
-  (`attr_assign_without_hook` / `del_attr_val(.., false)`); with a Python base, `Base.__setattr__(self, ..)` falls back to
-  them in `eval_class_method` when the base has no hook. A literal name in `object.__setattr__(self, "x", v)` declares
-  field `x` (`bypass_setattr_name` in `classes.rs`). The checker lets an assignment target on a hooked class name
-  anything (`attr_is_assign_target`). `cached_property` stores through `__py_object_setattr`. The Arrow parser rejects
-  the hooks in Arrow classes (`reject_attr_hook`).
-- Static / class methods through an instance (known_bugs.md #5): for a Python class (`ClassValue::is_python`)
-  `call_instance_method_evaled` sends `obj.f(..)` of a `static fn` / `class_method fn` to `eval_class_method` with the
-  instance's class (static: no `self`; class method: `cls = type(obj)`), and `get_attr_without_hook` returns the plain
-  function / a `BoundTarget::ClassMethod` bound to the class. The checker skips `StaticMethodOnInstance` for
-  `TypeRegistry::is_python_class` (classes collected from an `import[py]` body). Arrow classes keep the class-only rule.
-- `__getattr__` (known_bugs.md #11): `get_attr_val` calls `get_attr_without_hook` and, when that fails with an
-  `AttributeError` (`Interpreter::is_attribute_error` — a message, or a raised exception in `current_exception`, which
-  it clears), calls a Python class's `__getattr__(name)`. A method call on an unknown name reads through it
-  (`call_instance_method_evaled`). `object.__getattribute__(o, k)` / `super().__getattribute__(k)` convert to
-  `__py_object_getattribute` (`get_attr_without_hook`). The checker lets an instance of a hooked class read or call any
-  name (`getattr_hook_type` — the hook's return annotation, else `Any`). `getattr(o, k, d)` / `hasattr` use the same
-  `is_attribute_error`, so an `AttributeError` raised by a property getter or the hook is caught.
-- `__getattribute__` (known_bugs.md #12): `get_attr_val` calls a Python class's `__getattribute__(name)` instead of
-  `get_attr_without_hook` (then `__getattr__` on `AttributeError`). An explicit method call `o.m(..)` — recognised by the
-  method cache that only source call sites pass (`call_instance_method_evaled`; internal special-method calls pass
-  `None`) — reads `m` through the hook and calls the result, so `o.__len__()` goes through it but `len(o)` does not.
-  No field / method cache is filled for such a class (both are filled only past the hook). The checker treats it like
-  `__getattr__` (`getattr_hook_type`), and the Arrow parser rejects it in Arrow classes (`reject_attr_hook`).
-- `object` (python_builtins_plan.md 6-10): a call `object(..)` is converted to the internal builtin
-  `__py_object(..)` (Arrow source may not call `object()`; calling the class value is a runtime error).
-  `super().__init__(..)` in a class without a base (or with base `object`) becomes
-  `__py_object_init(self, ..)` (CPython's `TypeError` on extra arguments); any other `super().m()` there is a
-  conversion error. `super()` passes `*args` / `**kwargs` through like an ordinary call. `super(C, x).m(..)` (6-2) is
-  the same rewrite with receiver `x` when `C` is the class being converted (`current_super_class`); any other `C` is
-  a conversion error (`super_form` in `expressions.rs`; `builtins_check` skips the same shape).
-- `super()` with a Python base (known_bugs.md #6): `super().m(..)` becomes the Python-only internal builtin
-  `__py_super(<first base>, receiver, "m", ..)`. The zero-argument receiver is the current function's first parameter
-  (`SuperReceiverGuard` / `current_super_receiver` in `supers.rs` — `cls` in a class method; none in a static method or
-  a parameterless function, which is a conversion error). `Interpreter::py_super_call` (`class_methods.rs`) runs the
-  base's own function: a class method gets `cls` = the receiver (or its class), a static method gets no receiver, a
-  class receiver calling an instance method passes no `self`; anything else falls back to the old
-  `Base.m(receiver, ..)` (`eval_class_method` — exceptions' `__init__`, `object` hooks).
-- `f = staticmethod(f)` / `g = classmethod(f)` in a class body (6-13, `wrapped_method` in
-  `python_converter/classes.rs`) mark an earlier method static / class (a different name adds a copy). Wrapping
-  anything other than an earlier method of the class is a conversion error; `builtins_check` skips exactly this form.
-- `except m.Err:` is converted to a dotted name, `except (A, B) as e:` to one handler per type
-  (same body); a nested tuple is a conversion error (4-3 / 4-4).
-- ⚠ Properties (python_builtins_plan.md 6-1, `python_converter/classes.rs`): a method with a
-  decorator `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` is
-  renamed (`__property_get_x` / `__property_set_x` / `__property_del_x`), `x` becomes a placeholder
-  `static mut x: Any = None`, and statements **after the class** build the built-in `property`
-  (`C.x = property(C.__property_get_x)`, `C.x.__set_name__(C, "x")`, `C.x = C.x.setter(..)`). Reads and
-  writes then go through the descriptor protocol (1-12). `self.x = v` does not make `x` a field; fields
-  are also collected from `self.attr = ..` in methods other than `__init__` (not for class-attribute or
-  method names). Decorators inside the property decorator apply to the method; decorators outside it
-  wrap the built property (`C.x = logged(C.x)`, 6-6). Conversion errors: two property decorators,
-  `@staticmethod` / `@classmethod` / `@abstractmethod` outside one, `@x.setter` on a method with another
-  name or before `@property def x`, a static/class-method property, `@cached_property`.
-- Class-body names (6-3, `classes.rs` + `class_scope.rs`): a class attribute whose initializer reads a name
-  bound earlier in the class body (method / class attribute / nested class) gets a `None` placeholder and
-  `C.x = <expr with those names rewritten to C.name>` after the class (`ClassNameRewriter`; lambda bodies and
-  comprehension elements are not rewritten, as in Python). `alias = method` / `__repr__ = __str__` define the
-  same method again under the new name; `name = lambda self: ..` becomes a method.
-- Cache key: `("py", key)`
-
-### Python Interface (`load_python_interface_module`, `src/parser/imports/py_modules.rs`)
-
-Used by `import[py-int]`. The body is for type-checking only; the runtime uses PyO3.
+Used by `import[py]` (pandas_import_plan.md D-1 / D-6, task 3-2): CPython imports and runs the module; the body is the
+type stub only (type checking). Search is the shared rule (`python_import_dirs(from_dir, level)`: no dots → the entry
+directory then `python_search_dirs_from(entry)` — `python.search_paths`, `PYTHONPATH`, the stdlib, the user's and the
+system site-packages; dots → counted from the importing file's directory only). The module name is the written spelling.
+⚠ `import[py-int]` (the former name of this path) is a parse error (`dispatch.rs`). ⚠ The former `import[py]` translated the
+Python source to Arrow statements (`python_converter`, `load_python_module`); that loader was removed in 3-2 and the
+converter is used only for `.pyi` stubs until 3-3.
 
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
@@ -326,7 +223,7 @@ name (`Parser::py_raw_stubs`, shared with sub-parsers). ⚠ A copied (re-exporte
 name inside the importing module's stub, so one stub holds one class per name.
 
 **Class names and bases** (pandas_import_plan.md 3-1): the registry qualifies a CPython module's types by the module, like
-an Arrow module (`names_types_by_module` includes `py-int`): `zoo.Dog` and `kennel.Dog` are different types. A stub class
+an Arrow module (`names_types_by_module` includes `py`): `zoo.Dog` and `kennel.Dog` are different types. A stub class
 carries its same-file bases (`py_same_file_bases`; nested siblings first) and, through `py_merge_outside_bases`, bases of
 other modules spelled with that module's name (`pkg.zoo.Dog`), so a derived class is accepted where a base is expected;
 a base in a module the program does not import is a dead end. Copied declarations get their home-file bases qualified by
@@ -361,7 +258,7 @@ the converter; `bundled_stubs_lose_no_declarations` guards it). The import-follo
 back to them too, so `collections.deque` resolves into `_collections`);
 otherwise **an error** (`cannot find its types` — put a `.pyi` next to the importing file). ⚠ Unresolved imports
 are errors for every language since 2026-10-08 (`implementation_plans/editor_import_resolution_plan.md` 1-2): they
-used to fall back to an empty body (no type checking) for `py-int` / `cpp-*` / `cs-*` / `js-proc`.
+used to fall back to an empty body (no type checking) for `py` / `cpp-*` / `cs-*` / `js-proc`.
 At runtime `py_interop::load_py_int_module` inserts `Interpreter::import_search_dirs(origin)` (the search base,
 plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 
@@ -548,20 +445,20 @@ States:
 - `ModuleState::Loading` — set before execution to catch circular imports at runtime
 - `ModuleState::Loaded(NamespaceData)` — cached after first execution
 
-**For `.ar` / `.arc` / `py` imports**: runs the body AST in the module's own globals, collects the declared top-level names as `NamespaceData.members`. Names bound by the module's own imports are members too (re-exports, CPython). After loading, `attach_submodule` makes the module an attribute of its parent package; binding follows `Stmt::Import::bind` (a package `a` for `import a.b`).
+**For `.ar` / `.arc` imports**: runs the body AST in the module's own globals, collects the declared top-level names as `NamespaceData.members`. Names bound by the module's own imports are members too (re-exports, CPython). After loading, `attach_submodule` makes the module an attribute of its parent package; binding follows `Stmt::Import::bind` (a package `a` for `import a.b`).
 
-**Runtime search** (`py-int`'s `sys.path`, the C# bridge `{Name}_native.dll` / host `{Name}_proc.exe`): `Interpreter::import_search_dirs(origin)` = the statement's search base, plus `python.search_paths` (nearest ancestor `ar_config.json`) for non-relative imports. js-proc looks for `ar_config.json` from the search base upward, and passes a JS file found at the search base to the bridge as an absolute path. ⚠ These used to search the entry file's directory (and the CWD for C#).
+**Runtime search** (`py`'s `sys.path`, the C# bridge `{Name}_native.dll` / host `{Name}_proc.exe`): `Interpreter::import_search_dirs(origin)` = the statement's search base, plus `python.search_paths` (nearest ancestor `ar_config.json`) for non-relative imports. js-proc looks for `ar_config.json` from the search base upward, and passes a JS file found at the search base to the bridge as an absolute path. ⚠ These used to search the entry file's directory (and the CWD for C#).
 
 **For `rs` and `arc` imports** (v1 is the only native `.arc` version): calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
 
-**For `py-int` imports**: calls `py_interop::load_py_int_module()` which uses PyO3 to import the Python module directly. `NamespaceData::members` is a snapshot of the non-private attributes as `Value::PyObject` (for `dir()` and `foreign_call_lang`); reads go through `NsLive::Python` — `namespace_member` calls `py_getattr` on the module each time, so values are converted (`sys.version` is an Arrow `str`) and module globals rewritten by Python are current. A call `m.f(..)` skips that read and goes straight to `call_py_method(module, "f", ..)` (`method_call.rs`: one GIL section, the same reference counts as CPython's `LOAD_ATTR` + `CALL`; reading first cost +0.6–0.9 µs per call). A missing name is then Python's `AttributeError`. Exceptions Python raises (`py_interop::python_raised`, pandas_import_plan.md
+**For `py` imports**: calls `py_interop::load_py_int_module()` which uses PyO3 to import the Python module directly. `NamespaceData::members` is a snapshot of the non-private attributes as `Value::PyObject` (for `dir()` and `foreign_call_lang`); reads go through `NsLive::Python` — `namespace_member` calls `py_getattr` on the module each time, so values are converted (`sys.version` is an Arrow `str`) and module globals rewritten by Python are current. A call `m.f(..)` skips that read and goes straight to `call_py_method(module, "f", ..)` (`method_call.rs`: one GIL section, the same reference counts as CPython's `LOAD_ATTR` + `CALL`; reading first cost +0.6–0.9 µs per call). A missing name is then Python's `AttributeError`. Exceptions Python raises (`py_interop::python_raised`, pandas_import_plan.md
 2-1): the error text is CPython's last traceback line (`ValueError: bad` / `pkg.MyErr: bad`) and the exception is stashed
 (`RAISED`); `make_internal_raised_error` takes it (`take_python_exception`) — a built-in one becomes the Arrow exception of
 the same name with Python's `args`, one defined in Python stays a `Value::PyObject` that `vm_exc_matches` checks with CPython's
 `isinstance` (`py_exception_is` for built-in names, `value_is_type` for `m.Err`). Stub classes that inherit a built-in
 exception keep it as their base (`py_exception_base`; across files `py_merge_outside_bases`), so `except m.Err:` type-checks. Assignment `o.x = v` / `m.x = v` on a CPython object or a Python module calls `py_interop::py_setattr` (`attrs.rs` `attr_assign_inner`; borrows receiver and value like `py_setitem`, so `__setattr__` sees CPython's reference counts); the type checker checks `m.x = v` against the stub type of the global (`check_attr_assign`, pandas_import_plan.md 2-9). Truthiness of a CPython object (`eval_truthy`: `if` / `while` / `and` / `or` / `bool()`; `apply_unary_dyn`: `not` / `-` / `~`) asks CPython (`py_truthy` = `PyObject_IsTrue`, `py_unary` = `PyNumber_Negative` / `PyNumber_Invert`; 2-2) — errors raised by `__bool__` arrive as Python exceptions. ⚠ `is_truthy` cannot fail, so it still answers true for a `PyObject`; every caller that can see one goes through `eval_truthy`. `for x in <CPython object>` (`make_for_iterator`) wraps `iter(obj)` (`py_get_iter`) in a `GeneratorState::python` — `gen_next` takes one element per call with `PyIter_Next` (`py_iter_next`; 2-4), so comprehensions, `list()`, `any()` and native-compiled loops are lazy too. ⚠ The borrow of the state is dropped before calling CPython (`__next__` may call back into Arrow once 2-5 exists). Slicing a CPython object passes the slice through (`eval_subscript_slice` / `eval_setitem_slice` → `py_getitem` / `py_setitem`; `ar_to_py` turns `Value::Slice` into `PySlice_New` and the `Ellipsis` / `NotImplemented` singletons into CPython's; 2-3). A slice may hold any bounds (`slice_from_values`); Arrow containers check them when slicing (`slice_bound`), and the type checker skips the int check when the subscript target is a CPython class or `Any` (`takes_foreign_slices`). `===` (Python's `is`) with a CPython operand is identity (`apply_binop` → `values_ref_eq`, `PyObjHandle::identity`; never `__eq__`; one side only → false; D-4 / 5-1).
 
-**Arrow functions passed to Python** (2-5, design in pandas_import_plan.md 2.7): `ar_to_py` wraps `Function` / `OverloadedFn` / `NativeFunction` in the `#[pyclass] ArrowFunction` (holds only an id + the creating thread; the `Value` lives in the thread-local `ARROW_FUNCTIONS`; `Drop` removes it, or queues it in `DROPPED_ELSEWHERE` when Python drops it on another thread). `__call__` re-enters the interpreter registered for the thread (`register_interpreter`: py-int import, `call_value_evaled`'s PyObject arm, `eval_method_call_evaled`'s Python arms; `Interpreter`'s `Drop` forgets it) and runs `call_value_evaled` while holding the GIL; another thread gets a Python `RuntimeError`. An Arrow exception becomes a Python exception (`arrow_error_to_py`: built-in → same-name Python type with `args`, Arrow-defined → `arrow.ArrowError`; a Python exception passing through is re-raised as is) and is stashed in `ARROW_RAISED`; when it comes back, `python_raised` turns it into `PyRaised::Arrow` so `make_internal_raised_error` restores the original `RaisedError` (fields and frames). The caller frame of the callback is replaced with the calling Python frame (`python_caller_frame`), and an uncaught one at top level is reported through `uncaught_error_report`.
+**Arrow functions passed to Python** (2-5, design in pandas_import_plan.md 2.7): `ar_to_py` wraps `Function` / `OverloadedFn` / `NativeFunction` in the `#[pyclass] ArrowFunction` (holds only an id + the creating thread; the `Value` lives in the thread-local `ARROW_FUNCTIONS`; `Drop` removes it, or queues it in `DROPPED_ELSEWHERE` when Python drops it on another thread). `__call__` re-enters the interpreter registered for the thread (`register_interpreter`: Python import, `call_value_evaled`'s PyObject arm, `eval_method_call_evaled`'s Python arms; `Interpreter`'s `Drop` forgets it) and runs `call_value_evaled` while holding the GIL; another thread gets a Python `RuntimeError`. An Arrow exception becomes a Python exception (`arrow_error_to_py`: built-in → same-name Python type with `args`, Arrow-defined → `arrow.ArrowError`; a Python exception passing through is re-raised as is) and is stashed in `ARROW_RAISED`; when it comes back, `python_raised` turns it into `PyRaised::Arrow` so `make_internal_raised_error` restores the original `RaisedError` (fields and frames). The caller frame of the callback is replaced with the calling Python frame (`python_caller_frame`), and an uncaught one at top level is reported through `uncaught_error_report`.
 
 ---
 

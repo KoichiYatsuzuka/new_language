@@ -1,11 +1,11 @@
-# import[py-int] の物を for で回す（1 つずつ取り出す・pandas_import_plan.md の 2-4）
+# import[py] の物を for で回す（1 つずつ取り出す・pandas_import_plan.md の 2-4）
 #
 # `for` は CPython の反復子から**取り出すたびに 1 つ**取る（CPython の `for` と同じ）。生成器の処理と
 # ループの本体が交互に進み、途中で `break` すればそれより先は取り出さない。途中で投げられた例外は、そこまでの
 # 本体を走らせたあとで届く。内包・`list()`・`any()` / `all()` も同じ。
 # ⚠ 以前は回す前に全部を取り出していた（無限の生成器が終わらない・副作用の順が CPython と違う）。
 
-import[py-int] py_int_lazy_for as pl
+import[py] py_int_lazy_for as pl
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

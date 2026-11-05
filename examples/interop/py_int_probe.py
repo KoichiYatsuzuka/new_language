@@ -1,4 +1,4 @@
-"""py_int_probe.py — import[py-int] の値の受け渡しを確かめる（implementation_plans/ffi_value_exchange_plan.md 2-6）。"""
+"""py_int_probe.py — import[py] の値の受け渡しを確かめる（implementation_plans/ffi_value_exchange_plan.md 2-6）。"""
 import array
 from decimal import Decimal
 

@@ -14,7 +14,7 @@
 #   Right-click / Escape     → cancel selection
 # Keyboard: type a command and press Enter.
 
-import[py-int] pygame as pygame
+import[py] pygame as pygame
 
 const WIN_W  = 1020
 const WIN_H  = 780

@@ -5,7 +5,7 @@
 #   bind it with `mut`
 # 正しい形は py_int_mut_binding.ar。型が `Any` などで静的に分からないものは py_int_mut_binding_runtime_error.ar。
 
-import[py-int] py_int_refcount as rc
+import[py] py_int_refcount as rc
 
 let p = rc.make()                       # let
 const P = rc.make()                     # const

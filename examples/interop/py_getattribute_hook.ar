@@ -15,7 +15,7 @@
 #   4 fallback: 1 fallback:hidden fallback:hidden fallback:missing
 #   5 child: 11 ['extra', 'x']
 
-import[py-int] test_modules.py_getattribute_hook as m
+import[py] test_modules.py_getattribute_hook as m
 
 m.run()
 

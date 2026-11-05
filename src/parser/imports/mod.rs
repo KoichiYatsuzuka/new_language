@@ -6,18 +6,6 @@
 
 
 
-/// 解決先が **CPython の標準ライブラリ**の下にあるか（項目 27）。
-///
-/// `python_lib_dirs()` の**先頭が stdlib**（その後にユーザーの site-packages・purelib（site-packages）が続く・
-/// `python_lib_dirs` のスクリプトがこの順で出す）。stdlib だけを見たいので先頭のみと突き合わせる。
-///
-/// ⚠ Python が見つからない環境では `python_lib_dirs()` が空 ⇒ 常に `false`。
-///   そのときは stdlib が検索パスにも入らないので、そもそもここに来ない。
-pub(crate) fn is_python_stdlib_path(path: &std::path::Path) -> bool {
-    crate::import_fs::python_lib_dirs()
-        .first()
-        .is_some_and(|stdlib| path.starts_with(stdlib))
-}
 
 // ─── C 型スタブ ───────────────────────────────────────────────────────────────
 

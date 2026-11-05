@@ -29,7 +29,7 @@ fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
 }
 
 /// [`prepare`] の、構文解析の起点（エントリのディレクトリ）を指定する版。
-/// import 先を探す起点になる（`import[py-int] m` の `m.py` を構文解析の時点で見つけるため）。
+/// import 先を探す起点になる（`import[py] m` の `m.py` を構文解析の時点で見つけるため）。
 fn prepare_at(src: &str, dir: Option<std::path::PathBuf>) -> Result<(Vec<Stmt>, Interpreter), String> {
     let tokens = Lexer::new(src, "").tokenize();
     let mut parser = Parser::new(tokens, dir);
@@ -119,7 +119,7 @@ fn run_get(src: &str, var: &str) -> Value {
     interp.get_val(var).unwrap()
 }
 
-/// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
+/// Python（`import[py]`）のテスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
 /// ⚠ `native` 限定（評価コアビルドでは `py_interop` がスタブなので成立しない・#6）。
 ///
 /// ⚠ 構文解析も `examples/interop/test_modules` を起点にする。未解決の import はエラーなので
@@ -198,7 +198,7 @@ mod iterator;
 mod collections;
 mod callables;
 mod indexing;
-// ⚠ `import[py-int]` を実際に動かすので `native` 限定（評価コア切り出し #6）。
+// ⚠ `import[py]` を実際に動かすので `native` 限定（評価コア切り出し #6）。
 //   評価コアビルドでは `py_interop` がスタブなので必ず失敗する。
 #[cfg(feature = "native")]
 mod pyobject;

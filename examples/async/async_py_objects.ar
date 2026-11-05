@@ -6,7 +6,7 @@
 #   止まらない（⚠ 以前は、待つ側が GIL を持ったままで、タスクの Python の操作が GIL を待ち続けた）。
 # - Arrow が Python へ渡した包み（Arrow のインスタンス・関数）は作ったスレッドでだけ使える。タスクから触ると Python の
 #   `RuntimeError`（Arrow の値はスレッドをまたげない・2-6）。
-import[py-int] async_py_objects as ap
+import[py] async_py_objects as ap
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

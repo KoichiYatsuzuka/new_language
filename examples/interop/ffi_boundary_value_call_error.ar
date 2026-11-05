@@ -13,7 +13,7 @@
 #
 # 素材: ffi_probe/lying_py.py（注釈と実装が食い違う Python モジュール）
 
-import[py-int] ffi_probe.lying_py as L
+import[py] ffi_probe.lying_py as L
 
 fn call_via_value() -> int:
     mut f = L.get_int       # 関数値に束縛

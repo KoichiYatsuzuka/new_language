@@ -6,7 +6,7 @@
 # Usage:
 #   cargo run -- examples/apps/spider_solitaire.ar
 
-import[py-int] random as random
+import[py] random as random
 import spider_render as renderer
 
 # Rank labels used in error messages (index 0 = Ace, index 12 = King)

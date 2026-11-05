@@ -2,7 +2,7 @@
 #
 # `del x`（束縛の削除）も CPython が実行する。
 
-import[py-int] test_modules.py_del_warn as m
+import[py] test_modules.py_del_warn as m
 
 mut n = 5
 

@@ -4,8 +4,8 @@
 # - Arrow の list / dict / set とはキャスト `=>` で写す（キャスト先の型の深さまで・要素を照合する）。
 # - Python が返した list / dict / set は写さずに `py_list` などのまま届く（書き換えが互いに見える）。
 # - Python の物なので `mut` で受ける。
-import[py-int] heapq
-import[py-int] py_int_collections as pc
+import[py] heapq
+import[py] py_int_collections as pc
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

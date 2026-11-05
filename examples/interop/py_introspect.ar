@@ -7,7 +7,7 @@
 # - issubclass(C, spec): クラス同士は isinstance と同じ判定（同じクラスか派生）、組み込みの型は bool ⊂ int、組は要素ごと
 # - callable(x): 関数・クラス・組み込みの関数と型・`__call__` を持つインスタンスは真
 
-import[py-int] test_modules.py_introspect as m
+import[py] test_modules.py_introspect as m
 
 print(m.kinds())          # ['bool', 'int', 'sequence of 2', 'sequence of 1', 'dict', 'Puppy (an Animal)', 'other: str']
 mut p = m.Puppy("x")

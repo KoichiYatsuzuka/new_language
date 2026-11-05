@@ -20,7 +20,7 @@
 # Run: ./scripts/ab_bench.ps1 -A <旧> -B <新> -Scripts examples/bench/bench_name_vs_global.ar -Reps 7
 #      ⚠ 使う前に同一 exe 同士で負の対照を取ること。
 
-import[py-int] time
+import[py] time
 
 let N = 4_000_000
 

@@ -20,7 +20,7 @@
   `g.X = ..` is allowed only for `mut X` (it rewrites the module's global itself, like CPython);
   `let` / `const` / functions are static errors, and so is writing into a `let` / `const` (`g.L.append(..)`).
   `from g import X` binds a name that cannot be rebound, but its contents follow the original attribute.
-  - ⚠ A Python module (`import[py-int]`) has no `let` / `mut`: as in CPython, every global can be assigned from Arrow
+  - ⚠ A Python module (`import[py]`) has no `let` / `mut`: as in CPython, every global can be assigned from Arrow
     (`m.count = 5` calls `setattr`; checked against the stub's type when it has one), and reads are live (pandas_import_plan.md
     1-4 / 2-9).
 - `...` is a value (`Ellipsis`) only as a subscript item (`a[..., 0]`, pandas_import_plan.md 2-3); elsewhere write
@@ -49,10 +49,9 @@
   `tags.ar` is the type `tags.Tag` (a nested path gives `a.b.Tag`), distinct from a `Tag` in the main program or in
   another module. Annotations may name it through the import alias (`import tags as t` → `let x: t.Tag`), and
   `from tags import Tag` binds the same type. `is t.Tag` / `mustbe t.Tag` work too.
-  - ⚠ The same holds for classes of an `import[py]` module (`import[py] zoo as z` → `z.Dog`). A Python
-    class also matches the names of its base classes (`p is z.Animal` for `class Dog(Animal)`), as CPython's
-    `isinstance` does. `import[py-int]` classes (CPython objects) are named the same way (`z.Dog` is distinct from
-    another module's `Dog`), and a derived class is accepted where its base type is expected (same-file bases, and
+  - ⚠ The same holds for classes of an `import[py]` module (`import[py] zoo as z` → `z.Dog`, distinct from another
+    module's `Dog`). A Python class also matches the names of its base classes (`p is z.Animal` for `class Dog(Animal)`),
+    as CPython's `isinstance` does, and a derived class is accepted where its base type is expected (same-file bases, and
     bases of other modules the program also imports; pandas_import_plan.md 3-1).
   - ⚠ A module's name is **per file** (2026-10-02): its path relative to the entry file's directory
     (`pkg.util`; above the entry directory each level is `__parent__`, e.g. `__parent__.util`). The same file
@@ -77,17 +76,15 @@
   - **Relative imports**: `from . import x`, `from .m import y`, `from ..m import y` (CPython), plus the Arrow
     extension `import .a` / `import ..a.b`. Each extra dot goes one directory up from the importing file.
     ⚠ Unlike CPython they also work from the entry file and may go above the entry directory.
-  - **The same rule applies to every `import[lang]`** (`.ar` / `.arc` / py / py-int / cpp / cs / js), when
+  - **The same rule applies to every `import[lang]`** (`.ar` / `.arc` / py / cpp / cs / js), when
     parsing and at runtime. ⚠ cpp / cs / js / rs dotted paths are file locations, not packages: they bind
     the alias or the last part (cpp: the header's stem) as before. `import[rs]` takes a crate name, so a
     relative `import[rs]` is an error.
 - **`class` / `trait` / `protocol` / `new_type` and `import` only at the top level of a module**
   (task 10-16). Inside a function or a block (`if` / `for` / …) they are a `ParseError`.
   `enum` may still be declared inside a function.
-  - ⚠ Code translated from Python (`import[py]`) may define classes inside functions (decorators,
-    class factories), but a Python function that **returns a class it defines** may only be used
-    from Python: calling it, decorating with it or taking it as a value from Arrow is a static
-    error. A Python `import` inside a function (or a module-level block) is a conversion error.
+  - ⚠ This is about Arrow source. A Python module (`import[py]`) runs on CPython, so its functions may define classes
+    and import modules (class factories, decorators, lazy imports) as in Python.
 - **Exceptions**: a user exception implements the `Error` trait (`class MyErr(Error)` — classes can
   only inherit traits). `Exception` is the base of **every** exception, built-in or user-defined
   (task 10-19), so `except Exception` catches them all, as in Python. `except Error` is a static
@@ -95,17 +92,19 @@
   - Built-in exceptions follow **CPython 3.12's hierarchy** (`except LookupError` catches `KeyError`;
     `GeneratorExit` is not an `Exception`), take any positional arguments (`e.args`, CPython's
     `str(e)` / `repr(e)`), and `except m.Err:` names a module's exception (python_builtins_plan.md 4-1〜4-3).
-  - Exceptions raised by CPython (`import[py-int]`; pandas_import_plan.md 2-1): a built-in one arrives as the Arrow exception
+  - Exceptions raised by CPython (`import[py]`; pandas_import_plan.md 2-1): a built-in one arrives as the Arrow exception
     of the same name (`except ValueError:`); one defined in Python stays a CPython object, caught by `except m.Err:` and by
     the built-in exceptions it inherits (CPython's `isinstance`). They used to all be `ForeignError`.
-- **Code translated from Python (`import[py]`) shares references; Arrow code copies** (known_bugs.md #1, decision
-  A). Arrow copies a value whenever it is stored (field, dict, `append`, `xs[i] = v`, set `add`, `mut` declaration,
-  closure capture) so a `let` value can never change through another holder. Inside a Python module's code these
-  stores share the object, as in CPython (aliases, parent/child references and registries behave the same). A
-  Python class without `__eq__` / `__hash__` compares and hashes by identity; an Arrow class still compares by
-  contents. Binding a Python value to an Arrow `let` / `mut` still copies it (the boundary keeps Arrow's rule).
+- **Python code shares references; Arrow code copies** (known_bugs.md #1). Arrow copies a value whenever it is stored
+  (field, dict, `append`, `xs[i] = v`, set `add`, `mut` declaration, closure capture) so a `let` value can never change
+  through another holder. A Python module (`import[py]`) runs on CPython, where stores share the object (aliases,
+  parent/child references and registries behave as in Python). A Python class without `__eq__` / `__hash__` compares and
+  hashes by identity; an Arrow class still compares by contents. A Python object bound in Arrow is shared too (it must be
+  bound with `mut`, below).
+  - ⚠ Python modules used to be translated to Arrow and run by Arrow (`import[py]` until 2026-11-06); the CPython path
+    was named `import[py-int]`, which is now a parse error (write `import[py]`; pandas_import_plan.md D-6 / 3-2).
 - **Python objects must be bound with `mut`** (`implementation_plans/pandas_import_plan.md` D-3, task 1-2). A CPython
-  object (an `import[py-int]` value that stays a Python object: instances, functions, arrays, big ints …) is shared, not
+  object (an `import[py]` value that stays a Python object: instances, functions, arrays, big ints …) is shared, not
   copied, so other references can change it; `let` / `const` / `freeze` and a parameter that is not `mut` cannot hold one
   (`fn f(mut d: pd.DataFrame)`; ⚠ except a **generator function's parameters**, which can only be `let` and so may hold one —
   task 2-13). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
@@ -140,18 +139,13 @@
   an Arrow function; otherwise (a `let` variable, stored into a Python object, an operand, a cast element) Python gets a
   read-only view — attribute assignment and `mut self` methods raise `TypeError`. Classes and generator functions are
   callables, generators are Python iterators. Touching them from another Python thread raises `RuntimeError`.
-- **`object()` can only be called in Python modules** (`import[py]`; phase 6 task 6-10). In Arrow source it is a
-  static error (calling the class value is a runtime error). `object` itself is still the base of every value
-  (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`. An `object()` instance has no
-  fields, is never copied on store (a sentinel stays the same object through fields, dicts and lists), and compares
-  and hashes by identity.
-- **Attribute hooks (`__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__`) exist only in Python modules**
-  (`import[py]`; known_bugs.md #10 / #11 / #12). A Python class's `__setattr__` runs for every assignment (`o.x = v`,
-  `setattr`, `self.x = ..` in `__init__`, assignments from Arrow); `object.__setattr__(self, k, v)` /
-  `super().__setattr__(k, v)` store past it. `__getattribute__` runs for every explicit read and method call (`o.x`,
-  `o.m(..)`, `o.__len__()`), but not for the special methods the interpreter looks up itself (`str(o)`, `len(o)`,
-  operators, `for`); `__getattr__` runs when the read raises `AttributeError`; `object.__getattribute__(self, k)` reads
-  past both. Defining any of these hooks in an Arrow class is a `ParseError` — Arrow members are fixed by the class body.
+- **`object()` cannot be called in Arrow source** (phase 6 task 6-10): a static error. A Python module's `object()`
+  sentinels are CPython objects, shared through Arrow bindings (`examples/interop/py_object.ar`). `object` itself is
+  still the base of every value (`isinstance(x, object)` / `x is object` are always true) and annotates like `Any`.
+- **Attribute hooks (`__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__`) exist only in Python classes**
+  (known_bugs.md #10 / #11 / #12). A Python class runs on CPython, so its hooks behave as in Python, also for reads and
+  assignments from Arrow (they are CPython's `getattr` / `setattr`). Defining any of these hooks in an Arrow class is a
+  `ParseError` — Arrow members are fixed by the class body.
 - **`obj.method` read as a value is a bound method** (the receiver is bound, as in Python; task 1-8).
   Binding never fails; calling a `mut self` method of an immutable receiver (`let` / frozen) is an
   error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's
@@ -171,7 +165,7 @@
     time is a data race. Return results with `block_return` instead.
   - ⚠ Thread-bound values (file objects, `AsyncManager`, `Signal`) are never shared, even through `mut`: the task gets a
     detached copy and using it is a `RuntimeError`; `EventLoop` is the task's own loop (7-19).
-  - Python objects (`import[py-int]`) are shared with a task like `mut` values; their operations run one at a time under
+  - Python objects (`import[py]`) are shared with a task like `mut` values; their operations run one at a time under
     the GIL. Waiting for tasks (`wait_for_finish`, `EventLoop.run`) releases the GIL, so a task that uses Python never
     deadlocks a waiter that Python called (pandas_import_plan.md 2-8). Wrappers Arrow handed to Python are bound to the
     thread that made them (`RuntimeError` from a task).

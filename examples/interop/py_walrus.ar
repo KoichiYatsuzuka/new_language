@@ -2,7 +2,7 @@
 #
 # walrus は CPython が実行する（右辺は 1 回だけ評価・⑥）。Arrow の list は `=> py_list[int]` で写して渡す。
 
-import[py-int] test_modules.py_walrus as m
+import[py] test_modules.py_walrus as m
 
 # ── ① if の条件（最頻出の形） ───────────────────────────────────────────
 mut xs = [1, 2, 3]

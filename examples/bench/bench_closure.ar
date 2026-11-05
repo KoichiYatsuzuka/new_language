@@ -12,7 +12,7 @@
 #         #45 の効果は C でしか見えない（A/B が 1.03x に対し C は 4x 超）。
 #
 # A/B 計測は ./ab_bench.ps1 -A <head.exe> -B <new.exe> -Scripts examples/bench/bench_closure.ar
-import[py-int] time
+import[py] time
 
 # --- 不変キャプチャ（値を末尾 slot へ・#27-d 段階 1） ---
 fn make_adder(let x: int) -> function[let int]->int:

@@ -3,7 +3,7 @@
 # 展開は CPython が実行する。Arrow の list は `=> py_list[int]` で写して渡す。
 # Arrow の側の `*other` は `examples/collections/seq_spread.ar`。
 
-import[py-int] test_modules.py_literal_unpack as m
+import[py] test_modules.py_literal_unpack as m
 
 mut a = [1, 2]
 mut b = [3, 4]

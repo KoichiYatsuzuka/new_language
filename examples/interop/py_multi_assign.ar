@@ -3,7 +3,7 @@
 # 代入は CPython が実行する（右辺は 1 回だけ評価・`a = b = []` は同じリスト・入れ子の `a, (b, c) = t`）。
 # Arrow の list は `=> py_list[T]` で写して渡す。
 
-import[py-int] test_modules.py_multi_assign as m
+import[py] test_modules.py_multi_assign as m
 
 # ── ① 複数代入 ──────────────────────────────────────────────────────────
 print(m.chain())

@@ -30,7 +30,7 @@ pub fn load_py_int_module(
     _module_path: &[String],
     _extra_search_dirs: &[PathBuf],
 ) -> Result<Rc<NamespaceData>, String> {
-    Err(unavailable("`import[py-int]`"))
+    Err(unavailable("`import[py]`"))
 }
 
 pub fn call_py_object(

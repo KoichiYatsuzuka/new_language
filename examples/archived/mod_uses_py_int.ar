@@ -1,7 +1,7 @@
 # mod_uses_py_int.tl — module that imports a py-int module
-# Tests: can --compile handle import[py-int]?
+# Tests: can --compile handle import[py]?
 
-import[py-int] time
+import[py] time
 
 # Calls time.time() — NOT eligible for native (cross-module call)
 fn timed_square(n: int) -> int:

@@ -6,7 +6,7 @@
 #   through other references)
 # 静的に分かる形は py_int_mut_binding_error.ar、正しい形は py_int_mut_binding.ar。
 
-import[py-int] py_int_refcount as rc
+import[py] py_int_refcount as rc
 
 fn describe(x: Any) -> str:             # mut でない引数
     return "never reached"

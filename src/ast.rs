@@ -851,12 +851,15 @@ pub enum TupleTarget {
 /// import 文の**探索の起点**（相対 import・2026-10-02）。
 ///
 /// 規則は [`crate::module_path`] が唯一の定義。パーサ（CLI）が埋め、実行時の探索
-/// （`import[py-int]` の `sys.path`・C# のブリッジ・js-proc の設定）もこれを使う。
+/// （`import[py]` の `sys.path`・C# のブリッジ・js-proc の設定）もこれを使う。
 /// ⚠ 実行時がエントリのディレクトリで探すと、サブディレクトリのファイルが書いた
 ///   import だけ別の場所を探すことになる（以前の不具合）。
 #[derive(Debug, Clone)]
 pub struct ImportOrigin {
     /// 先頭のドットの数（`import ..a` なら 2）。0 は相対指定なし。
+    /// ⚠ 読むのは実行時の外部言語の探索（`import_search_dirs` / js-proc・`native` 限定）だけ。評価コアでは使わない
+    ///   （以前は Python のモジュールの中の import を構文解析が読んでいた・pandas_import_plan.md 3-2 で消した）。
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub level: u32,
     /// 探索の起点ディレクトリ（`level` を適用済み）。
     /// `None` はファイルから読まれていない文（エディタの解析・合成した文）。

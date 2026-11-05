@@ -10,7 +10,7 @@
 #   cached_property area Area, computed once per instance. area
 #   True
 
-import[py-int] test_modules.py_cached_property as cp
+import[py] test_modules.py_cached_property as cp
 
 cp.run()
 

@@ -1,4 +1,4 @@
-# py_int_callbacks.ar が import[py-int] で使うモジュール（Arrow の関数を Python から呼ぶ・pandas_import_plan.md の 2-5）。
+# py_int_callbacks.ar が import[py] で使うモジュール（Arrow の関数を Python から呼ぶ・pandas_import_plan.md の 2-5）。
 import threading
 
 

@@ -1,4 +1,4 @@
-# py_int_slices.ar が import[py-int] で使うモジュール（切り出し・多次元の添字・Ellipsis / NotImplemented を Python へ
+# py_int_slices.ar が import[py] で使うモジュール（切り出し・多次元の添字・Ellipsis / NotImplemented を Python へ
 # 渡す・pandas_import_plan.md の 2-3）。
 
 

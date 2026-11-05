@@ -1,5 +1,5 @@
 # bench_method_call.ar — instance-method dispatch in a hot loop (R3/method-IC target)
-import[py-int] time
+import[py] time
 
 class Point:
     mut x: float

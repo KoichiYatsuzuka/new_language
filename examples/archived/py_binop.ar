@@ -1,6 +1,6 @@
 ## py_binop.tl — PyObject の二項演算子例
 
-import[py-int] py_calculator as calc
+import[py] py_calculator as calc
 
 # lhs = PyObject: c * 3 → Container.__mul__
 let c = calc.make_container([1, 2])

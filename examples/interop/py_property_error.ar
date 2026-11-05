@@ -4,6 +4,6 @@
 #   42
 #   AttributeError: property 'value' of 'ReadOnly' object has no setter
 
-import[py-int] test_modules.py_property_error as pe
+import[py] test_modules.py_property_error as pe
 
 pe.run()

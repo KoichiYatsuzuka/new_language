@@ -10,6 +10,6 @@
 #   実際に呼ぶ数少ない形で、遅延の初期化が壊れるとここが `ImportError` で落ちる（負の対照で確認済み）。
 # ⚠ 型の探索先（構文解析の側）と関数の呼び出しは `import_py_search_path.ar` が見る。
 
-import[py-int] cfg_probe
+import[py] cfg_probe
 
 print(cfg_probe.MARKER)

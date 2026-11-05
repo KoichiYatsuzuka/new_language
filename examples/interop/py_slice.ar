@@ -3,7 +3,7 @@
 # スライスは CPython が実行する。Arrow の list は `=> py_list[int]` で写して渡す（⑧ のスライス代入は Python の中の list）。
 # Arrow の値のスライスは `examples/collections/` の例題、CPython の物のスライスは `py_int_slices.ar`。
 
-import[py-int] test_modules.py_slice as m
+import[py] test_modules.py_slice as m
 
 mut xs = [1, 2, 3, 4, 5]
 

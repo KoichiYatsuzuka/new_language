@@ -105,7 +105,7 @@ pub struct TypeChecker {
     /// Python のモジュールの関数の `@overload` の形（`モジュール.関数` → 書いた順の形・pandas_import_plan.md の 1-3）。
     /// `m.f(..)` の呼び出しで、CPython の型の検査器と同じく最初に当てはまる形を選ぶ（`select_py_overload`）。
     py_overloads: HashMap<String, Vec<PyOverload>>,
-    /// `import[py-int] m as alias` の別名 → モジュールの名前（`py_overloads` を引くため）。
+    /// `import[py] m as alias` の別名 → モジュールの名前（`py_overloads` を引くため）。
     py_aliases: HashMap<String, String>,
     /// import したモジュールの**グローバル変数の型と属性**（モジュールの名前 `a.b` → 名前 → (型, 属性)）。
     /// モジュールの本体を検査したときのスコープから取る（`annotate_module_body`）ので、注釈の無い変数も

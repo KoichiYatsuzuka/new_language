@@ -3,7 +3,7 @@
 # 後から来たキーが勝つ（CPython）。Arrow の dict は `=> py_dict[str, int]` で写して渡し、結果は `py_dict` のまま受ける。
 # Arrow の側の `{**other, key: value}` は `examples/collections/dict_spread.ar`。
 
-import[py-int] test_modules.py_dict_spread as m
+import[py] test_modules.py_dict_spread as m
 
 mut a = {"a": 1}
 mut b = {"b": 2}

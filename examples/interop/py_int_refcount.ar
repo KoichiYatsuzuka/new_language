@@ -1,4 +1,4 @@
-# import[py-int]: CPython から見える参照の数が、CPython で同じ形を書いたときと同じになる（pandas_import_plan.md の D-5・タスク 1-1）
+# import[py]: CPython から見える参照の数が、CPython で同じ形を書いたときと同じになる（pandas_import_plan.md の D-5・タスク 1-1）
 #
 # Arrow の値の写し 1 つが CPython の参照 1 つを持ち、メソッド・関数の呼び出しは評価のスタックの参照を引き渡す
 # （CPython のバイトコードと同じ）。pandas は `sys.getrefcount(self)` で連鎖代入を見分けるので、変数への
@@ -6,7 +6,7 @@
 # ⚠ 以前は Arrow の束縛がいくつあっても CPython の参照は 1 つ（変数への代入が一時的な物への代入に見えた）。
 # 期待する数は CPython で同じ形を走らせて得る（py_int_refcount.py の `expected`）。版で変わる数は出さない。
 
-import[py-int] py_int_refcount as rc
+import[py] py_int_refcount as rc
 
 let want = rc.expected() => dict[str, int]
 mut got: dict[str, int] = {}

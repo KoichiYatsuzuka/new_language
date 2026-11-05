@@ -6,16 +6,16 @@
 # Run:
 #   cargo run -- examples/practical_examples/pd_numpy_pyplot/data_analysis.ar
 
-import[py-int] warnings as _w
+import[py] warnings as _w
 _w.simplefilter("ignore")
 
 # Set non-interactive backend before importing pyplot (avoids display window).
-import[py-int] matplotlib as mpl
+import[py] matplotlib as mpl
 mpl.use("Agg")
 
-import[py-int] pandas as pd
-import[py-int] numpy as np
-import[py-int] matplotlib.pyplot as plt
+import[py] pandas as pd
+import[py] numpy as np
+import[py] matplotlib.pyplot as plt
 
 # ── 1. Load ───────────────────────────────────────────────────────────────────
 

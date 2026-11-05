@@ -3,7 +3,7 @@
 # 1. cargo run --release -- --compile examples/bench/partial_call_overhead_module.ar
 # 2. cargo run --release -- examples/bench/partial_call_overhead.ar
 
-import[py-int] time
+import[py] time
 
 from partial_call_overhead_module import noop0
 from partial_call_overhead_module import id1

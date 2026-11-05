@@ -10,7 +10,7 @@
 #   Step 3  (native dispatch — same bench file):
 #     cargo run --release -- examples/bench_types.ar
 
-import[py-int] time
+import[py] time
 import compile_types
 
 # ── helpers ───────────────────────────────────────────────────────────────────

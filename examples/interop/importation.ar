@@ -4,7 +4,7 @@
 #   import             — auto: prefers .arc if present, falls back to .ar
 #   import[ar]         — force .ar source (tree-walk, ignores .arc)
 #   import[arc]        — force .arc compiled (error if no .arc exists)
-#   import[py-int]     — Python module with integer conversion
+#   import[py]     — Python module with integer conversion
 #   import[rs]         — Rust crate (auto-discovered from ar_config.json rust.crates_path)
 #   from … import      — selective import from a .ar module
 #   subdir.module      — subdirectory .ar module
@@ -12,7 +12,7 @@
 # Prerequisites for section 1 (physics benchmark):
 #   cargo run --release -- --compile examples/interop/test_modules/physics.ar
 
-import[py-int] time
+import[py] time
 
 # ── 1. Physics benchmark: native class-method dispatch ─────────────────────────
 #
@@ -72,12 +72,12 @@ print("  [native]  loop compiled, method bodies run as native DLL code via CB_GE
 print("  [inline]  loop + all arithmetic compiled — upper bound (no callbacks for fields)")
 print()
 
-# ── 2. import[py-int] — pandas ───────────────────────────────────────────────
+# ── 2. import[py] — pandas ───────────────────────────────────────────────
 
-import[py-int] warnings as w
+import[py] warnings as w
 w.simplefilter("ignore")   # suppress pandas CoW FutureWarning
 
-import[py-int] pandas as pd
+import[py] pandas as pd
 
 mut df = pd.DataFrame({
     "name":  ["Alice", "Bob", "Charlie", "Diana", "Eve"],
@@ -113,9 +113,9 @@ let sorted_df = df.sort_values("score", ascending=False)
 print("top 3 by score:")
 print(sorted_df.head(3))
 
-# ── 3. import[py-int] — PyObject operators and iteration ─────────────────────
+# ── 3. import[py] — PyObject operators and iteration ─────────────────────
 
-import[py-int] test_modules.py_calculator as calc
+import[py] test_modules.py_calculator as calc
 
 # binary operators
 let c = calc.make_container([1, 2])

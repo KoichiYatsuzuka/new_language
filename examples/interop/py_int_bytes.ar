@@ -1,4 +1,4 @@
-# py_int_bytes.ar — import[py-int] で Python のバイト列と Arrow の bytes を受け渡す（正例・ffi_value_exchange_plan.md 5-3・D-9）
+# py_int_bytes.ar — import[py] で Python のバイト列と Arrow の bytes を受け渡す（正例・ffi_value_exchange_plan.md 5-3・D-9）
 #
 #   - Python の `bytes` / `bytearray` → Arrow の bytes（コピー。bytearray の書き換えは Arrow へ伝わらない・D-11）
 #   - `memoryview` は要素が 1 バイト（`B` / `b` / `c`）のものだけ bytes にする。int32 などの view はバイト列にすると
@@ -9,7 +9,7 @@
 #
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

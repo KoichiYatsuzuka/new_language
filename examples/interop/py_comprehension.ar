@@ -4,7 +4,7 @@
 # list / set / dict は CPython の物のまま `py_list` などで受ける（表示は Python の形）。
 # Arrow の内包表記は `examples/collections/comprehension.ar`。
 
-import[py-int] test_modules.py_comprehension as m
+import[py] test_modules.py_comprehension as m
 
 mut xs = [1, 2, 3, 4]
 mut ys = [10, 20]

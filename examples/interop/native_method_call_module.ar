@@ -3,13 +3,13 @@
 #
 # 組み込み型（list / str）のメソッドと、外部言語（Python）のモジュールの関数を、コンパイル済みコードから
 # 名前で呼ぶ。外部言語の戻り値は、VM と同じくスタブの宣言型と照合する（宣言と違えば FfiTypeError）。
-# ⚠ `import[py-int] ffi_probe...` は入口のファイルのディレクトリから探すので、このモジュールは examples/interop に置く。
+# ⚠ `import[py] ffi_probe...` は入口のファイルのディレクトリから探すので、このモジュールは examples/interop に置く。
 #
 # Compile with:
 #   cargo run --release -- --compile examples/interop/native_method_call_module.ar
 
-import[py-int] ffi_probe.honest_py as H
-import[py-int] ffi_probe.lying_py as L
+import[py] ffi_probe.honest_py as H
+import[py] ffi_probe.lying_py as L
 
 # 組み込み型（list / str）のメソッド（ループの中で同じ箇所を何度も呼ぶ）
 fn builtin_methods(let n: int) -> str:

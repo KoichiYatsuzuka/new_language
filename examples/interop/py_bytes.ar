@@ -8,7 +8,7 @@
 #   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 3: unexpected end of data
 #   [b'a', b'b'] True tags
 
-import[py-int] test_modules.py_bytes as pb
+import[py] test_modules.py_bytes as pb
 
 let tail: bytes = pb.run()
 print(tail, tail.hex())

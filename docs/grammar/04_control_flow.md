@@ -132,7 +132,7 @@ for i, val in enumerate(items):   # タプルアンパック
 （`for mut k, v in ..` はすべての変数。内包でも `[.. for mut x in ..]`）。`x` は `mut x = 要素` と同じく要素の**写し**を
 持つので、書き換えても反復の元は変わりません（`let` のリストを回しても中身は変わらない）。`mut` を書かない
 `for x in ..` は要素そのものを指し、反復の元の属性（`mut` / `let`）を受け継ぎます（従来どおり）。
-⚠ Python の物（`import[py-int]` の CPython の物）を受けるループ変数は `for mut` と書きます（Python の物は `mut` で受ける・
+⚠ Python の物（`import[py]` の CPython の物）を受けるループ変数は `for mut` と書きます（Python の物は `mut` で受ける・
 D-3）。外の束縛が `mut` でも要ります。書かなければ、型で分かれば静的な誤り（`ImmutablePythonObject`）、分からなければ
 束縛するときに実行時の `TypeError`（`examples/basics/for_mut.ar`・`examples/interop/py_int_implicit_bindings.ar`・`_error`・
 `_runtime_error`）。
@@ -150,7 +150,7 @@ D-3）。外の束縛が `mut` でも要ります。書かなければ、型で�
    - `Tuple` → 各要素
    - `Generator` → `next()` を繰り返す
    - `Range` インスタンス → `__iter__` / `__next__` を呼ぶ
-   - CPython の物（`import[py-int]`）→ `iter(obj)` の反復子から取り出すたびに 1 つ（`PyIter_Next`・pandas_import_plan.md 2-4）
+   - CPython の物（`import[py]`）→ `iter(obj)` の反復子から取り出すたびに 1 つ（`PyIter_Next`・pandas_import_plan.md 2-4）
 3. 各イテレーションで新しいスコープを積んで `targets` にバインド
 4. ボディを実行; `ExecResult::Break` で脱出、`ExecResult::Continue` で次へ
 

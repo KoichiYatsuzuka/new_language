@@ -154,18 +154,17 @@ fn is_arrow_source_lang(lang: &str) -> bool {
 
 /// `import[lang]` のモジュールで宣言した型を**モジュールの名前で修飾する**か（`zoo.Dog`・10-8）。
 ///
-/// Arrow のソースに加えて `py`（Python のソースを Arrow の文へ変換したもの）も修飾する。
+/// Arrow のソースに加えて `py`（CPython で実行する Python のモジュール・本体は型スタブ）も修飾する。
 /// ⚠⚠ 以前は Arrow のソースだけだったので、`import[py] zoo as z` の `z.Dog` / `zoo.Dog` が
 ///   型の名前として通らなかった（`d is z.Dog` が `unknown type`・`let x: z.Dog` が `not a known type`）。
-///   CPython の `isinstance(d, z.Dog)` は通る形で、変換したコードからも Arrow からも書けないと困る。
-///   ついでに、別々のモジュールの同名クラス（素の名前で登録すると混ざる）も分かれる。
+///   ついでに、別々のモジュールの同名クラス（素の名前で登録すると混ざる）も分かれる（pandas_import_plan.md 3-1）。
 /// ⚠ [`is_arrow_source_lang`]（`Value::Instance` 前提の最適化に載せてよいか）とは**別の問い**。
 ///   `py` のクラスは修飾するが、外部言語のまま扱う（`foreign_depth`・`arrow_class_names` に載せない・
 ///   デコレータつきのクラスのメンバー検査を黙らせる）ので、VM の最適化とデコレータの扱いは変わらない。
-/// ⚠ `py-int`（CPython 経由・本体は `.pyi` の型の写し）は対象外。実行時の値が `Value::PyObject` で、
-///   `is` が修飾名を突き合わせる相手（`ClassValue::module_name`）を持たない。
+/// ⚠ 実行時の `is` は修飾名を書いた綴り（`z.Dog`）で受け、名前空間からクラスを引いて CPython の `isinstance` で判定する
+///   （`ops/typecheck.rs`）。
 fn names_types_by_module(lang: &str) -> bool {
-    is_arrow_source_lang(lang) || lang == "py" || lang == "py-int"
+    is_arrow_source_lang(lang) || lang == "py"
 }
 
 /// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
@@ -409,7 +408,7 @@ impl TypeRegistryBuilder {
                         self.reg.python_class_names.insert(name.clone());
                     }
                     // CPython で実行するモジュールのクラス（インスタンスは `Value::PyObject`・D-3）
-                    if self.foreign_lang.as_deref() == Some("py-int") {
+                    if self.foreign_lang.as_deref() == Some("py") {
                         self.reg.cpython_class_names.insert(name.clone());
                     }
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
@@ -595,7 +594,8 @@ impl TypeRegistryBuilder {
                             if !arrow {
                                 self.foreign_depth += 1;
                             }
-                            let prev_py = std::mem::replace(&mut self.collecting_python, lang == "py");
+                            // ⚠ Python のモジュールは CPython で実行する（3-2）ので、変換したクラスとしては集めない
+                            let prev_py = std::mem::replace(&mut self.collecting_python, false);
                             let prev_lang = if arrow { self.foreign_lang.take() } else { self.foreign_lang.replace(lang.clone()) };
                             self.collect_in_module(&modpath, idx, &qbody);
                             self.foreign_lang = prev_lang;

@@ -7,7 +7,7 @@
 # Prerequisites:
 #   cargo run --release -- --compile examples/native_ops.ar
 
-import[py-int] time
+import[py] time
 
 # ── auto (default) ────────────────────────────────────────────────────────────
 import native_ops as auto_mod

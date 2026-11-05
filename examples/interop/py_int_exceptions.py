@@ -1,4 +1,4 @@
-"""import[py-int] の例外の試験（examples/interop/py_int_exceptions.ar・pandas_import_plan.md の 2-1）。
+"""import[py] の例外の試験（examples/interop/py_int_exceptions.ar・pandas_import_plan.md の 2-1）。
 
 組み込みの例外と、Python で定義した例外（組み込みの例外を継承するもの・同じファイルの例外を継承するもの）を投げる。
 """

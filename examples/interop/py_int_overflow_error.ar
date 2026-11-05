@@ -5,7 +5,7 @@
 # 実行には Python（py_int_probe.py）が要る。
 # 対になる正例: ffi_int_overflow.ar
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 
 print("before")
 let n: int = pp.big_declared()

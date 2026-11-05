@@ -1,4 +1,4 @@
-"""import[py-int] の参照の数の試験（examples/interop/py_int_refcount.ar・pandas_import_plan.md の D-5・タスク 1-1）。
+"""import[py] の参照の数の試験（examples/interop/py_int_refcount.ar・pandas_import_plan.md の D-5・タスク 1-1）。
 
 Arrow で書いた形で CPython から見える参照の数を、同じ形を CPython で書いたときの数（`expected`）と比べる。
 数そのものは CPython の版で変わるので、決め打ちの数とは比べない。

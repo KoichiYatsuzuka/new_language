@@ -1,7 +1,7 @@
 # micro_ffi_bench.ar — prices each loop of micro_ffi.ar: (t(loop) - t(empty loop)) / n, in ns.
 # Output: MICRO <name> <ns per op>  (and RAW <name> <s>)
 
-import[py-int] time
+import[py] time
 from micro_ffi import Body, make_body, f_empty, f_kinetic, a_kinetic, f_add_scaled, f_sum, a_sum, f_label, f_encode_only, a_label, f_make, a_make
 
 let N = 200000 * int(getenv("AR_BENCH_SCALE", "1"))

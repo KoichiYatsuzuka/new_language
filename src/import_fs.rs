@@ -117,8 +117,8 @@ mod native {
     /// ⚠ ユーザーの site-packages（`site.getusersitepackages()`・Windows では `AppData\Roaming\Python\..`）は、CPython の
     ///   `sys.path` と同じく、使えるとき（`site.ENABLE_USER_SITE` が真でディレクトリがある）だけ、site-packages の**前**に置く
     ///   （同じ名前なら CPython はこちらを使う・pandas_import_plan.md の 1-5）。以前は探さず、pandas が要る `dateutil` /
-    ///   `six` の型が見つからなかった（`import[py-int] dateutil.parser` が `cannot find its types`）。
-    /// ⚠ 先頭は標準ライブラリ（`is_python_stdlib_path` が先頭だけを見る）。
+    ///   `six` の型が見つからなかった（`import[py] dateutil.parser` が `cannot find its types`）。
+    /// ⚠ 先頭は標準ライブラリ。
     pub fn python_lib_dirs() -> &'static [PathBuf] {
         use std::sync::OnceLock;
         static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();

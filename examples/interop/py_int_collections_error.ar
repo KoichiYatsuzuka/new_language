@@ -1,5 +1,5 @@
 # py_int_collections_error.ar — `py_list` / `py_dict` / `py_set` の静的な誤り（pandas_import_plan.md の D-12・2-7）
-import[py-int] py_int_collections as pc
+import[py] py_int_collections as pc
 
 # Python の物なので `let` では受けられない（D-3）
 let fixed = [1, 2] => py_list[int]

@@ -1,4 +1,4 @@
-# import[py-int] の物を暗黙の束縛（`for` の変数・内包の変数・`except .. as`）で受ける（pandas_import_plan.md の D-11・2-10）
+# import[py] の物を暗黙の束縛（`for` の変数・内包の変数・`except .. as`）で受ける（pandas_import_plan.md の D-11・2-10）
 #
 # Python の物は `mut` で受ける（D-3）。暗黙の束縛にも `mut` を書く:
 #   for mut f in ..:        /  [.. for mut f in ..]  /  except E as mut e:
@@ -7,7 +7,7 @@
 # ⚠ 以前は束縛と型によって割れていた: 関数の戻り値を回す `for f in ..` は `f["x"] = 1` が静的な誤りなのにメソッドでは
 #   中身が変わり、型の分からない `for` と `except .. as e` は何も検査されなかった。
 
-import[py-int] py_int_implicit_bindings as pb
+import[py] py_int_implicit_bindings as pb
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

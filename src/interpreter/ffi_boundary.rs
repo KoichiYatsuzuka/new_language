@@ -72,7 +72,7 @@ pub(crate) fn python_verdict(value: &Value, declared: &InferredType) -> Verdict 
 
 pub(crate) fn checker_for(lang: &str) -> Option<&'static dyn BoundaryChecker> {
     match lang {
-        "py" | "py-int" => Some(&PythonChecker),
+        "py" => Some(&PythonChecker),
         "js-proc" => Some(&JavaScriptChecker),
         _ => None,
     }
@@ -633,7 +633,7 @@ mod tests {
     /// Python: `float` の宣言には int も入る（PEP 484・7-30）。float → int は寄せない
     #[test]
     fn python_coerces_int_to_float_only() {
-        let c = checker_for("py-int").unwrap();
+        let c = checker_for("py").unwrap();
         assert!(matches!(c.check(&Value::Int(4), &InferredType::Float), Verdict::Coerce(Value::Float(f)) if f == 4.0));
         let opt = InferredType::Union(vec![InferredType::Float, InferredType::None]);
         assert!(matches!(c.check(&Value::Int(4), &opt), Verdict::Coerce(Value::Float(_))));
@@ -728,7 +728,6 @@ mod tests {
     #[test]
     fn only_dynamic_languages_are_checked() {
         assert!(checker_for("py").is_some());
-        assert!(checker_for("py-int").is_some());
         assert!(checker_for("js-proc").is_some());
         // 静的型付け側は向こうが型を守るので対象外。
         // C/C++ の `void*` は Arrow の int に落ちるため型タグでは何も言えない（別軸の課題）。

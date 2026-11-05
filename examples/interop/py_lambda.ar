@@ -2,7 +2,7 @@
 #
 # lambda は CPython が実行する。Arrow へ返した lambda は CPython の呼べる物（`Any`）で、Arrow から呼べる。
 
-import[py-int] test_modules.py_lambda as m
+import[py] test_modules.py_lambda as m
 
 mut x = 5
 

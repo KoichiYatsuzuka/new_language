@@ -3,7 +3,7 @@
 # `for` は CPython が実行する。Arrow の list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す。
 # Arrow の側の `for k, v in d.items():` は `examples/collections/dict_items.ar`。
 
-import[py-int] test_modules.py_for_unpack as m
+import[py] test_modules.py_for_unpack as m
 
 # ── ① タプルのリストを分解する ──────────────────────────────────────────
 mut pairs = [(1, 10), (2, 20)]

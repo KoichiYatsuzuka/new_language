@@ -15,6 +15,6 @@
 #   celsius Temperature.celsius
 #   run run None
 
-import[py-int] test_modules.py_function_attrs as fa
+import[py] test_modules.py_function_attrs as fa
 
 fa.run()

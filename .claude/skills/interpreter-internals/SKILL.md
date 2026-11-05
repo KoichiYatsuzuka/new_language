@@ -28,7 +28,7 @@ src/interpreter/
 ├── exceptions.rs  — get_context_lines, exc_matches, exc_set_args (built-in exception args / str(e))
 ├── async_mgr.rs   — AsyncManagerData, AsyncStatus, thread spawning via std::thread
 ├── native_api.rs  — i64 handle arena, ArCallbacks struct, C callback implementations
-├── py_interop.rs  — PyO3 runtime bridge (import[py-int] execution)
+├── py_interop.rs  — PyO3 runtime bridge (import[py] execution on CPython)
 ├── debugger.rs    — break_point REPL, step mode, DBG_MODE thread-local
 ├── msvc_errors.rs — MSVC-style error message formatting
 └── tests.rs       — interpreter integration tests

@@ -1,6 +1,6 @@
 # py_int_element_types.ar — Python の注釈の要素型を型スタブに残す（正例・ffi_value_exchange_plan.md 7-8）
 #
-# py-int の型スタブは Python の注釈から作る。`set[tuple[int, int]]` / `frozenset[str]` / `dict[str, list[int]]` は要素型まで
+# Python のモジュールの型スタブは Python の注釈から作る。`set[tuple[int, int]]` / `frozenset[str]` / `dict[str, list[int]]` は要素型まで
 # Arrow の型になり（frozenset は Arrow の set で届くので `set[str]`）、戻り値の要素も境界で照合する。
 # ⚠ 7-8 より前は `set[tuple[int, int]]` → `set[tuple]`・`frozenset[str]` → `Any`・`dict[K, V]` → `dict` と要素型を落としていた
 #   ので、注釈に反する要素（`{(1, "x")}`・`{"a": "x"}`）が黙って通った。
@@ -9,7 +9,7 @@
 # 実行には Python（py_int_probe.py）が要る。
 # 対になる負例: py_int_element_type_error.ar
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

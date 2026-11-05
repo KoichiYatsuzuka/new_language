@@ -36,9 +36,6 @@ impl Parser {
     }
 
     /// `file_dir` に書かれた import 文の探索の起点（[`Parser::import_origin`] の `file_dir` 版）。
-    ///
-    /// ⚠ Python のモジュールの中の import（`fill_python_imports`）は、`.ar` ではなく
-    ///   **その `.py` のディレクトリ**が `file_dir`。
     pub(crate) fn origin_for(&self, file_dir: &Path, level: u32) -> ImportOrigin {
         ImportOrigin {
             level,
@@ -155,19 +152,14 @@ impl Parser {
         prefix: &[String],
         loaded: &LoadedModule,
     ) -> Result<LoadedModule, String> {
-        if lang == "py-int" {
-            // ⚠ py-int は CPython 自身が読む（本体は型検査用のスタブだけ）。名前は書いた綴り。
+        if lang == "py" {
+            // ⚠ Python のパッケージは CPython 自身が読む（本体は型検査用のスタブだけ）。名前は書いた綴り。
             return self.load_python_interface_module(level, prefix);
         }
         let Some(root) = loaded.root.clone() else {
             return Ok(LoadedModule::as_written(Vec::new(), prefix));
         };
         let dir = root.join(prefix.iter().collect::<PathBuf>());
-        if lang == "py" {
-            // エントリ・相対の起点で見つけたならエントリ基準の名前、外部の探索先なら書いた綴り。
-            let local = level > 0 || self.is_entry_dir(&root);
-            return self.load_py_package(&dir, prefix, local);
-        }
         self.load_ar_package(lang, &dir, prefix)
     }
 
@@ -176,7 +168,7 @@ impl Parser {
         let Some(root) = loaded.root.as_ref() else { return false };
         let dir = root.join(prefix.iter().collect::<PathBuf>());
         let inits: &[&str] = match lang {
-            "py" | "py-int" => &["__init__.py"],
+            "py" => &["__init__.py"],
             _ => &["__init__.ar", "__init__.arc"],
         };
         inits
@@ -184,17 +176,12 @@ impl Parser {
             .any(|f| self.loading.contains(&module_path::absolute(&dir.join(f))))
     }
 
-    /// `dir` がエントリのディレクトリ（CPython の `sys.path[0]`）か。
-    pub(crate) fn is_entry_dir(&self, dir: &Path) -> bool {
-        module_path::absolute(dir) == module_path::absolute(&self.root_dir)
-    }
-
     /// `module` のファイル（またはパッケージのディレクトリ）が探索の起点に在るか（読み込まない）。
     pub(crate) fn module_exists(&self, lang: &str, file_dir: &Path, level: u32, module: &[String]) -> bool {
         if module_path::is_arrow_source_lang(lang) {
             return self.ar_module_exists(lang, level, module);
         }
-        if lang == "py" || lang == "py-int" {
+        if lang == "py" {
             return self.py_module_exists(file_dir, level, module);
         }
         false
@@ -227,11 +214,7 @@ impl Parser {
             if out.is_empty() {
                 out.push(self.synthetic_import(lang, file_dir, level, module, loaded));
             }
-            let sl = if lang == "py" {
-                self.load_python_module(file_dir, level, &sub)?
-            } else {
-                self.load_module(lang, level, &sub, None)?
-            };
+            let sl = self.load_module(lang, level, &sub, None)?;
             out.push(self.synthetic_import(lang, file_dir, level, &sub, &sl));
         }
         Ok(out)
@@ -265,11 +248,7 @@ impl Parser {
                 rest.push((orig, alias));
                 continue;
             }
-            let loaded = if lang == "py" {
-                self.load_python_module(file_dir, level, &sub)?
-            } else {
-                self.load_module(lang, level, &sub, None)?
-            };
+            let loaded = self.load_module(lang, level, &sub, None)?;
             out.push(Stmt::Import {
                 lang: lang.to_string(),
                 module: loaded.name.clone(),
@@ -298,8 +277,6 @@ impl Parser {
                 ));
             }
             let pkg = if lang == "py" {
-                self.load_py_package(&dir, &[], true)?
-            } else if lang == "py-int" {
                 LoadedModule::as_written(Vec::new(), &[])
             } else {
                 self.load_ar_package(lang, &dir, &[])?

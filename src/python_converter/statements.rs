@@ -487,7 +487,7 @@ fn loop_else_error(filename: &str, kw: &str) -> String {
 /// **変換器が名前で直接モデル化している**モジュールか（項目 27）。
 ///
 /// これらは `.py` の実体を読む必要が無い／読んでも意味が無いので、`import` 文を
-/// **落とす**。落とさないと `load_python_module` が実体を探しに行って
+/// **落とす**。落とさないと `load_python_module` が実体を探しに行って（3-2 で削除済み）
 /// 「Python ソースが見つからない」という的外れな明示エラーになる。
 ///
 /// - `typing` / `typing_extensions` — 注釈は `annotations.rs` が Arrow の型名へ写す。
@@ -1271,13 +1271,13 @@ pub(crate) fn convert_stmt(
         //
         // ★ Python モジュール内の `import` を Arrow の `Stmt::Import` / `Stmt::FromImport`
         //   （`lang = "py"`・`body` は空）として出す。`body` は
-        //   `Parser::load_python_module` が**再帰呼び出しで充填**する
+        //   `Parser::load_python_module` が**再帰呼び出しで充填**する（3-2 で削除済み）
         //   （既存の `module_cache` / `self.loading` の循環検出をそのまま再利用できる）。
         //
         // ⚠⚠ **以前は `Ok(vec![])` で黙って捨てていた**。そのため import した名前が
         //   未定義のまま実行され、`NameError` が**別の行**で出ていた。
         //
-        // ⚠ **見つからないモジュールは明示エラー**（`load_python_module` が出す）。
+        // ⚠ **見つからないモジュールは明示エラー**（`load_python_module` が出す）。（3-2 で削除済み）
         //   stdlib や C 拡張（`os` / `sys` / `numpy` …）は翻訳対象の `.py` が無いので
         //   ここで止まる。PyO3 経由で使いたいなら**ドライバ側で** `import[py-int]` する。
         py::Stmt::Import(i) => {
@@ -1294,7 +1294,7 @@ pub(crate) fn convert_stmt(
                 out.push(Stmt::Import {
                     lang: "py".to_string(),
                     // 仮の束縛（CPython: `import a.b` は `a`、`import a.b as m` は `m`）。
-                    // ⚠ パーサが読み込んだあとファイルごとの名前で付け直す（`fill_python_imports`）。
+                    // ⚠ パーサが読み込んだあとファイルごとの名前で付け直す（`fill_python_imports`）。（3-2 で削除済み）
                     bind: Some(crate::ast::ImportBind {
                         name: asname.clone().unwrap_or_else(|| module[0].clone()),
                         module: if asname.is_some() { module.clone() } else { module[..1].to_vec() },
@@ -1303,7 +1303,7 @@ pub(crate) fn convert_stmt(
                     source_module: None,
                     alias: asname,
                     body: Vec::new(),
-                    // 探索の起点はパーサが埋める（`fill_python_imports`・その `.py` のディレクトリ）。
+                    // 探索の起点はパーサが埋める（`fill_python_imports`・その `.py` のディレクトリ）。（3-2 で削除済み）
                     origin: crate::ast::ImportOrigin::default(),
                 });
             }

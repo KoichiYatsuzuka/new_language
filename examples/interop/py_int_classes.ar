@@ -1,4 +1,4 @@
-# py_int_classes.ar — import[py-int] の Python のクラスを Arrow から使う（正例・ffi_value_exchange_plan.md 7-27）
+# py_int_classes.ar — import[py] の Python のクラスを Arrow から使う（正例・ffi_value_exchange_plan.md 7-27）
 #
 # 型を付けるのは**注釈・スタブファイル（.pyi）があるもの**と、**コンストラクタの戻り値**だけ（利用者の決定）:
 #   - `pc.Counter(10)` の型は `pc.Counter`（`__init__` の戻り値）。メソッド・属性はそのクラスの表で静的に検査する
@@ -10,7 +10,7 @@
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # 対になる負例: py_int_classes_error.ar
 
-import[py-int] py_int_classes as pc
+import[py] py_int_classes as pc
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

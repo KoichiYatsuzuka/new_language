@@ -5,7 +5,7 @@
 #
 # ⚠ 一時ファイルは `examples/**/_tmp_*.txt`（`.gitignore` 済みの慣習）に置く。
 
-import[py-int] test_modules.py_with as m
+import[py] test_modules.py_with as m
 
 mut mr = FileOpenMode.read
 

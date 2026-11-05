@@ -1,4 +1,4 @@
-"""py_int_one_line.py - 本体を 1 行に書いた関数（python_builtins_plan.md のタスク 1-19・import[py-int] で読む）。"""
+"""py_int_one_line.py - 本体を 1 行に書いた関数（python_builtins_plan.md のタスク 1-19・import[py] で読む）。"""
 
 
 def area(w, h): return w * h

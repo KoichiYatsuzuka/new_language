@@ -1,4 +1,4 @@
-# py_int_classes.py - Python classes used from Arrow through import[py-int] (ffi_value_exchange_plan.md 7-27).
+# py_int_classes.py - Python classes used from Arrow through import[py] (ffi_value_exchange_plan.md 7-27).
 # Only annotated members get types on the Arrow side; the constructor gives the class's own type.
 
 

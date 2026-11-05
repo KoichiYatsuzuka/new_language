@@ -767,7 +767,7 @@ impl TypeChecker {
                     // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
                     // 綴りは束縛名からモジュールまでの道（`import a.b` の `a.b.f`・`import a.b as m` の `m.f`）。
                     self.py_class_factories.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
-                    if lang == "py" || lang == "py-int" {
+                    if lang == "py" {
                         let rest = module.get(b.module.len()..).unwrap_or(&[]);
                         let spelled: Vec<&str> =
                             std::iter::once(b.name.as_str()).chain(rest.iter().map(String::as_str)).collect();
@@ -791,7 +791,7 @@ impl TypeChecker {
                         }
                     }
                     // `pd.read_csv(..)` で `@overload` の形を選ぶために、別名とモジュールを控える（1-3）
-                    if matches!(lang.as_str(), "py" | "py-int") {
+                    if lang == "py" {
                         self.py_aliases.insert(b.name.clone(), b.module.join("."));
                     }
                     self.declare(b.name.clone(), ns_ty, false);
@@ -805,7 +805,7 @@ impl TypeChecker {
                 if !origin.unresolved {
                     self.module_member_cache.insert(module.join("."), member_types.clone());
                 }
-                let is_py = lang == "py" || lang == "py-int";
+                let is_py = lang == "py";
                 let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
                 let marks_fns = matches!(lang.as_str(), "cpp-dll" | "cpp-lib" | "rs");
                 let unsupported = if marks_fns { ffi_unsupported_fns(body) } else { Vec::new() };
@@ -1449,7 +1449,7 @@ impl TypeChecker {
             }
             return;
         }
-        // `import[py-int]` のモジュールの大域への代入（`gm.count = 5`・pandas_import_plan.md の 2-9）: Python ではどの大域も
+        // `import[py]` のモジュールの大域への代入（`gm.count = 5`・pandas_import_plan.md の 2-9）: Python ではどの大域も
         // 外から書き換えられる。型スタブに型のある大域変数（`count: int`）はその型で検査する（上の `mut` と同じ）。
         // ⚠ 関数・クラスの付け替え（モンキーパッチ）と型の分からない名前は検査しない（型スタブに値の型が無い）
         if let InferredType::PyNamespace(..) = self.infer_quietly(object) {

@@ -3,7 +3,7 @@
 # 1. cargo run --release -- --compile examples/bench/flat_bench_module.ar
 # 2. cargo run --release -- examples/bench/flat_bench.ar
 
-import[py-int] time
+import[py] time
 from flat_bench_module import Particle
 from flat_bench_module import compute_mut
 from flat_bench_module import compute_frozen

@@ -10,6 +10,6 @@
 #
 # pf.run(..) の出力（CPython）:
 
-import[py-int] test_modules.py_file_methods as pf
+import[py] test_modules.py_file_methods as pf
 
 pf.run("examples/interop/_tmp_py_file_methods.txt")

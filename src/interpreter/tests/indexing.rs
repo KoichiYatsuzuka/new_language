@@ -88,7 +88,7 @@ fn test_instance_getitem_setitem() {
 fn test_pyobject_getitem() {
     // PyObject の subscript read: Container.__getitem__
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "mut c = calc.make_container([10, 20, 30] => py_list[int])\n",
         "let r = c[1]\n",
     );
@@ -106,7 +106,7 @@ fn test_pyobject_getitem() {
 fn test_pyobject_setitem() {
     // PyObject の subscript write: Container.__setitem__
     let src = concat!(
-        "import[py-int] py_calculator as calc\n",
+        "import[py] py_calculator as calc\n",
         "mut c = calc.make_container([1, 2, 3] => py_list[int])\n",
         "c[0] = 99\n",
         "let r = c[0]\n",

@@ -1,4 +1,4 @@
-# import[py-int] で Python が投げた例外を、同じ名前の Arrow の例外として受ける（pandas_import_plan.md の 2-1）
+# import[py] で Python が投げた例外を、同じ名前の Arrow の例外として受ける（pandas_import_plan.md の 2-1）
 #
 # - 組み込みの例外（`ValueError` / `KeyError` / `FileNotFoundError` …）は同じ名前の Arrow の例外。`args`・`str(e)` も CPython と同じ
 #   （`KeyError` の `args` はキー、`OSError` の系統は `errno` も持つ）
@@ -9,7 +9,7 @@
 # ⚠ 以前は Python の例外がどれも `ForeignError`（`message` は `ValueError: bad`）で、`except ValueError:` で捕まらなかった。
 # 捕まえない形は py_int_exception_error.ar。
 
-import[py-int] py_int_exceptions as px
+import[py] py_int_exceptions as px
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

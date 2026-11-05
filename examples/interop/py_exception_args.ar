@@ -6,7 +6,7 @@
 #   - __init__ が super().__init__ を呼ばなくても、作るときの引数が args（Coded・BaseException.__new__）
 # Arrow の `except Exception as mut e` も Python で定義した例外を捕まえる（値は CPython の物なので `mut` で受ける・D-11）。
 
-import[py-int] test_modules.py_exception_args as p
+import[py] test_modules.py_exception_args as p
 
 for line in p.describe_all():
     print(line)

@@ -1,4 +1,4 @@
-# py_int_lazy_for.ar が import[py-int] で使うモジュール（for で CPython の反復子から 1 つずつ取り出す・
+# py_int_lazy_for.ar が import[py] で使うモジュール（for で CPython の反復子から 1 つずつ取り出す・
 # pandas_import_plan.md の 2-4）。
 
 log = []

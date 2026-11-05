@@ -148,6 +148,7 @@ $knownDiff = @{
     'async_py_objects'               = 'Rust: Python の物をタスクと共有し、待つ間は GIL を手放す（pandas_import_plan.md の 2-8）。py: import[py-int] の物を async へ渡せず NameError'
     'py_int_element_reads'           = 'Rust: py_list / py_dict の要素を読むたびに宣言の型と照合する（pandas_import_plan.md の 2-12）。py: 内包を構文解析できず ParseError'
     'py_int_element_reads_runtime_error' = 'Rust: Python が後から入れた注釈を破る要素を読むと FfiTypeError（2-12）。py: Python の list が TlList になり append できず AttributeError'
+    'import_py_int_removed_error'    = 'Rust: import[py-int] は廃止した（構文解析の誤り・pandas_import_plan.md の 3-2）。py: impl_python は import[py] と import[py-int] を同じに読む（更新しない・D-6）'
     'py_int_generator_params'        = 'Rust: ジェネレータ関数の引数（let）は Python の物を受けられる（pandas_import_plan.md の 2-13）。py: 内包を構文解析できず ParseError'
     'py_int_slices'                  ='Rust: CPython の物へスライス・項を並べた添字（a[1:, 0]）・...・Ellipsis / NotImplemented を渡す（pandas_import_plan.md の 2-3）。py: スライスを含む添字を構文解析できず ParseError'
     'py_int_slices_runtime_error'    = 'Rust: 型の分からない str の境界で Arrow の list を切り出すと CPython と同じ slice indices must be integers ..（2-3・境界は切り出すときに確かめる）。py: 以前の文言 slice bounds must be int or Index'

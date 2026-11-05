@@ -28,7 +28,7 @@
 # accesses (p.x, p.y) routing through interpreter callbacks; the gain comes
 # from native loop control, branching, and local-variable management.
 
-import[py-int] time
+import[py] time
 import point_ops
 
 let N = 100000

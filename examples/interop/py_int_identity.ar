@@ -1,11 +1,11 @@
-# import[py-int] の物どうしの `===`（Python の `is`）は同一性（pandas_import_plan.md の D-4・5-1）
+# import[py] の物どうしの `===`（Python の `is`）は同一性（pandas_import_plan.md の D-4・5-1）
 #
 # - 同じ CPython のオブジェクトなら真、別のオブジェクトなら偽。`__eq__` は呼ばない（`==` は `__eq__`）
 # - 片方だけ CPython の物なら偽（Arrow の値と CPython の物は同じ物ではない）
 # - Arrow の束縛・リストの要素にしても同じオブジェクトを指す（写し 1 つが CPython の参照 1 つ・D-5）
 # ⚠ 以前は `===` が `__eq__` を呼んでいた（`__eq__` が投げれば `===` も投げ、何にでも True を返す物は別の物とも真）。
 
-import[py-int] py_int_identity as pi
+import[py] py_int_identity as pi
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

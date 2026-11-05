@@ -3,8 +3,8 @@
 # Python のモジュールが別のモジュールの例外を except h.ConfigError: で捕まえる（基底でも当たる: MissingKey は
 # ConfigError の派生）。Arrow の側も except h.ConfigError: と書ける（値は CPython の物なので `as mut e`）。
 
-import[py-int] test_modules.py_qualified_except as q
-import[py-int] test_modules.py_exception_hierarchy as h
+import[py] test_modules.py_qualified_except as q
+import[py] test_modules.py_exception_hierarchy as h
 
 print(q.guarded(1))                       # ConfigError: raised in python
 print(q.guarded(2))                       # AppError: app failure

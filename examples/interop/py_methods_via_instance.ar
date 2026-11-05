@@ -14,7 +14,7 @@
 #   5 function form: 101
 #   6 identity: True True False
 
-import[py-int] test_modules.py_methods_via_instance as m
+import[py] test_modules.py_methods_via_instance as m
 
 m.run()
 

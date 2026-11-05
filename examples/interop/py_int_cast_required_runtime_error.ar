@@ -4,7 +4,7 @@
 # `apply(f, x)` は注釈の無い Python の関数で、Arrow の関数 `pair` を呼ぶ。`pair` が返す Arrow の list は Python へ渡る値だが、
 # 呼ばれるのは Python の中なので静的には分からない。境界で TypeError（`=> py_list[int]` で返せと言う）になる。
 # 対になる正例: `pair_ok` は `=> py_list[int]` で返すので通る。
-import[py-int] py_int_callbacks as pc
+import[py] py_int_callbacks as pc
 
 fn pair_ok(let x: int) -> py_list[int]:
     return [x, x] => py_list[int]

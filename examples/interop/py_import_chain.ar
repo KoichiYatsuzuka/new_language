@@ -3,7 +3,7 @@
 # 中の import は CPython が実行する（探索先は `sys.path`。`ar_config.json` の `python.search_paths` = `py_libs` を含む）。
 # 型スタブは `from chain_leaf import double as dbl` の再エクスポートもたどる（pandas_import_plan.md 1-3）。
 
-import[py-int] chain_top
+import[py] chain_top
 
 # ── ① 2 段先の定数まで届く（モジュール本体の実行順） ──────────────────────
 #    `chain_leaf.LEAF_MARKER` → `chain_util.UTIL_MARKER` → `chain_top.TOP_MARKER`

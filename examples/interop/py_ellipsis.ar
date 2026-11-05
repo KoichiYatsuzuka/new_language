@@ -5,7 +5,7 @@
 # ⚠ 型を書いたスタブ本体（`def stub_typed(x: int) -> int: ...`）は CPython では `None` を返すので、
 #   戻り値の境界の検査が `FfiTypeError` にする（型スタブの注釈と違う値は通さない）。
 
-import[py-int] test_modules.py_ellipsis as m
+import[py] test_modules.py_ellipsis as m
 
 # ── ① 関数のスタブ本体（戻り値は None） ────────────────────────────────
 print(m.stub())

@@ -9,7 +9,7 @@
 #
 # black = 現在の黒セル数（draw_cells 内の DrawPixel コールバック回数に比例）
 #
-# 時刻源: time.perf_counter()（py-int、ns 分解能）。
+# 時刻源: time.perf_counter()（CPython、ns 分解能）。
 # ※ DxLib の GetNowHiPerformanceCount は LONGLONG 戻り値が cpp ブリッジ未対応のため不使用。
 # 70 秒経過で自動終了する。
 #
@@ -18,7 +18,7 @@
 # 実行:
 #   cargo run --release -- examples/practical_examples/DxLib/langtons_ant_profile.ar
 
-import[py-int] time
+import[py] time
 import[ar] ant_render as render
 from ant_render import Cell
 # the DxLib SDK is in examples/DxLib (two levels up: `...`)

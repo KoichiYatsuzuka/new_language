@@ -6,7 +6,7 @@
 # This is the CURRENT (HashMap-based) baseline.
 # After the HashMap→Vec optimization, re-run to compare.
 
-import[py-int] time
+import[py] time
 
 # -------------------------------------------------------------------------
 # Case 1: concrete class, direct field access (obj.field)

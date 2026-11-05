@@ -1,4 +1,4 @@
-"""import[py-int] の暗黙の束縛の試験（examples/interop/py_int_implicit_bindings.ar・pandas_import_plan.md の D-11・2-10）。"""
+"""import[py] の暗黙の束縛の試験（examples/interop/py_int_implicit_bindings.ar・pandas_import_plan.md の D-11・2-10）。"""
 
 
 class Frame:

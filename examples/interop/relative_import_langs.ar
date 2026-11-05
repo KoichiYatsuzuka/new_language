@@ -11,15 +11,15 @@
 # ── ① Python … Python のファイルの中の相対 import（CPython のパッケージの相対 import） ──
 #    py_rel_pkg/top.py は `from .helper import double` / `from . import consts` /
 #    `from .inner.deep import quad` を書き、inner/deep.py は `from ..helper import double` を書く。
-import[py-int] .py_rel_pkg.top as pt
+import[py] .py_rel_pkg.top as pt
 
 let r: int = pt.run(5)
 print(r)                          # 10 + 20 + 100 = 130
 if r != 130:
     raise ValueError("py_rel_pkg.top.run")
 
-# ── ② import[py-int] … 実行時（CPython）の `sys.path` も import 文の起点を使う ──
-import[py-int] .py_rel_pkg.plain as pp
+# ── ② import[py] … 実行時（CPython）の `sys.path` も import 文の起点を使う ──
+import[py] .py_rel_pkg.plain as pp
 
 print(pp.triple(4))               # 12
 

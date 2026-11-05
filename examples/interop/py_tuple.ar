@@ -3,7 +3,7 @@
 # タプルは不変なので境界で Arrow のタプルに写す（要素の list などは CPython の物のまま `py_list`）。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_tuple as m
+import[py] test_modules.py_tuple as m
 
 # ── ① リテラル / 空 / 単要素 ────────────────────────────────────────────
 print(m.literal())

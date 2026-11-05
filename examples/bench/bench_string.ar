@@ -14,7 +14,7 @@
 #   4. 属性/メソッド名 — 名前の照合。#15-3（インターン）の主対象
 #   5. dict キー — DictKey::Str の比較・複製
 
-import[py-int] time
+import[py] time
 
 let N = 200000
 

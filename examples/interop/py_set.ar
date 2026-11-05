@@ -5,7 +5,7 @@
 #   `{"a","b","c"}` の表示順は**実行のたびに変わる**。ここでは int / tuple のセットだけを表示し、str のセットは
 #   メンバシップで確認する。
 
-import[py-int] test_modules.py_set as m
+import[py] test_modules.py_set as m
 
 # ── ① リテラル / 重複除去 / 単要素 ──────────────────────────────────────
 print(m.literal())

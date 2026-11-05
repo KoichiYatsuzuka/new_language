@@ -11,6 +11,6 @@
 #   too hot
 #   Temperature(15) Temperature(15) [Temperature(15)]
 
-import[py-int] test_modules.py_class_body_names as cb
+import[py] test_modules.py_class_body_names as cb
 
 cb.run()

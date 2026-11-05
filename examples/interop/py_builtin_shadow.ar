@@ -7,7 +7,7 @@
 # ⚠ Arrow に無い組み込み（`format` など）を参照するモジュールは読む時点で誤りになる（タスク 1-1・
 #   `py_unsupported_builtin_error.ar`）が、モジュールで定義した同名の関数を指すなら通る。
 
-import[py-int] test_modules.py_builtin_shadow as s
+import[py] test_modules.py_builtin_shadow as s
 
 print(s.read_back())          # (7, 'shadowed str', 42)
 print(s.id, s.str)            # 7 shadowed str

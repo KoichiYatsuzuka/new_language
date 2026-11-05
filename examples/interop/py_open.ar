@@ -3,7 +3,7 @@
 # Python のコードの `open` は CPython の組み込みの `open`（文字列のモード・`encoding=`）。`with` の終わりで閉じる。
 # 書く行は Arrow の list を `=> py_list[str]` で写して渡す（D-12）。
 
-import[py-int] test_modules.py_open as po
+import[py] test_modules.py_open as po
 
 po.save("examples/interop/_tmp_py_open.txt", ["alpha", "beta"] => py_list[str])
 print(po.load("examples/interop/_tmp_py_open.txt"), end="")      # alpha / beta

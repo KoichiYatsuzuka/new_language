@@ -2,7 +2,7 @@
 #
 # `match` は CPython が実行する（当たった 1 本だけ走る・どれにも当たらず `_` も無ければ何もしない）。
 
-import[py-int] test_modules.py_match as m
+import[py] test_modules.py_match as m
 
 # ── ① 整数リテラル ──────────────────────────────────────────────────────
 mut a = 0

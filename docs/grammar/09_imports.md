@@ -32,7 +32,7 @@ Stmt::FromImport { lang, module, source_module, names, body, origin }
 
 | フィールド | 内容 |
 |---|---|
-| `lang` | 言語タグ（`"ar-auto"` / `"ar"` / `"arc"` / `"py"` / `"py-int"` / `"rs"` / `"cpp-dll"` …） |
+| `lang` | 言語タグ（`"ar-auto"` / `"ar"` / `"arc"` / `"py"` / `"rs"` / `"cpp-dll"` …） |
 | `module` | モジュールの名前。Arrow / py は**ファイルごとに一意な名前**（後述「モジュールの同一性」）、cpp は解決済みヘッダパス、それ以外は書いた綴り |
 | `source_module` | `module` が書いた綴りと違うときの、書いた綴り（`..util` など。エディタ用スタブの鍵） |
 | `alias` | `as` の別名 |
@@ -51,8 +51,7 @@ Stmt::FromImport { lang, module, source_module, names, body, origin }
 import[ar]      mod          # .ar ファイルを強制読み込み
 import[arc]     mod          # .arc (コンパイル済み) を強制読み込み
 import          mod          # 自動選択 (.arc 優先、なければ .ar)
-import[py]      mylib        # Python ファイルをコンバータで変換して読み込み
-import[py-int]  numpy as np  # Python インタープリタ (PyO3) 経由で読み込み
+import[py]      numpy as np  # Python のモジュールを CPython（PyO3）で読み込み
 import[rs]      regex        # Rust crate を直接読み込み
 import[cpp-dll] DxLib.DxLib as dx            # C/C++ DLL を読み込み（ヘッダ DxLib/DxLib.h）
 import[cpp-lib] MyLib.MyLib as ml            # C/C++ 静的ライブラリを読み込み
@@ -65,8 +64,8 @@ import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経
 
 ## 探索規則（全言語共通）
 
-**どの言語タグでも同じ規則**で探します（`.ar` / `.arc` / py / py-int / cpp / cs / js）。
-構文解析時の読み込みだけでなく、実行時の探索（`import[py-int]` の `sys.path`・C# のブリッジ DLL /
+**どの言語タグでも同じ規則**で探します（`.ar` / `.arc` / py / cpp / cs / js）。
+構文解析時の読み込みだけでなく、実行時の探索（`import[py]` の `sys.path`・C# のブリッジ DLL /
 ホスト・js-proc の設定）も同じ起点を使います。
 
 | 書き方 | 探す場所 |
@@ -86,7 +85,7 @@ import[js-proc] out_debug.analysis as ana    # Node.js IPC サブプロセス経
 
 | 言語 | 外部の探索先 |
 |---|---|
-| `py` / `py-int` | `ar_config.json` の `python.search_paths` → `PYTHONPATH` → `$PYTHONHOME/Lib/site-packages` → Python の標準ライブラリ・ユーザーの site-packages（CPython が使うときだけ）・site-packages |
+| `py` | `ar_config.json` の `python.search_paths` → `PYTHONPATH` → `$PYTHONHOME/Lib/site-packages` → Python の標準ライブラリ・ユーザーの site-packages（CPython が使うときだけ）・site-packages |
 | `cs-dll` / `cs-proc` | `ar_config.json` の `csharp.lib_paths` |
 | `js-proc` | ブリッジ側の解決（`bridge_root`・npm パッケージ・Node.js 組み込み） |
 | `.ar` / `.arc` / `cpp-*` | なし |
@@ -107,13 +106,13 @@ cpp の設定（`cpp.*` と最上位の `"os"`）だけは、**ヘッダのデ�
 | 言語 | 型の出所 | 見つからないとき |
 |---|---|---|
 | `.ar` / `.arc` | ソース・`.ars` | `cannot find module` |
-| `py` / `py-int` | `.pyi` / `.py`（`py-int` は無ければ同梱スタブ）。`__init__` の無いディレクトリは名前空間パッケージ | `cannot find its types` — `.pyi` を置く |
+| `py` | `.pyi` / `.py`（無ければ同梱スタブ）。`__init__` の無いディレクトリは名前空間パッケージ | `cannot find its types` — `.pyi` を置く |
 | `cpp-dll` / `cpp-lib` | ヘッダ（`.h`） | `cannot read header` |
 | `cs-dll` / `cs-proc` | DLL の .NET メタデータ | `cannot find '…dll'` — `csharp.lib_paths` に足す |
 | `js-proc` | `.ars`（Node.js 組み込みのモジュールも含め、使う関数を `.ars` に書く） | `cannot find the type stub` |
 | `rs` | crate のソース | `crate directory not found` など |
 
-> ⚠ 2026-10-08 より前は `py-int` / `cpp-*` / `cs-*` / `js-proc` で見つからないと型なしで続けていたため、
+> ⚠ 2026-10-08 より前は `py` / `cpp-*` / `cs-*` / `js-proc` で見つからないと型なしで続けていたため、
 > モジュールのメンバーがすべて型の分からないまま通り、間違いが実行時まで分からなかった
 > （`implementation_plans/editor_import_resolution_plan.md` 1-2）。
 
@@ -311,205 +310,23 @@ loading:      HashSet<PathBuf>
 
 ## Python モジュール (`[py]`)
 
-Python ソースファイルを Arrow の AST に変換してインポートします。
-⚠ この読み方は廃止します（`implementation_plans/pandas_import_plan.md` のフェーズ 3・D-6）。`import[py]` は CPython で
-実行する読み方（下の `[py-int]` の節）に切り替え、例題はすでに `[py-int]` へ移しました（3-1）。
+Python のモジュールは **CPython が import して実行します**（PyO3 を介して組み込んだインタープリタ・
+`implementation_plans/pandas_import_plan.md` の D-1 / D-6）。Arrow は型スタブ（`.pyi` / `.py` から抽出した宣言）で
+型を検査し、境界で値をやり取りします。
 
 ```ar
-import[py] mylib as m
-from mylib import[py] join_words, count
-import[py] .py_pkg.top as pt          # 相対（このファイルのディレクトリの py_pkg/top.py）
-```
-
-- 探索は上記の規則どおりです（ドット無しはエントリのディレクトリ → `python.search_paths` → `PYTHONPATH` →
-  site-packages）。
-- **Python ファイルの中の import も同じ規則**です。ドット無しはエントリのディレクトリ（`sys.path[0]`）と
-  外部の探索先から、`from .m import x` / `from . import m` は**その `.py` のディレクトリ**から数えます。
-  `import a.b` の束縛・パッケージ（`__init__.py`・名前空間パッケージ）・サブモジュールの属性・
-  再エクスポートも CPython と同じです。
-- 標準ライブラリ（`os` / `sys` など）と C 拡張は変換できません（明示エラー）。CPython 経由で使うときは
-  `import[py-int]` を使います。
-- Python の関数の中の `import` は変換エラーです。
-
-**変換の制限**:
-- Python の `class` → Arrow のクラスに変換
-- Python の `def` → `fn` に変換
-- `*args` はタプル（CPython と同じ・1 個も来なくても空タプル・タスク 1-16）、`**kwargs` は辞書で受ける
-
-関数本体内での変数ホイスト (if ブランチで代入された変数の前宣言) も自動で行われます。
-
-**関数の値**: `func.__name__` / `__qualname__` / `__doc__` は CPython と同じです（[05_functions.md](05_functions.md)・
-タスク 1-14）。デコレータの `func.__name__`、関数の中の関数の `outer.<locals>.inner`、ラムダの `<lambda>`、
-property の getter の `p.fget.__name__`（変換器の別名ではなく元の名前）も同じになります。
-関数の中で定義した関数も Python の関数として呼ばれます（既定値・キーワード引数・`**kw` の束縛）。
-`*args` は CPython と同じくタプルで受けます（タスク 1-16）。
-
-**組み込み**（[12_builtins.md](12_builtins.md)）:
-- Arrow に無い組み込み（`vars` / `exit` / `input` …）を参照するモジュールは、**読み込む時点で変換の誤り**です
-  （実行の前・呼ばれない関数の中でも）。名前ごとに最初の行を並べます:
-  `m.py: Python builtin(s) not supported by Arrow: 'vars' (line 8), 'exit' (line 12) (...)`。
-  モジュールのどこかで束縛した名前（`def format(..)` / 代入 / 仮引数 / `import` の別名）・デコレータ・クラスの基底・
-  `super().m(..)` の `super` は通します（`from m import *` のあるモジュールは調べません）。実装は
-  `src/python_converter/builtins_check.rs`。
-- モジュールの最上位で組み込みの名前を束縛し直せます（`id = 7` / `def len(x): ..`。そのモジュールの中だけ）。
-
-**例外**（[07_exceptions.md](07_exceptions.md)）:
-- `except m.Err:`（修飾名）・`except (A, B) as e:`（型ごとに同じ本体の節を並べる）を変換します。
-  組の入れ子 `except (A, (B, C)):` は変換の誤り（CPython 3.12 も実行時の `TypeError`）。
-- 組み込みの例外を継承したクラスの `super().__init__(..)` は組み込みの例外へ届き、`args` / `str(e)` が CPython と同じになります。
-
-**`super()`**（known_bugs.md の #6）: `super().m(..)` / `super(C, x).m(..)` は Python 専用の内部の組み込み
-`__py_super(<第 1 基底>, 受け手, "m", ..)` に変換し、基底の `m` の種類に合わせて受け手を渡します（CPython の `super` と同じ）。
-- 引数なしの `super()` の受け手は**今の関数の最初の引数**です（インスタンスメソッドは `self`、クラスメソッドは `cls`）。
-- 基底のクラスメソッドは `cls` を派生クラスのまま受け取ります（`super().make(name)` が派生のインスタンスを作る・pandas の
-  `_simple_new` の形）。インスタンスメソッドから基底のクラスメソッドを呼ぶ形（`cls` はインスタンスのクラス）も同じです。
-- 基底の静的メソッドには受け手を渡しません。`*args` / `**kwargs` は普通の呼び出しと同じに渡します。
-- ⚠ 静的メソッド・仮引数の無い関数の中の `super()` は変換の誤りです（受け手が無い。CPython も実行時の誤り）。⚠ 探すのは第 1 基底とその祖先だけです（多重継承の 2 つ目以降の基底は見ない）。
-- 例題は `examples/interop/py_super_classmethod.ar`（CPython と同じ出力）。
-
-**値の共有**（known_bugs.md の #1・A 案）: Arrow は値を格納するたびに写します（`let` の値を共有先から書き換えさせないため）が、Python のモジュールのコードの中では CPython と同じく**写さずに共有**します。フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても同じ物で、別名から書き換えた結果が見えます（親子の参照・登録した物の書き換えも CPython と同じ）。`__eq__` / `__hash__` を書いていない Python のクラスのインスタンスは、`==` / `hash` が同一性です（別々の `P(1)` は等しくなく、辞書のキーとしても別）。⚠ Arrow のソースのコードは今のまま写し、Arrow のクラスは中身で比べます。Arrow の `let` / `mut` に Python のインスタンスを束縛するときも写します（`examples/interop/py_shared_objects.ar`）。
-
-**`object`**（[12_builtins.md](12_builtins.md)・python_builtins_plan.md のタスク 6-10）: `object()` は内部の `__py_object()` に変換します（Arrow のソースからは呼べない）。番兵（`MISSING = object()`）はフィールド・辞書・リストを通っても同じ物で、別々の `object()` は `==` で等しくなく、辞書のキーとしても別です（CPython と同じ）。基底を書かないクラス・`class C(object)` の `super().__init__(*args, **kwargs)` は `object.__init__` に届きます（余分な引数があれば CPython と同じ `TypeError`）。Python 2 からの書き方 `super(C, self).m(..)` は、`C` が定義中のクラスなら `super().m(..)` と同じです（タスク 6-2。ほかのクラスを渡す形は変換の誤り）。⚠ `object` のほかのメソッド（`super().__setattr__(..)` / `object.__new__(cls)` など）と、型を値として呼ぶ `type(o)()` は対象外。`super()` の `*args` / `**kwargs` は普通の呼び出しと同じに渡します。
-
-**`staticmethod` / `classmethod`**: デコレータのほか、クラス本体の `f = staticmethod(f)` / `g = classmethod(f)` も受けます（先に定義したメソッドにデコレータを付けたのと同じ。名前が違えばその名前の写しを足す・タスク 6-13）。クラス本体の外で定義した関数を包む形（`bump = staticmethod(helper)`）とクラス本体の外の `staticmethod(..)` は変換の誤りです。
-静的メソッドは Arrow の `static fn`、クラスメソッドは `class_method fn` になります。Arrow のクラスではどちらもクラス経由
-（`C.f(..)`）でしか呼べませんが、**Python のクラスでは CPython と同じくインスタンスからも呼べます**（known_bugs.md の #5）。
-`self.helper(x)` は `self` を渡さずに呼び、`self.make()` は `cls` にインスタンスのクラス（`type(self)`・派生のインスタンスなら
-派生）を渡します。値として読む形（`f = obj.helper` は束縛しない関数・`g = obj.make` は `type(obj)` に束縛した関数）も同じで、
-Arrow のコードから Python のインスタンス経由で呼ぶ形も型検査を通ります（`examples/interop/py_methods_via_instance.ar`）。
-⚠ 静的メソッド・クラスメソッドをインスタンスから呼ぶ形（`self.helper(..)`）は Arrow の規則で実行時の誤りです（クラスから呼ぶ）。
-
-**`...`**: 値の `...` は組み込みの唯一の値 `Ellipsis` です（表示は `Ellipsis`・`x is ...` は `Ellipsis` のときだけ真・タスク 6-11。以前は `None` にしていました）。文の `...`（`def f(): ...` などスタブの本体）は `pass` です。
-
-**f-string**: `{x:.2f}` は組み込みの `format(x, ".2f")`、`!r` / `!s` / `!a` は `repr` / `str` / `ascii` に変換します
-（書式指定の中の `{w}` も・`__format__` を持つクラスはそれが呼ばれる・タスク 3-4。以前は書式指定と `!a` が変換の誤り）。
-
-**値**: `b".."` のリテラルは組み込みの `bytes([..])` に変換します（python_builtins_plan.md のタスク 3-1。
-[12_builtins.md](12_builtins.md) の「`bytes`」）。`frozenset(..)` も使えます。
-
-**ファイル**: `open(path, "w", encoding="utf-8")` など Python の形の `open` を受けます。`with open(p) as f: return f.read()`
-（`with` の中の `return`）も動きます。Python の形で開いたファイルは CPython と同じに読み書きできます（`readline` /
-`readlines` / `writelines` / `for line in f` / 終わりの `read()` は `""` / `write` は書いた数 / `"rb"` は `bytes`・
-[12_builtins.md](12_builtins.md) の「ファイルのメソッド」・タスク 5-4）。
-
-**`with`**: `with EXPR as x:` は本体を `try` / `finally` で包み、抜けるとき（`return` / 例外も）に `__py_with_exit(x)` を
-呼びます。ファイルなら閉じて書き戻します（CPython の `__exit__`）。ほかの値は何もしません（ブロックの破棄に任せる）。
-⚠ 以前はブロックの破棄だけに頼っていたので、同じ関数の中で `with open(p, "w")` の後に `with open(p)` で読むと、
-まだ書き戻されていなかった（VM はブロックの変数を関数の終わりまで持つ・タスク 5-4 で直した）。
-
-**`del`**（known_bugs.md の #2 / #3）: ターゲットの種類で分けます。`del a, b[0]` は左から 1 つずつ（CPython と同じ順）。
-- `del o.a` は属性を**未代入に戻します**（変換器が `__py_delattr(o, "a")` にする）。以後の読みは `AttributeError`、
-  `hasattr` は偽、`getattr(o, "a", d)` は `d` で、また代入できます（Arrow のフィールドはクラスで決まるので、欄は残して
-  「代入されていない」に戻す）。CPython と同じ順に、クラスの `__delattr__`（下の「`__setattr__` / `__delattr__`」）、
-  データディスクリプタの `__delete__`（property の deleter）を先に見ます。`cached_property` は消すと次に読んだときに計算し直します。
-  ⚠ クラス・モジュールの属性（`del C.x` / `del m.x`）は消せません（実行時の `TypeError`。CPython は消せる）。
-  ⚠ 不変（`let` / `freeze`）のインスタンスの属性は消せません（実行時の `TypeError`）。Arrow の `mut` のインスタンスを
-  Python の関数に渡して消すと、Arrow から読んでも `AttributeError` になります（注釈の型の値は入っていない）。
-- `del d[k]` は辞書のエントリ・リストの要素（スライス・負のステップも）を取り除き、インスタンスは `__delitem__` を呼びます
-  （変換器が `__py_delitem(d, k)` にする）。無いキーは `KeyError`、範囲の外は `IndexError`、タプル・文字列・集合は
-  `TypeError`（文言は CPython と同じ）。
-- `del x`（名前）は警告して無視します（Arrow はスコープを抜けるときに破棄する。消した後に読んでも `NameError` にならない）。
-- ⚠ クラスの本体の `del` は変換の誤りです。
-- 例題は `examples/interop/py_del.ar`（CPython と同じ出力）・`py_del_error.ar`。
-
-**`__setattr__` / `__delattr__`**（known_bugs.md の #10）: Python のクラスが定義した属性の操作の上書きは CPython と同じく
-**まずそれを呼びます**。`o.x = v`・`setattr(o, "x", v)`・`o.x += v`（読んでから上書きへ）・`__init__` の中の `self.x = v`・
-Arrow からの代入のどれも通り、基底で定義したものも受け継ぎます。`del o.x` は `__delattr__` を呼びます。
-- 上書きを飛ばして本当に入れる・消すのは `object.__setattr__(self, name, value)` / `super().__setattr__(name, value)` /
-  `object.__delattr__(self, name)` / `super().__delattr__(name)` です（変換器が内部の `__py_object_setattr` /
-  `__py_object_delattr` にする。property の setter などのデータディスクリプタはこの先で呼ばれる）。基底が上書きしていない
-  `super().__setattr__` も `object` のものに届きます。
-- `object.__setattr__(self, "x", v)` / `super().__setattr__("x", v)` の名前が文字列の定数なら、`x` もフィールドになります
-  （`self.x = v` と同じ）。⚠ 名前が変数のときは、ほかの所で `self.x = ..` と書いた名前（＝宣言されたフィールド）だけが
-  入ります（Arrow のインスタンスに `__dict__` は無い。宣言の無い名前は実行時の `AttributeError`）。
-- `__setattr__` を持つクラスのインスタンスへの代入は、Arrow の型検査でも宣言していない名前を書けます（上書きが受ける。
-  読みは今までどおり宣言した名前だけ）。
-- `cached_property` が覚える値は上書きを通りません（CPython もインスタンスの `__dict__` へ直に入れる）。
-- ⚠ **Arrow のクラスは `__setattr__` / `__delattr__` を定義できません**（パースの誤り・`examples/classes/setattr_hook_error.ar`）。
-  Arrow のフィールドはクラスの本体で決まり、代入はそのまま入ります。
-- 例題は `examples/interop/py_setattr.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
-
-**`__getattr__`**（known_bugs.md の #11）: Python のクラスが定義した `__getattr__(name)` は、**ふつうの読みが `AttributeError`
-になったときだけ**呼びます（CPython と同じ。無い名前・`del` した属性・`AttributeError` を投げた property の getter）。
-フィールド・メソッド・property など見つかる名前では呼びません。`getattr(o, k, d)`・`hasattr`・`o.k(..)`（読んでから呼ぶ）・
-Arrow からの読みも同じで、基底で定義したものも受け継ぎます。
-- `__getattr__` の中から本当の属性を読むのは `object.__getattribute__(self, name)` / `super().__getattribute__(name)` です
-  （変換器が内部の `__py_object_getattribute` にする。pandas の `NDFrame.__getattr__` の形）。
-- Arrow の型検査は、`__getattr__` を持つクラスのインスタンスから宣言していない名前を読む・呼ぶ形を通します（型は
-  `__getattr__` の戻り値の注釈、無ければ `Any`）。⚠ 代入は、`__setattr__` が無ければ今までどおり宣言した名前だけです。
-- ⚠ **Arrow のクラスは `__getattr__` を定義できません**（パースの誤り・`examples/classes/getattr_hook_error.ar`）。
-- 例題は `examples/interop/py_getattr_hook.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
-
-**`__getattribute__`**（known_bugs.md の #12）: Python のクラスが定義した `__getattribute__(name)` は、**すべての明示の読み**で
-呼びます（フィールド・メソッド・property・`getattr` / `hasattr`・Arrow からの読み）。メソッドの呼び出し `o.m(..)` も
-`__getattribute__` で読んでから呼び、特殊メソッドを明示して呼ぶ `o.__len__()` も通ります（CPython と同じ）。
-`AttributeError` を投げれば `__getattr__` へ回ります（両方あるときの順も CPython と同じ）。
-- `str(o)` / `len(o)` / `o + 1` / `for x in o` などがインタープリタの中で呼ぶ特殊メソッドは通りません（CPython も型から
-  直接引く）。
-- 本当の属性を読むのは `object.__getattribute__(self, name)` / `super().__getattribute__(name)` です（`__getattr__` と同じ）。
-  `__getattribute__` の中で `self.x` と書くと、また `__getattribute__` が呼ばれて止まりません（CPython と同じ）。
-- 型検査は、`__getattribute__` を持つクラスのインスタンスから宣言していない名前を読む・呼ぶ形を通します（型は
-  `__getattribute__` の戻り値の注釈、無ければ `Any`）。
-- ⚠ **Arrow のクラスは `__getattribute__` を定義できません**（パースの誤り・`examples/classes/getattribute_hook_error.ar`）。
-- 例題は `examples/interop/py_getattribute_hook.ar`（CPython と同じ出力・Arrow の側の確かめつき）。
-
-**クラスの属性・property**:
-- `@property` / `@x.setter` / `@x.getter` / `@x.deleter` / `@Base.x.getter` を変換します（CPython と同じ振る舞い・文言）。
-  メソッドは別名（`__property_get_x` など）になり、`x` はクラスの属性の置き場（`static mut x: Any`）、
-  **クラスの定義の後で**組み込みの `property` を組み立てて置きます。読み書きはディスクリプタのプロトコル
-  （[06_classes_traits.md](06_classes_traits.md)）が getter / setter に回すので、`self._constructor(..)`（property が返す
-  クラスを呼ぶ）や Arrow からの `t.celsius = 30` も動きます。
-  ```python
-  class Temperature:
-      def __init__(self, c):
-          self.celsius = c          # setter を通る（フィールドにはしない）
-      @property
-      def celsius(self):
-          return self._c
-      @celsius.setter
-      def celsius(self, v):
-          self._c = v               # setter だけが代入するフィールドもフィールドになる
-  ```
-- property を包むデコレータ（`@logged @property def x`）は CPython と同じく `logged(property(..))` になります
-  （クラスの定義の後に `C.x = logged(C.x)`・タスク 6-6）。property より内側のデコレータはメソッドに当たります。
-- getter の docstring は property の `__doc__` になります（`@x.getter` で差し替えると付け直す。setter / deleter の
-  docstring は使わない・CPython と同じ・タスク 6-7）。
-- getter の戻り値の注釈（`def celsius(self) -> float`）が、Arrow から読んだ値（`t.celsius`）の型になります
-  （置き場を `static mut celsius: float` にする・タスク 6-8）。注釈が無ければ `Any`（演算の前に `mustbe` などで確かめる）。
-  ⚠ Python の注釈は実行時に検査しないので、getter が注釈と違う型を返すと実行時の値と食い違います（CPython と同じく
-  注釈は約束でしかない）。⚠ クラスから読む `C.x`（property そのもの）も型検査はこの型として扱います。
-  ⚠ `x = property(getx)`（クラス属性に書く形）は `Any` のまま。
-- ⚠ `@x.setter` は同じ名前のメソッドに付けること（`def set_x` は誤り）。
-- `@cached_property`（`from functools import cached_property` / `@functools.cached_property`）は、初めて読んだときだけ
-  計算してインスタンスごとに覚えます（CPython と同じ・タスク 6-5）。メソッドは別名（`__property_cached_x`）になり、
-  置き場の `static mut x` に組み込みの `cached_property` を、計算した値は同じ名前のインスタンスのフィールド `x`
-  （CPython のインスタンスの `__dict__` の代わり）に入れます。`obj.x = v` もそのフィールドへ入ります。
-  getter の戻り値の注釈が Arrow から読んだ値の型になります（property と同じ）。
-  `del obj.x` は覚えた値を消します（次に読むと計算し直す・上の「`del`」）。⚠ `from functools import cached_property as cp` の別名は見分けません。
-  ⚠ `import functools` は従来どおり読み込みの誤り（`from functools import cached_property` と書く）。
-- `del obj.x` は property の deleter を呼びます（上の「`del`」）。
-- `__init__` 以外のメソッドだけが代入する `self.attr` もフィールドになります（クラス属性・メソッドと同じ名前は除く）。
-- クラス本体で先に定義した名前を引くクラス属性（`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
-  `table = {"get": getx}`）は、**クラスの定義の後で** `C.x = property(C.getx, C.setx)` のように組み立てます
-  （Arrow の `static mut` の初期化式からはクラス本体の名前が見えないため・タスク 6-3）。Python と同じく、ラムダの本体と
-  内包表記の要素の式からはクラス本体の名前は見えません。
-- メソッドの別名（`current = get_c` / `__repr__ = __str__`）と `name = lambda self: ..` はメソッドとして定義します
-  （インスタンスから読むと束縛される・CPython と同じ）。
-
----
-
-## Python インタープリタ連携 (`[py-int]`)
-
-PyO3 を介して Python インタープリタを呼び出します。
-
-```ar
-import[py-int] numpy as np
+import[py] numpy as np
 let arr = np.array([1, 2, 3, 4])
 let mean = np.mean(arr)
 ```
 
+⚠ 2026-11-06（pandas_import_plan.md の 3-2）に読み方を 1 つにしました。以前の `import[py]` は Python のソースを Arrow の
+文へ変換して Arrow が実行し（C 拡張・標準ライブラリ・動的な仕掛けを扱えなかった）、CPython で実行する読み方は
+`import[py]` でした。今は `import[py]` が CPython で実行する読み方で、**`import[py]` は構文解析の誤り**です
+（`import[py]` に書き換える・`examples/interop/import_py_int_removed_error.ar`）。
+
 **特徴**:
-- `.pyi` スタブファイルがあれば型チェックに使用（探索は `[py]` と同じ順。`.pyi` → `.py`）
+- `.pyi` スタブファイルがあれば型チェックに使用（探索は上の規則どおり。`.pyi` → `.py`）
   - 注釈は要素型まで Arrow の型にします: `set[tuple[int, int]]`・`dict[str, list[int]]`・`frozenset[str]`（→ `set[str]`）・
     `Optional[T]` / `T | None`（→ `Option[T]`）。戻り値の要素も境界で照合します（宣言に反すれば `FfiTypeError`）。
     Arrow が表せない型（`Sequence[T]`・`Callable[...]`・`tuple[int, ...]` の要素）は照合しません
@@ -642,7 +459,7 @@ let mean = np.mean(arr)
 - **Python の `print`**: CPython の `sys.stdout` / `sys.stderr` は改行ごとに書き出す（Arrow の `print` と同じ・出す順が保たれる）。
   改行で終わらない残りはプログラムの終わりに書き出す（pandas_import_plan.md 3-1）。⚠ 以前は出力先がファイル・パイプのとき CPython が
   溜めたまま終わり、Python の `print` が黙って消えた
-- `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
+- `import[py] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
 - GIL (Global Interpreter Lock) により並列化は不可
 - **CPython から見える参照の数は、CPython で同じ形を書いたときと同じ**です（`implementation_plans/pandas_import_plan.md` の
   D-5・1-1）。Arrow の束縛・欄・要素・評価中の値がそれぞれ参照を 1 つ持ち、メソッド・関数の呼び出しは評価中の参照を

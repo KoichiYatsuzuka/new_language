@@ -6,7 +6,7 @@
 # 別の型。入れ子のクラスの基底は同じ本体の兄弟を先に引く（`class Leaf(Node):` の `Node` は `Tree.Node`・Python と同じ）。
 # ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
 
-import[py-int] test_modules.py_nested_class as m
+import[py] test_modules.py_nested_class as m
 
 # ── ① Python の中で使う ────────────────────────────────────────────────
 print(m.summary())

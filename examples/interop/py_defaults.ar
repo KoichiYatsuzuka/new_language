@@ -4,7 +4,7 @@
 # ⚠ 可変の既定値は `def` のときに 1 回だけ作られて共有される（⑦・CPython の有名な罠）。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_defaults as m
+import[py] test_modules.py_defaults as m
 
 # ── ① デフォルトを使う / 上書きする ──────────────────────────────────────
 mut name = "bob"

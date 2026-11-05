@@ -19,7 +19,7 @@
 #   E bypass_missing: AttributeError 'Dyn' object has no attribute 'zz'
 #   E bad_name: TypeError attribute name must be string, not 'int'
 
-import[py-int] test_modules.py_getattr_hook as m
+import[py] test_modules.py_getattr_hook as m
 
 m.run()
 m.errors()

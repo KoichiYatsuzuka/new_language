@@ -10,9 +10,9 @@
 # ⚠ インスタンスは CPython の物なので `mut` で受ける（D-3）。
 # ⚠ ほかのモジュールの基底へは、そのモジュールもプログラムが import しているときだけたどれる（型の表はモジュールごと）。
 
-import[py-int] test_modules.py_module_types_zoo as z
-import[py-int] test_modules.py_module_types_kennel as k
-from test_modules.py_module_types_zoo import[py-int] Puppy
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+from test_modules.py_module_types_zoo import[py] Puppy
 
 # ── ① is: 自分のクラスと、その基底 ──────────────────────────────────────
 mut p = z.Puppy()

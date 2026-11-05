@@ -1,4 +1,4 @@
-# py_int_identity.ar が import[py-int] で使うモジュール（CPython の物どうしの === は同一性・pandas_import_plan.md の 5-1）。
+# py_int_identity.ar が import[py] で使うモジュール（CPython の物どうしの === は同一性・pandas_import_plan.md の 5-1）。
 
 
 class Node:

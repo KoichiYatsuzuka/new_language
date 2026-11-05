@@ -29,7 +29,7 @@
 #   CPython は 5 つの形（filename2）で `[WinError None] ..` と出す（Arrow は `[Errno ..] ..: 'a' -> 'b'`・Linux の CPython と同じ）。
 #   4 つ目の `winerror` は持たないので、`None` 以外を渡すと TypeError（`py_os_error_args_error.ar`）。
 
-import[py-int] test_modules.py_os_error_args as m
+import[py] test_modules.py_os_error_args as m
 
 m.run()
 

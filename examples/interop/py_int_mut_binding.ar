@@ -5,7 +5,7 @@
 # （誤りの形は py_int_mut_binding_error.ar・py_int_mut_binding_runtime_error.ar）。
 # 境界で Arrow の値に変わる物（int・str・dict など）は Arrow の値なので `let` で受けられる。
 
-import[py-int] py_int_refcount as rc
+import[py] py_int_refcount as rc
 
 fn count_self(mut p: rc.Probe) -> int:
     return p.count_self()

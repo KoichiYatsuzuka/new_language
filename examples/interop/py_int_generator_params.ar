@@ -5,7 +5,7 @@
 #   受けた物は共有され（写さない）、取り出すたびに要素を照合する（2-12）。
 # ⚠ ふつうの関数の引数は今までどおり `mut` で受ける（`fn f(mut xs: py_list[int])`）。
 # ⚠ 内包の結果は `str(..)` で比べる（ジェネレータを回す内包の型が `list[Any]` になる既存の不具合・known_bugs.md の #15）。
-import[py-int] py_int_element_reads as pe
+import[py] py_int_element_reads as pe
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

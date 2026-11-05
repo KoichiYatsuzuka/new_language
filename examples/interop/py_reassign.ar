@@ -4,7 +4,7 @@
 # Arrow の list は `=> py_list[int]` で写して渡す。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_reassign as m
+import[py] test_modules.py_reassign as m
 
 # ── ① 素朴な再代入 ──────────────────────────────────────────────────────
 print(m.basic())

@@ -17,7 +17,7 @@
 #   Temperature in degrees Celsius. name of the base None None
 #                            ← getter の docstring が `__doc__`（setter のは使わない・getter を差し替えると付け直す・タスク 6-7）
 
-import[py-int] test_modules.py_property as pp
+import[py] test_modules.py_property as pp
 
 pp.run()
 

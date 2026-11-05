@@ -494,7 +494,7 @@ fn run_program(
     #[cfg(feature = "prof")]
     drop(_s_as);
     // ⚠⚠ エントリのディレクトリを実行時の import 探索先に**登録しない**（2026-10-02）。
-    //   以前はここで登録していたので、`import[py-int]` の `sys.path`・C# のブリッジ・js-proc の
+    //   以前はここで登録していたので、`import[py]` の `sys.path`・C# のブリッジ・js-proc の
     //   設定が、サブディレクトリのファイルが書いた import でもエントリのディレクトリ基準で探された。
     //   今は各 import 文が自分の探索の起点を持つ（`ast::ImportOrigin`・`crate::module_path`）。
     // ⚠ この区間は **~0.000 ms でなければならない**（#69・`prof::Sub::CfgWalk` の doc 参照）。

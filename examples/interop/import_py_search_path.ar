@@ -13,7 +13,7 @@
 #
 # ⚠ Python が書き換える list は `py_list` で渡す（Arrow の list をキャストして渡すと写しなので、書き換えは戻らない）。
 
-import[py-int] cfg_probe
+import[py] cfg_probe
 
 # ── ① モジュール属性（解決だけで読める） ──────────────────────────────────
 print(cfg_probe.MARKER)

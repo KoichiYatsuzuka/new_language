@@ -27,6 +27,6 @@
 #   {'a': ['apple', 'avocado'], 'b': ['banana']}
 #
 
-import[py-int] test_modules.py_dict_methods as dm
+import[py] test_modules.py_dict_methods as dm
 
 dm.run()

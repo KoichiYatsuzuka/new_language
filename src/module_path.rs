@@ -1,7 +1,7 @@
 // module_path.rs — import の探索規則とモジュールの同一性（CPython 準拠・2026-10-02）。
 //
 // ⚠⚠ **探索の起点の規則はここが唯一の定義。** パーサ（全言語のローダ）と実行時
-//   （`import[py-int]` の `sys.path`・C# のブリッジ探索・js-proc の設定探索）が同じ関数を呼ぶ。
+//   （`import[py]` の `sys.path`・C# のブリッジ探索・js-proc の設定探索）が同じ関数を呼ぶ。
 //   以前は言語と段ごとに起点がばらばらで、サブディレクトリのファイルから上の階層を指す手段が無かった。
 //
 // ## 規則（全言語共通・CPython と同じ。計画: implementation_logs/IMPORT_RESOLUTION_PLAN.md）
@@ -108,13 +108,13 @@ pub fn is_arrow_source_lang(lang: &str) -> bool {
     matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
 }
 
-/// 言語が**パッケージの階層**を持つか（Arrow / py / py-int・CPython 準拠・2026-10-02）。
+/// 言語が**パッケージの階層**を持つか（Arrow / py・CPython 準拠・2026-10-02）。
 ///
 /// これらの言語では `import a.b` が `a` を束縛し、パッケージ `a` → `a.b` を順に読み込む。
 /// ⚠ 外部言語（cpp / cs / js / rs）のドット区切りは**ファイルの場所**なので対象外
 ///   （束縛は別名か末尾・cpp はヘッダの stem）。
 pub fn has_packages(lang: &str) -> bool {
-    is_arrow_source_lang(lang) || lang == "py" || lang == "py-int"
+    is_arrow_source_lang(lang) || lang == "py"
 }
 
 /// 言語ごとの外部の探索先を見てよいか（ドット付きの書き方では見ない）。

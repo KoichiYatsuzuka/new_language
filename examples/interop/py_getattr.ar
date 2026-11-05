@@ -8,7 +8,7 @@
 #   - hasattr は AttributeError だけを偽にする（ほかの誤りはそのまま上げる）
 # ⚠ Arrow のクラスはフィールドを本体で宣言するので、宣言していない名前は setattr でも作れない。
 
-import[py-int] test_modules.py_getattr as m
+import[py] test_modules.py_getattr as m
 
 print("=== 1. inside Python code ===")
 print(m.run())                          # ([True, False, True], 'started;unknown pause;stopped;')

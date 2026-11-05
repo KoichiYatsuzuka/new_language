@@ -1,6 +1,6 @@
 ﻿// py_interop.rs — PyO3 を介した Python ランタイム呼び出し
 //
-// `import[py-int]` で読み込んだモジュールの実行時ディスパッチを担当する。
+// `import[py]` で読み込んだモジュールの実行時ディスパッチを担当する。
 // - `load_py_int_module`: Python モジュールを PyO3 でロードし NamespaceData を構築する
 // - `ar_to_py`: tl の Value を PyO3 PyObject に変換する
 // - `py_to_tl`: PyO3 Bound<PyAny> を tl の Value に変換する（プリミティブ自動変換）
@@ -357,7 +357,7 @@ mod arrow_error {
 use arrow_error::ArrowError;
 use pyo3::PyTypeInfo;
 
-/// このスレッドで Python を呼ぶインタプリタを覚える（2-5）。py-int の import と Python を呼ぶ入口で呼ぶ。
+/// このスレッドで Python を呼ぶインタプリタを覚える（2-5）。Python のモジュールの import と Python を呼ぶ入口で呼ぶ。
 pub fn register_interpreter(interp: *mut crate::interpreter::Interpreter) {
     PY_INTERP.with(|p| p.set(interp));
 }

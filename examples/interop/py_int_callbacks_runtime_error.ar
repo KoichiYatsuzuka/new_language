@@ -3,7 +3,7 @@
 # 本体の例外は Python の中を `arrow.ArrowError` として通り、Arrow へ戻ると元の Arrow の例外に戻る。捕まえなければ
 # Arrow の例外と同じ最後の行（`Overdrawn: balance would be -5`）で終わる。捕まえる形は py_int_callbacks.ar。
 
-import[py-int] py_int_callbacks as pc
+import[py] py_int_callbacks as pc
 
 class Overdrawn(Error):
     fn __init__(mut self, balance: int) -> None:

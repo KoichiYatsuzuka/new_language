@@ -1,4 +1,4 @@
-# py_int_functions.py - Python functions used from Arrow through import[py-int] (ffi_value_exchange_plan.md 7-30).
+# py_int_functions.py - Python functions used from Arrow through import[py] (ffi_value_exchange_plan.md 7-30).
 # Annotated parameters and returns get their types on the Arrow side; everything else is Any.
 from typing import Optional
 

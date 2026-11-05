@@ -20,7 +20,7 @@
 #   AttributeError: 'object' object has no attribute 'x'
 #   TypeError: object() takes no arguments
 
-import[py-int] test_modules.py_object as po
+import[py] test_modules.py_object as po
 
 po.run()
 

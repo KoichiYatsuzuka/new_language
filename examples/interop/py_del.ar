@@ -37,7 +37,7 @@
 #   E set_item: TypeError 'set' object doesn't support item deletion
 #   E no_delitem: TypeError 'Series' object doesn't support item deletion
 
-import[py-int] test_modules.py_del as m
+import[py] test_modules.py_del as m
 
 m.run()
 m.errors()

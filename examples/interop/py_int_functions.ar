@@ -1,4 +1,4 @@
-# py_int_functions.ar — import[py-int] の Python の関数の引数と戻り値を検査する（正例・ffi_value_exchange_plan.md 7-30）
+# py_int_functions.ar — import[py] の Python の関数の引数と戻り値を検査する（正例・ffi_value_exchange_plan.md 7-30）
 #
 # 型を付けるのは**注釈・スタブファイル（.pyi）があるもの**だけ（利用者の決定）。それ以外は Any:
 #   - 注釈のある引数・戻り値はその型。既定値のある引数は省略できる。引数の数も検査する
@@ -10,7 +10,7 @@
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # 対になる負例: py_int_functions_error.ar
 
-import[py-int] py_int_functions as pf
+import[py] py_int_functions as pf
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

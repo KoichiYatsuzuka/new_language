@@ -9,7 +9,7 @@
 #
 # Run: target/release/arrow.exe -src examples/bench/bench_arith.ar
 
-import[py-int] time
+import[py] time
 
 let N = 3_000_000
 

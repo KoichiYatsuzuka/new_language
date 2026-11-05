@@ -3,7 +3,7 @@
 # 置き場の型は getter の戻り値の注釈なので、Arrow から読んだ値は `float`。
 # 期待: 静的型エラー（`str` と宣言した変数を `float` で初期化している）
 
-import[py-int] test_modules.py_property_typed as pt
+import[py] test_modules.py_property_typed as pt
 
 mut s = pt.Sensor(21.5, [3] => py_list[int])
 let name: str = s.celsius

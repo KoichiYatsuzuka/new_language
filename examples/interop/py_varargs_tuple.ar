@@ -11,6 +11,6 @@
 #   (7, 'x') ['7-x']
 #   (3, 2, 1)
 
-import[py-int] test_modules.py_varargs_tuple as vt
+import[py] test_modules.py_varargs_tuple as vt
 
 vt.run()

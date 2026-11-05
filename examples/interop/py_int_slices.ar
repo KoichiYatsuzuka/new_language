@@ -1,4 +1,4 @@
-# import[py-int] の物へ切り出し・多次元の添字・Ellipsis / NotImplemented を渡す（pandas_import_plan.md の 2-3）
+# import[py] の物へ切り出し・多次元の添字・Ellipsis / NotImplemented を渡す（pandas_import_plan.md の 2-3）
 #
 # CPython の物の添字は Python と同じに書ける:
 # - スライスは Python の `slice` として渡る（`a[1:]`・`a[::2]`・代入の `a[1:] = v` も）
@@ -9,7 +9,7 @@
 # ⚠ Arrow の list・str などを切り出すときの境界は今までどおり int（静的な誤り・py_int_slices_error.ar、型の分からない値は
 #   実行時の誤り・py_int_slices_runtime_error.ar）。
 
-import[py-int] py_int_slices as ps
+import[py] py_int_slices as ps
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

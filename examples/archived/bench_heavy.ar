@@ -10,7 +10,7 @@
 #   Step 3  (native dispatch — same bench file):
 #     cargo run --release -- examples/bench_heavy.ar
 
-import[py-int] time
+import[py] time
 import heavy_ops
 
 fn elapsed(t0: float, t1: float) -> str:

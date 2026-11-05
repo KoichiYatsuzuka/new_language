@@ -326,25 +326,13 @@ fn test_seq_ordering_follows_cpython() {
 }
 
 /// 比べられない要素に届いたときだけ `TypeError`（届かなければ決まる）。list と tuple は比べない。
-/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
-#[cfg(feature = "native")]
 #[test]
 fn test_seq_ordering_type_errors() {
-    use crate::ast::Stmt;
-    // 静的検査を通らない形なので、Python から変換した関数（引数の型が無い）で確かめる。
-    let py = "def lt(a, b):\n    return a < b\n";
-    let body = crate::python_converter::convert_python_source(py, "cmp.py").expect("convert");
+    // 静的検査を通らない形（`Any` どうしの `<`）なので、型検査をせずに走らせる（`resolve_and_annotate` の誤りは見ない）。
+    // ⚠ 以前は Python から変換した関数（引数の型が無い）で確かめていた（変換器は pandas_import_plan.md の 3-3 で消す）。
     let run = |main: &str| -> Result<Interpreter, String> {
-        let mut stmts = vec![Stmt::Import {
-            lang: "py".to_string(),
-            module: vec!["cmp".to_string()],
-            source_module: None,
-            alias: Some("c".to_string()),
-            body: body.clone(),
-            origin: crate::ast::ImportOrigin::default(),
-            bind: Some(crate::ast::ImportBind { name: "c".to_string(), module: vec!["cmp".to_string()] }),
-        }];
-        stmts.extend(Parser::new(Lexer::new(main, "").tokenize(), None).parse_program()?);
+        let src = format!("fn lt(let a: Any, let b: Any) -> bool:\n    return a < b\n{main}");
+        let mut stmts = Parser::new(Lexer::new(&src, "").tokenize(), None).parse_program()?;
         let (_e, _w, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
         let mut interp = Interpreter::new();
         interp.wire_resolution(
@@ -362,11 +350,11 @@ fn test_seq_ordering_type_errors() {
         }
         Ok(interp)
     };
-    let i = run("let ok = c.lt((1, \"a\"), (2, 3))\n").expect("decided at the first element");
+    let i = run("let ok = lt((1, \"a\"), (2, 3))\n").expect("decided at the first element");
     assert!(matches!(i.get_val("ok"), Some(Value::Bool(true))));
-    let e = run("let bad = c.lt((1, \"a\"), (1, 3))\n").err().expect("str vs int");
+    let e = run("let bad = lt((1, \"a\"), (1, 3))\n").err().expect("str vs int");
     assert!(e.contains("TypeError"), "{e}");
-    let e = run("let bad = c.lt([1], (1,))\n").err().expect("list vs tuple");
+    let e = run("let bad = lt([1], (1,))\n").err().expect("list vs tuple");
     assert!(e.contains("TypeError"), "{e}");
 }
 

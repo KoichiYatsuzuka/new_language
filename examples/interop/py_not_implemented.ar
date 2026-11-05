@@ -25,7 +25,7 @@
 #
 # ⚠ Python の `NotImplemented` は Arrow の `NotImplemented` と同じ値（境界を越えても同じ物）。
 
-import[py-int] test_modules.py_not_implemented as pn
+import[py] test_modules.py_not_implemented as pn
 
 pn.run()
 

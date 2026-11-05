@@ -5,7 +5,7 @@
 # ⚠ Arrow の `class` は今もクラスを継承できない（基底はトレイトだけ・`examples/classes/class_inherit_error.ar`）。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_inherit as m
+import[py] test_modules.py_inherit as m
 
 mut v = 5
 mut w = 2

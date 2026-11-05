@@ -31,7 +31,7 @@ struct ExceptHandler {
 }
 ```
 
-**`except E as mut e`**: Python で定義した例外（`import[py-int]` の CPython の物）を受けるときは `as mut e` と書きます
+**`except E as mut e`**: Python で定義した例外（`import[py]` の CPython の物）を受けるときは `as mut e` と書きます
 （Python の物は `mut` で受ける・pandas_import_plan.md の D-3 / D-11・タスク 2-10）。書かなければ、型で分かれば静的な誤り
 （`except m.Err as e`）、分からなければ束縛するときに実行時の `TypeError`（`except ValueError as e` が Python で定義した
 `ValueError` の派生を捕まえたとき。文言に元の例外を含める）。Arrow の例外・Python の組み込みの例外（同じ名前の Arrow の
@@ -125,7 +125,7 @@ BaseException
   文言は CPython と同じ）。⚠ CPython の 5 引数の構築子と `encoding` / `start` / `end` / `reason` の属性は無い。
 - ⚠ `SystemExit` / `KeyboardInterrupt` / `ImportError` / `ExceptionGroup` などはまだありません（意味が要るもの）。
 - `FfiTypeError` は `TypeError` の派生なので `except TypeError` でも捕まえられます。`ForeignError` は C# の例外・
-  JS の `throw`・py-int で Python が投げた例外で、`message` は相手の例外の種類とメッセージ
+  JS の `throw`・Python が投げた例外で、`message` は相手の例外の種類とメッセージ
   （`System.InvalidOperationException: boom`・`ValueError: bad`）。どちらも `implementation_plans/ffi_value_exchange_plan.md`
   7-4 で登録しました（以前は `CsDll: …` / `cs-proc remote: …` などの文字列のままで、`except` で捕まえられませんでした）。
 

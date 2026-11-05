@@ -414,7 +414,7 @@ impl Interpreter {
                 Ok(())
             }
             Value::PyObject(_) => {
-                Err("TypeError: cannot delete an item of a CPython object (import[py-int]) yet".to_string())
+                Err("TypeError: cannot delete an item of a CPython object (import[py]) yet".to_string())
             }
             Value::Instance(inst) => Err(format!(
                 "TypeError: '{}' object doesn't support item deletion",

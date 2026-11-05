@@ -1,4 +1,4 @@
-# Arrow の関数を import[py-int] の Python へ渡して呼んでもらう（pandas_import_plan.md の 2-5・設計は 2.7）
+# Arrow の関数を import[py] の Python へ渡して呼んでもらう（pandas_import_plan.md の 2-5・設計は 2.7）
 #
 # - Arrow の関数（`fn`・束縛メソッド・ほかの関数を呼ぶ関数）は Python の呼べる物（`arrow.ArrowFunction`）になる。Python が
 #   呼ぶと Arrow の本体が走る（Python → Arrow → Python … の入れ子も）。引数・戻り値は境界の変換、キーワード引数も渡る
@@ -8,7 +8,7 @@
 # - 作ったスレッド以外から呼ばれたら Python の `RuntimeError`（Arrow の値はスレッドをまたげない）
 # ⚠ 以前は Arrow の関数を Python へ渡すと `TypeError: cannot pass an Arrow value of type 'function' to Python` だった。
 
-import[py-int] py_int_callbacks as pc
+import[py] py_int_callbacks as pc
 
 fn check(label: str, ok: bool) -> None:
     if not ok:

@@ -1,4 +1,4 @@
-import[py-int] py_calculator as calc
+import[py] py_calculator as calc
 
 # PyO3 経由で Python 関数を呼び出す
 let r1 = calc.add(3, 7)

@@ -16,7 +16,7 @@
 # The parser automatically prefers .tlc over .tl when both exist.
 # Type-annotated int/float functions run 100–200× faster natively.
 
-import[py-int] time
+import[py] time
 import native_ops
 
 # ── Correctness check ─────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 # 実行には Python（py_int_probe.py）が要る。
 # 対になる正例: py_int_element_types.ar
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 
 print("before")
 mut t = pp.lying_table()

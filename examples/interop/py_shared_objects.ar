@@ -20,7 +20,7 @@
 #   8 dict list: [1, 2]
 #   9 key lookup: v True False
 
-import[py-int] test_modules.py_shared_objects as sh
+import[py] test_modules.py_shared_objects as sh
 
 sh.run()
 sh.run2()

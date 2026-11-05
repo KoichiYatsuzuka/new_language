@@ -8,7 +8,7 @@
 #   - 第 2 引数は値なので、変数に入れたクラスでも書ける
 # ⚠ Arrow のコードでは `x is C` が同じ判定で、型の絞り込みも効く。
 
-import[py-int] test_modules.py_isinstance as m
+import[py] test_modules.py_isinstance as m
 
 print("=== 1. inside Python code ===")
 print(m.kinds())        # ['bool', 'int', 'sequence', 'sequence', 'dict', 'a Dog', 'an Animal', 'other']

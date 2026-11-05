@@ -15,16 +15,14 @@
 # ⚠ **利用者のファイルが常に勝つ**。埋め込み表を引くのは検索ディレクトリを全部見て
 #   1 つも見つからなかったときだけなので、自分で `time.pyi` を置けば上書きできる。
 #
-# ⚠⚠ **前提は INF-D だった**。変換器は全パラメータを `mutable: true` にするので、
-#   `mut` 実引数の検査を直す前にスタブを置くと `time.sleep(0.01)` が
-#   `CallMutParamWithImmutableArg` で落ちる ＝ **純粋な退行**になっていた。
+# ⚠ スタブの引数は不変（`mut` の実引数を求めない）。`time.sleep(0.01)` のようにリテラルを渡せる。
 #
 # ⚠ スタブに書けるのは `py_type_to_arrow` が解釈できる型だけ。**モジュール定数**（`math.pi`）は注釈だけを書く
 #   （pandas_import_plan.md の 1-4 から型が付く。以前はどちらの経路も拾わず `Any` だった）⇒ ⑦。
 #   ⑤ で「宣言していないメンバも従来どおり使える」ことを固定する。
 
-import[py-int] math
-import[py-int] time
+import[py] math
+import[py] time
 
 # ── ① 戻り値型が効く（float） ───────────────────────────────────────────
 let a: float = math.sqrt(2.0)

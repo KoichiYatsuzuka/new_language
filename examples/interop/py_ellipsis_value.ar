@@ -12,9 +12,9 @@
 #   TypeError: EllipsisType takes no arguments
 #   AttributeError: 'ellipsis' object has no attribute 'x'
 #
-# ⚠ `pe.pick()` の型は `Any`（注釈が無い）なので、`mustbe ellipsis` で型を決めてから比べる。
+# ⚠ `pe.pick()` の型は `Any`（注釈が無い）。`Any` の値に `===` は使えないので、同じ物かは `id()` で比べる。
 
-import[py-int] test_modules.py_ellipsis_value as pe
+import[py] test_modules.py_ellipsis_value as pe
 
 pe.run()
 
@@ -25,11 +25,11 @@ fn check(let ok: bool, let what: str) -> None:
 # Arrow のソースからも同じ値
 let e = Ellipsis
 mut picked = pe.pick()
-check((picked mustbe ellipsis) === e and (picked mustbe ellipsis) === Ellipsis, "same object as Python's ...")
+check(id(picked) == id(e) and id(picked) == id(Ellipsis), "same object as Python's ...")
 mut given = pe.pick(None)
-check(not (given is ellipsis), "None is not Ellipsis")
+check(id(given) != id(e), "None is not Ellipsis")
 mut back = pe.pick(e)
-check((back mustbe ellipsis) === e, "Arrow's Ellipsis comes back as itself")
+check(id(back) == id(e), "Arrow's Ellipsis comes back as itself")
 let es = [e, Ellipsis]
 check(es[0] === es[1] and es[0] == es[1], "only one Ellipsis")
 check(repr(e) == "Ellipsis" and str(e) == "Ellipsis", "display")

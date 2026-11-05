@@ -3,8 +3,8 @@
 # `type X = T` は CPython 3.12 の文で、CPython が実行する。型スタブは型エイリアスを読まない（`X` を注釈に使った関数の
 # 引数・戻り値の型は `Any`）。Arrow の list は `=> py_list[int]` で写して渡す。
 
-import[py-int] test_modules.py_type_alias as m
-import[py-int] test_modules.py_type_alias_other as o
+import[py] test_modules.py_type_alias as m
+import[py] test_modules.py_type_alias_other as o
 
 # ── ① `type Vec = list[int]` が展開される ───────────────────────────────
 mut xs = [1, 2, 3]

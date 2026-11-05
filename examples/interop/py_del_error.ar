@@ -6,7 +6,7 @@
 # ⚠ Python が投げた例外は、捕まえなければ CPython と同じ最後の行で止まる（pandas_import_plan.md 2-1）。
 # ほかの誤り（`py_del.ar` の `errors()` が捕まえて表示する）は CPython の `del` の誤りそのもの。
 
-import[py-int] test_modules.py_del as m
+import[py] test_modules.py_del as m
 
 print(m.read_deleted())
 print("unreachable")

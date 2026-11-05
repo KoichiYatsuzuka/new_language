@@ -15,7 +15,7 @@
 #   L.get_int_none()      → declared `int` but returned `None`
 #   L.get_list_of_int()   → declared `list[int]` but returned `list`（要素型の違反）
 
-import[py-int] ffi_probe.lying_py as L
+import[py] ffi_probe.lying_py as L
 
 fn double_it(let x: int) -> str:
     return "doubled=" + str(x * 2)

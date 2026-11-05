@@ -149,7 +149,7 @@ impl TypeChecker {
                     // ⚠ `import[py]` のモジュール（`PyNamespace`）も修飾名で引く（`zoo.Dog`）。以前は素の `Dog` で
                     //   引いていたので、`z.Dog()` がメインの同名クラスの `__init__` で検査されていた（実測）。
                     Some(InferredType::Namespace(..) | InferredType::PyNamespace(..)) => {
-                        // ⚠ 外部言語のモジュール（cpp / cs / py-int …）は素の名前で登録したまま。
+                        // ⚠ 外部言語のモジュール（cpp / cs …）は素の名前で登録したまま。
                         Some(self.registry.module_member(name, attr).unwrap_or_else(|| attr.clone()))
                     }
                     // ⚠ 型の分からない受け手（エディタで読めていない `import` の別名など）の `x.f(..)` を、
@@ -538,7 +538,7 @@ impl TypeChecker {
                 //
                 // 外部言語のクラスも、スタブの `__init__` で検査する（ffi_value_exchange_plan.md 7-31・利用者の決定: 分かる範囲で
                 // 検査し、静的に分からない部分は `Any`）。各ブリッジのスタブは実際のコンストラクタを書く: C# は公開の
-                // コンストラクタごと（5-1）、Rust の構造体は `new` / 構造体リテラル、py-int は `__init__`（7-27。基底が分からない
+                // コンストラクタごと（5-1）、Rust の構造体は `new` / 構造体リテラル、Python は `__init__`（7-27。基底が分からない
                 // クラスは引数を問わない `*args, **kwargs`）、cpp の構造体はフィールドの並び（7-31）、js-proc は利用者の `.ars`。
                 // 引数の型が分からないところはスタブが `Any` と書く。`__init__` の無いスタブは検査しない（何も分からない）。
                 // ⚠ 以前は外部言語のクラスをすべて除外していた（#27-a。当時の C# のスタブが `__init__` を引数 0 個で

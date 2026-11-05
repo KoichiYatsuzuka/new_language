@@ -15,7 +15,7 @@
 #
 # Run: ./scripts/ab_bench.ps1 -A <旧> -B <新> -Scripts examples/bench/bench_container_insert.ar -Reps 7
 
-import[py-int] time
+import[py] time
 
 let N = 300_000
 

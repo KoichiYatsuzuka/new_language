@@ -1,8 +1,8 @@
-# import[py-int] の、例外でない Python のクラスで捕まえる・投げる（静的な誤り・pandas_import_plan.md の 2-1）
+# import[py] の、例外でない Python のクラスで捕まえる・投げる（静的な誤り・pandas_import_plan.md の 2-1）
 #
 # 正しい形は py_int_exceptions.ar。Python のクラスが例外か（組み込みの例外を継承しているか）は、型スタブが基底をたどって決める。
 
-import[py-int] py_int_exceptions as px
+import[py] py_int_exceptions as px
 
 try:
     px.fail_app(1)

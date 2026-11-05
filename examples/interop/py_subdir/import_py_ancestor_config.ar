@@ -11,8 +11,8 @@
 # ⚠ この例題が無いと、方針がまた 2 通りに分かれても全ゲートが緑のまま通る
 #   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
 
-import[py-int] cfg_probe
-import[py-int] cfg_probe as cfg_int
+import[py] cfg_probe
+import[py] cfg_probe as cfg_int
 
 print(cfg_probe.MARKER)
 print(cfg_int.MARKER)

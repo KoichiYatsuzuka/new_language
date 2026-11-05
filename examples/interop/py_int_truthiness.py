@@ -1,4 +1,4 @@
-# py_int_truthiness.ar が import[py-int] で使うモジュール（CPython の物の真偽・pandas_import_plan.md の 2-2）。
+# py_int_truthiness.ar が import[py] で使うモジュール（CPython の物の真偽・pandas_import_plan.md の 2-2）。
 
 
 class Box:

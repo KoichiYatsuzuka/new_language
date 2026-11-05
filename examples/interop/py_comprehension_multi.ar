@@ -2,7 +2,7 @@
 #
 # 内包表記は CPython が実行する。Arrow の側の多ターゲットは `examples/collections/comprehension_multi_target.ar`。
 
-import[py-int] test_modules.py_comprehension_multi as m
+import[py] test_modules.py_comprehension_multi as m
 
 mut d = {"a": 1, "b": 2}
 mut pairs = [(1, 10), (2, 20)]

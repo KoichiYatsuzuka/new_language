@@ -8,6 +8,6 @@
 #   shape square of side 3
 #   tile: shape square of side 2
 
-import[py-int] test_modules.py_super_two_args as st
+import[py] test_modules.py_super_two_args as st
 
 st.run()

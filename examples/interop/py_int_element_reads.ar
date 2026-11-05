@@ -3,7 +3,7 @@
 # Python が返した list は写さずに共有する（2-7）ので、受け取ったときに照合しても、後で Python が別の型の要素を入れうる。
 # 添字（`xs[i]` / `d[k]`）・`for` / 内包で取り出した要素・メソッドの戻り値（`xs.pop()`）を、型の宣言と照合する。
 # 違えば FfiTypeError（受け取るときの境界検査と同じ例外）。`float` と宣言した所の int は float に寄せる（PEP 484）。
-import[py-int] py_int_element_reads as pe
+import[py] py_int_element_reads as pe
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

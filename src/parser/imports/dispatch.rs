@@ -14,7 +14,7 @@ pub(crate) struct LoadedModule {
     /// AST の `module` に入れる名前。
     ///
     /// ⚠ Arrow / py のモジュールは**ファイルごとに一意な名前**（[`crate::module_path`]）。
-    ///   それ以外（py-int / rs / cs / js）は書いた綴りのまま（実行時がその名前で外部へ問い合わせる）。
+    ///   それ以外（py / rs / cs / js）は書いた綴りのまま（実行時がその名前で外部へ問い合わせる）。
     pub(crate) name: Vec<String>,
     /// モジュールのパスを解いた**探索先のディレクトリ**（`a.b` なら `<root>/a/b.ar` の `<root>`）。
     /// パッケージの連鎖（`<root>/a`）を読み込むのに使う（CPython 準拠・`packages.rs`）。
@@ -255,7 +255,7 @@ impl Parser {
             }
             other => return Err(format!("expected language identifier, got `{other}`")),
         };
-        // ハイフン区切りの識別子を許容（例: `py-int`）
+        // ハイフン区切りの識別子を許容（例: `cpp-dll`）
         while *self.current() == Token::Minus {
             self.advance();
             match self.current().clone() {
@@ -292,13 +292,15 @@ impl Parser {
             "tl" | "ar" => self.load_tl_source_module(level, module),
             // import[arc]: force .arc, error if not found
             "tlc" | "arc" => self.load_tlc_module(level, module),
-            "py" => {
-                let dir = self.source_dir.clone();
-                self.load_python_module(&dir, level, module)
-            }
-            // py-int: .pyi を優先し、なければ .py にフォールバック
-            // body は型検査専用（実行時は PyO3 経由）
-            "py-int" => self.load_python_interface_module(level, module),
+            // import[py]: CPython が import して実行する（pandas_import_plan.md の D-1 / D-6・3-2）。
+            // body は型検査専用の型スタブ（`.pyi` を優先し、なければ `.py` から抽出する）
+            "py" => self.load_python_interface_module(level, module),
+            // ⚠ `import[py-int]` は廃止した（3-2）。以前の `import[py]`（Python のソースを Arrow へ変換して読む）を
+            //   CPython で実行する読み方に置き換え、`import[py-int]` はその読み方の名前だった
+            "py-int" => Err(format!(
+                "`import[py-int]` was removed: write `import[py] {}` (Python modules run on CPython)",
+                module_path::written_spelling(level, module)
+            )),
             // import[rs]: クレートバインディングをコンパイル・キャッシュし stubs を返す
             // ⚠ クレートはファイルではないので相対の書き方は受けない。
             "rs" if level > 0 => Err(format!(

@@ -6,7 +6,7 @@
 #
 # 対になる正例: py_int_arrow_objects.ar
 
-import[py-int] py_int_arrow_objects as po
+import[py] py_int_arrow_objects as po
 
 class Point:
     mut x: int

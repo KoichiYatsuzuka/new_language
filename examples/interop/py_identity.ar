@@ -4,7 +4,7 @@
 # 計算で作った文字列や大きな int（インターンされないので `is` は偽・⑤）も CPython と同じ。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_identity as m
+import[py] test_modules.py_identity as m
 
 mut n = None
 mut v = 5

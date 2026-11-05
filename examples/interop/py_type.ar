@@ -9,7 +9,7 @@
 # ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
 # ⚠ Arrow の `type(x)` に CPython の物を渡すと CPython の `type`（そのクラスの値）を返す。
 
-import[py-int] test_modules.py_type as m
+import[py] test_modules.py_type as m
 
 print("=== 1. inside Python code ===")
 print(m.names())          # ['int', 'str', 'list', 'NoneType', 'Square(2)', 'Square(6)']

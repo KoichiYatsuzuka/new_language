@@ -355,11 +355,12 @@ pub enum InferredType {
     /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー（2026-10-02）。
     /// 外部言語（cpp / cs / js / rs）のスタブと、import 先を読めていないエディタでは `None`（開いている）。
     Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>, Box<ModuleVars>),
-    /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
+    /// Python モジュール (`import[py]`) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
     ///
-    /// 2 つ目は **CPython で実行する**モジュール（`import[py-int]`）か（pandas_import_plan.md の D-12・2-11: Arrow の list などを
-    /// キャストせずに渡すのは誤り）。`import[py]`（Arrow へ変換して実行する）は偽。
+    /// 2 つ目は **CPython で実行する**モジュールか（pandas_import_plan.md の D-12・2-11: Arrow の list などを
+    /// キャストせずに渡すのは誤り）。3-2 から Python のモジュールはどれも CPython で実行するので常に真（変換して実行していた
+    /// 頃の `import[py]` は偽だった・3-3 で外す）。
     PyNamespace(HashMap<String, InferredType>, bool),
     /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,

@@ -1,4 +1,4 @@
-// py_stubs.rs — `import[py-int]` 用に**バイナリへ埋め込む**型スタブ（BYTECODE_VM_PLAN #19）。
+// py_stubs.rs — `import[py]` 用に**バイナリへ埋め込む**型スタブ（BYTECODE_VM_PLAN #19）。
 //
 // ★ `time` / `math` は CPython の**C 組み込みモジュール**で `.py` が存在しない。
 //   そのため `Parser::python_search_dirs_from` が stdlib まで辿っても必ず空振りし、
@@ -30,7 +30,7 @@
 //     `stubs/generated/LICENSE-typeshed.txt`・D-10）、無いもの（28 本）は CPython の内省（引数の名前と数は
 //     CPython の __text_signature__ から、大域変数の型は作ったときの値の型から付け、それ以外は `Any`）。
 //     `scripts/gen_builtin_py_stubs.ps1` で作り直す（手で書き換えない）。
-//   どちらにも無いモジュールは、型の出所が無いので `import[py-int]` が構文解析の誤りになる（`.pyi` を置くよう促す）。
+//   どちらにも無いモジュールは、型の出所が無いので `import[py]` が構文解析の誤りになる（`.pyi` を置くよう促す）。
 //   ⚠ 作った CPython（版と OS）のもの。Linux だけのモジュール（posix / fcntl など）は無い。
 //   ⚠ 同梱のスタブは変換器を通さず、行単位の抽出器だけで読む（`build_py_type_body`）。宣言を落とさないかは
 //     単体テスト `bundled_stubs_lose_no_declarations` が見る。

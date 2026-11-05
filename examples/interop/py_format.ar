@@ -10,6 +10,6 @@
 #   1.230000e-04 1_000_000 0b11111111
 #   total=3 total = 003 '\xe9'
 
-import[py-int] test_modules.py_format as fm
+import[py] test_modules.py_format as fm
 
 fm.run()

@@ -3,7 +3,7 @@
 # 三項演算子は CPython が実行する（選ばれた腕しか評価しない・⑨ で副作用の回数まで確かめる・腕の型が違ってもよい）。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_ternary as m
+import[py] test_modules.py_ternary as m
 
 mut t = True
 mut f = False

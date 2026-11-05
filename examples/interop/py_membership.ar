@@ -4,7 +4,7 @@
 # `=> py_list[T]` などで写して渡す。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_membership as m
+import[py] test_modules.py_membership as m
 
 mut xs = [1, 2, 3]
 mut two = 2

@@ -4,7 +4,7 @@
 # （pandas_import_plan.md 2-4）。⇒ ④ の無限ジェネレータ + `break` は先を取り出さない。
 # Arrow の側の `gen` メソッドは `examples/collections/gen_method.ar`。
 
-import[py-int] test_modules.py_generator as m
+import[py] test_modules.py_generator as m
 
 # ── ① 素のジェネレータ ──────────────────────────────────────────────────
 for v in m.two():

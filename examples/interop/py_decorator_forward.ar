@@ -3,7 +3,7 @@
 # Python で最頻出の形: `def deco(f): def wrapper(*args, **kwargs): return f(*args, **kwargs)`。
 # 包まれた関数・クロージャ・関数値を受ける関数は CPython が実行し、Arrow は戻り値と関数値（`inc`・`m.triple`）を受けて呼ぶ。
 
-import[py-int] test_modules.py_decorator_forward as m
+import[py] test_modules.py_decorator_forward as m
 
 mut n = 5
 

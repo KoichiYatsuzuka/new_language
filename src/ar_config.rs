@@ -9,14 +9,14 @@
 // | 読み手 | セクション | 探索方針 | 理由 |
 // |---|---|---|---|
 // | `Interpreter::import_search_dirs`（`load_python_search_paths`） | `python.search_paths` | import 文の**探索の起点**から**祖先を root まで**遡り、**最初の 1 個で打ち切り** | 上位の設定が下位を上書きしない、という既存の挙動（#61） |
-// | `Parser::python_search_dirs_from` | `python.search_paths` | エントリのディレクトリ（CPython の `sys.path[0]` 相当）から祖先へ遡る | **#74 で上の行と揃えた**（以前は 2 箇所だけで、同じ設定が `import[py-int]` からは見えて `import[py]` からは見えなかった） |
+// | `Parser::python_search_dirs_from` | `python.search_paths` | エントリのディレクトリ（CPython の `sys.path[0]` 相当）から祖先へ遡る | **#74 で上の行と揃えた**（以前は 2 箇所だけで、同じ設定が実行時（CPython の `sys.path`）からは見えて型の側（パーサ）からは見えなかった） |
 // | `cpp_bridge::config::load_cpp_config` | `cpp.*` | 祖先を root まで ＋ cwd を**全部レイヤーマージ**（遠い方から適用） | **打ち切りだと中間の部分的な設定がルートの cpp 設定を丸ごと隠す**（実バグとして修正済み） |
 // | `exec::find_js_config` | `javascript.*` | 探索の起点から祖先へ → cwd の順に**最初に見つかったもの** | ブリッジは 1 つだけ要るため |
 // | `Parser::load_cs_lib_paths` | `csharp.lib_paths` | エントリのディレクトリから**祖先を root まで**・最初の 1 個 | `python` 側と同じ（#73 で読み取りを共有化） |
 //
 // ⚠⚠ **`python` の 2 つは #74 で揃えた**（どちらも祖先ウォーク）。揃える前は
-// `examples/interop/py_subdir/` から `import[py] cfg_probe` が **ParseError** になる一方
-// `import[py-int]` は通る、という食い違いが実際にあった。
+// `examples/interop/py_subdir/` から、変換して読む方の `import[py] cfg_probe` が **ParseError** になる一方
+// CPython で読む方（当時の `import[py-int]`）は通る、という食い違いが実際にあった。
 // **ウォーク側へ寄せた根拠**: 5 つの読み手のうち **4 つが既にウォーク**で、2 箇所ルールが異端だった。
 // ⚠ 2026-10-02 から、ドット無しの import の設定はエントリのディレクトリ（CPython の `sys.path[0]`
 //   相当）から遡る（`crate::module_path`・CPython 準拠）。実行時の起点は import 文ごと
@@ -46,14 +46,14 @@ use std::path::{Path, PathBuf};
 /// `source_dir` から**祖先へ遡って** `ar_config.json` を探し、最初に見つけたものの
 /// `python.search_paths` を（相対なら設定ファイルのある場所を基準に）絶対パス化して返す（#61）。
 ///
-/// 消費者は `Interpreter::import_search_dirs`（`import[py-int]` と
+/// 消費者は `Interpreter::import_search_dirs`（`import[py]` と
 /// cs-dll / cs-proc のブリッジ探索）。
 ///
 /// ⚠ **見つかった時点で打ち切る**（読めなくても・壊れていても遡らない）。
 /// 上位の設定が下位を上書きしない、という既存の挙動をそのまま保つため。
 /// ⚠ **見つからない場合はドライブ root まで遡る**（打ち切りが無い）。
 /// これが `interp_init` の支配項だったので、**起動時には呼ばない**（#69）。呼ぶのは
-/// その import 文（py-int / cs）を実際に実行したときだけ。
+/// その import 文（py / cs）を実際に実行したときだけ。
 // ⚠ 呼ぶのは実行時（インタプリタ）だけなので、拡張（`editor`）では未使用になる。
 #[cfg_attr(feature = "editor", allow(dead_code))]
 pub(crate) fn load_python_search_paths(source_dir: &Path) -> Vec<PathBuf> {

@@ -11,7 +11,7 @@
 #   Hot 40.0
 #   42 abab 8
 
-import[py-int] test_modules.py_static_class_funcs as sc
+import[py] test_modules.py_static_class_funcs as sc
 
 sc.run()
 

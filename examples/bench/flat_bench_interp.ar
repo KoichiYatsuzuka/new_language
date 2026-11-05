@@ -3,7 +3,7 @@
 #
 # Run: cargo run --release -- examples/bench/flat_bench_interp.ar
 
-import[py-int] time
+import[py] time
 
 class Particle:
     mut x: float

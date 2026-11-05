@@ -1,0 +1,12 @@
+# import_py_int_removed_error.ar — `import[py-int]` は廃止した（pandas_import_plan.md の 3-2・D-6）
+#
+# Python のモジュールは `import[py]` で読み、CPython が実行する（以前の `import[py-int]` と同じ読み方）。
+# 以前の `import[py]`（Python のソースを Arrow へ変換して動かす読み方）は廃止し、`import[py-int]` の読み方を
+# `import[py]` の名前で引き継いだ。⇒ `import[py-int]` は `import[py]` に書き換える。
+#
+# 期待されるエラー（ParseError・構文解析の時点）:
+#   `import[py-int]` was removed: write `import[py] math` (Python modules run on CPython)
+
+import[py-int] math
+
+print(math.sqrt(4.0))

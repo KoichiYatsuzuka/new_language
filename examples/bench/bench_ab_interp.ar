@@ -8,7 +8,7 @@
 #
 # Run: target/release/arrow.exe -src examples/bench/bench_ab_interp.ar
 
-import[py-int] time
+import[py] time
 
 let N  = 1_000_000     # 単純ループ用
 let NM = 600_000       # メソッド/属性/クロージャ用

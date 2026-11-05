@@ -5,7 +5,7 @@
 #   Python から見える特殊メソッドは Arrow のクラスが持つものだけ（`__len__` / `__getitem__` / `__add__` …）。
 # - 書けるのは `mut` の変数（と式）を引数に渡したときだけ。`let` の変数は読むだけ（属性への代入・`mut self` のメソッドは TypeError）。
 # - クラス・ジェネレータ関数は呼べる物、ジェネレータは Python の反復子になる。
-import[py-int] py_int_arrow_objects as po
+import[py] py_int_arrow_objects as po
 
 fn check(let label: str, let ok: bool) -> None:
     if not ok:

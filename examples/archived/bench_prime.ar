@@ -19,7 +19,7 @@
 # Target number: 999962000357 = 999979 × 999983  (two six-digit primes)
 # Trial-division checks ~499 990 odd divisors, so it takes noticeable time.
 
-import[py-int] time
+import[py] time
 import prime_factors
 
 let n = 999962000357

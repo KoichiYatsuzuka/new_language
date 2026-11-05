@@ -4,7 +4,7 @@
 # 評価順序・同一性（`a is b is c`）は CPython と同じ。⑧〜⑫ は条件式・内包・`while` の中の連鎖比較。
 # ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py-int] test_modules.py_chained_compare as m
+import[py] test_modules.py_chained_compare as m
 
 mut x = 5
 

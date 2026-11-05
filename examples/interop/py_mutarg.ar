@@ -3,7 +3,7 @@
 # Python の関数の引数は型スタブで不変（`mut` の実引数を求めない）なので、どれも渡せる。Arrow の list は
 # `=> py_list[int]` で写して渡す。
 
-import[py-int] test_modules.py_mutarg as m
+import[py] test_modules.py_mutarg as m
 
 mut n = 5
 mut xs = [1, 2, 3]

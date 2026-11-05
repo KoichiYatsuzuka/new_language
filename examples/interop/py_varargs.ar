@@ -3,7 +3,7 @@
 # 型スタブは `*args` / `**kwargs` を持つ関数の引数を検査しない（位置引数の個数・キーワードの名前が開いている）。
 # 束縛は CPython が行う（余った位置引数はタプル・余ったキーワード引数は dict・1 個も無くても空）。
 
-import[py-int] test_modules.py_varargs as m
+import[py] test_modules.py_varargs as m
 
 mut a = 1
 mut b = 2

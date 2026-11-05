@@ -1,6 +1,6 @@
 # ffi_int_overflow.ar — 外部言語から int（64 ビット）に入らない整数が返ったら OverflowError（正例・ffi_value_exchange_plan.md 7-9）
 #
-# C / C# / Rust の境界は以前から OverflowError。Python（py-int）と JavaScript（js-proc）も同じにした:
+# C / C# / Rust の境界は以前から OverflowError。Python（`import[py]`）と JavaScript（js-proc）も同じにした:
 #   - `-> int` と宣言した Python の関数が 2**70 を返す（Python の int は桁に上限が無い）
 #   - `-> list[int]` の要素に 2**70 が混ざる
 #   - `-> int` と宣言した JS の関数が 1e20 を返す（整数値だが int64 に入らない）
@@ -10,7 +10,7 @@
 # 実行には Python（py_int_probe.py）と Node.js（js_probe.js）が要る。
 # 対になる負例: py_int_overflow_error.ar
 
-import[py-int] py_int_probe as pp
+import[py] py_int_probe as pp
 import[js-proc] js_probe as jp
 
 fn check(let label: str, let ok: bool) -> None:

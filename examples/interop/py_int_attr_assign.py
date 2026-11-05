@@ -1,4 +1,4 @@
-"""import[py-int] の属性への代入の試験（examples/interop/py_int_attr_assign.ar・pandas_import_plan.md の 2-9）。
+"""import[py] の属性への代入の試験（examples/interop/py_int_attr_assign.ar・pandas_import_plan.md の 2-9）。
 
 Arrow の `o.x = v` は CPython の `setattr` を呼ぶ。`__setattr__` の中から見える参照の数を、同じ形を CPython で
 書いたときの数（`expected`）と比べる（数そのものは CPython の版で変わるので決め打ちしない・D-5）。

@@ -41,7 +41,7 @@
 /// - 複数行シグネチャ（ブラケット深さを追跡）に対応
 /// - `_` で始まるプライベート関数は除外
 ///
-/// ⚠ テストだけが使う（1 つのファイルだけの型）。`import[py-int]` の型スタブは、たどって宣言を足してから `Any` にする
+/// ⚠ テストだけが使う（1 つのファイルだけの型）。`import[py]` の型スタブは、たどって宣言を足してから `Any` にする
 ///   （[`extract_py_type_stubs_raw`]・`py_modules.rs` の `link_py_types`・pandas_import_plan.md の 1-3）。
 #[cfg(test)]
 pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
@@ -52,7 +52,7 @@ pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
 
 /// [`extract_py_type_stubs`] の、このファイルが宣言していない型の名前を `Any` にする**前**の宣言（pandas_import_plan.md の 1-3）。
 ///
-/// `import[py-int]` の型スタブは、再エクスポートと注釈のよそのクラスをたどって宣言を足してから `Any` にする
+/// `import[py]` の型スタブは、再エクスポートと注釈のよそのクラスをたどって宣言を足してから `Any` にする
 /// （`py_modules.rs` の `link_py_types`）。先に `Any` にすると、よそのモジュールのクラスの名前が消える。
 pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
     let lines: Vec<&str> = source.lines().collect();
@@ -205,7 +205,7 @@ fn py_literal_params(text: &str) -> Vec<(String, String)> {
 }
 
 /// トップレベルのクラスのうち、**このファイルに無い基底**を持つものの、その基底の名前（書いた綴り・`indexing.IndexingMixin` など）。
-/// `py_class_stub` はこの基底のメンバーを知らないので、クラスを開いておく（メンバーを検査しない）。`import[py-int]` の型スタブは
+/// `py_class_stub` はこの基底のメンバーを知らないので、クラスを開いておく（メンバーを検査しない）。`import[py]` の型スタブは
 /// これをたどって基底のメンバーを写す（`py_modules.rs` の `link_py_types`・pandas_import_plan.md の 1-3）。
 pub(crate) fn py_class_outside_bases(source: &str) -> std::collections::HashMap<String, Vec<String>> {
     let lines: Vec<&str> = source.lines().collect();
