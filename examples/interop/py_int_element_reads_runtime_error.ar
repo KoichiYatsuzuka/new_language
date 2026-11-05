@@ -1,0 +1,12 @@
+# py_int_element_reads_runtime_error.ar — Python が注釈を破る要素を入れた `py_list` を読むと FfiTypeError（pandas_import_plan.md の 2-12）
+#
+# `scores() -> list[int]` は受け取るときには正しい（境界検査を通る）が、共有しているので Python が後で "four" を足せる。
+# 読むたびに照合するので、`xs[3]` で FfiTypeError になる（黙って str を int として使わない）。
+# 対になる正例: py_int_element_reads.ar
+import[py-int] py_int_element_reads as pe
+
+mut xs = pe.scores()
+pe.spoil(xs, "four")
+print("first:", xs[0])
+let n: int = xs[3]
+print("unreachable:", n + 1)

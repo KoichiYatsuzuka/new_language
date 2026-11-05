@@ -366,7 +366,10 @@ converts between them and Arrow's collections (`eval_cast_evaled` → `py_intero
 to the depth the target type names, checking elements; static rules in `check_cast_possible` → `py_collection_cast`).
 Their operations are typed by `py_collection_binop` (`binop.rs`), `py_collection_method_return` (`call_check.rs`) and
 the closed method table `names::PY_COLLECTION_METHODS`; at run time they are ordinary `PyObject` operations. The return
-boundary check (`ffi_boundary`) checks their elements (`py_collection_items` / `py_dict_pairs`). frozenset → Arrow set
+boundary check (`ffi_boundary`) checks their elements (`py_collection_items` / `py_dict_pairs`). Every later read is checked too (2-12):
+the type checker records the expected type of a subscript / iterated element (`AstAnnotations::py_reads` / `py_iters`,
+`python_read_check` keeps only the outer kind of nested `py_*`), the tree-walk and the VM (`CheckPyRead` / `GetIterChecked`,
+emitted only when annotated; iterators carry `GeneratorState::py_check`) call `Interpreter::check_python_read`. frozenset → Arrow set
 (a frozenset with an element Arrow cannot hold stays a `PyObject`). An Arrow list / dict / set is **never** passed implicitly
 (task 2-11): `ar_to_py` returns a `TypeError` for it (the only copy left is `exception_arg_to_py` for exception `args`), and the
 type checker reports `ArrowCollectionToPython` when the receiver is known to be Python (`is_python_value`: a CPython module —

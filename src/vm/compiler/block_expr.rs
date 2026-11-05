@@ -333,7 +333,7 @@ impl Compiler {
         let result_slot = self.alloc_temp()?;
         let iter_temp = self.alloc_temp()?;
         self.compile_expr(iter)?;
-        self.emit(Op::GetIter);
+        self.emit_get_iter(iter);
         self.emit(Op::StoreLocal(iter_temp));
         let loop_start = self.here();
         let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit → NORMAL_END

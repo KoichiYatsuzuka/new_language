@@ -202,7 +202,8 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         //    （`Dict` / `Set` と同じ扱い・タスク 8.3）。
         InferredType::TupleAny => prim(matches!(value, Value::Tuple(_)), value),
         // 中身が CPython の物のコレクション（pandas_import_plan.md の D-12・2-7）: 外側の形（CPython の list / dict / set か）と要素。
-        // ⚠ 照合するのは受け取るときだけ。共有されるので、後で Python が別の型の要素を入れうる（読むたびの照合は 2-12）。
+        // ⚠ ここは受け取るときの照合。共有されるので後で Python が別の型の要素を入れうる ⇒ 要素を読むたびにも照合する
+        //   （`Interpreter::check_python_read`・2-12）。
         // ⚠ 要素の `float` には int も入る（PEP 484 の数の塔）。CPython の物なので、Arrow の list のように float へ寄せられない。
         InferredType::PyList(elem) | InferredType::PySet(elem) => {
             let want = if matches!(declared, InferredType::PyList(_)) { "list" } else { "set" };

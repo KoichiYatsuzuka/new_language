@@ -99,6 +99,14 @@ pub struct AstAnnotations {
     /// **`NamedInstance` だけを根拠に `Value::Instance` 前提の最適化へ落としてはいけない**
     /// （#15e の「注釈は最適化ヒントであって意味論の根拠ではない」の具体例）。
     arrow_classes: std::collections::HashSet<String>,
+    /// **CPython の物から読む値の宣言の型**（pandas_import_plan.md の 2-12）: node_id → 型。`py_list` / `py_dict` の添字
+    /// （`pl[i]` の node）と、`py_list` などを回す `for` / 内包の反復する式（`for x in pl` の `pl` の node）に、読んだ要素の型を
+    /// 載せる。実行時は読むたびに照合する（Python が後で別の型の要素を入れうる・共有されるので）。
+    /// ⚠ 検査指示（`directives`）とは別の表: 1 つの node が「自分の値」（添字）と「回したときの要素」（反復する式）の両方を
+    ///   持ちうる（`for x in grid[0]`）。⚠ 載っていない node は照合しない（合成 AST・注釈の無い経路は今までどおり）。
+    py_reads: HashMap<u32, TypeId>,
+    /// `py_reads` の反復の側（`for x in pl` の `pl` の node → 要素の型）。
+    py_iters: HashMap<u32, TypeId>,
 }
 
 /// `binop_kind` が付かなかった二項演算の理由別件数（診断用）。
@@ -162,6 +170,34 @@ impl AstAnnotations {
     /// node の検査指示を引く（未登録は `Directive::None`）。
     pub fn directive(&self, node_id: u32) -> Directive {
         self.directives.get(&node_id).cloned().unwrap_or(Directive::None)
+    }
+
+    /// CPython の物から読む値の宣言の型を記録する（`py_reads`・node_id==0 は無視・2-12）。
+    pub fn set_py_read(&mut self, node_id: u32, ty: InferredType) {
+        if node_id == 0 {
+            return;
+        }
+        let tid = self.intern(ty);
+        self.py_reads.insert(node_id, tid);
+    }
+
+    /// CPython の物から読む値の宣言の型（`py_reads`）。
+    pub fn py_read(&self, node_id: u32) -> Option<&InferredType> {
+        self.py_reads.get(&node_id).and_then(|tid| self.type_of(*tid))
+    }
+
+    /// CPython の物を回したときの要素の宣言の型を記録する（`py_iters`・node_id==0 は無視・2-12）。
+    pub fn set_py_iter(&mut self, node_id: u32, ty: InferredType) {
+        if node_id == 0 {
+            return;
+        }
+        let tid = self.intern(ty);
+        self.py_iters.insert(node_id, tid);
+    }
+
+    /// CPython の物を回したときの要素の宣言の型（`py_iters`）。
+    pub fn py_iter(&self, node_id: u32) -> Option<&InferredType> {
+        self.py_iters.get(&node_id).and_then(|tid| self.type_of(*tid))
     }
 
     /// node の Call 構造化注釈を記録する（node_id==0 は無視）。

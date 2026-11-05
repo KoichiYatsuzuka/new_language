@@ -541,7 +541,7 @@ impl Compiler {
         // イテレータを取得して temp slot に格納。
         let iter_temp = self.alloc_temp()?;
         self.compile_expr(iter)?;
-        self.emit(Op::GetIter);
+        self.emit_get_iter(iter);
         self.emit(Op::StoreLocal(iter_temp));
         // loop_start: ForIter で next。EndOfIteration なら exit へ、要素なら target へ束縛。
         let loop_start = self.here();
@@ -589,6 +589,15 @@ impl Compiler {
             self.free_temp();
         }
         Some(())
+    }
+
+    /// `for` の反復子を作る命令。CPython の物から取り出す要素に型検査が型を載せていれば照合つき（`GetIterChecked`・
+    /// pandas_import_plan.md の 2-12）、ほかは今までどおり `GetIter`（バイトコードを変えない）。`for` 文と `for` 式が共有する。
+    pub(super) fn emit_get_iter(&mut self, iter: &Expr) {
+        match iter.node_id().filter(|n| self.annotations.py_iter(*n).is_some()) {
+            Some(n) => self.emit(Op::GetIterChecked(n)),
+            None => self.emit(Op::GetIter),
+        };
     }
 
     /// `ForIter` の直後の、ループ変数の束縛（`compile_for` と `for` 式の `compile_for_expr_inner` が共有・D-11・2-10）。

@@ -319,3 +319,36 @@ fn unannotated_node_has_no_directive() {
     assert_eq!(ann.directive(9_999_999), Directive::None);
     assert!(ann.resolved(9_999_999).is_none());
 }
+
+/// `py_list` / `py_dict` の添字と、それを回す `for` の式には、読んだ要素を照合する型が載る（pandas_import_plan.md の 2-12）。
+/// Arrow の list には載せない（実行時の照合も無い・バイトコードを変えない）。
+#[test]
+fn python_reads_are_annotated_only_for_python_collections() {
+    fn last_two(stmts: &[Stmt]) -> (u32, u32) {
+        // 最後から 2 つの文: `let v = <添字>` と `for x in <式>:`
+        let n = stmts.len();
+        let (Stmt::Let(_, _, Expr::Subscript { node_id: sub, .. }, _) | Stmt::Mut(_, _, Expr::Subscript { node_id: sub, .. }, _)) =
+            &stmts[n - 2]
+        else {
+            panic!("no subscript")
+        };
+        let Stmt::For { iter, .. } = &stmts[n - 1] else { panic!("no for") };
+        (*sub, iter.node_id().expect("the iterable has a node id"))
+    }
+    let check = |src: &str| {
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (sub, it) = last_two(&stmts);
+        let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
+        (ann.py_read(sub).cloned(), ann.py_iter(it).cloned())
+    };
+    let (read, iter) = check("mut xs = [1] => py_list[py_list[int]]\nmut v = xs[0]\nfor x in xs:\n    pass\n");
+    // 中の `py_list` は外側の種類だけ見る（要素は読むときに照合する）
+    assert_eq!(read.map(|t| t.to_string()).as_deref(), Some("py_list"));
+    assert_eq!(iter.map(|t| t.to_string()).as_deref(), Some("py_list"));
+    let (read, iter) = check("mut d = {\"a\": 1} => py_dict[str, int]\nlet v = d[\"a\"]\nfor k in d:\n    pass\n");
+    assert_eq!(read, Some(InferredType::Int));
+    assert_eq!(iter, Some(InferredType::Str));
+    let (read, iter) = check("let xs = [1, 2]\nlet v = xs[0]\nfor x in xs:\n    pass\n");
+    assert_eq!((read, iter), (None, None));
+}

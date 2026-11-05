@@ -112,6 +112,17 @@ impl TypeChecker {
         }
     }
 
+    /// `py_list` / `py_set` / `py_dict` を回す `for` / 内包なら、取り出す要素の宣言の型を注釈に載せる（読むたびに照合する・
+    /// pandas_import_plan.md の 2-12）。
+    pub(crate) fn note_python_iteration(&mut self, iter: &Expr, iter_ty: &InferredType, elem_ty: &InferredType) {
+        if !matches!(iter_ty, InferredType::PyList(_) | InferredType::PySet(_) | InferredType::PyDict(..)) {
+            return;
+        }
+        if let (Some(node_id), Some(check)) = (iter.node_id(), elem_ty.python_read_check()) {
+            self.annotations.set_py_iter(node_id, check);
+        }
+    }
+
     /// `for target in iter:` のターゲットに与える**要素型**を、イテラブルの型から求める。
     ///
     /// 反復の意味論は `Interpreter::make_for_iterator`

@@ -531,10 +531,14 @@ impl Compiler {
                 }
             }
             // ── 添字・コレクションリテラル（タスク #5） ──
-            Expr::Subscript { object, index, .. } => {
+            Expr::Subscript { object, index, node_id } => {
                 self.compile_expr(object)?;
                 self.compile_expr(index)?;
                 self.emit(Op::Subscript);
+                // `py_list` / `py_dict` から読んだ要素の照合（型検査が載せたときだけ・pandas_import_plan.md の 2-12）
+                if self.annotations.py_read(*node_id).is_some() {
+                    self.emit(Op::CheckPyRead(*node_id));
+                }
             }
             Expr::Slice { begin, end, step } => {
                 // 省略された要素は `Op::Nil`（= `Value::None`）を積む。`slice_from_values`

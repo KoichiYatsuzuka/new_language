@@ -122,6 +122,9 @@
   elements (`TypeError` on a mismatch). A list / dict / set returned by Python arrives **uncopied** as `py_list` etc.
   (Python's later changes are visible), and a stub's `list[T]` reads as `py_list[T]`. An Arrow collection cannot be an
   element (`py_list[list[int]]` is an error). Like every Python object they are bound with `mut`.
+  Elements are checked against the declared type **on every read** (subscript, `for` / comprehension, method results;
+  `FfiTypeError` on a mismatch, an int read as `float` becomes a float) because Python may change the shared object later
+  (task 2-12).
   - Passing an Arrow list / dict / set (or a tuple holding one) to Python **without a cast is an error, literals
     included** (task 2-11): write `np.array([1, 2] => py_list[int])`. It covers call arguments (keywords and `*` / `**`
     spreads too), subscripts, element / attribute assignment and operator operands — static `ArrowCollectionToPython`

@@ -270,6 +270,10 @@ pub enum Op {
     CallBuiltin(u32, u16),
     /// イテレータ取得: pop iterable, push make_for_iterator(iterable)（`for` ループの入口）。
     GetIter,
+    /// `GetIter` に、CPython の物から取り出す要素の照合を付けたもの（`for x in pl`・`pl: py_list[int]`・pandas_import_plan.md の
+    /// 2-12）。中身は回す式の node-id（型検査の注釈 `py_iters` を引く・`make_for_iterator_checked`）。
+    /// ⚠ 型検査がその式に型を載せたときだけコンパイラが出す（ほかの `for` のバイトコードは変えない）。
+    GetIterChecked(u32),
     /// イテレータ前進: `locals[iter_slot]` の `.next()` を呼ぶ。
     /// `EndOfIteration` なら `exit_ip` へジャンプ、要素があれば `locals[target_slot]` へ束縛して継続。
     /// フィールドは (iter_slot, target_slot, exit_ip)。
@@ -445,6 +449,9 @@ pub enum Op {
     // ── 添字・コレクションリテラル（タスク #5） ──
     /// 添字読み: pop key, pop obj, push `eval_subscript(obj, key)`（`obj[key]`）。
     Subscript,
+    /// CPython の物から読んだ値（`Subscript` の直後・`pl[i]` / `d[k]`）を、型検査が載せた宣言の型と照合する（pandas_import_plan.md
+    /// の 2-12）。中身は添字の node-id（注釈 `py_reads` を引く）。pop v, push 照合した v（`float` へ寄せることがある）。
+    CheckPyRead(u32),
     /// 添字書き: pop value, pop key, pop obj, `eval_setitem(obj, key, value)`（`obj[key] = value`）。
     SetIndex,
     /// `^名前` — メタ情報を引く（設計書 §1.5 / タスク 4-0）。

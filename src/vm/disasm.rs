@@ -112,6 +112,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Yield => "YIELD".to_string(),
         Op::AsyncSubmit(i) => format!("ASYNC_SUBMIT block={i}"),
         Op::GetIter => "GET_ITER".to_string(),
+        Op::GetIterChecked(n) => format!("GET_ITER_CHECKED node={n}"),
+        Op::CheckPyRead(n) => format!("CHECK_PY_READ node={n}"),
         Op::ForIter(it, tgt, exit) => format!("FOR_ITER iter={it} target={tgt} exit={exit}"),
         Op::Jump(t) => format!("JUMP {t}"),
         Op::JumpIfFalse(t) => format!("JUMP_IF_FALSE {t}"),

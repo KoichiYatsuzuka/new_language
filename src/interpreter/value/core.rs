@@ -392,6 +392,7 @@ impl Value {
                     running: false,
                     poisoned,
                     py_iter: None,
+                    py_check: None,
                 })))
             }
             Value::Class(rc) => Value::Class(Rc::new(rc.deep_clone())),

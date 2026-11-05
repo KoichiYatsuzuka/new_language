@@ -295,10 +295,12 @@ impl Interpreter {
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(vals))))
             }
-            Expr::Subscript { object, index, .. } => {
+            Expr::Subscript { object, index, node_id } => {
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
-                self.eval_subscript(obj, key)
+                let v = self.eval_subscript(obj, key)?;
+                // `py_list` / `py_dict` から読んだ要素は宣言の型と照合する（型検査が載せた注釈・pandas_import_plan.md の 2-12）
+                self.check_python_read_at(v, *node_id)
             }
             Expr::Slice { begin, end, step } => self.eval_slice_expr(begin, end, step),
             Expr::UnaryOp { op, operand } => {

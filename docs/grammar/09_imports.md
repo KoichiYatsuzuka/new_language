@@ -605,7 +605,10 @@ let mean = np.mean(arr)
   CPython の list / dict / set のものだけ）で、Arrow の list などとは混ぜられない（`pl + [1]` は誤り）。要素に Arrow の list は
   置けない（`py_list[list[int]]` は誤り・`py_list[py_list[int]]` と書く）。Python の物なので `mut` で受ける（D-3）。戻り値の
   境界検査は要素まで照合する（`float` には int も入る・PEP 484）（`examples/interop/py_int_collections.ar`・`_error`・
-  `_runtime_error`）。⚠ 照合するのは受け取るときだけ（後で Python が別の型の要素を入れうる・2-12）。⚠ 以前は Python の
+  `_runtime_error`）。**要素は読むたびにも照合する**（2-12）: 共有されるので、受け取ったときに正しくても後で Python が別の型の
+  要素を入れうる。添字（`xs[i]` / `d[k]`）・`for` / 内包で取り出した要素・メソッドの戻り値（`xs.pop()`）を宣言の型と照合し、
+  違えば `FfiTypeError`（`float` と宣言した所の int は float に寄せる）（`examples/interop/py_int_element_reads.ar`・
+  `_runtime_error`）。⚠ ネイティブにコンパイルした関数の中の読みは照合しない。⚠ 以前は Python の
   list / dict / set を Arrow の list などに写していた（Python の書き換えが戻らず、同じ物でなくなった）
 - **Arrow のコレクションを渡すにはキャストが要る**（D-12・2-11）: Arrow の list / dict / set（とそれを持つ tuple）を**キャスト
   せずに** Python へ渡すのは誤り。**リテラルも同じ**で、`np.array([1, 2, 3] => py_list[int])`・

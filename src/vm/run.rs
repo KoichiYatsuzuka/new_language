@@ -1386,6 +1386,11 @@ fn exec_op(
             let iter = interp.make_for_iterator(iterable)?;
             buf.push(iter);
         }
+        Op::GetIterChecked(node_id) => {
+            let iterable = buf.pop().unwrap();
+            let iter = interp.make_for_iterator_checked(iterable, Some(*node_id))?;
+            buf.push(iter);
+        }
         Op::ForIter(iter_slot, target_slot, exit_ip) => {
             let iter_idx = base + *iter_slot as usize;
             // 高速パス: Generator（range/list/str/set/tuple/gen __iter__ の実体）は
@@ -1847,6 +1852,11 @@ fn exec_op(
             let key = buf.pop().unwrap();
             let obj = buf.pop().unwrap();
             let v = interp.eval_subscript(obj, key)?;
+            buf.push(v);
+        }
+        Op::CheckPyRead(node_id) => {
+            let v = buf.pop().unwrap();
+            let v = interp.check_python_read_at(v, *node_id)?;
             buf.push(v);
         }
         Op::SetIndex => {

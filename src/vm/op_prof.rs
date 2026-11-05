@@ -12,7 +12,7 @@
 use super::op::Op;
 
 /// 宣言順の op 名（`op_index` の戻り値でそのまま索引できる）。
-pub const OP_NAMES: [&str; 97] = [
+pub const OP_NAMES: [&str; 99] = [
     "Const",
     "Nil",
     "LoadLocal",
@@ -110,6 +110,8 @@ pub const OP_NAMES: [&str; 97] = [
     "MetaInfo",
     "MakeCode",
     "StoreLocalImplicit",
+    "GetIterChecked",
+    "CheckPyRead",
 ];
 
 /// `Op` を宣言順のインデックスへ落とす。
@@ -217,5 +219,7 @@ pub fn op_index(op: &Op) -> u8 {
         Op::MetaInfo { .. } => 94,
         Op::MakeCode { .. } => 95,
         Op::StoreLocalImplicit { .. } => 96,
+        Op::GetIterChecked { .. } => 97,
+        Op::CheckPyRead { .. } => 98,
     }
 }

@@ -123,6 +123,9 @@ pub struct GeneratorState {
     /// 1 つ取る（CPython の `for` と同じ）。**尽きたら `None`**（参照を離す）。
     /// ⚠ 以前は回す前に全部を取り出していた（無限の生成器が終わらない・副作用の順が CPython と違う）。
     pub(crate) py_iter: Option<PyObjHandle>,
+    /// `py_iter` から取り出した要素を照合する宣言の型（`for x in pl`・`pl: py_list[int]`・pandas_import_plan.md の 2-12）。
+    /// 型検査が回す式に載せた型（注釈の `py_iters`）を、反復子を作るときに付ける（`Interpreter::make_for_iterator_checked`）。
+    pub(crate) py_check: Option<Rc<crate::type_check::InferredType>>,
 }
 
 impl GeneratorState {
@@ -136,7 +139,7 @@ impl GeneratorState {
     /// ⚠ フィールドを直接並べる形は 14 箇所あり、B13 だけで 3 回（`producer` /
     /// `running` / `poisoned`）全箇所を触った。**新しいフィールドはここだけ**で済ませる。
     pub(crate) fn materialized(values: Vec<Value>) -> Self {
-        GeneratorState { values, index: 0, producer: None, running: false, poisoned: false, py_iter: None }
+        GeneratorState { values, index: 0, producer: None, running: false, poisoned: false, py_iter: None, py_check: None }
     }
 }
 

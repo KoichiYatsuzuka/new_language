@@ -321,6 +321,8 @@ impl TypeChecker {
                     self.annotations.set_resolved(*node_id, result.clone());
                     return result;
                 }
+                // CPython の物（`py_list` / `py_dict`）から読む要素は、読むたびに宣言の型と照合する（2-12）
+                let python_read = matches!(obj_ty, InferredType::PyList(_) | InferredType::PyDict(..));
                 let result = match obj_ty {
                     InferredType::ListOf(elem)
                     | InferredType::FixedListOf(elem)
@@ -358,6 +360,11 @@ impl TypeChecker {
                 };
                 // ── AST 型解決層（#16）── 添字アクセスの**要素結果型**を焼く。
                 self.annotations.set_resolved(*node_id, result.clone());
+                if python_read {
+                    if let Some(check) = result.python_read_check() {
+                        self.annotations.set_py_read(*node_id, check);
+                    }
+                }
                 result
             }
             // ⚠ スライスの境界は `int` でなければならない（タスク 5.2b・検体 L8）。
@@ -435,6 +442,7 @@ impl TypeChecker {
                 // ここが抜けていたため、for **式**の本体では変数が未宣言＝`Unresolved` になり、
                 // 本体の演算に型特化が効かなかった。
                 let elem_ty = Self::for_element_type(&iter_ty);
+                self.note_python_iteration(iter, &iter_ty, &elem_ty);
                 // ⚠⚠ `for` **式**も `for` 文と同じ束縛を作るので、B4 の規則を**同じく適用**する。
                 //    以前は `mutable: true` 決め打ちで、内包表記の脱糖先もここを通るため
                 //    文側だけ直しても穴が残っていた（実測）。

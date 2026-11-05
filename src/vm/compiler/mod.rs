@@ -489,6 +489,8 @@ fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 
             | Op::Cast(_)
             | Op::CallBuiltin(_, _)
             | Op::GetIter
+            | Op::GetIterChecked(_)
+            | Op::CheckPyRead(_)
             | Op::Jump(_)
             | Op::JumpIfFalse(_)
             | Op::JumpIfFalseOrPop(_)

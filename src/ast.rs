@@ -1404,6 +1404,21 @@ pub enum Stmt {
 ///
 /// # フィールド
 impl Expr {
+    /// 式の node-id（AST 型解決層の注釈を引くキー）。持たない式は `None`、0 は未採番（合成 AST）。
+    pub fn node_id(&self) -> Option<u32> {
+        match self {
+            Expr::Ident { node_id, .. }
+            | Expr::Attr { node_id, .. }
+            | Expr::BinOp { node_id, .. }
+            | Expr::Call { node_id, .. }
+            | Expr::Subscript { node_id, .. }
+            | Expr::Cast { node_id, .. }
+            | Expr::IsType { node_id, .. }
+            | Expr::MustBe { node_id, .. } => Some(*node_id),
+            _ => None,
+        }
+    }
+
     /// 式そのものが持つ位置（呼び出し・属性・二項演算・`as` / `is` / `mustbe`）。無ければ `None`（フェーズ10 10-17）。
     ///
     /// ⚠ 呼び出しの位置は `(` のトークン（文の先頭ではない）。式文の位置の代わりに使う

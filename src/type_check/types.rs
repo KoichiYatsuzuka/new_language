@@ -488,6 +488,24 @@ impl InferredType {
             || matches!(self, Self::PyList(e) | Self::PySet(e) | Self::PyDict(e, _) if **e == Self::Unresolved)
     }
 
+    /// CPython の物から読んだ値を照合するときの型（pandas_import_plan.md の 2-12）。中の `py_list` などは外側の種類だけ見る
+    /// （要素は読むときに照合するので、`d["k"]` を読むたびに中の list を全部見ない）。照合しても何も分からない型（`Any` など）は
+    /// `None`。
+    pub fn python_read_check(&self) -> Option<InferredType> {
+        fn shallow(t: &InferredType) -> InferredType {
+            use InferredType as T;
+            match t {
+                T::PyList(_) => T::PyList(Box::new(T::Unresolved)),
+                T::PySet(_) => T::PySet(Box::new(T::Unresolved)),
+                T::PyDict(..) => T::PyDict(Box::new(T::Unresolved), Box::new(T::Unresolved)),
+                T::Tuple(ts) => T::Tuple(ts.iter().map(shallow).collect()),
+                T::Union(ts) => T::Union(ts.iter().map(shallow).collect()),
+                other => other.clone(),
+            }
+        }
+        (!matches!(self, Self::Any | Self::Unresolved | Self::Never)).then(|| shallow(self))
+    }
+
     /// 型の中に、CPython の list / dict / set（`py_list` など）の要素に**置けない** Arrow のコレクション
     /// （`list` / `dict` / `set` / `fixed_list`）があれば、その型（D-12・2-7）。`py_list[list[int]]` は `py_list[py_list[int]]` と書く。
     /// ⚠ 置けるかは Python の物の要素の位置だけで見る（`list[py_list[int]]` の外側は Arrow の list なのでよい）。

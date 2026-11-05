@@ -13,6 +13,20 @@ use {
 impl Interpreter {
     /// イテラブルな値を `for` 反復用のイテレータ（多くは `Value::Generator`）へ変換する。
     /// 消費者は VM の `Op::GetIter` **だけ**（ツリーウォークの `exec_for_stmt` は #33 で削除）。
+    /// [`Self::make_for_iterator`] に、CPython の物から取り出す要素の宣言の型（型検査が回す式に載せた注釈 `py_iters`）を付ける
+    /// （`for x in pl` で読むたびに照合する・pandas_import_plan.md の 2-12）。注釈が無ければ付けない。
+    pub(crate) fn make_for_iterator_checked(&mut self, iter_val: Value, node_id: Option<u32>) -> Result<Value, String> {
+        let check = node_id.and_then(|n| self.annotations.py_iter(n).cloned());
+        let it = self.make_for_iterator(iter_val)?;
+        if let (Some(ty), Value::Generator(state)) = (check, &it) {
+            let mut s = state.borrow_mut();
+            if s.py_iter.is_some() {
+                s.py_check = Some(Rc::new(ty));
+            }
+        }
+        Ok(it)
+    }
+
     pub(crate) fn make_for_iterator(&mut self, iter_val: Value) -> Result<Value, String> {
         let generator = match iter_val {
             Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.borrow().clone())))),

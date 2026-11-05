@@ -1,0 +1,54 @@
+# py_int_element_reads.ar — `py_list` / `py_dict` の要素は読むたびに宣言の型と照合する（pandas_import_plan.md の 2-12）
+#
+# Python が返した list は写さずに共有する（2-7）ので、受け取ったときに照合しても、後で Python が別の型の要素を入れうる。
+# 添字（`xs[i]` / `d[k]`）・`for` / 内包で取り出した要素・メソッドの戻り値（`xs.pop()`）を、型の宣言と照合する。
+# 違えば FfiTypeError（受け取るときの境界検査と同じ例外）。`float` と宣言した所の int は float に寄せる（PEP 484）。
+import[py-int] py_int_element_reads as pe
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+mut xs = pe.scores()
+check("elements of the declared type read as usual", xs[0] + xs[1] == 4)
+pe.spoil(xs, "four")
+mut caught = 0
+try:
+    let bad = xs[3]
+    print("unreachable:", bad)
+except FfiTypeError:
+    caught += 1
+try:
+    mut total = 0
+    for x in xs:
+        total += x
+    print("unreachable:", total)
+except FfiTypeError:
+    caught += 1
+try:
+    print("unreachable:", [x * 2 for x in xs])
+except FfiTypeError:
+    caught += 1
+try:
+    print("unreachable:", xs.pop())
+except FfiTypeError:
+    caught += 1
+check("a str in py_list[int] is an FfiTypeError when read", caught == 4)
+check("the other elements still read", xs[2] == 2 and len(xs) == 3)
+
+# float には int も入る（float に寄せる）
+mut ws = pe.weights()
+let w0: float = ws[0]
+check("an int read as float becomes a float", str(w0) == "1.0")
+
+# py_dict の値も同じ
+mut t = pe.table()
+pe.spoil_value(t, "b", None)
+check("a correct value of a py_dict", t["a"] == 1)
+mut caught_dict = False
+try:
+    print("unreachable:", t["b"])
+except FfiTypeError:
+    caught_dict = True
+check("a None in py_dict[str, int] is an FfiTypeError when read", caught_dict)

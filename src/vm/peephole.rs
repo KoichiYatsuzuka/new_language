@@ -119,6 +119,8 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::Cast(_)
         | Op::CallBuiltin(_, _)
         | Op::GetIter
+        | Op::GetIterChecked(_)
+        | Op::CheckPyRead(_)
         | Op::Call(_, _, _, _, _)
         | Op::CallMethod(_, _, _, _)
         | Op::Return

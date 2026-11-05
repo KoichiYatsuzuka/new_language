@@ -100,6 +100,38 @@ impl Interpreter {
         }
     }
 
+    /// CPython の物から読んだ値（`py_list` / `py_dict` の要素・回して取り出した要素）を、型検査が載せた宣言の型
+    /// （注釈の `py_reads` / `py_iters`）と照合する（pandas_import_plan.md の 2-12）。共有されるので、受け取ったときに照合しても
+    /// 後で Python が別の型の要素を入れうる。⇒ 読むたびに見る。`float` には int も入り、float に寄せる（PEP 484・`PythonChecker`）。
+    pub(crate) fn check_python_read(&mut self, value: Value, declared: &crate::type_check::InferredType) -> Result<Value, String> {
+        use crate::interpreter::ffi_boundary::{python_verdict, Verdict};
+        let msg = match python_verdict(&value, declared) {
+            Verdict::Ok | Verdict::Unverifiable => return Ok(value),
+            Verdict::Coerce(v) => return Ok(v),
+            Verdict::Mismatch { actual } => {
+                format!("FfiTypeError: an element read from Python is declared `{declared}` but is `{actual}`")
+            }
+            Verdict::Overflow { value: shown } => format!(
+                "OverflowError: an element read from Python is {shown}, which does not fit in `int` (64-bit; declared `{declared}`)"
+            ),
+        };
+        match self.make_internal_raised_error(&msg) {
+            Some(raised) => {
+                self.current_exception = Some(raised);
+                Err(crate::interpreter::RAISE_SENTINEL.to_string())
+            }
+            None => Err(msg),
+        }
+    }
+
+    /// [`Self::check_python_read`] の、宣言の型を添字の node-id で注釈（`py_reads`）から引く形（VM の `CheckPyRead`）。
+    pub(crate) fn check_python_read_at(&mut self, value: Value, node_id: u32) -> Result<Value, String> {
+        match self.annotations.py_read(node_id).cloned() {
+            Some(ty) => self.check_python_read(value, &ty),
+            None => Ok(value),
+        }
+    }
+
     /// 関数呼び出し式 `func(args)` を評価する。
     /// テンプレート instantiate・メソッド呼び出し・組み込み関数・ユーザー定義関数・クラスコンストラクタ・
     /// ジェネレータ・ネイティブ関数・型コンストラクタなど、呼び出し先の種別に応じて適切なパスへ分岐する。
