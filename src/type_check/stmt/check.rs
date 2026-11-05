@@ -2221,7 +2221,7 @@ impl TypeChecker {
         //    既定値の検査も `fn` と同じく宣言の前に行う。
         self.check_param_defaults(name, params);
         for param in params {
-            self.declare_param(param);
+            self.declare_param_in(param, true);
         }
         // `gen` 本体の直下だけが `yield` を書ける（B13）。
         let prev_gen = self.state.enter_gen_body(true);
@@ -2240,6 +2240,14 @@ impl TypeChecker {
 
     /// 関数パラメータ1つをスコープに束縛する（`self`・可変長・通常引数を区別）。
     fn declare_param(&mut self, param: &Param) {
+        self.declare_param_in(param, false);
+    }
+
+    /// [`Self::declare_param`] の本体。`in_gen` はジェネレータ関数の引数か。
+    ///
+    /// ⚠ ジェネレータ関数の引数は Python の物でも `let` で受けられる（`mut` にできない・`gen` の引数は `let` / `const` だけ。
+    ///   pandas_import_plan.md の 2-13・D-3 の例外・2026-11-05 の決定）。ほかの引数は `mut` で受ける（D-3）。
+    fn declare_param_in(&mut self, param: &Param, in_gen: bool) {
         if param.variadic {
             // 可変長パラメータ: local::args として Optional[list[T]] を宣言
             let elem_ty = param
@@ -2267,7 +2275,7 @@ impl TypeChecker {
                 .unwrap_or(InferredType::Unresolved)
         };
         // Python のオブジェクトを受ける引数は `mut` で書く（D-3・1-2）。⚠ `self` は対象外（受け手の可変性は別の規則）。
-        if !param.mutable && param.name != "self" {
+        if !param.mutable && param.name != "self" && !in_gen {
             self.require_mut_for_python_object(&param.name, "parameter", &ty);
         }
         self.declare(param.name.clone(), ty, param.mutable);

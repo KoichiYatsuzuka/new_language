@@ -661,6 +661,8 @@ Python のクラスのインスタンス（とそれを持つ list など）と�
 束縛するときに実行時の `TypeError` です。`py_list` / `py_dict` / `py_set` も Python の物です。境界で Arrow の値に変わる物（`int`・`str`・
 `tuple`・`=> list[int]` で写した物など）は `let` で受けられます
 （`examples/interop/py_int_mut_binding.ar`・`py_int_mut_binding_error.ar`・`py_int_mut_binding_runtime_error.ar`）。
+⚠ ジェネレータ関数の引数だけは例外で、`let` でも Python の物を受けられます（`gen` の引数は `mut` にできないため・
+pandas_import_plan.md の 2-13・`examples/interop/py_int_generator_params.ar`）。
 暗黙の束縛も同じで、`for mut f in ..`・`[.. for mut f in ..]`・`except E as mut e` と書きます（D-11・2-10。外の束縛が `mut`
 でも要る。`examples/interop/py_int_implicit_bindings.ar`・`_error`・`_runtime_error`）。`match` は新しい名前を束縛しません。
 

@@ -105,7 +105,8 @@
 - **Python objects must be bound with `mut`** (`implementation_plans/pandas_import_plan.md` D-3, task 1-2). A CPython
   object (an `import[py-int]` value that stays a Python object: instances, functions, arrays, big ints …) is shared, not
   copied, so other references can change it; `let` / `const` / `freeze` and a parameter that is not `mut` cannot hold one
-  (`fn f(mut d: pd.DataFrame)`). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
+  (`fn f(mut d: pd.DataFrame)`; ⚠ except a **generator function's parameters**, which can only be `let` and so may hold one —
+  task 2-13). Static error `ImmutablePythonObject` when the type says so (a Python class instance, or a
   container of them, or a `py_list` / `py_dict` / `py_set`), otherwise a runtime `TypeError` at the binding. Values
   converted to Arrow values at the boundary (`int`, `str`, `tuple`, the result of `=> list[int]` …) are Arrow values and
   can be bound with `let`.

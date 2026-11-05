@@ -1115,13 +1115,10 @@ impl Interpreter {
 
         // `let` パラメータ（self 除く）に copy() を適用する
         // let param + mutable arg → deepcopy、let param + let arg → スキップ
-        // ⚠ 前置きの生成器（`GLOBALS_OF_CALLER`・`py_lazy_prelude`）は組み込みの実装なので、Python の物の検査をしない（D-3）
-        let user_gen = gen_fn.globals != crate::interpreter::value::GLOBALS_OF_CALLER;
+        // ⚠ ジェネレータ関数の引数は Python の物でも `let` で受けられる（`gen` の引数は `mut` にできないので・pandas_import_plan.md
+        //   の 2-13・D-3 の例外）。⇒ Python の物の検査（`check_param_binding`）をしない
         for binding in &mut bindings {
             let (name, val, param_mutable, arg_is_mutable) = binding;
-            if user_gen {
-                Self::check_param_binding(*param_mutable, name, val)?;
-            }
             if !*param_mutable && name != "self" && *arg_is_mutable {
                 *val = self.copy_value(val.clone())?;
             }

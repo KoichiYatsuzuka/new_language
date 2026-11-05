@@ -1,0 +1,39 @@
+# py_int_generator_params.ar — ジェネレータ関数の引数（`let`）は Python の物を受けられる（pandas_import_plan.md の 2-13）
+#
+# Python の物は `mut` で受けるのが決まり（D-3）だが、`gen` の引数は `let` / `const` しか書けない（`mut` は構文の誤り）。
+# ⇒ ジェネレータ関数の引数だけは、`let` でも Python の物を受けられる（D-3 の例外・2026-11-05 の決定）。
+#   受けた物は共有され（写さない）、取り出すたびに要素を照合する（2-12）。
+# ⚠ ふつうの関数の引数は今までどおり `mut` で受ける（`fn f(mut xs: py_list[int])`）。
+# ⚠ 内包の結果は `str(..)` で比べる（ジェネレータを回す内包の型が `list[Any]` になる既存の不具合・known_bugs.md の #15）。
+import[py-int] py_int_element_reads as pe
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    print(label + " OK")
+
+gen doubled(let xs: py_list[int]) -> int:
+    for x in xs:
+        yield x * 2
+
+gen entries(let d: py_dict[str, int]) -> str:
+    for k, v in d.items():
+        yield k + "=" + str(v)
+
+mut xs = pe.scores()
+check("a py_list passed to a generator function", str([v for v in doubled(xs)]) == "[6, 2, 4]")
+mut t = pe.table()
+check("a py_dict passed to a generator function", str([e for e in entries(t)]) == "['a=1']")
+
+# 共有される: 取り出す前に Python が足した要素も見える
+mut later = doubled(xs)
+pe.spoil(xs, 10)
+check("the generator sees Python's later change", str([v for v in later]) == "[6, 2, 4, 20]")
+
+fn total(mut ys: py_list[int]) -> int:
+    mut s = 0
+    for v in doubled(ys):
+        s += v
+    return s
+
+check("from a function that takes it with mut", total(xs) == 32)

@@ -106,3 +106,12 @@ fn the_suggested_conversion_names_python_collections() {
     );
     assert!(TypeChecker::arrow_collection_as_python(&InferredType::from_ann("tuple[int, str]").unwrap()).is_none());
 }
+
+#[test]
+fn generator_parameters_may_hold_python_objects() {
+    // `gen` の引数は `let` / `const` だけなので、Python の物も `let` で受けられる（2-13・D-3 の例外）
+    assert!(ok("gen each(let xs: py_list[int]) -> int:\n    for x in xs:\n        yield x\n"));
+    assert!(ok("gen each(xs: py_list[int]) -> int:\n    for x in xs:\n        yield x\n"));
+    // ふつうの関数の引数は今までどおり `mut`
+    assert!(err("fn f(let xs: py_list[int]) -> None:\n    pass\n"));
+}
