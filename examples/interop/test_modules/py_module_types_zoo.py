@@ -2,15 +2,15 @@
 
 
 class Animal:
-    def kind(self):
+    def kind(self) -> str:
         return "animal"
 
 
 class Dog(Animal):
-    def kind(self):
+    def kind(self) -> str:
         return "dog"
 
 
 class Puppy(Dog):
-    def kind(self):
+    def kind(self) -> str:
         return "puppy"

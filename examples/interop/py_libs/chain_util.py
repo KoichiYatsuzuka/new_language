@@ -1,6 +1,4 @@
-# chain_util.py — `import[py]` の**再帰ロード**（項目 27）の中段。
-# `import` と `from ... import` の**両方**を使い、どちらの経路でも
-# 依存先が読まれることを見る。
+# chain_util.py — Python のモジュールの中の import（3 段）の中段（py_import_chain.ar が CPython で動かす）。
 
 import chain_leaf
 from chain_leaf import double as dbl

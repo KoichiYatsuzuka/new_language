@@ -95,7 +95,7 @@ impl TypeChecker {
                     let is_static = self.registry.is_static_method(&cls_name, attr.as_str());
                     // StaticMethodOnInstance: only report when called on an instance
                     // ⚠ Python のクラスの静的メソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
-                    if is_static && is_instance && !self.registry.is_python_class(&cls_name) {
+                    if is_static && is_instance && !self.registry.is_python_class(&cls_name) && !self.registry.is_cpython_class(&cls_name) {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::StaticMethodOnInstance {
                                 method_name: attr.clone(),

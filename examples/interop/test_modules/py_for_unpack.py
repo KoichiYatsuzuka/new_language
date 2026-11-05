@@ -1,11 +1,4 @@
-"""py_for_unpack.py — `for` のループ変数のアンパック（U1）。
-
-Arrow の `Stmt::For.targets` は元から `Vec<String>` で**多ターゲットに対応済み**
-だったので、変換器が単純名を並べるだけで通る。
-
-⚠ `d.items()` は本項目と同時に Arrow へ追加した（それまで dict は `keys()` /
-  `values()` しか持たず、Python で最頻出のこの形が使えなかった）。
-"""
+"""py_for_unpack.py — `for` のアンパックを使う関数（py_for_unpack.ar が CPython で動かす）。"""
 
 
 def from_pairs(pairs):

@@ -1,34 +1,30 @@
-# py_membership.ar — `import[py]`（Python → Arrow 変換器）の **`in` / `not in`** 対応の検査（項目 12）。
+# py_membership.ar — Python の `in` / `not in` を使う関数を Arrow から呼ぶ
 #
-# 対象は `convert_cmpop`（`src/python_converter/expressions.rs`）。
-# Arrow にも `BinOp::In` / `BinOp::NotIn` が実在するので、`CmpOp::In` / `CmpOp::NotIn` を
-# そこへ写すだけ（従来は「式コンテキストでは非対応」エラーだった）。
-#
-# ⚠ コンテナごとの意味も Python と一致する（実機確認済み）:
-#   list / tuple / set は**要素**、dict は**キー**、str は**部分文字列**。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# list / tuple / set は要素、dict はキー、str は部分文字列（CPython が実行する）。Arrow の list / dict / set は
+# `=> py_list[T]` などで写して渡す。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_membership as m
+import[py-int] test_modules.py_membership as m
 
 mut xs = [1, 2, 3]
 mut two = 2
 mut nine = 9
 
 # ── ① list ──────────────────────────────────────────────────────────────
-print(m.in_list(two, xs))
+print(m.in_list(two, xs => py_list[int]))
 # True
-print(m.in_list(nine, xs))
+print(m.in_list(nine, xs => py_list[int]))
 # False
-print(m.not_in_list(nine, xs))
+print(m.not_in_list(nine, xs => py_list[int]))
 # True
 
 # ── ② dict はキーに対するメンバシップ ───────────────────────────────────
 mut d = {"a": 1}
 mut ka = "a"
-print(m.in_dict(ka, d))
+print(m.in_dict(ka, d => py_dict[str, int]))
 # True
 mut kz = "z"
-print(m.in_dict(kz, d))
+print(m.in_dict(kz, d => py_dict[str, int]))
 # False
 
 # ── ③ str は部分文字列 ──────────────────────────────────────────────────
@@ -43,19 +39,19 @@ mut one = 1
 print(m.in_tuple(one, tup))
 # True
 mut st = {1, 2, 3}
-print(m.in_set(two, st))
+print(m.in_set(two, st => py_set[int]))
 # True
 
 # ── ⑤ 条件式としての利用 ────────────────────────────────────────────────
-print(m.guard(xs))
+print(m.guard(xs => py_list[int]))
 # yes
 
 # ── ⑥ `and` と組み合わせる ──────────────────────────────────────────────
 mut ys = [9]
-print(m.combined(two, xs, ys))
+print(m.combined(two, xs => py_list[int], ys => py_list[int]))
 # True
 
 # ── ⑦ ループ内フィルタ（典型的な用途） ──────────────────────────────────
 mut banned = [2]
-print(m.filter_loop(xs, banned))
+print(m.filter_loop(xs => py_list[int], banned => py_list[int]))
 # [1, 3]

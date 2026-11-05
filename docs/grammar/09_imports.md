@@ -312,6 +312,8 @@ loading:      HashSet<PathBuf>
 ## Python モジュール (`[py]`)
 
 Python ソースファイルを Arrow の AST に変換してインポートします。
+⚠ この読み方は廃止します（`implementation_plans/pandas_import_plan.md` のフェーズ 3・D-6）。`import[py]` は CPython で
+実行する読み方（下の `[py-int]` の節）に切り替え、例題はすでに `[py-int]` へ移しました（3-1）。
 
 ```ar
 import[py] mylib as m
@@ -362,8 +364,7 @@ property の getter の `p.fget.__name__`（変換器の別名ではなく元の
 - 基底のクラスメソッドは `cls` を派生クラスのまま受け取ります（`super().make(name)` が派生のインスタンスを作る・pandas の
   `_simple_new` の形）。インスタンスメソッドから基底のクラスメソッドを呼ぶ形（`cls` はインスタンスのクラス）も同じです。
 - 基底の静的メソッドには受け手を渡しません。`*args` / `**kwargs` は普通の呼び出しと同じに渡します。
-- ⚠ 静的メソッド・仮引数の無い関数の中の `super()` は変換の誤りです（受け手が無い。CPython も実行時の誤り・
-  `examples/interop/py_super_static_error.ar`）。⚠ 探すのは第 1 基底とその祖先だけです（多重継承の 2 つ目以降の基底は見ない）。
+- ⚠ 静的メソッド・仮引数の無い関数の中の `super()` は変換の誤りです（受け手が無い。CPython も実行時の誤り）。⚠ 探すのは第 1 基底とその祖先だけです（多重継承の 2 つ目以降の基底は見ない）。
 - 例題は `examples/interop/py_super_classmethod.ar`（CPython と同じ出力）。
 
 **値の共有**（known_bugs.md の #1・A 案）: Arrow は値を格納するたびに写します（`let` の値を共有先から書き換えさせないため）が、Python のモジュールのコードの中では CPython と同じく**写さずに共有**します。フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても同じ物で、別名から書き換えた結果が見えます（親子の参照・登録した物の書き換えも CPython と同じ）。`__eq__` / `__hash__` を書いていない Python のクラスのインスタンスは、`==` / `hash` が同一性です（別々の `P(1)` は等しくなく、辞書のキーとしても別）。⚠ Arrow のソースのコードは今のまま写し、Arrow のクラスは中身で比べます。Arrow の `let` / `mut` に Python のインスタンスを束縛するときも写します（`examples/interop/py_shared_objects.ar`）。
@@ -528,6 +529,17 @@ let mean = np.mean(arr)
   （7-31。`__init__` を書かない派生は同じファイルの基底のものを受け継ぎ、基底が分からないクラスは引数を問わない）。
   `x is pc.Counter` / `x mustbe pc.Counter` は Python の `isinstance` と同じく基底も見る
   （`examples/interop/py_int_classes.ar`）。⚠ 以前はコンストラクタの値が `Any` で、属性もメソッドも使えなかった
+  - **型の名前はモジュールで修飾する**（pandas_import_plan.md 3-1）: `test_modules/zoo.py` の `Dog` は
+    `test_modules.zoo.Dog` という型で、別のモジュールの `Dog`・メインの `Dog` とは別の型（`import ... as z` の `z.Dog` と
+    書ける）。**派生は基底の型で受けられる**（`fn describe(mut a: z.Animal)` に `z.Puppy()`）: 同じファイルの基底は基底の基底
+    までたどり、ほかのモジュールの基底（`class Corgi(zoo.Dog)`）はそのモジュールで修飾した名前で継承を持つ（そのモジュールも
+    プログラムが import しているときだけたどれる）（`examples/interop/py_module_types.ar`・`_error`）
+  - `@classmethod` の `cls` は呼び出しで渡さず、`@staticmethod` と `f = staticmethod(f)` / `g = classmethod(f)` も静的メソッド。
+    Python と同じくインスタンスからも呼べる。**入れ子のクラス**は `Tree.Node` の名前の型で、`m.Tree.Node(..)` /
+    `t.Leaf(..)` と引ける（`examples/interop/py_nested_class.ar`）。本体に宣言でない文（`if debug: level = 10`）のある
+    クラスはメンバーの顔ぶれが分からないので開いておく
+  - Arrow の `isinstance(x, m.C)` / `issubclass(m.D, m.C)` / `type(x)` は CPython のクラス・物を受ける（CPython の `isinstance` /
+    `issubclass` / `type`）（`examples/interop/py_isinstance.ar`・`py_introspect.ar`）
 - **import をたどって型を付ける**（`implementation_plans/pandas_import_plan.md` の 1-3）: モジュールが import した名前
   （`from pandas.core.api import DataFrame` のような**再エクスポート**）は定義元の宣言の型、注釈に書いたよそのモジュールの
   クラス（`if TYPE_CHECKING:` の中で import した名前も）はそのクラスの型、ほかのファイルの基底のメンバーは派生のメンバー
@@ -627,6 +639,9 @@ let mean = np.mean(arr)
   待つ側が GIL を持ったまま止まった
 - 実行時は Python インタープリタを呼び出す。このとき import 文の探索先（ドット無しはエントリの
   ディレクトリと `python.search_paths`、相対は起点ディレクトリ）を `sys.path` の先頭に足す
+- **Python の `print`**: CPython の `sys.stdout` / `sys.stderr` は改行ごとに書き出す（Arrow の `print` と同じ・出す順が保たれる）。
+  改行で終わらない残りはプログラムの終わりに書き出す（pandas_import_plan.md 3-1）。⚠ 以前は出力先がファイル・パイプのとき CPython が
+  溜めたまま終わり、Python の `print` が黙って消えた
 - `import[py-int] os.path`（`as` 無し）は CPython と同じく `os` を束縛する
 - GIL (Global Interpreter Lock) により並列化は不可
 - **CPython から見える参照の数は、CPython で同じ形を書いたときと同じ**です（`implementation_plans/pandas_import_plan.md` の

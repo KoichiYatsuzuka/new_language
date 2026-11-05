@@ -511,6 +511,22 @@ fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
 
 type PyStubRc = std::rc::Rc<crate::parser::py_import_links::PyRawStub>;
 
+/// ほかのモジュール `home` から写したクラスの宣言の基底（`home` のファイルの素の名前）を、`home` で修飾した名前にする
+/// （型はモジュールごとに登録する・pandas_import_plan.md 3-1）。素の名前のまま写すと、写した先のモジュールの同じ名前の
+/// クラスを基底と取り違える。組み込みの例外はそのまま。
+fn py_home_bases(decl: &mut Stmt, home: &PyStubRc, here: &[String]) {
+    if home.module == here {
+        return;
+    }
+    if let Stmt::ClassDef { bases, .. } = decl {
+        for b in bases.iter_mut() {
+            if !b.contains('.') && !crate::parser::py_stub_extract::is_builtin_exception_name(b) {
+                *b = format!("{}.{}", home.module.join("."), b);
+            }
+        }
+    }
+}
+
 impl Parser {
     /// 絶対のモジュール名 `module` の型スタブの元（`.pyi` を先に）。見つからない・読めないなら `None`。
     fn py_raw_stub(&mut self, module: &[String]) -> Option<PyStubRc> {
@@ -610,10 +626,20 @@ impl Parser {
             py_type_refs(&base_decl, &mut refs);
             queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&base_home))));
             crate::parser::py_stub_extract::py_merge_base_members(class, &base_decl);
-            // ほかのファイルの基底が例外なら、派生も同じ組み込みの例外を基底に持つ（`py_exception_base`・2-1）
-            if let (Stmt::ClassDef { bases, .. }, Stmt::ClassDef { bases: base_bases, .. }) = (&mut *class, &base_decl) {
-                if bases.is_empty() && !base_bases.is_empty() {
-                    *bases = base_bases.clone();
+            if let (Stmt::ClassDef { bases, .. }, Stmt::ClassDef { name: base_name, bases: base_bases, .. }) =
+                (&mut *class, &base_decl)
+            {
+                // ほかのファイルの基底が例外なら、派生も同じ組み込みの例外を基底に持つ（`py_exception_base`・2-1）
+                for b in base_bases.iter().filter(|b| crate::parser::py_stub_extract::is_builtin_exception_name(b)) {
+                    if !bases.contains(b) {
+                        bases.push(b.clone());
+                    }
+                }
+                // 基底のクラスは、それを書いたモジュールで修飾した名前（`pkg.zoo.Dog`・型の登録はモジュールごと・3-1）。
+                // ⚠ そのモジュールをプログラムが import していなければ型の表に無いので、その先の基底へはたどれない
+                let qualified = format!("{}.{}", base_home.module.join("."), base_name);
+                if !bases.contains(&qualified) {
+                    bases.push(qualified);
                 }
             }
         }
@@ -658,6 +684,7 @@ impl Parser {
                 }
                 _ => continue,
             }
+            py_home_bases(&mut decl, &home, module);
             self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
             let mut refs = Vec::new();
             py_type_refs(&decl, &mut refs);
@@ -685,6 +712,7 @@ impl Parser {
             if !classes.insert(cname) {
                 continue;
             }
+            py_home_bases(&mut decl, &home, module);
             self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
             let mut refs = Vec::new();
             py_type_refs(&decl, &mut refs);

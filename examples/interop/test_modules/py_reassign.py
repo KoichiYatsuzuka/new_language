@@ -1,9 +1,4 @@
-"""py_reassign.py - `import[py]` 変換器の変数再代入（項目 2 / INF-A）の検査用モジュール。
-
-Python は「スコープ内で一度でも代入された名前は 1 つの変数」。
-Arrow は宣言 `mut` と再代入が別ノードで、二重宣言は `already declared` になる。
-変換器は**スコープ単位で全代入名を巻き上げ**、以降をすべて再代入に落とす。
-"""
+"""py_reassign.py — 同じ名前へ何度も代入する関数（py_reassign.ar が CPython で動かす）。"""
 
 # --- 7. モジュール直下の再代入 ---
 COUNT = 0
@@ -100,10 +95,7 @@ def latest_of(xs):
     return latest
 
 
-# --- 11. ★`if __name__ == "__main__":` の中の代入は巻き上げてはいけない ---
-#     変換器はこのブロックを丸ごと捨てるので、中の `scratch` を巻き上げると
-#     「代入されないのに `mut scratch = None` だけ残る」モジュール変数が生まれ、
-#     取り込み側の同名変数と衝突して `already declared` になる。
+# --- 11. `if __name__ == "__main__":` の中（import したときは走らない） ---
 if __name__ == "__main__":
     scratch = basic()
     print(scratch)

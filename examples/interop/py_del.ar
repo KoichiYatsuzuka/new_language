@@ -1,14 +1,9 @@
-# py_del.ar — Python の `del o.a` / `del d[k]`（known_bugs.md の #2 / #3）
+# py_del.ar — Python の `del o.a` / `del d[k]` を使うモジュールと、Arrow から持った Python のインスタンス
 #
-# 変換器は `del o.a` を `__py_delattr(o, "a")`、`del d[k]` を `__py_delitem(d, k)` にする（`del x` は従来どおり
-# 警告して無視・`py_del_warn.ar`）。
-# - `del o.a` は属性を**未代入に戻す**。Arrow のフィールドはクラスで決まるので欄は残し、「代入されていない」に戻す
-#   （CPython の「インスタンスの `__dict__` に無い」と同じ効き方: 読みは AttributeError・`hasattr` は偽・また代入できる）。
-#   CPython と同じ順に `__delattr__`・データディスクリプタの `__delete__`（property の deleter）を先に見る。
-#   `cached_property` は消すと計算し直す。
-# - `del d[k]` は辞書・リスト（スライス・負のステップも）・`__delitem__`。
+# `del` は CPython が実行する（`__delattr__`・property の deleter・`cached_property`・辞書・リスト・`__delitem__`）。
+# Arrow の `mut` に束縛した Python のインスタンスも、メソッドの中の `del` で属性が消え、また代入できる。
 #
-# m.run() / m.errors() は CPython 3.12 と同じ出力:
+# m.run() / m.errors() の出力（CPython）:
 #   1 before: True ref
 #   1 after: False None
 #   1 again: ref2
@@ -41,10 +36,8 @@
 #   E str_item: TypeError 'str' object doesn't support item deletion
 #   E set_item: TypeError 'set' object doesn't support item deletion
 #   E no_delitem: TypeError 'Series' object doesn't support item deletion
-#
-# ⚠ 以前は `del o.a` / `del d[k]` が変換の誤りだった（`del <expr>[<key>]` is not supported）。
 
-import[py] test_modules.py_del as m
+import[py-int] test_modules.py_del as m
 
 m.run()
 m.errors()

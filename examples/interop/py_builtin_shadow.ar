@@ -1,14 +1,13 @@
-# py_builtin_shadow.ar — Python のモジュールの最上位で組み込みの名前を束縛し直す（python_builtins_plan.md のタスク 1-6）
+# py_builtin_shadow.ar — Python のモジュールの最上位で組み込みの名前を束縛し直す（CPython で実行する）
 #
 # `test_modules/py_builtin_shadow.py` は最上位で `id = 7` / `str = "..."` / `def len(x)` を書く。
 # CPython ではモジュールの大域が組み込みを隠すので、モジュールの中の `id` / `str` / `len` はそれを指す。
-# ⚠ 以前は `id = 7` が `NameError: variable 'id' is already declared` で、モジュールごと読めなかった。
 # ⚠ 隠すのはそのモジュールの中だけ。この（Arrow の）プログラムの `len` / `id` は組み込みのまま。
 # ⚠ Arrow のソースの最上位で組み込みの名前を宣言し直すのは従来どおり誤り（`let len = 3`）。
 # ⚠ Arrow に無い組み込み（`format` など）を参照するモジュールは読む時点で誤りになる（タスク 1-1・
 #   `py_unsupported_builtin_error.ar`）が、モジュールで定義した同名の関数を指すなら通る。
 
-import[py] test_modules.py_builtin_shadow as s
+import[py-int] test_modules.py_builtin_shadow as s
 
 print(s.read_back())          # (7, 'shadowed str', 42)
 print(s.id, s.str)            # 7 shadowed str

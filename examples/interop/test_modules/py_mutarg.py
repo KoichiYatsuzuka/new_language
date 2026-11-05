@@ -1,9 +1,4 @@
-"""py_mutarg.py — `import[py]` 由来の関数へ**一時値**を渡す形の検査（INF-D）。
-
-変換器は Python に不変引数の概念が無いため全パラメータを `mutable: true` にする
-（coverage の 🔵「変換パラメータは常に mutable: true」）。そのため呼び出し側の
-可変性検査が、ネイティブ `fn` と**同じ規則**である必要がある。
-"""
+"""py_mutarg.py — 引数を受ける関数（変数・リテラル・要素・戻り値を渡す）（py_mutarg.ar が CPython で動かす）。"""
 
 
 def take(v):

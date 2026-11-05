@@ -105,9 +105,43 @@ pub(crate) fn with_py<R>(f: impl FnOnce(Python<'_>) -> R) -> R {
         }
         IN_PY.with(|d| d.set(d.get() + 1));
         let _depth = Depth;
+        STDIO_SETUP.call_once(|| line_buffer_stdio(py));
         apply_pending(py);
         f(py)
     })
+}
+
+/// CPython の標準出力の設定を 1 度だけ行ったか（[`line_buffer_stdio`]）。
+static STDIO_SETUP: std::sync::Once = std::sync::Once::new();
+
+/// CPython の `sys.stdout` / `sys.stderr` を行ごとに書き出す設定にする（初めて CPython へ入るとき・pandas_import_plan.md 3-1）。
+///
+/// ⚠⚠ 埋め込みの CPython の `sys.stdout` は、端末でなければ（ファイル・パイプへ出すと）ブロック単位で溜める。Arrow の `print`
+///   （Rust の標準出力・行ごと）と出す順が入れ替わり、終わるときに CPython を後始末しないので、溜めた分は**黙って消えた**
+///   （Python のコードの `print` は `flush=True` を付けないと出なかった）。Arrow と同じく改行ごとに書き出す。
+/// ⚠ 改行で終わらない残り（`print(x, end="")`）は、プログラムの終わりに [`flush_stdio`] が書き出す。
+fn line_buffer_stdio(py: Python<'_>) {
+    const CODE: &str = "import sys\n\
+for _s in (sys.stdout, sys.stderr):\n    \
+if _s is not None and hasattr(_s, 'reconfigure'):\n        \
+_s.reconfigure(line_buffering=True)\n";
+    // ⚠ 設定できなくても（`sys.stdout` を差し替えた環境など）実行は続ける。出す順が CPython の既定のままになるだけ。
+    let _ = py.run_bound(CODE, Some(&PyDict::new_bound(py)), None);
+}
+
+/// CPython の `sys.stdout` / `sys.stderr` に溜まった分を書き出す（プログラムの終わり・[`line_buffer_stdio`]）。
+/// CPython をまだ使っていなければ何もしない（ここで CPython を起動しない）。
+pub fn flush_stdio() {
+    if !STDIO_SETUP.is_completed() {
+        return;
+    }
+    with_py(|py| {
+        let _ = py.run_bound(
+            "import sys\nfor _s in (sys.stdout, sys.stderr):\n    if _s is not None:\n        _s.flush()\n",
+            Some(&PyDict::new_bound(py)),
+            None,
+        );
+    });
 }
 
 /// このスレッドが GIL を持っていれば、手放して `f` を走らせる（`async` のタスクを待つ間・pandas_import_plan.md の 2-8）。
@@ -892,6 +926,20 @@ fn stash_arrow_raised(
     PyErr::from_value_bound(exc)
 }
 
+/// Python の組み込みの関数 `builtins.<name>(*args)` を呼ぶ（Arrow の `isinstance` / `issubclass` が CPython のクラスを受けたとき・
+/// pandas_import_plan.md 3-1）。引数は Arrow → Python の変換（`ar_to_py`）、戻り値は Python → Arrow の変換。
+pub fn call_py_builtin(name: &str, args: &[Value]) -> Result<Value, String> {
+    with_py(|py| {
+        let f = py.import_bound("builtins").and_then(|b| b.getattr(name)).map_err(python_raised)?;
+        let mut objs = Vec::with_capacity(args.len());
+        for a in args {
+            objs.push(ar_to_py(py, a).map_err(arrow_side)?);
+        }
+        let r = f.call1(PyTuple::new_bound(py, objs)).map_err(python_raised)?;
+        Ok(py_to_tl(py, &r))
+    })
+}
+
 /// `isinstance(obj, cls)`。`cls` がクラスでなければ（`isinstance` が `TypeError`）`None`。
 pub fn py_isinstance(obj: &PyObjHandle, cls: &PyObjHandle) -> Option<bool> {
     with_py(|py| {
@@ -931,6 +979,18 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     //   下の int の取り出しが int にしてしまう）
     if let Some(v) = unwrap_arrow_value(obj) {
         return v;
+    }
+    // 唯一の値（`...`・`NotImplemented`）は Arrow の同じ値（`ar_to_py` の逆・pandas_import_plan.md 3-1）。
+    // ⚠ 以前は CPython の物のまま届いたので、`pe.pick() === Ellipsis` が偽で、`let` でも受けられなかった。
+    for (single, kind) in [
+        (py.Ellipsis(), crate::interpreter::BuiltinClass::Ellipsis),
+        (py.NotImplemented(), crate::interpreter::BuiltinClass::NotImplemented),
+    ] {
+        if obj.is(&single) {
+            if let Ok(interp) = running_interpreter("Ellipsis") {
+                return interp.builtin_singleton(kind);
+            }
+        }
     }
     // bool は int のサブクラスなので先にチェックする
     let type_name = obj

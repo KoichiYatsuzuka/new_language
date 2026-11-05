@@ -1,15 +1,13 @@
-# py_introspect.ar — issubclass / callable と、フェーズ 2 の組み込みをまとめて使う Python のコード
-# （python_builtins_plan.md のタスク 2-4。2-1 isinstance・2-2 type・2-3 getattr / hasattr / setattr も通す）
+# py_introspect.ar — issubclass / callable / getattr / hasattr / setattr を使う Python のコードと、Arrow から CPython のクラスを調べる
 #
 # 対になる誤りの例: py_introspect_error.ar
 #
+# Arrow の `issubclass(m.Puppy, m.Animal)` / `callable(m.Dog)` は CPython のクラスを受ける（CPython の `issubclass`・
+# pandas_import_plan.md 3-1）。片方だけ CPython のクラスなら偽（Arrow のクラスと継承でつながらない）。
 # - issubclass(C, spec): クラス同士は isinstance と同じ判定（同じクラスか派生）、組み込みの型は bool ⊂ int、組は要素ごと
-# - callable(x): 関数・クラス・組み込みの関数と型・`__call__` を持つインスタンスは真（`x is function` と違い、
-#   `__call__` の無いクラスも呼べる＝作れるので真）
-# ⚠ 以前はどれも NameError（pandas で issubclass 69・callable 59 箇所）。
-# ⚠ 下の出力はすべて CPython 3.12 と同じ。
+# - callable(x): 関数・クラス・組み込みの関数と型・`__call__` を持つインスタンスは真
 
-import[py] test_modules.py_introspect as m
+import[py-int] test_modules.py_introspect as m
 
 print(m.kinds())          # ['bool', 'int', 'sequence of 2', 'sequence of 1', 'dict', 'Puppy (an Animal)', 'other: str']
 mut p = m.Puppy("x")

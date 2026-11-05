@@ -9,7 +9,7 @@ class Temp:
         return c * 9 / 5 + 32
     to_f = staticmethod(to_f)
 
-    def parse(cls, text):
+    def parse(cls, text) -> "Temp":
         return cls(float(text.rstrip("C")))
     parse = classmethod(parse)
 

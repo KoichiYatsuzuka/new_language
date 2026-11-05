@@ -1,13 +1,4 @@
-"""py_multi_assign.py — 複数代入（項目 15）とタプルアンパック代入（U2）。
-
-どちらも「**この文の直前に補助文を置く**」機構（INF-B / INF-C）で脱糖する:
-
-    a = b = c     ->  __py_tmp_N = c ; a = __py_tmp_N ; b = __py_tmp_N
-    a, b = t      ->  __py_tmp_N = t ; a = __py_tmp_N[0] ; b = __py_tmp_N[1]
-    a, *rest = t  ->  __py_tmp_N = t ; a = __py_tmp_N[0] ; rest = __py_tmp_N[1:]
-
-⚠ 一時変数は**必須**。直接 `a = c; b = c` と書くと右辺が 2 回評価される。
-"""
+"""py_multi_assign.py — 複数代入とタプルのアンパック代入を使う関数（py_multi_assign.ar が CPython で動かす）。"""
 
 CALLS = []
 

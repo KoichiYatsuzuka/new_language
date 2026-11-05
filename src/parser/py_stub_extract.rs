@@ -98,8 +98,8 @@ pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
         // トップレベルの class 定義（7-27）
         // ⚠ スタブ（`.ars`）を読んだ C# / JS のクラスは**通常の Arrow 宣言**として別経路で登録されるので、ここを通らない。
         if py_parse_class_name(trimmed).is_some() {
-            let (stmt, next) = py_class_stub(&lines, i, decorated);
-            stmts.push(stmt);
+            let (decls, next) = py_class_stub(&lines, i, decorated);
+            stmts.extend(decls);
             decorated = false;
             overloaded = false;
             i = next;
@@ -442,46 +442,49 @@ const PY_OPEN_MEMBERS_MARK: &str = "py-open-members: ";
 /// - 基底（`object` 以外）が同じファイルのクラスならそのメンバーも持つ。ほかのファイル・ライブラリのクラスを継承する
 ///   クラスと、デコレータ（`@dataclass` など）の付いたクラスは、メンバーの顔ぶれが分からないので開いておく
 ///   （書いたメンバーは型が付き、ほかの名前は検査しない）
-fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (crate::ast::Stmt, usize) {
+///
+/// 戻り値の宣言は、入れ子のクラス（`Tree.Node` の名前・Python の `__qualname__`）を先に、このクラスを最後に並べる。
+fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (Vec<crate::ast::Stmt>, usize) {
+    let name = py_parse_class_name(py_strip_comment(lines[start]).trim()).unwrap_or_default();
+    py_class_stub_named(lines, start, decorated, name, &std::collections::HashMap::new())
+}
+
+/// 同じ本体の先に書いた入れ子のクラス（素の名前 → (`class` の行, `Outer.Inner`)）。Python のクラスの本体の中では、入れ子の
+/// クラスを素の名前で引ける（`class Leaf(Node):` の `Node` は同じ本体の `Node`）。
+type PySiblings = std::collections::HashMap<String, (usize, String)>;
+
+/// [`py_class_stub`] の本体。`qualname` はこのクラスの名前（入れ子なら `Outer.Inner`）。
+///
+/// 入れ子のクラス（クラス本体の `class`・pandas_import_plan.md 3-1）は `Outer.Inner` の名前で外へ持ち上げ、外側のクラスには
+/// その型の値の属性（`Inner: type[Outer.Inner]`）を置く（`m.Tree.Node(v)` / `t.Leaf(w)` が引ける・旧変換器と同じ形）。
+/// ⚠ 以前は入れ子のクラスを読み飛ばしていたので、`m.Tree.Node` が `has no member 'Node'` の静的な誤りだった。
+fn py_class_stub_named(
+    lines: &[&str],
+    start: usize,
+    decorated: bool,
+    qualname: String,
+    siblings: &PySiblings,
+) -> (Vec<crate::ast::Stmt>, usize) {
     use crate::ast::{Accessibility, Expr, FieldKind, Stmt};
     let header = py_strip_comment(lines[start]).trim();
-    let name = py_parse_class_name(header).unwrap_or_default();
-    let end = py_block_end(lines, start + 1, 0);
-    let bases: Vec<String> = match (header.find('('), header.rfind(')')) {
-        (Some(o), Some(c)) if o < c => split_top_level(&header[o + 1..c], ',')
-            .into_iter()
-            .filter(|b| !b.is_empty() && *b != "object" && !b.contains('='))
-            .map(|b| b.to_string())
-            .collect(),
-        _ => Vec::new(),
-    };
-    let members = py_class_members(lines, start, end);
-    // 同じファイルの基底のメンバー（先に書く。派生で同じ名前があれば派生が勝つ）
-    let mut fields: Vec<(String, String)> = Vec::new();
-    let mut methods: Vec<Stmt> = Vec::new();
-    let mut open = decorated;
-    for base in &bases {
-        match py_find_class(lines, base) {
-            Some(b) if b != start => {
-                let base_end = py_block_end(lines, b + 1, 0);
-                let bm = py_class_members(lines, b, base_end);
-                for f in bm.fields {
-                    py_add_field(&mut fields, f.0, f.1);
-                }
-                // `__init__` も受け継ぐ（Python と同じく、派生が `__init__` を書かなければ基底のものが使われる。派生が書けば
-                // 下の名前の照合で派生が勝つ）
-                methods.extend(bm.methods);
-            }
-            _ => open = true,
-        }
-    }
-    for f in members.fields {
-        py_add_field(&mut fields, f.0, f.1);
-    }
-    for m in members.methods {
-        let mname = match &m { Stmt::FnDef { name, .. } => name.clone(), _ => String::new() };
-        methods.retain(|x| !matches!(x, Stmt::FnDef { name, .. } if *name == mname));
-        methods.push(m);
+    let name = qualname;
+    let end = py_block_end(lines, start + 1, py_line_indent(lines[start]));
+    let bases = py_header_bases(header);
+    // 自分と、同じファイルの基底（その基底も）のメンバー。派生で同じ名前があれば派生が勝つ
+    let (PyClassMembers { mut fields, mut methods, nested, open_body }, base_open) =
+        py_class_all_members(lines, start, 0, siblings);
+    let open = decorated || base_open || open_body;
+    // 入れ子のクラス: 先に持ち上げ、外側のクラスにはその型の値の属性を置く
+    let mut hoisted: Vec<Stmt> = Vec::new();
+    let mut inner_map: PySiblings = PySiblings::new();
+    for (line, inner_decorated) in nested {
+        let Some(inner) = py_parse_class_name(py_strip_comment(lines[line]).trim()) else { continue };
+        let q = format!("{name}.{inner}");
+        let (decls, _) = py_class_stub_named(lines, line, inner_decorated, q.clone(), &inner_map);
+        hoisted.extend(decls);
+        inner_map.insert(inner.clone(), (line, q.clone()));
+        fields.retain(|(n, _)| *n != inner);
+        fields.push((inner, format!("type[{q}]")));
     }
     if !methods.iter().any(|m| matches!(m, Stmt::FnDef { name, .. } if name == "__init__")) {
         // `__init__` が無い: 基底が分からなければ引数を問わない、そうでなければ引数なし
@@ -507,20 +510,85 @@ fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (crate::ast::
     } else {
         Vec::new()
     };
-    (
-        Stmt::ClassDef {
-            src: None,
-            name,
-            template_params: vec![],
-            // 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持たせる（`except m.Err:` の型検査・
-            // pandas_import_plan.md の 2-1）。ほかの基底は書かない（メンバーは上で写した）
-            bases: py_exception_base(lines, &bases, 0).into_iter().collect(),
-            base_args: vec![],
-            decorators,
-            body,
-        },
-        end,
-    )
+    hoisted.push(Stmt::ClassDef {
+        src: None,
+        name,
+        template_params: vec![],
+        // 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持たせる（`except m.Err:` の型検査・
+        // pandas_import_plan.md の 2-1）。同じファイルの基底のクラスも書く（派生を基底の型の引数に渡せる・
+        // `fn f(mut a: z.Animal)` に `z.Puppy()`・3-1。メンバーは上で写した）。ほかのファイルの基底は `link_py_types` が
+        // 修飾名で足す（`py_merge_outside_bases`）
+        bases: py_exception_base(lines, &bases, 0)
+            .into_iter()
+            .chain(py_same_file_bases(lines, start, &bases, siblings))
+            .collect(),
+        base_args: vec![],
+        decorators,
+        body,
+    });
+    (hoisted, end)
+}
+
+/// `class` の行に書いた基底（`object` とキーワード引数 `metaclass=..` を除く・書いた綴り）。
+fn py_header_bases(header: &str) -> Vec<String> {
+    match (header.find('('), header.rfind(')')) {
+        (Some(o), Some(c)) if o < c => split_top_level(&header[o + 1..c], ',')
+            .into_iter()
+            .filter(|b| !b.is_empty() && *b != "object" && !b.contains('='))
+            .map(|b| b.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 基底の名前 `base` が指す同じファイルのクラスの `class` の行と、型の名前（入れ子の兄弟なら `Outer.Inner`・最上位なら素の名前）。
+fn py_find_base(lines: &[&str], start: usize, base: &str, siblings: &PySiblings) -> Option<(usize, String)> {
+    if let Some((line, q)) = siblings.get(base) {
+        return Some((*line, q.clone()));
+    }
+    match py_find_class(lines, base) {
+        Some(j) if j != start => Some((j, base.to_string())),
+        _ => None,
+    }
+}
+
+/// `class` の行 `start` のクラスのメンバーに、同じファイルの基底のメンバーを（基底の基底もたどって）足したもの。2 つ目は、
+/// 同じファイルに無い基底（ライブラリのクラスなど）をどこかで継承しているか（メンバーの顔ぶれが分からない）。
+///
+/// 名前が重なれば派生が、基底どうしでは先に書いた基底が勝つ（CPython の MRO の近似）。`__init__` も受け継ぐ（Python と同じく、
+/// 派生が `__init__` を書かなければ基底のものが使われる）。
+/// ⚠ 以前は直接の基底のメンバーだけを写していたので、`class C(B)`・`class B(A)` の `C` に `A` のメソッドが無かった
+///   （`c.show()` が `'C' has no member 'show'`・`Puppy(Dog(Animal))` の `__init__` が引数なし。pandas_import_plan.md 3-1）。
+fn py_class_all_members(lines: &[&str], start: usize, depth: u32, siblings: &PySiblings) -> (PyClassMembers, bool) {
+    use crate::ast::Stmt;
+    let header = py_strip_comment(lines[start]).trim();
+    let end = py_block_end(lines, start + 1, py_line_indent(lines[start]));
+    let mut out = py_class_members(lines, start, end);
+    let mut open = false;
+    let bases = py_header_bases(header);
+    for base in &bases {
+        let bare = base.split('[').next().unwrap_or(base).trim();
+        match py_find_base(lines, start, bare, siblings) {
+            // ⚠ 深さの上限は循環（壊れたソース）の保険
+            Some((b, _)) if depth < 20 => {
+                // ⚠ 基底の基底は最上位のクラスから引く（基底が入れ子のクラスでも・近似）
+                let (bm, base_open) = py_class_all_members(lines, b, depth + 1, &PySiblings::new());
+                open |= base_open;
+                for f in bm.fields {
+                    py_add_field(&mut out.fields, f.0, f.1);
+                }
+                for m in bm.methods {
+                    let Stmt::FnDef { name, .. } = &m else { continue };
+                    if !out.methods.iter().any(|x| matches!(x, Stmt::FnDef { name: n, .. } if n == name)) {
+                        out.methods.push(m);
+                    }
+                }
+                open |= bm.open_body;
+            }
+            _ => open = true,
+        }
+    }
+    (out, open)
 }
 
 /// 基底 `bases`（同じファイルのクラスはその基底もたどる）が行き着く組み込みの例外（`ValueError` など・Arrow の
@@ -553,6 +621,19 @@ fn py_exception_base(lines: &[&str], bases: &[String], depth: u32) -> Option<Str
     None
 }
 
+/// `bases`（`class` の行 `start` に書いた基底）のうち、同じファイルのクラス（型引数は外した名前）。
+fn py_same_file_bases(lines: &[&str], start: usize, bases: &[String], siblings: &PySiblings) -> Vec<String> {
+    bases
+        .iter()
+        .filter_map(|b| py_find_base(lines, start, b.split('[').next().unwrap_or(b).trim(), siblings).map(|(_, q)| q))
+        .collect()
+}
+
+/// 組み込みの例外の名前（`ValueError` など・Arrow の `BUILTIN_EXCEPTIONS`）か。
+pub(crate) fn is_builtin_exception_name(name: &str) -> bool {
+    crate::type_check::names::BUILTIN_EXCEPTIONS.iter().any(|(n, _)| *n == name)
+}
+
 /// 同じファイルのトップレベルの `class name` の行。
 fn py_find_class(lines: &[&str], name: &str) -> Option<usize> {
     lines.iter().position(|l| py_line_indent(l) == 0 && py_parse_class_name(l.trim()).as_deref() == Some(name))
@@ -563,6 +644,10 @@ struct PyClassMembers {
     /// （名前, 型）。注釈の無いものは `Any`
     fields: Vec<(String, String)>,
     methods: Vec<crate::ast::Stmt>,
+    /// 入れ子のクラスの `class` の行と、デコレータが付いていたか（`py_class_stub_named` が持ち上げる）
+    nested: Vec<(usize, bool)>,
+    /// 本体に宣言でない文（`if` / `for` / `try` …）があるか。その中で定義した名前は読めないので、メンバーの顔ぶれが分からない
+    open_body: bool,
 }
 
 /// 同じ名前の属性は、注釈のあるもの（`Any` でない型）を勝たせる。
@@ -579,7 +664,7 @@ fn py_add_field(fields: &mut Vec<(String, String)>, name: String, ty: String) {
 
 /// `class` の行 `start` から `end` までの本体のメソッドと属性。
 fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers {
-    let mut out = PyClassMembers { fields: Vec::new(), methods: Vec::new() };
+    let mut out = PyClassMembers { fields: Vec::new(), methods: Vec::new(), nested: Vec::new(), open_body: false };
     let body_indent = lines[start + 1..end]
         .iter()
         .find(|l| {
@@ -589,11 +674,27 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
         .map(|l| py_line_indent(l))
         .unwrap_or(4);
     let mut decos: Vec<String> = Vec::new();
+    // メソッドの（名前, 戻り値の注釈, 引数の並び）。`name = staticmethod(f)` の `f` を引く（下の `py_method_wrapper`）
+    let mut defs: Vec<(String, Option<String>, String)> = Vec::new();
     let mut i = start + 1;
     while i < end {
         let line = lines[i];
         let t = py_strip_comment(line).trim();
         if t.is_empty() || py_line_indent(line) != body_indent {
+            i += 1;
+            continue;
+        }
+        // `to_f = staticmethod(to_f)` / `parse = classmethod(parse)`（デコレータを使わない古い書き方）: 名前の付いたメソッドを
+        // 静的メソッド・クラスメソッドとして足し直す。⚠ 以前は `to_f` が普通のメソッド（先頭の引数を `self` として外す）のままだった
+        if let Some((alias, deco, target)) = py_method_wrapper(t) {
+            if let Some((_, ret, params)) = defs.iter().find(|(n, _, _)| *n == target) {
+                let ret_ty = Some(ret.as_deref().map(|r| py_type_to_arrow(py_unquote(r))).unwrap_or_else(|| "Any".to_string()));
+                let params = py_params(params, deco == "classmethod").unwrap_or_else(py_open_params);
+                out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == alias));
+                out.fields.retain(|(n, _)| *n != alias);
+                out.methods.push(py_method(&alias, params, ret_ty, true));
+            }
+            decos.clear();
             i += 1;
             continue;
         }
@@ -610,12 +711,16 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
                         py_add_field(&mut out.fields, n, ty);
                     }
                 }
+                defs.push((mname.clone(), ret.clone(), params.clone()));
                 let ret_ty = ret.as_deref().map(|r| py_type_to_arrow(py_unquote(r)));
                 let is_static = decos.iter().any(|d| d == "staticmethod" || d == "classmethod");
+                // `@classmethod` の先頭の引数（`cls`）は呼び出しで渡さない。`@staticmethod` は先頭も本物の引数。
+                // ⚠ 以前は両方とも先頭を残していたので、`Box.of(v)` が `takes 2 argument(s)` の偽の誤りだった。
+                let drops_first = !decos.iter().any(|d| d == "staticmethod");
                 if decos.iter().any(|d| d == "property" || d == "functools.cached_property" || d == "cached_property") {
                     py_add_field(&mut out.fields, mname, ret_ty.unwrap_or_else(|| "Any".to_string()));
                 } else if !decos.iter().any(|d| d.ends_with(".setter") || d.ends_with(".deleter")) {
-                    let params = py_params(&params, !is_static).unwrap_or_else(py_open_params);
+                    let params = py_params(&params, drops_first).unwrap_or_else(py_open_params);
                     let ret_ty = if mname == "__init__" { Some("None".to_string()) } else { Some(ret_ty.unwrap_or_else(|| "Any".to_string())) };
                     out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == mname));
                     out.methods.push(py_method(&mname, params, ret_ty, is_static));
@@ -626,7 +731,15 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
             }
         }
         if t.starts_with("class ") {
-            // 入れ子のクラスは読み飛ばす（Arrow から `Outer.Inner` で使う形はスタブに書かない）
+            // 入れ子のクラス（`py_class_stub_named` が `Outer.Inner` として持ち上げる）
+            out.nested.push((i, !decos.is_empty()));
+            decos.clear();
+            i = py_block_end(lines, i + 1, body_indent);
+            continue;
+        }
+        // 宣言でない文（`if debug: level = 10`）: その中の名前は読まないので、クラスを開いておく（無い名前を誤りにしない）
+        if ["if ", "for ", "while ", "try:", "with ", "match ", "async for ", "async with "].iter().any(|k| t.starts_with(k)) {
+            out.open_body = true;
             decos.clear();
             i = py_block_end(lines, i + 1, body_indent);
             continue;
@@ -639,6 +752,22 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
         i += 1;
     }
     out
+}
+
+/// クラス本体の 1 行が `name = staticmethod(f)` / `name = classmethod(f)` なら（`name`, `staticmethod` か `classmethod`, `f`）。
+fn py_method_wrapper(t: &str) -> Option<(String, &'static str, String)> {
+    let (lhs, rhs) = t.split_once('=')?;
+    let alias = lhs.trim();
+    let rhs = rhs.trim();
+    if rhs.starts_with('=') || alias.is_empty() || !alias.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    let (deco, rest) = [("staticmethod", "staticmethod("), ("classmethod", "classmethod(")]
+        .into_iter()
+        .find_map(|(d, p)| rhs.strip_prefix(p).map(|r| (d, r)))?;
+    let target = rest.strip_suffix(')')?.trim();
+    (!target.is_empty() && target.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| (alias.to_string(), deco, target.to_string()))
 }
 
 /// クラス本体の 1 行が属性の宣言なら（名前, 型）。`name: T = …` / `name: T` は T、`name = …` は `Any`。
@@ -1201,7 +1330,8 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
     }
 
     /// 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持つ（`except m.Err:` の型検査・pandas_import_plan.md の 2-1）。
-    /// 例外でないクラスは基底を持たない。
+    /// 同じファイルの基底のクラスも基底に持つ（派生を基底の型で受ける・3-1）。ほかのファイルの基底は持たない（`link_py_types` が
+    /// 修飾名で足す）。
     #[test]
     fn exception_classes_keep_their_builtin_base() {
         use crate::ast::Stmt;
@@ -1213,9 +1343,81 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
             .collect();
         let of = |n: &str| bases.iter().find(|(c, _)| c == n).map(|(_, b)| b.clone()).unwrap();
         assert_eq!(of("A"), vec!["ValueError".to_string()]);
-        assert_eq!(of("B"), vec!["ValueError".to_string()]);
+        assert_eq!(of("B"), vec!["ValueError".to_string(), "A".to_string()]);
         assert_eq!(of("C"), vec!["KeyError".to_string()]);
-        assert!(of("D").is_empty() && of("E").is_empty() && of("F").is_empty());
+        assert!(of("D").is_empty() && of("F").is_empty());
+        assert_eq!(of("E"), vec!["D".to_string()]);
+    }
+
+    /// `@classmethod` の `cls` は呼び出しで渡さない・`@staticmethod` の先頭は本物の引数・`f = staticmethod(f)` も同じ・
+    /// 基底の基底のメンバーも持つ（pandas_import_plan.md 3-1）。
+    #[test]
+    fn class_and_static_methods_and_deep_bases() {
+        let src = "class A:
+    def __init__(self, v):
+        self.v = v
+    def show(self) -> str:
+        return ''
+class B(A):
+    @classmethod
+    def of(cls, v) -> 'B':
+        return cls(v)
+    @staticmethod
+    def twice(x):
+        return x
+    def to_f(c):
+        return c
+    to_f = staticmethod(to_f)
+    def parse(cls, t):
+        return cls(t)
+    parse = classmethod(parse)
+class C(B):
+    pass
+";
+        let stmts = extract_py_type_stubs(src);
+        let (fields, methods, open) = class_parts(&stmts, "C");
+        let m = |n: &str| methods.iter().find(|(name, _, _)| name == n).cloned().unwrap_or_else(|| panic!("no method {n} in {methods:?}"));
+        assert_eq!(m("of").1, vec!["v:Any".to_string()], "classmethod: no cls");
+        assert_eq!(m("twice").1, vec!["x:Any".to_string()], "staticmethod: the first parameter is real");
+        assert_eq!(m("to_f").1, vec!["c:Any".to_string()], "`to_f = staticmethod(to_f)`");
+        assert_eq!(m("parse").1, vec!["t:Any".to_string()], "`parse = classmethod(parse)`");
+        assert_eq!(m("show").2, "str", "a member of the base of the base");
+        assert_eq!(m("__init__").1, vec!["self:".to_string(), "v:Any".to_string()], "`__init__` of the base of the base");
+        assert!(!fields.iter().any(|(n, _)| n == "to_f" || n == "parse"), "the wrappers are not attributes: {fields:?}");
+        assert!(!open);
+    }
+
+    /// 入れ子のクラスは `Outer.Inner` の名前で持ち上げ、外側のクラスにはその型の値の属性を置く。入れ子のクラスの基底は同じ本体の
+    /// 兄弟を先に引く。本体に宣言でない文（`if`）があるクラスは開いておく（pandas_import_plan.md 3-1）。
+    #[test]
+    fn nested_classes_are_hoisted() {
+        use crate::ast::Stmt;
+        let src = "class Node:
+    pass
+class Tree:
+    class Node:
+        def __init__(self, value):
+            self.value = value
+    class Leaf(Node):
+        pass
+class Settings:
+    debug = False
+    if debug:
+        level = 10
+";
+        let stmts = extract_py_type_stubs(src);
+        let names: Vec<&str> = stmts.iter().filter_map(|s| if let Stmt::ClassDef { name, .. } = s { Some(name.as_str()) } else { None }).collect();
+        assert_eq!(names, vec!["Node", "Tree.Node", "Tree.Leaf", "Tree", "Settings"]);
+        let (fields, _, _) = class_parts(&stmts, "Tree");
+        assert_eq!(fields, vec![("Node".to_string(), "type[Tree.Node]".to_string()), ("Leaf".to_string(), "type[Tree.Leaf]".to_string())]);
+        let (_, methods, _) = class_parts(&stmts, "Tree.Leaf");
+        assert_eq!(methods[0].1, vec!["self:".to_string(), "value:Any".to_string()], "the sibling `Node`, not the top-level one");
+        let Some(Stmt::ClassDef { bases, .. }) = stmts.iter().find(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "Tree.Leaf")) else {
+            panic!()
+        };
+        assert_eq!(bases, &vec!["Tree.Node".to_string()]);
+        let (_, _, open) = class_parts(&stmts, "Settings");
+        assert!(open, "a class body with an `if`: the members are open");
     }
 
     /// 注釈のあるモジュールの大域変数は型つきの `let` の宣言になる（pandas_import_plan.md の 1-4）。注釈の無いもの・`_` で

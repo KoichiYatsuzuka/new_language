@@ -121,6 +121,11 @@ mod py_interop;
 // `interpreter/` を前置する（`eval/mod.rs` 側は `mod.rs` なので相対のままでよい）。
 #[path = "interpreter/py_interop_stub.rs"]
 mod py_interop;
+
+/// CPython の標準出力に溜まった分を書き出す（プログラムの終わりに `main` が呼ぶ・`py_interop::flush_stdio`）。
+pub fn flush_python_stdio() {
+    py_interop::flush_stdio();
+}
 #[path = "interpreter/resolver.rs"]
 pub(crate) mod resolver;
 #[path = "interpreter/scope.rs"]

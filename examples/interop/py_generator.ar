@@ -1,26 +1,10 @@
-# py_generator.ar — `import[py]` 変換器の **ジェネレータ**対応（項目 9）。
+# py_generator.ar — Python のジェネレータを Arrow の `for` で回す
 #
-# 本体に**文としての** `yield` があれば `Stmt::FnDef` ではなく `Stmt::GenDef` を生成する。
-#
-# ⚠ 判定は**そのフレームだけ**。入れ子の `def` には降りない ——
-#   Python では内側の `def` は別の関数で、そこの `yield` は内側をジェネレータに
-#   するだけだから。各 `def` を自分のフレームだけで見れば、入れ子のジェネレータは
-#   入れ子の `gen` として自然に落ちる（⑤ で確認。Arrow も入れ子 `gen` に対応済み）。
-#
-# ⚠⚠ **B13 でジェネレータが真に遅延になった**（以前は先行評価で、本体を最後まで
-#   走らせて全 `yield` を集めていた）。⇒ ④ の無限ジェネレータ + `break` が成立する。
-#   この例題は**その遅延を固定する**ためにある。
-#
-# ⚠ **`gen` メソッドは型検査のクラスメンバ収集から漏れていた**（`'Bag' has no member
-#   'each'`）。純 Arrow でも再現する既存のドリフトで、本項目と同時に直した。
-#   → `examples/collections/gen_method.ar`。
-#
-# ⚠ 未対応（明示エラー）: `yield from` / 値位置の `yield`（`x = yield`）/
-#   ジェネレータへのデコレータ・`@staticmethod` 等。→ `py_generator_error.ar`。
-#
-# 6 形すべて CPython と出力一致を突き合わせ済み。
+# Python のジェネレータ（関数・入れ子・メソッド）は CPython の反復子のまま届き、`for` は取り出すたびに 1 つ取る
+# （pandas_import_plan.md 2-4）。⇒ ④ の無限ジェネレータ + `break` は先を取り出さない。
+# Arrow の側の `gen` メソッドは `examples/collections/gen_method.ar`。
 
-import[py] test_modules.py_generator as m
+import[py-int] test_modules.py_generator as m
 
 # ── ① 素のジェネレータ ──────────────────────────────────────────────────
 for v in m.two():
@@ -30,14 +14,14 @@ for v in m.two():
 
 # ── ② for を含む本体 ────────────────────────────────────────────────────
 mut xs = [1, 2, 3]
-for v in m.squares(xs):
+for v in m.squares(xs => py_list[int]):
     print(v)
 # 1
 # 4
 # 9
 
 # ── ③ if でふるい落とす（yield が入れ子の中にある） ─────────────────────
-for v in m.filtered(xs):
+for v in m.filtered(xs => py_list[int]):
     print(v)
 # 2
 # 3
@@ -59,11 +43,11 @@ for v in m.outer():
 # 7
 
 # ── ⑥ 通常の関数は壊れていない ──────────────────────────────────────────
-print(m.not_a_gen(xs))
+print(m.not_a_gen(xs => py_list[int]))
 # 3
 
 # ── ⑦ `gen` メソッド ────────────────────────────────────────────────────
-mut b = m.Bag(xs)
+mut b = m.Bag(xs => py_list[int])
 for v in b.each():
     print(v)
 print(b.size())

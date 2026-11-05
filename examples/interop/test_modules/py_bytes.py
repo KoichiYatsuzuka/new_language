@@ -7,7 +7,7 @@ def header_ok(data, sig=b"\x89PNG"):
     return data.startswith(sig)
 
 
-def run():
+def run() -> bytes:
     print(MAGIC, len(MAGIC), header_ok(MAGIC), header_ok(b"GIF89a"))
     line = b"name=caf\xc3\xa9; tags=a,b"
     fields = line.split(b"; ")

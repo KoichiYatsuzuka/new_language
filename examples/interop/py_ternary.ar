@@ -1,22 +1,9 @@
-# py_ternary.ar — `import[py]`（Python → Arrow 変換器）の **三項演算子** 対応の検査（項目 11）。
+# py_ternary.ar — Python の三項演算子（`a if cond else b`）を使う関数を Arrow から呼ぶ
 #
-# 対象は `convert_expr` の `py::Expr::IfExp` アーム（`src/python_converter/expressions.rs`）。
-#
-# Python の `a if cond else b` は**式**。Arrow の `if` 式は分岐本体が**文の列**で、
-# 値は `block_return` で返す形なので、各腕を `block_return <値>` 1 文だけのブロックにして写す:
-#
-#   Expr::IfExpr {
-#       branches:  [(cond, [BlockReturn(a)])],
-#       else_body: Some([BlockReturn(b)]),
-#       return_type: None,          // ← `-> T` 注釈なしでも式として評価できる
-#   }
-#
-# ⚠ **遅延評価が一致する**こと（⑨）が要点。Python の三項式は選ばれた腕しか評価しないので、
-#   副作用のある呼び出しを腕に置いたときの回数まで揃う必要がある。Arrow の `if` 式も同じ。
-# ⚠ 腕の型が違ってもよい（⑧）。`return_type: None` なので静的検査は緩い側に倒れる。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# 三項演算子は CPython が実行する（選ばれた腕しか評価しない・⑨ で副作用の回数まで確かめる・腕の型が違ってもよい）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_ternary as m
+import[py-int] test_modules.py_ternary as m
 
 mut t = True
 mut f = False

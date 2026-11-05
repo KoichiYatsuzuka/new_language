@@ -4,7 +4,7 @@
 # `args == (k,)`（`e.args[0] is k`）、`repr(e)` は `KeyError('zz')`。空の `d.popitem()` / `s.pop()` は文言の文字列が引数。
 # `str(e)` はどれもキーの `repr`（以前と同じ）。Arrow のコードの誤りも同じ。
 #
-# m.run() は CPython 3.12 と同じ出力:
+# m.run() の出力（CPython）:
 #   1 read: KeyError('zz') ('zz',) 'zz'
 #   1 int key: KeyError(7) (7,) 7
 #   1 tuple key: KeyError((3, 4)) ((3, 4),) (3, 4)
@@ -19,10 +19,9 @@
 #   9 nested: ('deep',)
 #   10 quote: KeyError("it's") ("it's",) "it's"
 #
-# ⚠ 以前は `args` が文言（キーの `repr`）だった: `KeyError("'zz'")` / `("'zz'",)`・`KeyError('7')`。
-#   誤りは文字列で運ばれ、例外にする所ではキーの値が分からなかった。今は送出の場が値を控える（`error_with_args`）。
+# ⚠ Arrow のコードの KeyError も同じ（送出の場が値を控える・`error_with_args`）。
 
-import[py] test_modules.py_key_error_args as m
+import[py-int] test_modules.py_key_error_args as m
 
 m.run()
 

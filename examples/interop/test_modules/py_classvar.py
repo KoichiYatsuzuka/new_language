@@ -1,10 +1,4 @@
-"""py_classvar.py - `import[py]` 変換器のクラス変数対応（項目 5）の検査用モジュール。
-
-Python のクラス属性は**可変・全インスタンス共有**なので、Arrow では
-`FieldKind::StaticMut`（`static mut name: Type = default`）に対応する。
-以前は `FieldKind::Const` にしていたため、`C.count = ...` が
-`cannot assign to class variable (declared const)` で落ちていた。
-"""
+"""py_classvar.py — クラス変数（全インスタンスで共有する可変の属性）を持つクラス（py_classvar.ar が CPython で動かす）。"""
 
 
 class Counter:

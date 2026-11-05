@@ -3,7 +3,7 @@
 
 class P:
     def __init__(self, x):
-        self.x = x
+        self.x: int = x
 
 
 class E:
@@ -23,9 +23,9 @@ class Node:
 
 class Registry:
     def __init__(self):
-        self.items = []
+        self.items: list[P] = []
 
-    def register(self, item):
+    def register(self, item: P) -> P:
         self.items.append(item)
         return item
 

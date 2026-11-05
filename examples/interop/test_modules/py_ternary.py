@@ -1,8 +1,4 @@
-"""py_ternary.py - `import[py]` 変換器の三項演算子対応（項目 11）の検査用モジュール。
-
-Python の `a if cond else b` は**式**。Arrow の `if` 式は分岐本体が文の列で、
-値は `block_return` で返す形なので、各腕を `block_return <値>` 1 文のブロックにして写す。
-"""
+"""py_ternary.py — 三項演算子を使う関数（py_ternary.ar が CPython で動かす）。"""
 
 CALLS = []
 

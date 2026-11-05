@@ -1,23 +1,10 @@
-# py_kwonly.ar — `import[py]`（Python → Arrow 変換器）の **bare `*`（キーワード専用引数）** 対応の検査。
+# py_kwonly.ar — キーワード専用引数（bare `*`）・位置専用引数（`/`）を持つ Python の関数を Arrow から呼ぶ
 #
-# 対象は `convert_params()`（`src/python_converter/classes.rs`）。
-#
-# Python の `def f(a, *, b)` の `*` は「これより後ろはキーワードでしか渡せない」区切り。
-# rustpython はこのマーカをノードとして持たず、`args` / `kwonlyargs` という**区分**で表す。
-# Arrow の `Param` に「位置渡し禁止」を表すフラグが無いので、変換器は**区分をまたいで
-# 1 本の引数列に平坦化**する（位置専用マーカ `/` も同じ）。
-#
-# ⚠ **意味の緩和がある**: Python は `f(1, 2)` を `TypeError` にするが、平坦化後の Arrow は通す。
-#   受け入れる Python コードが**広がる**方向なので許容（coverage 項目 24 の決定）。
-#   ⇒ この 1 本だけ CPython と挙動が違う。下の ② がその形。
-#
-# ⚠ **キーワード専用引数のデフォルト値も効く**（項目 1 で対応済み）。
-# ⚠ **`def f(a, *rest, b)` のように名前つき `*args` と併用する形は明示エラー**（A6）。
-#   Arrow の可変長は必ず末尾で `Param` にキーワード専用の概念が無いため表現できない。
-#   ⇒ `py_kwonly_error.ar` を参照。bare `*`（名前なし）単体はこの影響を受けない。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# `def f(a, *, b)` の `*` より後ろはキーワードでしか渡せない。Arrow の型スタブには「位置渡し禁止」を表す印が無いので、
+# 静的には通り、位置で渡すと CPython が `TypeError` にする（②）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_kwonly as m
+import[py-int] test_modules.py_kwonly as m
 
 mut a = 1
 mut b = 2
@@ -27,9 +14,12 @@ mut c = 3
 print(m.f(a, b=b))
 # 12
 
-# ── ② 位置で渡す（★CPython では TypeError。平坦化による緩和） ────────────
-print(m.f(a, b))
-# 12
+# ── ② 位置で渡す（CPython の TypeError） ────────────────────────────────
+try:
+    print(m.f(a, b))
+except TypeError as e:
+    print("TypeError:", e)
+# TypeError: f() takes 1 positional argument but 2 were given
 
 # ── ③ キーワード専用が 2 個 ─────────────────────────────────────────────
 print(m.g(a, b=b, c=c))
@@ -40,7 +30,7 @@ mut n = 5
 print(m.only_kw(b=n))
 # 6
 
-# ── ⑤ `/` と `*` の併用（両方のマーカが無視される） ──────────────────────
+# ── ⑤ `/` と `*` の併用（`/` の前は位置で、`*` の後はキーワードで渡す） ────
 print(m.both_markers(a, b, c=c))
 # 123
 

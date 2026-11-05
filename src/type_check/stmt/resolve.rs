@@ -389,10 +389,16 @@ impl TypeChecker {
                     .collect();
                 // 戻り値と引数の型は、本体の宣言と同じ規則で作る（`collect_module_types`）
                 let one = self.collect_module_types(lang, std::slice::from_ref(v));
-                let (fn_params, ret) = match one.into_values().next() {
+                let (mut fn_params, ret) = match one.into_values().next() {
                     Some(InferredType::Function { params, return_type, .. }) => (params, *return_type),
                     _ => (None, InferredType::Any),
                 };
+                // クラスの名前はモジュールで修飾した型にする（本体の宣言と同じ・`module_member_types` の `canon_type`・3-1）。
+                // ⚠ しないと `pk.read("a.csv")` の戻り値が素の `Frame` で、`let f: pk.Frame` と食い違った
+                let ret = self.canon_type(&ret);
+                for p in fn_params.iter_mut().flatten() {
+                    p.ty = self.canon_type(&p.ty);
+                }
                 let plain = |p: &&crate::ast::Param| !p.variadic && p.name != crate::ast::PY_KWARGS_PARAM;
                 list.push(crate::type_check::PyOverload {
                     params: params.iter().filter(plain).map(|p| (p.name.clone(), p.default.is_some())).collect(),

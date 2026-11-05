@@ -1,43 +1,17 @@
-# py_with.ar — `import[py]` 変換器の **`with` 文**（項目 25）。
+# py_with.ar — Python の `with` 文を使うモジュールを CPython で動かす
 #
-# Arrow に `with` は無いが、**ブロック退出でローカルが破棄され、ネイティブなリソース型は
-# `Drop` で実クリーンアップされる**（`FileData::drop` が `close()` を呼ぶ）。
-# ⇒ `with EXPR as x: body` を `block: mut x = EXPR; body` へ脱糖する。
-#
-#   with open(p, m) as f:      ->   block:
-#       f.write("hello")                mut f = open(p, m)
-#                                       f.write("hello")
-#
-# ⚠⚠ **ブロック退出で解放されるのは最上位だけ**（純 Arrow で再現する既存の制限）:
-#
-#   | 形                              | 解放 |
-#   |---------------------------------|------|
-#   | 最上位の `block` を抜ける        | ✅   |
-#   | **関数の中**の `block` を抜ける  | ❌   |
-#   | 関数を抜ける                     | ✅   |
-#
-#   ⇒ `with` で書いた直後に**同じ関数の中で**読み直すと空に見える。
-#     この例題は**関数を抜けてから**読む形にしてある。
-#     ⚠ `FileObject` に `close()` メソッドは無いので明示クローズもできない。
-#
-# ⚠ `__enter__` / `__exit__` を持つクラスは**明示エラー**。`__enter__` が別の値を返す形は
-#   `mut x = EXPR` で再現できず、`__exit__` の副作用は `Drop` では走らないため。
-#   判定は**同じモジュールで定義されたクラス**に限る（`hasattr` 相当の組込みが無く
-#   実行時ガードを組めない）。→ `py_with_error.ar`。
+# `with` は CPython が実行するので、`__enter__` の戻り値の束縛・`__exit__` の呼び出し（例外のときも）・ファイルの close は
+# CPython と同じ。Python の `open` は Python の文字列のモード（`"w"`）で開く。書いたファイルは Arrow の `open` で読む。
 #
 # ⚠ 一時ファイルは `examples/**/_tmp_*.txt`（`.gitignore` 済みの慣習）に置く。
-#
-# ⚠ `open` は Arrow のシグネチャ（`file_path` / `open_mode` 必須、`start_point` 等は任意）。
-#   Python の文字列モード（`open(p, "w")`）は通らないので、モードは呼び出し側から渡す。
 
-import[py] test_modules.py_with as m
+import[py-int] test_modules.py_with as m
 
-mut mw = FileOpenMode.rewrite
 mut mr = FileOpenMode.read
 
-# ── ① 基本形（関数を抜けてから読む） ────────────────────────────────────
+# ── ① 基本形（`with` を抜けると閉じる） ─────────────────────────────────
 mut p = "examples/interop/_tmp_with_a.txt"
-print(m.write_hello(p, mw))
+print(m.write_hello(p))
 mut f1 = open("examples/interop/_tmp_with_a.txt", mr)
 print(f1.read())
 # written
@@ -45,12 +19,16 @@ print(f1.read())
 
 # ── ② 複数アイテム（`with a as x, b as y:`） ───────────────────────────
 mut q = "examples/interop/_tmp_with_b.txt"
-print(m.write_two(p, q, mw))
+print(m.write_two(p, q))
 mut f2 = open("examples/interop/_tmp_with_b.txt", mr)
 print(f2.read())
 # written2
 # B
 
-# ── ③ `as` なし（一時変数へ束縛して破棄させる） ────────────────────────
-print(m.no_binding(p, mw))
+# ── ③ `as` なし ─────────────────────────────────────────────────────────
+print(m.no_binding(p))
 # no-as
+
+# ── ④ `__enter__` / `__exit__` を持つクラス（例外のときも `__exit__` が走る） ─
+print(m.with_hooks())
+# ['enter', 'token', 'exit:ok', 'enter', 'exit:ValueError']

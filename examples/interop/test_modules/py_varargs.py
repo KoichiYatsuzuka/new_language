@@ -1,11 +1,4 @@
-"""py_varargs.py - `import[py]` 変換器の `*args` / `**kwargs` 対応（項目 6・7）の検査用モジュール。
-
-Arrow 側の対応物:
-  `*args`    → 可変長パラメータ（`Param.variadic`）。本体からは `local::args` で参照する規約なので、
-               変換器が Python 側の名前（`*xs` など）を本体で差し替える。
-  `**kwargs` → Arrow に相当構文が無いので**番兵パラメータ**（識別子にできない名前）を置き、
-               `bind_args_relaxed` が余ったキーワード引数を dict にして束縛する。
-"""
+"""py_varargs.py — `*args` / `**kwargs` を受ける関数（py_varargs.ar が CPython で動かす）。"""
 
 
 # --- 1. `*args` の基本 ---

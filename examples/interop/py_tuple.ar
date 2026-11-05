@@ -1,24 +1,9 @@
-# py_tuple.ar — `import[py]`（Python → Arrow 変換器）の **タプル** 対応の検査（項目 18）。
+# py_tuple.ar — Python のタプル（リテラル・入れ子・アンパック・比較）を使う関数を Arrow から呼ぶ
 #
-# ⚠⚠ **項目 18 の「定数タプル」アームは現在の構成では到達しない**。
-#   `Constant::Tuple` を作るのは rustpython の `ConstantOptimizer` だけで、それは
-#   `constant-optimization` フィーチャ有効時にしか実装されず、`Suite::parse` は畳み込みをしない。
-#   通常のタプル `(1, 2)` は**常に** `py::Expr::Tuple` として来る（そちらは元から対応済み）。
-#   ⇒ 変換器側は将来フィーチャを有効にしても壊れないよう正しく再帰変換を実装したうえで、
-#     この例題では**実際に通る経路**（`Expr::Tuple`）を固定する。
-#
-# ⚠⚠ 検査中に **Arrow 本体側のタプルの穴を 3 つ**見つけた（いずれも変換器の外・未修正）:
-#   ① **タプルを dict のキーにすると黙って消える**（最悪の失敗形）。
-#      `{(1, 2): "x"}` は空の dict になり、`d[(1,2)] = "y"` も入らない（`len` が 0）。
-#      str / int / bool のキーは正常。⇒ ここでは dict キーの例を置けない。
-#   ② **タプル同士の `+`（連結）が未対応**。`(1,2) + (3,)` が
-#      `TypeError: unsupported operand types for Add: tuple and tuple`。
-#   ③ `list` の `==` が**値比較でない**（`[1,2] == [1,2]` が `False`）。
-#      ⚠ **タプルの `==` は値比較で正しい**（⑨ で固定）ので、list 側だけがおかしい。
-#
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# タプルは不変なので境界で Arrow のタプルに写す（要素の list などは CPython の物のまま `py_list`）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_tuple as m
+import[py-int] test_modules.py_tuple as m
 
 # ── ① リテラル / 空 / 単要素 ────────────────────────────────────────────
 print(m.literal())

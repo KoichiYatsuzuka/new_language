@@ -160,3 +160,11 @@ pub fn py_dict_pairs(_h: &PyObjHandle) -> Option<Vec<(Value, Value)>> {
 pub(crate) fn without_gil<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
+
+/// 評価コアには CPython が無いので、書き出す物も無い。
+pub fn flush_stdio() {}
+
+/// 評価コアには CPython が無い（`Value::PyObject` を作れないので、ここへは来ない）。
+pub fn call_py_builtin(name: &str, _args: &[Value]) -> Result<Value, String> {
+    Err(format!("RuntimeError: cannot call Python's {name}(): this build has no Python runtime"))
+}

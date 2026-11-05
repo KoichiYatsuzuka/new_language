@@ -1,22 +1,8 @@
-# py_match.ar — `import[py]` 変換器の **`match` 文**（値 / `_` のサブセット・項目 8）。
+# py_match.ar — Python の `match` 文を使う関数を Arrow から呼ぶ
 #
-# Arrow の `match` は `MatchPattern::Case`（値の等価比較）か `IsType`（型検査）の
-# どちらか一方しか持たず、**構造的パターンマッチングが無い**。
-# ⇒ Python の `case <リテラル/値>:` と `case _:` だけを写し、構造を分解する
-#   パターンは明示エラーにする（黙って一部だけ合わせない）。
-#
-# ⚠ **意味論は Python と一致する**（実機で確認した）:
-#   - アームは**フォールスルーしない**（当たった 1 本だけ走る）
-#   - どれにも当たらず `_` も無ければ**何もしない**（④ がその形）
-#   - `case _:` は常にマッチ
-#
-# ⚠ 未対応（明示エラー）: キャプチャ `case x:` / OR `case 1 | 2:` /
-#   シーケンス `case [a, b]:` / マッピング `case {"k": v}:` / クラス `case C():` /
-#   ガード `case 1 if cond:`。→ `py_match_error.ar`。
-#
-# 9 ケースすべて CPython と出力一致を突き合わせ済み。
+# `match` は CPython が実行する（当たった 1 本だけ走る・どれにも当たらず `_` も無ければ何もしない）。
 
-import[py] test_modules.py_match as m
+import[py-int] test_modules.py_match as m
 
 # ── ① 整数リテラル ──────────────────────────────────────────────────────
 mut a = 0

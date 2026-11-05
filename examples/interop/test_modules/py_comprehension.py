@@ -1,8 +1,4 @@
-"""py_comprehension.py - `import[py]` 変換器の内包表記対応（項目 17）の検査用モジュール。
-
-★ 脱糖は Arrow のネイティブ内包表記と**同じ関数**（`ast::build_list_comprehension`）を通る。
-⇒ 「Arrow で書いた内包表記」と「Python 由来の内包表記」で AST が食い違うことはない。
-"""
+"""py_comprehension.py — 内包表記（リスト・集合・辞書）を使う関数（py_comprehension.ar が CPython で動かす）。"""
 
 
 def simple(xs):
@@ -53,7 +49,7 @@ def set_comp_has(xs, k):
 
 
 def dict_comp(ks):
-    """辞書内包（`dict([(k, v) for ...])` に脱糖される・python_builtins_plan.md のタスク 3-1）。"""
+    """辞書内包。"""
     return {k: k * 2 for k in ks if k != 3}
 
 

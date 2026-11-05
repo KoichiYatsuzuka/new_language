@@ -1,10 +1,4 @@
-"""py_del_warn.py — `del <name>` は警告つきで無視される（項目 14）／
-例外まわりで**通り続ける**形の確認。
-
-`del x` は束縛の削除で、Arrow はスコープ退出でどのみち破棄する。
-⇒ 無視してよい。残る差は「削除後に読むと Python は `NameError`」だけ。
-（`del d[k]` / `del o.a` は意味のある削除なので削除する。`py_del.ar` 参照。）
-"""
+"""py_del_warn.py — `del <name>` と例外の構文を使う関数（py_del_warn.ar が CPython で動かす）。"""
 
 
 def del_name(n):

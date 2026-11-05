@@ -1,10 +1,4 @@
-"""py_tuple.py - `import[py]` 変換器のタプル対応（項目 18）の検査用モジュール。
-
-⚠ 項目 18 の対象は `convert_constant` の `Constant::Tuple` アームだが、そこは
-**現在の構成では到達しない**（`Constant::Tuple` を作るのは rustpython の
-`ConstantOptimizer` だけで、`Suite::parse` は畳み込みをしない）。
-通常のタプルは常に `py::Expr::Tuple` として来る。このモジュールはその**実際に通る経路**を固定する。
-"""
+"""py_tuple.py — タプルを使う関数（py_tuple.ar が CPython で動かす）。"""
 
 
 # --- 1. リテラル / 空 / 単要素 ---

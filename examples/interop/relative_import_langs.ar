@@ -8,10 +8,10 @@
 #
 # Arrow のモジュール同士は examples/basics/relative_import.ar。
 
-# ── ① import[py] … Python のファイルの中の相対 import も同じ規則 ──
+# ── ① Python … Python のファイルの中の相対 import（CPython のパッケージの相対 import） ──
 #    py_rel_pkg/top.py は `from .helper import double` / `from . import consts` /
 #    `from .inner.deep import quad` を書き、inner/deep.py は `from ..helper import double` を書く。
-import[py] .py_rel_pkg.top as pt
+import[py-int] .py_rel_pkg.top as pt
 
 let r: int = pt.run(5)
 print(r)                          # 10 + 20 + 100 = 130

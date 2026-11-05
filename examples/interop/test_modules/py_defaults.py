@@ -1,8 +1,4 @@
-"""py_defaults.py - `import[py]` 変換器のデフォルト引数対応（項目 1）の検査用モジュール。
-
-rustpython は `ArgWithDefault.default` として**引数ごと**にデフォルト式を持つので、
-変換器はそれを `Param.default` に写すだけでよい（位置の末尾詰め対応づけは不要）。
-"""
+"""py_defaults.py — 既定値のある引数を持つ関数（py_defaults.ar が CPython で動かす）。"""
 
 
 # --- 1. 位置引数のデフォルト 1 個 ---
@@ -15,7 +11,7 @@ def add(a, b=10, c=100):
     return a + b + c
 
 
-# --- 3. キーワード専用引数のデフォルト（項目 24 と併用） ---
+# --- 3. キーワード専用引数のデフォルト ---
 def kw(a, *, b=3, c=4):
     return a * 100 + b * 10 + c
 

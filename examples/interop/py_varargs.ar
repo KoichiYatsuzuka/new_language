@@ -1,33 +1,9 @@
-# py_varargs.ar — `import[py]`（Python → Arrow 変換器）の **`*args` / `**kwargs`** 対応（項目 6・7）。
+# py_varargs.ar — `*args` / `**kwargs` を受ける Python の関数を Arrow から呼ぶ
 #
-# ⚠⚠ **3 層に手を入れて初めて動く**。どれか 1 つでも欠けると別々のエラーになる:
-#
-#   ① 変換器（`python_converter`）
-#      - `*args`    → `Param { name: "...", variadic: true }`（Arrow の可変長規約）
-#      - `**kwargs` → `Param { name: "**kwargs" }`（Arrow の識別子にできない**番兵名**）
-#      - Arrow の可変長は**名前を持たず** `local::args` で参照する規約なので、
-#        本体の `xs` / `opts` といった Python 側の名前を**変換中に差し替える**
-#        （`param_rewrite.rs`。変換後の AST を歩く再帰ウォーカを避けるため）。
-#
-#   ② 静的型検査（`type_check`）
-#      `FnTypeParam` / `FnSig` は「個数が固定の引数列」しか表せないので、そのままだと
-#      `f(1, 2, 3)` が `takes 1 argument(s) but 3 were given`、`f(x=1)` が
-#      `has no parameter named 'x'` という**嘘のエラー**になる。
-#      ⇒ 引数の個数が**開いている**関数は、モジュールメンバなら `params: None`（検査しない）、
-#        メソッドなら `variadic_type` を立てて**上限なし**にする。
-#
-#   ③ 束縛（`bind_args_relaxed` — `import[py]` の関数だけが通る経路）
-#      - 通常パラメータを埋めきったあとの位置引数を `local::args` に積む
-#        （Arrow のネイティブ呼び出しは `f(... = a, b)` と明示するが、Python は `f(a, b)`）。
-#      - 余ったキーワード引数を dict にして番兵名で束縛する。
-#        ⚠ **1 個も無くても空 dict**（Python の `kw` は常に存在するので、
-#          省くと本体の参照が `NameError` になる）。
-#      - `*args` は CPython と同じ**タプル**。空のときも `Value::None` ではなく**空タプル**（`for` / `len` が素直に動く・
-#        python_builtins_plan.md のタスク 1-16。以前はリスト）。
-#
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# 型スタブは `*args` / `**kwargs` を持つ関数の引数を検査しない（位置引数の個数・キーワードの名前が開いている）。
+# 束縛は CPython が行う（余った位置引数はタプル・余ったキーワード引数は dict・1 個も無くても空）。
 
-import[py] test_modules.py_varargs as m
+import[py-int] test_modules.py_varargs as m
 
 mut a = 1
 mut b = 2
@@ -77,14 +53,8 @@ print(o.m(c))
 print(o.k(p=a))
 # {'p': 1}
 
-# ── ⑥ ★`*args` の中身は **tuple**（CPython と同じ・タスク 1-16） ──────────
-#     以前はリストで渡していたので `[1, 2]` と表示され、tuple 固有の操作（`xs + (3,)`）もできなかった。
-#     Arrow の関数の可変長（`let ...: T`）は従来どおりリスト。
+# ── ⑥ `*args` の中身は tuple ─────────────────────────────────────────────
+#     Arrow の関数の可変長（`let ...: T`）はリスト。
 print(m.raw(a, b))
 # (1, 2)
-#
-# ⚠ **入れ子 `fn` から `*args` を参照すると VM に載らない**:
-#   `def outer(*xs): def inner(): return len(xs)` は
-#   `VmForceError: cannot compile function 'inner' to bytecode` になる。
-#   ⚠ これは**純 Arrow でも同じ**（`local::args` を捕捉する入れ子 `fn` が VM 非適格）で、
-#     変換器の問題ではない。ここでは踏まないようにしてある。
+

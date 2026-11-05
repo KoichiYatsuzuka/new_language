@@ -1,15 +1,12 @@
-# py_nested_class.ar — Python のクラス本体の中のクラス（入れ子のクラス・フェーズ10 10-18）
+# py_nested_class.ar — Python のクラス本体の中のクラス（入れ子のクラス）を Arrow から使う
 #
-# 対になるエラー例: py_class_body_error.ar（クラス本体の変換しない文）
-#
-# 変換器は入れ子のクラスを外側のクラスと同じ場所へ持ち上げ、名前を Python の __qualname__
-# （Tree.Node）にする。外側のクラスにはクラス変数 Node = Tree.Node を置くので、Tree.Node(..) /
-# self.Node(..) が引ける。最上位の Node や別のクラスの同名の入れ子（Graph.Node）とはぶつからない。
-#
-# ⚠ 以前はクラス本体の class を黙って捨てていた（AttributeError: class 'Tree' has no method 'Node'）。
-# ⚠ Python のメソッドは `mut self` 扱いなので、インスタンスは `mut` で持つ。
+# 型スタブは入れ子のクラスを Python の __qualname__（`Tree.Node`）の名前で持ち上げ、外側のクラスにはその型の値の属性
+# （`Node: type[Tree.Node]`）を置く（pandas_import_plan.md 3-1）。⇒ `m.Tree.Node(..)` / `t.Leaf(..)`（インスタンスから）/
+# `m.Config.Section.Entry(..)`（入れ子の入れ子）が引ける。最上位の `Node` や別のクラスの同名の入れ子（`Graph.Node`）とは
+# 別の型。入れ子のクラスの基底は同じ本体の兄弟を先に引く（`class Leaf(Node):` の `Node` は `Tree.Node`・Python と同じ）。
+# ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
 
-import[py] test_modules.py_nested_class as m
+import[py-int] test_modules.py_nested_class as m
 
 # ── ① Python の中で使う ────────────────────────────────────────────────
 print(m.summary())

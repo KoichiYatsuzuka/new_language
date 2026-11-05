@@ -20,7 +20,7 @@ class Series:
         if hasattr(self, "_cacher"):
             del self._cacher
 
-    def cacher(self):
+    def cacher(self) -> str:
         return getattr(self, "_cacher", None)
 
 

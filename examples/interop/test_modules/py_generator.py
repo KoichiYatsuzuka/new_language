@@ -1,11 +1,4 @@
-"""py_generator.py — `def` + `yield` → Arrow の `gen`（項目 9）。
-
-判定は**そのフレームだけ**（`frame_has_yield`）。入れ子の `def` が持つ `yield` は
-内側を `gen` にするだけで外側には影響しない —— Python の規則と同じ。
-
-⚠ B13 でジェネレータが**真に遅延**になったので、無限ジェネレータ + `break` も
-  CPython と同じに動く（以前は先行評価で止まらなかった）。
-"""
+"""py_generator.py — ジェネレータ（関数・入れ子・メソッド・無限）（py_generator.ar が CPython で動かす）。"""
 
 
 def two():

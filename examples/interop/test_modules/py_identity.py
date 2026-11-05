@@ -1,9 +1,4 @@
-"""py_identity.py - `import[py]` 変換器の `is` / `is not` 対応（項目 13）の検査用モジュール。
-
-★Python の `is` は**識別比較**なので Arrow の `===`（`BinOp::RefEq`）に対応する。
-⚠⚠ Arrow にも `is` キーワードがあるが、あちらは**型ガード**（`x is int`）で**完全に別物**。
-Arrow に `!==` は無いので `is not` は `Not(RefEq)` でラップする。
-"""
+"""py_identity.py — `is` / `is not` を使う関数（py_identity.ar が CPython で動かす）。"""
 
 
 class Box:
@@ -27,8 +22,6 @@ def default_guard(x):
 
 
 # --- 2. 別名（同じオブジェクトを指す）---
-#     ⚠ `import[py]` の関数は Python の値渡し規則（deep copy しない）を保つので、
-#        別名が「同じオブジェクト」のままになる。
 def alias():
     a = [1, 2]
     b = a

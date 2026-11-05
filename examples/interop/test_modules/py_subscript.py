@@ -1,8 +1,4 @@
-"""py_subscript.py - `import[py]` 変換器の添字/キー代入対応（項目 3）の検査用モジュール。
-
-Arrow は添字代入を「代入先の**式**を `target` に置く `Stmt::AttrAssign`」で表す
-（属性代入 `o.a = v` と同じノード）。複合代入は `Stmt::AttrCompoundAssign`。
-"""
+"""py_subscript.py — 添字・キーへの代入を使う関数（py_subscript.ar が CPython で動かす）。"""
 
 
 # --- 1. dict のキー代入・読んで書き戻し ---

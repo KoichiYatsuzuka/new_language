@@ -1,21 +1,10 @@
-# py_decorators.ar — `import[py]`（Python → Arrow 変換器）の**デコレータ対応**の検査。
+# py_decorators.ar — デコレータを使う Python のモジュール（関数・クラス・`@staticmethod` / `@classmethod` / `@abstractmethod`）
 #
-# 対象は `src/python_converter/decorators.rs`（`convert_decorators`）。
-# 変換器は Python の `decorator_list` を 2 つに振り分ける:
-#
-#   ① 通常のデコレータ（`@banner` 等）      → Arrow の `FnDef.decorators` / `ClassDef.decorators`
-#      （インタープリタが定義時に**逆順**で適用する）
-#   ② Arrow ではフラグで表す定義種別マーカ  → `is_static` / `is_class_method` / `is_abstract`
-#      `@staticmethod` / `@classmethod` / `@abstractmethod`
-#
-# ⚠ ② を①として素通しすると Arrow に `staticmethod` という組込関数が無いため
-#   実行時 `NameError` になる。フラグへの振り替えが必須。
-# ⚠ Arrow の `static` / `class_method` は **クラス経由でしか呼べない**
-#   （インスタンス経由は `AttributeError`）。Python はどちらでも呼べるので**ここが意味差**。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
-# ⚠ デフォルト引数は変換器が未対応（項目 1）なので全部明示的に渡す。
+# デコレータは CPython が実行する。型スタブは `@staticmethod` / `@classmethod` を静的メソッドとして読み（`@classmethod`
+# の `cls` は呼び出しで渡さない）、Python と同じくインスタンスからも呼べる。
+# ⚠ `@classmethod` の戻り値の型は注釈（`-> "Box"`）から取る（注釈が無ければ `Any`）。
 
-import[py] test_modules.py_decorators as d
+import[py-int] test_modules.py_decorators as d
 
 # ── 定義時に走るデコレータの副作用 ───────────────────────────────────────
 # import の時点で以下が出力済み:

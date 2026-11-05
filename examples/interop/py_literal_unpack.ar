@@ -1,53 +1,42 @@
-# py_literal_unpack.ar — `import[py]` 変換器の **リテラル内の `*` 展開**（U3）。
+# py_literal_unpack.ar — リテラルの中の `*` 展開（`[0, *a, 9]`・`(*a, 9)`・`{*a}`）を使う関数を Arrow から呼ぶ
 #
-# ⚠⚠ **以前は連結へ脱糖していた**（`[0, *a, 9]` → `[0] + a + [9]`）。Arrow に
-#   splat / spread が無かったため。その形には穴があった:
-#   **展開元がリストに限られる**（`list()` 組込みは意図的に非公開なので
-#   `list(a) + [...]` とも書けない）。タプルやセットを展開すると `TypeError`。
-#
-#   ⇒ **Arrow 側に `*other` を列リテラルの構文として入れた**ので 1 対 1 で写せる
-#     （`examples/collections/seq_spread.ar`）。展開元の種類を選ばなくなり、
-#     **タプル表示 `(*a, 9)` も通るようになった**。
-#
-# ⚠ 型検査は要素型を展開元から持ち込む（`seq_entry_elem_types`）。
-#   判らないときは `Unresolved` ではなく `Any` に倒す（検査が消えないように）。
-#
-# 8 形すべて CPython と出力一致を突き合わせ済み。
+# 展開は CPython が実行する。Arrow の list は `=> py_list[int]` で写して渡す。
+# Arrow の側の `*other` は `examples/collections/seq_spread.ar`。
 
-import[py] test_modules.py_literal_unpack as m
+import[py-int] test_modules.py_literal_unpack as m
 
 mut a = [1, 2]
 mut b = [3, 4]
 mut t = (5, 6)
 
 # ── ① 前後にリテラルがある ──────────────────────────────────────────────
-print(m.mid(a))
+print(m.mid(a => py_list[int]))
 # [0, 1, 2, 9]
 
 # ── ② 先頭が展開 ────────────────────────────────────────────────────────
-print(m.head(a))
+print(m.head(a => py_list[int]))
 # [1, 2, 9]
 
-# ── ③ ★タプルを展開（以前は TypeError だった形） ───────────────────────
+# ── ③ タプルを展開 ──────────────────────────────────────────────────────
 print(m.from_tuple(t))
 # [5, 6, 9]
 
 # ── ④ 展開だけ（＝コピー） ──────────────────────────────────────────────
-print(m.only(a))
+print(m.only(a => py_list[int]))
 # [1, 2]
 
 # ── ⑤ 展開が 2 つ ───────────────────────────────────────────────────────
-print(m.two(a, b))
+print(m.two(a => py_list[int], b => py_list[int]))
 # [1, 2, 3, 4]
 
 # ── ⑥ `[*a]` が**新しいリスト**であること（元を書き換えない） ───────────
-print(m.copy_check(a))
+print(m.copy_check(a => py_list[int]))
 # (2, 3)
 
-# ── ⑦ ★タプル表示の展開（以前は明示エラー） ────────────────────────────
-print(m.tup(a))
+# ── ⑦ タプル表示の展開 ──────────────────────────────────────────────────
+print(m.tup(a => py_list[int]))
 # (1, 2, 9)
 
 # ── ⑧ セット表示の展開（並びは当てにしない） ────────────────────────────
-print(m.st(a))
+print(m.st(a => py_list[int]))
 # (3, True)

@@ -1,8 +1,4 @@
-"""py_fstring.py - `import[py]` 変換器の f-string 対応（項目 19）の検査用モジュール。
-
-Arrow のパーサが自前の f-string を脱糖する `desugar_fstring`（`src/parser/exprs.rs`）と
-**同形**に変換する: リテラル片はそのまま、埋め込み式は `str(...)` で包み、左結合の `+` で連結。
-"""
+"""py_fstring.py — f-string を使う関数（py_fstring.ar が CPython で動かす）。"""
 
 
 class Box:

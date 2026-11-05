@@ -1,8 +1,7 @@
-# py_property.ar — Python の @property / @x.setter / @x.deleter / @Base.x.getter（python_builtins_plan.md のタスク 6-1）
+# py_property.ar — Python の @property / @x.setter / @x.deleter / @Base.x.getter を CPython で動かし、Arrow から読み書きする
 #
-# 変換器は property のメソッドを別名のメソッドにし、クラスの定義の後で組み込みの `property` を組み立てて
-# クラスの属性に置く（`C.x = property(C.<getter>)` / `C.x = C.x.setter(C.<setter>)`）。読み書きは
-# ディスクリプタのプロトコル（タスク 1-12）で getter / setter に回る。pp.run() は CPython と同じ出力:
+# 読み書きは CPython のディスクリプタのプロトコルで getter / setter に回る（Arrow からの `o.x` / `o.x = v` も CPython の
+# `getattr` / `setattr`）。pp.run() の出力（CPython）:
 #   25
 #   77.0
 #   212.0
@@ -17,10 +16,8 @@
 #   7 ['property']           ← `@logged @property`（property を包むデコレータ・タスク 6-6）
 #   Temperature in degrees Celsius. name of the base None None
 #                            ← getter の docstring が `__doc__`（setter のは使わない・getter を差し替えると付け直す・タスク 6-7）
-#
-# ⚠ 以前は `@property` が変換の誤り（Arrow has no property syntax）だった。
 
-import[py] test_modules.py_property as pp
+import[py-int] test_modules.py_property as pp
 
 pp.run()
 

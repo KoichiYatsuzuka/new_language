@@ -1,5 +1,4 @@
-# chain_leaf.py — `import[py]` の**再帰ロード**（項目 27）の葉。
-# 誰も import しない。ここで定義した名前が 2 段上まで届くかを見る。
+# chain_leaf.py — Python のモジュールの中の import（3 段）の葉（py_import_chain.ar が CPython で動かす）。
 
 LEAF_MARKER = "leaf"
 

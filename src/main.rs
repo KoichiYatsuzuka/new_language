@@ -617,7 +617,10 @@ fn interpreter_main() {
             } else {
                 (read_file(&path), path)
             };
-            if let Err(e) = run_program(&source, &filename, cli_args) {
+            let result = run_program(&source, &filename, cli_args);
+            // ⚠ CPython の出力の残り（改行で終わらない分）は、誤りの文言より前に出す（CPython を後始末しないので、出さないと消える）
+            interpreter::flush_python_stdio();
+            if let Err(e) = result {
                 #[cfg(feature = "prof")]
                 prof::dump();
                 eprintln!("{e}");
@@ -631,7 +634,9 @@ fn interpreter_main() {
             std::io::stdin()
                 .read_to_string(&mut buf)
                 .expect("failed to read stdin");
-            if let Err(e) = run_program(&buf, "<stdin>", std::collections::HashMap::new()) {
+            let result = run_program(&buf, "<stdin>", std::collections::HashMap::new());
+            interpreter::flush_python_stdio();
+            if let Err(e) = result {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

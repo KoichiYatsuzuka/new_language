@@ -1,11 +1,4 @@
-"""py_walrus.py — walrus 演算子 `:=`（項目 23）。
-
-`(x := expr)` を「**この文の直前に** `x = expr` を置き、式は `x` を返す」形へ脱糖する
-（INF-B）。⇒ 右辺は **1 回だけ**評価される（`once()` が固定）。
-
-⚠ 持ち上げると評価回数が変わる位置（`while` の条件・`and`/`or` の右辺・三項の腕・
-  内包表記の中）は**明示エラー**。→ `py_walrus_error.ar`。
-"""
+"""py_walrus.py — walrus 演算子 `:=` を使う関数（py_walrus.ar が CPython で動かす）。"""
 
 CALLS = []
 

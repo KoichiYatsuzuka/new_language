@@ -1,38 +1,17 @@
-# py_walrus.ar — `import[py]` 変換器の **walrus 演算子 `:=`**（項目 23）。
+# py_walrus.ar — Python の walrus 演算子 `:=` を使う関数を Arrow から呼ぶ
 #
-# `(x := expr)` を **INF-B**（式→文の注入）で脱糖する:
-#
-#   if (n := len(xs)) > 2:   ->   n = len(xs)
-#                                 if n > 2:
-#
-# ⇒ 右辺は**1 回だけ**評価される（⑥ が固定）。
-#
-# ⚠⚠ **持ち上げると評価回数が変わる位置では明示エラーにする**。これが本項目の要点:
-#
-#   while (n := f()) > 0:            毎周回評価 → 持ち上げるとループ前に 1 回だけ
-#   if a and (n := f()):             a が偽なら f() は呼ばれない → 必ず呼ばれてしまう
-#   1 if c else (n := f())           選ばれた腕しか評価しない
-#   [v for v in xs if (n := v)]      要素ごとに評価
-#
-#   いずれも「黙って評価回数が変わる」＝ 最悪の失敗形なので通さない。
-#   入れ子（`if a and (b or (n := f()))`）でも効くよう**深さで数えている**。
-#   → `py_walrus_error.ar`。
-#
-# ⚠ walrus の名前は**式の中**で作られるので、項目 2 のスコープ巻き上げに
-#   `collect_walrus_names` を足して拾っている（拾わないと未宣言の名前への代入になる）。
-#
-# 6 形すべて CPython と出力一致を突き合わせ済み。
+# walrus は CPython が実行する（右辺は 1 回だけ評価・⑥）。Arrow の list は `=> py_list[int]` で写して渡す。
 
-import[py] test_modules.py_walrus as m
+import[py-int] test_modules.py_walrus as m
 
 # ── ① if の条件（最頻出の形） ───────────────────────────────────────────
 mut xs = [1, 2, 3]
-print(m.in_if(xs))
+print(m.in_if(xs => py_list[int]))
 # 30
 
 # ── ② 束縛した名前を条件の外でも使う ────────────────────────────────────
 mut small = [1]
-print(m.in_if(small))
+print(m.in_if(small => py_list[int]))
 # 1
 
 # ── ③ return の中（同じ式で 2 回参照） ─────────────────────────────────

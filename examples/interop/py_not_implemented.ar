@@ -1,4 +1,4 @@
-# py_not_implemented.ar — Python の NotImplemented と演算子の手順（python_builtins_plan.md のタスク 6-12）
+# py_not_implemented.ar — Python の NotImplemented と演算子の手順（CPython で実行する）
 #
 # 二項演算子は CPython と同じ手順で演算子メソッドを探す:
 #   1. 右が左の真の派生で反対側のメソッドを持てば右が先（`Base() + Derived()` は `Derived.__radd__`）
@@ -8,7 +8,7 @@
 #   4. 全部駄目なら `==` / `!=` は同一性、ほかは CPython と同じ文言の `TypeError`
 # `!=` は `__ne__` が無ければ `__eq__` の反対。`NotImplemented` はクラス `NotImplementedType` の唯一の値。
 #
-# pn.run() は CPython と同じ出力:
+# pn.run() の出力（CPython）:
 #   Money(400) Money(155) Money(155) Money(400) Meters(6) Meters(6)
 #   True False False False True True
 #   True True True
@@ -23,10 +23,9 @@
 #   True NotImplemented NotImplemented NotImplementedType
 #   True True True
 #
-# ⚠ 以前は `NotImplemented` が未対応の組み込み（モジュールごと変換の誤り）で、演算子は左のメソッドだけを呼んだ
-#   （`5 + a` は `__radd__` があっても `TypeError`、`a != b` は `__eq__` を見なかった）。
+# ⚠ Python の `NotImplemented` は Arrow の `NotImplemented` と同じ値（境界を越えても同じ物）。
 
-import[py] test_modules.py_not_implemented as pn
+import[py-int] test_modules.py_not_implemented as pn
 
 pn.run()
 

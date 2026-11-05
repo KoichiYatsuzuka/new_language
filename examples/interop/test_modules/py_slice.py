@@ -1,9 +1,4 @@
-"""py_slice.py - `import[py]` 変換器のスライス対応（項目 4）の検査用モジュール。
-
-rustpython の `ExprSlice` は `lower` / `upper` / `step` を 3 つとも `Option` で持ち、
-省略された部分は `None` になる。Arrow の `Expr::Slice { begin, end, step }` も同じ形なので
-そのまま写せる。
-"""
+"""py_slice.py — スライスを使う関数（py_slice.ar が CPython で動かす）。"""
 
 
 # --- 1. 基本形 ---
@@ -81,7 +76,7 @@ def nested_expr(xs):
     return xs[1:][:2]
 
 
-# --- 8. ★スライス代入（項目 3 の添字代入と組み合わさって成立する） ---
+# --- 8. スライス代入 ---
 def slice_assign(xs):
     xs[1:3] = [99, 98]
     return xs

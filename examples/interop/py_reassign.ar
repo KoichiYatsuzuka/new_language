@@ -1,23 +1,10 @@
-# py_reassign.ar — `import[py]`（Python → Arrow 変換器）の **変数の再代入** 対応の検査（項目 2 / INF-A）。
+# py_reassign.ar — 同じ名前へ何度も代入する Python の関数（`if` / `for` / `while` / `try` の中も）を Arrow から呼ぶ
 #
-# Python は「スコープ内で一度でも代入された名前は、そのスコープ全体で同じ 1 つの変数」。
-# Arrow は宣言（`Stmt::Mut`）と再代入（`Stmt::Assign`）が別ノードで、同じ名前を 2 回宣言すると
-# `NameError: variable 'x' is already declared` になる。
-#
-# 変換器（`convert_scope` / `src/python_converter/statements.rs`）は **スコープ単位の完全巻き上げ**を行う:
-#   ① スコープ内で `=` により単純名前へ代入される名前を**再帰収集**（`def`/`class` の中には降りない）
-#   ② スコープ先頭で `mut name = None` として**一度だけ**宣言
-#   ③ 以降の `x = expr` は**すべて**再代入
-#
-# ⚠⚠ 旧実装は「**トップレベルの `if` のブランチ内代入だけ**」を巻き上げていた。
-#   `for` / `while` / `try` の本体に降りた時点で巻き上げ集合が失われ、同じ名前がまた
-#   `Stmt::Mut` になって落ちていた（＝ネストで壊れるドリフト）。⑤ 以外はすべて旧実装では動かない。
-#
-# ⚠ 巻き上げの初期値は `None` なので、静的型検査から見た型は緩くなる（`Any` 相当）。
-#   機能的には正しいが型精度は下がる（設計判断。coverage 項目 2 参照）。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# Python は「スコープ内で一度でも代入された名前は、そのスコープ全体で同じ 1 つの変数」。CPython が実行する。
+# Arrow の list は `=> py_list[int]` で写して渡す。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_reassign as m
+import[py-int] test_modules.py_reassign as m
 
 # ── ① 素朴な再代入 ──────────────────────────────────────────────────────
 print(m.basic())
@@ -30,7 +17,7 @@ print(m.loop(n))
 
 # ── ③ for + if のネスト ─────────────────────────────────────────────────
 mut xs = [1, 2, 3]
-print(m.in_for(xs))
+print(m.in_for(xs => py_list[int]))
 # 106
 
 # ── ④ try / except / finally ────────────────────────────────────────────
@@ -64,7 +51,7 @@ print(m.shadow())
 # ── ⑨⑩ ループの最後の値を取る（推奨形）───────────────────────
 #
 # ループ変数そのものをループ後に読むのではなく、**別の変数へ退避**させる。
-# この形なら巻き上げ（項目 2）も含めて CPython と同じ結果になる。
+# （Python のコードの中ではループ変数をループの後で読める。CPython が実行する。）
 #
 # ⚠ **ループ変数をループ後に読む形は Arrow ではエラー**（bug_fix.md B4・規則 2）。
 #   CPython とは違うが、**意図した違い**—— ループ変数はブロック内の束縛で、
@@ -72,17 +59,15 @@ print(m.shadow())
 #   エラー側の実演は
 #   [for_target_scope_error.ar](../basics/for_target_scope_error.ar)。
 
-print(m.latest_with_default(xs))
+print(m.latest_with_default(xs => py_list[int]))
 # 3
 
-print(m.latest_of(xs))
+print(m.latest_of(xs => py_list[int]))
 # 3
 
 # ── ⑪ `if __name__ == "__main__":` の中の代入を巻き上げないこと ──────────
-#     py 側のガード内で `scratch` に代入しているが、変換器はブロックごと捨てる。
-#     巻き上げていると `mut scratch = None` がモジュールに残り、
-#     ここの `mut scratch` と衝突して `NameError: variable 'scratch' is already declared`。
-#     ⚠ 実際に `test_modules/py_calculator.py`（ガード内の `c = Calculator(...)`）で踏んだ形。
+#     import したモジュールの `__name__` は `__main__` ではないので、ガードの中は走らない。
+#     Arrow のこのファイルの `mut scratch` はモジュールの名前とは別。
 mut scratch = 42
 print(scratch)
 # 42

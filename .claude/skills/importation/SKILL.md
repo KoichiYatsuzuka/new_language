@@ -322,8 +322,17 @@ the module that wrote the annotation, `if TYPE_CHECKING:` imports included) and 
 (`py_class_outside_bases` / `py_merge_base_members`). Only then do unknown type names become `Any`. `-> Self` becomes the class.
 `@overload` variants are nested in the implementation's `FnDef` body (marked `py_stub_extract::PY_OVERLOAD_MARK`); the type
 checker (`select_py_overload`) picks the first variant the call matches for `m.f(..)`. Module lookups are cached by module
-name (`Parser::py_raw_stubs`, shared with sub-parsers). ⚠ Foreign classes are registered by their bare name, so one stub holds
-one class per name.
+name (`Parser::py_raw_stubs`, shared with sub-parsers). ⚠ A copied (re-exported / annotation-named) class keeps its bare
+name inside the importing module's stub, so one stub holds one class per name.
+
+**Class names and bases** (pandas_import_plan.md 3-1): the registry qualifies a CPython module's types by the module, like
+an Arrow module (`names_types_by_module` includes `py-int`): `zoo.Dog` and `kennel.Dog` are different types. A stub class
+carries its same-file bases (`py_same_file_bases`; nested siblings first) and, through `py_merge_outside_bases`, bases of
+other modules spelled with that module's name (`pkg.zoo.Dog`), so a derived class is accepted where a base is expected;
+a base in a module the program does not import is a dead end. Copied declarations get their home-file bases qualified by
+their home module (`py_home_bases`). Nested classes are hoisted as `Outer.Inner` with a `Inner: type[Outer.Inner]` field
+(`py_class_stub_named`); `@classmethod` drops `cls`, `f = staticmethod(f)` is read (`py_method_wrapper`); a class body
+with a compound statement (`if` …) leaves the class open.
 
 Typing rule (ffi_value_exchange_plan.md 7-27 / 7-30, the user's decision): only annotated members, `.pyi` stubs and the
 constructor's result get types; everything else is `Any`. Top-level functions are `Stmt::FnDef` stubs with parsed

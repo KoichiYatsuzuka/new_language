@@ -1,12 +1,4 @@
-"""py_lambda.py — lambda の持ち上げ（lambda lifting・項目 26）。
-
-Arrow に**無名関数式が無い**（クロージャは名前付き入れ子 `fn` でしか作れない）ので、
-各 lambda を `fn __py_lambda_N(...)` へ持ち上げ、式はその名前の参照にする（INF-B）。
-
-⚠ 戻り型は **注釈なし**にする。`-> Any` にすると `Any` が伝染して
-  `cannot apply '+' to 'Any'` になる（実測）。py 由来の関数はどれも注釈が無い。
-⚠ 入れ子の lambda は**外側の本体の中**へ持ち上げる（外へ出すと外側の引数が見えない）。
-"""
+"""py_lambda.py — lambda を使う関数（py_lambda.ar が CPython で動かす）。"""
 
 
 def apply(f, x):

@@ -1,4 +1,4 @@
-"""py_object.py - 組み込みのクラス object と番兵（python_builtins_plan.md のタスク 6-10）。"""
+"""py_object.py - 組み込みのクラス object と番兵（py_object.ar が CPython で動かす）。"""
 
 MISSING = object()
 OTHER = object()
@@ -9,7 +9,7 @@ class Config:
         self.timeout = timeout
         self.cache = {"t": timeout}
 
-    def has_timeout(self):
+    def has_timeout(self) -> bool:
         return self.timeout is not MISSING
 
 
@@ -32,6 +32,10 @@ class Extra:
 
 def pick(x=MISSING):
     return x
+
+
+def is_missing(x) -> bool:
+    return x is MISSING
 
 
 def run():

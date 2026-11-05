@@ -1,12 +1,11 @@
-# py_setattr.ar — Python のクラスの `__setattr__` / `__delattr__`（known_bugs.md の #10）
+# py_setattr.ar — `__setattr__` / `__delattr__` を持つ Python のクラスを CPython で動かし、Arrow から代入する
 #
-# 属性の操作の上書きは Python の読み込み（`import[py]`）でだけ使える。Python のクラスが定義した `__setattr__` は
-# `o.x = v`・`setattr(o, "x", v)`・`o.x += v`・`__init__` の中の `self.x = ..`・Arrow からの代入のどれでもまず呼ばれ、
-# 基底のものも受け継ぐ。上書きを飛ばして本当に入れるのは `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)`
-# （変換器が内部の `__py_object_setattr` にする）。`__delattr__` / `object.__delattr__` も同じ。
+# `__setattr__` は `o.x = v`・`setattr(o, "x", v)`・`o.x += v`・`__init__` の中の `self.x = ..`・Arrow からの代入
+# （CPython の `setattr`・2-9）のどれでもまず呼ばれ、基底のものも受け継ぐ。上書きを飛ばして本当に入れるのは
+# `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)`。`__delattr__` / `object.__delattr__` も同じ。
 # ⚠ Arrow のクラスは `__setattr__` / `__delattr__` を定義できない（`classes/setattr_hook_error.ar`）。
 #
-# m.run() / m.errors() は CPython 3.12 と同じ出力:
+# m.run() / m.errors() の出力（CPython）:
 #   1 log: ['x=1', 'x=2', 'x=3', 'x=7'] 7
 #   2 frozen: 5
 #   2 bypass: 6
@@ -21,10 +20,8 @@
 #   E frozen_setattr: AttributeError Frozen is read-only: v
 #   E frozen_del: AttributeError Frozen cannot delete: v
 #   E bad_name: TypeError attribute name must be string, not 'int'
-#
-# ⚠ 以前は上書きが黙って呼ばれず（`self.x = 1` がそのままフィールドへ入った）、`object.__setattr__` は実行時の誤りだった。
 
-import[py] test_modules.py_setattr as m
+import[py-int] test_modules.py_setattr as m
 
 m.run()
 m.errors()

@@ -1,31 +1,11 @@
-# py_inherit.ar — `import[py]` の **クラス継承** サポートの検査。
+# py_inherit.ar — 継承する Python のクラス（単一・多段・多重・`super()`）を Arrow から使う
 #
-# ★★ **Arrow の `class` は継承できない**。基底に置けるのは**トレイトだけ**で、
-#   ネイティブ `.ar` では今も
-#   `ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`
-#   になる（`examples/classes/class_inherit_error.ar` で固定）。
-#   Python ではクラス継承が普通なので、**Python モジュールを読み込むときだけ**の特別扱いとして
-#   トレイト継承と同じ考え方で成立させている。
-#
-# 仕組み（3 箇所）:
-#   ① `exec_class_def`（`src/interpreter/exec/definitions.rs`）
-#      `in_python_module` のときだけ基底**クラス**のメンバを引き継ぐ。
-#      トレイト継承と同じく**定義時に平坦化**する（実行時に基底を辿らない）。
-#      メソッド等は「サブクラスが持っていなければ取り込む」＝オーバーライド優先。
-#   ② `build_field_index`（`src/interpreter.rs`）
-#      基底のフィールドを先頭に置く既存ロジックを流用。トレイトを先に見て、
-#      無ければ `py_class_field_order`（Python クラス限定・平坦化済み）を見る。
-#      ⚠ 別のマップにしてあるのは、Python 側のクラス名がトレイト名と衝突して
-#        トレイト継承を壊さないようにするため。
-#   ③ `super()` は Arrow に無いので**変換時に脱糖**する（`src/python_converter/`）。
-#      `super().m(args)` → `<第1基底>.m(self, args)`。受け側のアンバウンド呼び出しは
-#      `classes/class_methods.rs` が **`FnValue::is_python` 限定**で許可する。
-#
-# ⚠ 多重継承は「**先に書いた基底が勝つ**」。Python の MRO（C3 線形化）とは厳密には違うが、
-#   単一継承では一致する。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# 継承は CPython が実行する（`super()`・MRO）。型スタブは同じファイルの基底のメンバーを基底の基底までたどって持ち
+# （`c.show()` は `A` のメソッド）、派生を基底の型で受けられる（pandas_import_plan.md 3-1）。
+# ⚠ Arrow の `class` は今もクラスを継承できない（基底はトレイトだけ・`examples/classes/class_inherit_error.ar`）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_inherit as m
+import[py-int] test_modules.py_inherit as m
 
 mut v = 5
 mut w = 2

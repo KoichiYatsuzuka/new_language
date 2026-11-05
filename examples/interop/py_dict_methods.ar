@@ -1,11 +1,11 @@
-# py_dict_methods.ar — Python の dict のメソッド（python_builtins_plan.md のタスク 3-6）
+# py_dict_methods.ar — Python の dict のメソッドを使うモジュール（CPython で実行する）
 #
-# get / pop / setdefault / update / popitem / clear / copy を CPython と同じに受ける（文言も同じ）。
+# get / pop / setdefault / update / popitem / clear / copy（誤りの文言も CPython）。
 # `__hash__` / `__eq__` を持つキー（`Key("Name")` と `Key("NAME")` が同じ）もそのまま引ける。
 # `counts[w] = counts.get(w, 0) + 1` / `groups.setdefault(k, []).append(w)` のよくある形も動く
 # （`setdefault` は辞書に入れた後の値を返す）。
 #
-# dm.run() は CPython と同じ出力:
+# dm.run() の出力（CPython）:
 #   1 None 0 1
 #   1 {'b': 2} -1
 #   pop missing: KeyError: 'z'
@@ -26,8 +26,7 @@
 #   {'a': 3, 'b': 2, 'c': 1}
 #   {'a': ['apple', 'avocado'], 'b': ['banana']}
 #
-# ⚠ 以前は get / pop などが `AttributeError: 'dict' object has no method 'get'` だった。
 
-import[py] test_modules.py_dict_methods as dm
+import[py-int] test_modules.py_dict_methods as dm
 
 dm.run()

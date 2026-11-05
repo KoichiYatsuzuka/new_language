@@ -144,9 +144,8 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
 
 - `import[py]` は CPython が import して実行する（従来の `import[py-int]` の実行の道）。型は従来の `import[py-int]` と同じ
   抽出器（2.3）。
-- `import[py-int]` は廃止: 書くと構文解析の誤りにし、`import[py]` に書き換えるよう促す。`import[py-int]` を使う例題 61 本
-  （`interop` 31・`bench` 16・`bench/speed_modes` 4・`apps` 2・`async` 1・`basics` 1・`interop/py_subdir` 1・
-  `practical_examples` 5）を `import[py]` に書き換える。
+- `import[py-int]` は廃止: 書くと構文解析の誤りにし、`import[py]` に書き換えるよう促す。`import[py-int]` を使う例題
+  （3-1 で `import[py]` から移した 80 本を含む）を `import[py]` に書き換える。
 - 変換器（`python_converter`）と、変換したコードのための Python 専用の仕組みは**すべて消す**（D-7）。
   - 仕組みの例: `running_python` / `in_python_module`、格納で写さない規則、属性の操作の上書き、`object()`、クラスを返す関数、
     prelude の `__py_*`。
@@ -254,8 +253,8 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
-| 3-1 | `import[py]` を CPython の実行に切り替え、`import[py-int]` を廃止する（書くと誤り・D-6・2.5）。型は従来の `import[py-int]` と同じ抽出器 | 1-3・2-1〜2-5 | 中 |
-| 3-2 | 例題の移行: `import[py]` を使う 114 本（`interop` 106・`classes` 4・`collections` 3・`interop/py_subdir` 1）を CPython の出力と突き合わせて直す。`import[py-int]` を使う 61 本を `import[py]` に書き換える。変換器の誤りを確かめる `_error` の例題は消す | 3-1 | 大 |
+| ~~3-1~~ | ✅ **済**（2026-11-06）例題の移行: `import[py]` で読んでいた例題 105 本（`interop` 104・`interop/py_subdir` 1。ほかの 9 本はコメントで触れているだけ）を `import[py-int]`（CPython）に書き換え、CPython の値に合わせて直した。80 本を残し、変換器の誤りだけを確かめていた `_error` 25 本と、それだけが使う Python のモジュール 45 本を消した。移す中で見つけた不備を直した: ① CPython の `print` が、出力先がファイル・パイプのとき消えた（`sys.stdout` / `sys.stderr` を行ごとに書き出し、終わりに残りを書き出す・`py_interop::flush_stdio`） ② Python の `...` / `NotImplemented` が Arrow の同じ値に戻らなかった（`py_to_tl`） ③ Arrow の `isinstance` / `issubclass` / `type` が CPython のクラス・物を受けなかった（`call_py_builtin`） ④ 型スタブ: `@classmethod` の `cls` を外していなかった・`f = staticmethod(f)` を読まなかった・基底の基底のメンバーが無かった・入れ子のクラス（`Tree.Node`）を落としていた・本体に `if` のあるクラスを閉じていた ⑤ CPython のクラスの型をモジュールで修飾し（`z.Dog` と `k.Dog` は別の型・`names_types_by_module`）、基底を型に載せた（派生を基底の型で受ける。ほかのモジュールの基底はそのモジュールで修飾した名前）⑥ CPython のクラスの静的メソッドをインスタンスから呼ぶのが静的な誤りだった。⚠ 旧変換器が CPython と違っていた所（可変の既定値の共有・`is` とインターン・`self.x = ..` がクラス属性を隠す・キーワード専用引数を位置で渡す形）は CPython の値に直した。⚠ 例題の `.py` に注釈を足した所がある（注釈の無い戻り値は `Any`・D-2）。⚠ 3-2 と順を入れ替えた（4 節の 10） | なし | 大 |
+| 3-2 | `import[py]` を CPython の実行に切り替え、`import[py-int]` を廃止する（書くと誤り・D-6・2.5）。`import[py-int]` を使う例題（3-1 で移した 80 本を含む約 190 本）を `import[py]` に書き換える。型は従来の `import[py-int]` と同じ抽出器 | 3-1 | 中 |
 | 3-3 | Python の翻訳に固有のコードをすべて消す（D-7・2.5）。文書（`language-differences.md` の Python の節・`docs/grammar/09_imports.md`・skills）も直す | 3-2 | 大 |
 
 ### フェーズ 4: 速さ（計測してから）
@@ -288,6 +287,10 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 8. ~~Arrow の list / dict / set を Python へどう渡すか~~（4 の包みを測ったら pandas などが壊れた・6.8）⇒ 専用の型 `py_list` / `py_dict` /
    `py_set` を組み込みで足し、Arrow のコレクションとはキャストで写す。キャストを書かずに渡すのは誤り（リテラルも）。Python が返した物は
    `py_list` などのまま（D-12・2.6）。
+
+決定（2026-11-06・実施時の判断）:
+10. 3-1（切り替え）と 3-2（例題の移行）の順を入れ替えた。例題を先に `import[py-int]` で CPython に合わせておけば、切り替えは
+    書き換えだけになり、各コミットでゲートが緑のまま進める（切り替えを先にすると、例題 105 本が直すまで落ちたままになる）。
 
 決定（2026-11-05）:
 9. ~~ジェネレータ関数の引数で Python の物を受けるか~~（`gen` の引数は `mut` にできず、D-3 と食い違う・2-6 で発見）⇒ ジェネレータ関数の

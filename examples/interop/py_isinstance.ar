@@ -1,16 +1,14 @@
-# py_isinstance.ar — isinstance（python_builtins_plan.md のタスク 2-1）
+# py_isinstance.ar — isinstance を使う Python のコードと、Arrow の isinstance に CPython のクラスを渡す形
 #
 # 対になる誤りの例: py_isinstance_error.ar
 #
-# CPython の isinstance と同じ考え方で判定する:
+# Arrow の `isinstance(x, m.Dog)` は CPython のクラスを受ける（CPython の `isinstance`・pandas_import_plan.md 3-1）。
 #   - 組は要素ごと（`isinstance(x, (list, tuple))`）
-#   - クラスは同じクラスかその派生（基底は修飾名でも当たる・別のモジュールの同名クラスとは取り違えない）
 #   - 組み込みの型は値の種類。`bool` は `int` の派生（`isinstance(True, int)` は真）
 #   - 第 2 引数は値なので、変数に入れたクラスでも書ける
-# ⚠ 以前は `NameError: 'isinstance' is not defined`（pandas で 2,766 箇所）。
-# ⚠ Arrow のコードでは `x is C` が同じ判定で、型の絞り込みも効く。isinstance は主に Python のコード向け。
+# ⚠ Arrow のコードでは `x is C` が同じ判定で、型の絞り込みも効く。
 
-import[py] test_modules.py_isinstance as m
+import[py-int] test_modules.py_isinstance as m
 
 print("=== 1. inside Python code ===")
 print(m.kinds())        # ['bool', 'int', 'sequence', 'sequence', 'dict', 'a Dog', 'an Animal', 'other']

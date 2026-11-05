@@ -1,9 +1,4 @@
-"""py_ellipsis.py - `import[py]` 変換器の `...`（Ellipsis）対応（項目 21）の検査用モジュール。
-
-⚠ **文位置と値位置で扱いが違う**:
-  - 文としての `...`（スタブ本体のプレースホルダ）→ Arrow の `pass`
-  - 値としての `...`（`x = ...`）→ 組み込みの `Ellipsis`（python_builtins_plan.md のタスク 6-11。以前は `None`）
-"""
+"""py_ellipsis.py - `...`（Ellipsis）を文と値の位置で使うモジュール（py_ellipsis.ar が CPython で動かす）。"""
 
 
 # --- 1. 関数のスタブ本体 ---

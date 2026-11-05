@@ -1,32 +1,10 @@
-# py_chained_compare.ar — `import[py]`（Python → Arrow 変換器）の **連鎖比較** 対応（項目 16 / D6）。
+# py_chained_compare.ar — Python の連鎖比較（`a < b < c`）を使う関数を Arrow から呼ぶ
 #
-# 対象は `convert_expr` の `Compare` アーム（`src/python_converter/expressions.rs`）。
-#
-# Python の `a < b < c` に相当する構文は Arrow に無いので脱糖する。**脱糖は 2 通り**:
-#
-#   ① 中間オペランドに副作用が無い（素の名前・定数）… 圧倒的多数
-#        a < b < c   →   (a < b) and (b < c)
-#      ⚠ 中間を 2 回読むが、読んでも観測できないので命令を増やさない。
-#
-#   ② 中間オペランドに副作用がある（呼び出し・添字・属性 …）… D6
-#        a < f() < c
-#          →  block->bool:
-#                 mut __py_cmp_0 = f()          # 中間は 1 回だけ評価
-#                 if not (a < __py_cmp_0):
-#                     block_return False        # ← ここで抜けるので c は評価されない
-#                 block_return __py_cmp_0 < c
-#
-# ⚠⚠ **ブロック式はその場に埋め込む**（文へ持ち上げない）。持ち上げると
-#   `while 0 < f() < 10:` が 1 回しか評価されない・`p and (0 < f() < 10)` で `p` が
-#   偽でも `f()` が走る、という形で**黙って評価回数が変わる**。
-#   `Expr::Block` は VM コンパイラの一般の式ディスパッチが扱うので、条件式の中でも
-#   内包表記の中でもそのまま置ける。⇒ ⑧〜⑫ がその網。
-#
-# ⚠ 期待値は**すべて CPython と一致**（短絡・評価回数・評価順序・同一性）。
-#
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# 連鎖比較は CPython が実行するので、短絡（`a < f() < c` で左が偽なら `c` を評価しない）・中間の評価回数（1 回）・
+# 評価順序・同一性（`a is b is c`）は CPython と同じ。⑧〜⑫ は条件式・内包・`while` の中の連鎖比較。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_chained_compare as m
+import[py-int] test_modules.py_chained_compare as m
 
 mut x = 5
 
@@ -54,7 +32,7 @@ print(m.eq_chain(a, a, b))
 
 # ── ④ 他の演算子との組み合わせ ──────────────────────────────────────────
 mut xs = [5]
-print(m.with_in(x, xs))
+print(m.with_in(x, xs => py_list[int]))
 # True
 
 # ── ⑤ 連鎖でない比較も同じ経路（`is not` の特別扱いを壊していないこと） ──

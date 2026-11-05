@@ -1,5 +1,4 @@
-# chain_top.py — `import[py]` の**再帰ロード**（項目 27）の入口。
-# `chain_util` → `chain_leaf` と 2 段たどれることを見る。
+# chain_top.py — Python のモジュールの中の import（3 段）の入口（py_import_chain.ar が CPython で動かす）。
 
 import chain_util as cu
 

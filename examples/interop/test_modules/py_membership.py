@@ -1,9 +1,4 @@
-"""py_membership.py - `import[py]` 変換器の `in` / `not in` 対応（項目 12）の検査用モジュール。
-
-Arrow にも `BinOp::In` / `BinOp::NotIn` が実在し、list / dict / str / tuple / set の
-どれにも効いて Python と同じ真偽を返す。変換器は `CmpOp::In` / `CmpOp::NotIn` を
-そこへ写すだけ。
-"""
+"""py_membership.py — `in` / `not in` を使う関数（py_membership.ar が CPython で動かす）。"""
 
 
 def in_list(t, xs):

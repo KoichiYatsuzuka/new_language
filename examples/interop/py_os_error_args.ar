@@ -1,12 +1,12 @@
 # py_os_error_args.ar — OSError の errno / strerror / filename と args（known_bugs.md の #9）
 #
-# `open` の失敗は CPython と同じく `[Errno 2] No such file or directory: 'p'`（以前は `cannot open 'p': <OS の文言>`）で、
+# `open` の失敗は `[Errno 2] No such file or directory: 'p'` で、
 # `args == (errno, strerror)`・`errno` / `strerror` / `filename` を持つ（errno と文言は C の値。Windows の CPython も
 # `open` は C ランタイムの errno を出す）。`OSError(errno, strerror[, filename])` で作っても同じで、`filename` が
 # `None` でなければ `args` は最初の 2 つ。`OSError(2, "..")` は errno に対応する派生（`FileNotFoundError`）になる。
 # Python の派生クラスも `super().__init__(13, "denied", path)` で同じ属性を持つ。
 #
-# m.run() は CPython 3.12 と同じ出力（パスは相対で、リポジトリの根から実行する）:
+# m.run() の出力（CPython・パスは相対で、リポジトリの根から実行する）:
 #   1 missing: FileNotFoundError | [Errno 2] No such file or directory: 'examples/interop/no_such_dir_kb9/nope.txt' | FileNotFoundError(2, 'No such file or directory') | (2, 'No such file or directory') 2 No such file or directory examples/interop/no_such_dir_kb9/nope.txt None
 #   1 missing dir: FileNotFoundError | [Errno 2] No such file or directory: 'examples/interop/no_such_dir_kb9/new.txt' | FileNotFoundError(2, 'No such file or directory') | (2, 'No such file or directory') 2 No such file or directory examples/interop/no_such_dir_kb9/new.txt None
 #   1 exists: FileExistsError | [Errno 17] File exists: 'examples/interop/_tmp_py_os_error.txt' | FileExistsError(17, 'File exists') | (17, 'File exists') 17 File exists examples/interop/_tmp_py_os_error.txt None
@@ -29,7 +29,7 @@
 #   CPython は 5 つの形（filename2）で `[WinError None] ..` と出す（Arrow は `[Errno ..] ..: 'a' -> 'b'`・Linux の CPython と同じ）。
 #   4 つ目の `winerror` は持たないので、`None` 以外を渡すと TypeError（`py_os_error_args_error.ar`）。
 
-import[py] test_modules.py_os_error_args as m
+import[py-int] test_modules.py_os_error_args as m
 
 m.run()
 

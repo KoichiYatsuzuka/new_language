@@ -1,13 +1,6 @@
-"""py_decorators.py - `import[py]` 変換器のデコレータ対応（項目 20）の検査用モジュール。
+"""py_decorators.py — デコレータ（関数・クラス・`@staticmethod` / `@classmethod` / `@abstractmethod`）（py_decorators.ar が CPython で動かす）。"""
 
-Arrow 側は `@decorator` を定義時に**逆順**で適用する。
-`@staticmethod` / `@classmethod` は Arrow に同名の組込関数が無いので、
-変換器が `static fn` / `class_method fn` のフラグに振り替える。
-"""
-
-# `@abstractmethod` を素の Python としても有効にするための import。
-# ⚠ 変換器は Python 内 import を現状**黙って捨てる**（項目 27 未実装）。
-# ここでは `@abstractmethod` を変換器が先に横取りするため、捨てられても問題にならない。
+# `@abstractmethod` のための import。
 from abc import abstractmethod
 
 
@@ -73,7 +66,7 @@ class Box:
 
     # --- 6. `@classmethod` -> Arrow の `class_method fn`（第 1 引数にクラス） ---
     @classmethod
-    def of(cls, v):
+    def of(cls, v) -> "Box":
         return cls(v)
 
     # --- 7. `@abstractmethod` は Arrow の抽象フラグに振り替え（本体はそのまま） ---

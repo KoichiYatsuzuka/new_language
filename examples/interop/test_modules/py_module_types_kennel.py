@@ -5,10 +5,10 @@ from test_modules.py_module_types_zoo import Dog as ZooDog
 
 
 class Corgi(ZooDog):
-    def kind(self):
+    def kind(self) -> str:
         return "corgi"
 
 
 class Dog:
-    def kind(self):
+    def kind(self) -> str:
         return "kennel dog"

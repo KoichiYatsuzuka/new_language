@@ -114,8 +114,12 @@ pub(super) fn qualify_module_body(prefix: &str, body: &[Stmt]) -> (Vec<Stmt>, Na
             match &mut st {
                 Stmt::ClassDef { name, bases, .. } => {
                     *name = q(name);
+                    // ⚠ 修飾済みの基底（`pkg.zoo.Dog`・Python のほかのモジュールのクラス）はそのまま。`q` は `.` で区切った各語を
+                    //   引くので、このモジュールにも同じ名前のクラス（`Dog`）があると `pkg.zoo.<このモジュール>.Dog` に化けた
                     for b in bases.iter_mut() {
-                        *b = q(b);
+                        if !b.contains('.') {
+                            *b = q(b);
+                        }
                     }
                 }
                 Stmt::TraitDef { name, .. }
@@ -161,7 +165,7 @@ fn is_arrow_source_lang(lang: &str) -> bool {
 /// ⚠ `py-int`（CPython 経由・本体は `.pyi` の型の写し）は対象外。実行時の値が `Value::PyObject` で、
 ///   `is` が修飾名を突き合わせる相手（`ClassValue::module_name`）を持たない。
 fn names_types_by_module(lang: &str) -> bool {
-    is_arrow_source_lang(lang) || lang == "py"
+    is_arrow_source_lang(lang) || lang == "py" || lang == "py-int"
 }
 
 /// 展開器が置いたテンプレートの具体化（`Box[int]` のような名前の宣言）なら、その名前（タスク 2-16）。
@@ -592,7 +596,9 @@ impl TypeRegistryBuilder {
                                 self.foreign_depth += 1;
                             }
                             let prev_py = std::mem::replace(&mut self.collecting_python, lang == "py");
+                            let prev_lang = if arrow { self.foreign_lang.take() } else { self.foreign_lang.replace(lang.clone()) };
                             self.collect_in_module(&modpath, idx, &qbody);
+                            self.foreign_lang = prev_lang;
                             self.collecting_python = prev_py;
                             if !arrow {
                                 self.foreign_depth -= 1;

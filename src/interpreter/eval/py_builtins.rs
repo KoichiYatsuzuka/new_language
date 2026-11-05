@@ -35,6 +35,9 @@ impl Interpreter {
                 _ => self.value_is_type(x, name),
             }),
             Value::Trait(name) | Value::Protocol(name) => Ok(self.value_is_type(x, name)),
+            // CPython のクラス（`isinstance(p, m.Dog)`）は CPython の `isinstance`（Arrow のインスタンスは包みで渡るので偽・
+            // pandas_import_plan.md 3-1）。⚠ 以前は型でない値として `TypeError` だった。
+            Value::PyObject(_) => Self::py_builtin_bool("isinstance", x, spec),
             _ => Err("TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union".to_string()),
         }
     }
@@ -47,6 +50,12 @@ impl Interpreter {
     pub(crate) fn py_type_of(&self, x: &Value) -> Value {
         let name = match x {
             Value::Instance(inst) => return Value::Class(inst.borrow().class.clone()),
+            // CPython の物は CPython の `type(x)`（そのクラスの値・`type(df).__name__` は `DataFrame`・pandas_import_plan.md 3-1）。
+            // ⚠ 以前は Arrow の型の名前で `<class 'object'>` だった
+            Value::PyObject(_) => {
+                return crate::interpreter::py_interop::call_py_builtin("type", std::slice::from_ref(x))
+                    .unwrap_or_else(|_| Value::Type("object".to_string()));
+            }
             Value::None => "NoneType",
             Value::Function(_)
             | Value::OverloadedFn(_)
@@ -157,7 +166,16 @@ impl Interpreter {
     /// 組み込みの型同士は名前（`bool` は `int` の派生）、trait は実装しているか。組は要素ごと。
     /// ⚠ 第 1 引数がクラス（型）でなければ CPython と同じ `TypeError`。
     pub(crate) fn py_issubclass(&self, c: &Value, spec: &Value) -> Result<bool, String> {
-        if !matches!(c, Value::Class(_) | Value::Type(_)) {
+        // CPython のクラスどうし（`issubclass(m.Puppy, m.Animal)`）は CPython の `issubclass`（3-1）。片方だけが CPython の
+        // クラスなら偽（Arrow のクラスと CPython のクラスは継承でつながらない）。組は要素ごと（下の腕）。
+        match (c, spec) {
+            (Value::PyObject(_), Value::PyObject(_)) => return Self::py_builtin_bool("issubclass", c, spec),
+            (Value::PyObject(_), Value::Tuple(_)) => {}
+            (Value::PyObject(_), _) => return Ok(false),
+            (Value::Class(_) | Value::Type(_), Value::PyObject(_)) => return Ok(false),
+            _ => {}
+        }
+        if !matches!(c, Value::Class(_) | Value::Type(_) | Value::PyObject(_)) {
             return Err("TypeError: issubclass() arg 1 must be a class".to_string());
         }
         match spec {
@@ -177,6 +195,14 @@ impl Interpreter {
             }
             Value::Trait(name) | Value::Protocol(name) => Ok(matches!(c, Value::Class(cc) if cc.is_a(name))),
             _ => Err("TypeError: issubclass() arg 2 must be a class, a tuple of classes, or a union".to_string()),
+        }
+    }
+
+    /// CPython の組み込みの関数 `name(a, b)` を呼び、真偽を受け取る（[`Self::py_isinstance`] / [`Self::py_issubclass`]）。
+    fn py_builtin_bool(name: &str, a: &Value, b: &Value) -> Result<bool, String> {
+        match crate::interpreter::py_interop::call_py_builtin(name, &[a.clone(), b.clone()])? {
+            Value::Bool(r) => Ok(r),
+            other => Err(format!("TypeError: Python's {name}() returned a non-bool value ({other:?})")),
         }
     }
 

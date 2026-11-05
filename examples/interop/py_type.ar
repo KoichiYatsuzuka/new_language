@@ -1,4 +1,4 @@
-# py_type.ar — type(x)（python_builtins_plan.md のタスク 2-2）
+# py_type.ar — type(x) を使う Python のコード（CPython で実行する）
 #
 # 対になる誤りの例: py_type_error.ar
 #
@@ -6,11 +6,10 @@
 #   - 呼べる（`type(self)(...)` で同じクラスを作り直す・派生でも派生のまま）
 #   - `__name__` で名前が引ける
 #   - `===`（Python の `is`）・`==` で比べられる
-# ⚠ 以前は `NameError: 'type' is not defined`（pandas で 868 箇所）。
 # ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
-# ⚠ クラスの表示は CPython と違いモジュール名を付けない（`<class 'Square'>`。CPython は `<class 'test_modules.py_type.Square'>`）。
+# ⚠ Arrow の `type(x)` に CPython の物を渡すと CPython の `type`（そのクラスの値）を返す。
 
-import[py] test_modules.py_type as m
+import[py-int] test_modules.py_type as m
 
 print("=== 1. inside Python code ===")
 print(m.names())          # ['int', 'str', 'list', 'NoneType', 'Square(2)', 'Square(6)']

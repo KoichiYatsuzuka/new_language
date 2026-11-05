@@ -1,19 +1,12 @@
-# py_class_factory.ar — 関数の中でクラスを作る Python のコード（フェーズ10 10-16）
+# py_class_factory.ar — 関数の中でクラスを作る Python のコード（デコレータ・クラスのファクトリ）
 #
-# 対になるエラー例: py_class_factory_error.ar（ファクトリを Arrow から直接使う）
-#                   py_import_in_function_error.ar（Python の関数の中の import）
-#                   classes/class_in_function_error.ar（Arrow の関数の中の class）
-#
-# Python のデコレータ・クラスのファクトリは関数の中でクラスを定義する。Arrow はこれを
-# **Python から呼ぶときだけ**認める:
-#   - 関数の中でクラスを作って使い切る関数（count_by など）は Arrow から呼べる。
-#   - Python の中でデコレータを掛けたクラス（@add_greeting class Person）も Arrow から使える。
-#     デコレータがメンバーを足すことがあるので、そのクラスのメンバーは静的に「無い」と言わない。
-#
-# ⚠ 以前は Python の関数の中の class が実行時の内部エラー（VmForceError）になっていた。
-# ⚠ Python のメソッドは `mut self` 扱いなので、インスタンスは `mut` で持つ。
+# 関数の中のクラスは CPython が作る。関数の中でクラスを作って使い切る関数（count_by など）も、Python の中でデコレータを
+# 掛けたクラス（@add_greeting class Person）も Arrow から使える（デコレータがメンバーを足すことがあるので、そのクラスの
+# メンバーは静的に「無い」と言わない）。
+# ⚠ Arrow の関数の中の class は構文の誤り（classes/class_in_function_error.ar）。
+# ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
 
-import[py] test_modules.py_class_factory as f
+import[py-int] test_modules.py_class_factory as f
 
 # ── ① ファクトリを Python の中で使い切る ────────────────────────────────
 #     Counter は関数の引数 step（3）を閉包として捕まえ、最上位の Base を継承する。
@@ -37,7 +30,7 @@ print(f.pick(no))
 
 # ── ④ メソッドが関数のローカルのリストを書き換える（同じリストを指す） ──
 mut values = [1, 2, 3]
-print(f.collect(values))
+print(f.collect(values => py_list[int]))
 # 3
 
 # ── ⑤ Python の中でデコレータを掛けたクラス ──────────────────────────────

@@ -2,7 +2,7 @@
 #
 # `%s` は `str(x)`（`__str__`、無ければ `__repr__`）、`%r` は `repr(x)`。コンテナ・組の中の値は `repr` で並べる。
 #
-# pf.run() は CPython と同じ出力:
+# pf.run() の出力（CPython）:
 #   t|T()
 #   R()|R()
 #   ab|'ab'
@@ -17,9 +17,7 @@
 #       t|R()  |t
 #   t
 #   [T()]
-#
-# ⚠ 以前はインスタンスが `<T object at 0x..>`、`%r` が表示を Rust の書式で引用した形（`"ab"` / `"5"`）だった。
 
-import[py] test_modules.py_percent_format as pf
+import[py-int] test_modules.py_percent_format as pf
 
 pf.run()

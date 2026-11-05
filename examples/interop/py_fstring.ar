@@ -1,18 +1,10 @@
-# py_fstring.ar — `import[py]`（Python → Arrow 変換器）の **f-string** 対応の検査（項目 19）。
+# py_fstring.ar — f-string を使う Python の関数を Arrow から呼ぶ
 #
-# 対象は `convert_expr` の `py::Expr::JoinedStr` アーム（`src/python_converter/expressions.rs`）。
-#
-# Arrow のパーサが自前の f-string を脱糖する `desugar_fstring`（`src/parser/exprs.rs`）と
-# **同形**に変換する:
-#   リテラル片はそのまま `Expr::Str`、埋め込み式は `format(...)` 呼び出しで包み（`__format__` の無い値は
-#   `str(...)` と同じ）、左結合の `BinOp::Add` で連結する。`f""` は空文字列。
-#
-# ⚠ **変換フラグは対応済み**: `!s` → `str()`、`!r` → `repr()`、`!a` → `ascii()`。
-# ⚠ **書式指定 `{x:.2f}` も対応済み**（組み込みの `format(x, spec)`・python_builtins_plan.md のタスク 3-4）。
-#   通る形は `py_format.ar`。以前の `py_fstring_error.ar`（書式指定・`!a` の明示エラー）は削除した。
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# f-string は CPython が評価する（`!s` / `!r` / 入れ子の f-string・`{{` / `}}`）。書式指定は `py_format.ar`。
+# Arrow の list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_fstring as m
+import[py-int] test_modules.py_fstring as m
 
 # ── ① 基本形 ────────────────────────────────────────────────────────────
 mut name = "bob"
@@ -40,13 +32,13 @@ print(m.braces(n))
 print(m.expr_inside(a, b))
 # sum=3
 mut xs = [1, 2, 3]
-print(m.call_inside(xs))
+print(m.call_inside(xs => py_list[int]))
 # len=3
 mut o = m.Box(7)
 print(m.attr_inside(o))
 # v=7
 mut d = {"x": 9}
-print(m.index_inside(d))
+print(m.index_inside(d => py_dict[str, int]))
 # x=9
 
 # ── ④ 変換フラグ `!s` / `!r` ────────────────────────────────────────────

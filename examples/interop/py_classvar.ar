@@ -1,16 +1,11 @@
-# py_classvar.ar — `import[py]`（Python → Arrow 変換器）の **クラス変数** 対応の検査（項目 5）。
+# py_classvar.ar — Python のクラス変数（全インスタンスで共有する可変の属性）を Arrow から読み書きする
 #
-# 対象は `convert_class` のクラス本体 `Assign` / `AnnAssign` アーム（`src/python_converter/classes.rs`）。
-#
-# Python のクラス属性は**可変・全インスタンス共有**。Arrow でこれに対応するのは
-# `FieldKind::StaticMut`（`static mut name: Type = default`）で、`Const`（共有不変）ではない。
-# ⚠ 以前は `Const` にしていたため、`Counter.count = ...` が
-#   `TypeError: cannot assign to class variable 'count' (declared const)` で落ちていた。
-# ⚠ 「定数として使いたい属性」と静的に区別できないので、**Python 側の意味に忠実な可変**へ倒す。
-#
-# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# Python のクラス属性は**可変・全インスタンス共有**。`m.Counter.count = 100` は CPython の `setattr`（2-9）。
+# インスタンスの `self.x = ...` はクラス属性を隠すインスタンス属性を新しく作る（⑦: `self.count` は 99、
+# `Counter.count` は 102 のまま）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
 
-import[py] test_modules.py_classvar as m
+import[py-int] test_modules.py_classvar as m
 
 # ── ① クラス経由の読み取り ──────────────────────────────────────────────
 print(m.Counter.count)
@@ -56,13 +51,8 @@ mut t = m.Typed()
 print(t.get())
 # 5
 
-# ── ⑦ ★`self.x = ...` の意味が違う（唯一の発散） ────────────────────────
-#     Python: クラス属性を隠す**インスタンス属性を新設**する
-#             ⇒ `self.count` は 99、`Counter.count` は 102 のまま。
-#     Arrow : `static mut` は**単一の記憶場所**でインスタンス側の層が無い
-#             ⇒ 共有変数そのものを書き換えるので両方 99 になる。
-#     ⚠ 変換器では埋められないモデル差（Arrow に「インスタンス属性の動的追加」が無い）。
+# ── ⑦ `self.x = ...` はクラス属性を隠すインスタンス属性を作る ──────────────
 print(a.shadow())
-# (99, 99)      （CPython は (99, 102)）
+# (99, 102)
 print(m.Counter.count)
-# 99            （CPython は 102）
+# 102

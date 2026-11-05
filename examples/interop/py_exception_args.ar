@@ -1,13 +1,12 @@
-# py_exception_args.ar — Python の例外の args / str(e) / super().__init__（python_builtins_plan.md のタスク 4-2）
+# py_exception_args.ar — Python で定義した例外の args / str(e) を CPython で動かして Arrow で受ける
 #
-# Python のクラスが組み込みの例外を継承したときも、args と str(e) は CPython と同じ:
+# Python のクラスが組み込みの例外を継承したときの args と str(e)（CPython の BaseException の規則）:
 #   - super().__init__(..) に渡したものが args になる（RangeError）
 #   - __init__ を書かなければ、作るときの引数がそのまま args（Missing）
-#   - __init__ が super().__init__ を呼ばなくても、作るときの引数が args（Coded・CPython の BaseException.__new__ と同じ）
-# ⚠ 以前は super().__init__(..) が組み込みの例外へ届かず（`class 'Exception' has no method '__init__'` 相当）、
-#   2 引数以上では作れなかった。
+#   - __init__ が super().__init__ を呼ばなくても、作るときの引数が args（Coded・BaseException.__new__）
+# Arrow の `except Exception as mut e` も Python で定義した例外を捕まえる（値は CPython の物なので `mut` で受ける・D-11）。
 
-import[py] test_modules.py_exception_args as p
+import[py-int] test_modules.py_exception_args as p
 
 for line in p.describe_all():
     print(line)
@@ -17,7 +16,7 @@ for line in p.describe_all():
 
 try:
     p.fail()
-except LookupError as e:
+except LookupError as mut e:
     print("not reached")
-except Exception as e:
+except Exception as mut e:
     print("Arrow caught:", e)            # Arrow caught: 3-4

@@ -13,7 +13,7 @@ class Handler:
 
     def dispatch(self, event):
         # 名前を組み立ててメソッドを引く（getattr の典型的な使い方）。
-        # ⚠ クラスから引いて self を渡す（Arrow にはまだ束縛メソッドが無い・python_builtins_plan.md の 1-8）。
+        # クラスから引いて self を渡す形。
         method = getattr(type(self), "on_" + event, None)
         if method is None:
             self.log = self.log + "unknown " + event + ";"

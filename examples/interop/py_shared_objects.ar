@@ -1,14 +1,12 @@
-# py_shared_objects.ar — Python のコードの中は格納で値を写さず、参照を共有する（known_bugs.md の #1・A 案）
+# py_shared_objects.ar — Python のコードの中は参照を共有する（CPython で実行する）
 #
-# Arrow は値を格納するたびに写す（`let` の値を共有先から書き換えさせないため）。Python から変換したコードの中では
-# CPython と同じく**写さずに共有する**: フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても
-# 同じ物で、別名から書き換えた結果が見える（親子の参照も作れる）。Python のクラスの `__eq__` / `__hash__` を
-# 書いていないインスタンスの `==` / `hash` は同一性（別々の `P(1)` は等しくなく、辞書のキーとしても別）。
+# CPython のコードの中では、フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても同じ物で、別名から
+# 書き換えた結果が見える（親子の参照も作れる）。`__eq__` / `__hash__` を書いていないクラスのインスタンスの `==` / `hash`
+# は同一性（別々の `P(1)` は等しくなく、辞書のキーとしても別）。
+# Arrow の束縛に入れた Python のインスタンスも写さずに共有する（CPython の物・`mut` で受ける・D-3）。
+# ⚠ Arrow のクラスは今までどおり格納で写し、中身で比べる。
 #
-# ⚠ Arrow のソースのコードは今のまま写す（Arrow のクラスは中身で比べる）。Arrow の `let` / `mut` に Python の
-#   インスタンスを束縛するときも写す（下の Arrow 側の確かめ）。
-#
-# sh.run() / sh.run2() は CPython と同じ出力:
+# sh.run() / sh.run2() の出力（CPython）:
 #   1 list alias: 2
 #   1 dict alias: 3
 #   2 registry: 11
@@ -21,11 +19,8 @@
 #   8 comprehension: 9 True
 #   8 dict list: [1, 2]
 #   9 key lookup: v True False
-#
-# ⚠ 以前は格納のたびに写したので、1〜3・6〜8 の別名からの書き換えが見えず（`2 registry: 10` など）、
-#   `P(1) == P(1)` が真・辞書のキーが 1 つに潰れていた。
 
-import[py] test_modules.py_shared_objects as sh
+import[py-int] test_modules.py_shared_objects as sh
 
 sh.run()
 sh.run2()
@@ -43,13 +38,13 @@ mut pts: list[Pt] = []
 pts.append(a)
 check(pts[0] == a and Pt(1) == Pt(1) and not (pts[0] === a), "Arrow classes copy and compare by contents")
 
-# Arrow 側で Python のインスタンスを mut に束縛すると写す
+# Arrow の束縛に入れた Python のインスタンスは共有される（写さない）
 mut reg = sh.Registry()
 mut item = reg.register(sh.P(10))
 item.x = 11
-check(reg.items[0].x == 10, "binding in Arrow copies")
+check(reg.items[0].x == 11, "a Python object bound in Arrow is shared, not copied")
 
 # Python のクラスの既定の == は同一性
-let p = sh.P(1)
+mut p = sh.P(1)
 check(p == p and not (sh.P(1) == sh.P(1)), "Python classes compare by identity")
 print("arrow side ok")

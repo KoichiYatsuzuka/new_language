@@ -1,17 +1,8 @@
-# py_del_warn.ar — `del <name>` は**警告して無視**される（項目 14）。
-#                  併せて、群5 のエラー化で**壊していない**例外構文を固定する。
+# py_del_warn.ar — `del <name>` と例外の構文（`try` / `except` / 素の `except:`）を使う関数を Arrow から呼ぶ
 #
-# `del x` は束縛の削除であり、Arrow はスコープを抜けるときにどのみち破棄する。
-# ⇒ 無視して差し支えない。残る意味差は「削除後にその名前を読むと Python は
-#   `NameError` になる」だけで、変換器はそこまでは面倒を見ない。
-#
-# ⚠ 実行すると **stderr に警告**が出る:
-#   Warning: ...py_del_warn.py: `del tmp` is ignored (Arrow drops bindings at scope exit)
-#
-# ⚠ **`del d[k]` / `del o.a` は削除する**（意味のある削除なので無視できない・known_bugs.md の #2 / #3）。
-#   → `py_del.ar`。
+# `del x`（束縛の削除）も CPython が実行する。
 
-import[py] test_modules.py_del_warn as m
+import[py-int] test_modules.py_del_warn as m
 
 mut n = 5
 

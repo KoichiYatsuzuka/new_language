@@ -1,11 +1,4 @@
-"""py_type_alias.py — `type X = T`（Python 3.12+ の型エイリアス・項目 10）。
-
-⚠ Arrow の `alias` は**パース時構文**で AST に出せない（`parser.aliases` へ登録され
-  `Stmt::Pass` になる）。`new_type` は名目的別型なので `list[int]` として使えなくなる。
-  ⇒ 変換器が自前の表を持ち、**型注釈の解決時に透過展開**する。
-
-⚠ 表はモジュール 1 本の変換中だけ有効。別ファイルの同名エイリアスと混ざらない。
-"""
+"""py_type_alias.py — 型エイリアス（`type X = T`・Python 3.12+）を使う関数（py_type_alias.ar が CPython で動かす）。"""
 
 type Vec = list[int]
 type Name = str
