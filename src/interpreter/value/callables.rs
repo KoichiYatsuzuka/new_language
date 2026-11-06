@@ -181,8 +181,6 @@ pub struct FnValue {
     pub name: String,
     pub params: Vec<Param>,
     pub body: std::rc::Rc<[Stmt]>,
-    /// Python モジュールから変換された関数かどうか。
-    pub is_python: bool,
     /// キャプチャした外側スコープ変数（クロージャ環境）。
     pub captured_env: HashMap<String, CapturedVar>,
     /// 静的型アノテーションの戻り値型（文字列）。import[cs-dll] のブリッジ呼び出しで使用。
@@ -249,16 +247,13 @@ pub enum BoundTarget {
     /// 組み込みの値のメソッド（`xs.append` / `s.upper` / `d.items`・タスク 1-10）。名前で
     /// `eval_method_call_full` へ回す。読める名前は `type_check::names::BUILTIN_VALUE_METHODS`。
     Builtin(String),
-    /// Python のクラスのクラスメソッドをインスタンスから読んだもの（`g = obj.make`・known_bugs.md の #5）。受け手は
-    /// **クラス**（`type(obj)`）で、呼ぶとクラス経由の呼び出し（`eval_class_method`・`cls` に受け手）と同じ。
-    ClassMethod(Vec<Rc<FnValue>>),
 }
 
 impl BoundTarget {
     /// 呼び先の同一性（等値・ハッシュ）。組み込みのメソッドは名前で比べるので `None`。
     fn ptr(&self) -> Option<*const ()> {
         match self {
-            BoundTarget::Methods(m) | BoundTarget::ClassMethod(m) => Some(Rc::as_ptr(&m[0]) as *const ()),
+            BoundTarget::Methods(m) => Some(Rc::as_ptr(&m[0]) as *const ()),
             BoundTarget::Gen(g) => Some(Rc::as_ptr(g) as *const ()),
             BoundTarget::Builtin(_) => None,
         }
@@ -277,46 +272,8 @@ fn receiver_ptr(v: &Value) -> Option<*const ()> {
         Value::Generator(r) => Some(Rc::as_ptr(r) as *const ()),
         Value::FrozenList { state, .. } => Some(Rc::as_ptr(state) as *const ()),
         Value::Str(s) => Some(Rc::as_ptr(s) as *const u8 as *const ()),
-        // クラスメソッドの受け手（`BoundTarget::ClassMethod`・`obj.make == obj.make`）
-        Value::Class(c) => Some(Rc::as_ptr(c) as *const ()),
         _ => None,
     }
-}
-
-/// 変換器（`python_converter::classes`）が property のメソッドに付ける別名（python_builtins_plan.md のタスク 6-1）。
-///
-/// `tag` は `get` / `set` / `del` / `cached`（`@cached_property`・タスク 6-5）。同じ名前の 2 つ目からは `tag` の後に数を付ける（`x` の setter は
-/// `__property_set_x`、2 つ目は `__property_set2_x`）。
-/// [`python_fn_name`] が元の名前（`x`）へ戻すので、**作り方と戻し方をここに並べてある**。
-/// ⚠ 使うのは変換器だけ（`native` ビルド）。エディタの wasm フロントエンドには変換器が無い。
-#[cfg_attr(not(feature = "native"), allow(dead_code))]
-pub(crate) fn property_method_name(tag: &str, name: &str, n: usize) -> String {
-    if n <= 1 {
-        format!("__property_{tag}_{name}")
-    } else {
-        format!("__property_{tag}{n}_{name}")
-    }
-}
-
-/// 変換器が付けた関数の名前から Python の名前（`__name__`）を取り出す（python_builtins_plan.md のタスク 1-14）。
-///
-/// property のメソッドの別名（[`property_method_name`]）は元の名前、持ち上げたラムダ（変換器の
-/// `next_temp_name("lambda")` が付ける `__py_lambda_` ＋ 番号）は CPython と同じ `<lambda>`。それ以外はそのまま。
-/// ⚠ Python のモジュールから来た関数（`FnValue::is_python`）にだけ使う。
-pub(crate) fn python_fn_name(name: &str) -> &str {
-    if let Some(rest) = name.strip_prefix("__property_") {
-        for tag in ["get", "set", "del", "cached"] {
-            let Some(r) = rest.strip_prefix(tag) else { continue };
-            let r = r.trim_start_matches(|c: char| c.is_ascii_digit());
-            if let Some(original) = r.strip_prefix('_').filter(|s| !s.is_empty()) {
-                return original;
-            }
-        }
-    }
-    if name.strip_prefix("__py_lambda_").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
-        return "<lambda>";
-    }
-    name
 }
 
 impl FnValue {
@@ -326,24 +283,18 @@ impl FnValue {
     /// `Interpreter::call_bound_method` へ回り、`receiver` が `self` になる（`obj.method(..)` と同じ実行）。
     /// 名前・仮引数（`self` を除く）・戻り値の注釈は表示と内省のために写す。
     pub(crate) fn bind(receiver: Value, target: BoundTarget) -> Rc<FnValue> {
-        let (name, params, is_python, return_type, globals) = match &target {
+        let (name, params, return_type, globals) = match &target {
             BoundTarget::Methods(m) => {
                 let f = &m[0];
-                (f.name.clone(), Self::params_without_self(&f.params), f.is_python, f.return_type.clone(), f.globals)
+                (f.name.clone(), Self::params_without_self(&f.params), f.return_type.clone(), f.globals)
             }
-            BoundTarget::Gen(g) => (g.name.clone(), Self::params_without_self(&g.params), false, None, g.globals),
-            BoundTarget::Builtin(n) => (n.clone(), Vec::new(), false, None, GLOBALS_OF_CALLER),
-            // クラスメソッドは最初の仮引数（`cls`）を受け手が埋める。
-            BoundTarget::ClassMethod(m) => {
-                let f = &m[0];
-                (f.name.clone(), f.params.iter().skip(1).cloned().collect(), f.is_python, f.return_type.clone(), f.globals)
-            }
+            BoundTarget::Gen(g) => (g.name.clone(), Self::params_without_self(&g.params), None, g.globals),
+            BoundTarget::Builtin(n) => (n.clone(), Vec::new(), None, GLOBALS_OF_CALLER),
         };
         Rc::new(FnValue {
             name,
             params,
             body: Rc::from(Vec::<Stmt>::new()),
-            is_python,
             captured_env: HashMap::new(),
             return_type,
             vm_chunk: None,
@@ -440,7 +391,7 @@ impl FieldCheck {
 pub enum BuiltinClass {
     /// 普通のクラス（Arrow / Python で書いたクラス・組み込みの例外など）。
     Ordinary,
-    /// `object`。インスタンスは `object()`（Python のソースからだけ作れる・変換器が `__py_object()` にする）。
+    /// `object`。Arrow のコードからはインスタンスを作れない（Python のコードの `object()` は CPython の物）。
     /// 同一性はアドレス（`is` / `==` / `hash` / `id`）。⚠ スレッドへ送る複製（`deep_clone`）では別の物になる。
     Object,
     /// `ellipsis`（タスク 6-11）。唯一のインスタンスが `Ellipsis`（Python の `...`）。表示は `Ellipsis`。
@@ -562,10 +513,6 @@ pub struct ClassValue {
     pub enum_of: Option<String>,
     /// インスタンスを物として扱う組み込みのクラスか（[`BuiltinClass`]・タスク 6-10）。普通のクラスは `Ordinary`。
     pub builtin: BuiltinClass,
-    /// Python から変換したクラスか（`exec_class_def` が `in_python_module` のときに立てる・known_bugs.md の #1）。
-    /// 立っていれば、`__eq__` / `__hash__` を書いていないインスタンスの `==` / `hash` は同一性（CPython の
-    /// `object.__eq__` と同じ）。Arrow のクラスは中身で比べる（格納のたびに写すので、写しを元と等しくするため）。
-    pub is_python: bool,
 }
 
 
@@ -641,7 +588,6 @@ impl ClassValue {
             module_name: None,
             enum_of: None,
             builtin: BuiltinClass::Ordinary,
-            is_python: false,
         }
     }
 
@@ -663,7 +609,6 @@ impl ClassValue {
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
                             // はスレッド送出経路で使われるので、中身を複製して独立させる。
                             body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
-                            is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
@@ -742,7 +687,6 @@ impl ClassValue {
             module_name: self.module_name.as_deref().map(Rc::from),
             enum_of: self.enum_of.clone(),
             builtin: self.builtin,
-            is_python: self.is_python,
         }
     }
 }

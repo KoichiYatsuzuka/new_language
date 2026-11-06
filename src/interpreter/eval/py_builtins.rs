@@ -118,42 +118,6 @@ impl Interpreter {
         Ok(Value::None)
     }
 
-    /// `object.__setattr__(o, name, value)`（変換器が Python の `object.__setattr__(..)` / `super().__setattr__(..)` を
-    /// `__py_object_setattr(..)` にする・known_bugs.md の #10）。クラスが上書きした `__setattr__` を飛ばして、ふつうの
-    /// 代入をする（`attr_assign_without_hook`）。文言は CPython と同じ。
-    pub(crate) fn py_object_setattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
-        let [obj, name, value]: [Value; 3] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
-            0 => "TypeError: descriptor '__setattr__' of 'object' object needs an argument".to_string(),
-            n => format!("TypeError: expected 2 arguments, got {}", n - 1),
-        })?;
-        let name = self.attr_name_arg(&name)?;
-        self.attr_assign_without_hook(obj, &name, value)?;
-        Ok(Value::None)
-    }
-
-    /// `object.__getattribute__(o, name)`（変換器が Python の `object.__getattribute__(..)` /
-    /// `super().__getattribute__(..)` を `__py_object_getattribute(..)` にする・known_bugs.md の #11）。上書きした
-    /// `__getattr__` を呼ばない読み（無ければ `AttributeError`。`__getattr__` の中から本当の属性を読む形）。
-    pub(crate) fn py_object_getattribute(&mut self, args: Vec<Value>) -> Result<Value, String> {
-        let [obj, name]: [Value; 2] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
-            0 => "TypeError: descriptor '__getattribute__' of 'object' object needs an argument".to_string(),
-            n => format!("TypeError: expected 1 argument, got {}", n - 1),
-        })?;
-        let name = self.attr_name_arg(&name)?;
-        self.get_attr_without_hook(obj, &name, None)
-    }
-
-    /// `object.__delattr__(o, name)`（変換器が置く・`py_object_setattr` と同じ）。上書きした `__delattr__` を飛ばす。
-    pub(crate) fn py_object_delattr(&mut self, args: Vec<Value>) -> Result<Value, String> {
-        let [obj, name]: [Value; 2] = args.try_into().map_err(|a: Vec<Value>| match a.len() {
-            0 => "TypeError: descriptor '__delattr__' of 'object' object needs an argument".to_string(),
-            n => format!("TypeError: expected 1 argument, got {}", n - 1),
-        })?;
-        let name = self.attr_name_arg(&name)?;
-        self.del_attr_val(obj, &name, false)?;
-        Ok(Value::None)
-    }
-
     /// 属性の名前の引数（`getattr` / `hasattr` / `setattr`）。文字列でなければ CPython と同じ `TypeError`。
     fn attr_name_arg(&self, v: &Value) -> Result<String, String> {
         match v {
@@ -1308,11 +1272,10 @@ impl Interpreter {
 /// Arrow のクラスで書いたもの。読み書きはディスクリプタのプロトコル（タスク 1-12・`eval/attrs.rs`）が
 /// `__get__` / `__set__` へ回す。
 /// - 文言は CPython と同じ（`property 'x' of 'C' object has no setter`。名前が無ければ `property of 'C' object ..`）。
-///   名前は `__set_name__` で入る（変換器がクラスの定義の後で呼ぶ。CPython ではクラスを作るときに `type.__new__` が呼ぶ）。
+///   名前は `__set_name__` で入る（Arrow のクラスでは呼ぶ人が呼ぶ。CPython ではクラスを作るときに `type.__new__` が呼ぶ）。
 /// - `getter` / `setter` / `deleter` は名前ごと写した新しい property を返す（CPython 3.12 の `property_copy`）。
 /// - ⚠ CPython 3.12 の property は `__name__` を持たない（3.13 から）ので、名前は `private` のフィールドに置く。
-/// - ⚠ `__doc__` は渡した `doc` だけ（CPython は `doc` が無ければ getter の `__doc__` を引き継ぐ。変換器が getter の
-///   docstring を `doc` に渡すので、変換したクラスでは同じになる・タスク 6-7）。
+/// - ⚠ `__doc__` は渡した `doc` だけ（CPython は `doc` が無ければ getter の `__doc__` を引き継ぐ・タスク 6-7）。
 /// - ⚠ `obj` を書き換える getter / setter に写しを渡さないよう、仮引数は `mut obj`。
 /// - ⚠ `__get__` は `mut self`: クラスから読む `C.x` は property **そのもの**を返す（`C.x is C.x`・`C.x.__set_name__(..)`
 ///   が置いてある property に届く）。`self` のままだと `return self` が写しを返す（Arrow の値の規則）。
@@ -1373,49 +1336,15 @@ const PY_PROPERTY_SRC: &str = r#"class property:
         return f"property '{self._name}' of '{type(obj).__name__}' object has no {what}"
 "#;
 
-/// 組み込みのクラス `cached_property`（`functools.cached_property`・python_builtins_plan.md のタスク 6-5）。
-/// CPython 3.12 と同じ振る舞いを Arrow のクラスで書いたもの。
-/// - 非データディスクリプタ（`__get__` だけ）。初めて読んだときに `func(obj)` を計算してインスタンスの
-///   **同じ名前のフィールド**へ入れる。以後はフィールドが勝つ（`get_attr_val` はフィールドを非データディスクリプタより先に見る）。
-///   CPython がインスタンスの `__dict__` へ入れるのと同じ効き方。フィールドは変換器が宣言する（Arrow のインスタンスに
-///   `__dict__` は無い）。
-/// - `obj.x = v` も同じフィールドへ入る（`attr_assign_evaled` が非データディスクリプタと同じ名前のフィールドを先にする）。
-/// - 覚える値は `__py_object_setattr` で入れる（クラスが上書きした `__setattr__` を通らない。CPython もインスタンスの
-///   `__dict__` へ直に入れる・known_bugs.md の #10）。
-/// - 入れた後で**読み直した値**を返す（代入は値を写すので、計算した値そのものを返すと 1 回目と 2 回目で別の物になる）。
-/// - 文言は CPython と同じ。`__doc__` は `func.__doc__`（タスク 1-14）。
-/// - ⚠ `__get__` は `mut self`（`property` と同じ理由）。
-const PY_CACHED_PROPERTY_SRC: &str = r#"class cached_property:
-    mut func: Any
-    mut attrname: Any
-    mut __doc__: Any
-
-    fn __init__(mut self, func: Any) -> None:
-        self.func = func
-        self.attrname = None
-        self.__doc__ = func.__doc__
-
-    fn __set_name__(mut self, owner: Any, name: Any) -> None:
-        if self.attrname is None:
-            self.attrname = name
-        elif name != self.attrname:
-            raise TypeError("Cannot assign the same cached_property to two different names (" + repr(self.attrname) + " and " + repr(name) + ").")
-
-    fn __get__(mut self, mut obj: Any, owner: Any = None) -> Any:
-        if obj is None:
-            return self
-        if self.attrname is None:
-            raise TypeError("Cannot use cached_property instance without calling __set_name__ on it.")
-        __py_object_setattr(obj, self.attrname, self.func(obj))
-        return getattr(obj, self.attrname)
-"#;
-
 /// Arrow で書いた組み込みのクラスの名前（[`Interpreter::py_builtin_class`] が組み立てる）。
-pub(crate) const PY_BUILTIN_CLASS_NAMES: &[&str] = &["property", "cached_property"];
+/// ⚠ 以前は `cached_property`（タスク 6-5）もあった。インスタンスに同じ名前のフィールドが要り、それを宣言できるのは
+///   Python から Arrow への変換器だけだったので、変換器と一緒に消した（pandas_import_plan.md の 3-3）。Python のクラスの
+///   `@functools.cached_property` は CPython のもの。
+pub(crate) const PY_BUILTIN_CLASS_NAMES: &[&str] = &["property"];
 
 impl Interpreter {
-    /// Arrow で書いた組み込みのクラス（`property` / `cached_property`）の値。どれかを初めて引いたときに
-    /// まとめて組み立てる（[`PY_PROPERTY_SRC`] / [`PY_CACHED_PROPERTY_SRC`]）。
+    /// Arrow で書いた組み込みのクラス（`property`）の値。どれかを初めて引いたときに
+    /// まとめて組み立てる（[`PY_PROPERTY_SRC`]）。
     ///
     /// 自分の大域（組み込みだけ）の枠でクラスを定義するので、メソッドの本体は利用者の名前を見ない
     /// （モジュールの本体と同じ・`enter_module_frame`）。クラスの名前に修飾は付かない（`type(p).__name__` は `property`）。
@@ -1423,7 +1352,7 @@ impl Interpreter {
         if self.py_builtin_classes.is_none() {
             let mut stmts = Vec::new();
             // トレースバックのファイル名はクラスの名前（`File "<property>", line 29, in __set__`）。
-            for (src, file) in [(PY_PROPERTY_SRC, "<property>"), (PY_CACHED_PROPERTY_SRC, "<cached_property>")] {
+            for (src, file) in [(PY_PROPERTY_SRC, "<property>")] {
                 let tokens = crate::lexer::Lexer::new(src, file).tokenize();
                 stmts.extend(
                     crate::parser::Parser::new(tokens, None)
@@ -1431,10 +1360,6 @@ impl Interpreter {
                         .map_err(|e| format!("RuntimeError: internal — a builtin class does not parse: {e}"))?,
                 );
             }
-            // ⚠ Python のモジュールの中から引かれても Arrow のクラスとして定義する（`is_python` を立てない）。
-            let prev_py = std::mem::replace(&mut self.in_python_module, false);
-            let prev_running_py = std::mem::replace(&mut self.running_python, false);
-            let prev_nested = std::mem::replace(&mut self.defining_nested_class, false);
             let frame = self.enter_module_frame(&[]);
             let result = stmts.iter().try_for_each(|st| self.exec(st).map(|_| ()));
             let classes: std::collections::HashMap<String, Value> = PY_BUILTIN_CLASS_NAMES
@@ -1442,9 +1367,6 @@ impl Interpreter {
                 .filter_map(|n| self.scopes[0].get(n).map(|v| (n.to_string(), v.get_value())))
                 .collect();
             self.leave_module_frame(frame);
-            self.defining_nested_class = prev_nested;
-            self.running_python = prev_running_py;
-            self.in_python_module = prev_py;
             result.map_err(|e| format!("RuntimeError: internal — a builtin class failed: {e}"))?;
             self.py_builtin_classes = Some(classes);
         }
@@ -1461,8 +1383,7 @@ impl Interpreter {
     /// - フィールドもメソッドも持たない。インスタンスは写さずに共有し、同一性で比べる（[`crate::interpreter::BuiltinClass`]）。
     /// - すべての値が `object` の派生（`isinstance(x, object)` は真）なのは型の判定の特例（`ClassValue::is_a` /
     ///   `primitive_ann_matches` / [`Self::py_isinstance`]）。このクラスの振る舞いは引き継がない。
-    /// - ⚠ クラスの値を呼んでも作れない（`instantiate_evaled`）。作れるのは Python のソースの `object()` だけ
-    ///   （変換器が `__py_object()` にする・[`Self::py_object`]）。
+    /// - ⚠ クラスの値を呼んでも作れない（`instantiate_evaled`）。Python のコードの `object()` は CPython が作る。
     pub(crate) fn object_class(&mut self) -> std::rc::Rc<ClassValue> {
         self.object_class
             .get_or_insert_with(|| {
@@ -1497,27 +1418,6 @@ impl Interpreter {
             Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst)))
         })
         .clone()
-    }
-
-    /// Python の `object()`（変換器が `__py_object()` にする・タスク 6-10）。文言は CPython と同じ。
-    pub(crate) fn py_object(&mut self, args: &[Value]) -> Result<Value, String> {
-        if !args.is_empty() {
-            return Err("TypeError: object() takes no arguments".to_string());
-        }
-        let inst = crate::interpreter::InstanceData::new_empty(self.object_class(), 0);
-        Ok(Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(inst))))
-    }
-
-    /// 基底が `object` のクラス（基底を書かない・`class C(object)`）の `super().__init__(..)`（変換器が
-    /// `__py_object_init(self, ..)` にする・タスク 6-10）。CPython の `object.__init__` と同じく、`self` のほかに
-    /// 引数があれば `TypeError`、無ければ何もしない。
-    /// ⚠ CPython は `__new__` を上書きしたクラスでは余分な引数を許すが、Python のクラスの `__new__` は対象外。
-    pub(crate) fn py_object_init(&self, args: &[Value]) -> Result<Value, String> {
-        match args.len() {
-            0 => Err("TypeError: descriptor '__init__' of 'object' object needs an argument".to_string()),
-            1 => Ok(Value::None),
-            _ => Err("TypeError: object.__init__() takes exactly one argument (the instance to initialize)".to_string()),
-        }
     }
 
     /// `bytes()` / `bytes(n)` / `bytes(iterable)` / `bytes(s, encoding[, errors])` / `bytes(b)`

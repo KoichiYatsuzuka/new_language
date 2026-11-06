@@ -18,8 +18,7 @@ impl Interpreter {
     /// クラス変数（`static mut` / `const` のクラス変数）に入った**クラス**（フェーズ10 10-18）。
     ///
     /// メソッドが見つからなかったときだけ使う: `Outer.Inner()` / `self.Inner()` は Python では
-    /// 「属性を読んで呼ぶ」なので、クラス変数に入れた入れ子のクラス（`python_converter::classes` が
-    /// 持ち上げて結んだもの）を呼べるようにする。
+    /// 「属性を読んで呼ぶ」なので、クラス変数に入れたクラス（`static mut Inner = Other`）を呼べるようにする。
     /// ⚠ クラスだけを対象にする。関数を入れたクラス変数をインスタンス経由で呼ぶと Python は `self` を
     ///   束縛する（束縛メソッド）ので、同じ扱いにすると意味が違ってしまう。
     pub(crate) fn class_var_class(cls: &ClassValue, name: &str) -> Option<Value> {
@@ -88,20 +87,6 @@ impl Interpreter {
                     return Ok(Value::None);
                 }
             }
-            // Python のクラスが `__setattr__` / `__delattr__` / `__getattribute__` を上書きしていなければ `object` のもの
-            // （変換器は `super().__setattr__(k, v)` を `<基底>.__setattr__(self, k, v)` にするので、基底が上書きしていないと
-            // ここへ来る・known_bugs.md の #10 / #11）。⚠ キーワード引数は CPython と同じ誤り。
-            if cls.is_python && matches!(method_name, "__setattr__" | "__delattr__" | "__getattribute__") {
-                if evaled.iter().any(|(k, _, _)| k.is_some()) {
-                    return Err(format!("TypeError: wrapper {method_name}() takes no keyword arguments"));
-                }
-                let args = evaled.into_iter().map(|(_, v, _)| v).collect();
-                return match method_name {
-                    "__setattr__" => self.py_object_setattr(args),
-                    "__delattr__" => self.py_object_delattr(args),
-                    _ => self.py_object_getattribute(args),
-                };
-            }
             // クラス変数に入ったクラス（入れ子のクラス・10-18）なら、それを呼ぶ。
             if let Some(v) = Self::class_var_class(&cls, method_name) {
                 return self.call_value_evaled(v, evaled, method_name, None, 0);
@@ -136,86 +121,10 @@ impl Interpreter {
             };
         }
 
-        // ★ **Python 由来のメソッド限定**: `Base.__init__(self, ...)` の形（アンバウンド呼び出し）を許す。
-        //
-        // Python のサブクラスは基底の初期化をこの書き方で行うのが定石で、クラス継承
-        // （`exec_class_def` の py 限定分岐）を入れた以上ここも通す必要がある。
-        // 第 1 実引数がそのまま `self` に位置で束縛される（`class_method` と同じ形）。
-        //
-        // ⚠ 判定に `self.in_python_module` は**使えない**。あれは「今 Python モジュール本体を
-        //   実行中か」でしかなく、ドライバ `.ar` から呼ばれた時点で false になる。
-        //   `FnValue::is_python`（そのメソッド自身が Python 由来か）で見るのが正しい。
-        if overloads.first().is_some_and(|f| f.is_python) {
-            return if overloads.len() == 1 {
-                self.in_class_ctx(&cls, |me| me.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None))
-            } else {
-                self.in_class_ctx(&cls, |me| me.dispatch_overload_evaled(overloads, evaled, None, method_name, None))
-            };
-        }
-
         Err(format!(
             "TypeError: cannot call instance method '{method_name}' on class '{}' directly; use an instance",
             cls.name
         ))
-    }
-
-    /// Python の `super().m(..)` / `super(C, x).m(..)`（変換器が Python 専用の内部の組み込み
-    /// `__py_super(<第 1 基底>, 受け手, "m", ..)` にする・known_bugs.md の #6）。CPython の `super` と同じく、基底
-    /// （メソッドは祖先まで平坦化してある）の `m` を、種類に合わせて受け手で呼ぶ:
-    /// - クラスメソッド: `cls` に受け手（受け手がインスタンスならそのクラス）。名前で引き直さずに**基底の関数そのもの**を
-    ///   呼ぶ（`Sub.kind` へ戻って回り続けない）
-    /// - 静的メソッド: 受け手を渡さない
-    /// - 受け手がクラス（クラスメソッドの中の `super()`）で、`m` がインスタンスメソッド: 束縛しない関数として呼ぶ
-    ///   （`self` を渡さない・CPython と同じく引数が足りなければ誤り）
-    /// - ほか（インスタンスメソッド・組み込みの例外の `__init__`・基底が上書きしていない `__setattr__` など）: 以前の
-    ///   書き換え先 `Base.m(受け手, ..)` と同じ（[`Self::eval_class_method`]）
-    pub(crate) fn py_super_call(&mut self, evaled: Vec<(Option<String>, Value, bool)>) -> Result<Value, String> {
-        let mut it = evaled.into_iter();
-        let (Some((None, Value::Class(base), _)), Some((None, receiver, _)), Some((None, Value::Str(name), _))) =
-            (it.next(), it.next(), it.next())
-        else {
-            return Err("TypeError: __py_super() takes the base class, the receiver and the method name".to_string());
-        };
-        let rest: Vec<(Option<String>, Value, bool)> = it.collect();
-        let name: &str = &name;
-        if let Some(overloads) = base.methods.get(name).cloned() {
-            if base.class_method_names.contains(name) {
-                let cls = match &receiver {
-                    Value::Class(c) => c.clone(),
-                    Value::Instance(i) => i.borrow().class.clone(),
-                    other => {
-                        return Err(format!(
-                            "TypeError: super(type, obj): obj ({}) must be an instance or subtype of type",
-                            self.type_name(other)
-                        ))
-                    }
-                };
-                let mut all = vec![(None, Value::Class(cls), true)];
-                all.extend(rest);
-                return self.run_in_class_ctx(&base, overloads, all, name);
-            }
-            if base.static_method_names.contains(name) || matches!(receiver, Value::Class(_)) {
-                return self.run_in_class_ctx(&base, overloads, rest, name);
-            }
-        }
-        let mut all = vec![(None, receiver, true)];
-        all.extend(rest);
-        self.eval_class_method(base, name, all)
-    }
-
-    /// `overloads`（1 つなら直接・複数なら多重定義の振り分け）を `cls` の文脈で呼ぶ（`self` は渡さない）。
-    fn run_in_class_ctx(
-        &mut self,
-        cls: &Rc<ClassValue>,
-        overloads: Vec<Rc<crate::interpreter::FnValue>>,
-        evaled: Vec<(Option<String>, Value, bool)>,
-        method_name: &str,
-    ) -> Result<Value, String> {
-        if overloads.len() == 1 {
-            self.in_class_ctx(cls, |me| me.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None))
-        } else {
-            self.in_class_ctx(cls, |me| me.dispatch_overload_evaled(overloads, evaled, None, method_name, None))
-        }
     }
 
     /// 静的メソッド・クラスメソッドを**そのクラスの文脈で**呼ぶ（フェーズ10 10-6）。

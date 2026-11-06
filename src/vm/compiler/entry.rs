@@ -350,19 +350,6 @@ fn compile_fn_inner(
                 n = n.checked_add(1)?;
             }
             Stmt::EnumDef { .. } => {}
-            // 関数本体の `class`（Python から翻訳したコードだけ・フェーズ10 10-16）。`enum` と同じく
-            // リゾルバの `collect_base_decls` が base slot を採番するので、ここでも採る。
-            // ⚠ テンプレートは対象外（Python に無い）。
-            Stmt::ClassDef { name, template_params, .. }
-                if template_params.is_empty() && name != "_" && !slots.contains_key(name) =>
-            {
-                slots.insert(name.clone(), n);
-                slot_mut.push(false);
-                slot_type.push(None);
-                n = n.checked_add(1)?;
-            }
-            // 同じ名前の `class` をもう一度定義する形（Python の再定義）は slot を使い回す（`fn` と同じ）。
-            Stmt::ClassDef { template_params, .. } if template_params.is_empty() => {}
             // `static mut x = e`（#27-d）。記憶域はフレームではなく `Interpreter::static_cells`
             // （宣言位置がキーの共有セル）で、呼び出しをまたいで生き残る。名前 → 宣言位置を
             // 控えておき、本体の読み書きを `LoadStatic`/`StoreStatic` に落とす。
@@ -380,6 +367,8 @@ fn compile_fn_inner(
                 }
             }
             // slot を採番する可能性のある未対応の宣言的文があれば、番号ずれを避けて丸ごと諦める。
+            // ⚠ 関数本体の `class` はパーサが弾く（10-16）。以前は Python から変換した関数の `class` を slot に載せていた
+            //   （変換器と一緒に pandas_import_plan.md の 3-3 で消した）。
             Stmt::LetTuple { .. }
             | Stmt::ClassDef { .. }
             | Stmt::TraitDef { .. }

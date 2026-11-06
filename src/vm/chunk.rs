@@ -127,24 +127,6 @@ pub struct ChunkEnumDef {
     pub slot: u16,
 }
 
-/// 関数本体の `class` 定義 1 件（フェーズ10 10-16）。`Op::ClassDef(idx)` が参照する。
-///
-/// ⚠ 関数の中でクラスを作るのは **Python から翻訳したコードだけ**（デコレータ・クラスを返す関数）。
-///   Arrow のソースはパーサが最上位以外の `class` を弾く。
-/// ⚠ クラスの組み立ては最上位と同じ `exec_class_def`。関数のローカル（`visible`）を名前で見えるようにして
-///   走らせるので、基底（`class Wrapped(cls)` の `cls`）・メソッドの自由変数（閉包）が関数のローカルに届く。
-pub struct ChunkClassDef {
-    /// `Stmt::ClassDef` そのもの。
-    pub stmt: std::rc::Rc<crate::ast::Stmt>,
-    /// クラスの名前（`stmt` の名前と同じ）。
-    pub name: String,
-    /// 組み立てたクラスを書き込む先: `(添字, セルか)`。セルなら `cells[添字]`（入れ子の関数がクラスの
-    /// 名前を捕まえている）、そうでなければ slot（リゾルバの base slot と同じ番号）。
-    pub target: (u16, bool),
-    /// 名前で見せる関数のローカル: `(名前, 添字, セルか)`。セルなら `cells[添字]`、そうでなければ slot。
-    pub visible: Vec<(String, u16, bool)>,
-}
-
 /// `let a, b = t` 1 件ぶんの分解情報（#27-c）。
 pub struct TupleDecl {
     pub targets: Vec<crate::ast::TupleTarget>,
@@ -305,8 +287,6 @@ pub struct Chunk {
     pub fn_defs: Vec<ChunkFnDef>,
     /// 関数本体の `enum` 定義（#68）。`Op::EnumDef(idx)` が index で参照する。
     pub enum_defs: Vec<ChunkEnumDef>,
-    /// 関数本体の `class` 定義（フェーズ10 10-16）。`Op::ClassDef(idx)` が index で参照する。
-    pub class_defs: Vec<ChunkClassDef>,
     /// `mut` と書かない 1 つの変数の `for x in ..` の `Op::ForIter` の位置と、変数の説明（`names` の索引・`for:x`）
     /// （pandas_import_plan.md の D-11・2-10）。`ForIter` は要素が Python の物のときだけこれを引き、載っていれば
     /// `TypeError`（[`Op::StoreLocalImplicit`] と同じ規則）。位置の順に並ぶ（コンパイルした順）。
@@ -317,9 +297,6 @@ pub struct Chunk {
     /// `check_param_binding` の呼び出し側と同じ判断）。⚠ 以前は `for mut i, fr in enumerate(..)` が実装の中の `for x in it`
     /// で誤りになった（実測）。
     pub builtin_prelude: bool,
-    /// Python から翻訳した関数の本体か（10-16）。`Op::ClassDef` がクラスを Python の規則
-    /// （クラス継承・引数の束縛）で組み立てるのに使う。`compile_fn_value` が埋める。
-    pub is_python: bool,
     /// テンプレート実体化の型引数リスト（#27-c）。`Op::CallTemplate(idx, ..)` が index で参照する。
     ///
     /// `names` に入れて (開始, 個数) で持つ手もあるが、`instantiate_template_evaled` が
@@ -356,12 +333,10 @@ impl Chunk {
     /// 入れ子 `fn` / `gen` の `__qualname__` を `{outer}.<locals>.{name}` で埋める（python_builtins_plan.md のタスク 1-14）。
     ///
     /// `outer` はこの本体の関数の `__qualname__`。関数の本体をコンパイルした呼び出し側（`compile_fn_value` など）が
-    /// 呼ぶ。Python のモジュールの関数（`is_python`）は変換器の付けた名前を戻す（持ち上げたラムダは `<lambda>`）。
+    /// 呼ぶ。
     pub fn set_nested_qualnames(&mut self, outer: &str) {
-        let is_python = self.is_python;
         for d in &mut self.fn_defs {
-            let name = if is_python { crate::interpreter::python_fn_name(&d.name) } else { &d.name };
-            d.qualname = Some(std::rc::Rc::from(format!("{outer}.<locals>.{name}")));
+            d.qualname = Some(std::rc::Rc::from(format!("{outer}.<locals>.{}", d.name)));
         }
     }
 }

@@ -7,15 +7,12 @@
 // モジュールだった。そのため VS Code 拡張（wasm）からも使えるようにここへ出した。
 // （今は拡張も `parser/imports/` を使う・editor_import_resolution_plan.md 3-2。）
 //
-// ⚠ ここは 1 行ずつ見るだけの近似抽出で、`python_converter`（＝本物の Python パーサ）は使わない
-//    （`python_converter` が取りこぼした宣言を補う側）。⚠ 以前は「rustpython は wasm32 に載らない」
-//    ことも理由だったが、載ることを確かめた（2-2・拡張の crate も `python_converter` を取り込む）
-//    （`crates/arrow-frontend/Cargo.toml` の「ネイティブ依存を足さないこと」）。
+// ⚠ ここは 1 行ずつ見るだけの近似抽出で、本物の Python パーサは使わない。以前は rustpython で Python のソースを
+//    Arrow の文へ変換する変換器があり、ここはその取りこぼしを補う側だった（変換器は
+//    pandas_import_plan.md の 3-3 で消した。Python のコードは CPython が走らせる）。
 //
-// ⚠ CLI の `.pyi` 経路は **`python_converter` の結果をここで補完する**形（`py_modules.rs`）。
-//    エディタは補完側だけを使うので、**取れる型は CLI の部分集合**になる。
-//    ⇒ 型が少なく出ることはあっても、CLI と違う型が出ることはない
-//    （`compare_wasm_frontend.ps1` が守る不変条件と同じ向き）。
+// ⚠ CLI もエディタも Python のモジュールの型は**この抽出器だけ**で取る（`py_modules.rs`）ので、取れる型は同じ
+//    （`compare_wasm_frontend.ps1` が守る不変条件）。
 
 
 /// Python ソースから型スタブを直接抽出する。
@@ -309,64 +306,6 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
     }
 }
 
-/// 宣言の注釈の Arrow の list / dict / set を `py_list` / `py_dict` / `py_set` にする（`.pyi` を変換器で読んだ宣言・D-12・2-7）。
-/// 行単位の抽出器は [`py_type_to_arrow`] が初めからそう読む。⚠ 2 度掛けてもよい（`py_list` は語として `list` ではない）。
-pub(crate) fn py_collections_as_python(stmts: &mut [crate::ast::Stmt]) {
-    use crate::ast::Stmt;
-    let fix = |t: &mut String| *t = py_collection_words(t);
-    let fix_fn = |params: &mut Vec<crate::ast::Param>, ret: &mut Option<String>| {
-        params.iter_mut().filter_map(|p| p.type_ann.as_mut()).for_each(fix);
-        ret.iter_mut().for_each(fix);
-    };
-    for st in stmts.iter_mut() {
-        match st {
-            Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
-            Stmt::ClassDef { body, .. } => {
-                for m in body.iter_mut() {
-                    match m {
-                        Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
-                        Stmt::Field { type_ann, .. } => fix(type_ann),
-                        _ => {}
-                    }
-                }
-            }
-            Stmt::Let(_, Some(t), _, _) => fix(t),
-            _ => {}
-        }
-    }
-}
-
-/// 型の字句の `list[` / `dict[` / `set[` を `py_list[` などに、要素型の無い `list` などを `py_list[Any]` などにする。
-fn py_collection_words(ty: &str) -> String {
-    let mut out = String::with_capacity(ty.len() + 8);
-    let chars: Vec<char> = ty.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i].is_alphanumeric() || chars[i] == '_' {
-            let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let bracket = chars.get(i) == Some(&'[');
-            match (word.as_str(), bracket) {
-                ("list" | "dict" | "set", true) => {
-                    out.push_str("py_");
-                    out.push_str(&word);
-                }
-                ("list", false) => out.push_str("py_list[Any]"),
-                ("dict", false) => out.push_str("py_dict[Any, Any]"),
-                ("set", false) => out.push_str("py_set[Any]"),
-                _ => out.push_str(&word),
-            }
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
 /// 型の字句 `ty` の中の名前 `from`（語として一致するものだけ）を `to` にする。
 fn py_replace_type_word(ty: &str, from: &str, to: &str) -> String {
     let mut out = String::with_capacity(ty.len());
@@ -456,7 +395,7 @@ type PySiblings = std::collections::HashMap<String, (usize, String)>;
 /// [`py_class_stub`] の本体。`qualname` はこのクラスの名前（入れ子なら `Outer.Inner`）。
 ///
 /// 入れ子のクラス（クラス本体の `class`・pandas_import_plan.md 3-1）は `Outer.Inner` の名前で外へ持ち上げ、外側のクラスには
-/// その型の値の属性（`Inner: type[Outer.Inner]`）を置く（`m.Tree.Node(v)` / `t.Leaf(w)` が引ける・旧変換器と同じ形）。
+/// その型の値の属性（`Inner: type[Outer.Inner]`）を置く（`m.Tree.Node(v)` / `t.Leaf(w)` が引ける・削除した変換器と同じ形）。
 /// ⚠ 以前は入れ子のクラスを読み飛ばしていたので、`m.Tree.Node` が `has no member 'Node'` の静的な誤りだった。
 fn py_class_stub_named(
     lines: &[&str],
@@ -1298,8 +1237,6 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
     /// Python のバイト列の注釈はどれも `bytes`（ffi_value_exchange_plan.md 5-3）。
     #[test]
     fn byte_sequences_are_bytes() {
-        assert_eq!(py_collection_words("Option[dict[str, list[int]]]"), "Option[py_dict[str, py_list[int]]]");
-        assert_eq!(py_collection_words("Union[list, set, fixed_list[int], py_list[int]]"), "Union[py_list[Any], py_set[Any], fixed_list[int], py_list[int]]");
         assert_eq!(py_type_to_arrow("bytes"), "bytes");
         assert_eq!(py_type_to_arrow("bytearray"), "bytes");
         assert_eq!(py_type_to_arrow("Optional[memoryview]"), "Option[bytes]");

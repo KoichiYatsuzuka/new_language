@@ -1086,7 +1086,6 @@ impl Interpreter {
                 name: "__init__".to_string(),
                 params: init_params,
                 body: std::rc::Rc::from(init_body),
-                is_python: false,
                 captured_env: HashMap::new(),
             return_type: None,
             vm_chunk: None,

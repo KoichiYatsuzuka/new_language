@@ -802,20 +802,6 @@ fn test_function_name_qualname_and_doc() {
     assert!(matches!(interp.get_val("nd"), Some(Value::None)));
 }
 
-/// 変換器が付ける property のメソッドの別名と、それを元の名前へ戻す規則（タスク 1-14）。
-#[test]
-fn test_python_fn_name_undoes_converter_names() {
-    use crate::interpreter::{property_method_name, python_fn_name};
-    assert_eq!(property_method_name("get", "x", 1), "__property_get_x");
-    assert_eq!(property_method_name("set", "x", 2), "__property_set2_x");
-    for (tag, name, n) in [("get", "x", 1), ("set", "x_2", 1), ("del", "value", 3), ("set", "a_b", 12)] {
-        assert_eq!(python_fn_name(&property_method_name(tag, name, n)), name);
-    }
-    assert_eq!(python_fn_name("__py_lambda_7"), "<lambda>");
-    assert_eq!(python_fn_name("__py_lambda_"), "__py_lambda_");
-    assert_eq!(python_fn_name("area"), "area");
-}
-
 /// Arrow のインスタンスは写さずに Python へ渡り（pandas_import_plan.md の 2-6）、`mut` の変数から渡せば Python の `setattr` が
 /// Arrow のインスタンスに届く。`let` の変数から渡した物は読むだけ（`setattr` は TypeError）。
 // ⚠ `native` 限定（評価コアでは `py_interop` がスタブ・#6）。

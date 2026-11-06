@@ -455,7 +455,7 @@ T.f = 2.5                 # StaticTypeError: field 'f' of class 'T' is declared 
 ```
 
 - ⚠ インスタンスのフィールド（`mut f: D`）はディスクリプタとして扱いません（実行時も働かない）。
-- ⚠ 組み込みの `property` を置いたメンバーは `Any` です（Python から変換したクラスは `static mut x: Any`）。
+- ⚠ 組み込みの `property` を置いたメンバーは `Any` です。
 - 実装: `TypeChecker::class_descriptor`（`type_check/infer.rs`）。読みは `infer_attr`、呼び出しは `call_check.rs`、
   代入は `stmt/check.rs` の `check_assign` が使う。
 

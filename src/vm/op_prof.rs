@@ -12,7 +12,7 @@
 use super::op::Op;
 
 /// 宣言順の op 名（`op_index` の戻り値でそのまま索引できる）。
-pub const OP_NAMES: [&str; 99] = [
+pub const OP_NAMES: [&str; 98] = [
     "Const",
     "Nil",
     "LoadLocal",
@@ -106,7 +106,6 @@ pub const OP_NAMES: [&str; 99] = [
     "DictMerge",
     "SeqExtend",
     "SeqFinish",
-    "ClassDef",
     "MetaInfo",
     "MakeCode",
     "StoreLocalImplicit",
@@ -213,13 +212,13 @@ pub fn op_index(op: &Op) -> u8 {
         Op::Yield => 87,
         Op::AsyncSubmit { .. } => 88,
         Op::CoerceFloat => 89,
-        Op::ClassDef { .. } => 93,
         // ⚠ メタ関数の 2 つは宣言の途中に足されていて、ここへの登録が漏れていた（`--features prof` が
         //   ビルドできなかった・フェーズ10 10-16 で発見）。番号は末尾に足す（名前の表と合っていればよい）。
-        Op::MetaInfo { .. } => 94,
-        Op::MakeCode { .. } => 95,
-        Op::StoreLocalImplicit { .. } => 96,
-        Op::GetIterChecked { .. } => 97,
-        Op::CheckPyRead { .. } => 98,
+        // ⚠ 93 だった `ClassDef`（関数の中の `class`・Python から翻訳したコードだけが出した）は pandas_import_plan.md 3-3 で消した。
+        Op::MetaInfo { .. } => 93,
+        Op::MakeCode { .. } => 94,
+        Op::StoreLocalImplicit { .. } => 95,
+        Op::GetIterChecked { .. } => 96,
+        Op::CheckPyRead { .. } => 97,
     }
 }

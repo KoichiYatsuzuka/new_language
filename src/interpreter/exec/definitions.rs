@@ -98,12 +98,6 @@ impl Interpreter {
         vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
         // `outer.<locals>.inner`（`ChunkFnDef::qualname`・タスク 1-14）。
         qualname: Option<Rc<str>>,
-        // 定義した本体が Python の関数か（`Chunk::is_python`）。
-        // ⚠ 以前は `in_python_module`（モジュールを読み込んでいる間だけ真）だけを見ていたので、
-        //   Python の関数を**呼んだときに**作る入れ子の関数が Arrow の関数になり、Arrow の束縛の規則
-        //   （既定値・`*args` / `**kw` の受け方・`let` の仮引数の写し）で呼ばれていた（タスク 1-14 で発見・
-        //   `def inner(a, b=2, *rest, **kw)` を `inner(1)` で呼ぶと `TypeError`）。
-        is_python: bool,
     ) -> Value {
         use crate::interpreter::CapturedVar;
         let mut captured_env: HashMap<String, CapturedVar> = captured
@@ -119,7 +113,6 @@ impl Interpreter {
             name: name.to_string(),
             params: params.to_vec(),
             body,
-            is_python: self.in_python_module || is_python,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk,
@@ -167,7 +160,6 @@ impl Interpreter {
             name: crate::template_subst::display_name(name).to_string(),
             params: params.to_vec(),
             body: std::rc::Rc::from(body),
-            is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
             vm_chunk: None,
@@ -399,7 +391,6 @@ impl Interpreter {
                         },
                     ],
                     body: std::rc::Rc::from(init_body),
-                    is_python: false,
                     captured_env: HashMap::new(),
                 return_type: None,
                 vm_chunk: None,
@@ -508,7 +499,6 @@ impl Interpreter {
                 },
             ],
             body: std::rc::Rc::from(init_body),
-            is_python: false,
             captured_env: HashMap::new(),
         return_type: None,
         vm_chunk: None,
@@ -564,57 +554,14 @@ impl Interpreter {
         }))
     }
 
-    /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。
-    /// 関数の中の `class`（Python から翻訳したコードだけ・フェーズ10 10-16）を組み立てて返す。
-    ///
-    /// 関数のローカル（`visible`）を一時的なスコープに置き、その上で最上位と同じ `exec_class_def` を走らせる。
-    /// - 基底（`class Wrapped(cls)` の `cls`）・デコレータ・フィールドの既定値が関数のローカルを引ける。
-    /// - メソッドは関数のローカルを閉包として捕まえる（`defining_nested_class`）。
-    /// - メソッドがクラス自身を名前で引ける（`self_cell`。組み立て終わったらクラスを入れる）。
-    /// - `is_python` なら Python の規則（クラス継承・引数の束縛）で組み立てる。
-    ///
-    /// ⚠ クラス自身を名前で引くメソッドがあると、クラス → メソッド → セル → クラスの循環参照になり、
-    ///   そのクラスは解放されない（`Rc`・Python なら循環 GC が回収する）。
-    pub(crate) fn vm_class_def(
-        &mut self,
-        stmt: &Stmt,
-        visible: Vec<(String, Rc<std::cell::RefCell<Value>>)>,
-        self_cell: Rc<std::cell::RefCell<Value>>,
-        is_python: bool,
-    ) -> Result<Value, String> {
-        let Stmt::ClassDef { name, template_params, bases, body, decorators, .. } = stmt else {
-            return Err("RuntimeError: internal: Op::ClassDef without a class".to_string());
-        };
-        let mut scope = crate::interpreter::ScopeMap::default();
-        for (n, cell) in visible {
-            scope.insert(n, Var::Cell(cell));
-        }
-        scope.insert(name.clone(), Var::Cell(self_cell.clone()));
-        self.scopes.push(scope);
-        let now_py = self.in_python_module || is_python;
-        let prev_py = std::mem::replace(&mut self.in_python_module, now_py);
-        let prev_nested = std::mem::replace(&mut self.defining_nested_class, true);
-        let r = self.exec_class_def(name, template_params, bases, body, decorators);
-        self.defining_nested_class = prev_nested;
-        self.in_python_module = prev_py;
-        let scope = self.scopes.pop();
-        r?;
-        let class = scope
-            .and_then(|s| s.get(name.as_str()).map(|v| v.get_value()))
-            .ok_or_else(|| format!("RuntimeError: internal: class '{name}' was not defined"))?;
-        *self_cell.borrow_mut() = class.clone();
-        Ok(class)
-    }
-
     /// クラスのメソッドの `__qualname__`（`C.m`・python_builtins_plan.md のタスク 1-14）。
     ///
-    /// 具体化したクラス（`Box[int]`）はテンプレートの名前（`Box.get`）。Python のモジュールのメソッドは
-    /// 変換器が付けた別名を元の名前へ戻す（property の getter は `C.x`・`python_fn_name`）。
+    /// 具体化したクラス（`Box[int]`）はテンプレートの名前（`Box.get`）。
     fn method_qualname(&self, class_name: &str, method: &str) -> Rc<str> {
-        let method = if self.in_python_module { crate::interpreter::python_fn_name(method) } else { method };
         Rc::from(format!("{}.{method}", crate::template_subst::display_name(class_name)))
     }
 
+    /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。
     pub(crate) fn exec_class_def(
         &mut self,
         name: &str,
@@ -624,34 +571,6 @@ impl Interpreter {
         decorators: &[Expr],
     ) -> Result<ExecResult, String> {
         reject_unexpanded_member_decorators("class", name, body)?;
-
-        // ⚠ Python の基底は変数のことがある（関数の中の `class Wrapped(cls)`・フェーズ10 10-16）。
-        //   基底のクラスはここで引いておき（組み立ての途中では名前が変わる）、名前で引く表
-        //   （フィールドの並び・`bases`）には**そのクラスの名前**を使う。
-        let py_base_classes: Vec<Rc<crate::interpreter::ClassValue>> = if self.in_python_module {
-            bases
-                .iter()
-                .filter_map(|b| match self.get_var(b).map(|v| v.get_value()) {
-                    Some(Value::Class(c)) => Some(c),
-                    _ => None,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let resolved_bases: Vec<String>;
-        let bases: &[String] = if self.in_python_module {
-            resolved_bases = bases
-                .iter()
-                .map(|b| match self.get_var(b).map(|v| v.get_value()) {
-                    Some(Value::Class(c)) => c.name.clone(),
-                    _ => b.clone(),
-                })
-                .collect();
-            &resolved_bases
-        } else {
-            bases
-        };
 
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateClassValue {
@@ -707,13 +626,7 @@ impl Interpreter {
                         name: mname.clone(),
                         params: params.clone(),
                         body: std::rc::Rc::from(&mbody[..]),
-                        is_python: self.in_python_module,
-                        // 関数の中のクラス（10-16）のメソッドは関数のローカルを閉包として捕まえる。
-                        captured_env: if self.defining_nested_class {
-                            self.capture_env(mbody, params)
-                        } else {
-                            HashMap::new()
-                        },
+                        captured_env: HashMap::new(),
                         return_type: mret.clone(),
                         vm_chunk: None,
                         bound: None,
@@ -773,11 +686,7 @@ impl Interpreter {
                             name: mname.clone(),
                             params: params.clone(),
                             body: mbody.clone(),
-                            captured_env: if self.defining_nested_class {
-                                self.capture_env(mbody, params)
-                            } else {
-                                HashMap::new()
-                            },
+                            captured_env: HashMap::new(),
                             qualname: Some(self.method_qualname(name, mname)),
                         }),
                     );
@@ -844,99 +753,8 @@ impl Interpreter {
             }
         }
 
-        // ★★ `import[py]` 限定: **クラス継承**を解決する。
-        //
-        // Arrow の `class` は継承できない（基底に置けるのはトレイトだけ。ネイティブ `.ar` では
-        // パーサが `cannot inherit from ... (only traits are allowed as bases)` で弾く）。
-        // だが Python ではクラス継承が普通で、変換器はパーサを通らないため、以前は
-        // `bases` が載っているのに**メソッドもフィールドも黙って引き継がれない**状態だった。
-        //
-        // ここではトレイト継承と同じ考え方（＝**定義時に平坦化する**。実行時に基底を辿らない）で
-        // 基底クラスのメンバを引き継ぐ:
-        //   - フィールドの並びは `py_class_field_order` 経由で `build_field_index` が処理する
-        //     （基底のフィールドが先頭、という C ABI 慣行もトレイトと同じ）。
-        //   - メソッド等は**サブクラス側が既に持っていなければ**取り込む（＝オーバーライド優先）。
-        // ⚠ 多重継承は「先に書いた基底が勝つ」。Python の MRO と厳密には違うが、単一継承では一致する。
-        if self.in_python_module && !bases.is_empty() {
-            let base_classes = &py_base_classes;
-            for base_cls in base_classes {
-                for (k, v) in &base_cls.methods {
-                    methods.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                for (k, v) in &base_cls.gen_methods {
-                    gen_methods.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                for (k, v) in &base_cls.class_vars {
-                    class_vars.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                // ⚠ `static mut` のセル（`Rc`）は**共有する**。基底のクラス変数を
-                //   サブクラス経由で読めるようにするため。
-                //   Python は `Sub.x = ...` でサブクラス側に別の属性を作るが、Arrow の
-                //   `static mut` には「クラスごとの層」が無いので書き込みは基底に届く（項目 5 と同じモデル差）。
-                for (k, v) in &base_cls.static_vars {
-                    static_vars.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                for (k, v) in &base_cls.field_mutability {
-                    field_mutability.entry(k.clone()).or_insert(*v);
-                }
-                for (k, v) in &base_cls.method_access {
-                    method_access.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                for (k, v) in &base_cls.field_access {
-                    field_access.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                for n in &base_cls.static_method_names {
-                    static_method_names.insert(n.clone());
-                }
-                for n in &base_cls.class_method_names {
-                    class_method_names.insert(n.clone());
-                }
-                // 既定値つきフィールドは基底の分を**前に**置く（フィールドの並びと同じ順序）。
-                let mut inherited_defaults: Vec<(String, Value, bool)> = base_cls
-                    .field_defaults
-                    .iter()
-                    .filter(|(n, _, _)| !field_defaults.iter().any(|(m, _, _)| m == n))
-                    .cloned()
-                    .collect();
-                inherited_defaults.extend(field_defaults.drain(..));
-                field_defaults = inherited_defaults;
-            }
-        }
-
         let (field_index, field_mutability_vec, field_tags, field_checks, field_count) =
             self.build_field_index(&own_field_order, bases);
-
-        // ★ `import[py]` 限定: このクラスの**平坦化済み**フィールド順を登録し、
-        //   さらにこれを基底とするクラス（多段継承）が 1 段の参照で解決できるようにする。
-        //   並べ方は `build_field_index` の Step1（基底が先）+ Step2（own が後）と同じ。
-        if self.in_python_module {
-            let mut full_order: Vec<(String, bool, String)> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            for base in bases {
-                let base_fields = self
-                    .trait_field_order
-                    .get(base)
-                    .or_else(|| self.py_class_field_order.get(base));
-                if let Some(bf) = base_fields {
-                    for (fname, m, t) in bf {
-                        if seen.insert(fname.clone()) {
-                            full_order.push((fname.clone(), *m, t.clone()));
-                        }
-                    }
-                }
-            }
-            for (fname, m, t) in &own_field_order {
-                if seen.insert(fname.clone()) {
-                    full_order.push((fname.clone(), *m, t.clone()));
-                } else if let Some(e) = full_order.iter_mut().find(|(n, _, _)| n == fname) {
-                    // own 宣言の可変性・型を優先する（`build_field_index` と同じ規則）。
-                    e.1 = *m;
-                    e.2 = t.clone();
-                }
-            }
-            self.py_class_field_order
-                .insert(name.to_string(), full_order);
-        }
 
         // raw ブロックレイアウト（.claude/skills/c-abi-interop/SKILL.md P1）:
         // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の
@@ -948,8 +766,6 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
-            // Python から変換したクラス（既定の `==` / `hash` が同一性・known_bugs.md の #1）。
-            is_python: self.in_python_module,
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。
             module_name: self.global_module_names.get(self.cur_globals as usize).cloned().flatten(),
@@ -959,24 +775,7 @@ impl Interpreter {
             instance_name: name
                 .ends_with(']')
                 .then(|| name.chars().filter(|c| !c.is_whitespace()).collect()),
-            // ⚠ Python のクラスは**祖先まで平坦化**して載せる（フェーズ10 10-19）。`class B(A)`・`class A(ValueError)`
-            //   の `B` も `except ValueError` / `except Exception` で捕まる（照合は `ClassValue::is_a` が `bases`
-            //   だけを見る・推移をたどらない）。フィールドの並びは上で直接の基底から組んだまま。
-            // ⚠ モジュールで定義した基底は**修飾名も**載せる（`zoo.Animal`・python_builtins_plan.md の 6 節）。
-            //   `d is z.Animal` / 型検査が付ける実行時の検査の `zoo.Animal` を `is_a` がそのまま当てるため。
-            //   祖先の修飾名は基底の `bases` に入っている（同じ手順で作ったので）。
-            bases: {
-                let mut all = bases.to_vec();
-                for c in &py_base_classes {
-                    let qualified = c.module_name.as_deref().map(|m| format!("{m}.{}", c.name));
-                    for b in qualified.into_iter().chain(c.bases.iter().cloned()) {
-                        if !all.contains(&b) {
-                            all.push(b);
-                        }
-                    }
-                }
-                all
-            },
+            bases: bases.to_vec(),
             methods,
             gen_methods,
             field_defaults,

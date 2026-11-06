@@ -38,17 +38,6 @@ impl Interpreter {
                 ))
             }
         };
-        // 明示の呼び出し `o.m(..)` は、Python のクラスが `__getattribute__` を上書きしていれば、それで読んでから呼ぶ
-        // （CPython と同じ・特殊メソッドを明示して呼ぶ `o.__len__()` も・known_bugs.md の #12）。
-        // ⚠ 明示の呼び出しかどうかは `cache` で見分ける: ソースの `o.m(..)`（VM の `CallMethod*`・ツリーウォークの
-        //   `eval_method_call`）は必ずメソッドのキャッシュを渡し、インタープリタが内部で呼ぶ特殊メソッド（`str(o)` の
-        //   `__str__`・演算子・`for` の `__iter__` / `__next__`）は `None` を渡す（`eval_method_call` の doc）。内部の
-        //   呼び出しは CPython も型から直接引き、`__getattribute__` を通らない。
-        // ⚠ このクラスにはメソッドのキャッシュを張らない（下の充填より前に返る）ので、毎回ここを通る。
-        if cache.is_some() && Self::py_attr_hook(&inst_rc.borrow().class, "__getattribute__") {
-            let callee = self.get_attr_val(obj, method_name, None)?;
-            return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
-        }
         if method_name == "copy" {
             if !evaled.is_empty() {
                 return Err(format!(
@@ -120,11 +109,9 @@ impl Interpreter {
             // 属性に入れた呼べる値（`self.f(x)`・Python の `self.callback(x)`・python_builtins_plan.md のタスク 1-11）。
             // CPython と同じく**属性を読んで、その値を呼ぶ**（読みはアクセス制御も含めて `get_attr_val`）。
             // ⚠ 以前は `has no method 'f'` だった（メソッドの表しか見ていなかった）。
-            // Python のクラスの `__getattr__` が答える名前も読んで呼ぶ（`d.dyn(..)`・known_bugs.md の #11）。
             if class.field_index.contains_key(method_name)
                 || class.class_vars.contains_key(method_name)
                 || class.static_vars.contains_key(method_name)
-                || Self::py_attr_hook(&class, "__getattr__")
             {
                 let callee = self.get_attr_val(obj.clone(), method_name, None)?;
                 return self.call_value_evaled(callee, evaled, method_name, call_span, 0);
@@ -132,15 +119,6 @@ impl Interpreter {
             return Err(format!("AttributeError: '{}' has no method '{method_name}'", class.name));
         };
         let n_overloads = overloads.len();
-        // Python のクラスの静的メソッド・クラスメソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
-        // クラス経由の呼び出し（`eval_class_method`）へ回す: 静的メソッドは `self` を渡さず、クラスメソッドは `cls` に
-        // インスタンスのクラス（`type(self)`・派生のインスタンスなら派生）を渡す。
-        // ⚠ Arrow のクラスは今までどおりクラス経由だけ（下の誤り・型検査の `StaticMethodOnInstance`）。
-        if class.is_python
-            && (class.static_method_names.contains(method_name) || class.class_method_names.contains(method_name))
-        {
-            return self.eval_class_method(class.clone(), method_name, evaled);
-        }
         if class.static_method_names.contains(method_name) {
             return Err(format!(
                 "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",

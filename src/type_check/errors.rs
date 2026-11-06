@@ -286,14 +286,6 @@ pub enum TypeErrorKind {
         type_name: String,
         decorator: String,
     },
-    /// 自分で定義したクラスを返す Python の関数を Arrow から使った（フェーズ10 10-16）。
-    ///
-    /// ⚠ クラスを作って返す関数（デコレータ・クラスのファクトリ）は **Python から呼ぶときだけ**認める。
-    ///   作られるクラスの型を Arrow の型検査は知り得ないので、Arrow から呼ぶ・デコレータに使う・値として
-    ///   持ち出すのはどれも誤り。
-    PyClassFactoryFromArrow {
-        function: String,
-    },
     /// 今の Arrow から正しく呼べない C/C++ の関数を使った（ffi_value_exchange_plan.md 1-2）。
     ///
     /// C の文字列・ポインタを返す、`void*` / 関数ポインタ / 出力バッファ（`char*`）/ `wchar_t*` を受け取る、
@@ -308,9 +300,8 @@ pub enum TypeErrorKind {
     },
     /// Arrow のソースで `object()` を呼んだ（python_builtins_plan.md のタスク 6-10）。
     ///
-    /// ⚠ `object()` は Python のソースを読み込んだとき（`import[py]`）だけ使える（決定）。変換器は Python の
-    ///   `object()` を `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出しだけ。型としての `object`
-    ///   （`x is object`・注釈）は使える。実行時もクラスの値を呼ぶと誤り（`instantiate_evaled`）。
+    /// ⚠ `object()` は Arrow のコードからは呼べない（決定・Python のコードの `object()` は CPython が作る）。型としての
+    ///   `object`（`x is object`・注釈）は使える。実行時もクラスの値を呼ぶと誤り（`instantiate_evaled`）。
     ObjectCallInArrow,
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
@@ -1010,10 +1001,6 @@ impl StaticTypeError {
             TypeErrorKind::CodeEscapesMetafunction { name } => format!(
                 "{} cannot hold a {} value — `code:` fragments exist only while the compile-time expander runs, so they cannot be bound outside a metafunction",
                 hl_q(name), hl_q("Code")
-            ),
-            TypeErrorKind::PyClassFactoryFromArrow { function } => format!(
-                "Python function {} returns a class it defines, so it can only be used from Python code — Arrow cannot know the type of that class (use it from a Python function instead)",
-                hl_q(function)
             ),
             TypeErrorKind::FfiUnsupported { what, function, reason } => format!(
                 "{what} {} cannot be used from Arrow yet: {reason}",

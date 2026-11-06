@@ -660,7 +660,7 @@ impl Parser {
     /// 添字の 1 項: スライス（`[:]`, `[:end]`, `[begin:]`, `[begin:end]`, `[::step]` 等）・`...`・式。
     /// 注意: `::` は lexer が Token::ColonColon として 1 トークンにまとめる。
     ///
-    /// `...` は唯一の値 `Ellipsis`（CPython と同じ。変換器も `...` をこの名前にする・タスク 6-11）。
+    /// `...` は唯一の値 `Ellipsis`（CPython と同じ・タスク 6-11）。
     /// ⚠ `...` を値として書けるのは添字の項だけ（numpy の `a[..., 0]`）。ほかの場所では `Ellipsis` と書く。
     fn parse_subscript_item(&mut self) -> Result<Expr, String> {
         if *self.current() == Token::ColonColon {

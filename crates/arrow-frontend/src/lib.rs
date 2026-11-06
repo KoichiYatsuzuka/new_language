@@ -64,9 +64,6 @@ pub mod cpp_header;
 // Rust crate のソースから型の情報を読む部分（`import[rs]` の型の出所・2-2）。
 #[path = "../../../src/rs_crate/mod.rs"]
 pub mod rs_crate;
-// Python のソース（`.py` / `.pyi`）を Arrow へ写す変換器（`.pyi` の型の出所・2-2。変換器は pandas_import_plan.md の 3-3 で消す）。
-#[path = "../../../src/python_converter/mod.rs"]
-pub mod python_converter;
 #[path = "../../../src/lexer/mod.rs"]
 pub mod lexer;
 #[path = "../../../src/parser/mod.rs"]

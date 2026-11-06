@@ -28,17 +28,6 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）
     "format",
-    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
-    "__py_with_exit",
-    // 変換器が Python の `object()` / 基底が `object` のクラスの `super().__init__(..)` にする（タスク 6-10）
-    "__py_object", "__py_object_init",
-    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
-    "__py_delattr", "__py_delitem",
-    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
-    // （known_bugs.md の #10 / #11）
-    "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
-    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
-    "__py_super",
     // 型（呼ぶと作る・タスク 3-1）
     "frozenset", "bytes",
 ];
@@ -123,13 +112,13 @@ impl Interpreter {
     ///
     /// 呼び出し元は名前の読みが失敗した所すべて（ツリーウォークの `eval` の識別子 3 か所・VM の `LoadGlobal` 2 か所）。
     /// ⚠ 束縛した名前が勝つ（ここへ来るのは束縛が無いときだけ）ので、`let repr = f` の利用者の値を隠さない。
-    /// ⚠ `property` / `cached_property` は Arrow で書いたクラス（タスク 6-1 / 6-5）。初めて引いたときに組み立てるので `&mut self`。
+    /// ⚠ `property` は Arrow で書いたクラス（タスク 6-1）。初めて引いたときに組み立てるので `&mut self`。
     pub(crate) fn builtin_value(&mut self, name: &str) -> Option<Value> {
-        // 組み込みのクラス `object`（タスク 6-10）。⚠ 呼んでも作れない（作れるのは Python の `object()` だけ）。
+        // 組み込みのクラス `object`（タスク 6-10）。⚠ 呼んでも作れない（Python のコードの `object()` は CPython の物）。
         if name == "object" {
             return Some(Value::Class(self.object_class()));
         }
-        // 唯一の値 `Ellipsis`（Python の `...` は変換器がこの名前にする・タスク 6-11）。
+        // 唯一の値 `Ellipsis`（CPython の `Ellipsis` もこれになる・`py_to_tl`・タスク 6-11）。
         if name == "Ellipsis" {
             return Some(self.builtin_singleton(crate::interpreter::BuiltinClass::Ellipsis));
         }
@@ -273,36 +262,6 @@ impl Interpreter {
             "ascii" => Some(self.py_ascii(args)),
             // 書式指定の小言語（タスク 3-4）。`str.format` / f-string の `{x:spec}` と同じ本体（`format_value`）。
             "format" => Some(self.py_format(args)),
-            // Python の `with` の終わり（変換器が `finally` に置く・タスク 5-4）。ファイルなら閉じる（CPython の `__exit__`）、
-            // ほかの値は何もしない（従来どおりブロックの破棄に任せる）。
-            "__py_with_exit" => Some(match args.as_slice() {
-                [Value::FileObject(fd)] => {
-                    fd.borrow_mut().close();
-                    Ok(Value::None)
-                }
-                [_] => Ok(Value::None),
-                _ => Err(format!("TypeError: __py_with_exit() takes exactly one argument ({} given)", args.len())),
-            }),
-            // Python の `object()` / 基底が `object` のクラスの `super().__init__(..)`（変換器が置く・タスク 6-10）。
-            "__py_object" => Some(self.py_object(&args)),
-            "__py_object_init" => Some(self.py_object_init(&args)),
-            // Python の `del o.a` / `del d[k]`（変換器が置く・known_bugs.md の #2 / #3）。
-            "__py_delattr" => Some(match <[Value; 2]>::try_from(args) {
-                Ok([obj, Value::Str(name)]) => self.del_attr_val(obj, &name, true).map(|_| Value::None),
-                Ok(_) => Err("TypeError: __py_delattr() takes an object and an attribute name".to_string()),
-                Err(a) => Err(format!("TypeError: __py_delattr() takes exactly 2 arguments ({} given)", a.len())),
-            }),
-            // Python の `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)` / `object.__getattribute__(o, k)`
-            // （上書きを飛ばす・変換器が置く・#10 / #11）。
-            "__py_object_setattr" => Some(self.py_object_setattr(args)),
-            "__py_object_delattr" => Some(self.py_object_delattr(args)),
-            "__py_object_getattribute" => Some(self.py_object_getattribute(args)),
-            // Python の `super().m(..)`（変換器が置く・known_bugs.md の #6）。キーワード引数つきは `eval_builtin_evaled_named`。
-            "__py_super" => Some(self.py_super_call(args.into_iter().map(|v| (None, v, true)).collect())),
-            "__py_delitem" => Some(match <[Value; 2]>::try_from(args) {
-                Ok([obj, key]) => self.eval_delitem(obj, key).map(|_| Value::None),
-                Err(a) => Err(format!("TypeError: __py_delitem() takes exactly 2 arguments ({} given)", a.len())),
-            }),
             "getattr" => Some(self.py_getattr(args)),
             "hasattr" => Some(self.py_hasattr(args)),
             "setattr" => Some(self.py_setattr(args)),
@@ -705,7 +664,7 @@ impl Interpreter {
     /// `parse_ar(source[, path])` の**唯一の実装**（#56）。
     ///
     /// ソースを字句解析・構文解析して、AST を `Value::Namespace` ツリーへ変換して返す（§2.1）。
-    /// `python_converter` / `converter.ar` がこれに依存する。
+    /// `std_tools/convert_to_python/converter.ar` がこれに依存する。
     ///
     /// ⚠ **入力は文字列だけ**なので評価済み引数で表現できる。#56 で削除した `is_builtin_callee` の
     /// 「AST を値へ変換するので評価済み引数では表現できない」は**出力と入力を取り違えていた**。
@@ -766,20 +725,6 @@ impl Interpreter {
         match name {
             // `print(.., sep=.., end=..)`（タスク 5-1）。`eval_builtin_ident_call` の `print` アームも同じ関数へ回す。
             "print" => Some(self.py_print(args)),
-            // `super().__init__(*args, **kwargs)` が `object` に届いた形（タスク 6-10）。展開してから数える
-            // （空の `**kwargs` は通す・CPython と同じ）。キーワード引数も「余分な引数」。
-            "__py_object_init" => {
-                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
-                Some(self.expand_spread_args(evaled).and_then(|all| {
-                    let values: Vec<Value> = all.into_iter().map(|(_, v, _)| v).collect();
-                    self.py_object_init(&values)
-                }))
-            }
-            // `super().m(*args, **kwargs)`（known_bugs.md の #6）。展開してから基底のメソッドへ名前ごと渡す。
-            "__py_super" => {
-                let evaled = args.into_iter().map(|(k, v)| (k, v, true)).collect();
-                Some(self.expand_spread_args(evaled).and_then(|all| self.py_super_call(all)))
-            }
             // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
             "enumerate" => {
                 let mut positional: Vec<Value> = Vec::new();

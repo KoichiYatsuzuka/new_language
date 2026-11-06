@@ -442,8 +442,8 @@ impl Parser {
             Token::Quote => self.parse_quote(),
             // ⚠⚠ **型の定義と `import` はモジュールの最上位だけ**（フェーズ10 10-16）。関数・ブロックの中に
             //    書くと、以前は実行時に内部エラー（`VmForceError`）になっていた。関数の中でクラスを作るのは
-            //    Python から翻訳したコード（デコレータ・クラスを返す関数）だけに認める（変換器はこのパーサを
-            //    通らない）。⚠ メタ関数の本体は展開時に走るコードなので対象外。`enum` は関数の中でも書ける（#68）。
+            //    Python のコード（CPython が走らせる・このパーサを通らない）だけ。⚠ メタ関数の本体は展開時に走る
+            //    コードなので対象外。`enum` は関数の中でも書ける（#68）。
             Token::Class | Token::Trait | Token::Protocol | Token::NewType | Token::Import | Token::From
                 if self.block_depth > 0 && self.metafn_depth == 0 =>
             {

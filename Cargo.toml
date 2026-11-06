@@ -25,7 +25,6 @@ encoding_rs = "0.8"
 # ⚠ **ネイティブ専用の依存**（wasm32 に載らない）。`native` feature で有効化する。
 # これらを無効にしたビルドが「評価コア」で、VS Code 拡張（wasm）へ持ち込める範囲になる。
 # 詳細と作業分割は implementation_logs/eval_core_extraction_plan.md を参照。
-rustpython-parser = { version = "0.4", optional = true }
 pyo3 = { version = "0.22", features = ["auto-initialize"], optional = true }
 libloading = { version = "0.8", optional = true }
 
@@ -34,7 +33,7 @@ libloading = { version = "0.8", optional = true }
 # 外すと FFI（C/C++ DLL・.NET・Node）と Python 相互運用が落ち、
 # 「評価コアだけ」のビルドになる（`cargo build --no-default-features`）。
 default = ["native"]
-native = ["dep:rustpython-parser", "dep:pyo3", "dep:libloading"]
+native = ["dep:pyo3", "dep:libloading"]
 # 診断フック `AR_TW_STATS=1`（#10）。**既定では無効＝コード自体が消える。**
 # 環境変数だけの分岐にすると `exec()` の 1 文ごとに OnceLock の atomic 読みが入り、
 # 文ディスパッチ支配のワークロードで **11% 退行した**（partial_call_overhead.ar で実測）。

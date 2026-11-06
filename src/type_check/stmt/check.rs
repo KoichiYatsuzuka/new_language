@@ -24,55 +24,6 @@ pub(crate) fn closed_module(lang: &str, module: &[String]) -> Option<Box<ClosedM
     Some(Box::new(ClosedModule { name: module.join(".") }))
 }
 
-/// Python のモジュールの本体で、**自分で定義したクラスを返す関数**の名前（フェーズ10 10-16）。
-///
-/// 次のどちらかを `return <名前>` で返す関数（`if` / `while` などの中の `return` も見る）:
-/// - 自分の本体で定義した `class`（クラスのファクトリ・`class Wrapped(cls)` を返すデコレータ）。
-/// - そういう関数として自分の本体で定義した関数（`def tagged_with(t): def deco(cls): ..; return deco`。
-///   返した関数を Arrow が呼ぶことになる）。
-///
-/// ⚠ 作ったクラスを中で使い切る関数（戻り値がクラスでない・インスタンスを返す）は対象外（Arrow から呼べる）。
-/// ⚠ 名前で見るだけの近似。別名（`X = A; return X`）・組（`return (A, B)`）で返す形は拾わない。
-/// ⚠ クラスのメソッドは見ない（受け手の型から引く別の経路になる）。
-fn py_class_factory_names(body: &[Stmt]) -> Vec<String> {
-    /// 関数の本体 `stmts` が自分で定義したクラスを返すか。
-    fn is_factory(stmts: &[Stmt]) -> bool {
-        let mut makes: Vec<String> = Vec::new();
-        let mut returned: Vec<String> = Vec::new();
-        scan(stmts, &mut makes, &mut returned);
-        returned.iter().any(|r| makes.contains(r))
-    }
-    /// 本体を（入れ子の関数・クラスへは降りずに）歩き、クラスを作るもの（`class` と、クラスを返す入れ子の
-    /// 関数）の名前と、`return` で返す名前を集める。
-    fn scan(stmts: &[Stmt], makes: &mut Vec<String>, returned: &mut Vec<String>) {
-        for st in stmts {
-            match st {
-                Stmt::ClassDef { name, .. } => makes.push(name.clone()),
-                Stmt::FnDef { name, body, .. } | Stmt::GenDef { name, body, .. } => {
-                    if is_factory(body) {
-                        makes.push(name.clone());
-                    }
-                }
-                Stmt::Return(Some(Expr::Ident { name, .. }), _) => returned.push(name.clone()),
-                _ => crate::stmt_walk::each_subpart(st, &mut |part| {
-                    use crate::stmt_walk::StmtPart as P;
-                    if let P::Control(b) | P::AsyncBody(b) = part {
-                        scan(b, makes, returned);
-                    }
-                }),
-            }
-        }
-    }
-    body.iter()
-        .filter_map(|st| match st {
-            Stmt::FnDef { name, body, .. } | Stmt::GenDef { name, body, .. } if is_factory(body) => {
-                Some(name.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 /// C/C++ のモジュールの本体（型スタブ）から、今の Arrow から正しく呼べない関数の `(名前, 理由)` を集める
 /// （ffi_value_exchange_plan.md 1-2）。パーサが理由を書いた文字列のデコレータ（`FFI_UNSUPPORTED_MARK` で始まる）
 /// を付けている（`parser/imports/cpp.rs`）。
@@ -764,20 +715,6 @@ impl TypeChecker {
                     } else {
                         self.namespace_type(lang, &b.module)
                     };
-                    // クラスを返す Python の関数（10-16）。同じ名前の束縛し直しで前の控えを消す。
-                    // 綴りは束縛名からモジュールまでの道（`import a.b` の `a.b.f`・`import a.b as m` の `m.f`）。
-                    self.py_class_factories.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
-                    if lang == "py" {
-                        let rest = module.get(b.module.len()..).unwrap_or(&[]);
-                        let spelled: Vec<&str> =
-                            std::iter::once(b.name.as_str()).chain(rest.iter().map(String::as_str)).collect();
-                        let prefix = format!("{}.", spelled.join("."));
-                        let depth = self.state.scope_depth();
-                        for f in py_class_factory_names(body) {
-                            let shown = format!("{}.{f}", module.join("."));
-                            self.py_class_factories.insert(format!("{prefix}{f}"), (depth, shown));
-                        }
-                    }
                     // 今の Arrow から呼べない C/C++ の関数（1-2）。cpp 系はパッケージではなく、束縛名が
                     // 別名かヘッダの名前なので、綴りは `束縛名.関数名`。
                     self.ffi_unsupported.retain(|k, _| !k.starts_with(&format!("{}.", b.name)));
@@ -805,8 +742,6 @@ impl TypeChecker {
                 if !origin.unresolved {
                     self.module_member_cache.insert(module.join("."), member_types.clone());
                 }
-                let is_py = lang == "py";
-                let factories = if is_py { py_class_factory_names(body) } else { Vec::new() };
                 let marks_fns = matches!(lang.as_str(), "cpp-dll" | "cpp-lib" | "rs");
                 let unsupported = if marks_fns { ffi_unsupported_fns(body) } else { Vec::new() };
                 let what = crate::type_check::ffi_kind(lang, false);
@@ -829,14 +764,6 @@ impl TypeChecker {
                         }
                     }
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
-                    // クラスを返す Python の関数（10-16）。
-                    if factories.contains(orig_name) {
-                        let shown = format!("{}.{orig_name}", module.join("."));
-                        self.py_class_factories
-                            .insert(bind_name.clone(), (self.state.scope_depth(), shown));
-                    } else {
-                        self.py_class_factories.remove(&bind_name);
-                    }
                     // 今の Arrow から呼べない C/C++ の関数（1-2）。
                     if let Some((_, reason)) = unsupported.iter().find(|(n, _)| n == orig_name) {
                         self.ffi_unsupported.insert(
@@ -854,7 +781,7 @@ impl TypeChecker {
                         .or_else(|| is_child.then(|| self.namespace_type(lang, &child_path)))
                         .unwrap_or(
                             // 読めなかった import では `Any` に落とさない（上の Stmt::Import と同じ理由）。
-                            if is_py && !origin.unresolved {
+                            if lang == "py" && !origin.unresolved {
                                 InferredType::Any
                             } else {
                                 InferredType::Unresolved

@@ -95,7 +95,7 @@ impl TypeChecker {
                     let is_static = self.registry.is_static_method(&cls_name, attr.as_str());
                     // StaticMethodOnInstance: only report when called on an instance
                     // ⚠ Python のクラスの静的メソッドはインスタンスからも呼べる（CPython と同じ・known_bugs.md の #5）。
-                    if is_static && is_instance && !self.registry.is_python_class(&cls_name) && !self.registry.is_cpython_class(&cls_name) {
+                    if is_static && is_instance && !self.registry.is_cpython_class(&cls_name) {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::StaticMethodOnInstance {
                                 method_name: attr.clone(),
@@ -367,8 +367,7 @@ impl TypeChecker {
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
             if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
-                // `object()` は Python のソースからだけ呼べる（タスク 6-10 の決定）。変換器は Python の `object()` を
-                // `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出し。
+                // `object()` は Arrow のコードからは呼べない（タスク 6-10 の決定・Python のコードの `object()` は CPython）。
                 if name == "object" {
                     self.report_error(StaticTypeError { kind: TypeErrorKind::ObjectCallInArrow, span: None });
                     return InferredType::Unresolved;
@@ -759,10 +758,8 @@ impl TypeChecker {
     ///
     /// **関数値は書き戻しようがない**（中身を差し替える手段が無い）。それでも弾いていたため、
     /// `m.apply(m.base, n)` のように**関数を引数で渡す形が丸ごと通らなかった**。
-    /// 変換器は全パラメータを `mutable: true` にするので、py 由来の関数では特に効く。
-    ///
-    /// ⚠ `is_python` 限定にはしない。食い違いは py 固有ではなく、純 Arrow の
-    /// `fn deco(mut f: function)` でも同じく通らなかった（INF-D と同じ判断）。
+    /// ⚠ 見つけたのは Python のコードを Arrow へ変換していた頃（変換器は全パラメータを `mutable: true` にした）だが、
+    ///   食い違いは純 Arrow の `fn deco(mut f: function)` でも同じく通らなかった（INF-D と同じ判断）。
     /// ⚠ スカラ（`int` 等）は**対象にしない**。書き戻らないのは同じだが、
     /// そこまで緩めるかは仕様の話で、本件（関数を渡せない）とは別。
     fn mut_arg_exempt(ty: &InferredType) -> bool {
@@ -1706,8 +1703,7 @@ impl TypeChecker {
                 [(None, T::Int), (None, T::Int), (None, T::Int)] => Some(T::Int),
                 _ => None,
             },
-            "setattr" | "__py_with_exit" | "__py_delattr" | "__py_delitem" | "__py_object_setattr"
-            | "__py_object_delattr" => Some(T::None),
+            "setattr" => Some(T::None),
             // `type(x)` は x の型の**型値**（タスク 2-2）。`type(x)(...)` が x と同じ型になり、`__name__` が引ける。
             // ⚠ クラスとプリミティブだけ。判らない型・3 引数の形は `None`（嘘の型を返さない）。
             "type" => match arg_data {
@@ -1860,11 +1856,10 @@ impl TypeChecker {
         }
     }
 
-    /// CPython の物と型で分かるか（CPython で実行するモジュール・そのクラスとインスタンス・`py_list` など・D-12・2-11）。
-    /// ⚠ `import[py]`（Arrow へ変換して実行する）のモジュールは偽（中身は Arrow の値）。
+    /// CPython の物と型で分かるか（Python のモジュール・そのクラスとインスタンス・`py_list` など・D-12・2-11）。
     pub(super) fn is_python_value(&self, ty: &InferredType) -> bool {
         match ty {
-            InferredType::PyNamespace(_, cpython) => *cpython,
+            InferredType::PyNamespace(_) => true,
             InferredType::PyList(_) | InferredType::PyDict(..) | InferredType::PySet(_) => true,
             InferredType::NamedInstance(n) | InferredType::GenericInstance { name: n, .. } => self.registry.is_cpython_class(n),
             InferredType::TypeValOf(inner) => self.is_python_value(inner),

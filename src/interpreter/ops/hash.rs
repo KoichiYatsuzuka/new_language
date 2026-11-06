@@ -224,12 +224,6 @@ impl Interpreter {
                     h.write_u64(hv);
                     return Ok(());
                 }
-                // Python から変換したクラスのインスタンスはアドレスでハッシュする（`values_eq` が同一性で比べるのと対・
-                // known_bugs.md の #1）。
-                if rc.borrow().class.is_python {
-                    ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ());
-                    return Ok(());
-                }
                 let inst = rc.borrow();
                 if inst.class.enum_of.is_some() {
                     // enum のメンバーは `values_eq` が `value` フィールドだけを見る。

@@ -329,7 +329,7 @@ fn test_seq_ordering_follows_cpython() {
 #[test]
 fn test_seq_ordering_type_errors() {
     // 静的検査を通らない形（`Any` どうしの `<`）なので、型検査をせずに走らせる（`resolve_and_annotate` の誤りは見ない）。
-    // ⚠ 以前は Python から変換した関数（引数の型が無い）で確かめていた（変換器は pandas_import_plan.md の 3-3 で消す）。
+    // ⚠ 以前は Python から変換した関数（引数の型が無い）で確かめていた（変換器は pandas_import_plan.md の 3-3 で消した）。
     let run = |main: &str| -> Result<Interpreter, String> {
         let src = format!("fn lt(let a: Any, let b: Any) -> bool:\n    return a < b\n{main}");
         let mut stmts = Parser::new(Lexer::new(&src, "").tokenize(), None).parse_program()?;
@@ -410,12 +410,3 @@ fn test_dict_constructor_follows_cpython() {
         .contains("dictionary update sequence element #1 has length 1; 2 is required"));
 }
 
-/// Python の辞書内包は `dict([(k, v) for ...])` に変換される（以前は変換の誤り）。
-/// ⚠ `native` 限定（変換器 `python_converter` を使う）。
-#[cfg(feature = "native")]
-#[test]
-fn test_python_dict_comprehension_converts() {
-    let body = crate::python_converter::convert_python_source("def f(ks):\n    return {k: k * 2 for k in ks}\n", "dc.py")
-        .expect("dict comprehension converts");
-    assert!(!body.is_empty());
-}

@@ -209,8 +209,8 @@ type stub only (type checking). Search is the shared rule (`python_import_dirs(f
 directory then `python_search_dirs_from(entry)` — `python.search_paths`, `PYTHONPATH`, the stdlib, the user's and the
 system site-packages; dots → counted from the importing file's directory only). The module name is the written spelling.
 ⚠ `import[py-int]` (the former name of this path) is a parse error (`dispatch.rs`). ⚠ The former `import[py]` translated the
-Python source to Arrow statements (`python_converter`, `load_python_module`); that loader was removed in 3-2 and the
-converter is used only for `.pyi` stubs until 3-3.
+Python source to Arrow statements (the converter `src/python_converter/`, rustpython); its loader was removed in 3-2
+and the converter itself in 3-3 (`.pyi` and `.py` types come from the line extractor `py_stub_extract` only).
 
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
@@ -238,8 +238,7 @@ Type names the file does not declare as a class become `Any` (`py_unknown_types_
 checker coerces an `int` result to a declared `float` (`ffi_boundary::coerce_numbers`, PEP 484). `parser/py_stub_extract.rs` turns a top-level `class` into a
 `Stmt::ClassDef` stub (`py_class_stub`): methods with parsed parameters, fields from class-level `name: T` / `name = …` and
 `self.name …` in methods, `@property` as a field; a base in the same file is merged, a foreign base or a decorator makes
-the member set open (decorator marker `py-open-members:`). `.pyi` files use the same class stubs (the converter's classes
-are dropped: `mut self`, lost bare annotations). Runtime `is` / `mustbe pc.Box` on a `Value::PyObject` compares the
+the member set open (decorator marker `py-open-members:`). `.pyi` files use the same class stubs. Runtime `is` / `mustbe pc.Box` on a `Value::PyObject` compares the
 class MRO names (and `__module__` when written through a module), `py_interop::py_class_mro`.
 
 Search order: the same `python_import_dirs` as `import[py]` (no dots: the entry directory, `python.search_paths`,
@@ -253,8 +252,8 @@ typeshed-fallback by default; `scripts/typeshed_flatten.py` keeps only the `sys.
 of the generating CPython, turns TypeVars into `Any`, inlines private aliases, `X: Final = 8` into `X: int`, merges
 overloaded methods, `__new__` into `__init__`; license in `stubs/generated/LICENSE-typeshed.txt`, shipped in the VSIX and
 the deploy folder's `third_party/`), the other 28 by CPython introspection (arity from `__text_signature__`, module
-globals typed from their values, everything else `Any`). Bundled stubs are read by the line-based extractor only (not
-the converter; `bundled_stubs_lose_no_declarations` guards it). The import-following linker (`py_raw_stub_load`) falls
+globals typed from their values, everything else `Any`). Bundled stubs are read by the line-based extractor
+(`bundled_stubs_lose_no_declarations` guards it). The import-following linker (`py_raw_stub_load`) falls
 back to them too, so `collections.deque` resolves into `_collections`);
 otherwise **an error** (`cannot find its types` — put a `.pyi` next to the importing file). ⚠ Unresolved imports
 are errors for every language since 2026-10-08 (`implementation_plans/editor_import_resolution_plan.md` 1-2): they

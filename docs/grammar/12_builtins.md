@@ -125,8 +125,8 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 ```
 
 - 作る: `bytes()` / `bytes(n)`（0 が n 個）/ `bytes(iterable)`（0〜255 の int）/ `bytes(s, encoding[, errors])` /
-  `s.encode(encoding="utf-8", errors="strict")`。⚠ Arrow のソースに `b".."` のリテラルは無い（Python のモジュールの
-  `b".."` は変換器が `bytes([..])` に写す）
+  `s.encode(encoding="utf-8", errors="strict")`。⚠ Arrow のソースに `b".."` のリテラルは無い（Python から返った
+  `bytes` は Arrow の `bytes` になる）
 - 符号化は `utf-8` / `ascii` / `latin-1`（別名も・誤りの文言まで CPython と同じ）、`utf-16-le` / `utf-16-be`
   （BOM は付けも読みもしない。`utf-16` はバイト順が決まらないので誤り）、`shift_jis`（`cp932`）とそのほかの WHATWG の名前
   （`euc-jp` / `gbk` …）。`errors` は `strict` / `ignore` / `replace`（どの符号化でも）。失敗は
@@ -164,10 +164,9 @@ print(bytes(3), bytes("abc", "ascii"))   # b'\x00\x00\x00' b'abc'
 | `iter(x)` / `iter(f, sentinel)` | `for` と同じイテレータ／`f()` が `sentinel` になるまで |
 | `hash` / `ord` / `chr` | `hash` は辞書・集合の鍵と同じ値 |
 | `hex` / `oct` / `bin` / `ascii` | 接頭辞つき（`-0b101`）／非 ASCII を `\x..` に |
-| `property(fget=None, fset=None, fdel=None, doc=None)` | クラス。`getter` / `setter` / `deleter` は写した property を返す。クラス側に置くとディスクリプタとして働く（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。Python の `@property` / `@x.setter` は変換器がこれで組み立てる（[09_imports.md](09_imports.md)）。⚠ Arrow で書いたクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）で、名前を初めて引いたときに組み立てる |
-| `cached_property(func)` | クラス（`functools.cached_property`・タスク 6-5）。Python の `@cached_property` は変換器がこれで組み立てる |
+| `property(fget=None, fset=None, fdel=None, doc=None)` | クラス。`getter` / `setter` / `deleter` は写した property を返す。クラス側に置くとディスクリプタとして働く（[06_classes_traits.md](06_classes_traits.md) の「ディスクリプタ」）。⚠ Arrow で書いたクラス（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）で、名前を初めて引いたときに組み立てる |
 | `format(value, format_spec='')` | 書式指定の小言語（下の節）。`str` を返す |
-| `object` | クラス（すべての値の基底・タスク 6-10）。`isinstance(x, object)` / `x is object` は何でも真（型の判定だけの特例）。注釈の `object` は静的には `Any` と同じ。⚠ **`object()` は Python のモジュール（`import[py]`）の中でだけ呼べる**（Arrow で書くと静的な誤り・クラスの値を呼ぶのは実行時の誤り）。作った値はフィールドを持たず、写さずに共有し、同一性で比べる（`is` / `==` / `hash` / `id`・表示は `<object object at 0x..>`）。番兵として使う （`examples/interop/py_object.ar`） |
+| `object` | クラス（すべての値の基底・タスク 6-10）。`isinstance(x, object)` / `x is object` は何でも真（型の判定だけの特例）。注釈の `object` は静的には `Any` と同じ。⚠ **`object()` は Arrow のソースでは呼べない**（静的な誤り・クラスの値を呼ぶのは実行時の誤り）。Python のモジュール（`import[py]`）の `object()` は CPython の物で、Arrow の束縛を通しても写さずに共有される（番兵として使える・`examples/interop/py_object.ar`） |
 | `Ellipsis` | 唯一の値（クラス `ellipsis`・タスク 6-11）。Python の値の `...` はこれ。表示は `Ellipsis`。写さずに共有し、`is` / `==` / `hash` は種類で決まる（1 つしか無い）。`type(...)()` は `Ellipsis` を返す（CPython と同じ） |
 | `NotImplemented` | 唯一の値（クラス `NotImplementedType`・タスク 6-12）。演算子メソッドがこれを返すと、二項演算子は反対側のメソッドを試す（[06_classes_traits.md](06_classes_traits.md) の「演算子メソッドの手順」）。表示は `NotImplemented` |
 
@@ -222,6 +221,5 @@ CPython 3.12 の組み込み 153 名のうち、2026-10-20 の時点で次の 34
 `ModuleNotFoundError` `KeyboardInterrupt` `MemoryError` `StopAsyncIteration` `SystemExit`
 
 - **Arrow のソース**で参照すると、型検査が未定義の名前として静的に弾きます。
-- **Python のモジュール**（`import[py]`）で参照すると、読み込む時点で変換の誤りになります。呼ばれない関数の中でも
-  同様です（[09_imports.md](09_imports.md) の「Python モジュール」）。
-- ⚠ `staticmethod` / `classmethod` はデコレータとクラス本体の `f = staticmethod(f)` の形（タスク 6-13）で、`super` は `super().m(..)` / `super(C, self).m(..)`（`C` は定義中のクラス・タスク 6-2）の形でなら変換器が受けます。
+- **Python のモジュール**（`import[py]`）は CPython が走らせるので、CPython の組み込みがすべて使えます
+  （[09_imports.md](09_imports.md) の「Python モジュール」）。

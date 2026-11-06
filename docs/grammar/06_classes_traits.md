@@ -623,8 +623,8 @@ print(p.greeting)             # Hello, Ada
 print(p.greeting.upper())     # HELLO, ADA（読んだ値は str）
 ```
 
-- ⚠ Arrow のクラスではフィールドとクラス側の値に同じ名前を付けられないので、「フィールドより先か後か」の違いが
-  出るのは Python から変換したクラス（`__init__` が `self.x = ..` と書くクラス）だけです。
+- ⚠ Arrow のクラスではフィールドとクラス側の値に同じ名前を付けられないので、「フィールドより先か後か」の違いは
+  出ません（Python のクラスは CPython の規則で動きます）。
 
 ### クラスから読む・関数を返す
 
@@ -680,8 +680,8 @@ print(Calc().op(21))          # 42
 
 ## 組み込みの `property`
 
-CPython 3.12 の `property` と同じ振る舞いのクラスです（データディスクリプタ）。Python の `@property` / `@x.setter` は
-変換器がこれで組み立てます（[09_imports.md](09_imports.md) の「クラスの属性・property」）。
+CPython 3.12 の `property` と同じ振る舞いのクラスです（データディスクリプタ）。Python のクラスの `@property` は
+CPython の `property` です（[09_imports.md](09_imports.md) の「Python モジュール」）。
 
 | 書き方 | 働き |
 |---|---|
@@ -704,12 +704,10 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
   （`def x(self) -> float`）が Arrow から読んだ値の型になります（[09_imports.md](09_imports.md)・タスク 6-8）。
 - ⚠ Arrow で書いたクラスで（`eval/py_builtins.rs` の `PY_PROPERTY_SRC`）、名前 `property` を初めて引いたときに組み立てます。
   CPython 3.12 の property は `__name__` を持たないので、名前は外から読めない欄に置いています。
-- 組み込みの `cached_property`（`functools.cached_property`・タスク 6-5）も同じく Arrow で書いた非データディスクリプタです
-  （`PY_CACHED_PROPERTY_SRC`）。初めて読んだときに計算した値をインスタンスの**同じ名前のフィールド**へ入れ、以後は
-  フィールドが勝ちます。Arrow のクラスは同じ名前を 2 度宣言できないので、使うのは Python のクラスの `@cached_property`
-  （変換器が置き場とフィールドを並べて宣言する・[09_imports.md](09_imports.md)）です。
-  ⚠ 非データディスクリプタと同じ名前のフィールドがあると、インスタンスへの代入はフィールドへ入ります（CPython の
-  インスタンスの `__dict__` と同じ）。
+- ⚠ 以前は組み込みの `cached_property`（`functools.cached_property`・タスク 6-5）もありました。計算した値を入れる
+  **同じ名前のフィールド**が要り、Arrow のクラスは同じ名前を 2 度宣言できないので、使えたのは Python から Arrow へ
+  変換したクラスだけでした。変換器と一緒に削除しました（pandas_import_plan.md の 3-3）。Python のクラスの
+  `@functools.cached_property` は CPython のものです（`examples/interop/py_cached_property.ar`）。
 
 ---
 
@@ -733,8 +731,8 @@ AttributeError: property of 'ReadOnly' object has no getter      # 名前を入�
 | `__freeze__(mut self)` | `freeze obj` 実行時 |
 | `__get__(self, mut obj, owner)` | クラス側に置いた値を読んだとき（ディスクリプタ・上の節。クラスから読むと `obj` は `None`） |
 | `__set__(self, mut obj, value)` | インスタンス経由で代入したとき（データディスクリプタ） |
-| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる。Python のモジュールの `del obj.x` が呼ぶ（⚠ Arrow のソースには `del` の構文が無い） |
-| `__set_name__(mut self, owner, name)` | Python のクラス本体の `property` を組み立てるとき（変換器が呼ぶ） |
+| `__delete__(self, mut obj)` | 持っているとデータディスクリプタになる（⚠ Arrow のソースには `del` の構文が無い） |
+| `__set_name__(mut self, owner, name)` | 名前を受け取る（CPython ではクラスを作るときに呼ばれる。Arrow では呼ぶ側が呼ぶ） |
 | ⚠ `__setattr__` / `__delattr__` / `__getattr__` / `__getattribute__` | **Arrow のクラスでは定義できない**（パースの誤り）。属性の操作の上書きは Python のモジュール（`import[py]`）のクラスだけ（[09_imports.md](09_imports.md) の「`__setattr__` / `__delattr__`」「`__getattr__`」「`__getattribute__`」） |
 
 ### 演算子メソッドの手順

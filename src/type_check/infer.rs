@@ -157,8 +157,6 @@ impl TypeChecker {
                 if found.is_none() {
                     self.check_name_defined(name);
                 }
-                // `from m import make_class` した、クラスを返す Python の関数（10-16）。
-                self.check_py_class_factory_use(name, name, None);
                 // `from h import[cpp-dll] f` した、今の Arrow から呼べない C の関数（1-2）。
                 self.check_ffi_unsupported_use(name, name, None);
                 let result = found.unwrap_or(InferredType::Unresolved);
@@ -850,10 +848,6 @@ impl TypeChecker {
         let is_callee = std::mem::take(&mut self.attr_is_callee);
         let is_assign_target = std::mem::take(&mut self.attr_is_assign_target);
         let obj_ty = self.infer(object);
-        // `import[py] m as p` の `p.make_class`（クラスを返す Python の関数・10-16）。
-        if let (Expr::Ident { name, .. }, InferredType::PyNamespace(..)) = (object, &obj_ty) {
-            self.check_py_class_factory_use(&format!("{name}.{attr}"), name, Some(span.clone()));
-        }
         // `import[cpp-dll] h as fp` の `fp.f`（今の Arrow から呼べない C の関数・1-2）。
         if let Expr::Ident { name, .. } = object {
             self.check_ffi_unsupported_use(&format!("{name}.{attr}"), name, Some(span.clone()));
@@ -1024,7 +1018,7 @@ impl TypeChecker {
         // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
         let fallback = if let InferredType::Namespace(ref members, _, _) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
-        } else if let InferredType::PyNamespace(ref members, _) = obj_ty {
+        } else if let InferredType::PyNamespace(ref members) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Any)
         } else {
             InferredType::Unresolved
@@ -1291,25 +1285,10 @@ impl TypeChecker {
         !self.member_set_is_closed(class_name)
     }
 
-    /// 自分で定義したクラスを返す Python の関数を Arrow から使っていたら誤りにする（フェーズ10 10-16）。
-    ///
-    /// `spelled` は束縛の綴り（p.factory / factory）、`binding` はその先頭の名前（p / factory）。
-    /// ⚠ 束縛の深さを見て、同じ綴りの別の束縛（関数の引数など）を取り違えない。
-    fn check_py_class_factory_use(&mut self, spelled: &str, binding: &str, span: Option<Span>) {
-        let Some((depth, shown)) = self.py_class_factories.get(spelled) else { return };
-        if self.state.lookup_depth(binding) != Some(*depth) {
-            return;
-        }
-        let function = shown.clone();
-        self.report_error(StaticTypeError {
-            kind: TypeErrorKind::PyClassFactoryFromArrow { function },
-            span,
-        });
-    }
-
     /// 今の Arrow から正しく呼べない C/C++ の関数を使っていたら誤りにする（ffi_value_exchange_plan.md 1-2）。
     ///
-    /// 引数の意味は `check_py_class_factory_use` と同じ。呼び出しに限らず、値として持ち出すのも誤り
+    /// `spelled` は束縛の綴り（fp.f / f）、`binding` はその先頭の名前（fp / f。束縛の深さを見て、同じ綴りの別の束縛を
+    /// 取り違えない）。呼び出しに限らず、値として持ち出すのも誤り
     /// （どの使い方でも、戻り値が壊れる・落ちる・書き込みが失われる関数なので）。
     fn check_ffi_unsupported_use(&mut self, spelled: &str, binding: &str, span: Option<Span>) {
         let Some((depth, shown, reason, what)) = self.ffi_unsupported.get(spelled) else { return };

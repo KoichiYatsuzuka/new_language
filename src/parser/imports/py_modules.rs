@@ -7,24 +7,6 @@ use {
     std::path::{Path, PathBuf},
 };
 
-/// Python のソースを Arrow の文へ写す（`python_converter`）。
-///
-/// ⚠ 評価コアのビルド（`--no-default-features`）には変換器が無い（`rustpython-parser` は `native` の依存）ので、
-///   `import[py]` と `.pyi` の読み込みは理由つきのエラー（ffi_value_exchange_plan.md 7-7。以前はこのファイルが
-///   `python_converter` を無条件に参照していて、評価コアのビルドそのものが通らなかった）。拡張のクレート（`editor`）は
-///   変換器を取り込んでいる。
-fn convert_python(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
-    #[cfg(any(feature = "native", feature = "editor"))]
-    return crate::python_converter::convert_python_source(source, filename);
-    #[cfg(not(any(feature = "native", feature = "editor")))]
-    {
-        let _ = source;
-        Err(format!(
-            "cannot read Python source '{filename}': this build has no Python converter (build with the default `native` feature)"
-        ))
-    }
-}
-
 impl Parser {
     /// Python の import の探索先（[`crate::module_path`] の規則・CPython と同じ）。
     ///
@@ -69,22 +51,22 @@ impl Parser {
         let search_dirs = self.python_import_dirs(&from_dir, level);
 
         // 候補パスを生成: module.pyi, module/__init__.pyi, module.py, module/__init__.py
-        let candidates: Vec<(PathBuf, bool)> = {
+        let candidates: Vec<PathBuf> = {
             let mut v = Vec::new();
             for dir in &search_dirs {
-                v.push((dir.join(module_base.with_extension("pyi")), true));
-                v.push((dir.join(module_base.join("__init__.pyi")), true));
+                v.push(dir.join(module_base.with_extension("pyi")));
+                v.push(dir.join(module_base.join("__init__.pyi")));
             }
             for dir in &search_dirs {
-                v.push((dir.join(module_base.with_extension("py")), false));
-                v.push((dir.join(module_base.join("__init__.py")), false));
+                v.push(dir.join(module_base.with_extension("py")));
+                v.push(dir.join(module_base.join("__init__.py")));
             }
             v
         };
 
-        for (abs_path, is_pyi) in candidates {
+        for abs_path in candidates {
             if !crate::import_fs::exists(&abs_path) { continue; }
-            return self.load_py_type_body(module, &module_path::normalize(&abs_path), is_pyi);
+            return self.load_py_type_body(module, &module_path::normalize(&abs_path));
         }
         // ⚠⚠ **型の出所が無ければエラー**（`editor_import_resolution_plan.md` 1-2）。以前は黙って空の body
         //    （型なし・実行時は PyO3 に任せる）にしていた。未解決の import は黙って型情報を落とさない。
@@ -121,22 +103,22 @@ impl Parser {
         if let Some(src) = crate::py_stubs::builtin_stub(module) {
             // キャッシュ／循環検出はパスで引くので、実在しない**疑似パス**を割り当てる。
             let pseudo = PathBuf::from("<builtin>").join(format!("{}.pyi", module.join(".")));
-            return self.build_py_type_body(module, &pseudo, src, true, true);
+            return self.build_py_type_body(module, &pseudo, src);
         }
 
         Err(not_found())
     }
 
-    /// Python ソースファイルから型検査用の body を生成する。
+    /// Python ソースファイル（`.pyi` / `.py`）から型検査用の body を生成する。
     ///
-    /// - `.pyi` ファイル: `python_converter` でベストエフォート変換 + スタブで補完
-    /// - `.py` ファイル: `extract_py_type_stubs_raw` でシグネチャを直接抽出（`python_converter` は使わない）
-    /// - どちらも、再エクスポート・注釈のよそのクラス・ほかのファイルの基底をたどって宣言を足す（`link_py_types`・1-3）
+    /// 行単位の抽出器（`extract_py_type_stubs_raw`）で宣言を読み、再エクスポート・注釈のよそのクラス・ほかのファイルの
+    /// 基底をたどって宣言を足す（`link_py_types`・1-3）。
+    /// ⚠ 以前は `.pyi` を変換器（Python のソースを Arrow の文へ変換する）で読んでから抽出器で補っていた。
+    ///   変換器は pandas_import_plan.md の 3-3 で消した（同梱のスタブは 1-6 から抽出器だけで読んでいた）。
     pub(crate) fn load_py_type_body(
         &mut self,
         module: &[String],
         abs_path: &PathBuf,
-        is_pyi: bool,
     ) -> Result<Vec<Stmt>, String> {
         let cache_key = ("py".to_string(), abs_path.clone());
         if let Some(body) = self.module_cache.get(&cache_key) {
@@ -148,21 +130,14 @@ impl Parser {
         let source = crate::import_fs::read_to_string(abs_path).map_err(|_| {
             format!("cannot read interface file for module '{}'", module.join("."))
         })?;
-        self.build_py_type_body(module, abs_path, &source, is_pyi, false)
+        self.build_py_type_body(module, abs_path, &source)
     }
 
     /// 読み込み済みのソース文字列から型検査用の body を組む。
     ///
-    /// `load_py_type_body`（ファイル版）と**同梱スタブ**（`py_stubs`）の共通部分。
-    /// `bundled` はエラー報告の出し分けに使う（群6 S4）。
-    fn build_py_type_body(
-        &mut self,
-        module: &[String],
-        abs_path: &PathBuf,
-        source: &str,
-        is_pyi: bool,
-        bundled: bool,
-    ) -> Result<Vec<Stmt>, String> {
+    /// `load_py_type_body`（ファイル版）と**同梱スタブ**（`py_stubs`）の共通部分。宣言を落としていないかは単体テスト
+    /// `bundled_stubs_lose_no_declarations` が見る。
+    fn build_py_type_body(&mut self, module: &[String], abs_path: &PathBuf, source: &str) -> Result<Vec<Stmt>, String> {
         let cache_key = ("py".to_string(), abs_path.clone());
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -171,66 +146,10 @@ impl Parser {
             return Ok(vec![]);
         }
         self.loading.insert(abs_path.clone());
-
-        // ⚠ 同梱のスタブ（`py_stubs`）は変換器を通さず、`.py` と同じ行単位の抽出器だけで読む（pandas_import_plan.md の 1-6）。
-        //   typeshed から作ったスタブは変換器の読めない構文（`@final`・`Protocol`・`*args` の後の名前つき引数など）を含み、
-        //   変換器は D-7 で消す。宣言を落としていないかは単体テスト `bundled_stubs_lose_no_declarations` が見る。
-        let body = if is_pyi && !bundled {
-            // .pyi: python_converter でベストエフォート変換
-            let filename = abs_path.to_string_lossy().to_string();
-            // ⚠⚠ **変換エラーを握り潰して**行ベース抽出へ落ちる経路（群6 S4）。利用者の `.pyi` は黙って精度を落とすだけ。
-            let mut converted = convert_python(source, &filename).unwrap_or_default();
-            // クラスは `.py` と同じ行単位の抽出の宣言を使う（ffi_value_exchange_plan.md 7-27）。変換器のクラスは Arrow の
-            // クラスとして組むので、メソッドが `mut self`（`let` の値から呼べない）になり、値の無い注釈の属性（`n: int`）を落とす
-            converted.retain(|s| !matches!(s, Stmt::ClassDef { .. }));
-            // 注釈の無い関数の戻り値・引数は `Any`（7-27・7-30・型を付けるのは注釈・スタブのあるものだけ）。引数は不変
-            // （変換器は Python の関数を Arrow の関数として組むので `mut` にするが、スタブでは `mut` の実引数を求めない）
-            for st in &mut converted {
-                if let Stmt::FnDef { return_type, params, .. } = st {
-                    if return_type.is_none() {
-                        *return_type = Some("Any".to_string());
-                    }
-                    for p in params.iter_mut() {
-                        p.mutable = false;
-                        p.type_ann = Some(match p.type_ann.as_deref() {
-                            // `float` の引数は `int` も受ける（PEP 484・`py_param_type`）
-                            Some(t) => crate::parser::py_stub_extract::py_param_type(t),
-                            None => "Any".to_string(),
-                        });
-                    }
-                }
-            }
-            // 変換器は Python の list / dict / set を Arrow の list などと読むが、実行時は CPython の物のまま届く（D-12・2-7）
-            crate::parser::py_stub_extract::py_collections_as_python(&mut converted);
-            // スタブで不足を補完（変換できなかった関数と、クラス）
-            let known: std::collections::HashSet<String> = converted
-                .iter()
-                .filter_map(|s| match s {
-                    Stmt::FnDef { name, .. } | Stmt::Let(name, ..) => Some(name.clone()),
-                    _ => None,
-                })
-                .collect();
-            for stub in crate::parser::py_stub_extract::extract_py_type_stubs_raw(source) {
-                match stub {
-                    Stmt::FnDef { ref name, .. } | Stmt::Let(ref name, ..) if !known.contains(name.as_str()) => {
-                        converted.push(stub)
-                    }
-                    Stmt::ClassDef { .. } => converted.push(stub),
-                    _ => {}
-                }
-            }
-            // 再エクスポート・注釈のよそのクラス・ほかのファイルの基底をたどって宣言を足す（1-3）
-            self.link_py_types(module, abs_path, source, &mut converted);
-            // このファイル（とたどって足した宣言）に無い型の名前は `Any`（7-30・`py_unknown_types_to_any`）
-            crate::parser::py_stub_extract::py_unknown_types_to_any(&mut converted);
-            converted
-        } else {
-            // .py: 直接スタブ抽出（python_converter は複雑な構文に対応できないため使わない）
-            let mut stubs = crate::parser::py_stub_extract::extract_py_type_stubs_raw(source);
-            self.link_py_types(module, abs_path, source, &mut stubs);
-            crate::parser::py_stub_extract::py_unknown_types_to_any(&mut stubs);
-            stubs
-        };
+        let mut body = crate::parser::py_stub_extract::extract_py_type_stubs_raw(source);
+        self.link_py_types(module, abs_path, source, &mut body);
+        // このファイル（とたどって足した宣言）に無い型の名前は `Any`（7-30・`py_unknown_types_to_any`）
+        crate::parser::py_stub_extract::py_unknown_types_to_any(&mut body);
 
         self.loading.remove(abs_path);
         self.module_cache.insert(cache_key, body.clone());

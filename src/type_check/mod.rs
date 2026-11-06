@@ -135,18 +135,9 @@ pub struct TypeChecker {
     /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
     /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
     declared_anywhere: std::collections::HashSet<String>,
-    /// Arrow から使えない Python の関数（自分で定義したクラスを返す関数・フェーズ10 10-16）の束縛の綴り。
-    /// キー: p.factory（`import[py] m as p`）/ factory（from m import factory）。
-    /// 値: (束縛のスコープの深さ, 表示名 m.factory)。
-    ///
-    /// ⚠ クラスを作って返す関数（デコレータ・クラスのファクトリ）は **Python から呼ぶときだけ**認める
-    ///   （利用者の判断）。作られるクラスの型を Arrow の型検査は知り得ないので、Arrow から呼ぶ・
-    ///   デコレータに使う・値として持ち出すのはどれも誤りにする。
-    /// ⚠ 深さは、同じ綴りの別の束縛（関数の引数など）を取り違えないために見る。
-    py_class_factories: HashMap<String, (usize, String)>,
     /// 今の Arrow から正しく呼べない C/C++ の関数（ffi_value_exchange_plan.md 1-2）の束縛の綴り。
     /// キー: fp.fp_greet（`import[cpp-dll] h as fp`）/ fp_greet（from h import[cpp-dll] fp_greet）。
-    /// 値: (束縛のスコープの深さ, 表示名, 理由)。`py_class_factories` と同じ形で、使った箇所を誤りにする。
+    /// 値: (束縛のスコープの深さ, 表示名, 理由)。使った箇所を誤りにする。
     ffi_unsupported: HashMap<String, (usize, String, String, &'static str)>,
     /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
     stmt_pos: Option<crate::token::Span>,
@@ -324,7 +315,6 @@ impl TypeChecker {
                 names::collect_declared_anywhere(stmts, &mut set);
                 set
             },
-            py_class_factories: HashMap::new(),
             ffi_unsupported: HashMap::new(),
             stmt_pos: None,
             bindings: None,

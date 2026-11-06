@@ -18,8 +18,7 @@ impl Interpreter {
         class: Rc<ClassValue>,
         evaled: &[(Option<String>, Value, bool)],
     ) -> Rc<ClassValue> {
-        let is_builtin_os_error = !class.is_python
-            && Self::in_exception_hierarchy(&class)
+        let is_builtin_os_error = Self::in_exception_hierarchy(&class)
             && matches!(class.name.as_str(), "OSError" | "IOError" | "EnvironmentError" | "WindowsError");
         if !is_builtin_os_error {
             return class;
@@ -59,9 +58,8 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match class.builtin {
             crate::interpreter::BuiltinClass::Ordinary => {}
-            // `object()` は Python のソースからだけ作れる（タスク 6-10 の決定）。変換器は Python の `object()` を
-            // `__py_object()` にするので、クラスの値を呼ぶのは Arrow のコード（`let c = object; c()`）か、
-            // Python で型を値として呼ぶ形（`type(o)()`・対象外）。
+            // `object()` は Arrow のコードからは作れない（タスク 6-10 の決定・Python のコードの `object()` は CPython が作る）。
+            // ここに来るのはクラスの値を呼ぶ Arrow のコード（`let c = object; c()`）。
             crate::interpreter::BuiltinClass::Object => {
                 return Err("TypeError: object() cannot be called from Arrow code; it is available only in Python \
                             modules (import[py])"
@@ -215,7 +213,7 @@ impl Interpreter {
         use crate::ast::{Expr, Stmt};
         let ov = class.methods.get("__init__")?;
         let [f] = ov.as_slice() else { return None };
-        if f.is_python || !f.params.first().is_some_and(|p| p.name == "self") {
+        if !f.params.first().is_some_and(|p| p.name == "self") {
             return None;
         }
         // `import[rs]` の構造体のフィールドは setter を通す（`attr_assign_ic` の外れた道）

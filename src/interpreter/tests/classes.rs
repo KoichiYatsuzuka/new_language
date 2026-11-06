@@ -821,47 +821,6 @@ fn test_descriptor_without_set_rejects_assignment() {
     assert!(run_err_msg(src).contains("AttributeError: __set__"), "{}", run_err_msg(src));
 }
 
-/// `__py_delattr`（Python の `del o.a`）はフィールドを未代入に戻す。raw レイアウト（int / float だけのクラス・init の
-/// ビットマップ）と boxed レイアウトのどちらも、消した後は `hasattr` が偽で、また代入できる（known_bugs.md の #2）。
-#[test]
-fn test_py_delattr_resets_field_in_both_layouts() {
-    let src = concat!(
-        "class Raw:\n",
-        "    mut x: int\n",
-        "    mut y: float\n",
-        "class Boxed:\n",
-        "    mut s: str\n",
-        "    mut n: int\n",
-        "mut r = Raw(1, 2.0)\n",
-        "mut b = Boxed(\"a\", 3)\n",
-        "__py_delattr(r, \"x\")\n",
-        "__py_delattr(b, \"s\")\n",
-        "let gone = not hasattr(r, \"x\") and hasattr(r, \"y\") and not hasattr(b, \"s\") and hasattr(b, \"n\")\n",
-        "r.x = 5\n",
-        "b.s = \"z\"\n",
-        "let back = r.x * 10 + b.n\n",
-        "let s_back = b.s\n",
-    );
-    let interp = run_interp(src);
-    let layouts = ["r", "b"].map(|v| match interp.get_val(v) {
-        Some(Value::Instance(i)) => i.borrow().has_raw_layout(),
-        other => panic!("{v}: {other:?}"),
-    });
-    assert_eq!(layouts, [true, false], "the test needs one class of each layout");
-    assert!(matches!(interp.get_val("gone"), Some(Value::Bool(true))));
-    assert!(matches!(interp.get_val("back"), Some(Value::Int(53))));
-    assert!(matches!(interp.get_val("s_back"), Some(Value::Str(s)) if s.to_string() == "z"));
-    // 消した欄をもう一度消すのは CPython と同じ `AttributeError`、不変のインスタンスは `TypeError`。
-    let twice = concat!("class P:\n", "    mut x: int\n", "mut p = P(1)\n", "__py_delattr(p, \"x\")\n", "__py_delattr(p, \"x\")\n");
-    assert!(run_err_msg(twice).contains("AttributeError: 'P' object has no attribute 'x'"), "{}", run_err_msg(twice));
-    let frozen = concat!("class P:\n", "    mut x: int\n", "let p = P(1)\n", "__py_delattr(p, \"x\")\n");
-    assert!(
-        run_err_msg(frozen).contains("cannot delete field 'x' on immutable instance"),
-        "{}",
-        run_err_msg(frozen)
-    );
-}
-
 
 /// `str` / `print` は `__str__` が無ければ `__repr__`、コンテナの要素は `repr`（タスク 1-15・CPython と同じ）。
 #[test]
@@ -897,15 +856,18 @@ fn test_str_falls_back_to_repr_and_containers_use_repr() {
     assert_eq!(s("e"), "s");
 }
 
-/// `object()` のインスタンスは写さずに共有し、同一性で比べる（python_builtins_plan.md のタスク 6-10）。
+/// `object` のインスタンスは写さずに共有し、同一性で比べる（python_builtins_plan.md のタスク 6-10）。
 /// ⚠ 等値（`values_eq`）とハッシュ（`default_hash`）が同じ規則であること（ずれると「入れたのに引けない辞書」）と、
 ///   格納で写す関数（`deep_copy_value` / `deep_copy_unfrozen`）が同じ物を返すことを固定する。
+/// ⚠ Arrow のコードからは作れない（Python のコードの `object()` は CPython の物）ので、インスタンスを直に組み立てる
+///   （以前は Python から変換したコードの `object()` が作った・pandas_import_plan.md の 3-3 で変換器ごと削除）。
 #[test]
 fn object_instances_are_shared_and_compared_by_identity() {
-    use crate::interpreter::{DictData, Interpreter, Value};
+    use crate::interpreter::{DictData, InstanceData, Interpreter, Value};
     let mut interp = Interpreter::new();
-    let a = interp.py_object(&[]).expect("object()");
-    let b = interp.py_object(&[]).expect("object()");
+    let mut make = || Value::Instance(std::rc::Rc::new(std::cell::RefCell::new(InstanceData::new_empty(interp.object_class(), 0))));
+    let a = make();
+    let b = make();
     let same_rc = |x: &Value, y: &Value| matches!((x, y), (Value::Instance(p), Value::Instance(q)) if std::rc::Rc::ptr_eq(p, q));
     // 写さない（フィールド・辞書・リストへの格納と `copy()` が通る関数）
     assert!(same_rc(&Interpreter::deep_copy_value(a.clone()), &a));
@@ -947,10 +909,11 @@ fn ellipsis_is_one_value_even_across_thread_copies() {
     assert_eq!(interp.display(&e), "Ellipsis");
 }
 
-/// 格納の写し（`copy_for_store`・`mut` の宣言の `bind_copy`）は Arrow のコードの中だけ。Python から変換したコードの中は写さずに共有する
-/// （known_bugs.md の #1・A 案）。どちらのコードかは `running_python`（チャンクを走らせる入口が差し替える）。
+/// 格納の写し（`copy_for_store`・`mut` の宣言の `bind_copy`）は値を写す（known_bugs.md の #1）。
+/// ⚠ 以前は Python から変換したコードの中だけ写さずに共有していた（変換器は pandas_import_plan.md の 3-3 で消した。
+///   Python のコードは CPython が走らせ、共有するのは CPython 側）。
 #[test]
-fn copy_for_store_shares_inside_python_code() {
+fn copy_for_store_copies() {
     use crate::interpreter::{Interpreter, Value};
     let mut interp = Interpreter::new();
     let xs = Value::List(std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Int(1)])));
@@ -958,10 +921,6 @@ fn copy_for_store_shares_inside_python_code() {
     // `mut x = e` の束縛（`bind_copy` の `DeepCopy`・master の取り込みで `copy_for_store` から移った）も同じ規則。
     // ⚠ `xs` を持ったまま渡すので「誰とも共有していない値は写さない」（12-1）には当たらない。
     let bind_mut = |interp: &mut Interpreter, v: Value| interp.bind_copy(crate::interpreter::BindCopy::DeepCopy, v).unwrap();
-    assert!(!interp.running_python);
     assert!(!same(&interp.copy_for_store(xs.clone()), &xs), "Arrow code copies on store");
     assert!(!same(&bind_mut(&mut interp, xs.clone()), &xs), "Arrow code copies on a mut declaration");
-    interp.running_python = true;
-    assert!(same(&interp.copy_for_store(xs.clone()), &xs), "Python code shares on store");
-    assert!(same(&bind_mut(&mut interp, xs.clone()), &xs), "Python code shares on a mut declaration");
 }

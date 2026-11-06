@@ -355,13 +355,10 @@ pub enum InferredType {
     /// `Some` のとき、マップに無い名前の属性・`from … import` は静的エラー（2026-10-02）。
     /// 外部言語（cpp / cs / js / rs）のスタブと、import 先を読めていないエディタでは `None`（開いている）。
     Namespace(HashMap<String, InferredType>, Option<Box<ClosedModule>>, Box<ModuleVars>),
-    /// Python モジュール (`import[py]`) を表す名前空間型。
+    /// Python モジュール (`import[py]`・CPython で実行する) を表す名前空間型。
     /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
-    ///
-    /// 2 つ目は **CPython で実行する**モジュールか（pandas_import_plan.md の D-12・2-11: Arrow の list などを
-    /// キャストせずに渡すのは誤り）。3-2 から Python のモジュールはどれも CPython で実行するので常に真（変換して実行していた
-    /// 頃の `import[py]` は偽だった・3-3 で外す）。
-    PyNamespace(HashMap<String, InferredType>, bool),
+    /// ⚠ 以前は 2 つ目に「CPython で実行するか」を持っていた（変換して Arrow が実行するモジュールと分けるため・3-3 で外した）。
+    PyNamespace(HashMap<String, InferredType>),
     /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,
     /// **下端型（⊥ / Never）**。決定 D-11・タスク 4.1。
@@ -1005,7 +1002,7 @@ impl std::fmt::Display for InferredType {
             }
             Self::TupleAny => write!(f, "tuple"),
             Self::Namespace(members, _, _) => write!(f, "<module({} members)>", members.len()),
-            Self::PyNamespace(members, _) => write!(f, "<py-module({} members)>", members.len()),
+            Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
             // ⚠ 利用者が書ける綴りではない（推論の内部表現）。表示は空コレクション由来だと
             //    判るものにする。

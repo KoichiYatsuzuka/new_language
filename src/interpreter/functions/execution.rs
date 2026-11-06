@@ -128,13 +128,10 @@ impl Interpreter {
             &mut_captures,
         )
         .map(|mut c| {
-            // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
-            c.is_python = fn_val.is_python;
             c.builtin_prelude = fn_val.globals == crate::interpreter::value::GLOBALS_OF_CALLER;
             // 入れ子の関数の `__qualname__`（`outer.<locals>.inner`・タスク 1-14）。
             let outer = match &fn_val.qualname {
                 Some(q) => q.to_string(),
-                None if fn_val.is_python => crate::interpreter::python_fn_name(&fn_val.name).to_string(),
                 None => fn_val.name.clone(),
             };
             c.set_nested_qualnames(&outer);
@@ -561,14 +558,6 @@ impl Interpreter {
         let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
         let bind_params = if has_self { &params[1..] } else { &params[..] };
 
-        // ⚠⚠ #71: **Python 関数は受けない。** 高速バインドは `let` パラメータ ＋ mut 引数に
-        // `copy_value` を掛けるが、一般経路は `is_python` のとき**掛けない**（Python は
-        // 値の deep copy をしない）。ここで受けると 2 経路で意味論がずれる
-        // （プランの「`*_evaled` 版とずれた実装を作らない」— 実バグ 4 回）。
-        // 束縛規則そのものも `bind_args` と `bind_args_relaxed` で違う。
-        if fn_val.is_python {
-            return Ok(None);
-        }
         // 単純シグネチャの判定。
         if params.iter().any(|p| p.variadic || p.default.is_some()) {
             return Ok(None);
@@ -813,19 +802,10 @@ impl Interpreter {
         // クロージャは**キャプチャの種類を問わず** VM に載る（#27-d 段階 2b）。
         // 不変は `captured_slots` の slot へ値を書き込み、可変は `captured_cells` の
         // セル index へ **`Rc` を共有**する（外側との書き戻りが保たれる）。
-        // ⚠⚠ #71: **`is_python` を条件から外した。** `import[py]` のモジュールは
-        // `python_converter` が **Arrow の AST へ変換**したものなので、本体は普通に
-        // バイトコードへ載る。`is_python` が意味するのは**引数束縛の規則**だけ
-        // （`bind_args_relaxed` ＋ `let` パラメータの copy をしない）で、それは下の
-        // 一般経路が見ている。
-        //
-        // #33 でツリーウォークのフォールバックが消えるまでは、ここで偽にすると
-        // 「ツリーウォークで実行する」意味だった。消えた後は**そのまま `VmForceError`**
+        // ⚠⚠ #71: 以前は Python から変換した関数（pandas_import_plan.md の 3-3 で変換器ごと削除）を条件で外して
+        // いた。#33 でツリーウォークのフォールバックが消えた後は、ここで偽にすると**そのまま `VmForceError`**
         // になり、`import[py]` の関数呼び出しが**丸ごと死んでいた**（#71 で発見）。
         // ⇒ #56（`is_builtin_callee`・削除済み）・#68（`enum`）と**同型の 5 度目**。
-        //
-        // ⚠ **`try_fast_bind` は python を受け付けない**（下記）。受けると copy 規則が
-        // 一般経路とずれる（`*_evaled` 版とずれた実装を作らない・#22 系列）。
         let vm_eligible = matches!(self_val, None | Some(Value::Instance(_)));
         // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
         // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
@@ -869,40 +849,23 @@ impl Interpreter {
             Vec::new()
         };
 
-        // ⚠ `extra_kwargs` は**ツリーウォークの関数本体だけ**が使っていた（#33 で削除）ので捨てる。
-        // ⚠ #71 以前はここに「`is_python` の関数は VM 非適格なので到達しない」と書いてあった。
-        // それは**到達不能なのではなく `VmForceError` で死んでいた**という意味だった。今は到達する。
-        let (mut bindings, _extra_kwargs) = if fn_val.is_python {
-            Self::bind_args_relaxed(
-                &fn_val.params,
-                evaled,
-                self_val.clone(),
-                &evaluated_defaults,
-            )?
-        } else {
-            (
-                Self::bind_args(
-                    &fn_val.params,
-                    evaled,
-                    self_val.clone(),
-                    recv_mut,
-                    &evaluated_defaults,
-                )?,
-                vec![],
-            )
-        };
+        let mut bindings = Self::bind_args(
+            &fn_val.params,
+            evaled,
+            self_val.clone(),
+            recv_mut,
+            &evaluated_defaults,
+        )?;
 
         // `let` パラメータ（self 除く）に copy() を適用する。
         // - let param + mutable arg → deepcopy（呼び出し元の mut 変数を保護）
         // - let param + let arg   → コピー不要（呼び出し元が不変ならエイリアス共有で安全）
         // - mut param             → コピー不要（参照共有が意図された動作）
-        if !fn_val.is_python {
-            for binding in &mut bindings {
-                let (name, val, param_mutable, arg_is_mutable) = binding;
-                Self::check_param_binding(*param_mutable, name, val)?;
-                if !*param_mutable && name != "self" && *arg_is_mutable {
-                    *val = self.copy_value(val.clone())?;
-                }
+        for binding in &mut bindings {
+            let (name, val, param_mutable, arg_is_mutable) = binding;
+            Self::check_param_binding(*param_mutable, name, val)?;
+            if !*param_mutable && name != "self" && *arg_is_mutable {
+                *val = self.copy_value(val.clone())?;
             }
         }
 
@@ -1010,13 +973,6 @@ impl Interpreter {
             BoundTarget::Gen(g) => return self.exec_generator_evaled(g.clone(), evaled.to_vec(), Some(receiver), true),
             // 組み込みの値のメソッドは名前で同じ入口へ（`xs.append(..)` と同じ・タスク 1-10）。
             BoundTarget::Builtin(name) => return self.eval_method_call_full(receiver, name, evaled.to_vec(), None),
-            // インスタンスから読んだ Python のクラスメソッド（known_bugs.md の #5）。受け手はクラスで、`C.make(..)` と同じ。
-            BoundTarget::ClassMethod(m) => {
-                let Value::Class(cls) = &receiver else {
-                    return Err(format!("RuntimeError: internal — class method '{}' bound to a non-class", m[0].name));
-                };
-                return self.eval_class_method(cls.clone(), &m[0].name, evaled.to_vec());
-            }
         };
         let method_name = methods[0].name.clone();
         // ネイティブのメソッド: `obj.m(..)`（`call_instance_method_evaled`）と同じ入口・同じ順序（不変性で振り分ける前）。

@@ -246,7 +246,7 @@ use super::*;
     //   `zoo.Dog` が型の名前として通らなかった（`d is a.Dog` が `unknown type`・`let x: a.Dog` が
     //   `not a known type`）。Arrow のモジュールと同じく `zoo.Dog` の名前で扱う。
     // ⚠ Python のモジュールの本体は型スタブ（行単位の抽出器・`extract_py_type_stubs`）。インスタンスは CPython の物なので
-    //   `mut` で受ける（D-3）。以前は変換器（`python_converter`）で変換した本体で確かめていた（3-2 で CPython に切り替えた）。
+    //   `mut` で受ける（D-3）。以前は変換器で変換した本体で確かめていた（3-2 で CPython に切り替えた）。
 
     /// `import[py] zoo as alias`（本体は Python の `py_src` の型スタブ）を先頭に置いたプログラムを検査する。
     fn check_with_py_module(py_src: &str, alias: Option<&str>, main_src: &str) -> Vec<StaticTypeError> {

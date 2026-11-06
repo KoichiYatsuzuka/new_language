@@ -542,16 +542,6 @@ pub struct Interpreter {
     /// モジュールキャッシュ: (lang, 解決済みパス) → ロード状態。
     /// 循環 import 検出と重複ロード防止に使用する。
     pub(self) module_cache: HashMap<(String, PathBuf), ModuleState>,
-    /// Python モジュール body を実行中かどうかを示すフラグ。
-    /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
-    pub(self) in_python_module: bool,
-    /// 今走っているのが Python から変換したコードか（known_bugs.md の #1・A 案）。真の間は格納で値を写さない
-    /// （`copy_for_store`・CPython と同じく参照を共有する）。
-    ///
-    /// ⚠ チャンクを走らせる入口（`vm::run` / `vm::resume_frame`）がチャンクの `is_python` に差し替えて戻す。
-    ///   Python のモジュールの本体は `exec_module` が真にする（定義文はツリーウォークで走るので）。Python の
-    ///   コードから呼ばれた Arrow の関数の中は偽に戻る（呼び出しの入口で差し替えるので）。
-    pub(crate) running_python: bool,
     /// 実行時の誤りの文言に添えた、例外の `args` にする値（`(文言, args)`・known_bugs.md の #9）。
     ///
     /// 実行時の誤りは文字列（`"KeyError: 'zz'"`）で運ばれ、例外のインスタンスになるのは捕まえる所・関数の境界
@@ -559,7 +549,7 @@ pub struct Interpreter {
     /// 控え、例外にするときに**文言が完全に一致すれば**この `args` を使う（一致しなければ文言の `args`）。
     /// ⚠ 変換のたびに取り去る。Rust の中で捨てた誤りの控えは残るが、拾うのは同じ文言（＝同じ `repr` のキー）だけ。
     pub(crate) error_args: Option<(String, Vec<Value>)>,
-    /// Arrow で書いた組み込みのクラス（`property` / `cached_property`・python_builtins_plan.md のタスク 6-1 / 6-5）。
+    /// Arrow で書いた組み込みのクラス（`property`・python_builtins_plan.md のタスク 6-1）。
     /// どれかの名前を初めて引いたときにまとめて組み立てる（`Interpreter::py_builtin_class`）。
     pub(self) py_builtin_classes: Option<HashMap<String, Value>>,
     /// 組み込みのクラス `object`（python_builtins_plan.md のタスク 6-10）。初めて引いたときに作る（`Interpreter::object_class`）。
@@ -598,9 +588,6 @@ pub struct Interpreter {
     /// 処理されずに VM のフレームを抜けた誤りの**失敗した文の位置**（フェーズ10 10-17）。
     /// `vm::run` の `note_error_site` が置き、`run_vm_method` が最も内側のフレームを作るときに取り去る。
     pub(crate) error_site: Option<crate::token::Span>,
-    /// 関数の中の `class` を組み立てている間だけ真（フェーズ10 10-16・`vm_class_def`）。
-    /// メソッドが関数のローカルを閉包として捕まえる（`exec_class_def`）。
-    pub(crate) defining_nested_class: bool,
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
@@ -611,18 +598,6 @@ pub struct Interpreter {
     /// （slot 順の実行時型判定タグ）を**同じ順序で**組み立てるため。これが無いと
     /// trait 由来のスロットだけ実行時検査が抜ける。
     pub(self) trait_field_order: HashMap<String, Vec<(String, bool, String)>>,
-    /// ★**`import[py]` 限定**: Python クラス名 → (フィールド名, 可変フラグ) の**平坦化済み**宣言順リスト。
-    ///
-    /// Arrow の `class` は**継承できない**（基底に置けるのはトレイトだけ。ネイティブ `.ar` では
-    /// パーサが `cannot inherit from ... (only traits are allowed as bases)` で弾く）。
-    /// しかし Python ではクラス継承が普通なので、**Python モジュールを読み込んでいる間だけ**
-    /// トレイト継承と同じ仕組みでクラス継承を成立させる。
-    ///
-    /// ⚠ `trait_field_order` と分けてあるのは、Python 側のクラス名がトレイト名（`Error` など）と
-    /// 衝突してトレイト継承を壊さないようにするため。`build_field_index` は
-    /// **トレイトを先に見て、無ければこちら**を見る。
-    /// ⚠ 「平坦化済み」= 自分の基底のフィールドも含む。多段継承（A→B→C）でも 1 段の参照で足りる。
-    pub(self) py_class_field_order: HashMap<String, Vec<(String, bool, String)>>,
     /// プロトコル名 → 必須メンバー名リスト（ProtocolDef 実行時に収集）。
     /// `is Protocol` 実行時チェックで使用する。
     pub(self) protocol_required_members: HashMap<String, Vec<String>>,
@@ -755,8 +730,6 @@ impl Interpreter {
             current_exception: None,
             live_generators: Vec::new(),
             module_cache: HashMap::new(),
-            in_python_module: false,
-            running_python: false,
             error_args: None,
             py_builtin_classes: None,
             object_class: None,
@@ -768,36 +741,7 @@ impl Interpreter {
             current_class: None,
             class_call_ctx: None,
             error_site: None,
-            defining_nested_class: false,
             trait_field_access: HashMap::new(),
-            // ⚠ 組み込みの例外クラスの並びを最初から載せる（フェーズ10 10-19）。Python のクラスが
-            //   `class AppError(Exception)` / `class ConfigError(ValueError)` と継承したとき、基底の
-            //   フィールド（message …）の並びがここに無く、`'AppError' has no field 'message'` で作れなかった。
-            //   並びは `Error` trait と同じ（`make_error_class` のフィールドの添字と一致）。`OSError` の系統は
-            //   `errno` / `strerror` / `filename` / `filename2` が続く（書き換えられる・known_bugs.md の #9）。
-            py_class_field_order: crate::type_check::names::BUILTIN_EXCEPTIONS
-                .iter()
-                .map(|(n, _)| {
-                    let mut order = vec![
-                        ("message".to_string(), false, "str".to_string()),
-                        ("code_context".to_string(), false, "str".to_string()),
-                        ("file".to_string(), false, "str".to_string()),
-                        ("line".to_string(), false, "int".to_string()),
-                        ("col".to_string(), false, "int".to_string()),
-                        ("args".to_string(), false, "Any".to_string()),
-                    ];
-                    let os_group = *n == "OSError"
-                        || crate::type_check::names::builtin_exception_bases(n, true).iter().any(|b| b == "OSError");
-                    if os_group {
-                        order.extend(
-                            crate::interpreter::built_in_types::OS_ERROR_FIELDS
-                                .iter()
-                                .map(|f| (f.to_string(), true, "Any".to_string())),
-                        );
-                    }
-                    (n.to_string(), order)
-                })
-                .collect(),
             trait_field_order: {
                 // Error trait のフィールド順序を登録: サブクラス定義時に build_field_index が参照する
                 let mut m = HashMap::new();
@@ -974,12 +918,7 @@ impl Interpreter {
         // Step 1: 継承 trait のフィールドを継承順で先頭に配置する。
         // これにより「基底部分が先頭」という C/C++ の継承レイアウト慣行と一致する。
         for base in bases {
-            // トレイトを先に見る。無ければ ★`import[py]` 限定のクラス継承（Python クラスの
-            // 平坦化済みフィールド順）を見る。トレイト名との衝突でトレイト側を壊さない順序。
-            let base_fields = self
-                .trait_field_order
-                .get(base)
-                .or_else(|| self.py_class_field_order.get(base));
+            let base_fields = self.trait_field_order.get(base);
             if let Some(trait_fields) = base_fields {
                 for (fname, is_mutable, type_ann) in trait_fields {
                     let qualified = format!("{}::{}", base, fname);

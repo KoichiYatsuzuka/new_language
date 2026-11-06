@@ -148,8 +148,6 @@ pub fn run(
     //   落とすと `prof_dist.ps1` の計測が黙って壊れる。
     #[cfg(feature = "prof")]
     let _cur = crate::prof::CurGuard::new();
-    // Python から変換したコードの中は格納で写さない（known_bugs.md の #1）。抜けたら呼び出し側の値へ戻す。
-    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     // ⚠ **ここで `Frame` を作らない**。`Frame` は中断の記録であって実行中の表現では無いので、
     //   新規実行は切り出し前と同じく 3 つのローカルを作って値渡しする。
     //   中断が生まれたときにだけ `Frame` を組み立てる（段階 C）。
@@ -159,7 +157,6 @@ pub fn run(
         Vec::new(),
         build_cells(chunk, captured_env),
     );
-    interp.running_python = prev_py;
     interp.call_depth -= 1;
     match r {
         Ok(RunOutcome::Done(v)) => Ok(v),
@@ -210,10 +207,7 @@ pub(crate) fn resume_frame(
     //    **スタックが満ちてプロセスごと落ちる**。B13 の実装中に実際に再発させ、
     //    `recursion_limit.ar` §5 が捕まえた。
     enter_depth(interp)?;
-    // ジェネレータの本体も `run` と同じく、Python のコードの中は写さない（known_bugs.md の #1）。
-    let prev_py = std::mem::replace(&mut interp.running_python, chunk.is_python);
     let r = run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells);
-    interp.running_python = prev_py;
     interp.call_depth -= 1;
     r
 }
@@ -698,48 +692,6 @@ fn enum_def_op(
     Ok(())
 }
 
-/// `Op::ClassDef` の本体（フェーズ10 10-16）。関数本体の `class` を組み立てて slot へ書く。
-///
-/// 関数のローカル（slot・セル）を名前で見えるようにして `Interpreter::vm_class_def` を呼ぶ。
-/// ⚠ Python から翻訳したコードだけが出す（`ChunkClassDef` の doc）。
-#[inline(never)]
-fn class_def_op(
-    interp: &mut Interpreter,
-    chunk: &Chunk,
-    buf: &mut [Value],
-    base: usize,
-    idx: u32,
-    cells: &[Rc<RefCell<Value>>],
-) -> Result<(), String> {
-    let d = &chunk.class_defs[idx as usize];
-    // セルはそのまま共有して見せる（メソッドが関数のローカルを捕まえると同じセルを指す）。
-    // slot の値は新しいセルに入れて見せる（リストなどの中身は共有される）。
-    let visible: Vec<(String, Rc<RefCell<Value>>)> = d
-        .visible
-        .iter()
-        .filter_map(|(n, i, is_cell)| {
-            let v = if *is_cell {
-                cells.get(*i as usize)?.clone()
-            } else {
-                Rc::new(RefCell::new(buf.get(base + *i as usize)?.clone()))
-            };
-            Some((n.clone(), v))
-        })
-        .collect();
-    // クラス自身の名前のセル。メソッドがクラスを名前で引く（`return Node(..)`）ときに使う。
-    let (ti, target_is_cell) = d.target;
-    let self_cell = if target_is_cell {
-        cells[ti as usize].clone()
-    } else {
-        Rc::new(RefCell::new(Value::None))
-    };
-    let class = interp.vm_class_def(&d.stmt, visible, self_cell, chunk.is_python)?;
-    if !target_is_cell {
-        buf[base + ti as usize] = class;
-    }
-    Ok(())
-}
-
 /// `Op::MakeFn` の本体（#27）。入れ子 `fn` の関数値を作って slot へ書く。
 ///
 /// ツリーウォークの `exec_fn_def`（デコレータ・テンプレートなし・キャプチャ空の経路）と同じ判断を、
@@ -800,8 +752,6 @@ fn make_fn(
         // #30: 実体ごとに再コンパイルせず、定義サイトの器を全実体で共有する。
         Some(d.compiled.clone()),
         d.qualname.clone(),
-        // Python の関数の中の関数は Python の関数（引数の束縛の規則・タスク 1-14）。
-        chunk.is_python,
     );
 }
 
@@ -1044,7 +994,6 @@ fn exec_op(
             buf[base + *s as usize] = v;
         }
         // 束縛の複製は `Interpreter::bind_copy` が唯一の実装（ツリーウォーク・ネイティブと共有・1-6）。
-        // Python から変換したコードの中の `mut` を写さない（known_bugs.md の #1）のもそちら。
         Op::StoreLocalDeepCopy(s) => {
             let v = interp.bind_copy(BindCopy::DeepCopy, buf.pop().unwrap())?;
             buf[base + *s as usize] = v;
@@ -1688,10 +1637,6 @@ fn exec_op(
         Op::EnumDef(idx) => {
             // #68: 関数本体の `enum` 定義。本体は `#[inline(never)]`。
             enum_def_op(interp, chunk, buf, base, *idx)?;
-        }
-        Op::ClassDef(idx) => {
-            // フェーズ10 10-16: 関数本体の `class`（Python から翻訳したコード）。本体は `#[inline(never)]`。
-            class_def_op(interp, chunk, buf, base, *idx, cells)?;
         }
         // ── `static mut`（#27-d）。記憶域は `Interpreter::static_cells`（span キー） ──
         // `exec_static_var` と同じく、**セルが既にあれば初期化子を評価しない**。

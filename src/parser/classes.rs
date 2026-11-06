@@ -852,7 +852,7 @@ impl Parser {
     /// モジュール（`import[py]`）のクラスだけが持てる（known_bugs.md の #10 / #11 / #12）。Arrow のクラスのフィールドは
     /// クラスの本体で決まり、代入はそのまま入り、無い名前の読みは静的な誤り。位置を `fn` に合わせるため、本体を読む前に
     /// 名前を見る（今の字句は `fn`）。
-    /// ⚠ 変換器が作る Python のクラスはこのパーサを通らない。
+    /// ⚠ Python のクラスは CPython が走らせる（このパーサを通らない）。
     fn reject_attr_hook(&self) -> Result<(), String> {
         match self.peek1() {
             Token::Ident(name)

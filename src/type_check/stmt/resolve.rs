@@ -354,8 +354,7 @@ impl TypeChecker {
             }
         }
         if lang == "py" {
-            // Python のモジュールは CPython のモジュール（3-2・`PyNamespace` の 2 つ目）
-            InferredType::PyNamespace(members, true)
+            InferredType::PyNamespace(members)
         } else {
             let closed = if known.is_some() { super::check::closed_module(lang, path) } else { None };
             let vars = crate::type_check::types::ModuleVars {
@@ -444,7 +443,7 @@ impl TypeChecker {
                     //   cpp のスタブも Arrow が Arrow の綴りで作る（`ctype_to_tl_str`）ので同じ（4-7）。⚠ 4-3 で戻り値が
                     //   `Option[bytes]` / `Option[Ptr[T]]` になってから型が「分からない」になり、`mut` を求める
                     //   `ArPtrProtocol*` の引数へ `let` の `Ptr` を渡すと偽の静的エラーになっていた。
-                    //   Python のスタブも Arrow の綴りで作る（`py_stub_extract::py_type_to_arrow`・`.pyi` の変換器も同じ）ので
+                    //   Python のスタブも Arrow の綴りで作る（`py_stub_extract::py_type_to_arrow`）ので
                     //   同じく読む。読めない型は `Any`（7-30・型が分かるものだけに型を付ける）。⚠ 7-30 で関数のスタブを
                     //   `Stmt::FnDef` にしたとき、ここが基本型しか読まない `type_ann_to_inferred` のままで、`-> list[int]` が
                     //   「分からない」になり境界の要素の照合（FfiTypeError / OverflowError）が効かなくなった（ゲートが止めた）

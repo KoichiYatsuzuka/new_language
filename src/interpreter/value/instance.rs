@@ -430,7 +430,6 @@ impl InstanceData {
                 let ok = match self.class.field_checks.get(idx) {
                     // ⚠ Arrow はクラス継承を許さない（trait だけが base）ので基本は完全一致。
                     //   ⚠ ただし `Exception` の欄はすべての例外を受ける（`ClassValue::is_a`・10-19）。
-                    //   Python から変換したクラスの派生もここで受ける（基底は祖先まで平坦化してある）。
                     Some(FieldCheck::Class(expected)) => {
                         let vb = v_rc.borrow();
                         vb.class.is_a(expected)
@@ -459,18 +458,6 @@ impl InstanceData {
             }
             self.boxed_fields[idx] = Some((val, mutable));
             true
-        }
-    }
-
-    /// スロット `idx` を未代入に戻す（Python の `del obj.x`・known_bugs.md の #2）。以後の [`Self::field_value`] は
-    /// `None`（読みは `AttributeError`・`hasattr` は偽）。raw クラスは init ビットマップのビットを落とす（値のバイトは
-    /// 残るが読まれない）。欄そのものは残るので、また代入できる。
-    pub fn clear_field(&mut self, idx: usize) {
-        if self.has_raw_layout() {
-            let f = self.flags() & !(1u32 << idx);
-            self.set_flags(f);
-        } else {
-            self.boxed_fields[idx] = None;
         }
     }
 

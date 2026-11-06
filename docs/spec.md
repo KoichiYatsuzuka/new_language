@@ -254,7 +254,7 @@ Arrow/
 - 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`, `Namespace(Rc<NamespaceData>)`, `PyObject(PyObjHandle)`
 - **トレイトの実行時表現**: `Stmt::TraitDef` 実行時に `Value::Trait(name)` をスコープに束縛。`Error` トレイトは起動時に自動登録されるため常にスコープに存在する
 - **`import[py]`**: PyO3 経由で Python ランタイム（CPython）に接続し、実際の Python モジュールを実行時にロードする。C 拡張（`.pyd`/`.so`）や標準ライブラリも扱える（`implementation_plans/pandas_import_plan.md` の D-1 / D-6）
-  - ⚠ 2026-11-06 より前の `import[py]` は `.py` を `python_converter` で Arrow の AST に変換して実行し、CPython で実行する読み方は `import[py-int]` だった。`import[py-int]` は構文解析の誤り（3-2）
+  - ⚠ 2026-11-06 より前の `import[py]` は `.py` を Arrow の AST に変換して実行し、CPython で実行する読み方は `import[py-int]` だった。`import[py-int]` は構文解析の誤り（3-2）。変換器は 3-3 で削除した
   - 型シグネチャは `.pyi` または `.py` ファイルから取得して静的型検査に使用する（パーサーが処理）
   - 実行時は `Value::PyObject(PyObjHandle)` で Python オブジェクトを opaque に保持（写し 1 つが CPython の参照 1 つ・
     `implementation_plans/pandas_import_plan.md` の D-5）

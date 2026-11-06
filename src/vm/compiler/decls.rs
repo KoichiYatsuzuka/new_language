@@ -191,15 +191,15 @@ fn declare_stmt_slots(
             // ⚠ `fn` が抜けていたため `alias.ar` の `block->function` が、`enum` が抜けていたため
             // `if:` の中の `enum` が、それぞれ「slot にもグローバルにも無い識別子」として
             // bail していた — **採番 walker と `compile_stmt` の walker がずれていた**典型例。
-            // ⚠ `class` も同じ（Python から翻訳した関数の `if` / `while` の中の `class`・フェーズ10 10-16。
-            //   `Op::ClassDef` が slot へ書く）。Arrow のソースはパーサが最上位以外の `class` を弾く。
-            D::Fn | D::Enum | D::Class => false,
+            D::Fn | D::Enum => false,
             // ⚠ **slot を振らないもの**（振っても使われない or 振ってはいけない）:
             // - `static mut` は記憶域が `Interpreter::static_cells`（span がキー）で slot を持たない
-            // - `gen`/`trait`/`protocol`/`new_type`/`import` は `compile_stmt` に
-            //   アームが無く、到達すれば bail する
+            // - `gen`/`class`/`trait`/`protocol`/`new_type`/`import` は `compile_stmt` に
+            //   アームが無く、到達すれば bail する（`class` 以下は関数の中ではパーサが弾く・10-16。以前は Python から
+            //   変換した関数の `class` を slot に載せていた・pandas_import_plan.md の 3-3 で消した）
             D::Static
             | D::Gen
+            | D::Class
             | D::Trait
             | D::Protocol
             | D::NewType

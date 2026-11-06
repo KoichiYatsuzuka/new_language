@@ -316,7 +316,6 @@ impl Value {
                 // 非アトミックなので、スレッドへ送る複製で共有すると親と競合する（#15）。
                 // 中身を複製して**独立した Rc** を作る。
                 body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
-                is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             return_type: None,
             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
@@ -334,7 +333,6 @@ impl Value {
                 };
                 let target = match &b.target {
                     T::Methods(ms) => T::Methods(clone_all(ms)),
-                    T::ClassMethod(ms) => T::ClassMethod(clone_all(ms)),
                     T::Gen(g) => match Value::GeneratorFn(g.clone()).deep_clone() {
                         Value::GeneratorFn(f) => T::Gen(f),
                         _ => unreachable!("deep_clone keeps the variant"),
@@ -356,7 +354,6 @@ impl Value {
                             params: crate::template_subst::unshare_params(&rc.params),
                             // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
                             body: std::rc::Rc::from(crate::template_subst::unshare_stmts(&rc.body)),
-                            is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
                             // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。

@@ -1584,17 +1584,14 @@ pub enum FieldKind {
     StaticMut,
 }
 
-/// `**kwargs` を表す**番兵パラメータ名**（`import[py]` の変換器だけが生成する）。
+/// `**kwargs` を表す**番兵パラメータ名**（Python の関数の型スタブだけが生成する）。
 ///
-/// Arrow に `**kwargs` 相当の構文は無い。変換器は「任意のキーワード引数を受ける」印として
-/// この名前のパラメータを 1 つ置き、`bind_args_relaxed` が余ったキーワード引数を dict にして
-/// **同じ名前**で束縛する（本体の参照も変換時に同じ名前へ差し替える）。
+/// Arrow に `**kwargs` 相当の構文は無い。Python の関数の型スタブ（`py_stub_extract`）は「任意のキーワード引数を受ける」
+/// 印としてこの名前のパラメータを 1 つ置き、型検査は引数の名前を検査しない（実行時の束縛は CPython が行う）。
 ///
 /// ⚠ Arrow の識別子に `*` は使えないので、**実ユーザのパラメータ名と衝突しない**。
 /// Arrow の可変長パラメータが `"..."` という番兵名を使うのと同じ考え方。
-/// ⚠ ここ（`ast.rs`）に置くのは、**型検査器からも参照する**ため。
-/// `crates/arrow-frontend`（VS Code 拡張の wasm）は `src/type_check` を取り込むが
-/// `src/python_converter` は取り込まないので、変換器側に置くと拡張のビルドが壊れる。
+/// ⚠ ここ（`ast.rs`）に置くのは、スタブを作る `src/parser` と**型検査器の両方から参照する**ため。
 pub const PY_KWARGS_PARAM: &str = "**kwargs";
 
 /// `f(*xs)` を VM が「名前付き引数」として運ぶときの番兵キー。
@@ -1612,9 +1609,8 @@ pub const KW_SPREAD_ARG_KEY: &str = "**";
 
 /// 内包表記の 1 節（`for <target> in <iter> [if <cond>]...`）。
 ///
-/// Arrow のネイティブ構文（`src/parser/exprs.rs`）と Python からの変換
-/// （`src/python_converter/expressions.rs`）の**両方**がこの形に落としてから
-/// [`build_list_comprehension`] を呼ぶ。⇒ **生成される AST が両者で必ず同一**になる。
+/// Arrow の構文（`src/parser/exprs.rs`）がこの形に落としてから [`build_list_comprehension`] を呼ぶ。
+/// ⚠ 以前は Python からの変換器（pandas_import_plan.md の 3-3 で削除）も同じ関数を通し、生成される AST を揃えていた。
 #[derive(Debug, Clone)]
 pub struct ComprehensionClause {
     /// ループ変数名のリスト（`for k, v in d.items()` は 2 要素）。

@@ -214,7 +214,6 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
             },
         ],
         body: std::rc::Rc::from(init_body),
-        is_python: false,
         captured_env: HashMap::new(),
     return_type: None,
     vm_chunk: None,

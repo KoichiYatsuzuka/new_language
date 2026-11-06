@@ -35,11 +35,6 @@ mod parser;
 mod prof;
 mod partial_compiler;
 mod py_stubs;
-// ⚠ `rustpython-parser` に依存するので `native` 限定（評価コア切り出し #2）。
-// 参照元は `parser/imports/py_modules.rs` だけ。⚠ 拡張の crate（`crates/arrow-frontend`）は `native` に
-// 関係なく取り込む（`import[py]` の型の出所・editor_import_resolution_plan.md 2-2）。
-#[cfg(feature = "native")]
-mod python_converter;
 mod repl;
 mod token;
 mod type_check;

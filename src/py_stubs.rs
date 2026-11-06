@@ -17,10 +17,7 @@
 //   1 つも見つからなかったときだけ（`load_python_interface_module` の末尾）。
 //   自分で `time.pyi` を置けば上書きできる。
 //
-// ⚠ 置き場所が `src/python_converter/` ではなく `src/` 直下なのは、
-//   `crates/arrow-frontend`（VS Code 拡張の wasm）が `src/parser` を取り込むため。
-//   変換器側に置くと拡張のビルドだけが壊れる（項目 7 で `PY_KWARGS_PARAM` が
-//   同じ理由で `src/ast.rs` へ行ったのと同じ判断）。
+// ⚠ `src/` 直下に置くのは、`crates/arrow-frontend`（VS Code 拡張の wasm）が `src/parser` と一緒に取り込むため。
 //
 // ★ スタブは 2 つの表にある（pandas_import_plan.md の 1-4・1-6）:
 //   - 手で書いたもの（`stubs/*.pyi`・`BUILTIN_STUBS`）: 戻り値の型まで書いてある。`time` / `math` だけ。
@@ -32,7 +29,7 @@
 //     `scripts/gen_builtin_py_stubs.ps1` で作り直す（手で書き換えない）。
 //   どちらにも無いモジュールは、型の出所が無いので `import[py]` が構文解析の誤りになる（`.pyi` を置くよう促す）。
 //   ⚠ 作った CPython（版と OS）のもの。Linux だけのモジュール（posix / fcntl など）は無い。
-//   ⚠ 同梱のスタブは変換器を通さず、行単位の抽出器だけで読む（`build_py_type_body`）。宣言を落とさないかは
+//   ⚠ 同梱のスタブは行単位の抽出器だけで読む（`build_py_type_body`）。宣言を落とさないかは
 //     単体テスト `bundled_stubs_lose_no_declarations` が見る。
 
 include!("py_stubs_generated.rs");

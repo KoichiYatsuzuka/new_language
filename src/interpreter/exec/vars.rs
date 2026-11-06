@@ -82,13 +82,10 @@ pub(crate) const IMMUTABLE_PYTHON_OBJECT: &str = "TypeError: a Python object can
 impl Interpreter {
     /// `mut` と書かない暗黙の束縛（`binding` は `for:x` / `except:e`）が Python の物 `value` を受けたときの誤りの文言
     /// （pandas_import_plan.md の D-11・2-10・静的な `ImmutablePythonObject` と対。型が分からない値のときに実行時に止める）。
-    /// 誤りでなければ `None`。⚠ Python から変換したコードの中は対象外（`running_python`・Arrow の束縛の規則は Arrow のコードのもの）。
+    /// 誤りでなければ `None`。
     /// ⚠ `except` の文言には元の例外を含める（この誤りが捕まえた例外に取って代わるので、元の誤りが分かるように）。
     pub(crate) fn implicit_py_binding_error(&self, binding: &str, value: &Value) -> Option<String> {
         let Value::PyObject(h) = value else { return None };
-        if self.running_python {
-            return None;
-        }
         let (kind, name) = binding.split_once(':').unwrap_or(("for", binding));
         Some(match kind {
             "except" => format!(
@@ -140,16 +137,11 @@ impl Interpreter {
     ///
     /// 呼び出し元は宣言の 4 か所（`exec_let` / `Const` / `Mut` / 最上位の VM の `vm_declare_global`）と
     /// タプル分解の宣言（`exec_let_tuple_evaled`）。
-    /// ⚠ Python から変換したモジュール（`import[py]`）の本体では、組み込みの名前（`id` / `str` / `dict` / `len` …）を
-    ///   束縛し直してよい（python_builtins_plan.md のタスク 1-6）。CPython は組み込みを名前の探索の最後の段に置くので、
-    ///   モジュールの大域が組み込みを隠す。以前は `id = 3` が `variable 'id' is already declared` だった（実測）。
-    ///   変換器は最上位の名前を 1 度だけ `mut x = None` で宣言する（巻き上げ）ので、同じ名前を 2 度宣言することはない。
-    /// ⚠ Arrow のソースの最上位では従来どおり誤り（`let len = 3`・規則として残すかは別に要判断）。
+    /// ⚠ Arrow のソースの最上位では組み込みの名前も誤り（`let len = 3`・規則として残すかは別に要判断）。以前は Python から
+    ///   変換したモジュールの本体だけ組み込みの名前を束縛し直せた（python_builtins_plan.md のタスク 1-6・変換器は
+    ///   pandas_import_plan.md の 3-3 で消した。Python のモジュールは CPython が走らせる）。
     pub(crate) fn redeclaration_error(&self, name: &str) -> Option<String> {
         if name == "_" || self.get_var(name).is_none() {
-            return None;
-        }
-        if self.in_python_module && crate::type_check::names::is_runtime_builtin_name(name) {
             return None;
         }
         Some(format!("NameError: variable '{name}' is already declared"))
@@ -174,13 +166,7 @@ impl Interpreter {
     /// ⚠ 以前は 4 通りあった: `freeze` は**コピーせずその場で**不変にし（同じオブジェクトを持つ相手まで
     ///   不変になる）、`let` はコピーしたがコレクションの中のインスタンスは不変にせず、関数の中の
     ///   `let x = <式>` はインスタンスのときしかコピーしなかった（`let item = xs[0]` が `xs[0]` と共有）。
-    /// ⚠ `DeepCopy`（`mut x = e`）は Python から変換したコードの中では写さない（`running_python`・known_bugs.md の #1。
-    ///   格納の [`Self::copy_for_store`] と同じ規則）。`CopyFreeze` は写す（変換器は `let` を出さないが、出したとしても
-    ///   不変の束縛が他の持ち主の変更で変わってはいけない）。
     pub(crate) fn bind_copy_held(&mut self, mode: BindCopy, value: Value, held: Option<usize>) -> Result<Value, String> {
-        if mode == BindCopy::DeepCopy && self.running_python {
-            return Ok(value);
-        }
         // Python のオブジェクトは不変の束縛にできない（pandas_import_plan.md の D-3・1-2）。CPython の物は写せず、ほかの
         // 参照から書き換えられるので、`let` / `const` / `freeze` の「変わらない」が成り立たない。静的に分かるもの
         // （CPython のクラスのインスタンス）は型検査が止めるので、ここに来るのは型が `Any` / 関数などの値。

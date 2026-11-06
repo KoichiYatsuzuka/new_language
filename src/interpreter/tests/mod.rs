@@ -322,7 +322,7 @@ mod a_axis_invariants {
             }
             for alt in head.split('|') {
                 let n = alt.trim().trim_matches('"');
-                // ⚠ `__` で始まる名前は変換器が置く内部の組み込み（`__py_with_exit` など・python_builtins_plan.md）。
+                // ⚠ `__` で始まる名前は内部の組み込み（python_builtins_plan.md）。
                 //   利用者が書く名前ではないので宣言しない（補完に出さない・⑤ の `__` のメソッドと同じ扱い）。
                 if n.starts_with("__") {
                     continue;

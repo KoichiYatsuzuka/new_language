@@ -62,25 +62,14 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4・f-string の `{x:spec}` の脱糖先）
     "format",
-    // 変換器が Python の `with` の終わりに置く（ファイルを閉じる・タスク 5-4）
-    "__py_with_exit",
     // 組み込みのクラス `object`（すべての値の基底・タスク 6-10）。⚠ Arrow のソースからは呼べない（`ObjectCallInArrow`）。
-    // 呼んで作るのは Python の `object()` だけで、変換器が `__py_object()` にする。基底が `object` のクラスの
-    // `super().__init__(..)` は `__py_object_init(self, ..)`。
-    "object", "__py_object", "__py_object_init",
-    // 変換器が Python の `del o.a` / `del d[k]` にする（known_bugs.md の #2 / #3）
-    "__py_delattr", "__py_delitem",
-    // 変換器が Python の `object.__setattr__(..)` / `object.__delattr__(..)` / `object.__getattribute__(..)` にする
-    // （known_bugs.md の #10 / #11）
-    "__py_object_setattr", "__py_object_delattr", "__py_object_getattribute",
-    // 変換器が Python の `super().m(..)` にする（Python 専用・known_bugs.md の #6）
-    "__py_super",
-    // 唯一の値 `Ellipsis`（Python の値の `...` は変換器がこの名前にする・タスク 6-11）。
+    "object",
+    // 唯一の値 `Ellipsis`（Python の `...` と同じ値・タスク 6-11）。
     "Ellipsis",
     // 唯一の値 `NotImplemented`（演算子メソッドが返すと反対側を試す・タスク 6-12）。
     "NotImplemented",
-    // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1 / 6-5）
-    "property", "cached_property",
+    // Arrow で書いた組み込みのクラス（`eval/py_builtins.rs` の `PY_BUILTIN_CLASS_NAMES`・タスク 6-1）
+    "property",
 ];
 
 /// 実行時が宣言なしで解決する名前か。
@@ -92,7 +81,7 @@ pub(crate) fn is_runtime_builtin_name(name: &str) -> bool {
 ///
 /// **唯一の表**。実行時のクラスの登録（`built_in_types.rs` の `register_builtin_globals`）・
 /// 内部のエラーの文字列を例外へ変える照合（`exceptions.rs` の `make_internal_raised_error`）・
-/// Python のクラスが継承したときのフィールドの並び（`py_class_field_order`）・型検査のレジストリ
+/// 型検査のレジストリ
 /// （`registry/builder.rs`）と大域の束縛（`TypeChecker::new`）が、みなここを読む
 /// （以前は 3 つの表を手で揃えていた）。
 ///
