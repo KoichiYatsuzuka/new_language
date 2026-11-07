@@ -1,0 +1,73 @@
+# py_value_kinds.ar — Python から返る値が Arrow のどの値になるか（pandas_import_plan.md の 4-1）
+#
+# 組み込みの型そのもの（int / float / str / bool / None / tuple）は型のポインタで見分けて速く写す。派生は `__index__` などを
+# 上書きできるので別の道を通るが、結果は同じ規則になる。この例題は、速い道を足しても変わらない所を確かめる。
+#
+# 期待される出力:
+#   int: 5 7 1
+#   float: 1.5
+#   str: s 日本語
+#   big: True True
+#   edge: (9223372036854775807, -9223372036854775808)
+#   surrogate: True
+#   none: None ()
+#   tuple: (1, 2) True
+#   nested: 1 2.5 x None True True 3
+#   objects: True True
+#   ok
+
+import[py] test_modules.py_value_kinds as m
+
+fn check(name: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("wrong value: " + name)
+
+# int の派生・`__index__` を持つ物は int になる（派生の `IntEnum` も）
+let a = m.my_int() mustbe int
+let b = m.indexable() mustbe int
+let c = m.color() mustbe int
+print("int:", a, b, c)
+check("my_int", a == 5 and b == 7 and c == 1)
+
+let f = m.my_float() mustbe float
+print("float:", f)
+check("my_float", f == 1.5)
+
+let s = m.my_str() mustbe str
+let j = m.japanese() mustbe str
+print("str:", s, j)
+check("str", s == "s" and j == "日本語" and len(j) == 3)
+
+# i64 に入らない int は Python の物のまま（値を失わない）
+mut big = m.big()
+mut low = m.negative_big()
+print("big:", str(big) == "1180591620717411303424", str(low) == "-9223372036854775809")
+print("edge:", m.edge())
+
+# UTF-8 にできない str は Python の物のまま
+mut odd = m.surrogate()
+print("surrogate:", len(odd) == 2)
+
+print("none:", m.nothing(), m.empty())
+
+# tuple の派生（namedtuple）も Arrow のタプル
+let p = m.point() mustbe tuple
+print("tuple:", p, p == (1, 2))
+
+# 入れ子の tuple の中の、i64 に入らない int も Python の物のまま
+mut t = m.nested()
+let t0 = t[0] mustbe int
+let t1 = t[1] mustbe float
+let t2 = t[2] mustbe str
+let t4 = t[4] mustbe bool
+mut inner = t[5]
+mut bigger = inner[0]
+mut deepest = inner[1]
+print("nested:", t0, t1, t2, t[3], t4, str(bigger) == "1180591620717411303424", deepest[0])
+
+# `__float__` だけの物は float にしない。`__name__` が bool なだけのクラスも bool にしない
+mut tenth = m.tenth()
+mut fake = m.named_bool()
+print("objects:", str(tenth) == "0.1", not (fake is bool))
+
+print("ok")

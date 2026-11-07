@@ -11,6 +11,7 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
 /// 外部言語から受け取った値の型名（タプルの要素型名・エラーメッセージ用）。インスタンスはクラス名、`None` は
 /// `NoneType`、それ以外は [`runtime_type_name`]。Python（2-6）と cs-proc / js-proc（5-2）が使う。
 /// ⚠ 2-6 より前の Python の境界は表に無い型を 'unknown' と出していた。
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn element_type_name(val: &Value) -> String {
     match val {
         Value::None => "NoneType".to_string(),

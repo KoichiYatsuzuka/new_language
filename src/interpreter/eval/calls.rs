@@ -47,23 +47,25 @@ impl Interpreter {
         callee_name: &str,
         call_span: Option<&Span>,
     ) -> Result<Value, String> {
-        let Some(declared) = self.annotations.resolved_type(node_id).cloned() else {
+        // ⚠ 呼び出しのたびに通るので、型を写さない（注釈の表を借りる）・位置の表示は誤りのときだけ作る（pandas_import_plan.md の 4-2）
+        let annotations = std::rc::Rc::clone(&self.annotations);
+        let Some(declared) = annotations.resolved_type(node_id) else {
             return Ok(value);
         };
-        let where_ = call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
-        self.check_ffi_return_declared(lang, value, &declared, callee_name, &where_)
+        let where_ = || call_span.map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
+        self.check_ffi_return_declared(lang, value, declared, callee_name, &where_)
     }
 
     /// [`Self::check_ffi_return`] の本体: 宣言型を注釈から引かずに受け取る。コンパイル済みコードは実行時に AST の注釈を
     /// 持たないので、生成コードが呼び出し箇所ごとに埋め込んだ宣言型・表示名・位置で同じ検査をする
-    /// （`ar_call_method_ic`・native_object_access_plan.md 11-3）。`where_` は位置の表示（`Span` の `Display`）。
+    /// （`ar_call_method_ic`・native_object_access_plan.md 11-3）。`where_` は位置の表示（`Span` の `Display`）を作る関数。
     pub(crate) fn check_ffi_return_declared(
         &mut self,
         lang: &str,
         value: Value,
         declared: &crate::type_check::InferredType,
         callee_name: &str,
-        where_: &str,
+        where_: &dyn Fn() -> String,
     ) -> Result<Value, String> {
         use crate::interpreter::ffi_boundary::{checker_for, Verdict};
 
@@ -90,7 +92,7 @@ impl Interpreter {
                 declared
             ),
         };
-        let msg = format!("{what} at {where_}");
+        let msg = format!("{what} at {}", where_());
         match self.make_internal_raised_error(&msg) {
             Some(raised) => {
                 self.current_exception = Some(raised);
@@ -126,8 +128,9 @@ impl Interpreter {
 
     /// [`Self::check_python_read`] の、宣言の型を添字の node-id で注釈（`py_reads`）から引く形（VM の `CheckPyRead`）。
     pub(crate) fn check_python_read_at(&mut self, value: Value, node_id: u32) -> Result<Value, String> {
-        match self.annotations.py_read(node_id).cloned() {
-            Some(ty) => self.check_python_read(value, &ty),
+        let annotations = std::rc::Rc::clone(&self.annotations);
+        match annotations.py_read(node_id) {
+            Some(ty) => self.check_python_read(value, ty),
             None => Ok(value),
         }
     }

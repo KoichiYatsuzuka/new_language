@@ -123,6 +123,14 @@ pub fn py_get_iter(_handle: &PyObjHandle) -> Result<PyObjHandle, String> {
     Err(unavailable("iterating a Python object"))
 }
 
+pub fn call_py_module_fn(
+    _module: &PyObjHandle,
+    _method_name: &str,
+    _evaled: Vec<(Option<String>, Value, bool)>,
+) -> Result<Value, String> {
+    Err(unavailable("calling a Python function"))
+}
+
 pub fn py_iter_next(_handle: &PyObjHandle) -> Result<Option<Value>, String> {
     Err(unavailable("iterating a Python object"))
 }

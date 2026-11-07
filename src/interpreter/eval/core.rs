@@ -46,10 +46,9 @@ impl Interpreter {
         Value::List(Rc::new(RefCell::new(vals)))
     }
 
-    /// VM: リテラルから Tuple を構築する（`Expr::Tuple` と同一・要素型名を収集）。
+    /// VM: リテラルから Tuple を構築する（`Expr::Tuple` と同一）。
     pub(crate) fn vm_build_tuple(&self, vals: Vec<Value>) -> Value {
-        let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
-        Value::Tuple(Rc::new(TupleData::new(vals, types)))
+        Value::Tuple(Rc::new(TupleData::new(vals)))
     }
 
     /// VM: リテラルから Set を構築する（`Expr::Set` と同一・`set_insert` で重複排除）。
@@ -128,11 +127,7 @@ impl Interpreter {
             0 => Ok(Value::List(l)),
             1 => {
                 let values = l.borrow().clone();
-                let types = values
-                    .iter()
-                    .map(|v| self.type_name(v).to_string())
-                    .collect();
-                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values, types))))
+                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values))))
             }
             _ => {
                 let raw = l.borrow().clone();
@@ -250,11 +245,7 @@ impl Interpreter {
             }
             Expr::Tuple(exprs) => {
                 let values = self.eval_seq_entries(exprs)?;
-                let types = values
-                    .iter()
-                    .map(|v| self.type_name(v).to_string())
-                    .collect();
-                Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
+                Ok(Value::Tuple(Rc::new(TupleData::new(values))))
             }
             Expr::Dict(entries) => {
                 let d = Rc::new(RefCell::new(DictData::new("Any".to_string(), "Any".to_string())));

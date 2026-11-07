@@ -117,7 +117,7 @@ extern "C" fn ar_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
         let elements: Vec<Value> = (0..n as usize)
             .map(|i| st.clone_value(unsafe { *items_ptr.add(i) }))
             .collect();
-        let tuple = Rc::new(TupleData::new(elements, vec![]));
+        let tuple = Rc::new(TupleData::new(elements));
         st.push_value(Value::Tuple(tuple))
     })
 }
@@ -1580,7 +1580,7 @@ fn check_native_ffi_return(
     let Some(declared) = crate::type_check::InferredType::from_ann(decl) else {
         return Err(format!("NativeError: the declared type `{decl}` of `{name}` from native code cannot be read"));
     };
-    interp.check_ffi_return_declared(lang, value, &declared, name, where_)
+    interp.check_ffi_return_declared(lang, value, &declared, name, &|| where_.to_string())
 }
 
 /// `mut_mask` の引数 `i`（bit i+1）が `mut` の値か。31 個目より後の引数はビットが無いので保守的に `mut`

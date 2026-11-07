@@ -286,7 +286,7 @@ impl Value {
             }
             Value::Tuple(rc) => {
                 let vals = rc.all_values().iter().map(|x| x.deep_clone()).collect();
-                Value::Tuple(Rc::new(TupleData::new(vals, rc.all_types().to_vec())))
+                Value::Tuple(Rc::new(TupleData::new(vals)))
             }
             Value::Slice(s) => Value::Slice(Rc::new(SliceValue {
                 begin: s.begin.as_ref().map(|v| v.deep_clone()),

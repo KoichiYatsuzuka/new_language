@@ -513,13 +513,10 @@ fn coerce_numbers(value: &Value, declared: &InferredType, repr: NumberRepr) -> R
         {
             let items = items.borrow();
             let mut vals = Vec::with_capacity(items.len());
-            let mut names = Vec::with_capacity(items.len());
             for (v, t) in items.iter().zip(types) {
-                let v = recur(v, t)?.unwrap_or_else(|| v.clone());
-                names.push(crate::interpreter::ops::typecheck::element_type_name(&v));
-                vals.push(v);
+                vals.push(recur(v, t)?.unwrap_or_else(|| v.clone()));
             }
-            Ok(Some(Value::Tuple(std::rc::Rc::new(crate::interpreter::value::TupleData::new(vals, names)))))
+            Ok(Some(Value::Tuple(std::rc::Rc::new(crate::interpreter::value::TupleData::new(vals)))))
         }
         // `Option[float]` など: 値に合う選択肢があればそのまま、寄せれば合う選択肢があれば寄せる
         (InferredType::Union(variants), _) => {

@@ -18,6 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ use pyo3::types::{
     PyAnyMethods, PyByteArray, PyBytes, PyDict, PyDictMethods, PyFloat, PyFrozenSet, PyInt, PyList, PyListMethods,
     PyMemoryView, PyModule, PySet, PyTuple, PyTupleMethods,
 };
+use pyo3::types::PyString;
 use pyo3::Borrowed;
 
 use crate::ast::{BinOp, UnaryOp};
@@ -49,11 +51,19 @@ use super::{DictData, NamespaceData, PyObjHandle, TupleData, Value};
 thread_local! {
     /// このスレッドが `with_py` の中（GIL を持っている）か（入れ子の深さ）。
     static IN_PY: Cell<u32> = const { Cell::new(0) };
+    /// [`PENDING`] と入れ替える空の `Vec`（積むたびに確保し直さないように・[`apply_pending`]）。
+    static PENDING_SPARE: Cell<Vec<(usize, bool)>> = const { Cell::new(Vec::new()) };
+    /// [`call_shaped`] の引数を並べる空の `Vec`（呼び出しのたびに確保し直さないように）。⚠ 入れ子の呼び出しは空の `Vec` を受け取る。
+    static ARG_SPARE: Cell<Vec<PyObject>> = const { Cell::new(Vec::new()) };
 }
 
 /// GIL を持たずに写した・捨てた `PyObjHandle` の参照の増減（オブジェクトの番地, 増やすなら真）。
 /// ⚠ `async` のタスク（別のスレッド）も写すので、プロセスで 1 つ。
 static PENDING: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
+
+/// [`PENDING`] に積まれた分があるか。⚠ `with_py` は越境のたびに通るので、空なら錠を取らない（pandas_import_plan.md の 4-2）。
+/// 別のスレッドが積んだばかりの分を見逃しても、次の入口で反映される（積んだスレッド自身の入口では必ず見える）。
+static PENDING_ANY: AtomicBool = AtomicBool::new(false);
 
 /// 待ち行列がこれを超えたら GIL を取って反映する（CPython を呼ばないループで写し続けても膨らみ続けないように）。
 const PENDING_LIMIT: usize = 1 << 14;
@@ -66,6 +76,7 @@ fn defer_refcount(ptr: NonNull<ffi::PyObject>, incref: bool) {
     let full = {
         let mut q = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         q.push((ptr.as_ptr() as usize, incref));
+        PENDING_ANY.store(true, Ordering::Release);
         q.len() > PENDING_LIMIT
     };
     if full {
@@ -78,7 +89,16 @@ fn defer_refcount(ptr: NonNull<ffi::PyObject>, incref: bool) {
 /// ⚠ **増やす分を先に、減らす分を後に。** 写した値を積んだ後に元を捨てると、同じ物の +1 と -1 が並ぶ。減らす分を先に
 ///   反映すると、写しが残っているのに 0 になって解放されうる（写しは必ず元より先に積まれるので、先に増やせば安全）。
 fn apply_pending(_py: Python<'_>) {
-    let q = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+    if !PENDING_ANY.load(Ordering::Acquire) {
+        return;
+    }
+    let mut q = PENDING_SPARE.with(Cell::take);
+    {
+        // ⚠ 錠は入れ替えるだけで手放す。`Py_DecRef` は Python の終了処理を走らせるので、錠を持ったままだと入れ子の入口で止まる
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::swap(&mut *pending, &mut q);
+        PENDING_ANY.store(false, Ordering::Release);
+    }
     for &(p, incref) in &q {
         if incref {
             unsafe { ffi::Py_IncRef(p as *mut ffi::PyObject) }
@@ -89,6 +109,8 @@ fn apply_pending(_py: Python<'_>) {
             unsafe { ffi::Py_DecRef(p as *mut ffi::PyObject) }
         }
     }
+    q.clear();
+    PENDING_SPARE.with(|s| s.set(q));
 }
 
 /// CPython へ入る**唯一の入口**: GIL を取り、待ち行列を反映してから `f` を走らせる。
@@ -973,8 +995,60 @@ pub fn py_class_mro(h: &PyObjHandle) -> Vec<(String, String)> {
 // Python → tl 変換
 // ---------------------------------------------------------------------------
 
+/// 組み込みの型**そのもの**（派生は含まない）の `int` / `float` / `str` / `bool` / `None` を写す（[`py_to_tl`] の先頭）。
+/// どれでもなければ `None`。
+///
+/// ⚠ 要素を 1 つずつ写す所（`=> list[T]`・`for x in pl`）の大半はこれらで、[`py_to_tl`] の下の道は 1 つにつき型の名前の文字列を
+///   作り、float / str は整数の取り出しを失敗させて例外の物まで作っていた（pandas_import_plan.md の 4-1）。型のポインタを比べるだけ
+///   なら Python のコードは走らないので、下の道と結果は変わらない（派生は `__index__` などを上書きできるので下の道を通す）。
+#[inline]
+fn py_to_tl_exact(obj: &Bound<'_, PyAny>) -> Option<Value> {
+    use std::ptr::addr_of_mut;
+    let p = obj.as_ptr();
+    // SAFETY: `obj` は GIL の下で生きている物。組み込みの型の静的な型オブジェクトと比べて、中身を読むだけ。
+    unsafe {
+        let ty = ffi::Py_TYPE(p);
+        if ty == addr_of_mut!(ffi::PyLong_Type) {
+            let mut overflow = 0;
+            let n = ffi::PyLong_AsLongLongAndOverflow(p, &mut overflow);
+            // ⚠ i64 に入らない int は Python のオブジェクトのまま（下の道の 2-6 と同じ）
+            return Some(if overflow == 0 { Value::Int(n) } else { Value::PyObject(PyObjHandle::from_bound(obj)) });
+        }
+        if ty == addr_of_mut!(ffi::PyFloat_Type) {
+            return Some(Value::Float(ffi::PyFloat_AS_DOUBLE(p)));
+        }
+        if ty == addr_of_mut!(ffi::PyUnicode_Type) {
+            // ⚠ UTF-8 にできない str（孤立サロゲート）は `None` で下の道へ（Python のオブジェクトのまま）
+            return obj.downcast::<PyString>().ok()?.to_str().ok().map(Value::str);
+        }
+        if ty == addr_of_mut!(ffi::PyBool_Type) {
+            return Some(Value::Bool(p == ffi::Py_True()));
+        }
+        if p == ffi::Py_None() {
+            return Some(Value::None);
+        }
+        // tuple → Value::Tuple（不変なので写しても区別がつかない）
+        if ty == addr_of_mut!(ffi::PyTuple_Type) {
+            let tup = obj.downcast::<PyTuple>().ok()?;
+            let values: Vec<Value> = tup.iter().map(|item| py_to_tl(obj.py(), &item)).collect();
+            return Some(Value::Tuple(Rc::new(TupleData::new(values))));
+        }
+    }
+    None
+}
+
+/// `obj` の型の `__name__` が `name` か（`__name__` を読まずに `tp_name` の最後の部分を比べる。`__name__` を読むと Python の文字列を作る）。
+fn type_name_is(obj: &Bound<'_, PyAny>, name: &str) -> bool {
+    // SAFETY: `tp_name` は型オブジェクトが持つ NUL 終端の文字列
+    let full = unsafe { std::ffi::CStr::from_ptr((*ffi::Py_TYPE(obj.as_ptr())).tp_name) };
+    full.to_bytes().rsplit(|&c| c == b'.').next() == Some(name.as_bytes())
+}
+
 /// PyO3 の `Bound<'_, PyAny>` を tl の `Value` に変換する。
 pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
+    if let Some(v) = py_to_tl_exact(obj) {
+        return v;
+    }
     // Arrow が渡した包みは元の Arrow の値（同じインスタンス・2-5 / 2-6）。⚠ 先に見る（`__index__` を持つ Arrow のクラスの包みを
     //   下の int の取り出しが int にしてしまう）
     if let Some(v) = unwrap_arrow_value(obj) {
@@ -992,19 +1066,17 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
             }
         }
     }
-    // bool は int のサブクラスなので先にチェックする
-    let type_name = obj
-        .get_type()
-        .name()
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-    if type_name == "bool" {
+    // bool は int のサブクラスなので先にチェックする（numpy の `bool` もここ）
+    if type_name_is(obj, "bool") {
         if let Ok(b) = obj.extract::<bool>() {
             return Value::Bool(b);
         }
     }
-    if let Ok(n) = obj.extract::<i64>() {
-        return Value::Int(n);
+    // ⚠ `__index__` が無い物は整数の取り出しが必ず失敗する。先に見て、失敗のたびに例外の物を作らない（4-1）。
+    if unsafe { ffi::PyIndex_Check(obj.as_ptr()) } != 0 {
+        if let Ok(n) = obj.extract::<i64>() {
+            return Value::Int(n);
+        }
     }
     // ⚠ 2-6: Python の int で i64 に入らないものは、下の f64 への変換に落ちて**黙って float**（精度を失う）になっていた。
     //   Python のオブジェクトのまま渡す（値を失わず、演算は Python 側で行える）。
@@ -1018,8 +1090,10 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
             return Value::Float(f);
         }
     }
-    if let Ok(s) = obj.extract::<String>() {
-        return Value::str(s);
+    if obj.is_instance_of::<PyString>() {
+        if let Ok(s) = obj.extract::<String>() {
+            return Value::str(s);
+        }
     }
     // bytes / bytearray → Arrow の bytes（コピー・5-3・D-9）。⚠ 以前は Python のオブジェクトのままだった
     if let Ok(b) = obj.downcast::<PyBytes>() {
@@ -1054,14 +1128,8 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     }
     // tuple → Value::Tuple（不変なので写しても区別がつかない）
     if let Ok(tup) = obj.downcast::<PyTuple>() {
-        let mut values = Vec::new();
-        let mut types = Vec::new();
-        for item in tup.iter() {
-            let v = py_to_tl(py, &item);
-            types.push(type_name_of(&v));
-            values.push(v);
-        }
-        return Value::Tuple(Rc::new(TupleData::new(values, types)));
+        let values: Vec<Value> = tup.iter().map(|item| py_to_tl(py, &item)).collect();
+        return Value::Tuple(Rc::new(TupleData::new(values)));
     }
     // frozenset → Value::Set（不変なので写す・2-6）。
     // ⚠ Arrow の set に入れられない要素（list / dict / PyObject など）を含むなら、要素を捨てずに丸ごと Python のオブジェクトの
@@ -1234,7 +1302,10 @@ fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check
         }
         T::ListOf(e) => {
             let list = obj.downcast::<PyList>().map_err(|_| kind_err())?;
-            let items: Vec<Value> = list.iter().map(|x| from_python_as(py, &x, e)).collect::<Result<_, _>>()?;
+            let mut items: Vec<Value> = Vec::with_capacity(list.len());
+            for x in list.iter() {
+                items.push(from_python_as(py, &x, e)?);
+            }
             Ok(Value::List(Rc::new(RefCell::new(items))))
         }
         T::SetOf(e) => {
@@ -1266,8 +1337,7 @@ fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check
                 return Err(kind_err());
             }
             let values: Vec<Value> = tup.iter().zip(ts).map(|(x, t)| from_python_as(py, &x, t)).collect::<Result<_, _>>()?;
-            let types = values.iter().map(type_name_of).collect();
-            Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
+            Ok(Value::Tuple(Rc::new(TupleData::new(values))))
         }
         T::Union(ts) => ts.iter().find_map(|t| from_python_as(py, obj, t).ok()).ok_or_else(kind_err),
         _ => {
@@ -1513,7 +1583,7 @@ pub fn call_py_object(
     handle: PyObjHandle,
     evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
-    call_shaped(handle, None, evaled)
+    call_shaped(CallHead::Owned(handle), None, evaled)
 }
 
 /// Python オブジェクトのメソッドを呼び出す（受け手と引数の扱いは [`call_py_object`] と同じ）。
@@ -1522,7 +1592,16 @@ pub fn call_py_method(
     method_name: &str,
     evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
-    call_shaped(handle, Some(method_name), evaled)
+    call_shaped(CallHead::Owned(handle), Some(method_name), evaled)
+}
+
+/// Python のモジュールの属性を読んで呼ぶ（`m.f(..)`）。受け手のモジュールは借りる（呼び出しの間だけ参照を 1 つ持つ）。
+pub fn call_py_module_fn(
+    module: &PyObjHandle,
+    method_name: &str,
+    evaled: Vec<(Option<String>, Value, bool)>,
+) -> Result<Value, String> {
+    call_shaped(CallHead::Borrowed(module), Some(method_name), evaled)
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,6 +1625,16 @@ const BOX: &str = "__arrow_box__";
 type ShapeKey = (Option<String>, usize, Vec<String>);
 
 static TRAMPOLINES: OnceLock<Mutex<HashMap<ShapeKey, Py<PyAny>>>> = OnceLock::new();
+
+/// 位置引数だけの肩代わり: メソッド名（呼ぶ物そのものなら `""`）→ 位置引数の数 → 肩代わり。
+/// ⚠ 呼び出しのたびに引くので、[`ShapeKey`] を作らずに `&str` で引ける形にしてある。ここにあれば名前はソースに書けると確かめ済み。
+type PositionalShapes = HashMap<String, Vec<Option<Py<PyAny>>>>;
+static POSITIONAL_TRAMPOLINES: OnceLock<Mutex<PositionalShapes>> = OnceLock::new();
+
+fn positional_trampoline<'py>(py: Python<'py>, method: Option<&str>, n_pos: usize) -> Option<Bound<'py, PyAny>> {
+    let cache = POSITIONAL_TRAMPOLINES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    cache.get(method.unwrap_or(""))?.get(n_pos)?.as_ref().map(|f| f.bind(py).clone())
+}
 
 /// 肩代わりの関数のソースに名前として書けるか（Python の識別子で、予約語でない）。
 fn is_py_identifier(s: &str) -> bool {
@@ -1577,16 +1666,49 @@ fn trampoline<'py>(py: Python<'py>, key: &ShapeKey) -> PyResult<Bound<'py, PyAny
     let src = format!("lambda {BOX}: {callee}({})", args.join(", "));
     let f = py.eval_bound(&src, Some(&PyDict::new_bound(py)), None)?;
     cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), f.clone().unbind());
+    if kw_names.is_empty() {
+        let mut positional = POSITIONAL_TRAMPOLINES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let by_count = positional.entry(method.clone().unwrap_or_default()).or_default();
+        if by_count.len() <= *n_pos {
+            by_count.resize_with(*n_pos + 1, || None);
+        }
+        by_count[*n_pos] = Some(f.clone().unbind());
+    }
     Ok(f)
+}
+
+/// 呼ぶ物・受け手の持ち方（[`call_shaped`]）。
+enum CallHead<'a> {
+    /// 自分の参照を手放して渡す（Arrow の値の写しの受け手・D-5）。
+    Owned(PyObjHandle),
+    /// 借りている物（モジュール）。呼び出しの間だけ参照を 1 つ持つ。
+    /// ⚠ 写してから渡すと、GIL の外で写すので待ち行列を通る（呼び出しのたびに錠を取る・pandas_import_plan.md の 4-2）。
+    Borrowed(&'a PyObjHandle),
+}
+
+impl CallHead<'_> {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            CallHead::Owned(h) => h.into_py(py),
+            CallHead::Borrowed(h) => h.to_py(py),
+        }
+    }
 }
 
 /// `head`（呼ぶ物、または `method` の受け手）を呼ぶ。引数の参照も受け取って手放す。
 fn call_shaped(
-    head: PyObjHandle,
+    head: CallHead<'_>,
     method: Option<&str>,
     evaled: Vec<(Option<String>, Value, bool)>,
 ) -> Result<Value, String> {
     with_py(|py| -> Result<Value, String> {
+        // 位置引数だけで、同じ形を呼んだことがあれば、名前の検査も形の鍵も要らない（呼び出しのたびに通る・4-2）
+        if evaled.iter().all(|(name, ..)| name.is_none()) {
+            if let Some(f) = positional_trampoline(py, method, evaled.len()) {
+                let n = evaled.len();
+                return call_trampoline(py, f, head, evaled.into_iter().map(|(_, v, writable)| (v, writable)), n);
+            }
+        }
         // 3 つ目は引数が `mut` の変数・式か（Arrow のインスタンスを書ける包みにするか・2-6）
         let mut pos: Vec<(Value, bool)> = Vec::new();
         let mut kw: Vec<(String, Value, bool)> = Vec::new();
@@ -1602,41 +1724,55 @@ fn call_shaped(
         if !shapeable {
             // ⚠ ソースに書けない名前（`getattr` でしか引けないメソッド名・予約語のキーワード）だけは、肩代わりを使わずに呼ぶ。
             //   このときだけ、受け手・引数の参照は CPython で書いたときより 1 つ多い。
-            return call_unshaped(py, head, method, pos, kw);
+            return call_unshaped(py, head.into_py(py), method, pos, kw);
         }
         let f = trampoline(py, &(method.map(str::to_string), pos.len(), kw_names)).map_err(arrow_side)?;
-        let mut owned: Vec<PyObject> = Vec::with_capacity(1 + pos.len() + kw.len());
-        owned.push(head.into_py(py));
-        for (v, writable) in pos {
-            owned.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
-        }
-        for (_, v, writable) in kw {
-            owned.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
-        }
-        // 肩代わりは後ろから `pop` するので、[頭, 位置引数.., キーワード..] の逆順に並べる。
-        // ⚠ 要素は `PyList_SET_ITEM` で**引き渡す**（`PyList::new_bound` は写すので、作る間だけ参照が 1 つ多くなる）。
-        owned.reverse();
-        let list = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(owned.len() as ffi::Py_ssize_t)) }
-            .map_err(arrow_side)?;
-        for (i, o) in owned.into_iter().enumerate() {
-            unsafe { ffi::PyList_SET_ITEM(list.as_ptr(), i as ffi::Py_ssize_t, o.into_ptr()) };
-        }
-        let result = f.call1((list,)).map_err(python_raised)?;
-        Ok(py_to_tl(py, &result))
+        let n = pos.len() + kw.len();
+        call_trampoline(py, f, head, pos.into_iter().chain(kw.into_iter().map(|(_, v, writable)| (v, writable))), n)
     })
+}
+
+/// 肩代わり `f` を呼ぶ。`args` は位置引数・キーワード引数の順の `n` 個の（値, 書ける包みにするか）。
+fn call_trampoline<'py>(
+    py: Python<'py>,
+    f: Bound<'py, PyAny>,
+    head: CallHead<'_>,
+    args: impl Iterator<Item = (Value, bool)>,
+    n: usize,
+) -> Result<Value, String> {
+    // ⚠ 全部を CPython の物にしてから中身の入ったリストを作る（`PyList_New` の空の欄は、Python のコードが走る前に埋める約束）
+    let mut owned = ARG_SPARE.with(Cell::take);
+    owned.reserve(n + 1);
+    owned.push(head.into_py(py));
+    for (v, writable) in args {
+        owned.push(ar_to_py_arg(py, v, writable).map_err(arrow_side)?);
+    }
+    let list = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(owned.len() as ffi::Py_ssize_t)) }
+        .map_err(arrow_side)?;
+    // 肩代わりは後ろから `pop` するので、[頭, 位置引数.., キーワード..] の逆順に並べる。
+    // ⚠ 要素は `PyList_SET_ITEM` で**引き渡す**（`PyList::new_bound` は写すので、作る間だけ参照が 1 つ多くなる）。
+    let last = owned.len() - 1;
+    for (i, o) in owned.drain(..).enumerate() {
+        unsafe { ffi::PyList_SET_ITEM(list.as_ptr(), (last - i) as ffi::Py_ssize_t, o.into_ptr()) };
+    }
+    ARG_SPARE.with(|s| s.set(owned));
+    // ⚠ 引数 1 つの呼び出しは組を作らない（`PyObject_CallOneArg`）
+    let result = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyObject_CallOneArg(f.as_ptr(), list.as_ptr())) }
+        .map_err(python_raised)?;
+    Ok(py_to_tl(py, &result))
 }
 
 /// 肩代わりを使わない呼び出し（[`call_shaped`] のソースに名前を書けないときだけ）。
 fn call_unshaped(
     py: Python<'_>,
-    head: PyObjHandle,
+    head: PyObject,
     method: Option<&str>,
     pos: Vec<(Value, bool)>,
     kw: Vec<(String, Value, bool)>,
 ) -> Result<Value, String> {
     let callable = match method {
         Some(m) => head.bind(py).getattr(m).map_err(python_raised)?,
-        None => head.bind(py).to_owned(),
+        None => head.into_bound(py),
     };
     let mut positional: Vec<PyObject> = Vec::with_capacity(pos.len());
     for (v, writable) in pos {

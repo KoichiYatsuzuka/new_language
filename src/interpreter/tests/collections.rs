@@ -224,9 +224,9 @@ fn test_tuple_multi() {
 fn test_tuple_types() {
     let v = eval_expr(r#"(1, "hello", True)"#);
     if let Value::Tuple(t) = v {
-        assert_eq!(t.element_type(0), Some("int"));
-        assert_eq!(t.element_type(1), Some("str"));
-        assert_eq!(t.element_type(2), Some("bool"));
+        assert!(matches!(t.get(0), Some(Value::Int(1))));
+        assert!(matches!(t.get(1), Some(Value::Str(s)) if &**s == "hello"));
+        assert!(matches!(t.get(2), Some(Value::Bool(true))));
     } else {
         panic!("expected Tuple");
     }

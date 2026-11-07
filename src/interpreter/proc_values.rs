@@ -125,8 +125,7 @@ pub(crate) fn decode_float(v: Option<&serde_json::Value>) -> Option<f64> {
 
 /// 受け取った要素から tuple を作る。
 pub(crate) fn make_tuple(items: Vec<Value>) -> Value {
-    let types = items.iter().map(crate::interpreter::ops::typecheck::element_type_name).collect();
-    Value::Tuple(Rc::new(TupleData::new(items, types)))
+    Value::Tuple(Rc::new(TupleData::new(items)))
 }
 
 /// 受け取ったキーと値の組から dict を作る。キーにできない値（None / NaN …）は TypeError。

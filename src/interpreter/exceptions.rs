@@ -300,9 +300,8 @@ impl Interpreter {
         Ok(evaled.iter().map(|(_, v, _)| v.clone()).collect())
     }
 
-    /// 値の列を組にする（要素の型名は実行時の名前）。
+    /// 値の列を組にする。
     fn tuple_of(&self, values: Vec<Value>) -> Value {
-        let types = values.iter().map(|v| self.type_name(v).to_string()).collect();
-        Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values, types)))
+        Value::Tuple(Rc::new(crate::interpreter::TupleData::new(values)))
     }
 }

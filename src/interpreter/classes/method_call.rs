@@ -413,7 +413,7 @@ impl Interpreter {
                     crate::interpreter::py_interop::register_interpreter(self);
                     // ⚠ 評価コア・wasm では `PyObjHandle` を作れない（中身が `Infallible`）ので、ここへは来ない
                     #[allow(unreachable_code, unused_variables)]
-                    let result = crate::interpreter::py_interop::call_py_method(module.clone(), method_name, evaled);
+                    let result = crate::interpreter::py_interop::call_py_module_fn(module, method_name, evaled);
                     return result;
                 }
                 // モジュール名前空間の場合: メンバを取り出して関数として呼び出す

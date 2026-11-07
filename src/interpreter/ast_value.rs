@@ -38,10 +38,7 @@ fn ns(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
 
 /// Wrap two values as a 2-tuple (for branch / pair / variant lists).
 fn pair(a: Value, b: Value) -> Value {
-    Value::Tuple(Rc::new(TupleData::new(
-        vec![a, b],
-        vec!["any".to_string(), "any".to_string()],
-    )))
+    Value::Tuple(Rc::new(TupleData::new(vec![a, b])))
 }
 
 fn stmts_list(stmts: &[Stmt]) -> Value {

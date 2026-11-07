@@ -1,0 +1,339 @@
+# Python <-> Arrow boundary measurement (pandas plan 4-1 / 4-2 / 4-3). Prints ns per element (minimum of the rounds).
+import[py] pbmod as pb
+import[py] numpy as np
+
+const N: int = 100000
+const CALLS: int = 200000
+const ROUNDS: int = 7
+
+fn report(name: str, best: float, n: int) -> None:
+    print(name + "\t" + str(round(best * 1000000000.0 / n, 1)))
+
+mut xi = pb.ints(N)
+mut xf = pb.floats(N)
+mut xs = pb.strs(N)
+mut xb = pb.bools(N)
+mut xa = pb.anys(N)
+mut xp = pb.pairs(N)
+mut xd = pb.strdict(N)
+mut xn = pb.nested(N // 3)
+
+fn bench_cast_int(mut p: py_list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[int]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_float(mut p: py_list[float]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[float]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_str(mut p: py_list[str]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[str]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_bool(mut p: py_list[bool]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[bool]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_any(mut p: py_list[Any]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[Any]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_pair(mut p: py_list[tuple[int, float]]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => list[tuple[int, float]]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_cast_dict(mut p: py_dict[str, int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = p => dict[str, int]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_for_int(mut p: py_list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0
+        for x in p:
+            s = s + x
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_for_arrow(p: list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0
+        for x in p:
+            s = s + x
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_index_int(mut p: py_list[int], n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0
+        mut i = 0
+        while i < n:
+            s = s + p[i]
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_index_arrow(p: list[int], n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0
+        mut i = 0
+        while i < n:
+            s = s + p[i]
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_to_py(p: list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut ys = p => py_list[int]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_to_py_float(p: list[float]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut ys = p => py_list[float]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_loop_only(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_noop(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            pb.noop()
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_int(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0
+        mut i = 0
+        while i < n:
+            s = s + pb.one_int()
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_float(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut s = 0.0
+        mut i = 0
+        while i < n:
+            s = s + pb.one_float()
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_str(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            let s = pb.one_str()
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_pair(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            let s = pb.one_pair()
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_call_arg(n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            pb.identity(i)
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_attr(mut a: np.ndarray, n: int) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut i = 0
+        while i < n:
+            let s = a.size mustbe int
+            i = i + 1
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_arr_tolist(mut a: np.ndarray) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = pb.tolist(a) => list[float]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_arr_tolist_only(mut a: np.ndarray) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut ys = pb.tolist(a)
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_py_loop(mut p: py_list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        pb.py_loop(p)
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_py_copy(mut p: py_list[int]) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        mut c = pb.py_copy(p)
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+report("cast list[int]", bench_cast_int(xi), N)
+report("cast list[float]", bench_cast_float(xf), N)
+report("cast list[str]", bench_cast_str(xs), N)
+report("cast list[bool]", bench_cast_bool(xb), N)
+report("cast list[Any]", bench_cast_any(xa), N)
+report("cast list[tuple[int,float]]", bench_cast_pair(xp), N)
+report("cast dict[str,int]", bench_cast_dict(xd), N)
+
+let al = xi => list[int]
+let af = xf => list[float]
+report("to py_list[int]", bench_to_py(al), N)
+report("to py_list[float]", bench_to_py_float(af), N)
+
+report("for py_list[int]", bench_for_int(xi), N)
+report("for list[int]", bench_for_arrow(al), N)
+report("index py_list[int]", bench_index_int(xi, N), N)
+report("index list[int]", bench_index_arrow(al, N), N)
+
+report("loop only", bench_loop_only(CALLS), CALLS)
+report("call noop", bench_call_noop(CALLS), CALLS)
+report("call int", bench_call_int(CALLS), CALLS)
+report("call float", bench_call_float(CALLS), CALLS)
+report("call str", bench_call_str(CALLS), CALLS)
+report("call pair", bench_call_pair(CALLS), CALLS)
+report("call arg", bench_call_arg(CALLS), CALLS)
+
+mut arr = np.ones(N) mustbe np.ndarray
+report("attr a.size", bench_attr(arr, CALLS), CALLS)
+report("tolist+cast", bench_arr_tolist(arr), N)
+report("tolist only", bench_arr_tolist_only(arr), N)
+report("py loop", bench_py_loop(xi), N)
+report("py copy", bench_py_copy(xi), N)

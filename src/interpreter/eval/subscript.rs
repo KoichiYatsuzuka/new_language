@@ -233,13 +233,10 @@ impl Interpreter {
             }
             Value::Tuple(td) => {
                 let vals = td.all_values();
-                let types: Vec<String> =
-                    vals.iter().map(|v| self.type_name(v).to_string()).collect();
                 let len = vals.len() as i64;
                 let indices = compute_slice_indices(len, begin, end, step);
                 let new_vals: Vec<Value> = indices.iter().map(|&i| vals[i].clone()).collect();
-                let new_types: Vec<String> = indices.iter().map(|&i| types[i].clone()).collect();
-                Ok(Value::Tuple(Rc::new(TupleData::new(new_vals, new_types))))
+                Ok(Value::Tuple(Rc::new(TupleData::new(new_vals))))
             }
             _ => Err(format!(
                 "TypeError: '{}' object does not support slicing",

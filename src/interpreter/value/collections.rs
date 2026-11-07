@@ -9,7 +9,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// タプル値の内部ストレージ。
-/// 内部表現（並列 Vec）はプライベートであり、公開 API（`get` / `len` / `element_type` など）のみが安定。
+/// 内部表現はプライベートであり、公開 API（`get` / `len` / `all_values` など）のみが安定。
 /// 内部フィールドは将来自由に変更できる。
 ///
 /// スライス値: `begin:end:step` の内部表現。
@@ -24,25 +24,22 @@ pub struct SliceValue {
 
 
 /// - `values`: 実値の順序付きリスト（実行時は任意の型）
-/// - `types`: 各要素のランタイム型名（例: `"int"`, `"str"`, `"MyClass"`）
+///
+/// ⚠ 以前は各要素の型の名前（`Vec<String>`）も持っていたが、読むのはテストだけで、タプルを作るたび・写すたびに要素の数だけ
+///   文字列を作っていた（pandas_import_plan.md の 4-1 で外した）。要素の型は値から分かる。
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct TupleData {
     /// 要素値の順序付きリスト（実行時は任意の型）。
     pub values: Vec<Value>,
-    /// 各要素のランタイム型名（例: `"int"`, `"str"`, `"MyClass"`）。
-    pub types: Vec<String>,
 }
 
 
 #[allow(dead_code)]
 impl TupleData {
-    /// 実値リストと型名リストから新しい `TupleData` を構築する。
-    ///
-    /// - `values`: 要素値のリスト
-    /// - `types`: 各要素のランタイム型名のリスト（`values` と同じ長さであること）
-    pub fn new(values: Vec<Value>, types: Vec<String>) -> Self {
-        Self { values, types }
+    /// 要素値のリストから新しい `TupleData` を構築する。
+    pub fn new(values: Vec<Value>) -> Self {
+        Self { values }
     }
 
     /// タプルの要素数を返す。
@@ -60,19 +57,9 @@ impl TupleData {
         self.values.get(index)
     }
 
-    /// 指定インデックスの要素のランタイム型名を返す。インデックスが範囲外なら `None`。
-    pub fn element_type(&self, index: usize) -> Option<&str> {
-        self.types.get(index).map(|s| s.as_str())
-    }
-
     /// すべての要素値をスライスとして返す。
     pub fn all_values(&self) -> &[Value] {
         &self.values
-    }
-
-    /// すべての要素型名をスライスとして返す。
-    pub fn all_types(&self) -> &[String] {
-        &self.types
     }
 }
 

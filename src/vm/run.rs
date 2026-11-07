@@ -622,8 +622,9 @@ fn wb_native_method<'c>(
     std::sync::Arc<crate::interpreter::value::NativeFnRef>,
     &'c crate::vm::chunk::WbCall,
 )> {
-    let fn_ref = Interpreter::vm_namespace_writeback_fn(obj, name)?;
+    // ⚠ 書き戻し先の表を先に見る（普通は空で、名前を引かずに済む）
     let wb = chunk.wb_targets.get(node_id)?;
+    let fn_ref = Interpreter::vm_namespace_writeback_fn(obj, name)?;
     Some((fn_ref, wb))
 }
 
@@ -1450,15 +1451,15 @@ fn exec_op(
         Op::CallMethodLocal(slot, name_idx, argc, mut_mask, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
-            let arg_vals = buf.split_off(split);
-            // レシーバは呼び先の `self` として所有権が要るので clone は避けられないが、
-            // `LoadLocal` の op ディスパッチと push/pop は省ける。
-            let obj = buf[base + *slot as usize].clone();
-            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
-                .into_iter()
+            // ⚠ `split_off` で一度 `Vec` に出すと、`evaled` と合わせて呼び出しのたびに 2 回確保する（pandas_import_plan.md の 4-2）
+            let evaled: Vec<(Option<String>, Value, bool)> = buf
+                .drain(split..)
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            // レシーバは呼び先の `self` として所有権が要るので clone は避けられないが、
+            // `LoadLocal` の op ディスパッチと push/pop は省ける。
+            let obj = buf[base + *slot as usize].clone();
             let name = &chunk.names[*name_idx as usize];
             let r = if matches!(obj, Value::Instance(_)) {
                 interp.call_instance_method_evaled(
@@ -1485,13 +1486,12 @@ fn exec_op(
         Op::CallMethod(name_idx, argc, mut_mask, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
-            let arg_vals = buf.split_off(split);
-            let obj = buf.pop().unwrap();
-            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
-                .into_iter()
+            let evaled: Vec<(Option<String>, Value, bool)> = buf
+                .drain(split..)
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            let obj = buf.pop().unwrap();
             // メソッドはツリーウォークと同じく call_span=None（degraded フレームで一致）。
             let name = &chunk.names[*name_idx as usize];
             let r = if matches!(obj, Value::Instance(_)) {

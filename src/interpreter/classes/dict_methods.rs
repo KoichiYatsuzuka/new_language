@@ -107,10 +107,9 @@ impl Interpreter {
         }
     }
 
-    /// `(キー, 値)` の組（`items()` / `popitem()`）。`zip` / `enumerate` と同じ作り方（型名リストを `type_name` で埋める）。
+    /// `(キー, 値)` の組（`items()` / `popitem()`）。
     fn pair_tuple(&self, k: Value, v: Value) -> Value {
-        let types = vec![self.type_name(&k).to_string(), self.type_name(&v).to_string()];
-        Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vec![k, v], types)))
+        Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vec![k, v])))
     }
 
     /// `get` / `pop` / `setdefault` の引数（キーと、あれば既定値）。位置引数だけ（CPython と同じ文言）。

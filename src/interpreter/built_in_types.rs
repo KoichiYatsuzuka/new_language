@@ -176,7 +176,7 @@ pub(crate) fn builtin_exception_of(msg: &str) -> Option<&'static str> {
 
 /// 空のタプル（例外の `args` の既定）。
 pub(super) fn empty_tuple() -> Value {
-    Value::Tuple(Rc::new(super::TupleData::new(Vec::new(), Vec::new())))
+    Value::Tuple(Rc::new(super::TupleData::new(Vec::new())))
 }
 
 /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。

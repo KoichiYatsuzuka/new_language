@@ -499,14 +499,11 @@ impl Interpreter {
                     Some(i) => (&s[..i], sep.as_str(), &s[i + sep.len()..]),
                     None => (&*s, "", ""),
                 };
-                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                    vec![
-                        Value::str(a.to_string()),
-                        Value::str(b.to_string()),
-                        Value::str(c.to_string()),
-                    ],
-                    vec!["str".to_string(), "str".to_string(), "str".to_string()],
-                ))))
+                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vec![
+                    Value::str(a.to_string()),
+                    Value::str(b.to_string()),
+                    Value::str(c.to_string()),
+                ]))))
             }
             "rpartition" => {
                 let sep = arg_str!(0, "sep");
@@ -514,14 +511,11 @@ impl Interpreter {
                     Some(i) => (&s[..i], sep.as_str(), &s[i + sep.len()..]),
                     None => ("", "", &*s),
                 };
-                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                    vec![
-                        Value::str(a.to_string()),
-                        Value::str(b.to_string()),
-                        Value::str(c.to_string()),
-                    ],
-                    vec!["str".to_string(), "str".to_string(), "str".to_string()],
-                ))))
+                Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vec![
+                    Value::str(a.to_string()),
+                    Value::str(b.to_string()),
+                    Value::str(c.to_string()),
+                ]))))
             }
 
             // ── その他変換 ───────────────────────────────────────────────────

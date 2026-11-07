@@ -74,10 +74,7 @@ impl Interpreter {
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_value).collect();
-                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                    vals,
-                    t.all_types().to_vec(),
-                )))
+                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vals)))
             }
             // プリミティブ・関数・クラス等はそのまま返す
             other => other,
@@ -174,10 +171,7 @@ impl Interpreter {
             Value::Tuple(t) => {
                 let vals: Vec<Value> =
                     t.all_values().iter().cloned().map(Self::deep_copy_unfrozen).collect();
-                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
-                    vals,
-                    t.all_types().to_vec(),
-                )))
+                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vals)))
             }
             other => other,
         }
