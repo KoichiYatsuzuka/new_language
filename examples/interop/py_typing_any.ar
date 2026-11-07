@@ -1,0 +1,32 @@
+# py_typing_any.ar — Python のクラスの注釈の `Any`（`from typing import Any`）は Arrow の `Any`
+#
+# ⚠ 以前は `typing.py` の `class Any` をモジュールへ写していたので、`Box(3)` が
+#   `argument 0 of 'py_typing_any.Box.__init__' expects 'py_typing_any.Any' but got 'int'` の静的な誤りになった。
+#   numpy の `ndarray.tolist() -> Any` も `numpy.Any` というクラスの値になっていた。
+#
+# 期待される出力:
+#   3 x [1, 2]
+#   True
+
+import[py] test_modules.py_typing_any as m
+import[py] numpy as np
+
+# どの型の値でも渡せる
+mut a = m.Box(3)
+mut b = m.Box("x")
+mut c = m.Box([1, 2] => py_list[int])
+
+# 読んだ値は `Any`。使う前に型を確かめる（注釈の無い関数の戻り値と同じ）
+let x = a.get() mustbe int
+let y = b.get() mustbe str
+mut z = c.get() mustbe py_list[int]
+print(x, y, z)
+
+a.put("now a string")
+print((a.value mustbe str) == "now a string")
+
+# numpy の `-> Any`
+mut arr = np.ones(2) mustbe np.ndarray
+mut listed = arr.tolist() mustbe py_list[float]
+if listed != ([1.0, 1.0] => py_list[float]):
+    raise ValueError("wrong list")

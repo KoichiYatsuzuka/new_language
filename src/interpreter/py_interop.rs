@@ -1211,14 +1211,23 @@ pub fn py_dict_pairs(h: &PyObjHandle) -> Option<Vec<(Value, Value)>> {
 /// 照合して同じ物を返す。
 pub fn cast_to_python(val: &Value, target: &crate::type_check::InferredType) -> Result<Value, String> {
     with_py(|py| {
-        let obj = to_python_as(py, val, target).map_err(|e| format!("TypeError: cannot cast to '{target}': {e}"))?;
+        let obj = to_python_as(py, val, target).map_err(|e| cast_error(target, e))?;
         Ok(Value::PyObject(PyObjHandle::from_owned(obj)))
     })
 }
 
 /// `pl => target`（`pl` は CPython の list / dict / set・`target` は Arrow の `list[T]` / `dict[K, V]` / `set[T]`）。
 pub fn cast_from_python(h: &PyObjHandle, target: &crate::type_check::InferredType) -> Result<Value, String> {
-    with_py(|py| from_python_as(py, &h.bind(py), target).map_err(|e| format!("TypeError: cannot cast to '{target}': {e}")))
+    with_py(|py| from_python_as(py, &h.bind(py), target).map_err(|e| cast_error(target, e)))
+}
+
+/// キャストの誤り。⚠ `int` に入らない整数は `OverflowError` のまま（ほかの境界と同じ・ffi_value_exchange_plan.md の 7-9）。
+fn cast_error(target: &crate::type_check::InferredType, e: String) -> String {
+    if e.starts_with("OverflowError:") {
+        e
+    } else {
+        format!("TypeError: cannot cast to '{target}': {e}")
+    }
 }
 
 /// 照合に通らなかった値の説明（`element of type 'str' where 'int' was expected`）。
@@ -1341,11 +1350,16 @@ fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check
         }
         T::Union(ts) => ts.iter().find_map(|t| from_python_as(py, obj, t).ok()).ok_or_else(kind_err),
         _ => {
+            use crate::interpreter::ffi_boundary::Verdict;
             let v = py_to_tl(py, obj);
             match crate::interpreter::ffi_boundary::python_verdict(&v, ty) {
-                crate::interpreter::ffi_boundary::Verdict::Mismatch { actual } => Err(element_mismatch(&actual, ty)),
-                crate::interpreter::ffi_boundary::Verdict::Coerce(c) => Ok(c),
-                _ => Ok(v),
+                Verdict::Ok | Verdict::Unverifiable => Ok(v),
+                Verdict::Coerce(c) => Ok(c),
+                Verdict::Mismatch { actual } => Err(element_mismatch(&actual, ty)),
+                // ⚠ 以前は `_ =>` で通していたので、`pl => list[int]` の結果に Python の物（i64 に入らない int）が混ざった
+                Verdict::Overflow { value } => Err(format!(
+                    "OverflowError: an element read from Python is {value}, which does not fit in `int` (64-bit; declared `{ty}`)"
+                )),
             }
         }
     }

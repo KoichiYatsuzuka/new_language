@@ -212,6 +212,9 @@ system site-packages; dots → counted from the importing file's directory only)
 Python source to Arrow statements (the converter `src/python_converter/`, rustpython); its loader was removed in 3-2
 and the converter itself in 3-3 (`.pyi` and `.py` types come from the line extractor `py_stub_extract` only).
 
+⚠ `typing.Any` is never chased (`py_chase_decl`): `typing.py` has a `class Any`, and copying it made the module's `Any`
+annotations a class of that module (`numpy.Any`, a false `expects 'm.Any' but got 'int'`).
+
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
 import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of

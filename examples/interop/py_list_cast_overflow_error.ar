@@ -1,0 +1,12 @@
+# py_list_cast_overflow_error.ar — `=> list[int]` で i64 に入らない要素は OverflowError（ほかの境界と同じ）
+#
+# ⚠ 以前は黙って通し、Arrow の `list[int]` に Python の物が混ざっていた。
+#
+# 期待されるエラー（OverflowError・実行時）:
+#   an element read from Python is 1180591620717411303424, which does not fit in `int` (64-bit; declared `int`)
+
+import[py] test_modules.py_list_cast_overflow as m
+
+mut pl = m.bigs()
+let xs = pl => list[int]
+print(xs)

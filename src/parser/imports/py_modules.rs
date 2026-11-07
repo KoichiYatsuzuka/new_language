@@ -307,6 +307,12 @@ impl Parser {
             let next = self.py_raw_stub(&target)?;
             return self.py_chase_decl(&next, rest, depth + 1);
         }
+        // ⚠ `typing.Any` は Arrow の `Any`。`typing.py` には `class Any` があるので、たどると `from typing import Any` が
+        //   そのクラスをモジュールへ写し、注釈の `Any` がモジュールのクラス（`m.Any`）になっていた（`m.Box(3)` が
+        //   `expects 'm.Any' but got 'int'` の静的な誤り・numpy の `ndarray.tolist() -> Any` も `numpy.Any` になる）。
+        if name == "Any" && ctx.module == ["typing"] {
+            return None;
+        }
         if let Some(d) = ctx.decls.iter().find(|d| py_decl_name(d) == Some(name)) {
             return Some((d.clone(), std::rc::Rc::clone(ctx)));
         }
