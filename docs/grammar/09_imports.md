@@ -439,6 +439,12 @@ let mean = np.mean(arr)
   違えば `FfiTypeError`（`float` と宣言した所の int は float に寄せる）（`examples/interop/py_int_element_reads.ar`・
   `_runtime_error`）。⚠ ネイティブにコンパイルした関数の中の読みは照合しない。⚠ 以前は Python の
   list / dict / set を Arrow の list などに写していた（Python の書き換えが戻らず、同じ物でなくなった）
+- **numpy の配列**（pandas_import_plan.md の 4-3）: 配列は写さずに Python の物のまま届く。Arrow のリストにするときは
+  `a => list[float]` と書く。意味は `a.tolist() => list[float]` と同じで（要素の照合も誤りも同じ）、数値のバッファを直接読むので
+  要素ごとに Python の物を作らない（`tolist()` を通すより 1 桁速い）。2 次元は `list[list[float]]` で、リストの深さは次元の数と
+  同じ。`float` には整数の配列も入る。数値のバッファを持つ物（`array.array` など）と、`tolist()` を持つ物（pandas の `Series`・
+  `float16` の配列など・こちらは `tolist()` を呼ぶ）も同じ書き方。`=> list[T]` のほかの形は無い（`=> dict[..]` は静的な誤り）
+  （`examples/interop/py_array_cast.ar`・`_error`）
 - **Arrow のコレクションを渡すにはキャストが要る**（D-12・2-11）: Arrow の list / dict / set（とそれを持つ tuple）を**キャスト
   せずに** Python へ渡すのは誤り。**リテラルも同じ**で、`np.array([1, 2, 3] => py_list[int])`・
   `pd.DataFrame({"a": [1, 2]} => py_dict[str, py_list[int]])`・`df[["a", "b"] => py_list[str]]` と書く。対象は関数・メソッド・

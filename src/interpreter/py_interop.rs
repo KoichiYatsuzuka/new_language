@@ -1310,7 +1310,19 @@ fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check
             Ok(Value::PyObject(PyObjHandle::from_bound(obj)))
         }
         T::ListOf(e) => {
-            let list = obj.downcast::<PyList>().map_err(|_| kind_err())?;
+            let Ok(list) = obj.downcast::<PyList>() else {
+                // 数値の配列（numpy の配列など）は `a.tolist() => list[T]` と同じ意味（pandas_import_plan.md の 4-3）。⚠ 読めない形
+                // （float16・逆のバイト順・`uint64` のあふれ・バッファを持たない pandas の Series）は本当に `tolist()` を呼ぶので、
+                // 値と誤りは同じになる
+                if let Some(v) = read_numeric_buffer(py, obj, ty) {
+                    return Ok(v);
+                }
+                if !obj.hasattr("tolist").unwrap_or(false) {
+                    return Err(kind_err());
+                }
+                let listed = obj.call_method0("tolist").map_err(|e| e.to_string())?;
+                return if listed.is_instance_of::<PyList>() { from_python_as(py, &listed, ty) } else { Err(kind_err()) };
+            };
             let mut items: Vec<Value> = Vec::with_capacity(list.len());
             for x in list.iter() {
                 items.push(from_python_as(py, &x, e)?);
@@ -1362,6 +1374,164 @@ fn from_python_as(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check
                 )),
             }
         }
+    }
+}
+
+/// 数値のバッファの要素の種類（[`read_numeric_buffer`]）。
+#[derive(Clone, Copy)]
+enum BufferElem {
+    F64,
+    F32,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl BufferElem {
+    /// `struct` の書式 1 文字と要素の大きさから。このマシンのバイト順の数・真偽値だけ。ほか（float16 の `e`・複素数・文字列）は `None`。
+    /// ⚠ `l` の大きさは環境で違う（numpy の `int32` は Windows で `l`）ので、大きさで決める。
+    fn of(format: &[u8], itemsize: ffi::Py_ssize_t) -> Option<Self> {
+        let code = match format {
+            [c] | [b'@' | b'=', c] => *c,
+            [b'<', c] if cfg!(target_endian = "little") => *c,
+            [b'>', c] if cfg!(target_endian = "big") => *c,
+            _ => return None,
+        };
+        Some(match (code, itemsize) {
+            (b'd', 8) => Self::F64,
+            (b'f', 4) => Self::F32,
+            (b'?', 1) => Self::Bool,
+            (b'b', 1) => Self::I8,
+            (b'B', 1) => Self::U8,
+            (b'h', 2) => Self::I16,
+            (b'H', 2) => Self::U16,
+            (b'i' | b'l' | b'q' | b'n', 4) => Self::I32,
+            (b'i' | b'l' | b'q' | b'n', 8) => Self::I64,
+            (b'I' | b'L' | b'Q' | b'N', 4) => Self::U32,
+            (b'I' | b'L' | b'Q' | b'N', 8) => Self::U64,
+            _ => return None,
+        })
+    }
+
+    /// この要素を、宣言の要素の型 `target` の値として読めるか（`tolist()` の要素を照合したときに通る組だけ）。
+    /// `float` には整数も入る（PEP 484・`python_verdict`）。⚠ `bool` は `int` にも `float` にも入らない（照合と同じ）。
+    fn fits(self, target: &crate::type_check::InferredType) -> bool {
+        use crate::type_check::InferredType as T;
+        let is_float = matches!(self, Self::F64 | Self::F32);
+        let is_bool = matches!(self, Self::Bool);
+        match target {
+            T::Any => true,
+            T::Float => !is_bool,
+            T::Int => !is_float && !is_bool,
+            T::Bool => is_bool,
+            _ => false,
+        }
+    }
+}
+
+/// 数値のバッファを読むのに使う値の作り方。
+#[derive(Clone, Copy)]
+struct BufferRead {
+    elem: BufferElem,
+    /// 整数を `float` にする（宣言の要素が `float` のとき）。
+    int_as_float: bool,
+}
+
+/// `dim` 次元目から下を Arrow のリストの要素にする（`start` はこの次元の先頭）。`i64` に入らない `uint64` があれば `None`。
+///
+/// # Safety
+/// `view` は C の `PyObject_GetBuffer` で取った形（`shape` / `strides` が `ndim` 個）で、`start` はその範囲の中を指すこと。
+unsafe fn read_buffer_dim(view: &ffi::Py_buffer, dim: usize, start: *const u8, how: BufferRead) -> Option<Vec<Value>> {
+    let n = *view.shape.add(dim);
+    let stride = *view.strides.add(dim);
+    let mut out = Vec::with_capacity(n as usize);
+    if dim + 1 < view.ndim as usize {
+        for i in 0..n {
+            let row = read_buffer_dim(view, dim + 1, start.offset(i * stride), how)?;
+            out.push(Value::List(Rc::new(RefCell::new(row))));
+        }
+        return Some(out);
+    }
+    let int = |x: i64| if how.int_as_float { Value::Float(x as f64) } else { Value::Int(x) };
+    macro_rules! each {
+        ($t:ty, $make:expr) => {
+            for i in 0..n {
+                // ⚠ `read_unaligned`: 構造化配列の欄などは要素の大きさに揃っていない。⚠ `stride` は負にもなる（`a[::-1]`）
+                let x = start.offset(i * stride).cast::<$t>().read_unaligned();
+                out.push($make(x));
+            }
+        };
+    }
+    match how.elem {
+        BufferElem::F64 => each!(f64, Value::Float),
+        BufferElem::F32 => each!(f32, |x: f32| Value::Float(x as f64)),
+        BufferElem::Bool => each!(u8, |x: u8| Value::Bool(x != 0)),
+        BufferElem::I8 => each!(i8, |x: i8| int(x as i64)),
+        BufferElem::I16 => each!(i16, |x: i16| int(x as i64)),
+        BufferElem::I32 => each!(i32, |x: i32| int(x as i64)),
+        BufferElem::I64 => each!(i64, int),
+        BufferElem::U8 => each!(u8, |x: u8| int(x as i64)),
+        BufferElem::U16 => each!(u16, |x: u16| int(x as i64)),
+        BufferElem::U32 => each!(u32, |x: u32| int(x as i64)),
+        BufferElem::U64 => {
+            for i in 0..n {
+                let x = start.offset(i * stride).cast::<u64>().read_unaligned();
+                out.push(int(i64::try_from(x).ok()?));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// `obj` の数値のバッファ（numpy の配列など）を、型 `ty`（`list[float]`・`list[list[int]]` など）の Arrow のリストにする。CPython の物を
+/// 1 つも作らずに読む（pandas_import_plan.md の 4-3）。読めない形なら `None`（呼び出し側が `tolist()` の道へ回す）。
+///
+/// ⚠ `tolist()` を照合したときに通る組だけを読む（[`BufferElem::fits`]）。通らない組はここで誤りにせず `None` を返し、同じ誤りを `tolist()` の
+///   道に出させる。⚠ 次元の数は `ty` のリストの深さと同じでなければ読まない。
+fn read_numeric_buffer(py: Python<'_>, obj: &Bound<'_, PyAny>, ty: &crate::type_check::InferredType) -> Option<Value> {
+    use crate::type_check::InferredType as T;
+    /// ⚠ `Py_buffer` は動かせない（中のポインタが自分の欄を指すことがある）ので、その場に置いて指す。
+    struct Release(*mut ffi::Py_buffer);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            // SAFETY: `PyObject_GetBuffer` が成功した物を、GIL の下で 1 度だけ手放す
+            unsafe { ffi::PyBuffer_Release(self.0) }
+        }
+    }
+    let mut leaf = ty;
+    let mut depth = 0;
+    while let T::ListOf(e) = leaf {
+        leaf = e;
+        depth += 1;
+    }
+    let mut view = std::mem::MaybeUninit::<ffi::Py_buffer>::uninit();
+    // SAFETY: GIL の下で、`view` は成功したときだけ初期化されて読まれる。読む間は Python のコードが走らないので、バッファは変わらない
+    unsafe {
+        if ffi::PyObject_CheckBuffer(obj.as_ptr()) == 0 {
+            return None;
+        }
+        if ffi::PyObject_GetBuffer(obj.as_ptr(), view.as_mut_ptr(), ffi::PyBUF_FORMAT | ffi::PyBUF_STRIDES) != 0 {
+            let _ = PyErr::take(py);
+            return None;
+        }
+        let _release = Release(view.as_mut_ptr());
+        let v = &*view.as_ptr();
+        if v.format.is_null() || v.shape.is_null() || v.strides.is_null() || v.ndim < 1 || v.ndim as usize != depth {
+            return None;
+        }
+        let elem = BufferElem::of(std::ffi::CStr::from_ptr(v.format).to_bytes(), v.itemsize)?;
+        if !elem.fits(leaf) {
+            return None;
+        }
+        let how = BufferRead { elem, int_as_float: *leaf == T::Float };
+        let items = read_buffer_dim(v, 0, v.buf as *const u8, how)?;
+        Some(Value::List(Rc::new(RefCell::new(items))))
     }
 }
 

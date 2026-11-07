@@ -1593,6 +1593,7 @@ impl TypeChecker {
     /// | クラスのインスタンス | `__cast__[T]` を**持たない** `T` | ⛔ `'C' is not castable to 'int'` |
     /// | 何でも | **`new_type`** | ✅ |
     /// | `list` | **`fixed_list[T]`** | ✅（平坦化変換） |
+    /// | Python のクラスのインスタンス（numpy の配列など） | **`list[T]`** | ✅（実行時に要素を照合する・pandas_import_plan.md の 4-3） |
     /// | それ以外（`1 => float` ・ `"5" => int` ・ `xs => list[int]`） | — | ⛔ `requires an instance or new_type target` |
     ///
     /// ⚠⚠ **プリミティブ同士の `=>` は書けない**（`1 => float` は実行時エラー）。
@@ -1645,6 +1646,12 @@ impl TypeChecker {
         //    `new_type` のラッパは `__cast__` を持たないが、実行時は基底型へ戻せる。
         if let T::NamedInstance(name) = src_ty {
             if self.registry.new_type_original(name.as_str()).is_some() {
+                return;
+            }
+        }
+        // Python のクラスのインスタンス → `list[T]`（`a => list[float]`・numpy の配列など）。写せるかは実行時に決まる（4-3）
+        if let (T::NamedInstance(name), T::ListOf(_)) = (src_ty, target_ty) {
+            if self.registry.is_cpython_class(name) {
                 return;
             }
         }

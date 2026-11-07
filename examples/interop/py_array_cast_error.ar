@@ -1,0 +1,12 @@
+# py_array_cast_error.ar — 配列の要素の型が宣言と違うキャストは `TypeError`（`a.tolist() => list[str]` と同じ）
+#
+# 配列の要素の型は実行時に決まるので、静的には止められない。
+#
+# 期待されるエラー（TypeError・実行時）:
+#   cannot cast to 'list[str]': found an element of type 'float' where 'str' was expected
+
+import[py] numpy as np
+
+mut a = np.ones(2) mustbe np.ndarray
+let xs = a => list[str]
+print(xs)

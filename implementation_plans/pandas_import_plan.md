@@ -263,7 +263,7 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 |---|---|---|---|
 | ~~4-1~~ | ✅ **済**（2026-11-07）Python → Arrow の変換を速くした（`=> list[int]` 192 → 60 ns/要素・`list[float]` 381 → 58・`list[str]` 471 → 99・`list[tuple[int,float]]` 929 → 315・6.9）。原因: `py_to_tl` が 1 つごとに型の名前の文字列を作り、float / str / `None` は整数の取り出しを失敗させて例外の物まで作っていた。組み込みの型そのもの（int / float / str / bool / None / tuple）は型のポインタで見分ける（`py_to_tl_exact`・派生は今までの道）。⚠ タプルの要素の型の名前（`TupleData.types`）は読む所がテストだけだったので欄ごと消した（Arrow のタプルも速くなる）。例題は `py_value_kinds.ar`（派生・`__index__`・i64 に入らない int・UTF-8 にできない str が前と同じ値になること）。測り直しは `scripts/py_boundary_bench.ps1` | 2-7 | 小〜中 |
 | ~~4-2~~ | ✅ **済**（2026-11-07）**決定: GIL はまとめない。** 測ると GIL の取得と解放は 1 回 40〜80 ns で、呼び出し 1 回の 1 割強（6.9）。持ち続ければその分は消えるが、Arrow のコードの間 Python のスレッドが止まる（CPython の 5 ms ごとの譲り渡しは Python のコードの中でしか働かないので、Arrow の VM に安全点が要る）。「越境 1 回 +0.5〜1.7 µs」の本体は GIL ではなく呼び出しの準備だったので、そちらを直した（`pb.noop()` 1,382 → 425 ns・`pb.one_int()` 1,112 → 449 ns・`pb.identity(i)` 1,289 → 592 ns）: 成功のときも位置の文字列を作り型を写していた `check_ffi_return`・呼ぶたびの名前の検査と形の鍵（`positional_trampoline`）・モジュールの受け手の写し（待ち行列の錠・`CallHead::Borrowed`）・引数の `Vec` の作り直し・空の待ち行列の錠 | 1-1 | 中 |
-| 4-3 | numpy の数値の配列を Arrow のリストにするとき、バッファを直接読む | 4-1 | 中 |
+| ~~4-3~~ | ✅ **済**（2026-11-07）`a => list[float]`（2 次元は `list[list[float]]`）を足した。それまでの道は `a.tolist()` を通すしか無かった。意味は `a.tolist() => list[T]` と同じで、数値のバッファは Python の物を作らずに読む（`read_numeric_buffer`・130 → 11 ns/要素・6.9）。読むのは `tolist()` を照合して通る組だけで（`BufferElem::fits`）、ほか（`float16`・逆のバイト順・`uint64` のあふれ・バッファの無い pandas の Series）は本当に `tolist()` を呼ぶので、値と誤りは同じ。静的には Python のクラスのインスタンス → `list[T]` を通す（写せるかは実行時）。例題は `py_array_cast.ar`・`_error` | 4-1 | 中 |
 
 ### フェーズ 5: `is`（D-4）
 
@@ -446,7 +446,11 @@ Python に触れない行（`loop only`・`for list[int]`・`index list[int]`）
 | `pb.identity(i)` | 1,288.7 | 591.5 |
 | `a.size`（`np.ndarray`） | 581.8 | 372.0 |
 | `a.tolist()`（戻り値の要素の照合を含む） | 339.7 | 57.8 |
+| `a.tolist() => list[float]` | 726.5 | 123.0 |
+| `a => list[float]`（4-3・`mut` で受ける） | — | 11.4 |
 | 参考: `[x for x in xs]`（CPython だけ） | — | 57.6 |
+
+⚠ `a => list[float]` を `let` で受けると 27.9 ns になる。差はリストを不変にする歩き回り（Arrow の `let` の一般のコスト）で、境界の話ではない。
 
 GIL の取り分（4-2）: 最初に CPython へ入るときに GIL を取ったまま手放さない形を仮に作って比べた（`PyGILState_Ensure` を `with_gil` の外で 1 回）。
 `for x in pl` 119 → 74、`pl[i]` 224 → 186、`pb.noop()` 419 → 365、`pb.identity(i)` 592 → 525、`a.size` 376 → 297 ns。代わりに、

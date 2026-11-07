@@ -1,0 +1,99 @@
+# py_array_cast.ar — numpy の配列を Arrow のリストにする（pandas_import_plan.md の 4-3）
+#
+# `a => list[float]` は `a.tolist() => list[float]` と同じ意味。数値の配列はバッファを直接読むので、要素ごとに Python の物を作らない。
+# 読めない形（`float16`・逆のバイト順）は `tolist()` の道を通るので、値は同じ。
+# ここでは、どの形も `tolist()` の道と同じ値になることを確かめる。
+#
+# 期待される出力:
+#   float64: [1.5, 2.5, -0.5]
+#   int64: [1, 2, 3]
+#   bool: [True, False]
+#   int -> float: [1.0, 2.0, 3.0]
+#   2-D: [[1, 2, 3], [4, 5, 6]]
+#   reversed: [3, 2, 1]
+#   stepped: [1, 3, 5]
+#   column: [2, 5]
+#   Fortran order: [[1, 2, 3], [4, 5, 6]]
+#   empty: []
+#   overflow: an element read from Python is 18446744073709551615, which does not fit in `int` (64-bit; declared `int`)
+#   list[Any]: [1.5, 2.5, -0.5]
+#   list of arrays: [[1.5, 2.5, -0.5], [1.5, 2.5, -0.5]]
+#   ok
+
+import[py] numpy as np
+import[py] array as ar
+
+fn check(name: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("wrong value: " + name)
+
+# ── バッファを読む形 ─────────────────────────────────────────────────────────
+mut f64 = np.array([1.5, 2.5, -0.5] => py_list[float]) mustbe np.ndarray
+let fs = f64 => list[float]
+print("float64:", fs)
+check("float64", fs == ((f64.tolist() mustbe py_list[float]) => list[float]))
+
+mut f32 = f64.astype("float32") mustbe np.ndarray
+check("float32", (f32 => list[float]) == [1.5, 2.5, -0.5])
+
+mut i64 = np.array([1, 2, 3] => py_list[int]) mustbe np.ndarray
+let ns = i64 => list[int]
+print("int64:", ns)
+
+for name in ["int8", "int16", "int32", "uint8", "uint16", "uint32", "uint64"]:
+    mut small = i64.astype(name) mustbe np.ndarray
+    check(name, (small => list[int]) == [1, 2, 3])
+
+mut flags = np.array([True, False] => py_list[bool]) mustbe np.ndarray
+let bs = flags => list[bool]
+print("bool:", bs)
+
+# `float` には int も入る（PEP 484・照合と同じ）
+print("int -> float:", i64 => list[float])
+
+# 2 次元は `list[list[T]]`
+mut grid = np.array([[1, 2, 3], [4, 5, 6]] => py_list[py_list[int]]) mustbe np.ndarray
+let rows = grid => list[list[int]]
+print("2-D:", rows)
+
+# 飛び幅: 逆向き・間引き・列・Fortran の並び
+mut backward = i64[::-1] mustbe np.ndarray
+print("reversed:", backward => list[int])
+mut wide = np.array([1, 2, 3, 4, 5, 6] => py_list[int]) mustbe np.ndarray
+mut stepped = wide[::2] mustbe np.ndarray
+print("stepped:", stepped => list[int])
+mut column = grid[:, 1] mustbe np.ndarray
+print("column:", column => list[int])
+mut fortran = np.array([[1, 2, 3], [4, 5, 6]] => py_list[py_list[int]], order="F") mustbe np.ndarray
+print("Fortran order:", fortran => list[list[int]])
+
+mut none = np.zeros(0) mustbe np.ndarray
+print("empty:", none => list[float])
+
+# numpy のほかにも、数値のバッファを持つ物は同じ
+mut raw = ar.array("d", [0.5, 1.5] => py_list[float])
+check("array.array", (raw => list[float]) == [0.5, 1.5])
+
+# ── `tolist()` の道を通る形（値は同じ）──────────────────────────────────────
+mut half = f64.astype("float16") mustbe np.ndarray
+check("float16", (half => list[float]) == [1.5, 2.5, -0.5])
+mut swapped = f64.astype(">f8") mustbe np.ndarray
+check("big-endian", (swapped => list[float]) == [1.5, 2.5, -0.5])
+
+# `uint64` の i64 に入らない値は OverflowError（`tolist()` の道と同じ）
+mut minus = np.array([-1] => py_list[int]) mustbe np.ndarray
+mut huge = minus.astype("uint64") mustbe np.ndarray
+try:
+    let oops = huge => list[int]
+    print("no error", oops)
+except OverflowError as e:
+    print("overflow:", str(e))
+
+# 宣言が `Any` なら、要素の値のまま
+print("list[Any]:", f64 => list[Any])
+
+# Python のリストの中の配列も同じ
+mut both = [f64, f64] => py_list[Any]
+print("list of arrays:", both => list[list[float]])
+
+print("ok")

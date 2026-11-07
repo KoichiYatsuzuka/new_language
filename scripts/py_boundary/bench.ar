@@ -285,6 +285,26 @@ fn bench_arr_tolist_only(mut a: np.ndarray) -> float:
             best = t1 - t0
     return best
 
+fn bench_arr_cast_float(mut a: np.ndarray) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = a => list[float]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
+fn bench_arr_cast_int(mut a: np.ndarray) -> float:
+    mut best = 1000000.0
+    for r in range(ROUNDS):
+        let t0 = pb.now() mustbe float
+        let ys = a => list[int]
+        let t1 = pb.now() mustbe float
+        if t1 - t0 < best:
+            best = t1 - t0
+    return best
+
 fn bench_py_loop(mut p: py_list[int]) -> float:
     mut best = 1000000.0
     for r in range(ROUNDS):
@@ -335,5 +355,8 @@ mut arr = np.ones(N) mustbe np.ndarray
 report("attr a.size", bench_attr(arr, CALLS), CALLS)
 report("tolist+cast", bench_arr_tolist(arr), N)
 report("tolist only", bench_arr_tolist_only(arr), N)
+report("array => list[float]", bench_arr_cast_float(arr), N)
+mut ints = np.arange(N) mustbe np.ndarray
+report("array => list[int]", bench_arr_cast_int(ints), N)
 report("py loop", bench_py_loop(xi), N)
 report("py copy", bench_py_copy(xi), N)

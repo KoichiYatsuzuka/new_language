@@ -127,6 +127,9 @@
   Elements are checked against the declared type **on every read** (subscript, `for` / comprehension, method results;
   `FfiTypeError` on a mismatch, an int read as `float` becomes a float) because Python may change the shared object later
   (task 2-12).
+  - A numpy array stays a Python object; `a => list[float]` (`list[list[float]]` for 2-D) makes an Arrow list. It means
+    `a.tolist() => list[float]` but reads the numeric buffer directly (pandas_import_plan.md 4-3). Anything with a numeric
+    buffer or a `tolist()` method casts the same way.
   - Passing an Arrow list / dict / set (or a tuple holding one) to Python **without a cast is an error, literals
     included** (task 2-11): write `np.array([1, 2] => py_list[int])`. It covers call arguments (keywords and `*` / `**`
     spreads too), subscripts, element / attribute assignment and operator operands — static `ArrowCollectionToPython`
