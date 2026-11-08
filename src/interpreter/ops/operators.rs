@@ -114,11 +114,12 @@ impl Interpreter {
         if let (BinOp::Mod, Value::Str(fmt)) = (op, &lv) {
             let fmt = fmt.clone();
             let args = Self::percent_args(&rv);
+            let mapping = Self::percent_rhs_is_mapping(&rv);
             let mut text_of = |v: &Value, how: PercentText| match how {
                 PercentText::Str => self.display_str(v),
                 PercentText::Repr => self.repr_val(v),
             };
-            return percent_format(&fmt, &args, &mut text_of).map(Value::str);
+            return percent_format(&fmt, &args, mapping, &mut text_of).map(Value::str);
         }
         // ⚠⚠ `in` / `not in` の**左辺**が `__eq__` を持つインスタンスなら、要素ごとに
         //    `__eq__` を呼ぶ（B2-b）。以前は `apply_binop` が `values_eq`（構造比較）を
@@ -168,6 +169,17 @@ impl Interpreter {
         match rv {
             Value::Tuple(t) => t.all_values().to_vec(),
             other => vec![other.clone()],
+        }
+    }
+
+    /// `%` の右辺が写像か（CPython の `PyMapping_Check`: `__getitem__` を持つ。tuple と str は除く）。写像なら余った引数を
+    /// 誤りにしない（CPython の `"x" % [1]` は `'x'`・`percent_format` の `mapping`）。
+    fn percent_rhs_is_mapping(rv: &Value) -> bool {
+        match rv {
+            Value::List(_) | Value::FrozenList { .. } | Value::Dict(_) | Value::Bytes(_) => true,
+            Value::Instance(inst) => inst.borrow().class.methods.contains_key("__getitem__"),
+            Value::PyObject(h) => crate::interpreter::py_interop::py_getattr(h, "__getitem__").is_ok(),
+            _ => false,
         }
     }
 
@@ -638,7 +650,8 @@ impl Interpreter {
                         PercentText::Repr => self.display_repr(v),
                     })
                 };
-                let result = percent_format(fmt, &Self::percent_args(rv), &mut text_of)?;
+                let mapping = Self::percent_rhs_is_mapping(rv);
+                let result = percent_format(fmt, &Self::percent_args(rv), mapping, &mut text_of)?;
                 Ok(Value::str(result))
             }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),

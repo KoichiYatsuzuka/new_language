@@ -261,6 +261,8 @@ $knownDiff = @{
     'py_array_cast'                  ='Rust: numpy の配列の => list[T]（pandas_import_plan.md の 4-3）。py: impl_python に numpy の読み込みは無い'
     'async_mustbe'                   ='Rust: async のタスクの本体の mustbe（known_bugs.md の #14）。py: impl_python に AsyncManager は無い'
     'comprehension_types'            ='Rust: 内包表記の型と Any の要素の比較（known_bugs.md の #15）。py: impl_python は多重の for の内包表記を読めない'
+    'percent_format_args'            ='Rust: % の書式の余った引数と途中で終わる書式（known_bugs.md の #13・CPython と同じ）。py: impl_python は tuple 以外の右辺を受けない'
+    'percent_format_args_error'      ='Rust: % の書式の余った引数は TypeError（#13）。py: impl_python は余った引数を捨てる'
     'int_literal_range_error'        ='Rust: int（64 ビット）に入らない整数リテラルは構文解析の誤り（known_bugs.md の #16）。py: impl_python の int は Python の任意の桁'
     'py_overload_methods_error'      ='Rust: 選んだ @overload の形の型の静的な誤り（フェーズ 6）。py: impl_python は型スタブの形を読まない'
     'py_overload_methods'            ='Rust: 型スタブの @overload と関数の名前（pandas_import_plan.md のフェーズ 6）。py: impl_python に numpy の読み込みは無い'

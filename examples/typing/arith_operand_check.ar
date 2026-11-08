@@ -35,7 +35,7 @@ print("=== 文字列 ===")
 print("a" + "b")                    # ab
 print("ab" * 2)                     # abab
 print(2 * "ab")                     # abab
-print("a" % 2)                      # a      書式化（右辺の型は問わない）
+print("a%d" % 2)                    # a2     書式化（右辺の型は問わない）
 
 print("=== list / tuple の連結と繰り返し ===")
 print([1] + [2])                    # [1, 2]

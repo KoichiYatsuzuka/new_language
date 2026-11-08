@@ -1,0 +1,63 @@
+# percent_format_args.ar — `%` の書式の引数の数と、途中で終わる書式（known_bugs.md の #13）
+#
+# CPython と同じ: 余った引数は `TypeError`、書式が `%` や幅の途中で終われば `ValueError`。右辺が `__getitem__` を持つ物
+# （list・dict など。tuple と str は除く）なら、余っても誤りにしない（CPython の `PyMapping_Check`）。
+# ⚠ 以前はどちらも黙って捨てていた（`"%d" % (1, 2)` が `'1'`・`"ab%" % ()` が `'ab'`）。
+#
+# 期待される出力:
+#   "%d" % (1, 2) -> TypeError: not all arguments converted during string formatting
+#   "x" % 5 -> TypeError: not all arguments converted during string formatting
+#   "x" % () -> x
+#   "ab%" % () -> ValueError: incomplete format
+#   "%5" % (1,) -> ValueError: incomplete format
+#   "x" % [1] -> x
+#   "x" % {"a": 1} -> x
+#   "%d%%" % 5 -> 5%
+#   "%s" % "s" -> s
+#   "x" % "s" -> TypeError: not all arguments converted during string formatting
+#   "%s" % [1, 2] -> [1, 2]
+
+try:
+    print('"%d" % (1, 2)', "->", "%d" % (1, 2))
+except Exception as e:
+    print('"%d" % (1, 2)', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"x" % 5', "->", "x" % 5)
+except Exception as e:
+    print('"x" % 5', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"x" % ()', "->", "x" % ())
+except Exception as e:
+    print('"x" % ()', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"ab%" % ()', "->", "ab%" % ())
+except Exception as e:
+    print('"ab%" % ()', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"%5" % (1,)', "->", "%5" % (1,))
+except Exception as e:
+    print('"%5" % (1,)', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"x" % [1]', "->", "x" % [1])
+except Exception as e:
+    print('"x" % [1]', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"x" % {"a": 1}', "->", "x" % {"a": 1})
+except Exception as e:
+    print('"x" % {"a": 1}', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"%d%%" % 5', "->", "%d%%" % 5)
+except Exception as e:
+    print('"%d%%" % 5', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"%s" % "s"', "->", "%s" % "s")
+except Exception as e:
+    print('"%s" % "s"', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"x" % "s"', "->", "x" % "s")
+except Exception as e:
+    print('"x" % "s"', "->", type(e).__name__ + ":", str(e))
+try:
+    print('"%s" % [1, 2]', "->", "%s" % [1, 2])
+except Exception as e:
+    print('"%s" % [1, 2]', "->", type(e).__name__ + ":", str(e))

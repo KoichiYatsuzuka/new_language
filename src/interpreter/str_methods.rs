@@ -279,11 +279,17 @@ pub enum PercentText {
 /// `text_of` は `%s` / `%r` の値を文字列にする（known_bugs.md の #4）。インタプリタを持つ呼び出し（`apply_binop_dyn`）は
 /// CPython と同じく `__str__` / `__repr__` を呼ぶ。⚠ 以前は既定の表示（`display`）しか使えず、インスタンスが
 /// `<T object at 0x..>` になり、`%r` は表示を Rust の書式で引用していた（`"%r" % "ab"` が `"ab"`・`"%r" % 5` が `"5"`）。
+///
+/// `mapping` は右辺が写像か（CPython の `PyMapping_Check`: `__getitem__` を持つ・tuple と str は除く）。写像でなければ、
+/// 余った引数は CPython と同じ `TypeError`（`"%d" % (1, 2)`）。書式が `%` や幅の途中で終われば `ValueError`（`"ab%"`）。
+/// ⚠ 以前はどちらも黙って捨てていた（known_bugs.md の #13）。
 pub fn percent_format(
     fmt: &str,
     args: &[Value],
+    mapping: bool,
     text_of: &mut dyn FnMut(&Value, PercentText) -> Result<String, String>,
 ) -> Result<String, String> {
+    const INCOMPLETE: &str = "ValueError: incomplete format";
     let mut result = String::new();
     let chars: Vec<char> = fmt.chars().collect();
     let mut i = 0;
@@ -297,7 +303,7 @@ pub fn percent_format(
         }
         i += 1;
         if i >= chars.len() {
-            break;
+            return Err(INCOMPLETE.to_string());
         }
 
         if chars[i] == '%' {
@@ -350,7 +356,7 @@ pub fn percent_format(
         };
 
         if i >= chars.len() {
-            break;
+            return Err(INCOMPLETE.to_string());
         }
         let spec = chars[i];
         i += 1;
@@ -450,6 +456,9 @@ pub fn percent_format(
         result.push_str(&s);
     }
 
+    if arg_idx < args.len() && !mapping {
+        return Err("TypeError: not all arguments converted during string formatting".to_string());
+    }
     Ok(result)
 }
 

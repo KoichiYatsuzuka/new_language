@@ -1,0 +1,6 @@
+# percent_format_args_error.ar — `%` の書式の引数が余れば `TypeError`（known_bugs.md の #13）
+#
+# 期待されるエラー（TypeError・実行時）:
+#   not all arguments converted during string formatting
+
+print("%d items" % (3, 4))
