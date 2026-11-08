@@ -154,6 +154,7 @@ pub enum FStrPart {
 ///
 /// ## その他
 /// - `Unknown(char)` — 未知の文字（エラー回復用）
+/// - `InvalidInt(String)` — `int`（64 ビット）に入らない・桁の無い整数リテラル（書いた綴り）。パーサが誤りにする
 /// - `Eof`           — 入力終端
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -376,6 +377,9 @@ pub enum Token {
 
     // Unknown character
     Unknown(char),
+    /// `int`（i64）に入らない整数リテラル（`18446744073709551615`・`0xFFFF_FFFF_FFFF_FFFF`）と桁の無い `0x`。綴りのまま。
+    /// ⚠ 以前は黙って `0` になっていた（known_bugs.md の #16）。
+    InvalidInt(String),
 
     // End of file
     Eof,
@@ -553,6 +557,7 @@ impl std::fmt::Display for Token {
             Token::Indent => write!(f, "INDENT"),
             Token::Dedent => write!(f, "DEDENT"),
             Token::Unknown(c) => write!(f, "?{c}"),
+            Token::InvalidInt(s) => write!(f, "{s}"),
             Token::Eof => write!(f, "EOF"),
             _ => unreachable!("keyword token should have been handled by keyword_str()"),
         }

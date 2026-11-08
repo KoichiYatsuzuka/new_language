@@ -385,6 +385,11 @@ impl Parser {
             .unwrap_or(&Token::Eof)
     }
 
+    /// 現在位置の `n` 個先のトークン。トークン列を超えた場合は `Token::Eof` を返す。
+    fn peek_at(&self, n: usize) -> &Token {
+        self.tokens.get(self.pos + n).map(|s| &s.token).unwrap_or(&Token::Eof)
+    }
+
     /// 現在位置の1つ先（先読み1トークン）への参照を返す。
     /// トークン列を超えた場合は `Token::Eof` を返す。
     fn peek1(&self) -> &Token {

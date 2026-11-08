@@ -146,6 +146,17 @@
         assert_eq!(tokens[5], Token::Int(10));
     }
 
+    /// `int`（i64）に入らない整数リテラルと桁の無い `0x` は `InvalidInt`（綴りのまま・known_bugs.md の #16）。以前は黙って `0`。
+    #[test]
+    fn test_integer_literals_out_of_range() {
+        let tokens = lex("9223372036854775807 9223372036854775808 0xFFFF_FFFF_FFFF_FFFF 0x 99999999999999999999j");
+        assert_eq!(tokens[0], Token::Int(i64::MAX));
+        assert_eq!(tokens[1], Token::InvalidInt("9223372036854775808".to_string()));
+        assert_eq!(tokens[2], Token::InvalidInt("0xFFFF_FFFF_FFFF_FFFF".to_string()));
+        assert_eq!(tokens[3], Token::InvalidInt("0x".to_string()));
+        assert_eq!(tokens[4], Token::ImaginaryFloat(1e20));
+    }
+
     /// float_literals のテスト。
     #[test]
     #[allow(clippy::approx_constant)] // 3.14 は円周率ではなく float リテラル字句解析の検証値

@@ -243,7 +243,7 @@ impl Lexer {
     /// - `is_digit`    — 対象の基数で有効な桁文字を判定するクロージャ
     ///
     /// # 戻り値
-    /// 解析した整数値を持つ `Token::Int(i64)`（パース失敗時は `0`）
+    /// 解析した整数値を持つ `Token::Int(i64)`。`i64` に入らない・桁が無いなら `Token::InvalidInt`（綴りのまま）
     fn lex_radix_int<F>(&mut self, token_start: usize, base: u32, is_digit: F) -> Token
     where
         F: Fn(char) -> bool,
@@ -260,7 +260,10 @@ impl Lexer {
         let raw: String = self.chars[token_start..self.pos].iter().collect();
         let clean = raw.replace('_', "");
         // clean[2..] でプレフィックス部分を除いた数字列を基数でパースする
-        Token::Int(i64::from_str_radix(&clean[2..], base).unwrap_or(0))
+        match i64::from_str_radix(&clean[2..], base) {
+            Ok(n) => Token::Int(n),
+            Err(_) => Token::InvalidInt(raw),
+        }
     }
 
     /// 10 進整数または浮動小数点リテラルを解析する。
@@ -273,7 +276,7 @@ impl Lexer {
     ///
     /// # 戻り値
     /// - 浮動小数点部が含まれる場合: `Token::Float(f64)`（パース失敗時は `0.0`）
-    /// - 整数のみの場合:             `Token::Int(i64)`（パース失敗時は `0`）
+    /// - 整数のみの場合:             `Token::Int(i64)`（`i64` に入らなければ `Token::InvalidInt`）
     fn lex_decimal_number(&mut self, token_start: usize) -> Token {
         // 整数部を消費する
         while matches!(self.ch(), Some(ch) if ch.is_ascii_digit() || ch == '_') {
@@ -316,11 +319,8 @@ impl Lexer {
                 matches!(self.ch1(), Some(c) if c.is_alphanumeric() || c == '_');
             if !next_is_alnum {
                 self.pos += 1; // `j` を消費する
-                let imag: f64 = if is_float {
-                    clean.parse().unwrap_or(0.0)
-                } else {
-                    clean.parse::<i64>().unwrap_or(0) as f64
-                };
+                // 虚数は float なので、桁の多い整数も float として読む（⚠ 以前は `i64` に入らないと `0` だった）
+                let imag: f64 = clean.parse().unwrap_or(0.0);
                 return Token::ImaginaryFloat(imag);
             }
         }
@@ -328,7 +328,10 @@ impl Lexer {
         if is_float {
             Token::Float(clean.parse().unwrap_or(0.0))
         } else {
-            Token::Int(clean.parse().unwrap_or(0))
+            match clean.parse() {
+                Ok(n) => Token::Int(n),
+                Err(_) => Token::InvalidInt(raw),
+            }
         }
     }
 }

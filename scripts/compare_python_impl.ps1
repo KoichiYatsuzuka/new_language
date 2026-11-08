@@ -259,6 +259,7 @@ $knownDiff = @{
     'py_typing_any'                  ='Rust: Python のクラスの注釈の Any（CPython のモジュールと numpy）。py: impl_python は import[py] を変換して実行する'
     'py_list_cast_overflow_error'    ='Rust: => list[int] の i64 に入らない要素は OverflowError（CPython のモジュール）。py: impl_python に py_list は無い'
     'py_array_cast'                  ='Rust: numpy の配列の => list[T]（pandas_import_plan.md の 4-3）。py: impl_python に numpy の読み込みは無い'
+    'int_literal_range_error'        ='Rust: int（64 ビット）に入らない整数リテラルは構文解析の誤り（known_bugs.md の #16）。py: impl_python の int は Python の任意の桁'
     'py_overload_methods_error'      ='Rust: 選んだ @overload の形の型の静的な誤り（フェーズ 6）。py: impl_python は型スタブの形を読まない'
     'py_overload_methods'            ='Rust: 型スタブの @overload と関数の名前（pandas_import_plan.md のフェーズ 6）。py: impl_python に numpy の読み込みは無い'
     'py_value_kinds'                 ='Rust: Python から返る値の写し方（pandas_import_plan.md の 4-1・CPython のモジュールの値）。py: impl_python は import[py] を変換して実行する'

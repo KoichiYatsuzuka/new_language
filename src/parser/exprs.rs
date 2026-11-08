@@ -328,6 +328,15 @@ impl Parser {
         match self.current() {
             // 単項マイナス（算術否定）
             Token::Minus => {
+                // `-9223372036854775808`（`i64::MIN`）は `-` の後の整数が `int` に入らないが、全体は入る。⚠ `-x ** 2` は
+                // `-(x ** 2)` なので、後に `**` が続くときは読まない
+                if let Token::InvalidInt(s) = self.peek1() {
+                    if int_literal_value(s) == Some(1u128 << 63) && *self.peek_at(2) != Token::StarStar {
+                        self.advance();
+                        self.advance();
+                        return Ok(Expr::Int(i64::MIN));
+                    }
+                }
                 self.advance();
                 Ok(Expr::UnaryOp {
                     op: UnaryOp::Neg,
@@ -889,6 +898,16 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Int(n))
             }
+            // ⚠ 以前は黙って `0` だった（known_bugs.md の #16）
+            Token::InvalidInt(s) => {
+                let digits = s.replace('_', "");
+                let prefix_only = digits.len() == 2 && matches!(digits.as_str(), "0x" | "0X" | "0o" | "0O" | "0b" | "0B");
+                Err(if prefix_only {
+                    format!("invalid integer literal '{s}' (no digits after the prefix)")
+                } else {
+                    format!("integer literal {s} does not fit in `int` (64-bit: -9223372036854775808 to 9223372036854775807)")
+                })
+            }
             Token::Float(f) => {
                 self.advance();
                 Ok(Expr::Float(f))
@@ -1432,4 +1451,16 @@ fn split_fstring_field(src: &str) -> Result<FStringField<'_>, String> {
         conversion,
         spec,
     })
+}
+
+/// `int` に入らなかった整数リテラル（`Token::InvalidInt` の綴り）の値。`0x` / `0o` / `0b` も読む。読めなければ `None`。
+fn int_literal_value(text: &str) -> Option<u128> {
+    let digits = text.replace('_', "");
+    let (radix, body) = match digits.get(..2) {
+        Some("0x" | "0X") => (16, &digits[2..]),
+        Some("0o" | "0O") => (8, &digits[2..]),
+        Some("0b" | "0B") => (2, &digits[2..]),
+        _ => (10, &digits[..]),
+    };
+    u128::from_str_radix(body, radix).ok()
 }

@@ -91,7 +91,7 @@ fn classify(token: &Token) -> Option<EditorTokenKind> {
         Token::Newline => Some(EditorTokenKind::Newline),
         Token::Ident(_) => Some(EditorTokenKind::Ident),
         Token::Str(_) | Token::FStr(_) => Some(EditorTokenKind::Str),
-        Token::Int(_) | Token::Float(_) => Some(EditorTokenKind::Num),
+        Token::Int(_) | Token::Float(_) | Token::InvalidInt(_) => Some(EditorTokenKind::Num),
         other => Some(if other.keyword_str().is_some() {
             EditorTokenKind::Keyword
         } else {

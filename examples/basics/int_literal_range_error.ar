@@ -1,0 +1,9 @@
+# int_literal_range_error.ar — `int`（64 ビット）に入らない整数リテラルは構文解析の誤り（known_bugs.md の #16）
+#
+# ⚠ 以前は黙って `0` になっていた（`print(18446744073709551615)` が `0`）。
+#
+# 期待されるエラー（ParseError）:
+#   integer literal 18446744073709551615 does not fit in `int` (64-bit: -9223372036854775808 to 9223372036854775807)
+
+let mask = 18446744073709551615
+print(mask)
