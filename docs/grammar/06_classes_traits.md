@@ -352,6 +352,34 @@ let b: Holder[str] = IntBox()     # StaticTypeError: ... does not satisfy protoc
 - 型テストは素の名前だけ（`x is Holder`・メンバーの有無を見る）。`x is Holder[int]` は静的な誤り（型引数は実行時に確かめられない・
   CPython の `isinstance` と同じ）。
 
+### 組み込みの protocol
+
+CPython の `typing` / `collections.abc` と同じ名前の protocol を、import せずに注釈へ書ける（pandas_import_plan.md の 6-7・
+宣言は `src/built_in_stab/builtins.ars`・`examples/typing/builtin_protocols.ar`・`_error`）。
+
+| protocol | 要求するメンバー |
+|---|---|
+| `Iterable[T]` | `__iter__() -> Iterator[T]` |
+| `Iterator[T]` | `__next__() -> T`・`__iter__()` |
+| `Reversible[T]` | `__reversed__()`・`__iter__()` |
+| `Sized` | `__len__() -> int` |
+| `Container[T]` | `__contains__(x) -> bool` |
+| `Collection[T]` | `__len__`・`__iter__`・`__contains__` |
+| `Sequence[T]` | `__getitem__(int) -> T`・`__len__`・`__iter__`・`__contains__`・`__reversed__`・`count`・`index` |
+| `Mapping[K, V]` | `__getitem__(K) -> V`・`__len__`・`__iter__`（キー）・`__contains__`・`keys`・`values`・`items`・`get` |
+| `Hashable` | `__hash__() -> int` |
+| `SupportsIndex` / `SupportsInt` / `SupportsFloat` / `SupportsComplex` / `SupportsBytes` | `__index__` / `__int__` / `__float__` / `__complex__` / `__bytes__` |
+| `SupportsAbs[T]` / `SupportsRound[T]` | `__abs__() -> T` / `__round__(ndigits) -> T` |
+
+- 組み込みの値がどれを満たすかは上の「組み込みの値も適合する」の表で決まる（`list[int]` は `Sequence[int]`・`dict[str, int]` は
+  `Mapping[str, int]`・`int` は `SupportsIndex`）。同じメンバーを持つクラスも満たす（`__iter__` を持てば `Iterable`）。
+- 値の型が protocol なら、`for` の要素（`__iter__` の反復子の要素）・添字（`__getitem__`）・メソッドの型は要求から決まる。
+  要求に無い操作は誤り（`Sized` の値は回せず、添字も取れない）。
+- メソッドの引数は位置だけで渡す（CPython の組み込みと同じ・照合で名前を見ない）。
+- 利用者が同じ名前のクラス・trait・enum・protocol・new_type を宣言したら、そちらが勝つ（組み込みの enum・関数と同じ・
+  `examples/typing/builtin_protocol_shadow.ar`）。同じ名前の**変数**は宣言できない（`let Sized = 1` は `VariableRedeclaration`・
+  組み込みの型名 `Path` などと同じく実行時の大域を占める・ffi_value_exchange_plan.md 7-25）。
+
 ---
 
 ### `is Protocol` 型ガード

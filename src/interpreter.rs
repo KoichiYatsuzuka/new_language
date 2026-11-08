@@ -754,7 +754,7 @@ impl Interpreter {
                 ]);
                 m
             },
-            protocol_required_members: HashMap::new(),
+            protocol_required_members: Self::builtin_protocol_members(),
             meta_expanding: false,
             meta_ops_left: 0,
             meta_decls: std::collections::HashMap::new(),

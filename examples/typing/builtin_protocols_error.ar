@@ -1,0 +1,30 @@
+# builtin_protocols_error.ar — 組み込みの protocol の誤り（pandas_import_plan.md の 6-7）
+#
+# - 要素の型も照合する（`list[str]` は `Iterable[int]` ではない）。`set` は番号で引けない（`Sequence` ではない）
+# - 値の型が protocol なら、できる操作は protocol の要求だけ（`Sized` は回せない・添字を取れない）
+# - 型引数を省けない（何でもよいなら `Iterable[Any]`）。型テストに型引数は書けない
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   type 'list[str]' does not satisfy protocol 'Iterable[int]': method `__iter__` signature does not match protocol requirement
+#   type 'set[int]' does not satisfy protocol 'Sequence[int]': missing method `__getitem__`
+#   type 'set[int]' does not satisfy protocol 'Sequence[int]': missing method `__reversed__`
+#   type 'set[int]' does not satisfy protocol 'Sequence[int]': missing method `count`
+#   type 'set[int]' does not satisfy protocol 'Sequence[int]': missing method `index`
+#   'Sized' is not iterable
+#   'Sized' is not subscriptable
+#   parameter `xs` of `count_all` is annotated 'Iterable' but protocol 'Iterable' takes 1 type argument(s); write 'Iterable[...]' (e.g. 'Iterable[Any]')
+#   type guard cannot test 'Iterable[int]' at runtime (element types are not checked); write `is Iterable`
+
+let a: Iterable[int] = ["x"]
+let b: Sequence[int] = {1, 2}
+
+fn walk(s: Sized) -> None:
+    for x in s:
+        print(x)
+    print(s[0])
+
+fn count_all(xs: Iterable) -> int:
+    return 0
+
+let c = [1]
+print(c is Iterable[int])

@@ -289,6 +289,11 @@ impl TypeChecker {
                 let ty = InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone())));
                 global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false });
             }
+            // 組み込みの protocol（`Iterable` …・6-7）も型の値として置く（`isinstance(x, Sized)`）
+            if let Stmt::ProtocolDef { name, .. } = decl {
+                let ty = InferredType::TypeValOf(Box::new(InferredType::Protocol(name.clone(), Vec::new())));
+                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false });
+            }
         }
 
         let mut builder = registry::builder::TypeRegistryBuilder::with_builtins();

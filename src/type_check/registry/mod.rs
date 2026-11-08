@@ -84,6 +84,9 @@ pub(super) struct TypeRegistry {
     cpython_class_names: HashSet<String>,
     /// プロトコル定義。プロトコル名 → `ProtocolInfo`。
     known_protocols: HashMap<String, ProtocolInfo>,
+    /// `builtins.ars` の組み込みの protocol の名前（`Iterable` …・6-7）。利用者が同じ名前の型を宣言したら外す
+    /// （`TypeRegistryBuilder::shadow_builtin_protocol`）。
+    builtin_protocols: HashSet<String>,
     /// **Arrow ソースで `class` 宣言された**クラス名（#27-a）。
     ///
     /// `known_class_names` との違いが要点: あちらは**外部言語のスタブ由来クラスも含む**

@@ -38,7 +38,8 @@ pub(crate) const RUNTIME_GLOBAL_NAMES: &[&str] = &[
 
 /// 実行時の組み込みの大域が占める名前か（[`RUNTIME_GLOBAL_NAMES`]）。
 pub(crate) fn is_runtime_global_name(name: &str) -> bool {
-    RUNTIME_GLOBAL_NAMES.contains(&name) || is_builtin_exception(name)
+    // 組み込みの protocol（`Iterable` …・6-7）も大域を占める（宣言は `builtins.ars`）
+    RUNTIME_GLOBAL_NAMES.contains(&name) || is_builtin_exception(name) || super::builtins::is_builtin_protocol(name)
 }
 
 pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
@@ -74,7 +75,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
 
 /// 実行時が宣言なしで解決する名前か。
 pub(crate) fn is_runtime_builtin_name(name: &str) -> bool {
-    RUNTIME_BUILTIN_NAMES.contains(&name) || is_builtin_exception(name)
+    RUNTIME_BUILTIN_NAMES.contains(&name) || is_builtin_exception(name) || super::builtins::is_builtin_protocol(name)
 }
 
 /// 組み込みの例外・警告クラスと、その親（CPython 3.12 の階層・python_builtins_plan.md のタスク 4-1）。

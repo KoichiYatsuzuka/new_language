@@ -39,6 +39,8 @@
 #       （どちらも `builtins_ars_matches_the_runtime` が突き合わせる）。
 #     ⚠ 実行時にしか決まらない戻り値（`f.read()` はテキストなら `str`・バイトなら `list[int]`）は
 #       `->` を書かない（関数と同じ規則）。
+#   - **組み込みの protocol**（`Iterable[T]` / `Sequence[T]` …・pandas_import_plan.md の 6-7）もここで宣言する。型検査器と
+#     実行時（`x is Sized`）の両方がこの宣言を読む。
 
 # ── 組み込みの型 ──────────────────────────────────────────────────────────────
 
@@ -121,6 +123,145 @@ class FileObject:
     fn tell(self) -> int:
         """The current position."""
         pass
+
+# ── 組み込みの protocol（pandas_import_plan.md の 6-7・D-13）───────────────────────────
+#
+# CPython の `typing` / `collections.abc` の同じ名前の抽象クラスと同じメンバーを要求し、構造で照合する（宣言の継承は
+# 要らない）。組み込みの値（`list` / `str` / `dict` …）がどれを満たすかは `src/type_check/builtin_members.rs` の表で
+# 決まる（`list[int]` は `Sequence[int]` を満たす）。型テストは素の名前だけ（`x is Iterable`）。
+# ⚠ メソッドの引数は位置だけで渡す（CPython の組み込みと同じ・名前は照合しない）。
+# ⚠ 利用者が同じ名前の型を宣言したら、そちらが勝つ（組み込みの enum / 関数と同じ）。
+
+# 回せる値（`for x in xs` が `T` を出す）。
+protocol Iterable[T]:
+    fn __iter__(self) -> Iterator[T]:
+        ...
+
+# 1 つずつ取り出す値（ジェネレータ）。
+protocol Iterator[T]:
+    fn __next__(self) -> T:
+        ...
+
+    fn __iter__(self) -> Iterator[T]:
+        ...
+
+# 逆から回せる値。
+protocol Reversible[T]:
+    fn __reversed__(self) -> Iterator[T]:
+        ...
+
+    fn __iter__(self) -> Iterator[T]:
+        ...
+
+# 長さのある値（`len(x)`）。
+protocol Sized:
+    fn __len__(self) -> int:
+        ...
+
+# `x in c` を答えられる値。
+protocol Container[T]:
+    fn __contains__(self, x: Any) -> bool:
+        ...
+
+# 長さがあり、回せて、`in` を答えられる値。
+protocol Collection[T]:
+    fn __len__(self) -> int:
+        ...
+
+    fn __iter__(self) -> Iterator[T]:
+        ...
+
+    fn __contains__(self, x: Any) -> bool:
+        ...
+
+# 番号で引ける列（`list` / `tuple` / `str` / `bytes` / `py_list`）。
+protocol Sequence[T]:
+    fn __getitem__(self, i: int) -> T:
+        ...
+
+    fn __len__(self) -> int:
+        ...
+
+    fn __iter__(self) -> Iterator[T]:
+        ...
+
+    fn __contains__(self, x: Any) -> bool:
+        ...
+
+    fn __reversed__(self) -> Iterator[T]:
+        ...
+
+    fn count(self, x: Any) -> int:
+        ...
+
+    fn index(self, x: Any) -> int:
+        ...
+
+# キーで引ける表（`dict` / `py_dict`）。
+protocol Mapping[K, V]:
+    fn __getitem__(self, k: K) -> V:
+        ...
+
+    fn __len__(self) -> int:
+        ...
+
+    fn __iter__(self) -> Iterator[K]:
+        ...
+
+    fn __contains__(self, x: Any) -> bool:
+        ...
+
+    fn keys(self) -> Iterable[K]:
+        ...
+
+    fn values(self) -> Iterable[V]:
+        ...
+
+    fn items(self) -> Iterable[tuple[K, V]]:
+        ...
+
+    fn get(self, k: K) -> Option[V]:
+        ...
+
+# 辞書のキー・集合の要素にできる値（`hash(x)`）。
+protocol Hashable:
+    fn __hash__(self) -> int:
+        ...
+
+# 添字・`range` の境界に使える整数（`int` / `bool`）。
+protocol SupportsIndex:
+    fn __index__(self) -> int:
+        ...
+
+# `int(x)` で整数にできる値。
+protocol SupportsInt:
+    fn __int__(self) -> int:
+        ...
+
+# `float(x)` で浮動小数点数にできる値。
+protocol SupportsFloat:
+    fn __float__(self) -> float:
+        ...
+
+# `complex(x)` で複素数にできる値。
+protocol SupportsComplex:
+    fn __complex__(self) -> complex:
+        ...
+
+# `bytes(x)` でバイト列にできる値。
+protocol SupportsBytes:
+    fn __bytes__(self) -> bytes:
+        ...
+
+# `abs(x)` が `T` を返す値。
+protocol SupportsAbs[T]:
+    fn __abs__(self) -> T:
+        ...
+
+# `round(x, n)` が `T` を返す値。
+protocol SupportsRound[T]:
+    fn __round__(self, ndigits: int) -> T:
+        ...
 
 # ── 組み込み関数 ────────────────────────────────────────────────────────────
 

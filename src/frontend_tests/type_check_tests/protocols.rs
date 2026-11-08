@@ -183,3 +183,34 @@ fn builtin_member_direct_calls_are_typed() {
     assert!(err("let n = [1, 2].__len__(3)\n"));
     assert!(err("let f = (2.5).__index__()\n"));
 }
+
+/// 組み込みの protocol は import せずに書け、`for` の要素・添字の型は要求から決まる（6-7）。
+#[test]
+fn builtin_protocols_type_operations() {
+    let sum = "fn f(xs: Iterable[int]) -> int:\n    mut s = 0\n    for x in xs:\n        s += x\n    return s\n";
+    assert!(ok(&format!("{sum}let a = f([1, 2])\nlet b = f((1, 2))\nlet c = f({{1}})\n")));
+    assert!(err(&format!("{sum}let a = f([\"x\"])\n")));
+    assert!(err("fn f(xs: Iterable[int]) -> str:\n    for x in xs:\n        return x\n    return \"\"\n"));
+    assert!(ok("fn f(xs: Sequence[str]) -> str:\n    return xs[0]\n"));
+    assert!(err("fn f(xs: Sequence[str]) -> int:\n    return xs[0]\n"));
+    assert!(ok("fn f(m: Mapping[str, int]) -> int:\n    return m[\"a\"]\nlet a = f({\"a\": 1})\n"));
+    // 要求に無い操作は誤り（`Sized` は回せず、添字も取れない）
+    assert!(err("fn f(s: Sized) -> None:\n    for x in s:\n        pass\n"));
+    assert!(err("fn f(s: Sized) -> int:\n    return s[0]\n"));
+}
+
+/// 利用者が組み込みの protocol と同じ名前の型を宣言したら、そちらが勝つ（6-7）。
+#[test]
+fn user_declarations_shadow_builtin_protocols() {
+    let class = concat!(
+        "class Sized:\n",
+        "    mut w: int\n",
+        "    fn __init__(mut self, let w: int) -> None:\n",
+        "        self.w = w\n",
+        "let s: Sized = Sized(1)\n",
+        "let n: int = s.w\n",
+    );
+    assert!(ok(class));
+    assert!(ok("enum Sized:\n    a = 1\nlet x: Sized = Sized.a\n"));
+    assert!(ok("trait Container[T]:\n    fn get(self) -> T:\n        ...\n"));
+}

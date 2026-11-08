@@ -289,6 +289,11 @@ pandas_import_plan.md 6-5; empty otherwise). `resolve_protocols` turns the `Name
   (`Interpreter::builtin_kind_of_value`) and direct calls `xs.__len__()` (`classes/builtin_member_methods.rs`,
   `call_builtin_member`); statically `builtin_member_call` types those calls. `interpreter::tests::classes::
   builtin_member_table_is_dispatched` checks every member is callable at run time.
+- Built-in protocols (`Iterable[T]` / `Sequence[T]` / `Mapping[K, V]` / `Sized` / `Supports*`, 6-7) are declared in
+  `src/built_in_stab/builtins.ars`; `collect_builtin_types` registers them (parameters positional-only) and
+  `TypeChecker::new` puts them in the global scope. A user declaration of the same name removes the built-in
+  (`TypeRegistryBuilder::shadow_builtin_protocol`; at run time `value_is_type` skips a protocol whose name is bound to
+  something else). `iter_element_type` / `protocol_subscript` type `for` and `xs[i]` on protocol-typed values.
 
 ### `type_val_compatible`
 

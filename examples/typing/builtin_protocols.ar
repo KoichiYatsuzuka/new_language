@@ -1,0 +1,66 @@
+# builtin_protocols.ar — 組み込みの protocol（`Iterable[T]` / `Sequence[T]` / `Mapping[K, V]` …・pandas_import_plan.md の 6-7）
+#
+# CPython の `typing` / `collections.abc` と同じ名前の protocol を、import せずに注釈へ書ける。構造で照合するので、
+# 組み込みの値（`list` / `tuple` / `str` / `dict` / `set` / ジェネレータ）も、同じメンバーを持つクラスも満たす。
+# 値の型が protocol なら、`for` の要素・添字・メソッドの型は protocol の要求から決まる（`xs: Sequence[str]` の `xs[0]` は `str`）。
+# 型テストは素の名前だけ（`x is Iterable`・`isinstance(x, Sized)`）。
+# 宣言は `src/built_in_stab/builtins.ars`（型検査器と実行時が同じ宣言を読む）。利用者が同じ名前の型を宣言したら
+# そちらが勝つ（`builtin_protocol_shadow.ar`）。
+#
+# 期待される出力:
+#   3 7 11 9 6
+#   a x p
+#   1 3 2 1
+#   True 1 2.6 3
+#   True False True True False True
+#   True False
+#   ok
+
+fn total(xs: Iterable[int]) -> int:
+    mut s = 0
+    for x in xs:
+        s += x
+    return s
+
+fn first(xs: Sequence[str]) -> str:
+    return xs[0]
+
+fn lookup(m: Mapping[str, int], k: str) -> int:
+    return m[k]
+
+fn size(x: Sized) -> int:
+    return len(x)
+
+gen nums() -> int:
+    yield 4
+    yield 5
+
+# `__iter__` を持つクラスも `Iterable` を満たす（宣言の継承は要らない）
+class Countdown:
+    mut n: int
+
+    fn __init__(mut self, let n: int) -> None:
+        self.n = n
+
+    fn __iter__(self) -> generator[int]:
+        return self.steps()
+
+    gen steps(self) -> int:
+        mut i = self.n
+        while i > 0:
+            yield i
+            i -= 1
+
+print(total([1, 2]), total((3, 4)), total({5, 6}), total(nums()), total(Countdown(3)))
+print(first(["a", "b"]), first("xy"), first(("p", "q")))
+print(lookup({"a": 1}, "a"), size([1, 2, 3]), size("ab"), size({"k": 1}))
+
+let h: Hashable = (1, 2)
+let i: SupportsIndex = True
+let r: SupportsRound[float] = 2.567
+let ab: SupportsAbs[int] = -3
+print(h.__hash__() == hash((1, 2)), i.__index__(), r.__round__(1), ab.__abs__())
+
+print([1] is Iterable, 5 is Iterable, "s" is Sequence, {1: 2} is Mapping, {1} is Sequence, 3 is SupportsIndex)
+print(isinstance([1], Sized), isinstance(3, Sized))
+print("ok")

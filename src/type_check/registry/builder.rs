@@ -51,6 +51,8 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     cur_scope: usize,
     /// 今集めているモジュールの修飾名（メインは `None`・10-8）。
     module_prefix: Option<String>,
+    /// `builtins.ars` の組み込みの型を集めているか（組み込みの protocol を控え、引数を位置だけにする・6-7）。
+    collecting_builtins: bool,
 }
 
 /// モジュールの本体を、**宣言を `tags.X` の名前にした写し**にする（フェーズ10 10-8）。
@@ -276,6 +278,7 @@ impl TypeRegistryBuilder {
                 class_static_methods: HashMap::new(),
                 cpython_class_names: HashSet::new(),
                 known_protocols: HashMap::new(),
+                builtin_protocols: HashSet::new(),
                 template_params: HashMap::new(),
                 name_scopes: vec![NameScope::default()],
                 module_scope_index: HashMap::new(),
@@ -287,6 +290,7 @@ impl TypeRegistryBuilder {
             foreign_lang: None,
             cur_scope: 0,
             module_prefix: None,
+            collecting_builtins: false,
         }
     }
 
@@ -322,8 +326,20 @@ impl TypeRegistryBuilder {
     /// ⚠ 利用者のプログラムより**先に**集める（同じ名前の利用者の宣言が後から上書きする）。
     pub(in crate::type_check) fn collect_builtin_types(&mut self, decls: &[Stmt]) {
         self.foreign_depth += 1;
+        self.collecting_builtins = true;
         self.collect(decls);
+        self.collecting_builtins = false;
         self.foreign_depth -= 1;
+    }
+
+    /// 利用者の宣言が組み込みの protocol（`Sized` …・6-7）と同じ名前なら、組み込みのほうを外す（利用者の宣言が勝つ。
+    /// 組み込みの enum / 関数と同じ）。⚠ 外さないと `trait Sized[T]` / `enum Sized` が protocol として読まれる。
+    fn shadow_builtin_protocol(&mut self, name: &str) {
+        if self.collecting_builtins || !self.reg.builtin_protocols.remove(name) {
+            return;
+        }
+        self.reg.known_protocols.remove(name);
+        self.reg.template_params.remove(name);
     }
 
     pub(in crate::type_check) fn collect(&mut self, stmts: &[Stmt]) {
@@ -394,6 +410,7 @@ impl TypeRegistryBuilder {
                 Stmt::ClassDef {
                     name, bases, base_args, body, template_params, decorators, ..
                 } => {
+                    self.shadow_builtin_protocol(name);
                     // ⚠ 未展開の `!装飾子` が残っていたら、このクラスのメンバーは未確定。
                     //   ⇒ メンバー存在検査を黙らせる（タスク 2-4）。
                     // ⚠ 外部言語（Python）のクラスにデコレータが付いていても同じ（フェーズ10 10-16）。
@@ -456,6 +473,7 @@ impl TypeRegistryBuilder {
                     }
                 }
                 Stmt::EnumDef { src: _, name, variants } => {
+                    self.shadow_builtin_protocol(name);
                     self.reg.known_class_names.insert(name.clone());
                     // ⚠⚠ **メンバーと `.value` の型を登録する**（タスク 2.3）。
                     //    以前は名前を `known_class_names` に入れるだけだったので
@@ -490,6 +508,7 @@ impl TypeRegistryBuilder {
                     self.reg.enum_members.insert(name.clone(), members);
                 }
                 Stmt::TraitDef { name, body, template_params, .. } => {
+                    self.shadow_builtin_protocol(name);
                     // trait 自身の型変数も登録する。適合検査で `-> T` のような
                     // 「実体化前の要求」を具体型と突き合わせないために要る。
                     if !template_params.is_empty() {
@@ -501,6 +520,10 @@ impl TypeRegistryBuilder {
                     self.collect_trait(name, body);
                 }
                 Stmt::ProtocolDef { name, template_params, body } => {
+                    self.shadow_builtin_protocol(name);
+                    if self.collecting_builtins {
+                        self.reg.builtin_protocols.insert(name.clone());
+                    }
                     // 総称の protocol の型変数（6-5）。適合の照合で要求の `T` を型引数へ置き換える。
                     if !template_params.is_empty() {
                         self.reg.template_params.insert(
@@ -643,6 +666,7 @@ impl TypeRegistryBuilder {
         }
         for stmt in stmts {
             if let Stmt::NewTypeDef { name, original } = stmt {
+                self.shadow_builtin_protocol(name);
                 self.reg.known_class_names.insert(name.clone());
                 self.reg
                     .new_type_originals
@@ -1008,7 +1032,9 @@ impl TypeRegistryBuilder {
                                 .as_deref()
                                 .and_then(InferredType::from_ann)
                                 .unwrap_or(InferredType::Unresolved);
-                            (p.name.clone(), p.mutable, ty)
+                            // 組み込みの protocol の引数は位置だけで渡す（名前は空・照合で比べない・6-7）
+                            let pname = if self.collecting_builtins { String::new() } else { p.name.clone() };
+                            (pname, p.mutable, ty)
                         })
                         .collect();
                     methods.push(ProtocolMethod {

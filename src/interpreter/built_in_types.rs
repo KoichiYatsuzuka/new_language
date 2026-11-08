@@ -295,6 +295,14 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
         Var::new(Value::Type("id".to_string()), false),
     );
 
+    // 組み込みの protocol（`builtins.ars` の `Iterable` / `Sized` …・6-7）を型の値として登録する（`isinstance(x, Sized)`）。
+    // 必須メンバーは `Interpreter::builtin_protocol_members`。⚠ 利用者が同じ名前を宣言したらそちらが勝つ（上書きする）。
+    for decl in crate::type_check::builtins::type_decls() {
+        if let crate::ast::Stmt::ProtocolDef { name, .. } = decl {
+            global.insert(name.clone(), Var::new(Value::Protocol(name), false));
+        }
+    }
+
     // 組み込み `Error` trait を事前登録（値としてアクセス可能にする）
     global.insert(
         "Error".to_string(),

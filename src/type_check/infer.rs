@@ -319,6 +319,12 @@ impl TypeChecker {
                     self.annotations.set_resolved(*node_id, result.clone());
                     return result;
                 }
+                // protocol の型の値（`xs: Sequence[int]`）は `__getitem__` の要求のシグネチャで検査する（6-7）
+                if let InferredType::Protocol(p, pargs) = self.resolve_protocols(&obj_ty) {
+                    let result = self.protocol_subscript(&p, &pargs, &obj_ty, &idx_ty);
+                    self.annotations.set_resolved(*node_id, result.clone());
+                    return result;
+                }
                 // CPython の物（`py_list` / `py_dict`）から読む要素は、読むたびに宣言の型と照合する（2-12）
                 let python_read = matches!(obj_ty, InferredType::PyList(_) | InferredType::PyDict(..));
                 let result = match obj_ty {
@@ -440,7 +446,7 @@ impl TypeChecker {
                 // ループ変数を要素型で宣言する（`Stmt::For` と同じ扱い）。
                 // ここが抜けていたため、for **式**の本体では変数が未宣言＝`Unresolved` になり、
                 // 本体の演算に型特化が効かなかった。
-                let elem_ty = Self::for_element_type(&iter_ty);
+                let elem_ty = self.iter_element_type(&iter_ty);
                 self.note_python_iteration(iter, &iter_ty, &elem_ty);
                 // ⚠⚠ `for` **式**も `for` 文と同じ束縛を作るので、B4 の規則を**同じく適用**する。
                 //    以前は `mutable: true` 決め打ちで、内包表記の脱糖先もここを通るため
@@ -1808,6 +1814,29 @@ impl TypeChecker {
     /// Python と違うので、ここを取りこぼすと Python の癖で書いた `for k in d:` が
     /// 実行時まで判らない。
     /// ⚠ クラスは `__iter__` を定義できるので素通しする（持たない場合は実行時 `AttributeError`）。
+    /// protocol の型の値の添字（`xs[0]`・`xs: Sequence[int]`）。`__getitem__` の要求で引数を検査して戻り値の型を返す。
+    /// 要求に無ければ添字を取れない（`Sized` の値など）。
+    fn protocol_subscript(
+        &mut self,
+        proto: &str,
+        args: &[InferredType],
+        obj_ty: &InferredType,
+        idx_ty: &InferredType,
+    ) -> InferredType {
+        match self.protocol_members(proto, args).and_then(|(_, m)| m.get("__getitem__").cloned()) {
+            Some(sigs) => self
+                .check_method_sigs(&obj_ty.to_string(), "__getitem__", &sigs, true, &[(None, idx_ty.clone())])
+                .unwrap_or(InferredType::Unresolved),
+            None => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NotSubscriptable { container: obj_ty.clone() },
+                    span: None,
+                });
+                InferredType::Unresolved
+            }
+        }
+    }
+
     pub(super) fn check_iterable(&mut self, iter_ty: &InferredType, span: Option<Span>) {
         use InferredType as T;
         // 判定できるのは「確実に反復できない」と分かっている型だけ。
@@ -1816,7 +1845,13 @@ impl TypeChecker {
             // ⚠ **`dict` は反復できる**（キーが出る・Python と同じ）。以前はここで
             //   弾いていたので `for k in d:` が `'dict[..]' is not iterable` だった。
             T::Int | T::Float | T::Complex | T::Bool | T::None | T::Undefined
-        );
+        ) || match self.resolve_protocols(iter_ty) {
+            // protocol の型の値は `__iter__`（無ければ CPython と同じく `__getitem__`）を要求するか（6-7）
+            T::Protocol(p, args) => self
+                .protocol_members(&p, &args)
+                .is_some_and(|(_, m)| !m.contains_key("__iter__") && !m.contains_key("__getitem__")),
+            _ => false,
+        };
         if !not_iterable {
             return;
         }

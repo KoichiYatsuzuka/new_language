@@ -294,18 +294,22 @@ impl Interpreter {
 
     /// `protocol` 定義を実行してプロトコル値をスコープに登録する。
     /// プロトコルは静的型チェック専用で、インスタンス化できない。
+    /// 組み込みの protocol（`builtins.ars` の `Iterable` / `Sized` …・pandas_import_plan.md の 6-7）の必須メンバー。
+    /// `Interpreter::new` が `protocol_required_members` の初めの中身にする（型検査器と同じ宣言を読む）。
+    pub(crate) fn builtin_protocol_members() -> std::collections::HashMap<String, Vec<String>> {
+        crate::type_check::builtins::type_decls()
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::ProtocolDef { name, body, .. } => Some((name.clone(), protocol_member_names(body))),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn exec_protocol_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
         reject_unexpanded_member_decorators("protocol", name, body)?;
         // 必須メンバー名を収集（is Protocol 実行時チェック用）
-        let mut members: Vec<String> = Vec::new();
-        for s in body {
-            match s {
-                Stmt::Field { name: fname, .. } => members.push(fname.clone()),
-                Stmt::FnDef { name: mname, .. } => members.push(mname.clone()),
-                _ => {}
-            }
-        }
-        self.protocol_required_members.insert(name.to_string(), members);
+        self.protocol_required_members.insert(name.to_string(), protocol_member_names(body));
         self.declare_var(
             name.to_string(),
             Var::new(Value::Protocol(name.to_string()), false),
@@ -844,4 +848,14 @@ fn reject_unexpanded_member_decorators(
         }
     }
     Ok(())
+}
+
+/// protocol の必須メンバーの名前（フィールドとメソッド）。`exec_protocol_def` と組み込みの protocol が共有する。
+fn protocol_member_names(body: &[Stmt]) -> Vec<String> {
+    body.iter()
+        .filter_map(|s| match s {
+            Stmt::Field { name, .. } | Stmt::FnDef { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }

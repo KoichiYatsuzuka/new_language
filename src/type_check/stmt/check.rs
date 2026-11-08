@@ -215,7 +215,7 @@ impl TypeChecker {
                 let iter_ty = self.infer(iter);
                 // ⚠ 反復できない型を弾く（タスク 7.1・検体 `K3`）。
                 self.check_iterable(&iter_ty, None);
-                let elem_ty = Self::for_element_type(&iter_ty);
+                let elem_ty = self.iter_element_type(&iter_ty);
                 self.note_python_iteration(iter, &iter_ty, &elem_ty);
                 self.push_scope();
                 // 分割代入（`for k, v in pairs`）は要素がタプルのときだけ各要素型へ割り当てる。

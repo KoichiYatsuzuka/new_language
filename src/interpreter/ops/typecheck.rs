@@ -390,7 +390,10 @@ impl Interpreter {
             return r;
         }
         // Protocol の実行時チェック: 必須メンバー名が全て存在するか確認する
-        if let Some(required) = self.protocol_required_members.get(type_name) {
+        // ⚠ 名前が今 protocol 以外（利用者の `class Sized` / `enum Sized` が組み込みの protocol を隠した・6-7）に
+        //   束縛されていれば、protocol としては見ない（下のクラスの判定へ）。
+        let shadowed = || !matches!(self.get_val(type_name), Some(Value::Protocol(_)) | None);
+        if let Some(required) = self.protocol_required_members.get(type_name).filter(|_| !shadowed()) {
             return match val {
                 Value::Instance(inst_rc) => {
                     let inst = inst_rc.borrow();

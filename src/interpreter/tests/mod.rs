@@ -283,8 +283,14 @@ mod a_axis_invariants {
         let mut runtime: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
         runtime.sort();
         // 組み込みの例外クラスは例外の表から（`is_runtime_global_name` と同じ・python_builtins_plan.md のタスク 4-1）。
-        let mut table: Vec<&str> =
-            RUNTIME_GLOBAL_NAMES.iter().copied().chain(BUILTIN_EXCEPTIONS.iter().map(|(n, _)| *n)).collect();
+        // 組み込みの protocol は `builtins.ars` から（`is_runtime_global_name` と同じ・6-7）。
+        let protocols = crate::type_check::builtins::protocol_names();
+        let mut table: Vec<&str> = RUNTIME_GLOBAL_NAMES
+            .iter()
+            .copied()
+            .chain(BUILTIN_EXCEPTIONS.iter().map(|(n, _)| *n))
+            .chain(protocols.iter().map(String::as_str))
+            .collect();
         table.sort();
         assert_eq!(table, runtime, "RUNTIME_GLOBAL_NAMES と実行時の組み込みの大域が違う");
     }

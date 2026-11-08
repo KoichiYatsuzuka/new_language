@@ -86,7 +86,7 @@ fn parse_table() -> Declarations {
     };
     for stmt in stmts {
         let Stmt::FnDef { name, params, return_type, .. } = stmt else {
-            if matches!(stmt, Stmt::EnumDef { .. } | Stmt::ClassDef { .. }) {
+            if matches!(stmt, Stmt::EnumDef { .. } | Stmt::ClassDef { .. } | Stmt::ProtocolDef { .. }) {
                 table.types.push(stmt);
             }
             continue;
@@ -161,9 +161,30 @@ pub(crate) fn declared_names() -> Vec<String> {
     })
 }
 
-/// 組み込みの型の宣言（`builtins.ars` の `enum` / `class` の文）。`TypeChecker::new` がレジストリと大域へ登録する。
-pub(super) fn type_decls() -> Vec<Stmt> {
+/// 組み込みの型の宣言（`builtins.ars` の `enum` / `class` / `protocol` の文）。`TypeChecker::new` がレジストリと大域へ登録する。
+/// 組み込みの protocol（6-7）は実行時も読む（`Interpreter::builtin_protocol_members` と `register_builtin_globals`）。
+pub(crate) fn type_decls() -> Vec<Stmt> {
     TABLE.with(|t| t.types.clone())
+}
+
+/// 組み込みの protocol（`builtins.ars` の `Iterable` / `Sized` …・pandas_import_plan.md の 6-7）の名前か。組み込みの型名と
+/// 同じく実行時の大域を占める（`names::is_runtime_global_name`）。
+pub(crate) fn is_builtin_protocol(name: &str) -> bool {
+    TABLE.with(|t| t.types.iter().any(|s| matches!(s, Stmt::ProtocolDef { name: n, .. } if n == name)))
+}
+
+/// 組み込みの protocol の名前（宣言の順）。
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn protocol_names() -> Vec<String> {
+    TABLE.with(|t| {
+        t.types
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::ProtocolDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// 組み込みの `enum` の宣言（名前・要素と値）。宣言と実行時の突き合わせ用。

@@ -216,7 +216,7 @@ impl TypeChecker {
                 CallArg::Spread(e) => {
                     let ty = self.infer(e);
                     self.check_spread_arg(&ty, false);
-                    spread_elems.push(Self::for_element_type(&ty));
+                    spread_elems.push(self.iter_element_type(&ty));
                 }
                 CallArg::KwSpread(e) => {
                     let ty = self.infer(e);
@@ -1759,7 +1759,7 @@ impl TypeChecker {
         use InferredType as T;
         // 要素型を引く。判らなければ `Any`。
         let elem = |t: &T| -> T {
-            match Self::for_element_type(t) {
+            match self.iter_element_type(t) {
                 T::Unresolved => T::Any,
                 other => other,
             }
@@ -1785,7 +1785,7 @@ impl TypeChecker {
                 let positional: Vec<&T> =
                     arg_data.iter().filter(|(k, _)| k.is_none()).map(|(_, t)| t).collect();
                 let has_kw = |n: &str| arg_data.iter().any(|(k, _)| k.as_deref() == Some(n));
-                let known_elem = |t: &T| match Self::for_element_type(t) {
+                let known_elem = |t: &T| match self.iter_element_type(t) {
                     T::Unresolved | T::Any => None,
                     e => Some(e),
                 };
@@ -1815,7 +1815,7 @@ impl TypeChecker {
                     ("filter", [_, (None, t)]) | ("iter", [(None, t)]) => Some(t),
                     _ => None,
                 };
-                src.and_then(|t| match Self::for_element_type(t) {
+                src.and_then(|t| match self.iter_element_type(t) {
                     T::Unresolved | T::Any => None,
                     e => Some(T::IteratorOf(Box::new(e))),
                 })
@@ -1852,7 +1852,7 @@ impl TypeChecker {
             // ⚠ 要素型が分からない（Python 由来の値など）ときは `None`（`list[Any]` にすると要素の操作が静的な誤りになる）。
             "list" => match arg_data {
                 [] => Some(T::ListOf(Box::new(T::Never))),
-                [(None, t)] => match Self::for_element_type(t) {
+                [(None, t)] => match self.iter_element_type(t) {
                     T::Unresolved => None,
                     e => Some(T::ListOf(Box::new(e))),
                 },
@@ -1863,7 +1863,7 @@ impl TypeChecker {
             // `frozenset()` / `frozenset(xs)`（タスク 3-1）。`list(..)` と同じ考え方。
             "frozenset" => match arg_data {
                 [] => Some(T::FrozenSetOf(Box::new(T::Never))),
-                [(None, t)] => match Self::for_element_type(t) {
+                [(None, t)] => match self.iter_element_type(t) {
                     T::Unresolved => None,
                     e => Some(T::FrozenSetOf(Box::new(e))),
                 },

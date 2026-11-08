@@ -23,6 +23,10 @@
   - ⚠ A Python module (`import[py]`) has no `let` / `mut`: as in CPython, every global can be assigned from Arrow
     (`m.count = 5` calls `setattr`; checked against the stub's type when it has one), and reads are live (pandas_import_plan.md
     1-4 / 2-9).
+- **`Iterable[T]` / `Sequence[T]` / `Mapping[K, V]` / `Sized` / `SupportsIndex` … are built-in protocols** (no
+  `from typing import ..`; pandas_import_plan.md 6-7, declared in `src/built_in_stab/builtins.ars`). They are checked
+  structurally, also for built-in values (`list[int]` satisfies `Sequence[int]`), and a user declaration of the same name
+  wins. Type tests take the bare name only (`x is Iterable`; `x is Iterable[int]` is a static error, as in CPython).
 - `...` is a value (`Ellipsis`) only as a subscript item (`a[..., 0]`, pandas_import_plan.md 2-3); elsewhere write
   `Ellipsis`. Subscript items may be slices (`a[1:, 0]`), and a slice may hold any bounds (`df.loc["b":"d"]`), but
   slicing an Arrow list / str / bytes / tuple still requires int bounds (static error when the type says so, otherwise

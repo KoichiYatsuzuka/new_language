@@ -159,6 +159,29 @@ impl TypeChecker {
         }
     }
 
+    /// `for` の要素の型（[`Self::for_element_type`] に、protocol の型の値を足したもの・pandas_import_plan.md の 6-7）。
+    /// protocol は `__iter__` が返す反復子の要素（ジェネレータなら要素・`Iterator[T]` なら `__next__` の戻り値）。
+    pub(crate) fn iter_element_type(&self, iter_ty: &InferredType) -> InferredType {
+        let elem = Self::for_element_type(iter_ty);
+        if elem != InferredType::Unresolved {
+            return elem;
+        }
+        let InferredType::Protocol(p, args) = self.resolve_protocols(iter_ty) else {
+            return InferredType::Unresolved;
+        };
+        let ret = self
+            .protocol_members(&p, &args)
+            .and_then(|(_, m)| m.get("__iter__")?.first()?.return_type.clone());
+        match ret.map(|r| self.resolve_protocols(&r)) {
+            Some(InferredType::IteratorOf(e)) => *e,
+            Some(InferredType::Protocol(ip, iargs)) => self
+                .protocol_members(&ip, &iargs)
+                .and_then(|(_, m)| m.get("__next__")?.first()?.return_type.clone())
+                .unwrap_or(InferredType::Unresolved),
+            _ => InferredType::Unresolved,
+        }
+    }
+
     /// import したモジュールの名前空間のメンバーの型（`t.Tag` / `t.make`）。モジュールの文脈で読み、
     /// クラスの名前を修飾名（`tags.Tag`）にして返す（フェーズ10 10-8）。
     /// ⚠ 以前は素の名前（`Tag`）のまま外へ出ていたので、メインの同名クラスと混ざった。

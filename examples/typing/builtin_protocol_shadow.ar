@@ -1,0 +1,26 @@
+# builtin_protocol_shadow.ar — 組み込みの protocol と同じ名前の型を宣言したら、そちらが勝つ（pandas_import_plan.md の 6-7）
+#
+# `Sized` / `Container` などは組み込みの protocol だが、利用者が同じ名前のクラス・trait・enum・protocol を宣言したら、その名前は
+# 利用者の宣言を指す（組み込みの enum・組み込み関数と同じ規則）。注釈・型テスト（`x is Sized`）・型の値のどれも同じ。
+#
+# 期待される出力:
+#   3
+#   True False
+#   True
+#   ok
+
+# 組み込みの `Sized`（`__len__` を要求する protocol）ではなく、このクラス
+class Sized:
+    mut width: int
+
+    fn __init__(mut self, let width: int) -> None:
+        self.width = width
+
+let s: Sized = Sized(3)
+print(s.width)
+# `[1]` は `__len__` を持つが、`Sized` はここではクラスなので偽
+print(s is Sized, [1] is Sized)
+
+# ほかの組み込みの protocol はそのまま使える
+print([1] is Iterable)
+print("ok")
