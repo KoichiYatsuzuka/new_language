@@ -2160,12 +2160,9 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
             BinOp::GtEq => obj.rich_compare(py_rhs, CompareOp::Ge),
             BinOp::And | BinOp::Or => return Err(NO_LOGICAL_BINOP.to_string()),
             BinOp::In | BinOp::NotIn => {
-                // obj (LHS item) in py_rhs (RHS container)
-                let container = py_rhs.bind(py);
-                let b: bool = container
-                    .call_method1("__contains__", (obj.to_owned().unbind(),))
-                    .and_then(|c| c.extract())
-                    .map_err(python_raised)?;
+                // obj (LHS item) in py_rhs (RHS container)。CPython の `in`（`PySequence_Contains`: `__contains__`、
+                // 無ければ反復）。
+                let b = py_rhs.bind(py).contains(obj).map_err(python_raised)?;
                 return Ok(Value::Bool(if matches!(op, BinOp::In) { b } else { !b }));
             }
         }
@@ -2174,48 +2171,64 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
     })
 }
 
-/// rhs が `PyObject` のときの二項演算。比較は左右を入れ替え、算術は反射メソッドを呼ぶ。
+/// rhs が `PyObject` のときの二項演算。lhs を Python へ写し、**左を受け手にして** CPython の演算子の手順に任せる
+/// （`PyNumber_Add` / `PyObject_RichCompare`: 左の `__add__` → `NotImplemented` なら右の `__radd__` → どちらも
+/// `NotImplemented` なら `TypeError`）。
+/// ⚠ 以前は右の反射メソッド（`__radd__`）を直接呼んだので、`NotImplemented` が値として出てきて、反射メソッドの
+///   無い物は `AttributeError` になった（CPython はどちらも `TypeError: unsupported operand type(s)`）。比較は左右を
+///   入れ替えて右の `__gt__` などを先に呼んでいた（known_bugs.md の #8 の ②）。
 pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value, String> {
     with_py(|py| -> Result<Value, String> {
         let obj = handle.bind(py);
         let py_lhs = ar_to_py(py, lhs).map_err(arrow_side)?;
+        let l = py_lhs.bind(py);
         let result = match op {
-            // 算術: 反射メソッドを直接呼び出す
-            BinOp::Add => obj.call_method1("__radd__", (py_lhs,)),
-            BinOp::Sub => obj.call_method1("__rsub__", (py_lhs,)),
-            BinOp::Mul => obj.call_method1("__rmul__", (py_lhs,)),
-            BinOp::Div => obj.call_method1("__rtruediv__", (py_lhs,)),
-            BinOp::FloorDiv => obj.call_method1("__rfloordiv__", (py_lhs,)),
-            BinOp::Mod => obj.call_method1("__rmod__", (py_lhs,)),
-            BinOp::Pow => obj.call_method1("__rpow__", (py_lhs,)),
-            BinOp::LShift => obj.call_method1("__rlshift__", (py_lhs,)),
-            BinOp::RShift => obj.call_method1("__rrshift__", (py_lhs,)),
-            BinOp::BitAnd => obj.call_method1("__rand__", (py_lhs,)),
-            BinOp::BitOr => obj.call_method1("__ror__", (py_lhs,)),
-            BinOp::BitXor => obj.call_method1("__rxor__", (py_lhs,)),
-            // 比較: 左右を入れ替えて対応する演算子を使う
-            BinOp::Eq => obj.rich_compare(py_lhs, CompareOp::Eq),
+            BinOp::Add => l.add(obj),
+            BinOp::Sub => l.sub(obj),
+            BinOp::Mul => l.mul(obj),
+            BinOp::Div => l.div(obj),
+            BinOp::FloorDiv => l.floor_div(obj),
+            BinOp::Mod => l.rem(obj),
+            BinOp::Pow => l.pow(obj, py.None()),
+            BinOp::LShift => l.lshift(obj),
+            BinOp::RShift => l.rshift(obj),
+            BinOp::BitAnd => l.bitand(obj),
+            BinOp::BitOr => l.bitor(obj),
+            BinOp::BitXor => l.bitxor(obj),
+            BinOp::Eq => l.rich_compare(obj, CompareOp::Eq),
             // `===` は同一性（`py_binop` と同じ・D-4・5-1）
             BinOp::RefEq => {
                 return Ok(Value::Bool(matches!(lhs, Value::PyObject(l) if l.identity() == handle.identity())))
             }
-            BinOp::NotEq => obj.rich_compare(py_lhs, CompareOp::Ne),
-            BinOp::Lt => obj.rich_compare(py_lhs, CompareOp::Gt), // lhs < rhs → rhs > lhs
-            BinOp::Gt => obj.rich_compare(py_lhs, CompareOp::Lt), // lhs > rhs → rhs < lhs
-            BinOp::LtEq => obj.rich_compare(py_lhs, CompareOp::Ge),
-            BinOp::GtEq => obj.rich_compare(py_lhs, CompareOp::Le),
+            BinOp::NotEq => l.rich_compare(obj, CompareOp::Ne),
+            BinOp::Lt => l.rich_compare(obj, CompareOp::Lt),
+            BinOp::Gt => l.rich_compare(obj, CompareOp::Gt),
+            BinOp::LtEq => l.rich_compare(obj, CompareOp::Le),
+            BinOp::GtEq => l.rich_compare(obj, CompareOp::Ge),
             BinOp::And | BinOp::Or => return Err(NO_LOGICAL_BINOP.to_string()),
             BinOp::In | BinOp::NotIn => {
-                // py_lhs (item) in obj/handle (RHS container)
-                let b: bool = obj
-                    .call_method1("__contains__", (py_lhs.clone_ref(py),))
-                    .and_then(|c| c.extract())
-                    .map_err(python_raised)?;
+                // py_lhs (item) in obj/handle (RHS container)。CPython の `in`（`py_binop` と同じ）。
+                let b = obj.contains(l).map_err(python_raised)?;
                 return Ok(Value::Bool(if matches!(op, BinOp::In) { b } else { !b }));
             }
         }
         .map_err(python_raised)?;
         Ok(py_to_tl(py, &result))
+    })
+}
+
+/// 片方が CPython の物の `a == b` の真偽（CPython の `PyObject_RichCompareBool`: 同じ物なら真、ほかは `__eq__` の
+/// 答えの真偽）。容器の要素との比較（`pyobj in xs`・`xs.index(pyobj)`）が使う（`Interpreter::values_eq_expr`・
+/// known_bugs.md の #8）。Python へ渡せない Arrow の値（容器）は `a == b` と同じ `TypeError`。
+pub fn py_eq_bool(a: &Value, b: &Value) -> Result<bool, String> {
+    with_py(|py| -> Result<bool, String> {
+        let l = ar_to_py(py, a).map_err(arrow_side)?;
+        let r = ar_to_py(py, b).map_err(arrow_side)?;
+        let res = unsafe { ffi::PyObject_RichCompareBool(l.as_ptr(), r.as_ptr(), ffi::Py_EQ) };
+        if res < 0 {
+            return Err(python_raised(PyErr::fetch(py)));
+        }
+        Ok(res == 1)
     })
 }
 

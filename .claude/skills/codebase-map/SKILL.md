@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (259 files, 123316 lines)
+src/  (259 files, 123345 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1690)
@@ -188,8 +188,8 @@ src/  (259 files, 123316 lines)
     native_api_stub.rs (71)
     proc_bridge.rs (203)
     proc_values.rs (249)
-    py_interop.rs (2229)
-    py_interop_stub.rs (178)
+    py_interop.rs (2242)
+    py_interop_stub.rs (182)
     resolver.rs (691)
     scope.rs (361)
     str_methods.rs (623)
@@ -247,7 +247,7 @@ src/  (259 files, 123316 lines)
     ops/
       codecs.rs (425)
       display.rs (416)
-      equality.rs (621)
+      equality.rs (629)
       format_spec.rs (400)
       hash.rs (639)
       mod.rs (179)
@@ -363,7 +363,7 @@ src/  (259 files, 123316 lines)
     stubs.rs (220)
   type_check/
     annotations.rs (299)
-    binop.rs (880)
+    binop.rs (884)
     builtins.rs (214)
     call_check.rs (2340)
     decorator.rs (154)
@@ -487,7 +487,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
   exceptions/ (18 .ar)
-  interop/ (317 .ar)
+  interop/ (319 .ar)
   practical_examples/ (9 .ar)
   repl/ (0 .ar)
   typing/ (122 .ar)
@@ -561,8 +561,8 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (38)
-  CLAUDE.md (172)
+  CLAUDE.md (173)
   README.md (317)
 ```
-_Generated 2026-11-08 by generate-codebase-map.ps1_
+_Generated 2026-11-09 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

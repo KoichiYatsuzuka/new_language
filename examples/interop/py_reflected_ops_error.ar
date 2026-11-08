@@ -1,0 +1,12 @@
+# py_reflected_ops_error.ar — 右の Python の物が演算子を扱わなければ CPython と同じ `TypeError`（known_bugs.md の #8 の ②）
+#
+# `1 + d` は左の `int.__add__` が扱えず、右の `__radd__` も `NotImplemented` を返すので、CPython と同じ誤り。
+# ⚠ 以前は `NotImplemented` が値として出てきた（`print` が `NotImplemented` と表示した）。
+#
+# 期待されるエラー（実行時）:
+#   TypeError: unsupported operand type(s) for +: 'int' and 'Declines'
+
+import[py] test_modules.py_reflected_ops as m
+
+mut d = m.declines()
+print(1 + d)

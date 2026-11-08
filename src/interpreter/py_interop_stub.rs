@@ -143,6 +143,10 @@ pub fn py_rbinop(_handle: &PyObjHandle, _op: &BinOp, _lhs: &Value) -> Result<Val
     Err(unavailable("a reflected binary operator on a Python object"))
 }
 
+pub fn py_eq_bool(_a: &Value, _b: &Value) -> Result<bool, String> {
+    Err(unavailable("comparing a Python object"))
+}
+
 /// 評価コアでは CPython の物を作れないので、どれも CPython の list / dict / set ではない。
 pub fn py_collection_kind(_h: &PyObjHandle) -> Option<&'static str> {
     None

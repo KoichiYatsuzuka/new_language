@@ -1,0 +1,54 @@
+# py_reflected_ops.ar — Arrow の値が左・Python の物が右の演算子（known_bugs.md の #8 の ② / ④）
+#
+# `1 + m` は CPython の `1 + m` と同じ手順で決まる: 左の `int.__add__` が扱えなければ右の `__radd__`、それも
+# `NotImplemented` なら `TypeError`。`x in obj` も CPython と同じで、`__contains__` が無ければ要素を回して探す。
+# ⚠ 以前は右の `__radd__` を直接呼んだので `NotImplemented` が値として出てきて、`__radd__` の無い物は
+#   `AttributeError`、`__contains__` の無い物の `in` も `AttributeError` だった。
+#
+# 別名で書いた型（`list[m.Money]`）と、スタブの `-> Money` から来た値は同じ型（`==` / `in` も通る）。⚠ 以前は
+# `y in xs` が「決して真にならない」の静的な誤りだった。Arrow のリストの `in` は、`==` と同じく CPython の `__eq__` で
+# 比べる（⚠ 以前は同じ物かどうかで比べたので、`__eq__` で等しい別の物が見つからなかった）。
+#
+# 期待される出力:
+#   add: 15 5
+#   compare: True False
+#   in: True False
+#   declines: TypeError True
+#   plain: TypeError True
+#   alias: True True
+#   ok
+
+import[py] test_modules.py_reflected_ops as m
+
+fn check(name: str, ok: bool) -> None:
+    if not ok:
+        raise ValueError("wrong value: " + name)
+
+mut five = m.money(5)
+mut sum = 10 + five
+mut diff = 10 - five
+print("add:", sum.n, diff.n)
+check("add", (sum.n mustbe int) == 15 and (diff.n mustbe int) == 5)
+
+# `1 < five` は CPython と同じく左の `int.__lt__`（扱えない）→ 右の `__gt__`
+print("compare:", 1 < five, 9 < five)
+
+mut b = m.bag()
+print("in:", 2 in b, 7 in b)
+
+# 右が扱わない（`NotImplemented`）・演算子を持たない物は CPython と同じ `TypeError`
+try:
+    mut d = m.declines()
+    print(1 + d)
+except TypeError as e:
+    print("declines:", type(e).__name__, str(e).contains("unsupported operand type(s) for +: 'int' and 'Declines'"))
+try:
+    mut p = m.plain()
+    print(1 + p)
+except TypeError as e:
+    print("plain:", type(e).__name__, str(e).contains("unsupported operand type(s) for +: 'int' and 'Plain'"))
+
+mut wallet: list[m.Money] = [m.money(1), m.money(2)]
+mut two: m.Money = m.money(2)
+print("alias:", m.money(2) in wallet, m.money(2) == two)
+print("ok")

@@ -170,6 +170,10 @@ impl TypeChecker {
         } else {
             (lt.clone(), rt.clone())
         };
+        // クラスの名前は修飾名へ引き直してから比べる（代入の検査の `types_compatible` と同じ・フェーズ10 10-8）。
+        // ⚠ 以前は書いた綴りのまま比べたので、`list[m.Plain]`（別名）と、スタブの `-> Plain` から来た `m8.Plain` の
+        //   `y in xs` / `y == q` が「決して真にならない」になった（known_bugs.md の #8 の ④）。
+        let (a, b) = (self.canon_type(&a), self.canon_type(&b));
         if Self::opaque_for_equality(&a) || Self::opaque_for_equality(&b) {
             return;
         }

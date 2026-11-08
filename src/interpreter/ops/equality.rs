@@ -397,6 +397,14 @@ impl Interpreter {
     ///   値の同一性（`values_eq`）は型厳密のまま。数値の昇格と同じく、オペランドの直下だけの規則
     ///   （`[{1}] == [frozenset({1})]` は偽。`[1] == [1.0]` が偽なのと同じ）。
     pub(crate) fn values_eq_expr(&self, a: &Value, b: &Value) -> Result<bool, String> {
+        // CPython の物は CPython の `==` で比べる（`a == b` と同じ答え・`pyobj in xs` / `xs.index(pyobj)` …）。
+        // ⚠ 以前は値の同一性（`values_eq`）に落ちたので、`__eq__` で等しい別の物が `in` で見つからなかった
+        //   （`a == b` は真なのに `a in [b]` は偽・known_bugs.md の #8）。
+        // ⚠ 容器の中までは見ない（`[a] == [b]` は今も同一性・#17）。`values_eq` は辞書のキーの照合で、ハッシュ（同一性）と
+        //   揃える必要がある（`hash_eq_identity.ps1`）。
+        if matches!(a, Value::PyObject(_)) || matches!(b, Value::PyObject(_)) {
+            return crate::interpreter::py_interop::py_eq_bool(a, b);
+        }
         match (a, b) {
             (Value::Set(s), Value::FrozenSet(f)) | (Value::FrozenSet(f), Value::Set(s)) => {
                 return Self::unordered_eq(&s.borrow(), f, 0);
