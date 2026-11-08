@@ -52,6 +52,14 @@ pandas を `import[py-int]`（組み込みの CPython）で読めば、`read_csv
   - Arrow の list / dict / set をキャストせずに Python へ渡すのは誤り（**リテラルも**: `np.array([1, 2, 3] => py_list[int])`）。
   - Python が返した list / dict / set は写さずに `py_list` などのまま受ける（Arrow の list にするなら `=> list[int]`）。
 - **D-10** 型を書いたスタブ（typeshed）は **`.py` の無いモジュールの分だけ同梱**し、ほかは同梱しない（2026-11-04 に決定・4 節の 7）。
+- **D-13** 組み込みの **protocol**（`Iterable[T]` / `Sequence[T]` / `Mapping[K, V]` / `Sized` / `SupportsIndex` …・6-7 の表）を足し、
+  **Arrow の注釈にも書ける**ようにする（2026-11-09 に決定・4 節の 11）。組み込みの値（`list` / `py_list` / タプル / `int` …）も
+  protocol を構造で満たす。型スタブの `typing` / `collections.abc` の名前はこれに読み替える。
+  - 理由: `Sequence[int]` などを型スタブから写すと、`py_list` もタプルも `Sequence` の派生ではないので偽の誤りになる（今の
+    `SupportsIndex` が実際にそうなっている・6-8）。`Any` にすると何も検査されない。
+- **D-14** 型スタブの注釈は **`Any` に落とさず**、`Union`・protocol（型スタブの `class X(Protocol)` も Arrow の protocol にする）・
+  型の別名で型検査する。**引数にも効かせる**（2026-11-09 に決定・4 節の 12）。D-2 の「推論できないときは `Any`」は、書けない形
+  （`Callable[...]` / `Literal[...]` など）だけに残る。
 - **D-11** 暗黙の束縛（`for` の変数・内包の変数・`except E as e`・`match` の捕捉）も D-3 に従う: 不変の束縛で Python の物を受けたら
   誤りにし、`mut` で受ける書き方（`for mut f in ..` など）を足す（2026-11-04 に決定・4 節の 6 の ①）。
 - **D-5** 参照の数は **Arrow の値の写し 1 つ ＝ CPython の参照 1 つ**にする（2.1）。決まった形の参照の数が CPython と同じで
@@ -276,7 +284,13 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~6-2~~ | ✅ **済**（2026-11-07）`@overload` の各形の注釈の、知らない名前を `Any` にする（`np.argmax` の `ArrayLike`。本体の宣言だけ `Any` にしていた）。`-> Self` も形の中まで置き換える | なし | 小 |
 | ~~6-3~~ | ✅ **済**（2026-11-07）`*args` の後のキーワード専用引数は型を見ない。Arrow の仮引数には印が無く、位置引数が先に束縛される（`a.resize(5)` が `refcheck: bool` と照合された）。⚠ 素の `*` の後は型を残す（位置引数は実行時にも誤り） | なし | 小 |
 | ~~6-4~~ | ✅ **済**（2026-11-07）クラスのメソッドの `@overload` も、モジュールの関数と同じく本体の中に入れ子で持ち、最初に当てはまる形を選ぶ（`select_py_method_overload`）。以前は同じ名前の `def` の上書きで最後の形だけが残っていた。例題は `py_overload_methods.ar`・`_error`。⇒ `practical_examples/pd_numpy_pyplot/` の 2 本が最後まで動くようになった（`refcount_pandas.ar` は全項目が CPython と同じ。`data_analysis.ar` は Python の物を `let` で受けていた所を `mut` に直した） | 6-1, 6-2 | 中 |
-| 6-5 | 注釈の numpy の配列を型にする。`-> NDArray[...]`（型の別名）・`-> ndarray[...]`（小文字のクラスの総称）は今 `Any` なので、`mut a = np.arange(3)` の `a.sum()` に `mustbe np.ndarray` が要る | 6-4 | 中 |
+| 6-5 | **総称の protocol**（D-13）: `protocol P[T]:` を書けるようにし、型は protocol の名前と型引数の組にする。適合の照合で型引数を置き換え、メソッドの照合を部分型にする（戻り値は狭くてよい・引数は広くてよい・位置だけの引数は名前を見ない）。自分を参照する protocol（numpy の `_NestedSequence[T]` の `__getitem__ -> T \| _NestedSequence[T]`）は、照合中の組を「適合する」と仮定して止める。対象は Arrow のクラス | なし | 中 |
+| 6-6 | **組み込みの値の構造的な適合**（D-13）: `list` / `tuple` / `str` / `bytes` / `dict` / `set` / `py_list` / `py_dict` / `py_set` / ジェネレータ / `int` / `float` / `bool` が持つ特殊メソッド（`__iter__` / `__len__` / `__getitem__` / `__contains__` / `__reversed__` / `__index__` / `__int__` / `__float__` / `__hash__` …）と名前のあるメソッド（`count` / `index` / `keys` …）の表を 1 か所に作り、protocol の照合と実行時の `x is P` が使う。⚠ 今は組み込みの値がどの protocol も満たさない（`protocol HasLen` に `[1, 2]` を渡すと `expects 'protocol HasLen' but got 'list[int]'`・実行時の `is` は偽） | 6-5 | 中 |
+| 6-7 | **組み込みの protocol**（D-13・Arrow の注釈にも書ける）: `Iterable[T]` / `Iterator[T]` / `Sequence[T]` / `Mapping[K, V]` / `Sized` / `Collection[T]` / `Container[T]` / `Reversible[T]` / `Hashable` / `SupportsIndex` / `SupportsInt` / `SupportsFloat` / `SupportsComplex` / `SupportsBytes` / `SupportsAbs[T]` / `SupportsRound[T]`。値の型が protocol のときの `for` / `len` / `[i]` / `in` は protocol のメソッドから型を引く。実行時の型テストは CPython の `isinstance` と同じく素の名前だけ（`x is Iterable`。型引数つきは静的な誤り） | 6-6 | 中 |
+| 6-8 | 型スタブの `typing` / `collections.abc` の名前を組み込みの protocol に読み替える。基底に抽象クラスを書いた Python のクラス（`class Bag(Sequence[int])`）は名目でも適合する。⚠ 今は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写すので、`def idx(i: SupportsIndex)` に `3` を渡すと `expects 'm.SupportsIndex' but got 'int'` の偽の静的な誤り（`SupportsInt` / `SupportsFloat` も・2026-11-09 に実測）。`Sequence` / `Iterable` / `Mapping` は今は `Any` | 6-7 | 中 |
+| 6-9 | 型スタブの `class X(Protocol)` / `class X(Protocol[T])` を Arrow の protocol にする（numpy の `_SupportsArray[_DType_co]` / `_NestedSequence[_T_co]`・D-14）。型変数（`TypeVar`）を protocol の型引数として読む。Python のクラスのインスタンスと組み込みの値は構造で適合する（6-5・6-6） | 6-8 | 中 |
+| 6-10 | 型スタブの**型の別名**を型にする（D-14）: `X = Y[...]`・`X: TypeAlias = ...`・`Union[...]`、型変数を持つ別名の置き換え（numpy の `ArrayLike = _DualArrayLike[dtype[Any], Union[bool, int, ...]]`）、モジュールをまたぐ別名（`from numpy._typing import NDArray`）。`np.zeros((2, 3))` の `shape: _ShapeLike`（`Union[SupportsIndex, Sequence[SupportsIndex]]`）が検査される | 6-9 | 中 |
+| 6-11 | 型スタブの**総称のクラス**（`ndarray[Any, dtype[...]]`・利用者の `Box[int]`）と、モジュールの別名で書いたクラス（pandas の `-> np.ndarray`）を型にする。引数にも効かせる（D-14）。⇒ `mut a = np.arange(3)` が `np.ndarray` になり `mustbe` が要らなくなる。⚠ `a.sum()` / `a.mean()` / `a.tolist()` はスタブ自体が `Any` を返すので `Any` のまま | 6-10 | 中 |
 
 ### フェーズ 5: `is`（D-4）
 
@@ -304,6 +318,12 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 決定（2026-11-06・実施時の判断）:
 10. 3-1（切り替え）と 3-2（例題の移行）の順を入れ替えた。例題を先に `import[py-int]` で CPython に合わせておけば、切り替えは
     書き換えだけになり、各コミットでゲートが緑のまま進める（切り替えを先にすると、例題 105 本が直すまで落ちたままになる）。
+
+決定（2026-11-09）:
+11. ~~型スタブの `Sequence` / `Iterable` などをどう扱うか~~（6-5 の検討で、抽象クラスを写すと `py_list` が偽の誤りになると判明）⇒
+    組み込みの protocol にし、Arrow の注釈にも書ける（D-13）。旧 6-5（numpy の配列）を 6-5〜6-11 に分けた。
+12. ~~numpy の配列の型を引数にも効かせるか・型の分からない形を `Any` にするか~~ ⇒ 引数にも効かせ、`Any` に落とさず `Union` /
+    protocol で検査する（D-14）。
 
 決定（2026-11-05）:
 9. ~~ジェネレータ関数の引数で Python の物を受けるか~~（`gen` の引数は `mut` にできず、D-3 と食い違う・2-6 で発見）⇒ ジェネレータ関数の
