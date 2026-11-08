@@ -253,7 +253,7 @@ def f(c):
 
 ### R-3. Python のモジュールで、ループの後に `for` の変数を読むと `NameError`
 
-R-1 の調査中に見つけた。CPython ではループの後でも `for` の変数（最後の値）が読める。
+⇒ **[known_bugs.md](known_bugs.md) の #14 に起票した**（2026-11-09・利用者の指示）。R-1 の調査中に見つけた。CPython ではループの後でも `for` の変数（最後の値）が読める。
 
 ```python
 def g():
