@@ -361,7 +361,7 @@ impl TypeRegistryBuilder {
                             template_params.iter().map(|p| p.name.clone()).collect(),
                         );
                     }
-                    self.collect(body);
+                    self.collect_fn_body(body);
                 }
                 // ⚠⚠ **`gen` も関数と同じく登録する**（フェーズ10 10-7）。以前は登録が無く、
                 //    `gen` の名前は `Unresolved` だったので、呼び出しの結果の型が分からず
@@ -442,7 +442,7 @@ impl TypeRegistryBuilder {
                     // class methods themselves must NOT be added to fn_sigs.
                     for s in body.iter() {
                         match s {
-                            Stmt::FnDef { body: method_body, .. } => self.collect(method_body),
+                            Stmt::FnDef { body: method_body, .. } => self.collect_fn_body(method_body),
                             // `gen` メソッドの中の入れ子の関数・`gen` も同じ（10-7）。
                             Stmt::GenDef { body: method_body, .. } => self.collect(method_body),
                             _ => {}
@@ -675,6 +675,14 @@ impl TypeRegistryBuilder {
         self.collect(body);
         self.cur_scope = prev_scope;
         self.module_prefix = prev_prefix;
+    }
+
+    /// 関数の本体の中の宣言を集める。⚠ Python の関数の本体の中に入れ子で持つ `@overload` の各形は関数ではない。集めると
+    /// numpy の関数の形が素の名前の多重定義として表に入る（pandas_import_plan.md の 6-1）。
+    fn collect_fn_body(&mut self, body: &[Stmt]) {
+        if !body.first().is_some_and(crate::parser::py_stub_extract::is_py_overload_variant) {
+            self.collect(body);
+        }
     }
 
     /// ★ Python の `**kwargs` 番兵パラメータかどうか。

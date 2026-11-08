@@ -202,7 +202,7 @@ Handled by `infer_call()`:
 
 1. If the callee's inferred type is `Function { params: Some(ps), return_type }` (a function-type variable), `check_fn_type_call` validates argument count, types, and `mut` requirements. Returns `return_type`.
 2. If callee type is `Function { params: None, .. }` → returns `Any` (untyped function).
-3. Otherwise, the callee name is looked up in `fn_sigs`. If a single overload matches the argument count, its return type is returned; if multiple overloads exist and exactly one matches count, returns that one's return type; otherwise `Unresolved`.
+3. Otherwise, the callee name is looked up in `fn_sigs` (⚠ only a real function name: `x.f(..)` on a value does not look up `f`, `method_of_value`). If a single overload matches the argument count, its return type is returned; if multiple overloads exist and exactly one matches count, returns that one's return type; otherwise `Unresolved`.
 4. If the callee name is a known class name → returns `NamedInstance(name)`.
 5. **Built-in functions** (callee is a bare name that no user `fn` / variable shadows):
    `enumerate` / `zip` build their result from the arguments; every other built-in returns the

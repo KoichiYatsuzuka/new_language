@@ -369,54 +369,78 @@ impl TypeChecker {
     /// Python のモジュールの関数の `@overload` の形を `py_overloads` に集める（1-3）。形は本体の宣言の本体の中に、印
     /// （`py_stub_extract::PY_OVERLOAD_MARK`）の付いた入れ子の宣言として入っている（`extract_py_type_stubs_raw`）。
     fn collect_py_overloads(&mut self, lang: &str, module: &[String], body: &[Stmt]) {
-        use crate::parser::py_stub_extract::{PY_LITERAL_MARK, PY_OVERLOAD_MARK};
+        let module_name = module.join(".");
         for st in body {
-            let Stmt::FnDef { name, body: variants, .. } = st else { continue };
-            let mut list = Vec::new();
-            for v in variants {
-                let Stmt::FnDef { params, decorators, .. } = v else { continue };
-                let marks: Vec<String> = decorators
-                    .iter()
-                    .filter_map(|d| if let Expr::Str(s) = d { Some(s.to_string()) } else { None })
-                    .collect();
-                if !marks.iter().any(|m| m == PY_OVERLOAD_MARK) {
-                    continue;
+            match st {
+                Stmt::FnDef { name, body: variants, .. } => {
+                    self.add_py_overloads(lang, format!("{module_name}.{name}"), variants, false);
                 }
-                let literals = marks
-                    .iter()
-                    .filter_map(|m| m.strip_prefix(PY_LITERAL_MARK))
-                    .filter_map(|m| m.split_once('=').map(|(n, v)| (n.to_string(), v.to_string())))
-                    .collect();
-                // 戻り値と引数の型は、本体の宣言と同じ規則で作る（`collect_module_types`）
-                let one = self.collect_module_types(lang, std::slice::from_ref(v));
-                let (mut fn_params, ret) = match one.into_values().next() {
-                    Some(InferredType::Function { params, return_type, .. }) => (params, *return_type),
-                    _ => (None, InferredType::Any),
-                };
-                // クラスの名前はモジュールで修飾した型にする（本体の宣言と同じ・`module_member_types` の `canon_type`・3-1）。
-                // ⚠ しないと `pk.read("a.csv")` の戻り値が素の `Frame` で、`let f: pk.Frame` と食い違った
-                let ret = self.canon_type(&ret);
-                for p in fn_params.iter_mut().flatten() {
-                    p.ty = self.canon_type(&p.ty);
+                // クラスのメソッドの形（6-4）。`self` は呼び出しで渡さないので形の引数から外す
+                Stmt::ClassDef { name: class, body: members, .. } => {
+                    for m in members {
+                        if let Stmt::FnDef { name, body: variants, is_static, .. } = m {
+                            self.add_py_overloads(lang, format!("{module_name}.{class}.{name}"), variants, !is_static);
+                        }
+                    }
                 }
-                let plain = |p: &&crate::ast::Param| !p.variadic && p.name != crate::ast::PY_KWARGS_PARAM;
-                list.push(crate::type_check::PyOverload {
-                    params: params.iter().filter(plain).map(|p| (p.name.clone(), p.default.is_some())).collect(),
-                    kwargs: params.iter().any(|p| p.name == crate::ast::PY_KWARGS_PARAM),
-                    varargs: params.iter().any(|p| p.variadic),
-                    literals,
-                    none_params: params
-                        .iter()
-                        .filter(|p| p.type_ann.as_deref() == Some("None"))
-                        .map(|p| p.name.clone())
-                        .collect(),
-                    fn_params,
-                    ret,
-                });
+                _ => {}
             }
-            if !list.is_empty() {
-                self.py_overloads.insert(format!("{}.{name}", module.join(".")), list);
+        }
+    }
+
+    /// `variants`（関数・メソッドの本体の中の `@overload` の各形）を `key` の形の表に載せる。
+    fn add_py_overloads(&mut self, lang: &str, key: String, variants: &[Stmt], drop_self: bool) {
+        use crate::parser::py_stub_extract::{PY_LITERAL_MARK, PY_OVERLOAD_MARK};
+        let mut list = Vec::new();
+        for v in variants {
+            let Stmt::FnDef { params, decorators, .. } = v else { continue };
+            let marks: Vec<String> = decorators
+                .iter()
+                .filter_map(|d| if let Expr::Str(s) = d { Some(s.to_string()) } else { None })
+                .collect();
+            if !marks.iter().any(|m| m == PY_OVERLOAD_MARK) {
+                continue;
             }
+            let literals = marks
+                .iter()
+                .filter_map(|m| m.strip_prefix(PY_LITERAL_MARK))
+                .filter_map(|m| m.split_once('=').map(|(n, v)| (n.to_string(), v.to_string())))
+                .collect();
+            // 戻り値と引数の型は、本体の宣言と同じ規則で作る（`collect_module_types`）
+            let one = self.collect_module_types(lang, std::slice::from_ref(v));
+            let (mut fn_params, ret) = match one.into_values().next() {
+                Some(InferredType::Function { params, return_type, .. }) => (params, *return_type),
+                _ => (None, InferredType::Any),
+            };
+            // クラスの名前はモジュールで修飾した型にする（本体の宣言と同じ・`module_member_types` の `canon_type`・3-1）。
+            // ⚠ しないと `pk.read("a.csv")` の戻り値が素の `Frame` で、`let f: pk.Frame` と食い違った
+            let ret = self.canon_type(&ret);
+            for p in fn_params.iter_mut().flatten() {
+                p.ty = self.canon_type(&p.ty);
+            }
+            let params = if drop_self { params.get(1..).unwrap_or(&[]) } else { &params[..] };
+            if drop_self {
+                if let Some(ps) = fn_params.as_mut().filter(|ps| !ps.is_empty()) {
+                    ps.remove(0);
+                }
+            }
+            let plain = |p: &&crate::ast::Param| !p.variadic && p.name != crate::ast::PY_KWARGS_PARAM;
+            list.push(crate::type_check::PyOverload {
+                params: params.iter().filter(plain).map(|p| (p.name.clone(), p.default.is_some())).collect(),
+                kwargs: params.iter().any(|p| p.name == crate::ast::PY_KWARGS_PARAM),
+                varargs: params.iter().any(|p| p.variadic),
+                literals,
+                none_params: params
+                    .iter()
+                    .filter(|p| p.type_ann.as_deref() == Some("None"))
+                    .map(|p| p.name.clone())
+                    .collect(),
+                fn_params,
+                ret,
+            });
+        }
+        if !list.is_empty() {
+            self.py_overloads.insert(key, list);
         }
     }
 

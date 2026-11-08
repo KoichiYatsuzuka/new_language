@@ -28,7 +28,7 @@ check("variable inplace", w.take() => list[str], want)
 df["b"].fillna(0, inplace=True)
 check("chained inplace", w.take() => list[str], want)
 
-mut a = np.arange(3)
+mut a = np.arange(3) mustbe np.ndarray
 mut resized: list[str] = []
 try:
     a.resize(5)

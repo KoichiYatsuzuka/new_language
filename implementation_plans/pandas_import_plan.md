@@ -265,6 +265,19 @@ src のファイルを作ったら codebase map を再生成し、型検査・�
 | ~~4-2~~ | ✅ **済**（2026-11-07）**決定: GIL はまとめない。** 測ると GIL の取得と解放は 1 回 40〜80 ns で、呼び出し 1 回の 1 割強（6.9）。持ち続ければその分は消えるが、Arrow のコードの間 Python のスレッドが止まる（CPython の 5 ms ごとの譲り渡しは Python のコードの中でしか働かないので、Arrow の VM に安全点が要る）。「越境 1 回 +0.5〜1.7 µs」の本体は GIL ではなく呼び出しの準備だったので、そちらを直した（`pb.noop()` 1,382 → 425 ns・`pb.one_int()` 1,112 → 449 ns・`pb.identity(i)` 1,289 → 592 ns）: 成功のときも位置の文字列を作り型を写していた `check_ffi_return`・呼ぶたびの名前の検査と形の鍵（`positional_trampoline`）・モジュールの受け手の写し（待ち行列の錠・`CallHead::Borrowed`）・引数の `Vec` の作り直し・空の待ち行列の錠 | 1-1 | 中 |
 | ~~4-3~~ | ✅ **済**（2026-11-07）`a => list[float]`（2 次元は `list[list[float]]`）を足した。それまでの道は `a.tolist()` を通すしか無かった。意味は `a.tolist() => list[T]` と同じで、数値のバッファは Python の物を作らずに読む（`read_numeric_buffer`・130 → 11 ns/要素・6.9）。読むのは `tolist()` を照合して通る組だけで（`BufferElem::fits`）、ほか（`float16`・逆のバイト順・`uint64` のあふれ・バッファの無い pandas の Series）は本当に `tolist()` を呼ぶので、値と誤りは同じ。静的には Python のクラスのインスタンス → `list[T]` を通す（写せるかは実行時）。例題は `py_array_cast.ar`・`_error` | 4-1 | 中 |
 
+### フェーズ 6: 型スタブの精度（numpy・pandas を型検査に通す）
+
+`examples/practical_examples/pd_numpy_pyplot/` の 2 本が偽の静的エラーで止まっていた（`.rolling(3).mean()`・`np.argmax(a)`・`a.resize(5)`）。
+原因は別々で、どれも CPython の型の検査器（`@overload` は最初に当てはまる形）に揃える。
+
+| # | 内容 | 前提 | 重さ |
+|---|---|---|---|
+| ~~6-1~~ | ✅ **済**（2026-11-07）値の受け手のメソッド `x.f(..)` を素の名前 `f` で関数の表から引かない（`method_of_value`）。`@overload` の各形を関数の表に入れない（`collect_fn_body`）。numpy を import すると pandas の `.mean()` が numpy の関数として検査され、Arrow の `fn upper` があると `"a".upper()` も同じだった | なし | 小 |
+| ~~6-2~~ | ✅ **済**（2026-11-07）`@overload` の各形の注釈の、知らない名前を `Any` にする（`np.argmax` の `ArrayLike`。本体の宣言だけ `Any` にしていた）。`-> Self` も形の中まで置き換える | なし | 小 |
+| ~~6-3~~ | ✅ **済**（2026-11-07）`*args` の後のキーワード専用引数は型を見ない。Arrow の仮引数には印が無く、位置引数が先に束縛される（`a.resize(5)` が `refcheck: bool` と照合された）。⚠ 素の `*` の後は型を残す（位置引数は実行時にも誤り） | なし | 小 |
+| ~~6-4~~ | ✅ **済**（2026-11-07）クラスのメソッドの `@overload` も、モジュールの関数と同じく本体の中に入れ子で持ち、最初に当てはまる形を選ぶ（`select_py_method_overload`）。以前は同じ名前の `def` の上書きで最後の形だけが残っていた。例題は `py_overload_methods.ar`・`_error`。⇒ `practical_examples/pd_numpy_pyplot/` の 2 本が最後まで動くようになった（`refcount_pandas.ar` は全項目が CPython と同じ。`data_analysis.ar` は Python の物を `let` で受けていた所を `mut` に直した） | 6-1, 6-2 | 中 |
+| 6-5 | 注釈の numpy の配列を型にする。`-> NDArray[...]`（型の別名）・`-> ndarray[...]`（小文字のクラスの総称）は今 `Any` なので、`mut a = np.arange(3)` の `a.sum()` に `mustbe np.ndarray` が要る | 6-4 | 中 |
+
 ### フェーズ 5: `is`（D-4）
 
 | # | 内容 | 前提 | 重さ |

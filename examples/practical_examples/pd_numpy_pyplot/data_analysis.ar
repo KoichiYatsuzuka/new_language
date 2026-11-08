@@ -41,11 +41,11 @@ print()
 
 # ── 3. numpy statistics ───────────────────────────────────────────────────────
 
-let a_arr   = np.array(df["product_a"].tolist())
-let b_arr   = np.array(df["product_b"].tolist())
-let c_arr   = np.array(df["product_c"].tolist())
-let tot_arr = np.array(df["total"].tolist())
-let mkt_arr = np.array(df["marketing_spend"].tolist())
+mut a_arr   = np.array(df["product_a"].tolist())
+mut b_arr   = np.array(df["product_b"].tolist())
+mut c_arr   = np.array(df["product_c"].tolist())
+mut tot_arr = np.array(df["total"].tolist())
+mut mkt_arr = np.array(df["marketing_spend"].tolist())
 
 print("=== Statistics (numpy) ===")
 print("Product A     mean:", np.mean(a_arr),   " std:", np.std(a_arr))

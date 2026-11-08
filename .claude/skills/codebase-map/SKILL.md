@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (259 files, 123000 lines)
+src/  (259 files, 123173 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1684)
@@ -315,7 +315,7 @@ src/  (259 files, 123000 lines)
     import_syntax.rs (87)
     mod.rs (453)
     py_import_links.rs (224)
-    py_stub_extract.rs (1381)
+    py_stub_extract.rs (1480)
     types.rs (713)
     cs_assembly/
       export_gen.rs (710)
@@ -365,7 +365,7 @@ src/  (259 files, 123000 lines)
     annotations.rs (299)
     binop.rs (843)
     builtins.rs (214)
-    call_check.rs (2298)
+    call_check.rs (2340)
     decorator.rs (154)
     diagnostics.rs (57)
     errors.rs (1240)
@@ -378,13 +378,13 @@ src/  (259 files, 123000 lines)
     type_utils.rs (755)
     types.rs (1098)
     registry/
-      builder.rs (1006)
+      builder.rs (1014)
       mod.rs (481)
     stmt/
       check.rs (2288)
       mod.rs (6)
       protocol.rs (469)
-      resolve.rs (949)
+      resolve.rs (973)
   vm/
     chunk.rs (342)
     disasm.rs (174)
@@ -487,7 +487,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
   exceptions/ (18 .ar)
-  interop/ (315 .ar)
+  interop/ (317 .ar)
   practical_examples/ (9 .ar)
   repl/ (0 .ar)
   typing/ (120 .ar)
@@ -503,7 +503,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (147)
   compare_outputs.ps1 (153)
-  compare_python_impl.ps1 (639)
+  compare_python_impl.ps1 (641)
   compare_tm_grammar.ps1 (120)
   compare_wasm_frontend.ps1 (301)
   cpp_cache_isolation.ps1 (135)
@@ -564,5 +564,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (172)
   README.md (317)
 ```
-_Generated 2026-11-07 by generate-codebase-map.ps1_
+_Generated 2026-11-08 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

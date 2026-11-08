@@ -120,12 +120,7 @@ pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
                     let mut f = py_function(&name, params, arrow_ret);
                     if is_variant {
                         // `@overload` の形: 印と、`Literal[..]` の引数の値を付けて、本体を待つ
-                        if let crate::ast::Stmt::FnDef { decorators, .. } = &mut f {
-                            decorators.push(crate::ast::Expr::Str(PY_OVERLOAD_MARK.into()));
-                            for (pname, value) in py_literal_params(&params_text) {
-                                decorators.push(crate::ast::Expr::Str(format!("{PY_LITERAL_MARK}{pname}={value}").into()));
-                            }
-                        }
+                        py_mark_overload(&mut f, &params_text);
                         match variants.iter_mut().find(|(n, _)| *n == name) {
                             Some((_, vs)) => vs.push(f),
                             None => variants.push((name.clone(), vec![f])),
@@ -176,6 +171,22 @@ pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
 
 /// `@overload` の形に付ける印（本体の宣言の本体の中の入れ子の宣言のデコレータ）。型検査が呼び出しで形を選ぶ（1-3）。
 pub(crate) const PY_OVERLOAD_MARK: &str = "py-overload";
+
+/// `@overload` の形（関数・メソッドの本体の中に入れ子で持つ）か。
+pub(crate) fn is_py_overload_variant(st: &crate::ast::Stmt) -> bool {
+    matches!(st, crate::ast::Stmt::FnDef { decorators, .. }
+        if decorators.iter().any(|d| matches!(d, crate::ast::Expr::Str(s) if &**s == PY_OVERLOAD_MARK)))
+}
+
+/// 宣言 `f` に `@overload` の形の印と、`Literal[..]` の引数の値を付ける（`params_text` は引数の並びの字句）。
+fn py_mark_overload(f: &mut crate::ast::Stmt, params_text: &str) {
+    if let crate::ast::Stmt::FnDef { decorators, .. } = f {
+        decorators.push(crate::ast::Expr::Str(PY_OVERLOAD_MARK.into()));
+        for (pname, value) in py_literal_params(params_text) {
+            decorators.push(crate::ast::Expr::Str(format!("{PY_LITERAL_MARK}{pname}={value}").into()));
+        }
+    }
+}
 
 /// `@overload` の形の `Literal[..]` の引数の印（`py-literal:iterator=True`）。値の 1 つだけの `Literal` だけを書く。
 pub(crate) const PY_LITERAL_MARK: &str = "py-literal:";
@@ -261,19 +272,25 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
         .filter_map(|s| if let Stmt::ClassDef { name, .. } = s { Some(name.clone()) } else { None })
         .collect();
     let fix = |t: &mut String| *t = py_type_names_to_any(t, &known);
-    let fix_fn = |params: &mut Vec<crate::ast::Param>, ret: &mut Option<String>| {
+    /// 関数の注釈に `fix` を当てる。⚠ 本体の中の `@overload` の各形も同じ（以前は本体の宣言だけで、`np.argmax(a)` が形の
+    /// `a: ArrayLike` と照合されて偽の誤りになった・pandas_import_plan.md の 6-2）。
+    fn fix_fn(st: &mut Stmt, fix: &dyn Fn(&mut String)) {
+        let Stmt::FnDef { params, return_type, body, .. } = st else { return };
         for p in params.iter_mut() {
             if let Some(t) = p.type_ann.as_mut() {
                 fix(t);
             }
         }
-        if let Some(t) = ret.as_mut() {
+        if let Some(t) = return_type.as_mut() {
             fix(t);
         }
-    };
+        for v in body.iter_mut() {
+            fix_fn(v, fix);
+        }
+    }
     for st in stmts.iter_mut() {
         match st {
-            Stmt::FnDef { params, return_type, .. } => fix_fn(params, return_type),
+            Stmt::FnDef { .. } => fix_fn(st, &fix),
             Stmt::ClassDef { name, body, .. } => {
                 // `typing.Self` はこのクラス（基底から写したメンバーなら写した先・PEP 673）。⚠ 以前は `Self` のまま残り、
                 //   `df.head()` の型が中身の無い `Self` になっていた（pandas_import_plan.md の 1-3）。
@@ -281,17 +298,10 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
                 let self_to_class = |t: &mut String| *t = py_replace_type_word(t, "Self", &this);
                 for m in body.iter_mut() {
                     match m {
-                        Stmt::FnDef { params, return_type, .. } => {
-                            for p in params.iter_mut() {
-                                if let Some(t) = p.type_ann.as_mut() {
-                                    self_to_class(t);
-                                }
-                            }
-                            if let Some(t) = return_type.as_mut() {
-                                self_to_class(t);
-                            }
-                            fix_fn(params, return_type)
-                        }
+                        Stmt::FnDef { .. } => fix_fn(m, &|t: &mut String| {
+                            self_to_class(t);
+                            fix(t);
+                        }),
                         Stmt::Field { type_ann, .. } => {
                             self_to_class(type_ann);
                             fix(type_ann)
@@ -615,6 +625,8 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
     let mut decos: Vec<String> = Vec::new();
     // メソッドの（名前, 戻り値の注釈, 引数の並び）。`name = staticmethod(f)` の `f` を引く（下の `py_method_wrapper`）
     let mut defs: Vec<(String, Option<String>, String)> = Vec::new();
+    // 本体を待っている `@overload` の各形（名前ごと・書いた順）
+    let mut variants: Vec<(String, Vec<crate::ast::Stmt>)> = Vec::new();
     let mut i = start + 1;
     while i < end {
         let line = lines[i];
@@ -659,10 +671,27 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
                 if decos.iter().any(|d| d == "property" || d == "functools.cached_property" || d == "cached_property") {
                     py_add_field(&mut out.fields, mname, ret_ty.unwrap_or_else(|| "Any".to_string()));
                 } else if !decos.iter().any(|d| d.ends_with(".setter") || d.ends_with(".deleter")) {
-                    let params = py_params(&params, drops_first).unwrap_or_else(py_open_params);
+                    let parsed = py_params(&params, drops_first).unwrap_or_else(py_open_params);
                     let ret_ty = if mname == "__init__" { Some("None".to_string()) } else { Some(ret_ty.unwrap_or_else(|| "Any".to_string())) };
-                    out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == mname));
-                    out.methods.push(py_method(&mname, params, ret_ty, is_static));
+                    let mut method = py_method(&mname, parsed, ret_ty, is_static);
+                    if decos.iter().any(|d| d == "overload" || d.ends_with(".overload")) {
+                        // `@overload` の形はモジュールの関数と同じく本体の中に入れ子で持つ（型検査が最初に当てはまる形を選ぶ・6-4）。
+                        // ⚠ 以前は同じ名前の `def` を上書きしていたので、最後の形だけが残った
+                        py_mark_overload(&mut method, &params);
+                        match variants.iter_mut().find(|(n, _)| *n == mname) {
+                            Some((_, vs)) => vs.push(method),
+                            None => variants.push((mname.clone(), vec![method])),
+                        }
+                    } else {
+                        if let Some(k) = variants.iter().position(|(n, _)| *n == mname) {
+                            let (_, vs) = variants.remove(k);
+                            if let crate::ast::Stmt::FnDef { body, .. } = &mut method {
+                                *body = vs;
+                            }
+                        }
+                        out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == mname));
+                        out.methods.push(method);
+                    }
                 }
                 decos.clear();
                 i = body_end;
@@ -689,6 +718,21 @@ fn py_class_members(lines: &[&str], start: usize, end: usize) -> PyClassMembers 
         }
         decos.clear();
         i += 1;
+    }
+    // 本体の無い `@overload`（`.pyi` は形だけを書く）: モジュールの関数と同じく、最後の形を本体の代わりにする
+    for (mname, vs) in variants {
+        let Some(mut method) = vs.last().cloned() else { continue };
+        let rets: Vec<String> = vs
+            .iter()
+            .filter_map(|v| if let crate::ast::Stmt::FnDef { return_type, .. } = v { return_type.clone() } else { None })
+            .collect();
+        if let crate::ast::Stmt::FnDef { return_type, decorators, body, .. } = &mut method {
+            *return_type = Some(union_of(rets));
+            decorators.clear();
+            *body = vs;
+        }
+        out.methods.retain(|m| !matches!(m, crate::ast::Stmt::FnDef { name, .. } if *name == mname));
+        out.methods.push(method);
     }
     out
 }
@@ -863,7 +907,13 @@ fn py_params(text: &str, with_self: bool) -> Option<Vec<crate::ast::Param>> {
         if pname.is_empty() || !pname.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return None;
         }
-        let ty = ann.map(|a| py_param_type(&py_type_to_arrow(py_unquote(a)))).unwrap_or_else(|| "Any".to_string());
+        // ⚠ `*args` の後の引数はキーワード専用だが、Arrow の仮引数には印が無く、位置引数が先に束縛される。`a.resize(5)`（`*new_shape,
+        // refcheck: bool = ...`）の `5` を `bool` と照合して偽の誤りになったので、型を見ない（pandas_import_plan.md の 6-3）
+        let ty = if varargs.is_some() {
+            "Any".to_string()
+        } else {
+            ann.map(|a| py_param_type(&py_type_to_arrow(py_unquote(a)))).unwrap_or_else(|| "Any".to_string())
+        };
         // 既定値の式は型スタブでは使わない（省略できることだけを表す）。型の合わない `None` を書くと型検査が既定値を
         // 疑うので、`Any` の値として `None` を置く（`Option` でない注釈なら型を `Any` に広げない）
         params.push(Param {
@@ -1322,6 +1372,55 @@ class C(B):
         assert_eq!(m("__init__").1, vec!["self:".to_string(), "v:Any".to_string()], "`__init__` of the base of the base");
         assert!(!fields.iter().any(|(n, _)| n == "to_f" || n == "parse"), "the wrappers are not attributes: {fields:?}");
         assert!(!open);
+    }
+
+    /// クラスのメソッドの `@overload` は、モジュールの関数と同じく本体の宣言の中に入れ子で持つ（pandas_import_plan.md の 6-4）。
+    /// 本体の無い形（`.pyi`）は最後の形が本体の代わりで、戻り値はすべての形を合わせたもの。形の注釈の知らない名前は `Any`（6-2）。
+    #[test]
+    fn class_method_overloads_are_nested() {
+        use crate::ast::Stmt;
+        let src = "class C:
+    @overload
+    def get(self, key: ArrayLike) -> int: ...
+    @overload
+    def get(self, key: str, default: str) -> str: ...
+    def get(self, key, default=None):
+        return key
+    @overload
+    def only(self, a: int) -> int: ...
+    @overload
+    def only(self, a: str) -> str: ...
+";
+        let stmts = extract_py_type_stubs(src);
+        let Some(Stmt::ClassDef { body, .. }) = stmts.iter().find(|s| matches!(s, Stmt::ClassDef { name, .. } if name == "C")) else {
+            panic!("{stmts:?}")
+        };
+        let method = |wanted: &str| {
+            let found: Vec<&Stmt> =
+                body.iter().filter(|m| matches!(m, Stmt::FnDef { name, .. } if name == wanted)).collect();
+            assert_eq!(found.len(), 1, "{wanted}: {body:?}");
+            found[0]
+        };
+        let Stmt::FnDef { body: variants, return_type, .. } = method("get") else { panic!() };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(return_type.as_deref(), Some("Any"), "the implementation has no annotation");
+        assert!(variants.iter().all(is_py_overload_variant));
+        let Stmt::FnDef { params, .. } = &variants[0] else { panic!() };
+        assert_eq!(params[1].type_ann.as_deref(), Some("Any"), "an unknown name in a variant");
+        let Stmt::FnDef { body: variants, return_type, .. } = method("only") else { panic!() };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(return_type.as_deref(), Some("Union[int, str]"));
+    }
+
+    /// `*args` の後のキーワード専用引数は型を見ない。Arrow の仮引数には印が無く、位置引数が先に束縛される（6-3）。
+    #[test]
+    fn keyword_only_after_varargs_is_any() {
+        let params = py_params("*shape: int, refcheck: bool = ...", false).expect("params");
+        let refcheck = params.iter().find(|p| p.name == "refcheck").expect("refcheck");
+        assert_eq!(refcheck.type_ann.as_deref(), Some("Any"));
+        let params = py_params("a: int, *, flag: bool = ...", false).expect("params");
+        let flag = params.iter().find(|p| p.name == "flag").expect("flag");
+        assert_eq!(flag.type_ann.as_deref(), Some("bool"), "a bare `*` takes no positional argument anyway");
     }
 
     /// 入れ子のクラスは `Outer.Inner` の名前で持ち上げ、外側のクラスにはその型の値の属性を置く。入れ子のクラスの基底は同じ本体の

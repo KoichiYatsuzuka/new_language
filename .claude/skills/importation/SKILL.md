@@ -220,8 +220,10 @@ annotations a class of that module (`numpy.Any`, a false `expects 'm.Any' but go
 import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of
 the module that wrote the annotation, `if TYPE_CHECKING:` imports included) and ③ the members of base classes in other files
 (`py_class_outside_bases` / `py_merge_base_members`). Only then do unknown type names become `Any`. `-> Self` becomes the class.
-`@overload` variants are nested in the implementation's `FnDef` body (marked `py_stub_extract::PY_OVERLOAD_MARK`); the type
-checker (`select_py_overload`) picks the first variant the call matches for `m.f(..)`. Module lookups are cached by module
+`@overload` variants are nested in the implementation's `FnDef` body (marked `py_stub_extract::PY_OVERLOAD_MARK`; a `.pyi`
+without an implementation uses the last variant as the body), for module functions and class methods alike; the type
+checker (`select_py_overload` / `select_py_method_overload`, table `py_overloads`) picks the first variant the call matches.
+⚠ The variants are not functions: `collect_fn_body` keeps them out of `fn_sigs`. Module lookups are cached by module
 name (`Parser::py_raw_stubs`, shared with sub-parsers). ⚠ A copied (re-exported / annotation-named) class keeps its bare
 name inside the importing module's stub, so one stub holds one class per name.
 

@@ -1,0 +1,61 @@
+# py_overload_methods.ar — 型スタブの `@overload` と関数の名前（pandas_import_plan.md のフェーズ 6）
+#
+# - クラスのメソッドの `@overload` も、CPython の型の検査器と同じく最初に当てはまる形を選ぶ（`s.get("a")` は int・
+#   `s.get("a", "x")` は str）。⚠ 以前は最後の形だけが残っていた。
+# - 値のメソッド `x.f(..)` の `f` は関数の名前ではない。⚠ 以前は同じ名前の関数の表を引いたので、numpy を import すると pandas の
+#   `.mean()` が numpy の関数 `mean` として検査され、`fn upper` があると `"a".upper()` が誤りになった。
+# - `@overload` の形の知らない注釈（numpy の `ArrayLike`）は `Any`。
+# - `*args` の後のキーワード専用引数に位置引数を束縛しない（`a.resize(5)`）。
+#
+# 期待される出力:
+#   2 X
+#   True
+#   True
+#   6.0 12.0
+#   2.0
+#   1
+#   3.0 2.0
+#   arrow's mean arrow's upper ABC
+#   ok
+
+import[py] test_modules.py_overload_methods as m
+import[py] numpy as np
+import[py] pandas as pd
+
+mut s = m.Store()
+
+# 形で戻り値の型が決まる（`mustbe` が要らない）
+let n: int = s.get("a")
+let t: str = s.get("a", "x")
+print(n + 1, t.upper())
+
+# `Literal` の値で形が決まる
+mut kept = s.drop("a")
+print(s.get("a") == 1)
+s.drop("a", inplace=True)
+print(s.size() == 0 and kept.size() == 0)
+
+# `*values` の後の `scale` はキーワード専用
+print(m.spread(1, 2, 3), m.spread(1, 2, 3, scale=2.0))
+
+mut a = np.array([1.0, 3.0, 2.0] => py_list[float]) mustbe np.ndarray
+print(a.mean())
+print(np.argmax(a))
+a.resize(4, refcheck=False)
+a.resize(3, refcheck=False)
+print(a.max(), a[2])
+
+# Arrow の関数と同じ名前のメソッド・numpy の関数と同じ名前の関数
+fn mean(x: str) -> str:
+    return "arrow's mean"
+
+fn upper(x: str) -> str:
+    return "arrow's upper"
+
+mut df = pd.DataFrame({"a": [1, 2, 3]} => py_dict[str, py_list[int]])
+mut rolled = df["a"].rolling(window=2).mean()
+print(mean("x"), upper("x"), "abc".upper())
+if rolled.iloc[2] != 2.5:
+    raise ValueError("wrong rolling mean")
+
+print("ok")

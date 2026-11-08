@@ -163,6 +163,20 @@ impl TypeChecker {
             _ => None,
         };
 
+        // 値のメソッド `x.f(..)`（受け手がモジュールでも型が分からない名前でもない）の `f` は関数の名前ではない。表示には使うが、
+        // 関数の表を引かない（pandas_import_plan.md の 6-1）。⚠ 以前は引いていたので、numpy を import すると pandas の
+        // `.mean()` が numpy の同じ名前の関数として検査された。Arrow の `fn upper` があると `"a".upper()` も同じ。
+        let method_of_value = match func {
+            Expr::Attr { object, .. } if self.module_path_of_expr(object).is_none() => match object.as_ref() {
+                Expr::Ident { name, .. } => !matches!(
+                    self.lookup(name).map(|v| &v.ty),
+                    None | Some(InferredType::Unresolved | InferredType::Namespace(..) | InferredType::PyNamespace(..))
+                ),
+                _ => true,
+            },
+            _ => false,
+        };
+
         // Only evaluate func type when not a method call. For method calls the object
         // was already inferred above; re-calling self.infer(func) would re-evaluate
         // the object expression and potentially duplicate errors.
@@ -487,10 +501,14 @@ impl TypeChecker {
                     span: None,
                 });
             }
+            // Python のクラスのメソッドの `@overload`（6-4）
+            if let Some(ret) = self.select_py_method_overload(cls_name, method_name, args, &arg_data) {
+                return ret;
+            }
             // self/cls is passed implicitly; check_self_type_params accounts for the +1
             let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
             return ret_ty.unwrap_or(InferredType::Unresolved);
-        } else if let Some(ref fname) = func_name {
+        } else if let Some(fname) = func_name.as_ref().filter(|_| !method_of_value) {
             // ⚠⚠ **テンプレートを型引数なしで呼んだ場合はここで打ち切る。**
             //    Arrow に暗黙実体化は無く、実行時も
             //    `TemplateError: template must be called with explicit type arguments` になる。
@@ -1306,10 +1324,34 @@ impl TypeChecker {
             return None;
         }
         let module = self.py_aliases.get(name)?;
-        let variants = self.py_overloads.get(&format!("{module}.{attr}"))?.clone();
-        let chosen = variants.into_iter().find(|v| Self::py_overload_matches(v, args))?;
+        let key = format!("{module}.{attr}");
+        self.select_py_overload_of(&key, &format!("{name}.{attr}"), args, arg_data)
+    }
+
+    /// `x.m(..)`（`x` は Python のクラスのインスタンス）のメソッドが `@overload` の形を持つなら、最初に当てはまる形を選ぶ
+    /// （[`Self::select_py_overload`] と同じ規則・pandas_import_plan.md の 6-4）。
+    fn select_py_method_overload(
+        &mut self,
+        class: &str,
+        method: &str,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
+        let key = format!("{}.{method}", self.registry.resolve(class));
+        self.select_py_overload_of(&key, &format!("{class}.{method}"), args, arg_data)
+    }
+
+    /// 形の表の `key` の、最初に当てはまる形で引数を検査して戻り値の型を返す。`shown` は表示の名前。
+    fn select_py_overload_of(
+        &mut self,
+        key: &str,
+        shown: &str,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
+        let chosen = self.py_overloads.get(key)?.iter().find(|v| Self::py_overload_matches(v, args))?.clone();
         if let Some(fn_params) = &chosen.fn_params {
-            self.check_fn_type_call(&format!("{name}.{attr}"), args, arg_data, fn_params);
+            self.check_fn_type_call(shown, args, arg_data, fn_params);
         }
         Some(chosen.ret)
     }

@@ -259,6 +259,8 @@ $knownDiff = @{
     'py_typing_any'                  ='Rust: Python のクラスの注釈の Any（CPython のモジュールと numpy）。py: impl_python は import[py] を変換して実行する'
     'py_list_cast_overflow_error'    ='Rust: => list[int] の i64 に入らない要素は OverflowError（CPython のモジュール）。py: impl_python に py_list は無い'
     'py_array_cast'                  ='Rust: numpy の配列の => list[T]（pandas_import_plan.md の 4-3）。py: impl_python に numpy の読み込みは無い'
+    'py_overload_methods_error'      ='Rust: 選んだ @overload の形の型の静的な誤り（フェーズ 6）。py: impl_python は型スタブの形を読まない'
+    'py_overload_methods'            ='Rust: 型スタブの @overload と関数の名前（pandas_import_plan.md のフェーズ 6）。py: impl_python に numpy の読み込みは無い'
     'py_value_kinds'                 ='Rust: Python から返る値の写し方（pandas_import_plan.md の 4-1・CPython のモジュールの値）。py: impl_python は import[py] を変換して実行する'
     'py_ellipsis_value'              ='Rust: 値の ... は組み込みの Ellipsis（タスク 6-11 で新設・pe.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
     'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'

@@ -1,0 +1,11 @@
+# py_overload_methods_error.ar — 選んだ `@overload` の形の型と違えば静的な誤り（pandas_import_plan.md の 6-4）
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   'x' is declared 'int' but initialized with 'str'
+#   argument 0 of 'test_modules.py_overload_methods.Store.get' expects 'str' but got 'int'
+
+import[py] test_modules.py_overload_methods as m
+
+mut s = m.Store()
+let x: int = s.get("a", "b")
+s.get(1)
