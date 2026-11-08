@@ -1,0 +1,10 @@
+# comprehension_types_error.ar — 内包表記の要素の型が宣言と違えば静的な誤り（known_bugs.md の #15）
+#
+# 内包表記の型は要素の式の型から決まるので、宣言と違えば静的に止まる（⚠ 以前は `list[Any]` で、宣言の側によっては
+# どの内包表記も誤りになり、どれも素通しにもなった）。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   'names' is declared 'list[str]' but initialized with 'list[int]'
+
+let names: list[str] = [len(w) for w in ["a", "bb"]]
+print(names)

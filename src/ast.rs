@@ -706,6 +706,11 @@ pub enum Expr {
         iter: Box<Expr>,
         body: Vec<Stmt>,
         return_type: Option<String>,
+        /// 内包表記を脱糖したもの（[`build_list_comprehension`]）か。型検査は `loop_yield` の値の型から要素の型を出す
+        /// （`[v * 2 for v in xs]` は `list[int]`）。⚠ `return_type` は `list[Any]` のまま（`->list[T]` を付けると実行時に
+        /// 要素を照合してしまう）。以前は型も `list[Any]` で、`let ys: list[int] = [v for v in xs]` が誤りだった
+        /// （known_bugs.md の #15）。
+        comprehension: bool,
     },
     /// while 式: `while cond [->Type]: body`。
     ///
@@ -1670,6 +1675,7 @@ pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) ->
                 iter: Box::new(clause.iter),
                 body,
                 return_type: Some("list[Any]".to_string()),
+                comprehension: true,
             });
         }
         body = vec![Stmt::For {

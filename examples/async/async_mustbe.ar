@@ -1,0 +1,32 @@
+# async_mustbe.ar — `async` のタスクの本体の `mustbe` と `=>`（known_bugs.md の #14）
+#
+# タスクの本体は別のスレッドで、型検査の注釈を持たずにバイトコードへコンパイルする。注釈が無くても `mustbe` / `=>` は
+# 実行時に検査する（メインのスレッドと同じ）。⚠ 以前は注釈が無いとコンパイルを諦め、タスクが
+# `VmForceError: cannot compile async task body to bytecode` で失敗した。
+#
+# 期待される出力:
+#   [2, 'x']
+#   [None, None]
+#   True True
+#   ok
+
+let a: Any = 1
+let s: Any = "x"
+mut mng = AsyncManager(num_thread=2)
+mng <- async->int:
+    block_return (a mustbe int) + 1
+mng <- async->str:
+    block_return s mustbe str
+mng.wait_for_finish()
+print(mng.results)
+print(mng.error_list)
+
+# 型が違えば、メインのスレッドと同じく実行時の誤り（`mustbe` の検査が走っている）
+mut bad = AsyncManager(num_thread=1)
+bad <- async->int:
+    block_return s mustbe int
+bad.wait_for_finish()
+let err = bad.error_list[0] mustbe str
+print(err.contains("TypeError"), err.contains("mustbe"))
+
+print("ok")

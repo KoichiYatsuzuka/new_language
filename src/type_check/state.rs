@@ -60,6 +60,9 @@ pub(super) struct CheckState {
     /// ⚠ **関数本体に入るときは `None` を積む**（継承しない）。入れ子 `fn` の
     /// `block_return` が外側のブロック式の注釈と照合されると嘘の判定になる。
     block_expr_expected: Vec<Option<InferredType>>,
+    /// 内包表記の `loop_yield` の値の型（いちばん内側の内包表記の分と、それを積んだときの `block_expr_expected` の深さ）。
+    /// 同じ深さの `loop_yield` だけが、その内包表記の要素（入れ子の `for` / `if` 文は透過する・要素の式の中の式は別の深さ）。
+    comprehension_yields: Vec<(usize, Vec<InferredType>)>,
     /// **`freeze` 済みの名前**（タスク 7.2・検体 `Z7`）。
     ///
     /// ⚠⚠ **可変性フラグ（`VarInfo::mutable`）を落としてはいけない。** 実測すると
@@ -99,6 +102,7 @@ impl CheckState {
             in_gen_body: false,
             block_return_forbidden_depth: 0,
             block_expr_expected: Vec::new(),
+            comprehension_yields: Vec::new(),
             type_params: Vec::new(),
         }
     }
@@ -285,6 +289,26 @@ impl CheckState {
     /// ブロック式の照合先を降ろす。
     pub(super) fn pop_block_expr_expected(&mut self) {
         self.block_expr_expected.pop();
+    }
+
+    /// 内包表記の本体に入る（[`Self::push_block_expr_expected`] の後に呼ぶ）。
+    pub(super) fn begin_comprehension(&mut self) {
+        self.comprehension_yields.push((self.block_expr_expected.len(), Vec::new()));
+    }
+
+    /// 内包表記の本体を出て、`loop_yield` の値の型を返す。
+    pub(super) fn end_comprehension(&mut self) -> Vec<InferredType> {
+        self.comprehension_yields.pop().map(|(_, types)| types).unwrap_or_default()
+    }
+
+    /// `loop_yield` の値の型を、それが積まれる内包表記に控える（内包表記の中でなければ何もしない）。
+    pub(super) fn note_loop_yield(&mut self, ty: &InferredType) {
+        let depth = self.block_expr_expected.len();
+        if let Some((d, types)) = self.comprehension_yields.last_mut() {
+            if *d == depth {
+                types.push(ty.clone());
+            }
+        }
     }
 
     /// いちばん内側のブロック式の `->T`。囲みが無ければ `None`。

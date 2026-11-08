@@ -432,6 +432,7 @@ impl TypeChecker {
                 iter,
                 body,
                 return_type,
+                comprehension,
             } => {
                 let iter_ty = self.infer(iter);
                 // ⚠ 反復できない型を弾く（タスク 7.1・検体 `K3`）。文と同じ検査を通す。
@@ -465,7 +466,10 @@ impl TypeChecker {
                     (InferredType::Tuple(ts), n) if ts.len() == n => ts.clone(),
                     (_, n) => vec![InferredType::Unresolved; n],
                 };
-                self.with_loop_expr_yielding(ann, |c| {
+                let yields = self.with_loop_expr_yielding(ann, |c| {
+                    if *comprehension {
+                        c.state.begin_comprehension();
+                    }
                     c.push_scope();
                     for (target, ty) in targets.iter().zip(target_tys) {
                         // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
@@ -487,7 +491,16 @@ impl TypeChecker {
                     }
                     c.check_stmts(body);
                     c.pop_scope();
+                    if *comprehension {
+                        c.state.end_comprehension()
+                    } else {
+                        Vec::new()
+                    }
                 });
+                // 内包表記の型は要素の式の型から（known_bugs.md の #15・`Expr::ForExpr` の `comprehension`）
+                if *comprehension && !yields.is_empty() {
+                    return InferredType::ListOf(Box::new(Self::join_elem_types(yields)));
+                }
                 Self::ann_or_unresolved(return_type)
             }
             Expr::WhileExpr {

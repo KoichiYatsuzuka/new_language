@@ -649,7 +649,8 @@ impl Compiler {
                 let ann = self.add_return_type(return_type);
                 self.compile_match_expr(subject, arms, pending, ann)?
             }
-            Expr::ForExpr { targets, mut_targets, iter, body, return_type } => {
+            // `comprehension` は型検査だけが見る（実行は `return_type` の `list[Any]` のまま）
+            Expr::ForExpr { targets, mut_targets, iter, body, return_type, comprehension: _ } => {
                 let ann = self.add_return_type(return_type);
                 self.compile_for_expr(targets, *mut_targets, iter, body, ann)?
             }
@@ -670,21 +671,17 @@ impl Compiler {
                     self.emit(Op::Un(crate::ast::UnaryOp::Not));
                 }
             }
-            Expr::MustBe { expr, guard_type, span, node_id } => {
-                if !self.check_required(*node_id) {
-                    bail("check-required-mustbe", None);
-                    return None;
-                }
+            // ⚠ 型検査は `mustbe` / `=>` にいつも `CheckBefore` を付ける。付いていない（注釈の無いコンパイル）なら検査が
+            //   要るか判らないので、**検査する**（ツリーウォークと同じ・省く方へは倒さない）。⚠ 以前はここで諦めていた。
+            //   ツリーウォークの道があった頃は安全だったが、#33 の後は `VmForceError` になり、注釈を持たない別のスレッドで
+            //   コンパイルする `async` のタスクの本体の `mustbe` が必ず失敗した（known_bugs.md の #14）。
+            Expr::MustBe { expr, guard_type, span, .. } => {
                 self.compile_expr(expr)?;
                 let ni = self.add_name(guard_type);
                 let si = self.add_span(span);
                 self.emit(Op::MustBe(ni, si));
             }
-            Expr::Cast { object, type_name, node_id, .. } => {
-                if !self.check_required(*node_id) {
-                    bail("check-required-cast", None);
-                    return None;
-                }
+            Expr::Cast { object, type_name, .. } => {
                 self.compile_expr(object)?;
                 let ni = self.add_name(type_name);
                 self.emit(Op::Cast(ni));

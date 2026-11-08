@@ -1,0 +1,26 @@
+# comprehension_types.ar — 内包表記の型と、`Any` の要素の比較（known_bugs.md の #15）
+#
+# - 内包表記の型は要素の式の型から決まる（`[v * 2 for v in xs]` は `list[int]`）。ジェネレータを回しても同じ。
+#   ⚠ 以前はいつも `list[Any]` で、`let ys: list[int] = [v for v in xs]` が静的な誤りだった。
+# - `list[Any]` と `list[int]` は等しくなりうる（`Any` の要素は何とでも等しくなりうる）。⚠ 以前は「決して真にならない」の
+#   静的な誤りだった。`list[int]` と `list[float]` は今も誤り（容器の等値は要素の型まで見るので `[2] == [2.0]` は偽）。
+#
+# 期待される出力:
+#   [2, 4] [3, 4, 6, 8]
+#   [[1], [1, 2]] [(1, 'a'), (2, 'a')]
+#   True True
+
+gen doubled(xs: list[int]) -> int:
+    for x in xs:
+        yield x * 2
+
+let ys: list[int] = [v for v in doubled([1, 2])]
+let pairs: list[int] = [a * b for a in [1, 2] for b in [3, 4] if a < b]
+print(ys, pairs)
+
+let nested: list[list[int]] = [[y + 1 for y in range(x)] for x in [1, 2]]
+let tagged: list[tuple[int, str]] = [(x, "a") for x in [1, 2]]
+print(nested, tagged)
+
+mut loose: list[Any] = [2, 4]
+print(loose == [2, 4], [v for v in doubled([1, 2])] == [2, 4])

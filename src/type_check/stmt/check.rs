@@ -440,6 +440,7 @@ impl TypeChecker {
                 //    **検査されない**（内側の注釈が `list[T]` ではないから）。
                 //    ここを「外側のループ式まで遡る」実装にすると偽エラーになる（実測）。
                 let got = self.infer(expr);
+                self.state.note_loop_yield(&got);
                 let expected = match self.state.block_expr_expected() {
                     Some(InferredType::ListOf(elem)) => Some((**elem).clone()),
                     _ => None,

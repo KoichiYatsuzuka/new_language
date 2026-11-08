@@ -1030,6 +1030,7 @@ impl Parser {
                     iter: Box::new(iter),
                     body: self.parse_block()?,
                     return_type,
+                    comprehension: false,
                 })
             }
             // `while cond [->Type]: body` — while 式

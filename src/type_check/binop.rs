@@ -200,6 +200,9 @@ impl TypeChecker {
         if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
             return;
         }
+        if Self::containers_may_equal(&a, &b) {
+            return;
+        }
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::CrossTypeEquality {
                 op: op.as_str().to_string(),
@@ -208,6 +211,40 @@ impl TypeChecker {
             },
             span: Some(span),
         });
+    }
+
+    /// 同じ種類の容器どうしで、要素どうしが等しくなりうるか（等値は要素で比べる）。⚠ 以前は型が完全に同じでなければ
+    /// 「決して真にならない」にしたので、`mut c: list[Any] = [1]` の `c == [1]` が誤りだった（`Any` の要素は何とでも
+    /// 等しくなりうる・known_bugs.md の #15）。
+    /// ⚠ 要素の数の型の違いは等しくならない（`[2] == [2.0]` は実行時に偽・容器の等値は要素の型まで見る）ので、数の族は混ぜない。
+    fn containers_may_equal(a: &InferredType, b: &InferredType) -> bool {
+        use InferredType as T;
+        let elements = |x: &T, y: &T| {
+            Self::opaque_for_equality(x) || Self::opaque_for_equality(y) || x == y || Self::containers_may_equal(x, y)
+        };
+        fn listish(t: &InferredType) -> Option<&InferredType> {
+            match t {
+                InferredType::ListOf(e) | InferredType::ListLikeOf(e) | InferredType::FixedListOf(e) => Some(e),
+                _ => None,
+            }
+        }
+        fn setish(t: &InferredType) -> Option<&InferredType> {
+            match t {
+                InferredType::SetOf(e) | InferredType::FrozenSetOf(e) => Some(e),
+                _ => None,
+            }
+        }
+        if let (Some(x), Some(y)) = (listish(a), listish(b)) {
+            return elements(x, y);
+        }
+        if let (Some(x), Some(y)) = (setish(a), setish(b)) {
+            return elements(x, y);
+        }
+        match (a, b) {
+            (T::DictOf(ka, va), T::DictOf(kb, vb)) => elements(ka, kb) && elements(va, vb),
+            (T::Tuple(xs), T::Tuple(ys)) => xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| elements(x, y)),
+            _ => false,
+        }
     }
 
     /// 等値比較で「判定材料が無い」とみなす型。

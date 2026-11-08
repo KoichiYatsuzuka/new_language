@@ -366,12 +366,14 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
             iter,
             body,
             return_type,
+            comprehension,
         } => Expr::ForExpr {
             targets: targets.clone(),
             mut_targets: *mut_targets,
             iter: Box::new(subst_expr(iter, type_map)),
             body: subst_stmts(body, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+            comprehension: *comprehension,
         },
         Expr::WhileExpr {
             cond,

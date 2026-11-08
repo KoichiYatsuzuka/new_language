@@ -647,21 +647,6 @@ impl Compiler {
         idx
     }
 
-    /// AST 型解決層の**検査指示**（`CheckBefore`）を消費する（#16 段階(b)(ii)）。
-    ///
-    /// `mustbe` / `=>` は型検査が常に `CheckBefore` を付けるので、現状これは実質いつも `true` を返す。
-    /// それでも指示を経由するのは、将来チェッカが「この検査は静的に冗長」と証明できるようになったとき、
-    /// **この一点を変えるだけで VM とネイティブの双方が検査を落とせる**ようにするため（＝解決の一元化）。
-    ///
-    /// 指示が `None`（未採番ノード・合成 AST・モジュール横断で注釈が無い）の場合は
-    /// **検査が要るのか判らない**ので、その関数の VM 化自体を諦める（`false`）。
-    /// 検査を省く方向へは決して倒さない。
-    pub(super) fn check_required(&self, node_id: u32) -> bool {
-        matches!(
-            self.annotations.directive(node_id),
-            crate::type_check::Directive::CheckBefore(_)
-        )
-    }
 
     pub(super) fn add_span(&mut self, span: &crate::token::Span) -> u32 {
         let idx = self.chunk.spans.len() as u32;
