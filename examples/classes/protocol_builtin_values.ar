@@ -1,0 +1,69 @@
+# protocol_builtin_values.ar — 組み込みの値も protocol を構造で満たす（pandas_import_plan.md の 6-6）
+#
+# `list` / `tuple` / `str` / `bytes` / `dict` / `set` / ジェネレータ / `int` / `float` / `bool` は、CPython の組み込みの型と同じ
+# 特殊メソッド（`__len__` / `__getitem__` / `__iter__` / `__index__` …）を持つとして protocol と照合する。型引数も見る
+# （`list[int]` は `Seq[int]` を満たすが、`list[str]` は満たさない）。実行時の型テスト（`[1] is HasLen`）も同じ表で見る。
+# ⚠ CPython の型スタブと同じく、`Sequence` の抽象クラスが足すメソッド（`str` / `tuple` の `__reversed__` / `count` / `index`）
+#   も持つとする。
+# 表のメンバーは直接も呼べる（`i.__index__()` の `i` が `int`・`xs.count(x)`）。
+# ⚠ 以前は組み込みの値がどの protocol も満たさなかった（`expected a class instance, got 'list[int]'`・実行時の `is` は偽）。
+#   特殊メソッドのほとんどと `list` / `tuple` の `count` / `index` も実行時に無かった。
+#
+# 期待される出力:
+#   2 3 1 3 0
+#   5 7 b
+#   3 3
+#   True True True True False False
+#   True False True
+#   ok
+
+protocol HasLen:
+    fn __len__(self) -> int:
+        ...
+
+protocol Seq[T]:
+    fn __getitem__(self, i: int) -> T:
+        ...
+
+    fn __len__(self) -> int:
+        ...
+
+protocol Indexable:
+    fn __index__(self) -> int:
+        ...
+
+protocol Counted:
+    fn count(self, x: Any) -> int:
+        ...
+
+    fn index(self, x: Any) -> int:
+        ...
+
+fn size(x: HasLen) -> int:
+    return len(x)
+
+fn first_int(xs: Seq[int]) -> int:
+    return xs[0]
+
+fn first_str(xs: Seq[str]) -> str:
+    return xs[0]
+
+fn as_index(i: Indexable) -> int:
+    return i.__index__()
+
+fn tally(c: Counted, x: Any) -> int:
+    return c.count(x)
+
+let empty: set[int] = set()
+print(size([1, 2]), size("abc"), size({"a": 1}), size((1, 2, 3)), size(empty))
+print(first_int([5, 6]), first_int((7, 8)), first_str("bc"))
+let i: Indexable = 3
+print(as_index(i), tally([1, 2, 1, 1], 1))
+
+gen nums() -> int:
+    yield 1
+
+let t = True
+print([1] is HasLen, "s" is HasLen, bytes([97, 98]) is HasLen, {1: 2} is HasLen, 5 is HasLen, nums() is HasLen)
+print(5 is Indexable, 1.5 is Indexable, t is Indexable)
+print("ok")

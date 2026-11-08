@@ -2217,6 +2217,22 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
     })
 }
 
+/// CPython の物が名前 `attr` の属性を持つか（protocol の型テスト `x is P`・pandas_import_plan.md の 6-6）。CPython 3.12 の
+/// `isinstance(x, Protocol)` と同じく `inspect.getattr_static` で引くので、利用者のコード（`__getattr__` / 記述子）を走らせない。
+/// ⚠ `getattr_static` が例外を投げるのは CPython の内部の失敗だけ（属性が無ければ番兵を返す）。そのときは持たないとする
+///   （型テストは真偽を返すだけで例外を伝えられない）。
+pub fn py_has_static_attr(handle: &PyObjHandle, attr: &str) -> bool {
+    with_py(|py| {
+        let lookup = || -> PyResult<bool> {
+            let getattr_static = py.import_bound("inspect")?.getattr("getattr_static")?;
+            let missing = py.import_bound("builtins")?.getattr("object")?.call0()?;
+            let found = getattr_static.call1((handle.bind(py), attr, &missing))?;
+            Ok(!found.is(&missing))
+        };
+        lookup().unwrap_or(false)
+    })
+}
+
 /// 片方が CPython の物の `a == b` の真偽（CPython の `PyObject_RichCompareBool`: 同じ物なら真、ほかは `__eq__` の
 /// 答えの真偽）。容器の要素との比較（`pyobj in xs`・`xs.index(pyobj)`）が使う（`Interpreter::values_eq_expr`・
 /// known_bugs.md の #8）。Python へ渡せない Arrow の値（容器）は `a == b` と同じ `TypeError`。

@@ -283,7 +283,12 @@ pandas_import_plan.md 6-5; empty otherwise). `resolve_protocols` turns the `Name
   counts must match. Fields must have the same type both ways.
 - Self-referential protocols stop through `TypeChecker::protocol_assumptions` (a pair being checked is assumed to hold).
 - Annotations must give every type argument (`ProtocolTypeArgCount`); `x is Holder[int]` is `GuardTypeNotTestable`.
-- ⚠ Only class instances (and other protocols) conform so far; built-in values are 6-6.
+- Built-in values conform through **one table**, `src/type_check/builtin_members.rs` (`members_of(kind)` → `Member`s;
+  `shape_of(ty)` gives the kind and element types, `Member::sigs` the signatures; parameters are positional-only = empty
+  names, which `method_sig_matches_protocol` does not compare). The runtime uses the same table: `x is P`
+  (`Interpreter::builtin_kind_of_value`) and direct calls `xs.__len__()` (`classes/builtin_member_methods.rs`,
+  `call_builtin_member`); statically `builtin_member_call` types those calls. `interpreter::tests::classes::
+  builtin_member_table_is_dispatched` checks every member is callable at run time.
 
 ### `type_val_compatible`
 

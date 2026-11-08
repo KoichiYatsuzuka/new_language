@@ -1,0 +1,21 @@
+# protocol_builtin_values_error.ar — 組み込みの値が protocol の要求を満たさなければ静的な誤り（pandas_import_plan.md の 6-6）
+#
+# 組み込みの値は、CPython の組み込みの型が持つ特殊メソッドで照合する。`int` は `__len__` を持たない、`set` は添字
+# （`__getitem__`）を持たない、`list[str]` の要素は `int` ではない。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   type 'int' does not satisfy protocol 'HasLen': missing method `__len__`
+#   type 'set[int]' does not satisfy protocol 'Seq[int]': missing method `__getitem__`
+#   type 'list[str]' does not satisfy protocol 'Seq[int]': method `__getitem__` signature does not match protocol requirement
+
+protocol HasLen:
+    fn __len__(self) -> int:
+        ...
+
+protocol Seq[T]:
+    fn __getitem__(self, i: int) -> T:
+        ...
+
+let a: HasLen = 5
+let b: Seq[int] = {1, 2}
+let c: Seq[int] = ["x"]

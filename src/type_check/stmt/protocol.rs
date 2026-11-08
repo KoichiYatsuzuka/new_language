@@ -168,7 +168,19 @@ impl TypeChecker {
                 Some((fields, methods)) => Conformer::Members { owner: None, fields, methods },
                 None => Conformer::Opaque,
             },
-            _ => Conformer::Mismatch(format!("expected a class instance, got `{ty}`")),
+            // 組み込みの値は、組み込みの表のメンバーで照合する（`list[int]` は `__len__` を持つ・6-6）。
+            // ⚠ 以前は「クラスのインスタンスではない」と弾いていた（どの protocol も満たさなかった）。
+            _ => match crate::type_check::builtin_members::shape_of(ty) {
+                Some(shape) => Conformer::Members {
+                    owner: Some(ty.to_string()),
+                    fields: std::collections::HashMap::new(),
+                    methods: crate::type_check::builtin_members::members_of(shape.kind)
+                        .iter()
+                        .map(|m| (m.name().to_string(), m.sigs(&shape)))
+                        .collect(),
+                },
+                None => Conformer::Mismatch(format!("expected a class instance, got `{ty}`")),
+            },
         }
     }
 
@@ -282,14 +294,19 @@ impl TypeChecker {
     ) -> bool {
         use crate::type_check::type_utils::Site;
         // self を除くパラメータ
+        let has_self = sig.params.first().is_some_and(|(name, _)| name == "self");
         let non_self_params: Vec<_> = sig.params.iter()
             .filter(|(name, _)| name != "self")
             .collect();
-        if non_self_params.len() != req.params.len() {
+        // 要求より多い引数は、省略できるものならよい（`list.index(x, start, stop)` は `index(x)` を満たす・6-6）
+        let required = sig.required_count.saturating_sub(usize::from(has_self));
+        if non_self_params.len() < req.params.len() || required > req.params.len() {
             return false;
         }
+        // 位置だけで渡す引数（名前が空・組み込みの値のメソッド）と特殊メソッド（演算子が呼ぶので名前で渡さない）は名前を見ない
+        let dunder = req.name.starts_with("__") && req.name.ends_with("__");
         for ((p_name, p_ty), (r_name, _r_mut, r_ty)) in non_self_params.iter().zip(req.params.iter()) {
-            if p_name != r_name {
+            if !dunder && !p_name.is_empty() && !r_name.is_empty() && p_name != r_name {
                 return false;
             }
             if let Some(pty) = p_ty {

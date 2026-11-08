@@ -1387,6 +1387,12 @@ impl TypeChecker {
     /// 組み込みの値のメソッドとして**ありうるか**（10-14）。`false` は「実行時に必ず無い」。
     fn builtin_may_have_method(ty: &InferredType, method: &str) -> bool {
         use InferredType as T;
+        // 組み込みの値の表のメンバー（`(5).__index__()` など・6-6）は呼べる（実行時は `call_builtin_member`）
+        if crate::type_check::builtin_members::shape_of(ty)
+            .is_some_and(|s| crate::type_check::builtin_members::has_member(s.kind, method))
+        {
+            return true;
+        }
         match ty {
             // 実行時のメソッド呼び出し（`eval_method_call_full`）に腕が無い。
             T::Int | T::Float | T::Bool | T::None => false,

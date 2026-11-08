@@ -294,6 +294,11 @@ impl TypeChecker {
             self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
             // ★ 戻り値型も分かる範囲で付ける。
             builtin_ret = Self::builtin_collection_method_return(&recv_ty, &method, &arg_data);
+            // 表のメンバー（特殊メソッドと `count` / `index`・6-6）は、表のシグネチャで引数と戻り値を検査する
+            // （実行時は `call_builtin_member`）
+            if builtin_ret.is_none() {
+                builtin_ret = self.builtin_member_call(&recv_ty, &method, &arg_data);
+            }
         }
 
         // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
@@ -628,6 +633,28 @@ impl TypeChecker {
         // Static methods have no implicit receiver; instance/class methods add +1 for self/cls
         let is_static = self.registry.is_static_method(cls_name, method_name);
         self.check_method_sigs(cls_name, method_name, &sigs, is_static, arg_data)
+    }
+
+    /// 組み込みの値の表のメンバー（`xs.__len__()` / `(5).__index__()` / `[1, 2].count(1)`・pandas_import_plan.md の 6-6）の
+    /// 呼び出し。引く名前は実行時の `call_builtin_member` と同じ（特殊メソッドと `count` / `index`・`str` / `bytes` の
+    /// `count` / `index` は種類ごとの表のまま）。表に無ければ `None`。
+    fn builtin_member_call(
+        &mut self,
+        recv_ty: &InferredType,
+        method: &str,
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
+        use crate::type_check::builtin_members::{self as bm, BuiltinKind, Member};
+        if !(method.starts_with("__") || matches!(method, "count" | "index")) {
+            return None;
+        }
+        let shape = bm::shape_of(recv_ty)?;
+        let member = bm::members_of(shape.kind).iter().copied().find(|m| m.name() == method)?;
+        if matches!(member, Member::Count | Member::Index) && matches!(shape.kind, BuiltinKind::Str | BuiltinKind::Bytes) {
+            return None;
+        }
+        let sigs = member.sigs(&shape);
+        Some(self.check_method_sigs(&recv_ty.to_string(), method, &sigs, true, arg_data).unwrap_or(InferredType::Unresolved))
     }
 
     /// protocol の型の値のメソッド呼び出し（`h.get()`・`h: Holder[int]`・pandas_import_plan.md の 6-5）。protocol の要求の

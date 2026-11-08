@@ -143,6 +143,11 @@ pub fn py_rbinop(_handle: &PyObjHandle, _op: &BinOp, _lhs: &Value) -> Result<Val
     Err(unavailable("a reflected binary operator on a Python object"))
 }
 
+/// 評価コアでは CPython の物を作れないので、呼ばれない（呼ばれても属性は無い）。
+pub fn py_has_static_attr(_handle: &PyObjHandle, _attr: &str) -> bool {
+    false
+}
+
 pub fn py_eq_bool(_a: &Value, _b: &Value) -> Result<bool, String> {
     Err(unavailable("comparing a Python object"))
 }

@@ -1,0 +1,27 @@
+# py_protocol_values.ar — CPython の物と protocol（pandas_import_plan.md の 6-6）
+#
+# `py_list` などは組み込みの表で、Python のクラスのインスタンスは型スタブのメソッドで、protocol と静的に照合する。
+# 実行時の型テスト（`x is HasLen`）は CPython 3.12 の `isinstance(x, Protocol)` と同じく、属性を静的に引く
+# （`inspect.getattr_static`）。利用者のコード（`__getattr__` など）は走らない。
+# ⚠ 以前は CPython の物の型テストがいつも偽だった。
+#
+# 期待される出力:
+#   2 4
+#   True True False
+#   ok
+
+import[py] test_modules.py_protocol_values as m
+
+protocol HasLen:
+    fn __len__(self) -> int:
+        ...
+
+fn size(mut x: HasLen) -> int:
+    return len(x)
+
+mut pl = [1, 2] => py_list[int]
+mut b = m.bag()
+print(size(pl), size(b))
+mut lz = m.lazy()
+print(pl is HasLen, b is HasLen, lz is HasLen)
+print("ok")

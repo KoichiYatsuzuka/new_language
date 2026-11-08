@@ -153,3 +153,33 @@ fn protocol_method_return_type_is_checked() {
     assert!(err(&format!("{src}fn f(h: Pr) -> str:\n    return h.get()\n")));
     assert!(err(&format!("{src}fn f(h: Pr) -> int:\n    return h.get(1)\n")));
 }
+
+const HAS_LEN: &str = concat!(
+    "protocol HasLen:\n",
+    "    fn __len__(self) -> int:\n",
+    "        ...\n",
+    "protocol Seq[T]:\n",
+    "    fn __getitem__(self, i: int) -> T:\n",
+    "        ...\n",
+);
+
+/// 組み込みの値も protocol を構造で満たす。要素の型も見る（6-6）。
+#[test]
+fn builtin_values_conform_structurally() {
+    assert!(ok(&format!("{HAS_LEN}let a: HasLen = [1]\nlet b: HasLen = \"s\"\nlet c: HasLen = {{1: 2}}\nlet d: HasLen = (1, 2)\n")));
+    assert!(ok(&format!("{HAS_LEN}let a: Seq[int] = [1]\nlet b: Seq[str] = \"s\"\nlet c: Seq[int] = (1, 2)\n")));
+    assert!(err(&format!("{HAS_LEN}let a: HasLen = 5\n")));
+    assert!(err(&format!("{HAS_LEN}let a: Seq[int] = {{1, 2}}\n")));
+    assert!(err(&format!("{HAS_LEN}let a: Seq[int] = [\"x\"]\n")));
+    // タプルの要素の型が混ざれば、要素の型はその和（`Seq[int]` ではない）
+    assert!(err(&format!("{HAS_LEN}let a: Seq[int] = (1, \"x\")\n")));
+}
+
+/// 組み込みの値の表のメンバーは直接も呼べ、型が付く（`[1].__len__()` は int・6-6）。
+#[test]
+fn builtin_member_direct_calls_are_typed() {
+    assert!(ok("let n: int = [1, 2].__len__()\nlet i: int = (5).__index__()\nlet c: int = [1, 2, 1].count(1)\n"));
+    assert!(err("let n: str = [1, 2].__len__()\n"));
+    assert!(err("let n = [1, 2].__len__(3)\n"));
+    assert!(err("let f = (2.5).__index__()\n"));
+}

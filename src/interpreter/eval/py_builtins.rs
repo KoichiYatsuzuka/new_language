@@ -410,7 +410,8 @@ impl Interpreter {
         Ok(result)
     }
 
-    /// `reversed(seq)`。list / tuple / str / dict（キー）・`__reversed__` を持つインスタンス。
+    /// `reversed(seq)`。list / tuple / str / bytes（1 バイトずつの int）/ dict（キー）・`__reversed__` を持つインスタンス。
+    /// ⚠ bytes は以前 `not reversible` だった（CPython は列として逆にできる・6-6 の表で見つけた）。
     /// ⚠ CPython と同じく、ジェネレータのような「長さの無い回すだけの値」は逆にできない（`TypeError`）。
     pub(crate) fn py_reversed(&mut self, args: Vec<Value>) -> Result<Value, String> {
         let [seq]: [Value; 1] = args
@@ -420,6 +421,7 @@ impl Interpreter {
             Value::List(l) => l.borrow().iter().rev().cloned().collect(),
             Value::Tuple(t) => t.all_values().iter().rev().cloned().collect(),
             Value::Str(s) => s.chars().rev().map(|c| Value::str(c.to_string())).collect(),
+            Value::Bytes(b) => b.iter().rev().map(|&x| Value::Int(x as i64)).collect(),
             Value::Dict(d) => d.borrow().all_keys().into_iter().rev().collect(),
             Value::FrozenList { .. } => self.drain_iterable(seq.clone())?.into_iter().rev().collect(),
             Value::Instance(inst) if inst.borrow().class.methods.contains_key("__reversed__") => {

@@ -323,6 +323,57 @@ impl Interpreter {
         ))
     }
 
+    /// 組み込みの値の種類（protocol の型テストが組み込みの表 `builtin_members` を引く・pandas_import_plan.md の 6-6）。
+    /// 組み込みの値でない物（インスタンス・関数・CPython の物など）は `None`。
+    ///
+    /// ⚠ `match` は網羅（`_` を書かない）。値の種類を足したら、ここで組み込みの値かを決めること（静的な側は
+    ///   `builtin_members::shape_of`）。
+    pub(crate) fn builtin_kind_of_value(val: &Value) -> Option<crate::type_check::builtin_members::BuiltinKind> {
+        use crate::type_check::builtin_members::BuiltinKind as K;
+        Some(match val {
+            Value::Int(_) | Value::UInt(_) => K::Int,
+            Value::Bool(_) => K::Bool,
+            Value::Float(_) => K::Float,
+            Value::Complex(..) => K::Complex,
+            Value::Str(_) => K::Str,
+            Value::Bytes(_) => K::Bytes,
+            Value::None => K::NoneValue,
+            Value::List(_) | Value::FrozenList { .. } => K::List,
+            Value::Tuple(_) => K::Tuple,
+            Value::Dict(_) => K::Dict,
+            Value::Set(_) => K::Set,
+            Value::FrozenSet(_) => K::FrozenSet,
+            Value::Generator(_) => K::Generator,
+            Value::Undefined
+            | Value::Code(_)
+            | Value::Meta(_)
+            | Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::Class(_)
+            | Value::Instance(_)
+            | Value::Type(_)
+            | Value::Trait(_)
+            | Value::Protocol(_)
+            | Value::TemplateFn(_)
+            | Value::TemplateClass(_)
+            | Value::GeneratorFn(_)
+            | Value::TemplateGenFn(_)
+            | Value::Namespace(_)
+            | Value::PyObject(_)
+            | Value::FileObject(_)
+            | Value::NativeFunction(_)
+            | Value::Ptr(_)
+            | Value::Slice(_)
+            | Value::AsyncManager(_)
+            | Value::AsyncStatusVal(_)
+            | Value::Signal(_)
+            | Value::EventLoop(_)
+            | Value::CsObject(_)
+            | Value::JsProcFn(_)
+            | Value::ResultVal { .. } => return None,
+        })
+    }
+
     /// 値が指定した型名に一致するかを判定する（`is` 型ガードのランタイム検査）。
     ///
     /// - プリミティブ型: `type_name` が `"int"`, `"float"` 等と一致するか確認する。
@@ -340,13 +391,25 @@ impl Interpreter {
         }
         // Protocol の実行時チェック: 必須メンバー名が全て存在するか確認する
         if let Some(required) = self.protocol_required_members.get(type_name) {
-            if let Value::Instance(inst_rc) = val {
-                let inst = inst_rc.borrow();
-                return required
-                    .iter()
-                    .all(|m| inst.class.field_index.contains_key(m.as_str()) || inst.class.methods.contains_key(m));
-            }
-            return false;
+            return match val {
+                Value::Instance(inst_rc) => {
+                    let inst = inst_rc.borrow();
+                    required
+                        .iter()
+                        .all(|m| inst.class.field_index.contains_key(m.as_str()) || inst.class.methods.contains_key(m))
+                }
+                // CPython の物は CPython 3.12 の `isinstance(x, Protocol)` と同じく、属性を静的に引く（6-6）
+                Value::PyObject(h) => {
+                    required.iter().all(|m| crate::interpreter::py_interop::py_has_static_attr(h, m))
+                }
+                // 組み込みの値は組み込みの表で見る（`[1, 2] is HasLen` は真・6-6）。⚠ 以前はいつも偽だった
+                _ => match Self::builtin_kind_of_value(val) {
+                    Some(kind) => {
+                        required.iter().all(|m| crate::type_check::builtin_members::has_member(kind, m))
+                    }
+                    None => false,
+                },
+            };
         }
         // ここへ来るのは**組み込みでない名前**だけ（クラス・trait・`FileObject` など）。
         match val {

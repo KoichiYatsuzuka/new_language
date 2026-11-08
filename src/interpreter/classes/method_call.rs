@@ -243,6 +243,10 @@ impl Interpreter {
             }
             other => other,
         };
+        // 組み込みの値の特殊メソッドと `count` / `index`（型検査と共有する表 `type_check::builtin_members`・6-6）
+        if let Some(result) = self.call_builtin_member(&obj, method_name, &evaled) {
+            return result;
+        }
         match &obj {
             Value::List(items) => {
                 match method_name {

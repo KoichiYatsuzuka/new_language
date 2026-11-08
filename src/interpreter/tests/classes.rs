@@ -924,3 +924,75 @@ fn copy_for_store_copies() {
     assert!(!same(&interp.copy_for_store(xs.clone()), &xs), "Arrow code copies on store");
     assert!(!same(&bind_mut(&mut interp, xs.clone()), &xs), "Arrow code copies on a mut declaration");
 }
+
+/// 組み込みの値の表（`type_check::builtin_members`）のメンバーは、どの種類の値でも実行時に呼べる（pandas_import_plan.md の 6-6）。
+/// 表は protocol の照合で「持つ」と言うので（`list[int]` は `__len__` を持つ）、実行時に無いメンバーを表に置かないための検査。
+/// ⚠ 以前は特殊メソッドのほとんどと `list` / `tuple` の `count` / `index` が実行時に無かった。
+#[test]
+fn builtin_member_table_is_dispatched() {
+    use crate::type_check::builtin_members::{members_of, BuiltinKind as K, Member as M};
+    // 種類を足したら、下の見本にも足すこと（網羅の `match` が止める）
+    fn sample_var(kind: K) -> &'static str {
+        match kind {
+            K::Int => "iv",
+            K::Bool => "bo",
+            K::Float => "fv",
+            K::Complex => "cv",
+            K::Str => "st",
+            K::Bytes => "by",
+            K::NoneValue => "nv",
+            K::List => "li",
+            K::Tuple => "tu",
+            K::Dict => "di",
+            K::Set => "se",
+            K::FrozenSet => "fz",
+            K::Generator => "ge",
+        }
+    }
+    let src = concat!(
+        "mut iv = 5\n",
+        "mut bo = True\n",
+        "mut fv = 2.5\n",
+        "mut cv = 1 + 2j\n",
+        "mut st = \"aba\"\n",
+        "mut by = bytes([97, 98, 97])\n",
+        "mut nv = None\n",
+        "mut li = [1, 2, 1]\n",
+        "mut tu = (1, 2, 1)\n",
+        "mut di = {1: 2}\n",
+        "mut se = {1, 2}\n",
+        "mut fz = frozenset([1, 2])\n",
+        "gen g() -> int:\n",
+        "    yield 1\n",
+        "mut ge = g()\n",
+    );
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
+    let kinds = [
+        K::Int, K::Bool, K::Float, K::Complex, K::Str, K::Bytes, K::NoneValue, K::List, K::Tuple, K::Dict, K::Set,
+        K::FrozenSet, K::Generator,
+    ];
+    for kind in kinds {
+        let recv = interp.get_val(sample_var(kind)).unwrap();
+        assert_eq!(Interpreter::builtin_kind_of_value(&recv), Some(kind), "sample of {kind:?}");
+        for member in members_of(kind) {
+            let arg = |v: Value| vec![(None, v, false)];
+            let key = || match kind {
+                K::Str => Value::str("a"),
+                K::Bytes => Value::Int(97),
+                _ => Value::Int(1),
+            };
+            let args = match member {
+                M::GetItem if kind == K::Dict => arg(Value::Int(1)),
+                M::GetItem => arg(Value::Int(0)),
+                M::Contains | M::Count | M::Index => arg(key()),
+                M::Get => arg(Value::Int(1)),
+                _ => Vec::new(),
+            };
+            let r = interp.eval_method_call_full(recv.clone(), member.name(), args, None);
+            assert!(r.is_ok(), "'{kind:?}.{}' is in the builtin member table but fails at run time: {r:?}", member.name());
+        }
+    }
+}

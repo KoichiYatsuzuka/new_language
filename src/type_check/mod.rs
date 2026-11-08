@@ -12,6 +12,7 @@ mod call_check;
 mod binop;
 mod decorator;
 pub(crate) mod names;
+pub(crate) mod builtin_members;
 pub mod annotations;
 pub mod builtins;
 

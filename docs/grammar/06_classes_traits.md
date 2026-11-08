@@ -249,6 +249,31 @@ class Circle:
 
 `Circle` は `draw`・`area`・`resize` をすべて持つため、`Drawable` と `Resizable` の両方に適合します。
 
+**組み込みの値も適合する**（pandas_import_plan.md の 6-6・`examples/classes/protocol_builtin_values.ar`・`_error`）。`list` /
+`tuple` / `str` / `bytes` / `dict` / `set` / ジェネレータ / `int` / `float` / `bool` / `complex` / `None` と `py_list` などは、
+CPython の組み込みの型と同じ特殊メソッドを持つとして照合する（表は `src/type_check/builtin_members.rs` の `members_of` の 1 つだけ）。
+
+| 種類 | 持つメンバー |
+|---|---|
+| `list` / `fixed_list` / `py_list` | `__iter__` `__len__` `__getitem__` `__contains__` `__reversed__` `count` `index` |
+| `tuple` | 上と同じ ＋ `__hash__` |
+| `str` / `bytes` | `tuple` と同じ（`bytes` は ＋ `__bytes__`・要素は `int`） |
+| `dict` / `py_dict` | `__iter__`（キー）`__len__` `__getitem__` `__contains__` `__reversed__` `keys` `values` `items` `get` |
+| `set` / `py_set` / `frozenset` | `__iter__` `__len__` `__contains__`（`frozenset` は ＋ `__hash__`） |
+| ジェネレータ | `__iter__` `__next__` |
+| `int` / `bool` | `__hash__` `__index__` `__int__` `__float__` `__abs__` `__round__` |
+| `float` | `__hash__` `__int__` `__float__` `__abs__` `__round__` |
+| `complex` / `None` | `__hash__` `__complex__` `__abs__` / `__hash__` |
+
+- 型スタブと同じく、`Sequence` / `Mapping` の抽象クラスが足すメソッド（`str` / `tuple` の `__reversed__` など）も持つとする
+  （CPython の `isinstance("ab", Sequence)` と同じ答え）。
+- 要素の型も見る: `list[int]` は `__getitem__(self, i: int) -> int` を持つので `Seq[int]` を満たし、`Seq[str]` は満たさない。
+- 表のメンバーは直接も呼べる（`[1, 2].__len__()` / `(5).__index__()` / `(1, 2, 1).count(1)`）。中身は組み込み関数・演算子と同じ
+  （`len` / `obj[k]` / `in` / `hash` …）。⚠ 以前は特殊メソッドのほとんどと `list` / `tuple` の `count` / `index` が実行時に無かった
+  （`[1, 2].count(1)` は型検査を通るのに `AttributeError`）。
+- 実行時の `x is P` も同じ表で見る。CPython の物は CPython 3.12 の `isinstance(x, Protocol)` と同じく属性を静的に引く
+  （`inspect.getattr_static`・`__getattr__` などは走らない・`examples/interop/py_protocol_values.ar`）。
+
 ---
 
 ### protocol 型変数への代入
@@ -339,7 +364,8 @@ if c is Drawable:
 ```
 
 **静的型チェック**: 条件分岐内で変数型を `Protocol(name)` に絞り込みます。  
-**実行時**: インスタンスが protocol の全必須メンバー名を持っているか確認します。
+**実行時**: 値が protocol の全必須メンバー名を持っているか確認します（インスタンスはクラスのメンバー、組み込みの値は上の表、
+CPython の物は `inspect.getattr_static`）。
 
 ---
 

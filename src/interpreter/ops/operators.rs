@@ -333,7 +333,7 @@ impl Interpreter {
 
     /// `in` / `not in` の右辺から**要素の並び**を取り出す。
     /// 要素を列挙できない容れ物（`str` / `dict` / 非コンテナ）は `None`。
-    fn membership_items(&self, container: &Value) -> Option<Vec<Value>> {
+    pub(crate) fn membership_items(&self, container: &Value) -> Option<Vec<Value>> {
         match container {
             Value::List(rc) | Value::Set(rc) => Some(rc.borrow().clone()),
             Value::FrozenSet(s) => Some(s.to_vec()),
