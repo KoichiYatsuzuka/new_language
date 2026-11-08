@@ -401,7 +401,7 @@ impl TypeChecker {
                 // プロトコルは型値としてスコープに登録する（インスタンス化試行を検出するため）
                 self.declare(
                     name.clone(),
-                    InferredType::TypeValOf(Box::new(InferredType::Protocol(name.clone()))),
+                    InferredType::TypeValOf(Box::new(InferredType::Protocol(name.clone(), Vec::new()))),
                     false,
                 );
                 // collect_fn_sigs で already registered in known_protocols
@@ -862,6 +862,12 @@ impl TypeChecker {
                 if self.report_unimported_module_type(name) {
                     return;
                 }
+                // 総称の protocol（`is Holder[int]`・6-5）は型引数を実行時に確かめられない（CPython の `isinstance` と
+                // 同じ）。素の名前（`is Holder`）は構造で確かめる。
+                if self.registry.is_protocol(&self.registry.resolve(name)) {
+                    self.report_error(StaticTypeError { kind: untestable(Some(name.as_str())), span: None });
+                    return;
+                }
                 let is_template = self
                     .registry
                     .template_params(name)
@@ -1090,7 +1096,7 @@ impl TypeChecker {
                     | T::NamedInstance(_)
                     | T::GenericInstance { .. }
                     | T::SelfType
-                    | T::Protocol(_)
+                    | T::Protocol(..)
                     | T::Union(_)
                     | T::Intersection(_)
                     | T::Result(_, _)
@@ -1214,7 +1220,7 @@ impl TypeChecker {
             return (None, None);
         };
         let guard_ty = if self.registry.is_protocol(type_name.as_str()) {
-            InferredType::Protocol(type_name.clone())
+            InferredType::Protocol(type_name.clone(), Vec::new())
         } else {
             Self::type_from_guard_name(&type_name)
         };

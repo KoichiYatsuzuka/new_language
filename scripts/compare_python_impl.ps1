@@ -269,6 +269,7 @@ $knownDiff = @{
     'py_value_kinds'                 ='Rust: Python から返る値の写し方（pandas_import_plan.md の 4-1・CPython のモジュールの値）。py: impl_python は import[py] を変換して実行する'
     'py_reflected_ops'               ='Rust: 右が CPython の物の演算子は CPython の手順・Arrow のリストの in は __eq__（known_bugs.md の #8）。py: impl_python は import[py] を変換して実行する'
     'py_reflected_ops_error'         ='Rust: CPython と同じ TypeError の文（known_bugs.md の #8）。py: impl_python は型の名前を unknown と書く'
+    'protocol_generic'               ='Rust: 総称の protocol（protocol Holder[T]・pandas_import_plan.md の 6-5）。py: impl_python は protocol の型引数を読めない'
     'py_ellipsis_value'              ='Rust: 値の ... は組み込みの Ellipsis（タスク 6-11 で新設・pe.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
     'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'
     'str_repr'                       ='Rust: 文字列の repr が CPython の unicode_repr と同じ（"it''s" / \n / \x00 の形・タスク 1-13 で新設）。py: コンテナの中の文字列を引用符なしで出す'

@@ -638,8 +638,9 @@ pub(crate) fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stm
             template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::ProtocolDef { name, body } => Stmt::ProtocolDef {
+        Stmt::ProtocolDef { name, template_params, body } => Stmt::ProtocolDef {
             name: name.clone(),
+            template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
         },
         Stmt::Field { src,

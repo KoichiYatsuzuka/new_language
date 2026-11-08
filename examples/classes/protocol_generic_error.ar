@@ -1,0 +1,34 @@
+# protocol_generic_error.ar — 総称の protocol の誤り（pandas_import_plan.md の 6-5）
+#
+# - 型引数を置き換えた要求と合わない型は満たさない（`Holder[int]` に `get() -> str` の型）
+# - 型引数の個数は宣言と同じでなければならない。素の名前も誤り（容器の要素型と同じく、何でもよいなら `Holder[Any]`）
+# - 型引数は実行時に確かめられないので、型テストに書けない（CPython の `isinstance` と同じ）
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   type 'StrBox' does not satisfy protocol 'Holder[int]': method `get` signature does not match protocol requirement
+#   parameter `h` of `show` is annotated 'Holder' but protocol 'Holder' takes 1 type argument(s); write 'Holder[...]' (e.g. 'Holder[Any]')
+#   variable `p` is annotated 'Holder[int,str]' but protocol 'Holder' takes 1 type argument(s), not 2
+#   type guard cannot test 'Holder[int]' at runtime (element types are not checked); write `is Holder`
+
+protocol Holder[T]:
+    fn get(self) -> T:
+        ...
+
+class StrBox:
+    mut v: str
+
+    fn __init__(mut self, let v: str) -> None:
+        self.v = v
+
+    fn get(self) -> str:
+        return self.v
+
+let a: Holder[int] = StrBox("x")
+
+fn show(h: Holder) -> None:
+    print(h)
+
+let p: Holder[int, str] = StrBox("y")
+
+let b = StrBox("z")
+print(b is Holder[int])

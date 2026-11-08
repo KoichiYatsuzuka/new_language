@@ -49,3 +49,4 @@ mod decorators_generics;
 mod generators;
 mod modules;
 mod py_collections;
+mod protocols;

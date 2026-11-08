@@ -93,6 +93,10 @@ pub struct TypeChecker {
     /// 「レジストリが不完全だから」止める、という理由で書いておかないと、
     /// 将来 import を解決する編集環境が出たときに誤って止め続ける。
     registry_incomplete: bool,
+    /// **照合中の（型, protocol）の組**（`satisfies_protocol` の再帰・pandas_import_plan.md の 6-5）。自分を参照する
+    /// protocol（`__getitem__ -> T | Nested[T]`）の照合は、照合中の組に戻ってきたら「満たす」と仮定して止める
+    /// （共帰納的な部分型の判定と同じ）。`&self` の述語から積むので `RefCell`。
+    protocol_assumptions: std::cell::RefCell<Vec<String>>,
     /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
     /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
     annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
@@ -296,6 +300,7 @@ impl TypeChecker {
             diags: Diagnostics::default(),
             annotations: annotations::AstAnnotations::default(),
             registry_incomplete: Self::has_unloaded_import(stmts),
+            protocol_assumptions: std::cell::RefCell::new(Vec::new()),
             annotated_modules: std::collections::HashSet::new(),
             annotated_instances: std::collections::HashSet::new(),
             module_member_cache: HashMap::new(),

@@ -96,7 +96,7 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         | InferredType::IteratorOf(_)
         | InferredType::Undefined
         | InferredType::SelfType
-        | InferredType::Protocol(_)
+        | InferredType::Protocol(..)
         | InferredType::Intersection(_)
         | InferredType::TypeVal
         | InferredType::TypeValOf(_)

@@ -284,7 +284,7 @@ impl TypeChecker {
                 | T::Any
                 | T::Never
                 | T::SelfType
-                | T::Protocol(_)
+                | T::Protocol(..)
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Result(_, _)
@@ -345,7 +345,7 @@ impl TypeChecker {
                     | T::NamedInstance(_)
                     | T::GenericInstance { .. }
                     | T::SelfType
-                    | T::Protocol(_)
+                    | T::Protocol(..)
                     | T::Intersection(_)
                     | T::Namespace(..)
                     | T::PyNamespace(..)

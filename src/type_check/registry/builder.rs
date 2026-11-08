@@ -295,16 +295,22 @@ impl TypeRegistryBuilder {
         self.reg
     }
 
-    /// `NamedInstance(name)` がプロトコル名であれば `Protocol(name)` に変換する。
+    /// `NamedInstance(name)` / `GenericInstance { name, .. }` がプロトコル名であれば `Protocol(name, 型引数)` に変換する
+    /// （総称の protocol・6-5）。
     /// 収集パス中は `known_protocols` が育っている途中なので、ここで参照するのは
     /// 「その時点までに登録済みのプロトコル」であることに注意（移設前の挙動と同一）。
     fn resolve_protocol_type(&self, ty: InferredType) -> InferredType {
-        if let InferredType::NamedInstance(ref name) = ty {
-            if self.reg.known_protocols.contains_key(name.as_str()) {
-                return InferredType::Protocol(name.clone());
+        match ty {
+            InferredType::NamedInstance(ref name) if self.reg.known_protocols.contains_key(name.as_str()) => {
+                InferredType::Protocol(name.clone(), Vec::new())
             }
+            InferredType::GenericInstance { ref name, ref args }
+                if self.reg.known_protocols.contains_key(name.as_str()) =>
+            {
+                InferredType::Protocol(name.clone(), args.clone())
+            }
+            _ => ty,
         }
-        ty
     }
 
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報を収集する。
@@ -494,7 +500,14 @@ impl TypeRegistryBuilder {
                     }
                     self.collect_trait(name, body);
                 }
-                Stmt::ProtocolDef { name, body } => {
+                Stmt::ProtocolDef { name, template_params, body } => {
+                    // 総称の protocol の型変数（6-5）。適合の照合で要求の `T` を型引数へ置き換える。
+                    if !template_params.is_empty() {
+                        self.reg.template_params.insert(
+                            name.clone(),
+                            template_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     self.collect_protocol(name, body);
                 }
                 Stmt::Match { arms, .. } => {

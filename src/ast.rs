@@ -1159,10 +1159,13 @@ pub enum Stmt {
     ///
     /// # フィールド
     /// - `name` : プロトコル名。
+    /// - `template_params` : 型引数（`protocol Box[T]:`・pandas_import_plan.md の 6-5）。総称でなければ空。
     /// - `body` : プロトコル本体（`Field` と抽象 `FnDef` のみ）。
     ProtocolDef {
         /// プロトコル名。
         name: String,
+        /// 型引数（`protocol Holder[T]:` の `T`・6-5）。制約（`T: Trait`）は書けない。
+        template_params: Vec<TemplateParam>,
         /// プロトコル本体（フィールド宣言と抽象メソッドシグネチャ）。
         body: Vec<Stmt>,
     },

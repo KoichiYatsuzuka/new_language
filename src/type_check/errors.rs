@@ -514,6 +514,14 @@ pub enum TypeErrorKind {
     /// パーサは import 先のテンプレートを知らないため
     /// `let b: Box[int]`（`Box` は別モジュール）まで**パースエラー**にしてしまった。
     /// ⇒ 判定をここへ移した。レジストリは import 本体も収集しているので正しく決まる。
+    /// 総称の protocol の型引数の個数が宣言と違う（素の名前 `Holder` も・pandas_import_plan.md の 6-5）。
+    ProtocolTypeArgCount {
+        name: String,
+        expected: usize,
+        got: usize,
+        ann: String,
+        what: String,
+    },
     TypeTakesNoTypeArgs {
         /// 型引数を付けられた名前（`str` など）。
         name: String,
@@ -1138,6 +1146,18 @@ impl StaticTypeError {
                 ),
                 None => format!("type guard cannot test {} at runtime", hl_q(type_name)),
             },
+            TypeErrorKind::ProtocolTypeArgCount { name, expected, got: 0, ann, what } => format!(
+                "{what} is annotated {} but protocol {} takes {expected} type argument(s); write {} (e.g. {})",
+                hl_q(ann),
+                hl_q(name),
+                hl_q(&format!("{name}[...]")),
+                hl_q(&format!("{name}[{}]", vec!["Any"; *expected].join(", ")))
+            ),
+            TypeErrorKind::ProtocolTypeArgCount { name, expected, got, ann, what } => format!(
+                "{what} is annotated {} but protocol {} takes {expected} type argument(s), not {got}",
+                hl_q(ann),
+                hl_q(name)
+            ),
             TypeErrorKind::TypeTakesNoTypeArgs { name, ann, what } => format!(
                 "{what} is annotated {} but {} does not take type arguments",
                 hl_q(ann), hl_q(name)

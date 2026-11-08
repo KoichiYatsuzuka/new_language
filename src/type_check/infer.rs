@@ -815,7 +815,7 @@ impl TypeChecker {
                 | T::NamedInstance(_)
                 | T::GenericInstance { .. }
                 | T::SelfType
-                | T::Protocol(_)
+                | T::Protocol(..)
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Namespace(..)
@@ -1053,6 +1053,13 @@ impl TypeChecker {
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
                 .map(|(_, ty)| Self::subst_type_params(ty, map))
+        });
+        // protocol の型の値のフィールド（`h.n`・`h: HasN[int]`）は、型引数で読んだ要求の型（6-5）。
+        let field = field.or_else(|| match self.resolve_protocols(&obj_ty) {
+            InferredType::Protocol(p, pargs) => {
+                self.protocol_members(&p, &pargs).and_then(|(fields, _)| fields.get(attr).map(|(_, t)| t.clone()))
+            }
+            _ => None,
         });
         // メソッドを**値として**読む形（束縛メソッド・タスク 1-11）。フィールドが先（同名なら実行時もフィールド）。
         let bound = if field.is_none() && !is_callee {
@@ -1648,7 +1655,7 @@ impl TypeChecker {
             return;
         }
         // 解決できない先（trait / protocol / 未知の名前）は判定しない。
-        if matches!(target_ty, T::Unresolved | T::Any | T::Protocol(_)) {
+        if matches!(target_ty, T::Unresolved | T::Any | T::Protocol(..)) {
             return;
         }
         if self.registry.is_known_trait(target_name) || self.registry.is_protocol(target_name) {
@@ -1770,7 +1777,7 @@ impl TypeChecker {
                 | T::NamedInstance(_)
                 | T::GenericInstance { .. }
                 | T::SelfType
-                | T::Protocol(_)
+                | T::Protocol(..)
                 | T::Union(_)
                 | T::Intersection(_)
                 | T::Result(_, _)

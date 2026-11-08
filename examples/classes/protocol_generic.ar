@@ -1,0 +1,109 @@
+# protocol_generic.ar — 総称の protocol（`protocol Holder[T]:`・pandas_import_plan.md の 6-5）
+#
+# protocol も型引数を取れる。適合は、型引数を置き換えた要求と構造で照合する（`Holder[int]` は `get(self) -> int` を
+# 持つ型）。メソッドの照合は部分型で、戻り値は要求より狭くてよく、引数は要求より広くてよい。
+# 自分を参照する protocol（`Node[T]` の `next() -> Option[Node[T]]`）も書ける。照合中の組に戻ってきたら満たすと
+# 仮定して止める。
+# ⚠ 以前は protocol が型引数を取れず、メソッドの型も完全に同じでなければならなかった。
+#
+# 期待される出力:
+#   3 x
+#   7
+#   5
+#   9
+#   6
+#   True True False
+#   ok
+
+protocol Holder[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox:
+    mut v: int
+
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+
+    fn get(self) -> int:
+        return self.v
+
+class StrBox:
+    mut v: str
+
+    fn __init__(mut self, let v: str) -> None:
+        self.v = v
+
+    fn get(self) -> str:
+        return self.v
+
+fn unwrap_int(h: Holder[int]) -> int:
+    return h.get()
+
+let a: Holder[int] = IntBox(3)
+let b: Holder[str] = StrBox("x")
+print(a.get(), b.get())
+print(unwrap_int(IntBox(7)))
+
+# 戻り値は要求より狭くてよい（`Option[int]` を返すことが要求されたところで `int` を返す）
+protocol MaybeInt:
+    fn value(self) -> Option[int]:
+        ...
+
+class Five:
+    fn value(self) -> int:
+        return 5
+
+let m: MaybeInt = Five()
+let mv = m.value()
+if mv is not None:
+    print(mv)
+
+# 引数は要求より広くてよい（`int` を渡すことが要求されたところで `Option[int]` を受ける）
+protocol Sink:
+    fn put(self, x: int) -> int:
+        ...
+
+class AnySink:
+    fn put(self, x: Option[int]) -> int:
+        if x is not None:
+            return x
+        return 0
+
+let s: Sink = AnySink()
+print(s.put(9))
+
+# 自分を参照する protocol
+protocol Node[T]:
+    fn value(self) -> T:
+        ...
+
+    fn next(self) -> Option[Node[T]]:
+        ...
+
+class Link:
+    mut v: int
+    mut nxt: Option[Link]
+
+    fn __init__(mut self, let v: int, let nxt: Option[Link]) -> None:
+        self.v = v
+        self.nxt = nxt
+
+    fn value(self) -> int:
+        return self.v
+
+    fn next(self) -> Option[Link]:
+        return self.nxt
+
+fn total(n: Node[int]) -> int:
+    let rest = n.next()
+    if rest is not None:
+        return n.value() + total(rest)
+    return n.value()
+
+print(total(Link(1, Link(2, Link(3, None)))))
+
+# 実行時の型テストは素の名前で、メンバーの有無を見る（型引数は確かめられない・`is Holder[int]` は静的な誤り）
+let n = 5
+print(a is Holder, b is Holder, n is Holder)
+print("ok")

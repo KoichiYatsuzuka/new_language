@@ -108,6 +108,11 @@ impl TypeChecker {
                 Some((c.clone(), map))
             }
             InferredType::GenericInstance { name, args } => {
+                // 総称の protocol（`Holder[int]`・6-5）はクラスではない。protocol の名前と型引数の表を返す（メンバーの有無は
+                // `member_exists` が protocol の表で見る）。
+                if self.registry.is_protocol(name) {
+                    return Some((name.clone(), self.protocol_subst(name, args).unwrap_or_default()));
+                }
                 // ⚠⚠ **展開器が単相化したクラスがあれば、それを普通のクラスとして引く**
                 //   （タスク 2-8 段階 2）。置換は済んでいるので置換表は空。
                 //   ⇒ メンバーの型・メソッドの引数と戻り値が具体型で入っている。
@@ -167,17 +172,26 @@ impl TypeChecker {
             T::NamedInstance(n) => {
                 let r = self.registry.resolve(n);
                 if self.registry.is_protocol(&r) {
-                    T::Protocol(r.into_owned())
+                    T::Protocol(r.into_owned(), Vec::new())
                 } else {
                     T::NamedInstance(r.into_owned())
                 }
             }
-            T::Protocol(n) => T::Protocol(self.registry.resolve(n).into_owned()),
+            T::Protocol(n, args) => T::Protocol(
+                self.registry.resolve(n).into_owned(),
+                args.iter().map(|a| self.resolve_protocols(a)).collect(),
+            ),
             T::TypeValOf(t) => T::TypeValOf(rec(t)),
-            T::GenericInstance { name, args } => T::GenericInstance {
-                name: self.registry.resolve(name).into_owned(),
-                args: args.iter().map(|a| self.resolve_protocols(a)).collect(),
-            },
+            // 総称の protocol（`Holder[int]`・6-5）は `from_ann` がテンプレートの具体化と同じ形で読むので、ここで寄せる。
+            T::GenericInstance { name, args } => {
+                let name = self.registry.resolve(name).into_owned();
+                let args = args.iter().map(|a| self.resolve_protocols(a)).collect();
+                if self.registry.is_protocol(&name) {
+                    T::Protocol(name, args)
+                } else {
+                    T::GenericInstance { name, args }
+                }
+            }
             T::ListOf(t) => T::ListOf(rec(t)),
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
@@ -205,7 +219,10 @@ impl TypeChecker {
         let rec = |t: &T| Box::new(self.canon_type(t));
         match ty {
             T::NamedInstance(n) => T::NamedInstance(self.registry.resolve(n).into_owned()),
-            T::Protocol(n) => T::Protocol(self.registry.resolve(n).into_owned()),
+            T::Protocol(n, args) => T::Protocol(
+                self.registry.resolve(n).into_owned(),
+                args.iter().map(|a| self.canon_type(a)).collect(),
+            ),
             T::GenericInstance { name, args } => T::GenericInstance {
                 name: self.registry.resolve(name).into_owned(),
                 args: args.iter().map(|a| self.canon_type(a)).collect(),
@@ -271,8 +288,8 @@ impl TypeChecker {
         //    自分自身に不適合という嘘のエラーになる（自動生成 `__init__` の
         //    `self.p = p` で実際に出た）。
         let got = self.resolve_protocols(got);
-        if let InferredType::Protocol(proto) = &expected {
-            self.check_protocol_conformance(&got, proto, None, context);
+        if let InferredType::Protocol(proto, args) = &expected {
+            self.check_protocol_conformance(&got, proto, args, None, context);
             return true;
         }
         // ⚠ 判定本体は `types_compatible` に一本化してある（タスク 3.3）。
@@ -438,8 +455,8 @@ impl TypeChecker {
         // ⚠ 逆に `let xs: list[HasN] = [Dog(2)]` は `resolve_protocols` を通らない経路で
         //    `HasN` が `NamedInstance` のまま**名前**比較され、**構造的に満たしているのに
         //    弾かれていた**（偽陽性）。経路によって 2 通りに壊れていた。
-        if let InferredType::Protocol(proto_name) = expected {
-            return self.satisfies_protocol(arg_ty, proto_name.as_str());
+        if let InferredType::Protocol(proto_name, args) = expected {
+            return self.satisfies_protocol(arg_ty, proto_name.as_str(), args);
         }
         if *expected == InferredType::TypeVal {
             return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);

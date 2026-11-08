@@ -175,7 +175,7 @@ impl Interpreter {
                 ..
             } => self.exec_gen_def(name, template_params, params, body),
             Stmt::TraitDef { name, body, .. } => self.exec_trait_def(name, body),
-            Stmt::ProtocolDef { name, body } => self.exec_protocol_def(name, body),
+            Stmt::ProtocolDef { name, body, .. } => self.exec_protocol_def(name, body),
             Stmt::NewTypeDef { name, original } => self.exec_new_type_def(name, original),
             Stmt::EnumDef { src: _, name, variants } => self.exec_enum_def(name, variants),
             // ⚠ `base_args`（基底 trait の具体型引数・タスク 9.9）は**静的検査専用**。

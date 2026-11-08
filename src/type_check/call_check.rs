@@ -41,9 +41,15 @@ impl TypeChecker {
         // double-evaluating the object and duplicating error reports.
         // 組み込みコレクションのレシーバ（型・メソッド名・位置）。`arg_data` が揃ってから使う。
         let mut builtin_recv: Option<(InferredType, String, crate::token::Span)> = None;
+        // 受け手の型が protocol（`h: Holder[int]`）なら、その名前と型引数。メソッドの引数と戻り値は protocol の要求の
+        // シグネチャで検査する（pandas_import_plan.md の 6-5・`check_protocol_method_call`）。
+        let mut protocol_recv: Option<(String, Vec<InferredType>)> = None;
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span, .. } = func {
                 let obj_ty = self.infer(object);
+                if let InferredType::Protocol(p, pargs) = self.resolve_protocols(&obj_ty) {
+                    protocol_recv = Some((p, pargs));
+                }
                 self.check_mutating_method_receiver(object, attr, &obj_ty, span);
                 // ⚠ 組み込みコレクションメソッドの引数型は `arg_data` が揃ってから検査する
                 //    （タスク 5.2c・検体 `L14`）。レシーバの型をここで控えておく。
@@ -79,6 +85,8 @@ impl TypeChecker {
                 };
                 let is_instance = matches!(obj_ty, InferredType::NamedInstance(_)) || instance_cls.is_some();
                 let cls_name_opt: Option<String> = match &obj_ty {
+                    // protocol の型の値（6-5）は protocol の名前でメンバーの有無を見る（`member_exists`）
+                    _ if protocol_recv.is_some() => protocol_recv.as_ref().map(|(p, _)| p.clone()),
                     InferredType::GenericInstance { .. } => instance_cls.clone(),
                     InferredType::NamedInstance(cls) => Some(cls.clone()),
                     InferredType::TypeValOf(inner) => match inner.as_ref() {
@@ -461,6 +469,9 @@ impl TypeChecker {
         }
         }
 
+        if let (Some((_, ref method_name)), Some((pname, pargs))) = (&method_call_info, &protocol_recv) {
+            return self.check_protocol_method_call(pname, pargs, method_name, args, &arg_data);
+        }
         if let Some((ref cls_name, ref method_name)) = method_call_info {
             // クラス変数に入ったクラスを呼ぶ形（`Outer.Inner()` / `self.Inner()`・フェーズ10 10-18）。
             // 実行時もメソッドが無いときだけクラス変数のクラスを呼ぶ（`Interpreter::class_var_class`）。
@@ -537,7 +548,7 @@ impl TypeChecker {
                     },
                     span: None,
                 });
-                return InferredType::Protocol(fname.clone());
+                return InferredType::Protocol(fname.clone(), Vec::new());
             }
             if self.registry.is_known_class(fname.as_str()) {
                 // ── コンストラクタ引数の検査（0-5）─────────────────────────
@@ -616,6 +627,55 @@ impl TypeChecker {
             .cloned()?;
         // Static methods have no implicit receiver; instance/class methods add +1 for self/cls
         let is_static = self.registry.is_static_method(cls_name, method_name);
+        self.check_method_sigs(cls_name, method_name, &sigs, is_static, arg_data)
+    }
+
+    /// protocol の型の値のメソッド呼び出し（`h.get()`・`h: Holder[int]`・pandas_import_plan.md の 6-5）。protocol の要求の
+    /// シグネチャ（型引数で読んだもの）で引数を検査し、戻り値の型を返す。
+    /// ⚠ 以前は protocol の名前をクラスの名前として引き、クラスのメソッドの表に無いので戻り値が `Unresolved` だった
+    ///   （型引数の無い protocol でも `fn f(h: Pr) -> str: return h.get()` が通った）。
+    fn check_protocol_method_call(
+        &mut self,
+        proto_name: &str,
+        args: &[InferredType],
+        method_name: &str,
+        call_args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> InferredType {
+        let Some((fields, methods)) = self.protocol_members(proto_name, args) else {
+            return InferredType::Unresolved;
+        };
+        if let Some(sigs) = methods.get(method_name) {
+            // 要求のシグネチャは `self` を含まない（静的メソッドと同じ数え方）
+            return self.check_method_sigs(proto_name, method_name, sigs, true, arg_data).unwrap_or(InferredType::Unresolved);
+        }
+        // 関数を入れたフィールドを呼ぶ形（`h.f(x)`）
+        match fields.get(method_name).map(|(_, t)| t.clone()) {
+            Some(InferredType::Function { params, return_type, .. }) => {
+                if let Some(fn_params) = params {
+                    self.check_fn_type_call(&format!("{proto_name}.{method_name}"), call_args, arg_data, &fn_params);
+                }
+                *return_type
+            }
+            // 呼べない値を入れたフィールド・型の分からないフィールド
+            Some(ty) => {
+                self.check_callable(&ty);
+                InferredType::Unresolved
+            }
+            None => InferredType::Unresolved,
+        }
+    }
+
+    /// メソッドの呼び出しの引数を、シグネチャ（オーバーロードの並び）で検査して戻り値の型を返す
+    /// （[`Self::check_self_type_params`] と protocol の受け手の共通の本体）。`is_static` は `self` を数えないか。
+    pub(super) fn check_method_sigs(
+        &mut self,
+        cls_name: &str,
+        method_name: &str,
+        sigs: &[FnSig],
+        is_static: bool,
+        arg_data: &[(Option<String>, InferredType)],
+    ) -> Option<InferredType> {
         // 可変長引数エントリを除いた通常引数のみでカウント
         let normal_args: Vec<_> = arg_data
             .iter()
@@ -994,9 +1054,9 @@ impl TypeChecker {
                     t
                 }
             };
-            if let Some(InferredType::Protocol(proto_name)) = param_ty_opt {
+            if let Some(InferredType::Protocol(proto_name, proto_args)) = param_ty_opt {
                 let context = format!("argument to `{fname}`");
-                self.check_protocol_conformance(arg_ty, &proto_name, None, &context);
+                self.check_protocol_conformance(arg_ty, &proto_name, &proto_args, None, &context);
             }
         }
     }
@@ -1017,6 +1077,13 @@ impl TypeChecker {
                 name: name.clone(),
                 args: args.iter().map(|a| Self::subst_type_params(a, map)).collect(),
             },
+            // 総称の protocol の型引数（`Holder[T]` の要求を `Holder[int]` で読む・6-5）
+            T::Protocol(name, args) => {
+                T::Protocol(name.clone(), args.iter().map(|a| Self::subst_type_params(a, map)).collect())
+            }
+            T::PyList(t) => T::PyList(rec(t)),
+            T::PySet(t) => T::PySet(rec(t)),
+            T::PyDict(k, v) => T::PyDict(rec(k), rec(v)),
             T::ListOf(t) => T::ListOf(rec(t)),
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),

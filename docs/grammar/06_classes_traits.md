@@ -207,9 +207,9 @@ protocol Resizable:
         ...
 ```
 
-`Stmt::ProtocolDef { name, body }`
+`Stmt::ProtocolDef { name, template_params, body }`
 
-**パース**: `'protocol' ident ':' class_body`
+**パース**: `'protocol' ident ['[' type_params ']'] ':' class_body`（型引数は「総称の protocol」の節）
 
 **制限**:
 - `protocol` はインスタンス化できません（静的型エラー `ProtocolInstantiation`）
@@ -224,6 +224,11 @@ protocol Resizable:
 クラスが protocol のすべてのメンバー（メソッド・フィールド）を持っている場合、  
 そのクラスは自動的に protocol に適合しているとみなされます。  
 明示的な継承宣言は不要です。
+
+メソッドは**部分型**で照合します（pandas_import_plan.md の 6-5）。戻り値は要求より狭くてよく（`-> Option[int]` の要求を
+`-> int` のメソッドで満たせる）、引数は要求より広くてよい（`x: int` の要求を `x: Option[int]` のメソッドで満たせる）。
+引数の名前と数は同じでなければならない。フィールドは読みも書きもできるので、型が同じでなければならない。
+⚠ 以前はメソッドの型も完全に同じでなければならなかった。
 
 ```ar
 class Circle:
@@ -290,6 +295,37 @@ make_bigger(c)   # OK: Circle は Resizable に適合
 ```
 
 **注意**: 呼び出し先でインスタンスを変更したい場合は `mut shape: ProtocolName` と宣言します。
+
+protocol の型の値のメソッドを呼ぶと、要求のシグネチャで引数と戻り値の型を検査する（`shape.area()` は `float`）。
+⚠ 以前は戻り値の型が付かず（`Unresolved`）、`fn f(s: Drawable) -> str: return s.area()` が通っていた（6-5 で直した）。
+
+---
+
+### 総称の protocol
+
+protocol も型引数を取れる（`protocol Holder[T]:`・pandas_import_plan.md の 6-5・`examples/classes/protocol_generic.ar`・`_error`）。
+`Holder[int]` は、要求の `T` を `int` に置き換えたメンバーを持つ型（`get(self) -> int` を持つクラス）が満たす。
+
+```ar
+protocol Holder[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox:
+    fn get(self) -> int:
+        return 1
+
+let a: Holder[int] = IntBox()     # OK
+let b: Holder[str] = IntBox()     # StaticTypeError: ... does not satisfy protocol 'Holder[str]': method `get` signature does not match ...
+```
+
+- 型引数の個数は宣言と同じでなければならない。注釈に素の名前（`fn f(h: Holder)`）は書けない（容器の要素型と同じく、
+  何でもよいなら `Holder[Any]`）。
+- 自分を参照する protocol（`protocol Node[T]: fn next(self) -> Option[Node[T]]`）も書ける。照合中の組に戻ってきたら
+  満たすと仮定して止める。
+- 型引数に制約（`protocol P[T: Trait]`）は書けない（`ParseError`・照合で使わないので、黙って捨てない）。
+- 型テストは素の名前だけ（`x is Holder`・メンバーの有無を見る）。`x is Holder[int]` は静的な誤り（型引数は実行時に確かめられない・
+  CPython の `isinstance` と同じ）。
 
 ---
 

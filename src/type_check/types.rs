@@ -297,9 +297,10 @@ pub enum InferredType {
         /// 具体化された型引数（宣言順）。
         args: Vec<InferredType>,
     },
-    /// プロトコル型。内部文字列はプロトコル名。静的型検査のみで使用。
-    /// 変数がこの型の場合、代入時にプロトコル適合チェックが行われる。
-    Protocol(String),
+    /// プロトコル型。1 つ目はプロトコル名、2 つ目は型引数（`Holder[int]` の `int`・総称でなければ空・
+    /// pandas_import_plan.md の 6-5）。静的型検査のみで使用。
+    /// 変数がこの型の場合、代入時にプロトコル適合チェックが行われる（型引数を置き換えた要求と構造で照合する）。
+    Protocol(String, Vec<InferredType>),
     /// 動的型エスケープ `Any`。演算子の型検査を抑制するため明示的なダウンキャストが必要。
     Any,
     /// `Union[T1, T2, ...]` 型。`Option[T]` は `Union[T, None]` の糖衣構文。
@@ -400,7 +401,7 @@ impl InferredType {
     pub fn for_each_type(&self, f: &mut dyn FnMut(&InferredType)) {
         f(self);
         match self {
-            Self::GenericInstance { args, .. } => {
+            Self::GenericInstance { args, .. } | Self::Protocol(_, args) => {
                 for a in args {
                     a.for_each_type(f);
                 }
@@ -446,7 +447,7 @@ impl InferredType {
     /// 型の中に現れる**クラス名らしき名前**をすべて集める（タスク 8.5）。
     pub fn collect_type_names(&self, out: &mut Vec<String>) {
         self.for_each_type(&mut |t| match t {
-            Self::NamedInstance(n) | Self::Protocol(n) => out.push(n.clone()),
+            Self::NamedInstance(n) | Self::Protocol(n, _) => out.push(n.clone()),
             Self::GenericInstance { name, .. } => out.push(name.clone()),
             _ => {}
         });
@@ -981,7 +982,11 @@ impl std::fmt::Display for InferredType {
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
-            Self::Protocol(name) => write!(f, "protocol {name}"),
+            Self::Protocol(name, args) if args.is_empty() => write!(f, "protocol {name}"),
+            Self::Protocol(name, args) => {
+                let parts: Vec<String> = args.iter().map(|t| t.to_string()).collect();
+                write!(f, "protocol {name}[{}]", parts.join(", "))
+            }
             Self::Any => write!(f, "Any"),
             Self::Union(types) => {
                 if types.len() == 2 && types[1] == Self::None {

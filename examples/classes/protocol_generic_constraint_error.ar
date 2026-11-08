@@ -1,0 +1,14 @@
+# protocol_generic_constraint_error.ar — protocol の型引数に制約は書けない（pandas_import_plan.md の 6-5）
+#
+# 適合の照合は型引数を置き換えた要求と構造で見るだけで、制約（`T: Trait`）を使わない。書いても効かないので誤りにする。
+#
+# 期待されるエラー（構文解析）:
+#   ParseError: the type parameter `T` of protocol `Holder` cannot have a constraint
+
+trait Named:
+    fn name(self) -> str:
+        ...
+
+protocol Holder[T: Named]:
+    fn get(self) -> T:
+        ...

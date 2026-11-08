@@ -878,6 +878,15 @@ impl Parser {
         self.advance(); // `protocol` を消費
         let name = self.expect_ident()?;
         let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Protocol);
+        // 型引数（`protocol Holder[T]:`・pandas_import_plan.md の 6-5）。適合は型引数を置き換えて構造で見る。
+        // ⚠ 制約（`T: Trait`）は適合の照合で使わないので書けない（黙って捨てない）。
+        let template_params = self.parse_template_params()?;
+        if let Some(p) = template_params.iter().find(|p| !p.constraints.is_empty()) {
+            return Err(format!(
+                "ParseError: the type parameter `{}` of protocol `{name}` cannot have a constraint",
+                p.name
+            ));
+        }
         // プロトコルは継承不可
         if *self.current() == Token::LParen {
             return Err(format!(
@@ -898,7 +907,7 @@ impl Parser {
         self.class_or_trait_depth -= 1;
         // プロトコル名を登録してインスタンス化エラー検出に使用
         self.known_protocols.insert(name.clone());
-        Ok(Stmt::ProtocolDef { name, body })
+        Ok(Stmt::ProtocolDef { name, template_params, body })
     }
 
     /// プロトコル本体をパースする。

@@ -7,178 +7,61 @@ use {
     crate::type_check::TypeChecker,
 };
 
+/// protocol の要求を満たさない理由 1 つ（[`TypeChecker::check_protocol_conformance`] の報告と
+/// [`TypeChecker::satisfies_protocol`] の判定が共有する・pandas_import_plan.md の 6-5）。
+pub(crate) struct ProtocolMiss {
+    /// 誤りに出す型の名前（クラスならクラスの名前）。`None` は照合の文脈（`argument to `f`` など）。
+    type_name: Option<String>,
+    reason: String,
+}
+
+/// 照合の相手が持つメンバー（[`TypeChecker::conformer_of`]）。
+enum Conformer {
+    /// フィールドとメソッド。`owner` は誤りに出す型の名前（クラスの名前・protocol なら `None`）。
+    Members {
+        owner: Option<String>,
+        fields: std::collections::HashMap<String, (crate::ast::FieldKind, InferredType)>,
+        methods: std::collections::HashMap<String, Vec<FnSig>>,
+    },
+    /// 判定材料が無い（`Any` / `Unresolved` / 単相化されないテンプレートの具体化など）。満たすとみなす。
+    Opaque,
+    /// 照合できない種類の型（理由）。
+    Mismatch(String),
+}
+
 impl TypeChecker {
-    /// 型 `ty` がプロトコル `proto_name` を満たすか検査する。
+    /// 型 `ty` がプロトコル `proto_name`（型引数 `args`・総称でなければ空）を満たすか検査する。
     /// 満たさない場合は StaticTypeError を記録する。
     pub(crate) fn check_protocol_conformance(
         &mut self,
         ty: &InferredType,
         proto_name: &str,
+        args: &[InferredType],
         span: Option<Span>,
         context: &str,
     ) {
-        let proto = match self.registry.protocol(proto_name).cloned() {
-            Some(p) => p,
-            None => return, // 未知のプロトコルは無視
+        let Some(misses) = self.protocol_misses(ty, proto_name, args) else {
+            return;
         };
-
-        let class_name = match ty {
-            InferredType::NamedInstance(cls) => cls.clone(),
-            // ⚠⚠ **テンプレートの具体化（`Box[int]`）も普通のクラスとして適合を見る**
-            //   （タスク 2-14）。以前は下の `_` に落ち、適合しているのに「クラスのインスタンスではない」
-            //   と**誤って弾いていた**（`let s: Sized = Box[int](1)`・実測）。単相化した具体クラスが
-            //   あればそれを使う。無ければ（単相化されない具体化）判定材料が無いので見送る。
-            InferredType::GenericInstance { .. } => {
-                match self.registry.instance_class(&ty.to_string()) {
-                    Some(cls) => cls.clone(),
-                    None => return,
-                }
-            }
-            InferredType::Any => return, // Any は全プロトコルを満たす
-            InferredType::Protocol(p) => {
-                // 別プロトコル型 — そのプロトコルがすべての要件を満たすか確認
-                let other_proto = match self.registry.protocol(p.as_str()).cloned() {
-                    Some(op) => op,
-                    None => return,
-                };
-                // フィールドチェック
-                for req_field in &proto.fields {
-                    let found = other_proto.fields.iter().find(|f| f.name == req_field.name);
-                    if let Some(f) = found {
-                        if f.kind != req_field.kind || f.ty != req_field.ty {
-                            let reason = format!(
-                                "field `{}` has kind/type `{:?}:{:?}` but protocol requires `{:?}:{:?}`",
-                                req_field.name, f.kind, f.ty, req_field.kind, req_field.ty
-                            );
-                            self.report_error(StaticTypeError {
-                                kind: TypeErrorKind::ProtocolConformanceFailed {
-                                    type_name: context.to_string(),
-                                    protocol_name: proto_name.to_string(),
-                                    reason,
-                                },
-                                span: span.clone(),
-                            });
-                        }
-                    } else {
-                        let reason = format!("missing field `{}`", req_field.name);
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::ProtocolConformanceFailed {
-                                type_name: context.to_string(),
-                                protocol_name: proto_name.to_string(),
-                                reason,
-                            },
-                            span: span.clone(),
-                        });
-                    }
-                }
-                return;
-            }
-            _ => {
-                let reason = format!("expected a class instance, got `{ty}`");
-                self.report_error(StaticTypeError {
-                    kind: TypeErrorKind::ProtocolConformanceFailed {
-                        type_name: context.to_string(),
-                        protocol_name: proto_name.to_string(),
-                        reason,
-                    },
-                    span,
-                });
-                return;
-            }
+        let protocol_name = if args.is_empty() {
+            proto_name.to_string()
+        } else {
+            let parts: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            format!("{proto_name}[{}]", parts.join(", "))
         };
-
-        // クラスのフィールド詳細とメソッドシグネチャを取得（クラス継承チェーンを含む）
-        let field_details = self.collect_class_field_details(&class_name);
-        let method_sigs = self.collect_class_method_sigs(&class_name);
-
-        // フィールド適合チェック
-        for req_field in &proto.fields {
-            match field_details.get(&req_field.name) {
-                None => {
-                    let reason = format!(
-                        "missing field `{}` (expected {:?}: {})",
-                        req_field.name, req_field.kind, req_field.ty
-                    );
-                    self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::ProtocolConformanceFailed {
-                            type_name: class_name.clone(),
-                            protocol_name: proto_name.to_string(),
-                            reason,
-                        },
-                        span: span.clone(),
-                    });
-                }
-                Some((actual_kind, actual_ty)) => {
-                    if *actual_kind != req_field.kind {
-                        let reason = format!(
-                            "field `{}` is `{:?}` but protocol requires `{:?}`",
-                            req_field.name, actual_kind, req_field.kind
-                        );
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::ProtocolConformanceFailed {
-                                type_name: class_name.clone(),
-                                protocol_name: proto_name.to_string(),
-                                reason,
-                            },
-                            span: span.clone(),
-                        });
-                    } else if *actual_ty != req_field.ty && req_field.ty != InferredType::Unresolved {
-                        let reason = format!(
-                            "field `{}` has type `{}` but protocol requires `{}`",
-                            req_field.name, actual_ty, req_field.ty
-                        );
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::ProtocolConformanceFailed {
-                                type_name: class_name.clone(),
-                                protocol_name: proto_name.to_string(),
-                                reason,
-                            },
-                            span: span.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // メソッド適合チェック
-        for req_method in &proto.methods {
-            match method_sigs.get(&req_method.name) {
-                None => {
-                    let reason = format!("missing method `{}`", req_method.name);
-                    self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::ProtocolConformanceFailed {
-                            type_name: class_name.clone(),
-                            protocol_name: proto_name.to_string(),
-                            reason,
-                        },
-                        span: span.clone(),
-                    });
-                }
-                Some(sigs) => {
-                    // sigs はオーバーロードリスト; 少なくとも1つがシグネチャ一致であればOK
-                    let matches_any = sigs.iter().any(|sig| {
-                        Self::method_sig_matches_protocol(sig, req_method)
-                    });
-                    if !matches_any {
-                        let reason = format!(
-                            "method `{}` signature does not match protocol requirement",
-                            req_method.name
-                        );
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::ProtocolConformanceFailed {
-                                type_name: class_name.clone(),
-                                protocol_name: proto_name.to_string(),
-                                reason,
-                            },
-                            span: span.clone(),
-                        });
-                    }
-                }
-            }
+        for m in misses {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ProtocolConformanceFailed {
+                    type_name: m.type_name.unwrap_or_else(|| context.to_string()),
+                    protocol_name: protocol_name.clone(),
+                    reason: m.reason,
+                },
+                span: span.clone(),
+            });
         }
     }
 
-    /// `ty` が protocol `proto_name` を**構造的に満たすか**（純粋な判定・タスク 1.3）。
+    /// `ty` が protocol `proto_name`（型引数 `args`）を**構造的に満たすか**（純粋な判定・タスク 1.3）。
     ///
     /// ⚠⚠ **`type_matches_exact` から呼ぶための述語版。** あちらは `&self` なので
     /// 診断を出す [`Self::check_protocol_conformance`]（`&mut self`）を呼べない。
@@ -190,47 +73,163 @@ impl TypeChecker {
     /// - 一方 `let xs: list[HasN] = [Dog(2)]` は `Pr` が `NamedInstance` のまま**名前**で
     ///   比較されるので、**構造的に満たしているのに弾かれていた**（偽陽性）
     ///
-    /// ⚠ 判定規則は `check_protocol_conformance` と**同じに保つこと**。あちらは失敗理由を
-    /// 個別に報告するため一本化できていない。フェーズ 3.3（3 分類の単一定義）で畳む。
-    pub(crate) fn satisfies_protocol(&self, ty: &InferredType, proto_name: &str) -> bool {
-        let Some(proto) = self.registry.protocol(proto_name) else {
-            return true; // 未知のプロトコルは無視（報告側と同じ）
-        };
-        let class_name = match ty {
-            InferredType::Any => return true, // Any は全プロトコルを満たす
-            InferredType::NamedInstance(cls) => cls.clone(),
-            InferredType::Protocol(p) => {
-                // 別プロトコル型 — 要求フィールドを同じ種別・同じ型で持つか
-                let Some(other) = self.registry.protocol(p.as_str()) else {
-                    return true;
-                };
-                return proto.fields.iter().all(|req| {
-                    other
-                        .fields
-                        .iter()
-                        .any(|f| f.name == req.name && f.kind == req.kind && f.ty == req.ty)
-                });
-            }
-            // クラスインスタンス以外は満たさない（報告側と同じ）
-            _ => return false,
-        };
-        let field_details = self.collect_class_field_details(&class_name);
-        let method_sigs = self.collect_class_method_sigs(&class_name);
-        let fields_ok = proto.fields.iter().all(|req| match field_details.get(&req.name) {
-            None => false,
-            Some((actual_kind, actual_ty)) => {
-                *actual_kind == req.kind
-                    && (*actual_ty == req.ty || req.ty == InferredType::Unresolved)
-            }
-        });
-        if !fields_ok {
-            return false;
+    /// ⚠ 判定は [`Self::protocol_misses`] の 1 つだけ（報告する版と同じ規則・6-5 で畳んだ）。
+    pub(crate) fn satisfies_protocol(&self, ty: &InferredType, proto_name: &str, args: &[InferredType]) -> bool {
+        self.protocol_misses(ty, proto_name, args).is_none_or(|m| m.is_empty())
+    }
+
+    /// `ty` が protocol を満たさない理由の一覧（満たせば空）。`None` は判定材料が無い（未知の protocol・型引数の個数が
+    /// 宣言と合わない）＝満たすとみなす（個数の誤りは注釈の検査 `check_ann_protocol_args` が報告する）。
+    ///
+    /// ⚠ 自分を参照する protocol（numpy の `_NestedSequence[T]` の `__getitem__ -> T | _NestedSequence[T]`）は、照合中の組に
+    ///   戻ってきたら満たすと仮定して止める（共帰納的な判定・[`TypeChecker::protocol_assumptions`]）。
+    fn protocol_misses(&self, ty: &InferredType, proto_name: &str, args: &[InferredType]) -> Option<Vec<ProtocolMiss>> {
+        let proto = self.registry.protocol(proto_name)?.clone();
+        let subst = self.protocol_subst(proto_name, args)?;
+        let key = format!("{ty} <: {proto_name}{args:?}");
+        if self.protocol_assumptions.borrow().contains(&key) {
+            return Some(Vec::new());
         }
-        proto.methods.iter().all(|req| match method_sigs.get(&req.name) {
-            None => false,
-            // オーバーロードは 1 つでも一致すればよい（報告側と同じ）
-            Some(sigs) => sigs.iter().any(|sig| Self::method_sig_matches_protocol(sig, req)),
-        })
+        self.protocol_assumptions.borrow_mut().push(key);
+        let misses = self.protocol_misses_of(ty, &proto, &subst);
+        self.protocol_assumptions.borrow_mut().pop();
+        misses
+    }
+
+    /// 型引数の置き換えの表（protocol の型変数 → 型引数）。型引数を書かない総称の protocol（型テストの `is Holder`）は
+    /// 型変数を何でも受ける（`Unresolved`）として読む。個数が宣言と合わなければ `None`。
+    pub(crate) fn protocol_subst(
+        &self,
+        proto_name: &str,
+        args: &[InferredType],
+    ) -> Option<std::collections::HashMap<String, InferredType>> {
+        let params = self.registry.template_params(proto_name).map(<[String]>::to_vec).unwrap_or_default();
+        if args.is_empty() {
+            return Some(params.into_iter().map(|p| (p, InferredType::Unresolved)).collect());
+        }
+        if params.len() != args.len() {
+            return None;
+        }
+        Some(params.into_iter().zip(args.iter().cloned()).collect())
+    }
+
+    /// protocol のメンバーを型引数で読んだもの（フィールド: 名前 → (種類, 型)・メソッド: 名前 → シグネチャ）。
+    /// 値の型が protocol のときのメンバーの型（`members.rs`）と、protocol どうしの照合が使う。
+    pub(crate) fn protocol_members(
+        &self,
+        proto_name: &str,
+        args: &[InferredType],
+    ) -> Option<(
+        std::collections::HashMap<String, (crate::ast::FieldKind, InferredType)>,
+        std::collections::HashMap<String, Vec<FnSig>>,
+    )> {
+        let proto = self.registry.protocol(proto_name)?;
+        let subst = self.protocol_subst(proto_name, args)?;
+        let sub = |t: &InferredType| Self::subst_type_params(t, &subst);
+        let fields = proto.fields.iter().map(|f| (f.name.clone(), (f.kind.clone(), sub(&f.ty)))).collect();
+        let methods = proto
+            .methods
+            .iter()
+            .map(|m| {
+                let sig = FnSig {
+                    param_mutable: m.params.iter().map(|(_, pmut, _)| *pmut).collect(),
+                    params: m.params.iter().map(|(pname, _, pty)| (pname.clone(), Some(sub(pty)))).collect(),
+                    required_count: m.params.len(),
+                    return_type: Some(sub(&m.return_type)),
+                    variadic_type: None,
+                };
+                (m.name.clone(), vec![sig])
+            })
+            .collect();
+        Some((fields, methods))
+    }
+
+    /// 照合の相手（`ty`）のメンバー。
+    fn conformer_of(&self, ty: &InferredType) -> Conformer {
+        let class = |cls: &str| Conformer::Members {
+            owner: Some(cls.to_string()),
+            fields: self.collect_class_field_details(cls),
+            methods: self.collect_class_method_sigs(cls),
+        };
+        match ty {
+            // Any は全プロトコルを満たす。`Unresolved` / `Never` は判定材料が無い。
+            InferredType::Any | InferredType::Unresolved | InferredType::Never => Conformer::Opaque,
+            InferredType::NamedInstance(cls) => class(cls),
+            // ⚠⚠ **テンプレートの具体化（`Box[int]`）も普通のクラスとして適合を見る**
+            //   （タスク 2-14）。以前は「クラスのインスタンスではない」と**誤って弾いていた**
+            //   （`let s: Sized = Box[int](1)`・実測）。単相化した具体クラスがあればそれを使う。
+            //   無ければ（単相化されない具体化）判定材料が無いので見送る。
+            InferredType::GenericInstance { .. } => match self.registry.instance_class(&ty.to_string()) {
+                Some(cls) => class(cls),
+                None => Conformer::Opaque,
+            },
+            // 別プロトコル型 — そのプロトコルのメンバー（型引数で読んだもの）が要求を満たすか
+            InferredType::Protocol(p, pargs) => match self.protocol_members(p, pargs) {
+                Some((fields, methods)) => Conformer::Members { owner: None, fields, methods },
+                None => Conformer::Opaque,
+            },
+            _ => Conformer::Mismatch(format!("expected a class instance, got `{ty}`")),
+        }
+    }
+
+    /// `ty` が protocol `proto`（型変数の表 `subst`）を満たさない理由。
+    fn protocol_misses_of(
+        &self,
+        ty: &InferredType,
+        proto: &crate::type_check::types::ProtocolInfo,
+        subst: &std::collections::HashMap<String, InferredType>,
+    ) -> Option<Vec<ProtocolMiss>> {
+        let (owner, fields, methods) = match self.conformer_of(ty) {
+            Conformer::Opaque => return None,
+            Conformer::Mismatch(reason) => return Some(vec![ProtocolMiss { type_name: None, reason }]),
+            Conformer::Members { owner, fields, methods } => (owner, fields, methods),
+        };
+        let miss = |reason: String| ProtocolMiss { type_name: owner.clone(), reason };
+        let mut misses = Vec::new();
+        for req in &proto.fields {
+            let req_ty = Self::subst_type_params(&req.ty, subst);
+            match fields.get(&req.name) {
+                None => misses.push(miss(format!(
+                    "missing field `{}` (expected {:?}: {})",
+                    req.name, req.kind, req_ty
+                ))),
+                Some((actual_kind, _)) if *actual_kind != req.kind => misses.push(miss(format!(
+                    "field `{}` is `{:?}` but protocol requires `{:?}`",
+                    req.name, actual_kind, req.kind
+                ))),
+                // フィールドは読みも書きもできるので、型は同じでなければならない（両向きに入る）
+                Some((_, actual_ty))
+                    if req_ty != InferredType::Unresolved
+                        && !(self.type_matches_exact(actual_ty, &req_ty) && self.type_matches_exact(&req_ty, actual_ty)) =>
+                {
+                    misses.push(miss(format!(
+                        "field `{}` has type `{}` but protocol requires `{}`",
+                        req.name, actual_ty, req_ty
+                    )))
+                }
+                Some(_) => {}
+            }
+        }
+        for req in &proto.methods {
+            let req_sig = crate::type_check::types::ProtocolMethod {
+                name: req.name.clone(),
+                params: req
+                    .params
+                    .iter()
+                    .map(|(n, m, t)| (n.clone(), *m, Self::subst_type_params(t, subst)))
+                    .collect(),
+                return_type: Self::subst_type_params(&req.return_type, subst),
+            };
+            match methods.get(&req.name) {
+                None => misses.push(miss(format!("missing method `{}`", req.name))),
+                // オーバーロードは 1 つでも一致すればよい
+                Some(sigs) if !sigs.iter().any(|sig| self.method_sig_matches_protocol(sig, &req_sig)) => misses.push(
+                    miss(format!("method `{}` signature does not match protocol requirement", req.name)),
+                ),
+                Some(_) => {}
+            }
+        }
+        Some(misses)
     }
 
     /// クラスのフィールド詳細を継承チェーンを辿って収集する。
@@ -272,10 +271,16 @@ impl TypeChecker {
     }
 
     /// メソッドシグネチャがプロトコルのメソッド要件を満たすか判定する。
+    ///
+    /// 引数は広くてよく（protocol の型の値を受けられる）、戻り値は狭くてよい（protocol の型として使える）。
+    /// ⚠ 以前は型が完全に同じでなければならなかった（6-5 で部分型にした）。総称の protocol の要求（`-> T | Nested[T]`）を
+    ///   具体的な型（`-> int`）で満たすのに要る。
     pub(crate) fn method_sig_matches_protocol(
+        &self,
         sig: &crate::type_check::types::FnSig,
         req: &crate::type_check::types::ProtocolMethod,
     ) -> bool {
+        use crate::type_check::type_utils::Site;
         // self を除くパラメータ
         let non_self_params: Vec<_> = sig.params.iter()
             .filter(|(name, _)| name != "self")
@@ -283,21 +288,23 @@ impl TypeChecker {
         if non_self_params.len() != req.params.len() {
             return false;
         }
-        for ((p_name, p_ty), (r_name, r_mut, r_ty)) in non_self_params.iter().zip(req.params.iter()) {
+        for ((p_name, p_ty), (r_name, _r_mut, r_ty)) in non_self_params.iter().zip(req.params.iter()) {
             if p_name != r_name {
                 return false;
             }
             if let Some(pty) = p_ty {
-                if pty != r_ty && *r_ty != InferredType::Unresolved {
+                if *pty != InferredType::Unresolved
+                    && *r_ty != InferredType::Unresolved
+                    && !self.types_compatible(r_ty, pty, Site::Other)
+                {
                     return false;
                 }
             }
-            let _ = r_mut; // mutability check placeholder — FnSig doesn't store mutable per-param
         }
         // 戻り値型チェック
         if req.return_type != InferredType::Unresolved {
             if let Some(ret) = &sig.return_type {
-                if *ret != req.return_type {
+                if *ret != InferredType::Unresolved && !self.types_compatible(ret, &req.return_type, Site::Other) {
                     return false;
                 }
             }

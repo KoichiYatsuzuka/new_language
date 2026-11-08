@@ -455,10 +455,11 @@ pub(crate) fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("body", stmts_list(body)),
             ],
         ),
-        Stmt::ProtocolDef { name, body } => ns(
+        Stmt::ProtocolDef { name, template_params, body } => ns(
             "StmtProtocolDef",
             vec![
                 ("name", Value::str(name.as_str())),
+                ("template_params", template_params_list(template_params)),
                 ("body", stmts_list(body)),
             ],
         ),

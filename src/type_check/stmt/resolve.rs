@@ -727,6 +727,7 @@ impl TypeChecker {
             return;
         }
         self.check_ann_names_exist(&ty, ann, what);
+        self.check_ann_protocol_args(&ty, ann, what);
         // `Ptr[int]` など、C の幅を持たない要素（3-3）
         let mut bad = Vec::new();
         ty.collect_bad_ptr_elems(&mut bad);
@@ -811,6 +812,41 @@ impl TypeChecker {
             span: None,
         });
         true
+    }
+
+    /// 総称の protocol の型引数の個数が宣言と合うか（6-5）。素の名前（`fn f(x: Holder)`）も誤り: 容器の要素型と同じく、
+    /// 何でもよいなら `Holder[Any]` と書く（タスク 8.1 の規則）。
+    /// ⚠ 型引数を取らない protocol に `[..]` を付けた形は [`Self::check_ann_takes_no_type_args`] が報告する。
+    fn check_ann_protocol_args(&mut self, ty: &InferredType, ann: &str, what: &str) {
+        if self.registry_incomplete {
+            return;
+        }
+        let mut found = Vec::new();
+        ty.for_each_type(&mut |t| match t {
+            InferredType::NamedInstance(n) => found.push((n.clone(), 0)),
+            InferredType::GenericInstance { name, args } => found.push((name.clone(), args.len())),
+            _ => {}
+        });
+        for (name, got) in found {
+            let resolved = self.registry.resolve(&name).into_owned();
+            if !self.registry.is_protocol(&resolved) {
+                continue;
+            }
+            let expected = self.registry.template_params(&resolved).map_or(0, |p| p.len());
+            if expected == 0 || got == expected {
+                continue;
+            }
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ProtocolTypeArgCount {
+                    name,
+                    expected,
+                    got,
+                    ann: ann.to_string(),
+                    what: what.to_string(),
+                },
+                span: None,
+            });
+        }
     }
 
     fn check_ann_names_exist(&mut self, ty: &InferredType, ann: &str, what: &str) {
@@ -898,10 +934,12 @@ impl TypeChecker {
         self.check_literal_elements(ann, &rhs_ty, stmt);
         // ⚠ protocol 名の注釈はここで打ち切って構わない。`check_protocol_conformance` が
         //    **右辺との照合も行う**（構造的適合検査）ため、下の整合性検査と二重にならない。
-        if self.registry.is_protocol(ann) {
-            let proto_name = ann.to_string();
-            self.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name);
-            return InferredType::Protocol(proto_name);
+        // 総称の protocol（`Holder[int]`・6-5）も同じ（満たさない理由を出す）。
+        if let Some(InferredType::Protocol(proto_name, args)) =
+            InferredType::from_ann(ann).map(|t| self.resolve_protocols(&t))
+        {
+            self.check_protocol_conformance(&rhs_ty, &proto_name, &args, None, var_name);
+            return InferredType::Protocol(proto_name, args);
         }
         // ── 通常の注釈（0-1）─────────────────────────────────────────────────
         //

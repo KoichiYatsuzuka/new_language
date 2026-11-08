@@ -74,28 +74,14 @@ impl TypeChecker {
                     }
                 }
             }
-            InferredType::Protocol(name) => {
-                if let Some(proto) = self.registry.protocol(name.as_str()) {
-                    for f in &proto.fields {
-                        members.insert(f.name.clone(), MemberKind::Field {
-                            kind: f.kind.clone(),
-                            ty: f.ty.clone(),
-                            access: Accessibility::Public,
-                        });
+            InferredType::Protocol(name, args) => {
+                // 総称の protocol は要求の型変数を型引数で読む（`Holder[int]` の `get()` は `int`・6-5）
+                if let Some((fields, methods)) = self.protocol_members(name.as_str(), args) {
+                    for (fname, (kind, fty)) in fields {
+                        members.insert(fname, MemberKind::Field { kind, ty: fty, access: Accessibility::Public });
                     }
-                    for m in &proto.methods {
-                        let sig = FnSig {
-                            param_mutable: m.params.iter().map(|(_, pmut, _)| *pmut).collect(),
-                            params: m.params.iter()
-                                .map(|(pname, _pmut, pty)| (pname.clone(), Some(pty.clone())))
-                                .collect(),
-                            required_count: m.params.len(),
-                            return_type: Some(m.return_type.clone()),
-                            variadic_type: None,
-                        };
-                        members.insert(m.name.clone(), MemberKind::Method {
-                            sigs: vec![sig],
-                        });
+                    for (mname, sigs) in methods {
+                        members.insert(mname, MemberKind::Method { sigs });
                     }
                 }
             }
@@ -268,7 +254,7 @@ impl TypeChecker {
         let mut ok = true;
         for ty in intersection_types {
             let ty_name = match ty {
-                InferredType::NamedInstance(n) | InferredType::Protocol(n) => n.clone(),
+                InferredType::NamedInstance(n) | InferredType::Protocol(n, _) => n.clone(),
                 _ => continue,
             };
             let satisfied = if self.registry.is_protocol(ty_name.as_str()) {

@@ -268,6 +268,23 @@ Rules applied in order:
 8. If `arg_ty == NamedInstance(C)` and `C` has a `__cast__[ExpectedType]` method → **compatible** (implicit cast path).
 9. Otherwise → **incompatible**.
 
+### Protocols (`src/type_check/stmt/protocol.rs`)
+
+`InferredType::Protocol(name, args)` — `args` are the type arguments of a generic protocol (`protocol Holder[T]:`,
+pandas_import_plan.md 6-5; empty otherwise). `resolve_protocols` turns the `NamedInstance` / `GenericInstance` that
+`from_ann` produces into `Protocol`.
+
+- **One rule**: `protocol_misses(ty, name, args)` lists why `ty` does not satisfy the protocol (`None` = no information,
+  treated as satisfied). `check_protocol_conformance` reports the list, `satisfies_protocol` tests it is empty.
+- Type parameters are replaced by the arguments (`protocol_subst`; a bare generic protocol in a type test reads them as
+  `Unresolved`). The members of a protocol-typed value are read the same way (`protocol_members`): method calls on it are
+  checked against the requirement's signature (`check_protocol_method_call`) and fields have the substituted type.
+- Methods match by **subtyping** (`method_sig_matches_protocol`): parameters may be wider, the return narrower; names and
+  counts must match. Fields must have the same type both ways.
+- Self-referential protocols stop through `TypeChecker::protocol_assumptions` (a pair being checked is assumed to hold).
+- Annotations must give every type argument (`ProtocolTypeArgCount`); `x is Holder[int]` is `GuardTypeNotTestable`.
+- ⚠ Only class instances (and other protocols) conform so far; built-in values are 6-6.
+
 ### `type_val_compatible`
 
 Used when checking `TypeValOf(arg)` against `TypeValOf(expected)`:
