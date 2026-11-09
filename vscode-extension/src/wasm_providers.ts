@@ -385,6 +385,16 @@ function wordAt(document: vscode.TextDocument, analysis: Analysis, pos: vscode.P
     return { word: document.getText(range), range };
 }
 
+/** `pos` の識別子が呼び出しのキーワード引数の名前（`(` か `,` の直後で、次が `=`）か。 */
+function isKeywordArgLabel(document: vscode.TextDocument, analysis: Analysis, pos: vscode.Position): boolean {
+    const i = tokenIndexAt(analysis, pos);
+    if (i < 1 || i + 1 >= analysis.tokens.length) return false;
+    const prev = analysis.tokens[i - 1], next = analysis.tokens[i + 1];
+    const text = (t: Token) => document.getText(tokenRange(t));
+    return next.kind === 'op' && text(next) === '='
+        && prev.kind === 'op' && (text(prev) === '(' || text(prev) === ',');
+}
+
 /** ちょうどその位置で宣言されているシンボル（名前トークンの上にカーソルがある場合）。 */
 function declarationAt(analysis: Analysis, pos: vscode.Position, word: string): Symbol | undefined {
     return analysis.symbols.find(
@@ -393,25 +403,17 @@ function declarationAt(analysis: Analysis, pos: vscode.Position, word: string): 
     );
 }
 
-/** その名前の宣言のうち、`line` から見えるもの（無ければファイル内の最初の同名宣言）。 */
+/**
+ * その名前の宣言のうち、`line` から見えるもの。見えなければ `undefined`（name_scope_plan.md の 2-1）。
+ *
+ * ⚠ 見えない名前を**別の宣言に結び付けない**。以前は見えなければ「ファイル内で最初の同名の宣言」を返していたので、
+ *   未宣言の `font` がクラスのフィールド `font` として hover され、定義へ移動もそこへ飛んだ（利用者の報告）。
+ *   呼び出し元（hover・定義へ移動・シグネチャヘルプ・受け手の型の推定）はどれも `undefined` を「出さない」として扱う。
+ */
 function lookup(analysis: Analysis, name: string, line: number): Symbol | undefined {
-    return visibleSymbols(analysis, line).find(s => s.name === name)
-        ?? analysis.symbols.find(s => s.name === name);
+    return visibleSymbols(analysis, line).find(s => s.name === name);
 }
 
-/** カーソル位置の式の推論型（型検査器が実際に計算したもの）。 */
-function exprTypeAt(analysis: Analysis, pos: vscode.Position): string | undefined {
-    // node の位置は式の**末尾**トークンを指す。識別子ではその識別子自身なので、
-    // 同じ行で、カーソルを含む名前の末尾に一致するものを探す。
-    let best: string | undefined;
-    for (const e of analysis.exprTypes) {
-        if (e.at.line !== pos.line) continue;
-        if (Math.abs(e.at.col - pos.character) <= 64) {
-            if (e.at.col <= pos.character) best = e.type;
-        }
-    }
-    return best;
-}
 
 // ===== 表示用の整形 =====
 
@@ -514,6 +516,12 @@ export function provideHover(
     //   別の型の同名の宣言に当たった（`f.read()` の `read` が `FileOpenMode.read`）ときだけこの経路。
     //   組み込みの型（`FileObject`）のメソッドは利用者のファイルの宣言表に無いので、ここでしか引けない。
     const receiver = receiverTypeAt(analysis, document, w.range.start);
+    // 受け手の型のメンバがこのファイルで宣言されていれば、その宣言を見せる（定義へ移動と同じ・name_scope_plan.md の 2-1）。
+    // ⚠ 以前は名前だけで引いた「ファイル内で最初の同名の宣言」がたまたま同じメンバに当たって見えていた。
+    if (receiver?.type && sym?.container !== receiver.type) {
+        const owned = analysis.symbols.find(s => s.container === receiver.type && s.name === w.word);
+        if (owned) sym = owned;
+    }
     if (receiver?.type && sym?.container !== receiver.type) {
         const mem = membersOf(analysis, receiver.type).find(m => m.name === w.word);
         if (mem) {
@@ -528,8 +536,15 @@ export function provideHover(
     //   同じファイルの `fn warmup` を出していた・VSIX_update_plan.md D）。受け手の型のメンバだけが正しい。
     if (receiver && !declared && sym?.container !== receiver.type) sym = undefined;
 
-    // 宣言に紐づく推論型を優先し、無ければカーソル位置の式の型で補う。
-    const inferred = sym?.inferred ?? exprTypeAt(analysis, position);
+    // キーワード引数の名前（`f(a = 1)` の `a`）は変数ではない。式の型で補うと呼び出し全体の型（関数の型）を
+    // その名前の型として見せてしまう（2-1 で `lookup` が別の宣言を返さなくなって表に出た）。
+    if (!sym && isKeywordArgLabel(document, analysis, position)) return undefined;
+
+    // 宣言に紐づく推論型を優先し、無ければ**この識別子で終わる式**の型で補う（`exprTypeOfToken`）。
+    // ⚠ 以前は同じ行でカーソルより左で終わる最も近い式の型を拾っていたので、型の付かない名前（見えない名前・
+    //   内包表記の変数）に、隣の式の型（呼び出し先の関数の型など）を出していた（name_scope_plan.md の 2-1）。
+    const tok = tokenAt(analysis, position);
+    const inferred = sym?.inferred ?? (tok ? exprTypeOfToken(analysis, tok) : undefined);
 
     if (!sym) {
         // 宣言が引けなくても、型検査器が式の型を出していれば見せる価値がある。
@@ -716,7 +731,7 @@ function knownType(analysis: Analysis, t: string | null | undefined): t is strin
 /**
  * 型検査器が**トークン `t` で終わる式**に付けた型（`exprTypes`）。
  *
- * 式の node の位置は末尾のトークンの先頭（`f()` なら `)`・`a.b` なら `b`）。⚠ `exprTypeAt` のように近くの別の式の
+ * 式の node の位置は末尾のトークンの先頭（`f()` なら `)`・`a.b` なら `b`）。⚠ 近くの別の式の
  * 型を拾わないよう、位置が一致するものだけを見る。同じ位置に複数あれば型名として引けるものを選ぶ。
  */
 function exprTypeOfToken(analysis: Analysis, t: Token): string | undefined {
