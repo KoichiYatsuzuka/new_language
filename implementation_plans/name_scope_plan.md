@@ -152,7 +152,7 @@ Python のモジュールでは関数単位の集合を使うか、判定を変�
 |---|---|---|---|
 | **1-1** | ✅（2026-11-10・結果は表の下）**影響の測定**（コードは残さない）。§2 の規則を試しに入れたビルドで、9 カテゴリ・`archived/`・`practical_examples/`・import 先（`.ar` / `import[py]` の変換結果）すべての例題に型検査をかけ、新しく出る `UndefinedName` を全部並べて 3 つに分ける。① 例題の本当の誤り ② **型検査器の宣言漏れ**（宣言しているはずの束縛を宣言していない。`match` の束縛・組の分解・`with .. as`・関数の中の `static mut`・内包表記・メタ展開が作る名前など、見つかったもの） ③ D-1 の形（B2・B3）。あわせて確かめる: メソッド名（A6）・入れ子の関数（A7）が通る経路（`declared_anywhere` か `fn_sigs` か）、`Stmt::Field` の `declare` に頼っているもの（束縛の記録 `BindingRecord` や拡張のホバー・インレイヒントなど）、Python のモジュールの扱い（§2 の ⚠）、REPL（前の入力の名前が大域に入っているか）。結果を本書に書く | なし | 中 |
 | **1-2** | ⇒ **対象なし**（1-1 で ② が 0 件）。1-1 の ② を埋める。型検査器が束縛をスコープに宣言するようにする。宣言の漏れは型の検査の漏れでもあるので、`type_obligations` の退行を見る | 1-1 | 1-1 次第 |
-| **1-3** | クラスのメンバーを裸の名前で見せない（1-B）。`Stmt::Field` の腕でクラスのスコープに宣言するのをやめる（頼っているものは 1-1 の結果に従って別の経路にする）。メソッド名が裸で通る経路があれば塞ぐ。例題: 成功例はメソッドから `self.x` / `C.K` で読む形、エラー例（`_error`）は A3〜A6 | 1-1 | 小 |
+| **1-3** | ✅（2026-11-10・結果は表の下）クラスのメンバーを裸の名前で見せない（1-B）。`Stmt::Field` の腕でクラスのスコープに宣言するのをやめる（頼っているものは 1-1 の結果に従って別の経路にする）。メソッド名が裸で通る経路があれば塞ぐ。例題: 成功例はメソッドから `self.x` / `C.K` で読む形、エラー例（`_error`）は A3〜A6 | 1-1 | 小 |
 | **1-4** | `declared_anywhere` を「モジュールの最上位の束縛」に置き換え、§2 の規則 2 を入れる（1-A）。Python のモジュールは 1-1 の結果に従う。`names.rs` / `check_name_defined` の doc の規則を書き直す。例題: 成功例は B1（前方参照）、エラー例（`_error`）は A1・A2・A7〜A13 と、利用者の報告の形（別の関数のローカルを渡す） | 1-2, 1-3 | 中 |
 | **1-5** | D-1 = (a): B2・B3 を静的な誤りにする（1-4 の規則で自然に誤りになるはずなので、そうなることを確かめてエラー例（`_error`）に足す） | 1-4 | 小 |
 | **1-7** | **関数のシグネチャの表をスコープで分ける**（2026-11-09 に追加）。`fn_sigs`（[registry/builder.rs](../src/type_check/registry/builder.rs)）は名前だけをキーにしたプログラム全体の表で、別々の関数の中の同じ名前の入れ子の関数（`a` の `helper(x: int)` と `b` の `helper(s: str)`）を多重定義としてまとめる。実測: `b` の中の `helper(2)` が静的に止まらず、実行時の `TypeError`。入れ子の関数のシグネチャは、その定義を検査するときにそのスコープへ宣言し、表から引くのは最上位の関数（とモジュールの関数）だけにする。例題: エラー例（`_error`）に上の形 | 1-4 | 小〜中 |
@@ -214,6 +214,29 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
 **REPL**: 型検査の誤りを無視して実行する（[repl.rs `run_block`](../src/repl.rs)）ので、規則を変えても振る舞いは変わらない。
 
 ⇒ **1-2 は対象なし**（②が 0 件）。1-3 から進める。
+
+#### 1-3 の結果（2026-11-10・✅ 完了）
+
+- クラス・trait の本体の直下では、メンバー（`Stmt::Field` と、メソッドの `fn` / `gen`）をスコープに宣言しない
+  （`CheckState::in_class_body`）。メンバーの型・可変性はもともとレジストリが持っていて、`self.x` / `C.K` はそちらから引く。
+- 見えない名前が検査中のクラスのメンバーなら、`declared_anywhere` より先に専用の誤り `BareClassMember` を出す
+  （`name 'font' is not defined ('font' is a member of 'C'; write `self.font`)`。`const` / `static mut` は `C.K` を勧める）。
+  先に見るのは、メンバーの名前はたいていどこか別の場所（`__init__` の同名の引数など）でも束縛されていて、
+  `declared_anywhere` で通ってしまうため。⚠ モジュールの最上位の束縛と同じ名前は対象外（メソッドから最上位の変数を読む・前方参照）。
+  そのため**モジュールの最上位の束縛の集合**（`TypeChecker::module_toplevel`・`names::collect_toplevel_bindings`）を先に入れた（1-4 でも使う）。
+- **代入の左辺**（`x = ..` / `x += ..`）にも同じ判定を入れた。以前は読みだけを検査していて、`opened += 1`（クラスの `static mut` を
+  裸で書く）や、関数の中の宣言していない名前への代入（実行時 `NameError`）が静的に通っていた。
+- 振る舞いが**緩くなる**所: メソッドの中で、メンバーと同じ名前のローカル（`let font = ..`）を宣言できるようになった。以前は
+  クラスのスコープのメンバーとぶつかって `VariableRedeclaration` だった（実行時は問題なく動く形）。参照実装は今も誤りにする
+  ので、`compare_python_impl` の既知の差に `class_member_scope` を足した。
+- 例題: [class_member_scope.ar](../examples/classes/class_member_scope.ar)・[class_member_scope_error.ar](../examples/classes/class_member_scope_error.ar)（A3〜A6 と、
+  クラスの本体の `const B = A + 1`・`static mut` への裸の `+=`。5 件とも静的な誤り）。
+  ⚠ 1-1 の Python のモジュールの `tag`（`py_class_factory`）は、引く先が外側の関数の引数に直った。
+- ゲート（release）: `scan_examples` FAIL 1・TIMEOUT 1（`interop/async_native_call.ar` の LINK1104 は一時ファイルの取り合いで、
+  単独で再実行して成功。`bench_ab_native.ar` の時間切れは負荷）。`force_gate` 0 件。`type_obligations` 退行なし（149 件中 STATIC 147）。
+  `compare_wasm_frontend` 772 / 772 一致。`repl_session` 同一。`cargo test`（debug）1302 passed。`compare_python_impl` 予期しない差は上の 1 件だけ（既知の差に足した）。
+  ⚠ 同じ実行で `interop/cpp_raw_pointers.ar` の既知の差が「一致した（古い）」と出た。Rust 側の出力は変わっておらず
+  （型検査を通って最後まで動く）、参照実装の側の環境による揺れ。今回は触らない。
 
 ### フェーズ 2 — VS Code 拡張（ホバー・定義へ移動・色付け）
 

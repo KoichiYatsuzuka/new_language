@@ -130,6 +130,9 @@ pub struct TypeChecker {
     /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
     /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
     declared_anywhere: std::collections::HashSet<String>,
+    /// 検査中のモジュールの**最上位の束縛**（`names::collect_toplevel_bindings`・name_scope_plan.md の 1-3 / 1-4）。
+    /// 末尾が今のモジュール（入口のファイルで始まり、`annotate_module_body` が import 先の分を積む）。
+    module_toplevel: Vec<std::collections::HashSet<String>>,
     /// Arrow から使えない Python の関数（自分で定義したクラスを返す関数・フェーズ10 10-16）の束縛の綴り。
     /// キー: p.factory（`import[py] m as p`）/ factory（from m import factory）。
     /// 値: (束縛のスコープの深さ, 表示名 m.factory)。
@@ -317,6 +320,7 @@ impl TypeChecker {
                 names::collect_declared_anywhere(stmts, &mut set);
                 set
             },
+            module_toplevel: vec![names::collect_toplevel_bindings(stmts)],
             py_class_factories: HashMap::new(),
             ffi_unsupported: HashMap::new(),
             stmt_pos: None,

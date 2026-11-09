@@ -150,6 +150,11 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
+                } else if self.fn_value_type(name).is_none() {
+                    // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
+                    // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
+                    // （クラスの `static mut` を裸で書く）が静的に通っていた。
+                    self.check_name_defined(name);
                 }
                 // ⚠ `freeze` 済みの名前への再束縛も**上の `!info.mutable` で捕まる**
                 //    （タスク 9.2 で `freeze` を可変フラグの降格にしたため）。
@@ -205,6 +210,11 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
+                } else if self.fn_value_type(name).is_none() {
+                    // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
+                    // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
+                    // （クラスの `static mut` を裸で書く）が静的に通っていた。
+                    self.check_name_defined(name);
                 }
                 let lt = self.lookup(name).map(|i| i.ty.clone());
                 let rt = self.infer(value);
@@ -352,6 +362,7 @@ impl TypeChecker {
                     false,
                 );
                 self.push_scope();
+                self.state.enter_class_body();
                 let prev_class = self.state.enter_class(name.clone());
                 // ⚠ 仮想メソッド（`...` 本体）は **trait 専用**。クラスに置くと実装を強制する
                 //    相手が居ないので、以前は黙って `None` を返す no-op になっていた（0-10）。
@@ -418,6 +429,7 @@ impl TypeChecker {
                 self.check_trait_conformance(name);
                 self.state.pop_type_params(saved_tp);
                 self.state.exit_class(prev_class);
+                self.state.exit_class_body();
                 self.pop_scope();
             }
             Stmt::TraitDef { name, template_params, body, .. } => {
@@ -434,7 +446,9 @@ impl TypeChecker {
                 let saved_tp =
                     self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
                 self.push_scope();
+                self.state.enter_class_body();
                 self.check_stmts(body);
+                self.state.exit_class_body();
                 self.pop_scope();
                 self.state.pop_type_params(saved_tp);
             }
@@ -554,11 +568,9 @@ impl TypeChecker {
                         }
                     }
                 }
-                // ⚠ `StaticMut` も可変（タスク 1.2）。理由は
-                //    `registry/builder.rs` の同じ式のコメントを参照。2 箇所あるので
-                //    **片方だけ直すとずれる**。
-                let mutable = matches!(kind, FieldKind::Mut | FieldKind::StaticMut);
-                self.declare(name.clone(), ty, mutable);
+                // ⚠ メンバーは変数として**宣言しない**（name_scope_plan.md の 1-3・`CheckState::in_class_body`）。
+                //   型・可変性はレジストリ（`class_field_details` / `field_is_mutable`）が持ち、`self.x` / `C.K` は
+                //   そちらから引く。裸の名前で読むと `BareClassMember` になる（`check_name_defined`）。
             }
 
             // --- ジェネレータ関数定義 ---
@@ -2057,8 +2069,11 @@ impl TypeChecker {
         //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
         //    ⚠ `fn_value_type` が `None` を返す場合（オーバーロード・テンプレート関数）は
         //    従来どおり `Unresolved`。関数値としての型が 1 つに決まらないため。
-        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
-        self.declare(name.to_string(), self_ty, false);
+        // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
+        if !self.state.in_class_body() {
+            let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+            self.declare(name.to_string(), self_ty, false);
+        }
         self.push_scope();
         // ⚠ 関数自身の型変数（`fn f[T]`）を積む。囲みクラスの型変数は `ClassDef` 側が
         //    既に積んでいるので、ここでは追加するだけでよい。
@@ -2135,8 +2150,11 @@ impl TypeChecker {
         // ⚠ `gen` の名前も関数値としての型で宣言する（`check_fn_def` と同じ・フェーズ10 10-7）。
         //   結果の型は `generator[T]`。以前は `Unresolved` だったので、入れ子の `gen` を呼んだ結果に
         //   型が付かなかった。
-        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
-        self.declare(name.to_string(), self_ty, false);
+        // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
+        if !self.state.in_class_body() {
+            let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+            self.declare(name.to_string(), self_ty, false);
+        }
         self.push_scope();
         // ⚠⚠ **`gen` 自身の型変数（`gen take[T]`）を積んでから注釈を検査する**（フェーズ10 10-1）。
         //    以前は「`gen` には型変数の投入が無いので、ここで検査してよい」と書いてあったが誤りで、

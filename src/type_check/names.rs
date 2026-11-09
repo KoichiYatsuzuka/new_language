@@ -290,6 +290,20 @@ pub(crate) fn builtin_exception_bases(name: &str, mutual: bool) -> Vec<String> {
     out
 }
 
+/// モジュールの**最上位の文が直接束縛する名前**（`let` / `mut` / `const` / `fn` / `class` / `import` の束縛など）。
+///
+/// ⚠ 最上位の `if` / `for` などの**中**の束縛は含めない（ブロックスコープ）。`for` の変数・`except .. as` の別名も
+///   含めない（`decl_names::each_declared_name` が報告しない）。
+pub(crate) fn collect_toplevel_bindings(stmts: &[Stmt]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for stmt in stmts {
+        crate::decl_names::each_declared_name(stmt, &mut |name, _, _| {
+            out.insert(name.to_string());
+        });
+    }
+    out
+}
+
 /// プログラムの**どこかで束縛される名前**をすべて集める（保守的・10-12）。
 ///
 /// ⚠ `import` の本体（別モジュール）へは降りない。モジュールの名前は修飾なしでは見えない

@@ -86,6 +86,13 @@ pub(super) struct CheckState {
     /// クラス本体に入るときとテンプレート関数に入るときに積み、抜けるときに戻す
     /// （メソッドの中からは囲みクラスの型変数も見えるので**スタック**にしてある）。
     type_params: Vec<String>,
+    /// **クラス・trait の本体のスコープの深さ**（name_scope_plan.md の 1-3）。
+    ///
+    /// クラスの本体の直下では、メンバー（フィールド・`const`・`static mut`・メソッド）を変数として
+    /// **宣言しない**（[`Self::in_class_body`]）。実行時も参照実装も、メンバーは `self.x` / `C.K` でしか
+    /// 読めない。以前は宣言していたので、メソッドの中の裸の `font` がフィールドの型の変数として引けた
+    /// （§0 の A3）うえ、同じ名前のローカル（`let n = ..`）が再宣言の誤りになっていた。
+    class_body_depths: Vec<usize>,
 }
 
 impl CheckState {
@@ -100,6 +107,7 @@ impl CheckState {
             block_return_forbidden_depth: 0,
             block_expr_expected: Vec::new(),
             type_params: Vec::new(),
+            class_body_depths: Vec::new(),
         }
     }
 
@@ -222,6 +230,22 @@ impl CheckState {
     /// クラス本体の検査に入る。戻り値は退出時に `exit_class` へ渡すこと。
     pub(super) fn enter_class(&mut self, name: String) -> Option<String> {
         self.current_class_name.replace(name)
+    }
+
+    /// 今のスコープ（`push_scope` 直後）をクラス・trait の本体として印を付ける。抜けるときに
+    /// [`Self::exit_class_body`] を呼ぶ。
+    pub(super) fn enter_class_body(&mut self) {
+        self.class_body_depths.push(self.scope_depth());
+    }
+
+    /// [`Self::enter_class_body`] の印を外す。
+    pub(super) fn exit_class_body(&mut self) {
+        self.class_body_depths.pop();
+    }
+
+    /// 今のスコープがクラス・trait の本体の直下か（メソッドの本体・入れ子の関数の中は偽）。
+    pub(super) fn in_class_body(&self) -> bool {
+        self.class_body_depths.last() == Some(&self.scope_depth())
     }
 
     /// `enter_class` が返した値を渡してクラス本体の検査を抜ける。

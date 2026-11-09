@@ -1,4 +1,4 @@
-use crate::ast::{Expr, UnaryOp};
+use crate::ast::{Expr, FieldKind, UnaryOp};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
@@ -1285,9 +1285,18 @@ impl TypeChecker {
     /// ⚠ 保守的に判定する（`type_check::names` の doc）。次のどれかなら通す:
     ///   プログラムのどこかで束縛される名前・実行時の組み込みの名前・クラス / trait / protocol / 関数 /
     ///   テンプレートの名前・今見えている型変数・`Self`。import 先を読めていない環境（エディタ）では見ない。
-    fn check_name_defined(&mut self, name: &str) {
-        if self.registry_incomplete
-            || self.declared_anywhere.contains(name)
+    pub(super) fn check_name_defined(&mut self, name: &str) {
+        if self.registry_incomplete {
+            return;
+        }
+        if let Some((class_name, spelled)) = self.bare_class_member(name) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::BareClassMember { name: name.to_string(), class_name, spelled },
+                span: None,
+            });
+            return;
+        }
+        if self.declared_anywhere.contains(name)
             || super::names::is_runtime_builtin_name(name)
             || name == "Self"
             // `case _:` の `_`（どれにも当たる腕）。束縛ではないので宣言の集合には入らない。
@@ -1305,6 +1314,33 @@ impl TypeChecker {
             kind: TypeErrorKind::UndefinedName { name: name.to_string() },
             span: None,
         });
+    }
+
+    /// 見えない名前 `name` が、検査中のクラスの**メンバー**なら（クラス名, 書くべき形）（name_scope_plan.md の 1-3）。
+    ///
+    /// メンバーはクラスのスコープに宣言しない（`CheckState::in_class_body`）ので、メソッドの中の裸の `font` は
+    /// ここに来る。`declared_anywhere` より先に見るのは、メンバーの名前はたいていどこか別の場所でも
+    /// 束縛されていて（`__init__` の同名の引数など）、そちらで通ってしまうため。
+    /// ⚠ モジュールの最上位の束縛と同じ名前なら対象外（メソッドから最上位の `font` を読む前方参照は正しい）。
+    /// ⚠ メンバーの顔ぶれが未確定のクラス（未展開の装飾子）も対象外。
+    fn bare_class_member(&self, name: &str) -> Option<(String, String)> {
+        let class = self.state.current_class()?;
+        if self.module_toplevel.last().is_some_and(|t| t.contains(name)) || self.registry.members_unresolved(class) {
+            return None;
+        }
+        let spelled = if let Some((kind, _)) =
+            self.registry.class_field_details(class).and_then(|f| f.get(name))
+        {
+            match kind {
+                FieldKind::Const | FieldKind::StaticMut => format!("{class}.{name}"),
+                FieldKind::Mut | FieldKind::Let => format!("self.{name}"),
+            }
+        } else if self.registry.class_methods(class).is_some_and(|m| m.contains_key(name)) {
+            format!("self.{name}")
+        } else {
+            return None;
+        };
+        Some((class.to_string(), spelled))
     }
 
     /// 属性を読めない組み込みの値の型なら、その表示名（`int` / `list[int]` …・10-14）。

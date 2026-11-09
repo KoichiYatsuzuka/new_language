@@ -80,6 +80,31 @@ class Config:
 - `mut`/`let` フィールド → 初期値禁止 (静的型エラー `FieldDefaultNotAllowed`)。  
   初期値が必要な場合は `__init__` で設定するか、デフォルト `__init__` に引数デフォルト値を渡します。
 
+**メンバーは裸の名前では読めない**（`implementation_plans/name_scope_plan.md` の 1-3）。フィールド・`const`・`static mut`・
+メソッドは変数ではないので、メソッドの中でもクラスの本体でも `self.x`（インスタンスのメンバー）か `C.K`（`const` /
+`static mut`）と書く。裸の名前で読む・書くと静的エラー
+`name 'font' is not defined ('font' is a member of 'C'; write `self.font`)`（`BareClassMember`。実行時なら `NameError`）。
+クラスの本体の `const B = A + 1` も同じ（`C.A` と書く）。
+
+- 同じ理由で、メンバーと**同じ名前のローカル・引数・最上位の変数はメンバーとぶつからない**
+  （メソッドの中の `let font = ..` は通る。裸の `font` はそのローカル・引数・最上位の変数を指す）。
+  ⚠ 以前は型検査がメンバーをクラスのスコープの変数として扱っていたので、メソッドの中の裸の `font` が
+  フィールドの型の変数として通り、`let font = ..` は再宣言の誤りになっていた（参照実装の `impl_python` は今も後者）。
+
+```ar
+class EditorConfig:
+    let font: str
+    const DEFAULT: int = 12
+
+    fn __init__(mut self, font: str) -> None:   # 引数とフィールドが同じ名前でもよい
+        self.font = font
+
+    fn show(self) -> None:
+        let font = "(" + self.font + ")"        # OK: フィールドと同じ名前のローカル
+        print(font, EditorConfig.DEFAULT)
+        # print(DEFAULT)                        # 静的エラー: write `EditorConfig.DEFAULT`
+```
+
 ---
 
 ## 自動生成 `__init__`

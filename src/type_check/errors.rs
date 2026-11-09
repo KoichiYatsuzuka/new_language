@@ -492,6 +492,14 @@ pub enum TypeErrorKind {
     /// ⚠ 判定は保守的（`type_check::names` の doc）。プログラムのどこかで束縛される名前・組み込みの名前・
     ///   クラスや関数の名前は通す。
     UndefinedName { name: String },
+    /// クラスのメンバー（フィールド・`const`・`static mut`・メソッド）を**裸の名前で**読んでいる
+    /// （name_scope_plan.md の 1-3）。実行時は `NameError`。メンバーは `self.x` / `C.K` で読む。
+    BareClassMember {
+        name: String,
+        class_name: String,
+        /// 書くべき形（`self.font` / `C.K`）。
+        spelled: String,
+    },
     /// 型ガード（`is T`）で**判定できない型**（フェーズ10 10-10）。
     ///
     /// 実行時の `is` は値の外側の種類（とクラス名）しか見ないので、`x is list[int]` は「`list` か」しか
@@ -1095,6 +1103,13 @@ impl StaticTypeError {
                 hl_q(type_name)
             ),
             TypeErrorKind::UndefinedName { name } => format!("name {} is not defined", hl_q(name)),
+            TypeErrorKind::BareClassMember { name, class_name, spelled } => format!(
+                "name {} is not defined ({} is a member of {}; write `{}`)",
+                hl_q(name),
+                hl_q(name),
+                hl_q(class_name),
+                spelled
+            ),
             TypeErrorKind::GuardTypeNotTestable { type_name, outer } => match outer {
                 Some(o) => format!(
                     "type guard cannot test {} at runtime (element types are not checked); write `is {}`",

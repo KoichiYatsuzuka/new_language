@@ -87,7 +87,10 @@ impl TypeChecker {
         //   知らないモジュール（外部言語）では文脈は変わらない。
         let prev_scope = self.registry.enter_module_scope(&module.join("."));
         self.push_scope();
+        // モジュールの最上位の束縛は**本体全体**から取る（2 回目以降の `import` で検査するのが具体化だけでも同じ）。
+        self.module_toplevel.push(crate::type_check::names::collect_toplevel_bindings(body));
         self.check_stmts(target);
+        self.module_toplevel.pop();
         // ⚠⚠ **グローバル変数の型と属性を控える**（import した側が名前空間で使う）。スコープは
         //    この直後に捨てるので、ここでしか取れない（注釈の無い変数の推論した型も含む）。
         if first {
