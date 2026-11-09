@@ -2,13 +2,16 @@
 #
 # ⚠ 正常系と規則の説明は [block_scope.ar](block_scope.ar) を参照。
 #
-# 期待されるエラー（5 件。どれも静的な `name '..' is not defined`）:
+# 期待されるエラー（6 件。どれも静的な `name '..' is not defined`）:
 #   ① y   ブロックの後で中の束縛を読む（`block:` / `match` の腕 / ブロック式 / `except .. as e` の `e` も同じ）
 #   ② z   一度も実行されなかったブロックの束縛を読む
 #   ③ w   ループの本体で、宣言より前に読む
 #   ④ x   入れ子の関数が、外側の関数で**後に**束縛する名前を捕まえる（D-1 = (a)。関数は定義した時点の値を写すので、
 #         その時点に無い名前は写せない）
 #   ⑤ e   `except .. as e` の `e` を `try` の後で読む
+#   ⑥ odd  入れ子の関数が、後で定義する入れ子の関数を呼ぶ（④と同じ理由・D-1 = (a)）
+#         ⚠ 間に文を挟まずに続く定義どうし（`fn even` の直後に `fn odd`）は、name_scope_plan.md のフェーズ 3 で
+#           1 つの組として互いに呼べるようになる予定。ここは間に `let` を挟んだ、その後も誤りのままの形
 #
 # 経緯: VM が関数の中でブロックスコープを守らず、①は中の値 1、②は `None`、③は前の周回の値、④は `None` を
 #   読んでいた（R-1 で実行時の `NameError` にした）。型検査は「プログラムのどこかで束縛される名前」として
@@ -37,6 +40,18 @@ fn outer() -> None:
         print(x)                  # ⛔ ④
     let x = 1
     inner()
+
+fn mutual() -> bool:
+    fn even(n: int) -> bool:
+        if n == 0:
+            return True
+        return odd(n - 1)         # ⛔ ⑥
+    let start = 4
+    fn odd(n: int) -> bool:
+        if n == 0:
+            return False
+        return even(n - 1)
+    return even(start)
 
 fn after_except() -> None:
     try:
