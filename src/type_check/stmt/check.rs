@@ -2071,6 +2071,14 @@ impl TypeChecker {
         //    従来どおり `Unresolved`。関数値としての型が 1 つに決まらないため。
         // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
         if !self.state.in_class_body() {
+            // 入れ子の関数のシグネチャは、ここでこのスコープへ積む（name_scope_plan.md の 1-7・`CheckState::declare_local_fn`）。
+            if self.state.in_deferred_body() && template_params.is_empty() {
+                let ret = return_type
+                    .and_then(InferredType::from_ann)
+                    .map(|t| self.registry.resolve_protocol_ann(t));
+                let sig = self.registry.sig_of(params, ret);
+                self.state.declare_local_fn(name.to_string(), sig);
+            }
             let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
             self.declare(name.to_string(), self_ty, false);
         }
@@ -2154,6 +2162,14 @@ impl TypeChecker {
         //   型が付かなかった。
         // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
         if !self.state.in_class_body() {
+            // 入れ子の `gen` も入れ子の関数と同じ（1-7）。結果の型はジェネレータ（`registry/builder.rs` の `GenDef` と同じ）。
+            if self.state.in_deferred_body() && template_params.is_empty() {
+                let ret = yield_type
+                    .and_then(InferredType::from_ann)
+                    .map(|t| InferredType::IteratorOf(Box::new(self.registry.resolve_protocol_ann(t))));
+                let sig = self.registry.sig_of(params, ret);
+                self.state.declare_local_fn(name.to_string(), sig);
+            }
             let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
             self.declare(name.to_string(), self_ty, false);
         }

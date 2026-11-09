@@ -542,6 +542,13 @@ impl TypeChecker {
         }
     }
 
+    /// 名前 `name` で今見える関数のシグネチャ（入れ子の関数を先に引き、無ければ最上位の関数・name_scope_plan.md の 1-7）。
+    ///
+    /// ⚠ 検査器から関数のシグネチャを名前で引くときは**必ずこれを使う**。レジストリの `fn_sigs` には入れ子の関数が無い。
+    pub(super) fn visible_fn_sigs(&self, name: &str) -> Option<&Vec<super::types::FnSig>> {
+        self.state.lookup_local_fn(name).or_else(|| self.registry.fn_sigs(name))
+    }
+
     /// 名前が関数を指すとき、その**関数値としての型**（タスク 2.2）。
     ///
     /// ⚠ `Expr::Ident` は変数スコープだけを引いていたので、`fn` を名前で参照した値の型が
@@ -559,7 +566,7 @@ impl TypeChecker {
         {
             return None;
         }
-        let sigs = self.registry.fn_sigs(name)?;
+        let sigs = self.visible_fn_sigs(name)?;
         if sigs.len() != 1 {
             return None; // オーバーロード
         }

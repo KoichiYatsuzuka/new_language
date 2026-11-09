@@ -35,7 +35,7 @@ impl TypeChecker {
         };
 
         // --- Case 1: 関数デコレータ ---
-        if let Some(sigs) = self.registry.fn_sigs(&dec_name).cloned() {
+        if let Some(sigs) = self.visible_fn_sigs(&dec_name).cloned() {
             if sigs.len() != 1 {
                 return;
             }

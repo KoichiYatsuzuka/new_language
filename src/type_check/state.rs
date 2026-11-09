@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::types::{InferredType, VarInfo};
+use super::types::{FnSig, InferredType, VarInfo};
 
 /// 検査中のスコープスタックと「今どこを検査しているか」を保持する。
 pub(super) struct CheckState {
@@ -96,6 +96,9 @@ pub(super) struct CheckState {
     /// **後で実行される本体**（`fn` / `gen` / メソッドの本体）の入れ子の深さ（name_scope_plan.md の 1-4）。
     /// 1 以上なら、まだ束縛していないモジュールの最上位の名前を読んでよい（前方参照・`check_name_defined`）。
     deferred_depth: usize,
+    /// **入れ子の関数のシグネチャ**（`scope_stack` と同じ並び・name_scope_plan.md の 1-7）。
+    /// 最上位の関数はレジストリの `fn_sigs` が持つ。入れ子の関数はここに、定義したスコープで積む。
+    local_fn_sigs: Vec<HashMap<String, Vec<FnSig>>>,
 }
 
 impl CheckState {
@@ -112,6 +115,7 @@ impl CheckState {
             type_params: Vec::new(),
             class_body_depths: Vec::new(),
             deferred_depth: 0,
+            local_fn_sigs: vec![HashMap::new()],
         }
     }
 
@@ -120,13 +124,33 @@ impl CheckState {
     /// 新しいスコープをスタックに積む。
     pub(super) fn push_scope(&mut self) {
         self.scope_stack.push(HashMap::new());
+        self.local_fn_sigs.push(HashMap::new());
     }
 
     /// 現在のスコープをスタックから取り除く。グローバルスコープは取り除かない。
     pub(super) fn pop_scope(&mut self) {
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
+            self.local_fn_sigs.pop();
         }
+    }
+
+    /// 入れ子の関数のシグネチャを今のスコープに積む（同じスコープの同じ名前は多重定義として並ぶ・1-7）。
+    pub(super) fn declare_local_fn(&mut self, name: String, sig: FnSig) {
+        if let Some(top) = self.local_fn_sigs.last_mut() {
+            top.entry(name).or_default().push(sig);
+        }
+    }
+
+    /// 今見えている入れ子の関数のシグネチャ（内側のスコープから引く）。
+    ///
+    /// ⚠ 同じ名前の変数が**より内側**で宣言されていれば、その変数が関数を隠すので `None`。
+    pub(super) fn lookup_local_fn(&self, name: &str) -> Option<&Vec<FnSig>> {
+        let fn_depth = self.local_fn_sigs.iter().rposition(|m| m.contains_key(name))?;
+        if self.lookup_depth(name).is_some_and(|d| d > fn_depth) {
+            return None;
+        }
+        self.local_fn_sigs[fn_depth].get(name)
     }
 
     /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。

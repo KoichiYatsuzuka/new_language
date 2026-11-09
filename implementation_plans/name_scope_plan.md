@@ -155,7 +155,7 @@ Python のモジュールでは関数単位の集合を使うか、判定を変�
 | **1-3** | ✅（2026-11-10・結果は表の下）クラスのメンバーを裸の名前で見せない（1-B）。`Stmt::Field` の腕でクラスのスコープに宣言するのをやめる（頼っているものは 1-1 の結果に従って別の経路にする）。メソッド名が裸で通る経路があれば塞ぐ。例題: 成功例はメソッドから `self.x` / `C.K` で読む形、エラー例（`_error`）は A3〜A6 | 1-1 | 小 |
 | **1-4** | ✅（2026-11-10・結果は表の下）`declared_anywhere` を「モジュールの最上位の束縛」に置き換え、§2 の規則 2 を入れる（1-A）。Python のモジュールは 1-1 の結果に従う。`names.rs` / `check_name_defined` の doc の規則を書き直す。例題: 成功例は B1（前方参照）、エラー例（`_error`）は A1・A2・A7〜A13 と、利用者の報告の形（別の関数のローカルを渡す） | 1-2, 1-3 | 中 |
 | **1-5** | ✅（2026-11-10）1-4 の規則で B2・B3 とも静的な誤りになった（`fn_sigs` で型が引けても判定を通すので B3 も止まる）。[block_scope_error.ar](../examples/basics/block_scope_error.ar) の④（B2）・⑥（B3）。⚠ ⑥は間に `let` を挟んだ形にした（間を挟まずに続く定義どうしはフェーズ 3 で組として呼べるようになるため、その後も誤りのままの形を残す）。入れ子の関数の自己再帰は型検査を通る（実行時の `NoneType` はフェーズ 3）。ゲート: `scan_examples` FAIL 0・`compare_wasm_frontend` 772 / 772。D-1 = (a): B2・B3 を静的な誤りにする（1-4 の規則で自然に誤りになるはずなので、そうなることを確かめてエラー例（`_error`）に足す） | 1-4 | 小 |
-| **1-7** | **関数のシグネチャの表をスコープで分ける**（2026-11-09 に追加）。`fn_sigs`（[registry/builder.rs](../src/type_check/registry/builder.rs)）は名前だけをキーにしたプログラム全体の表で、別々の関数の中の同じ名前の入れ子の関数（`a` の `helper(x: int)` と `b` の `helper(s: str)`）を多重定義としてまとめる。実測: `b` の中の `helper(2)` が静的に止まらず、実行時の `TypeError`。入れ子の関数のシグネチャは、その定義を検査するときにそのスコープへ宣言し、表から引くのは最上位の関数（とモジュールの関数）だけにする。例題: エラー例（`_error`）に上の形 | 1-4 | 小〜中 |
+| **1-7** | ✅（2026-11-10・結果は表の下）**関数のシグネチャの表をスコープで分ける**（2026-11-09 に追加）。`fn_sigs`（[registry/builder.rs](../src/type_check/registry/builder.rs)）は名前だけをキーにしたプログラム全体の表で、別々の関数の中の同じ名前の入れ子の関数（`a` の `helper(x: int)` と `b` の `helper(s: str)`）を多重定義としてまとめる。実測: `b` の中の `helper(2)` が静的に止まらず、実行時の `TypeError`。入れ子の関数のシグネチャは、その定義を検査するときにそのスコープへ宣言し、表から引くのは最上位の関数（とモジュールの関数）だけにする。例題: エラー例（`_error`）に上の形 | 1-4 | 小〜中 |
 | **1-6** | 文書を直す。`type-checking` スキルの未定義名の節、`docs/grammar/02_variables.md` のスコープ規則（静的に検査することを書く）、[for_target_scope_error.ar](../examples/basics/for_target_scope_error.ar) の「型検査には未定義変数の検査が無い」（古い記述。ループ変数の誤りが静的になる）。型検査が変わるので VSIX を作り直す（`make-vsix.ps1`） | 1-4, 1-5 | 小 |
 
 **ゲート**（1-2〜1-5 の各タスクで）: `test_build_gate` / `scan_examples` / `force_gate` / `compare_python_impl` /
@@ -262,6 +262,27 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
 - ゲート（release）: `scan_examples` FAIL 0（TIMEOUT 1 は `bench_ab_native.ar`・負荷）。`force_gate` 0 件。`type_obligations` 退行なし。
   `compare_wasm_frontend` 772 / 772。`repl_session` 同一。`stale_doc_refs` OK。`compare_python_impl` 予期しない差 0（`for_target_scope_error` は
   参照実装も内包表記で止まって一致したので既知の差から外した。理由の文面を 2 件直した）。`cargo test`（debug）1302 passed。
+
+
+#### 1-7 の結果（2026-11-10・✅ 完了）
+
+- レジストリの `fn_sigs` には、関数の本体の中の `fn` / `gen`（入れ子の関数）を載せない（`TypeRegistryBuilder::fn_depth`）。
+  ⚠ テンプレートの入れ子の関数は今までどおり載せる。最上位の `if` などの中の関数は今までどおり載る（深さ 0）。
+- 入れ子の関数のシグネチャは、検査器がその定義を検査するときに作り（`TypeRegistry::sig_of`。ビルダーと同じ
+  `TypeRegistryBuilder::sig_from` を通す）、定義したスコープへ積む（`CheckState::declare_local_fn`。スコープと同じ並びの表）。
+- 検査器が関数のシグネチャを名前で引く所（呼び出しの引数の検査・戻り値の型・関数値の型・デコレータ。9 か所）は
+  `TypeChecker::visible_fn_sigs`（見えている入れ子の関数を先に引き、無ければ最上位の関数）にした。同じ名前の変数が
+  より内側で宣言されていれば、その変数が関数を隠す。
+- 例題: [nested_fn_signature.ar](../examples/basics/nested_fn_signature.ar)（別々の関数の同じ名前の入れ子の関数・最上位の関数を隠す・既定値・入れ子の `gen`）、
+  [nested_fn_signature_error.ar](../examples/basics/nested_fn_signature_error.ar)（2 件。以前はどちらも通った）。
+- 全例題（842 本）で、1-3 の前の exe と**すべての静的な誤り**を比べた: 増えたのは 25 件ですべて誤りの例（1-3〜1-5 の 23 件と
+  上の 2 件）。減ったのは 1 件で、1-3 で意図して緩めた形（`class_member_scope.ar` のフィールドと同じ名前のローカル）。
+- ゲート（release）: `scan_examples` FAIL 1・TIMEOUT 1（`interop/js_proc_values.ar` は 1-3 と同じ LNK1104 の一時ファイルの取り合いで、
+  単独で再実行して成功。`bench_ab_native.ar` は負荷）。`force_gate` 0 件。`type_obligations` 退行なし。`compare_wasm_frontend` 774 / 774。
+  `repl_session` 同一。`stale_doc_refs` OK。`compare_python_impl` 予期しない差は `nested_fn_signature_error` だけ（参照実装は入れ子の関数を
+  静的に検査しない。既知の差に足した）。`cargo test`（debug）1302 passed。
+  ⚠ `scan_examples` の LNK1104（`_tl_cpp_bridge` の一時ファイル）は 3 回の実行で 2 回、別々の例題で出た。cpp の中継のビルドを
+  並列に走らせたときの取り合いと見られる（本計画の変更とは関係ない・単独では毎回成功）。
 
 ### フェーズ 2 — VS Code 拡張（ホバー・定義へ移動・色付け）
 

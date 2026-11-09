@@ -44,6 +44,14 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     /// 「Arrow のクラス」に見えてしまう（実際 `event_cs_handler.ar` で
     /// `Value::CsObject` を `Value::Instance` 前提の op に流して落ちた）。
     foreign_depth: u32,
+    /// 関数（`fn` / `gen` / メソッド）の本体を集めている深さ（name_scope_plan.md の 1-7）。
+    ///
+    /// 1 以上のときに見た `fn` / `gen` は**入れ子の関数**で、`fn_sigs`（名前をキーにしたプログラム全体の表）に
+    /// 載せない。載せると別々の関数の中の同じ名前の入れ子の関数が多重定義としてまとまり（`helper(x: int)` と
+    /// `helper(s: str)`）、`helper(2)` の誤りが静的に止まらなかった。入れ子の関数のシグネチャは、検査器がその定義を
+    /// 検査するときに作って、そのスコープへ宣言する（`CheckState::declare_local_fn`）。
+    /// ⚠ テンプレートの入れ子の関数は今までどおり載せる（実体化が名前で引く）。
+    fn_depth: u32,
     /// 今集めている外部言語のスタブの言語タグ（誤りの文で `C# method` / `Rust method` と呼び分ける・2-5）。
     foreign_lang: Option<String>,
     /// `import[py]` のモジュールの本体を集めている間か（`python_class_names` に載せる・known_bugs.md の #5）。
@@ -283,6 +291,7 @@ impl TypeRegistryBuilder {
             seen_modules: HashSet::new(),
             seen_instances: HashSet::new(),
             foreign_depth: 0,
+            fn_depth: 0,
             foreign_lang: None,
             collecting_python: false,
             cur_scope: 0,
@@ -353,7 +362,9 @@ impl TypeRegistryBuilder {
                         .and_then(InferredType::from_ann)
                         .map(|t| self.resolve_protocol_type(t));
                     let sig = self.sig_of(params, ret);
-                    self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    if self.fn_depth == 0 || !template_params.is_empty() {
+                        self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    }
                     // 実体化呼び出しの引数検査に要る（型変数名と並び）。
                     if !template_params.is_empty() {
                         self.reg.template_params.insert(
@@ -361,7 +372,7 @@ impl TypeRegistryBuilder {
                             template_params.iter().map(|p| p.name.clone()).collect(),
                         );
                     }
-                    self.collect(body);
+                    self.collect_fn_body(body);
                 }
                 // ⚠⚠ **`gen` も関数と同じく登録する**（フェーズ10 10-7）。以前は登録が無く、
                 //    `gen` の名前は `Unresolved` だったので、呼び出しの結果の型が分からず
@@ -376,14 +387,16 @@ impl TypeRegistryBuilder {
                         .and_then(InferredType::from_ann)
                         .map(|t| InferredType::IteratorOf(Box::new(self.resolve_protocol_type(t))));
                     let sig = self.sig_of(params, ret);
-                    self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    if self.fn_depth == 0 || !template_params.is_empty() {
+                        self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    }
                     if !template_params.is_empty() {
                         self.reg.template_params.insert(
                             name.clone(),
                             template_params.iter().map(|p| p.name.clone()).collect(),
                         );
                     }
-                    self.collect(body);
+                    self.collect_fn_body(body);
                 }
                 Stmt::ClassDef {
                     name, bases, base_args, body, template_params, decorators, ..
@@ -441,9 +454,9 @@ impl TypeRegistryBuilder {
                     // class methods themselves must NOT be added to fn_sigs.
                     for s in body.iter() {
                         match s {
-                            Stmt::FnDef { body: method_body, .. } => self.collect(method_body),
+                            Stmt::FnDef { body: method_body, .. } => self.collect_fn_body(method_body),
                             // `gen` メソッドの中の入れ子の関数・`gen` も同じ（10-7）。
-                            Stmt::GenDef { body: method_body, .. } => self.collect(method_body),
+                            Stmt::GenDef { body: method_body, .. } => self.collect_fn_body(method_body),
                             _ => {}
                         }
                     }
@@ -667,6 +680,13 @@ impl TypeRegistryBuilder {
         }
     }
 
+    /// 関数（`fn` / `gen` / メソッド）の本体を集める（中の `fn` / `gen` は入れ子の関数・[`Self::fn_depth`]）。
+    fn collect_fn_body(&mut self, body: &[Stmt]) {
+        self.fn_depth += 1;
+        self.collect(body);
+        self.fn_depth -= 1;
+    }
+
     /// モジュールの本体（修飾名に書き換えた写し）を、そのモジュールの文脈で集める（10-8）。
     fn collect_in_module(&mut self, modpath: &str, idx: usize, body: &[Stmt]) {
         let prev_scope = std::mem::replace(&mut self.cur_scope, idx);
@@ -698,6 +718,16 @@ impl TypeRegistryBuilder {
     /// 最上位（と入れ子）の `fn` / `gen` の仮引数からシグネチャを作る。`ret` は**呼び出しの結果の型**
     /// （`gen` なら `generator[T]`）。
     fn sig_of(&self, params: &[Param], ret: Option<InferredType>) -> FnSig {
+        Self::sig_from(params, ret, &|t| self.resolve_protocol_type(t))
+    }
+
+    /// [`Self::sig_of`] の本体。`resolve` は注釈の型を protocol の型へ読み替える（ビルダーとレジストリで同じ規則）。
+    /// ⚠ 入れ子の関数のシグネチャは検査器が `TypeRegistry::sig_of` で作る（1-7）。ここと**同じ関数**を通すこと。
+    pub(super) fn sig_from(
+        params: &[Param],
+        ret: Option<InferredType>,
+        resolve: &dyn Fn(InferredType) -> InferredType,
+    ) -> FnSig {
         let variadic_param = params.iter().find(|p| p.variadic);
         let open_arity = Self::has_open_arity(params);
         FnSig {
@@ -715,7 +745,7 @@ impl TypeRegistryBuilder {
                         .type_ann
                         .as_deref()
                         .and_then(InferredType::from_ann)
-                        .map(|t| self.resolve_protocol_type(t));
+                        .map(resolve);
                     (p.name.clone(), ty)
                 })
                 .collect(),
@@ -944,7 +974,7 @@ impl TypeRegistryBuilder {
                         variadic_type: variadic_param.and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann)),
                     };
                     tmethods.entry(mname.clone()).or_default().push(sig);
-                    self.collect(method_body);
+                    self.collect_fn_body(method_body);
                 }
                 Stmt::Field { name: fname, kind, type_ann, .. } => {
                     let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
