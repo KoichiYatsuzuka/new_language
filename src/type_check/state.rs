@@ -93,6 +93,9 @@ pub(super) struct CheckState {
     /// 読めない。以前は宣言していたので、メソッドの中の裸の `font` がフィールドの型の変数として引けた
     /// （§0 の A3）うえ、同じ名前のローカル（`let n = ..`）が再宣言の誤りになっていた。
     class_body_depths: Vec<usize>,
+    /// **後で実行される本体**（`fn` / `gen` / メソッドの本体）の入れ子の深さ（name_scope_plan.md の 1-4）。
+    /// 1 以上なら、まだ束縛していないモジュールの最上位の名前を読んでよい（前方参照・`check_name_defined`）。
+    deferred_depth: usize,
 }
 
 impl CheckState {
@@ -108,6 +111,7 @@ impl CheckState {
             block_expr_expected: Vec::new(),
             type_params: Vec::new(),
             class_body_depths: Vec::new(),
+            deferred_depth: 0,
         }
     }
 
@@ -241,6 +245,21 @@ impl CheckState {
     /// [`Self::enter_class_body`] の印を外す。
     pub(super) fn exit_class_body(&mut self) {
         self.class_body_depths.pop();
+    }
+
+    /// 後で実行される本体（`fn` / `gen` / メソッドの本体）の検査に入る。抜けるときに [`Self::exit_deferred_body`]。
+    pub(super) fn enter_deferred_body(&mut self) {
+        self.deferred_depth += 1;
+    }
+
+    /// [`Self::enter_deferred_body`] を戻す。
+    pub(super) fn exit_deferred_body(&mut self) {
+        self.deferred_depth -= 1;
+    }
+
+    /// 後で実行される本体の中か。
+    pub(super) fn in_deferred_body(&self) -> bool {
+        self.deferred_depth > 0
     }
 
     /// 今のスコープがクラス・trait の本体の直下か（メソッドの本体・入れ子の関数の中は偽）。

@@ -2,6 +2,7 @@
 #
 # `if` / `while` / `for` / `match` / `block:` / `try` / `except` の本体で宣言した名前は、
 # そのブロックを抜けると見えない。宣言より前からも見えない（docs/grammar/02_variables.md）。
+# 外から読むと静的エラー（name_scope_plan.md の 1-4）。
 # ⚠ 以前は**関数の中でだけ漏れていた**（ブロックの後で中の値が読めた・一度も実行されなかった `let` が
 #   `None`・ループで宣言より前の読みが前の周回の値）。誤りの形は
 #   → [block_scope_error.ar](block_scope_error.ar)

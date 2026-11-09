@@ -153,7 +153,7 @@ Python のモジュールでは関数単位の集合を使うか、判定を変�
 | **1-1** | ✅（2026-11-10・結果は表の下）**影響の測定**（コードは残さない）。§2 の規則を試しに入れたビルドで、9 カテゴリ・`archived/`・`practical_examples/`・import 先（`.ar` / `import[py]` の変換結果）すべての例題に型検査をかけ、新しく出る `UndefinedName` を全部並べて 3 つに分ける。① 例題の本当の誤り ② **型検査器の宣言漏れ**（宣言しているはずの束縛を宣言していない。`match` の束縛・組の分解・`with .. as`・関数の中の `static mut`・内包表記・メタ展開が作る名前など、見つかったもの） ③ D-1 の形（B2・B3）。あわせて確かめる: メソッド名（A6）・入れ子の関数（A7）が通る経路（`declared_anywhere` か `fn_sigs` か）、`Stmt::Field` の `declare` に頼っているもの（束縛の記録 `BindingRecord` や拡張のホバー・インレイヒントなど）、Python のモジュールの扱い（§2 の ⚠）、REPL（前の入力の名前が大域に入っているか）。結果を本書に書く | なし | 中 |
 | **1-2** | ⇒ **対象なし**（1-1 で ② が 0 件）。1-1 の ② を埋める。型検査器が束縛をスコープに宣言するようにする。宣言の漏れは型の検査の漏れでもあるので、`type_obligations` の退行を見る | 1-1 | 1-1 次第 |
 | **1-3** | ✅（2026-11-10・結果は表の下）クラスのメンバーを裸の名前で見せない（1-B）。`Stmt::Field` の腕でクラスのスコープに宣言するのをやめる（頼っているものは 1-1 の結果に従って別の経路にする）。メソッド名が裸で通る経路があれば塞ぐ。例題: 成功例はメソッドから `self.x` / `C.K` で読む形、エラー例（`_error`）は A3〜A6 | 1-1 | 小 |
-| **1-4** | `declared_anywhere` を「モジュールの最上位の束縛」に置き換え、§2 の規則 2 を入れる（1-A）。Python のモジュールは 1-1 の結果に従う。`names.rs` / `check_name_defined` の doc の規則を書き直す。例題: 成功例は B1（前方参照）、エラー例（`_error`）は A1・A2・A7〜A13 と、利用者の報告の形（別の関数のローカルを渡す） | 1-2, 1-3 | 中 |
+| **1-4** | ✅（2026-11-10・結果は表の下）`declared_anywhere` を「モジュールの最上位の束縛」に置き換え、§2 の規則 2 を入れる（1-A）。Python のモジュールは 1-1 の結果に従う。`names.rs` / `check_name_defined` の doc の規則を書き直す。例題: 成功例は B1（前方参照）、エラー例（`_error`）は A1・A2・A7〜A13 と、利用者の報告の形（別の関数のローカルを渡す） | 1-2, 1-3 | 中 |
 | **1-5** | D-1 = (a): B2・B3 を静的な誤りにする（1-4 の規則で自然に誤りになるはずなので、そうなることを確かめてエラー例（`_error`）に足す） | 1-4 | 小 |
 | **1-7** | **関数のシグネチャの表をスコープで分ける**（2026-11-09 に追加）。`fn_sigs`（[registry/builder.rs](../src/type_check/registry/builder.rs)）は名前だけをキーにしたプログラム全体の表で、別々の関数の中の同じ名前の入れ子の関数（`a` の `helper(x: int)` と `b` の `helper(s: str)`）を多重定義としてまとめる。実測: `b` の中の `helper(2)` が静的に止まらず、実行時の `TypeError`。入れ子の関数のシグネチャは、その定義を検査するときにそのスコープへ宣言し、表から引くのは最上位の関数（とモジュールの関数）だけにする。例題: エラー例（`_error`）に上の形 | 1-4 | 小〜中 |
 | **1-6** | 文書を直す。`type-checking` スキルの未定義名の節、`docs/grammar/02_variables.md` のスコープ規則（静的に検査することを書く）、[for_target_scope_error.ar](../examples/basics/for_target_scope_error.ar) の「型検査には未定義変数の検査が無い」（古い記述。ループ変数の誤りが静的になる）。型検査が変わるので VSIX を作り直す（`make-vsix.ps1`） | 1-4, 1-5 | 小 |
@@ -236,7 +236,32 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
   単独で再実行して成功。`bench_ab_native.ar` の時間切れは負荷）。`force_gate` 0 件。`type_obligations` 退行なし（149 件中 STATIC 147）。
   `compare_wasm_frontend` 772 / 772 一致。`repl_session` 同一。`cargo test`（debug）1302 passed。`compare_python_impl` 予期しない差は上の 1 件だけ（既知の差に足した）。
   ⚠ 同じ実行で `interop/cpp_raw_pointers.ar` の既知の差が「一致した（古い）」と出た。Rust 側の出力は変わっておらず
-  （型検査を通って最後まで動く）、参照実装の側の環境による揺れ。今回は触らない。
+  （型検査を通って最後まで動く）、参照実装の側の環境による揺れ。今回は触らない（1-4 の実行では出なかった）。
+
+#### 1-4 の結果（2026-11-10・✅ 完了）
+
+- `declared_anywhere`（プログラム全体で束縛される名前の集合）をやめた。見えない名前を通すのは、§2 の規則 1 の名前
+  （組み込み・クラス / trait / protocol / テンプレート・型変数・`Self`・`_`）と、規則 2 の**後で実行される本体の中から読む、
+  このモジュールの最上位の束縛**（`CheckState::in_deferred_body`・1-3 で入れた `module_toplevel`）だけ。
+- ⚠ §2 の規則 1 の「最上位の関数の名前」は**特別扱いをやめた**。最上位の関数は定義した時点からスコープにあり、その前に
+  読めるのは後で実行される本体の中だけ（規則 2 に入る）。実行時も関数を巻き上げない（最上位の `f()` の後の `fn f` は
+  `NameError`）ので、規則 1 のままだと A8 と同じ形の取りこぼしが残った。
+- 関数表（`fn_sigs`）で型が引けても、スコープに無い名前は判定を通す（`Expr::Ident`）。A7（別の関数の入れ子の関数）・
+  B3（後で定義する入れ子の関数）はこれで止まる。
+- 同じ文で同じ名前の「見えない名前」の誤りは 1 回だけ出す（`already_reported_undefined`）。`n = n + 1` の左辺と右辺が
+  2 回出していたのと、§5 R-2 の 2 回出る件（`mh.enable(1)`）がこれで直った（R-2 の位置が `(` を指す件は残る）。
+- 例題: 成功例 [name_resolution.ar](../examples/basics/name_resolution.ar)（メソッドからの前方参照を足した）。エラー例
+  [name_resolution_error.ar](../examples/basics/name_resolution_error.ar)（9 件: 利用者の報告の形・A2・A7・A8・関数の巻き上げ・A13・宣言していない名前への代入）、
+  [block_scope_error.ar](../examples/basics/block_scope_error.ar)（5 件: A12・B2・`except .. as e`）、
+  [for_target_scope_error.ar](../examples/basics/for_target_scope_error.ar)（3 件: A9・A11）。後の 2 本は実行時の `NameError` の例だったので、
+  全部の形を本文に書いて静的な誤りの例にした。
+- 全例題（842 本・`archived/`・`practical_examples/` を含む）で、1-3 の前の exe と「is not defined」の誤りを比べた: **増えたのは
+  22 件ですべて誤りの例**（上の 4 本＋[class_member_scope_error.ar](../examples/classes/class_member_scope_error.ar)・
+  [global_assign_from_fn_error.ar](../examples/basics/global_assign_from_fn_error.ar)・`archived/scope_test.ar`）。正しい例題で増えたものは 0、減ったものは 0。
+  `global_assign_from_fn_error.ar` は実行時の経路の例だったが静的な誤りになった（実行時の経路は型検査を通さない単体テストが確かめる）。
+- ゲート（release）: `scan_examples` FAIL 0（TIMEOUT 1 は `bench_ab_native.ar`・負荷）。`force_gate` 0 件。`type_obligations` 退行なし。
+  `compare_wasm_frontend` 772 / 772。`repl_session` 同一。`stale_doc_refs` OK。`compare_python_impl` 予期しない差 0（`for_target_scope_error` は
+  参照実装も内包表記で止まって一致したので既知の差から外した。理由の文面を 2 件直した）。`cargo test`（debug）1302 passed。
 
 ### フェーズ 2 — VS Code 拡張（ホバー・定義へ移動・色付け）
 
@@ -413,6 +438,8 @@ B4 の `for` の変数の解放（R-1 の「仕組み」3）が、Python のモ�
 R-1 で「Arrow の関数だけ」に分けるときに、こちらも Python の関数から外せば直る。
 
 ### R-2. 未定義の受け手でメソッドを呼ぶと、同じ誤りが 2 回出る
+
+⇒ **2 回出る件は 1-4 で直った**（`already_reported_undefined`）。位置が `(` を指す件は残る。
 
 同じ誤りが 2 回出て、位置が受け手ではなく `(` を指す（最上位の `mh.enable(1)` → `1:10 name 'mh' is not defined`
 が 2 行。関数の中でも同じ。利用者のファイルでは `80:18` が 2 行）。

@@ -459,7 +459,7 @@ $knownDiff = @{
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'
     'variable'                       = 'py 古い: static mut の扱い'
     'block_return_typecheck_error'   = 'py 古い: block_return の実行時型検査が無い（#35 で Rust に追加）'
-    'global_assign_from_fn_error'    = 'py: NameError の文言・traceback 形式が違う'
+    'global_assign_from_fn_error'    = 'py: 宣言していない名前への代入が実行時の NameError（before を出してから止まる）。Rust は静的な誤り（name_scope_plan.md の 1-3）'
     # ⚠ B1-a: ハッシュ不可能なキーを **py はまだ黙って捨てる**（Rust は TypeError）。
     #    実測: `d[(1,2)] = "x"` の後の行まで実行され「ここには到達しない」が出る＝まさに B1 の症状。
     'dict_key_types_error'           = 'py 古い: None キーを黙って受け入れる（実測: 次の行の「ここには到達しない」が出る）。Rust は仕様で禁止'
@@ -476,8 +476,7 @@ $knownDiff = @{
     'let_immutability_error'         = 'py: mut パラメータへ let を渡す静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止）'
     # ⚠ B4 規則 1（for ターゲットの再束縛禁止）で新設。**実測して確認済み**。
     'for_target_shadow_error'        = 'py: for ターゲットが外側の束縛を覆う静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止）'
-    'for_target_scope_error'         = 'py: 両方とも NameError になるが**出力形式が違う**（実測：py は stdout へ RuntimeError: NameError: name ... を 1 行、Rust はトレースバック）'
-    'block_scope_error'              = 'py: 両方とも NameError になるが**出力形式が違う**（for_target_scope_error と同じ。name_scope_plan.md の R-1）'
+    'block_scope_error'              = 'py: ブロックの外からの読みが実行時の NameError。Rust は静的な誤り（name_scope_plan.md の 1-4。R-1 の当時はどちらも NameError で出力形式だけが違った）'
     # ⚠ name_scope_plan.md の 1-3（クラスのメンバーを裸の名前で見せない）で新設。**実測して確認済み**。
     'class_member_scope'             = 'py: メンバーをクラスのスコープの変数として扱うので、フィールドと同じ名前のローカル（let font = ..）が StaticTypeError（already declared）になり何も出力しない。Rust はメンバーとぶつからない'
     # ⚠ B10 系統（再帰の深さ上限）で新設。**実測して確認済み**。

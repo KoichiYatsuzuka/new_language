@@ -150,7 +150,7 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
-                } else if self.fn_value_type(name).is_none() {
+                } else {
                     // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
                     // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
                     // （クラスの `static mut` を裸で書く）が静的に通っていた。
@@ -210,7 +210,7 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
-                } else if self.fn_value_type(name).is_none() {
+                } else {
                     // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
                     // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
                     // （クラスの `static mut` を裸で書く）が静的に通っていた。
@@ -2111,7 +2111,9 @@ impl TypeChecker {
         //    false へ張り替えることでそこの `yield` もエラーになる。
         let prev_gen = self.state.enter_gen_body(false);
         // ⚠ ブロック式の照合先も**継承しない**（`with_fn_body` の doc・タスク 5.2）。
+        self.state.enter_deferred_body();
         self.with_fn_body(|c| c.check_stmts(body));
+        self.state.exit_deferred_body();
         self.state.exit_gen_body(prev_gen);
         self.state.exit_fn(prev_fn);
         self.state.pop_type_params(saved_tp);
@@ -2189,7 +2191,9 @@ impl TypeChecker {
             name.to_string(),
             yield_type.and_then(InferredType::from_ann),
         );
+        self.state.enter_deferred_body();
         self.with_fn_body(|c| c.check_stmts(body));
+        self.state.exit_deferred_body();
         self.state.exit_fn(prev_fn);
         self.state.exit_gen_body(prev_gen);
         self.state.pop_type_params(saved_tp);

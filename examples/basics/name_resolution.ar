@@ -2,9 +2,11 @@
 #
 # 対になる誤りの例: name_resolution_error.ar
 #
-# 型検査は**どこにも無い名前**を静的エラーにする（以前は実行時の NameError まで分からなかった）。
-# 判定は保守的で、プログラムのどこかで束縛される名前・組み込みの名前（`print` / `range` / `Ok` …）・
-# クラスや関数の名前は通す。後で宣言される最上位の名前を関数の中から読むのも書ける。
+# 型検査は**ここから見えない名前**を静的エラーにする（以前は実行時の NameError まで分からなかった）。
+# 見えるのは、スコープにある名前・組み込みの名前（`print` / `range` / `Ok` …）・クラスの名前と、
+# **後で実行される本体（関数・`gen`・メソッド）の中から読む、モジュールの最上位の名前**（後で束縛するものも。前方参照）。
+# ⚠ 最上位の文そのものは順に実行されるので、後で束縛する名前（関数も）を先に読むのは誤り（name_resolution_error.ar）。
+# ⚠ 規則は implementation_plans/name_scope_plan.md の §2（以前は「プログラムのどこかで束縛される名前」を全部通していた）。
 
 fn total() -> int:
     # LIMIT と helper はこの関数より後で宣言される
@@ -29,3 +31,12 @@ match 3:
         print("one")
     case _:
         print("other")            # other
+
+# メソッドの中からも、後で束縛する最上位の名前を読める
+class Greeter:
+    fn greet(self) -> str:
+        return GREETING + NAME
+
+let GREETING = "hello, "
+let NAME = "arrow"
+print(Greeter().greet())          # hello, arrow

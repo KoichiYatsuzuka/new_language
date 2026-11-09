@@ -127,9 +127,6 @@ pub struct TypeChecker {
     /// `check_attr_assign` が立て、`infer_attr` が入口で取り去る。`__setattr__` を上書きした Python のクラスへの代入は
     /// 上書きが受けるので、宣言していない名前も書ける（読みは今までどおり宣言した名前だけ）。
     attr_is_assign_target: bool,
-    /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
-    /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
-    declared_anywhere: std::collections::HashSet<String>,
     /// 検査中のモジュールの**最上位の束縛**（`names::collect_toplevel_bindings`・name_scope_plan.md の 1-3 / 1-4）。
     /// 末尾が今のモジュール（入口のファイルで始まり、`annotate_module_body` が import 先の分を積む）。
     module_toplevel: Vec<std::collections::HashSet<String>>,
@@ -315,11 +312,6 @@ impl TypeChecker {
             },
             attr_is_callee: false,
             attr_is_assign_target: false,
-            declared_anywhere: {
-                let mut set = std::collections::HashSet::new();
-                names::collect_declared_anywhere(stmts, &mut set);
-                set
-            },
             module_toplevel: vec![names::collect_toplevel_bindings(stmts)],
             py_class_factories: HashMap::new(),
             ffi_unsupported: HashMap::new(),
