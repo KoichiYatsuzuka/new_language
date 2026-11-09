@@ -1,7 +1,10 @@
-# py_type_alias.ar — Python の型エイリアス（`type X = T`）を使うモジュールを CPython で動かす
+# py_type_alias.ar — Python の型の別名を使うモジュールを CPython で動かす（型スタブは別名を展開する・pandas_import_plan.md の 6-10）
 #
-# `type X = T` は CPython 3.12 の文で、CPython が実行する。型スタブは型エイリアスを読まない（`X` を注釈に使った関数の
-# 引数・戻り値の型は `Any`）。Arrow の list は `=> py_list[int]` で写して渡す。
+# 型スタブは型の別名を読んで、注釈の中で展開する: `type X = T`（CPython 3.12 の文）・`X = 型の式`・`X: TypeAlias = 型の式`。
+# 型変数を持つ別名（`Couple = tuple[_T, _T]`）は型引数を当てはめ（`Couple[str]` は `tuple[str, str]`）、別名を使う別名と、
+# ほかのモジュールから import した別名もたどる。引数は展開した型で静的に検査される（`py_type_alias_error.ar`）。
+# ⚠ 以前は型スタブが別名を読まず、別名を書いた引数・戻り値の型は `Any`（何も検査しない）だった。
+# Arrow の list は `=> py_list[int]` で写して渡す。
 
 import[py] test_modules.py_type_alias as m
 import[py] test_modules.py_type_alias_other as o
@@ -24,3 +27,12 @@ print(m.chained(xs => py_list[int]))
 mut s = "hello"
 print(o.size(s))
 # 5
+
+# ── ⑤ 型変数を持つ別名（`Couple[str]` は `tuple[str, str]`）と `TypeAlias` ──
+print(m.swap(("a", "b")), m.tally(4))
+# ('b', 'a') 5
+
+# ── ⑥ ほかのモジュールの別名（`Grid = list[list[Scalar]]`・`Scalar = Union[int, float]`） ──
+mut g = [[1, 2] => py_list[int], [3, 4] => py_list[int]] => py_list[py_list[int]]
+print(m.cell(g, 1))
+# 4

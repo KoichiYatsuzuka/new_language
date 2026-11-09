@@ -1443,11 +1443,42 @@ impl TypeChecker {
         args: &[CallArg],
         arg_data: &[(Option<String>, InferredType)],
     ) -> Option<InferredType> {
-        let chosen = self.py_overloads.get(key)?.iter().find(|v| Self::py_overload_matches(v, args))?.clone();
+        // 引数の型も当てはまる最初の形（CPython の型の検査器と同じ・pandas_import_plan.md の 6-10）。型で当てはまる形が無ければ、
+        // 個数などで当てはまる最初の形で検査して誤りを出す。⚠ 以前は型を見なかったので、numpy の `np.array([1.0])` が
+        // 2 つ目の形（`_ArrayLike[_SCT]`・要素が配列らしい物）に決まり、型が付いてから偽の誤りになった
+        let forms = self.py_overloads.get(key)?;
+        let chosen = forms
+            .iter()
+            .find(|v| Self::py_overload_matches(v, args) && self.py_overload_types_match(v, arg_data))
+            .or_else(|| forms.iter().find(|v| Self::py_overload_matches(v, args)))?
+            .clone();
         if let Some(fn_params) = &chosen.fn_params {
             self.check_fn_type_call(shown, args, arg_data, fn_params);
         }
         Some(chosen.ret)
+    }
+
+    /// 引数の型が `@overload` の形 `v` の仮引数の型に当てはまるか（報告しない・[`Self::select_py_overload_of`]）。可変長を持つ形
+    /// （`fn_params` が無い）は型を見ない。
+    fn py_overload_types_match(&self, v: &crate::type_check::PyOverload, arg_data: &[(Option<String>, InferredType)]) -> bool {
+        let Some(params) = &v.fn_params else { return true };
+        let mut positional = 0usize;
+        for (key, ty) in arg_data {
+            let param = match key.as_deref() {
+                Some("...") => continue,
+                Some(k) => params.iter().find(|p| p.name == k),
+                None => {
+                    positional += 1;
+                    params.get(positional - 1)
+                }
+            };
+            if let Some(p) = param {
+                if !self.types_compatible(ty, &p.ty, Site::Other) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// 呼び出し `args` が `@overload` の形 `v` に当てはまるか（[`Self::select_py_overload`]）。

@@ -43,7 +43,7 @@
 #[cfg(test)]
 pub(crate) fn extract_py_type_stubs(source: &str) -> Vec<crate::ast::Stmt> {
     let mut stmts = extract_py_type_stubs_raw(source);
-    py_unknown_types_to_any(&mut stmts);
+    py_unknown_types_to_any(&mut stmts, &py_type_aliases(source));
     stmts
 }
 
@@ -169,6 +169,193 @@ pub(crate) fn extract_py_type_stubs_raw(source: &str) -> Vec<crate::ast::Stmt> {
     stmts
 }
 
+/// 型スタブの型の別名（`ArrayLike = _DualArrayLike[dtype[Any], Union[bool, int]]`・pandas_import_plan.md の 6-10）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PyTypeAlias {
+    /// 型変数（中身に現れた順・`NDArray[float64]` の `float64` が入る所）。
+    pub(crate) params: Vec<String>,
+    /// 中身（Arrow の型の綴り・`py_type_to_arrow` で読んだもの。よその名前を `Any` にする前）。
+    pub(crate) body: String,
+}
+
+/// モジュールの型変数（`_T = TypeVar("_T")`・`T = typing.TypeVar(..)`）の名前。
+pub(crate) fn py_type_vars(source: &str) -> std::collections::HashSet<String> {
+    source
+        .lines()
+        .filter(|l| py_line_indent(l) == 0)
+        .filter_map(|l| {
+            let (name, rhs) = py_strip_comment(l).split_once('=')?;
+            let rhs = rhs.trim();
+            let call = rhs.strip_prefix("typing.").unwrap_or(rhs);
+            let name = name.trim();
+            (call.starts_with("TypeVar(") && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// モジュールの型の別名（最上位の `X = 型の式` / `X: TypeAlias = 型の式`。複数行の `Union[...]` も読む・6-10）。
+///
+/// 型の式と見なすのは、識別子で始まり、括弧の外に呼び出し（`(`）・代入の並び（`,`）が無いもの。値の代入（`MAX = 10` /
+/// `x = f()` / `__all__ = [..]`）は拾わない。型変数（[`py_type_vars`]）を中身に現れた順に別名の型引数にする（PEP 484）。
+pub(crate) fn py_type_aliases(source: &str) -> std::collections::HashMap<String, PyTypeAlias> {
+    let type_vars = py_type_vars(source);
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
+        if py_line_indent(line) != 0 {
+            continue;
+        }
+        let text = py_strip_comment(line).trim_end();
+        let Some((lhs, rhs)) = text.split_once('=') else { continue };
+        if rhs.starts_with('=') || lhs.ends_with(['!', '<', '>']) {
+            continue;
+        }
+        // Python 3.12 の `type X = T` / `type X[T] = ...`（型引数は書いたもの）
+        let mut declared_params: Option<Vec<String>> = None;
+        let (name, explicit) = if let Some(rest) = lhs.trim().strip_prefix("type ") {
+            let rest = rest.trim();
+            match rest.split_once('[') {
+                Some((n, ps)) => {
+                    declared_params = Some(
+                        ps.trim_end_matches(']')
+                            .split(',')
+                            .map(|p| p.split(':').next().unwrap_or("").trim().to_string())
+                            .filter(|p| !p.is_empty())
+                            .collect(),
+                    );
+                    (n.trim(), true)
+                }
+                None => (rest, true),
+            }
+        } else {
+            match lhs.split_once(':') {
+            Some((n, ann)) => {
+                let ann = ann.trim();
+                if !matches!(ann, "TypeAlias" | "typing.TypeAlias" | "typing_extensions.TypeAlias") {
+                    continue;
+                }
+                (n.trim(), true)
+            }
+            None => (lhs.trim(), false),
+            }
+        };
+        if name.is_empty() || name.starts_with("__") || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        // 括弧が閉じるまで続きの行を足す
+        let mut rhs = rhs.trim().to_string();
+        let depth = |s: &str| s.chars().fold(0i32, |d, c| d + i32::from(matches!(c, '[' | '(')) - i32::from(matches!(c, ']' | ')')));
+        while depth(&rhs) > 0 && i < lines.len() {
+            rhs.push(' ');
+            rhs.push_str(py_strip_comment(lines[i]).trim());
+            i += 1;
+        }
+        let rhs = py_unquote(rhs.trim()).trim().to_string();
+        if !explicit && !py_looks_like_type(&rhs) {
+            continue;
+        }
+        let body = py_type_to_arrow(&rhs);
+        let params = declared_params.unwrap_or_else(|| {
+            let mut params: Vec<String> = Vec::new();
+            for w in body.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                if type_vars.contains(w) && !params.iter().any(|p| p == w) {
+                    params.push(w.to_string());
+                }
+            }
+            params
+        });
+        out.insert(name.to_string(), PyTypeAlias { params, body });
+    }
+    out
+}
+
+/// 代入の右辺が型の式に見えるか（[`py_type_aliases`]）。識別子で始まり、括弧の外に呼び出し・並びが無い。
+fn py_looks_like_type(rhs: &str) -> bool {
+    if !rhs.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+        return false;
+    }
+    let mut depth = 0i32;
+    for c in rhs.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            '(' | '{' | '=' => return false,
+            ',' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// 型の綴り `ty` の中の別名を展開する（型引数は別名の型変数へ当てはめる・型引数を書かない別名の型変数は `Any`・6-10）。
+/// 別名の中の別名も展開する（深すぎれば `Any`）。
+pub(crate) fn py_expand_aliases(
+    ty: &str,
+    aliases: &std::collections::HashMap<String, PyTypeAlias>,
+    depth: u32,
+) -> String {
+    if aliases.is_empty() {
+        return ty.to_string();
+    }
+    let chars: Vec<char> = ty.chars().collect();
+    let mut out = String::with_capacity(ty.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if !(c.is_alphanumeric() || c == '_' || c == '.') {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
+            i += 1;
+        }
+        let word: String = chars[start..i].iter().collect();
+        let Some(alias) = aliases.get(&word) else {
+            out.push_str(&word);
+            continue;
+        };
+        // 型引数（`[...]`）
+        let mut args: Vec<String> = Vec::new();
+        if chars.get(i) == Some(&'[') {
+            let open = i;
+            let mut d = 0;
+            while i < chars.len() {
+                match chars[i] {
+                    '[' => d += 1,
+                    ']' => {
+                        d -= 1;
+                        if d == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let inner: String = chars[open + 1..i.saturating_sub(1)].iter().collect();
+            args = split_top_level(&inner, ',').into_iter().map(|a| py_expand_aliases(a, aliases, depth + 1)).collect();
+        }
+        if depth > 8 {
+            out.push_str("Any");
+            continue;
+        }
+        let mut body = alias.body.clone();
+        for (k, p) in alias.params.iter().enumerate() {
+            let arg = args.get(k).cloned().unwrap_or_else(|| "Any".to_string());
+            body = py_replace_type_word(&body, p, &arg);
+        }
+        out.push_str(&py_expand_aliases(&body, aliases, depth + 1));
+    }
+    out
+}
+
 /// `@overload` の形に付ける印（本体の宣言の本体の中の入れ子の宣言のデコレータ）。型検査が呼び出しで形を選ぶ（1-3）。
 pub(crate) const PY_OVERLOAD_MARK: &str = "py-overload";
 
@@ -265,7 +452,10 @@ pub(crate) fn py_merge_base_members(class: &mut crate::ast::Stmt, base: &crate::
 /// ⚠ 以前は大文字始まりの名前をそのままクラスの型にしていたので、引数に型を付けた 7-30 で `plt.pie([..])` が
 ///   `expects 'ArrayLike' but got 'list'` の偽の静的エラーになった。
 /// `.py` の抽出（`extract_py_type_stubs`）と `.pyi` の変換（`build_py_type_body`）の両方の結果に使う。
-pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
+pub(crate) fn py_unknown_types_to_any(
+    stmts: &mut [crate::ast::Stmt],
+    aliases: &std::collections::HashMap<String, PyTypeAlias>,
+) {
     use crate::ast::Stmt;
     // このモジュール（とたどって足した宣言）のクラスと protocol（6-9）
     let known: std::collections::HashSet<String> = stmts
@@ -279,7 +469,8 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
         .iter()
         .filter_map(|s| if let Stmt::ProtocolDef { name, .. } = s { Some(name.clone()) } else { None })
         .collect();
-    let fix = |t: &mut String| *t = py_type_names_to_any(t, &known, &protocols);
+    // 型の別名は先に展開する（6-10）
+    let fix = |t: &mut String| *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &known, &protocols);
     /// 関数の注釈に `fix` を当てる。⚠ 本体の中の `@overload` の各形も同じ（以前は本体の宣言だけで、`np.argmax(a)` が形の
     /// `a: ArrayLike` と照合されて偽の誤りになった・pandas_import_plan.md の 6-2）。
     fn fix_fn(st: &mut Stmt, fix: &dyn Fn(&mut String)) {
@@ -303,7 +494,8 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
             Stmt::ProtocolDef { template_params, body, .. } => {
                 let mut scope = known.clone();
                 scope.extend(template_params.iter().map(|p| p.name.clone()));
-                let fix_p = |t: &mut String| *t = py_type_names_to_any(t, &scope, &protocols);
+                let fix_p =
+                    |t: &mut String| *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &scope, &protocols);
                 for m in body.iter_mut() {
                     match m {
                         Stmt::FnDef { .. } => fix_fn(m, &fix_p),
@@ -1224,8 +1416,10 @@ fn py_type_to_arrow(ann: &str) -> String {
     if let Some((base, inner)) = a.strip_suffix(']').and_then(|s| s.split_once('[')) {
         let base_text = base.trim();
         let base = base_text.rsplit('.').next().unwrap_or("").trim();
-        let raw_args = split_top_level(inner, ',');
-        let args: Vec<String> = raw_args.iter().map(|t| py_type_to_arrow(t)).collect();
+        // ⚠ 最後のカンマ（複数行に書いた `Union[int, str,]`）の後の空の型引数は数えない
+        let raw_args: Vec<&str> = split_top_level(inner, ',').into_iter().filter(|t| !t.trim().is_empty()).collect();
+        // 型引数の中の前方参照（`_SupportsArray["dtype[_ScalarType]"]`）も読む
+        let args: Vec<String> = raw_args.iter().map(|t| py_type_to_arrow(py_unquote(t.trim()))).collect();
         return match (base, args.as_slice()) {
             ("Optional", [t]) => union_of(vec![t.clone(), "None".to_string()]),
             // 大域変数・クラスの属性の印（PEP 591 / PEP 526）: 型は中身
@@ -1588,6 +1782,47 @@ class C(B):
         assert_eq!(arrow_type("Mapping[str]"), "Any", "wrong number of type arguments");
         assert_eq!(arrow_type("Sized[int]"), "Any", "Sized takes no type arguments");
         assert_eq!(arrow_type("np.Sized"), "Any", "another module's Sized is not the built-in protocol");
+    }
+
+    /// 型の別名（`X = 型の式` / `X: TypeAlias = ..` / `type X[T] = ..`・複数行）を集め、注釈で展開する（6-10）。型変数は中身に現れた順の
+    /// 型引数。値の代入（`MAX = 10` / `f = g()` / `__all__ = [..]`）は別名ではない。
+    #[test]
+    fn type_aliases_are_expanded() {
+        use crate::ast::Stmt;
+        let src = "from typing import TypeAlias, TypeVar, Union
+_T = TypeVar('_T')
+IntList = list[int]
+Pair = tuple[_T, _T]
+Number: TypeAlias = Union[int, float]
+Nested = Union[
+    int,
+    IntList,
+]
+type Grid[T] = list[list[T]]
+MAX = 10
+helper = make()
+__all__ = ['f']
+def f(a: IntList, b: Pair[str], c: Number, d: Nested, e: Grid[int], g: Pair) -> None: ...
+";
+        let aliases = py_type_aliases(src);
+        assert_eq!(aliases.get("Pair").map(|a| a.params.clone()), Some(vec!["_T".to_string()]));
+        assert!(!aliases.contains_key("MAX") && !aliases.contains_key("helper") && !aliases.contains_key("__all__"));
+        let stmts = extract_py_type_stubs(src);
+        let Some(Stmt::FnDef { params, .. }) = stmts.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "f")) else {
+            panic!("no f");
+        };
+        let ann: Vec<&str> = params.iter().filter_map(|p| p.type_ann.as_deref()).collect();
+        assert_eq!(
+            ann,
+            [
+                "py_list[int]",
+                "tuple[str, str]",
+                "Union[int, float]",
+                "Union[int, py_list[int]]",
+                "py_list[py_list[int]]",
+                "tuple[Any, Any]",
+            ]
+        );
     }
 
     /// `class X(Protocol[_T_co])` は Arrow の protocol（型変数は型引数・`__init__` は要求に入れない）。本体の注釈の型変数と、

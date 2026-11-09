@@ -1,0 +1,15 @@
+# py_type_alias_error.ar — 型スタブの別名を展開した型と合わない値は静的な誤り（pandas_import_plan.md の 6-10）
+#
+# `Couple[str]` は `tuple[str, str]`、`Count` は `int`、`type Name = str` は `str`。以前は別名を書いた引数が `Any` だったので
+# 何も検査されなかった。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   argument 0 of 'test_modules.py_type_alias.swap' expects 'tuple[str, str]' but got 'tuple[int, int]'
+#   argument 0 of 'test_modules.py_type_alias.tally' expects 'int' but got 'str'
+#   argument 0 of 'test_modules.py_type_alias.greet' expects 'str' but got 'int'
+
+import[py] test_modules.py_type_alias as m
+
+print(m.swap((1, 2)))
+print(m.tally("x"))
+print(m.greet(5))

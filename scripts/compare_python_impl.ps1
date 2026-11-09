@@ -278,6 +278,7 @@ $knownDiff = @{
     'py_typing_protocols_error'      ='Rust: 型スタブの typing の型の静的な誤り（6-8）。py: impl_python は型スタブの protocol を読まない'
     'py_protocol_classes'            ='Rust: Python の Protocol のクラスは Arrow の protocol（pandas_import_plan.md の 6-9）。py: impl_python に py_list は無い'
     'py_protocol_classes_error'      ='Rust: Python の protocol の静的な誤り（6-9）。py: impl_python は型スタブの protocol を読まない'
+    'py_type_alias_error'            ='Rust: 型スタブの別名を展開した型の静的な誤り（pandas_import_plan.md の 6-10）。py: impl_python は型スタブの別名を読まない'
     'py_protocol_values'             ='Rust: CPython の物と protocol（6-6）。py: impl_python に py_list は無い'
     'py_ellipsis_value'              ='Rust: 値の ... は組み込みの Ellipsis（タスク 6-11 で新設・pe.run() は CPython と同じ出力）。py: import[py] したモジュールの run を引けず AttributeError'
     'str_falls_back_to_repr'         ='Rust: str / print / f-string が __str__ の無いインスタンスで __repr__ を呼び、コンテナの要素は repr で出す（タスク 1-15 で新設・CPython と同じ出力）。py: 例題を構文解析できず ParseError（expected RPAREN, got STR）'

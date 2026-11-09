@@ -22,6 +22,8 @@ pub(crate) struct PyRawStub {
     pub(crate) links: Vec<PyImportLink>,
     /// ほかのファイルの基底を持つクラスの、その基底の名前（`py_class_outside_bases`）。
     pub(crate) outside_bases: std::collections::HashMap<String, Vec<String>>,
+    /// このファイルの型の別名（`py_type_aliases`・pandas_import_plan.md の 6-10）。
+    pub(crate) aliases: std::collections::HashMap<String, crate::parser::py_stub_extract::PyTypeAlias>,
 }
 
 /// このモジュールの名前 `local` が指す物。

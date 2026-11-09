@@ -343,6 +343,11 @@ let mean = np.mean(arr)
     ⚠ そのファイル（とたどって足した宣言）に無い名前は型引数ごと `Any`。Python の総称のクラス（`Box[int]`）は型引数を落として
     `Box`（6-11 で扱う）。メンバーの顔ぶれが分からないクラス（よそのファイルを継承する・デコレータの付いたもの）は、protocol の
     照合でも満たすとみなす（メンバーの有無を検査しないのと同じ）
+  - **型の別名**（6-10・`examples/interop/py_type_alias.ar`・`_error`）: `X = 型の式`・`X: TypeAlias = 型の式`・`type X[T] = ..`
+    （Python 3.12）を読み、注釈の中で展開する。型変数（`_T = TypeVar("_T")`）を持つ別名は型引数を当てはめる（`Couple[str]` は
+    `tuple[str, str]`・書かなければ `Any`）。別名を使う別名と、ほかのモジュールから import した別名もたどる（numpy の
+    `np.zeros(shape)` の `_ShapeLike` は `Union[SupportsIndex, Sequence[SupportsIndex]]`）。値の代入（`MAX = 10` / `x = f()`）は
+    別名ではない。⚠ 以前は別名を読まず、別名を書いた引数・戻り値は `Any` だった
 - **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
   （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
 - **関数の引数**（7-30）: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。引数の数も検査する。
@@ -374,7 +379,7 @@ let mean = np.mean(arr)
   クラス（`if TYPE_CHECKING:` の中で import した名前も）はそのクラスの型、ほかのファイルの基底のメンバーは派生のメンバー
   として型が付く。`-> Self` はメソッドを持つクラス（基底から受け継いだものは派生）。`@overload` は、`m.f(..)` と Python のクラスの
   メソッドの呼び出しで CPython の型の検査器と同じく最初に当てはまる形を選ぶ（位置引数の数・キーワードの名前・省略できない引数・
-  `Literal[X]` の値・`None`。`pd.read_csv(path)` は `DataFrame`、`chunksize=..` を渡すと `TextFileReader`・
+  `Literal[X]` の値・`None`・**引数の型**（6-10。型で当てはまる形が無ければ、数などで当てはまる最初の形で検査して誤りを出す）。`pd.read_csv(path)` は `DataFrame`、`chunksize=..` を渡すと `TextFileReader`・
   `examples/interop/py_overload_methods.ar`・`_error`）。たどれない名前（型の出所の無い
   C 拡張・`from x import *`）は `Any`。`x is m.C` は、`m.C` が CPython のクラスなら CPython の `isinstance` で判定する
   （再エクスポートしたクラスも真）（`examples/interop/py_int_links.ar`・`py_int_links_error.ar`）。⚠ 以前は 1 つのファイルの

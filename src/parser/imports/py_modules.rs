@@ -147,9 +147,9 @@ impl Parser {
         }
         self.loading.insert(abs_path.clone());
         let mut body = crate::parser::py_stub_extract::extract_py_type_stubs_raw(source);
-        self.link_py_types(module, abs_path, source, &mut body);
-        // このファイル（とたどって足した宣言）に無い型の名前は `Any`（7-30・`py_unknown_types_to_any`）
-        crate::parser::py_stub_extract::py_unknown_types_to_any(&mut body);
+        let aliases = self.link_py_types(module, abs_path, source, &mut body);
+        // このファイル（とたどって足した宣言）に無い型の名前は `Any`（7-30・`py_unknown_types_to_any`）。型の別名は展開する（6-10）
+        crate::parser::py_stub_extract::py_unknown_types_to_any(&mut body, &aliases);
 
         self.loading.remove(abs_path);
         self.module_cache.insert(cache_key, body.clone());
@@ -192,7 +192,8 @@ fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
     fn scan(t: &str, out: &mut Vec<String>) {
         for w in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
             let last = w.rsplit('.').next().unwrap_or(w);
-            if last.starts_with(|c: char| c.is_ascii_uppercase()) && !ARROW_TYPE_NAMES.contains(&w) {
+            // `_` で始まる名前（`_SupportsArray` / 別名の `_ShapeLike`）もよその型かもしれない（6-9・6-10）
+            if last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') && !ARROW_TYPE_NAMES.contains(&w) {
                 out.push(w.to_string());
             }
         }
@@ -288,6 +289,7 @@ impl Parser {
             decls: crate::parser::py_stub_extract::extract_py_type_stubs_raw(&source),
             links: py_import_links(&source, &filename),
             outside_bases: crate::parser::py_stub_extract::py_class_outside_bases(&source),
+            aliases: crate::parser::py_stub_extract::py_type_aliases(&source),
         });
         Some(stub)
     }
@@ -405,8 +407,15 @@ impl Parser {
     }
 
     /// `import[py]` の型スタブ `body`（`module` の、まだよその型の名前を `Any` にしていない宣言）に、① 再エクスポートの宣言
-    /// ② 宣言の注釈に出てくるよそのクラス ③ クラスのほかのファイルの基底のメンバー を足す（上の節の説明・1-3）。
-    pub(crate) fn link_py_types(&mut self, module: &[String], abs_path: &Path, source: &str, body: &mut Vec<Stmt>) {
+    /// ② 宣言の注釈に出てくるよそのクラス・protocol ③ クラスのほかのファイルの基底のメンバー を足す（上の節の説明・1-3）。
+    /// 戻り値は、注釈が使う型の別名（このファイルのものと、たどったよそのもの・6-10）。別名の中身が使う宣言も足す。
+    pub(crate) fn link_py_types(
+        &mut self,
+        module: &[String],
+        abs_path: &Path,
+        source: &str,
+        body: &mut Vec<Stmt>,
+    ) -> std::collections::HashMap<String, crate::parser::py_stub_extract::PyTypeAlias> {
         use crate::parser::py_import_links::{py_import_links, PyRawStub};
         let is_package = abs_path.file_stem().is_some_and(|s| s == "__init__");
         let me = std::rc::Rc::new(PyRawStub {
@@ -415,7 +424,9 @@ impl Parser {
             decls: body.clone(),
             links: py_import_links(source, &abs_path.to_string_lossy()),
             outside_bases: crate::parser::py_stub_extract::py_class_outside_bases(source),
+            aliases: crate::parser::py_stub_extract::py_type_aliases(source),
         });
+        let mut aliases = me.aliases.clone();
         let mut queue: Vec<(String, PyStubRc)> = Vec::new();
         // ③ このファイルのクラスの、ほかのファイルの基底
         for st in body.iter_mut() {
@@ -450,10 +461,15 @@ impl Parser {
             queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&home))));
             body.push(decl);
         }
-        // ② このファイルの宣言の注釈に出てくる名前
+        // ② このファイルの宣言の注釈に出てくる名前（と、このファイルの別名の中身に出てくる名前）
         for st in me.decls.iter() {
             let mut refs = Vec::new();
             py_type_refs(st, &mut refs);
+            queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&me))));
+        }
+        for alias in me.aliases.values() {
+            let mut refs = Vec::new();
+            py_type_text_refs(&alias.body, &mut refs);
             queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&me))));
         }
         // 注釈のよそのクラスを、たどれる限り足す（足したクラスの注釈も、それを書いたモジュールで引く）
@@ -463,9 +479,22 @@ impl Parser {
             if classes.contains(&short) || !tried.insert((name.clone(), ctx.module.clone())) {
                 continue;
             }
-            let Some((mut decl, home)) = self.py_chase_decl(&ctx, &name, 0) else { continue };
+            let Some((mut decl, home)) = self.py_chase_decl(&ctx, &name, 0) else {
+                // 型の別名（`ArrayLike` / `npt.NDArray`・6-10）。注釈に書いた綴りで展開し、中身が使う名前は別名を書いた
+                // モジュールで引く
+                if !aliases.contains_key(&name) {
+                    if let Some((alias, home)) = self.py_chase_alias(&ctx, &name, 0) {
+                        let mut refs = Vec::new();
+                        py_type_text_refs(&alias.body, &mut refs);
+                        queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&home))));
+                        aliases.insert(name.clone(), alias);
+                    }
+                }
+                continue;
+            };
             let cname = match &decl {
-                Stmt::ClassDef { name, .. } => name.clone(),
+                // protocol（`_SupportsArray`・6-9）も写す
+                Stmt::ClassDef { name, .. } | Stmt::ProtocolDef { name, .. } => name.clone(),
                 _ => continue,
             };
             if !classes.insert(cname) {
@@ -477,6 +506,49 @@ impl Parser {
             py_type_refs(&decl, &mut refs);
             queue.extend(refs.into_iter().map(|r| (r, std::rc::Rc::clone(&home))));
             body.push(decl);
+        }
+        aliases
+    }
+
+    /// `ctx` のモジュールで名前 `name`（`a.B` の形も）が指す型の別名を、再エクスポートをたどって探す（[`Self::py_chase_decl`] の
+    /// 別名の版・6-10）。見つかれば（別名, 別名を書いたモジュールの元）。
+    fn py_chase_alias(
+        &mut self,
+        ctx: &PyStubRc,
+        name: &str,
+        depth: u32,
+    ) -> Option<(crate::parser::py_stub_extract::PyTypeAlias, PyStubRc)> {
+        use crate::parser::py_import_links::absolute_module;
+        if depth > PY_LINK_DEPTH || py_is_typing_module(&ctx.module) {
+            return None;
+        }
+        if let Some((head, rest)) = name.split_once('.') {
+            let link = ctx.links.iter().find(|l| l.local == head)?.clone();
+            let mut target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+            if let Some(sub) = &link.name {
+                target.push(sub.clone());
+            }
+            let next = self.py_raw_stub(&target)?;
+            return self.py_chase_alias(&next, rest, depth + 1);
+        }
+        if let Some(a) = ctx.aliases.get(name) {
+            return Some((a.clone(), std::rc::Rc::clone(ctx)));
+        }
+        let link = ctx.links.iter().find(|l| l.local == name)?.clone();
+        let orig = link.name.as_deref()?;
+        let target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+        let next = self.py_raw_stub(&target)?;
+        self.py_chase_alias(&next, orig, depth + 1)
+    }
+}
+
+/// 型の綴りに出てくる、よそのモジュールの型かもしれない名前（大文字・`_` で始まる名前・`a.B` の形・別名の中身用・6-10）。
+fn py_type_text_refs(t: &str, out: &mut Vec<String>) {
+    const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
+    for w in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
+        let last = w.rsplit('.').next().unwrap_or(w);
+        if last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') && !ARROW_TYPE_NAMES.contains(&w) {
+            out.push(w.to_string());
         }
     }
 }

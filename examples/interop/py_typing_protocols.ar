@@ -5,6 +5,7 @@
 # 静的に検査される（`py_typing_protocols_error.ar`）。戻り値も protocol の型（`for v in m.countdown(3)` の `v` は `int`）。
 # 抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence)`）は名目でも満たす（抽象クラスが足すメソッドは型スタブに
 # 現れない）。
+# `@overload` の形は引数の型も見て選ぶ（`m.pick(3)` は `int`・`m.pick("s")` は `str`・CPython の型の検査器と同じ）。
 # ⚠ 以前は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写したので、`m.at(1)` が `expects
 #   'm.SupportsIndex' but got 'int'` の偽の静的な誤りだった。`Sequence[int]` などは `Any`（何も検査しない）だった。
 #
@@ -15,6 +16,7 @@
 #   2 3
 #   6
 #   True True True
+#   3 s
 #   ok
 
 import[py] test_modules.py_typing_protocols as m
@@ -35,4 +37,7 @@ for v in m.countdown(3):
     s += v
 print(s)
 print(b is Sequence, t is Mapping, pl is Sequence)
+let n: int = m.pick(3)
+let w: str = m.pick("s")
+print(n, w)
 print("ok")

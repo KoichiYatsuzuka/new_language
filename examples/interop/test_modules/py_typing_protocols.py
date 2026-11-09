@@ -2,7 +2,7 @@
 
 import collections.abc as cabc
 from collections.abc import Iterator, Sequence
-from typing import Iterable, Mapping, SupportsIndex
+from typing import Iterable, Mapping, SupportsIndex, overload
 
 
 class Bag(Sequence):
@@ -57,3 +57,12 @@ def lookup(m: Mapping[str, int], key: str) -> int:
 
 def countdown(n: int) -> Iterator[int]:
     return iter(range(n, 0, -1))
+
+
+@overload
+def pick(x: int) -> int: ...
+@overload
+def pick(x: str) -> str: ...
+def pick(x):
+    """`@overload` の形は引数の型で選ぶ（int なら int・str なら str）。"""
+    return x

@@ -225,6 +225,12 @@ classes and protocols (`known`): unknown names become `Any` **with their bracket
 arguments (`Box[int]` → `Box`, until 6-11), protocols keep them. `class X(Protocol[T])` becomes a `Stmt::ProtocolDef`
 (`py_protocol_params` / `py_class_to_protocol`; inside its body the type variables are names too).
 
+**Type aliases** (6-10): `py_type_aliases(source)` reads `X = <type>` / `X: TypeAlias = ..` / `type X[T] = ..` (type
+variables from `py_type_vars`, in order of appearance, are the alias parameters) into `PyRawStub::aliases`.
+`link_py_types` returns the aliases the annotations use (its own and those chased through imports with
+`py_chase_alias`, whose bodies' names are linked from the alias's home module), and `py_unknown_types_to_any` expands
+them (`py_expand_aliases`) before the unknown-name pass.
+
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
 import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of
