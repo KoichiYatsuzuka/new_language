@@ -191,9 +191,9 @@ fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
     const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
     fn scan(t: &str, out: &mut Vec<String>) {
         for w in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
-            let last = w.rsplit('.').next().unwrap_or(w);
-            // `_` で始まる名前（`_SupportsArray` / 別名の `_ShapeLike`）もよその型かもしれない（6-9・6-10）
-            if last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') && !ARROW_TYPE_NAMES.contains(&w) {
+            // `_` で始まる名前（`_SupportsArray` / 別名の `_ShapeLike`・6-9・6-10）・小文字のクラス（`ndarray` / `np.ndarray`・
+            // 6-11）もよその型かもしれない。⚠ Arrow の型の名前（`int` / `py_list` …）は除く
+            if py_maybe_type_ref(w) && !ARROW_TYPE_NAMES.contains(&w) {
                 out.push(w.to_string());
             }
         }
@@ -546,11 +546,20 @@ impl Parser {
 fn py_type_text_refs(t: &str, out: &mut Vec<String>) {
     const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
     for w in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
-        let last = w.rsplit('.').next().unwrap_or(w);
-        if last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') && !ARROW_TYPE_NAMES.contains(&w) {
+        if py_maybe_type_ref(w) && !ARROW_TYPE_NAMES.contains(&w) {
             out.push(w.to_string());
         }
     }
+}
+
+/// 注釈の語 `w` が、よそのモジュールの型（クラス・protocol・別名）の名前かもしれないか（大文字・`_` で始まる名前・その修飾した名前）。
+///
+/// ⚠ 小文字のクラス（`ndarray` / `np.ndarray`）はよそのモジュールから写さない（6-11）。写した型はそのモジュールの型になり
+///   （pandas の `-> np.ndarray` が `pandas.ndarray`）、`numpy.ndarray` とは別の型になって偽の誤りを生むため。そのモジュールが
+///   宣言した小文字のクラス（numpy の中の `ndarray`）は型になる。モジュールをまたいで同じ型にするのは残りのタスク（6-12）。
+fn py_maybe_type_ref(w: &str) -> bool {
+    let last = w.rsplit('.').next().unwrap_or(w);
+    !w.is_empty() && w.split('.').all(|p| !p.is_empty()) && last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
 }
 
 /// 型の名前を定めるモジュール（`typing` / `typing_extensions` / `collections.abc` / `_collections_abc`）か。ここの `Any` と

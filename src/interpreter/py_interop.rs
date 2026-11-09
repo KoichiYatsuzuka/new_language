@@ -1073,7 +1073,10 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         }
     }
     // ⚠ `__index__` が無い物は整数の取り出しが必ず失敗する。先に見て、失敗のたびに例外の物を作らない（4-1）。
-    if unsafe { ffi::PyIndex_Check(obj.as_ptr()) } != 0 {
+    // ⚠ 長さを持つ物（容器・numpy の `ndarray`。0 次元の配列は `__index__` が成功する）は整数にしない（Python の物のまま）。
+    //   型スタブも容器はクラスの型で読む（`py_numeric_class`・pandas_import_plan.md の 6-11）。以前は 0 次元の配列や
+    //   `__index__` を持つ容器が黙って int になり、型スタブの型（クラス）と食い違った
+    if unsafe { ffi::PyIndex_Check(obj.as_ptr()) } != 0 && !py_type_has_len(obj) {
         if let Ok(n) = obj.extract::<i64>() {
             return Value::Int(n);
         }
@@ -2231,6 +2234,17 @@ pub fn py_has_static_attr(handle: &PyObjHandle, attr: &str) -> bool {
         };
         lookup().unwrap_or(false)
     })
+}
+
+/// 型が長さ（`__len__`・`sq_length` / `mp_length`）を持つか（`py_to_tl` の `__index__` の写し方・6-11）。型の欄を見るだけで
+/// 呼び出しはしない。
+fn py_type_has_len(obj: &Bound<'_, PyAny>) -> bool {
+    unsafe {
+        let tp = ffi::Py_TYPE(obj.as_ptr());
+        let seq = (*tp).tp_as_sequence;
+        let map = (*tp).tp_as_mapping;
+        (!seq.is_null() && (*seq).sq_length.is_some()) || (!map.is_null() && (*map).mp_length.is_some())
+    }
 }
 
 /// 片方が CPython の物の `a == b` の真偽（CPython の `PyObject_RichCompareBool`: 同じ物なら真、ほかは `__eq__` の

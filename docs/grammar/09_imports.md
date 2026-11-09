@@ -348,6 +348,14 @@ let mean = np.mean(arr)
     `tuple[str, str]`・書かなければ `Any`）。別名を使う別名と、ほかのモジュールから import した別名もたどる（numpy の
     `np.zeros(shape)` の `_ShapeLike` は `Union[SupportsIndex, Sequence[SupportsIndex]]`）。値の代入（`MAX = 10` / `x = f()`）は
     別名ではない。⚠ 以前は別名を読まず、別名を書いた引数・戻り値は `Any` だった
+  - **小文字のクラスと総称のクラス**（6-11・`examples/interop/py_numpy_types.ar`・`_error`）: そのファイルが宣言した小文字のクラス
+    （numpy の `ndarray` / `dtype`）も型になり、総称のクラスの注釈（`ndarray[Any, dtype[...]]` / `Box[int]`）は型引数を落とした
+    クラスの型（Python の総称のクラスは Arrow のテンプレートではない）。⇒ `np.arange(3)` / `np.zeros(..)` / `a.reshape(..)` は
+    `np.ndarray`（以前は `Any`）。境界で Arrow の数になるクラスは境界と同じ型で読む: 長さ（`__len__`）を持たず `__index__` を持つ
+    クラス（numpy の `int64` = `signedinteger`）は `int`、`__float__` / `__complex__` / `__int__` だけを持つクラス（`floating`）は `Any`
+    （`float64` は Arrow の `float`、`float32` は Python の物のまま届く）、長さを持つクラス（`ndarray`）はクラスの型。
+    ⚠ 境界（`py_to_tl`）も同じ規則にした: 長さを持つ物は `__index__` が成功しても int にしない（以前は 0 次元の配列が int になった）。
+    ⚠ よそのモジュールが書いた小文字のクラス（pandas の `-> np.ndarray`）は `Any` のまま（写すとそのモジュールの別の型になる・6-12）
 - **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
   （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
 - **関数の引数**（7-30）: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。引数の数も検査する。

@@ -1,0 +1,35 @@
+# py_numpy_types.ar — numpy の配列は `np.ndarray` の型（pandas_import_plan.md の 6-11）
+#
+# 型スタブの小文字のクラス（`ndarray` / `dtype`）と、総称のクラスの注釈（`ndarray[Any, dtype[...]]` は型引数を落として
+# `ndarray`）を型にした。型の別名 `NDArray[...]`（6-10）は `ndarray[...]` に展開されるので、`np.arange(3)` / `np.zeros(..)` /
+# `a.reshape(..)` / `a.astype(..)` は `np.ndarray` で、`mustbe` を書かずにメソッドを呼べる。
+# 境界で Arrow の数になるクラスは、境界と同じ型で読む: 容器でないクラスで `__index__` を持つもの（numpy の `int64` など）は `int`、
+# `__float__` などだけを持つもの（`floating`）は `Any`（`float64` は Arrow の `float`、`float32` は Python の物のまま届く）。
+# 容器（`ndarray`）は `__index__` を持っていてもクラスの型。
+# ⚠ `a.sum()` / `a.mean()` / `a.tolist()` は numpy の型スタブ自体が `Any` を返すので `Any` のまま。
+# ⚠ よそのモジュールが書いた小文字のクラス（pandas の `-> np.ndarray`）は今は `Any`（写すとそのモジュールの別の型になる・6-12）。
+# ⚠ 以前は `np.arange(3)` が `Any` で、`a.size` の前に `mustbe np.ndarray` が要った。
+#
+# 期待される出力:
+#   3 1 2
+#   6 (2, 3)
+#   [0. 1. 2.]
+#   5 3 6
+#   ok
+
+import[py] numpy as np
+import[py] test_modules.py_numeric_classes as m
+
+mut a = np.arange(3)
+mut column = a.reshape(3, 1)
+print(a.size, a.ndim, column.ndim)
+mut z = np.zeros((2, 3))
+print(z.size, z.shape)
+mut f = a.astype("float64")
+print(f)
+
+# 容器でないクラスで `__index__` を持つ物は `int`（境界で Arrow の int になる）。容器はクラスの型
+let n: int = m.count(5)
+mut g = m.grid(3)
+print(n, len(g), g.total())
+print("ok")

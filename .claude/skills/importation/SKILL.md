@@ -231,6 +231,13 @@ variables from `py_type_vars`, in order of appearance, are the alias parameters)
 `py_chase_alias`, whose bodies' names are linked from the alias's home module), and `py_unknown_types_to_any` expands
 them (`py_expand_aliases`) before the unknown-name pass.
 
+**Lowercase and numeric classes** (6-11): lowercase class names (`ndarray`) are class-like too (`py_class_like_name`
+excludes only lowercase Arrow type names); a known class drops its type arguments. `py_numeric_class` reads classes that
+become Arrow numbers at the boundary as those types (no `__len__` + `__index__` → `int`; only `__float__` / `__complex__` /
+`__int__` → `Any`), matching `py_to_tl` (which does not turn objects with a length into `int`, `py_type_has_len`).
+Lowercase classes are not copied from other modules (`py_maybe_type_ref`): a copy would be a different type
+(`pandas.ndarray` ≠ `numpy.ndarray`), task 6-12.
+
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
 import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of

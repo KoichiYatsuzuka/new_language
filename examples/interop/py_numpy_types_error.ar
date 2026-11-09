@@ -1,0 +1,14 @@
+# py_numpy_types_error.ar — numpy の配列の型と合わない使い方は静的な誤り（pandas_import_plan.md の 6-11）
+#
+# `np.arange(3)` は `np.ndarray`（以前は `Any`）なので、`str` の変数に入れられない。`__index__` を持つ容器でないクラスは `int`
+# なので、`str` の変数に入れられない。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   's' is declared 'str' but initialized with 'numpy.ndarray'
+#   't' is declared 'str' but initialized with 'int'
+
+import[py] numpy as np
+import[py] test_modules.py_numeric_classes as m
+
+mut s: str = np.arange(3)
+let t: str = m.count(5)

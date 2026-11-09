@@ -469,8 +469,17 @@ pub(crate) fn py_unknown_types_to_any(
         .iter()
         .filter_map(|s| if let Stmt::ProtocolDef { name, .. } = s { Some(name.clone()) } else { None })
         .collect();
+    // 境界で Arrow の数になるクラス（numpy の符号つき整数のクラスは `int`・浮動小数点数のクラスは `Any`・6-11）
+    let numeric: std::collections::HashMap<String, &'static str> = stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::ClassDef { name, body, .. } => py_numeric_class(body).map(|t| (name.clone(), t)),
+            _ => None,
+        })
+        .collect();
     // 型の別名は先に展開する（6-10）
-    let fix = |t: &mut String| *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &known, &protocols);
+    let fix =
+        |t: &mut String| *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &known, &protocols, &numeric);
     /// 関数の注釈に `fix` を当てる。⚠ 本体の中の `@overload` の各形も同じ（以前は本体の宣言だけで、`np.argmax(a)` が形の
     /// `a: ArrayLike` と照合されて偽の誤りになった・pandas_import_plan.md の 6-2）。
     fn fix_fn(st: &mut Stmt, fix: &dyn Fn(&mut String)) {
@@ -494,8 +503,9 @@ pub(crate) fn py_unknown_types_to_any(
             Stmt::ProtocolDef { template_params, body, .. } => {
                 let mut scope = known.clone();
                 scope.extend(template_params.iter().map(|p| p.name.clone()));
-                let fix_p =
-                    |t: &mut String| *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &scope, &protocols);
+                let fix_p = |t: &mut String| {
+                    *t = py_type_names_to_any(&py_expand_aliases(t, aliases, 0), &scope, &protocols, &numeric)
+                };
                 for m in body.iter_mut() {
                     match m {
                         Stmt::FnDef { .. } => fix_fn(m, &fix_p),
@@ -554,12 +564,26 @@ fn py_replace_type_word(ty: &str, from: &str, to: &str) -> String {
 /// Arrow の型の名前）は残す。知らない名前の型引数つき（`Callable[..]` / `Literal[..]` / 写していないクラス `Box[int]`）は
 /// **型引数ごと** `Any`（6-9）。`known` のクラス（protocol でない名前）の型引数は落とす（`Box[int]` は `Box`。Python の総称の
 /// クラスは Arrow のテンプレートではない・6-11 で扱う）。`protocols` の型引数は残す。
+///
+/// `numeric` は境界で Arrow の数になるクラスの読み替え（[`py_numeric_class`]・6-11）。修飾した名前（`np.ndarray`）は、写した
+/// クラスの名前（`ndarray`）で引く（よそのクラスは短い名前で写す・`link_py_types`）。
 fn py_type_names_to_any(
     ty: &str,
     known: &std::collections::HashSet<String>,
     protocols: &std::collections::HashSet<String>,
+    numeric: &std::collections::HashMap<String, &'static str>,
 ) -> String {
     const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
+    // 修飾した名前は、知らなければ最後の部分（写したクラスの名前）で引く
+    let resolve = |word: &str| -> String {
+        if word.contains('.') && !known.contains(word) {
+            let last = word.rsplit('.').next().unwrap_or(word);
+            if known.contains(last) {
+                return last.to_string();
+            }
+        }
+        word.to_string()
+    };
     let keep = |word: &str| {
         !py_class_like_name(word)
             || ARROW_TYPE_NAMES.contains(&word)
@@ -580,7 +604,7 @@ fn py_type_names_to_any(
         while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
             i += 1;
         }
-        let word: String = chars[start..i].iter().collect();
+        let word = resolve(&chars[start..i].iter().collect::<String>());
         let skip_args = |i: &mut usize| {
             if chars.get(*i) == Some(&'[') {
                 let mut depth = 0;
@@ -601,8 +625,9 @@ fn py_type_names_to_any(
             }
         };
         if keep(&word) {
-            out.push_str(&word);
-            if known.contains(&word) && !protocols.contains(&word) {
+            let is_class = known.contains(&word) && !protocols.contains(&word);
+            out.push_str(numeric.get(&word).copied().unwrap_or(word.as_str()));
+            if is_class {
                 skip_args(&mut i);
             }
             continue;
@@ -612,6 +637,26 @@ fn py_type_names_to_any(
         skip_args(&mut i);
     }
     out
+}
+
+/// 境界（`py_to_tl`）で Arrow の数になるクラスなら、型スタブで読み替える型（pandas_import_plan.md の 6-11）。`body` は基底の
+/// メンバーを写したクラスの本体。
+///
+/// - 容器でない（`__len__` を持たない）クラスで `__index__` を持つもの（numpy の `int64` の型スタブのクラス）は `int`: 長さを持たず
+///   `__index__` が成功する物は必ず Arrow の `int` になる（`py_to_tl` と同じ規則。numpy の数は `__getitem__` を持つが `__len__` は
+///   持たない）。
+/// - そうでなく `__float__` / `__complex__` / `__int__` を持つもの（numpy の浮動小数点数・真偽のクラス）は `Any`: Python の `float` の派生
+///   （`float64`）は Arrow の `float` になるが、ほか（`float32`）は Python の物のまま届き、型スタブからは分からない。
+/// - 容器（numpy の `ndarray`。0 次元の配列のために `__index__` も持つ）とそれ以外は読み替えない（クラスの型）。
+fn py_numeric_class(body: &[crate::ast::Stmt]) -> Option<&'static str> {
+    let has = |n: &str| body.iter().any(|m| matches!(m, crate::ast::Stmt::FnDef { name, .. } if name == n));
+    if has("__len__") {
+        return None;
+    }
+    if has("__index__") {
+        return Some("int");
+    }
+    (has("__float__") || has("__complex__") || has("__int__")).then_some("Any")
 }
 
 /// `start` から読んで、インデントが `indent` 以下の（空でもコメントでもない）行の位置。ブロックの終わり。
@@ -1444,6 +1489,7 @@ fn py_type_to_arrow(ann: &str) -> String {
             // 宣言した名前かを `py_unknown_types_to_any` が決める（知らなければ丸ごと `Any`・6-9）。
             // ⚠ 知らないジェネリクス（`Callable[...]` / `Literal[...]`）もここを通り、そこで `Any` になる
             _ if py_class_like_name(base_text) => format!("{base_text}[{}]", args.join(", ")),
+            // ⚠ Arrow の型の名前の総称で上で扱わないもの（`type[X]` など）は今までどおり検査しない
             _ => "Any".to_string(),
         };
     }
@@ -1476,12 +1522,17 @@ fn py_type_to_arrow(ann: &str) -> String {
     }
 }
 
-/// クラス・protocol らしい名前か（大文字か `_` で始まる名前・修飾した名前 `a.B`）。⚠ 小文字の素の名前（`int` など）は Arrow の
-/// 型の名前なので含めない。
+/// クラス・protocol らしい名前か（大文字・`_` で始まる名前・修飾した名前 `a.B`・小文字のクラス `ndarray` / `dtype`・
+/// pandas_import_plan.md の 6-11）。⚠ 小文字の Arrow の型の名前（`int` / `py_list` / `tuple` …・
+/// [`crate::type_check::builtins::is_conversion`]）は含めない。大文字の名前（`Self` / `Any`）はクラスらしい名前のまま（`Self` は
+/// クラスの名前に置き換え、`Any` などは `py_type_names_to_any` が残す）。
 fn py_class_like_name(a: &str) -> bool {
     !a.is_empty()
+        && a.starts_with(|c: char| c.is_alphabetic() || c == '_')
         && a.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_'))
-        && (a.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') || a.contains('.'))
+        && (a.contains('.')
+            || a.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+            || !crate::type_check::builtins::is_conversion(a))
 }
 
 /// 注釈の名前 `a`（`Sequence` / `typing.Sized` / `collections.abc.Iterable` / `abc.Mapping`）が組み込みの protocol なら、その名前
@@ -1765,7 +1816,7 @@ class C(B):
 
     /// 注釈を読む 2 つの段（`py_type_to_arrow` と、知らない名前を `Any` にする `py_type_names_to_any`）を通した型。
     fn arrow_type(a: &str) -> String {
-        py_type_names_to_any(&py_type_to_arrow(a), &Default::default(), &Default::default())
+        py_type_names_to_any(&py_type_to_arrow(a), &Default::default(), &Default::default(), &Default::default())
     }
 
     /// `typing` / `collections.abc` の `Sequence` などは組み込みの protocol として読む（pandas_import_plan.md の 6-8）。
@@ -1782,6 +1833,34 @@ class C(B):
         assert_eq!(arrow_type("Mapping[str]"), "Any", "wrong number of type arguments");
         assert_eq!(arrow_type("Sized[int]"), "Any", "Sized takes no type arguments");
         assert_eq!(arrow_type("np.Sized"), "Any", "another module's Sized is not the built-in protocol");
+    }
+
+    /// 小文字のクラス（`ndarray`）と総称のクラスの注釈（`ndarray[int]` は `ndarray`）を型にする。境界で Arrow の数になるクラスは
+    /// 境界と同じ型で読む: 長さを持たず `__index__` を持つ物は `int`、`__float__` などだけを持つ物は `Any`、長さを持つ物はクラス（6-11）。
+    #[test]
+    fn lowercase_and_numeric_classes() {
+        use crate::ast::Stmt;
+        let src = "class ndarray:
+    def __len__(self) -> int: ...
+    def __index__(self) -> int: ...
+class integer:
+    def __index__(self) -> int: ...
+    def __getitem__(self, key) -> integer: ...
+class floating:
+    def __float__(self) -> float: ...
+class dtype:
+    pass
+def f(a: ndarray[int], b: integer, c: floating, d: dtype[floating], e: unknown_cls) -> ndarray: ...
+";
+        let stmts = extract_py_type_stubs(src);
+        let Some(Stmt::FnDef { params, return_type, .. }) =
+            stmts.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "f"))
+        else {
+            panic!("no f");
+        };
+        let ann: Vec<&str> = params.iter().filter_map(|p| p.type_ann.as_deref()).collect();
+        assert_eq!(ann, ["ndarray", "int", "Any", "dtype", "Any"]);
+        assert_eq!(return_type.as_deref(), Some("ndarray"));
     }
 
     /// 型の別名（`X = 型の式` / `X: TypeAlias = ..` / `type X[T] = ..`・複数行）を集め、注釈で展開する（6-10）。型変数は中身に現れた順の
