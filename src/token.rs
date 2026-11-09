@@ -364,6 +364,9 @@ pub enum Token {
     /// Imaginary-unit literal: the coefficient before `j` (e.g. `2j` → `ImaginaryFloat(2.0)`).
     ImaginaryFloat(f64),
     Str(String),
+    /// バイト列のリテラル `b"..."` / `rb"..."`（Python と同じ・known_bugs.md の #18）。エスケープを読んだバイト列。
+    /// 書けない字（ASCII でない字・`\x` の後の 16 進でない字）は誤りの文（`Err`）。パーサが `bytes([..])` にする。
+    Bytes(Result<Vec<u8>, String>),
     /// f-string: セグメントのリスト（リテラル文字列 + 補間式ソーステキスト）
     FStr(Vec<FStrPart>),
 
@@ -551,6 +554,8 @@ impl std::fmt::Display for Token {
             Token::Float(n) => write!(f, "{n}"),
             Token::ImaginaryFloat(n) => write!(f, "{n}j"),
             Token::Str(s) => write!(f, "{s:?}"),
+            Token::Bytes(Ok(b)) => write!(f, "b{:?}", String::from_utf8_lossy(b)),
+            Token::Bytes(Err(e)) => write!(f, "<invalid bytes literal: {e}>"),
             Token::FStr(_) => write!(f, "f-string"),
             Token::Ident(s) => write!(f, "{s}"),
             Token::Newline => write!(f, "NEWLINE"),

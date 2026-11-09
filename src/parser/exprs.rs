@@ -920,6 +920,13 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Str(Rc::from(s.as_str())))
             }
+            // `b"..."` は組み込みの `bytes([..])` の呼び出し（f-string の脱糖と同じ形・known_bugs.md の #18）
+            Token::Bytes(bytes) => {
+                self.advance();
+                let bytes = bytes.map_err(|e| format!("invalid bytes literal: {e}"))?;
+                let items = bytes.into_iter().map(|b| crate::ast::SeqEntry::Item(Expr::Int(i64::from(b)))).collect();
+                Ok(self.fstring_call("bytes", vec![Expr::List(items)], &Span::unknown()))
+            }
             Token::FStr(parts) => {
                 self.advance();
                 Ok(self.desugar_fstring(parts)?)

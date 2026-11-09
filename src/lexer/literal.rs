@@ -79,6 +79,76 @@ impl Lexer {
     }
 
     /// 通常の文字列リテラル（プレフィックスなし）を解析して `Token::Str` を返す。
+    /// バイト列のリテラル（`b"..."`・`raw` は `rb"..."`）を読む（known_bugs.md の #18）。Python と同じく、ASCII でない字は書けず、
+    /// エスケープは `\n` `\t` `\r` `\\` `\'` `\"` `\0`〜`\777`（8 進）`\xNN` `\a` `\b` `\f` `\v`。ほかの `\c` はそのまま
+    /// （`\u` も）。`raw` はエスケープを読まない。
+    pub(super) fn lex_bytes(&mut self, raw: bool) -> Result<Vec<u8>, String> {
+        let s = self.lex_string_inner(true);
+        let chars: Vec<char> = s.chars().collect();
+        if let Some(c) = chars.iter().find(|c| !c.is_ascii()) {
+            return Err(format!("bytes can only contain ASCII literal characters (found {c:?})"));
+        }
+        let mut out = Vec::with_capacity(chars.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            i += 1;
+            if c != '\\' || raw {
+                out.push(c as u8);
+                continue;
+            }
+            let Some(&e) = chars.get(i) else {
+                out.push(b'\\');
+                break;
+            };
+            i += 1;
+            match e {
+                'n' => out.push(b'\n'),
+                't' => out.push(b'\t'),
+                'r' => out.push(b'\r'),
+                'a' => out.push(0x07),
+                'b' => out.push(0x08),
+                'f' => out.push(0x0c),
+                'v' => out.push(0x0b),
+                '\\' | '\'' | '"' => out.push(e as u8),
+                // 行末のバックスラッシュは行を続ける（Python と同じ）
+                '\n' => {}
+                'x' => {
+                    let hex: String = chars.get(i..i + 2).map(|h| h.iter().collect()).unwrap_or_default();
+                    match u8::from_str_radix(&hex, 16) {
+                        Ok(b) if hex.len() == 2 => {
+                            out.push(b);
+                            i += 2;
+                        }
+                        _ => return Err(format!("invalid \\x escape in bytes literal ('\\x{hex}')")),
+                    }
+                }
+                '0'..='7' => {
+                    let mut v = e.to_digit(8).expect("octal digit");
+                    for _ in 0..2 {
+                        match chars.get(i).and_then(|d| d.to_digit(8)) {
+                            Some(d) => {
+                                v = v * 8 + d;
+                                i += 1;
+                            }
+                            None => break,
+                        }
+                    }
+                    // `\777` は 0o777 = 511 で、Python も下位 8 ビットではなく誤り（3.12 は警告して 0xff で切る）
+                    if v > 0xff {
+                        return Err(format!("octal escape value \\{v:o} is outside the range of a byte"));
+                    }
+                    out.push(v as u8);
+                }
+                other => {
+                    out.push(b'\\');
+                    out.push(other as u8);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub(super) fn lex_string(&mut self) -> Token {
         Token::Str(self.lex_string_inner(false))
     }

@@ -38,6 +38,7 @@ let b: bytes = "日本語".encode("shift_jis")   # str → bytes
 let s: str = b.decode("cp932")                 # bytes → str
 let raw = bytes([104, 105, 255])               # 0〜255 の int のリストから
 print(raw)                                     # b'hi\xff'
+let lit = b"hi\xff"                            # バイト列のリテラル（`raw` と同じ値・known_bugs.md の #18）
 print(len(raw), raw[0], raw[0:2])              # 3 104 b'hi'
 for x in raw:                                  # 各要素は 0〜255 の int
     print(x)

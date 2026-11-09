@@ -201,8 +201,19 @@ impl Lexer {
                     'r' => Token::Str(self.lex_string_inner(true)),
                     // Math strings use raw mode so \alpha, \times etc. reach render_math_str intact
                     'm' => Token::Str(render_math_str(&self.lex_string_inner(true))),
-                    _ => Token::Str(self.lex_string_inner(false)),
+                    // ⚠ 以前は `b` を読み捨てて `str` にしていた（`type(b"ab")` が `str`・known_bugs.md の #18）
+                    _ => Token::Bytes(self.lex_bytes(false)),
                 };
+                self.spanned(tok, start)
+            }
+
+            // rb"" / br"" 生のバイト列（エスケープを読まない）
+            Some(ch)
+                if (ch == 'r' && self.ch1() == Some('b') || ch == 'b' && self.ch1() == Some('r'))
+                    && matches!(self.ch2(), Some('"') | Some('\'')) =>
+            {
+                self.pos += 2;
+                let tok = Token::Bytes(self.lex_bytes(true));
                 self.spanned(tok, start)
             }
 

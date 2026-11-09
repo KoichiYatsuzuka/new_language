@@ -147,6 +147,21 @@
     }
 
     /// `int`（i64）に入らない整数リテラルと桁の無い `0x` は `InvalidInt`（綴りのまま・known_bugs.md の #16）。以前は黙って `0`。
+    /// `b"..."` はバイト列のリテラル（Python と同じエスケープ・`rb"..."` は生）。ASCII でない字と壊れた `\x` は誤りの文
+    /// （known_bugs.md の #18。以前は `b` を読み捨てて `str` だった）。
+    #[test]
+    fn test_bytes_literals() {
+        let tokens = lex(r#"b"a\x89\n" rb"\x41" br'q' b"\101\0" b"caf" b"\xZZ""#);
+        assert_eq!(tokens[0], Token::Bytes(Ok(vec![b'a', 0x89, b'\n'])));
+        assert_eq!(tokens[1], Token::Bytes(Ok(br"\x41".to_vec())));
+        assert_eq!(tokens[2], Token::Bytes(Ok(b"q".to_vec())));
+        assert_eq!(tokens[3], Token::Bytes(Ok(vec![b'A', 0])));
+        assert_eq!(tokens[4], Token::Bytes(Ok(b"caf".to_vec())));
+        assert!(matches!(&tokens[5], Token::Bytes(Err(e)) if e.contains("invalid \\x escape")));
+        let tokens = lex("b\"caf\u{e9}\"");
+        assert!(matches!(&tokens[0], Token::Bytes(Err(e)) if e.contains("ASCII")));
+    }
+
     #[test]
     fn test_integer_literals_out_of_range() {
         let tokens = lex("9223372036854775807 9223372036854775808 0xFFFF_FFFF_FFFF_FFFF 0x 99999999999999999999j");

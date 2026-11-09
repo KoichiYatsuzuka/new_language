@@ -90,7 +90,7 @@ fn classify(token: &Token) -> Option<EditorTokenKind> {
         // 改行は改行文字（CRLF なら 2 文字）を読んで作るので位置は正しい（行末から次の行の先頭まで）。
         Token::Newline => Some(EditorTokenKind::Newline),
         Token::Ident(_) => Some(EditorTokenKind::Ident),
-        Token::Str(_) | Token::FStr(_) => Some(EditorTokenKind::Str),
+        Token::Str(_) | Token::FStr(_) | Token::Bytes(_) => Some(EditorTokenKind::Str),
         Token::Int(_) | Token::Float(_) | Token::InvalidInt(_) => Some(EditorTokenKind::Num),
         other => Some(if other.keyword_str().is_some() {
             EditorTokenKind::Keyword

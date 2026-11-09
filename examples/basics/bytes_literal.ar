@@ -1,0 +1,17 @@
+# bytes_literal.ar — バイト列のリテラル `b"..."`（Python と同じ・known_bugs.md の #18）
+#
+# `b"..."` / `b'...'` は `bytes` の値（`bytes([..])` と同じ）。エスケープは Python と同じ（`\xNN`・`\n` などと 8 進の `\101`）、
+# `rb"..."` / `br"..."` はエスケープを読まない。ASCII でない字は書けない（`bytes_literal_error.ar`）。
+# ⚠ 以前は `b` を読み捨てて `str` にしていた（`type(b"ab")` が `<class 'str'>`・`b"ab".count(97)` が `TypeError`）。
+#
+# 期待される出力:
+#   <class 'bytes'> b'aba' 2 3 97
+#   b'\x89PNG\r\n' b'\\x41' b'a\\n' b"it's" b'A\x00'
+#   b'abcd' True True
+#   ok
+
+let a = b"aba"
+print(type(a), a, a.count(97), len(a), a[0])
+print(b"\x89PNG\r\n", rb"\x41", br"a\n", b'it\'s', b"\101\0")
+print(b"ab" + b"cd", b"" == bytes([]), b"hi" == "hi".encode("utf-8"))
+print("ok")

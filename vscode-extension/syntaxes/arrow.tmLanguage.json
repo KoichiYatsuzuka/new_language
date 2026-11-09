@@ -285,7 +285,7 @@
         },
         {
           "name": "string.quoted.triple.double.ar",
-          "begin": "(?<![\\w])(r)(\"\"\")",
+          "begin": "(?<![\\w])(rb|br|r)(\"\"\")",
           "end": "(\"\"\")",
           "beginCaptures": {
             "1": { "name": "storage.type.string.ar" },
@@ -296,7 +296,7 @@
         },
         {
           "name": "string.quoted.triple.single.ar",
-          "begin": "(?<![\\w])(r)(''')",
+          "begin": "(?<![\\w])(rb|br|r)(''')",
           "end": "(''')",
           "beginCaptures": {
             "1": { "name": "storage.type.string.ar" },
@@ -307,7 +307,7 @@
         },
         {
           "name": "string.quoted.double.ar",
-          "begin": "(?<![\\w])(r)(\"(?!\"\"))",
+          "begin": "(?<![\\w])(rb|br|r)(\"(?!\"\"))",
           "end": "(\")",
           "beginCaptures": {
             "1": { "name": "storage.type.string.ar" },
@@ -318,7 +318,7 @@
         },
         {
           "name": "string.quoted.single.ar",
-          "begin": "(?<![\\w])(r)('(?!''))",
+          "begin": "(?<![\\w])(rb|br|r)('(?!''))",
           "end": "(')",
           "beginCaptures": {
             "1": { "name": "storage.type.string.ar" },

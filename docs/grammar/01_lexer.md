@@ -158,6 +158,11 @@ src/lexer/
 | `fr"..."` / `rf"..."` | Raw f-string |
 | `m"\alpha_1^2"` | 数学文字列 (LaTeX 記法 → Unicode 変換) |
 | `$\alpha_1^2$` | 数学文字列の短縮記法 |
+| `b"\x89PNG"` / `b'..'` | バイト列（`bytes` の値・Python と同じエスケープ `\xNN` / `\n` / 8 進 `\101` など。ASCII でない字は書けない・known_bugs.md の #18） |
+| `rb"..."` / `br"..."` | 生のバイト列（エスケープを読まない） |
+
+⚠ バイト列のリテラルは構文解析で `bytes([..])` の呼び出しにする（f-string の脱糖と同じ形）。以前は `b` を読み捨てて `str` に
+していた（`type(b"ab")` が `<class 'str'>`）。`examples/basics/bytes_literal.ar`・`_error`。
 
 **エスケープシーケンス** (raw でない文字列で有効):
 
