@@ -219,6 +219,12 @@ built-in protocol names (`Sequence` / `SupportsIndex` …) from `typing` / `typi
 Arrow protocol (bare `Sequence` → `Sequence[Any]`), and a class inheriting the abstract class gets the protocol name in
 its bases (`py_builtin_protocol_of` in `py_merge_outside_bases`), which conformance accepts nominally.
 
+**Names in stub annotations** (6-9): `py_type_to_arrow` keeps every class-like name (capitalised, `_`-prefixed, dotted)
+with its type arguments; `py_unknown_types_to_any` → `py_type_names_to_any` then decides with the module's declared
+classes and protocols (`known`): unknown names become `Any` **with their brackets**, a known class drops its type
+arguments (`Box[int]` → `Box`, until 6-11), protocols keep them. `class X(Protocol[T])` becomes a `Stmt::ProtocolDef`
+(`py_protocol_params` / `py_class_to_protocol`; inside its body the type variables are names too).
+
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's
 import table, `parser/py_import_links.rs`, read line by line), ② classes named in annotations (resolved in the import table of

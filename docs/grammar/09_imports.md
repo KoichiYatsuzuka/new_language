@@ -337,6 +337,12 @@ let mean = np.mean(arr)
     `Sequence` は `Sequence[Any]`。抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence)`）は名目でも満たす
     （⚠ 型引数は照合しない）。⚠ 以前は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写したので、
     `def at(i: SupportsIndex)` に `1` を渡すと偽の静的な誤りで、`Sequence[int]` などは `Any`（何も検査しない）だった
+  - `class X(Protocol)` / `class X(Protocol[T])` は Arrow の **protocol**（6-9・`examples/interop/py_protocol_classes.ar`・`_error`）。
+    構造で照合するので、継承しない物も同じメンバーを持てば渡せる。型変数（`TypeVar`）は protocol の型引数（`SupportsRead[str]`）。
+    自分を参照する protocol（numpy の `_NestedSequence`）も書ける。名前が `_` で始まるクラス・protocol も型になる（以前は `Any`）。
+    ⚠ そのファイル（とたどって足した宣言）に無い名前は型引数ごと `Any`。Python の総称のクラス（`Box[int]`）は型引数を落として
+    `Box`（6-11 で扱う）。メンバーの顔ぶれが分からないクラス（よそのファイルを継承する・デコレータの付いたもの）は、protocol の
+    照合でも満たすとみなす（メンバーの有無を検査しないのと同じ）
 - **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
   （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
 - **関数の引数**（7-30）: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。引数の数も検査する。

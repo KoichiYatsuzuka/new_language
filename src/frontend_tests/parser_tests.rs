@@ -1083,7 +1083,10 @@ fn bundled_stubs_lose_no_declarations() {
         let got: std::collections::HashSet<String> = crate::parser::py_stub_extract::extract_py_type_stubs_raw(src)
             .into_iter()
             .filter_map(|s| match s {
-                Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::Let(name, ..) => Some(name),
+                // `class X(Protocol)` は protocol の宣言（pandas_import_plan.md の 6-9）
+                Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::ProtocolDef { name, .. } | Stmt::Let(name, ..) => {
+                    Some(name)
+                }
                 _ => None,
             })
             .collect();

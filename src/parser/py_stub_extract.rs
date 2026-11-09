@@ -267,11 +267,19 @@ pub(crate) fn py_merge_base_members(class: &mut crate::ast::Stmt, base: &crate::
 /// `.py` の抽出（`extract_py_type_stubs`）と `.pyi` の変換（`build_py_type_body`）の両方の結果に使う。
 pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
     use crate::ast::Stmt;
+    // このモジュール（とたどって足した宣言）のクラスと protocol（6-9）
     let known: std::collections::HashSet<String> = stmts
         .iter()
-        .filter_map(|s| if let Stmt::ClassDef { name, .. } = s { Some(name.clone()) } else { None })
+        .filter_map(|s| match s {
+            Stmt::ClassDef { name, .. } | Stmt::ProtocolDef { name, .. } => Some(name.clone()),
+            _ => None,
+        })
         .collect();
-    let fix = |t: &mut String| *t = py_type_names_to_any(t, &known);
+    let protocols: std::collections::HashSet<String> = stmts
+        .iter()
+        .filter_map(|s| if let Stmt::ProtocolDef { name, .. } = s { Some(name.clone()) } else { None })
+        .collect();
+    let fix = |t: &mut String| *t = py_type_names_to_any(t, &known, &protocols);
     /// 関数の注釈に `fix` を当てる。⚠ 本体の中の `@overload` の各形も同じ（以前は本体の宣言だけで、`np.argmax(a)` が形の
     /// `a: ArrayLike` と照合されて偽の誤りになった・pandas_import_plan.md の 6-2）。
     fn fix_fn(st: &mut Stmt, fix: &dyn Fn(&mut String)) {
@@ -291,6 +299,19 @@ pub(crate) fn py_unknown_types_to_any(stmts: &mut [crate::ast::Stmt]) {
     for st in stmts.iter_mut() {
         match st {
             Stmt::FnDef { .. } => fix_fn(st, &fix),
+            // protocol の本体の中では、その型変数（`Protocol[_T_co]` の `_T_co`）も型の名前（6-9）
+            Stmt::ProtocolDef { template_params, body, .. } => {
+                let mut scope = known.clone();
+                scope.extend(template_params.iter().map(|p| p.name.clone()));
+                let fix_p = |t: &mut String| *t = py_type_names_to_any(t, &scope, &protocols);
+                for m in body.iter_mut() {
+                    match m {
+                        Stmt::FnDef { .. } => fix_fn(m, &fix_p),
+                        Stmt::Field { type_ann, .. } => fix_p(type_ann),
+                        _ => {}
+                    }
+                }
+            }
             Stmt::ClassDef { name, body, .. } => {
                 // `typing.Self` はこのクラス（基底から写したメンバーなら写した先・PEP 673）。⚠ 以前は `Self` のまま残り、
                 //   `df.head()` の型が中身の無い `Self` になっていた（pandas_import_plan.md の 1-3）。
@@ -336,32 +357,68 @@ fn py_replace_type_word(ty: &str, from: &str, to: &str) -> String {
     out
 }
 
-/// 型の字句の中の、知らない大文字始まりの名前を `Any` にする（`py_unknown_types_to_any`）。Arrow の型の構成子
-/// （`Union` / `Option` / `Any` / `None` …）と `known` の名前は残す。
-fn py_type_names_to_any(ty: &str, known: &std::collections::HashSet<String>) -> String {
+/// 型の字句の中の、知らないクラスらしい名前（大文字・`_` で始まる・`a.B`）を `Any` にする（`py_unknown_types_to_any`）。Arrow の
+/// 型の構成子（`Union` / `Option` / `Any` / `None` …）・組み込みの protocol・`known` の名前と、小文字の素の名前（`int` など
+/// Arrow の型の名前）は残す。知らない名前の型引数つき（`Callable[..]` / `Literal[..]` / 写していないクラス `Box[int]`）は
+/// **型引数ごと** `Any`（6-9）。`known` のクラス（protocol でない名前）の型引数は落とす（`Box[int]` は `Box`。Python の総称の
+/// クラスは Arrow のテンプレートではない・6-11 で扱う）。`protocols` の型引数は残す。
+fn py_type_names_to_any(
+    ty: &str,
+    known: &std::collections::HashSet<String>,
+    protocols: &std::collections::HashSet<String>,
+) -> String {
     const ARROW_TYPE_NAMES: &[&str] = &["Any", "None", "Union", "Option", "Intersection", "Result", "Self", "Undefined"];
-    let mut out = String::with_capacity(ty.len());
-    let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if !word.is_empty() {
-            // 組み込みの protocol（`Sequence` …・6-8）も Arrow の型の名前（`py_type_to_arrow` が `typing` のものだけ残す）
-            let keep = !word.starts_with(|c: char| c.is_ascii_uppercase())
-                || ARROW_TYPE_NAMES.contains(&word.as_str())
-                || known.contains(word.as_str())
-                || crate::type_check::builtins::is_builtin_protocol(word);
-            out.push_str(if keep { word } else { "Any" });
-            word.clear();
-        }
+    let keep = |word: &str| {
+        !py_class_like_name(word)
+            || ARROW_TYPE_NAMES.contains(&word)
+            || known.contains(word)
+            || crate::type_check::builtins::is_builtin_protocol(word)
     };
-    for c in ty.chars() {
-        if c.is_alphanumeric() || c == '_' || c == '.' {
-            word.push(c);
-        } else {
-            flush(&mut word, &mut out);
+    let chars: Vec<char> = ty.chars().collect();
+    let mut out = String::with_capacity(ty.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if !(c.is_alphanumeric() || c == '_' || c == '.') {
             out.push(c);
+            i += 1;
+            continue;
         }
+        let start = i;
+        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
+            i += 1;
+        }
+        let word: String = chars[start..i].iter().collect();
+        let skip_args = |i: &mut usize| {
+            if chars.get(*i) == Some(&'[') {
+                let mut depth = 0;
+                while *i < chars.len() {
+                    match chars[*i] {
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                *i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    *i += 1;
+                }
+            }
+        };
+        if keep(&word) {
+            out.push_str(&word);
+            if known.contains(&word) && !protocols.contains(&word) {
+                skip_args(&mut i);
+            }
+            continue;
+        }
+        out.push_str("Any");
+        // 知らない名前の型引数（`[...]`）は読み飛ばす（`Any[int]` にしない）
+        skip_args(&mut i);
     }
-    flush(&mut word, &mut out);
     out
 }
 
@@ -397,7 +454,54 @@ const PY_OPEN_MEMBERS_MARK: &str = "py-open-members: ";
 /// 戻り値の宣言は、入れ子のクラス（`Tree.Node` の名前・Python の `__qualname__`）を先に、このクラスを最後に並べる。
 fn py_class_stub(lines: &[&str], start: usize, decorated: bool) -> (Vec<crate::ast::Stmt>, usize) {
     let name = py_parse_class_name(py_strip_comment(lines[start]).trim()).unwrap_or_default();
-    py_class_stub_named(lines, start, decorated, name, &std::collections::HashMap::new())
+    let (mut decls, next) = py_class_stub_named(lines, start, decorated, name, &std::collections::HashMap::new());
+    if let Some(params) = py_protocol_params(py_strip_comment(lines[start]).trim()) {
+        if let Some(last) = decls.pop() {
+            decls.push(py_class_to_protocol(last, params));
+        }
+    }
+    (decls, next)
+}
+
+/// `class` の行が `typing.Protocol` を基底に書いていれば、その型変数（`Protocol[_T_co]` の `_T_co`・無ければ `Generic[..]` の型変数）。
+/// protocol でなければ `None`（pandas_import_plan.md の 6-9）。
+fn py_protocol_params(header: &str) -> Option<Vec<String>> {
+    let bases = py_header_bases(header);
+    let head = |b: &str| b.split('[').next().unwrap_or(b).trim().rsplit('.').next().unwrap_or("").to_string();
+    let args = |b: &str| -> Vec<String> {
+        b.split_once('[')
+            .and_then(|(_, r)| r.strip_suffix(']'))
+            .map(|inner| split_top_level(inner, ',').into_iter().map(|t| t.trim().to_string()).collect())
+            .unwrap_or_default()
+    };
+    let protocol = bases.iter().find(|b| head(b) == "Protocol")?;
+    let mut params = args(protocol);
+    if params.is_empty() {
+        if let Some(generic) = bases.iter().find(|b| head(b) == "Generic") {
+            params = args(generic);
+        }
+    }
+    Some(params)
+}
+
+/// Python の protocol のクラスの宣言を、Arrow の protocol の宣言にする（構造で照合する・6-9）。要求に入れるのはフィールドと
+/// メソッド（`py_class_stub` が足した `__init__` は入れない。protocol は作り方を要求しない）。
+fn py_class_to_protocol(class: crate::ast::Stmt, params: Vec<String>) -> crate::ast::Stmt {
+    use crate::ast::{Stmt, TemplateParam};
+    let Stmt::ClassDef { name, body, .. } = class else { return class };
+    let body = body
+        .into_iter()
+        .filter(|m| match m {
+            Stmt::FnDef { name, .. } => name != "__init__",
+            Stmt::Field { .. } => true,
+            _ => false,
+        })
+        .collect();
+    Stmt::ProtocolDef {
+        name,
+        template_params: params.into_iter().map(|name| TemplateParam { name, constraints: vec![] }).collect(),
+        body,
+    }
 }
 
 /// 同じ本体の先に書いた入れ子のクラス（素の名前 → (`class` の行, `Outer.Inner`)）。Python のクラスの本体の中では、入れ子の
@@ -1118,7 +1222,8 @@ fn py_type_to_arrow(ann: &str) -> String {
     }
     // ジェネリクス `Base[args]`（`typing.List[int]` の `typing.` は落とす）
     if let Some((base, inner)) = a.strip_suffix(']').and_then(|s| s.split_once('[')) {
-        let base = base.trim().rsplit('.').next().unwrap_or("").trim();
+        let base_text = base.trim();
+        let base = base_text.rsplit('.').next().unwrap_or("").trim();
         let raw_args = split_top_level(inner, ',');
         let args: Vec<String> = raw_args.iter().map(|t| py_type_to_arrow(t)).collect();
         return match (base, args.as_slice()) {
@@ -1140,7 +1245,11 @@ fn py_type_to_arrow(ann: &str) -> String {
             (b, ts) if crate::type_check::builtins::protocol_arity(b).is_some_and(|n| n == ts.len() && n > 0) => {
                 format!("{b}[{}]", ts.join(", "))
             }
-            // 知らないジェネリクス（`Callable[...]` / 利用者のクラス `Box[int]` など）は検査しない
+            (b, _) if crate::type_check::builtins::protocol_arity(b).is_some() => "Any".to_string(),
+            // クラス・protocol らしい名前（`_NestedSequence[T]` / `Box[int]` / `a.B[int]`）は型引数ごと残し、このモジュールが
+            // 宣言した名前かを `py_unknown_types_to_any` が決める（知らなければ丸ごと `Any`・6-9）。
+            // ⚠ 知らないジェネリクス（`Callable[...]` / `Literal[...]`）もここを通り、そこで `Any` になる
+            _ if py_class_like_name(base_text) => format!("{base_text}[{}]", args.join(", ")),
             _ => "Any".to_string(),
         };
     }
@@ -1165,15 +1274,20 @@ fn py_type_to_arrow(ann: &str) -> String {
                 n => format!("{name}[{}]", vec!["Any"; n].join(", ")),
             }
         }
-        // 大文字始まりのクラス名はそのまま（NamedInstance として解釈される）
-        _ if a.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-            && a.chars().all(|c| c.is_alphanumeric() || c == '_') =>
-        {
-            a.to_string()
-        }
+        // クラス・protocol らしい名前（大文字・`_` で始まる・`a.B`）はそのまま。このモジュールが宣言した名前かを
+        // `py_unknown_types_to_any` が決める（知らなければ `Any`・6-9）
+        _ if py_class_like_name(a) => a.to_string(),
         // 不明・複雑な型 → Any
         _ => "Any".to_string(),
     }
+}
+
+/// クラス・protocol らしい名前か（大文字か `_` で始まる名前・修飾した名前 `a.B`）。⚠ 小文字の素の名前（`int` など）は Arrow の
+/// 型の名前なので含めない。
+fn py_class_like_name(a: &str) -> bool {
+    !a.is_empty()
+        && a.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        && (a.starts_with(|c: char| c.is_ascii_uppercase() || c == '_') || a.contains('.'))
 }
 
 /// 注釈の名前 `a`（`Sequence` / `typing.Sized` / `collections.abc.Iterable` / `abc.Mapping`）が組み込みの protocol なら、その名前
@@ -1327,24 +1441,25 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
     /// `Union[List[int], None]` は中を変換しないまま・`list[int] | None` → `Any` だった。
     #[test]
     fn element_types_are_kept() {
-        assert_eq!(py_type_to_arrow("set[tuple[int, int]]"), "py_set[tuple[int, int]]");
-        assert_eq!(py_type_to_arrow("frozenset[str]"), "set[str]");
-        assert_eq!(py_type_to_arrow("FrozenSet[int]"), "set[int]");
-        assert_eq!(py_type_to_arrow("dict[str, list[int]]"), "py_dict[str, py_list[int]]");
-        assert_eq!(py_type_to_arrow("Dict[str, Tuple[int, float]]"), "py_dict[str, tuple[int, float]]");
-        assert_eq!(py_type_to_arrow("Union[List[int], None]"), "Option[py_list[int]]");
-        assert_eq!(py_type_to_arrow("Union[int, str, None]"), "Union[int, str, None]");
-        assert_eq!(py_type_to_arrow("list[int] | None"), "Option[py_list[int]]");
-        assert_eq!(py_type_to_arrow("int | str"), "Union[int, str]");
-        assert_eq!(py_type_to_arrow("typing.Optional[typing.List[str]]"), "Option[py_list[str]]");
+        assert_eq!(arrow_type("set[tuple[int, int]]"), "py_set[tuple[int, int]]");
+        assert_eq!(arrow_type("frozenset[str]"), "set[str]");
+        assert_eq!(arrow_type("FrozenSet[int]"), "set[int]");
+        assert_eq!(arrow_type("dict[str, list[int]]"), "py_dict[str, py_list[int]]");
+        assert_eq!(arrow_type("Dict[str, Tuple[int, float]]"), "py_dict[str, tuple[int, float]]");
+        assert_eq!(arrow_type("Union[List[int], None]"), "Option[py_list[int]]");
+        assert_eq!(arrow_type("Union[int, str, None]"), "Union[int, str, None]");
+        assert_eq!(arrow_type("list[int] | None"), "Option[py_list[int]]");
+        assert_eq!(arrow_type("int | str"), "Union[int, str]");
+        assert_eq!(arrow_type("typing.Optional[typing.List[str]]"), "Option[py_list[str]]");
         // Arrow が表せないものは検査しない側
-        assert_eq!(py_type_to_arrow("tuple[int, ...]"), "tuple");
+        assert_eq!(arrow_type("tuple[int, ...]"), "tuple");
         // `Sequence[int]` は組み込みの protocol（6-8・`typing_names_are_builtin_protocols`）。以前は `Any` だった
-        assert_eq!(py_type_to_arrow("Sequence[int]"), "Sequence[int]");
-        assert_eq!(py_type_to_arrow("Callable[[int], str]"), "Any");
-        assert_eq!(py_type_to_arrow("Optional[Any]"), "Any");
+        assert_eq!(arrow_type("Sequence[int]"), "Sequence[int]");
+        assert_eq!(arrow_type("Callable[[int], str]"), "Any");
+        assert_eq!(arrow_type("Optional[Any]"), "Any");
+        // 名前は読む時点では残す（このモジュールのクラスかは `py_unknown_types_to_any` が決める）
         assert_eq!(py_type_to_arrow("Person"), "Person");
-        assert_eq!(py_type_to_arrow("Final[int]"), "int");
+        assert_eq!(arrow_type("Final[int]"), "int");
     }
 
     /// 例外のクラスは、継承をたどって行き着く組み込みの例外を基底に持つ（`except m.Err:` の型検査・pandas_import_plan.md の 2-1）。
@@ -1454,20 +1569,62 @@ class C(B):
         assert_eq!(flag.type_ann.as_deref(), Some("bool"), "a bare `*` takes no positional argument anyway");
     }
 
+    /// 注釈を読む 2 つの段（`py_type_to_arrow` と、知らない名前を `Any` にする `py_type_names_to_any`）を通した型。
+    fn arrow_type(a: &str) -> String {
+        py_type_names_to_any(&py_type_to_arrow(a), &Default::default(), &Default::default())
+    }
+
     /// `typing` / `collections.abc` の `Sequence` などは組み込みの protocol として読む（pandas_import_plan.md の 6-8）。
     /// 型引数を書かなければ `Any` で埋める。ほかのモジュールで修飾した同じ名前・個数の違う型引数は検査しない（`Any`）。
     #[test]
     fn typing_names_are_builtin_protocols() {
-        assert_eq!(py_type_to_arrow("Sequence[int]"), "Sequence[int]");
-        assert_eq!(py_type_to_arrow("typing.Iterable[str]"), "Iterable[str]");
-        assert_eq!(py_type_to_arrow("Mapping[str, int]"), "Mapping[str, int]");
-        assert_eq!(py_type_to_arrow("Sequence"), "Sequence[Any]");
-        assert_eq!(py_type_to_arrow("collections.abc.Mapping"), "Mapping[Any, Any]");
-        assert_eq!(py_type_to_arrow("SupportsIndex"), "SupportsIndex");
-        assert_eq!(py_type_to_arrow("Iterable[int] | None"), "Option[Iterable[int]]");
-        assert_eq!(py_type_to_arrow("Mapping[str]"), "Any", "wrong number of type arguments");
-        assert_eq!(py_type_to_arrow("Sized[int]"), "Any", "Sized takes no type arguments");
-        assert_eq!(py_type_to_arrow("np.Sized"), "Any", "another module's Sized is not the built-in protocol");
+        assert_eq!(arrow_type("Sequence[int]"), "Sequence[int]");
+        assert_eq!(arrow_type("typing.Iterable[str]"), "Iterable[str]");
+        assert_eq!(arrow_type("Mapping[str, int]"), "Mapping[str, int]");
+        assert_eq!(arrow_type("Sequence"), "Sequence[Any]");
+        assert_eq!(arrow_type("collections.abc.Mapping"), "Mapping[Any, Any]");
+        assert_eq!(arrow_type("SupportsIndex"), "SupportsIndex");
+        assert_eq!(arrow_type("Iterable[int] | None"), "Option[Iterable[int]]");
+        assert_eq!(arrow_type("Mapping[str]"), "Any", "wrong number of type arguments");
+        assert_eq!(arrow_type("Sized[int]"), "Any", "Sized takes no type arguments");
+        assert_eq!(arrow_type("np.Sized"), "Any", "another module's Sized is not the built-in protocol");
+    }
+
+    /// `class X(Protocol[_T_co])` は Arrow の protocol（型変数は型引数・`__init__` は要求に入れない）。本体の注釈の型変数と、
+    /// このモジュールの `_` で始まる名前は残す。知らない名前は型引数ごと `Any`、このモジュールのクラスの型引数は落とす（6-9）。
+    #[test]
+    fn protocol_classes_become_protocols() {
+        use crate::ast::Stmt;
+        let src = "from typing import Protocol, TypeVar
+_T_co = TypeVar('_T_co')
+class SupportsRead(Protocol[_T_co]):
+    def read(self, n: int) -> _T_co: ...
+class _Closer(Protocol):
+    def close(self) -> None: ...
+class Box:
+    pass
+def f(r: SupportsRead[str], c: _Closer, b: Box[int], u: Unknown[int], t: _T_co) -> None: ...
+";
+        let stmts = extract_py_type_stubs(src);
+        let Some(Stmt::ProtocolDef { template_params, body, .. }) =
+            stmts.iter().find(|s| matches!(s, Stmt::ProtocolDef { name, .. } if name == "SupportsRead"))
+        else {
+            panic!("SupportsRead is not a protocol: {stmts:?}");
+        };
+        assert_eq!(template_params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["_T_co"]);
+        let Some(Stmt::FnDef { return_type, .. }) = body.iter().find(|m| matches!(m, Stmt::FnDef { name, .. } if name == "read"))
+        else {
+            panic!("no read");
+        };
+        assert_eq!(return_type.as_deref(), Some("_T_co"));
+        assert!(!body.iter().any(|m| matches!(m, Stmt::FnDef { name, .. } if name == "__init__")));
+        assert!(stmts.iter().any(|s| matches!(s, Stmt::ProtocolDef { name, .. } if name == "_Closer")));
+        let Some(Stmt::FnDef { params, .. }) = stmts.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "f")) else {
+            panic!("no f");
+        };
+        let ann: Vec<&str> = params.iter().filter_map(|p| p.type_ann.as_deref()).collect();
+        // ⚠ 型変数は protocol の本体の外では型の名前ではない（`_T_co` は `Any`）
+        assert_eq!(ann, ["SupportsRead[str]", "_Closer", "Box", "Any", "Any"]);
     }
 
     /// 入れ子のクラスは `Outer.Inner` の名前で持ち上げ、外側のクラスにはその型の値の属性を置く。入れ子のクラスの基底は同じ本体の

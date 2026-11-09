@@ -171,6 +171,9 @@ impl TypeChecker {
         match ty {
             // Any は全プロトコルを満たす。`Unresolved` / `Never` は判定材料が無い。
             InferredType::Any | InferredType::Unresolved | InferredType::Never => Conformer::Opaque,
+            // メンバーの顔ぶれが分からないクラス（よそのファイルを継承する・デコレータの付いた Python のクラス、未展開の
+            // `!装飾子`）は判定材料が無い（メンバーの有無の検査を黙らせるのと同じ・6-9）
+            InferredType::NamedInstance(cls) if self.registry.members_unresolved(cls) => Conformer::Opaque,
             InferredType::NamedInstance(cls) => class(cls),
             // ⚠⚠ **テンプレートの具体化（`Box[int]`）も普通のクラスとして適合を見る**
             //   （タスク 2-14）。以前は「クラスのインスタンスではない」と**誤って弾いていた**

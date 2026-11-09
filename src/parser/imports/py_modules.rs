@@ -179,7 +179,9 @@ const PY_LINK_DEPTH: u32 = 24;
 /// 宣言の名前（関数・クラス）。
 fn py_decl_name(st: &Stmt) -> Option<&str> {
     match st {
-        Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::Let(name, ..) => Some(name),
+        Stmt::FnDef { name, .. } | Stmt::ClassDef { name, .. } | Stmt::ProtocolDef { name, .. } | Stmt::Let(name, ..) => {
+            Some(name)
+        }
         _ => None,
     }
 }
@@ -208,7 +210,7 @@ fn py_type_refs(st: &Stmt, out: &mut Vec<String>) {
     match st {
         Stmt::FnDef { params, return_type, .. } => fn_sig(params, return_type, out),
         Stmt::Let(_, Some(t), _, _) => scan(t, out),
-        Stmt::ClassDef { body, .. } => {
+        Stmt::ClassDef { body, .. } | Stmt::ProtocolDef { body, .. } => {
             for m in body {
                 match m {
                     Stmt::FnDef { params, return_type, .. } => fn_sig(params, return_type, out),
