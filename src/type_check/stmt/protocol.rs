@@ -85,6 +85,13 @@ impl TypeChecker {
     ///   戻ってきたら満たすと仮定して止める（共帰納的な判定・[`TypeChecker::protocol_assumptions`]）。
     fn protocol_misses(&self, ty: &InferredType, proto_name: &str, args: &[InferredType]) -> Option<Vec<ProtocolMiss>> {
         let proto = self.registry.protocol(proto_name)?.clone();
+        // `typing` / `collections.abc` の抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence[int])`）は名目で満たす
+        // （抽象クラスが足すメソッドは型スタブに現れない・pandas_import_plan.md の 6-8）
+        if let InferredType::NamedInstance(cls) = ty {
+            if self.registry.is_cpython_class(cls) && self.class_inherits(cls, proto_name, 0) {
+                return Some(Vec::new());
+            }
+        }
         let subst = self.protocol_subst(proto_name, args)?;
         let key = format!("{ty} <: {proto_name}{args:?}");
         if self.protocol_assumptions.borrow().contains(&key) {
@@ -94,6 +101,16 @@ impl TypeChecker {
         let misses = self.protocol_misses_of(ty, &proto, &subst);
         self.protocol_assumptions.borrow_mut().pop();
         misses
+    }
+
+    /// クラス `cls` が基底に `base` を（基底の基底もたどって）書いたか。
+    fn class_inherits(&self, cls: &str, base: &str, depth: u32) -> bool {
+        // ⚠ 深さの上限は循環（壊れたスタブ）の保険
+        depth < 20
+            && self
+                .registry
+                .class_bases(cls)
+                .is_some_and(|bs| bs.iter().any(|b| b == base || self.class_inherits(b, base, depth + 1)))
     }
 
     /// 型引数の置き換えの表（protocol の型変数 → 型引数）。型引数を書かない総称の protocol（型テストの `is Holder`）は

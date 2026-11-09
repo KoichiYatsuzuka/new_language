@@ -310,7 +310,12 @@ impl Parser {
         // ⚠ `typing.Any` は Arrow の `Any`。`typing.py` には `class Any` があるので、たどると `from typing import Any` が
         //   そのクラスをモジュールへ写し、注釈の `Any` がモジュールのクラス（`m.Any`）になっていた（`m.Box(3)` が
         //   `expects 'm.Any' but got 'int'` の静的な誤り・numpy の `ndarray.tolist() -> Any` も `numpy.Any` になる）。
-        if name == "Any" && ctx.module == ["typing"] {
+        // ⚠ `typing` / `collections.abc` の `Sequence` / `SupportsIndex` などは Arrow の組み込みの protocol（pandas_import_plan.md
+        //   の 6-8）。写すとただのクラスになり、`def idx(i: SupportsIndex)` に `3` を渡すと `expects 'm.SupportsIndex'
+        //   but got 'int'` の偽の誤りだった（`typing.py` の `class SupportsIndex(Protocol)`）。
+        if py_is_typing_module(&ctx.module)
+            && (name == "Any" || crate::type_check::builtins::is_builtin_protocol(name))
+        {
             return None;
         }
         if let Some(d) = ctx.decls.iter().find(|d| py_decl_name(d) == Some(name)) {
@@ -324,6 +329,30 @@ impl Parser {
         self.py_chase_decl(&next, orig, depth + 1)
     }
 
+    /// `ctx` のモジュールで名前 `name`（`Sequence` / `abc.Sequence`）が、`typing` / `collections.abc` から import した組み込みの
+    /// protocol を指すなら、その名前（6-8）。
+    fn py_builtin_protocol_of(&self, ctx: &PyStubRc, name: &str) -> Option<String> {
+        use crate::parser::py_import_links::absolute_module;
+        let (head, orig) = match name.split_once('.') {
+            // `import collections.abc as abc` の `abc.Sequence`: `abc` がモジュールを指す
+            Some((head, rest)) => {
+                let link = ctx.links.iter().find(|l| l.local == head)?;
+                let mut target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+                if let Some(sub) = &link.name {
+                    target.push(sub.clone());
+                }
+                (target, rest.to_string())
+            }
+            // `from typing import Sequence`
+            None => {
+                let link = ctx.links.iter().find(|l| l.local == name)?;
+                let target = absolute_module(&ctx.module, ctx.is_package, link.level, &link.module)?;
+                (target, link.name.clone()?)
+            }
+        };
+        (py_is_typing_module(&head) && crate::type_check::builtins::is_builtin_protocol(&orig)).then_some(orig)
+    }
+
     /// クラスの宣言 `class`（`home` のモジュールで書かれたもの）に、ほかのファイルの基底のメンバーを写す。基底の注釈の名前は
     /// 基底を書いたモジュールで引くので、`queue` に（名前, 文脈）を積む。
     fn py_merge_outside_bases(&mut self, class: &mut Stmt, home: &PyStubRc, queue: &mut Vec<(String, PyStubRc)>, depth: u32) {
@@ -335,6 +364,16 @@ impl Parser {
         for b in bases {
             // `Generic[T]` などの型引数は外して名前で引く
             let bare = b.split('[').next().unwrap_or(&b).trim().to_string();
+            // `typing` / `collections.abc` の抽象クラス（`class Bag(Sequence[int])`）は組み込みの protocol を名目で満たす
+            // （抽象クラスが足すメソッドは型スタブに現れない・6-8）。基底には protocol の名前を書く
+            if let Some(proto) = self.py_builtin_protocol_of(home, &bare) {
+                if let Stmt::ClassDef { bases, .. } = &mut *class {
+                    if !bases.contains(&proto) {
+                        bases.push(proto);
+                    }
+                }
+                continue;
+            }
             let Some((mut base_decl, base_home)) = self.py_chase_decl(home, &bare, 0) else { continue };
             if !matches!(base_decl, Stmt::ClassDef { .. }) {
                 continue;
@@ -438,4 +477,13 @@ impl Parser {
             body.push(decl);
         }
     }
+}
+
+/// 型の名前を定めるモジュール（`typing` / `typing_extensions` / `collections.abc` / `_collections_abc`）か。ここの `Any` と
+/// 組み込みの protocol の名前は Arrow の型として読み、宣言を写さない（`py_chase_decl`・pandas_import_plan.md の 6-8）。
+fn py_is_typing_module(module: &[String]) -> bool {
+    matches!(
+        module.iter().map(String::as_str).collect::<Vec<_>>().as_slice(),
+        ["typing"] | ["typing_extensions"] | ["collections", "abc"] | ["_collections_abc"]
+    )
 }

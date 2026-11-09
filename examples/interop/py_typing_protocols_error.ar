@@ -1,0 +1,15 @@
+# py_typing_protocols_error.ar — 型スタブの `typing` の型と合わない値は静的な誤り（pandas_import_plan.md の 6-8）
+#
+# `Sequence[int]` に文字列のタプル、`SupportsIndex` に浮動小数点数、`Iterable[str]` に整数のタプルは渡せない（以前は `Any`
+# なので何も検査されなかった）。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   argument 0 of 'test_modules.py_typing_protocols.total' expects 'Sequence[int]' but got 'tuple[str, str]'
+#   argument 0 of 'test_modules.py_typing_protocols.at' expects 'SupportsIndex' but got 'float'
+#   argument 0 of 'test_modules.py_typing_protocols.joined' expects 'Iterable[str]' but got 'tuple[int, int]'
+
+import[py] test_modules.py_typing_protocols as m
+
+print(m.total(("a", "b")))
+print(m.at(1.5))
+print(m.joined((1, 2)))

@@ -27,6 +27,8 @@
   `from typing import ..`; pandas_import_plan.md 6-7, declared in `src/built_in_stab/builtins.ars`). They are checked
   structurally, also for built-in values (`list[int]` satisfies `Sequence[int]`), and a user declaration of the same name
   wins. Type tests take the bare name only (`x is Iterable`; `x is Iterable[int]` is a static error, as in CPython).
+  The same names in a Python module's annotations (`typing` / `collections.abc`) are these protocols (6-8), and a Python
+  class that inherits the abstract class (`class Bag(Sequence)`) satisfies it nominally.
 - `...` is a value (`Ellipsis`) only as a subscript item (`a[..., 0]`, pandas_import_plan.md 2-3); elsewhere write
   `Ellipsis`. Subscript items may be slices (`a[1:, 0]`), and a slice may hold any bounds (`df.loc["b":"d"]`), but
   slicing an Arrow list / str / bytes / tuple still requires int bounds (static error when the type says so, otherwise

@@ -173,6 +173,17 @@ pub(crate) fn is_builtin_protocol(name: &str) -> bool {
     TABLE.with(|t| t.types.iter().any(|s| matches!(s, Stmt::ProtocolDef { name: n, .. } if n == name)))
 }
 
+/// 組み込みの protocol の型引数の個数（`Sequence` は 1・`Mapping` は 2・`Sized` は 0）。組み込みの protocol でなければ `None`。
+/// Python の型スタブの `Sequence`（型引数なし）を `Sequence[Any]` と読むのに使う（pandas_import_plan.md の 6-8）。
+pub(crate) fn protocol_arity(name: &str) -> Option<usize> {
+    TABLE.with(|t| {
+        t.types.iter().find_map(|s| match s {
+            Stmt::ProtocolDef { name: n, template_params, .. } if n == name => Some(template_params.len()),
+            _ => None,
+        })
+    })
+}
+
 /// 組み込みの protocol の名前（宣言の順）。
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn protocol_names() -> Vec<String> {

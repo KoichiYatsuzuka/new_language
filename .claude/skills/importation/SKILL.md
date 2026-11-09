@@ -213,7 +213,11 @@ Python source to Arrow statements (the converter `src/python_converter/`, rustpy
 and the converter itself in 3-3 (`.pyi` and `.py` types come from the line extractor `py_stub_extract` only).
 
 ⚠ `typing.Any` is never chased (`py_chase_decl`): `typing.py` has a `class Any`, and copying it made the module's `Any`
-annotations a class of that module (`numpy.Any`, a false `expects 'm.Any' but got 'int'`).
+annotations a class of that module (`numpy.Any`, a false `expects 'm.Any' but got 'int'`). The same holds for the
+built-in protocol names (`Sequence` / `SupportsIndex` …) from `typing` / `typing_extensions` / `collections.abc` /
+`_collections_abc` (`py_is_typing_module`, pandas_import_plan.md 6-8): `py_type_to_arrow` keeps `Sequence[int]` as the
+Arrow protocol (bare `Sequence` → `Sequence[Any]`), and a class inheriting the abstract class gets the protocol name in
+its bases (`py_builtin_protocol_of` in `py_merge_outside_bases`), which conformance accepts nominally.
 
 **Following imports** (`link_py_types`, pandas_import_plan.md 1-3): after `extract_py_type_stubs_raw`, the stub gets
 ① re-exported declarations (a name the module binds with `import` is chased to its defining module through the module's

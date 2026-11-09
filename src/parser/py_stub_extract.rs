@@ -344,9 +344,11 @@ fn py_type_names_to_any(ty: &str, known: &std::collections::HashSet<String>) -> 
     let mut word = String::new();
     let flush = |word: &mut String, out: &mut String| {
         if !word.is_empty() {
+            // 組み込みの protocol（`Sequence` …・6-8）も Arrow の型の名前（`py_type_to_arrow` が `typing` のものだけ残す）
             let keep = !word.starts_with(|c: char| c.is_ascii_uppercase())
                 || ARROW_TYPE_NAMES.contains(&word.as_str())
-                || known.contains(word.as_str());
+                || known.contains(word.as_str())
+                || crate::type_check::builtins::is_builtin_protocol(word);
             out.push_str(if keep { word } else { "Any" });
             word.clear();
         }
@@ -1133,7 +1135,12 @@ fn py_type_to_arrow(ann: &str) -> String {
             // 可変長（`tuple[int, ...]`）と空（`tuple[()]`）は要素の並びを Arrow で書けないので素の `tuple`（形だけ照合）
             ("Tuple" | "tuple", _) if raw_args.iter().any(|t| matches!(t.trim(), "..." | "()")) => "tuple".to_string(),
             ("Tuple" | "tuple", ts) if !ts.is_empty() => format!("tuple[{}]", ts.join(", ")),
-            // 知らないジェネリクス（`Sequence[T]` / `Callable[...]` / 利用者のクラス `Box[int]` など）は検査しない
+            // `typing` / `collections.abc` の `Sequence[int]` などは組み込みの protocol（構造で照合する・
+            // pandas_import_plan.md の 6-8）。⚠ 型引数の個数が宣言と違えば検査しない（`Any`）
+            (b, ts) if crate::type_check::builtins::protocol_arity(b).is_some_and(|n| n == ts.len() && n > 0) => {
+                format!("{b}[{}]", ts.join(", "))
+            }
+            // 知らないジェネリクス（`Callable[...]` / 利用者のクラス `Box[int]` など）は検査しない
             _ => "Any".to_string(),
         };
     }
@@ -1149,6 +1156,15 @@ fn py_type_to_arrow(ann: &str) -> String {
         // Python のバイト列はどれも Arrow の bytes として受け取る（ffi_value_exchange_plan.md 5-3）。要素が 1 バイトでない
         // memoryview は Python のオブジェクトのまま届き、境界の照合で FfiTypeError になる
         "bytearray" | "memoryview" => "bytes".to_string(),
+        // 型引数を書かない組み込みの protocol（`Sequence` / `typing.Sized` / `collections.abc.Iterable`・6-8）。型引数を取るものは
+        // `Any` で埋める（Python の素の `Sequence` は `Sequence[Any]`）
+        _ if py_builtin_protocol_name(a).is_some() => {
+            let name = py_builtin_protocol_name(a).expect("checked");
+            match crate::type_check::builtins::protocol_arity(name).unwrap_or(0) {
+                0 => name.to_string(),
+                n => format!("{name}[{}]", vec!["Any"; n].join(", ")),
+            }
+        }
         // 大文字始まりのクラス名はそのまま（NamedInstance として解釈される）
         _ if a.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && a.chars().all(|c| c.is_alphanumeric() || c == '_') =>
@@ -1158,6 +1174,20 @@ fn py_type_to_arrow(ann: &str) -> String {
         // 不明・複雑な型 → Any
         _ => "Any".to_string(),
     }
+}
+
+/// 注釈の名前 `a`（`Sequence` / `typing.Sized` / `collections.abc.Iterable` / `abc.Mapping`）が組み込みの protocol なら、その名前
+/// （pandas_import_plan.md の 6-8）。修飾は `typing` / `typing_extensions` / `collections.abc` / `abc` だけ（ほかのモジュールの
+/// 同じ名前のクラスは違う型）。
+fn py_builtin_protocol_name(a: &str) -> Option<&str> {
+    let (prefix, name) = match a.rsplit_once('.') {
+        Some((p, n)) => (Some(p), n),
+        None => (None, a),
+    };
+    if !matches!(prefix, None | Some("typing" | "typing_extensions" | "collections.abc" | "abc")) {
+        return None;
+    }
+    crate::type_check::builtins::is_builtin_protocol(name).then_some(name)
 }
 
 /// 型の選択肢を Arrow の型にする: `None` との 2 択は `Option[T]`、`Any` を含めば `Any`（どの値も入る）。
@@ -1309,7 +1339,8 @@ def f(x: ArrayLike, b: Box, xs: list[Other] | None) -> Box:
         assert_eq!(py_type_to_arrow("typing.Optional[typing.List[str]]"), "Option[py_list[str]]");
         // Arrow が表せないものは検査しない側
         assert_eq!(py_type_to_arrow("tuple[int, ...]"), "tuple");
-        assert_eq!(py_type_to_arrow("Sequence[int]"), "Any");
+        // `Sequence[int]` は組み込みの protocol（6-8・`typing_names_are_builtin_protocols`）。以前は `Any` だった
+        assert_eq!(py_type_to_arrow("Sequence[int]"), "Sequence[int]");
         assert_eq!(py_type_to_arrow("Callable[[int], str]"), "Any");
         assert_eq!(py_type_to_arrow("Optional[Any]"), "Any");
         assert_eq!(py_type_to_arrow("Person"), "Person");
@@ -1421,6 +1452,22 @@ class C(B):
         let params = py_params("a: int, *, flag: bool = ...", false).expect("params");
         let flag = params.iter().find(|p| p.name == "flag").expect("flag");
         assert_eq!(flag.type_ann.as_deref(), Some("bool"), "a bare `*` takes no positional argument anyway");
+    }
+
+    /// `typing` / `collections.abc` の `Sequence` などは組み込みの protocol として読む（pandas_import_plan.md の 6-8）。
+    /// 型引数を書かなければ `Any` で埋める。ほかのモジュールで修飾した同じ名前・個数の違う型引数は検査しない（`Any`）。
+    #[test]
+    fn typing_names_are_builtin_protocols() {
+        assert_eq!(py_type_to_arrow("Sequence[int]"), "Sequence[int]");
+        assert_eq!(py_type_to_arrow("typing.Iterable[str]"), "Iterable[str]");
+        assert_eq!(py_type_to_arrow("Mapping[str, int]"), "Mapping[str, int]");
+        assert_eq!(py_type_to_arrow("Sequence"), "Sequence[Any]");
+        assert_eq!(py_type_to_arrow("collections.abc.Mapping"), "Mapping[Any, Any]");
+        assert_eq!(py_type_to_arrow("SupportsIndex"), "SupportsIndex");
+        assert_eq!(py_type_to_arrow("Iterable[int] | None"), "Option[Iterable[int]]");
+        assert_eq!(py_type_to_arrow("Mapping[str]"), "Any", "wrong number of type arguments");
+        assert_eq!(py_type_to_arrow("Sized[int]"), "Any", "Sized takes no type arguments");
+        assert_eq!(py_type_to_arrow("np.Sized"), "Any", "another module's Sized is not the built-in protocol");
     }
 
     /// 入れ子のクラスは `Outer.Inner` の名前で持ち上げ、外側のクラスにはその型の値の属性を置く。入れ子のクラスの基底は同じ本体の

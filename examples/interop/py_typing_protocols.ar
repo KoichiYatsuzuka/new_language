@@ -1,0 +1,38 @@
+# py_typing_protocols.ar — 型スタブの `typing` / `collections.abc` の型は組み込みの protocol（pandas_import_plan.md の 6-8）
+#
+# Python の関数の注釈の `Sequence[int]` / `Iterable[str]` / `Mapping[str, int]` / `SupportsIndex` / `Iterator[int]` は、Arrow の
+# 組み込みの protocol として読む。構造で照合するので、タプル・`py_list` / `py_dict`・それを満たす Python の物を渡せ、要素の型も
+# 静的に検査される（`py_typing_protocols_error.ar`）。戻り値も protocol の型（`for v in m.countdown(3)` の `v` は `int`）。
+# 抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence)`）は名目でも満たす（抽象クラスが足すメソッドは型スタブに
+# 現れない）。
+# ⚠ 以前は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写したので、`m.at(1)` が `expects
+#   'm.SupportsIndex' but got 'int'` の偽の静的な誤りだった。`Sequence[int]` などは `Any`（何も検査しない）だった。
+#
+# 期待される出力:
+#   30 20
+#   6 3 3
+#   a-b x-y
+#   2 3
+#   6
+#   True True True
+#   ok
+
+import[py] test_modules.py_typing_protocols as m
+
+print(m.at(2), m.at(True))
+
+mut b = m.bag()
+mut pl = [1, 2] => py_list[int]
+print(m.total(b), m.total((1, 2)), m.total(pl))
+print(m.joined(("a", "b")), m.joined(["x", "y"] => py_list[str]))
+
+mut t = m.table()
+mut pd = {"k": 3} => py_dict[str, int]
+print(m.lookup(t, "bb"), m.lookup(pd, "k"))
+
+mut s = 0
+for v in m.countdown(3):
+    s += v
+print(s)
+print(b is Sequence, t is Mapping, pl is Sequence)
+print("ok")

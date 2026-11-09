@@ -329,8 +329,14 @@ let mean = np.mean(arr)
 - `.pyi` スタブファイルがあれば型チェックに使用（探索は上の規則どおり。`.pyi` → `.py`）
   - 注釈は要素型まで Arrow の型にします: `set[tuple[int, int]]`・`dict[str, list[int]]`・`frozenset[str]`（→ `set[str]`）・
     `Optional[T]` / `T | None`（→ `Option[T]`）。戻り値の要素も境界で照合します（宣言に反すれば `FfiTypeError`）。
-    Arrow が表せない型（`Sequence[T]`・`Callable[...]`・`tuple[int, ...]` の要素）は照合しません
+    Arrow が表せない型（`Callable[...]`・`tuple[int, ...]` の要素）は照合しません
     （`implementation_plans/ffi_value_exchange_plan.md` 7-8。以前は `dict[K, V]` → `dict`・`frozenset[T]` → `Any` と要素型を落としていました）
+  - `typing` / `collections.abc` の `Iterable[T]` / `Sequence[T]` / `Mapping[K, V]` / `Iterator[T]` / `Sized` / `SupportsIndex` …は
+    Arrow の**組み込みの protocol**（pandas_import_plan.md の 6-8・`examples/interop/py_typing_protocols.ar`・`_error`）。構造で照合
+    するので、タプル・`py_list` / `py_dict`・それを満たす Python の物を渡せ、要素の型も静的に検査される。型引数を書かない
+    `Sequence` は `Sequence[Any]`。抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence)`）は名目でも満たす
+    （⚠ 型引数は照合しない）。⚠ 以前は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写したので、
+    `def at(i: SupportsIndex)` に `1` を渡すと偽の静的な誤りで、`Sequence[int]` などは `Any`（何も検査しない）だった
 - **型を付けるのは注釈・スタブファイル（`.pyi`）があるものと、クラスのコンストラクタの戻り値だけ**。それ以外は `Any`
   （使うには明示のダウンキャストが要る）。注釈の無い関数の戻り値も `Any`（7-27。以前は `return` のリテラルから推し量っていた）
 - **関数の引数**（7-30）: 注釈のある引数はその型、注釈の無い引数は `Any`、既定値のある引数は省略できる。引数の数も検査する。
