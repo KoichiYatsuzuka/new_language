@@ -148,6 +148,10 @@ pub fn py_has_static_attr(_handle: &PyObjHandle, _attr: &str) -> bool {
     false
 }
 
+pub fn py_hash(_handle: &PyObjHandle) -> Result<i64, String> {
+    Err(unavailable("hashing a Python object"))
+}
+
 pub fn py_eq_bool(_a: &Value, _b: &Value) -> Result<bool, String> {
     Err(unavailable("comparing a Python object"))
 }

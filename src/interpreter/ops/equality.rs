@@ -300,8 +300,11 @@ impl Interpreter {
             (Value::Code(a), Value::Code(b)) => Rc::ptr_eq(a, b),
             // ⚠ メタ情報も参照の同一性（`hash.rs` の `ptr_hash` と対）。
             (Value::Meta(a), Value::Meta(b)) => Rc::ptr_eq(a, b),
-            // 同じ CPython のオブジェクトか（`PyObjHandle::identity`・`hash.rs` と対）
-            (Value::PyObject(a), Value::PyObject(b)) => a.identity() == b.identity(),
+            // CPython の物どうしは CPython の `==`（同じ物なら真・ほかは `__eq__`。`hash.rs` の CPython の `hash()` と対・
+            // known_bugs.md の #17）。⚠ 以前は同じ物かで比べたので、`[a] == [b]`（`a == b` は真）が偽で、辞書のキーも引けなかった
+            (Value::PyObject(pa), Value::PyObject(pb)) => {
+                pa.identity() == pb.identity() || crate::interpreter::py_interop::py_eq_bool(a, b)?
+            }
             (Value::NativeFunction(a), Value::NativeFunction(b)) => std::sync::Arc::ptr_eq(a, b),
             // 同じ `PtrHandle`（コピー）どうしだけが等しい（3-2）。同じアドレスを指す別の `Ptr` は等しくない
             (Value::Ptr(a), Value::Ptr(b)) => std::sync::Arc::ptr_eq(a, b),

@@ -2247,6 +2247,12 @@ fn py_type_has_len(obj: &Bound<'_, PyAny>) -> bool {
     }
 }
 
+/// CPython の `hash(obj)`（辞書のキー・集合の要素・known_bugs.md の #17）。ハッシュにできない物（`py_list` など）は CPython と同じ
+/// `TypeError: unhashable type: ..`。
+pub fn py_hash(handle: &PyObjHandle) -> Result<i64, String> {
+    with_py(|py| handle.bind(py).hash().map(|n| n as i64).map_err(python_raised))
+}
+
 /// 片方が CPython の物の `a == b` の真偽（CPython の `PyObject_RichCompareBool`: 同じ物なら真、ほかは `__eq__` の
 /// 答えの真偽）。容器の要素との比較（`pyobj in xs`・`xs.index(pyobj)`）が使う（`Interpreter::values_eq_expr`・
 /// known_bugs.md の #8）。Python へ渡せない Arrow の値（容器）は `a == b` と同じ `TypeError`。

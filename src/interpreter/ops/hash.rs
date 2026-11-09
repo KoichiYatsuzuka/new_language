@@ -92,6 +92,8 @@ enum Tag {
     JsProcFn,
     CsObject,
     Pointer,
+    /// CPython の `hash()` を混ぜた印（known_bugs.md の #17）。
+    Python,
     /// `__hash__` が返した値を混ぜた印。
     DunderHash,
     /// 深さ上限に達して降下をやめた印。
@@ -117,6 +119,18 @@ pub(crate) enum HashError {
     /// ⇒ 呼び出し側がインタプリタを持っているなら `__hash__` をディスパッチし、
     /// 持っていないならエラーとして扱う。実際のディスパッチは B1-c で配線する。
     NeedsDispatch,
+    /// CPython の `hash()` が例外を投げた（ハッシュにできない `py_list` など・CPython の文言・known_bugs.md の #17）。
+    Raised(String),
+}
+
+impl HashError {
+    /// 誤りの文（インタプリタを持たない経路で `__hash__` に当たったときは、呼べないことを言う）。
+    pub(crate) fn message(self) -> String {
+        match self {
+            HashError::NeedsDispatch => "TypeError: __hash__ cannot be called from this context".to_string(),
+            HashError::Raised(m) => m,
+        }
+    }
 }
 
 impl Interpreter {
@@ -403,7 +417,15 @@ impl Interpreter {
             Value::AsyncManager(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::Signal(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
             Value::EventLoop(rc) => ptr_hash(h, std::rc::Rc::as_ptr(rc) as *const ()),
-            Value::PyObject(a) => ptr_hash(h, a.identity()),
+            // CPython の物は CPython の `hash()`（`__hash__`・定義しないクラスは同じ物かで・`values_eq` の `==` と対・
+            // known_bugs.md の #17）。⚠ 以前は同じ物かでハッシュしたので、`__eq__` / `__hash__` で等しい別の物が辞書で引けなかった
+            Value::PyObject(a) => match crate::interpreter::py_interop::py_hash(a) {
+                Ok(n) => {
+                    h.write_u8(Tag::Python as u8);
+                    h.write_i64(n);
+                }
+                Err(e) => return Err(HashError::Raised(e)),
+            },
             Value::NativeFunction(a) => ptr_hash(h, std::sync::Arc::as_ptr(a) as *const ()),
             // ⚠ 同一性（同じ `PtrHandle` か・3-2）。`values_eq` 側も `Arc::ptr_eq`（`hash_eq_identity` が見る）
             Value::Ptr(a) => ptr_hash(h, std::sync::Arc::as_ptr(a) as *const ()),
@@ -483,8 +505,10 @@ impl Interpreter {
                     }
                 }
             };
-            if Self::hash_into(v, &mut h, 0, &mut disp).is_err() && err.is_none() {
-                err = Some("TypeError: value is not hashable".to_string());
+            match Self::hash_into(v, &mut h, 0, &mut disp) {
+                Err(HashError::Raised(m)) if err.is_none() => err = Some(m),
+                Err(_) if err.is_none() => err = Some("TypeError: value is not hashable".to_string()),
+                _ => {}
             }
         }
         match err {
@@ -599,8 +623,7 @@ impl Interpreter {
         if let Some(why) = DictData::reject_key(&key) {
             return Err(why);
         }
-        let hash = Self::default_hash(&key)
-            .map_err(|_| "TypeError: __hash__ cannot be called from this context".to_string())?;
+        let hash = Self::default_hash(&key).map_err(HashError::message)?;
         let idx = d.index_of_with(hash, |stored| Self::values_eq_pure(&key, stored))?;
         match idx {
             Some(i) => d.set_at(i, value),
@@ -614,8 +637,7 @@ impl Interpreter {
         if let Some(why) = DictData::reject_key(key) {
             return Err(why);
         }
-        let hash = Self::default_hash(key)
-            .map_err(|_| "TypeError: __hash__ cannot be called from this context".to_string())?;
+        let hash = Self::default_hash(key).map_err(HashError::message)?;
         d.get_with(hash, |stored| Self::values_eq_pure(key, stored))
     }
 

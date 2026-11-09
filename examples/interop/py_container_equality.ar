@@ -1,0 +1,31 @@
+# py_container_equality.ar — 容器の中の CPython の物も CPython の `==` / `hash()` で比べる（known_bugs.md の #17）
+#
+# Arrow のリスト・タプル・辞書・集合の中の CPython の物は、`__eq__` / `__hash__` で比べる（CPython と同じ）。`__eq__` で等しい
+# 別の物が入ったリストどうしは等しく、辞書は等しいキーで引ける。`__hash__` を持たない物（`py_list` など）は辞書のキーにできない
+# （CPython と同じ `TypeError: unhashable type`・`py_container_equality_error.ar`）。
+# ⚠ 以前は同じ物かどうかで比べ・ハッシュしたので、`[a] == [b]`（`a == b` は真）が偽で、辞書は `b` で引けなかった。
+# ⚠ CPython の物と Arrow の値は混ぜて比べない（容器の等値は型まで見る・`[1] == [1.0]` が偽なのと同じ）。
+#
+# 期待される出力:
+#   True True True
+#   True 1
+#   1
+#   ok
+
+import[py] test_modules.py_reflected_ops as m
+
+mut a = m.money(2)
+mut b = m.money(2)
+mut la: list[m.Money] = [a]
+mut lb: list[m.Money] = [b]
+print(a == b, la == lb, (a, 1) == (b, 1))
+
+mut prices: dict[m.Money, int] = {}
+prices[a] = 1
+print(b in prices, prices[b])
+
+mut seen: set[m.Money] = set()
+seen.add(a)
+seen.add(b)
+print(len(seen))
+print("ok")

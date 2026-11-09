@@ -424,8 +424,9 @@ let mean = np.mean(arr)
 - **二項演算子**（known_bugs.md の #8）: 片方が CPython の物なら、もう片方を Python へ写して CPython の手順で決める
   （`1 + m` は左の `int.__add__` → 右の `__radd__` → どちらも答えなければ `TypeError: unsupported operand type(s)`。比較も
   左から）。`x in obj` は CPython の `in`（`__contains__`、無ければ要素を回す）。Arrow の容器の `pyobj in xs` / `xs.index(pyobj)`
-  は要素を CPython の `==` で比べる（`a == b` が真なら `a in [b]` も真）。⚠ 容器の**中**の比較（`[a] == [b]`・辞書のキー）は
-  同じ物かどうかで比べる（#17）。`examples/interop/py_reflected_ops.ar`・`_error`。⚠ 以前は右の `__radd__` を直接呼んだので
+  は要素を CPython の `==` で比べる（`a == b` が真なら `a in [b]` も真）。容器の**中**の比較（`[a] == [b]`）と辞書のキー・集合の要素も
+  CPython の `==` / `hash()`（#17・`examples/interop/py_container_equality.ar`・`_error`。`__hash__` を持たない `py_list` などはキーに
+  できない: `TypeError: unhashable type`）。⚠ CPython の物と Arrow の値は混ぜて比べない（容器の等値は型まで見る）。`examples/interop/py_reflected_ops.ar`・`_error`。⚠ 以前は右の `__radd__` を直接呼んだので
   `NotImplemented` が値として出てきて、`__radd__` の無い物は `AttributeError` だった
 - **Arrow の関数を渡す**（pandas_import_plan.md の 2-5・設計は 2.7）: Arrow の関数（`fn`・束縛メソッド・多重定義・
   ネイティブの関数）を Python へ渡すと、Python の呼べる物（`arrow.ArrowFunction`・`__name__` は関数名）になる。Python が呼ぶと

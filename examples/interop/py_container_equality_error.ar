@@ -1,0 +1,12 @@
+# py_container_equality_error.ar — `__hash__` を持たない CPython の物は辞書のキーにできない（known_bugs.md の #17）
+#
+# 辞書のキーは CPython の `hash()` でハッシュする。`py_list` は CPython の list で、ハッシュにできない（CPython と同じ誤り）。
+# ⚠ 以前は同じ物かどうかでハッシュしたので、黙ってキーにできた。
+#
+# 期待されるエラー（実行時）:
+#   TypeError: unhashable type: 'list'
+
+mut key = [1, 2] => py_list[int]
+mut table: dict[py_list[int], str] = {}
+table[key] = "x"
+print(table)
