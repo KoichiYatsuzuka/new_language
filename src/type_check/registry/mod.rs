@@ -84,6 +84,12 @@ pub(super) struct TypeRegistry {
     cpython_class_names: HashSet<String>,
     /// プロトコル定義。プロトコル名 → `ProtocolInfo`。
     known_protocols: HashMap<String, ProtocolInfo>,
+    /// Python のクラスの家（宣言したモジュールで修飾した名前・登録した名前 → 家・pandas_import_plan.md の 6-12）。
+    /// よそのモジュールから写したクラスは印（`PY_HOME_MARK`）の家、そのモジュールが宣言したクラスは自分の名前。
+    py_class_home: HashMap<String, String>,
+    /// 同じ家のクラスの代表（登録した名前・家 → 代表の名前・6-12）。`build` が作り、[`Self::resolve`] が最後に引く。代表は家の名前で
+    /// 登録したもの（その家のモジュールをプログラムが import した）、無ければ最初に登録した写し。
+    py_class_rep: HashMap<String, String>,
     /// `builtins.ars` の組み込みの protocol の名前（`Iterable` …・6-7）。利用者が同じ名前の型を宣言したら外す
     /// （`TypeRegistryBuilder::shadow_builtin_protocol`）。
     builtin_protocols: HashSet<String>,
@@ -142,10 +148,30 @@ impl TypeRegistry {
     ///
     /// `Box[Tag]` のような型の綴りは、中の名前を 1 つずつ引き直す（`tags.Box[tags.Tag]`）。
     pub(super) fn resolve<'a>(&'a self, name: &'a str) -> Cow<'a, str> {
-        if name.contains('[') {
-            return Cow::Owned(self.resolve_spelling(name));
+        let r = if name.contains('[') { Cow::Owned(self.resolve_spelling(name)) } else { self.resolve_word(name) };
+        // 同じ家の Python のクラスは代表の名前へ（6-12）
+        match self.py_class_rep.get(r.as_ref()) {
+            Some(rep) => Cow::Borrowed(rep.as_str()),
+            None => r,
         }
-        self.resolve_word(name)
+    }
+
+    /// 同じ家の Python のクラスの代表を決める（`TypeRegistryBuilder::build` が呼ぶ・6-12）。
+    pub(super) fn link_py_class_homes(&mut self) {
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        let mut names: Vec<(&String, &String)> = self.py_class_home.iter().collect();
+        names.sort();
+        for (name, home) in names {
+            groups.entry(home.clone()).or_default().push(name.clone());
+        }
+        for (home, members) in groups {
+            let rep = if members.contains(&home) { home.clone() } else { members[0].clone() };
+            for m in members.iter().chain(std::iter::once(&home)) {
+                if *m != rep {
+                    self.py_class_rep.insert(m.clone(), rep.clone());
+                }
+            }
+        }
     }
 
     fn resolve_word<'a>(&'a self, name: &'a str) -> Cow<'a, str> {

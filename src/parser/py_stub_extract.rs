@@ -356,6 +356,24 @@ pub(crate) fn py_expand_aliases(
     out
 }
 
+/// よそのモジュールから写したクラスに付ける印（クラスの宣言のデコレータ・`py-home: numpy.ndarray`）。宣言したモジュールで修飾した
+/// 名前（家）を持つ。型検査は同じ家のクラスを 1 つの型にする（`TypeRegistry::py_class_rep`・pandas_import_plan.md の 6-12）。
+/// ⚠ メンバーの顔ぶれを開く印ではない（デコレータとして数えない・`is_py_marker_decorator`）。
+pub(crate) const PY_HOME_MARK: &str = "py-home: ";
+
+/// クラスのデコレータの印（[`PY_HOME_MARK`]）なら、その家の名前。
+pub(crate) fn py_home_of(decorators: &[crate::ast::Expr]) -> Option<&str> {
+    decorators.iter().find_map(|d| match d {
+        crate::ast::Expr::Str(s) => s.strip_prefix(PY_HOME_MARK),
+        _ => None,
+    })
+}
+
+/// デコレータが型スタブの印（[`PY_HOME_MARK`]）で、本物のデコレータではないか。
+pub(crate) fn is_py_marker_decorator(d: &crate::ast::Expr) -> bool {
+    matches!(d, crate::ast::Expr::Str(s) if s.starts_with(PY_HOME_MARK))
+}
+
 /// `@overload` の形に付ける印（本体の宣言の本体の中の入れ子の宣言のデコレータ）。型検査が呼び出しで形を選ぶ（1-3）。
 pub(crate) const PY_OVERLOAD_MARK: &str = "py-overload";
 

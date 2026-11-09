@@ -1,0 +1,26 @@
+# py_home_classes.ar — よそのモジュールのクラスは、どのモジュールを通して受けても同じ型（pandas_import_plan.md の 6-12）
+#
+# `py_home_shapes` は `py_home_points` の `Point` / `vector` を import して返し、受ける。型スタブはよそのモジュールのクラスを自分の
+# 型スタブに写すが、写したクラスには宣言したモジュール（家）の印を付け、同じ家のクラスは 1 つの型にする。⇒ `sh.origin()` の
+# 結果を `pt.Point` の変数に入れられ、`pt.Point(..)` を `sh.shift(..)` に渡せる。小文字のクラス（numpy の `ndarray` の役の `vector`）
+# も同じ（pandas の `df.to_numpy()` は numpy を import していれば `np.ndarray`）。
+# ⚠ 以前は写した先のモジュールの別の型（`test_modules.py_home_shapes.Point`）になり、`pt.Point` と混ぜると偽の静的な誤りだった。
+#   小文字のクラスはよそから写さず `Any` だった（6-11）。
+#
+# 期待される出力:
+#   0 2
+#   5
+#   3
+#   ok
+
+import[py] test_modules.py_home_points as pt
+import[py] test_modules.py_home_shapes as sh
+
+mut o: pt.Point = sh.origin()
+mut moved: pt.Point = sh.shift(o, 1)
+print(o.total(), moved.total())
+mut p = pt.Point(1, 2)
+print(sh.shift(p, 1).total())
+mut v: pt.vector = sh.vec(3)
+print(v.size())
+print("ok")

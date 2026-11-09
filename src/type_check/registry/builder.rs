@@ -279,6 +279,8 @@ impl TypeRegistryBuilder {
                 cpython_class_names: HashSet::new(),
                 known_protocols: HashMap::new(),
                 builtin_protocols: HashSet::new(),
+                py_class_home: HashMap::new(),
+                py_class_rep: HashMap::new(),
                 template_params: HashMap::new(),
                 name_scopes: vec![NameScope::default()],
                 module_scope_index: HashMap::new(),
@@ -295,7 +297,8 @@ impl TypeRegistryBuilder {
     }
 
     /// 収集を終えてレジストリを凍結する。
-    pub(in crate::type_check) fn build(self) -> TypeRegistry {
+    pub(in crate::type_check) fn build(mut self) -> TypeRegistry {
+        self.reg.link_py_class_homes();
         self.reg
     }
 
@@ -415,9 +418,9 @@ impl TypeRegistryBuilder {
                     //   ⇒ メンバー存在検査を黙らせる（タスク 2-4）。
                     // ⚠ 外部言語（Python）のクラスにデコレータが付いていても同じ（フェーズ10 10-16）。
                     //   デコレータは実行時にクラスを差し替えられる（`class Wrapped(cls)` を返してメンバーを足す）。
-                    if body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. }))
-                        || (self.foreign_depth > 0 && !decorators.is_empty())
-                    {
+                    // ⚠ 型スタブの印（家・6-12）はデコレータとして数えない
+                    let decorated = decorators.iter().any(|d| !crate::parser::py_stub_extract::is_py_marker_decorator(d));
+                    if body.iter().any(|s| matches!(s, Stmt::MetaDecorated { .. })) || (self.foreign_depth > 0 && decorated) {
                         self.reg
                             .classes_with_unexpanded_decorators
                             .insert(name.clone());
@@ -426,6 +429,9 @@ impl TypeRegistryBuilder {
                     // CPython で実行するモジュールのクラス（インスタンスは `Value::PyObject`・D-3）
                     if self.foreign_lang.as_deref() == Some("py") {
                         self.reg.cpython_class_names.insert(name.clone());
+                        // 家（よそから写したクラスは印の家・そのモジュールのクラスは自分の名前・6-12）
+                        let home = crate::parser::py_stub_extract::py_home_of(decorators).unwrap_or(name.as_str());
+                        self.reg.py_class_home.insert(name.clone(), home.to_string());
                     }
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
                     if self.foreign_depth == 0 {

@@ -7,7 +7,7 @@
 # `__float__` などだけを持つもの（`floating`）は `Any`（`float64` は Arrow の `float`、`float32` は Python の物のまま届く）。
 # 容器（`ndarray`）は `__index__` を持っていてもクラスの型。
 # ⚠ `a.sum()` / `a.mean()` / `a.tolist()` は numpy の型スタブ自体が `Any` を返すので `Any` のまま。
-# ⚠ よそのモジュールが書いた小文字のクラス（pandas の `-> np.ndarray`）は今は `Any`（写すとそのモジュールの別の型になる・6-12）。
+# よそのモジュールが書いた小文字のクラス（pandas の `-> np.ndarray`）も同じ型（6-12・`py_home_classes.ar`）。
 # ⚠ 以前は `np.arange(3)` が `Any` で、`a.size` の前に `mustbe np.ndarray` が要った。
 #
 # 期待される出力:

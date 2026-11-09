@@ -455,6 +455,7 @@ impl Parser {
                 _ => continue,
             }
             py_home_bases(&mut decl, &home, module);
+            py_mark_home(&mut decl, &home);
             self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
             let mut refs = Vec::new();
             py_type_refs(&decl, &mut refs);
@@ -501,6 +502,7 @@ impl Parser {
                 continue;
             }
             py_home_bases(&mut decl, &home, module);
+            py_mark_home(&mut decl, &home);
             self.py_merge_outside_bases(&mut decl, &home, &mut queue, 0);
             let mut refs = Vec::new();
             py_type_refs(&decl, &mut refs);
@@ -552,14 +554,27 @@ fn py_type_text_refs(t: &str, out: &mut Vec<String>) {
     }
 }
 
-/// 注釈の語 `w` が、よそのモジュールの型（クラス・protocol・別名）の名前かもしれないか（大文字・`_` で始まる名前・その修飾した名前）。
-///
-/// ⚠ 小文字のクラス（`ndarray` / `np.ndarray`）はよそのモジュールから写さない（6-11）。写した型はそのモジュールの型になり
-///   （pandas の `-> np.ndarray` が `pandas.ndarray`）、`numpy.ndarray` とは別の型になって偽の誤りを生むため。そのモジュールが
-///   宣言した小文字のクラス（numpy の中の `ndarray`）は型になる。モジュールをまたいで同じ型にするのは残りのタスク（6-12）。
+/// 注釈の語 `w` が、よそのモジュールの型（クラス・protocol・別名）の名前かもしれないか（識別子・修飾した名前。小文字のクラス
+/// `ndarray` / `np.ndarray` も・6-11・6-12。Arrow の型の名前 `int` / `py_list` / `tuple` は除く）。
+/// 写したクラスには家の印を付けるので、写した先のモジュールでも同じ型になる（`py_mark_home`・6-12）。
 fn py_maybe_type_ref(w: &str) -> bool {
-    let last = w.rsplit('.').next().unwrap_or(w);
-    !w.is_empty() && w.split('.').all(|p| !p.is_empty()) && last.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+    !w.is_empty()
+        && w.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        && w.split('.').all(|p| !p.is_empty())
+        && (w.contains('.')
+            || w.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+            || !crate::type_check::builtins::is_conversion(w))
+}
+
+/// よそのモジュール `home` から写したクラスの宣言に、家（宣言したモジュールで修飾した名前）の印を付ける（6-12）。型検査は同じ家の
+/// クラスを 1 つの型にする（pandas が写した `ndarray` と numpy の `ndarray` は同じ `numpy.ndarray`）。
+fn py_mark_home(decl: &mut Stmt, home: &PyStubRc) {
+    use crate::parser::py_stub_extract::{py_home_of, PY_HOME_MARK};
+    let Stmt::ClassDef { name, decorators, .. } = decl else { return };
+    if py_home_of(decorators).is_some() {
+        return;
+    }
+    decorators.push(crate::ast::Expr::Str(format!("{PY_HOME_MARK}{}.{name}", home.module.join(".")).into()));
 }
 
 /// 型の名前を定めるモジュール（`typing` / `typing_extensions` / `collections.abc` / `_collections_abc`）か。ここの `Any` と

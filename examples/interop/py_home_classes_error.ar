@@ -1,0 +1,12 @@
+# py_home_classes_error.ar — 違うクラスは、モジュールをまたいでも違う型（pandas_import_plan.md の 6-12）
+#
+# 同じ家（宣言したモジュール）のクラスだけが同じ型になる。`py_home_shapes` が宣言した `Point2` は、`py_home_points` の `Point` の
+# 変数に入れられない。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   'q' is declared 'pt.Point' but initialized with 'test_modules.py_home_shapes.Point2'
+
+import[py] test_modules.py_home_points as pt
+import[py] test_modules.py_home_shapes as sh
+
+mut q: pt.Point = sh.other()
