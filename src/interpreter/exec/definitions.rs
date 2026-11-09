@@ -77,6 +77,7 @@ impl Interpreter {
             body: body.to_vec(),
             captured_env: env,
             qualname,
+            is_python: self.in_python_module,
         }))
     }
 
@@ -238,6 +239,7 @@ impl Interpreter {
                 body: body.to_vec(),
                 captured_env,
                 qualname: None,
+                is_python: self.in_python_module,
             });
             if name.ends_with(']') {
                 self.register_mono_instance(name, &Value::GeneratorFn(Rc::clone(&gen_fn)));
@@ -779,6 +781,7 @@ impl Interpreter {
                                 HashMap::new()
                             },
                             qualname: Some(self.method_qualname(name, mname)),
+                            is_python: self.in_python_module,
                         }),
                     );
                 }

@@ -152,6 +152,13 @@ impl Compiler {
                 let ci = self.add_const(Value::Undefined);
                 self.emit(Op::Const(ci));
             }
+            // **見えていない名前**の読み（ブロックの外・宣言より前・name_scope_plan.md の R-1）。
+            // ⚠⚠ **どの記憶域の腕よりも先に置く**（セル・`Resolution::Local`・`slots` のどれに当たっても、
+            //    読むのは書かれていない枠か前の周回の値で、黙って `None` / 古い値になる）。
+            //    注釈は**ヒントであって意味論ではない**（B4 の腕と同じ理由）。
+            Expr::Ident { name, .. } if self.is_unbound_local(name) => {
+                self.emit_unbound_local(name);
+            }
             // **セル変数**の読み（#27-d 段階 2b）。slot を持たないので slot 系より先に判定する。
             Expr::Ident { name, .. } if self.cells.contains_key(name) => {
                 let i = self.cells[name];
@@ -407,6 +414,13 @@ impl Compiler {
                     return Some(()); // メソッド呼び出しは span 不要
                 }
                 let site = self.add_span(span); // 関数呼び出しはトレースバック用の呼び出し位置を記録
+                // 見えていない名前を呼ぶ（R-1）。呼び出し先は引数より先に読むので、ここで落とす。
+                if let Expr::Ident { name, .. } = func.as_ref() {
+                    if self.is_unbound_local(name) {
+                        self.emit_unbound_local(name);
+                        return Some(());
+                    }
+                }
                 if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func.as_ref() {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。

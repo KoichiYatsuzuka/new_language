@@ -25,12 +25,15 @@ use super::*;
 /// - `body`: 解決済み関数本体（リゾルバが `res` を付与済み。**入れ子 `fn` の本体は未解決**）。
 /// - `captures`: **不変キャプチャの名前**（#27-d）。クロージャ本体をコンパイルするときだけ非空。
 ///   末尾に slot を採番し、呼び出し側が `chunk.captured_slots` を見て値を書き込む。
+///
+/// `is_python` は Python のモジュールの関数か（ブロックスコープを当てない・`visibility` の doc）。
 pub fn compile_fn(
     params: &[Param],
     body: &[Stmt],
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     captures: &[String],
     mut_captures: &[String],
+    is_python: bool,
 ) -> Option<Chunk> {
     // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
     #[cfg(feature = "prof")]
@@ -38,10 +41,10 @@ pub fn compile_fn(
     // 診断フック（#10）: 失敗したのに bail 地点が 1 件も記録されなかったら「未帰属」として計上する。
     // 個々の `?` を全て計装する代わりに、取りこぼしを総量で可視化する。
     if !crate::interpreter::tw_stats::enabled() {
-        return compile_fn_inner(params, body, annotations, captures, mut_captures);
+        return compile_fn_inner(params, body, annotations, captures, mut_captures, is_python);
     }
     let before = crate::interpreter::tw_stats::bail_count();
-    let out = compile_fn_inner(params, body, annotations, captures, mut_captures);
+    let out = compile_fn_inner(params, body, annotations, captures, mut_captures, is_python);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
         bail("unattributed", None);
     }
@@ -101,7 +104,8 @@ pub fn compile_toplevel_stmt(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashMap<String, bool>,
 ) -> Option<Chunk> {
-    compile_toplevel_or_module(stmt, annotations, toplevel_globals, CompileMode::Toplevel)
+    // メインプログラムは Arrow のソースだけ（Python のモジュールの文は `compile_module_stmt`）。
+    compile_toplevel_or_module(stmt, annotations, toplevel_globals, CompileMode::Toplevel, false)
 }
 
 /// **import モジュール本体の 1 文**を Chunk へコンパイルする（#42）。
@@ -111,12 +115,15 @@ pub fn compile_toplevel_stmt(
 /// **push 済みスコープ**に入る。⇒ 代入を `StoreName`（`assign_var` = チェーン探索）にする。
 /// 宣言（`DeclareGlobal` → `declare_var` → `scopes.last_mut()`）と
 /// 読み（`LoadName`）はもともとチェーンを見るので変更不要。
+///
+/// `is_python` は Python のモジュールの文か（ブロックスコープを当てない・`visibility` の doc）。
 pub fn compile_module_stmt(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     module_globals: &HashMap<String, bool>,
+    is_python: bool,
 ) -> Option<Chunk> {
-    compile_toplevel_or_module(stmt, annotations, module_globals, CompileMode::Module)
+    compile_toplevel_or_module(stmt, annotations, module_globals, CompileMode::Module, is_python)
 }
 
 fn compile_toplevel_or_module(
@@ -124,6 +131,7 @@ fn compile_toplevel_or_module(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashMap<String, bool>,
     mode: CompileMode,
+    is_python: bool,
 ) -> Option<Chunk> {
     debug_assert!(matches!(mode, CompileMode::Toplevel | CompileMode::Module));
     if !is_toplevel_compile_target(stmt) {
@@ -134,12 +142,12 @@ fn compile_toplevel_or_module(
     let _ct = crate::prof::CompileTimer::new();
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
     if !crate::interpreter::tw_stats::enabled() {
-        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode);
+        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode, is_python);
     }
     // bail の分類先を「最上位」へ切り替える（#27。関数側と残タスクが別物なので混ぜない）。
     let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new(stmt);
     let before = crate::interpreter::tw_stats::bail_count();
-    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode);
+    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode, is_python);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
         // 未帰属でも**どの文種別か**は分かる。これが無いと 46 件の出所を探せない（#27-c）。
         bail("unattributed", Some(stmt));
@@ -161,9 +169,12 @@ fn compile_toplevel_or_module(
 ///   ツリーウォークの `eval()` と答えが変わる。名前引きなら深さを問わず一致する。
 /// - **書き込み先は slot だけ**（`store_target` が `name_lookup` で bail する）。
 ///   式の中で宣言したローカルは `collect_expr_decls` が slot を振るので影響しない。
+///
+/// `is_python` は Python のモジュールの中の定義か（ブロックスコープを当てない・`visibility` の doc）。
 pub fn compile_definition_expr(
     expr: &Expr,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    is_python: bool,
 ) -> Option<Chunk> {
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
@@ -188,6 +199,11 @@ pub fn compile_definition_expr(
         chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         ..Compiler::base(CompileMode::DefinitionExpr, annotations)
     };
+    // 式の中の宣言（ブロック式の本体）はすべてブロックの中の名前（R-1）。
+    if !is_python {
+        let names: Vec<String> = c.slots.keys().cloned().collect();
+        c.track_block_locals(names);
+    }
 
     c.compile_expr(expr)?;
     c.emit(Op::Return);
@@ -199,6 +215,7 @@ fn compile_toplevel_stmt_inner(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashMap<String, bool>,
     mode: CompileMode,
+    is_python: bool,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
 
@@ -244,6 +261,12 @@ fn compile_toplevel_stmt_inner(
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
         ..Compiler::base(mode, annotations)
     };
+    // この文の内側の宣言（ループ本体・ブロック式の中）はすべてブロックの中の名前（R-1）。
+    // ⚠ 最上位の宣言そのものは大域で `slots` に入らないので対象外（`DeclareGlobal`）。
+    if !is_python {
+        let names: Vec<String> = c.slots.keys().cloned().collect();
+        c.track_block_locals(names);
+    }
 
     c.compile_stmt(stmt)?;
     // 最上位文は値を返さない（`Return` は型検査が最上位で禁じる）。
@@ -263,6 +286,7 @@ fn compile_fn_inner(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     captures: &[String],
     mut_captures: &[String],
+    is_python: bool,
 ) -> Option<Chunk> {
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
@@ -402,6 +426,17 @@ fn compile_fn_inner(
         bail("nested-decls", None);
         return None;
     }
+    // 本体が宣言する名前（ブロックスコープで見え方を管理する・R-1）。この時点の `slots` は
+    // 引数と本体の宣言だけ（キャプチャは下で足す）。⚠ 下でセルへ移す名前もここに含めたままにする。
+    let block_locals: Vec<String> = if is_python {
+        Vec::new()
+    } else {
+        let params_named: HashSet<&str> = params
+            .iter()
+            .map(|p| if p.variadic { "local::args" } else { p.name.as_str() })
+            .collect();
+        slots.keys().filter(|k| !params_named.contains(k.as_str())).cloned().collect()
+    };
 
     // クロージャの不変キャプチャに slot を採番する（#27-d）。
     //
@@ -500,6 +535,7 @@ fn compile_fn_inner(
         cell_by_slot,
         ..Compiler::base(CompileMode::Function, annotations)
     };
+    c.track_block_locals(block_locals);
 
     // **`mut` パラメータのセル昇格に引数を流し込む**（B3）。
     //
@@ -572,6 +608,9 @@ pub fn compile_async_body(
         bail("nested-decls", None);
         return None;
     }
+    // 本体が宣言する名前（R-1）。捕捉名は下で足すので、この時点の `slots` は本体の宣言だけ。
+    // ⚠ async の本体は Arrow の構文（`mng <- async->T:`）なので Python の場合は無い。
+    let block_locals: Vec<String> = slots.keys().cloned().collect();
     // 捕捉環境は末尾（#27-d 段階 1 と同じ理由・同じ表）。
     let mut captured_slots: Vec<(String, u16)> = Vec::with_capacity(captures.len());
     let mut capture_names: Vec<&String> = captures.iter().collect();
@@ -634,6 +673,7 @@ pub fn compile_async_body(
         // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
         ..Compiler::base(CompileMode::AsyncBody, annotations)
     };
+    c.track_block_locals(block_locals);
 
     // async 本体は Chunk の先頭＝オペランドスタックは空（#34）。
     // アノテーションは持たない（`mng <- async->T:` の T は代入先の型で、`block_return` の

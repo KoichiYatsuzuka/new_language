@@ -126,6 +126,7 @@ impl Interpreter {
             self.annotations.clone(),
             &captures,
             &mut_captures,
+            fn_val.is_python,
         )
         .map(|mut c| {
             // `Op::ClassDef` がクラスを Python の規則で組み立てるのに使う（フェーズ10 10-16）。
@@ -166,6 +167,7 @@ impl Interpreter {
                     self.annotations.clone(),
                     &captures,
                     &mut_captures,
+                    gen_fn.is_python,
                 )
                 .map(|mut c| {
                     // 入れ子の関数の `__qualname__`（`compile_fn_value` と同じ・タスク 1-14）。

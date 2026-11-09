@@ -45,6 +45,12 @@ impl Compiler {
                 self.emit(Op::ReturnNil);
             }
             Stmt::Assign { name, value, .. } => {
+                // 見えていない名前への代入（R-1）。ツリーウォークと同じく右辺を評価してから落とす。
+                if self.is_unbound_local(name) {
+                    self.compile_expr(value)?;
+                    self.emit_unbound_local(name);
+                    return Some(());
+                }
                 self.compile_assign(name, value)?;
             }
             Stmt::CompoundAssign {
@@ -54,6 +60,11 @@ impl Compiler {
                 node_id,
                 ..
             } => {
+                // 見えていない名前への複合代入（R-1）。現在値を読む時点で落ちる。
+                if self.is_unbound_local(name) {
+                    self.emit_unbound_local(name);
+                    return Some(());
+                }
                 self.compile_compound_assign(name, op, value, *node_id)?;
             }
             Stmt::If { branches, else_body, span: _ } => {
@@ -62,17 +73,13 @@ impl Compiler {
                 for (cond, body) in branches {
                     self.compile_expr(cond)?;
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
                 }
                 if let Some(body) = else_body {
-                    for s in body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(body)?;
                 }
                 let end = self.here();
                 for j in end_jumps {
@@ -91,10 +98,9 @@ impl Compiler {
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
                 let saved_base = self.stmt_base.replace(0);
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
+                let r = self.compile_block_body(body);
                 self.stmt_base = saved_base;
+                r?;
                 self.emit(Op::Jump(start));
                 let end = self.here();
                 self.patch_jump(jf, end);
@@ -426,7 +432,11 @@ impl Compiler {
             // `freeze x`（#27-c）。`let x = x` と同じ結果にする（python_builtins_plan.md のタスク 1-9）。
             // 名前の引き方は `store_target` と同じ順（セル → `static` → slot → それ以外）。
             Stmt::Freeze(name, span) => {
-                if self.cells.contains_key(name) {
+                if self.is_unbound_local(name) {
+                    // 見えていない名前の `freeze`（R-1）。`FreezeVar` のミス経路（最上位）と同じ文言。
+                    let n = self.add_name(&format!("{span}: NameError: '{name}' is not defined"));
+                    self.emit(Op::Fail(n));
+                } else if self.cells.contains_key(name) {
                     // クロージャが捕まえた変数（`exec_freeze` と同じ文言）。
                     let n = self.add_name(&format!(
                         "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
@@ -466,6 +476,9 @@ impl Compiler {
                 return None;
             }
         }
+        // この文が束縛した名前は、ここから今のブロックの終わりまで見える（R-1・`visibility` の doc）。
+        // ⚠ 初期化子をコンパイルした**後**に入れる（`let y = y + 1` の右辺の `y` は見えない）。
+        self.make_declared_visible(stmt);
         Some(())
     }
 
@@ -563,10 +576,9 @@ impl Compiler {
         });
         // 本体はこのループ入口の深さで走る（#34）。
         let saved_base = self.stmt_base.replace(0);
-        for s in body {
-            self.compile_stmt(s)?;
-        }
+        let r = self.compile_loop_body(targets, body);
         self.stmt_base = saved_base;
+        r?;
         self.emit(Op::Jump(loop_start));
         let exit = self.here();
         // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
@@ -679,6 +691,22 @@ impl Compiler {
             bail("nested-fn-mutable-capture", None);
             return None;
         };
+        // 定義の時点でまだ見えていない外側の名前を捕まえる形（R-1・name_scope_plan.md の D-1 = (a)）。
+        // 入れ子の関数は定義した時点の値を写すので、その時点に無い名前は写せない。以前は書かれていない枠
+        // （`None`）を写し、後で `print(x)` が `None`、`b()` が `'NoneType' object is not callable` になっていた。
+        // ⚠ **自分の名前（自己再帰）は対象外**。名前の束縛は `MakeFn` の後なので同じく見えていないが、
+        //   ここで落とすと再帰しない呼び出し（`fact(1)`）まで定義の時点で落ちる。扱いは別に決める
+        //   （name_scope_plan.md の R-1 の「自己再帰」）。
+        if let Some(unbound) = captures
+            .iter()
+            .chain(cell_captures.iter())
+            .map(|(n, _)| n.as_str())
+            .find(|n| *n != name && self.is_unbound_local(n))
+        {
+            let unbound = unbound.to_string();
+            self.emit_unbound_local(&unbound);
+            return Some(());
+        }
         let slot = self.slot_of(name)?;
         let idx = u32::try_from(self.chunk.fn_defs.len()).ok()?;
         self.chunk.fn_defs.push(crate::vm::chunk::ChunkFnDef {

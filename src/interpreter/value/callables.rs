@@ -48,6 +48,9 @@ pub struct GeneratorFnValue {
     pub owner_class: Option<Rc<ClassValue>>,
     /// `__qualname__`（[`FnValue::qualname`] と同じ）。
     pub qualname: Option<Rc<str>>,
+    /// Python のモジュールで定義したか（[`FnValue::is_python`] と同じ）。
+    /// ⚠ VM が本体にブロックスコープを当てるかを決める（Python は関数単位のスコープ・name_scope_plan.md の R-1）。
+    pub is_python: bool,
 }
 
 
@@ -679,6 +682,7 @@ impl ClassValue {
                         body: crate::template_subst::unshare_stmts(&rc.body),
                         captured_env: deep_clone_captured_env(&rc.captured_env),
                         qualname: rc.qualname.as_deref().map(Rc::from),
+                        is_python: rc.is_python,
                     }),
                 )
             })

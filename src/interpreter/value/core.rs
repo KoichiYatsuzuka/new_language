@@ -374,6 +374,7 @@ impl Value {
                 body: crate::template_subst::unshare_stmts(&rc.body),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
                 qualname: rc.qualname.as_deref().map(Rc::from),
+                is_python: rc.is_python,
             })),
             Value::Generator(rc) => {
                 let b = rc.borrow();

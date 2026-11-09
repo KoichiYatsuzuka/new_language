@@ -1,0 +1,53 @@
+# block_scope_error.ar — ブロックの外から中の束縛を読む形（関数の中・name_scope_plan.md の R-1）
+#
+# ⚠ 正常系と規則の説明は [block_scope.ar](block_scope.ar) を参照。
+#
+# ⚠⚠ いまは**静的エラーではなく実行時 `NameError`**。型検査はスコープの外の名前を
+#    「プログラムのどこかで束縛される名前」として通してしまう（name_scope_plan.md のフェーズ 1 で直す。
+#    直したらここは `StaticTypeError: name 'y' is not defined` になる）。
+#
+# それぞれ単体で実行したときのエラー（どれも関数の中。最上位でも同じ文言）:
+#
+#   ① ブロックの後で中の束縛を読む（⚠ 以前は中の値 1 が読めていた）
+#      fn f() -> None:
+#          if True:
+#              let y = 1
+#          print(y)
+#      # NameError: 'y' is not defined
+#      # `block:` / `match` の腕 / ブロック式 / `except .. as e` の `e` も同じ
+#
+#   ② 一度も実行されなかったブロックの束縛を読む（⚠ 以前は `None`。`let z: int` なら
+#      `int` と注釈した値に `None` が入り、離れた場所で TypeError になっていた）
+#      fn f() -> None:
+#          if False:
+#              let z: int = 1
+#          print(z + 1)
+#      # NameError: 'z' is not defined
+#
+#   ③ ループの本体で、宣言より前に読む（⚠ 以前は**前の周回の値**が読めていた）
+#      fn f() -> None:
+#          for i in [1, 2]:
+#              if i == 2:
+#                  print(y)
+#              let y = i * 10
+#      # NameError: 'y' is not defined
+#
+#   ④ 入れ子の関数が、外側の関数で**後に**束縛する名前を捕まえる（name_scope_plan.md の D-1 = (a)。
+#      関数は定義した時点の値を写すので、その時点に無い名前は写せない。⚠ 以前は `None` を写していた）
+#      fn outer() -> None:
+#          fn inner() -> None:
+#              print(x)
+#          let x = 1
+#          inner()
+#      # NameError: 'x' is not defined（`fn inner` の定義の時点で）
+
+print("block scope error demo")
+
+fn leak() -> None:
+    if True:
+        let y = 1
+    print(y)
+
+leak()
+
+print("ここには到達しない")

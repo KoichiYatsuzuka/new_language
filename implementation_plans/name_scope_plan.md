@@ -177,6 +177,39 @@ Python のモジュールでは関数単位の集合を使うか、判定を変�
 
 「掬いきれなかった選択肢はエラーにする」に反する。調査は 2026-11-09（`b6e1e2af`・release）。
 
+**✅ 修正済み（2026-11-09・利用者の指示で本計画のフェーズより先に直した）**。下の「直し方の案」のとおり。
+- [visibility.rs](../src/vm/compiler/visibility.rs)（新規）: コンパイラが「今見えている名前」を持つ。
+  本体が宣言する名前（`block_locals`・入口ごとに、宣言を集めた直後の `slots` から引数・キャプチャを除いたもの）は、
+  宣言の文をコンパイルし終えたとき（`make_declared_visible`・列挙は `decl_names::each_declared_name`）に見え、
+  そのブロックを抜けると見えなくなる。ブロックの本体はすべて `compile_block_body` / `compile_loop_body`（`for` の変数）/
+  `compile_handler_body`（`except` の別名）を通す（`if` / `while` / `for` / `match` / `block:` / `try` / `except` /
+  `finally` の複製・各ブロック式・async の本体）。
+- 見えていない名前の読み（`Expr::Ident` の腕の先頭・呼び出し先・融合の `as_local`）、代入・複合代入・`freeze`、
+  入れ子の関数のキャプチャは、`Op::Fail` で `NameError: '<name>' is not defined`（最上位と同じ文言）。
+- Python のモジュールの関数・文には当てない（`compile_fn` / `compile_module_stmt` / `compile_definition_expr` に
+  `is_python` を渡す。ジェネレータの値 `GeneratorFnValue` にも `is_python` を足した）。
+- ⚠ **入れ子の関数の自己再帰は対象外にした**（下の「残り」）。
+- 上の表の形はすべて `NameError` になった（関数の中・最上位の 1 文の中の両方。`gen` の本体・メソッドの本体も）。
+  Python のモジュールの例（`3` / `4`）は変わらない。
+- 例題: [block_scope.ar](../examples/basics/block_scope.ar)（正しいコードが今までどおり動く）・
+  [block_scope_error.ar](../examples/basics/block_scope_error.ar)（実行時 `NameError`。フェーズ 1 の後は静的な誤りになる）。
+- ゲート（基準は修正前の `b6e1e2af` の release exe・同じセッションで負の対照を取った）:
+  - `compare_bytecode -A`: 652 / 653 一致。残る 1 件（`async_cs_calls.ar`）は負の対照でも同じようにずれる
+    （毎回変わる出力）。⇒ **正しいプログラムのバイトコードは 1 命令も変わっていない**。
+  - `compare_outputs -A`: 635 / 636 一致（負の対照 636 / 636）。違うのは新しい `block_scope_error.ar` だけ（修正前は `1`）。
+  - `compare_import_paths -A`: 13 / 13（負の対照 13 / 13）。`compare_python_impl`: 予期しない差 0
+    （`block_scope_error` は出力形式だけが違うので既知の差に足した。`for_target_scope_error` と同じ）。
+  - `scan_examples`: FAIL 0（`test_build_gate` ok）。`force_gate`: `VmForceError` 0 件。`debug_session` / `repl_session`: 同一。
+  - `cargo test`（debug）: 1302 passed。
+
+**残り**
+- **入れ子の関数の自己再帰が動かない**（R-1 の調査中に見つけた・修正の前から）。
+  `fn outer(): fn fact(n): .. fact(n - 1) ..; fact(5)` が `TypeError: 'NoneType' object is not callable`（参照実装は `120`）。
+  `MakeFn` が自分の名前の枠を、名前を書き込む前に写すため。B3 と同じ形だが、「後で束縛する名前」（D-1）ではなく
+  自分の名前なので、静的な誤りにするか動かすかは別に決める（⚠ 要判断）。今回は振る舞いを変えていない。
+- ネイティブコンパイル（`--compile`）の関数に同じ漏れがあるかは未確認（この環境に clang が無く、`.arc` は VM で動いた）。
+- デバッガの停止時のローカルの表示（`declared_slots`）は、ブロックを抜けた枠も見せたまま（実行の意味は変わらない）。
+
 **仕組み**。関数（`fn` / `gen` / メソッド）の本体は VM にコンパイルされ、ローカルは番号付きの枠
 （`STORE_LOCAL` / `LOAD_LOCAL`）に置かれる。
 
