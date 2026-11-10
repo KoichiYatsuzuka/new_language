@@ -73,6 +73,7 @@ def   misses   : 0 / 4076
 bind  misses   : 0 / 182   <- must be 0
 typed vars     : 1980 / 2382   <- 減ったら退行
 tag   misses   : 0 / 14    <- must be 0
+scope misses   : 0 / 14    <- must be 0
 ```
 
 - `threw` must be 0.
@@ -98,6 +99,11 @@ tag   misses   : 0 / 14    <- must be 0
   fixtures are the only thing guarding it.
 - `no symbols` is expected for the deliberate `ParseError` / `*_error.ar` examples and for
   `math_string.ar`, which declares nothing.
+- `scope misses` must be 0 — `test_fixtures/name_scope_cases.ar` marks uses of names with
+  `use:<name>=<label>` (go-to-definition must land on the line marked `decl:<label>`) or `use:<name>=none`
+  (no hover and no definition: the name is not visible there). It guards the per-use binding (`uses`,
+  name_scope_plan.md 2-2/2-3); the counters above only probe declarations and cannot see a use bound to the wrong
+  declaration. Negative control at the pre-2-1 providers: 6 / 14 misses. Add a line when you fix a new form.
 
 ## 3. `uses_probe.js` — hover / definition at every *use* of a name
 

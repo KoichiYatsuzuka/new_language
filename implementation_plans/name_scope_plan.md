@@ -290,7 +290,7 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
 |---|---|---|---|
 | **2-1** | ✅（2026-11-10・結果は表の下）`lookup` の「ファイル内で最初の同名の宣言」をやめる（1-C）。呼び出し元 4 か所（ホバー・定義へ移動・シグネチャヘルプ・受け手の型の推定）が `undefined` を扱えるか確かめる。`stress.js` の数え上げで、ホバー・定義が消えたものを全部見て、正しく消えた（見えない名前）か、2-2 で拾うべきもの（前方参照など）かを分ける | フェーズ 1 | 小 |
 | **2-2** | ✅（2026-11-10・結果は表の下）D-2 = (b): 型検査器が、識別子を使っている位置ごとに結び付いた宣言（の位置）を記録し、`crates/arrow-frontend` の解析結果に載せ、`lookup` と色付け（`provideDocumentSemanticTokens`）がそれを引く。A1〜A3・A12 の形のホバーが出ず、B1 のホバーは出ること | 2-1 | 中 |
-| **2-3** | `vscode-extension/test_fixtures/` に §0 の形を足し、`run_debug.js` / `stress.js` で確かめる。`vscode-extension-dev` スキル（名前の引き方）を更新する。wasm を作り直して VSIX を作る（`make-vsix.ps1`） | 2-2 | 小 |
+| **2-3** | ✅（2026-11-10・結果は表の下）`vscode-extension/test_fixtures/` に §0 の形を足し、`run_debug.js` / `stress.js` で確かめる。`vscode-extension-dev` スキル（名前の引き方）を更新する。wasm を作り直して VSIX を作る（`make-vsix.ps1`） | 2-2 | 小 |
 
 **ゲート**: `compare_wasm_frontend` / `stress.js`（数え上げの退行） / `compare_tm_grammar`（触らないはずだが VSIX を作るので）
 
@@ -340,6 +340,17 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
   定義へ移動も出ない。B1（前方参照）は出る（`name_resolution.ar` の `LIMIT` / `helper` / `GREETING`）。
 - ゲート: `compare_wasm_frontend` 774 / 774・`stress.js`（threw 0・hover / def misses 0 / 6713・bind misses 0・typed vars 2855 / 3508 で変わらず・
   tag misses 0）・`scan_examples` FAIL 0・`type_obligations` 退行なし・`repl_session` 同一・`stale_doc_refs` OK・`cargo test`（debug）1302 passed。
+
+
+#### 2-3 の結果（2026-11-10・✅ 完了）
+
+- [test_fixtures/name_scope_cases.ar](../vscode-extension/test_fixtures/name_scope_cases.ar): §0 の形（A1 / A2・A3・A12・宣言より前の読み・B1・B2・
+  クラスのメンバーを `self.x` / `C.K` で読む・同じ関数の 2 つの `for i` のそれぞれ）を 14 の印（`use:<name>=<label|none>`）で並べた。
+- `stress.js` に `scope misses` を足した（印どおりに定義へ移動が飛ぶか・見えない名前に hover も定義も出ないか）。**0 / 14**。
+  負の対照: 2-1 の前の `wasm_providers.ts` では 6 / 14（検査が退行を捕まえることを確かめた）。
+- スキル: `vscode-extension-dev` に「使っている位置が宣言を引く順序」（`uses` → スコープ木 → 何もしない）、
+  `vscode-debug-runner` に `scope misses` と `uses_probe.js`。
+- VSIX を作り直した。`compare_tm_grammar`（`test_fixtures/` を足したので）: SPILL 0・キーワードの一覧が一致。
 
 ### フェーズ 3 — 入れ子の関数の再帰（連続する `fn` を 1 つの組として作る）
 

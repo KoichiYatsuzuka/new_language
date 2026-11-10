@@ -11,6 +11,9 @@
 //                  miss に数えず `def none` に数える（以前は import 文そのものに飛んで「解決」していた・
 //                  VSIX_update_plan.md D）。そこで飛んでしまったら miss。
 //   tag   misses : `import[lang]` タグごとの最小フィクスチャで別名が索引に載らなかった件数。
+//   scope misses : test_fixtures/name_scope_cases.ar の印（`use:<name>=<label|none>`）どおりに、使っている位置の
+//                  定義へ移動が見える宣言へ飛ぶか・見えない名前に hover も定義も出ないか（0 が正常・name_scope_plan.md の 2-3）。
+//                  ⚠ 宣言の位置しか見ない上の数え上げでは、使っている位置が別の宣言に結び付く誤りを数えられない。
 //                  例題が 1 本も無いタグ（実測: cpp-dll）はこれでしか守れない。
 //   bind  misses : import が束縛する名前が索引に載っていない件数（0 が正常）。
 //                  期待値は**ソースの行スキャン**で作る — パーサから取ると一致して
@@ -149,6 +152,38 @@ function checkTagFixtures(){
   return misses;
 }
 
+// ── 使っている位置の結び付き（name_scope_plan.md の 2-3）───────────────────────────
+function checkScopeFixture(){
+  const f=path.join(__dirname,'test_fixtures','name_scope_cases.ar');
+  const doc=new Doc(f,fs.readFileSync(f,'utf8'));
+  const decls={}, cases=[], misses=[];
+  for(let ln=0; ln<doc.lineCount; ln++){
+    const text=doc._l[ln];
+    const hash=text.indexOf('#'); if(hash<0) continue;
+    const code=text.slice(0,hash), note=text.slice(hash);
+    const d=/decl:(\w+)/.exec(note); if(d) decls[d[1]]=ln;
+    const u=/use:(\w+)=(\w+)/.exec(note);
+    if(u){ const m=new RegExp('\\b'+u[1]+'\\b').exec(code);
+      if(!m) misses.push(`  SCOPE BAD   L${ln+1}  '${u[1]}' not on the line`);
+      else cases.push({ln, col:m.index, name:u[1], want:u[2]}); }
+  }
+  for(const c of cases){
+    const p={line:c.ln, character:c.col};
+    let h, loc;
+    try{ h=P.provideHover(doc,p); loc=P.provideDefinition(doc,p); }
+    catch(e){ misses.push(`  SCOPE THREW L${c.ln+1}  ${String(e).split('\n')[0]}`); continue; }
+    const l=Array.isArray(loc)?loc[0]:loc;
+    if(c.want==='none'){
+      if(h||l) misses.push(`  SCOPE MISS  L${c.ln+1}  '${c.name}' should be unresolved (hover=${!!h} def=${l?l.range.start.line+1:'-'})`);
+    } else {
+      const want=decls[c.want];
+      if(want===undefined) misses.push(`  SCOPE BAD   L${c.ln+1}  no decl:${c.want}`);
+      else if(!l || l.range.start.line!==want) misses.push(`  SCOPE MISS  L${c.ln+1}  '${c.name}' -> ${l?l.range.start.line+1:'-'} (want L${want+1})`);
+    }
+  }
+  return {misses, total:cases.length};
+}
+
 const files=walk(path.join(__dirname,'..','examples'));
 let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0, defNone=0;
 let totalBind=0, bindMiss=0;
@@ -221,4 +256,7 @@ console.log(`typed vars     : ${typedVars} / ${totalVars}   <- 減ったら退�
 const tagMisses = checkTagFixtures();
 console.log(`tag   misses   : ${tagMisses.length} / ${TAG_FIXTURES.length}   <- must be 0 (タグ別フィクスチャ)`);
 problems.push(...tagMisses);
+const scope = checkScopeFixture();
+console.log(`scope misses   : ${scope.misses.length} / ${scope.total}   <- must be 0 (使っている位置の結び付き・test_fixtures/name_scope_cases.ar)`);
+problems.push(...scope.misses);
 if(problems.length){ console.log('\nproblems:'); problems.slice(0,25).forEach(p=>console.log(p)); }
