@@ -184,13 +184,14 @@ pub(super) fn empty_tuple() -> Value {
 pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
     let init_body = vec![Stmt::AttrAssign {
         target: Expr::Attr {
-            object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+            object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() }),
             attr: "value".to_string(),
             span: Span::unknown(),
+            attr_span: Span::unknown(),
             cache: Default::default(),
             node_id: 0, // #16: 合成コード（注釈対象外）
         },
-        value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+        value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() },
         span: crate::token::Span::unknown(),
     }];
     let init_fn = Rc::new(FnValue {

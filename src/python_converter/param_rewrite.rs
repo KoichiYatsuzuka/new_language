@@ -74,7 +74,7 @@ pub(crate) fn renamed_ident(name: &str) -> Option<Expr> {
                 ParamRename::Kwargs => Expr::Ident {
                     name: PY_KWARGS_PARAM.to_string(),
                     node_id: 0,
-                    res: Resolution::Unresolved,
+                    res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                 },
             })
         })

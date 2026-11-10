@@ -477,11 +477,13 @@ impl Parser {
                 Token::Dot => {
                     let dot_span = self.current_span();
                     self.advance(); // `.` を消費
+                    let attr_span = self.current_span();
                     let attr = self.expect_attr_name()?;
                     expr = Expr::Attr {
                         object: Box::new(expr),
                         attr,
                         span: dot_span,
+                        attr_span,
                         cache: Default::default(),
                         node_id: self.next_node_id(),
                     };
@@ -813,7 +815,13 @@ impl Parser {
     /// f-string の脱糖が作る組み込みの呼び出し（`str(x)` / `format(x, spec)` / `repr(x)` …）。
     fn fstring_call(&mut self, func: &str, args: Vec<Expr>, span: &Span) -> Expr {
         Expr::Call {
-            func: Box::new(Expr::Ident { name: func.to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
+            // 名前は f-string が書いたものではないので、f-string の位置を付ける。
+            func: Box::new(Expr::Ident {
+                name: func.to_string(),
+                node_id: self.next_node_id(),
+                res: Resolution::Unresolved,
+                span: span.clone(),
+            }),
             args: args.into_iter().map(crate::ast::CallArg::Positional).collect(),
             span: span.clone(),
             cache: Default::default(),
@@ -915,16 +923,19 @@ impl Parser {
                 Ok(Expr::Undefined)
             }
             Token::Any => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Union => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Option => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Ident(name) if name == "dbg" => {
                 self.advance();
@@ -947,12 +958,13 @@ impl Parser {
                 }
             }
             Token::Ident(name) => {
+                let span = self.current_span();
                 self.advance();
                 // 別名（alias）は式位置では保存済みの右辺 AST に置換する（純粋な構文置換）。
                 // 後続の postfix（`(...)` / `[...]` / `.attr`）は展開後の式に適用される。
                 match self.aliases.get(&name).map(|e| (*e.expr).clone()) {
                     Some(expanded) => Ok(expanded),
-                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved }),
+                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved, span }),
                 }
             }
             Token::SelfType => {
@@ -962,8 +974,9 @@ impl Parser {
                             .to_string(),
                     );
                 }
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             // `code:` — 中身を**パースせず**トークン列で持つ `Code` 値（メタ関数 1-1）。
             Token::Code => Ok(crate::ast::Expr::CodeBlock(self.parse_code_block()?)),
@@ -1208,6 +1221,7 @@ impl Parser {
                     name: "set".to_string(),
                     node_id: self.next_node_id(),
                     res: crate::ast::Resolution::Unresolved,
+                    span: Span::unknown(), // 合成した呼び出し（呼び出しの側も位置を持たない）
                 }),
                 args: vec![crate::ast::CallArg::Positional(list_expr)],
                 span: Span::unknown(),

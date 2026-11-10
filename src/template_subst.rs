@@ -235,8 +235,12 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
         ),
         // `^対象` の対象は普通の式なので、型注釈の置換はそのまま降りる。
         Expr::MetaInfo(target) => Expr::MetaInfo(Box::new(subst_expr(target, type_map))),
-        Expr::Ident { name, node_id, res } =>
-            Expr::Ident { name: name.clone(), node_id: fresh_node_id(*node_id), res: res.clone() },
+        Expr::Ident { name, node_id, res, span } => Expr::Ident {
+            name: name.clone(),
+            node_id: fresh_node_id(*node_id),
+            res: res.clone(),
+            span: span.clone(),
+        },
         Expr::List(items) => Expr::List(
             items
                 .iter()
@@ -250,10 +254,11 @@ pub(crate) fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Exp
                 })
                 .collect(),
         ),
-        Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {
+        Expr::Attr { object, attr, span, attr_span, node_id, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
             span: span.clone(),
+            attr_span: attr_span.clone(),
             cache: Default::default(),
             node_id: fresh_node_id(*node_id),
         },

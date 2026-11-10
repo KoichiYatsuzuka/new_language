@@ -558,11 +558,11 @@ pub(crate) fn generate_auto_init_if_needed(
             // `self::TraitName.field = field` の形式で代入
             init_body.push(Stmt::AttrAssign {
                 target: Expr::TraitAccess {
-                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() }),
                     trait_name: tname.clone(),
                     attr: fname.clone(),
                 },
-                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() },
                 span: Span::unknown(), // 合成した `__init__`（位置を持たない）
             });
         }
@@ -570,13 +570,14 @@ pub(crate) fn generate_auto_init_if_needed(
             // `self.field = field` の形式で代入
             init_body.push(Stmt::AttrAssign {
                 target: Expr::Attr {
-                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() }),
                     attr: fname.clone(),
                     span: Span::unknown(),
+                    attr_span: Span::unknown(),
                     cache: Default::default(),
                     node_id: 0, // #16: 合成 __init__ の代入先（注釈対象外）
                 },
-                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() },
                 span: Span::unknown(), // 合成した `__init__`（位置を持たない）
             });
         }

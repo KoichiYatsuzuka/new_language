@@ -312,7 +312,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         py::Expr::Name(n) => Ok(renamed_ident(n.id.as_str()).unwrap_or_else(|| Expr::Ident {
             name: n.id.to_string(),
             node_id: 0,
-            res: Resolution::Unresolved,
+            res: Resolution::Unresolved, span: crate::token::Span::unknown(),
         })),
 
         py::Expr::Attribute(a) => {
@@ -321,6 +321,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 object: Box::new(obj),
                 attr: a.attr.to_string(),
                 span: make_span(filename),
+                attr_span: make_span(filename),
                 cache: Default::default(),
                 node_id: 0, // #16: 合成/変換コード（注釈対象外）
             })
@@ -449,7 +450,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 if let Some(form) = super_form(&attr.value) {
                     let receiver = match form {
                         SuperForm::Zero => match current_super_receiver() {
-                            Some(name) => Expr::Ident { name, node_id: 0, res: Resolution::Unresolved },
+                            Some(name) => Expr::Ident { name, node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() },
                             None if !inside_class() => {
                                 return Err(format!(
                                     "{filename}: `super()` is only supported inside a method of a class"
@@ -507,7 +508,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                                 func: Box::new(Expr::Ident {
                                     name: name.to_string(),
                                     node_id: 0,
-                                    res: Resolution::Unresolved,
+                                    res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                                 }),
                                 args,
                                 span: crate::token::Span::unknown(),
@@ -532,7 +533,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     let base_expr = Expr::Ident {
                         name: base,
                         node_id: 0,
-                        res: Resolution::Unresolved,
+                        res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                     };
                     // `__py_super(基底, 受け手, "m", args..)`（`args` の先頭は受け手）。
                     let mut call_args = vec![CallArg::Positional(base_expr)];
@@ -544,7 +545,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                         func: Box::new(Expr::Ident {
                             name: "__py_super".to_string(),
                             node_id: 0,
-                            res: Resolution::Unresolved,
+                            res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                         }),
                         args: call_args,
                         span: crate::token::Span::unknown(),
@@ -571,7 +572,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 py::Expr::Name(n) if n.id.as_str() == "object" => Expr::Ident {
                     name: "__py_object".to_string(),
                     node_id: 0,
-                    res: Resolution::Unresolved,
+                    res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                 },
                 // `object.__setattr__(o, k, v)` / `object.__delattr__(o, k)`（クラスが上書きした `__setattr__` /
                 // `__delattr__` を飛ばす・known_bugs.md の #10）。`object.__init__(self)` も同じ内部の組み込みへ。
@@ -582,7 +583,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     Expr::Ident {
                         name: object_method_builtin(a.attr.as_str()).expect("checked").to_string(),
                         node_id: 0,
-                        res: Resolution::Unresolved,
+                        res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                     }
                 }
                 other => convert_expr(other, filename)?,
@@ -681,7 +682,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 func: Box::new(Expr::Ident {
                     name: "set".to_string(),
                     node_id: 0,
-                    res: Resolution::Unresolved,
+                    res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                 }),
                 args: vec![CallArg::Positional(list_expr)],
                 span: make_span(filename),
@@ -708,7 +709,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 func: Box::new(Expr::Ident {
                     name: "dict".to_string(),
                     node_id: 0,
-                    res: Resolution::Unresolved,
+                    res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                 }),
                 args: vec![CallArg::Positional(list_expr)],
                 span: make_span(filename),
@@ -794,7 +795,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                             func: Box::new(Expr::Ident {
                                 name: name.to_string(),
                                 node_id: 0,
-                                res: Resolution::Unresolved,
+                                res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                             }),
                             args: args.into_iter().map(CallArg::Positional).collect(),
                             span: span.clone(),
@@ -829,7 +830,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                             func: Box::new(Expr::Ident {
                                 name: "str".to_string(),
                                 node_id: 0,
-                                res: Resolution::Unresolved,
+                                res: Resolution::Unresolved, span: crate::token::Span::unknown(),
                             }),
                             args: vec![CallArg::Positional(inner)],
                             span: span.clone(),
@@ -982,7 +983,7 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
             func: Box::new(Expr::Ident {
                 name: "bytes".to_string(),
                 node_id: 0,
-                res: Resolution::Unresolved,
+                res: Resolution::Unresolved, span: crate::token::Span::unknown(),
             }),
             args: vec![CallArg::Positional(Expr::List(
                 b.iter().map(|&x| crate::ast::SeqEntry::Item(Expr::Int(x as i64))).collect(),
@@ -997,7 +998,7 @@ pub(crate) fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Re
         py::Constant::Ellipsis => Ok(Expr::Ident {
             name: "Ellipsis".to_string(),
             node_id: 0,
-            res: Resolution::Unresolved,
+            res: Resolution::Unresolved, span: crate::token::Span::unknown(),
         }),
         // 定数タプル。要素も `Constant` なので再帰する。
         //

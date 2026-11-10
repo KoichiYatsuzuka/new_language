@@ -375,13 +375,14 @@ impl Interpreter {
                 // `new_type Meters: int` → `class Meters: mut value: int` と等価
                 let init_body = vec![Stmt::AttrAssign {
                     target: Expr::Attr {
-                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() }),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
+                        attr_span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() },
                     span: crate::token::Span::unknown(),
                 }];
                 let init_fn = Rc::new(FnValue {
@@ -485,13 +486,14 @@ impl Interpreter {
         let module_name = self.global_module_names.get(self.cur_globals as usize).cloned().flatten();
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
-                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() }),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
+                attr_span: crate::token::Span::unknown(),
                 cache: Default::default(),
                 node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
-            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() },
             span: crate::token::Span::unknown(),
         }];
         let init_fn = Rc::new(FnValue {

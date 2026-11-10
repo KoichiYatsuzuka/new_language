@@ -324,7 +324,7 @@ pub(crate) fn ident_expr(name: &str) -> Expr {
     Expr::Ident {
         name: name.to_string(),
         node_id: 0,
-        res: crate::ast::Resolution::Unresolved,
+        res: crate::ast::Resolution::Unresolved, span: crate::token::Span::unknown(),
     }
 }
 
@@ -1072,12 +1072,12 @@ pub(crate) fn convert_stmt(
                         func: Box::new(Expr::Ident {
                             name: "__py_with_exit".to_string(),
                             node_id: 0,
-                            res: crate::ast::Resolution::Unresolved,
+                            res: crate::ast::Resolution::Unresolved, span: crate::token::Span::unknown(),
                         }),
                         args: vec![crate::ast::CallArg::Positional(Expr::Ident {
                             name: name.clone(),
                             node_id: 0,
-                            res: crate::ast::Resolution::Unresolved,
+                            res: crate::ast::Resolution::Unresolved, span: crate::token::Span::unknown(),
                         })],
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
@@ -1410,7 +1410,7 @@ pub(crate) fn convert_stmt(
                         MatchPattern::Case(Expr::Ident {
                             name: "_".to_string(),
                             node_id: 0,
-                            res: crate::ast::Resolution::Unresolved,
+                            res: crate::ast::Resolution::Unresolved, span: crate::token::Span::unknown(),
                         })
                     }
                     // `case x:`（キャプチャ）は「常にマッチして名前に束縛する」形。

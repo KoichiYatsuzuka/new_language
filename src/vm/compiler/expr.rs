@@ -196,13 +196,14 @@ impl Compiler {
             // ⚠ 呼び出しの形（`Stack[int](..)`）は `CallTemplate` のまま（下の `Call` の腕）。
             // ⚠ `m.Stack[int]`（import したモジュールのテンプレート）は対象外（パーサも添字として読む）。
             Expr::TemplateInstantiate { base, type_args } if matches!(**base, Expr::Ident { .. }) => {
-                let Expr::Ident { name, node_id, .. } = &**base else {
+                let Expr::Ident { name, node_id, span, .. } = &**base else {
                     unreachable!("checked by the guard")
                 };
                 let inst = Expr::Ident {
                     name: crate::template_subst::instance_name(name, type_args),
                     node_id: *node_id,
                     res: Resolution::Unresolved,
+                    span: span.clone(),
                 };
                 self.compile_expr(&inst)?;
             }

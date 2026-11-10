@@ -71,6 +71,7 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 | `BinOp` | 演算子 | `+` を支えない型の組 |
 | `Cast` / `IsType` / `MustBe` | 今の `span` | 同上 |
 | `Subscript` | 対象の錨 | `xs[i]` の `xs` |
+| `TemplateInstantiate` | 対象の錨 | `Box[int]` の `Box`（1-3 で足した） |
 | その他（リテラル・`UnaryOp`・コンテナ・制御構文の式…） | **なし**（外側の錨を引き継ぐ） | 位置を持たない式で錨を消さない |
 
 ### 2.2 守ること
@@ -85,6 +86,10 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
   「今の文で出した（名前）」を位置と別に控える形に変える（2-3）。
 - ⚠ `Span` は始点だけ（`file` / `line` / `col`）。**波線は 1 トークン**のまま（式全体に引くには終点が要る・本書の範囲外・§5）。
 - ⚠ 錨の位置は `line == 0`（`Span::unknown()`・合成した式）なら無いものとして扱う（`own_span` と同じ）。
+- ⚠⚠ **`alias` の展開で入った式は、alias を定義した位置を持つ**（1-1 で気付いた）。パーサは式位置の alias を
+  保存した右辺の AST で置き換える（`parse_primary` の `Token::Ident`）ので、その中の識別子の `span` は定義側
+  （別のファイルのこともある）。錨の**ファイルが `stmt_pos` のファイルと違えば錨を使わない**（2-2）。
+  同じファイルの alias は定義の位置を指すことになるが、誤りの原因はそこに書いてあるので許す。
 - ⚠ CLI の `Line:Col` も変わる。**エラー例題の出力が変わるのは意図した差分**（4-1 で全件を目で確かめる）。
   拡張と CLI は同じ型検査器なので `compare_wasm_frontend` は一致したままのはず。
 
@@ -101,12 +106,25 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 ゲート: `test_build_gate` / `scan_examples` / `force_gate` / `compare_outputs -A`（**差分 0**・まだ型検査は位置を使わない）/
 `compare_bytecode -A`（差分 0）/ `compare_wasm_frontend`
 
+**結果（2026-11-11・フェーズ 1 完了）**
+
+- 1-1: 合成する識別子は、パーサの `self` の補完・`interpreter/` の合成した `__init__`・`python_converter/`
+  （Python の名前は位置を持たない）が `Span::unknown()`、f-string の脱糖の呼び出しは f-string の位置、
+  `template_subst` と VM の `TemplateInstantiate` は元の識別子の位置を引き継ぐ。
+- 1-2: `size_of::<Expr>()` は **112 のまま**（`Ident` の中身は 48 → 80 で、一番大きい変種より小さい）。速度は測っていない。
+- 1-3: `Attr` に `attr_span` を足した（`.` の `span` は変えていない）。Python からの変換は `span` と同じ値を入れる。
+  `Expr::anchor_span()` を足し、位置のテストを `frontend_tests/parser_tests.rs` の
+  `expression_anchor_points_at_the_subject_token` に置いた。
+- ゲート: `cargo test` 1303 件 ok・`scan_examples`（`bench_ab_native.ar` の TIMEOUT は基準の exe でも 120 秒を超える。
+  本書の変更とは関係ない）・`force_gate`（`VmForceError` 0）・`compare_outputs -A` **643 / 643 一致**・
+  `compare_bytecode -A` **662 / 662 一致**・`compare_wasm_frontend` 777 / 777 一致
+
 ### フェーズ 2: 型検査器が錨を使う
 
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | **2-1** | `TypeChecker` に `expr_anchor: Option<Span>` を足す。`infer` を「錨を控える → 今の `infer` の本体（`infer_inner` に改名） → 戻す」の薄い包みにする（錨の無い式は張り替えない）。`check_stmt` の入口で錨を空にして控え、出口で戻す（§2.2 の 1 つ目） | 1-3 | 小 |
-| **2-2** | `report_error` / `report_warning` の既定の位置を **錨 → `stmt_pos`** にする。doc（10-17 の注記）を書き換える | 2-1 | 小 |
+| **2-2** | `report_error` / `report_warning` の既定の位置を **錨 → `stmt_pos`** にする（錨のファイルが `stmt_pos` と違えば `stmt_pos`・§2.2 の alias の注記）。doc（10-17 の注記）を書き換える | 2-1 | 小 |
 | **2-3** | `already_reported_undefined` を位置の比較から「今の文で出した名前の集合」（`check_stmt` が張り替える）に変える。`n = n + 1`・`mh.enable(1)`（受け手と呼び出しの 2 経路）が 1 件のままであることをテストする | 2-2 | 小 |
 | **2-4** | 代入の左辺の未定義（`stmt/check.rs` の 2 か所の `check_name_defined`）は文の位置のまま（左辺の名前＝文の先頭）で正しいことを確かめる。`AttrAssign` の対象の錨も確かめる | 2-2 | 小 |
 | **2-5** | 位置のテストを足す（`frontend_tests/type_check_tests/`）: 未定義の名前（`while` の条件・二項演算の右辺・引数・入れ子の関数の中）、存在しない属性（属性名）、引数の数の誤り（呼ばれる側の名前）、演算子の型（演算子）、`if` 式の本体の中の誤り（本体の文を指す・外側の式を指さない）、合成した識別子（位置 0 → 文の位置に戻る） | 2-2 | 小 |
