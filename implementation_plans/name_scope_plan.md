@@ -588,6 +588,8 @@ R-1 で「Arrow の関数だけ」に分けるときに、こちらも Python �
 
 ### R-4. import したモジュールの本体の型の誤りが表に出ない・取り込む側の大域が見える（1-1 で見つけた）
 
+⇒ **[known_bugs.md](known_bugs.md) の #15 に起票した**（2026-11-11・利用者の指示）。
+
 - モジュールの本体は `annotate_module_body`（[resolve.rs](../src/type_check/stmt/resolve.rs)）が取り込む側の中で検査し、
   誤りは具体化の分を除いて捨てる。実測: モジュールに `let s: str = 1` と未定義の名前を書いても、`import` した入口の
   検査も実行も何も言わない（そのモジュールを入口にすれば出る）。意図した設計かどうかは記録が見当たらない。
@@ -596,6 +598,8 @@ R-1 で「Arrow の関数だけ」に分けるときに、こちらも Python �
 - 本計画の規則（モジュールの最上位の束縛）とは別の層なので、フェーズ 1 では扱わない。
 
 ### R-5. 関数の中の `static mut` を `local::` で読むと `VmForceError`（1-1 で見つけた）
+
+⇒ **[known_bugs.md](known_bugs.md) の #16 に起票した**（2026-11-11・利用者の指示）。
 
 `fn f(): static mut calls: int = 0; print(local::calls)` が `VmForceError: cannot compile function 'f' to bytecode`
 （R-1 の前の exe でも同じ）。`local::` は可変長引数の名前空間で、`static mut` に使うのが誤りなら静的な誤りにすべき。
