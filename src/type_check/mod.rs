@@ -157,6 +157,9 @@ pub struct TypeChecker {
     /// 直前の [`BindingRecord`]（名前・添字）。次の `declare` が同じ名前を宣言したら、その変数に結び付ける
     /// （`VarInfo::binding`・name_scope_plan.md の 2-2）。
     pending_binding: Option<(String, usize)>,
+    /// 組の名前として先に宣言した `fn` / `gen`（`predeclare_fn_group`・name_scope_plan.md の 3-2）。
+    /// 各定義の検査が自分の名前を 1 つ取り除き、宣言を飛ばす。
+    group_predeclared: Vec<String>,
     /// 識別子を使っている位置ごとの結び付き（[`NameUse`]・記録するときだけ）。
     uses: Option<Vec<NameUse>>,
 }
@@ -353,6 +356,7 @@ impl TypeChecker {
             bindings: None,
             bind_pos: None,
             pending_binding: None,
+            group_predeclared: Vec::new(),
             uses: None,
         }
     }
