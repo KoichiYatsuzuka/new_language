@@ -169,7 +169,14 @@ impl CheckState {
         self.scope_stack
             .last_mut()
             .unwrap()
-            .insert(name, VarInfo { ty, mutable, contents_mutable });
+            .insert(name, VarInfo { ty, mutable, contents_mutable, binding: None });
+    }
+
+    /// 今のスコープの変数 `name` を束縛の記録 `idx` に結び付ける（`VarInfo::binding`・エディタだけ・2-2）。
+    pub(super) fn set_binding(&mut self, name: &str, idx: usize) {
+        if let Some(v) = self.scope_stack.last_mut().and_then(|s| s.get_mut(name)) {
+            v.binding = Some(idx);
+        }
     }
 
     /// スコープスタックを内側から外側へ走査して変数情報を返す。見つからない場合は `None`。

@@ -154,7 +154,7 @@ impl TypeChecker {
                     // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
                     // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
                     // （クラスの `static mut` を裸で書く）が静的に通っていた。
-                    self.check_name_defined(name);
+                    let _ = self.check_name_defined(name);
                 }
                 // ⚠ `freeze` 済みの名前への再束縛も**上の `!info.mutable` で捕まる**
                 //    （タスク 9.2 で `freeze` を可変フラグの降格にしたため）。
@@ -214,7 +214,7 @@ impl TypeChecker {
                     // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
                     // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
                     // （クラスの `static mut` を裸で書く）が静的に通っていた。
-                    self.check_name_defined(name);
+                    let _ = self.check_name_defined(name);
                 }
                 let lt = self.lookup(name).map(|i| i.ty.clone());
                 let rt = self.infer(value);

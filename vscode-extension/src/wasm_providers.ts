@@ -52,6 +52,11 @@ export interface Symbol {
 interface Scope { parent: number; startLine: number; endLine: number }
 interface ExprType { at: Pos; type: string }
 /**
+ * 識別子を**使っている位置**が指す宣言（型検査器の結び付き・name_scope_plan.md の 2-2）。
+ * `decl` は宣言の名前の位置。`null` は「ここから見えない名前」（型検査の誤り）で、hover も定義へ移動も出さない。
+ */
+interface NameUse { at: Pos; decl: Pos | null }
+/**
  * 型注釈位置に現れた型名 1 件（`let x: int` の `int`）。
  *
  * これはパーサ（`parse_type_expr`）だけが知っている事実で、**名前からは復元できない**。
@@ -99,6 +104,8 @@ interface Analysis extends AnalysisResult {
     symbols: Symbol[];
     scopes: Scope[];
     exprTypes: ExprType[];
+    /** 旧い wasm は出さない（`useIndexOf` が空として扱う）。 */
+    uses?: NameUse[];
     typeRefs: TypeRef[];
     tokens: Token[];
     /**
@@ -128,6 +135,21 @@ function typeRefsOf(analysis: Analysis): Map<string, string> {
             index.set(`${ref.at.line}:${ref.at.col}`, ref.name);
         }
         typeRefIndexCache.set(analysis, index);
+    }
+    return index;
+}
+
+/** `line:col`（使っている位置）→ 宣言の位置（`null` は見えない名前）。`analysis.uses` の逆引き。 */
+const useIndexCache = new WeakMap<Analysis, Map<string, Pos | null>>();
+
+function useIndexOf(analysis: Analysis): Map<string, Pos | null> {
+    let index = useIndexCache.get(analysis);
+    if (!index) {
+        index = new Map();
+        for (const u of analysis.uses ?? []) {
+            index.set(`${u.at.line}:${u.at.col}`, u.decl);
+        }
+        useIndexCache.set(analysis, index);
     }
     return index;
 }
@@ -410,7 +432,20 @@ function declarationAt(analysis: Analysis, pos: vscode.Position, word: string): 
  *   未宣言の `font` がクラスのフィールド `font` として hover され、定義へ移動もそこへ飛んだ（利用者の報告）。
  *   呼び出し元（hover・定義へ移動・シグネチャヘルプ・受け手の型の推定）はどれも `undefined` を「出さない」として扱う。
  */
-function lookup(analysis: Analysis, name: string, line: number): Symbol | undefined {
+function lookup(analysis: Analysis, name: string, line: number, at?: Pos): Symbol | undefined {
+    // 型検査器がこの位置の結び付きを決めていれば、それに従う（name_scope_plan.md の 2-2）。パーサのスコープ木は
+    // ブロックスコープも宣言の順序も見ないので、ブロックの後・宣言より前の読みを中の宣言に結び付けてしまう。
+    if (at) {
+        const index = useIndexOf(analysis);
+        const key = `${at.line}:${at.col}`;
+        if (index.has(key)) {
+            const decl = index.get(key);
+            if (!decl) return undefined;
+            const hit = analysis.symbols.find(
+                s => s.name === name && s.at.line === decl.line && s.at.col === decl.col);
+            if (hit) return hit;
+        }
+    }
     return visibleSymbols(analysis, line).find(s => s.name === name);
 }
 
@@ -499,7 +534,12 @@ export function provideHover(
     if (!w) return undefined;
 
     const declared = declarationAt(analysis, position, w.word);
-    let sym = declared ?? lookup(analysis, w.word, position.line);
+    // 型検査器が「ここから見えない名前」と決めた位置には何も出さない（型も補わない・name_scope_plan.md の 2-2）。
+    if (!declared && useIndexOf(analysis).get(`${w.range.start.line}:${w.range.start.character}`) === null) {
+        return undefined;
+    }
+    let sym = declared ?? lookup(analysis, w.word, position.line,
+        { line: w.range.start.line, col: w.range.start.character });
 
     // 型位置に書かれた名前で、引けた宣言が型でない（＝`int` のような型名/関数の兼用名）なら、
     // 関数のシグネチャを見せてはいけない。ユーザー定義のクラス・トレイト等はこの分岐を
@@ -646,6 +686,7 @@ export function provideDocumentSemanticTokens(
     // 宣言そのものには declaration 修飾を付ける。
     const declAt = new Map<string, Symbol>();
     for (const s of analysis.symbols) declAt.set(`${s.at.line}:${s.at.col}`, s);
+    const uses = useIndexOf(analysis);
 
     const typeRefs = typeRefsOf(analysis);
 
@@ -682,7 +723,14 @@ export function provideDocumentSemanticTokens(
             continue;
         }
 
-        const sym = decl ?? byName.get(document.getText(tokenRange(t)));
+        // 型検査器が使っている位置の結び付きを決めていれば、それに従う（見えない名前は着色しない・name_scope_plan.md の 2-2）。
+        let sym: Symbol | undefined = decl;
+        if (!sym && uses.has(at)) {
+            const target = uses.get(at);
+            sym = target ? declAt.get(`${target.line}:${target.col}`) : undefined;
+            if (!sym) continue;
+        }
+        sym ??= byName.get(document.getText(tokenRange(t)));
         if (!sym) continue;
         const type = TOKEN_TYPE_OF[sym.kind];
         if (!type) continue;
@@ -776,7 +824,7 @@ function typeOfExprEndingAt(analysis: Analysis, document: vscode.TextDocument, i
         }
         // 受け手そのものが型名（`MyEnum.` / `MyClass.`）かモジュールの束縛名ならその表。
         if (knownType(analysis, text)) return text;
-        const sym = lookup(analysis, text, t.line);
+        const sym = lookup(analysis, text, t.line, { line: t.line, col: t.col });
         if (knownType(analysis, sym?.typeAnn)) return sym!.typeAnn;
         if (knownType(analysis, sym?.inferred)) return sym!.inferred;
         return inferred();
@@ -1029,7 +1077,8 @@ export function provideDefinition(
         return undefined;
     }
 
-    const sym = lookup(analysis, w.word, position.line);
+    const sym = lookup(analysis, w.word, position.line,
+        { line: w.range.start.line, col: w.range.start.character });
     if (!sym) return undefined;
     // 組み込み（builtins.ars 由来）はこのファイルの中に定義が無いので飛ばない。
     if (prelude.includes(sym)) return undefined;

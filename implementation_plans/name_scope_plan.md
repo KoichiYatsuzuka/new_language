@@ -289,7 +289,7 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
 | # | 内容 | 前提 | 重さ |
 |---|---|---|---|
 | **2-1** | ✅（2026-11-10・結果は表の下）`lookup` の「ファイル内で最初の同名の宣言」をやめる（1-C）。呼び出し元 4 か所（ホバー・定義へ移動・シグネチャヘルプ・受け手の型の推定）が `undefined` を扱えるか確かめる。`stress.js` の数え上げで、ホバー・定義が消えたものを全部見て、正しく消えた（見えない名前）か、2-2 で拾うべきもの（前方参照など）かを分ける | フェーズ 1 | 小 |
-| **2-2** | D-2 = (b): 型検査器が、識別子を使っている位置ごとに結び付いた宣言（の位置）を記録し、`crates/arrow-frontend` の解析結果に載せ、`lookup` と色付け（`provideDocumentSemanticTokens`）がそれを引く。A1〜A3・A12 の形のホバーが出ず、B1 のホバーは出ること | 2-1 | 中 |
+| **2-2** | ✅（2026-11-10・結果は表の下）D-2 = (b): 型検査器が、識別子を使っている位置ごとに結び付いた宣言（の位置）を記録し、`crates/arrow-frontend` の解析結果に載せ、`lookup` と色付け（`provideDocumentSemanticTokens`）がそれを引く。A1〜A3・A12 の形のホバーが出ず、B1 のホバーは出ること | 2-1 | 中 |
 | **2-3** | `vscode-extension/test_fixtures/` に §0 の形を足し、`run_debug.js` / `stress.js` で確かめる。`vscode-extension-dev` スキル（名前の引き方）を更新する。wasm を作り直して VSIX を作る（`make-vsix.ps1`） | 2-2 | 小 |
 
 **ゲート**: `compare_wasm_frontend` / `stress.js`（数え上げの退行） / `compare_tm_grammar`（触らないはずだが VSIX を作るので）
@@ -317,6 +317,29 @@ B1（前方参照）と入れ子の関数の自己再帰はならないことを
   ⚠ 内包表記の変数は宣言表に載っていないので、今は hover に型だけが出て定義へ移動が無い（2-2 で型検査器の結び付きから引く）。
 - `stress.js`: threw 0・hover misses 0 / 6713・def misses 0 / 6713・bind misses 0 / 427・typed vars 2855 / 3508（変更前と同じ）・tag misses 0 / 14。
   VSIX を作り直した。
+
+#### 2-2 の結果（2026-11-10・✅ 完了）
+
+- 型検査器（エディタの経路だけ）が、識別子を**使っている位置ごと**に結び付きを記録する（`NameUse`・node-id 単位）。
+  - 変数を束縛した記録（`BindingRecord`）に番号を付け、宣言した変数（`VarInfo::binding`）に持たせる。使っている位置は
+    その番号を記録する（型ガードの絞り込みは同じ変数なので番号を引き継ぐ）。
+  - **見えない名前**（`UndefinedName` / `BareClassMember` になった名前）は「見えない」と記録する（`check_name_defined` が
+    見えたかどうかを返すようにした）。
+  - 記録しない位置（引数・関数・クラスの名前・組み込み・前方参照・束縛の記録が無いもの）は、拡張が従来どおりスコープ木から引く。
+- `crates/arrow-frontend` は、束縛の記録を宣言表と突き合わせる `bound_types` が「記録の番号 → 宣言」も返すようにし、
+  解析結果に `uses`（使っている位置 → 宣言の位置、見えなければ `null`）を載せる。数が合わない鍵（どの宣言か決まらない）は出さない。
+- 拡張: `lookup` は使っている位置の記録があればそれに従う（見えなければ `undefined`）。hover は見えない位置に何も出さない
+  （式の型も補わない）。色付け（`provideDocumentSemanticTokens`）も同じ記録に従う。
+- `uses_probe.js` で 2-1 の後と比べた: 消えたのは 15 か所ですべて見えない名前（A12 のブロックの後・宣言より前の読み・
+  B2・B3・`for` の変数をループの後で・`except .. as e` の `e` を後で・最上位で後に束縛する名前・メソッドの中の裸のメンバー（A3）・
+  クラスの本体の裸の `const`）。変わったのは 4 か所で、どれも正しい側へ: クラスのメンバーと同じ名前の最上位の変数
+  （`class_member_scope.ar` の `size` が、以前はフィールドを指していた）、再宣言の誤りの後の読みが後の宣言へ、`if` の中で `freeze`
+  した変数の読みが元の宣言へ（`freeze` は変数そのものを書き換えるので、ブロックの中の `freeze` 文ではなく元の宣言が正しい）、
+  最上位で定義より前に呼んだ関数（`name_resolution_error.ar` の `later_fn`）に型だけが出ていたのが出なくなった。
+- §0 の拡張の表: A1 / A2（`use_it` の `font`）・A3（メソッドの中の裸の `font`）・A12（ブロックの外へ漏れた `y`）とも、hover も
+  定義へ移動も出ない。B1（前方参照）は出る（`name_resolution.ar` の `LIMIT` / `helper` / `GREETING`）。
+- ゲート: `compare_wasm_frontend` 774 / 774・`stress.js`（threw 0・hover / def misses 0 / 6713・bind misses 0・typed vars 2855 / 3508 で変わらず・
+  tag misses 0）・`scan_examples` FAIL 0・`type_obligations` 退行なし・`repl_session` 同一・`stale_doc_refs` OK・`cargo test`（debug）1302 passed。
 
 ### フェーズ 3 — 入れ子の関数の再帰（連続する `fn` を 1 つの組として作る）
 

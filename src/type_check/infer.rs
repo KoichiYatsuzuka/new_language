@@ -143,11 +143,20 @@ impl TypeChecker {
             // 型検査は名前でスコープを引くだけで `res` を見ない。
             Expr::Ident { name, node_id, .. } => {
                 let in_scope = self.lookup(name).map(|v| v.ty.clone());
+                let binding = self.lookup(name).and_then(|v| v.binding);
                 // どのスコープにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
                 // ⚠ 関数表（`fn_sigs`）で型が引けても見る（name_scope_plan.md の 1-4）。関数表はプログラム全体の
                 //   表で、別の関数の中の入れ子の関数・後で定義する関数も載っている（§0 の A7・B3）。
-                if in_scope.is_none() {
-                    self.check_name_defined(name);
+                let visible = in_scope.is_some() || self.check_name_defined(name);
+                // 使っている位置の結び付き（エディタだけ・2-2）。束縛の記録がある変数と、見えない名前だけを記録する。
+                if !self.in_instance_decl() {
+                    if let Some(uses) = self.uses.as_mut() {
+                        if !visible {
+                            uses.push(super::NameUse { node_id: *node_id, binding: None });
+                        } else if let Some(b) = binding {
+                            uses.push(super::NameUse { node_id: *node_id, binding: Some(b) });
+                        }
+                    }
                 }
                 let found = in_scope
                     // ⚠⚠ **変数スコープに無ければ関数を探す**（タスク 2.2）。
@@ -1295,16 +1304,20 @@ impl TypeChecker {
     ///   最上位の束縛**（前方参照）。import 先を読めていない環境（エディタ）では見ない。
     /// ⚠ 関数の名前を特別扱いしない。最上位の関数は宣言した時点からスコープにあり（`check_fn_def`）、
     ///   その前に読めるのは後で実行される本体の中だけ（実行時も関数を巻き上げない）。
-    pub(super) fn check_name_defined(&mut self, name: &str) {
-        if self.registry_incomplete || self.already_reported_undefined(name) {
-            return;
+    /// 戻り値は**見えるか**（通したら `true`・誤りにしたら `false`。判定しない環境では `true`）。
+    pub(super) fn check_name_defined(&mut self, name: &str) -> bool {
+        if self.registry_incomplete {
+            return true;
+        }
+        if self.already_reported_undefined(name) {
+            return false;
         }
         if let Some((class_name, spelled)) = self.bare_class_member(name) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::BareClassMember { name: name.to_string(), class_name, spelled },
                 span: None,
             });
-            return;
+            return false;
         }
         let forward_ref = self.state.in_deferred_body()
             && self.module_toplevel.last().is_some_and(|t| t.contains(name));
@@ -1319,12 +1332,13 @@ impl TypeChecker {
             || self.registry.is_protocol(name)
             || self.registry.template_params(name).is_some()
         {
-            return;
+            return true;
         }
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::UndefinedName { name: name.to_string() },
             span: None,
         });
+        false
     }
 
     /// 同じ文で、同じ名前の「見えない名前」の誤りをもう出したか（name_scope_plan.md の 1-4・R-2）。
