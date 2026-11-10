@@ -140,9 +140,9 @@ impl TypeChecker {
 
     /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
     ///
-    /// ⚠ 検査の間は**今の文の位置**を控える（フェーズ10 10-17）。位置を持たない誤り（式の側に位置が
-    ///   無い `let z: str = s` など）はこの位置で報告する（`report_error`）。位置を持たない文
-    ///   （`pass` など）は外側の文の位置を引き継ぐ。
+    /// ⚠ 検査の間は**今の文の位置**を控える（フェーズ10 10-17）。位置を持たない誤りのうち、推論中の式の
+    ///   錨（`expr_anchor`）が無いもの（推論が終わってから出す `let z: str = s` の不一致など）はこの位置で
+    ///   報告する（`report_error`）。位置を持たない文（`pass` など）は外側の文の位置を引き継ぐ。
     pub(crate) fn check_stmt(&mut self, stmt: &Stmt) {
         // 式文は文の位置を持たないので、式そのものの位置（呼び出しの `(` など）で代える。
         let here = stmt.position().or_else(|| match stmt {
@@ -153,6 +153,8 @@ impl TypeChecker {
             Some(p) => self.stmt_pos.replace(p.clone()),
             None => self.stmt_pos.clone(),
         };
+        // 式の中の文（`if` 式の本体など）は外側の式の錨を引き継がない（diagnostic_position_plan.md の 2-1）。
+        let outer_anchor = self.expr_anchor.take();
         // 束縛の記録に付ける位置（`bind_pos` の doc）。`Stmt::position` だけを見る。
         // 記録しない検査（CLI）では張り替えない。
         let outer_bind = match (self.bindings.is_some(), stmt.position()) {
@@ -164,6 +166,7 @@ impl TypeChecker {
             self.bind_pos = prev;
         }
         self.stmt_pos = outer;
+        self.expr_anchor = outer_anchor;
     }
 
     fn check_stmt_inner(&mut self, stmt: &Stmt) {

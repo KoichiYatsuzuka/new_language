@@ -155,14 +155,16 @@ impl TypeChecker {
 
     /// 静的型エラーをエラーリストに追加する。
     ///
-    /// ⚠ 位置を持たない誤りには**今検査している文の位置**を付ける（フェーズ10 10-17・`check_stmt`）。
-    ///   以前は表の `File` が `<unknown>` になっていた（`let z: str = s` は右辺の識別子が位置を持たない）。
+    /// ⚠ 位置を持たない誤りには、**推論中の式の錨**（`expr_anchor`・diagnostic_position_plan.md の 2-2）、
+    ///   それが無ければ**今検査している文の位置**（フェーズ10 10-17・`check_stmt`）を付ける
+    ///   （[`Self::fallback_span`]）。10-17 より前は表の `File` が `<unknown>` に、2-2 より前は
+    ///   誤りが全部文の先頭（`while running:` の未定義の `running` が `while`）を指していた。
     pub(super) fn report_error(&mut self, mut err: StaticTypeError) {
         if err.span.is_none() {
-            err.span = self.stmt_pos.clone();
+            err.span = self.fallback_span();
         }
         let from_instance = self.in_instance_decl();
-        self.diags.report_error(err, from_instance);
+        self.diags.report_error(err, from_instance, self.stmt_pos.clone());
     }
 
     /// 静的型警告を警告リストに追加する。
@@ -175,11 +177,24 @@ impl TypeChecker {
         if self.in_instance_decl() {
             return;
         }
-        // 位置を持たない警告には今の文の位置を付ける（`report_error` と同じ・10-17）。
+        // 位置を持たない警告には錨か今の文の位置を付ける（`report_error` と同じ・10-17・2-2）。
         if w.span.is_none() {
-            w.span = self.stmt_pos.clone();
+            w.span = self.fallback_span();
         }
         self.diags.report_warning(w);
+    }
+
+    /// 位置を持たない誤り・警告に付ける位置（diagnostic_position_plan.md の 2-2）: 推論中の式の錨、無ければ文の位置。
+    ///
+    /// ⚠ 錨の**ファイルが文と違えば**文の位置を使う。式位置の `alias` は定義した右辺の AST に置き換わる
+    ///   （パーサの `parse_primary`）ので、その中の識別子は alias を定義したファイルの位置を持つ。
+    ///   エディタは開いているファイルの誤りしか出さないので、別のファイルを指すと誤りが消えてしまう。
+    fn fallback_span(&self) -> Option<crate::token::Span> {
+        match (&self.expr_anchor, &self.stmt_pos) {
+            (Some(a), Some(s)) if a.file != s.file => Some(s.clone()),
+            (Some(a), _) => Some(a.clone()),
+            (None, s) => s.clone(),
+        }
     }
 
     /// 今、単相化した具体化（`Box[int]` / `ident[str]`）の本体を検査しているか（タスク 2-8 段階 2）。

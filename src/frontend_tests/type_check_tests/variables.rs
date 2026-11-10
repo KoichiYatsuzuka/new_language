@@ -482,6 +482,52 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
     }
 
+    /// 誤りの (行, 列) の一覧。
+    fn error_positions(src: &str) -> Vec<(usize, usize)> {
+        check(src).iter().filter_map(|e| e.span.as_ref().map(|s| (s.line, s.col))).collect()
+    }
+
+    /// 位置を持たない誤りは**推論中の式の錨**を指す（diagnostic_position_plan.md の 2-2・2-5）。
+    /// 以前は全部文の先頭（`while running:` の未定義の `running` で `while`）を指していた。
+    #[test]
+    fn error_points_at_the_expression_being_inferred() {
+        // 未定義の名前は名前そのもの。条件・二項演算の右辺・引数・入れ子の関数の中。
+        assert_eq!(error_positions("while running:\n    pass\n"), vec![(1, 7)]);
+        assert_eq!(error_positions("let x = 1\nlet y = x + nope\n"), vec![(2, 13)]);
+        assert_eq!(error_positions("fn f(let a: int) -> int:\n    return a\n\nlet r = f(nope)\n"), vec![(4, 11)]);
+        assert_eq!(
+            error_positions("fn outer() -> None:\n    fn inner() -> None:\n        print(nope)\n    inner()\n"),
+            vec![(3, 15)]
+        );
+        // 未定義の受け手のメソッド呼び出しは受け手。
+        assert_eq!(error_positions("nope.run(1)\n"), vec![(1, 1)]);
+        // 引数の数の誤りは呼ばれる側の名前（呼び出しの `(` ではない）。
+        assert_eq!(error_positions("fn f(let a: int) -> int:\n    return a\n\nf(1, 2)\n"), vec![(4, 1)]);
+        // 演算子の型の誤りは演算子。
+        assert_eq!(error_positions("let s = \"a\" - 1\n"), vec![(1, 13)]);
+        // f-string の中の式は f-string のトークン（フィールドの中の列は字句が持たない）。
+        assert_eq!(error_positions("print(f\"x {nope}\")\n"), vec![(1, 7)]);
+    }
+
+    /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
+    #[test]
+    fn error_in_expression_body_points_into_the_body() {
+        let src = "let r = if True -> int:\n    block_return nope\nelse:\n    block_return 1\n";
+        assert_eq!(error_positions(src), vec![(2, 18)]);
+    }
+
+    /// 同じ文で同じ名前の「見えない名前」は 1 件だけ（2-3）。左辺（文の位置）と右辺（名前の位置）で
+    /// 誤りの位置が違っても重ねない。
+    #[test]
+    fn undefined_name_reported_once_per_statement() {
+        let src = "fn g() -> None:\n    m = m + 1\n";
+        assert_eq!(undefined_names(src), vec!["m".to_string()]);
+        // 代入の左辺は文の位置（＝左辺の名前）。
+        assert_eq!(error_positions(src), vec![(2, 5)]);
+        // 別の文なら別に出す。
+        assert_eq!(undefined_names("print(nope)\nprint(nope)\n").len(), 2);
+    }
+
     /// 組み込みの型名はどのスレッドでも大域で見える名前で、同じ名前の変数は宣言できない（7-25・利用者の決定）。
     /// ⚠ 以前は型検査の大域に無い名前（`Signal` / `Size` / `Index` / `pointer` / `EventLoop`）だけ型検査を通り、実行時に
     ///   `NameError` になった。ファイルのパスの型は `Path`（以前は `path`）なので `path` は普通の名前。組み込みの関数は隠せる。

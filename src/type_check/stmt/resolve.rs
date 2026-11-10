@@ -110,7 +110,8 @@ impl TypeChecker {
         let instance_names = self.registry.instance_names().clone();
         for (e, from_instance) in Self::dedup_instance_errors(errors, &instance_names) {
             if from_instance {
-                self.diags.report_error(e, true);
+                // 文の位置は持ち越さない（モジュールの文の位置で、この文の重複除去には使わない・2-3）。
+                self.diags.report_error(e, true, None);
             }
         }
     }
