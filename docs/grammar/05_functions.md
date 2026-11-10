@@ -208,6 +208,38 @@ fn make_multiplier(let n: int) -> function[let int]->int:
 
 クロージャの詳細は [02_variables.md](02_variables.md) の「クロージャとキャプチャ」を参照。
 
+### 入れ子の関数の再帰（前方宣言は要らない）
+
+入れ子の関数は自分の名前を呼べます（自己再帰）。**間に別の文を挟まずに続けて書いた** `fn` / `gen` の定義は
+1 つの**組**になり、組の中では互いの名前を呼べます（相互再帰）。組は並びで決まるので、書き手は何も足しません
+（`implementation_plans/name_scope_plan.md` のフェーズ 3）。
+
+```ar
+fn parity(n: int) -> str:
+    fn is_even(k: int) -> bool:
+        if k == 0:
+            return True
+        return is_odd(k - 1)      # 後で定義する組の相手
+    fn is_odd(k: int) -> bool:
+        if k == 0:
+            return False
+        return is_even(k - 1)
+    if is_even(n):
+        return "even"
+    return "odd"
+```
+
+- 組の**外**の名前は、今までどおり定義した時点で束縛済みでなければなりません（入れ子の関数は定義した時点の値を写す）。
+  組の途中に別の文（`let` / 式文など）があると組はそこで切れ、前の関数から後の関数は見えません（静的エラー
+  `name '..' is not defined`）。
+- デコレータの付いた `fn` とテンプレートの `fn` / `gen` は組を切ります（デコレータは定義の時点で走り、そのときに
+  組の残りはまだありません）。
+- ブロック（`if` / `for` / `block:` …）の中の定義の並びも同じ規則です（そのブロックの中で続けて書いたもの）。
+- 再帰する入れ子の関数を返して外で呼んでも動きます（組の片方だけを返しても、もう片方を呼べる）。
+- ⚠ 自分や組の相手を値として写さないので、関数どうしの参照の循環は作りません（呼び出すときに、自分は呼ばれている
+  関数そのもの、相手は組から作って渡す）。
+- 例題: `examples/basics/nested_fn_recursion.ar`（`_returned` / `_error`）
+
 ---
 
 ## デコレータ

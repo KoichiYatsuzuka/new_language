@@ -337,6 +337,10 @@ Before checking, `TypeRegistryBuilder::collect` (`registry/builder.rs`) scans al
   their signature when it checks the definition (`TypeRegistry::sig_of`) and declares it in that scope
   (`CheckState::declare_local_fn`). Look signatures up by name with `TypeChecker::visible_fn_sigs`, never
   `registry.fn_sigs` directly (name_scope_plan.md 1-7).
+- **Groups of nested functions** (name_scope_plan.md phase 3): `check_stmts` pre-declares a run of back-to-back
+  `fn` / `gen` definitions (`decl_names::fn_group_len`; a decorator or template breaks the run) before checking their
+  bodies (`predeclare_fn_group`), so members may call each other. The VM compiler uses the same function
+  (`note_fn_groups`) — keep them one function, or the checker passes code the runtime cannot run.
 - `class_method_sigs`: `class → method → Vec<FnSig>`.
 - `known_class_names`: set of all class/enum names.
 - `enum_members`: `enum → (member → type)`; the type is the enum type itself.

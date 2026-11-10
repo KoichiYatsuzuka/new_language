@@ -481,6 +481,9 @@ $knownDiff = @{
     'class_member_scope'             = 'py: メンバーをクラスのスコープの変数として扱うので、フィールドと同じ名前のローカル（let font = ..）が StaticTypeError（already declared）になり何も出力しない。Rust はメンバーとぶつからない'
     # ⚠ name_scope_plan.md の 1-7（入れ子の関数のシグネチャをスコープで分ける）で新設。**実測して確認済み**。
     'nested_fn_signature_error'      = 'py: 入れ子の関数の引数・戻り値を静的に検査しないので素通りして 2 を出し、実行時の TypeError（int と str の +）で止まる。Rust は静的な誤り 2 件'
+    # ⚠ name_scope_plan.md のフェーズ 3（入れ子の関数の再帰）で新設。**実測して確認済み**。
+    'nested_fn_recursion_returned'   = 'py: 返した入れ子の関数から組の相手を呼ぶと NameError（自己再帰の 720 は出る）。Rust は組から相手を作るので True False まで出る'
+    'nested_fn_recursion_error'      = 'py: 間に文を挟んで組を切った前方参照を静的に検査せず、呼んだ時点の値を読むので 3 / between / 2 を出す。Rust は静的な誤り 2 件'
     # ⚠ B10 系統（再帰の深さ上限）で新設。**実測して確認済み**。
     'recursion_limit'                = 'py 古い: 再帰を Python のスタックに任せており RuntimeError になる。Rust は catchable な RecursionError なので except で受けて実行を続けられる'
     'recursion_limit_error'          = 'py 古い: 同上。py は stdout へ RuntimeError を 1 行、Rust は RecursionError のトレースバック'

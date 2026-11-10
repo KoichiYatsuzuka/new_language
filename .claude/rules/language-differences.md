@@ -114,6 +114,9 @@
   the block, in functions too. Reading a name that is not visible is a static `name '..' is not defined`. Only a
   `fn` / `gen` / method body may read a module top-level name bound **later** (forward reference); top-level code may
   not (functions are not hoisted). A nested function cannot capture an outer local bound after its definition.
+  - ⚠ Except recursion: a nested function may call itself, and `fn` / `gen` definitions written **back to back** (no
+    statement in between) form a group whose members may call each other (phase 3; no forward declaration). Neither
+    copies the function value, so no `Rc` cycle (`CapturedVar::SelfFn` / `Sibling`).
   - ⚠ Class members are not variables: inside methods and the class body write `self.x` / `C.K` (bare `x` is
     `BareClassMember`). A local may reuse a member's name.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it

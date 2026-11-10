@@ -1,0 +1,100 @@
+# nested_fn_recursion.ar — 入れ子の関数の再帰（name_scope_plan.md のフェーズ 3）
+#
+# エラー系は nested_fn_recursion_error.ar
+#
+# 入れ子の関数は自分の名前を呼べる（自己再帰）。**間に別の文を挟まずに続けて書いた** `fn` / `gen` の定義は
+# 1 つの組になり、組の中では互いの名前を呼べる（相互再帰）。前方宣言は要らない。
+# ⚠ 組の外の名前は今までどおり、定義した時点で束縛済みでなければならない（後で束縛する外側のローカルは捕まえられない）。
+# ⚠ 以前は自己再帰が `TypeError: 'NoneType' object is not callable`（定義した時点の自分の枠を写していた）、
+#   相互再帰は静的な誤りだった。
+
+print("=== 1. 自己再帰 ===")
+fn factorial_of(n: int) -> int:
+    fn fact(k: int) -> int:
+        if k <= 1:
+            return 1
+        return k * fact(k - 1)
+    return fact(n)
+print(factorial_of(5))                     # 120
+
+print("=== 2. 続けて書いた定義どうしの相互再帰 ===")
+fn parity(n: int) -> str:
+    fn is_even(k: int) -> bool:
+        if k == 0:
+            return True
+        return is_odd(k - 1)               # 後で定義する組の相手
+    fn is_odd(k: int) -> bool:
+        if k == 0:
+            return False
+        return is_even(k - 1)
+    if is_even(n):
+        return "even"
+    return "odd"
+print(parity(10), parity(7))               # even odd
+
+print("=== 3. 組の関数は外側の（定義より前に束縛した）名前を捕まえられる ===")
+fn ping_pong(rounds: int) -> int:
+    let step = 10
+    fn ping(n: int) -> int:
+        if n == 0:
+            return 0
+        return step + pong(n - 1)
+    fn pong(n: int) -> int:
+        if n == 0:
+            return 0
+        return 1 + ping(n - 1)
+    return ping(rounds)
+print(ping_pong(4))                        # 22
+
+print("=== 4. gen を含む組・自己再帰する gen ===")
+fn even_sum(n: int) -> int:
+    gen evens(limit: int) -> int:
+        for i in range(limit):
+            if keep(i):
+                yield i
+    fn keep(k: int) -> bool:
+        return k % 2 == 0
+    mut total = 0
+    for v in evens(n):
+        total += v
+    return total
+print(even_sum(7))                         # 12
+
+fn countdown_sum(n: int) -> int:
+    gen down(k: int) -> int:
+        if k > 0:
+            yield k
+            for rest in down(k - 1):
+                yield rest
+    mut total = 0
+    for v in down(n):
+        total += v
+    return total
+print(countdown_sum(4))                    # 10
+
+print("=== 5. ブロックの中の組・メソッドの中の再帰 ===")
+fn in_block(flag: bool) -> int:
+    if flag:
+        fn a(n: int) -> int:
+            if n == 0:
+                return 1
+            return 2 * b(n - 1)
+        fn b(n: int) -> int:
+            if n == 0:
+                return 1
+            return 3 * a(n - 1)
+        return a(3)
+    return 0
+print(in_block(True))                      # 12
+
+class Tree:
+    mut depth: int
+    fn __init__(mut self, depth: int) -> None:
+        self.depth = depth
+    fn nodes(self) -> int:
+        fn count(d: int) -> int:
+            if d == 0:
+                return 1
+            return 1 + 2 * count(d - 1)
+        return count(self.depth)
+print(Tree(3).nodes())                     # 15
