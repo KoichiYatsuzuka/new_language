@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::types::{InferredType, VarInfo};
+use super::types::{FnSig, InferredType, VarInfo};
 
 /// 検査中のスコープスタックと「今どこを検査しているか」を保持する。
 pub(super) struct CheckState {
@@ -86,6 +86,19 @@ pub(super) struct CheckState {
     /// クラス本体に入るときとテンプレート関数に入るときに積み、抜けるときに戻す
     /// （メソッドの中からは囲みクラスの型変数も見えるので**スタック**にしてある）。
     type_params: Vec<String>,
+    /// **クラス・trait の本体のスコープの深さ**（name_scope_plan.md の 1-3）。
+    ///
+    /// クラスの本体の直下では、メンバー（フィールド・`const`・`static mut`・メソッド）を変数として
+    /// **宣言しない**（[`Self::in_class_body`]）。実行時も参照実装も、メンバーは `self.x` / `C.K` でしか
+    /// 読めない。以前は宣言していたので、メソッドの中の裸の `font` がフィールドの型の変数として引けた
+    /// （§0 の A3）うえ、同じ名前のローカル（`let n = ..`）が再宣言の誤りになっていた。
+    class_body_depths: Vec<usize>,
+    /// **後で実行される本体**（`fn` / `gen` / メソッドの本体）の入れ子の深さ（name_scope_plan.md の 1-4）。
+    /// 1 以上なら、まだ束縛していないモジュールの最上位の名前を読んでよい（前方参照・`check_name_defined`）。
+    deferred_depth: usize,
+    /// **入れ子の関数のシグネチャ**（`scope_stack` と同じ並び・name_scope_plan.md の 1-7）。
+    /// 最上位の関数はレジストリの `fn_sigs` が持つ。入れ子の関数はここに、定義したスコープで積む。
+    local_fn_sigs: Vec<HashMap<String, Vec<FnSig>>>,
 }
 
 impl CheckState {
@@ -100,6 +113,9 @@ impl CheckState {
             block_return_forbidden_depth: 0,
             block_expr_expected: Vec::new(),
             type_params: Vec::new(),
+            class_body_depths: Vec::new(),
+            deferred_depth: 0,
+            local_fn_sigs: vec![HashMap::new()],
         }
     }
 
@@ -108,13 +124,33 @@ impl CheckState {
     /// 新しいスコープをスタックに積む。
     pub(super) fn push_scope(&mut self) {
         self.scope_stack.push(HashMap::new());
+        self.local_fn_sigs.push(HashMap::new());
     }
 
     /// 現在のスコープをスタックから取り除く。グローバルスコープは取り除かない。
     pub(super) fn pop_scope(&mut self) {
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
+            self.local_fn_sigs.pop();
         }
+    }
+
+    /// 入れ子の関数のシグネチャを今のスコープに積む（同じスコープの同じ名前は多重定義として並ぶ・1-7）。
+    pub(super) fn declare_local_fn(&mut self, name: String, sig: FnSig) {
+        if let Some(top) = self.local_fn_sigs.last_mut() {
+            top.entry(name).or_default().push(sig);
+        }
+    }
+
+    /// 今見えている入れ子の関数のシグネチャ（内側のスコープから引く）。
+    ///
+    /// ⚠ 同じ名前の変数が**より内側**で宣言されていれば、その変数が関数を隠すので `None`。
+    pub(super) fn lookup_local_fn(&self, name: &str) -> Option<&Vec<FnSig>> {
+        let fn_depth = self.local_fn_sigs.iter().rposition(|m| m.contains_key(name))?;
+        if self.lookup_depth(name).is_some_and(|d| d > fn_depth) {
+            return None;
+        }
+        self.local_fn_sigs[fn_depth].get(name)
     }
 
     /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。
@@ -133,7 +169,14 @@ impl CheckState {
         self.scope_stack
             .last_mut()
             .unwrap()
-            .insert(name, VarInfo { ty, mutable, contents_mutable });
+            .insert(name, VarInfo { ty, mutable, contents_mutable, binding: None });
+    }
+
+    /// 今のスコープの変数 `name` を束縛の記録 `idx` に結び付ける（`VarInfo::binding`・エディタだけ・2-2）。
+    pub(super) fn set_binding(&mut self, name: &str, idx: usize) {
+        if let Some(v) = self.scope_stack.last_mut().and_then(|s| s.get_mut(name)) {
+            v.binding = Some(idx);
+        }
     }
 
     /// スコープスタックを内側から外側へ走査して変数情報を返す。見つからない場合は `None`。
@@ -222,6 +265,37 @@ impl CheckState {
     /// クラス本体の検査に入る。戻り値は退出時に `exit_class` へ渡すこと。
     pub(super) fn enter_class(&mut self, name: String) -> Option<String> {
         self.current_class_name.replace(name)
+    }
+
+    /// 今のスコープ（`push_scope` 直後）をクラス・trait の本体として印を付ける。抜けるときに
+    /// [`Self::exit_class_body`] を呼ぶ。
+    pub(super) fn enter_class_body(&mut self) {
+        self.class_body_depths.push(self.scope_depth());
+    }
+
+    /// [`Self::enter_class_body`] の印を外す。
+    pub(super) fn exit_class_body(&mut self) {
+        self.class_body_depths.pop();
+    }
+
+    /// 後で実行される本体（`fn` / `gen` / メソッドの本体）の検査に入る。抜けるときに [`Self::exit_deferred_body`]。
+    pub(super) fn enter_deferred_body(&mut self) {
+        self.deferred_depth += 1;
+    }
+
+    /// [`Self::enter_deferred_body`] を戻す。
+    pub(super) fn exit_deferred_body(&mut self) {
+        self.deferred_depth -= 1;
+    }
+
+    /// 後で実行される本体の中か。
+    pub(super) fn in_deferred_body(&self) -> bool {
+        self.deferred_depth > 0
+    }
+
+    /// 今のスコープがクラス・trait の本体の直下か（メソッドの本体・入れ子の関数の中は偽）。
+    pub(super) fn in_class_body(&self) -> bool {
+        self.class_body_depths.last() == Some(&self.scope_depth())
     }
 
     /// `enter_class` が返した値を渡してクラス本体の検査を抜ける。

@@ -26,6 +26,11 @@ impl Diagnostics {
         self.from_instance.push(from_instance);
     }
 
+    /// これまでに積んだ誤り（読むだけ。重複を避ける判断は呼び出し側）。
+    pub(super) fn errors(&self) -> &[StaticTypeError] {
+        &self.errors
+    }
+
     /// 静的型警告を追加する。
     pub(super) fn report_warning(&mut self, w: StaticTypeWarning) {
         self.warnings.push(w);

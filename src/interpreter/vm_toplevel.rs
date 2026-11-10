@@ -122,7 +122,7 @@ impl Interpreter {
             None => {
                 // Python のモジュールの本体の文は Python のコード（格納で写さない・known_bugs.md の #1）。
                 let in_py = self.in_python_module;
-                let compiled = crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
+                let compiled = crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals, in_py)
                     .map(|mut c| {
                         c.is_python = in_py;
                         Rc::new(c)
@@ -160,7 +160,7 @@ impl Interpreter {
         &mut self,
         expr: &crate::ast::Expr,
     ) -> Result<Value, String> {
-        let Some(chunk) = crate::vm::compile_definition_expr(expr, self.annotations.clone())
+        let Some(chunk) = crate::vm::compile_definition_expr(expr, self.annotations.clone(), self.in_python_module)
         else {
             return Err(format!(
                 "VmForceError: cannot compile definition-context expression `{}` to bytecode",

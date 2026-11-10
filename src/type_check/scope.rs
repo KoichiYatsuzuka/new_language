@@ -22,15 +22,36 @@ impl TypeChecker {
 
     /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。
     pub(super) fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
-        self.state.declare(name, ty, mutable);
+        let pending = self.take_pending_binding(&name);
+        self.state.declare(name.clone(), ty, mutable);
+        if let Some(idx) = pending {
+            self.state.set_binding(&name, idx);
+        }
+    }
+
+    /// 直前の束縛の記録が `name` のものなら取り出す（`note_binding` の直後の宣言を結び付ける・2-2）。
+    fn take_pending_binding(&mut self, name: &str) -> Option<usize> {
+        match self.pending_binding.take() {
+            Some((n, idx)) if n == name => Some(idx),
+            other => {
+                self.pending_binding = other;
+                None
+            }
+        }
     }
 
     /// 型ガードで絞り込んだ変数を今のスコープに宣言し直す。**付け替え・中身の書き換えの可否は元の
     /// 束縛のまま**（`from m import X` の `X` は付け替えられないが中身は書き換えられることがある）。
     pub(super) fn declare_narrowed(&mut self, name: String, ty: InferredType) {
-        let (mutable, contents_mutable) =
-            self.lookup(&name).map(|i| (i.mutable, i.contents_mutable)).unwrap_or((false, false));
-        self.state.declare_with_contents(name, ty, mutable, contents_mutable);
+        let (mutable, contents_mutable, binding) = self
+            .lookup(&name)
+            .map(|i| (i.mutable, i.contents_mutable, i.binding))
+            .unwrap_or((false, false, None));
+        self.state.declare_with_contents(name.clone(), ty, mutable, contents_mutable);
+        // 絞り込みは同じ変数の宣言し直しなので、元の束縛を指したままにする（2-2）。
+        if let Some(idx) = binding {
+            self.state.set_binding(&name, idx);
+        }
     }
 
     /// `from m import X` で取り込んだ名前を宣言する。付け替えはできず、中身は元の宣言の属性に従う
@@ -52,6 +73,7 @@ impl TypeChecker {
         let pos = self.bind_pos.clone();
         if let Some(records) = self.bindings.as_mut() {
             records.push(super::BindingRecord { pos, name: name.to_string(), ty: ty.clone() });
+            self.pending_binding = Some((name.to_string(), records.len() - 1));
         }
     }
 
@@ -161,7 +183,7 @@ impl TypeChecker {
     }
 
     /// 今、単相化した具体化（`Box[int]` / `ident[str]`）の本体を検査しているか（タスク 2-8 段階 2）。
-    fn in_instance_decl(&self) -> bool {
+    pub(super) fn in_instance_decl(&self) -> bool {
         self.state.current_class().is_some_and(|c| c.contains('['))
             || self.state.current_fn().is_some_and(|f| f.contains('['))
     }

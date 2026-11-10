@@ -321,9 +321,27 @@ impl TypeRegistry {
 
     // ── 関数 ──────────────────────────────────────────────────────────────────
 
-    /// 関数名のオーバーロード候補。
+    /// 関数名のオーバーロード候補（最上位の関数とモジュールの関数・テンプレート）。
+    ///
+    /// ⚠ 入れ子の関数は載らない（name_scope_plan.md の 1-7）。検査器からは `TypeChecker::visible_fn_sigs`
+    ///   （そのスコープで見える入れ子の関数を先に引く）を使うこと。
     pub(super) fn fn_sigs(&self, name: &str) -> Option<&Vec<FnSig>> {
         self.fn_sigs.get(&*self.resolve(name))
+    }
+
+    /// 仮引数と結果の型からシグネチャを作る（ビルダーと同じ規則・入れ子の関数用・1-7）。
+    pub(super) fn sig_of(&self, params: &[crate::ast::Param], ret: Option<InferredType>) -> FnSig {
+        builder::TypeRegistryBuilder::sig_from(params, ret, &|t| self.resolve_protocol_ann(t))
+    }
+
+    /// 注釈の型を protocol の型へ読み替える（ビルダーの `resolve_protocol_type` と同じ）。
+    pub(super) fn resolve_protocol_ann(&self, t: InferredType) -> InferredType {
+        match t {
+            InferredType::NamedInstance(ref name) if self.known_protocols.contains_key(name.as_str()) => {
+                InferredType::Protocol(name.clone())
+            }
+            t => t,
+        }
     }
 
     // ── クラス ────────────────────────────────────────────────────────────────

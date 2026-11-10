@@ -201,6 +201,27 @@ pub struct CsObjectData {
 // deep_clone helpers (used when capturing the environment for async tasks)
 // ---------------------------------------------------------------------------
 
+/// 入れ子の関数の組（`FnGroup`）を、スレッドへ送るために複製する（name_scope_plan.md の 3-3）。
+/// メンバーは組を持たない写しなので、複製は有限で終わる。
+fn deep_clone_group(g: &Rc<super::FnGroup>) -> Rc<super::FnGroup> {
+    use super::GroupMember as M;
+    let members = g
+        .members
+        .iter()
+        .map(|m| match m {
+            M::Fn(f) => match Value::Function(f.clone()).deep_clone() {
+                Value::Function(f) => M::Fn(f),
+                _ => unreachable!("deep_clone keeps the variant"),
+            },
+            M::Gen(f) => match Value::GeneratorFn(f.clone()).deep_clone() {
+                Value::GeneratorFn(f) => M::Gen(f),
+                _ => unreachable!("deep_clone keeps the variant"),
+            },
+        })
+        .collect();
+    Rc::new(super::FnGroup { members })
+}
+
 /// Deep-clone a CapturedVar environment map so no Rc is shared across threads.
 pub fn deep_clone_captured_env(
     env: &HashMap<String, CapturedVar>,
@@ -212,6 +233,9 @@ pub fn deep_clone_captured_env(
                 CapturedVar::Mutable(cell) => {
                     CapturedVar::Mutable(Rc::new(RefCell::new(cell.borrow().deep_clone())))
                 }
+                // 印は値を持たない（name_scope_plan.md の 3-3）。組は関数の値の側で複製する（`deep_clone_group`）。
+                CapturedVar::SelfFn => CapturedVar::SelfFn,
+                CapturedVar::Sibling(j) => CapturedVar::Sibling(*j),
             };
             (k.clone(), cloned)
         })
@@ -344,6 +368,8 @@ impl Value {
             }),
             // ⚠ `Rc<str>` も共有しない（作り直す）。
             qualname: rc.qualname.as_deref().map(Rc::from),
+                // 組も複製する（相手を組から作るので、捨てると呼べなくなる・3-3）。
+                group: rc.group.as_ref().map(deep_clone_group),
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -362,6 +388,7 @@ impl Value {
                             vm_chunk: None,
                             bound: None,
                             qualname: rc.qualname.as_deref().map(Rc::from),
+                            group: None,
                         })
                     })
                     .collect(),
@@ -374,6 +401,8 @@ impl Value {
                 body: crate::template_subst::unshare_stmts(&rc.body),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
                 qualname: rc.qualname.as_deref().map(Rc::from),
+                is_python: rc.is_python,
+                group: rc.group.as_ref().map(deep_clone_group),
             })),
             Value::Generator(rc) => {
                 let b = rc.borrow();

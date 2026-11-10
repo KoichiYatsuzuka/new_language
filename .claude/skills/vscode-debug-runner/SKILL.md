@@ -73,6 +73,7 @@ def   misses   : 0 / 4076
 bind  misses   : 0 / 182   <- must be 0
 typed vars     : 1980 / 2382   <- 減ったら退行
 tag   misses   : 0 / 14    <- must be 0
+scope misses   : 0 / 14    <- must be 0
 ```
 
 - `threw` must be 0.
@@ -98,6 +99,25 @@ tag   misses   : 0 / 14    <- must be 0
   fixtures are the only thing guarding it.
 - `no symbols` is expected for the deliberate `ParseError` / `*_error.ar` examples and for
   `math_string.ar`, which declares nothing.
+- `scope misses` must be 0 — `test_fixtures/name_scope_cases.ar` marks uses of names with
+  `use:<name>=<label>` (go-to-definition must land on the line marked `decl:<label>`) or `use:<name>=none`
+  (no hover and no definition: the name is not visible there). It guards the per-use binding (`uses`,
+  name_scope_plan.md 2-2/2-3); the counters above only probe declarations and cannot see a use bound to the wrong
+  declaration. Negative control at the pre-2-1 providers: 6 / 14 misses. Add a line when you fix a new form.
+
+## 3. `uses_probe.js` — hover / definition at every *use* of a name
+
+```bash
+ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" uses_probe.js <out.tsv>   # after npx tsc -p tsconfig.debug.json
+```
+
+`stress.js` only probes **declarations**, so it cannot see a *use* of a name being bound to the wrong
+declaration (an undeclared `font` hovered as an unrelated class field — `implementation_plans/name_scope_plan.md` §0).
+`uses_probe.js` requests hover + go-to-definition at every identifier position of every example
+(including `archived/`) and writes `file  line:col  name  hover-first-line  def-target` (one row per position
+that gets either). Run it before and after a change to name resolution and **look at every row that
+disappeared or changed** (≈45 000 rows; diff them with a script, grouping by kind). As of 2-1 (2026-11-10) the
+only uses that lose a hover are ones that were bound wrongly before.
 
 ## What each harness will NOT catch
 

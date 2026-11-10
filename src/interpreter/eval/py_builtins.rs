@@ -1212,6 +1212,9 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
                         body,
                         captured_env: std::collections::HashMap::new(),
                         qualname: None,
+                        // ⚠ 前置き（`PY_LAZY_PRELUDE`）は Arrow の構文で書いた Arrow のコード。
+                        is_python: false,
+                        group: None,
                     }));
                     table.insert(name, value);
                 }

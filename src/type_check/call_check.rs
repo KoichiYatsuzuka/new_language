@@ -277,7 +277,7 @@ impl TypeChecker {
                 Some(fn_params.iter().map(|p| Some(p.ty.clone())).collect())
             } else if let Expr::Ident { name, .. } = func {
                 // 直接グローバル関数呼び出し（単一シグネチャ）。
-                self.registry.fn_sigs(name).and_then(|sigs| {
+                self.visible_fn_sigs(name).and_then(|sigs| {
                     (sigs.len() == 1)
                         .then(|| sigs[0].params.iter().map(|(_, t)| t.clone()).collect())
                 })
@@ -342,7 +342,7 @@ impl TypeChecker {
         //     関数が宣言されていればそちらが勝つ（`examples/basics/builtin_shadow.ar`）。
         //     `lookup` を落とすとこの例題が壊れる（実際に踏んだ）。
         if let Expr::Ident { name, .. } = func {
-            if self.registry.fn_sigs(name).is_none() && self.lookup(name).is_none() {
+            if self.visible_fn_sigs(name).is_none() && self.lookup(name).is_none() {
                 // `object()` は Python のソースからだけ呼べる（タスク 6-10 の決定）。変換器は Python の `object()` を
                 // `__py_object()` にするので、ここに来るのは Arrow で書いた呼び出し。
                 if name == "object" {
@@ -359,7 +359,7 @@ impl TypeChecker {
         let direct_fn_call = matches!(func, Expr::Ident { .. })
             && func_name
                 .as_deref()
-                .is_some_and(|n| self.registry.fn_sigs(n).is_some());
+                .is_some_and(|n| self.visible_fn_sigs(n).is_some());
         if !direct_fn_call {
         // 束縛メソッドが不変の受け手を書き換える（`let c` の `let add = c.add` の後の `add(1)`・タスク 1-11）。
         // `c.add(1)` を直接書いたのと同じ誤り。束縛すること自体は誤りにしない。
@@ -532,7 +532,7 @@ impl TypeChecker {
 
         func_name
             .as_deref()
-            .and_then(|n| self.registry.fn_sigs(n))
+            .and_then(|n| self.visible_fn_sigs(n))
             .and_then(|sigs| {
                 let call_count = arg_data
                     .iter()
@@ -812,7 +812,7 @@ impl TypeChecker {
         if Self::has_spread_arg(args) {
             return;
         }
-        let sigs = match self.registry.fn_sigs(fname).cloned() {
+        let sigs = match self.visible_fn_sigs(fname).cloned() {
             Some(s) => s,
             None => return,
         };
@@ -1118,7 +1118,7 @@ impl TypeChecker {
         }
         // テンプレート関数 → 具体化した関数の宣言の戻り値型
         let inst = crate::template_subst::instance_name(base_name, type_args);
-        match self.registry.fn_sigs(&inst) {
+        match self.visible_fn_sigs(&inst) {
             // ⚠ オーバーロードは実引数で決まるのでここでは決めない
             Some(sigs) if sigs.len() == 1 => {
                 sigs[0].return_type.clone().unwrap_or(InferredType::Unresolved)
@@ -1156,7 +1156,7 @@ impl TypeChecker {
                 None => return, // `__init__` が無い（`new_type` ラッパ等）
             }
         } else {
-            match self.registry.fn_sigs(&inst) {
+            match self.visible_fn_sigs(&inst) {
                 Some(sigs) => (sigs.clone(), 0usize),
                 None => return,
             }

@@ -77,6 +77,8 @@ impl Interpreter {
             body: body.to_vec(),
             captured_env: env,
             qualname,
+            is_python: self.in_python_module,
+            group: None,
         }))
     }
 
@@ -125,6 +127,7 @@ impl Interpreter {
             vm_chunk,
             bound: None,
             qualname,
+            group: None,
         });
         let existing = match existing {
             Value::None => None,
@@ -174,6 +177,7 @@ impl Interpreter {
             bound: None,
             // 最上位（とツリーウォークで走る本体の中）の関数は名前と同じ。
             qualname: None,
+            group: None,
         });
 
         // 単相化した関数は、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
@@ -238,6 +242,8 @@ impl Interpreter {
                 body: body.to_vec(),
                 captured_env,
                 qualname: None,
+                is_python: self.in_python_module,
+                group: None,
             });
             if name.ends_with(']') {
                 self.register_mono_instance(name, &Value::GeneratorFn(Rc::clone(&gen_fn)));
@@ -405,6 +411,7 @@ impl Interpreter {
                 vm_chunk: None,
                 bound: None,
                 qualname: None,
+                    group: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -514,6 +521,7 @@ impl Interpreter {
         vm_chunk: None,
         bound: None,
         qualname: None,
+            group: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -718,6 +726,7 @@ impl Interpreter {
                         vm_chunk: None,
                         bound: None,
                         qualname: Some(self.method_qualname(name, mname)),
+                        group: None,
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。
@@ -779,6 +788,8 @@ impl Interpreter {
                                 HashMap::new()
                             },
                             qualname: Some(self.method_qualname(name, mname)),
+                            is_python: self.in_python_module,
+                            group: None,
                         }),
                     );
                 }

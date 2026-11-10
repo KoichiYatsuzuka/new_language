@@ -449,7 +449,7 @@ mod bin_specialization_invariants {
         for s in &stmts {
             if let crate::ast::Stmt::FnDef { name: n, params, body, .. } = s {
                 if n == name {
-                    return crate::vm::compile_fn(params, body, annots, &[], &[])
+                    return crate::vm::compile_fn(params, body, annots, &[], &[], false)
                         .unwrap_or_else(|| panic!("`{name}` が VM コンパイルできなかった"))
                         .code;
                 }

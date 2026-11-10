@@ -21,6 +21,42 @@ pub enum CapturedVar {
     Immutable(Value),
     /// 可変変数: 外側スコープと同じセルを共有する
     Mutable(Rc<RefCell<Value>>),
+    /// **自分の名前**（入れ子の関数の自己再帰・name_scope_plan.md の 3-3）。値は持たず、呼び出すときに
+    /// 呼ばれている関数そのもの（`Rc`）を枠へ書く（`bind_captures`）。
+    /// ⚠ 自分の値を `Immutable` で持つと `FnValue → captured_env → FnValue` の循環になり、解放されない。
+    SelfFn,
+    /// **組の相手**（続けて定義した入れ子の関数の相互再帰・3-3）。`FnValue::group` の何番目か。
+    /// 呼び出すときに組から相手の関数の値を作って枠へ書く（[`FnGroup::member_value`]）。
+    Sibling(usize),
+}
+
+/// 続けて定義した入れ子の `fn` / `gen` の**組**（name_scope_plan.md のフェーズ 3）。
+///
+/// メンバーの関数の値（`FnValue::group` が `Some`）が `Rc` で持つ。ここに入れるのは**組を持たない写し**
+/// （`group: None`）なので、組 → 写し → 組 の循環にならない。相手の名前は呼び出すときに写しから
+/// 組つきの関数の値を作って渡す（相互再帰のときだけの費用）。
+#[derive(Debug)]
+pub struct FnGroup {
+    pub members: Vec<GroupMember>,
+}
+
+/// 組のメンバー（組を持たない写し）。
+#[derive(Debug)]
+pub enum GroupMember {
+    Fn(Rc<FnValue>),
+    Gen(Rc<GeneratorFnValue>),
+}
+
+impl FnGroup {
+    /// `j` 番目のメンバーの、組つきの関数の値。
+    pub fn member_value(self: &Rc<Self>, j: usize) -> Value {
+        match &self.members[j] {
+            GroupMember::Fn(f) => Value::Function(Rc::new(FnValue { group: Some(self.clone()), ..(**f).clone() })),
+            GroupMember::Gen(g) => {
+                Value::GeneratorFn(Rc::new(GeneratorFnValue { group: Some(self.clone()), ..(**g).clone() }))
+            }
+        }
+    }
 }
 
 
@@ -35,7 +71,7 @@ pub enum CapturedVar {
 /// - `params`: 仮引数リスト
 /// - `body`: 関数本体の文リスト（`yield` 文を含む）
 /// - `captured_env`: キャプチャした外側スコープ変数のマップ
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GeneratorFnValue {
     pub name: String,
     pub params: Vec<Param>,
@@ -48,6 +84,11 @@ pub struct GeneratorFnValue {
     pub owner_class: Option<Rc<ClassValue>>,
     /// `__qualname__`（[`FnValue::qualname`] と同じ）。
     pub qualname: Option<Rc<str>>,
+    /// Python のモジュールで定義したか（[`FnValue::is_python`] と同じ）。
+    /// ⚠ VM が本体にブロックスコープを当てるかを決める（Python は関数単位のスコープ・name_scope_plan.md の R-1）。
+    pub is_python: bool,
+    /// 続けて定義した入れ子の関数の組（[`FnValue::group`] と同じ・name_scope_plan.md の 3-3）。
+    pub group: Option<Rc<FnGroup>>,
 }
 
 
@@ -164,7 +205,7 @@ pub const GLOBALS_OF_CALLER: u32 = u32::MAX;
 /// - `params`: 仮引数リスト（名前・可変フラグ・型アノテーションを含む）
 /// - `body`: 関数本体の文リスト
 /// - `captured_env`: キャプチャした外側スコープ変数のマップ（クロージャ）
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnValue {
     pub name: String,
     pub params: Vec<Param>,
@@ -213,6 +254,9 @@ pub struct FnValue {
     /// （外側の本体をコンパイルしたときに `ChunkFnDef::qualname` へ入れ、`Op::MakeFn` が写す）。
     /// ⚠ スレッドへ送る `deep_clone` では `Rc` を共有しない（作り直す・`vm_chunk` と同じ理由）。
     pub qualname: Option<Rc<str>>,
+    /// **続けて定義した入れ子の関数の組**（[`FnGroup`]・name_scope_plan.md の 3-3）。組でなければ `None`。
+    /// 組の相手の名前（`CapturedVar::Sibling`）は呼び出すときにここから引く。
+    pub group: Option<Rc<FnGroup>>,
 }
 
 /// 束縛メソッドの中身（`obj.method` を値として読んだもの・python_builtins_plan.md のタスク 1-8 / 1-10）。
@@ -340,6 +384,7 @@ impl FnValue {
             bound: Some(Rc::new(BoundMethod { receiver, target })),
             // 束縛メソッドの `__qualname__` は呼び先のもの（`Interpreter::function_attr`）。
             qualname: None,
+            group: None,
         })
     }
 
@@ -658,6 +703,7 @@ impl ClassValue {
                             vm_chunk: None,
                             bound: None,
                             qualname: rc.qualname.as_deref().map(Rc::from),
+                            group: None,
                         })
                     })
                     .collect();
@@ -679,6 +725,8 @@ impl ClassValue {
                         body: crate::template_subst::unshare_stmts(&rc.body),
                         captured_env: deep_clone_captured_env(&rc.captured_env),
                         qualname: rc.qualname.as_deref().map(Rc::from),
+                        is_python: rc.is_python,
+                        group: None,
                     }),
                 )
             })

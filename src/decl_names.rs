@@ -227,3 +227,20 @@ pub fn module_exports(body: &[Stmt]) -> ModuleExports {
     out.imported.retain(|n| !defined.contains(n));
     out
 }
+
+/// `stmts` の先頭から、間に別の文を挟まずに続く `fn` / `gen` の定義の数（組・name_scope_plan.md のフェーズ 3）。
+///
+/// ⚠ デコレータの付いた `fn` は組を切る（デコレータは定義の時点で走り、そのときに組の残りはまだ無い）。
+///   先頭がそれなら 0。テンプレートの `fn` / `gen` も組に入れない（入れ子のテンプレートは名前で実体化される）。
+/// ⚠ VM（`vm/compiler` の `note_fn_groups`）も**同じ関数**で組を決める。別々に書くと、型検査は通るのに実行時に
+///   相手が見えない（またはその逆）になる。
+pub fn fn_group_len(stmts: &[Stmt]) -> usize {
+    stmts
+        .iter()
+        .take_while(|s| match s {
+            Stmt::FnDef { decorators, template_params, .. } => decorators.is_empty() && template_params.is_empty(),
+            Stmt::GenDef { template_params, .. } => template_params.is_empty(),
+            _ => false,
+        })
+        .count()
+}

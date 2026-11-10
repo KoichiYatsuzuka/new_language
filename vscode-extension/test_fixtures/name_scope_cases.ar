@@ -1,0 +1,57 @@
+# name_scope_cases.ar — 使っている位置の hover / 定義へ移動が、見える宣言だけに結び付くか（name_scope_plan.md の 2-3）
+#
+# stress.js の `scope misses` がこのファイルを読む。行末の印:
+#   `decl:<label>`         その行の宣言に名前を付ける
+#   `use:<name>=<label>`   その行で最初に現れる <name> の定義へ移動が <label> の行へ飛ぶ
+#   `use:<name>=none`      その行で最初に現れる <name> に hover も定義へ移動も出ない（ここから見えない名前）
+# ⚠ 型検査の誤りを含む（見えない名前の形を並べるため）。解析だけに使う。
+
+class EditorConfig:
+    let font: str                  # decl:field_font
+    const K: int = 1               # decl:field_k
+
+    fn __init__(mut self, font: str) -> None:
+        self.font = font
+
+    fn show(self) -> None:
+        print(font)                # use:font=none
+        print(K)                   # use:K=none
+        print(self.font)           # use:font=field_font
+        print(EditorConfig.K)      # use:K=field_k
+
+fn loader() -> None:
+    let font = "mono"              # decl:local_font
+    print(font)                    # use:font=local_font
+
+fn use_it() -> None:
+    print(font)                    # use:font=none
+
+fn leak() -> None:
+    if True:
+        let y = 1                  # decl:inner_y
+        print(y)                   # use:y=inner_y
+    print(y)                       # use:y=none
+
+fn before() -> None:
+    for i in [1, 2]:
+        if i == 2:
+            print(w)               # use:w=none
+        let w = i                  # decl:loop_w
+        print(w)                   # use:w=loop_w
+
+fn later() -> int:
+    return LIMIT                   # use:LIMIT=top_limit
+
+let LIMIT = 3                      # decl:top_limit
+
+fn loops() -> None:
+    for i in range(2):             # decl:first_i
+        print(i)                   # use:i=first_i
+    for i in range(3):             # decl:second_i
+        print(i)                   # use:i=second_i
+
+fn outer() -> None:
+    fn inner() -> None:
+        print(x)                   # use:x=none
+    let x = 1
+    inner()

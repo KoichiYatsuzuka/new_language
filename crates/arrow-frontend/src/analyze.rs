@@ -12,6 +12,7 @@
 //! | `symbols`     | `parser::editor_index` の宣言表（型は型検査器の束縛の記録 `BindingRecord`） | Hover / Inlay / Go-to-def / Semantic tokens |
 //! | `scopes`      | 同上のスコープ木 | Completion（可視名の絞り込み） |
 //! | `exprTypes`   | `editor_index.node_spans` × `AstAnnotations` | Hover（式の推論型）/ Inlay |
+//! | `uses`        | `editor_index.node_spans` × 型検査器の `NameUse`（使っている位置 → 束縛） | Hover / Go-to-def（name_scope_plan.md の 2-2） |
 //! | `typeRefs`    | `editor_index.type_refs`（`parse_type_expr` が控えた型位置） | Semantic tokens / Hover（型名を関数と誤認させない） |
 //! | `tokens`      | `lexer::editor_tokens`（トークンの範囲＋コメント） | Semantic tokens / 語の特定 / 受け手判定 / 呼び出し文脈 |
 //! | `members`     | AST のクラス/トレイト/列挙本体 ＋ **import した名前空間** | `.` 補完 |
@@ -432,6 +433,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
                 "symbols": [],
                 "scopes": [],
                 "exprTypes": [],
+                "uses": [],
                 "typeRefs": [],
                 "tokens": tokens_json,
                 "members": {},
@@ -468,7 +470,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
         // ⚠ 単相化の失敗（具体化が終わらない・2-9）も CLI と同じく `MetaError`（3-3）。
         crate::meta_expand::monomorphize(stmts, counter)
     };
-    let (errors, warnings, annotations, bindings) = TypeChecker::check_program_for_editor(&stmts);
+    let (errors, warnings, annotations, records) = TypeChecker::check_program_for_editor(&stmts);
 
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());
     // 読み込めなかった import（`EditorIndex::import_errors`）。CLI はここで構文解析を止める（`ParseError`）。
@@ -513,7 +515,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
     }
 
     let index = parser.editor_index();
-    let bound = bound_types(index, &bindings, filename);
+    let (bound, record_decls) = bound_types(index, &records.bindings, filename);
 
     // ── 宣言表 ────────────────────────────────────────────────────────────
     let symbols: Vec<Value> = index
@@ -604,6 +606,23 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
     //   （`collect_module_members` の doc）。
     collect_module_members(&stmts, &mut members);
 
+    // ── 使っている位置 → 束縛（name_scope_plan.md の 2-2・D-2 = (b)）──────────────
+    // 型検査器が識別子ごとに決めた結び付き（`NameUse`）を、使っている位置（`node_spans`）と宣言の位置
+    // （`bound_types` が突き合わせた宣言表の添字）に直す。`decl: null` は「ここから見えない名前」。
+    // ⚠ 束縛が宣言表と突き合わなかったもの（`record_decls` に無い）は出さない。拡張は従来どおりスコープ木から引く。
+    let mut uses: Vec<Value> = Vec::new();
+    for u in &records.uses {
+        let Some(pos) = index.node_spans.get(&u.node_id) else { continue };
+        let decl = match u.binding {
+            None => Value::Null,
+            Some(b) => match record_decls.get(&b).and_then(|&i| index.decls.get(i)) {
+                Some(d) if d.pos.0 != 0 => pos_json(&cols, d.pos.0, d.pos.1),
+                _ => continue,
+            },
+        };
+        uses.push(json!({ "at": pos_json(&cols, pos.0, pos.1), "decl": decl }));
+    }
+
     json!({
         "ok": true,
         "parseError": Value::Null,
@@ -611,6 +630,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
         "symbols": symbols,
         "scopes": scopes,
         "exprTypes": expr_types,
+        "uses": uses,
         "typeRefs": type_refs,
         "tokens": tokens_json,
         "parseErrorAt": Value::Null,
@@ -621,7 +641,7 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
 }
 
 /// 宣言表の束縛（`Decl::binding`）に、型検査器が記録した束縛の型（`BindingRecord`）を割り当てる。
-/// 戻り値は「宣言表の添字 → 型の表示」。
+/// 戻り値は「宣言表の添字 → 型の表示」と「束縛の記録の添字 → 宣言表の添字」（使っている位置の結び付き・2-2）。
 ///
 /// 両側とも鍵は「束縛を含む文の位置（`Stmt::position`）＋名前」で、同じ鍵の中は束縛した順に並ぶ
 /// （パーサは `bind_anchors`、型検査器は `bind_pos` が同じ規則で決める）。ここは**突き合わせるだけ**で、
@@ -636,17 +656,17 @@ fn bound_types(
     index: &crate::parser::editor_index::EditorIndex,
     records: &[crate::type_check::BindingRecord],
     filename: &str,
-) -> HashMap<usize, String> {
+) -> (HashMap<usize, String>, HashMap<usize, usize>) {
     type Key<'a> = ((usize, usize), &'a str);
-    let mut checked: HashMap<Key, Vec<String>> = HashMap::new();
-    for r in records {
+    let mut checked: HashMap<Key, Vec<(usize, String)>> = HashMap::new();
+    for (ri, r) in records.iter().enumerate() {
         let Some(pos) = r.pos.as_ref().filter(|p| &*p.file == filename) else {
             continue;
         };
         checked
             .entry(((pos.line, pos.col), r.name.as_str()))
             .or_default()
-            .push(r.ty.to_string());
+            .push((ri, r.ty.to_string()));
     }
     let mut declared: HashMap<Key, Vec<(usize, usize)>> = HashMap::new();
     for (i, d) in index.decls.iter().enumerate() {
@@ -658,20 +678,23 @@ fn bound_types(
         declared.entry((anchor, d.name.as_str())).or_default().push((seq, i));
     }
     let mut out = HashMap::new();
+    let mut record_decls = HashMap::new();
     for (key, mut decls) in declared {
         let Some(types) = checked.get(&key) else { continue };
         decls.sort_unstable();
         if decls.len() == types.len() {
-            for ((_, i), t) in decls.iter().zip(types) {
+            for ((_, i), (ri, t)) in decls.iter().zip(types) {
                 out.insert(*i, t.clone());
+                record_decls.insert(*ri, *i);
             }
-        } else if types.len() > decls.len() && types.iter().all(|t| *t == types[0]) {
+        } else if types.len() > decls.len() && types.iter().all(|(_, t)| *t == types[0].1) {
+            // ⚠ 数が合わない鍵は型だけを使い、使っている位置の結び付きには使わない（どの宣言か決まらない）。
             for (_, i) in &decls {
-                out.insert(*i, types[0].clone());
+                out.insert(*i, types[0].1.clone());
             }
         }
     }
-    out
+    (out, record_decls)
 }
 
 /// docstring 取得のための薄いラッパ（`Expr::Str` 判定は 1 箇所に置く）。

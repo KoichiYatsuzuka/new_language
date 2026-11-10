@@ -1,6 +1,7 @@
 # for_target_scope.ar — `for` のループ変数はブロック内の束縛（bug_fix.md B4・規則 2）
 #
-# ⚠⚠ ループ変数は**ブロックを抜けたら解放される**。ループ後に読むと NameError
+# ⚠⚠ ループ変数は**ブロックを抜けたら解放される**。ループ後に読むと静的エラー `name 'i' is not defined`
+#    （name_scope_plan.md の 1-4。以前は実行時の NameError）
 #    → [for_target_scope_error.ar](for_target_scope_error.ar)
 #
 # ⚠ 以前は**関数の中でだけ漏れていた**。最上位では名前引きが失敗して NameError に

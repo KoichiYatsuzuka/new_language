@@ -2,33 +2,15 @@
 #
 # ⚠ 正常系と規則の説明は [for_target_scope.ar](for_target_scope.ar) を参照。
 #
-# ⚠⚠ これは**静的エラーではなく実行時 `NameError`**。型検査には未定義変数の検査が
-#    無いので（`len` のような未登録の組み込みを弾いてしまうため入れていない）、
-#    ループ変数の解放は VM コンパイラ側で表現している。
+# 期待されるエラー（3 件。どれも静的な `name '..' is not defined`。置き場所で振る舞いが変わらないことが規則 2 の眼目）:
+#   ① i   最上位のループ変数をループの後で読む
+#   ② j   関数の中のループ変数をループの後で読む（⚠ 以前はここだけ漏れており、最後の値 2 が読めていた）
+#   ③ v   内包表記のループ変数を外で読む（`for` 式に脱糖されるため同じ）
 #
-# それぞれ単体で実行したときのエラー:
+# ⚠ 以前は型検査を通り、実行時の `NameError` だった（VM コンパイラがループ変数を解放して表現していた）。
+#   型検査が見えない名前を静的に弾くようになった（name_scope_plan.md の 1-4）ので、静的な誤りになった。
 #
-#   ① 最上位（元からこうだった＝想定どおりの側）
-#      for i in range(3):
-#          print(i)
-#      print(i)
-#      # NameError: 'i' is not defined
-#
-#   ② 関数の中（⚠ 以前はここだけ漏れており、最後の値 2 が読めていた）
-#      fn f() -> int:
-#          mut s = 0
-#          for i in range(3):
-#              s += i
-#          return i
-#      # 同じ NameError。**①と一字一句同じ文言**にしてある
-#      # （置き場所で振る舞いが変わらないことが規則 2 の眼目）。
-#
-#   ③ 内包表記のループ変数も同じ（`for` 式に脱糖されるため）
-#      let xs = [v * 2 for v in range(3)]
-#      print(v)
-#      # 同じ NameError
-#
-# ⚠ ループ変数そのものへの代入は**静的エラー**（規則 3）:
+# ⚠ ループ変数そのものへの代入も**静的エラー**（規則 3）:
 #     for i in range(3):
 #         i = i * 10    # StaticTypeError: cannot assign to immutable variable 'i'
 #   → [let_immutability_error.ar](let_immutability_error.ar)
@@ -38,6 +20,15 @@ print("for target scope error demo")
 for i in range(3):
     print(i)
 
-print(i)
+print(i)                          # ⛔ ①
+
+fn f() -> int:
+    mut s = 0
+    for j in range(3):
+        s += j
+    return j                      # ⛔ ②
+
+let xs = [v * 2 for v in range(3)]
+print(v)                          # ⛔ ③
 
 print("ここには到達しない")

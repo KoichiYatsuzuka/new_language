@@ -1,0 +1,34 @@
+# nested_fn_signature.ar — 入れ子の関数のシグネチャは、定義したスコープの中だけで効く（name_scope_plan.md の 1-7）
+#
+# エラー系は nested_fn_signature_error.ar
+#
+# 別々の関数の中に同じ名前の入れ子の関数があっても、それぞれ自分のシグネチャで検査される。
+# 最上位の関数と同じ名前の入れ子の関数は、その関数の中でだけ最上位の関数を隠す。
+# ⚠ 以前は型検査が入れ子の関数を名前だけでプログラム全体の表に載せていたので、同じ名前のものが
+#   多重定義としてまとまり、どちらかに合う呼び出しなら全部通っていた。
+
+fn helper(x: int) -> int:
+    return x * 100
+
+fn shout() -> str:
+    fn helper(s: str) -> str:              # 最上位の helper を隠す
+        return s + "!"
+    return helper("hi")
+
+fn count() -> int:
+    fn helper(n: int, step: int = 1) -> int:
+        return n + step
+    gen upto(n: int) -> int:
+        for i in range(n):
+            yield i
+    mut total = 0
+    for k in upto(3):                      # k は int
+        total += k
+    return helper(total) + helper(total, 10)
+
+fn plain() -> int:
+    return helper(2)                       # 最上位の helper（入れ子のものは見えない）
+
+print(shout())                             # hi!
+print(count())                             # 17
+print(plain())                             # 200

@@ -1,4 +1,4 @@
-use crate::ast::{Expr, UnaryOp};
+use crate::ast::{Expr, FieldKind, UnaryOp};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
@@ -142,9 +142,23 @@ impl TypeChecker {
             // 記憶域の解決（`res`）はリゾルバが型検査の後に書くので、ここでは常に未解決。
             // 型検査は名前でスコープを引くだけで `res` を見ない。
             Expr::Ident { name, node_id, .. } => {
-                let found = self
-                    .lookup(name)
-                    .map(|v| v.ty.clone())
+                let in_scope = self.lookup(name).map(|v| v.ty.clone());
+                let binding = self.lookup(name).and_then(|v| v.binding);
+                // どのスコープにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
+                // ⚠ 関数表（`fn_sigs`）で型が引けても見る（name_scope_plan.md の 1-4）。関数表はプログラム全体の
+                //   表で、別の関数の中の入れ子の関数・後で定義する関数も載っている（§0 の A7・B3）。
+                let visible = in_scope.is_some() || self.check_name_defined(name);
+                // 使っている位置の結び付き（エディタだけ・2-2）。束縛の記録がある変数と、見えない名前だけを記録する。
+                if !self.in_instance_decl() {
+                    if let Some(uses) = self.uses.as_mut() {
+                        if !visible {
+                            uses.push(super::NameUse { node_id: *node_id, binding: None });
+                        } else if let Some(b) = binding {
+                            uses.push(super::NameUse { node_id: *node_id, binding: Some(b) });
+                        }
+                    }
+                }
+                let found = in_scope
                     // ⚠⚠ **変数スコープに無ければ関数を探す**（タスク 2.2）。
                     //    以前はここで `Unresolved` に倒していたため、`fn` を名前で参照した
                     //    **関数値に型が付いていなかった**。`Unresolved` は
@@ -153,10 +167,6 @@ impl TypeChecker {
                     //      let f: function[int]->int = takes_str    # シグネチャ違いが通る
                     //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
                     .or_else(|| self.fn_value_type(name.as_str()));
-                // どこにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
-                if found.is_none() {
-                    self.check_name_defined(name);
-                }
                 // `from m import make_class` した、クラスを返す Python の関数（10-16）。
                 self.check_py_class_factory_use(name, name, None);
                 // `from h import[cpp-dll] f` した、今の Arrow から呼べない C の関数（1-2）。
@@ -541,6 +551,13 @@ impl TypeChecker {
         }
     }
 
+    /// 名前 `name` で今見える関数のシグネチャ（入れ子の関数を先に引き、無ければ最上位の関数・name_scope_plan.md の 1-7）。
+    ///
+    /// ⚠ 検査器から関数のシグネチャを名前で引くときは**必ずこれを使う**。レジストリの `fn_sigs` には入れ子の関数が無い。
+    pub(super) fn visible_fn_sigs(&self, name: &str) -> Option<&Vec<super::types::FnSig>> {
+        self.state.lookup_local_fn(name).or_else(|| self.registry.fn_sigs(name))
+    }
+
     /// 名前が関数を指すとき、その**関数値としての型**（タスク 2.2）。
     ///
     /// ⚠ `Expr::Ident` は変数スコープだけを引いていたので、`fn` を名前で参照した値の型が
@@ -558,7 +575,7 @@ impl TypeChecker {
         {
             return None;
         }
-        let sigs = self.registry.fn_sigs(name)?;
+        let sigs = self.visible_fn_sigs(name)?;
         if sigs.len() != 1 {
             return None; // オーバーロード
         }
@@ -1280,14 +1297,31 @@ impl TypeChecker {
         });
     }
 
-    /// 今のスコープにも関数表にも無い名前を読んだとき、それが**どこにも無い**なら誤りにする（10-12）。
+    /// 今のスコープに無い名前を読み書きしたとき、それが**ここから見えない**なら誤りにする（10-12・name_scope_plan.md の 1-4）。
     ///
-    /// ⚠ 保守的に判定する（`type_check::names` の doc）。次のどれかなら通す:
-    ///   プログラムのどこかで束縛される名前・実行時の組み込みの名前・クラス / trait / protocol / 関数 /
-    ///   テンプレートの名前・今見えている型変数・`Self`。import 先を読めていない環境（エディタ）では見ない。
-    fn check_name_defined(&mut self, name: &str) {
-        if self.registry_incomplete
-            || self.declared_anywhere.contains(name)
+    /// 規則は `type_check::names` の doc。次のどれかなら通す: 実行時の組み込みの名前・クラス / trait / protocol /
+    ///   テンプレートの名前・今見えている型変数・`Self`・`_`、それと**後で実行される本体の中から読む、このモジュールの
+    ///   最上位の束縛**（前方参照）。import 先を読めていない環境（エディタ）では見ない。
+    /// ⚠ 関数の名前を特別扱いしない。最上位の関数は宣言した時点からスコープにあり（`check_fn_def`）、
+    ///   その前に読めるのは後で実行される本体の中だけ（実行時も関数を巻き上げない）。
+    /// 戻り値は**見えるか**（通したら `true`・誤りにしたら `false`。判定しない環境では `true`）。
+    pub(super) fn check_name_defined(&mut self, name: &str) -> bool {
+        if self.registry_incomplete {
+            return true;
+        }
+        if self.already_reported_undefined(name) {
+            return false;
+        }
+        if let Some((class_name, spelled)) = self.bare_class_member(name) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::BareClassMember { name: name.to_string(), class_name, spelled },
+                span: None,
+            });
+            return false;
+        }
+        let forward_ref = self.state.in_deferred_body()
+            && self.module_toplevel.last().is_some_and(|t| t.contains(name));
+        if forward_ref
             || super::names::is_runtime_builtin_name(name)
             || name == "Self"
             // `case _:` の `_`（どれにも当たる腕）。束縛ではないので宣言の集合には入らない。
@@ -1296,15 +1330,58 @@ impl TypeChecker {
             || self.registry.is_known_class(name)
             || self.registry.is_known_trait(name)
             || self.registry.is_protocol(name)
-            || self.registry.fn_sigs(name).is_some()
             || self.registry.template_params(name).is_some()
         {
-            return;
+            return true;
         }
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::UndefinedName { name: name.to_string() },
             span: None,
         });
+        false
+    }
+
+    /// 同じ文で、同じ名前の「見えない名前」の誤りをもう出したか（name_scope_plan.md の 1-4・R-2）。
+    ///
+    /// 位置を持たない誤りには今の文の位置が付く（`report_error`）ので、`n = n + 1` の左辺と右辺、
+    /// `mh.enable(1)` を受け手と呼び出しの 2 経路で推論する形が、同じ誤りを 2 回出していた。
+    fn already_reported_undefined(&self, name: &str) -> bool {
+        let Some(pos) = self.stmt_pos.as_ref() else { return false };
+        self.diags.errors().iter().any(|e| {
+            let same_name = match &e.kind {
+                TypeErrorKind::UndefinedName { name: n } | TypeErrorKind::BareClassMember { name: n, .. } => n == name,
+                _ => false,
+            };
+            same_name
+                && e.span.as_ref().is_some_and(|s| s.file == pos.file && s.line == pos.line && s.col == pos.col)
+        })
+    }
+
+    /// 見えない名前 `name` が、検査中のクラスの**メンバー**なら（クラス名, 書くべき形）（name_scope_plan.md の 1-3）。
+    ///
+    /// メンバーはクラスのスコープに宣言しない（`CheckState::in_class_body`）ので、メソッドの中の裸のフィールド名は
+    /// ここに来る。⚠ 1-3 の当時は、プログラムのどこかで束縛される名前を全部通していた（`__init__` の同名の
+    /// 引数などで通ってしまう）ので、それより先に見ていた。今も「何が違うか」を添えるために先に見る。
+    /// ⚠ モジュールの最上位の束縛と同じ名前なら対象外（メソッドから同じ名前の最上位の変数を読む・前方参照は正しい）。
+    /// ⚠ メンバーの顔ぶれが未確定のクラス（未展開の装飾子）も対象外。
+    fn bare_class_member(&self, name: &str) -> Option<(String, String)> {
+        let class = self.state.current_class()?;
+        if self.module_toplevel.last().is_some_and(|t| t.contains(name)) || self.registry.members_unresolved(class) {
+            return None;
+        }
+        let spelled = if let Some((kind, _)) =
+            self.registry.class_field_details(class).and_then(|f| f.get(name))
+        {
+            match kind {
+                FieldKind::Const | FieldKind::StaticMut => format!("{class}.{name}"),
+                FieldKind::Mut | FieldKind::Let => format!("self.{name}"),
+            }
+        } else if self.registry.class_methods(class).is_some_and(|m| m.contains_key(name)) {
+            format!("self.{name}")
+        } else {
+            return None;
+        };
+        Some((class.to_string(), spelled))
     }
 
     /// 属性を読めない組み込みの値の型なら、その表示名（`int` / `list[int]` …・10-14）。

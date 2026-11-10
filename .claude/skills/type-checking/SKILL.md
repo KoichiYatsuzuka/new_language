@@ -140,7 +140,22 @@ Defined in `src/type_check/infer.rs`. The checker calls `infer(expr)` recursivel
 
 ### Identifiers
 
-Returns the type recorded in scope. If not found → `Unresolved`.
+Returns the type recorded in scope; if not in scope, the function-value type from `visible_fn_sigs`
+(else `Unresolved`). A name **not in scope** always goes through `check_name_defined` (`infer.rs`,
+rule in the `type_check::names` module doc, `implementation_plans/name_scope_plan.md` phase 1), and so does an
+assignment target (`x = ..` / `x += ..`). It passes only for: runtime builtin names, class / trait /
+protocol / template names, visible type variables, `Self`, `_`, and — **inside a deferred body**
+(`fn` / `gen` / method body, `CheckState::in_deferred_body`) — a **top-level binding of the current module**
+(`module_toplevel`, `names::collect_toplevel_bindings`; this is the forward reference). Everything else is
+`UndefinedName`, or `BareClassMember` when the name is a member of the class being checked
+(`write `self.x` / `C.K``).
+
+- ⚠ Top-level code may not read a later binding (functions are not hoisted at run time either).
+- ⚠ There is no "declared somewhere in the program" fallback any more (removed in 1-4): it let other
+  functions' locals, block-leaked names and class fields count as defined.
+- ⚠ The same undefined name is reported once per statement (`already_reported_undefined`).
+- ⚠ Class / trait bodies do **not** declare their members (fields, methods) as variables
+  (`CheckState::in_class_body`); member types come from the registry.
 
 ### Attribute access (`obj.attr`)
 
@@ -317,7 +332,15 @@ Generator functions (`gen`) are subject to the same requirement; the missing ann
 Before checking, `TypeRegistryBuilder::collect` (`registry/builder.rs`) scans all `FnDef`,
 `ClassDef`, `EnumDef`, `TraitDef`, and `NewTypeDef` statements recursively. It populates:
 
-- `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution.
+- `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution — **top-level (and module / template) functions only**.
+  Nested `fn` / `gen` (inside a function body, `TypeRegistryBuilder::fn_depth`) are not stored: the checker builds
+  their signature when it checks the definition (`TypeRegistry::sig_of`) and declares it in that scope
+  (`CheckState::declare_local_fn`). Look signatures up by name with `TypeChecker::visible_fn_sigs`, never
+  `registry.fn_sigs` directly (name_scope_plan.md 1-7).
+- **Groups of nested functions** (name_scope_plan.md phase 3): `check_stmts` pre-declares a run of back-to-back
+  `fn` / `gen` definitions (`decl_names::fn_group_len`; a decorator or template breaks the run) before checking their
+  bodies (`predeclare_fn_group`), so members may call each other. The VM compiler uses the same function
+  (`note_fn_groups`) — keep them one function, or the checker passes code the runtime cannot run.
 - `class_method_sigs`: `class → method → Vec<FnSig>`.
 - `known_class_names`: set of all class/enum names.
 - `enum_members`: `enum → (member → type)`; the type is the enum type itself.
