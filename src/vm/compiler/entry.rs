@@ -555,6 +555,7 @@ fn compile_fn_inner(
         c.emit(Op::StoreCell(cell));
     }
 
+    c.note_fn_groups(body);
     for stmt in body {
         c.compile_stmt(stmt)?;
     }

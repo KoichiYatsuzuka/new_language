@@ -731,10 +731,23 @@ fn make_fn(
     cells: &[Rc<RefCell<Value>>],
 ) {
     let d = &chunk.fn_defs[idx as usize];
+    // 自分の名前と組の相手は値を写さない（name_scope_plan.md の 3-3・`CapturedVar::SelfFn` / `Sibling`）。
+    // ⚠ 写すと定義した時点の枠（まだ `None`）が入り、`'NoneType' object is not callable` になっていた。
+    //   また自分の値を写すと `FnValue → captured_env → FnValue` の循環になる。
+    let marker = |n: &str| -> Option<crate::interpreter::CapturedVar> {
+        if n == d.name {
+            Some(crate::interpreter::CapturedVar::SelfFn)
+        } else {
+            d.group.iter().position(|m| m == n).map(crate::interpreter::CapturedVar::Sibling)
+        }
+    };
+    let markers: Vec<(String, crate::interpreter::CapturedVar)> =
+        d.captures.iter().filter_map(|(n, _)| marker(n).map(|m| (n.clone(), m))).collect();
     // 不変キャプチャは**生成時点の値を複製**する（ツリーウォークの `capture_env` の不変分岐と同じ）。
     let captured: Vec<(String, Value)> = d
         .captures
         .iter()
+        .filter(|(n, _)| marker(n).is_none())
         .map(|(n, s)| (n.clone(), buf[base + *s as usize].clone()))
         .collect();
     // 可変キャプチャは**セルを共有**する（#27-d 段階 2b）。`Rc` を clone するだけなので
@@ -762,6 +775,10 @@ fn make_fn(
             cell_captured,
             d.qualname.clone(),
         );
+        add_capture_markers(&mut buf[slot], markers);
+        if let Some(first) = d.group_first {
+            link_fn_group(chunk, buf, base, first, d.group.len());
+        }
         return;
     }
     buf[slot] = interp.make_nested_fn_value(
@@ -779,6 +796,55 @@ fn make_fn(
         // Python の関数の中の関数は Python の関数（引数の束縛の規則・タスク 1-14）。
         chunk.is_python,
     );
+    add_capture_markers(&mut buf[slot], markers);
+    if let Some(first) = d.group_first {
+        link_fn_group(chunk, buf, base, first, d.group.len());
+    }
+}
+
+/// 作ったばかりの入れ子の関数の値の `captured_env` に、自分・組の相手の印を足す（name_scope_plan.md の 3-3）。
+///
+/// ⚠ 作ったばかりで他に持ち主がいない（`Rc::get_mut` が通る）。同じ名前の関数と合成されて多重定義
+///   （`OverloadedFn`）になった値には足さない（組の相手・自己再帰は今までどおり見えない）。
+fn add_capture_markers(v: &mut Value, markers: Vec<(String, crate::interpreter::CapturedVar)>) {
+    if markers.is_empty() {
+        return;
+    }
+    let env = match v {
+        Value::Function(rc) => Rc::get_mut(rc).map(|f| &mut f.captured_env),
+        Value::GeneratorFn(rc) => Rc::get_mut(rc).map(|g| &mut g.captured_env),
+        _ => None,
+    };
+    if let Some(env) = env {
+        env.extend(markers);
+    }
+}
+
+/// 組の最後のメンバーを作った直後に、組を繋ぐ（name_scope_plan.md の 3-3）。
+///
+/// 組（`FnGroup`）には各メンバーの**組を持たない写し**を入れ、枠のメンバーの値に組を持たせる。
+/// ⚠ 組は写しだけを持つので、組 → メンバー → 組 の循環にならない。
+/// ⚠ メンバーが関数の値でない（多重定義に合成された）ときは繋がない（相手は今までどおり見えない）。
+fn link_fn_group(chunk: &Chunk, buf: &mut [Value], base: usize, first: u32, len: usize) {
+    use crate::interpreter::{FnGroup, GroupMember};
+    let slots: Vec<usize> =
+        (0..len).map(|k| base + chunk.fn_defs[first as usize + k].slot as usize).collect();
+    let mut members = Vec::with_capacity(len);
+    for &s in &slots {
+        match &buf[s] {
+            Value::Function(f) => members.push(GroupMember::Fn(Rc::new((**f).clone()))),
+            Value::GeneratorFn(g) => members.push(GroupMember::Gen(Rc::new((**g).clone()))),
+            _ => return,
+        }
+    }
+    let group = Rc::new(FnGroup { members });
+    for &s in &slots {
+        match &mut buf[s] {
+            Value::Function(f) => Rc::make_mut(f).group = Some(group.clone()),
+            Value::GeneratorFn(g) => Rc::make_mut(g).group = Some(group.clone()),
+            _ => {}
+        }
+    }
 }
 
 /// `Op::UnpackTuple` の本体（#27-c）。`for k, v in ...` の要素をスタックへ積む。

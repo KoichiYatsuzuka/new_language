@@ -324,6 +324,7 @@ impl Compiler {
                 body,
                 ..
             } => {
+                let group = self.fn_groups.get(&(stmt as *const Stmt)).cloned();
                 self.compile_nested_fn_def(
                     name,
                     template_params,
@@ -332,6 +333,7 @@ impl Compiler {
                     &[],
                     yield_type,
                     true,
+                    group,
                 )?;
             }
             Stmt::FnDef {
@@ -343,6 +345,7 @@ impl Compiler {
                 return_type,
                 ..
             } => {
+                let group = self.fn_groups.get(&(stmt as *const Stmt)).cloned();
                 self.compile_nested_fn_def(
                     name,
                     template_params,
@@ -351,6 +354,7 @@ impl Compiler {
                     decorators,
                     return_type,
                     false,
+                    group,
                 )?;
             }
             // 関数本体の `enum` 定義（#68）。組み立ては `build_enum_classes`（ツリーウォークと
@@ -675,6 +679,8 @@ impl Compiler {
         decorators: &[Expr],
         return_type: &Option<String>,
         is_generator: bool,
+        // 続けて定義した入れ子の関数の組（メンバーの名前・自分の位置）。組でなければ `None`（3-3）。
+        group: Option<(std::rc::Rc<[String]>, usize)>,
     ) -> Option<()> {
         if !template_params.is_empty() {
             bail("nested-fn-template", None);
@@ -694,14 +700,14 @@ impl Compiler {
         // 定義の時点でまだ見えていない外側の名前を捕まえる形（R-1・name_scope_plan.md の D-1 = (a)）。
         // 入れ子の関数は定義した時点の値を写すので、その時点に無い名前は写せない。以前は書かれていない枠
         // （`None`）を写し、後で `print(x)` が `None`、`b()` が `'NoneType' object is not callable` になっていた。
-        // ⚠ **自分の名前（自己再帰）は対象外**。名前の束縛は `MakeFn` の後なので同じく見えていないが、
-        //   ここで落とすと再帰しない呼び出し（`fact(1)`）まで定義の時点で落ちる。扱いは別に決める
-        //   （name_scope_plan.md の R-1 の「自己再帰」）。
+        // ⚠ **自分の名前と組の相手は対象外**（name_scope_plan.md のフェーズ 3）。値を写さず、呼び出すときに
+        //   自分（`CapturedVar::SelfFn`）・組から作った相手（`CapturedVar::Sibling`）を渡す（`run.rs` の `make_fn`）。
+        let members: std::rc::Rc<[String]> = group.as_ref().map(|(m, _)| m.clone()).unwrap_or_else(|| std::rc::Rc::from([]));
         if let Some(unbound) = captures
             .iter()
             .chain(cell_captures.iter())
             .map(|(n, _)| n.as_str())
-            .find(|n| *n != name && self.is_unbound_local(n))
+            .find(|n| *n != name && !members.iter().any(|m| m == n) && self.is_unbound_local(n))
         {
             let unbound = unbound.to_string();
             self.emit_unbound_local(&unbound);
@@ -709,6 +715,15 @@ impl Compiler {
         }
         let slot = self.slot_of(name)?;
         let idx = u32::try_from(self.chunk.fn_defs.len()).ok()?;
+        // 組の最初のメンバーで添字を控え、最後のメンバーの `MakeFn` が組を繋ぐ（3-3）。
+        let group_first = match &group {
+            Some((_, 0)) => {
+                self.group_start = Some(idx);
+                None
+            }
+            Some((m, k)) if *k + 1 == m.len() => self.group_start.take(),
+            _ => None,
+        };
         self.chunk.fn_defs.push(crate::vm::chunk::ChunkFnDef {
             name: name.to_string(),
             params: params.to_vec(),
@@ -725,6 +740,8 @@ impl Compiler {
             compiled: Default::default(),
             // 外側の名前はコンパイラが知らない（呼び出し側が `Chunk::set_nested_qualnames` で埋める）。
             qualname: None,
+            group: members,
+            group_first,
         });
         self.emit(Op::MakeFn(idx));
         Some(())

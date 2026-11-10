@@ -95,7 +95,7 @@ impl TypeChecker {
             // 間に文を挟まずに続く `fn` / `gen` の定義は 1 つの組（name_scope_plan.md のフェーズ 3・3-2）。
             // 組の名前とシグネチャを、最初の定義より前に全部宣言しておく（組の中の前方参照・相互再帰を通す）。
             if i >= group_end && !self.state.in_class_body() {
-                let len = fn_group_len(&stmts[i..]);
+                let len = crate::decl_names::fn_group_len(&stmts[i..]);
                 group_end = i + len;
                 if len >= 2 {
                     self.predeclare_fn_group(&stmts[i..group_end]);
@@ -105,7 +105,7 @@ impl TypeChecker {
         }
     }
 
-    /// 組（[`fn_group_len`]）の関数の名前とシグネチャを先に宣言する。各定義の検査（`check_fn_def` / `check_gen_def`）は
+    /// 組（`decl_names::fn_group_len`）の関数の名前とシグネチャを先に宣言する。各定義の検査（`check_fn_def` / `check_gen_def`）は
     /// `group_predeclared` に残った名前の宣言を飛ばす（同じスコープに 2 回積まない）。
     /// ⚠ 組の外の名前は今までどおり定義の時点のスコープで引く（D-1 = (a)）。
     fn predeclare_fn_group(&mut self, group: &[Stmt]) {
@@ -2335,19 +2335,3 @@ impl TypeChecker {
     }
 }
 
-/// `stmts` の先頭から、間に別の文を挟まずに続く `fn` / `gen` の定義の数（組・name_scope_plan.md のフェーズ 3）。
-///
-/// ⚠ デコレータの付いた `fn` は組を切る（デコレータは定義の時点で走り、そのときに組の残りはまだ無い）。
-///   先頭がそれなら 0。テンプレートの `fn` / `gen` も組に入れない（入れ子のテンプレートは名前で実体化される）。
-/// ⚠ VM（`vm/compiler`）と木の実行器も**同じ関数**で組を決める。別々に書くと、型検査は通るのに実行時に
-///   相手が見えない（またはその逆）になる。
-pub(crate) fn fn_group_len(stmts: &[Stmt]) -> usize {
-    stmts
-        .iter()
-        .take_while(|s| match s {
-            Stmt::FnDef { decorators, template_params, .. } => decorators.is_empty() && template_params.is_empty(),
-            Stmt::GenDef { template_params, .. } => template_params.is_empty(),
-            _ => false,
-        })
-        .count()
-}

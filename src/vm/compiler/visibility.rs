@@ -79,12 +79,38 @@ impl Compiler {
         }
     }
 
+    /// 文の並び `stmts` の中の、続けて定義した入れ子の `fn` / `gen` の組を控える（name_scope_plan.md の 3-3）。
+    ///
+    /// 組は型検査と**同じ関数**（`decl_names::fn_group_len`）で決める。2 つ以上のときだけ控える（1 つなら自己再帰だけで、
+    /// それは組の印が無くても `CapturedVar::SelfFn` になる）。
+    /// ⚠ 本体の文を回すループ（この 3 つのヘルパーと `compile_fn` の本体）は、回す前にこれを呼ぶこと。
+    pub(super) fn note_fn_groups(&mut self, stmts: &[Stmt]) {
+        let mut i = 0;
+        while i < stmts.len() {
+            let len = crate::decl_names::fn_group_len(&stmts[i..]);
+            if len >= 2 {
+                let names: std::rc::Rc<[String]> = stmts[i..i + len]
+                    .iter()
+                    .filter_map(|s| match s {
+                        Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                for (k, s) in stmts[i..i + len].iter().enumerate() {
+                    self.fn_groups.insert(s as *const Stmt, (names.clone(), k));
+                }
+            }
+            i += len.max(1);
+        }
+    }
+
     /// ブロックの本体 `stmts` を、新しいブロックとしてコンパイルする。
     ///
     /// ⚠ 本体の文を回すループは**これを通す**こと（`for s in body { self.compile_stmt(s)?; }` と直接書くと、
     ///   その本体の宣言がブロックの外まで見えたままになる）。途中で失敗してもブロックは抜ける。
     pub(super) fn compile_block_body(&mut self, stmts: &[Stmt]) -> Option<()> {
         self.enter_block();
+        self.note_fn_groups(stmts);
         let r = (|| {
             for s in stmts {
                 self.compile_stmt(s)?;
@@ -104,6 +130,7 @@ impl Compiler {
         for t in targets {
             self.make_visible(t);
         }
+        self.note_fn_groups(body);
         let r = (|| {
             for s in body {
                 self.compile_stmt(s)?;
@@ -120,6 +147,7 @@ impl Compiler {
         if let Some(a) = alias {
             self.make_visible(a);
         }
+        self.note_fn_groups(body);
         let r = (|| {
             for s in body {
                 self.compile_stmt(s)?;

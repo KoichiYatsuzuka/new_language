@@ -170,6 +170,10 @@ struct Compiler {
     /// ブロックごとの「このブロックで見えるようになった名前」（抜けるときに `visible_locals` から外す）。
     /// 先頭はこの Chunk の本体そのもの（抜けない）。
     block_scopes: Vec<Vec<String>>,
+    /// 文（`fn` / `gen` の定義）→（組のメンバーの名前・その中の位置）（`note_fn_groups`・name_scope_plan.md の 3-3）。
+    fn_groups: HashMap<*const Stmt, (std::rc::Rc<[String]>, usize)>,
+    /// 今コンパイルしている組の最初のメンバーの `fn_defs` の添字。
+    group_start: Option<u32>,
     /// `static mut` の名前 → 宣言位置（#27-d）。
     ///
     /// この名前は **slot を持たない**（記憶域は `Interpreter::static_cells`）ので、
@@ -347,6 +351,8 @@ impl Compiler {
             block_locals: HashSet::new(),
             visible_locals: HashSet::new(),
             block_scopes: vec![Vec::new()],
+            fn_groups: HashMap::new(),
+            group_start: None,
             statics: HashMap::new(),
             cells: HashMap::new(),
             cell_by_slot: HashMap::new(),

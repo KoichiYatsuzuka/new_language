@@ -111,6 +111,13 @@ pub struct ChunkFnDef {
     ///   [`Chunk::set_nested_qualnames`] で埋める。最上位の文の Chunk では `None` のまま（名前と同じ。
     ///   CPython も最上位の `if` の中の `def` は名前だけ）。
     pub qualname: Option<std::rc::Rc<str>>,
+    /// **続けて定義した入れ子の関数の組**のメンバーの名前（並び順・自分を含む・name_scope_plan.md の 3-3）。
+    /// 組でなければ空。`Op::MakeFn` は、捕捉のうち自分の名前を `CapturedVar::SelfFn`、組の相手を
+    /// `CapturedVar::Sibling` にする（値を写さない・`Rc` の循環を作らない）。
+    pub group: std::rc::Rc<[String]>,
+    /// 組の**最後の**メンバーだけが持つ: 組の最初のメンバーの `fn_defs` の添字。この `MakeFn` が組を繋ぐ
+    /// （`run.rs` の `link_fn_group`）。
+    pub group_first: Option<u32>,
 }
 
 /// 関数本体の `enum` 定義 1 件（#68）。`Op::EnumDef(idx)` が参照する。

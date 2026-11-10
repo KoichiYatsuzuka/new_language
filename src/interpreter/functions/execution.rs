@@ -111,7 +111,8 @@ impl Interpreter {
         let mut mut_captures: Vec<String> = Vec::new();
         for (n, c) in env {
             match c {
-                CapturedVar::Immutable(_) => captures.push(n.clone()),
+                // 自分・組の相手（3-3）も不変の捕捉として枠を持つ。値は呼び出すときに書く（`bind_captures`）。
+                CapturedVar::Immutable(_) | CapturedVar::SelfFn | CapturedVar::Sibling(_) => captures.push(n.clone()),
                 CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
             }
         }
@@ -391,11 +392,19 @@ impl Interpreter {
         // 不変キャプチャは slot へ書き込む（`bind_captures` と同じ位置づけ・B13 段階 E）。
         // ⚠ 値は clone するだけでよい。`Immutable` は生成時に deep_copy 済み。
         for (cname, slot) in &chunk.captured_slots {
-            if let Some(CapturedVar::Immutable(v)) = gen_fn.captured_env.get(cname) {
-                let idx = *slot as usize;
-                if idx < buf.len() {
-                    buf[idx] = v.clone();
-                }
+            let v = match gen_fn.captured_env.get(cname) {
+                Some(CapturedVar::Immutable(v)) => v.clone(),
+                // 自分（自己再帰する入れ子の `gen`）・組の相手（name_scope_plan.md の 3-3）。
+                Some(CapturedVar::SelfFn) => Value::GeneratorFn(gen_fn.clone()),
+                Some(CapturedVar::Sibling(j)) => match &gen_fn.group {
+                    Some(g) => g.member_value(*j),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let idx = *slot as usize;
+            if idx < buf.len() {
+                buf[idx] = v;
             }
         }
         // 可変キャプチャは**セルを共有**する（外側との書き戻りが保たれる）。
@@ -600,11 +609,20 @@ impl Interpreter {
         base: usize,
     ) {
         for (name, slot) in &chunk.captured_slots {
-            if let Some(CapturedVar::Immutable(v)) = fn_val.captured_env.get(name) {
-                let idx = base + *slot as usize;
-                if idx < buf.len() {
-                    buf[idx] = v.clone();
-                }
+            let v = match fn_val.captured_env.get(name) {
+                Some(CapturedVar::Immutable(v)) => v.clone(),
+                // 自分の名前（自己再帰）は呼ばれている関数そのもの、組の相手は組から作る（name_scope_plan.md の 3-3）。
+                // ⚠ どちらも呼び出しのフレームが持つだけなので循環しない。
+                Some(CapturedVar::SelfFn) => Value::Function(fn_val.clone()),
+                Some(CapturedVar::Sibling(j)) => match &fn_val.group {
+                    Some(g) => g.member_value(*j),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let idx = base + *slot as usize;
+            if idx < buf.len() {
+                buf[idx] = v;
             }
         }
     }
