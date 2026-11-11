@@ -781,6 +781,7 @@ impl TypeChecker {
         rhs_ty: InferredType,
         var_name: &str,
         stmt: &Stmt,
+        rhs: &Expr,
     ) -> InferredType {
         let ann = match type_ann {
             // ⚠⚠ **注釈が無いときは `Never` を `Any` へ開く**（D-11 / U-6・タスク 4.1）。
@@ -801,7 +802,8 @@ impl TypeChecker {
         //    **右辺との照合も行う**（構造的適合検査）ため、下の整合性検査と二重にならない。
         if self.registry.is_protocol(ann) {
             let proto_name = ann.to_string();
-            self.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name);
+            // 適合しない理由は右辺を指す（diagnostic_position_plan.md の 3-3）。
+            self.with_anchor_at(rhs, |c| c.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name));
             return InferredType::Protocol(proto_name);
         }
         // ── 通常の注釈（0-1）─────────────────────────────────────────────────
@@ -852,8 +854,9 @@ impl TypeChecker {
         //    構造的に満たしているクラスを**誤って弾いていた**（タスク 1.3 で実測）。
         //    1.3 では手で `resolve_protocols` を 2 行足して直したが、3.3 で述語の中へ
         //    閉じ込めたので**新しい検査地点で同じ忘れ方ができない**。
+        // 不一致は右辺を指す（3-3）。⚠ 上の注釈の誤り（`check_ann_not_bare` など）は注釈が位置を持たないので文の位置。
         if !self.types_compatible(&rhs_ty, &declared, crate::type_check::type_utils::Site::Other) {
-            self.report_error(StaticTypeError {
+            self.report_error_at(rhs, StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {
                     name: var_name.to_string(),
                     expected: declared.clone(),

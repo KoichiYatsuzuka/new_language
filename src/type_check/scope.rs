@@ -174,10 +174,24 @@ impl TypeChecker {
     /// （[`Self::report_error`] と同じ）。錨を張り替えて報告するだけなので、ファイルの検査
     /// （[`Self::fallback_span`] の alias の注記）もそのまま効く。
     pub(super) fn report_error_at(&mut self, at: &Expr, err: StaticTypeError) {
-        let Some(anchor) = at.anchor_span() else { return self.report_error(err) };
-        let outer = self.expr_anchor.replace(anchor.clone());
-        self.report_error(err);
+        self.with_anchor_at(at, |c| c.report_error(err));
+    }
+
+    /// `f` の間だけ錨を**式 `at` の錨**にする（`at` が錨を持たなければ張り替えない）。
+    ///
+    /// 値を期待型と照合する検査（`check_expected` は protocol の適合検査の誤りも中で出す）を丸ごと包み、
+    /// 照合で出る誤りを全部その値に指させる（diagnostic_position_plan.md の 3-3）。
+    pub(super) fn with_anchor_at<R>(&mut self, at: &Expr, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_anchor(at.anchor_span().cloned(), f)
+    }
+
+    /// `f` の間だけ錨を `anchor` にする（`None` なら張り替えない・[`Self::with_anchor_at`]）。
+    pub(super) fn with_anchor<R>(&mut self, anchor: Option<Span>, f: impl FnOnce(&mut Self) -> R) -> R {
+        let Some(anchor) = anchor else { return f(self) };
+        let outer = self.expr_anchor.replace(anchor);
+        let r = f(self);
         self.expr_anchor = outer;
+        r
     }
 
     /// 静的型警告を警告リストに追加する。

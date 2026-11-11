@@ -207,10 +207,12 @@ impl TypeChecker {
                 //    以前はここに `is_frozen` の別検査があったが、同じ問いに 2 つの
                 //    実装がある状態だったので撤去した。
                 let rhs_ty = self.infer(value);
+                // 値の誤りは**右辺**を指す（diagnostic_position_plan.md の 3-3）。右辺が錨を持たなければ文の位置
+                // （＝左辺の名前）。
                 if rhs_ty == InferredType::Undefined {
-                    self.report_error(StaticTypeError {
+                    self.report_error_at(value, StaticTypeError {
                         kind: TypeErrorKind::AssignUndefined,
-                        span: Some(span.clone()),
+                        span: None,
                     });
                 }
                 // ── 再代入の型検査（0-7）────────────────────────────────────
@@ -231,14 +233,14 @@ impl TypeChecker {
                         && !self.mentions_type_param(&declared)
                     {
                         let ctx = format!("variable `{name}`");
-                        if !self.check_expected(&rhs_ty, &declared, false, &ctx) {
-                            self.report_error(StaticTypeError {
+                        if !self.with_anchor_at(value, |c| c.check_expected(&rhs_ty, &declared, false, &ctx)) {
+                            self.report_error_at(value, StaticTypeError {
                                 kind: TypeErrorKind::VarTypeMismatch {
                                     name: name.clone(),
                                     expected: declared,
                                     got: rhs_ty,
                                 },
-                                span: Some(span.clone()),
+                                span: None,
                             });
                         }
                     }
@@ -512,7 +514,8 @@ impl TypeChecker {
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
                     let got = self.infer(e);
-                    self.check_return_type(&got);
+                    // 不一致は戻り値の式を指す（3-3）。
+                    self.with_anchor_at(e, |c| c.check_return_type(&got));
                 }
                 // ⚠ 値なしの `return`（早期脱出）は**照合しない**。「戻り値を返し忘れている」
                 //    という別の検査であり、既存コードの早期 return を巻き込む。
@@ -529,7 +532,8 @@ impl TypeChecker {
                 //    通っていた）。
                 let got = self.infer(expr);
                 let expected = self.state.block_expr_expected().cloned();
-                self.check_block_expr_value(&got, expected, "block_return", Some(span.clone()));
+                // 不一致は値の式を指す（3-3）。錨が無ければ文の位置（＝`block_return`）。
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "block_return", None));
             }
             // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
             Stmt::LoopYield(expr, _) => {
@@ -545,7 +549,7 @@ impl TypeChecker {
                     Some(InferredType::ListOf(elem)) => Some((**elem).clone()),
                     _ => None,
                 };
-                self.check_block_expr_value(&got, expected, "loop_yield", None);
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "loop_yield", None));
             }
             Stmt::Yield(expr, _) => {
                 // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
@@ -559,12 +563,8 @@ impl TypeChecker {
                 // ⚠ 値は `gen` の宣言 yield 型と照合する（タスク 5.2・検体 C8）。
                 //    照合先は `check_gen_def` が `current_fn_return` へ入れた要素型。
                 let got = self.infer(expr);
-                self.check_block_expr_value(
-                    &got,
-                    self.state.current_fn_return().cloned(),
-                    "yield",
-                    None,
-                );
+                let expected = self.state.current_fn_return().cloned();
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "yield", None));
             }
 
             // --- クラスフィールド宣言 ---
@@ -601,8 +601,9 @@ impl TypeChecker {
                         && !self.mentions_type_param(&ty)
                     {
                         let ctx = format!("default value of field `{name}` of `{class_name}`");
-                        if !self.check_expected(&got, &ty, false, &ctx) {
-                            self.report_error(StaticTypeError {
+                        // 不一致は既定値の式を指す（3-3）。
+                        if !self.with_anchor_at(expr, |c| c.check_expected(&got, &ty, false, &ctx)) {
+                            self.report_error_at(expr, StaticTypeError {
                                 kind: TypeErrorKind::FieldTypeMismatch {
                                     field_name: name.clone(),
                                     class_name,
@@ -1158,7 +1159,8 @@ impl TypeChecker {
         if matches!(ty, InferredType::Bool) {
             return;
         }
-        self.report_error(StaticTypeError {
+        // 条件の式を指す（3-3）。錨が無ければ今の錨（`if` 式）か文の位置（`if` / `while`）。
+        self.report_error_at(cond, StaticTypeError {
             kind: TypeErrorKind::ConditionNotBool {
                 keyword: keyword.to_string(),
                 got: ty,
@@ -1424,6 +1426,20 @@ impl TypeChecker {
         let target_ty = self.infer(target);
         self.attr_is_assign_target = false;
         let value_ty = self.infer(value);
+        // 値の照合で出る誤りは**代入する値**を指す（diagnostic_position_plan.md の 3-3）。値が錨を持たない
+        // （リテラル）ときは代入先の属性名・添字の対象。⚠ 上の不変性の誤りは書き込む先の誤りなので文の位置のまま。
+        let anchor = value.anchor_span().or_else(|| target.anchor_span()).cloned();
+        self.with_anchor(anchor, |c| c.check_attr_assign_value(target, compound_op, target_ty, value_ty));
+    }
+
+    /// [`Self::check_attr_assign`] の後半: 代入する値の型（`value_ty`）を代入先（`target_ty`）と照合する。
+    fn check_attr_assign_value(
+        &mut self,
+        target: &Expr,
+        compound_op: Option<&BinOp>,
+        target_ty: InferredType,
+        value_ty: InferredType,
+    ) {
         // ⚠⚠ **添字代入 `xs[i] = v` / `d[k] = v`**（タスク 5.2b・検体 `L5`）。
         //    以前は完全に無検査で、`list[int]` に `str` が、`dict[str,int]` に
         //    `int` キーや `str` 値が**黙って入っていた**（実測: `['s', 2]` /
@@ -1472,7 +1488,7 @@ impl TypeChecker {
                             expected: target_ty,
                             got: value_ty,
                         },
-                        span: Some(span.clone()),
+                        span: None,
                     });
                 }
             }
@@ -1573,7 +1589,7 @@ impl TypeChecker {
                 expected,
                 got: value_ty,
             },
-            span: Some(span.clone()),
+            span: None,
         });
     }
 
@@ -1735,10 +1751,11 @@ impl TypeChecker {
             let ctx = format!("default value of `{}` of `{func_name}`", p.name);
             // ⚠ `mut` 引数でも既定値は**呼び元の記憶域ではない**ので拡大を許してよい
             //    （write-back の相手が居ない）。
-            if self.check_expected(&got, &declared, false, &ctx) {
+            // 不一致は既定値の式を指す（3-3）。
+            if self.with_anchor_at(expr, |c| c.check_expected(&got, &declared, false, &ctx)) {
                 continue;
             }
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::ParamDefaultTypeMismatch {
                     func_name: func_name.to_string(),
                     param_name: p.name.clone(),
@@ -2309,8 +2326,9 @@ impl TypeChecker {
         mutable: bool,
     ) {
         let rhs_ty = self.infer(expr);
+        // 値の誤りは**右辺**を指す（diagnostic_position_plan.md の 3-3）。錨が無ければ文の位置。
         if rhs_ty == InferredType::Undefined {
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::AssignUndefined,
                 span: None,
             });
@@ -2321,7 +2339,7 @@ impl TypeChecker {
         //     ここで `Code` が見えたということ自体が「外へ出た」ことを意味する。
         //   ⚠ 本体を検査するようにしたら**ここに深さの条件を足すこと**。
         if rhs_ty == InferredType::Code {
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::CodeEscapesMetafunction { name: name.to_string() },
                 span: None,
             });
@@ -2332,7 +2350,7 @@ impl TypeChecker {
                 span: None,
             });
         }
-        let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt);
+        let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt, expr);
         self.note_binding(name, &ty);
         self.declare(name.to_string(), ty, mutable);
     }

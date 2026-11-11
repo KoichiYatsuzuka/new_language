@@ -469,10 +469,18 @@ fn meta_kinds_are_distinct_types() {
 
 
     /// 式の側に位置が無い誤りは**文の位置**で報告する（フェーズ10 10-17。以前は `<unknown>`）。
+    ///
+    /// ⚠ 宣言の不一致は右辺を指す（diagnostic_position_plan.md の 3-3）。以前は識別子が位置を持たず、
+    ///   `let z: str = s` も文の位置 (2, 1) だった。文の位置に戻るのは右辺が錨を持たない（リテラル）ときだけ。
     #[test]
     fn error_without_expression_position_uses_statement_position() {
-        // 右辺が識別子（位置を持たない）の宣言。
+        // 右辺が識別子の宣言は右辺の名前。
         let errs = check("let s = 1\nlet z: str = s\n");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        let at = errs[0].span.as_ref().map(|s| (s.line, s.col));
+        assert_eq!(at, Some((2, 14)), "{errs:?}");
+        // 右辺がリテラル（位置を持たない）の宣言は文の位置。
+        let errs = check("let s = 1\nlet z: str = 1\n");
         assert_eq!(errs.len(), 1, "{errs:?}");
         let at = errs[0].span.as_ref().map(|s| (s.line, s.col));
         assert_eq!(at, Some((2, 1)), "{errs:?}");
@@ -528,6 +536,27 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(error_positions(t), vec![(5, 7)]);
         // リテラルの引数は錨を持たないので呼ばれる側の名前。
         assert_eq!(error_positions(&format!("{f}f(\"y\")\n")), vec![(5, 1)]);
+    }
+
+    /// 宣言・代入・`return` などの値の不一致は**値の式**を指す（diagnostic_position_plan.md の 3-3）。
+    /// 以前は文の先頭（`let` / `return` / `if`）を指していた。
+    #[test]
+    fn value_mismatch_points_at_the_value() {
+        let s = "let s = \"x\"\n";
+        // `let x: T = e`・`x = e`・属性への代入・添字への代入。
+        assert_eq!(error_positions(&format!("{s}let n: int = s\n")), vec![(2, 14)]);
+        assert_eq!(error_positions(&format!("{s}mut n = 1\nn = s\n")), vec![(3, 5)]);
+        let p = "class P:\n    mut n: int\n\nmut p = P(1)\nlet s = \"x\"\n";
+        assert_eq!(error_positions(&format!("{p}p.n = s\n")), vec![(6, 7)]);
+        // 値がリテラルなら代入先の属性名。
+        assert_eq!(error_positions(&format!("{p}p.n = \"y\"\n")), vec![(6, 3)]);
+        assert_eq!(error_positions(&format!("{s}mut xs = [1]\nxs[0] = s\n")), vec![(3, 9)]);
+        // `return` の値・条件。
+        assert_eq!(error_positions(&format!("{s}fn f() -> int:\n    return s\n")), vec![(3, 12)]);
+        assert_eq!(error_positions("let n = 1\nif n:\n    pass\n"), vec![(2, 4)]);
+        // protocol の注釈への適合しない値。
+        let pr = "protocol Named:\n    fn name(self) -> str:\n        ...\n\nclass A:\n    mut n: int\n\nlet a = A(1)\n";
+        assert_eq!(error_positions(&format!("{pr}let x: Named = a\n")), vec![(9, 16)]);
     }
 
     /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
