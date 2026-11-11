@@ -575,7 +575,7 @@ The resulting `HashMap<String, InferredType>` is stored as `InferredType::Namesp
 
 The editor draws the squiggle under **one token**: the one at the error's `span`. `Span` holds only a
 start point (`file / line / col`; line 0 = unknown). The rules come from
-`implementation_plans/diagnostic_position_plan.md`:
+`implementation_logs/diagnostic_position_plan.md`:
 
 1. **An explicit `span: Some(..)` wins.** Most errors are built with `span: None` and get their
    position in `TypeChecker::report_error` (`scope.rs`) through `fallback_span`, which picks:
