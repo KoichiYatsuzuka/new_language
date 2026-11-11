@@ -1472,9 +1472,11 @@ impl TypeChecker {
             }
             return;
         }
-        let Expr::Attr { object, attr, span, .. } = target else {
+        let Expr::Attr { object, attr, span, attr_span, .. } = target else {
             return;
         };
+        // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+        let span = if attr_span.line != 0 { attr_span } else { span };
         // ⚠ import したモジュールの `mut` のグローバル変数への代入（`g.MK = v`）は、その変数の型で検査する
         //   （ふつうの変数の付け替えと同じ `VarTypeMismatch`）。
         if let InferredType::Namespace(_, _, vars) = self.infer_quietly(object) {

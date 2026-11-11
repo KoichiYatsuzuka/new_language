@@ -549,7 +549,11 @@ impl TypeChecker {
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
         // ⚠ 添字（`Expr::Subscript`）は位置を持たないので、文の位置で知らせる（`report_error` が補う）。
         let (object, attr, span): (&Expr, Option<&str>, Option<Span>) = match target {
-            Expr::Attr { object, attr, span, .. } => (object.as_ref(), Some(attr.as_str()), Some(span.clone())),
+            // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+            Expr::Attr { object, attr, span, attr_span, .. } => {
+                let at = if attr_span.line != 0 { attr_span } else { span };
+                (object.as_ref(), Some(attr.as_str()), Some(at.clone()))
+            }
             Expr::Subscript { object, .. } => (object.as_ref(), None, None),
             _ => return,
         };

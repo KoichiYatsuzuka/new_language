@@ -574,6 +574,17 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(error_positions(d), vec![(4, 2)]);
     }
 
+    /// 属性の誤りは**属性名**を指す（diagnostic_position_plan.md の 3-5）。以前は `.` を指していた。
+    #[test]
+    fn attribute_errors_point_at_the_attribute_name() {
+        let p = "class P:\n    let x: int\n\n";
+        // 存在しない属性（読み・メソッド呼び出し）。
+        assert_eq!(error_positions(&format!("{p}let p = P(1)\nprint(p.nope)\n")), vec![(5, 9)]);
+        assert_eq!(error_positions(&format!("{p}let p = P(1)\np.nope()\n")), vec![(5, 3)]);
+        // `let` フィールドへの代入。
+        assert_eq!(error_positions(&format!("{p}mut p = P(1)\np.x = 2\n")), vec![(5, 3)]);
+    }
+
     /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
     #[test]
     fn error_in_expression_body_points_into_the_body() {

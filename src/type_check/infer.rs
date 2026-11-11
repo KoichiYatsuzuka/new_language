@@ -121,8 +121,10 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span, node_id, .. } => {
-                self.infer_attr(object, attr, span, *node_id)
+            Expr::Attr { object, attr, span, attr_span, node_id, .. } => {
+                // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+                let at = if attr_span.line != 0 { attr_span } else { span };
+                self.infer_attr(object, attr, at, *node_id)
             }
             // ⚠⚠ **trait 修飾アクセス `o::T.f` は型を返していなかった**（タスク 5.2d・検体 `F3`）。
             //    `Unresolved` は「何でも通る」ので、読みも代入も**丸ごと無検査**だった

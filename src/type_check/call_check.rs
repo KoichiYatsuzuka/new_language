@@ -16,7 +16,10 @@ impl TypeChecker {
     ) -> InferredType {
         // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
         let freeze_span = match func {
-            Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
+            // 属性名を指す（diagnostic_position_plan.md の 3-5）。
+            Expr::Attr { attr, span, attr_span, .. } if attr == "__freeze__" => {
+                Some(if attr_span.line != 0 { attr_span.clone() } else { span.clone() })
+            }
             Expr::Ident { name, .. } if name == "__freeze__" => None,
             _ => {
                 // Not a __freeze__ call — proceed normally.
@@ -42,7 +45,9 @@ impl TypeChecker {
         // 組み込みコレクションのレシーバ（型・メソッド名・位置）。`arg_data` が揃ってから使う。
         let mut builtin_recv: Option<(InferredType, String, crate::token::Span)> = None;
         let method_call_info: Option<(String, String)> =
-            if let Expr::Attr { object, attr, span, .. } = func {
+            if let Expr::Attr { object, attr, span, attr_span, .. } = func {
+                // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+                let span = if attr_span.line != 0 { attr_span } else { span };
                 let obj_ty = self.infer(object);
                 self.check_mutating_method_receiver(object, attr, &obj_ty, span);
                 // ⚠ 組み込みコレクションメソッドの引数型は `arg_data` が揃ってから検査する
