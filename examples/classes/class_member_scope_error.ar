@@ -1,0 +1,34 @@
+# class_member_scope_error.ar — クラスのメンバーを裸の名前で読む（name_scope_plan.md の 1-3）
+#
+# 正常系は class_member_scope.ar
+#
+# メンバーは変数ではないので、メソッドの中でもクラスの本体でも裸の名前では見えない。
+# 実行時は `NameError`。以前は型検査を通り、①はフィールドの型（`str`）の変数として扱われていた
+# （利用者の報告: `TeX_editor/initializer.ar` の `font`）。
+#
+# 期待されるエラー（どれも静的。書くべき形を添える）:
+#   ① name 'font' is not defined ('font' is a member of 'EditorConfig'; write `self.font`)
+#   ② name 'DEFAULT' is not defined (... write `EditorConfig.DEFAULT`)
+#   ③ name 'opened' is not defined (... write `EditorConfig.opened`)
+#   ④ name 'helper' is not defined (... write `self.helper`)
+#   ⑤ name 'DEFAULT' is not defined（クラスの本体の `const` から同じクラスの `const` を読む）
+
+class EditorConfig:
+    let font: str
+    const DEFAULT: int = 12
+    const LARGE: int = DEFAULT + 4                # ⛔ ⑤
+    static mut opened: int = 0
+
+    fn __init__(mut self, font: str) -> None:
+        self.font = font
+
+    fn helper(self) -> int:
+        return 1
+
+    fn show(self) -> None:
+        print(font)                               # ⛔ ①
+        print(DEFAULT)                            # ⛔ ②
+        opened += 1                               # ⛔ ③
+        print(helper())                           # ⛔ ④
+
+EditorConfig("mono").show()

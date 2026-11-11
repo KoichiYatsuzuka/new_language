@@ -6,6 +6,7 @@
 // 置いてはならない。積むかどうかの判断は呼び出し側（TypeChecker）の責務。
 
 use super::errors::{StaticTypeError, StaticTypeWarning};
+use crate::token::Span;
 
 /// 型検査中に収集された診断。`TypeChecker::check*` の最終段で取り出される。
 #[derive(Default)]
@@ -16,14 +17,25 @@ pub(super) struct Diagnostics {
     /// ⚠ 重複をまとめる対象はこちらが真のものだけ。テンプレートと関係の無い本物の重複
     /// （別々の箇所の同じ文面）まで消さないように。
     from_instance: Vec<bool>,
+    /// `errors` と同じ長さ。その誤りを報告したときに検査していた**文の位置**（diagnostic_position_plan.md の 2-3）。
+    ///
+    /// 誤りの位置（`span`）は式の錨を指すので、「同じ文で同じ誤りを出したか」は誤りの位置では引けない。
+    /// `rollback` で誤りと一緒に捨てるので、ここに持つ。
+    stmt_at: Vec<Option<Span>>,
     warnings: Vec<StaticTypeWarning>,
 }
 
 impl Diagnostics {
-    /// 静的型エラーを追加する。
-    pub(super) fn report_error(&mut self, err: StaticTypeError, from_instance: bool) {
+    /// 静的型エラーを追加する。`stmt_at` は報告したときに検査していた文の位置。
+    pub(super) fn report_error(&mut self, err: StaticTypeError, from_instance: bool, stmt_at: Option<Span>) {
         self.errors.push(err);
         self.from_instance.push(from_instance);
+        self.stmt_at.push(stmt_at);
+    }
+
+    /// これまでに積んだ誤りと、それを報告したときの文の位置（読むだけ。重複を避ける判断は呼び出し側）。
+    pub(super) fn errors_with_stmt(&self) -> impl Iterator<Item = (&StaticTypeError, Option<&Span>)> {
+        self.errors.iter().zip(self.stmt_at.iter().map(Option::as_ref))
     }
 
     /// 静的型警告を追加する。
@@ -40,6 +52,7 @@ impl Diagnostics {
     pub(super) fn rollback(&mut self, mark: (usize, usize)) {
         self.errors.truncate(mark.0);
         self.from_instance.truncate(mark.0);
+        self.stmt_at.truncate(mark.0);
         self.warnings.truncate(mark.1);
     }
 

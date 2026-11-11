@@ -160,6 +160,15 @@ items make an `Expr::Tuple` (`a[1:, 0]`; pandas_import_plan.md 2-3). ⚠ A postf
 `is` / `is not` are parsed in `parse_comparison` as `Expr::IsType { negated }`.
 `in` / `not in` are parsed as `BinOp::In / BinOp::NotIn`.
 
+**Expression positions** (what static errors point at; diagnostic_position_plan.md phase 1):
+- `Expr::Ident { span }` is the name token, set in `parse_primary`.
+- `Expr::Attr { span, attr_span }`: `span` is the `.` and `attr_span` is the attribute name, set in `parse_call` (the "postfix" level of the chain above).
+- `Call` / `BinOp` / `Cast` / `IsType` / `MustBe` carry the `(` or the operator / keyword (`Expr::own_span`).
+- `Expr::anchor_span` picks the token the type checker points at (see the `type-checking` skill, "Error Positions").
+- ⚠ Expressions the parser **synthesises** (field initialisers in `classes.rs`, `Span::unknown()` in the interpreter) use line 0. Line 0 means "no position", so `anchor_span` skips it.
+  When you synthesise an `Ident` / `Attr`, pass `Span::unknown()`, not a made-up position.
+- Literals, `[..]` / `{..}` displays, type annotations, `Param`, `except` clauses and `case` arms have **no position**.
+
 ---
 
 ## Type and Parameter Parsing (`types.rs`)

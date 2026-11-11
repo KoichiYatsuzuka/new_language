@@ -142,7 +142,22 @@ Defined in `src/type_check/infer.rs`. The checker calls `infer(expr)` recursivel
 
 ### Identifiers
 
-Returns the type recorded in scope. If not found → `Unresolved`.
+Returns the type recorded in scope; if not in scope, the function-value type from `visible_fn_sigs`
+(else `Unresolved`). A name **not in scope** always goes through `check_name_defined` (`infer.rs`,
+rule in the `type_check::names` module doc, `implementation_plans/name_scope_plan.md` phase 1), and so does an
+assignment target (`x = ..` / `x += ..`). It passes only for: runtime builtin names, class / trait /
+protocol / template names, visible type variables, `Self`, `_`, and — **inside a deferred body**
+(`fn` / `gen` / method body, `CheckState::in_deferred_body`) — a **top-level binding of the current module**
+(`module_toplevel`, `names::collect_toplevel_bindings`; this is the forward reference). Everything else is
+`UndefinedName`, or `BareClassMember` when the name is a member of the class being checked
+(`write `self.x` / `C.K``).
+
+- ⚠ Top-level code may not read a later binding (functions are not hoisted at run time either).
+- ⚠ There is no "declared somewhere in the program" fallback any more (removed in 1-4): it let other
+  functions' locals, block-leaked names and class fields count as defined.
+- ⚠ The same undefined name is reported once per statement (`already_reported_undefined`).
+- ⚠ Class / trait bodies do **not** declare their members (fields, methods) as variables
+  (`CheckState::in_class_body`); member types come from the registry.
 
 ### Attribute access (`obj.attr`)
 
@@ -346,7 +361,15 @@ Generator functions (`gen`) are subject to the same requirement; the missing ann
 Before checking, `TypeRegistryBuilder::collect` (`registry/builder.rs`) scans all `FnDef`,
 `ClassDef`, `EnumDef`, `TraitDef`, and `NewTypeDef` statements recursively. It populates:
 
-- `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution.
+- `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution — **top-level (and module / template) functions only**.
+  Nested `fn` / `gen` (inside a function body, `TypeRegistryBuilder::fn_depth`) are not stored: the checker builds
+  their signature when it checks the definition (`TypeRegistry::sig_of`) and declares it in that scope
+  (`CheckState::declare_local_fn`). Look signatures up by name with `TypeChecker::visible_fn_sigs`, never
+  `registry.fn_sigs` directly (name_scope_plan.md 1-7).
+- **Groups of nested functions** (name_scope_plan.md phase 3): `check_stmts` pre-declares a run of back-to-back
+  `fn` / `gen` definitions (`decl_names::fn_group_len`; a decorator or template breaks the run) before checking their
+  bodies (`predeclare_fn_group`), so members may call each other. The VM compiler uses the same function
+  (`note_fn_groups`) — keep them one function, or the checker passes code the runtime cannot run.
 - `class_method_sigs`: `class → method → Vec<FnSig>`.
 - `known_class_names`: set of all class/enum names.
 - `enum_members`: `enum → (member → type)`; the type is the enum type itself.
@@ -574,6 +597,60 @@ When a module is imported, `collect_module_types` does a shallow scan of the mod
 - `Let`, `Mut`, `Const`, `Static`, tuple targets → `Unresolved`
 
 The resulting `HashMap<String, InferredType>` is stored as `InferredType::Namespace(map)` under the module's binding name. Member access on a `Namespace` returns the recorded type directly.
+
+---
+
+## Error Positions (which token an error points at)
+
+The editor draws the squiggle under **one token**: the one at the error's `span`. `Span` holds only a
+start point (`file / line / col`; line 0 = unknown). The rules come from
+`implementation_logs/diagnostic_position_plan.md`:
+
+1. **An explicit `span: Some(..)` wins.** Most errors are built with `span: None` and get their
+   position in `TypeChecker::report_error` (`scope.rs`) through `fallback_span`, which picks:
+   - the **anchor of the expression being inferred** (`expr_anchor`);
+   - failing that, the **position of the statement being checked** (`stmt_pos`, set by `check_stmt`).
+   ⚠ If the anchor is in a different file from the statement (an `alias` expanded into this file),
+   the statement's position is used, so the error is not reported in a file the editor isn't showing.
+2. **The anchor** is `Expr::anchor_span()` (`ast.rs`). `infer` (the body is `infer_inner`) sets it
+   for every expression and restores the outer anchor afterwards:
+
+   | Expression | Anchor |
+   |---|---|
+   | `Ident` | the name (`span`) |
+   | `Attr` `o.a` | the attribute name (`attr_span`), else `.` |
+   | `Call` | the callee's anchor (`m` in `o.m(..)`), else `(` |
+   | `Subscript` / `TemplateInstantiate` | the object's anchor |
+   | `BinOp` / `Cast` / `IsType` / `MustBe` | the operator or keyword (`own_span`) |
+   | anything else (literals, `[..]` / `{..}`, unary operators, expression forms) | none: the outer anchor stays |
+3. **An error raised after inference has finished** (argument types, `let x: T = e`, `return e`,
+   conditions, …) would only see the outer anchor. Point it at its subject explicitly:
+   - `report_error_at(&expr, err)` reports at `expr`'s anchor.
+   - `with_anchor_at(&expr, |c| ..)` makes every error raised inside the closure point at
+     `expr`. It wraps `check_expected`, so protocol-conformance errors point at the value.
+   - `with_anchor(Option<Span>, |c| ..)` is the same for a ready-made span.
+
+   All three only swap the anchor, so a subject with no anchor (a literal) falls back to the
+   current anchor or the statement. The site must also pass `span: None`, because an explicit
+   `span` overrides the anchor.
+
+**Where errors point today:**
+
+| Error | Points at |
+|---|---|
+| Argument errors (`CallArgTypeMismatch`, `CallMutParamWithImmutableArg`, `SelfTypeMismatch`, spread / `len` / keyword argument) | that argument |
+| Wrong argument count, `NoMatchingOverload`, `NotCallable` | the callee name |
+| `let` / `x = e` / `p.f = e` / `xs[i] = e` / `return e` / `yield` / `loop_yield` mismatches, `ConditionNotBool`, param / field defaults, `EnumVariantNotInt` | the value. If the value is a literal: the statement, or the attribute name for `p.f = 1` |
+| `has no member`, access control, assigning to a `let` / `const` field | the attribute name |
+| `InvalidDecorator` | the decorator expression |
+| Spreads in list / dict displays, unary `OperationOnAny` / `OperationOnUnion` | the spread / operand expression |
+| Definition errors (`MissingParamTypeAnn`, …), redeclarations, type-annotation errors, `AssignToImmutable` (the root name is the statement's first token) | the statement |
+
+⚠ **No position exists for** literals, list/dict displays, type annotations, `Param`, `except`
+clauses and `case` arms. So `except Foo:` errors point at the **`try`**, and `case` errors at the
+**`match`** (diagnostic_position_plan.md §4 category D / §5).
+⚠ Positions in error examples are part of `compare_outputs` and `compare_wasm_frontend`. A
+position change shows up there as an intended diff.
 
 ---
 

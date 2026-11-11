@@ -1,4 +1,4 @@
-use crate::ast::{Expr, UnaryOp};
+use crate::ast::{Expr, FieldKind, UnaryOp};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
@@ -49,8 +49,20 @@ impl TypeChecker {
     /// **フェーズ 5 で印を付けた地点をすべて実装し終えた**ので撤去した
     /// （残っていると「義務が無い」と区別できない死んだ足場になる）。
     /// 外側の網は `scripts/type_obligations.ps1`（114 件の検体）が引き続き担う。
+    ///
+    /// ⚠ 推論のあいだは、式の**錨**（`Expr::anchor_span`）を位置を持たない誤りの位置として控える
+    ///   （`expr_anchor`・diagnostic_position_plan.md の 2-1）。錨を持たない式は外側の錨をそのまま使う。
     #[must_use]
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
+        let Some(anchor) = expr.anchor_span() else { return self.infer_inner(expr) };
+        let outer = self.expr_anchor.replace(anchor.clone());
+        let ty = self.infer_inner(expr);
+        self.expr_anchor = outer;
+        ty
+    }
+
+    /// [`Self::infer`] の本体（錨の張り替えを除いたもの）。
+    fn infer_inner(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---
             // `code:` が作るのは `Code`（設計書 §1.2）。
@@ -109,8 +121,10 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span, node_id, .. } => {
-                self.infer_attr(object, attr, span, *node_id)
+            Expr::Attr { object, attr, span, attr_span, node_id, .. } => {
+                // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+                let at = if attr_span.line != 0 { attr_span } else { span };
+                self.infer_attr(object, attr, at, *node_id)
             }
             // ⚠⚠ **trait 修飾アクセス `o::T.f` は型を返していなかった**（タスク 5.2d・検体 `F3`）。
             //    `Unresolved` は「何でも通る」ので、読みも代入も**丸ごと無検査**だった
@@ -142,9 +156,23 @@ impl TypeChecker {
             // 記憶域の解決（`res`）はリゾルバが型検査の後に書くので、ここでは常に未解決。
             // 型検査は名前でスコープを引くだけで `res` を見ない。
             Expr::Ident { name, node_id, .. } => {
-                let found = self
-                    .lookup(name)
-                    .map(|v| v.ty.clone())
+                let in_scope = self.lookup(name).map(|v| v.ty.clone());
+                let binding = self.lookup(name).and_then(|v| v.binding);
+                // どのスコープにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
+                // ⚠ 関数表（`fn_sigs`）で型が引けても見る（name_scope_plan.md の 1-4）。関数表はプログラム全体の
+                //   表で、別の関数の中の入れ子の関数・後で定義する関数も載っている（§0 の A7・B3）。
+                let visible = in_scope.is_some() || self.check_name_defined(name);
+                // 使っている位置の結び付き（エディタだけ・2-2）。束縛の記録がある変数と、見えない名前だけを記録する。
+                if !self.in_instance_decl() {
+                    if let Some(uses) = self.uses.as_mut() {
+                        if !visible {
+                            uses.push(super::NameUse { node_id: *node_id, binding: None });
+                        } else if let Some(b) = binding {
+                            uses.push(super::NameUse { node_id: *node_id, binding: Some(b) });
+                        }
+                    }
+                }
+                let found = in_scope
                     // ⚠⚠ **変数スコープに無ければ関数を探す**（タスク 2.2）。
                     //    以前はここで `Unresolved` に倒していたため、`fn` を名前で参照した
                     //    **関数値に型が付いていなかった**。`Unresolved` は
@@ -153,10 +181,7 @@ impl TypeChecker {
                     //      let f: function[int]->int = takes_str    # シグネチャ違いが通る
                     //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
                     .or_else(|| self.fn_value_type(name.as_str()));
-                // どこにも無い名前（フェーズ10 10-12）。以前は `Unresolved` に倒して素通しにしていた。
-                if found.is_none() {
-                    self.check_name_defined(name);
-                }
+
                 // `from h import[cpp-dll] f` した、今の Arrow から呼べない C の関数（1-2）。
                 self.check_ffi_unsupported_use(name, name, None);
                 let result = found.unwrap_or(InferredType::Unresolved);
@@ -589,6 +614,13 @@ impl TypeChecker {
         }
     }
 
+    /// 名前 `name` で今見える関数のシグネチャ（入れ子の関数を先に引き、無ければ最上位の関数・name_scope_plan.md の 1-7）。
+    ///
+    /// ⚠ 検査器から関数のシグネチャを名前で引くときは**必ずこれを使う**。レジストリの `fn_sigs` には入れ子の関数が無い。
+    pub(super) fn visible_fn_sigs(&self, name: &str) -> Option<&Vec<super::types::FnSig>> {
+        self.state.lookup_local_fn(name).or_else(|| self.registry.fn_sigs(name))
+    }
+
     /// 名前が関数を指すとき、その**関数値としての型**（タスク 2.2）。
     ///
     /// ⚠ `Expr::Ident` は変数スコープだけを引いていたので、`fn` を名前で参照した値の型が
@@ -606,7 +638,7 @@ impl TypeChecker {
         {
             return None;
         }
-        let sigs = self.registry.fn_sigs(name)?;
+        let sigs = self.visible_fn_sigs(name)?;
         if sigs.len() != 1 {
             return None; // オーバーロード
         }
@@ -691,8 +723,9 @@ impl TypeChecker {
                         IT::Any | IT::Unresolved => IT::Any,
                         // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
                         IT::NamedInstance(_) => IT::Any,
+                        // 展開する式を指す（diagnostic_position_plan.md の 3-4。リストの表示は錨を持たない）。
                         other => {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(x, StaticTypeError {
                                 kind: TypeErrorKind::SpreadArgNotIterable {
                                     got: other.to_string(),
                                     kw: false,
@@ -731,8 +764,9 @@ impl TypeChecker {
             InferredType::Any | InferredType::Unresolved => {
                 (InferredType::Any, InferredType::Any)
             }
+            // 展開する式を指す（3-4）。
             other => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(src, StaticTypeError {
                     kind: TypeErrorKind::DictSpreadNotADict {
                         got: other.to_string(),
                     },
@@ -1329,14 +1363,31 @@ impl TypeChecker {
         });
     }
 
-    /// 今のスコープにも関数表にも無い名前を読んだとき、それが**どこにも無い**なら誤りにする（10-12）。
+    /// 今のスコープに無い名前を読み書きしたとき、それが**ここから見えない**なら誤りにする（10-12・name_scope_plan.md の 1-4）。
     ///
-    /// ⚠ 保守的に判定する（`type_check::names` の doc）。次のどれかなら通す:
-    ///   プログラムのどこかで束縛される名前・実行時の組み込みの名前・クラス / trait / protocol / 関数 /
-    ///   テンプレートの名前・今見えている型変数・`Self`。import 先を読めていない環境（エディタ）では見ない。
-    fn check_name_defined(&mut self, name: &str) {
-        if self.registry_incomplete
-            || self.declared_anywhere.contains(name)
+    /// 規則は `type_check::names` の doc。次のどれかなら通す: 実行時の組み込みの名前・クラス / trait / protocol /
+    ///   テンプレートの名前・今見えている型変数・`Self`・`_`、それと**後で実行される本体の中から読む、このモジュールの
+    ///   最上位の束縛**（前方参照）。import 先を読めていない環境（エディタ）では見ない。
+    /// ⚠ 関数の名前を特別扱いしない。最上位の関数は宣言した時点からスコープにあり（`check_fn_def`）、
+    ///   その前に読めるのは後で実行される本体の中だけ（実行時も関数を巻き上げない）。
+    /// 戻り値は**見えるか**（通したら `true`・誤りにしたら `false`。判定しない環境では `true`）。
+    pub(super) fn check_name_defined(&mut self, name: &str) -> bool {
+        if self.registry_incomplete {
+            return true;
+        }
+        if self.already_reported_undefined(name) {
+            return false;
+        }
+        if let Some((class_name, spelled)) = self.bare_class_member(name) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::BareClassMember { name: name.to_string(), class_name, spelled },
+                span: None,
+            });
+            return false;
+        }
+        let forward_ref = self.state.in_deferred_body()
+            && self.module_toplevel.last().is_some_and(|t| t.contains(name));
+        if forward_ref
             || super::names::is_runtime_builtin_name(name)
             || name == "Self"
             // `case _:` の `_`（どれにも当たる腕）。束縛ではないので宣言の集合には入らない。
@@ -1345,15 +1396,61 @@ impl TypeChecker {
             || self.registry.is_known_class(name)
             || self.registry.is_known_trait(name)
             || self.registry.is_protocol(name)
-            || self.registry.fn_sigs(name).is_some()
             || self.registry.template_params(name).is_some()
         {
-            return;
+            return true;
         }
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::UndefinedName { name: name.to_string() },
             span: None,
         });
+        false
+    }
+
+    /// 同じ文で、同じ名前の「見えない名前」の誤りをもう出したか（name_scope_plan.md の 1-4・R-2）。
+    ///
+    /// 以前は誤りの位置が文の位置だったので、`n = n + 1` の左辺と右辺、`mh.enable(1)` を受け手と呼び出しの
+    /// 2 経路で推論する形が、同じ誤りを 2 回出していた。
+    /// ⚠ 誤りは名前の位置を指す（diagnostic_position_plan.md の 2-2）ので、誤りの位置ではなく
+    ///   **報告したときの文の位置**（`Diagnostics::errors_with_stmt`）で比べる（2-3）。同じ文を 2 回検査しても
+    ///   1 件のまま。⚠ 横に別の表を持たないのは、型だけが欲しい推論が誤りを捨てる（`Diagnostics::rollback`）と
+    ///   表だけが残り、本物の誤りを「もう出した」と取り違えるため。
+    fn already_reported_undefined(&self, name: &str) -> bool {
+        let Some(pos) = self.stmt_pos.as_ref() else { return false };
+        self.diags.errors_with_stmt().any(|(e, at)| {
+            let same_name = match &e.kind {
+                TypeErrorKind::UndefinedName { name: n } | TypeErrorKind::BareClassMember { name: n, .. } => n == name,
+                _ => false,
+            };
+            same_name && at.is_some_and(|s| s.file == pos.file && s.line == pos.line && s.col == pos.col)
+        })
+    }
+
+    /// 見えない名前 `name` が、検査中のクラスの**メンバー**なら（クラス名, 書くべき形）（name_scope_plan.md の 1-3）。
+    ///
+    /// メンバーはクラスのスコープに宣言しない（`CheckState::in_class_body`）ので、メソッドの中の裸のフィールド名は
+    /// ここに来る。⚠ 1-3 の当時は、プログラムのどこかで束縛される名前を全部通していた（`__init__` の同名の
+    /// 引数などで通ってしまう）ので、それより先に見ていた。今も「何が違うか」を添えるために先に見る。
+    /// ⚠ モジュールの最上位の束縛と同じ名前なら対象外（メソッドから同じ名前の最上位の変数を読む・前方参照は正しい）。
+    /// ⚠ メンバーの顔ぶれが未確定のクラス（未展開の装飾子）も対象外。
+    fn bare_class_member(&self, name: &str) -> Option<(String, String)> {
+        let class = self.state.current_class()?;
+        if self.module_toplevel.last().is_some_and(|t| t.contains(name)) || self.registry.members_unresolved(class) {
+            return None;
+        }
+        let spelled = if let Some((kind, _)) =
+            self.registry.class_field_details(class).and_then(|f| f.get(name))
+        {
+            match kind {
+                FieldKind::Const | FieldKind::StaticMut => format!("{class}.{name}"),
+                FieldKind::Mut | FieldKind::Let => format!("self.{name}"),
+            }
+        } else if self.registry.class_methods(class).is_some_and(|m| m.contains_key(name)) {
+            format!("self.{name}")
+        } else {
+            return None;
+        };
+        Some((class.to_string(), spelled))
     }
 
     /// 属性を読めない組み込みの値の型なら、その表示名（`int` / `list[int]` …・10-14）。
@@ -1470,8 +1567,9 @@ impl TypeChecker {
             UnaryOp::BitNot => "~",
         };
         match &ty {
+            // 単項演算の誤りは**対象の式**を指す（3-4。単項演算の式は錨を持たない）。
             InferredType::Any => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnAny {
                         op: op_str.to_string(),
                     },
@@ -1480,7 +1578,7 @@ impl TypeChecker {
                 return InferredType::Unresolved;
             }
             InferredType::Union(_) => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnUnion {
                         union_type: ty.to_string(),
                         op: op_str.to_string(),
@@ -1529,7 +1627,7 @@ impl TypeChecker {
         match result {
             Some(t) => t,
             None => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::IncompatibleUnaryOp {
                         op: op_str.to_string(),
                         operand: ty,
@@ -1825,7 +1923,7 @@ impl TypeChecker {
     ) -> InferredType {
         match self.protocol_members(proto, args).and_then(|(_, m)| m.get("__getitem__").cloned()) {
             Some(sigs) => self
-                .check_method_sigs(&obj_ty.to_string(), "__getitem__", &sigs, true, &[(None, idx_ty.clone())])
+                .check_method_sigs(&obj_ty.to_string(), "__getitem__", &sigs, true, &[(None, idx_ty.clone())], &[])
                 .unwrap_or(InferredType::Unresolved),
             None => {
                 self.report_error(StaticTypeError {

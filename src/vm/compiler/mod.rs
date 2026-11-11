@@ -48,6 +48,7 @@ mod entry;
 mod expr;
 mod stmt;
 mod stmt_assign;
+mod visibility;
 
 pub use diag::expr_kind;
 /// VM が `CallBuiltin` を出す組み込み名。消費者は `vm_builtin_names_are_all_handled`（#22-d）と、
@@ -154,6 +155,25 @@ struct Compiler {
     /// どの束縛にも当たらない」という `Expr::Ident` アームの前提を、解放が破るため。
     /// ⚠⚠ ここに入った名前の読みは `Op::Fail` に落とし、最上位と**同じ `NameError`**にする。
     released_for_targets: HashSet<String>,
+    /// **ブロックスコープで見え方を管理する名前**（この Chunk の本体が宣言する名前・name_scope_plan.md の R-1）。
+    ///
+    /// ⚠⚠ 枠は本体の宣言を入れ子のブロックまで**先に全部**集めて振る（`collect_nested_decls`）ので、
+    /// `slots` に名前があることは「今その名前が見える」ことを意味しない。ブロックを抜けた後・宣言より前の
+    /// 読みが、書かれていない枠（`Value::None`）や前の周回の値を**黙って**読んでいた。
+    /// ⇒ ここに入っていて `visible_locals` に無い名前の読み書きは `Op::Fail` で `NameError` にする
+    /// （[`visibility`] の doc）。引数・キャプチャ・`static mut` は入れない（宣言の前から見える／枠が無い）。
+    /// ⚠ **Python のモジュールの関数では空**（関数単位のスコープなので、ブロックの外へ見えるのが正しい）。
+    block_locals: HashSet<String>,
+    /// `block_locals` のうち**今見えている**名前。宣言の文をコンパイルし終えたときに入り、
+    /// その宣言のあるブロックを抜けるときに出る。
+    visible_locals: HashSet<String>,
+    /// ブロックごとの「このブロックで見えるようになった名前」（抜けるときに `visible_locals` から外す）。
+    /// 先頭はこの Chunk の本体そのもの（抜けない）。
+    block_scopes: Vec<Vec<String>>,
+    /// 文（`fn` / `gen` の定義）→（組のメンバーの名前・その中の位置）（`note_fn_groups`・name_scope_plan.md の 3-3）。
+    fn_groups: HashMap<*const Stmt, (std::rc::Rc<[String]>, usize)>,
+    /// 今コンパイルしている組の最初のメンバーの `fn_defs` の添字。
+    group_start: Option<u32>,
     /// `static mut` の名前 → 宣言位置（#27-d）。
     ///
     /// この名前は **slot を持たない**（記憶域は `Interpreter::static_cells`）ので、
@@ -328,6 +348,11 @@ impl Compiler {
             temps_in_use: 0,
             toplevel_globals: HashMap::new(),
             released_for_targets: HashSet::new(),
+            block_locals: HashSet::new(),
+            visible_locals: HashSet::new(),
+            block_scopes: vec![Vec::new()],
+            fn_groups: HashMap::new(),
+            group_start: None,
             statics: HashMap::new(),
             cells: HashMap::new(),
             cell_by_slot: HashMap::new(),

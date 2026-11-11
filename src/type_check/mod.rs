@@ -137,15 +137,22 @@ pub struct TypeChecker {
     /// `check_attr_assign` が立て、`infer_attr` が入口で取り去る。`__setattr__` を上書きした Python のクラスへの代入は
     /// 上書きが受けるので、宣言していない名前も書ける（読みは今までどおり宣言した名前だけ）。
     attr_is_assign_target: bool,
-    /// プログラムのどこかで束縛される名前（`names::collect_declared_anywhere`・フェーズ10 10-12）。
-    /// 今のスコープに無い名前を「未定義」と言う前に引く（前方参照などで偽の誤りを出さないため）。
-    declared_anywhere: std::collections::HashSet<String>,
+    /// 検査中のモジュールの**最上位の束縛**（`names::collect_toplevel_bindings`・name_scope_plan.md の 1-3 / 1-4）。
+    /// 末尾が今のモジュール（入口のファイルで始まり、`annotate_module_body` が import 先の分を積む）。
+    module_toplevel: Vec<std::collections::HashSet<String>>,
     /// 今の Arrow から正しく呼べない C/C++ の関数（ffi_value_exchange_plan.md 1-2）の束縛の綴り。
     /// キー: fp.fp_greet（`import[cpp-dll] h as fp`）/ fp_greet（from h import[cpp-dll] fp_greet）。
     /// 値: (束縛のスコープの深さ, 表示名, 理由)。使った箇所を誤りにする。
     ffi_unsupported: HashMap<String, (usize, String, String, &'static str)>,
-    /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
+    /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける
+    /// （[`Self::expr_anchor`] が無いとき）。
     stmt_pos: Option<crate::token::Span>,
+    /// 今推論している式のうち一番内側で**錨**（[`crate::ast::Expr::anchor_span`]）を持つものの錨
+    /// （diagnostic_position_plan.md の 2-1）。`infer` が張り替えて戻し、`check_stmt` が空にして戻す
+    /// （式の中の文 ― `if` 式の本体など ― が外側の式を指さないように）。位置を持たない誤りは
+    /// これ → `stmt_pos` の順で位置を得る（`report_error`）。
+    expr_anchor: Option<crate::token::Span>,
+
     /// 変数を束縛した記録（[`BindingRecord`]）。`None` のあいだは記録しない
     /// （使うのは VS Code 拡張だけ・[`Self::check_program_for_editor`]）。
     bindings: Option<Vec<BindingRecord>>,
@@ -155,6 +162,39 @@ pub struct TypeChecker {
     ///   エディタ索引（`parser::editor_index` の `bind_anchors`）が同じ規則で鍵を作るので、
     ///   片方にだけ規則を足すと突き合わせが外れる。
     bind_pos: Option<crate::token::Span>,
+    /// 直前の [`BindingRecord`]（名前・添字）。次の `declare` が同じ名前を宣言したら、その変数に結び付ける
+    /// （`VarInfo::binding`・name_scope_plan.md の 2-2）。
+    pending_binding: Option<(String, usize)>,
+    /// 組の名前として先に宣言した `fn` / `gen`（`predeclare_fn_group`・name_scope_plan.md の 3-2）。
+    /// 各定義の検査が自分の名前を 1 つ取り除き、宣言を飛ばす。
+    group_predeclared: Vec<String>,
+    /// 識別子を使っている位置ごとの結び付き（[`NameUse`]・記録するときだけ）。
+    uses: Option<Vec<NameUse>>,
+}
+
+/// 識別子を**使っている位置**（`Expr::Ident` の node-id）が、どの束縛を指すか（VS Code 拡張の hover /
+/// 定義へ移動・name_scope_plan.md の 2-2・D-2 = (b)）。
+///
+/// - `binding: Some(i)`: [`BindingRecord`] の `i` 番目の束縛（変数）を指す。
+/// - `binding: None`: **ここから見えない名前**（`UndefinedName` / `BareClassMember` の誤りになった）。拡張は
+///   同じ名前の別の宣言に結び付けず、hover も定義へ移動も出さない。
+///
+/// 記録の無い位置（引数・関数・クラスの名前・組み込み・前方参照）は、拡張が従来どおりスコープ木から引く。
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
+pub struct NameUse {
+    pub node_id: u32,
+    pub binding: Option<usize>,
+}
+
+/// エディタ用の記録（[`TypeChecker::check_program_for_editor`] が返す）。
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
+pub struct EditorRecords {
+    /// 変数を束縛した記録（宣言の hover / inlay の型）。
+    pub bindings: Vec<BindingRecord>,
+    /// 識別子を使っている位置ごとの結び付き。
+    pub uses: Vec<NameUse>,
 }
 
 /// 変数を**束縛した瞬間**の型の記録（VS Code 拡張の hover / inlay hint 用）。
@@ -212,6 +252,7 @@ impl TypeChecker {
                     ty: InferredType::TypeValOf(Box::new(inner.clone())),
                     mutable: false,
                     contents_mutable: false,
+                    binding: None,
                 },
             );
         }
@@ -243,7 +284,7 @@ impl TypeChecker {
         //     `check_len_argument`（`call_check.rs`）で弾く。
         for name in builtins::GLOBAL_FNS {
             if let Some(ty) = builtins::fn_type(name) {
-                global.insert(name.to_string(), VarInfo { ty, mutable: false, contents_mutable: false });
+                global.insert(name.to_string(), VarInfo { ty, mutable: false, contents_mutable: false, binding: None });
             }
         }
         for name in ["begin", "last"] {
@@ -253,6 +294,7 @@ impl TypeChecker {
                     ty: InferredType::NamedInstance("Index".to_string()),
                     mutable: false,
                     contents_mutable: false,
+                    binding: None,
                 },
             );
         }
@@ -264,6 +306,7 @@ impl TypeChecker {
                 ))),
                 mutable: false,
                 contents_mutable: false,
+                binding: None,
             },
         );
         // 例外クラスの登録はレジストリ側（with_builtins）と対になっている。
@@ -277,6 +320,7 @@ impl TypeChecker {
                     ))),
                     mutable: false,
                     contents_mutable: false,
+                    binding: None,
                 },
             );
         }
@@ -287,12 +331,12 @@ impl TypeChecker {
         for decl in &builtin_types {
             if let Stmt::EnumDef { name, .. } = decl {
                 let ty = InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone())));
-                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false });
+                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false, binding: None });
             }
             // 組み込みの protocol（`Iterable` …・6-7）も型の値として置く（`isinstance(x, Sized)`）
             if let Stmt::ProtocolDef { name, .. } = decl {
                 let ty = InferredType::TypeValOf(Box::new(InferredType::Protocol(name.clone(), Vec::new())));
-                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false });
+                global.insert(name.clone(), VarInfo { ty, mutable: false, contents_mutable: false, binding: None });
             }
         }
 
@@ -321,15 +365,15 @@ impl TypeChecker {
             },
             attr_is_callee: false,
             attr_is_assign_target: false,
-            declared_anywhere: {
-                let mut set = std::collections::HashSet::new();
-                names::collect_declared_anywhere(stmts, &mut set);
-                set
-            },
+            module_toplevel: vec![names::collect_toplevel_bindings(stmts)],
             ffi_unsupported: HashMap::new(),
             stmt_pos: None,
+            expr_anchor: None,
             bindings: None,
             bind_pos: None,
+            pending_binding: None,
+            group_predeclared: Vec::new(),
+            uses: None,
         }
     }
 
@@ -422,7 +466,7 @@ impl TypeChecker {
         Vec<StaticTypeError>,
         Vec<StaticTypeWarning>,
         annotations::AstAnnotations,
-        Vec<BindingRecord>,
+        EditorRecords,
     ) {
         Self::check_program_inner(stmts, true)
     }
@@ -434,11 +478,12 @@ impl TypeChecker {
         Vec<StaticTypeError>,
         Vec<StaticTypeWarning>,
         annotations::AstAnnotations,
-        Vec<BindingRecord>,
+        EditorRecords,
     ) {
         let mut tc = Self::new(stmts);
         if record_bindings {
             tc.bindings = Some(Vec::new());
+            tc.uses = Some(Vec::new());
         }
         tc.check_stmts(stmts);
         // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
@@ -447,10 +492,13 @@ impl TypeChecker {
             .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
         let instance_names = tc.registry.instance_names().clone();
-        let bindings = tc.bindings.take().unwrap_or_default();
+        let records = EditorRecords {
+            bindings: tc.bindings.take().unwrap_or_default(),
+            uses: tc.uses.take().unwrap_or_default(),
+        };
         let (errors, warnings) = tc.diags.into_parts_tagged();
         let errors = Self::merge_instance_errors(errors, &instance_names);
-        (errors, warnings, annotations, bindings)
+        (errors, warnings, annotations, records)
     }
 
     /// **同じ誤りの重複報告をまとめる**（タスク 2-8 段階 2）。

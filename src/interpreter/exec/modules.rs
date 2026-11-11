@@ -1069,13 +1069,14 @@ impl Interpreter {
                 .iter()
                 .map(|(fname, _)| crate::ast::Stmt::AttrAssign {
                     target: crate::ast::Expr::Attr {
-                        object: Box::new(crate::ast::Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                        object: Box::new(crate::ast::Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() }),
                         attr: fname.clone(),
                         span: Span::unknown(),
+                        attr_span: Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: crate::ast::Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
+                    value: crate::ast::Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved, span: Span::unknown() },
                     span: crate::token::Span::unknown(),
                 })
                 .collect();
@@ -1091,6 +1092,7 @@ impl Interpreter {
             vm_chunk: None,
             bound: None,
             qualname: None,
+                group: None,
             });
 
             let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();

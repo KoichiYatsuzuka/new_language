@@ -200,10 +200,11 @@ impl Parser {
         if matches!(self.current(), Token::Ident(n) if self.known_templates.contains(n))
             && *self.peek1() == Token::LBracket
         {
+            let span = self.current_span();
             let base = self.expect_ident()?;
             let type_args = self.parse_type_args()?;
             return Ok(Expr::TemplateInstantiate {
-                base: Box::new(Expr::Ident { name: base, node_id: self.next_node_id(), res: Resolution::Unresolved }),
+                base: Box::new(Expr::Ident { name: base, node_id: self.next_node_id(), res: Resolution::Unresolved, span }),
                 type_args,
             });
         }
@@ -214,6 +215,7 @@ impl Parser {
         //   型位置での展開は `expand_alias_as_type` が保存トークンを再パースするので、
         //   ここで返す `Expr` は式位置で誤用されたときの名前（`NameError` の見出し）に使う。
         let save = self.pos;
+        let span = self.current_span();
         match self.parse_expr() {
             Ok(e) => Ok(e),
             Err(expr_err) => {
@@ -223,6 +225,7 @@ impl Parser {
                         name: ty,
                         node_id: self.next_node_id(),
                         res: Resolution::Unresolved,
+                        span,
                     }),
                     // 型としても読めないなら、式としての失敗の方が利用者に近い
                     Err(_) => Err(expr_err),

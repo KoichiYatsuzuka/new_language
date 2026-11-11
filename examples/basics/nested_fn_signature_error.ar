@@ -1,0 +1,31 @@
+# nested_fn_signature_error.ar — 入れ子の関数を、そのシグネチャに合わない引数で呼ぶ（name_scope_plan.md の 1-7）
+#
+# 正常系は nested_fn_signature.ar
+#
+# 期待されるエラー（どれも静的）:
+#   ① argument 0 of 'helper' expects 'str' but got 'int'（b の中の helper は str を受ける）
+#   ② 's' is declared 'str' but initialized with 'int'（a の中の helper は int を返す）
+#
+# ⚠ 以前は a と b の helper が多重定義としてまとまり、①も②も「どちらかの helper に合う」ので静的に通った。
+#   ①は実行時の TypeError（int と str の足し算）、②は str と注釈した変数に int が入っていた。
+
+fn a() -> int:
+    fn helper(x: int) -> int:
+        return x + 1
+    return helper(1)
+
+fn b() -> str:
+    fn helper(s: str) -> str:
+        return s + "!"
+    let s: str = helper(2)                 # ⛔ ①
+    return s
+
+fn c() -> None:
+    fn helper(x: int) -> int:
+        return x
+    let s: str = helper(1)                 # ⛔ ②
+    print(s)
+
+print(a())
+print(b())
+c()

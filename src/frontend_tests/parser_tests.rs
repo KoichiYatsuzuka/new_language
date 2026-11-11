@@ -1653,3 +1653,35 @@ fn arrow_class_cannot_define_attr_hooks() {
     Parser::new(Lexer::new(ok, "m.ar").tokenize(), None).parse_program().expect("other dunders parse");
 }
 
+/// 識別子・属性名の位置と、型検査の誤りの錨（`Expr::anchor_span`・diagnostic_position_plan.md の 1-1 / 1-3）。
+#[test]
+fn expression_anchor_points_at_the_subject_token() {
+    let stmts = parse(concat!(
+        "while running:\n",      // 1: 条件の識別子は列 7
+        "    pass\n",
+        "let y = obj.missing\n", // 3: 属性名は列 13（`.` は列 12）
+        "f(a, b)\n",             // 4: 呼び出しは呼ばれる側の名前（列 1）
+        "o.m(1)\n",              // 5: メソッドの呼び出しはメソッド名（列 3）
+        "xs[0]\n",               // 6: 添字は対象（列 1）
+        "1 + 2\n",               // 7: 二項演算は演算子（列 3）
+        "-x\n",                  // 8: 単項演算は錨を持たない
+        "(g)(1)\n",              // 9: 括弧で包んだ呼ばれる側も名前（列 2）
+    ));
+    let at = |e: &Expr| e.anchor_span().map(|s| (s.line, s.col));
+    let Stmt::While { cond, .. } = &stmts[0] else { panic!("expected while") };
+    assert_eq!(at(cond), Some((1, 7)));
+    let Stmt::Let(_, _, init, _) = &stmts[1] else { panic!("expected let") };
+    assert_eq!(at(init), Some((3, 13)));
+    let Expr::Attr { span, .. } = init else { panic!("expected attr") };
+    assert_eq!((span.line, span.col), (3, 12), "`.` の位置（実行時の表示が使う）は変えない");
+    let expr_at = |i: usize| {
+        let Stmt::Expr(e) = &stmts[i] else { panic!("expected expression statement at {i}") };
+        at(e)
+    };
+    assert_eq!(expr_at(2), Some((4, 1)));
+    assert_eq!(expr_at(3), Some((5, 3)));
+    assert_eq!(expr_at(4), Some((6, 1)));
+    assert_eq!(expr_at(5), Some((7, 3)));
+    assert_eq!(expr_at(6), None);
+    assert_eq!(expr_at(7), Some((9, 2)));
+}

@@ -1,0 +1,29 @@
+# nested_fn_recursion_error.ar — 組を切った入れ子の関数の前方参照（name_scope_plan.md のフェーズ 3）
+#
+# 正常系は nested_fn_recursion.ar
+#
+# 組になるのは**間に別の文を挟まずに続けて書いた** `fn` / `gen` の定義だけ。間に文があると組はそこで切れ、
+# 前の組から後の関数は見えない（定義した時点でまだ束縛されていない外側の名前と同じ・D-1 = (a)）。
+#
+# 期待されるエラー（どれも静的な `name '..' is not defined`）:
+#   ① second  間に `let` を挟んだ後の関数を呼ぶ
+#   ② helper  間に `print(..)` を挟んだ後の関数を呼ぶ
+
+fn split_by_let() -> int:
+    fn first(n: int) -> int:
+        return second(n) + 1               # ⛔ ①
+    let offset = 1
+    fn second(n: int) -> int:
+        return n + offset
+    return first(1)
+
+fn split_by_call() -> int:
+    fn uses(n: int) -> int:
+        return helper(n)                   # ⛔ ②
+    print("between")
+    fn helper(n: int) -> int:
+        return n
+    return uses(2)
+
+print(split_by_let())
+print(split_by_call())

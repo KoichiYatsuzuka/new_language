@@ -1100,4 +1100,7 @@ pub(crate) struct VarInfo {
     /// 違うのは `from m import X` で取り込んだ名前だけ（付け替えはできないが、中身は元の宣言の属性に従う・
     /// [`VarAttr::Imported`]）。
     pub(crate) contents_mutable: bool,
+    /// この変数を束縛した記録（`TypeChecker::bindings` の添字・エディタだけ・name_scope_plan.md の 2-2）。
+    /// 識別子を使っている位置からその宣言を引くのに使う（`NameUse`）。記録しない束縛（引数・関数の名前など）は `None`。
+    pub(crate) binding: Option<usize>,
 }

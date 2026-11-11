@@ -74,13 +74,8 @@ impl Compiler {
             self.stmt_base = self.stmt_base.map(|d| d + extra);
         }
         self.in_finally += 1;
-        let mut ok = true;
-        for s in fin {
-            if self.compile_stmt(s).is_none() {
-                ok = false;
-                break;
-            }
-        }
+        // 複製ごとに 1 つのブロック（R-1）。`finally` の中の宣言は外から見えない。
+        let ok = self.compile_block_body(fin).is_some();
         self.in_finally -= 1;
         self.stmt_base = saved_base;
         if ok {
@@ -122,12 +117,7 @@ impl Compiler {
         // 本体の間だけハンドラが 1 つ多い（#34）。ここから外側ループへ跳ぶ `break` は
         // `PopTry` を通らないので、跳ぶ側が同じ数だけ戻す必要がある（`finally` は無いので `None`）。
         self.try_stack.push(None);
-        let r = (|| {
-            for s in body {
-                self.compile_stmt(s)?;
-            }
-            Some(())
-        })();
+        let r = self.compile_block_body(body);
         self.try_stack.pop();
         r?;
         self.emit(Op::PopTry);
@@ -140,9 +130,7 @@ impl Compiler {
                 // bare `except:` — 無条件マッチ。
                 None => {
                     self.bind_or_pop_exc(h)?;
-                    for s in &h.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_handler_body(h.name.as_ref(), &h.body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     // bare except 以降のハンドラは到達不能（パーサが末尾を保証）。
                 }
@@ -153,9 +141,7 @@ impl Compiler {
                     self.emit(Op::ExcMatch(ni)); // [exc, bool]
                     let jf = self.emit(Op::JumpIfFalse(0)); // bool を pop・不一致は next へ
                     self.bind_or_pop_exc(h)?; // 一致: [exc] を束縛 or 破棄
-                    for s in &h.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_handler_body(h.name.as_ref(), &h.body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
@@ -190,9 +176,7 @@ impl Compiler {
         self.try_stack.push(Some(fin.to_vec()));
         let r = (|| {
             if handlers.is_empty() {
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
+                self.compile_block_body(body)?;
             } else {
                 self.compile_try_except(body, handlers)?;
             }
@@ -248,9 +232,7 @@ impl Compiler {
             match &arm.pattern {
                 // ワイルドカード `case _:` は無条件マッチ。
                 MatchPattern::Case(Expr::Ident { name: n, .. }) if n == "_" => {
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     // 以降のアームは到達不能だが害はない（emit を続けても正しさは保たれる）。
                 }
@@ -259,9 +241,7 @@ impl Compiler {
                     self.compile_expr(pattern_expr)?;
                     self.emit(Op::Bin(BinOp::Eq)); // subject == pattern（apply_binop_dyn 委譲）
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
@@ -271,9 +251,7 @@ impl Compiler {
                     let ni = self.add_name(type_name);
                     self.emit(Op::IsType(ni));
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);

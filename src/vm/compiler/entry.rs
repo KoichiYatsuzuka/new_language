@@ -101,6 +101,7 @@ pub fn compile_toplevel_stmt(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashMap<String, bool>,
 ) -> Option<Chunk> {
+    // メインプログラムは Arrow のソースだけ（Python のモジュールの文は `compile_module_stmt`）。
     compile_toplevel_or_module(stmt, annotations, toplevel_globals, CompileMode::Toplevel)
 }
 
@@ -188,6 +189,9 @@ pub fn compile_definition_expr(
         chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         ..Compiler::base(CompileMode::DefinitionExpr, annotations)
     };
+    // 式の中の宣言（ブロック式の本体）はすべてブロックの中の名前（R-1）。
+    let names: Vec<String> = c.slots.keys().cloned().collect();
+    c.track_block_locals(names);
 
     c.compile_expr(expr)?;
     c.emit(Op::Return);
@@ -244,6 +248,10 @@ fn compile_toplevel_stmt_inner(
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
         ..Compiler::base(mode, annotations)
     };
+    // この文の内側の宣言（ループ本体・ブロック式の中）はすべてブロックの中の名前（R-1）。
+    // ⚠ 最上位の宣言そのものは大域で `slots` に入らないので対象外（`DeclareGlobal`）。
+    let names: Vec<String> = c.slots.keys().cloned().collect();
+    c.track_block_locals(names);
 
     c.compile_stmt(stmt)?;
     // 最上位文は値を返さない（`Return` は型検査が最上位で禁じる）。
@@ -391,6 +399,15 @@ fn compile_fn_inner(
         bail("nested-decls", None);
         return None;
     }
+    // 本体が宣言する名前（ブロックスコープで見え方を管理する・R-1）。この時点の `slots` は
+    // 引数と本体の宣言だけ（キャプチャは下で足す）。⚠ 下でセルへ移す名前もここに含めたままにする。
+    let block_locals: Vec<String> = {
+        let params_named: HashSet<&str> = params
+            .iter()
+            .map(|p| if p.variadic { "local::args" } else { p.name.as_str() })
+            .collect();
+        slots.keys().filter(|k| !params_named.contains(k.as_str())).cloned().collect()
+    };
 
     // クロージャの不変キャプチャに slot を採番する（#27-d）。
     //
@@ -489,6 +506,7 @@ fn compile_fn_inner(
         cell_by_slot,
         ..Compiler::base(CompileMode::Function, annotations)
     };
+    c.track_block_locals(block_locals);
 
     // **`mut` パラメータのセル昇格に引数を流し込む**（B3）。
     //
@@ -508,6 +526,7 @@ fn compile_fn_inner(
         c.emit(Op::StoreCell(cell));
     }
 
+    c.note_fn_groups(body);
     for stmt in body {
         c.compile_stmt(stmt)?;
     }
@@ -561,6 +580,9 @@ pub fn compile_async_body(
         bail("nested-decls", None);
         return None;
     }
+    // 本体が宣言する名前（R-1）。捕捉名は下で足すので、この時点の `slots` は本体の宣言だけ。
+    // ⚠ async の本体は Arrow の構文（`mng <- async->T:`）なので Python の場合は無い。
+    let block_locals: Vec<String> = slots.keys().cloned().collect();
     // 捕捉環境は末尾（#27-d 段階 1 と同じ理由・同じ表）。
     let mut captured_slots: Vec<(String, u16)> = Vec::with_capacity(captures.len());
     let mut capture_names: Vec<&String> = captures.iter().collect();
@@ -623,6 +645,7 @@ pub fn compile_async_body(
         // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
         ..Compiler::base(CompileMode::AsyncBody, annotations)
     };
+    c.track_block_locals(block_locals);
 
     // async 本体は Chunk の先頭＝オペランドスタックは空（#34）。
     // アノテーションは持たない（`mng <- async->T:` の T は代入先の型で、`block_return` の

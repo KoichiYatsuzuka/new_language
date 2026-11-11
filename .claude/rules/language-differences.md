@@ -160,6 +160,16 @@
   error at the call, exactly as the direct call `obj.method(..)` would be (static via the function type's
   `mutates_immutable` mark; instances are also stopped at run time). `gen` methods and methods of built-in
   values (`push = xs.append`) bind too (task 1-10; readable names: `names::BUILTIN_VALUE_METHODS`).
+- **Block scope, checked statically** (`implementation_plans/name_scope_plan.md` phase 1): a name bound inside
+  `if` / `for` / `while` / `match` / `block:` / `try` (including the `for` variable and `except .. as e`) is gone after
+  the block, in functions too. Reading a name that is not visible is a static `name '..' is not defined`. Only a
+  `fn` / `gen` / method body may read a module top-level name bound **later** (forward reference); top-level code may
+  not (functions are not hoisted). A nested function cannot capture an outer local bound after its definition.
+  - ⚠ Except recursion: a nested function may call itself, and `fn` / `gen` definitions written **back to back** (no
+    statement in between) form a group whose members may call each other (phase 3; no forward declaration). Neither
+    copies the function value, so no `Rc` cycle (`CapturedVar::SelfFn` / `Sibling`).
+  - ⚠ Class members are not variables: inside methods and the class body write `self.x` / `C.K` (bare `x` is
+    `BareClassMember`). A local may reuse a member's name.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation

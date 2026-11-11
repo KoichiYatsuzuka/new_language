@@ -3,16 +3,22 @@
 // 型検査は、どのスコープにも無い名前（`print(nonexistent(2))`）を静的に弾く。以前は `Unresolved` に
 // 倒して素通しにしており、実行時の `NameError` まで分からなかった。
 //
-// ⚠⚠ 誤って「未定義」と言わないために、判定は保守的にしてある:
-//   - 今のスコープで見えなくても、**プログラムのどこかで束縛される名前**は通す（`declared_anywhere`）。
-//     前方参照（後で宣言される最上位の名前を関数の中から読む）や、スコープの細部の食い違いで
-//     偽の誤りを出さないため。取りこぼすのは「同じ名前がどこか別の場所で束縛されている」誤りだけ。
+// 今のスコープで見えない名前を通すのは次のときだけ（name_scope_plan.md の §2・1-4）:
+//   - **後で実行される本体**（`fn` / `gen` / メソッドの本体）の中で、名前が**このモジュールの最上位の束縛**
+//     （[`collect_toplevel_bindings`]）のとき。前方参照（`fn f(): print(G)` の後の `let G = 1`）を通すため。
+//     ⚠ 最上位の文そのもの（関数の外）では通さない。最上位は順に実行されるので、後で束縛する名前を先に読むのは
+//       誤り（関数も巻き上げない: `f()` の後の `fn f` は実行時 `NameError`）。
+//     ⚠ 入れ子の関数から、外側の関数で後に束縛する名前も通さない（D-1 = (a)。外側の関数の本体は順に検査する
+//       スコープのまま見える）。
+//   ⚠ 以前（10-12）は**プログラムのどこかで束縛される名前**を全部通していた。別の関数の
+//     ローカル・クラスのフィールド・ブロックの外へ漏れた名前が「定義済み」になり、実行時の `NameError` まで
+//     分からなかった（利用者の報告・§0）。1-1 で全例題を測り、型検査器の宣言漏れが無いことを確かめてからやめた。
 //   - 実行時が宣言なしで解決する名前（組み込みの型・例外・関数）は [`RUNTIME_BUILTIN_NAMES`] で通す。
 //   - import 先を読めていない環境（エディタ）では判定しない（`registry_incomplete`）。
 
 use std::collections::HashSet;
 
-use crate::ast::{Expr, Stmt};
+use crate::ast::Stmt;
 
 /// 実行時が**宣言なしで**解決する名前（組み込みの大域・組み込み関数）。
 ///
@@ -301,50 +307,20 @@ pub(crate) fn builtin_exception_bases(name: &str, mutual: bool) -> Vec<String> {
     out
 }
 
-/// プログラムの**どこかで束縛される名前**をすべて集める（保守的・10-12）。
+/// モジュールの**最上位の文が直接束縛する名前**（`let` / `mut` / `const` / `fn` / `class` / `import` の束縛など）。
 ///
-/// ⚠ `import` の本体（別モジュール）へは降りない。モジュールの名前は修飾なしでは見えない
-///   （名前空間の分離・2026-09-26）ので、`import m` の後の `helper(2)` は未定義として弾く。
-pub(crate) fn collect_declared_anywhere(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// ⚠ 最上位の `if` / `for` などの**中**の束縛は含めない（ブロックスコープ）。`for` の変数・`except .. as` の別名も
+///   含めない（`decl_names::each_declared_name` が報告しない）。
+pub(crate) fn collect_toplevel_bindings(stmts: &[Stmt]) -> HashSet<String> {
+    let mut out = HashSet::new();
     for stmt in stmts {
         crate::decl_names::each_declared_name(stmt, &mut |name, _, _| {
             out.insert(name.to_string());
         });
-        crate::stmt_walk::each_subpart(stmt, &mut |part| {
-            use crate::stmt_walk::StmtPart as P;
-            match part {
-                P::Expr(e) | P::MatchPattern(e) => collect_declared_in_expr(e, out),
-                P::Control(b) | P::GenBody(b) | P::TypeBody(b) | P::ProtocolBody(b) | P::AsyncBody(b) => {
-                    collect_declared_anywhere(b, out)
-                }
-                P::FnBody { params, body } => {
-                    for p in params {
-                        out.insert(p.name.clone());
-                    }
-                    collect_declared_anywhere(body, out);
-                }
-                P::ForTarget(t) | P::ExceptAlias(t) => {
-                    out.insert(t.to_string());
-                }
-                // 別モジュールの本体・既存の名前への代入（束縛ではない）。
-                P::ModuleBody(_) | P::TargetName(_) => {}
-            }
-        });
     }
+    out
 }
 
-fn collect_declared_in_expr(e: &Expr, out: &mut HashSet<String>) {
-    crate::expr_walk::each_subpart(e, &mut |part| {
-        use crate::expr_walk::SubPart as P;
-        match part {
-            P::Plain(x) | P::Control(x) | P::MatchPattern(x) => collect_declared_in_expr(x, out),
-            P::Body(b) => collect_declared_anywhere(b, out),
-            P::ForTarget(t) => {
-                out.insert(t.to_string());
-            }
-        }
-    });
-}
 
 
 /// プログラムのどこかで import されるモジュール（`a.b`）を、親（`a`）の子として集める

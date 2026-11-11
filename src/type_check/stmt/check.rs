@@ -41,16 +41,59 @@ fn ffi_unsupported_fns(body: &[Stmt]) -> Vec<(String, String)> {
 impl TypeChecker {
     /// 文のスライスを順に型検査する。
     pub(crate) fn check_stmts(&mut self, stmts: &[Stmt]) {
-        for stmt in stmts {
+        let mut group_end = 0;
+        for (i, stmt) in stmts.iter().enumerate() {
+            // 間に文を挟まずに続く `fn` / `gen` の定義は 1 つの組（name_scope_plan.md のフェーズ 3・3-2）。
+            // 組の名前とシグネチャを、最初の定義より前に全部宣言しておく（組の中の前方参照・相互再帰を通す）。
+            if i >= group_end && !self.state.in_class_body() {
+                let len = crate::decl_names::fn_group_len(&stmts[i..]);
+                group_end = i + len;
+                if len >= 2 {
+                    self.predeclare_fn_group(&stmts[i..group_end]);
+                }
+            }
             self.check_stmt(stmt);
+        }
+    }
+
+    /// 組（`decl_names::fn_group_len`）の関数の名前とシグネチャを先に宣言する。各定義の検査（`check_fn_def` / `check_gen_def`）は
+    /// `group_predeclared` に残った名前の宣言を飛ばす（同じスコープに 2 回積まない）。
+    /// ⚠ 組の外の名前は今までどおり定義の時点のスコープで引く（D-1 = (a)）。
+    fn predeclare_fn_group(&mut self, group: &[Stmt]) {
+        for st in group {
+            let (name, params, ret) = match st {
+                Stmt::FnDef { name, params, return_type, template_params, .. } if template_params.is_empty() => (
+                    name,
+                    params,
+                    return_type.as_deref().and_then(InferredType::from_ann).map(|t| self.registry.resolve_protocol_ann(t)),
+                ),
+                Stmt::GenDef { name, params, yield_type, template_params, .. } if template_params.is_empty() => (
+                    name,
+                    params,
+                    yield_type
+                        .as_deref()
+                        .and_then(InferredType::from_ann)
+                        .map(|t| InferredType::IteratorOf(Box::new(self.registry.resolve_protocol_ann(t)))),
+                ),
+                _ => continue,
+            };
+            if self.state.in_deferred_body() {
+                let sig = self.registry.sig_of(params, ret);
+                self.state.declare_local_fn(name.clone(), sig);
+            }
+            self.group_predeclared.push(name.clone());
+        }
+        for name in self.group_predeclared.clone() {
+            let ty = self.fn_value_type(&name).unwrap_or(InferredType::Unresolved);
+            self.declare(name, ty, false);
         }
     }
 
     /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
     ///
-    /// ⚠ 検査の間は**今の文の位置**を控える（フェーズ10 10-17）。位置を持たない誤り（式の側に位置が
-    ///   無い `let z: str = s` など）はこの位置で報告する（`report_error`）。位置を持たない文
-    ///   （`pass` など）は外側の文の位置を引き継ぐ。
+    /// ⚠ 検査の間は**今の文の位置**を控える（フェーズ10 10-17）。位置を持たない誤りのうち、推論中の式の
+    ///   錨（`expr_anchor`）が無いもの（推論が終わってから出す `let z: str = s` の不一致など）はこの位置で
+    ///   報告する（`report_error`）。位置を持たない文（`pass` など）は外側の文の位置を引き継ぐ。
     pub(crate) fn check_stmt(&mut self, stmt: &Stmt) {
         // 式文は文の位置を持たないので、式そのものの位置（呼び出しの `(` など）で代える。
         let here = stmt.position().or_else(|| match stmt {
@@ -61,6 +104,8 @@ impl TypeChecker {
             Some(p) => self.stmt_pos.replace(p.clone()),
             None => self.stmt_pos.clone(),
         };
+        // 式の中の文（`if` 式の本体など）は外側の式の錨を引き継がない（diagnostic_position_plan.md の 2-1）。
+        let outer_anchor = self.expr_anchor.take();
         // 束縛の記録に付ける位置（`bind_pos` の doc）。`Stmt::position` だけを見る。
         // 記録しない検査（CLI）では張り替えない。
         let outer_bind = match (self.bindings.is_some(), stmt.position()) {
@@ -72,6 +117,7 @@ impl TypeChecker {
             self.bind_pos = prev;
         }
         self.stmt_pos = outer;
+        self.expr_anchor = outer_anchor;
     }
 
     fn check_stmt_inner(&mut self, stmt: &Stmt) {
@@ -101,16 +147,23 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
+                } else {
+                    // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
+                    // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
+                    // （クラスの `static mut` を裸で書く）が静的に通っていた。
+                    let _ = self.check_name_defined(name);
                 }
                 // ⚠ `freeze` 済みの名前への再束縛も**上の `!info.mutable` で捕まる**
                 //    （タスク 9.2 で `freeze` を可変フラグの降格にしたため）。
                 //    以前はここに `is_frozen` の別検査があったが、同じ問いに 2 つの
                 //    実装がある状態だったので撤去した。
                 let rhs_ty = self.infer(value);
+                // 値の誤りは**右辺**を指す（diagnostic_position_plan.md の 3-3）。右辺が錨を持たなければ文の位置
+                // （＝左辺の名前）。
                 if rhs_ty == InferredType::Undefined {
-                    self.report_error(StaticTypeError {
+                    self.report_error_at(value, StaticTypeError {
                         kind: TypeErrorKind::AssignUndefined,
-                        span: Some(span.clone()),
+                        span: None,
                     });
                 }
                 // ── 再代入の型検査（0-7）────────────────────────────────────
@@ -131,14 +184,14 @@ impl TypeChecker {
                         && !self.mentions_type_param(&declared)
                     {
                         let ctx = format!("variable `{name}`");
-                        if !self.check_expected(&rhs_ty, &declared, false, &ctx) {
-                            self.report_error(StaticTypeError {
+                        if !self.with_anchor_at(value, |c| c.check_expected(&rhs_ty, &declared, false, &ctx)) {
+                            self.report_error_at(value, StaticTypeError {
                                 kind: TypeErrorKind::VarTypeMismatch {
                                     name: name.clone(),
                                     expected: declared,
                                     got: rhs_ty,
                                 },
-                                span: Some(span.clone()),
+                                span: None,
                             });
                         }
                     }
@@ -156,6 +209,11 @@ impl TypeChecker {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
+                } else {
+                    // 見えない名前への代入（name_scope_plan.md の 1-3）。実行時は `NameError`。読みと同じ判定
+                    // （`check_name_defined`）を通す。以前は代入の左辺だけ検査が無く、`opened += 1`
+                    // （クラスの `static mut` を裸で書く）が静的に通っていた。
+                    let _ = self.check_name_defined(name);
                 }
                 let lt = self.lookup(name).map(|i| i.ty.clone());
                 let rt = self.infer(value);
@@ -300,7 +358,8 @@ impl TypeChecker {
                 ..
             } => {
                 for dec in decorators {
-                    self.check_decorator(dec, false, name);
+                    // 装飾子の誤りは装飾子の式を指す（diagnostic_position_plan.md の 3-4）。
+                    self.with_anchor_at(dec, |c| c.check_decorator(dec, false, name));
                 }
                 // ⚠ クラスの型変数はメソッド本体からも見える（`mut v: T` を `self.v` で書く）。
                 let saved_tp =
@@ -311,6 +370,7 @@ impl TypeChecker {
                     false,
                 );
                 self.push_scope();
+                self.state.enter_class_body();
                 let prev_class = self.state.enter_class(name.clone());
                 // ⚠ 仮想メソッド（`...` 本体）は **trait 専用**。クラスに置くと実装を強制する
                 //    相手が居ないので、以前は黙って `None` を返す no-op になっていた（0-10）。
@@ -377,6 +437,7 @@ impl TypeChecker {
                 self.check_trait_conformance(name);
                 self.state.pop_type_params(saved_tp);
                 self.state.exit_class(prev_class);
+                self.state.exit_class_body();
                 self.pop_scope();
             }
             Stmt::TraitDef { name, template_params, body, .. } => {
@@ -393,7 +454,9 @@ impl TypeChecker {
                 let saved_tp =
                     self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
                 self.push_scope();
+                self.state.enter_class_body();
                 self.check_stmts(body);
+                self.state.exit_class_body();
                 self.pop_scope();
                 self.state.pop_type_params(saved_tp);
             }
@@ -411,7 +474,8 @@ impl TypeChecker {
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
                     let got = self.infer(e);
-                    self.check_return_type(&got);
+                    // 不一致は戻り値の式を指す（3-3）。
+                    self.with_anchor_at(e, |c| c.check_return_type(&got));
                 }
                 // ⚠ 値なしの `return`（早期脱出）は**照合しない**。「戻り値を返し忘れている」
                 //    という別の検査であり、既存コードの早期 return を巻き込む。
@@ -428,7 +492,8 @@ impl TypeChecker {
                 //    通っていた）。
                 let got = self.infer(expr);
                 let expected = self.state.block_expr_expected().cloned();
-                self.check_block_expr_value(&got, expected, "block_return", Some(span.clone()));
+                // 不一致は値の式を指す（3-3）。錨が無ければ文の位置（＝`block_return`）。
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "block_return", None));
             }
             // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
             Stmt::LoopYield(expr, _) => {
@@ -445,7 +510,7 @@ impl TypeChecker {
                     Some(InferredType::ListOf(elem)) => Some((**elem).clone()),
                     _ => None,
                 };
-                self.check_block_expr_value(&got, expected, "loop_yield", None);
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "loop_yield", None));
             }
             Stmt::Yield(expr, _) => {
                 // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
@@ -459,12 +524,8 @@ impl TypeChecker {
                 // ⚠ 値は `gen` の宣言 yield 型と照合する（タスク 5.2・検体 C8）。
                 //    照合先は `check_gen_def` が `current_fn_return` へ入れた要素型。
                 let got = self.infer(expr);
-                self.check_block_expr_value(
-                    &got,
-                    self.state.current_fn_return().cloned(),
-                    "yield",
-                    None,
-                );
+                let expected = self.state.current_fn_return().cloned();
+                self.with_anchor_at(expr, |c| c.check_block_expr_value(&got, expected, "yield", None));
             }
 
             // --- クラスフィールド宣言 ---
@@ -501,8 +562,9 @@ impl TypeChecker {
                         && !self.mentions_type_param(&ty)
                     {
                         let ctx = format!("default value of field `{name}` of `{class_name}`");
-                        if !self.check_expected(&got, &ty, false, &ctx) {
-                            self.report_error(StaticTypeError {
+                        // 不一致は既定値の式を指す（3-3）。
+                        if !self.with_anchor_at(expr, |c| c.check_expected(&got, &ty, false, &ctx)) {
+                            self.report_error_at(expr, StaticTypeError {
                                 kind: TypeErrorKind::FieldTypeMismatch {
                                     field_name: name.clone(),
                                     class_name,
@@ -514,11 +576,9 @@ impl TypeChecker {
                         }
                     }
                 }
-                // ⚠ `StaticMut` も可変（タスク 1.2）。理由は
-                //    `registry/builder.rs` の同じ式のコメントを参照。2 箇所あるので
-                //    **片方だけ直すとずれる**。
-                let mutable = matches!(kind, FieldKind::Mut | FieldKind::StaticMut);
-                self.declare(name.clone(), ty, mutable);
+                // ⚠ メンバーは変数として**宣言しない**（name_scope_plan.md の 1-3・`CheckState::in_class_body`）。
+                //   型・可変性はレジストリ（`class_field_details` / `field_is_mutable`）が持ち、`self.x` / `C.K` は
+                //   そちらから引く。裸の名前で読むと `BareClassMember` になる（`check_name_defined`）。
             }
 
             // --- ジェネレータ関数定義 ---
@@ -597,7 +657,8 @@ impl TypeChecker {
                     if matches!(got, InferredType::Unresolved | InferredType::Int) {
                         continue;
                     }
-                    self.report_error(StaticTypeError {
+                    // 値の式を指す（3-4）。錨が無ければ文の位置（`enum`）。
+                    self.report_error_at(expr, StaticTypeError {
                         kind: TypeErrorKind::EnumVariantNotInt {
                             enum_name: name.clone(),
                             variant: vname.clone(),
@@ -1056,7 +1117,8 @@ impl TypeChecker {
         if matches!(ty, InferredType::Bool) {
             return;
         }
-        self.report_error(StaticTypeError {
+        // 条件の式を指す（3-3）。錨が無ければ今の錨（`if` 式）か文の位置（`if` / `while`）。
+        self.report_error_at(cond, StaticTypeError {
             kind: TypeErrorKind::ConditionNotBool {
                 keyword: keyword.to_string(),
                 got: ty,
@@ -1322,6 +1384,20 @@ impl TypeChecker {
         let target_ty = self.infer(target);
         self.attr_is_assign_target = false;
         let value_ty = self.infer(value);
+        // 値の照合で出る誤りは**代入する値**を指す（diagnostic_position_plan.md の 3-3）。値が錨を持たない
+        // （リテラル）ときは代入先の属性名・添字の対象。⚠ 上の不変性の誤りは書き込む先の誤りなので文の位置のまま。
+        let anchor = value.anchor_span().or_else(|| target.anchor_span()).cloned();
+        self.with_anchor(anchor, |c| c.check_attr_assign_value(target, compound_op, target_ty, value_ty));
+    }
+
+    /// [`Self::check_attr_assign`] の後半: 代入する値の型（`value_ty`）を代入先（`target_ty`）と照合する。
+    fn check_attr_assign_value(
+        &mut self,
+        target: &Expr,
+        compound_op: Option<&BinOp>,
+        target_ty: InferredType,
+        value_ty: InferredType,
+    ) {
         // CPython の物の要素・属性へ Arrow の list などをキャストせずに入れない（`df["c"] = [1, 2]`・`df.columns = [..]`・D-12・2-11）
         if let Expr::Subscript { object, .. } | Expr::Attr { object, .. } = target {
             let recv = self.infer_quietly(object);
@@ -1359,9 +1435,11 @@ impl TypeChecker {
             }
             return;
         }
-        let Expr::Attr { object, attr, span, .. } = target else {
+        let Expr::Attr { object, attr, span, attr_span, .. } = target else {
             return;
         };
+        // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+        let span = if attr_span.line != 0 { attr_span } else { span };
         // ⚠ import したモジュールの `mut` のグローバル変数への代入（`g.MK = v`）は、その変数の型で検査する
         //   （ふつうの変数の付け替えと同じ `VarTypeMismatch`）。
         if let InferredType::Namespace(_, _, vars) = self.infer_quietly(object) {
@@ -1377,7 +1455,7 @@ impl TypeChecker {
                             expected: target_ty,
                             got: value_ty,
                         },
-                        span: Some(span.clone()),
+                        span: None,
                     });
                 }
             }
@@ -1506,7 +1584,7 @@ impl TypeChecker {
                 expected,
                 got: value_ty,
             },
-            span: Some(span.clone()),
+            span: None,
         });
     }
 
@@ -1668,10 +1746,11 @@ impl TypeChecker {
             let ctx = format!("default value of `{}` of `{func_name}`", p.name);
             // ⚠ `mut` 引数でも既定値は**呼び元の記憶域ではない**ので拡大を許してよい
             //    （write-back の相手が居ない）。
-            if self.check_expected(&got, &declared, false, &ctx) {
+            // 不一致は既定値の式を指す（3-3）。
+            if self.with_anchor_at(expr, |c| c.check_expected(&got, &declared, false, &ctx)) {
                 continue;
             }
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::ParamDefaultTypeMismatch {
                     func_name: func_name.to_string(),
                     param_name: p.name.clone(),
@@ -1997,7 +2076,8 @@ impl TypeChecker {
         template_params: &[crate::ast::TemplateParam],
     ) {
         for dec in decorators {
-            self.check_decorator(dec, true, name);
+            // 装飾子の誤りは装飾子の式を指す（diagnostic_position_plan.md の 3-4）。
+            self.with_anchor_at(dec, |c| c.check_decorator(dec, true, name));
         }
         for param in params.iter() {
             if param.name == "self" || param.variadic {
@@ -2051,8 +2131,22 @@ impl TypeChecker {
         //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
         //    ⚠ `fn_value_type` が `None` を返す場合（オーバーロード・テンプレート関数）は
         //    従来どおり `Unresolved`。関数値としての型が 1 つに決まらないため。
-        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
-        self.declare(name.to_string(), self_ty, false);
+        // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
+        if let Some(i) = self.group_predeclared.iter().position(|n| n == name) {
+            // 組の名前として先に宣言済み（`predeclare_fn_group`・3-2）。
+            self.group_predeclared.remove(i);
+        } else if !self.state.in_class_body() {
+            // 入れ子の関数のシグネチャは、ここでこのスコープへ積む（name_scope_plan.md の 1-7・`CheckState::declare_local_fn`）。
+            if self.state.in_deferred_body() && template_params.is_empty() {
+                let ret = return_type
+                    .and_then(InferredType::from_ann)
+                    .map(|t| self.registry.resolve_protocol_ann(t));
+                let sig = self.registry.sig_of(params, ret);
+                self.state.declare_local_fn(name.to_string(), sig);
+            }
+            let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+            self.declare(name.to_string(), self_ty, false);
+        }
         self.push_scope();
         // ⚠ 関数自身の型変数（`fn f[T]`）を積む。囲みクラスの型変数は `ClassDef` 側が
         //    既に積んでいるので、ここでは追加するだけでよい。
@@ -2090,7 +2184,9 @@ impl TypeChecker {
         //    false へ張り替えることでそこの `yield` もエラーになる。
         let prev_gen = self.state.enter_gen_body(false);
         // ⚠ ブロック式の照合先も**継承しない**（`with_fn_body` の doc・タスク 5.2）。
+        self.state.enter_deferred_body();
         self.with_fn_body(|c| c.check_stmts(body));
+        self.state.exit_deferred_body();
         self.state.exit_gen_body(prev_gen);
         self.state.exit_fn(prev_fn);
         self.state.pop_type_params(saved_tp);
@@ -2129,8 +2225,22 @@ impl TypeChecker {
         // ⚠ `gen` の名前も関数値としての型で宣言する（`check_fn_def` と同じ・フェーズ10 10-7）。
         //   結果の型は `generator[T]`。以前は `Unresolved` だったので、入れ子の `gen` を呼んだ結果に
         //   型が付かなかった。
-        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
-        self.declare(name.to_string(), self_ty, false);
+        // ⚠ メソッド（クラス・trait の本体の直下）は宣言しない（1-3・`Stmt::Field` の腕と同じ理由）。
+        if let Some(i) = self.group_predeclared.iter().position(|n| n == name) {
+            // 組の名前として先に宣言済み（`predeclare_fn_group`・3-2）。
+            self.group_predeclared.remove(i);
+        } else if !self.state.in_class_body() {
+            // 入れ子の `gen` も入れ子の関数と同じ（1-7）。結果の型はジェネレータ（`registry/builder.rs` の `GenDef` と同じ）。
+            if self.state.in_deferred_body() && template_params.is_empty() {
+                let ret = yield_type
+                    .and_then(InferredType::from_ann)
+                    .map(|t| InferredType::IteratorOf(Box::new(self.registry.resolve_protocol_ann(t))));
+                let sig = self.registry.sig_of(params, ret);
+                self.state.declare_local_fn(name.to_string(), sig);
+            }
+            let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+            self.declare(name.to_string(), self_ty, false);
+        }
         self.push_scope();
         // ⚠⚠ **`gen` 自身の型変数（`gen take[T]`）を積んでから注釈を検査する**（フェーズ10 10-1）。
         //    以前は「`gen` には型変数の投入が無いので、ここで検査してよい」と書いてあったが誤りで、
@@ -2165,7 +2275,9 @@ impl TypeChecker {
             name.to_string(),
             yield_type.and_then(InferredType::from_ann),
         );
+        self.state.enter_deferred_body();
         self.with_fn_body(|c| c.check_stmts(body));
+        self.state.exit_deferred_body();
         self.state.exit_fn(prev_fn);
         self.state.exit_gen_body(prev_gen);
         self.state.pop_type_params(saved_tp);
@@ -2225,8 +2337,9 @@ impl TypeChecker {
         mutable: bool,
     ) {
         let rhs_ty = self.infer(expr);
+        // 値の誤りは**右辺**を指す（diagnostic_position_plan.md の 3-3）。錨が無ければ文の位置。
         if rhs_ty == InferredType::Undefined {
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::AssignUndefined,
                 span: None,
             });
@@ -2237,7 +2350,7 @@ impl TypeChecker {
         //     ここで `Code` が見えたということ自体が「外へ出た」ことを意味する。
         //   ⚠ 本体を検査するようにしたら**ここに深さの条件を足すこと**。
         if rhs_ty == InferredType::Code {
-            self.report_error(StaticTypeError {
+            self.report_error_at(expr, StaticTypeError {
                 kind: TypeErrorKind::CodeEscapesMetafunction { name: name.to_string() },
                 span: None,
             });
@@ -2248,7 +2361,7 @@ impl TypeChecker {
                 span: None,
             });
         }
-        let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt);
+        let ty = self.resolve_declared_type(type_ann, rhs_ty, name, stmt, expr);
         if !mutable {
             let binding = if matches!(stmt, Stmt::Const(..)) { "const" } else { "let" };
             self.require_mut_for_python_object(name, binding, &ty);
@@ -2293,3 +2406,4 @@ impl TypeChecker {
         }
     }
 }
+

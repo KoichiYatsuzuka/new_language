@@ -66,10 +66,26 @@ Rust side of the same feature:
 | Diagnostics | `diagnostics` — `TypeChecker::check_program` errors and warnings |
 | Hover | `symbols` (declaration + signature + docstring + access) and `symbols[].inferred` |
 | Inlay hints | `symbols[].inferred` — the type the checker recorded **when it bound the variable** (`type_check::BindingRecord`), matched to the declaration by statement position + name. Covers every initializer kind and initializer-less bindings (loop variables, `except as`, tuple targets) |
-| Semantic tokens | `symbols` + the scope tree, matched against identifier occurrences |
+| Semantic tokens | `uses` first, then `symbols` + the scope tree, matched against identifier occurrences |
 | Completion | `scopes` for visible names; `members` for `.` access |
 | Signature help | `symbols[].signature` and `members[].params` |
-| Go to definition | `symbols[].at` |
+| Go to definition | `uses` first, then `symbols[].at` |
+
+### How a *use* of a name finds its declaration (`lookup` in `wasm_providers.ts`)
+
+1. **`uses`** (name_scope_plan.md 2-2): the type checker records, per identifier node, the binding it resolved to
+   (`NameUse` → `BindingRecord` → declaration position, via `bound_types` in `analyze.rs`) or `decl: null` when the name
+   is **not visible there** (it reported `UndefinedName` / `BareClassMember`). `null` means: no hover, no definition, no
+   colour, and no fallback type. Only variables with a binding record are resolved this way.
+2. Otherwise the parser's scope tree (`visibleSymbols`). ⚠ It knows neither block scopes nor declaration order, which is
+   why (1) exists; do not "fix" a wrong link by teaching it more rules — record it in the checker instead.
+3. Nothing else. ⚠ **Never fall back to "the first declaration with that name in the file"** (removed in 2-1): it bound an
+   undeclared `font` to an unrelated class field. Members after `.` resolve through the receiver type
+   (`receiverTypeAt`) to that type's declaration; keyword-argument labels (`f(a = 1)`) get no hover.
+- The inferred-type fallback of hover uses `exprTypeOfToken` (the expression that **ends at this token**), never a
+  nearby expression on the same line.
+- Regression checks: `stress.js`'s `scope misses` (`test_fixtures/name_scope_cases.ar`, one marker per case) and
+  `uses_probe.js` (every use in every example, diffed before/after) — see `vscode-debug-runner`.
 
 ## Adding a feature
 

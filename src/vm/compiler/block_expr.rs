@@ -64,9 +64,7 @@ impl Compiler {
             try_len: self.try_stack.len(),
             entry_depth: self.stmt_base,
         });
-        for s in stmts {
-            self.compile_stmt(s)?;
-        }
+        self.compile_block_body(stmts)?;
         let ctx = self.block_ctxs.pop().unwrap();
         // 正常フォールスルー: 値 = 蓄積リスト or None（蓄積先を持たなければ常に None）。
         match yield_slot {
@@ -142,17 +140,13 @@ impl Compiler {
         for (cond, body) in branches {
             self.compile_expr(cond)?;
             let jf = self.emit(Op::JumpIfFalse(0));
-            for s in body {
-                self.compile_stmt(s)?;
-            }
+            self.compile_block_body(body)?;
             branch_ends.push(self.emit(Op::Jump(0)));
             let next = self.here();
             self.patch_jump(jf, next);
         }
         if let Some(eb) = else_body {
-            for s in eb {
-                self.compile_stmt(s)?;
-            }
+            self.compile_block_body(eb)?;
         }
         let ctx = self.block_ctxs.pop().unwrap();
         let end = self.here();
@@ -211,9 +205,7 @@ impl Compiler {
         for arm in arms {
             match &arm.pattern {
                 MatchPattern::Case(Expr::Ident { name: n, .. }) if n == "_" => {
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     arm_ends.push(self.emit(Op::Jump(0)));
                 }
                 MatchPattern::Case(pat) => {
@@ -221,9 +213,7 @@ impl Compiler {
                     self.compile_expr(pat)?;
                     self.emit(Op::Bin(BinOp::Eq));
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     arm_ends.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
@@ -233,9 +223,7 @@ impl Compiler {
                     let ni = self.add_name(type_name);
                     self.emit(Op::IsType(ni));
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in &arm.body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(&arm.body)?;
                     arm_ends.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
@@ -352,9 +340,7 @@ impl Compiler {
             try_len: self.try_stack.len(),
             entry_depth: self.stmt_base,
         });
-        for s in body {
-            self.compile_stmt(s)?;
-        }
+        self.compile_loop_body(targets, body)?;
         self.emit(Op::Jump(loop_start));
         // NORMAL_END: 反復終了 or break → 蓄積リスト or None。
         let normal_end = self.here();
@@ -432,9 +418,7 @@ impl Compiler {
             try_len: self.try_stack.len(),
             entry_depth: self.stmt_base,
         });
-        for s in body {
-            self.compile_stmt(s)?;
-        }
+        self.compile_block_body(body)?;
         self.emit(Op::Jump(loop_start));
         let normal_end = self.here();
         self.patch_jump(jf, normal_end);

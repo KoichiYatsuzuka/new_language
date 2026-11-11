@@ -160,6 +160,18 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   **必ず 1 slot 消費する**（`static` で飛ばして `LoadLocal` が範囲外を読んだ）。
 - **同じ木を歩く walker が 2 つあるとずれる**。`compile_stmt` に文種別を足したら
   **必ず採番側（`collect_nested_decls`）も見る**（#27-c で 2 回踏んだ）。
+- **⚠⚠ `slots` に名前がある ≠ その名前が今見える**（name_scope_plan.md の R-1）。枠は本体の宣言を
+  入れ子のブロックまで**先に全部**振り、初期値は `Value::None`。見え方はコンパイラの
+  [visibility.rs](../../../src/vm/compiler/visibility.rs) が持つ。⇒ **ブロックの本体を回すときは
+  `for s in body { self.compile_stmt(s)?; }` と直接書かず `compile_block_body` を通す**（直接書くと、その
+  本体の宣言がブロックの外へ漏れる。以前は関数の中だけ `if True: let y = 1` の後の `y` が読め、
+  ループで前の周回の値を黙って読んでいた）。名前を読む新しい経路を足したら `is_unbound_local` も見ること。
+- **⚠⚠ 入れ子の関数の捕捉に、自分や組の相手の*値*を写さない**（name_scope_plan.md のフェーズ 3）。`MakeFn` の時点の
+  自分の枠はまだ `None`（以前の `'NoneType' object is not callable`）で、値を入れれば入れたで
+  `FnValue → captured_env → FnValue` の `Rc` の循環になり解放されない。⇒ `CapturedVar::SelfFn` / `Sibling(j)` の印にし、
+  呼び出しの `bind_captures` が自分（`fn_val`）・組から作った相手を書く。組（`FnGroup`）は**組を持たない写し**だけを持つ。
+  組の決め方は型検査と同じ `decl_names::fn_group_len` で、本体の文を回すループでは回す前に `note_fn_groups` を呼ぶ
+  （`compile_block_body` などのヘルパーと `compile_fn` の本体は呼んでいる。新しいループを足したら呼ぶこと）。
 - **⚠ `*_evaled` 版とずれた実装を作らない** — 実バグ 4 回。同じ判断をする 2 実装は
   片方を委譲に畳む。畳めないものは **不変条件をテストで固定** する。
   ⚠ #48 の実バグはこの形: **VM は評価済みの値で呼ぶ ⇒ `dispatch_native_evaled` に落ちる ⇒

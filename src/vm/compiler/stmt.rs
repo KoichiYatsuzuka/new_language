@@ -45,6 +45,12 @@ impl Compiler {
                 self.emit(Op::ReturnNil);
             }
             Stmt::Assign { name, value, .. } => {
+                // 見えていない名前への代入（R-1）。ツリーウォークと同じく右辺を評価してから落とす。
+                if self.is_unbound_local(name) {
+                    self.compile_expr(value)?;
+                    self.emit_unbound_local(name);
+                    return Some(());
+                }
                 self.compile_assign(name, value)?;
             }
             Stmt::CompoundAssign {
@@ -54,6 +60,11 @@ impl Compiler {
                 node_id,
                 ..
             } => {
+                // 見えていない名前への複合代入（R-1）。現在値を読む時点で落ちる。
+                if self.is_unbound_local(name) {
+                    self.emit_unbound_local(name);
+                    return Some(());
+                }
                 self.compile_compound_assign(name, op, value, *node_id)?;
             }
             Stmt::If { branches, else_body, span: _ } => {
@@ -62,17 +73,13 @@ impl Compiler {
                 for (cond, body) in branches {
                     self.compile_expr(cond)?;
                     let jf = self.emit(Op::JumpIfFalse(0));
-                    for s in body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(body)?;
                     end_jumps.push(self.emit(Op::Jump(0)));
                     let next = self.here();
                     self.patch_jump(jf, next);
                 }
                 if let Some(body) = else_body {
-                    for s in body {
-                        self.compile_stmt(s)?;
-                    }
+                    self.compile_block_body(body)?;
                 }
                 let end = self.here();
                 for j in end_jumps {
@@ -91,10 +98,9 @@ impl Compiler {
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
                 let saved_base = self.stmt_base.replace(0);
-                for s in body {
-                    self.compile_stmt(s)?;
-                }
+                let r = self.compile_block_body(body);
                 self.stmt_base = saved_base;
+                r?;
                 self.emit(Op::Jump(start));
                 let end = self.here();
                 self.patch_jump(jf, end);
@@ -318,6 +324,7 @@ impl Compiler {
                 body,
                 ..
             } => {
+                let group = self.fn_groups.get(&(stmt as *const Stmt)).cloned();
                 self.compile_nested_fn_def(
                     name,
                     template_params,
@@ -326,6 +333,7 @@ impl Compiler {
                     &[],
                     yield_type,
                     true,
+                    group,
                 )?;
             }
             Stmt::FnDef {
@@ -337,6 +345,7 @@ impl Compiler {
                 return_type,
                 ..
             } => {
+                let group = self.fn_groups.get(&(stmt as *const Stmt)).cloned();
                 self.compile_nested_fn_def(
                     name,
                     template_params,
@@ -345,6 +354,7 @@ impl Compiler {
                     decorators,
                     return_type,
                     false,
+                    group,
                 )?;
             }
             // 関数本体の `enum` 定義（#68）。組み立ては `build_enum_classes`（ツリーウォークと
@@ -400,7 +410,11 @@ impl Compiler {
             // `freeze x`（#27-c）。`let x = x` と同じ結果にする（python_builtins_plan.md のタスク 1-9）。
             // 名前の引き方は `store_target` と同じ順（セル → `static` → slot → それ以外）。
             Stmt::Freeze(name, span) => {
-                if self.cells.contains_key(name) {
+                if self.is_unbound_local(name) {
+                    // 見えていない名前の `freeze`（R-1）。`FreezeVar` のミス経路（最上位）と同じ文言。
+                    let n = self.add_name(&format!("{span}: NameError: '{name}' is not defined"));
+                    self.emit(Op::Fail(n));
+                } else if self.cells.contains_key(name) {
                     // クロージャが捕まえた変数（`exec_freeze` と同じ文言）。
                     let n = self.add_name(&format!(
                         "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
@@ -440,6 +454,9 @@ impl Compiler {
                 return None;
             }
         }
+        // この文が束縛した名前は、ここから今のブロックの終わりまで見える（R-1・`visibility` の doc）。
+        // ⚠ 初期化子をコンパイルした**後**に入れる（`let y = y + 1` の右辺の `y` は見えない）。
+        self.make_declared_visible(stmt);
         Some(())
     }
 
@@ -530,10 +547,9 @@ impl Compiler {
         });
         // 本体はこのループ入口の深さで走る（#34）。
         let saved_base = self.stmt_base.replace(0);
-        for s in body {
-            self.compile_stmt(s)?;
-        }
+        let r = self.compile_loop_body(targets, body);
         self.stmt_base = saved_base;
+        r?;
         self.emit(Op::Jump(loop_start));
         let exit = self.here();
         // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
@@ -681,6 +697,8 @@ impl Compiler {
         decorators: &[Expr],
         return_type: &Option<String>,
         is_generator: bool,
+        // 続けて定義した入れ子の関数の組（メンバーの名前・自分の位置）。組でなければ `None`（3-3）。
+        group: Option<(std::rc::Rc<[String]>, usize)>,
     ) -> Option<()> {
         if !template_params.is_empty() {
             bail("nested-fn-template", None);
@@ -697,8 +715,33 @@ impl Compiler {
             bail("nested-fn-mutable-capture", None);
             return None;
         };
+        // 定義の時点でまだ見えていない外側の名前を捕まえる形（R-1・name_scope_plan.md の D-1 = (a)）。
+        // 入れ子の関数は定義した時点の値を写すので、その時点に無い名前は写せない。以前は書かれていない枠
+        // （`None`）を写し、後で `print(x)` が `None`、`b()` が `'NoneType' object is not callable` になっていた。
+        // ⚠ **自分の名前と組の相手は対象外**（name_scope_plan.md のフェーズ 3）。値を写さず、呼び出すときに
+        //   自分（`CapturedVar::SelfFn`）・組から作った相手（`CapturedVar::Sibling`）を渡す（`run.rs` の `make_fn`）。
+        let members: std::rc::Rc<[String]> = group.as_ref().map(|(m, _)| m.clone()).unwrap_or_else(|| std::rc::Rc::from([]));
+        if let Some(unbound) = captures
+            .iter()
+            .chain(cell_captures.iter())
+            .map(|(n, _)| n.as_str())
+            .find(|n| *n != name && !members.iter().any(|m| m == n) && self.is_unbound_local(n))
+        {
+            let unbound = unbound.to_string();
+            self.emit_unbound_local(&unbound);
+            return Some(());
+        }
         let slot = self.slot_of(name)?;
         let idx = u32::try_from(self.chunk.fn_defs.len()).ok()?;
+        // 組の最初のメンバーで添字を控え、最後のメンバーの `MakeFn` が組を繋ぐ（3-3）。
+        let group_first = match &group {
+            Some((_, 0)) => {
+                self.group_start = Some(idx);
+                None
+            }
+            Some((m, k)) if *k + 1 == m.len() => self.group_start.take(),
+            _ => None,
+        };
         self.chunk.fn_defs.push(crate::vm::chunk::ChunkFnDef {
             name: name.to_string(),
             params: params.to_vec(),
@@ -715,6 +758,8 @@ impl Compiler {
             compiled: Default::default(),
             // 外側の名前はコンパイラが知らない（呼び出し側が `Chunk::set_nested_qualnames` で埋める）。
             qualname: None,
+            group: members,
+            group_first,
         });
         self.emit(Op::MakeFn(idx));
         Some(())

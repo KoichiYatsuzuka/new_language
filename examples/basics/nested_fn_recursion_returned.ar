@@ -1,0 +1,27 @@
+# nested_fn_recursion_returned.ar — 再帰する入れ子の関数を返して、外で呼ぶ（name_scope_plan.md のフェーズ 3）
+#
+# 自己再帰・組の相互再帰は、関数を外へ返した後も動く（組の相手は返した関数が持つ組から作る）。
+# ⚠ 参照実装（impl_python）はこの形を `NameError` にする（compare_python_impl の既知の差）。
+
+fn make_fact() -> function{let n: int}->int:
+    fn fact(n: int) -> int:
+        if n <= 1:
+            return 1
+        return n * fact(n - 1)
+    return fact
+
+fn make_parity() -> function{let n: int}->bool:
+    fn is_even(n: int) -> bool:
+        if n == 0:
+            return True
+        return is_odd(n - 1)
+    fn is_odd(n: int) -> bool:
+        if n == 0:
+            return False
+        return is_even(n - 1)
+    return is_even                          # is_odd は返さないが、is_even から呼べる
+
+let fact = make_fact()
+print(fact(6))                              # 720
+let even = make_parity()
+print(even(10), even(3))                    # True False

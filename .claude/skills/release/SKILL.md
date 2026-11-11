@@ -10,7 +10,10 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 ```powershell
 ./scripts/release.ps1 -Version 0.4.1 -CommitTrailer 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
 # -Tag v0_4_1（既定は v<x>_<y>_<z>）  -DeployDir ..\Arrow（既定）  -PrevVersion 0.4.0（既定は配布先の arrow-*.vsix から）
+# -Remote origin（既定・タグの push 先）  -NoPushTag（タグを push しない）
 ```
+
+⚠ **タグは push する**（2026-11-11 にユーザーの指定）。push するのは**タグだけ**で、ブランチは push しない。
 
 ⚠ `-CommitTrailer` には、その会話で指示された署名行（system-reminder の attribution）を渡す。
 
@@ -25,6 +28,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 | 4 | タグ | そのコミットに注釈つきタグ（`git tag -a <Tag> -m "Arrow <版>"`） |
 | 5 | 退避と配置 | 配布先の `arrow.exe`・`arrow-<前の版>.vsix`・`ar_config.json` を `old/v<前の版>/` へ**移動**し、新しい exe・VSIX・配布用の `ar_config.json` を置く。`bridge/js_bridge.cjs` が変わっていればそれも差し替える（古いものは `old/v<前の版>/bridge/`）。`third_party/LICENSE-typeshed.txt` を書く（exe が typeshed から作った型スタブを埋め込むため・Apache-2.0） |
 | 6 | 動作確認 | 配布先の exe で 1 行のスクリプトを実行（`3` が出るか） |
+| 7 | タグの push | `git push <Remote> refs/tags/<Tag>:refs/tags/<Tag>`。**タグだけで、ブランチは push しない**。リモートに同じコミットのタグがもうあれば飛ばす。違うコミットのタグがあれば上書きせずに止まる。最後の段なので、ビルドや配置が失敗したときはタグが公開されない。`-NoPushTag` で飛ばせる |
 
 ## 名前の決まり
 
@@ -56,10 +60,14 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 - ⚠ PowerShell 5.1 で日本語のファイルを読み書きすると壊れる。版の書き換え・設定・コミットメッセージは、
   すべて `release_files.py`（UTF-8・BOM と改行を保つ）でやる。`release.ps1` は ASCII だけで書く。
 - ⚠ 配布先の exe が実行中だと、移動に失敗して止まる（VS Code の REPL 端末などを閉じる）。
+- ⚠ **7 段（タグの push）だけが失敗したとき**（ネットワークなど）は再実行しない。退避先にもうファイルがあるので 0 段で止まる。
+  `git push origin <Tag>` を手で打つ。
+- ⚠ タグを push すると、そのコミットまでのオブジェクトもリモートに送られる（ブランチの参照は動かない）。
+  ブランチを push するかどうかはユーザーに任せる。
 
 ## 終わったら報告すること
 
 - 新しいコミットとタグ（`git log --oneline -1`・`git tag --points-at HEAD`）。
 - 配布先と退避先の中身（`Get-ChildItem <DeployDir>, <DeployDir>\old\<前の版>`）。
 - `ar_config.json` で残した値・消した値（スクリプトの表示）。
-- push していないこと。
+- タグを push したこと（`git ls-remote --tags origin <Tag>`）と、ブランチは push していないこと。

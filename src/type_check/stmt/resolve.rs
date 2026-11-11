@@ -87,7 +87,10 @@ impl TypeChecker {
         //   知らないモジュール（外部言語）では文脈は変わらない。
         let prev_scope = self.registry.enter_module_scope(&module.join("."));
         self.push_scope();
+        // モジュールの最上位の束縛は**本体全体**から取る（2 回目以降の `import` で検査するのが具体化だけでも同じ）。
+        self.module_toplevel.push(crate::type_check::names::collect_toplevel_bindings(body));
         self.check_stmts(target);
+        self.module_toplevel.pop();
         // ⚠⚠ **グローバル変数の型と属性を控える**（import した側が名前空間で使う）。スコープは
         //    この直後に捨てるので、ここでしか取れない（注釈の無い変数の推論した型も含む）。
         if first {
@@ -107,7 +110,8 @@ impl TypeChecker {
         let instance_names = self.registry.instance_names().clone();
         for (e, from_instance) in Self::dedup_instance_errors(errors, &instance_names) {
             if from_instance {
-                self.diags.report_error(e, true);
+                // 文の位置は持ち越さない（モジュールの文の位置で、この文の重複除去には使わない・2-3）。
+                self.diags.report_error(e, true, None);
             }
         }
     }
@@ -939,6 +943,7 @@ impl TypeChecker {
         rhs_ty: InferredType,
         var_name: &str,
         stmt: &Stmt,
+        rhs: &Expr,
     ) -> InferredType {
         let ann = match type_ann {
             // ⚠⚠ **注釈が無いときは `Never` を `Any` へ開く**（D-11 / U-6・タスク 4.1）。
@@ -957,11 +962,12 @@ impl TypeChecker {
         self.check_literal_elements(ann, &rhs_ty, stmt);
         // ⚠ protocol 名の注釈はここで打ち切って構わない。`check_protocol_conformance` が
         //    **右辺との照合も行う**（構造的適合検査）ため、下の整合性検査と二重にならない。
-        // 総称の protocol（`Holder[int]`・6-5）も同じ（満たさない理由を出す）。
+        // 総称の protocol（`Holder[int]`・6-5）も同じ（満たさない理由を出す）。適合しない理由は右辺を指す
+        // （diagnostic_position_plan.md の 3-3）。
         if let Some(InferredType::Protocol(proto_name, args)) =
             InferredType::from_ann(ann).map(|t| self.resolve_protocols(&t))
         {
-            self.check_protocol_conformance(&rhs_ty, &proto_name, &args, None, var_name);
+            self.with_anchor_at(rhs, |c| c.check_protocol_conformance(&rhs_ty, &proto_name, &args, None, var_name));
             return InferredType::Protocol(proto_name, args);
         }
         // ── 通常の注釈（0-1）─────────────────────────────────────────────────
@@ -1012,8 +1018,9 @@ impl TypeChecker {
         //    構造的に満たしているクラスを**誤って弾いていた**（タスク 1.3 で実測）。
         //    1.3 では手で `resolve_protocols` を 2 行足して直したが、3.3 で述語の中へ
         //    閉じ込めたので**新しい検査地点で同じ忘れ方ができない**。
+        // 不一致は右辺を指す（3-3）。⚠ 上の注釈の誤り（`check_ann_not_bare` など）は注釈が位置を持たないので文の位置。
         if !self.types_compatible(&rhs_ty, &declared, crate::type_check::type_utils::Site::Other) {
-            self.report_error(StaticTypeError {
+            self.report_error_at(rhs, StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {
                     name: var_name.to_string(),
                     expected: declared.clone(),

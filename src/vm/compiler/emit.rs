@@ -76,8 +76,11 @@ impl Compiler {
         }
         match e {
             // `static mut` / セル変数は slot を持たない（#27-d）。融合の対象外。
+            // 見えていない名前（R-1）も融合しない。`compile_expr` の腕が `NameError` にする。
             Expr::Ident { name, .. }
-                if self.statics.contains_key(name) || self.cells.contains_key(name) =>
+                if self.statics.contains_key(name)
+                    || self.cells.contains_key(name)
+                    || self.is_unbound_local(name) =>
             {
                 None
             }

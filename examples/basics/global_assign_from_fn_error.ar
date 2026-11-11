@@ -1,9 +1,10 @@
 # global_assign_from_fn_error.ar — 関数から未宣言のグローバルへ代入（#39）
 #
 # 関数本体からのグローバル代入は #39 で VM に載ったが、**検査は緩めていない**。
-# 宣言されていない名前への代入は実行時 `NameError` になる
-# （`vm_assign_global` が `scopes[0]` を引いて外れた場合）。
-# ⚠ `let`（不変）への代入は**静的型検査**が先に捕まえるので、実行時経路はこちらで確かめる。
+# 宣言されていない名前への代入は静的エラー `name 'not_declared_anywhere' is not defined`
+# （name_scope_plan.md の 1-3 で代入の左辺も検査するようになった。以前は実行時 `NameError`）。
+# ⚠ 実行時の経路（`vm_assign_global` が `scopes[0]` を引いて外れた場合の `NameError`）は、型検査を通さない
+#   単体テスト `test_assign_to_undeclared_global_from_fn_is_error`（interpreter/tests/expressions.rs）が確かめる。
 
 print("before")
 

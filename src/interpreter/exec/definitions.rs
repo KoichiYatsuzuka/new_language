@@ -76,7 +76,8 @@ impl Interpreter {
             params: params.to_vec(),
             body: body.to_vec(),
             captured_env: env,
-            qualname,
+            qualname,
+            group: None,
         }))
     }
 
@@ -118,6 +119,7 @@ impl Interpreter {
             vm_chunk,
             bound: None,
             qualname,
+            group: None,
         });
         let existing = match existing {
             Value::None => None,
@@ -166,6 +168,7 @@ impl Interpreter {
             bound: None,
             // 最上位（とツリーウォークで走る本体の中）の関数は名前と同じ。
             qualname: None,
+            group: None,
         });
 
         // 単相化した関数は、このスコープのテンプレートの具体化として登録する（タスク 2-15）。
@@ -229,7 +232,8 @@ impl Interpreter {
                 params: params.to_vec(),
                 body: body.to_vec(),
                 captured_env,
-                qualname: None,
+                qualname: None,
+                group: None,
             });
             if name.ends_with(']') {
                 self.register_mono_instance(name, &Value::GeneratorFn(Rc::clone(&gen_fn)));
@@ -365,13 +369,14 @@ impl Interpreter {
                 // `new_type Meters: int` → `class Meters: mut value: int` と等価
                 let init_body = vec![Stmt::AttrAssign {
                     target: Expr::Attr {
-                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() }),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
+                        attr_span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() },
                     span: crate::token::Span::unknown(),
                 }];
                 let init_fn = Rc::new(FnValue {
@@ -400,6 +405,7 @@ impl Interpreter {
                 vm_chunk: None,
                 bound: None,
                 qualname: None,
+                    group: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -473,13 +479,14 @@ impl Interpreter {
         let module_name = self.global_module_names.get(self.cur_globals as usize).cloned().flatten();
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
-                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
+                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() }),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
+                attr_span: crate::token::Span::unknown(),
                 cache: Default::default(),
                 node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
-            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
+            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() },
             span: crate::token::Span::unknown(),
         }];
         let init_fn = Rc::new(FnValue {
@@ -508,6 +515,7 @@ impl Interpreter {
         vm_chunk: None,
         bound: None,
         qualname: None,
+            group: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -635,6 +643,7 @@ impl Interpreter {
                         vm_chunk: None,
                         bound: None,
                         qualname: Some(self.method_qualname(name, mname)),
+                        group: None,
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。
@@ -691,7 +700,8 @@ impl Interpreter {
                             params: params.clone(),
                             body: mbody.clone(),
                             captured_env: HashMap::new(),
-                            qualname: Some(self.method_qualname(name, mname)),
+                            qualname: Some(self.method_qualname(name, mname)),
+                            group: None,
                         }),
                     );
                 }

@@ -1,17 +1,57 @@
-# name_resolution_error.ar — どこにも無い名前は静的エラー（フェーズ10 10-12）
+# name_resolution_error.ar — ここから見えない名前は静的エラー（フェーズ10 10-12・name_scope_plan.md の 1-4）
 #
 # 対になる正常系: name_resolution.ar
 #
-# 期待されるエラー（2 件）:
-#   StaticTypeError  name 'nonexistent' is not defined
-#   StaticTypeError  name 'totl' is not defined
+# 期待されるエラー（9 件。どれも `name '..' is not defined`）:
+#   ① nonexistent  どこにも無い
+#   ② totl         綴りの誤り（total）
+#   ③ font         別の関数のローカルを渡す（利用者の報告: `TeX_editor/initializer.ar` の `font`）
+#   ④ title        クラスのフィールドの名前だけがある名前を関数から読む
+#   ⑤ nested       別の関数の入れ子の関数を呼ぶ
+#   ⑥ LATER        最上位で、後で束縛する名前を先に読む
+#   ⑦ later_fn     最上位で、後で定義する関数を先に呼ぶ（関数は巻き上げない）
+#   ⑧ inside       最上位の `if` の中の束縛を関数から読む（ブロックスコープ）
+#   ⑨ undeclared   宣言していない名前への代入
 #
-# ⚠ 以前は静的に通り、実行時の NameError だった（しかも最初の 1 つで止まるので 2 つ目は見えなかった）。
+# ⚠ 以前は①②だけが静的に止まり、③〜⑨は「プログラムのどこかで束縛される名前」として通って実行時の
+#   NameError だった（③〜⑤は呼ばれるまで分からない）。
 # ⚠ `import m` だけでモジュールの名前を修飾なしで書いた場合（`helper(2)`）も同じ静的エラー
 #   （フェーズ10 10-8 でモジュールの宣言を `m.helper` の名前で扱うようになってから）。
+# ⚠ ブロック・`for` の変数・`except .. as` の外から読む形は block_scope_error.ar / for_target_scope_error.ar。
 
 fn total() -> int:
     return 42
 
 print(nonexistent(2))             # ⛔ どこにも無い
 print(totl())                     # ⛔ 綴りの誤り（total）
+
+class Doc:
+    let title: str
+
+fn loader() -> None:
+    let font = "mono"
+    print(font)
+
+fn has_nested() -> int:
+    fn nested() -> int:
+        return 1
+    return nested()
+
+fn use_it(show: function[str, int] -> None) -> None:
+    show(font, 1)                 # ⛔ ③
+    print(title)                  # ⛔ ④
+    print(nested())               # ⛔ ⑤
+    undeclared = 3                # ⛔ ⑨
+
+if True:
+    let inside = 1
+
+fn read_inside() -> int:
+    return inside                 # ⛔ ⑧
+
+print(LATER)                      # ⛔ ⑥
+let LATER = 1
+
+later_fn()                        # ⛔ ⑦
+fn later_fn() -> None:
+    pass
