@@ -399,7 +399,8 @@ impl TypeChecker {
                 ..
             } => {
                 for dec in decorators {
-                    self.check_decorator(dec, false, name);
+                    // 装飾子の誤りは装飾子の式を指す（diagnostic_position_plan.md の 3-4）。
+                    self.with_anchor_at(dec, |c| c.check_decorator(dec, false, name));
                 }
                 // ⚠ クラスの型変数はメソッド本体からも見える（`mut v: T` を `self.v` で書く）。
                 let saved_tp =
@@ -696,7 +697,8 @@ impl TypeChecker {
                     if matches!(got, InferredType::Unresolved | InferredType::Int) {
                         continue;
                     }
-                    self.report_error(StaticTypeError {
+                    // 値の式を指す（3-4）。錨が無ければ文の位置（`enum`）。
+                    self.report_error_at(expr, StaticTypeError {
                         kind: TypeErrorKind::EnumVariantNotInt {
                             enum_name: name.clone(),
                             variant: vname.clone(),
@@ -2078,7 +2080,8 @@ impl TypeChecker {
         template_params: &[crate::ast::TemplateParam],
     ) {
         for dec in decorators {
-            self.check_decorator(dec, true, name);
+            // 装飾子の誤りは装飾子の式を指す（diagnostic_position_plan.md の 3-4）。
+            self.with_anchor_at(dec, |c| c.check_decorator(dec, true, name));
         }
         for param in params.iter() {
             if param.name == "self" || param.variadic {

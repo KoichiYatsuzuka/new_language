@@ -559,6 +559,21 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(error_positions(&format!("{pr}let x: Named = a\n")), vec![(9, 16)]);
     }
 
+    /// 錨を持たない式（リストの表示・単項演算）の中の誤りや装飾子の誤りは、主語の式を指す
+    /// （diagnostic_position_plan.md の 3-4）。以前は文の先頭を指していた。
+    #[test]
+    fn errors_in_unanchored_expressions_point_at_the_subject() {
+        // リスト・辞書の表示の展開・単項演算の対象。
+        assert_eq!(error_positions("let n = 5\nlet xs = [*n]\n"), vec![(2, 12)]);
+        assert_eq!(error_positions("let n = 5\nlet d = {**n}\n"), vec![(2, 12)]);
+        assert_eq!(error_positions("let s = \"a\"\nlet t = -s\n"), vec![(2, 10)]);
+        // `enum` の値・装飾子。
+        let e = "fn f(let s: str) -> int:\n    enum E:\n        A = s\n    return 1\n";
+        assert_eq!(error_positions(e), vec![(3, 13)]);
+        let d = "fn dec() -> function:\n    pass\n\n@dec\nfn g(let a: int) -> int:\n    return a\n";
+        assert_eq!(error_positions(d), vec![(4, 2)]);
+    }
+
     /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
     #[test]
     fn error_in_expression_body_points_into_the_body() {

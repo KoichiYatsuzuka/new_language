@@ -672,8 +672,9 @@ impl TypeChecker {
                         IT::Any | IT::Unresolved => IT::Any,
                         // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
                         IT::NamedInstance(_) => IT::Any,
+                        // 展開する式を指す（diagnostic_position_plan.md の 3-4。リストの表示は錨を持たない）。
                         other => {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(x, StaticTypeError {
                                 kind: TypeErrorKind::SpreadArgNotIterable {
                                     got: other.to_string(),
                                     kw: false,
@@ -712,8 +713,9 @@ impl TypeChecker {
             InferredType::Any | InferredType::Unresolved => {
                 (InferredType::Any, InferredType::Any)
             }
+            // 展開する式を指す（3-4）。
             other => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(src, StaticTypeError {
                     kind: TypeErrorKind::DictSpreadNotADict {
                         got: other.to_string(),
                     },
@@ -1468,8 +1470,9 @@ impl TypeChecker {
             UnaryOp::BitNot => "~",
         };
         match &ty {
+            // 単項演算の誤りは**対象の式**を指す（3-4。単項演算の式は錨を持たない）。
             InferredType::Any => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnAny {
                         op: op_str.to_string(),
                     },
@@ -1478,7 +1481,7 @@ impl TypeChecker {
                 return InferredType::Unresolved;
             }
             InferredType::Union(_) => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnUnion {
                         union_type: ty.to_string(),
                         op: op_str.to_string(),
@@ -1527,7 +1530,7 @@ impl TypeChecker {
         match result {
             Some(t) => t,
             None => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::IncompatibleUnaryOp {
                         op: op_str.to_string(),
                         operand: ty,
