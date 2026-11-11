@@ -85,7 +85,8 @@ fn module_types_reach_the_editor() {
     assert_eq!(inferred_of(&v, "n").as_deref(), Some("int"), "import 先の戻り値型が届いていない");
     let d = diagnostics(&v);
     assert_eq!(d.len(), 1, "{d:?}");
-    assert_eq!(d[0].1, Some((4, 1)), "型の誤り（str に int）がこのファイルの位置に出ていない: {d:?}");
+    // 右辺（呼ばれる側の名前 `count`）を指す（diagnostic_position_plan.md の 3-3。以前は文の位置 (4, 1)）。
+    assert_eq!(d[0].1, Some((4, 19)), "型の誤り（str に int）がこのファイルの位置に出ていない: {d:?}");
 }
 
 /// 読めない import は `ParseError` の診断（CLI が止まる位置）になり、ファイルの残りは解析される。

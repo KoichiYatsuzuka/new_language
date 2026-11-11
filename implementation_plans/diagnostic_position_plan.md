@@ -167,6 +167,31 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 
 ゲート: フェーズ 2 と同じ
 
+**結果（2026-11-11・フェーズ 3 完了）**
+
+- 3-1: §4 の表。実測の仕掛け（`#[track_caller]`）はコミットしていない。
+- 位置の付け方は 2 つだけ足した（`type_check/scope.rs`）: `TypeChecker::report_error_at(式, 誤り)`（その式の錨で報告）と
+  `TypeChecker::with_anchor_at(式, 検査)`（検査の間だけ錨を張り替える）。どちらも錨を張り替えて `report_error` に任せるので、
+  錨が無い式（リテラル）は今の錨か文の位置に戻り、alias のファイルの検査（2-2）もそのまま効く。
+- 3-2: 引数の誤りは `arg_data` の添字から実引数を引く（`call_check.rs` の `arg_expr`。`arg_data` は展開 `*xs` を積まないので飛ばして数える）。
+  `check_self_type_params` / `check_template_call_args` / `check_new_type_arg` / `check_len_argument` は引数の式を受け取るようにした。
+- 3-3: 照合（`check_expected`）を `with_anchor_at` で包むので、protocol 適合の誤りも値を指す。属性への代入は値の照合を
+  `check_attr_assign_value` に分けた（前半の不変性の誤りは書き込む先なので文の位置のまま）。値がリテラルなら**代入先の属性名**。
+  `x = e` / `block_return` は明示で渡していた文の位置をやめた（錨が無ければ文の位置に戻るので同じ）。
+  10-17 のテストは右辺が識別子なら右辺 (2, 14)・リテラルなら文 (2, 1) の 2 つに分けた。
+  `crates/arrow-frontend/tests/imports.rs` の `module_types_reach_the_editor` も (4, 1) → (4, 19)（右辺の `count`）。
+- 3-4: 計画どおり。`except` 節・`case` は位置が無く直していない（§4 の区分 D）。
+- 3-5: 属性名を引くのは `infer_attr` へ渡す位置・メソッド呼び出しの受け手の検査・`__freeze__` の直接呼び出し・
+  `check_immutable_field_assign`・属性への複合代入の 5 か所。`.` を指すべき誤りは見つからなかった。
+- テスト: `frontend_tests/type_check_tests/variables.rs` に 4 件（`argument_errors_point_at_the_argument` /
+  `value_mismatch_points_at_the_value` / `errors_in_unanchored_expressions_point_at_the_subject` /
+  `attribute_errors_point_at_the_attribute_name`）。`cargo test` 1310 件 ok。
+- ゲート: `scan_examples`（`bench_ab_native.ar` の TIMEOUT はフェーズ 1 と同じ）・`force_gate`（`VmForceError` 0）・
+  `compare_python_impl` clean・`type_obligations` 退行なし・`stale_doc_refs` OK・`compare_wasm_frontend`（MISSED / INVENTED 0・
+  frontend tests 810 件 ok）。フェーズ 2 の exe と比べて、静的検査だけ（`AR_CHECK_ONLY=1`）で **78 件が違い、78 件とも位置だけ**。
+  `compare_outputs -A`（フェーズ 2 の exe）は 76 件が違い、実行して比べても位置以外の差は計測値（`bench/`）とアドレス
+  （`id()`・`<function .. at 0x..>`）だけ。
+
 ### フェーズ 4: 確認・文書・拡張
 
 | # | 内容 | 前提 | 重さ |
@@ -219,7 +244,7 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 | 誤り（関数） | 理由 |
 |---|---|
 | `MissingParamTypeAnn` / `MissingReturnTypeAnn` / `ProtocolReturnType` / `IntersectionSkippedCompile`（`check_fn_def` / `check_gen_def`） | 関数の定義そのものの誤り。⚠ 引数の注釈の誤りは仮引数を指すほうがよいが、`Param` は位置を持たない（§5） |
-| `VariableRedeclaration` / `AssignUndefined` / `CodeEscapesMetafunction`（`check_var_decl`）・`VariableRedeclaration`（`for` の変数） | 宣言・束縛する名前＝文の先頭 |
+| `VariableRedeclaration`（`check_var_decl`）・`VariableRedeclaration`（`for` の変数） | 宣言・束縛する名前＝文の先頭（⚠ 同じ関数の `AssignUndefined` / `CodeEscapesMetafunction` は値の誤りなので 3-3 で右辺に移した） |
 | `AssignToImmutable`（`check_attr_assign`・`scope.rs` の書き込みの経路） | 書き込む先の根の名前＝文の先頭 |
 | `YieldOutsideGenerator`・`FieldDefaultNotAllowed`・`SelfReferentialField`・`VirtualMethodInClass`・`UnexpandedMemberDecorator`（未観測）・`TraitConformanceFailed`（`report_trait_error`）・`CannotImportName` | 文（`yield` / フィールド / メソッド / `class` / `import`）そのものの誤り |
 | 注釈の誤り（`BareContainerAnnotation` / `UnknownTypeName` / `TypeTakesNoTypeArgs` / `UnimportedModuleType` / `PtrElemNotCType`・`stmt/resolve.rs`）・`ResultSameTypes` | 型注釈は位置を持たない（§5）。注釈を書いた文を指す |
