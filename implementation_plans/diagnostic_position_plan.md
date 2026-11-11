@@ -214,6 +214,9 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
   拡張の TS は変えていない。`test_fixtures/` の診断（`name_scope_cases.ar` の 6 件）も全部が名前を指す（`tm_grammar_cases.ar`
   の `ParseError` は基準の exe でも同じ位置）。`stress.js` は threw 0・hover / def / bind / tag / scope の取りこぼし 0。
   VSIX を作り直した（`arrow-0.5.1.vsix`）。
+- 4-3: `type-checking` スキルに「Error Positions」の節（`fallback_span`・錨の表・`report_error_at` / `with_anchor_at` /
+  `with_anchor`・誤りごとの行き先・位置を持たないもの）、`parser-internals` スキルに式の位置（`Ident` の `span`・`Attr` の
+  `attr_span`・合成した式は行 0）を書いた。`stale_doc_refs` OK。ファイルは増やしていない（`generate-codebase-map` は不要）。
 
 ## 4. フェーズ 3 の分類表
 

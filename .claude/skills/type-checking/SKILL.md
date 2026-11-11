@@ -571,6 +571,60 @@ The resulting `HashMap<String, InferredType>` is stored as `InferredType::Namesp
 
 ---
 
+## Error Positions (which token an error points at)
+
+The editor draws the squiggle under **one token**: the one at the error's `span`. `Span` holds only a
+start point (`file / line / col`; line 0 = unknown). The rules come from
+`implementation_plans/diagnostic_position_plan.md`:
+
+1. **An explicit `span: Some(..)` wins.** Most errors are built with `span: None` and get their
+   position in `TypeChecker::report_error` (`scope.rs`) through `fallback_span`, which picks:
+   - the **anchor of the expression being inferred** (`expr_anchor`);
+   - failing that, the **position of the statement being checked** (`stmt_pos`, set by `check_stmt`).
+   ⚠ If the anchor is in a different file from the statement (an `alias` expanded into this file),
+   the statement's position is used, so the error is not reported in a file the editor isn't showing.
+2. **The anchor** is `Expr::anchor_span()` (`ast.rs`). `infer` (the body is `infer_inner`) sets it
+   for every expression and restores the outer anchor afterwards:
+
+   | Expression | Anchor |
+   |---|---|
+   | `Ident` | the name (`span`) |
+   | `Attr` `o.a` | the attribute name (`attr_span`), else `.` |
+   | `Call` | the callee's anchor (`m` in `o.m(..)`), else `(` |
+   | `Subscript` / `TemplateInstantiate` | the object's anchor |
+   | `BinOp` / `Cast` / `IsType` / `MustBe` | the operator or keyword (`own_span`) |
+   | anything else (literals, `[..]` / `{..}`, unary operators, expression forms) | none: the outer anchor stays |
+3. **An error raised after inference has finished** (argument types, `let x: T = e`, `return e`,
+   conditions, …) would only see the outer anchor. Point it at its subject explicitly:
+   - `report_error_at(&expr, err)` reports at `expr`'s anchor.
+   - `with_anchor_at(&expr, |c| ..)` makes every error raised inside the closure point at
+     `expr`. It wraps `check_expected`, so protocol-conformance errors point at the value.
+   - `with_anchor(Option<Span>, |c| ..)` is the same for a ready-made span.
+
+   All three only swap the anchor, so a subject with no anchor (a literal) falls back to the
+   current anchor or the statement. The site must also pass `span: None`, because an explicit
+   `span` overrides the anchor.
+
+**Where errors point today:**
+
+| Error | Points at |
+|---|---|
+| Argument errors (`CallArgTypeMismatch`, `CallMutParamWithImmutableArg`, `SelfTypeMismatch`, spread / `len` / keyword argument) | that argument |
+| Wrong argument count, `NoMatchingOverload`, `NotCallable` | the callee name |
+| `let` / `x = e` / `p.f = e` / `xs[i] = e` / `return e` / `yield` / `loop_yield` mismatches, `ConditionNotBool`, param / field defaults, `EnumVariantNotInt` | the value. If the value is a literal: the statement, or the attribute name for `p.f = 1` |
+| `has no member`, access control, assigning to a `let` / `const` field | the attribute name |
+| `InvalidDecorator` | the decorator expression |
+| Spreads in list / dict displays, unary `OperationOnAny` / `OperationOnUnion` | the spread / operand expression |
+| Definition errors (`MissingParamTypeAnn`, …), redeclarations, type-annotation errors, `AssignToImmutable` (the root name is the statement's first token) | the statement |
+
+⚠ **No position exists for** literals, list/dict displays, type annotations, `Param`, `except`
+clauses and `case` arms. So `except Foo:` errors point at the **`try`**, and `case` errors at the
+**`match`** (diagnostic_position_plan.md §4 category D / §5).
+⚠ Positions in error examples are part of `compare_outputs` and `compare_wasm_frontend`. A
+position change shows up there as an intended diff.
+
+---
+
 ## All Error Kinds (`TypeErrorKind`)
 
 | Variant | When raised |
