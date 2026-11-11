@@ -1,6 +1,6 @@
 [package]
 name = "arrow-frontend"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Arrow language frontend (lexer + parser + type checker) built for editors, including wasm32."
 
