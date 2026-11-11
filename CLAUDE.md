@@ -10,6 +10,8 @@ It aims to provide a Python-based syntax with static type checking and additiona
 - File extension: `.ar`
 - Implementation language: **Rust** (main, `src/`) and **Python** (`impl_python/`)
 - Indentation-based block structure (Python-style)
+- やりとりは日本語で行う。
+- Python実装は現在停止中。更新は支持があるまで行わない。
 
 For the full directory layout and what each file is responsible for, use the `codebase-map` skill.
 For a map of which subsystem (lexer/parser/type-checker/interpreter/VS Code extension) supports what, use the `architecture-overview` skill.
