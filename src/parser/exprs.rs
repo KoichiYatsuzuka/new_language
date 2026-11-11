@@ -477,11 +477,13 @@ impl Parser {
                 Token::Dot => {
                     let dot_span = self.current_span();
                     self.advance(); // `.` を消費
+                    let attr_span = self.current_span();
                     let attr = self.expect_attr_name()?;
                     expr = Expr::Attr {
                         object: Box::new(expr),
                         attr,
                         span: dot_span,
+                        attr_span,
                         cache: Default::default(),
                         node_id: self.next_node_id(),
                     };
@@ -731,7 +733,9 @@ impl Parser {
     ///
     /// ⚠ 以前は `:` / `!` から後ろを**黙って捨てていた**（`f"{x:.2f}"` が `3.14159`）。式の後ろに
     ///   読めない字句が残れば誤りにする。
-    fn desugar_fstring(&mut self, parts: Vec<FStrPart>) -> Result<Expr, String> {
+    ///
+    /// `at` は f-string のトークンの位置。置換フィールドの式はこの位置を持つ（[`Self::parse_fstring_expr`]）。
+    fn desugar_fstring(&mut self, parts: Vec<FStrPart>, at: &Span) -> Result<Expr, String> {
         if parts.is_empty() {
             return Ok(Expr::Str(Rc::from("")));
         }
@@ -742,7 +746,7 @@ impl Parser {
                 FStrPart::Lit(s) => exprs.push(Expr::Str(Rc::from(s.as_str()))),
                 FStrPart::Expr(src) => {
                     let field = split_fstring_field(&src)?;
-                    let expr = self.parse_fstring_expr(field.expr)?;
+                    let expr = self.parse_fstring_expr(field.expr, at)?;
                     if let Some(text) = field.debug_text {
                         exprs.push(Expr::Str(Rc::from(text)));
                     }
@@ -770,7 +774,7 @@ impl Parser {
                     };
                     let piece = match field.spec {
                         Some(spec) => {
-                            let spec_expr = self.desugar_fstring_spec(spec)?;
+                            let spec_expr = self.desugar_fstring_spec(spec, at)?;
                             self.fstring_call("format", vec![value, spec_expr], &span)
                         }
                         None if conversion.is_some() => value,
@@ -797,8 +801,19 @@ impl Parser {
     }
 
     /// f-string の置換フィールドの式を読む。式の後ろに字句が残れば誤り（以前は黙って捨てていた）。
-    fn parse_fstring_expr(&mut self, src: &str) -> Result<Expr, String> {
-        let tokens = lexer::Lexer::new(src, "<fstring>").tokenize();
+    ///
+    /// ⚠ 式は別に字句解析するので、トークンの位置は `<fstring>` という名前の別のファイルの 1 行目になる。
+    ///   **全部を f-string のトークンの位置 `at` に置き換える**（diagnostic_position_plan.md の 2-5）。字句は
+    ///   置換フィールドの文字列上の位置を持たない（`{{` や逃がし文字で列がずれる）ので、フィールドの中の
+    ///   列までは指せない。置き換えないと、型検査の誤りは文の位置に戻り（錨のファイルが違う）、
+    ///   実行時の誤りは `<fstring>:1:2` を指していた。
+    fn parse_fstring_expr(&mut self, src: &str, at: &Span) -> Result<Expr, String> {
+        let mut tokens = lexer::Lexer::new(src, "<fstring>").tokenize();
+        if at.line != 0 {
+            for t in &mut tokens {
+                t.span = at.clone();
+            }
+        }
         let mut sub_parser = Parser::new(tokens, None);
         let expr = sub_parser.parse_expr()?;
         while *sub_parser.current() == Token::Newline {
@@ -813,7 +828,13 @@ impl Parser {
     /// f-string の脱糖が作る組み込みの呼び出し（`str(x)` / `format(x, spec)` / `repr(x)` …）。
     fn fstring_call(&mut self, func: &str, args: Vec<Expr>, span: &Span) -> Expr {
         Expr::Call {
-            func: Box::new(Expr::Ident { name: func.to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
+            // 名前は f-string が書いたものではないので、f-string の位置を付ける。
+            func: Box::new(Expr::Ident {
+                name: func.to_string(),
+                node_id: self.next_node_id(),
+                res: Resolution::Unresolved,
+                span: span.clone(),
+            }),
             args: args.into_iter().map(crate::ast::CallArg::Positional).collect(),
             span: span.clone(),
             cache: Default::default(),
@@ -822,7 +843,7 @@ impl Parser {
     }
 
     /// 書式指定（`:` の後ろ）を式にする。中の置換フィールド（`{w}`）は f-string と同じに脱糖して連結する。
-    fn desugar_fstring_spec(&mut self, spec: &str) -> Result<Expr, String> {
+    fn desugar_fstring_spec(&mut self, spec: &str, at: &Span) -> Result<Expr, String> {
         if !spec.contains('{') {
             return Ok(Expr::Str(Rc::from(spec)));
         }
@@ -860,7 +881,7 @@ impl Parser {
         if !lit.is_empty() {
             parts.push(FStrPart::Lit(lit));
         }
-        self.desugar_fstring(parts)
+        self.desugar_fstring(parts, at)
     }
 
     /// 基本式（リテラル・識別子・括弧式・リスト・辞書）をパースする。
@@ -895,8 +916,9 @@ impl Parser {
                 Ok(Expr::Str(Rc::from(s.as_str())))
             }
             Token::FStr(parts) => {
+                let at = self.current_span();
                 self.advance();
-                Ok(self.desugar_fstring(parts)?)
+                Ok(self.desugar_fstring(parts, &at)?)
             }
             Token::True => {
                 self.advance();
@@ -915,16 +937,19 @@ impl Parser {
                 Ok(Expr::Undefined)
             }
             Token::Any => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Union => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Option => {
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             Token::Ident(name) if name == "dbg" => {
                 self.advance();
@@ -947,12 +972,13 @@ impl Parser {
                 }
             }
             Token::Ident(name) => {
+                let span = self.current_span();
                 self.advance();
                 // 別名（alias）は式位置では保存済みの右辺 AST に置換する（純粋な構文置換）。
                 // 後続の postfix（`(...)` / `[...]` / `.attr`）は展開後の式に適用される。
                 match self.aliases.get(&name).map(|e| (*e.expr).clone()) {
                     Some(expanded) => Ok(expanded),
-                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved }),
+                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved, span }),
                 }
             }
             Token::SelfType => {
@@ -962,8 +988,9 @@ impl Parser {
                             .to_string(),
                     );
                 }
+                let span = self.current_span();
                 self.advance();
-                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
+                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved, span })
             }
             // `code:` — 中身を**パースせず**トークン列で持つ `Code` 値（メタ関数 1-1）。
             Token::Code => Ok(crate::ast::Expr::CodeBlock(self.parse_code_block()?)),
@@ -1208,6 +1235,7 @@ impl Parser {
                     name: "set".to_string(),
                     node_id: self.next_node_id(),
                     res: crate::ast::Resolution::Unresolved,
+                    span: Span::unknown(), // 合成した呼び出し（呼び出しの側も位置を持たない）
                 }),
                 args: vec![crate::ast::CallArg::Positional(list_expr)],
                 span: Span::unknown(),

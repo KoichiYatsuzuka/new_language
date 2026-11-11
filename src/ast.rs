@@ -583,7 +583,10 @@ pub enum Expr {
     /// 以前は `Ident` / `LocalRef` / `GlobalRef` の 3 変種に分かれていたが、
     /// 「1 つの概念（識別子参照）に 3 変種」は各パスに同じ 3 アームを書かせるだけだったので
     /// 1 変種＋解決フィールドへ統合した。
-    Ident { name: String, node_id: u32, res: Resolution },
+    /// `span` は**名前のトークンの位置**（diagnostic_position_plan.md の 1-1）。型検査の誤りが原因の名前を
+    /// 指すために持つ。合成した識別子（`self` の補完・テンプレート置換・Python からの変換…）は元になった
+    /// 位置か、無ければ `Span::unknown()`（行 0 ＝位置なし）。
+    Ident { name: String, node_id: u32, res: Resolution, span: Span },
     /// `code:` ブロック — 中身を **AST リテラル**として保持する `Code` 値。
     ///
     /// ⚠ **中身はパースしない。** 未完の断片（`if cond:` だけ等）を許すため、
@@ -611,7 +614,11 @@ pub enum Expr {
     Attr {
         object: Box<Expr>,
         attr: String,
+        /// `.` の位置。実行時の誤りの表示はこちらを使う。
         span: Span,
+        /// **属性名**のトークンの位置（diagnostic_position_plan.md の 1-3）。型検査の誤りの錨
+        /// （[`Expr::anchor_span`]）に使う。合成した属性参照は `Span::unknown()`。
+        attr_span: Span,
         cache: AttrCache,
         /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
         node_id: u32,
@@ -1398,6 +1405,37 @@ pub enum Stmt {
 ///
 /// # フィールド
 impl Expr {
+    /// この式についての誤りを**どのトークンで示すか**（錨・diagnostic_position_plan.md の 1-3・§2.1）。
+    ///
+    /// 型検査が位置を持たない誤りを報告するとき、推論中の一番内側の式の錨を使う（エディタは錨のトークン
+    /// 1 個に波線を引く）。[`Self::own_span`] は式が持つ位置そのもので、呼び出しなら `(`、属性なら `.` を
+    /// 指す。それでは波線が 1 文字になるので、錨は「誤りの主語」を選ぶ:
+    ///
+    /// | 式 | 錨 |
+    /// |---|---|
+    /// | 識別子 | 名前 |
+    /// | 属性 `o.a` | 属性名 `a` |
+    /// | 呼び出し `f(..)` | 呼ばれる側の錨（`f` / `o.m(..)` の `m`）。無ければ `(` |
+    /// | 添字 `xs[i]` / 型引数 `Box[int]` | 対象の錨 |
+    /// | 二項演算・`=>`・`is`・`mustbe` | 演算子・キーワード（`own_span`） |
+    /// | それ以外（リテラル・単項演算・コンテナ・制御構文の式…） | なし（外側の錨を使う） |
+    ///
+    /// ⚠ 行 0（`Span::unknown()`・合成した式）は位置なしとして扱う。合成した識別子を呼ぶ式は
+    ///   呼び出し自身の位置に戻る。
+    pub fn anchor_span(&self) -> Option<&Span> {
+        fn known(s: &Span) -> Option<&Span> {
+            (s.line != 0).then_some(s)
+        }
+        match self {
+            Expr::Ident { span, .. } => known(span),
+            Expr::Attr { span, attr_span, .. } => known(attr_span).or_else(|| known(span)),
+            Expr::Call { func, span, .. } => func.anchor_span().or_else(|| known(span)),
+            Expr::Subscript { object, .. } => object.anchor_span(),
+            Expr::TemplateInstantiate { base, .. } => base.anchor_span(),
+            _ => self.own_span(),
+        }
+    }
+
     /// 式そのものが持つ位置（呼び出し・属性・二項演算・`as` / `is` / `mustbe`）。無ければ `None`（フェーズ10 10-17）。
     ///
     /// ⚠ 呼び出しの位置は `(` のトークン（文の先頭ではない）。式文の位置の代わりに使う

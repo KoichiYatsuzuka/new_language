@@ -469,10 +469,18 @@ fn meta_kinds_are_distinct_types() {
 
 
     /// 式の側に位置が無い誤りは**文の位置**で報告する（フェーズ10 10-17。以前は `<unknown>`）。
+    ///
+    /// ⚠ 宣言の不一致は右辺を指す（diagnostic_position_plan.md の 3-3）。以前は識別子が位置を持たず、
+    ///   `let z: str = s` も文の位置 (2, 1) だった。文の位置に戻るのは右辺が錨を持たない（リテラル）ときだけ。
     #[test]
     fn error_without_expression_position_uses_statement_position() {
-        // 右辺が識別子（位置を持たない）の宣言。
+        // 右辺が識別子の宣言は右辺の名前。
         let errs = check("let s = 1\nlet z: str = s\n");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        let at = errs[0].span.as_ref().map(|s| (s.line, s.col));
+        assert_eq!(at, Some((2, 14)), "{errs:?}");
+        // 右辺がリテラル（位置を持たない）の宣言は文の位置。
+        let errs = check("let s = 1\nlet z: str = 1\n");
         assert_eq!(errs.len(), 1, "{errs:?}");
         let at = errs[0].span.as_ref().map(|s| (s.line, s.col));
         assert_eq!(at, Some((2, 1)), "{errs:?}");
@@ -480,6 +488,120 @@ fn meta_kinds_are_distinct_types() {
         let errs = check("fn f(let x: int) -> None:\n    pass\n\nf(\"s\")\n");
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].span.as_ref().map(|s| s.line), Some(4), "{errs:?}");
+    }
+
+    /// 誤りの (行, 列) の一覧。
+    fn error_positions(src: &str) -> Vec<(usize, usize)> {
+        check(src).iter().filter_map(|e| e.span.as_ref().map(|s| (s.line, s.col))).collect()
+    }
+
+    /// 位置を持たない誤りは**推論中の式の錨**を指す（diagnostic_position_plan.md の 2-2・2-5）。
+    /// 以前は全部文の先頭（`while running:` の未定義の `running` で `while`）を指していた。
+    #[test]
+    fn error_points_at_the_expression_being_inferred() {
+        // 未定義の名前は名前そのもの。条件・二項演算の右辺・引数・入れ子の関数の中。
+        assert_eq!(error_positions("while running:\n    pass\n"), vec![(1, 7)]);
+        assert_eq!(error_positions("let x = 1\nlet y = x + nope\n"), vec![(2, 13)]);
+        assert_eq!(error_positions("fn f(let a: int) -> int:\n    return a\n\nlet r = f(nope)\n"), vec![(4, 11)]);
+        assert_eq!(
+            error_positions("fn outer() -> None:\n    fn inner() -> None:\n        print(nope)\n    inner()\n"),
+            vec![(3, 15)]
+        );
+        // 未定義の受け手のメソッド呼び出しは受け手。
+        assert_eq!(error_positions("nope.run(1)\n"), vec![(1, 1)]);
+        // 引数の数の誤りは呼ばれる側の名前（呼び出しの `(` ではない）。
+        assert_eq!(error_positions("fn f(let a: int) -> int:\n    return a\n\nf(1, 2)\n"), vec![(4, 1)]);
+        // 演算子の型の誤りは演算子。
+        assert_eq!(error_positions("let s = \"a\" - 1\n"), vec![(1, 13)]);
+        // f-string の中の式は f-string のトークン（フィールドの中の列は字句が持たない）。
+        assert_eq!(error_positions("print(f\"x {nope}\")\n"), vec![(1, 7)]);
+    }
+
+    /// 引数の誤りは**その引数**を指す（diagnostic_position_plan.md の 3-2）。以前は呼ばれる側の名前を指していた。
+    /// ⚠ 錨を持たない引数（リテラル）は呼ばれる側の名前のまま（§4 の区分 B の注記）。
+    #[test]
+    fn argument_errors_point_at_the_argument() {
+        let f = "fn f(let a: int) -> int:\n    return a\n\nlet s = \"x\"\n";
+        // 位置引数・キーワード引数（値）・知らないキーワード（値）。
+        assert_eq!(error_positions(&format!("{f}f(s)\n")), vec![(5, 3)]);
+        assert_eq!(error_positions(&format!("{f}f(a=s)\n")), vec![(5, 5)]);
+        assert_eq!(error_positions(&format!("{f}f(b=s)\n")), vec![(5, 5)]);
+        // メソッドの引数。
+        let c = "class C:\n    fn m(self, let a: int) -> None:\n        pass\n\nlet c = C()\nlet s = \"x\"\n";
+        assert_eq!(error_positions(&format!("{c}c.m(s)\n")), vec![(7, 5)]);
+        // `len` の引数・展開する式・`mut` 引数へ渡した `let` の値。
+        assert_eq!(error_positions("let n = 5\nprint(len(n))\n"), vec![(2, 11)]);
+        assert_eq!(error_positions("let n = 5\nprint(*n)\n"), vec![(2, 8)]);
+        let t = "fn touch(mut xs: list[int]) -> None:\n    xs.append(1)\n\nlet a = [1]\ntouch(a)\n";
+        assert_eq!(error_positions(t), vec![(5, 7)]);
+        // リテラルの引数は錨を持たないので呼ばれる側の名前。
+        assert_eq!(error_positions(&format!("{f}f(\"y\")\n")), vec![(5, 1)]);
+    }
+
+    /// 宣言・代入・`return` などの値の不一致は**値の式**を指す（diagnostic_position_plan.md の 3-3）。
+    /// 以前は文の先頭（`let` / `return` / `if`）を指していた。
+    #[test]
+    fn value_mismatch_points_at_the_value() {
+        let s = "let s = \"x\"\n";
+        // `let x: T = e`・`x = e`・属性への代入・添字への代入。
+        assert_eq!(error_positions(&format!("{s}let n: int = s\n")), vec![(2, 14)]);
+        assert_eq!(error_positions(&format!("{s}mut n = 1\nn = s\n")), vec![(3, 5)]);
+        let p = "class P:\n    mut n: int\n\nmut p = P(1)\nlet s = \"x\"\n";
+        assert_eq!(error_positions(&format!("{p}p.n = s\n")), vec![(6, 7)]);
+        // 値がリテラルなら代入先の属性名。
+        assert_eq!(error_positions(&format!("{p}p.n = \"y\"\n")), vec![(6, 3)]);
+        assert_eq!(error_positions(&format!("{s}mut xs = [1]\nxs[0] = s\n")), vec![(3, 9)]);
+        // `return` の値・条件。
+        assert_eq!(error_positions(&format!("{s}fn f() -> int:\n    return s\n")), vec![(3, 12)]);
+        assert_eq!(error_positions("let n = 1\nif n:\n    pass\n"), vec![(2, 4)]);
+        // protocol の注釈への適合しない値。
+        let pr = "protocol Named:\n    fn name(self) -> str:\n        ...\n\nclass A:\n    mut n: int\n\nlet a = A(1)\n";
+        assert_eq!(error_positions(&format!("{pr}let x: Named = a\n")), vec![(9, 16)]);
+    }
+
+    /// 錨を持たない式（リストの表示・単項演算）の中の誤りや装飾子の誤りは、主語の式を指す
+    /// （diagnostic_position_plan.md の 3-4）。以前は文の先頭を指していた。
+    #[test]
+    fn errors_in_unanchored_expressions_point_at_the_subject() {
+        // リスト・辞書の表示の展開・単項演算の対象。
+        assert_eq!(error_positions("let n = 5\nlet xs = [*n]\n"), vec![(2, 12)]);
+        assert_eq!(error_positions("let n = 5\nlet d = {**n}\n"), vec![(2, 12)]);
+        assert_eq!(error_positions("let s = \"a\"\nlet t = -s\n"), vec![(2, 10)]);
+        // `enum` の値・装飾子。
+        let e = "fn f(let s: str) -> int:\n    enum E:\n        A = s\n    return 1\n";
+        assert_eq!(error_positions(e), vec![(3, 13)]);
+        let d = "fn dec() -> function:\n    pass\n\n@dec\nfn g(let a: int) -> int:\n    return a\n";
+        assert_eq!(error_positions(d), vec![(4, 2)]);
+    }
+
+    /// 属性の誤りは**属性名**を指す（diagnostic_position_plan.md の 3-5）。以前は `.` を指していた。
+    #[test]
+    fn attribute_errors_point_at_the_attribute_name() {
+        let p = "class P:\n    let x: int\n\n";
+        // 存在しない属性（読み・メソッド呼び出し）。
+        assert_eq!(error_positions(&format!("{p}let p = P(1)\nprint(p.nope)\n")), vec![(5, 9)]);
+        assert_eq!(error_positions(&format!("{p}let p = P(1)\np.nope()\n")), vec![(5, 3)]);
+        // `let` フィールドへの代入。
+        assert_eq!(error_positions(&format!("{p}mut p = P(1)\np.x = 2\n")), vec![(5, 3)]);
+    }
+
+    /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
+    #[test]
+    fn error_in_expression_body_points_into_the_body() {
+        let src = "let r = if True -> int:\n    block_return nope\nelse:\n    block_return 1\n";
+        assert_eq!(error_positions(src), vec![(2, 18)]);
+    }
+
+    /// 同じ文で同じ名前の「見えない名前」は 1 件だけ（2-3）。左辺（文の位置）と右辺（名前の位置）で
+    /// 誤りの位置が違っても重ねない。
+    #[test]
+    fn undefined_name_reported_once_per_statement() {
+        let src = "fn g() -> None:\n    m = m + 1\n";
+        assert_eq!(undefined_names(src), vec!["m".to_string()]);
+        // 代入の左辺は文の位置（＝左辺の名前）。
+        assert_eq!(error_positions(src), vec![(2, 5)]);
+        // 別の文なら別に出す。
+        assert_eq!(undefined_names("print(nope)\nprint(nope)\n").len(), 2);
     }
 
     /// 組み込みの型名はどのスレッドでも大域で見える名前で、同じ名前の変数は宣言できない（7-25・利用者の決定）。

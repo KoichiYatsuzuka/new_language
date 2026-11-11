@@ -155,14 +155,43 @@ impl TypeChecker {
 
     /// 静的型エラーをエラーリストに追加する。
     ///
-    /// ⚠ 位置を持たない誤りには**今検査している文の位置**を付ける（フェーズ10 10-17・`check_stmt`）。
-    ///   以前は表の `File` が `<unknown>` になっていた（`let z: str = s` は右辺の識別子が位置を持たない）。
+    /// ⚠ 位置を持たない誤りには、**推論中の式の錨**（`expr_anchor`・diagnostic_position_plan.md の 2-2）、
+    ///   それが無ければ**今検査している文の位置**（フェーズ10 10-17・`check_stmt`）を付ける
+    ///   （[`Self::fallback_span`]）。10-17 より前は表の `File` が `<unknown>` に、2-2 より前は
+    ///   誤りが全部文の先頭（`while running:` の未定義の `running` が `while`）を指していた。
     pub(super) fn report_error(&mut self, mut err: StaticTypeError) {
         if err.span.is_none() {
-            err.span = self.stmt_pos.clone();
+            err.span = self.fallback_span();
         }
         let from_instance = self.in_instance_decl();
-        self.diags.report_error(err, from_instance);
+        self.diags.report_error(err, from_instance, self.stmt_pos.clone());
+    }
+
+    /// 誤りを**式 `at` の錨**で報告する（diagnostic_position_plan.md のフェーズ 3）。
+    ///
+    /// 推論が終わってから出す誤り（引数の型・`let x: T = e` の不一致など）は、錨が外側に戻った後に出るので、
+    /// 主語の式を渡して指させる。`at` が錨を持たない（リテラル・表示）ときは今の錨か文の位置のまま
+    /// （[`Self::report_error`] と同じ）。錨を張り替えて報告するだけなので、ファイルの検査
+    /// （[`Self::fallback_span`] の alias の注記）もそのまま効く。
+    pub(super) fn report_error_at(&mut self, at: &Expr, err: StaticTypeError) {
+        self.with_anchor_at(at, |c| c.report_error(err));
+    }
+
+    /// `f` の間だけ錨を**式 `at` の錨**にする（`at` が錨を持たなければ張り替えない）。
+    ///
+    /// 値を期待型と照合する検査（`check_expected` は protocol の適合検査の誤りも中で出す）を丸ごと包み、
+    /// 照合で出る誤りを全部その値に指させる（diagnostic_position_plan.md の 3-3）。
+    pub(super) fn with_anchor_at<R>(&mut self, at: &Expr, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_anchor(at.anchor_span().cloned(), f)
+    }
+
+    /// `f` の間だけ錨を `anchor` にする（`None` なら張り替えない・[`Self::with_anchor_at`]）。
+    pub(super) fn with_anchor<R>(&mut self, anchor: Option<Span>, f: impl FnOnce(&mut Self) -> R) -> R {
+        let Some(anchor) = anchor else { return f(self) };
+        let outer = self.expr_anchor.replace(anchor);
+        let r = f(self);
+        self.expr_anchor = outer;
+        r
     }
 
     /// 静的型警告を警告リストに追加する。
@@ -175,11 +204,24 @@ impl TypeChecker {
         if self.in_instance_decl() {
             return;
         }
-        // 位置を持たない警告には今の文の位置を付ける（`report_error` と同じ・10-17）。
+        // 位置を持たない警告には錨か今の文の位置を付ける（`report_error` と同じ・10-17・2-2）。
         if w.span.is_none() {
-            w.span = self.stmt_pos.clone();
+            w.span = self.fallback_span();
         }
         self.diags.report_warning(w);
+    }
+
+    /// 位置を持たない誤り・警告に付ける位置（diagnostic_position_plan.md の 2-2）: 推論中の式の錨、無ければ文の位置。
+    ///
+    /// ⚠ 錨の**ファイルが文と違えば**文の位置を使う。式位置の `alias` は定義した右辺の AST に置き換わる
+    ///   （パーサの `parse_primary`）ので、その中の識別子は alias を定義したファイルの位置を持つ。
+    ///   エディタは開いているファイルの誤りしか出さないので、別のファイルを指すと誤りが消えてしまう。
+    fn fallback_span(&self) -> Option<crate::token::Span> {
+        match (&self.expr_anchor, &self.stmt_pos) {
+            (Some(a), Some(s)) if a.file != s.file => Some(s.clone()),
+            (Some(a), _) => Some(a.clone()),
+            (None, s) => s.clone(),
+        }
     }
 
     /// 今、単相化した具体化（`Box[int]` / `ident[str]`）の本体を検査しているか（タスク 2-8 段階 2）。
@@ -507,7 +549,11 @@ impl TypeChecker {
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
         // ⚠ 添字（`Expr::Subscript`）は位置を持たないので、文の位置で知らせる（`report_error` が補う）。
         let (object, attr, span): (&Expr, Option<&str>, Option<Span>) = match target {
-            Expr::Attr { object, attr, span, .. } => (object.as_ref(), Some(attr.as_str()), Some(span.clone())),
+            // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+            Expr::Attr { object, attr, span, attr_span, .. } => {
+                let at = if attr_span.line != 0 { attr_span } else { span };
+                (object.as_ref(), Some(attr.as_str()), Some(at.clone()))
+            }
             Expr::Subscript { object, .. } => (object.as_ref(), None, None),
             _ => return,
         };

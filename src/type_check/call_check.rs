@@ -16,7 +16,10 @@ impl TypeChecker {
     ) -> InferredType {
         // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
         let freeze_span = match func {
-            Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
+            // 属性名を指す（diagnostic_position_plan.md の 3-5）。
+            Expr::Attr { attr, span, attr_span, .. } if attr == "__freeze__" => {
+                Some(if attr_span.line != 0 { attr_span.clone() } else { span.clone() })
+            }
             Expr::Ident { name, .. } if name == "__freeze__" => None,
             _ => {
                 // Not a __freeze__ call — proceed normally.
@@ -42,7 +45,9 @@ impl TypeChecker {
         // 組み込みコレクションのレシーバ（型・メソッド名・位置）。`arg_data` が揃ってから使う。
         let mut builtin_recv: Option<(InferredType, String, crate::token::Span)> = None;
         let method_call_info: Option<(String, String)> =
-            if let Expr::Attr { object, attr, span, .. } = func {
+            if let Expr::Attr { object, attr, span, attr_span, .. } = func {
+                // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+                let span = if attr_span.line != 0 { attr_span } else { span };
                 let obj_ty = self.infer(object);
                 self.check_mutating_method_receiver(object, attr, &obj_ty, span);
                 // ⚠ 組み込みコレクションメソッドの引数型は `arg_data` が揃ってから検査する
@@ -191,11 +196,11 @@ impl TypeChecker {
                 //   ⚠ 推論だけは必ず行う（式の中の誤りを見逃さないため）。
                 CallArg::Spread(e) => {
                     let ty = self.infer(e);
-                    self.check_spread_arg(&ty, false);
+                    self.check_spread_arg(&ty, false, e);
                 }
                 CallArg::KwSpread(e) => {
                     let ty = self.infer(e);
-                    self.check_spread_arg(&ty, true);
+                    self.check_spread_arg(&ty, true, e);
                 }
                 // 可変長引数: 各要素の型を推論し、リスト型として "..." キーで登録
                 //
@@ -231,14 +236,14 @@ impl TypeChecker {
         // ⚠ `len()` の引数は「大きさを持つ型」（タスク 7.4）。
         if let Expr::Ident { name, .. } = func {
             if name == "len" && self.lookup("len").is_some() {
-                self.check_len_argument(&arg_data);
+                self.check_len_argument(&arg_data, args);
             }
         }
 
         // ⚠ `new_type` のコンストラクタ引数（タスク 5.6・検体 `T3`）。
         if let Expr::Ident { name, .. } = func {
             if let Some(original) = self.registry.new_type_original(name).map(str::to_string) {
-                self.check_new_type_arg(name, &original, &arg_data);
+                self.check_new_type_arg(name, &original, &arg_data, args);
             }
         }
 
@@ -317,7 +322,7 @@ impl TypeChecker {
         if let Expr::TemplateInstantiate { base, type_args } = func {
             if let Some(name) = self.template_base_name(base) {
                 let name = name.to_string();
-                self.check_template_call_args(&name, type_args, &arg_data);
+                self.check_template_call_args(&name, type_args, &arg_data, args);
                 // ⚠ タスク 2.1: 結果型を返す（以前は常に `Unresolved` を捨て返していた）。
                 return self.template_call_result_type(&name, type_args);
             }
@@ -461,7 +466,7 @@ impl TypeChecker {
                 });
             }
             // self/cls is passed implicitly; check_self_type_params accounts for the +1
-            let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
+            let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data, args);
             return ret_ty.unwrap_or(InferredType::Unresolved);
         } else if let Some(ref fname) = func_name {
             // ⚠⚠ **テンプレートを型引数なしで呼んだ場合はここで打ち切る。**
@@ -524,7 +529,7 @@ impl TypeChecker {
                         span: None,
                     });
                 } else {
-                    self.check_self_type_params(fname, "__init__", &arg_data);
+                    self.check_self_type_params(fname, "__init__", &arg_data, args);
                 }
                 return InferredType::NamedInstance(fname.clone());
             }
@@ -563,6 +568,7 @@ impl TypeChecker {
         cls_name: &str,
         method_name: &str,
         arg_data: &[(Option<String>, InferredType)],
+        args: &[CallArg],
     ) -> Option<InferredType> {
         let sigs = self
             .registry
@@ -638,7 +644,7 @@ impl TypeChecker {
             // ⚠ これは**要素型同士**の比較で、仮引数への束縛ではない（実行時に
             //    `__cast__` は挟まらない）ので `Site::Other`。
             if !self.types_compatible(elem_ty, expected_elem_ty, Site::Other) {
-                self.report_error(StaticTypeError {
+                self.report_error_at_opt(Self::variadic_arg_expr(args), StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{cls_name}.{method_name}"),
                         param_index: usize::MAX,
@@ -656,7 +662,7 @@ impl TypeChecker {
         // ⚠ `self`/`cls` の分だけ添字がずれる。`implicit` は arity 検査と**同じ規約**。
         let implicit = usize::from(!is_static);
         let mut positional_idx = 0usize;
-        for (key, arg_ty) in normal_args.iter() {
+        for (arg_i, (key, arg_ty)) in normal_args.iter().enumerate() {
             let param_idx = match key {
                 // キーワード引数は**名前で**引く（位置で数えると別の仮引数を見る）。
                 // 未知の名前はここでは報告しない（個数検査の担当外なので黙って飛ばす）。
@@ -683,7 +689,7 @@ impl TypeChecker {
             let mutable = sig.param_mutable.get(param_idx).copied().unwrap_or(false);
             let ctx = format!("argument to `{cls_name}.{method_name}`");
             if !self.check_expected(arg_ty, &expected, mutable, &ctx) {
-                self.report_error(StaticTypeError {
+                self.report_error_at_opt(Self::arg_expr(args, arg_i), StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{cls_name}.{method_name}"),
                         // 呼び出し側から見た位置に直す（`self` を数えない）。
@@ -700,7 +706,7 @@ impl TypeChecker {
             if let Some((param_name, Some(InferredType::SelfType))) = sig.params.get(param_idx) {
                 if let InferredType::NamedInstance(got_cls) = arg_ty {
                     if got_cls != cls_name {
-                        self.report_error(StaticTypeError {
+                        self.report_error_at_opt(Self::arg_expr(args, arg_idx), StaticTypeError {
                             kind: TypeErrorKind::SelfTypeMismatch {
                                 method: method_name.to_string(),
                                 param_name: param_name.clone(),
@@ -759,12 +765,39 @@ impl TypeChecker {
             .any(|a| matches!(a, CallArg::Spread(_) | CallArg::KwSpread(_)))
     }
 
+    /// `arg_data` の `i` 番目に当たる実引数の式。引数の誤りをその引数に指させる（diagnostic_position_plan.md の 3-2）。
+    ///
+    /// ⚠ `arg_data` は展開（`*xs` / `**d`）を積まないので、展開を飛ばして数える。可変長引数（`... = a, b`）は
+    ///   引数列の最後にしか書けないので、それを除いた並び（各検査の `normal_args`）の添字もそのまま使える。
+    ///   可変長引数そのものは [`Self::variadic_arg_expr`]。
+    fn arg_expr(args: &[CallArg], i: usize) -> Option<&Expr> {
+        args.iter()
+            .filter(|a| !matches!(a, CallArg::Spread(_) | CallArg::KwSpread(_) | CallArg::Variadic(_)))
+            .nth(i)
+            .map(CallArg::expr)
+    }
+
+    /// 可変長引数（`... = a, b`）の最初の式。要素型の不一致を指す。
+    fn variadic_arg_expr(args: &[CallArg]) -> Option<&Expr> {
+        args.iter().find(|a| matches!(a, CallArg::Variadic(_))).map(CallArg::expr)
+    }
+
+    /// 誤りを式 `at` の錨で報告する。`at` が無い（対応する実引数が見つからない）ときは今の錨のまま。
+    fn report_error_at_opt(&mut self, at: Option<&Expr>, err: StaticTypeError) {
+        match at {
+            Some(e) => self.report_error_at(e, err),
+            None => self.report_error(err),
+        }
+    }
+
     /// `*xs` / `**d` の展開元の型を検査する。
     ///
     /// ⚠⚠ **判らないときは黙って通す**が、**明らかに展開できない型はここで捕まえる**。
     /// 実行時（`expand_spread_into`）と同じ意味の検査を静的に行う。
     /// ⚠ `Unresolved` / `Any` はエラーにしない（注釈が供給されない経路があるため）。
-    fn check_spread_arg(&mut self, ty: &InferredType, kw: bool) {
+    ///
+    /// `at` は展開する式（誤りはそこを指す・diagnostic_position_plan.md の 3-2）。
+    fn check_spread_arg(&mut self, ty: &InferredType, kw: bool, at: &Expr) {
         use InferredType as IT;
         if matches!(ty, IT::Any | IT::Unresolved) {
             return;
@@ -792,7 +825,7 @@ impl TypeChecker {
             )
         };
         if !ok {
-            self.report_error(StaticTypeError {
+            self.report_error_at(at, StaticTypeError {
                 kind: TypeErrorKind::SpreadArgNotIterable {
                     got: ty.to_string(),
                     kw,
@@ -874,7 +907,7 @@ impl TypeChecker {
             match key {
                 Some(kwarg_name) => {
                     match sig.params.iter().position(|(n, _)| n == kwarg_name) {
-                        None => self.report_error(StaticTypeError {
+                        None => self.report_error_at(call_arg.expr(), StaticTypeError {
                             kind: TypeErrorKind::UnknownKeywordArg {
                                 func_name: fname.to_string(),
                                 arg_name: kwarg_name.clone(),
@@ -886,7 +919,7 @@ impl TypeChecker {
                             if let Some(expected) = &sig.params[param_pos].1 {
                                 // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                                 if !self.param_type_matches(sig, param_pos, arg_ty, expected) {
-                                    self.report_error(StaticTypeError {
+                                    self.report_error_at(call_arg.expr(), StaticTypeError {
                                         kind: TypeErrorKind::CallArgTypeMismatch {
                                             func_name: fname.to_string(),
                                             param_index: param_pos,
@@ -904,7 +937,7 @@ impl TypeChecker {
                     if let Some((_, Some(expected))) = sig.params.get(positional_idx) {
                         // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
                         if !self.param_type_matches(sig, positional_idx, arg_ty, expected) {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(call_arg.expr(), StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: fname.to_string(),
                                     param_index: positional_idx,
@@ -928,7 +961,7 @@ impl TypeChecker {
             // ⚠ これは**要素型同士**の比較で、仮引数への束縛ではない（実行時に
             //    `__cast__` は挟まらない）ので `Site::Other`。
             if !self.types_compatible(elem_ty, expected_elem_ty, Site::Other) {
-                self.report_error(StaticTypeError {
+                self.report_error_at_opt(Self::variadic_arg_expr(args), StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: fname.to_string(),
                         param_index: usize::MAX, // 可変長引数を示す特殊値
@@ -1132,6 +1165,7 @@ impl TypeChecker {
         base_name: &str,
         type_args: &[String],
         arg_data: &[(Option<String>, InferredType)],
+        args: &[CallArg],
     ) {
         if self.registry.template_params(base_name).is_none() {
             return; // テンプレートでない名前（実行時に別のエラーになる）
@@ -1176,7 +1210,7 @@ impl TypeChecker {
         }
         let sig = matching[0].clone();
         let mut positional_idx = 0usize;
-        for (key, arg_ty) in normal {
+        for (arg_i, (key, arg_ty)) in normal.into_iter().enumerate() {
             let param_idx = match key {
                 // キーワード引数は名前で引く（位置で数えると別の仮引数を見る）。
                 Some(kw) => match sig.params.iter().position(|(n, _)| n == kw) {
@@ -1197,7 +1231,7 @@ impl TypeChecker {
             let mutable = sig.param_mutable.get(param_idx).copied().unwrap_or(false);
             let ctx = format!("argument to `{inst}`");
             if !self.check_expected(arg_ty, &expected, mutable, &ctx) {
-                self.report_error(StaticTypeError {
+                self.report_error_at_opt(Self::arg_expr(args, arg_i), StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: inst.clone(),
                         param_index: param_idx.saturating_sub(implicit),
@@ -1338,7 +1372,7 @@ impl TypeChecker {
     /// ⚠ `InferredType` に「大きさを持つ型」は無いので、仮引数の型は `Any` にして
     /// **明らかに持たない型だけ**をここで弾く（7.1 と同じ「判っていて不可なら報告」）。
     /// ⚠ クラスは `__len__` を定義できるので素通しする。
-    fn check_len_argument(&mut self, arg_data: &[(Option<String>, InferredType)]) {
+    fn check_len_argument(&mut self, arg_data: &[(Option<String>, InferredType)], args: &[CallArg]) {
         use InferredType as T;
         let [(None, got)] = arg_data else { return };
         let no_len = matches!(
@@ -1348,7 +1382,7 @@ impl TypeChecker {
         if !no_len {
             return;
         }
-        self.report_error(StaticTypeError {
+        self.report_error_at_opt(Self::arg_expr(args, 0), StaticTypeError {
             kind: TypeErrorKind::NotSized { ty: got.clone() },
             span: None,
         });
@@ -1428,6 +1462,7 @@ impl TypeChecker {
         name: &str,
         original: &str,
         arg_data: &[(Option<String>, InferredType)],
+        args: &[CallArg],
     ) {
         // `new_type` の連鎖を根まで辿る（`Kg: Meters: float` → `float`）。
         let mut root = original.to_string();
@@ -1460,7 +1495,7 @@ impl TypeChecker {
         if self.check_expected(got, &expected, false, &ctx) {
             return;
         }
-        self.report_error(StaticTypeError {
+        self.report_error_at_opt(Self::arg_expr(args, 0), StaticTypeError {
             kind: TypeErrorKind::CallArgTypeMismatch {
                 func_name: name.to_string(),
                 param_index: 0,
@@ -1816,12 +1851,13 @@ impl TypeChecker {
             return;
         }
         for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
+            let at = args.get(i).map(CallArg::expr);
             if let Some(arg_name) = key {
                 match decl.params.iter().position(|p| &p.name == arg_name) {
                     Some(param_pos) => {
                         let param = &decl.params[param_pos];
                         if param.ty != InferredType::Any && !self.types_compatible(arg_ty, &param.ty, Site::LetParam) {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at_opt(at, StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: name.to_string(),
                                     param_index: param_pos,
@@ -1832,7 +1868,7 @@ impl TypeChecker {
                             });
                         }
                     }
-                    None => self.report_error(StaticTypeError {
+                    None => self.report_error_at_opt(at, StaticTypeError {
                         kind: TypeErrorKind::UnknownKeywordArg {
                             func_name: name.to_string(),
                             arg_name: arg_name.clone(),
@@ -1843,7 +1879,7 @@ impl TypeChecker {
                 continue;
             }
             if elem != InferredType::Any && !self.types_compatible(arg_ty, &elem, Site::LetParam) {
-                self.report_error(StaticTypeError {
+                self.report_error_at_opt(at, StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: name.to_string(),
                         param_index: i,
@@ -1888,7 +1924,7 @@ impl TypeChecker {
             let arg_expr = args[i].expr();
             match key {
                 Some(kwarg_name) => match params.iter().position(|p| &p.name == kwarg_name) {
-                    None => self.report_error(StaticTypeError {
+                    None => self.report_error_at(arg_expr, StaticTypeError {
                         kind: TypeErrorKind::UnknownKeywordArg {
                             func_name: func_name.to_string(),
                             arg_name: kwarg_name.clone(),
@@ -1904,7 +1940,7 @@ impl TypeChecker {
                             self.types_compatible(arg_ty, &param.ty, Site::LetParam)
                         };
                         if param.ty != InferredType::Any && !ok {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(arg_expr, StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: func_name.to_string(),
                                     param_index: param_pos,
@@ -1918,7 +1954,7 @@ impl TypeChecker {
                             && self.path_is_mutable(arg_expr) == Some(false)
                             && !Self::mut_arg_exempt(arg_ty)
                         {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(arg_expr, StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
                                     param_name: param.name.clone(),
@@ -1937,7 +1973,7 @@ impl TypeChecker {
                             self.types_compatible(arg_ty, &param.ty, Site::LetParam)
                         };
                         if param.ty != InferredType::Any && !ok {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(arg_expr, StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: func_name.to_string(),
                                     param_index: positional_idx,
@@ -1951,7 +1987,7 @@ impl TypeChecker {
                             && self.path_is_mutable(arg_expr) == Some(false)
                             && !Self::mut_arg_exempt(arg_ty)
                         {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(arg_expr, StaticTypeError {
                                 kind: TypeErrorKind::CallMutParamWithImmutableArg {
                                     func_name: func_name.to_string(),
                                     param_name: param.name.clone(),
@@ -2043,7 +2079,7 @@ impl TypeChecker {
             return;
         }
         let param_name = sig.params.get(param_pos).map(|(n, _)| n.clone()).unwrap_or_default();
-        self.report_error(StaticTypeError {
+        self.report_error_at(arg_expr, StaticTypeError {
             kind: TypeErrorKind::CallMutParamWithImmutableArg {
                 func_name: fname.to_string(),
                 param_name,

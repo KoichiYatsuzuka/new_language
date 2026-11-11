@@ -460,7 +460,7 @@ fn convert_class_in(
                         default: Some(crate::ast::Expr::Ident {
                             name: inner_q,
                             node_id: 0,
-                            res: crate::ast::Resolution::Unresolved,
+                            res: crate::ast::Resolution::Unresolved, span: crate::token::Span::unknown(),
                         }),
                         access: crate::ast::Accessibility::Public,
                     });
@@ -546,9 +546,10 @@ fn class_attr_assign(class_name: &str, name: &str, value: crate::ast::Expr, file
     use crate::ast::{Expr, Resolution};
     Stmt::AttrAssign {
         target: Expr::Attr {
-            object: Box::new(Expr::Ident { name: class_name.to_string(), node_id: 0, res: Resolution::Unresolved }),
+            object: Box::new(Expr::Ident { name: class_name.to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() }),
             attr: name.to_string(),
             span: make_span(filename),
+            attr_span: make_span(filename),
             cache: Default::default(),
             node_id: 0,
         },
@@ -812,11 +813,12 @@ fn property_stmts(
     filename: &str,
 ) -> Result<Vec<Stmt>, String> {
     use crate::ast::{CallArg, Expr, Resolution};
-    let ident = |name: &str| Expr::Ident { name: name.to_string(), node_id: 0, res: Resolution::Unresolved };
+    let ident = |name: &str| Expr::Ident { name: name.to_string(), node_id: 0, res: Resolution::Unresolved, span: crate::token::Span::unknown() };
     let attr = |object: Expr, name: &str| Expr::Attr {
         object: Box::new(object),
         attr: name.to_string(),
         span: make_span(filename),
+        attr_span: make_span(filename),
         cache: Default::default(),
         node_id: 0,
     };

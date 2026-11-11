@@ -143,8 +143,15 @@ pub struct TypeChecker {
     /// キー: fp.fp_greet（`import[cpp-dll] h as fp`）/ fp_greet（from h import[cpp-dll] fp_greet）。
     /// 値: (束縛のスコープの深さ, 表示名, 理由)。`py_class_factories` と同じ形で、使った箇所を誤りにする。
     ffi_unsupported: HashMap<String, (usize, String, String, &'static str)>,
-    /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける。
+    /// 今検査している文の位置（フェーズ10 10-17・`check_stmt` が張り替える）。位置を持たない誤りに付ける
+    /// （[`Self::expr_anchor`] が無いとき）。
     stmt_pos: Option<crate::token::Span>,
+    /// 今推論している式のうち一番内側で**錨**（[`crate::ast::Expr::anchor_span`]）を持つものの錨
+    /// （diagnostic_position_plan.md の 2-1）。`infer` が張り替えて戻し、`check_stmt` が空にして戻す
+    /// （式の中の文 ― `if` 式の本体など ― が外側の式を指さないように）。位置を持たない誤りは
+    /// これ → `stmt_pos` の順で位置を得る（`report_error`）。
+    expr_anchor: Option<crate::token::Span>,
+
     /// 変数を束縛した記録（[`BindingRecord`]）。`None` のあいだは記録しない
     /// （使うのは VS Code 拡張だけ・[`Self::check_program_for_editor`]）。
     bindings: Option<Vec<BindingRecord>>,
@@ -353,6 +360,7 @@ impl TypeChecker {
             py_class_factories: HashMap::new(),
             ffi_unsupported: HashMap::new(),
             stmt_pos: None,
+            expr_anchor: None,
             bindings: None,
             bind_pos: None,
             pending_binding: None,

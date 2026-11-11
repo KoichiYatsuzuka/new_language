@@ -49,8 +49,20 @@ impl TypeChecker {
     /// **フェーズ 5 で印を付けた地点をすべて実装し終えた**ので撤去した
     /// （残っていると「義務が無い」と区別できない死んだ足場になる）。
     /// 外側の網は `scripts/type_obligations.ps1`（114 件の検体）が引き続き担う。
+    ///
+    /// ⚠ 推論のあいだは、式の**錨**（`Expr::anchor_span`）を位置を持たない誤りの位置として控える
+    ///   （`expr_anchor`・diagnostic_position_plan.md の 2-1）。錨を持たない式は外側の錨をそのまま使う。
     #[must_use]
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
+        let Some(anchor) = expr.anchor_span() else { return self.infer_inner(expr) };
+        let outer = self.expr_anchor.replace(anchor.clone());
+        let ty = self.infer_inner(expr);
+        self.expr_anchor = outer;
+        ty
+    }
+
+    /// [`Self::infer`] の本体（錨の張り替えを除いたもの）。
+    fn infer_inner(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---
             // `code:` が作るのは `Code`（設計書 §1.2）。
@@ -109,8 +121,10 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span, node_id, .. } => {
-                self.infer_attr(object, attr, span, *node_id)
+            Expr::Attr { object, attr, span, attr_span, node_id, .. } => {
+                // 属性の誤りは**属性名**を指す（`.` ではない・diagnostic_position_plan.md の 3-5）。合成した属性参照（位置 0）は `.`。
+                let at = if attr_span.line != 0 { attr_span } else { span };
+                self.infer_attr(object, attr, at, *node_id)
             }
             // ⚠⚠ **trait 修飾アクセス `o::T.f` は型を返していなかった**（タスク 5.2d・検体 `F3`）。
             //    `Unresolved` は「何でも通る」ので、読みも代入も**丸ごと無検査**だった
@@ -660,8 +674,9 @@ impl TypeChecker {
                         IT::Any | IT::Unresolved => IT::Any,
                         // クラスは `__iter__` を持ちうるので通す（実行時に判る）。
                         IT::NamedInstance(_) => IT::Any,
+                        // 展開する式を指す（diagnostic_position_plan.md の 3-4。リストの表示は錨を持たない）。
                         other => {
-                            self.report_error(StaticTypeError {
+                            self.report_error_at(x, StaticTypeError {
                                 kind: TypeErrorKind::SpreadArgNotIterable {
                                     got: other.to_string(),
                                     kw: false,
@@ -700,8 +715,9 @@ impl TypeChecker {
             InferredType::Any | InferredType::Unresolved => {
                 (InferredType::Any, InferredType::Any)
             }
+            // 展開する式を指す（3-4）。
             other => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(src, StaticTypeError {
                     kind: TypeErrorKind::DictSpreadNotADict {
                         got: other.to_string(),
                     },
@@ -1343,17 +1359,20 @@ impl TypeChecker {
 
     /// 同じ文で、同じ名前の「見えない名前」の誤りをもう出したか（name_scope_plan.md の 1-4・R-2）。
     ///
-    /// 位置を持たない誤りには今の文の位置が付く（`report_error`）ので、`n = n + 1` の左辺と右辺、
-    /// `mh.enable(1)` を受け手と呼び出しの 2 経路で推論する形が、同じ誤りを 2 回出していた。
+    /// 以前は誤りの位置が文の位置だったので、`n = n + 1` の左辺と右辺、`mh.enable(1)` を受け手と呼び出しの
+    /// 2 経路で推論する形が、同じ誤りを 2 回出していた。
+    /// ⚠ 誤りは名前の位置を指す（diagnostic_position_plan.md の 2-2）ので、誤りの位置ではなく
+    ///   **報告したときの文の位置**（`Diagnostics::errors_with_stmt`）で比べる（2-3）。同じ文を 2 回検査しても
+    ///   1 件のまま。⚠ 横に別の表を持たないのは、型だけが欲しい推論が誤りを捨てる（`Diagnostics::rollback`）と
+    ///   表だけが残り、本物の誤りを「もう出した」と取り違えるため。
     fn already_reported_undefined(&self, name: &str) -> bool {
         let Some(pos) = self.stmt_pos.as_ref() else { return false };
-        self.diags.errors().iter().any(|e| {
+        self.diags.errors_with_stmt().any(|(e, at)| {
             let same_name = match &e.kind {
                 TypeErrorKind::UndefinedName { name: n } | TypeErrorKind::BareClassMember { name: n, .. } => n == name,
                 _ => false,
             };
-            same_name
-                && e.span.as_ref().is_some_and(|s| s.file == pos.file && s.line == pos.line && s.col == pos.col)
+            same_name && at.is_some_and(|s| s.file == pos.file && s.line == pos.line && s.col == pos.col)
         })
     }
 
@@ -1453,8 +1472,9 @@ impl TypeChecker {
             UnaryOp::BitNot => "~",
         };
         match &ty {
+            // 単項演算の誤りは**対象の式**を指す（3-4。単項演算の式は錨を持たない）。
             InferredType::Any => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnAny {
                         op: op_str.to_string(),
                     },
@@ -1463,7 +1483,7 @@ impl TypeChecker {
                 return InferredType::Unresolved;
             }
             InferredType::Union(_) => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::OperationOnUnion {
                         union_type: ty.to_string(),
                         op: op_str.to_string(),
@@ -1512,7 +1532,7 @@ impl TypeChecker {
         match result {
             Some(t) => t,
             None => {
-                self.report_error(StaticTypeError {
+                self.report_error_at(operand, StaticTypeError {
                     kind: TypeErrorKind::IncompatibleUnaryOp {
                         op: op_str.to_string(),
                         operand: ty,
