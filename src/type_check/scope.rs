@@ -167,6 +167,19 @@ impl TypeChecker {
         self.diags.report_error(err, from_instance, self.stmt_pos.clone());
     }
 
+    /// 誤りを**式 `at` の錨**で報告する（diagnostic_position_plan.md のフェーズ 3）。
+    ///
+    /// 推論が終わってから出す誤り（引数の型・`let x: T = e` の不一致など）は、錨が外側に戻った後に出るので、
+    /// 主語の式を渡して指させる。`at` が錨を持たない（リテラル・表示）ときは今の錨か文の位置のまま
+    /// （[`Self::report_error`] と同じ）。錨を張り替えて報告するだけなので、ファイルの検査
+    /// （[`Self::fallback_span`] の alias の注記）もそのまま効く。
+    pub(super) fn report_error_at(&mut self, at: &Expr, err: StaticTypeError) {
+        let Some(anchor) = at.anchor_span() else { return self.report_error(err) };
+        let outer = self.expr_anchor.replace(anchor.clone());
+        self.report_error(err);
+        self.expr_anchor = outer;
+    }
+
     /// 静的型警告を警告リストに追加する。
     ///
     /// ⚠⚠ **単相化した具体化の本体では警告を出さない**（タスク 2-8 段階 2）。型変数に関係しない

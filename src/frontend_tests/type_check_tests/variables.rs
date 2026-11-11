@@ -509,6 +509,27 @@ fn meta_kinds_are_distinct_types() {
         assert_eq!(error_positions("print(f\"x {nope}\")\n"), vec![(1, 7)]);
     }
 
+    /// 引数の誤りは**その引数**を指す（diagnostic_position_plan.md の 3-2）。以前は呼ばれる側の名前を指していた。
+    /// ⚠ 錨を持たない引数（リテラル）は呼ばれる側の名前のまま（§4 の区分 B の注記）。
+    #[test]
+    fn argument_errors_point_at_the_argument() {
+        let f = "fn f(let a: int) -> int:\n    return a\n\nlet s = \"x\"\n";
+        // 位置引数・キーワード引数（値）・知らないキーワード（値）。
+        assert_eq!(error_positions(&format!("{f}f(s)\n")), vec![(5, 3)]);
+        assert_eq!(error_positions(&format!("{f}f(a=s)\n")), vec![(5, 5)]);
+        assert_eq!(error_positions(&format!("{f}f(b=s)\n")), vec![(5, 5)]);
+        // メソッドの引数。
+        let c = "class C:\n    fn m(self, let a: int) -> None:\n        pass\n\nlet c = C()\nlet s = \"x\"\n";
+        assert_eq!(error_positions(&format!("{c}c.m(s)\n")), vec![(7, 5)]);
+        // `len` の引数・展開する式・`mut` 引数へ渡した `let` の値。
+        assert_eq!(error_positions("let n = 5\nprint(len(n))\n"), vec![(2, 11)]);
+        assert_eq!(error_positions("let n = 5\nprint(*n)\n"), vec![(2, 8)]);
+        let t = "fn touch(mut xs: list[int]) -> None:\n    xs.append(1)\n\nlet a = [1]\ntouch(a)\n";
+        assert_eq!(error_positions(t), vec![(5, 7)]);
+        // リテラルの引数は錨を持たないので呼ばれる側の名前。
+        assert_eq!(error_positions(&format!("{f}f(\"y\")\n")), vec![(5, 1)]);
+    }
+
     /// 式の中の文（`if` 式の本体）は、外側の式ではなく本体の文の中を指す（2-1・2-5）。
     #[test]
     fn error_in_expression_body_points_into_the_body() {
