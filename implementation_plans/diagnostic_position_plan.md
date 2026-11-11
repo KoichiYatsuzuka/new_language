@@ -200,6 +200,16 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 | **4-2** | VS Code 拡張で `TeX_editor/main.ar` の 98 行目と `vscode-extension/test_fixtures/` を開き、波線が名前に引かれることを確かめる（`vscode-debug-runner` の `run_debug.js` で診断の範囲を出してもよい）。拡張の TS は変えない見込み。VSIX を作り直す（`make-vsix.ps1`） | 4-1 | 小 |
 | **4-3** | 文書: `type-checking` スキル（誤りの位置の規則・錨）、`parser-internals`（`Ident` の `span`・`Attr` の `attr_span`）、`stale_doc_refs.ps1`（`infer` を改名したので）。ファイルを増やしたら `generate-codebase-map.ps1` | 4-1 | 小 |
 
+**結果（2026-11-11）**
+
+- 4-1: フェーズ 1 の直前の exe と比べた。静的検査だけ（`AR_CHECK_ONLY=1`・9 カテゴリ 761 件）で **109 件が違い、109 件とも
+  位置だけ**。動いた位置 278 個は**全部が同じ行の中**で、行が変わったものは 0。行き先は 275 個が識別子の先頭（未定義の名前・
+  呼ばれる側・メソッド名・引数・値・属性名）、残る 3 個は二項演算の値（`return a / b` の `/`・式の位置は演算子）が 2 個と、
+  import 先（`containers.ar` の `self.v = 0`・値がリテラルなので属性名 `v`）が 1 個。左へ動いた 18 個は、以前 `(`（呼び出しの
+  位置）を指していたものが呼ばれる側の名前に移ったもの（引数がリテラルの呼び出し）。
+  `compare_outputs -A` は 107 件が違い、実行して比べても位置以外の差は計測値（`bench/`）とアドレス（`id()`・
+  `<function .. at 0x..>`・`<Index object at 0x..>`）だけ。
+
 ## 4. フェーズ 3 の分類表
 
 3-1（2026-11-11）。`report_error` / `report_warning` に一時的に `#[track_caller]` を付け、`span` を持たない誤りごとに
