@@ -209,6 +209,11 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
   位置）を指していたものが呼ばれる側の名前に移ったもの（引数がリテラルの呼び出し）。
   `compare_outputs -A` は 107 件が違い、実行して比べても位置以外の差は計測値（`bench/`）とアドレス（`id()`・
   `<function .. at 0x..>`・`<Index object at 0x..>`）だけ。
+- 4-2: `run_debug.js` で `TeX_editor/main.ar` の 98 行目は `L 98:11 name 'running' is not defined`（`while running:` の
+  `running`）。拡張は位置にあるトークン 1 個分に波線を引く（`wasm_providers.ts` の `toDiagnostic`）ので、名前全体に引かれる。
+  拡張の TS は変えていない。`test_fixtures/` の診断（`name_scope_cases.ar` の 6 件）も全部が名前を指す（`tm_grammar_cases.ar`
+  の `ParseError` は基準の exe でも同じ位置）。`stress.js` は threw 0・hover / def / bind / tag / scope の取りこぼし 0。
+  VSIX を作り直した（`arrow-0.5.1.vsix`）。
 
 ## 4. フェーズ 3 の分類表
 
