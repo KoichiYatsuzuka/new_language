@@ -13,9 +13,12 @@
 #               ar_config.json, keeping the deployed machine-specific values, without the "test" section).
 #               bridge\js_bridge.cjs is replaced too when it changed (the old one goes to old\v<prev>\bridge\).
 #   6. smoke    run the deployed exe once from <DeployDir>
+#   7. push tag git push <Remote> <Tag> -- the tag only, never a branch (-NoPushTag skips it).
+#               Done last, so a failed build / deploy never publishes a tag.
 #
 # Re-running after a failure is safe: a step already done is skipped (version already raised and its VSIX
-# committed / tag already on HEAD); the backup folder is never overwritten.
+# committed / tag already on HEAD / tag already on the remote at the same commit); the backup folder is
+# never overwritten. When only step 7 failed (network), run `git push <Remote> <Tag>` by hand.
 #
 # ASCII-only on purpose: PowerShell 5.1 reads BOM-less .ps1 as ANSI (Japanese text lives in release_files.py).
 
@@ -27,6 +30,10 @@ param(
     [string]$PrevVersion,
     # Appended to the commit message (e.g. a Co-Authored-By line).
     [string]$CommitTrailer = '',
+    # Remote the tag is pushed to (step 7).
+    [string]$Remote = 'origin',
+    # Skip step 7 (leave the tag local).
+    [switch]$NoPushTag,
     [int]$TimeoutSec = 3600
 )
 
@@ -127,6 +134,11 @@ try {
         if ($tagged -ne $head) { throw "tag $Tag already exists on $tagged (HEAD is $head)" }
     }
 
+    if (-not $NoPushTag) {
+        # `git remote` lists names on stdout only (a failing `get-url` writes stderr, which PS 5.1 turns into an error).
+        if (@(& git remote) -notcontains $Remote) { throw "remote '$Remote' not found (pass -Remote, or -NoPushTag)" }
+    }
+
     $current = Read-CargoVersion
     Write-Host "  repo version $current -> $Version, deployed $PrevVersion, tag $Tag, deploy to $DeployDir"
     Write-Host "  branch $((& git branch --show-current).Trim())"
@@ -216,6 +228,25 @@ try {
     Write-Host '  ok (printed 3)'
 } finally { Remove-Item $smoke -ErrorAction SilentlyContinue }
 
+# ---------------------------------------------------------------- 7. push the tag
+if ($NoPushTag) {
+    Step "push tag skipped (-NoPushTag): git push $Remote $Tag when wanted"
+} else {
+    Step "push tag $Tag -> $Remote"
+    $local = (& git -C $repo rev-parse "$Tag^{commit}").Trim()
+    $r = Invoke-Captured 'git' "ls-remote --tags $Remote refs/tags/$Tag^{}"
+    if ($r.Code -ne 0) { Write-Host $r.Err -ForegroundColor Red; throw "git ls-remote $Remote failed (exit $($r.Code)); push by hand: git push $Remote $Tag" }
+    $remoteCommit = ($r.Out.Trim() -split '\s+')[0]
+    if ($remoteCommit -eq $local) {
+        Write-Host "  already on $Remote at $local (skipped)"
+    } elseif ($remoteCommit) {
+        throw "tag $Tag already exists on $Remote at $remoteCommit (local $local); not overwritten"
+    } else {
+        Invoke-Git "push $Remote refs/tags/${Tag}:refs/tags/$Tag"
+        Write-Host "  pushed (branches are NOT pushed)"
+    }
+}
+
 Write-Host ''
 Write-Host "released $Version (tag $Tag) to $DeployDir; previous files in $backup" -ForegroundColor Green
-Write-Host 'push is NOT done (git push / git push origin $Tag when wanted)'
+Write-Host 'branches are NOT pushed (git push when wanted)'
