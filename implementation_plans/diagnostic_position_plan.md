@@ -177,7 +177,63 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
 
 ## 4. フェーズ 3 の分類表
 
-（3-1 で埋める）
+3-1（2026-11-11）。`report_error` / `report_warning` に一時的に `#[track_caller]` を付け、`span` を持たない誤りごとに
+**呼んだ場所**と**付いた位置の出どころ**（錨 / 文 / 無し）を標準エラーに出して、9 カテゴリの例題＋
+`vscode-extension/test_fixtures/` と `cargo test` の全部を走らせて数えた（計測の仕掛けはコミットしていない）。
+91 か所のうち 79 か所が実際に通り、通らなかった 12 か所は読んで分けた（表の「未観測」）。
+
+⚠ 「文」の中には **`import[py]` の Python のコードの検査**から出るものがある（Python の名前は位置を持たないので錨が無く、
+`import` 文の位置になる）。どれも例題が成功する（型だけが欲しい推論で捨てる誤り）ので数に入れていない。
+
+**区分 A — 推論中に出す（錨で足りる・直さない）**
+
+| 誤り（関数） | 実測の位置 |
+|---|---|
+| `UndefinedName` / `BareClassMember`（`check_name_defined`） | 名前 |
+| `CallArgCountMismatch` / `NoMatchingOverload` / `NoOverloadForArgTypes`（`check_call_args` / `check_self_type_params` / `check_fn_type_call` / `narrow_overloads_by_arg_types`） | 呼ばれる側の名前（引数の数は「どの関数か」の誤り） |
+| `NotCallable`（`check_callable`）・`ObjectCallInArrow` / `MutatingMethodOnImmutable` / `FfiUnsupported` / `TemplateMissingTypeArgs` / `ProtocolInstantiation`（`infer_call_inner`・最後は未観測） | 呼ばれる側の名前 |
+| `NotSubscriptable` / `SubscriptTypeMismatch`（`check_subscript_index` / `check_int_position`） | 添字の対象 |
+| `IncompatibleUnaryOp`（`infer_unaryop`）・`VariableRedeclaration`（内包の変数・`infer_inner`・未観測） | 外側の錨 |
+| `UnknownGuardType` / `PtrElemNotCType`（`check_guard_type_exists`・`x is T` / `mustbe`） | `is` / `mustbe` |
+
+**区分 B — 推論の後に出す（文の位置に残る・直す）**
+
+| 誤り（関数） | 実測の位置 | 直す先 | タスク |
+|---|---|---|---|
+| `CallArgTypeMismatch`（`check_call_args` / `check_self_type_params` / `check_template_call_args` / `check_new_type_arg` / `check_builtin_call` / `check_fn_type_call`） | 呼ばれる側の名前 | **その引数** | 3-2 |
+| `CallMutParamWithImmutableArg`（`check_mut_param_arg` / `check_fn_type_call`）・`SelfTypeMismatch` | 呼ばれる側の名前 | その引数 | 3-2 |
+| `SpreadArgNotIterable`（`check_spread_arg`）・`NotSized`（`check_len_argument`）・`UnknownKeywordArg` | 呼ばれる側の名前 | 展開する式 / `len` の引数 / キーワード引数の値 | 3-2 |
+| `VarTypeMismatch`（`resolve_declared_type`・`let x: T = e`） | 文（`let`） | 右辺 | 3-3 |
+| `ReturnTypeMismatch`（`check_return_type`） | 文（`return`） | 戻り値の式 | 3-3 |
+| `ParamDefaultTypeMismatch`（`check_param_defaults`） | 文（`fn`） | 既定値の式 | 3-3 |
+| `FieldTypeMismatch`（クラス本体のフィールド・`check_trait_field_assign`）・`SubscriptTypeMismatch`（`check_subscript_assign`） | 文 | 代入する値 | 3-3 |
+| `ProtocolConformanceFailed`（`let d: Drawable = Bad(..)`・`stmt/protocol.rs`） | 文（`let`） | 右辺 | 3-3 |
+| `ConditionNotBool`（`check_condition_is_bool`） | 文（`if` / `while`） | 条件の式 | 3-3 |
+| `SpreadArgNotIterable` / `DictSpreadNotADict`（リストと辞書の表示の `*xs` / `**d`・`seq_entry_elem_types` / `dict_spread_elem_types`） | 文（リストの表示は錨を持たない） | 展開する式 | 3-4 |
+| `OperationOnAny` / `OperationOnUnion`（`infer_unaryop`） | 外側の錨 / 文 | 演算の対象 | 3-4 |
+| `InvalidDecorator`（`check_decorator`） | 文（装飾される定義） | 装飾子の式 | 3-4 |
+| `EnumVariantNotInt` | 文（`enum`） | 値の式 | 3-4 |
+
+**区分 C — 文が主語（文の位置が正しい・直さない）**
+
+| 誤り（関数） | 理由 |
+|---|---|
+| `MissingParamTypeAnn` / `MissingReturnTypeAnn` / `ProtocolReturnType` / `IntersectionSkippedCompile`（`check_fn_def` / `check_gen_def`） | 関数の定義そのものの誤り。⚠ 引数の注釈の誤りは仮引数を指すほうがよいが、`Param` は位置を持たない（§5） |
+| `VariableRedeclaration` / `AssignUndefined` / `CodeEscapesMetafunction`（`check_var_decl`）・`VariableRedeclaration`（`for` の変数） | 宣言・束縛する名前＝文の先頭 |
+| `AssignToImmutable`（`check_attr_assign`・`scope.rs` の書き込みの経路） | 書き込む先の根の名前＝文の先頭 |
+| `YieldOutsideGenerator`・`FieldDefaultNotAllowed`・`SelfReferentialField`・`VirtualMethodInClass`・`UnexpandedMemberDecorator`（未観測）・`TraitConformanceFailed`（`report_trait_error`）・`CannotImportName` | 文（`yield` / フィールド / メソッド / `class` / `import`）そのものの誤り |
+| 注釈の誤り（`BareContainerAnnotation` / `UnknownTypeName` / `TypeTakesNoTypeArgs` / `UnimportedModuleType` / `PtrElemNotCType`・`stmt/resolve.rs`）・`ResultSameTypes` | 型注釈は位置を持たない（§5）。注釈を書いた文を指す |
+
+**区分 D — 指すべきものが位置を持たない（直さない・§5）**
+
+| 誤り | 今の位置 | 足りないもの |
+|---|---|---|
+| `ExceptOnErrorTrait` / `ExceptNotError`（`check_except_type`） | **`try`**（`except` の行ではない） | `except` 節の位置 |
+| `CasePatternNeverMatches`・`case T:` の `UnknownGuardType` | `match` | `case` の位置 |
+| `SubscriptTypeMismatch`（リテラルの要素・`check_literal_elements`・未観測） | 文 | リテラルの位置 |
+
+⚠ 錨はリテラル（`1`・`"s"`）・リスト / 辞書の表示などを持たない（§2.1）。区分 B を直しても、`let x: int = "s"` や
+`f(1, "s")` のように**値がリテラルのとき**は外側の錨（呼び出しなら呼ばれる側）か文の位置のまま（§5）。
 
 ## 5. 範囲外
 
@@ -185,3 +241,6 @@ AST で位置を持つ式は 6 種類だけで、指しているトークンは�
   1 トークンに正しく引けるようになってから別に起票する。
 - **実行時の誤り**（`NameError` など）の位置。VM の行テーブルが文の位置を持っており、本書では変えない。
 - `EditorIndex::node_spans` を `Ident` の `span` で置き換える整理（拡張の hover / 定義へ移動の位置は今も正しい）。
+- **リテラル・表示（`[..]` / `{..}`）・型注釈・仮引数・`except` 節・`case` に位置を持たせる**（§4 の区分 C / D と
+  区分 B の注記）。持たせれば `let x: int = "s"` の `"s"`・`except Foo:` の `Foo` を指せる。`Expr` の大きさ
+  （1-2）と各層の作り直しの量を測ってから別に起票する。
