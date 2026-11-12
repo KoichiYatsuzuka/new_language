@@ -1,0 +1,11 @@
+# p_k2.ar — プロファイル用のドライバ（scripts/prof_stacks.ps1）: list[Body] の反復と let self の連鎖（run_energy・軌跡は空）
+# bench.ar の同じ区間を、同じ状態で AR_PROF_M 倍だけ繰り返す。sim_core は隣に写したもの（コンパイル済みなら .arc）を読む。
+
+import[py] time
+from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
+
+let M = int(getenv("AR_PROF_M", "1"))
+let t0 = time.perf_counter()
+mut w = make_world(256)
+let r = run_energy(w, 1000 * M)
+print("PROF p_k2 " + str(time.perf_counter() - t0) + " " + str(r))

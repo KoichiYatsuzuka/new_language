@@ -1,0 +1,16 @@
+# p_k3.ar — プロファイル用のドライバ（scripts/prof_stacks.ps1）: list[float] への追加（run_record・軌跡 500 個まで。世界を作り直して繰り返す）
+# bench.ar の同じ区間を、同じ状態で AR_PROF_M 倍だけ繰り返す。sim_core は隣に写したもの（コンパイル済みなら .arc）を読む。
+
+import[py] time
+from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
+
+let M = int(getenv("AR_PROF_M", "1"))
+let t0 = time.perf_counter()
+mut i = 0
+mut acc = 0.0
+while i < M:
+    mut w = make_world(256)
+    acc += run_record(w, 500)
+    i += 1
+let r = acc
+print("PROF p_k3 " + str(time.perf_counter() - t0) + " " + str(r))

@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (263 files, 126788 lines)
+src/  (263 files, 126790 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1731)
@@ -368,7 +368,7 @@ src/  (263 files, 126788 lines)
     binop.rs (884)
     builtin_members.rs (261)
     builtins.rs (246)
-    call_check.rs (2505)
+    call_check.rs (2507)
     decorator.rs (154)
     diagnostics.rs (70)
     errors.rs (1275)
@@ -520,6 +520,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   native_slowdown.ps1 (117)
   prof_attr_ic.ps1 (104)
   prof_dist.ps1 (180)
+  prof_stacks.ps1 (157)
   py_boundary_bench.ps1 (70)
   release.ps1 (260)
   repl_session.ps1 (58)
@@ -553,6 +554,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   name_scope_plan.md (605)
   native_object_access_plan.md (634)
   native_slowdown_analysis.md (230)
+  pandas_import_plan.md (492)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
   python_builtins_plan.md (596)
@@ -567,7 +569,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (38)
-  CLAUDE.md (173)
+  CLAUDE.md (174)
   README.md (317)
 ```
 _Generated 2026-11-12 by generate-codebase-map.ps1_
