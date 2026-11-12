@@ -515,6 +515,10 @@ fn run_program(
             if interpreter::tw_stats::enabled() {
                 interpreter::tw_stats::dump();
             }
+            // 診断フック（copy_alloc_speed_plan.md 1-2）: 値の複製の入口ごとの回数を出す。
+            if interpreter::copy_stats::enabled() {
+                interpreter::copy_stats::dump();
+            }
         }
     }
     let _tw_dump = TwStatsDump;
@@ -670,6 +674,9 @@ fn interpreter_main() {
             // **対話 REPL は `AR_TW_STATS` に一度も映っていなかった**（`run_program` 側だけ配線済み）。
             if interpreter::tw_stats::enabled() {
                 interpreter::tw_stats::dump();
+            }
+            if interpreter::copy_stats::enabled() {
+                interpreter::copy_stats::dump();
             }
         }
     }

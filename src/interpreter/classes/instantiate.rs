@@ -268,6 +268,7 @@ impl Interpreter {
         Some((|| {
             for (s, (_, v, arg_mut)) in plan.iter().zip(evaled) {
                 let v = self.bind_param_value(&s.param, v.clone(), *arg_mut)?;
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::AutoInitStore, &v, false);
                 let v = Self::deep_copy_value(v);
                 let mut inst = rc.borrow_mut();
                 Self::store_field_checked(&mut inst, s.idx, &s.param.name, v, s.is_mutable)?;

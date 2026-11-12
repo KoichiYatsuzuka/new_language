@@ -45,7 +45,8 @@ impl Interpreter {
                     inst_rc.borrow().class.name
                 ));
             }
-            return self.copy_value(obj);
+            crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Explicit, &obj, false);
+            return self.copy_value_uncounted(obj);
         }
 
         // method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ（eval_method_call と同一）。

@@ -55,6 +55,12 @@ impl Interpreter {
     ///
     /// メモリ不足などでコピーがパニックした場合は `MemoryError` を返す。
     pub(crate) fn copy_value(&mut self, val: Value) -> Result<Value, String> {
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, &val, false);
+        self.copy_value_uncounted(val)
+    }
+
+    /// [`Self::copy_value`] の本体（診断 `copy_stats` に数えない。利用者が書いた `x.copy()` は別の種類として数える）。
+    pub(crate) fn copy_value_uncounted(&mut self, val: Value) -> Result<Value, String> {
         if let Value::Instance(ref inst_rc) = val {
             let class = inst_rc.borrow().class.clone();
             if let Some(overloads) = self.lookup_method_in_class(&class, "__copy__") {

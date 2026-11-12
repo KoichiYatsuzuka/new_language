@@ -14,6 +14,7 @@ impl Interpreter {
     /// Arrow のコードは写す（L4・`let` の値を共有先から書き換えさせない）。⚠ Python のコードは CPython が実行する
     /// （そこでは参照を共有する）。CPython の物（`Value::PyObject`）は写しても同じ物を指す（`deep_copy_value`）。
     pub(crate) fn copy_for_store(&self, val: Value) -> Value {
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, &val, false);
         Self::deep_copy_value(val)
     }
 

@@ -174,6 +174,7 @@ impl Interpreter {
             return Err(IMMUTABLE_PYTHON_OBJECT.to_string());
         }
         let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Bind, &value, unshared);
         let copied = if unshared { value } else { Self::deep_copy_value(value) };
         if mode == BindCopy::CopyFreeze {
             self.freeze_value_in_place(&copied)?;

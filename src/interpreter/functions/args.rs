@@ -150,6 +150,7 @@ impl Interpreter {
         if self_param_mutable || !recv_mut {
             sv
         } else {
+            crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &sv, false);
             Self::deep_copy_value(sv)
         }
     }

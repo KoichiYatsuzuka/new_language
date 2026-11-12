@@ -1076,6 +1076,7 @@ extern "C" fn ar_let_from_name(name_ptr: *const u8, name_len: i32, h: i64) -> i6
 
 extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
+    crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &val, false);
     let copied = crate::interpreter::Interpreter::deep_copy_value(val);
     push_handle(copied)
 }
@@ -1648,6 +1649,7 @@ fn call_method_common(
                     let self_let = pm.first().is_some_and(|m| !m);
                     if self_let && mask & 1 != 0 {
                         copied_from.get_or_insert_with(arena_len);
+                        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &obj, false);
                         all_args.push(push_handle(crate::interpreter::Interpreter::deep_copy_value(obj.clone())));
                     } else {
                         all_args.push(obj_h);

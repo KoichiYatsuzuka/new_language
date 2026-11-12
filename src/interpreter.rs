@@ -137,6 +137,9 @@ mod templates;
 /// 診断フック `AR_TW_STATS=1`（#10 のスコープ計測）。既定では完全に無効。
 #[path = "interpreter/tw_stats.rs"]
 pub(crate) mod tw_stats;
+// 診断フック `AR_COPY_STATS=1`（値の複製の入口ごとの回数・copy_alloc_speed_plan.md 1-2）。
+#[path = "interpreter/copy_stats.rs"]
+pub(crate) mod copy_stats;
 /// 最上位文の VM 実行経路（#10-b）。**`functions/execution.rs` へ移してはいけない**（同ファイル冒頭参照）。
 #[path = "interpreter/vm_toplevel.rs"]
 mod vm_toplevel;

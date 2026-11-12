@@ -40,6 +40,11 @@ native = ["dep:pyo3", "dep:libloading"]
 # 計測時は `cargo build --features tw_stats`（tw_stats.ps1 が自動で行う）。
 tw_stats = []
 
+# 診断フック `AR_COPY_STATS=1`（src/interpreter/copy_stats.rs・copy_alloc_speed_plan.md 1-2）: 値の複製の入口ごとの
+# 回数と大きさを数える。**既定では無効＝コード自体が消える**（`tw_stats` と同じ理由）。
+# 計測時は `cargo build --release --features copy_stats`（scripts/copy_stats.ps1 が専用の target に作る）。
+copy_stats = []
+
 # 実行時間分布の計測フック（src/prof.rs）。**既定では無効＝コード自体が消える。**
 # `cargo build --release --features prof` でビルドし、`AR_PROF=1`（段のみ）/
 # `AR_PROF=ops`（段 + op 別サンプリング）で有効化する。
