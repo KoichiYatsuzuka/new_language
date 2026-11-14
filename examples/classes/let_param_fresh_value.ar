@@ -1,0 +1,99 @@
+# let_param_fresh_value.ar — `let` 仮引数に渡す値の複製（copy_alloc_speed_plan.md 2-2）
+#
+# `mut` の値を `let` 仮引数で受けるときは複製する。誰とも共有していない作りたての値は写さずに渡してよいが、
+# **ほかに持ち主がいる値は必ず複製する**。「複製を省くと値が変わる」形を並べ、期待と違えば `raise` する。
+
+class P:
+    mut x: int
+
+class Holder:
+    mut p: P
+
+# `__copy__` を持つクラス: `let` 仮引数で受けるたびに `__copy__` が走る（作りたての値でも）
+class Counted:
+    static mut copies: int = 0
+    mut x: int
+
+    fn __copy__(let self) -> Counted:
+        Counted.copies += 1
+        return Counted(self.x + 100)
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("let_param_fresh_value: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn ident(mut p: P) -> P:
+    return p
+
+fn first(mut h: Holder) -> P:
+    return h.p
+
+fn frozen_made(let x: int) -> P:
+    let p = P(x)
+    return p
+
+fn read(let v: P) -> int:
+    return v.x
+
+# `let` で受けた値を読む前に、元の値を別の引数から書き換える: 受けた値は変わらない
+fn read_after_write(let v: P, mut src: P) -> int:
+    src.x = 50
+    return v.x
+
+fn read_after_holder_write(let v: P, mut h: Holder) -> int:
+    h.p.x = 60
+    return v.x
+
+# 受けた値を `mut` に束縛して書き換える（束縛が複製する）
+fn rebind_and_write(let v: P) -> int:
+    mut y = v
+    y.x = 77
+    return y.x + v.x
+
+fn read_counted(let c: Counted) -> int:
+    return c.x
+
+fn read_list(let xs: list[P]) -> int:
+    return xs[0].x
+
+fn write_then_read_list(let xs: list[P], mut src: P) -> int:
+    src.x = 90
+    return xs[0].x
+
+fn in_function() -> int:
+    mut p = P(1)
+    expect("fn fresh", read(P(3)), 3)
+    expect("fn named", read_after_write(p, p), 1)
+    p.x = 1
+    expect("fn returned argument", read_after_write(ident(p), p), 1)
+    p.x = 1
+    mut h = Holder(P(2))
+    expect("fn returned field", read_after_holder_write(first(h), h), 2)
+    expect("fn fresh list holding a named value", write_then_read_list([p], p), 1)
+    expect("fn frozen fresh value", rebind_and_write(frozen_made(4)), 81)
+    return 1
+
+mut p = P(1)
+expect("fresh", read(P(3)), 3)
+expect("named", read_after_write(p, p), 1)
+expect("named was written", p.x, 50)
+p.x = 1
+expect("returned argument", read_after_write(ident(p), p), 1)
+p.x = 1
+mut h = Holder(P(2))
+expect("returned field", read_after_holder_write(first(h), h), 2)
+expect("fresh list", read_list([P(8)]), 8)
+expect("fresh list holding a named value", write_then_read_list([p], p), 1)
+
+# 凍った作りたての値（`let` で作って返した値）: 受けた側で `mut` に束縛すれば書き換えられる
+expect("frozen fresh value", rebind_and_write(frozen_made(4)), 81)
+
+# `__copy__`: 作りたての値でも、名前で持っている値でも 1 回ずつ走る
+expect("copy hook on a fresh value", read_counted(Counted(1)), 101)
+expect("copy hook ran", Counted.copies, 1)
+mut c = Counted(2)
+expect("copy hook on a named value", read_counted(c), 102)
+expect("copy hook ran twice", Counted.copies, 2)
+
+expect("in_function", in_function(), 1)
+print("let_param_fresh_value: ok")

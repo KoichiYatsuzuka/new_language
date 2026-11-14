@@ -55,8 +55,36 @@ impl Interpreter {
     ///
     /// メモリ不足などでコピーがパニックした場合は `MemoryError` を返す。
     pub(crate) fn copy_value(&mut self, val: Value) -> Result<Value, String> {
-        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, &val, false);
+        self.copy_value_held(val, 0)
+    }
+
+    /// [`Self::copy_value`] の本体。`held` は、呼ぶ側が `val` のほかに持っていて、束縛が済むまで誰からも見えない
+    /// 参照の数（評価済みの引数の並びの 1 個など）。
+    ///
+    /// 誰とも共有していない値（[`Self::is_unshared`]・作りたての `Vec3(...)` など）は写さずにそのまま渡す
+    /// （copy_alloc_speed_plan.md 2-2）。写しと同じ印になるよう、フリーズはその場で解く（[`Self::unfreeze_in_place`]）。
+    /// ⚠ `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ（利用者のコードが走る）。
+    /// ⚠⚠ `held` を多く数えると、持ち主のいる値を写さずに渡してしまう（`let` の仮引数が外から書き換わる）。
+    ///   確かに数えられる分だけを渡すこと。少なく数えるのは安全（写すだけ）。
+    pub(crate) fn copy_value_held(&mut self, val: Value, held: usize) -> Result<Value, String> {
+        let fresh = Self::is_unshared(&val, 1 + held) && !self.has_copy_hook(&val);
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, &val, fresh);
+        if fresh {
+            Self::unfreeze_in_place(&val);
+            return Ok(val);
+        }
         self.copy_value_uncounted(val)
+    }
+
+    /// `val` がインスタンスで、そのクラスが `__copy__` を持つか（[`Self::copy_value_uncounted`] が呼ぶもの）。
+    fn has_copy_hook(&self, val: &Value) -> bool {
+        match val {
+            Value::Instance(rc) => {
+                let class = rc.borrow().class.clone();
+                self.lookup_method_in_class(&class, "__copy__").is_some()
+            }
+            _ => false,
+        }
     }
 
     /// [`Self::copy_value`] の本体（診断 `copy_stats` に数えない。利用者が書いた `x.copy()` は別の種類として数える）。

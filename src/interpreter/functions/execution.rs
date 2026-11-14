@@ -614,7 +614,9 @@ impl Interpreter {
     /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
     pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
         Self::check_param_binding(p.mutable, &p.name, &v)?;
-        let v = if !p.mutable && arg_mut { self.copy_value(v)? } else { v };
+        // ⚠ 呼ぶ側は**評価済みの引数の並びの要素の写し**を渡す（`try_fast_bind`・`store_auto_init`）。並びの 1 個は
+        //   束縛が済むまで誰からも見えないので、数えない（`held` = 1・copy_alloc_speed_plan.md 2-2）。
+        let v = if !p.mutable && arg_mut { self.copy_value_held(v, 1)? } else { v };
         Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v))
     }
 
@@ -722,7 +724,8 @@ impl Interpreter {
             }
             for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
                 Self::check_param_binding(p.mutable, &p.name, v)?;
-                out.push(if !p.mutable && *arg_mut { self.copy_value(v.clone())? } else { v.clone() });
+                // 評価済みの引数の並び（`evaled`）が持つ 1 個は数えない（`bind_param_value` と同じ・2-2）
+                out.push(if !p.mutable && *arg_mut { self.copy_value_held(v.clone(), 1)? } else { v.clone() });
             }
             return Ok(out);
         }

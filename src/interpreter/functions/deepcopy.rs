@@ -190,6 +190,36 @@ impl Interpreter {
         }
     }
 
+    /// 誰とも共有していない値のフリーズを**その場で**解く（[`Self::deep_copy_unfrozen`] が作る写しと同じ印にする・
+    /// copy_alloc_speed_plan.md 2-2）。インスタンスは不変の印を落とし、フィールドの可変性をクラスの定義に戻す。
+    /// ⚠ 呼ぶのは [`Self::is_unshared`] が真の値だけ（ほかに持ち主がいる値に呼ぶと、相手の値まで解ける）。
+    ///   辞書は `is_unshared` が偽にするのでここには来ないが、来ても中へは入らない（何もしない）。
+    pub(crate) fn unfreeze_in_place(val: &Value) {
+        match val {
+            Value::Instance(rc) if Self::shares_instance(rc) => {}
+            Value::Instance(rc) => {
+                let Ok(mut inst) = rc.try_borrow_mut() else { return };
+                let class = inst.class.clone();
+                let unfrozen = inst.flags() & !crate::interpreter::value::INST_IMMUTABLE;
+                inst.set_flags(unfrozen);
+                for (idx, slot) in inst.boxed_fields.iter_mut().enumerate() {
+                    if let Some((v, m)) = slot {
+                        *m = class.field_mutability_vec.get(idx).copied().unwrap_or(true);
+                        Self::unfreeze_in_place(v);
+                    }
+                }
+            }
+            Value::List(rc) | Value::Set(rc) => {
+                if let Ok(xs) = rc.try_borrow() {
+                    xs.iter().for_each(Self::unfreeze_in_place);
+                }
+            }
+            Value::Tuple(t) => t.all_values().iter().for_each(Self::unfreeze_in_place),
+            Value::FrozenSet(items) => items.iter().for_each(Self::unfreeze_in_place),
+            _ => {}
+        }
+    }
+
     /// 写さずに共有するインスタンスか（`object()`・タスク 6-10）。フィールドを持たないので、共有しても同一性のほかに
     /// 違いは見えない。写すと別の物になり、番兵として働かない（フィールドに入れた `object()` が `is` で偽になる）。
     /// ⚠ スレッドへ送る複製（`Value::deep_clone`）は `Rc` を共有できないので、ここを通らず作り直す。
