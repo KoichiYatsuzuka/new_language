@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (264 files, 126969 lines)
+src/  (264 files, 126989 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1731)
@@ -123,7 +123,7 @@ src/  (264 files, 126969 lines)
   expr_walk.rs (200)
   import_fs.rs (344)
   interpreter.rs (1337)
-  main.rs (804)
+  main.rs (812)
   module_path.rs (295)
   prof.rs (558)
   py_stubs.rs (63)
@@ -240,7 +240,7 @@ src/  (264 files, 126969 lines)
       vars.rs (420)
     functions/
       args.rs (307)
-      deepcopy.rs (192)
+      deepcopy.rs (204)
       execution.rs (1119)
       mod.rs (7)
       overload.rs (223)
@@ -487,7 +487,7 @@ examples/  (recursive .ar counts per category)
   async/ (13 .ar)
   basics/ (179 .ar)
   bench/ (35 .ar)
-  classes/ (73 .ar)
+  classes/ (74 .ar)
   collections/ (38 .ar)
   debugger/ (6 .ar)
   DxLib/ (0 .ar)
@@ -508,7 +508,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_bytecode.ps1 (135)
   compare_import_paths.ps1 (147)
   compare_outputs.ps1 (153)
-  compare_python_impl.ps1 (672)
+  compare_python_impl.ps1 (673)
   compare_tm_grammar.ps1 (120)
   compare_wasm_frontend.ps1 (301)
   copy_stats.ps1 (202)
@@ -574,5 +574,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   CLAUDE.md (175)
   README.md (317)
 ```
-_Generated 2026-11-12 by generate-codebase-map.ps1_
+_Generated 2026-11-14 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
