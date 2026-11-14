@@ -1514,7 +1514,7 @@ extern "C" fn ar_call_method(
     n_args: i32,
 ) -> i64 {
     let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
-    call_method_common(obj_h, name, args_ptr, n_args, None, None)
+    call_method_common(obj_h, name, args_ptr, n_args, None, None, 0)
 }
 
 /// 名前によるメソッド呼び出し＋値渡しの複製（field 55・native_object_access_plan.md 1-5・D-8）。
@@ -1531,7 +1531,7 @@ extern "C" fn ar_call_method_m(
     mut_mask: u32,
 ) -> i64 {
     let Some(name) = native_str(name_ptr, name_len, "method name") else { return TL_NONE };
-    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), None)
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), None, 0)
 }
 
 /// 名前によるメソッド呼び出しの、箇所ごとのセルと FFI の検査の情報つきの版（field 73・11-3・D-12）。
@@ -1551,6 +1551,7 @@ extern "C" fn ar_call_method_ic(
     info_len: i32,
 ) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
+    let fresh = take_fresh_mask();
     let Some(name) = site_name(name_ptr, name_len, cell, "method name") else { return TL_NONE };
     if !cell.is_null() {
         // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
@@ -1562,7 +1563,7 @@ extern "C" fn ar_call_method_ic(
         let Some(info) = native_str(info_ptr, info_len, "call info") else { return TL_NONE };
         Some(info)
     };
-    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), info)
+    call_method_common(obj_h, name, args_ptr, n_args, Some(mut_mask), info, fresh)
 }
 
 /// 生成コードが埋め込んだ FFI の検査の情報（`表示名 \x1f 宣言型 \x1f 位置`）で戻り値を照合する（VM の
@@ -1599,6 +1600,7 @@ fn call_method_common(
     n_args: i32,
     mut_mask: Option<u32>,
     ffi: Option<&str>,
+    fresh: u32,
 ) -> i64 {
 
     let (has_err, obj, interp_ptr) = STATE.with(|s| {
@@ -1659,8 +1661,18 @@ fn call_method_common(
                         let param_let = pm.get(i + 1).is_some_and(|m| !m);
                         if param_let && mask_arg_is_mut(mask, i) {
                             copied_from.get_or_insert_with(arena_len);
-                            match interp.copy_value(clone_value_at(h)) {
-                                Ok(v) => all_args.push(push_handle(v)),
+                            // 作りたての印の付いた引数は、欄の 1 個を数えずに共有を判定する（2-4。写さなければ同じ欄を渡す）
+                            let is_fresh = i < 31 && fresh & (1 << (i + 1)) != 0 && h >= super::INT_CACHE_BASE as i64;
+                            let val = clone_value_at(h);
+                            let copied = if is_fresh {
+                                interp.copy_value_held(val.clone(), 2).map(|v| {
+                                    if crate::interpreter::Interpreter::same_heap_value(&v, &val) { h } else { push_handle(v) }
+                                })
+                            } else {
+                                interp.copy_value(val).map(push_handle)
+                            };
+                            match copied {
+                                Ok(nh) => all_args.push(nh),
                                 Err(e) => {
                                     STATE.with(|s| s.borrow_mut().error = Some(e));
                                     return TL_NONE;
@@ -1713,7 +1725,7 @@ fn call_method_common(
                 Some(mask) => mask_arg_is_mut(mask, i),
                 None => true,
             };
-            (None, clone_value_at(unsafe { *args_ptr.add(i) }), is_mut)
+            (None, arg_value(args_ptr, i, fresh), is_mut)
         })
         .collect();
     // インスタンスは VM の `CallMethod` と同じ入口へ、受け手の可変性（bit 0）を添えて渡す（6-1）。
@@ -2122,7 +2134,7 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
 /// クラスは名前で引く（`CB_GET_GLOBAL` と同じ `get_var`。1-7 でモジュールの大域にいる）。クラスでない値に
 /// 束縛されていたら（型検査が通さないはずだが）値として呼ぶ（`call_value_with_args`）。
 extern "C" fn ar_construct(name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32, mut_mask: u32) -> i64 {
-    construct_by_name(std::ptr::null_mut(), name_ptr, name_len, args_ptr, n_args, mut_mask)
+    construct_by_name(std::ptr::null_mut(), name_ptr, name_len, args_ptr, n_args, mut_mask, 0)
 }
 
 /// `Class(args)` の呼び出し箇所ごとのセルつき版（field 70・native_object_access_plan.md 10-2・D-11）。セルに前回の
@@ -2140,6 +2152,7 @@ extern "C" fn ar_construct_ic(
     mut_mask: u32,
 ) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
+    let fresh = take_fresh_mask();
     if !cell.is_null() {
         // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
         let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
@@ -2154,15 +2167,77 @@ extern "C" fn ar_construct_ic(
             if !interp_ptr.is_null() {
                 let interp = unsafe { &mut *interp_ptr };
                 if let Some(cls) = interp.native_classes.get(&((packed - 1) as u32)).cloned() {
-                    return construct_class(interp, cls, args_ptr, n_args, mut_mask);
+                    return construct_class(interp, cls, args_ptr, n_args, mut_mask, fresh);
                 }
             }
         }
     }
-    construct_by_name(cell, name_ptr, name_len, args_ptr, n_args, mut_mask)
+    construct_by_name(cell, name_ptr, name_len, args_ptr, n_args, mut_mask, fresh)
 }
 
 /// クラスを名前で引いて生成する（field 67 と field 70 の外れた道）。`cell` があればクラスを表とセルに入れる。
+/// 直後の生成・名前によるメソッド呼び出しの「作りたての引数」の印を入れる（field 75・2-4）。
+extern "C" fn ar_set_fresh(mask: u32) {
+    STATE.with(|s| s.borrow_mut().fresh_mask = mask);
+}
+
+/// 印を読んで 0 に戻す。⚠ `ar_construct_ic` / `ar_call_method_ic` は**入口の最初に**呼ぶ（途中で抜けても、次の
+/// 呼び出しに印が残らないように）。
+fn take_fresh_mask() -> u32 {
+    STATE.with(|s| std::mem::take(&mut s.borrow_mut().fresh_mask))
+}
+
+/// 引数 `i` の値。作りたての印（`fresh` の bit i+1）が付いていれば、アリーナの欄から**取り出す**（欄は `None` になる。
+/// 生成コードはその欄を二度と読まない）。付いていなければ今までどおり欄の値の写し。
+/// ⚠ 小さい整数・真偽値・`None` の共有の欄（`INT_CACHE_BASE` より前）は取り出さない。
+fn arg_value(args_ptr: *const i64, i: usize, fresh: u32) -> Value {
+    let h = unsafe { *args_ptr.add(i) };
+    if i < 31 && fresh & (1 << (i + 1)) != 0 && h >= super::INT_CACHE_BASE as i64 {
+        return STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            match st.arena.get_mut(h as usize) {
+                Some(slot) => std::mem::replace(slot, Value::None),
+                None => Value::None,
+            }
+        });
+    }
+    clone_value_at(h)
+}
+
+/// 直接呼び出しの `let self` / `let` 仮引数へ渡す作りたての値（field 76・2-4）。`h` の欄の 1 個は数えずに、
+/// 誰とも共有していなければ複製しない（VM の `copy_value_held` / 受け手の `deep_copy_value` と同じ結果）。
+extern "C" fn ar_copy_fresh(h: i64, is_self: i32) -> i64 {
+    let (has_err, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for copy_fresh".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if is_self != 0 {
+        // `let self`: `deep_copy_value`（`__copy__` を呼ばない・印を保つ）。共有していなければそのまま
+        let unshared = h >= super::INT_CACHE_BASE as i64 && crate::interpreter::Interpreter::is_unshared(&val, 2);
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &val, unshared);
+        if unshared {
+            return h;
+        }
+        return push_handle(crate::interpreter::Interpreter::deep_copy_value(val));
+    }
+    let held = usize::from(h >= super::INT_CACHE_BASE as i64);
+    match interp.copy_value_held(val.clone(), held + 1) {
+        // 写さなかった（同じ実体）なら欄をそのまま使う
+        Ok(v) if crate::interpreter::Interpreter::same_heap_value(&v, &val) => h,
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
+    }
+}
+
 fn construct_by_name(
     cell: *mut u64,
     name_ptr: *const u8,
@@ -2170,6 +2245,7 @@ fn construct_by_name(
     args_ptr: *const i64,
     n_args: i32,
     mut_mask: u32,
+    fresh: u32,
 ) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
@@ -2190,7 +2266,7 @@ fn construct_by_name(
                 // SAFETY: 上と同じ
                 unsafe { &*(cell as *const AtomicU64) }.store(u64::from(cls.class_id) + 1, Ordering::Relaxed);
             }
-            construct_class(interp, cls, args_ptr, n_args, mut_mask)
+            construct_class(interp, cls, args_ptr, n_args, mut_mask, fresh)
         }
         Some(other) => {
             let args: Vec<Value> = (0..n_args as usize).map(|i| clone_value_at(unsafe { *args_ptr.add(i) })).collect();
@@ -2207,9 +2283,11 @@ fn construct_class(
     args_ptr: *const i64,
     n_args: i32,
     mut_mask: u32,
+    fresh: u32,
 ) -> i64 {
+    // 作りたての印の付いた引数は欄から取り出す（2-4・参照の数を VM と同じにして、束縛と格納の複製を省く）
     let evaled = (0..n_args as usize)
-        .map(|i| (None, clone_value_at(unsafe { *args_ptr.add(i) }), mask_arg_is_mut(mut_mask, i)))
+        .map(|i| (None, arg_value(args_ptr, i, fresh), mask_arg_is_mut(mut_mask, i)))
         .collect();
     finish_construct(interp.instantiate_evaled(cls, evaled))
 }
@@ -2396,6 +2474,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     make_str_ic: ar_make_str_ic,
     call_method_ic: ar_call_method_ic,
     assign_path_ic: ar_assign_path_ic,
+    set_fresh: ar_set_fresh,
+    copy_fresh: ar_copy_fresh,
 };
 
 #[cfg(test)]

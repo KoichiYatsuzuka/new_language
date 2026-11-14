@@ -1304,6 +1304,7 @@ impl<'a> GenCtx<'a> {
             None => ("ptr null".to_string(), 0),
         };
         let cell = self.ic_cell();
+        self.emit_fresh_mask(&handles);
         self.call_cb(CB_CALL_METHOD_IC, &[
             cell, format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
             args_arr, format!("i32 {n}"), format!("i32 {mask}"), info_ptr, format!("i32 {info_len}"),
@@ -1411,6 +1412,7 @@ impl<'a> GenCtx<'a> {
                 } else {
                     let n   = handles.len();
                     let arr = self.spill_handle_array(&handles, "kargs");
+                    self.emit_fresh_mask(&handles);
                     self.call_cb(CB_CONSTRUCT_IC, &[cell, ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")])
                 };
             }

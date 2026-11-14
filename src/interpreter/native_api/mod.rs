@@ -177,6 +177,9 @@ struct NativeCallState {
     /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
     /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
     str_consts: Vec<Option<Value>>,
+    /// 次の `ar_construct_ic` / `ar_call_method_ic` の引数のうち、「作りたての値を積んだばかりの欄」の印
+    /// （bit i+1 = 引数 i・`ar_set_fresh` が入れ、次の呼び出しが入口で必ず読んで 0 に戻す・copy_alloc_speed_plan.md 2-4）。
+    fresh_mask: u32,
 }
 
 impl NativeCallState {
@@ -233,6 +236,7 @@ thread_local! {
             protocol_args: Vec::new(),
             native_methods: HashMap::new(),
             str_consts: Vec::new(),
+            fresh_mask: 0,
         }
     });
 }
@@ -709,6 +713,15 @@ pub struct ArCallbacks {
     /// 2 = `float`（ビット列）。⚠ 生成コードは値を先に評価するので、値の評価が何も起こさない形（リテラル・変数・
     /// 数の演算）のときだけ使う（途中の読み出しの順が VM と入れ替わっても見分けられない）。
     pub assign_path_ic: extern "C" fn(i64, *const i64, i32, i32, i64),
+
+    // ── Fresh temporaries (fields 75-76・copy_alloc_speed_plan.md 2-4) ──
+    /// 直後の `construct_ic` / `call_method_ic` の引数のうち、作りたての値を積んだばかりの欄の印（bit i+1 = 引数 i）。
+    /// 印の付いた引数は、欄から値を**取り出して**渡す（欄に写しを残さない）ので、誰とも共有していない値は
+    /// VM と同じく複製されずに渡る（`copy_value_held`・`copy_for_store`）。生成コードはその欄を二度と読まない。
+    pub set_fresh: extern "C" fn(u32),
+    /// 直接呼び出し（`_impl`）の `let self` / `let` 仮引数へ渡す作りたての値の複製。(ハンドル, `let self` か) を取り、
+    /// 誰とも共有していなければ同じハンドルを返す（欄の 1 個は数えない）。共有していれば今までどおり複製を積む。
+    pub copy_fresh: extern "C" fn(i64, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

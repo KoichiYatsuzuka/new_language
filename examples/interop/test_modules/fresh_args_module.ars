@@ -1,0 +1,46 @@
+class P:
+    mut x: int
+    fn __init__(mut self, x: int) -> None:
+        ...
+
+
+class Pair:
+    mut a: P
+    mut b: P
+    fn __init__(mut self, a: P, b: P) -> None:
+        ...
+
+
+class Holder:
+    mut p: P
+    mut ps: list[P]
+    fn __init__(mut self, p: P, ps: list[P]) -> None:
+        ...
+
+
+fn ident(mut p: P) -> P:
+    ...
+
+fn first(mut h: Holder) -> P:
+    ...
+
+fn read(v: P) -> int:
+    ...
+
+fn read_after_write(v: P, mut src: P) -> int:
+    ...
+
+fn store_cases() -> int:
+    ...
+
+fn nested_cases() -> int:
+    ...
+
+fn construct_cases() -> int:
+    ...
+
+fn param_cases() -> int:
+    ...
+
+fn field_cases() -> int:
+    ...

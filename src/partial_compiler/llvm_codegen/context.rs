@@ -88,6 +88,21 @@ impl<'a> GenCtx<'a> {
         mask
     }
 
+    /// 引数のハンドルのうち「作りたての値を積んだばかりの欄」（`fresh_regs`）の印（bit i+1 = 引数 i・2-4）。0 でなければ
+    /// 直後の `CB_CONSTRUCT_IC` / `CB_CALL_METHOD_IC` の前に `CB_SET_FRESH` で渡す（コールバックは欄から値を取り出す）。
+    /// ⚠ 印を付けたレジスタは、その呼び出しの引数としてしか使わないこと（欄は空になる）。
+    pub(super) fn emit_fresh_mask(&mut self, handles: &[String]) {
+        let mut mask = 0u32;
+        for (i, h) in handles.iter().enumerate().take(31) {
+            if self.fresh_regs.contains(h) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        if mask != 0 {
+            self.call_cb(CB_SET_FRESH, &[format!("i32 {mask}")]);
+        }
+    }
+
     /// 受け手の無い呼び出し（生成・5-1）の `mut_mask`: bit i+1 = 引数 i が `mut` の値か（bit 0 は使わない）。
     pub(super) fn method_mut_mask_args(&self, args: &[CallArg]) -> u32 {
         let mut mask = 0u32;
@@ -117,6 +132,10 @@ impl<'a> GenCtx<'a> {
         // 終わるまでアリーナに残り、ループの中の呼び出しでは周の数だけ溜まった（`let self` の深いコピーで 1 GB 超）。
         if self.pending_save.is_none() {
             self.pending_save = Some(self.call_cb(CB_ARENA_SAVE, &[]));
+        }
+        // 作りたての値を積んだばかりの欄（`fresh_regs`）は、誰とも共有していなければ複製しない（2-4・`ar_copy_fresh`）
+        if self.fresh_regs.contains(h) {
+            return self.call_cb(CB_COPY_FRESH, &[format!("i64 {h}"), format!("i32 {}", i32::from(is_self))]);
         }
         let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
         self.call_cb(cb, &[format!("i64 {h}")])
