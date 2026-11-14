@@ -13,9 +13,21 @@ impl Interpreter {
     ///
     /// Arrow のコードは写す（L4・`let` の値を共有先から書き換えさせない）。⚠ Python のコードは CPython が実行する
     /// （そこでは参照を共有する）。CPython の物（`Value::PyObject`）は写しても同じ物を指す（`deep_copy_value`）。
+    ///
+    /// 誰とも共有していない値（[`Self::is_unshared`]・作りたての `Vec3(...)` など）は写さずにそのまま格納する
+    /// （copy_alloc_speed_plan.md 2-1）。元を指す者がいないので、写しても違いは観測できない（`deep_copy_value` は
+    /// フリーズの印も写すので、印も同じ）。
+    /// ⚠ **値を渡し切って呼ぶこと**（`val` のほかに呼ぶ側が写しを持たない）。持ったまま呼ぶと参照が 2 個になり、
+    ///   共有とみなして写す（遅いだけで結果は同じ）。逆に、持ち主がいる値を「共有していない」と誤ることは無い。
+    /// ⚠ コンパイル済みコードのコールバックから来る値は、アリーナの欄が 1 個持つので必ず写す（2-4 で扱う）。
     pub(crate) fn copy_for_store(&self, val: Value) -> Value {
-        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, &val, false);
-        Self::deep_copy_value(val)
+        let unshared = Self::is_unshared(&val, 1);
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, &val, unshared);
+        if unshared {
+            val
+        } else {
+            Self::deep_copy_value(val)
+        }
     }
 
     /// 参照型の値を再帰的にディープコピーして返す。
