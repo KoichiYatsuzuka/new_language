@@ -267,9 +267,15 @@ impl Interpreter {
         let Value::Instance(rc) = inst_val else { return None };
         Some((|| {
             for (s, (_, v, arg_mut)) in plan.iter().zip(evaled) {
-                let v = self.bind_param_value(&s.param, v.clone(), *arg_mut)?;
-                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::AutoInitStore, &v, false);
-                let v = Self::deep_copy_value(v);
+                let arg = v;
+                let v = self.bind_param_value(&s.param, arg.clone(), *arg_mut)?;
+                // 格納の複製。誰とも共有していない値は写さない（copy_alloc_speed_plan.md 2-3）: 束縛が写した値と、
+                // 束縛が写さずに渡した作りたての値。後者は評価済みの引数の並び（`arg`）が同じ物を 1 個持つので、
+                // **同じ物のときだけ**その 1 個を数えない（`__copy__` が返した値は並びの物と別なので数える）。
+                let held = usize::from(Self::same_heap_value(&v, arg));
+                let unshared = Self::is_unshared(&v, 1 + held);
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::AutoInitStore, &v, unshared);
+                let v = if unshared { v } else { Self::deep_copy_value(v) };
                 let mut inst = rc.borrow_mut();
                 Self::store_field_checked(&mut inst, s.idx, &s.param.name, v, s.is_mutable)?;
             }

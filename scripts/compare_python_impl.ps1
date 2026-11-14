@@ -236,6 +236,7 @@ $knownDiff = @{
     'py_os_error_args'               ='Rust: OSError の errno / strerror / filename と args・open の失敗の文言（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'store_fresh_value'              ='Rust: 格納（append など）は持ち主のいる値を複製する（L4・copy_alloc_speed_plan.md 2-1 で新設）。py: append が参照を共有し、格納した側の書き換えが元の変数に見える（held by a name = 9）'
     'let_param_fresh_value'          ='Rust: 関数の中の `mut p` は最上位の `p` と別の変数（ブロックスコープ・copy_alloc_speed_plan.md 2-2 で新設）。py: 関数の中の宣言を再宣言とみなして NameError（variable p is already declared）'
+    'auto_init_fresh_value'          ='Rust: 生成の引数を `let` で受けるとき `__copy__` を呼ぶ（copy_alloc_speed_plan.md 2-3 で新設）。py: 生成の引数で `__copy__` を呼ばない（copy hook result stored = 1）'
     'py_key_error_args'              ='Rust: 実行時の KeyError の args はキーそのもの（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_getattr_hook'                ='Rust: Python のクラスの __getattr__ と object.__getattribute__（known_bugs.md の #11 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'getattr_hook_error'             ='Rust: Arrow のクラスの __getattr__ はパースの誤り（known_bugs.md の #11 で新設）。py: 誤りにせず素通しして 1 / unreachable を出す'

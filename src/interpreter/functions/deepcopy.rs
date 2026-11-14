@@ -190,6 +190,19 @@ impl Interpreter {
         }
     }
 
+    /// 2 つの値が同じ実体（同じ `Rc`）か。[`Self::deep_copy_value`] が作り直す種類（インスタンス・リスト・集合・辞書・
+    /// タプル）だけを見る。ほかは `false`（数値・文字列などは実体を数える意味が無い）。
+    pub(crate) fn same_heap_value(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Instance(x), Value::Instance(y)) => Rc::ptr_eq(x, y),
+            (Value::List(x), Value::List(y)) | (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
+            (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
+            (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
+            (Value::FrozenSet(x), Value::FrozenSet(y)) => Rc::ptr_eq(x, y),
+            _ => false,
+        }
+    }
+
     /// 誰とも共有していない値のフリーズを**その場で**解く（[`Self::deep_copy_unfrozen`] が作る写しと同じ印にする・
     /// copy_alloc_speed_plan.md 2-2）。インスタンスは不変の印を落とし、フィールドの可変性をクラスの定義に戻す。
     /// ⚠ 呼ぶのは [`Self::is_unshared`] が真の値だけ（ほかに持ち主がいる値に呼ぶと、相手の値まで解ける）。
