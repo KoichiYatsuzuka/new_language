@@ -70,6 +70,10 @@ impl<'a> GenCtx<'a> {
     /// `true`（複製する。結果は変わらず、複製が多いだけ）。
     /// ⚠ VM はモジュール最上位の `let` も共有する（`toplevel_mut`）が、ここは最上位の表を持たないので複製する。
     pub(super) fn operand_is_mutable(&self, e: &Expr) -> bool {
+        // VM の `arg_is_mutable` と同じ: 型検査が不変と証明した経路は複製しない（copy_alloc_speed_plan.md 3-3）
+        if e.node_id().is_some_and(|id| self.annotations.is_immutable_path(id)) {
+            return false;
+        }
         match e {
             Expr::Ident { name, .. } => self.binding_mut.get(name.as_str()).copied().unwrap_or(true),
             _ => true,

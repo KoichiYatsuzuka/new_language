@@ -147,6 +147,15 @@ impl TypeChecker {
             // --- 関数呼び出し ---
             Expr::Call { func, args, node_id, .. } => {
                 let result = self.infer_call(func, args, *node_id);
+                // 受け手・引数が不変と証明できた経路なら記録する（3-1。`let self` / `let` 仮引数で受けるときに複製しない）
+                if let Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } = func.as_ref() {
+                    self.note_immutable_path(object);
+                }
+                for a in args {
+                    if matches!(a, crate::ast::CallArg::Positional(_) | crate::ast::CallArg::Keyword { .. }) {
+                        self.note_immutable_path(a.expr());
+                    }
+                }
                 // ── AST 型解決層（#16）── 呼び出しの**結果型**を焼く（CallInfo は infer_call_inner が充填）。
                 self.annotations.set_resolved(*node_id, result.clone());
                 result
@@ -478,6 +487,8 @@ impl TypeChecker {
                 //    文側だけ直しても穴が残っていた（実測）。
                 // `for mut x in ..`（D-11・2-10）は可変の束縛（要素を写す）
                 let target_mut = *mut_targets || self.path_is_mutable(iter).unwrap_or(false);
+                // `Stmt::For` と同じ（3-1）: ループ変数が「誰からも書き換わらない値」か
+                let iter_proven = !*mut_targets && self.proven_immutable_path(iter);
                 let mut_targets = *mut_targets;
                 // ⚠ 積むのは `->list[T]` **そのもの**。要素を取り出すのは `loop_yield`
                 //    側で、内側の注釈が `list[T]` でなければ照合しない（タスク 5.2）。
@@ -502,6 +513,7 @@ impl TypeChecker {
                         c.state.begin_comprehension();
                     }
                     c.push_scope();
+                    c.for_var_proof.push(targets.iter().map(|t| (t.clone(), iter_proven)).collect());
                     for (target, ty) in targets.iter().zip(target_tys) {
                         // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
                         if target != "_" && c.already_declared(target) {
@@ -521,6 +533,7 @@ impl TypeChecker {
                         c.declare(target.clone(), ty, target_mut);
                     }
                     c.check_stmts(body);
+                    c.for_var_proof.pop();
                     c.pop_scope();
                     if *comprehension {
                         c.state.end_comprehension()

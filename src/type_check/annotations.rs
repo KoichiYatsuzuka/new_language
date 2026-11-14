@@ -107,6 +107,12 @@ pub struct AstAnnotations {
     py_reads: HashMap<u32, TypeId>,
     /// `py_reads` の反復の側（`for x in pl` の `pl` の node → 要素の型）。
     py_iters: HashMap<u32, TypeId>,
+    /// **不変と証明できた経路**の式（呼び出しの受け手・引数・copy_alloc_speed_plan.md 3-1・D-4 / D-10）。
+    /// `let` が根の名前・属性・添字の経路で、全部の段を Arrow のクラスのフィールドか組み込みのコンテナの要素と
+    /// 解決できたもの。VM のコンパイラと生成コードは、ここに載っている式を `let self` / `let` 仮引数へ渡すとき
+    /// 複製しない（`let` の値は誰からも書き換わらないので、共有しても観測できない）。
+    /// ⚠ **載っていない式は今までどおり複製する**（合成した AST・未採番は遅いが正しい側へ倒れる）。
+    immutable_paths: std::collections::HashSet<u32>,
 }
 
 /// `binop_kind` が付かなかった二項演算の理由別件数（診断用）。
@@ -211,6 +217,18 @@ impl AstAnnotations {
     /// node の Call 構造化注釈を引く。
     pub fn call_info(&self, node_id: u32) -> Option<&CallInfo> {
         self.calls.get(&node_id)
+    }
+
+    /// 式を「不変と証明できた経路」として記録する（node_id==0 は無視・3-1）。
+    pub fn set_immutable_path(&mut self, node_id: u32) {
+        if node_id != 0 {
+            self.immutable_paths.insert(node_id);
+        }
+    }
+
+    /// 式が「不変と証明できた経路」か（未採番・載っていない式は `false` ＝ 複製する側）。
+    pub fn is_immutable_path(&self, node_id: u32) -> bool {
+        node_id != 0 && self.immutable_paths.contains(&node_id)
     }
 
     /// 二項演算のオペランド種別を記録する（node_id==0 は無視）。

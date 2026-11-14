@@ -103,6 +103,11 @@ impl Compiler {
     /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、
     /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
     pub(super) fn arg_is_mutable(&self, e: &Expr) -> bool {
+        // 型検査が不変と証明した経路（`let` が根の属性・添字・`let` のコンテナのループ変数）は複製しない
+        // （copy_alloc_speed_plan.md 3-2）。載っていない式は下の今までの規則（迷ったら「可変」＝複製する）。
+        if e.node_id().is_some_and(|id| self.annotations.is_immutable_path(id)) {
+            return false;
+        }
         match e {
             Expr::Ident { name, res: Resolution::Local(slot), .. } => {
                 // ⚠ 採番のずれをデバッグビルドで捕まえる（#86）。ここは可変性を引くだけだが、

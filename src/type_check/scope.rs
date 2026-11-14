@@ -276,6 +276,63 @@ impl TypeChecker {
         Some(info.contents_mutable)
     }
 
+    /// `expr` が**不変と証明できた経路**か（copy_alloc_speed_plan.md 3-1・D-4 / D-10）: `let self` / `let` 仮引数へ
+    /// 渡すときに複製しなくてよい式。条件は全部:
+    /// 1. 名前・属性・添字だけの経路で、[`Self::path_is_mutable`] が `Some(false)`（根の束縛が書き換えられない）
+    /// 2. 根が `for` のループ変数なら、その反復対象も証明できた経路だった（一時値を回したループ変数は除く）
+    /// 3. 途中の段を全部、Arrow のクラスのインスタンスのフィールドか組み込みのコンテナの要素と解決できた
+    ///    （型の値・モジュール・Python の物・解決できない型が途中にあれば `false`）
+    /// ⚠ `false` は「複製する」側。迷ったら `false` を返す。
+    pub(super) fn proven_immutable_path(&mut self, expr: &Expr) -> bool {
+        if !matches!(expr, Expr::Ident { .. } | Expr::Attr { .. } | Expr::Subscript { .. }) {
+            return false;
+        }
+        if self.path_is_mutable(expr) != Some(false) {
+            return false;
+        }
+        let Some(root) = Self::path_root_ident(expr) else { return false };
+        if let Some(proven) = self.for_var_proof.iter().rev().find_map(|m| m.get(root)) {
+            if !*proven {
+                return false;
+            }
+        }
+        self.path_steps_resolved(expr)
+    }
+
+    /// 経路の途中の段（属性・添字の受け手）の型が、インスタンスのフィールド / コンテナの要素と分かるものか。
+    fn path_steps_resolved(&mut self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident { .. } => true,
+            Expr::Attr { object, .. } => {
+                let arrow_instance = match self.infer_quietly(object) {
+                    InferredType::NamedInstance(c) => self.registry.arrow_class_names().contains(&c),
+                    _ => false,
+                };
+                arrow_instance && self.path_steps_resolved(object)
+            }
+            Expr::Subscript { object, .. } => {
+                let container = matches!(
+                    self.infer_quietly(object),
+                    InferredType::ListOf(_)
+                        | InferredType::FixedListOf(_)
+                        | InferredType::DictOf(..)
+                        | InferredType::Tuple(_)
+                );
+                container && self.path_steps_resolved(object)
+            }
+            _ => false,
+        }
+    }
+
+    /// 呼び出しの受け手・引数の式を、証明できれば注釈表に記録する（3-1）。
+    pub(super) fn note_immutable_path(&mut self, expr: &Expr) {
+        if let Some(id) = expr.node_id() {
+            if id != 0 && self.proven_immutable_path(expr) {
+                self.annotations.set_immutable_path(id);
+            }
+        }
+    }
+
     /// 型だけが欲しい推論（**診断を出さない**）。
     ///
     /// ⚠ 書き込み先の経路（`C.L` の `C`）を調べるために、本来の検査とは別にもう一度推論する。

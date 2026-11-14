@@ -296,6 +296,9 @@ impl TypeChecker {
                 //    とループ変数そのものを潰せた。
                 // `for mut x in ..`（D-11・2-10）は可変の束縛（要素を写す）
                 let target_mut = *mut_targets || self.path_is_mutable(iter).unwrap_or(false);
+                // ループ変数が「誰からも書き換わらない値」か（反復対象が証明できた経路・3-1）。`for mut` は写しなので対象外
+                let iter_proven = !*mut_targets && self.proven_immutable_path(iter);
+                self.for_var_proof.push(targets.iter().map(|t| (t.clone(), iter_proven)).collect());
                 for (t, ty) in targets.iter().zip(target_tys) {
                     // ⚠ Python の物を受けるループ変数は `for mut` と書く（D-11）。外の束縛が `mut` でも要る（実行時も
                     //   `mut` と書いたかだけで判定する）
@@ -323,6 +326,7 @@ impl TypeChecker {
                     self.declare(t.clone(), ty, target_mut);
                 }
                 self.check_stmts(body);
+                self.for_var_proof.pop();
                 self.pop_scope();
             }
             Stmt::Block(body) => {
