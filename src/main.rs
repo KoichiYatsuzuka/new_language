@@ -40,6 +40,14 @@ mod token;
 mod type_check;
 mod vm;
 
+// exe のアロケータ（copy_alloc_speed_plan.md 5-1・D-12）。feature `fast_alloc`（既定で有効）のときだけ mimalloc にする。
+// ⚠ 差し替わるのは **この exe が確保・解放するメモリだけ**。コンパイル済みモジュール・`import[rs]` / cpp の中継・
+//   CPython はそれぞれ自分のアロケータを使う。exe が確保したものを DLL が解放する（またはその逆の）受け渡しを
+//   足すときは、解放する関数を確保した側に置くこと（`import[rs]` の `Ptr` は中継の `_release_vec` が解放する）。
+#[cfg(feature = "fast_alloc")]
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
 use parser::Parser;

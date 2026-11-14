@@ -68,6 +68,12 @@ def is_generated(mod):
     return mod.lower().endswith('_tl.dll')
 
 
+def is_heap(mod, name):
+    """葉がヒープの確保・解放か: OS のヒープ（ntdll / kernel32）・Rust の確保の入口・mimalloc（`mi_*` / `_mi_*`）。"""
+    return (mod.lower() in ('ntdll.dll', 'kernel32.dll', 'kernelbase.dll') or 'alloc' in name
+            or name.startswith('mi_') or name.startswith('_mi_'))
+
+
 WIDTH = 110  # 名前の表示の幅（総称の引数で長くなる名前を切る）
 
 
@@ -137,9 +143,8 @@ def main():
             c = sum(cnt for frames, cnt in stacks if any(sub in n for _, n in frames))
             print(f'{100 * c / total:6.1f}%  {c:6d}  {sub}')
     # ヒープの確保・解放（葉が OS のヒープか Rust の確保の入口）
-    heap = sum(c for frames, c in stacks
-               if frames[-1][0].lower() in ('ntdll.dll', 'kernel32.dll', 'kernelbase.dll') or 'alloc' in frames[-1][1])
-    print(f'\n-- heap (self time in ntdll / kernel32 / allocator entry points)\n{100 * heap / total:6.1f}%  {heap:6d}')
+    heap = sum(c for frames, c in stacks if is_heap(*frames[-1]))
+    print(f'\n-- heap (self time in ntdll / kernel32 / allocator functions)\n{100 * heap / total:6.1f}%  {heap:6d}')
 
     if callers:
         cc = Counter()

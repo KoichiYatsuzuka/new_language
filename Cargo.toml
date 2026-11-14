@@ -27,13 +27,21 @@ encoding_rs = "0.8"
 # 詳細と作業分割は implementation_logs/eval_core_extraction_plan.md を参照。
 pyo3 = { version = "0.22", features = ["auto-initialize"], optional = true }
 libloading = { version = "0.8", optional = true }
+# アロケータ（copy_alloc_speed_plan.md 5-1・D-12）。Windows の標準のヒープは小さい確保と解放の繰り返しが遅く、
+# 実行時間の 25〜48% を占めていた（インスタンス 1 個が 2〜3 回の確保）。`fast_alloc` feature で有効（既定で有効）。
+# ⚠ C のソースをビルドする（`cc`・MSVC が要る）。exe に静的に入るので、配る DLL は増えない。
+mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [features]
 # ⚠ 既定で有効。`cargo build` の挙動は従来どおり。
 # 外すと FFI（C/C++ DLL・.NET・Node）と Python 相互運用が落ち、
 # 「評価コアだけ」のビルドになる（`cargo build --no-default-features`）。
-default = ["native"]
+default = ["native", "fast_alloc"]
 native = ["dep:pyo3", "dep:libloading"]
+# exe のアロケータを mimalloc にする（src/main.rs の `#[global_allocator]`・copy_alloc_speed_plan.md 5-1）。
+# 外すと Rust の既定（Windows のプロセスのヒープ）に戻る: `cargo build --release --no-default-features --features native`
+# （アロケータを疑うとき・メモリの使い方を比べるときに使う）。評価コア（`--no-default-features`）には入らない。
+fast_alloc = ["dep:mimalloc"]
 # 診断フック `AR_TW_STATS=1`（#10）。**既定では無効＝コード自体が消える。**
 # 環境変数だけの分岐にすると `exec()` の 1 文ごとに OnceLock の atomic 読みが入り、
 # 文ディスパッチ支配のワークロードで **11% 退行した**（partial_call_overhead.ar で実測）。
