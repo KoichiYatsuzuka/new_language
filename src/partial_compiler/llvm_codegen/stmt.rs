@@ -92,7 +92,7 @@ impl<'a> GenCtx<'a> {
                     _ => None,
                 };
                 let (old, old_t) = match (trait_name, known) {
-                    (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_attr_read(&oh, attr, Some(t)),
+                    (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_field_read(object, &oh, attr, Some(t)),
                     _ => (self.emit_attr_load(&oh, trait_name, attr), Ty::Handle),
                 };
                 let (res, rest) = self.specialize_binop(op, &old, old_t, &rv, rt);

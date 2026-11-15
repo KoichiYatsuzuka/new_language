@@ -542,8 +542,6 @@ impl InstanceData {
 // ---------------------------------------------------------------------------
 
 /// クラスの宣言から静的に求めた raw レイアウト（コンパイル済みコードが位置と幅を決めるのに使う・D-13 ②）。
-// ⚠ 使うのは生成コードの読み出し（8-3）から。それまでは単体テストだけが読む（下の `static_class_layout` も同じ）
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StaticRawClass {
     pub layout: RawLayout,
@@ -556,7 +554,6 @@ pub struct StaticRawClass {
 /// 実行時（`exec_class_def`）と同じ規則: インスタンスのフィールドは `const` / `static mut` 以外の `Stmt::Field` で、
 /// 判定は [`RawLayout::for_class`]。⚠ 静的な答えは**ヒント**で、実行時のクラスと合っているかは番地を返すコールバックが
 /// 確かめる（[`ClassValue::matches_direct_desc`]。合わなければ直接の道を使わない）。
-#[allow(dead_code)]
 pub fn static_class_layout(bases: &[String], body: &[crate::ast::Stmt]) -> Option<StaticRawClass> {
     use crate::ast::{FieldKind, Stmt};
     let mut own: Vec<(String, String)> = Vec::new();

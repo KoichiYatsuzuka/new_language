@@ -192,7 +192,7 @@ impl<'a> GenCtx<'a> {
                 let known_ty = self.field_ty_resolved(object, attr, *node_id);
                 let (obj, ot) = self.gen_expr(object);
                 let h = self.to_handle(&obj, ot);
-                self.emit_attr_read(&h, attr, known_ty)
+                self.emit_field_read(object, &h, attr, known_ty)
             }
 
             // `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`（1-4）。
@@ -995,6 +995,20 @@ impl<'a> GenCtx<'a> {
                 }
             }
         }
+    }
+
+    /// `obj.attr` の読み出し（受け手は評価済みのハンドル `h`）。数値のフィールドで、受け手のクラスがこのモジュールの
+    /// raw レイアウトのクラスと分かるなら番地から直接読む（copy_alloc_speed_plan.md 8-3）。ほかは IC 付きのコールバック。
+    /// ⚠ 受け手のクラスは注釈・仮引数の型から決めたヒントで、実行時に合っているかは番地を返すコールバックが確かめる。
+    pub(super) fn emit_field_read(&mut self, object: &Expr, h: &str, attr: &str, known_ty: Option<Ty>) -> (String, Ty) {
+        if let Some(ty @ (Ty::Int | Ty::Float)) = known_ty {
+            if let Some(recv) = self.receiver_class(object) {
+                if let Some(r) = self.emit_direct_read(&recv.class, h, attr, ty) {
+                    return r;
+                }
+            }
+        }
+        self.emit_attr_read(h, attr, known_ty)
     }
 
     /// ハンドル ABI（[`Self::gen_call`]）で呼んでから、戻り値型に応じて**開けて返す**（#64）。

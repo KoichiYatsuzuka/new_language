@@ -62,6 +62,8 @@ impl<'a> GenCtx<'a> {
             attr_stats:            AttrResolutionStats::default(),
             expr_stats:            HandleFallbackStats::default(),
             ident_stats:           IdentHandleStats::default(),
+            raw_classes:           HashMap::new(),
+            direct_descs:          HashMap::new(),
         }
     }
 
@@ -541,6 +543,112 @@ impl<'a> GenCtx<'a> {
             Some(Ty::Int) => (self.call_cb(CB_GET_INT_FIELD_IC, &args), Ty::Int),
             _ => (self.call_cb(CB_GET_ATTR_IC, &args), Ty::Handle),
         }
+    }
+
+    /// クラスの表（`DirectClassDesc` ＋ フィールドごとの `DirectFieldDesc`）を DLL の定数として出し、`ptr @名前` を返す
+    /// （copy_alloc_speed_plan.md 8-3）。クラスごとに 1 回だけ出す。番地を返すコールバックが、実行時のクラスと照合する。
+    fn direct_class_desc(&mut self, class: &str) -> Option<String> {
+        if let Some(g) = self.direct_descs.get(class) {
+            return Some(format!("ptr @{g}"));
+        }
+        let rc = self.raw_classes.get(class)?.clone();
+        let n = rc.fields.len();
+        let cname = self.str_const(class.as_bytes());
+        let mut items = Vec::with_capacity(n);
+        for ((fname, mutable), desc) in rc.fields.iter().zip(&rc.layout.fields) {
+            let fp = self.str_const(fname.as_bytes());
+            let info = crate::interpreter::value::direct_field_info(*desc, *mutable);
+            items.push(format!("{{ ptr, i64, i64 }} {{ {fp}, i64 {}, i64 {info} }}", fname.len()));
+        }
+        let g = format!("_dcd{}", self.direct_descs.len());
+        self.str_globals.push_str(&format!(
+            "@{g} = private constant {{ ptr, i64, i64, [{n} x {{ ptr, i64, i64 }}] }} {{ {cname}, i64 {}, i64 {n}, [{n} x {{ ptr, i64, i64 }}] [{}] }}, align 8\n",
+            class.len(),
+            items.join(", ")
+        ));
+        self.direct_descs.insert(class.to_string(), g.clone());
+        Some(format!("ptr @{g}"))
+    }
+
+    /// `obj.attr`（数値のフィールド）を**番地から直接読む**（copy_alloc_speed_plan.md 8-3・D-9・D-13）。出せなければ
+    /// 何も出さずに `None`（呼ぶ側が [`Self::emit_attr_read`] を使う）。
+    ///
+    /// 出せるのは、受け手のクラス `class` がこのモジュールの raw レイアウトのクラスで、フィールドの幅が読む型 `ty` に合うとき
+    /// （整数の幅 → `Int`・`float32` / `float` → `Float`）。出すコード:
+    /// 1. `CB_INST_BLOCK`（ハンドル・クラスの表・セル）で先頭の塊の番地を得る。インスタンスのクラスが表のとおりでなければ空
+    ///    （注釈が外れた・private のフィールドがある・別のモジュールの同じ名前のクラス）
+    /// 2. 先頭の語の初期化の印を見る
+    /// 3. 立っていれば、塊の先頭から静的に決めた位置を、幅どおりに読んで広げる（`InstanceData::field_value` と同じ変換）
+    /// 4. 番地が空・未初期化なら今までのコールバック（[`Self::emit_attr_read`]。結果もエラーの文面も今までと同じ）
+    ///
+    /// ⚠ 位置・幅・印の bit は `interpreter::value::block` と `RawLayout` から取る（並びの定義は 1 か所・8-2）。
+    pub(super) fn emit_direct_read(&mut self, class: &str, h: &str, attr: &str, ty: Ty) -> Option<(String, Ty)> {
+        use crate::interpreter::value::{block, RawWidth};
+        // 終わったブロックの後（到達しないコード）には分岐を出さない
+        if self.terminated {
+            return None;
+        }
+        let rc = self.raw_classes.get(class)?;
+        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
+        let desc = rc.layout.fields[idx];
+        // (読む型, 広げ方)。`None` はそのまま
+        let (ity, ext): (&str, Option<&str>) = match (desc.width, ty) {
+            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+            (RawWidth::I32, Ty::Int) => ("i32", Some("sext")),
+            (RawWidth::U32, Ty::Int) => ("i32", Some("zext")),
+            (RawWidth::I16, Ty::Int) => ("i16", Some("sext")),
+            (RawWidth::U16, Ty::Int) => ("i16", Some("zext")),
+            (RawWidth::I8, Ty::Int) => ("i8", Some("sext")),
+            (RawWidth::U8, Ty::Int) => ("i8", Some("zext")),
+            (RawWidth::F64, Ty::Float) => ("double", None),
+            (RawWidth::F32, Ty::Float) => ("float", Some("fpext")),
+            // フィールドの型と読む型が合わない（`int` のフィールドを `float` として読むなど）: 今までの道が変換する
+            _ => return None,
+        };
+        let offset = block::field_offset(desc.byte_offset);
+        let init_bit = block::init_bit(idx);
+        let table = self.direct_class_desc(class)?;
+        let cell = self.ic_cell();
+        let t = llvm_ty(ty);
+
+        let p = self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]);
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let isnull = self.fresh_reg();
+        self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
+        self.br_cond(&isnull, &bslow, &bchk);
+
+        self.start_block(&bchk);
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let bit = self.fresh_reg();
+        self.ec(&format!("{bit} = and i64 {head}, {init_bit}"));
+        let inited = self.fresh_reg();
+        self.ec(&format!("{inited} = icmp ne i64 {bit}, 0"));
+        self.br_cond(&inited, &bfast, &bslow);
+
+        self.start_block(&bfast);
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        let rawv = self.fresh_reg();
+        self.ec(&format!("{rawv} = load {ity}, ptr {fp}, align {}", desc.width.byte_width()));
+        let fast = match ext {
+            None => rawv,
+            Some(op) => {
+                let w = self.fresh_reg();
+                self.ec(&format!("{w} = {op} {ity} {rawv} to {t}"));
+                w
+            }
+        };
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        let (slow, _) = self.emit_attr_read(h, attr, Some(ty));
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi {t} [ {fast}, %{bfast} ], [ {slow}, %{bslow} ]"));
+        Some((r, ty))
     }
 
     /// `obj.attr = v` を**箇所ごとの書き込みの IC 付きで**行う（2-3・VM の `SetAttr` と同じ `attr_assign_ic`）。

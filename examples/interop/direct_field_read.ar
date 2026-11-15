@@ -1,0 +1,187 @@
+# direct_field_read.ar — コンパイル済みコードが数値のフィールドを番地から直接読む（copy_alloc_speed_plan.md 8-3）
+#
+# 全フィールドが数値のクラスの数値のフィールドは、コンパイル済みコードがコールバックを呼ばずにインスタンスの番地から
+# 読む（番地はコールバックで 1 回取る）。次の場合も、今までと同じ値・同じエラーになること:
+#   - 幅の違う整数・float32（符号の広げ方）
+#   - まだ書いていないフィールド（`__init__` の中）: 今までのコールバックへ回ってエラーになる
+#   - private のフィールドを持つクラス: 直接の道に入らない
+#   - 不変のインスタンス（`let`）からの読み出し
+#   - 非同期タスクのワーカーが同じ箇所を読む
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_read_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_read.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.direct_field_read_module as m
+
+class P:
+    mut x: float
+    mut n: int
+
+    # `mut self` の受け手（`let self` は入口で先読みするので、こちらが直接の読み出しになる）
+    fn total(mut self) -> float:
+        return self.x + float(self.n)
+
+class Holder:
+    mut p: P
+    mut tag: str
+
+# 整数・小数の幅ごと（符号つきは符号を広げ、符号なしは 0 で広げ、float32 は float へ広げる）
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int16
+    mut d: uint16
+    mut e: int32
+    mut f: uint32
+    mut g: int64
+    mut h: float32
+    mut i: float
+
+# private のフィールドを持つクラス: 並びは同じでも直接の道に入らない（アクセスの検査は今までの道で行う）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+    public:
+    fn reveal(mut self) -> int:
+        return self.hidden + self.shown
+
+# `__init__` の中で、まだ書いていないフィールドを読む（未初期化）
+class Early:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.x = v
+        self.y = self.x * 2.0
+
+class Broken:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.y = peek_x(self) + v
+        self.x = v
+
+# 途中まで初期化したインスタンスを受け取り、まだ書いていないフィールドを読む
+fn peek_x(mut b: Broken) -> float:
+    return b.x
+
+fn var_read(mut p: P) -> float:
+    return p.x * 10.0 + float(p.n)
+
+fn nested_read(mut h: Holder) -> float:
+    return h.p.x + float(h.p.n)
+
+fn loop_read(mut ps: list[P]) -> float:
+    mut s = 0.0
+    for p in ps:
+        s += p.x + float(p.n)
+    return s
+
+fn compound(mut p: P) -> float:
+    p.x += 1.5
+    p.n += 2
+    return p.x + float(p.n)
+
+fn widths_sum(mut w: Widths) -> int:
+    return w.a + w.b + w.c + w.d + w.e + w.f + w.g
+
+fn widths_float(mut w: Widths) -> float:
+    return w.h + w.i
+
+fn method_read(mut p: P) -> float:
+    return p.total()
+
+fn secret_read(mut s: Secret) -> int:
+    return s.reveal() * 100 + s.shown
+
+fn early_read(let v: float) -> float:
+    mut e = Early(v)
+    return e.x + e.y
+
+fn broken_read(let v: float) -> str:
+    try:
+        mut b = Broken(v)
+        return "no error: " + str(b.y)
+    except Exception as e:
+        return str(e)
+
+fn frozen_read(let p: P) -> float:
+    return p.x + float(p.n)
+
+fn expect_f(let name: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError("direct_field_read: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn expect_i(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("direct_field_read: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn expect_s(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("direct_field_read: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+mut p = P(1.5, 2)
+expect_f("vm var", var_read(p), 17.0)
+mut h = Holder(P(0.25, 4), "h")
+expect_f("vm nested", nested_read(h), 4.25)
+mut ps: list[P] = [P(1.0, 1), P(2.0, 2), P(3.5, 3)]
+expect_f("vm loop", loop_read(ps), 12.5)
+expect_f("vm compound", compound(p), 7.0)
+expect_f("vm compound wrote", p.x, 3.0)
+mut w = Widths(-1, 255, -300, 65535, -70000, 4000000000, 0 - 9000000000, 0.5, 0.25)
+expect_i("vm widths", widths_sum(w), -1 + 255 - 300 + 65535 - 70000 + 4000000000 - 9000000000)
+expect_f("vm widths float", widths_float(w), 0.75)
+expect_f("vm method", method_read(p), 7.0)
+mut s = Secret(3, 4)
+expect_i("vm private", secret_read(s), 703)
+expect_f("vm init", early_read(1.5), 4.5)
+let vm_broken = broken_read(1.0)
+let fp = P(2.5, 1)
+expect_f("vm frozen", frozen_read(fp), 3.5)
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+mut mp = m.P(1.5, 2)
+expect_f("compiled var", m.var_read(mp), 17.0)
+mut mh = m.Holder(m.P(0.25, 4), "h")
+expect_f("compiled nested", m.nested_read(mh), 4.25)
+mut mps: list[m.P] = [m.P(1.0, 1), m.P(2.0, 2), m.P(3.5, 3)]
+expect_f("compiled loop", m.loop_read(mps), 12.5)
+expect_f("compiled compound", m.compound(mp), 7.0)
+expect_f("compiled compound wrote", mp.x, 3.0)
+mut mw = m.Widths(-1, 255, -300, 65535, -70000, 4000000000, 0 - 9000000000, 0.5, 0.25)
+expect_i("compiled widths", m.widths_sum(mw), -1 + 255 - 300 + 65535 - 70000 + 4000000000 - 9000000000)
+expect_f("compiled widths float", m.widths_float(mw), 0.75)
+expect_f("compiled method", m.method_read(mp), 7.0)
+mut ms = m.Secret(3, 4)
+expect_i("compiled private", m.secret_read(ms), 703)
+expect_f("compiled init", m.early_read(1.5), 4.5)
+# まだ書いていないフィールドの読み出しは、両方とも同じエラー
+expect_s("uninitialized field error", m.broken_read(1.0), vm_broken)
+if vm_broken.startswith("no error"):
+    raise ValueError("direct_field_read: reading an unset field did not fail: " + vm_broken)
+let mfp = m.P(2.5, 1)
+expect_f("compiled frozen", m.frozen_read(mfp), 3.5)
+
+# ── 非同期タスクのワーカーが同じ箇所を読む ────────────────────────────────────
+mut mng = AsyncManager(num_thread=2)
+mng <- async->float:
+    mut tp = m.P(4.0, 5)
+    block_return m.var_read(tp) + m.compound(tp)
+mng <- async->float:
+    mut th = m.Holder(m.P(0.5, 1), "t")
+    block_return m.nested_read(th)
+mng.wait_for_finish()
+let errors = mng.error_list
+if not (errors[0] is None and errors[1] is None):
+    raise ValueError("direct_field_read: a task failed")
+let results = mng.results
+expect_f("task var + compound", results[0] mustbe float, 45.0 + 12.5)
+expect_f("task nested", results[1] mustbe float, 1.5)
+# タスクの後も、メインのスレッドの同じ箇所は正しく読める
+expect_f("compiled var after tasks", m.var_read(mp), 34.0)
+print("direct_field_read: ok")
