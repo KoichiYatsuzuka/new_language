@@ -38,15 +38,22 @@ pub(crate) enum CopyKind {
     Bind,
     /// 利用者が書いた複製（`x.copy()`・`d.copy()`）。
     Explicit,
+    /// `LetSelf` のうち、呼ばれた関数が読むだけだったもの（`crate::readonly_fns`・copy_alloc_speed_plan.md 4-1）。
+    /// ⚠ VM の速い束縛の道（`try_fast_bind`）だけを数える。`LetSelf` と重ねて数える（内訳）。
+    LetSelfReadonly,
+    /// `LetParam` のうち、呼ばれた関数が読むだけだったもの（同上）。
+    LetParamReadonly,
 }
 
-const KINDS: [(CopyKind, &str); 6] = [
+const KINDS: [(CopyKind, &str); 8] = [
     (CopyKind::LetSelf, "let_self"),
     (CopyKind::LetParam, "let_param"),
     (CopyKind::Store, "store"),
     (CopyKind::AutoInitStore, "auto_init_store"),
     (CopyKind::Bind, "bind"),
     (CopyKind::Explicit, "explicit"),
+    (CopyKind::LetSelfReadonly, "let_self_readonly"),
+    (CopyKind::LetParamReadonly, "let_param_readonly"),
 ];
 
 /// 種類ごとの数（`calls` / `copied` / `nodes` / `elems` / `alone1` / `alone2` / `alone3` / `skipped`）。

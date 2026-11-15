@@ -35,6 +35,8 @@ mod parser;
 mod prof;
 mod partial_compiler;
 mod py_stubs;
+// 「読むだけの関数」の解析（copy_alloc_speed_plan.md 4-1）。
+mod readonly_fns;
 mod repl;
 mod token;
 mod type_check;
@@ -441,6 +443,18 @@ fn run_program(
         return Err(format_static_errors(&type_errors));
     }
 
+    // 読むだけの関数の解析（copy_alloc_speed_plan.md 4-1）。⚠ 今は診断（`copy_stats` の `*_readonly`）が数えるだけで、
+    // 実行の結果は変えない。`AR_READONLY_FNS=1` で、判定した名前を stderr に出す。
+    let readonly = readonly_fns::analyze(&stmts);
+    if std::env::var("AR_READONLY_FNS").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "ReadonlyFns: defs={} readonly_defs={} names={}",
+            readonly.defs_total,
+            readonly.defs_readonly,
+            readonly.sorted_names().join(",")
+        );
+    }
+
     // 診断フック: `AR_CHECK_ONLY=1` で**静的検査まで**で終わる（実行しない）。`compare_wasm_frontend.ps1` が
     // 全例題の静的な誤りを拡張と突き合わせるのに使う（GUI・FFI・待ちを起こさずに・3-3）。
     if std::env::var_os("AR_CHECK_ONLY").is_some() {
@@ -475,6 +489,7 @@ fn run_program(
     #[cfg(feature = "prof")]
     let _s_new = prof::SubTimer::new(prof::Sub::InterpNew);
     let mut interp = Interpreter::new();
+    interp.readonly_fns = std::rc::Rc::new(readonly);
     #[cfg(feature = "prof")]
     drop(_s_new);
     // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。

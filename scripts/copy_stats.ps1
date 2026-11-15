@@ -19,7 +19,8 @@
 #   skipped … `copied` のうち、入口が共有していないと判定して写さずに済ませた回数（実際に写したのは copied - skipped）
 #   入口: let_self（`let self` ← `mut` の受け手）・let_param（`let` 仮引数 ← `mut` の値）・store（格納）・
 #         auto_init_store（合成した `__init__` の直接格納）・bind（宣言の束縛。共有していない値は実際には写さない）・
-#         explicit（`x.copy()`）
+#         explicit（`x.copy()`）。`let_self_readonly` / `let_param_readonly` は、`let_self` / `let_param` のうち呼ばれた関数が
+#         読むだけと判定できたもの（`src/readonly_fns.rs`・計画の 4-1。VM の速い束縛の道だけ・内訳として重ねて数える）
 #
 # 仕組み:
 #   * フックは feature `copy_stats` を付けたビルドにしか無い（既定のビルドではコードごと消える）。このスクリプトが
@@ -43,7 +44,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$kinds = @('let_self', 'let_param', 'store', 'auto_init_store', 'bind', 'explicit')
+$kinds = @('let_self', 'let_self_readonly', 'let_param', 'let_param_readonly', 'store', 'auto_init_store', 'bind', 'explicit')
 $fields = @('calls', 'copied', 'nodes', 'elems', 'alone1', 'alone2', 'alone3', 'skipped')
 
 # 時間の上限つきで 1 つのプロセスを走らせる。超えたらプロセスの木ごと止めて $null を返す。
@@ -111,14 +112,14 @@ function Run-One([string]$name, [string]$arguments, [string]$cwd, [hashtable]$ex
 function Show-Table([string]$title, $stats) {
     Write-Host ''
     Write-Host $title -ForegroundColor Green
-    Write-Host ('{0,-15}{1,11}{2,11}{3,11}{4,11}{5,11}{6,11}{7,11}{8,11}{9,5}{10,5}{11,5}' -f `
+    Write-Host ('{0,-19}{1,11}{2,11}{3,11}{4,11}{5,11}{6,11}{7,11}{8,11}{9,5}{10,5}{11,5}' -f `
             'entry', 'calls', 'copied', 'skipped', 'nodes', 'elems', 'alone1', 'alone2', 'alone3', 'a1%', 'a2%', 'a3%')
     foreach ($k in $kinds) {
         $row = $stats[$k]
         if ($null -eq $row) { continue }
         $c = [double]$row['copied']
         $pct = { param($n) if ($c -gt 0) { '{0:N0}' -f (100.0 * $n / $c) } else { '-' } }
-        Write-Host ('{0,-15}{1,11:N0}{2,11:N0}{3,11:N0}{4,11:N0}{5,11:N0}{6,11:N0}{7,11:N0}{8,11:N0}{9,5}{10,5}{11,5}' -f `
+        Write-Host ('{0,-19}{1,11:N0}{2,11:N0}{3,11:N0}{4,11:N0}{5,11:N0}{6,11:N0}{7,11:N0}{8,11:N0}{9,5}{10,5}{11,5}' -f `
                 $k, $row['calls'], $row['copied'], $row['skipped'], $row['nodes'], $row['elems'], $row['alone1'], $row['alone2'], $row['alone3'],
             (& $pct $row['alone1']), (& $pct $row['alone2']), (& $pct $row['alone3']))
     }

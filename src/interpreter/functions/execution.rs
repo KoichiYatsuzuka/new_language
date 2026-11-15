@@ -592,6 +592,14 @@ impl Interpreter {
         if has_self {
             let sv = self_val.as_ref().unwrap();
             // `let self` は `mut` の受け手だけ deep_copy（bind_args と同一の規則・6-1・D-8）
+            // 診断（4-1）: 複製する受け手のうち、呼ばれた関数が読むだけのものを数える
+            if crate::interpreter::copy_stats::enabled()
+                && !params[0].mutable
+                && recv_mut
+                && self.readonly_fns.contains(&fn_val.name)
+            {
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelfReadonly, sv, false);
+            }
             let self_bound = Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut);
             if slot < chunk.n_locals {
                 buf[base + slot] = self_bound;
@@ -599,6 +607,13 @@ impl Interpreter {
             slot += 1;
         }
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
+            if crate::interpreter::copy_stats::enabled()
+                && !p.mutable
+                && *arg_mut
+                && self.readonly_fns.contains(&fn_val.name)
+            {
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParamReadonly, val, false);
+            }
             let v = self.bind_param_value(p, val.clone(), *arg_mut)?;
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
