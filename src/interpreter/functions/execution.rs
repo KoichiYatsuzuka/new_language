@@ -592,6 +592,12 @@ impl Interpreter {
         let wants_copy = (has_self && !params[0].mutable && recv_mut)
             || bind_params.iter().zip(evaled.iter()).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
         let borrow = wants_copy && self.may_borrow_for(&fn_val.name);
+        // 「重ならない引数」の印（4-6）。この呼び出しの引数の並びに置かれたものだけを使う
+        let disjoint = if wants_copy && self.pending_disjoint.0 == evaled.as_ptr() as usize && bind_params.len() < 30 {
+            self.pending_disjoint.1
+        } else {
+            0
+        };
 
         // 直接バインド。
         let mut buf = std::mem::take(&mut self.vm_stack);
@@ -618,7 +624,11 @@ impl Interpreter {
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
             // 読むだけの関数（4-3）: `mut` の値を `let` 仮引数で受けても複製しない（「可変でない値」として束縛する）。
             // ⚠ `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ（利用者のコードが走る）
-            let skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(val);
+            let mut skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(val);
+            // 自分の `mut` 仮引数だけを書き換える関数へ、受け手・ほかの引数と重ならない値を渡す（4-6）
+            if !skip_copy && !p.mutable && *arg_mut && disjoint & (1 << (slot - usize::from(has_self))) != 0 {
+                skip_copy = self.may_borrow_disjoint_for(&fn_val.name) && !self.has_copy_hook(val);
+            }
             if skip_copy {
                 use crate::interpreter::copy_stats::{record, CopyKind};
                 record(CopyKind::LetParamReadonly, val, true);
@@ -731,6 +741,12 @@ impl Interpreter {
     /// ⚠ 名前の集合を引くので、**複製が起きる呼び出しでだけ**呼ぶこと。
     pub(crate) fn may_borrow_for(&self, name: &str) -> bool {
         crate::interpreter::async_mgr::no_live_tasks() && self.readonly_fns.contains(name)
+    }
+
+    /// `name` という関数の `let` 仮引数へ、受け手・ほかの引数と**重ならない** `mut` の値を複製せずに渡してよいか
+    /// （4-6）: 自分の `mut` 仮引数だけを書き換える関数（読むだけの関数を含む）で、走っているタスクが無い。
+    pub(crate) fn may_borrow_disjoint_for(&self, name: &str) -> bool {
+        crate::interpreter::async_mgr::no_live_tasks() && self.readonly_fns.is_confined_writer(name)
     }
 
     pub(crate) fn bind_native_args(

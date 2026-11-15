@@ -166,19 +166,10 @@ impl<'a> GenCtx<'a> {
     /// 相手が `let` の値（書き換えられない）なら見なくてよい。それ以外（別の変数・添字・呼び出しの結果・片方が
     /// もう片方の中）は「重なりうる」。⚠ 迷ったら `false`（複製する側）。
     pub(super) fn disjoint_from_all(&self, arg: &Expr, others: &[&Expr]) -> bool {
-        let Some(a) = attr_path(arg) else { return false };
-        others.iter().all(|o| {
-            if !self.operand_is_mutable(o) {
-                return true;
-            }
-            match attr_path(o) {
-                Some(b) => {
-                    a.0 == b.0
-                        && a.1.iter().zip(b.1.iter()).any(|(x, y)| x != y)
-                }
-                None => false,
-            }
-        })
+        // 規則は型検査と同じ 1 つ（`type_check::annotations::arg_is_disjoint`）。「書き換えられない値」の判定だけが
+        // 生成コードの `operand_is_mutable`
+        let mut immutable = |e: &Expr| !self.operand_is_mutable(e);
+        crate::type_check::arg_is_disjoint(arg, others, &mut immutable)
     }
 
     /// 直接呼び出しのシンボル（`{クラス}__{メソッド}` か関数名）から、関数・メソッドの名前を取り出す。
@@ -685,15 +676,3 @@ impl<'a> GenCtx<'a> {
 
 }
 
-/// 名前を根にした属性だけの経路（`a.b.c` → (`a`, [`b`, `c`])）。添字・呼び出しを含めば `None`。
-fn attr_path(e: &Expr) -> Option<(&str, Vec<&str>)> {
-    match e {
-        Expr::Ident { name, .. } => Some((name.as_str(), Vec::new())),
-        Expr::Attr { object, attr, .. } => {
-            let (root, mut path) = attr_path(object)?;
-            path.push(attr.as_str());
-            Some((root, path))
-        }
-        _ => None,
-    }
-}

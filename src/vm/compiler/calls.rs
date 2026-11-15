@@ -102,6 +102,15 @@ impl Compiler {
 
     /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、
     /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
+    /// 呼び出しに「重ならない引数」の印（型検査の注釈）があれば [`crate::vm::op::MASK_DISJOINT_INFO`]（4-6）。
+    pub(super) fn disjoint_info_bit(&self, argc: usize, node_id: u32) -> u32 {
+        if argc < 30 && self.annotations.disjoint_args(node_id) != 0 {
+            crate::vm::op::MASK_DISJOINT_INFO
+        } else {
+            0
+        }
+    }
+
     pub(super) fn arg_is_mutable(&self, e: &Expr) -> bool {
         // 型検査が不変と証明した経路（`let` が根の属性・添字・`let` のコンテナのループ変数）は複製しない
         // （copy_alloc_speed_plan.md 3-2）。載っていない式は下の今までの規則（迷ったら「可変」＝複製する）。
@@ -313,7 +322,10 @@ impl Compiler {
         kw: Option<Vec<Option<String>>>,
     ) -> Option<()> {
         match kw {
-            None => self.emit(Op::Call(argc as u16, mask, name_idx, span_idx, node_id)),
+            None => {
+                let mask = mask | self.disjoint_info_bit(argc, node_id);
+                self.emit(Op::Call(argc as u16, mask, name_idx, span_idx, node_id))
+            }
             Some(arg_names) => {
                 let i = u32::try_from(self.chunk.kw_calls.len()).ok()?;
                 self.chunk.kw_calls.push(crate::vm::chunk::KwCall {

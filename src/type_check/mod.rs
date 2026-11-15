@@ -22,7 +22,7 @@ pub mod builtins;
 pub use types::{FnTypeParam, InferredType, MetaKind, PtrElem, VarAttr};
 #[allow(unused_imports)]
 pub use annotations::{
-    ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
+    arg_is_disjoint, ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
 };
 #[allow(unused_imports)]
 pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};

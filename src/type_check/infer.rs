@@ -156,6 +156,28 @@ impl TypeChecker {
                         self.note_immutable_path(a.expr());
                     }
                 }
+                // 受け手・ほかの引数と重ならない位置引数の印（4-6）。全部が位置引数の呼び出しだけ
+                if !args.is_empty()
+                    && args.len() < 30
+                    && args.iter().all(|a| matches!(a, crate::ast::CallArg::Positional(_)))
+                {
+                    let receiver = match func.as_ref() {
+                        Expr::Attr { object, .. } => Some(object.as_ref()),
+                        _ => None,
+                    };
+                    let mut mask = 0u32;
+                    for (i, a) in args.iter().enumerate() {
+                        let others: Vec<&Expr> = receiver
+                            .into_iter()
+                            .chain(args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.expr()))
+                            .collect();
+                        let mut immutable = |e: &Expr| self.path_is_mutable(e) == Some(false);
+                        if super::annotations::arg_is_disjoint(a.expr(), &others, &mut immutable) {
+                            mask |= 1 << i;
+                        }
+                    }
+                    self.annotations.set_disjoint_args(*node_id, mask);
+                }
                 // ── AST 型解決層（#16）── 呼び出しの**結果型**を焼く（CallInfo は infer_call_inner が充填）。
                 self.annotations.set_resolved(*node_id, result.clone());
                 result

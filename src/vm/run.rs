@@ -992,6 +992,44 @@ fn load_global_ref(
     }
 }
 
+/// 呼び出しに「重ならない引数」の印があれば（[`crate::vm::op::MASK_DISJOINT_INFO`]）、束縛が見られるように
+/// インタープリタへ置く（copy_alloc_speed_plan.md 4-6）。返すガードが落ちるとき（呼び出しの終わり・エラーでも）に消す。
+/// ⚠ 印は**この呼び出しの評価済みの引数の並び**（番地）と対で置く。束縛は並びの番地が同じときだけ使うので、
+///   途中で走るほかの呼び出し（特殊メソッド・組み込みが呼ぶ関数）には当たらない。
+/// ⚠ `exec_op` は `#[inline(always)]` なので、ここは判定 1 つだけにして本体を外に出す。
+#[inline(always)]
+fn note_disjoint_args(
+    interp: &mut Interpreter,
+    mut_mask: u32,
+    evaled: &[(Option<String>, Value, bool)],
+    node_id: u32,
+) -> Option<DisjointArgsGuard> {
+    if mut_mask & crate::vm::op::MASK_DISJOINT_INFO == 0 {
+        return None;
+    }
+    Some(note_disjoint_args_slow(interp, evaled, node_id))
+}
+
+#[inline(never)]
+fn note_disjoint_args_slow(
+    interp: &mut Interpreter,
+    evaled: &[(Option<String>, Value, bool)],
+    node_id: u32,
+) -> DisjointArgsGuard {
+    interp.pending_disjoint = (evaled.as_ptr() as usize, interp.annotations.disjoint_args(node_id));
+    DisjointArgsGuard(interp as *mut Interpreter)
+}
+
+/// [`note_disjoint_args`] が置いた印を、呼び出しを抜けるときに消す。
+struct DisjointArgsGuard(*mut Interpreter);
+
+impl Drop for DisjointArgsGuard {
+    fn drop(&mut self) {
+        // SAFETY: ガードは `exec_op` の 1 つの命令の中だけで生き、その間 `interp` は生きている
+        unsafe { (*self.0).pending_disjoint = (0, 0) };
+    }
+}
+
 #[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
@@ -1482,6 +1520,7 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             // native の `mut` ポインタ書き戻し（#48）。
             //
             // ⚠⚠ ここに置いてよいのは **discriminant 1 個の判定だけ**。`exec_op` は
@@ -1523,6 +1562,7 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             // レシーバは呼び先の `self` として所有権が要るので clone は避けられないが、
             // `LoadLocal` の op ディスパッチと push/pop は省ける。
             let obj = buf[base + *slot as usize].clone();
@@ -1557,6 +1597,7 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             let obj = buf.pop().unwrap();
             // メソッドはツリーウォークと同じく call_span=None（degraded フレームで一致）。
             let name = &chunk.names[*name_idx as usize];

@@ -13,6 +13,11 @@ use crate::ast::{BinOp, UnaryOp};
 /// ⚠ 引数が 32 個の呼び出しでは bit 31 は引数 31 のものなので立てず、読む側も見ない（[`recv_is_mut`]）。
 pub(crate) const MASK_RECV_LET: u32 = 1 << 31;
 
+/// この呼び出しに「受け手・ほかの引数と重ならない引数」の印がある（型検査の注釈 `AstAnnotations::disjoint_args`・
+/// copy_alloc_speed_plan.md 4-6）。立っていれば、実行時に呼び出しの `node_id` で印を引く（立っていない呼び出しは
+/// 表を引かない）。⚠ 引数が 30 個以上の呼び出しでは bit 30 は引数のものなので立てない。
+pub(crate) const MASK_DISJOINT_INFO: u32 = 1 << 30;
+
 /// メソッド呼び出しの受け手が `mut` の値か（`let self` で複製が要るか）。[`MASK_RECV_LET`] を参照。
 #[inline(always)]
 pub(crate) fn recv_is_mut(mut_mask: u32, argc: usize) -> bool {

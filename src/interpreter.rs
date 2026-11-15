@@ -645,6 +645,10 @@ pub struct Interpreter {
     /// 読むだけの関数の名前（`crate::readonly_fns`・copy_alloc_speed_plan.md 4-1）。型検査のあとで `main` が入れる。
     /// 入れていなければ空（どの関数も読むだけとみなさない＝今までどおり複製する）。
     pub(crate) readonly_fns: Rc<crate::readonly_fns::ReadonlyFns>,
+    /// 今の呼び出しの「受け手・ほかの引数と重ならない引数」の印（評価済みの引数の並びの番地, bit i = 引数 i・
+    /// copy_alloc_speed_plan.md 4-6）。VM の呼び出し命令が置き、束縛（`try_fast_bind`）が**並びの番地が同じときだけ**使う。
+    /// 呼び出しを抜けると (0, 0) に戻る。
+    pub(crate) pending_disjoint: (usize, u32),
     /// クラスの番号ごとの、パーサが合成した `__init__` を呼ばずに格納する計画（native_object_access_plan.md 10-3・D-11）。
     /// 初めて生成するときに作る（`None` = 直接格納しない）。`classes/instantiate.rs` の `auto_init_plan`。
     pub(self) auto_inits: HashMap<u32, Option<Rc<[crate::interpreter::classes::AutoInitSlot]>>>,
@@ -768,6 +772,7 @@ impl Interpreter {
             native_libs: HashMap::new(),
             native_classes: HashMap::new(),
             readonly_fns: Rc::new(crate::readonly_fns::ReadonlyFns::default()),
+            pending_disjoint: (0, 0),
             auto_inits: HashMap::new(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
