@@ -425,3 +425,74 @@ fn test_new_type_const_is_parse_error() {
     );
 }
 
+
+/// クラスの宣言から静的に求めた raw レイアウト（コンパイル済みコードが使う・copy_alloc_speed_plan.md 8-2）が、実行時の
+/// クラスと一致する: 持つ・持たないの判定が同じで、持つクラスは名前・位置・幅・`mut` かの表が実行時のクラスに合う
+/// （`matches_direct_desc`。番地を返すコールバックが確かめるのと同じ照合）。private のフィールドを持つクラスは、
+/// 並びは同じでも直接の道の対象にならない。
+#[test]
+fn test_static_class_layout_matches_runtime_class() {
+    use crate::interpreter::value::{direct_field_info, static_class_layout};
+    let src = "trait Named:
+    fn label(let self) -> str:
+        return \"n\"
+class Plain:
+    mut x: float
+    let id: int
+    mut small: int8
+    mut wide: uint32
+    mut ratio: float32
+    const LIMIT: int = 3
+    static mut count: int = 0
+    fn sum(let self) -> float:
+        return self.x
+class WithStr:
+    mut x: float
+    mut name: str
+class WithTrait(Named):
+    mut x: float
+    fn label(let self) -> str:
+        return \"t\"
+class Hidden:
+    mut x: float
+    private:
+    mut secret: int
+class Empty:
+    fn f(let self) -> int:
+        return 1
+";
+    let (stmts, mut interp) = prepare(src).expect("parse");
+    for stmt in &stmts {
+        interp.exec(stmt).expect("run");
+    }
+    let mut seen = Vec::new();
+    for st in &stmts {
+        let Stmt::ClassDef { name, bases, body, .. } = st else { continue };
+        let cls = match interp.get_val(name) {
+            Some(Value::Class(c)) => c,
+            other => panic!("expected class {name}, got {other:?}"),
+        };
+        let stat = static_class_layout(bases, body);
+        assert_eq!(stat.is_some(), cls.raw_layout.is_some(), "class {name}: static and runtime disagree");
+        let matches = stat.as_ref().is_some_and(|s| {
+            let table: Vec<(&str, u64)> = s
+                .fields
+                .iter()
+                .zip(&s.layout.fields)
+                .map(|((n, m), d)| (n.as_str(), direct_field_info(*d, *m)))
+                .collect();
+            cls.matches_direct_desc(name, &table)
+        });
+        seen.push((name.as_str(), stat.is_some(), matches));
+    }
+    assert_eq!(
+        seen,
+        [
+            ("Plain", true, true),
+            ("WithStr", false, false),
+            ("WithTrait", false, false),
+            ("Hidden", true, false),
+            ("Empty", false, false),
+        ]
+    );
+}

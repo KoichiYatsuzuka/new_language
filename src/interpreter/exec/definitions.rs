@@ -773,11 +773,9 @@ impl Interpreter {
         // raw ブロックレイアウト（.claude/skills/c-abi-interop/SKILL.md P1）:
         // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の
         // クラスはフィールドを InstanceData.raw の C ABI レイアウト領域に格納する。
-        let raw_layout = if bases.is_empty() && own_field_types.len() == field_count {
-            crate::interpreter::value::RawLayout::from_fields(&own_field_types).map(Rc::new)
-        } else {
-            None
-        };
+        // ⚠ 判定は `RawLayout::for_class` の 1 つ（コンパイル済みコードの静的な並びと同じ関数・copy_alloc_speed_plan.md 8-2）。
+        let raw_layout =
+            crate::interpreter::value::RawLayout::for_class(bases.is_empty(), &own_field_types, field_count).map(Rc::new);
 
         let cls = Rc::new(crate::interpreter::ClassValue {
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。

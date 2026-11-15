@@ -731,6 +731,14 @@ pub struct ArCallbacks {
     /// 2 つ目の引数は種類: 0 = `let` 仮引数・1 = `let self`・2 = 受け手やほかの引数と重ならない `let` 仮引数（4-6。
     /// 呼ぶ関数が自分の `mut` 仮引数だけを書き換える関数でも複製しない）。
     pub borrow_or_copy: extern "C" fn(i64, i32, *const u8, i32, *mut u64) -> i64,
+
+    // ── Direct field access (field 78・copy_alloc_speed_plan.md 8-2・D-13) ──
+    /// ハンドルの指すインスタンスの**先頭の塊の番地**（`InstanceData::raw`）。(ハンドル, 生成コードの持つクラスの表
+    /// [`crate::interpreter::value::DirectClassDesc`], 箇所ごとのセル) を取る。インスタンスのクラスが表のとおり
+    /// （名前・フィールドの名前・位置・幅・`mut` か・全部 public）と確かめられたときだけ番地を返し、そうでなければ空を返す
+    /// （生成コードは今までのコールバックの道を使う）。確かめたクラスの番号はセルに覚える（0 = まだ）。
+    /// 番地は、そのハンドルの欄が値を持っている間だけ使える（塊はインスタンスが生きている間動かない）。
+    pub inst_block: extern "C" fn(i64, *const crate::interpreter::value::DirectClassDesc, *mut u64) -> *mut u64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

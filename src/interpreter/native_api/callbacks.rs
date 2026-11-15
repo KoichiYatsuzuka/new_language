@@ -2533,11 +2533,173 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     set_fresh: ar_set_fresh,
     copy_fresh: ar_copy_fresh,
     borrow_or_copy: ar_borrow_or_copy,
+    inst_block: ar_inst_block,
 };
+
+// ── 番地から直接読み書きする道（field 78・copy_alloc_speed_plan.md 8-2・D-13） ──────────────
+
+/// セルに覚える値: 確かめたクラスの番号に印を付けたもの（0 は「まだ」なので、番号 0 のクラスと区別する）。
+fn direct_cell_value(class_id: u32) -> u64 {
+    (1u64 << 32) | class_id as u64
+}
+
+/// 生成コードの表を読む: (クラスの名前, フィールドごとの (名前, `direct_field_info`))。UTF-8 でない名前・負の長さは `None`。
+///
+/// # Safety
+/// `desc` は [`DirectClassDesc`] と、それに続く `n_fields` 個の [`DirectFieldDesc`]（生成コードが DLL の中に置く定数）を指すこと。
+unsafe fn read_direct_desc<'a>(
+    desc: *const crate::interpreter::value::DirectClassDesc,
+) -> Option<(&'a str, Vec<(&'a str, u64)>)> {
+    use crate::interpreter::value::{DirectClassDesc, DirectFieldDesc};
+    let text = |p: *const u8, len: i64| -> Option<&'a str> {
+        if p.is_null() || len <= 0 {
+            return None;
+        }
+        // SAFETY: 関数の契約（生成コードが `len` バイトの定数を渡す）
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len as usize) }).ok()
+    };
+    // SAFETY: 関数の契約
+    let head: &DirectClassDesc = unsafe { &*desc };
+    // raw レイアウトは 24 フィールドまで（`RawLayout::from_fields`）。それを超える表は読まない
+    if !(1..=24).contains(&head.n_fields) {
+        return None;
+    }
+    let name = text(head.name, head.name_len)?;
+    // SAFETY: 表は先頭の直後に `n_fields` 個続く（並びは `repr(C)` で、どちらも 8 バイト境界）
+    let fields = unsafe { std::slice::from_raw_parts(desc.add(1) as *const DirectFieldDesc, head.n_fields as usize) };
+    let fields = fields.iter().map(|f| Some((text(f.name, f.name_len)?, f.info))).collect::<Option<Vec<_>>>()?;
+    Some((name, fields))
+}
+
+/// field 78 の本体: インスタンスのクラスが生成コードの表のとおりなら、先頭の塊の番地。
+fn instance_block(
+    rc: &std::rc::Rc<std::cell::RefCell<crate::interpreter::value::InstanceData>>,
+    desc: *const crate::interpreter::value::DirectClassDesc,
+    cell: *mut u64,
+) -> *mut u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
+    let cell = unsafe { &*(cell as *const AtomicU64) };
+    {
+        let inst = rc.borrow();
+        let want = direct_cell_value(inst.class.class_id);
+        if cell.load(Ordering::Relaxed) != want {
+            // SAFETY: `desc` は生成コードが DLL の中に置いた表
+            let Some((name, fields)) = (unsafe { read_direct_desc(desc) }) else { return std::ptr::null_mut() };
+            if !inst.class.matches_direct_desc(name, &fields) {
+                return std::ptr::null_mut();
+            }
+            cell.store(want, Ordering::Relaxed);
+        }
+    }
+    // SAFETY: 借用は上で返した。塊（`Box<[u64]>`）はインスタンスが生きている間動かない（作るのは生成と深いコピーだけ）。
+    // 生成コードは、この番地を使う間そのインスタンスを借りている者がいない所でだけ読み書きする（D-13 ④）。
+    unsafe { (*rc.as_ptr()).raw.as_mut_ptr() }
+}
+
+extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::value::DirectClassDesc, cell: *mut u64) -> *mut u64 {
+    if h < 3 || cell.is_null() || desc.is_null() {
+        return std::ptr::null_mut();
+    }
+    STATE.with(|s| {
+        let st = s.borrow();
+        // 先に積まれたエラーがあれば直接の道に入れない（今までの道が何もせずに戻る）
+        if st.error.is_some() {
+            return std::ptr::null_mut();
+        }
+        match st.arena.get(h as usize) {
+            Some(Value::Instance(rc)) => instance_block(rc, desc, cell),
+            _ => std::ptr::null_mut(),
+        }
+    })
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 番地を返すコールバック（field 78・8-2）: クラスが生成コードの表のとおりのときだけ番地を返し、セルに覚える。
+    /// 表と 1 つでも違うクラス・インスタンスでない値・先に積まれたエラーがあるときは空。
+    #[test]
+    fn inst_block_returns_the_block_only_for_the_described_class() {
+        use crate::interpreter::value::{
+            alloc_class_id, block, direct_field_info, ClassValue, DirectClassDesc, DirectFieldDesc, InstanceData,
+            RawLayout,
+        };
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let make_class = |name: &str, fields: &[(&str, &str, bool)]| -> Rc<ClassValue> {
+            let own: Vec<(String, String)> = fields.iter().map(|(n, a, _)| (n.to_string(), a.to_string())).collect();
+            Rc::new(ClassValue {
+                field_index: fields.iter().enumerate().map(|(i, (n, _, _))| (n.to_string(), i)).collect(),
+                field_count: fields.len(),
+                field_mutability_vec: fields.iter().map(|(_, _, m)| *m).collect(),
+                raw_layout: RawLayout::for_class(true, &own, own.len()).map(Rc::new),
+                ..ClassValue::synthetic(name, alloc_class_id())
+            })
+        };
+        let new_inst = |cls: &Rc<ClassValue>| {
+            let mut inst = InstanceData::new_empty(cls.clone(), 0);
+            // 並びの違うクラスでは型が合わず入らないものがある（番地が返らないことだけを見るので構わない）
+            let _ = inst.store_field(0, Value::Float(1.5), true);
+            let _ = inst.store_field(1, Value::Int(7), true);
+            push_handle(Value::Instance(Rc::new(RefCell::new(inst))))
+        };
+        // 生成コードの表: 先頭 + フィールド 2 つ（`repr(C)` の並びのまま 1 つの定数にする）
+        #[repr(C)]
+        struct Table(DirectClassDesc, [DirectFieldDesc; 2]);
+        let vec2 = make_class("Vec2", &[("x", "float", true), ("n", "int32", true)]);
+        let layout = vec2.raw_layout.clone().unwrap();
+        let table = Table(
+            DirectClassDesc { name: "Vec2".as_ptr(), name_len: 4, n_fields: 2 },
+            [
+                DirectFieldDesc { name: "x".as_ptr(), name_len: 1, info: direct_field_info(layout.fields[0], true) },
+                DirectFieldDesc { name: "n".as_ptr(), name_len: 1, info: direct_field_info(layout.fields[1], true) },
+            ],
+        );
+        let desc = &table.0 as *const DirectClassDesc;
+        let mut cell = 0u64;
+
+        // 表のとおりのクラス: 番地が返り、セルが埋まる。番地の先頭の語は class_id、フィールドは表の位置にある
+        let h = new_inst(&vec2);
+        let p = ar_inst_block(h, desc, &mut cell);
+        assert!(!p.is_null());
+        assert_eq!(cell, direct_cell_value(vec2.class_id));
+        let head = unsafe { *p };
+        assert_eq!((head & block::CLASS_ID_MASK) as u32, vec2.class_id);
+        assert_ne!(head & block::init_bit(0), 0);
+        let x_at = (table.1[0].info & 0xFFFF) as usize;
+        assert_eq!(unsafe { (p as *const u8).add(x_at).cast::<f64>().read_unaligned() }, 1.5);
+        // 2 回目は同じ番地（セルが当たる）
+        assert_eq!(ar_inst_block(h, desc, &mut cell), p);
+
+        // 同じ名前で並びの違うクラス（フィールドの順・幅・`let`・private）は空。セルは変わらない
+        let mut private = make_class("Vec2", &[("x", "float", true), ("n", "int32", true)]);
+        Rc::get_mut(&mut private).unwrap().field_access.insert("n".to_string(), crate::ast::Accessibility::Private);
+        for other in [
+            make_class("Vec2", &[("n", "int32", true), ("x", "float", true)]),
+            make_class("Vec2", &[("x", "float", true), ("n", "int", true)]),
+            make_class("Vec2", &[("x", "float", true), ("n", "int32", false)]),
+            make_class("Vec3", &[("x", "float", true), ("n", "int32", true)]),
+            make_class("Vec2", &[("x", "float", true), ("n", "int32", true), ("z", "float", true)]),
+            private,
+        ] {
+            let h = new_inst(&other);
+            assert!(ar_inst_block(h, desc, &mut cell).is_null(), "class {:?} must not match", other.field_index);
+            assert_eq!(cell, direct_cell_value(vec2.class_id));
+        }
+
+        // インスタンスでない値・小さい番号・空の引数
+        assert!(ar_inst_block(push_handle(Value::Float(1.0)), desc, &mut cell).is_null());
+        assert!(ar_inst_block(TL_NONE, desc, &mut cell).is_null());
+        assert!(ar_inst_block(h, std::ptr::null(), &mut cell).is_null());
+        assert!(ar_inst_block(h, desc, std::ptr::null_mut()).is_null());
+        // 先に積まれたエラーがあれば空（エラーはそのまま残る）
+        set_native_error("ValueError: earlier".to_string());
+        assert!(ar_inst_block(h, desc, &mut cell).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("earlier")));
+        assert!(!ar_inst_block(h, desc, &mut cell).is_null());
+    }
 
     /// 正しい UTF-8 は `str` になる（日本語を含む）。
     #[test]
