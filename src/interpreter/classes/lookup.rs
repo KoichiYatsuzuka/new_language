@@ -77,7 +77,7 @@ impl Interpreter {
     }
 
     /// `val` がインスタンスで、そのクラスが `__copy__` を持つか（[`Self::copy_value_uncounted`] が呼ぶもの）。
-    fn has_copy_hook(&self, val: &Value) -> bool {
+    pub(crate) fn has_copy_hook(&self, val: &Value) -> bool {
         match val {
             Value::Instance(rc) => {
                 let class = rc.borrow().class.clone();

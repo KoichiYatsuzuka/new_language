@@ -16,6 +16,7 @@
 //      （属性・添字への代入、`static`、`freeze`、`yield`、入れ子の定義、非同期の投入、イベントの購読は除く）
 //   5. 本体の呼び出しが、読むだけの名前・書き換えない組み込み関数・書き換えない組み込み型のメソッドだけ
 //      （関数の値の呼び出し・クラスの生成・ローカルに隠された名前・知らない名前は除く）
+//   6. `===`（同一性の比較）を使わない — 受けた値が写しかどうかを見分けられる
 // 演算子・添字・`for`・`str()` などが呼ぶ特殊メソッド（`__add__`・`__eq__`・`__str__`…）は名前に現れないので、
 // **利用者が定義した特殊メソッド（`__init__` を除く）が全部読むだけ**のときだけ、どの関数も読むだけとみなす
 // （1 つでも外れれば集合は空）。
@@ -297,6 +298,8 @@ impl Ctx<'_> {
             }
             Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => self.expr_ok(object),
             Expr::Subscript { object, index, .. } => self.expr_ok(object) && self.expr_ok(index),
+            // `===`（同一性）は、受けた値が写しかどうかを見分けられる（写せば別の物・写さなければ同じ物）
+            Expr::BinOp { op: crate::ast::BinOp::RefEq, .. } => false,
             Expr::BinOp { .. } | Expr::UnaryOp { .. } | Expr::Slice { .. } | Expr::Cast { .. } | Expr::IsType { .. }
             | Expr::MustBe { .. } => self.subparts_ok(e),
             Expr::ForExpr { .. } if self.user_iter => false,
@@ -359,4 +362,79 @@ fn is_readonly_builtin_method(name: &str) -> bool {
     ];
     !MUTATING.contains(&name)
         && crate::type_check::names::BUILTIN_VALUE_METHODS.iter().any(|(_, ms)| ms.contains(&name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::analyze;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn names(source: &str) -> Vec<String> {
+        let tokens = Lexer::new(source, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        analyze(&stmts).sorted_names().into_iter().map(str::to_string).collect()
+    }
+
+    const CLASS_V: &str = "class V:\n    mut x: int\n";
+
+    /// 読むだけと判定するもの・しないものの表（copy_alloc_speed_plan.md 4-2）。
+    #[test]
+    fn verdicts() {
+        let src = format!(
+            "{CLASS_V}
+    fn get(let self) -> int:
+        return self.x
+    fn add(let self, let o: V) -> int:
+        return self.x + o.get()
+    fn set(mut self, let v: int) -> None:
+        self.x = v
+    fn me(let self) -> V:
+        return self
+    fn same(let self, let o: V) -> bool:
+        return self === o
+    fn poke(let self, mut o: V) -> int:
+        o.x = 1
+        return self.x
+
+fn total(let vs: list[V]) -> int:
+    mut s = 0
+    for v in vs:
+        s += v.get()
+    return s
+
+fn grows(let vs: list[V]) -> int:
+    mut ys = vs
+    ys.append(V(1))
+    return len(ys)
+
+fn calls_value(let f: int, let v: V) -> int:
+    return f(v)
+
+mut counter = 0
+fn bumps(let v: V) -> int:
+    counter = counter + 1
+    return v.x
+"
+        );
+        assert_eq!(names(&src), ["add", "get", "total"]);
+    }
+
+    /// 同じ名前の定義が 1 つでも外れれば、その名前は入らない。
+    #[test]
+    fn same_name_is_closed_over_every_definition() {
+        let src = "class A:\n    mut k: int\n    fn read(let self) -> int:\n        return self.k\n\
+                   class B:\n    mut k: int\n    fn read(mut self) -> int:\n        self.k = 0\n        return self.k\n\
+                   fn use_a(let a: A) -> int:\n    return a.read()\n";
+        assert!(names(src).is_empty());
+    }
+
+    /// 読むだけでない特殊メソッドがあれば、どの関数も入れない（演算子が何を呼ぶかは名前から分からない）。
+    #[test]
+    fn impure_special_method_clears_everything() {
+        let ok = format!("{CLASS_V}    fn get(let self) -> int:\n        return self.x\n    fn __str__(let self) -> str:\n        return str(self.x)\n");
+        assert_eq!(names(&ok), ["__str__", "get"]);
+        let bad = format!("{CLASS_V}    fn get(let self) -> int:\n        return self.x\n    fn __str__(mut self) -> str:\n        self.x = 0\n        return str(self.x)\n");
+        assert!(names(&bad).is_empty());
+    }
 }

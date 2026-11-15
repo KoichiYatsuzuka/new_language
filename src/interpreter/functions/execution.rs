@@ -584,6 +584,17 @@ impl Interpreter {
             }
         }
 
+        // 読むだけの関数へは、`mut` の値を複製せずに渡す（copy_alloc_speed_plan.md 4-3・D-11）。呼ばれた側は受けた値を
+        // 書き換えず、中身を外へ出さないので、写しても写さなくても結果は同じ（`crate::readonly_fns`）。
+        // ⚠ 走っているタスクがあれば今までどおり複製する（別のスレッドが同じ値を書き換えうる・D-7 / D-8）。
+        // ⚠ 名前の集合を引くのは**複製が起きる呼び出しだけ**（下の `wants_copy`）。毎回引くと、複製の無い呼び出し
+        //   （`mut self` のメソッド・`let` の受け手）が名前のハッシュの分だけ遅くなる（4-3 の A/B で 4〜11%）。
+        let wants_copy = (has_self && !params[0].mutable && recv_mut)
+            || bind_params.iter().zip(evaled.iter()).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
+        let borrow = wants_copy
+            && crate::interpreter::async_mgr::no_live_tasks()
+            && self.readonly_fns.contains(&fn_val.name);
+
         // 直接バインド。
         let mut buf = std::mem::take(&mut self.vm_stack);
         let base = buf.len();
@@ -592,29 +603,30 @@ impl Interpreter {
         if has_self {
             let sv = self_val.as_ref().unwrap();
             // `let self` は `mut` の受け手だけ deep_copy（bind_args と同一の規則・6-1・D-8）
-            // 診断（4-1）: 複製する受け手のうち、呼ばれた関数が読むだけのものを数える
-            if crate::interpreter::copy_stats::enabled()
-                && !params[0].mutable
-                && recv_mut
-                && self.readonly_fns.contains(&fn_val.name)
-            {
-                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelfReadonly, sv, false);
-            }
-            let self_bound = Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut);
+            // 読むだけの関数（4-3）: `mut` の受け手を `let self` で受けても複製しない
+            let self_bound = if borrow && !params[0].mutable && recv_mut {
+                use crate::interpreter::copy_stats::{record, CopyKind};
+                record(CopyKind::LetSelfReadonly, sv, true);
+                record(CopyKind::LetSelf, sv, true);
+                sv.clone()
+            } else {
+                Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut)
+            };
             if slot < chunk.n_locals {
                 buf[base + slot] = self_bound;
             }
             slot += 1;
         }
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
-            if crate::interpreter::copy_stats::enabled()
-                && !p.mutable
-                && *arg_mut
-                && self.readonly_fns.contains(&fn_val.name)
-            {
-                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParamReadonly, val, false);
+            // 読むだけの関数（4-3）: `mut` の値を `let` 仮引数で受けても複製しない（「可変でない値」として束縛する）。
+            // ⚠ `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ（利用者のコードが走る）
+            let skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(val);
+            if skip_copy {
+                use crate::interpreter::copy_stats::{record, CopyKind};
+                record(CopyKind::LetParamReadonly, val, true);
+                record(CopyKind::LetParam, val, true);
             }
-            let v = self.bind_param_value(p, val.clone(), *arg_mut)?;
+            let v = self.bind_param_value(p, val.clone(), *arg_mut && !skip_copy)?;
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
             }
