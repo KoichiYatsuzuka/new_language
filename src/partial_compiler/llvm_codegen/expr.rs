@@ -779,7 +779,7 @@ impl<'a> GenCtx<'a> {
                 }
                 None => {
                     let (v, vt) = self.gen_expr(op);
-                    parts.push(self.abi_operand(&v, vt, tys[i], op, muts[i], i == 0, sym));
+                    parts.push(self.abi_operand(&v, vt, tys[i], op, muts[i], i == 0, sym, false));
                 }
             }
         }
@@ -804,11 +804,16 @@ impl<'a> GenCtx<'a> {
         let tys = self.fn_sigs[sym].param_tys.clone();
         // 仮引数より多い引数は `_impl` の型が合わず clang が落とす（ここの選択は結果に効かない）。
         let callee_mut = |i: usize| muts.get(i).copied().unwrap_or(true);
-        let recv = self.copy_for_let(oh, ot, object, callee_mut(0), true, sym);
+        let recv = self.copy_for_let(oh, ot, object, callee_mut(0), true, sym, false);
         let mut out = Vec::new();
         for (i, ((v, vt), a)) in arg_exprs.iter().zip(args).enumerate() {
             let pty = tys.get(i + 1).copied().unwrap_or(Ty::Handle);
-            out.push(self.abi_operand(v, *vt, pty, a.expr(), callee_mut(i + 1), false, sym));
+            // 受け手とほかの引数のどれとも重ならない引数（同じ変数の別のフィールド）か（4-6）
+            let others: Vec<&Expr> = std::iter::once(object)
+                .chain(args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.expr()))
+                .collect();
+            let disjoint = self.disjoint_from_all(a.expr(), &others);
+            out.push(self.abi_operand(v, *vt, pty, a.expr(), callee_mut(i + 1), false, sym, disjoint));
         }
         (recv, out)
     }
@@ -817,13 +822,13 @@ impl<'a> GenCtx<'a> {
     /// `int` / `float` の仮引数は生値（型検査が同じ型しか通さない）、ほかはハンドルで、`let` で受ける `mut` の値は
     /// 複製する（D-8・1-5）。⚠ 以前は全部ハンドルに箱詰めし、呼ばれた側が入口で開けていた。
     #[allow(clippy::too_many_arguments)]
-    fn abi_operand(&mut self, v: &str, vt: Ty, pty: Ty, operand: &Expr, callee_mutable: bool, is_self: bool, callee: &str) -> String {
+    fn abi_operand(&mut self, v: &str, vt: Ty, pty: Ty, operand: &Expr, callee_mutable: bool, is_self: bool, callee: &str, disjoint: bool) -> String {
         match pty {
             Ty::Int => format!("i64 {}", self.to_i64(v, vt)),
             Ty::Float => format!("double {}", self.to_f64(v, vt)),
             _ => {
                 let h = self.to_handle(v, vt);
-                format!("i64 {}", self.copy_for_let(&h, vt, operand, callee_mutable, is_self, callee))
+                format!("i64 {}", self.copy_for_let(&h, vt, operand, callee_mutable, is_self, callee, disjoint))
             }
         }
     }
@@ -879,7 +884,10 @@ impl<'a> GenCtx<'a> {
         let ops: Vec<String> = arg_exprs.iter().zip(args).enumerate()
             .map(|(i, ((v, vt), a))| {
                 let pty = tys.get(i).copied().unwrap_or(Ty::Handle);
-                self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false, name)
+                let others: Vec<&Expr> =
+                    args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.expr()).collect();
+                let disjoint = self.disjoint_from_all(a.expr(), &others);
+                self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false, name, disjoint)
             })
             .collect();
         let save = self.finish_call_save(outer);

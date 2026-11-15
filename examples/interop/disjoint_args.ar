@@ -1,0 +1,72 @@
+# disjoint_args.ar — 書き換える関数へ、重ならない値を `let` 仮引数で渡す（copy_alloc_speed_plan.md 4-6）
+#
+# `self.pos.mix(self.vel)` のように、受け手と引数が**同じ変数の別のフィールド**なら、呼ばれた関数が受け手を
+# 書き換えても引数の値は変わらないので、コンパイル済みコードは引数を複製しない。次のものは複製する:
+#   - 受け手と引数が同じ値（`v.mix(v)`）
+#   - 引数が受け手の中身（`b.absorb(b.pos)`）
+#   - 別の変数どうし（同じ物を指しうる）
+# 同じ関数を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/disjoint_args_module.ar
+#   2. cargo run --release -- examples/interop/disjoint_args.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.disjoint_args_module as m
+
+class V2:
+    mut x: int
+    mut y: int
+
+    fn mix(mut self, let o: V2) -> None:
+        self.x = self.x + o.y
+        self.y = self.y + o.x
+
+class Body:
+    mut pos: V2
+    mut vel: V2
+    mut n: int
+
+    fn step(mut self) -> None:
+        self.pos.mix(self.vel)
+
+    fn absorb(mut self, let p: V2) -> None:
+        self.pos.x = self.pos.x + 100
+        self.n = p.x
+
+fn two(mut a: Body, mut b: Body) -> None:
+    a.pos.mix(b.pos)
+
+fn disjoint_cases() -> int:
+    mut b = Body(V2(1, 2), V2(10, 20), 0)
+    b.step()
+    return b.pos.x * 10000 + b.pos.y * 100 + b.vel.x
+
+fn same_value_cases() -> int:
+    mut v = V2(1, 10)
+    v.mix(v)
+    return v.x * 100 + v.y
+
+fn inside_cases() -> int:
+    mut b = Body(V2(1, 2), V2(10, 20), 0)
+    b.absorb(b.pos)
+    return b.n * 1000 + b.pos.x
+
+fn two_names_cases() -> int:
+    mut b = Body(V2(1, 10), V2(0, 0), 0)
+    two(b, b)
+    return b.pos.x * 100 + b.pos.y
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("disjoint_args: " + name + " = " + str(got) + ", expected " + str(want))
+
+expect("vm disjoint", disjoint_cases(), 211210)
+expect("vm same value", same_value_cases(), 1111)
+expect("vm inside", inside_cases(), 1101)
+expect("vm two names", two_names_cases(), 1111)
+
+expect("compiled disjoint", m.disjoint_cases(), 211210)
+expect("compiled same value", m.same_value_cases(), 1111)
+expect("compiled inside", m.inside_cases(), 1101)
+expect("compiled two names", m.two_names_cases(), 1111)
+print("disjoint_args: ok")

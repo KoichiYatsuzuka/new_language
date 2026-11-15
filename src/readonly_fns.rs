@@ -34,6 +34,11 @@ use crate::ast::{CallArg, DictEntry, Expr, Param, SeqEntry, Stmt};
 #[derive(Debug, Default, Clone)]
 pub struct ReadonlyFns {
     names: HashSet<String>,
+    /// **自分の `mut` 仮引数だけを書き換える関数**の名前（copy_alloc_speed_plan.md 4-6）。読むだけの条件のうち
+    /// 「`mut` の仮引数が無い」と「属性・添字へ代入しない」を、「代入の先は自分の `mut` 仮引数（`mut self` を含む）を
+    /// 根にした経路だけ」に緩めたもの。こういう関数の `let` 仮引数へは、渡す値が `mut` の引数と**重ならない**と
+    /// 呼ぶ側が言えるとき（同じ変数の別のフィールド）、複製せずに渡せる。
+    confined: HashSet<String>,
     /// 解析した定義の数（診断用）。
     pub defs_total: usize,
     /// そのうち、読むだけと判定した名前に属する定義の数（診断用）。
@@ -44,6 +49,18 @@ impl ReadonlyFns {
     /// `name` という関数・メソッドが読むだけか（載っていない名前は `false` ＝ 複製する側）。
     pub fn contains(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// `name` という関数・メソッドが、自分の `mut` 仮引数だけを書き換えるか（読むだけの関数も含む）。
+    pub fn is_confined_writer(&self, name: &str) -> bool {
+        self.names.contains(name) || self.confined.contains(name)
+    }
+
+    /// 自分の `mut` 仮引数だけを書き換える関数の名前の一覧（並べ替え済み・読むだけの関数は含まない）。
+    pub fn sorted_confined(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.confined.iter().map(String::as_str).collect();
+        v.sort_unstable();
+        v
     }
 
     /// 名前の一覧（並べ替え済み・診断とテスト用）。
@@ -107,7 +124,7 @@ pub fn analyze(stmts: &[Stmt]) -> ReadonlyFns {
         names.retain(|n| {
             by_name[n].iter().all(|&i| {
                 let d = &defs[i];
-                let mut ctx = Ctx { readonly: &snapshot, locals: HashSet::new(), user_iter };
+                let mut ctx = Ctx { readonly: &snapshot, locals: HashSet::new(), user_iter, writable: HashSet::new() };
                 ctx.declare_params(d.params);
                 collect_locals(d.body, &mut ctx.locals);
                 ctx.stmts_ok(d.body)
@@ -122,8 +139,45 @@ pub fn analyze(stmts: &[Stmt]) -> ReadonlyFns {
     if !dunders_ok {
         names.clear();
     }
+    // 自分の `mut` 仮引数だけを書き換える関数（4-6）。読むだけの集合が決まってから求める（呼び出しは読むだけの名前だけ）。
+    // ⚠ 特殊メソッドの条件が外れていれば（`names` が空）、こちらも空にする（演算子が何を呼ぶか分からない）。
+    let confined: HashSet<&str> = if dunders_ok {
+        by_name
+            .iter()
+            .filter(|(n, idxs)| {
+                !blocked.contains(**n)
+                    && !names.contains(**n)
+                    && idxs.iter().all(|&i| {
+                        let d = &defs[i];
+                        if !confined_signature_ok(d) {
+                            return false;
+                        }
+                        let writable = d.params.iter().filter(|p| p.mutable).map(|p| p.name.clone()).collect();
+                        let mut ctx = Ctx { readonly: &names, locals: HashSet::new(), user_iter, writable };
+                        ctx.declare_params(d.params);
+                        collect_locals(d.body, &mut ctx.locals);
+                        ctx.stmts_ok(d.body)
+                    })
+            })
+            .map(|(n, _)| *n)
+            .collect()
+    } else {
+        HashSet::new()
+    };
     let defs_readonly = defs.iter().filter(|d| names.contains(d.name)).count();
-    ReadonlyFns { names: names.into_iter().map(str::to_string).collect(), defs_total: defs.len(), defs_readonly }
+    ReadonlyFns {
+        names: names.into_iter().map(str::to_string).collect(),
+        confined: confined.into_iter().map(str::to_string).collect(),
+        defs_total: defs.len(),
+        defs_readonly,
+    }
+}
+
+/// 4-6 の関数の条件 1〜3: `mut` の仮引数はあってよい（それだけを書き換える）。ほかは読むだけと同じ。
+fn confined_signature_ok(d: &Def<'_>) -> bool {
+    !d.excluded
+        && d.params.iter().all(|p| !p.variadic)
+        && d.return_type.is_some_and(|t| SCALAR_RETURN_TYPES.contains(&t))
 }
 
 /// 条件 1〜3（本体を見ずに決まるもの）。
@@ -221,6 +275,8 @@ struct Ctx<'a> {
     locals: HashSet<String>,
     /// プログラムが `__iter__` / `__next__` を定義しているか（`for` が利用者のコードを走らせうる）。
     user_iter: bool,
+    /// 属性・添字への代入の先として認める根の名前（4-6: この関数の `mut` 仮引数）。読むだけの判定では空。
+    writable: HashSet<String>,
 }
 
 impl Ctx<'_> {
@@ -245,6 +301,10 @@ impl Ctx<'_> {
             Stmt::CompoundAssign { name, value, .. } => self.locals.contains(name) && self.expr_ok(value),
             Stmt::Return(e, _) => e.as_ref().is_none_or(|e| self.expr_ok(e)),
             Stmt::BlockReturn(e, _) | Stmt::LoopYield(e, _) => self.expr_ok(e),
+            // 属性・添字への代入は、自分の `mut` 仮引数を根にした経路へだけ（4-6。読むだけの判定では `writable` が空）
+            Stmt::AttrAssign { target, value, .. } | Stmt::AttrCompoundAssign { target, value, .. } => {
+                self.writable_target(target) && self.expr_ok(value)
+            }
             Stmt::Break | Stmt::Continue | Stmt::Pass => true,
             Stmt::For { .. } if self.user_iter => false,
             Stmt::If { .. }
@@ -269,6 +329,24 @@ impl Ctx<'_> {
                 ok
             }
             // 属性・添字への代入、`static`、`freeze`、`yield`、定義、取り込み、非同期、イベント、デバッグ用の文
+            _ => false,
+        }
+    }
+
+    /// 代入の先が、`writable` の名前を根にした属性・添字の経路か（途中の添字の式も読むだけであること）。
+    fn writable_target(&self, target: &Expr) -> bool {
+        match target {
+            Expr::Attr { object, .. } => self.writable_root(object),
+            Expr::Subscript { object, index, .. } => self.writable_root(object) && self.expr_ok(index),
+            _ => false,
+        }
+    }
+
+    fn writable_root(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident { name, .. } => self.writable.contains(name),
+            Expr::Attr { object, .. } => self.writable_root(object),
+            Expr::Subscript { object, index, .. } => self.writable_root(object) && self.expr_ok(index),
             _ => false,
         }
     }
@@ -418,6 +496,33 @@ fn bumps(let v: V) -> int:
 "
         );
         assert_eq!(names(&src), ["add", "get", "total"]);
+    }
+
+    /// 自分の `mut` 仮引数だけを書き換える関数（4-6）。
+    #[test]
+    fn confined_writers() {
+        let src = format!(
+            "{CLASS_V}
+    fn bump(mut self, let o: V) -> None:
+        self.x = self.x + o.x
+    fn leak(mut self, let o: V) -> V:
+        self.x = o.x
+        return o
+    fn get(let self) -> int:
+        return self.x
+
+mut total = 0
+fn tally(mut v: V) -> None:
+    v.x = 0
+    total = total + 1
+"
+        );
+        let tokens = Lexer::new(&src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let r = analyze(&stmts);
+        // パーサが合成した `__init__`（`self.x = x` だけ）も入る
+        assert_eq!(r.sorted_confined(), ["__init__", "bump"]);
+        assert!(r.is_confined_writer("get") && r.is_confined_writer("bump") && !r.is_confined_writer("tally"));
     }
 
     /// 同じ名前の定義が 1 つでも外れれば、その名前は入らない。

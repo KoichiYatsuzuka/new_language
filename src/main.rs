@@ -453,6 +453,7 @@ fn run_program(
             readonly.defs_readonly,
             readonly.sorted_names().join(",")
         );
+        eprintln!("ConfinedWriterFns: names={}", readonly.sorted_confined().join(","));
     }
 
     // 診断フック: `AR_CHECK_ONLY=1` で**静的検査まで**で終わる（実行しない）。`compare_wasm_frontend.ps1` が

@@ -2250,6 +2250,10 @@ extern "C" fn ar_copy_fresh(h: i64, is_self: i32) -> i64 {
 /// タスクが無ければ複製しない（VM の `try_fast_bind` と同じ判定・`Interpreter::may_borrow_for`）。
 /// ⚠ セルはプロセスに 1 つだが、覚えるのは「名前が読むだけの集合にあるか」だけ。非同期タスクのワーカーは
 ///   自分が走っているタスクなので、セルが 1 でも必ず複製する（`no_live_tasks` が偽）。
+///
+/// `is_self` は種類: 0 = `let` 仮引数・1 = `let self`・2 = `let` 仮引数で、渡す値が受け手・ほかの引数と**重ならない**と
+/// 生成コードが言えたもの（同じ変数の別のフィールド・4-6）。2 のときは、呼ぶ関数が自分の `mut` 仮引数だけを書き換える
+/// 関数（`ReadonlyFns::is_confined_writer`）でも複製しない。
 extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     if !cell.is_null() && h >= super::INT_CACHE_BASE as i64 && crate::interpreter::async_mgr::no_live_tasks() {
@@ -2260,12 +2264,17 @@ extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *const u8, name_
             let interp_ptr = STATE.with(|s| s.borrow().interp_ptr);
             if let (Some(name), false) = (native_str(name_ptr, name_len, "function name"), interp_ptr.is_null()) {
                 let interp = unsafe { &*interp_ptr };
-                known = if interp.readonly_fns.contains(name) { 1 } else { 2 };
+                let ok = if is_self == 2 {
+                    interp.readonly_fns.is_confined_writer(name)
+                } else {
+                    interp.readonly_fns.contains(name)
+                };
+                known = if ok { 1 } else { 2 };
                 cell.store(known, Ordering::Relaxed);
             }
         }
         if known == 1 {
-            if is_self != 0 {
+            if is_self == 1 {
                 return h;
             }
             // 仮引数: `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ
@@ -2278,7 +2287,7 @@ extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *const u8, name_
             }
         }
     }
-    if is_self != 0 {
+    if is_self == 1 {
         ar_deep_copy(h)
     } else {
         ar_copy_arg(h)

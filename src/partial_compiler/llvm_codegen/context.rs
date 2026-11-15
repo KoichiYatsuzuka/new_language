@@ -129,6 +129,7 @@ impl<'a> GenCtx<'a> {
         callee_mutable: bool,
         is_self: bool,
         callee: &str,
+        disjoint: bool,
     ) -> String {
         if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
             return h.to_string();
@@ -148,13 +149,36 @@ impl<'a> GenCtx<'a> {
         let name = self.callee_fn_name(callee).to_string();
         let name_ptr = self.str_const(name.as_bytes());
         let cell = self.ic_cell();
+        // 種類: 1 = `let self`・2 = 受け手やほかの引数と重ならない `let` 仮引数（4-6）・0 = ほかの `let` 仮引数
+        let kind = if is_self { 1 } else if disjoint { 2 } else { 0 };
         self.call_cb(CB_BORROW_OR_COPY, &[
             format!("i64 {h}"),
-            format!("i32 {}", i32::from(is_self)),
+            format!("i32 {kind}"),
             name_ptr,
             format!("i32 {}", name.len()),
             cell,
         ])
+    }
+
+    /// `arg` が、`others`（受け手とほかの引数）のどれとも**重ならない**と言えるか（copy_alloc_speed_plan.md 4-6）。
+    /// 言えるのは、`arg` と相手が同じ変数を根にした属性だけの経路で、途中で別のフィールドへ分かれるとき
+    /// （`self.pos` と `self.vel`。格納のたびに複製するので、別のフィールドの中身は共有しない）。
+    /// 相手が `let` の値（書き換えられない）なら見なくてよい。それ以外（別の変数・添字・呼び出しの結果・片方が
+    /// もう片方の中）は「重なりうる」。⚠ 迷ったら `false`（複製する側）。
+    pub(super) fn disjoint_from_all(&self, arg: &Expr, others: &[&Expr]) -> bool {
+        let Some(a) = attr_path(arg) else { return false };
+        others.iter().all(|o| {
+            if !self.operand_is_mutable(o) {
+                return true;
+            }
+            match attr_path(o) {
+                Some(b) => {
+                    a.0 == b.0
+                        && a.1.iter().zip(b.1.iter()).any(|(x, y)| x != y)
+                }
+                None => false,
+            }
+        })
     }
 
     /// 直接呼び出しのシンボル（`{クラス}__{メソッド}` か関数名）から、関数・メソッドの名前を取り出す。
@@ -659,4 +683,17 @@ impl<'a> GenCtx<'a> {
 
     // ── Expression generation ─────────────────────────────────────────────────
 
+}
+
+/// 名前を根にした属性だけの経路（`a.b.c` → (`a`, [`b`, `c`])）。添字・呼び出しを含めば `None`。
+fn attr_path(e: &Expr) -> Option<(&str, Vec<&str>)> {
+    match e {
+        Expr::Ident { name, .. } => Some((name.as_str(), Vec::new())),
+        Expr::Attr { object, attr, .. } => {
+            let (root, mut path) = attr_path(object)?;
+            path.push(attr.as_str());
+            Some((root, path))
+        }
+        _ => None,
+    }
 }
