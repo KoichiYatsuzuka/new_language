@@ -47,8 +47,6 @@ pub mod block {
     /// フィールドの領域が始まる位置（塊の先頭からのバイト数）。
     pub const FIELDS_OFFSET: usize = 8;
     /// 先頭の語の「不変のインスタンス」の bit（`INST_IMMUTABLE`）。語を符号つきで読むと負になる。
-    // ⚠ 使うのは生成コードの書き込み（8-4）から。それまでは単体テストだけが読む
-    #[allow(dead_code)]
     pub const IMMUTABLE: u64 = (super::INST_IMMUTABLE as u64) << FLAGS_SHIFT;
 
     /// 先頭の語の、フィールド `idx` の初期化の印。

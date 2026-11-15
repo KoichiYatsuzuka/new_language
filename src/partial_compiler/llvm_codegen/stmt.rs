@@ -70,7 +70,7 @@ impl<'a> GenCtx<'a> {
                 let oh  = self.to_handle(&obj, ot);
                 match trait_name {
                     // `int` / `float` の値は箱に入れずに書く（4-2）
-                    None => self.emit_attr_assign_typed(&oh, attr, &val, vt),
+                    None => self.emit_field_assign(object, &oh, attr, &val, vt),
                     Some(_) => {
                         let vh = self.to_handle(&val, vt);
                         self.emit_attr_store(&oh, trait_name, attr, &vh);
@@ -103,7 +103,7 @@ impl<'a> GenCtx<'a> {
                     self.to_handle(&obj2, ot2)
                 };
                 match trait_name {
-                    None => self.emit_attr_assign_typed(&oh, attr, &res, rest),
+                    None => self.emit_field_assign(object, &oh, attr, &res, rest),
                     Some(_) => {
                         let rh = self.to_handle(&res, rest);
                         self.emit_attr_store(&oh, trait_name, attr, &rh);

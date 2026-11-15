@@ -1,0 +1,75 @@
+class P:
+    mut x: float
+    mut n: int
+    let id: int
+    fn bump(mut self, d: float) -> None:
+        ...
+    fn __init__(mut self, x: float, n: int, id: int) -> None:
+        ...
+
+
+class Holder:
+    mut p: P
+    mut tag: str
+    fn __init__(mut self, p: P, tag: str) -> None:
+        ...
+
+
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int16
+    mut d: uint16
+    mut e: int32
+    mut f: uint32
+    mut g: int64
+    mut h: float32
+    mut i: float
+    fn __init__(mut self, a: int8, b: uint8, c: int16, d: uint16, e: int32, f: uint32, g: int64, h: float32, i: float) -> None:
+        ...
+
+
+class Late:
+    mut x: float
+    mut n: int
+    fn __init__(mut self, v: float) -> None:
+        ...
+    fn __init__(mut self, x: float, n: int) -> None:
+        ...
+
+
+fn fill(mut t: Late, v: float) -> None:
+    ...
+
+fn var_write(mut p: P, v: float, k: int) -> None:
+    ...
+
+fn promote(mut p: P, k: int) -> None:
+    ...
+
+fn compound(mut p: P) -> None:
+    ...
+
+fn nested_write(mut h: Holder, v: float) -> None:
+    ...
+
+fn loop_write(mut ps: list[P]) -> None:
+    ...
+
+fn method_write(mut p: P) -> None:
+    ...
+
+fn widths_write(mut w: Widths, k: int, v: float) -> None:
+    ...
+
+fn widths_text(mut w: Widths) -> str:
+    ...
+
+fn late_sum(v: float) -> float:
+    ...
+
+fn frozen_copy(mut p: P) -> float:
+    ...
+
+fn p_text(mut p: P) -> str:
+    ...

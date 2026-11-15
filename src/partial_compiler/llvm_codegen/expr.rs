@@ -1011,6 +1011,20 @@ impl<'a> GenCtx<'a> {
         self.emit_attr_read(h, attr, known_ty)
     }
 
+    /// `obj.attr = v` の書き込み（受け手は評価済みのハンドル `oh`・値は評価済み）。`int` / `float` の値を、このモジュールの
+    /// raw レイアウトのクラスの `mut` の数値のフィールドへ書くなら番地へ直接書く（copy_alloc_speed_plan.md 8-4）。
+    /// ほかは今までのコールバック（[`Self::emit_attr_assign_typed`]）。
+    pub(super) fn emit_field_assign(&mut self, object: &Expr, oh: &str, attr: &str, v: &str, vt: Ty) {
+        if matches!(vt, Ty::Int | Ty::Float) {
+            if let Some(recv) = self.receiver_class(object) {
+                if self.emit_direct_write(&recv.class, oh, attr, v, vt) {
+                    return;
+                }
+            }
+        }
+        self.emit_attr_assign_typed(oh, attr, v, vt);
+    }
+
     /// ハンドル ABI（[`Self::gen_call`]）で呼んでから、戻り値型に応じて**開けて返す**（#64）。
     ///
     /// `Ty::Float` はここへ来ない（呼び出し側が `double` 直返しの高速経路を選ぶ）。

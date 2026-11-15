@@ -651,6 +651,89 @@ impl<'a> GenCtx<'a> {
         Some((r, ty))
     }
 
+    /// `obj.attr = v`（数値のフィールド・`v` は `int` / `float` の生値）を**番地へ直接書く**（copy_alloc_speed_plan.md 8-4・
+    /// D-13 ③）。出せなければ何も出さずに `false`（呼ぶ側が [`Self::emit_attr_assign_typed`] を使う）。
+    ///
+    /// 出せるのは、受け手のクラス `class` がこのモジュールの raw レイアウトのクラスで、フィールドが `mut`、値の型がフィールドに
+    /// 入るとき（`int` → 整数の幅・`float` → 小数の幅・`int` → 小数の幅は変換する。`InstanceData::store_field` と同じ規則）。
+    /// `let` のフィールドと、入らない型（`float` を整数のフィールドへ）は静的に分かるので直接の道を出さない（今までの
+    /// コールバックがエラーにする）。出すコード:
+    /// 1. `CB_INST_BLOCK` で先頭の塊の番地を得る（クラスが表のとおりでなければ空。表は `mut` かどうかも照合する）
+    /// 2. 先頭の語の不変の印を見る。立っていれば今までのコールバック（エラーの文面を保つ）
+    /// 3. 値を幅に合わせて（切り詰め・変換）書き、初期化の印を立てる
+    /// ⚠ 書き込みの IC が当たったときに省いている検査（定数のクラス変数・`static mut`・setter・アクセスの検査）は、
+    ///   クラスが表のとおり（全フィールドが public のふつうのフィールド）と確かめてあるので要らない。
+    pub(super) fn emit_direct_write(&mut self, class: &str, h: &str, attr: &str, v: &str, vt: Ty) -> bool {
+        use crate::interpreter::value::{block, RawWidth};
+        if self.terminated {
+            return false;
+        }
+        let Some(rc) = self.raw_classes.get(class) else { return false };
+        let Some(idx) = rc.fields.iter().position(|(n, _)| n == attr) else { return false };
+        if !rc.fields[idx].1 {
+            return false; // `let` のフィールド
+        }
+        let desc = rc.layout.fields[idx];
+        // (格納する型, 値の変換)。`None` はそのまま
+        let (ity, conv): (&str, Option<&str>) = match (desc.width, vt) {
+            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+            (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
+            (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
+            (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
+            (RawWidth::F64, Ty::Float) => ("double", None),
+            (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
+            // `int` → `float` のフィールドの昇格
+            (RawWidth::F64, Ty::Int) => ("double", Some("sitofp i64")),
+            (RawWidth::F32, Ty::Int) => ("float", Some("sitofp i64")),
+            // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）: 今までの道がエラーにする
+            _ => return false,
+        };
+        let offset = block::field_offset(desc.byte_offset);
+        let init_bit = block::init_bit(idx);
+        let Some(table) = self.direct_class_desc(class) else { return false };
+        let cell = self.ic_cell();
+
+        let p = self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]);
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let isnull = self.fresh_reg();
+        self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
+        self.br_cond(&isnull, &bslow, &bchk);
+
+        self.start_block(&bchk);
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let imm = self.fresh_reg();
+        // LLVM の整数の定数は符号つきの 10 進で書く
+        self.ec(&format!("{imm} = and i64 {head}, {}", block::IMMUTABLE as i64));
+        let frozen = self.fresh_reg();
+        self.ec(&format!("{frozen} = icmp ne i64 {imm}, 0"));
+        self.br_cond(&frozen, &bslow, &bfast);
+
+        self.start_block(&bfast);
+        let stored = match conv {
+            None => v.to_string(),
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {ity}"));
+                c
+            }
+        };
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        let head2 = self.fresh_reg();
+        self.ec(&format!("{head2} = or i64 {head}, {init_bit}"));
+        self.ec(&format!("store i64 {head2}, ptr {p}, align 8"));
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        self.emit_attr_assign_typed(h, attr, v, vt);
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        true
+    }
+
     /// `obj.attr = v` を**箇所ごとの書き込みの IC 付きで**行う（2-3・VM の `SetAttr` と同じ `attr_assign_ic`）。
     /// セルは読み出しとは別（`attr_assign_ic` の doc）。
     pub(super) fn emit_attr_assign(&mut self, oh: &str, attr: &str, vh: &str) {
