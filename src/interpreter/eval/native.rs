@@ -367,10 +367,11 @@ impl Interpreter {
             if named || evaled.len() != fn_ref.n_params {
                 let vals = match self.global_value_in(g, &fn_ref.fn_name) {
                     Some(Value::Function(f)) => {
-                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                        self.bind_native_args(&f.name, &f.params, f.globals, &evaled, None, true)?
                     }
+                    // ジェネレータは読むだけにならない（名前を渡さない＝複製する）
                     Some(Value::GeneratorFn(f)) => {
-                        self.bind_native_args(&f.params, f.globals, &evaled, None, true)?
+                        self.bind_native_args("", &f.params, f.globals, &evaled, None, true)?
                     }
                     _ => {
                         return Err(format!(

@@ -1649,7 +1649,13 @@ fn call_method_common(
                     let interp = unsafe { &mut *interp_ptr };
                     // 受け手（param 0 = self）
                     let self_let = pm.first().is_some_and(|m| !m);
-                    if self_let && mask & 1 != 0 {
+                    // 読むだけのメソッドへは複製せずに渡す（4-4・VM と同じ判定）。引くのは複製が起きるときだけ
+                    let wants_copy = (self_let && mask & 1 != 0)
+                        || (0..n_args as usize).any(|i| pm.get(i + 1).is_some_and(|m| !m) && mask_arg_is_mut(mask, i));
+                    let borrow = wants_copy && interp.may_borrow_for(name);
+                    if self_let && mask & 1 != 0 && borrow {
+                        all_args.push(obj_h);
+                    } else if self_let && mask & 1 != 0 {
                         copied_from.get_or_insert_with(arena_len);
                         crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &obj, false);
                         all_args.push(push_handle(crate::interpreter::Interpreter::deep_copy_value(obj.clone())));
@@ -1659,7 +1665,9 @@ fn call_method_common(
                     for i in 0..n_args as usize {
                         let h = unsafe { *args_ptr.add(i) };
                         let param_let = pm.get(i + 1).is_some_and(|m| !m);
-                        if param_let && mask_arg_is_mut(mask, i) {
+                        if param_let && mask_arg_is_mut(mask, i) && borrow && !interp.has_copy_hook(&clone_value_at(h)) {
+                            all_args.push(h);
+                        } else if param_let && mask_arg_is_mut(mask, i) {
                             copied_from.get_or_insert_with(arena_len);
                             // 作りたての印の付いた引数は、欄の 1 個を数えずに共有を判定する（2-4。写さなければ同じ欄を渡す）
                             let is_fresh = i < 31 && fresh & (1 << (i + 1)) != 0 && h >= super::INT_CACHE_BASE as i64;
@@ -2238,6 +2246,45 @@ extern "C" fn ar_copy_fresh(h: i64, is_self: i32) -> i64 {
     }
 }
 
+/// 直接呼び出しの `let self` / `let` 仮引数へ渡す `mut` の値（field 77・4-4）。呼ぶ関数が読むだけで、走っている
+/// タスクが無ければ複製しない（VM の `try_fast_bind` と同じ判定・`Interpreter::may_borrow_for`）。
+/// ⚠ セルはプロセスに 1 つだが、覚えるのは「名前が読むだけの集合にあるか」だけ。非同期タスクのワーカーは
+///   自分が走っているタスクなので、セルが 1 でも必ず複製する（`no_live_tasks` が偽）。
+extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *const u8, name_len: i32, cell: *mut u64) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if !cell.is_null() && h >= super::INT_CACHE_BASE as i64 && crate::interpreter::async_mgr::no_live_tasks() {
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+        let cell = unsafe { &*(cell as *const AtomicU64) };
+        let mut known = cell.load(Ordering::Relaxed);
+        if known == 0 {
+            let interp_ptr = STATE.with(|s| s.borrow().interp_ptr);
+            if let (Some(name), false) = (native_str(name_ptr, name_len, "function name"), interp_ptr.is_null()) {
+                let interp = unsafe { &*interp_ptr };
+                known = if interp.readonly_fns.contains(name) { 1 } else { 2 };
+                cell.store(known, Ordering::Relaxed);
+            }
+        }
+        if known == 1 {
+            if is_self != 0 {
+                return h;
+            }
+            // 仮引数: `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ
+            let (val, interp_ptr) = STATE.with(|s| {
+                let st = s.borrow();
+                (st.clone_value(h), st.interp_ptr)
+            });
+            if !interp_ptr.is_null() && !unsafe { &*interp_ptr }.has_copy_hook(&val) {
+                return h;
+            }
+        }
+    }
+    if is_self != 0 {
+        ar_deep_copy(h)
+    } else {
+        ar_copy_arg(h)
+    }
+}
+
 fn construct_by_name(
     cell: *mut u64,
     name_ptr: *const u8,
@@ -2476,6 +2523,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     assign_path_ic: ar_assign_path_ic,
     set_fresh: ar_set_fresh,
     copy_fresh: ar_copy_fresh,
+    borrow_or_copy: ar_borrow_or_copy,
 };
 
 #[cfg(test)]

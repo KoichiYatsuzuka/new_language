@@ -240,6 +240,7 @@ $knownDiff = @{
     'fresh_args'                     ='Rust: コンパイル済みモジュール（.arc）で作りたての値を格納・引数に渡す（copy_alloc_speed_plan.md 2-4 で新設）。py: .arc を読めず UnicodeDecodeError'
     'immutable_path_args'            ='Rust: 不変と分かる経路を let self / let 仮引数へ渡す例題（copy_alloc_speed_plan.md 3-1〜3-3 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'readonly_callee'                ='Rust: `let self` で受けた mut の値は写し（中身をそのまま返すメソッドの結果を書き換えても元は変わらない・copy_alloc_speed_plan.md 4-3 で新設）。py: 受け手を複製せず、返った値の書き換えが元に見える（returned field is a copy = 50）'
+    'readonly_callee_native'         ='Rust: コンパイル済みモジュール（.arc）の読むだけの関数へ mut の値を渡す（copy_alloc_speed_plan.md 4-4 で新設）。py: .arc を読めず UnicodeDecodeError'
     'py_key_error_args'              ='Rust: 実行時の KeyError の args はキーそのもの（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_getattr_hook'                ='Rust: Python のクラスの __getattr__ と object.__getattribute__（known_bugs.md の #11 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'getattr_hook_error'             ='Rust: Arrow のクラスの __getattr__ はパースの誤り（known_bugs.md の #11 で新設）。py: 誤りにせず素通しして 1 / unreachable を出す'

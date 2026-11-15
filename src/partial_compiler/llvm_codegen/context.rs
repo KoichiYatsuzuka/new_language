@@ -128,6 +128,7 @@ impl<'a> GenCtx<'a> {
         operand: &Expr,
         callee_mutable: bool,
         is_self: bool,
+        callee: &str,
     ) -> String {
         if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
             return h.to_string();
@@ -141,8 +142,27 @@ impl<'a> GenCtx<'a> {
         if self.fresh_regs.contains(h) {
             return self.call_cb(CB_COPY_FRESH, &[format!("i64 {h}"), format!("i32 {}", i32::from(is_self))]);
         }
-        let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
-        self.call_cb(cb, &[format!("i64 {h}")])
+        // 呼ぶ関数が読むだけなら複製しない（4-4・`ar_borrow_or_copy`）。読むだけかは実行時に、プログラム全体の
+        // 判定（`Interpreter::readonly_fns`）を呼ぶ関数の名前で引く（箇所ごとのセルに覚える）。そうでなければ
+        // コールバックの中で今までの複製（`let self` は `deep_copy_value`・仮引数は `copy_value`）をする。
+        let name = self.callee_fn_name(callee).to_string();
+        let name_ptr = self.str_const(name.as_bytes());
+        let cell = self.ic_cell();
+        self.call_cb(CB_BORROW_OR_COPY, &[
+            format!("i64 {h}"),
+            format!("i32 {}", i32::from(is_self)),
+            name_ptr,
+            format!("i32 {}", name.len()),
+            cell,
+        ])
+    }
+
+    /// 直接呼び出しのシンボル（`{クラス}__{メソッド}` か関数名）から、関数・メソッドの名前を取り出す。
+    pub(super) fn callee_fn_name<'s>(&self, sym: &'s str) -> &'s str {
+        match sym.split_once("__") {
+            Some((class, method)) if self.all_class_fields.contains_key(class) => method,
+            _ => sym,
+        }
     }
 
     /// 直接呼び出しの被演算子を組み立てる前に呼ぶ: 外側の呼び出しの保存点を退避する（1-15）。

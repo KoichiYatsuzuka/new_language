@@ -1,0 +1,53 @@
+# readonly_callee_native.ar — コンパイル済みコードで、読むだけの関数へ `mut` の値を渡す
+# （copy_alloc_speed_plan.md 4-4）
+#
+# 読むだけの関数（何も書き換えず、受けた値の中身を外へ出さない）へ渡す `mut` の値は複製しない。
+# 読むだけと言えない関数は今までどおり複製する。モジュール（.arc・コンパイル済み）の関数を呼び、
+# 期待値と比べる。本体からコンパイル済みのメソッドを呼ぶ境界も確かめる。
+#   1. cargo run --release -- --compile examples/interop/test_modules/readonly_callee_module.ar
+#   2. cargo run --release -- examples/interop/readonly_callee_native.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.readonly_callee_module as m
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("readonly_callee_native: " + name + " = " + str(got) + ", expected " + str(want))
+
+expect("compiled readonly", m.readonly_cases(), 11120)
+expect("compiled copying", m.copying_cases(), 14100)
+expect("compiled list", m.list_cases(), 103)
+
+# 本体（VM）からコンパイル済みのメソッドを呼ぶ
+mut b = m.Body(m.V(1), [2, 3], 4)
+expect("boundary energy", b.energy(), 10)
+expect("boundary total", m.total(b), 10)
+b.record()
+expect("boundary record", b.trail[2], 10)
+b.pos_of().x = 50
+expect("boundary returned field is a copy", b.pos.x, 1)
+expect("boundary peek", b.peek(b), 4)
+expect("boundary peek wrote", b.n, 100)
+
+# タスクが `mut` の値を書き換えている間に、読むだけのメソッドを呼ぶ（走っている間は複製する）
+mut shared = m.Body(m.V(0), [], 0)
+mut mng = AsyncManager(num_thread=1)
+mng <- async->int:
+    mut i = 0
+    while i < 2000:
+        shared.n = shared.n + 1
+        i += 1
+    block_return i
+mut seen_bad = 0
+mut j = 0
+while j < 200:
+    let e = shared.energy()
+    if e < 0 or e > 2000:
+        seen_bad += 1
+    j += 1
+mng.wait_for_finish()
+expect("task finished", mng.results[0], 2000)
+expect("values seen while the task ran", seen_bad, 0)
+expect("after the task", shared.energy(), 2000)
+print("readonly_callee_native: ok")

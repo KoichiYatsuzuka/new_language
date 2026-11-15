@@ -468,7 +468,7 @@ pub fn try_dispatch_native_method_evaled(
     if decl.params.first().is_none_or(|p| p.name != "self") {
         return None;
     }
-    let mut vals = match interp.bind_native_args(&decl.params, decl.globals, evaled, Some(obj), recv_mut) {
+    let mut vals = match interp.bind_native_args(method_name, &decl.params, decl.globals, evaled, Some(obj), recv_mut) {
         Ok(v) => v,
         Err(e) => return Some(Err(e)),
     };
@@ -722,6 +722,13 @@ pub struct ArCallbacks {
     /// 直接呼び出し（`_impl`）の `let self` / `let` 仮引数へ渡す作りたての値の複製。(ハンドル, `let self` か) を取り、
     /// 誰とも共有していなければ同じハンドルを返す（欄の 1 個は数えない）。共有していれば今までどおり複製を積む。
     pub copy_fresh: extern "C" fn(i64, i32) -> i64,
+
+    // ── Read-only callees (field 77・copy_alloc_speed_plan.md 4-4) ──
+    /// 直接呼び出し（`_impl`）の `let self` / `let` 仮引数へ渡す `mut` の値。(ハンドル, `let self` か, 呼ぶ関数の名前,
+    /// 長さ, 箇所ごとのセル) を取り、呼ぶ関数が読むだけで走っているタスクが無ければ**同じハンドルを返す**（複製しない）。
+    /// そうでなければ今までの複製（`let self` は `deep_copy`・仮引数は `copy_arg`）を積んで返す。
+    /// セルには「読むだけか」を 1 回だけ調べて覚える（0 = まだ・1 = 読むだけ・2 = 違う）。
+    pub borrow_or_copy: extern "C" fn(i64, i32, *const u8, i32, *mut u64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

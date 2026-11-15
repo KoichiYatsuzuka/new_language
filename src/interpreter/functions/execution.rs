@@ -591,9 +591,7 @@ impl Interpreter {
         //   （`mut self` のメソッド・`let` の受け手）が名前のハッシュの分だけ遅くなる（4-3 の A/B で 4〜11%）。
         let wants_copy = (has_self && !params[0].mutable && recv_mut)
             || bind_params.iter().zip(evaled.iter()).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
-        let borrow = wants_copy
-            && crate::interpreter::async_mgr::no_live_tasks()
-            && self.readonly_fns.contains(&fn_val.name);
+        let borrow = wants_copy && self.may_borrow_for(&fn_val.name);
 
         // 直接バインド。
         let mut buf = std::mem::take(&mut self.vm_stack);
@@ -728,8 +726,16 @@ impl Interpreter {
     /// （`self` を含む）を返す。既定値は定義したモジュールの大域 `globals` で評価する（`exec_fn_evaled` と同じ）。
     /// ⚠ 以前は評価済みの引数を呼び出しの順にそのまま渡しており、`let` で受けても複製せず（§0.3 ⑬）、名前つき引数が
     ///   位置で束縛され（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
+    /// `name` という関数へ渡す `mut` の値を、複製せずに渡してよいか（copy_alloc_speed_plan.md 4-3・4-4）:
+    /// 読むだけの関数（`crate::readonly_fns`）で、走っているタスクが無い（D-8）。
+    /// ⚠ 名前の集合を引くので、**複製が起きる呼び出しでだけ**呼ぶこと。
+    pub(crate) fn may_borrow_for(&self, name: &str) -> bool {
+        crate::interpreter::async_mgr::no_live_tasks() && self.readonly_fns.contains(name)
+    }
+
     pub(crate) fn bind_native_args(
         &mut self,
+        fn_name: &str,
         params: &[crate::ast::Param],
         globals: u32,
         evaled: &[(Option<String>, Value, bool)],
@@ -745,14 +751,27 @@ impl Interpreter {
             && evaled.iter().all(|(k, _, _)| k.is_none())
             && !params.iter().any(|p| p.variadic || p.default.is_some())
         {
+            // 読むだけの関数へは `mut` の値を複製せずに渡す（`try_fast_bind` と同じ・4-4）
+            let wants_copy = (has_self && !params[0].mutable && recv_mut)
+                || rest.iter().zip(evaled).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
+            let borrow = wants_copy && self.may_borrow_for(fn_name);
             let mut out = Vec::with_capacity(params.len());
             if let (true, Some(sv)) = (has_self, self_val) {
-                out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
+                if borrow && !params[0].mutable && recv_mut {
+                    crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &sv, true);
+                    out.push(sv);
+                } else {
+                    out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
+                }
             }
             for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
                 Self::check_param_binding(p.mutable, &p.name, v)?;
+                let skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(v);
+                if skip_copy {
+                    crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, v, true);
+                }
                 // 評価済みの引数の並び（`evaled`）が持つ 1 個は数えない（`bind_param_value` と同じ・2-2）
-                out.push(if !p.mutable && *arg_mut { self.copy_value_held(v.clone(), 1)? } else { v.clone() });
+                out.push(if !p.mutable && *arg_mut && !skip_copy { self.copy_value_held(v.clone(), 1)? } else { v.clone() });
             }
             return Ok(out);
         }

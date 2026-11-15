@@ -1,0 +1,65 @@
+# readonly_callee_module.ar — readonly_callee_native.ar のコンパイル済みの側（copy_alloc_speed_plan.md 4-4）
+#
+# 読むだけの関数へ渡す `mut` の値は複製しない。読むだけと言えない関数は今までどおり複製する。
+# どの関数も「複製を省くと値が変わる」形を含み、結果を数で返す（本体が期待値と比べる）。
+
+class V:
+    mut x: int
+
+    fn get(let self) -> int:
+        return self.x
+
+class Body:
+    mut pos: V
+    mut trail: list[int]
+    mut n: int
+
+    # 読むだけ
+    fn energy(let self) -> int:
+        mut s = self.n
+        for t in self.trail:
+            s += t
+        return s + self.pos.get()
+
+    # 読むだけでない: 受けた値の中身をそのまま返す
+    fn pos_of(let self) -> V:
+        return self.pos
+
+    # 読むだけでない: 別の引数から書き換える
+    fn peek(let self, mut other: Body) -> int:
+        other.n = 100
+        return self.n
+
+    # `mut self` の中から読むだけのメソッドを呼ぶ（直接呼び出し）
+    fn record(mut self) -> None:
+        self.trail.append(self.energy())
+
+fn total(let b: Body) -> int:
+    return b.energy()
+
+# 読むだけのメソッド・関数: 値は変わらない
+fn readonly_cases() -> int:
+    mut b = Body(V(1), [2, 3], 4)
+    let e1 = b.energy()
+    let e2 = total(b)
+    b.record()
+    # 10, 10, 10（記録した値）, 20（記録のあと）→ 10 * 1000 + 10 * 100 + 10 * 10 + 20
+    return e1 * 1000 + e2 * 100 + b.trail[2] * 10 + b.energy()
+
+# 読むだけでないメソッド: 複製する
+fn copying_cases() -> int:
+    mut b = Body(V(1), [2, 3], 4)
+    b.pos_of().x = 50
+    let r = b.peek(b)
+    # pos.x は 1 のまま・peek は書き換える前の 4・n は 100 → 1 * 10000 + 4 * 1000 + 100
+    return b.pos.x * 10000 + r * 1000 + b.n
+
+# リストの要素を受け手にする（ガード付きの呼び出し）
+fn list_cases() -> int:
+    mut bs = [Body(V(1), [], 2), Body(V(3), [], 4)]
+    mut s = 0
+    for b in bs:
+        s += b.energy()
+    bs[0].record()
+    # 3 + 7 = 10・記録した値 3
+    return s * 10 + bs[0].trail[0]
