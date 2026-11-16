@@ -721,6 +721,10 @@ struct GenCtx<'a> {
     raw_classes: HashMap<String, crate::interpreter::value::StaticRawClass>,
     /// クラスごとの表（`DirectClassDesc`）を出した大域の名前。最初に使う所で 1 回だけ出す。
     direct_descs: HashMap<String, String>,
+    /// 番地を覚えているローカル変数（copy_alloc_speed_plan.md 8-5）: 変数の置き場（`%_al_x`）→（番地の置き場 `%_ip_x`・
+    /// 確かめたクラス）。関数ごとに作り直し、関数を出力するときに「変数へ書いたら番地を捨てる」命令を差し込む
+    /// （[`GenCtx::finish_block_cache`]）。
+    ip_vars: HashMap<String, (String, String)>,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。

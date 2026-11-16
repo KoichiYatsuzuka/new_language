@@ -64,6 +64,7 @@ impl<'a> GenCtx<'a> {
             ident_stats:           IdentHandleStats::default(),
             raw_classes:           HashMap::new(),
             direct_descs:          HashMap::new(),
+            ip_vars:               HashMap::new(),
         }
     }
 
@@ -570,13 +571,111 @@ impl<'a> GenCtx<'a> {
         Some(format!("ptr @{g}"))
     }
 
+    /// ハンドル `h` の指すインスタンスの先頭の塊の番地（クラスが `class` の表のとおりでなければ空）を得るコードを出す
+    /// （copy_alloc_speed_plan.md 8-3・8-5）。
+    ///
+    /// `h` がローカル変数から読んだばかりの値なら、**番地を変数ごとに覚えて使い回す**（8-5・D-13 ⑤）: 変数の隣に番地の
+    /// 置き場（関数の入口で空）を持ち、空のときだけ `CB_INST_BLOCK` を呼ぶ。そうでなければ毎回呼ぶ。
+    ///
+    /// 覚えた番地が正しい条件と、その守り方:
+    /// - **変数が同じ値を指している間だけ使う。** 変数へ書いたら捨てる。書き込みは 1 つ残らず変数の置き場への `store` なので、
+    ///   関数を出力するときに本体の文面を走査し、その `store` の直後へ「番地を捨てる」命令を差し込む
+    ///   （[`Self::finish_block_cache`]。書き込みを出す側の関数に印を足す方式だと、足し忘れた 1 か所が解放済みの番地を読む）。
+    /// - **`h` が変数の今の値であること。** `h` を読んだ `load` の後に、その変数への `store` が 1 つも出ていないときだけ覚える
+    ///   （`x.f = block: x = other ..` のように、受け手を読んだ後で値の評価が変数を差し替える式は覚えない）。
+    /// - **番地の指す塊が生きていること。** 変数の欄（アリーナ）がインスタンスを持っている間、塊は動かず解放されない。
+    ///   周の巻き戻しは残す変数の欄を積み直して変数へ書き戻す（= `store` なので捨てる）。残さない変数は次に使う前に代入される。
+    ///   外部言語の `T*` の書き戻しは、インタープリタが作った別の欄へ書き、結果は値として呼ぶ側へ返る
+    ///   （生成コードの変数の欄は差し替えられない・`eval/native.rs`）。
+    /// - **1 つの変数に 1 つのクラス。** 同じ変数を別のクラスとして読む箇所は覚えない（毎回呼ぶ）。
+    fn emit_block_ptr(&mut self, class: &str, h: &str) -> Option<String> {
+        let table = self.direct_class_desc(class)?;
+        let cell = self.ic_cell();
+        let args = [format!("i64 {h}"), table, cell];
+        let Some(al) = self.cacheable_var(h, class) else {
+            return Some(self.call_cb(CB_INST_BLOCK, &args));
+        };
+        let ip = format!("%_ip_{}", &al["%_al_".len()..]);
+        if !self.ip_vars.contains_key(&al) {
+            self.ea(&format!("{ip} = alloca ptr, align 8"));
+            self.ea(&format!("store ptr null, ptr {ip}"));
+            self.ip_vars.insert(al, (ip.clone(), class.to_string()));
+        }
+        let p0 = self.fresh_reg();
+        self.ec(&format!("{p0} = load ptr, ptr {ip}"));
+        let empty = self.fresh_reg();
+        self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
+        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&empty, &bfetch, &bhave);
+        self.start_block(&bfetch);
+        let p1 = self.call_cb(CB_INST_BLOCK, &args);
+        self.ec(&format!("store ptr {p1}, ptr {ip}"));
+        self.br(&bhave);
+        self.start_block(&bhave);
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {ip}"));
+        Some(p)
+    }
+
+    /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
+    /// 生成済みの本体の文面から決める（[`Self::emit_block_ptr`] の 2 つ目の条件）。別のクラスで覚えた変数は `None`。
+    fn cacheable_var(&self, h: &str, class: &str) -> Option<String> {
+        let def = format!("  {h} = load i64, ptr ");
+        let at = self.code_buf.rfind(&def)?;
+        let rest = &self.code_buf[at + def.len()..];
+        let (al, after) = rest.split_once('\n')?;
+        if !al.starts_with("%_al_") {
+            return None;
+        }
+        let store_tail = format!(", ptr {al}");
+        if after.lines().any(|l| l.trim_start().starts_with("store ") && l.ends_with(&store_tail)) {
+            return None;
+        }
+        match self.ip_vars.get(al) {
+            Some((_, c)) if c != class => None,
+            _ => Some(al.to_string()),
+        }
+    }
+
+    /// 関数の本体を出力する直前に呼ぶ（8-5）: 番地を覚えた変数の置き場への `store` の直後に、番地の置き場を空にする
+    /// 命令を差し込む。変数の置き場が `load` / `store` 以外（呼び出しの引数など）に出てきた行の後にも差し込む
+    /// （置き場の番地を外へ渡す所は今は無いが、できたときに古い番地を読まないように）。
+    pub(super) fn finish_block_cache(&mut self) {
+        if self.ip_vars.is_empty() {
+            return;
+        }
+        let vars: Vec<(String, String)> = self.ip_vars.drain().map(|(al, (ip, _))| (al, ip)).collect();
+        let mut out = String::with_capacity(self.code_buf.len() + 64);
+        for line in self.code_buf.lines() {
+            out.push_str(line);
+            out.push('\n');
+            let body = line.trim_start();
+            for (al, ip) in &vars {
+                let writes = if body.starts_with("store ") {
+                    line.ends_with(&format!(", ptr {al}"))
+                } else if body.contains(" = load ") {
+                    false
+                } else {
+                    // 置き場の名前そのもの（`%_al_x` の後に名前の続きが無い）が出てくる行
+                    line.match_indices(al.as_str()).any(|(i, _)| {
+                        !line[i + al.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.')
+                    })
+                };
+                if writes {
+                    out.push_str(&format!("  store ptr null, ptr {ip}\n"));
+                }
+            }
+        }
+        self.code_buf = out;
+    }
+
     /// `obj.attr`（数値のフィールド）を**番地から直接読む**（copy_alloc_speed_plan.md 8-3・D-9・D-13）。出せなければ
     /// 何も出さずに `None`（呼ぶ側が [`Self::emit_attr_read`] を使う）。
     ///
     /// 出せるのは、受け手のクラス `class` がこのモジュールの raw レイアウトのクラスで、フィールドの幅が読む型 `ty` に合うとき
     /// （整数の幅 → `Int`・`float32` / `float` → `Float`）。出すコード:
-    /// 1. `CB_INST_BLOCK`（ハンドル・クラスの表・セル）で先頭の塊の番地を得る。インスタンスのクラスが表のとおりでなければ空
-    ///    （注釈が外れた・private のフィールドがある・別のモジュールの同じ名前のクラス）
+    /// 1. 先頭の塊の番地を得る（[`Self::emit_block_ptr`]: `CB_INST_BLOCK`。受け手がローカル変数なら覚えた番地を使い回す）。
+    ///    インスタンスのクラスが表のとおりでなければ空（注釈が外れた・private のフィールドがある・別のモジュールの同じ名前のクラス）
     /// 2. 先頭の語の初期化の印を見る
     /// 3. 立っていれば、塊の先頭から静的に決めた位置を、幅どおりに読んで広げる（`InstanceData::field_value` と同じ変換）
     /// 4. 番地が空・未初期化なら今までのコールバック（[`Self::emit_attr_read`]。結果もエラーの文面も今までと同じ）
@@ -607,11 +706,9 @@ impl<'a> GenCtx<'a> {
         };
         let offset = block::field_offset(desc.byte_offset);
         let init_bit = block::init_bit(idx);
-        let table = self.direct_class_desc(class)?;
-        let cell = self.ic_cell();
         let t = llvm_ty(ty);
 
-        let p = self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]);
+        let p = self.emit_block_ptr(class, h)?;
         let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
         let isnull = self.fresh_reg();
         self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
@@ -690,10 +787,7 @@ impl<'a> GenCtx<'a> {
         };
         let offset = block::field_offset(desc.byte_offset);
         let init_bit = block::init_bit(idx);
-        let Some(table) = self.direct_class_desc(class) else { return false };
-        let cell = self.ic_cell();
-
-        let p = self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]);
+        let Some(p) = self.emit_block_ptr(class, h) else { return false };
         let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
         let isnull = self.fresh_reg();
         self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));

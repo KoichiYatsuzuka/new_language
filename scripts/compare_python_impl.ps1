@@ -244,6 +244,7 @@ $knownDiff = @{
     'disjoint_args'                  ='Rust: 書き換える関数へ重ならない値を渡す例題（copy_alloc_speed_plan.md 4-6 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_field_read'              ='Rust: 数値のフィールドを番地から直接読む例題（copy_alloc_speed_plan.md 8-3 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_field_write'             ='Rust: 数値のフィールドへ番地から直接書く例題（copy_alloc_speed_plan.md 8-4 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
+    'direct_field_cache'             ='Rust: インスタンスの番地を変数ごとに使い回す例題（copy_alloc_speed_plan.md 8-5 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'py_key_error_args'              ='Rust: 実行時の KeyError の args はキーそのもの（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_getattr_hook'                ='Rust: Python のクラスの __getattr__ と object.__getattribute__（known_bugs.md の #11 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'getattr_hook_error'             ='Rust: Arrow のクラスの __getattr__ はパースの誤り（known_bugs.md の #11 で新設）。py: 誤りにせず素通しして 1 / unreachable を出す'

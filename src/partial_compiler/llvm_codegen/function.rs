@@ -24,6 +24,7 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -144,6 +145,7 @@ impl<'a> GenCtx<'a> {
         // Float-returning functions use double ABI in _impl; others use i64 handle ABI.
         let impl_ret     = if ret_ty == Ty::Float { "double" } else { "i64" };
         let impl_ret_str = impl_ret;
+        self.finish_block_cache();
         self.fn_defs.push_str(&format!(
             "\ndefine internal {impl_ret} @{name}_impl({sig}) {{\nentry:\n{}{}}}\n",
             self.alloca_buf, self.code_buf
@@ -264,6 +266,7 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.current_fn_ret = ret_ty;
@@ -332,6 +335,7 @@ impl<'a> GenCtx<'a> {
         if self.fast_failed {
             self.discarded_fast.insert(name.to_string());
         } else {
+            self.finish_block_cache();
             self.fn_defs.push_str(&format!(
                 "\ndefine internal {impl_ret} @{name}_fast({sig}) {{\nentry:\n{}{}}}\n",
                 self.alloca_buf, self.code_buf
@@ -378,6 +382,7 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -418,6 +423,7 @@ impl<'a> GenCtx<'a> {
 
         let attr = export_attr();
         let vis = if attr.is_empty() { "" } else { attr };
+        self.finish_block_cache();
         Some(format!(
             "\ndefine {vis}i32 @{name}_typed(ptr %_args, ptr %_ret, ptr %_err) {{\nentry:\n{}{}}}\n",
             self.alloca_buf, self.code_buf
@@ -440,6 +446,7 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
         self.block_stack.clear();
 
         let param_sigs: Vec<String> = params.iter().enumerate()
@@ -483,6 +490,7 @@ impl<'a> GenCtx<'a> {
         let attr = export_attr();
         let vis = if attr.is_empty() { "" } else { attr };
         let sig = param_sigs.join(", ");
+        self.finish_block_cache();
         self.fn_defs.push_str(&format!(
             "\ndefine internal i64 @{name}_impl({sig}) {{\nentry:\n{}{}}}\n",
             self.alloca_buf, self.code_buf
