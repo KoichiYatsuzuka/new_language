@@ -1228,7 +1228,17 @@ impl<'a> GenCtx<'a> {
                         return self.emit_direct_method_call_typed(&sym, &cls, object, &oh, ot, args, &arg_exprs);
                     }
 
-                    // ハンドルを返すメソッド・ガード付きの受け手: ハンドル ABI（int は CB_TO_INT で開ける）。
+                    // ガード付きの受け手で `int` / `float` を返すメソッド: 当たりの道の生の値のまま合流する（7-5）
+                    if matches!(ret_ty, Ty::Float | Ty::Int) {
+                        let arg_exprs: Vec<(String, Ty)> = args.iter()
+                            .map(|a| self.gen_expr(a.expr())).collect();
+                        let (ov, ot) = self.gen_expr(object);
+                        let oh = self.to_handle(&ov, ot);
+                        let cls = cls.clone();
+                        return self.emit_guarded_method_call_typed(&sym, &cls, attr, object, &oh, ot, args, &arg_exprs, site);
+                    }
+
+                    // ハンドルを返すメソッド: ハンドル ABI。
                     return self.gen_call_unwrapped(func, args, ret_ty, site);
                 }
             }
@@ -1321,6 +1331,66 @@ impl<'a> GenCtx<'a> {
         let r = self.fresh_reg();
         self.ec(&format!("{r} = load i64, ptr {slot}"));
         r
+    }
+
+    /// [`Self::emit_guarded_method_call`] の、`int` / `float` を返すメソッドの版（copy_alloc_speed_plan.md 7-5）: 両方の道の結果を
+    /// **生の値**（`i64` / `double`）で合流する。以前はハンドルで合流していたので、当たりの道でも `_impl` の `double` を
+    /// 箱に詰め直し、結果を使う演算も型の無い道（`binop` のコールバック）になっていた（`e += b.kinetic()` で 1 回 4 コールバック）。
+    /// 外れた道（名前による呼び出し）の結果は `CB_EXPECT_RET` で宣言の型どおりに開け、違う型なら `TypeError`
+    /// （黙って変換しない・利用者の決定 2026-11-17・旧 known_problems.md #1）。
+    #[allow(clippy::too_many_arguments)]
+    fn emit_guarded_method_call_typed(
+        &mut self,
+        sym: &str,
+        cls: &str,
+        key: &str,
+        object: &Expr,
+        oh: &str,
+        ot: Ty,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+        site: CallSite<'_>,
+    ) -> (String, Ty) {
+        let ret = self.fn_sigs[sym].ret;
+        let t = llvm_ty(ret);
+        let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
+        let cell = self.ic_cell();
+        let cptr = self.str_const(cls.as_bytes());
+        let ok = self.call_cb(CB_METHOD_GUARD, &[
+            format!("i64 {oh}"), cptr, format!("i32 {}", cls.len()), cell, format!("i32 {}", i32::from(need_mut)),
+        ]);
+        let slot = format!("%_mres{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca {t}, align 8"));
+        let cond = self.fresh_reg();
+        self.ec(&format!("{cond} = icmp ne i32 {ok}, 0"));
+        let (b_direct, b_name, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        self.ec(&format!("br i1 {cond}, label %{b_direct}, label %{b_name}"));
+        self.terminated = true;
+        self.start_block(&b_direct);
+        let (rd, rt) = self.emit_direct_method_call_typed(sym, cls, object, oh, ot, args, arg_exprs);
+        let rd = if ret == Ty::Float { self.to_f64(&rd, rt) } else { self.to_i64(&rd, rt) };
+        self.ec(&format!("store {t} {rd}, ptr {slot}"));
+        self.br(&b_join);
+        self.start_block(&b_name);
+        let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
+        let shown = format!("{cls}.{key}");
+        let name = self.str_const(shown.as_bytes());
+        let kind = i32::from(ret == Ty::Float);
+        let bits = self.call_cb(CB_EXPECT_RET, &[format!("i64 {rn}"), format!("i32 {kind}"), name, format!("i32 {}", shown.len())]);
+        let v = if ret == Ty::Float {
+            let f = self.fresh_reg();
+            self.ec(&format!("{f} = bitcast i64 {bits} to double"));
+            f
+        } else {
+            bits
+        };
+        self.ec(&format!("store {t} {v}, ptr {slot}"));
+        self.br(&b_join);
+        self.start_block(&b_join);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = load {t}, ptr {slot}"));
+        (r, ret)
     }
 
     /// 名前によるメソッド呼び出し（`CB_CALL_METHOD_IC`・外のメソッド・コンパイルしていないメソッド・ガードが外れたとき）。

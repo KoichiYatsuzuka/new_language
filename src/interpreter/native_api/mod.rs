@@ -757,6 +757,11 @@ pub struct ArCallbacks {
         *const crate::interpreter::value::DirectClassDesc,
         *mut u64,
     ) -> *mut u64,
+    /// 宣言の型どおりの戻り値を開ける（field 80・copy_alloc_speed_plan.md 7-5）。(ハンドル, 種類 0 = `int` / 1 = `float`,
+    /// 呼んだメソッドの表示名, 長さ) を取り、`int` は値そのもの、`float` はビット列（`f64::to_bits`）を返す。
+    /// 宣言の型と違う値（`int` に `float`・`float` に `int`・数でない値）は `TypeError` にして 0 を返す。
+    /// ガード付きのメソッド呼び出しで、ガードが外れて名前で呼んだときの結果だけに使う（利用者の決定 2026-11-17）。
+    pub expect_ret: extern "C" fn(i64, i32, *const u8, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

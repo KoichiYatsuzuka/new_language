@@ -2594,7 +2594,52 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     borrow_or_copy: ar_borrow_or_copy,
     inst_block: ar_inst_block,
     attr_block: ar_attr_block,
+    expect_ret: ar_expect_ret,
 };
+
+/// field 80（7-5）: ガードが外れて名前で呼んだメソッドの戻り値を、宣言の型どおりに開ける。
+///
+/// ガード付きの呼び出し（受け手のクラスを型検査の注釈で決めた呼び出し）は、当たりの道で `_impl` が返す生の `int` / `float`
+/// をそのまま使う。外れるのは注釈と違うクラスの値が来たとき（型検査の穴を通ったとき）だけで、そのとき呼んだ別のクラスの
+/// メソッドが宣言と違う型を返したら、黙って変換せずに `TypeError` にする（以前は `int` は `to_int` で切り捨て、`float` は
+/// 箱のまま続けていた・旧 known_problems.md #1）。
+/// ⚠ 先に積まれたエラー・例外があれば何もしない（呼んだメソッドが投げた例外をこの誤りで上書きしない）。
+/// ⚠ `int` に `bool` は通さない（Arrow の `bool` は `int` ではない）。`float` に `int` も通さない（VM はそのまま `int` で続ける）。
+extern "C" fn ar_expect_ret(h: i64, kind: i32, name_ptr: *const u8, name_len: i32) -> i64 {
+    let (has_err, got) = STATE.with(|s| {
+        let st = s.borrow();
+        if st.error.is_some() || st.pending_raise.is_some() {
+            return (true, None);
+        }
+        let got = match (kind, h) {
+            (0, n) if n >= 3 && (n as usize) < INT_CACHE_BASE => Some(n - 3),
+            (0, n) if n >= 3 => match st.arena.get(n as usize) {
+                Some(Value::Int(v)) => Some(*v),
+                Some(Value::UInt(v)) => Some(*v as i64),
+                _ => None,
+            },
+            (1, n) if n >= INT_CACHE_BASE as i64 => match st.arena.get(n as usize) {
+                Some(Value::Float(f)) => Some(f.to_bits() as i64),
+                _ => None,
+            },
+            _ => None,
+        };
+        (false, got)
+    });
+    if has_err {
+        return 0;
+    }
+    if let Some(v) = got {
+        return v;
+    }
+    let want = if kind == 1 { "float" } else { "int" };
+    let name = native_str(name_ptr, name_len, "method name").unwrap_or("?");
+    set_argument_error(format!(
+        "TypeError: method '{name}' is declared to return '{want}', but the call returned '{}'",
+        handle_type_name(h)
+    ));
+    0
+}
 
 /// field 79（8-7）: 親の `name` のフィールドが持っているインスタンスの先頭の塊の番地。アリーナには積まない。
 ///
@@ -2715,6 +2760,40 @@ extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::value::Dire
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ガードが外れたときの戻り値の開け方（field 80・7-5）: 宣言の型の値だけを開け、違う型は黙って変換せずに TypeError。
+    /// 先に積まれたエラー・例外は上書きしない。
+    #[test]
+    fn expect_ret_unboxes_only_the_declared_type() {
+        let name = "Body.kinetic";
+        let call = |h: i64, kind: i32| ar_expect_ret(h, kind, name.as_ptr(), name.len() as i32);
+        // int: 小さい整数（番号で表す）・大きい整数
+        assert_eq!(call(push_handle(Value::Int(7)), 0), 7);
+        assert_eq!(call(push_handle(Value::Int(1 << 40)), 0), 1 << 40);
+        assert_eq!(call(push_handle(Value::Int(-3)), 0), -3);
+        // float: ビット列で返る
+        assert_eq!(f64::from_bits(call(push_handle(Value::Float(2.5)), 1) as u64), 2.5);
+        assert!(take_error().is_none());
+        // 宣言と違う型: float に int・int に float・bool・None・文字列
+        for (h, kind, got) in [
+            (push_handle(Value::Int(3)), 1, "int"),
+            (push_handle(Value::Float(3.0)), 0, "float"),
+            (TL_TRUE, 0, "bool"),
+            (TL_NONE, 1, "NoneType"),
+            (ar_make_str(b"x".as_ptr(), 1), 1, "str"),
+        ] {
+            assert_eq!(call(h, kind), 0);
+            let want = if kind == 1 { "float" } else { "int" };
+            assert_eq!(
+                take_error(),
+                Some(format!("TypeError: method 'Body.kinetic' is declared to return '{want}', but the call returned '{got}'"))
+            );
+        }
+        // 先に積まれたエラーは上書きしない
+        set_native_error("ValueError: raised inside the method".to_string());
+        assert_eq!(call(TL_NONE, 1), 0);
+        assert_eq!(take_error().as_deref(), Some("ValueError: raised inside the method"));
+    }
 
     /// 番地を返すコールバック（field 78・8-2）: クラスが生成コードの表のとおりのときだけ番地を返し、セルに覚える。
     /// 表と 1 つでも違うクラス・インスタンスでない値・先に積まれたエラーがあるときは空。

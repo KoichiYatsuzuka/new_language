@@ -1,0 +1,43 @@
+class V:
+    mut x: float
+    mut y: float
+    fn dot(self, o: V) -> float:
+        ...
+    fn grid(self) -> int:
+        ...
+    fn scale(mut self, k: float) -> float:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut mass: float
+    mut hits: int
+    fn kinetic(self) -> float:
+        ...
+    fn cell(self) -> int:
+        ...
+    fn __init__(mut self, pos: V, vel: V, mass: float, hits: int) -> None:
+        ...
+
+
+fn energy(bs: list[Body]) -> float:
+    ...
+
+fn cells(bs: list[Body]) -> str:
+    ...
+
+fn count_fast(bs: list[Body], lim: float) -> int:
+    ...
+
+fn rescale(mut bs: list[Body], k: float) -> float:
+    ...
+
+fn first_kinetic(bs: list[Body]) -> float:
+    ...
+
+fn text(bs: list[Body]) -> str:
+    ...
