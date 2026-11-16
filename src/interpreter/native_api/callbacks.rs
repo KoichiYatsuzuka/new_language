@@ -569,12 +569,67 @@ extern "C" fn ar_assign_attr_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, 
 
 /// `obj.attr = <int>`（IC 付き・field 65・4-2）。値はハンドルにせず `Value::Int` で渡す（中身は field 61 と同じ）。
 extern "C" fn ar_assign_int_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: i64, cell: *mut u64) {
+    if assign_number_ic_hit(obj_h, name_ptr, name_len, Value::Int(v), cell) {
+        return;
+    }
     assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Int(v), cell);
 }
 
 /// `obj.attr = <float>`（IC 付き・field 66・4-2）。
 extern "C" fn ar_assign_float_field_ic(obj_h: i64, name_ptr: *const u8, name_len: i32, v: f64, cell: *mut u64) {
+    if assign_number_ic_hit(obj_h, name_ptr, name_len, Value::Float(v), cell) {
+        return;
+    }
     assign_attr_ic_value(obj_h, name_ptr, name_len, Value::Float(v), cell);
+}
+
+/// 数値の書き込みの IC の命中経路（copy_alloc_speed_plan.md 8-8）。書き込みの IC が当たれば、アリーナとインスタンスを 1 回
+/// 借りたまま検査と格納を済ませて `true`。当たらなければ何もせずに `false`（呼ぶ側が今までの道 `assign_attr_ic_value` へ回る）。
+///
+/// やることは `attr_assign_inner` の命中の枝と同じ（`ic_slot` → `field_mutability_vec` → [`Interpreter::store_field_checked`]。
+/// 不変のフィールド・不変のインスタンス・型の合わない値は同じ文面のエラーになる）。違うのは通り道だけ:
+/// - 受け手をアリーナから写さない（`Rc` の増減が無い）・インタープリタを取り出さない・一時の `AttrCache` を作らない
+/// - 格納の前の複製（`copy_for_store`）を呼ばない: 値は `int` / `float` で、複製しても同じ値
+/// ⚠ 以前は当たっても `attr_assign_ic` を通り、`b.mass = 2.0` が 1 回 42 ns かかっていた（読み出しは 12.5 ns・§0.7）。
+/// ⚠ 値がハンドルの書き込み（field 61）はここを通さない: 格納の前の複製にインタープリタが要る。
+fn assign_number_ic_hit(obj_h: i64, name_ptr: *const u8, name_len: i32, val: Value, cell: *mut u64) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    debug_assert!(matches!(val, Value::Int(_) | Value::Float(_)));
+    if cell.is_null() || obj_h < 3 || name_len <= 0 || name_ptr.is_null() {
+        return false;
+    }
+    // SAFETY: `read_ic_hit` と同じ（生成コードが渡すのは DLL 内の `i64` の大域）
+    let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    if packed == 0 {
+        return false;
+    }
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        // 先に積まれたエラーがあれば何もしない（今までの道も、セルが埋まっていればここで戻る）
+        if st.error.is_some() {
+            return true;
+        }
+        let stored = {
+            let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return false };
+            // 借りられない（誰かが借りたまま）なら今までの道に任せる
+            let Ok(mut inst) = rc.try_borrow_mut() else { return false };
+            let Some((idx, _)) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len)) else {
+                return false;
+            };
+            let is_mutable = inst.class.field_mutability_vec.get(idx).copied().unwrap_or(true);
+            // 複製の診断（`copy_stats`）は今までの道と同じ数え方にする（格納の入口を 1 回・写していない）
+            crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, &val, true);
+            // SAFETY: セルが埋まっている箇所の名前は、埋める前に `native_str` が UTF-8 として検査した（`site_name` と同じ）
+            let name = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+            };
+            crate::interpreter::Interpreter::store_field_checked(&mut inst, idx, name, val, is_mutable)
+        };
+        if let Err(e) = stored {
+            st.error = Some(e);
+        }
+        true
+    })
 }
 
 /// `a.b.c = v` を 1 回で行う（field 74・12-3・D-13）。途中の段は VM の `GetAttr` と同じ IC で読み（命中なら
@@ -2738,6 +2793,80 @@ mod tests {
         assert!(ar_inst_block(h, desc, &mut cell).is_null());
         assert!(take_error().is_some_and(|e| e.contains("earlier")));
         assert!(!ar_inst_block(h, desc, &mut cell).is_null());
+
+        // ── 数値の書き込みの命中経路（8-8）: 当たれば 1 回の借用で検査と格納。エラーの文面は今までと同じ ──
+        {
+            use crate::vm::op::TypeTag;
+            let body = Rc::new(ClassValue {
+                field_index: [("name", 0usize), ("mass", 1), ("hits", 2), ("id", 3)]
+                    .into_iter()
+                    .map(|(n, i)| (n.to_string(), i))
+                    .collect(),
+                field_count: 4,
+                field_mutability_vec: vec![true, true, true, false],
+                field_tags: vec![TypeTag::Str, TypeTag::Float, TypeTag::Int, TypeTag::Int],
+                ..ClassValue::synthetic("Body", alloc_class_id())
+            });
+            let new_body = |flags: u32| {
+                let mut inst = InstanceData::new_empty(body.clone(), 0);
+                assert!(inst.store_field(0, Value::Str("b".into()), true));
+                assert!(inst.store_field(1, Value::Float(1.0), true));
+                assert!(inst.store_field(2, Value::Int(0), true));
+                assert!(inst.store_field(3, Value::Int(9), false));
+                inst.flags_or(flags);
+                push_handle(Value::Instance(Rc::new(RefCell::new(inst))))
+            };
+            let field = |h: i64, idx: usize| match clone_value_at(h) {
+                Value::Instance(rc) => rc.borrow().field_value(idx),
+                other => panic!("{other:?}"),
+            };
+            let cell_for = |idx: usize| {
+                let c = crate::ast::AttrCache::default();
+                c.fill(body.class_id, idx, crate::ast::AttrCache::PUBLIC);
+                c.0.get()
+            };
+            let (mut mass, mut hits, mut id) = (cell_for(1), cell_for(2), cell_for(3));
+            let b = new_body(0);
+            // 当たり: float・int・`int` を `float` のフィールドへ（昇格）
+            ar_assign_float_field_ic(b, "mass".as_ptr(), 4, 2.5, &mut mass);
+            ar_assign_int_field_ic(b, "hits".as_ptr(), 4, 7, &mut hits);
+            assert!(take_error().is_none());
+            assert!(matches!(field(b, 1), Some(Value::Float(f)) if f == 2.5));
+            assert!(matches!(field(b, 2), Some(Value::Int(7))));
+            ar_assign_int_field_ic(b, "mass".as_ptr(), 4, 3, &mut mass);
+            assert!(take_error().is_none());
+            assert!(matches!(field(b, 1), Some(Value::Float(f)) if f == 3.0));
+            // 型の合わない値・`let` のフィールド・不変のインスタンス: 共有の検査（`store_field_checked`）と同じ文面で、値は変わらない
+            ar_assign_float_field_ic(b, "hits".as_ptr(), 4, 1.5, &mut hits);
+            assert_eq!(take_error().as_deref(), Some("TypeError: value does not match declared type of field 'hits'"));
+            assert!(matches!(field(b, 2), Some(Value::Int(7))));
+            ar_assign_int_field_ic(b, "id".as_ptr(), 2, 1, &mut id);
+            assert_eq!(take_error().as_deref(), Some("TypeError: cannot assign to immutable field 'id'"));
+            assert!(matches!(field(b, 3), Some(Value::Int(9))));
+            let frozen = new_body(crate::interpreter::value::INST_IMMUTABLE);
+            ar_assign_float_field_ic(frozen, "mass".as_ptr(), 4, 9.0, &mut mass);
+            // 同じ形のもう 1 つのインスタンスに、共有の検査を直接かけた結果と比べる（エラーも、格納された値も）
+            let twin = new_body(crate::interpreter::value::INST_IMMUTABLE);
+            let direct = {
+                let Value::Instance(rc) = clone_value_at(twin) else { panic!() };
+                let mut inst = rc.borrow_mut();
+                crate::interpreter::Interpreter::store_field_checked(&mut inst, 1, "mass", Value::Float(9.0), true)
+            };
+            assert_eq!(take_error(), direct.err(), "the same error as the shared check");
+            assert!(matches!((field(frozen, 1), field(twin, 1)), (Some(Value::Float(a)), Some(Value::Float(b))) if a == b));
+            // 先に積まれたエラーがあれば書かない（エラーはそのまま）
+            set_native_error("ValueError: earlier".to_string());
+            ar_assign_float_field_ic(b, "mass".as_ptr(), 4, 8.0, &mut mass);
+            assert!(take_error().is_some_and(|e| e.contains("earlier")));
+            assert!(matches!(field(b, 1), Some(Value::Float(f)) if f == 3.0));
+            // 当たらない（別のクラスのセル・空のセル・インスタンスでない）ときは命中経路は何もしない
+            let mut other = cell_for(1) ^ (1u64 << 40);
+            assert!(!assign_number_ic_hit(b, "mass".as_ptr(), 4, Value::Float(8.0), &mut other));
+            let mut empty = 0u64;
+            assert!(!assign_number_ic_hit(b, "mass".as_ptr(), 4, Value::Float(8.0), &mut empty));
+            assert!(!assign_number_ic_hit(TL_NONE, "mass".as_ptr(), 4, Value::Float(8.0), &mut mass));
+            assert!(matches!(field(b, 1), Some(Value::Float(f)) if f == 3.0));
+        }
 
         // ── 入れ子の受け手（field 79・8-7）: 親のフィールドが持っているインスタンスの番地。積まない ──
         let holder = Rc::new(ClassValue {
