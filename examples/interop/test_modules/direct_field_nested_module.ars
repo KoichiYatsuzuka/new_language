@@ -1,0 +1,94 @@
+class P:
+    mut x: float
+    mut n: int
+    fn __init__(mut self, x: float, n: int) -> None:
+        ...
+
+
+class Holder:
+    mut p: P
+    mut q: P
+    mut tag: str
+    fn total(mut self) -> float:
+        ...
+    fn __init__(mut self, p: P, q: P, tag: str) -> None:
+        ...
+
+
+class Outer:
+    mut h: Holder
+    mut k: int
+    fn __init__(mut self, h: Holder, k: int) -> None:
+        ...
+
+
+class Secret:
+public:
+    mut shown: int
+private:
+    mut hidden: int
+public:
+    fn __init__(mut self, shown: int, hidden: int) -> None:
+        ...
+
+
+class Vault:
+    mut s: Secret
+    mut tag: str
+    fn __init__(mut self, s: Secret, tag: str) -> None:
+        ...
+
+
+class Late:
+    mut p: P
+    mut tag: str
+    fn __init__(mut self, v: float) -> None:
+        ...
+    fn __init__(mut self, p: P, tag: str) -> None:
+        ...
+
+
+fn peek(mut l: Late) -> float:
+    ...
+
+fn late_text(v: float) -> str:
+    ...
+
+fn read2(mut h: Holder) -> float:
+    ...
+
+fn read3(mut o: Outer) -> float:
+    ...
+
+fn read_loop(mut hs: list[Holder]) -> float:
+    ...
+
+fn method_read(mut h: Holder) -> float:
+    ...
+
+fn replace_child(mut h: Holder) -> float:
+    ...
+
+fn write_plain(mut h: Holder, v: float, k: int) -> None:
+    ...
+
+fn write3(mut o: Outer, v: float) -> None:
+    ...
+
+fn write_replacing(mut h: Holder) -> float:
+    ...
+
+fn write_reading(mut h: Holder) -> None:
+    ...
+
+fn secret_read(mut v: Vault) -> int:
+    ...
+
+fn secret_write(mut v: Vault) -> None:
+    ...
+
+fn frozen_read(h: Holder) -> float:
+    ...
+
+fn text(mut h: Holder) -> str:
+    ...

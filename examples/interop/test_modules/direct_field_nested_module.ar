@@ -1,0 +1,109 @@
+# direct_field_nested_module.ar — direct_field_nested.ar のコンパイル済みの側（copy_alloc_speed_plan.md 8-7）
+#
+# 入れ子の受け手（`h.p.x` の `h.p`）が全フィールド数値のクラスなら、コンパイル済みコードは `h.p` をアリーナに積まず、
+# 1 回のコールバックで番地を取って読む。代入は、値の評価が何も起こさない式のときだけ同じ形で書く。
+
+class P:
+    mut x: float
+    mut n: int
+
+class Holder:
+    mut p: P
+    mut q: P
+    mut tag: str
+
+    # メソッドの中の `self.p.x`
+    fn total(mut self) -> float:
+        return self.p.x + self.q.x + float(self.p.n + self.q.n)
+
+class Outer:
+    mut h: Holder
+    mut k: int
+
+# private のフィールドを持つクラスが子（直接の道に入らない）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+
+class Vault:
+    mut s: Secret
+    mut tag: str
+
+# 途中の段がまだ書かれていない（`__init__` の途中）
+class Late:
+    mut p: P
+    mut tag: str
+
+    fn __init__(mut self, let v: float) -> None:
+        self.tag = "late"
+        self.p = P(peek(self) + v, 1)
+
+fn peek(mut l: Late) -> float:
+    return l.p.x
+
+fn late_text(let v: float) -> str:
+    try:
+        mut l = Late(v)
+        return "no error: " + str(l.p.x)
+    except Exception as e:
+        return str(e)
+
+fn read2(mut h: Holder) -> float:
+    return h.p.x * 10.0 + h.q.x + float(h.p.n - h.q.n)
+
+fn read3(mut o: Outer) -> float:
+    return o.h.p.x + float(o.h.q.n) + float(o.k)
+
+fn read_loop(mut hs: list[Holder]) -> float:
+    mut s = 0.0
+    for h in hs:
+        s += h.p.x + float(h.q.n)
+    return s
+
+fn method_read(mut h: Holder) -> float:
+    return h.total()
+
+# 親のフィールドを差し替えた後は、新しい子を読む（同じ箇所・IC は当たったまま）
+fn replace_child(mut h: Holder) -> float:
+    mut s = h.p.x
+    h.p = P(40.0, 4)
+    s += h.p.x
+    h.p = h.q
+    return s + h.p.x + float(h.p.n)
+
+# 値の評価が何も起こさない代入（リテラル・変数・数の演算）
+fn write_plain(mut h: Holder, let v: float, let k: int) -> None:
+    h.p.x = 1.5
+    h.p.n = k
+    h.q.x = v * 2.0 + 1.0
+    h.q.n = k + 1
+
+fn write3(mut o: Outer, let v: float) -> None:
+    o.h.p.x = v
+    o.h.q.n = 77
+
+# 値の評価が受け手を差し替える代入: 書く先は、差し替える前の `h.p`（受け手を先に読む）
+fn write_replacing(mut h: Holder) -> float:
+    h.p.x = block->float:
+        h.p = P(60.0, 6)
+        block_return 9.0
+    return h.p.x
+
+# 値が同じ受け手を読む代入・複合代入
+fn write_reading(mut h: Holder) -> None:
+    h.p.x = 0.0 - h.p.x
+    h.q.x += h.p.x
+    h.q.n += 10
+
+fn secret_read(mut v: Vault) -> int:
+    return v.s.shown * 2
+
+fn secret_write(mut v: Vault) -> None:
+    v.s.shown = 21
+
+fn frozen_read(let h: Holder) -> float:
+    return h.p.x + h.q.x
+
+fn text(mut h: Holder) -> str:
+    return str(h.p.x) + "/" + str(h.p.n) + " " + str(h.q.x) + "/" + str(h.q.n)

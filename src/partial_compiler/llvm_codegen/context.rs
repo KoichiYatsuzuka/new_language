@@ -571,6 +571,117 @@ impl<'a> GenCtx<'a> {
         Some(format!("ptr @{g}"))
     }
 
+    /// 数値のフィールド `class.attr` を型 `ty` として番地から直接読めるか（読めるなら slot・位置と幅・読む型と広げ方）。
+    /// 読めるのは: 到達するコードで、`class` がこのモジュールの raw レイアウトのクラスで全フィールドが public、フィールドの
+    /// 幅が `ty` に合う（整数の幅 → `Int`・`float32` / `float` → `Float`。合わなければ今までの道が変換する）。
+    /// ⚠ コードを出す前の判定にも使う（[`Self::emit_direct_read`] はこれが `Some` なら必ず出す）。
+    #[allow(clippy::type_complexity)]
+    pub(super) fn direct_read_plan(
+        &self,
+        class: &str,
+        attr: &str,
+        ty: Ty,
+    ) -> Option<(usize, crate::interpreter::value::RawFieldDesc, (&'static str, Option<&'static str>))> {
+        use crate::interpreter::value::RawWidth;
+        // 終わったブロックの後（到達しないコード）には分岐を出さない
+        if self.terminated {
+            return None;
+        }
+        let rc = self.raw_classes.get(class).filter(|rc| rc.all_public)?;
+        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
+        let desc = rc.layout.fields[idx];
+        // (読む型, 広げ方)。`None` はそのまま
+        let conv = match (desc.width, ty) {
+            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+            (RawWidth::I32, Ty::Int) => ("i32", Some("sext")),
+            (RawWidth::U32, Ty::Int) => ("i32", Some("zext")),
+            (RawWidth::I16, Ty::Int) => ("i16", Some("sext")),
+            (RawWidth::U16, Ty::Int) => ("i16", Some("zext")),
+            (RawWidth::I8, Ty::Int) => ("i8", Some("sext")),
+            (RawWidth::U8, Ty::Int) => ("i8", Some("zext")),
+            (RawWidth::F64, Ty::Float) => ("double", None),
+            (RawWidth::F32, Ty::Float) => ("float", Some("fpext")),
+            _ => return None,
+        };
+        Some((idx, desc, conv))
+    }
+
+    /// `class.attr` が、番地から直接書けるフィールドか（値の型を見る前の判定）: raw レイアウトのクラスで全フィールドが
+    /// public、フィールドが `mut`。
+    pub(super) fn direct_write_field(&self, class: &str, attr: &str) -> bool {
+        !self.terminated
+            && self
+                .raw_classes
+                .get(class)
+                .filter(|rc| rc.all_public)
+                .is_some_and(|rc| rc.fields.iter().any(|(n, m)| n == attr && *m))
+    }
+
+    /// 型 `vt` の値を `class.attr` へ番地から直接書けるか（書けるなら slot・位置と幅・格納する型と値の変換）。
+    /// [`Self::direct_write_field`] に加えて、値の型がフィールドに入ること（`InstanceData::store_field` と同じ規則）。
+    #[allow(clippy::type_complexity)]
+    pub(super) fn direct_write_plan(
+        &self,
+        class: &str,
+        attr: &str,
+        vt: Ty,
+    ) -> Option<(usize, crate::interpreter::value::RawFieldDesc, (&'static str, Option<&'static str>))> {
+        use crate::interpreter::value::RawWidth;
+        if !self.direct_write_field(class, attr) {
+            return None; // `let` のフィールド・private のフィールドを持つクラスなど
+        }
+        let rc = self.raw_classes.get(class)?;
+        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
+        let desc = rc.layout.fields[idx];
+        // (格納する型, 値の変換)。`None` はそのまま
+        let conv = match (desc.width, vt) {
+            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+            (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
+            (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
+            (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
+            (RawWidth::F64, Ty::Float) => ("double", None),
+            (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
+            // `int` → `float` のフィールドの昇格
+            (RawWidth::F64, Ty::Int) => ("double", Some("sitofp i64")),
+            (RawWidth::F32, Ty::Int) => ("float", Some("sitofp i64")),
+            // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）: 今までの道がエラーにする
+            _ => return None,
+        };
+        Some((idx, desc, conv))
+    }
+
+    /// 受け手 `src` の先頭の塊の番地を得るコードを出す。戻り値は (番地, 入れ子の受け手なら親の読み出しの IC のセル)。
+    /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。番地は直後の
+    /// 読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
+    fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
+        match src {
+            BlockSrc::Handle(h) => Some((self.emit_block_ptr(class, h)?, None)),
+            BlockSrc::Field { parent_h, attr } => {
+                let table = self.direct_class_desc(class)?;
+                let class_cell = self.ic_cell();
+                let ic = self.ic_cell();
+                let name = self.str_const(attr.as_bytes());
+                let p = self.call_cb(CB_ATTR_BLOCK, &[
+                    format!("i64 {parent_h}"), name, format!("i32 {}", attr.len()), ic.clone(), table, class_cell,
+                ]);
+                Some((p, Some(ic)))
+            }
+        }
+    }
+
+    /// 直接の道から外れたときに使う受け手のハンドル。入れ子の受け手は、ここで初めて今までの読み出し（`CB_GET_ATTR_IC`）を
+    /// 呼んでアリーナに積む（`CB_ATTR_BLOCK` と**同じ IC のセル**を渡す。外れた最初の 1 回でセルが埋まり、次から当たる）。
+    fn block_src_handle(&mut self, src: BlockSrc<'_>, ic: Option<String>) -> String {
+        match src {
+            BlockSrc::Handle(h) => h.to_string(),
+            BlockSrc::Field { parent_h, attr } => {
+                let cell = ic.unwrap_or_else(|| self.ic_cell());
+                let name = self.str_const(attr.as_bytes());
+                self.call_cb(CB_GET_ATTR_IC, &[format!("i64 {parent_h}"), name, format!("i32 {}", attr.len()), cell])
+            }
+        }
+    }
+
     /// ハンドル `h` の指すインスタンスの先頭の塊の番地（クラスが `class` の表のとおりでなければ空）を得るコードを出す
     /// （copy_alloc_speed_plan.md 8-3・8-5）。
     ///
@@ -681,34 +792,14 @@ impl<'a> GenCtx<'a> {
     /// 4. 番地が空・未初期化なら今までのコールバック（[`Self::emit_attr_read`]。結果もエラーの文面も今までと同じ）
     ///
     /// ⚠ 位置・幅・印の bit は `interpreter::value::block` と `RawLayout` から取る（並びの定義は 1 か所・8-2）。
-    pub(super) fn emit_direct_read(&mut self, class: &str, h: &str, attr: &str, ty: Ty) -> Option<(String, Ty)> {
-        use crate::interpreter::value::{block, RawWidth};
-        // 終わったブロックの後（到達しないコード）には分岐を出さない
-        if self.terminated {
-            return None;
-        }
-        let rc = self.raw_classes.get(class)?;
-        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
-        let desc = rc.layout.fields[idx];
-        // (読む型, 広げ方)。`None` はそのまま
-        let (ity, ext): (&str, Option<&str>) = match (desc.width, ty) {
-            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
-            (RawWidth::I32, Ty::Int) => ("i32", Some("sext")),
-            (RawWidth::U32, Ty::Int) => ("i32", Some("zext")),
-            (RawWidth::I16, Ty::Int) => ("i16", Some("sext")),
-            (RawWidth::U16, Ty::Int) => ("i16", Some("zext")),
-            (RawWidth::I8, Ty::Int) => ("i8", Some("sext")),
-            (RawWidth::U8, Ty::Int) => ("i8", Some("zext")),
-            (RawWidth::F64, Ty::Float) => ("double", None),
-            (RawWidth::F32, Ty::Float) => ("float", Some("fpext")),
-            // フィールドの型と読む型が合わない（`int` のフィールドを `float` として読むなど）: 今までの道が変換する
-            _ => return None,
-        };
+    pub(super) fn emit_direct_read(&mut self, class: &str, src: BlockSrc<'_>, attr: &str, ty: Ty) -> Option<(String, Ty)> {
+        use crate::interpreter::value::block;
+        let (idx, desc, (ity, ext)) = self.direct_read_plan(class, attr, ty)?;
         let offset = block::field_offset(desc.byte_offset);
         let init_bit = block::init_bit(idx);
         let t = llvm_ty(ty);
 
-        let p = self.emit_block_ptr(class, h)?;
+        let (p, ic) = self.emit_block_src(class, src)?;
         let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
         let isnull = self.fresh_reg();
         self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
@@ -739,7 +830,8 @@ impl<'a> GenCtx<'a> {
         self.br(&bdone);
 
         self.start_block(&bslow);
-        let (slow, _) = self.emit_attr_read(h, attr, Some(ty));
+        let h = self.block_src_handle(src, ic);
+        let (slow, _) = self.emit_attr_read(&h, attr, Some(ty));
         self.br(&bdone);
 
         self.start_block(&bdone);
@@ -760,34 +852,12 @@ impl<'a> GenCtx<'a> {
     /// 3. 値を幅に合わせて（切り詰め・変換）書き、初期化の印を立てる
     /// ⚠ 書き込みの IC が当たったときに省いている検査（定数のクラス変数・`static mut`・setter・アクセスの検査）は、
     ///   クラスが表のとおり（全フィールドが public のふつうのフィールド）と確かめてあるので要らない。
-    pub(super) fn emit_direct_write(&mut self, class: &str, h: &str, attr: &str, v: &str, vt: Ty) -> bool {
-        use crate::interpreter::value::{block, RawWidth};
-        if self.terminated {
-            return false;
-        }
-        let Some(rc) = self.raw_classes.get(class) else { return false };
-        let Some(idx) = rc.fields.iter().position(|(n, _)| n == attr) else { return false };
-        if !rc.fields[idx].1 {
-            return false; // `let` のフィールド
-        }
-        let desc = rc.layout.fields[idx];
-        // (格納する型, 値の変換)。`None` はそのまま
-        let (ity, conv): (&str, Option<&str>) = match (desc.width, vt) {
-            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
-            (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
-            (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
-            (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
-            (RawWidth::F64, Ty::Float) => ("double", None),
-            (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
-            // `int` → `float` のフィールドの昇格
-            (RawWidth::F64, Ty::Int) => ("double", Some("sitofp i64")),
-            (RawWidth::F32, Ty::Int) => ("float", Some("sitofp i64")),
-            // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）: 今までの道がエラーにする
-            _ => return false,
-        };
+    pub(super) fn emit_direct_write(&mut self, class: &str, src: BlockSrc<'_>, attr: &str, v: &str, vt: Ty) -> bool {
+        use crate::interpreter::value::block;
+        let Some((idx, desc, (ity, conv))) = self.direct_write_plan(class, attr, vt) else { return false };
         let offset = block::field_offset(desc.byte_offset);
         let init_bit = block::init_bit(idx);
-        let Some(p) = self.emit_block_ptr(class, h) else { return false };
+        let Some((p, ic)) = self.emit_block_src(class, src) else { return false };
         let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
         let isnull = self.fresh_reg();
         self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
@@ -821,7 +891,8 @@ impl<'a> GenCtx<'a> {
         self.br(&bdone);
 
         self.start_block(&bslow);
-        self.emit_attr_assign_typed(h, attr, v, vt);
+        let h = self.block_src_handle(src, ic);
+        self.emit_attr_assign_typed(&h, attr, v, vt);
         self.br(&bdone);
 
         self.start_block(&bdone);

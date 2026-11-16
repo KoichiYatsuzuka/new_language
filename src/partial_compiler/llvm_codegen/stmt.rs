@@ -62,6 +62,10 @@ impl<'a> GenCtx<'a> {
             Stmt::AttrAssign { target, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
                 // `a.b.c = v`（途中に属性が 1 段以上）で値の評価が何も起こさなければ、途中を積まない 1 回の呼び出し（12-3）
+                // `a.b.x = v` で `a.b` が raw レイアウトのクラス・値の評価が何も起こさないなら、`a.b` を積まずに番地へ書く（8-7）
+                if trait_name.is_none() && self.emit_nested_field_assign(object, attr, value) {
+                    return;
+                }
                 if trait_name.is_none() && self.emit_attr_path_assign(target, value) {
                     return;
                 }
@@ -588,6 +592,36 @@ impl<'a> GenCtx<'a> {
         self.call_cb(CB_ASSIGN_PATH_IC, &[
             format!("i64 {root}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {kind}"), format!("i64 {bits}"),
         ]);
+        true
+    }
+
+    /// `a.b.x = v`（受け手 `object` が属性 `a.b`）を、`a.b` をアリーナに積まずに番地へ書く（copy_alloc_speed_plan.md 8-7・
+    /// D-13 ⑥）。出したら `true`。当てはまらなければ何も出さずに `false`。
+    ///
+    /// 当てはまるのは、`a.b` のクラスがこのモジュールの raw レイアウトのクラスで `x` が `mut` の数値のフィールド、かつ
+    /// **値の評価が何も起こさない**とき（[`Self::effect_free_value`]）。評価の順は `a` → 値 → `a.b` の読み出し → 書き込みで、
+    /// `emit_attr_path_assign`（12-3）と同じ（VM は `a.b` を値より先に読むが、値の評価が何も起こさないので見分けられない）。
+    /// ⚠ 値の評価が何かを起こしうる式（呼び出し・属性の読み出しを含む）は対象外: `a.b` を値より先に読んでアリーナに
+    ///   積む今までの順でないと、値の評価が `a.b` を差し替えたときに書く先が変わる（そちらは `emit_field_assign` が
+    ///   ハンドルから番地を取って書く・8-4）。
+    fn emit_nested_field_assign(&mut self, object: &Expr, attr: &str, value: &Expr) -> bool {
+        let Expr::Attr { object: parent, attr: pattr, .. } = object else { return false };
+        if !self.effect_free_value(value) {
+            return false;
+        }
+        let Some(class) = self.receiver_class(object).map(|r| r.class) else { return false };
+        if !self.direct_write_field(&class, attr) {
+            return false;
+        }
+        let (pv, pt) = self.gen_expr(parent);
+        let ph = self.to_handle(&pv, pt);
+        let (val, vt) = self.gen_expr(value);
+        let src = BlockSrc::Field { parent_h: &ph, attr: pattr };
+        if !self.emit_direct_write(&class, src, attr, &val, vt) {
+            // 値の型がフィールドに入らない（`float` を整数のフィールドへ など）: 今までの道（読んでから IC 付きで書く）
+            let (oh, _) = self.emit_attr_read(&ph, pattr, None);
+            self.emit_attr_assign_typed(&oh, attr, &val, vt);
+        }
         true
     }
 

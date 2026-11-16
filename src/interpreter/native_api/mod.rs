@@ -739,6 +739,19 @@ pub struct ArCallbacks {
     /// （生成コードは今までのコールバックの道を使う）。確かめたクラスの番号はセルに覚える（0 = まだ）。
     /// 番地は、そのハンドルの欄が値を持っている間だけ使える（塊はインスタンスが生きている間動かない）。
     pub inst_block: extern "C" fn(i64, *const crate::interpreter::value::DirectClassDesc, *mut u64) -> *mut u64,
+    /// 入れ子の受け手（`a.b.x` の `a.b`）の先頭の塊の番地（field 79・8-7）。(親のハンドル, 属性名, 長さ, 読み出しの IC のセル,
+    /// 子のクラスの表, 子のクラスのセル) を取る。親の読み出しの IC が当たり、その slot が持っている値が表のとおりのクラスの
+    /// インスタンスのときだけ、子の番地を返す（**アリーナには積まない**）。ほかは空で、生成コードは今までの
+    /// 読み出し（field 58・同じ IC のセル）へ回る。番地は、次にコールバックを呼ぶまでの間だけ使える（子を生かしているのは
+    /// 親のフィールド）。
+    pub attr_block: extern "C" fn(
+        i64,
+        *const u8,
+        i32,
+        *mut u64,
+        *const crate::interpreter::value::DirectClassDesc,
+        *mut u64,
+    ) -> *mut u64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────

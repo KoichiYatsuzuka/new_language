@@ -2534,7 +2534,46 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     copy_fresh: ar_copy_fresh,
     borrow_or_copy: ar_borrow_or_copy,
     inst_block: ar_inst_block,
+    attr_block: ar_attr_block,
 };
+
+/// field 79（8-7）: 親の `name` のフィールドが持っているインスタンスの先頭の塊の番地。アリーナには積まない。
+///
+/// 返すのは、読み出しの IC が当たり（セルが空・クラスが違う・public でないなら当たらない）、その slot が**今持っている値**が
+/// 表のとおりのクラスのインスタンスのときだけ。外れたときにここで読み直さない: 外れた道（`get_attr_val`）は一時値を返すことが
+/// あり（ディスクリプタ・`import[rs]` のフィールド）、積まずに番地だけ返すと、持ち主のいない塊を指す。外れたら空を返し、
+/// 生成コードが同じセルで field 58（`ar_get_attr_ic`）を呼ぶ（そちらがセルを埋め、値をアリーナに積む）。
+extern "C" fn ar_attr_block(
+    parent_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    ic_cell: *mut u64,
+    desc: *const crate::interpreter::value::DirectClassDesc,
+    class_cell: *mut u64,
+) -> *mut u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if parent_h < 3 || ic_cell.is_null() || class_cell.is_null() || desc.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（`read_ic_hit` と同じ）
+    let packed = unsafe { &*(ic_cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    STATE.with(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return std::ptr::null_mut();
+        }
+        let Some(Value::Instance(rc)) = st.arena.get(parent_h as usize) else { return std::ptr::null_mut() };
+        let inst = rc.borrow();
+        let Some((idx, _)) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len)) else {
+            return std::ptr::null_mut();
+        };
+        // インスタンスを持てるのは raw レイアウトでないクラスの slot だけ（raw レイアウトのフィールドは数値）
+        match inst.boxed_fields.get(idx) {
+            Some(Some((Value::Instance(child), _))) => instance_block(child, desc, class_cell),
+            _ => std::ptr::null_mut(),
+        }
+    })
+}
 
 // ── 番地から直接読み書きする道（field 78・copy_alloc_speed_plan.md 8-2・D-13） ──────────────
 
@@ -2699,6 +2738,39 @@ mod tests {
         assert!(ar_inst_block(h, desc, &mut cell).is_null());
         assert!(take_error().is_some_and(|e| e.contains("earlier")));
         assert!(!ar_inst_block(h, desc, &mut cell).is_null());
+
+        // ── 入れ子の受け手（field 79・8-7）: 親のフィールドが持っているインスタンスの番地。積まない ──
+        let holder = Rc::new(ClassValue {
+            field_index: [("p".to_string(), 0usize), ("tag".to_string(), 1)].into_iter().collect(),
+            field_count: 2,
+            field_mutability_vec: vec![true, true],
+            ..ClassValue::synthetic("Holder", alloc_class_id())
+        });
+        let child = match clone_value_at(new_inst(&vec2)) {
+            Value::Instance(rc) => rc,
+            other => panic!("{other:?}"),
+        };
+        let mut hinst = InstanceData::new_empty(holder.clone(), 0);
+        assert!(hinst.store_field(0, Value::Instance(child.clone()), true));
+        assert!(hinst.store_field(1, Value::Int(3), true));
+        let ph = push_handle(Value::Instance(Rc::new(RefCell::new(hinst))));
+        let mut ic = 0u64;
+        let mut ccell = 0u64;
+        // 読み出しの IC のセルが空のうちは空（生成コードが field 58 で読んでセルを埋める）
+        assert!(ar_attr_block(ph, "p".as_ptr(), 1, &mut ic, desc, &mut ccell).is_null());
+        let cache = crate::ast::AttrCache::default();
+        cache.fill(holder.class_id, 0, crate::ast::AttrCache::PUBLIC);
+        ic = cache.0.get();
+        let arena_len = STATE.with(|s| s.borrow().arena.len());
+        let cp = ar_attr_block(ph, "p".as_ptr(), 1, &mut ic, desc, &mut ccell);
+        assert_eq!(cp, unsafe { (*child.as_ptr()).raw.as_mut_ptr() }, "the block of the instance the field holds");
+        assert_eq!(STATE.with(|s| s.borrow().arena.len()), arena_len, "nothing is pushed");
+        // slot が持っている値がインスタンスでない・親が別のクラス（IC が外れる）・親がインスタンスでない
+        cache.fill(holder.class_id, 1, crate::ast::AttrCache::PUBLIC);
+        let mut ic_tag = cache.0.get();
+        assert!(ar_attr_block(ph, "tag".as_ptr(), 3, &mut ic_tag, desc, &mut ccell).is_null());
+        assert!(ar_attr_block(h, "p".as_ptr(), 1, &mut ic, desc, &mut ccell).is_null());
+        assert!(ar_attr_block(TL_NONE, "p".as_ptr(), 1, &mut ic, desc, &mut ccell).is_null());
     }
 
     /// 正しい UTF-8 は `str` になる（日本語を含む）。

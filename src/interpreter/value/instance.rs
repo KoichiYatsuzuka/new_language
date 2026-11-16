@@ -545,6 +545,9 @@ pub struct StaticRawClass {
     pub layout: RawLayout,
     /// インスタンスのフィールド（宣言順 = slot 順）: (名前, `mut` か)。
     pub fields: Vec<(String, bool)>,
+    /// インスタンスのフィールドが全部 public か。そうでないクラスは番地を返すコールバックが必ず空を返すので
+    /// （[`ClassValue::matches_direct_desc`]）、生成コードは直接の道を出さない（無駄なコールバックを呼ばない・8-7）。
+    pub all_public: bool,
 }
 
 /// クラスの宣言（`Stmt::ClassDef` の `bases` と `body`）から raw レイアウトを求める。持たないクラスは `None`。
@@ -556,17 +559,19 @@ pub fn static_class_layout(bases: &[String], body: &[crate::ast::Stmt]) -> Optio
     use crate::ast::{FieldKind, Stmt};
     let mut own: Vec<(String, String)> = Vec::new();
     let mut fields: Vec<(String, bool)> = Vec::new();
+    let mut all_public = true;
     for st in body {
-        if let Stmt::Field { name, kind, type_ann, .. } = st {
+        if let Stmt::Field { name, kind, type_ann, access, .. } = st {
             if matches!(kind, FieldKind::Const | FieldKind::StaticMut) {
                 continue;
             }
+            all_public &= *access == crate::ast::Accessibility::Public;
             own.push((name.clone(), type_ann.clone()));
             fields.push((name.clone(), *kind == FieldKind::Mut));
         }
     }
     let layout = RawLayout::for_class(bases.is_empty(), &own, own.len())?;
-    Some(StaticRawClass { layout, fields })
+    Some(StaticRawClass { layout, fields, all_public })
 }
 
 /// 生成コードが DLL の中に持つ「このクラスだと思って読み書きする」表の先頭（8-2・D-13 ②）。
