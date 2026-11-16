@@ -69,3 +69,8 @@ pub fn try_dispatch_native_method_evaled(
 ) -> Option<Result<Value, String>> {
     None
 }
+
+/// `native_api::native_call_active` と同じ。評価コアではコンパイル済みコードを呼ばないので常に `false`。
+pub fn native_call_active() -> bool {
+    false
+}

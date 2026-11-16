@@ -2115,6 +2115,10 @@ const CTX_UNCHANGED: i64 = -1;
 const CTX_NONE: i64 = 0;
 
 extern "C" fn ar_enter_method_ctx(obj_h: i64) -> i64 {
+    // private / protected のメンバーを持つクラスが 1 つも無い間は、文脈を読む者がいないので切り替えない（7-3）
+    if !crate::interpreter::value::restricted_members_exist() {
+        return CTX_UNCHANGED;
+    }
     let (obj, interp_ptr) = STATE.with(|s| {
         let st = s.borrow();
         (st.clone_value(obj_h), st.interp_ptr)

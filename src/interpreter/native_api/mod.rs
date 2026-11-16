@@ -243,6 +243,11 @@ thread_local! {
 
 // ── Public API for the interpreter ──────────────────────────────────────────
 
+/// このスレッドでコンパイル済みコードの呼び出しの途中か（copy_alloc_speed_plan.md 7-3 の検査）。
+pub fn native_call_active() -> bool {
+    STATE.with(|s| s.borrow().call_depth > 0)
+}
+
 /// ネイティブ関数呼び出しを開始する。最外呼び出し（深さ0）のとき `true` を返す。
 /// 最外レベルではアリーナとイテレータテーブルの保存点を記録し `interp_ptr` をセットする。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {

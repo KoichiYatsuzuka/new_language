@@ -777,6 +777,16 @@ impl Interpreter {
         let raw_layout =
             crate::interpreter::value::RawLayout::for_class(bases.is_empty(), &own_field_types, field_count).map(Rc::new);
 
+        // private / protected のメンバーを持つ最初のクラスなら、コンパイル済みコードが文脈の切り替えを省くのをやめる
+        // （copy_alloc_speed_plan.md 7-3）。⚠ 省いた呼び出しの途中で立つと、その呼び出しの残りが違う文脈で走る。
+        // クラスはモジュールの最上位にしか書けない（10-16）ので起きないはずだが、起きたら黙って続けずに止める。
+        if crate::interpreter::value::note_class_access(field_access.is_empty(), method_access.is_empty())
+            && crate::interpreter::native_api::native_call_active()
+        {
+            return Err(format!(
+                "RuntimeError: class '{name}' with private / protected members was defined during a call into compiled code"
+            ));
+        }
         let cls = Rc::new(crate::interpreter::ClassValue {
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。
