@@ -790,6 +790,8 @@ impl Interpreter {
                 "RuntimeError: class '{name}' with private / protected members was defined during a call into compiled code"
             ));
         }
+        // `__copy__` を持つクラスなら、コンパイル済みコードが値を見ずに複製を省くのをやめる（7-7）
+        crate::interpreter::value::note_class_copy_hook(methods.contains_key("__copy__"));
         let cls = Rc::new(crate::interpreter::ClassValue {
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。

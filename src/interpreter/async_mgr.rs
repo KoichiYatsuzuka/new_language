@@ -48,7 +48,7 @@ pub enum AsyncStatus {
 /// 見え方を守る役目を持つ（同 D-7）。読むだけの関数へ渡すときにこの複製を省くのは、**この数が 0 のときだけ**
 /// （[`no_live_tasks`]）。1 つでも走っていれば今までどおり複製する。
 /// ⚠ Arrow のコードを別のスレッドで走らせる所はここ（`try_schedule`）だけ。増やしたら、ここで数えること。
-static LIVE_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static LIVE_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// 走っているタスクのスレッドが 1 つも無いか。
 /// ⚠ タスクのスレッドの中から呼べば、自分が数に入っているので必ず `false`（タスクの中では省かない）。

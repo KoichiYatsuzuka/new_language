@@ -793,7 +793,18 @@ pub struct ArCallbacks {
     /// 宣言の型と違う値（`int` に `float`・`float` に `int`・数でない値）は `TypeError` にして 0 を返す。
     /// ガード付きのメソッド呼び出しで、ガードが外れて名前で呼んだときの結果だけに使う（利用者の決定 2026-11-17）。
     pub expect_ret: extern "C" fn(i64, i32, *const u8, i32) -> i64,
+
+    // ── Data the generated code reads directly (fields 81-82・copy_alloc_speed_plan.md 7-7) ──
+    /// 走っているタスクのスレッドの数（`async_mgr::LIVE_TASKS`）の番地。⚠ 関数ではなくデータの番地。
+    pub live_tasks: *const std::sync::atomic::AtomicUsize,
+    /// `__copy__` を持つクラスが定義されたかの印（`value::COPY_HOOKS`）の番地。⚠ 関数ではなくデータの番地。
+    /// 生成コードはこの 2 つと箇所ごとのセルを読み、読むだけの関数へ `mut` の値を渡すときに、そろえば `CB_BORROW_OR_COPY`
+    /// を呼ばずに同じハンドルを使う。
+    pub copy_hooks: *const std::sync::atomic::AtomicU8,
 }
+
+// SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。
+unsafe impl Sync for ArCallbacks {}
 
 // ── Callback implementations ─────────────────────────────────────────────────
 

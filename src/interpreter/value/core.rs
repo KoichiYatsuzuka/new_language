@@ -40,6 +40,22 @@ pub fn note_class_access(field_access_empty: bool, method_access_empty: bool) ->
     !RESTRICTED_MEMBERS.swap(true, Ordering::Relaxed)
 }
 
+/// `__copy__` を持つ Arrow のクラスが、このプロセスで 1 つでも定義されたか（copy_alloc_speed_plan.md 7-7）。
+///
+/// 読むだけの関数の `let` 仮引数へ `mut` の値を写さずに渡せるのは、値のクラスが `__copy__` を持たないとき
+/// （`Interpreter::has_copy_hook`・持つなら今までどおり `__copy__` を呼ぶ）。コンパイル済みコードはこの印が立っていない
+/// 間だけ、値を見ずに写さないと決める（印が立っていればコールバックが値ごとに確かめる）。
+/// ⚠ 立てるのはクラスの定義（`exec_class_def`）の 1 か所。一度立てたら戻さない。生成コードは番地を
+///   `ArCallbacks::copy_hooks` から読む。
+pub static COPY_HOOKS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// クラスを定義したときに呼ぶ: `__copy__` を持てば [`COPY_HOOKS`] を立てる。
+pub fn note_class_copy_hook(has_copy: bool) {
+    if has_copy {
+        COPY_HOOKS.store(1, Ordering::Relaxed);
+    }
+}
+
 /// 新しい一意なクラス ID を発行する。クラス定義時に一度だけ呼ぶ。
 #[inline]
 pub fn alloc_class_id() -> u32 {

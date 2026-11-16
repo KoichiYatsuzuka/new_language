@@ -2595,6 +2595,8 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     inst_block: ar_inst_block,
     attr_block: ar_attr_block,
     expect_ret: ar_expect_ret,
+    live_tasks: &crate::interpreter::async_mgr::LIVE_TASKS,
+    copy_hooks: &crate::interpreter::value::COPY_HOOKS,
 };
 
 /// field 80（7-5）: ガードが外れて名前で呼んだメソッドの戻り値を、宣言の型どおりに開ける。

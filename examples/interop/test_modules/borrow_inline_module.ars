@@ -1,0 +1,32 @@
+class V:
+    mut x: int
+    mut y: int
+    fn mix(mut self, o: V) -> None:
+        ...
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut n: int
+    fn energy(self) -> int:
+        ...
+    fn step(mut self) -> None:
+        ...
+    fn __init__(mut self, pos: V, vel: V, n: int) -> None:
+        ...
+
+
+fn read_v(v: V) -> int:
+    ...
+
+fn sum(mut b: Body) -> int:
+    ...
+
+fn run_energy(mut b: Body, k: int) -> int:
+    ...
+
+fn run_step(mut b: Body, k: int) -> int:
+    ...

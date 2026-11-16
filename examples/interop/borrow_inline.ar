@@ -1,0 +1,63 @@
+# borrow_inline.ar — 読むだけの関数へ mut の値を渡す判定を、コンパイル済みコードが自分で行う（copy_alloc_speed_plan.md 7-7）
+#
+# 箇所ごとのセルが「読むだけ」と覚えた後、走っているタスクが無く、（`let` 仮引数なら）`__copy__` を持つクラスが 1 つも
+# 無ければ、コンパイル済みコードはコールバックを呼ばずに同じハンドルを渡す。次の場合も今までと同じ値になること:
+#   1. 前半: `__copy__` を持つクラスがまだ無い（コールバックを呼ばない）
+#   2. 後半: `__copy__` を持つクラスを読み込んだ後（`let` 仮引数はコールバックが値ごとに確かめ、`__copy__` を呼ぶ）
+#   3. タスクが走っている間は複製する（readonly_callee_native.ar と同じ形）
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/borrow_inline_module.ar
+#   2. cargo run --release -- --compile examples/interop/test_modules/borrow_inline_hook_module.ar
+#   3. cargo run --release -- examples/interop/borrow_inline.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.borrow_inline_module as m
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("borrow_inline: " + name + " = " + str(got) + ", expected " + str(want))
+
+# ── 前半 ──
+mut b = m.Body(m.V(1, 2), m.V(3, 4), 5)
+expect("let param", m.sum(b), 12 + 34)
+expect("let param again", m.sum(b), 46)
+expect("let self", m.run_energy(b, 3), 3 * (9 + 16 + 5))
+# pos を 3 回 mix: (1,2) → (5,5) → (9,8) → (13,11)
+expect("disjoint param", m.run_step(b, 3), 13011)
+expect("caller sees the writes", b.pos.x * 100 + b.vel.x, 1303)
+
+# ── 後半: `__copy__` を持つクラスを読み込む ──
+import test_modules.borrow_inline_hook_module as h
+
+mut c = h.Counted(1)
+# `peek(let c)` は読むだけだが、`__copy__` を持つクラスの値は今までどおり `__copy__` で写す（2 回）
+expect("copy hook result", h.peek_twice(c), 202)
+expect("copy hook ran", h.Counted.copies, 2)
+# 前半の関数も同じ値のまま（今度はコールバックが確かめる）
+mut b2 = m.Body(m.V(1, 2), m.V(3, 4), 5)
+expect("let param after hooks", m.sum(b2), 46)
+expect("let self after hooks", m.run_energy(b2, 2), 60)
+expect("disjoint param after hooks", m.run_step(b2, 3), 13011)
+
+# ── タスクが走っている間は複製する ──
+mut shared = m.Body(m.V(0, 0), m.V(0, 0), 0)
+mut mng = AsyncManager(num_thread=1)
+mng <- async->int:
+    mut i = 0
+    while i < 2000:
+        shared.n = shared.n + 1
+        i += 1
+    block_return i
+mut seen_bad = 0
+mut j = 0
+while j < 200:
+    let e = m.run_energy(shared, 1)
+    if e < 0 or e > 2000:
+        seen_bad += 1
+    j += 1
+mng.wait_for_finish()
+expect("task finished", mng.results[0], 2000)
+expect("values seen while the task ran", seen_bad, 0)
+expect("after the task", m.run_energy(shared, 1), 2000)
+print("borrow_inline: ok")

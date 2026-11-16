@@ -154,13 +154,61 @@ impl<'a> GenCtx<'a> {
         let cell = self.ic_cell();
         // 種類: 1 = `let self`・2 = 受け手やほかの引数と重ならない `let` 仮引数（4-6）・0 = ほかの `let` 仮引数
         let kind = if is_self { 1 } else if disjoint { 2 } else { 0 };
-        self.call_cb(CB_BORROW_OR_COPY, &[
-            format!("i64 {h}"),
-            format!("i32 {kind}"),
-            name_ptr,
-            format!("i32 {}", name.len()),
-            cell,
-        ])
+        // 7-7: セルが「読むだけ」（1）と覚えていて、走っているタスクが無く、（仮引数なら）`__copy__` を持つクラスが 1 つも
+        // 無ければ、コールバックを呼ばずに同じハンドルを使う（コールバックと同じ判定・値を見ないので `__copy__` の印は
+        // プロセス全体で見る）。ほかは今までどおりコールバックが判定し、必要なら複製する（セルを埋めるのもこちら）。
+        if self.terminated {
+            return self.call_cb(CB_BORROW_OR_COPY, &[
+                format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
+            ]);
+        }
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let cell_ref = cell.trim_start_matches("ptr ").to_string();
+        let known = self.fresh_reg();
+        self.ec(&format!("{known} = load atomic i64, ptr {cell_ref} monotonic, align 8"));
+        let is_ro = self.fresh_reg();
+        self.ec(&format!("{is_ro} = icmp eq i64 {known}, 1"));
+        self.br_cond(&is_ro, &bchk, &bslow);
+        self.start_block(&bchk);
+        let lt = self.load_cb_data("i64", CB_LIVE_TASKS);
+        let no_tasks = self.fresh_reg();
+        self.ec(&format!("{no_tasks} = icmp eq i64 {lt}, 0"));
+        let ok = if is_self {
+            no_tasks
+        } else {
+            let ch = self.load_cb_data("i8", CB_COPY_HOOKS);
+            let no_hooks = self.fresh_reg();
+            self.ec(&format!("{no_hooks} = icmp eq i8 {ch}, 0"));
+            let both = self.fresh_reg();
+            self.ec(&format!("{both} = and i1 {no_tasks}, {no_hooks}"));
+            both
+        };
+        self.br_cond(&ok, &bfast, &bslow);
+        self.start_block(&bfast);
+        self.br(&bdone);
+        self.start_block(&bslow);
+        let copied = self.call_cb(CB_BORROW_OR_COPY, &[
+            format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
+        ]);
+        self.br(&bdone);
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi i64 [ {h}, %{bfast} ], [ {copied}, %{bslow} ]"));
+        r
+    }
+
+    /// コールバックの表の欄 `field` にあるデータの番地から、型 `ty` の値を原子的に読む（7-7・`CB_LIVE_TASKS` など）。
+    fn load_cb_data(&mut self, ty: &str, field: usize) -> String {
+        let cb = self.fresh_reg();
+        self.ec(&format!("{cb} = load ptr, ptr @CB"));
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds %ArCallbacks, ptr {cb}, i32 0, i32 {field}"));
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {fp}"));
+        let v = self.fresh_reg();
+        let align = if ty == "i64" { 8 } else { 1 };
+        self.ec(&format!("{v} = load atomic {ty}, ptr {p} monotonic, align {align}"));
+        v
     }
 
     /// `arg` が、`others`（受け手とほかの引数）のどれとも**重ならない**と言えるか（copy_alloc_speed_plan.md 4-6）。
