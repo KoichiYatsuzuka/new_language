@@ -98,13 +98,22 @@ impl<'a> GenCtx<'a> {
             }
             // 4-4: 本体が `p.f` の読みでしか `p` を使わないなら、参照するフィールドだけを読む。
             let uses = param_field_uses(body, &p.name);
-            for (field_name, field_ty) in &fields {
-                if uses.as_ref().is_some_and(|u| !u.contains(field_name)) {
-                    continue;
-                }
-                let r = match field_ty {
-                    Ty::Float | Ty::Int => self.emit_attr_read(&format!("%_h{i}"), field_name, Some(*field_ty)).0,
-                    _ => continue,
+            let wanted: Vec<&(String, Ty)> = fields
+                .iter()
+                .filter(|(n, t)| matches!(t, Ty::Float | Ty::Int) && !uses.as_ref().is_some_and(|u| !u.contains(n)))
+                .collect();
+            // 8-9: 受け手が raw レイアウトのクラスなら、番地を 1 回だけ取ってフィールドは生成コードが読む
+            // （以前はフィールド 1 つにつきコールバック 1 回。`dot(let self, let o)` は 6 回）。番地が空・未初期化・
+            // 幅の合わないフィールドは今までのコールバック（`emit_direct_read` の外れの道・`emit_attr_read`）。
+            let handle = format!("%_h{i}");
+            let block = if wanted.is_empty() { None } else { self.emit_inst_block_once(&class_name, &handle) };
+            for (field_name, field_ty) in wanted {
+                let direct = block.as_deref().and_then(|p| {
+                    self.emit_direct_read(&class_name, BlockSrc::Block { p, h: &handle }, field_name, *field_ty)
+                });
+                let r = match direct {
+                    Some((r, _)) => r,
+                    None => self.emit_attr_read(&handle, field_name, Some(*field_ty)).0,
                 };
                 let al = format!("%_prf_{}_{}", p.name, field_name);
                 let tstr = llvm_ty(*field_ty);

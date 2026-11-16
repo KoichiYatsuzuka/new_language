@@ -650,12 +650,27 @@ impl<'a> GenCtx<'a> {
         Some((idx, desc, conv))
     }
 
+    /// ハンドル `h` の先頭の塊の番地を 1 回だけ取るコードを出す（変数ごとの置き場は使わない）。同じ受け手のフィールドを
+    /// 続けて読む所（関数の入口の先読み・8-9）が、返った番地を [`BlockSrc::Block`] で使い回す。`class` が直接読める
+    /// クラス（このモジュールの raw レイアウトのクラスで全フィールドが public）でなければ何も出さずに `None`。
+    /// ⚠ 番地を使い回してよいのは、その間 `h` の欄が同じインスタンスを持っているときだけ（仮引数のハンドルは呼ぶ側の欄で、
+    ///   関数の入口では動かない）。
+    pub(super) fn emit_inst_block_once(&mut self, class: &str, h: &str) -> Option<String> {
+        if self.terminated || !self.raw_classes.get(class).is_some_and(|rc| rc.all_public) {
+            return None;
+        }
+        let table = self.direct_class_desc(class)?;
+        let cell = self.ic_cell();
+        Some(self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]))
+    }
+
     /// 受け手 `src` の先頭の塊の番地を得るコードを出す。戻り値は (番地, 入れ子の受け手なら親の読み出しの IC のセル)。
     /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。番地は直後の
     /// 読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
     fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
         match src {
             BlockSrc::Handle(h) => Some((self.emit_block_ptr(class, h)?, None)),
+            BlockSrc::Block { p, .. } => Some((p.to_string(), None)),
             BlockSrc::Field { parent_h, attr } => {
                 let table = self.direct_class_desc(class)?;
                 let class_cell = self.ic_cell();
@@ -673,7 +688,7 @@ impl<'a> GenCtx<'a> {
     /// 呼んでアリーナに積む（`CB_ATTR_BLOCK` と**同じ IC のセル**を渡す。外れた最初の 1 回でセルが埋まり、次から当たる）。
     fn block_src_handle(&mut self, src: BlockSrc<'_>, ic: Option<String>) -> String {
         match src {
-            BlockSrc::Handle(h) => h.to_string(),
+            BlockSrc::Handle(h) | BlockSrc::Block { h, .. } => h.to_string(),
             BlockSrc::Field { parent_h, attr } => {
                 let cell = ic.unwrap_or_else(|| self.ic_cell());
                 let name = self.str_const(attr.as_bytes());

@@ -410,6 +410,9 @@ enum BlockSrc<'s> {
     Handle(&'s str),
     /// 親のハンドルと属性名（`a.b.x` の `a` と `b`）。子をアリーナに積まずに番地だけ取る（`CB_ATTR_BLOCK`・8-7）
     Field { parent_h: &'s str, attr: &'s str },
+    /// もう取ってある番地 `p`（空のことがある）と、そのハンドル `h`。同じ受け手のフィールドを続けて読むとき
+    /// （関数の入口の先読み・8-9）に、番地を 1 回だけ取って使い回す。
+    Block { p: &'s str, h: &'s str },
 }
 
 /// Symbol name for a class method export: `{ClassName}__{method_name}`.
