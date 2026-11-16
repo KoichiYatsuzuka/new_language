@@ -1,6 +1,6 @@
 # analyze.py — sampler の折りたたみ形式（根;...;葉 回数）を集計する（scripts/prof_stacks.ps1 が呼ぶ）
 #
-#   python analyze.py <file.folded> [--top N] [--incl 名前,名前] [--under 名前] [--callers 名前]
+#   python analyze.py <file.folded> [--top N] [--incl 名前,名前] [--under 名前] [--callers 名前] [--heap-owners 1]
 #
 # 見るのはインタープリタのスレッド（`interpreter_main` を含むスタック）だけ。出すもの:
 #   1. from generated code (inclusive) … いちばん内側の生成コード（`<module>_tl.dll`）のフレームの次＝呼んだコールバックごとの
@@ -8,6 +8,8 @@
 #   2. self time                       … 葉の関数ごとの時間
 #   3. inclusive (name contains)       … `--incl` の文字列を名前に含む関数がスタックにある標本
 #   4. callers of <名前>               … `--callers` の関数（いちばん外の出現）を直接呼んだ関数
+#   5. heap by owner                   … `--heap-owners 1` のとき。葉がヒープの確保・解放の標本を、葉からさかのぼって最初に
+#      出てくる Arrow の関数（`drop<..>` は解放の持ち主として数える）ごとに分ける（どこが確保・解放しているか・6-1）
 # `--under 名前` を付けると、その関数（いちばん内側の出現）より下だけを数える。
 #
 # ⚠ 記号は exe の隣の PDB から引く。デバッグ情報なしでビルドした exe は内部の関数に記号が無く、近くの関数の名前に
@@ -90,9 +92,9 @@ def show(title, counter, total, top):
 def main():
     args = sys.argv[1:]
     if not args:
-        print('usage: analyze.py <file.folded> [--top N] [--incl a,b] [--under name] [--callers name]')
+        print('usage: analyze.py <file.folded> [--top N] [--incl a,b] [--under name] [--callers name] [--heap-owners 1]')
         return 2
-    path, top, incl, under, callers = args[0], 25, [], None, None
+    path, top, incl, under, callers, heap_owners = args[0], 25, [], None, None, False
     i = 1
     while i < len(args):
         if args[i] == '--top':
@@ -103,6 +105,8 @@ def main():
             under = args[i + 1]
         elif args[i] == '--callers':
             callers = args[i + 1]
+        elif args[i] == '--heap-owners':
+            heap_owners = args[i + 1] not in ('0', '')
         else:
             print(f'unknown option: {args[i]}')
             return 2
@@ -145,6 +149,24 @@ def main():
     # ヒープの確保・解放（葉が OS のヒープか Rust の確保の入口）
     heap = sum(c for frames, c in stacks if is_heap(*frames[-1]))
     print(f'\n-- heap (self time in ntdll / kernel32 / allocator functions)\n{100 * heap / total:6.1f}%  {heap:6d}')
+
+    if heap_owners:
+        # 葉からさかのぼって、確保の入口でも標準ライブラリでもない最初の関数（exe の中の `i::` / `arrow::` か、生成コード）
+        owners = Counter()
+        for frames, c in stacks:
+            if not is_heap(*frames[-1]):
+                continue
+            owner = '(no Arrow frame)'
+            for mod, name in reversed(frames):
+                if is_generated(mod):
+                    owner = '(generated code)'
+                    break
+                if mod.lower() == 'arrow.exe' and not is_heap(mod, name) and (
+                        name.startswith('i::') or name.startswith('arrow::') or name.startswith('drop<')):
+                    owner = name
+                    break
+            owners[owner] += c
+        show('heap by owner (share of all samples)', owners, total, top)
 
     if callers:
         cc = Counter()

@@ -11,6 +11,7 @@
 #   * self time                       … 葉の関数ごとの時間
 #   * inclusive (name contains)       … -Incl の関数がスタックにある標本の割合
 #   * heap                            … OS のヒープと確保の入口が葉の標本の割合
+#   * heap by owner                   … 上の標本を、確保・解放を出している Arrow の関数ごとに分けたもの（copy_alloc_speed_plan.md 6-1）
 #
 # 仕組み:
 #   * プロファイラ（scripts/stack_prof/sampler・C#）は対象を起動し、約 1 ms ごとに全スレッドを止めて `dbghelp` でスタックを
@@ -121,7 +122,7 @@ function Measure-One([string]$name, [string]$cwd, [string]$script, [int]$m) {
     }
     Write-Host ''
     Write-Host "#### $name  ($($r.Out.Trim()))" -ForegroundColor Green
-    $a = Invoke-Bounded 'python' @((Join-Path $profDir 'analyze.py'), $folded, '--top', "$Top", '--incl', $Incl) $repo 120 @{ PYTHONIOENCODING = 'utf-8' } 'analyze.py'
+    $a = Invoke-Bounded 'python' @((Join-Path $profDir 'analyze.py'), $folded, '--top', "$Top", '--incl', $Incl, '--heap-owners', '1') $repo 120 @{ PYTHONIOENCODING = 'utf-8' } 'analyze.py'
     if ($a.Code -ne 0) { Write-Host "FAIL analyze.py`n$($a.Out)`n$($a.Err)" -ForegroundColor Red; exit 1 }
     Write-Host $a.Out
 }
