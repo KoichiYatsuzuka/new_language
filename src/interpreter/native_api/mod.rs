@@ -215,6 +215,37 @@ impl NativeCallState {
 }
 
 thread_local! {
+    /// [`STATE`] の番地（copy_alloc_speed_plan.md 7-6）。初期化を遅らせない const の TLS なので、取り出しは TLS の番地の
+    /// 読み出しだけで済む（`STATE` は初めての参照で作るので、参照のたびに「作ったか」を調べ、解放の登録を確かめる）。
+    /// 空なら [`with_state`] が `STATE` を引いて埋める。`STATE` が解放されるとき（スレッドの終わり）は
+    /// `NativeCallState::drop` が空に戻す。
+    static STATE_PTR: std::cell::Cell<*const RefCell<NativeCallState>> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// スレッドの状態（[`STATE`]）を借りる**唯一の入口**（7-6）。`STATE.with(..)` と同じ意味で、取り出しが安い。
+/// ⚠ 以前はコールバックのたびに `STATE.with` を通っていた。試作の A/B でコンパイル済みの k1 1.12x・フィールドの読み書きの
+///   単価 1.18〜1.27x（借用と本体は変えていない＝取り出しの固定費だけの差）。
+#[inline(always)]
+fn with_state<R>(f: impl FnOnce(&RefCell<NativeCallState>) -> R) -> R {
+    let p = STATE_PTR.with(|c| c.get());
+    if !p.is_null() {
+        // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
+        return f(unsafe { &*p });
+    }
+    STATE.with(|s| {
+        STATE_PTR.with(|c| c.set(s as *const _));
+        f(s)
+    })
+}
+
+/// [`STATE_PTR`] を空に戻す（解放された `STATE` を指したままにしない）。`STATE` のほかに `NativeCallState` は作らない。
+impl Drop for NativeCallState {
+    fn drop(&mut self) {
+        let _ = STATE_PTR.try_with(|c| c.set(std::ptr::null()));
+    }
+}
+
+thread_local! {
     static STATE: RefCell<NativeCallState> = RefCell::new({
         let mut arena = Vec::with_capacity(INT_CACHE_BASE + 64);
         arena.push(Value::None);         // index 0
@@ -245,13 +276,13 @@ thread_local! {
 
 /// このスレッドでコンパイル済みコードの呼び出しの途中か（copy_alloc_speed_plan.md 7-3 の検査）。
 pub fn native_call_active() -> bool {
-    STATE.with(|s| s.borrow().call_depth > 0)
+    with_state(|s| s.borrow().call_depth > 0)
 }
 
 /// ネイティブ関数呼び出しを開始する。最外呼び出し（深さ0）のとき `true` を返す。
 /// 最外レベルではアリーナとイテレータテーブルの保存点を記録し `interp_ptr` をセットする。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let prev = st.call_depth;
         st.call_depth = prev + 1;
@@ -269,7 +300,7 @@ pub fn enter_native_call(interp: *mut Interpreter) -> bool {
 /// ネイティブ関数呼び出しを正常終了する。
 /// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ等を保存点まで巻き戻す。
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let result = st.clone_value(result_h);
         if st.call_depth > 0 {
@@ -290,7 +321,7 @@ pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
 
 /// ネイティブ関数呼び出しをエラー終了する（値を返さずクリーンアップのみ）。
 pub fn abort_native_call(is_outermost: bool) {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         if st.call_depth > 0 {
             st.call_depth -= 1;
@@ -314,7 +345,7 @@ pub fn push_handle(v: Value) -> i64 {
         Value::Bool(true) => TL_TRUE,
         Value::Bool(false) => TL_FALSE,
         Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-        _ => STATE.with(|s| {
+        _ => with_state(|s| {
             let mut st = s.borrow_mut();
             let h = st.arena.len() as i64;
             st.arena.push(v);
@@ -325,7 +356,7 @@ pub fn push_handle(v: Value) -> i64 {
 
 /// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す（cpp-bridge write-back 用）。
 pub fn push_handle_writeback(v: Value) -> i64 {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let h = st.arena.len() as i64;
         st.arena.push(v);
@@ -340,7 +371,7 @@ pub fn clone_value_at(h: i64) -> Value {
         TL_TRUE => Value::Bool(true),
         TL_FALSE => Value::Bool(false),
         n if n >= 3 => {
-            STATE.with(|s| s.borrow().arena.get(n as usize).cloned().unwrap_or(Value::None))
+            with_state(|s| s.borrow().arena.get(n as usize).cloned().unwrap_or(Value::None))
         }
         _ => Value::None,
     }
@@ -348,19 +379,19 @@ pub fn clone_value_at(h: i64) -> Value {
 
 /// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す。
 pub fn take_error() -> Option<String> {
-    STATE.with(|s| s.borrow_mut().error.take())
+    with_state(|s| s.borrow_mut().error.take())
 }
 
 /// Take any exception raised by CB_RAISE. Returns (type_name, message) if set.
 pub fn take_pending_raise() -> Option<(String, String)> {
-    STATE.with(|s| s.borrow_mut().pending_raise.take())
+    with_state(|s| s.borrow_mut().pending_raise.take())
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
 /// `class_id` はモジュールが定義したクラスの番号（同じ名前の別のクラスと混ざらない・11-4）。
 /// `globals` はクラスを定義したモジュールの大域の番号（呼ぶ間だけそこへ差し替える・1-7）。
 pub fn register_native_method(class_id: u32, method_name: &str, fn_ptr: usize, globals: u32) {
-    STATE.with(|s| {
+    with_state(|s| {
         s.borrow_mut()
             .native_methods
             .entry(class_id)
@@ -376,7 +407,7 @@ pub fn lookup_native_method_ptr(class_id: u32, method_name: &str) -> Option<usiz
 
 /// ネイティブのメソッドの関数ポインタと、走らせる大域の番号（1-7）。
 pub(crate) fn lookup_native_method(class_id: u32, method_name: &str) -> Option<(usize, u32)> {
-    STATE.with(|s| {
+    with_state(|s| {
         s.borrow()
             .native_methods
             .get(&class_id)
