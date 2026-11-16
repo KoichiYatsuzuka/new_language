@@ -164,7 +164,9 @@ impl Interpreter {
             body: std::rc::Rc::from(body),
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
-            vm_chunk: None,
+            // 定義サイトの器を持たない関数も、関数の値ごとの置き場を持つ（copy_alloc_speed_plan.md 6-3）。
+            // ⚠ 無いと `get_or_compile_chunk` が呼び出しのたびに `vm_chunks`（SipHash の表）を引き、`Weak` を戻していた。
+            vm_chunk: Some(Default::default()),
             bound: None,
             // 最上位（とツリーウォークで走る本体の中）の関数は名前と同じ。
             qualname: None,
@@ -640,7 +642,8 @@ impl Interpreter {
                         body: std::rc::Rc::from(&mbody[..]),
                         captured_env: HashMap::new(),
                         return_type: mret.clone(),
-                        vm_chunk: None,
+                        // メソッドも値ごとの置き場を持つ（上の `exec_fn_def` と同じ理由・6-3）
+                        vm_chunk: Some(Default::default()),
                         bound: None,
                         qualname: Some(self.method_qualname(name, mname)),
                         group: None,

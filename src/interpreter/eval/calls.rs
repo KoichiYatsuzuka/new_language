@@ -769,7 +769,9 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match callee {
             Value::Function(fn_val) => {
-                self.exec_fn_evaled(fn_val, &evaled, None, fn_name, call_span)
+                let r = self.exec_fn_evaled(fn_val, &evaled, None, fn_name, call_span);
+                self.recycle_evaled(evaled);
+                r
             }
             Value::OverloadedFn(candidates) => {
                 self.dispatch_overload_evaled(candidates, evaled, None, fn_name, call_span)

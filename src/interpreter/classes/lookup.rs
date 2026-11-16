@@ -80,8 +80,8 @@ impl Interpreter {
     pub(crate) fn has_copy_hook(&self, val: &Value) -> bool {
         match val {
             Value::Instance(rc) => {
-                let class = rc.borrow().class.clone();
-                self.lookup_method_in_class(&class, "__copy__").is_some()
+                // ⚠ 以前は `lookup_method_in_class` が候補の `Vec` を写していた（呼び出しのたびに確保・6-3）
+                rc.borrow().class.methods.contains_key("__copy__")
             }
             _ => false,
         }

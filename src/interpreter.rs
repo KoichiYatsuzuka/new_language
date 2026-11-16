@@ -533,6 +533,11 @@ pub struct Interpreter {
     /// `call_stack` 自体の型と `len()` の意味は変えないので、深さを見ている
     /// デバッガ（`debugger.rs`）や例外フレーム生成には影響しない。
     pub(self) call_name_pool: Vec<String>,
+    /// VM の呼び出し命令が引数の並び（`evaled`）に使う `Vec` の置き場（copy_alloc_speed_plan.md 6-3）。
+    /// 呼び出しのたびに確保して捨てていた並びを、呼び終えたら空にして戻し、次の呼び出しが使い回す。
+    /// ⚠ 戻すのは呼び出しを抜けた後だけ（`note_disjoint_args` は並びの番地で呼び出しを見分ける。使っている間の並びは
+    ///   置き場に無いので、ほかの呼び出しが同じ番地を使うことは無い）。
+    pub(crate) evaled_pool: Vec<Vec<(Option<String>, Value, bool)>>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
     /// 生存している**中断可能な**ジェネレータ（bug_fix.md B13 段階 D）。
@@ -737,6 +742,7 @@ impl Interpreter {
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             call_name_pool: Vec::new(),
+            evaled_pool: Vec::new(),
             current_exception: None,
             live_generators: Vec::new(),
             module_cache: HashMap::new(),

@@ -12,6 +12,21 @@ use {
 };
 
 impl Interpreter {
+    /// 引数の並びの `Vec` を置き場から取る（無ければ新しく作る・6-3）。
+    #[inline]
+    pub(crate) fn take_evaled_buf(&mut self) -> Vec<(Option<String>, Value, bool)> {
+        self.evaled_pool.pop().unwrap_or_default()
+    }
+
+    /// 呼び終えた引数の並びを空にして置き場へ戻す（6-3）。置き場は呼び出しの深さ程度しか要らないので、多すぎる分は捨てる。
+    #[inline]
+    pub(crate) fn recycle_evaled(&mut self, mut v: Vec<(Option<String>, Value, bool)>) {
+        v.clear();
+        if self.evaled_pool.len() < 32 && v.capacity() <= 16 {
+            self.evaled_pool.push(v);
+        }
+    }
+
     /// 呼び出し名スタックへ push する（#12）。
     /// プールに空きバッファがあれば確保せず詰め直す。
     #[inline]
@@ -845,7 +860,9 @@ impl Interpreter {
         if let Some(bound) = fn_val.bound.clone() {
             return self.call_bound_method(&bound, evaled, call_span);
         }
-        let declared_ret = fn_val.return_type.clone();
+        // 戻り値の型は関数の値から読む（`Rc` を 1 つ増やすだけ）。⚠ 以前は `return_type`（`Option<String>`）を呼び出しのたびに
+        // 写していた（戻り値の型を書いた関数は 1 回ごとに文字列を 1 つ確保・copy_alloc_speed_plan.md 6-3）。
+        let declared = Rc::clone(&fn_val);
         // クラスの文脈（10-6）。インスタンスメソッドは `self` のクラス（`run_vm_method` が張る）。
         // それ以外は定義したときのクラス（入れ子の関数）か、クラス経由の呼び出しのクラス。
         // ⚠ `class_call_ctx` は**ここで取り去る**（`Interpreter::class_call_ctx` の doc）。
@@ -863,7 +880,7 @@ impl Interpreter {
         self.switch_globals(prev_globals);
         let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
-            declared_ret.as_deref(),
+            declared.return_type.as_deref(),
             out,
         ))
     }
