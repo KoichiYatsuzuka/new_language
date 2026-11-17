@@ -3,7 +3,7 @@
 #   python analyze.py <file.folded> [--top N] [--incl 名前,名前] [--under 名前] [--callers 名前] [--heap-owners 1]
 #
 # 見るのはインタープリタのスレッド（`interpreter_main` を含むスタック）だけ。出すもの:
-#   1. from generated code (inclusive) … いちばん内側の生成コード（`<module>_tl.dll`）のフレームの次＝呼んだコールバックごとの
+#   1. from generated code (inclusive) … いちばん内側の生成コード（`<module>_tl_<ハッシュ>.dll`）のフレームの次＝呼んだコールバックごとの
 #      包括時間。`(generated code itself)` は葉が生成コード、`(outside generated code)` は生成コードを通らない標本
 #   2. self time                       … 葉の関数ごとの時間
 #   3. inclusive (name contains)       … `--incl` の文字列を名前に含む関数がスタックにある標本
@@ -66,8 +66,9 @@ def load(path):
 
 
 def is_generated(mod):
-    """コンパイル済みモジュールの DLL か（実行時に `<module>_tl.dll` として読み込まれる）。"""
-    return mod.lower().endswith('_tl.dll')
+    """コンパイル済みモジュールの DLL か（実行時に `<module>_tl_<中身のハッシュ 16 桁>.dll` として読み込まれる・
+    copy_alloc_speed_plan.md 7-8。それより前の exe は `<module>_tl.dll`）。"""
+    return re.search(r'_tl(_[0-9a-f]{16})?\.dll$', mod.lower()) is not None
 
 
 def is_heap(mod, name):

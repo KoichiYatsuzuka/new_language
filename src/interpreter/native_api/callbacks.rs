@@ -2160,7 +2160,9 @@ extern "C" fn ar_leave_method_ctx(token: i64) {
 /// 名前で引けなければ（シャドウなど）0 のまま返す＝毎回名前による呼び出し（遅いが正しい）。
 extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, cell: *mut u64, need_mutable: i32) -> i32 {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let Some(class_name) = native_str(class_ptr, class_len, "class name") else { return 0 };
+    // ⚠ クラスの名前（の UTF-8 の検査）はセルが空のときだけ使う（copy_alloc_speed_plan.md 7-9）。以前は毎回検査していて、
+    //   それがコンパイル済みの k1 の 9%（このガードの 2/3）だった。セルを埋めるのは名前が正しいときだけなので、正しくない
+    //   名前は今までどおり、名前を引くたびにエラーになる。
     if cell.is_null() || obj_h < 3 {
         return 0;
     }
@@ -2179,6 +2181,7 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
     let cell = unsafe { &*(cell as *const AtomicU64) };
     let mut want = cell.load(Ordering::Relaxed);
     if want == 0 {
+        let Some(class_name) = native_str(class_ptr, class_len, "class name") else { return 0 };
         if interp_ptr.is_null() {
             return 0;
         }
@@ -2795,6 +2798,39 @@ mod tests {
         set_native_error("ValueError: raised inside the method".to_string());
         assert_eq!(call(TL_NONE, 1), 0);
         assert_eq!(take_error().as_deref(), Some("ValueError: raised inside the method"));
+    }
+
+    /// 受け手のクラスのガード（field 64）: セルが埋まっていればクラスの名前を読まない（7-9）。セルが空のときだけ名前を
+    /// 検査し、正しくない UTF-8 ならエラー
+    #[test]
+    fn method_guard_reads_the_class_name_only_to_fill_the_cell() {
+        use crate::interpreter::value::{alloc_class_id, ClassValue, InstanceData, INST_IMMUTABLE};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let cls = Rc::new(ClassValue::synthetic("Vec2", alloc_class_id()));
+        let inst = |immutable: bool| {
+            let mut d = InstanceData::new_empty(cls.clone(), 0);
+            if immutable {
+                d.set_flags(d.flags() | INST_IMMUTABLE);
+            }
+            push_handle(Value::Instance(Rc::new(RefCell::new(d))))
+        };
+        let bad = [0xFFu8, 0xFE];
+        let mut cell = cls.class_id as u64;
+        // セルが当たる: 名前（正しくない UTF-8）は読まず、エラーにもならない
+        assert_eq!(ar_method_guard(inst(false), bad.as_ptr(), 2, &mut cell, 0), 1);
+        assert_eq!(ar_method_guard(inst(false), bad.as_ptr(), 2, &mut cell, 1), 1);
+        // `mut self` のメソッドに不変のインスタンス・別のクラスのセル・インスタンスでない値は外れ
+        assert_eq!(ar_method_guard(inst(true), bad.as_ptr(), 2, &mut cell, 1), 0);
+        let mut other = cell + 1;
+        assert_eq!(ar_method_guard(inst(false), bad.as_ptr(), 2, &mut other, 0), 0);
+        assert_eq!(ar_method_guard(push_handle(Value::Int(1 << 40)), bad.as_ptr(), 2, &mut cell, 0), 0);
+        assert!(take_error().is_none());
+        // セルが空: 名前を検査する（正しくない UTF-8 はエラー・セルは空のまま）
+        let mut empty = 0u64;
+        assert_eq!(ar_method_guard(inst(false), bad.as_ptr(), 2, &mut empty, 0), 0);
+        assert_eq!(empty, 0);
+        assert!(take_error().is_some_and(|e| e.contains("class name from native code is not valid UTF-8")));
     }
 
     /// 番地を返すコールバック（field 78・8-2）: クラスが生成コードの表のとおりのときだけ番地を返し、セルに覚える。
