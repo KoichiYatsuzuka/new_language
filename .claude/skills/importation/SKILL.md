@@ -482,7 +482,7 @@ States:
 
 **Runtime search** (`py`'s `sys.path`, the C# bridge `{Name}_native.dll` / host `{Name}_proc.exe`): `Interpreter::import_search_dirs(origin)` = the statement's search base, plus `python.search_paths` (nearest ancestor `ar_config.json`) for non-relative imports. js-proc looks for `ar_config.json` from the search base upward, and passes a JS file found at the search base to the bridge as an absolute path. ⚠ These used to search the entry file's directory (and the CWD for C#).
 
-**For `rs` and `arc` imports** (v1 is the only native `.arc` version): calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
+**For `rs` and `arc` imports** (v1 is the only native `.arc` version): calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, places them in a temp file (`materialize_native_lib`: named by content hash, reused when identical — a freshly written DLL costs 0.6–0.8 s to load), loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
 
 **For `py` imports**: calls `py_interop::load_py_int_module()` which uses PyO3 to import the Python module directly. `NamespaceData::members` is a snapshot of the non-private attributes as `Value::PyObject` (for `dir()` and `foreign_call_lang`); reads go through `NsLive::Python` — `namespace_member` calls `py_getattr` on the module each time, so values are converted (`sys.version` is an Arrow `str`) and module globals rewritten by Python are current. A call `m.f(..)` skips that read and goes straight to `call_py_method(module, "f", ..)` (`method_call.rs`: one GIL section, the same reference counts as CPython's `LOAD_ATTR` + `CALL`; reading first cost +0.6–0.9 µs per call). A missing name is then Python's `AttributeError`. Exceptions Python raises (`py_interop::python_raised`, pandas_import_plan.md
 2-1): the error text is CPython's last traceback line (`ValueError: bad` / `pkg.MyErr: bad`) and the exception is stashed
@@ -536,7 +536,8 @@ fails at once. ⚠ MSVC also quotes type names and namespaces (`HWND`, `DxLib`) 
 functions (7-29).
 
 **Generated files** (`cpp_bridge/compiler.rs`):
-- `cpp-dll`: the Rust wrapper is rebuilt into `%TEMP%` on every run and loads `{stem}.dll` next to the header.
+- `cpp-dll`: the Rust wrapper is rebuilt on every run, placed in `%TEMP%` with `materialize_native_lib` (not rewritten when
+  identical), and loads `{stem}.dll` next to the header.
 - `cpp-lib`: the wrapper `ar_{stem}.dll`, the MSVC shim `ar_{stem}_shim.dll` and `ar_{stem}.syms` are written
   **next to the header and reused** (they are committed for `test_modules/vec_math`). The first line of `.syms`
   is a stamp (`cache_stamp`: FNV-1a of the generated shim + wrapper sources and the build config). A stale

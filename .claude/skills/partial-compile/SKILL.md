@@ -38,6 +38,9 @@ cargo run --release -- examples/interop/importation.ar
 
 When a `.ar` file imports a module, the parser prefers `.arc` over `.ar`.
 If the `.arc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.
+The file is `%TEMP%\{stem}_tl_{content hash}.dll` and is **not rewritten when an identical one exists**
+(`materialize_native_lib`, copy_alloc_speed_plan.md 7-8): loading a freshly written DLL costs 0.6–0.8 s (antivirus scan).
+One process never gets the same path twice (a second identical module gets its own copy, so DLL globals are not shared).
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```

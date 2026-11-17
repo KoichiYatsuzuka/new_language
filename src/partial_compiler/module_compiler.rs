@@ -107,6 +107,108 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
+/// 読み込む DLL の中身 `bytes` を一時ディレクトリに置き、そのパスを返す（copy_alloc_speed_plan.md 7-8）。
+///
+/// 名前は `{prefix}_{中身のハッシュ}.{ext}`。**同じ中身のファイルが既にあれば書き直さない**（更新日時だけ新しくする）。
+/// 書いたばかりの DLL は読み込みのたびにウイルス対策の検査を受け、`LoadLibrary` が 1 回 0.6〜0.8 s かかる
+/// （実測 2026-11-17・130 KB の DLL。変えていないファイルなら別のプロセスからでも約 30 ms。更新日時を変えても速いまま）。
+/// 以前は実行のたびに `{stem}_tl.dll` を書き直していて、コンパイル済みモジュールを読むプロセスが毎回これを払っていた
+/// （速度の調査のベンチで、6 区間の合計 0.56 s に対して起動が 0.7 s）。
+///
+/// - 中身ごとに名前が違うので、違う版のモジュール（違う exe が作った `.arc`）を同時に走らせても互いのファイルを
+///   書き換えない（以前は、ほかのプロセスが読み込んでいる DLL は書けず、ツリーウォークに落ちていた）。
+/// - 書くときは別名に書いてから名前を変える（ほかのプロセスが書きかけのファイルを読まない）。名前を変えられなかった
+///   ときは、同じ中身を別のプロセスが先に置いた場合だけ成功とする。
+/// - 新しく書いたときに、同じ `prefix` のファイルのうち 7 日以上使われていないもの（更新日時が古いもの）を消す。
+/// - ⚠ **1 つのプロセスで同じパスを 2 回返さない**。DLL は同じパスを 2 回読み込むと同じ実体になり、中の大域
+///   （IC のセル・クラスの表のセル）を 2 つのモジュールが共有してしまう（同じソースの 2 つのモジュール・同じプロセスの
+///   別のインタープリタ〔`cargo test` のスレッド〕）。2 回目からは写しの番号を混ぜた名前の別のファイルにする
+///   （以前はここで、読み込み中の DLL を書けずにツリーウォークに落ちていた）。
+pub fn materialize_native_lib(prefix: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    static HANDED_OUT: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let fnv = |h: u64, b: u8| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    let dir = std::env::temp_dir();
+    let base = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| fnv(h, b));
+    // ⚠ 毒された（ほかのスレッドが持ったまま panic した）ときも中身はパスの一覧なので、そのまま使ってよい
+    let mut handed = HANDED_OUT.lock().unwrap_or_else(|e| e.into_inner());
+    let mut copy: u64 = 0;
+    loop {
+        let hash = if copy == 0 { base } else { copy.to_le_bytes().iter().fold(base, |h, &b| fnv(h, b)) };
+        let name = format!("{prefix}_{hash:016x}.{}", native_lib_ext());
+        let path = dir.join(&name);
+        if handed.contains(&path) {
+            copy += 1;
+            continue;
+        }
+        if place_native_lib(&dir, &name, bytes)? {
+            remove_stale_native_libs(&dir, prefix, &name);
+        }
+        handed.push(path.clone());
+        return Ok(path);
+    }
+}
+
+/// `dir/name` に中身 `bytes` のファイルを置く。同じ中身が既にあれば書かずに更新日時だけ新しくする。
+/// 書いたら `true`（`materialize_native_lib`）。
+fn place_native_lib(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<bool> {
+    let path = dir.join(name);
+    if same_contents(&path, bytes) {
+        // ⚠ 失敗は無視してよい: 更新日時は古いファイルを消す目安にしか使わない（消されたら次に書き直すだけ）
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&path) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+        return Ok(false);
+    }
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        // ⚠ 片付けの失敗は無視してよい（一時ファイルが残るだけ）
+        let _ = std::fs::remove_file(&tmp);
+        if !same_contents(&path, bytes) {
+            return Err(e);
+        }
+    }
+    Ok(true)
+}
+
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    match std::fs::read(path) {
+        Ok(b) => b == bytes,
+        Err(_) => false,
+    }
+}
+
+/// `prefix` の DLL のうち、7 日以上使われていないものを消す（`materialize_native_lib`）。
+fn remove_stale_native_libs(dir: &Path, prefix: &str, keep: &str) {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+    let head = format!("{prefix}_");
+    let tail = format!(".{}", native_lib_ext());
+    // ⚠ ここの失敗は全部無視してよい: 片付けなので、読めない・消せない（ほかのプロセスが読み込んでいる）ファイルは残すだけ
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(n) = file_name.to_str() else { continue };
+        if n == keep || !n.starts_with(&head) || !n.ends_with(&tail) {
+            continue;
+        }
+        // 名前の残りが 16 桁の 16 進数のものだけ（`{prefix}_x` という別のモジュールの DLL を消さない）
+        let mid = &n[head.len()..n.len() - tail.len()];
+        if mid.len() != 16 || !mid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age > STALE);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
@@ -249,4 +351,73 @@ fn write_tlc_native(
     }
     write_len_prefixed(&mut buf, payload);
     std::fs::write(path, buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ar_native_lib_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 同じ中身なら書き直さない・違う中身なら書き直す（7-8）
+    #[test]
+    fn place_native_lib_rewrites_only_changed_contents() {
+        let d = scratch("place");
+        assert!(place_native_lib(&d, "m_tl_x.dll", b"abc").unwrap(), "first placement writes");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(d.join("m_tl_x.dll")).unwrap().set_modified(old).unwrap();
+        assert!(!place_native_lib(&d, "m_tl_x.dll", b"abc").unwrap(), "same contents are not rewritten");
+        let touched = std::fs::metadata(d.join("m_tl_x.dll")).unwrap().modified().unwrap();
+        assert!(touched > old, "reuse refreshes the modification time");
+        assert!(place_native_lib(&d, "m_tl_x.dll", b"abcd").unwrap(), "changed contents are rewritten");
+        assert_eq!(std::fs::read(d.join("m_tl_x.dll")).unwrap(), b"abcd");
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "no temporary file is left: {left:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 古いものだけ・同じ prefix の 16 桁のハッシュの名前だけを消す
+    #[test]
+    fn remove_stale_native_libs_keeps_recent_and_foreign_files() {
+        let d = scratch("stale");
+        let ext = native_lib_ext();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 60 * 60);
+        let names = [
+            format!("m_tl_{:016x}.{ext}", 1),       // 古い → 消す
+            format!("m_tl_{:016x}.{ext}", 2),       // 新しい → 残す
+            format!("m_tl_{:016x}.{ext}", 3),       // keep（今書いたもの）→ 残す
+            format!("m_tl_b_tl_{:016x}.{ext}", 4),  // 別のモジュール（`m_tl_b`）→ 残す
+            format!("n_tl_{:016x}.{ext}", 5),       // 別の prefix → 残す
+        ];
+        for (i, n) in names.iter().enumerate() {
+            std::fs::write(d.join(n), b"x").unwrap();
+            if i != 1 {
+                std::fs::File::options().write(true).open(d.join(n)).unwrap().set_modified(old).unwrap();
+            }
+        }
+        remove_stale_native_libs(&d, "m_tl", &names[2]);
+        for (i, n) in names.iter().enumerate() {
+            assert_eq!(d.join(n).exists(), i != 0, "{n}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 1 つのプロセスで同じ中身を 2 回置くと別のパスになる（DLL の実体を共有しない）
+    #[test]
+    fn materialize_native_lib_never_hands_out_a_path_twice() {
+        let prefix = format!("ar_test_materialize_{}", std::process::id());
+        let bytes = b"not really a dll".to_vec();
+        let a = materialize_native_lib(&prefix, &bytes).unwrap();
+        let b = materialize_native_lib(&prefix, &bytes).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), bytes);
+        assert_eq!(std::fs::read(&b).unwrap(), bytes);
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
 }
