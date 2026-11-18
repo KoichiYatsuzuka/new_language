@@ -836,7 +836,46 @@ pub(super) struct IdentHandleStats {
 
 // ── Eligibility (identical to old codegen) ────────────────────────────────────
 
-fn body_eligible(stmts: &[Stmt]) -> bool { stmts.iter().all(stmt_eligible) }
+/// 適格判定の文脈（known_bugs.md #23）: 代入（`x = ..` / `x += ..`）の代入先が、生成コードのローカルの表
+/// （`GenCtx::locals`）で引ける名前か（仮引数か、それより前で宣言した名前か）を見るため、本体を前から順に歩いて
+/// 宣言した名前（仮引数・`let` / `mut` / `const`・`for` の変数）を覚える。
+///
+/// 生成側（`stmt.rs`）は代入先をローカルの表でしか引かない（大域へ書くコードを持たない）。以前は代入先を見ずに
+/// 適格にしていて、大域への `x = ..` は**何も出さず**（黙って書き込みが消える）、`x += ..` は未定義の値（`%_UNDEF`）を
+/// 読む IR になって clang が落ち、モジュール全体の DLL が作られなかった。⇒ 代入先がローカルでない関数は適格にしない
+/// （VM が動かす）。
+/// ⚠ ローカルの表は関数に 1 つでブロックのスコープを持たない（ブロックを抜けても消えない）が、見えている名前と同じ名前の
+///   ローカルは宣言できない（型検査の `variable '..' is already declared in an accessible scope`。ブロックの中・`for` の
+///   変数も同じ）ので、関数の中で宣言した名前が大域を指すことは無い。
+struct EligScope<'s> {
+    /// これまでに宣言した名前（仮引数を含む・ブロックを抜けても残す＝ローカルの表と同じ）。
+    declared: HashSet<&'s str>,
+}
+
+impl<'s> EligScope<'s> {
+    fn new(params: &'s [Param]) -> Self {
+        EligScope { declared: params.iter().map(|p| p.name.as_str()).collect() }
+    }
+
+    fn declare(&mut self, name: &'s str) {
+        self.declared.insert(name);
+    }
+
+    /// 代入先 `name` をローカルの表で引けるか。
+    fn assign_target_ok(&self, name: &str) -> bool {
+        self.declared.contains(name)
+    }
+}
+
+fn body_eligible<'s>(stmts: &'s [Stmt], sc: &mut EligScope<'s>) -> bool { stmts.iter().all(|s| stmt_eligible(s, sc)) }
+
+/// `for` の変数を宣言してから本体を見る。
+fn for_body_eligible<'s>(targets: &'s [String], body: &'s [Stmt], sc: &mut EligScope<'s>) -> bool {
+    for t in targets {
+        sc.declare(t);
+    }
+    body_eligible(body, sc)
+}
 
 fn body_has_loop_yield(stmts: &[Stmt]) -> bool {
     stmts.iter().any(stmt_has_loop_yield)
@@ -854,86 +893,92 @@ fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
     }
 }
 
-fn stmt_eligible(stmt: &Stmt) -> bool {
+fn stmt_eligible<'s>(stmt: &'s Stmt, sc: &mut EligScope<'s>) -> bool {
     match stmt {
-        Stmt::Let(_, _, e, _) | Stmt::Mut(_, _, e, _) | Stmt::Const(_, _, e, _) => expr_eligible(e),
-        Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
+        Stmt::Let(name, _, e, _) | Stmt::Mut(name, _, e, _) | Stmt::Const(name, _, e, _) => {
+            let ok = expr_eligible(e, sc);
+            sc.declare(name);
+            ok
+        }
+        // 代入先は生成コードのローカルの表で引ける名前だけ（known_bugs.md #23・`EligScope`）
+        Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } =>
+            expr_eligible(value, sc) && sc.assign_target_ok(name),
         // ⚠ 代入先は `obj.attr` か `obj::T.attr` だけ（生成側 `stmt.rs` はこの 2 形しか書けない。
         //   以前はほかの形でも適格で、生成コードが代入を黙って出さなかった・native_object_access_plan.md 1-4）。
         Stmt::AttrAssign { target, value, span: _ } =>
-            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target) && expr_eligible(value),
+            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target, sc) && expr_eligible(value, sc),
         Stmt::AttrCompoundAssign { target, value, .. } =>
-            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target) && expr_eligible(value),
-        Stmt::Return(Some(e), _) => expr_eligible(e),
+            matches!(target, Expr::Attr { .. } | Expr::TraitAccess { .. }) && expr_eligible(target, sc) && expr_eligible(value, sc),
+        Stmt::Return(Some(e), _) => expr_eligible(e, sc),
         Stmt::Return(None, _) | Stmt::Pass | Stmt::Break | Stmt::Continue => true,
-        Stmt::Expr(e)    => expr_eligible(e),
+        Stmt::Expr(e)    => expr_eligible(e, sc),
         Stmt::Freeze(..) => true,
-        Stmt::Block(ss)  => body_eligible(ss),
-        Stmt::BlockReturn(e, _) => expr_eligible(e),
-        Stmt::LoopYield(e, _)      => expr_eligible(e),
-        Stmt::Yield(e, _)          => expr_eligible(e),
+        Stmt::Block(ss)  => body_eligible(ss, sc),
+        Stmt::BlockReturn(e, _) => expr_eligible(e, sc),
+        Stmt::LoopYield(e, _)      => expr_eligible(e, sc),
+        Stmt::Yield(e, _)          => expr_eligible(e, sc),
         // raise ExcType(msg) — only positional constructor calls
         Stmt::Raise { exc: Some(e), .. } => matches!(e, Expr::Call { args, .. }
-            if args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e)))),
+            if args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e, sc)))),
         Stmt::If { branches, else_body, span: _ } =>
-            branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
-            && else_body.as_ref().is_none_or(|b| body_eligible(b)),
-        Stmt::While { cond, body, span: _ } => expr_eligible(cond) && body_eligible(body),
+            branches.iter().all(|(c, b)| expr_eligible(c, sc) && body_eligible(b, sc))
+            && else_body.as_ref().is_none_or(|b| body_eligible(b, sc)),
+        Stmt::While { cond, body, span: _ } => expr_eligible(cond, sc) && body_eligible(body, sc),
         // `for mut x in ..`（D-11）は要素を写す束縛なので、ネイティブには載せない（VM が写す）
         Stmt::For { targets, mut_targets, iter, body, span: _ } =>
-            !*mut_targets && targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
+            !*mut_targets && targets.len() == 1 && expr_eligible(iter, sc) && for_body_eligible(targets, body, sc),
         Stmt::Match { subject, arms, .. } =>
-            expr_eligible(subject) && arms.iter().all(|a| {
+            expr_eligible(subject, sc) && arms.iter().all(|a| {
                 (match &a.pattern {
-                    MatchPattern::Case(e) => expr_eligible(e),
+                    MatchPattern::Case(e) => expr_eligible(e, sc),
                     MatchPattern::IsType(_) => true,
-                }) && body_eligible(&a.body)
+                }) && body_eligible(&a.body, sc)
             }),
         _ => false,
     }
 }
 
-fn expr_eligible(expr: &Expr) -> bool {
+fn expr_eligible<'s>(expr: &'s Expr, sc: &mut EligScope<'s>) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
         Expr::Ident { .. } => true,
-        Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
-        Expr::UnaryOp { operand, .. } => expr_eligible(operand),
+        Expr::BinOp { left, right, .. } => expr_eligible(left, sc) && expr_eligible(right, sc),
+        Expr::UnaryOp { operand, .. } => expr_eligible(operand, sc),
         // ⚠ `*other` を含む列リテラルは**ネイティブ非適格**（展開後の長さが実行時決定で、
         //   「N 要素を alloca して渡す」形に載らない）。`Dict` の `**` と同じ判断。
         Expr::List(items) | Expr::Tuple(items) => items
             .iter()
-            .all(|e| !e.is_spread() && expr_eligible(e.expr())),
+            .all(|e| !e.is_spread() && expr_eligible(e.expr(), sc)),
         // ⚠ `**other` を含む辞書リテラルは**ネイティブ非適格**にする（合成は実行時の
         //   辞書操作で、`gen_expr` の「キー配列 / 値配列を alloca して渡す」形に載らない）。
         Expr::Dict(entries) => entries.iter().all(|e| match e {
-            crate::ast::DictEntry::Pair(k, v) => expr_eligible(k) && expr_eligible(v),
+            crate::ast::DictEntry::Pair(k, v) => expr_eligible(k, sc) && expr_eligible(v, sc),
             crate::ast::DictEntry::Spread(_) => false,
         }),
         Expr::Call { func, args, .. } =>
-            expr_eligible(func) && args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e))),
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => expr_eligible(object),
-        Expr::Subscript { object, index, .. } => expr_eligible(object) && expr_eligible(index),
-        Expr::IsType { expr, .. } => expr_eligible(expr),
-        Expr::TemplateInstantiate { base, .. } => expr_eligible(base),
+            expr_eligible(func, sc) && args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e, sc))),
+        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => expr_eligible(object, sc),
+        Expr::Subscript { object, index, .. } => expr_eligible(object, sc) && expr_eligible(index, sc),
+        Expr::IsType { expr, .. } => expr_eligible(expr, sc),
+        Expr::TemplateInstantiate { base, .. } => expr_eligible(base, sc),
         // Control-flow expressions (block_return / loop_yield inside these is also handled)
-        Expr::Block { stmts, .. } => body_eligible(stmts),
+        Expr::Block { stmts, .. } => body_eligible(stmts, sc),
         Expr::IfExpr { branches, else_body, .. } =>
-            branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
-            && else_body.as_ref().is_none_or(|b| body_eligible(b)),
+            branches.iter().all(|(c, b)| expr_eligible(c, sc) && body_eligible(b, sc))
+            && else_body.as_ref().is_none_or(|b| body_eligible(b, sc)),
         // ⚠ 多ターゲット（`for k, v in ...`）はネイティブ非適格。`gen_expr` は
         //   ループ変数 1 つ分の受け皿しか作らない（分解する形が無い）。
         Expr::ForExpr { targets, iter, body, .. } => {
-            targets.len() == 1 && expr_eligible(iter) && body_eligible(body)
+            targets.len() == 1 && expr_eligible(iter, sc) && for_body_eligible(targets, body, sc)
         }
-        Expr::WhileExpr { cond, body, .. } => expr_eligible(cond) && body_eligible(body),
+        Expr::WhileExpr { cond, body, .. } => expr_eligible(cond, sc) && body_eligible(body, sc),
         Expr::MatchExpr { subject, arms, .. } =>
-            expr_eligible(subject) && arms.iter().all(|a| {
+            expr_eligible(subject, sc) && arms.iter().all(|a| {
                 (match &a.pattern {
-                    MatchPattern::Case(e) => expr_eligible(e),
+                    MatchPattern::Case(e) => expr_eligible(e, sc),
                     MatchPattern::IsType(_) => true,
-                }) && body_eligible(&a.body)
+                }) && body_eligible(&a.body, sc)
             }),
         _ => false,
     }
@@ -1087,15 +1132,15 @@ fn escape_for_llvm(bytes: &[u8]) -> String {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Generator body is eligible if it uses only yield, not block_return/loop_yield
-fn body_eligible_gen(stmts: &[Stmt]) -> bool {
-    stmts.iter().all(stmt_eligible_gen)
+fn body_eligible_gen<'s>(stmts: &'s [Stmt], sc: &mut EligScope<'s>) -> bool {
+    stmts.iter().all(|s| stmt_eligible_gen(s, sc))
 }
 
-fn stmt_eligible_gen(stmt: &Stmt) -> bool {
+fn stmt_eligible_gen<'s>(stmt: &'s Stmt, sc: &mut EligScope<'s>) -> bool {
     match stmt {
-        Stmt::Yield(e, _) => expr_eligible(e),
+        Stmt::Yield(e, _) => expr_eligible(e, sc),
         Stmt::LoopYield(_, _) | Stmt::BlockReturn(..) => false, // only yield allowed in gen bodies
-        other => stmt_eligible(other),
+        other => stmt_eligible(other, sc),
     }
 }
 
@@ -1144,7 +1189,7 @@ fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleF
     };
     match stmt {
         Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
-            if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+            if !template_params.is_empty() || *is_abstract || !body_eligible(body, &mut EligScope::new(params)) {
                 return None;
             }
             if ann_has_intersection(params, return_type.as_deref()) {
@@ -1161,7 +1206,7 @@ fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleF
             })
         }
         Stmt::GenDef { name, template_params, params, body, .. } => {
-            if !template_params.is_empty() || !body_eligible_gen(body) {
+            if !template_params.is_empty() || !body_eligible_gen(body, &mut EligScope::new(params)) {
                 return None;
             }
             if ann_has_intersection(params, None) {
@@ -1600,5 +1645,64 @@ fn plain(let x: int) -> int:
         let names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"plain") && names.contains(&"area"), "{names:?}");
         assert!(!names.contains(&"twice") && !names.contains(&"__init__") && !names.contains(&"scale"), "{names:?}");
+    }
+
+    /// 大域へ代入・複合代入する関数とメソッドはコンパイルしない（known_bugs.md #23）。仮引数・ブロックや `for` の中で
+    /// 宣言したローカルへの代入はコンパイルする。⚠ 以前は大域への `=` を黙って出さず、`+=` は未定義の値（`%_UNDEF`）を
+    /// 読む IR になった（clang が落ちてモジュール全体がネイティブにならない）。
+    #[test]
+    fn functions_assigning_globals_are_left_to_the_interpreter() {
+        let src = "\
+mut counter = 0
+
+fn set_c(let v: int) -> None:
+    counter = v
+
+fn bump() -> None:
+    counter += 1
+
+fn in_block(let v: int) -> None:
+    if v > 0:
+        counter = v
+
+class Acc:
+    mut n: int
+
+    fn record(mut self) -> None:
+        counter += 1
+        self.n += 1
+
+    fn local(mut self, let k: int) -> int:
+        mut s = k
+        s += self.n
+        return s
+
+fn locals(mut p: int, let n: int) -> int:
+    p += 1
+    mut acc = 0
+    for i in range(n):
+        mut sq = i * i
+        sq += 1
+        acc += sq
+    if n > 0:
+        mut t = 1
+        t = t + acc
+        acc = t
+    return acc + p
+
+fn read_only() -> int:
+    return counter
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, exports) = generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+        assert!(!ir.contains("%_UNDEF"), "undefined value in the IR");
+        let names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
+        for compiled in ["locals", "read_only", "local"] {
+            assert!(names.contains(&compiled), "{compiled} must be compiled: {names:?}");
+        }
+        for left in ["set_c", "bump", "in_block", "record"] {
+            assert!(!names.contains(&left), "{left} must not be compiled: {names:?}");
+        }
     }
 }

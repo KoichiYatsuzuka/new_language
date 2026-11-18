@@ -1,0 +1,46 @@
+# compiled_global_assign_module.ar — compiled_global_assign.ar のコンパイル済みの側・大域への代入（known_bugs.md #23）
+#
+# モジュールの大域へ代入する関数はコンパイルしない（VM が動かす）。ローカルだけに代入する関数・大域を読むだけの関数は
+# コンパイルする。
+# ⚠ 以前はこのモジュールの `set_counter` をコンパイルし、大域への書き込みが黙って消えた（`get_counter()` が 0 のまま）。
+#   複合代入は別のモジュール（compiled_global_compound_module.ar）に置く（以前は複合代入があるとモジュール全体の DLL が
+#   作られず、このモジュールの不具合が隠れた）。
+# ⚠ 大域と同じ名前のローカル（ブロックの中・`for` の変数も）は型検査が止める（`already declared in an accessible scope`）。
+
+mut counter = 0
+mut label = "a"
+
+# 大域への代入（コンパイルしない）
+fn set_counter(let v: int) -> None:
+    counter = v
+
+fn set_label(let s: str) -> None:
+    label = s
+
+# 大域を読むだけ（コンパイルする）
+fn get_counter() -> int:
+    return counter
+
+fn get_label() -> str:
+    return label
+
+# ブロックの中・ループの中で宣言したローカルに代入する（コンパイルする）
+fn nested_local(let n: int) -> int:
+    mut out = 0
+    if n > 0:
+        mut acc = 0
+        for i in range(n):
+            mut sq = i * i
+            sq += 1
+            acc += sq
+        out = acc
+    return out
+
+# ローカルだけに代入する（コンパイルする）
+fn local_only(let n: int) -> int:
+    mut s = 0
+    mut i = 0
+    while i < n:
+        s += i
+        i += 1
+    return s
