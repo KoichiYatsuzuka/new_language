@@ -172,7 +172,8 @@ struct NativeCallState {
     ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
     /// ⚠ キーは**クラスの番号**（`class_id`・11-4）。以前は素のクラス名で、本体（や別のモジュール）の同じ名前のクラスの
     ///   生成・メソッド呼び出しでも、コンパイル済みのモジュールのメソッドが呼ばれていた（型はモジュールごとに別・10-8）。
-    native_methods: HashMap<u32, HashMap<String, (usize, u32)>>,
+    /// ⚠ 外側の表は FxHash（`ClassIdMap`・copy_alloc_speed_plan.md 7-10。インスタンスを作るたびに `__init__` を引く）。
+    native_methods: crate::interpreter::ClassIdMap<HashMap<String, (usize, u32)>>,
     /// 文字列のリテラルの表（11-2・D-12）: 呼び出し箇所のセルに入れた番号 − 1 → 1 度だけ作った文字列。VM の定数表と同じく、
     /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
     /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
@@ -265,7 +266,7 @@ thread_local! {
             pending_raise: None,
             cstr_bufs: Vec::new(),
             protocol_args: Vec::new(),
-            native_methods: HashMap::new(),
+            native_methods: crate::interpreter::ClassIdMap::default(),
             str_consts: Vec::new(),
             fresh_mask: 0,
         }

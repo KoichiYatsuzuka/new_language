@@ -94,6 +94,14 @@ impl Interpreter {
         }
     }
 
+    /// 写しも束縛の検査も要らない値か: 数値・真偽値・`None`・文字列（copy_alloc_speed_plan.md 7-10）。どれも
+    /// [`Self::deep_copy_value`] が同じ値を返し（[`Self::is_unshared`] は真）、`__copy__` を持たず、Python の物でもない。
+    /// 束縛（`bind_param_value`）と合成した `__init__` の格納（`store_auto_init`）が、この値の重い道を飛ばすのに使う。
+    #[inline]
+    pub(crate) fn is_plain_scalar(val: &Value) -> bool {
+        matches!(val, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::None | Value::Str(_))
+    }
+
     /// `val` を（入れ子の値も含めて）誰とも共有していないか（12-1・D-13）。いちばん外の参照は `outer` 個まで、
     /// 入れ子の値は 1 個（容れ物の中の 1 つ）まで。[`Self::deep_copy_value`] が新しく作り直すもの（インスタンス・
     /// リスト・集合・タプル）だけを数え、作り直さずに共有するもの（数値・文字列・関数など）は見ない。

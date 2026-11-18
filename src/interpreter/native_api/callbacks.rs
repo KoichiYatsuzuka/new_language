@@ -2222,15 +2222,15 @@ extern "C" fn ar_construct_ic(
     mut_mask: u32,
 ) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let fresh = take_fresh_mask();
+    // 作りたての印を読んで 0 に戻すのと、エラーの有無・インタープリタを読むのを、状態を 1 回借りて済ませる（7-10）
+    let (fresh, has_err, interp_ptr) = with_state(|s| {
+        let mut st = s.borrow_mut();
+        (std::mem::take(&mut st.fresh_mask), st.error.is_some(), st.interp_ptr)
+    });
     if !cell.is_null() {
         // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
         let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
         if packed != 0 {
-            let (has_err, interp_ptr) = with_state(|s| {
-                let st = s.borrow();
-                (st.error.is_some(), st.interp_ptr)
-            });
             if has_err {
                 return TL_NONE;
             }
@@ -2251,8 +2251,8 @@ extern "C" fn ar_set_fresh(mask: u32) {
     with_state(|s| s.borrow_mut().fresh_mask = mask);
 }
 
-/// 印を読んで 0 に戻す。⚠ `ar_construct_ic` / `ar_call_method_ic` は**入口の最初に**呼ぶ（途中で抜けても、次の
-/// 呼び出しに印が残らないように）。
+/// 印を読んで 0 に戻す。⚠ `ar_construct_ic` / `ar_call_method_ic` は**入口の最初に**読む（途中で抜けても、次の
+/// 呼び出しに印が残らないように。`ar_construct_ic` はエラーの有無と一緒に、状態を借りる 1 回の中で読む・7-10）。
 fn take_fresh_mask() -> u32 {
     with_state(|s| std::mem::take(&mut s.borrow_mut().fresh_mask))
 }
@@ -2261,17 +2261,19 @@ fn take_fresh_mask() -> u32 {
 /// 生成コードはその欄を二度と読まない）。付いていなければ今までどおり欄の値の写し。
 /// ⚠ 小さい整数・真偽値・`None` の共有の欄（`INT_CACHE_BASE` より前）は取り出さない。
 fn arg_value(args_ptr: *const i64, i: usize, fresh: u32) -> Value {
+    with_state(|s| arg_value_in(&mut s.borrow_mut(), args_ptr, i, fresh))
+}
+
+/// [`arg_value`] の本体。スレッドの状態を借りたまま引数を続けて読む所（生成・7-10）が使う。
+fn arg_value_in(st: &mut super::NativeCallState, args_ptr: *const i64, i: usize, fresh: u32) -> Value {
     let h = unsafe { *args_ptr.add(i) };
     if i < 31 && fresh & (1 << (i + 1)) != 0 && h >= super::INT_CACHE_BASE as i64 {
-        return with_state(|s| {
-            let mut st = s.borrow_mut();
-            match st.arena.get_mut(h as usize) {
-                Some(slot) => std::mem::replace(slot, Value::None),
-                None => Value::None,
-            }
-        });
+        return match st.arena.get_mut(h as usize) {
+            Some(slot) => std::mem::replace(slot, Value::None),
+            None => Value::None,
+        };
     }
-    clone_value_at(h)
+    st.clone_value(h)
 }
 
 /// 直接呼び出しの `let self` / `let` 仮引数へ渡す作りたての値（field 76・2-4）。`h` の欄の 1 個は数えずに、
@@ -2403,10 +2405,15 @@ fn construct_class(
     mut_mask: u32,
     fresh: u32,
 ) -> i64 {
-    // 作りたての印の付いた引数は欄から取り出す（2-4・参照の数を VM と同じにして、束縛と格納の複製を省く）
-    let evaled = (0..n_args as usize)
-        .map(|i| (None, arg_value(args_ptr, i, fresh), mask_arg_is_mut(mut_mask, i)))
-        .collect();
+    // 作りたての印の付いた引数は欄から取り出す（2-4・参照の数を VM と同じにして、束縛と格納の複製を省く）。
+    // 並びは置き場から取り（`instantiate_evaled` が戻す）、引数は状態を 1 回借りて全部読む（7-10）
+    let mut evaled = interp.take_evaled_buf();
+    with_state(|s| {
+        let mut st = s.borrow_mut();
+        evaled.extend(
+            (0..n_args.max(0) as usize).map(|i| (None, arg_value_in(&mut st, args_ptr, i, fresh), mask_arg_is_mut(mut_mask, i))),
+        );
+    });
     finish_construct(interp.instantiate_evaled(cls, evaled))
 }
 

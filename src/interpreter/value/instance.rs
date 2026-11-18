@@ -399,8 +399,8 @@ impl InstanceData {
     /// raw クラスで値の型がスロット形式に合わない場合は `false` を返す。
     pub fn store_field(&mut self, idx: usize, val: Value, mutable: bool) -> bool {
         if self.has_raw_layout() {
-            let Some(layout) = self.class.raw_layout.clone() else { return false };
-            let Some(desc) = layout.fields.get(idx).copied() else { return false };
+            // 記述子（`Copy`）だけを写す（並びの `Rc` を写さない・copy_alloc_speed_plan.md 7-10）
+            let Some(desc) = self.class.raw_layout.as_ref().and_then(|l| l.fields.get(idx).copied()) else { return false };
             let o = desc.byte_offset;
             {
                 let bytes = self.raw_bytes_mut();

@@ -663,6 +663,15 @@ impl Interpreter {
     /// `let` 仮引数 ＋ `mut` の値は `copy_value`（一般経路の複製ループと同一）、それ以外は共有。そのあと `float` 注釈の
     /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
     pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
+        // 作り直さない値（`is_plain_scalar`）は、下の検査（Python の物か）も複製（`copy_value_held` が同じ値を返す）も
+        // 何もしないので、昇格だけを行う（copy_alloc_speed_plan.md 7-10。生成のたびに仮引数の数だけ通る。以前はこの関数の
+        // 自己時間が VM の `Vec3` の生成の 18% だった）。診断の数え方は下と同じにする。
+        if Self::is_plain_scalar(&v) {
+            if !p.mutable && arg_mut {
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, &v, true);
+            }
+            return Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v));
+        }
         Self::check_param_binding(p.mutable, &p.name, &v)?;
         // ⚠ 呼ぶ側は**評価済みの引数の並びの要素の写し**を渡す（`try_fast_bind`・`store_auto_init`）。並びの 1 個は
         //   束縛が済むまで誰からも見えないので、数えない（`held` = 1・copy_alloc_speed_plan.md 2-2）。

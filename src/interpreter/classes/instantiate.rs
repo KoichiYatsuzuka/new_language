@@ -147,9 +147,12 @@ impl Interpreter {
             })));
         }
 
+        // ⚠ 引数の並びは使い終えたら置き場へ戻す（copy_alloc_speed_plan.md 7-10。VM の `Call` も `ar_construct_ic` も
+        //   置き場から取った並びを渡すので、戻さないと生成のたびに並びを 1 つ確保していた）
         // パーサが合成した `__init__`（本体が `self.f = f` だけ）は呼ばずに、VM と同じ規則で格納する（10-3・D-11・U-4）
         if let Some(plan) = self.auto_init_plan(&class) {
             if let Some(r) = self.store_auto_init(&plan, &inst_val, &evaled) {
+                self.recycle_evaled(evaled);
                 return r.map(|()| inst_val);
             }
         }
@@ -160,27 +163,27 @@ impl Interpreter {
         if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
             self, inst_val.clone(), "__init__", &evaled, true,
         ) {
+            self.recycle_evaled(evaled);
             result?;
             return Ok(inst_val);
         }
-        if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
-            if init_overloads.len() == 1 {
-                self.exec_fn_evaled(
-                    init_overloads[0].clone(),
-                    &evaled,
-                    Some(inst_val.clone()),
-                    "__init__",
-                    None,
-                )?;
-            } else {
+        // 候補は借りて、1 つなら関数の値だけを写して呼ぶ（`lookup_method_in_class` は候補の `Vec` を写す・6-3 と同じ）
+        match class.methods.get("__init__").map(Vec::as_slice) {
+            Some([init]) => {
+                let r = self.exec_fn_evaled(init.clone(), &evaled, Some(inst_val.clone()), "__init__", None);
+                self.recycle_evaled(evaled);
+                r?;
+            }
+            Some(init_overloads) => {
                 self.dispatch_overload_evaled(
-                    init_overloads,
+                    init_overloads.to_vec(),
                     evaled,
                     Some(inst_val.clone()),
                     "__init__",
                     None,
                 )?;
             }
+            None => {}
         }
         Ok(inst_val)
     }
