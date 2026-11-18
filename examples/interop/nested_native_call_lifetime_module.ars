@@ -1,0 +1,13 @@
+class Bag:
+    mut n: int
+    fn __len__(self) -> int:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+fn size_of(b: Bag) -> float:
+    ...
+
+fn alive_after(b: Bag, k: int) -> int:
+    ...

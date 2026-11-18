@@ -158,6 +158,12 @@ struct NativeCallState {
     arena_save: usize,
     /// Iter table size saved at the outermost native call entry.
     iter_save: usize,
+    /// 入れ子のネイティブ呼び出し（コンパイル済みコード → コールバック → 利用者のコード → コンパイル済みの関数）に
+    /// 入ったときのアリーナの長さ（いちばん内側が末尾）。抜けるときにそこまで巻き戻す（known_bugs.md #25）。
+    /// ⚠ 以前は巻き戻すのがいちばん外の呼び出しだけで、入れ子の呼び出しが積んだ値（引数・結果の箱・本体の値）は、
+    ///   呼ぶ側の生成コードが巻き戻すまで残った。値を積まないと判定した関数の呼び出しは巻き戻さないので
+    ///   （`pushing_fns`・9-2）、その中の `len(x)`（`__len__` がコンパイル済み）をループで呼ぶと回数だけ溜まった。
+    nested_saves: Vec<usize>,
     /// Error set by a callback on failure; checked after each native call.
     error: Option<String>,
     /// Exception raised by CB_RAISE; (type_name, message) pair.
@@ -262,6 +268,7 @@ thread_local! {
             call_depth: 0,
             arena_save: INT_CACHE_BASE,
             iter_save: 0,
+            nested_saves: Vec::new(),
             error: None,
             pending_raise: None,
             cstr_bufs: Vec::new(),
@@ -282,6 +289,8 @@ pub fn native_call_active() -> bool {
 
 /// ネイティブ関数呼び出しを開始する。最外呼び出し（深さ0）のとき `true` を返す。
 /// 最外レベルではアリーナとイテレータテーブルの保存点を記録し `interp_ptr` をセットする。
+/// 入れ子の呼び出しは、入ったときのアリーナの長さを `nested_saves` に積む（抜けるときにそこまで巻き戻す・#25）。
+/// ⚠ 呼んだら必ず [`exit_native_call`] か [`abort_native_call`] を同じ `is_outermost` で 1 回呼ぶこと（積んだ長さが残る）。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
     with_state(|s| {
         let mut st = s.borrow_mut();
@@ -293,50 +302,50 @@ pub fn enter_native_call(interp: *mut Interpreter) -> bool {
             st.iter_save = st.iter_table.len();
             true
         } else {
+            let len = st.arena.len();
+            st.nested_saves.push(len);
             false
         }
     })
 }
 
+/// 呼び出しを抜けるときの片づけ（[`exit_native_call`] / [`abort_native_call`] の共通部分）。
+/// いちばん外ならアリーナ・イテレータの表などを入ったときまで戻す。入れ子ならアリーナだけを入ったときの長さまで
+/// 巻き戻す（#25）。呼ぶ側の生成コードが持つハンドルは入る前に積んだもの（その長さより下）なので消えない。
+/// ⚠ イテレータの表は入れ子では戻さない（以前と同じ。イテレータは呼ぶ側の生成コードの `for` が片づける）。
+fn leave_native_call(st: &mut NativeCallState, is_outermost: bool) {
+    if st.call_depth > 0 {
+        st.call_depth -= 1;
+    }
+    if is_outermost {
+        st.interp_ptr = std::ptr::null_mut();
+        let arena_save = st.arena_save;
+        let iter_save = st.iter_save;
+        st.arena.truncate(arena_save);
+        st.iter_table.truncate(iter_save);
+        st.cstr_bufs.clear();
+        st.protocol_args.clear();
+        // いちばん外を抜けたら入れ子の長さは残らない（対になっていれば空。念のため捨てる）
+        st.nested_saves.clear();
+    } else if let Some(len) = st.nested_saves.pop() {
+        st.arena.truncate(len);
+    }
+}
+
 /// ネイティブ関数呼び出しを正常終了する。
-/// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ等を保存点まで巻き戻す。
+/// `result_h` から結果値をクローンし（巻き戻す前）、アリーナを入ったときまで巻き戻す（[`leave_native_call`]）。
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
     with_state(|s| {
         let mut st = s.borrow_mut();
         let result = st.clone_value(result_h);
-        if st.call_depth > 0 {
-            st.call_depth -= 1;
-        }
-        if is_outermost {
-            st.interp_ptr = std::ptr::null_mut();
-            let arena_save = st.arena_save;
-            let iter_save = st.iter_save;
-            st.arena.truncate(arena_save);
-            st.iter_table.truncate(iter_save);
-            st.cstr_bufs.clear();
-            st.protocol_args.clear();
-        }
+        leave_native_call(&mut st, is_outermost);
         result
     })
 }
 
 /// ネイティブ関数呼び出しをエラー終了する（値を返さずクリーンアップのみ）。
 pub fn abort_native_call(is_outermost: bool) {
-    with_state(|s| {
-        let mut st = s.borrow_mut();
-        if st.call_depth > 0 {
-            st.call_depth -= 1;
-        }
-        if is_outermost {
-            st.interp_ptr = std::ptr::null_mut();
-            let arena_save = st.arena_save;
-            let iter_save = st.iter_save;
-            st.arena.truncate(arena_save);
-            st.iter_table.truncate(iter_save);
-            st.cstr_bufs.clear();
-            st.protocol_args.clear();
-        }
-    })
+    with_state(|s| leave_native_call(&mut s.borrow_mut(), is_outermost))
 }
 
 /// 値をアリーナにプッシュしてハンドルを返す（小整数・真偽値はキャッシュ済みハンドルを返す）。
@@ -863,5 +872,37 @@ mod tests {
                 "binop code {code} of {op:?} is not decoded back by the callbacks"
             );
         }
+    }
+
+    /// 入れ子の呼び出し（コンパイル済みコード → コールバック → 利用者のコード → コンパイル済みの関数）は、抜けるときに
+    /// 入ったときのアリーナの長さまで巻き戻す（known_bugs.md #25）。結果は巻き戻す前に取り出し、外の呼び出しが
+    /// 積んだ値は残る。エラーで抜けても（`abort_native_call`）、入れ子の中の入れ子でも同じ。
+    #[test]
+    fn nested_native_calls_drop_what_they_pushed() {
+        use super::*;
+        let arena_len = || with_state(|s| s.borrow().arena.len());
+        let is_str = |v: &Value, want: &str| matches!(v, Value::Str(s) if &**s == want);
+        assert!(enter_native_call(std::ptr::null_mut()), "the test starts outside any native call");
+        let kept = push_handle(Value::str("outer"));
+        let before = arena_len();
+        // 正常に抜ける入れ子: 引数と結果の箱を積んで抜ける
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("arg"));
+        let r = push_handle(Value::str("result"));
+        assert!(is_str(&exit_native_call(r, false), "result"), "the result is taken before the arena is cut back");
+        assert_eq!(arena_len(), before, "a nested call leaves nothing behind");
+        // エラーで抜ける入れ子の中の入れ子
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("a"));
+        let mid = arena_len();
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("b"));
+        abort_native_call(false);
+        assert_eq!(arena_len(), mid, "the inner nested call is cut back to its own entry");
+        abort_native_call(false);
+        assert_eq!(arena_len(), before, "an aborted nested call leaves nothing behind");
+        assert!(is_str(&clone_value_at(kept), "outer"), "what the outer call pushed stays");
+        exit_native_call(TL_NONE, true);
+        assert!(!native_call_active());
     }
 }
