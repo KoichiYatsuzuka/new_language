@@ -2367,7 +2367,6 @@ fn construct_by_name(
     mut_mask: u32,
     fresh: u32,
 ) -> i64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
     let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
     let (has_err, interp_ptr) = with_state(|s| {
         let st = s.borrow();
@@ -2381,11 +2380,7 @@ fn construct_by_name(
     let interp = unsafe { &mut *interp_ptr };
     match interp.get_var(name).map(|v| v.get_value()) {
         Some(Value::Class(cls)) => {
-            if !cell.is_null() {
-                interp.native_classes.insert(cls.class_id, cls.clone());
-                // SAFETY: 上と同じ
-                unsafe { &*(cell as *const AtomicU64) }.store(u64::from(cls.class_id) + 1, Ordering::Relaxed);
-            }
+            remember_site_class(interp, cell, &cls);
             construct_class(interp, cls, args_ptr, n_args, mut_mask, fresh)
         }
         Some(other) => {
@@ -2425,6 +2420,102 @@ fn finish_construct(r: Result<Value, String>) -> i64 {
             TL_NONE
         }
     }
+}
+
+/// 生成の箇所のセルとインタープリタの表に、名前で引いたクラスを覚える（2 回目からは名前で引かない・10-2）。
+fn remember_site_class(
+    interp: &mut crate::interpreter::Interpreter,
+    cell: *mut u64,
+    cls: &std::rc::Rc<crate::interpreter::ClassValue>,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if !cell.is_null() {
+        interp.native_classes.insert(cls.class_id, cls.clone());
+        // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+        unsafe { &*(cell as *const AtomicU64) }.store(u64::from(cls.class_id) + 1, Ordering::Relaxed);
+    }
+}
+
+/// 生成の箇所 `cell`（null でないこと）のクラス。`ar_construct_ic` と同じ引き方: セルが埋まっていて表にあればそれ、
+/// 無ければ名前で引いて覚える。クラスでない値・見つからない名前は `None`（呼ぶ側は今までの道へ回り、そちらがエラーを出す）。
+fn site_class(
+    interp: &mut crate::interpreter::Interpreter,
+    cell: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+) -> Option<std::rc::Rc<crate::interpreter::ClassValue>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+    let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    if packed != 0 {
+        if let Some(cls) = interp.native_classes.get(&((packed - 1) as u32)) {
+            return Some(cls.clone());
+        }
+    }
+    let name = native_str(name_ptr, name_len, "class name")?;
+    match interp.get_var(name).map(|v| v.get_value()) {
+        Some(Value::Class(cls)) => {
+            remember_site_class(interp, cell, &cls);
+            Some(cls)
+        }
+        _ => None,
+    }
+}
+
+/// 合成した `__init__` で作るインスタンスを、引数を格納する前の状態で作ってアリーナに積む（field 83・
+/// copy_alloc_speed_plan.md 7-11）。生成コードはこのあと数値の引数を番地 `*out` へ直接書き、初期化の印を立てる。これは
+/// `store_auto_init` が `store_field_checked` で行う格納と同じ結果になる: 作ったばかりのインスタンスは不変でなく、どの slot も
+/// まだ初期化されていないので格納の検査は通り、値の変換（幅への切り詰め・`float32` への丸め）は生成コードが
+/// `InstanceData::store_field` と同じ規則で行う。
+/// クラスは `ar_construct_ic` と同じセル・同じ引き方（[`site_class`]）で決め、生成コードの表（`DirectClassDesc`）のとおりか
+/// （並び・幅・`mut`・全部 public）と、合成した `__init__` の格納の順が `slots` と同じか（`Interpreter::auto_init_direct_ok`）を
+/// 確かめる。確かめたクラスは照合のセル `checked` に番号 + 1 で覚え、2 回目からは照合しない（答えはクラスと、箇所ごとに
+/// 決まった表と順だけで決まる。`ar_inst_block` のセルと同じ考え）。外れ・先に積まれたエラーは 0 を返して何もしない
+/// （生成コードは今までの `ar_construct_ic` へ回り、結果もエラーも今までどおり）。
+#[allow(clippy::too_many_arguments)]
+extern "C" fn ar_new_instance(
+    cell: *mut u64,
+    checked: *mut u64,
+    name_ptr: *const u8,
+    name_len: i32,
+    desc: *const crate::interpreter::value::DirectClassDesc,
+    slots: *const i64,
+    n: i32,
+    out: *mut *mut u64,
+) -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() || checked.is_null() || desc.is_null() || out.is_null() || n <= 0 || slots.is_null() {
+        return 0;
+    }
+    let (has_err, interp_ptr) = with_state(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err || interp_ptr.is_null() {
+        return 0;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let Some(cls) = site_class(interp, cell, name_ptr, name_len) else { return 0 };
+    // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（IC のセルと同じ）
+    let checked = unsafe { &*(checked as *const AtomicU64) };
+    let id1 = u64::from(cls.class_id) + 1;
+    if checked.load(Ordering::Relaxed) != id1 {
+        // SAFETY: `desc` は生成コードが DLL の中に置いた表
+        let Some((cname, fields)) = (unsafe { read_direct_desc(desc) }) else { return 0 };
+        // SAFETY: 生成コードが渡す `n` 個の `i64` の定数（DLL の中）
+        let want = unsafe { std::slice::from_raw_parts(slots, n as usize) };
+        if !cls.matches_direct_desc(cname, &fields) || !interp.auto_init_direct_ok(&cls, want) {
+            return 0;
+        }
+        checked.store(id1, Ordering::Relaxed);
+    }
+    let rc = std::rc::Rc::new(std::cell::RefCell::new(crate::interpreter::Interpreter::new_instance_data(&cls)));
+    // SAFETY: 塊（`Box<[u64]>`）はインスタンスが生きている間動かない。インスタンスはすぐ下でアリーナの欄に置き、生成コードは
+    // 次にコールバックを呼ぶ前に書き終える（その間インスタンスを借りている者はいない・D-13 ④）。
+    let block = unsafe { (*rc.as_ptr()).raw.as_mut_ptr() };
+    let h = push_handle(Value::Instance(rc));
+    unsafe { *out = block };
+    h
 }
 
 /// `len(x)`（field 68・native_object_access_plan.md 5-2）。組み込みの `len` と同じ `len_of`（唯一の実装）を呼び、
@@ -2607,6 +2698,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     expect_ret: ar_expect_ret,
     live_tasks: &crate::interpreter::async_mgr::LIVE_TASKS,
     copy_hooks: &crate::interpreter::value::COPY_HOOKS,
+    new_instance: ar_new_instance,
 };
 
 /// field 80（7-5）: ガードが外れて名前で呼んだメソッドの戻り値を、宣言の型どおりに開ける。
@@ -2838,6 +2930,95 @@ mod tests {
         assert_eq!(ar_method_guard(inst(false), bad.as_ptr(), 2, &mut empty, 0), 0);
         assert_eq!(empty, 0);
         assert!(take_error().is_some_and(|e| e.contains("class name from native code is not valid UTF-8")));
+    }
+
+    /// 合成した `__init__` の生成（field 83・7-11）: 宣言から静的に求めた格納の順（`static_class_layout`）が実行時の計画と
+    /// 同じクラスにだけ、引数を格納する前のインスタンスを作って番地を返す。利用者が書いた `__init__`・違う順・違う表・
+    /// クラスでない名前・先に積まれたエラーは 0（何も作らない・エラーを積まない）。
+    #[test]
+    fn new_instance_makes_only_instances_of_the_described_synthesized_init() {
+        use crate::interpreter::value::{block, direct_field_info, static_class_layout, DirectClassDesc, DirectFieldDesc};
+        let src = "class V2:\n    mut x: float\n    let n: int32\n    const K: int = 3\n\n\
+                   class U2:\n    mut x: float\n    let n: int32\n\n    \
+                   fn __init__(mut self, let x: float, let n: int32) -> None:\n        self.x = x\n        self.n = n\n\n\
+                   fn not_a_class() -> int:\n    return 1\n";
+        let stmts = crate::parser::Parser::new(crate::lexer::Lexer::new(src, "t.ar").tokenize(), None)
+            .parse_program()
+            .expect("parse");
+        let layout = |name: &str| {
+            stmts.iter().find_map(|s| match s {
+                crate::ast::Stmt::ClassDef { name: n, bases, body, .. } if n == name => static_class_layout(bases, body),
+                _ => None,
+            })
+        };
+        // 静的な順: 合成した `__init__` は `const` を受けない。利用者が書いた同じ形の `__init__` は合成したものでない
+        let v2 = layout("V2").expect("V2 has a raw layout");
+        assert_eq!(v2.auto_init, Some(vec![0, 1]));
+        assert_eq!(layout("U2").expect("U2 has a raw layout").auto_init, None);
+
+        let mut interp = crate::interpreter::Interpreter::new();
+        for s in &stmts {
+            interp.exec(s).expect("exec");
+        }
+        let outermost = super::enter_native_call(&mut interp as *mut _);
+        // 生成コードの表（V2 の並び。U2 も同じ並び）
+        #[repr(C)]
+        struct Table(DirectClassDesc, [DirectFieldDesc; 2]);
+        let table = |name: &'static str| {
+            Table(
+                DirectClassDesc { name: name.as_ptr(), name_len: name.len() as i64, n_fields: 2 },
+                [
+                    DirectFieldDesc { name: "x".as_ptr(), name_len: 1, info: direct_field_info(v2.layout.fields[0], true) },
+                    DirectFieldDesc { name: "n".as_ptr(), name_len: 1, info: direct_field_info(v2.layout.fields[1], false) },
+                ],
+            )
+        };
+        let (tv, tu) = (table("V2"), table("U2"));
+        // 1 つの箇所 = 1 組のセル・表・順（照合のセルは、その箇所の表と順で確かめたクラスを覚える）
+        let call = |name: &str, t: &Table, order: &[i64], cells: &mut (u64, u64), out: &mut *mut u64| {
+            let (cell, checked) = cells;
+            ar_new_instance(cell, checked, name.as_ptr(), name.len() as i32, &t.0, order.as_ptr(), order.len() as i32, out)
+        };
+
+        // 表と順のとおり: インスタンスを積み、セルにクラスを覚え、先頭の塊の番地を返す。フィールドはまだ書いていない
+        let (mut cells, mut out) = ((0u64, 0u64), std::ptr::null_mut());
+        let h = call("V2", &tv, &[0, 1], &mut cells, &mut out);
+        assert!(h >= 3 && !out.is_null());
+        let Value::Instance(rc) = clone_value_at(h) else { panic!("not an instance") };
+        let id1 = u64::from(rc.borrow().class.class_id) + 1;
+        assert_eq!(cells, (id1, id1));
+        assert_eq!(unsafe { (*rc.as_ptr()).raw.as_mut_ptr() }, out);
+        let head = unsafe { *out };
+        assert_eq!((head & block::CLASS_ID_MASK) as u32, rc.borrow().class.class_id);
+        assert_eq!(head & (block::init_bit(0) | block::init_bit(1)), 0);
+        assert!(rc.borrow().field_value(0).is_none());
+        // 2 回目はセルから（名前は読まない: 正しくない UTF-8 でも作れる）
+        let bad = [0xFFu8, 0xFE];
+        let mut out2 = std::ptr::null_mut();
+        let h2 = ar_new_instance(&mut cells.0, &mut cells.1, bad.as_ptr(), 2, &tv.0, [0i64, 1].as_ptr(), 2, &mut out2);
+        assert!(h2 >= 3 && h2 != h && !out2.is_null() && out2 != out);
+
+        // 外れ（それぞれ別の箇所）: 違う順・違う数・利用者が書いた `__init__`・表と違うクラス・クラスでない名前 → 0。
+        // 何も作らず、照合のセルは空のまま、エラーも積まない
+        let mut o = std::ptr::null_mut();
+        for (name, t, order) in [
+            ("V2", &tv, &[1i64, 0][..]),
+            ("V2", &tv, &[0][..]),
+            ("U2", &tu, &[0, 1][..]),
+            ("V2", &tu, &[0, 1][..]),
+            ("not_a_class", &tv, &[0, 1][..]),
+        ] {
+            let mut site = (0u64, 0u64);
+            assert_eq!(call(name, t, order, &mut site, &mut o), 0, "{name} {order:?}");
+            assert_eq!(site.1, 0);
+        }
+        assert!(o.is_null());
+        assert!(take_error().is_none());
+        // 先に積まれたエラーがあれば 0（エラーはそのまま残る）
+        set_native_error("ValueError: earlier".to_string());
+        assert_eq!(call("V2", &tv, &[0, 1], &mut cells, &mut o), 0);
+        assert!(take_error().is_some_and(|e| e.contains("earlier")));
+        super::abort_native_call(outermost);
     }
 
     /// 番地を返すコールバック（field 78・8-2）: クラスが生成コードの表のとおりのときだけ番地を返し、セルに覚える。

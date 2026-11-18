@@ -596,7 +596,9 @@ impl<'a> GenCtx<'a> {
 
     /// クラスの表（`DirectClassDesc` ＋ フィールドごとの `DirectFieldDesc`）を DLL の定数として出し、`ptr @名前` を返す
     /// （copy_alloc_speed_plan.md 8-3）。クラスごとに 1 回だけ出す。番地を返すコールバックが、実行時のクラスと照合する。
-    fn direct_class_desc(&mut self, class: &str) -> Option<String> {
+    /// クラスの `__init__` が合成したものなら、その格納の順（slot の `i64` の並び）も `@名前_ord` として出す（7-11・
+    /// `CB_NEW_INSTANCE` が実行時の計画と照合する。使わなければ LLVM が消す）。
+    pub(super) fn direct_class_desc(&mut self, class: &str) -> Option<String> {
         if let Some(g) = self.direct_descs.get(class) {
             return Some(format!("ptr @{g}"));
         }
@@ -615,6 +617,11 @@ impl<'a> GenCtx<'a> {
             class.len(),
             items.join(", ")
         ));
+        if let Some(order) = rc.auto_init.as_ref().filter(|o| !o.is_empty()) {
+            let k = order.len();
+            let slots: Vec<String> = order.iter().map(|i| format!("i64 {i}")).collect();
+            self.str_globals.push_str(&format!("@{g}_ord = private constant [{k} x i64] [{}], align 8\n", slots.join(", ")));
+        }
         self.direct_descs.insert(class.to_string(), g.clone());
         Some(format!("ptr @{g}"))
     }
@@ -681,19 +688,11 @@ impl<'a> GenCtx<'a> {
         let rc = self.raw_classes.get(class)?;
         let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
         let desc = rc.layout.fields[idx];
-        // (格納する型, 値の変換)。`None` はそのまま
         let conv = match (desc.width, vt) {
-            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
-            (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
-            (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
-            (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
-            (RawWidth::F64, Ty::Float) => ("double", None),
-            (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
-            // `int` → `float` のフィールドの昇格
+            // `int` → `float` のフィールドの昇格（代入は `InstanceData::store_field` が `int` を直接その幅へ変換する）
             (RawWidth::F64, Ty::Int) => ("double", Some("sitofp i64")),
             (RawWidth::F32, Ty::Int) => ("float", Some("sitofp i64")),
-            // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）: 今までの道がエラーにする
-            _ => return None,
+            _ => raw_store_conv(desc.width, vt)?,
         };
         Some((idx, desc, conv))
     }
@@ -1093,5 +1092,27 @@ impl<'a> GenCtx<'a> {
 
     // ── Expression generation ─────────────────────────────────────────────────
 
+}
+
+/// 型 `vt` の値を幅 `w` のフィールドへ番地から直接書くときの (格納する型, 値の変換)（変換が `None` ならそのまま）。
+/// 値の型とフィールドの幅が同じ種類（整数 / 小数）のときだけ: `InstanceData::store_field` と同じく、整数は幅に切り詰め、
+/// `float32` は丸める。代入（8-4・[`GenCtx::direct_write_plan`]）と、合成した `__init__` の生成（7-11）が共有する。
+/// ⚠ `int` を小数のフィールドへ書く変換はここに無い（代入と生成で規則が違う: 代入は `int` を直接その幅へ、生成は束縛で
+///   いったん `float` にしてから。生成のほうは型検査が止めるので出さない）。入らない型は `None`（今までの道がエラーにする）。
+pub(super) fn raw_store_conv(
+    w: crate::interpreter::value::RawWidth,
+    vt: Ty,
+) -> Option<(&'static str, Option<&'static str>)> {
+    use crate::interpreter::value::RawWidth;
+    Some(match (w, vt) {
+        (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+        (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
+        (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
+        (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
+        (RawWidth::F64, Ty::Float) => ("double", None),
+        (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
+        // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）
+        _ => return None,
+    })
 }
 

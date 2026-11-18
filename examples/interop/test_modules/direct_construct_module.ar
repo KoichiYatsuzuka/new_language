@@ -1,0 +1,103 @@
+# direct_construct_module.ar — direct_construct.ar のコンパイル済みの側（copy_alloc_speed_plan.md 7-11）
+#
+# 全フィールドが数値のクラスを合成した `__init__` で作るとき、コンパイル済みコードは数値の引数を箱に入れずに
+# インスタンスの番地へ直接書く。利用者が書いた `__init__`・名前つき引数・数値でない引数は今までの道。
+
+class V3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+# 幅の違う整数・float32・`let` のフィールド
+class Mixed:
+    let id: int
+    mut w: float32
+    mut k: int16
+    mut u: uint8
+    mut big: int64
+
+# `const` / `static mut` を持つクラス（インスタンスのフィールドではないので、合成した `__init__` は受けない）
+class WithConst:
+    mut x: float
+    const K: int = 5
+    static mut made: int = 0
+
+# 利用者が書いた `__init__`（合成したものでないので、今までどおり呼ぶ）
+class Custom:
+    mut x: float
+
+    fn __init__(mut self, let a: float) -> None:
+        self.x = a * 2.0
+
+# 数値でないフィールドを持つクラス（raw レイアウトでない）の中で V3 を作る
+class Line:
+    mut a: V3
+    mut b: V3
+    mut tag: str
+
+fn next_val(mut log: list[float]) -> float:
+    log.append(1.0)
+    return float(len(log))
+
+fn v3_text(let v: V3) -> str:
+    return str(v.x) + "," + str(v.y) + "," + str(v.z)
+
+fn make_v3(let a: float, let b: float, let c: float) -> V3:
+    return V3(a, b, c)
+
+# 整数から作る（`int` をそのまま `float` のフィールドへ渡すのは型検査が止める）
+fn make_v3_int(let a: int, let b: int, let c: int) -> V3:
+    return V3(float(a), float(b), float(c))
+
+fn mixed_text(let id: int, let w: float, let k: int, let u: int, let big: int) -> str:
+    let mx = Mixed(id, w, k, u, big)
+    return str(mx.id) + "," + str(mx.w) + "," + str(mx.k) + "," + str(mx.u) + "," + str(mx.big)
+
+fn mixed_text_f(let w: float) -> str:
+    let mx = Mixed(1, w, 2, 3, 4)
+    return str(mx.w)
+
+fn const_text(let x: float) -> str:
+    let d = WithConst(x)
+    WithConst.made += 1
+    return str(d.x) + "," + str(WithConst.K) + "," + str(WithConst.made)
+
+fn custom_x(let a: float) -> float:
+    let c = Custom(a)
+    return c.x
+
+fn keyword_text() -> str:
+    return v3_text(V3(z=3.0, x=1.0, y=2.0))
+
+# 引数は左から順に評価する
+fn order_text() -> str:
+    mut log: list[float] = []
+    return v3_text(V3(next_val(log), next_val(log) * 10.0, next_val(log) * 100.0))
+
+# ループの中で作る（同じ箇所のセルを使い回す）・作った値を書き換える
+fn loop_sum(let n: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        mut v = V3(float(i), 1.0, 2.0)
+        v.y = v.y + v.x
+        s += v.x + v.y + v.z
+        i += 1
+    return s
+
+fn line_text() -> str:
+    let l = Line(V3(1.0, 2.0, 3.0), make_v3_int(4, 5, 6), "t")
+    return v3_text(l.a) + "|" + v3_text(l.b) + "|" + l.tag
+
+# 作った値をリストに入れる（作りたての値を格納する）
+fn list_text() -> str:
+    mut xs: list[V3] = []
+    mut i = 0
+    while i < 3:
+        xs.append(V3(float(i), float(i) * 2.0, 0.5))
+        i += 1
+    return v3_text(xs[0]) + "|" + v3_text(xs[2])
+
+fn is_v3(let x: float) -> bool:
+    let v = V3(x, x, x)
+    return v is V3

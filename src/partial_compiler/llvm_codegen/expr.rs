@@ -1057,6 +1057,97 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// `Class(args)` を、数値の引数を箱に入れずに作ったばかりのインスタンスの番地へ直接書いて作る（copy_alloc_speed_plan.md
+    /// 7-11）。出せなければ何も出さずに `None`（呼ぶ側が今の `CB_CONSTRUCT_IC` を使う）。
+    ///
+    /// 出せるのは、`class` がこのモジュールの raw レイアウトのクラスで全フィールドが public、`__init__` がパーサの合成したもの
+    /// （`StaticRawClass::auto_init`）、引数（位置引数・評価済みの `arg_exprs`）の数がその仮引数と同じで、どの引数も格納先の
+    /// フィールドに同じ種類の数として入るとき（[`raw_store_conv`]。`int` を `float` のフィールドへ渡す形は型検査が止めるので
+    /// 出さない）。出すコード:
+    /// 1. `CB_NEW_INSTANCE`: インスタンスを作ってアリーナに積み、先頭の塊の番地を返す。クラスが表のとおりでない・合成した
+    ///    `__init__` の格納の順が違うときは 0（何も作らない）
+    /// 2. 作れたら、引数を幅に合わせて（切り詰め・丸め）番地へ書き、初期化の印をまとめて立てる。`store_auto_init` の格納
+    ///    （束縛は数なのでそのまま・格納の検査は作ったばかりのインスタンスなので通る）と同じ結果
+    /// 3. 作れなければ、引数を箱に入れて今までの `CB_CONSTRUCT_IC` を呼ぶ（**同じセル**を渡す。結果もエラーも今までと同じ）
+    /// ⚠ 引数は呼ぶ前に評価してある（評価の順は今までと同じ）。番地は 2 の間だけ使う（間にコールバックを挟まない）。
+    fn emit_direct_construct(&mut self, class: &str, arg_exprs: &[(String, Ty)], mask: u32) -> Option<String> {
+        use crate::interpreter::value::block;
+        if self.terminated {
+            return None;
+        }
+        let rc = self.raw_classes.get(class).filter(|rc| rc.all_public)?;
+        let order = rc.auto_init.as_ref()?;
+        if order.is_empty() || order.len() != arg_exprs.len() {
+            return None;
+        }
+        let mut stores = Vec::with_capacity(order.len());
+        for (&idx, (v, vt)) in order.iter().zip(arg_exprs) {
+            let desc = rc.layout.fields[idx];
+            let (ity, conv) = super::context::raw_store_conv(desc.width, *vt)?;
+            stores.push((desc, ity, conv, v.clone()));
+        }
+        let init_bits = order.iter().fold(0u64, |b, &i| b | block::init_bit(i));
+        let n = order.len();
+        let table = self.direct_class_desc(class)?;
+        let ord = format!("{table}_ord");
+        // セルは今までの道（`CB_CONSTRUCT_IC`）と共有する（どちらもクラスの番号 + 1 を入れる）。照合のセルは別（確かめた
+        // クラスを覚える）
+        let cell = self.ic_cell();
+        let checked = self.ic_cell();
+        let name = self.str_const(class.as_bytes());
+        let len = class.len();
+        let out = format!("%_nio{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{out} = alloca ptr, align 8"));
+        let h = self.call_cb(CB_NEW_INSTANCE, &[
+            cell.clone(), checked, name.clone(), format!("i32 {len}"), table, ord, format!("i32 {n}"), format!("ptr {out}"),
+        ]);
+        let made = self.fresh_reg();
+        self.ec(&format!("{made} = icmp ne i64 {h}, 0"));
+        let (bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&made, &bfast, &bslow);
+
+        self.start_block(&bfast);
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {out}, align 8"));
+        for (desc, ity, conv, v) in &stores {
+            let stored = match conv {
+                None => v.clone(),
+                Some(op) => {
+                    let c = self.fresh_reg();
+                    self.ec(&format!("{c} = {op} {v} to {ity}"));
+                    c
+                }
+            };
+            let fp = self.fresh_reg();
+            self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {}", block::field_offset(desc.byte_offset)));
+            self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        }
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let head2 = self.fresh_reg();
+        // LLVM の整数の定数は符号つきの 10 進で書く
+        self.ec(&format!("{head2} = or i64 {head}, {}", init_bits as i64));
+        self.ec(&format!("store i64 {head2}, ptr {p}, align 8"));
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        let handles: Vec<String> = arg_exprs.iter().map(|(v, vt)| self.to_handle(v, *vt)).collect();
+        let arr = self.spill_handle_array(&handles, "kargs");
+        self.emit_fresh_mask(&handles);
+        let h2 = self.call_cb(CB_CONSTRUCT_IC, &[
+            cell, name, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}"),
+        ]);
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi i64 [ {h}, %{bfast} ], [ {h2}, %{bslow} ]"));
+        // どちらの道も作りたての値を新しい欄に積む（`CB_CONSTRUCT_IC` と同じ・12-1）
+        self.fresh_regs.insert(r.clone());
+        Some(r)
+    }
+
     /// 引数ハンドルを **entry ブロックの `alloca` 配列**へ積んでポインタ名を返す（#64）。
     ///
     /// ⚠ `alloca` は **entry ブロック**へ出す（`ea`）。ループ本体に置くと反復ごとに
@@ -1523,9 +1614,13 @@ impl<'a> GenCtx<'a> {
                 && !self.locals.contains_key(name)
                 && args.iter().all(|a| matches!(a, CallArg::Positional(_)))
             {
+                let mask = self.method_mut_mask_args(args);
+                // 全フィールドが数値のクラスを合成した `__init__` で作るなら、数値の引数を番地へ直接書く（7-11）
+                if let Some(r) = self.emit_direct_construct(name, &arg_exprs, mask) {
+                    return r;
+                }
                 let ptr = self.str_const(name.as_bytes());
                 let len = name.len() as i32;
-                let mask = self.method_mut_mask_args(args);
                 let handles: Vec<String> = arg_exprs.iter()
                     .map(|(v, vt)| self.to_handle(v, *vt))
                     .collect();

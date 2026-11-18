@@ -1,0 +1,81 @@
+class V3:
+    mut x: float
+    mut y: float
+    mut z: float
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        ...
+
+
+class Mixed:
+    let id: int
+    mut w: float32
+    mut k: int16
+    mut u: uint8
+    mut big: int64
+    fn __init__(mut self, id: int, w: float32, k: int16, u: uint8, big: int64) -> None:
+        ...
+
+
+class WithConst:
+    mut x: float
+    const K: int = ...
+    static mut made: int = ...
+    fn __init__(mut self, x: float) -> None:
+        ...
+
+
+class Custom:
+    mut x: float
+    fn __init__(mut self, a: float) -> None:
+        ...
+
+
+class Line:
+    mut a: V3
+    mut b: V3
+    mut tag: str
+    fn __init__(mut self, a: V3, b: V3, tag: str) -> None:
+        ...
+
+
+fn next_val(mut log: list[float]) -> float:
+    ...
+
+fn v3_text(v: V3) -> str:
+    ...
+
+fn make_v3(a: float, b: float, c: float) -> V3:
+    ...
+
+fn make_v3_int(a: int, b: int, c: int) -> V3:
+    ...
+
+fn mixed_text(id: int, w: float, k: int, u: int, big: int) -> str:
+    ...
+
+fn mixed_text_f(w: float) -> str:
+    ...
+
+fn const_text(x: float) -> str:
+    ...
+
+fn custom_x(a: float) -> float:
+    ...
+
+fn keyword_text() -> str:
+    ...
+
+fn order_text() -> str:
+    ...
+
+fn loop_sum(n: int) -> float:
+    ...
+
+fn line_text() -> str:
+    ...
+
+fn list_text() -> str:
+    ...
+
+fn is_v3(x: float) -> bool:
+    ...

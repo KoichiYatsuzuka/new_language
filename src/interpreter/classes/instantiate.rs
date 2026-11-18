@@ -76,13 +76,7 @@ impl Interpreter {
             }
         }
         let class = self.os_error_subclass_for(class, &evaled);
-        let mut inst = InstanceData::new_empty(class.clone(), 0);
-        for (name, default_val, mutable) in &class.field_defaults {
-            if let Some(&idx) = class.field_index.get(name.as_str()) {
-                inst.store_field(idx, default_val.clone(), *mutable);
-            }
-        }
-        let inst_rc = Rc::new(RefCell::new(inst));
+        let inst_rc = Rc::new(RefCell::new(Self::new_instance_data(&class)));
         // 組み込みの例外の階層は `__init__` より先に `args` と `str(e)` を入れる（CPython の
         // `BaseException.__new__` と同じ・python_builtins_plan.md のタスク 4-2）。`__init__` を書かない
         // Python のクラスも、`super().__init__` を呼ばない `__init__` も、`args` は作るときの位置引数になる。
@@ -213,38 +207,55 @@ impl Interpreter {
     }
 
     fn build_auto_init_plan(class: &Rc<ClassValue>) -> Option<Rc<[AutoInitSlot]>> {
-        use crate::ast::{Expr, Stmt};
         let ov = class.methods.get("__init__")?;
         let [f] = ov.as_slice() else { return None };
-        if !f.params.first().is_some_and(|p| p.name == "self") {
-            return None;
-        }
         // `import[rs]` の構造体のフィールドは setter を通す（`attr_assign_ic` の外れた道）
         if class.field_index.contains_key("__rs_handle__") {
             return None;
         }
-        let params = &f.params[1..];
-        if params.iter().any(|p| p.variadic || p.default.is_some()) || f.body.len() != params.len() {
-            return None;
-        }
-        let mut slots = Vec::with_capacity(params.len());
-        for (st, p) in f.body.iter().zip(params) {
-            let Stmt::AttrAssign { target: Expr::Attr { object, attr, .. }, value: Expr::Ident { name, .. }, span } = st else {
-                return None;
-            };
-            let self_obj = matches!(object.as_ref(), Expr::Ident { name: s, .. } if s == "self");
-            if !self_obj || span.line != 0 || attr != &p.name || name != &p.name {
-                return None;
-            }
+        // 合成したものかの判定はコンパイル済みコードの直接の生成と同じ関数（copy_alloc_speed_plan.md 7-11）
+        let names = crate::interpreter::value::synthesized_init_fields(&f.params, &f.body)?;
+        let mut slots = Vec::with_capacity(names.len());
+        for (attr, p) in names.into_iter().zip(&f.params[1..]) {
             // `static mut`・クラス変数への代入は格納ではない（外れた道が扱う）
             if class.static_vars.contains_key(attr) || Self::lookup_class_var(class, attr).is_some() {
                 return None;
             }
-            let idx = *class.field_index.get(attr.as_str())?;
-            let is_mutable = class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
+            let idx = *class.field_index.get(attr)?;
+            let is_mutable = class.field_mutability.get(attr).copied().unwrap_or(true);
             slots.push(AutoInitSlot { param: p.clone(), idx, is_mutable });
         }
         Some(slots.into())
+    }
+
+    /// `class` のインスタンスを、コンパイル済みコードが [`Self::new_instance_data`] で作ってから数値の引数を番地へ直接書いて
+    /// よいか（copy_alloc_speed_plan.md 7-11・field 83 の `ar_new_instance`）。よいのは、[`Self::instantiate_evaled`] が
+    /// `new_instance_data` の後で合成した `__init__` の直接格納だけを行うクラス（ふつうのクラスで、例外の階層でも C# の
+    /// ブリッジでもない）で、その格納の順（フィールドの番号）が `slots`（生成コードが宣言から静的に求めた順）と同じとき。
+    /// ⚠ 答えはクラスと `slots` だけで決まる（コールバックは箇所ごとのセルに覚えて 2 回目から引かない）。
+    pub(crate) fn auto_init_direct_ok(&mut self, class: &Rc<ClassValue>, slots: &[i64]) -> bool {
+        if class.builtin != crate::interpreter::BuiltinClass::Ordinary
+            || Self::in_exception_hierarchy(class)
+            || class.class_vars.contains_key("__cs_bridge_path__")
+            || class.class_vars.contains_key("__cs_proc_path__")
+        {
+            return false;
+        }
+        self.auto_init_plan(class).is_some_and(|plan| {
+            plan.len() == slots.len() && plan.iter().zip(slots).all(|(s, &want)| s.idx as i64 == want)
+        })
+    }
+
+    /// クラスの空のインスタンス（フィールドの既定値は格納済み）。[`Self::instantiate_evaled`] と、合成した `__init__` の
+    /// 直接の生成（`ar_new_instance`・7-11）が共有する。
+    pub(crate) fn new_instance_data(class: &Rc<ClassValue>) -> InstanceData {
+        let mut inst = InstanceData::new_empty(class.clone(), 0);
+        for (name, default_val, mutable) in &class.field_defaults {
+            if let Some(&idx) = class.field_index.get(name.as_str()) {
+                inst.store_field(idx, default_val.clone(), *mutable);
+            }
+        }
+        inst
     }
 
     /// 合成した `__init__` を呼ぶ代わりに、VM と同じ規則で引数をフィールドへ格納する。`None` は今の道（`__init__` を

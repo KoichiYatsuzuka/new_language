@@ -802,6 +802,24 @@ pub struct ArCallbacks {
     /// 生成コードはこの 2 つと箇所ごとのセルを読み、読むだけの関数へ `mut` の値を渡すときに、そろえば `CB_BORROW_OR_COPY`
     /// を呼ばずに同じハンドルを使う。
     pub copy_hooks: *const std::sync::atomic::AtomicU8,
+
+    // ── Direct construction (field 83・copy_alloc_speed_plan.md 7-11) ──
+    /// 合成した `__init__` で作るインスタンスを、引数を格納する前の状態で作ってアリーナに積む。(生成の箇所のセル
+    /// 〔`construct_ic` と共有〕, 照合のセル〔確かめたクラスの番号 + 1〕, クラスの名前, 長さ, 生成コードの持つクラスの表,
+    /// 格納の順〔フィールドの slot の並び〕, その長さ, 先頭の塊の番地の書き込み先) を取り、ハンドルを返す。生成コードは
+    /// このあと数値の引数を番地へ直接書き、初期化の印を立てる。クラスが表のとおりでない・合成した `__init__` の順が違う・
+    /// 先に積まれたエラーがある、ときは 0 を返し、何もしない（生成コードは今までの `construct_ic` へ回る）。番地は、次に
+    /// コールバックを呼ぶまでの間だけ使う。
+    pub new_instance: extern "C" fn(
+        *mut u64,
+        *mut u64,
+        *const u8,
+        i32,
+        *const crate::interpreter::value::DirectClassDesc,
+        *const i64,
+        i32,
+        *mut *mut u64,
+    ) -> i64,
 }
 
 // SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。

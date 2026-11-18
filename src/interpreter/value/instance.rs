@@ -548,6 +548,38 @@ pub struct StaticRawClass {
     /// インスタンスのフィールドが全部 public か。そうでないクラスは番地を返すコールバックが必ず空を返すので
     /// （[`ClassValue::matches_direct_desc`]）、生成コードは直接の道を出さない（無駄なコールバックを呼ばない・8-7）。
     pub all_public: bool,
+    /// `__init__` がパーサの合成したもの（[`synthesized_init_fields`]）なら、仮引数の順に格納するフィールドの slot。
+    /// 生成コードが数値の引数を番地へ直接書いて作るのに使う（copy_alloc_speed_plan.md 7-11）。⚠ ヒントであり、実行時の
+    /// 計画と同じ順かは生成のコールバック（`ar_new_instance`）が確かめる。
+    pub auto_init: Option<Vec<usize>>,
+}
+
+/// `__init__`（仮引数 `params`・本体 `body`）がパーサの合成したもの（`parser::classes::generate_auto_init_if_needed`）なら、
+/// 仮引数（`self` を除く）の順に、格納するフィールドの名前（`self.f = f` の `f`）。合成したものでなければ `None`。
+/// 実行時の直接格納の計画（`Interpreter::build_auto_init_plan`）と、コンパイル済みコードの直接の生成（copy_alloc_speed_plan.md
+/// 7-11・[`static_class_layout`]）が同じ判定を使う。
+/// ⚠ 合成したものに限る（native_object_access_plan.md U-4 案 1）: 利用者が書いた同じ形の `__init__` は今までどおり呼ぶ
+///   （トレースバック・デバッガに出る）。目印は文の位置: 合成した文はすべて `Span::unknown()`（行 0）で、パーサが読んだ文は
+///   必ず位置を持つ。トレイトのフィールドへの格納（`self::T.f = f`）を含むものは `None`。
+pub fn synthesized_init_fields<'p>(params: &'p [crate::ast::Param], body: &[crate::ast::Stmt]) -> Option<Vec<&'p str>> {
+    use crate::ast::{Expr, Stmt};
+    if !params.first().is_some_and(|p| p.name == "self") {
+        return None;
+    }
+    let params = &params[1..];
+    if params.iter().any(|p| p.variadic || p.default.is_some()) || body.len() != params.len() {
+        return None;
+    }
+    body.iter()
+        .zip(params)
+        .map(|(st, p)| {
+            let Stmt::AttrAssign { target: Expr::Attr { object, attr, .. }, value: Expr::Ident { name, .. }, span } = st else {
+                return None;
+            };
+            let self_obj = matches!(object.as_ref(), Expr::Ident { name: s, .. } if s == "self");
+            (self_obj && span.line == 0 && attr == &p.name && name == &p.name).then_some(p.name.as_str())
+        })
+        .collect()
 }
 
 /// クラスの宣言（`Stmt::ClassDef` の `bases` と `body`）から raw レイアウトを求める。持たないクラスは `None`。
@@ -571,7 +603,19 @@ pub fn static_class_layout(bases: &[String], body: &[crate::ast::Stmt]) -> Optio
         }
     }
     let layout = RawLayout::for_class(bases.is_empty(), &own, own.len())?;
-    Some(StaticRawClass { layout, fields, all_public })
+    // 合成した `__init__` の格納の順（7-11）。`__init__` が 1 つだけで、格納先がどれもインスタンスのフィールドのとき
+    // （`const` / `static mut` への格納は格納ではない・実行時の計画と同じ）
+    let mut inits = body.iter().filter_map(|st| match st {
+        Stmt::FnDef { name, params, body, .. } if name == "__init__" => Some((params, body)),
+        _ => None,
+    });
+    let auto_init = match (inits.next(), inits.next()) {
+        (Some((params, fbody)), None) => synthesized_init_fields(params, fbody).and_then(|names| {
+            names.iter().map(|n| fields.iter().position(|(f, _)| f == n)).collect::<Option<Vec<usize>>>()
+        }),
+        _ => None,
+    };
+    Some(StaticRawClass { layout, fields, all_public, auto_init })
 }
 
 /// 生成コードが DLL の中に持つ「このクラスだと思って読み書きする」表の先頭（8-2・D-13 ②）。
