@@ -139,11 +139,20 @@ impl<'a> GenCtx<'a> {
         }
         // 複製の前に保存点を取り、呼び出しの後で巻き戻す（1-15）。⚠ 取らないと複製がいちばん外の呼び出しが
         // 終わるまでアリーナに残り、ループの中の呼び出しでは周の数だけ溜まった（`let self` の深いコピーで 1 GB 超）。
+        // 呼ばれた側が値を積まないなら、保存点は複製しうる道（下の `note_lazy_save`）でだけ取る（7-12・`CallSave::Lazy`）。
         if self.pending_save.is_none() {
-            self.pending_save = Some(self.call_cb(CB_ARENA_SAVE, &[]));
+            self.pending_save = Some(if self.pushing_fns.contains(callee) || self.terminated {
+                CallSave::Taken(self.call_cb(CB_ARENA_SAVE, &[]))
+            } else {
+                let slot = self.fresh_reg();
+                self.ea(&format!("{slot} = alloca i64, align 8"));
+                self.ec(&format!("store i64 -1, ptr {slot}"));
+                CallSave::Lazy(slot)
+            });
         }
         // 作りたての値を積んだばかりの欄（`fresh_regs`）は、誰とも共有していなければ複製しない（2-4・`ar_copy_fresh`）
         if self.fresh_regs.contains(h) {
+            self.note_lazy_save();
             return self.call_cb(CB_COPY_FRESH, &[format!("i64 {h}"), format!("i32 {}", i32::from(is_self))]);
         }
         // 呼ぶ関数が読むだけなら複製しない（4-4・`ar_borrow_or_copy`）。読むだけかは実行時に、プログラム全体の
@@ -158,6 +167,7 @@ impl<'a> GenCtx<'a> {
         // 無ければ、コールバックを呼ばずに同じハンドルを使う（コールバックと同じ判定・値を見ないので `__copy__` の印は
         // プロセス全体で見る）。ほかは今までどおりコールバックが判定し、必要なら複製する（セルを埋めるのもこちら）。
         if self.terminated {
+            self.note_lazy_save();
             return self.call_cb(CB_BORROW_OR_COPY, &[
                 format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
             ]);
@@ -187,6 +197,7 @@ impl<'a> GenCtx<'a> {
         self.start_block(&bfast);
         self.br(&bdone);
         self.start_block(&bslow);
+        self.note_lazy_save();
         let copied = self.call_cb(CB_BORROW_OR_COPY, &[
             format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
         ]);
@@ -232,14 +243,91 @@ impl<'a> GenCtx<'a> {
     }
 
     /// 直接呼び出しの被演算子を組み立てる前に呼ぶ: 外側の呼び出しの保存点を退避する（1-15）。
-    pub(super) fn take_call_save(&mut self) -> Option<String> {
+    pub(super) fn take_call_save(&mut self) -> Option<CallSave> {
         self.pending_save.take()
     }
 
     /// 被演算子を組み立てた後に呼ぶ: この呼び出しの複製の前に取った保存点（無ければ `None`）を返し、外側の
     /// 呼び出しの保存点を戻す（1-15）。
-    pub(super) fn finish_call_save(&mut self, outer: Option<String>) -> Option<String> {
+    pub(super) fn finish_call_save(&mut self, outer: Option<CallSave>) -> Option<CallSave> {
         std::mem::replace(&mut self.pending_save, outer)
+    }
+
+    /// 組み立て中の呼び出しの保存点が `CallSave::Lazy` なら、ここで保存点を取る（今の長さと置き場の小さい方を置く）。
+    /// `copy_for_let` が、値を積みうる（複製しうる）コールバックの直前で呼ぶ（7-12）。
+    fn note_lazy_save(&mut self) {
+        if let Some(CallSave::Lazy(slot)) = self.pending_save.clone() {
+            self.emit_lazy_save(&slot);
+        }
+    }
+
+    /// `slot` に保存点を置く: 取っていなければ今の長さ、取ってあれば小さい方（初めに取った方）。`-1` は u64 の最大なので
+    /// 「取っていない」も同じ比較で済む。
+    fn emit_lazy_save(&mut self, slot: &str) {
+        let now = self.call_cb(CB_ARENA_SAVE, &[]);
+        let old = self.fresh_reg();
+        self.ec(&format!("{old} = load i64, ptr {slot}"));
+        let lt = self.fresh_reg();
+        self.ec(&format!("{lt} = icmp ult i64 {now}, {old}"));
+        let m = self.fresh_reg();
+        self.ec(&format!("{m} = select i1 {lt}, i64 {now}, i64 {old}"));
+        self.ec(&format!("store i64 {m}, ptr {slot}"));
+    }
+
+    /// 直接呼び出し（`@{sym}_impl` / `_fast`）の直前に呼ぶ: 呼ばれた側がハンドルを作りうる（`pushing_fns`）なら、
+    /// 保存点が必ずあるようにする（9-2・7-12）。作らないなら被演算子の複製の保存点（あれば）のまま。
+    pub(super) fn save_before_call(&mut self, sym: &str, save: Option<CallSave>) -> Option<CallSave> {
+        if !self.pushing_fns.contains(sym) {
+            return save;
+        }
+        match save {
+            None => Some(CallSave::Taken(self.call_cb(CB_ARENA_SAVE, &[]))),
+            Some(CallSave::Lazy(slot)) => {
+                // `copy_for_let` も同じ `pushing_fns` を見るのでここへは来ないが、来ても保存点を取れば正しい
+                self.emit_lazy_save(&slot);
+                Some(CallSave::Lazy(slot))
+            }
+            taken => taken,
+        }
+    }
+
+    /// 直接呼び出しの直後に呼ぶ: [`Self::save_before_call`] の保存点まで巻き戻す。`raw` は呼び出しが返したハンドル
+    /// （`int` / `float` を返す呼び出しは `None`・残すハンドルが無い）。戻り値は巻き戻した後の結果のハンドル
+    /// （`raw` が `None` なら `"0"`）。保存点が無ければ何もせず `raw` のまま（呼ばれた側は何も積んでいない・7-12）。
+    /// `CallSave::Lazy` は、保存点を取ったとき（複製しうる道を通ったとき）だけ巻き戻す。
+    pub(super) fn rewind_after_call(&mut self, save: Option<CallSave>, raw: Option<&str>) -> String {
+        let keep = format!("i64 {}", raw.unwrap_or("0"));
+        match save {
+            None => raw.unwrap_or("0").to_string(),
+            Some(CallSave::Taken(s)) => {
+                let h = self.call_cb(CB_ARENA_COMPACT, &[keep, format!("i64 {s}")]);
+                if raw.is_some() { h } else { "0".to_string() }
+            }
+            // 到達しないコード（ブロックが終端した後）にはブロックを作らない（`copy_for_let` と同じ）
+            Some(CallSave::Lazy(_)) if self.terminated => raw.unwrap_or("0").to_string(),
+            Some(CallSave::Lazy(slot)) => {
+                let s = self.fresh_reg();
+                self.ec(&format!("{s} = load i64, ptr {slot}"));
+                let taken = self.fresh_reg();
+                self.ec(&format!("{taken} = icmp ne i64 {s}, -1"));
+                let (bc, bs, bd) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+                self.br_cond(&taken, &bc, &bs);
+                self.start_block(&bc);
+                let h = self.call_cb(CB_ARENA_COMPACT, &[keep, format!("i64 {s}")]);
+                self.br(&bd);
+                self.start_block(&bs);
+                self.br(&bd);
+                self.start_block(&bd);
+                match raw {
+                    Some(r) => {
+                        let p = self.fresh_reg();
+                        self.ec(&format!("{p} = phi i64 [ {h}, %{bc} ], [ {r}, %{bs} ]"));
+                        p
+                    }
+                    None => "0".to_string(),
+                }
+            }
+        }
     }
 
     /// 宣言（`let` / `mut`）で束縛する値を VM と同じ規則で複製する（§0.3 ⑥・1-6）。

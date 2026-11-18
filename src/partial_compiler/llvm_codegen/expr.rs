@@ -837,41 +837,32 @@ impl<'a> GenCtx<'a> {
     }
 
     /// `@{sym}_impl` を内部 ABI（4-1）で呼び、結果をその型のまま返す: `float` → `double`、`int` → 生の i64、
-    /// ほか → ハンドル。`int` とハンドルはアリーナを保存点まで巻き戻す。`float` は複製をしたとき（`save` がある）
-    /// だけ巻き戻す（1-15・複製の無い `float` の呼び出しはアリーナを触らない）。
+    /// ほか → ハンドル。呼ばれた側がハンドルを作りうる（`pushing_fns`）か、被演算子を複製した（`save` がある）ときだけ、
+    /// アリーナを保存点まで巻き戻す（1-15・9-2・copy_alloc_speed_plan.md 7-12）。
     /// `save`: 被演算子の複製の前に取った保存点（`finish_call_save`）。あればそこまで巻き戻して複製も捨てる。
-    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<String>) -> (String, Ty) {
+    ///
+    /// 値を積まない関数（`pushing_fns` に無い・`lcg` のような数値だけの関数や、フィールドを書いて `None` を返す
+    /// メソッド）は、複製が無ければ前後で何もしない。ハンドルを返す場合も、呼ばれた側が何も積まないので、返るのは
+    /// 呼ぶ前からある欄（引数・`None` など）で、積み直さずにそのまま使える。
+    /// ⚠ 7-12 より前は `int` / ハンドルを返す呼び出しが、呼ばれた側が何も積まなくても毎回 `ar_arena_save` /
+    ///   `ar_arena_compact` を払っていた（コンパイル済みの k1 で 1 体の更新に 3 組・うち 1 組は値を積まないメソッドの呼び出し）。
+    /// ⚠ 「積まない」は呼ばれた側の本体が積む箇所（`push_sites`）を出さないこと。積む箇所に数えないコールバックが
+    ///   走らせた利用者のコードの入れ子のネイティブ呼び出しは、その呼び出しが抜けるときに自分で巻き戻す（known_bugs.md #25）。
+    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<CallSave>) -> (String, Ty) {
+        let save = self.save_before_call(sym, save);
         match ret {
-            Ty::Float => {
-                // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`int` / ハンドルを返す呼び出しと同じ）。
-                // 数値だけの関数（`pushing_fns` に無い）は何もしない。⚠ 以前は巻き戻さず、呼ばれた側が積んだ値が
-                // いちばん外の呼び出しが終わるまで残った（ループ・再帰の中の呼び出しで溜まる）
-                let save = if self.pushing_fns.contains(sym) {
-                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
-                } else {
-                    save
-                };
+            Ty::Float | Ty::Int => {
                 let r = self.fresh_reg();
-                self.ec(&format!("{r} = call double @{sym}_impl({params})"));
-                if let Some(s) = save {
-                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
-                }
-                (r, Ty::Float)
-            }
-            Ty::Int => {
-                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
-                let r = self.fresh_reg();
-                self.ec(&format!("{r} = call i64 @{sym}_impl({params})"));
+                let t = if ret == Ty::Float { "double" } else { "i64" };
+                self.ec(&format!("{r} = call {t} @{sym}_impl({params})"));
                 // 生値なので残すハンドルは無い（TL_NONE を渡して巻き戻すだけ）
-                self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {save}")]);
-                (r, Ty::Int)
+                self.rewind_after_call(save, None);
+                (r, ret)
             }
             _ => {
-                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
                 let raw = self.fresh_reg();
                 self.ec(&format!("{raw} = call i64 @{sym}_impl({params})"));
-                let h = self.call_cb(CB_ARENA_COMPACT, &[format!("i64 {raw}"), format!("i64 {save}")]);
-                (h, Ty::Handle)
+                (self.rewind_after_call(save, Some(&raw)), Ty::Handle)
             }
         }
     }
@@ -1174,7 +1165,7 @@ impl<'a> GenCtx<'a> {
     /// |---|---|---|
     /// | 戻り値 | `(値, ネイティブ型)` | **i64 ハンドル 1 本** |
     /// | 呼び出し規約 | 戻り値が `Ty::Float` のときだけ **`double` を返す `_impl` / `_fast`** を直接呼ぶ | **ハンドル ABI 一本** |
-    /// | アリーナ | **触らない**（save/compact を出さない） | `CB_ARENA_SAVE` → `CB_ARENA_COMPACT` を必ず挟む |
+    /// | アリーナ | 呼ばれた側が積むとき・被演算子を複製したときだけ `CB_ARENA_SAVE` → `CB_ARENA_COMPACT` を挟む（9-2・7-12・どちらも `call_impl`） | 同左（7-12 より前は必ず挟んでいた） |
     /// | boxing | 無し（スカラーのまま） | 有り |
     ///
     /// ⇒ **同じ呼び先に対する 2 つの ABI** であって、重複実装ではない。
@@ -1295,16 +1286,10 @@ impl<'a> GenCtx<'a> {
                             if let Some(fast_args) = fast_args {
                                 let r = self.fresh_reg();
                                 // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`call_impl` と同じ）
-                                let save = if self.pushing_fns.contains(&sym) {
-                                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
-                                } else {
-                                    save
-                                };
+                                let save = self.save_before_call(&sym, save);
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
-                                // 被演算子を複製したとき（1-15）・呼ばれた側が積むとき（9-2）に巻き戻す
-                                if let Some(s) = save {
-                                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
-                                }
+                                // 被演算子を複製したとき（1-15・7-12）・呼ばれた側が積むとき（9-2）に巻き戻す
+                                self.rewind_after_call(save, None);
                                 return (r, Ty::Float);
                             }
                             // `build_fast_call_args` は被演算子を作る前にしか `None` を返さない（作った複製は無い）

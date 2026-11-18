@@ -611,6 +611,20 @@ struct BlockCtx {
     list_al: Option<String>,
 }
 
+/// 組み立て中の直接呼び出しの、アリーナの保存点（`GenCtx::pending_save`・native_object_access_plan.md 1-15・
+/// copy_alloc_speed_plan.md 7-12）。
+#[derive(Clone)]
+enum CallSave {
+    /// 呼び出しの前に取った保存点のレジスタ。呼んだ後は必ずここまで巻き戻す。
+    Taken(String),
+    /// 値を積まない関数（`pushing_fns` に無い）の呼び出しで、`let` で受ける値を実際に複製しうる道（読むだけと分かって
+    /// いない・作りたての値）の中でだけ取る保存点の置き場（`alloca i64`・呼び出しごとに -1 に戻し、取ったら最小の長さ）。
+    /// 呼んだ後は、取ったときだけ巻き戻す。⚠ 7-12 より前は複製しうる呼び出しで必ず取っていたので、読むだけと分かって
+    /// 複製しない呼び出し（k1 の、フィールドの値を `let` で受けるメソッドへ渡す呼び出し）も毎回 `ar_arena_save` /
+    /// `ar_arena_compact` を払った。
+    Lazy(String),
+}
+
 // ── Code generation context ───────────────────────────────────────────────────
 
 struct GenCtx<'a> {
@@ -646,9 +660,9 @@ struct GenCtx<'a> {
     /// 属性を読む箇所ごとの IC のセル（`@_icN`）の採番（2-2）。
     ic_ctr:     usize,
     /// 組み立て中の直接呼び出しで、`let` で受ける値の複製（`copy_for_let`）の前に取ったアリーナの保存点
-    /// （native_object_access_plan.md 1-15）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
+    /// （native_object_access_plan.md 1-15・[`CallSave`]）。呼び出しの後でここまで巻き戻し、複製を呼び出しごとに捨てる。
     /// 入れ子の呼び出しは [`Self::take_call_save`] / [`Self::finish_call_save`] で積む。
-    pending_save: Option<String>,
+    pending_save: Option<CallSave>,
     /// 今の関数で、アリーナへ値を積みうる箇所（ハンドルを返すコールバック・`float` を返す直接呼び出し）を出した数
     /// （native_object_access_plan.md 9-1）。ループの本体の前後で比べ、増えたループだけを周ごとに巻き戻す。
     push_sites: usize,
@@ -1703,6 +1717,104 @@ fn read_only() -> int:
         }
         for left in ["set_c", "bump", "in_block", "record"] {
             assert!(!names.contains(&left), "{left} must not be compiled: {names:?}");
+        }
+    }
+
+    /// 値を積まない関数（`pushing_fns` に無い）を `int` / ハンドルを返す直接呼び出しで呼ぶときは、被演算子を複製して
+    /// いなければ巻き戻さない（copy_alloc_speed_plan.md 7-12・`float` の 9-2 と同じ）。`let` で受ける `mut` の値を
+    /// 渡す呼び出しは、保存点を複製しうる道でだけ取り、取ったときだけ巻き戻す（`CallSave::Lazy`）。積む関数は今までどおり
+    /// 必ず巻き戻す。⚠ 以前は `int` / ハンドルを返す呼び出しと、`let` で受ける `mut` の値を渡す呼び出しが、毎回
+    /// `ar_arena_save` / `ar_arena_compact` を払っていた。
+    #[test]
+    fn calls_of_functions_that_push_nothing_skip_the_arena_rewind() {
+        let src = "\
+class V:
+    mut x: float
+    mut tag: str
+
+    fn reset(mut self) -> None:
+        self.x = 0.0
+
+fn twice(let n: int) -> int:
+    return n * 2
+
+fn same(mut v: V) -> V:
+    return v
+
+fn label(let n: int) -> int:
+    return len(str(n))
+
+fn peek(let v: V) -> float:
+    return v.x
+
+fn grab(let v: V) -> str:
+    return v.tag
+
+fn drive(mut v: V, let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += twice(i)
+        v.reset()
+        mut w = same(v)
+        acc += label(i)
+        i += 1
+    return acc
+
+fn copies(mut v: V) -> str:
+    let x = peek(v)
+    return grab(v)
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, _) = generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+        // 呼ぶ側の `_impl` の本体だけを見る（`_tl` の包みも `_impl` を呼ぶが、境界なので巻き戻さない）
+        let mut lines: Vec<&str> = Vec::new();
+        let mut inside = false;
+        for l in ir.lines() {
+            if l.starts_with("define ") {
+                inside = l.contains("@drive_impl(") || l.contains("@copies_impl(");
+            }
+            if inside {
+                lines.push(l);
+            }
+        }
+        let compact_field = format!("i32 0, i32 {}", super::CB_ARENA_COMPACT);
+        let is_compact = |l: &str| l.contains("getelementptr inbounds %ArCallbacks") && l.ends_with(&compact_field);
+        #[derive(Debug, PartialEq)]
+        enum Rewind { None, Always, IfSaved }
+        // 呼び出しの直後に巻き戻しがあるか: コールバックを引く 2 行の中なら必ず、保存点の置き場が -1 でないかを
+        // 比べて分かれた先（8 行の中）なら取ったときだけ
+        let rewinds_after = |callee: &str| -> Vec<Rewind> {
+            let call = format!("@{callee}_impl(");
+            lines.iter().enumerate()
+                .filter(|(_, l)| l.contains(&call) && l.contains(" call "))
+                .map(|(i, _)| {
+                    let near = &lines[i + 1..(i + 3).min(lines.len())];
+                    let after = &lines[i + 1..(i + 9).min(lines.len())];
+                    if near.iter().any(|l| is_compact(l)) {
+                        Rewind::Always
+                    } else if after.iter().any(|l| l.contains("icmp ne i64") && l.ends_with(", -1"))
+                        && after.iter().any(|l| is_compact(l))
+                    {
+                        Rewind::IfSaved
+                    } else {
+                        Rewind::None
+                    }
+                })
+                .collect()
+        };
+        for (callee, want) in [
+            ("twice", Rewind::None),
+            ("V__reset", Rewind::None),
+            ("same", Rewind::None),
+            ("label", Rewind::Always),
+            ("grab", Rewind::Always),
+            ("peek", Rewind::IfSaved),
+        ] {
+            let r = rewinds_after(callee);
+            assert!(!r.is_empty(), "{callee}_impl is called directly");
+            assert!(r.iter().all(|x| *x == want), "a call of {callee} must rewind {want:?}: {r:?}");
         }
     }
 }

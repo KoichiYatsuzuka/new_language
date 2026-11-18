@@ -483,7 +483,16 @@ When one eligible function calls another eligible function in the same module, t
 
 For `let` (immutable) parameters, the codegen emits a `CB_DEEP_COPY` before the call, matching the interpreter's immutable-argument semantics.
 
-For method calls, the codegen additionally wraps the call with `CB_ARENA_SAVE` / `CB_ARENA_COMPACT` to safely reclaim temporaries created inside the callee.
+Direct calls (functions and methods, every return type) are wrapped with `CB_ARENA_SAVE` / `CB_ARENA_COMPACT`
+to reclaim temporaries created inside the callee **only when the callee can push** (`pushing_fns`, a fixpoint
+over the module — native_object_access_plan.md 9-2, copy_alloc_speed_plan.md 7-12) or an operand was copied for
+a `let` parameter. A callee that pushes nothing (pure-numeric `int` functions, methods that only write numeric
+fields and return `None`, functions returning an argument) gets a bare `call`; a returned handle is then a
+pre-existing slot. When the callee pushes nothing but an operand *may* be copied, the save point is taken lazily
+inside the copying slow path (`CallSave::Lazy`) and the rewind after the call runs only if it was taken — the
+read-only fast path (7-7) pays nothing. A nested native call (compiled code → callback → user code → compiled
+function) cuts the arena back to its own entry when it returns (`leave_native_call`, known_bugs.md #25), so
+callbacks not counted as pushes cannot leak through a skipped rewind.
 
 ### Short-circuit Operators
 
