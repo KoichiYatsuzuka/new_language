@@ -183,8 +183,12 @@ impl Interpreter {
     ///   オブジェクトのフィールドの可変性には影響しない。
     pub(crate) fn apply_freeze_to_value(&mut self, val: &Value, freeze_fields: bool) -> Result<(), String> {
         if let Value::Instance(ref inst_rc) = val {
-            let class = inst_rc.borrow().class.clone();
-            if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+            // `__freeze__` を持たないクラス（ほとんど）は名前で引かない（クラスごとの印・7-1）
+            let hooked = {
+                let inst = inst_rc.borrow();
+                inst.class.has_freeze_method().then(|| inst.class.clone())
+            };
+            if let Some(overloads) = hooked.and_then(|class| self.lookup_method_in_class(&class, "__freeze__")) {
                 if overloads.len() == 1 {
                     self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__", None)?;
                 } else {

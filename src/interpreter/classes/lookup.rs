@@ -80,8 +80,9 @@ impl Interpreter {
     pub(crate) fn has_copy_hook(&self, val: &Value) -> bool {
         match val {
             Value::Instance(rc) => {
-                // ⚠ 以前は `lookup_method_in_class` が候補の `Vec` を写していた（呼び出しのたびに確保・6-3）
-                rc.borrow().class.methods.contains_key("__copy__")
+                // ⚠ 以前は `lookup_method_in_class` が候補の `Vec` を写していた（呼び出しのたびに確保・6-3）。
+                //   その後も名前で引いていた（`contains_key`）のを、クラスごとの印にした（7-1）
+                rc.borrow().class.has_copy_method()
             }
             _ => false,
         }
@@ -89,8 +90,15 @@ impl Interpreter {
 
     /// [`Self::copy_value`] の本体（診断 `copy_stats` に数えない。利用者が書いた `x.copy()` は別の種類として数える）。
     pub(crate) fn copy_value_uncounted(&mut self, val: Value) -> Result<Value, String> {
-        if let Value::Instance(ref inst_rc) = val {
-            let class = inst_rc.borrow().class.clone();
+        // `__copy__` を持たないクラス（ほとんど）は名前で引かない（クラスごとの印・7-1）
+        let hooked = match &val {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                inst.class.has_copy_method().then(|| inst.class.clone())
+            }
+            _ => None,
+        };
+        if let Some(class) = hooked {
             if let Some(overloads) = self.lookup_method_in_class(&class, "__copy__") {
                 // 引数なし（self のみ）で呼び出せるオーバーロードを選別する
                 let callable: Vec<Rc<FnValue>> = overloads

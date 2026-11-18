@@ -925,6 +925,30 @@ fn copy_for_store_copies() {
     assert!(!same(&bind_mut(&mut interp, xs.clone()), &xs), "Arrow code copies on a mut declaration");
 }
 
+/// クラスごとの `__copy__` / `__freeze__` の印（`ClassValue::hook_bits`・copy_alloc_speed_plan.md 7-1）は、
+/// メソッドの表から求めた答えと同じで、2 回目に聞いても（覚えた答えでも）、スレッドへ送る写し（`deep_clone`）でも同じ。
+#[test]
+fn copy_and_freeze_hook_bits_follow_the_methods() {
+    let src = "class P:\n    mut n: int\n\
+               class C:\n    mut n: int\n    fn __copy__(let self) -> C:\n        mut c = C(self.n)\n        return c\n\
+               class F:\n    mut n: int\n    fn __freeze__(mut self) -> None:\n        self.n = 0\n\
+               class B:\n    mut n: int\n    fn __copy__(let self) -> B:\n        mut c = B(self.n)\n        return c\n    \
+               fn __freeze__(mut self) -> None:\n        self.n = 0\n";
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
+    for (name, copy, freeze) in [("P", false, false), ("C", true, false), ("F", false, true), ("B", true, true)] {
+        let Some(Value::Class(cls)) = interp.get_val(name) else { panic!("{name} is not a class") };
+        let sent = cls.deep_clone();
+        for (what, c) in [("defined", &*cls), ("asked again", &*cls), ("deep_clone", &sent)] {
+            assert_eq!(c.has_copy_method(), copy, "{name}.__copy__ ({what})");
+            assert_eq!(c.has_freeze_method(), freeze, "{name}.__freeze__ ({what})");
+            assert_eq!(c.has_copy_method(), c.methods.contains_key("__copy__"), "{name}: bits vs. methods ({what})");
+        }
+    }
+}
+
 /// 組み込みの値の表（`type_check::builtin_members`）のメンバーは、どの種類の値でも実行時に呼べる（pandas_import_plan.md の 6-6）。
 /// 表は protocol の照合で「持つ」と言うので（`list[int]` は `__len__` を持つ）、実行時に無いメンバーを表に置かないための検査。
 /// ⚠ 以前は特殊メソッドのほとんどと `list` / `tuple` の `count` / `index` が実行時に無かった。
