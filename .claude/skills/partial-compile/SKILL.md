@@ -511,6 +511,18 @@ read-only fast path (7-7) pays nothing. A nested native call (compiled code → 
 function) cuts the arena back to its own entry when it returns (`leave_native_call`, known_bugs.md #25), so
 callbacks not counted as pushes cannot leak through a skipped rewind.
 
+### Loop Rewinds (native_object_access_plan.md 9-1 / copy_alloc_speed_plan.md 7-15)
+
+A loop whose body can push to the arena (`push_sites` grew) takes a save point just before the loop (inserted at
+`loop_pre_pos`) and rewinds to it every round (`gen_loop_body`). Locals that the body stored handles into
+(`handle_store_log`) are kept: the latch calls `CB_COMPACT_MANY`, which re-pushes them and writes the new handles back.
+When nothing is kept, a `for` over an iterator merges the rewind into the next round's fetch: the header calls
+`CB_ITER_NEXT_AT` (field 84) with a per-loop slot that is reset to -1 on entry and set to the save point only when the
+loop rewinds (`new_loop_fuse_slot` / `loop_fuse_slot`), so one callback per round instead of two. `break` skips the
+header, so the last round's values stay until the enclosing rewind (as before). The fetch moves the element out of the
+iterator's snapshot (`NativeIter::Items`) instead of cloning it; the snapshot itself (`ar_iter_from`) is kept because
+the VM also iterates over a copy taken when the loop starts.
+
 ### Remembered Block Addresses (copy_alloc_speed_plan.md 8-5 / 7-13)
 
 Numeric fields of this module's raw-layout classes are read and written at the instance's block address

@@ -408,12 +408,11 @@ impl<'a> GenCtx<'a> {
                 self.iter_scopes.push(iter_al.clone());
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
+                let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let ir = self.fresh_reg();
-                self.ec(&format!("{ir} = load i64, ptr {iter_al}"));
-                let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {ir}")]);
+                let next = self.emit_iter_next_at(&iter_al, &fuse);
                 self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
                 self.note_handle_store(&tgt_al);
                 let done = self.fresh_reg();
@@ -425,6 +424,7 @@ impl<'a> GenCtx<'a> {
                     result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone(),
                     iter_depth: self.iter_scopes.len(),
                 });
+                self.loop_fuse_slot = Some(fuse);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
                 self.start_block(&exit_blk);

@@ -1,0 +1,44 @@
+# for_loop_rewind.ar — コンパイル済みコードの `for` は、周ごとに作った値を次の周の頭で捨てる（copy_alloc_speed_plan.md 7-15）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/for_loop_rewind_module.ar
+#   2. cargo run --release -- examples/interop/for_loop_rewind.ar
+#
+# 周の終わりに残す値が無いループは、アリーナの巻き戻しを次の周の頭の取り出し（`iter_next_at`）にまとめる。反復の写しの
+# 要素は複製せずに取り出して積む。確かめること:
+#   - 周ごとの一時値（Python の `Tracker`）は次の周で捨てられる（生きている数の最大が 1）。`break` / `continue` / 入れ子
+#   - 反復はループに入ったときの写し（途中で足した要素は回らない）・取り出しても元のリストは変わらない
+#   - ループ変数は元のリストの要素そのもの
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import[py] ffi_probe.lifetime_py as P
+import for_loop_rewind_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    print(label + " OK")
+
+mut xs: list[int] = []
+for i in range(50):
+    xs.append(i)
+
+check("one temporary at a time", m.peak_alive(xs), 1)
+check("none is alive afterwards", P.alive(), 0)
+check("break keeps the last round until the call returns", m.first_big(xs, 30), 31001)
+check("and it is dropped when the call returns", P.alive(), 0)
+check("continue", m.odd_sum([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 25001)
+check("nested loops", m.grid([1, 2, 3], [1, 2]), 18001)
+check("none is alive after the nested loops", P.alive(), 0)
+
+mut ys: list[int] = [1, 2, 3]
+check("the loop runs over a copy taken when it starts", m.grow(ys), 3006)
+check("the original list keeps its elements", ys[0] * 100 + ys[1] * 10 + ys[2], 123)
+check("and gets the appended ones", ys[3] * 100 + ys[4] * 10 + ys[5], 123)
+
+mut cs: list[m.Cell] = [m.Cell(1, "a"), m.Cell(2, "b")]
+check("the loop variable is the element itself", m.bump_all(cs), 5)
+check("the list sees the change", cs[0].n * 10 + cs[1].n, 23)
+if m.last_tag(cs) != "b!":
+    raise ValueError("last_tag: expected 'b!', got '" + m.last_tag(cs) + "'")
+print("handles kept at the end of a round OK")

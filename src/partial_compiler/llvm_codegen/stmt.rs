@@ -423,12 +423,11 @@ impl<'a> GenCtx<'a> {
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の `for`・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
 
+                let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let iter_reload = self.fresh_reg();
-                self.ec(&format!("{iter_reload} = load i64, ptr {iter_al}"));
-                let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {iter_reload}")]);
+                let next = self.emit_iter_next_at(&iter_al, &fuse);
                 self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
                 self.note_handle_store(&tgt_al);
                 let is_done = self.fresh_reg();
@@ -436,6 +435,7 @@ impl<'a> GenCtx<'a> {
                 let body_blk2 = self.fresh_blk();
                 self.br_cond(&is_done, &exit_blk, &body_blk2);
                 self.start_block(&body_blk2);
+                self.loop_fuse_slot = Some(fuse);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
                 self.drop_iter_scope(&iter_al);
@@ -535,6 +535,26 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store i64 {next}, ptr {cnt}"));
         self.gen_loop_body(body, header, exit, pre_pos, |_| {});
         self.start_block(exit);
+    }
+
+    /// `for` の見出しが読む保存点の置き場を作り、ループに入るたびに -1（巻き戻さない）にする（7-15）。ループの本体が値を
+    /// 積み、周の終わりに残す値が無ければ、`gen_loop_body` がループに入る所で保存点を書く。⚠ `loop_pre_pos` より前に呼ぶ
+    /// （保存点の書き込みは -1 の後に差し込まれる）。
+    pub(super) fn new_loop_fuse_slot(&mut self) -> String {
+        let slot = format!("%_itsave{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca i64, align 8"));
+        self.ec(&format!("store i64 -1, ptr {slot}"));
+        slot
+    }
+
+    /// `for` の見出しの取り出し（7-15）: 置き場の保存点（-1 なら巻き戻さない）まで巻き戻してから次の要素（`CB_ITER_NEXT_AT`）。
+    pub(super) fn emit_iter_next_at(&mut self, iter_al: &str, slot: &str) -> String {
+        let it = self.fresh_reg();
+        self.ec(&format!("{it} = load i64, ptr {iter_al}"));
+        let save = self.fresh_reg();
+        self.ec(&format!("{save} = load i64, ptr {slot}"));
+        self.call_cb(CB_ITER_NEXT_AT, &[format!("i64 {it}"), format!("i64 {save}")])
     }
 
     /// ループに入る直前（見出しへの `br` を出す前）の `code_buf` の位置。ループの前が到達しないなら `None`（9-1）。
@@ -709,6 +729,8 @@ impl<'a> GenCtx<'a> {
         let latch = self.fresh_blk();
         let pushes_before = self.push_sites;
         let log_before = self.handle_store_log.len();
+        // 見出しが巻き戻しを受け持てるループ（7-15）。本体の入れ子のループに渡さないよう、本体を出す前に取り出す
+        let fuse = self.loop_fuse_slot.take();
         self.loop_stack.push((latch.clone(), exit.to_string()));
         self.gen_stmts(body);
         self.loop_stack.pop();
@@ -726,6 +748,15 @@ impl<'a> GenCtx<'a> {
             // 保存点はループに入る直前（見出しへの `br` の前）に差し込む
             let tail = self.code_buf.split_off(pos);
             let save = self.call_cb(CB_ARENA_SAVE, &[]);
+            // 残す値が無く、見出しが `CB_ITER_NEXT_AT` で読むなら、巻き戻しは次の周の頭の取り出しに任せる（7-15）。
+            // 保存点を見出しの置き場へ書き（ループに入るたび・置き場の -1 の後）、戻り口では何も呼ばない。`break` は
+            // 見出しを通らないので、今までどおり最後の周の値を残す。
+            if let (true, Some(slot)) = (live.is_empty(), &fuse) {
+                self.ec(&format!("store i64 {save}, ptr {slot}"));
+                self.code_buf.push_str(&tail);
+                self.br(header);
+                return;
+            }
             self.code_buf.push_str(&tail);
             let n = live.len();
             let (ins, outs) = if n == 0 {

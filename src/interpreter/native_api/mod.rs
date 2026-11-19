@@ -137,7 +137,8 @@ fn int_cache_handle(n: i64) -> i64 {
 
 /// ネイティブコードの `for` の反復状態（`ar_iter_from` / `ar_iter_next`）。
 pub(crate) enum NativeIter {
-    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。
+    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。要素は反復のための写しで、
+    /// 取り出した要素（位置より前）は `None` に置き換わっている（`iter_next_impl` が複製せずに取り出す・7-15）。
     Items(Vec<Value>, usize),
     /// インタープリタの反復プロトコル: `make_for_iterator` が作ったジェネレータを `gen_next` で進める
     /// （VM の `GetIter` / `ForIter` と同じ。`set`・`bytes`・`enumerate` / `zip`・ジェネレータ・`__iter__` を持つ
@@ -829,6 +830,12 @@ pub struct ArCallbacks {
         i32,
         *mut *mut u64,
     ) -> i64,
+
+    // ── `for` の見出しで巻き戻してから次の要素（field 84・copy_alloc_speed_plan.md 7-15） ──
+    /// (イテレータ, 保存点) を取り、保存点が 0 以上ならアリーナをそこまで巻き戻してから、`iter_next` と同じく次の要素を返す。
+    /// 周の終わりに残す値が無いループの巻き戻し（`compact_many` の 0 個の版）を、次の周の頭の取り出しにまとめる
+    /// （1 周のコールバックが 2 回 → 1 回）。保存点 -1 は巻き戻さない（`iter_next` と同じ）。
+    pub iter_next_at: extern "C" fn(i64, i64) -> i64,
 }
 
 // SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。

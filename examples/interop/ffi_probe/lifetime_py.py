@@ -21,3 +21,9 @@ def make() -> Tracker:
 
 def alive() -> int:
     return _alive
+
+
+# 渡された物を生かしたまま、今の生きている数と同じ長さの文字列を返す（copy_alloc_speed_plan.md 7-15 の例題
+# for_loop_rewind.ar）。コンパイル済みコードは `len(..)` を生の int で受けるので、受けたローカルがハンドルにならない
+def alive_mark(t: Tracker) -> str:
+    return "x" * _alive

@@ -72,6 +72,7 @@ impl<'a> GenCtx<'a> {
             blk_mode:              false,
             blk_failed:            false,
             blk_self:              None,
+            loop_fuse_slot:        None,
         }
     }
 

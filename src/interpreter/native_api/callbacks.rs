@@ -913,38 +913,60 @@ extern "C" fn ar_iter_drop(iter_h: i64) {
 
 /// イテレータハンドルから次の要素ハンドルを取得する。
 extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
-    enum Step { Value(Value), Stop, Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>) }
+    iter_next_impl(iter_h, None)
+}
+
+/// field 84（copy_alloc_speed_plan.md 7-15）: アリーナを保存点 `save`（0 以上のとき）まで巻き戻してから次の要素。
+/// 周の終わりに残す値が無いループの巻き戻しを、次の周の頭のこの呼び出しにまとめる。
+extern "C" fn ar_iter_next_at(iter_h: i64, save: i64) -> i64 {
+    iter_next_impl(iter_h, usize::try_from(save).ok())
+}
+
+/// [`ar_iter_next`] / [`ar_iter_next_at`] の本体。リストなどの写し（`NativeIter::Items`）の要素は、複製せずに写しから
+/// **取り出して**積む（写しの要素は 1 回しか使わない・7-15）。巻き戻し・取り出し・積むのを 1 回の借用で行う。
+/// ⚠ 以前は要素を複製して積み（写しにも残る）、`push_handle` でもう 1 回状態を借りていた。要素はインスタンスの `Rc` で、
+///   参照の数はばらばらの塊にあるので、触るたびに離れたメモリを読む（`Value::clone` が k2 の自己時間の 14%）。
+/// ⚠ 巻き戻しはエラーがあってもする（周の終わりの `compact_many` と同じ）。
+fn iter_next_impl(iter_h: i64, rewind: Option<usize>) -> i64 {
+    enum Step { Done(i64), Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>) }
+    enum Next { Val(Value), Stop, Gen(std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>), Bad }
     let (step, interp_ptr) = with_state(|s| {
         let mut st = s.borrow_mut();
-        if st.error.is_some() { return (Step::Stop, st.interp_ptr); }
+        if let Some(len) = rewind {
+            st.arena.truncate(len);
+        }
+        if st.error.is_some() { return (Step::Done(TL_STOP_ITER), st.interp_ptr); }
         let ip = st.interp_ptr;
         if iter_h > -2 {
             st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
-            return (Step::Stop, ip);
+            return (Step::Done(TL_STOP_ITER), ip);
         }
         let idx = (-(iter_h + 2)) as usize;
-        let step = match st.iter_table.get_mut(idx) {
-            Some(NativeIter::Items(items, pos)) => {
-                if *pos < items.len() {
-                    let v = items[*pos].clone();
+        let next = match st.iter_table.get_mut(idx) {
+            Some(NativeIter::Items(items, pos)) => match items.get_mut(*pos) {
+                Some(slot) => {
                     *pos += 1;
-                    Step::Value(v)
-                } else {
-                    Step::Stop
+                    Next::Val(std::mem::replace(slot, Value::None))
                 }
-            }
-            Some(NativeIter::Gen(g)) => Step::Gen(g.clone()),
+                None => Next::Stop,
+            },
+            Some(NativeIter::Gen(g)) => Next::Gen(g.clone()),
+            None => Next::Bad,
+        };
+        let step = match next {
+            Next::Val(v) => Step::Done(st.push_value(v)),
+            Next::Stop => Step::Done(TL_STOP_ITER),
+            Next::Gen(g) => Step::Gen(g),
             // ⚠ 表に無いハンドル（最外の呼び出しを抜けて捨てた後など）を黙って「終わり」にしない
-            None => {
+            Next::Bad => {
                 st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
-                Step::Stop
+                Step::Done(TL_STOP_ITER)
             }
         };
         (step, ip)
     });
     match step {
-        Step::Value(v) => push_handle(v),
-        Step::Stop => TL_STOP_ITER,
+        Step::Done(h) => h,
         // ⚠ `gen_next` は本体（ジェネレータ・`__next__`）を走らせうるので、`STATE` の借用を落としてから呼ぶ。
         Step::Gen(g) => {
             if interp_ptr.is_null() {
@@ -2699,6 +2721,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     live_tasks: &crate::interpreter::async_mgr::LIVE_TASKS,
     copy_hooks: &crate::interpreter::value::COPY_HOOKS,
     new_instance: ar_new_instance,
+    iter_next_at: ar_iter_next_at,
 };
 
 /// field 80（7-5）: ガードが外れて名前で呼んだメソッドの戻り値を、宣言の型どおりに開ける。
@@ -2864,6 +2887,49 @@ extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::value::Dire
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// field 84（copy_alloc_speed_plan.md 7-15）: 保存点まで巻き戻してから次の要素。反復の写しの要素は取り出して積み、
+    /// 元のリストは変わらない。保存点 -1 は巻き戻さない（field 17 と同じ）。終わり（`TL_STOP_ITER`）でも巻き戻す。
+    #[test]
+    fn iter_next_at_rewinds_and_takes_elements_from_the_copy() {
+        let items = std::rc::Rc::new(RefCell::new(vec![Value::str("a"), Value::str("b")]));
+        let lh = push_handle(Value::List(items.clone()));
+        let it = ar_iter_from(lh);
+        let len = || with_state(|s| s.borrow().arena.len());
+        let text = |h: i64| match clone_value_at(h) {
+            Value::Str(s) => s.to_string(),
+            other => panic!("not a str: {other:?}"),
+        };
+        let save = len();
+        // 1 周目: 巻き戻さない（-1）。周の中で一時値を 1 つ積む
+        let h1 = ar_iter_next_at(it, -1);
+        assert_eq!(text(h1), "a");
+        push_handle(Value::str("round temporary"));
+        assert_eq!(len(), save + 2);
+        // 2 周目: 1 周目の値（要素と一時値）を捨ててから次の要素を積む
+        let h2 = ar_iter_next_at(it, save as i64);
+        assert_eq!(h2, save as i64, "the next element takes the first freed slot");
+        assert_eq!(text(h2), "b");
+        assert_eq!(len(), save + 1);
+        // 終わり: 巻き戻して `TL_STOP_ITER`
+        assert_eq!(ar_iter_next_at(it, save as i64), TL_STOP_ITER);
+        assert_eq!(len(), save);
+        // 元のリストは要素を持ったまま（取り出したのは写しから）
+        let kept: Vec<String> = items.borrow().iter().map(|v| match v {
+            Value::Str(s) => s.to_string(),
+            other => panic!("not a str: {other:?}"),
+        }).collect();
+        assert_eq!(kept, ["a", "b"]);
+        // field 17 は今までどおり巻き戻さない
+        let it2 = ar_iter_from(lh);
+        let before = len();
+        let h = ar_iter_next(it2);
+        assert_eq!(text(h), "a");
+        assert_eq!(len(), before + 1);
+        ar_iter_drop(it2);
+        ar_iter_drop(it);
+        assert!(take_error().is_none());
+    }
 
     /// ガードが外れたときの戻り値の開け方（field 80・7-5）: 宣言の型の値だけを開け、違う型は黙って変換せずに TypeError。
     /// 先に積まれたエラー・例外は上書きしない。
