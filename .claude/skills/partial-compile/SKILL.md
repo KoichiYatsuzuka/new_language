@@ -313,7 +313,7 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 
 ### Generated Function Variants
 
-For each eligible function `f`, the codegen emits up to four LLVM functions:
+For each eligible function `f`, the codegen emits up to five LLVM functions:
 
 #### `@f_impl` (internal)
 
@@ -350,6 +350,23 @@ Receives class instance fields as raw scalars instead of arena handles. This eli
 A `_fast` variant is only emitted if:
 - At least one parameter is a class instance with typed (`int`/`float`) fields
 - That parameter is never written in the function body (purity analysis via `body_writes_param`)
+
+#### `@f_blk` (internal — block-pointer variant of a raw-layout class's method, copy_alloc_speed_plan.md 7-14)
+
+`mut self` arrives as the instance's block address (`ptr %_bp_self`) and its fields are read/written with plain
+`load` / `store` (no init/immutable checks); `let self` and `let` class params of raw-layout classes arrive flattened
+like `_fast` (a snapshot at the call); `let int/float` params raw. Candidates: `blk_sig_of` (methods of this module's
+raw-layout, all-public classes; no defaults; ret `None`/`int`/`float`). The variant is dropped (and the symbol evicted
+from `blk_ok`, which `generate_llvm_module` re-generates around) if the body needs any callback (`blk_failed` via
+`call_cb`), calls anything but `@llvm.*` (`calls_only_intrinsics`), or uses `self` / a flattened param as a value.
+
+Call sites (`emit_blk_method_call`): receiver and class args must be locals or `local.attr`; numeric args must be
+`numeric_leaf`. The code fetches each block (remembered `%_ip_x` / `%_apN`), then checks: non-null; all init bits set;
+for `mut self` the IMMUTABLE bit clear; for a guarded receiver the head's `class_id` equals the guard cell (the desc
+match alone cannot tell the main program's `V` from a module's `V` with the same fields); if a flattened non-receiver
+arg is a `mut` value, no `__copy__` class exists (`CB_COPY_HOOKS`). Pass → `call @X_blk`; fail → the normal path
+(`gen_method_call_expr`), which first fills the IC cells of null nested blocks and the empty guard cell so later
+calls pass. `scripts/native_ir_abi_check.py` checks `_blk` calls too.
 
 #### `@f_typed` (public — 統一 typed ABI、zero-TLS)
 

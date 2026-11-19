@@ -66,6 +66,12 @@ impl<'a> GenCtx<'a> {
             direct_descs:          HashMap::new(),
             ip_vars:               HashMap::new(),
             ap_vars:               HashMap::new(),
+            blk_sigs:              HashMap::new(),
+            blk_ok:                HashSet::new(),
+            blk_evicted:           HashSet::new(),
+            blk_mode:              false,
+            blk_failed:            false,
+            blk_self:              None,
         }
     }
 
@@ -210,7 +216,7 @@ impl<'a> GenCtx<'a> {
     }
 
     /// コールバックの表の欄 `field` にあるデータの番地から、型 `ty` の値を原子的に読む（7-7・`CB_LIVE_TASKS` など）。
-    fn load_cb_data(&mut self, ty: &str, field: usize) -> String {
+    pub(super) fn load_cb_data(&mut self, ty: &str, field: usize) -> String {
         let cb = self.fresh_reg();
         self.ec(&format!("{cb} = load ptr, ptr @CB"));
         let fp = self.fresh_reg();
@@ -804,7 +810,7 @@ impl<'a> GenCtx<'a> {
     /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。
     /// 親がローカル変数から読んだばかりの値なら、子の番地を（変数, 属性）ごとに覚えて使い回す（7-13・[`Self::cacheable_field`]）。
     /// そうでなければ番地は直後の読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
-    fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
+    pub(super) fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
         match src {
             BlockSrc::Handle(h) => Some((self.emit_block_ptr(class, h)?, None)),
             BlockSrc::Block { p, .. } => Some((p.to_string(), None)),
@@ -870,7 +876,7 @@ impl<'a> GenCtx<'a> {
 
     /// 直接の道から外れたときに使う受け手のハンドル。入れ子の受け手は、ここで初めて今までの読み出し（`CB_GET_ATTR_IC`）を
     /// 呼んでアリーナに積む（`CB_ATTR_BLOCK` と**同じ IC のセル**を渡す。外れた最初の 1 回でセルが埋まり、次から当たる）。
-    fn block_src_handle(&mut self, src: BlockSrc<'_>, ic: Option<String>) -> String {
+    pub(super) fn block_src_handle(&mut self, src: BlockSrc<'_>, ic: Option<String>) -> String {
         match src {
             BlockSrc::Handle(h) | BlockSrc::Block { h, .. } => h.to_string(),
             BlockSrc::Field { parent_h, attr } => {
@@ -999,6 +1005,72 @@ impl<'a> GenCtx<'a> {
             }
         }
         self.code_buf = out;
+    }
+
+    /// 確かめ済みの番地 `p`（クラスが `class` の表のとおりで、全フィールドが初期化済み）から `attr` を検査なしで読む
+    /// （番地で呼ぶ変種・7-14）。読めない型・幅なら何も出さずに `None`。
+    pub(super) fn emit_trusted_read(&mut self, class: &str, p: &str, attr: &str, ty: Ty) -> Option<(String, Ty)> {
+        use crate::interpreter::value::block;
+        let (_, desc, (ity, ext)) = self.direct_read_plan(class, attr, ty)?;
+        let offset = block::field_offset(desc.byte_offset);
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        let rawv = self.fresh_reg();
+        self.ec(&format!("{rawv} = load {ity}, ptr {fp}, align {}", desc.width.byte_width()));
+        Some(match ext {
+            None => (rawv, ty),
+            Some(op) => {
+                let w = self.fresh_reg();
+                self.ec(&format!("{w} = {op} {ity} {rawv} to {}", llvm_ty(ty)));
+                (w, ty)
+            }
+        })
+    }
+
+    /// 確かめ済みの番地 `p`（全フィールドが初期化済みで、不変でない）へ `attr` を検査なしで書く（7-14）。書けない
+    /// （`let` のフィールド・値の型が入らない）なら何も出さずに `false`。初期化の印は立っているので触らない。
+    pub(super) fn emit_trusted_write(&mut self, class: &str, p: &str, attr: &str, v: &str, vt: Ty) -> bool {
+        use crate::interpreter::value::block;
+        let Some((_, desc, (ity, conv))) = self.direct_write_plan(class, attr, vt) else { return false };
+        let offset = block::field_offset(desc.byte_offset);
+        let stored = match conv {
+            None => v.to_string(),
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {ity}"));
+                c
+            }
+        };
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        true
+    }
+
+    /// 番地で呼ぶ変種の本体の `self.attr`（`mut self` を番地で受けた・7-14）。読めなければ変種を捨てる（`blk_failed`）。
+    pub(super) fn emit_blk_self_read(&mut self, attr: &str) -> (String, Ty) {
+        let p = self.blk_self.clone().expect("only inside a `_blk` body with a `mut self` block");
+        let class = self.current_class.clone();
+        let ty = class.as_ref().and_then(|c| self.class_fields.get(c)).and_then(|f| f.get(attr)).copied();
+        if let (Some(c), Some(t)) = (class, ty) {
+            if let Some(r) = self.emit_trusted_read(&c, &p, attr, t) {
+                return r;
+            }
+        }
+        self.blk_failed = true;
+        ("0".to_string(), Ty::Int)
+    }
+
+    /// 番地で呼ぶ変種の本体の `self.attr = v`（7-14）。書けなければ変種を捨てる（`blk_failed`）。
+    pub(super) fn emit_blk_self_write(&mut self, attr: &str, v: &str, vt: Ty) {
+        let p = self.blk_self.clone().expect("only inside a `_blk` body with a `mut self` block");
+        let ok = match self.current_class.clone() {
+            Some(c) if matches!(vt, Ty::Int | Ty::Float) => self.emit_trusted_write(&c, &p, attr, v, vt),
+            _ => false,
+        };
+        if !ok {
+            self.blk_failed = true;
+        }
     }
 
     /// `obj.attr`（数値のフィールド）を**番地から直接読む**（copy_alloc_speed_plan.md 8-3・D-9・D-13）。出せなければ
@@ -1160,6 +1232,10 @@ impl<'a> GenCtx<'a> {
         // （typed エントリは TLS・アリーナに一切触れないことが保証されるため）
         if self.typed_mode {
             self.typed_failed = true;
+        }
+        // 番地で呼ぶ変種（7-14）もコールバックを持たない（呼ぶ側が確かめた番地を、確かめずに使う）
+        if self.blk_mode {
+            self.blk_failed = true;
         }
         let (ret_ty, param_tys) = cb_sig(field);
         // アリーナへ積みうるか（9-1）: ハンドルを返すもの。生の整数・保存点・トークンを返すものは積まない

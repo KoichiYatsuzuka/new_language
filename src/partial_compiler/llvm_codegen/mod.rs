@@ -57,6 +57,71 @@ struct FnSig {
     fast_flat: Vec<Option<String>>,
 }
 
+/// 番地で呼ぶ変種（`@X_blk`・copy_alloc_speed_plan.md 7-14）の仮引数 1 つの受け方。
+#[derive(Clone, Debug, PartialEq)]
+enum BlkOp {
+    /// `mut self`: 受け手の先頭の塊の番地（`ptr`）。呼ぶ側がクラス・全フィールドの初期化・不変でないことを確かめてある
+    Ptr(String),
+    /// `let self` / `let` のクラスの仮引数: そのクラスの数値のフィールドを宣言の順に生値で（呼んだときの写し・`_fast` と同じ）
+    Flat(String),
+    /// `let` の `int` / `float`: 生値
+    Num(Ty),
+}
+
+/// 番地で呼ぶ変種の並び（受け手を含む仮引数の順・戻り値）。[`blk_sig_of`] が作る。
+#[derive(Clone, Debug)]
+struct BlkSig {
+    params: Vec<BlkOp>,
+    /// `float` → `double`・`int` → 生の `i64`・`None` → `i64` の 0（`_impl` と同じ内部 ABI）
+    ret: Ty,
+}
+
+/// このメソッドに番地で呼ぶ変種を作る候補なら、その並び（7-14）。候補は、このモジュールの raw レイアウトのクラス
+/// （全フィールドが public）のメソッドで、仮引数が `self`・`let` の `int` / `float`・`let` の raw レイアウトのクラス
+/// （本体が書き換えない）だけ、既定値なし、戻り値が `None` / `int` / `float` のもの。本体がコールバックを要するかは
+/// 生成してから決める（[`GenCtx::emit_fn_blk`]）。
+fn blk_sig_of(
+    f: &EligibleFn<'_>,
+    raw_classes: &HashMap<String, crate::interpreter::value::StaticRawClass>,
+) -> Option<BlkSig> {
+    let cls = f.class_name.as_deref()?;
+    let raw = |c: &str| raw_classes.get(c).is_some_and(|rc| rc.all_public);
+    if f.is_gen || !raw(cls) {
+        return None;
+    }
+    let ret = match f.return_type {
+        None | Some("None") => Ty::Handle,
+        Some(t) => match ann_ty(Some(t)) {
+            t @ (Ty::Int | Ty::Float) => t,
+            _ => return None,
+        },
+    };
+    let mut params = Vec::with_capacity(f.params.len());
+    for (i, p) in f.params.iter().enumerate() {
+        if p.default.is_some() || p.variadic {
+            return None;
+        }
+        let op = if i == 0 && p.name == "self" {
+            if p.mutable {
+                BlkOp::Ptr(cls.to_string())
+            } else if param_prereadable(p, f.body) {
+                BlkOp::Flat(cls.to_string())
+            } else {
+                return None;
+            }
+        } else {
+            match p.type_ann.as_deref() {
+                _ if p.mutable => return None,
+                Some(t) if matches!(ann_ty(Some(t)), Ty::Int | Ty::Float) => BlkOp::Num(ann_ty(Some(t))),
+                Some(t) if raw(t) && param_prereadable(p, f.body) => BlkOp::Flat(t.to_string()),
+                _ => return None,
+            }
+        };
+        params.push(op);
+    }
+    matches!(params.first(), Some(BlkOp::Ptr(_) | BlkOp::Flat(_))).then_some(BlkSig { params, ret })
+}
+
 /// フラット配列の末端プリミティブフィールド情報。ネストしたクラスは再帰的に展開される。
 #[derive(Clone)]
 struct FlatLeaf {
@@ -768,6 +833,16 @@ struct GenCtx<'a> {
     /// `%_apN`・確かめた子のクラス）。`a.b.x` の `a.b` の番地を `CB_ATTR_BLOCK` で 1 回だけ取る。捨てる規則は `ip_vars` と
     /// 同じ（変数へ書いたとき・番地を取るコールバックのほかの呼び出しの後・[`GenCtx::finish_block_cache`]）。
     ap_vars: HashMap<(String, String), (String, String)>,
+    /// 番地で呼ぶ変種（`@X_blk`）の候補の並び（copy_alloc_speed_plan.md 7-14・[`blk_sig_of`]）。
+    blk_sigs: HashMap<String, BlkSig>,
+    /// 番地で呼ぶ変種があると見込んでいる関数（呼ぶ側はこれを見て `@X_blk` を呼ぶ）。生成してみて作れなかった関数は
+    /// `blk_evicted` に入れ、`generate_llvm_module` が外して作り直す（集合は減る一方なので止まる）。
+    blk_ok: HashSet<String>,
+    blk_evicted: HashSet<String>,
+    /// 番地で呼ぶ変種を生成中か（コールバックを使ったら `blk_failed`）・`mut self` の番地を受けた仮引数のレジスタ。
+    blk_mode: bool,
+    blk_failed: bool,
+    blk_self: Option<String>,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
@@ -1468,11 +1543,20 @@ pub fn generate_llvm_module(
     // ハンドルを作りうる関数の集合を不動点で決める（9-2）。呼ぶ側を呼ばれる側より先に生成することもあるので、楽観的に
     // 空から始め、作りうると分かった関数を足して作り直す（集合は増える一方なので関数の数 + 1 回で止まる）。前の周回の
     // 生成は捨てる（文字列の定数・IC のセルの番号がずれない）。
+    // 番地で呼ぶ変種（7-14）も同じループで決める: 候補を全部あると見込んで生成し、本体がコールバックを要して作れなかった
+    // 関数を外して作り直す（呼ぶ側が無い `@X_blk` を呼ばないように）。外すと呼ぶ側の速い道が消えるだけで、積む箇所の
+    // 数は変わらない（遅い道は今までの呼び出しそのもの）ので、`pushing` の不動点とぶつからない。
+    let blk_sigs: HashMap<String, BlkSig> = eligible.iter()
+        .filter_map(|f| blk_sig_of(f, &raw_classes).map(|s| (f.symbol.clone(), s)))
+        .collect();
+    let mut blk_ok: HashSet<String> = blk_sigs.keys().cloned().collect();
     let mut pushing: HashSet<String> = HashSet::new();
     let mut ctx = loop {
         let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
         ctx.pushing_fns = pushing.clone();
         ctx.raw_classes = raw_classes.clone();
+        ctx.blk_sigs = blk_sigs.clone();
+        ctx.blk_ok = blk_ok.clone();
 
         // 組み込み関数を隠しうる最上位の名前（5-2）
         for s in stmts {
@@ -1489,10 +1573,13 @@ pub fn generate_llvm_module(
             }
             ctx.current_class = None;
         }
-        if ctx.fn_pushes == pushing {
+        if ctx.fn_pushes == pushing && ctx.blk_evicted.is_empty() {
             break ctx;
         }
         pushing = ctx.fn_pushes.clone();
+        for s in &ctx.blk_evicted {
+            blk_ok.remove(s);
+        }
     };
 
     // ── 統一 typed ABI 変種（{name}_typed）の生成 ──────────────────────────────
@@ -1956,5 +2043,74 @@ fn rebinds(mut h: H, mut k: H) -> float:
             .map(|(i, _)| i)
             .expect("h = k stores into h");
         assert_eq!(rebinds[store_h + 1].trim_start(), format!("store ptr null, ptr {slot}"), "h = k drops h.v");
+    }
+
+    /// raw レイアウトのクラスのメソッドは、番地で呼ぶ変種（`@X_blk`）を持つ（copy_alloc_speed_plan.md 7-14）。`mut self` は
+    /// 番地、`let self` と `let` のクラスの仮引数は数値のフィールドの生値で受け、本体は何も呼ばない。コールバックを使う
+    /// メソッドには作らない。呼ぶ側は、番地が空でない・全フィールドの初期化の印・`mut self` なら不変の印・ガード付きの
+    /// 受け手なら `class_id` を確かめてから呼び、外れたら今までの呼び出し（`_impl`）。
+    /// ⚠ 以前は `h.v.bump(1.0)` が `h.v` をアリーナに積み、ガード・文脈の切り替え・呼ばれた側の番地の取得を通っていた。
+    #[test]
+    fn methods_of_raw_classes_get_a_block_variant() {
+        use crate::interpreter::value::block;
+        let src = "\
+class V:
+    mut x: float
+    mut y: float
+
+    fn bump(mut self, let k: float) -> None:
+        self.x = self.x + k
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y
+
+    fn loud(let self) -> float:
+        print(\"x\")
+        return self.x
+
+class H:
+    mut v: V
+    mut w: V
+    mut name: str
+
+fn drive(mut h: H) -> float:
+    h.v.bump(1.0)
+    let a = h.v.dot(h.w)
+    let b = h.v.loud()
+    return a + b
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let mut stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (errors, _, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (ir, _) = generate_llvm_module(&stmts, &annotations).expect("eligible functions");
+        let body_of = |head: &str| -> Option<Vec<String>> {
+            let start = ir.find(head)?;
+            Some(ir[start..].lines().take_while(|l| *l != "}").map(str::to_string).collect())
+        };
+        // 呼ばれる側: 並びのとおりの変種があり、本体は何も呼ばない
+        let bump = body_of("define internal i64 @V__bump_blk(ptr %_bp_self, double %_fph1)").expect("bump has a block variant");
+        let dot = body_of("define internal double @V__dot_blk(double %_fp_self__x, double %_fp_self__y, double %_fp_o__x, double %_fp_o__y)")
+            .expect("dot has a block variant");
+        for b in [&bump, &dot] {
+            assert!(!b.iter().any(|l| l.contains(" call ")), "a block variant calls nothing:\n{}", b.join("\n"));
+        }
+        // `self.x = ..` は番地の `x` の位置（先頭の語の後）へそのまま書く
+        let x_at = format!("getelementptr inbounds i8, ptr %_bp_self, i64 {}", block::FIELDS_OFFSET);
+        assert!(bump.iter().any(|l| l.contains(&x_at)), "bump writes x at the block:\n{}", bump.join("\n"));
+        assert!(bump.iter().any(|l| l.trim_start().starts_with("store double")), "{}", bump.join("\n"));
+        assert!(!ir.contains("@V__loud_blk"), "loud uses a callback, so it has no block variant");
+
+        // 呼ぶ側: 速い道で `_blk` を呼び、遅い道に今までの `_impl` を残す
+        let drive = body_of("@drive_impl(").expect("drive is compiled").join("\n");
+        assert!(drive.contains("call i64 @V__bump_blk(ptr "), "{drive}");
+        assert!(drive.contains("call double @V__dot_blk(double "), "{drive}");
+        assert!(drive.contains("@V__bump_impl(") && drive.contains("@V__dot_impl("), "the slow paths remain:\n{drive}");
+        // 検査: 全フィールドの初期化の印（2 つ）・`mut self` は不変の印も・ガード付きの受け手の `class_id`
+        let init = (block::init_bit(0) | block::init_bit(1)) as i64;
+        let with_imm = (block::init_bit(0) | block::init_bit(1) | block::IMMUTABLE) as i64;
+        assert!(drive.contains(&format!(", {with_imm}\n")), "bump checks the immutable flag:\n{drive}");
+        assert!(drive.contains(&format!(", {init}\n")), "dot checks the init bits:\n{drive}");
+        assert!(drive.contains(&format!(", {}\n", block::CLASS_ID_MASK as i64)), "the guarded receiver's class id is compared:\n{drive}");
     }
 }

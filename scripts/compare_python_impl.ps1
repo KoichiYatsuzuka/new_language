@@ -257,6 +257,7 @@ $knownDiff = @{
     'arena_rewind_skip'              ='Rust: 値を積まない関数の呼び出しは前後でアリーナを巻き戻さず、積む関数は呼ぶたびに巻き戻す例題（copy_alloc_speed_plan.md 7-12 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_field_after_error'       ='Rust: コンパイル済みコードは誤りの後で覚えたインスタンスの番地へ書かない例題（known_bugs.md の #26 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_field_nested_cache'      ='Rust: コンパイル済みコードは入れ子の受け手の番地を（変数, 属性）ごとに使い回し、親のフィールドを差し替える呼び出しの後で取り直す例題（copy_alloc_speed_plan.md 7-13 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
+    'blk_method_call'                ='Rust: コンパイル済みコードは raw レイアウトのクラスのメソッドを番地で呼び、クラス・初期化・__copy__ を確かめて外れたら今までの呼び出しへ回る例題（copy_alloc_speed_plan.md 7-14 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'py_key_error_args'              ='Rust: 実行時の KeyError の args はキーそのもの（known_bugs.md の #9 で新設・m.run() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'py_getattr_hook'                ='Rust: Python のクラスの __getattr__ と object.__getattribute__（known_bugs.md の #11 で新設・m.run() / m.errors() は CPython と同じ出力）。py: f-string の書式を読めず ParseError（expected RPAREN, got STR）'
     'getattr_hook_error'             ='Rust: Arrow のクラスの __getattr__ はパースの誤り（known_bugs.md の #11 で新設）。py: 誤りにせず素通しして 1 / unreachable を出す'

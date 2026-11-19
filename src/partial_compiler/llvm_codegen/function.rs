@@ -204,8 +204,122 @@ impl<'a> GenCtx<'a> {
             self.emit_fn_fast(name, params, ret_ty, body);
         }
 
+        // 番地で呼ぶ変種（7-14）: 作れなければ `blk_evicted` に入れ、`generate_llvm_module` が呼ぶ側ごと作り直す
+        if self.blk_ok.contains(name) {
+            if let Some(sig) = self.blk_sigs.get(name).cloned() {
+                if !self.emit_fn_blk(name, params, ret_ty, body, &sig) {
+                    self.blk_evicted.insert(name.to_string());
+                }
+            }
+        }
+
         self.current_fn_ret = Ty::Handle;
         self.preread_fields.clear();
+    }
+
+    /// `@{name}_blk(...)` — 番地で呼ぶ変種（copy_alloc_speed_plan.md 7-14）。仮引数は `sig` のとおり: `mut self` は先頭の
+    /// 塊の番地（`ptr %_bp_self`）、`let self` / `let` のクラスの仮引数は数値のフィールドの生値（宣言の順・`_fast` と同じ）、
+    /// `int` / `float` は生値。戻り値は `_impl` と同じ内部 ABI。
+    ///
+    /// 呼ぶ側は、受け手のクラス（ガード付きなら `class_id`）・全フィールドの初期化の印・不変の印を確かめてから呼ぶので、
+    /// `self.f` の読み書きは番地への検査なしの `load` / `store` にする（[`Self::emit_blk_self_read`] /
+    /// [`Self::emit_blk_self_write`]）。本体がコールバック（`blk_failed`）・LLVM の組み込みのほかの関数を呼ぶか、平たくした
+    /// 仮引数・`mut self` を値として使う（`fast_failed`）なら作らずに `false` を返す。
+    pub(super) fn emit_fn_blk(&mut self, name: &str, params: &[Param], ret_ty: Ty, body: &[Stmt], sig: &BlkSig) -> bool {
+        self.alloca_buf.clear();
+        self.code_buf.clear();
+        self.reg = 0;
+        self.blk = 0;
+        self.terminated = false;
+        self.locals.clear();
+        self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
+        self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
+        self.block_stack.clear();
+        self.preread_fields.clear();
+        self.current_fn_ret = ret_ty;
+        self.param_classes.clear();
+        for p in params {
+            if let Some(ann) = &p.type_ann {
+                if self.class_fields.contains_key(ann.as_str()) {
+                    self.param_classes.insert(p.name.clone(), ann.clone());
+                }
+            }
+        }
+        self.blk_mode = true;
+        self.blk_failed = false;
+        self.blk_self = None;
+        // 平たくした仮引数と番地で受けた `self` は値として表せない（使ったら `fast_failed`・`_fast` と同じ仕組み）
+        self.fast_mode = true;
+        self.fast_failed = false;
+        self.fast_flattened.clear();
+
+        let mut sig_parts: Vec<String> = Vec::new();
+        for (i, (p, op)) in params.iter().zip(&sig.params).enumerate() {
+            match op {
+                BlkOp::Ptr(_) => {
+                    sig_parts.push("ptr %_bp_self".to_string());
+                    self.blk_self = Some("%_bp_self".to_string());
+                    self.fast_flattened.insert(p.name.clone());
+                }
+                BlkOp::Flat(cls) => {
+                    for (field, ty) in self.class_fields_ord.get(cls).cloned().unwrap_or_default() {
+                        let reg = format!("%_fp_{}__{field}", p.name);
+                        let al = format!("%_fpral_{}__{field}", p.name);
+                        let t = llvm_ty(ty);
+                        sig_parts.push(format!("{t} {reg}"));
+                        self.alloca_buf.push_str(&format!("  {al} = alloca {t}, align 8\n"));
+                        self.ec(&format!("store {t} {reg}, ptr {al}"));
+                        self.preread_fields.insert(format!("{}.{field}", p.name), (al, ty));
+                    }
+                    self.fast_flattened.insert(p.name.clone());
+                }
+                BlkOp::Num(ty) => {
+                    let reg = format!("%_fph{i}");
+                    sig_parts.push(format!("{} {reg}", llvm_ty(*ty)));
+                    let al = self.alloca_var(&p.name, store_ty(*ty));
+                    self.store_val(*ty, &reg, &al);
+                }
+            }
+        }
+
+        self.gen_stmts(body);
+        if ret_ty == Ty::Float {
+            if !self.terminated {
+                self.ec("ret double 0.0");
+                self.terminated = true;
+            }
+        } else {
+            self.ret_handle("0");
+        }
+
+        let ok = !self.blk_failed && !self.fast_failed && calls_only_intrinsics(&self.code_buf);
+        if ok {
+            let impl_ret = if ret_ty == Ty::Float { "double" } else { "i64" };
+            self.fn_defs.push_str(&format!(
+                "\ndefine internal {impl_ret} @{name}_blk({}) {{\nentry:\n{}{}}}\n",
+                sig_parts.join(", "),
+                self.alloca_buf,
+                self.code_buf
+            ));
+        }
+        self.blk_mode = false;
+        self.blk_failed = false;
+        self.blk_self = None;
+        self.fast_mode = false;
+        self.fast_failed = false;
+        self.fast_flattened.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
+        self.preread_fields.clear();
+        ok
     }
 
     /// Emit `@{name}_fast(...)` — like _impl but receives class param fields as
@@ -524,4 +638,17 @@ impl<'a> GenCtx<'a> {
         self.fn_defs.push_str(&wrapper);
     }
 
+}
+
+/// 本体の文面の `call` が LLVM の組み込み（`@llvm.*`）だけか（番地で呼ぶ変種・7-14）。コールバックは `call_cb` が
+/// `blk_failed` を立てるが、直接呼び出し（`@X_impl` など）・関数の値の呼び出しはここで見る。
+/// ⚠ 呼ぶ先を読めない `call` は「組み込みでない」に倒す。
+fn calls_only_intrinsics(code: &str) -> bool {
+    code.lines().all(|line| {
+        let body = line.trim_start();
+        let at = if body.starts_with("call ") { Some(0) } else { body.find(" call ").map(|i| i + 1) };
+        let Some(at) = at else { return true };
+        let rest = &body[at + "call ".len()..];
+        rest.find(['%', '@']).is_some_and(|s| rest[s..].starts_with("@llvm."))
+    })
 }

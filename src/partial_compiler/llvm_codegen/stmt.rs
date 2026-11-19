@@ -61,6 +61,12 @@ impl<'a> GenCtx<'a> {
             // 代入先の形は `stmt_eligible` が `obj.attr` / `obj::T.attr` に絞っている。
             Stmt::AttrAssign { target, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
+                // 番地で呼ぶ変種の本体の `self.f = v`（7-14）: 検査なしで書く（呼ぶ側が不変でないことを確かめてある）
+                if trait_name.is_none() && self.blk_self.is_some() && ident_name(object) == Some("self") {
+                    let (val, vt) = self.gen_expr(value);
+                    self.emit_blk_self_write(attr, &val, vt);
+                    return;
+                }
                 // `a.b.c = v`（途中に属性が 1 段以上）で値の評価が何も起こさなければ、途中を積まない 1 回の呼び出し（12-3）
                 // `a.b.x = v` で `a.b` が raw レイアウトのクラス・値の評価が何も起こさないなら、`a.b` を積まずに番地へ書く（8-7）
                 if trait_name.is_none() && self.emit_nested_field_assign(object, attr, value) {
@@ -83,6 +89,14 @@ impl<'a> GenCtx<'a> {
             }
             Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
+                // 番地で呼ぶ変種の本体の `self.f op= v`（7-14）: 右辺 → 読み → 演算 → 書き（下と同じ順）
+                if trait_name.is_none() && self.blk_self.is_some() && ident_name(object) == Some("self") {
+                    let (rv, rt) = self.gen_expr(value);
+                    let (old, old_t) = self.emit_blk_self_read(attr);
+                    let (res, rest) = self.specialize_binop(op, &old, old_t, &rv, rt);
+                    self.emit_blk_self_write(attr, &res, rest);
+                    return;
+                }
                 // ⚠⚠ ツリーウォーク（`attr_assign`）・VM と同じ順で評価する: 右辺 → 受け手（読み）→ 二項演算 →
                 //   受け手（書き・もう 1 度評価）。以前は受け手を先に読んで右辺を後に評価しており、右辺が同じ
                 //   フィールドを書き換えると（`self.n += self.bump()`）その書き換えが消えた（§0.3 ⑪・4-2 で発見・
@@ -629,7 +643,7 @@ impl<'a> GenCtx<'a> {
     /// 読み出しを値の後へ回してよいかの判定。リテラル・名前（読むだけ）と、`int` / `float` と分かっている項の演算だけ。
     /// ⚠ 属性の読み出しは入れない（C# のプロパティ・Python の属性は読むだけでコードを走らせる）。演算も項がインスタンスなら
     ///   `__add__` などを呼ぶので、数と分かっている項だけ。
-    fn effect_free_value(&self, e: &Expr) -> bool {
+    pub(super) fn effect_free_value(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::None | Expr::Str(_) => true,
             Expr::Ident { .. } => true,
@@ -644,7 +658,7 @@ impl<'a> GenCtx<'a> {
     }
 
     /// `int` / `float` と分かっている項（数のリテラル・`int` / `float` のローカル変数・その演算）。
-    fn numeric_leaf(&self, e: &Expr) -> bool {
+    pub(super) fn numeric_leaf(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(_) | Expr::Float(_) => true,
             Expr::Ident { name, .. } => self.locals.get(name).is_some_and(|(_, t)| matches!(t, Ty::Int | Ty::Float)),
