@@ -2722,7 +2722,52 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     copy_hooks: &crate::interpreter::value::COPY_HOOKS,
     new_instance: ar_new_instance,
     iter_next_at: ar_iter_next_at,
+    num_field_ptr: ar_num_field_ptr,
 };
+
+/// field 85（copy_alloc_speed_plan.md 7-16）: `x.f op= v`（数値のフィールド）を生成コードが 1 回で行うための、フィールドの
+/// 値の番地。返すのは、受け手が raw レイアウトでないクラスのインスタンスで、読み出しの IC が当たり（public のフィールド）、
+/// スロットが初期化済みで可変の印が立ち（`let` のフィールド・凍ったインスタンスは印が倒れている）、`kind` どおりの
+/// `Value::Int`（0）/ `Value::Float`（1）を持つときだけ。生成コードはそこへ `old op v` を直接書く: 値の型は変わらず（宣言の
+/// 型の検査 `store_field` を通る値と同じ）、可変の印もそのまま。ほかは空を返し、生成コードは今までの道（同じ IC のセルで
+/// 読む・`attr_assign_ic` で書く）へ回る。先に積まれた誤りがあれば空（今までの道が何もしない）。
+/// ⚠ 番地は、次にコールバックを呼ぶまでの間だけ使える（スロットを差し替えるのはコールバックだけ）。
+/// ⚠ 借りられない（誰かが借りたまま）なら空。
+extern "C" fn ar_num_field_ptr(obj_h: i64, name_ptr: *const u8, name_len: i32, cell: *mut u64, kind: i32) -> *mut u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if cell.is_null() || obj_h < 3 || name_len <= 0 || name_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `read_ic_hit` と同じ（生成コードが渡すのは DLL 内の `i64` の大域）
+    let packed = unsafe { &*(cell as *const AtomicU64) }.load(Ordering::Relaxed);
+    if packed == 0 {
+        return std::ptr::null_mut();
+    }
+    with_state(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return std::ptr::null_mut();
+        }
+        let Some(Value::Instance(rc)) = st.arena.get(obj_h as usize) else { return std::ptr::null_mut() };
+        let Ok(mut inst) = rc.try_borrow_mut() else { return std::ptr::null_mut() };
+        if inst.has_raw_layout() {
+            return std::ptr::null_mut();
+        }
+        let Some((idx, _)) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len)) else {
+            return std::ptr::null_mut();
+        };
+        let p = match (kind, inst.boxed_fields.get_mut(idx)) {
+            (0, Some(Some((Value::Int(n), true)))) => (n as *mut i64).cast::<u64>(),
+            (1, Some(Some((Value::Float(f), true)))) => (f as *mut f64).cast::<u64>(),
+            _ => return std::ptr::null_mut(),
+        };
+        // 格納の入口の数え方は今までの道（`assign_number_ic_hit`）と同じにする（数値は写さない・番地を返すときだけ数える）
+        if let Some(Some((v, _))) = inst.boxed_fields.get(idx) {
+            crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, v, true);
+        }
+        p
+    })
+}
 
 /// field 80（7-5）: ガードが外れて名前で呼んだメソッドの戻り値を、宣言の型どおりに開ける。
 ///
@@ -2887,6 +2932,72 @@ extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::value::Dire
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// field 85（copy_alloc_speed_plan.md 7-16）: 数値のフィールドの値の番地。返すのは IC が当たり（public）、スロットが
+    /// 初期化済みで可変の印が立ち、種類どおりの `Int` / `Float` を持つときだけ。番地へ書いた値はフィールドの値になる。
+    /// `let` のフィールド・凍ったインスタンス・未初期化・種類の違い・private・空のセル・インスタンスでない・先に積まれた
+    /// 誤りは空（生成コードは今までの道へ回る）。
+    #[test]
+    fn num_field_ptr_only_for_initialized_mutable_numbers() {
+        use crate::interpreter::value::{alloc_class_id, ClassValue, InstanceData};
+        let cls = Rc::new(ClassValue {
+            field_index: [("hits", 0usize), ("mass", 1), ("id", 2), ("unset", 3)]
+                .into_iter()
+                .map(|(n, i)| (n.to_string(), i))
+                .collect(),
+            field_count: 4,
+            field_mutability_vec: vec![true, true, false, true],
+            ..ClassValue::synthetic("Counter", alloc_class_id())
+        });
+        let new_counter = || {
+            let mut inst = InstanceData::new_empty(cls.clone(), 0);
+            assert!(inst.store_field(0, Value::Int(7), true));
+            assert!(inst.store_field(1, Value::Float(1.5), true));
+            assert!(inst.store_field(2, Value::Int(9), false));
+            Rc::new(RefCell::new(inst))
+        };
+        let cell = |idx: usize, access: u8| {
+            let c = crate::ast::AttrCache::default();
+            c.fill(cls.class_id, idx, access);
+            c.0.get()
+        };
+        let field = |rc: &Rc<RefCell<InstanceData>>, idx: usize| rc.borrow().field_value(idx);
+        let ptr = |h: i64, name: &str, c: &mut u64, kind: i32| ar_num_field_ptr(h, name.as_ptr(), name.len() as i32, c, kind);
+        let rc = new_counter();
+        let b = push_handle(Value::Instance(rc.clone()));
+        let (mut hits, mut mass, mut id, mut unset) = (cell(0, 0), cell(1, 0), cell(2, 0), cell(3, 0));
+
+        // `int` / `float`: 番地へ書いた値がフィールドの値になる
+        let p = ptr(b, "hits", &mut hits, 0);
+        assert!(!p.is_null());
+        unsafe { *p.cast::<i64>() += 5 };
+        assert!(matches!(field(&rc, 0), Some(Value::Int(12))));
+        let p = ptr(b, "mass", &mut mass, 1);
+        assert!(!p.is_null());
+        unsafe { *p.cast::<f64>() += 1.0 };
+        assert!(matches!(field(&rc, 1), Some(Value::Float(f)) if f == 2.5));
+        // 種類の違い・`let` のフィールド・未初期化
+        assert!(ptr(b, "hits", &mut hits, 1).is_null());
+        assert!(ptr(b, "mass", &mut mass, 0).is_null());
+        assert!(ptr(b, "id", &mut id, 0).is_null());
+        assert!(ptr(b, "unset", &mut unset, 0).is_null());
+        // private のフィールド（IC の access が public でない）・空のセル・インスタンスでない
+        let mut private = cell(0, 1);
+        assert!(ptr(b, "hits", &mut private, 0).is_null());
+        let mut empty = 0u64;
+        assert!(ptr(b, "hits", &mut empty, 0).is_null());
+        assert!(ptr(TL_NONE, "hits", &mut hits, 0).is_null());
+        // 凍ったインスタンス（スロットの可変の印が倒れる）
+        let frozen = new_counter();
+        crate::interpreter::Interpreter::freeze_instance(&frozen);
+        let fh = push_handle(Value::Instance(frozen.clone()));
+        assert!(ptr(fh, "hits", &mut hits, 0).is_null());
+        // 先に積まれた誤りがあれば空（誤りはそのまま）
+        set_native_error("ValueError: earlier".to_string());
+        assert!(ptr(b, "hits", &mut hits, 0).is_null());
+        assert!(take_error().is_some_and(|e| e.contains("earlier")));
+        assert!(matches!(field(&rc, 0), Some(Value::Int(12))));
+    }
 
     /// field 84（copy_alloc_speed_plan.md 7-15）: 保存点まで巻き戻してから次の要素。反復の写しの要素は取り出して積み、
     /// 元のリストは変わらない。保存点 -1 は巻き戻さない（field 17 と同じ）。終わり（`TL_STOP_ITER`）でも巻き戻す。

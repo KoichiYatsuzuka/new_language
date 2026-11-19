@@ -109,6 +109,13 @@ impl<'a> GenCtx<'a> {
                     (None, Expr::Attr { node_id, .. }) => self.field_ty_resolved(object, attr, *node_id),
                     _ => None,
                 };
+                // raw レイアウトでないクラスの数値のフィールドは、値の番地を 1 回のコールバックで取って書く（7-16）
+                if let (None, Some(kt @ (Ty::Int | Ty::Float))) = (trait_name, known) {
+                    if self.fused_compound_ok(object, attr, op, kt, rt) {
+                        self.emit_fused_num_compound(object, &oh, attr, op, kt, &rv, rt);
+                        return;
+                    }
+                }
                 let (old, old_t) = match (trait_name, known) {
                     (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_field_read(object, &oh, attr, Some(t)),
                     _ => (self.emit_attr_load(&oh, trait_name, attr), Ty::Handle),
@@ -535,6 +542,71 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store i64 {next}, ptr {cnt}"));
         self.gen_loop_body(body, header, exit, pre_pos, |_| {});
         self.start_block(exit);
+    }
+
+    /// `x.f op= v`（型 `kt` の数値のフィールド・右辺は評価済みで型 `rt`）を、値の番地を返すコールバック
+    /// （`CB_NUM_FIELD_PTR`）の 1 回で行えるか（copy_alloc_speed_plan.md 7-16）。
+    /// - 受け手が名前（`self`・ローカル）: VM は名前でない受け手を書く前にもう 1 度評価する（`f().n += 1` は `f` を 2 回呼ぶ）
+    /// - 受け手のクラスが raw レイアウトのクラスでない: raw レイアウトなら番地から直接読み書きする道（8-3・8-4）の方が速い
+    /// - 演算の結果の型がフィールドの型と同じ形で、演算が何も呼ばない: `int` は `+` `-` `*`（`int` の右辺）、`float` は
+    ///   `+` `-` `*` `/`（`int` / `float` の右辺）。`int` のフィールドへ `float` を足すと型の誤りになるので今までの道
+    pub(super) fn fused_compound_ok(&self, object: &Expr, attr: &str, op: &crate::ast::BinOp, kt: Ty, rt: Ty) -> bool {
+        use crate::ast::BinOp;
+        if self.typed_mode || self.blk_mode || self.terminated || ident_name(object).is_none() {
+            return false;
+        }
+        if self.receiver_class(object).is_some_and(|r| self.direct_read_plan(&r.class, attr, kt).is_some()) {
+            return false;
+        }
+        match kt {
+            Ty::Int => rt == Ty::Int && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul),
+            Ty::Float => matches!(rt, Ty::Int | Ty::Float) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div),
+            _ => false,
+        }
+    }
+
+    /// [`Self::fused_compound_ok`] の形のコード: 番地を取り（`CB_NUM_FIELD_PTR`）、空でなければ読んで演算して書く
+    /// （その間に何も呼ばない）。空なら今までの道（同じ IC のセルで型付きで読む → 演算 → `emit_field_assign`）。
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn emit_fused_num_compound(
+        &mut self,
+        object: &Expr,
+        oh: &str,
+        attr: &str,
+        op: &crate::ast::BinOp,
+        kt: Ty,
+        rv: &str,
+        rt: Ty,
+    ) {
+        let cell = self.ic_cell();
+        let name = self.str_const(attr.as_bytes());
+        let len = attr.len();
+        let kind = i32::from(kt == Ty::Float);
+        let p = self.call_cb(CB_NUM_FIELD_PTR, &[
+            format!("i64 {oh}"), name.clone(), format!("i32 {len}"), cell.clone(), format!("i32 {kind}"),
+        ]);
+        let (b_fast, b_slow, b_done) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let empty = self.fresh_reg();
+        self.ec(&format!("{empty} = icmp eq ptr {p}, null"));
+        self.br_cond(&empty, &b_slow, &b_fast);
+
+        self.start_block(&b_fast);
+        let t = llvm_ty(kt);
+        let old = self.fresh_reg();
+        self.ec(&format!("{old} = load {t}, ptr {p}, align 8"));
+        let (res, rest) = self.specialize_binop(op, &old, kt, rv, rt);
+        debug_assert_eq!(rest, kt, "fused_compound_ok only lets through operations that keep the field's type");
+        self.ec(&format!("store {t} {res}, ptr {p}, align 8"));
+        self.br(&b_done);
+
+        // 外れ: 読み出しは同じ IC のセルで（外れの道がセルを埋め、次から番地が取れる）
+        self.start_block(&b_slow);
+        let cb = if kt == Ty::Float { CB_GET_FLOAT_FIELD_IC } else { CB_GET_INT_FIELD_IC };
+        let old2 = self.call_cb(cb, &[format!("i64 {oh}"), name, format!("i32 {len}"), cell]);
+        let (res2, rest2) = self.specialize_binop(op, &old2, kt, rv, rt);
+        self.emit_field_assign(object, oh, attr, &res2, rest2);
+        self.br(&b_done);
+        self.start_block(&b_done);
     }
 
     /// `for` の見出しが読む保存点の置き場を作り、ループに入るたびに -1（巻き戻さない）にする（7-15）。ループの本体が値を

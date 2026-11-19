@@ -523,6 +523,17 @@ header, so the last round's values stay until the enclosing rewind (as before). 
 iterator's snapshot (`NativeIter::Items`) instead of cloning it; the snapshot itself (`ar_iter_from`) is kept because
 the VM also iterates over a copy taken when the loop starts.
 
+### Compound Assignment of Numeric Fields (copy_alloc_speed_plan.md 7-16)
+
+`x.f op= v` on a numeric field of a class *without* raw layout (raw layouts read/write the block directly, 8-3/8-4)
+uses `CB_NUM_FIELD_PTR` (field 85): after the right-hand side is evaluated, one callback returns the address of the
+`i64` / `f64` inside the slot's `Value::Int` / `Value::Float` — only on an IC hit (public field), for an initialized
+slot whose mutable flag is set (a `let` field or a frozen instance has it cleared) and whose value matches the field
+kind. The generated code loads, applies the op and stores with no call in between. Null → the old path (typed read
+with the *same* IC cell, so a miss fills it, then `emit_field_assign`). Only when the receiver is a name (the VM
+evaluates a non-name receiver twice) and the op keeps the field's type (`int`: `+ - *` with an `int` rhs; `float`:
+`+ - * /`) — `fused_compound_ok` / `emit_fused_num_compound`.
+
 ### Remembered Block Addresses (copy_alloc_speed_plan.md 8-5 / 7-13)
 
 Numeric fields of this module's raw-layout classes are read and written at the instance's block address
