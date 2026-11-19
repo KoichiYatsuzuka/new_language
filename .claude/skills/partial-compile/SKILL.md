@@ -494,6 +494,20 @@ read-only fast path (7-7) pays nothing. A nested native call (compiled code → 
 function) cuts the arena back to its own entry when it returns (`leave_native_call`, known_bugs.md #25), so
 callbacks not counted as pushes cannot leak through a skipped rewind.
 
+### Remembered Block Addresses (copy_alloc_speed_plan.md 8-5 / 7-13)
+
+Numeric fields of this module's raw-layout classes are read and written at the instance's block address
+(`CB_INST_BLOCK` field 78 for a handle, `CB_ATTR_BLOCK` field 79 for a nested receiver `a.b` without pushing `a.b`).
+The address is remembered per function in an alloca and fetched only when the alloca is null:
+`%_ip_x` per local variable (8-5) and `%_apN` per (parent variable, attribute) for nested receivers (7-13,
+`cacheable_field`). Only a value freshly loaded from the variable's alloca is remembered (`fresh_var_of`).
+`finish_block_cache` scans the finished body and inserts `store ptr null` after (1) every store to the variable
+and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `@llvm.*`** (`cb_field_of_call`, which reads the
+callback index from the `getelementptr inbounds %ArCallbacks` line; unknown callees count as "other"). (2) keeps the
+nested child alive and current (only calls can replace a parent's field) and keeps the error guard: the fetch
+callbacks return null when an error is pending, which sends the code to the slow path that does nothing — a
+remembered address used after another call would skip that guard (known_bugs.md #26).
+
 ### Short-circuit Operators
 
 `and` and `or` generate proper LLVM basic-block structure:

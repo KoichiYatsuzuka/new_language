@@ -65,6 +65,7 @@ impl<'a> GenCtx<'a> {
             raw_classes:           HashMap::new(),
             direct_descs:          HashMap::new(),
             ip_vars:               HashMap::new(),
+            ap_vars:               HashMap::new(),
         }
     }
 
@@ -800,8 +801,9 @@ impl<'a> GenCtx<'a> {
     }
 
     /// 受け手 `src` の先頭の塊の番地を得るコードを出す。戻り値は (番地, 入れ子の受け手なら親の読み出しの IC のセル)。
-    /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。番地は直後の
-    /// 読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
+    /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。
+    /// 親がローカル変数から読んだばかりの値なら、子の番地を（変数, 属性）ごとに覚えて使い回す（7-13・[`Self::cacheable_field`]）。
+    /// そうでなければ番地は直後の読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
     fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
         match src {
             BlockSrc::Handle(h) => Some((self.emit_block_ptr(class, h)?, None)),
@@ -811,12 +813,59 @@ impl<'a> GenCtx<'a> {
                 let class_cell = self.ic_cell();
                 let ic = self.ic_cell();
                 let name = self.str_const(attr.as_bytes());
-                let p = self.call_cb(CB_ATTR_BLOCK, &[
+                let args = [
                     format!("i64 {parent_h}"), name, format!("i32 {}", attr.len()), ic.clone(), table, class_cell,
-                ]);
+                ];
+                let p = match self.cacheable_field(parent_h, attr, class) {
+                    Some(slot) => self.load_or_fetch_block(&slot, CB_ATTR_BLOCK, &args),
+                    None => self.call_cb(CB_ATTR_BLOCK, &args),
+                };
                 Some((p, Some(ic)))
             }
         }
+    }
+
+    /// 番地の置き場 `slot` が空のときだけ `cb`（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）を呼んで埋め、置き場の番地を返すコードを出す
+    /// （8-5・7-13）。空（クラスが表のとおりでない・先に積まれた誤りがある）を返されたら空のまま置くので、次の箇所でまた呼ぶ。
+    fn load_or_fetch_block(&mut self, slot: &str, cb: usize, args: &[String]) -> String {
+        let p0 = self.fresh_reg();
+        self.ec(&format!("{p0} = load ptr, ptr {slot}"));
+        let empty = self.fresh_reg();
+        self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
+        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&empty, &bfetch, &bhave);
+        self.start_block(&bfetch);
+        let p1 = self.call_cb(cb, args);
+        self.ec(&format!("store ptr {p1}, ptr {slot}"));
+        self.br(&bhave);
+        self.start_block(&bhave);
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {slot}"));
+        p
+    }
+
+    /// 入れ子の受け手 `a.b`（親のハンドル `h`・属性 `attr`・子のクラス `class`）の番地を覚えてよいなら、その置き場（初めてなら
+    /// 関数の入口で空にした置き場を作る）。覚えてよいのは、`h` が親の変数の今の値（[`Self::fresh_var_of`]）で、同じ
+    /// （変数, 属性）を別のクラスとして覚えていないとき（copy_alloc_speed_plan.md 7-13）。
+    ///
+    /// 覚えた番地が正しい条件と、その守り方（どちらも [`Self::finish_block_cache`] が捨てる命令を差し込む）:
+    /// - **親の変数が同じインスタンスを指している間だけ使う。** 変数へ書いたら捨てる（8-5 と同じ）。
+    /// - **親のフィールドが同じ子を持っている間だけ使う。** フィールドを差し替えるのはコールバック（代入・名前による呼び出し・
+    ///   利用者のコード）と直接呼び出しだけで、番地を取るコールバックのほかの呼び出しの後で捨てる（#26 と同じ規則）。
+    ///   番地への直接の読み書きは数値のフィールドだけで、インスタンスを持つ slot（raw レイアウトでないクラスの slot）は変えない。
+    /// - **子が生きていること。** 親のフィールドが持っている間は捨てられない。親は変数の欄が生かしている。
+    fn cacheable_field(&mut self, h: &str, attr: &str, class: &str) -> Option<String> {
+        let al = self.fresh_var_of(h)?;
+        let key = (al, attr.to_string());
+        if let Some((slot, c)) = self.ap_vars.get(&key) {
+            return (c == class).then(|| slot.clone());
+        }
+        let slot = format!("%_ap{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca ptr, align 8"));
+        self.ea(&format!("store ptr null, ptr {slot}"));
+        self.ap_vars.insert(key, (slot.clone(), class.to_string()));
+        Some(slot)
     }
 
     /// 直接の道から外れたときに使う受け手のハンドル。入れ子の受け手は、ここで初めて今までの読み出し（`CB_GET_ATTR_IC`）を
@@ -865,25 +914,22 @@ impl<'a> GenCtx<'a> {
             self.ea(&format!("store ptr null, ptr {ip}"));
             self.ip_vars.insert(al, (ip.clone(), class.to_string()));
         }
-        let p0 = self.fresh_reg();
-        self.ec(&format!("{p0} = load ptr, ptr {ip}"));
-        let empty = self.fresh_reg();
-        self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
-        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
-        self.br_cond(&empty, &bfetch, &bhave);
-        self.start_block(&bfetch);
-        let p1 = self.call_cb(CB_INST_BLOCK, &args);
-        self.ec(&format!("store ptr {p1}, ptr {ip}"));
-        self.br(&bhave);
-        self.start_block(&bhave);
-        let p = self.fresh_reg();
-        self.ec(&format!("{p} = load ptr, ptr {ip}"));
-        Some(p)
+        Some(self.load_or_fetch_block(&ip, CB_INST_BLOCK, &args))
     }
 
     /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
-    /// 生成済みの本体の文面から決める（[`Self::emit_block_ptr`] の 2 つ目の条件）。別のクラスで覚えた変数は `None`。
+    /// 別のクラスで覚えた変数は `None`（[`Self::emit_block_ptr`] の 2 つ目と 4 つ目の条件）。
     fn cacheable_var(&self, h: &str, class: &str) -> Option<String> {
+        let al = self.fresh_var_of(h)?;
+        match self.ip_vars.get(&al) {
+            Some((_, c)) if c != class => None,
+            _ => Some(al),
+        }
+    }
+
+    /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
+    /// 生成済みの本体の文面から決める（`h` を定義した `load` の後に、その置き場への `store` が無いこと）。
+    fn fresh_var_of(&self, h: &str) -> Option<String> {
         let def = format!("  {h} = load i64, ptr ");
         let at = self.code_buf.rfind(&def)?;
         let rest = &self.code_buf[at + def.len()..];
@@ -895,10 +941,7 @@ impl<'a> GenCtx<'a> {
         if after.lines().any(|l| l.trim_start().starts_with("store ") && l.ends_with(&store_tail)) {
             return None;
         }
-        match self.ip_vars.get(al) {
-            Some((_, c)) if c != class => None,
-            _ => Some(al.to_string()),
-        }
+        Some(al.to_string())
     }
 
     /// 関数の本体を出力する直前に呼ぶ（8-5）: 番地を覚えた変数の置き場への `store` の直後に、番地の置き場を空にする
@@ -913,13 +956,17 @@ impl<'a> GenCtx<'a> {
     /// いない）が `self.x` の読み出しの誤りを積んだ後で `self.y` を書いた（VM は書く前に例外を投げる）。
     /// どのコールバックかは文面から引く（`getelementptr inbounds %ArCallbacks, .., i32 N` → `load` → `call`・
     /// [`cb_field_of_call`]）。引けない呼び出し（関数の値・トランポリン・直接呼び出し）は捨てる側に倒す。
+    ///
+    /// 入れ子の受け手の番地（`ap_vars`・7-13）も同じ規則で捨てる: 親の変数へ書いたとき（親が別のインスタンスになる）と、
+    /// ほかの呼び出しの後（親のフィールドが差し替えられうる）。
     pub(super) fn finish_block_cache(&mut self) {
-        if self.ip_vars.is_empty() {
+        if self.ip_vars.is_empty() && self.ap_vars.is_empty() {
             return;
         }
-        // (変数の置き場, 番地の置き場)。差し込む順を決めるために並べ替える（表から取り出す順は実行ごとに変わり、
-        // 生成 IR が毎回違ってしまう）
+        // (変数の置き場, 番地の置き場)。入れ子の受け手は親の変数の置き場で並べる。差し込む順を決めるために並べ替える
+        // （表から取り出す順は実行ごとに変わり、生成 IR が毎回違ってしまう）
         let mut vars: Vec<(String, String)> = self.ip_vars.drain().map(|(al, (ip, _))| (al, ip)).collect();
+        vars.extend(self.ap_vars.drain().map(|((al, _), (ap, _))| (al, ap)));
         vars.sort();
         let mut out = String::with_capacity(self.code_buf.len() + 64);
         let mut cb_regs: HashMap<String, usize> = HashMap::new();

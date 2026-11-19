@@ -1,0 +1,44 @@
+class V:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class H:
+    mut v: V
+    mut tag: str
+    fn swap(mut self, k: float) -> None:
+        ...
+    fn sum_twice(self) -> float:
+        ...
+    fn __init__(mut self, v: V, tag: str) -> None:
+        ...
+
+
+fn replace(mut h: H, k: float) -> None:
+    ...
+
+fn after_method(mut old: V, mut h: H) -> float:
+    ...
+
+fn after_assign(mut old: V, mut h: H) -> float:
+    ...
+
+fn after_function(mut old: V, mut h: H) -> float:
+    ...
+
+fn two_names(mut old: V, mut a: H, mut b: H) -> float:
+    ...
+
+fn rebind(mut h1: H, mut h2: H) -> float:
+    ...
+
+fn loop_swap(mut old: V, mut h: H, n: int) -> float:
+    ...
+
+fn write_after(mut old: V, mut h: H) -> float:
+    ...
+
+fn sum_all(mut hs: list[H]) -> float:
+    ...

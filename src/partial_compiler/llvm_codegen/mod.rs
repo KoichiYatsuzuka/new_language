@@ -764,6 +764,10 @@ struct GenCtx<'a> {
     /// 確かめたクラス）。関数ごとに作り直し、関数を出力するときに「変数へ書いたら番地を捨てる」命令を差し込む
     /// （[`GenCtx::finish_block_cache`]）。
     ip_vars: HashMap<String, (String, String)>,
+    /// 番地を覚えている入れ子の受け手（copy_alloc_speed_plan.md 7-13）:（親の変数の置き場 `%_al_x`, 属性）→（番地の置き場
+    /// `%_apN`・確かめた子のクラス）。`a.b.x` の `a.b` の番地を `CB_ATTR_BLOCK` で 1 回だけ取る。捨てる規則は `ip_vars` と
+    /// 同じ（変数へ書いたとき・番地を取るコールバックのほかの呼び出しの後・[`GenCtx::finish_block_cache`]）。
+    ap_vars: HashMap<(String, String), (String, String)>,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
@@ -1873,5 +1877,84 @@ fn after(mut p: P, let xs: list[int]) -> None:
         }
         assert!(kept >= 1, "the block of p is taken by CB_INST_BLOCK:\n{}", body.join("\n"));
         assert!(dropped >= 2, "the subscript and the slow paths drop it:\n{}", body.join("\n"));
+    }
+
+    /// 入れ子の受け手 `h.v` の番地は（変数, 属性）ごとに 1 つの置き場に覚え、置き場が空のときだけ `CB_ATTR_BLOCK` を呼ぶ
+    /// （copy_alloc_speed_plan.md 7-13）。親の変数へ書いたときと、番地を取るコールバックのほかの呼び出しの後で捨てる。
+    /// ⚠ 以前は `h.v.x` を読むたびに `CB_ATTR_BLOCK` を呼んでいた（`Body.bounce` は 1 回の呼び出しで 6 回）。
+    #[test]
+    fn nested_receiver_blocks_are_remembered_per_variable_and_field() {
+        use super::context::{cb_field_of_call, CallKind};
+        let src = "\
+class V:
+    mut x: float
+    mut y: float
+
+class H:
+    mut v: V
+    mut w: V
+    mut tag: str
+
+fn reads(let h: H) -> float:
+    return h.v.x + h.v.y + h.v.x + h.w.x
+
+fn rebinds(mut h: H, mut k: H) -> float:
+    let a = h.v.x
+    h = k
+    return a + h.v.x
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let mut stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        // 入れ子の受け手の直接の道は、`h.v.x` が `float` だという型検査の注釈を要る（`--compile` と同じ入口）
+        let (errors, _, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (ir, _) = generate_llvm_module(&stmts, &annotations).expect("eligible functions");
+        let body_of = |f: &str| -> Vec<String> {
+            let start = ir.find(&format!("@{f}_impl(")).unwrap_or_else(|| panic!("{f}_impl is defined"));
+            ir[start..].lines().take_while(|l| *l != "}").map(str::to_string).collect()
+        };
+        // `CB_ATTR_BLOCK` の呼び出しごとに、結果を書いた置き場（`store ptr %r, ptr %_apN`）
+        let attr_block_slots = |body: &[String]| -> Vec<String> {
+            let mut regs = std::collections::HashMap::new();
+            let mut slots = Vec::new();
+            for (i, line) in body.iter().enumerate() {
+                let l = line.trim_start();
+                if cb_field_of_call(l, &mut regs) == Some(CallKind::KeepsBlocks) && l.contains(" = call ptr (i64, ptr, i32,") {
+                    let dst = l.split(" = ").next().unwrap();
+                    let next = body[i + 1].trim_start();
+                    let slot = next
+                        .strip_prefix(&format!("store ptr {dst}, ptr "))
+                        .unwrap_or_else(|| panic!("the block of {l} is remembered: {next}"));
+                    slots.push(slot.to_string());
+                }
+            }
+            slots
+        };
+        let reads = body_of("reads");
+        let slots = attr_block_slots(&reads);
+        assert_eq!(slots.len(), 4, "one fetch per read site:\n{}", reads.join("\n"));
+        let distinct: std::collections::BTreeSet<&String> = slots.iter().collect();
+        assert_eq!(distinct.len(), 2, "h.v and h.w each have one slot: {slots:?}");
+        assert!(slots.iter().all(|s| s.starts_with("%_ap")), "{slots:?}");
+        // 読み出しの前は置き場を見て、空のときだけ呼ぶ
+        let v_slot = &slots[0];
+        let loads = reads.iter().filter(|l| l.trim_start().contains(&format!("= load ptr, ptr {v_slot}"))).count();
+        assert!(loads >= 3 * 2, "every read of h.v loads the slot (before and after the fetch): {loads}");
+
+        let rebinds = body_of("rebinds");
+        let slots = attr_block_slots(&rebinds);
+        assert!(!slots.is_empty(), "h.v is remembered:\n{}", rebinds.join("\n"));
+        let slot = &slots[0];
+        let store_h = rebinds
+            .iter()
+            .position(|l| l.trim_start().starts_with("store i64 ") && l.ends_with(", ptr %_al_h"))
+            .and_then(|first| {
+                rebinds.iter().enumerate().skip(first + 1).find(|(_, l)| {
+                    l.trim_start().starts_with("store i64 ") && l.ends_with(", ptr %_al_h")
+                })
+            })
+            .map(|(i, _)| i)
+            .expect("h = k stores into h");
+        assert_eq!(rebinds[store_h + 1].trim_start(), format!("store ptr null, ptr {slot}"), "h = k drops h.v");
     }
 }

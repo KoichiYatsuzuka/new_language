@@ -25,6 +25,7 @@ impl<'a> GenCtx<'a> {
         self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -276,6 +277,7 @@ impl<'a> GenCtx<'a> {
         self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.current_fn_ret = ret_ty;
@@ -392,6 +394,7 @@ impl<'a> GenCtx<'a> {
         self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -456,6 +459,7 @@ impl<'a> GenCtx<'a> {
         self.fresh_regs.clear();
         self.handle_store_log.clear();
         self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
 
         let param_sigs: Vec<String> = params.iter().enumerate()
