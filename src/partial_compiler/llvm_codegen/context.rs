@@ -849,6 +849,9 @@ impl<'a> GenCtx<'a> {
     ///   外部言語の `T*` の書き戻しは、インタープリタが作った別の欄へ書き、結果は値として呼ぶ側へ返る
     ///   （生成コードの変数の欄は差し替えられない・`eval/native.rs`）。
     /// - **1 つの変数に 1 つのクラス。** 同じ変数を別のクラスとして読む箇所は覚えない（毎回呼ぶ）。
+    /// - **取ってから、番地を取るコールバックのほかに何も呼んでいないこと**（known_bugs.md #26）。ほかの呼び出しはエラーを
+    ///   積みうるので、その直後で捨てる（これも [`Self::finish_block_cache`]）。番地を取り直すコールバックが、先に積まれた
+    ///   エラーを見て空を返し、今までの道（エラーがあれば何もしない）へ回す。
     fn emit_block_ptr(&mut self, class: &str, h: &str) -> Option<String> {
         let table = self.direct_class_desc(class)?;
         let cell = self.ic_cell();
@@ -901,16 +904,37 @@ impl<'a> GenCtx<'a> {
     /// 関数の本体を出力する直前に呼ぶ（8-5）: 番地を覚えた変数の置き場への `store` の直後に、番地の置き場を空にする
     /// 命令を差し込む。変数の置き場が `load` / `store` 以外（呼び出しの引数など）に出てきた行の後にも差し込む
     /// （置き場の番地を外へ渡す所は今は無いが、できたときに古い番地を読まないように）。
+    ///
+    /// **番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）と LLVM の組み込み以外の `call` の直後でも、覚えた
+    /// 番地を全部捨てる**（known_bugs.md #26）。覚えた番地を使い回してよいのは、取ってからほかのコールバックを 1 つも
+    /// 呼んでいない間だけ: ほかのコールバック（と直接呼び出し）はエラーを積みうる。番地を取るコールバックは先に積まれた
+    /// エラーがあれば空を返し、生成コードを今までの道（エラーがあれば何もしない）へ回すが、覚えた番地を使うと、その守りを
+    /// 通らずに書いてしまう。⚠ 以前は変数へ書いたときだけ捨てていたので、`self.y = self.x + s`（`self.x` がまだ書かれて
+    /// いない）が `self.x` の読み出しの誤りを積んだ後で `self.y` を書いた（VM は書く前に例外を投げる）。
+    /// どのコールバックかは文面から引く（`getelementptr inbounds %ArCallbacks, .., i32 N` → `load` → `call`・
+    /// [`cb_field_of_call`]）。引けない呼び出し（関数の値・トランポリン・直接呼び出し）は捨てる側に倒す。
     pub(super) fn finish_block_cache(&mut self) {
         if self.ip_vars.is_empty() {
             return;
         }
-        let vars: Vec<(String, String)> = self.ip_vars.drain().map(|(al, (ip, _))| (al, ip)).collect();
+        // (変数の置き場, 番地の置き場)。差し込む順を決めるために並べ替える（表から取り出す順は実行ごとに変わり、
+        // 生成 IR が毎回違ってしまう）
+        let mut vars: Vec<(String, String)> = self.ip_vars.drain().map(|(al, (ip, _))| (al, ip)).collect();
+        vars.sort();
         let mut out = String::with_capacity(self.code_buf.len() + 64);
+        let mut cb_regs: HashMap<String, usize> = HashMap::new();
         for line in self.code_buf.lines() {
             out.push_str(line);
             out.push('\n');
             let body = line.trim_start();
+            if let Some(callee) = cb_field_of_call(body, &mut cb_regs) {
+                if !matches!(callee, CallKind::KeepsBlocks) {
+                    for (_, ip) in &vars {
+                        out.push_str(&format!("  store ptr null, ptr {ip}\n"));
+                    }
+                    continue;
+                }
+            }
             for (al, ip) in &vars {
                 let writes = if body.starts_with("store ") {
                     line.ends_with(&format!(", ptr {al}"))
@@ -1204,3 +1228,43 @@ pub(super) fn raw_store_conv(
     })
 }
 
+
+/// 本体の `call` の、覚えた番地（8-5）にとっての分類（[`GenCtx::finish_block_cache`]・known_bugs.md #26）。
+#[derive(Debug, PartialEq)]
+pub(super) enum CallKind {
+    /// 番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）と LLVM の組み込み: 何も書き換えず、エラーも積まない
+    KeepsBlocks,
+    /// ほかの呼び出し（ほかのコールバック・直接呼び出し・関数の値・引けなかったもの）
+    Other,
+}
+
+/// 本体の 1 行（字下げを除いたもの）が `call` ならその分類を返す（`call` でなければ `None`）。コールバックの番号は、同じ
+/// 関数の前の行の `%a = getelementptr inbounds %ArCallbacks, ptr .., i32 0, i32 N` と `%f = load ptr, ptr %a` から
+/// `regs` に覚える（[`GenCtx::call_cb`] の出す形）。⚠ 読めない形は [`CallKind::Other`]（覚えた番地を捨てる側）に倒す。
+pub(super) fn cb_field_of_call(body: &str, regs: &mut HashMap<String, usize>) -> Option<CallKind> {
+    if let Some((dst, rest)) = body.split_once(" = ") {
+        if let Some(gep) = rest.strip_prefix("getelementptr inbounds %ArCallbacks, ptr ") {
+            if let Some(n) = gep.rsplit_once(", i32 ").and_then(|(_, n)| n.trim().parse::<usize>().ok()) {
+                regs.insert(dst.to_string(), n);
+            }
+            return None;
+        }
+        if let Some(src) = rest.strip_prefix("load ptr, ptr ") {
+            if let Some(&n) = regs.get(src.trim()) {
+                regs.insert(dst.to_string(), n);
+            }
+            return None;
+        }
+    }
+    let at = if body.starts_with("call ") { 0 } else { body.find(" call ")? + 1 };
+    let rest = &body[at + "call ".len()..];
+    // 呼ぶ先は `call` の後の最初の `%` / `@` の名前（戻り値の型と関数の型は名前を含まない）
+    let callee = rest
+        .find(['%', '@'])
+        .and_then(|s| rest[s..].split_once('(').map(|(name, _)| name));
+    Some(match callee {
+        Some(name) if name.starts_with("@llvm.") => CallKind::KeepsBlocks,
+        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK))) => CallKind::KeepsBlocks,
+        _ => CallKind::Other,
+    })
+}

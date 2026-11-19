@@ -1817,4 +1817,61 @@ fn copies(mut v: V) -> str:
             assert!(r.iter().all(|x| *x == want), "a call of {callee} must rewind {want:?}: {r:?}");
         }
     }
+
+    /// 覚えた番地（8-5）は、番地を取るコールバックと LLVM の組み込みのほかの `call` の直後で捨てる（known_bugs.md #26）。
+    /// ⚠ 以前は変数へ書いたときだけ捨てていたので、誤りを積んだコールバックの後の書き込みが、番地を取り直す
+    /// コールバック（先に積まれた誤りがあれば空を返す）を通らずに番地へ書いた。
+    #[test]
+    fn remembered_blocks_are_dropped_after_other_calls() {
+        use super::context::{cb_field_of_call, CallKind};
+        let mut regs = std::collections::HashMap::new();
+        let gep = |n: usize, r: &str| format!("%g{r} = getelementptr inbounds %ArCallbacks, ptr %cb, i32 0, i32 {n}");
+        let load = |r: &str| format!("%f{r} = load ptr, ptr %g{r}");
+        for (n, r) in [(super::CB_INST_BLOCK, "a"), (super::CB_ATTR_BLOCK, "b"), (14, "c")] {
+            assert_eq!(cb_field_of_call(&gep(n, r), &mut regs), None);
+            assert_eq!(cb_field_of_call(&load(r), &mut regs), None);
+        }
+        let classify = |line: &str, regs: &mut std::collections::HashMap<String, usize>| cb_field_of_call(line, regs);
+        assert_eq!(classify("%p = call ptr (i64, ptr, ptr) %fa(i64 %h, ptr @_dcd0, ptr @_ic1)", &mut regs), Some(CallKind::KeepsBlocks));
+        assert_eq!(classify("%p = call ptr (i64, ptr, i32, ptr, ptr, ptr) %fb(i64 %h, ptr @_s1)", &mut regs), Some(CallKind::KeepsBlocks));
+        assert_eq!(classify("%v = call i64 (i64, i64) %fc(i64 %h, i64 %i)", &mut regs), Some(CallKind::Other));
+        assert_eq!(classify("%v = call double @llvm.sqrt.f64(double %x)", &mut regs), Some(CallKind::KeepsBlocks));
+        assert_eq!(classify("%v = call i64 @step_impl(i64 %h)", &mut regs), Some(CallKind::Other));
+        assert_eq!(classify("call void %unknown(i64 %h)", &mut regs), Some(CallKind::Other));
+        assert_eq!(classify("store ptr null, ptr %_ip_p", &mut regs), None);
+
+        let src = "\
+class P:
+    mut x: float
+    mut y: float
+
+fn after(mut p: P, let xs: list[int]) -> None:
+    p.y = 1.0
+    let k = xs[5]
+    p.y = 3.0
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, _) = generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+        let start = ir.find("@after_impl(").expect("after_impl is defined");
+        let body: Vec<&str> = ir[start..].lines().take_while(|l| *l != "}").collect();
+        let mut regs = std::collections::HashMap::new();
+        let (mut kept, mut dropped) = (0, 0);
+        for (i, line) in body.iter().enumerate() {
+            let next = body.get(i + 1).copied().unwrap_or("");
+            match cb_field_of_call(line.trim_start(), &mut regs) {
+                Some(CallKind::KeepsBlocks) => {
+                    assert!(!next.contains("store ptr null, ptr %_ip_p"), "kept after {line}");
+                    kept += 1;
+                }
+                Some(CallKind::Other) => {
+                    assert_eq!(next.trim_start(), "store ptr null, ptr %_ip_p", "dropped right after {line}");
+                    dropped += 1;
+                }
+                None => {}
+            }
+        }
+        assert!(kept >= 1, "the block of p is taken by CB_INST_BLOCK:\n{}", body.join("\n"));
+        assert!(dropped >= 2, "the subscript and the slow paths drop it:\n{}", body.join("\n"));
+    }
 }
