@@ -852,20 +852,48 @@ impl<'a> GenCtx<'a> {
     ///   `ar_arena_compact` を払っていた（コンパイル済みの k1 で 1 体の更新に 3 組・うち 1 組は値を積まないメソッドの呼び出し）。
     /// ⚠ 「積まない」は呼ばれた側の本体が積む箇所（`push_sites`）を出さないこと。積む箇所に数えないコールバックが
     ///   走らせた利用者のコードの入れ子のネイティブ呼び出しは、その呼び出しが抜けるときに自分で巻き戻す（known_bugs.md #25）。
-    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<CallSave>) -> (String, Ty) {
+    ///
+    /// `pre`: 番地を受け取る変種（`@{sym}_pre`・copy_alloc_speed_plan.md 7-19）へ渡す `self` の入れ子の受け手の並び。
+    /// 呼ぶ直前に、この関数が覚えている同じ（属性, クラス）の置き場を読んで渡す（覚えていなければ空）。
+    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<CallSave>, pre: Option<&[(String, String)]>) -> (String, Ty) {
         let save = self.save_before_call(sym, save);
+        // 置き場は呼ぶ直前に読む: 間にほかの呼び出しがあれば `finish_block_cache` がその後で空にしているので、読んだ値は
+        // 呼ぶ時点で正しい（空なら呼ばれる側が取り直す）
+        let (callee, params) = match pre {
+            Some(list) => {
+                let mut ps = params.to_string();
+                for (a, c) in list {
+                    let slot = self
+                        .ap_vars
+                        .get(&("%_al_self".to_string(), a.clone()))
+                        .filter(|(_, sc)| sc == c)
+                        .map(|(slot, _)| slot.clone());
+                    let v = match slot {
+                        Some(slot) => {
+                            let p = self.fresh_reg();
+                            self.ec(&format!("{p} = load ptr, ptr {slot}"));
+                            p
+                        }
+                        None => "null".to_string(),
+                    };
+                    ps.push_str(&format!(", ptr {v}"));
+                }
+                (format!("@{sym}_pre"), ps)
+            }
+            None => (format!("@{sym}_impl"), params.to_string()),
+        };
         match ret {
             Ty::Float | Ty::Int => {
                 let r = self.fresh_reg();
                 let t = if ret == Ty::Float { "double" } else { "i64" };
-                self.ec(&format!("{r} = call {t} @{sym}_impl({params})"));
+                self.ec(&format!("{r} = call {t} {callee}({params})"));
                 // 生値なので残すハンドルは無い（TL_NONE を渡して巻き戻すだけ）
                 self.rewind_after_call(save, None);
                 (r, ret)
             }
             _ => {
                 let raw = self.fresh_reg();
-                self.ec(&format!("{raw} = call i64 @{sym}_impl({params})"));
+                self.ec(&format!("{raw} = call i64 {callee}({params})"));
                 (self.rewind_after_call(save, Some(&raw)), Ty::Handle)
             }
         }
@@ -889,7 +917,7 @@ impl<'a> GenCtx<'a> {
             })
             .collect();
         let save = self.finish_call_save(outer);
-        self.call_impl(name, &ops.join(", "), ret, save)
+        self.call_impl(name, &ops.join(", "), ret, save, None)
     }
 
 
@@ -1628,8 +1656,19 @@ impl<'a> GenCtx<'a> {
         let all_params = std::iter::once(format!("i64 {oh}"))
             .chain(explicit).collect::<Vec<_>>().join(", ");
         let ret = self.fn_sigs[sym].ret;
+        // 番地を受け取る変種（7-19）へ渡すのは、受け手がこの関数の `self` の今の値そのもので（`mut self` なので写さない）、
+        // 呼ばれる側が `mut self` のメソッドのとき。同じクラスの `self.m(..)` だけ（Arrow のクラスは継承しないので、
+        // `self` のクラスは呼ばれる側のクラス）
+        let pre = (!self.typed_mode
+            && !self.blk_mode
+            && ident_name(object) == Some("self")
+            && self.fn_sigs[sym].param_mutabilities.first().copied() == Some(true)
+            && self.fresh_var_of(&oh).as_deref() == Some("%_al_self"))
+            .then(|| self.pre_lists.get(sym).cloned())
+            .flatten()
+            .filter(|l| !l.is_empty());
         let ctx = self.enter_callee_ctx(cls, &oh);
-        let out = self.call_impl(sym, &all_params, ret, save);
+        let out = self.call_impl(sym, &all_params, ret, save, pre.as_deref());
         self.leave_callee_ctx(ctx);
         out
     }

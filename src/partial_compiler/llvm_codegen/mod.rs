@@ -858,6 +858,12 @@ struct GenCtx<'a> {
     /// 値を使わない呼び出し（式の文）の `func` の式（copy_alloc_speed_plan.md 7-17）。その呼び出しの遅い道は、結果を残さずに
     /// 巻き戻せる（`begin_fallback_region`）。式の文を出す間だけ入れる。⚠ 番地はノードの同一性にだけ使い、読まない。
     discarded_func: Option<*const Expr>,
+    /// 番地を受け取る変種（`@X_pre`）の並び（copy_alloc_speed_plan.md 7-19）: `mut self` のメソッド →（属性, 子のクラス）の
+    /// 並び。前の周回の生成で、本体が `self.属性` の番地を覚えた置き場（`ap_vars`）から決める（`pre_found`）。呼ぶ側
+    /// （同じクラスの `self.m(..)`）は覚えている番地をこの並びで渡し、呼ばれる側は置き場をその値で始める。
+    pre_lists: HashMap<String, Vec<(String, String)>>,
+    /// この周回の生成で見つけた並び（[`Self::pre_lists`] の次の周回の値）。
+    pre_found: HashMap<String, Vec<(String, String)>>,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
@@ -1566,9 +1572,11 @@ pub fn generate_llvm_module(
         .collect();
     let mut blk_ok: HashSet<String> = blk_sigs.keys().cloned().collect();
     let mut pushing: HashSet<String> = HashSet::new();
+    let mut pre_lists: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut ctx = loop {
         let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
         ctx.pushing_fns = pushing.clone();
+        ctx.pre_lists = pre_lists.clone();
         ctx.raw_classes = raw_classes.clone();
         ctx.blk_sigs = blk_sigs.clone();
         ctx.blk_ok = blk_ok.clone();
@@ -1588,10 +1596,12 @@ pub fn generate_llvm_module(
             }
             ctx.current_class = None;
         }
-        if ctx.fn_pushes == pushing && ctx.blk_evicted.is_empty() {
+        if ctx.fn_pushes == pushing && ctx.blk_evicted.is_empty() && ctx.pre_found == pre_lists {
             break ctx;
         }
         pushing = ctx.fn_pushes.clone();
+        // 番地を受け取る変種の並び（7-19）: 本体の生成だけで決まる（呼ぶ側が `_pre` を呼ぶかに依らない）ので、次の周回で止まる
+        pre_lists = ctx.pre_found.clone();
         for s in &ctx.blk_evicted {
             blk_ok.remove(s);
         }
@@ -2396,5 +2406,66 @@ fn sums(mut h: H) -> None:
         assert_eq!(count("adds_itself", super::CB_ATTR_BLOCKS), 0, "{}", body_of("adds_itself"));
         assert_eq!(count("adds_other", super::CB_ATTR_BLOCKS), 0, "{}", body_of("adds_other"));
         assert_eq!(count("adds_other", super::CB_ATTR_BLOCK), 2, "{}", body_of("adds_other"));
+    }
+
+    /// `self` の入れ子の受け手の番地を覚える `mut self` のメソッドは、番地を受け取る変種（`@X_pre(.., ptr ..)`）を持ち、
+    /// 置き場をその番地で始める（copy_alloc_speed_plan.md 7-19）。`_impl` は空の番地で `_pre` を呼ぶだけ。同じクラスの
+    /// `self.m(..)` は覚えている番地を渡して `_pre` を呼び、受け手が `self` でない呼び出しは `_impl`。`let self` のメソッドには
+    /// 作らない。番地で呼ぶ変種（`_blk`）の呼び出しの後は覚えた番地を捨てない。
+    /// ⚠ 以前は `step` が `self.pos` / `self.vel` の番地を持っていても、`Body.bounce` が入口で空にして取り直していた。
+    #[test]
+    fn methods_called_on_self_receive_the_remembered_blocks() {
+        let src = "\
+class V:
+    mut x: float
+    mut y: float
+
+    fn bump(mut self, let k: float) -> None:
+        self.x = self.x + k
+
+class K:
+    mut v: V
+    mut w: V
+    mut name: str
+
+    fn flip(mut self) -> None:
+        self.v.x = 0.0 - self.v.x
+        self.w.y = self.w.y + self.v.x
+
+    fn look(let self) -> float:
+        return self.v.x
+
+    fn step(mut self) -> None:
+        self.v.y = self.v.y + self.w.x
+        self.v.bump(1.0)
+        self.flip()
+
+    fn other(mut self, mut o: K) -> None:
+        self.v.y = self.v.y + 1.0
+        o.flip()
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let mut stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (errors, _, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (ir, _) = generate_llvm_module(&stmts, &annotations).expect("eligible functions");
+        let def = |head: &str| -> String {
+            let start = ir.find(head).unwrap_or_else(|| panic!("{head} is defined:\n{ir}"));
+            ir[start..].lines().take_while(|l| *l != "}").collect::<Vec<_>>().join("\n")
+        };
+        let flip = def("define internal i64 @K__flip_pre(i64 %_h0, ptr %_pb0, ptr %_pb1)");
+        assert!(flip.contains("store ptr %_pb0, ptr %_ap") && flip.contains("store ptr %_pb1, ptr %_ap"), "{flip}");
+        let flip_impl = def("define internal i64 @K__flip_impl(i64 %_h0)");
+        assert!(flip_impl.contains("call i64 @K__flip_pre(i64 %_h0, ptr null, ptr null)"), "{flip_impl}");
+        assert!(!ir.contains("@K__look_pre"), "a `let self` method gets no block-receiving variant");
+        let step = def("define internal i64 @K__step_pre(");
+        let call = step.lines().find(|l| l.contains("call i64 @K__flip_pre(")).unwrap_or_else(|| panic!("{step}"));
+        assert!(!call.contains("ptr null"), "step hands over its remembered blocks: {call}");
+        // `self.v.bump(..)`（番地で呼ぶ変種）の後も、覚えた番地はそのまま（空にしない）
+        let blk_at = step.lines().position(|l| l.contains("call i64 @V__bump_blk(")).unwrap_or_else(|| panic!("{step}"));
+        let next = step.lines().nth(blk_at + 1).unwrap_or("");
+        assert!(!next.contains("store ptr null"), "the blocks survive a `_blk` call:\n{step}");
+        let other = def("define internal i64 @K__other_pre(");
+        assert!(other.contains("call i64 @K__flip_impl("), "o is not self: no blocks to hand over:\n{other}");
     }
 }

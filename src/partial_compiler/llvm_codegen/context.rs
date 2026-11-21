@@ -74,6 +74,8 @@ impl<'a> GenCtx<'a> {
             blk_self:              None,
             loop_fuse_slot:        None,
             discarded_func:        None,
+            pre_lists:             HashMap::new(),
+            pre_found:             HashMap::new(),
         }
     }
 
@@ -1084,7 +1086,7 @@ impl<'a> GenCtx<'a> {
 
     /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
     /// 生成済みの本体の文面から決める（`h` を定義した `load` の後に、その置き場への `store` が無いこと）。
-    fn fresh_var_of(&self, h: &str) -> Option<String> {
+    pub(super) fn fresh_var_of(&self, h: &str) -> Option<String> {
         let def = format!("  {h} = load i64, ptr ");
         let at = self.code_buf.rfind(&def)?;
         let rest = &self.code_buf[at + def.len()..];
@@ -1510,7 +1512,8 @@ pub(super) fn raw_store_conv(
 /// 本体の `call` の、覚えた番地（8-5）にとっての分類（[`GenCtx::finish_block_cache`]・known_bugs.md #26）。
 #[derive(Debug, PartialEq)]
 pub(super) enum CallKind {
-    /// 番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）と LLVM の組み込み: 何も書き換えず、エラーも積まない
+    /// 番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS`）・保存点を取るだけの `CB_ARENA_SAVE`・
+    /// 番地で呼ぶ変種（`@X_blk`）・LLVM の組み込み: インスタンスを持つフィールドを書き換えず、エラーも積まない（7-19）
     KeepsBlocks,
     /// ほかの呼び出し（ほかのコールバック・直接呼び出し・関数の値・引けなかったもの）
     Other,
@@ -1542,7 +1545,10 @@ pub(super) fn cb_field_of_call(body: &str, regs: &mut HashMap<String, usize>) ->
         .and_then(|s| rest[s..].split_once('(').map(|(name, _)| name));
     Some(match callee {
         Some(name) if name.starts_with("@llvm.") => CallKind::KeepsBlocks,
-        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK | CB_ATTR_BLOCKS))) => CallKind::KeepsBlocks,
+        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK | CB_ATTR_BLOCKS | CB_ARENA_SAVE))) => CallKind::KeepsBlocks,
+        // 番地で呼ぶ変種（7-14）: 本体は何も呼ばず、渡された塊の数値のフィールドだけを読み書きする（子を差し替えず、誤りも
+        // 積まない・作れなかった変種は呼ぶ側ごと作り直すので、呼び出しが残るのは作れた変種だけ）。覚えた番地はそのまま使える（7-19）
+        Some(name) if name.starts_with('@') && name.ends_with("_blk") => CallKind::KeepsBlocks,
         _ => CallKind::Other,
     })
 }

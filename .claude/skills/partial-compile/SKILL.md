@@ -313,7 +313,9 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 
 ### Generated Function Variants
 
-For each eligible function `f`, the codegen emits up to five LLVM functions:
+For each eligible function `f`, the codegen emits up to six LLVM functions (`@f_pre` — the body of a `mut self`
+method that receives remembered nested-receiver blocks, with `@f_impl` as its null-passing wrapper — is described
+under "Remembered Block Addresses", copy_alloc_speed_plan.md 7-19):
 
 #### `@f_impl` (internal)
 
@@ -568,11 +570,23 @@ arguments (`self.pos.add_scaled(self.vel, dt)`) and a checked nested assignment'
 `CB_ATTR_BLOCK` with the same arguments (a miss stays null, so the next site fetches it alone). The same attribute
 twice, different parents, or a slot remembered under another class are fetched one by one.
 `finish_block_cache` scans the finished body and inserts `store ptr null` after (1) every store to the variable
-and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS` / `@llvm.*`** (`cb_field_of_call`, which reads the
-callback index from the `getelementptr inbounds %ArCallbacks` line; unknown callees count as "other"). (2) keeps the
-nested child alive and current (only calls can replace a parent's field) and keeps the error guard: the fetch
-callbacks return null when an error is pending, which sends the code to the slow path that does nothing — a
-remembered address used after another call would skip that guard (known_bugs.md #26).
+and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS` / `CB_ARENA_SAVE` / `@X_blk` /
+`@llvm.*`** (`cb_field_of_call`, which reads the callback index from the `getelementptr inbounds %ArCallbacks` line;
+unknown callees count as "other"). (2) keeps the nested child alive and current (only calls can replace a parent's
+field) and keeps the error guard: the fetch callbacks return null when an error is pending, which sends the code to
+the slow path that does nothing — a remembered address used after another call would skip that guard (known_bugs.md
+#26). `CB_ARENA_SAVE` only reads the arena length, and a `_blk` body calls nothing and writes only numeric fields of
+the blocks it was given (7-19).
+
+**Handing blocks to a callee (7-19).** A `mut self` method whose body remembers `self.<attr>` blocks is emitted as
+`@X_pre(<params>, ptr %_pb0, ..)`: the slots for those `(attr, class)` pairs start from the parameters instead of
+null (a `; @pre-blocks` marker after the parameter stores is replaced once the slots are known), and `@X_impl`
+becomes a one-line wrapper that calls `@X_pre` with null pointers (so `_tl` and every other caller are unchanged).
+The list per method (`pre_lists`) is what the previous round of the `generate_llvm_module` fixpoint found
+(`pre_found` — it depends only on the callee's own body, so it settles one round later). A direct call `self.m(..)`
+— the receiver is the fresh value of `%_al_self` and `m` takes `mut self` (no copy) — loads the caller's slots for
+the same pairs right before the call (`call_impl`; an intervening call has already nulled them) and calls `@m_pre`.
+Other receivers use `@m_impl`. `native_ir_abi_check.py` checks `_pre` calls too.
 
 ### Short-circuit Operators
 

@@ -1,4 +1,4 @@
-"""native_ir_abi_check.py - check that every direct call to an internal function (@X_impl / @X_fast / @X_blk) in a generated
+"""native_ir_abi_check.py - check that every direct call to an internal function (@X_impl / @X_fast / @X_blk / @X_pre) in a generated
 LLVM IR module matches the function's definition (return type and every argument type).
 
     python scripts/native_ir_abi_check.py <file.ll> [<file.ll> ...]
@@ -10,8 +10,8 @@ call through an opaque pointer, so a codegen bug here does not fail clang; it re
 import re
 import sys
 
-DEF = re.compile(r'^define\s+(?:internal\s+|dllexport\s+)?(\S+)\s+@(\w+_(?:impl|fast|blk))\((.*)\)\s*\{')
-CALL = re.compile(r'call\s+(\S+)\s+@(\w+_(?:impl|fast|blk))\((.*)\)')
+DEF = re.compile(r'^define\s+(?:internal\s+|dllexport\s+)?(\S+)\s+@(\w+_(?:impl|fast|blk|pre))\((.*)\)\s*\{')
+CALL = re.compile(r'call\s+(\S+)\s+@(\w+_(?:impl|fast|blk|pre))\((.*)\)')
 
 
 def split_args(s):
