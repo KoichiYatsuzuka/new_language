@@ -864,6 +864,122 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// 受け手の番地を並べて取る（[`Self::emit_block_src`] の複数版・copy_alloc_speed_plan.md 7-18）。`items` は
+    /// (クラス, 親か変数のハンドル, 入れ子なら親の属性)。戻り値は `items` と同じ並びの (番地, 入れ子なら IC のセル)。
+    /// どれかのクラスが直接読めるクラスでなければ何も出さずに `None`。
+    ///
+    /// 同じ親の変数から読んだばかりの入れ子の受け手（`self.pos` と `self.vel`）が 2 つ以上あり、どれも番地を覚えてよい
+    /// （[`Self::cacheable_field`]）なら、置き場のどれかが空のとき `CB_ATTR_BLOCKS` の 1 回で全部の置き場を埋める（親を 1 回
+    /// たどる。1 件ごとの結果は `CB_ATTR_BLOCK` と同じ）。ほかは 1 つずつ。番地を取るコールバックは利用者のコードを走らせない
+    /// ので、まとめて取る順の違いは見分けられない。
+    pub(super) fn emit_block_srcs(&mut self, items: &[(String, String, Option<String>)]) -> Option<Vec<(String, Option<String>)>> {
+        if items.iter().any(|(c, _, _)| !self.raw_classes.contains_key(c)) {
+            return None;
+        }
+        // 親の変数ごとの組: (変数の置き場, items の位置)。同じ (変数, 属性) は 2 つ目から 1 つずつの側（埋まった置き場を読む）
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        for (i, (class, h, a)) in items.iter().enumerate() {
+            let Some(a) = a else { continue };
+            let Some(al) = self.fresh_var_of(h) else { continue };
+            if self.ap_vars.get(&(al.clone(), a.clone())).is_some_and(|(_, c)| c != class) {
+                continue; // 同じ (変数, 属性) を別のクラスとして覚えている: 覚えない（1 つずつ・毎回呼ぶ）
+            }
+            match groups.iter_mut().find(|(g, _)| *g == al) {
+                Some((_, v)) if v.iter().any(|&j| items[j].2.as_deref() == Some(a.as_str())) => {}
+                Some((_, v)) => v.push(i),
+                None => groups.push((al, vec![i])),
+            }
+        }
+        let mut out: Vec<Option<(String, Option<String>)>> = vec![None; items.len()];
+        for (_, idxs) in groups.iter().filter(|(_, v)| v.len() >= 2) {
+            let got = self.emit_grouped_field_blocks(items, idxs);
+            for (&i, g) in idxs.iter().zip(got) {
+                out[i] = Some(g);
+            }
+        }
+        for (i, (class, h, a)) in items.iter().enumerate() {
+            if out[i].is_some() {
+                continue;
+            }
+            let src = match a {
+                Some(a) => BlockSrc::Field { parent_h: h, attr: a },
+                None => BlockSrc::Handle(h),
+            };
+            out[i] = Some(self.emit_block_src(class, src)?);
+        }
+        Some(out.into_iter().map(|g| g.expect("every item has a block")).collect())
+    }
+
+    /// [`Self::emit_block_srcs`] の 1 つの組（同じ親の変数の、属性の違う入れ子の受け手 `idxs`）のコード: 置き場のどれかが空
+    /// なら `CB_ATTR_BLOCKS` で全部埋め、置き場から番地を読む。件ごとの表（名前・IC のセル・クラスの表・クラスのセル）は DLL の
+    /// 定数（`@_abN`）。外れた件は空のまま置くので、次の箇所が 1 つずつ取り直す（`load_or_fetch_block` と同じ）。
+    fn emit_grouped_field_blocks(&mut self, items: &[(String, String, Option<String>)], idxs: &[usize]) -> Vec<(String, Option<String>)> {
+        let n = idxs.len();
+        let mut elems = Vec::with_capacity(n);
+        let mut cells = Vec::with_capacity(n);
+        let mut slots = Vec::with_capacity(n);
+        for &i in idxs {
+            let (class, h, a) = &items[i];
+            let a = a.as_deref().expect("grouped items are nested receivers");
+            let table = self.direct_class_desc(class).expect("checked by emit_block_srcs");
+            let class_cell = self.ic_cell();
+            let ic = self.ic_cell();
+            let name = self.str_const(a.as_bytes());
+            elems.push(format!("{{ ptr, i64, ptr, ptr, ptr }} {{ {name}, i64 {}, {ic}, {table}, {class_cell} }}", a.len()));
+            slots.push(self.cacheable_field(h, a, class).expect("checked by emit_block_srcs"));
+            cells.push(ic);
+        }
+        let table = format!("@_ab{}", self.ic_ctr);
+        self.ic_ctr += 1;
+        self.str_globals.push_str(&format!(
+            "{table} = private constant [{n} x {{ ptr, i64, ptr, ptr, ptr }}] [{}], align 8\n",
+            elems.join(", ")
+        ));
+        let outp = format!("%_abo{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{outp} = alloca [{n} x ptr], align 8"));
+        let mut any: Option<String> = None;
+        for slot in &slots {
+            let p0 = self.fresh_reg();
+            self.ec(&format!("{p0} = load ptr, ptr {slot}"));
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
+            any = Some(match any {
+                None => empty,
+                Some(prev) => {
+                    let o = self.fresh_reg();
+                    self.ec(&format!("{o} = or i1 {prev}, {empty}"));
+                    o
+                }
+            });
+        }
+        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&any.expect("a group has two items or more"), &bfetch, &bhave);
+        self.start_block(&bfetch);
+        let parent_h = items[idxs[0]].1.clone();
+        self.call_cb(CB_ATTR_BLOCKS, &[
+            format!("i64 {parent_h}"), format!("i32 {n}"), format!("ptr {table}"), format!("ptr {outp}"),
+        ]);
+        for (k, slot) in slots.iter().enumerate() {
+            let at = self.fresh_reg();
+            self.ec(&format!("{at} = getelementptr inbounds [{n} x ptr], ptr {outp}, i32 0, i32 {k}"));
+            let p = self.fresh_reg();
+            self.ec(&format!("{p} = load ptr, ptr {at}"));
+            self.ec(&format!("store ptr {p}, ptr {slot}"));
+        }
+        self.br(&bhave);
+        self.start_block(&bhave);
+        slots
+            .iter()
+            .zip(cells)
+            .map(|(slot, ic)| {
+                let p = self.fresh_reg();
+                self.ec(&format!("{p} = load ptr, ptr {slot}"));
+                (p, Some(ic))
+            })
+            .collect()
+    }
+
     /// 番地の置き場 `slot` が空のときだけ `cb`（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）を呼んで埋め、置き場の番地を返すコードを出す
     /// （8-5・7-13）。空（クラスが表のとおりでない・先に積まれた誤りがある）を返されたら空のまま置くので、次の箇所でまた呼ぶ。
     fn load_or_fetch_block(&mut self, slot: &str, cb: usize, args: &[String]) -> String {
@@ -1426,7 +1542,7 @@ pub(super) fn cb_field_of_call(body: &str, regs: &mut HashMap<String, usize>) ->
         .and_then(|s| rest[s..].split_once('(').map(|(name, _)| name));
     Some(match callee {
         Some(name) if name.starts_with("@llvm.") => CallKind::KeepsBlocks,
-        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK))) => CallKind::KeepsBlocks,
+        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK | CB_ATTR_BLOCKS))) => CallKind::KeepsBlocks,
         _ => CallKind::Other,
     })
 }

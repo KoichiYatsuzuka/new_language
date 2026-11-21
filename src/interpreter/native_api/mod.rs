@@ -843,10 +843,26 @@ pub struct ArCallbacks {
     /// （`i64` / `f64`）の番地を返す。ほかは空（生成コードは今までの読み出し → 演算 → 書き込みへ回る）。番地は、次に
     /// コールバックを呼ぶまでの間だけ使える（生成コードは読んで演算して書くまで何も呼ばない）。
     pub num_field_ptr: extern "C" fn(i64, *const u8, i32, *mut u64, i32) -> *mut u64,
+
+    // ── 同じ親の入れ子の受け手の番地をまとめて（field 86・copy_alloc_speed_plan.md 7-18） ──
+    /// (親, 件数 n, n 件の表 [`AttrBlockReq`], n 個の番地の置き場) を取り、親を 1 回だけたどって、1 件ごとに
+    /// field 79（`attr_block`）と同じ番地（外れた件は空）を置き場へ書く。
+    pub attr_blocks: extern "C" fn(i64, i32, *const AttrBlockReq, *mut *mut u64),
 }
 
 // SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。
 unsafe impl Sync for ArCallbacks {}
+
+/// field 86（`attr_blocks`）の 1 件（copy_alloc_speed_plan.md 7-18）: field 79（`attr_block`）の引数の、親のハンドル以外。
+/// 生成コードが DLL の定数として並べる（`{ ptr, i64, ptr, ptr, ptr }`）。
+#[repr(C)]
+pub struct AttrBlockReq {
+    pub name: *const u8,
+    pub name_len: i64,
+    pub ic_cell: *mut u64,
+    pub desc: *const crate::interpreter::value::DirectClassDesc,
+    pub class_cell: *mut u64,
+}
 
 // ── Callback implementations ─────────────────────────────────────────────────
 

@@ -2723,7 +2723,48 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     new_instance: ar_new_instance,
     iter_next_at: ar_iter_next_at,
     num_field_ptr: ar_num_field_ptr,
+    attr_blocks: ar_attr_blocks,
 };
+
+/// field 86（copy_alloc_speed_plan.md 7-18）: 同じ親の `n` 個のフィールドが持つインスタンスの先頭の塊の番地を、親を 1 回だけ
+/// たどって `out[i]` へ書く。1 件ごとの結果は field 79 を `reqs[i]` で呼んだのと同じ（読み出しの IC が当たり、slot が今持って
+/// いる値が表のとおりのクラスのインスタンスのときだけ番地・ほかは空）。先に積まれた誤りがある・親がインスタンスでないなら
+/// 全部空。アリーナには積まない。
+/// ⚠ 外れた件をここで読み直さない（field 79 と同じ理由）。生成コードがその件の IC のセルで field 58 を呼んで埋める。
+extern "C" fn ar_attr_blocks(parent_h: i64, n: i32, reqs: *const AttrBlockReq, out: *mut *mut u64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    if n <= 0 || reqs.is_null() || out.is_null() {
+        return;
+    }
+    // SAFETY: 生成コードは `n` 件の表と `n` 個の `ptr` の置き場を渡す
+    let reqs = unsafe { std::slice::from_raw_parts(reqs, n as usize) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
+    out.fill(std::ptr::null_mut());
+    if parent_h < 3 {
+        return;
+    }
+    with_state(|s| {
+        let st = s.borrow();
+        if st.error.is_some() {
+            return;
+        }
+        let Some(Value::Instance(rc)) = st.arena.get(parent_h as usize) else { return };
+        let inst = rc.borrow();
+        for (r, slot) in reqs.iter().zip(out.iter_mut()) {
+            if r.ic_cell.is_null() || r.class_cell.is_null() || r.desc.is_null() {
+                continue;
+            }
+            // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（`read_ic_hit` と同じ）
+            let packed = unsafe { &*(r.ic_cell as *const AtomicU64) }.load(Ordering::Relaxed);
+            let Some((idx, _)) = inst.ic_slot(packed, true, || debug_field_name(r.name, r.name_len as i32)) else {
+                continue;
+            };
+            if let Some(Some((Value::Instance(child), _))) = inst.boxed_fields.get(idx) {
+                *slot = instance_block(child, r.desc, r.class_cell);
+            }
+        }
+    })
+}
 
 /// field 85（copy_alloc_speed_plan.md 7-16）: `x.f op= v`（数値のフィールド）を生成コードが 1 回で行うための、フィールドの
 /// 値の番地。返すのは、受け手が raw レイアウトでないクラスのインスタンスで、読み出しの IC が当たり（public のフィールド）、
@@ -3196,6 +3237,105 @@ mod tests {
         assert_eq!(call("V2", &tv, &[0, 1], &mut cells, &mut o), 0);
         assert!(take_error().is_some_and(|e| e.contains("earlier")));
         super::abort_native_call(outermost);
+    }
+
+    /// 同じ親の入れ子の受け手の番地をまとめて取るコールバック（field 86・copy_alloc_speed_plan.md 7-18）: 1 件ごとの結果は
+    /// field 79（`ar_attr_block`）を同じ引数で呼んだのと同じ。表と違うクラスの子・インスタンスでない値・空の IC のセルの件だけ
+    /// 空で、ほかの件は番地。親がインスタンスでない・先に積まれた誤りがあれば全部空（誤りはそのまま）。
+    #[test]
+    fn attr_blocks_match_attr_block_for_each_request() {
+        use crate::interpreter::value::{
+            alloc_class_id, direct_field_info, ClassValue, DirectClassDesc, DirectFieldDesc, InstanceData, RawLayout,
+        };
+        let make_raw = |name: &str, fields: &[(&str, &str)]| -> Rc<ClassValue> {
+            let own: Vec<(String, String)> = fields.iter().map(|(n, a)| (n.to_string(), a.to_string())).collect();
+            Rc::new(ClassValue {
+                field_index: fields.iter().enumerate().map(|(i, (n, _))| (n.to_string(), i)).collect(),
+                field_count: fields.len(),
+                field_mutability_vec: vec![true; fields.len()],
+                raw_layout: RawLayout::for_class(true, &own, own.len()).map(Rc::new),
+                ..ClassValue::synthetic(name, alloc_class_id())
+            })
+        };
+        let new_inst = |cls: &Rc<ClassValue>| {
+            let mut inst = InstanceData::new_empty(cls.clone(), 0);
+            let _ = inst.store_field(0, Value::Float(1.5), true);
+            let _ = inst.store_field(1, Value::Int(7), true);
+            Rc::new(RefCell::new(inst))
+        };
+        let vec2 = make_raw("Vec2", &[("x", "float"), ("n", "int32")]);
+        // 同じ名前で並びの違うクラス（表と照合すると外れる）
+        let swapped = make_raw("Vec2", &[("n", "int32"), ("x", "float")]);
+        // 親（raw レイアウトでない）: v / w / s は子のインスタンス、k は数
+        let parent = Rc::new(ClassValue {
+            field_index: [("v", 0usize), ("w", 1), ("s", 2), ("k", 3)].into_iter().map(|(n, i)| (n.to_string(), i)).collect(),
+            field_count: 4,
+            field_mutability_vec: vec![true; 4],
+            ..ClassValue::synthetic("H", alloc_class_id())
+        });
+        let mut pinst = InstanceData::new_empty(parent.clone(), 0);
+        assert!(pinst.store_field(0, Value::Instance(new_inst(&vec2)), true));
+        assert!(pinst.store_field(1, Value::Instance(new_inst(&vec2)), true));
+        assert!(pinst.store_field(2, Value::Instance(new_inst(&swapped)), true));
+        assert!(pinst.store_field(3, Value::Int(3), true));
+        let ph = push_handle(Value::Instance(Rc::new(RefCell::new(pinst))));
+
+        #[repr(C)]
+        struct Table(DirectClassDesc, [DirectFieldDesc; 2]);
+        let layout = vec2.raw_layout.clone().unwrap();
+        let table = Table(
+            DirectClassDesc { name: "Vec2".as_ptr(), name_len: 4, n_fields: 2 },
+            [
+                DirectFieldDesc { name: "x".as_ptr(), name_len: 1, info: direct_field_info(layout.fields[0], true) },
+                DirectFieldDesc { name: "n".as_ptr(), name_len: 1, info: direct_field_info(layout.fields[1], true) },
+            ],
+        );
+        let desc = &table.0 as *const DirectClassDesc;
+        let ic = |idx: usize| {
+            let c = crate::ast::AttrCache::default();
+            c.fill(parent.class_id, idx, 0);
+            c.0.get()
+        };
+        // 件ごとの (名前, 読み出しの IC のセル, クラスのセル)。field 79 と同じ値を比べるため、セルは件ごとに別に持つ
+        let names = ["v", "w", "s", "k"];
+        let mut ics = [ic(0), ic(1), ic(2), ic(3), 0u64];
+        let mut class_cells = [0u64; 5];
+        let req = |name: &'static str, ic: *mut u64, cc: *mut u64| AttrBlockReq {
+            name: name.as_ptr(),
+            name_len: name.len() as i64,
+            ic_cell: ic,
+            desc,
+            class_cell: cc,
+        };
+        let one = |name: &str, ic: &mut u64, cc: &mut u64| ar_attr_block(ph, name.as_ptr(), name.len() as i32, ic, desc, cc);
+        let (mut ic79, mut cc79) = ([ic(0), ic(1), ic(2), ic(3)], [0u64; 4]);
+        let want: Vec<*mut u64> = (0..4).map(|i| one(names[i], &mut ic79[i], &mut cc79[i])).collect();
+        assert!(!want[0].is_null() && !want[1].is_null() && want[0] != want[1]);
+        assert!(want[2].is_null() && want[3].is_null(), "a child of another layout / a number has no block");
+
+        // 4 件 + IC のセルが空の件（v をもう 1 度・空のセル）
+        let reqs = [
+            req("v", &mut ics[0], &mut class_cells[0]),
+            req("w", &mut ics[1], &mut class_cells[1]),
+            req("s", &mut ics[2], &mut class_cells[2]),
+            req("k", &mut ics[3], &mut class_cells[3]),
+            req("v", &mut ics[4], &mut class_cells[4]),
+        ];
+        let mut out = [1usize as *mut u64; 5];
+        ar_attr_blocks(ph, 5, reqs.as_ptr(), out.as_mut_ptr());
+        assert_eq!(&out[..4], &want[..], "each request gets what field 79 returns");
+        assert!(out[4].is_null(), "an empty IC cell gives null");
+        // 親がインスタンスでない・先に積まれた誤り: 全部空（誤りはそのまま）
+        for parent_h in [TL_NONE, push_handle(Value::Float(1.0))] {
+            let mut out = [1usize as *mut u64; 2];
+            ar_attr_blocks(parent_h, 2, reqs.as_ptr(), out.as_mut_ptr());
+            assert!(out.iter().all(|p| p.is_null()));
+        }
+        set_native_error("ValueError: earlier".to_string());
+        let mut out = [1usize as *mut u64; 2];
+        ar_attr_blocks(ph, 2, reqs.as_ptr(), out.as_mut_ptr());
+        assert!(out.iter().all(|p| p.is_null()));
+        assert!(take_error().is_some_and(|e| e.contains("earlier")));
     }
 
     /// 番地を返すコールバック（field 78・8-2）: クラスが生成コードの表のとおりのときだけ番地を返し、セルに覚える。

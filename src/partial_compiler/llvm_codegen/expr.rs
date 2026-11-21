@@ -1423,26 +1423,27 @@ impl<'a> GenCtx<'a> {
         let rt = if ret == Ty::Float { "double" } else { "i64" };
 
         // ── 2) 受け手と引数の番地を取る: (親か変数のハンドル, 入れ子なら属性, 番地, 入れ子なら IC のセル) ──
+        // 根（ローカル変数）を先に全部読んでから番地を取る: 同じ親の入れ子の受け手（`self.pos.add_scaled(self.vel, dt)`）は
+        // `CB_ATTR_BLOCKS` の 1 回でまとめて取る（7-18）。根を読むのは何も起こさないので、順を変えても見分けられない
         type Got = (String, Option<String>, String, Option<String>);
-        let mut got: Vec<Option<Got>> = Vec::with_capacity(operands.len());
-        for (op, want) in operands.iter().zip(&sig.params) {
-            let (BlkOp::Ptr(c) | BlkOp::Flat(c)) = want else {
-                got.push(None);
-                continue;
-            };
+        let mut srcs: Vec<(usize, String, String, Option<String>)> = Vec::new();
+        for (i, (op, want)) in operands.iter().zip(&sig.params).enumerate() {
+            let (BlkOp::Ptr(c) | BlkOp::Flat(c)) = want else { continue };
             let (src_e, a) = match op {
                 Expr::Attr { object: parent, attr: a, .. } => (parent.as_ref(), Some(a.clone())),
                 e => (*e, None),
             };
             let (v, t) = self.gen_expr(src_e);
             let h = self.to_handle(&v, t);
-            let src = match &a {
-                Some(a) => BlockSrc::Field { parent_h: &h, attr: a },
-                None => BlockSrc::Handle(&h),
-            };
-            // クラスは raw レイアウト（`blk_sig_of` で確かめた）なので表があり、必ず番地のコードを出す
-            let (p, ic) = self.emit_block_src(c, src).expect("a raw-layout class has a direct class table");
-            got.push(Some((h, a, p, ic)));
+            srcs.push((i, c.clone(), h, a));
+        }
+        let items: Vec<(String, String, Option<String>)> =
+            srcs.iter().map(|(_, c, h, a)| (c.clone(), h.clone(), a.clone())).collect();
+        // クラスは raw レイアウト（`blk_sig_of` で確かめた）なので表があり、必ず番地のコードを出す
+        let blocks = self.emit_block_srcs(&items).expect("a raw-layout class has a direct class table");
+        let mut got: Vec<Option<Got>> = vec![None; operands.len()];
+        for ((i, _, h, a), (p, ic)) in srcs.into_iter().zip(blocks) {
+            got[i] = Some((h, a, p, ic));
         }
 
         // ── 3) 確かめる（外れたら遅い道へ） ──

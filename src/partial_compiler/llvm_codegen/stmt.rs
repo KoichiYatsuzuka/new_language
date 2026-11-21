@@ -803,19 +803,19 @@ impl<'a> GenCtx<'a> {
             }
         }
 
-        // ── 2) 番地を取る: (親か変数のハンドル, 番地, 入れ子なら IC のセル) ──
-        let mut got: Vec<(String, String, Option<String>)> = Vec::with_capacity(blks.len());
+        // ── 2) 番地を取る: (親か変数のハンドル, 番地, 入れ子なら IC のセル)。根（ローカル変数）を先に全部読み、同じ親の
+        //    入れ子の受け手は `CB_ATTR_BLOCKS` の 1 回でまとめて取る（7-18） ──
+        let mut hs: Vec<String> = Vec::with_capacity(blks.len());
         for b in &blks {
             let (v, t) = self.gen_expr(b.recv);
-            let h = self.to_handle(&v, t);
-            let src = match &b.attr {
-                Some(a) => BlockSrc::Field { parent_h: &h, attr: a },
-                None => BlockSrc::Handle(&h),
-            };
-            // クラスは raw レイアウト（`direct_read_plan` / `direct_write_plan` で確かめた）なので表があり、必ず番地のコードを出す
-            let (p, ic) = self.emit_block_src(&b.class, src).expect("a raw-layout class has a direct class table");
-            got.push((h, p, ic));
+            hs.push(self.to_handle(&v, t));
         }
+        let items: Vec<(String, String, Option<String>)> =
+            blks.iter().zip(&hs).map(|(b, h)| (b.class.clone(), h.clone(), b.attr.clone())).collect();
+        // クラスは raw レイアウト（`direct_read_plan` / `direct_write_plan` で確かめた）なので表があり、必ず番地のコードを出す
+        let blocks = self.emit_block_srcs(&items).expect("a raw-layout class has a direct class table");
+        let got: Vec<(String, String, Option<String>)> =
+            hs.into_iter().zip(blocks).map(|(h, (p, ic))| (h, p, ic)).collect();
 
         // ── 3) 確かめる（外れたら遅い道へ） ──
         let (b_fast, b_slow, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());

@@ -560,8 +560,15 @@ Numeric fields of this module's raw-layout classes are read and written at the i
 The address is remembered per function in an alloca and fetched only when the alloca is null:
 `%_ip_x` per local variable (8-5) and `%_apN` per (parent variable, attribute) for nested receivers (7-13,
 `cacheable_field`). Only a value freshly loaded from the variable's alloca is remembered (`fresh_var_of`).
+Sites that need several nested receivers of the same parent variable at once — a `_blk` call's receiver and
+arguments (`self.pos.add_scaled(self.vel, dt)`) and a checked nested assignment's target and reads — go through
+`emit_block_srcs` (7-18): when any of the group's slots is null, one `CB_ATTR_BLOCKS` call (field 86,
+`void(i64 parent, i32 n, ptr reqs, ptr out)`) walks the parent once and fills every slot; `reqs` is a DLL constant
+`@_abN = [n x { ptr name, i64 len, ptr ic_cell, ptr desc, ptr class_cell }]`, and each entry's result equals
+`CB_ATTR_BLOCK` with the same arguments (a miss stays null, so the next site fetches it alone). The same attribute
+twice, different parents, or a slot remembered under another class are fetched one by one.
 `finish_block_cache` scans the finished body and inserts `store ptr null` after (1) every store to the variable
-and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `@llvm.*`** (`cb_field_of_call`, which reads the
+and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS` / `@llvm.*`** (`cb_field_of_call`, which reads the
 callback index from the `getelementptr inbounds %ArCallbacks` line; unknown callees count as "other"). (2) keeps the
 nested child alive and current (only calls can replace a parent's field) and keeps the error guard: the fetch
 callbacks return null when an error is pending, which sends the code to the slow path that does nothing — a
