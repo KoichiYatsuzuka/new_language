@@ -852,6 +852,9 @@ struct GenCtx<'a> {
     /// 次の `gen_loop_body` のループの見出しが `CB_ITER_NEXT_AT` で読む保存点の置き場（copy_alloc_speed_plan.md 7-15）。
     /// `for` の見出しを出す側が入れ、`gen_loop_body` が取り出す。周の終わりに残す値が無ければ、巻き戻しは見出しへまとめる。
     loop_fuse_slot: Option<String>,
+    /// 値を使わない呼び出し（式の文）の `func` の式（copy_alloc_speed_plan.md 7-17）。その呼び出しの遅い道は、結果を残さずに
+    /// 巻き戻せる（`begin_fallback_region`）。式の文を出す間だけ入れる。⚠ 番地はノードの同一性にだけ使い、読まない。
+    discarded_func: Option<*const Expr>,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
@@ -2227,5 +2230,110 @@ fn on_element(mut cs: list[C]) -> None:
         assert_eq!(count(&body_of("on_local"), super::CB_NUM_FIELD_PTR), 1, "a local receiver too");
         assert_eq!(count(&body_of("on_raw"), super::CB_NUM_FIELD_PTR), 0, "a raw-layout class reads and writes its block");
         assert_eq!(count(&body_of("on_element"), super::CB_NUM_FIELD_PTR), 0, "the receiver is not a name");
+    }
+
+    /// 値を積む箇所が遅い道だけにある関数は「値を積まない関数」になり、呼ぶ側が保存点と巻き戻しで囲まない
+    /// （copy_alloc_speed_plan.md 7-17）。①遅い道（入れ子の受け手の読み出しの外れ・番地で呼ぶ変種の外れ・ガードが外れた
+    /// 名前による呼び出しで結果を使わないもの）は、道の中で保存点を取って巻き戻す。②`a.b.x = <数の式>` で式が確かめられる
+    /// 番地だけを読むなら、書き込み先と読み出し先の番地を先に確かめて検査なしで読み書きする（`a.b` を積まない）。
+    /// 結果のハンドルを返す関数・確かめられない式を書く関数は、今までどおり値を積む。
+    /// ⚠ 以前は `self.vel.x = 0.0 - self.vel.x`（`Body.bounce`）が `self.vel` を積み、`step` → `bounce` と `step_all` → `step` の
+    ///   呼び出しが毎回保存点と巻き戻しで囲まれた。
+    #[test]
+    fn slow_paths_rewind_so_their_functions_do_not_push() {
+        use crate::interpreter::value::block;
+        let src = "\
+class V:
+    mut x: float
+    mut y: float
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y
+
+class K:
+    mut n: int
+    mut tag: str
+
+    fn bump(mut self) -> None:
+        self.n += 1
+
+    fn label(let self) -> str:
+        return self.tag
+
+class H:
+    mut v: V
+    mut w: V
+    mut k: K
+    mut name: str
+
+fn reads(mut h: H) -> float:
+    return h.v.x * 2.0
+
+fn dots(mut h: H) -> float:
+    return h.v.dot(h.w)
+
+fn bumps(mut k: K) -> None:
+    k.bump()
+
+fn flips(mut h: H) -> None:
+    h.v.x = 0.0 - h.v.x
+    h.v.y = h.w.x * 2.0 + h.v.y
+
+fn flips_named(mut h: H) -> None:
+    h.v.x = 0.0 - h.v.x + float(len(h.name))
+
+fn labels(mut k: K) -> str:
+    let s = k.label()
+    return s
+
+fn call_reads(mut h: H) -> float:
+    return reads(h)
+
+fn call_dots(mut h: H) -> float:
+    return dots(h)
+
+fn call_bumps(mut k: K) -> None:
+    bumps(k)
+
+fn call_flips(mut h: H) -> None:
+    flips(h)
+
+fn call_flips_named(mut h: H) -> None:
+    flips_named(h)
+
+fn call_labels(mut k: K) -> int:
+    return len(labels(k))
+";
+        let tokens = Lexer::new(src, "").tokenize();
+        let mut stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let (errors, _, annotations) = crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (ir, _) = generate_llvm_module(&stmts, &annotations).expect("eligible functions");
+        let body_of = |f: &str| -> String {
+            let start = ir.find(&format!("@{f}_impl(")).unwrap_or_else(|| panic!("{f}_impl is defined"));
+            ir[start..].lines().take_while(|l| *l != "}").collect::<Vec<_>>().join("\n")
+        };
+        let field = |n: usize| format!("i32 0, i32 {n}\n");
+        let saves = |f: &str| body_of(f).matches(&field(super::CB_ARENA_SAVE)).count();
+
+        // 遅い道だけが積む関数: 呼ぶ側は囲まない
+        for f in ["reads", "dots", "flips"] {
+            assert_eq!(saves(&format!("call_{f}")), 0, "{f} does not push:\n{}", body_of(&format!("call_{f}")));
+            assert!(saves(f) > 0, "{f} rewinds inside its slow paths:\n{}", body_of(f));
+        }
+        // 型を宣言した仮引数の受け手はガードなしで直接呼ぶ（遅い道が無い）: 積まないまま
+        assert_eq!(saves("call_bumps"), 0, "{}", body_of("call_bumps"));
+        // 結果のハンドルを返す・確かめられない式を書く: 今までどおり囲む
+        assert_eq!(saves("call_labels"), 1, "labels pushes its result:\n{}", body_of("call_labels"));
+        assert_eq!(saves("call_flips_named"), 1, "flips_named pushes h.v:\n{}", body_of("call_flips_named"));
+
+        // ② 速い道: 書き込み先（不変の印・読む x の初期化の印）と読み出し先（y の初期化の印は書き込み先と同じ番地）を確かめる
+        let flips = body_of("flips");
+        let x_mask = (block::IMMUTABLE | block::init_bit(0)) as i64;
+        let xy_mask = (block::IMMUTABLE | block::init_bit(1)) as i64;
+        assert!(flips.contains(&format!(", {x_mask}\n")), "h.v.x = 0.0 - h.v.x checks x's init bit and the flag:\n{flips}");
+        assert!(flips.contains(&format!(", {xy_mask}\n")), "h.v.y = .. + h.v.y checks y's init bit and the flag:\n{flips}");
+        assert!(flips.contains(&format!(", {}\n", block::init_bit(0) as i64)), "h.w.x is checked for x's init bit:\n{flips}");
+        assert!(flips.contains("fsub double 0.0, ") && flips.contains("store double "), "{flips}");
     }
 }

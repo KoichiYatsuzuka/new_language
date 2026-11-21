@@ -1342,7 +1342,7 @@ impl<'a> GenCtx<'a> {
     }
 
     /// `e` がこの関数のローカル変数（仮引数を含む）の読みか。
-    fn is_local_ident(&self, e: &Expr) -> bool {
+    pub(super) fn is_local_ident(&self, e: &Expr) -> bool {
         match e {
             Expr::Ident { res: Resolution::Local(slot), .. }
                 if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) =>
@@ -1528,6 +1528,10 @@ impl<'a> GenCtx<'a> {
 
         // ── 5) 遅い道: 今までの呼び出し ──
         self.start_block(&b_slow);
+        // 遅い道が積む値（受け手・引数のハンドル・結果）は、結果が生の数か使わない値なら道の中で巻き戻す（7-17）
+        let region = (matches!(ret, Ty::Float | Ty::Int) || self.call_value_discarded(func))
+            .then(|| self.begin_fallback_region())
+            .flatten();
         // 次から速い道を通れるように、空だった入れ子の受け手・引数の番地の読み出しの IC のセルを埋める（`CB_ATTR_BLOCK` は
         // セルが空のうちは空を返す）。ガード付きの受け手は、ガードのセルが空なら埋める（結果は今までの呼び出しのガードが
         // もう一度決める）。番地が取れてほかの検査で外れたとき（`__copy__` を持つクラスがある など）は何も足さない。
@@ -1577,6 +1581,7 @@ impl<'a> GenCtx<'a> {
         if !self.terminated {
             self.ec(&format!("store {rt} {v}, ptr {slot}"));
         }
+        self.end_fallback_region(region);
         self.br(&b_join);
 
         self.start_block(&b_join);
@@ -1643,6 +1648,7 @@ impl<'a> GenCtx<'a> {
         args: &[CallArg],
         arg_exprs: &[(String, Ty)],
         site: CallSite<'_>,
+        discarded: bool,
     ) -> String {
         // `mut self` のメソッドは不変インスタンスでガードを外す（名前による呼び出しがエラーにする）
         let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
@@ -1664,8 +1670,11 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store i64 {rd}, ptr {slot}"));
         self.br(&b_join);
         self.start_block(&b_name);
+        // 値を使わない呼び出し（式の文）なら、名前による呼び出しが積む値（引数の箱・結果）を道の中で巻き戻す（7-17）
+        let region = discarded.then(|| self.begin_fallback_region()).flatten();
         let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
         self.ec(&format!("store i64 {rn}, ptr {slot}"));
+        self.end_fallback_region(region);
         self.br(&b_join);
         self.start_block(&b_join);
         let r = self.fresh_reg();
@@ -1713,6 +1722,8 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store {t} {rd}, ptr {slot}"));
         self.br(&b_join);
         self.start_block(&b_name);
+        // 結果は宣言の型どおりに開けた生の数なので、名前による呼び出しが積む値は道の中で巻き戻す（7-17）
+        let region = self.begin_fallback_region();
         let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
         let shown = format!("{cls}.{key}");
         let name = self.str_const(shown.as_bytes());
@@ -1726,6 +1737,7 @@ impl<'a> GenCtx<'a> {
             bits
         };
         self.ec(&format!("store {t} {v}, ptr {slot}"));
+        self.end_fallback_region(region);
         self.br(&b_join);
         self.start_block(&b_join);
         let r = self.fresh_reg();
@@ -1799,7 +1811,8 @@ impl<'a> GenCtx<'a> {
                     if !guarded {
                         return self.emit_direct_method_call(&sym, &cls, object, &oh, ot, args, &arg_exprs);
                     }
-                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs, site);
+                    let discarded = self.call_value_discarded(func);
+                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs, site, discarded);
                 }
             }
             return self.emit_method_call_by_name(&key, object, &oh, args, &arg_exprs, site);

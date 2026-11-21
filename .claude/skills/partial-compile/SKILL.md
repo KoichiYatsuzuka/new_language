@@ -511,6 +511,25 @@ read-only fast path (7-7) pays nothing. A nested native call (compiled code → 
 function) cuts the arena back to its own entry when it returns (`leave_native_call`, known_bugs.md #25), so
 callbacks not counted as pushes cannot leak through a skipped rewind.
 
+**Fallback regions (copy_alloc_speed_plan.md 7-17).** A slow path whose pushes are temporaries rewinds them itself
+and does not count as a push site, so a function that pushes only on slow paths stays out of `pushing_fns`
+(`begin_fallback_region` / `end_fallback_region`: `CB_ARENA_SAVE` at the start, `CB_ARENA_COMPACT(0, save)` at the
+end, `push_sites` restored). Used for: the miss of a nested receiver's direct read/write (`BlockSrc::Field`), the miss
+of a `_blk` call whose result is a raw `int`/`float` or unused, the by-name branch of a guarded call when the result
+is a raw number (`emit_guarded_method_call_typed`) or unused (a statement expression — `discarded_func` marks the
+outermost call's `func` node), and the miss of a checked nested assignment (below). A region that stored a handle
+into a local (`handle_store_log` grew) is not rewound and counts as before. A handle result that is used is never
+inside a region.
+
+**Checked nested assignment (7-17 ②).** `a.b.x = <expr>` where `a` is a local, `a.b` a raw-layout class and `<expr>`
+only literals, numeric locals and reads `L.f` / `L.c.f` of raw-layout numeric fields combined with `+ - *`
+(`checked_num_ty`): the target's and every read receiver's block is fetched first (`CB_ATTR_BLOCK` /
+`CB_INST_BLOCK`, remembered addresses reused), then one check per block — non-null and `(head & mask) == init bits`
+with the read fields' init bits plus `IMMUTABLE` for the target — then the fast path reads, computes and writes with
+no call (setting the target's init bit). Miss → fill the empty nested IC cells, then the old path (`a.b` pushed →
+value → `emit_field_assign`) inside a fallback region. The fetch callbacks run no user code, so fetching before the
+value is not observable. (`emit_nested_field_assign`, 8-7, still covers values that read no field.)
+
 ### Loop Rewinds (native_object_access_plan.md 9-1 / copy_alloc_speed_plan.md 7-15)
 
 A loop whose body can push to the arena (`push_sites` grew) takes a save point just before the loop (inserted at

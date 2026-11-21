@@ -73,6 +73,7 @@ impl<'a> GenCtx<'a> {
             blk_failed:            false,
             blk_self:              None,
             loop_fuse_slot:        None,
+            discarded_func:        None,
         }
     }
 
@@ -214,6 +215,37 @@ impl<'a> GenCtx<'a> {
         let r = self.fresh_reg();
         self.ec(&format!("{r} = phi i64 [ {h}, %{bfast} ], [ {copied}, %{bslow} ]"));
         r
+    }
+
+    /// `func` が値を使わない呼び出し（式の文のいちばん外の呼び出し）の `func` か（7-17・`discarded_func`）。
+    pub(super) fn call_value_discarded(&self, func: &Expr) -> bool {
+        self.discarded_func == Some(func as *const Expr)
+    }
+
+    /// 遅い道（直接の道から外れたときの今までの道）の始まり（copy_alloc_speed_plan.md 7-17）: 保存点を取り、そこまでに数えた
+    /// 積む箇所の数を覚える。[`Self::end_fallback_region`] で巻き戻し、道の中の積む箇所を数えない（関数が値を積まない関数の
+    /// ままになり、呼ぶ側が前後で巻き戻さなくて済む）。⚠ 道の結果は生の `int` / `float` か、使わない値であること（ハンドルの
+    /// 結果は巻き戻すと消える）。到達しない位置・typed / 番地で呼ぶ変種の中では何もしない（`None`）。
+    pub(super) fn begin_fallback_region(&mut self) -> Option<FallbackRegion> {
+        if self.terminated || self.typed_mode || self.blk_mode {
+            return None;
+        }
+        let pushes = self.push_sites;
+        let log_len = self.handle_store_log.len();
+        let save = self.call_cb(CB_ARENA_SAVE, &[]);
+        Some(FallbackRegion { save, pushes, log_len })
+    }
+
+    /// [`Self::begin_fallback_region`] の終わり: 保存点まで巻き戻し（残す値は無い）、道の中の積む箇所を数えなかったことにする。
+    /// 道がローカル変数へハンドルを書いた（`handle_store_log` が伸びた）・道の終わりへ届かない（`return` など）ときは何もせず、
+    /// 積む箇所はそのまま数える（巻き戻すと変数の値が消える・巻き戻しを出せない）。
+    pub(super) fn end_fallback_region(&mut self, region: Option<FallbackRegion>) {
+        let Some(r) = region else { return };
+        if self.terminated || self.handle_store_log.len() != r.log_len {
+            return;
+        }
+        self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {}", r.save)]);
+        self.push_sites = r.pushes;
     }
 
     /// コールバックの表の欄 `field` にあるデータの番地から、型 `ty` の値を原子的に読む（7-7・`CB_LIVE_TASKS` など）。
@@ -1124,8 +1156,11 @@ impl<'a> GenCtx<'a> {
         self.br(&bdone);
 
         self.start_block(&bslow);
+        // 入れ子の受け手の外れは `a.b` を積むが、結果は生の数なので道の中で巻き戻す（積む箇所に数えない・7-17）
+        let region = matches!(src, BlockSrc::Field { .. }).then(|| self.begin_fallback_region()).flatten();
         let h = self.block_src_handle(src, ic);
         let (slow, _) = self.emit_attr_read(&h, attr, Some(ty));
+        self.end_fallback_region(region);
         self.br(&bdone);
 
         self.start_block(&bdone);
@@ -1185,8 +1220,11 @@ impl<'a> GenCtx<'a> {
         self.br(&bdone);
 
         self.start_block(&bslow);
+        // 入れ子の受け手の外れは `a.b` を積むが、結果は無いので道の中で巻き戻す（7-17）
+        let region = matches!(src, BlockSrc::Field { .. }).then(|| self.begin_fallback_region()).flatten();
         let h = self.block_src_handle(src, ic);
         self.emit_attr_assign_typed(&h, attr, v, vt);
+        self.end_fallback_region(region);
         self.br(&bdone);
 
         self.start_block(&bdone);
@@ -1391,4 +1429,14 @@ pub(super) fn cb_field_of_call(body: &str, regs: &mut HashMap<String, usize>) ->
         Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK))) => CallKind::KeepsBlocks,
         _ => CallKind::Other,
     })
+}
+
+/// 遅い道の巻き戻しの区切り（copy_alloc_speed_plan.md 7-17・[`GenCtx::begin_fallback_region`]）。
+pub(super) struct FallbackRegion {
+    /// 道の始まりの保存点（`CB_ARENA_SAVE` の結果のレジスタ）
+    save: String,
+    /// 道の始まりまでに数えた積む箇所の数
+    pushes: usize,
+    /// 道の始まりの `handle_store_log` の長さ
+    log_len: usize,
 }

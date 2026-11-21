@@ -72,6 +72,10 @@ impl<'a> GenCtx<'a> {
                 if trait_name.is_none() && self.emit_nested_field_assign(object, attr, value) {
                     return;
                 }
+                // 値が raw レイアウトのクラスの数値のフィールドを読むなら、読み書きする番地を先に確かめる（7-17 ②）
+                if trait_name.is_none() && self.emit_checked_nested_assign(object, attr, value) {
+                    return;
+                }
                 if trait_name.is_none() && self.emit_attr_path_assign(target, value) {
                     return;
                 }
@@ -185,7 +189,16 @@ impl<'a> GenCtx<'a> {
                     self.br(&header);
                 }
             }
-            Stmt::Expr(e) => { self.gen_expr(e); }
+            // 式の文は値を使わない: いちばん外の呼び出しの遅い道は、結果を残さずに巻き戻せる（7-17・`discarded_func`）。
+            // 呼び出しの `func` の式（AST のノード）で覚えるので、引数の中の呼び出しは当たらない
+            Stmt::Expr(e) => {
+                self.discarded_func = match e {
+                    Expr::Call { func, .. } => Some(&**func as *const Expr),
+                    _ => None,
+                };
+                self.gen_expr(e);
+                self.discarded_func = None;
+            }
             Stmt::Freeze(..) => {}
             Stmt::Block(body) => self.gen_stmts(body),
 
@@ -731,6 +744,217 @@ impl<'a> GenCtx<'a> {
         true
     }
 
+    /// `a.b.x = <数の式>` を、読み書きする番地を先に確かめてから検査なしで行う（copy_alloc_speed_plan.md 7-17 ②）。
+    /// 出したら `true`。当てはまらなければ何も出さずに `false`。
+    ///
+    /// 当てはまるのは、`a` がローカル変数で、`a.b` がこのモジュールの raw レイアウトのクラス・`x` がそこへ値の型のまま書ける
+    /// フィールド、値が数のリテラル・数のローカル変数・**確かめられる読み出し**（`L.f` / `L.c.f`: `L` はローカル変数、
+    /// 受け手は raw レイアウトのクラスで `f` は数値のフィールド）の `+` / `-` / `*` だけのとき（[`Self::checked_num_ty`]）。
+    ///
+    /// 出すコード:
+    /// 1. 書き込み先と読み出し先の番地を取る（`CB_ATTR_BLOCK` / `CB_INST_BLOCK`・覚えた番地は使い回す）
+    /// 2. 確かめる: 番地が空でない（クラスが表のとおり）・読むフィールドの初期化の印・書き込み先が不変でない
+    /// 3. 速い道: 検査なしで読んで演算し、書いて初期化の印を立てる
+    /// 4. 遅い道: 今までの道（`a.b` を読んでアリーナに積み → 値 → 書き込み）。文は値を残さないので道の中で巻き戻す（①）
+    ///
+    /// ⚠ 評価の順: 1 で番地を取るコールバックは利用者のコードを走らせず何も書き換えないので、外れて今までの道（VM と
+    ///   同じ `a.b` → 値の順）を通っても、先に番地を取ったことは見分けられない。速い道は何も起こさない読み出しと演算だけ。
+    /// ⚠ 以前は `emit_nested_field_assign`（8-7）だけで、値の評価が何も起こさない式に限るため、属性を読む値
+    ///   （`Body.bounce` の `self.vel.x = 0.0 - self.vel.x`）は `a.b` を積んだ。積む箇所があると関数が「値を積む関数」になり、
+    ///   呼ぶ側が毎回保存点と巻き戻しで囲む。
+    fn emit_checked_nested_assign(&mut self, object: &Expr, attr: &str, value: &Expr) -> bool {
+        use crate::interpreter::value::block;
+        if self.typed_mode || self.blk_mode || self.terminated {
+            return false;
+        }
+        let Expr::Attr { object: parent, attr: pattr, .. } = object else { return false };
+        let Some(pname) = ident_name(parent).filter(|_| self.is_local_ident(parent)) else { return false };
+        let Some(tclass) = self.receiver_class(object).map(|r| r.class) else { return false };
+
+        // ── 1) 当てはまるかを、コードを出す前に全部確かめる ──
+        let mut reads: Vec<CheckedRead<'_>> = Vec::new();
+        let Some(vt) = self.checked_num_ty(value, &mut reads) else { return false };
+        // 読み出しが無い値は 8-7 の形（そちらで出せなかったものは、ここでも出せない）
+        if reads.is_empty() {
+            return false;
+        }
+        let Some((tidx, tdesc, (tity, tconv))) = self.direct_write_plan(&tclass, attr, vt) else { return false };
+        // 番地ごと（ローカル変数, 属性）に確かめる印。書き込み先が先頭（同じ番地を読むなら印をまとめる）
+        let mut blks: Vec<CheckedBlock<'_>> = vec![CheckedBlock {
+            recv: parent,
+            name: pname.to_string(),
+            attr: Some(pattr.clone()),
+            class: tclass.clone(),
+            mask: block::IMMUTABLE,
+        }];
+        for r in &reads {
+            let bit = block::init_bit(r.idx);
+            match blks.iter_mut().find(|b| b.name == r.name && b.attr == r.attr) {
+                Some(b) if b.class == r.class => b.mask |= bit,
+                // 同じ受け手を別のクラスとして読む（注釈が食い違う）: 今までの道
+                Some(_) => return false,
+                None => blks.push(CheckedBlock {
+                    recv: r.recv,
+                    name: r.name.clone(),
+                    attr: r.attr.clone(),
+                    class: r.class.clone(),
+                    mask: bit,
+                }),
+            }
+        }
+
+        // ── 2) 番地を取る: (親か変数のハンドル, 番地, 入れ子なら IC のセル) ──
+        let mut got: Vec<(String, String, Option<String>)> = Vec::with_capacity(blks.len());
+        for b in &blks {
+            let (v, t) = self.gen_expr(b.recv);
+            let h = self.to_handle(&v, t);
+            let src = match &b.attr {
+                Some(a) => BlockSrc::Field { parent_h: &h, attr: a },
+                None => BlockSrc::Handle(&h),
+            };
+            // クラスは raw レイアウト（`direct_read_plan` / `direct_write_plan` で確かめた）なので表があり、必ず番地のコードを出す
+            let (p, ic) = self.emit_block_src(&b.class, src).expect("a raw-layout class has a direct class table");
+            got.push((h, p, ic));
+        }
+
+        // ── 3) 確かめる（外れたら遅い道へ） ──
+        let (b_fast, b_slow, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        for (b, (_, p, _)) in blks.iter().zip(&got) {
+            let nonnull = self.fresh_reg();
+            self.ec(&format!("{nonnull} = icmp ne ptr {p}, null"));
+            let b_chk = self.fresh_blk();
+            self.br_cond(&nonnull, &b_chk, &b_slow);
+            self.start_block(&b_chk);
+            let head = self.fresh_reg();
+            self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+            let masked = self.fresh_reg();
+            // LLVM の整数の定数は符号つきの 10 進で書く。不変の印は立っていないこと・初期化の印は立っていること
+            self.ec(&format!("{masked} = and i64 {head}, {}", b.mask as i64));
+            let ok = self.fresh_reg();
+            self.ec(&format!("{ok} = icmp eq i64 {masked}, {}", (b.mask & !block::IMMUTABLE) as i64));
+            let b_next = self.fresh_blk();
+            self.br_cond(&ok, &b_next, &b_slow);
+            self.start_block(&b_next);
+        }
+        self.br(&b_fast);
+
+        // ── 4) 速い道: 検査なしで読んで演算し、書く ──
+        self.start_block(&b_fast);
+        let ptrs: Vec<String> = got.iter().map(|(_, p, _)| p.clone()).collect();
+        let (v, t) = self.emit_checked_num(value, &blks, &ptrs);
+        debug_assert_eq!(t, vt, "checked_num_ty and emit_checked_num agree on the type");
+        let stored = match tconv {
+            None => v,
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {tity}"));
+                c
+            }
+        };
+        let tp = &ptrs[0];
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {tp}, i64 {}", block::field_offset(tdesc.byte_offset)));
+        self.ec(&format!("store {tity} {stored}, ptr {fp}, align {}", tdesc.width.byte_width()));
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {tp}, align 8"));
+        let head2 = self.fresh_reg();
+        self.ec(&format!("{head2} = or i64 {head}, {}", block::init_bit(tidx)));
+        self.ec(&format!("store i64 {head2}, ptr {tp}, align 8"));
+        self.br(&b_join);
+
+        // ── 5) 遅い道: 今までの道 ──
+        self.start_block(&b_slow);
+        let region = self.begin_fallback_region();
+        // 次から速い道を通れるように、空だった入れ子の番地の読み出しの IC のセルを埋める（`CB_ATTR_BLOCK` はセルが空の
+        // うちは空を返す。7-14 の遅い道と同じ）。番地が取れてほかの検査で外れたときは何も足さない
+        for (b, (h, p, ic)) in blks.iter().zip(got.clone()) {
+            let Some(a) = &b.attr else { continue };
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq ptr {p}, null"));
+            let (b_fill, b_cont) = (self.fresh_blk(), self.fresh_blk());
+            self.br_cond(&empty, &b_fill, &b_cont);
+            self.start_block(&b_fill);
+            self.block_src_handle(BlockSrc::Field { parent_h: &h, attr: a }, ic);
+            self.br(&b_cont);
+            self.start_block(&b_cont);
+        }
+        let (obj, ot) = self.gen_expr(object);
+        let (val, vt2) = self.gen_expr(value);
+        let oh = self.to_handle(&obj, ot);
+        self.emit_field_assign(object, &oh, attr, &val, vt2);
+        self.end_fallback_region(region);
+        self.br(&b_join);
+
+        self.start_block(&b_join);
+        true
+    }
+
+    /// [`Self::emit_checked_nested_assign`] の値の型（`int` / `float`）。載らない式は `None`。確かめられる読み出し
+    /// （`L.f` / `L.c.f`）を `reads` に足す。関数の入口で先読みしたフィールド（`preread_fields`）は読み出しに数えない
+    /// （`gen_expr` が置き場から読む）。
+    fn checked_num_ty<'e>(&self, e: &'e Expr, reads: &mut Vec<CheckedRead<'e>>) -> Option<Ty> {
+        match e {
+            Expr::Int(_) => Some(Ty::Int),
+            Expr::Float(_) => Some(Ty::Float),
+            Expr::Ident { name, .. } => {
+                self.locals.get(name).map(|(_, t)| *t).filter(|t| matches!(t, Ty::Int | Ty::Float))
+            }
+            Expr::Attr { object: o, attr: f, .. } => {
+                if let Some((_, t)) = preread_path(e).and_then(|p| self.preread_fields.get(&p)) {
+                    return matches!(t, Ty::Int | Ty::Float).then_some(*t);
+                }
+                let (l, a) = match o.as_ref() {
+                    Expr::Attr { object: l, attr: a, .. } => (l.as_ref(), Some(a.clone())),
+                    l => (l, None),
+                };
+                let name = ident_name(l).filter(|_| self.is_local_ident(l))?;
+                let class = self.receiver_class(o)?.class;
+                let ty = self.class_fields.get(&class)?.get(f.as_str()).copied()?;
+                if !matches!(ty, Ty::Int | Ty::Float) {
+                    return None;
+                }
+                let (idx, _, _) = self.direct_read_plan(&class, f, ty)?;
+                reads.push(CheckedRead { recv: l, name: name.to_string(), attr: a, class, idx });
+                Some(ty)
+            }
+            Expr::BinOp { op: crate::ast::BinOp::Add | crate::ast::BinOp::Sub | crate::ast::BinOp::Mul, left, right, .. } => {
+                let lt = self.checked_num_ty(left, reads)?;
+                let rt = self.checked_num_ty(right, reads)?;
+                Some(if lt == Ty::Int && rt == Ty::Int { Ty::Int } else { Ty::Float })
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::checked_num_ty`] が通した式を、確かめ済みの番地 `ptrs`（`blks` と同じ並び）から検査なしで評価する。
+    fn emit_checked_num(&mut self, e: &Expr, blks: &[CheckedBlock<'_>], ptrs: &[String]) -> (String, Ty) {
+        match e {
+            Expr::BinOp { op, left, right, .. } => {
+                let (l, lt) = self.emit_checked_num(left, blks, ptrs);
+                let (r, rt) = self.emit_checked_num(right, blks, ptrs);
+                self.specialize_binop(op, &l, lt, &r, rt)
+            }
+            Expr::Attr { object: o, attr: f, .. }
+                if preread_path(e).is_none_or(|p| !self.preread_fields.contains_key(&p)) =>
+            {
+                let (l, a) = match o.as_ref() {
+                    Expr::Attr { object: l, attr: a, .. } => (l.as_ref(), Some(a.as_str())),
+                    l => (l, None),
+                };
+                let name = ident_name(l).expect("checked by checked_num_ty");
+                let k = blks
+                    .iter()
+                    .position(|b| b.name == name && b.attr.as_deref() == a)
+                    .expect("every checked read has a block");
+                let class = blks[k].class.clone();
+                let ty = self.class_fields.get(&class).and_then(|m| m.get(f.as_str())).copied().expect("checked");
+                self.emit_trusted_read(&class, &ptrs[k], f, ty).expect("checked by checked_num_ty")
+            }
+            // リテラル・数のローカル変数・先読みしたフィールド: 何も起こさない
+            _ => self.gen_expr(e),
+        }
+    }
+
     /// 値の評価が何も起こさないか（利用者のコード・外部言語のコードを走らせず、何も書き換えない）。12-3 で途中の段の
     /// 読み出しを値の後へ回してよいかの判定。リテラル・名前（読むだけ）と、`int` / `float` と分かっている項の演算だけ。
     /// ⚠ 属性の読み出しは入れない（C# のプロパティ・Python の属性は読むだけでコードを走らせる）。演算も項がインスタンスなら
@@ -946,4 +1170,24 @@ fn attr_target(target: &Expr) -> (&Expr, Option<&str>, &str) {
         Expr::TraitAccess { object, trait_name, attr } => (object, Some(trait_name), attr),
         other => unreachable!("attribute assignment target must be checked by stmt_eligible: {other:?}"),
     }
+}
+
+/// [`GenCtx::checked_num_ty`] が見つけた、確かめてから読むフィールド（7-17 ②）: 受け手（ローカル変数 `name`・入れ子なら
+/// 属性 `attr`）、受け手のクラス、フィールドの位置（初期化の印の番号）。
+struct CheckedRead<'e> {
+    recv: &'e Expr,
+    name: String,
+    attr: Option<String>,
+    class: String,
+    idx: usize,
+}
+
+/// [`GenCtx::emit_checked_nested_assign`] が確かめる番地: 受け手（ローカル変数 `name`・入れ子なら属性 `attr`）と、先頭の語で
+/// 見る印（`mask`: 立っていてはいけない不変の印と、立っていなければいけない初期化の印）。
+struct CheckedBlock<'e> {
+    recv: &'e Expr,
+    name: String,
+    attr: Option<String>,
+    class: String,
+    mask: u64,
 }
