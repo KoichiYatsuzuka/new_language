@@ -1,0 +1,29 @@
+# dbg_vars.ar — デバッガ一時変数（`let dbg::x = expr`）と式評価のシナリオ。
+#
+# REPL は停止フレームのスコープに対して式を評価する（`compile_debug` の `LoadName`/
+# `DeclareName` 経路、コンパイル不能な構文はツリーウォークへフォールバック）。
+# VM 適格関数の中で停止したときにローカルが見えるかが #1 の要点なので、
+# クラスインスタンス・リスト・メソッド呼び出しも混ぜて両経路を踏ませる。
+#
+# 対応する stdin は dbg_vars.in。
+
+class Point:
+    let x: float
+    let y: float
+
+    fn __init__(mut self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+    fn norm_sq(self) -> float:
+        return self.x * self.x + self.y * self.y
+
+fn run() -> float:
+    let p: Point = Point(3.0, 4.0)
+    let xs = [1, 2, 3]
+    mut acc = 0.0
+    break_point
+    acc = p.norm_sq()
+    return acc
+
+print(run())

@@ -212,3 +212,9 @@ let a: int = "s"            # expect: static VarTypeMismatch
 ## 8. 対話（REPL・デバッガ）
 
 コードの中で確かめられないので、入力と期待する出力の対で照らす（今の `repl_session` / `debug_session` と同じ形）。
+
+- `repl/<name>.in` と `<name>.out`: `scripts/repl_session.ps1` が全部の対を照らす（4-9 で `examples/repl/` から写し、
+  1 本だけでなくディレクトリの中の対を全部見るようにした）。
+- `debugger/<name>.ar` / `.in` / `.out`: `scripts/debug_session.ps1` が照らす。golden の中のパスは
+  `<REPO>\gate\debugger\…` の形。共通ランナー（`gate_expect` など）はこのディレクトリを実行しない。
+- どちらのスクリプトも `-Dir` で `examples/repl` / `examples/debugger` を指せる。

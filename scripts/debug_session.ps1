@@ -5,7 +5,7 @@
 # #33 で `--vm` を廃止したので**同じものを 2 回実行するだけ**になった（空回りする検査は
 # 無い検査より悪い）。⇒ 期待値ファイルとの比較へ切り替えた（repl_session.ps1 と同じ方式）。
 #
-# 検査内容: examples/debugger/<name>.ar と同名の <name>.in（デバッガへ流すコマンド列）を対にして
+# 検査内容: gate/debugger/<name>.ar と同名の <name>.in（デバッガへ流すコマンド列）を対にして
 # 実行し、<name>.out と一致するかを見る。`.in` が無い .ar はスキップする。
 #
 # ⚠ compare_vm_modes.ps1 は stdin を与えないのでこの経路を覆えない。
@@ -18,7 +18,8 @@
 param(
     [string]$Filter = '',
     [int]$TimeoutSec = 60,
-    [switch]$Update
+    [switch]$Update,
+    [string]$Dir = ''   # 既定は gate/debugger（gate_speed_plan.md 4-9）。examples/debugger も -Dir で指せる
 )
 
 $ErrorActionPreference = 'Continue'
@@ -27,7 +28,8 @@ $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジ�
 $exe = Join-Path $repo 'target/release/arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe (run: cargo build --release)" }
 
-$dir = Join-Path $repo 'examples/debugger'
+# ⚠ 既定の読み先は gate/debugger（4-9 で examples/debugger から写した）。golden の中のパスは <REPO>\gate\debugger\… の形。
+$dir = if ($Dir) { (Resolve-Path $Dir).Path } else { Join-Path $repo 'gate/debugger' }
 if (-not (Test-Path $dir)) { throw "not found: $dir" }
 
 # 1 本走らせて stdout+stderr を返す（stdin に $inputFile の内容を流す）。

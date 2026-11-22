@@ -1,0 +1,23 @@
+# step_into_fn.ar — ステップイン先が **VM 適格関数**になるシナリオ（タスク #1 の中核）。
+#
+# `accumulate` はトップレベルのリーフ関数なので `--vm=auto` では VM でコンパイルされる。
+# デバッグ中は `dbg_active()` が VM を無効化してツリーウォークに委ねる暫定対応が効くため、
+# `--vm=off` と同じトランスクリプトになるはず。この一致が #1 の不変条件。
+#
+# 対応する stdin は step_into_fn.in（compare_debug_modes.ps1 が流し込む）。
+
+fn accumulate(let n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        total = total + i * 2
+        i += 1
+    return total
+
+fn main() -> int:
+    let base = 5
+    break_point
+    let got = accumulate(base)
+    return got
+
+print(main())

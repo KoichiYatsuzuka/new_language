@@ -1,0 +1,11 @@
+p.x
+xs
+let dbg::t = 7
+dbg::t
+xs[1]
+e
+self.x
+self.y
+o
+acc
+q

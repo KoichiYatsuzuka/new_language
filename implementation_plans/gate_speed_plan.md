@@ -505,7 +505,18 @@
   - ⚠ 期待の値は写したときの exe の出力。ベンチの多くはループの結果を捨てているので、照らせるのは「最後まで走る・
     出力の形・`CHECKSUM` などの値」まで。別の実行の経路で突き合わせようとしたが、`--vm=off` は「ツリーウォークの
     経路は取り除いた」として無視されるので、できなかった。
-- **4-9** 対話: REPL とデバッガの golden（`repl_session` / `debug_session` が読むもの）。
+- **4-9（済・2026-11-23）** 対話: REPL とデバッガの golden（`repl_session` / `debug_session` が読むもの）。
+  - `examples/repl/repl_session.in/.out` を `gate/repl/` に、`examples/debugger/` の 6 組（`.ar` / `.in` / `.out`）を
+    `gate/debugger/` に写した。デバッガの golden の中のパス（`<REPO>\examples\debugger\…`）は `gate\debugger` に直した。
+  - `repl_session.ps1` はディレクトリの中の `.in` / `.out` の対を全部照らすようにした（以前は 1 本だけ）。2-3 の試しの
+    `state_across_blocks` も照らされる。`debug_session.ps1` と合わせて、既定の読み先を `gate/` にし、`-Dir` で
+    `examples/` も指せるようにした。
+  - 共通ランナーは `gate/debugger/` を実行しない（`debug_session` が `.in` を流して照らすもの）。
+  - 結果: `gate/` で REPL 2 件・デバッガ 6 件が一致した。`-Dir examples/…` でも同じく一致。期待を 1 行変えた REPL の
+    写しで `DIFFERING`（exit 1）になることを見た。
+  - フェーズ 4 の終わりの構文の網羅（`syntax_cov -Root gate`）: `Stmt` 42 / 43・`Expr` 31 / 32 で、無いのは例題と同じ
+    `DebugLet` / `DebugVar`。`NESTED-GAP` は例題の 10 件に `Const` が足されて 11 件（`gate/` には関数の中の `const` が
+    あるが入れ子の関数の中には無い。例題には関数の中の `const` も無いので穴として出なかった）。5-1 で埋める。
 
 各外部言語のタスク（4-4〜4-6）も、正常系と禁止の形（境界での型の誤り・`FfiTypeError` など）の両方を書く。
 

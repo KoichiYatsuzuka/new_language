@@ -1,0 +1,25 @@
+# step_over_heavy.ar — 「重い呼び出しを step-over で飛ばす」シナリオ（#1 の実利計測用）。
+#
+# `should_pause_at` は step-over 中、**entry より深いフレームでは決して停止しない**ので、
+# `heavy()` は VM で全速実行してよい。以前は `dbg_active()` だけで VM を切っていたため、
+# ここがツリーウォークに落ちて 2〜4x 待たされていた。
+#
+# 対応する stdin は step_over_heavy.in（step-over 2 回 → resume）。
+
+fn heavy(let n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        if i > 0:
+            total = total + i * 2 - 1
+        i += 1
+    return total
+
+fn driver() -> int:
+    let n = 2_000_000
+    break_point
+    let a = heavy(n)
+    let b = heavy(n)
+    return a + b
+
+print(driver())

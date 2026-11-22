@@ -53,6 +53,7 @@ function Get-GateForceHits($Results, [string]$RelBase) {
 function Get-GateTestFiles([string]$Root) {
     return @(Get-ChildItem -LiteralPath $Root -Filter *.ar -Recurse | Where-Object {
         $_.FullName -notmatch '\\lib\\' -and $_.FullName -notmatch '_mods\\' -and
+        $_.FullName -notmatch '\\gate\\debugger\\' -and   # debug_session.ps1 が .in を流して照らす（4-9）
         ($_.FullName -notmatch '\\(ffi|modules)\\[^\\]+\\' -or $_.FullName -match '\\(ffi|modules)\\[^\\]+_tests\\[^\\]+$')
     })
 }
