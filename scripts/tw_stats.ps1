@@ -8,8 +8,11 @@
 #    1 文ごとに atomic 読みが残り 11% 退行するため、意図的にこの構成にしてある。
 #    このスクリプトが専用ビルドを行う。
 #
-# 使い方: ./scripts/tw_stats.ps1 [-Timeout 20] [-SkipBuild]
-param([int]$Timeout = 20, [switch]$SkipBuild)
+# 使い方: ./scripts/tw_stats.ps1 [-Timeout 20] [-SkipBuild]          # gate/ のテスト（gate_speed_plan.md 5-6）
+#   ./scripts/tw_stats.ps1 -Root examples                             # 今までの例題（archived を除く全部）
+#   ⚠ gate/ のときは共通ランナーと同じテストの一覧（Get-GateTestFiles: lib/・*_mods/・ffi/ と modules/ の補助・
+#     debugger/ を除く）。debugger/ の .ar は入力を待つ（このスクリプトは標準入力を渡さない）ので外している。
+param([int]$Timeout = 20, [switch]$SkipBuild, [string]$Root = '')
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
@@ -28,8 +31,15 @@ if (-not $SkipBuild) {
 $exe = Join-Path $repo 'target\debug\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
-         Where-Object { $_.FullName -notmatch '\\archived\\' }
+if (-not $Root) { $Root = Join-Path $repo 'gate' }
+$rootDir = (Resolve-Path $Root).Path.TrimEnd('\')
+if ($rootDir -eq (Join-Path $repo 'examples')) {
+    $files = Get-ChildItem -Path $rootDir -Filter *.ar -Recurse |
+             Where-Object { $_.FullName -notmatch '\\archived\\' }
+} else {
+    . (Join-Path $PSScriptRoot 'gate_judge.ps1')
+    $files = Get-GateTestFiles $rootDir
+}
 
 $toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}; $twcf = @{}
 $ran = 0; $failed = 0

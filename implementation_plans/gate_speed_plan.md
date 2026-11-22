@@ -592,8 +592,15 @@
   - 先頭に、凍結の日付・理由（`impl_python` の更新を止めている・4-1 の実測で 202 件中 95 件しか一致しない）・代わりの網
     （`gate/` の D-15 / D-14・入口は `gates_every_time.ps1`）・残す理由（再開するときに方針を決め直す）を書いた。
     CLAUDE.md の表の書き換えは 5-7。
-- **5-6** 全例題を再帰で舐めるゲート（`syntax_cov` / `tw_stats` / `compare_tm_grammar`）の対象を
+- **5-6（済・2026-11-23）** 全例題を再帰で舐めるゲート（`syntax_cov` / `tw_stats` / `compare_tm_grammar`）の対象を
   `gate/` にする（`compare_wasm_frontend` はフェーズ 7）。
+  - 3 本とも既定の対象を `gate/` にし、`-Root examples` で今までの範囲を指せるようにした。
+    - `syntax_cov`: 除くものの既定は `gate/` なら `lib/` と `*_mods/`、`examples/` なら `archived/`。
+    - `tw_stats`: `gate/` のときは共通ランナーと同じテストの一覧（`Get-GateTestFiles`）。`debugger/` の `.ar` は
+      入力を待つ（標準入力を渡さない）ので外れる。
+    - `compare_tm_grammar`: `gate/` の `.ar` を全部（補助を含む）と `vscode-extension/test_fixtures/`。
+  - 結果: `syntax_cov` 801 件（`Stmt` 42 / 43・`Expr` 31 / 32・`NESTED-GAP` 10 件で例題と同じ）、`tw_stats` 762 件が
+    全部走り、ツリーウォークに落ちるのは定義文だけ、`compare_tm_grammar` 838 件で `SPILL` 0・キーワードの一覧が一致。
 - **5-7** 文書を直す: CLAUDE.md のゲートの表と注意書き（「例題ゲートが見ていない場所」の節を含む）、`regulations.md`、
   skill `language-dev-principles` / `vm-pitfalls` / `add-syntax`、`BYTECODE_VM_PLAN.md` のスクリプトの表。
   `generate-codebase-map.ps1` を走らせる。

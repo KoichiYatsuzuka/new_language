@@ -25,16 +25,18 @@
 #   他の例題で既に埋まっていたため**検出できない**。文脈ごとに分けるとキーが 3 倍以上に
 #   増えて読めなくなるので、**意図的に分けていない**（代わりに上の nested-fn 列を見る）。
 #   ./scripts/syntax_cov.ps1 -SkipBuild
-#   ./scripts/syntax_cov.ps1 -Exclude 'archived|practical_examples'
-#   ./scripts/syntax_cov.ps1 -Root gate -Exclude '\\lib\\|_mods\\'   # gate/ のテストを測る（D-12）
+#   ./scripts/syntax_cov.ps1 -Root examples                    # 今までの例題（既定で archived を除く）
+#   ./scripts/syntax_cov.ps1 -Root examples -Exclude 'archived|practical_examples'
+#   ⚠ 既定の対象は gate/（gate_speed_plan.md 5-6）。除くもの（-Exclude）の既定は、gate/ なら lib/ と *_mods/、
+#     examples/ なら archived/。
 #
 # ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**（PS5.1 は BOM 無しを ANSI で読む）。
 param(
     [int]$Timeout = 30,
     [switch]$SkipBuild,
     [switch]$Pairs,
-    [string]$Exclude = '\\archived\\',
-    [string]$Root = ''   # 既定は examples/。gate/ を測るときは -Root gate（gate_speed_plan.md D-12 / 4-1）
+    [string]$Exclude = '',
+    [string]$Root = ''   # 既定は gate/（5-6）。-Root examples で今までの例題
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,7 +56,11 @@ if (-not $SkipBuild) {
 $exe = Join-Path $repo 'target\debug\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-if (-not $Root) { $Root = Join-Path $repo 'examples' }
+if (-not $Root) { $Root = Join-Path $repo 'gate' }
+$Root = (Resolve-Path $Root).Path.TrimEnd('\')
+if (-not $Exclude) {
+    $Exclude = if ($Root -eq (Join-Path $repo 'examples')) { '\\archived\\' } else { '\\lib\\|_mods\\' }
+}
 $files = Get-ChildItem -Path $Root -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch $Exclude }
 

@@ -10,8 +10,8 @@
 #   * The grammar's keyword list must match src/lexer/keyword.rs.
 #   * Other differences inside a line are reported only (-VerboseDiff lists them).
 #
-# Population: examples/**/*.ar except examples/archived (the same as compare_wasm_frontend.ps1),
-# plus vscode-extension/test_fixtures/*.ar (the edge cases of the plan).
+# Population: gate/**/*.ar (gate_speed_plan.md 5-6; -Root examples for examples/**/*.ar except
+# examples/archived), plus vscode-extension/test_fixtures/*.ar (the edge cases of the plan).
 #
 # The TextMate engine is the one VS Code itself uses, taken from the installed VS Code
 # (resources/app/node_modules.asar) into target/tm_engine/<version>/ on first use, and run with
@@ -24,7 +24,9 @@ param(
     [switch]$VerboseDiff,
     [switch]$SkipCompile,
     # Files to check instead of the whole population.
-    [string[]]$Files
+    [string[]]$Files,
+    # Directory to take the population from (default gate/; -Root examples for the user-facing samples).
+    [string]$Root = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,7 +100,9 @@ if (-not $SkipCompile) {
 if ($Files) {
     $list = $Files | ForEach-Object { (Resolve-Path $_).Path }
 } else {
-    $list = @(Get-ChildItem -Path (Join-Path $repo 'examples') -Recurse -Filter '*.ar' |
+    # gate_speed_plan.md 5-6: the population is gate/ (every .ar, helpers included) unless -Root examples.
+    $rootDir = if ($Root) { (Resolve-Path $Root).Path.TrimEnd('\') } else { Join-Path $repo 'gate' }
+    $list = @(Get-ChildItem -Path $rootDir -Recurse -Filter '*.ar' |
         Where-Object { $_.FullName -notlike '*\archived\*' } | Sort-Object FullName | ForEach-Object { $_.FullName })
     $fixtures = Join-Path $repo 'vscode-extension\test_fixtures'
     if (Test-Path $fixtures) {
