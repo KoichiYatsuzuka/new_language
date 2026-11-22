@@ -3,7 +3,9 @@
 #   ./scripts/release.ps1 -Version 0.4.1 [-Tag v0_4_1] [-DeployDir ..\Arrow] [-CommitTrailer '...']
 #
 # Steps (the `release` skill has the reasons and the traps):
-#   1. bump     the version in Cargo.toml, crates/arrow-frontend/Cargo.toml, vscode-extension/package.json,
+#   0. examples cargo build --release, then scripts/check_examples.ps1: normal examples exit 0, *_error ones exit
+#               non-zero (gate_speed_plan.md D-16). Stops before anything is changed.
+#   1. bump    the version in Cargo.toml, crates/arrow-frontend/Cargo.toml, vscode-extension/package.json,
 #               package-lock.json and make-vsix.ps1 (scripts/release_files.py bump; stops if any site moved)
 #   2. build    cargo build --release (arrow.exe) and make-vsix.ps1 (arrow-<Version>.vsix, wasm included)
 #   3. commit   the bump and the new VSIX (the old VSIX is removed from git), on the current branch; no push
@@ -35,6 +37,8 @@ param(
     [string]$Remote = 'origin',
     # Skip step 7 (leave the tag local).
     [switch]$NoPushTag,
+    # Examples allowed to fail the step-0 check (known to fail on this machine only; e.g. a missing crate).
+    [string[]]$AllowExampleFailures = @(),
     [int]$TimeoutSec = 3600
 )
 
@@ -143,6 +147,17 @@ try {
     $current = Read-CargoVersion
     Write-Host "  repo version $current -> $Version, deployed $PrevVersion, tag $Tag, deploy to $DeployDir"
     Write-Host "  branch $((& git branch --show-current).Trim())"
+
+    # ------------------------------------------------------------ 0. examples
+    # gate_speed_plan.md D-16 / 5-4: examples/ (the user-facing samples) is not in the every-time gates, which look at
+    # gate/ only. Check it once per release: normal examples exit 0, *_error examples exit non-zero
+    # (scripts/check_examples.ps1). Done BEFORE the bump, so a failure leaves nothing to undo; the current source is
+    # built first (a no-op when target/release is up to date). Pass -AllowExampleFailures name1,name2 only for an
+    # example known to fail on this machine (say why in the release notes).
+    Step 'check examples/ (scripts/check_examples.ps1)'
+    Invoke-Limited 'cargo' 'build --release'
+    $allowArg = if ($AllowExampleFailures.Count -gt 0) { '-Allow ' + ($AllowExampleFailures -join ',') } else { '' }
+    Invoke-Limited 'powershell' ('-NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f (Join-Path $PSScriptRoot 'check_examples.ps1'), $allowArg)
 
     # ------------------------------------------------------------ 1. bump
     $bumped = $false

@@ -11,6 +11,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 ./scripts/release.ps1 -Version 0.4.1 -CommitTrailer 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
 # -Tag v0_4_1（既定は v<x>_<y>_<z>）  -DeployDir ..\Arrow（既定）  -PrevVersion 0.4.0（既定は配布先の arrow-*.vsix から）
 # -Remote origin（既定・タグの push 先）  -NoPushTag（タグを push しない）
+# -AllowExampleFailures event_external_handler（この環境でだけ落ちると分かっている例題を 0' の確かめで許す）
 ```
 
 ⚠ **タグは push する**（2026-11-11 にユーザーの指定）。push するのは**タグだけ**で、ブランチは push しない。
@@ -22,6 +23,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 | # | 段階 | 内容 |
 |---|---|---|
 | 0 | 前提の確認 | 作業ツリーがきれい（未コミットの変更があれば止まる）・配布先に `arrow.exe` / `arrow-<前の版>.vsix` / `ar_config.json` がある・`old/v<前の版>/` が空・タグが無いか HEAD にある |
+| 0' | 例題の確かめ | `cargo build --release` してから `scripts/check_examples.ps1`: 利用者向けの例題（`examples/` の 9 カテゴリ）のうち正常のものは exit 0、名前の末尾が `_error` / `_errors` のものは exit が 0 でないこと（どの誤りで止まるかは照らさない）。1 件でも合わなければ**版を上げる前に**止まる（元に戻すものが無い）。`examples/` は「毎回」のゲート（`gates_every_time.ps1`）の対象ではないので、ここが唯一の確かめ（gate_speed_plan.md D-16 / 5-4）。この環境でだけ落ちる例題は `-AllowExampleFailures <名前>` で許す（許したものは `ALLOWED` と出る。理由をリリースの報告に書く） |
 | 1 | 版を上げる | `scripts/release_files.py bump`: `Cargo.toml`・`crates/arrow-frontend/Cargo.toml`・`vscode-extension/package.json`・`package-lock.json`・`make-vsix.ps1`（VSIX のファイル名と manifest の `Version`）。**どこか 1 か所でも一致の数が違えば、何も書かずに止まる** |
 | 2 | リリースビルド | `cargo build --release`（`target/release/arrow.exe`）と `make-vsix.ps1`（tsc・wasm の再ビルド込み・`arrow-<版>.vsix`）。どちらも時間制限つき（`-TimeoutSec`・既定 1 時間・超えたらプロセスの木ごと kill） |
 | 3 | コミット | 版上げ・新しい VSIX・`out/` の追跡済み JS を今のブランチにコミット（古い VSIX は `git rm`）。**push しない** |
@@ -60,6 +62,10 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 - ⚠ PowerShell 5.1 で日本語のファイルを読み書きすると壊れる。版の書き換え・設定・コミットメッセージは、
   すべて `release_files.py`（UTF-8・BOM と改行を保つ）でやる。`release.ps1` は ASCII だけで書く。
 - ⚠ 配布先の exe が実行中だと、移動に失敗して止まる（VS Code の REPL 端末などを閉じる）。
+- ⚠ **例題の確かめ（0' 段）が落ちたら、例題を直してから再実行する**。環境のせいで落ちるもの（2026-11-23 の時点でこの
+  リポジトリの環境では `interop/event_external_handler`。`import[rs] libm` のクレートが `rust.crates_path` に無い）だけを
+  `-AllowExampleFailures` で許す。名前を書き間違えると止まる。確かめだけを先に走らせるには
+  `./scripts/check_examples.ps1`（同じ判定。走らせない例題の一覧は `scripts/gate_judge.ps1` の `$GateExampleSkip`）。
 - ⚠ **7 段（タグの push）だけが失敗したとき**（ネットワークなど）は再実行しない。退避先にもうファイルがあるので 0 段で止まる。
   `git push origin <Tag>` を手で打つ。
 - ⚠ タグを push すると、そのコミットまでのオブジェクトもリモートに送られる（ブランチの参照は動かない）。
@@ -67,6 +73,7 @@ description: Use when the user asks to raise Arrow's version (e.g. "v0.4.1 に�
 
 ## 終わったら報告すること
 
+- 例題の確かめの結果（`CHECK-EXAMPLES: …` の行）と、許した例題があればその名前と理由。
 - 新しいコミットとタグ（`git log --oneline -1`・`git tag --points-at HEAD`）。
 - 配布先と退避先の中身（`Get-ChildItem <DeployDir>, <DeployDir>\old\<前の版>`）。
 - `ar_config.json` で残した値・消した値（スクリプトの表示）。

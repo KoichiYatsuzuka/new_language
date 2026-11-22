@@ -570,9 +570,24 @@
     正の対照: わざと落ちるテストを置くと `FAILED (gate_expect 1)` で exit 1、消すと OK に戻った。
   - `scan_examples -Root examples` は、この環境で例題そのものが落ちる `event_external_handler`（`import[rs] libm`）の
     1 件で exit 1 になる（5-4 で扱う）。
-- **5-4** リリースの手順（`scripts/release.ps1`）に `examples/` の確かめを足す（D-16）。正常の例題は exit 0、`_error` は
+- **5-4（済・2026-11-23）** リリースの手順（`scripts/release.ps1`）に `examples/` の確かめを足す（D-16）。正常の例題は exit 0、`_error` は
   exit が 0 でないこと。落ちたらリリースを止める。skill `release` に手順を書く。正の対照として、わざと壊した例題で
   止まることを見る（リリースそのものは走らせず、確かめの部分だけを呼ぶ）。
+  - `scripts/check_examples.ps1`: 9 カテゴリの直下（走らせない例題は `scan_examples` と同じ一覧。`gate_judge.ps1` の
+    `$GateExampleSkip` / `$GateExampleCategories` に移して共有した）を 1 回走らせる。正常の例題は exit 0、名前の末尾が
+    `_error` / `_errors` の例題は exit が 0 でないこと、どれも時間切れにならないこと。名前が `_error` で終わるのに正常に
+    終わる 2 件（`eof_error` / `py_int_foreign_error`）は理由つきの一覧で正常の側に入れた。この環境でだけ落ちるものは
+    `-Allow <名前>` で許す（書き間違えた名前は止める）。
+    - ⚠ `scan_examples -Root examples` は名前の**どこかに** `_error` を含むものを全部除くので、`foreign_error_catch` /
+      `py_key_error_args` / `py_os_error_args` など正常に終わる例題の exit 0 を、今まで誰も確かめていなかった。
+      `check_examples` はこれらを正常の側で確かめる（今は全部 exit 0）。
+  - `release.ps1` の 0' 段: 前提の確認の後、**版を上げる前**に `cargo build --release` と `check_examples.ps1` を走らせる
+    （ビルドの後に置くと、落ちたときに版だけ上がった状態が残り、再実行が「版は上がっているのに VSIX がコミットされて
+    いない」で止まるため）。`-AllowExampleFailures` を `-Allow` へ渡す。skill `release` に段と落とし穴を書いた。
+  - 結果: 725 件のうち、この環境では `interop/event_external_handler`（`import[rs] libm` のクレートが無い）だけが落ちる。
+    `-Allow event_external_handler` で `724 ok, 0 failed, 1 allowed`。正の対照: 落ちる正常の例題・exit 0 で終わる
+    `_error` の例題を一時的に足すと 2 件とも `FAILED`、書き間違えた `-Allow` の名前も止まって exit 1。`release.ps1` は
+    ASCII だけのまま構文が読めることを確かめた（リリースそのものは走らせていない）。
 - **5-5** `compare_python_impl` を凍結する（D-9）。スクリプトの先頭に凍結の理由と日付を書く。
 - **5-6** 全例題を再帰で舐めるゲート（`syntax_cov` / `tw_stats` / `compare_tm_grammar`）の対象を
   `gate/` にする（`compare_wasm_frontend` はフェーズ 7）。

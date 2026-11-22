@@ -58,6 +58,25 @@ function Get-GateTestFiles([string]$Root) {
     })
 }
 
+# ── examples/ の対象（scan_examples -Root examples と check_examples が共有する・5-4）──────────────
+# 走らせない例題（窓を出す・対話・長い・この形では動かないもの）。
+$script:GateExampleSkip = @(
+    'debug_demo', 'async_bench', 'async_demo', 'spider_render', 'spider_solitaire',
+    'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
+    'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
+    'importation'
+)
+# ⚠⚠ **`archived/` と `practical_examples/` は意図的に対象外**（タスク 9.3・利用者の決定）。
+#    `$categoryDirs` を使うスクリプト（scan_examples / check_examples / compare_outputs / compare_bytecode /
+#    compare_python_impl）は 9 カテゴリだけを走査する。
+#    ⚠ `force_gate.ps1 -Root examples` と `compare_wasm_frontend.ps1` は `examples/` を `-Recurse` で
+#      舐めるので上記 2 つも**含む**が、どちらも「例題が成功するか」は見ていない
+#      （バイトコード化の可否／2 実装の診断の一致）。⇒ **壊れていても素通りする。**
+#    ⚠⚠ **新しい検査の影響を測るときは母集団をこの 9 カテゴリに限ること。**
+#      タスク 7.5 の偽陽性計測で `archived/` の壊れた例題を「偽陽性」と数えかけた。
+#    理由と現状は examples/archived/README.md ・ examples/practical_examples/README.md。
+$script:GateExampleCategories = @('basics','collections','classes','typing','exceptions','async','bench','apps','interop')
+
 # gate/ のテストを**決まった引数で**走らせる（gate_speed_plan.md 5-3）。gate_expect / scan_examples / force_gate /
 # gates_every_time はどれもこれを呼ぶので、保存のキー（ファイルの並び・作業ディレクトリ・時間切れ・猶予・指紋）が揃い、
 # 1 回走らせれば残りは保存した結果を読むだけになる。⚠ 引数を変えるとキーが変わる（別々に走る）。
