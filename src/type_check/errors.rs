@@ -1261,6 +1261,118 @@ fn hl_bt(s: impl std::fmt::Display) -> String {
     format!("`\x1b[1;35m{s}\x1b[0m`")
 }
 
+// ---------------------------------------------------------------------------
+// 種類の名前（機械向けの診断 `AR_DIAG_OUT`・gate_speed_plan.md 3-1）
+// ---------------------------------------------------------------------------
+
+impl TypeErrorKind {
+    /// 種類の名前（列挙子の名前そのもの）。`gate/` のテストの期待（`# expect: static <名前>`）と照らす。
+    /// ⚠ 網羅の `match`（`_ =>` を書かない）: 種類を足すとここでコンパイルが止まり、名前の付け忘れが起きない。
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::IncompatibleComparison { .. } => "IncompatibleComparison",
+            Self::MutatingMethodOnImmutable { .. } => "MutatingMethodOnImmutable",
+            Self::AssignToImmutable { .. } => "AssignToImmutable",
+            Self::ImmutablePythonObject { .. } => "ImmutablePythonObject",
+            Self::CallArgCountMismatch { .. } => "CallArgCountMismatch",
+            Self::CallArgTypeMismatch { .. } => "CallArgTypeMismatch",
+            Self::MissingParamTypeAnn { .. } => "MissingParamTypeAnn",
+            Self::MissingReturnTypeAnn { .. } => "MissingReturnTypeAnn",
+            Self::UnknownKeywordArg { .. } => "UnknownKeywordArg",
+            Self::NoMatchingOverload { .. } => "NoMatchingOverload",
+            Self::SelfTypeMismatch { .. } => "SelfTypeMismatch",
+            Self::SpreadArgNotIterable { .. } => "SpreadArgNotIterable",
+            Self::DictSpreadNotADict { .. } => "DictSpreadNotADict",
+            Self::OperationOnAny { .. } => "OperationOnAny",
+            Self::OperationOnUnion { .. } => "OperationOnUnion",
+            Self::IsNotOnNonUnion { .. } => "IsNotOnNonUnion",
+            Self::CallMutParamWithImmutableArg { .. } => "CallMutParamWithImmutableArg",
+            Self::InvalidDecorator { .. } => "InvalidDecorator",
+            Self::TupleUnpackMissingQualifier { .. } => "TupleUnpackMissingQualifier",
+            Self::TupleUnpackArityMismatch { .. } => "TupleUnpackArityMismatch",
+            Self::AssignToImmutableField { .. } => "AssignToImmutableField",
+            Self::AssignToConst { .. } => "AssignToConst",
+            Self::ModifyConst { .. } => "ModifyConst",
+            Self::VarTypeMismatch { .. } => "VarTypeMismatch",
+            Self::ReturnTypeMismatch { .. } => "ReturnTypeMismatch",
+            Self::FieldTypeMismatch { .. } => "FieldTypeMismatch",
+            Self::PrivateAccessError { .. } => "PrivateAccessError",
+            Self::ProtectedAccessError { .. } => "ProtectedAccessError",
+            Self::StaticMethodOnInstance { .. } => "StaticMethodOnInstance",
+            Self::BlockReturnInLoopExpr { .. } => "BlockReturnInLoopExpr",
+            Self::InvalidRaiseType { .. } => "InvalidRaiseType",
+            Self::FieldDefaultNotAllowed { .. } => "FieldDefaultNotAllowed",
+            Self::DirectFreezeCall { .. } => "DirectFreezeCall",
+            Self::ProtocolInstantiation { .. } => "ProtocolInstantiation",
+            Self::ProtocolConformanceFailed { .. } => "ProtocolConformanceFailed",
+            Self::ParamDefaultTypeMismatch { .. } => "ParamDefaultTypeMismatch",
+            Self::TemplateMissingTypeArgs { .. } => "TemplateMissingTypeArgs",
+            Self::VirtualMethodInClass { .. } => "VirtualMethodInClass",
+            Self::SelfReferentialField { .. } => "SelfReferentialField",
+            Self::CodeEscapesMetafunction { .. } => "CodeEscapesMetafunction",
+            Self::UnexpandedMemberDecorator { .. } => "UnexpandedMemberDecorator",
+            Self::FfiUnsupported { .. } => "FfiUnsupported",
+            Self::ObjectCallInArrow { .. } => "ObjectCallInArrow",
+            Self::TraitConformanceFailed { .. } => "TraitConformanceFailed",
+            Self::ProtocolInheritance { .. } => "ProtocolInheritance",
+            Self::AssignUndefined { .. } => "AssignUndefined",
+            Self::YieldOutsideGenerator { .. } => "YieldOutsideGenerator",
+            Self::VariableRedeclaration { .. } => "VariableRedeclaration",
+            Self::ResultSameTypes { .. } => "ResultSameTypes",
+            Self::IntersectionMemberConflict { .. } => "IntersectionMemberConflict",
+            Self::IntersectionGuardTypeFails { .. } => "IntersectionGuardTypeFails",
+            Self::IncompatibleBinOp { .. } => "IncompatibleBinOp",
+            Self::CompoundAssignResultMismatch { .. } => "CompoundAssignResultMismatch",
+            Self::BlockExprValueMismatch { .. } => "BlockExprValueMismatch",
+            Self::SubscriptTypeMismatch { .. } => "SubscriptTypeMismatch",
+            Self::NotSubscriptable { .. } => "NotSubscriptable",
+            Self::CasePatternNeverMatches { .. } => "CasePatternNeverMatches",
+            Self::ConditionNotBool { .. } => "ConditionNotBool",
+            Self::NoOverloadForArgTypes { .. } => "NoOverloadForArgTypes",
+            Self::IncompatibleUnaryOp { .. } => "IncompatibleUnaryOp",
+            Self::NotCallable { .. } => "NotCallable",
+            Self::NotIterable { .. } => "NotIterable",
+            Self::ExceptNotError { .. } => "ExceptNotError",
+            Self::ExceptOnErrorTrait { .. } => "ExceptOnErrorTrait",
+            Self::CastCanNeverSucceed { .. } => "CastCanNeverSucceed",
+            Self::MustBeCanNeverSucceed { .. } => "MustBeCanNeverSucceed",
+            Self::NotSized { .. } => "NotSized",
+            Self::NoSuchMember { .. } => "NoSuchMember",
+            Self::CrossTypeEquality { .. } => "CrossTypeEquality",
+            Self::UnknownGuardType { .. } => "UnknownGuardType",
+            Self::UndefinedName { .. } => "UndefinedName",
+            Self::BareClassMember { .. } => "BareClassMember",
+            Self::GuardTypeNotTestable { .. } => "GuardTypeNotTestable",
+            Self::ProtocolTypeArgCount { .. } => "ProtocolTypeArgCount",
+            Self::TypeTakesNoTypeArgs { .. } => "TypeTakesNoTypeArgs",
+            Self::UnknownTypeName { .. } => "UnknownTypeName",
+            Self::ModuleHasNoMember { .. } => "ModuleHasNoMember",
+            Self::UnimportedModuleType { .. } => "UnimportedModuleType",
+            Self::CannotImportName { .. } => "CannotImportName",
+            Self::BareContainerAnnotation { .. } => "BareContainerAnnotation",
+            Self::PtrElemNotCType { .. } => "PtrElemNotCType",
+            Self::ArrowCollectionInPython { .. } => "ArrowCollectionInPython",
+            Self::ArrowCollectionToPython { .. } => "ArrowCollectionToPython",
+            Self::PtrMethodUnavailable { .. } => "PtrMethodUnavailable",
+            Self::EnumVariantNotInt { .. } => "EnumVariantNotInt",
+        }
+    }
+}
+
+impl TypeWarningKind {
+    /// 種類の名前（列挙子の名前そのもの・`TypeErrorKind::name` と同じ）。
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::ProtocolReturnType { .. } => "ProtocolReturnType",
+            Self::ProtocolSkippedCompile { .. } => "ProtocolSkippedCompile",
+            Self::IntersectionMemberDuplicate { .. } => "IntersectionMemberDuplicate",
+            Self::IntersectionSkippedCompile { .. } => "IntersectionSkippedCompile",
+            Self::MustBeElemTypeUnchecked { .. } => "MustBeElemTypeUnchecked",
+            Self::MustBeFunctionSignatureUnchecked { .. } => "MustBeFunctionSignatureUnchecked",
+        }
+    }
+}
+
 impl std::fmt::Display for StaticTypeError {
     /// エラーを `"位置: StaticTypeError: 詳細"` 形式の ANSI 色付き文字列として出力する。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

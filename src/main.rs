@@ -1,9 +1,11 @@
-﻿/// Arrow インタープリタのエントリーポイント。
+/// Arrow インタープリタのエントリーポイント。
 ///
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
 // `ar_config.json` の読み取り（#72）。**探索方針は呼び出し側ごと**で、その地図も doc にある。
 mod ar_config;
+// 機械向けの診断の出力（`AR_DIAG_OUT`・gate_speed_plan.md 3-1）。
+mod diag_out;
 mod ast;
 // 「この文はどの名前を束縛するか」の唯一の定義（#59）。resolver / exec / vm-compiler が共有する。
 mod decl_names;
@@ -394,7 +396,9 @@ fn run_program(
         Ok(s) => s,
         Err(e) => {
             let at = parser.error_location(&e);
-            return Err(format!("ParseError: {e}{at}"));
+            let full = format!("ParseError: {e}{at}");
+            diag_out::parse_error(&full);
+            return Err(full);
         }
     };
     // ⚠ 展開器が置いたコードも**同じカウンタ**から採番する（設計書 §0.3 / タスク 2-1）。
@@ -426,6 +430,7 @@ fn run_program(
             if std::env::var_os("AR_EXPANSION_MARK").is_some() {
                 eprintln!("ExpansionStopped");
             }
+            diag_out::expand_error(&e);
             e
         })?;
     stmts = expanded;
@@ -438,6 +443,10 @@ fn run_program(
         interpreter::resolver::resolve_and_annotate(&mut stmts);
     for w in &type_warnings {
         eprintln!("Warning: {w}");
+        diag_out::static_diag("warning", w.kind.name(), w.span.as_ref(), &w.detail_str());
+    }
+    for e in &type_errors {
+        diag_out::static_diag("static", e.kind.name(), e.span.as_ref(), &e.detail_str());
     }
     if !type_errors.is_empty() {
         return Err(format_static_errors(&type_errors));
@@ -558,20 +567,32 @@ fn run_program(
         match interp.exec(stmt) {
             // `raise` 文が実行された場合: フォーマット済みエラーレポートを返す
             Ok(ExecResult::Raise(raised)) => {
+                diag_out::runtime_raised(&raised);
                 return Err(explain(Interpreter::format_error_report(&raised)));
             }
             // 正常終了: 次の文へ続く
             Ok(_) => {}
             // 内部シグナル `\x00__raise__`: インタープリタが例外を保持している場合に送出される
             Err(e) if e == "\x00__raise__" => {
-                let msg = interp
-                    .take_current_exception()
-                    .map(|r| Interpreter::format_error_report(&r))
-                    .unwrap_or_else(|| "UnhandledException: (no details available)".to_string());
+                let msg = match interp.take_current_exception() {
+                    Some(r) => {
+                        diag_out::runtime_raised(&r);
+                        Interpreter::format_error_report(&r)
+                    }
+                    None => {
+                        let m = "UnhandledException: (no details available)".to_string();
+                        diag_out::runtime_text(&m);
+                        m
+                    }
+                };
                 return Err(explain(msg));
             }
             // その他の実行時エラー文字列をそのまま返す（Python の中を通って戻ってきた Arrow の例外は元の例外の報告・2-5）
-            Err(e) => return Err(explain(interp.uncaught_error_report(e))),
+            Err(e) => {
+                let report = interp.uncaught_error_report(e);
+                diag_out::runtime_text(&report);
+                return Err(explain(report));
+            }
         }
     }
     // ⚠⚠ 残った**中断中のジェネレータを閉じて `finally` を走らせる**（bug_fix.md B13 段階 D）。
@@ -626,6 +647,7 @@ fn main() {
 fn interpreter_main() {
     #[cfg(feature = "prof")]
     prof::mark_start();
+    diag_out::init();
     match parse_args() {
         Mode::Run(path, cli_args) => {
             // .arc: extract embedded source first, then run normally

@@ -1288,7 +1288,13 @@ impl Interpreter {
             }
         }
 
-        // Exception class name and message.
+        out.push_str(&Self::exception_line(raised));
+        out
+    }
+
+    /// トレースバックの最後の行（`ClassName: message`。文面が空なら名前だけ）。
+    /// ⚠ 機械向けの診断（`AR_DIAG_OUT`・main.rs の `diag_out`）も同じ行から種類と文面を取るので、組み立てはここ 1 箇所。
+    pub fn exception_line(raised: &RaisedError) -> String {
         match &raised.exception {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
@@ -1304,18 +1310,16 @@ impl Interpreter {
                 }).unwrap_or_default();
                 // `str(e)` が空なら名前だけ（CPython と同じ・`raise ValueError()` は `ValueError`）。
                 if message.is_empty() {
-                    out.push_str(&class_name);
+                    class_name
                 } else {
-                    out.push_str(&format!("{}: {}", class_name, message));
+                    format!("{}: {}", class_name, message)
                 }
             }
-            Value::Str(s) => out.push_str(s),
+            Value::Str(s) => s.to_string(),
             // Python で定義した例外（CPython のオブジェクトのまま・pandas_import_plan.md の 2-1）: `pkg.MyErr: bad`
-            Value::PyObject(h) => out.push_str(&crate::interpreter::py_interop::py_exception_line(h)),
-            other => out.push_str(&format!("<exception: {:?}>", other)),
+            Value::PyObject(h) => crate::interpreter::py_interop::py_exception_line(h),
+            other => format!("<exception: {:?}>", other),
         }
-
-        out
     }
 
     /// Execute one statement in REPL mode.
