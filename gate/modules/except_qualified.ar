@@ -1,0 +1,38 @@
+# except_qualified.ar — モジュールを通した名前の例外を捕まえる except m.Err:（python_builtins_plan.md のタスク 4-3）
+#
+# 対になる誤りの例: except_qualified_error.ar
+#
+# except の型にはモジュールの別名を通した名前（ae.AppError）も、import したときの名前
+# （exc_modules.app_errors.AppError）も書ける。照合は `x is ae.AppError` と同じ（同じクラスか・その派生か）。
+# ⚠ 以前は構文が受けず `ParseError: expected ':', got '.'` だった（Python の except requests.HTTPError: も変換できなかった）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/exceptions/except_qualified.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import exc_modules.app_errors as ae
+import exc_modules.app_errors
+
+try:
+    ae.fail("boom")
+except ae.AppError as e:
+    emit([str("caught ae.AppError:"), str(e.message)])               # caught ae.AppError: boom
+
+try:
+    ae.fail("full path")
+except exc_modules.app_errors.AppError as e:
+    emit([str("caught by the full name:"), str(e.message)])          # caught by the full name: full path
+
+try:
+    ae.fail("again")
+except ValueError:
+    emit([str("not reached")])
+except Exception as e:
+    emit([str("except Exception still catches it:"), str(e.message)])   # except Exception still catches it: again
+
+# ── 出力を照らす ──
+check_output([
+    "caught ae.AppError: boom",
+    "caught by the full name: full path",
+    "except Exception still catches it: again",
+    "",
+], "except_qualified")

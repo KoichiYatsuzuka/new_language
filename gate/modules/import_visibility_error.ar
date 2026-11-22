@@ -1,0 +1,22 @@
+# import_visibility_error.ar — import で見えないもの（CPython と同じ・2026-10-02）
+#
+# 対になる正常系: import_visibility.ar
+#
+# `import visibility_modules.wrapper as w` は `w` だけを束縛する（`visibility_modules` も `wrapper` も束縛しない）。
+# モジュールに無い名前・束縛していない名前は、静的エラーになる（実行まで進めば AttributeError / NameError）。
+#
+#   Expected error (StaticTypeError) ×4:
+#     module 'visibility_modules.wrapper' has no member 'nothing'
+#     cannot import 'nothing' from 'visibility_modules.wrapper'
+#     name 'wrapper' is not defined
+#     type 'visibility_modules.core.Item' belongs to module 'visibility_modules.core',
+#       which is not imported here; import it to use its types
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/import_visibility_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import visibility_modules.wrapper as w
+from visibility_modules.wrapper import nothing   # expect: static CannotImportName
+
+print(w.nothing)   # expect: static ModuleHasNoMember
+print(wrapper.WRAPPED)   # expect: static UndefinedName
+let it: visibility_modules.core.Item = w.wrap(1)   # expect: static UnimportedModuleType

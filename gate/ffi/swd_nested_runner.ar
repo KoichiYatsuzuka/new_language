@@ -1,0 +1,22 @@
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/swd_nested_runner.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+from test_modules.swd_nested import Vec2, Particle, sum_ksq, count_moving_right
+
+mut parts: list[Particle] = [
+    Particle(Vec2(0, 0), Vec2(3, 4)),   # ksq = 9+16 = 25, moving right
+    Particle(Vec2(1, 1), Vec2(-1, 2)),  # ksq = 1+4  = 5,  not right
+    Particle(Vec2(5, 5), Vec2(2, 0)),   # ksq = 4+0  = 4,  moving right
+]
+let particles: fixed_list[Particle] = parts => fixed_list[Particle]
+
+emit([str(sum_ksq(particles))])          # 25+5+4 = 34
+emit([str(count_moving_right(particles))])  # 2
+
+# ── 出力を照らす ──
+check_output([
+    "34",
+    "2",
+    "",
+], "swd_nested_runner")

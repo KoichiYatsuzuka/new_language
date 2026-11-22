@@ -1,0 +1,9 @@
+# util.ar — sub/util.ar と同じ名前の別ファイル（相対 import の例題）
+#
+# ⚠ 以前は実行時のモジュールキャッシュが**書いた綴り**（`util`）で区別していたので、
+#   こちらと sub/util.ar の両方を import すると、後から読んだ側が先に読んだ側の
+#   名前空間を受け取っていた。今はファイルごとに別の名前（`relative_modules.util` /
+#   `relative_modules.sub.util`）になる。
+
+fn which() -> str:
+    return "relative_modules/util.ar"

@@ -1,0 +1,4 @@
+# sub/util.ar — ../util.ar と同じ名前の別ファイル（相対 import の例題）
+
+fn which() -> str:
+    return "relative_modules/sub/util.ar"

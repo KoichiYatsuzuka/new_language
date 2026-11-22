@@ -1,0 +1,49 @@
+# import_visibility.ar — import で何が見えるか（CPython と同じ・2026-10-02）
+#
+# 対になる誤り: import_visibility_error.ar
+#
+# ① `import a.b` は先にパッケージ `a`（a/__init__.ar。無ければ空の名前空間パッケージ）を実行し、
+#    **先頭の `a` を束縛**する。`a.b.f()` と属性でたどる。
+# ② 読み込まれたサブモジュールは親パッケージの属性になる（どこで読み込まれても・`sys.modules` と同じ）。
+# ③ モジュールの中で import した名前もそのモジュールのメンバー（再エクスポート）。
+# ④ `from a import b` は、b が a の名前に無ければサブモジュール a.b を読み込む。
+#
+# ⚠ 2026-10-02 のフェーズ 2 では「再エクスポートしない」だったが、利用者の決定で CPython 準拠に改めた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/import_visibility.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import visibility_modules.wrapper
+
+# ── ① パッケージ `visibility_modules` を束縛する ──
+emit([str(visibility_modules.PACKAGE)])                 # visibility_modules（__init__.ar の名前）
+let it = visibility_modules.wrapper.wrap(4)
+emit([str(it.v)])                                       # 40
+if it.v != 40:
+    raise ValueError("wrapper.wrap")
+emit([str(visibility_modules.wrapper.describe(it))])    # wrapped core:40
+
+# ── ② wrapper が読み込んだ core は、パッケージの属性として見える ──
+emit([str(visibility_modules.core.LABEL)])              # core
+
+# ── ③ 再エクスポート: wrapper が import した core / Item は wrapper のメンバー ──
+emit([str(visibility_modules.wrapper.core.make_item(1).v)])   # 10
+from visibility_modules.wrapper import Item
+let it2: Item = visibility_modules.wrapper.wrap(2)
+emit([str(it2.v)])                                      # 20
+
+# ── ④ `from パッケージ import サブモジュール` ──
+from visibility_modules import core
+emit([str(core.make_item(3).v)])                        # 30
+
+# ── 出力を照らす ──
+check_output([
+    "visibility_modules",
+    "40",
+    "wrapped core:40",
+    "core",
+    "10",
+    "20",
+    "30",
+    "",
+], "import_visibility")

@@ -1,0 +1,56 @@
+# module_mut_state.ar — モジュールの `mut` 変数の変更が `m.x` に映る（フェーズ10 10-11）
+#
+# ⚠ 以前は `c.count` が import した時点の写しで、`c.bump()` を何度呼んでも 0 のままだった。
+#   モジュールの関数はモジュールの大域を書き換える（名前空間の分離・2026-09-26）ので、
+#   名前空間の `mut` のメンバーはモジュールの大域の**今の値**を読む。
+# ⚠ `from m import x` は import した時点の値を束縛する（Python と同じ）。後の変更は映らない。
+#
+# ⚠ **`mut` のグローバル変数は外から代入できる**（属性が `mut` だから・enum_member_type_plan.md 6-2）。
+#   代入するのはモジュールの大域そのもので、モジュールの関数も代入した値の続きから動く。
+#   以前は名前空間への代入が実行時に `cannot set attribute on non-instance` で失敗していた。
+#   `let` / `const` への代入は静的エラー（module_global_assign_error.ar / module_const_assign_error.ar）。
+# ⚠ `from m import x` で取り込んだ名前は付け替えられないが、**中身は元の宣言の属性に従う**
+#   （`mut` のリストなら `append` できる。リストはモジュールと共有している）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/module_mut_state.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import namespace_modules.counter as c
+from namespace_modules.counter import count as count_at_import
+from namespace_modules.counter import history
+
+emit([str(c.count)])                    # 0
+c.bump()
+c.bump()
+emit([str(c.count)])                    # 2
+c.reset()
+emit([str(c.count)])                    # 0
+c.bump()
+emit([str(c.count + c.STEP)])           # 2
+
+emit([str(count_at_import)])            # 0（from import は写し）
+
+c.count = 10                      # mut は外から代入できる
+emit([str(c.count)])                    # 10
+c.bump()                          # モジュールの関数は代入した値の続きから
+emit([str(c.count)])                    # 11
+c.count += 5
+emit([str(c.count)])                    # 16
+
+history.append(7)                 # 取り込んだ mut のリストの中身は書き換えられる（共有）
+c.history.append(8)
+emit([str(c.history)])                  # [7, 8]
+
+# ── 出力を照らす ──
+check_output([
+    "0",
+    "2",
+    "0",
+    "2",
+    "0",
+    "10",
+    "11",
+    "16",
+    "[7, 8]",
+    "",
+], "module_mut_state")

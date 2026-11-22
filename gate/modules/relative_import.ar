@@ -1,0 +1,57 @@
+# relative_import.ar — 相対 import（先頭のドット）でディレクトリを遡る（2026-10-02・CPython 準拠）
+#
+# 対になる誤り: relative_import_error.ar
+#
+# 規則（言語によらず同じ・src/module_path.rs）:
+#   import a.b          … エントリのディレクトリ（CPython の sys.path[0]）→ 言語ごとの外部の探索先
+#   import .a.b         … import 文を書いたファイルのディレクトリだけ
+#   from ..m import y   … 1 つ上のディレクトリだけ（ドットが 1 つ増えるごとにさらに 1 つ上）
+#   from . import m     … このディレクトリのモジュール m（CPython の書き方）
+# ⚠ `import a.b` は CPython と同じく**先頭の `a` を束縛**する（`a.b.f()` と呼ぶ）。`as m` なら `m = a.b`。
+# ⚠ CPython との差（Arrow の拡張）: `import .x` / `import ..x` も書け、エントリのファイルからも、
+#   エントリのディレクトリより上へも相対 import できる（サブディレクトリのファイルから上の階層を読むため）。
+#
+# relative_modules/sub/leaf.ar が `import ..base` / `import .util` / `from ..util import which` を書いている。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/relative_import.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import .relative_modules.base        # `relative_modules` を束縛（`relative_modules.base` は属性でたどる）
+import relative_modules.sub.leaf as leaf
+import relative_modules.util as top
+from relative_modules.base import Unit
+
+# ── ① サブディレクトリのモジュールが 1 つ上のモジュールを使う ──
+let u: Unit = leaf.make_unit(21)
+emit([str(u.v)])                        # 42
+if u.v != 42:
+    raise ValueError("leaf.make_unit")
+emit([str(leaf.base_name())])           # base
+
+# ── ② 同じファイルは、どの綴りで import しても同じモジュール ──
+#    leaf.ar の `..base` と、ここの `.relative_modules.base` / `relative_modules.base` は同じ base.ar。
+#    ⇒ 型も同じ（leaf.ar の `Unit` を返す関数の結果が、ここの `Unit` に入る・①）。
+#      モジュールの状態も 1 つ（base.double はどの綴りから呼んでも同じ関数）。
+emit([str(relative_modules.base.double(u.v))])               # 84
+emit([str(relative_modules.base.NAME == leaf.base_name())])  # True
+
+# ── ③ 同じ名前の別ファイルは別のモジュール ──
+#    sub/util.ar（leaf.ar の `.util`）と util.ar（ここの `relative_modules.util`）
+let both: str = leaf.which_utils()
+emit([str(both)])                       # relative_modules/sub/util.ar / relative_modules/util.ar
+if both != "relative_modules/sub/util.ar / relative_modules/util.ar":
+    raise ValueError("which_utils")
+emit([str(top.which())])                # relative_modules/util.ar
+if top.which() != "relative_modules/util.ar":
+    raise ValueError("top.which")
+
+# ── 出力を照らす ──
+check_output([
+    "42",
+    "base",
+    "84",
+    "True",
+    "relative_modules/sub/util.ar / relative_modules/util.ar",
+    "relative_modules/util.ar",
+    "",
+], "relative_import")

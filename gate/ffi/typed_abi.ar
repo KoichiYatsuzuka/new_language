@@ -1,0 +1,44 @@
+# typed_abi.ar — 統一 typed ABI の動作検証ランナー
+#
+# 1. cargo run --release -- --compile examples/interop/test_modules/typed_abi_module.ar
+# 2. cargo run --release -- examples/interop/typed_abi.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/typed_abi.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+from test_modules.typed_abi_module import safe_div
+from test_modules.typed_abi_module import chain_call
+from test_modules.typed_abi_module import hypot_sq
+
+# 正常経路（typed ABI 直接呼び出し）
+emit([str(safe_div(10, 2))])       # 5
+emit([str(hypot_sq(3.0, 4.0))])    # 25.0
+
+# ネイティブコード内の raise が ErrSlot 経由で言語例外として届く
+try:
+    let bad = safe_div(1, 0)
+    emit([str("NOT REACHED")])
+except ValueError as e:
+    emit([str("caught direct: " + e.message)])
+
+# typed→typed 呼び出しチェーンを通る raise の status 伝播
+try:
+    let bad2 = chain_call(0)
+    emit([str("NOT REACHED")])
+except ValueError as e:
+    emit([str("caught chained: " + e.message)])
+
+# raise 後も正常呼び出しが機能する
+emit([str(chain_call(4))])         # 25
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "5",
+    "25.0",
+    "caught direct: division by zero in safe_div",
+    "caught chained: division by zero in safe_div",
+    "25",
+    "done",
+    "",
+], "typed_abi")

@@ -1,0 +1,37 @@
+# meta_modules/greeting_macros.ar — 例題 `metafn_module.ar` が import するメタ関数のモジュール（タスク 2-12）。
+#
+# ⚠ このファイルの中のメタ関数呼び出し（下の `announce()`）は、このモジュールが
+#   **初めて読み込まれるとき**に、このモジュールの中だけで展開される（設計書 §1.7）。
+# ⚠ メタ関数は定義より前にあるモジュールの名前（ここでは `VERBOSE` / `line_of`）を
+#   閉包として捕まえる。⇒ 呼び出し側に同じ名前があっても、このモジュールのものを読む。
+
+const VERBOSE = True
+
+# モジュールの中で使う純粋メタ関数。
+exprconst fn line_of(n: int) -> Code:
+    let c = code:
+        print("greeting", <! n !>)
+    return c
+
+# 公開する配置メタ関数。`m.greet_times(2)` / `from ... import greet_times` で使う。
+exprconst !fn greet_times(n: int) -> None:
+    mut out = code:
+    for i in range(n):
+        out = out + line_of(i + 1)
+    quote out
+
+# 公開する装飾子。対象はそのまま残し、宣言されたことを示す変数を足す。
+exprconst !fn tagged(m) -> None:
+    let flag = m.name + "_is_tagged"
+    let extra = code:
+        let <! flag !> = True
+    quote m.code() + extra
+
+# このモジュール自身の展開（読み込まれたときに一度だけ）。
+exprconst !fn announce() -> None:
+    if VERBOSE:
+        quote code:
+            print("greeting_macros loaded")
+    quote code:
+
+announce()

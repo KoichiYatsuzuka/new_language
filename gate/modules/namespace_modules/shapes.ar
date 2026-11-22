@@ -1,0 +1,18 @@
+# namespace_modules/shapes.ar — 例題 import_namespace.ar / import_namespace_error.ar が import するモジュール。
+#
+# ⚠ このモジュールの関数・メソッドは、**このモジュールの名前**（`SCALE` / `scaled`）を引く。
+#   import した側に同じ名前があっても取り違えない。
+
+const SCALE = 10
+
+fn scaled(let n: int) -> int:
+    return n * SCALE
+
+class Square:
+    mut side: int
+
+    fn area(self) -> int:
+        return scaled(self.side * self.side)
+
+# モジュールの最上位（読み込みの最中）からメソッドを呼ぶ。
+let SAMPLE = Square(2).area()

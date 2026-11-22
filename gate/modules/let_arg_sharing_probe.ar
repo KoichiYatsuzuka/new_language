@@ -1,0 +1,10 @@
+# let_arg_sharing_probe.ar — `let_arg_sharing.ar` / `let_arg_sharing_module.ar` の共通ヘルパ。
+#
+# ⚠ 別ファイルに置いてあるのは、**モジュール本体から自モジュールの関数を呼べない**ため
+#   （bug_fix.md B6）。モジュール本体側のケースを書くには外部から import するしかない。
+
+from ..lib.check import emit
+
+# 同じ変数を 2 つの `let` パラメータに渡す。束縛で複製されなければ両者は同一オブジェクト。
+fn probe(let label: str, let v: list[int], let w: list[int]) -> None:
+    emit([str(label), str(v === w)])   # ⚠ gate/ への写し: print を emit に（呼ぶテストが check_output で照らす・4-7）

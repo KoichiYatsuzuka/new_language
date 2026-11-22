@@ -1,0 +1,7 @@
+# namespace_modules/globals.ar — 例題 module_global_assign_error.ar が import するモジュール
+#
+# グローバル変数の型と属性（`let` / `mut`）は import した側からも分かる（注釈が無くても型が付く）。
+
+let LABEL = "x"
+let TAGS: list[str] = ["t"]
+mut total = 0

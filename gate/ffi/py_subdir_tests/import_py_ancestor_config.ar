@@ -10,9 +10,19 @@
 # ⚠ #74 以前は型の側（パーサ）だけが `source_dir` と `root_dir` の 2 箇所しか見ず、ここで落ちていた。
 # ⚠ この例題が無いと、方針がまた 2 通りに分かれても全ゲートが緑のまま通る
 #   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_subdir/import_py_ancestor_config.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
 
 import[py] cfg_probe
 import[py] cfg_probe as cfg_int
 
-print(cfg_probe.MARKER)
-print(cfg_int.MARKER)
+emit([str(cfg_probe.MARKER)])
+emit([str(cfg_int.MARKER)])
+
+# ── 出力を照らす ──
+check_output([
+    "search_path_ok",
+    "search_path_ok",
+    "",
+], "import_py_ancestor_config")

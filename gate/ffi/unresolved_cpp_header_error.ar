@@ -11,6 +11,6 @@
 # ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/unresolved_cpp_header_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
 #   例題のコメントと照らして見直した（gate/README.md 3 節）。
 
-import[cpp-lib] no_such_header as h   # expect: parse - "import[cpp-lib]: cannot read header 'D:\repository\new_langu"
+import[cpp-lib] no_such_header as h   # expect: parse - "import[cpp-lib]: cannot read header '"
 
 print("ここには到達しない")

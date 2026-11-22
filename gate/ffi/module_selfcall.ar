@@ -1,0 +1,25 @@
+# module_selfcall.ar — モジュール本体から自モジュールの関数を呼ぶ（bug_fix.md B6）。
+#
+# ⚠ 本体は [test_modules/mod_selfcall.ar](test_modules/mod_selfcall.ar)。
+#   そちらに原因と経緯を書いてある。ここは結果を印字するだけ。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/module_selfcall.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[ar] test_modules.mod_selfcall as M
+
+emit([str(M.MSG)])        # hi bob      直接の呼び出し
+emit([str(M.MSG2)])       # hi alice    変数経由の呼び出し
+emit([str(M.P.x)])        # 7           クラスの実体化
+emit([str(M.TABLE)])      # ['hi 0', 'hi 1', 'hi 2']   初期化コード
+emit([str(M.G("carol"))]) # hi carol    参照（元から通っていた対照）
+
+# ── 出力を照らす ──
+check_output([
+    "hi bob",
+    "hi alice",
+    "7",
+    "['hi 0', 'hi 1', 'hi 2']",
+    "hi carol",
+    "",
+], "module_selfcall")

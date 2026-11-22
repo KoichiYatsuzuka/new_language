@@ -1,0 +1,16 @@
+# import_namespace_error.ar — `import m` だけではモジュールの名前は修飾なしで使えない（名前空間の分離）
+#
+# 対になる正常系: import_namespace.ar
+#
+# ⚠ 以前はモジュールの名前が呼び出し側の大域へ流し込まれていたので、これが通って 20 を出していた。
+#   Expected error (StaticTypeError):
+#     name 'scaled' is not defined
+#
+# ⚠ フェーズ10 10-8 から**静的エラー**（それまでは実行時の NameError）。型検査がモジュールの宣言を
+#   `namespace_modules.shapes.scaled` の名前で扱うようになり、修飾なしの `scaled` はどこにも無い名前になった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/import_namespace_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import namespace_modules.shapes as sh
+
+print(scaled(2))   # expect: static UndefinedName

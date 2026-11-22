@@ -45,12 +45,15 @@ function Get-GateForceHits($Results, [string]$RelBase) {
     return $hits
 }
 
-# gate/ の下の実行するテスト（lib/ と *_mods/ の下、ffi/ のサブディレクトリの下は除く・gate/README.md 1 節）。
-#   ⚠ ffi/ のテストは ffi/ の直下だけ。下のディレクトリ（test_modules/ など）は外部言語のテストが共有する補助
-#     （examples/interop/ と同じ名前で写した・4-4）。
+# gate/ の下の実行するテスト（lib/ と *_mods/ の下、ffi/ と modules/ のサブディレクトリの下は除く・gate/README.md 1 節）。
+#   ⚠ ffi/ と modules/ のテストは直下だけ。下のディレクトリ（test_modules/ / namespace_modules/ など）はテストが共有する
+#     補助（examples/ と同じ名前で写した。名前は import のパスと型の名前に出るので変えない・4-4 / 4-7）。
+#     例外として、名前が `_tests` で終わるディレクトリの下は実行する（サブディレクトリから祖先の設定が見えるかを
+#     確かめるテスト・4-7）。
 function Get-GateTestFiles([string]$Root) {
     return @(Get-ChildItem -LiteralPath $Root -Filter *.ar -Recurse | Where-Object {
-        $_.FullName -notmatch '\\lib\\' -and $_.FullName -notmatch '_mods\\' -and $_.FullName -notmatch '\\ffi\\[^\\]+\\'
+        $_.FullName -notmatch '\\lib\\' -and $_.FullName -notmatch '_mods\\' -and
+        ($_.FullName -notmatch '\\(ffi|modules)\\[^\\]+\\' -or $_.FullName -match '\\(ffi|modules)\\[^\\]+_tests\\[^\\]+$')
     })
 }
 

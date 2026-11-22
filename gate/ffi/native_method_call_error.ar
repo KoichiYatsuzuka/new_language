@@ -1,0 +1,19 @@
+# native_method_call_error.ar — コンパイル済みコードからの外部言語の呼び出しも、戻り値を宣言型と照合する
+# （native_object_access_plan.md 11-3・D-12）
+#
+# モジュール native_method_call_module.ar を .arc（コンパイル済み）で読む:
+#   cargo run --release -- --compile examples/interop/native_method_call_module.ar
+#
+# 期待されるエラー（FfiTypeError・実行時）:
+#   python function `L.get_int` is declared to return `int` but returned `str`
+#
+# ⚠ 以前のコンパイル済みコードは照合せず、`['I am a string']` を黙って返していた（非コンパイルは FfiTypeError）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/native_method_call_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime FfiTypeError "python function `L.get_int` is declared to return `int` but"
+
+import native_method_call_module as m
+
+print("before")
+print(m.lying_call())   # FfiTypeError: declared `int` but returned `str`
+print("not reached")

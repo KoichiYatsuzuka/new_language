@@ -1,0 +1,21 @@
+# relative_import_error.ar — ドット無しの import は、書いたファイルのディレクトリを探さない（CPython 準拠）
+#
+# 対になる正常系: relative_import.ar
+#
+# relative_modules/sub/implicit_relative_error.ar は、同じディレクトリの util.ar を `import util` で
+# 読もうとしている。ドット無しの import はエントリのディレクトリ（CPython の sys.path[0] =
+# このファイルのある examples/basics/）から探すので見つからない（CPython にも暗黙の相対 import は無い）。
+# 同じディレクトリのモジュールは `import .util` か `from . import util` と書く。
+#
+#   Expected error (ParseError):
+#     cannot find module 'util' (looked at '...examples\basics\util.arc', ...)
+#
+# ⚠ 2026-10-02 午前の版（フェーズ 1）では逆に「ドット無しも書いたファイルのディレクトリから・
+#   エントリのディレクトリは探さない」だった。利用者の決定で CPython 準拠へ改めた（フェーズ 4）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/relative_import_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: parse - "cannot find module 'util' (looked at '"
+
+import relative_modules.sub.implicit_relative_error as m
+
+print(m.which())

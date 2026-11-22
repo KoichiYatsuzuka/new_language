@@ -470,8 +470,23 @@
       種類の集まりが全部同じだった（4-2 の 193 件も同じ方法で全部同じ）。
   - ⚠ 全体を走らせたとき `async/async_demo` が 1 回揺れた（`raise_immediately=True` で 3 つ目のタスクが終わるか
     中断されるかはスレッドの順で決まる）。決まる部分だけを照らす形に直した（4-3 の 5 回では揺れなかった。負荷で出る）。
-- **4-7** import とモジュール（パッケージ・相対 import・再エクスポート・`.arc`）。`compare_import_paths` の 13 例題に
+- **4-7（済・2026-11-23）** import とモジュール（パッケージ・相対 import・再エクスポート・`.arc`）。`compare_import_paths` の 13 例題に
   当たる範囲を含める。
+  - `gate/modules/`: `basics` / `typing` / `exceptions` の import が主題の 19 件（正常系 10・禁止の形 9）と、
+    補助のディレクトリ 6 つ（`namespace_modules/` など）・モジュール 2 つ（`let_arg_sharing_probe` / `_module`）。
+    `ffi/` と同じく、テストは直下だけで、補助は `examples/` と同じ名前で写した（名前は import のパスと型の名前
+    `namespace_modules.tags.Tag` に出る）。ランナーの規則を `modules/` にも当てた。
+  - `.arc`（ネイティブの経路）とモジュールの 46 件は、補助（`test_modules/`）を共有するので `gate/ffi/` に置いた
+    （`native_*` / `cross_module_*` / `module_*` / `stale_arc_check` / `typed_abi` など）。
+  - `compare_import_paths` の 13 件: 窓を出す `cs_proc_app` を除く 12 件が `gate/ffi/` にある。
+    サブディレクトリから祖先の `ar_config.json` を読む `py_subdir/import_py_ancestor_config.ar` のために、名前が `_tests` で
+    終わるディレクトリは `ffi/` / `modules/` の下でも実行する例外を足し、`ffi/py_subdir_tests/` に置いた。
+  - モジュールの側の `print`: `let_arg_sharing_probe` は写したモジュールの側で `emit` に置き換えた。
+    `meta_modules/greeting_macros` はメタ関数が置くコードの中の `print` なので置き換えず、照らさない（4 行・README 2.3）。
+  - 禁止の形 9 件は、例題とファイルごとの誤りの段階と種類の集まりが同じだった。
+  - ⚠ 期待の文面の断片に**絶対パス**が入っていた 2 件（`relative_import_error` / `ffi/unresolved_cpp_header_error`）を、
+    パスの手前で切った。worktree や別の環境では合わなくなるため。照らす出力の期待にも絶対パスが無いことを確かめた。
+  - 結果: `gate/` 全体の 715 件が `-Fresh` で 2 回とも合格した（6 並列で 23〜28 秒）。
 - **4-8** ベンチ。合否のゲートとして走らせる回数にする（今は 23 件で 82 秒。計測は `ab_bench` / `speed_modes` の担当）。
 - **4-9** 対話: REPL とデバッガの golden（`repl_session` / `debug_session` が読むもの）。
 

@@ -1,0 +1,14 @@
+# let_arg_sharing_module.ar — `let_arg_sharing.ar` から import されるモジュール。
+#
+# ⚠ **import されたモジュール本体はリゾルバが解決を供給しない**（意図的・`resolver.rs` の doc）。
+#   そのため本体の名前は `Resolution::Unresolved` のままで、可変性の判定は
+#   `toplevel_globals`（名前 → 可変性）を引いて答える。ここを引かずに既定の「可変」へ
+#   倒すと、下の `mod_let` が `mut` と同じ扱いになり**無駄な複製**が起きる。
+
+from let_arg_sharing_probe import[ar] probe
+
+let mod_let = [1]
+probe("module-body let :", mod_let, mod_let)     # True  : 共有
+
+mut mod_mut = [1]
+probe("module-body mut :", mod_mut, mod_mut)     # False : 複製

@@ -1,0 +1,26 @@
+# metafn_module_import_error.ar — メタ関数を使うモジュールは最上位で import する（タスク 2-12）。
+#
+# モジュールは**初めて読み込まれるとき**に展開される（§1.7・2026-09-25 確定）。
+# ただし展開器が歩くのは最上位（とクラス本体）だけで、**関数の本体・ブロックの中には降りない**
+# （関数の中ではメタ関数を呼べないので・§1.1）。⇒ そこにある import の本体は展開されない。
+#
+# ⚠ 黙って通すと、実行時にその関数が呼ばれたとき「展開されなかった」で落ちる
+#   （呼ばれなければ黙って残る）。⇒ 展開時に止める。
+#
+# ⚠ 成功例は `metafn_module.ar`（最上位で import する）。
+#
+# 期待されるエラー:
+#   ParseError: `import` must be at the top level of a module; it cannot be written inside
+#               a function or a block
+#
+# ⚠ フェーズ10 10-16 から、関数・ブロックの中の import は**メタ関数を使うかどうかに関係なく**パーサが弾く
+#   （以前は展開器の MetaError: module '...' uses metafunctions, so it must be imported at the top level
+#   だった。その検査は AST を組み立てたときの保険として残っている）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_module_import_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+fn setup() -> None:
+    import meta_modules.greeting_macros as gm   # expect: parse - "`import` must be at the top level of a module"
+    print("setup")
+
+setup()

@@ -16,8 +16,8 @@
 | `check/` | `lib/check.ar` そのものの確かめ（合わない値・期待した例外が出ない・別の例外が出る、で確かめ落ちになること） |
 | `lang/<主題>/` | 言語の中核（`examples/` の `basics` / `collections` / `classes` / `typing` / `exceptions` に当たる範囲） |
 | `async/` | `async` / イベントループ / シグナル |
-| `modules/` | import とモジュール（パッケージ・相対 import・再エクスポート・`.arc`） |
-| `ffi/` | 外部言語（C / C++ / C# / JS / Python / Rust）とネイティブの経路（`.arc`）。テストは `ffi/` の**直下だけ**に置き、名前の頭で言語を分ける（`cpp_` / `cs_` / `js_` / `py_` / `rs_` / `native_` …）。下のディレクトリ（`test_modules/` / `py_libs/` / `rs_crates/` / `cs_*/` …）は共有の補助で、ランナーは実行しない（`examples/interop/` と同じ名前で写したので import を書き換えていない・4-4） |
+| `modules/` | import とモジュール（パッケージ・相対 import・再エクスポート）。`ffi/` と同じく、テストは直下だけで、下のディレクトリ（`namespace_modules/` など）は補助（名前は import のパスと型の名前に出るので `examples/` と同じにした）。`.arc` を使うテストは `ffi/` の `native_*` など（補助を共有するため） |
+| `ffi/` | 外部言語（C / C++ / C# / JS / Python / Rust）とネイティブの経路（`.arc`）。テストは `ffi/` の**直下だけ**に置き、名前の頭で言語を分ける（`cpp_` / `cs_` / `js_` / `py_` / `rs_` / `native_` …）。下のディレクトリ（`test_modules/` / `py_libs/` / `rs_crates/` / `cs_*/` …）は共有の補助で、ランナーは実行しない（`examples/interop/` と同じ名前で写したので import を書き換えていない・4-4）。例外: 名前が `_tests` で終わるディレクトリの下のテストは実行する（`py_subdir_tests/`: サブディレクトリから祖先の `ar_config.json` が見えること） |
 | `bench/` | ベンチ（合否だけを見る。速さは `ab_bench` / `speed_modes` が測る） |
 | `repl/` | 対話 REPL の入力と期待する出力 |
 | `debugger/` | デバッガのコマンド列と期待する出力 |
@@ -117,7 +117,9 @@ stdout へ直接出る。
   ```
 
 - ネイティブのコード（`.arc` / C）の `print` は照らせない。照らせない行の数をテストの末尾のコメントに書いている
-  （`ffi/native_builtins.ar` の 1 行）。
+  （`ffi/native_builtins.ar` の 1 行）。メタ関数が置いたコードの `print`（`modules/metafn_module.ar` の 4 行）も
+  照らしていない。
+- Arrow のモジュールの `print` は、写したモジュールの側で `emit` に置き換える（`modules/let_arg_sharing_probe.ar`）。
 - 写すとき（4-4〜4-6）は、`emit` の出力に印を付けて走らせ、印の付いた行（Arrow の側）と付かない行（外部言語の側）に
   分けて期待にした。Arrow の側の行は、もとの例題の出力の中に同じ順で現れることを確かめた。
 
